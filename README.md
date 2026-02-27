@@ -34,7 +34,7 @@
 ### Installation
 
 ```bash
-bun add -g clopen
+bun add -g @myrialabs/clopen
 ```
 
 This installs dependencies, builds the frontend, and makes the `clopen` command available globally.
