@@ -4,7 +4,7 @@ import tailwindcss from '@tailwindcss/vite';
 import { resolve } from 'path';
 
 export default defineConfig({
-	plugins: [svelte(), tailwindcss()],
+	plugins: [tailwindcss(), svelte()],
 	publicDir: 'static',
 	build: {
 		outDir: 'dist',
