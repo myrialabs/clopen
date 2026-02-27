@@ -1,6 +1,5 @@
 #!/usr/bin/env bun
 import { Elysia } from 'elysia';
-import { staticPlugin } from '@elysiajs/static';
 import { corsMiddleware } from './middleware/cors';
 import { errorHandlerMiddleware } from './middleware/error-handler';
 import { loggerMiddleware } from './middleware/logger';
@@ -11,6 +10,8 @@ import { disposeAllEngines } from './lib/engine';
 import { debug } from '$shared/utils/logger';
 import { isPortInUse } from './lib/shared/port-utils';
 import { networkInterfaces } from 'os';
+import { resolve } from 'node:path';
+import { statSync } from 'node:fs';
 
 // Import WebSocket router
 import { wsRouter } from './ws';
@@ -66,18 +67,26 @@ if (isDevelopment) {
 	// Store cleanup function for graceful shutdown
 	(globalThis as any).__closeViteDev = closeViteDev;
 } else {
-	// Production: Serve static frontend files
-	app.use(
-		staticPlugin({
-			assets: './dist',
-			prefix: '/'
-		})
-	);
+	// Production: Read index.html once at startup as a string so Content-Length
+	// is always correct. Bun.file() streaming can hang on some platforms.
+	const distDir = resolve(process.cwd(), 'dist');
+	const indexHtml = await Bun.file(resolve(distDir, 'index.html')).text();
 
-	// SPA fallback: serve index.html for all non-file routes
-	// Pass BunFile directly (not .stream()) so Bun sets Content-Length automatically
-	app.all('/*', async () => {
-		return new Response(Bun.file('./dist/index.html'), {
+	app.all('/*', ({ path }) => {
+		// Serve static files from dist/
+		if (path !== '/' && !path.includes('..')) {
+			const filePath = resolve(distDir, path.slice(1));
+			if (filePath.startsWith(distDir)) {
+				try {
+					if (statSync(filePath).isFile()) {
+						return new Response(Bun.file(filePath));
+					}
+				} catch {}
+			}
+		}
+
+		// SPA fallback: serve cached index.html
+		return new Response(indexHtml, {
 			headers: { 'Content-Type': 'text/html; charset=utf-8' }
 		});
 	});

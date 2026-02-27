@@ -3,19 +3,6 @@
  *
  * Provides filtered logging capabilities with label-based categorization.
  * All logs can be filtered by label, method type, and text content.
- *
- * Label Categories (22 total):
- * - Communication & Real-time: WebSocket, MCP operations
- * - File Operations: File I/O operations
- * - Chat & Notifications: Messages and notifications
- * - Terminal: Shell/PTY operations
- * - Preview: Browser preview and video encoding
- * - Data Persistence: Database, migrations, snapshots, checkpoints
- * - Engine & Processing: Engine operations
- * - User & Session: User and session management
- * - Configuration & Settings: Settings
- * - Infrastructure & Utilities: Server, git, project ops
- * - Frontend/UI State: Workspace and checkpoint UI state
  */
 
 export type LogLabel =
@@ -71,8 +58,7 @@ interface LoggerConfig {
 // enabled = true in development, false in production
 const config: LoggerConfig = {
 	enabled: process.env.NODE_ENV !== 'production',
-	filterLabels: ['snapshot', 'checkpoint', 'chat'],
-	// filterLabels: ['file'],
+	filterLabels: null,
 	filterMethods: null,
 	filterText: null
 };
