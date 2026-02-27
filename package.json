@@ -1,6 +1,6 @@
 {
   "name": "@myrialabs/clopen",
-  "version": "0.0.2",
+  "version": "0.0.3",
   "description": "All-in-one web workspace for Claude Code & OpenCode — chat, terminal, git, browser preview, checkpoints, and real-time collaboration",
   "author": "Myria Labs",
   "license": "MIT",
