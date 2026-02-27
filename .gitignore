@@ -1,0 +1,52 @@
+node_modules
+
+# Package managers
+package-lock.json
+yarn.lock
+pnpm-lock.yaml
+# Note: bun.lock should be committed
+
+# Output
+.output
+.vercel
+.netlify
+.wrangler
+/.svelte-kit
+/build
+/dist
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Env
+.env
+.env.*
+!.env.example
+!.env.test
+
+# Vite
+vite.config.js.timestamp-*
+vite.config.ts.timestamp-*
+
+# Database
+data/
+*.db
+*.db-shm
+*.db-wal
+
+# Logs
+logs/
+*.log
+dev.log
+
+# Runtime files
+nul
+
+# Playwright browser videos
+temp-videos/
+*.webm
+*.mp4
+
+# Terminal output cache
+.terminal-output-cache/

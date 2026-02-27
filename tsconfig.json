@@ -1,0 +1,41 @@
+{
+	"compilerOptions": {
+		// Basic Options
+		"target": "ES2022",
+		"module": "ES2022",
+		"lib": ["ES2022", "DOM", "DOM.Iterable"],
+		"moduleResolution": "bundler",
+		"resolveJsonModule": true,
+		"allowJs": true,
+		"checkJs": true,
+		"esModuleInterop": true,
+		"forceConsistentCasingInFileNames": true,
+		"skipLibCheck": true,
+		"sourceMap": true,
+		"strict": true,
+
+		// Path Aliases
+		"baseUrl": ".",
+		"paths": {
+			"$backend": ["./backend"],
+			"$backend/*": ["./backend/*"],
+			"$frontend": ["./frontend"],
+			"$frontend/*": ["./frontend/*"],
+			"$shared": ["./shared"],
+			"$shared/*": ["./shared/*"]
+		},
+
+		// Svelte & Type Checking
+		"types": ["svelte", "vite/client", "bun-types"],
+		"isolatedModules": true,
+		"allowSyntheticDefaultImports": true
+	},
+	"include": [
+		"frontend/**/*.ts",
+		"frontend/**/*.js",
+		"frontend/**/*.svelte",
+		"backend/**/*.ts",
+		"backend/**/*.js"
+	],
+	"exclude": ["node_modules", "dist", "build"]
+}

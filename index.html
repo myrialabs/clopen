@@ -1,0 +1,70 @@
+<!doctype html>
+<html lang="en">
+	<head>
+		<meta charset="utf-8" />
+		<link rel="icon" href="/favicon.svg" />
+		<meta name="viewport" content="width=device-width, initial-scale=1" />
+		<meta
+			name="description"
+			content="Clopen - Modern web UI for Claude Code & OpenCode with real browser preview, git management, multi-account support, file management, checkpoints, collaboration, and integrated terminal. Built with Bun and Svelte 5."
+		/>
+		<meta name="theme-color" content="#0a0a0a" />
+		<title>Clopen</title>
+
+		<!-- DM Sans - Local self-hosted font -->
+		<link rel="stylesheet" href="/fonts/dm-sans.css">
+
+		<!-- Prevent FOUC (Flash of Unstyled Content) for theme -->
+		<script>
+			(function() {
+				// Check for saved theme preference
+				try {
+					const savedTheme = localStorage.getItem('claude-theme');
+					const isManualTheme = localStorage.getItem('claude-theme-manual') === 'true';
+
+					let isDark = false;
+
+					if (savedTheme && isManualTheme) {
+						// Use saved manual theme preference
+						const theme = JSON.parse(savedTheme);
+						isDark = theme.mode === 'dark';
+					} else {
+						// Follow system preference
+						isDark = window.matchMedia('(prefers-color-scheme: dark)').matches;
+					}
+
+					// Apply dark class immediately to prevent flash
+					if (isDark) {
+						document.documentElement.classList.add('dark');
+					} else {
+						document.documentElement.classList.remove('dark');
+					}
+
+					// Set color scheme for browser integration
+					document.documentElement.style.colorScheme = isDark ? 'dark' : 'light';
+
+					// Update meta theme-color for mobile browsers
+					const metaThemeColor = document.querySelector('meta[name="theme-color"]');
+					if (metaThemeColor) {
+						metaThemeColor.setAttribute('content', isDark ? '#0a0a0a' : '#ffffff');
+					}
+				} catch (e) {
+					// Fallback to system preference if anything fails
+					if (window.matchMedia('(prefers-color-scheme: dark)').matches) {
+						document.documentElement.classList.add('dark');
+						document.documentElement.style.colorScheme = 'dark';
+					}
+				}
+			})();
+		</script>
+	</head>
+	<body
+		class="min-h-screen bg-white text-slate-900 dark:bg-slate-950 dark:text-slate-100 transition-colors duration-200"
+	>
+		<!-- App mount point -->
+		<div id="app"></div>
+
+		<!-- Vite entry point -->
+		<script type="module" src="/frontend/main.ts"></script>
+	</body>
+</html>

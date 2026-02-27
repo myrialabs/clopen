@@ -1,0 +1,68 @@
+# Dependencies
+node_modules
+
+# Package managers (keep bun.lock)
+package-lock.json
+yarn.lock
+pnpm-lock.yaml
+
+# Development files
+.git
+.gitignore
+.npmrc
+eslint.config.js
+tsconfig.json
+
+# Environment & Config
+.env
+.env.*
+!.env.example
+.claude
+
+# Build artifacts
+# dist/ is excluded - will be built automatically on first run
+dist/
+
+# Database & Data
+data/
+*.db
+*.db-shm
+*.db-wal
+
+# Logs & Debug
+*.log
+dev.log
+nul
+logs/
+log-*.txt
+
+# Development artifacts
+.terminal-output-cache/
+temp-videos/
+
+# Documentation & Notes (exclude internal docs)
+prompt*.txt
+CLAUDE.md
+DECISIONS.md
+PUBLISHING.md
+
+# Media files
+*.webm
+*.mp4
+
+# OS files
+.DS_Store
+Thumbs.db
+
+# IDE
+.vscode
+.idea
+*.swp
+*.swo
+*~
+
+# Test files (if any)
+*.test.ts
+*.spec.ts
+__tests__
+coverage

@@ -1,0 +1,313 @@
+@import 'tailwindcss';
+
+/* Configure dark mode strategy for Tailwind v4 */
+@variant dark (.dark &);
+
+@theme {
+	/* Typography scale */
+	--font-sans: 'DM Sans', ui-sans-serif, system-ui, sans-serif, 'Apple Color Emoji', 'Segoe UI Emoji', 'Segoe UI Symbol', 'Noto Color Emoji';
+	--font-mono: Consolas, ui-monospace, SFMono-Regular, 'SF Mono', Menlo, Monaco, 'Liberation Mono', 'Courier New', monospace;
+
+	/* Custom text sizes for very small text */
+	--text-5xs: 0.5rem; /* 8px */
+	--text-5xs--line-height: 0.875rem;
+	--text-4xs: 0.5625rem; /* 9px */
+	--text-4xs--line-height: 0.875rem;
+	--text-3xs: 0.625rem; /* 10px */
+	--text-3xs--line-height: 1rem;
+	--text-2xs: 0.6875rem; /* 11px */
+	--text-2xs--line-height: 1rem;
+}
+
+/* ========================================
+   DESIGN SYSTEM - Using Tailwind Violet Palette
+   ======================================== */
+
+@layer base {
+	* {
+		scrollbar-width: thin;
+	}
+
+	/* Light theme by default */
+	html {
+		scrollbar-color: rgb(139 92 246 / 0.2) transparent;
+		color-scheme: light;
+	}
+
+	/* Dark theme scrollbar */
+	.dark {
+		scrollbar-color: rgb(139 92 246 / 0.3) transparent;
+		color-scheme: dark;
+	}
+
+	html {
+		font-size: 13px;
+		line-height: 1.5;
+		-webkit-font-smoothing: antialiased;
+		-moz-osx-font-smoothing: grayscale;
+		scroll-behavior: smooth;
+	}
+
+	body {
+		margin: 0;
+		padding: 0;
+	}
+
+	.iconify {
+		display: inline-block;
+		vertical-align: middle;
+		width: 1em;
+		height: 1em;
+		transition: opacity 0.2s ease;
+	}
+
+	/* Smooth transitions for interactive elements */
+	button,
+	a,
+	input,
+	textarea,
+	select {
+		transition: all 200ms cubic-bezier(0.4, 0, 0.2, 1);
+	}
+
+	/* Disable transitions during theme switching for performance */
+	.no-transitions,
+	.no-transitions *,
+	.no-transitions *::before,
+	.no-transitions *::after {
+		transition: none !important;
+		animation: none !important;
+	}
+
+	/* Remove all focus outlines - use custom focus states */
+	*:focus {
+		outline: none !important;
+	}
+
+	*:focus-visible {
+		outline: none !important;
+	}
+
+	/* Screen reader only content */
+	.sr-only {
+		position: absolute;
+		width: 0.0625rem;
+		height: 0.0625rem;
+		padding: 0;
+		margin: -0.0625rem;
+		overflow: hidden;
+		clip: rect(0, 0, 0, 0);
+		white-space: nowrap;
+		border: 0;
+	}
+
+	.sr-only:focus {
+		position: static;
+		width: auto;
+		height: auto;
+		margin: 0;
+		overflow: visible;
+		clip: auto;
+		white-space: normal;
+	}
+
+	/* Reduced motion support */
+	@media (prefers-reduced-motion: reduce) {
+
+		*,
+		*::before,
+		*::after {
+			animation-duration: 0.01ms !important;
+			animation-iteration-count: 1 !important;
+			transition-duration: 0.01ms !important;
+		}
+
+		.animate-spin {
+			animation: none;
+		}
+
+		.animate-pulse {
+			animation: none;
+		}
+	}
+
+	button {
+		cursor: pointer;
+	}
+
+	/* Enhanced button animations - NO MOVEMENT */
+	button {
+		transition: background-color 0.2s ease, color 0.2s ease, box-shadow 0.2s ease, opacity 0.2s ease;
+	}
+
+	/* Remove all transform hover effects globally */
+	button:hover {
+		transform: none;
+	}
+
+	button:active {
+		transform: none;
+	}
+}
+
+/* ========================================
+   AI COCKPIT UTILITY CLASSES
+   ======================================== */
+
+@layer utilities {
+
+	/* Accent Glow Effect */
+	.ai-glow {
+		box-shadow: 0 0 20px rgb(139 92 246 / 0.2);
+	}
+
+	.ai-glow-sm {
+		box-shadow: 0 0 10px rgb(139 92 246 / 0.15);
+	}
+
+	.ai-glow-lg {
+		box-shadow: 0 0 40px rgb(139 92 246 / 0.25);
+	}
+
+	/* Glass Panel Effect */
+	.ai-glass {
+		backdrop-filter: blur(12px);
+	}
+
+	/* Border Glow on Hover */
+	.ai-border-glow {
+		transition: border-color 0.2s ease, box-shadow 0.2s ease;
+	}
+
+	.ai-border-glow:hover {
+		box-shadow: 0 0 12px rgb(139 92 246 / 0.2);
+	}
+
+	/* Gradient Accent */
+	.ai-gradient-accent {
+		background: linear-gradient(135deg, rgb(124 58 237) 0%, rgb(139 92 246) 100%);
+	}
+
+	/* Neural Pattern Background */
+	.ai-neural-bg {
+		background-image:
+			radial-gradient(circle at 25% 25%, rgb(139 92 246 / 0.03) 0%, transparent 50%),
+			radial-gradient(circle at 75% 75%, rgb(124 58 237 / 0.03) 0%, transparent 50%);
+	}
+
+	/* Pulse Animation for Status */
+	@keyframes ai-pulse {
+
+		0%,
+		100% {
+			opacity: 1;
+			box-shadow: 0 0 0 0 rgb(139 92 246 / 0.2);
+		}
+
+		50% {
+			opacity: 0.8;
+			box-shadow: 0 0 0 8px transparent;
+		}
+	}
+
+	.ai-pulse {
+		animation: ai-pulse 2s ease-in-out infinite;
+	}
+
+	/* Thinking Animation */
+	@keyframes ai-thinking {
+		0% {
+			transform: translateX(-100%);
+		}
+
+		100% {
+			transform: translateX(100%);
+		}
+	}
+
+	.ai-thinking-bar {
+		overflow: hidden;
+		position: relative;
+	}
+
+	.ai-thinking-bar::after {
+		content: '';
+		position: absolute;
+		top: 0;
+		left: 0;
+		right: 0;
+		bottom: 0;
+		background: linear-gradient(90deg, transparent, rgb(139 92 246 / 0.3), transparent);
+		animation: ai-thinking 1.5s ease-in-out infinite;
+	}
+
+	/* Terminal cursor blinking animation */
+	@keyframes terminal-cursor-blink {
+
+		0%,
+		50% {
+			background-color: rgb(124 58 237);
+			color: #000000;
+		}
+
+		51%,
+		100% {
+			background-color: transparent;
+			color: rgb(124 58 237);
+		}
+	}
+
+	.animate-terminal-cursor {
+		animation: terminal-cursor-blink 1s infinite;
+	}
+
+	/* Terminal scrollbar styling */
+	.terminal-scrollbar {
+		-webkit-overflow-scrolling: touch;
+		scrollbar-width: thin;
+		scrollbar-color: rgb(139 92 246 / 0.3) transparent;
+	}
+
+	.terminal-scrollbar::-webkit-scrollbar {
+		width: 0.5rem;
+	}
+
+	.terminal-scrollbar::-webkit-scrollbar-track {
+		background: transparent;
+	}
+
+	.terminal-scrollbar::-webkit-scrollbar-thumb {
+		background: rgb(139 92 246 / 0.3);
+		border-radius: 0.25rem;
+	}
+
+	.terminal-scrollbar::-webkit-scrollbar-thumb:hover {
+		background: rgb(139 92 246 / 0.5);
+	}
+
+	/* Hide scrollbar on mobile for cleaner look */
+	@media (max-width: 640px) {
+		.terminal-scrollbar::-webkit-scrollbar {
+			width: 0.25rem;
+		}
+
+		.terminal-scrollbar {
+			scrollbar-width: none;
+		}
+	}
+
+	/* Terminal URL styling */
+	.terminal-url {
+		cursor: pointer;
+	}
+
+	.terminal-url:hover {
+		text-decoration: underline;
+	}
+
+	/* Terminal URL parts (for URLs split by ANSI codes) */
+	.terminal-url-part {
+		pointer-events: none;
+	}
+}
+
