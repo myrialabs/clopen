@@ -33,8 +33,22 @@ export class XTermService {
 	 * Initialize terminal with async imports
 	 */
 	async initialize(container: HTMLDivElement): Promise<void> {
-		if (!browser || !container || this.terminal) {
+		if (!browser || !container) {
 			return;
+		}
+
+		// Already initialized
+		if (this.isInitialized) {
+			return;
+		}
+
+		// Clean up partial initialization if terminal exists but isn't initialized
+		// This can happen if a previous attempt failed after terminal.open() but before isInitialized was set
+		if (this.terminal) {
+			try { this.terminal.dispose(); } catch { /* ignore */ }
+			this.terminal = null;
+			this.fitAddon = null;
+			this.webLinksAddon = null;
 		}
 
 		try {
@@ -60,14 +74,26 @@ export class XTermService {
 			// Open terminal in container
 			this.terminal.open(container);
 
-			// Fit terminal to container
-			this.fitAddon.fit();
+			// Fit terminal to container - non-fatal if container has zero dimensions
+			// Will be retried automatically on resize
+			try {
+				this.fitAddon.fit();
+			} catch {
+				debug.log('terminal', '⚠️ Initial fit failed (container may have zero dimensions), will retry on resize');
+			}
 
 			this.isInitialized = true;
 			this.isReady = true;
 
 			debug.log('terminal', '✅ XTerm initialized successfully');
 		} catch (error) {
+			// Clean up on failure to allow retry
+			if (this.terminal) {
+				try { this.terminal.dispose(); } catch { /* ignore */ }
+				this.terminal = null;
+			}
+			this.fitAddon = null;
+			this.webLinksAddon = null;
 			debug.error('terminal', '❌ Failed to initialize XTerm:', error);
 		}
 	}

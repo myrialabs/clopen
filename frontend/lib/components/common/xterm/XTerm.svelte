@@ -42,6 +42,8 @@
 	let promptShownForSession = $state(false); // Track if prompt shown for current session
 	let justRestoredFromBuffer = $state(false); // Track if we just restored from buffer
 	let isInitialMount = $state(true); // Track if this is the initial mount after restore
+	let initRetryCount = $state(0); // Retry counter for initialization failures
+	const MAX_INIT_RETRIES = 5; // Max retry attempts
 	const keyboardEventHandler: ((e: KeyboardEvent) => void) | null = null; // Store event handler reference
 
 	// Track which sessions have connected to PTY in this browser session (after refresh)
@@ -323,11 +325,23 @@
 	// Reactive effects
 	$effect(() => {
 		// Initialize terminal when container is available
-		if (terminalContainer && !xtermService.isInitialized) {
-			// Small delay to ensure DOM is ready
-			setTimeout(() => {
-				initializeTerminal();
-			}, 10);
+		// Track initRetryCount to enable retry on failure
+		const currentRetry = initRetryCount;
+
+		if (terminalContainer && !isInitialized) {
+			// First attempt: short delay for DOM readiness
+			// Retries: longer delay to allow layout/resize to settle
+			const delay = currentRetry === 0 ? 10 : 500;
+			const timeoutId = setTimeout(async () => {
+				await initializeTerminal();
+
+				// If still not initialized, schedule a retry
+				if (!xtermService.isInitialized && currentRetry < MAX_INIT_RETRIES) {
+					initRetryCount = currentRetry + 1;
+				}
+			}, delay);
+
+			return () => clearTimeout(timeoutId);
 		}
 	});
 
