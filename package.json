@@ -1,5 +1,5 @@
 {
-  "name": "clopen",
+  "name": "@myrialabs/clopen",
   "version": "0.0.1",
   "description": "All-in-one web workspace for Claude Code & OpenCode — chat, terminal, git, browser preview, checkpoints, and real-time collaboration",
   "author": "Myria Labs",
