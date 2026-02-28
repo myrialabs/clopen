@@ -38,6 +38,7 @@
 							port={tunnel.port}
 							publicUrl={tunnel.publicUrl}
 							startedAt={tunnel.startedAt}
+							autoStopMinutes={tunnel.autoStopMinutes}
 						/>
 					{/each}
 				</div>

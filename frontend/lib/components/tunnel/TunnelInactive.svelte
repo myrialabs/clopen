@@ -137,6 +137,7 @@
 				bind:value={autoStopMinutes}
 				class="block w-full px-3 py-3 border border-slate-300 dark:border-slate-600 rounded-lg transition-colors duration-200 focus:outline-none text-sm font-medium focus:border-violet-500 focus:ring-2 focus:ring-violet-200 dark:focus:ring-violet-900/20 bg-white dark:bg-slate-900 text-slate-900 dark:text-slate-100"
 			>
+				<option value={10}>10 minutes</option>
 				<option value={30}>30 minutes</option>
 				<option value={60}>1 hour</option>
 				<option value={120}>2 hours</option>

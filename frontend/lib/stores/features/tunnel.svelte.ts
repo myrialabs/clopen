@@ -20,6 +20,7 @@ interface TunnelInfo {
 	port: number;
 	publicUrl: string;
 	startedAt: string;
+	autoStopMinutes: number;
 }
 
 interface PortState {
@@ -82,7 +83,8 @@ export const tunnelStore = {
 			tunnelState.tunnels.push({
 				port,
 				publicUrl: result.publicUrl,
-				startedAt: new Date().toISOString()
+				startedAt: new Date().toISOString(),
+				autoStopMinutes: autoStopMinutes || 60
 			});
 
 			tunnelState.portStates[port].progress = { stage: 'connected' };

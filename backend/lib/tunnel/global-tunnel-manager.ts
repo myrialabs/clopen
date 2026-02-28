@@ -7,6 +7,7 @@ interface TunnelInstance {
 	publicUrl: string;
 	localPort: number;
 	startedAt: Date;
+	autoStopMinutes: number;
 	autoStopTimer?: NodeJS.Timeout;
 }
 
@@ -173,6 +174,7 @@ class GlobalTunnelManager {
 				publicUrl,
 				localPort: port,
 				startedAt: new Date(),
+				autoStopMinutes,
 				autoStopTimer
 			};
 
@@ -239,11 +241,13 @@ class GlobalTunnelManager {
 		port: number;
 		publicUrl: string;
 		startedAt: string;
+		autoStopMinutes: number;
 	}> {
 		return Array.from(this.activeTunnels.entries()).map(([port, instance]) => ({
 			port,
 			publicUrl: instance.publicUrl,
-			startedAt: instance.startedAt.toISOString()
+			startedAt: instance.startedAt.toISOString(),
+			autoStopMinutes: instance.autoStopMinutes
 		}));
 	}
 

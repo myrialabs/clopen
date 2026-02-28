@@ -4,16 +4,28 @@
 	import TunnelQRCode from './TunnelQRCode.svelte';
 	import { addNotification } from '$frontend/lib/stores/ui/notification.svelte';
 
+	import { onMount } from 'svelte';
+
 	interface Props {
 		port: number;
 		publicUrl: string;
 		startedAt: string;
+		autoStopMinutes: number;
 	}
 
-	const { port, publicUrl, startedAt }: Props = $props();
+	const { port, publicUrl, startedAt, autoStopMinutes }: Props = $props();
 
 	let showQR = $state(false);
 	let copied = $state(false);
+	let now = $state(Date.now());
+
+	// Update every second for countdown
+	onMount(() => {
+		const interval = setInterval(() => {
+			now = Date.now();
+		}, 1000);
+		return () => clearInterval(interval);
+	});
 
 	async function copyUrl() {
 		try {
@@ -57,18 +69,21 @@
 		}
 	}
 
-	function getTimeAgo(startedAt: string): string {
-		const start = new Date(startedAt);
-		const now = new Date();
-		const diffMs = now.getTime() - start.getTime();
+	function getCountdown(startedAt: string, autoStopMins: number, currentTime: number): string {
+		const start = new Date(startedAt).getTime();
+		const endTime = start + autoStopMins * 60 * 1000;
+		const remainingMs = endTime - currentTime;
 
-		const diffMins = Math.floor(diffMs / 60000);
-		const diffHours = Math.floor(diffMs / 3600000);
+		if (remainingMs <= 0) return 'Stopping...';
 
-		if (diffMins < 1) return 'Just now';
-		if (diffMins < 60) return `${diffMins}m ago`;
-		if (diffHours < 24) return `${diffHours}h ago`;
-		return `${Math.floor(diffHours / 24)}d ago`;
+		const totalSeconds = Math.floor(remainingMs / 1000);
+		const hours = Math.floor(totalSeconds / 3600);
+		const minutes = Math.floor((totalSeconds % 3600) / 60);
+		const seconds = totalSeconds % 60;
+
+		if (hours > 0) return `${hours}h ${minutes}m left`;
+		if (minutes > 0) return `${minutes}m ${seconds}s left`;
+		return `${seconds}s left`;
 	}
 </script>
 
@@ -80,7 +95,7 @@
 				<div class="w-2 h-2 rounded-full bg-green-500"></div>
 				<span class="text-sm font-semibold text-slate-900 dark:text-slate-100">Port {port}</span>
 			</div>
-			<span class="text-xs text-slate-500 dark:text-slate-400">{getTimeAgo(startedAt)}</span>
+			<span class="text-xs text-slate-500 dark:text-slate-400">{getCountdown(startedAt, autoStopMinutes, now)}</span>
 		</div>
 		<button
 			onclick={handleStopTunnel}

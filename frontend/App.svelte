@@ -4,6 +4,7 @@
 	import { backgroundTerminalService } from '$frontend/lib/services/terminal/background';
 	import { initializeMCPPreview } from '$frontend/lib/services/preview';
 	import { globalStreamMonitor } from '$frontend/lib/services/notification/global-stream-monitor';
+	import { tunnelStore } from '$frontend/lib/stores/features/tunnel.svelte';
 
 	// NOTE: In Phase 3, we'll need to handle routing for SPA
 	// For now, we'll just render the main workspace
@@ -23,6 +24,9 @@
 		// Initialize MCP Preview Integration
 		// This sets up listeners for MCP browser automation events
 		initializeMCPPreview();
+
+		// Restore tunnel status from server
+		tunnelStore.checkStatus();
 	});
 </script>
 

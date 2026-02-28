@@ -207,16 +207,7 @@
 		aria-label="Action Buttons"
 	>
 		<!-- Tunnel Button -->
-		<button
-			type="button"
-			class="flex items-center justify-center w-9 h-8 bg-transparent border-none rounded-md text-slate-500 cursor-pointer transition-all duration-150 active:bg-violet-500/10"
-			role="tab"
-			onclick={() => (showTunnelModal = true)}
-			aria-label="Public Tunnel"
-			title="Public Tunnel"
-		>
-			<Icon name="lucide:cloud-upload" class="w-5 h-5" />
-		</button>
+		<TunnelButton collapsed={true} onClick={() => (showTunnelModal = true)} mobile={true} />
 
 		<!-- Settings Button -->
 		<button
