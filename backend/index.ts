@@ -14,6 +14,7 @@ import { debug } from '$shared/utils/logger';
 import { findAvailablePort } from './lib/shared/port-utils';
 import { networkInterfaces } from 'os';
 import { resolve } from 'node:path';
+import { statSync } from 'node:fs';
 
 // Import WebSocket router
 import { wsRouter } from './ws';
@@ -57,19 +58,27 @@ const app = new Elysia()
 	.use(wsRouter.asPlugin('/ws'));
 
 if (!isDevelopment) {
-	// Production: serve static files from dist/ using @elysiajs/static
-	const { staticPlugin } = await import('@elysiajs/static');
-
-	app.use(staticPlugin({
-		assets: 'dist',
-		prefix: '/',
-	}));
-
-	// SPA fallback: serve index.html for any unmatched route (client-side routing)
+	// Production: serve static files manually instead of @elysiajs/static.
+	// The static plugin tries to serve directories (like /) as files via Bun.file(),
+	// which hangs on some devices/platforms. Using statSync to verify the path is
+	// an actual file before serving avoids this issue.
 	const distDir = resolve(process.cwd(), 'dist');
 	const indexHtml = await Bun.file(resolve(distDir, 'index.html')).text();
 
-	app.get('/*', () => {
+	app.all('/*', ({ path }) => {
+		// Serve static files from dist/
+		if (path !== '/' && !path.includes('..')) {
+			const filePath = resolve(distDir, path.slice(1));
+			if (filePath.startsWith(distDir)) {
+				try {
+					if (statSync(filePath).isFile()) {
+						return new Response(Bun.file(filePath));
+					}
+				} catch {}
+			}
+		}
+
+		// SPA fallback: serve cached index.html
 		return new Response(indexHtml, {
 			headers: { 'Content-Type': 'text/html; charset=utf-8' }
 		});
