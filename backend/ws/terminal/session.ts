@@ -179,6 +179,22 @@ export const sessionHandler = createRouter()
 
 		debug.log('terminal', `✅ Added fresh listeners to PTY session ${sessionId}`);
 
+		// Replay historical output for reconnection (e.g., after browser refresh)
+		// The stream preserves output from the old stream when reconnecting to the same PTY.
+		// Replay from outputStartIndex so frontend receives all output it doesn't have yet.
+		const historicalOutput = terminalStreamManager.getOutput(registeredStreamId, outputStartIndex);
+		if (historicalOutput.length > 0) {
+			debug.log('terminal', `📜 Replaying ${historicalOutput.length} historical output entries for session ${sessionId}`);
+			for (const output of historicalOutput) {
+				ws.emit.project(projectId, 'terminal:output', {
+					sessionId,
+					content: output,
+					projectId,
+					timestamp: new Date().toISOString()
+				});
+			}
+		}
+
 		// Broadcast terminal tab created to all project users
 		ws.emit.project(projectId, 'terminal:tab-created', {
 			sessionId,
@@ -379,4 +395,36 @@ export const sessionHandler = createRouter()
 				message: 'PTY not found'
 			};
 		}
+	})
+
+	// List active PTY sessions for a project
+	// Used after browser refresh to discover existing sessions
+	.http('terminal:list-sessions', {
+		data: t.Object({
+			projectId: t.String()
+		}),
+		response: t.Object({
+			sessions: t.Array(t.Object({
+				sessionId: t.String(),
+				pid: t.Number(),
+				cwd: t.String(),
+				createdAt: t.String(),
+				lastActivityAt: t.String()
+			}))
+		})
+	}, async ({ data }) => {
+		const { projectId } = data;
+
+		const allSessions = ptySessionManager.getAllSessions();
+		const projectSessions = allSessions
+			.filter(session => session.projectId === projectId)
+			.map(session => ({
+				sessionId: session.sessionId,
+				pid: session.pty.pid,
+				cwd: session.cwd,
+				createdAt: session.createdAt.toISOString(),
+				lastActivityAt: session.lastActivityAt.toISOString()
+			}));
+
+		return { sessions: projectSessions };
 	});

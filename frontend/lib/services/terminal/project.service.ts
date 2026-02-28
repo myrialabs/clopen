@@ -98,28 +98,83 @@ class TerminalProjectManager {
 
 	/**
 	 * Create initial terminal sessions for a project
+	 * First checks backend for existing PTY sessions (e.g., after browser refresh)
 	 */
 	private async createProjectTerminalSessions(projectId: string, projectPath: string): Promise<void> {
-		// Creating terminal session for project
-		
 		const context = this.getOrCreateProjectContext(projectId, projectPath);
-		
-		// Create only 1 terminal session by default with correct project path and projectId
+
+		// Check backend for existing PTY sessions (survives browser refresh)
+		const existingBackendSessions = await terminalService.listProjectSessions(projectId);
+
+		if (existingBackendSessions.length > 0) {
+			debug.log('terminal', `Found ${existingBackendSessions.length} existing PTY sessions for project ${projectId}`);
+
+			// Sort by sessionId to maintain consistent order (terminal-1, terminal-2, etc.)
+			existingBackendSessions.sort((a, b) => a.sessionId.localeCompare(b.sessionId));
+
+			// Restore all existing sessions as tabs
+			for (const backendSession of existingBackendSessions) {
+				const sessionParts = backendSession.sessionId.split('-');
+				const terminalNumber = sessionParts[sessionParts.length - 1] || '1';
+
+				const terminalSession: TerminalSession = {
+					id: backendSession.sessionId,
+					name: `Terminal ${terminalNumber}`,
+					directory: backendSession.cwd || projectPath,
+					lines: [],
+					commandHistory: [],
+					isActive: false,
+					createdAt: new Date(backendSession.createdAt),
+					lastUsedAt: new Date(backendSession.lastActivityAt),
+					shellType: 'Unknown',
+					terminalBuffer: undefined,
+					projectId: projectId,
+					projectPath: projectPath
+				};
+
+				terminalStore.addSession(terminalSession);
+				terminalSessionManager.createSession(backendSession.sessionId, projectId, projectPath, backendSession.cwd || projectPath);
+				context.sessionIds.push(backendSession.sessionId);
+
+				// Update nextSessionId to avoid ID conflicts
+				const match = backendSession.sessionId.match(/terminal-(\d+)/);
+				if (match) {
+					terminalStore.updateNextSessionId(parseInt(match[1], 10) + 1);
+				}
+			}
+
+			// Restore previously active session from sessionStorage, or default to first
+			let activeSessionId = existingBackendSessions[0].sessionId;
+			if (typeof sessionStorage !== 'undefined') {
+				try {
+					const savedActiveId = sessionStorage.getItem(`terminal-active-session-${projectId}`);
+					if (savedActiveId && context.sessionIds.includes(savedActiveId)) {
+						activeSessionId = savedActiveId;
+					}
+				} catch {
+					// sessionStorage not available
+				}
+			}
+			context.activeSessionId = activeSessionId;
+			terminalStore.switchToSession(context.activeSessionId);
+			this.persistContexts();
+			return;
+		}
+
+		// No existing backend sessions, create 1 new terminal session
 		const sessionId = terminalStore.createNewSession(projectPath, projectPath, projectId);
-		
-		// Update the session's directory to ensure it's correct
+
 		const session = terminalStore.getSession(sessionId);
 		if (session) {
 			session.directory = projectPath;
 		}
-		
-		// Create a fresh session in terminalSessionManager with correct project association
+
 		terminalSessionManager.createSession(sessionId, projectId, projectPath, projectPath);
-		
+
 		context.sessionIds.push(sessionId);
 		context.activeSessionId = sessionId;
 		terminalStore.switchToSession(sessionId);
-		
+
 		this.persistContexts();
 	}
 

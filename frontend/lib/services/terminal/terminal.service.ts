@@ -340,6 +340,25 @@ export class TerminalService {
 	}
 
 	/**
+	 * List active PTY sessions for a project on the backend
+	 * Used after browser refresh to discover existing sessions
+	 */
+	async listProjectSessions(projectId: string): Promise<Array<{
+		sessionId: string;
+		pid: number;
+		cwd: string;
+		createdAt: string;
+		lastActivityAt: string;
+	}>> {
+		try {
+			const data = await ws.http('terminal:list-sessions', { projectId }, 5000);
+			return data.sessions || [];
+		} catch {
+			return [];
+		}
+	}
+
+	/**
 	 * Cleanup listeners for a session
 	 */
 	cleanupListeners(sessionId: string): void {

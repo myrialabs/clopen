@@ -49,17 +49,20 @@ class TerminalStreamManager {
   ): string {
     // Check if there's already a stream for this session
     const existingStreamId = this.sessionToStream.get(sessionId);
+    let preservedOutput: string[] = [];
     if (existingStreamId) {
       const existingStream = this.streams.get(existingStreamId);
       if (existingStream) {
-        // Clean up existing stream first
         if (existingStream.pty && existingStream.pty !== pty) {
-          // If it's a different PTY, kill the old one
+          // Different PTY, kill the old one
           try {
             existingStream.pty.kill();
           } catch (error) {
             // Ignore error if PTY already killed
           }
+        } else if (existingStream.pty === pty) {
+          // Same PTY (reconnection after browser refresh) - preserve output buffer
+          preservedOutput = [...existingStream.output];
         }
         // Remove the old stream
         this.streams.delete(existingStreamId);
@@ -79,7 +82,7 @@ class TerminalStreamManager {
       workingDirectory,
       projectPath,
       projectId,
-      output: [],
+      output: preservedOutput,
       processId: pty.pid,
       outputStartIndex: outputStartIndex || 0
     };

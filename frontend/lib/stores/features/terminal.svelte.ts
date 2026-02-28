@@ -138,6 +138,16 @@ export const terminalStore = {
 		}));
 
 		terminalState.activeSessionId = sessionId;
+
+		// Persist active session ID for restoration after browser refresh
+		const session = terminalState.sessions.find(s => s.id === sessionId);
+		if (session?.projectId && typeof sessionStorage !== 'undefined') {
+			try {
+				sessionStorage.setItem(`terminal-active-session-${session.projectId}`, sessionId);
+			} catch {
+				// sessionStorage not available
+			}
+		}
 	},
 
 	async closeSession(sessionId: string): Promise<boolean> {
