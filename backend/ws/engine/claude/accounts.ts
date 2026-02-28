@@ -20,6 +20,7 @@ import { ws } from '$backend/lib/utils/ws';
 import { engineQueries } from '../../../lib/database/queries';
 import { resetEnvironment, getClaudeUserConfigDir } from '../../../lib/engine/adapters/claude/environment';
 import { debug } from '$shared/utils/logger';
+import { getCleanSpawnEnv } from '../../../lib/shared/env';
 
 // ── Helpers ──
 
@@ -184,11 +185,8 @@ export const accountsHandler = createRouter()
 		const existingSetupId = userSetups.get(userId);
 		if (existingSetupId) cleanupSetup(existingSetupId);
 
-		// Build env
-		const ptyEnv: Record<string, string> = {};
-		for (const [key, value] of Object.entries(process.env)) {
-			if (value !== undefined) ptyEnv[key] = value;
-		}
+		// Build env from clean base (no Bun/npm/Vite pollution)
+		const ptyEnv = getCleanSpawnEnv();
 		ptyEnv['CLAUDE_CONFIG_DIR'] = getClaudeUserConfigDir();
 		ptyEnv['BROWSER'] = 'false';
 

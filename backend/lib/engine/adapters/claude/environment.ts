@@ -12,6 +12,7 @@ import { join } from 'path';
 import { isWindows, findGitBash } from '../../../terminal/shell-utils.js';
 import { engineQueries } from '../../../database/queries';
 import { debug } from '$shared/utils/logger';
+import { getCleanSpawnEnv } from '../../../shared/env';
 
 let _ready = false;
 let _initPromise: Promise<void> | null = null;
@@ -60,13 +61,8 @@ export async function setupEnvironmentOnce(): Promise<void> {
  * specific account's token instead of the globally active account.
  */
 export function getEngineEnv(accountId?: number): Record<string, string> {
-  const env: Record<string, string> = {};
-  // Copy process.env (filter out undefined values)
-  for (const [key, value] of Object.entries(process.env)) {
-    if (value !== undefined) {
-      env[key] = value;
-    }
-  }
+  // Start from clean env (no Bun/npm/Vite pollution)
+  const env = getCleanSpawnEnv();
   // Apply our overrides
   Object.assign(env, _envOverrides);
 

@@ -1,4 +1,7 @@
 #!/usr/bin/env bun
+// MUST be first import — cleans process.env before any other module reads it
+import { SERVER_ENV } from './lib/shared/env';
+
 import { Elysia } from 'elysia';
 import { corsMiddleware } from './middleware/cors';
 import { errorHandlerMiddleware } from './middleware/error-handler';
@@ -34,9 +37,9 @@ function getLocalIps(): string[] {
 	return ips;
 }
 
-const isDevelopment = process.env.NODE_ENV !== 'production';
-const PORT = process.env.PORT ? parseInt(process.env.PORT) : 9141;
-const HOST = process.env.HOST || 'localhost';
+const isDevelopment = SERVER_ENV.isDevelopment;
+const PORT = SERVER_ENV.PORT;
+const HOST = SERVER_ENV.HOST;
 
 // Create Elysia app
 const app = new Elysia()
@@ -49,7 +52,7 @@ const app = new Elysia()
 	.get('/health', () => ({
 		status: 'ok',
 		timestamp: new Date().toISOString(),
-		environment: process.env.NODE_ENV || 'development'
+		environment: SERVER_ENV.NODE_ENV
 	}))
 
 	// Mount WebSocket router (all functionality now via WebSocket)

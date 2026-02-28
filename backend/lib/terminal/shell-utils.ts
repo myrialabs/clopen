@@ -7,6 +7,7 @@ import { join } from 'path';
 import { spawn, type IPty } from 'bun-pty';
 
 import { debug } from '$shared/utils/logger';
+import { getCleanSpawnEnv } from '../shared/env';
 // Platform detection
 export const isWindows = process.platform === 'win32';
 export const isMacOS = process.platform === 'darwin';
@@ -148,38 +149,40 @@ export async function getShellConfig(preferGitBash = false): Promise<{
 }
 
 /**
- * Create a PTY instance using bun-pty with xterm.js optimizations
+ * Create a clean PTY environment with terminal-specific overrides.
+ * Uses getCleanSpawnEnv() to filter Bun/npm/Vite runtime pollution
+ * on every call (catches Vite re-injection after startup).
  */
-export function createPty(shell: string, args: string[], cwd: string, terminalSize?: { cols: number; rows: number }): IPty {
-	// Prepare environment
-	const ptyEnv: Record<string, string> = {};
-	
-	// Copy defined environment variables
-	for (const [key, value] of Object.entries(process.env)) {
-		if (value !== undefined) {
-			ptyEnv[key] = value;
-		}
-	}
-	
-	// Get terminal dimensions from frontend or use defaults
+export function createCleanPtyEnv(terminalSize?: { cols: number; rows: number }): Record<string, string> {
+	const ptyEnv = getCleanSpawnEnv();
+
+	// Terminal-specific environment variables for xterm.js
 	const cols = terminalSize?.cols || 80;
 	const rows = terminalSize?.rows || 24;
-	
-	// Add terminal-specific environment variables optimized for xterm.js
+
 	Object.assign(ptyEnv, {
 		FORCE_COLOR: '1',
 		COLORTERM: 'truecolor',
 		TERM: 'xterm-256color',
 		COLUMNS: cols.toString(),
 		LINES: rows.toString(),
-		// Enable proper ANSI support
 		TERM_PROGRAM: 'xterm.js',
-		// Optimize for interactive terminal
 		CLICOLOR: '1',
-		// Enable Unicode support
 		LC_ALL: 'en_US.UTF-8',
 		LANG: 'en_US.UTF-8'
 	});
+
+	return ptyEnv;
+}
+
+/**
+ * Create a PTY instance using bun-pty with xterm.js optimizations
+ */
+export function createPty(shell: string, args: string[], cwd: string, terminalSize?: { cols: number; rows: number }): IPty {
+	// Use clean environment (no Bun/npm/Vite pollution)
+	const ptyEnv = createCleanPtyEnv(terminalSize);
+	const cols = terminalSize?.cols || 80;
+	const rows = terminalSize?.rows || 24;
 	
 	// Extract the actual command from args
 	const actualCommand: string = '';

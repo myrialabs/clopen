@@ -7,6 +7,7 @@
 import type { IPty } from 'bun-pty';
 import { spawn } from 'bun-pty';
 import { debug } from '$shared/utils/logger';
+import { createCleanPtyEnv } from './shell-utils';
 
 export interface PtySession {
 	sessionId: string;
@@ -68,30 +69,12 @@ class PtySessionManager {
 			shellArgs = []; // Interactive mode, no -c
 		}
 
-		// Prepare environment
-		const ptyEnv: Record<string, string> = {};
-		for (const [key, value] of Object.entries(process.env)) {
-			if (value !== undefined) {
-				ptyEnv[key] = value;
-			}
-		}
+		// Use clean environment (no Bun/npm/Vite pollution)
+		const ptyEnv = createCleanPtyEnv(terminalSize);
 
 		// Terminal size
 		const cols = terminalSize?.cols || 80;
 		const rows = terminalSize?.rows || 24;
-
-		// Add terminal-specific environment variables
-		Object.assign(ptyEnv, {
-			FORCE_COLOR: '1',
-			COLORTERM: 'truecolor',
-			TERM: 'xterm-256color',
-			COLUMNS: cols.toString(),
-			LINES: rows.toString(),
-			TERM_PROGRAM: 'xterm.js',
-			CLICOLOR: '1',
-			LC_ALL: 'en_US.UTF-8',
-			LANG: 'en_US.UTF-8'
-		});
 
 		// Spawn interactive PTY
 		const pty = spawn(shell, shellArgs, {

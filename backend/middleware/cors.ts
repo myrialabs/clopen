@@ -1,11 +1,12 @@
 import { cors } from '@elysiajs/cors';
+import { SERVER_ENV } from '../lib/shared/env';
 
 /**
  * CORS Middleware Configuration
  * Single port setup — frontend and backend share the same origin.
  */
-const port = process.env.PORT || '9141';
-const host = process.env.HOST || 'localhost';
+const port = SERVER_ENV.PORT;
+const host = SERVER_ENV.HOST;
 export const corsMiddleware = cors({
 	origin: `http://${host}:${port}`,
 	credentials: true,

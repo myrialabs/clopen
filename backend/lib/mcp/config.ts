@@ -11,6 +11,7 @@ import type { ServerConfig, ParsedMcpToolName, ServerName } from './types';
 import { serverRegistry } from './servers';
 import { debug } from '$shared/utils/logger';
 import { resolve } from 'path';
+import { SERVER_ENV } from '../shared/env';
 
 /**
  * User-defined MCP Servers Configuration
@@ -297,7 +298,7 @@ export function getOpenCodeMcpConfig(): Record<string, McpLocalConfig> {
 
 	// Resolve path to the stdio server script
 	const stdioServerPath = resolve(import.meta.dir, 'stdio-server.ts');
-	const port = process.env.PORT || '9141';
+	const port = SERVER_ENV.PORT;
 
 	debug.log('mcp', `📦 Open Code MCP: stdio server at ${stdioServerPath}`);
 	debug.log('mcp', `📦 Open Code MCP: bridge port ${port}`);
@@ -307,7 +308,7 @@ export function getOpenCodeMcpConfig(): Record<string, McpLocalConfig> {
 			type: 'local',
 			command: ['bun', 'run', stdioServerPath],
 			environment: {
-				CLOPEN_PORT: port,
+				CLOPEN_PORT: String(port),
 			},
 			enabled: true,
 			timeout: 10000,

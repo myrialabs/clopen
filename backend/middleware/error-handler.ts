@@ -1,4 +1,5 @@
 import type { Elysia } from 'elysia';
+import { SERVER_ENV } from '../lib/shared/env';
 
 /**
  * Global Error Handler Middleware
@@ -40,7 +41,7 @@ export function errorHandlerMiddleware(app: Elysia) {
 					success: false,
 					error: 'Internal server error',
 					message:
-						process.env.NODE_ENV === 'production'
+						SERVER_ENV.NODE_ENV === 'production'
 							? 'An error occurred'
 							: error.toString()
 				};

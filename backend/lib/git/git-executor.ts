@@ -4,6 +4,7 @@
  */
 
 import { debug } from '$shared/utils/logger';
+import { getCleanSpawnEnv } from '../shared/env';
 
 export interface GitExecResult {
 	stdout: string;
@@ -26,7 +27,7 @@ export async function execGit(
 		stdout: 'pipe',
 		stderr: 'pipe',
 		env: {
-			...process.env,
+			...getCleanSpawnEnv(),
 			// Prevent git from prompting for credentials
 			GIT_TERMINAL_PROMPT: '0',
 			// Use English output for consistent parsing
