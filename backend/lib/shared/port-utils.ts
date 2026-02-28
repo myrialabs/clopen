@@ -23,3 +23,13 @@ export async function isPortInUse(port: number): Promise<boolean> {
 		return false; // Connection refused = port is free
 	}
 }
+
+/** Find an available port starting from the given port, incrementing on collision */
+export async function findAvailablePort(startPort: number, maxAttempts = 8): Promise<number> {
+	let port = startPort;
+	for (let i = 0; i < maxAttempts; i++) {
+		if (!(await isPortInUse(port))) return port;
+		port++;
+	}
+	throw new Error(`No available port found starting from ${startPort} (tried ${maxAttempts} ports)`);
+}

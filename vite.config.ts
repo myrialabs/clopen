@@ -3,9 +3,26 @@ import { defineConfig } from 'vite';
 import tailwindcss from '@tailwindcss/vite';
 import { resolve } from 'path';
 
+const frontendPort = parseInt(process.env.PORT_FRONTEND || '9141');
+const backendPort = parseInt(process.env.PORT_BACKEND || '9151');
+
 export default defineConfig({
 	plugins: [tailwindcss(), svelte()],
 	publicDir: 'static',
+	server: {
+		port: frontendPort,
+		strictPort: false,
+		proxy: {
+			'/api': {
+				target: `http://localhost:${backendPort}`,
+				changeOrigin: true,
+			},
+			'/ws': {
+				target: `ws://localhost:${backendPort}`,
+				ws: true,
+			},
+		},
+	},
 	build: {
 		outDir: 'dist',
 		emptyOutDir: true,

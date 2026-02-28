@@ -45,9 +45,11 @@
     "bun": ">=1.2.12"
   },
   "scripts": {
-    "dev": "bun --watch backend/index.ts",
+    "dev": "bun scripts/dev.ts",
+    "dev:backend": "bun --watch backend/index.ts",
+    "dev:frontend": "bunx vite dev",
     "build": "vite build",
-    "start": "bun backend/index.ts",
+    "start": "NODE_ENV=production bun backend/index.ts",
     "check": "svelte-check --tsconfig ./tsconfig.json",
     "lint": "eslint .",
     "lint:fix": "eslint . --fix",
@@ -60,6 +62,7 @@
     "@types/bun": "^1.2.18",
     "@types/qrcode": "^1.5.6",
     "@types/xterm": "^3.0.0",
+    "concurrently": "^9.2.1",
     "eslint": "^9.31.0",
     "eslint-plugin-svelte": "^3.10.1",
     "globals": "^16.3.0",

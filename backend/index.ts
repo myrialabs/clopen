@@ -11,10 +11,9 @@ import { loggerMiddleware } from './middleware/logger';
 import { initializeDatabase, closeDatabase } from './lib/database';
 import { disposeAllEngines } from './lib/engine';
 import { debug } from '$shared/utils/logger';
-import { isPortInUse } from './lib/shared/port-utils';
+import { findAvailablePort } from './lib/shared/port-utils';
 import { networkInterfaces } from 'os';
 import { resolve } from 'node:path';
-import { statSync } from 'node:fs';
 
 // Import WebSocket router
 import { wsRouter } from './ws';
@@ -22,9 +21,8 @@ import { wsRouter } from './ws';
 /**
  * Clopen - Elysia Backend Server
  *
- * Single port: 9141 for everything.
- * Development: Vite embedded as middleware (no separate server)
- * Production: Serves frontend static files + API
+ * Development: Elysia runs on port 9151, Vite dev server proxies /api and /ws from port 9141
+ * Production: Elysia runs on port 9141, serves static files from dist/ + API + WebSocket
  */
 
 function getLocalIps(): string[] {
@@ -48,8 +46,8 @@ const app = new Elysia()
 	.use(errorHandlerMiddleware)
 	.use(loggerMiddleware)
 
-	// Health check endpoint
-	.get('/health', () => ({
+	// API routes
+	.get('/api/health', () => ({
 		status: 'ok',
 		timestamp: new Date().toISOString(),
 		environment: SERVER_ENV.NODE_ENV
@@ -58,50 +56,32 @@ const app = new Elysia()
 	// Mount WebSocket router (all functionality now via WebSocket)
 	.use(wsRouter.asPlugin('/ws'));
 
-if (isDevelopment) {
-	// Development: Embed Vite as middleware — no separate port
-	// Uses Vite's direct APIs (transformIndexHtml, transformRequest) for speed,
-	// with Node.js compat middleware only as fallback for edge cases.
-	const { initViteDev, handleDevRequest, closeViteDev } = await import('./lib/vite-dev');
-	const vite = await initViteDev();
+if (!isDevelopment) {
+	// Production: serve static files from dist/ using @elysiajs/static
+	const { staticPlugin } = await import('@elysiajs/static');
 
-	app.all('/*', async ({ request }) => handleDevRequest(vite, request));
+	app.use(staticPlugin({
+		assets: 'dist',
+		prefix: '/',
+	}));
 
-	// Store cleanup function for graceful shutdown
-	(globalThis as any).__closeViteDev = closeViteDev;
-} else {
-	// Production: Read index.html once at startup as a string so Content-Length
-	// is always correct. Bun.file() streaming can hang on some platforms.
+	// SPA fallback: serve index.html for any unmatched route (client-side routing)
 	const distDir = resolve(process.cwd(), 'dist');
 	const indexHtml = await Bun.file(resolve(distDir, 'index.html')).text();
 
-	app.all('/*', ({ path }) => {
-		// Serve static files from dist/
-		if (path !== '/' && !path.includes('..')) {
-			const filePath = resolve(distDir, path.slice(1));
-			if (filePath.startsWith(distDir)) {
-				try {
-					if (statSync(filePath).isFile()) {
-						return new Response(Bun.file(filePath));
-					}
-				} catch {}
-			}
-		}
-
-		// SPA fallback: serve cached index.html
+	app.get('/*', () => {
 		return new Response(indexHtml, {
 			headers: { 'Content-Type': 'text/html; charset=utf-8' }
 		});
 	});
-
 }
 
 // Start server with proper initialization sequence
 async function startServer() {
-	// Strict check: refuse to start if port is already in use
-	if (await isPortInUse(PORT)) {
-		console.error(`❌ Port ${PORT} is already in use. Please close the existing process first.`);
-		process.exit(1);
+	// Find available port — auto-increment if desired port is in use
+	const actualPort = await findAvailablePort(PORT);
+	if (actualPort !== PORT) {
+		debug.log('server', `⚠️ Port ${PORT} in use, using ${actualPort} instead`);
 	}
 
 	// Initialize database first before accepting connections
@@ -114,14 +94,14 @@ async function startServer() {
 
 	// Start listening after database is ready
 	app.listen({
-		port: PORT,
+		port: actualPort,
 		hostname: HOST
 	}, () => {
-		console.log(`🚀 Clopen running at http://localhost:${PORT}`);
+		console.log(`🚀 Clopen running at http://localhost:${actualPort}`);
 		if (HOST === '0.0.0.0') {
 			const ips = getLocalIps();
 			for (const ip of ips) {
-				console.log(`🌐 Network access: http://${ip}:${PORT}`);
+				console.log(`🌐 Network access: http://${ip}:${actualPort}`);
 			}
 		}
 	});
@@ -136,10 +116,6 @@ startServer().catch((error) => {
 async function gracefulShutdown() {
 	console.log('\n🛑 Shutting down server...');
 	try {
-		// Close Vite dev server if running
-		if (isDevelopment && (globalThis as any).__closeViteDev) {
-			await (globalThis as any).__closeViteDev();
-		}
 		// Dispose all AI engines
 		await disposeAllEngines();
 		// Stop accepting new connections
