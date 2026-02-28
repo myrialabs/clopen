@@ -107,11 +107,16 @@ class GlobalTunnelManager {
 		const tunnelStartTime = Date.now();
 
 		try {
-			// Create tunnel instance
-			const tunnel = new Tunnel({
-				// Bind to specific port
-				url: `http://localhost:${port}`
-			});
+			// Create quick tunnel instance
+			const tunnel = Tunnel.quick(`http://localhost:${port}`);
+
+			// Log ALL events for debugging
+			tunnel.on('url', (url: string) => debug.log('tunnel', `[EVENT] url: ${url}`));
+			tunnel.on('connected', (info: any) => debug.log('tunnel', `[EVENT] connected:`, info));
+			tunnel.on('error', (error: Error) => debug.error('tunnel', `[EVENT] error:`, error));
+			tunnel.on('exit', (code: number | null) => debug.log('tunnel', `[EVENT] exit with code ${code}`));
+			tunnel.on('stdout', (data: string) => debug.log('tunnel', `[STDOUT] ${data.trim()}`));
+			tunnel.on('stderr', (data: string) => debug.log('tunnel', `[STDERR] ${data.trim()}`));
 
 			// Wait for tunnel to be ready
 			debug.log('tunnel', '[PROGRESS:GENERATING_URL] Waiting for public URL...');
@@ -119,10 +124,17 @@ class GlobalTunnelManager {
 
 			const publicUrl: string = await new Promise((resolve, reject) => {
 				const timeout = setTimeout(() => {
-					reject(new Error('Tunnel connection timeout (30s)'));
+					tunnel.stop();
+					reject(new Error('Tunnel connection timeout (30s). Please check if port ' + port + ' is accessible and has a running service.'));
 				}, 30000); // 30 second timeout
 
 				tunnel.on('url', (url: string) => {
+					// Validate that this is an actual tunnel URL, not the API endpoint
+					if (url.includes('api.trycloudflare.com')) {
+						debug.log('tunnel', `Ignoring API endpoint URL: ${url}`);
+						return;
+					}
+
 					debug.log('tunnel', `[PROGRESS:CONNECTED] ✅ Tunnel connected! Public URL: ${url}`);
 					clearTimeout(timeout);
 					resolve(url);
@@ -132,6 +144,13 @@ class GlobalTunnelManager {
 					debug.error('tunnel', '[PROGRESS:FAILED] Tunnel error:', error);
 					clearTimeout(timeout);
 					reject(error);
+				});
+
+				tunnel.once('exit', (code: number | null) => {
+					if (code !== 0 && code !== null) {
+						clearTimeout(timeout);
+						reject(new Error(`Tunnel failed to start (exit code ${code}). Please check your internet connection.`));
+					}
 				});
 			});
 

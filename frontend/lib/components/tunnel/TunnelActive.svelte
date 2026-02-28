@@ -77,7 +77,7 @@
 	<div class="flex items-start justify-between gap-3 mb-3">
 		<div class="flex items-center gap-2">
 			<div class="flex items-center gap-1.5">
-				<div class="w-2 h-2 rounded-full bg-green-500 animate-pulse"></div>
+				<div class="w-2 h-2 rounded-full bg-green-500"></div>
 				<span class="text-sm font-semibold text-slate-900 dark:text-slate-100">Port {port}</span>
 			</div>
 			<span class="text-xs text-slate-500 dark:text-slate-400">{getTimeAgo(startedAt)}</span>

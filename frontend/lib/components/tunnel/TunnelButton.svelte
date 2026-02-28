@@ -40,7 +40,7 @@
 			<Icon name="lucide:cloud-upload" class="w-4 h-4" />
 			{#if hasActiveTunnels}
 				<span
-					class="absolute -top-1 -right-1 w-2 h-2 bg-green-500 rounded-full border-2 border-slate-50 dark:border-slate-900/95 animate-pulse"
+					class="absolute -top-1 -right-1 w-2 h-2 bg-green-500 rounded-full border-2 border-slate-50 dark:border-slate-900/95"
 				></span>
 			{/if}
 		</div>

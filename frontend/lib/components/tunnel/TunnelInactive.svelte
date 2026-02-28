@@ -4,7 +4,7 @@
 	import Modal from '$frontend/lib/components/common/Modal.svelte';
 	import Checkbox from '$frontend/lib/components/common/Checkbox.svelte';
 
-	let port = $state(9141);
+	let port = $state(3000);
 	let autoStopMinutes = $state(60);
 	let showWarning = $state(false);
 	let dontShowWarningAgain = $state(false);
