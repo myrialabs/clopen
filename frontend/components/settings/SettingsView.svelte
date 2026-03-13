@@ -7,6 +7,7 @@
 	import AppearanceSettings from './appearance/AppearanceSettings.svelte';
 	import AccountSettings from './account/AccountSettings.svelte';
 	import NotificationSettings from './notifications/NotificationSettings.svelte';
+	import GitSettings from './git/GitSettings.svelte';
 	import SecuritySettings from './security/SecuritySettings.svelte';
 	import SystemSettings from './system/SystemSettings.svelte';
 	import UserManagement from './admin/UserManagement.svelte';
@@ -23,8 +24,11 @@
 	<div class="flex-1 overflow-auto">
 		<div class="space-y-6">
 
-			<!-- Model Configuration -->
+			<!-- AI Assistant (Chat Model) -->
 			<ModelSettings />
+
+			<!-- AI Commit (Commit Message Generator) -->
+			<GitSettings />
 
 			<!-- Appearance Configuration -->
 			<AppearanceSettings />

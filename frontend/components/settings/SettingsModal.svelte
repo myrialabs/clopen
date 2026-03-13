@@ -22,6 +22,7 @@
 	import InviteManagement from './admin/InviteManagement.svelte';
 	import SecuritySettings from './security/SecuritySettings.svelte';
 	import SystemSettings from './system/SystemSettings.svelte';
+	import GitSettings from './git/GitSettings.svelte';
 
 	// Responsive state
 	let isMobileMenuOpen = $state(false);
@@ -219,9 +220,13 @@
 				<!-- Content Area -->
 				<main class="flex-1 flex flex-col min-w-0 overflow-hidden">
 					<div class="flex-1 overflow-y-auto p-4 md:p-5">
-						{#if activeSection === 'model'}
+						{#if activeSection === 'assistant'}
 							<div in:fly={{ x: 20, duration: 200 }}>
 								<ModelSettings />
+							</div>
+						{:else if activeSection === 'commit-message'}
+							<div in:fly={{ x: 20, duration: 200 }}>
+								<GitSettings />
 							</div>
 						{:else if activeSection === 'appearance'}
 							<div in:fly={{ x: 20, duration: 200 }}>

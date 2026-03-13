@@ -180,9 +180,9 @@
 
 <div class="py-1">
 	<!-- Engine Selection -->
-	<h3 class="text-base font-bold text-slate-900 dark:text-slate-100 mb-1.5">AI Engine</h3>
+	<h3 class="text-base font-bold text-slate-900 dark:text-slate-100 mb-1.5">Engine</h3>
 	<p class="text-sm text-slate-600 dark:text-slate-500 mb-4">
-		Select the AI engine to power your conversations
+		Select the engine that powers your AI assistant
 	</p>
 
 	<div class="flex gap-3 mb-6">
@@ -233,7 +233,7 @@
 		</button>
 	</div>
 	<p class="text-sm text-slate-600 dark:text-slate-500 mb-3">
-		Select the AI model for the {ENGINES.find(e => e.type === settings.selectedEngine)?.name || 'selected'} engine
+		Select the model for the {ENGINES.find(e => e.type === settings.selectedEngine)?.name || 'selected'} engine
 	</p>
 
 	<!-- Search -->

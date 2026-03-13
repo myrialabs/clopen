@@ -10,7 +10,7 @@
  */
 
 import type { SDKMessage, SDKUserMessage, EngineSDKMessage } from '$shared/types/messaging';
-import type { AIEngine, EngineQueryOptions } from '../../types';
+import type { AIEngine, EngineQueryOptions, StructuredGenerationOptions } from '../../types';
 import type { EngineModel } from '$shared/types/engine';
 import type {
 	Provider,
@@ -1009,5 +1009,85 @@ export class OpenCodeEngine implements AIEngine {
 		}
 
 		return [{ type: 'text', text: '' }];
+	}
+
+	/**
+	 * One-shot structured JSON generation.
+	 * Uses the v1 SDK client.session.prompt() (synchronous) with prompt
+	 * engineering for JSON output since v1 doesn't support format option.
+	 */
+	async generateStructured<T = unknown>(options: StructuredGenerationOptions): Promise<T> {
+		const {
+			prompt,
+			model = 'claude-sonnet',
+			schema,
+			projectPath,
+			abortController
+		} = options;
+
+		if (!this._isInitialized) {
+			await this.initialize();
+		}
+
+		const client = await ensureClient();
+
+		// Create a temporary session for this one-shot request
+		const sessionResult = await client.session.create({
+			query: { directory: projectPath }
+		});
+		const sessionId = sessionResult.data?.id;
+		if (!sessionId) {
+			throw new Error('Failed to create OpenCode session');
+		}
+
+		// Parse model into providerID/modelID
+		const [providerID, modelID] = model.includes('/') ? model.split('/', 2) : ['', model];
+
+		// Wrap prompt with JSON instruction since v1 doesn't support format option
+		const jsonPrompt = `${prompt}
+
+IMPORTANT: You MUST respond with ONLY a valid JSON object matching this schema, no other text:
+${JSON.stringify(schema, null, 2)}`;
+
+		debug.log('engine', `[OC structured] Sending prompt to session ${sessionId}, model=${model}`);
+
+		// Use v1 SDK synchronous prompt method — waits for completion
+		const response = await client.session.prompt({
+			path: { id: sessionId },
+			body: {
+				parts: [{ type: 'text', text: jsonPrompt }],
+				...(providerID && modelID ? { model: { providerID, modelID } } : {}),
+				tools: {}
+			},
+			query: { directory: projectPath },
+			...(abortController?.signal && { signal: abortController.signal })
+		});
+
+		const data = response.data;
+		if (!data) {
+			throw new Error('OpenCode returned empty response');
+		}
+
+		debug.log('engine', `[OC structured] Got response with ${data.parts?.length || 0} parts`);
+
+		// Extract text content from response parts and parse as JSON
+		const textParts = (data.parts || []).filter((p: any) => p.type === 'text');
+		const fullText = textParts.map((p: any) => p.text || '').join('');
+
+		if (!fullText) {
+			throw new Error('OpenCode returned no text content');
+		}
+
+		debug.log('engine', `[OC structured] Raw text: ${fullText.slice(0, 200)}`);
+
+		// Try to extract JSON from the response (may include markdown fences)
+		const jsonMatch = fullText.match(/```(?:json)?\s*([\s\S]*?)```/) || fullText.match(/(\{[\s\S]*\})/);
+		const jsonText = jsonMatch ? jsonMatch[1].trim() : fullText.trim();
+
+		try {
+			return JSON.parse(jsonText) as T;
+		} catch {
+			throw new Error(`OpenCode did not return valid JSON: ${jsonText.slice(0, 200)}`);
+		}
 	}
 }

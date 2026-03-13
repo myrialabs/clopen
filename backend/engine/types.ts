@@ -24,6 +24,16 @@ export interface EngineQueryOptions {
 	claudeAccountId?: number;
 }
 
+/** Options for one-shot structured generation (no tools, no streaming) */
+export interface StructuredGenerationOptions {
+	prompt: string;
+	model?: string;
+	schema: Record<string, unknown>;
+	projectPath: string;
+	abortController?: AbortController;
+	claudeAccountId?: number;
+}
+
 /** The contract every engine adapter must fulfil */
 export interface AIEngine {
 	/** Engine identifier */
@@ -61,4 +71,11 @@ export interface AIEngine {
 	 * Unblocks the canUseTool callback so the SDK can continue.
 	 */
 	resolveUserAnswer?(toolUseId: string, answers: Record<string, string>): boolean;
+
+	/**
+	 * One-shot structured JSON generation (no tools, no streaming).
+	 * Returns parsed JSON matching the provided schema.
+	 * Optional — engines that don't support it leave undefined.
+	 */
+	generateStructured?<T = unknown>(options: StructuredGenerationOptions): Promise<T>;
 }

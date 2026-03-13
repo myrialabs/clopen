@@ -8,6 +8,7 @@
 
 import { query, type SDKMessage, type EngineSDKMessage, type Options, type Query, type SDKUserMessage } from '$shared/types/messaging';
 import type { PermissionMode, PermissionResult } from "@anthropic-ai/claude-agent-sdk";
+import type { StructuredGenerationOptions } from '../../types';
 import { normalizePath } from './path-utils';
 import { setupEnvironmentOnce, getEngineEnv } from './environment';
 import { handleStreamError } from './error-handler';
@@ -237,5 +238,91 @@ export class ClaudeCodeEngine implements AIEngine {
 
     this.pendingUserAnswers.delete(toolUseId);
     return true;
+  }
+
+  /**
+   * One-shot structured JSON generation.
+   * Uses query() with no tools, outputFormat, and maxTurns: 1.
+   */
+  async generateStructured<T = unknown>(options: StructuredGenerationOptions): Promise<T> {
+    const {
+      prompt,
+      model = 'haiku',
+      schema,
+      projectPath,
+      abortController,
+      claudeAccountId
+    } = options;
+
+    if (!this._isInitialized) {
+      await this.initialize();
+    }
+
+    const controller = abortController || new AbortController();
+    const normalizedPath = normalizePath(projectPath);
+
+    // Use bypassPermissions + tools: [] for a safe, tool-free one-shot query.
+    // 'plan' mode can suppress output; tools: [] already prevents tool usage.
+    const sdkOptions: Options = {
+      permissionMode: 'bypassPermissions' as PermissionMode,
+      allowDangerouslySkipPermissions: true,
+      cwd: normalizedPath,
+      env: getEngineEnv(claudeAccountId),
+      tools: [],
+      outputFormat: {
+        type: 'json_schema',
+        schema
+      },
+      ...(model && { model }),
+      abortController: controller
+    };
+
+    const promptIterable = (async function* () {
+      yield {
+        type: 'user',
+        message: { role: 'user', content: prompt }
+      } as SDKUserMessage;
+    })();
+
+    const queryInstance = query({
+      prompt: promptIterable,
+      options: sdkOptions
+    });
+
+    let structuredOutput: unknown = null;
+    let resultText = '';
+    let lastError = '';
+
+    for await (const message of queryInstance) {
+      debug.log('engine', `[structured] message type=${message.type}, subtype=${'subtype' in message ? message.subtype : 'n/a'}`);
+
+      if (message.type === 'result') {
+        if (message.subtype === 'success') {
+          const result = message as any;
+          structuredOutput = result.structured_output;
+          resultText = result.result || '';
+          debug.log('engine', `[structured] success: structured_output=${!!structuredOutput}, resultLen=${resultText.length}`);
+        } else {
+          const errResult = message as any;
+          lastError = errResult.errors?.join('; ') || errResult.subtype || 'unknown error';
+          debug.error('engine', `[structured] result error: ${lastError}`);
+        }
+      }
+    }
+
+    if (structuredOutput) {
+      return structuredOutput as T;
+    }
+
+    // Fallback: parse the text result as JSON
+    if (resultText) {
+      try {
+        return JSON.parse(resultText) as T;
+      } catch {
+        debug.warn('engine', `[structured] result text is not valid JSON: ${resultText.slice(0, 200)}`);
+      }
+    }
+
+    throw new Error(lastError || 'Claude Code did not return valid structured output');
   }
 }

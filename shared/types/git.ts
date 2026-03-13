@@ -169,3 +169,18 @@ export interface GitTag {
 	date: string;
 	isAnnotated: boolean;
 }
+
+// ============================================
+// Commit Message Generation
+// ============================================
+
+/** Format for AI-generated commit messages */
+export type CommitMessageFormat = 'single-line' | 'multi-line';
+
+/** Structured commit message output from AI */
+export interface GeneratedCommitMessage {
+	type: string;
+	scope: string;
+	subject: string;
+	body: string;
+}

@@ -1,4 +1,14 @@
 import type { EngineType } from '$shared/types/engine';
+import type { CommitMessageFormat } from '$shared/types/git';
+
+/** AI commit message generator settings */
+export interface CommitGeneratorSettings {
+	/** When false, uses the chat model (selectedEngine/selectedModel). When true, uses custom engine/model below. */
+	useCustomModel: boolean;
+	engine: EngineType;
+	model: string;
+	format: CommitMessageFormat;
+}
 
 /** Per-user settings (stored per user) */
 export interface AppSettings {
@@ -13,6 +23,8 @@ export interface AppSettings {
 	layoutPresetVisibility: Record<string, boolean>;
 	/** Base font size in pixels (10–20). Default: 13. */
 	fontSize: number;
+	/** AI commit message generator configuration */
+	commitGenerator: CommitGeneratorSettings;
 }
 
 /** Authentication mode */

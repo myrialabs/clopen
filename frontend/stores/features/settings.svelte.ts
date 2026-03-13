@@ -32,7 +32,13 @@ const defaultSettings: AppSettings = {
 	soundNotifications: true,
 	pushNotifications: false,
 	layoutPresetVisibility: createDefaultPresetVisibility(),
-	fontSize: 13
+	fontSize: 13,
+	commitGenerator: {
+		useCustomModel: false,
+		engine: 'claude-code',
+		model: 'claude-code:haiku',
+		format: 'single-line'
+	}
 };
 
 // Default system settings
@@ -63,7 +69,12 @@ export function applyFontSize(size: number): void {
 export function applyServerSettings(serverSettings: Partial<AppSettings> | null): void {
 	if (serverSettings && typeof serverSettings === 'object') {
 		// Merge with defaults to ensure all properties exist
-		Object.assign(settings, { ...defaultSettings, ...serverSettings });
+		const merged = { ...defaultSettings, ...serverSettings };
+		// Deep merge nested objects so new default fields are preserved
+		if (serverSettings.commitGenerator) {
+			merged.commitGenerator = { ...defaultSettings.commitGenerator, ...serverSettings.commitGenerator };
+		}
+		Object.assign(settings, merged);
 		applyFontSize(settings.fontSize);
 		debug.log('settings', 'Applied server settings');
 	}
