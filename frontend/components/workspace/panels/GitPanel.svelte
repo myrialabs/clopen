@@ -437,23 +437,62 @@
 		if (!isTwoColumnMode) viewMode = 'diff';
 
 		try {
-			const action = section === 'staged' ? 'git:diff-staged' : 'git:diff-unstaged';
-			const diffs = await ws.http(action, { projectId, filePath: file.path });
-			let diffResult: GitFileDiff | null = diffs.length > 0 ? diffs[0] : null;
+			let diffResult: GitFileDiff | null = null;
 
-			// When git diff returns empty (e.g. untracked files), create a synthetic diff
-			if (!diffResult) {
-				diffResult = {
-					oldPath: file.path,
-					newPath: file.path,
-					status: status || '?',
-					hunks: [],
-					isBinary: isBinaryByExtension(file.path)
-				};
-			} else if (status) {
-				// Override diff parser status with authoritative status from git status
-				// parseDiff defaults to 'M', but the real status (A, D, R, etc.) comes from git status
-				diffResult = { ...diffResult, status };
+			if (status === '?') {
+				// Untracked files have no git diff — read file content to build a synthetic diff
+				const isBinary = isBinaryByExtension(file.path);
+				if (isBinary) {
+					diffResult = {
+						oldPath: file.path,
+						newPath: file.path,
+						status: '?',
+						hunks: [],
+						isBinary: true
+					};
+				} else {
+					const basePath = projectState.currentProject?.path || '';
+					const separator = basePath.includes('\\') ? '\\' : '/';
+					const fullPath = `${basePath}${separator}${file.path}`;
+					const fileData = await ws.http('files:read-file', { file_path: fullPath });
+					const lines = (fileData.content || '').split('\n');
+					diffResult = {
+						oldPath: file.path,
+						newPath: file.path,
+						status: '?',
+						hunks: [{
+							oldStart: 0,
+							oldLines: 0,
+							newStart: 1,
+							newLines: lines.length,
+							header: `@@ -0,0 +1,${lines.length} @@`,
+							lines: lines.map((line, i) => ({
+								type: 'add' as const,
+								content: line,
+								newLineNumber: i + 1
+							}))
+						}],
+						isBinary: false
+					};
+				}
+			} else {
+				const action = section === 'staged' ? 'git:diff-staged' : 'git:diff-unstaged';
+				const diffs = await ws.http(action, { projectId, filePath: file.path });
+				diffResult = diffs.length > 0 ? diffs[0] : null;
+
+				if (!diffResult) {
+					diffResult = {
+						oldPath: file.path,
+						newPath: file.path,
+						status: status || '?',
+						hunks: [],
+						isBinary: isBinaryByExtension(file.path)
+					};
+				} else if (status) {
+					// Override diff parser status with authoritative status from git status
+					// parseDiff defaults to 'M', but the real status (A, D, R, etc.) comes from git status
+					diffResult = { ...diffResult, status };
+				}
 			}
 
 			openTabs = openTabs.map(t =>
@@ -981,7 +1020,7 @@
 			}
 
 			// Refresh the active diff tab if currently viewing one
-			if (activeTab && !activeTab.isLoading && activeTab.section !== 'commit') {
+			if (activeTab && !activeTab.isLoading && activeTab.section !== 'commit' && activeTab.status !== '?') {
 				const tab = activeTab;
 				try {
 					const action = tab.section === 'staged' ? 'git:diff-staged' : 'git:diff-unstaged';
