@@ -1,7 +1,9 @@
 <script lang="ts">
-	import { onMount, onDestroy, untrack } from 'svelte';
+	import { onDestroy, untrack } from 'svelte';
 	import Icon from '$frontend/components/common/display/Icon.svelte';
+	import MediaPreview from '$frontend/components/common/media/MediaPreview.svelte';
 	import { getFileIcon } from '$frontend/utils/file-icon-mappings';
+	import { isPreviewableFile } from '$frontend/utils/file-type';
 	import { getGitStatusBadgeLabel, getGitStatusBadgeColor } from '$frontend/utils/git-status';
 	import { themeStore } from '$frontend/stores/ui/theme.svelte';
 	import { projectState } from '$frontend/stores/core/projects.svelte';
@@ -11,7 +13,6 @@
 	import type { GitFileDiff } from '$shared/types/git';
 	import type { IconName } from '$shared/types/ui/icons';
 	import { debug } from '$shared/utils/logger';
-	import ws from '$frontend/utils/ws';
 	import { requestRevealFile } from '$frontend/stores/core/files.svelte';
 	import { getVisiblePanels, workspaceState } from '$frontend/stores/ui/workspace.svelte';
 
@@ -34,91 +35,21 @@
 	let monacoInstance: typeof import('monaco-editor') | null = null;
 	const isDark = $derived(themeStore.isDark);
 
-	// Binary file preview state
-	let blobUrl = $state<string | null>(null);
-	let pdfBlobUrl = $state<string | null>(null);
-	let isBinaryLoading = $state(false);
-
-	// File type detection helpers
-	function isImageFile(fileName: string): boolean {
-		const ext = fileName.substring(fileName.lastIndexOf('.')).toLowerCase();
-		return ['.png', '.jpg', '.jpeg', '.gif', '.webp', '.ico', '.bmp'].includes(ext);
-	}
-
-	function isSvgFile(fileName: string): boolean {
-		return fileName.toLowerCase().endsWith('.svg');
-	}
-
-	function isPdfFile(fileName: string): boolean {
-		return fileName.toLowerCase().endsWith('.pdf');
-	}
-
-	function isPreviewableBinary(fileName: string): boolean {
-		return isImageFile(fileName) || isSvgFile(fileName) || isPdfFile(fileName);
-	}
-
-	// Load binary content for preview
-	async function loadBinaryPreview(filePath: string) {
+	// Derive absolute path for binary preview
+	const binaryPreviewPath = $derived.by(() => {
+		if (!activeDiff?.isBinary || activeDiff.status === 'D') return null;
+		const filePath = activeDiff.newPath || activeDiff.oldPath;
+		if (!filePath) return null;
+		const fileName = getFileName(filePath);
+		if (!isPreviewableFile(fileName)) return null;
 		const projectPath = projectState.currentProject?.path;
-		if (!projectPath) return;
+		if (!projectPath) return null;
+		return `${projectPath}/${filePath}`;
+	});
 
-		const absolutePath = `${projectPath}/${filePath}`;
-		isBinaryLoading = true;
-
-		try {
-			const response = await ws.http('files:read-content', { path: absolutePath });
-
-			if (response.content) {
-				const binaryString = atob(response.content);
-				const bytes = new Uint8Array(binaryString.length);
-				for (let i = 0; i < binaryString.length; i++) {
-					bytes[i] = binaryString.charCodeAt(i);
-				}
-				const blob = new Blob([bytes], { type: response.contentType || 'application/octet-stream' });
-
-				if (isPdfFile(filePath)) {
-					if (pdfBlobUrl) URL.revokeObjectURL(pdfBlobUrl);
-					pdfBlobUrl = URL.createObjectURL(blob);
-				} else {
-					if (blobUrl) URL.revokeObjectURL(blobUrl);
-					blobUrl = URL.createObjectURL(blob);
-				}
-			}
-		} catch (err) {
-			debug.error('git', 'Failed to load binary preview:', err);
-		} finally {
-			isBinaryLoading = false;
-		}
-	}
-
-	function cleanupBlobUrls() {
-		if (blobUrl) {
-			URL.revokeObjectURL(blobUrl);
-			blobUrl = null;
-		}
-		if (pdfBlobUrl) {
-			URL.revokeObjectURL(pdfBlobUrl);
-			pdfBlobUrl = null;
-		}
-	}
-
-	// Load binary preview when activeDiff changes to a binary file
-	$effect(() => {
-		const currentDiff = activeDiff;
-		if (currentDiff?.isBinary) {
-			const filePath = currentDiff.newPath || currentDiff.oldPath;
-			if (filePath && isPreviewableBinary(getFileName(filePath))) {
-				// Status 'D' means file is deleted, can't preview
-				if (currentDiff.status !== 'D') {
-					untrack(() => {
-						cleanupBlobUrls();
-						loadBinaryPreview(filePath);
-					});
-				}
-			}
-		} else {
-			untrack(() => cleanupBlobUrls());
-		}
+	const binaryFileName = $derived.by(() => {
+		if (!activeDiff) return '';
+		return getFileName(activeDiff.newPath || activeDiff.oldPath);
 	});
 
 	// Build full content from hunks
@@ -288,7 +219,6 @@
 			diffEditorInstance.dispose();
 			diffEditorInstance = null;
 		}
-		cleanupBlobUrls();
 	});
 </script>
 
@@ -303,28 +233,28 @@
 			<span>Select a file to view diff</span>
 		</div>
 	{:else}
-		<!-- File header (like FileViewer) -->
+		<!-- File header -->
 		<div class="flex-shrink-0 flex items-center justify-between px-4 py-2.5 border-b border-slate-200 dark:border-slate-700">
-			<div class="flex items-center gap-2 min-w-0 flex-1">
-				<Icon name={getFileIcon(getFileName(activeDiff.newPath || activeDiff.oldPath)) as IconName} class="w-5 h-5 shrink-0" />
+			<div class="flex items-center gap-2 sm:gap-3 min-w-0 flex-1">
+				<Icon name={getFileIcon(getFileName(activeDiff.newPath || activeDiff.oldPath)) as IconName} class="w-7 h-7 shrink-0" />
 				<div class="min-w-0 flex-1">
-					<h3 class="text-xs font-bold text-slate-900 dark:text-slate-100 truncate">
+					<h3 class="text-xs sm:text-sm font-bold text-slate-900 dark:text-slate-100 truncate">
 						{getFileName(activeDiff.newPath || activeDiff.oldPath)}
 					</h3>
-					<p class="text-3xs text-slate-500 dark:text-slate-400 truncate mt-0.5">
+					<p class="text-xs text-slate-600 dark:text-slate-400 truncate mt-0.5">
 						{activeDiff.newPath || activeDiff.oldPath}
 					</p>
 				</div>
 			</div>
-			<div class="flex items-center gap-2 shrink-0">
+			<div class="flex items-center gap-1.5 sm:gap-1 flex-shrink-0">
 				{#if isFilesPanelVisible && activeDiff.status !== 'D'}
 					<button
 						type="button"
-						class="p-1 text-slate-400 hover:text-violet-600 dark:hover:text-violet-400 hover:bg-violet-50 dark:hover:bg-violet-900/30 rounded transition-colors cursor-pointer"
+						class="flex p-2 text-slate-600 dark:text-slate-400 hover:text-violet-600 dark:hover:text-violet-400 hover:bg-violet-50 dark:hover:bg-violet-900/30 rounded-lg transition-all duration-200 cursor-pointer"
 						onclick={openInFilesPanel}
 						title="Open in Files panel"
 					>
-						<Icon name="lucide:file-symlink" class="w-3.5 h-3.5" />
+						<Icon name="lucide:file-symlink" class="w-4 h-4" />
 					</button>
 				{/if}
 				<span class="text-3xs font-bold px-1.5 py-0.5 rounded {getGitStatusBadgeColor(activeDiff.status)}">
@@ -334,7 +264,6 @@
 		</div>
 
 		{#if activeDiff.isBinary}
-			{@const fileName = getFileName(activeDiff.newPath || activeDiff.oldPath)}
 			{@const isDeleted = activeDiff.status === 'D'}
 			{#if isDeleted}
 				<!-- Deleted binary file -->
@@ -345,43 +274,9 @@
 						This binary file has been deleted and cannot be previewed.
 					</p>
 				</div>
-			{:else if isImageFile(fileName) || isSvgFile(fileName)}
-				<!-- Image / SVG preview -->
-				<div class="flex-1 flex items-center justify-center p-4 overflow-hidden checkerboard-bg">
-					{#if isBinaryLoading}
-						<div class="w-5 h-5 border-2 border-slate-200 dark:border-slate-700 border-t-violet-600 rounded-full animate-spin"></div>
-					{:else if blobUrl}
-						<img
-							src={blobUrl}
-							alt={fileName}
-							class="max-w-full max-h-full object-contain"
-						/>
-					{:else}
-						<div class="flex flex-col items-center gap-2 text-slate-500 text-xs">
-							<Icon name="lucide:image-off" class="w-8 h-8 opacity-40" />
-							<span>Failed to load preview</span>
-						</div>
-					{/if}
-				</div>
-			{:else if isPdfFile(fileName)}
-				<!-- PDF preview -->
-				<div class="flex-1 h-full w-full">
-					{#if isBinaryLoading}
-						<div class="flex items-center justify-center h-full">
-							<div class="w-5 h-5 border-2 border-slate-200 dark:border-slate-700 border-t-violet-600 rounded-full animate-spin"></div>
-						</div>
-					{:else if pdfBlobUrl}
-						<iframe
-							src={pdfBlobUrl}
-							title={fileName}
-							class="w-full h-full border-0"
-						></iframe>
-					{:else}
-						<div class="flex flex-col items-center justify-center h-full gap-2 text-slate-500 text-xs">
-							<Icon name="lucide:file-x" class="w-8 h-8 opacity-40" />
-							<span>Failed to load PDF preview</span>
-						</div>
-					{/if}
+			{:else if binaryPreviewPath}
+				<div class="flex-1 overflow-hidden">
+					<MediaPreview fileName={binaryFileName} filePath={binaryPreviewPath} />
 				</div>
 			{:else}
 				<!-- Generic binary file -->
@@ -401,13 +296,3 @@
 		{/if}
 	{/if}
 </div>
-
-<style>
-	.checkerboard-bg {
-		background-image: url('data:image/svg+xml;charset=utf-8,%3Csvg%20xmlns%3D%22http%3A%2F%2Fwww.w3.org%2F2000%2Fsvg%22%20width%3D%2220%22%20height%3D%2220%22%3E%3Crect%20width%3D%2220%22%20height%3D%2220%22%20fill%3D%22%23f0f0f0%22%2F%3E%3Crect%20width%3D%2210%22%20height%3D%2210%22%20fill%3D%22%23e0e0e0%22%2F%3E%3Crect%20x%3D%2210%22%20y%3D%2210%22%20width%3D%2210%22%20height%3D%2210%22%20fill%3D%22%23e0e0e0%22%2F%3E%3C%2Fsvg%3E');
-	}
-
-	:global(.dark) .checkerboard-bg {
-		background-image: url('data:image/svg+xml;charset=utf-8,%3Csvg%20xmlns%3D%22http%3A%2F%2Fwww.w3.org%2F2000%2Fsvg%22%20width%3D%2220%22%20height%3D%2220%22%3E%3Crect%20width%3D%2220%22%20height%3D%2220%22%20fill%3D%22%23181818%22%2F%3E%3Crect%20width%3D%2210%22%20height%3D%2210%22%20fill%3D%22%23222222%22%2F%3E%3Crect%20x%3D%2210%22%20y%3D%2210%22%20width%3D%2210%22%20height%3D%2210%22%20fill%3D%22%23222222%22%2F%3E%3C%2Fsvg%3E');
-	}
-</style>

@@ -1,0 +1,40 @@
+/**
+ * Shared binary file extension constants.
+ * Single source of truth used by both backend (file-type-detection) and frontend (file-type).
+ */
+
+/** Binary extensions that CAN be previewed in the browser (image, audio, video, PDF) */
+export const PREVIEWABLE_BINARY_EXTENSIONS = new Set([
+	// Images
+	'.png', '.jpg', '.jpeg', '.gif', '.bmp', '.ico', '.webp', '.tiff', '.tif',
+	// Audio
+	'.mp3', '.wav', '.ogg', '.flac', '.aac', '.m4a', '.wma', '.opus',
+	// Video
+	'.mp4', '.webm', '.avi', '.mkv', '.mov', '.flv', '.wmv', '.m4v', '.ogv',
+	// Documents
+	'.pdf',
+]);
+
+/** Binary extensions that CANNOT be previewed — archives, executables, fonts, databases, etc. */
+export const NON_PREVIEWABLE_BINARY_EXTENSIONS = new Set([
+	// Archives
+	'.zip', '.tar', '.gz', '.bz2', '.xz', '.7z', '.rar', '.zst', '.lz4',
+	// Office documents
+	'.doc', '.docx', '.xls', '.xlsx', '.ppt', '.pptx',
+	// Executables & compiled
+	'.exe', '.dll', '.com', '.bin', '.dat', '.pak', '.res',
+	'.beam', '.pyc', '.pyo', '.class', '.o', '.obj', '.so', '.dylib', '.a',
+	'.lib', '.wasm', '.bc', '.pdb', '.dSYM',
+	// Fonts
+	'.woff', '.woff2', '.ttf', '.eot', '.otf',
+	// Databases
+	'.sqlite', '.db', '.mdb',
+	// Disk images & other
+	'.iso', '.dmg', '.img', '.swf', '.swc',
+]);
+
+/** All known binary extensions (union of previewable + non-previewable) */
+export const ALL_BINARY_EXTENSIONS = new Set([
+	...PREVIEWABLE_BINARY_EXTENSIONS,
+	...NON_PREVIEWABLE_BINARY_EXTENSIONS,
+]);

@@ -1,23 +1,8 @@
 import { fileTypeFromBuffer } from 'file-type';
 import isTextPath from 'is-text-path';
 
+import { ALL_BINARY_EXTENSIONS } from '$shared/constants/binary-extensions';
 import { debug } from '$shared/utils/logger';
-
-/** Known binary file extensions that may fool content heuristics */
-const KNOWN_BINARY_EXTENSIONS = new Set([
-	'.beam', '.pyc', '.pyo', '.class', '.o', '.obj', '.so', '.dylib', '.a',
-	'.lib', '.dll', '.exe', '.com', '.bin', '.dat', '.pak', '.res',
-	'.wasm', '.bc', '.pdb', '.dSYM',
-	'.zip', '.tar', '.gz', '.bz2', '.xz', '.7z', '.rar', '.zst', '.lz4',
-	'.png', '.jpg', '.jpeg', '.gif', '.bmp', '.ico', '.webp', '.tiff', '.tif',
-	'.mp3', '.wav', '.ogg', '.flac', '.aac', '.m4a', '.wma', '.opus',
-	'.mp4', '.webm', '.avi', '.mkv', '.mov', '.flv', '.wmv', '.m4v', '.ogv',
-	'.pdf', '.doc', '.docx', '.xls', '.xlsx', '.ppt', '.pptx',
-	'.woff', '.woff2', '.ttf', '.eot', '.otf',
-	'.sqlite', '.db', '.mdb',
-	'.iso', '.dmg', '.img',
-	'.swf', '.swc',
-]);
 
 /**
  * Simple and reliable text file detection using external libraries
@@ -31,7 +16,7 @@ export async function isTextFile(filePath: string): Promise<boolean> {
 
 		// Fast reject: known binary extensions
 		const ext = filePath.substring(filePath.lastIndexOf('.')).toLowerCase();
-		if (KNOWN_BINARY_EXTENSIONS.has(ext)) {
+		if (ALL_BINARY_EXTENSIONS.has(ext)) {
 			return false;
 		}
 

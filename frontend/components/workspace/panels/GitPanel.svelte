@@ -8,6 +8,7 @@
 	import { settings } from '$frontend/stores/features/settings.svelte';
 	import ws from '$frontend/utils/ws';
 	import { getFileIcon } from '$frontend/utils/file-icon-mappings';
+	import { isPreviewableFile, isBinaryFile } from '$frontend/utils/file-type';
 	import { getGitStatusLabel, getGitStatusColor } from '$frontend/utils/git-status';
 	import type { IconName } from '$shared/types/ui/icons';
 	import type {
@@ -404,16 +405,8 @@
 
 	// Detect binary files by extension (for fallback when git diff returns empty)
 	function isBinaryByExtension(filePath: string): boolean {
-		const ext = filePath.substring(filePath.lastIndexOf('.')).toLowerCase();
-		return [
-			'.png', '.jpg', '.jpeg', '.gif', '.webp', '.ico', '.bmp', '.svg',
-			'.pdf', '.doc', '.docx', '.xls', '.xlsx', '.ppt', '.pptx',
-			'.zip', '.tar', '.gz', '.7z', '.rar', '.bz2',
-			'.exe', '.dll', '.so', '.dylib',
-			'.woff', '.woff2', '.ttf', '.eot', '.otf',
-			'.mp3', '.mp4', '.wav', '.avi', '.mkv', '.flv', '.mov', '.ogg',
-			'.sqlite', '.db',
-		].includes(ext);
+		const fileName = filePath.split(/[\\/]/).pop() || filePath;
+		return isPreviewableFile(fileName) || isBinaryFile(fileName);
 	}
 
 	async function viewDiff(file: GitFileChange, section: string) {
@@ -455,25 +448,37 @@
 					const separator = basePath.includes('\\') ? '\\' : '/';
 					const fullPath = `${basePath}${separator}${file.path}`;
 					const fileData = await ws.http('files:read-file', { file_path: fullPath });
-					const lines = (fileData.content || '').split('\n');
-					diffResult = {
-						oldPath: file.path,
-						newPath: file.path,
-						status: '?',
-						hunks: [{
-							oldStart: 0,
-							oldLines: 0,
-							newStart: 1,
-							newLines: lines.length,
-							header: `@@ -0,0 +1,${lines.length} @@`,
-							lines: lines.map((line, i) => ({
-								type: 'add' as const,
-								content: line,
-								newLineNumber: i + 1
-							}))
-						}],
-						isBinary: false
-					};
+
+					if (fileData.isBinary) {
+						// Backend detected binary content — show preview instead of diff
+						diffResult = {
+							oldPath: file.path,
+							newPath: file.path,
+							status: '?',
+							hunks: [],
+							isBinary: true
+						};
+					} else {
+						const lines = (fileData.content || '').split('\n');
+						diffResult = {
+							oldPath: file.path,
+							newPath: file.path,
+							status: '?',
+							hunks: [{
+								oldStart: 0,
+								oldLines: 0,
+								newStart: 1,
+								newLines: lines.length,
+								header: `@@ -0,0 +1,${lines.length} @@`,
+								lines: lines.map((line, i) => ({
+									type: 'add' as const,
+									content: line,
+									newLineNumber: i + 1
+								}))
+							}],
+							isBinary: false
+						};
+					}
 				}
 			} else {
 				const action = section === 'staged' ? 'git:diff-staged' : 'git:diff-unstaged';
