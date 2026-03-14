@@ -1,6 +1,6 @@
 <script lang="ts">
 	import { systemSettings, updateSystemSettings } from '$frontend/stores/features/settings.svelte';
-	import { updateState, checkForUpdate, runUpdate } from '$frontend/stores/ui/update.svelte';
+	import { updateState, checkForUpdate, runUpdate, showRestartModal } from '$frontend/stores/ui/update.svelte';
 	import Icon from '../../common/display/Icon.svelte';
 
 	function toggleAutoUpdate() {
@@ -88,10 +88,17 @@
 				</div>
 			{/if}
 
-			{#if updateState.updateSuccess}
+			{#if updateState.updateSuccess || updateState.pendingRestart}
 				<div class="mt-3 flex items-center gap-2 px-3 py-2 bg-emerald-500/10 border border-emerald-500/20 rounded-lg">
 					<Icon name="lucide:circle-check" class="w-4 h-4 text-emerald-500 shrink-0" />
-					<span class="text-xs text-emerald-600 dark:text-emerald-400">Updated successfully — restart clopen to apply</span>
+					<span class="text-xs text-emerald-600 dark:text-emerald-400">Updated to v{updateState.latestVersion} — restart required</span>
+					<button
+						type="button"
+						onclick={() => showRestartModal()}
+						class="text-xs font-semibold text-emerald-600 dark:text-emerald-400 underline underline-offset-2 hover:text-emerald-700 dark:hover:text-emerald-300 transition-colors"
+					>
+						How to restart
+					</button>
 				</div>
 			{/if}
 		</div>

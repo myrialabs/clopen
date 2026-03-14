@@ -13,6 +13,10 @@ import { readFileSync } from 'node:fs';
 import { createRouter } from '$shared/utils/ws-server';
 import { initializeDatabase, getDatabase } from '../../database';
 import { debug } from '$shared/utils/logger';
+import { ws } from '$backend/utils/ws';
+
+/** In-memory flag: set after successful update, cleared on server restart */
+let pendingUpdate: { fromVersion: string; toVersion: string } | null = null;
 
 /** Read current version from package.json */
 function getCurrentVersion(): string {
@@ -56,7 +60,12 @@ export const operationsHandler = createRouter()
 		response: t.Object({
 			currentVersion: t.String(),
 			latestVersion: t.String(),
-			updateAvailable: t.Boolean()
+			updateAvailable: t.Boolean(),
+			pendingRestart: t.Boolean(),
+			pendingUpdate: t.Optional(t.Object({
+				fromVersion: t.String(),
+				toVersion: t.String()
+			}))
 		})
 	}, async () => {
 		const currentVersion = getCurrentVersion();
@@ -67,7 +76,13 @@ export const operationsHandler = createRouter()
 
 		debug.log('server', `Latest version: ${latestVersion}, update available: ${updateAvailable}`);
 
-		return { currentVersion, latestVersion, updateAvailable };
+		return {
+			currentVersion,
+			latestVersion,
+			updateAvailable,
+			pendingRestart: pendingUpdate !== null,
+			pendingUpdate: pendingUpdate ?? undefined
+		};
 	})
 
 	// Run package update
@@ -98,8 +113,19 @@ export const operationsHandler = createRouter()
 			throw new Error(`Update failed (exit code ${exitCode}): ${output}`);
 		}
 
+		const fromVersion = getCurrentVersion();
+
 		// Re-fetch to confirm new version
 		const newVersion = await fetchLatestVersion();
+
+		// Set pending restart flag (persists until server restarts)
+		pendingUpdate = { fromVersion, toVersion: newVersion };
+
+		// Broadcast to all connected clients
+		ws.emit.global('system:update-completed', {
+			fromVersion,
+			toVersion: newVersion
+		});
 
 		debug.log('server', `Update completed. New version: ${newVersion}`);
 

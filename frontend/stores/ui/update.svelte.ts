@@ -18,6 +18,9 @@ interface UpdateState {
 	errorType: 'check' | 'update' | null;
 	updateOutput: string | null;
 	updateSuccess: boolean;
+	pendingRestart: boolean;
+	pendingVersions: { from: string; to: string } | null;
+	showRestartModal: boolean;
 }
 
 export const updateState = $state<UpdateState>({
@@ -30,7 +33,10 @@ export const updateState = $state<UpdateState>({
 	error: null,
 	errorType: null,
 	updateOutput: null,
-	updateSuccess: false
+	updateSuccess: false,
+	pendingRestart: false,
+	pendingVersions: null,
+	showRestartModal: false
 });
 
 let checkInterval: ReturnType<typeof setInterval> | null = null;
@@ -49,8 +55,17 @@ export async function checkForUpdate(): Promise<void> {
 		updateState.latestVersion = result.latestVersion;
 		updateState.updateAvailable = result.updateAvailable;
 
-		// Auto-update if enabled and update is available
-		if (result.updateAvailable && systemSettings.autoUpdate) {
+		// Restore pending restart state from backend (survives page refresh)
+		if (result.pendingRestart && result.pendingUpdate) {
+			updateState.pendingRestart = true;
+			updateState.pendingVersions = { from: result.pendingUpdate.fromVersion, to: result.pendingUpdate.toVersion };
+			updateState.updateSuccess = true;
+			updateState.latestVersion = result.pendingUpdate.toVersion;
+			updateState.showRestartModal = true;
+		}
+
+		// Auto-update if enabled and update is available (skip if already pending restart)
+		if (result.updateAvailable && systemSettings.autoUpdate && !result.pendingRestart) {
 			debug.log('server', 'Auto-update enabled, starting update...');
 			await runUpdate();
 		}
@@ -77,7 +92,10 @@ export async function runUpdate(): Promise<void> {
 		updateState.updateOutput = result.output;
 		updateState.updateSuccess = true;
 		updateState.updateAvailable = false;
+		updateState.pendingRestart = true;
+		updateState.pendingVersions = { from: updateState.currentVersion, to: result.newVersion };
 		updateState.latestVersion = result.newVersion;
+		updateState.showRestartModal = true;
 
 		debug.log('server', 'Update completed successfully');
 	} catch (err) {
@@ -89,10 +107,33 @@ export async function runUpdate(): Promise<void> {
 	}
 }
 
-/** Dismiss the update banner */
+/** Dismiss the update banner (not allowed when restart is pending) */
 export function dismissUpdate(): void {
+	if (updateState.pendingRestart) return;
 	updateState.dismissed = true;
 }
+
+/** Show the restart instructions modal */
+export function showRestartModal(): void {
+	updateState.showRestartModal = true;
+}
+
+/** Hide the restart instructions modal */
+export function hideRestartModal(): void {
+	updateState.showRestartModal = false;
+}
+
+// Listen for update-completed broadcast (notifies other tabs/clients)
+ws.on('system:update-completed', (payload) => {
+	debug.log('server', 'Update completed broadcast received');
+	updateState.updateSuccess = true;
+	updateState.updateAvailable = false;
+	updateState.pendingRestart = true;
+	updateState.pendingVersions = { from: payload.fromVersion, to: payload.toVersion };
+	updateState.latestVersion = payload.toVersion;
+	updateState.showRestartModal = true;
+	updateState.dismissed = false;
+});
 
 /** Start periodic update checks (every 30 minutes) */
 export function startUpdateChecker(): void {
