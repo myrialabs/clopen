@@ -1344,6 +1344,7 @@
 							externallyChanged={displayExternallyChanged}
 							onForceReload={forceReloadTab}
 							isBinary={displayIsBinary}
+						projectPath={projectPath}
 						/>
 					</div>
 				</div>

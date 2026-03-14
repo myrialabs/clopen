@@ -40,6 +40,7 @@
 		externallyChanged?: boolean;
 		onForceReload?: () => void;
 		isBinary?: boolean;
+		projectPath?: string;
 	}
 
 	const {
@@ -56,8 +57,18 @@
 		onToggleWordWrap,
 		externallyChanged = false,
 		onForceReload,
-		isBinary = false
+		isBinary = false,
+		projectPath = ''
 	}: Props = $props();
+
+	// Relative path for display
+	const displayPath = $derived.by(() => {
+		if (!file) return '';
+		if (projectPath && file.path.startsWith(projectPath)) {
+			return file.path.slice(projectPath.length).replace(/^[/\\]/, '');
+		}
+		return file.path;
+	});
 
 	// Theme state
 	const isDark = $derived(themeStore.isDark);
@@ -273,7 +284,7 @@
 						{file.name}
 					</h3>
 					<p class="text-xs text-slate-600 dark:text-slate-400 truncate mt-0.5">
-						<span class="hidden sm:inline">{file.path} • </span> {formatFileSize(file.size || 0)}
+						<span class="hidden sm:inline">{displayPath} • </span> {formatFileSize(file.size || 0)}
 					</p>
 				</div>
 			</div>
