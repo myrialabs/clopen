@@ -296,21 +296,38 @@ export class ClaudeCodeEngine implements AIEngine {
     let resultText = '';
     let lastError = '';
 
-    for await (const message of queryInstance) {
-      debug.log('engine', `[structured] message type=${message.type}, subtype=${'subtype' in message ? message.subtype : 'n/a'}`);
+    try {
+      for await (const message of queryInstance) {
+        debug.log('engine', `[structured] message type=${message.type}, subtype=${'subtype' in message ? message.subtype : 'n/a'}`);
 
-      if (message.type === 'result') {
-        if (message.subtype === 'success') {
-          const result = message as any;
-          structuredOutput = result.structured_output;
-          resultText = result.result || '';
-          debug.log('engine', `[structured] success: structured_output=${!!structuredOutput}, resultLen=${resultText.length}`);
-        } else {
-          const errResult = message as any;
-          lastError = errResult.errors?.join('; ') || errResult.subtype || 'unknown error';
-          debug.error('engine', `[structured] result error: ${lastError}`);
+        if (message.type === 'result') {
+          if (message.subtype === 'success') {
+            const result = message as any;
+            structuredOutput = result.structured_output;
+            resultText = result.result || '';
+            debug.log('engine', `[structured] success: structured_output=${!!structuredOutput}, resultLen=${resultText.length}`);
+          } else {
+            const errResult = message as any;
+            lastError = errResult.errors?.join('; ') || '';
+            const subtype = errResult.subtype || '';
+
+            // Map SDK error subtypes to user-friendly messages
+            if (subtype === 'error_max_structured_output_retries') {
+              lastError = 'Failed to generate valid structured output after multiple attempts';
+            } else if (subtype === 'error_max_turns') {
+              lastError = 'Generation exceeded turn limit';
+            } else if (!lastError) {
+              lastError = subtype || 'unknown error';
+            }
+
+            debug.error('engine', `[structured] result error: ${lastError}`);
+          }
         }
       }
+    } catch (error) {
+      handleStreamError(error);
+      // handleStreamError swallows AbortError — if we reach here without throw, it was cancelled
+      throw new Error('Generation was cancelled');
     }
 
     if (structuredOutput) {
