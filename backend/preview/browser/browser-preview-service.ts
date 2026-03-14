@@ -103,17 +103,15 @@ export class BrowserPreviewService extends EventEmitter {
 			if (this.videoCapture.isStreaming(sessionId)) {
 				const tab = this.getTab(sessionId);
 				if (tab) {
-					// Small delay to ensure page is fully loaded
-					setTimeout(async () => {
-						try {
-							const success = await this.videoCapture.handleNavigation(sessionId, tab);
-							if (success) {
-								this.emit('preview:browser-navigation-streaming-ready', { sessionId });
-							}
-						} catch (error) {
-							// Silently fail - frontend will request refresh if needed
+					// Restart streaming immediately — page is already navigated
+					try {
+						const success = await this.videoCapture.handleNavigation(sessionId, tab);
+						if (success) {
+							this.emit('preview:browser-navigation-streaming-ready', { sessionId });
 						}
-					}, 100);
+					} catch (error) {
+						// Silently fail - frontend will request refresh if needed
+					}
 				}
 			}
 		});
@@ -214,14 +212,15 @@ export class BrowserPreviewService extends EventEmitter {
 			preNavigationSetup
 		});
 
-		// Setup console and navigation tracking
-		await this.consoleManager.setupConsoleLogging(tab.id, tab.page, tab);
-		await this.navigationTracker.setupNavigationTracking(tab.id, tab.page, tab);
+		// Setup console, navigation tracking, and pre-inject streaming scripts in parallel
+		await Promise.all([
+			this.consoleManager.setupConsoleLogging(tab.id, tab.page, tab),
+			this.navigationTracker.setupNavigationTracking(tab.id, tab.page, tab),
+		]);
 
-		// Setup dialog bindings and handling
-		// Temporarily disable dialog injection to test CloudFlare evasion
-		// await this.dialogHandler.setupDialogBindings(tab.id, tab.page);
-		// await this.dialogHandler.setupDialogHandling(tab.id, tab.page, tab);
+		// Pre-inject WebCodecs scripts so startStreaming() is fast (~50-80ms vs ~200-350ms)
+		// Fire-and-forget: failure here is non-fatal, startStreaming() will retry injection
+		this.videoCapture.preInjectScripts(tab.id, tab).catch(() => {});
 
 		return tab;
 	}

@@ -34,11 +34,9 @@ export function videoEncoderScript(config: StreamingConfig['video']) {
 	let lastCursor = 'default';
 	let cursorCheckInterval: any = null;
 
-	// ICE servers
-	const iceServers = [
-		{ urls: 'stun:stun.l.google.com:19302' },
-		{ urls: 'stun:stun1.l.google.com:19302' }
-	];
+	// ICE servers - empty for local connections (both peers on same machine)
+	// STUN servers are unnecessary for localhost and add 100-500ms ICE gathering latency
+	const iceServers: { urls: string }[] = [];
 
 	// Check cursor style from page
 	function checkCursor() {

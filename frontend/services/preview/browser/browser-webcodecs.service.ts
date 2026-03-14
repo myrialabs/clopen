@@ -115,17 +115,16 @@ export class BrowserWebCodecsService {
 	private lastAudioBytesReceived = 0;
 	private lastStatsTime = 0;
 
-	// ICE servers
-	private readonly iceServers: RTCIceServer[] = [
-		{ urls: 'stun:stun.l.google.com:19302' },
-		{ urls: 'stun:stun1.l.google.com:19302' }
-	];
+	// ICE servers - empty for local connections (both peers on same machine)
+	// STUN servers are unnecessary for localhost and add 100-500ms ICE gathering latency
+	private readonly iceServers: RTCIceServer[] = [];
 
 	// Callbacks
 	private onConnectionChange: ((connected: boolean) => void) | null = null;
 	private onConnectionFailed: (() => void) | null = null;
 	private onNavigationReconnect: (() => void) | null = null; // Fast reconnection after navigation
 	private onReconnectingStart: (() => void) | null = null; // Signals reconnecting state started (for UI)
+	private onFirstFrame: (() => void) | null = null; // Fires immediately when first frame is decoded
 	private onError: ((error: Error) => void) | null = null;
 	private onStats: ((stats: BrowserWebCodecsStreamStats) => void) | null = null;
 	private onCursorChange: ((cursor: string) => void) | null = null;
@@ -640,6 +639,11 @@ export class BrowserWebCodecsService {
 				this.startTime = performance.now();
 				this.firstFrameTimestamp = frame.timestamp;
 				debug.log('webcodecs', 'First video frame rendered');
+
+				// Notify immediately so UI can hide loading overlay without polling delay
+				if (this.onFirstFrame) {
+					this.onFirstFrame();
+				}
 
 				// Reset navigation state - frames are flowing, navigation is complete
 				if (this.isNavigating) {
@@ -1475,6 +1479,10 @@ export class BrowserWebCodecsService {
 
 	setReconnectingStartHandler(handler: () => void): void {
 		this.onReconnectingStart = handler;
+	}
+
+	setFirstFrameHandler(handler: () => void): void {
+		this.onFirstFrame = handler;
 	}
 
 	setErrorHandler(handler: (error: Error) => void): void {

@@ -55,9 +55,9 @@
 	// - Explicit errors
 	const MAX_CONSECUTIVE_FAILURES = 2;
 	const HEALTH_CHECK_INTERVAL = 2000; // Check every 2 seconds for connection health
-	const FRAME_CHECK_INTERVAL = 500; // Check for first frame every 500ms (just for UI update, not recovery)
-	const STUCK_STREAM_TIMEOUT = 5000; // Fallback: Request screencast refresh after 5 seconds of connected but no frame
-	const NAVIGATION_FAST_REFRESH_DELAY = 500; // Fast refresh after navigation: 500ms
+	const FRAME_CHECK_INTERVAL = 100; // Fallback poll for first frame (primary path is onFirstFrame callback)
+	const STUCK_STREAM_TIMEOUT = 3000; // Fallback: Request screencast refresh after 3 seconds of connected but no frame
+	const NAVIGATION_FAST_REFRESH_DELAY = 300; // Fast refresh after navigation: 300ms
 
 	// Sync isStreamReady with hasReceivedFirstFrame for parent component
 	$effect(() => {
@@ -480,6 +480,23 @@
 					onStatsUpdate(stats);
 				});
 
+				// Setup first frame handler - fires immediately when first frame decoded
+				// This eliminates the 500ms polling delay for hiding the loading overlay
+				webCodecsService.setFirstFrameHandler(() => {
+					if (!hasReceivedFirstFrame) {
+						debug.log('webcodecs', 'First frame callback - immediately updating UI');
+						hasReceivedFirstFrame = true;
+						consecutiveFailures = 0;
+						connectionFailed = false;
+
+						if (isReconnecting) {
+							setTimeout(() => {
+								isReconnecting = false;
+							}, 300);
+						}
+					}
+				});
+
 				// Setup cursor change handler
 				webCodecsService.setOnCursorChange((cursor: string) => {
 					updateCanvasCursor(cursor);
@@ -491,8 +508,8 @@
 
 			let success = false;
 			let retries = 0;
-			const maxRetries = 5; // Increased for rapid tab switching
-			const retryDelay = 500; // Increased delay for backend cleanup
+			const maxRetries = 5;
+			const retryDelay = 300;
 
 			while (!success && retries < maxRetries) {
 				try {
@@ -831,12 +848,10 @@
 					await startStreaming();
 				};
 
-				// Longer delay to ensure backend session is fully ready
-				// This is especially important during viewport/device change
-				// when session is being recreated
+				// Small delay to ensure backend session is ready
 				const timeout = setTimeout(() => {
 					doStartStreaming();
-				}, 200);
+				}, 50);
 
 				return () => clearTimeout(timeout);
 			}

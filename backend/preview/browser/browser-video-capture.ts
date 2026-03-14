@@ -41,6 +41,7 @@ interface VideoStreamSession {
 	headlessReady: boolean;
 	pendingCandidates: RTCIceCandidateInit[];
 	scriptInjected: boolean; // Track if persistent script was injected
+	scriptsPreInjected: boolean; // Track if scripts were pre-injected during tab creation
 	stats: {
 		videoBytesSent: number;
 		audioBytesSent: number;
@@ -52,9 +53,118 @@ interface VideoStreamSession {
 
 export class BrowserVideoCapture extends EventEmitter {
 	private sessions = new Map<string, VideoStreamSession>();
+	private preInjectPromises = new Map<string, Promise<boolean>>();
 
 	constructor() {
 		super();
+	}
+
+	/**
+	 * Pre-inject WebCodecs scripts during tab creation.
+	 * This overlaps script injection with frontend processing,
+	 * so startStreaming() only needs batched init + CDP setup (~50-80ms).
+	 */
+	preInjectScripts(sessionId: string, session: BrowserTab): Promise<boolean> {
+		const promise = this.doPreInject(sessionId, session);
+		this.preInjectPromises.set(sessionId, promise);
+		return promise;
+	}
+
+	private async doPreInject(sessionId: string, session: BrowserTab): Promise<boolean> {
+		if (!session.page || session.page.isClosed()) return false;
+
+		try {
+			const page = session.page;
+			const viewport = page.viewport()!;
+			const config = DEFAULT_STREAMING_CONFIG;
+			const scale = session.scale || 1;
+
+			const scaledWidth = Math.round(viewport.width * scale);
+			const scaledHeight = Math.round(viewport.height * scale);
+
+			const videoConfig: StreamingConfig['video'] = {
+				...config.video,
+				width: scaledWidth,
+				height: scaledHeight
+			};
+
+			// Create session tracking
+			const videoSession: VideoStreamSession = {
+				sessionId,
+				isActive: false,
+				clientConnected: false,
+				headlessReady: false,
+				pendingCandidates: [],
+				scriptInjected: true,
+				scriptsPreInjected: false, // Set to true only after injection completes
+				stats: {
+					videoBytesSent: 0,
+					audioBytesSent: 0,
+					videoFramesEncoded: 0,
+					audioFramesEncoded: 0,
+					connectionState: 'new'
+				}
+			};
+			this.sessions.set(sessionId, videoSession);
+
+			await this.injectScripts(sessionId, page, videoConfig, config);
+
+			// Mark as pre-injected only after successful completion
+			videoSession.scriptsPreInjected = true;
+
+			debug.log('webcodecs', `Pre-injected scripts for ${sessionId}`);
+			return true;
+		} catch (error) {
+			debug.warn('webcodecs', `Pre-injection failed for ${sessionId}:`, error);
+			// Clean up so startStreaming() will do full injection
+			this.sessions.delete(sessionId);
+			return false;
+		} finally {
+			this.preInjectPromises.delete(sessionId);
+		}
+	}
+
+	/**
+	 * Inject signaling bindings + encoder scripts into page
+	 */
+	private async injectScripts(
+		sessionId: string,
+		page: Page,
+		videoConfig: StreamingConfig['video'],
+		config: StreamingConfig
+	): Promise<void> {
+		// Check if bindings exist
+		const bindingsExist = await page.evaluate(() => {
+			return typeof (window as any).__sendIceCandidate === 'function';
+		});
+
+		// Expose signaling functions (persists across navigations)
+		if (!bindingsExist) {
+			await page.exposeFunction('__sendIceCandidate', (candidate: RTCIceCandidateInit) => {
+				const activeSession = Array.from(this.sessions.values()).find(s => s.isActive);
+				if (!activeSession) return;
+				this.emit('ice-candidate', { sessionId: activeSession.sessionId, candidate, from: 'headless' });
+			});
+
+			await page.exposeFunction('__sendConnectionState', (state: string) => {
+				const activeSession = Array.from(this.sessions.values()).find(s => s.isActive);
+				if (activeSession) {
+					activeSession.stats.connectionState = state;
+					this.emit('connection-state', { sessionId: activeSession.sessionId, state });
+				}
+			});
+
+			await page.exposeFunction('__sendCursorChange', (cursor: string) => {
+				const activeSession = Array.from(this.sessions.values()).find(s => s.isActive);
+				if (activeSession) {
+					this.emit('cursor-change', { sessionId: activeSession.sessionId, cursor });
+				}
+			});
+		}
+
+		// Inject video encoder + audio capture scripts
+		await page.evaluate(videoEncoderScript, videoConfig);
+		await page.evaluate(audioCaptureScript, config.audio);
 	}
 
 	/**
@@ -67,11 +177,18 @@ export class BrowserVideoCapture extends EventEmitter {
 	): Promise<boolean> {
 		debug.log('webcodecs', `Starting streaming for session ${sessionId}`);
 
-		// If session exists, stop it first
-		if (this.sessions.has(sessionId)) {
-			debug.log('webcodecs', `Session ${sessionId} exists, stopping for restart`);
+		// Wait for any pending pre-injection to complete
+		const pendingPreInject = this.preInjectPromises.get(sessionId);
+		if (pendingPreInject) {
+			debug.log('webcodecs', `Waiting for pre-injection to complete for ${sessionId}`);
+			await pendingPreInject.catch(() => {});
+		}
+
+		// If session exists and was pre-injected, don't stop it
+		const existingSession = this.sessions.get(sessionId);
+		if (existingSession && !existingSession.scriptsPreInjected) {
+			debug.log('webcodecs', `Session ${sessionId} exists (not pre-injected), stopping for restart`);
 			await this.stopStreaming(sessionId, session);
-			await new Promise(resolve => setTimeout(resolve, 100));
 		}
 
 		if (!session.page || session.page.isClosed()) {
@@ -100,6 +217,7 @@ export class BrowserVideoCapture extends EventEmitter {
 					headlessReady: false,
 					pendingCandidates: [],
 					scriptInjected: false,
+					scriptsPreInjected: false,
 					stats: {
 						videoBytesSent: 0,
 						audioBytesSent: 0,
@@ -109,35 +227,6 @@ export class BrowserVideoCapture extends EventEmitter {
 					}
 				};
 				this.sessions.set(sessionId, videoSession);
-			}
-
-			// Check if bindings exist
-			const bindingsExist = await page.evaluate(() => {
-				return typeof (window as any).__sendIceCandidate === 'function';
-			});
-
-			// Expose signaling functions (persists across navigations)
-			if (!bindingsExist) {
-				await page.exposeFunction('__sendIceCandidate', (candidate: RTCIceCandidateInit) => {
-					const activeSession = Array.from(this.sessions.values()).find(s => s.isActive);
-					if (!activeSession) return;
-					this.emit('ice-candidate', { sessionId: activeSession.sessionId, candidate, from: 'headless' });
-				});
-
-				await page.exposeFunction('__sendConnectionState', (state: string) => {
-					const activeSession = Array.from(this.sessions.values()).find(s => s.isActive);
-					if (activeSession) {
-						activeSession.stats.connectionState = state;
-						this.emit('connection-state', { sessionId: activeSession.sessionId, state });
-					}
-				});
-
-				await page.exposeFunction('__sendCursorChange', (cursor: string) => {
-					const activeSession = Array.from(this.sessions.values()).find(s => s.isActive);
-					if (activeSession) {
-						this.emit('cursor-change', { sessionId: activeSession.sessionId, cursor });
-					}
-				});
 			}
 
 			// Calculate scaled dimensions
@@ -150,91 +239,60 @@ export class BrowserVideoCapture extends EventEmitter {
 				height: scaledHeight
 			};
 
-			// Store config globally for persistent script access
-			await page.evaluate((cfg) => {
-				(window as any).__videoEncoderConfig = cfg;
-			}, videoConfig);
-
-			// Inject persistent video encoder script (survives navigation)
-			// Only inject once per page instance
-			if (!videoSession.scriptInjected) {
-				// Temporarily disable evaluateOnNewDocument for evasion test
-				// await page.evaluateOnNewDocument(videoEncoderScript, videoConfig);
+			// Skip script injection if already pre-injected during tab creation
+			if (!videoSession.scriptsPreInjected) {
+				await this.injectScripts(sessionId, page, videoConfig, config);
 				videoSession.scriptInjected = true;
-				debug.log('webcodecs', `Persistent video encoder script injected for ${sessionId}`);
+			} else {
+				debug.log('webcodecs', `Scripts already pre-injected for ${sessionId}, skipping injection`);
 			}
 
-			// Also inject immediately for current page context
-			// (evaluateOnNewDocument only runs on NEXT navigation)
-			await page.evaluate(videoEncoderScript, videoConfig);
+			// Single batched call: verify peer + start streaming + init audio
+			// (saves ~60ms of IPC overhead vs 4 separate page.evaluate calls)
+			const initResult = await page.evaluate(async () => {
+				const peer = (window as any).__webCodecsPeer;
+				if (typeof peer?.startStreaming !== 'function') {
+					return { peerExists: false, started: false, audioInitialized: false };
+				}
 
-			// Inject audio capture script post-navigation to avoid CF detection.
-			// Using page.evaluate() instead of evaluateOnNewDocument() ensures
-			// AudioContext patching happens AFTER Cloudflare challenges pass,
-			// preventing fingerprint detection of constructor interception.
-			await page.evaluate(audioCaptureScript, config.audio);
+				const started = await peer.startStreaming();
+				if (!started) {
+					return { peerExists: true, started: false, audioInitialized: false };
+				}
 
-			// Verify peer was created
-			const peerExists = await page.evaluate(() => {
-				return typeof (window as any).__webCodecsPeer?.startStreaming === 'function';
+				// Initialize audio encoder if available
+				let audioInitialized = false;
+				const encoder = (window as any).__audioEncoder;
+				if (typeof encoder?.init === 'function') {
+					try {
+						const initiated = await encoder.init();
+						if (initiated) {
+							audioInitialized = !!encoder.start();
+						}
+					} catch {}
+				}
+
+				return { peerExists: true, started: true, audioInitialized };
 			});
 
-			if (!peerExists) {
+			if (!initResult.peerExists) {
 				debug.error('webcodecs', `Peer script injected but __webCodecsPeer not available`);
+				this.sessions.delete(sessionId);
+				return false;
+			}
+
+			if (!initResult.started) {
+				debug.error('webcodecs', `startStreaming returned false`);
 				this.sessions.delete(sessionId);
 				return false;
 			}
 
 			videoSession.isActive = true;
 
-			// Wait for page to be fully loaded
-			try {
-				const loadState = await page.evaluate(() => document.readyState);
-				if (loadState !== 'complete') {
-					debug.log('webcodecs', `Waiting for page load...`);
-					await page.waitForFunction(() => document.readyState === 'complete', { timeout: 60000 });
-				}
-			} catch (loadError) {
-				debug.warn('webcodecs', 'Page load wait timed out, proceeding anyway');
-			}
-
-			// Start video streaming
-			const started = await page.evaluate(() => {
-				return (window as any).__webCodecsPeer?.startStreaming();
-			});
-
-			if (!started) {
-				debug.error('webcodecs', `startStreaming returned false`);
-				this.sessions.delete(sessionId);
-				return false;
-			}
-
-			// Initialize and start audio encoder (from AudioContext interception)
-			const audioEncoderAvailable = await page.evaluate(() => {
-				return typeof (window as any).__audioEncoder?.init === 'function';
-			});
-
-			if (audioEncoderAvailable) {
-				debug.log('webcodecs', 'Initializing audio encoder from AudioContext interception...');
-
-				const audioInitialized = await page.evaluate(async () => {
-					const encoder = (window as any).__audioEncoder;
-					if (!encoder) return false;
-
-					const initiated = await encoder.init();
-					if (initiated) {
-						return encoder.start();
-					}
-					return false;
-				});
-
-				if (audioInitialized) {
-					debug.log('webcodecs', 'Audio encoder initialized and started');
-				} else {
-					debug.warn('webcodecs', 'Audio encoder initialization failed, continuing with video only');
-				}
+			if (initResult.audioInitialized) {
+				debug.log('webcodecs', 'Audio encoder initialized and started');
 			} else {
-				debug.warn('webcodecs', 'Audio encoder not available (AudioEncoder API may not be supported)');
+				debug.warn('webcodecs', 'Audio not available, continuing with video only');
 			}
 
 			videoSession.headlessReady = true;
@@ -325,25 +383,16 @@ export class BrowserVideoCapture extends EventEmitter {
 			return null;
 		}
 
-		const maxRetries = 5;
-		const retryDelay = 100;
+		const maxRetries = 3;
+		const retryDelay = 50;
 
 		for (let attempt = 0; attempt < maxRetries; attempt++) {
 			try {
-				const peerReady = await session.page.evaluate(() => {
-					return typeof (window as any).__webCodecsPeer?.createOffer === 'function';
-				});
-
-				if (!peerReady) {
-					if (attempt < maxRetries - 1) {
-						await new Promise(resolve => setTimeout(resolve, retryDelay));
-						continue;
-					}
-					return null;
-				}
-
-				const offer = await session.page.evaluate(() => {
-					return (window as any).__webCodecsPeer?.createOffer();
+				// Single evaluate: check peer + create offer in one IPC round-trip
+				const offer = await session.page.evaluate(async () => {
+					const peer = (window as any).__webCodecsPeer;
+					if (typeof peer?.createOffer !== 'function') return null;
+					return peer.createOffer();
 				});
 
 				if (offer) return offer;
@@ -570,54 +619,50 @@ export class BrowserVideoCapture extends EventEmitter {
 				height: scaledHeight
 			};
 
-			// Re-inject video encoder script to new page context
-			// (evaluateOnNewDocument doesn't run for the current navigation, only future ones)
-			await page.evaluate((cfg) => {
-				(window as any).__videoEncoderConfig = cfg;
-			}, videoConfig);
-
+			// Re-inject video encoder and audio capture scripts to new page context
 			await page.evaluate(videoEncoderScript, videoConfig);
-
-			// Re-inject audio capture script for new page context (post-navigation)
 			await page.evaluate(audioCaptureScript, config.audio);
 
-			// Verify peer was re-created
-			const peerExists = await page.evaluate(() => {
-				return typeof (window as any).__webCodecsPeer?.startStreaming === 'function';
+			// Single batched call: verify peer + start streaming + init audio
+			const initResult = await page.evaluate(async () => {
+				const peer = (window as any).__webCodecsPeer;
+				if (typeof peer?.startStreaming !== 'function') {
+					return { peerExists: false, started: false, audioInitialized: false };
+				}
+
+				const started = await peer.startStreaming();
+				if (!started) {
+					return { peerExists: true, started: false, audioInitialized: false };
+				}
+
+				let audioInitialized = false;
+				const encoder = (window as any).__audioEncoder;
+				if (typeof encoder?.init === 'function') {
+					try {
+						const initiated = await encoder.init();
+						if (initiated) {
+							audioInitialized = !!encoder.start();
+						}
+					} catch {}
+				}
+
+				return { peerExists: true, started: true, audioInitialized };
 			});
 
-			if (!peerExists) {
+			if (!initResult.peerExists) {
 				debug.error('webcodecs', `Peer script re-injection failed - peer not available`);
 				return false;
 			}
 
-			// Start video streaming on new page
-			const started = await page.evaluate(() => {
-				return (window as any).__webCodecsPeer?.startStreaming();
-			});
-
-			if (!started) {
+			if (!initResult.started) {
 				debug.error('webcodecs', `Failed to start streaming on new page`);
 				return false;
 			}
 
-			// Re-initialize and start audio capture after navigation
-			try {
-				const audioReady = await page.evaluate(async () => {
-					const encoder = (window as any).__audioEncoder;
-					if (!encoder) return false;
-					const initiated = await encoder.init();
-					if (initiated) return encoder.start();
-					return false;
-				});
-
-				if (audioReady) {
-					debug.log('webcodecs', 'Audio re-initialized after navigation');
-				} else {
-					debug.warn('webcodecs', 'Audio not available after navigation, continuing with video only');
-				}
-			} catch {
-				debug.warn('webcodecs', 'Audio re-init failed after navigation, continuing with video only');
+			if (initResult.audioInitialized) {
+				debug.log('webcodecs', 'Audio re-initialized after navigation');
+			} else {
+				debug.warn('webcodecs', 'Audio not available after navigation, continuing with video only');
 			}
 
 			// Restart CDP screencast
@@ -661,15 +706,11 @@ export class BrowserVideoCapture extends EventEmitter {
 
 		if (session?.page && !session.page.isClosed()) {
 			try {
-				// Stop audio encoder
+				// Stop audio + peer in one IPC round-trip
 				await session.page.evaluate(() => {
 					(window as any).__audioEncoder?.stop();
-				}).catch(() => {});
-
-				// Stop peer
-				await session.page.evaluate(() => {
 					(window as any).__webCodecsPeer?.stopStreaming();
-				});
+				}).catch(() => {});
 
 				// Stop CDP screencast
 				const cdp = (session as any).__webCodecsCdp;
