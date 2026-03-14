@@ -184,10 +184,12 @@ export class BrowserVideoCapture extends EventEmitter {
 			await pendingPreInject.catch(() => {});
 		}
 
-		// If session exists and was pre-injected, don't stop it
+		// If session is already actively streaming, stop it for a clean reconnect.
+		// This ensures the old PeerConnection + DataChannel are torn down and
+		// a fresh one is created, preventing stale connections where no frames flow.
 		const existingSession = this.sessions.get(sessionId);
-		if (existingSession && !existingSession.scriptsPreInjected) {
-			debug.log('webcodecs', `Session ${sessionId} exists (not pre-injected), stopping for restart`);
+		if (existingSession && existingSession.isActive) {
+			debug.log('webcodecs', `Session ${sessionId} already active, stopping for clean reconnect`);
 			await this.stopStreaming(sessionId, session);
 		}
 

@@ -47,7 +47,14 @@
 	let isRecovering = $state(false); // Track recovery attempts
 	let connectionFailed = $state(false); // Track if connection actually failed (not just slow)
 	let hasRequestedScreencastRefresh = false; // Track if we've already requested refresh for this stream
+	let screencastRefreshCount = 0; // Track retry count for stuck detection
 	let navigationJustCompleted = false; // Track if navigation just completed (for fast refresh)
+
+	// Canvas snapshot storage for instant tab switching
+	// Stores a clone of the canvas per sessionId so switching back shows content immediately
+	const canvasSnapshots = new Map<string, HTMLCanvasElement>();
+	const MAX_SNAPSHOTS = 10;
+	let hasRestoredSnapshot = false; // Prevents canvas clear/reset during streaming start
 
 	// Recovery is only triggered by ACTUAL failures, not timeouts
 	// - ICE connection failed
@@ -72,6 +79,10 @@
 		// Project changed - destroy and recreate service
 		if (lastProjectId && currentProjectId && lastProjectId !== currentProjectId) {
 			debug.log('webcodecs', `🔄 Project changed (${lastProjectId} → ${currentProjectId}), destroying old WebCodecs service`);
+
+			// Clear canvas snapshots - they belong to old project's sessions
+			canvasSnapshots.clear();
+			hasRestoredSnapshot = false;
 
 			// Destroy old service
 			if (webCodecsService) {
@@ -416,7 +427,10 @@
 
 		isStartingStream = true;
 		isStreamStarting = true; // Show loading overlay
-		hasReceivedFirstFrame = false; // Reset first frame state
+		// Don't reset if we restored a snapshot - keep showing it
+		if (!hasRestoredSnapshot) {
+			hasReceivedFirstFrame = false; // Reset first frame state
+		}
 
 		try {
 			// If streaming a different session, stop first
@@ -488,12 +502,14 @@
 						hasReceivedFirstFrame = true;
 						consecutiveFailures = 0;
 						connectionFailed = false;
+					}
 
-						if (isReconnecting) {
-							setTimeout(() => {
-								isReconnecting = false;
-							}, 300);
-						}
+					// Always reset reconnecting state on first real frame
+					// (outside !hasReceivedFirstFrame to handle snapshot + reconnect case)
+					if (isReconnecting) {
+						setTimeout(() => {
+							isReconnecting = false;
+						}, 300);
 					}
 				});
 
@@ -519,7 +535,8 @@
 						isConnected = true;
 						activeStreamingSessionId = sessionId;
 						consecutiveFailures = 0; // Reset failure counter on success
-						startHealthCheck(); // Start monitoring for stuck streams
+						startHealthCheck(hasRestoredSnapshot); // Skip first frame reset if snapshot
+						hasRestoredSnapshot = false; // Reset after using
 						debug.log('webcodecs', 'Streaming started successfully');
 						break;
 					}
@@ -550,6 +567,7 @@
 		} finally {
 			isStartingStream = false;
 			isStreamStarting = false; // Hide "Launching browser..." (but may still show "Connecting..." until first frame)
+			hasRestoredSnapshot = false; // Always reset in finally
 		}
 	}
 
@@ -578,6 +596,7 @@
 		}
 		connectionFailed = false;
 		hasRequestedScreencastRefresh = false; // Reset for new stream
+		screencastRefreshCount = 0; // Reset retry counter
 
 		const startTime = Date.now();
 
@@ -604,6 +623,7 @@
 				consecutiveFailures = 0;
 				connectionFailed = false;
 				hasRequestedScreencastRefresh = false; // Reset on success
+				screencastRefreshCount = 0; // Reset retry counter on success
 
 				// Reset reconnecting state after successful frame reception
 				// This completes the fast reconnect cycle
@@ -638,10 +658,21 @@
 			// STUCK STREAM DETECTION (FALLBACK): If connected but no first frame for too long,
 			// request screencast refresh (hot-swap) to restart CDP screencast.
 			// This handles cases where WebRTC is connected but CDP frames aren't flowing.
-			if (stats?.isConnected && !stats?.firstFrameRendered && elapsed >= STUCK_STREAM_TIMEOUT && !hasRequestedScreencastRefresh) {
-				debug.warn('webcodecs', `Stream appears stuck (connected but no frame for ${elapsed}ms), requesting screencast refresh`);
-				hasRequestedScreencastRefresh = true;
-				onRequestScreencastRefresh();
+			// Retries: 1st at 3s (screencast refresh), 2nd at 6s (another refresh), 3rd at 10s (full recovery)
+			if (stats?.isConnected && !stats?.firstFrameRendered && !hasRequestedScreencastRefresh) {
+				const MAX_SCREENCAST_RETRIES = 2;
+				const retryThreshold = STUCK_STREAM_TIMEOUT + (screencastRefreshCount * 3000); // 3s, 6s
+
+				if (elapsed >= retryThreshold && screencastRefreshCount < MAX_SCREENCAST_RETRIES) {
+					screencastRefreshCount++;
+					debug.warn('webcodecs', `Stream stuck (connected, no frame for ${elapsed}ms), screencast refresh attempt ${screencastRefreshCount}/${MAX_SCREENCAST_RETRIES}`);
+					onRequestScreencastRefresh();
+				} else if (elapsed >= 10000 && screencastRefreshCount >= MAX_SCREENCAST_RETRIES) {
+					// Screencast refreshes didn't help - attempt full recovery
+					debug.warn('webcodecs', `Stream still stuck after ${screencastRefreshCount} screencast refreshes (${elapsed}ms), attempting full recovery`);
+					hasRequestedScreencastRefresh = true; // Prevent further retries
+					attemptRecovery();
+				}
 			}
 
 		}, FRAME_CHECK_INTERVAL);
@@ -787,11 +818,11 @@
 			lastStartRequestId = null; // Clear to allow new requests
 			// Note: Don't reset hasReceivedFirstFrame here - let startStreaming do it
 			// This prevents flashing when switching tabs
-			// Clear canvas to prevent stale frames, BUT keep last frame during navigation
-			if (!isNavigating) {
+			// Clear canvas to prevent stale frames, BUT keep last frame during navigation or snapshot restore
+			if (!isNavigating && !hasRestoredSnapshot) {
 				clearCanvas();
 			} else {
-				debug.log('webcodecs', 'Skipping canvas clear during navigation - keeping last frame');
+				debug.log('webcodecs', `Skipping canvas clear - navigation: ${isNavigating}, snapshot: ${hasRestoredSnapshot}`);
 			}
 		}
 	}
@@ -830,10 +861,52 @@
 			const needsStreaming = !isWebCodecsActive || activeStreamingSessionId !== sessionId;
 
 			if (needsStreaming) {
-				// Clear canvas immediately when session changes to prevent stale frames
 				if (activeStreamingSessionId !== sessionId) {
-					clearCanvas();
-					hasReceivedFirstFrame = false; // Reset to show loading overlay
+					// SNAPSHOT: Save current canvas before switching to new session
+					if (activeStreamingSessionId && hasReceivedFirstFrame && canvasElement.width > 0) {
+						try {
+							const clone = document.createElement('canvas');
+							clone.width = canvasElement.width;
+							clone.height = canvasElement.height;
+							const cloneCtx = clone.getContext('2d');
+							if (cloneCtx) {
+								cloneCtx.drawImage(canvasElement, 0, 0);
+								// Limit snapshot count
+								if (canvasSnapshots.size >= MAX_SNAPSHOTS) {
+									const firstKey = canvasSnapshots.keys().next().value;
+									if (firstKey) canvasSnapshots.delete(firstKey);
+								}
+								canvasSnapshots.set(activeStreamingSessionId, clone);
+								debug.log('webcodecs', `📸 Saved canvas snapshot for session ${activeStreamingSessionId}`);
+							}
+						} catch (e) {
+							debug.warn('webcodecs', 'Failed to capture canvas snapshot:', e);
+						}
+					}
+
+					// SNAPSHOT: Restore for new session if available
+					const existingSnapshot = canvasSnapshots.get(sessionId);
+					if (existingSnapshot) {
+						setupCanvasInternal(); // Ensure canvas dimensions are correct
+						try {
+							const ctx = canvasElement.getContext('2d');
+							if (ctx) {
+								ctx.drawImage(existingSnapshot, 0, 0, canvasElement.width, canvasElement.height);
+								hasRestoredSnapshot = true;
+								// Don't reset hasReceivedFirstFrame - snapshot is visible
+								debug.log('webcodecs', `📸 Restored canvas snapshot for session ${sessionId}`);
+							}
+						} catch (e) {
+							debug.warn('webcodecs', 'Failed to restore canvas snapshot:', e);
+							hasRestoredSnapshot = false;
+							clearCanvas();
+							hasReceivedFirstFrame = false;
+						}
+					} else {
+						hasRestoredSnapshot = false;
+						clearCanvas();
+						hasReceivedFirstFrame = false; // Reset to show loading overlay
+					}
 				}
 
 				// Stop existing streaming first if session changed
@@ -1054,6 +1127,7 @@
 
 	onDestroy(() => {
 		stopHealthCheck(); // Stop health monitoring
+		canvasSnapshots.clear(); // Free snapshot memory
 		if (webCodecsService) {
 			webCodecsService.destroy();
 			webCodecsService = null;

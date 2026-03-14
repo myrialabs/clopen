@@ -160,6 +160,7 @@
 		if (currentProjectId && currentProjectId !== previousProjectId && previousProjectId !== '') {
 			debug.log('preview', `🔄 Project changed: ${previousProjectId} → ${currentProjectId}`);
 			previousProjectId = currentProjectId;
+			sessionsRecovered = false; // Reset for new project (enables empty tab creation if needed)
 			coordinator.switchProject();
 		}
 	});

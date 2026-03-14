@@ -486,7 +486,10 @@ export function createBrowserCoordinator(config: BrowserCoordinatorConfig) {
 
 			if (!existingTabs || existingTabs.count === 0) {
 				debug.log('preview', '📭 No existing sessions to recover');
-				isRestoring = false;
+				// Notify parent about 0-tab recovery (enables empty tab creation)
+				if (onSessionsRecovered) {
+					onSessionsRecovered(0);
+				}
 				return;
 			}
 
@@ -781,7 +784,7 @@ export function createBrowserCoordinator(config: BrowserCoordinatorConfig) {
 		const newProjectId = getProjectId();
 		debug.log('preview', `🔄 Switching to project: ${newProjectId}`);
 
-		// Set restore lock during project switch
+		// Set restore lock during entire project switch (prevents race conditions)
 		isRestoring = true;
 
 		try {
@@ -795,12 +798,17 @@ export function createBrowserCoordinator(config: BrowserCoordinatorConfig) {
 			browserCleanup.clearAll();
 
 			// Recover sessions from new project
-			// Note: recoverExistingSessions will handle its own lock
-			isRestoring = false;
 			await recoverExistingSessions();
 		} catch (error) {
 			debug.error('preview', '❌ Error switching project:', error);
+		} finally {
 			isRestoring = false;
+		}
+
+		// After recovery and lock release, create empty tab if no tabs exist
+		if (tabManager.getAllTabs().length === 0) {
+			debug.log('preview', '📭 No tabs after project switch, creating empty tab');
+			createNewTab('');
 		}
 	}
 

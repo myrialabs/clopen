@@ -52,8 +52,9 @@
 	let previewContainer = $state<HTMLDivElement | undefined>();
 
 	// Solid loading overlay: shown during initial load states
+	// Skip when lastFrameData exists (tab was previously loaded - snapshot handles display)
 	const showSolidOverlay = $derived(
-		isLaunchingBrowser || !sessionInfo || (!isStreamReady && !isNavigating && !isReconnecting)
+		isLaunchingBrowser || !sessionInfo || (!isStreamReady && !isNavigating && !isReconnecting && !lastFrameData)
 	);
 
 	// Navigation overlay state with debounce to prevent flickering during state transitions
