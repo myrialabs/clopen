@@ -109,7 +109,8 @@ export const crudHandler = createRouter()
 			currentProjectId: t.Union([t.String(), t.Null()]),
 			lastView: t.Union([t.String(), t.Null()]),
 			settings: t.Union([t.Any(), t.Null()]),
-			unreadSessions: t.Union([t.Any(), t.Null()])
+			unreadSessions: t.Union([t.Any(), t.Null()]),
+			todoPanelState: t.Union([t.Any(), t.Null()])
 		})
 	}, async ({ conn }) => {
 		const userId = ws.getUserId(conn);
@@ -118,6 +119,7 @@ export const crudHandler = createRouter()
 		const lastView = getUserState(userId, 'lastView') as string | null;
 		const userSettings = getUserState(userId, 'settings');
 		const unreadSessions = getUserState(userId, 'unreadSessions');
+		const todoPanelState = getUserState(userId, 'todoPanelState');
 
 		debug.log('user', `Restored state for ${userId}:`, {
 			currentProjectId,
@@ -130,7 +132,8 @@ export const crudHandler = createRouter()
 			currentProjectId: currentProjectId ?? null,
 			lastView: lastView ?? null,
 			settings: userSettings ?? null,
-			unreadSessions: unreadSessions ?? null
+			unreadSessions: unreadSessions ?? null,
+			todoPanelState: todoPanelState ?? null
 		};
 	})
 
@@ -147,7 +150,7 @@ export const crudHandler = createRouter()
 		const userId = ws.getUserId(conn);
 
 		// Validate allowed keys to prevent arbitrary data storage
-		const allowedKeys = ['currentProjectId', 'lastView', 'settings', 'unreadSessions'];
+		const allowedKeys = ['currentProjectId', 'lastView', 'settings', 'unreadSessions', 'todoPanelState'];
 		if (!allowedKeys.includes(data.key)) {
 			throw new Error(`Invalid state key: ${data.key}. Allowed: ${allowedKeys.join(', ')}`);
 		}

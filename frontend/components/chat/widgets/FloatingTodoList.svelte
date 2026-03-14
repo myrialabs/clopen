@@ -8,17 +8,14 @@
 <script lang="ts">
 	import { sessionState } from '$frontend/stores/core/sessions.svelte';
 	import { appState } from '$frontend/stores/core/app.svelte';
+	import { todoPanelState, saveTodoPanelState } from '$frontend/stores/ui/todo-panel.svelte';
 	import Icon from '$frontend/components/common/display/Icon.svelte';
 	import { fly } from 'svelte/transition';
 	import type { TodoWriteToolInput } from '$shared/types/messaging';
 
-	let isExpanded = $state(true);
-	let isMinimized = $state(false);
-
-	// Drag & snap state
-	let posY = $state(80);
+	// Drag-only local state (posX is always transient, posY syncs to store on drop)
+	let posY = $state(todoPanelState.posY);
 	let posX = $state(0);
-	let snapSide = $state<'left' | 'right'>('right');
 	let isDragging = $state(false);
 
 	// Minimized button ref for measuring width at snap time
@@ -28,18 +25,18 @@
 	let _sx = 0, _sy = 0, _mx = 0, _my = 0, _hasDragged = false;
 
 	function getPanelWidth() {
-		return isExpanded ? 330 : 230;
+		return todoPanelState.isExpanded ? 330 : 230;
 	}
 
 	// Always use `left` property so CSS can transition in both directions
 	const panelDisplayLeft = $derived(
-		isDragging ? posX : snapSide === 'right' ? window.innerWidth - getPanelWidth() - 16 : 16
+		isDragging ? posX : todoPanelState.snapSide === 'right' ? window.innerWidth - getPanelWidth() - 16 : 16
 	);
 
 	const minimizedDisplayLeft = $derived(
 		isDragging
 			? posX
-			: snapSide === 'right'
+			: todoPanelState.snapSide === 'right'
 				? window.innerWidth - (minimizedBtn?.offsetWidth ?? 90) - 16
 				: 16
 	);
@@ -69,7 +66,9 @@
 	function endDrag(e: PointerEvent) {
 		if (!isDragging) return;
 		isDragging = false;
-		snapSide = posX + getPanelWidth() / 2 < window.innerWidth / 2 ? 'left' : 'right';
+		todoPanelState.snapSide = posX + getPanelWidth() / 2 < window.innerWidth / 2 ? 'left' : 'right';
+		todoPanelState.posY = posY;
+		saveTodoPanelState();
 	}
 
 	// --- Minimized button drag (click = restore, drag = move) ---
@@ -103,7 +102,9 @@
 			return;
 		}
 		const el = e.currentTarget as HTMLElement;
-		snapSide = posX + el.offsetWidth / 2 < window.innerWidth / 2 ? 'left' : 'right';
+		todoPanelState.snapSide = posX + el.offsetWidth / 2 < window.innerWidth / 2 ? 'left' : 'right';
+		todoPanelState.posY = posY;
+		saveTodoPanelState();
 	}
 
 	// Extract the latest TodoWrite data from messages
@@ -151,19 +152,22 @@
 	const shouldShow = $derived(latestTodos !== null && latestTodos.length > 0);
 
 	function toggleExpand() {
-		if (!isMinimized) {
-			isExpanded = !isExpanded;
+		if (!todoPanelState.isMinimized) {
+			todoPanelState.isExpanded = !todoPanelState.isExpanded;
+			saveTodoPanelState();
 		}
 	}
 
 	function minimize() {
-		isMinimized = true;
-		isExpanded = false;
+		todoPanelState.isMinimized = true;
+		todoPanelState.isExpanded = false;
+		saveTodoPanelState();
 	}
 
 	function restore() {
-		isMinimized = false;
-		isExpanded = true;
+		todoPanelState.isMinimized = false;
+		todoPanelState.isExpanded = true;
+		saveTodoPanelState();
 	}
 
 	function getStatusIcon(status: string) {
@@ -194,7 +198,7 @@
 </script>
 
 {#if shouldShow && !appState.isRestoring}
-	{#if isMinimized}
+	{#if todoPanelState.isMinimized}
 		<!-- Minimized state - small floating button, draggable -->
 		<button
 			bind:this={minimizedBtn}
@@ -210,7 +214,7 @@
 				cursor: {isDragging ? 'grabbing' : 'grab'};
 				transition: {isDragging ? 'none' : 'left 0.25s ease, top 0.15s ease'};
 			"
-			transition:fly={{ x: snapSide === 'right' ? 100 : -100, duration: 200 }}
+			transition:fly={{ x: todoPanelState.snapSide === 'right' ? 100 : -100, duration: 200 }}
 		>
 			<Icon name="lucide:list-todo" class="w-5 h-5" />
 			<span class="text-sm font-medium">{progress.completed}/{progress.total}</span>
@@ -222,11 +226,11 @@
 			style="
 				top: {posY}px;
 				left: {panelDisplayLeft}px;
-				width: {isExpanded ? '330px' : '230px'};
-				max-height: {isExpanded ? '600px' : '56px'};
+				width: {todoPanelState.isExpanded ? '330px' : '230px'};
+				max-height: {todoPanelState.isExpanded ? '600px' : '56px'};
 				transition: {isDragging ? 'none' : 'left 0.25s ease, top 0.15s ease, width 0.3s, max-height 0.3s'};
 			"
-			transition:fly={{ x: snapSide === 'right' ? 100 : -100, duration: 300 }}
+			transition:fly={{ x: todoPanelState.snapSide === 'right' ? 100 : -100, duration: 300 }}
 		>
 			<!-- Header (drag handle) -->
 			<div
@@ -244,7 +248,7 @@
 						<span class="text-sm font-semibold text-slate-900 dark:text-slate-100">
 							Task Progress
 						</span>
-						{#if !isExpanded}
+						{#if !todoPanelState.isExpanded}
 							<span class="text-xs text-slate-600 dark:text-slate-400">
 								{progress.completed}/{progress.total} tasks ({progress.percentage}%)
 							</span>
@@ -256,10 +260,10 @@
 					<button
 						onclick={toggleExpand}
 						class="p-1.5 hover:bg-slate-100 dark:hover:bg-slate-700 rounded-lg transition-colors"
-						title={isExpanded ? 'Collapse' : 'Expand'}
+						title={todoPanelState.isExpanded ? 'Collapse' : 'Expand'}
 					>
 						<Icon
-							name={isExpanded ? 'lucide:chevron-up' : 'lucide:chevron-down'}
+							name={todoPanelState.isExpanded ? 'lucide:chevron-up' : 'lucide:chevron-down'}
 							class="w-4 h-4 text-slate-600 dark:text-slate-400"
 						/>
 					</button>
@@ -273,7 +277,7 @@
 				</div>
 			</div>
 
-			{#if isExpanded}
+			{#if todoPanelState.isExpanded}
 				<!-- Progress bar -->
 				<div class="px-4 py-3 border-b border-slate-100 dark:border-slate-800">
 					<div class="flex items-center justify-between mb-2">

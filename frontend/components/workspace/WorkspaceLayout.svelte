@@ -28,6 +28,7 @@
 	import { initializeSessions } from '$frontend/stores/core/sessions.svelte';
 	import { initializeNotifications, notificationStore } from '$frontend/stores/ui/notification.svelte';
 	import { applyServerSettings, loadSystemSettings } from '$frontend/stores/features/settings.svelte';
+	import { applyTodoPanelState } from '$frontend/stores/ui/todo-panel.svelte';
 	import { initPresence } from '$frontend/stores/core/presence.svelte';
 	import ws from '$frontend/utils/ws';
 	import { debug } from '$shared/utils/logger';
@@ -84,7 +85,7 @@
 
 			// Step 3: Restore user state from server
 			setProgress(30, 'Restoring state...');
-			let serverState: { currentProjectId: string | null; lastView: string | null; settings: any; unreadSessions: any } | null = null;
+			let serverState: { currentProjectId: string | null; lastView: string | null; settings: any; unreadSessions: any; todoPanelState: any } | null = null;
 			try {
 				serverState = await ws.http('user:restore-state', {});
 				debug.log('workspace', 'Server state restored:', serverState);
@@ -97,6 +98,7 @@
 			if (serverState?.settings) {
 				applyServerSettings(serverState.settings);
 			}
+			applyTodoPanelState(serverState?.todoPanelState);
 			restoreLastView(serverState?.lastView);
 			restoreUnreadSessions(serverState?.unreadSessions);
 			await loadSystemSettings();
