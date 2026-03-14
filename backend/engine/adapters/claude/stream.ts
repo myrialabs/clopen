@@ -261,32 +261,34 @@ export class ClaudeCodeEngine implements AIEngine {
     const controller = abortController || new AbortController();
     const normalizedPath = normalizePath(projectPath);
 
-    // Use bypassPermissions + tools: [] for a safe, tool-free one-shot query.
-    // 'plan' mode can suppress output; tools: [] already prevents tool usage.
+    // Optimized for one-shot structured generation:
+    // - tools: [] prevents tool use (no agentic loops)
+    // - persistSession: false skips writing session to disk
+    // - effort: 'low' reduces processing overhead for simple tasks
+    // - thinking disabled removes reasoning overhead
+    // - minimal systemPrompt avoids loading heavy defaults
+    // - no maxTurns: structured output has its own retry limit
     const sdkOptions: Options = {
       permissionMode: 'bypassPermissions' as PermissionMode,
       allowDangerouslySkipPermissions: true,
       cwd: normalizedPath,
       env: getEngineEnv(claudeAccountId),
+      systemPrompt: 'You are a structured data generator. Return JSON matching the provided schema.',
       tools: [],
       outputFormat: {
         type: 'json_schema',
         schema
       },
-      maxTurns: 1,
+      persistSession: false,
+      effort: 'low',
+      thinking: { type: 'disabled' },
       ...(model && { model }),
       abortController: controller
     };
 
-    const promptIterable = (async function* () {
-      yield {
-        type: 'user',
-        message: { role: 'user', content: prompt }
-      } as SDKUserMessage;
-    })();
-
+    // Use plain string prompt — simpler and faster than AsyncIterable
     const queryInstance = query({
-      prompt: promptIterable,
+      prompt,
       options: sdkOptions
     });
 
