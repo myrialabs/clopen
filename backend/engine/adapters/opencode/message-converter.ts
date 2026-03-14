@@ -357,6 +357,35 @@ function normalizeToolInput(claudeToolName: string, raw: OCToolInput): Normalize
 }
 
 // ============================================================
+// Tool Error Detection
+// ============================================================
+
+/**
+ * Common error prefixes in tool output content.
+ * OpenCode SDK may mark a tool as 'completed' even when the output is an error
+ * (e.g. "Error: File not found"). These patterns detect such cases.
+ */
+const ERROR_CONTENT_PATTERNS = [
+	/^Error:\s/i,
+	/^ENOENT:\s/i,
+	/^EPERM:\s/i,
+	/^EACCES:\s/i,
+	/^Command failed/i,
+	/^Permission denied/i,
+];
+
+/**
+ * Determine if a tool result should be marked as is_error.
+ * Returns true when the tool part status is 'error', OR when the output
+ * content matches a known error pattern (for tools that complete with error output).
+ */
+function isToolError(status: string, content: string): boolean {
+	if (status === 'error') return true;
+	if (!content || status !== 'completed') return false;
+	return ERROR_CONTENT_PATTERNS.some(pattern => pattern.test(content));
+}
+
+// ============================================================
 // Stop Reason Mapping
 // ============================================================
 
@@ -483,16 +512,19 @@ export function convertAssistantMessages(
 			};
 
 			if (toolPart.state.status === 'completed') {
+				const output = toolPart.state.output || '';
 				block.$result = {
 					type: 'tool_result',
 					tool_use_id: block.id,
-					content: toolPart.state.output || '',
+					content: output,
+					...(isToolError('completed', output) && { is_error: true }),
 				};
 			} else if (toolPart.state.status === 'error') {
 				block.$result = {
 					type: 'tool_result',
 					tool_use_id: block.id,
 					content: toolPart.state.error || 'Tool execution failed',
+					is_error: true,
 				};
 			}
 
@@ -854,6 +886,8 @@ export function convertToolResultOnly(
 		content = '';
 	}
 
+	const hasError = isToolError(toolPart.state.status, content);
+
 	return {
 		type: 'user',
 		uuid: crypto.randomUUID(),
@@ -864,7 +898,8 @@ export function convertToolResultOnly(
 			content: [{
 				type: 'tool_result',
 				tool_use_id: toolUseId,
-				content
+				content,
+				...(hasError && { is_error: true }),
 			}]
 		}
 	} as unknown as SDKMessage;
