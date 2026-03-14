@@ -33,14 +33,14 @@
 			<span class="text-xs font-medium text-slate-700 dark:text-slate-300">Command:</span>
 		</div>
 		{#if timeout}
-			<div class="inline-block ml-auto text-xs bg-orange-100 dark:bg-orange-900 text-orange-700 dark:text-orange-300 px-2 py-0.5 rounded">
+			<div class="inline-block ml-auto text-3xs bg-orange-100 dark:bg-orange-900 text-orange-700 dark:text-orange-300 px-2 py-0.5 rounded">
 				Timeout: {timeout}ms
 			</div>
 		{/if}
 	</div>
 
 	<!-- Terminal-style command display -->
-	<div class="bg-slate-50 dark:bg-slate-950 border border-slate-200/60 dark:border-slate-800/60 rounded-md p-2.5 font-mono text-sm">
+	<div class="max-h-64 overflow-y-auto bg-slate-50 dark:bg-slate-950 border border-slate-200/60 dark:border-slate-800/60 rounded-md p-2.5 font-mono text-sm">
 		<div class="flex items-start gap-2">
 			<span class="text-green-600 dark:text-green-400 select-none">$</span>
 			<div class="flex-1 text-slate-900 dark:text-slate-200 break-all">

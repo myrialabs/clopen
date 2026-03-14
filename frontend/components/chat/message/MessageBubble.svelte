@@ -9,6 +9,7 @@
 -->
 
 <script lang="ts">
+	import { tick } from 'svelte';
 	import type { SDKMessageFormatter } from '$shared/types/database/schema';
 	import type { IconName } from '$shared/types/ui/icons';
 	import Card from '$frontend/components/common/display/Card.svelte';
@@ -46,6 +47,22 @@
 		onShowTokenUsage: () => void;
 		onShowDebug: () => void;
 	} = $props();
+
+	let scrollContainer: HTMLDivElement | undefined = $state();
+
+	// Auto-scroll reasoning content to bottom while receiving partial text
+	$effect(() => {
+		if (roleCategory !== 'reasoning' || !scrollContainer) return;
+		// Track message content changes (partialText for streaming, message for final)
+		const _track = message.type === 'stream_event' && 'partialText' in message
+			? message.partialText
+			: message;
+		tick().then(() => {
+			if (scrollContainer) {
+				scrollContainer.scrollTop = scrollContainer.scrollHeight;
+			}
+		});
+	});
 </script>
 
 <div class="relative overflow-hidden">
@@ -73,7 +90,10 @@
 		/>
 
 		<!-- Message Content -->
-		<div class="p-3 md:p-4">
+		<div
+			bind:this={scrollContainer}
+			class="p-3 md:p-4 {roleCategory === 'reasoning' ? 'max-h-80 overflow-y-auto' : ''}"
+		>
 			<div class="max-w-none space-y-4">
 				<!-- Content rendering using MessageFormatter component -->
 				<MessageFormatter {message} />
