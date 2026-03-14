@@ -18,6 +18,7 @@
 	import { showConfirm } from '$frontend/stores/ui/dialog.svelte';
 	import { getFileIcon } from '$frontend/utils/file-icon-mappings';
 	import type { IconName } from '$shared/types/ui/icons';
+	import { fileState, clearRevealRequest } from '$frontend/stores/core/files.svelte';
 
 	// Props
 	interface Props {
@@ -1085,6 +1086,72 @@
 		}
 		prevTwoColumnMode = isTwoColumnMode;
 	});
+
+	// Reveal and open file in editor when requested from external components (e.g. chat tools)
+	$effect(() => {
+		const revealPath = fileState.revealRequest;
+		if (!revealPath || !projectPath) return;
+
+		clearRevealRequest();
+
+		// Expand all parent directories in the tree
+		const relativePath = revealPath.startsWith(projectPath)
+			? revealPath.slice(projectPath.length).replace(/^[/\\]/, '')
+			: '';
+		if (relativePath) {
+			const parts = relativePath.split(/[/\\]/);
+			let currentPath = projectPath;
+			for (let i = 0; i < parts.length - 1; i++) {
+				currentPath += '/' + parts[i];
+				expandedFolders.add(currentPath);
+			}
+			expandedFolders = new Set(expandedFolders);
+		}
+
+		// Open file in editor tab (handleFileOpen also handles missing tree nodes)
+		revealAndOpenFile(revealPath);
+	});
+
+	async function revealAndOpenFile(filePath: string) {
+		const existingTab = openTabs.find(t => t.file.path === filePath);
+		if (existingTab) {
+			// Tab already open — just activate it
+			activeTabPath = filePath;
+			if (!isTwoColumnMode) viewMode = 'viewer';
+			scrollToActiveFile(filePath);
+			return;
+		}
+
+		// Create new tab
+		let file = findFileInTree(projectFiles, filePath);
+		if (!file) {
+			const fileName = filePath.split(/[/\\]/).pop() || 'Untitled';
+			file = { name: fileName, path: filePath, type: 'file', size: 0, modified: new Date() };
+		}
+		const newTab: EditorTab = {
+			file,
+			currentContent: '',
+			savedContent: '',
+			isLoading: true
+		};
+		openTabs = [...openTabs, newTab];
+		activeTabPath = filePath;
+		if (!isTwoColumnMode) viewMode = 'viewer';
+
+		// Load content and verify file exists on disk
+		const success = await loadTabContent(filePath);
+		if (!success) {
+			openTabs = openTabs.filter(t => t.file.path !== filePath);
+			if (activeTabPath === filePath) {
+				activeTabPath = openTabs.length > 0 ? openTabs[openTabs.length - 1].file.path : null;
+				if (!activeTabPath && !isTwoColumnMode) viewMode = 'tree';
+			}
+			showErrorAlert('File no longer exists on disk.', 'File Not Found');
+			return;
+		}
+
+		scrollToActiveFile(filePath);
+	}
 
 	// Save state to persistent storage on component destruction (mobile/desktop switch)
 	onDestroy(() => {

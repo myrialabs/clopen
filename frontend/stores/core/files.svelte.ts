@@ -11,6 +11,7 @@ interface FileState {
 	expandedFolders: Set<string>;
 	isLoading: boolean;
 	error: string | null;
+	revealRequest: string | null;
 }
 
 // File state using Svelte 5 runes
@@ -19,7 +20,8 @@ export const fileState = $state<FileState>({
 	selectedFile: null,
 	expandedFolders: new Set<string>(),
 	isLoading: false,
-	error: null
+	error: null,
+	revealRequest: null
 });
 
 // ========================================
@@ -70,4 +72,16 @@ export function setError(error: string | null) {
 
 export function clearError() {
 	fileState.error = null;
+}
+
+// ========================================
+// FILE REVEAL
+// ========================================
+
+export function requestRevealFile(filePath: string) {
+	fileState.revealRequest = filePath;
+}
+
+export function clearRevealRequest() {
+	fileState.revealRequest = null;
 }

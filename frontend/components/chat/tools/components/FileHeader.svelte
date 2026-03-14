@@ -3,6 +3,15 @@
 	import type { IconName } from '$shared/types/ui/icons';
 	import { getFileIcon } from '$frontend/utils/file-icon-mappings';
 	import { formatPath } from '../../shared/utils';
+	import { requestRevealFile } from '$frontend/stores/core/files.svelte';
+	import { getVisiblePanels, workspaceState } from '$frontend/stores/ui/workspace.svelte';
+
+	function handleClick() {
+		const visiblePanels = getVisiblePanels(workspaceState.layout);
+		if (visiblePanels.includes('files')) {
+			requestRevealFile(filePath);
+		}
+	}
 
 	interface Props {
 		filePath: string;
@@ -18,10 +27,15 @@
 </script>
 
 <div class={box ? "bg-white dark:bg-slate-800 rounded-md border border-slate-200/60 dark:border-slate-700/60 p-3" : ""}>
-	<div class="flex items-center gap-3 mb-1">
-		<Icon 
-			name={getFileIcon(displayFileName)} 
-			class="w-6 h-6 {iconColor || ''}" 
+	<button
+		type="button"
+		class="flex items-center gap-3 mb-1 w-full text-left hover:opacity-80 transition-opacity cursor-pointer"
+		onclick={handleClick}
+		title="Reveal in Files panel"
+	>
+		<Icon
+			name={getFileIcon(displayFileName)}
+			class="w-6 h-6 {iconColor || ''}"
 		/>
 		<div class="flex-1 min-w-0">
 			<h3 class="font-medium text-slate-900 dark:text-slate-100 truncate">
@@ -31,7 +45,7 @@
 				{formatPath(filePath)}
 			</p>
 		</div>
-	</div>
+	</button>
 	
 	{#if badges.length > 0}
 		<div class="flex gap-2 mt-3">
