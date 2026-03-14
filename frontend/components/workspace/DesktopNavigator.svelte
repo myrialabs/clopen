@@ -26,6 +26,9 @@
 	let projectToDelete = $state<Project | null>(null);
 	let searchQuery = $state('');
 	let showTunnelModal = $state(false);
+	let hoveredProject = $state<Project | null>(null);
+	let tooltipY = $state(0);
+	let tooltipX = $state(0);
 
 	// Derived
 	const isCollapsed = $derived(workspaceState.navigatorCollapsed);
@@ -144,6 +147,17 @@
 		}
 		// Single word: take first 2 letters
 		return name.substring(0, 2).toUpperCase();
+	}
+
+	function showProjectTooltip(project: Project, event: MouseEvent) {
+		const rect = (event.currentTarget as HTMLElement).getBoundingClientRect();
+		tooltipX = rect.right + 8;
+		tooltipY = rect.top + rect.height / 2;
+		hoveredProject = project;
+	}
+
+	function hideProjectTooltip() {
+		hoveredProject = null;
 	}
 </script>
 
@@ -315,7 +329,8 @@
 							? 'bg-violet-500/10 dark:bg-violet-500/20 text-violet-700 dark:text-violet-300'
 							: 'bg-slate-200/50 dark:bg-slate-800/50 text-slate-600 dark:text-slate-400 hover:bg-violet-500/10 hover:text-slate-900 dark:hover:text-slate-100'}"
 						onclick={() => selectProject(project)}
-						title={project.name}
+						onmouseenter={(e) => showProjectTooltip(project, e)}
+						onmouseleave={hideProjectTooltip}
 					>
 						<span>{getProjectInitials(project.name)}</span>
 						<span
@@ -348,6 +363,17 @@
 		{/if}
 	</nav>
 </aside>
+
+<!-- Collapsed project tooltip (fixed position to avoid overflow clipping) -->
+{#if hoveredProject}
+	<div
+		class="fixed z-50 pointer-events-none flex flex-col py-1.5 px-2.5 rounded-lg bg-white dark:bg-slate-700 border border-slate-200 dark:border-slate-600 shadow-lg whitespace-nowrap"
+		style="left: {tooltipX}px; top: {tooltipY}px; transform: translateY(-50%);"
+	>
+		<span class="text-xs font-semibold text-slate-900 dark:text-slate-100">{hoveredProject.name}</span>
+		<span class="text-3xs font-mono text-slate-500 dark:text-slate-400">{hoveredProject.path}</span>
+	</div>
+{/if}
 
 <!-- Folder Browser (includes its own Modal) -->
 <FolderBrowser
