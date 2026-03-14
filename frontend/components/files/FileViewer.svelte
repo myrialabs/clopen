@@ -85,6 +85,9 @@
 	// PDF blob URL
 	let pdfBlobUrl = $state<string | null>(null);
 
+	// Audio/Video blob URL
+	let mediaBlobUrl = $state<string | null>(null);
+
 	// Keyboard shortcut for save
 	onMount(() => {
 		function handleKeyDown(e: KeyboardEvent) {
@@ -111,11 +114,14 @@
 		if (pdfBlobUrl) {
 			URL.revokeObjectURL(pdfBlobUrl);
 		}
+		if (mediaBlobUrl) {
+			URL.revokeObjectURL(mediaBlobUrl);
+		}
 	});
 
-	// Load binary content (images, PDF) via WebSocket when file changes
+	// Load binary content (images, PDF, audio, video) via WebSocket when file changes
 	$effect(() => {
-		if (file && (isImageFile(file.name) || isPdfFile(file.name))) {
+		if (file && (isImageFile(file.name) || isPdfFile(file.name) || isAudioFile(file.name) || isVideoFile(file.name))) {
 			loadBinaryContent();
 		} else {
 			// Cleanup if not binary
@@ -126,6 +132,10 @@
 			if (pdfBlobUrl) {
 				URL.revokeObjectURL(pdfBlobUrl);
 				pdfBlobUrl = null;
+			}
+			if (mediaBlobUrl) {
+				URL.revokeObjectURL(mediaBlobUrl);
+				mediaBlobUrl = null;
 			}
 		}
 	});
@@ -148,6 +158,9 @@
 				if (isPdfFile(file.name)) {
 					if (pdfBlobUrl) URL.revokeObjectURL(pdfBlobUrl);
 					pdfBlobUrl = URL.createObjectURL(blob);
+				} else if (isAudioFile(file.name) || isVideoFile(file.name)) {
+					if (mediaBlobUrl) URL.revokeObjectURL(mediaBlobUrl);
+					mediaBlobUrl = URL.createObjectURL(blob);
 				} else {
 					if (blobUrl) URL.revokeObjectURL(blobUrl);
 					blobUrl = URL.createObjectURL(blob);
@@ -311,15 +324,29 @@
 		return fileName.toLowerCase().endsWith('.pdf');
 	}
 
+	function isAudioFile(fileName: string): boolean {
+		const extension = fileName.substring(fileName.lastIndexOf('.')).toLowerCase();
+		return ['.mp3', '.wav', '.ogg', '.flac', '.aac', '.m4a', '.wma', '.opus', '.webm'].includes(extension);
+	}
+
+	function isVideoFile(fileName: string): boolean {
+		const extension = fileName.substring(fileName.lastIndexOf('.')).toLowerCase();
+		return ['.mp4', '.webm', '.ogv', '.mov', '.avi', '.mkv', '.flv', '.wmv', '.m4v'].includes(extension);
+	}
+
 	function isBinaryFile(fileName: string): boolean {
 		const extension = fileName.substring(fileName.lastIndexOf('.')).toLowerCase();
 		return ['.doc', '.docx', '.xls', '.xlsx', '.zip', '.tar', '.gz', '.exe', '.dll',
 			'.ppt', '.pptx', '.7z', '.rar', '.bz2', '.woff', '.woff2', '.ttf', '.eot', '.otf',
-			'.mp3', '.mp4', '.wav', '.avi', '.mkv', '.flv', '.sqlite', '.db'].includes(extension);
+			'.sqlite', '.db'].includes(extension);
 	}
 
 	function isVisualFile(fileName: string): boolean {
 		return isImageFile(fileName) || isSvgFile(fileName) || isPdfFile(fileName);
+	}
+
+	function isMediaFile(fileName: string): boolean {
+		return isAudioFile(fileName) || isVideoFile(fileName);
 	}
 
 	function formatFileSize(bytes: number): string {
@@ -406,7 +433,7 @@
 				{/if}
 
 				<!-- Actions for editable files -->
-				{#if file && file.type === 'file' && !isImageFile(file.name) && !isBinaryFile(file.name) && !isPdfFile(file.name) && !(isSvgFile(file.name) && svgViewMode === 'visual')}
+				{#if file && file.type === 'file' && !isImageFile(file.name) && !isBinaryFile(file.name) && !isPdfFile(file.name) && !isAudioFile(file.name) && !isVideoFile(file.name) && !(isSvgFile(file.name) && svgViewMode === 'visual')}
 					<!-- Word Wrap toggle -->
 					{#if onToggleWordWrap}
 						<button
@@ -498,7 +525,7 @@
 				</div>
 			{:else if isImageFile(file.name)}
 				<!-- Image preview -->
-				<div class="flex items-center justify-center h-full p-4 overflow-hidden">
+				<div class="flex items-center justify-center h-full p-4 overflow-hidden checkerboard-bg">
 					{#if blobUrl}
 						<img
 							src={blobUrl}
@@ -512,7 +539,7 @@
 			{:else if isSvgFile(file.name)}
 				<!-- SVG: visual or code view -->
 				{#if svgViewMode === 'visual'}
-					<div class="flex items-center justify-center h-full p-4 overflow-auto bg-[url('data:image/svg+xml;charset=utf-8,%3Csvg%20xmlns%3D%22http%3A%2F%2Fwww.w3.org%2F2000%2Fsvg%22%20width%3D%2220%22%20height%3D%2220%22%3E%3Crect%20width%3D%2220%22%20height%3D%2220%22%20fill%3D%22%23f0f0f0%22%2F%3E%3Crect%20width%3D%2210%22%20height%3D%2210%22%20fill%3D%22%23e0e0e0%22%2F%3E%3Crect%20x%3D%2210%22%20y%3D%2210%22%20width%3D%2210%22%20height%3D%2210%22%20fill%3D%22%23e0e0e0%22%2F%3E%3C%2Fsvg%3E')]">
+					<div class="flex items-center justify-center h-full p-4 overflow-auto checkerboard-bg">
 						{#if blobUrl}
 							<img
 								src={blobUrl}
@@ -574,6 +601,33 @@
 						<div class="flex items-center justify-center h-full">
 							<LoadingSpinner size="lg" />
 						</div>
+					{/if}
+				</div>
+			{:else if isAudioFile(file.name)}
+				<!-- Audio player -->
+				<div class="flex flex-col items-center justify-center h-full p-8 checkerboard-bg">
+					<Icon name="lucide:music" class="w-16 h-16 text-violet-400 mb-6" />
+					<h3 class="text-sm font-semibold text-slate-900 dark:text-slate-100 mb-4">
+						{file.name}
+					</h3>
+					{#if mediaBlobUrl}
+						<audio controls class="w-full max-w-md" src={mediaBlobUrl}>
+							Your browser does not support the audio element.
+						</audio>
+					{:else}
+						<LoadingSpinner size="lg" />
+					{/if}
+				</div>
+			{:else if isVideoFile(file.name)}
+				<!-- Video player -->
+				<div class="flex items-center justify-center h-full p-4 overflow-hidden checkerboard-bg">
+					{#if mediaBlobUrl}
+						<!-- svelte-ignore a11y_media_has_caption -->
+						<video controls class="max-w-full max-h-full object-contain" src={mediaBlobUrl}>
+							Your browser does not support the video element.
+						</video>
+					{:else}
+						<LoadingSpinner size="lg" />
 					{/if}
 				</div>
 			{:else if isBinaryFile(file.name)}
@@ -668,5 +722,13 @@
 				background-color: transparent;
 			}
 		}
+	}
+
+	.checkerboard-bg {
+		background-image: url('data:image/svg+xml;charset=utf-8,%3Csvg%20xmlns%3D%22http%3A%2F%2Fwww.w3.org%2F2000%2Fsvg%22%20width%3D%2220%22%20height%3D%2220%22%3E%3Crect%20width%3D%2220%22%20height%3D%2220%22%20fill%3D%22%23f0f0f0%22%2F%3E%3Crect%20width%3D%2210%22%20height%3D%2210%22%20fill%3D%22%23e0e0e0%22%2F%3E%3Crect%20x%3D%2210%22%20y%3D%2210%22%20width%3D%2210%22%20height%3D%2210%22%20fill%3D%22%23e0e0e0%22%2F%3E%3C%2Fsvg%3E');
+	}
+
+	:global(.dark) .checkerboard-bg {
+		background-image: url('data:image/svg+xml;charset=utf-8,%3Csvg%20xmlns%3D%22http%3A%2F%2Fwww.w3.org%2F2000%2Fsvg%22%20width%3D%2220%22%20height%3D%2220%22%3E%3Crect%20width%3D%2220%22%20height%3D%2220%22%20fill%3D%22%23181818%22%2F%3E%3Crect%20width%3D%2210%22%20height%3D%2210%22%20fill%3D%22%23222222%22%2F%3E%3Crect%20x%3D%2210%22%20y%3D%2210%22%20width%3D%2210%22%20height%3D%2210%22%20fill%3D%22%23222222%22%2F%3E%3C%2Fsvg%3E');
 	}
 </style>
