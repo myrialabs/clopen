@@ -12,6 +12,8 @@
 	import type { IconName } from '$shared/types/ui/icons';
 	import { debug } from '$shared/utils/logger';
 	import ws from '$frontend/utils/ws';
+	import { requestRevealFile } from '$frontend/stores/core/files.svelte';
+	import { getVisiblePanels, workspaceState } from '$frontend/stores/ui/workspace.svelte';
 
 	interface Props {
 		diff: GitFileDiff | null;
@@ -162,6 +164,19 @@
 		return path.split(/[\\/]/).pop() || path;
 	}
 
+	function openInFilesPanel() {
+		if (!activeDiff) return;
+		const visiblePanels = getVisiblePanels(workspaceState.layout);
+		if (!visiblePanels.includes('files')) return;
+		const basePath = projectState.currentProject?.path;
+		if (!basePath) return;
+		const relativePath = activeDiff.newPath || activeDiff.oldPath;
+		const separator = basePath.includes('\\') ? '\\' : '/';
+		requestRevealFile(`${basePath}${separator}${relativePath}`);
+	}
+
+	const isFilesPanelVisible = $derived(getVisiblePanels(workspaceState.layout).includes('files'));
+
 	async function initDiffEditor() {
 		if (!containerRef || !activeDiff) return;
 
@@ -302,6 +317,16 @@
 				</div>
 			</div>
 			<div class="flex items-center gap-2 shrink-0">
+				{#if isFilesPanelVisible && activeDiff.status !== 'D'}
+					<button
+						type="button"
+						class="p-1 text-slate-400 hover:text-violet-600 dark:hover:text-violet-400 hover:bg-violet-50 dark:hover:bg-violet-900/30 rounded transition-colors cursor-pointer"
+						onclick={openInFilesPanel}
+						title="Open in Files panel"
+					>
+						<Icon name="lucide:file-symlink" class="w-3.5 h-3.5" />
+					</button>
+				{/if}
 				<span class="text-3xs font-bold px-1.5 py-0.5 rounded {getGitStatusBadgeColor(activeDiff.status)}">
 					{getGitStatusBadgeLabel(activeDiff.status)}
 				</span>
