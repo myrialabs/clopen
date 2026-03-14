@@ -38,6 +38,7 @@
 		onToggleWordWrap?: () => void;
 		externallyChanged?: boolean;
 		onForceReload?: () => void;
+		isBinary?: boolean;
 	}
 
 	const {
@@ -53,7 +54,8 @@
 		wordWrap = false,
 		onToggleWordWrap,
 		externallyChanged = false,
-		onForceReload
+		onForceReload,
+		isBinary = false
 	}: Props = $props();
 
 	// Theme state
@@ -336,9 +338,15 @@
 
 	function isBinaryFile(fileName: string): boolean {
 		const extension = fileName.substring(fileName.lastIndexOf('.')).toLowerCase();
-		return ['.doc', '.docx', '.xls', '.xlsx', '.zip', '.tar', '.gz', '.exe', '.dll',
-			'.ppt', '.pptx', '.7z', '.rar', '.bz2', '.woff', '.woff2', '.ttf', '.eot', '.otf',
-			'.sqlite', '.db'].includes(extension);
+		return [
+			'.doc', '.docx', '.xls', '.xlsx', '.zip', '.tar', '.gz', '.exe', '.dll',
+			'.ppt', '.pptx', '.7z', '.rar', '.bz2', '.xz', '.zst', '.lz4',
+			'.woff', '.woff2', '.ttf', '.eot', '.otf',
+			'.sqlite', '.db', '.mdb',
+			'.beam', '.pyc', '.pyo', '.class', '.o', '.obj', '.so', '.dylib', '.a',
+			'.lib', '.com', '.bin', '.dat', '.pak', '.wasm', '.bc', '.pdb',
+			'.iso', '.dmg', '.img', '.swf',
+		].includes(extension);
 	}
 
 	function isVisualFile(fileName: string): boolean {
@@ -433,7 +441,7 @@
 				{/if}
 
 				<!-- Actions for editable files -->
-				{#if file && file.type === 'file' && !isImageFile(file.name) && !isBinaryFile(file.name) && !isPdfFile(file.name) && !isAudioFile(file.name) && !isVideoFile(file.name) && !(isSvgFile(file.name) && svgViewMode === 'visual')}
+				{#if file && file.type === 'file' && !isBinary && !isImageFile(file.name) && !isBinaryFile(file.name) && !isPdfFile(file.name) && !isAudioFile(file.name) && !isVideoFile(file.name) && !(isSvgFile(file.name) && svgViewMode === 'visual')}
 					<!-- Word Wrap toggle -->
 					{#if onToggleWordWrap}
 						<button
@@ -630,7 +638,7 @@
 						<LoadingSpinner size="lg" />
 					{/if}
 				</div>
-			{:else if isBinaryFile(file.name)}
+			{:else if isBinary || isBinaryFile(file.name)}
 				<div class="flex flex-col items-center justify-center h-full p-8">
 					<Icon name="lucide:file-text" class="w-16 h-16 text-slate-400 mb-4" />
 					<h3 class="text-lg font-semibold text-slate-900 dark:text-slate-100 mb-2">

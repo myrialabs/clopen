@@ -52,6 +52,7 @@
 		savedContent: string;
 		isLoading: boolean;
 		externallyChanged?: boolean;
+		isBinary?: boolean;
 	}
 
 	let openTabs = $state<EditorTab[]>([]);
@@ -69,6 +70,7 @@
 	let displayFile = $state<FileNode | null>(null);
 	let displayLoading = $state(false);
 	let displayTargetLine = $state<number | undefined>(undefined);
+	let displayIsBinary = $state(false);
 	let displayExternallyChanged = $state(false);
 
 	// Sync display state when active tab changes
@@ -79,12 +81,14 @@
 			displaySavedContent = activeTab.savedContent;
 			displayLoading = activeTab.isLoading;
 			displayExternallyChanged = activeTab.externallyChanged || false;
+			displayIsBinary = activeTab.isBinary || false;
 		} else {
 			displayFile = null;
 			displayContent = '';
 			displaySavedContent = '';
 			displayLoading = false;
 			displayExternallyChanged = false;
+			displayIsBinary = false;
 		}
 	});
 
@@ -342,9 +346,10 @@
 		try {
 			const data = await ws.http('files:read-file', { file_path: filePath });
 			const content = data.content || '';
+			const isBinary = data.isBinary || false;
 			openTabs = openTabs.map(t =>
 				t.file.path === filePath
-					? { ...t, currentContent: content, savedContent: content, isLoading: false }
+					? { ...t, currentContent: content, savedContent: content, isLoading: false, isBinary }
 					: t
 			);
 			// Update display if this is the active tab
@@ -352,6 +357,7 @@
 				displayContent = content;
 				displaySavedContent = content;
 				displayLoading = false;
+				displayIsBinary = isBinary;
 			}
 			return true;
 		} catch (err) {
@@ -378,6 +384,7 @@
 			displayContent = tab.currentContent;
 			displaySavedContent = tab.savedContent;
 			displayLoading = tab.isLoading;
+			displayIsBinary = tab.isBinary || false;
 		}
 	}
 
@@ -1336,6 +1343,7 @@
 							onToggleWordWrap={() => { wordWrapEnabled = !wordWrapEnabled; }}
 							externallyChanged={displayExternallyChanged}
 							onForceReload={forceReloadTab}
+							isBinary={displayIsBinary}
 						/>
 					</div>
 				</div>
