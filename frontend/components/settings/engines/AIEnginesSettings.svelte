@@ -383,9 +383,9 @@
 
 <div class="space-y-6">
 	<!-- Header -->
-	<h3 class="text-base font-bold text-slate-900 dark:text-slate-100 mb-1.5">AI Engine</h3>
+	<h3 class="text-base font-bold text-slate-900 dark:text-slate-100 mb-1.5">Engines</h3>
 	<p class="text-sm text-slate-600 dark:text-slate-500 mb-4">
-		Manage AI engine installations and accounts
+		Manage engine installations and accounts
 	</p>
 
 	<!-- Claude Code Card -->

@@ -219,7 +219,7 @@
 				<!-- Content Area -->
 				<main class="flex-1 flex flex-col min-w-0 overflow-hidden">
 					<div class="flex-1 overflow-y-auto p-4 md:p-5">
-						{#if activeSection === 'assistant'}
+						{#if activeSection === 'models'}
 							<div in:fly={{ x: 20, duration: 200 }}>
 								<ModelSettings />
 							</div>

@@ -11,8 +11,8 @@
 	type Tab = 'assistant' | 'commit-message';
 
 	const tabs: { id: Tab; label: string; icon: IconName }[] = [
-		{ id: 'assistant', label: 'Assistant', icon: 'lucide:cpu' },
-		{ id: 'commit-message', label: 'Commit Message', icon: 'lucide:sparkles' }
+		{ id: 'assistant', label: 'Assistant', icon: 'lucide:bot' },
+		{ id: 'commit-message', label: 'Commit Message', icon: 'lucide:git-branch' }
 	];
 
 	let activeTab = $state<Tab>('assistant');
@@ -144,7 +144,7 @@
 	<!-- ===== ASSISTANT TAB ===== -->
 	{#if activeTab === 'assistant'}
 		<p class="text-sm text-slate-600 dark:text-slate-500 mb-4">
-			Engine and model for your AI assistant
+			Configure the engine and model for chat
 		</p>
 
 		<EngineModelPicker
@@ -158,27 +158,30 @@
 	<!-- ===== COMMIT MESSAGE TAB ===== -->
 	{#if activeTab === 'commit-message'}
 		<p class="text-sm text-slate-600 dark:text-slate-500 mb-4">
-			Generate commit messages from staged changes
+			Configure the engine, model, and format for commits
 		</p>
 
-		<!-- Current Model Info -->
+		<!-- Format Selection -->
 		<div class="mb-5">
-			<label class="block text-sm font-semibold text-slate-700 dark:text-slate-300 mb-2">Model</label>
-			<div class="flex items-center gap-3 px-3.5 py-2.5 border border-slate-200 dark:border-slate-700 rounded-lg bg-slate-50 dark:bg-slate-800/50">
-				{#if activeEngineMeta}
-					<div class="flex-shrink-0">
-						<div class="flex dark:hidden items-center justify-center w-4 h-4">{@html activeEngineMeta.icon.light}</div>
-						<div class="hidden dark:flex items-center justify-center w-4 h-4">{@html activeEngineMeta.icon.dark}</div>
-					</div>
-				{/if}
-				<div class="flex-1 min-w-0">
-					<span class="text-sm font-medium text-slate-900 dark:text-slate-100">
-						{activeModelMeta?.name || activeModel}
-					</span>
-					{#if !useCustomModel}
-						<span class="text-xs text-slate-500 dark:text-slate-400 ml-1.5">(same as assistant)</span>
-					{/if}
-				</div>
+			<label class="block text-sm font-semibold text-slate-700 dark:text-slate-300 mb-2">Message Format</label>
+			<div class="flex gap-2">
+				{#each formatOptions as fmt (fmt.id)}
+					{@const isActive = commitGen.format === fmt.id}
+					<button
+						type="button"
+						class="flex-1 flex items-center gap-2.5 p-3 border-2 rounded-xl text-left cursor-pointer transition-all duration-200
+							{isActive
+							? 'border-violet-600 bg-gradient-to-br from-violet-500/10 to-purple-500/5 dark:from-violet-500/12 dark:to-purple-500/8'
+							: 'border-slate-200 dark:border-slate-800 bg-slate-100/80 dark:bg-slate-800/80 hover:border-violet-500/20 dark:hover:border-violet-500/35'}"
+						onclick={() => selectFormat(fmt.id)}
+					>
+						<Icon name={fmt.icon} class="w-4 h-4 {isActive ? 'text-violet-600' : 'text-slate-400'}" />
+						<div>
+							<div class="text-sm font-medium text-slate-900 dark:text-slate-100">{fmt.label}</div>
+							<div class="text-xs text-slate-500 dark:text-slate-400 font-mono">{fmt.desc}</div>
+						</div>
+					</button>
+				{/each}
 			</div>
 		</div>
 
@@ -201,9 +204,30 @@
 			</button>
 		</div>
 
+		<!-- Current Model Info (hidden when custom model is active) -->
+		{#if !useCustomModel}
+			<div class="mb-2">
+				<label class="block text-sm font-semibold text-slate-700 dark:text-slate-300 mb-2">Model</label>
+				<div class="flex items-center gap-3 px-3.5 py-2.5 border border-slate-200 dark:border-slate-700 rounded-lg bg-slate-50 dark:bg-slate-800/50">
+					{#if activeEngineMeta}
+						<div class="flex-shrink-0">
+							<div class="flex dark:hidden items-center justify-center w-4 h-4">{@html activeEngineMeta.icon.light}</div>
+							<div class="hidden dark:flex items-center justify-center w-4 h-4">{@html activeEngineMeta.icon.dark}</div>
+						</div>
+					{/if}
+					<div class="flex-1 min-w-0">
+						<span class="text-sm font-medium text-slate-900 dark:text-slate-100">
+							{activeModelMeta?.name || activeModel}
+						</span>
+						<span class="text-xs text-slate-500 dark:text-slate-400 ml-1.5">(same as assistant)</span>
+					</div>
+				</div>
+			</div>
+		{/if}
+
 		<!-- Custom Engine & Model Selection (only when toggled on) -->
 		{#if useCustomModel}
-			<div class="mb-6">
+			<div class="mb-2">
 				<EngineModelPicker
 					engine={commitGen.engine}
 					model={commitGen.model}
@@ -212,29 +236,5 @@
 				/>
 			</div>
 		{/if}
-
-		<!-- Format Selection -->
-		<div class="mb-2">
-			<label class="block text-sm font-semibold text-slate-700 dark:text-slate-300 mb-2">Message Format</label>
-			<div class="flex gap-2">
-				{#each formatOptions as fmt (fmt.id)}
-					{@const isActive = commitGen.format === fmt.id}
-					<button
-						type="button"
-						class="flex-1 flex items-center gap-2.5 p-3 border-2 rounded-xl text-left cursor-pointer transition-all duration-200
-							{isActive
-							? 'border-violet-600 bg-gradient-to-br from-violet-500/10 to-purple-500/5 dark:from-violet-500/12 dark:to-purple-500/8'
-							: 'border-slate-200 dark:border-slate-800 bg-slate-100/80 dark:bg-slate-800/80 hover:border-violet-500/20 dark:hover:border-violet-500/35'}"
-						onclick={() => selectFormat(fmt.id)}
-					>
-						<Icon name={fmt.icon} class="w-4 h-4 {isActive ? 'text-violet-600' : 'text-slate-400'}" />
-						<div>
-							<div class="text-sm font-medium text-slate-900 dark:text-slate-100">{fmt.label}</div>
-							<div class="text-xs text-slate-500 dark:text-slate-400 font-mono">{fmt.desc}</div>
-						</div>
-					</button>
-				{/each}
-			</div>
-		</div>
 	{/if}
 </div>

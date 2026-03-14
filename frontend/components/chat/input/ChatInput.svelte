@@ -141,7 +141,7 @@
 
 	const chatPlaceholder = $derived.by(() => {
 		if (chatBlockedReason === 'no-claude-account') {
-			return 'No Claude Code account connected. Configure it in Settings → AI Engine → Claude Code → Accounts.';
+			return 'No Claude Code account connected. Configure it in Settings → Engines → Claude Code → Accounts.';
 		}
 		if (chatBlockedReason === 'no-model') {
 			return 'No model selected. Please select a model to start chatting.';

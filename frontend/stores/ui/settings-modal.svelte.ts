@@ -6,7 +6,7 @@
 import type { IconName } from '$shared/types/ui/icons';
 
 export type SettingsSection =
-	| 'assistant'
+	| 'models'
 	| 'engines'
 	| 'appearance'
 	| 'notifications'
@@ -31,10 +31,10 @@ export interface SettingsSectionMeta {
 
 export const settingsSections: SettingsSectionMeta[] = [
 	{
-		id: 'assistant',
-		label: 'AI',
-		icon: 'lucide:cpu',
-		description: 'Model and commit preferences'
+		id: 'models',
+		label: 'Models',
+		icon: 'lucide:sparkles',
+		description: 'Chat and commit model'
 	},
 	{
 		id: 'appearance',
@@ -56,8 +56,8 @@ export const settingsSections: SettingsSectionMeta[] = [
 	},
 	{
 		id: 'engines',
-		label: 'AI Engine',
-		icon: 'lucide:bot',
+		label: 'Engines',
+		icon: 'lucide:plug',
 		description: 'Installation and accounts',
 		adminOnly: true
 	},
@@ -87,11 +87,11 @@ export const settingsSections: SettingsSectionMeta[] = [
 // Create the state using Svelte 5 runes
 export const settingsModalState = $state<SettingsModalState>({
 	isOpen: false,
-	activeSection: 'assistant'
+	activeSection: 'models'
 });
 
 // Helper functions
-export function openSettingsModal(section: SettingsSection = 'assistant') {
+export function openSettingsModal(section: SettingsSection = 'models') {
 	settingsModalState.isOpen = true;
 	settingsModalState.activeSection = section;
 }

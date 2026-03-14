@@ -87,7 +87,7 @@
 	const stepLabels: Record<WizardStep, { label: string; icon: IconName }> = {
 		'auth-mode': { label: 'Login', icon: 'lucide:shield' },
 		'admin-account': { label: 'Account', icon: 'lucide:user-plus' },
-		'engines': { label: 'Engines', icon: 'lucide:cpu' },
+		'engines': { label: 'Engines', icon: 'lucide:plug' },
 		'preferences': { label: 'Preferences', icon: 'lucide:palette' }
 	};
 
@@ -602,7 +602,7 @@
 			{:else if currentStep === 'engines'}
 				<div class="space-y-4">
 					<div class="text-center">
-						<h2 class="text-base font-semibold text-slate-900 dark:text-slate-100 mb-1">AI Engines</h2>
+						<h2 class="text-base font-semibold text-slate-900 dark:text-slate-100 mb-1">Engines</h2>
 						<p class="text-sm text-slate-500 dark:text-slate-400">
 							Check your AI engine installations.
 						</p>
