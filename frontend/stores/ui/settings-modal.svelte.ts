@@ -7,7 +7,6 @@ import type { IconName } from '$shared/types/ui/icons';
 
 export type SettingsSection =
 	| 'assistant'
-	| 'commit-message'
 	| 'engines'
 	| 'appearance'
 	| 'notifications'
@@ -33,15 +32,9 @@ export interface SettingsSectionMeta {
 export const settingsSections: SettingsSectionMeta[] = [
 	{
 		id: 'assistant',
-		label: 'Assistant',
+		label: 'AI',
 		icon: 'lucide:cpu',
-		description: 'Engine and model for AI assistant'
-	},
-	{
-		id: 'commit-message',
-		label: 'Commit Message',
-		icon: 'lucide:sparkles',
-		description: 'Generate commit messages from staged changes'
+		description: 'Model and commit preferences'
 	},
 	{
 		id: 'appearance',

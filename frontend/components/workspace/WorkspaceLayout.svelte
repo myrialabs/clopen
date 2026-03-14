@@ -19,13 +19,14 @@
 	import ModalProvider from '$frontend/components/common/overlay/ModalProvider.svelte';
 	import SettingsModal from '$frontend/components/settings/SettingsModal.svelte';
 	import HistoryModal from '$frontend/components/history/HistoryModal.svelte';
+	import NotificationToast from '$frontend/components/common/feedback/NotificationToast.svelte';
 
 	// Services
 	import { initializeTheme } from '$frontend/utils/theme';
 	import { initializeStore } from '$frontend/stores/core/app.svelte';
 	import { initializeProjects } from '$frontend/stores/core/projects.svelte';
 	import { initializeSessions } from '$frontend/stores/core/sessions.svelte';
-	import { initializeNotifications } from '$frontend/stores/ui/notification.svelte';
+	import { initializeNotifications, notificationStore } from '$frontend/stores/ui/notification.svelte';
 	import { applyServerSettings, loadSystemSettings } from '$frontend/stores/features/settings.svelte';
 	import { initPresence } from '$frontend/stores/core/presence.svelte';
 	import ws from '$frontend/utils/ws';
@@ -163,3 +164,12 @@
 
 <!-- History Modal -->
 <HistoryModal bind:isOpen={showHistoryModal} onClose={closeHistoryModal} />
+
+<!-- Toast Notifications -->
+{#if notificationStore.notifications.length > 0}
+	<div class="fixed top-4 right-4 z-[200] flex flex-col gap-2">
+		{#each notificationStore.notifications as notification (notification.id)}
+			<NotificationToast {notification} />
+		{/each}
+	</div>
+{/if}

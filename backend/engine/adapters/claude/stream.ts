@@ -273,6 +273,7 @@ export class ClaudeCodeEngine implements AIEngine {
         type: 'json_schema',
         schema
       },
+      maxTurns: 1,
       ...(model && { model }),
       abortController: controller
     };
