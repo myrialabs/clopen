@@ -44,6 +44,7 @@ export interface ExistingTabInfo {
 	deviceSize: string;
 	rotation: string;
 	isActive: boolean;
+	isMcpControlled?: boolean;
 }
 
 export interface ExistingTabsResult {

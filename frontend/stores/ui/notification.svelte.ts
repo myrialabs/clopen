@@ -6,6 +6,9 @@ export const notificationStore = $state({
 	maxNotifications: 5
 });
 
+// Monotonic counter for unique notification IDs
+let _notificationCounter = 0;
+
 // Derived values as functions (cannot export derived state from modules)
 export function hasNotifications() {
 	return notificationStore.notifications.length > 0;
@@ -18,7 +21,7 @@ export function notificationCount() {
 // Notification management functions
 export function addNotification(notification: Omit<ToastNotification, 'id'>) {
 	const newNotification: ToastNotification = {
-		id: Date.now().toString(),
+		id: `${Date.now()}-${++_notificationCounter}`,
 		...notification,
 		duration: notification.duration || 5000 // Default 5 seconds
 	};

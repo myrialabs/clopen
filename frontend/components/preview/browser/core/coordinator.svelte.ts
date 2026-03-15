@@ -510,6 +510,13 @@ export function createBrowserCoordinator(config: BrowserCoordinatorConfig) {
 				if (backendTab.isActive && frontendId) {
 					activeTabFrontendId = frontendId;
 				}
+
+				// Restore MCP control state if this tab was being controlled
+				if (backendTab.isMcpControlled && frontendId) {
+					debug.log('preview', `🎮 Restoring MCP control state for recovered tab: ${frontendId} (session: ${backendTab.tabId})`);
+					mcpHandler.restoreControlState(frontendId, backendTab.tabId);
+				}
+
 				totalRestored++;
 			}
 
@@ -801,6 +808,9 @@ export function createBrowserCoordinator(config: BrowserCoordinatorConfig) {
 
 			// Clear frontend tracking
 			browserCleanup.clearAll();
+
+			// Reset MCP control state to avoid stale tab IDs after tab recreation
+			mcpHandler.resetControlState();
 
 			// Recover sessions from new project
 			await recoverExistingSessions();

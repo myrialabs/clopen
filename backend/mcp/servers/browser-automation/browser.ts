@@ -89,10 +89,26 @@ interface CloseTabResponse {
  * Internal helper: Get active tab
  * Throws error if no active tab found
  * Automatically acquires MCP control for the active tab to ensure UI sync
+ *
+ * If MCP is already controlling a specific tab, that tab is returned regardless
+ * of which tab the user has currently active in the frontend. This prevents MCP
+ * from "following" the user when they switch tabs mid-session.
  */
 export async function getActiveTabSession(projectId?: string) {
-	// Get active tab directly from backend tab manager
 	const previewService = getPreviewService(projectId);
+
+	// If MCP is already controlling a specific tab, stick to that tab.
+	// This prevents user tab-switching from hijacking the MCP session.
+	const controlState = browserMcpControl.getControlState();
+	if (controlState.isControlling && controlState.browserTabId) {
+		const controlledTab = previewService.getTab(controlState.browserTabId);
+		if (controlledTab) {
+			debug.log('mcp', `🎮 Using MCP-controlled tab: ${controlledTab.id} (ignoring active tab)`);
+			return { tab: controlledTab, session: controlledTab };
+		}
+	}
+
+	// No controlled tab — use the active tab and acquire control
 	const tab = previewService.getActiveTab();
 
 	if (!tab) {
@@ -101,8 +117,9 @@ export async function getActiveTabSession(projectId?: string) {
 
 	// Acquire control for active tab (ensures UI sync after idle timeout)
 	// This is idempotent - if already controlling this tab, just updates timestamp
-	if (!browserMcpControl.isTabControlled(tab.id)) {
-		const acquired = browserMcpControl.acquireControl(tab.id);
+	const resolvedProjectId = previewService.getProjectId();
+	if (!browserMcpControl.isTabControlled(tab.id, resolvedProjectId)) {
+		const acquired = browserMcpControl.acquireControl(tab.id, undefined, resolvedProjectId);
 		if (acquired) {
 			debug.log('mcp', `🔄 Auto-acquired control for tab ${tab.id} (resumed after idle)`);
 		}
@@ -189,7 +206,7 @@ export async function switchTabHandler(args: { tabId: string; projectId?: string
 		// Update MCP control to the new tab
 		if (tab) {
 			browserMcpControl.releaseControl();
-			browserMcpControl.acquireControl(tab.id);
+			browserMcpControl.acquireControl(tab.id, undefined, previewService.getProjectId());
 		}
 
 		// Update last action to keep control alive
@@ -244,7 +261,7 @@ export async function openNewTabHandler(args: { url?: string; deviceSize?: 'desk
 
 		// Auto-acquire control of the new tab
 		browserMcpControl.releaseControl();
-		browserMcpControl.acquireControl(tab.id);
+		browserMcpControl.acquireControl(tab.id, undefined, previewService.getProjectId());
 
 		// Update last action to keep control alive
 		browserMcpControl.updateLastAction();
@@ -296,7 +313,7 @@ export async function closeTabHandler(args: { tabId: string; projectId?: string 
 		if (result.newActiveTabId) {
 			const newActiveTab = previewService.getTab(result.newActiveTabId);
 			if (newActiveTab) {
-				browserMcpControl.acquireControl(newActiveTab.id);
+				browserMcpControl.acquireControl(newActiveTab.id, undefined, previewService.getProjectId());
 			}
 		}
 

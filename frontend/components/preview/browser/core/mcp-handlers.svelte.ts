@@ -145,8 +145,8 @@ export function createMcpHandler(config: McpHandlerConfig) {
 	}
 
 	function handleCursorPosition(data: { sessionId: string; x: number; y: number; timestamp: number; source: 'mcp' }) {
-		// Only update cursor if this is for the active session and MCP is controlling
-		if (mcpControlState.isControlled && mcpControlState.browserSessionId === data.sessionId && transformBrowserToDisplayCoordinates) {
+		// Only show cursor if MCP is controlling AND user is currently viewing that tab
+		if (mcpControlState.isControlled && mcpControlState.browserSessionId === data.sessionId && isCurrentTabMcpControlled() && transformBrowserToDisplayCoordinates) {
 			const transformedPosition = transformBrowserToDisplayCoordinates(data.x, data.y);
 			if (transformedPosition && onCursorUpdate) {
 				onCursorUpdate(transformedPosition.x, transformedPosition.y, false);
@@ -155,11 +155,42 @@ export function createMcpHandler(config: McpHandlerConfig) {
 	}
 
 	function handleCursorClick(data: { sessionId: string; x: number; y: number; timestamp: number; source: 'mcp' }) {
-		if (mcpControlState.isControlled && mcpControlState.browserSessionId === data.sessionId && transformBrowserToDisplayCoordinates) {
+		// Only show cursor click if MCP is controlling AND user is currently viewing that tab
+		if (mcpControlState.isControlled && mcpControlState.browserSessionId === data.sessionId && isCurrentTabMcpControlled() && transformBrowserToDisplayCoordinates) {
 			const transformedPosition = transformBrowserToDisplayCoordinates(data.x, data.y);
 			if (transformedPosition && onCursorUpdate) {
 				onCursorUpdate(transformedPosition.x, transformedPosition.y, true);
 			}
+		}
+	}
+
+	/**
+	 * Restore MCP control state after session recovery (browser refresh or project switch)
+	 * Called when recovered backend tab was previously MCP-controlled
+	 */
+	function restoreControlState(frontendTabId: string, browserSessionId: string): void {
+		debug.log('preview', `🔄 Restoring MCP control state for tab: ${frontendTabId} (session: ${browserSessionId})`);
+		mcpControlState = {
+			isControlled: true,
+			controlledTabId: frontendTabId,
+			browserSessionId: browserSessionId,
+			startedAt: Date.now()
+		};
+	}
+
+	/**
+	 * Reset MCP control state (called before project switch recovery)
+	 */
+	function resetControlState(): void {
+		debug.log('preview', `🔄 Resetting MCP control state`);
+		mcpControlState = {
+			isControlled: false,
+			controlledTabId: null,
+			browserSessionId: null,
+			startedAt: null
+		};
+		if (onCursorHide) {
+			onCursorHide();
 		}
 	}
 
@@ -297,6 +328,8 @@ export function createMcpHandler(config: McpHandlerConfig) {
 		setupEventListeners,
 		isCurrentTabMcpControlled,
 		getControlState,
+		restoreControlState,
+		resetControlState,
 		get mcpControlState() { return mcpControlState; }
 	};
 }

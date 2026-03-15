@@ -28,6 +28,7 @@ export interface McpControlState {
 	isControlling: boolean;
 	mcpSessionId: string | null;
 	browserTabId: string | null;
+	projectId: string | null;
 	startedAt: number | null;
 	lastActionAt: number | null;
 }
@@ -60,6 +61,7 @@ export class BrowserMcpControl extends EventEmitter {
 		isControlling: false,
 		mcpSessionId: null,
 		browserTabId: null,
+		projectId: null,
 		startedAt: null,
 		lastActionAt: null
 	};
@@ -96,13 +98,16 @@ export class BrowserMcpControl extends EventEmitter {
 
 	/**
 	 * Handle tab destroyed event
-	 * Auto-release control if the destroyed tab was being controlled
+	 * Auto-release control if the destroyed tab was being controlled.
+	 * Uses the service's projectId to avoid cross-project false-positives.
 	 */
 	private handleTabDestroyed(tabId: string): void {
-		if (this.controlState.isControlling && this.controlState.browserTabId === tabId) {
-			debug.warn('mcp', `⚠️ Controlled tab ${tabId} was destroyed - auto-releasing control`);
-			this.releaseControl();
-		}
+		if (!this.controlState.isControlling || this.controlState.browserTabId !== tabId) return;
+		// Validate project to prevent cross-project collisions (tab IDs are not globally unique)
+		const serviceProjectId = this.previewService?.getProjectId();
+		if (serviceProjectId && this.controlState.projectId && this.controlState.projectId !== serviceProjectId) return;
+		debug.warn('mcp', `⚠️ Controlled tab ${tabId} was destroyed - auto-releasing control`);
+		this.releaseControl();
 	}
 
 	/**
@@ -167,18 +172,25 @@ export class BrowserMcpControl extends EventEmitter {
 	}
 
 	/**
-	 * Check if a specific browser tab is being controlled
+	 * Check if a specific browser tab is being controlled.
+	 * When projectId is provided, also validates the project to prevent cross-project
+	 * false-positives (tab IDs are only unique per project, not globally).
 	 */
-	isTabControlled(browserTabId: string): boolean {
-		return this.controlState.isControlling &&
-			   this.controlState.browserTabId === browserTabId;
+	isTabControlled(browserTabId: string, projectId?: string): boolean {
+		if (!this.controlState.isControlling || this.controlState.browserTabId !== browserTabId) {
+			return false;
+		}
+		if (projectId && this.controlState.projectId && this.controlState.projectId !== projectId) {
+			return false;
+		}
+		return true;
 	}
 
 	/**
 	 * Acquire control of a browser tab
 	 * Returns true if control was acquired, false if already controlled by another MCP
 	 */
-	acquireControl(browserTabId: string, mcpSessionId?: string): boolean {
+	acquireControl(browserTabId: string, mcpSessionId?: string, projectId?: string): boolean {
 		// Validate tab exists before acquiring control
 		if (this.previewService && !this.previewService.getTab(browserTabId)) {
 			debug.warn('mcp', `❌ Cannot acquire control: tab ${browserTabId} does not exist`);
@@ -204,6 +216,7 @@ export class BrowserMcpControl extends EventEmitter {
 			isControlling: true,
 			mcpSessionId: mcpSessionId || null,
 			browserTabId,
+			projectId: projectId || null,
 			startedAt: now,
 			lastActionAt: now
 		};
@@ -238,6 +251,7 @@ export class BrowserMcpControl extends EventEmitter {
 			isControlling: false,
 			mcpSessionId: null,
 			browserTabId: null,
+			projectId: null,
 			startedAt: null,
 			lastActionAt: null
 		};
@@ -380,13 +394,14 @@ export class BrowserMcpControl extends EventEmitter {
 	}
 
 	/**
-	 * Auto-release control for a specific browser tab (called when tab closes)
+	 * Auto-release control for a specific browser tab (called when tab closes).
+	 * projectId is used to prevent accidental release across projects with same tab IDs.
 	 */
-	autoReleaseForTab(browserTabId: string): void {
-		if (this.controlState.isControlling && this.controlState.browserTabId === browserTabId) {
-			debug.log('mcp', `🗑️ Auto-releasing MCP control for closed tab: ${browserTabId}`);
-			this.releaseControl(browserTabId);
-		}
+	autoReleaseForTab(browserTabId: string, projectId?: string): void {
+		if (!this.controlState.isControlling || this.controlState.browserTabId !== browserTabId) return;
+		if (projectId && this.controlState.projectId && this.controlState.projectId !== projectId) return;
+		debug.log('mcp', `🗑️ Auto-releasing MCP control for closed tab: ${browserTabId}`);
+		this.releaseControl(browserTabId);
 	}
 
 	/**
@@ -403,6 +418,7 @@ export class BrowserMcpControl extends EventEmitter {
 			isControlling: false,
 			mcpSessionId: null,
 			browserTabId: null,
+			projectId: null,
 			startedAt: null,
 			lastActionAt: null
 		};

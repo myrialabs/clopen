@@ -273,7 +273,7 @@ export class BrowserTabManager extends EventEmitter {
 		const wasActive = tab.isActive;
 
 		// Auto-release MCP control if this tab is being controlled
-		browserMcpControl.autoReleaseForTab(tabId);
+		browserMcpControl.autoReleaseForTab(tabId, this.projectId);
 
 		// IMMEDIATELY set destroyed flag and stop streaming
 		tab.isDestroyed = true;

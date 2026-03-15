@@ -417,6 +417,14 @@
 		return mcpHandler.isCurrentTabMcpControlled();
 	}
 
+	// Hide MCP virtual cursor when switching to a non-MCP-controlled tab
+	$effect(() => {
+		void activeTabId; // track activeTabId changes
+		if (!isCurrentTabMcpControlled()) {
+			mcpVirtualCursor = { x: 0, y: 0, visible: false, clicking: false };
+		}
+	});
+
 	// Stream message handling
 	$effect(() => {
 		if (activeTabId && sessionId) {

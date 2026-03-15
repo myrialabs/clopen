@@ -7,6 +7,7 @@
 import { t } from 'elysia';
 import { createRouter } from '$shared/utils/ws-server';
 import { browserPreviewServiceManager } from '../../../preview/index';
+import { browserMcpControl } from '../../../preview/browser/browser-mcp-control';
 import { ws } from '$backend/utils/ws';
 import { debug } from '$shared/utils/logger';
 
@@ -62,7 +63,8 @@ export const tabInfoPreviewHandler = createRouter()
 				isStreaming: t.Boolean(),
 				deviceSize: t.String(),
 				rotation: t.String(),
-				isActive: t.Boolean()
+				isActive: t.Boolean(),
+				isMcpControlled: t.Boolean()
 			})),
 			activeTabId: t.Union([t.String(), t.Null()]),
 			count: t.Number()
@@ -87,7 +89,8 @@ export const tabInfoPreviewHandler = createRouter()
 				isStreaming: tab.isStreaming,
 				deviceSize: tab.deviceSize,
 				rotation: tab.rotation,
-				isActive: tab.isActive
+				isActive: tab.isActive,
+				isMcpControlled: browserMcpControl.isTabControlled(tab.id, projectId)
 			})),
 			activeTabId: activeTab?.id || null,
 			count: allTabsInfo.length
