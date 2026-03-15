@@ -544,10 +544,17 @@
 						startHealthCheck(hasRestoredSnapshot); // Skip first frame reset if snapshot
 						hasRestoredSnapshot = false; // Reset after using
 						debug.log('webcodecs', 'Streaming started successfully');
-						break;
+					} else {
+						// Service handles errors internally and returns false.
+						// Never retry here — retrying immediately creates a stop/start loop.
+						debug.warn('webcodecs', 'Streaming start returned false, stopping retries');
 					}
+					// Always break after the service returns (success or failure).
+					// The service catches all exceptions internally, so the catch block
+					// below never runs, making retries/retryDelay dead code anyway.
+					break;
 				} catch (error: any) {
-					// Check if it's a retriable error - might just need more time
+					// This block only runs if the service unexpectedly throws.
 					const isRetriable = error?.message?.includes('not found') ||
 						error?.message?.includes('invalid') ||
 						error?.message?.includes('Failed to start') ||
@@ -560,11 +567,9 @@
 							await new Promise(resolve => setTimeout(resolve, retryDelay));
 						} else {
 							debug.error('webcodecs', 'Max retries reached, streaming still not ready');
-							// Don't throw - just fail silently and let user retry manually
 							break;
 						}
 					} else {
-						// Other errors - don't retry, just log
 						debug.error('webcodecs', 'Streaming error:', error);
 						break;
 					}
