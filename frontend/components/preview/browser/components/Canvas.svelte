@@ -83,6 +83,7 @@
 			// Clear canvas snapshots - they belong to old project's sessions
 			canvasSnapshots.clear();
 			hasRestoredSnapshot = false;
+			lastStartRequestId = null; // Clear so new project sessions aren't blocked by old tab IDs
 
 			// Destroy old service
 			if (webCodecsService) {
@@ -403,24 +404,29 @@
 
 	// Start WebCodecs streaming
 	async function startStreaming() {
-		if (!sessionId || !canvasElement) return;
+		debug.log('webcodecs', `[DIAG] startStreaming() called: sessionId=${sessionId}, canvasElement=${!!canvasElement}, isStartingStream=${isStartingStream}, isWebCodecsActive=${isWebCodecsActive}, activeStreamingSessionId=${activeStreamingSessionId}, lastStartRequestId=${lastStartRequestId}`);
+
+		if (!sessionId || !canvasElement) {
+			debug.log('webcodecs', `[DIAG] startStreaming() early exit: missing sessionId=${!sessionId} or canvasElement=${!canvasElement}`);
+			return;
+		}
 
 		// Prevent concurrent start attempts
 		if (isStartingStream) {
-			debug.log('webcodecs', 'Already starting stream, skipping duplicate call');
+			debug.log('webcodecs', '[DIAG] startStreaming() skipped: already starting stream');
 			return;
 		}
 
 		// If already streaming same session, skip
 		if (isWebCodecsActive && activeStreamingSessionId === sessionId) {
-			debug.log('webcodecs', 'Already streaming same session, skipping');
+			debug.log('webcodecs', '[DIAG] startStreaming() skipped: already streaming same session');
 			return;
 		}
 
 		// Prevent duplicate requests for same session
 		const requestId = `${sessionId}-${Date.now()}`;
 		if (lastStartRequestId && lastStartRequestId.startsWith(sessionId)) {
-			debug.log('webcodecs', `Duplicate start request for ${sessionId}, skipping`);
+			debug.log('webcodecs', `[DIAG] startStreaming() skipped: duplicate request for ${sessionId}, lastStartRequestId=${lastStartRequestId}`);
 			return;
 		}
 		lastStartRequestId = requestId;
@@ -850,6 +856,8 @@
 	// Start/restart streaming when session is ready
 	// This handles both initial start and session changes (viewport switch, etc.)
 	$effect(() => {
+		debug.log('webcodecs', `[DIAG] streaming $effect triggered: sessionId=${sessionId}, canvasElement=${!!canvasElement}, sessionInfo=${!!sessionInfo}, isReconnecting=${isReconnecting}, isWebCodecsActive=${isWebCodecsActive}, activeStreamingSessionId=${activeStreamingSessionId}`);
+
 		if (sessionId && canvasElement && sessionInfo) {
 			// Skip during fast reconnect - fastReconnect() handles this case
 			if (isReconnecting) {
@@ -859,6 +867,7 @@
 
 			// Check if we need to start or restart streaming
 			const needsStreaming = !isWebCodecsActive || activeStreamingSessionId !== sessionId;
+			debug.log('webcodecs', `[DIAG] streaming $effect: needsStreaming=${needsStreaming}`);
 
 			if (needsStreaming) {
 				if (activeStreamingSessionId !== sessionId) {

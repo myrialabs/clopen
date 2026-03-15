@@ -57,6 +57,11 @@
 		isLaunchingBrowser || !sessionInfo || (!isStreamReady && !isNavigating && !isReconnecting && !lastFrameData)
 	);
 
+	// Diagnostic: log whenever showSolidOverlay changes
+	$effect(() => {
+		debug.log('preview', `[DIAG] showSolidOverlay=${showSolidOverlay} (isLaunchingBrowser=${isLaunchingBrowser}, sessionInfo=${!!sessionInfo}, isStreamReady=${isStreamReady}, isNavigating=${isNavigating}, isReconnecting=${isReconnecting}, lastFrameData=${!!lastFrameData})`);
+	});
+
 	// Navigation overlay state with debounce to prevent flickering during state transitions
 	let showNavigationOverlay = $state(false);
 	let overlayHideTimeout: ReturnType<typeof setTimeout> | null = null;

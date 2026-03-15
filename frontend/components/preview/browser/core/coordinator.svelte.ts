@@ -536,6 +536,11 @@ export function createBrowserCoordinator(config: BrowserCoordinatorConfig) {
 
 			debug.log('preview', `✅ Session recovery complete - restored ${totalRestored} tabs`);
 
+			// Diagnostic: dump state of all restored tabs
+			for (const tab of tabManager.getAllTabs()) {
+				debug.log('preview', `[DIAG] Restored tab: id=${tab.id}, sessionId=${tab.sessionId}, url=${tab.url}, isConnected=${tab.isConnected}, isStreamReady=${tab.isStreamReady}, isLaunchingBrowser=${tab.isLaunchingBrowser}, sessionInfo=${!!tab.sessionInfo}`);
+			}
+
 			// Notify parent that sessions were recovered
 			if (onSessionsRecovered) {
 				onSessionsRecovered(totalRestored);

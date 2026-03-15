@@ -164,7 +164,7 @@ export class BrowserWebCodecsService {
 	 * Start WebCodecs streaming for a preview session
 	 */
 	async startStreaming(sessionId: string, canvas: HTMLCanvasElement): Promise<boolean> {
-		debug.log('webcodecs', `Starting streaming for session: ${sessionId}`);
+		debug.log('webcodecs', `[DIAG] startStreaming called: sessionId=${sessionId}, isConnected=${this.isConnected}, existingSessionId=${this.sessionId}`);
 
 		if (!BrowserWebCodecsService.isSupported()) {
 			debug.error('webcodecs', 'Not supported in this browser');
@@ -182,7 +182,11 @@ export class BrowserWebCodecsService {
 			this.audioContext = new AudioContext({ sampleRate: 48000 });
 		}
 		if (this.audioContext.state === 'suspended') {
-			await this.audioContext.resume().catch(() => {});
+			// Fire-and-forget: don't await — after page refresh (no user gesture),
+			// resume() returns a promise that NEVER resolves until user interacts.
+			// Awaiting it would block streaming indefinitely. Audio will resume
+			// automatically on first user interaction via the safety net in playAudioFrame.
+			this.audioContext.resume().catch(() => {});
 		}
 
 		// Clean up any existing connection
@@ -214,7 +218,9 @@ export class BrowserWebCodecsService {
 			this.setupEventListeners();
 
 			// Request server to start streaming and get offer
+			debug.log('webcodecs', `[DIAG] Sending preview:browser-stream-start for session: ${sessionId}`);
 			const response = await ws.http('preview:browser-stream-start', {}, 30000);
+			debug.log('webcodecs', `[DIAG] preview:browser-stream-start response: success=${response.success}, hasOffer=${!!response.offer}, message=${response.message}`);
 
 			if (!response.success) {
 				throw new Error(response.message || 'Failed to start streaming');
@@ -225,12 +231,15 @@ export class BrowserWebCodecsService {
 
 			// Set remote description (offer)
 			if (response.offer) {
+				debug.log('webcodecs', `[DIAG] Using offer from stream-start response`);
 				await this.handleOffer({
 					type: response.offer.type as RTCSdpType,
 					sdp: response.offer.sdp
 				});
 			} else {
+				debug.log('webcodecs', `[DIAG] No offer in stream-start response, fetching via stream-offer`);
 				const offerResponse = await ws.http('preview:browser-stream-offer', {}, 10000);
+				debug.log('webcodecs', `[DIAG] preview:browser-stream-offer response: hasOffer=${!!offerResponse.offer}`);
 				if (offerResponse.offer) {
 					await this.handleOffer({
 						type: offerResponse.offer.type as RTCSdpType,
@@ -241,7 +250,7 @@ export class BrowserWebCodecsService {
 				}
 			}
 
-			debug.log('webcodecs', 'Streaming setup complete');
+			debug.log('webcodecs', '[DIAG] Streaming setup complete, waiting for ICE/DataChannel');
 			return true;
 		} catch (error) {
 			debug.error('webcodecs', 'Failed to start streaming:', error);
@@ -595,9 +604,9 @@ export class BrowserWebCodecsService {
 				this.audioContext = new AudioContext({ sampleRate: 48000 });
 			}
 
-			// Resume if suspended (may happen without user gesture)
+			// Resume if suspended — fire-and-forget, same reason as in startStreaming
 			if (this.audioContext.state === 'suspended') {
-				await this.audioContext.resume();
+				this.audioContext.resume().catch(() => {});
 			}
 
 			debug.log('webcodecs', `AudioContext initialized (state: ${this.audioContext.state})`);
