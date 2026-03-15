@@ -119,8 +119,9 @@ export function getProjectStatusColor(projectId: string): string {
 		return 'bg-amber-500';
 	}
 
-	// Check for unread sessions in this project
-	if (hasUnreadSessionsForProject(projectId)) return 'bg-blue-500';
+	// Check for unread sessions in this project, excluding the currently viewed session
+	const currentSessionId = sessionState.currentSession?.id;
+	if (hasUnreadSessionsForProject(projectId, currentSessionId)) return 'bg-blue-500';
 
 	return 'bg-slate-500/30';
 }

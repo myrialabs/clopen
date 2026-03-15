@@ -295,6 +295,8 @@ export async function loadSessions() {
 						// wiping out any stream_event injected by catchup.
 						await loadMessagesForSession(targetSession.id);
 						sessionState.currentSession = targetSession;
+						// Clear unread status — user is actively viewing this session
+						markSessionRead(targetSession.id);
 						// Join chat session room so we receive session-scoped events
 						// (stream, input sync, edit mode, model sync).
 						// Critical after refresh — without it, connection misses all events.

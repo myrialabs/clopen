@@ -428,7 +428,7 @@
 									<span
 										class="absolute -bottom-0.5 -right-0.5 w-2.5 h-2.5 rounded-full border-2 border-white dark:border-slate-900 {isSessionWaitingInput(session.id, projectState.currentProject?.id) ? 'bg-amber-500' : 'bg-emerald-500'}"
 									></span>
-								{:else if isSessionUnread(session.id)}
+								{:else if isSessionUnread(session.id) && session.id !== sessionState.currentSession?.id}
 									<span
 										class="absolute -bottom-0.5 -right-0.5 w-2.5 h-2.5 rounded-full border-2 border-white dark:border-slate-900 bg-blue-500"
 									></span>

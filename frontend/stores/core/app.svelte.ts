@@ -214,10 +214,11 @@ export function isSessionUnread(sessionId: string): boolean {
 
 /**
  * Check if a project has any unread sessions.
+ * Optionally exclude a specific session (e.g. the currently viewed one).
  */
-export function hasUnreadSessionsForProject(projectId: string): boolean {
-	for (const pId of appState.unreadSessions.values()) {
-		if (pId === projectId) return true;
+export function hasUnreadSessionsForProject(projectId: string, excludeSessionId?: string): boolean {
+	for (const [sId, pId] of appState.unreadSessions.entries()) {
+		if (pId === projectId && sId !== excludeSessionId) return true;
 	}
 	return false;
 }
