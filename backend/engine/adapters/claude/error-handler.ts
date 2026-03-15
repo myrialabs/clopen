@@ -3,8 +3,13 @@ export function handleStreamError(error: unknown): void {
     throw error;
   }
 
-  // Abort errors are expected during cancellation - don't re-throw
-  if (error.name === 'AbortError' || error.message.includes('aborted') || error.message.includes('abort')) {
+  // Abort errors are expected during cancellation - don't re-throw.
+  // "Operation aborted" comes from the SDK's internal write() when the
+  // subprocess is killed during handleControlRequest.
+  if (error.name === 'AbortError'
+    || error.message.includes('aborted')
+    || error.message.includes('abort')
+    || error.message === 'Operation aborted') {
     return;
   }
 

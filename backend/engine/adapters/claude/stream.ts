@@ -180,7 +180,19 @@ export class ClaudeCodeEngine implements AIEngine {
    * Cancel active query
    */
   async cancel(): Promise<void> {
-    if (this.activeQuery && typeof this.activeQuery.interrupt === 'function') {
+    // Resolve all pending AskUserQuestion promises BEFORE aborting.
+    // This lets the SDK process the denial responses while the subprocess
+    // is still alive, preventing "Operation aborted" write errors.
+    for (const [, pending] of this.pendingUserAnswers) {
+      pending.resolve({ behavior: 'deny', message: 'Cancelled' });
+    }
+    this.pendingUserAnswers.clear();
+
+    // Only interrupt if the controller hasn't been aborted yet.
+    // Interrupting after abort causes the SDK to write to a dead subprocess,
+    // resulting in "Operation aborted" unhandled rejections that crash Bun.
+    if (this.activeQuery && typeof this.activeQuery.interrupt === 'function'
+        && this.activeController && !this.activeController.signal.aborted) {
       try {
         await this.activeQuery.interrupt();
       } catch {
@@ -188,13 +200,19 @@ export class ClaudeCodeEngine implements AIEngine {
       }
     }
 
+    // Brief delay between interrupt and abort to let the SDK flush pending
+    // write operations (e.g., handleControlRequest responses). Without this,
+    // aborting immediately after interrupt kills the subprocess while the SDK
+    // still has in-flight writes, causing "Operation aborted" rejections.
+    if (this.activeController && !this.activeController.signal.aborted) {
+      await new Promise(resolve => setTimeout(resolve, 100));
+    }
+
     if (this.activeController) {
       this.activeController.abort();
       this.activeController = null;
     }
     this.activeQuery = null;
-    // Reject all pending user answer promises (abort signal handles this, but clean up the map)
-    this.pendingUserAnswers.clear();
   }
 
   /**

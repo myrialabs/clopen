@@ -229,7 +229,11 @@
 			appState.isLoading = false;
 			lastCatchupProjectId = undefined;
 		} else if (!hasActiveForSession && !appState.isLoading) {
-			// No active streams for this session — just reset catchup tracking.
+			// No active streams for this session — clear cancelling state and reset catchup tracking.
+			// This is the authoritative signal that the cancel is fully complete (presence confirmed).
+			if (appState.isCancelling) {
+				appState.isCancelling = false;
+			}
 			lastCatchupProjectId = undefined;
 		}
 	});
@@ -441,6 +445,7 @@
 					<!-- Action buttons -->
 					<ChatInputActions
 						isLoading={appState.isLoading}
+						isCancelling={appState.isCancelling}
 						hasActiveProject={hasActiveProject}
 						messageText={messageText}
 						attachedFiles={fileHandling.attachedFiles}

@@ -180,10 +180,32 @@ process.on('SIGTERM', gracefulShutdown);
 // Safety net: prevent server crash from unhandled errors.
 // These can occur when AI engine SDKs emit asynchronous errors that bypass
 // the normal try/catch flow (e.g., subprocess killed during initialization).
-process.on('unhandledRejection', (reason) => {
-	debug.error('server', 'Unhandled promise rejection (server still running):', reason);
+//
+// IMPORTANT: Use the Web API (globalThis.addEventListener) instead of Node's
+// process.on('unhandledRejection') because Bun only respects event.preventDefault()
+// from the Web API to suppress the default crash behavior.
+globalThis.addEventListener('unhandledrejection', (event: PromiseRejectionEvent) => {
+	// preventDefault() is the ONLY way to prevent Bun from exiting on unhandled rejections.
+	// process.on('unhandledRejection') alone does NOT prevent the crash in Bun 1.3.x.
+	event.preventDefault();
+
+	try {
+		const reason = event.reason;
+		const message = reason instanceof Error ? reason.message : String(reason);
+		if (message.includes('Operation aborted') || message.includes('aborted')) {
+			debug.warn('server', 'Suppressed expected SDK abort rejection:', message);
+			return;
+		}
+		debug.error('server', 'Unhandled promise rejection (server still running):', reason);
+	} catch {
+		console.error('Unhandled promise rejection (server still running)');
+	}
 });
 
 process.on('uncaughtException', (error) => {
-	debug.error('server', 'Uncaught exception (server still running):', error);
+	try {
+		debug.error('server', 'Uncaught exception (server still running):', error);
+	} catch {
+		console.error('Uncaught exception (server still running)');
+	}
 });

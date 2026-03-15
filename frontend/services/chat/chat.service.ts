@@ -196,7 +196,12 @@ class ChatService {
       this.streamCompleted = true;
       this.reconnected = false;
       this.activeProcessId = null;
-      this.setProcessState({ isLoading: false, isWaitingInput: false, isCancelling: false });
+      // Don't clear isCancelling here — it causes a race with presence.
+      // The chat:cancelled WS event arrives before broadcastPresence() updates,
+      // so clearing isCancelling lets the presence $effect re-enable isLoading
+      // (because hasActiveForSession is still true). The presence $effect will
+      // clear isCancelling once the stream is actually gone from presence.
+      this.setProcessState({ isLoading: false, isWaitingInput: false });
 
       // Mark any tool_use blocks that never got a tool_result
       this.markInterruptedTools();

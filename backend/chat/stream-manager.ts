@@ -1132,15 +1132,11 @@ class StreamManager extends EventEmitter {
 			}
 		}
 
-		// Abort the stream-manager's controller FIRST.
-		// This ensures processStream() sees the abort signal at its next check point
-		// and avoids starting a new engine query with an already-aborted controller.
-		streamState.abortController?.abort();
-
-		// Cancel the per-project engine — this is safe because each project
-		// has its own engine instance (via getProjectEngine), so cancel()
-		// only affects this project's active query/session, not other projects.
-		// Wrapped in try/catch to prevent SDK errors from crashing the server.
+		// Cancel the per-project engine FIRST — this sends an interrupt to the
+		// still-alive SDK subprocess, then aborts the controller. If we abort
+		// the controller first, the subprocess dies and the SDK's subsequent
+		// interrupt write fails with "Operation aborted" (unhandled rejection
+		// that crashes Bun).
 		const projectId = streamState.projectId || 'default';
 		try {
 			const engine = getProjectEngine(projectId, streamState.engine);
@@ -1149,6 +1145,13 @@ class StreamManager extends EventEmitter {
 			}
 		} catch (error) {
 			debug.error('chat', 'Error cancelling engine (non-fatal):', error);
+		}
+
+		// Abort the stream-manager's controller as a fallback.
+		// engine.cancel() already aborts the same controller, so this is
+		// typically a no-op but ensures cleanup if the engine wasn't active.
+		if (!streamState.abortController?.signal.aborted) {
+			streamState.abortController?.abort();
 		}
 
 		this.emitStreamEvent(streamState, 'cancelled', {

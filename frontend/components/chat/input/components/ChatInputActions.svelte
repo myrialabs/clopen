@@ -4,6 +4,7 @@
 
 	interface Props {
 		isLoading: boolean;
+		isCancelling: boolean;
 		hasActiveProject: boolean;
 		messageText: string;
 		attachedFiles: FileAttachment[];
@@ -16,6 +17,7 @@
 
 	const {
 		isLoading,
+		isCancelling,
 		hasActiveProject,
 		messageText,
 		attachedFiles,
@@ -64,6 +66,14 @@
 			aria-label="Cancel request"
 		>
 			<Icon name="lucide:circle-stop" class="text-white w-5 h-5" />
+		</button>
+	{:else if isCancelling}
+		<button
+			disabled
+			class="w-10 h-10 bg-red-500 opacity-70 rounded-xl flex items-center justify-center transition-all duration-200 cursor-not-allowed"
+			aria-label="Cancelling..."
+		>
+			<Icon name="lucide:loader-circle" class="text-white w-5 h-5 animate-spin" />
 		</button>
 	{:else}
 		<button
