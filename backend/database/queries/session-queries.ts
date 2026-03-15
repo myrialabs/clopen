@@ -66,6 +66,15 @@ export const sessionQueries = {
 		`).run(sdkSessionId, id);
 	},
 
+	clearLatestSdkSessionId(id: string): void {
+		const db = getDatabase();
+		db.prepare(`
+			UPDATE chat_sessions
+			SET latest_sdk_session_id = NULL
+			WHERE id = ?
+		`).run(id);
+	},
+
 	updateEngineModel(id: string, engine: string, model: string): void {
 		const db = getDatabase();
 		db.prepare(`

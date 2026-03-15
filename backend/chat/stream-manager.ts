@@ -41,6 +41,7 @@ export interface StreamState {
 	abortController?: AbortController;
 	streamPromise?: Promise<void>;
 	sdkSessionId?: string;
+	preStreamSdkSessionId?: string | null; // latest_sdk_session_id before this stream started
 	hasCompactBoundary?: boolean;
 	eventSeq: number; // Sequence number for deduplication
 }
@@ -132,7 +133,17 @@ class StreamManager extends EventEmitter {
 			const existingStream = this.activeStreams.get(existingStreamId);
 			if (existingStream && existingStream.status === 'active') {
 				if (existingStream.projectId === request.projectId) {
-					return existingStreamId;
+					if ((request.engine || 'claude-code') === 'claude-code') {
+						// Claude Code: cancel existing stream to prevent message loss from race condition.
+						// Claude Code SDK only returns session_id inside yielded messages, so a cancelled
+						// stream may never have established a valid session — safe to cancel and restart.
+						debug.log('chat', `Cancelling existing active stream ${existingStreamId} before starting new one`);
+						await this.cancelStream(existingStreamId);
+					} else {
+						// Other engines (OpenCode): return existing stream ID (original behavior).
+						// OpenCode creates sessions synchronously, so the existing stream is valid.
+						return existingStreamId;
+					}
 				}
 			}
 		}
@@ -302,6 +313,9 @@ class StreamManager extends EventEmitter {
 				}
 			}
 
+			// Store pre-stream session ID so cancelStream() can restore it
+			streamState.preStreamSdkSessionId = resumeSessionId ?? null;
+
 			// Prepare user message
 			const userMessage = {
 				...(prompt as SDKMessage),
@@ -378,10 +392,102 @@ class StreamManager extends EventEmitter {
 				return;
 			}
 
+			// Detect orphaned user messages and prepend context (claude-code only).
+			// When a stream is cancelled before the SDK returns a session_id,
+			// the user's message is saved to DB but unknown to the SDK session.
+			// We prepend those orphaned messages as context so the AI has full history.
+			let enginePrompt = prompt;
+			if (engineType === 'claude-code' && chatSessionId) {
+				try {
+					const head = sessionQueries.getHead(chatSessionId);
+					if (head) {
+						const chain = messageQueries.getPathToRoot(head);
+						// Remove the current user message (last in chain, just saved)
+						const previousChain = chain.slice(0, -1);
+
+						if (previousChain.length > 0) {
+							// Find boundary: last message with session_id matching resumeSessionId
+							let boundaryIndex = -1;
+
+							if (resumeSessionId) {
+								for (let i = previousChain.length - 1; i >= 0; i--) {
+									try {
+										const sdk = JSON.parse(previousChain[i].sdk_message);
+										if (sdk.session_id === resumeSessionId) {
+											boundaryIndex = i;
+											break;
+										}
+									} catch { /* skip unparseable */ }
+								}
+							}
+
+							// Collect orphaned user messages after boundary
+							const orphanedUserTexts: string[] = [];
+							for (let i = boundaryIndex + 1; i < previousChain.length; i++) {
+								try {
+									const sdk = JSON.parse(previousChain[i].sdk_message);
+									if (sdk.type === 'user') {
+										const content = sdk.message?.content;
+										let text = '';
+										if (typeof content === 'string') {
+											text = content;
+										} else if (Array.isArray(content)) {
+											text = content
+												.filter((block: any) => block.type === 'text')
+												.map((block: any) => block.text)
+												.join('\n');
+										}
+										if (text.trim()) {
+											orphanedUserTexts.push(text.trim());
+										}
+									}
+								} catch { /* skip unparseable */ }
+							}
+
+							// Prepend context if there are orphaned messages
+							if (orphanedUserTexts.length > 0) {
+								debug.log('chat', `Prepending ${orphanedUserTexts.length} orphaned user message(s) as context`);
+
+								const contextPrefix = [
+									'[Previous unprocessed messages from the user:]',
+									...orphanedUserTexts.map((text, i) => `${i + 1}. "${text}"`),
+									'',
+									'[Current message:]'
+								].join('\n');
+
+								const originalContent = prompt.message.content;
+								let modifiedContent: typeof originalContent;
+
+								if (typeof originalContent === 'string') {
+									modifiedContent = contextPrefix + '\n' + originalContent;
+								} else if (Array.isArray(originalContent)) {
+									modifiedContent = [
+										{ type: 'text' as const, text: contextPrefix },
+										...originalContent
+									];
+								} else {
+									modifiedContent = originalContent;
+								}
+
+								enginePrompt = {
+									...prompt,
+									message: {
+										...prompt.message,
+										content: modifiedContent
+									}
+								} as SDKUserMessage;
+							}
+						}
+					}
+				} catch (error) {
+					debug.error('chat', 'Failed to detect orphaned messages:', error);
+				}
+			}
+
 			// Stream messages through the engine adapter
 			for await (const message of engine.streamQuery({
 				projectPath: actualProjectPath,
-				prompt: prompt,
+				prompt: enginePrompt,
 				resume: resumeSessionId,
 				model: model || 'sonnet',
 				includePartialMessages: true,
@@ -1006,6 +1112,23 @@ class StreamManager extends EventEmitter {
 				debug.log('chat', 'Saved partial text on cancel:', savedMessage.id);
 			} catch (error) {
 				debug.error('chat', 'Failed to save partial text on cancel:', error);
+			}
+		}
+
+		// Claude Code only: restore latest_sdk_session_id to pre-stream value.
+		// Claude Code SDK only returns session_id inside yielded messages, so a cancelled
+		// stream's fork session_id is not a valid resume target. OpenCode creates sessions
+		// synchronously, so its session_id is always valid — no restoration needed.
+		if (streamState.engine === 'claude-code' && streamState.chatSessionId && streamState.preStreamSdkSessionId !== undefined) {
+			try {
+				if (streamState.preStreamSdkSessionId) {
+					sessionQueries.updateLatestSdkSessionId(streamState.chatSessionId, streamState.preStreamSdkSessionId);
+				} else {
+					sessionQueries.clearLatestSdkSessionId(streamState.chatSessionId);
+				}
+				debug.log('chat', `Restored latest_sdk_session_id to: ${streamState.preStreamSdkSessionId || 'null'}`);
+			} catch (error) {
+				debug.error('chat', 'Failed to restore latest_sdk_session_id:', error);
 			}
 		}
 
