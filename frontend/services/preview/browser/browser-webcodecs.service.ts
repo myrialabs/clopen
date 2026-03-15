@@ -757,33 +757,28 @@ export class BrowserWebCodecsService {
 	}
 
 	/**
-	 * Play audio frame with proper AV synchronization
+	 * Play audio frame using simple back-to-back scheduling.
 	 *
-	 * The key insight: Audio and video timestamps from the server use the same
-	 * performance.now() origin. However, audio may start LATER than video if the
-	 * page has no audio initially (silence is skipped).
-	 *
-	 * Solution: Use lastVideoTimestamp (currently rendered video) as the reference
-	 * point, not the first video frame timestamp. This ensures we synchronize
-	 * audio to the CURRENT video position, not the initial position.
+	 * Frames are scheduled immediately one after another. When a gap occurs
+	 * (e.g. silence was skipped server-side and audio resumes), the schedule
+	 * is reset with a 50ms lookahead so playback starts cleanly without
+	 * audible pops or stutters from scheduling in the past.
 	 */
 	private playAudioFrame(audioData: AudioData): void {
 		if (!this.audioContext) return;
 
-		// Safety net: resume AudioContext if it somehow got suspended
+		// Safety net: resume AudioContext if suspended
 		if (this.audioContext.state === 'suspended') {
 			this.audioContext.resume().catch(() => {});
 		}
 
 		try {
-			// Create AudioBuffer
 			const buffer = this.audioContext.createBuffer(
 				audioData.numberOfChannels,
 				audioData.numberOfFrames,
 				audioData.sampleRate
 			);
 
-			// Copy audio data to buffer
 			for (let channel = 0; channel < audioData.numberOfChannels; channel++) {
 				const options = {
 					planeIndex: channel,
@@ -791,134 +786,27 @@ export class BrowserWebCodecsService {
 					frameCount: audioData.numberOfFrames,
 					format: 'f32-planar' as AudioSampleFormat
 				};
-
-				const requiredSize = audioData.allocationSize(options);
-				const tempBuffer = new ArrayBuffer(requiredSize);
-				const tempFloat32 = new Float32Array(tempBuffer);
+				// allocationSize() returns bytes — wrap in ArrayBuffer so Float32Array length is correct
+				const tempFloat32 = new Float32Array(new ArrayBuffer(audioData.allocationSize(options)));
 				audioData.copyTo(tempFloat32, options);
-
-				const channelData = buffer.getChannelData(channel);
-				channelData.set(tempFloat32);
+				buffer.getChannelData(channel).set(tempFloat32);
 			}
 
 			const currentTime = this.audioContext.currentTime;
-			const audioTimestamp = audioData.timestamp; // microseconds
-			const bufferDuration = buffer.duration;
-			const now = performance.now();
 
-			// Wait for video to establish sync before playing audio
-			if (!this.syncEstablished || this.lastVideoTimestamp === 0) {
-				// No video yet - skip this audio frame to prevent desync
-				return;
+			// When the scheduler has fallen behind (gap due to silence or decode delay),
+			// reset with a 50ms lookahead so the next chunk starts cleanly.
+			if (this.nextAudioPlayTime < currentTime) {
+				this.nextAudioPlayTime = currentTime + 0.05;
 			}
 
-			// Phase 1: Calibration - collect samples to determine stable offset
-			if (this.audioCalibrationSamples < this.CALIBRATION_SAMPLES) {
-				// Calculate the offset between audio timestamp and video timeline
-				// audioVideoOffset > 0 means audio is AHEAD of video in stream time
-				// audioVideoOffset < 0 means audio is BEHIND video in stream time
-				const audioVideoOffset = (audioTimestamp - this.lastVideoTimestamp) / 1000000; // seconds
-
-				// Also account for the time elapsed since video was rendered
-				const timeSinceVideoRender = (now - this.lastVideoRealTime) / 1000; // seconds
-
-				// Expected audio position relative to current video position
-				// If audio and video are in sync, audio should play at:
-				// currentTime + audioVideoOffset - timeSinceVideoRender
-				const expectedOffset = audioVideoOffset - timeSinceVideoRender;
-
-				this.audioOffsetAccumulator += expectedOffset;
-				this.audioCalibrationSamples++;
-
-				if (this.audioCalibrationSamples === this.CALIBRATION_SAMPLES) {
-					// Calibration complete - calculate average offset
-					this.calibratedAudioOffset = this.audioOffsetAccumulator / this.CALIBRATION_SAMPLES;
-
-					// Clamp the offset to reasonable bounds (-500ms to +500ms)
-					// Beyond this, something is wrong and we should just play immediately
-					if (this.calibratedAudioOffset < -0.5) {
-						debug.warn('webcodecs', `Audio calibration: offset ${(this.calibratedAudioOffset * 1000).toFixed(0)}ms too negative, clamping to -500ms`);
-						this.calibratedAudioOffset = -0.5;
-					} else if (this.calibratedAudioOffset > 0.5) {
-						debug.warn('webcodecs', `Audio calibration: offset ${(this.calibratedAudioOffset * 1000).toFixed(0)}ms too positive, clamping to +500ms`);
-						this.calibratedAudioOffset = 0.5;
-					}
-
-					// Initialize nextAudioPlayTime based on calibrated offset
-					// Add small buffer (30ms) for smooth playback
-					this.nextAudioPlayTime = currentTime + Math.max(0.03, this.calibratedAudioOffset + 0.03);
-					this.audioSyncInitialized = true;
-
-					debug.log('webcodecs', `Audio calibration complete: offset=${(this.calibratedAudioOffset * 1000).toFixed(1)}ms, startTime=${(this.nextAudioPlayTime - currentTime).toFixed(3)}s from now`);
-				} else {
-					// Still calibrating - skip this audio frame
-					return;
-				}
-			}
-
-			// Phase 2: Synchronized playback with drift correction
-			let targetPlayTime = this.nextAudioPlayTime;
-
-			// If we've fallen too far behind (buffer underrun), reset
-			if (targetPlayTime < currentTime - 0.01) {
-				// We're behind by more than 10ms, need to catch up
-				targetPlayTime = currentTime + 0.02; // Small buffer to recover
-				debug.warn('webcodecs', 'Audio buffer underrun, resetting playback');
-			}
-
-			// Periodic drift check (every ~500ms worth of audio, ~25 frames)
-			if (this.stats.audioFramesDecoded % 25 === 0) {
-				// Recalculate where audio SHOULD be based on current video position
-				const audioVideoOffset = (audioTimestamp - this.lastVideoTimestamp) / 1000000;
-				const timeSinceVideoRender = (now - this.lastVideoRealTime) / 1000;
-				const expectedOffset = audioVideoOffset - timeSinceVideoRender;
-
-				// Where audio should play relative to currentTime
-				const idealTime = currentTime + expectedOffset + 0.03; // +30ms buffer
-
-				const drift = targetPlayTime - idealTime;
-
-				// Apply correction based on drift magnitude
-				if (Math.abs(drift) > 0.2) {
-					// Large drift (>200ms) - aggressive correction (80%)
-					targetPlayTime -= drift * 0.8;
-					debug.warn('webcodecs', `Large audio drift: ${(drift * 1000).toFixed(0)}ms, aggressive correction`);
-				} else if (Math.abs(drift) > 0.05) {
-					// Medium drift (50-200ms) - moderate correction (40%)
-					targetPlayTime -= drift * 0.4;
-				}
-				// Small drift (<50ms) - no correction, continuous playback handles it
-			}
-
-			// Ensure we don't schedule in the past
-			if (targetPlayTime < currentTime + 0.005) {
-				targetPlayTime = currentTime + 0.005;
-			}
-
-			// Schedule this buffer
 			const source = this.audioContext.createBufferSource();
 			source.buffer = buffer;
 			source.connect(this.audioContext.destination);
-			source.start(targetPlayTime);
+			source.start(this.nextAudioPlayTime);
 
-			// Track scheduled buffer
-			this.audioBufferQueue.push({ buffer, scheduledTime: targetPlayTime });
-
-			// Update next play time for continuous scheduling (back-to-back)
-			this.nextAudioPlayTime = targetPlayTime + bufferDuration;
-
-			// Limit queue size to prevent memory buildup
-			if (this.audioBufferQueue.length > this.maxAudioQueueSize) {
-				this.audioBufferQueue.shift();
-			}
-
-			// Cleanup old scheduled buffers
-			source.onended = () => {
-				const index = this.audioBufferQueue.findIndex(item => item.buffer === buffer);
-				if (index !== -1) {
-					this.audioBufferQueue.splice(index, 1);
-				}
-			};
+			// Back-to-back: next chunk plays immediately after this one ends
+			this.nextAudioPlayTime += buffer.duration;
 		} catch (error) {
 			debug.warn('webcodecs', 'Audio playback error:', error);
 		}

@@ -148,6 +148,12 @@ export function audioCaptureScript(config: StreamingConfig['audio']) {
 		if (interceptedContexts.has(ctx)) return;
 		interceptedContexts.add(ctx);
 
+		// Resume AudioContext immediately — in headless Chrome without a user gesture,
+		// AudioContext starts in 'suspended' state and onaudioprocess never fires.
+		if (ctx.state === 'suspended') {
+			ctx.resume().catch(() => {});
+		}
+
 		// Store original destination
 		const originalDestination = ctx.destination;
 
@@ -212,6 +218,11 @@ export function audioCaptureScript(config: StreamingConfig['audio']) {
 			// We need an AudioContext to capture from media element
 			const OriginalAudioContext = (window as any).__OriginalAudioContext || window.AudioContext;
 			const ctx = new OriginalAudioContext();
+
+			// Resume context immediately — headless Chrome requires explicit resume
+			if (ctx.state === 'suspended') {
+				ctx.resume().catch(() => {});
+			}
 
 			// Create media element source
 			const source = ctx.createMediaElementSource(element);

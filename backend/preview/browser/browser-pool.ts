@@ -49,7 +49,9 @@ const DEFAULT_CONFIG: PoolConfig = {
 const CHROMIUM_ARGS = [
 	'--no-sandbox',
 	'--disable-blink-features=AutomationControlled',
-	'--window-size=1366,768'
+	'--window-size=1366,768',
+	'--autoplay-policy=no-user-gesture-required',
+	'--disable-features=AudioServiceOutOfProcess'
 ];
 
 class BrowserPool {
