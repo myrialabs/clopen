@@ -25,6 +25,13 @@ import * as migration023 from './023_create_user_unread_sessions_table';
 import * as migration024 from './024_create_users_table';
 import * as migration025 from './025_create_auth_sessions_table';
 import * as migration026 from './026_create_invite_tokens_table';
+import * as migration027 from './027_query_history';
+import * as migration028 from './028_db_manager_rbac';
+import * as migration029 from './029_db_backup';
+import * as migration030 from './030_sql_snippets';
+import * as migration031 from './031_sql_rest_api';
+import * as migration032 from './032_audit_trail_snapshots';
+import * as migration033 from './033_schema_versioning';
 
 // Export all migrations in order
 export const migrations = [
@@ -183,6 +190,48 @@ export const migrations = [
 		description: migration026.description,
 		up: migration026.up,
 		down: migration026.down
+	},
+	{
+		id: '027',
+		description: migration027.description,
+		up: migration027.up,
+		down: migration027.down
+	},
+	{
+		id: '028',
+		description: migration028.description,
+		up: migration028.up,
+		down: migration028.down
+	},
+	{
+		id: '029',
+		description: migration029.description,
+		up: migration029.up,
+		down: migration029.down
+	},
+	{
+		id: '030',
+		description: migration030.description,
+		up: migration030.up,
+		down: migration030.down
+	},
+	{
+		id: '031',
+		description: migration031.description,
+		up: migration031.up,
+		down: migration031.down
+	},
+	{
+		id: '032',
+		description: migration032.description,
+		up: migration032.up,
+		down: migration032.down
+	},
+	{
+		id: '033',
+		description: migration033.description,
+		up: migration033.up,
+		down: migration033.down
 	}
 ];
 

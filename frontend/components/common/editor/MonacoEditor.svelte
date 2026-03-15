@@ -395,10 +395,16 @@
 		}
 	});
 
-	// Update value when it changes externally
+	// Update value when it changes externally.
+	// NOTE: read `value` unconditionally first so Svelte tracks it as a reactive
+	// dependency even when `monacoEditor` is not yet initialised (falsy). Without
+	// this, the short-circuit `&&` would prevent `value` from being read on the
+	// first effect run, causing the effect to never re-run when the value changes
+	// (e.g. switching database tabs).
 	$effect(() => {
-		if (monacoEditor && monacoEditor.getValue() !== value) {
-			monacoEditor.setValue(value);
+		const current = value;
+		if (monacoEditor && monacoEditor.getValue() !== current) {
+			monacoEditor.setValue(current);
 		}
 	});
 

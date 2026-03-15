@@ -28,6 +28,7 @@ import { systemRouter } from './system';
 import { tunnelRouter } from './tunnel';
 import { gitRouter } from './git';
 import { engineRouter } from './engine';
+import { databaseRouter } from './database';
 
 // ============================================
 // Main App Router - Merge All Module Routers
@@ -63,7 +64,10 @@ export const wsRouter = createRouter()
 	.merge(gitRouter)
 
 	// AI Engine Management
-	.merge(engineRouter);
+	.merge(engineRouter)
+
+	// Database Manager
+	.merge(databaseRouter);
 
 // Export API type for frontend type-safe access
 export type WSAPI = typeof wsRouter['$api'];

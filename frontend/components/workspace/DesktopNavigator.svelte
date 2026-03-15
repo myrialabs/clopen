@@ -16,6 +16,7 @@
 	import ViewMenu from '$frontend/components/workspace/ViewMenu.svelte';
 	import TunnelButton from '$frontend/components/tunnel/TunnelButton.svelte';
 	import TunnelModal from '$frontend/components/tunnel/TunnelModal.svelte';
+	import DatabaseModal from '$frontend/components/database/DatabaseModal.svelte';
 	import ProjectUserAvatars from '$frontend/components/common/display/ProjectUserAvatars.svelte';
 	import ws from '$frontend/utils/ws';
 
@@ -29,6 +30,7 @@
 	let hoveredProject = $state<Project | null>(null);
 	let tooltipY = $state(0);
 	let tooltipX = $state(0);
+	let showDatabaseModal = $state(false);
 
 	// Derived
 	const isCollapsed = $derived(workspaceState.navigatorCollapsed);
@@ -297,6 +299,15 @@
 				<button
 					type="button"
 					class="flex items-center gap-2.5 w-full py-2.5 px-3 bg-transparent border-none rounded-lg text-slate-500 text-sm cursor-pointer transition-all duration-150 hover:bg-violet-500/10 hover:text-slate-900 dark:hover:text-slate-100"
+					onclick={() => (showDatabaseModal = true)}
+				>
+					<Icon name="lucide:database" class="w-4 h-4" />
+					<span>Database</span>
+				</button>
+
+				<button
+					type="button"
+					class="flex items-center gap-2.5 w-full py-2.5 px-3 bg-transparent border-none rounded-lg text-slate-500 text-sm cursor-pointer transition-all duration-150 hover:bg-violet-500/10 hover:text-slate-900 dark:hover:text-slate-100"
 					onclick={() => openSettingsModal()}
 				>
 					<Icon name="lucide:settings" class="w-4 h-4" />
@@ -354,6 +365,15 @@
 				<button
 					type="button"
 					class="flex items-center justify-center w-9 h-9 bg-transparent border-none rounded-lg text-slate-500 cursor-pointer transition-all duration-150 relative hover:bg-violet-500/10 hover:text-slate-900 dark:hover:text-slate-100"
+					onclick={() => (showDatabaseModal = true)}
+					title="Database Manager"
+				>
+					<Icon name="lucide:database" class="w-5 h-5" />
+				</button>
+
+				<button
+					type="button"
+					class="flex items-center justify-center w-9 h-9 bg-transparent border-none rounded-lg text-slate-500 cursor-pointer transition-all duration-150 relative hover:bg-violet-500/10 hover:text-slate-900 dark:hover:text-slate-100"
 					onclick={() => openSettingsModal()}
 					title="Settings"
 				>
@@ -396,3 +416,6 @@
 
 <!-- Tunnel Modal -->
 <TunnelModal bind:isOpen={showTunnelModal} onClose={() => (showTunnelModal = false)} />
+
+<!-- Database Manager Modal -->
+<DatabaseModal bind:isOpen={showDatabaseModal} onClose={() => (showDatabaseModal = false)} />

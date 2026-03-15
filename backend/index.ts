@@ -27,6 +27,20 @@ import { statSync } from 'node:fs';
 // Import WebSocket router
 import { wsRouter } from './ws';
 
+// Backup scheduler
+import { startBackupScheduler, stopBackupScheduler } from './db-manager/backup';
+
+// SQL-to-REST API Generator
+import {
+	executeEndpointQuery,
+	checkRateLimit,
+	getRateLimitReset,
+	generateOpenApiSpec,
+	generateSwaggerHtml,
+	hashApiKey
+} from './db-manager/sql-rest-api';
+import { sqlRestApiQueries } from './database/queries';
+
 // MCP remote server for Open Code custom tools
 import { handleMcpRequest, closeMcpServer } from './mcp/remote-server';
 
@@ -80,6 +94,161 @@ const app = new Elysia()
 	// Handles GET (SSE stream), POST (JSON-RPC), DELETE (session close)
 	.all('/mcp', async ({ request }) => handleMcpRequest(request))
 
+	// ── SQL-to-REST API Generator ────────────────────────────────────────────
+
+	// OpenAPI spec JSON — use relative base URL so Swagger UI resolves against its own origin
+	.get('/sql-api/spec', () => {
+		const endpoints = sqlRestApiQueries.listEndpoints().filter((e) => e.enabled);
+		const spec = generateOpenApiSpec(endpoints, '/');
+		return new Response(JSON.stringify(spec, null, 2), {
+			headers: {
+				'Content-Type': 'application/json',
+				'Access-Control-Allow-Origin': '*'
+			}
+		});
+	})
+
+	// Swagger UI HTML — use relative URL so the spec is fetched same-origin as the browser
+	.get('/sql-api/docs', () => {
+		const html = generateSwaggerHtml('/sql-api/spec');
+		return new Response(html, { headers: { 'Content-Type': 'text/html; charset=utf-8' } });
+	})
+
+	// Execute a SQL API endpoint by slug
+	.get('/sql-api/:slug', async ({ params, query, request }) => {
+		const { slug } = params;
+		const ip = request.headers.get('x-forwarded-for')?.split(',')[0]?.trim()
+			?? request.headers.get('cf-connecting-ip')
+			?? 'unknown';
+
+		const endpoint = sqlRestApiQueries.getEndpointBySlug(slug);
+		if (!endpoint) {
+			return new Response(JSON.stringify({ error: 'Endpoint not found', code: 'ENDPOINT_NOT_FOUND' }), {
+				status: 404, headers: { 'Content-Type': 'application/json' }
+			});
+		}
+
+		if (!endpoint.enabled) {
+			return new Response(JSON.stringify({ error: 'Endpoint is disabled', code: 'ENDPOINT_DISABLED' }), {
+				status: 503, headers: { 'Content-Type': 'application/json' }
+			});
+		}
+
+		// API key authentication for private endpoints
+		let apiKeyId: string | null = null;
+		if (!endpoint.isPublic) {
+			const rawKey = request.headers.get('x-api-key') ?? (query as Record<string, string>)['api_key'];
+			if (!rawKey) {
+				return new Response(JSON.stringify({ error: 'API key required', code: 'UNAUTHORIZED' }), {
+					status: 401, headers: { 'Content-Type': 'application/json', 'WWW-Authenticate': 'ApiKey' }
+				});
+			}
+			const keyHash = await hashApiKey(rawKey);
+			const apiKey = sqlRestApiQueries.getKeyByHash(keyHash);
+			if (!apiKey || !apiKey.enabled) {
+				return new Response(JSON.stringify({ error: 'Invalid or disabled API key', code: 'UNAUTHORIZED' }), {
+					status: 401, headers: { 'Content-Type': 'application/json' }
+				});
+			}
+			if (apiKey.expiresAt && new Date(apiKey.expiresAt) < new Date()) {
+				return new Response(JSON.stringify({ error: 'API key has expired', code: 'UNAUTHORIZED' }), {
+					status: 401, headers: { 'Content-Type': 'application/json' }
+				});
+			}
+			if (apiKey.endpointId !== '*' && apiKey.endpointId !== endpoint.id) {
+				return new Response(JSON.stringify({ error: 'API key not authorized for this endpoint', code: 'UNAUTHORIZED' }), {
+					status: 401, headers: { 'Content-Type': 'application/json' }
+				});
+			}
+			apiKeyId = apiKey.id;
+			// Update last_used_at asynchronously (best-effort)
+			try { sqlRestApiQueries.touchKeyLastUsed(apiKey.id); } catch { /* ignore */ }
+		}
+
+		// Rate limiting
+		const clientId = apiKeyId ?? ip;
+		const allowed = checkRateLimit(endpoint.id, clientId, endpoint.rateLimitRequests, endpoint.rateLimitWindowSecs);
+		if (!allowed) {
+			const retryAfter = getRateLimitReset(endpoint.id, clientId, endpoint.rateLimitWindowSecs);
+			const logId = `${Date.now()}-${Math.random().toString(36).slice(2)}`;
+			try {
+				sqlRestApiQueries.addRequestLog({
+					id: logId,
+					endpointId: endpoint.id,
+					endpointSlug: endpoint.slug,
+					apiKeyId,
+					ipAddress: ip,
+					params: query as Record<string, string>,
+					statusCode: 429,
+					rowCount: null,
+					executionTimeMs: null,
+					error: 'Rate limit exceeded'
+				});
+			} catch { /* ignore */ }
+			return new Response(JSON.stringify({ error: 'Rate limit exceeded', code: 'RATE_LIMITED' }), {
+				status: 429,
+				headers: {
+					'Content-Type': 'application/json',
+					'Retry-After': String(retryAfter),
+					'X-RateLimit-Limit': String(endpoint.rateLimitRequests),
+					'X-RateLimit-Window': String(endpoint.rateLimitWindowSecs)
+				}
+			});
+		}
+
+		// Execute query
+		const queryParams = { ...(query as Record<string, string>) };
+		delete queryParams['api_key']; // strip auth param before passing to SQL engine
+		const { result, error: execError } = await executeEndpointQuery(endpoint, queryParams);
+
+		const logId = `${Date.now()}-${Math.random().toString(36).slice(2)}`;
+		if (execError) {
+			try {
+				sqlRestApiQueries.addRequestLog({
+					id: logId,
+					endpointId: endpoint.id,
+					endpointSlug: endpoint.slug,
+					apiKeyId,
+					ipAddress: ip,
+					params: queryParams,
+					statusCode: execError.code === 'PARAM_ERROR' ? 400 : 500,
+					rowCount: null,
+					executionTimeMs: null,
+					error: execError.error
+				});
+			} catch { /* ignore */ }
+			const status = execError.code === 'PARAM_ERROR' || execError.code === 'SELECT_ONLY' ? 400 : 500;
+			return new Response(JSON.stringify(execError), {
+				status, headers: { 'Content-Type': 'application/json' }
+			});
+		}
+
+		try {
+			sqlRestApiQueries.addRequestLog({
+				id: logId,
+				endpointId: endpoint.id,
+				endpointSlug: endpoint.slug,
+				apiKeyId,
+				ipAddress: ip,
+				params: queryParams,
+				statusCode: 200,
+				rowCount: result!.rowCount,
+				executionTimeMs: result!.executionTimeMs,
+				error: null
+			});
+		} catch { /* ignore */ }
+
+		return new Response(JSON.stringify(result), {
+			status: 200,
+			headers: {
+				'Content-Type': 'application/json',
+				'X-Execution-Time': String(result!.executionTimeMs),
+				'X-Row-Count': String(result!.rowCount),
+				'X-Cached': result!.cached ? 'true' : 'false'
+			}
+		});
+	})
+
 	// Mount WebSocket router (all functionality now via WebSocket)
 	.use(wsRouter.asPlugin('/ws'));
 
@@ -131,6 +300,9 @@ async function startServer() {
 		debug.warn('database', '⚠️ Database initialization failed:', error);
 	}
 
+	// Start the automated backup scheduler
+	startBackupScheduler();
+
 	// Start listening after database is ready
 	app.listen({
 		port: PORT,
@@ -159,6 +331,8 @@ startServer().catch((error) => {
 async function gracefulShutdown() {
 	console.log('\n🛑 Shutting down server...');
 	try {
+		// Stop backup scheduler
+		stopBackupScheduler();
 		// Close MCP remote server (before engines, as they may still reference it)
 		await closeMcpServer();
 		// Dispose all AI engines

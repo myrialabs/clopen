@@ -18,6 +18,10 @@ export default defineConfig({
 				target: `http://localhost:${backendPort}`,
 				changeOrigin: true,
 			},
+			'/sql-api': {
+				target: `http://localhost:${backendPort}`,
+				changeOrigin: true,
+			},
 			'/ws': {
 				target: `ws://localhost:${backendPort}`,
 				ws: true,

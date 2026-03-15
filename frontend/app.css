@@ -70,7 +70,16 @@
 		transition: all 200ms cubic-bezier(0.4, 0, 0.2, 1);
 	}
 
-	/* Disable transitions during theme switching for performance */
+	/* Smooth theme transitions — applied only during the ~300ms switch window.
+	   Scoped to color/fill/stroke properties only, so layout and transforms
+	   are unaffected. Excludes animated elements and canvas to prevent glitches. */
+	.theme-transitioning *:not([class*="animate-"]):not(canvas):not(svg *) {
+		transition-property: background-color, color, border-color, fill, stroke, box-shadow !important;
+		transition-duration: 300ms !important;
+		transition-timing-function: cubic-bezier(0.4, 0, 0.2, 1) !important;
+	}
+
+	/* Legacy: keep no-transitions for any code that still references it */
 	.no-transitions,
 	.no-transitions *,
 	.no-transitions *::before,

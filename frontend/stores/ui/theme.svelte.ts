@@ -43,46 +43,40 @@ export const themes: Theme[] = [
 	}
 ];
 
-// Theme functions using Tailwind CSS v4 approach with optimized transitions
+// Theme functions using Tailwind CSS v4 approach with smooth color transitions
 export function setTheme(theme: Theme) {
 	themeStore.current = theme;
 	themeStore.isDark = theme.mode === 'dark';
 
-	// Apply theme to document using Tailwind v4 class-based dark mode
 	if (typeof window !== 'undefined') {
 		const htmlElement = document.documentElement;
-		
-		// Disable transitions during theme switch for performance
-		htmlElement.classList.add('no-transitions');
-		
-		// Force a reflow to ensure the no-transitions class is applied
-		htmlElement.offsetHeight;
-		
-		// Tailwind v4 class-based approach: only add 'dark' class when in dark mode
-		// Light mode is the default state (no class needed)
+
+		// Activate the transition layer — color changes animate smoothly
+		htmlElement.classList.add('theme-transitioning');
+
+		// Apply dark/light class (Tailwind v4 class-based dark mode)
 		if (theme.mode === 'dark') {
 			htmlElement.classList.add('dark');
 		} else {
 			htmlElement.classList.remove('dark');
 		}
-		
-		// Set CSS custom properties for dynamic accent colors
+
+		// CSS custom properties for dynamic accent colors
 		htmlElement.style.setProperty('--color-primary', theme.primary);
 		htmlElement.style.setProperty('--color-secondary', theme.secondary);
-		
-		// Set color scheme for browser integration (important for form controls, scrollbars, etc.)
+
+		// Browser chrome: scrollbars, form controls, input caret
 		htmlElement.style.colorScheme = theme.mode === 'dark' ? 'dark' : 'light';
-		
-		// Update meta theme-color for mobile browsers  
+
+		// Mobile browser toolbar color
 		updateThemeColor(theme.mode);
-		
-		// Re-enable transitions after a short delay to allow theme to settle
+
+		// Remove the transition class once the animation completes (matches CSS duration)
 		setTimeout(() => {
-			htmlElement.classList.remove('no-transitions');
-		}, 50);
+			htmlElement.classList.remove('theme-transitioning');
+		}, 350);
 	}
 
-	// Save to localStorage
 	localStorage.setItem('claude-theme', JSON.stringify(theme));
 }
 
