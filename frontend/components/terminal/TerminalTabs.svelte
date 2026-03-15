@@ -37,7 +37,7 @@
 		{@const isActive = session.isActive}
 		<button
 			type="button"
-			class="group relative flex items-center justify-center gap-1 px-2 py-2 text-xs font-medium transition-colors min-w-0 max-w-xs cursor-pointer
+			class="group relative flex items-center justify-center gap-1 pr-2 pl-3 py-2 text-xs font-medium transition-colors min-w-0 max-w-xs cursor-pointer
 				{isActive
 					? 'text-violet-600 dark:text-violet-400'
 					: 'text-slate-500 dark:text-slate-400 hover:text-slate-700 dark:hover:text-slate-300'}"
@@ -45,7 +45,6 @@
 			role="tab"
 			tabindex="0"
 		>
-			<Icon name="lucide:terminal" class="w-3 h-3 flex-shrink-0" />
 			<span class="truncate max-w-28">{session.name}</span>
 			<!-- Close button -->
 			<span

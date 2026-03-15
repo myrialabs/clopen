@@ -222,7 +222,7 @@
 				{@const isActive = tab.id === activeTabId}
 				<button
 					type="button"
-					class="group relative flex items-center justify-center gap-1 px-2 py-2 text-xs font-medium transition-colors min-w-0 max-w-xs cursor-pointer
+					class="group relative flex items-center justify-center gap-1 pr-2 pl-3 py-2 text-xs font-medium transition-colors min-w-0 max-w-xs cursor-pointer
 						{isActive
 							? 'text-violet-600 dark:text-violet-400'
 							: 'text-slate-500 dark:text-slate-400 hover:text-slate-700 dark:hover:text-slate-300'}"
@@ -230,13 +230,6 @@
 					role="tab"
 					tabindex="0"
 				>
-					{#if tab.id === mcpControlledTabId}
-						<Icon name="lucide:bot" class="w-3 h-3 flex-shrink-0 text-amber-500" />
-					{:else if tab.isLoading}
-						<Icon name="lucide:loader-circle" class="w-3 h-3 animate-spin flex-shrink-0" />
-					{:else}
-						<Icon name="lucide:globe" class="w-3 h-3 flex-shrink-0" />
-					{/if}
 					<span class="truncate max-w-28" title={tab.url}>
 						{tab.title || 'New Tab'}
 					</span>
