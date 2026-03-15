@@ -35,11 +35,24 @@ export interface TimelineResponse {
 }
 
 /**
- * Check if a user message is an internal tool confirmation message
- * Internal messages contain tool_result blocks, not regular text input
+ * Check if a user message is an internal/non-genuine user message.
+ *
+ * The SDK uses `type: 'user'` for several kinds of messages that are NOT
+ * typed by the real human user:
+ *   1. Tool-result confirmations — content contains `tool_result` blocks
+ *   2. Sub-agent / Task prompts — `parent_tool_use_id` is non-null
+ *   3. Post-compaction synthetic summaries — `isSynthetic` is true
+ *
+ * Only messages that pass none of these checks are genuine user input.
  */
 export function isInternalToolMessage(sdkMessage: any): boolean {
 	if (sdkMessage.type !== 'user') return false;
+
+	// Sub-agent or tool-result message (parent_tool_use_id is set)
+	if (sdkMessage.parent_tool_use_id != null) return true;
+
+	// Synthetic message generated after context compaction
+	if (sdkMessage.isSynthetic === true) return true;
 
 	const content = sdkMessage.message?.content;
 	if (!content) return false;
