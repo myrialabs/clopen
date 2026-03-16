@@ -52,7 +52,7 @@
 
 	// Auto-scroll reasoning/system content to bottom while receiving partial text
 	$effect(() => {
-		if (roleCategory !== 'reasoning' && roleCategory !== 'system') return;
+		if (roleCategory !== 'reasoning' && roleCategory !== 'system' && roleCategory !== 'compact') return;
 		if (!scrollContainer) return;
 		// Track message content changes (partialText for streaming, message for final)
 		const _track = message.type === 'stream_event' && 'partialText' in message
@@ -93,7 +93,7 @@
 		<!-- Message Content -->
 		<div
 			bind:this={scrollContainer}
-			class="p-3 md:p-4 {roleCategory === 'reasoning' || roleCategory === 'system' ? 'max-h-80 overflow-y-auto' : ''}"
+			class="p-3 md:p-4 {roleCategory === 'reasoning' || roleCategory === 'system' || roleCategory === 'compact' ? 'max-h-80 overflow-y-auto' : ''}"
 		>
 			<div class="max-w-none space-y-4">
 				<!-- Content rendering using MessageFormatter component -->
