@@ -10,7 +10,6 @@ import { debug } from '$shared/utils/logger';
 import type { FileAttachment } from './use-file-handling.svelte';
 
 interface ChatActionsParams {
-	messageText: string;
 	attachedFiles: FileAttachment[];
 	clearAllAttachments: () => void;
 	adjustTextareaHeight: () => void;
@@ -27,7 +26,6 @@ export function useChatActions(params: ChatActionsParams) {
 	function handleCancelEdit() {
 		cancelEdit();
 		clearInput();
-		params.messageText = ''; // This won't work directly, need to pass setter
 		params.clearAllAttachments();
 		params.adjustTextareaHeight();
 	}
@@ -51,6 +49,12 @@ export function useChatActions(params: ChatActionsParams) {
 					const restoreTargetId = editModeState.parentMessageId || '__initial__';
 					await snapshotService.restore(restoreTargetId, sessionState.currentSession.id);
 				}
+
+				// Set skip and clear draft BEFORE reloading messages — editing the first message
+				// causes messages to become empty (welcome state), which remounts ChatInput.
+				// Without this, the new instance restores stale server state into the input.
+				setSkipNextRestore(true);
+				params.clearDraft();
 
 				// Reload messages from database to update UI
 				if (sessionState.currentSession?.id) {

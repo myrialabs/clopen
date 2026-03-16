@@ -66,9 +66,6 @@
 
 	// Chat actions params
 	const chatActionsParams = {
-		get messageText() {
-			return messageText;
-		},
 		get attachedFiles() {
 			return fileHandling.attachedFiles;
 		},
