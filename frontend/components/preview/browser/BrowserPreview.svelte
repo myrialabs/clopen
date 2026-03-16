@@ -473,7 +473,7 @@
 			bind:isConsoleOpen
 			{tabs}
 			{activeTabId}
-			mcpControlledTabId={mcpHandler.mcpControlState.controlledTabId}
+			mcpControlledTabIds={mcpHandler.getControlledTabIds()}
 			onGoClick={handleGoClick}
 			onRefresh={refreshPreview}
 			onOpenInExternalBrowser={() => {}}

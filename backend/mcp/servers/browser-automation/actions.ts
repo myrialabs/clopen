@@ -4,7 +4,6 @@
 
 import { browserPreviewServiceManager, type BrowserPreviewService } from "$backend/preview";
 import type { BrowserAutonomousAction } from "$backend/preview/browser/types";
-import { browserMcpControl } from "$backend/preview";
 import { projectContextService } from "$backend/mcp/project-context";
 import { getActiveTabSession } from "./browser";
 import { debug } from "$shared/utils/logger";
@@ -116,7 +115,6 @@ export async function actionsHandler(args: {
 		// Note: Cursor events are emitted by performAutonomousActions internally
 		// with proper delays between each action. No need to emit here.
 		const results = await previewService.performAutonomousActions(sessionId, processedActions);
-		browserMcpControl.updateLastAction();
 
 		// Format response with extracted data if any
 		const extractedData = results?.filter((r: any) => r.action === 'extract_data') || [];

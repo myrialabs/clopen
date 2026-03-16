@@ -733,8 +733,8 @@ class BrowserPreviewServiceManager {
 		browserMcpControl.on('control-start', (data) => {
 			debug.log('preview', `🚀 Forwarding mcp-control-start to project ${projectId}:`, data);
 			ws.emit.project(projectId, 'preview:browser-mcp-control-start', {
-				browserSessionId: data.browserTabId,
-				mcpSessionId: data.mcpSessionId,
+				browserTabId: data.browserTabId,
+				chatSessionId: data.chatSessionId,
 				timestamp: data.timestamp
 			});
 		});
@@ -742,7 +742,7 @@ class BrowserPreviewServiceManager {
 		browserMcpControl.on('control-end', (data) => {
 			debug.log('preview', `🚀 Forwarding mcp-control-end to project ${projectId}:`, data);
 			ws.emit.project(projectId, 'preview:browser-mcp-control-end', {
-				browserSessionId: data.browserTabId,
+				browserTabId: data.browserTabId,
 				timestamp: data.timestamp
 			});
 		});

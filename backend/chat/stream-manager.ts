@@ -485,7 +485,8 @@ class StreamManager extends EventEmitter {
 			}
 
 			// Stream messages through the engine adapter
-			for await (const message of engine.streamQuery({
+			// Wrap in execution context so MCP tool handlers can access chatSessionId/projectId
+			const streamIterable = engine.streamQuery({
 				projectPath: actualProjectPath,
 				prompt: enginePrompt,
 				resume: resumeSessionId,
@@ -493,7 +494,11 @@ class StreamManager extends EventEmitter {
 				includePartialMessages: true,
 				abortController: streamState.abortController,
 				...(claudeAccountId !== undefined && { claudeAccountId }),
-			})) {
+			});
+
+			await projectContextService.runWithContextAsync(
+				{ chatSessionId, projectId, streamId: streamState.streamId },
+				async () => { for await (const message of streamIterable) {
 				// Check if cancelled (cancelStream() already set status and emitted event)
 				if ((streamState.status as string) === 'cancelled' || streamState.abortController?.signal.aborted) {
 					break;
@@ -909,7 +914,7 @@ class StreamManager extends EventEmitter {
 					sender_id: requestData.senderId,
 					sender_name: requestData.senderName
 				});
-			}
+			} }); // end runWithContextAsync + for await
 
 			// Only mark as completed if not already cancelled/errored
 			if (streamState.status === 'active') {
@@ -924,9 +929,11 @@ class StreamManager extends EventEmitter {
 				this.emitStreamLifecycle(streamState, 'completed');
 			}
 
-			// Auto-release MCP control when stream completes
-			browserMcpControl.releaseControl();
-			debug.log('mcp', '✅ Auto-released MCP control on stream completion');
+			// Auto-release all MCP-controlled tabs for this chat session
+			if (chatSessionId) {
+				browserMcpControl.releaseSession(chatSessionId);
+				debug.log('mcp', `✅ Auto-released MCP tabs for session ${chatSessionId.slice(0, 8)} on stream completion`);
+			}
 
 		} catch (error) {
 			// Don't overwrite status if already cancelled by cancelStream()
@@ -988,9 +995,11 @@ class StreamManager extends EventEmitter {
 				this.emitStreamLifecycle(streamState, 'error');
 			}
 
-			// Auto-release MCP control on stream error
-			browserMcpControl.releaseControl();
-			debug.log('mcp', '✅ Auto-released MCP control on stream error');
+			// Auto-release all MCP-controlled tabs for this chat session
+			if (requestData.chatSessionId) {
+				browserMcpControl.releaseSession(requestData.chatSessionId);
+				debug.log('mcp', `✅ Auto-released MCP tabs for session ${requestData.chatSessionId.slice(0, 8)} on stream error`);
+			}
 		} finally {
 			// Capture snapshot ONCE at stream end (regardless of completion/error/cancel).
 			// Associates the snapshot with the user message (checkpoint) that triggered the stream.
@@ -1161,9 +1170,11 @@ class StreamManager extends EventEmitter {
 
 		this.emitStreamLifecycle(streamState, 'cancelled');
 
-		// Auto-release MCP control on stream cancellation
-		browserMcpControl.releaseControl();
-		debug.log('mcp', '✅ Auto-released MCP control on stream cancellation');
+		// Auto-release all MCP-controlled tabs for this chat session
+		if (streamState.chatSessionId) {
+			browserMcpControl.releaseSession(streamState.chatSessionId);
+			debug.log('mcp', `✅ Auto-released MCP tabs for session ${streamState.chatSessionId.slice(0, 8)} on stream cancellation`);
+		}
 
 		return true;
 	}

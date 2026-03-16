@@ -3,7 +3,6 @@
  */
 
 import { browserPreviewServiceManager, type BrowserPreviewService } from "$backend/preview";
-import { browserMcpControl } from "$backend/preview";
 import { projectContextService } from "$backend/mcp/project-context";
 import { getActiveTabSession } from "./browser";
 import { debug } from "$shared/utils/logger";
@@ -49,8 +48,7 @@ export async function getConsoleLogsHandler(args: {
 		const previewService = getPreviewService(args.projectId);
 		const logs = previewService.getConsoleLogs(sessionId);
 
-		// Update last action to keep control alive
-		browserMcpControl.updateLastAction();
+
 
 		if (logs.length === 0) {
 			return {
@@ -97,8 +95,7 @@ export async function clearConsoleLogsHandler(args: { projectId?: string } = {})
 		const previewService = getPreviewService(args.projectId);
 		const success = previewService.clearConsoleLogs(sessionId);
 
-		// Update last action to keep control alive
-		browserMcpControl.updateLastAction();
+
 
 		if (!success) {
 			return {
@@ -141,8 +138,7 @@ export async function executeConsoleHandler(args: {
 		const previewService = getPreviewService(args.projectId);
 		const result = await previewService.executeConsoleCommand(sessionId, args.command);
 
-		// Update last action to keep control alive
-		browserMcpControl.updateLastAction();
+
 
 		return {
 			content: [{
@@ -438,8 +434,7 @@ export async function analyzeDomHandler(args: {
 			filtered = analysis;
 		}
 
-		// Update last action to keep control alive
-		browserMcpControl.updateLastAction();
+
 
 		return {
 			content: [{
@@ -471,8 +466,7 @@ export async function takeScreenshotHandler() {
 			type: 'png'
 		});
 
-		// Update last action to keep control alive
-		browserMcpControl.updateLastAction();
+
 
 		return {
 			content: [

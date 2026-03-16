@@ -1,16 +1,17 @@
 /**
  * Browser MCP Control
  *
- * Manages exclusive MCP control over browser tabs.
- * Ensures only one MCP can control the browser at a time.
- * Emits events for frontend to show visual indicators.
- * Also handles MCP tab request/response coordination.
+ * Manages MCP control over browser tabs with multi-tab, session-scoped ownership.
+ * Each chat session can control multiple tabs simultaneously.
+ * A tab can only be controlled by one chat session at a time.
+ * All tabs are released when the chat session ends (stream complete/error/cancel).
  *
- * ARCHITECTURE: Event-based control management
- * - Control is maintained as long as the browser tab exists
- * - Auto-release when tab is destroyed via 'preview:browser-tab-destroyed' event
- * - NO timeouts or polling - 100% real-time event-driven
- * - Listens directly to preview service events for tab lifecycle
+ * ARCHITECTURE:
+ * - Control lifecycle follows chat sessions (no idle timeout)
+ * - Multiple tabs can be locked by one chat session (accumulated via switch/open)
+ * - Tab destroyed → auto-release that single tab from its owning session
+ * - Stream ends → releaseSession() releases all tabs owned by that session
+ * - Emits per-tab control-start/control-end events for frontend UI
  */
 
 import { EventEmitter } from 'events';
@@ -24,19 +25,17 @@ interface PendingTabRequest<T = any> {
 	timeout: NodeJS.Timeout;
 }
 
-export interface McpControlState {
-	isControlling: boolean;
-	mcpSessionId: string | null;
-	browserTabId: string | null;
-	projectId: string | null;
-	startedAt: number | null;
-	lastActionAt: number | null;
+/** Ownership info for a single tab */
+interface TabOwnershipInfo {
+	chatSessionId: string;
+	projectId: string;
+	acquiredAt: number;
 }
 
 export interface McpControlEvent {
 	type: 'mcp:control-start' | 'mcp:control-end';
 	browserTabId: string;
-	mcpSessionId?: string;
+	chatSessionId?: string;
 	timestamp: number;
 }
 
@@ -57,18 +56,11 @@ export interface McpClickEvent {
 }
 
 export class BrowserMcpControl extends EventEmitter {
-	private controlState: McpControlState = {
-		isControlling: false,
-		mcpSessionId: null,
-		browserTabId: null,
-		projectId: null,
-		startedAt: null,
-		lastActionAt: null
-	};
+	/** Tab → ownership info (which chat session controls it) */
+	private tabOwnership = new Map<string, TabOwnershipInfo>();
 
-	// Auto-release configuration
-	private readonly IDLE_TIMEOUT_MS = 30000; // 30 seconds idle = auto release
-	private idleCheckInterval: NodeJS.Timeout | null = null;
+	/** Chat session → set of tab IDs it controls */
+	private sessionTabs = new Map<string, Set<string>>();
 
 	// Pending tab requests (keyed by request type + timestamp)
 	private pendingTabRequests = new Map<string, PendingTabRequest>();
@@ -98,16 +90,18 @@ export class BrowserMcpControl extends EventEmitter {
 
 	/**
 	 * Handle tab destroyed event
-	 * Auto-release control if the destroyed tab was being controlled.
-	 * Uses the service's projectId to avoid cross-project false-positives.
+	 * Auto-release control for the destroyed tab only
 	 */
 	private handleTabDestroyed(tabId: string): void {
-		if (!this.controlState.isControlling || this.controlState.browserTabId !== tabId) return;
-		// Validate project to prevent cross-project collisions (tab IDs are not globally unique)
+		const ownership = this.tabOwnership.get(tabId);
+		if (!ownership) return;
+
+		// Validate project to prevent cross-project collisions
 		const serviceProjectId = this.previewService?.getProjectId();
-		if (serviceProjectId && this.controlState.projectId && this.controlState.projectId !== serviceProjectId) return;
-		debug.warn('mcp', `⚠️ Controlled tab ${tabId} was destroyed - auto-releasing control`);
-		this.releaseControl();
+		if (serviceProjectId && ownership.projectId !== serviceProjectId) return;
+
+		debug.warn('mcp', `⚠️ Controlled tab ${tabId} was destroyed - auto-releasing from session ${ownership.chatSessionId}`);
+		this.releaseTab(tabId);
 	}
 
 	/**
@@ -157,126 +151,189 @@ export class BrowserMcpControl extends EventEmitter {
 		return false;
 	}
 
+	// ============================================================================
+	// Control State Queries
+	// ============================================================================
+
 	/**
-	 * Check if MCP is currently controlling a browser session
+	 * Check if any tab is being controlled
 	 */
 	isControlling(): boolean {
-		return this.controlState.isControlling;
+		return this.tabOwnership.size > 0;
 	}
 
 	/**
-	 * Get current control state
-	 */
-	getControlState(): McpControlState {
-		return { ...this.controlState };
-	}
-
-	/**
-	 * Check if a specific browser tab is being controlled.
-	 * When projectId is provided, also validates the project to prevent cross-project
-	 * false-positives (tab IDs are only unique per project, not globally).
+	 * Check if a specific tab is being controlled (by any session)
 	 */
 	isTabControlled(browserTabId: string, projectId?: string): boolean {
-		if (!this.controlState.isControlling || this.controlState.browserTabId !== browserTabId) {
-			return false;
-		}
-		if (projectId && this.controlState.projectId && this.controlState.projectId !== projectId) {
-			return false;
-		}
+		const ownership = this.tabOwnership.get(browserTabId);
+		if (!ownership) return false;
+		if (projectId && ownership.projectId !== projectId) return false;
 		return true;
 	}
 
 	/**
-	 * Acquire control of a browser tab
-	 * Returns true if control was acquired, false if already controlled by another MCP
+	 * Check if a tab is controlled by a specific chat session
 	 */
-	acquireControl(browserTabId: string, mcpSessionId?: string, projectId?: string): boolean {
-		// Validate tab exists before acquiring control
-		if (this.previewService && !this.previewService.getTab(browserTabId)) {
-			debug.warn('mcp', `❌ Cannot acquire control: tab ${browserTabId} does not exist`);
-			return false;
-		}
+	isTabControlledBySession(browserTabId: string, chatSessionId: string): boolean {
+		const ownership = this.tabOwnership.get(browserTabId);
+		return ownership?.chatSessionId === chatSessionId;
+	}
 
-		// If already controlling the same tab, just update timestamp
-		if (this.controlState.isControlling &&
-			this.controlState.browserTabId === browserTabId) {
-			this.controlState.lastActionAt = Date.now();
-			return true;
-		}
+	/**
+	 * Get the chat session ID that controls a specific tab
+	 */
+	getTabOwner(browserTabId: string): string | null {
+		return this.tabOwnership.get(browserTabId)?.chatSessionId || null;
+	}
 
-		// If another tab is being controlled, deny
-		if (this.controlState.isControlling) {
-			debug.warn('mcp', `MCP control denied: another tab (${this.controlState.browserTabId}) is already being controlled`);
+	/**
+	 * Get all tab IDs controlled by a specific chat session
+	 */
+	getSessionTabs(chatSessionId: string): string[] {
+		const tabs = this.sessionTabs.get(chatSessionId);
+		return tabs ? Array.from(tabs) : [];
+	}
+
+	/**
+	 * Get all controlled tab IDs (across all sessions)
+	 */
+	getAllControlledTabs(): Map<string, TabOwnershipInfo> {
+		return new Map(this.tabOwnership);
+	}
+
+	// ============================================================================
+	// Control Acquisition
+	// ============================================================================
+
+	/**
+	 * Acquire control of a browser tab for a chat session.
+	 *
+	 * - If the tab is already owned by the same session → success (idempotent)
+	 * - If the tab is owned by another session → denied
+	 * - If the tab is free → acquire and add to session's controlled set
+	 */
+	acquireControl(browserTabId: string, chatSessionId: string, projectId: string): boolean {
+		// Check existing ownership
+		const existingOwner = this.tabOwnership.get(browserTabId);
+
+		if (existingOwner) {
+			// Same session already owns it → idempotent success
+			if (existingOwner.chatSessionId === chatSessionId) {
+				return true;
+			}
+			// Different session owns it → denied
+			debug.warn('mcp', `❌ Tab ${browserTabId} is controlled by session ${existingOwner.chatSessionId}, denied for ${chatSessionId}`);
 			return false;
 		}
 
 		// Acquire control
 		const now = Date.now();
-		this.controlState = {
-			isControlling: true,
-			mcpSessionId: mcpSessionId || null,
-			browserTabId,
-			projectId: projectId || null,
-			startedAt: now,
-			lastActionAt: now
-		};
+		this.tabOwnership.set(browserTabId, {
+			chatSessionId,
+			projectId,
+			acquiredAt: now
+		});
+
+		// Add to session's tab set
+		let sessionSet = this.sessionTabs.get(chatSessionId);
+		if (!sessionSet) {
+			sessionSet = new Set();
+			this.sessionTabs.set(chatSessionId, sessionSet);
+		}
+		sessionSet.add(browserTabId);
 
 		// Emit control start event to frontend
-		this.emitControlStart(browserTabId, mcpSessionId);
+		this.emitControlStart(browserTabId, chatSessionId);
 
-		// Start idle check interval
-		this.startIdleCheck();
-
-		debug.log('mcp', `🎮 MCP acquired control of tab: ${browserTabId} (event-based tracking)`);
+		debug.log('mcp', `🎮 Session ${chatSessionId.slice(0, 8)} acquired tab: ${browserTabId} (total: ${sessionSet.size} tabs)`);
 		return true;
 	}
 
+	// ============================================================================
+	// Control Release
+	// ============================================================================
+
 	/**
-	 * Release control of a browser tab
+	 * Release a single tab from its owning session.
+	 * Used when a tab is closed via close_tab or destroyed.
 	 */
-	releaseControl(browserTabId?: string): void {
-		// If browserTabId provided, only release if it matches
-		if (browserTabId && this.controlState.browserTabId !== browserTabId) {
-			return;
+	releaseTab(browserTabId: string): void {
+		const ownership = this.tabOwnership.get(browserTabId);
+		if (!ownership) return;
+
+		// Remove from tab ownership
+		this.tabOwnership.delete(browserTabId);
+
+		// Remove from session's tab set
+		const sessionSet = this.sessionTabs.get(ownership.chatSessionId);
+		if (sessionSet) {
+			sessionSet.delete(browserTabId);
+			if (sessionSet.size === 0) {
+				this.sessionTabs.delete(ownership.chatSessionId);
+			}
 		}
-
-		if (!this.controlState.isControlling) {
-			return;
-		}
-
-		const releasedTabId = this.controlState.browserTabId;
-
-		// Reset state
-		this.controlState = {
-			isControlling: false,
-			mcpSessionId: null,
-			browserTabId: null,
-			projectId: null,
-			startedAt: null,
-			lastActionAt: null
-		};
-
-		// Stop idle check interval
-		this.stopIdleCheck();
 
 		// Emit control end event to frontend
-		if (releasedTabId) {
-			this.emitControlEnd(releasedTabId);
-		}
+		this.emitControlEnd(browserTabId);
 
-		debug.log('mcp', `🎮 MCP released control of tab: ${releasedTabId}`);
+		debug.log('mcp', `🎮 Released tab: ${browserTabId} (was owned by session ${ownership.chatSessionId.slice(0, 8)})`);
 	}
 
 	/**
-	 * Update last action timestamp (for tracking purposes only)
-	 * NOTE: This does NOT affect control lifecycle - control is maintained
-	 * as long as the session exists, regardless of action timestamps
+	 * Release all tabs owned by a chat session.
+	 * Called when chat stream ends (complete/error/cancel).
 	 */
-	updateLastAction(): void {
-		if (this.controlState.isControlling) {
-			this.controlState.lastActionAt = Date.now();
+	releaseSession(chatSessionId: string): void {
+		const sessionSet = this.sessionTabs.get(chatSessionId);
+		if (!sessionSet || sessionSet.size === 0) {
+			this.sessionTabs.delete(chatSessionId);
+			return;
 		}
+
+		const tabIds = Array.from(sessionSet);
+		debug.log('mcp', `🎮 Releasing ${tabIds.length} tabs for session ${chatSessionId.slice(0, 8)}`);
+
+		for (const tabId of tabIds) {
+			this.tabOwnership.delete(tabId);
+			this.emitControlEnd(tabId);
+		}
+
+		this.sessionTabs.delete(chatSessionId);
+
+		debug.log('mcp', `🎮 Session ${chatSessionId.slice(0, 8)} fully released`);
 	}
+
+	/**
+	 * Auto-release control for a specific tab when it's closed.
+	 * projectId is used to prevent accidental release across projects.
+	 */
+	autoReleaseForTab(browserTabId: string, projectId?: string): void {
+		const ownership = this.tabOwnership.get(browserTabId);
+		if (!ownership) return;
+		if (projectId && ownership.projectId !== projectId) return;
+		debug.log('mcp', `🗑️ Auto-releasing tab: ${browserTabId} (closed)`);
+		this.releaseTab(browserTabId);
+	}
+
+	/**
+	 * Force release all control (for cleanup)
+	 */
+	forceReleaseAll(): void {
+		// Emit control-end for all controlled tabs
+		for (const [tabId] of this.tabOwnership) {
+			this.emitControlEnd(tabId);
+		}
+
+		this.tabOwnership.clear();
+		this.sessionTabs.clear();
+
+		debug.log('mcp', '🧹 Force released all MCP control');
+	}
+
+	// ============================================================================
+	// Cursor Events
+	// ============================================================================
 
 	/**
 	 * Emit cursor position event with MCP source
@@ -319,14 +376,15 @@ export class BrowserMcpControl extends EventEmitter {
 		});
 	}
 
-	/**
-	 * Emit control start event to frontend
-	 */
-	private emitControlStart(browserTabId: string, mcpSessionId?: string): void {
+	// ============================================================================
+	// Private Event Emitters
+	// ============================================================================
+
+	private emitControlStart(browserTabId: string, chatSessionId?: string): void {
 		const event: McpControlEvent = {
 			type: 'mcp:control-start',
 			browserTabId,
-			mcpSessionId,
+			chatSessionId,
 			timestamp: Date.now()
 		};
 
@@ -335,9 +393,6 @@ export class BrowserMcpControl extends EventEmitter {
 		debug.log('mcp', `📢 Emitted mcp:control-start for tab: ${browserTabId}`);
 	}
 
-	/**
-	 * Emit control end event to frontend
-	 */
 	private emitControlEnd(browserTabId: string): void {
 		const event: McpControlEvent = {
 			type: 'mcp:control-end',
@@ -348,82 +403,6 @@ export class BrowserMcpControl extends EventEmitter {
 		this.emit('control-end', event);
 
 		debug.log('mcp', `📢 Emitted mcp:control-end for tab: ${browserTabId}`);
-	}
-
-	/**
-	 * Start idle check interval
-	 */
-	private startIdleCheck(): void {
-		// Clear any existing interval
-		this.stopIdleCheck();
-
-		// Check every 10 seconds
-		this.idleCheckInterval = setInterval(() => {
-			this.checkAndReleaseIfIdle();
-		}, 10000);
-
-		debug.log('mcp', '⏰ Started idle check interval (30s timeout)');
-	}
-
-	/**
-	 * Stop idle check interval
-	 */
-	private stopIdleCheck(): void {
-		if (this.idleCheckInterval) {
-			clearInterval(this.idleCheckInterval);
-			this.idleCheckInterval = null;
-			debug.log('mcp', '⏰ Stopped idle check interval');
-		}
-	}
-
-	/**
-	 * Check if MCP control is idle and auto-release if timeout
-	 */
-	private checkAndReleaseIfIdle(): void {
-		if (!this.controlState.isControlling) {
-			return;
-		}
-
-		const now = Date.now();
-		const idleTime = now - (this.controlState.lastActionAt || this.controlState.startedAt || now);
-
-		if (idleTime >= this.IDLE_TIMEOUT_MS) {
-			debug.log('mcp', `⏰ MCP control idle for ${Math.round(idleTime / 1000)}s, auto-releasing...`);
-			this.releaseControl();
-		}
-	}
-
-	/**
-	 * Auto-release control for a specific browser tab (called when tab closes).
-	 * projectId is used to prevent accidental release across projects with same tab IDs.
-	 */
-	autoReleaseForTab(browserTabId: string, projectId?: string): void {
-		if (!this.controlState.isControlling || this.controlState.browserTabId !== browserTabId) return;
-		if (projectId && this.controlState.projectId && this.controlState.projectId !== projectId) return;
-		debug.log('mcp', `🗑️ Auto-releasing MCP control for closed tab: ${browserTabId}`);
-		this.releaseControl(browserTabId);
-	}
-
-	/**
-	 * Force release all control (for cleanup)
-	 */
-	forceReleaseAll(): void {
-		this.stopIdleCheck();
-
-		if (this.controlState.isControlling && this.controlState.browserTabId) {
-			this.emitControlEnd(this.controlState.browserTabId);
-		}
-
-		this.controlState = {
-			isControlling: false,
-			mcpSessionId: null,
-			browserTabId: null,
-			projectId: null,
-			startedAt: null,
-			lastActionAt: null
-		};
-
-		debug.log('mcp', '🧹 Force released all MCP control');
 	}
 }
 

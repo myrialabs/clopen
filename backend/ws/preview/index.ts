@@ -117,12 +117,12 @@ export const previewRouter = createRouter()
 	}))
 	// MCP control events
 	.emit('preview:browser-mcp-control-start', t.Object({
-		browserSessionId: t.String(),
-		mcpSessionId: t.Optional(t.String()),
+		browserTabId: t.String(),
+		chatSessionId: t.Optional(t.String()),
 		timestamp: t.Number()
 	}))
 	.emit('preview:browser-mcp-control-end', t.Object({
-		browserSessionId: t.String(),
+		browserTabId: t.String(),
 		timestamp: t.Number()
 	}))
 	.emit('preview:browser-mcp-cursor-position', t.Object({

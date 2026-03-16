@@ -25,7 +25,7 @@
 		// Tab state
 		tabs = $bindable<any[]>([]),
 		activeTabId = $bindable<string | null>(null),
-		mcpControlledTabId = $bindable<string | null>(null),
+		mcpControlledTabIds = $bindable<Set<string>>(new Set()),
 
 		// Callbacks
 		onGoClick = $bindable<() => void>(() => {}),
@@ -233,11 +233,11 @@
 					<span class="truncate max-w-28" title={tab.url}>
 						{tab.title || 'New Tab'}
 					</span>
-					{#if tab.id === mcpControlledTabId}
+					{#if mcpControlledTabIds.has(tab.id)}
 						<span title="MCP Controlled" class="flex"><Icon name="lucide:lock" class="w-3 h-3 flex-shrink-0 text-amber-500" /></span>
 					{/if}
 					<!-- Close button -->
-					{#if tab.id !== mcpControlledTabId}
+					{#if !mcpControlledTabIds.has(tab.id)}
 						<span
 							role="button"
 							tabindex="0"

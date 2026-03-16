@@ -185,6 +185,26 @@ class ProjectContextService {
 	}
 
 	/**
+	 * Get chat session ID from current execution context
+	 * Used by MCP browser automation to track which chat session is controlling tabs
+	 */
+	getCurrentChatSessionId(): string | null {
+		const context = this.getCurrentContext();
+
+		// 1. From AsyncLocalStorage execution context (highest priority)
+		if (context?.chatSessionId) {
+			return context.chatSessionId;
+		}
+
+		// 2. Fallback to most recent active stream
+		if (this.mostRecentActiveStream) {
+			return this.mostRecentActiveStream.chatSessionId;
+		}
+
+		return null;
+	}
+
+	/**
 	 * Get project ID from current execution context
 	 * This is the primary method MCP handlers should use
 	 */

@@ -6,144 +6,100 @@
  * - Open and close tabs (auto session management)
  * - Navigate active tab
  *
- * Session management is handled internally - no session tools exposed.
- * All operations work on the active tab automatically.
+ * Control model:
+ * - Each chat session can control multiple tabs (accumulated via switch/open)
+ * - A tab can only be controlled by one chat session at a time
+ * - All controlled tabs are released when the chat stream ends
+ * - list_tabs shows MCP control status so AI avoids conflicts
  */
 
-import { ws } from "$backend/utils/ws";
 import { debug } from "$shared/utils/logger";
 import { browserMcpControl, browserPreviewServiceManager, type BrowserPreviewService } from "$backend/preview";
 import { projectContextService } from "$backend/mcp/project-context";
 
 /**
  * Get BrowserPreviewService for current MCP execution context
- *
- * Uses projectContextService to determine the correct project based on:
- * 1. Explicit projectId parameter (if provided)
- * 2. Current active chat session context
- * 3. Most recent active stream
- * 4. Fallback to first available project
  */
 function getPreviewService(projectId?: string): BrowserPreviewService {
-	// 1. Use explicit projectId if provided
 	if (projectId) {
-		debug.log('mcp', `Using explicit projectId: ${projectId}`);
 		return browserPreviewServiceManager.getService(projectId);
 	}
 
-	// 2. Try to get projectId from current execution context
 	const contextProjectId = projectContextService.getCurrentProjectId();
 	if (contextProjectId) {
-		debug.log('mcp', `Using projectId from context: ${contextProjectId}`);
 		return browserPreviewServiceManager.getService(contextProjectId);
 	}
 
-	// 3. Fallback: Get first available project's service
 	const activeProjects = browserPreviewServiceManager.getActiveProjects();
 	if (activeProjects.length > 0) {
-		const fallbackProjectId = activeProjects[0];
-		debug.warn('mcp', `⚠️ No project context found, falling back to first active project: ${fallbackProjectId}`);
-		return browserPreviewServiceManager.getService(fallbackProjectId);
+		debug.warn('mcp', `⚠️ No project context found, falling back to first active project: ${activeProjects[0]}`);
+		return browserPreviewServiceManager.getService(activeProjects[0]);
 	}
 
 	throw new Error('No active browser preview service found. Project isolation requires projectId.');
 }
 
-// Tab response types
-interface FrontendTab {
-	id: string;
-	url: string;
-	title: string;
-	sessionId: string | null;
-	isActive: boolean;
-}
-
-interface TabsListResponse {
-	tabs: FrontendTab[];
-}
-
-interface ActiveTabResponse {
-	tab: FrontendTab | null;
-}
-
-interface SwitchTabResponse {
-	success: boolean;
-	tab?: FrontendTab;
-	error?: string;
-}
-
-interface OpenTabResponse {
-	success: boolean;
-	tab?: FrontendTab;
-	error?: string;
-}
-
-interface CloseTabResponse {
-	success: boolean;
-	closedTabId?: string;
-	newActiveTab?: FrontendTab;
-	error?: string;
+/**
+ * Get chatSessionId from current execution context.
+ * Required for session-scoped MCP control.
+ */
+function getChatSessionId(): string {
+	const chatSessionId = projectContextService.getCurrentChatSessionId();
+	if (!chatSessionId) {
+		throw new Error('No chat session context available. Cannot acquire MCP control.');
+	}
+	return chatSessionId;
 }
 
 /**
- * Internal helper: Get active tab
- * Throws error if no active tab found
- * Automatically acquires MCP control for the active tab to ensure UI sync
+ * Internal helper: Get active tab for MCP operations.
+ * Automatically acquires MCP control for the chat session.
  *
- * If MCP is already controlling a specific tab, that tab is returned regardless
- * of which tab the user has currently active in the frontend. This prevents MCP
- * from "following" the user when they switch tabs mid-session.
+ * If this chat session already controls tabs, uses the most recently
+ * controlled tab (not necessarily the frontend's active tab).
  */
 export async function getActiveTabSession(projectId?: string) {
 	const previewService = getPreviewService(projectId);
+	const resolvedProjectId = previewService.getProjectId();
+	const chatSessionId = getChatSessionId();
 
-	// If MCP is already controlling a specific tab, stick to that tab.
-	// This prevents user tab-switching from hijacking the MCP session.
-	const controlState = browserMcpControl.getControlState();
-	if (controlState.isControlling && controlState.browserTabId) {
-		const controlledTab = previewService.getTab(controlState.browserTabId);
+	// Check if this session already controls any tabs — use the last one
+	const sessionTabs = browserMcpControl.getSessionTabs(chatSessionId);
+	if (sessionTabs.length > 0) {
+		// Use the last tab this session was working with
+		const lastTabId = sessionTabs[sessionTabs.length - 1];
+		const controlledTab = previewService.getTab(lastTabId);
 		if (controlledTab) {
-			debug.log('mcp', `🎮 Using MCP-controlled tab: ${controlledTab.id} (ignoring active tab)`);
+			debug.log('mcp', `🎮 Using session-controlled tab: ${controlledTab.id}`);
 			return { tab: controlledTab, session: controlledTab };
 		}
 	}
 
-	// No controlled tab — use the active tab and acquire control
+	// No controlled tab — use the frontend's active tab and acquire control
 	const tab = previewService.getActiveTab();
-
 	if (!tab) {
-		throw new Error("No active tab found. Open a tab first using 'open_tab'.");
+		throw new Error("No active tab found. Open a tab first using 'open_new_tab'.");
 	}
 
-	// Acquire control for active tab (ensures UI sync after idle timeout)
-	// This is idempotent - if already controlling this tab, just updates timestamp
-	const resolvedProjectId = previewService.getProjectId();
-	if (!browserMcpControl.isTabControlled(tab.id, resolvedProjectId)) {
-		const acquired = browserMcpControl.acquireControl(tab.id, undefined, resolvedProjectId);
-		if (acquired) {
-			debug.log('mcp', `🔄 Auto-acquired control for tab ${tab.id} (resumed after idle)`);
-		}
+	// Acquire control (will fail if another session owns this tab)
+	const acquired = browserMcpControl.acquireControl(tab.id, chatSessionId, resolvedProjectId);
+	if (!acquired) {
+		const owner = browserMcpControl.getTabOwner(tab.id);
+		throw new Error(`Tab '${tab.id}' is controlled by another chat session (${owner?.slice(0, 8)}...). Use a different tab.`);
 	}
 
-	// For backward compatibility, return both tab and session-like reference
-	// Note: In tab-centric architecture, tab IS the session
 	return { tab, session: tab };
 }
 
 /**
- * List all open tabs in the browser preview
+ * List all open tabs in the browser preview.
+ * Shows MCP control status so AI can avoid conflicts.
  */
 export async function listTabsHandler(projectId?: string) {
 	try {
-		debug.log('mcp', '📋 MCP requesting tab list');
-		debug.log('mcp', `🔍 Input projectId: ${projectId || '(none)'}`);
-
-		// Get all tabs directly from backend
 		const previewService = getPreviewService(projectId);
-		debug.log('mcp', `✅ Using service for project: ${previewService.getProjectId()}`);
-
 		const tabs = previewService.getAllTabs();
-		debug.log('mcp', `📊 Found ${tabs.length} tabs`);
+		const chatSessionId = projectContextService.getCurrentChatSessionId();
 
 		if (tabs.length === 0) {
 			return {
@@ -154,12 +110,17 @@ export async function listTabsHandler(projectId?: string) {
 			};
 		}
 
-		const tabList = tabs.map((tab: any, index: number) =>
-			`${index + 1}. ${tab.isActive ? '* ' : '  '}[${tab.id}] ${tab.title || 'Untitled'}\n   URL: ${tab.url || '(empty)'}`
-		).join('\n\n');
+		const tabList = tabs.map((tab: any, index: number) => {
+			const owner = browserMcpControl.getTabOwner(tab.id);
+			let status = '';
+			if (owner) {
+				status = owner === chatSessionId
+					? ' (MCP: this session)'
+					: ' (MCP: another session)';
+			}
 
-		// Update last action to keep control alive
-		browserMcpControl.updateLastAction();
+			return `${index + 1}. ${tab.isActive ? '* ' : '  '}[${tab.id}] ${tab.title || 'Untitled'}${status}\n   URL: ${tab.url || '(empty)'}`;
+		}).join('\n\n');
 
 		return {
 			content: [{
@@ -180,16 +141,18 @@ export async function listTabsHandler(projectId?: string) {
 }
 
 /**
- * Switch to a specific tab by ID
+ * Switch to a specific tab by ID.
+ * Adds the tab to this session's controlled set (does NOT release other tabs).
  */
 export async function switchTabHandler(args: { tabId: string; projectId?: string }) {
 	try {
 		debug.log('mcp', `🔄 MCP switching to tab: ${args.tabId}`);
 
-		// Switch tab directly in backend
 		const previewService = getPreviewService(args.projectId);
-		const success = previewService.switchTab(args.tabId);
+		const chatSessionId = getChatSessionId();
+		const resolvedProjectId = previewService.getProjectId();
 
+		const success = previewService.switchTab(args.tabId);
 		if (!success) {
 			return {
 				content: [{
@@ -200,17 +163,21 @@ export async function switchTabHandler(args: { tabId: string; projectId?: string
 			};
 		}
 
-		// Get the tab that was just activated
+		// Acquire control of the new tab (adds to session's set, doesn't release others)
 		const tab = previewService.getTab(args.tabId);
-
-		// Update MCP control to the new tab
 		if (tab) {
-			browserMcpControl.releaseControl();
-			browserMcpControl.acquireControl(tab.id, undefined, previewService.getProjectId());
+			const acquired = browserMcpControl.acquireControl(tab.id, chatSessionId, resolvedProjectId);
+			if (!acquired) {
+				const owner = browserMcpControl.getTabOwner(tab.id);
+				return {
+					content: [{
+						type: "text" as const,
+						text: `Tab '${args.tabId}' is controlled by another chat session (${owner?.slice(0, 8)}...). Cannot switch to it.`
+					}],
+					isError: true
+				};
+			}
 		}
-
-		// Update last action to keep control alive
-		browserMcpControl.updateLastAction();
 
 		return {
 			content: [{
@@ -231,40 +198,31 @@ export async function switchTabHandler(args: { tabId: string; projectId?: string
 }
 
 /**
- * Open a new tab with optional URL and viewport configuration
- * Auto-creates browser session and acquires MCP control
+ * Open a new tab with optional URL and viewport configuration.
+ * Auto-acquires MCP control for the new tab.
  */
 export async function openNewTabHandler(args: { url?: string; deviceSize?: 'desktop' | 'laptop' | 'tablet' | 'mobile'; rotation?: 'portrait' | 'landscape'; projectId?: string }) {
 	try {
 		const deviceSize = args.deviceSize || 'laptop';
 
-		// Determine default rotation based on device size if not specified
 		let rotation: 'portrait' | 'landscape';
 		if (args.rotation) {
 			rotation = args.rotation;
 		} else {
-			// Desktop and laptop default to landscape
-			// Tablet and mobile default to portrait
 			rotation = (deviceSize === 'desktop' || deviceSize === 'laptop') ? 'landscape' : 'portrait';
 		}
 
 		debug.log('mcp', `📑 MCP opening new tab with URL: ${args.url || '(empty)'}`);
-		debug.log('mcp', `📱 Device: ${deviceSize}, Rotation: ${rotation}`);
-		debug.log('mcp', `🔍 Input projectId: ${args.projectId || '(none)'}`);
 
-		// Create tab directly in backend
 		const previewService = getPreviewService(args.projectId);
-		debug.log('mcp', `✅ Using service for project: ${previewService.getProjectId()}`);
+		const chatSessionId = getChatSessionId();
+		const resolvedProjectId = previewService.getProjectId();
 
 		const tab = await previewService.createTab(args.url || undefined, deviceSize, rotation);
 		debug.log('mcp', `✅ Tab created: ${tab.id}`);
 
-		// Auto-acquire control of the new tab
-		browserMcpControl.releaseControl();
-		browserMcpControl.acquireControl(tab.id, undefined, previewService.getProjectId());
-
-		// Update last action to keep control alive
-		browserMcpControl.updateLastAction();
+		// Acquire control of the new tab (adds to session's set)
+		browserMcpControl.acquireControl(tab.id, chatSessionId, resolvedProjectId);
 
 		return {
 			content: [{
@@ -285,14 +243,13 @@ export async function openNewTabHandler(args: { url?: string; deviceSize?: 'desk
 }
 
 /**
- * Close a specific tab by ID
- * Auto-destroys browser session and releases MCP control
+ * Close a specific tab by ID.
+ * Releases MCP control for the closed tab only.
  */
 export async function closeTabHandler(args: { tabId: string; projectId?: string }) {
 	try {
 		debug.log('mcp', `❌ MCP closing tab: ${args.tabId}`);
 
-		// Close tab directly in backend
 		const previewService = getPreviewService(args.projectId);
 		const result = await previewService.closeTab(args.tabId);
 
@@ -306,19 +263,8 @@ export async function closeTabHandler(args: { tabId: string; projectId?: string 
 			};
 		}
 
-		// Release control of closed tab
-		browserMcpControl.releaseControl();
-
-		// If there's a new active tab, acquire control
-		if (result.newActiveTabId) {
-			const newActiveTab = previewService.getTab(result.newActiveTabId);
-			if (newActiveTab) {
-				browserMcpControl.acquireControl(newActiveTab.id, undefined, previewService.getProjectId());
-			}
-		}
-
-		// Update last action to keep control alive
-		browserMcpControl.updateLastAction();
+		// releaseTab is already called by autoReleaseForTab inside closeTab()
+		// No need to manually release here
 
 		let responseText = `Tab '${args.tabId}' closed successfully.`;
 		if (result.newActiveTabId) {
@@ -349,25 +295,21 @@ export async function closeTabHandler(args: { tabId: string; projectId?: string 
 }
 
 /**
- * Navigate active tab to a different URL
+ * Navigate active tab to a different URL.
  * Waits for page load. Session state preserved.
  */
 export async function navigateHandler(args: { url: string; projectId?: string }) {
 	try {
-		// Get active tab session
 		const { session } = await getActiveTabSession(args.projectId);
 
-		// Navigate and wait for page to load
 		await session.page.goto(args.url, {
 			waitUntil: 'domcontentloaded',
 			timeout: 30000
 		});
 
-		// Wait a bit for dynamic content to load
 		await new Promise(resolve => setTimeout(resolve, 500));
 
 		const finalUrl = session.page.url();
-		browserMcpControl.updateLastAction();
 
 		return {
 			content: [{
@@ -388,11 +330,10 @@ export async function navigateHandler(args: { url: string; projectId?: string })
 }
 
 /**
- * Change viewport settings (device size and rotation) for active tab
+ * Change viewport settings (device size and rotation) for active tab.
  */
 export async function setViewportHandler(args: { deviceSize?: 'desktop' | 'laptop' | 'tablet' | 'mobile'; rotation?: 'portrait' | 'landscape'; projectId?: string }) {
 	try {
-		// Get active tab
 		const { tab } = await getActiveTabSession(args.projectId);
 
 		const deviceSize = args.deviceSize || tab.deviceSize;
@@ -400,7 +341,6 @@ export async function setViewportHandler(args: { deviceSize?: 'desktop' | 'lapto
 
 		debug.log('mcp', `📱 MCP changing viewport for tab ${tab.id}: ${deviceSize} (${rotation})`);
 
-		// Get preview service and update viewport
 		const previewService = getPreviewService(args.projectId);
 		const success = await previewService.setViewport(tab.id, deviceSize, rotation);
 
@@ -413,9 +353,6 @@ export async function setViewportHandler(args: { deviceSize?: 'desktop' | 'lapto
 				isError: true
 			};
 		}
-
-		// Update last action to keep control alive
-		browserMcpControl.updateLastAction();
 
 		return {
 			content: [{
