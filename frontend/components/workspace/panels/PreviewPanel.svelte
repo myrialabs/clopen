@@ -104,6 +104,8 @@
 
 	// Export actions for DesktopPanel header
 	export const panelActions = {
+		getTouchMode: () => browserPreviewRef?.browserActions?.getTouchMode() || 'scroll',
+		setTouchMode: (mode: 'scroll' | 'cursor') => { browserPreviewRef?.browserActions?.setTouchMode(mode); },
 		getDeviceSize: () => deviceSize,
 		getRotation: () => rotation,
 		getScale: () => previewDimensions?.scale || 1,

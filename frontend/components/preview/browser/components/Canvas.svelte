@@ -24,7 +24,9 @@
 		onCursorUpdate = $bindable<(cursor: string) => void>(() => {}),
 		onFrameUpdate = $bindable<(data: any) => void>(() => {}),
 		onStatsUpdate = $bindable<(stats: BrowserWebCodecsStreamStats | null) => void>(() => {}),
-		onRequestScreencastRefresh = $bindable<() => void>(() => {}) // Called when stream is stuck
+		onRequestScreencastRefresh = $bindable<() => void>(() => {}), // Called when stream is stuck
+		touchMode = $bindable<'scroll' | 'cursor'>('scroll'),
+		onTouchCursorUpdate = $bindable<(pos: { x: number; y: number; visible: boolean; clicking?: boolean }) => void>(() => {})
 	} = $props();
 
 	// WebCodecs service instance
@@ -296,6 +298,24 @@
 	let dragCurrentPos = $state<{x: number, y: number} | null>(null);
 	let mouseDownTime = $state(0);
 	let dragStarted = $state(false); // Track if we've sent mousedown for drag
+
+	// Touch-specific tracking (non-reactive for performance)
+	let longPressTimer: ReturnType<typeof setTimeout> | null = null;
+	let touchLongPressed = false;
+	let lastTouchCoords: { x: number; y: number } | null = null;
+
+	// Trackpad cursor state (cursor/trackpad mode - persists between touch gestures)
+	let trackpadCursorX = 0;
+	let trackpadCursorY = 0;
+	let trackpadLastClientX = 0;
+	let trackpadLastClientY = 0;
+	let trackpadTouchStartClientX = 0;
+	let trackpadTouchStartClientY = 0;
+	let trackpadTwoFingerActive = false;
+	let trackpadTwoFingerStartTime = 0;
+	let trackpadTwoFingerLastCenterX = 0;
+	let trackpadTwoFingerLastCenterY = 0;
+	let trackpadTwoFingerTotalDist = 0;
 
 	function handleCanvasMouseDown(event: MouseEvent, canvas: HTMLCanvasElement) {
 		if (!sessionId) return;
@@ -982,9 +1002,20 @@
 				canvas.focus();
 			});
 
-			canvas.addEventListener('touchstart', (e) => handleTouchStart(e, canvas), { passive: false });
-			canvas.addEventListener('touchmove', (e) => handleTouchMove(e, canvas), { passive: false });
-			canvas.addEventListener('touchend', (e) => handleTouchEnd(e, canvas), { passive: false });
+			const touchStartHandler = (e: TouchEvent) => handleTouchStart(e, canvas);
+			let lastTouchMoveTime = 0;
+			const touchMoveHandler = (e: TouchEvent) => {
+				const now = Date.now();
+				if (now - lastTouchMoveTime >= 16) {
+					lastTouchMoveTime = now;
+					handleTouchMove(e, canvas);
+				}
+			};
+			const touchEndHandler = (e: TouchEvent) => handleTouchEnd(e, canvas);
+
+			canvas.addEventListener('touchstart', touchStartHandler, { passive: false });
+			canvas.addEventListener('touchmove', touchMoveHandler, { passive: false });
+			canvas.addEventListener('touchend', touchEndHandler, { passive: false });
 
 			const handleMouseLeave = () => {
 				if (isMouseDown) {
@@ -1014,76 +1045,299 @@
 				canvas.removeEventListener('mousedown', (e) => handleCanvasMouseDown(e, canvas));
 				canvas.removeEventListener('mouseup', (e) => handleCanvasMouseUp(e, canvas));
 				canvas.removeEventListener('mousemove', handleMouseMove);
-				canvas.removeEventListener('touchstart', (e) => handleTouchStart(e, canvas));
-				canvas.removeEventListener('touchmove', (e) => handleTouchMove(e, canvas));
-				canvas.removeEventListener('touchend', (e) => handleTouchEnd(e, canvas));
+				canvas.removeEventListener('touchstart', touchStartHandler);
+				canvas.removeEventListener('touchmove', touchMoveHandler);
+				canvas.removeEventListener('touchend', touchEndHandler);
 			};
 		}
 	});
+
+	// Convert canvas coordinates to viewport (screen) coordinates for VirtualCursor display
+	function canvasToScreen(cx: number, cy: number): { x: number; y: number } {
+		if (!canvasElement) return { x: 0, y: 0 };
+		const rect = canvasElement.getBoundingClientRect();
+		return {
+			x: rect.left + cx * (rect.width / canvasElement.width),
+			y: rect.top + cy * (rect.height / canvasElement.height)
+		};
+	}
+
+	// Show / hide cursor when touchMode changes
+	$effect(() => {
+		if (touchMode === 'cursor') {
+			// Init cursor at canvas center on first activation
+			if (canvasElement && trackpadCursorX === 0 && trackpadCursorY === 0) {
+				trackpadCursorX = canvasElement.width / 2;
+				trackpadCursorY = canvasElement.height / 2;
+			}
+			if (canvasElement) {
+				const pos = canvasToScreen(trackpadCursorX, trackpadCursorY);
+				onTouchCursorUpdate({ x: pos.x, y: pos.y, visible: true });
+			}
+		} else {
+			onTouchCursorUpdate({ x: 0, y: 0, visible: false });
+		}
+	});
+
+	// ── Trackpad (cursor) mode handlers ───────────────────────────────────────
+
+	function handleTrackpadTouchStart(event: TouchEvent) {
+		if (event.touches.length >= 2) {
+			// Second finger joined → switch to two-finger mode
+			if (!trackpadTwoFingerActive) {
+				// Cancel any pending single-finger actions
+				if (longPressTimer) { clearTimeout(longPressTimer); longPressTimer = null; }
+				if (touchLongPressed && dragStarted) {
+					sendInteraction({ type: 'mouseup', x: Math.round(trackpadCursorX), y: Math.round(trackpadCursorY), button: 'left' });
+				}
+				isMouseDown = false;
+				dragStarted = false;
+				touchLongPressed = false;
+			}
+			trackpadTwoFingerActive = true;
+			trackpadTwoFingerStartTime = Date.now();
+			trackpadTwoFingerTotalDist = 0;
+			const t1 = event.touches[0];
+			const t2 = event.touches[1];
+			trackpadTwoFingerLastCenterX = (t1.clientX + t2.clientX) / 2;
+			trackpadTwoFingerLastCenterY = (t1.clientY + t2.clientY) / 2;
+			return;
+		}
+
+		if (trackpadTwoFingerActive) return; // Ignore until two-finger gesture fully ends
+
+		// Single finger
+		const touch = event.touches[0];
+		trackpadTouchStartClientX = touch.clientX;
+		trackpadTouchStartClientY = touch.clientY;
+		trackpadLastClientX = touch.clientX;
+		trackpadLastClientY = touch.clientY;
+		isMouseDown = true;
+		mouseDownTime = Date.now();
+		dragStarted = false;
+		touchLongPressed = false;
+
+		// Long-press (600ms without movement) → drag mode
+		longPressTimer = setTimeout(() => {
+			if (!isMouseDown) return;
+			const dist = Math.sqrt(
+				Math.pow(trackpadLastClientX - trackpadTouchStartClientX, 2) +
+				Math.pow(trackpadLastClientY - trackpadTouchStartClientY, 2)
+			);
+			if (dist < 8) {
+				touchLongPressed = true;
+				dragStarted = true;
+				sendInteraction({ type: 'mousedown', x: Math.round(trackpadCursorX), y: Math.round(trackpadCursorY), button: 'left' });
+			}
+		}, 600);
+	}
+
+	function handleTrackpadTouchMove(event: TouchEvent) {
+		if (!canvasElement) return;
+
+		if (event.touches.length >= 2 && trackpadTwoFingerActive) {
+			// Two-finger scroll
+			const t1 = event.touches[0];
+			const t2 = event.touches[1];
+			const centerX = (t1.clientX + t2.clientX) / 2;
+			const centerY = (t1.clientY + t2.clientY) / 2;
+			const deltaX = trackpadTwoFingerLastCenterX - centerX;
+			const deltaY = trackpadTwoFingerLastCenterY - centerY;
+			trackpadTwoFingerLastCenterX = centerX;
+			trackpadTwoFingerLastCenterY = centerY;
+			trackpadTwoFingerTotalDist += Math.sqrt(deltaX * deltaX + deltaY * deltaY);
+			if (Math.abs(deltaX) > 0.3 || Math.abs(deltaY) > 0.3) {
+				const rect = canvasElement.getBoundingClientRect();
+				const scale = canvasElement.width / rect.width;
+				sendInteraction({ type: 'scroll', deltaX: deltaX * scale * 2, deltaY: deltaY * scale * 2 });
+			}
+			return;
+		}
+
+		if (event.touches.length !== 1 || !isMouseDown || trackpadTwoFingerActive) return;
+
+		const touch = event.touches[0];
+		const deltaClientX = touch.clientX - trackpadLastClientX;
+		const deltaClientY = touch.clientY - trackpadLastClientY;
+		trackpadLastClientX = touch.clientX;
+		trackpadLastClientY = touch.clientY;
+
+		// Cancel long-press if finger moved significantly
+		const totalDist = Math.sqrt(
+			Math.pow(touch.clientX - trackpadTouchStartClientX, 2) +
+			Math.pow(touch.clientY - trackpadTouchStartClientY, 2)
+		);
+		if (totalDist > 8 && longPressTimer) {
+			clearTimeout(longPressTimer);
+			longPressTimer = null;
+		}
+
+		// Convert screen delta → canvas delta and move cursor
+		const rect = canvasElement.getBoundingClientRect();
+		const scale = canvasElement.width / rect.width;
+		trackpadCursorX = Math.max(0, Math.min(canvasElement.width, trackpadCursorX + deltaClientX * scale));
+		trackpadCursorY = Math.max(0, Math.min(canvasElement.height, trackpadCursorY + deltaClientY * scale));
+
+		// Send mousemove so the browser sees hover state changes
+		sendInteraction({ type: 'mousemove', x: Math.round(trackpadCursorX), y: Math.round(trackpadCursorY) });
+
+		// Update virtual cursor display
+		const pos = canvasToScreen(trackpadCursorX, trackpadCursorY);
+		onTouchCursorUpdate({ x: pos.x, y: pos.y, visible: true });
+	}
+
+	function handleTrackpadTouchEnd(event: TouchEvent) {
+		if (longPressTimer) { clearTimeout(longPressTimer); longPressTimer = null; }
+
+		const remainingTouches = event.touches.length;
+
+		if (trackpadTwoFingerActive) {
+			if (remainingTouches === 0) {
+				// All fingers lifted: check for two-finger tap → right click
+				const duration = Date.now() - trackpadTwoFingerStartTime;
+				if (duration < 300 && trackpadTwoFingerTotalDist < 20) {
+					sendInteraction({ type: 'rightclick', x: Math.round(trackpadCursorX), y: Math.round(trackpadCursorY) });
+				}
+				trackpadTwoFingerActive = false;
+			} else if (remainingTouches === 1) {
+				// One finger remains: transition back to single-finger tracking
+				const touch = event.touches[0];
+				trackpadLastClientX = touch.clientX;
+				trackpadLastClientY = touch.clientY;
+				trackpadTouchStartClientX = touch.clientX;
+				trackpadTouchStartClientY = touch.clientY;
+				isMouseDown = true;
+				mouseDownTime = Date.now();
+				trackpadTwoFingerActive = false;
+			}
+			return;
+		}
+
+		if (!isMouseDown) return;
+
+		if (touchLongPressed && dragStarted) {
+			sendInteraction({ type: 'mouseup', x: Math.round(trackpadCursorX), y: Math.round(trackpadCursorY), button: 'left' });
+		} else {
+			// Tap: short + minimal movement → left click at cursor position
+			const duration = Date.now() - mouseDownTime;
+			const moveDist = Math.sqrt(
+				Math.pow(trackpadLastClientX - trackpadTouchStartClientX, 2) +
+				Math.pow(trackpadLastClientY - trackpadTouchStartClientY, 2)
+			);
+			if (duration < 250 && moveDist < 10) {
+				sendInteraction({ type: 'click', x: Math.round(trackpadCursorX), y: Math.round(trackpadCursorY) });
+			}
+		}
+
+		isMouseDown = false;
+		dragStarted = false;
+		touchLongPressed = false;
+	}
+
+	// ── Touch event handlers (dispatch to scroll or trackpad mode) ────────────
 
 	// Touch event handlers
 	function handleTouchStart(event: TouchEvent, canvas: HTMLCanvasElement) {
 		if (!sessionId || event.touches.length === 0) return;
 		event.preventDefault();
 
+		if (touchMode === 'cursor') {
+			handleTrackpadTouchStart(event);
+			return;
+		}
+
+		// ── Scroll mode ──────────────────────────────────────────────────────────
+		if (event.touches.length > 1) return;
+
 		const coords = getCanvasCoordinates(event, canvas);
 		isMouseDown = true;
 		mouseDownTime = Date.now();
 		dragStartPos = { x: coords.x, y: coords.y };
 		dragCurrentPos = { x: coords.x, y: coords.y };
-		dragStarted = false; // Reset drag started flag
+		dragStarted = false;
+		touchLongPressed = false;
+		lastTouchCoords = { x: coords.x, y: coords.y };
+
+		// Long-press detection: after 500ms without significant movement → drag mode
+		longPressTimer = setTimeout(() => {
+			if (!isMouseDown || !dragStartPos) return;
+			const dist = dragCurrentPos
+				? Math.sqrt(
+						Math.pow(dragCurrentPos.x - dragStartPos.x, 2) +
+						Math.pow(dragCurrentPos.y - dragStartPos.y, 2)
+					)
+				: 0;
+			if (dist < 10) {
+				touchLongPressed = true;
+				dragStarted = true;
+				sendInteraction({ type: 'mousedown', x: dragStartPos.x, y: dragStartPos.y, button: 'left' });
+			}
+		}, 500);
 	}
 
 	function handleTouchMove(event: TouchEvent, canvas: HTMLCanvasElement) {
-		if (!sessionId || event.touches.length === 0 || !isMouseDown || !dragStartPos) return;
+		if (!sessionId || event.touches.length === 0) return;
 		event.preventDefault();
+
+		if (touchMode === 'cursor') {
+			handleTrackpadTouchMove(event);
+			return;
+		}
+
+		// ── Scroll mode ──────────────────────────────────────────────────────────
+		if (!isMouseDown || !dragStartPos) return;
 
 		const coords = getCanvasCoordinates(event, canvas);
 		dragCurrentPos = { x: coords.x, y: coords.y };
 
-		const dragDistance = Math.sqrt(
+		const dist = Math.sqrt(
 			Math.pow(coords.x - dragStartPos.x, 2) + Math.pow(coords.y - dragStartPos.y, 2)
 		);
 
-		if (dragDistance > 15) {
-			// Send mousedown on first drag detection
-			if (!dragStarted) {
-				sendInteraction({
-					type: 'mousedown',
-					x: dragStartPos.x,
-					y: dragStartPos.y,
-					button: 'left'
-				});
-				dragStarted = true;
-			}
+		if (dist > 10 && longPressTimer) {
+			clearTimeout(longPressTimer);
+			longPressTimer = null;
+		}
 
+		if (touchLongPressed) {
 			isDragging = true;
-			// Send mousemove to continue dragging (mouse is already down)
-			sendInteraction({
-				type: 'mousemove',
-				x: coords.x,
-				y: coords.y
-			});
+			sendInteraction({ type: 'mousemove', x: coords.x, y: coords.y });
+		} else {
+			if (lastTouchCoords) {
+				const deltaX = lastTouchCoords.x - coords.x;
+				const deltaY = lastTouchCoords.y - coords.y;
+				sendInteraction({ type: 'scroll', deltaX, deltaY });
+			}
+			lastTouchCoords = { x: coords.x, y: coords.y };
 		}
 	}
 
 	function handleTouchEnd(event: TouchEvent, canvas: HTMLCanvasElement) {
-		if (!sessionId || !isMouseDown) return;
+		if (!sessionId) return;
 		event.preventDefault();
 
-		if (dragStartPos) {
-			const endPos = dragCurrentPos || dragStartPos;
+		if (touchMode === 'cursor') {
+			handleTrackpadTouchEnd(event);
+			return;
+		}
 
-			// If drag was started (mousedown was sent), send mouseup
-			if (dragStarted) {
-				sendInteraction({
-					type: 'mouseup',
-					x: endPos.x,
-					y: endPos.y,
-					button: 'left'
-				});
-			} else {
-				// No drag occurred, this is a tap/click
+		// ── Scroll mode ──────────────────────────────────────────────────────────
+		if (!isMouseDown) return;
+
+		if (longPressTimer) { clearTimeout(longPressTimer); longPressTimer = null; }
+
+		if (touchLongPressed && dragStarted) {
+			const endPos = dragCurrentPos || dragStartPos;
+			if (endPos) sendInteraction({ type: 'mouseup', x: endPos.x, y: endPos.y, button: 'left' });
+		} else if (!isDragging && dragStartPos) {
+			const touchDuration = Date.now() - mouseDownTime;
+			const dist = dragCurrentPos
+				? Math.sqrt(
+						Math.pow(dragCurrentPos.x - dragStartPos.x, 2) +
+						Math.pow(dragCurrentPos.y - dragStartPos.y, 2)
+					)
+				: 0;
+			if (touchDuration < 300 && dist < 15) {
 				sendInteraction({ type: 'click', x: dragStartPos.x, y: dragStartPos.y });
 			}
 		}
@@ -1093,6 +1347,8 @@
 		dragStartPos = null;
 		dragCurrentPos = null;
 		dragStarted = false;
+		touchLongPressed = false;
+		lastTouchCoords = null;
 	}
 
 	function getCanvasElement() {
@@ -1142,6 +1398,10 @@
 	onDestroy(() => {
 		stopHealthCheck(); // Stop health monitoring
 		canvasSnapshots.clear(); // Free snapshot memory
+		if (longPressTimer) {
+			clearTimeout(longPressTimer);
+			longPressTimer = null;
+		}
 		if (webCodecsService) {
 			webCodecsService.destroy();
 			webCodecsService = null;

@@ -44,12 +44,16 @@
 		// Preview dimensions (bindable to parent)
 		previewDimensions = $bindable<any>({ scale: 1 }),
 
+		// Touch interaction mode
+		touchMode = $bindable<'scroll' | 'cursor'>('scroll'),
+
 		// Callbacks
 		onInteraction = $bindable<(action: any) => void>(() => {}),
 		onRetry = $bindable<() => void>(() => {})
 	} = $props();
 
 	let previewContainer = $state<HTMLDivElement | undefined>();
+	let touchCursorPos = $state<{ x: number; y: number; visible: boolean; clicking?: boolean }>({ x: 0, y: 0, visible: false });
 
 	// Solid loading overlay: shown during initial load states
 	// Skip when lastFrameData exists (tab was previously loaded - snapshot handles display)
@@ -93,6 +97,10 @@
 			}, 100); // 100ms debounce
 		}
 	});
+
+	function handleTouchCursorUpdate(pos: { x: number; y: number; visible: boolean; clicking?: boolean }) {
+		touchCursorPos = { x: pos.x, y: pos.y, visible: pos.visible, clicking: pos.clicking };
+	}
 
 	onDestroy(() => {
 		if (overlayHideTimeout) {
@@ -376,10 +384,12 @@
 						bind:isStreamReady
 						bind:isNavigating
 						bind:isReconnecting
+						bind:touchMode
 						onInteraction={handleCanvasInteraction}
 						onCursorUpdate={handleCursorUpdate}
 						onFrameUpdate={handleFrameUpdate}
 						onRequestScreencastRefresh={handleScreencastRefresh}
+						onTouchCursorUpdate={handleTouchCursorUpdate}
 					/>
 				</div>
 			{/if}
@@ -432,6 +442,7 @@
 				</div>
 			{/if}
 
+
 		</div>
 	{:else}
 		<div
@@ -448,6 +459,11 @@
 	<!-- Virtual Cursor - User -->
 	{#if !isMcpControlled}
 		<VirtualCursor cursor={virtualCursor} />
+	{/if}
+
+	<!-- Touch Cursor - shown in cursor simulation mode -->
+	{#if touchMode === 'cursor' && touchCursorPos.visible}
+		<VirtualCursor cursor={touchCursorPos} />
 	{/if}
 
 	<!-- MCP Virtual Cursor -->

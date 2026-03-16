@@ -61,6 +61,9 @@
 	// Flag to prevent URL watcher from double-launching during MCP session creation
 	const mcpLaunchInProgress = $state(false);
 
+	// Touch interaction mode for canvas
+	let touchMode = $state<'scroll' | 'cursor'>('scroll');
+
 	// Flag to track if sessions were recovered (prevents creating empty tab on mount)
 	let sessionsRecovered = $state(false);
 
@@ -434,6 +437,8 @@
 
 	// Expose methods for parent (PreviewPanel)
 	export const browserActions = {
+		getTouchMode: () => touchMode,
+		setTouchMode: (mode: 'scroll' | 'cursor') => { touchMode = mode; },
 		changeDeviceSize: (size: DeviceSize) => {
 			coordinator.changeDeviceSize(size, previewDimensions?.scale);
 		},
@@ -502,6 +507,7 @@
 				bind:canvasAPI
 				bind:previewDimensions
 				bind:lastFrameData={currentTabLastFrameData}
+				bind:touchMode
 				isMcpControlled={isCurrentTabMcpControlled()}
 				onInteraction={handleCanvasInteraction}
 				onRetry={handleGoClick}
