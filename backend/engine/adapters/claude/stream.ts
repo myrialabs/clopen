@@ -180,38 +180,29 @@ export class ClaudeCodeEngine implements AIEngine {
    * Cancel active query
    */
   async cancel(): Promise<void> {
-    // Resolve all pending AskUserQuestion promises BEFORE aborting.
-    // This lets the SDK process the denial responses while the subprocess
-    // is still alive, preventing "Operation aborted" write errors.
+    // Resolve all pending AskUserQuestion promises before terminating.
     for (const [, pending] of this.pendingUserAnswers) {
       pending.resolve({ behavior: 'deny', message: 'Cancelled' });
     }
     this.pendingUserAnswers.clear();
 
-    // Only interrupt if the controller hasn't been aborted yet.
-    // Interrupting after abort causes the SDK to write to a dead subprocess,
-    // resulting in "Operation aborted" unhandled rejections that crash Bun.
-    if (this.activeQuery && typeof this.activeQuery.interrupt === 'function'
-        && this.activeController && !this.activeController.signal.aborted) {
+    // Use close() to forcefully terminate the query process and clean up
+    // all resources (docs: "Forcefully ends the query and cleans up all
+    // resources"). Unlike interrupt() which can hang indefinitely when the
+    // subprocess is unresponsive, close() is synchronous and guaranteed to
+    // complete — making cancel deterministic.
+    if (this.activeQuery && typeof this.activeQuery.close === 'function') {
       try {
-        await this.activeQuery.interrupt();
+        this.activeQuery.close();
       } catch {
-        // Ignore interrupt errors
+        // Ignore close errors — process may already be dead
       }
     }
 
-    // Brief delay between interrupt and abort to let the SDK flush pending
-    // write operations (e.g., handleControlRequest responses). Without this,
-    // aborting immediately after interrupt kills the subprocess while the SDK
-    // still has in-flight writes, causing "Operation aborted" rejections.
     if (this.activeController && !this.activeController.signal.aborted) {
-      await new Promise(resolve => setTimeout(resolve, 100));
-    }
-
-    if (this.activeController) {
       this.activeController.abort();
-      this.activeController = null;
     }
+    this.activeController = null;
     this.activeQuery = null;
   }
 

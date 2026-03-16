@@ -485,13 +485,9 @@ class ChatService {
     // before a stale non-reasoning stream_event instead of at the end).
     this.cleanupStreamEvents();
 
-    // Safety timeout: clear isCancelling after 10s if WS confirmation never arrives
-    // (e.g., network issues, dropped connection)
-    setTimeout(() => {
-      if (appState.isCancelling) {
-        appState.isCancelling = false;
-      }
-    }, 10000);
+    // No safety timeout needed — cancel completion is confirmed via WS events:
+    // chat:cancelled clears isLoading, then presence update clears isCancelling.
+    // If WS disconnects, reconnection logic re-fetches presence and clears state.
   }
 
   /**

@@ -1132,7 +1132,7 @@ class StreamManager extends EventEmitter {
 			}
 		}
 
-		// Cancel the per-project engine FIRST — this sends an interrupt to the
+		// Cancel the per-project engine — this sends an interrupt to the
 		// still-alive SDK subprocess, then aborts the controller. If we abort
 		// the controller first, the subprocess dies and the SDK's subsequent
 		// interrupt write fails with "Operation aborted" (unhandled rejection

@@ -470,7 +470,7 @@ export const streamHandler = createRouter()
 				return;
 			}
 
-			const cancelled = await streamManager.cancelStream(streamState.streamId);
+			await streamManager.cancelStream(streamState.streamId);
 			// Always send cancelled to chat session room to clear UI
 			ws.emit.chatSession(chatSessionId, 'chat:cancelled', {
 				status: 'cancelled',
