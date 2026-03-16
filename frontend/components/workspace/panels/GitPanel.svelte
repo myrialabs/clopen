@@ -1426,12 +1426,7 @@
 				<div class="space-y-1 px-1">
 					{#each tags as tag (tag.name)}
 						<div class="group flex items-center gap-2 px-2.5 py-2 rounded-md hover:bg-slate-100 dark:hover:bg-slate-800/60 transition-colors">
-							<span title={tag.isAnnotated ? 'Annotated tag' : 'Lightweight tag'} class="shrink-0">
-								<Icon
-									name={tag.isAnnotated ? 'lucide:bookmark' : 'lucide:tag'}
-									class="w-4 h-4 {tag.isAnnotated ? 'text-amber-500' : 'text-slate-400'}"
-								/>
-							</span>
+							<Icon name="lucide:tag" class="w-4 h-4 text-slate-400 shrink-0" />
 							<div class="flex-1 min-w-0">
 								<p class="text-sm font-medium text-slate-900 dark:text-slate-100 truncate">{tag.name}</p>
 								<div class="flex items-center gap-1.5">
