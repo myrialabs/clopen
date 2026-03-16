@@ -942,6 +942,16 @@
 		}
 	}
 
+	async function copyTagHash(hash: string, e: MouseEvent) {
+		e.stopPropagation();
+		try {
+			await navigator.clipboard.writeText(hash);
+			showInfo('Copied', `Hash ${hash.substring(0, 7)} copied to clipboard`);
+		} catch {
+			showError('Copy Failed', 'Could not copy to clipboard');
+		}
+	}
+
 	// ============================
 	// Lifecycle
 	// ============================
@@ -1323,8 +1333,8 @@
 						<div class="group flex items-center gap-2 px-2.5 py-2 rounded-md hover:bg-slate-100 dark:hover:bg-slate-800/60 transition-colors">
 							<Icon name="lucide:archive" class="w-4 h-4 text-slate-400 shrink-0" />
 							<div class="flex-1 min-w-0">
-								<p class="text-xs font-medium text-slate-900 dark:text-slate-100 truncate">{entry.message}</p>
-								<p class="text-3xs text-slate-400 dark:text-slate-500">stash@&#123;{entry.index}&#125;</p>
+								<p class="text-sm font-medium text-slate-900 dark:text-slate-100 truncate">{entry.message}</p>
+								<p class="text-xs text-slate-400 dark:text-slate-500">stash@&#123;{entry.index}&#125;</p>
 							</div>
 							<div class="flex items-center gap-0.5 shrink-0">
 								<button
@@ -1416,21 +1426,25 @@
 				<div class="space-y-1 px-1">
 					{#each tags as tag (tag.name)}
 						<div class="group flex items-center gap-2 px-2.5 py-2 rounded-md hover:bg-slate-100 dark:hover:bg-slate-800/60 transition-colors">
-							<Icon
-								name={tag.isAnnotated ? 'lucide:bookmark' : 'lucide:tag'}
-								class="w-4 h-4 shrink-0 {tag.isAnnotated ? 'text-amber-500' : 'text-slate-400'}"
-							/>
+							<span title={tag.isAnnotated ? 'Annotated tag' : 'Lightweight tag'} class="shrink-0">
+								<Icon
+									name={tag.isAnnotated ? 'lucide:bookmark' : 'lucide:tag'}
+									class="w-4 h-4 {tag.isAnnotated ? 'text-amber-500' : 'text-slate-400'}"
+								/>
+							</span>
 							<div class="flex-1 min-w-0">
+								<p class="text-sm font-medium text-slate-900 dark:text-slate-100 truncate">{tag.name}</p>
 								<div class="flex items-center gap-1.5">
-									<p class="text-xs font-medium text-slate-900 dark:text-slate-100 truncate">{tag.name}</p>
-									{#if tag.isAnnotated}
-										<span class="text-3xs px-1 py-0.5 rounded bg-amber-500/10 text-amber-600 dark:text-amber-400 shrink-0">annotated</span>
+									<button
+										type="button"
+										class="text-xs font-mono text-slate-400 dark:text-slate-500 hover:text-violet-600 dark:hover:text-violet-400 bg-transparent border-none cursor-pointer p-0 shrink-0 transition-colors"
+										onclick={(e) => copyTagHash(tag.hash, e)}
+										title="Copy tag hash"
+									>{tag.hash.slice(0, 7)}</button>
+									{#if tag.message}
+										<span class="text-xs text-slate-400 dark:text-slate-500 truncate">{tag.message}</span>
 									{/if}
 								</div>
-								{#if tag.message}
-									<p class="text-3xs text-slate-500 dark:text-slate-400 truncate">{tag.message}</p>
-								{/if}
-								<p class="text-3xs text-slate-400 dark:text-slate-500 font-mono">{tag.hash}</p>
 							</div>
 							<div class="flex items-center gap-0.5 shrink-0">
 								<button
