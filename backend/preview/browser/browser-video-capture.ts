@@ -4,9 +4,9 @@
  * Handles WebCodecs-based video streaming with WebRTC DataChannel transport.
  *
  * Video Architecture:
- * 1. Puppeteer CDP captures JPEG frames via Page.screencastFrame
- * 2. Decode JPEG to ImageBitmap in browser
- * 3. Encode with VideoEncoder (VP8) in browser
+ * 1. CDP captures JPEG frames via Page.screencastFrame
+ * 2. Direct CDP Runtime.evaluate sends base64 to page (bypasses Puppeteer IPC)
+ * 3. Page decodes JPEG via createImageBitmap, encodes with VP8 VideoEncoder
  * 4. Send encoded chunks via RTCDataChannel
  *
  * Audio Architecture:
@@ -347,17 +347,15 @@ export class BrowserVideoCapture extends EventEmitter {
 			// ACK immediately
 			cdp.send('Page.screencastFrameAck', { sessionId: event.sessionId }).catch(() => {});
 
-			// Send frame to encoder
-			page.evaluate((frameData) => {
-				const peer = (window as any).__webCodecsPeer;
-				if (!peer) return false;
-				peer.encodeFrame(frameData);
-				return true;
-			}, event.data).catch((err) => {
-				if (cdpFrameCount <= 5) {
-					debug.warn('webcodecs', `Frame delivery error (frame ${cdpFrameCount}):`, err.message);
-				}
-			});
+			// Send frame to encoder via direct CDP (bypasses Puppeteer's
+			// ExecutionContext lookup, function serialization, Runtime.callFunctionOn
+			// overhead, and result deserialization). Base64 charset [A-Za-z0-9+/=]
+			// is safe to embed in a JS double-quoted string literal.
+			cdp.send('Runtime.evaluate', {
+				expression: `window.__webCodecsPeer?.encodeFrame("${event.data}")`,
+				awaitPromise: false,
+				returnByValue: false
+			}).catch(() => {});
 		});
 
 		// Start screencast with scaled dimensions

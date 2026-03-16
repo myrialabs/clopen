@@ -208,7 +208,7 @@ export class BrowserWebCodecsService {
 
 		if (this.ctx) {
 			this.ctx.imageSmoothingEnabled = true;
-			this.ctx.imageSmoothingQuality = 'low';
+			this.ctx.imageSmoothingQuality = 'medium';
 		}
 
 		this.clearCanvas();
@@ -1003,7 +1003,7 @@ export class BrowserWebCodecsService {
 
 		if (this.ctx) {
 			this.ctx.imageSmoothingEnabled = true;
-			this.ctx.imageSmoothingQuality = 'low';
+			this.ctx.imageSmoothingQuality = 'medium';
 		}
 
 		try {

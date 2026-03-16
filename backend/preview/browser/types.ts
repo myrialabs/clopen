@@ -229,10 +229,10 @@ export interface StreamingConfig {
 /**
  * Default streaming configuration
  *
- * Optimized for low-end servers without GPU:
- * - Software encoding only (hardwareAcceleration: 'no-preference')
- * - Lower bitrate for bandwidth efficiency
- * - VP8 for video (good software encoder performance)
+ * Optimized for visual quality with reasonable bandwidth:
+ * - Software encoding (hardwareAcceleration: 'no-preference')
+ * - JPEG quality 70 preserves thin borders/text, VP8 handles bandwidth
+ * - VP8 at 1.2Mbps for crisp UI/text rendering
  * - Opus for audio (efficient and widely supported)
  */
 export const DEFAULT_STREAMING_CONFIG: StreamingConfig = {
@@ -241,9 +241,9 @@ export const DEFAULT_STREAMING_CONFIG: StreamingConfig = {
 		width: 0,
 		height: 0,
 		framerate: 24,
-		bitrate: 600_000,
-		keyframeInterval: 2,
-		screenshotQuality: 35,
+		bitrate: 1_200_000,
+		keyframeInterval: 3,
+		screenshotQuality: 70,
 		hardwareAcceleration: 'no-preference',
 		latencyMode: 'realtime'
 	},

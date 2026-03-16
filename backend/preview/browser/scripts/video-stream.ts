@@ -218,23 +218,24 @@ export function videoEncoderScript(config: StreamingConfig['video']) {
 		if (!videoEncoder || !isCapturing) return;
 
 		try {
-			// Base64 to arrayBuffer (more efficient)
-			const imageBuffer = await fetch(`data:image/jpeg;base64,${imageData}`);
-			const arrayBuffer = await imageBuffer.arrayBuffer();
+			// Direct base64 decode (avoids fetch() + data URL parsing overhead)
+			const binaryStr = atob(imageData);
+			const len = binaryStr.length;
+			const bytes = new Uint8Array(len);
+			for (let i = 0; i < len; i++) {
+				bytes[i] = binaryStr.charCodeAt(i);
+			}
 
-			// Decode JPEG to VideoFrame
-			const decoder = new ImageDecoder({
-				data: arrayBuffer,
-				type: 'image/jpeg',
-			});
-
-			const { image } = await decoder.decode();
+			// Decode JPEG via createImageBitmap (avoids per-frame ImageDecoder
+			// constructor/destructor overhead)
+			const blob = new Blob([bytes], { type: 'image/jpeg' });
+			const bitmap = await createImageBitmap(blob);
 
 			// Get aligned timestamp in microseconds
 			const timestamp = performance.now() * 1000;
 
-			// Create VideoFrame with aligned timestamp
-			const frame = new VideoFrame(image, {
+			// Create VideoFrame from ImageBitmap
+			const frame = new VideoFrame(bitmap, {
 				timestamp,
 				alpha: 'discard'
 			});
@@ -253,8 +254,7 @@ export function videoEncoderScript(config: StreamingConfig['video']) {
 
 			// Close immediately to prevent memory leaks
 			frame.close();
-			image.close();
-			decoder.close();
+			bitmap.close();
 		} catch (error) {}
 	}
 

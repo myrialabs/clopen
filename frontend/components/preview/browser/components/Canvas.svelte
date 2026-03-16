@@ -406,7 +406,7 @@
 			// This matches the loading overlay background roughly
 			if (ctx) {
 				ctx.imageSmoothingEnabled = true;
-				ctx.imageSmoothingQuality = 'low'; // Faster rendering
+				ctx.imageSmoothingQuality = 'medium';
 				ctx.fillStyle = '#f1f5f9'; // slate-100 - neutral light color
 				ctx.fillRect(0, 0, canvasElement.width, canvasElement.height);
 			}
