@@ -1,16 +1,11 @@
 <script lang="ts">
-	import { initializeProjects, projectState } from '$frontend/stores/core/projects.svelte';
-	import { initializeStore } from '$frontend/stores/core/app.svelte';
-	import { sessionState } from '$frontend/stores/core/sessions.svelte';
 	import { addNotification } from '$frontend/stores/ui/notification.svelte';
-	import { settings, resetToDefaults } from '$frontend/stores/features/settings.svelte';
+	import { resetToDefaults } from '$frontend/stores/features/settings.svelte';
 	import { showConfirm } from '$frontend/stores/ui/dialog.svelte';
-	import { terminalStore } from '$frontend/stores/features/terminal.svelte';
 	import Icon from '../../common/display/Icon.svelte';
 	import { debug } from '$shared/utils/logger';
 	import ws from '$frontend/utils/ws';
 
-	let isExporting = $state(false);
 	let isClearing = $state(false);
 
 	async function clearData() {
@@ -26,79 +21,23 @@
 		if (confirmed) {
 			isClearing = true;
 			try {
-				localStorage.clear();
-				sessionStorage.clear();
-
 				const response = await ws.http('system:clear-data', {});
 
 				if (response.cleared) {
-					terminalStore.clearAllSessions();
-					projectState.currentProject = null;
-					await initializeProjects();
-					await initializeStore();
-					resetToDefaults();
-
-					addNotification({
-						type: 'success',
-						title: 'Data Cleared',
-						message: 'All data has been cleared successfully'
-					});
+					localStorage.clear();
+					sessionStorage.clear();
+					window.location.reload();
 				}
 			} catch (error) {
 				debug.error('settings', 'Error clearing data:', error);
+				isClearing = false;
 				addNotification({
 					type: 'error',
 					title: 'Clear Data Error',
 					message: 'Failed to clear all data',
 					duration: 4000
 				});
-			} finally {
-				isClearing = false;
 			}
-		}
-	}
-
-	async function exportData() {
-		isExporting = true;
-		try {
-			const [projects, sessions, messages] = await Promise.all([
-				ws.http('projects:list', {}),
-				ws.http('sessions:list', {}),
-				ws.http('messages:list', { session_id: '', include_all: true })
-			]);
-
-			const data = {
-				projects: projects || projectState.projects,
-				sessions: sessions || sessionState.sessions,
-				messages: messages || sessionState.messages,
-				settings: settings,
-				exportedAt: new Date().toISOString(),
-				version: '1.0'
-			};
-
-			const blob = new Blob([JSON.stringify(data, null, 2)], { type: 'application/json' });
-			const url = URL.createObjectURL(blob);
-			const a = document.createElement('a');
-			a.href = url;
-			a.download = `clopen-data-${new Date().toISOString().split('T')[0]}.json`;
-			a.click();
-			URL.revokeObjectURL(url);
-
-			addNotification({
-				type: 'success',
-				title: 'Export Complete',
-				message: 'Your data has been exported successfully'
-			});
-		} catch (error) {
-			debug.error('settings', 'Export error:', error);
-			addNotification({
-				type: 'error',
-				title: 'Export Error',
-				message: 'Failed to export data',
-				duration: 4000
-			});
-		} finally {
-			isExporting = false;
 		}
 	}
 
