@@ -47,6 +47,9 @@
 	// Mobile detection
 	let isMobile = $state(false);
 
+	// Touchscreen detection
+	let isTouchDevice = $state(false);
+
 	// Chat session users (other users in the same chat session, excluding self)
 	const chatSessionUsers = $derived.by(() => {
 		if (panelId !== 'chat') return [];
@@ -142,6 +145,7 @@
 	onMount(() => {
 		handleResize();
 		if (browser) {
+			isTouchDevice = navigator.maxTouchPoints > 0 || 'ontouchstart' in window;
 			window.addEventListener('resize', handleResize);
 		}
 	});
@@ -383,7 +387,7 @@
 				{/if} -->
 
 				<!-- Device size dropdown -->
-				<div class="relative {isMobile ? '' : 'mr-1.5'}">
+				<div class="relative">
 					<button
 						type="button"
 						class="flex items-center justify-center gap-1.5 {isMobile ? 'px-2 h-9' : 'px-1 h-6'} bg-transparent border-none rounded-md text-slate-500 cursor-pointer transition-all duration-150 hover:bg-violet-500/10 hover:text-slate-900 dark:hover:text-slate-100"
@@ -481,20 +485,22 @@
 					{/if}
 				</div>
 
-				<!-- Touch mode toggle (scroll ↔ trackpad cursor) -->
-				<button
-					type="button"
-					class="flex items-center justify-center gap-1.5 {isMobile ? 'px-2 h-9' : 'px-1 h-6'} bg-transparent border-none rounded-md cursor-pointer transition-all duration-150 hover:bg-violet-500/10
-						{previewPanelRef?.panelActions?.getTouchMode() === 'cursor' ? 'text-violet-600 dark:text-violet-400' : 'text-slate-500 hover:text-slate-900 dark:hover:text-slate-100'}"
-					onclick={() => {
-						const current = previewPanelRef?.panelActions?.getTouchMode() || 'scroll';
-						previewPanelRef?.panelActions?.setTouchMode(current === 'scroll' ? 'cursor' : 'scroll');
-					}}
-					title={previewPanelRef?.panelActions?.getTouchMode() === 'cursor' ? 'Trackpad mode: 1-finger moves cursor, tap=click, 2-finger scroll/right-click' : 'Scroll mode: touch scrolls the page (tap to click)'}
-				>
-					<Icon name={previewPanelRef?.panelActions?.getTouchMode() === 'cursor' ? 'lucide:mouse-pointer-2' : 'lucide:pointer'} class={isMobile ? 'w-4.5 h-4.5' : 'w-4 h-4'} />
-					<span class="text-xs font-medium">{previewPanelRef?.panelActions?.getTouchMode() === 'cursor' ? 'Cursor' : 'Touch'}</span>
-				</button>
+				<!-- Touch mode toggle (scroll ↔ trackpad cursor) — only shown on touchscreen devices -->
+				{#if isTouchDevice}
+					<button
+						type="button"
+						class="flex items-center justify-center gap-1.5 {isMobile ? 'px-2 h-9' : 'px-1 h-6'} bg-transparent border-none rounded-md cursor-pointer transition-all duration-150 hover:bg-violet-500/10
+							{previewPanelRef?.panelActions?.getTouchMode() === 'cursor' ? 'text-violet-600 dark:text-violet-400' : 'text-slate-500 hover:text-slate-900 dark:hover:text-slate-100'}"
+						onclick={() => {
+							const current = previewPanelRef?.panelActions?.getTouchMode() || 'scroll';
+							previewPanelRef?.panelActions?.setTouchMode(current === 'scroll' ? 'cursor' : 'scroll');
+						}}
+						title={previewPanelRef?.panelActions?.getTouchMode() === 'cursor' ? 'Trackpad mode: 1-finger moves cursor, tap=click, 2-finger scroll/right-click' : 'Scroll mode: touch scrolls the page (tap to click)'}
+					>
+						<Icon name={previewPanelRef?.panelActions?.getTouchMode() === 'cursor' ? 'lucide:mouse-pointer-2' : 'lucide:pointer'} class={isMobile ? 'w-4.5 h-4.5' : 'w-4 h-4'} />
+						<span class="text-xs font-medium">{previewPanelRef?.panelActions?.getTouchMode() === 'cursor' ? 'Cursor' : 'Touch'}</span>
+					</button>
+				{/if}
 
 				<!-- Rotation toggle -->
 				<button
@@ -510,7 +516,7 @@
 				</button>
 
 				<!-- Scale info badge -->
-				<div class="flex items-center gap-1.5 {isMobile ? 'px-2.5 h-9 bg-transparent' : 'px-2 h-6 bg-slate-100/60 dark:bg-slate-800/40'} rounded-md text-xs font-medium text-slate-500">
+				<div class="flex items-center gap-1.5 {isMobile ? 'px-1 h-9 bg-transparent' : 'px-1 h-6 bg-slate-100/60 dark:bg-slate-800/40'} rounded-md text-xs font-medium text-slate-500">
 					<Icon name="lucide:move-diagonal" class={isMobile ? 'w-4 h-4' : 'w-3.5 h-3.5'} />
 					<span>{Math.round((previewPanelRef?.panelActions?.getScale() || 1) * 100)}%</span>
 				</div>
