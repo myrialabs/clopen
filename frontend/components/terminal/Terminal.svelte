@@ -5,9 +5,7 @@
 <script lang="ts">
 	import { terminalStore } from '$frontend/stores/features/terminal.svelte';
 	import { projectState } from '$frontend/stores/core/projects.svelte';
-	import { getShortcutLabels } from '$frontend/utils/platform';
 	import TerminalTabs from './TerminalTabs.svelte';
-	import LoadingSpinner from '../common/feedback/LoadingSpinner.svelte';
 	import Icon from '$frontend/components/common/display/Icon.svelte';
 	import XTerm from '$frontend/components/common/xterm/XTerm.svelte';
 
@@ -25,9 +23,6 @@
 	let xterminalRef = $state<{ scrollToBottom: () => void; clear: () => void; writeData: (data: string) => void }>();
 	let isCancelling = $state(false);
 	let terminalContainer: HTMLDivElement | undefined = $state();
-
-	// Get platform-specific shortcut labels
-	const shortcuts = $derived(getShortcutLabels());
 
 	// Initialize terminal only once when component mounts
 	let isInitialized = false;
@@ -258,7 +253,7 @@
 	aria-label="Terminal application">
 
 	<!-- Terminal Header with Tabs -->
-	<div class="flex-shrink-0 bg-slate-100 dark:bg-slate-900 border-b border-slate-200 dark:border-slate-700">
+	<div class="flex-shrink-0 bg-white dark:bg-slate-900 border-b border-slate-200 dark:border-slate-700">
 		<!-- Terminal Tabs -->
 		<TerminalTabs
 			sessions={terminalStore.sessions}
@@ -292,29 +287,6 @@
 		</div>
 	{/if}
 
-	<!-- Terminal status bar -->
-	<div class="flex-shrink-0 px-2 py-0.5 bg-slate-100 dark:bg-slate-900 border-t border-slate-200 dark:border-slate-800 text-3xs text-slate-500 dark:text-slate-500 font-mono">
-		<div class="flex items-center justify-between">
-			<div class="flex items-center space-x-3">
-				<span class="hidden sm:inline"><kbd class="px-1 py-0.5 bg-slate-200 dark:bg-slate-800 border border-slate-300 dark:border-slate-700 rounded text-3xs text-slate-700 dark:text-slate-300">↑↓</kbd> History</span>
-				<span class="hidden md:inline"><kbd class="px-1 py-0.5 bg-slate-200 dark:bg-slate-800 border border-slate-300 dark:border-slate-700 rounded text-3xs text-slate-700 dark:text-slate-300">Ctrl+L</kbd> Clear</span>
-				<span class="hidden sm:inline"><kbd class="px-1 py-0.5 bg-slate-200 dark:bg-slate-800 border border-slate-300 dark:border-slate-700 rounded text-3xs text-slate-700 dark:text-slate-300">{shortcuts.cancel}</kbd> Interrupt
-					{#if isCancelling}
-						<span class="animate-pulse ml-1">(cancelling...)</span>
-					{/if}
-				</span>
-			</div>
-			<div class="flex items-center space-x-1.5">
-				{#if hasActiveProject}
-					<span class="text-emerald-500 text-xs">●</span>
-					<span class="hidden sm:inline">Ready</span>
-				{:else}
-					<span class="text-amber-500 text-xs">●</span>
-					<span class="hidden sm:inline">No Project</span>
-				{/if}
-			</div>
-		</div>
-	</div>
 </div>
 
 <style>

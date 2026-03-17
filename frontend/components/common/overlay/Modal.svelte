@@ -51,7 +51,7 @@
 		md: 'max-w-[95vw] md:max-w-lg',
 		lg: 'max-w-[95vw] md:max-w-2xl',
 		xl: 'max-w-[95vw] md:max-w-4xl',
-		full: 'max-w-[95vw] md:max-w-[90vw] max-h-[90vh]'
+		full: 'max-w-[95vw] md:max-w-[90vw]'
 	};
 
 	// Auto-focus management
@@ -106,7 +106,7 @@
 		<div
 			class="bg-white dark:bg-slate-900 rounded-lg md:rounded-xl border border-slate-200 dark:border-slate-800 shadow-2xl w-full {sizeClasses[
 				size
-			]} max-h-[95vh] md:max-h-[90vh] overflow-hidden flex flex-col {className}"
+			]} max-h-[calc(100dvh-1rem)] md:max-h-[calc(100dvh-2rem)] overflow-hidden flex flex-col {className}"
 			role="document"
 			onclick={(e) => e.stopPropagation()}
 			onkeydown={(e) => e.stopPropagation()}

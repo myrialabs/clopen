@@ -50,7 +50,7 @@
 	{#if badges.length > 0}
 		<div class="flex gap-2 mt-3">
 			{#each badges as badge}
-				<div class="text-xs px-2 py-1 rounded {badge.color}">
+				<div class="text-3xs px-2 py-0.5 rounded {badge.color}">
 					{badge.text}
 				</div>
 			{/each}

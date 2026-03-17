@@ -26,7 +26,7 @@
 {#if isOpen}
 	<div class="fixed inset-0 bg-black/50 z-50 flex items-center justify-center" onclick={onClose}>
 		<div
-			class="bg-white dark:bg-slate-800 rounded-lg shadow-xl max-w-4xl w-full mx-4 max-h-[85vh] flex flex-col"
+			class="bg-white dark:bg-slate-800 rounded-lg shadow-xl max-w-4xl w-full mx-4 my-4 max-h-[calc(100dvh-2rem)] flex flex-col"
 			onclick={(e) => e.stopPropagation()}
 		>
 			<!-- Header -->

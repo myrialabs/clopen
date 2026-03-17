@@ -168,7 +168,7 @@
 	aria-label="Project Navigator"
 >
 	<nav
-		class="flex flex-col h-full bg-slate-50 dark:bg-slate-900/95 transition-all duration-200 {isCollapsed
+		class="flex flex-col h-full bg-white dark:bg-slate-900/95 transition-all duration-200 {isCollapsed
 			? 'items-center'
 			: ''}"
 	>

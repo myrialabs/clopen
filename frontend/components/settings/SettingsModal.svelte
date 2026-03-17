@@ -106,7 +106,7 @@
 			role="dialog"
 			aria-labelledby="settings-title"
 			tabindex="-1"
-			class="flex flex-col w-full max-w-225 h-[85dvh] max-h-175 bg-slate-50 dark:bg-slate-950 border border-violet-500/20 rounded-2xl overflow-hidden shadow-[0_25px_50px_-12px_rgba(0,0,0,0.25)] dark:shadow-[0_25px_50px_-12px_rgba(0,0,0,0.5)] max-md:max-w-full max-md:h-dvh max-md:max-h-dvh max-md:rounded-none"
+			class="flex flex-col w-full max-w-225 h-[85dvh] max-h-175 bg-slate-50 dark:bg-slate-950 border border-slate-200 dark:border-slate-800 rounded-2xl overflow-hidden shadow-[0_25px_50px_-12px_rgba(0,0,0,0.25)] dark:shadow-[0_25px_50px_-12px_rgba(0,0,0,0.5)] max-md:max-w-full max-md:h-dvh max-md:max-h-dvh max-md:rounded-none"
 			onclick={(e) => e.stopPropagation()}
 			onkeydown={(e) => e.stopPropagation()}
 			in:scale={{ duration: 250, easing: cubicOut, start: 0.95 }}

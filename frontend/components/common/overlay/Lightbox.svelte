@@ -171,7 +171,7 @@
 
 		<!-- Content container -->
 		<div
-			class="relative max-w-[95vw] max-h-[95vh] flex items-center justify-center"
+			class="relative max-w-[95vw] max-h-[95dvh] flex items-center justify-center"
 			onclick={(e) => e.stopPropagation()}
 			onkeydown={(e) => e.stopPropagation()}
 			role="document"
@@ -184,7 +184,7 @@
 				<img
 					src="data:{mediaType};base64,{data}"
 					alt="Full size view"
-					class="max-w-full max-h-[90vh] object-contain rounded-lg shadow-2xl"
+					class="max-w-full max-h-[90dvh] object-contain rounded-lg shadow-2xl"
 					loading="eager"
 				/>
 			{:else if type === 'document'}

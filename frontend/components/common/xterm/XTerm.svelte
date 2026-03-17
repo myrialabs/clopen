@@ -635,7 +635,7 @@
 <!-- Pure xterm.js terminal container -->
 <div
 	bind:this={terminalContainer}
-	class="w-full h-full overflow-hidden bg-slate-50 dark:bg-slate-900/70 {className} select-none"
+	class="w-full h-full overflow-hidden bg-white dark:bg-slate-900/70 {className} select-none"
 	style="transition: opacity 0.2s ease-in-out; user-select: text;"
 	role="textbox"
 	tabindex="0"
@@ -673,6 +673,11 @@
 	}
 
 	:global(.xterm .xterm-screen) {
+		background: transparent !important;
+		height: 100% !important;
+	}
+
+	:global(.xterm .xterm-scrollable-element) {
 		background: transparent !important;
 		height: 100% !important;
 	}

@@ -4,7 +4,7 @@
 	import Modal from '$frontend/components/common/overlay/Modal.svelte';
 	import Checkbox from '$frontend/components/common/form/Checkbox.svelte';
 
-	let port = $state(3000);
+	let port = $state<number | null>(null);
 	let autoStopMinutes = $state(60);
 	let showWarning = $state(false);
 	let dontShowWarningAgain = $state(false);
@@ -20,6 +20,8 @@
 	);
 
 	async function handleStartTunnel() {
+		if (!port) return;
+
 		// Check if tunnel already exists for this port
 		if (tunnelStore.getTunnel(port)) {
 			warningMessage = `Tunnel already active on port ${port}`;
@@ -44,9 +46,9 @@
 	}
 
 	// Get loading and progress state for current port
-	const isLoading = $derived(tunnelStore.isLoading(port));
-	const progress = $derived(tunnelStore.getProgress(port));
-	const error = $derived(tunnelStore.getError(port));
+	const isLoading = $derived(tunnelStore.isLoading(port ?? 0));
+	const progress = $derived(tunnelStore.getProgress(port ?? 0));
+	const error = $derived(tunnelStore.getError(port ?? 0));
 
 	function openWarningModal() {
 		// Clear any previous warning messages
@@ -151,7 +153,7 @@
 		<!-- Start Button -->
 		<button
 			onclick={openWarningModal}
-			disabled={isLoading}
+			disabled={isLoading || !port}
 			class="inline-flex items-center justify-center font-semibold transition-colors duration-200 focus:outline-none disabled:opacity-50 disabled:cursor-not-allowed w-full px-3 md:px-4 py-2.5 text-sm rounded-lg bg-violet-600 hover:bg-violet-700 text-white gap-2"
 		>
 			{#if isLoading}

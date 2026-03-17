@@ -16,6 +16,13 @@
 	}
 
 	const parsedCommand = $derived(parseCommandParts(command));
+
+	function formatTimeout(ms: number): string {
+		if (ms < 1000) return `${ms}ms`;
+		if (ms < 60_000) return `${ms / 1000}s`;
+		if (ms < 3_600_000) return `${ms / 60_000}m`;
+		return `${ms / 3_600_000}h`;
+	}
 </script>
 
 <!-- Description (if provided) -->
@@ -34,7 +41,7 @@
 		</div>
 		{#if timeout}
 			<div class="inline-block ml-auto text-3xs bg-orange-100 dark:bg-orange-900 text-orange-700 dark:text-orange-300 px-2 py-0.5 rounded">
-				Timeout: {timeout}ms
+				Timeout: {formatTimeout(timeout)}
 			</div>
 		{/if}
 	</div>

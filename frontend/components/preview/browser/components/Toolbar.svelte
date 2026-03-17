@@ -214,7 +214,7 @@
 </script>
 
 <!-- Preview Toolbar -->
-<div class="relative bg-slate-100 dark:bg-slate-900 border-b border-slate-200 dark:border-slate-700">
+<div class="relative bg-white dark:bg-slate-900 border-b border-slate-200 dark:border-slate-700">
 	<!-- Tabs bar (Git-style underline tabs) — separated with its own border-bottom -->
 	{#if tabs.length > 0}
 		<div class="relative flex items-center overflow-x-auto border-b border-slate-200 dark:border-slate-700">

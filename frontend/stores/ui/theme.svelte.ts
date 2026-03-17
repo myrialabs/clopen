@@ -96,7 +96,7 @@ function updateThemeColor(mode: 'light' | 'dark') {
 	}
 	
 	// Set appropriate theme color
-	const themeColor = mode === 'dark' ? '#0a0a0a' : '#ffffff';
+	const themeColor = mode === 'dark' ? '#0e172b' : '#ffffff';
 	metaThemeColor.setAttribute('content', themeColor);
 }
 

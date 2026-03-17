@@ -13,7 +13,7 @@
 	let gitPanelRef: any = $state();
 </script>
 
-<Modal {isOpen} {onClose} size="full" className="!max-h-[85vh] !max-w-[95vw] md:!max-w-5xl">
+<Modal {isOpen} {onClose} size="full" className="!max-h-[85dvh] !max-w-[95vw] md:!max-w-5xl">
 	{#snippet header()}
 		<div class="flex items-center justify-between px-4 py-3 md:px-6 md:py-4">
 			<div class="flex items-center gap-2.5">
@@ -73,7 +73,7 @@
 	{/snippet}
 
 	{#snippet children()}
-		<div class="h-[65vh] -mx-4 -my-6 md:-mx-6">
+		<div class="h-[65dvh] -mx-4 -my-6 md:-mx-6">
 			<GitPanel bind:this={gitPanelRef} />
 		</div>
 	{/snippet}
