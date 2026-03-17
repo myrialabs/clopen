@@ -416,11 +416,11 @@
 			ondrop={fileHandling.handleDrop}
 		>
 			<div class="flex-1">
-				<!-- Engine/Model Picker -->
-				<EngineModelPicker />
-
 				<!-- Edit Mode Indicator -->
 				<EditModeIndicator onCancel={handleCancelEdit} />
+
+				<!-- Engine/Model Picker -->
+				<EngineModelPicker />
 
 				<div class="flex items-end">
 					<textarea
