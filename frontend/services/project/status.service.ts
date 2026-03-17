@@ -7,7 +7,7 @@
  */
 
 import { getOrCreateAnonymousUser, type AnonymousUser } from '$shared/utils/anonymous-user';
-import ws from '$frontend/utils/ws';
+import ws, { onWsReconnect } from '$frontend/utils/ws';
 import { debug } from '$shared/utils/logger';
 
 export interface ProjectStatus {
@@ -43,6 +43,16 @@ class ProjectStatusService {
 
     this.currentUser = await getOrCreateAnonymousUser();
     debug.log('project', 'Initialized with user:', this.currentUser?.name);
+
+    // Re-join project presence after WebSocket reconnection.
+    // Without this, the new connection loses presence tracking and
+    // panels (Git, Terminal, Preview, etc.) miss status updates.
+    onWsReconnect(() => {
+      if (this.currentProjectId && this.currentUser) {
+        ws.emit('projects:join', { userName: this.currentUser.name });
+        debug.log('project', 'Re-joined project presence after reconnection');
+      }
+    });
 
     this.unsubscribe = ws.on('projects:presence-updated', (data) => {
       try {

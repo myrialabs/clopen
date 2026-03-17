@@ -56,6 +56,8 @@ export interface WSClientOptions {
 	maxReconnectDelay?: number;
 	/** Callback when connection status changes */
 	onStatusChange?: (status: WSConnectionStatus, reconnectAttempts: number) => void;
+	/** Callback when WebSocket reconnects (not on initial connection) */
+	onReconnect?: () => void;
 }
 
 // ============================================================================
@@ -204,13 +206,14 @@ function decodeBinaryMessage(buffer: ArrayBuffer): { action: string; payload: an
 export class WSClient<TAPI extends { client: any; server: any }> {
 	private ws: WebSocket | null = null;
 	private url: string;
-	private options: Required<Omit<WSClientOptions, 'onStatusChange'>> & Pick<WSClientOptions, 'onStatusChange'>;
+	private options: Required<Omit<WSClientOptions, 'onStatusChange' | 'onReconnect'>> & Pick<WSClientOptions, 'onStatusChange' | 'onReconnect'>;
 	private reconnectAttempts = 0;
 	private reconnectTimeout: ReturnType<typeof setTimeout> | null = null;
 	private listeners = new Map<string, Set<(payload: any) => void>>();
 	private messageQueue: Array<{ action: string; payload: any }> = [];
 	private isConnected = false;
 	private shouldReconnect = true;
+	private hasConnectedBefore = false;
 
 	/** Current context (synced with server) */
 	private context: {
@@ -237,7 +240,8 @@ export class WSClient<TAPI extends { client: any; server: any }> {
 			maxReconnectAttempts: options.maxReconnectAttempts ?? 5,
 			reconnectDelay: options.reconnectDelay ?? 1000,
 			maxReconnectDelay: options.maxReconnectDelay ?? 30000,
-			onStatusChange: options.onStatusChange ?? undefined
+			onStatusChange: options.onStatusChange ?? undefined,
+			onReconnect: options.onReconnect ?? undefined
 		};
 
 		this.connect();
@@ -295,7 +299,20 @@ export class WSClient<TAPI extends { client: any; server: any }> {
 					}
 				}
 
-				// Flush queued messages AFTER context is synced
+				// Fire reconnect handlers BEFORE queue flush so room
+				// subscriptions (chat:join-session, projects:join) are
+				// restored before any queued messages are sent.
+				const isReconnect = this.hasConnectedBefore;
+				this.hasConnectedBefore = true;
+				if (isReconnect) {
+					try {
+						this.options.onReconnect?.();
+					} catch (err) {
+						debug.error('websocket', 'onReconnect callback error:', err);
+					}
+				}
+
+				// Flush queued messages AFTER context + room re-joins are synced
 				while (this.messageQueue.length > 0) {
 					const msg = this.messageQueue.shift();
 					if (msg) {
@@ -303,7 +320,7 @@ export class WSClient<TAPI extends { client: any; server: any }> {
 					}
 				}
 
-				// Resolve waitUntilConnected() callers AFTER context sync + queue flush
+				// Resolve waitUntilConnected() callers AFTER everything is ready
 				for (const resolve of this.connectResolvers) {
 					resolve();
 				}

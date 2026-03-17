@@ -10,7 +10,7 @@
 import type { ChatSession, SDKMessageFormatter } from '$shared/types/database/schema';
 import type { SDKMessage } from '$shared/types/messaging';
 import { buildMetadataFromTransport } from '$shared/utils/message-formatter';
-import ws from '$frontend/utils/ws';
+import ws, { onWsReconnect } from '$frontend/utils/ws';
 import { projectState } from './projects.svelte';
 import { setupEditModeListener, restoreEditMode } from '$frontend/stores/ui/edit-mode.svelte';
 import { markSessionUnread, markSessionRead, appState } from '$frontend/stores/core/app.svelte';
@@ -376,6 +376,16 @@ export async function reloadSessionsForProject(): Promise<string | null> {
  * automatically switch to the new shared session.
  */
 function setupCollaborativeListeners() {
+	// Re-join chat session room after WebSocket reconnection.
+	// Without this, the new connection is not in the session room and
+	// misses all chat events (stream, partial, complete, input sync, etc.).
+	onWsReconnect(() => {
+		if (sessionState.currentSession?.id) {
+			ws.emit('chat:join-session', { chatSessionId: sessionState.currentSession.id });
+			debug.log('session', 'Re-joined chat session room after reconnection:', sessionState.currentSession.id);
+		}
+	});
+
 	// Listen for new session available notifications from other users.
 	// Does NOT auto-switch — adds session to list and shows notification.
 	ws.on('sessions:session-available', async (data: { session: ChatSession }) => {

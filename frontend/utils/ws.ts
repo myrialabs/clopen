@@ -7,6 +7,7 @@
 import { WSClient } from '$shared/utils/ws-client';
 import type { WSAPI } from '$backend/ws';
 import { setConnectionStatus } from '$frontend/stores/ui/connection.svelte';
+import { debug } from '$shared/utils/logger';
 
 /**
  * Get WebSocket URL based on environment
@@ -18,6 +19,28 @@ function getWebSocketUrl(): string {
 	return `${protocol}//${host}/ws`;
 }
 
+// ============================================================================
+// Reconnect Handler Registry
+// ============================================================================
+
+/** Handlers to run after WebSocket reconnection (re-join rooms, restore subscriptions) */
+const reconnectHandlers = new Set<() => void>();
+
+/**
+ * Register a handler to run after WebSocket reconnection.
+ * Use this to re-join rooms (chat:join-session, projects:join) and
+ * restore subscriptions that are lost when the connection drops.
+ * Returns an unsubscribe function.
+ */
+export function onWsReconnect(handler: () => void): () => void {
+	reconnectHandlers.add(handler);
+	return () => { reconnectHandlers.delete(handler); };
+}
+
+// ============================================================================
+// WebSocket Client
+// ============================================================================
+
 const ws = new WSClient<WSAPI>(getWebSocketUrl(), {
 	autoReconnect: true,
 	maxReconnectAttempts: 0, // Infinite reconnect
@@ -25,6 +48,16 @@ const ws = new WSClient<WSAPI>(getWebSocketUrl(), {
 	maxReconnectDelay: 30000,
 	onStatusChange: (status, reconnectAttempts) => {
 		setConnectionStatus(status, reconnectAttempts);
+	},
+	onReconnect: () => {
+		debug.log('websocket', `Running ${reconnectHandlers.size} reconnect handler(s)`);
+		for (const handler of reconnectHandlers) {
+			try {
+				handler();
+			} catch (err) {
+				debug.error('websocket', 'Reconnect handler error:', err);
+			}
+		}
 	}
 });
 
@@ -43,6 +76,15 @@ if (import.meta.hot) {
 // spin indefinitely after a refresh.
 window.addEventListener('beforeunload', () => {
 	ws.disconnect();
+});
+
+// Force reload when page is restored from bfcache (back-forward cache).
+// After beforeunload, all WS listeners are cleared and the connection is dead.
+// A full reload ensures all state (handlers, room subscriptions) is re-initialized.
+window.addEventListener('pageshow', (event) => {
+	if (event.persisted) {
+		window.location.reload();
+	}
 });
 
 export default ws;
