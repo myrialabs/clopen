@@ -163,6 +163,21 @@
 		progressPercent = 0;
 	}
 
+	// Reset progress bar immediately when active tab changes
+	// This prevents stale progress from a previous tab leaking into the new tab
+	let previousActiveTabId = $state<string | null>(null);
+	$effect(() => {
+		if (activeTabId !== previousActiveTabId) {
+			previousActiveTabId = activeTabId;
+			// Immediately stop any running progress animation and clear pending timeouts
+			stopProgress();
+			if (progressCompleteTimeout) {
+				clearTimeout(progressCompleteTimeout);
+				progressCompleteTimeout = null;
+			}
+		}
+	});
+
 	// Watch loading states to control progress bar
 	// Progress bar should be active during:
 	// 1. isLaunchingBrowser: API call to launch browser
