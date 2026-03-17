@@ -338,16 +338,22 @@ export class BrowserWebCodecsService {
 		// Handle ICE candidates
 		this.peerConnection.onicecandidate = (event) => {
 			if (event.candidate && this.sessionId) {
+				const candidateInit: RTCIceCandidateInit = {
+					candidate: event.candidate.candidate,
+					sdpMid: event.candidate.sdpMid,
+					sdpMLineIndex: event.candidate.sdpMLineIndex
+				};
+
 				// Backend uses active tab automatically
-				ws.http('preview:browser-stream-ice', {
-					candidate: {
-						candidate: event.candidate.candidate,
-						sdpMid: event.candidate.sdpMid,
-						sdpMLineIndex: event.candidate.sdpMLineIndex
-					}
-				}).catch((error) => {
+				ws.http('preview:browser-stream-ice', { candidate: candidateInit }).catch((error) => {
 					debug.warn('webcodecs', 'Failed to send ICE candidate:', error);
 				});
+
+				// Also send loopback version for VPN compatibility (same-machine peers)
+				const loopback = this.createLoopbackCandidate(candidateInit);
+				if (loopback) {
+					ws.http('preview:browser-stream-ice', { candidate: loopback }).catch(() => {});
+				}
 			}
 		};
 
@@ -866,7 +872,27 @@ export class BrowserWebCodecsService {
 	}
 
 	/**
-	 * Add ICE candidate
+	 * Create a loopback (127.0.0.1) copy of a host ICE candidate.
+	 * Ensures WebRTC connects via loopback when VPN (e.g. Cloudflare WARP)
+	 * interferes with host candidate connectivity between same-machine peers.
+	 */
+	private createLoopbackCandidate(candidate: RTCIceCandidateInit): RTCIceCandidateInit | null {
+		if (!candidate.candidate) return null;
+		if (!candidate.candidate.includes('typ host')) return null;
+
+		const parts = candidate.candidate.split(' ');
+		if (parts.length < 8) return null;
+
+		// Index 4 is the address field in ICE candidate format
+		const address = parts[4];
+		if (address === '127.0.0.1' || address === '::1') return null;
+
+		parts[4] = '127.0.0.1';
+		return { ...candidate, candidate: parts.join(' ') };
+	}
+
+	/**
+	 * Add ICE candidate (+ loopback variant for VPN compatibility)
 	 */
 	private async addIceCandidate(candidate: RTCIceCandidateInit): Promise<void> {
 		if (!this.peerConnection) return;
@@ -875,6 +901,16 @@ export class BrowserWebCodecsService {
 			await this.peerConnection.addIceCandidate(new RTCIceCandidate(candidate));
 		} catch (error) {
 			debug.warn('webcodecs', 'Add ICE candidate error:', error);
+		}
+
+		// Also try loopback version for VPN compatibility (same-machine peers)
+		const loopback = this.createLoopbackCandidate(candidate);
+		if (loopback) {
+			try {
+				await this.peerConnection.addIceCandidate(new RTCIceCandidate(loopback));
+			} catch {
+				// Expected to fail if loopback is not applicable
+			}
 		}
 	}
 

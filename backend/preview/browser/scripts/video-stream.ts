@@ -38,6 +38,23 @@ export function videoEncoderScript(config: StreamingConfig['video']) {
 	// STUN servers are unnecessary for localhost and add 100-500ms ICE gathering latency
 	const iceServers: { urls: string }[] = [];
 
+	// Create a loopback (127.0.0.1) copy of a host ICE candidate.
+	// Ensures WebRTC connects via loopback when VPN (e.g. Cloudflare WARP)
+	// interferes with host candidate connectivity between same-machine peers.
+	function createLoopbackCandidate(candidate: { candidate?: string; sdpMid?: string | null; sdpMLineIndex?: number | null }) {
+		if (!candidate.candidate) return null;
+		if (!candidate.candidate.includes('typ host')) return null;
+
+		const parts = candidate.candidate.split(' ');
+		if (parts.length < 8) return null;
+
+		const address = parts[4];
+		if (address === '127.0.0.1' || address === '::1') return null;
+
+		parts[4] = '127.0.0.1';
+		return { ...candidate, candidate: parts.join(' ') };
+	}
+
 	// Check cursor style from page
 	function checkCursor() {
 		try {
@@ -103,11 +120,18 @@ export function videoEncoderScript(config: StreamingConfig['video']) {
 		// Handle ICE candidates
 		peerConnection.onicecandidate = (event) => {
 			if (event.candidate && (window as any).__sendIceCandidate) {
-				(window as any).__sendIceCandidate({
+				const candidateInit = {
 					candidate: event.candidate.candidate,
 					sdpMid: event.candidate.sdpMid,
 					sdpMLineIndex: event.candidate.sdpMLineIndex
-				});
+				};
+				(window as any).__sendIceCandidate(candidateInit);
+
+				// Also send loopback version for VPN compatibility (same-machine peers)
+				const loopback = createLoopbackCandidate(candidateInit);
+				if (loopback) {
+					(window as any).__sendIceCandidate(loopback);
+				}
 			}
 		};
 
@@ -337,16 +361,27 @@ export function videoEncoderScript(config: StreamingConfig['video']) {
 		}
 	}
 
-	// Add ICE candidate
+	// Add ICE candidate (+ loopback variant for VPN compatibility)
 	async function addIceCandidate(candidate: RTCIceCandidateInit) {
 		if (!peerConnection) return false;
 
 		try {
 			await peerConnection.addIceCandidate(new RTCIceCandidate(candidate));
-			return true;
 		} catch (error) {
 			return false;
 		}
+
+		// Also try loopback version for VPN compatibility (same-machine peers)
+		const loopback = createLoopbackCandidate(candidate);
+		if (loopback) {
+			try {
+				await peerConnection.addIceCandidate(new RTCIceCandidate(loopback as RTCIceCandidateInit));
+			} catch {
+				// Expected to fail if loopback is not applicable
+			}
+		}
+
+		return true;
 	}
 
 	// Reconfigure video encoder with new dimensions (hot-swap)

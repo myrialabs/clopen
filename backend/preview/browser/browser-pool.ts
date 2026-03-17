@@ -51,7 +51,7 @@ const CHROMIUM_ARGS = [
 	'--disable-blink-features=AutomationControlled',
 	'--window-size=1366,768',
 	'--autoplay-policy=no-user-gesture-required',
-	'--disable-features=AudioServiceOutOfProcess'
+	'--disable-features=AudioServiceOutOfProcess,WebRtcHideLocalIpsWithMdns'
 ];
 
 class BrowserPool {
