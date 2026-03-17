@@ -156,7 +156,12 @@ startServer().catch((error) => {
 });
 
 // Graceful shutdown - properly close server and database
+let isShuttingDown = false;
+
 async function gracefulShutdown() {
+	if (isShuttingDown) return;
+	isShuttingDown = true;
+
 	console.log('\n🛑 Shutting down server...');
 	try {
 		// Close MCP remote server (before engines, as they may still reference it)
@@ -176,6 +181,13 @@ async function gracefulShutdown() {
 
 process.on('SIGINT', gracefulShutdown);
 process.on('SIGTERM', gracefulShutdown);
+
+// Ignore SIGHUP — sent when the controlling terminal closes or an SSH session
+// disconnects. Without a handler Bun exits immediately; we want the server to
+// keep running (e.g. started in a background tab or remote shell).
+process.on('SIGHUP', () => {
+	debug.log('server', 'Received SIGHUP — ignoring (server stays running)');
+});
 
 // Safety net: prevent server crash from unhandled errors.
 // These can occur when AI engine SDKs emit asynchronous errors that bypass
