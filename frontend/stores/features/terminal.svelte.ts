@@ -17,6 +17,7 @@ interface TerminalState {
 	executingSessionIds: Set<string>; // Track multiple executing sessions
 	sessionExecutionStates: Map<string, boolean>; // Track execution state per session
 	lineBuffers: Map<string, string>; // Line buffering for chunked PTY output
+	flushTimers: Map<string, ReturnType<typeof setTimeout>>; // Auto-flush timers for buffered output
 }
 
 // Terminal store state
@@ -28,7 +29,8 @@ const terminalState = $state<TerminalState>({
 	lastCommandWasCancelled: false,
 	executingSessionIds: new Set(),
 	sessionExecutionStates: new Map(),
-	lineBuffers: new Map()
+	lineBuffers: new Map(),
+	flushTimers: new Map()
 });
 
 // Computed properties
@@ -214,8 +216,13 @@ export const terminalStore = {
 			debug.error('terminal', `🔴 [closeSession] Failed to remove from project context:`, error);
 		}
 
-		// Clear any buffered content for this session
+		// Clear any buffered content and flush timers for this session
 		terminalState.lineBuffers.delete(sessionId);
+		const closeFlushTimer = terminalState.flushTimers.get(sessionId);
+		if (closeFlushTimer) {
+			clearTimeout(closeFlushTimer);
+			terminalState.flushTimers.delete(sessionId);
+		}
 
 		// Remove execution states for this session
 		terminalState.sessionExecutionStates.delete(sessionId);
@@ -285,6 +292,13 @@ export const terminalStore = {
 
 		// Flush any buffered content before cancel (if was executing)
 		if (wasExecuting) {
+			// Clear flush timer first
+			const cancelFlushTimer = terminalState.flushTimers.get(activeSession.id);
+			if (cancelFlushTimer) {
+				clearTimeout(cancelFlushTimer);
+				terminalState.flushTimers.delete(activeSession.id);
+			}
+
 			const remainingBuffer = terminalState.lineBuffers.get(activeSession.id);
 			if (remainingBuffer && remainingBuffer.length > 0) {
 				this.addLineToSession(activeSession.id, {
@@ -353,31 +367,41 @@ export const terminalStore = {
 
 	// Process buffered output to handle chunked PTY data properly
 	processBufferedOutput(sessionId: string, content: string, type: 'output' | 'error'): void {
-		// Buffer incomplete lines to avoid splitting words like "Reply" into "R" and "eply"
+		// Clear any pending flush timer for this session
+		const existingTimer = terminalState.flushTimers.get(sessionId);
+		if (existingTimer) {
+			clearTimeout(existingTimer);
+			terminalState.flushTimers.delete(sessionId);
+		}
+
 		let buffer = terminalState.lineBuffers.get(sessionId) || '';
 		buffer += content;
-		
-		// Only send complete chunks to avoid word splitting
-		// If buffer ends with a partial ANSI sequence or in middle of a word, wait for more
-		if (buffer.length < 2) {
-			// Very short buffer, likely incomplete - wait for more
-			terminalState.lineBuffers.set(sessionId, buffer);
-			return;
-		}
-		
+
 		// Check if we're in the middle of an ANSI escape sequence
 		const lastEscIndex = buffer.lastIndexOf('\x1b');
 		if (lastEscIndex >= 0 && lastEscIndex > buffer.length - 10) {
-			// Might be in middle of escape sequence, check if it's complete
 			const remaining = buffer.substring(lastEscIndex);
 			if (!/^(\x1b\[[0-9;]*[a-zA-Z]|\x1b\[\?[0-9]+[lh])/.test(remaining)) {
-				// Incomplete escape sequence, wait for more
+				// Incomplete escape sequence - hold briefly, auto-flush after 8ms
 				terminalState.lineBuffers.set(sessionId, buffer);
+				const flushTimer = setTimeout(() => {
+					terminalState.flushTimers.delete(sessionId);
+					const pending = terminalState.lineBuffers.get(sessionId);
+					if (pending && pending.length > 0) {
+						this.addLineToSession(sessionId, {
+							content: pending,
+							type: type,
+							timestamp: new Date()
+						});
+						terminalState.lineBuffers.set(sessionId, '');
+					}
+				}, 8);
+				terminalState.flushTimers.set(sessionId, flushTimer);
 				return;
 			}
 		}
-		
-		// Send the buffer and clear it
+
+		// Flush immediately - no artificial delay for complete data
 		if (buffer.length > 0) {
 			this.addLineToSession(sessionId, {
 				content: buffer,
@@ -390,15 +414,11 @@ export const terminalStore = {
 
 	// Session Content Management
 	addLineToSession(sessionId: string, line: TerminalLine): void {
-		terminalState.sessions = terminalState.sessions.map(session => 
-			session.id === sessionId 
-				? { 
-					...session, 
-					lines: [...session.lines, line],
-					lastUsedAt: new Date()
-				}
-				: session
-		);
+		const session = terminalState.sessions.find(s => s.id === sessionId);
+		if (session) {
+			session.lines.push(line);
+			session.lastUsedAt = new Date();
+		}
 	},
 
 	updateSessionHistory(sessionId: string, history: string[]): void {
@@ -411,8 +431,13 @@ export const terminalStore = {
 
 
 	clearSession(sessionId: string): void {
-		// Clear any buffered content for this session
+		// Clear any buffered content and flush timers for this session
 		terminalState.lineBuffers.delete(sessionId);
+		const clearFlushTimer = terminalState.flushTimers.get(sessionId);
+		if (clearFlushTimer) {
+			clearTimeout(clearFlushTimer);
+			terminalState.flushTimers.delete(sessionId);
+		}
 		
 		// CRITICAL FIX: Actually clear the session lines history
 		// This ensures when switching tabs, the cleared terminal stays clear
@@ -600,6 +625,11 @@ export const terminalStore = {
 	 */
 	removeSessionFromStore(sessionId: string): void {
 		terminalState.lineBuffers.delete(sessionId);
+		const removeFlushTimer = terminalState.flushTimers.get(sessionId);
+		if (removeFlushTimer) {
+			clearTimeout(removeFlushTimer);
+			terminalState.flushTimers.delete(sessionId);
+		}
 		terminalState.sessionExecutionStates.delete(sessionId);
 		terminalState.executingSessionIds.delete(sessionId);
 		terminalState.sessions = terminalState.sessions.filter(s => s.id !== sessionId);

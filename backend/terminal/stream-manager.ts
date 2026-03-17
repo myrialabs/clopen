@@ -4,7 +4,7 @@
  */
 
 import type { IPty } from 'bun-pty';
-import { existsSync, mkdirSync, writeFileSync, readFileSync, unlinkSync } from 'fs';
+import { existsSync, mkdirSync, readFileSync, unlinkSync } from 'fs';
 import { join } from 'path';
 
 interface TerminalStream {
@@ -129,36 +129,50 @@ class TerminalStreamManager {
     }
   }
 
+  /** Pending write flag to coalesce rapid writes */
+  private pendingWrites = new Set<string>();
+
   /**
-   * Persist output to disk for cross-project persistence
+   * Persist output to disk for cross-project persistence (async, coalesced)
    */
   private persistOutputToDisk(stream: TerminalStream): void {
-    try {
-      const cacheFile = join(this.tempDir, `${stream.sessionId}.json`);
+    // Coalesce rapid writes - only schedule one write per session per microtask
+    if (this.pendingWrites.has(stream.sessionId)) return;
+    this.pendingWrites.add(stream.sessionId);
 
-      // Only save new output (from outputStartIndex onwards)
-      // This prevents duplicating old output that was already displayed
-      const newOutput = stream.outputStartIndex !== undefined
-        ? stream.output.slice(stream.outputStartIndex)
-        : stream.output;
+    queueMicrotask(() => {
+      this.pendingWrites.delete(stream.sessionId);
 
-      const cacheData = {
-        streamId: stream.streamId,
-        sessionId: stream.sessionId,
-        command: stream.command,
-        projectId: stream.projectId,
-        projectPath: stream.projectPath,
-        workingDirectory: stream.workingDirectory,
-        startedAt: stream.startedAt,
-        status: stream.status,
-        output: newOutput, // Only save new output
-        outputStartIndex: stream.outputStartIndex || 0,
-        lastUpdated: new Date().toISOString()
-      };
-      writeFileSync(cacheFile, JSON.stringify(cacheData));
-    } catch (error) {
-      // Silently handle write errors
-    }
+      try {
+        const cacheFile = join(this.tempDir, `${stream.sessionId}.json`);
+
+        // Only save new output (from outputStartIndex onwards)
+        const newOutput = stream.outputStartIndex !== undefined
+          ? stream.output.slice(stream.outputStartIndex)
+          : stream.output;
+
+        const cacheData = {
+          streamId: stream.streamId,
+          sessionId: stream.sessionId,
+          command: stream.command,
+          projectId: stream.projectId,
+          projectPath: stream.projectPath,
+          workingDirectory: stream.workingDirectory,
+          startedAt: stream.startedAt,
+          status: stream.status,
+          output: newOutput,
+          outputStartIndex: stream.outputStartIndex || 0,
+          lastUpdated: new Date().toISOString()
+        };
+
+        // Use Bun.write for non-blocking async disk write
+        Bun.write(cacheFile, JSON.stringify(cacheData)).catch(() => {
+          // Silently handle write errors
+        });
+      } catch {
+        // Silently handle errors
+      }
+    });
   }
 
   /**
