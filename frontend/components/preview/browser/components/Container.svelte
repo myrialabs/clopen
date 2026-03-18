@@ -385,6 +385,7 @@
 						bind:isNavigating
 						bind:isReconnecting
 						bind:touchMode
+						touchTarget={previewContainer}
 						onInteraction={handleCanvasInteraction}
 						onCursorUpdate={handleCursorUpdate}
 						onFrameUpdate={handleFrameUpdate}

@@ -26,6 +26,7 @@
 		onStatsUpdate = $bindable<(stats: BrowserWebCodecsStreamStats | null) => void>(() => {}),
 		onRequestScreencastRefresh = $bindable<() => void>(() => {}), // Called when stream is stuck
 		touchMode = $bindable<'scroll' | 'cursor'>('scroll'),
+		touchTarget = undefined as HTMLElement | undefined, // Container element for touch events
 		onTouchCursorUpdate = $bindable<(pos: { x: number; y: number; visible: boolean; clicking?: boolean }) => void>(() => {})
 	} = $props();
 
@@ -1002,20 +1003,6 @@
 				canvas.focus();
 			});
 
-			const touchStartHandler = (e: TouchEvent) => handleTouchStart(e, canvas);
-			let lastTouchMoveTime = 0;
-			const touchMoveHandler = (e: TouchEvent) => {
-				const now = Date.now();
-				if (now - lastTouchMoveTime >= 16) {
-					lastTouchMoveTime = now;
-					handleTouchMove(e, canvas);
-				}
-			};
-			const touchEndHandler = (e: TouchEvent) => handleTouchEnd(e, canvas);
-
-			canvas.addEventListener('touchstart', touchStartHandler, { passive: false });
-			canvas.addEventListener('touchmove', touchMoveHandler, { passive: false });
-			canvas.addEventListener('touchend', touchEndHandler, { passive: false });
 
 			const handleMouseLeave = () => {
 				if (isMouseDown) {
@@ -1045,11 +1032,36 @@
 				canvas.removeEventListener('mousedown', (e) => handleCanvasMouseDown(e, canvas));
 				canvas.removeEventListener('mouseup', (e) => handleCanvasMouseUp(e, canvas));
 				canvas.removeEventListener('mousemove', handleMouseMove);
-				canvas.removeEventListener('touchstart', touchStartHandler);
-				canvas.removeEventListener('touchmove', touchMoveHandler);
-				canvas.removeEventListener('touchend', touchEndHandler);
 			};
 		}
+	});
+
+	// Attach touch events to touchTarget (Container's previewContainer) instead of canvas
+	$effect(() => {
+		if (!touchTarget || !canvasElement) return;
+
+		const canvas = canvasElement;
+		let lastTouchMoveTime = 0;
+
+		const touchStartHandler = (e: TouchEvent) => handleTouchStart(e, canvas);
+		const touchMoveHandler = (e: TouchEvent) => {
+			const now = Date.now();
+			if (now - lastTouchMoveTime >= 16) {
+				lastTouchMoveTime = now;
+				handleTouchMove(e, canvas);
+			}
+		};
+		const touchEndHandler = (e: TouchEvent) => handleTouchEnd(e, canvas);
+
+		touchTarget.addEventListener('touchstart', touchStartHandler, { passive: false });
+		touchTarget.addEventListener('touchmove', touchMoveHandler, { passive: false });
+		touchTarget.addEventListener('touchend', touchEndHandler, { passive: false });
+
+		return () => {
+			touchTarget.removeEventListener('touchstart', touchStartHandler);
+			touchTarget.removeEventListener('touchmove', touchMoveHandler);
+			touchTarget.removeEventListener('touchend', touchEndHandler);
+		};
 	});
 
 	// Convert canvas coordinates to viewport (screen) coordinates for VirtualCursor display
