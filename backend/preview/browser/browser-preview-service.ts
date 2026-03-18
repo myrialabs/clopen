@@ -94,6 +94,7 @@ export class BrowserPreviewService extends EventEmitter {
 		});
 
 		// Forward navigation events and handle video streaming restart
+		// Only full navigations (framenavigated) need streaming restart
 		this.navigationTracker.on('navigation', async (data) => {
 			this.emit('preview:browser-navigation', data);
 
@@ -119,6 +120,12 @@ export class BrowserPreviewService extends EventEmitter {
 		// Forward navigation loading events
 		this.navigationTracker.on('navigation-loading', (data) => {
 			this.emit('preview:browser-navigation-loading', data);
+		});
+
+		// Forward SPA navigation events (pushState/replaceState)
+		// No streaming restart needed — page context is unchanged
+		this.navigationTracker.on('navigation-spa', (data) => {
+			this.emit('preview:browser-navigation-spa', data);
 		});
 
 		// Forward new window events
@@ -252,6 +259,9 @@ export class BrowserPreviewService extends EventEmitter {
 
 		// Stop WebCodecs streaming first
 		await this.stopWebCodecsStreaming(tabId);
+
+		// Cleanup navigation tracker CDP session
+		await this.navigationTracker.cleanupSession(tabId);
 
 		// Clear cursor tracking for this tab
 		this.interactionHandler.clearSessionCursor(tabId);
@@ -652,6 +662,11 @@ class BrowserPreviewServiceManager {
 
 		service.on('preview:browser-navigation', (data) => {
 			ws.emit.project(projectId, 'preview:browser-navigation', data);
+		});
+
+		// Forward SPA navigation events (pushState/replaceState — URL-only update)
+		service.on('preview:browser-navigation-spa', (data) => {
+			ws.emit.project(projectId, 'preview:browser-navigation-spa', data);
 		});
 
 		// Forward tab events

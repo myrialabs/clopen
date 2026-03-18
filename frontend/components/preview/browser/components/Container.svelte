@@ -70,10 +70,11 @@
 	let showNavigationOverlay = $state(false);
 	let overlayHideTimeout: ReturnType<typeof setTimeout> | null = null;
 
-	// Debounced navigation overlay - similar to progress bar logic
-	// Shows immediately when navigating/reconnecting, hides with delay to prevent flicker
+	// Debounced navigation overlay - only for user-initiated toolbar navigations
+	// In-browser navigations (link clicks) only show progress bar, not this overlay
+	// This makes the preview behave like a real browser
 	$effect(() => {
-		const shouldShowOverlay = (isNavigating || isReconnecting) && isStreamReady;
+		const shouldShowOverlay = isNavigating && isStreamReady;
 
 		// Cancel any pending hide when overlay should show
 		if (shouldShowOverlay && overlayHideTimeout) {
@@ -409,7 +410,8 @@
 				</div>
 			{/if}
 
-			<!-- Navigation Overlay: Semi-transparent overlay during navigation/reconnect (shows last frame behind) -->
+			<!-- Navigation Overlay: Only for user-initiated toolbar navigations (Go button/Enter) -->
+			<!-- In-browser link clicks only show the progress bar, not this overlay -->
 			{#if showNavigationOverlay}
 				<div
 					class="absolute inset-0 bg-white/60 dark:bg-slate-800/60 backdrop-blur-[2px] flex items-center justify-center z-10"
@@ -417,7 +419,7 @@
 					<div class="flex flex-col items-center gap-2">
 						<Icon name="lucide:loader-circle" class="w-8 h-8 animate-spin text-violet-600" />
 						<div class="text-slate-600 dark:text-slate-300 text-center">
-							<div class="text-sm font-medium">Loading preview...</div>
+							<div class="text-sm font-medium">Navigating...</div>
 						</div>
 					</div>
 				</div>

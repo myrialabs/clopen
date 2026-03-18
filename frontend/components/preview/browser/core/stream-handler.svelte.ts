@@ -73,6 +73,10 @@ export function createStreamMessageHandler(config: StreamMessageHandlerConfig) {
 				handleNavigation(targetTabId, message.data, tab);
 				break;
 
+			case 'navigation-spa':
+				handleNavigationSpa(targetTabId, message.data, tab);
+				break;
+
 			case 'new-window':
 				handleNewWindow(message.data);
 				break;
@@ -172,13 +176,14 @@ export function createStreamMessageHandler(config: StreamMessageHandlerConfig) {
 	function handleNavigationLoading(tabId: string, data: any) {
 		if (data && data.url) {
 			const tab = tabManager.getTab(tabId);
-			// isNavigating: true if session already exists (navigating within same session)
-			// isNavigating: false if no session yet (initial load)
-			const isNavigating = tab?.sessionId ? true : false;
 
+			// Only set isLoading (progress bar) for in-browser navigations.
+			// Do NOT set isNavigating here — that flag is reserved for user-initiated
+			// toolbar navigations (Go button/Enter), which is set in navigateBrowserForTab().
+			// This prevents the "Loading preview..." overlay from showing on link clicks
+			// within the browser, making it behave like a real browser.
 			tabManager.updateTab(tabId, {
 				isLoading: true,
-				isNavigating,
 				url: data.url,
 				title: getTabTitle(data.url)
 			});
@@ -213,6 +218,34 @@ export function createStreamMessageHandler(config: StreamMessageHandlerConfig) {
 				isLoading: false,
 				isNavigating: false
 			});
+		}
+	}
+
+	function handleNavigationSpa(tabId: string, data: any, tab: PreviewTab) {
+		if (data && data.url && data.url !== tab.url) {
+			debug.log('preview', `🔄 SPA navigation for tab ${tabId}: ${tab.url} → ${data.url}`);
+
+			// Freeze canvas briefly to avoid showing white flash during SPA transition
+			// The last rendered frame is held while the DOM settles
+			tab.canvasAPI?.freezeForSpaNavigation?.();
+
+			// SPA navigation: update URL/title and reset any loading states.
+			// A preceding navigation-loading event may have set isLoading=true
+			// (e.g., if the browser started a document request before the SPA
+			// router intercepted it). Reset those states here since the SPA
+			// handled the navigation without a full page reload.
+			// Video streaming continues uninterrupted since page context is unchanged.
+			tabManager.updateTab(tabId, {
+				url: data.url,
+				title: getTabTitle(data.url),
+				isLoading: false,
+				isNavigating: false
+			});
+
+			// Update parent if this is the active tab
+			if (tabId === tabManager.activeTabId && onNavigationUpdate) {
+				onNavigationUpdate(tabId, data.url);
+			}
 		}
 	}
 

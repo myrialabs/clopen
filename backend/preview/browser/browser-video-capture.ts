@@ -383,8 +383,8 @@ export class BrowserVideoCapture extends EventEmitter {
 			return null;
 		}
 
-		const maxRetries = 3;
-		const retryDelay = 50;
+		const maxRetries = 6;
+		const retryDelay = 150;
 
 		for (let attempt = 0; attempt < maxRetries; attempt++) {
 			try {

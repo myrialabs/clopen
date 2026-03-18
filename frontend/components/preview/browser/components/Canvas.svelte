@@ -567,12 +567,16 @@
 						debug.log('webcodecs', 'Streaming started successfully');
 					} else {
 						// Service handles errors internally and returns false.
-						// Never retry here — retrying immediately creates a stop/start loop.
-						debug.warn('webcodecs', 'Streaming start returned false, stopping retries');
+						// Retry after a delay — the peer/offer may need more time to initialize.
+						retries++;
+						if (retries < maxRetries) {
+							debug.warn('webcodecs', `Streaming start returned false, retrying in ${retryDelay * retries}ms (${retries}/${maxRetries})`);
+							await new Promise(resolve => setTimeout(resolve, retryDelay * retries));
+							continue;
+						}
+						debug.error('webcodecs', 'Streaming start failed after all retries');
+						break;
 					}
-					// Always break after the service returns (success or failure).
-					// The service catches all exceptions internally, so the catch block
-					// below never runs, making retries/retryDelay dead code anyway.
 					break;
 				} catch (error: any) {
 					// This block only runs if the service unexpectedly throws.
@@ -1403,7 +1407,8 @@
 			getStats: () => webCodecsService?.getStats() ?? null,
 			getLatency: () => latencyMs,
 			// Navigation handling
-			notifyNavigationComplete
+			notifyNavigationComplete,
+			freezeForSpaNavigation: () => webCodecsService?.freezeForSpaNavigation()
 		};
 	});
 

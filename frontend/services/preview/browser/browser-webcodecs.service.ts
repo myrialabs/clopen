@@ -133,6 +133,9 @@ export class BrowserWebCodecsService {
 	private isNavigating = false;
 	private navigationCleanupFn: (() => void) | null = null;
 
+	// SPA navigation frame freeze — holds last frame briefly during SPA transitions
+	private spaFreezeUntil = 0;
+
 	// WebSocket cleanup
 	private wsCleanupFunctions: Array<() => void> = [];
 
@@ -237,16 +240,32 @@ export class BrowserWebCodecsService {
 					sdp: response.offer.sdp
 				});
 			} else {
-				debug.log('webcodecs', `[DIAG] No offer in stream-start response, fetching via stream-offer`);
-				const offerResponse = await ws.http('preview:browser-stream-offer', {}, 10000);
-				debug.log('webcodecs', `[DIAG] preview:browser-stream-offer response: hasOffer=${!!offerResponse.offer}`);
-				if (offerResponse.offer) {
+				// Offer not ready yet — peer may still be initializing. Retry with backoff.
+				debug.log('webcodecs', `[DIAG] No offer in stream-start response, retrying stream-offer with backoff`);
+
+				let offer: { type: string; sdp?: string } | undefined;
+				const offerMaxRetries = 5;
+				const offerRetryDelay = 200;
+
+				for (let attempt = 0; attempt < offerMaxRetries; attempt++) {
+					if (attempt > 0) {
+						await new Promise(resolve => setTimeout(resolve, offerRetryDelay * attempt));
+					}
+					debug.log('webcodecs', `[DIAG] stream-offer attempt ${attempt + 1}/${offerMaxRetries}`);
+					const offerResponse = await ws.http('preview:browser-stream-offer', {}, 10000);
+					if (offerResponse.offer) {
+						offer = offerResponse.offer;
+						break;
+					}
+				}
+
+				if (offer) {
 					await this.handleOffer({
-						type: offerResponse.offer.type as RTCSdpType,
-						sdp: offerResponse.offer.sdp
+						type: offer.type as RTCSdpType,
+						sdp: offer.sdp
 					});
 				} else {
-					throw new Error('No offer received from server');
+					throw new Error('No offer received from server after retries');
 				}
 			}
 
@@ -630,6 +649,17 @@ export class BrowserWebCodecsService {
 			return;
 		}
 
+		// During SPA navigation freeze, skip rendering to hold the last frame
+		// This prevents brief white flashes during SPA page transitions
+		if (this.spaFreezeUntil > 0 && Date.now() < this.spaFreezeUntil) {
+			frame.close();
+			return;
+		}
+		// Auto-reset freeze after it expires
+		if (this.spaFreezeUntil > 0) {
+			this.spaFreezeUntil = 0;
+		}
+
 		try {
 			// Update stats
 			this.stats.videoFramesDecoded++;
@@ -855,9 +885,16 @@ export class BrowserWebCodecsService {
 
 		const cleanupNavComplete = ws.on('preview:browser-navigation', (data) => {
 			if (data.sessionId === this.sessionId) {
-				// Keep isNavigating true for a short period to allow reconnection
-				// Will be reset when new frames arrive or reconnection completes
 				debug.log('webcodecs', `Navigation completed (direct WS) for session ${data.sessionId}`);
+
+				// If isNavigating was NOT set by navigation-loading (SPA-like case where
+				// framenavigated fires without a document request), set it now so the
+				// subsequent DataChannel close triggers fast reconnect instead of full recovery
+				if (!this.isNavigating) {
+					this.isNavigating = true;
+					debug.log('webcodecs', '✅ Set isNavigating=true on navigation complete (no loading event preceded)');
+				}
+
 				// Signal reconnecting state IMMEDIATELY when navigation completes
 				// This eliminates the gap between isNavigating=false and DataChannel close
 				// ensuring the overlay stays visible continuously
@@ -868,7 +905,17 @@ export class BrowserWebCodecsService {
 			}
 		});
 
-		this.wsCleanupFunctions = [cleanupIce, cleanupState, cleanupCursor, cleanupNavLoading, cleanupNavComplete];
+		// Listen for SPA navigation events (pushState/replaceState/hash changes)
+		// Reset isNavigating if it was set by a preceding navigation-loading event
+		// that the SPA router intercepted (cancelled the full navigation)
+		const cleanupNavSpa = ws.on('preview:browser-navigation-spa', (data) => {
+			if (data.sessionId === this.sessionId && this.isNavigating) {
+				debug.log('webcodecs', '🔄 SPA navigation received - resetting isNavigating (no stream restart needed)');
+				this.isNavigating = false;
+			}
+		});
+
+		this.wsCleanupFunctions = [cleanupIce, cleanupState, cleanupCursor, cleanupNavLoading, cleanupNavComplete, cleanupNavSpa];
 	}
 
 	/**
@@ -1416,6 +1463,15 @@ export class BrowserWebCodecsService {
 
 	setFirstFrameHandler(handler: () => void): void {
 		this.onFirstFrame = handler;
+	}
+
+	/**
+	 * Freeze frame rendering briefly during SPA navigation.
+	 * Holds the current canvas content to prevent white flash during
+	 * SPA page transitions (pushState/replaceState).
+	 */
+	freezeForSpaNavigation(durationMs = 150): void {
+		this.spaFreezeUntil = Date.now() + durationMs;
 	}
 
 	setErrorHandler(handler: (error: Error) => void): void {

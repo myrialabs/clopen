@@ -252,6 +252,17 @@ export const streamPreviewHandler = createRouter()
 			url: t.String(),
 			timestamp: t.Number()
 		})
+	)
+
+	// Server → Client: SPA navigation (pushState/replaceState — URL-only update, no page reload)
+	.emit(
+		'preview:browser-navigation-spa',
+		t.Object({
+			sessionId: t.String(),
+			type: t.String(),
+			url: t.String(),
+			timestamp: t.Number()
+		})
 	);
 
 // Setup event forwarding from preview service to WebSocket

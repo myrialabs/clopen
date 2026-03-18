@@ -771,6 +771,19 @@ export function createBrowserCoordinator(config: BrowserCoordinatorConfig) {
 					debug.warn('preview', `Tab not found for sessionId: ${data.sessionId}`);
 				}
 			});
+
+			// Listen for SPA navigation events (pushState/replaceState)
+			ws.on('preview:browser-navigation-spa', (data: { sessionId: string; type: string; url: string; timestamp: number }) => {
+				debug.log('preview', `🔄 SPA navigation event received: ${data.sessionId} → ${data.url}`);
+
+				const tab = tabManager.tabs.find(t => t.sessionId === data.sessionId);
+				if (tab) {
+					streamHandler.handleStreamMessage({
+						type: 'navigation-spa',
+						data: { url: data.url }
+					}, tab.id);
+				}
+			});
 		});
 	}
 
