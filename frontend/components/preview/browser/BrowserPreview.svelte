@@ -306,7 +306,7 @@
 
 	// Initialize URL input
 	$effect(() => {
-		if (url && !url.startsWith('http://') && !url.startsWith('https://')) {
+		if (url && !url.startsWith('http://') && !url.startsWith('https://') && !url.startsWith('file://')) {
 			url = 'http://' + url;
 		}
 		if (url && !urlInput) {
@@ -319,7 +319,7 @@
 		if (!urlInput.trim()) return;
 
 		let processedUrl = urlInput.trim();
-		if (!processedUrl.startsWith('http://') && !processedUrl.startsWith('https://')) {
+		if (!processedUrl.startsWith('http://') && !processedUrl.startsWith('https://') && !processedUrl.startsWith('file://')) {
 			processedUrl = 'http://' + processedUrl;
 		}
 
