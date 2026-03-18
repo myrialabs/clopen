@@ -447,7 +447,8 @@
 		},
 		getSessionInfo: () => sessionInfo,
 		getIsStreamReady: () => isStreamReady,
-		getErrorMessage: () => errorMessage
+		getErrorMessage: () => errorMessage,
+		getIsMcpControlled: () => isCurrentTabMcpControlled()
 	};
 </script>
 

@@ -140,6 +140,10 @@ export class BrowserPreviewService extends EventEmitter {
 			this.emit('preview:browser-tab-navigated', data);
 		});
 
+		this.tabManager.on('preview:browser-viewport-changed', (data) => {
+			this.emit('preview:browser-viewport-changed', data);
+		});
+
 		// Forward video capture events
 		this.videoCapture.on('ice-candidate', (data) => {
 			this.emit('preview:browser-webcodecs-ice-candidate', data);
@@ -666,6 +670,10 @@ class BrowserPreviewServiceManager {
 
 		service.on('preview:browser-tab-navigated', (data) => {
 			ws.emit.project(projectId, 'preview:browser-tab-navigated', data);
+		});
+
+		service.on('preview:browser-viewport-changed', (data) => {
+			ws.emit.project(projectId, 'preview:browser-viewport-changed', data);
 		});
 
 		// Forward console events

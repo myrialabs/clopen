@@ -390,9 +390,10 @@
 				<div class="relative">
 					<button
 						type="button"
-						class="flex items-center justify-center gap-1.5 {isMobile ? 'px-2 h-9' : 'px-1 h-6'} bg-transparent border-none rounded-md text-slate-500 cursor-pointer transition-all duration-150 hover:bg-violet-500/10 hover:text-slate-900 dark:hover:text-slate-100"
-						onclick={toggleDeviceDropdown}
-						title="Select device size"
+						class="flex items-center justify-center gap-1.5 {isMobile ? 'px-2 h-9' : 'px-1 h-6'} bg-transparent border-none rounded-md transition-all duration-150 {previewPanelRef?.panelActions?.getIsMcpControlled() ? 'text-slate-400 dark:text-slate-600 cursor-not-allowed opacity-50' : 'text-slate-500 cursor-pointer hover:bg-violet-500/10 hover:text-slate-900 dark:hover:text-slate-100'}"
+						onclick={previewPanelRef?.panelActions?.getIsMcpControlled() ? undefined : toggleDeviceDropdown}
+						disabled={previewPanelRef?.panelActions?.getIsMcpControlled()}
+						title={previewPanelRef?.panelActions?.getIsMcpControlled() ? 'Controlled by MCP agent' : 'Select device size'}
 					>
 						{#if previewPanelRef?.panelActions?.getDeviceSize() === 'desktop'}
 							<Icon name="lucide:monitor" class={isMobile ? 'w-4.5 h-4.5' : 'w-4 h-4'} />
@@ -505,9 +506,10 @@
 				<!-- Rotation toggle -->
 				<button
 					type="button"
-					class="flex items-center justify-center gap-1.5 {isMobile ? 'px-2 h-9' : 'px-1 h-6'} bg-transparent border-none rounded-md text-slate-500 cursor-pointer transition-all duration-150 hover:bg-violet-500/10 hover:text-slate-900 dark:hover:text-slate-100"
-					onclick={() => previewPanelRef?.panelActions?.toggleRotation()}
-					title="Toggle orientation"
+					class="flex items-center justify-center gap-1.5 {isMobile ? 'px-2 h-9' : 'px-1 h-6'} bg-transparent border-none rounded-md transition-all duration-150 {previewPanelRef?.panelActions?.getIsMcpControlled() ? 'text-slate-400 dark:text-slate-600 cursor-not-allowed opacity-50' : 'text-slate-500 cursor-pointer hover:bg-violet-500/10 hover:text-slate-900 dark:hover:text-slate-100'}"
+					onclick={previewPanelRef?.panelActions?.getIsMcpControlled() ? undefined : () => previewPanelRef?.panelActions?.toggleRotation()}
+					disabled={previewPanelRef?.panelActions?.getIsMcpControlled()}
+					title={previewPanelRef?.panelActions?.getIsMcpControlled() ? 'Controlled by MCP agent' : 'Toggle orientation'}
 				>
 					<Icon name="lucide:rotate-cw" class={isMobile ? 'w-4.5 h-4.5' : 'w-4 h-4'} />
 					<span class="text-xs font-medium">

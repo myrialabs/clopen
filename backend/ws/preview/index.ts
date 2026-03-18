@@ -143,4 +143,12 @@ export const previewRouter = createRouter()
 		sessionId: t.String(),
 		timestamp: t.Number(),
 		source: t.Literal('mcp')
+	}))
+	.emit('preview:browser-viewport-changed', t.Object({
+		tabId: t.String(),
+		deviceSize: t.String(),
+		rotation: t.String(),
+		width: t.Number(),
+		height: t.Number(),
+		timestamp: t.Number()
 	}));

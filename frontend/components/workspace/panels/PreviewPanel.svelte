@@ -113,6 +113,7 @@
 		getSessionInfo: () => browserPreviewRef?.browserActions?.getSessionInfo() || null,
 		getIsStreamReady: () => browserPreviewRef?.browserActions?.getIsStreamReady() || false,
 		getErrorMessage: () => browserPreviewRef?.browserActions?.getErrorMessage() || null,
+		getIsMcpControlled: () => browserPreviewRef?.browserActions?.getIsMcpControlled() || false,
 		setDeviceSize: (size: DeviceSize) => {
 			if (browserPreviewRef?.browserActions) {
 				browserPreviewRef.browserActions.changeDeviceSize(size);
