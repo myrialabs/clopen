@@ -223,6 +223,12 @@
 	let previousUrl = '';
 	$effect(() => {
 		if (!url || url === previousUrl) return;
+		// Ignore browser-internal error pages (e.g. DNS failure) — they are not real URLs
+		// and should never trigger a new navigation attempt.
+		if (url.startsWith('chrome-error://') || url.startsWith('chrome://')) {
+			previousUrl = url;
+			return;
+		}
 		if (mcpLaunchInProgress) {
 			previousUrl = url;
 			urlInput = url;

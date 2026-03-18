@@ -731,6 +731,21 @@ export class BrowserTabManager extends EventEmitter {
 	}
 
 	/**
+	 * Returns true for errors where retrying is pointless because the page/session is gone.
+	 */
+	private isNonRetryableError(error: unknown): boolean {
+		if (error instanceof Error) {
+			const msg = error.message;
+			return (
+				msg.includes('Session closed') ||
+				msg.includes('detached Frame') ||
+				error.constructor.name === 'TargetCloseError'
+			);
+		}
+		return false;
+	}
+
+	/**
 	 * Navigate with retry, including Cloudflare auto-pass detection and CAPTCHA popup dismissal.
 	 */
 	private async navigateWithRetry(page: Page, url: string): Promise<string> {
@@ -750,7 +765,7 @@ export class BrowserTabManager extends EventEmitter {
 			} catch (error) {
 				retries--;
 				debug.warn('preview', `⚠️ Navigation failed, ${retries} retries left:`, error);
-				if (retries === 0) throw error;
+				if (retries === 0 || this.isNonRetryableError(error)) throw error;
 
 				// Wait before retry
 				await new Promise(resolve => setTimeout(resolve, 2000));

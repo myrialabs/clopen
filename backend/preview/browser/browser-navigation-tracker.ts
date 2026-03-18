@@ -32,6 +32,10 @@ export class BrowserNavigationTracker extends EventEmitter {
 			if (frame === page.mainFrame()) {
 				const newUrl = frame.url();
 
+				// Skip internal Chrome error/system pages — they indicate a failed navigation
+				// and should not be surfaced to the frontend as a real URL change.
+				if (newUrl.startsWith('chrome-error://') || newUrl.startsWith('chrome://')) return;
+
 				// Update session URL
 				session.url = newUrl;
 
@@ -48,10 +52,12 @@ export class BrowserNavigationTracker extends EventEmitter {
 		// Also track URL changes via JavaScript (for single page applications)
 		page.on('load', async () => {
 			const currentUrl = page.url();
+			// Skip internal Chrome error/system pages
+			if (currentUrl.startsWith('chrome-error://') || currentUrl.startsWith('chrome://')) return;
 			if (currentUrl !== session.url) {
-				
+
 				session.url = currentUrl;
-				
+
 				this.emit('navigation', {
 					sessionId,
 					type: 'navigation',
