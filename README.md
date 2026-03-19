@@ -1,26 +1,64 @@
-# Clopen
+<p align="center">
+  <img src="https://clopen.myrialabs.dev/favicon.svg" alt="Clopen" width="72" height="72" />
+</p>
 
-[![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
-[![Built with Bun](https://img.shields.io/badge/Built%20with-Bun-black)](https://bun.sh)
+<h1 align="center">Clopen</h1>
 
-**Clopen** provides a modern web interface for AI-assisted development, supporting both **Claude Code** and **OpenCode** as AI engines. It runs as a standalone web application — manage multiple Claude Code accounts, use built-in git source control, preview your app in a real browser, edit files, collaborate in real-time, and never lose progress with git-like checkpoints.
+<p align="center">
+  <strong>Build more. Switch less.</strong><br />
+  All-in-one workspace for Claude Code & OpenCode
+</p>
+
+<p align="center">
+  <a href="https://clopen.myrialabs.dev">Website</a> ·
+  <a href="https://github.com/myrialabs/clopen/issues">Issues</a> ·
+  <a href="https://www.npmjs.com/package/@myrialabs/clopen">npm</a>
+</p>
+
+<p align="center">
+  <a href="https://www.npmjs.com/package/@myrialabs/clopen"><img src="https://img.shields.io/npm/v/@myrialabs/clopen" alt="npm version" /></a>
+  <a href="LICENSE"><img src="https://img.shields.io/badge/License-MIT-blue.svg" alt="License: MIT" /></a>
+  <a href="https://github.com/myrialabs/clopen/pulls"><img src="https://img.shields.io/badge/PRs-welcome-brightgreen.svg" alt="PRs Welcome" /></a>
+  <a href="https://bun.sh"><img src="https://img.shields.io/badge/Built%20with-Bun-black" alt="Built with Bun" /></a>
+</p>
+
+<p align="center">
+  <img src="https://clopen.myrialabs.dev/images/workspace-overview.webp" alt="Clopen workspace overview" />
+</p>
+
+All-in-one workspace for Claude Code & OpenCode. Chat, terminal, git, browser preview, and real-time collaboration, built for multi-project and multi-session workflows.
+
+---
+
+## Screenshots
+
+![AI chat interface](https://clopen.myrialabs.dev/images/ai-chat-interface.webp)
+
+![Multi-account manager](https://clopen.myrialabs.dev/images/multi-account-claude-code.webp)
+
+![Browser preview panel](https://clopen.myrialabs.dev/images/browser-preview-panel.webp)
+
+![Checkpoint restore](https://clopen.myrialabs.dev/images/checkpoint-restore.webp)
 
 ---
 
 ## Features
 
-- **Multi-Account Claude Code** - Manage multiple accounts (personal, work, team) and switch instantly per session, isolated under `~/.clopen/claude/user/` (or `~/.clopen-dev/` in development) without touching system-level Claude config
-- **Multi-Engine Support** - Switch between Claude Code and OpenCode
-- **AI Chat Interface** - Streaming responses with tool use visualization
-- **Background Processing** - Chat, terminal, and other processes continue running even when you close the browser — come back later and pick up where you left off
-- **Git-like Checkpoints** - Multi-branch undo/redo system with file and folder snapshots
-- **Real Browser Preview** - Puppeteer-based Chromium rendering with WebCodecs streaming (80-90% bandwidth reduction), full click/type/scroll/drag interaction
-- **Integrated Terminal** - Multi-tab terminal with full PTY control
-- **File Management** - Directory browsing, live editing, and real-time file watching
-- **Git Management** - Full source control: staging, commits, branches, push/pull, stash, log, conflict resolution
-- **Flexible Authentication** - No Login or With Login mode with admin/member roles, invite links, rate-limited login, CLI token recovery — configurable during setup and in Settings
-- **Real-time Collaboration** - Multiple users can work on the same project simultaneously
-- **Built-in Cloudflare Tunnel** - Expose local projects publicly for testing and sharing
+A complete development environment designed around AI-assisted workflows, built to disappear into the background and just work.
+
+- **Multi-Account Claude Code** — Manage multiple Claude Code accounts (personal, work, or team) and switch between them instantly per chat session
+- **Multi-Engine Support** — Switch between Claude Code and OpenCode as your AI engine, per session
+- **Integrated Terminal** — Full PTY emulation with xterm.js UI. Multi-tab terminal sessions with complete ANSI/VT sequence support and full keyboard control
+- **Full Git Management** — Stage, commit, branch, push, pull, stash, log, and resolve conflicts, all from a clean UI. Powered by native git CLI for accuracy
+- **Real Browser Preview** — A live browser preview streams directly into your workspace. Interact with your app manually, or let the AI drive: clicking, typing, and scrolling for autonomous visual testing
+- **Git-Like Checkpoints** — Multi-branch undo/redo with full file snapshots. Roll back to any point in your AI conversation without touching your actual git history
+- **Real-Time Collaboration** — WebSocket-based presence tracking per project. Multiple users can work on the same codebase simultaneously with live awareness
+- **Monaco File Editor** — VS Code's editor embedded in the browser. Full syntax highlighting, autocomplete, and live file watching, right beside your AI chat
+- **Cloudflare Tunnel** — One-click public HTTPS URL for your local dev server. Built-in QR code for instant mobile access. Share your work without deploying
+- **MCP Support** — Full Model Context Protocol integration. Connect AI tools, external APIs, and custom capabilities to your AI agents with zero friction
+- **Flexible Authentication** — No Login or With Login mode with admin/member roles, invite links, rate-limited login, and CLI token recovery
+- **Background Processing** — Chat, terminal, and other processes continue running even when you close the browser — come back later and pick up where you left off
+- **Database Management** — Browse tables, run queries, and inspect your database directly from the workspace *(coming soon)*
 
 ---
 
@@ -28,8 +66,8 @@
 
 ### Prerequisites
 
-- [Bun](https://bun.sh/) v1.2.12+
-- [Claude Code](https://github.com/anthropics/claude-code) and/or [OpenCode](https://github.com/anomalyco/opencode) — required for AI chat functionality
+- [Bun.js](https://bun.sh/) v1.2.12+
+- [Claude Code](https://github.com/anthropics/claude-code) or [OpenCode](https://opencode.ai) — required for AI functionality
 
 ### Installation
 
@@ -82,7 +120,9 @@ This regenerates and displays a new admin PAT.
 
 ---
 
-## Development
+## Contributing
+
+Clopen is open source and contributions are welcome! Whether it's a bug fix, new feature, or improvement to docs — feel free to open an issue or submit a pull request.
 
 ```bash
 git clone https://github.com/myrialabs/clopen.git
@@ -93,6 +133,8 @@ bun run check   # Type checking
 ```
 
 When running in development mode, Clopen uses `~/.clopen-dev` instead of `~/.clopen`, keeping dev data separate from any production instance.
+
+See [CONTRIBUTING.md](CONTRIBUTING.md) for guidelines and [DECISIONS.md](DECISIONS.md) for architectural decisions.
 
 ---
 
@@ -109,14 +151,6 @@ When running in development mode, Clopen uses `~/.clopen-dev` instead of `~/.clo
 | AI Engines | Claude Code + OpenCode |
 
 Clopen uses an engine-agnostic adapter pattern — both engines normalize output to Claude SDK message format, ensuring a consistent experience regardless of which engine is selected.
-
----
-
-## Documentation
-
-- [Technical Decisions](DECISIONS.md) - Architectural and technical decision log
-- [Contributing](CONTRIBUTING.md) - How to contribute to this project
-- [Development Guidelines](CLAUDE.md) - Guidelines for working with Claude Code on this project
 
 ---
 
