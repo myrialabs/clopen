@@ -6,8 +6,33 @@ import { debug } from '$shared/utils/logger';
 export class BrowserNavigationTracker extends EventEmitter {
 	private cdpSessions = new Map<string, CDPSession>();
 
+	// Deduplication: track the last emitted navigation URL+timestamp per session.
+	// framenavigated and load often fire for the same navigation;
+	// this prevents emitting duplicate 'navigation' events that would cause
+	// parallel handleNavigation calls and double streaming restarts.
+	private lastNavigationEmit = new Map<string, { url: string; time: number }>();
+	private readonly DEDUP_WINDOW_MS = 500; // Ignore duplicate within 500ms
+
 	constructor() {
 		super();
+	}
+
+	/**
+	 * Emit a navigation event with deduplication.
+	 * Returns true if the event was emitted, false if it was a duplicate.
+	 */
+	private emitNavigationDeduped(event: string, sessionId: string, url: string, data: any): boolean {
+		const now = Date.now();
+		const last = this.lastNavigationEmit.get(sessionId);
+
+		if (last && last.url === url && (now - last.time) < this.DEDUP_WINDOW_MS) {
+			debug.log('preview', `⏭️ Deduped ${event} for ${url} (${now - last.time}ms since last emit)`);
+			return false;
+		}
+
+		this.lastNavigationEmit.set(sessionId, { url, time: now });
+		this.emit(event, data);
+		return true;
 	}
 
 	/**
@@ -134,8 +159,9 @@ export class BrowserNavigationTracker extends EventEmitter {
 				// Update session URL
 				session.url = newUrl;
 
-				// Emit navigation completed event to frontend
-				this.emit('navigation', {
+				// Emit navigation completed event (deduplicated to prevent double events
+				// from framenavigated + load firing for the same navigation)
+				this.emitNavigationDeduped('navigation', sessionId, newUrl, {
 					sessionId,
 					type: 'navigation',
 					url: newUrl,
@@ -184,7 +210,8 @@ export class BrowserNavigationTracker extends EventEmitter {
 
 				session.url = currentUrl;
 
-				this.emit('navigation', {
+				// Deduplicated: framenavigated already emitted for this URL
+				this.emitNavigationDeduped('navigation', sessionId, currentUrl, {
 					sessionId,
 					type: 'navigation',
 					url: currentUrl,
@@ -246,6 +273,7 @@ export class BrowserNavigationTracker extends EventEmitter {
 			}
 			this.cdpSessions.delete(sessionId);
 		}
+		this.lastNavigationEmit.delete(sessionId);
 	}
 
 	async navigateSession(sessionId: string, session: BrowserTab, url: string): Promise<string> {

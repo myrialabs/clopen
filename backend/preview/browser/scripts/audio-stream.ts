@@ -16,6 +16,11 @@ import type { StreamingConfig } from '../types';
  * This script intercepts AudioContext and captures all audio
  */
 export function audioCaptureScript(config: StreamingConfig['audio']) {
+	// Idempotency guard — prevent double-injection when both evaluateOnNewDocument
+	// and page.evaluate inject this script into the same page context.
+	if ((window as any).__audioCaptureInstalled) return;
+	(window as any).__audioCaptureInstalled = true;
+
 	// Check AudioEncoder support
 	if (typeof AudioEncoder === 'undefined') {
 		(window as any).__audioEncoderSupported = false;

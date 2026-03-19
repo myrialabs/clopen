@@ -122,9 +122,10 @@ export async function launchBrowser(
 }
 
 /**
- * Navigate active tab to new URL
+ * Navigate a specific tab to new URL.
+ * Requires explicit tabId to prevent cross-contamination during rapid tab switching.
  */
-export async function navigateBrowser(newUrl: string, projectId: string): Promise<NavigateResult> {
+export async function navigateBrowser(newUrl: string, projectId: string, tabId?: string): Promise<NavigateResult> {
 	if (!newUrl) {
 		return { success: false, error: 'No URL provided' };
 	}
@@ -134,8 +135,8 @@ export async function navigateBrowser(newUrl: string, projectId: string): Promis
 	}
 
 	try {
-		// Backend uses active tab automatically
-		const data = await ws.http('preview:browser-tab-navigate', { url: newUrl }, 30000);
+		// Always send explicit tabId to prevent race conditions during rapid tab switching
+		const data = await ws.http('preview:browser-tab-navigate', { url: newUrl, tabId }, 30000);
 
 		return { success: true, finalUrl: data.finalUrl };
 	} catch (error) {

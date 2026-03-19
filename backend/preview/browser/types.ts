@@ -229,10 +229,11 @@ export interface StreamingConfig {
 /**
  * Default streaming configuration
  *
- * Optimized for visual quality with reasonable bandwidth:
+ * Optimized for visual quality with reduced resource usage:
  * - Software encoding (hardwareAcceleration: 'no-preference')
- * - JPEG quality 70 preserves thin borders/text, VP8 handles bandwidth
- * - VP8 at 1.2Mbps for crisp UI/text rendering
+ * - JPEG quality 65: slightly lower than before but still preserves thin borders/text
+ * - VP8 at 1.0Mbps: ~17% reduction from 1.2Mbps, sharp edges preserved by VP8 codec
+ * - keyframeInterval 5s: less frequent large keyframes, saves bandwidth on static pages
  * - Opus for audio (efficient and widely supported)
  */
 export const DEFAULT_STREAMING_CONFIG: StreamingConfig = {
@@ -241,9 +242,9 @@ export const DEFAULT_STREAMING_CONFIG: StreamingConfig = {
 		width: 0,
 		height: 0,
 		framerate: 24,
-		bitrate: 1_200_000,
-		keyframeInterval: 3,
-		screenshotQuality: 70,
+		bitrate: 1_000_000,
+		keyframeInterval: 5,
+		screenshotQuality: 65,
 		hardwareAcceleration: 'no-preference',
 		latencyMode: 'realtime'
 	},

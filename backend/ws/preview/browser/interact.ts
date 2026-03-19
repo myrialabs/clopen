@@ -12,6 +12,9 @@ import type { KeyInput } from 'puppeteer';
 import { debug } from '$shared/utils/logger';
 import { sleep } from '$shared/utils/async';
 
+// Throttle cursor detection evaluate calls per session (100ms = ~10/sec is plenty)
+const lastCursorEvalTime = new Map<string, number>();
+
 // Helper function to check if error is navigation-related
 function isNavigationError(error: Error): boolean {
 	const msg = error.message.toLowerCase();
@@ -108,8 +111,9 @@ export const interactPreviewHandler = createRouter()
 				switch (action.type) {
 					case 'mousedown':
 						try {
-							// Reset mouse state first to ensure clean state
-							try { await session.page.mouse.up(); } catch { }
+							// Fire-and-forget reset — CDP processes commands in FIFO order so
+							// this completes before move/down even though we skip the await.
+							session.page.mouse.up().catch(() => {});
 							// Move to position and press button
 							await session.page.mouse.move(action.x!, action.y!, { steps: 1 });
 							await session.page.mouse.down({ button: action.button === 'right' ? 'right' : 'left' });
@@ -140,14 +144,10 @@ export const interactPreviewHandler = createRouter()
 
 					case 'click':
 						try {
-							// Reset mouse state before click to prevent "already pressed" errors
-							// This ensures a clean state for each click operation
-							try {
-								await session.page.mouse.up();
-							} catch { /* Ignore - mouse might not be pressed */ }
-
-							// IMPORTANT: Check for select element BEFORE clicking
-							// If it's a select, we'll emit event to frontend instead of clicking
+							// Check for select element BEFORE clicking.
+							// Skip the mouse.up() reset: page.mouse.click() is atomic (down+up),
+							// and Canvas.svelte always sends mouseup before sending click, so the
+							// mouse state is already clean at this point.
 							const selectInfo = await previewService.checkForSelectElement(session.id, action.x!, action.y!);
 							if (selectInfo) {
 								// Select element detected - event emitted by checkForSelectElement
@@ -243,37 +243,40 @@ export const interactPreviewHandler = createRouter()
 							await session.page.mouse.move(action.x!, action.y!, {
 								steps: action.steps || 1 // Reduced from 5 to 1 for faster response
 							});
-							// Update cursor position and detect cursor type in browser context (fire-and-forget, don't await)
-							// This replaces the disabled cursor-tracking script (blocked by CloudFlare)
-							session.page.evaluate((data) => {
-								const { x, y } = data;
-								// Detect cursor type from element under mouse
-								let cursor = 'default';
-								try {
-									const el = document.elementFromPoint(x, y);
-									if (el) {
-										cursor = window.getComputedStyle(el).cursor || 'default';
-									}
-								} catch {}
+							// Cursor detection via page.evaluate — throttled to ~10/sec per session.
+							// Running it on every mousemove queues extra CDP commands that delay clicks/keypresses.
+							const nowMs = Date.now();
+							const lastEval = lastCursorEvalTime.get(session.id) ?? 0;
+							if (nowMs - lastEval >= 100) {
+								lastCursorEvalTime.set(session.id, nowMs);
+								session.page.evaluate((data) => {
+									const { x, y } = data;
+									let cursor = 'default';
+									try {
+										const el = document.elementFromPoint(x, y);
+										if (el) {
+											cursor = window.getComputedStyle(el).cursor || 'default';
+										}
+									} catch {}
 
-								// Initialize or update __cursorInfo
-								const existing = (window as any).__cursorInfo;
-								if (existing) {
-									existing.cursor = cursor;
-									existing.x = x;
-									existing.y = y;
-									existing.timestamp = Date.now();
-									existing.hasRecentInteraction = true;
-								} else {
-									(window as any).__cursorInfo = {
-										cursor,
-										x,
-										y,
-										timestamp: Date.now(),
-										hasRecentInteraction: true
-									};
-								}
-							}, { x: action.x!, y: action.y! }).catch(() => { /* Ignore evaluation errors */ });
+									const existing = (window as any).__cursorInfo;
+									if (existing) {
+										existing.cursor = cursor;
+										existing.x = x;
+										existing.y = y;
+										existing.timestamp = Date.now();
+										existing.hasRecentInteraction = true;
+									} else {
+										(window as any).__cursorInfo = {
+											cursor,
+											x,
+											y,
+											timestamp: Date.now(),
+											hasRecentInteraction: true
+										};
+									}
+								}, { x: action.x!, y: action.y! }).catch(() => { /* Ignore evaluation errors */ });
+							}
 						} catch (error) {
 							if (error instanceof Error && isNavigationError(error)) {
 								ws.emit.user(userId, 'preview:browser-interacted', { action: action.type, message: 'Action deferred (navigation)', deferred: true });
@@ -297,8 +300,6 @@ export const interactPreviewHandler = createRouter()
 
 					case 'doubleclick':
 						try {
-							// Reset mouse state first
-							try { await session.page.mouse.up(); } catch { }
 							await session.page.mouse.click(action.x!, action.y!, { clickCount: 2 });
 						} catch (error) {
 							if (error instanceof Error) {
@@ -314,8 +315,8 @@ export const interactPreviewHandler = createRouter()
 
 					case 'rightclick':
 						try {
-							// Reset mouse state first
-							try { await session.page.mouse.up(); } catch { }
+							// Fire-and-forget reset (see mousedown comment for rationale)
+							session.page.mouse.up().catch(() => {});
 
 							// IMPORTANT: Check for context menu
 							// We'll emit context menu event to frontend for custom overlay
@@ -385,12 +386,7 @@ export const interactPreviewHandler = createRouter()
 								await session.page.keyboard.press(action.key as KeyInput);
 							}
 
-							if (['ArrowDown', 'ArrowUp'].includes(action.key)) {
-								try {
-									await sleep(50);
-								} catch { }
-							}
-						}
+					}
 						break;
 
 					case 'checkselectoptions':

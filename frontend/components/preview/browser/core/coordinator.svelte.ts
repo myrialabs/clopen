@@ -175,6 +175,17 @@ export function createBrowserCoordinator(config: BrowserCoordinatorConfig) {
 					if (onErrorChange) onErrorChange(null);
 				}
 
+				// Backend created this tab with setActive=true, which may override a tab switch
+				// that happened while the 60-second launch call was awaiting. Re-assert the
+				// correct active tab on the backend if the user switched away during launch.
+				if (tabId !== tabManager.activeTabId && tabManager.activeTabId) {
+					const currentActiveTab = tabManager.getTab(tabManager.activeTabId);
+					if (currentActiveTab?.sessionId) {
+						debug.log('preview', `🔄 Tab switched during launch — re-asserting active backend tab: ${tabManager.activeTabId}`);
+						void switchToBackendTab(currentActiveTab.sessionId, getProjectId());
+					}
+				}
+
 				} else {
 				const errorMsg = result.error || 'Unknown error';
 				debug.error('preview', `❌ Browser launch failed:`, errorMsg);
@@ -210,7 +221,8 @@ export function createBrowserCoordinator(config: BrowserCoordinatorConfig) {
 
 			// Get current projectId
 			const projectId = getProjectId();
-			const result = await navigateBrowserOp(newUrl, projectId);
+			// Send explicit tabId (backend sessionId) to prevent cross-contamination during rapid switching
+			const result = await navigateBrowserOp(newUrl, projectId, tab.sessionId);
 
 			if (result.success) {
 				const finalUrl = result.finalUrl || newUrl;

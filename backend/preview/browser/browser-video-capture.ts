@@ -42,6 +42,7 @@ interface VideoStreamSession {
 	pendingCandidates: RTCIceCandidateInit[];
 	scriptInjected: boolean; // Track if persistent script was injected
 	scriptsPreInjected: boolean; // Track if scripts were pre-injected during tab creation
+	audioOnNewDocumentInjected: boolean; // Track if evaluateOnNewDocument was registered for audio
 	stats: {
 		videoBytesSent: number;
 		audioBytesSent: number;
@@ -97,6 +98,7 @@ export class BrowserVideoCapture extends EventEmitter {
 				pendingCandidates: [],
 				scriptInjected: true,
 				scriptsPreInjected: false, // Set to true only after injection completes
+				audioOnNewDocumentInjected: false,
 				stats: {
 					videoBytesSent: 0,
 					audioBytesSent: 0,
@@ -162,7 +164,16 @@ export class BrowserVideoCapture extends EventEmitter {
 			});
 		}
 
-		// Inject video encoder + audio capture scripts
+		// Register audio capture as a startup script — runs before page scripts on every new document load.
+		// Critical for SPAs that create AudioContext during initialization (before page.evaluate runs).
+		// The idempotency guard in audioCaptureScript prevents double-injection.
+		const session = this.sessions.get(sessionId);
+		if (session && !session.audioOnNewDocumentInjected) {
+			await page.evaluateOnNewDocument(audioCaptureScript, config.audio);
+			session.audioOnNewDocumentInjected = true;
+		}
+
+		// Inject video encoder + audio capture scripts into the current page context
 		await page.evaluate(videoEncoderScript, videoConfig);
 		await page.evaluate(audioCaptureScript, config.audio);
 	}
@@ -220,6 +231,7 @@ export class BrowserVideoCapture extends EventEmitter {
 					pendingCandidates: [],
 					scriptInjected: false,
 					scriptsPreInjected: false,
+					audioOnNewDocumentInjected: false,
 					stats: {
 						videoBytesSent: 0,
 						audioBytesSent: 0,

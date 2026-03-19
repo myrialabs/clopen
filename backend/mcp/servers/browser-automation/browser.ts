@@ -177,6 +177,8 @@ export async function switchTabHandler(args: { tabId: string; projectId?: string
 					isError: true
 				};
 			}
+			// Promote tab to end of session's set so getActiveTabSession() targets it next
+			browserMcpControl.promoteSessionTab(tab.id, chatSessionId);
 		}
 
 		return {

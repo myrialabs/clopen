@@ -27,6 +27,9 @@ import { statSync } from 'node:fs';
 // Import WebSocket router
 import { wsRouter } from './ws';
 
+// Import browser preview manager for graceful shutdown
+import { browserPreviewServiceManager } from './preview';
+
 // MCP remote server for Open Code custom tools
 import { handleMcpRequest, closeMcpServer } from './mcp/remote-server';
 
@@ -166,6 +169,8 @@ async function gracefulShutdown() {
 	try {
 		// Close MCP remote server (before engines, as they may still reference it)
 		await closeMcpServer();
+		// Cleanup browser preview sessions
+		await browserPreviewServiceManager.cleanup();
 		// Dispose all AI engines
 		await disposeAllEngines();
 		// Stop accepting new connections

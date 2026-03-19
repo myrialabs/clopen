@@ -173,6 +173,9 @@ export function createStreamMessageHandler(config: StreamMessageHandlerConfig) {
 		tabManager.updateTab(tabId, { consoleLogs: [] });
 	}
 
+	// Safety timeout handles to clear stale isLoading if navigation-complete never arrives
+	const loadingTimeouts = new Map<string, ReturnType<typeof setTimeout>>();
+
 	function handleNavigationLoading(tabId: string, data: any) {
 		if (data && data.url) {
 			const tab = tabManager.getTab(tabId);
@@ -180,17 +183,26 @@ export function createStreamMessageHandler(config: StreamMessageHandlerConfig) {
 			// Only set isLoading (progress bar) for in-browser navigations.
 			// Do NOT set isNavigating here — that flag is reserved for user-initiated
 			// toolbar navigations (Go button/Enter), which is set in navigateBrowserForTab().
-			// This prevents the "Loading preview..." overlay from showing on link clicks
-			// within the browser, making it behave like a real browser.
 			tabManager.updateTab(tabId, {
 				isLoading: true,
 				url: data.url,
 				title: getTabTitle(data.url)
 			});
 
-			// Only update parent if this is the active tab AND not already navigating via HTTP
-			// When navigating via HTTP (Go button), the HTTP response will handle URL updates
-			// to avoid race conditions with stream events overwriting the final redirected URL
+			// Safety timeout: if no navigation-complete event arrives within 15s,
+			// clear isLoading to prevent it from being stuck indefinitely.
+			// This handles aborted navigations (user clicks another link before load).
+			const existing = loadingTimeouts.get(tabId);
+			if (existing) clearTimeout(existing);
+			loadingTimeouts.set(tabId, setTimeout(() => {
+				loadingTimeouts.delete(tabId);
+				const currentTab = tabManager.getTab(tabId);
+				if (currentTab?.isLoading) {
+					debug.warn('preview', `⏰ Safety timeout: clearing stale isLoading for tab ${tabId}`);
+					tabManager.updateTab(tabId, { isLoading: false });
+				}
+			}, 15000));
+
 			if (tabId === tabManager.activeTabId && onNavigationUpdate && !tab?.isNavigating) {
 				onNavigationUpdate(tabId, data.url);
 			}
@@ -198,6 +210,13 @@ export function createStreamMessageHandler(config: StreamMessageHandlerConfig) {
 	}
 
 	function handleNavigation(tabId: string, data: any, tab: PreviewTab) {
+		// Clear safety timeout — navigation completed normally
+		const timeout = loadingTimeouts.get(tabId);
+		if (timeout) {
+			clearTimeout(timeout);
+			loadingTimeouts.delete(tabId);
+		}
+
 		if (data && data.url && data.url !== tab.url) {
 			debug.log('preview', `🧭 Navigation completed for tab ${tabId}: ${tab.url} → ${data.url}`);
 			tabManager.updateTab(tabId, {
@@ -207,12 +226,10 @@ export function createStreamMessageHandler(config: StreamMessageHandlerConfig) {
 				title: getTabTitle(data.url)
 			});
 
-			// Only update parent if this is the active tab
 			if (tabId === tabManager.activeTabId && onNavigationUpdate) {
 				onNavigationUpdate(tabId, data.url);
 			}
 		} else if (data && data.url === tab.url) {
-			// Same URL but navigation completed (e.g., page refresh)
 			debug.log('preview', `🔄 Same URL navigation completed for tab ${tabId}: ${data.url}`);
 			tabManager.updateTab(tabId, {
 				isLoading: false,
@@ -222,6 +239,13 @@ export function createStreamMessageHandler(config: StreamMessageHandlerConfig) {
 	}
 
 	function handleNavigationSpa(tabId: string, data: any, tab: PreviewTab) {
+		// Clear safety timeout — SPA navigation also resolves the loading state
+		const timeout = loadingTimeouts.get(tabId);
+		if (timeout) {
+			clearTimeout(timeout);
+			loadingTimeouts.delete(tabId);
+		}
+
 		if (data && data.url && data.url !== tab.url) {
 			debug.log('preview', `🔄 SPA navigation for tab ${tabId}: ${tab.url} → ${data.url}`);
 

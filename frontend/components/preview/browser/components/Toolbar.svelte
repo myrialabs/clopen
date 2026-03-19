@@ -163,31 +163,33 @@
 		progressPercent = 0;
 	}
 
-	// Reset progress bar immediately when active tab changes
-	// This prevents stale progress from a previous tab leaking into the new tab
+	// Reset progress bar immediately when active tab changes.
+	// A brief suppression window prevents the loading $effect from
+	// restarting progress before global state has synced to the new tab.
 	let previousActiveTabId = $state<string | null>(null);
+	let tabSwitchSuppressUntil = 0;
 	$effect(() => {
 		if (activeTabId !== previousActiveTabId) {
 			previousActiveTabId = activeTabId;
-			// Immediately stop any running progress animation and clear pending timeouts
 			stopProgress();
 			if (progressCompleteTimeout) {
 				clearTimeout(progressCompleteTimeout);
 				progressCompleteTimeout = null;
 			}
+			// Suppress loading $effect for a short window to allow state sync
+			tabSwitchSuppressUntil = Date.now() + 150;
 		}
 	});
 
 	// Watch loading states to control progress bar
-	// Progress bar should be active during:
-	// 1. isLaunchingBrowser: API call to launch browser
-	// 2. sessionInfo exists but isStreamReady false: waiting for first frame (initial load)
-	// 3. isNavigating: navigating within same session (link click)
-	// 4. isReconnecting: fast reconnect after navigation (keeps progress bar visible)
-	// 5. isLoading: generic loading state
 	$effect(() => {
 		const waitingForInitialFrame = sessionInfo && !isStreamReady && !isNavigating && !isReconnecting;
 		const shouldShowProgress = isLoading || isLaunchingBrowser || isNavigating || isReconnecting || waitingForInitialFrame;
+
+		// Skip during tab switch suppression window — state may be stale from old tab
+		if (Date.now() < tabSwitchSuppressUntil) {
+			return;
+		}
 
 		// Cancel any pending completion when a loading state becomes active
 		if (shouldShowProgress && progressCompleteTimeout) {
@@ -195,24 +197,23 @@
 			progressCompleteTimeout = null;
 		}
 
-		// Only start if not already showing progress (prevent restart)
 		if (shouldShowProgress && !showProgress) {
 			startProgressAnimation();
 		}
-		// Only complete if currently showing progress - with debounce to handle state transitions
-		// This prevents the progress bar from briefly completing during isNavigating → isReconnecting transition
 		else if (!shouldShowProgress && showProgress && !progressCompleteTimeout) {
 			progressCompleteTimeout = setTimeout(() => {
 				progressCompleteTimeout = null;
-				// Re-check if we should still complete (state might have changed)
 				const stillShouldComplete = !isLoading && !isLaunchingBrowser && !isNavigating && !isReconnecting;
 				const stillWaitingForFrame = sessionInfo && !isStreamReady && !isNavigating && !isReconnecting;
 				if (stillShouldComplete && !stillWaitingForFrame) {
 					completeProgress();
 				}
-			}, 100); // 100ms debounce to handle state transitions
+			}, 100);
 		}
 	});
+
+	// Whether the currently active tab is under MCP control
+	const isMcpControlled = $derived(activeTabId != null && mcpControlledTabIds.has(activeTabId));
 
 	// Cleanup animation frame on component destroy
 	onDestroy(() => {
@@ -304,8 +305,9 @@
 						oninput={handleUrlInput}
 						onfocus={() => isUserTyping = true}
 						onblur={() => isUserTyping = false}
-						placeholder="Enter URL to preview..."
-						class="flex-1 pl-3 py-2 text-sm bg-transparent border-0 focus:outline-none min-w-0 text-ellipsis"
+						placeholder={isMcpControlled ? 'MCP controlled — navigation disabled' : 'Enter URL to preview...'}
+						disabled={isMcpControlled}
+						class="flex-1 pl-3 py-2 text-sm bg-transparent border-0 focus:outline-none min-w-0 text-ellipsis disabled:opacity-50 disabled:cursor-not-allowed"
 					/>
 					<div class="flex items-center gap-1 px-1.5">
 						{#if url}
@@ -318,8 +320,8 @@
 							</button>
 							<button
 								onclick={handleRefresh}
-								disabled={isLoading}
-								class="flex p-1.5 rounded-md hover:bg-slate-100 dark:hover:bg-slate-700 transition-all duration-200 disabled:opacity-50"
+								disabled={isLoading || isMcpControlled}
+								class="flex p-1.5 rounded-md hover:bg-slate-100 dark:hover:bg-slate-700 transition-all duration-200 disabled:opacity-50 disabled:cursor-not-allowed"
 								title="Refresh current page"
 							>
 								<Icon name={isLoading ? 'lucide:loader-circle' : 'lucide:refresh-cw'} class="w-4 h-4 transition-transform duration-200 {isLoading ? 'animate-spin' : 'hover:rotate-180'}" />
@@ -327,9 +329,9 @@
 						{/if}
 						<button
 							onclick={handleGoClick}
-							disabled={!urlInput.trim() || isLoading}
-							class="ml-0.5 px-3.5 py-1 text-xs font-medium rounded-md bg-violet-500 hover:bg-violet-600 disabled:bg-slate-300 disabled:dark:bg-slate-600 text-white transition-all duration-200 disabled:opacity-50"
-							title="Navigate to URL"
+							disabled={!urlInput.trim() || isLoading || isMcpControlled}
+							class="ml-0.5 px-3.5 py-1 text-xs font-medium rounded-md bg-violet-500 hover:bg-violet-600 disabled:bg-slate-300 disabled:dark:bg-slate-600 text-white transition-all duration-200 disabled:opacity-50 disabled:cursor-not-allowed"
+							title={isMcpControlled ? 'Navigation disabled — MCP controlled' : 'Navigate to URL'}
 						>
 							Go
 						</button>

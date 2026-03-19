@@ -70,6 +70,19 @@
 	let showNavigationOverlay = $state(false);
 	let overlayHideTimeout: ReturnType<typeof setTimeout> | null = null;
 
+	// Immediately reset navigation overlay on tab switch to prevent stale overlay from old tab
+	let previousOverlaySessionId: string | null = null;
+	$effect(() => {
+		if (sessionId !== previousOverlaySessionId) {
+			previousOverlaySessionId = sessionId;
+			if (overlayHideTimeout) {
+				clearTimeout(overlayHideTimeout);
+				overlayHideTimeout = null;
+			}
+			showNavigationOverlay = false;
+		}
+	});
+
 	// Debounced navigation overlay - only for user-initiated toolbar navigations
 	// In-browser navigations (link clicks) only show progress bar, not this overlay
 	// This makes the preview behave like a real browser
@@ -90,9 +103,11 @@
 		else if (!shouldShowOverlay && showNavigationOverlay && !overlayHideTimeout) {
 			overlayHideTimeout = setTimeout(() => {
 				overlayHideTimeout = null;
-				// Re-check if we should still hide
-				const stillShouldHide = !(isNavigating || isReconnecting) || !isStreamReady;
-				if (stillShouldHide) {
+				// Re-check: only isNavigating controls this overlay.
+				// isReconnecting is intentionally excluded — it serves a different purpose
+				// (preventing solid loading overlay) and can stay true for a long time
+				// (e.g. ICE recovery), which would keep the overlay stuck indefinitely.
+				if (!isNavigating) {
 					showNavigationOverlay = false;
 				}
 			}, 100); // 100ms debounce

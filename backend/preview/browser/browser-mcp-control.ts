@@ -207,6 +207,22 @@ export class BrowserMcpControl extends EventEmitter {
 	// ============================================================================
 
 	/**
+	 * Promote a tab to the end of the session's controlled set.
+	 * This ensures getSessionTabs()[last] returns the most recently activated tab,
+	 * which is used by getActiveTabSession to determine which tab MCP operates on.
+	 *
+	 * Must be called after switch_tab to reflect the new active tab.
+	 */
+	promoteSessionTab(browserTabId: string, chatSessionId: string): void {
+		const sessionSet = this.sessionTabs.get(chatSessionId);
+		if (sessionSet && sessionSet.has(browserTabId)) {
+			sessionSet.delete(browserTabId);
+			sessionSet.add(browserTabId);
+			debug.log('mcp', `🔀 Promoted tab ${browserTabId} to end of session ${chatSessionId.slice(0, 8)} set`);
+		}
+	}
+
+	/**
 	 * Acquire control of a browser tab for a chat session.
 	 *
 	 * - If the tab is already owned by the same session → success (idempotent)

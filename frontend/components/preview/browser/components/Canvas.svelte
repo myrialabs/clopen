@@ -37,6 +37,12 @@
 	let isStartingStream = false; // Prevent concurrent start attempts
 	let lastStartRequestId: string | null = null; // Track the last start request to prevent duplicates
 
+	// Generation counter: increments on every session change (tab switch).
+	// Async operations (startStreaming, recovery) capture the current generation
+	// and bail out if it has changed, preventing stale operations from corrupting
+	// the new tab's state.
+	let streamingGeneration = 0;
+
 	let canvasElement = $state<HTMLCanvasElement | undefined>();
 	let setupCanvasTimeout: ReturnType<typeof setTimeout> | undefined;
 
@@ -98,6 +104,31 @@
 		}
 
 		lastProjectId = currentProjectId;
+	});
+
+	// Track session changes to reset stale state and increment generation counter.
+	// This runs BEFORE the streaming $effect, ensuring isReconnecting from the old
+	// tab doesn't leak into the new tab and that stale async operations bail out.
+	let lastTrackedSessionId: string | null = null;
+	$effect(() => {
+		const currentSessionId = sessionId;
+		if (currentSessionId !== lastTrackedSessionId) {
+			if (lastTrackedSessionId !== null) {
+				// Session actually changed (tab switch) — not initial mount
+				streamingGeneration++;
+				debug.log('webcodecs', `Session changed ${lastTrackedSessionId} → ${currentSessionId}, generation=${streamingGeneration}`);
+
+				// Reset states that belong to the old tab
+				if (isReconnecting) {
+					isReconnecting = false;
+				}
+				if (isNavigating) {
+					isNavigating = false;
+				}
+				lastStartRequestId = null; // Allow new start request for new session
+			}
+			lastTrackedSessionId = currentSessionId;
+		}
 	});
 
 	// Sync navigation state with webCodecsService
@@ -425,32 +456,27 @@
 
 	// Start WebCodecs streaming
 	async function startStreaming() {
-		debug.log('webcodecs', `[DIAG] startStreaming() called: sessionId=${sessionId}, canvasElement=${!!canvasElement}, isStartingStream=${isStartingStream}, isWebCodecsActive=${isWebCodecsActive}, activeStreamingSessionId=${activeStreamingSessionId}, lastStartRequestId=${lastStartRequestId}`);
+		debug.log('webcodecs', `startStreaming() called: sessionId=${sessionId}, generation=${streamingGeneration}`);
 
 		if (!sessionId || !canvasElement) {
-			debug.log('webcodecs', `[DIAG] startStreaming() early exit: missing sessionId=${!sessionId} or canvasElement=${!canvasElement}`);
 			return;
 		}
 
 		// Prevent concurrent start attempts
 		if (isStartingStream) {
-			debug.log('webcodecs', '[DIAG] startStreaming() skipped: already starting stream');
+			debug.log('webcodecs', 'startStreaming() skipped: already starting stream');
 			return;
 		}
 
 		// If already streaming same session, skip
 		if (isWebCodecsActive && activeStreamingSessionId === sessionId) {
-			debug.log('webcodecs', '[DIAG] startStreaming() skipped: already streaming same session');
+			debug.log('webcodecs', 'startStreaming() skipped: already streaming same session');
 			return;
 		}
 
-		// Prevent duplicate requests for same session
-		const requestId = `${sessionId}-${Date.now()}`;
-		if (lastStartRequestId && lastStartRequestId.startsWith(sessionId)) {
-			debug.log('webcodecs', `[DIAG] startStreaming() skipped: duplicate request for ${sessionId}, lastStartRequestId=${lastStartRequestId}`);
-			return;
-		}
-		lastStartRequestId = requestId;
+		// Capture current generation — if it changes during async operations,
+		// it means the user switched tabs and this operation is stale
+		const myGeneration = streamingGeneration;
 
 		isStartingStream = true;
 		isStreamStarting = true; // Show loading overlay
@@ -464,8 +490,13 @@
 			if (isWebCodecsActive && activeStreamingSessionId !== sessionId) {
 				debug.log('webcodecs', `Session mismatch (active: ${activeStreamingSessionId}, requested: ${sessionId}), stopping old stream first`);
 				await stopStreaming();
-				// Small delay to ensure cleanup is complete
 				await new Promise(resolve => setTimeout(resolve, 100));
+			}
+
+			// Bail out if tab switched during cleanup
+			if (myGeneration !== streamingGeneration) {
+				debug.log('webcodecs', `Stale startStreaming (gen ${myGeneration} != ${streamingGeneration}), aborting`);
+				return;
 			}
 
 			// Create WebCodecs service if not exists
@@ -480,7 +511,11 @@
 				// Setup error handler
 				webCodecsService.setErrorHandler((error: Error) => {
 					debug.error('webcodecs', 'Error:', error);
-					isStartingStream = false;
+					// NOTE: do NOT reset isStartingStream here.
+					// This handler fires from inside webCodecsService.startStreaming (before it returns false).
+					// Canvas.svelte's startStreaming retry loop is still running with isStartingStream=true.
+					// Resetting it here releases the concurrency guard prematurely, causing multiple
+					// concurrent streaming sessions to start (each triggering the streaming $effect).
 					connectionFailed = true;
 				});
 
@@ -555,19 +590,39 @@
 			const retryDelay = 300;
 
 			while (!success && retries < maxRetries) {
+				// Check generation before each attempt
+				if (myGeneration !== streamingGeneration) {
+					debug.log('webcodecs', `Stale startStreaming retry (gen ${myGeneration} != ${streamingGeneration}), aborting`);
+					break;
+				}
+
 				try {
+					// Guard: webCodecsService can be destroyed by a concurrent tab/project switch
+					if (!webCodecsService) {
+						debug.warn('webcodecs', 'webCodecsService became null during startStreaming, aborting');
+						break;
+					}
+
 					success = await webCodecsService.startStreaming(sessionId, canvasElement);
+
+					// Check generation after async operation
+					if (myGeneration !== streamingGeneration) {
+						debug.log('webcodecs', `Tab switched during startStreaming (gen ${myGeneration} != ${streamingGeneration}), discarding result`);
+						if (success && webCodecsService) {
+							await webCodecsService.stopStreaming();
+						}
+						break;
+					}
+
 					if (success) {
 						isWebCodecsActive = true;
 						isConnected = true;
 						activeStreamingSessionId = sessionId;
-						consecutiveFailures = 0; // Reset failure counter on success
-						startHealthCheck(hasRestoredSnapshot); // Skip first frame reset if snapshot
-						hasRestoredSnapshot = false; // Reset after using
+						consecutiveFailures = 0;
+						startHealthCheck(hasRestoredSnapshot);
+						hasRestoredSnapshot = false;
 						debug.log('webcodecs', 'Streaming started successfully');
 					} else {
-						// Service handles errors internally and returns false.
-						// Retry after a delay — the peer/offer may need more time to initialize.
 						retries++;
 						if (retries < maxRetries) {
 							debug.warn('webcodecs', `Streaming start returned false, retrying in ${retryDelay * retries}ms (${retries}/${maxRetries})`);
@@ -579,7 +634,6 @@
 					}
 					break;
 				} catch (error: any) {
-					// This block only runs if the service unexpectedly throws.
 					const isRetriable = error?.message?.includes('not found') ||
 						error?.message?.includes('invalid') ||
 						error?.message?.includes('Failed to start') ||
@@ -764,6 +818,7 @@
 			return;
 		}
 
+		const myGeneration = streamingGeneration;
 		consecutiveFailures++;
 		debug.log('webcodecs', `Recovery attempt ${consecutiveFailures}/${MAX_CONSECUTIVE_FAILURES} for session ${sessionId}`);
 
@@ -776,11 +831,18 @@
 
 		// Stop and restart streaming
 		try {
-			isRecovering = true; // Show "Reconnecting..." overlay
-			hasReceivedFirstFrame = false; // Reset for recovery
+			isRecovering = true;
+			hasReceivedFirstFrame = false;
 			await stopStreaming();
-			lastStartRequestId = null; // Clear to allow new start request
-			await new Promise(resolve => setTimeout(resolve, 500)); // Wait for cleanup
+			lastStartRequestId = null;
+			await new Promise(resolve => setTimeout(resolve, 500));
+
+			// Bail out if tab switched during cleanup
+			if (myGeneration !== streamingGeneration) {
+				debug.log('webcodecs', 'Recovery aborted - tab switched during cleanup');
+				return;
+			}
+
 			await startStreaming();
 		} catch (error) {
 			debug.error('webcodecs', 'Recovery failed:', error);
@@ -802,42 +864,43 @@
 			return;
 		}
 
-		debug.log('webcodecs', `🚀 Fast reconnect for session ${sessionId} (reconnect only, no backend stop)`);
+		const myGeneration = streamingGeneration;
+		debug.log('webcodecs', `🚀 Fast reconnect for session ${sessionId} (gen=${myGeneration})`);
 
 		try {
 			isRecovering = true;
 			isStartingStream = true;
-
-			// Set isReconnecting to prevent loading overlay during reconnect
-			// This ensures the last frame stays visible instead of "Loading preview..."
 			isReconnecting = true;
 
-			// Don't reset hasReceivedFirstFrame - keep showing last frame during reconnect
-
-			// Use reconnectToExistingStream which does NOT stop backend streaming
 			const success = await webCodecsService.reconnectToExistingStream(sessionId, canvasElement);
+
+			// Bail out if tab switched during reconnect
+			if (myGeneration !== streamingGeneration) {
+				debug.log('webcodecs', 'Fast reconnect aborted - tab switched');
+				return;
+			}
 
 			if (success) {
 				isWebCodecsActive = true;
 				isConnected = true;
 				activeStreamingSessionId = sessionId;
 				consecutiveFailures = 0;
-				startHealthCheck(true); // Skip resetting hasReceivedFirstFrame to keep overlay stable
+				startHealthCheck(true);
 				debug.log('webcodecs', '✅ Fast reconnect successful');
 			} else {
 				throw new Error('Reconnect returned false');
 			}
 		} catch (error) {
 			debug.error('webcodecs', 'Fast reconnect failed:', error);
-			// Fall back to regular recovery on failure
 			consecutiveFailures++;
 			isStartingStream = false;
-			isReconnecting = false; // Reset on failure
-			attemptRecovery();
+			isReconnecting = false;
+			if (myGeneration === streamingGeneration) {
+				attemptRecovery();
+			}
 		} finally {
 			isRecovering = false;
 			isStartingStream = false;
-			// Note: isReconnecting will be reset when first frame is received
 		}
 	}
 
@@ -950,12 +1013,27 @@
 
 				// Stop existing streaming first if session changed
 				// This ensures clean state before starting new stream
+				const capturedGeneration = streamingGeneration;
+
+				// IMMEDIATELY block the old session's frames from painting onto the canvas.
+				// Without this, A's DataChannel continues delivering frames for up to 30ms
+				// after we clear/snapshot-restore the canvas, overwriting B's content.
+				if (activeStreamingSessionId && activeStreamingSessionId !== sessionId) {
+					webCodecsService?.pauseRendering();
+				}
+
 				const doStartStreaming = async () => {
+					// Bail immediately if tab already changed
+					if (capturedGeneration !== streamingGeneration) return;
+
 					if (activeStreamingSessionId && activeStreamingSessionId !== sessionId) {
 						debug.log('webcodecs', `Session changed from ${activeStreamingSessionId} to ${sessionId}, stopping old stream first`);
 						await stopStreaming();
-						// Wait a bit for cleanup
-						await new Promise(resolve => setTimeout(resolve, 100));
+						// Bail if tab changed during cleanup
+						if (capturedGeneration !== streamingGeneration) return;
+						// Short wait for backend cleanup
+						await new Promise(resolve => setTimeout(resolve, 50));
+						if (capturedGeneration !== streamingGeneration) return;
 					}
 					await startStreaming();
 				};
@@ -963,7 +1041,7 @@
 				// Small delay to ensure backend session is ready
 				const timeout = setTimeout(() => {
 					doStartStreaming();
-				}, 50);
+				}, 30);
 
 				return () => clearTimeout(timeout);
 			}
@@ -993,10 +1071,9 @@
 			let lastMoveTime = 0;
 			const handleMouseMove = (e: MouseEvent) => {
 				const now = Date.now();
-				// Low-end optimized throttle: reduced CPU usage
-				// 32ms hover = ~30fps, 16ms drag = ~60fps
-				const throttleMs = isDragging ? 16 : 32;
-				if (now - lastMoveTime >= throttleMs) {
+				// 32ms = ~30fps — enough for smooth hover/drag while keeping CDP pipeline clear
+				// for clicks and keypresses (halving the rate halves CDP queue pressure)
+				if (now - lastMoveTime >= 32) {
 					lastMoveTime = now;
 					handleCanvasMouseMove(e, canvas);
 				}

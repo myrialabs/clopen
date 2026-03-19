@@ -132,6 +132,7 @@ export class BrowserWebCodecsService {
 	// Navigation state - when true, DataChannel close is expected and recovery is suppressed
 	private isNavigating = false;
 	private navigationCleanupFn: (() => void) | null = null;
+	private navigationSafetyTimeout: ReturnType<typeof setTimeout> | null = null;
 
 	// SPA navigation frame freeze — holds last frame briefly during SPA transitions
 	private spaFreezeUntil = 0;
@@ -145,11 +146,32 @@ export class BrowserWebCodecsService {
 	// Bandwidth logging interval
 	private bandwidthLogIntervalId: ReturnType<typeof setInterval> | null = null;
 
+	// User gesture listener for AudioContext resume (needed after page refresh)
+	private userGestureHandler: (() => void) | null = null;
+
 	constructor(projectId: string) {
 		if (!projectId) {
 			throw new Error('projectId is required for BrowserWebCodecsService');
 		}
 		this.projectId = projectId;
+
+		// Register a one-time user gesture listener to resume suspended AudioContext.
+		// After page refresh, AudioContext cannot resume without a user gesture.
+		// This listener fires on the first click/keydown and resumes it.
+		this.userGestureHandler = () => {
+			if (this.audioContext && this.audioContext.state === 'suspended') {
+				this.audioContext.resume().catch(() => {});
+				debug.log('webcodecs', 'AudioContext resumed via user gesture');
+			}
+			// Remove listeners after first successful gesture
+			if (this.userGestureHandler) {
+				document.removeEventListener('click', this.userGestureHandler);
+				document.removeEventListener('keydown', this.userGestureHandler);
+				this.userGestureHandler = null;
+			}
+		};
+		document.addEventListener('click', this.userGestureHandler, { once: false });
+		document.addEventListener('keydown', this.userGestureHandler, { once: false });
 	}
 
 	/**
@@ -221,8 +243,10 @@ export class BrowserWebCodecsService {
 			this.setupEventListeners();
 
 			// Request server to start streaming and get offer
+			// Send explicit tabId to ensure backend targets the correct tab
+			// even if user switches tabs during the async negotiation
 			debug.log('webcodecs', `[DIAG] Sending preview:browser-stream-start for session: ${sessionId}`);
-			const response = await ws.http('preview:browser-stream-start', {}, 30000);
+			const response = await ws.http('preview:browser-stream-start', { tabId: sessionId }, 30000);
 			debug.log('webcodecs', `[DIAG] preview:browser-stream-start response: success=${response.success}, hasOffer=${!!response.offer}, message=${response.message}`);
 
 			if (!response.success) {
@@ -252,7 +276,7 @@ export class BrowserWebCodecsService {
 						await new Promise(resolve => setTimeout(resolve, offerRetryDelay * attempt));
 					}
 					debug.log('webcodecs', `[DIAG] stream-offer attempt ${attempt + 1}/${offerMaxRetries}`);
-					const offerResponse = await ws.http('preview:browser-stream-offer', {}, 10000);
+					const offerResponse = await ws.http('preview:browser-stream-offer', { tabId: sessionId }, 10000);
 					if (offerResponse.offer) {
 						offer = offerResponse.offer;
 						break;
@@ -308,6 +332,11 @@ export class BrowserWebCodecsService {
 
 			this.dataChannel.onclose = () => {
 				debug.log('webcodecs', 'DataChannel closed');
+				// Clear navigation safety timeout — DataChannel closed normally
+				if (this.navigationSafetyTimeout) {
+					clearTimeout(this.navigationSafetyTimeout);
+					this.navigationSafetyTimeout = null;
+				}
 				// Trigger recovery if channel closed while we were connected
 				// BUT skip recovery if we're navigating (expected behavior during page navigation)
 				if (this.isConnected && !this.isCleaningUp && !this.isNavigating && this.onConnectionFailed) {
@@ -319,8 +348,8 @@ export class BrowserWebCodecsService {
 					if (this.onReconnectingStart) {
 						this.onReconnectingStart();
 					}
-					// Backend needs ~500ms to restart streaming with new peer
-					// Wait for backend to be ready, then trigger FAST reconnection (no delay)
+					// Backend is already ready (navigation-complete fires after backend setup).
+					// Short delay to let state settle, then trigger fast reconnection.
 					setTimeout(() => {
 						if (this.isCleaningUp) return;
 						debug.log('webcodecs', '🔄 Triggering fast reconnection after navigation');
@@ -332,16 +361,22 @@ export class BrowserWebCodecsService {
 							// Fallback to regular recovery if no navigation handler
 							this.onConnectionFailed();
 						}
-					}, 700); // Wait 700ms for backend to restart (usually takes ~500ms)
+					}, 100);
 				}
 			};
 
 			this.dataChannel.onerror = (error) => {
+				// Suppress error log during intentional cleanup (User-Initiated Abort is expected)
+				if (this.isCleaningUp) {
+					debug.log('webcodecs', 'DataChannel error during cleanup (expected, suppressed)');
+					return;
+				}
+
 				debug.error('webcodecs', 'DataChannel error:', error);
-				debug.log('webcodecs', `DataChannel error state: isConnected=${this.isConnected}, isCleaningUp=${this.isCleaningUp}, isNavigating=${this.isNavigating}`);
+				debug.log('webcodecs', `DataChannel error state: isConnected=${this.isConnected}, isNavigating=${this.isNavigating}`);
 				// Trigger recovery on DataChannel error
 				// BUT skip recovery if we're navigating (expected behavior during page navigation)
-				if (this.isConnected && !this.isCleaningUp && !this.isNavigating && this.onConnectionFailed) {
+				if (this.isConnected && !this.isNavigating && this.onConnectionFailed) {
 					debug.warn('webcodecs', 'DataChannel error - triggering recovery');
 					this.onConnectionFailed();
 				} else if (this.isNavigating) {
@@ -363,15 +398,14 @@ export class BrowserWebCodecsService {
 					sdpMLineIndex: event.candidate.sdpMLineIndex
 				};
 
-				// Backend uses active tab automatically
-				ws.http('preview:browser-stream-ice', { candidate: candidateInit }).catch((error) => {
+				ws.http('preview:browser-stream-ice', { candidate: candidateInit, tabId: this.sessionId }).catch((error) => {
 					debug.warn('webcodecs', 'Failed to send ICE candidate:', error);
 				});
 
 				// Also send loopback version for VPN compatibility (same-machine peers)
 				const loopback = this.createLoopbackCandidate(candidateInit);
 				if (loopback) {
-					ws.http('preview:browser-stream-ice', { candidate: loopback }).catch(() => {});
+					ws.http('preview:browser-stream-ice', { candidate: loopback, tabId: this.sessionId }).catch(() => {});
 				}
 			}
 		};
@@ -445,12 +479,12 @@ export class BrowserWebCodecsService {
 		debug.log('webcodecs', 'Local description set');
 
 		if (this.sessionId) {
-			// Backend uses active tab automatically
 			await ws.http('preview:browser-stream-answer', {
 				answer: {
 					type: answer.type,
 					sdp: answer.sdp
-				}
+				},
+				tabId: this.sessionId
 			});
 		}
 	}
@@ -573,6 +607,11 @@ export class BrowserWebCodecsService {
 				output: (frame) => this.handleDecodedVideoFrame(frame),
 				error: (e) => {
 					debug.error('webcodecs', 'VideoDecoder error:', e);
+					// Null out so next keyframe triggers reinitialization.
+					// Without this, the decoder stays in 'closed' state but non-null,
+					// causing handleVideoChunk's `!this.videoDecoder` check to never fire
+					// → all subsequent frames permanently dropped (stuck frames bug).
+					this.videoDecoder = null;
 				}
 			});
 
@@ -604,6 +643,8 @@ export class BrowserWebCodecsService {
 				output: (frame) => this.handleDecodedAudioFrame(frame),
 				error: (e) => {
 					debug.error('webcodecs', 'AudioDecoder error:', e);
+					// Null out so next chunk triggers reinitialization.
+					this.audioDecoder = null;
 				}
 			});
 
@@ -694,6 +735,10 @@ export class BrowserWebCodecsService {
 				if (this.isNavigating) {
 					debug.log('webcodecs', 'Navigation complete - frames received, resetting navigation state');
 					this.isNavigating = false;
+					if (this.navigationSafetyTimeout) {
+						clearTimeout(this.navigationSafetyTimeout);
+						this.navigationSafetyTimeout = null;
+					}
 				}
 			}
 
@@ -737,6 +782,10 @@ export class BrowserWebCodecsService {
 		this.isRenderingFrame = false;
 
 		if (!this.pendingFrame || this.isCleaningUp || !this.canvas || !this.ctx) {
+			if (this.pendingFrame) {
+				this.pendingFrame.close();
+				this.pendingFrame = null;
+			}
 			return;
 		}
 
@@ -746,15 +795,15 @@ export class BrowserWebCodecsService {
 			const frameTimestamp = (this.pendingFrame.timestamp - this.firstFrameTimestamp) / 1000; // convert to ms
 			const elapsedTime = timestamp - this.startTime;
 
-			// Check if we're ahead of schedule (frame came too early)
-			// If so, we might want to delay rendering, but for low-latency
-			// we render immediately to minimize lag
 			const timeDrift = elapsedTime - frameTimestamp;
 
-			// Only log significant drift (for debugging)
-			if (Math.abs(timeDrift) > 100) {
-				// Drift more than 100ms is significant
-				debug.warn('webcodecs', `Frame timing drift: ${timeDrift.toFixed(0)}ms`);
+			// Auto-reset timing when drift exceeds 2 seconds.
+			// This handles stale timing state after reconnects or rapid tab switches
+			// where startTime/firstFrameTimestamp were not properly reset.
+			if (Math.abs(timeDrift) > 2000 && this.startTime > 0) {
+				debug.warn('webcodecs', `Frame timing drift reset (was ${timeDrift.toFixed(0)}ms)`);
+				this.startTime = timestamp;
+				this.firstFrameTimestamp = this.pendingFrame.timestamp;
 			}
 
 			// Render to canvas with optimal settings
@@ -902,6 +951,24 @@ export class BrowserWebCodecsService {
 					debug.log('webcodecs', '🔄 Pre-emptive reconnecting state on navigation complete');
 					this.onReconnectingStart();
 				}
+
+				// Fast safety timeout: if DataChannel doesn't close within 100ms,
+				// force a full recovery (stop + start fresh stream). Sometimes
+				// the old WebRTC connection lingers for 10-16s before ICE timeout.
+				// Using onConnectionFailed triggers attemptRecovery (full stop+start),
+				// which is the same path as tab switching and takes ~100ms to first frame.
+				if (this.navigationSafetyTimeout) {
+					clearTimeout(this.navigationSafetyTimeout);
+				}
+				this.navigationSafetyTimeout = setTimeout(() => {
+					this.navigationSafetyTimeout = null;
+					if (this.isCleaningUp || !this.isNavigating) return;
+					debug.warn('webcodecs', '⏰ Navigation safety timeout - forcing full recovery');
+					this.isNavigating = false;
+					if (this.onConnectionFailed) {
+						this.onConnectionFailed();
+					}
+				}, 100);
 			}
 		});
 
@@ -1097,7 +1164,7 @@ export class BrowserWebCodecsService {
 			await this.createPeerConnection();
 
 			// Get offer from backend's existing peer (don't start new streaming)
-			const offerResponse = await ws.http('preview:browser-stream-offer', {}, 10000);
+			const offerResponse = await ws.http('preview:browser-stream-offer', { tabId: sessionId }, 10000);
 			if (offerResponse.offer) {
 				await this.handleOffer({
 					type: offerResponse.offer.type as RTCSdpType,
@@ -1140,13 +1207,19 @@ export class BrowserWebCodecsService {
 		}
 
 		// Cleanup WebSocket listeners
-		this.wsCleanupFunctions.forEach((cleanup) => cleanup());
+		try {
+			this.wsCleanupFunctions.forEach((cleanup) => cleanup());
+		} catch (e) {
+			debug.warn('webcodecs', 'Error in ws cleanup:', e);
+		}
 		this.wsCleanupFunctions = [];
 
-		// Close decoders
+		// Close decoders immediately (reset + close, no flush).
+		// Flushing processes all queued frames which is slow and can fire
+		// stale callbacks during rapid tab switching.
 		if (this.videoDecoder) {
 			try {
-				await this.videoDecoder.flush();
+				this.videoDecoder.reset();
 				this.videoDecoder.close();
 			} catch (e) {}
 			this.videoDecoder = null;
@@ -1154,7 +1227,7 @@ export class BrowserWebCodecsService {
 
 		if (this.audioDecoder) {
 			try {
-				await this.audioDecoder.flush();
+				this.audioDecoder.reset();
 				this.audioDecoder.close();
 			} catch (e) {}
 			this.audioDecoder = null;
@@ -1227,22 +1300,22 @@ export class BrowserWebCodecsService {
 		}
 
 		// Cleanup WebSocket listeners
-		this.wsCleanupFunctions.forEach((cleanup) => cleanup());
+		try {
+			this.wsCleanupFunctions.forEach((cleanup) => cleanup());
+		} catch (e) {
+			debug.warn('webcodecs', 'Error in ws cleanup:', e);
+		}
 		this.wsCleanupFunctions = [];
 
-		// Notify server
+		// Notify server with explicit tabId (fire-and-forget for speed during rapid switching)
 		if (this.sessionId) {
-			try {
-				await ws.http('preview:browser-stream-stop', {});
-			} catch (error) {
-				debug.warn('webcodecs', 'Failed to notify server:', error);
-			}
+			ws.http('preview:browser-stream-stop', { tabId: this.sessionId }).catch(() => {});
 		}
 
-		// Close decoders
+		// Close decoders immediately (reset + close, no flush for speed)
 		if (this.videoDecoder) {
 			try {
-				await this.videoDecoder.flush();
+				this.videoDecoder.reset();
 				this.videoDecoder.close();
 			} catch (e) {}
 			this.videoDecoder = null;
@@ -1250,17 +1323,16 @@ export class BrowserWebCodecsService {
 
 		if (this.audioDecoder) {
 			try {
-				await this.audioDecoder.flush();
+				this.audioDecoder.reset();
 				this.audioDecoder.close();
 			} catch (e) {}
 			this.audioDecoder = null;
 		}
 
-		// Close audio context
-		if (this.audioContext && this.audioContext.state !== 'closed') {
-			await this.audioContext.close().catch(() => {});
-			this.audioContext = null;
-		}
+		// Keep AudioContext alive across stop/start cycles — it was created during
+		// a user gesture in startStreaming() and closing it means we can't resume
+		// without another user gesture. Only destroy() should close it.
+		// Just reset audio playback scheduling state below.
 
 		// Close data channel
 		if (this.dataChannel) {
@@ -1330,6 +1402,10 @@ export class BrowserWebCodecsService {
 
 		// Reset navigation state
 		this.isNavigating = false;
+		if (this.navigationSafetyTimeout) {
+			clearTimeout(this.navigationSafetyTimeout);
+			this.navigationSafetyTimeout = null;
+		}
 
 		if (this.onConnectionChange) {
 			this.onConnectionChange(false);
@@ -1359,12 +1435,16 @@ export class BrowserWebCodecsService {
 			this.pendingFrame = null;
 		}
 
-		this.wsCleanupFunctions.forEach((cleanup) => cleanup());
+		try {
+			this.wsCleanupFunctions.forEach((cleanup) => cleanup());
+		} catch (e) {
+			debug.warn('webcodecs', 'Error in ws cleanup:', e);
+		}
 		this.wsCleanupFunctions = [];
 
 		if (this.videoDecoder) {
 			try {
-				await this.videoDecoder.flush();
+				this.videoDecoder.reset();
 				this.videoDecoder.close();
 			} catch (e) {}
 			this.videoDecoder = null;
@@ -1372,16 +1452,13 @@ export class BrowserWebCodecsService {
 
 		if (this.audioDecoder) {
 			try {
-				await this.audioDecoder.flush();
+				this.audioDecoder.reset();
 				this.audioDecoder.close();
 			} catch (e) {}
 			this.audioDecoder = null;
 		}
 
-		if (this.audioContext && this.audioContext.state !== 'closed') {
-			await this.audioContext.close().catch(() => {});
-			this.audioContext = null;
-		}
+		// Keep AudioContext alive — same rationale as cleanup()
 
 		if (this.dataChannel) {
 			this.dataChannel.close();
@@ -1395,6 +1472,10 @@ export class BrowserWebCodecsService {
 
 		this.isConnected = false;
 		this.sessionId = null;
+
+		// Reset stats (prevent stale firstFrameRendered from skipping timing reset)
+		this.stats.firstFrameRendered = false;
+		this.stats.isConnected = false;
 
 		// Reset audio playback state
 		this.nextAudioPlayTime = 0;
@@ -1416,6 +1497,12 @@ export class BrowserWebCodecsService {
 		this.syncStreamTimestamp = 0;
 		this.lastVideoTimestamp = 0;
 		this.lastVideoRealTime = 0;
+
+		// Clear navigation safety timeout
+		if (this.navigationSafetyTimeout) {
+			clearTimeout(this.navigationSafetyTimeout);
+			this.navigationSafetyTimeout = null;
+		}
 
 		this.isCleaningUp = false;
 	}
@@ -1442,6 +1529,24 @@ export class BrowserWebCodecsService {
 	 */
 	getConnectionStatus(): boolean {
 		return this.isConnected;
+	}
+
+	/**
+	 * Immediately block frame rendering without closing the WebRTC connection.
+	 * Call this as soon as a tab switch is detected to prevent the old session's
+	 * frames from painting onto the canvas after it has been cleared/snapshot-restored.
+	 * The cleanup + new connection will complete asynchronously via stopStreaming/startStreaming.
+	 */
+	pauseRendering(): void {
+		this.isCleaningUp = true;
+		if (this.renderFrameId !== null) {
+			cancelAnimationFrame(this.renderFrameId);
+			this.renderFrameId = null;
+		}
+		if (this.pendingFrame) {
+			this.pendingFrame.close();
+			this.pendingFrame = null;
+		}
 	}
 
 	// Event handlers
@@ -1493,6 +1598,11 @@ export class BrowserWebCodecsService {
 	 */
 	setNavigating(navigating: boolean): void {
 		this.isNavigating = navigating;
+		// Clear safety timeout when navigation state is externally reset
+		if (!navigating && this.navigationSafetyTimeout) {
+			clearTimeout(this.navigationSafetyTimeout);
+			this.navigationSafetyTimeout = null;
+		}
 		debug.log('webcodecs', `Navigation state set: ${navigating}`);
 	}
 
@@ -1508,6 +1618,13 @@ export class BrowserWebCodecsService {
 	 */
 	destroy(): void {
 		this.cleanup();
+
+		// Close AudioContext only on full destroy (not reused after this)
+		if (this.audioContext && this.audioContext.state !== 'closed') {
+			this.audioContext.close().catch(() => {});
+			this.audioContext = null;
+		}
+
 		this.onConnectionChange = null;
 		this.onConnectionFailed = null;
 		this.onNavigationReconnect = null;
@@ -1515,5 +1632,12 @@ export class BrowserWebCodecsService {
 		this.onError = null;
 		this.onStats = null;
 		this.onCursorChange = null;
+
+		// Remove user gesture listener
+		if (this.userGestureHandler) {
+			document.removeEventListener('click', this.userGestureHandler);
+			document.removeEventListener('keydown', this.userGestureHandler);
+			this.userGestureHandler = null;
+		}
 	}
 }

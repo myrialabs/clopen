@@ -869,37 +869,3 @@ class BrowserPreviewServiceManager {
 // Service manager instance (singleton)
 export const browserPreviewServiceManager = new BrowserPreviewServiceManager();
 
-// Graceful shutdown handlers
-const gracefulShutdown = async (signal: string) => {
-	try {
-		await browserPreviewServiceManager.cleanup();
-		process.exit(0);
-	} catch (error) {
-		process.exit(1);
-	}
-};
-
-// Handle various termination signals
-process.on('SIGINT', () => gracefulShutdown('SIGINT'));
-process.on('SIGTERM', () => gracefulShutdown('SIGTERM'));
-process.on('SIGHUP', () => gracefulShutdown('SIGHUP'));
-
-// Handle Windows-specific signals
-if (process.platform === 'win32') {
-	process.on('SIGBREAK', () => gracefulShutdown('SIGBREAK'));
-}
-
-// Handle uncaught exceptions and unhandled rejections
-process.on('uncaughtException', async (error) => {
-	await browserPreviewServiceManager.cleanup();
-	process.exit(1);
-});
-
-process.on('unhandledRejection', async (reason, promise) => {
-	await browserPreviewServiceManager.cleanup();
-	process.exit(1);
-});
-
-// Handle process exit
-process.on('exit', (code) => {
-});

@@ -16,7 +16,9 @@ export const streamPreviewHandler = createRouter()
 	.http(
 		'preview:browser-stream-start',
 		{
-			data: t.Object({}),
+			data: t.Object({
+				tabId: t.Optional(t.String())
+			}),
 			response: t.Object({
 				success: t.Boolean(),
 				message: t.Optional(t.String()),
@@ -34,9 +36,10 @@ export const streamPreviewHandler = createRouter()
 			// Get project-specific preview service
 			const previewService = browserPreviewServiceManager.getService(projectId);
 
-			const tab = previewService.getActiveTab();
+			// Use explicit tabId if provided, otherwise fall back to active tab
+			const tab = data.tabId ? previewService.getTab(data.tabId) : previewService.getActiveTab();
 			if (!tab) {
-				throw new Error('No active tab');
+				throw new Error(data.tabId ? `Tab not found: ${data.tabId}` : 'No active tab');
 			}
 
 			const sessionId = tab.id;
@@ -73,7 +76,9 @@ export const streamPreviewHandler = createRouter()
 	.http(
 		'preview:browser-stream-offer',
 		{
-			data: t.Object({}),
+			data: t.Object({
+				tabId: t.Optional(t.String())
+			}),
 			response: t.Object({
 				success: t.Boolean(),
 				offer: t.Optional(
@@ -90,9 +95,9 @@ export const streamPreviewHandler = createRouter()
 			// Get project-specific preview service
 			const previewService = browserPreviewServiceManager.getService(projectId);
 
-			const tab = previewService.getActiveTab();
+			const tab = data.tabId ? previewService.getTab(data.tabId) : previewService.getActiveTab();
 			if (!tab) {
-				throw new Error('No active tab');
+				throw new Error(data.tabId ? `Tab not found: ${data.tabId}` : 'No active tab');
 			}
 
 			const offer = await previewService.getWebCodecsOffer(tab.id);
@@ -117,7 +122,8 @@ export const streamPreviewHandler = createRouter()
 				answer: t.Object({
 					type: t.String(),
 					sdp: t.Optional(t.String())
-				})
+				}),
+				tabId: t.Optional(t.String())
 			}),
 			response: t.Object({
 				success: t.Boolean()
@@ -129,9 +135,9 @@ export const streamPreviewHandler = createRouter()
 			// Get project-specific preview service
 			const previewService = browserPreviewServiceManager.getService(projectId);
 
-			const tab = previewService.getActiveTab();
+			const tab = data.tabId ? previewService.getTab(data.tabId) : previewService.getActiveTab();
 			if (!tab) {
-				throw new Error('No active tab');
+				throw new Error(data.tabId ? `Tab not found: ${data.tabId}` : 'No active tab');
 			}
 
 			const { answer } = data;
@@ -150,7 +156,8 @@ export const streamPreviewHandler = createRouter()
 					candidate: t.Optional(t.String()),
 					sdpMid: t.Optional(t.Union([t.String(), t.Null()])),
 					sdpMLineIndex: t.Optional(t.Union([t.Number(), t.Null()]))
-				})
+				}),
+				tabId: t.Optional(t.String())
 			}),
 			response: t.Object({
 				success: t.Boolean()
@@ -162,9 +169,9 @@ export const streamPreviewHandler = createRouter()
 			// Get project-specific preview service
 			const previewService = browserPreviewServiceManager.getService(projectId);
 
-			const tab = previewService.getActiveTab();
+			const tab = data.tabId ? previewService.getTab(data.tabId) : previewService.getActiveTab();
 			if (!tab) {
-				throw new Error('No active tab');
+				throw new Error(data.tabId ? `Tab not found: ${data.tabId}` : 'No active tab');
 			}
 
 			const { candidate } = data;
@@ -178,7 +185,9 @@ export const streamPreviewHandler = createRouter()
 	.http(
 		'preview:browser-stream-stop',
 		{
-			data: t.Object({}),
+			data: t.Object({
+				tabId: t.Optional(t.String())
+			}),
 			response: t.Object({
 				success: t.Boolean()
 			})
@@ -189,9 +198,9 @@ export const streamPreviewHandler = createRouter()
 			// Get project-specific preview service
 			const previewService = browserPreviewServiceManager.getService(projectId);
 
-			const tab = previewService.getActiveTab();
+			const tab = data.tabId ? previewService.getTab(data.tabId) : previewService.getActiveTab();
 			if (!tab) {
-				throw new Error('No active tab');
+				throw new Error(data.tabId ? `Tab not found: ${data.tabId}` : 'No active tab');
 			}
 
 			await previewService.stopWebCodecsStreaming(tab.id);
