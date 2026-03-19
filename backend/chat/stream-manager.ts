@@ -1141,16 +1141,19 @@ class StreamManager extends EventEmitter {
 			}
 		}
 
-		// Cancel the per-project engine — this sends an interrupt to the
-		// still-alive SDK subprocess, then aborts the controller. If we abort
-		// the controller first, the subprocess dies and the SDK's subsequent
-		// interrupt write fails with "Operation aborted" (unhandled rejection
-		// that crashes Bun).
+		// Cancel the per-project engine with a bounded timeout.
+		// engine.cancel() stops the SDK process (Claude Code: close() kills subprocess,
+		// OpenCode: aborts controller + HTTP abort to server). If cancel() hangs
+		// (e.g. unresponsive SDK), the timeout ensures we always proceed to emit
+		// events and update presence — preventing infinite loader on the frontend.
 		const projectId = streamState.projectId || 'default';
 		try {
 			const engine = getProjectEngine(projectId, streamState.engine);
 			if (engine.isActive) {
-				await engine.cancel();
+				await Promise.race([
+					engine.cancel(),
+					new Promise<void>(resolve => setTimeout(resolve, 5000))
+				]);
 			}
 		} catch (error) {
 			debug.error('chat', 'Error cancelling engine (non-fatal):', error);
@@ -1158,7 +1161,8 @@ class StreamManager extends EventEmitter {
 
 		// Abort the stream-manager's controller as a fallback.
 		// engine.cancel() already aborts the same controller, so this is
-		// typically a no-op but ensures cleanup if the engine wasn't active.
+		// typically a no-op but ensures cleanup if the engine timed out
+		// or wasn't active.
 		if (!streamState.abortController?.signal.aborted) {
 			streamState.abortController?.abort();
 		}

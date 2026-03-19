@@ -39,6 +39,7 @@ class ChatService {
   private lastEventSeq = new Map<string, number>(); // Sequence-based deduplication
   private cancelledProcessIds = new Set<string>(); // Track ALL cancelled streams to ignore late events
   private reconnected: boolean = false; // Whether we've reconnected to an active stream
+  private cancelSafetyTimer: ReturnType<typeof setTimeout> | null = null;
 
   static loadingTexts: string[] = [
     'thinking', 'processing', 'analyzing', 'calculating', 'computing',
@@ -170,6 +171,7 @@ class ChatService {
 
       this.streamCompleted = true;
       this.reconnected = false;
+      this.clearCancelSafetyTimer();
       this.setProcessState({ isLoading: false, isWaitingInput: false, isCancelling: false });
 
       // Mark any tool_use blocks that never got a tool_result
@@ -196,6 +198,7 @@ class ChatService {
       this.streamCompleted = true;
       this.reconnected = false;
       this.activeProcessId = null;
+      this.clearCancelSafetyTimer();
       // Don't clear isCancelling here — it causes a race with presence.
       // The chat:cancelled WS event arrives before broadcastPresence() updates,
       // so clearing isCancelling lets the presence $effect re-enable isLoading
@@ -485,9 +488,28 @@ class ChatService {
     // before a stale non-reasoning stream_event instead of at the end).
     this.cleanupStreamEvents();
 
-    // No safety timeout needed — cancel completion is confirmed via WS events:
-    // chat:cancelled clears isLoading, then presence update clears isCancelling.
-    // If WS disconnects, reconnection logic re-fetches presence and clears state.
+    // Safety timeout: if backend events (chat:cancelled + presence update) don't
+    // arrive within 10 seconds, force-clear isCancelling to prevent infinite loader.
+    // This catches edge cases: WS disconnect during cancel, engine.cancel() timeout,
+    // or race conditions between presence update and chat:cancelled event ordering.
+    this.clearCancelSafetyTimer();
+    this.cancelSafetyTimer = setTimeout(() => {
+      this.cancelSafetyTimer = null;
+      if (appState.isCancelling) {
+        debug.warn('chat', 'Cancel safety timeout: force-clearing isCancelling after 10s');
+        this.setProcessState({ isCancelling: false, isLoading: false }, chatSessionId);
+      }
+    }, 10000);
+  }
+
+  /**
+   * Clear the cancel safety timer (called when cancel completes normally)
+   */
+  private clearCancelSafetyTimer(): void {
+    if (this.cancelSafetyTimer) {
+      clearTimeout(this.cancelSafetyTimer);
+      this.cancelSafetyTimer = null;
+    }
   }
 
   /**

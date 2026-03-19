@@ -770,20 +770,15 @@ export class OpenCodeEngine implements AIEngine {
 	}
 
 	async cancel(): Promise<void> {
-		// Abort the OpenCode session on the server so it stops processing
-		const client = getClient();
-		if (client && this.activeSessionId) {
-			try {
-				await client.session.abort({
-					path: { id: this.activeSessionId },
-					...(this.activeProjectPath && { query: { directory: this.activeProjectPath } }),
-				});
-				debug.log('engine', 'Open Code session aborted:', this.activeSessionId);
-			} catch (error) {
-				debug.warn('engine', 'Failed to abort Open Code session:', error);
-			}
-		}
+		// Capture refs before clearing — needed for server-side abort below
+		const sessionId = this.activeSessionId;
+		const projectPath = this.activeProjectPath;
 
+		// 1. FIRST: Abort local stream processing immediately.
+		//    This breaks the SSE event stream and causes the for-await loop
+		//    in processStream() to throw AbortError, stopping all local processing.
+		//    Must happen BEFORE the HTTP call because client.session.abort() can
+		//    hang indefinitely if the OpenCode server is busy/unresponsive.
 		if (this.activeAbortController) {
 			this.activeAbortController.abort();
 			this.activeAbortController = null;
@@ -792,6 +787,26 @@ export class OpenCodeEngine implements AIEngine {
 		this.activeSessionId = null;
 		this.activeProjectPath = null;
 		this.pendingQuestions.clear();
+
+		// 2. THEN: Tell the OpenCode server to stop processing (with timeout).
+		//    This is a courtesy cleanup — local processing is already stopped.
+		//    The server-side session would otherwise keep running (consuming
+		//    LLM API calls and compute resources) until it naturally completes.
+		const client = getClient();
+		if (client && sessionId) {
+			try {
+				await Promise.race([
+					client.session.abort({
+						path: { id: sessionId },
+						...(projectPath && { query: { directory: projectPath } }),
+					}),
+					new Promise<void>(resolve => setTimeout(resolve, 5000))
+				]);
+				debug.log('engine', 'Open Code session aborted:', sessionId);
+			} catch (error) {
+				debug.warn('engine', 'Failed to abort Open Code session (non-fatal):', error);
+			}
+		}
 	}
 
 	/**
@@ -802,13 +817,16 @@ export class OpenCodeEngine implements AIEngine {
 		const client = getClient();
 		if (!client || !sessionId) return;
 		try {
-			await client.session.abort({
-				path: { id: sessionId },
-				...(projectPath && { query: { directory: projectPath } }),
-			});
+			await Promise.race([
+				client.session.abort({
+					path: { id: sessionId },
+					...(projectPath && { query: { directory: projectPath } }),
+				}),
+				new Promise<void>(resolve => setTimeout(resolve, 5000))
+			]);
 			debug.log('engine', 'Open Code session aborted (per-stream):', sessionId);
 		} catch (error) {
-			debug.warn('engine', 'Failed to abort Open Code session:', error);
+			debug.warn('engine', 'Failed to abort Open Code session (non-fatal):', error);
 		}
 	}
 
