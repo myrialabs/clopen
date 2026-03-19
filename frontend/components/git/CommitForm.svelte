@@ -77,7 +77,7 @@
 
 <div class="px-2 py-2">
 	<div class="flex flex-col gap-1.5">
-		<div class="relative">
+		<div class="flex relative">
 			<textarea
 				bind:this={textareaEl}
 				bind:value={commitMessage}

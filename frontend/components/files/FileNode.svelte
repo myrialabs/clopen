@@ -62,50 +62,29 @@
 
 	let nodeElement: HTMLDivElement;
 	let menuButtonElement: HTMLButtonElement;
-	let showAbove = $state(false);
+	let menuStyle = $state('');
 
-	// Context menu positioning
-	let menuOpenedViaContextMenu = $state(false);
-	let contextMenuX = $state(0);
-	let contextMenuY = $state(0);
-
-	function checkMenuPosition() {
-		if (!menuButtonElement) return;
-
-		const rect = menuButtonElement.getBoundingClientRect();
-		const dockContainer = nodeElement?.closest('.overflow-auto');
-
-		if (!dockContainer) {
-			// Fallback ke viewport jika tidak ada container
-			const viewportHeight = window.innerHeight;
-			const menuHeight = 100;
-			showAbove = rect.bottom + menuHeight > viewportHeight && rect.top > menuHeight;
-			return;
-		}
-
-		const dockRect = dockContainer.getBoundingClientRect();
-		const menuHeight = 100; // Estimasi tinggi menu dropdown
-
-		// Hitung ruang yang tersedia di bawah dan di atas dalam dock container
-		const spaceBelow = dockRect.bottom - rect.bottom;
-		const spaceAbove = rect.top - dockRect.top;
-
-		// Jika tidak cukup ruang di bawah untuk menu dan ada cukup ruang di atas, tampilkan di atas
-		showAbove = spaceBelow < menuHeight && spaceAbove > menuHeight;
+	function computeMenuStyle(x: number, y: number, alignRight: boolean): string {
+		const menuHeight = 200;
+		const isAbove = y + menuHeight > window.innerHeight && y > menuHeight;
+		const verticalStyle = isAbove
+			? `bottom: ${window.innerHeight - y}px;`
+			: `top: ${y}px;`;
+		const horizontalStyle = alignRight ? `right: ${x}px;` : `left: ${x}px;`;
+		return `${horizontalStyle} ${verticalStyle}`;
 	}
 
 	function toggleMenu(event: Event) {
 		event.stopPropagation();
 		if (!isMenuOpen) {
-			checkMenuPosition();
-			menuOpenedViaContextMenu = false; // Opened via button click
+			const rect = menuButtonElement.getBoundingClientRect();
+			menuStyle = computeMenuStyle(window.innerWidth - rect.right, rect.bottom, true);
 		}
 		onMenuToggle?.(file.path);
 	}
 
 	function closeMenu() {
-		onMenuToggle?.(file.path); // Toggle to close
-		menuOpenedViaContextMenu = false;
+		onMenuToggle?.(file.path);
 	}
 
 	function getDisplayIcon(fileName: string, isDirectory: boolean): IconName {
@@ -127,30 +106,9 @@
 	function handleContextMenu(event: MouseEvent) {
 		event.preventDefault();
 		if (!isMenuOpen) {
-			// Save mouse position for context menu positioning
-			contextMenuX = event.clientX;
-			contextMenuY = event.clientY;
-			menuOpenedViaContextMenu = true;
-			// Check position based on mouse Y relative to dock container
-			checkContextMenuPosition(event.clientY);
+			menuStyle = computeMenuStyle(event.clientX, event.clientY, false);
 		}
 		onMenuToggle?.(file.path);
-	}
-
-	function checkContextMenuPosition(mouseY: number) {
-		const dockContainer = nodeElement?.closest('.overflow-auto');
-		const menuHeight = 100;
-
-		if (!dockContainer) {
-			const viewportHeight = window.innerHeight;
-			showAbove = mouseY + menuHeight > viewportHeight && mouseY > menuHeight;
-			return;
-		}
-
-		const dockRect = dockContainer.getBoundingClientRect();
-		const spaceBelow = dockRect.bottom - mouseY;
-		const spaceAbove = mouseY - dockRect.top;
-		showAbove = spaceBelow < menuHeight && spaceAbove > menuHeight;
 	}
 
 	function handleAction(action: string, event: Event) {
@@ -250,8 +208,8 @@
 			<div
 				role="menu"
 				tabindex="-1"
-				class="{menuOpenedViaContextMenu ? 'fixed' : 'absolute right-0'} {showAbove && !menuOpenedViaContextMenu ? 'bottom-full -mb-5' : !menuOpenedViaContextMenu ? 'top-full -mt-5' : ''} bg-white dark:bg-slate-800 border border-slate-200 dark:border-slate-700 rounded-lg py-1 w-44 max-h-80 overflow-y-auto z-50 shadow-lg"
-				style={menuOpenedViaContextMenu ? `left: ${contextMenuX}px; ${showAbove ? `bottom: ${window.innerHeight - contextMenuY}px;` : `top: ${contextMenuY}px;`}` : ''}
+				class="fixed bg-white dark:bg-slate-800 border border-slate-200 dark:border-slate-700 rounded-lg py-1 w-44 max-h-80 overflow-y-auto z-50 shadow-lg"
+				style={menuStyle}
 				onclick={(e) => e.stopPropagation()}
 			>
 				<!-- New File & New Folder (hanya untuk directory) -->
