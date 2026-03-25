@@ -35,6 +35,7 @@ import { handleMcpRequest, closeMcpServer } from './mcp/remote-server';
 
 // Auth middleware
 import { checkRouteAccess } from './auth/permissions';
+import { authRateLimiter } from './auth';
 import { ws as wsServer } from './utils/ws';
 
 // Register auth gate on WebSocket router — blocks unauthenticated/unauthorized access
@@ -165,22 +166,32 @@ async function gracefulShutdown() {
 	if (isShuttingDown) return;
 	isShuttingDown = true;
 
+	// Force exit after 5 seconds — prevents port from being held by slow cleanup
+	// during bun --watch restarts, which causes ECONNREFUSED on the Vite WS proxy.
+	const forceExitTimer = setTimeout(() => {
+		debug.warn('server', '⚠️ Shutdown timeout — forcing exit to release port');
+		process.exit(1);
+	}, 5_000);
+
 	console.log('\n🛑 Shutting down server...');
 	try {
+		// Stop accepting new connections first — release the port ASAP
+		app.stop();
+		// Dispose rate limiter timer
+		authRateLimiter.dispose();
 		// Close MCP remote server (before engines, as they may still reference it)
 		await closeMcpServer();
 		// Cleanup browser preview sessions
 		await browserPreviewServiceManager.cleanup();
 		// Dispose all AI engines
 		await disposeAllEngines();
-		// Stop accepting new connections
-		app.stop();
 		// Close database connection
 		closeDatabase();
 		debug.log('server', '✅ Graceful shutdown completed');
 	} catch (error) {
 		debug.error('server', '❌ Error during shutdown:', error);
 	}
+	clearTimeout(forceExitTimer);
 	process.exit(0);
 }
 
