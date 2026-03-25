@@ -139,14 +139,6 @@
 <div
 	class="h-full w-full overflow-hidden {isMobile ? 'bg-white/90 dark:bg-slate-900/98' : 'bg-slate-50 dark:bg-slate-900/70'} text-slate-900 dark:text-slate-100 font-sans"
 >
-	<!-- Skip link for accessibility -->
-	<a
-		href="#main-content"
-		class="sr-only focus:not-sr-only focus:absolute focus:z-50 focus:p-4 focus:bg-violet-600 focus:text-white"
-	>
-		Skip to main content
-	</a>
-
 	{#if isMobile}
 		<!-- Mobile Layout -->
 		<div class="flex flex-col h-full w-full" in:fade={{ duration: 200 }}>
