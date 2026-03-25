@@ -12,7 +12,7 @@ import { join } from 'node:path';
 import { readFileSync } from 'node:fs';
 import fs from 'node:fs/promises';
 import { createRouter } from '$shared/utils/ws-server';
-import { initializeDatabase, getDatabase } from '../../database';
+import { closeDatabase, initializeDatabase } from '../../database';
 import { debug } from '$shared/utils/logger';
 import { ws } from '$backend/utils/ws';
 import { getClopenDir } from '$backend/utils/index';
@@ -143,51 +143,26 @@ export const operationsHandler = createRouter()
 			tablesCount: t.Number()
 		})
 	}, async () => {
-		debug.log('server', 'Clearing all database data...');
+		debug.log('server', 'Clearing all data...');
 
-		// Initialize database first to ensure it exists
+		// Close database connection
+		closeDatabase();
+
+		// Delete entire clopen directory
+		const clopenDir = getClopenDir();
+		await fs.rm(clopenDir, { recursive: true, force: true });
+		debug.log('server', 'Deleted clopen directory:', clopenDir);
+
+		// Reset environment state
+		resetEnvironment();
+
+		// Reinitialize database from scratch (creates dir, db, migrations, seeders)
 		await initializeDatabase();
 
-		// Get database connection
-		const db = getDatabase();
-
-		// Get all table names
-		const tables = db.prepare(`
-			SELECT name FROM sqlite_master
-			WHERE type='table'
-			AND name NOT LIKE 'sqlite_%'
-		`).all() as { name: string }[];
-
-		// Delete all data from each table
-		for (const table of tables) {
-			db.prepare(`DELETE FROM ${table.name}`).run();
-			debug.log('server', `Cleared table: ${table.name}`);
-		}
-
-		debug.log('server', 'Database cleared successfully');
-
-		// Delete snapshots directory
-		const clopenDir = getClopenDir();
-		const snapshotsDir = join(clopenDir, 'snapshots');
-		try {
-			await fs.rm(snapshotsDir, { recursive: true, force: true });
-			debug.log('server', 'Snapshots directory cleared');
-		} catch (err) {
-			debug.warn('server', 'Failed to clear snapshots directory:', err);
-		}
-
-		// Delete Claude config directory and reset environment state
-		const claudeDir = join(clopenDir, 'claude');
-		try {
-			await fs.rm(claudeDir, { recursive: true, force: true });
-			resetEnvironment();
-			debug.log('server', 'Claude config directory cleared');
-		} catch (err) {
-			debug.warn('server', 'Failed to clear Claude config directory:', err);
-		}
+		debug.log('server', 'All data cleared successfully');
 
 		return {
 			cleared: true,
-			tablesCount: tables.length
+			tablesCount: 0
 		};
 	});

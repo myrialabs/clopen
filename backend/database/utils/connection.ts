@@ -117,23 +117,29 @@ export class DatabaseManager {
 
 	async resetDatabase(): Promise<void> {
 		debug.log('database', '⚠️ Resetting database (dropping all tables)...');
-		
+
 		if (!this.db) {
 			throw new Error('Database not connected');
 		}
 
-		// Drop all tables
-		const tables = this.db.prepare(`
-			SELECT name FROM sqlite_master 
-			WHERE type='table' AND name NOT LIKE 'sqlite_%'
-		`).all() as { name: string }[];
+		// Disable foreign key checks to allow dropping in any order
+		this.db.exec('PRAGMA foreign_keys = OFF');
 
-		for (const table of tables) {
-			debug.log('database', `🗑️ Dropping table: ${table.name}`);
-			this.db.exec(`DROP TABLE IF EXISTS ${table.name}`);
+		try {
+			const tables = this.db.prepare(`
+				SELECT name FROM sqlite_master
+				WHERE type='table' AND name NOT LIKE 'sqlite_%'
+			`).all() as { name: string }[];
+
+			for (const table of tables) {
+				debug.log('database', `🗑️ Dropping table: ${table.name}`);
+				this.db.exec(`DROP TABLE IF EXISTS ${table.name}`);
+			}
+
+			debug.log('database', '✅ Database reset completed');
+		} finally {
+			this.db.exec('PRAGMA foreign_keys = ON');
 		}
-
-		debug.log('database', '✅ Database reset completed');
 	}
 
 	async vacuum(): Promise<void> {

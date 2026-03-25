@@ -1,6 +1,5 @@
 <script lang="ts">
 	import { addNotification } from '$frontend/stores/ui/notification.svelte';
-	import { resetToDefaults } from '$frontend/stores/features/settings.svelte';
 	import { showConfirm } from '$frontend/stores/ui/dialog.svelte';
 	import Icon from '../../common/display/Icon.svelte';
 	import { debug } from '$shared/utils/logger';
@@ -41,68 +40,16 @@
 		}
 	}
 
-	async function resetSettings() {
-		const confirmed = await showConfirm({
-			title: 'Reset Settings',
-			message:
-				'Are you sure you want to reset all settings to defaults? This will not delete your projects or conversations.',
-			type: 'warning',
-			confirmText: 'Reset Settings',
-			cancelText: 'Cancel'
-		});
 
-		if (confirmed) {
-			resetToDefaults();
-			addNotification({
-				type: 'success',
-				title: 'Settings Reset',
-				message: 'All settings have been restored to defaults'
-			});
-		}
-	}
 </script>
 
 <div class="py-1">
 	<h3 class="text-base font-bold text-slate-900 dark:text-slate-100 mb-1.5">Data Management</h3>
 	<p class="text-sm text-slate-600 dark:text-slate-500 mb-5">
-		Export, import, or clear your application data
+		Manage your application data
 	</p>
 
 	<div class="flex flex-col gap-4">
-		<!-- Storage Info -->
-		<div
-			class="flex items-center gap-3.5 p-4 bg-slate-100/50 dark:bg-slate-800/50 border border-slate-200 dark:border-slate-700/50 rounded-lg"
-		>
-			<Icon name="lucide:hard-drive" class="w-5 h-5 text-slate-500 dark:text-slate-400" />
-			<div class="flex-1">
-				<div class="text-sm font-medium text-slate-900 dark:text-slate-100">Local Storage</div>
-				<div class="text-xs text-slate-600 dark:text-slate-400">Data is stored locally in your browser</div>
-			</div>
-		</div>
-
-		<!-- Action Cards -->
-		<div class="flex flex-col gap-3">
-			<!-- Reset Settings -->
-			<div
-				class="flex items-center justify-between gap-4 py-3 px-4 bg-slate-100/50 dark:bg-slate-800/50 border border-slate-200 dark:border-slate-700/50 rounded-lg"
-			>
-				<div class="flex items-center gap-3">
-					<Icon name="lucide:refresh-cw" class="w-4.5 h-4.5 text-slate-600 dark:text-slate-400" />
-					<div class="text-left">
-						<div class="text-sm font-medium text-slate-900 dark:text-slate-100">Reset Settings</div>
-						<div class="text-xs text-slate-600 dark:text-slate-400">Restore default settings</div>
-					</div>
-				</div>
-				<button
-					type="button"
-					class="px-4 py-2 bg-slate-200 dark:bg-slate-700 border border-slate-300 dark:border-slate-600 text-slate-700 dark:text-slate-300 rounded-lg text-sm font-medium cursor-pointer transition-all duration-150 hover:bg-slate-300 dark:hover:bg-slate-600 hover:border-slate-400 dark:hover:border-slate-500 disabled:opacity-60 disabled:cursor-not-allowed whitespace-nowrap"
-					onclick={resetSettings}
-				>
-					Reset
-				</button>
-			</div>
-		</div>
-
 		<!-- Danger Zone -->
 		<div class="mt-2">
 			<div class="flex items-center gap-2 mb-3 text-xs font-medium text-red-600 dark:text-red-400">
