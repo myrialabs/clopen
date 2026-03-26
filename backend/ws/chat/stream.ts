@@ -255,8 +255,11 @@ export const streamHandler = createRouter()
 							break;
 					}
 				} catch (err) {
+					// Log but do NOT unsubscribe — one bad event must not kill the
+					// entire stream subscription. The bridge between StreamManager
+					// and the WS room would be permanently broken, causing the UI
+					// to stop receiving stream output while the WS stays connected.
 					debug.error('chat', 'Error handling stream event:', err);
-					unsubscribe();
 				}
 			};
 
@@ -394,8 +397,10 @@ export const streamHandler = createRouter()
 							break;
 					}
 				} catch (err) {
+					// Log but do NOT unsubscribe — same rationale as the initial
+					// stream handler: a transient error must not permanently break
+					// the EventEmitter → WS room bridge.
 					debug.error('chat', 'Error handling reconnected stream event:', err);
-					unsubscribe();
 				}
 			};
 

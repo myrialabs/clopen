@@ -1191,8 +1191,16 @@ class StreamManager extends EventEmitter {
 		const streamState = this.activeStreams.get(streamId);
 		if (streamState) {
 			const sessionKey = this.getSessionKey(streamState.projectId, streamState.chatSessionId);
-			this.sessionStreams.delete(sessionKey);
-			this.sessionStreams.delete(streamState.chatSessionId);
+			// Only delete session key if it still points to THIS stream.
+			// A newer stream for the same session may have overridden the key;
+			// blindly deleting it would orphan the active stream — making it
+			// unfindable by getSessionStream() and breaking cancel/reconnect.
+			if (this.sessionStreams.get(sessionKey) === streamId) {
+				this.sessionStreams.delete(sessionKey);
+			}
+			if (this.sessionStreams.get(streamState.chatSessionId) === streamId) {
+				this.sessionStreams.delete(streamState.chatSessionId);
+			}
 			this.activeStreams.delete(streamId);
 
 			// Cleanup project context service

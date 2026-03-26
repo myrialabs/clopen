@@ -25,7 +25,7 @@
 	import { editModeState } from '$frontend/stores/ui/edit-mode.svelte';
 	import { claudeAccountsStore } from '$frontend/stores/features/claude-accounts.svelte';
 	import type { IconName } from '$shared/types/ui/icons';
-	import ws from '$frontend/utils/ws';
+	import ws, { onWsReconnect } from '$frontend/utils/ws';
 	import { debug } from '$shared/utils/logger';
 
 	// Components
@@ -182,6 +182,19 @@
 	// Also fetch partial text and reconnect to stream for late-joining users / refresh
 	let lastCatchupProjectId: string | undefined;
 	let lastPresenceProjectId: string | undefined;
+
+	// Reset catchup tracking on WS reconnect so catchupActiveStream re-runs.
+	// When WS briefly disconnects, the server-side cleanup removes the stream
+	// EventEmitter subscription. Without resetting, catchup won't fire again
+	// (guarded by lastCatchupProjectId) and the stream subscription is never
+	// re-established — causing stream output to silently stop in the UI.
+	onWsReconnect(() => {
+		if (lastCatchupProjectId) {
+			debug.log('chat', 'WS reconnected — resetting stream catchup tracking');
+			lastCatchupProjectId = undefined;
+		}
+	});
+
 	$effect(() => {
 		const projectId = projectState.currentProject?.id;
 		const sessionId = sessionState.currentSession?.id; // Reactive dep: retry catchup when session loads
