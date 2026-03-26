@@ -831,6 +831,9 @@ class StreamManager extends EventEmitter {
 							savedReasoningParentId = saved?.parent_message_id || null;
 						}
 
+						// Clear reasoning text after save to prevent stale catchup injection
+						streamState.currentReasoningText = undefined;
+
 						this.emitStreamEvent(streamState, 'message', {
 							processId: streamState.processId,
 							message: reasoningMsg,
@@ -889,6 +892,16 @@ class StreamManager extends EventEmitter {
 					);
 					savedMsgId = saved?.id;
 					savedParentId = saved?.parent_message_id || null;
+				}
+
+				// Clear partial text after saving a complete assistant message to prevent
+				// cancelStream from saving a duplicate text-only message to DB.
+				// Also prevents catchupActiveStream from injecting a stale stream_event
+				// with text that's already part of the saved message.
+				if (message.type === 'assistant' && !message.metadata?.reasoning) {
+					streamState.currentPartialText = undefined;
+				} else if (message.type === 'assistant' && message.metadata?.reasoning) {
+					streamState.currentReasoningText = undefined;
 				}
 
 				streamState.messages.push({
