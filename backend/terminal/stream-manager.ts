@@ -6,6 +6,7 @@
 import type { IPty } from 'bun-pty';
 import { existsSync, mkdirSync, readFileSync, unlinkSync } from 'fs';
 import { join } from 'path';
+import { getClopenDir } from '../utils/paths';
 
 interface TerminalStream {
   streamId: string;
@@ -25,7 +26,7 @@ interface TerminalStream {
 class TerminalStreamManager {
   private streams: Map<string, TerminalStream> = new Map();
   private sessionToStream: Map<string, string> = new Map();
-  private tempDir: string = '.terminal-output-cache';
+  private tempDir: string = join(getClopenDir(), 'terminal-cache');
 
   constructor() {
     // Create temp directory for output caching
