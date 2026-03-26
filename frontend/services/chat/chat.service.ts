@@ -482,11 +482,11 @@ class ChatService {
     // and global flags — cancel sets isCancelling=true to prevent presence re-enabling
     this.setProcessState({ isLoading: false, isWaitingInput: false, isCancelling: true }, chatSessionId);
 
-    // Clean up stale stream_events from the cancelled stream.
-    // Without this, stale stream_events remain in the messages array and cause
-    // wrong insertion positions when a new stream starts (e.g., reasoning inserted
-    // before a stale non-reasoning stream_event instead of at the end).
-    this.cleanupStreamEvents();
+    // Convert stream_events to finalized assistant messages on cancel.
+    // This preserves partial reasoning/text that was visible to the user.
+    // Empty stream_events are removed. The backend saves partial text to DB
+    // independently, so on refresh the DB version takes over.
+    this.finalizeStreamEvents();
 
     // Safety timeout: if backend events (chat:cancelled + presence update) don't
     // arrive within 10 seconds, force-clear isCancelling to prevent infinite loader.
@@ -743,12 +743,42 @@ class ChatService {
 
   /**
    * Remove all stream_event messages from the messages array.
-   * Called on cancel and new message send to prevent stale streaming
+   * Called on new message send to prevent stale streaming
    * placeholders from causing wrong insertion positions.
    */
   private cleanupStreamEvents(): void {
     for (let i = sessionState.messages.length - 1; i >= 0; i--) {
       if ((sessionState.messages[i] as any).type === 'stream_event') {
+        sessionState.messages.splice(i, 1);
+      }
+    }
+  }
+
+  /**
+   * Convert stream_event messages with text to finalized assistant messages.
+   * Called on cancel to preserve partial reasoning/text that was visible.
+   * Empty stream_events (no text) are removed.
+   * The backend saves these to DB independently, so on refresh the DB version takes over.
+   */
+  private finalizeStreamEvents(): void {
+    for (let i = sessionState.messages.length - 1; i >= 0; i--) {
+      const msg = sessionState.messages[i] as any;
+      if (msg.type !== 'stream_event') continue;
+
+      if (msg.partialText) {
+        const isReasoning = msg.metadata?.reasoning === true;
+        sessionState.messages[i] = {
+          type: 'assistant',
+          message: {
+            role: 'assistant',
+            content: [{ type: 'text', text: msg.partialText }]
+          },
+          metadata: {
+            ...msg.metadata,
+            ...(isReasoning && { reasoning: true }),
+          }
+        } as any;
+      } else {
         sessionState.messages.splice(i, 1);
       }
     }

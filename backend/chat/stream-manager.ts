@@ -1107,6 +1107,37 @@ class StreamManager extends EventEmitter {
 		streamState.status = 'cancelled';
 		streamState.completedAt = new Date();
 
+		// Save partial reasoning text to DB before cancelling (persists across refresh/project switch)
+		if (streamState.currentReasoningText && streamState.chatSessionId) {
+			try {
+				const reasoningMessage = {
+					type: 'assistant' as const,
+					parent_tool_use_id: null,
+					message: {
+						role: 'assistant' as const,
+						content: [{ type: 'text' as const, text: streamState.currentReasoningText }]
+					},
+					session_id: streamState.sdkSessionId || '',
+					metadata: { reasoning: true }
+				};
+
+				const timestamp = new Date().toISOString();
+				const currentHead = sessionQueries.getHead(streamState.chatSessionId);
+
+				const savedMessage = messageQueries.create({
+					session_id: streamState.chatSessionId,
+					sdk_message: reasoningMessage as any,
+					timestamp,
+					parent_message_id: currentHead || undefined
+				});
+
+				sessionQueries.updateHead(streamState.chatSessionId, savedMessage.id);
+				debug.log('chat', 'Saved partial reasoning on cancel:', savedMessage.id);
+			} catch (error) {
+				debug.error('chat', 'Failed to save partial reasoning on cancel:', error);
+			}
+		}
+
 		// Save partial text to DB before cancelling (persists across refresh/project switch)
 		if (streamState.currentPartialText && streamState.chatSessionId) {
 			try {
