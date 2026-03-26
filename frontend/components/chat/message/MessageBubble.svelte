@@ -64,6 +64,19 @@
 			}
 		});
 	});
+
+	// Force reactive tracking for assistant text streaming.
+	// Without an explicit $effect that reads partialText, Svelte 5's derived chain
+	// may not re-render the component when partialText changes on a proxied object.
+	// Reasoning gets this implicitly via the auto-scroll effect above.
+	$effect(() => {
+		if (roleCategory !== 'assistant') return;
+		if (message.type !== 'stream_event') return;
+		if (!('partialText' in message)) return;
+		// Reading partialText subscribes this effect to changes,
+		// which forces the component to re-evaluate its derived values
+		const _track = message.partialText;
+	});
 </script>
 
 <div class="relative overflow-hidden">

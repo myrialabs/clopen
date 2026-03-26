@@ -708,10 +708,16 @@ class StreamManager extends EventEmitter {
 							});
 						} else if ((event as any).content_block?.type === 'text') {
 							// Reset partial text for new text content block
-							// Don't emit the initial text — deltas will provide the content
-							// This prevents double-counting if content_block_start.text repeats
-							// the first content_block_delta.text
 							streamState.currentPartialText = '';
+							// Emit a start event so frontend has a text stream_event
+							// before deltas arrive (matches thinking block behavior)
+							this.emitStreamEvent(streamState, 'partial', {
+								processId: streamState.processId,
+								eventType: 'start',
+								partialText: '',
+								deltaText: '',
+								timestamp: new Date().toISOString()
+							});
 						}
 					} else if (event.type === 'content_block_delta') {
 						debug.log('chat', `[SM] content_block_delta: deltaType=${(event as any).delta?.type}, hasThinking=${'thinking' in ((event as any).delta || {})}, hasText=${'text' in ((event as any).delta || {})}`);

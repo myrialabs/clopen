@@ -581,15 +581,32 @@ class ChatService {
         }
         // If no reasoning stream_event found, fall through to push at end
       } else {
-        // Remove ALL regular (non-reasoning) stream_events, not just the last one
-        // This prevents stale stream_events from remaining when message order varies
+        // Replace text stream_event IN PLACE to preserve message position
+        // (same approach as reasoning — prevents visual displacement)
         for (let i = sessionState.messages.length - 1; i >= 0; i--) {
           const msg = sessionState.messages[i] as any;
           if (msg.type === 'stream_event' && !msg.metadata?.reasoning) {
-            sessionState.messages.splice(i, 1);
-            break; // Only remove the most recent one
+            const messageFormatter = {
+              ...sdkMessage,
+              metadata: buildMetadataFromTransport(data)
+            };
+            sessionState.messages[i] = messageFormatter;
+
+            // Detect interactive tool_use blocks in the replaced message
+            if (sdkMessage.type === 'assistant' && sdkMessage.message?.content) {
+              const content = Array.isArray(sdkMessage.message.content) ? sdkMessage.message.content : [];
+              const hasInteractiveTool = content.some(
+                (item: any) => item.type === 'tool_use' && INTERACTIVE_TOOLS.has(item.name)
+              );
+              if (hasInteractiveTool) {
+                this.setProcessState({ isWaitingInput: true });
+              }
+            }
+
+            return; // Replaced in-place, skip push below
           }
         }
+        // No stream_event found, fall through to push at end
       }
     }
 
@@ -723,7 +740,7 @@ class ChatService {
           const msg = sessionState.messages[i] as any;
           if (msg.type === 'stream_event' && msg.metadata?.reasoning) {
             msg.partialText = partialText || '';
-            break;
+            return;
           }
         }
       } else {
@@ -733,9 +750,34 @@ class ChatService {
           const msg = sessionState.messages[i] as any;
           if (msg.type === 'stream_event' && !msg.metadata?.reasoning) {
             msg.partialText = partialText || '';
-            break;
+            return;
           }
         }
+      }
+
+      // Fallback: no matching stream_event found (start event was missed).
+      // Create one now so text doesn't get lost.
+      const fallbackMessage = {
+        type: 'stream_event' as const,
+        processId: data.processId,
+        partialText: partialText || '',
+        metadata: buildMetadataFromTransport({
+          timestamp: data.timestamp,
+          ...(isReasoning && { reasoning: true }),
+        })
+      };
+
+      if (isReasoning) {
+        const textStreamIdx = (sessionState.messages as any[]).findIndex(
+          (m: any) => m.type === 'stream_event' && !m.metadata?.reasoning
+        );
+        if (textStreamIdx >= 0) {
+          (sessionState.messages as any[]).splice(textStreamIdx, 0, fallbackMessage);
+        } else {
+          (sessionState.messages as any[]).push(fallbackMessage);
+        }
+      } else {
+        (sessionState.messages as any[]).push(fallbackMessage);
       }
     }
     // Note: 'end' event is not needed - streaming message will be replaced by final message in handleMessageEvent
