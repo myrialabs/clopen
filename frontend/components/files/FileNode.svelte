@@ -116,14 +116,6 @@
 		onAction?.(action, file);
 	}
 
-	function formatFileSize(bytes: number): string {
-		if (bytes === 0) return '0 B';
-		const k = 1024;
-		const sizes = ['B', 'KB', 'MB', 'GB'];
-		const i = Math.floor(Math.log(bytes) / Math.log(k));
-		return parseFloat((bytes / Math.pow(k, i)).toFixed(1)) + ' ' + sizes[i];
-	}
-
 	// Close menu when clicking outside
 	onMount(() => {
 		function handleClickOutside(event: MouseEvent) {
@@ -183,13 +175,6 @@
 			<span class="inline-flex w-1.5 h-1.5 rounded-full bg-amber-500 dark:bg-amber-600 ml-1"></span>
 		{/if}
 	</span>
-
-	<!-- File metadata -->
-	{#if file.type === 'file'}
-		<span class="flex-shrink-0 text-xs text-slate-400 dark:text-slate-500 lg:group-hover:hidden">
-			{formatFileSize(file.size || 0)}
-		</span>
-	{/if}
 
 	<!-- Actions menu (always visible, triggered by click) -->
 	<div class="flex-shrink-0">

@@ -41,6 +41,11 @@
 	let showDeleteFolder = $state(false);
 	let folderToDelete: FileItem | null = $state(null);
 	let deleteFolderConfirmName = $state('');
+	let showHidden = $state(false);
+
+	const filteredItems = $derived(
+		showHidden ? items : items.filter(item => !item.name.startsWith('.'))
+	);
 
 	// Derived: whether directory access is restricted
 	const hasRestrictions = $derived(systemSettings.allowedBasePaths && systemSettings.allowedBasePaths.length > 0);
@@ -612,6 +617,14 @@
 					
 					<div class="flex items-center space-x-2">
 						<button
+							onclick={() => showHidden = !showHidden}
+							class="px-3 py-1.5 text-xs rounded-lg transition-colors {showHidden ? 'bg-violet-100 dark:bg-violet-900/30 text-violet-700 dark:text-violet-300' : 'bg-slate-200 dark:bg-slate-700 hover:bg-slate-300 dark:hover:bg-slate-600 text-slate-700 dark:text-slate-300'}"
+							title={showHidden ? 'Hide hidden folders' : 'Show hidden folders'}
+						>
+							<Icon name={showHidden ? 'lucide:eye' : 'lucide:eye-off'} class="inline sm:mr-1" />
+							<span class="hidden sm:inline">Hidden</span>
+						</button>
+						<button
 							onclick={() => showCreateFolder = true}
 							class="px-3 py-1.5 text-xs rounded-lg bg-slate-200 dark:bg-slate-700 hover:bg-slate-300 dark:hover:bg-slate-600 text-slate-700 dark:text-slate-300 transition-colors"
 							title="Create new folder in current directory"
@@ -651,24 +664,24 @@
 					</Button>
 				</div>
 			</div>
-		{:else if showLoadingSpinner && items.length === 0}
+		{:else if showLoadingSpinner && filteredItems.length === 0}
 			<div class="flex items-center justify-center py-12">
 				<div class="text-center">
 					<div class="animate-spin rounded-full h-8 w-8 border-2 border-violet-500 border-t-transparent mx-auto mb-4"></div>
 					<p class="text-slate-600 dark:text-slate-400">Loading directory...</p>
 				</div>
 			</div>
-		{:else if items.length === 0}
+		{:else if filteredItems.length === 0}
 			<div class="flex items-center justify-center py-12">
 				<div class="text-center">
 					<Icon name="lucide:folder-x" class="text-4xl text-slate-400 mx-auto mb-4" />
 					<p class="text-slate-600 dark:text-slate-400">No folders found</p>
-					<p class="text-sm text-slate-500 dark:text-slate-500 mt-2">This directory doesn't contain any subdirectories</p>
+					<p class="text-sm text-slate-500 dark:text-slate-500 mt-2">{items.length > 0 ? 'Toggle "Hidden" to show hidden folders' : 'This directory doesn\'t contain any subdirectories'}</p>
 				</div>
 			</div>
 		{:else}
 			<div class="space-y-2 transition-opacity duration-300 {loading ? 'opacity-75' : 'opacity-100'}">
-				{#each items as item (item.path)}
+				{#each filteredItems as item (item.path)}
 					<div 
 						class="flex items-center space-x-3 py-3 px-4 rounded-xl border transition-all duration-200 cursor-pointer {selectedPath === item.path 
 							? 'bg-violet-50 dark:bg-violet-900/20 border-violet-200 dark:border-violet-700' 
