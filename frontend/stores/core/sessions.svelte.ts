@@ -13,7 +13,7 @@ import { buildMetadataFromTransport } from '$shared/utils/message-formatter';
 import ws, { onWsReconnect } from '$frontend/utils/ws';
 import { projectState } from './projects.svelte';
 import { setupEditModeListener, restoreEditMode } from '$frontend/stores/ui/edit-mode.svelte';
-import { markSessionUnread, markSessionRead, appState } from '$frontend/stores/core/app.svelte';
+import { markSessionUnread, markSessionRead, clearSessionState, appState } from '$frontend/stores/core/app.svelte';
 import { debug } from '$shared/utils/logger';
 
 interface SessionState {
@@ -163,6 +163,9 @@ export function removeSession(sessionId: string) {
 	if (index !== -1) {
 		sessionState.sessions.splice(index, 1);
 	}
+
+	// Clear all app-level state for this session (unread, process state)
+	clearSessionState(sessionId);
 
 	// Clear current session if it's the one being removed
 	if (sessionState.currentSession?.id === sessionId) {

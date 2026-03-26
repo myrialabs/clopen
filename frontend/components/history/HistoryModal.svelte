@@ -520,7 +520,9 @@
 	onClose={closeDeleteDialog}
 	type="error"
 	title="Delete Session"
-	message="Are you sure you want to delete this session? All messages will be permanently removed."
+	message={sessionToDelete && isSessionStreaming(sessionToDelete.id)
+		? 'This session is currently running. Deleting it will stop the active chat and permanently remove all messages.'
+		: 'Are you sure you want to delete this session? All messages will be permanently removed.'}
 	confirmText="Delete"
 	cancelText="Cancel"
 	onConfirm={confirmDeleteSession}

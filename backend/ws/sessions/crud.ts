@@ -15,6 +15,8 @@ import { createRouter } from '$shared/utils/ws-server';
 import type { EngineType } from '$shared/types/engine';
 import { sessionQueries, messageQueries, projectQueries } from '../../database/queries';
 import { ws } from '$backend/utils/ws';
+import { streamManager } from '../../chat/stream-manager';
+import { broadcastPresence } from '../projects/status';
 import { debug } from '$shared/utils/logger';
 
 export const crudHandler = createRouter()
@@ -309,6 +311,10 @@ export const crudHandler = createRouter()
 		}
 
 		const projectId = session.project_id;
+
+		// Cancel and clean up any active/completed streams for this session
+		await streamManager.cleanupSessionStreams(data.id);
+
 		sessionQueries.delete(data.id);
 
 		// Broadcast to all project members so other users see the deletion
@@ -317,6 +323,9 @@ export const crudHandler = createRouter()
 			sessionId: data.id,
 			projectId
 		});
+
+		// Broadcast updated presence so status indicators reflect the deletion
+		broadcastPresence().catch(() => {});
 
 		return {
 			message: 'Session deleted successfully'

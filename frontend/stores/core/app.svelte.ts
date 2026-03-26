@@ -129,10 +129,18 @@ export function syncGlobalStateFromSession(sessionId: string): void {
 }
 
 /**
- * Remove a session's process state entry (e.g. when deleting a session).
+ * Remove all app-level state for a deleted session
+ * (process state, unread status, etc.)
  */
-export function clearSessionProcessState(sessionId: string): void {
+export function clearSessionState(sessionId: string): void {
 	delete appState.sessionStates[sessionId];
+
+	if (appState.unreadSessions.has(sessionId)) {
+		const next = new Map(appState.unreadSessions);
+		next.delete(sessionId);
+		appState.unreadSessions = next;
+		persistUnreadSessions();
+	}
 }
 
 // ========================================

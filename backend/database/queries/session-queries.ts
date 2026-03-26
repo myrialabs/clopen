@@ -125,8 +125,9 @@ export const sessionQueries = {
 
 	delete(id: string): void {
 		const db = getDatabase();
-		// Delete related messages first
+		// Delete related data first
 		db.prepare('DELETE FROM messages WHERE session_id = ?').run(id);
+		db.prepare('DELETE FROM user_unread_sessions WHERE session_id = ?').run(id);
 		db.prepare('DELETE FROM chat_sessions WHERE id = ?').run(id);
 	},
 

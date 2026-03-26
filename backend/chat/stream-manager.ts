@@ -103,7 +103,7 @@ class StreamManager extends EventEmitter {
 	 * This event fires regardless of per-connection subscribers.
 	 * Used by the WS layer to send cross-project notifications (presence, sound, push).
 	 */
-	private emitStreamLifecycle(streamState: StreamState, status: 'completed' | 'error' | 'cancelled'): void {
+	private emitStreamLifecycle(streamState: StreamState, status: 'completed' | 'error' | 'cancelled', reason?: string): void {
 		if (this.lifecycleEmitted.has(streamState.streamId)) return;
 		this.lifecycleEmitted.add(streamState.streamId);
 
@@ -112,7 +112,8 @@ class StreamManager extends EventEmitter {
 			streamId: streamState.streamId,
 			projectId: streamState.projectId,
 			chatSessionId: streamState.chatSessionId,
-			timestamp: (streamState.completedAt || new Date()).toISOString()
+			timestamp: (streamState.completedAt || new Date()).toISOString(),
+			reason
 		});
 
 		// Clean up guard after 60s (no need to keep forever)
@@ -1083,7 +1084,7 @@ class StreamManager extends EventEmitter {
 		return engine.resolveUserAnswer(toolUseId, answers);
 	}
 
-	async cancelStream(streamId: string): Promise<boolean> {
+	async cancelStream(streamId: string, reason?: string): Promise<boolean> {
 		const streamState = this.activeStreams.get(streamId);
 		if (!streamState || streamState.status !== 'active') {
 			return false;
@@ -1172,7 +1173,7 @@ class StreamManager extends EventEmitter {
 			timestamp: streamState.completedAt.toISOString()
 		});
 
-		this.emitStreamLifecycle(streamState, 'cancelled');
+		this.emitStreamLifecycle(streamState, 'cancelled', reason);
 
 		// Auto-release all MCP-controlled tabs for this chat session
 		if (streamState.chatSessionId) {
@@ -1374,6 +1375,35 @@ class StreamManager extends EventEmitter {
 		streamsToClean.forEach(streamId => {
 			this.cleanupStream(streamId);
 		});
+	}
+
+	/**
+	 * Cancel and clean up all streams for a specific chat session.
+	 * Used when a session is deleted to remove green/amber status indicators.
+	 */
+	async cleanupSessionStreams(chatSessionId: string): Promise<void> {
+		const streamsToCancel: string[] = [];
+		const streamsToClean: string[] = [];
+
+		this.activeStreams.forEach((stream, streamId) => {
+			if (stream.chatSessionId === chatSessionId) {
+				if (stream.status === 'active') {
+					streamsToCancel.push(streamId);
+				} else {
+					streamsToClean.push(streamId);
+				}
+			}
+		});
+
+		// Cancel active streams first (with reason so notifications are suppressed)
+		for (const streamId of streamsToCancel) {
+			await this.cancelStream(streamId, 'session-deleted');
+		}
+
+		// Clean up non-active streams
+		for (const streamId of streamsToClean) {
+			this.cleanupStream(streamId);
+		}
 	}
 
 	/**

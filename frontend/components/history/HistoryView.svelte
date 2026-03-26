@@ -14,7 +14,16 @@
 	import { showConfirm } from '$frontend/stores/ui/dialog.svelte';
 	import Modal from '$frontend/components/common/overlay/Modal.svelte';
 	import TimelineModal from '../checkpoint/TimelineModal.svelte';
+	import { presenceState } from '$frontend/stores/core/presence.svelte';
 	import { debug } from '$shared/utils/logger';
+
+	// Check if a session has an active stream
+	function isSessionStreaming(chatSessionId: string): boolean {
+		for (const status of presenceState.statuses.values()) {
+			if (status.streams?.some(s => s.status === 'active' && s.chatSessionId === chatSessionId)) return true;
+		}
+		return false;
+	}
 
 	// Use real session data from session store
 	const sessions = $derived(sessionState.sessions);
@@ -303,10 +312,13 @@
 	async function deleteSession(session: ChatSession) {
 		const sessionData = await getSessionData(session.id);
 		const title = sessionData.title;
-		
+		const streaming = isSessionStreaming(session.id);
+
 		const confirmed = await showConfirm({
 			title: 'Delete Session',
-			message: `Are you sure you want to delete session "${title}"? This action cannot be undone.`,
+			message: streaming
+				? `This session "${title}" is currently running. Deleting it will stop the active chat and permanently remove all messages.`
+				: `Are you sure you want to delete session "${title}"? This action cannot be undone.`,
 			type: 'error',
 			confirmText: 'Delete',
 			cancelText: 'Cancel'

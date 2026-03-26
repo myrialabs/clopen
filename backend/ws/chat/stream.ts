@@ -22,11 +22,11 @@ import { sessionQueries, messageQueries } from '../../database/queries';
 // exists (e.g., after browser refresh when user is on a different project).
 // Ensures cross-project notifications (presence update, sound, push) always work.
 // ============================================================================
-streamManager.on('stream:lifecycle', (event: { status: string; streamId: string; projectId?: string; chatSessionId?: string; timestamp: string }) => {
-	const { status, projectId, chatSessionId, timestamp } = event;
+streamManager.on('stream:lifecycle', (event: { status: string; streamId: string; projectId?: string; chatSessionId?: string; timestamp: string; reason?: string }) => {
+	const { status, projectId, chatSessionId, timestamp, reason } = event;
 	if (!projectId) return;
 
-	debug.log('chat', `Stream lifecycle: ${status} for project ${projectId} session ${chatSessionId}`);
+	debug.log('chat', `Stream lifecycle: ${status} for project ${projectId} session ${chatSessionId}${reason ? ` (reason: ${reason})` : ''}`);
 
 	// Mark any tool_use blocks that never got a tool_result as interrupted (persisted to DB)
 	if (chatSessionId) {
@@ -42,7 +42,8 @@ streamManager.on('stream:lifecycle', (event: { status: string; streamId: string;
 		projectId,
 		chatSessionId: chatSessionId || '',
 		status: status as 'completed' | 'error' | 'cancelled',
-		timestamp
+		timestamp,
+		reason
 	});
 
 	// Broadcast updated presence (status indicators for all projects)
@@ -789,7 +790,8 @@ export const streamHandler = createRouter()
 		projectId: t.String(),
 		chatSessionId: t.String(),
 		status: t.Union([t.Literal('completed'), t.Literal('error'), t.Literal('cancelled')]),
-		timestamp: t.String()
+		timestamp: t.String(),
+		reason: t.Optional(t.String())
 	}))
 
 	.emit('chat:waiting-input', t.Object({

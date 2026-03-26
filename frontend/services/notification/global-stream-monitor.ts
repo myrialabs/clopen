@@ -35,12 +35,15 @@ class GlobalStreamMonitor {
 
     // Stream finished — notify on completion
     ws.on('chat:stream-finished', async (data) => {
-      const { projectId, status, chatSessionId } = data;
+      const { projectId, status, chatSessionId, reason } = data;
 
-      debug.log('notification', 'GlobalStreamMonitor: Stream finished', { projectId, status });
+      debug.log('notification', 'GlobalStreamMonitor: Stream finished', { projectId, status, reason });
 
       // Clean up notified IDs for this session (stream is done)
       this.clearSessionNotifications(chatSessionId);
+
+      // Skip notifications when stream was cancelled due to session deletion
+      if (reason === 'session-deleted') return;
 
       // Play sound notification
       try {
