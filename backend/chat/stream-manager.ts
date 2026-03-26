@@ -1395,9 +1395,15 @@ class StreamManager extends EventEmitter {
 			}
 		});
 
-		// Cancel active streams first (with reason so notifications are suppressed)
+		// Cancel active streams and await their processStream promise so the
+		// finally block (snapshot capture) completes before the caller deletes
+		// the session — preventing FOREIGN KEY constraint failures.
 		for (const streamId of streamsToCancel) {
 			await this.cancelStream(streamId, 'session-deleted');
+			const stream = this.activeStreams.get(streamId);
+			if (stream?.streamPromise) {
+				await stream.streamPromise.catch(() => {});
+			}
 		}
 
 		// Clean up non-active streams
