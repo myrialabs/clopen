@@ -702,7 +702,7 @@
 													class="flex items-center gap-1 px-2.5 py-1.5 text-2xs font-medium rounded-md bg-violet-100 dark:bg-violet-900/30 text-violet-700 dark:text-violet-300 hover:bg-violet-200 dark:hover:bg-violet-800/40 transition-colors"
 												>
 													<Icon name="lucide:external-link" class="w-3 h-3" />
-													Open
+													Open in Browser
 												</a>
 											</div>
 

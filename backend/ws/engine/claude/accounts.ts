@@ -33,15 +33,13 @@ function stripAnsi(str: string): string {
 		.replace(/\x1B(?:[@-Z\\-_]|\[[0-?]*[ -/]*[@-~])/g, '');
 }
 
+// Extracts the first https:// URL from PTY output.
+// Known formats (may change across Claude Code versions):
+//   - https://claude.ai/oauth/authorize?...
+//   - https://claude.com/cai/oauth/authorize?...
 function extractAuthUrl(clean: string): string | null {
-	const urlPrefix = 'https://claude.ai/oauth/authorize?';
-	const urlStart = clean.indexOf(urlPrefix);
-	if (urlStart === -1) return null;
-
-	const pasteIdx = clean.indexOf('Paste', urlStart);
-	if (pasteIdx === -1) return null;
-
-	return clean.substring(urlStart, pasteIdx).replace(/\s/g, '');
+	const match = clean.match(/https:\/\/\S+/);
+	return match ? match[0] : null;
 }
 
 function extractOAuthToken(clean: string): string | null {
