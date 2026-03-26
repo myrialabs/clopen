@@ -22,6 +22,7 @@ import { debug } from '$shared/utils/logger';
 /** Pending AskUserQuestion resolver — stored while SDK is blocked waiting for user input */
 interface PendingUserAnswer {
   resolve: (result: PermissionResult) => void;
+  removeAbortListener: () => void;
   input: Record<string, unknown>;
 }
 
@@ -130,6 +131,9 @@ export class ClaudeCodeEngine implements AIEngine {
                   options.signal.removeEventListener('abort', onAbort);
                   resolve(result);
                 },
+                removeAbortListener: () => {
+                  options.signal.removeEventListener('abort', onAbort);
+                },
                 input
               });
             });
@@ -180,9 +184,15 @@ export class ClaudeCodeEngine implements AIEngine {
    * Cancel active query
    */
   async cancel(): Promise<void> {
-    // Resolve all pending AskUserQuestion promises before terminating.
+    // Remove abort listeners from pending AskUserQuestion promises WITHOUT
+    // resolving them. Resolving causes the SDK to call handleControlRequest →
+    // write() to send the permission result to the subprocess. If close() has
+    // already killed the subprocess, this write throws "Operation aborted" as
+    // an unhandled error, crashing the server. By removing listeners and not
+    // resolving, the promises are safely abandoned when close() terminates the
+    // process and the async generator completes.
     for (const [, pending] of this.pendingUserAnswers) {
-      pending.resolve({ behavior: 'deny', message: 'Cancelled' });
+      pending.removeAbortListener();
     }
     this.pendingUserAnswers.clear();
 

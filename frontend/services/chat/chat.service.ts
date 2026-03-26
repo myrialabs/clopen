@@ -774,10 +774,11 @@ class ChatService {
       }
     }
 
-    // Check if any interactive tool is unanswered
+    // Check if any interactive tool is unanswered (skip interrupted/cancelled messages)
     for (const msg of sessionState.messages) {
       const msgAny = msg as any;
       if (msgAny.type !== 'assistant' || !msgAny.message?.content) continue;
+      if (msgAny.metadata?.interrupted) continue;
       const content = Array.isArray(msgAny.message.content) ? msgAny.message.content : [];
       const hasPendingInteractive = content.some(
         (item: any) => item.type === 'tool_use' && INTERACTIVE_TOOLS.has(item.name) && item.id && !answeredToolIds.has(item.id)
