@@ -30,8 +30,7 @@ export const sessionHandler = createRouter()
 			workingDirectory: t.Optional(t.String()),
 			projectPath: t.Optional(t.String()),
 			cols: t.Optional(t.Number()),
-			rows: t.Optional(t.Number()),
-			outputStartIndex: t.Optional(t.Number())
+			rows: t.Optional(t.Number())
 		}),
 		response: t.Object({
 			sessionId: t.String(),
@@ -48,8 +47,7 @@ export const sessionHandler = createRouter()
 			workingDirectory,
 			projectPath,
 			cols = 80,
-			rows = 24,
-			outputStartIndex = 0
+			rows = 24
 		} = data;
 
 		const projectId = ws.getProjectId(conn);
@@ -120,7 +118,7 @@ export const sessionHandler = createRouter()
 			projectPath || '',
 			projectId || '',
 			streamId,
-			outputStartIndex
+			{ cols, rows }
 		);
 
 		// Broadcast initial ready event (frontend filters by sessionId)
@@ -179,20 +177,17 @@ export const sessionHandler = createRouter()
 
 		debug.log('terminal', `✅ Added fresh listeners to PTY session ${sessionId}`);
 
-		// Replay historical output for reconnection (e.g., after browser refresh)
-		// The stream preserves output from the old stream when reconnecting to the same PTY.
-		// Replay from outputStartIndex so frontend receives all output it doesn't have yet.
-		const historicalOutput = terminalStreamManager.getOutput(registeredStreamId, outputStartIndex);
-		if (historicalOutput.length > 0) {
-			debug.log('terminal', `📜 Replaying ${historicalOutput.length} historical output entries for session ${sessionId}`);
-			for (const output of historicalOutput) {
-				ws.emit.project(projectId, 'terminal:output', {
-					sessionId,
-					content: output,
-					projectId,
-					timestamp: new Date().toISOString()
-				});
-			}
+		// Replay serialized terminal state for reconnection (e.g., after browser refresh)
+		// The headless xterm preserves full terminal state including clear/scrollback
+		const serializedOutput = terminalStreamManager.getSerializedOutput(registeredStreamId);
+		if (serializedOutput) {
+			debug.log('terminal', `📜 Replaying serialized terminal state for session ${sessionId}`);
+			ws.emit.project(projectId, 'terminal:output', {
+				sessionId,
+				content: serializedOutput,
+				projectId,
+				timestamp: new Date().toISOString()
+			});
 		}
 
 		// Broadcast terminal tab created to all project users
@@ -214,6 +209,20 @@ export const sessionHandler = createRouter()
 			cols,
 			rows
 		};
+	})
+
+	// Clear headless terminal buffer (sync with frontend clear)
+	.http('terminal:clear', {
+		data: t.Object({
+			sessionId: t.String()
+		}),
+		response: t.Object({
+			sessionId: t.String()
+		})
+	}, async ({ data }) => {
+		const { sessionId } = data;
+		terminalStreamManager.clearHeadlessTerminal(sessionId);
+		return { sessionId };
 	})
 
 	// Resize terminal viewport
@@ -238,6 +247,9 @@ export const sessionHandler = createRouter()
 		if (!success) {
 			throw new Error('No active PTY session found');
 		}
+
+		// Keep headless terminal in sync with PTY dimensions
+		terminalStreamManager.resizeHeadlessTerminal(sessionId, cols, rows);
 
 		return { sessionId, cols, rows };
 	})
@@ -308,6 +320,12 @@ export const sessionHandler = createRouter()
 		}
 
 		debug.log('terminal', `💀 [kill-session] Successfully killed PTY session: ${sessionId} (PID: ${pid})`);
+
+		// Clean up stream and headless terminal
+		const stream = terminalStreamManager.getStreamBySession(sessionId);
+		if (stream) {
+			terminalStreamManager.removeStream(stream.streamId);
+		}
 
 		// Broadcast terminal tab closed to all project users
 		const projectId = ws.getProjectId(conn);

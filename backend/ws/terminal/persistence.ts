@@ -33,49 +33,38 @@ export const persistenceHandler = createRouter()
 		return status;
 	})
 
-	// Get missed output
+	// Get missed output (serialized terminal state)
 	.http('terminal:missed-output', {
 		data: t.Object({
 			sessionId: t.String(),
-			streamId: t.Optional(t.String()),
-			fromIndex: t.Optional(t.Number())
+			streamId: t.Optional(t.String())
 		}),
 		response: t.Object({
 			sessionId: t.String(),
 			streamId: t.Union([t.String(), t.Null()]),
-			output: t.Array(t.String()),
-			outputCount: t.Number(),
+			output: t.String(),
 			status: t.String(),
-			fromIndex: t.Number(),
 			timestamp: t.String()
 		})
 	}, async ({ data }) => {
-		const { sessionId, streamId, fromIndex = 0 } = data;
+		const { sessionId, streamId } = data;
 
-		// Try to get output from stream manager (memory or cache)
-		let output: string[] = [];
+		// Get serialized terminal state from headless xterm
+		let output = '';
 
 		if (streamId) {
-			// If streamId is provided, get output from that specific stream
-			output = terminalStreamManager.getOutput(streamId, fromIndex);
+			output = terminalStreamManager.getSerializedOutput(streamId);
 		} else {
-			// Otherwise try to load cached output for the session
-			const cachedOutput = terminalStreamManager.loadCachedOutput(sessionId);
-			if (cachedOutput) {
-				output = cachedOutput.slice(fromIndex);
-			}
+			output = terminalStreamManager.getSerializedOutputBySession(sessionId);
 		}
 
-		// Get stream status if available
 		const streamStatus = streamId ? terminalStreamManager.getStreamStatus(streamId) : null;
 
 		return {
 			sessionId,
 			streamId: streamId || null,
 			output,
-			outputCount: output.length,
 			status: streamStatus?.status || 'unknown',
-			fromIndex,
 			timestamp: new Date().toISOString()
 		};
 	})
@@ -84,11 +73,10 @@ export const persistenceHandler = createRouter()
 	.on('terminal:reconnect', {
 		data: t.Object({
 			streamId: t.String(),
-			sessionId: t.String(),
-			fromIndex: t.Optional(t.Number())
+			sessionId: t.String()
 		})
 	}, async ({ data, conn }) => {
-		const { streamId, sessionId, fromIndex = 0 } = data;
+		const { streamId, sessionId } = data;
 		const projectId = ws.getProjectId(conn);
 
 		const stream = terminalStreamManager.getStream(streamId);
@@ -102,17 +90,15 @@ export const persistenceHandler = createRouter()
 		}
 
 		try {
-			// Broadcast missed output (frontend filters by sessionId for one-time replay)
-			const existingOutput = terminalStreamManager.getOutput(streamId, fromIndex);
+			// Send serialized terminal state (frontend writes it to xterm to restore)
+			const serializedOutput = terminalStreamManager.getSerializedOutput(streamId);
 
-			if (existingOutput.length > 0) {
-				for (const output of existingOutput) {
-					ws.emit.project(projectId, 'terminal:output', {
-						sessionId,
-						content: output,
-						timestamp: new Date().toISOString()
-					});
-				}
+			if (serializedOutput) {
+				ws.emit.project(projectId, 'terminal:output', {
+					sessionId,
+					content: serializedOutput,
+					timestamp: new Date().toISOString()
+				});
 			}
 
 			if (stream.status === 'active') {

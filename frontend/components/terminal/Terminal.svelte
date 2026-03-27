@@ -5,6 +5,7 @@
 <script lang="ts">
 	import { terminalStore } from '$frontend/stores/features/terminal.svelte';
 	import { projectState } from '$frontend/stores/core/projects.svelte';
+	import { terminalService } from '$frontend/services/terminal';
 	import TerminalTabs from './TerminalTabs.svelte';
 	import Icon from '$frontend/components/common/display/Icon.svelte';
 	import XTerm from '$frontend/components/common/xterm/XTerm.svelte';
@@ -160,11 +161,14 @@
 		if (activeSession) {
 			// Clear the terminal store session
 			terminalStore.clearSession(activeSession.id);
-			
+
 			// Also immediately clear the XTerm display
 			if (xterminalRef) {
 				xterminalRef.clear();
 			}
+
+			// Sync clear with backend headless terminal
+			terminalService.clearHeadlessTerminal(activeSession.id);
 		}
 	}
 

@@ -106,9 +106,9 @@ export const crudHandler = createRouter()
 
 		const mode = data.mode ?? 'remove';
 
-		// Clean up terminal cache for this project
-		const cachedTerminals = terminalStreamManager.cleanupProjectCache(data.id);
-		debug.log('project', `Cleaned up ${cachedTerminals} terminal cache files for project ${data.id}`);
+		// Clean up terminal streams for this project
+		const cleanedStreams = terminalStreamManager.cleanupProjectStreams(data.id);
+		debug.log('project', `Cleaned up ${cleanedStreams} terminal streams for project ${data.id}`);
 
 		if (mode === 'full') {
 			// Full delete: remove sessions with blob cleanup, then the project itself

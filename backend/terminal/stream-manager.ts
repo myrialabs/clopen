@@ -1,12 +1,12 @@
 /**
  * Terminal Stream Manager
  * Manages background terminal streams and their state
+ * Uses @xterm/headless to maintain accurate terminal state in-memory
  */
 
 import type { IPty } from 'bun-pty';
-import { existsSync, mkdirSync, readFileSync, readdirSync, unlinkSync } from 'fs';
-import { join } from 'path';
-import { getClopenDir } from '../utils/paths';
+import { Terminal } from '@xterm/headless';
+import { SerializeAddon } from '@xterm/addon-serialize';
 
 interface TerminalStream {
   streamId: string;
@@ -18,23 +18,30 @@ interface TerminalStream {
   workingDirectory?: string;
   projectPath?: string;
   projectId?: string;
-  output: string[];
   processId?: number;
-  outputStartIndex?: number; // Track where new output starts (for background output)
+  headlessTerminal: Terminal;
+  serializeAddon: SerializeAddon;
 }
 
 class TerminalStreamManager {
   private streams: Map<string, TerminalStream> = new Map();
   private sessionToStream: Map<string, string> = new Map();
-  private tempDir: string = join(getClopenDir(), 'terminal-cache');
 
-  constructor() {
-    // Create temp directory for output caching
-    if (!existsSync(this.tempDir)) {
-      mkdirSync(this.tempDir, { recursive: true });
-    }
+  /**
+   * Create a headless terminal instance with serialize addon
+   */
+  private createHeadlessTerminal(cols: number, rows: number): { terminal: Terminal; serializeAddon: SerializeAddon } {
+    const terminal = new Terminal({
+      scrollback: 1000,
+      cols,
+      rows,
+      allowProposedApi: true
+    });
+    const serializeAddon = new SerializeAddon();
+    terminal.loadAddon(serializeAddon);
+    return { terminal, serializeAddon };
   }
-  
+
   /**
    * Create a new terminal stream
    */
@@ -46,32 +53,54 @@ class TerminalStreamManager {
     projectPath?: string,
     projectId?: string,
     predefinedStreamId?: string,
-    outputStartIndex?: number
+    terminalSize?: { cols: number; rows: number }
   ): string {
+    const cols = terminalSize?.cols || 80;
+    const rows = terminalSize?.rows || 24;
+
     // Check if there's already a stream for this session
     const existingStreamId = this.sessionToStream.get(sessionId);
-    let preservedOutput: string[] = [];
     if (existingStreamId) {
       const existingStream = this.streams.get(existingStreamId);
       if (existingStream) {
-        if (existingStream.pty && existingStream.pty !== pty) {
-          // Different PTY, kill the old one
+        if (existingStream.pty === pty) {
+          // Same PTY (reconnection) - reuse existing headless terminal as-is
+          // The headless terminal already has all accumulated output
+          const newStreamId = predefinedStreamId || existingStreamId;
+
+          // Resize headless terminal if dimensions changed
+          existingStream.headlessTerminal.resize(cols, rows);
+
+          // Update stream ID if changed
+          if (newStreamId !== existingStreamId) {
+            this.streams.delete(existingStreamId);
+            existingStream.streamId = newStreamId;
+            this.streams.set(newStreamId, existingStream);
+            this.sessionToStream.set(sessionId, newStreamId);
+          }
+
+          return newStreamId;
+        }
+
+        // Different PTY, kill the old one and dispose headless terminal
+        if (existingStream.pty) {
           try {
             existingStream.pty.kill();
-          } catch (error) {
+          } catch {
             // Ignore error if PTY already killed
           }
-        } else if (existingStream.pty === pty) {
-          // Same PTY (reconnection after browser refresh) - preserve output buffer
-          preservedOutput = [...existingStream.output];
         }
-        // Remove the old stream
+        existingStream.serializeAddon.dispose();
+        existingStream.headlessTerminal.dispose();
         this.streams.delete(existingStreamId);
       }
     }
 
     // Use provided streamId or generate a new one
     const streamId = predefinedStreamId || `terminal-stream-${Date.now()}-${Math.random().toString(36).substr(2, 9)}`;
+
+    // Create headless terminal
+    const { terminal: headlessTerminal, serializeAddon } = this.createHeadlessTerminal(cols, rows);
 
     const stream: TerminalStream = {
       streamId,
@@ -83,9 +112,9 @@ class TerminalStreamManager {
       workingDirectory,
       projectPath,
       projectId,
-      output: preservedOutput,
       processId: pty.pid,
-      outputStartIndex: outputStartIndex || 0
+      headlessTerminal,
+      serializeAddon
     };
 
     this.streams.set(streamId, stream);
@@ -93,14 +122,14 @@ class TerminalStreamManager {
 
     return streamId;
   }
-  
+
   /**
    * Get stream by ID
    */
   getStream(streamId: string): TerminalStream | undefined {
     return this.streams.get(streamId);
   }
-  
+
   /**
    * Get stream by session ID
    */
@@ -111,121 +140,65 @@ class TerminalStreamManager {
     }
     return undefined;
   }
-  
+
   /**
-   * Add output to stream
+   * Add output to stream (writes to headless terminal)
    */
   addOutput(streamId: string, output: string): void {
     const stream = this.streams.get(streamId);
     if (stream) {
-      stream.output.push(output);
-
-      // Keep only last 2000 entries to prevent memory overflow
-      if (stream.output.length > 2000) {
-        stream.output = stream.output.slice(-2000);
-      }
-
-      // Also persist output to disk for background persistence
-      this.persistOutputToDisk(stream);
+      stream.headlessTerminal.write(output);
     }
   }
 
-  /** Pending write flag to coalesce rapid writes */
-  private pendingWrites = new Set<string>();
-
   /**
-   * Persist output to disk for cross-project persistence (async, coalesced)
+   * Get serialized terminal output for a stream
    */
-  private persistOutputToDisk(stream: TerminalStream): void {
-    // Coalesce rapid writes - only schedule one write per session per microtask
-    if (this.pendingWrites.has(stream.sessionId)) return;
-    this.pendingWrites.add(stream.sessionId);
-
-    queueMicrotask(() => {
-      this.pendingWrites.delete(stream.sessionId);
-
-      try {
-        const cacheFile = join(this.tempDir, `${stream.sessionId}.json`);
-
-        // Only save new output (from outputStartIndex onwards)
-        const newOutput = stream.outputStartIndex !== undefined
-          ? stream.output.slice(stream.outputStartIndex)
-          : stream.output;
-
-        const cacheData = {
-          streamId: stream.streamId,
-          sessionId: stream.sessionId,
-          command: stream.command,
-          projectId: stream.projectId,
-          projectPath: stream.projectPath,
-          workingDirectory: stream.workingDirectory,
-          startedAt: stream.startedAt,
-          status: stream.status,
-          output: newOutput,
-          outputStartIndex: stream.outputStartIndex || 0,
-          lastUpdated: new Date().toISOString()
-        };
-
-        // Use Bun.write for non-blocking async disk write
-        Bun.write(cacheFile, JSON.stringify(cacheData)).catch(() => {
-          // Silently handle write errors
-        });
-      } catch {
-        // Silently handle errors
-      }
-    });
-  }
-
-  /**
-   * Load cached output from disk (public method for API access)
-   */
-  loadCachedOutput(sessionId: string): string[] | null {
-    try {
-      const cacheFile = join(this.tempDir, `${sessionId}.json`);
-      if (existsSync(cacheFile)) {
-        const data = JSON.parse(readFileSync(cacheFile, 'utf-8'));
-        return data.output || [];
-      }
-    } catch (error) {
-      // Silently handle read errors
-    }
-    return null;
-  }
-  
-  /**
-   * Get output from index
-   */
-  getOutput(streamId: string, fromIndex: number = 0): string[] {
+  getSerializedOutput(streamId: string): string {
     const stream = this.streams.get(streamId);
     if (stream) {
-      return stream.output.slice(fromIndex);
+      return stream.serializeAddon.serialize();
     }
-
-    // If stream not in memory, try to load from cache
-    // This handles cases where server restarts or stream is cleaned from memory
-    const sessionId = this.getSessionIdByStreamId(streamId);
-    if (sessionId) {
-      const cachedOutput = this.loadCachedOutput(sessionId);
-      if (cachedOutput) {
-        return cachedOutput.slice(fromIndex);
-      }
-    }
-
-    return [];
+    return '';
   }
 
   /**
-   * Get session ID from stream ID (helper method)
+   * Get serialized terminal output by session ID
    */
-  private getSessionIdByStreamId(streamId: string): string | null {
-    for (const [sessionId, sid] of this.sessionToStream.entries()) {
-      if (sid === streamId) {
-        return sessionId;
+  getSerializedOutputBySession(sessionId: string): string {
+    const streamId = this.sessionToStream.get(sessionId);
+    if (streamId) {
+      return this.getSerializedOutput(streamId);
+    }
+    return '';
+  }
+
+  /**
+   * Clear headless terminal buffer (sync with frontend clear)
+   */
+  clearHeadlessTerminal(sessionId: string): void {
+    const streamId = this.sessionToStream.get(sessionId);
+    if (streamId) {
+      const stream = this.streams.get(streamId);
+      if (stream) {
+        stream.headlessTerminal.clear();
       }
     }
-    return null;
   }
-  
+
+  /**
+   * Resize headless terminal to match PTY dimensions
+   */
+  resizeHeadlessTerminal(sessionId: string, cols: number, rows: number): void {
+    const streamId = this.sessionToStream.get(sessionId);
+    if (streamId) {
+      const stream = this.streams.get(streamId);
+      if (stream) {
+        stream.headlessTerminal.resize(cols, rows);
+      }
+    }
+  }
+
   /**
    * Update stream status
    */
@@ -233,7 +206,7 @@ class TerminalStreamManager {
     const stream = this.streams.get(streamId);
     if (stream) {
       stream.status = status;
-      
+
       // Clean up completed/cancelled streams after a delay
       if (status === 'completed' || status === 'cancelled' || status === 'error') {
         // Keep stream for 5 minutes for reconnection attempts
@@ -243,9 +216,9 @@ class TerminalStreamManager {
       }
     }
   }
-  
+
   /**
-   * Remove stream
+   * Remove stream and dispose headless terminal
    */
   removeStream(streamId: string): void {
     const stream = this.streams.get(streamId);
@@ -254,33 +227,27 @@ class TerminalStreamManager {
       if (stream.status === 'active' && stream.pty) {
         try {
           stream.pty.kill();
-        } catch (error) {
+        } catch {
           // Silently handle error
         }
       }
 
-      // Clean up cache file
-      try {
-        const cacheFile = join(this.tempDir, `${stream.sessionId}.json`);
-        if (existsSync(cacheFile)) {
-          unlinkSync(cacheFile);
-        }
-      } catch (error) {
-        // Silently handle error
-      }
+      // Dispose headless terminal
+      stream.serializeAddon.dispose();
+      stream.headlessTerminal.dispose();
 
       // Remove from maps
       this.streams.delete(streamId);
       this.sessionToStream.delete(stream.sessionId);
     }
   }
-  
+
   /**
    * Get stream status info
    */
   getStreamStatus(streamId: string): {
     status: string;
-    messagesCount: number;
+    bufferLength: number;
     startedAt: Date;
     processId?: number;
   } | null {
@@ -288,51 +255,35 @@ class TerminalStreamManager {
     if (!stream) {
       return null;
     }
-    
+
     return {
       status: stream.status,
-      messagesCount: stream.output.length,
+      bufferLength: stream.headlessTerminal.buffer.active.length,
       startedAt: stream.startedAt,
       processId: stream.processId
     };
   }
-  
-  /**
-   * Clean up terminal cache files for a specific project
-   */
-  cleanupProjectCache(projectId: string): number {
-    let deleted = 0;
-    try {
-      const files = readdirSync(this.tempDir);
-      for (const file of files) {
-        if (!file.endsWith('.json')) continue;
-        try {
-          const filePath = join(this.tempDir, file);
-          const data = JSON.parse(readFileSync(filePath, 'utf-8'));
-          if (data.projectId === projectId) {
-            unlinkSync(filePath);
-            deleted++;
-          }
-        } catch {
-          // Skip unreadable files
-        }
-      }
-    } catch {
-      // Directory may not exist
-    }
 
-    // Also remove in-memory streams for this project
+  /**
+   * Clean up terminal streams for a specific project
+   */
+  cleanupProjectStreams(projectId: string): number {
+    let cleaned = 0;
+
     for (const [streamId, stream] of this.streams) {
       if (stream.projectId === projectId) {
         if (stream.status === 'active' && stream.pty) {
           try { stream.pty.kill(); } catch {}
         }
+        stream.serializeAddon.dispose();
+        stream.headlessTerminal.dispose();
         this.streams.delete(streamId);
         this.sessionToStream.delete(stream.sessionId);
+        cleaned++;
       }
     }
 
-    return deleted;
+    return cleaned;
   }
 
   /**

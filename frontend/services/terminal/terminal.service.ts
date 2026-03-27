@@ -62,20 +62,6 @@ export class TerminalService {
 		// Create unique stream ID for this connection
 		const streamId = `${sessionId}-${Date.now()}`;
 
-		// Get current output count to mark where new output starts
-		let outputStartIndex = 0;
-		if (typeof window !== 'undefined') {
-			try {
-				const terminalStoreModule = await import('$frontend/stores/features/terminal.svelte');
-				const termSession = terminalStoreModule.terminalStore.getSession(sessionId);
-				if (termSession && termSession.lines) {
-					outputStartIndex = termSession.lines.length;
-				}
-			} catch {
-				// Ignore error, use default 0
-			}
-		}
-
 		// Setup WebSocket listeners for this session
 		const listeners: Array<() => void> = [];
 
@@ -173,8 +159,7 @@ export class TerminalService {
 				workingDirectory: session.workingDirectory,
 				projectPath,
 				cols: terminalSize?.cols || 80,
-				rows: terminalSize?.rows || 24,
-				outputStartIndex
+				rows: terminalSize?.rows || 24
 			});
 
 			debug.log('terminal', `✅ Terminal session created:`, response);
@@ -227,6 +212,17 @@ export class TerminalService {
 		} catch (error) {
 			debug.error('terminal', 'Error sending Ctrl+C signal:', error);
 			return false;
+		}
+	}
+
+	/**
+	 * Clear headless terminal on backend (sync with frontend clear)
+	 */
+	async clearHeadlessTerminal(sessionId: string): Promise<void> {
+		try {
+			await ws.http('terminal:clear', { sessionId });
+		} catch {
+			// Silently handle - non-critical
 		}
 	}
 
@@ -301,39 +297,34 @@ export class TerminalService {
 	}
 
 	/**
-	 * Get missed output for a session
+	 * Get missed output for a session (serialized terminal state)
 	 */
 	async getMissedOutput(
 		sessionId: string,
-		streamId?: string,
-		fromIndex: number = 0
+		streamId?: string
 	): Promise<{
 		success: boolean;
-		output: string[];
-		outputCount: number;
+		output: string;
 		status: string;
 	}> {
 		try {
-			const data = await ws.http('terminal:missed-output', { sessionId, streamId, fromIndex }, 5000);
+			const data = await ws.http('terminal:missed-output', { sessionId, streamId }, 5000);
 			if (data.sessionId === sessionId) {
 				return {
 					success: true,
 					output: data.output,
-					outputCount: data.outputCount,
 					status: data.status
 				};
 			}
 			return {
 				success: false,
-				output: [],
-				outputCount: 0,
+				output: '',
 				status: 'invalid_session'
 			};
 		} catch {
 			return {
 				success: false,
-				output: [],
-				outputCount: 0,
+				output: '',
 				status: 'timeout'
 			};
 		}

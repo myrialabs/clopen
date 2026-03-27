@@ -262,66 +262,10 @@ class TerminalProjectManager {
 					}
 				}
 
-				// Restore saved output for this session
-				let baseOutput: any[] = [];
-				let backgroundOutput: any[] = [];
-
-				// First, restore base output from context (input/output sebelumnya)
-				if (context.sessionOutputs.has(sessionId)) {
-					const savedOutput = context.sessionOutputs.get(sessionId);
-					if (savedOutput) {
-						baseOutput = savedOutput.map(output => ({
-							content: output.content,
-							type: output.type as any,
-							timestamp: output.timestamp
-						}));
-						// Restored base output lines for session
-					}
-				}
-
-				// Second, get NEW output from server that was generated while we were away
-				// We need to track when we saved the output to know what's new
-				if (hasActiveStream && activeStreamInfo) {
-					try {
-						// Get the saved output count from context metadata
-						// This tells us how much output we had when we switched away
-						let savedOutputCount = 0;
-						const savedMetadata = context.sessionOutputs.get(`${sessionId}-metadata`);
-						if (savedMetadata && typeof savedMetadata === 'object' && 'outputCount' in savedMetadata) {
-							savedOutputCount = (savedMetadata as any).outputCount || 0;
-						} else {
-							// Fallback: count actual output lines in baseOutput
-							for (const line of baseOutput) {
-								if (line.type === 'output' || line.type === 'error') {
-									savedOutputCount++;
-								}
-							}
-						}
-
-						// Get only NEW output from server (skip what we already have)
-						const data = await terminalService.getMissedOutput(
-							sessionId,
-							activeStreamInfo.streamId,
-							savedOutputCount
-						);
-						if (data.success && data.output && data.output.length > 0) {
-							// Convert server output to terminal lines
-							backgroundOutput = data.output.map((content: string) => ({
-								content: content,
-								type: 'output',
-								timestamp: new Date()
-							}));
-							debug.log('terminal', `Restored ${backgroundOutput.length} new output lines for session ${sessionId}`);
-						}
-					} catch (error) {
-						debug.error('terminal', 'Failed to fetch missed output:', error);
-					}
-				}
-
-				// Combine base output with background output from server
-				// Base output contains previous input/output saved in context
-				// Background output contains new output from server (if any)
-				terminalSession.lines = [...baseOutput, ...backgroundOutput];
+				// Always start with empty lines.
+				// The create-session replay from headless xterm will provide the
+				// accurate current terminal state (respects clear, scrollback, etc.)
+				terminalSession.lines = [];
 
 				// Restore command history from context (persisted) rather than manager (temporary)
 				const savedCommandHistory = context.sessionCommandHistories.get(sessionId);
