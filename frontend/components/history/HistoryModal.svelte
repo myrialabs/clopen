@@ -275,7 +275,7 @@
 		}
 	}
 
-	// Delete session state
+	// Delete single session state
 	let showDeleteDialog = $state(false);
 	let sessionToDelete = $state<ChatSession | null>(null);
 
@@ -299,7 +299,7 @@
 			addNotification({
 				type: 'success',
 				title: 'Session Deleted',
-				message: 'Chat session has been deleted',
+				message: 'Chat session and related data have been deleted',
 				duration: 3000
 			});
 
@@ -321,6 +321,54 @@
 		sessionToDelete = null;
 	}
 
+	// Delete all sessions state
+	let showDeleteAllDialog = $state(false);
+	let deletingAll = $state(false);
+
+	async function confirmDeleteAllSessions() {
+		deletingAll = true;
+		try {
+			const result = await ws.http('sessions:delete-all', {});
+
+			// Remove all project sessions from local state
+			const projectId = projectState.currentProject?.id;
+			if (projectId) {
+				const toRemove = sessionState.sessions
+					.filter(s => s.project_id === projectId)
+					.map(s => s.id);
+				for (const id of toRemove) {
+					removeSession(id);
+				}
+			}
+
+			// Clear cache
+			sessionDataCache = {};
+
+			addNotification({
+				type: 'success',
+				title: 'All Sessions Deleted',
+				message: `${result.deletedCount} sessions and related data have been deleted`,
+				duration: 3000
+			});
+
+			showDeleteAllDialog = false;
+		} catch (error) {
+			debug.error('session', 'Failed to delete all sessions:', error);
+			addNotification({
+				type: 'error',
+				title: 'Error',
+				message: 'Failed to delete all sessions',
+				duration: 5000
+			});
+		} finally {
+			deletingAll = false;
+		}
+	}
+
+	function closeDeleteAllDialog() {
+		showDeleteAllDialog = false;
+	}
+
 	function closeModal() {
 		searchQuery = '';
 		onClose();
@@ -331,21 +379,34 @@
 	{#snippet header()}
 		<div class="flex items-center justify-between px-4 py-3 md:px-6 md:py-4">
 			<h2 class="text-base md:text-lg font-bold text-slate-900 dark:text-slate-100">Sessions</h2>
-			<button
-				type="button"
-				class="p-1.5 md:p-2 rounded-lg text-slate-500 hover:text-slate-900 dark:hover:text-slate-100 hover:bg-violet-500/10 transition-colors"
-				onclick={closeModal}
-				aria-label="Close modal"
-			>
-				<svg class="w-4 h-4 md:w-5 md:h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-					<path
-						stroke-linecap="round"
-						stroke-linejoin="round"
-						stroke-width="2"
-						d="M6 18L18 6M6 6l12 12"
-					/>
-				</svg>
-			</button>
+			<div class="flex items-center gap-2">
+				{#if filteredSessions.length > 0}
+					<button
+						type="button"
+						class="flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg text-xs font-medium text-red-600 dark:text-red-400 hover:bg-red-500/10 transition-colors"
+						onclick={() => (showDeleteAllDialog = true)}
+						aria-label="Delete all sessions"
+					>
+						<Icon name="lucide:trash-2" class="w-3.5 h-3.5" />
+						<span class="hidden sm:inline">Delete All</span>
+					</button>
+				{/if}
+				<button
+					type="button"
+					class="p-1.5 md:p-2 rounded-lg text-slate-500 hover:text-slate-900 dark:hover:text-slate-100 hover:bg-violet-500/10 transition-colors"
+					onclick={closeModal}
+					aria-label="Close modal"
+				>
+					<svg class="w-4 h-4 md:w-5 md:h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+						<path
+							stroke-linecap="round"
+							stroke-linejoin="round"
+							stroke-width="2"
+							d="M6 18L18 6M6 6l12 12"
+						/>
+					</svg>
+				</button>
+			</div>
 		</div>
 	{/snippet}
 
@@ -514,16 +575,28 @@
 	{/snippet}
 </Modal>
 
-<!-- Delete Confirmation Dialog -->
+<!-- Delete Single Session Confirmation Dialog -->
 <Dialog
 	bind:isOpen={showDeleteDialog}
 	onClose={closeDeleteDialog}
 	type="error"
 	title="Delete Session"
 	message={sessionToDelete && isSessionStreaming(sessionToDelete.id)
-		? 'This session is currently running. Deleting it will stop the active chat and permanently remove all messages.'
-		: 'Are you sure you want to delete this session? All messages will be permanently removed.'}
+		? 'This session is currently running. Deleting it will stop the active chat and permanently remove all messages, snapshots, and related data.'
+		: 'Are you sure you want to delete this session? All messages, snapshots, and related data will be permanently removed.'}
 	confirmText="Delete"
 	cancelText="Cancel"
 	onConfirm={confirmDeleteSession}
+/>
+
+<!-- Delete All Sessions Confirmation Dialog -->
+<Dialog
+	bind:isOpen={showDeleteAllDialog}
+	onClose={closeDeleteAllDialog}
+	type="error"
+	title="Delete All Sessions"
+	message={`Are you sure you want to delete all ${filteredSessions.length} sessions in this project? All messages, snapshots, and related data will be permanently removed. This only affects the current project.`}
+	confirmText={deletingAll ? 'Deleting...' : 'Delete All'}
+	cancelText="Cancel"
+	onConfirm={confirmDeleteAllSessions}
 />

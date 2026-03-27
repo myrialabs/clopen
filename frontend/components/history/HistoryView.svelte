@@ -317,25 +317,20 @@
 		const confirmed = await showConfirm({
 			title: 'Delete Session',
 			message: streaming
-				? `This session "${title}" is currently running. Deleting it will stop the active chat and permanently remove all messages.`
-				: `Are you sure you want to delete session "${title}"? This action cannot be undone.`,
+				? `This session "${title}" is currently running. Deleting it will stop the active chat and permanently remove all messages, snapshots, and related data.`
+				: `Are you sure you want to delete session "${title}"? All messages, snapshots, and related data will be permanently removed.`,
 			type: 'error',
 			confirmText: 'Delete',
 			cancelText: 'Cancel'
 		});
-		
+
 		if (confirmed) {
 			try {
-				// Delete from database via WebSocket
 				await ws.http('sessions:delete', { id: session.id });
-				// Remove from local state
 				removeSession(session.id);
-				// Clear cache
 				delete sessionDataCache[session.id];
-				// User already knows session was deleted from UI update
 			} catch (error) {
 				addNotification({
-					
 					type: 'error',
 					title: 'Error',
 					message: 'Failed to delete session',
@@ -344,11 +339,11 @@
 			}
 		}
 	}
-	
+
 	async function clearHistory() {
 		const confirmed = await showConfirm({
 			title: 'Clear All Session History',
-			message: 'Are you sure you want to clear all session history? This will delete all sessions. This action cannot be undone.',
+			message: 'Are you sure you want to clear all session history? All messages, snapshots, and related data will be permanently removed. This only affects the current project.',
 			type: 'error',
 			confirmText: 'Clear All',
 			cancelText: 'Cancel'
@@ -361,34 +356,20 @@
 		}
 
 		try {
-			// Delete all sessions from database
-			const deletePromises = sessions.map(async (session) => {
-				try {
-					await ws.http('sessions:delete', { id: session.id });
-					// Remove from local state
-					removeSession(session.id);
-					// Clear cache
-					delete sessionDataCache[session.id];
-					return { success: true };
-				} catch (error) {
-					debug.error('session', `Error deleting session ${session.id}:`, error);
-					return { success: false, error: 'Failed to delete session' };
-				}
-			});
+			const result = await ws.http('sessions:delete-all', {});
 
-			// Wait for all deletions to complete
-			const results = await Promise.all(deletePromises);
-
-			// Check if any deletions failed
-			const failed = results.filter(r => !r.success);
-			if (failed.length > 0) {
-				addNotification({
-					type: 'warning',
-					title: 'Partial Deletion',
-					message: `Failed to delete ${failed.length} session(s)`,
-					duration: 5000
-				});
+			// Remove all sessions from local state
+			const toRemove = [...sessions].map(s => s.id);
+			for (const id of toRemove) {
+				removeSession(id);
 			}
+
+			addNotification({
+				type: 'success',
+				title: 'All Sessions Deleted',
+				message: `${result.deletedCount} sessions and related data have been deleted`,
+				duration: 3000
+			});
 		} catch (error) {
 			debug.error('session', 'Error clearing history:', error);
 			addNotification({

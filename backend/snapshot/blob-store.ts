@@ -4,7 +4,6 @@
  *
  * Structure:
  *   ~/.clopen/snapshots/blobs/{hash[0:2]}/{hash}.gz  - compressed file blobs
- *   ~/.clopen/snapshots/trees/{snapshotId}.json       - tree maps (filepath -> hash)
  *
  * Deduplication: Same file content across any snapshot is stored only once.
  * Compression: All blobs are gzip compressed to minimize disk usage.
@@ -18,7 +17,6 @@ import { getClopenDir } from '../utils/index.js';
 
 const SNAPSHOTS_DIR = join(getClopenDir(), 'snapshots');
 const BLOBS_DIR = join(SNAPSHOTS_DIR, 'blobs');
-const TREES_DIR = join(SNAPSHOTS_DIR, 'trees');
 
 export interface TreeMap {
 	[filepath: string]: string; // filepath -> blob hash
@@ -45,7 +43,6 @@ class BlobStore {
 	async init(): Promise<void> {
 		if (this.initialized) return;
 		await fs.mkdir(BLOBS_DIR, { recursive: true });
-		await fs.mkdir(TREES_DIR, { recursive: true });
 		this.initialized = true;
 	}
 
@@ -113,69 +110,6 @@ class BlobStore {
 	}
 
 	/**
-	 * Store a tree (snapshot state) as a JSON file.
-	 * Returns the tree hash for reference.
-	 */
-	async storeTree(snapshotId: string, tree: TreeMap): Promise<string> {
-		await this.init();
-		const treePath = join(TREES_DIR, `${snapshotId}.json`);
-		const content = JSON.stringify(tree);
-		const treeHash = this.hashContent(Buffer.from(content, 'utf-8'));
-		await fs.writeFile(treePath, content, 'utf-8');
-		return treeHash;
-	}
-
-	/**
-	 * Read a tree by snapshot ID
-	 */
-	async readTree(snapshotId: string): Promise<TreeMap> {
-		const treePath = join(TREES_DIR, `${snapshotId}.json`);
-		const content = await fs.readFile(treePath, 'utf-8');
-		return JSON.parse(content) as TreeMap;
-	}
-
-	/**
-	 * Check if a tree exists
-	 */
-	async hasTree(snapshotId: string): Promise<boolean> {
-		try {
-			await fs.access(join(TREES_DIR, `${snapshotId}.json`));
-			return true;
-		} catch {
-			return false;
-		}
-	}
-
-	/**
-	 * Resolve a tree to full file contents (as Buffers).
-	 * Reads all blobs in parallel for performance.
-	 * Returns { filepath: Buffer } map for binary-safe handling.
-	 */
-	async resolveTree(tree: TreeMap): Promise<Record<string, Buffer>> {
-		const result: Record<string, Buffer> = {};
-
-		const entries = Object.entries(tree);
-		const blobPromises = entries.map(async ([filepath, hash]) => {
-			try {
-				const content = await this.readBlob(hash);
-				return { filepath, content };
-			} catch (err) {
-				debug.warn('snapshot', `Could not read blob ${hash} for ${filepath}:`, err);
-				return null;
-			}
-		});
-
-		const results = await Promise.all(blobPromises);
-		for (const r of results) {
-			if (r) {
-				result[r.filepath] = r.content;
-			}
-		}
-
-		return result;
-	}
-
-	/**
 	 * Hash a file using mtime cache. Returns { hash, content? }.
 	 * If the file hasn't changed (same mtime+size), returns cached hash without reading content.
 	 * If the file has changed, reads content, hashes it, stores blob, and caches.
@@ -191,10 +125,15 @@ class BlobStore {
 		// Check mtime cache
 		const cached = this.fileHashCache.get(filepath);
 		if (cached && cached.mtimeMs === stat.mtimeMs && cached.size === stat.size) {
-			return { hash: cached.hash, content: null, cached: true };
+			// Verify blob still exists on disk (could have been cleaned up)
+			if (await this.hasBlob(cached.hash)) {
+				return { hash: cached.hash, content: null, cached: true };
+			}
+			// Blob was deleted — invalidate cache, fall through to re-read and re-store
+			this.fileHashCache.delete(filepath);
 		}
 
-		// File changed - read as Buffer (binary-safe, no encoding conversion)
+		// File changed or cache miss - read as Buffer (binary-safe, no encoding conversion)
 		const content = await fs.readFile(fullPath);
 		const hash = this.hashContent(content);
 
@@ -212,14 +151,55 @@ class BlobStore {
 	}
 
 	/**
-	 * Delete a tree file (cleanup)
+	 * Delete multiple blobs by hash.
+	 * Also invalidates fileHashCache entries whose hash matches a deleted blob.
 	 */
-	async deleteTree(snapshotId: string): Promise<void> {
-		try {
-			await fs.unlink(join(TREES_DIR, `${snapshotId}.json`));
-		} catch {
-			// Ignore - might not exist
+	async deleteBlobs(hashes: string[]): Promise<number> {
+		const hashSet = new Set(hashes);
+		let deleted = 0;
+		for (const hash of hashes) {
+			try {
+				await fs.unlink(this.getBlobPath(hash));
+				deleted++;
+			} catch {
+				// Ignore - might not exist
+			}
 		}
+
+		// Invalidate fileHashCache entries pointing to deleted blobs
+		for (const [filepath, entry] of this.fileHashCache) {
+			if (hashSet.has(entry.hash)) {
+				this.fileHashCache.delete(filepath);
+			}
+		}
+
+		return deleted;
+	}
+
+	/**
+	 * Scan all blob files on disk and return their hashes.
+	 * Used for full garbage collection — compare with DB references to find orphans.
+	 */
+	async scanAllBlobHashes(): Promise<Set<string>> {
+		const hashes = new Set<string>();
+		try {
+			const prefixDirs = await fs.readdir(BLOBS_DIR);
+			for (const prefix of prefixDirs) {
+				const prefixPath = join(BLOBS_DIR, prefix);
+				const stat = await fs.stat(prefixPath);
+				if (!stat.isDirectory()) continue;
+
+				const files = await fs.readdir(prefixPath);
+				for (const file of files) {
+					if (file.endsWith('.gz')) {
+						hashes.add(file.slice(0, -3)); // Remove .gz suffix
+					}
+				}
+			}
+		} catch {
+			// Directory might not exist yet
+		}
+		return hashes;
 	}
 }
 

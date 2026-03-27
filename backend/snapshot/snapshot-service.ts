@@ -692,6 +692,30 @@ export class SnapshotService {
 	}
 
 	/**
+	 * Get all blob hashes from the in-memory baseline for a session.
+	 * Must be called BEFORE clearSessionBaseline.
+	 */
+	getSessionBaselineHashes(sessionId: string): Set<string> {
+		const baseline = this.sessionBaselines.get(sessionId);
+		if (!baseline) return new Set();
+		return new Set(Object.values(baseline));
+	}
+
+	/**
+	 * Get all blob hashes from ALL in-memory baselines (all active sessions).
+	 * Used to protect blobs still needed by other sessions during cleanup.
+	 */
+	getAllBaselineHashes(): Set<string> {
+		const hashes = new Set<string>();
+		for (const baseline of this.sessionBaselines.values()) {
+			for (const hash of Object.values(baseline)) {
+				hashes.add(hash);
+			}
+		}
+		return hashes;
+	}
+
+	/**
 	 * Clean up session baseline cache when session is no longer active.
 	 */
 	clearSessionBaseline(sessionId: string): void {

@@ -125,10 +125,44 @@ export const sessionQueries = {
 
 	delete(id: string): void {
 		const db = getDatabase();
-		// Delete related data first
+		// Delete all related data
+		db.prepare('DELETE FROM branches WHERE session_id = ?').run(id);
+		db.prepare('DELETE FROM message_snapshots WHERE session_id = ?').run(id);
+		db.prepare('DELETE FROM session_relationships WHERE parent_session_id = ? OR child_session_id = ?').run(id, id);
 		db.prepare('DELETE FROM messages WHERE session_id = ?').run(id);
 		db.prepare('DELETE FROM user_unread_sessions WHERE session_id = ?').run(id);
+		// Clear current_session_id references in user_projects
+		db.prepare('UPDATE user_projects SET current_session_id = NULL WHERE current_session_id = ?').run(id);
 		db.prepare('DELETE FROM chat_sessions WHERE id = ?').run(id);
+	},
+
+	/**
+	 * Delete all sessions for a project and their related data.
+	 * Returns the list of deleted session IDs.
+	 */
+	deleteAllByProjectId(projectId: string): string[] {
+		const db = getDatabase();
+		const sessions = db.prepare('SELECT id FROM chat_sessions WHERE project_id = ?')
+			.all(projectId) as { id: string }[];
+		const sessionIds = sessions.map(s => s.id);
+
+		if (sessionIds.length === 0) return [];
+
+		// Delete all related data for the project's sessions
+		db.prepare('DELETE FROM branches WHERE session_id IN (SELECT id FROM chat_sessions WHERE project_id = ?)').run(projectId);
+		db.prepare('DELETE FROM message_snapshots WHERE project_id = ?').run(projectId);
+		db.prepare(`
+			DELETE FROM session_relationships
+			WHERE parent_session_id IN (SELECT id FROM chat_sessions WHERE project_id = ?)
+			   OR child_session_id IN (SELECT id FROM chat_sessions WHERE project_id = ?)
+		`).run(projectId, projectId);
+		db.prepare('DELETE FROM messages WHERE session_id IN (SELECT id FROM chat_sessions WHERE project_id = ?)').run(projectId);
+		db.prepare('DELETE FROM user_unread_sessions WHERE project_id = ?').run(projectId);
+		// Clear current_session_id references in user_projects for this project
+		db.prepare('UPDATE user_projects SET current_session_id = NULL WHERE project_id = ?').run(projectId);
+		db.prepare('DELETE FROM chat_sessions WHERE project_id = ?').run(projectId);
+
+		return sessionIds;
 	},
 
 	/**

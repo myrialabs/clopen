@@ -325,5 +325,127 @@ export const snapshotQueries = {
 		`).all(projectId) as SessionRelationship[];
 
 		return relationships;
+	},
+
+	/**
+	 * Get ALL snapshots for a session (including soft-deleted).
+	 * Used for cleanup — getBySessionId filters is_deleted which misses hashes.
+	 */
+	getAllBySessionId(sessionId: string): MessageSnapshot[] {
+		const db = getDatabase();
+		return db.prepare(`
+			SELECT * FROM message_snapshots WHERE session_id = ?
+			ORDER BY created_at ASC
+		`).all(sessionId) as MessageSnapshot[];
+	},
+
+	/**
+	 * Get ALL snapshots for a project (including soft-deleted).
+	 * Used for cleanup.
+	 */
+	getAllByProjectId(projectId: string): MessageSnapshot[] {
+		const db = getDatabase();
+		return db.prepare(`
+			SELECT * FROM message_snapshots WHERE project_id = ?
+			ORDER BY created_at ASC
+		`).all(projectId) as MessageSnapshot[];
+	},
+
+	/**
+	 * Delete all snapshots for a session.
+	 * Returns the deleted snapshots so callers can clean up blob store.
+	 */
+	deleteBySessionId(sessionId: string): MessageSnapshot[] {
+		const db = getDatabase();
+		const snapshots = db.prepare(`
+			SELECT * FROM message_snapshots WHERE session_id = ?
+		`).all(sessionId) as MessageSnapshot[];
+
+		if (snapshots.length > 0) {
+			db.prepare('DELETE FROM message_snapshots WHERE session_id = ?').run(sessionId);
+		}
+
+		return snapshots;
+	},
+
+	/**
+	 * Delete all snapshots for a project.
+	 * Returns the deleted snapshots so callers can clean up blob store.
+	 */
+	deleteByProjectId(projectId: string): MessageSnapshot[] {
+		const db = getDatabase();
+		const snapshots = db.prepare(`
+			SELECT * FROM message_snapshots WHERE project_id = ?
+		`).all(projectId) as MessageSnapshot[];
+
+		if (snapshots.length > 0) {
+			db.prepare('DELETE FROM message_snapshots WHERE project_id = ?').run(projectId);
+		}
+
+		return snapshots;
+	},
+
+	/**
+	 * Delete session relationships by session ID (as parent or child).
+	 */
+	deleteRelationshipsBySessionId(sessionId: string): void {
+		const db = getDatabase();
+		db.prepare('DELETE FROM session_relationships WHERE parent_session_id = ? OR child_session_id = ?')
+			.run(sessionId, sessionId);
+	},
+
+	/**
+	 * Delete all session relationships for a project.
+	 */
+	deleteRelationshipsByProjectId(projectId: string): void {
+		const db = getDatabase();
+		db.prepare(`
+			DELETE FROM session_relationships
+			WHERE parent_session_id IN (SELECT id FROM chat_sessions WHERE project_id = ?)
+			   OR child_session_id IN (SELECT id FROM chat_sessions WHERE project_id = ?)
+		`).run(projectId, projectId);
+	},
+
+	/**
+	 * Collect all blob hashes referenced by the given snapshots.
+	 * Extracts oldHash and newHash from session_changes.
+	 */
+	collectBlobHashes(snapshots: MessageSnapshot[]): Set<string> {
+		const hashes = new Set<string>();
+		for (const snap of snapshots) {
+			if (!snap.session_changes) continue;
+			try {
+				const changes = JSON.parse(snap.session_changes as string) as Record<string, { oldHash: string; newHash: string }>;
+				for (const change of Object.values(changes)) {
+					if (change.oldHash) hashes.add(change.oldHash);
+					if (change.newHash) hashes.add(change.newHash);
+				}
+			} catch { /* skip malformed */ }
+		}
+		return hashes;
+	},
+
+	/**
+	 * Get all blob hashes still referenced by remaining snapshots in the database.
+	 * Used to determine which blobs are safe to delete (orphan detection).
+	 */
+	getAllReferencedBlobHashes(): Set<string> {
+		const db = getDatabase();
+		const rows = db.prepare(`
+			SELECT session_changes FROM message_snapshots
+			WHERE session_changes IS NOT NULL
+		`).all() as { session_changes: string }[];
+
+		const hashes = new Set<string>();
+		for (const row of rows) {
+			try {
+				const changes = JSON.parse(row.session_changes) as Record<string, { oldHash: string; newHash: string }>;
+				for (const change of Object.values(changes)) {
+					if (change.oldHash) hashes.add(change.oldHash);
+					if (change.newHash) hashes.add(change.newHash);
+				}
+			} catch { /* skip malformed */ }
+		}
+		return hashes;
 	}
 };
