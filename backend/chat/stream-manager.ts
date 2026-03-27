@@ -495,6 +495,9 @@ class StreamManager extends EventEmitter {
 				includePartialMessages: true,
 				abortController: streamState.abortController,
 				...(claudeAccountId !== undefined && { claudeAccountId }),
+				...(projectId && chatSessionId && {
+					mcpContext: { projectId, chatSessionId, streamId: streamState.streamId }
+				}),
 			});
 
 			await projectContextService.runWithContextAsync(

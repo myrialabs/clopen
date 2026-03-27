@@ -5,10 +5,12 @@
  * to avoid duplication and make it easier to add new servers.
  */
 
-import type { McpSdkServerConfigWithInstance, McpServerConfig } from "@anthropic-ai/claude-agent-sdk";
+import { createSdkMcpServer, tool, type McpSdkServerConfigWithInstance, type McpServerConfig } from "@anthropic-ai/claude-agent-sdk";
 import type { McpRemoteConfig } from '@opencode-ai/sdk';
 import type { ServerConfig, ParsedMcpToolName, ServerName } from './types';
-import { serverRegistry, serverFactories } from './servers';
+import type { McpExecutionContext } from '../engine/types';
+import { serverRegistry, serverFactories, serverMetadata } from './servers';
+import { projectContextService } from './project-context';
 import { debug } from '$shared/utils/logger';
 import { SERVER_ENV } from '../utils/env';
 
@@ -87,15 +89,39 @@ export const mcpServers: Record<string, ServerConfig & { instance: McpSdkServerC
  *
  * Creates FRESH server instances each call so that concurrent streams
  * each get their own Protocol — avoids "Already connected to a transport" errors.
+ *
+ * When `context` is provided, tool handlers are wrapped to restore the
+ * AsyncLocalStorage execution context. This is required because the SDK
+ * invokes MCP tool handlers through IPC which breaks AsyncLocalStorage
+ * propagation — without this, background streams from Project A would
+ * resolve to Project B's preview browser when the user switches projects.
  */
-export function getEnabledMcpServers(): Record<string, McpServerConfig> {
+export function getEnabledMcpServers(context?: McpExecutionContext): Record<string, McpServerConfig> {
 	const enabledServers: Record<string, McpServerConfig> = {};
 
 	Object.entries(mcpServers).forEach(([serverName, serverConfig]) => {
 		if (serverConfig.enabled) {
-			const factory = serverFactories[serverName as ServerName];
-			enabledServers[serverName] = factory ? factory() : serverConfig.instance;
-			debug.log('mcp', `✓ Enabled MCP server: ${serverName}`);
+			if (context) {
+				// Create context-bound instance: wrap each tool handler so
+				// AsyncLocalStorage context is restored on invocation
+				const meta = serverMetadata[serverName as ServerName];
+				const sdkTools = (serverConfig.tools as readonly string[]).map(toolName => {
+					const def = meta.toolDefs[toolName];
+					const boundHandler = async (args: any) => {
+						return projectContextService.runWithContextAsync(context, () => def.handler(args));
+					};
+					return tool(toolName, def.description, def.schema, boundHandler as any);
+				});
+				enabledServers[serverName] = createSdkMcpServer({
+					name: meta.name,
+					version: '1.0.0',
+					tools: sdkTools
+				});
+			} else {
+				const factory = serverFactories[serverName as ServerName];
+				enabledServers[serverName] = factory ? factory() : serverConfig.instance;
+			}
+			debug.log('mcp', `✓ Enabled MCP server: ${serverName}${context ? ' (context-bound)' : ''}`);
 		} else {
 			debug.log('mcp', `✗ Disabled MCP server: ${serverName}`);
 		}

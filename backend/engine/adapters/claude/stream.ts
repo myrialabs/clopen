@@ -90,7 +90,8 @@ export class ClaudeCodeEngine implements AIEngine {
 
     try {
       // Get custom MCP servers and allowed tools
-      const mcpServers = getEnabledMcpServers();
+      // Pass mcpContext so tool handlers are bound to the correct project
+      const mcpServers = getEnabledMcpServers(options.mcpContext);
       const allowedMcpTools = getAllowedMcpTools();
 
       debug.log('mcp', '📦 Loading custom MCP servers...');

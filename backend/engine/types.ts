@@ -11,6 +11,13 @@ import type { EngineType, EngineModel } from '$shared/types/engine';
 
 export type { EngineType, EngineModel };
 
+/** Execution context for MCP tool handlers (project isolation) */
+export interface McpExecutionContext {
+	projectId?: string;
+	chatSessionId?: string;
+	streamId?: string;
+}
+
 /** Options passed to engine.streamQuery() */
 export interface EngineQueryOptions {
 	projectPath: string;
@@ -22,6 +29,8 @@ export interface EngineQueryOptions {
 	includePartialMessages?: boolean;
 	abortController?: AbortController;
 	claudeAccountId?: number;
+	/** Context bound to MCP tool handlers for project isolation */
+	mcpContext?: McpExecutionContext;
 }
 
 /** Options for one-shot structured generation (no tools, no streaming) */
