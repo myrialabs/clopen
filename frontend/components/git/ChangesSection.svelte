@@ -27,12 +27,78 @@
 		onStageAll, onUnstageAll, onDiscardAll,
 		onViewDiff, onResolve
 	}: Props = $props();
+
+	// Virtual scroll — only render visible items when list is large
+	const ITEM_HEIGHT = 32;
+	const BUFFER = 10;
+	const VIRTUALIZE_THRESHOLD = 200;
+
+	let scrollEl = $state<HTMLDivElement>();
+	let headerEl = $state<HTMLDivElement>();
+	let scrollTop = $state(0);
+	let containerHeight = $state(384);
+	let panelHeight = $state(0);
+
+	const shouldVirtualize = $derived(files.length > VIRTUALIZE_THRESHOLD);
+	const visibleStart = $derived(
+		shouldVirtualize ? Math.max(0, Math.floor(scrollTop / ITEM_HEIGHT) - BUFFER) : 0
+	);
+	const visibleEnd = $derived(
+		shouldVirtualize
+			? Math.min(files.length, Math.ceil((scrollTop + containerHeight) / ITEM_HEIGHT) + BUFFER)
+			: files.length
+	);
+	const visibleFiles = $derived(files.slice(visibleStart, visibleEnd));
+	const topPad = $derived(visibleStart * ITEM_HEIGHT);
+	const bottomPad = $derived(Math.max(0, (files.length - visibleEnd) * ITEM_HEIGHT));
+
+	// Dynamic max-height: fill panel minus section header — no gap
+	const headerH = $derived(headerEl?.offsetHeight ?? 48);
+	const scrollMaxH = $derived(panelHeight > 0 ? Math.max(128, panelHeight - headerH) : 384);
+
+	// Track nearest scrollable ancestor size via ResizeObserver
+	$effect(() => {
+		const el = scrollEl;
+		if (!el) return;
+
+		let parent = el.parentElement;
+		while (parent && parent !== document.body) {
+			const ov = getComputedStyle(parent).overflowY;
+			if (ov === 'auto' || ov === 'scroll') break;
+			parent = parent.parentElement;
+		}
+		if (!parent || parent === document.body) return;
+
+		const obs = new ResizeObserver(() => {
+			panelHeight = parent!.clientHeight;
+			containerHeight = el.clientHeight || 384;
+		});
+		obs.observe(parent);
+		panelHeight = parent.clientHeight;
+		containerHeight = el.clientHeight || 384;
+
+		return () => obs.disconnect();
+	});
+
+	// Reset scroll position when section is expanded (container remounts)
+	$effect(() => {
+		if (!isCollapsed) {
+			scrollTop = 0;
+		}
+	});
+
+	function onScroll(e: Event) {
+		const el = e.currentTarget as HTMLDivElement;
+		scrollTop = el.scrollTop;
+		containerHeight = el.clientHeight;
+	}
 </script>
 
 {#if files.length > 0}
 	<div class="mb-1">
 		<!-- Section header -->
 		<div
+			bind:this={headerEl}
 			onclick={() => isCollapsed = !isCollapsed}
 			class="group flex items-center gap-2 py-3 px-2 cursor-pointer select-none hover:bg-slate-100 dark:hover:bg-slate-800/40 rounded-md transition-colors">
 			<div
@@ -87,19 +153,44 @@
 
 		<!-- Files list -->
 		{#if !isCollapsed}
-			<div class="ml-2">
-				{#each files as file (file.path)}
-					<FileChangeItem
-						{file}
-						{section}
-						{onStage}
-						{onUnstage}
-						{onDiscard}
-						{onViewDiff}
-						{onResolve}
-					/>
-				{/each}
-			</div>
+			{#if shouldVirtualize}
+				<div
+					class="ml-2 overflow-y-auto"
+					style="max-height: {scrollMaxH}px"
+					bind:this={scrollEl}
+					onscroll={onScroll}
+				>
+					<div style="padding-top: {topPad}px; padding-bottom: {bottomPad}px;">
+						{#each visibleFiles as file (file.path)}
+							<div style="height: {ITEM_HEIGHT}px" class="overflow-hidden">
+								<FileChangeItem
+									{file}
+									{section}
+									{onStage}
+									{onUnstage}
+									{onDiscard}
+									{onViewDiff}
+									{onResolve}
+								/>
+							</div>
+						{/each}
+					</div>
+				</div>
+			{:else}
+				<div class="ml-2">
+					{#each files as file (file.path)}
+						<FileChangeItem
+							{file}
+							{section}
+							{onStage}
+							{onUnstage}
+							{onDiscard}
+							{onViewDiff}
+							{onResolve}
+						/>
+					{/each}
+				</div>
+			{/if}
 		{/if}
 	</div>
 {/if}
