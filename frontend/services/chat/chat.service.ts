@@ -43,16 +43,14 @@ class ChatService {
 
   static loadingTexts: string[] = [
     'thinking', 'processing', 'analyzing', 'calculating', 'computing',
-    'strategizing', 'learningpatterns', 'updatingweights', 'finetuning',
-    'adaptingmodels', 'trainingnetworks', 'evaluatingoptions', 'planningactions',
-    'executingplans', 'simulatingscenarios', 'predictingoutcomes', 'scanningenvironment',
-    'monitoringsignals', 'processinginputs', 'adjustingparameters', 'optimizing',
-    'generatingresponses', 'refininglogic', 'recognizingpatterns', 'synthesizinginformation',
-    'runninginference', 'validatingoutputs', 'modulatingresponse', 'updatingmemory',
-    'switchingcontext', 'resolvingconflicts', 'allocatingresources', 'prioritizingtasks',
-    'developingawareness', 'buildingstrategies', 'assessingscenarios', 'integratingdata',
-    'bootingreasoning', 'activatingmodules', 'triggeringaction', 'deployinglogic',
-    'maintainingstate', 'clearingcache', 'updating', 'reflecting', 'syncinglogic',
+    'strategizing', 'learningpatterns', 'adaptingmodels', 'evaluatingoptions',
+    'executingplans', 'simulatingscenarios', 'predictingoutcomes', 'planningactions',
+    'processinginputs', 'optimizing', 'generatingresponses', 'refininglogic', 
+    'validatingoutputs', 'modulatingresponse', 'updatingmemory', 'recognizingpatterns',
+    'switchingcontext', 'allocatingresources', 'prioritizingtasks',
+    'developingawareness', 'buildingstrategies', 'assessingscenarios',
+    'bootingreasoning', 'triggeringaction', 'deployinglogic', 'synthesizinginformation',
+    'maintainingstate', 'updating', 'reflecting', 'syncinglogic',
     'connectingdots', 'compilingideas', 'brainstorming', 'schedulingtasks'
   ].map(text => text + '...');
 

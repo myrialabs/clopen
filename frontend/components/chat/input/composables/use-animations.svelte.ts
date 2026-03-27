@@ -3,6 +3,9 @@ import { onDestroy } from 'svelte';
 /**
  * Composable for managing placeholder and loading text animations
  * Combines placeholder typewriter effect and loading text rotation
+ *
+ * Both animations use a `destroyed` flag to prevent interval callbacks
+ * from mutating state after the owning component is torn down (HMR / navigation).
  */
 
 // ============================================================================
@@ -12,83 +15,77 @@ import { onDestroy } from 'svelte';
 export function usePlaceholderAnimation(placeholderTexts: string[]) {
 	let currentPlaceholderIndex = $state(0);
 	let placeholderText = $state('');
-	let placeholderTypewriterInterval: number | null = null;
-	let placeholderRotationInterval: number | null = null;
-	let placeholderDeleteTimeout: number | null = null;
+	let destroyed = false;
 
-	// Typewriter effect for placeholder
+	// Track every active timer so stopPlaceholderAnimation can clear them all
+	let typewriterInterval: number | null = null;
+	let rotationInterval: number | null = null;
+	let deleteTimeout: number | null = null;
+	let deleteInterval: number | null = null;
+
 	function typewritePlaceholder(text: string) {
-		if (placeholderTypewriterInterval) {
-			clearInterval(placeholderTypewriterInterval);
-		}
+		if (typewriterInterval) clearInterval(typewriterInterval);
+		typewriterInterval = null;
 
-		let currentIndex = 0;
+		let idx = 0;
 		placeholderText = '';
 
-		placeholderTypewriterInterval = window.setInterval(() => {
-			if (currentIndex < text.length) {
-				placeholderText = text.substring(0, currentIndex + 1);
-				currentIndex++;
+		typewriterInterval = window.setInterval(() => {
+			if (destroyed) { clearInterval(typewriterInterval!); typewriterInterval = null; return; }
+			if (idx < text.length) {
+				placeholderText = text.substring(0, idx + 1);
+				idx++;
 			} else {
-				clearInterval(placeholderTypewriterInterval!);
-				placeholderTypewriterInterval = null;
+				clearInterval(typewriterInterval!);
+				typewriterInterval = null;
 			}
-		}, 20); // Typing speed
+		}, 20);
 	}
 
-	// Update placeholder with typewriter effect
 	function updatePlaceholder() {
 		const fullText = placeholderTexts[currentPlaceholderIndex];
 
-		// Clear any existing delete timeout
-		if (placeholderDeleteTimeout) {
-			clearTimeout(placeholderDeleteTimeout);
-		}
+		if (deleteTimeout) clearTimeout(deleteTimeout);
+		if (deleteInterval) clearInterval(deleteInterval);
+		deleteTimeout = null;
+		deleteInterval = null;
 
-		// Use a tracked timeout that can be cleared properly
-		placeholderDeleteTimeout = window.setTimeout(() => {
-			// Clear current text with backspace effect
-			let deleteInterval = window.setInterval(() => {
+		deleteTimeout = window.setTimeout(() => {
+			if (destroyed) return;
+			deleteTimeout = null;
+
+			deleteInterval = window.setInterval(() => {
+				if (destroyed) { clearInterval(deleteInterval!); deleteInterval = null; return; }
 				if (placeholderText.length > 0) {
 					placeholderText = placeholderText.substring(0, placeholderText.length - 1);
 				} else {
-					clearInterval(deleteInterval);
-					// Start typing new text
+					clearInterval(deleteInterval!);
+					deleteInterval = null;
 					typewritePlaceholder(fullText);
 				}
-			}, 15); // Delete speed
-		}, 2000); // Wait 2 seconds before deleting
+			}, 15);
+		}, 2000);
 	}
 
 	function startPlaceholderAnimation() {
-		// Clear any existing intervals first
 		stopPlaceholderAnimation();
+		destroyed = false;
 
 		currentPlaceholderIndex = Math.floor(Math.random() * placeholderTexts.length);
-		// Initial placeholder
-		const initialText = placeholderTexts[currentPlaceholderIndex];
-		typewritePlaceholder(initialText);
+		typewritePlaceholder(placeholderTexts[currentPlaceholderIndex]);
 
-		// Rotate placeholders
-		placeholderRotationInterval = window.setInterval(() => {
+		rotationInterval = window.setInterval(() => {
+			if (destroyed) { clearInterval(rotationInterval!); rotationInterval = null; return; }
 			currentPlaceholderIndex = (currentPlaceholderIndex + 1) % placeholderTexts.length;
 			updatePlaceholder();
-		}, 7000); // Change every 7 seconds
+		}, 7000);
 	}
 
 	function stopPlaceholderAnimation() {
-		if (placeholderTypewriterInterval) {
-			clearInterval(placeholderTypewriterInterval);
-			placeholderTypewriterInterval = null;
-		}
-		if (placeholderRotationInterval) {
-			clearInterval(placeholderRotationInterval);
-			placeholderRotationInterval = null;
-		}
-		if (placeholderDeleteTimeout) {
-			clearTimeout(placeholderDeleteTimeout);
-			placeholderDeleteTimeout = null;
-		}
+		if (typewriterInterval) { clearInterval(typewriterInterval); typewriterInterval = null; }
+		if (rotationInterval) { clearInterval(rotationInterval); rotationInterval = null; }
+		if (deleteTimeout) { clearTimeout(deleteTimeout); deleteTimeout = null; }
+		if (deleteInterval) { clearInterval(deleteInterval); deleteInterval = null; }
 	}
 
 	function setStaticPlaceholder(text: string) {
@@ -96,15 +93,13 @@ export function usePlaceholderAnimation(placeholderTexts: string[]) {
 		placeholderText = text;
 	}
 
-	// Cleanup on destroy
 	onDestroy(() => {
+		destroyed = true;
 		stopPlaceholderAnimation();
 	});
 
 	return {
-		get placeholderText() {
-			return placeholderText;
-		},
+		get placeholderText() { return placeholderText; },
 		startAnimation: startPlaceholderAnimation,
 		stopAnimation: stopPlaceholderAnimation,
 		setStaticPlaceholder
@@ -116,85 +111,106 @@ export function usePlaceholderAnimation(placeholderTexts: string[]) {
 // ============================================================================
 
 export function useLoadingTextAnimation(loadingTexts: string[]) {
-	let currentLoadingText = $state('thinking');
-	let visibleLoadingText = $state('thinking');
-	let loadingTextIntervalId: number | null = null;
-	let typewriterIntervalId: number | null = null;
+	let visibleLoadingText = $state('');
+	let currentFullText = '';
+	let destroyed = false;
 
-	// Typewriter effect for smooth text transition
-	function animateTextTransition(newText: string) {
-		if (typewriterIntervalId) {
-			clearInterval(typewriterIntervalId);
-		}
+	let typewriterInterval: number | null = null;
+	let rotationInterval: number | null = null;
 
-		const oldText = visibleLoadingText;
-		let deleteIndex = oldText.length;
-		let typeIndex = 0;
-		let isDeleting = true;
+	/**
+	 * Typewriter: type characters one-by-one.
+	 * Calls `onDone` when the full text has been typed.
+	 */
+	function typeText(text: string, onDone?: () => void) {
+		if (typewriterInterval) clearInterval(typewriterInterval);
+		typewriterInterval = null;
 
-		typewriterIntervalId = window.setInterval(() => {
-			if (isDeleting) {
-				// Delete characters
-				if (deleteIndex > 0) {
-					visibleLoadingText = oldText.substring(0, deleteIndex - 1);
-					deleteIndex--;
-				} else {
-					// Finished deleting, start typing
-					isDeleting = false;
-				}
+		let idx = 0;
+		visibleLoadingText = '';
+
+		typewriterInterval = window.setInterval(() => {
+			if (destroyed) { clearInterval(typewriterInterval!); typewriterInterval = null; return; }
+			if (idx < text.length) {
+				visibleLoadingText = text.substring(0, idx + 1);
+				idx++;
 			} else {
-				// Type new characters
-				if (typeIndex < newText.length) {
-					visibleLoadingText = newText.substring(0, typeIndex + 1);
-					typeIndex++;
-				} else {
-					// Finished typing
-					clearInterval(typewriterIntervalId!);
-					typewriterIntervalId = null;
-				}
+				clearInterval(typewriterInterval!);
+				typewriterInterval = null;
+				onDone?.();
 			}
-		}, 50); // Adjust speed here (lower = faster)
+		}, 40);
+	}
+
+	/**
+	 * Backspace: delete characters one-by-one from the current visible text.
+	 * Calls `onDone` when the text is fully erased.
+	 */
+	function deleteText(onDone?: () => void) {
+		if (typewriterInterval) clearInterval(typewriterInterval);
+		typewriterInterval = null;
+
+		const snapshot = visibleLoadingText;
+		let len = snapshot.length;
+
+		typewriterInterval = window.setInterval(() => {
+			if (destroyed) { clearInterval(typewriterInterval!); typewriterInterval = null; return; }
+			if (len > 0) {
+				len--;
+				visibleLoadingText = snapshot.substring(0, len);
+			} else {
+				clearInterval(typewriterInterval!);
+				typewriterInterval = null;
+				onDone?.();
+			}
+		}, 40);
+	}
+
+	function pickNextText(): string {
+		let next = currentFullText;
+		while (next === currentFullText && loadingTexts.length > 1) {
+			next = loadingTexts[Math.floor(Math.random() * loadingTexts.length)];
+		}
+		return next;
+	}
+
+	/** Delete current text, then type new text */
+	function transitionTo(newText: string) {
+		currentFullText = newText;
+		deleteText(() => {
+			if (destroyed) return;
+			typeText(newText);
+		});
 	}
 
 	function startLoadingAnimation() {
-		// Clear any existing intervals first to prevent duplication
 		stopLoadingAnimation();
+		destroyed = false;
 
-		// Start loading text rotation with typewriter effect
-		currentLoadingText = loadingTexts[Math.floor(Math.random() * loadingTexts.length)];
-		visibleLoadingText = currentLoadingText;
-		loadingTextIntervalId = window.setInterval(() => {
-			// Get a different text than the current one
-			let newText = currentLoadingText;
-			while (newText === currentLoadingText && loadingTexts.length > 1) {
-				newText = loadingTexts[Math.floor(Math.random() * loadingTexts.length)];
-			}
-			currentLoadingText = newText;
-			animateTextTransition(newText);
+		// Type the initial text character-by-character
+		currentFullText = loadingTexts[Math.floor(Math.random() * loadingTexts.length)];
+		typeText(currentFullText);
+
+		// Rotate to a new random text periodically
+		rotationInterval = window.setInterval(() => {
+			if (destroyed) { clearInterval(rotationInterval!); rotationInterval = null; return; }
+			transitionTo(pickNextText());
 		}, 15000);
 	}
 
 	function stopLoadingAnimation() {
-		// Clear loading text interval
-		if (loadingTextIntervalId) {
-			window.clearInterval(loadingTextIntervalId);
-			loadingTextIntervalId = null;
-		}
-		if (typewriterIntervalId) {
-			window.clearInterval(typewriterIntervalId);
-			typewriterIntervalId = null;
-		}
+		if (typewriterInterval) { clearInterval(typewriterInterval); typewriterInterval = null; }
+		if (rotationInterval) { clearInterval(rotationInterval); rotationInterval = null; }
+		visibleLoadingText = '';
 	}
 
-	// Cleanup on destroy
 	onDestroy(() => {
+		destroyed = true;
 		stopLoadingAnimation();
 	});
 
 	return {
-		get visibleLoadingText() {
-			return visibleLoadingText;
-		},
+		get visibleLoadingText() { return visibleLoadingText; },
 		startAnimation: startLoadingAnimation,
 		stopAnimation: stopLoadingAnimation
 	};

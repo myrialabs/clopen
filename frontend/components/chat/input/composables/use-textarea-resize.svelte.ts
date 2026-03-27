@@ -12,8 +12,18 @@ export function useTextareaResize() {
 			// Reset height to auto to get accurate scrollHeight
 			textareaElement.style.height = 'auto';
 
-			// If content is empty or only whitespace, keep at minimum height
+			// If content is empty, measure placeholder height instead
 			if (!messageText || !messageText.trim()) {
+				const placeholder = textareaElement.placeholder;
+				if (placeholder) {
+					// Temporarily set value to placeholder to measure wrapped height
+					// (native placeholder doesn't affect scrollHeight)
+					textareaElement.value = placeholder;
+					const scrollHeight = textareaElement.scrollHeight;
+					textareaElement.value = '';
+					const newHeight = Math.min(scrollHeight, MAX_HEIGHT_PX);
+					textareaElement.style.height = newHeight + 'px';
+				}
 				return;
 			}
 

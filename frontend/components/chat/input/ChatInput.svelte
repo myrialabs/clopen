@@ -178,6 +178,14 @@
 		}
 	});
 
+	// Resize textarea when placeholder text changes (typewriter animation) while empty
+	$effect(() => {
+		chatPlaceholder; // track placeholder changes
+		if (!messageText || !messageText.trim()) {
+			adjustTextareaHeight();
+		}
+	});
+
 	// Sync appState.isLoading from presence data (single source of truth for all users)
 	// Also fetch partial text and reconnect to stream for late-joining users / refresh
 	let lastCatchupProjectId: string | undefined;

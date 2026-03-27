@@ -259,7 +259,7 @@
 				<div class="flex items-center gap-1">
 					<button
 						onclick={toggleExpand}
-						class="p-1.5 hover:bg-slate-100 dark:hover:bg-slate-700 rounded-lg transition-colors"
+						class="flex p-1.5 hover:bg-slate-100 dark:hover:bg-slate-700 rounded-lg transition-colors"
 						title={todoPanelState.isExpanded ? 'Collapse' : 'Expand'}
 					>
 						<Icon
@@ -269,7 +269,7 @@
 					</button>
 					<button
 						onclick={minimize}
-						class="p-1.5 hover:bg-slate-100 dark:hover:bg-slate-700 rounded-lg transition-colors"
+						class="flex p-1.5 hover:bg-slate-100 dark:hover:bg-slate-700 rounded-lg transition-colors"
 						title="Minimize"
 					>
 						<Icon name="lucide:minus" class="w-4 h-4 text-slate-600 dark:text-slate-400" />
