@@ -226,24 +226,26 @@
 					</div>
 				</div>
 			{/if}
-			
-			<div class="flex justify-end gap-3 pt-2">
-				{#if showCancel}
+
+			{#if !children}
+				<div class="flex justify-end gap-3 pt-2">
+					{#if showCancel}
+						<button
+							onclick={handleCancel}
+							class="px-6 py-2.5 bg-slate-50 dark:bg-slate-800 border border-slate-200 dark:border-slate-700 text-slate-700 dark:text-slate-300 rounded-lg hover:bg-slate-100 dark:hover:bg-slate-700 transition-all duration-200 font-semibold"
+						>
+							{cancelText}
+						</button>
+					{/if}
 					<button
-						onclick={handleCancel}
-						class="px-6 py-2.5 bg-slate-50 dark:bg-slate-800 border border-slate-200 dark:border-slate-700 text-slate-700 dark:text-slate-300 rounded-lg hover:bg-slate-100 dark:hover:bg-slate-700 transition-all duration-200 font-semibold"
+						onclick={handleConfirm}
+						disabled={confirmDisabled}
+						class="px-6 py-2.5 {colors.button} rounded-lg transition-all duration-200 font-semibold focus:outline-none disabled:opacity-50 disabled:cursor-not-allowed disabled:hover:bg-current"
 					>
-						{cancelText}
+						{confirmText}
 					</button>
-				{/if}
-				<button
-					onclick={handleConfirm}
-					disabled={confirmDisabled}
-					class="px-6 py-2.5 {colors.button} rounded-lg transition-all duration-200 font-semibold focus:outline-none disabled:opacity-50 disabled:cursor-not-allowed disabled:hover:bg-current"
-				>
-					{confirmText}
-				</button>
-			</div>
+				</div>
+			{/if}
 		</div>
 	</div>
 {/if}

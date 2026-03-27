@@ -4,7 +4,7 @@
  */
 
 import type { IPty } from 'bun-pty';
-import { existsSync, mkdirSync, readFileSync, unlinkSync } from 'fs';
+import { existsSync, mkdirSync, readFileSync, readdirSync, unlinkSync } from 'fs';
 import { join } from 'path';
 import { getClopenDir } from '../utils/paths';
 
@@ -297,6 +297,44 @@ class TerminalStreamManager {
     };
   }
   
+  /**
+   * Clean up terminal cache files for a specific project
+   */
+  cleanupProjectCache(projectId: string): number {
+    let deleted = 0;
+    try {
+      const files = readdirSync(this.tempDir);
+      for (const file of files) {
+        if (!file.endsWith('.json')) continue;
+        try {
+          const filePath = join(this.tempDir, file);
+          const data = JSON.parse(readFileSync(filePath, 'utf-8'));
+          if (data.projectId === projectId) {
+            unlinkSync(filePath);
+            deleted++;
+          }
+        } catch {
+          // Skip unreadable files
+        }
+      }
+    } catch {
+      // Directory may not exist
+    }
+
+    // Also remove in-memory streams for this project
+    for (const [streamId, stream] of this.streams) {
+      if (stream.projectId === projectId) {
+        if (stream.status === 'active' && stream.pty) {
+          try { stream.pty.kill(); } catch {}
+        }
+        this.streams.delete(streamId);
+        this.sessionToStream.delete(stream.sessionId);
+      }
+    }
+
+    return deleted;
+  }
+
   /**
    * Clean up all streams
    */

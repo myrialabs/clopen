@@ -57,11 +57,8 @@ export const projectQueries = {
 		`).run(now, id);
 	},
 
-	delete(id: string): void {
+	deleteProject(id: string): void {
 		const db = getDatabase();
-		// Delete related data first
-		db.prepare('DELETE FROM messages WHERE session_id IN (SELECT id FROM chat_sessions WHERE project_id = ?)').run(id);
-		db.prepare('DELETE FROM chat_sessions WHERE project_id = ?').run(id);
 		db.prepare('DELETE FROM user_projects WHERE project_id = ?').run(id);
 		db.prepare('DELETE FROM projects WHERE id = ?').run(id);
 	},

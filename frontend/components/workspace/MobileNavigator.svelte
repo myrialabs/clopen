@@ -87,12 +87,15 @@
 		showDeleteDialog = true;
 	}
 
-	async function confirmDeleteProject() {
-		if (!projectToDelete) return;
+	let deletingProject = $state(false);
+
+	async function confirmDeleteProject(mode: 'remove' | 'full') {
+		if (!projectToDelete || deletingProject) return;
 		const deleteId = projectToDelete.id!;
+		deletingProject = true;
 
 		try {
-			await ws.http('projects:delete', { id: deleteId });
+			await ws.http('projects:delete', { id: deleteId, mode });
 			removeProject(deleteId);
 			showDeleteDialog = false;
 			projectToDelete = null;
@@ -104,6 +107,8 @@
 				message: 'Failed to delete project',
 				duration: 5000
 			});
+		} finally {
+			deletingProject = false;
 		}
 	}
 
@@ -368,13 +373,55 @@
 <Dialog
 	bind:isOpen={showDeleteDialog}
 	onClose={closeDeleteDialog}
-	type="error"
-	title="Delete Project"
-	message='This will remove "{projectToDelete?.name}" from your project list. The actual project files on disk will not be deleted.'
-	confirmText="Delete"
-	cancelText="Cancel"
-	onConfirm={confirmDeleteProject}
-/>
+	type="warning"
+	title="Remove Project"
+	showCancel={false}
+>
+	{#snippet children()}
+		<div class="flex items-start space-x-4">
+			<div class="bg-amber-50 dark:bg-amber-900/20 border-amber-200 dark:border-amber-700/50 rounded-xl p-3 border">
+				<Icon name="lucide:triangle-alert" class="w-6 h-6 text-amber-600 dark:text-amber-400" />
+			</div>
+			<div class="flex-1">
+				<h3 class="text-lg font-semibold text-slate-900 dark:text-slate-100">Remove Project</h3>
+				<p class="text-sm text-slate-600 dark:text-slate-400 leading-relaxed">
+					How would you like to remove <strong>"{projectToDelete?.name}"</strong>?
+				</p>
+			</div>
+		</div>
+		<div class="flex flex-col gap-2 pt-2">
+			<button
+				onclick={() => confirmDeleteProject('remove')}
+				disabled={deletingProject}
+				class="w-full flex items-center gap-3 p-3 bg-slate-50 dark:bg-slate-800 border border-slate-200 dark:border-slate-700 rounded-lg hover:bg-slate-100 dark:hover:bg-slate-700 transition-all duration-200 text-left disabled:opacity-50"
+			>
+				<Icon name="lucide:eye-off" class="w-5 h-5 text-slate-500 shrink-0" />
+				<div class="flex-1 min-w-0">
+					<p class="text-sm font-semibold text-slate-900 dark:text-slate-100">Remove from list</p>
+					<p class="text-xs text-slate-500 dark:text-slate-400">Sessions will be restored when you re-add this project.</p>
+				</div>
+			</button>
+			<button
+				onclick={() => confirmDeleteProject('full')}
+				disabled={deletingProject}
+				class="w-full flex items-center gap-3 p-3 bg-slate-50 dark:bg-slate-800 border border-slate-200 dark:border-slate-700 rounded-lg hover:bg-slate-100 dark:hover:bg-slate-700 transition-all duration-200 text-left disabled:opacity-50"
+			>
+				<Icon name="lucide:trash-2" class="w-5 h-5 text-slate-500 shrink-0" />
+				<div class="flex-1 min-w-0">
+					<p class="text-sm font-semibold text-slate-900 dark:text-slate-100">Delete with all data</p>
+					<p class="text-xs text-slate-500 dark:text-slate-400">Delete all sessions, snapshots, and related data.</p>
+				</div>
+			</button>
+			<button
+				onclick={closeDeleteDialog}
+				class="w-full py-2 text-sm font-semibold text-slate-600 dark:text-slate-400 bg-slate-100 dark:bg-slate-800 border border-slate-200 dark:border-slate-700 rounded-lg hover:bg-slate-200 dark:hover:bg-slate-700 transition-colors"
+			>
+				Cancel
+			</button>
+			<p class="text-xs text-slate-400 dark:text-slate-500 text-center">Your project folder on disk will not be affected.</p>
+		</div>
+	{/snippet}
+</Dialog>
 
 <!-- Tunnel Modal -->
 <TunnelModal bind:isOpen={showTunnelModal} onClose={() => (showTunnelModal = false)} />
