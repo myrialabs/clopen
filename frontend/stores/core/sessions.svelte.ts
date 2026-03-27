@@ -436,6 +436,12 @@ export async function initializeSessions() {
 	setupCollaborativeListeners();
 	setupEditModeListener();
 
+	// Skip loading if no project is active — both calls require WS project context
+	if (!projectState.currentProject) {
+		debug.log('session', 'No active project, skipping session load');
+		return;
+	}
+
 	// Load sessions and restore edit mode in parallel
 	// Both only need WS project context (already set by initializeProjects)
 	await Promise.all([
