@@ -82,6 +82,12 @@
 		return provider.split(/[-_]/).map(w => w.charAt(0).toUpperCase() + w.slice(1)).join(' ');
 	}
 
+	function formatContextWindow(tokens: number): string {
+		if (tokens >= 1_000_000) return `${(tokens / 1_000_000).toFixed(tokens % 1_000_000 === 0 ? 0 : 1)}M`;
+		if (tokens >= 1_000) return `${(tokens / 1_000).toFixed(tokens % 1_000 === 0 ? 0 : 1)}K`;
+		return `${tokens}`;
+	}
+
 	async function handleEngineChange(engineType: EngineType) {
 		searchQuery = '';
 		onEngineChange(engineType);
@@ -253,6 +259,9 @@
 									<div class="flex-1 min-w-0">
 										<div class="flex items-center gap-2">
 											<span class="text-sm font-medium text-slate-900 dark:text-slate-100">{mdl.name}</span>
+											{#if mdl.contextWindow}
+												<span class="text-2xs text-slate-400 dark:text-slate-500">{formatContextWindow(mdl.contextWindow)}</span>
+											{/if}
 										</div>
 										{#if caps.length > 0}
 											<div class="flex flex-wrap gap-1 mt-1.5">

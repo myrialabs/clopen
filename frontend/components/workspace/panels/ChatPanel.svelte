@@ -16,6 +16,7 @@
 	import { chatService } from '$frontend/services/chat/chat.service';
 	import { setSkipNextRestore } from '$frontend/stores/ui/chat-input.svelte';
 	import { userStore } from '$frontend/stores/features/user.svelte';
+	import { cancelEdit, editModeState } from '$frontend/stores/ui/edit-mode.svelte';
 
 	// Props
 	interface Props {
@@ -145,6 +146,11 @@
 				duration: 3000
 			});
 			return;
+		}
+
+		// Clear edit mode if active
+		if (editModeState.isEditing) {
+			cancelEdit();
 		}
 
 		// Reset frontend state without killing the backend stream

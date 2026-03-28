@@ -32,6 +32,7 @@
 	import type { ChatSession } from '$shared/types/database/schema';
 	import { debug } from '$shared/utils/logger';
 	import ws from '$frontend/utils/ws';
+	import { cancelEdit, editModeState } from '$frontend/stores/ui/edit-mode.svelte';
 
 	// Welcome state - don't show during restoration
 	const isWelcomeState = $derived(
@@ -212,6 +213,11 @@
 				duration: 3000
 			});
 			return;
+		}
+
+		// Clear edit mode if active
+		if (editModeState.isEditing) {
+			cancelEdit();
 		}
 
 		// Reset frontend state without killing the backend stream

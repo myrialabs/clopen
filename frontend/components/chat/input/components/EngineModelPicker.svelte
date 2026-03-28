@@ -330,6 +330,12 @@
 			.join(' ');
 	}
 
+	function formatContextWindow(tokens: number): string {
+		if (tokens >= 1_000_000) return `${(tokens / 1_000_000).toFixed(tokens % 1_000_000 === 0 ? 0 : 1)}M`;
+		if (tokens >= 1_000) return `${(tokens / 1_000).toFixed(tokens % 1_000 === 0 ? 0 : 1)}K`;
+		return `${tokens}`;
+	}
+
 	// Dropdown state
 	let showDropdown = $state(false);
 	let triggerButton: HTMLButtonElement;
@@ -610,7 +616,12 @@
 
 								<!-- Model info -->
 								<div class="flex-1 min-w-0">
-									<div class="font-medium text-xs">{model.name}</div>
+									<div class="flex items-center gap-2">
+										<span class="font-medium text-xs">{model.name}</span>
+										{#if model.contextWindow}
+											<span class="text-3xs text-slate-400 dark:text-slate-500">{formatContextWindow(model.contextWindow)}</span>
+										{/if}
+									</div>
 									{#if model.capabilities.length > 0}
 										<div class="flex flex-wrap gap-1 mt-1">
 											{#each model.capabilities as cap}
