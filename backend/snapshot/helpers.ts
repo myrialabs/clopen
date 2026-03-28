@@ -275,6 +275,11 @@ function findSessionEndByParent(
 					sessionContinuation = child;
 					break;
 				}
+				// System messages (e.g. compact_boundary) are part of session continuation
+				if (sdk.type === 'system') {
+					sessionContinuation = child;
+					break;
+				}
 			} catch {
 				continue;
 			}
@@ -313,6 +318,9 @@ function findSessionEndByTimestamp(
 			if (sdk.type === 'assistant') {
 				lastValidEnd = msg;
 			} else if (sdk.type === 'user' && isInternalToolMessage(sdk)) {
+				lastValidEnd = msg;
+			} else if (sdk.type === 'system') {
+				// System messages (e.g. compact_boundary) are part of session continuation
 				lastValidEnd = msg;
 			} else if (sdk.type === 'user' && !isInternalToolMessage(sdk)) {
 				// Hit the next real user message (checkpoint) - stop
