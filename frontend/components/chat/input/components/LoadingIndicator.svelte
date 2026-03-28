@@ -13,12 +13,12 @@
 
 {#if appState.isLoading}
 	<div
-		class="absolute z-20 {isWelcomeState ? '-top-16' : '-top-14'} left-0 right-0 flex justify-center pointer-events-none"
+		class="absolute z-20 h-9 {isWelcomeState ? '-top-16' : '-top-14'} left-0 right-0 flex justify-center pointer-events-none"
 		transition:fly={{ y: 100, duration: 300 }}
 	>
 		{#if appState.isWaitingInput}
 			<!-- Waiting for user input state -->
-			<div class="flex items-center gap-2.5 px-4 py-2 bg-amber-50 dark:bg-amber-900/30 rounded-full border border-amber-300 dark:border-amber-700 shadow-sm">
+			<div class="flex items-center gap-2.5 px-4 py-2 bg-amber-50 dark:bg-amber-950 rounded-full border border-amber-200 dark:border-amber-900 shadow-sm">
 				<Icon name="lucide:message-circle-question-mark" class="w-4 h-4 text-amber-600 dark:text-amber-400" />
 				<span class="text-sm font-medium text-amber-700 dark:text-amber-300">
 					Waiting for your input...

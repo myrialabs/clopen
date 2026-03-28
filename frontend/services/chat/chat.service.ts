@@ -59,7 +59,50 @@ class ChatService {
     'Create a full-stack e-commerce platform with Next.js, Stripe, and PostgreSQL',
     'Build a real-time chat application using Socket.io with room support and typing indicators',
     'Create a SaaS dashboard with user management, billing, and analytics',
-    // ... (keep the same placeholder texts as before)
+    'Build a REST API with authentication, rate limiting, and Swagger documentation',
+    'Create a CLI tool in TypeScript that scaffolds new projects with custom templates',
+    // Debugging & fixing
+    'Debug a memory leak in a Node.js service causing it to crash every 24 hours',
+    'Fix race conditions in a concurrent queue processor causing duplicate jobs',
+    'Fix a CORS issue blocking requests between a frontend and backend on different origins',
+    'Fix broken JWT refresh logic that logs users out unexpectedly',
+    'Fix flaky tests that pass locally but fail randomly in CI',
+    // Code review & refactoring
+    'Refactor a 1000-line monolithic function into clean, testable modules',
+    'Convert a class-based React codebase to functional components with hooks',
+    'Migrate a JavaScript project to TypeScript with strict mode enabled',
+    'Refactor database queries to use an ORM with proper migrations',
+    'Clean up and standardize error handling across an entire Express application',
+    // Writing tests
+    'Write unit tests for a payment processing module with 100% coverage',
+    'Add end-to-end tests using Playwright for a multi-step checkout flow',
+    'Set up integration tests for a REST API using a real test database',
+    'Write property-based tests to find edge cases in a data validation library',
+    'Set up test coverage reporting and enforce a minimum threshold in CI',
+    // Performance & optimization
+    'Optimize a slow PostgreSQL query that runs 10 seconds on a 5M-row table',
+    'Implement Redis caching to reduce database load by 80%',
+    'Reduce bundle size of a React app from 4MB to under 500KB',
+    'Profile and optimize a Python data pipeline processing 1M records per hour',
+    'Add lazy loading and virtualization to a list rendering 10,000 items',
+    // Architecture & design
+    'Design a scalable event-driven architecture using Kafka for a high-traffic app',
+    'Plan a migration from a monolith to microservices without downtime',
+    'Design a multi-tenant SaaS architecture with data isolation per customer',
+    'Create an authentication system supporting SSO, OAuth, and MFA',
+    'Architect a real-time notification system using WebSockets and a message queue',
+    // DevOps & infrastructure
+    'Write a Dockerfile and docker-compose setup for a full-stack app with hot reload',
+    'Set up a GitHub Actions CI/CD pipeline with testing, linting, and auto-deploy',
+    'Configure Nginx as a reverse proxy with SSL termination and load balancing',
+    'Create Terraform scripts to provision a production-ready AWS infrastructure',
+    'Set up monitoring and alerting using Prometheus and Grafana',
+    // AI & data
+    'Build a RAG pipeline using LangChain, embeddings, and a vector database',
+    'Create a sentiment analysis API using a fine-tuned transformer model',
+    'Build a data scraper that extracts and structures product data at scale',
+    'Implement a recommendation engine using collaborative filtering',
+    'Create a real-time data dashboard ingesting from multiple streaming sources',
   ];
 
   constructor() {
