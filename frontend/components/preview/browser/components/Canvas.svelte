@@ -573,6 +573,14 @@
 							isReconnecting = false;
 						}, 300);
 					}
+
+					// Reset navigation state when first frame arrives after navigation.
+					// The preview:browser-navigation event that normally resets this can be
+					// missed during stream reconnect (listeners are removed/re-registered),
+					// so use the first rendered frame as definitive signal that navigation completed.
+					if (isNavigating) {
+						isNavigating = false;
+					}
 				});
 
 				// Setup cursor change handler

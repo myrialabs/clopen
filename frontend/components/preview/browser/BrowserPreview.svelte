@@ -299,6 +299,13 @@
 		}
 	});
 
+	// Sync isNavigating back to active tab (Canvas resets this on first frame after navigation)
+	$effect(() => {
+		if (activeTabId && activeTab && activeTab.isNavigating !== isNavigating) {
+			tabManager.updateTab(activeTabId, { isNavigating });
+		}
+	});
+
 	// Watch scale changes and send to backend
 	let lastSentScale = 1;
 	$effect(() => {
