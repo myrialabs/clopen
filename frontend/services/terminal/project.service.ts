@@ -9,6 +9,7 @@ import { terminalStore } from '$frontend/stores/features/terminal.svelte';
 import type { TerminalSession } from '$shared/types/terminal';
 import { terminalService } from './terminal.service';
 import { debug } from '$shared/utils/logger';
+import { onWsReconnect } from '$frontend/utils/ws';
 interface ProjectTerminalContext {
 	projectId: string;
 	projectPath: string;
@@ -838,6 +839,57 @@ class TerminalProjectManager {
 
 			debug.log('terminal', '✅ Terminal collaborative listeners registered');
 		});
+
+		// Validate terminal sessions after WebSocket reconnect.
+		// When the server restarts, all PTY sessions die. We need to detect
+		// dead tabs and clean them up, then auto-create a fresh session.
+		onWsReconnect(() => {
+			this.validateSessionsAfterReconnect();
+		});
+	}
+
+	/**
+	 * After WebSocket reconnects, check which terminal sessions are still
+	 * alive on the backend. Remove dead tabs and auto-create a new one
+	 * if none remain.
+	 */
+	private async validateSessionsAfterReconnect(): Promise<void> {
+		if (!this.currentProjectId) return;
+		const context = this.projectContexts.get(this.currentProjectId);
+		if (!context || context.sessionIds.length === 0) return;
+
+		debug.log('terminal', 'Validating terminal sessions after reconnect...');
+
+		try {
+			// Query backend for alive PTY sessions
+			const aliveSessions = await terminalService.listProjectSessions(this.currentProjectId);
+			const aliveSessionIds = new Set(aliveSessions.map(s => s.sessionId));
+
+			// Find dead sessions (in UI but not on backend)
+			const deadSessionIds = context.sessionIds.filter(id => !aliveSessionIds.has(id));
+
+			if (deadSessionIds.length === 0) {
+				debug.log('terminal', 'All terminal sessions still alive after reconnect');
+				return;
+			}
+
+			debug.log('terminal', `Found ${deadSessionIds.length} dead terminal session(s) after reconnect, cleaning up`);
+
+			// Remove dead sessions from context and store
+			for (const sessionId of deadSessionIds) {
+				this.removeSessionFromContext(sessionId);
+				terminalStore.removeSessionFromStore(sessionId);
+				terminalService.cleanupListeners(sessionId);
+			}
+
+			// If no sessions remain, auto-create a new one
+			if (context.sessionIds.length === 0) {
+				debug.log('terminal', 'All terminal sessions dead after reconnect, creating new session');
+				await this.createProjectTerminalSessions(this.currentProjectId, context.projectPath);
+			}
+		} catch (err) {
+			debug.error('terminal', 'Failed to validate terminal sessions after reconnect:', err);
+		}
 	}
 
 	/**
