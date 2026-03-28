@@ -56,7 +56,8 @@ export const TOOLS_WITH_RESULTS: ToolInput['name'][] = [
   'Config',
   'EnterWorktree',
   'Agent',
-  'EnterPlanMode'
+  'EnterPlanMode',
+  'Skill'
 ];
 
 // Tools that should be hidden from display

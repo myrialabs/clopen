@@ -18,6 +18,7 @@ export interface ToolUseWithResult {
   input: any;
   $result?: any;
   $subMessages?: SubAgentActivity[];
+  $skillPrompt?: string;
   metadata?: Record<string, unknown>;
 }
 
@@ -26,7 +27,8 @@ export function processToolMessage(
   message: ProcessedMessage,
   toolUseMap: Map<string, ToolGroup>,
   backgroundBashMap: Map<string, BackgroundBashData>,
-  subAgentMap: Map<string, SDKMessageFormatter[]>
+  subAgentMap: Map<string, SDKMessageFormatter[]>,
+  skillPromptMap: Map<string, string> = new Map()
 ): ProcessedMessage {
   const messageAny = message as any;
   const content = messageAny.message?.content ?
@@ -39,7 +41,7 @@ export function processToolMessage(
   const modifiedContent = content
     .map((item: any): any => {
       if (typeof item === 'object' && item && 'type' in item && item.type === 'tool_use') {
-        const processed = processToolUse(item, toolUseMap, backgroundBashMap, subAgentMap);
+        const processed = processToolUse(item, toolUseMap, backgroundBashMap, subAgentMap, skillPromptMap);
         // Propagate message-level interrupted flag to ALL tool_use blocks
         if (processed && isInterrupted) {
           return { ...processed, metadata: { ...processed.metadata, interrupted: true } };
@@ -65,7 +67,8 @@ function processToolUse(
   item: any,
   toolUseMap: Map<string, ToolGroup>,
   backgroundBashMap: Map<string, BackgroundBashData>,
-  subAgentMap: Map<string, SDKMessageFormatter[]>
+  subAgentMap: Map<string, SDKMessageFormatter[]>,
+  skillPromptMap: Map<string, string>
 ): ToolUseWithResult | null {
   // Hide certain tools completely
   if (shouldHideTool(item.name)) {
@@ -83,6 +86,11 @@ function processToolUse(
   // Special handling for Agent tool — embed sub-agent activities
   if (item.name === 'Agent' && item.id && subAgentMap.has(item.id)) {
     return handleAgentTool(item, toolUseMap, subAgentMap);
+  }
+
+  // Special handling for Skill tool — embed expanded skill prompt
+  if (item.name === 'Skill' && item.id && skillPromptMap.has(item.id)) {
+    return handleSkillTool(item, toolUseMap, skillPromptMap);
   }
 
   // Regular tool handling
@@ -163,6 +171,33 @@ function processSubAgentMessages(messages: SDKMessageFormatter[]): SubAgentActiv
   }
 
   return activities;
+}
+
+// Handle Skill tool — embed expanded skill prompt
+function handleSkillTool(
+  item: any,
+  toolUseMap: Map<string, ToolGroup>,
+  skillPromptMap: Map<string, string>
+): ToolUseWithResult {
+  const skillPrompt = skillPromptMap.get(item.id);
+
+  // Also embed the $result if available
+  let result: any = undefined;
+  if (item.id && toolUseMap.has(item.id)) {
+    const group = toolUseMap.get(item.id);
+    if (group?.toolResultMessage) {
+      const resultMessage = group.toolResultMessage as any;
+      const resultContent = resultMessage.message ?
+        (Array.isArray(resultMessage.message.content) ? resultMessage.message.content : [resultMessage.message.content]) : [];
+      result = findToolResult(resultContent, item.id);
+    }
+  }
+
+  return {
+    ...item,
+    ...(result ? { $result: result } : {}),
+    ...(skillPrompt ? { $skillPrompt: skillPrompt } : {})
+  } as ToolUseWithResult;
 }
 
 // Handle background bash commands

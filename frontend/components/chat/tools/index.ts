@@ -18,6 +18,7 @@ export { default as WebFetchTool } from './WebFetchTool.svelte';
 export { default as WebSearchTool } from './WebSearchTool.svelte';
 export { default as WriteTool } from './WriteTool.svelte';
 export { default as AskUserQuestionTool } from './AskUserQuestionTool.svelte';
+export { default as SkillTool } from './SkillTool.svelte';
 
 // Custom MCP Tools
 export { default as CustomMcpTool } from './CustomMcpTool.svelte';

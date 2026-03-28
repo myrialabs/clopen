@@ -7,7 +7,7 @@
 		NotebookEditTool,
 		ReadTool, ReadMcpResourceTool, AgentTool, TaskTool, TodoWriteTool,
 		WebFetchTool, WebSearchTool, WriteTool, CustomMcpTool,
-		AskUserQuestionTool
+		AskUserQuestionTool, SkillTool
 	} from '../tools';
 
 	const { toolInput }: { toolInput: ToolInput } = $props();
@@ -63,6 +63,8 @@
 	<WriteTool {toolInput} />
 {:else if toolInput.name === 'AskUserQuestion'}
 	<AskUserQuestionTool {toolInput} />
+{:else if toolInput.name === 'Skill'}
+	<SkillTool {toolInput} />
 {:else}
 	<!-- Generic fallback for unknown tools (Config, EnterWorktree, etc.) -->
 	<div class="bg-slate-50 dark:bg-slate-900 border border-slate-200 dark:border-slate-700 rounded-lg p-4 mb-4">

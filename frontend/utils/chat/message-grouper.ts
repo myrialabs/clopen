@@ -57,13 +57,18 @@ function getParentToolUseId(message: SDKMessageFormatter): string | null {
 export function groupMessages(messages: SDKMessageFormatter[]): {
   groups: ProcessedMessage[],
   toolUseMap: Map<string, ToolGroup>,
-  subAgentMap: Map<string, SDKMessageFormatter[]>
+  subAgentMap: Map<string, SDKMessageFormatter[]>,
+  skillPromptMap: Map<string, string>
 } {
   const groups: ProcessedMessage[] = [];
   const toolUseMap = new Map<string, ToolGroup>();
   const agentToolUseIds = new Set<string>();
   const subAgentMap = new Map<string, SDKMessageFormatter[]>();
+  const skillToolUseIds = new Set<string>();
+  const skillPromptMap = new Map<string, string>();
   let lastCompactBoundaryIdx = -1;
+  // Track last Skill tool_use ID for associating synthetic user messages
+  let lastSkillToolUseId: string | null = null;
 
   // Rebuild compact summary map each call
   _compactSummaryMap = new WeakMap<SDKMessageFormatter, string>();
@@ -91,6 +96,7 @@ export function groupMessages(messages: SDKMessageFormatter[]): {
     // Handle compact boundary messages — track for synthetic user embedding
     if (isCompactBoundaryMessage(message)) {
       lastCompactBoundaryIdx = groups.length;
+      lastSkillToolUseId = null;
       groups.push(message as ProcessedMessage);
       return;
     }
@@ -98,6 +104,7 @@ export function groupMessages(messages: SDKMessageFormatter[]): {
     // Handle assistant messages with tool_use
     if (message.type === 'assistant' && 'message' in message && message.message?.content) {
       lastCompactBoundaryIdx = -1;
+      lastSkillToolUseId = null;
       const toolUses = extractToolUses(message.message.content);
 
       if (toolUses.length > 0) {
@@ -111,6 +118,11 @@ export function groupMessages(messages: SDKMessageFormatter[]): {
             // Track Agent tool IDs for sub-agent message collection
             if (toolUse.name === 'Agent') {
               agentToolUseIds.add(toolUse.id);
+            }
+            // Track Skill tool IDs for synthetic user message capture
+            if (toolUse.name === 'Skill') {
+              skillToolUseIds.add(toolUse.id);
+              lastSkillToolUseId = toolUse.id;
             }
           }
         });
@@ -134,11 +146,23 @@ export function groupMessages(messages: SDKMessageFormatter[]): {
         return;
       }
 
+      // Synthetic user messages after Skill tool: capture expanded skill prompt
+      if (isSyntheticUserMessage(message) && lastSkillToolUseId) {
+        const promptText = extractUserTextContent(message);
+        if (promptText) {
+          skillPromptMap.set(lastSkillToolUseId, promptText);
+        }
+        lastSkillToolUseId = null;
+        return;
+      }
+
       lastCompactBoundaryIdx = -1;
 
       const toolResults = extractToolResults(message.message.content);
       if (toolResults.length > 0) {
         // Group tool_result with corresponding tool_use
+        // Note: don't reset lastSkillToolUseId here — tool_result may precede
+        // the synthetic skill prompt user message
         toolResults.forEach((toolResult: any) => {
           if (toolResult.tool_use_id && toolUseMap.has(toolResult.tool_use_id)) {
             const group = toolUseMap.get(toolResult.tool_use_id);
@@ -149,7 +173,8 @@ export function groupMessages(messages: SDKMessageFormatter[]): {
         });
         // Don't add tool_result messages separately
       } else {
-        // Regular user message
+        // Regular user message — reset skill tracking
+        lastSkillToolUseId = null;
         groups.push(message as ProcessedMessage);
       }
       return;
@@ -157,17 +182,19 @@ export function groupMessages(messages: SDKMessageFormatter[]): {
 
     // Include stream_event and other messages
     lastCompactBoundaryIdx = -1;
+    lastSkillToolUseId = null;
     groups.push(message as ProcessedMessage);
   });
 
-  return { groups, toolUseMap, subAgentMap };
+  return { groups, toolUseMap, subAgentMap, skillPromptMap };
 }
 
 // Add tool results to messages
 export function embedToolResults(
   groups: ProcessedMessage[],
   toolUseMap: Map<string, ToolGroup>,
-  subAgentMap: Map<string, SDKMessageFormatter[]>
+  subAgentMap: Map<string, SDKMessageFormatter[]>,
+  skillPromptMap: Map<string, string>
 ): ProcessedMessage[] {
   // Track background bash sessions
   const backgroundBashMap = trackBackgroundBashSessions(groups, toolUseMap);
@@ -182,7 +209,8 @@ export function embedToolResults(
           message,
           toolUseMap,
           backgroundBashMap,
-          subAgentMap
+          subAgentMap,
+          skillPromptMap
         );
         return processedMessage;
       }

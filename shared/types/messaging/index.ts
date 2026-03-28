@@ -129,6 +129,7 @@ export type {
   EnterWorktreeToolInput,
   AgentToolInput,
   EnterPlanModeToolInput,
+  SkillToolInput,
   SubAgentActivity,
   ToolInput,
 

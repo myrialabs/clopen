@@ -323,6 +323,20 @@ export interface EnterPlanModeToolInput {
   metadata?: ToolMetadata;
 }
 
+export interface SkillToolInput {
+  type: 'tool_use';
+  id: string;
+  name: 'Skill';
+  input: {
+    skill: string;
+    args?: string;
+  };
+  $result?: ToolResult;
+  /** Expanded skill prompt (from synthetic user message) */
+  $skillPrompt?: string;
+  metadata?: ToolMetadata;
+}
+
 // ============================================================
 // Union of All Tool Input Types
 // ============================================================
@@ -348,4 +362,5 @@ export type ToolInput =
   | ConfigToolInput
   | EnterWorktreeToolInput
   | AgentToolInput
-  | EnterPlanModeToolInput;
+  | EnterPlanModeToolInput
+  | SkillToolInput;
