@@ -47,34 +47,252 @@ function getVersion(): string {
 	}
 }
 
-// Simple loading indicator
-let loadingInterval: Timer | null = null;
-let currentMessage = '';
+// ============================================================
+// Simple single-line spinner (used for update / clear-data)
+// ============================================================
 
-async function delay(ms: number = 500) {
-	await new Promise(resolve => setTimeout(resolve, ms));
-}
+let spinnerInterval: Timer | null = null;
+let spinnerMessage = '';
 
-function updateLoading(message: string) {
-	currentMessage = message;
-	if (!loadingInterval) {
+function startSpinner(message: string) {
+	spinnerMessage = message;
+	if (!spinnerInterval) {
 		const frames = ['⠋', '⠙', '⠹', '⠸', '⠼', '⠴', '⠦', '⠧', '⠇', '⠏'];
 		let i = 0;
-		loadingInterval = setInterval(() => {
-			// Clear line and write new message to avoid text overlap
-			process.stdout.write(`\r\x1b[K${frames[i]} ${currentMessage}`);
+		spinnerInterval = setInterval(() => {
+			process.stdout.write(`\r\x1b[K${frames[i]} ${spinnerMessage}`);
 			i = (i + 1) % frames.length;
 		}, 80);
 	}
 }
 
-function stopLoading() {
-	if (loadingInterval) {
-		clearInterval(loadingInterval);
-		loadingInterval = null;
-		process.stdout.write('\r\x1b[K'); // Clear line
+function updateSpinner(message: string) {
+	spinnerMessage = message;
+}
+
+function stopSpinner() {
+	if (spinnerInterval) {
+		clearInterval(spinnerInterval);
+		spinnerInterval = null;
+		process.stdout.write('\r\x1b[K');
 	}
 }
+
+// ============================================================
+// Multi-step progress display (used for startup sequence)
+// ============================================================
+
+const SPINNER_FRAMES = ['⠋', '⠙', '⠹', '⠸', '⠼', '⠴', '⠦', '⠧', '⠇', '⠏'];
+const MAX_OUTPUT_LINES = 5;
+const OUTPUT_TRUNCATE = 72;
+
+type StepState = 'pending' | 'running' | 'done' | 'skipped' | 'error';
+
+interface ProgressStep {
+	id: string;
+	label: string;
+	activeLabel: string;
+}
+
+interface StepStatus {
+	state: StepState;
+	startTime?: number;
+	outputLines: string[];
+}
+
+const isTTY = process.stdout.isTTY === true;
+let progressSteps: ProgressStep[] = [];
+const stepStatuses = new Map<string, StepStatus>();
+let frameIdx = 0;
+let renderTimer: Timer | null = null;
+let drawnLines = 0;
+
+function stripAnsi(str: string): string {
+	return str.replace(/\x1b\[[0-9;]*[mGKHFABCDJhls]/g, '');
+}
+
+function trunc(str: string, max: number): string {
+	if (str.length <= max) return str;
+	return str.slice(0, max - 1) + '…';
+}
+
+function initProgress(steps: ProgressStep[]) {
+	progressSteps = steps;
+	stepStatuses.clear();
+	drawnLines = 0;
+	frameIdx = 0;
+	for (const s of steps) {
+		stepStatuses.set(s.id, { state: 'pending', outputLines: [] });
+	}
+	if (isTTY) {
+		process.stdout.write('\x1b[?25l'); // hide cursor
+		renderTimer = setInterval(renderProgress, 80);
+		renderProgress();
+	}
+}
+
+function renderProgress() {
+	if (!isTTY) return;
+
+	if (drawnLines > 0) {
+		process.stdout.write(`\x1b[${drawnLines}A\x1b[J`);
+	}
+
+	let output = '';
+	let lines = 0;
+
+	for (const step of progressSteps) {
+		const status = stepStatuses.get(step.id)!;
+		let icon: string;
+		let label: string;
+
+		switch (status.state) {
+			case 'pending':
+				icon = '\x1b[90m·\x1b[0m';
+				label = `\x1b[90m${step.label}\x1b[0m`;
+				break;
+			case 'running': {
+				const elapsed = Math.floor((Date.now() - (status.startTime ?? Date.now())) / 1000);
+				icon = `\x1b[36m${SPINNER_FRAMES[frameIdx]}\x1b[0m`;
+				const timer = elapsed >= 3 ? ` \x1b[90m(${elapsed}s)\x1b[0m` : '';
+				label = `${step.activeLabel}${timer}`;
+				break;
+			}
+			case 'done':
+				icon = '\x1b[32m✓\x1b[0m';
+				label = step.label;
+				break;
+			case 'skipped':
+				icon = '\x1b[90m✓\x1b[0m';
+				label = `\x1b[90m${step.label} (up to date)\x1b[0m`;
+				break;
+			case 'error':
+				icon = '\x1b[31m✗\x1b[0m';
+				label = `\x1b[31m${step.label}\x1b[0m`;
+				break;
+		}
+
+		output += `\x1b[K  ${icon} ${label}\n`;
+		lines++;
+
+		// Show last N output lines for the currently running step
+		if (status.state === 'running' && status.outputLines.length > 0) {
+			const visible = status.outputLines.slice(-MAX_OUTPUT_LINES);
+			for (const line of visible) {
+				output += `\x1b[K     \x1b[90m│ ${trunc(line, OUTPUT_TRUNCATE)}\x1b[0m\n`;
+				lines++;
+			}
+		}
+	}
+
+	process.stdout.write(output);
+	drawnLines = lines;
+	frameIdx = (frameIdx + 1) % SPINNER_FRAMES.length;
+}
+
+function stopProgress() {
+	if (renderTimer) {
+		clearInterval(renderTimer);
+		renderTimer = null;
+	}
+	if (isTTY) {
+		renderProgress(); // final render
+		process.stdout.write('\x1b[?25h'); // show cursor
+	}
+}
+
+function clearProgress() {
+	if (renderTimer) {
+		clearInterval(renderTimer);
+		renderTimer = null;
+	}
+	if (isTTY) {
+		if (drawnLines > 0) {
+			process.stdout.write(`\x1b[${drawnLines}A\x1b[J`);
+			drawnLines = 0;
+		}
+		process.stdout.write('\x1b[?25h');
+	}
+}
+
+function progressStepStart(id: string) {
+	const s = stepStatuses.get(id);
+	if (!s) return;
+	s.state = 'running';
+	s.startTime = Date.now();
+	s.outputLines = [];
+	if (!isTTY) {
+		const step = progressSteps.find(p => p.id === id);
+		process.stdout.write(`  ${step?.activeLabel ?? id}...\n`);
+	}
+}
+
+function progressStepDone(id: string) {
+	const s = stepStatuses.get(id);
+	if (!s) return;
+	s.state = 'done';
+	if (!isTTY) {
+		const step = progressSteps.find(p => p.id === id);
+		process.stdout.write(`  ✓ ${step?.label ?? id}\n`);
+	}
+}
+
+function progressStepSkip(id: string) {
+	const s = stepStatuses.get(id);
+	if (!s) return;
+	s.state = 'skipped';
+	if (!isTTY) {
+		const step = progressSteps.find(p => p.id === id);
+		process.stdout.write(`  ✓ ${step?.label ?? id} (up to date)\n`);
+	}
+}
+
+function progressStepFail(id: string) {
+	const s = stepStatuses.get(id);
+	if (!s) return;
+	s.state = 'error';
+}
+
+function progressAppendOutput(id: string, line: string) {
+	const s = stepStatuses.get(id);
+	if (!s || s.state !== 'running') return;
+	s.outputLines.push(stripAnsi(line).trim());
+}
+
+async function streamSubprocess(stream: ReadableStream<Uint8Array>, stepId: string): Promise<void> {
+	const reader = stream.getReader();
+	const decoder = new TextDecoder();
+	let buffer = '';
+	try {
+		for (;;) {
+			const { done, value } = await reader.read();
+			if (done) break;
+			buffer += decoder.decode(value, { stream: true });
+			const parts = buffer.split('\n');
+			buffer = parts.pop() ?? '';
+			for (const part of parts) {
+				const line = part.trim();
+				if (line) progressAppendOutput(stepId, line);
+			}
+		}
+		if (buffer.trim()) progressAppendOutput(stepId, buffer.trim());
+	} catch {
+		// stream closed or error — fine
+	} finally {
+		reader.releaseLock();
+	}
+}
+
+// Restore cursor on unexpected exit
+process.on('exit', () => {
+	if (renderTimer) clearInterval(renderTimer);
+	if (spinnerInterval) clearInterval(spinnerInterval);
+	if (isTTY) process.stdout.write('\x1b[?25h');
+});
+
+// ============================================================
+// Constants
+// ============================================================
 
 const __dirname = join(import.meta.dir, '..');
 const ENV_EXAMPLE = join(__dirname, '.env.example');
@@ -82,11 +300,20 @@ const ENV_FILE = join(__dirname, '.env');
 const DIST_DIR = join(__dirname, 'dist');
 const BUILD_VERSION_FILE = join(DIST_DIR, '.build-version');
 
-// Default values
 const DEFAULT_PORT = 9141;
 const DEFAULT_HOST = 'localhost';
 const MIN_PORT = 1024;
 const MAX_PORT = 65535;
+
+const STARTUP_STEPS: ProgressStep[] = [
+	{ id: 'deps', label: 'Dependencies', activeLabel: 'Installing dependencies' },
+	{ id: 'build', label: 'Build', activeLabel: 'Building' },
+	{ id: 'server', label: 'Server', activeLabel: 'Starting server' },
+];
+
+// ============================================================
+// CLI helpers
+// ============================================================
 
 function showHelp() {
 	console.log(`
@@ -203,30 +430,33 @@ function isNewerVersion(current: string, latest: string): boolean {
 	return false;
 }
 
+// ============================================================
+// Commands
+// ============================================================
+
 async function runUpdate() {
 	const currentVersion = getVersion();
 	console.log(`\x1b[36mClopen\x1b[0m v${currentVersion}\n`);
 
-	// Check for latest version
-	updateLoading('Checking for updates...');
+	startSpinner('Checking for updates...');
 
 	let latestVersion: string;
 	try {
 		const response = await fetch('https://registry.npmjs.org/@myrialabs/clopen/latest');
 		if (!response.ok) {
-			stopLoading();
+			stopSpinner();
 			console.error(`❌ Failed to check for updates (HTTP ${response.status})`);
 			process.exit(1);
 		}
 		const data = await response.json() as { version: string };
 		latestVersion = data.version;
 	} catch (err) {
-		stopLoading();
+		stopSpinner();
 		console.error('❌ Failed to reach npm registry:', err instanceof Error ? err.message : err);
 		process.exit(1);
 	}
 
-	stopLoading();
+	stopSpinner();
 
 	if (!isNewerVersion(currentVersion, latestVersion)) {
 		console.log(`✓ Already up to date (v${currentVersion})`);
@@ -235,8 +465,7 @@ async function runUpdate() {
 
 	console.log(`  New version available: v${currentVersion} → \x1b[32mv${latestVersion}\x1b[0m\n`);
 
-	// Run update
-	updateLoading(`Updating to v${latestVersion}...`);
+	startSpinner(`Updating to v${latestVersion}...`);
 
 	const proc = Bun.spawn(['bun', 'add', '-g', '@myrialabs/clopen@latest'], {
 		stdout: 'pipe',
@@ -249,7 +478,7 @@ async function runUpdate() {
 	]);
 
 	const exitCode = await proc.exited;
-	stopLoading();
+	stopSpinner();
 
 	if (exitCode !== 0) {
 		const output = (stdout + '\n' + stderr).trim();
@@ -266,7 +495,6 @@ async function recoverAdminToken() {
 	const version = getVersion();
 	console.log(`\x1b[36mClopen\x1b[0m v${version} — Admin Token Recovery\n`);
 
-	// Initialize database (import dynamically to avoid loading full backend)
 	const { initializeDatabase } = await import('../backend/database/index');
 	const { listUsers, regeneratePAT } = await import('../backend/auth/auth-service');
 
@@ -310,36 +538,33 @@ async function clearAllData() {
 	}
 
 	console.log('');
-	updateLoading('Clearing all data...');
+	startSpinner('Clearing all data...');
 
 	const { initializeDatabase, closeDatabase } = await import('../backend/database/index');
 	const { getClopenDir } = await import('../backend/utils/paths');
 	const { resetEnvironment } = await import('../backend/engine/adapters/claude/environment');
 	const fs = await import('node:fs/promises');
 
-	// Initialize database so we can close it properly
 	await initializeDatabase();
-
-	// Close database connection
 	closeDatabase();
 
-	// Delete entire clopen directory
 	const clopenDir = getClopenDir();
 	await fs.rm(clopenDir, { recursive: true, force: true });
 
-	// Reset environment state
 	resetEnvironment();
 
-	// Reinitialize database from scratch
 	await initializeDatabase();
 
-	stopLoading();
+	stopSpinner();
 	console.log('✓ All data cleared successfully.');
 	console.log('  Database has been reinitialized with a fresh state.');
 }
 
+// ============================================================
+// Startup sequence
+// ============================================================
+
 async function setupEnvironment() {
-	// Check if .env exists, if not copy from .env.example
 	if (!existsSync(ENV_FILE)) {
 		if (existsSync(ENV_EXAMPLE)) {
 			copyFileSync(ENV_EXAMPLE, ENV_FILE);
@@ -348,43 +573,35 @@ async function setupEnvironment() {
 }
 
 async function installDependencies() {
-	// Always run bun install to ensure dependencies are up to date
-	// Bun is fast and will skip if nothing changed
-	updateLoading('Checking dependencies...');
-	await delay();
+	progressStepStart('deps');
 
-	const installProc = Bun.spawn(['bun', 'install', '--silent'], {
+	const proc = Bun.spawn(['bun', 'install'], {
 		cwd: __dirname,
 		stdout: 'pipe',
-		stderr: 'pipe'
+		stderr: 'pipe',
 	});
 
-	// If install takes longer than 3 seconds, it's actually installing
-	const updateMessageTimeout = setTimeout(() => {
-		updateLoading('Installing dependencies...');
-	}, 3000);
-
-	const exitCode = await installProc.exited;
-	clearTimeout(updateMessageTimeout);
+	const [exitCode] = await Promise.all([
+		proc.exited,
+		streamSubprocess(proc.stdout as ReadableStream<Uint8Array>, 'deps'),
+		streamSubprocess(proc.stderr as ReadableStream<Uint8Array>, 'deps'),
+	]);
 
 	if (exitCode !== 0) {
-		stopLoading();
-		// Show error output only if failed
-		const errorText = await new Response(installProc.stderr).text();
+		progressStepFail('deps');
+		clearProgress();
+		const status = stepStatuses.get('deps');
 		console.error('❌ Dependency installation failed:');
-		console.error(errorText);
+		if (status?.outputLines.length) console.error(status.outputLines.join('\n'));
 		process.exit(exitCode);
 	}
+
+	progressStepDone('deps');
 }
 
 function needsBuild(): boolean {
-	// No dist directory — must build
 	if (!existsSync(DIST_DIR)) return true;
-
-	// No build version file — must build
 	if (!existsSync(BUILD_VERSION_FILE)) return true;
-
-	// Compare built version with current version
 	try {
 		const builtVersion = readFileSync(BUILD_VERSION_FILE, 'utf-8').trim();
 		return builtVersion !== getVersion();
@@ -394,44 +611,46 @@ function needsBuild(): boolean {
 }
 
 async function verifyBuild() {
-	if (needsBuild()) {
-		updateLoading('Building...');
-		await delay();
-
-		const buildProc = Bun.spawn(['bun', 'run', 'build'], {
-			cwd: __dirname,
-			stdout: 'pipe',
-			stderr: 'pipe'
-		});
-
-		const exitCode = await buildProc.exited;
-
-		if (exitCode !== 0) {
-			stopLoading();
-			const errorText = await new Response(buildProc.stderr).text();
-			console.error('❌ Build failed:');
-			console.error(errorText);
-			process.exit(exitCode);
-		}
-
-		// Write current version to build version file
-		writeFileSync(BUILD_VERSION_FILE, getVersion());
+	if (!needsBuild()) {
+		progressStepSkip('build');
+		return;
 	}
+
+	progressStepStart('build');
+
+	const proc = Bun.spawn(['bun', 'run', 'build'], {
+		cwd: __dirname,
+		stdout: 'pipe',
+		stderr: 'pipe',
+	});
+
+	const [exitCode] = await Promise.all([
+		proc.exited,
+		streamSubprocess(proc.stdout as ReadableStream<Uint8Array>, 'build'),
+		streamSubprocess(proc.stderr as ReadableStream<Uint8Array>, 'build'),
+	]);
+
+	if (exitCode !== 0) {
+		progressStepFail('build');
+		clearProgress();
+		const status = stepStatuses.get('build');
+		console.error('❌ Build failed:');
+		if (status?.outputLines.length) console.error(status.outputLines.join('\n'));
+		process.exit(exitCode);
+	}
+
+	writeFileSync(BUILD_VERSION_FILE, getVersion());
+	progressStepDone('build');
 }
 
 async function startServer(options: CLIOptions) {
-	updateLoading('Starting server...');
-	await delay();
+	progressStepStart('server');
+	progressStepDone('server');
+	stopProgress();
+	console.log('');
 
-	// Delegate to scripts/start.ts — handles port resolution (IPv4 + IPv6
-	// zombie detection) and starts backend in a single consistent path.
 	const startScript = join(__dirname, 'scripts/start.ts');
 
-	stopLoading();
-
-	// Overlay clopen's own .env on top of process.env to override any
-	// pollution from a .env file in the directory where `clopen` was invoked.
-	// CLI args take highest priority on top of that.
 	const env = { ...process.env, ...loadEnvFile(ENV_FILE) };
 	if (options.port) env.PORT = options.port.toString();
 	if (options.host) env.HOST = options.host;
@@ -441,19 +660,20 @@ async function startServer(options: CLIOptions) {
 		stdout: 'inherit',
 		stderr: 'inherit',
 		stdin: 'inherit',
-		env
+		env,
 	});
 
-	// Wait for server process
 	await serverProc.exited;
 }
 
+// ============================================================
+// Main
+// ============================================================
+
 async function main() {
 	try {
-		// Parse CLI arguments
 		const options = parseArguments();
 
-		// Show version if requested
 		if (options.version) {
 			const currentVersion = getVersion();
 			console.log(`v${currentVersion}`);
@@ -475,49 +695,44 @@ async function main() {
 			process.exit(0);
 		}
 
-		// Show help if requested
 		if (options.help) {
 			showHelp();
 			process.exit(0);
 		}
 
-		// Run update if requested
 		if (options.update) {
 			await runUpdate();
 			process.exit(0);
 		}
 
-		// Recover admin token if requested
 		if (options.resetPat) {
 			await setupEnvironment();
 			await recoverAdminToken();
 			process.exit(0);
 		}
 
-		// Clear all data if requested
 		if (options.clearData) {
 			await setupEnvironment();
 			await clearAllData();
 			process.exit(0);
 		}
 
-		// 1. Setup environment variables
+		// Print header
+		console.log(`\n\x1b[36mClopen\x1b[0m v${getVersion()}\n`);
+
+		// Init multi-step progress
+		initProgress(STARTUP_STEPS);
+
 		await setupEnvironment();
-
-		// 2. Install dependencies if needed
 		await installDependencies();
-
-		// 3. Verify/build frontend
 		await verifyBuild();
-
-		// 4. Start server
 		await startServer(options);
 
 	} catch (error) {
+		clearProgress();
 		console.error('❌ Failed to start Clopen:', error);
 		process.exit(1);
 	}
 }
 
-// Run CLI
 main();
