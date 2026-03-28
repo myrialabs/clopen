@@ -321,7 +321,7 @@ Clopen - All-in-one web workspace for Claude Code & OpenCode
 
 USAGE:
   clopen [OPTIONS]
-  clopen update
+  clopen <command>
 
 COMMANDS:
   update                  Update clopen to the latest version

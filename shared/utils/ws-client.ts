@@ -584,11 +584,33 @@ export class WSClient<TAPI extends { client: any; server: any }> {
 
 	/**
 	 * Manual reconnect
+	 * Unlike disconnect(), this preserves all registered listeners
+	 * so that services (chat, terminal, etc.) continue receiving events.
 	 */
 	reconnect(): void {
-		this.disconnect();
+		// Cancel any pending auto-reconnect
+		if (this.reconnectTimeout) {
+			clearTimeout(this.reconnectTimeout);
+			this.reconnectTimeout = null;
+		}
+
+		// Close existing socket without triggering onclose reconnect
+		if (this.ws) {
+			try {
+				this.ws.onclose = null;
+				this.ws.onerror = null;
+				this.ws.onmessage = null;
+				this.ws.close();
+			} catch {
+				// Ignore close errors on stale socket
+			}
+			this.ws = null;
+		}
+
+		this.isConnected = false;
 		this.shouldReconnect = true;
 		this.reconnectAttempts = 0;
+		// NOTE: listeners and messageQueue are intentionally preserved
 		this.connect();
 	}
 
