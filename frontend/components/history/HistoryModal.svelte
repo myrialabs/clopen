@@ -13,6 +13,7 @@
 	import { isSessionUnread } from '$frontend/stores/core/app.svelte';
 	import { userStore } from '$frontend/stores/features/user.svelte';
 	import { debug } from '$shared/utils/logger';
+	import { modelStore } from '$frontend/stores/features/models.svelte';
 
 	interface Props {
 		isOpen: boolean;
@@ -212,9 +213,8 @@
 
 	// Get the engine/model display for a session
 	function getSessionModel(session: ChatSession): string {
-		if (session.engine && session.model) {
-			const parts = session.model.split(':');
-			return parts.length > 1 ? parts[1] : session.model;
+		if (session.model) {
+			return modelStore.getById(session.model)?.name || session.model;
 		}
 		return '';
 	}

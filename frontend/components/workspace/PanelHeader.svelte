@@ -20,6 +20,7 @@
 	import type { DeviceSize } from '$frontend/utils/preview-constants';
 
 	import { DEVICE_VIEWPORTS } from '$frontend/utils/preview-constants';
+	import ContextIndicator from '$frontend/components/chat/widgets/ContextIndicator.svelte';
 
 	interface Props {
 		panelId: PanelId;
@@ -247,6 +248,9 @@
 		<!-- Panel-specific actions -->
 		<div class="flex items-center gap-1.5">
 			{#if panelId === 'chat'}
+				{#if sessionState.messages.length > 0 || sessionState.hasMessageHistory}
+					<ContextIndicator {isMobile} />
+				{/if}
 				{#if chatSessionUsers.length > 0}
 					<div class="relative" bind:this={chatUsersContainer}>
 					<div class="flex items-center -space-x-1.5 mr-1 cursor-pointer" title="Users in this session" onclick={toggleChatUsersPopover}>

@@ -24,12 +24,10 @@
 		roleCategory,
 		agentStatus,
 		senderName,
-		hasTokenUsageData,
 		formatTime,
 		onCopy,
 		onRestore,
 		onEdit,
-		onShowTokenUsage,
 		onShowDebug
 	}: {
 		message: SDKMessageFormatter;
@@ -39,12 +37,10 @@
 		roleCategory: 'user' | 'assistant' | 'agent' | string;
 		agentStatus: 'processing' | 'waiting' | 'success' | 'error' | null;
 		senderName: string | null;
-		hasTokenUsageData: any;
 		formatTime: (timestamp?: string) => string;
 		onCopy: () => void;
 		onRestore: () => void;
 		onEdit: () => void;
-		onShowTokenUsage: () => void;
 		onShowDebug: () => void;
 	} = $props();
 
@@ -94,12 +90,10 @@
 			{roleCategory}
 			{agentStatus}
 			{senderName}
-			{hasTokenUsageData}
 			{formatTime}
 			{onCopy}
 			{onRestore}
 			{onEdit}
-			{onShowTokenUsage}
 			{onShowDebug}
 		/>
 

@@ -21,7 +21,6 @@
 	import { startEdit, shouldDimMessage } from '$frontend/stores/ui/edit-mode.svelte';
 	import { debug } from '$shared/utils/logger';
 	import MessageBubble from './MessageBubble.svelte';
-	import TokenUsageModal from '../modal/TokenUsageModal.svelte';
 	import DebugModal from '../modal/DebugModal.svelte';
 	import Dialog from '$frontend/components/common/overlay/Dialog.svelte';
 	import ConflictResolutionModal from '$frontend/components/checkpoint/ConflictResolutionModal.svelte';
@@ -38,7 +37,6 @@
 
 	// Modal states
 	let showDebugPopup = $state(false);
-	let showTokenUsagePopup = $state(false);
 	let showRestoreConfirm = $state(false);
 
 	// Conflict resolution state
@@ -90,15 +88,6 @@
 			if (hasToolResult) return 'agent';
 		}
 		return message.type;
-	});
-
-	// Get token usage data from assistant messages
-	const hasTokenUsageData = $derived.by(() => {
-		if ((roleCategory === 'assistant' || roleCategory === 'agent') && 'message' in message) {
-			const msg = message.message as any;
-			return msg.usage || null;
-		}
-		return null;
 	});
 
 	// Get sender info from metadata
@@ -259,14 +248,6 @@
 	}
 
 	// Modal handlers
-	function openTokenUsageModal() {
-		showTokenUsagePopup = true;
-	}
-
-	function closeTokenUsageModal() {
-		showTokenUsagePopup = false;
-	}
-
 	function openDebugInfoModal() {
 		showDebugPopup = true;
 	}
@@ -460,12 +441,10 @@
 				{roleCategory}
 				{agentStatus}
 				{senderName}
-				{hasTokenUsageData}
 				{formatTime}
 				onCopy={copyToClipboard}
 				onRestore={handleRestore}
 				onEdit={handleEdit}
-				onShowTokenUsage={openTokenUsageModal}
 				onShowDebug={openDebugInfoModal}
 			/>
 		</div>
@@ -478,14 +457,6 @@
 		{/if}
 	</div>
 </div>
-
-<!-- Token Usage Popup -->
-<TokenUsageModal
-	bind:isOpen={showTokenUsagePopup}
-	tokenUsage={hasTokenUsageData}
-	timestamp={messageTimestamp}
-	onClose={closeTokenUsageModal}
-/>
 
 <!-- Debug Info Popup -->
 <DebugModal

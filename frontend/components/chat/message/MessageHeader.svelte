@@ -22,12 +22,10 @@
 		roleCategory,
 		agentStatus,
 		senderName,
-		hasTokenUsageData,
 		formatTime,
 		onCopy,
 		onRestore,
 		onEdit,
-		onShowTokenUsage,
 		onShowDebug
 	}: {
 		message: SDKMessageFormatter;
@@ -37,12 +35,10 @@
 		roleCategory: 'user' | 'assistant' | 'agent' | string;
 		agentStatus: 'processing' | 'waiting' | 'success' | 'error' | null;
 		senderName: string | null;
-		hasTokenUsageData: any;
 		formatTime: (timestamp?: string) => string;
 		onCopy: () => void;
 		onRestore: () => void;
 		onEdit: () => void;
-		onShowTokenUsage: () => void;
 		onShowDebug: () => void;
 	} = $props();
 
@@ -131,18 +127,6 @@
 				title="Edit message"
 			>
 				<Icon name="lucide:pencil" class="w-3.5 h-3.5" />
-			</button>
-		{/if}
-
-		<!-- Token Usage button -->
-		{#if hasTokenUsageData}
-			<button
-				onclick={onShowTokenUsage}
-				class="inline-flex p-1.5 rounded-md hover:bg-slate-200 dark:hover:bg-slate-600 transition-colors opacity-60 hover:opacity-100"
-				aria-label="Show token usage info"
-				title="Token usage"
-			>
-				<Icon name="lucide:zap" class="w-3.5 h-3.5" />
 			</button>
 		{/if}
 

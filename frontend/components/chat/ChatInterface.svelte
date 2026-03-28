@@ -23,7 +23,6 @@
 	import ChatInput from './input/ChatInput.svelte';
 	import FloatingTodoList from './widgets/FloatingTodoList.svelte';
 	import TimelineModal from '$frontend/components/checkpoint/TimelineModal.svelte';
-	// import TokenUsage from './widgets/TokenUsage.svelte'; // DISABLED
 	import Icon from '$frontend/components/common/display/Icon.svelte';
 	import AvatarBubble from '$frontend/components/common/display/AvatarBubble.svelte';
 	import Button from '$frontend/components/common/display/Button.svelte';
