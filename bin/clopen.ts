@@ -33,6 +33,7 @@ interface CLIOptions {
 	version?: boolean;
 	update?: boolean;
 	resetPat?: boolean;
+	clearData?: boolean;
 }
 
 // Get version from package.json
@@ -98,6 +99,7 @@ USAGE:
 COMMANDS:
   update                  Update clopen to the latest version
   reset-pat               Regenerate admin Personal Access Token
+  clear-data              Delete all projects, sessions, and settings
 
 OPTIONS:
   -p, --port <number>     Port to run the server on (default: ${DEFAULT_PORT})
@@ -106,12 +108,10 @@ OPTIONS:
   -h, --help              Show this help message
 
 EXAMPLES:
-  clopen                  # Start with default settings (port ${DEFAULT_PORT})
-  clopen --port 9145      # Start on port 9145
-  clopen --host 0.0.0.0   # Bind to all network interfaces
-  clopen update           # Update to the latest version
-  clopen reset-pat        # Regenerate admin login token
-  clopen --version        # Show version
+  clopen                  # Start with default settings
+  clopen --port 9145      # Start on custom port
+  clopen -v               # Show version
+  clopen update           # Update to latest version
 
 For more information, visit: https://github.com/myrialabs/clopen
 `);
@@ -173,6 +173,10 @@ function parseArguments(): CLIOptions {
 
 			case 'reset-pat':
 				options.resetPat = true;
+				break;
+
+			case 'clear-data':
+				options.clearData = true;
 				break;
 
 			default:
@@ -281,6 +285,57 @@ async function recoverAdminToken() {
 	console.log(`  Admin  : ${admin.name}`);
 	console.log(`  New PAT: \x1b[32m${newPAT}\x1b[0m`);
 	console.log(`\n  Use this token to log in. Keep it safe — it won't be shown again.`);
+}
+
+async function clearAllData() {
+	const version = getVersion();
+	console.log(`\x1b[36mClopen\x1b[0m v${version} — Clear All Data\n`);
+
+	console.log('\x1b[31m⚠  WARNING: This will permanently delete all projects, sessions, and settings.\x1b[0m');
+	console.log('   This action cannot be undone.\n');
+
+	process.stdout.write('Are you sure? Type "yes" to confirm: ');
+
+	const response = await new Promise<string>(resolve => {
+		const chunks: Buffer[] = [];
+		process.stdin.once('data', (data: Buffer) => {
+			chunks.push(data);
+			resolve(Buffer.concat(chunks).toString().trim());
+		});
+	});
+
+	if (response !== 'yes') {
+		console.log('\nAborted. No data was deleted.');
+		process.exit(0);
+	}
+
+	console.log('');
+	updateLoading('Clearing all data...');
+
+	const { initializeDatabase, closeDatabase } = await import('../backend/database/index');
+	const { getClopenDir } = await import('../backend/utils/paths');
+	const { resetEnvironment } = await import('../backend/engine/adapters/claude/environment');
+	const fs = await import('node:fs/promises');
+
+	// Initialize database so we can close it properly
+	await initializeDatabase();
+
+	// Close database connection
+	closeDatabase();
+
+	// Delete entire clopen directory
+	const clopenDir = getClopenDir();
+	await fs.rm(clopenDir, { recursive: true, force: true });
+
+	// Reset environment state
+	resetEnvironment();
+
+	// Reinitialize database from scratch
+	await initializeDatabase();
+
+	stopLoading();
+	console.log('✓ All data cleared successfully.');
+	console.log('  Database has been reinitialized with a fresh state.');
 }
 
 async function setupEnvironment() {
@@ -436,6 +491,13 @@ async function main() {
 		if (options.resetPat) {
 			await setupEnvironment();
 			await recoverAdminToken();
+			process.exit(0);
+		}
+
+		// Clear all data if requested
+		if (options.clearData) {
+			await setupEnvironment();
+			await clearAllData();
 			process.exit(0);
 		}
 
