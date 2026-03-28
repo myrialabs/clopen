@@ -15,7 +15,7 @@
 	// Info box visibility - load from localStorage
 	let showInfoBox = $state(
 		typeof window !== 'undefined'
-			? localStorage.getItem('tunnel-info-dismissed') !== 'true'
+			? localStorage.getItem('clopen-tunnel-info-dismissed') !== 'true'
 			: true
 	);
 
@@ -32,7 +32,7 @@
 
 		// Save "don't show again" preference
 		if (dontShowWarningAgain) {
-			localStorage.setItem('tunnel-warning-dismissed', 'true');
+			localStorage.setItem('clopen-tunnel-warning-dismissed', 'true');
 		}
 
 		// Close modal immediately
@@ -59,7 +59,7 @@
 		warningDismissed = false;
 
 		// Check if user has dismissed warning permanently
-		const securityWarningDismissed = localStorage.getItem('tunnel-warning-dismissed') === 'true';
+		const securityWarningDismissed = localStorage.getItem('clopen-tunnel-warning-dismissed') === 'true';
 		if (securityWarningDismissed) {
 			// Skip warning and start tunnel directly
 			handleStartTunnel();
@@ -70,7 +70,7 @@
 
 	function closeInfoBox() {
 		showInfoBox = false;
-		localStorage.setItem('tunnel-info-dismissed', 'true');
+		localStorage.setItem('clopen-tunnel-info-dismissed', 'true');
 	}
 
 	function dismissError() {

@@ -56,7 +56,7 @@ export async function getOrCreateAnonymousUser(): Promise<AnonymousUser | null> 
     return null;
   }
 
-  const stored = localStorage.getItem('claude-anonymous-user');
+  const stored = localStorage.getItem('clopen-anonymous-user');
 
   if (stored) {
     try {
@@ -76,7 +76,7 @@ export async function getOrCreateAnonymousUser(): Promise<AnonymousUser | null> 
   const newUser = await generateAnonymousUserFromServer();
 
   if (newUser) {
-    localStorage.setItem('claude-anonymous-user', JSON.stringify(newUser));
+    localStorage.setItem('clopen-anonymous-user', JSON.stringify(newUser));
     return newUser;
   }
 
@@ -93,7 +93,7 @@ export function getCurrentAnonymousUser(): AnonymousUser | null {
     return null;
   }
 
-  const stored = localStorage.getItem('claude-anonymous-user');
+  const stored = localStorage.getItem('clopen-anonymous-user');
 
   if (stored) {
     try {
@@ -146,7 +146,7 @@ export async function updateAnonymousUserName(newName: string): Promise<Anonymou
     });
 
     // Save to localStorage
-    localStorage.setItem('claude-anonymous-user', JSON.stringify(response));
+    localStorage.setItem('clopen-anonymous-user', JSON.stringify(response));
     debug.log('user', '✅ Updated user name:', response.name);
     return response;
   } catch (error) {

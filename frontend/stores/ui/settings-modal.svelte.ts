@@ -50,7 +50,7 @@ export const settingsSections: SettingsSectionMeta[] = [
 	},
 	{
 		id: 'account',
-		label: 'Account',
+		label: 'User Profile',
 		icon: 'lucide:user',
 		description: 'Your profile and access'
 	},

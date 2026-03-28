@@ -201,7 +201,7 @@
 						</div>
 					{/if}
 					
-					<div class="flex-1 space-y-2">
+					<div class="flex-1 space-y-1">
 						<h3 id="dialog-title" class="text-lg font-semibold {colors.text}">
 							{title}
 						</h3>
@@ -227,7 +227,7 @@
 				</div>
 			{/if}
 
-			{#if !children}
+			{#if !children || onConfirm}
 				<div class="flex justify-end gap-3 pt-2">
 					{#if showCancel}
 						<button

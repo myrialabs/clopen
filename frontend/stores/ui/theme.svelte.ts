@@ -3,7 +3,7 @@ import type { Theme } from '$shared/types/ui';
 // Theme store using Svelte 5 runes
 export const themeStore = $state({
 	current: {
-		name: 'claude-modern',
+		name: 'clopen-modern',
 		primary: '#D97757',
 		secondary: '#4F46E5',
 		background: '#F9FAFB',
@@ -26,7 +26,7 @@ export function isDarkMode() {
 // Theme presets
 export const themes: Theme[] = [
 	{
-		name: 'claude-modern',
+		name: 'clopen-modern',
 		primary: '#D97757',
 		secondary: '#4F46E5',
 		background: '#F9FAFB',
@@ -34,7 +34,7 @@ export const themes: Theme[] = [
 		mode: 'light'
 	},
 	{
-		name: 'claude-dark',
+		name: 'clopen-dark',
 		primary: '#D97757',
 		secondary: '#4F46E5',
 		background: '#111827',
@@ -83,7 +83,7 @@ export function setTheme(theme: Theme) {
 	}
 
 	// Save to localStorage
-	localStorage.setItem('claude-theme', JSON.stringify(theme));
+	localStorage.setItem('clopen-theme', JSON.stringify(theme));
 }
 
 // Helper function to update theme color meta tag
@@ -105,12 +105,12 @@ export function toggleDarkMode() {
 	const newMode: 'light' | 'dark' = themeStore.isDark ? 'light' : 'dark';
 
 	// Use predefined themes for consistency
-	const newTheme = newMode === 'dark' ? themes[1] : themes[0]; // claude-dark or claude-modern
+	const newTheme = newMode === 'dark' ? themes[1] : themes[0]; // clopen-dark or clopen-modern
 	
 	setTheme(newTheme);
 	
 	// Mark as manual theme choice
-	localStorage.setItem('claude-theme-manual', 'true');
+	localStorage.setItem('clopen-theme-manual', 'true');
 }
 
 export function initializeTheme() {
@@ -121,8 +121,8 @@ export function initializeTheme() {
 	themeStore.isSystemDark = isSystemDark;
 	
 	// Check for saved theme preference
-	const savedTheme = localStorage.getItem('claude-theme');
-	const isManualTheme = localStorage.getItem('claude-theme-manual') === 'true';
+	const savedTheme = localStorage.getItem('clopen-theme');
+	const isManualTheme = localStorage.getItem('clopen-theme-manual') === 'true';
 	
 	let initialTheme: Theme;
 	
@@ -160,7 +160,7 @@ export function initializeTheme() {
 		themeStore.isSystemDark = e.matches;
 		
 		// Only follow system if no manual theme was set
-		if (!localStorage.getItem('claude-theme-manual')) {
+		if (!localStorage.getItem('clopen-theme-manual')) {
 			const newTheme = e.matches ? themes[1] : themes[0];
 			setTheme(newTheme);
 		}
@@ -169,11 +169,11 @@ export function initializeTheme() {
 
 export function setManualTheme(theme: Theme) {
 	setTheme(theme);
-	localStorage.setItem('claude-theme-manual', 'true');
+	localStorage.setItem('clopen-theme-manual', 'true');
 }
 
 export function useSystemTheme() {
-	localStorage.removeItem('claude-theme-manual');
+	localStorage.removeItem('clopen-theme-manual');
 	const defaultTheme = themeStore.isSystemDark ? themes[1] : themes[0];
 	setTheme(defaultTheme);
 }

@@ -751,7 +751,7 @@ export function setActiveMobilePanel(panelId: PanelId): void {
 // PERSISTENCE
 // ============================================
 
-const STORAGE_KEY = 'claude-workspace-layout';
+const STORAGE_KEY = 'clopen-workspace-layout';
 
 export function saveWorkspaceState(): void {
 	try {

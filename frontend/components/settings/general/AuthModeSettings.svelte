@@ -188,7 +188,7 @@
 				<Icon name="lucide:triangle-alert" class="w-6 h-6 text-amber-600 dark:text-amber-400" />
 			</div>
 
-			<div class="flex-1 space-y-3">
+			<div class="flex-1 space-y-1">
 				<h3 class="text-lg font-semibold text-slate-900 dark:text-slate-100">
 					Change Authentication Mode
 				</h3>
@@ -197,7 +197,7 @@
 				</p>
 
 				<!-- PAT Display -->
-				<div class="p-3.5 rounded-lg bg-amber-50 dark:bg-amber-950/30 border border-amber-200 dark:border-amber-800">
+				<div class="mt-3 p-3.5 rounded-lg bg-amber-50 dark:bg-amber-950/30 border border-amber-200 dark:border-amber-800">
 					<div class="flex items-center gap-2 text-sm font-semibold text-amber-800 dark:text-amber-200 mb-2">
 						<Icon name="lucide:key-round" class="w-4 h-4" />
 						<span>Your Personal Access Token</span>
