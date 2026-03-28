@@ -126,9 +126,13 @@ export const timelineHandler = createRouter()
 			const isOnActivePath = activePathIds.has(cp.id);
 			const isCurrent = cp.id === activeCheckpointId;
 
-			// Orphaned = descendant of active checkpoint in the checkpoint tree
+			// Orphaned = in the "future" relative to the current checkpoint.
+			// At initial state: ALL checkpoints are orphaned (we've gone back before any messages).
+			// Otherwise: only descendants of the active checkpoint that are not on the active path.
 			let isOrphaned = false;
-			if (activeCheckpointId && !isOnActivePath) {
+			if (isAtInitialState) {
+				isOrphaned = true;
+			} else if (activeCheckpointId && !isOnActivePath) {
 				isOrphaned = isDescendant(cp.id, activeCheckpointId, childrenMap);
 			}
 

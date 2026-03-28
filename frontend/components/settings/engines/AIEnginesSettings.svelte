@@ -73,7 +73,7 @@
 	let openCodeCommandCopiedTimer: ReturnType<typeof setTimeout> | null = null;
 
 	// Debug PTY (xterm.js)
-	const showDebug = $state(true);
+	const showDebug = $state(false);
 	let debugTermContainer = $state<HTMLDivElement>();
 	let debugTerminal: Terminal | null = null;
 	let debugFitAddon: FitAddon | null = null;

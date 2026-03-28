@@ -247,9 +247,11 @@
 		const previousCurrentId = timelineData?.currentHeadId;
 		if (timelineData) {
 			timelineData.currentHeadId = node.id;
+			const isInitialRestore = !!node.checkpoint.isInitial;
 			graphNodes = graphNodes.map(n => ({
 				...n,
-				isCurrent: n.id === node.id
+				isCurrent: n.id === node.id,
+				isOrphaned: isInitialRestore ? n.id !== node.id : n.isOrphaned
 			}));
 		}
 

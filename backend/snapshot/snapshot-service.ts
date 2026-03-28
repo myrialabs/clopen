@@ -479,9 +479,6 @@ export class SnapshotService {
 			let restoredFiles = 0;
 			let skippedFiles = 0;
 
-			// Update in-memory baseline as we restore
-			const baseline = this.sessionBaselines.get(sessionId) || {};
-
 			for (const [filepath, expectedHash] of expectedState) {
 				// Check conflict resolution
 				if (conflictResolutions && conflictResolutions[filepath] === 'keep') {
@@ -509,7 +506,6 @@ export class SnapshotService {
 					// File should not exist at the target → delete it
 					try {
 						await fs.unlink(fullPath);
-						delete baseline[filepath];
 						debug.log('snapshot', `Deleted: ${filepath}`);
 						restoredFiles++;
 					} catch {
@@ -522,7 +518,6 @@ export class SnapshotService {
 						const dir = path.dirname(fullPath);
 						await fs.mkdir(dir, { recursive: true });
 						await fs.writeFile(fullPath, content);
-						baseline[filepath] = expectedHash;
 						debug.log('snapshot', `Restored: ${filepath}`);
 						restoredFiles++;
 					} catch (err) {
@@ -532,8 +527,15 @@ export class SnapshotService {
 				}
 			}
 
-			// Update in-memory baseline to reflect restored state
-			this.sessionBaselines.set(sessionId, baseline);
+			// Force re-initialize baseline from actual disk state.
+			// This is critical because:
+			// 1. Files already at expected state were skipped (baseline not updated for them)
+			// 2. After server restart, baseline starts empty — only restored files get entries
+			// 3. Files not mentioned in any snapshot are missing from the partial baseline
+			// Without this, subsequent captures would compute oldHash='' for files missing
+			// from the baseline, causing future restores to incorrectly delete those files.
+			this.sessionBaselines.delete(sessionId);
+			await this.initializeSessionBaseline(projectPath, sessionId);
 
 			debug.log('snapshot', `Restore complete: ${restoredFiles} restored, ${skippedFiles} skipped`);
 			return { restoredFiles, skippedFiles };
