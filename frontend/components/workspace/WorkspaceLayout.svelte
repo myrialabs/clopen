@@ -29,7 +29,8 @@
 	import { initializeNotifications, notificationStore } from '$frontend/stores/ui/notification.svelte';
 	import { applyServerSettings, loadSystemSettings } from '$frontend/stores/features/settings.svelte';
 	import { applyTodoPanelState } from '$frontend/stores/ui/todo-panel.svelte';
-	import { initPresence } from '$frontend/stores/core/presence.svelte';
+	import { presenceState, initPresence } from '$frontend/stores/core/presence.svelte';
+	import { updateFaviconBadge } from '$frontend/services/favicon.service';
 	import ws from '$frontend/utils/ws';
 	import { debug } from '$shared/utils/logger';
 
@@ -129,6 +130,35 @@
 		if (browser) {
 			window.removeEventListener('resize', handleResize);
 		}
+	});
+
+	// Reactive favicon badge: count non-idle indicators across all projects
+	$effect(() => {
+		const statuses = presenceState.statuses;
+		const unreadSessions = appState.unreadSessions;
+		const currentSessionId = sessionState.currentSession?.id;
+
+		// Count streaming sessions (green + amber)
+		const streamingSessionIds = new Set<string>();
+		for (const status of statuses.values()) {
+			if (!status.streams) continue;
+			for (const stream of status.streams) {
+				if (stream.status === 'active') {
+					streamingSessionIds.add(stream.chatSessionId);
+				}
+			}
+		}
+
+		// Count unread sessions (excluding current session and already-streaming ones)
+		let unreadCount = 0;
+		for (const [sessionId] of unreadSessions) {
+			if (sessionId !== currentSessionId && !streamingSessionIds.has(sessionId)) {
+				unreadCount++;
+			}
+		}
+
+		const totalCount = streamingSessionIds.size + unreadCount;
+		updateFaviconBadge(totalCount);
 	});
 </script>
 
