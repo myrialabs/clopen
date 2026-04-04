@@ -9,6 +9,8 @@
 
 import { createRouter } from '$shared/utils/ws-server';
 import { operationsHandler } from './operations';
+import { configHandler } from './config';
 
 export const tunnelRouter = createRouter()
-	.merge(operationsHandler);
+	.merge(operationsHandler)
+	.merge(configHandler);

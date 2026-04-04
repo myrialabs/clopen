@@ -11,6 +11,7 @@
 	import SystemSettings from './system/SystemSettings.svelte';
 	import UserManagement from './admin/UserManagement.svelte';
 	import InviteManagement from './admin/InviteManagement.svelte';
+	import TunnelSettings from './tunnel/TunnelSettings.svelte';
 
 	const isAdmin = $derived(authStore.isAdmin);
 	const isNoAuth = $derived(authStore.isNoAuth);
@@ -31,6 +32,9 @@
 
 			<!-- Notification Settings -->
 			<NotificationSettings />
+
+			<!-- Tunnel Settings -->
+			<TunnelSettings />
 
 			<!-- Account (hidden in no-auth mode) -->
 			{#if !isNoAuth}

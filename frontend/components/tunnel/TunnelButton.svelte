@@ -10,8 +10,8 @@
 
 	const { collapsed = false, mobile = false, onClick }: Props = $props();
 
-	const activeTunnels = $derived(tunnelStore.tunnels);
-	const hasActiveTunnels = $derived(activeTunnels.length > 0);
+	const activeDomainCount = $derived(tunnelStore.activeDomainCount);
+	const hasActiveTunnels = $derived(activeDomainCount > 0);
 </script>
 
 {#if collapsed}
@@ -31,7 +31,7 @@
 			<span
 				class="absolute top-0.5 right-0.5 min-w-4 h-4 px-0.5 rounded-full bg-green-500 text-white text-3xs font-bold flex items-center justify-center border-2 border-slate-50 dark:border-slate-900/95"
 			>
-				{activeTunnels.length}
+				{activeDomainCount}
 			</span>
 		{/if}
 	</button>
@@ -53,7 +53,7 @@
 		<span class="flex-1 text-left">Public Tunnel</span>
 		{#if hasActiveTunnels}
 			<span class="text-xs text-green-600 dark:text-green-400 font-semibold">
-				{activeTunnels.length}
+				{activeDomainCount}
 			</span>
 		{/if}
 	</button>

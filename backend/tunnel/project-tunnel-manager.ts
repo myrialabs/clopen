@@ -1,6 +1,5 @@
-import { Tunnel, bin, install } from 'cloudflared';
 import { debug } from '$shared/utils/logger';
-import { existsSync } from 'fs';
+import { getBinaryPath, isBinaryInstalled, installBinary, CloudflaredTunnel } from './cloudflared';
 
 interface TunnelInstance {
 	tunnel: any;
@@ -45,7 +44,7 @@ class ProjectTunnelManager {
 		}
 
 		// Check if binary file exists
-		if (!existsSync(bin)) {
+		if (!isBinaryInstalled()) {
 			debug.log('tunnel', '[PROGRESS:DOWNLOADING_BINARY] Cloudflared binary not found, downloading...');
 			debug.log('tunnel', 'This may take 30-60 seconds on first use (downloading ~66MB)');
 			onProgress?.('downloading-binary', { size: '~66MB' });
@@ -53,17 +52,10 @@ class ProjectTunnelManager {
 			const startTime = Date.now();
 
 			try {
-				// Call install() from cloudflared package
-				// This downloads the binary from Cloudflare's CDN
-				await install(bin);
+				await installBinary();
 
 				const downloadTime = Date.now() - startTime;
-				debug.log('tunnel', `[PROGRESS:BINARY_READY] Cloudflared binary installed successfully in ${downloadTime}ms at: ${bin}`);
-
-				// Verify the binary was actually created
-				if (!existsSync(bin)) {
-					throw new Error('Binary file was not created after installation');
-				}
+				debug.log('tunnel', `[PROGRESS:BINARY_READY] Cloudflared binary installed successfully in ${downloadTime}ms at: ${getBinaryPath()}`);
 
 				this.binaryInstalled = true;
 				onProgress?.('binary-ready', { downloaded: true, time: downloadTime });
@@ -76,7 +68,7 @@ class ProjectTunnelManager {
 				);
 			}
 		} else {
-			debug.log('tunnel', '[PROGRESS:BINARY_READY] Cloudflared binary already installed at:', bin);
+			debug.log('tunnel', '[PROGRESS:BINARY_READY] Cloudflared binary already installed at:', getBinaryPath());
 			this.binaryInstalled = true;
 			onProgress?.('binary-ready', { cached: true });
 			return { needsDownload: false };
@@ -116,7 +108,7 @@ class ProjectTunnelManager {
 
 		// Create quick tunnel pointing to localhost:port
 		// Use Tunnel.quick() method for quick tunnels
-		const tunnel = Tunnel.quick(`http://localhost:${port}`);
+		const tunnel = CloudflaredTunnel.quick(`http://localhost:${port}`);
 
 		// Log ALL events for debugging
 		tunnel.on('url', (url: string) => debug.log('tunnel', `[EVENT] url: ${url}`));

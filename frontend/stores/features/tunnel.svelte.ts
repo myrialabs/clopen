@@ -1,10 +1,12 @@
 /**
  * Tunnel Store
- * Manages cloudflared tunnel state for projects
+ * Manages cloudflared tunnel runtime state (active tunnels, progress, errors)
  */
 
 import { debug } from '$shared/utils/logger';
 import ws from '$frontend/utils/ws';
+
+type TunnelType = 'quick' | 'remote' | 'local';
 
 type TunnelProgress =
 	| { stage: 'idle' }
@@ -16,14 +18,23 @@ type TunnelProgress =
 	| { stage: 'connected' }
 	| { stage: 'failed'; error: string };
 
+interface IngressInfo {
+	hostname?: string;
+	service: string;
+}
+
 interface TunnelInfo {
 	port: number;
 	publicUrl: string;
 	startedAt: string;
 	autoStopMinutes: number;
+	type: TunnelType;
+	label?: string;
+	configId?: string;
+	ingress?: IngressInfo[];
 }
 
-interface PortState {
+interface LoadingState {
 	isLoading: boolean;
 	error: string | null;
 	progress: TunnelProgress;
@@ -31,133 +42,236 @@ interface PortState {
 
 interface TunnelState {
 	tunnels: TunnelInfo[];
-	portStates: Record<number, PortState>;
+	loadingStates: Record<string, LoadingState>;
 }
 
-// Tunnel store state
 const tunnelState = $state<TunnelState>({
 	tunnels: [],
-	portStates: {}
+	loadingStates: {}
 });
+
+function setLoading(key: string): void {
+	tunnelState.loadingStates[key] = {
+		isLoading: true,
+		error: null,
+		progress: { stage: 'starting-tunnel' }
+	};
+}
+
+function setConnected(key: string): void {
+	if (tunnelState.loadingStates[key]) {
+		tunnelState.loadingStates[key].progress = { stage: 'connected' };
+		tunnelState.loadingStates[key].isLoading = false;
+	}
+	setTimeout(() => {
+		if (tunnelState.loadingStates[key]) {
+			tunnelState.loadingStates[key].progress = { stage: 'idle' };
+		}
+	}, 1500);
+}
+
+function setFailed(key: string, error: string): void {
+	if (tunnelState.loadingStates[key]) {
+		tunnelState.loadingStates[key].error = error;
+		tunnelState.loadingStates[key].progress = { stage: 'failed', error };
+		tunnelState.loadingStates[key].isLoading = false;
+	}
+}
 
 export const tunnelStore = {
 	get tunnels() {
 		return tunnelState.tunnels;
 	},
-	isLoading(port: number) {
-		return tunnelState.portStates[port]?.isLoading ?? false;
+
+	get activeDomainCount() {
+		let count = 0;
+		for (const tunnel of tunnelState.tunnels) {
+			const hostRules = tunnel.ingress?.filter((r) => r.hostname) ?? [];
+			count += hostRules.length > 0 ? hostRules.length : (tunnel.publicUrl ? 1 : 0);
+		}
+		return count;
 	},
-	getError(port: number) {
-		return tunnelState.portStates[port]?.error ?? null;
+
+	getLoadingState(key: string): LoadingState {
+		return tunnelState.loadingStates[key] ?? { isLoading: false, error: null, progress: { stage: 'idle' } };
 	},
-	getProgress(port: number) {
-		return tunnelState.portStates[port]?.progress ?? { stage: 'idle' };
-	},
+
 	getTunnel(port: number) {
-		return tunnelState.tunnels.find((t) => t.port === port) || null;
+		return tunnelState.tunnels.find((t) => t.port === port && t.type === 'quick') ?? null;
 	},
 
-	/**
-	 * Start tunnel globally
-	 * Note: First time may take 30-90 seconds (downloading binary + starting tunnel)
-	 */
-	async startTunnel(port: number, autoStopMinutes?: number) {
-		// Initialize port state
-		tunnelState.portStates[port] = {
-			isLoading: true,
-			error: null,
-			progress: { stage: 'starting-tunnel' }
-		};
+	// --- Quick tunnel ---
 
-		debug.log('tunnel', `[Frontend] Starting tunnel for port ${port}...`);
+	async startQuickTunnel(port: number, autoStopMinutes?: number) {
+		const key = String(port);
+		setLoading(key);
 
 		try {
-			// Use HTTP pattern directly
-			const result = await ws.http('tunnel:start', { port, autoStopMinutes });
+			const result = await ws.http('tunnel:quick:start', { port, autoStopMinutes });
 
-			if (!result || !result.publicUrl) {
-				throw new Error('No result received from server');
-			}
+			if (!result?.publicUrl) throw new Error('No result received from server');
 
-			// Add tunnel to the list
 			tunnelState.tunnels.push({
 				port,
 				publicUrl: result.publicUrl,
 				startedAt: new Date().toISOString(),
-				autoStopMinutes: autoStopMinutes || 60
+				autoStopMinutes: autoStopMinutes ?? 60,
+				type: 'quick'
 			});
 
-			tunnelState.portStates[port].progress = { stage: 'connected' };
-			tunnelState.portStates[port].isLoading = false;
-
-			debug.log('tunnel', `[Frontend] ✅ Tunnel started successfully on port ${port}:`, result.publicUrl);
-			if (result.timings) {
-				debug.log('tunnel', '[Frontend] Timings:', result.timings);
-			}
-
-			// Reset progress after a short delay
-			setTimeout(() => {
-				if (tunnelState.portStates[port]) {
-					tunnelState.portStates[port].progress = { stage: 'idle' };
-				}
-			}, 1500);
+			setConnected(key);
+			debug.log('tunnel', `Quick tunnel started on port ${port}: ${result.publicUrl}`);
 		} catch (error) {
-			if (error instanceof Error) {
-				tunnelState.portStates[port].error = error.message;
-				tunnelState.portStates[port].progress = { stage: 'failed', error: error.message };
-				debug.error('tunnel', '[Frontend] Error:', error.message);
-			} else {
-				const errorMsg = 'Unknown error';
-				tunnelState.portStates[port].error = errorMsg;
-				tunnelState.portStates[port].progress = { stage: 'failed', error: errorMsg };
-				debug.error('tunnel', '[Frontend] Unknown error:', error);
-			}
-			tunnelState.portStates[port].isLoading = false;
+			const msg = error instanceof Error ? error.message : 'Unknown error';
+			setFailed(key, msg);
+			debug.error('tunnel', 'Quick tunnel error:', msg);
 			throw error;
 		}
 	},
 
-	/**
-	 * Stop tunnel for a port
-	 */
-	async stopTunnel(port: number) {
+	async stopQuickTunnel(port: number) {
 		try {
-			const response = await ws.http('tunnel:stop', { port });
+			const response = await ws.http('tunnel:quick:stop', { port });
+			if (!response.stopped) throw new Error('Failed to stop tunnel');
 
-			if (!response.stopped) {
-				throw new Error('Failed to stop tunnel');
-			}
-
-			// Remove tunnel from the list
-			tunnelState.tunnels = tunnelState.tunnels.filter((t) => t.port !== port);
-			delete tunnelState.portStates[port];
-
-			debug.log('tunnel', `Tunnel stopped on port ${port}`);
+			tunnelState.tunnels = tunnelState.tunnels.filter(
+				(t) => !(t.port === port && t.type === 'quick')
+			);
+			delete tunnelState.loadingStates[String(port)];
 		} catch (error) {
-			debug.error('tunnel', 'Failed to stop tunnel:', error);
+			debug.error('tunnel', 'Failed to stop quick tunnel:', error);
 			throw error;
 		}
 	},
 
-	/**
-	 * Check tunnel status globally
-	 */
+	// --- Remote tunnel ---
+
+	async startRemoteTunnel(configId: string) {
+		setLoading(configId);
+
+		try {
+			await ws.http('tunnel:remote:start', { configId });
+			setConnected(configId);
+			debug.log('tunnel', `Remote tunnel started: ${configId}`);
+		} catch (error) {
+			const msg = error instanceof Error ? error.message : 'Unknown error';
+			setFailed(configId, msg);
+			debug.error('tunnel', 'Remote tunnel error:', msg);
+			throw error;
+		}
+	},
+
+	async stopRemoteTunnel(configId: string) {
+		try {
+			const response = await ws.http('tunnel:remote:stop', { configId });
+			if (!response.stopped) throw new Error('Failed to stop tunnel');
+
+			tunnelState.tunnels = tunnelState.tunnels.filter(
+				(t) => !(t.configId === configId && t.type === 'remote')
+			);
+			delete tunnelState.loadingStates[configId];
+		} catch (error) {
+			debug.error('tunnel', 'Failed to stop remote tunnel:', error);
+			throw error;
+		}
+	},
+
+	// --- Local tunnel ---
+
+	async startLocalTunnel(configId: string) {
+		setLoading(configId);
+
+		try {
+			await ws.http('tunnel:local:start', { id: configId });
+			setConnected(configId);
+			debug.log('tunnel', `Local tunnel started: ${configId}`);
+		} catch (error) {
+			const msg = error instanceof Error ? error.message : 'Unknown error';
+			setFailed(configId, msg);
+			debug.error('tunnel', 'Local tunnel error:', msg);
+			throw error;
+		}
+	},
+
+	async stopLocalTunnel(configId: string) {
+		try {
+			const response = await ws.http('tunnel:local:stop', { id: configId });
+			if (!response.stopped) throw new Error('Failed to stop tunnel');
+
+			tunnelState.tunnels = tunnelState.tunnels.filter(
+				(t) => !(t.configId === configId && t.type === 'local')
+			);
+			delete tunnelState.loadingStates[configId];
+		} catch (error) {
+			debug.error('tunnel', 'Failed to stop local tunnel:', error);
+			throw error;
+		}
+	},
+
+	// --- Local auth ---
+
+	async checkAuth(): Promise<{ authenticated: boolean; certPath: string; zone: string | null }> {
+		return await ws.http('tunnel:local:auth-status', {});
+	},
+
+	async logout(): Promise<void> {
+		await ws.http('tunnel:local:logout', {});
+	},
+
+	async setZone(zone: string): Promise<void> {
+		await ws.http('tunnel:local:set-zone', { zone });
+	},
+
+	startLogin() {
+		ws.emit('tunnel:local:login-start', {});
+	},
+
+	cancelLogin() {
+		ws.emit('tunnel:local:login-cancel', {});
+	},
+
+	// --- Status ---
+
 	async checkStatus() {
 		try {
 			const response = await ws.http('tunnel:status', {});
-
-			// Update tunnels list from server
-			tunnelState.tunnels = response.tunnels || [];
+			tunnelState.tunnels = response.tunnels ?? [];
 		} catch (error) {
 			debug.error('tunnel', 'Failed to check tunnel status:', error);
 		}
 	},
 
-	/**
-	 * Reset tunnel state
-	 */
 	reset() {
 		tunnelState.tunnels = [];
-		tunnelState.portStates = {};
+		tunnelState.loadingStates = {};
+	},
+
+	/** Update ingress for a specific tunnel (used by remote ingress-update events) */
+	updateTunnelIngress(configId: string, ingress: IngressInfo[]) {
+		const tunnel = tunnelState.tunnels.find((t) => t.configId === configId);
+		if (tunnel) {
+			tunnel.ingress = ingress;
+			// Also update publicUrl from first hostname
+			const firstHostname = ingress.find((r) => r.hostname)?.hostname;
+			if (firstHostname) {
+				tunnel.publicUrl = `https://${firstHostname}`;
+			}
+		}
+	},
+
+	/** Initialize realtime tunnel status listener. Call once on app mount. */
+	initRealtimeListener() {
+		const cleanupStatus = ws.on('tunnel:status-changed', (data: { tunnels: TunnelInfo[] }) => {
+			tunnelState.tunnels = data.tunnels;
+		});
+
+		const cleanupIngress = ws.on('tunnel:remote:ingress-update', (data: { configId: string; ingress: IngressInfo[] }) => {
+			tunnelStore.updateTunnelIngress(data.configId, data.ingress);
+		});
+
+		return () => {
+			cleanupStatus();
+			cleanupIngress();
+		};
 	}
 };

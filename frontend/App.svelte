@@ -36,8 +36,9 @@
 			// Initialize MCP Preview Integration
 			initializeMCPPreview();
 
-			// Restore tunnel status
+			// Restore tunnel status and listen for realtime updates
 			tunnelStore.checkStatus();
+			tunnelStore.initRealtimeListener();
 
 			// Start periodic update checker
 			startUpdateChecker();

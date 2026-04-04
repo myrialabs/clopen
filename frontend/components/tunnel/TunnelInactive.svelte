@@ -12,56 +12,56 @@
 	let warningMessage = $state<string | null>(null);
 	let warningDismissed = $state(false);
 
-	// Info box visibility - load from localStorage
 	let showInfoBox = $state(
 		typeof window !== 'undefined'
 			? localStorage.getItem('clopen-tunnel-info-dismissed') !== 'true'
 			: true
 	);
 
+	const key = $derived(String(port ?? 0));
+	const loadingState = $derived(tunnelStore.getLoadingState(key));
+	const isLoading = $derived(loadingState.isLoading);
+	const progress = $derived(loadingState.progress);
+	const error = $derived(loadingState.error);
+
+	const isStartDisabled = $derived(isLoading || !port);
+
 	async function handleStartTunnel() {
-		if (!port) return;
-
-		// Check if tunnel already exists for this port
-		if (tunnelStore.getTunnel(port)) {
-			warningMessage = `Tunnel already active on port ${port}`;
-			warningDismissed = false;
-			showWarning = false;
-			return;
-		}
-
-		// Save "don't show again" preference
 		if (dontShowWarningAgain) {
 			localStorage.setItem('clopen-tunnel-warning-dismissed', 'true');
 		}
 
-		// Close modal immediately
 		showWarning = false;
 
 		try {
-			await tunnelStore.startTunnel(port, autoStopMinutes);
-		} catch (error) {
-			console.error('Failed to start tunnel:', error);
+			if (!port) return;
+
+			if (tunnelStore.getTunnel(port)) {
+				warningMessage = `Tunnel already active on port ${port}`;
+				warningDismissed = false;
+				return;
+			}
+
+			await tunnelStore.startQuickTunnel(port, autoStopMinutes);
+		} catch {
+			// Error handled by store
 		}
 	}
 
-	// Get loading and progress state for current port
-	const isLoading = $derived(tunnelStore.isLoading(port ?? 0));
-	const progress = $derived(tunnelStore.getProgress(port ?? 0));
-	const error = $derived(tunnelStore.getError(port ?? 0));
-
 	function openWarningModal() {
-		// Clear any previous warning messages
 		warningMessage = null;
-
-		// Reset error and warning dismissed state when user tries to start again
 		errorDismissed = false;
 		warningDismissed = false;
 
-		// Check if user has dismissed warning permanently
+		if (!port) return;
+		if (tunnelStore.getTunnel(port)) {
+			warningMessage = `Tunnel already active on port ${port}`;
+			warningDismissed = false;
+			return;
+		}
+
 		const securityWarningDismissed = localStorage.getItem('clopen-tunnel-warning-dismissed') === 'true';
 		if (securityWarningDismissed) {
-			// Skip warning and start tunnel directly
 			handleStartTunnel();
 		} else {
 			showWarning = true;
@@ -85,16 +85,14 @@
 <div class="space-y-6">
 	<!-- Info Card -->
 	{#if showInfoBox}
-		<div
-			class="p-4 bg-violet-500/5 dark:bg-violet-500/10 border border-violet-500/20 rounded-xl"
-		>
+		<div class="p-4 bg-violet-500/5 dark:bg-violet-500/10 border border-violet-500/20 rounded-xl">
 			<div class="flex gap-3">
 				<Icon name="lucide:info" class="w-5 h-5 text-violet-600 dark:text-violet-400 flex-shrink-0 mt-0.5" />
 				<div class="flex-1 text-sm text-slate-700 dark:text-slate-300">
 					<p class="font-semibold mb-1">What is Public Tunnel?</p>
 					<p class="text-slate-600 dark:text-slate-400">
 						Create a secure HTTPS tunnel to share your local development server with anyone on the
-						internet.
+						internet. Uses a random <span class="font-mono text-xs">*.trycloudflare.com</span> URL.
 					</p>
 				</div>
 				<button
@@ -124,9 +122,6 @@
 				placeholder="3000"
 				class="block w-full px-3 py-3 border border-slate-300 dark:border-slate-600 rounded-lg transition-colors duration-200 focus:outline-none text-sm font-medium focus:border-violet-500 focus:ring-2 focus:ring-violet-200 dark:focus:ring-violet-900/20 bg-white dark:bg-slate-900 text-slate-900 dark:text-slate-100 placeholder-slate-400 dark:placeholder-slate-500"
 			/>
-			<!-- <p class="text-xs text-slate-500 dark:text-slate-400">
-				Port number where your app is running (e.g., 3000 for Vite, 8080 for API)
-			</p> -->
 		</div>
 
 		<!-- Auto-Stop Timer -->
@@ -144,22 +139,18 @@
 				<option value={60}>1 hour</option>
 				<option value={120}>2 hours</option>
 				<option value={180}>3 hours</option>
+				<option value={0}>No limit</option>
 			</select>
-			<!-- <p class="text-xs text-slate-500 dark:text-slate-400">
-				Tunnel will automatically stop after this duration
-			</p> -->
 		</div>
 
 		<!-- Start Button -->
 		<button
 			onclick={openWarningModal}
-			disabled={isLoading || !port}
+			disabled={isStartDisabled}
 			class="inline-flex items-center justify-center font-semibold transition-colors duration-200 focus:outline-none disabled:opacity-50 disabled:cursor-not-allowed w-full px-3 md:px-4 py-2.5 text-sm rounded-lg bg-violet-600 hover:bg-violet-700 text-white gap-2"
 		>
 			{#if isLoading}
-				<div
-					class="animate-spin rounded-full h-4 w-4 border-2 border-current border-t-transparent"
-				></div>
+				<div class="animate-spin rounded-full h-4 w-4 border-2 border-current border-t-transparent"></div>
 				<span>
 					{#if progress.stage === 'checking-binary'}
 						Checking binary...
@@ -183,52 +174,35 @@
 			{/if}
 		</button>
 
-		<!-- Warning Message (e.g., tunnel already active) -->
+		<!-- Warning Message -->
 		{#if warningMessage && !warningDismissed}
-			<div
-				class="bg-yellow-500/10 border border-yellow-500/20 rounded-lg p-4 text-sm"
-			>
+			<div class="bg-yellow-500/10 border border-yellow-500/20 rounded-lg p-4 text-sm">
 				<div class="flex items-start gap-2 text-yellow-600 dark:text-yellow-400">
 					<Icon name="lucide:triangle-alert" class="w-5 h-5 flex-shrink-0 mt-0.5" />
 					<div class="flex-1 space-y-1">
 						<div class="font-semibold">Warning</div>
-						<div class="text-yellow-500 dark:text-yellow-300">
-							{warningMessage}
-						</div>
+						<div class="text-yellow-500 dark:text-yellow-300">{warningMessage}</div>
 					</div>
-					<button
-						onclick={dismissWarning}
-						class="text-yellow-400 hover:text-yellow-600 dark:hover:text-yellow-300 transition-colors flex-shrink-0"
-						title="Dismiss"
-					>
+					<button onclick={dismissWarning} class="text-yellow-400 hover:text-yellow-600 dark:hover:text-yellow-300 transition-colors flex-shrink-0" title="Dismiss">
 						<Icon name="lucide:x" class="w-5 h-5" />
 					</button>
 				</div>
 			</div>
 		{/if}
 
+		<!-- Error -->
 		{#if (error || progress.stage === 'failed') && !errorDismissed}
-			<div
-				class="bg-red-500/10 border border-red-500/20 rounded-lg p-4 text-sm space-y-3"
-			>
+			<div class="bg-red-500/10 border border-red-500/20 rounded-lg p-4 text-sm space-y-3">
 				<div class="flex items-start gap-2 text-red-600 dark:text-red-400">
 					<Icon name="lucide:circle-alert" class="w-5 h-5 flex-shrink-0 mt-0.5" />
 					<div class="flex-1 space-y-1">
 						<div class="font-semibold">Tunnel Failed</div>
-						<div class="text-red-500 dark:text-red-300">
-							{error}
-						</div>
+						<div class="text-red-500 dark:text-red-300">{error}</div>
 					</div>
-					<button
-						onclick={dismissError}
-						class="text-red-400 hover:text-red-600 dark:hover:text-red-300 transition-colors flex-shrink-0"
-						title="Dismiss"
-					>
+					<button onclick={dismissError} class="text-red-400 hover:text-red-600 dark:hover:text-red-300 transition-colors flex-shrink-0" title="Dismiss">
 						<Icon name="lucide:x" class="w-5 h-5" />
 					</button>
 				</div>
-
-				<!-- Common solutions -->
 				<div class="text-xs text-slate-700 dark:text-slate-300 space-y-1 pt-2 border-t border-red-500/20">
 					<div class="font-semibold">Common solutions:</div>
 					<ul class="list-disc list-inside space-y-0.5 text-slate-600 dark:text-slate-400">
@@ -259,7 +233,6 @@
 				</div>
 			</div>
 
-			<!-- Don't show again checkbox -->
 			<div class="pt-2">
 				<Checkbox
 					id="dontShowWarning"

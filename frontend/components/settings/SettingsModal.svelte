@@ -22,6 +22,7 @@
 	import InviteManagement from './admin/InviteManagement.svelte';
 	import SecuritySettings from './security/SecuritySettings.svelte';
 	import SystemSettings from './system/SystemSettings.svelte';
+	import TunnelSettings from './tunnel/TunnelSettings.svelte';
 
 	// Responsive state
 	let isMobileMenuOpen = $state(false);
@@ -230,6 +231,10 @@
 						{:else if activeSection === 'notifications'}
 							<div in:fly={{ x: 20, duration: 200 }}>
 								<NotificationSettings />
+							</div>
+						{:else if activeSection === 'tunnel'}
+							<div in:fly={{ x: 20, duration: 200 }}>
+								<TunnelSettings />
 							</div>
 						{:else if activeSection === 'account'}
 							<div in:fly={{ x: 20, duration: 200 }}>

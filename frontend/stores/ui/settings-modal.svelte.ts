@@ -10,6 +10,7 @@ export type SettingsSection =
 	| 'engines'
 	| 'appearance'
 	| 'notifications'
+	| 'tunnel'
 	| 'account'
 	| 'team'
 	| 'security'
@@ -47,6 +48,12 @@ export const settingsSections: SettingsSectionMeta[] = [
 		label: 'Notifications',
 		icon: 'lucide:bell',
 		description: 'Sound and push notifications'
+	},
+	{
+		id: 'tunnel',
+		label: 'Tunnel',
+		icon: 'lucide:globe',
+		description: 'Cloudflare tunnel services'
 	},
 	{
 		id: 'account',

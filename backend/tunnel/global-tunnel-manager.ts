@@ -1,57 +1,107 @@
-import { Tunnel, bin, install } from 'cloudflared';
-import { debug } from '$shared/utils/logger';
-import { existsSync } from 'fs';
+/**
+ * Global Tunnel Manager
+ *
+ * Manages three types of Cloudflare Tunnels:
+ * - Quick: Random URL via trycloudflare.com (no account needed)
+ * - Remote: Dashboard-managed tunnels via token (ConfigHandler for ingress sync)
+ * - Local: Locally-managed tunnels (login, create, config file, run)
+ */
 
-interface TunnelInstance {
-	tunnel: any;
-	publicUrl: string;
-	localPort: number;
-	startedAt: Date;
-	autoStopMinutes: number;
-	autoStopTimer?: NodeJS.Timeout;
+import { debug } from '$shared/utils/logger';
+import { existsSync, mkdirSync, renameSync, writeFileSync, unlinkSync, rmSync } from 'fs';
+import { homedir } from 'os';
+import { join } from 'path';
+import { getTunnelDir } from './tunnel-config';
+import type { RemoteTunnelConfig, LocalTunnelConfig } from './tunnel-config';
+import { getBinaryPath, isBinaryInstalled, installBinary, CloudflaredTunnel, type LoginHandle } from './cloudflared';
+
+// --- Types ---
+
+export type TunnelType = 'quick' | 'remote' | 'local';
+
+export interface IngressInfo {
+	hostname?: string;
+	service: string;
 }
 
-class GlobalTunnelManager {
-	// Key format: "port" for global tunnels
-	private activeTunnels = new Map<number, TunnelInstance>();
-	private binaryInstalled = false;
+interface BaseTunnelInstance {
+	tunnel: CloudflaredTunnel;
+	startedAt: Date;
+	type: TunnelType;
+}
 
-	/**
-	 * Ensure cloudflared binary is installed
-	 * Downloads binary on first use (~66MB, takes 30-60 seconds)
-	 */
+interface QuickTunnelInstance extends BaseTunnelInstance {
+	type: 'quick';
+	publicUrl: string;
+	localPort: number;
+	autoStopMinutes: number;
+	autoStopTimer?: ReturnType<typeof setTimeout>;
+}
+
+interface RemoteTunnelInstance extends BaseTunnelInstance {
+	type: 'remote';
+	configId: string;
+	label: string;
+	ingress: IngressInfo[];
+}
+
+interface LocalTunnelInstance extends BaseTunnelInstance {
+	type: 'local';
+	configId: string;
+	name: string;
+	ingress: IngressInfo[];
+}
+
+// --- Cloudflared paths ---
+
+const CERT_PATH = join(getTunnelDir(), 'cert.pem');
+const DEFAULT_CLOUDFLARED_CERT = join(homedir(), '.cloudflared', 'cert.pem');
+
+// --- Manager ---
+
+class GlobalTunnelManager {
+	private quickTunnels = new Map<number, QuickTunnelInstance>();
+	private remoteTunnels = new Map<string, RemoteTunnelInstance>();
+	private localTunnels = new Map<string, LocalTunnelInstance>();
+	private binaryInstalled = false;
+	private loginHandle: LoginHandle | null = null;
+
+	// Callback for pushing ingress updates to connected clients
+	private onRemoteIngressUpdate?: (configId: string, ingress: IngressInfo[]) => void;
+	// Callback for pushing tunnel list changes
+	private onStatusChanged?: () => void;
+
+	setRemoteIngressUpdateCallback(cb: (configId: string, ingress: IngressInfo[]) => void): void {
+		this.onRemoteIngressUpdate = cb;
+	}
+
+	setStatusChangedCallback(cb: () => void): void {
+		this.onStatusChanged = cb;
+	}
+
+	private notifyStatusChanged(): void {
+		this.onStatusChanged?.();
+	}
+
+	// --- Binary management ---
+
 	private async ensureBinaryInstalled(
 		onProgress?: (stage: string, data?: any) => void
-	): Promise<{
-		needsDownload: boolean;
-		downloadTime?: number;
-	}> {
-		// Check if already verified in this session
+	): Promise<{ needsDownload: boolean; downloadTime?: number }> {
 		if (this.binaryInstalled) {
 			onProgress?.('binary-ready', { cached: true });
 			return { needsDownload: false };
 		}
 
-		// Check if binary file exists
-		if (!existsSync(bin)) {
-			debug.log('tunnel', '[PROGRESS:DOWNLOADING_BINARY] Cloudflared binary not found, downloading...');
-			debug.log('tunnel', 'This may take 30-60 seconds on first use (downloading ~66MB)');
+		if (!isBinaryInstalled()) {
+			debug.log('tunnel', 'Cloudflared binary not found, downloading...');
 			onProgress?.('downloading-binary', { size: '~66MB' });
 
 			const startTime = Date.now();
-
 			try {
-				// Call install() from cloudflared package
-				// This downloads the binary from Cloudflare's CDN
-				await install(bin);
-
+				await installBinary();
 				const downloadTime = Date.now() - startTime;
-				debug.log('tunnel', `[PROGRESS:BINARY_READY] Cloudflared binary installed successfully in ${downloadTime}ms at: ${bin}`);
-
-				// Verify the binary was actually created
-				if (!existsSync(bin)) {
-					throw new Error('Binary file was not created after installation');
-				}
+				debug.log('tunnel', `Cloudflared binary installed in ${downloadTime}ms at: ${getBinaryPath()}`);
 
 				this.binaryInstalled = true;
 				onProgress?.('binary-ready', { downloaded: true, time: downloadTime });
@@ -59,90 +109,62 @@ class GlobalTunnelManager {
 			} catch (error) {
 				debug.error('tunnel', 'Failed to install cloudflared binary:', error);
 				throw new Error(
-					'Failed to download cloudflared binary. Please check your internet connection and try again. ' +
-						'The tunnel feature requires downloading ~66MB on first use.'
+					'Failed to download cloudflared binary. Please check your internet connection and try again.'
 				);
 			}
-		} else {
-			debug.log('tunnel', '[PROGRESS:BINARY_READY] Cloudflared binary already installed at:', bin);
-			this.binaryInstalled = true;
-			onProgress?.('binary-ready', { cached: true });
-			return { needsDownload: false };
 		}
+
+		debug.log('tunnel', 'Cloudflared binary already installed at:', getBinaryPath());
+		this.binaryInstalled = true;
+		onProgress?.('binary-ready', { cached: true });
+		return { needsDownload: false };
 	}
 
-	/**
-	 * Start cloudflared tunnel for a port
-	 */
-	async startTunnel(
+	// --- Quick tunnel ---
+
+	async startQuickTunnel(
 		port: number,
 		autoStopMinutes: number = 60,
 		onProgress?: (stage: string, data?: any) => void
-	): Promise<{ publicUrl: string; status: 'active'; binaryDownloaded: boolean; timings: any }> {
-		debug.log('tunnel', '[PROGRESS:CHECKING_BINARY] Checking if binary is installed...');
+	): Promise<{ publicUrl: string; binaryDownloaded: boolean; timings: Record<string, number> }> {
 		onProgress?.('checking-binary');
-
-		// Ensure binary is installed
 		const binaryInfo = await this.ensureBinaryInstalled(onProgress);
-		const timings: any = {};
+		const timings: Record<string, number> = {};
+		if (binaryInfo.downloadTime) timings.binaryDownload = binaryInfo.downloadTime;
 
-		if (binaryInfo.needsDownload) {
-			timings.binaryDownload = binaryInfo.downloadTime;
+		if (this.quickTunnels.has(port)) {
+			const existing = this.quickTunnels.get(port)!;
+			return { publicUrl: existing.publicUrl, binaryDownloaded: binaryInfo.needsDownload, timings };
 		}
 
-		// Check if tunnel already exists for this port
-		if (this.activeTunnels.has(port)) {
-			const existing = this.activeTunnels.get(port)!;
-			debug.log('tunnel', `Tunnel already exists for port ${port}, returning existing URL`);
-			return {
-				publicUrl: existing.publicUrl,
-				status: 'active',
-				binaryDownloaded: binaryInfo.needsDownload,
-				timings
-			};
-		}
-
-		debug.log('tunnel', `[PROGRESS:STARTING_TUNNEL] Starting cloudflared tunnel for port ${port}...`);
 		onProgress?.('starting-tunnel', { port });
-
 		const tunnelStartTime = Date.now();
 
 		try {
-			// Create quick tunnel instance
-			const tunnel = Tunnel.quick(`http://localhost:${port}`);
+			const tunnel = CloudflaredTunnel.quick(`http://localhost:${port}`);
 
-			// Log ALL events for debugging
-			tunnel.on('url', (url: string) => debug.log('tunnel', `[EVENT] url: ${url}`));
-			tunnel.on('connected', (info: any) => debug.log('tunnel', `[EVENT] connected:`, info));
-			tunnel.on('error', (error: Error) => debug.error('tunnel', `[EVENT] error:`, error));
-			tunnel.on('exit', (code: number | null) => debug.log('tunnel', `[EVENT] exit with code ${code}`));
-			tunnel.on('stdout', (data: string) => debug.log('tunnel', `[STDOUT] ${data.trim()}`));
-			tunnel.on('stderr', (data: string) => debug.log('tunnel', `[STDERR] ${data.trim()}`));
+			tunnel.on('error', (error: Error) => debug.error('tunnel', `[quick:${port}] error:`, error));
+			tunnel.on('exit', (code: number | null) => {
+				debug.log('tunnel', `[quick:${port}] exit code ${code}`);
+				this.quickTunnels.delete(port);
+				this.notifyStatusChanged();
+			});
 
-			// Wait for tunnel to be ready
-			debug.log('tunnel', '[PROGRESS:GENERATING_URL] Waiting for public URL...');
 			onProgress?.('generating-url');
 
 			const publicUrl: string = await new Promise((resolve, reject) => {
 				const timeout = setTimeout(() => {
 					tunnel.stop();
-					reject(new Error('Tunnel connection timeout (30s). Please check if port ' + port + ' is accessible and has a running service.'));
-				}, 30000); // 30 second timeout
+					reject(new Error(`Tunnel connection timeout (30s). Please check if port ${port} is accessible.`));
+				}, 30000);
 
 				tunnel.on('url', (url: string) => {
-					// Validate that this is an actual tunnel URL, not the API endpoint
-					if (url.includes('api.trycloudflare.com')) {
-						debug.log('tunnel', `Ignoring API endpoint URL: ${url}`);
-						return;
-					}
-
-					debug.log('tunnel', `[PROGRESS:CONNECTED] ✅ Tunnel connected! Public URL: ${url}`);
+					if (url.includes('api.trycloudflare.com')) return;
 					clearTimeout(timeout);
 					resolve(url);
 				});
 
 				tunnel.on('error', (error: Error) => {
-					debug.error('tunnel', '[PROGRESS:FAILED] Tunnel error:', error);
 					clearTimeout(timeout);
 					reject(error);
 				});
@@ -150,117 +172,481 @@ class GlobalTunnelManager {
 				tunnel.once('exit', (code: number | null) => {
 					if (code !== 0 && code !== null) {
 						clearTimeout(timeout);
-						reject(new Error(`Tunnel failed to start (exit code ${code}). Please check your internet connection.`));
+						reject(new Error(`Tunnel failed to start (exit code ${code}).`));
 					}
 				});
 			});
 
 			timings.tunnelStart = Date.now() - tunnelStartTime;
-			timings.total = Date.now() - tunnelStartTime + (binaryInfo.downloadTime || 0);
 
-			// Setup auto-stop timer
-			const autoStopMs = autoStopMinutes * 60 * 1000;
-			const autoStopTimer = setTimeout(
-				() => {
-					debug.log('tunnel', `Auto-stopping tunnel on port ${port} after ${autoStopMinutes} minutes`);
-					this.stopTunnel(port);
-				},
-				autoStopMs
-			);
+			let autoStopTimer: ReturnType<typeof setTimeout> | undefined;
+			if (autoStopMinutes > 0) {
+				autoStopTimer = setTimeout(async () => {
+					debug.log('tunnel', `Auto-stopping quick tunnel on port ${port}`);
+					await this.stopQuickTunnel(port);
+				}, autoStopMinutes * 60 * 1000);
+			}
 
-			// Store tunnel instance
-			const instance: TunnelInstance = {
+			this.quickTunnels.set(port, {
 				tunnel,
 				publicUrl,
 				localPort: port,
+				type: 'quick',
 				startedAt: new Date(),
 				autoStopMinutes,
 				autoStopTimer
-			};
+			});
 
-			this.activeTunnels.set(port, instance);
-
-			debug.log('tunnel', `✅ Tunnel started successfully on port ${port}`);
-			debug.log('tunnel', `   Public URL: ${publicUrl}`);
-			debug.log('tunnel', `   Auto-stop: ${autoStopMinutes} minutes`);
-			debug.log('tunnel', `   Timings:`, timings);
+			debug.log('tunnel', `Quick tunnel started on port ${port}: ${publicUrl}`);
 			onProgress?.('connected', { publicUrl, timings });
+			this.notifyStatusChanged();
 
-			return {
-				publicUrl,
-				status: 'active',
-				binaryDownloaded: binaryInfo.needsDownload,
-				timings
-			};
+			return { publicUrl, binaryDownloaded: binaryInfo.needsDownload, timings };
 		} catch (error) {
-			debug.error('tunnel', `Failed to start tunnel on port ${port}:`, error);
+			debug.error('tunnel', `Failed to start quick tunnel on port ${port}:`, error);
 			throw error;
 		}
 	}
 
-	/**
-	 * Stop tunnel for a port
-	 */
-	async stopTunnel(port: number): Promise<void> {
-		const instance = this.activeTunnels.get(port);
+	async stopQuickTunnel(port: number): Promise<void> {
+		const instance = this.quickTunnels.get(port);
+		if (!instance) return;
 
-		if (!instance) {
-			debug.log('tunnel', `No active tunnel found for port ${port}`);
+		if (instance.autoStopTimer) clearTimeout(instance.autoStopTimer);
+		try {
+			instance.tunnel.stop();
+		} catch { /* ignore */ }
+		this.quickTunnels.delete(port);
+		debug.log('tunnel', `Quick tunnel stopped on port ${port}`);
+		this.notifyStatusChanged();
+	}
+
+	// --- Remote tunnel (dashboard-managed) ---
+
+	async startRemoteTunnel(
+		config: RemoteTunnelConfig,
+		onProgress?: (stage: string, data?: any) => void
+	): Promise<{ binaryDownloaded: boolean; timings: Record<string, number> }> {
+		onProgress?.('checking-binary');
+		const binaryInfo = await this.ensureBinaryInstalled(onProgress);
+		const timings: Record<string, number> = {};
+		if (binaryInfo.downloadTime) timings.binaryDownload = binaryInfo.downloadTime;
+
+		if (this.remoteTunnels.has(config.id)) {
+			return { binaryDownloaded: binaryInfo.needsDownload, timings };
+		}
+
+		onProgress?.('starting-tunnel', { label: config.label });
+		const tunnelStartTime = Date.now();
+
+		try {
+			const tunnel = CloudflaredTunnel.withToken(config.token);
+
+			const instance: RemoteTunnelInstance = {
+				tunnel,
+				type: 'remote',
+				configId: config.id,
+				label: config.label,
+				startedAt: new Date(),
+				ingress: []
+			};
+
+			// Sync ingress from config events (emitted by the tunnel's built-in config handler)
+			tunnel.on('config', (data: { config: any; version: number }) => {
+				if (data.config?.ingress && Array.isArray(data.config.ingress)) {
+					instance.ingress = data.config.ingress.map((rule: any) => ({
+						hostname: rule.hostname,
+						service: rule.service
+					}));
+					debug.log('tunnel', `[remote:${config.label}] Config synced, ${instance.ingress.length} ingress rules`);
+					this.onRemoteIngressUpdate?.(config.id, instance.ingress);
+				}
+			});
+
+			tunnel.on('error', (error: Error) => debug.error('tunnel', `[remote:${config.label}] error:`, error));
+			tunnel.on('exit', (code: number | null) => {
+				debug.log('tunnel', `[remote:${config.label}] exit code ${code}`);
+				this.remoteTunnels.delete(config.id);
+				this.notifyStatusChanged();
+			});
+
+			onProgress?.('generating-url');
+
+			// Wait for first connection
+			await new Promise<void>((resolve, reject) => {
+				const timeout = setTimeout(() => {
+					tunnel.stop();
+					reject(new Error('Remote tunnel connection timeout (60s). Please check your token.'));
+				}, 60000);
+
+				tunnel.once('connected', () => {
+					clearTimeout(timeout);
+					resolve();
+				});
+
+				tunnel.once('error', (error: Error) => {
+					clearTimeout(timeout);
+					tunnel.stop();
+					reject(error);
+				});
+
+				tunnel.once('exit', (code: number | null) => {
+					if (code !== 0 && code !== null) {
+						clearTimeout(timeout);
+						reject(new Error(`Remote tunnel failed (exit code ${code}). Please verify your token.`));
+					}
+				});
+			});
+
+			timings.tunnelStart = Date.now() - tunnelStartTime;
+			this.remoteTunnels.set(config.id, instance);
+
+			debug.log('tunnel', `Remote tunnel started: ${config.label}`);
+			onProgress?.('connected', { timings });
+			this.notifyStatusChanged();
+
+			return { binaryDownloaded: binaryInfo.needsDownload, timings };
+		} catch (error) {
+			debug.error('tunnel', `Failed to start remote tunnel ${config.label}:`, error);
+			throw error;
+		}
+	}
+
+	async stopRemoteTunnel(configId: string): Promise<void> {
+		const instance = this.remoteTunnels.get(configId);
+		if (!instance) return;
+
+		try {
+			instance.tunnel.stop();
+		} catch { /* ignore */ }
+		this.remoteTunnels.delete(configId);
+		debug.log('tunnel', `Remote tunnel stopped: ${instance.label}`);
+		this.notifyStatusChanged();
+	}
+
+	getRemoteTunnelIngress(configId: string): IngressInfo[] {
+		return this.remoteTunnels.get(configId)?.ingress ?? [];
+	}
+
+	isRemoteTunnelActive(configId: string): boolean {
+		return this.remoteTunnels.has(configId);
+	}
+
+	// --- Local tunnel (locally-managed) ---
+
+	checkCloudflaredAuth(): { authenticated: boolean; certPath: string } {
+		// Migrate cert from default cloudflared location if it exists there but not in our dir
+		if (!existsSync(CERT_PATH) && existsSync(DEFAULT_CLOUDFLARED_CERT)) {
+			this.moveCertToTunnelDir();
+		}
+		const authenticated = existsSync(CERT_PATH);
+		return { authenticated, certPath: CERT_PATH };
+	}
+
+	async loginCloudflared(
+		onUrl?: (url: string) => void,
+		onComplete?: () => void,
+		onError?: (error: string) => void
+	): Promise<void> {
+		await this.ensureBinaryInstalled();
+
+		if (this.loginHandle) {
+			onError?.('Login process already running');
 			return;
 		}
 
-		debug.log('tunnel', `Stopping tunnel on port ${port}...`);
+		debug.log('tunnel', 'Starting cloudflared login...');
+
+		this.loginHandle = CloudflaredTunnel.login({
+			onUrl: (url) => {
+				debug.log('tunnel', `[login] Auth URL: ${url}`);
+				onUrl?.(url);
+			},
+			onComplete: () => {
+				this.loginHandle = null;
+				// Move cert.pem from ~/.cloudflared/ to our tunnel dir
+				this.moveCertToTunnelDir();
+				debug.log('tunnel', 'Cloudflared login successful');
+				onComplete?.();
+			},
+			onError: (message) => {
+				this.loginHandle = null;
+				debug.error('tunnel', `Cloudflared login failed: ${message}`);
+				onError?.(message);
+			}
+		});
+	}
+
+	private moveCertToTunnelDir(): void {
+		if (existsSync(DEFAULT_CLOUDFLARED_CERT)) {
+			const tunnelDir = getTunnelDir();
+			if (!existsSync(tunnelDir)) {
+				mkdirSync(tunnelDir, { recursive: true });
+			}
+			renameSync(DEFAULT_CLOUDFLARED_CERT, CERT_PATH);
+			debug.log('tunnel', `Cert moved: ${DEFAULT_CLOUDFLARED_CERT} -> ${CERT_PATH}`);
+		}
+	}
+
+	cancelLogin(): void {
+		if (this.loginHandle) {
+			debug.log('tunnel', 'Cloudflared login cancelled by user');
+			this.loginHandle.cancel();
+			this.loginHandle = null;
+		}
+	}
+
+	logoutCloudflared(): { success: boolean } {
+		try {
+			if (existsSync(CERT_PATH)) {
+				unlinkSync(CERT_PATH);
+				debug.log('tunnel', 'Cloudflared cert.pem removed (logged out)');
+			}
+			return { success: true };
+		} catch (error) {
+			debug.error('tunnel', 'Failed to remove cert.pem:', error);
+			return { success: false };
+		}
+	}
+
+	async createLocalTunnel(name: string): Promise<{ tunnelId: string; credentialsFile: string }> {
+		await this.ensureBinaryInstalled();
+
+		// Write credentials directly to our dir (not ~/.cloudflared/)
+		const tunnelBaseDir = getTunnelDir();
+		if (!existsSync(tunnelBaseDir)) {
+			mkdirSync(tunnelBaseDir, { recursive: true });
+		}
+		const tempCredentials = join(tunnelBaseDir, `${name}.json`);
+		const result = await CloudflaredTunnel.createTunnel(name, { credentialsFile: tempCredentials, origincert: CERT_PATH });
+
+		// Organize into {tunnelId}/ subdirectory
+		const tunnelDir = join(tunnelBaseDir, result.tunnelId);
+		if (!existsSync(tunnelDir)) {
+			mkdirSync(tunnelDir, { recursive: true });
+		}
+		const finalCredentials = join(tunnelDir, 'credentials.json');
+		renameSync(tempCredentials, finalCredentials);
+
+		debug.log('tunnel', `Local tunnel created: ${name} (${result.tunnelId})`);
+		return { tunnelId: result.tunnelId, credentialsFile: finalCredentials };
+	}
+
+	async deleteLocalTunnel(tunnelId: string, credentialsFile?: string): Promise<void> {
+		await this.ensureBinaryInstalled();
+
+		await CloudflaredTunnel.deleteTunnel(tunnelId, { credentialsFile, origincert: CERT_PATH });
+		debug.log('tunnel', `Local tunnel deleted: ${tunnelId}`);
+	}
+
+	cleanupLocalTunnelFiles(tunnelId: string): void {
+		const configDir = join(getTunnelDir(), tunnelId);
+		if (existsSync(configDir)) {
+			rmSync(configDir, { recursive: true });
+			debug.log('tunnel', `Tunnel config directory removed: ${configDir}`);
+		}
+	}
+
+	async routeDns(tunnelName: string, hostname: string): Promise<{ alreadyExists: boolean }> {
+		await this.ensureBinaryInstalled();
+
+		const result = await CloudflaredTunnel.routeDns(tunnelName, hostname, { overwriteDns: true, origincert: CERT_PATH });
+		debug.log('tunnel', `DNS route ${result.alreadyExists ? 'updated' : 'added'}: ${hostname} -> ${tunnelName}`);
+		return result;
+	}
+
+	writeLocalTunnelConfig(config: LocalTunnelConfig): string {
+		const configDir = join(getTunnelDir(), config.tunnelId);
+		if (!existsSync(configDir)) {
+			mkdirSync(configDir, { recursive: true });
+		}
+
+		const configPath = join(configDir, 'config.yml');
+
+		const ingressRules = [
+			...config.ingress.map((r) => `  - hostname: ${r.hostname}\n    service: ${r.service}`),
+			'  - service: http_status:404'
+		];
+
+		const yml = [
+			`tunnel: ${config.tunnelId}`,
+			`credentials-file: ${config.credentialsFile}`,
+			'ingress:',
+			...ingressRules
+		].join('\n');
+
+		writeFileSync(configPath, yml, 'utf-8');
+		debug.log('tunnel', `Config file written: ${configPath}`);
+		return configPath;
+	}
+
+	async startLocalTunnel(
+		config: LocalTunnelConfig,
+		onProgress?: (stage: string, data?: any) => void
+	): Promise<{ binaryDownloaded: boolean; timings: Record<string, number> }> {
+		onProgress?.('checking-binary');
+		const binaryInfo = await this.ensureBinaryInstalled(onProgress);
+		const timings: Record<string, number> = {};
+		if (binaryInfo.downloadTime) timings.binaryDownload = binaryInfo.downloadTime;
+
+		if (this.localTunnels.has(config.id)) {
+			return { binaryDownloaded: binaryInfo.needsDownload, timings };
+		}
+
+		if (config.ingress.length === 0) {
+			throw new Error('Cannot start tunnel without ingress rules. Add at least one hostname mapping.');
+		}
+
+		// Write config file
+		const configPath = this.writeLocalTunnelConfig(config);
+
+		onProgress?.('starting-tunnel', { name: config.name });
+		const tunnelStartTime = Date.now();
 
 		try {
-			// Clear auto-stop timer
-			if (instance.autoStopTimer) {
-				clearTimeout(instance.autoStopTimer);
-			}
+			const tunnel = CloudflaredTunnel.withConfig(configPath);
 
-			// Stop tunnel
-			if (instance.tunnel && typeof instance.tunnel.stop === 'function') {
-				await instance.tunnel.stop();
-			}
+			tunnel.on('error', (error: Error) => debug.error('tunnel', `[local:${config.name}] error:`, error));
+			tunnel.on('exit', (code: number | null) => {
+				debug.log('tunnel', `[local:${config.name}] exit code ${code}`);
+				this.localTunnels.delete(config.id);
+				this.notifyStatusChanged();
+			});
 
-			// Remove from active tunnels
-			this.activeTunnels.delete(port);
+			onProgress?.('generating-url');
 
-			debug.log('tunnel', `✅ Tunnel stopped on port ${port}`);
+			// Wait for first connection
+			await new Promise<void>((resolve, reject) => {
+				const timeout = setTimeout(() => {
+					tunnel.stop();
+					reject(new Error('Local tunnel connection timeout (60s). Check your config and credentials.'));
+				}, 60000);
+
+				tunnel.once('connected', () => {
+					clearTimeout(timeout);
+					resolve();
+				});
+
+				tunnel.once('error', (error: Error) => {
+					clearTimeout(timeout);
+					tunnel.stop();
+					reject(error);
+				});
+
+				tunnel.once('exit', (code: number | null) => {
+					if (code !== 0 && code !== null) {
+						clearTimeout(timeout);
+						reject(new Error(`Local tunnel failed (exit code ${code}).`));
+					}
+				});
+			});
+
+			timings.tunnelStart = Date.now() - tunnelStartTime;
+
+			const instance: LocalTunnelInstance = {
+				tunnel,
+				type: 'local',
+				configId: config.id,
+				name: config.name,
+				startedAt: new Date(),
+				ingress: config.ingress.map((r) => ({ hostname: r.hostname, service: r.service }))
+			};
+
+			this.localTunnels.set(config.id, instance);
+			debug.log('tunnel', `Local tunnel started: ${config.name}`);
+			onProgress?.('connected', { timings });
+			this.notifyStatusChanged();
+
+			return { binaryDownloaded: binaryInfo.needsDownload, timings };
 		} catch (error) {
-			debug.error('tunnel', `Error stopping tunnel on port ${port}:`, error);
-			// Still remove from active tunnels even if stop failed
-			this.activeTunnels.delete(port);
+			debug.error('tunnel', `Failed to start local tunnel ${config.name}:`, error);
 			throw error;
 		}
 	}
 
-	/**
-	 * Get all active tunnels
-	 */
+	async stopLocalTunnel(configId: string): Promise<void> {
+		const instance = this.localTunnels.get(configId);
+		if (!instance) return;
+
+		try {
+			instance.tunnel.stop();
+		} catch { /* ignore */ }
+		this.localTunnels.delete(configId);
+		debug.log('tunnel', `Local tunnel stopped: ${instance.name}`);
+		this.notifyStatusChanged();
+	}
+
+	isLocalTunnelActive(configId: string): boolean {
+		return this.localTunnels.has(configId);
+	}
+
+	// --- Status / global ---
+
 	getActiveTunnels(): Array<{
 		port: number;
 		publicUrl: string;
 		startedAt: string;
 		autoStopMinutes: number;
+		type: TunnelType;
+		label?: string;
+		configId?: string;
+		ingress?: IngressInfo[];
 	}> {
-		return Array.from(this.activeTunnels.entries()).map(([port, instance]) => ({
-			port,
-			publicUrl: instance.publicUrl,
-			startedAt: instance.startedAt.toISOString(),
-			autoStopMinutes: instance.autoStopMinutes
-		}));
+		const tunnels: ReturnType<typeof this.getActiveTunnels> = [];
+
+		for (const [port, instance] of this.quickTunnels) {
+			tunnels.push({
+				port,
+				publicUrl: instance.publicUrl,
+				startedAt: instance.startedAt.toISOString(),
+				autoStopMinutes: instance.autoStopMinutes,
+				type: 'quick'
+			});
+		}
+
+		for (const [, instance] of this.remoteTunnels) {
+			const firstHostname = instance.ingress.find((r) => r.hostname)?.hostname;
+			tunnels.push({
+				port: 0,
+				publicUrl: firstHostname ? `https://${firstHostname}` : '',
+				startedAt: instance.startedAt.toISOString(),
+				autoStopMinutes: 0,
+				type: 'remote',
+				label: instance.label,
+				configId: instance.configId,
+				ingress: instance.ingress
+			});
+		}
+
+		for (const [, instance] of this.localTunnels) {
+			const firstHostname = instance.ingress.find((r) => r.hostname)?.hostname;
+			tunnels.push({
+				port: 0,
+				publicUrl: firstHostname ? `https://${firstHostname}` : '',
+				startedAt: instance.startedAt.toISOString(),
+				autoStopMinutes: 0,
+				type: 'local',
+				label: instance.name,
+				configId: instance.configId,
+				ingress: instance.ingress
+			});
+		}
+
+		return tunnels;
 	}
 
-	/**
-	 * Stop all tunnels
-	 */
 	async stopAllTunnels(): Promise<void> {
 		debug.log('tunnel', 'Stopping all tunnels...');
-		const ports = Array.from(this.activeTunnels.keys());
-		await Promise.all(ports.map((port) => this.stopTunnel(port)));
-		debug.log('tunnel', '✅ All tunnels stopped');
+
+		const ops: Promise<void>[] = [];
+		for (const port of this.quickTunnels.keys()) ops.push(this.stopQuickTunnel(port));
+		for (const id of this.remoteTunnels.keys()) ops.push(this.stopRemoteTunnel(id));
+		for (const id of this.localTunnels.keys()) ops.push(this.stopLocalTunnel(id));
+
+		await Promise.all(ops);
+		debug.log('tunnel', 'All tunnels stopped');
 	}
 }
 
-// Singleton instance
+// Singleton
 export const globalTunnelManager = new GlobalTunnelManager();

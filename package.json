@@ -92,7 +92,6 @@
     "@xterm/headless": "^6.0.0",
     "@xterm/xterm": "^6.0.0",
     "bun-pty": "^0.4.2",
-    "cloudflared": "^0.7.1",
     "elysia": "^1.4.19",
     "file-type": "^21.0.0",
     "is-text-path": "^3.0.0",
