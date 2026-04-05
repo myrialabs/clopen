@@ -58,7 +58,7 @@ interface LoggerConfig {
 // Default configuration - null means no filtering
 // enabled = true in development, false in production
 const config: LoggerConfig = {
-	enabled: process.env.NODE_ENV !== 'production',
+	enabled: process.env.NODE_ENV !== 'production' || process.env.CLOPEN_DEBUG === 'true',
 	filterLabels: null,
 	filterMethods: null,
 	filterText: null

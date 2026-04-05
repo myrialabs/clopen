@@ -34,6 +34,7 @@ interface CLIOptions {
 	update?: boolean;
 	resetPat?: boolean;
 	clearData?: boolean;
+	log?: boolean;
 }
 
 // Get version from package.json
@@ -331,12 +332,14 @@ COMMANDS:
 OPTIONS:
   -p, --port <number>     Port to run the server on (default: ${DEFAULT_PORT})
   --host <address>        Host address to bind to (default: ${DEFAULT_HOST})
+  --log                   Enable debug logging output
   -v, --version           Show version number
   -h, --help              Show this help message
 
 EXAMPLES:
   clopen                  # Start with default settings
   clopen --port 9145      # Start on custom port
+  clopen --log            # Start with debug logging
   clopen -v               # Show version
   clopen update           # Update to latest version
 
@@ -404,6 +407,10 @@ function parseArguments(): CLIOptions {
 
 			case 'clear-data':
 				options.clearData = true;
+				break;
+
+			case '--log':
+				options.log = true;
 				break;
 
 			default:
@@ -654,6 +661,7 @@ async function startServer(options: CLIOptions) {
 	const env = { ...process.env, ...loadEnvFile(ENV_FILE) };
 	if (options.port) env.PORT = options.port.toString();
 	if (options.host) env.HOST = options.host;
+	if (options.log) env.CLOPEN_DEBUG = 'true';
 
 	const serverProc = Bun.spawn(['bun', startScript], {
 		cwd: __dirname,
