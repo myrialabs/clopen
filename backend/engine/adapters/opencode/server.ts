@@ -6,14 +6,16 @@
  *
  * Strategy:
  * 1. Check DB for previously stored server URL → health-check → reuse if alive
- * 2. Otherwise spawn `opencode serve` with port 0 (OS-assigned) and persist URL
+ * 2. Otherwise spawn `opencode serve` via Bun.spawn (port 0, OS-assigned) and persist URL
  * 3. On every ensureClient() call, verify the server is still alive.
  *    If it died mid-session, automatically recover through the same flow.
  */
 
 import type { OpencodeClient } from '@opencode-ai/sdk';
+import type { Subprocess } from 'bun';
 import { getOpenCodeMcpConfig } from '../../../mcp';
 import { settingsQueries } from '../../../database/queries';
+import { resolveCommand } from '../../../ws/engine/utils';
 import { debug } from '$shared/utils/logger';
 
 const OPENCODE_HOST = '127.0.0.1';
@@ -21,6 +23,7 @@ const DB_KEY = 'opencode.server.url';
 const HEALTH_TIMEOUT = 1500;
 const SERVER_START_TIMEOUT = 30_000; // 30s — generous for slow devices
 
+let serverProc: Subprocess | null = null;
 let serverHandle: { url: string; close(): void } | null = null;
 let client: OpencodeClient | null = null;
 let initPromise: Promise<void> | null = null;
@@ -31,6 +34,7 @@ function clearClientState(): void {
 	client = null;
 	ready = false;
 	serverHandle = null;
+	serverProc = null;
 	ownsProcess = false;
 }
 
@@ -113,8 +117,9 @@ async function init(): Promise<void> {
 		settingsQueries.delete(DB_KEY);
 	}
 
-	// 2. Spawn a new server — port 0 lets opencode pick an OS-assigned port
-	const { createOpencode } = await import('@opencode-ai/sdk');
+	// 2. Spawn a new server via Bun.spawn — uses same binary resolution as detectCLI
+	const command = await resolveCommand('opencode');
+	const args = [command, 'serve', `--hostname=${OPENCODE_HOST}`, '--port=0'];
 
 	// Build MCP config — but only inject if the MCP endpoint is actually reachable.
 	// The opencode binary may initialize MCP connections synchronously before printing
@@ -137,25 +142,81 @@ async function init(): Promise<void> {
 		}
 	}
 
-	// No retry — SDK does not kill the child process on timeout, so retrying
-	// would leave zombie `opencode serve` processes running in the background.
-	// 30s timeout is generous enough for slow devices.
-	const result = await createOpencode({
-		hostname: OPENCODE_HOST,
-		port: 0,
-		timeout: SERVER_START_TIMEOUT,
-		...(Object.keys(mcpConfig).length > 0 && {
-			config: { mcp: mcpConfig },
-		}),
+	const configContent = Object.keys(mcpConfig).length > 0
+		? JSON.stringify({ mcp: mcpConfig })
+		: '{}';
+
+	debug.log('engine', `Spawning: ${args.join(' ')}`);
+
+	const proc = Bun.spawn(args, {
+		stdout: 'pipe',
+		stderr: 'pipe',
+		env: {
+			...process.env,
+			OPENCODE_CONFIG_CONTENT: configContent,
+		},
 	});
 
-	serverHandle = result.server;
-	client = result.client;
+	// Parse server URL from stdout — opencode prints "opencode server listening on <url>"
+	const url = await new Promise<string>((resolve, reject) => {
+		const timeout = setTimeout(() => {
+			proc.kill();
+			reject(new Error(`Timeout waiting for opencode server to start after ${SERVER_START_TIMEOUT}ms`));
+		}, SERVER_START_TIMEOUT);
+
+		let output = '';
+
+		const readStream = async (stream: ReadableStream<Uint8Array>, label: string) => {
+			const reader = stream.getReader();
+			const decoder = new TextDecoder();
+			try {
+				while (true) {
+					const { done, value } = await reader.read();
+					if (done) break;
+					const chunk = decoder.decode(value, { stream: true });
+					output += chunk;
+
+					if (label === 'stdout') {
+						for (const line of output.split('\n')) {
+							if (line.startsWith('opencode server listening')) {
+								const match = line.match(/on\s+(https?:\/\/[^\s]+)/);
+								if (match) {
+									clearTimeout(timeout);
+									resolve(match[1]);
+									return;
+								}
+							}
+						}
+					}
+				}
+			} catch {
+				// stream closed
+			}
+		};
+
+		readStream(proc.stdout as ReadableStream<Uint8Array>, 'stdout');
+		readStream(proc.stderr as ReadableStream<Uint8Array>, 'stderr');
+
+		proc.exited.then((code) => {
+			clearTimeout(timeout);
+			let msg = `opencode server exited with code ${code}`;
+			if (output.trim()) msg += `\nServer output: ${output}`;
+			reject(new Error(msg));
+		});
+	});
+
+	serverProc = proc;
+	const { createOpencodeClient } = await import('@opencode-ai/sdk');
+	client = createOpencodeClient({ baseUrl: url });
+	serverHandle = {
+		url,
+		close() { proc.kill(); },
+	};
 	ownsProcess = true;
 	ready = true;
 
-	settingsQueries.set(DB_KEY, result.server.url);
-	debug.log('engine', `Open Code client ready (server: ${result.server.url})`);
+	settingsQueries.set(DB_KEY, url);
+	debug.log('engine', `Open Code client ready (server: ${url})`);
 }
 
 export function getClient(): OpencodeClient | null {

@@ -80,11 +80,12 @@
 
 ---
 
-### 10. bun-pty for Terminal
+### 10. bun-pty for Terminal (Interactive PTY)
 
-**Decision:** bun-pty instead of node-pty
+**Decision:** bun-pty instead of node-pty for interactive PTY sessions (terminal emulator, Claude auth flow)
 **Rationale:** Native Bun implementation, full PTY emulation, cross-platform (Windows/macOS/Linux), maintained for Bun ecosystem.
-**Trade-offs:** Smaller community than node-pty.
+**Note:** Bun now has built-in PTY via `Bun.spawn({ terminal })`, but it is POSIX-only (no Windows). Since Clopen must support Windows, bun-pty remains the correct choice for interactive PTY. Bun.spawn (pipe-based) is used for non-interactive subprocesses.
+**Trade-offs:** Smaller community than node-pty, extra dependency.
 
 ---
 
@@ -106,11 +107,11 @@
 
 ---
 
-### 13. OpenCode via SDK Server
+### 13. OpenCode via SDK Client + Bun.spawn Server
 
-**Decision:** Run OpenCode as a background server, communicate via `@opencode-ai/sdk`
-**Rationale:** Keeps integration clean and swappable within the adapter pattern, messages normalized to Claude SDK format so stream manager is unchanged.
-**Trade-offs:** Background server process adds memory overhead, dependency on SDK updates.
+**Decision:** Spawn `opencode serve` via Bun.spawn, connect via `createOpencodeClient` from `@opencode-ai/sdk`
+**Rationale:** The SDK's `createOpencode` uses `node:child_process.spawn` internally, which resolves binaries differently than `Bun.spawn` — causing ENOENT on devices where `opencode` is installed in non-standard PATH locations (e.g. `~/.local/bin`, `~/go/bin`). By spawning with Bun.spawn and using `resolveCommand()` (same as version detection), binary resolution is consistent. The SDK's client (`createOpencodeClient`) is still used for HTTP communication.
+**Trade-offs:** Must maintain stdout parsing for server URL (`"opencode server listening on <url>"`), background server process adds memory overhead.
 
 ---
 
@@ -247,5 +248,13 @@
 **Decision:** Replace single-page admin setup with a multi-step wizard (auth mode → admin account → AI engines → preferences)
 **Rationale:** First-time setup involves multiple concerns — authentication strategy, account creation, engine availability, and appearance preferences. A step-by-step wizard reduces cognitive load and lets users skip optional steps (engines, preferences) while ensuring critical decisions (auth mode) are made upfront. The stepper UI shows progress and allows navigation back to completed steps.
 **Trade-offs:** More complex setup component, but each step is self-contained and reuses existing components/logic.
+
+---
+
+### 30. Subprocess Spawn Strategy
+
+**Decision:** Use `Bun.spawn` for all non-interactive subprocesses, `bun-pty` for interactive PTY sessions
+**Rationale:** Third-party SDKs that use `node:child_process.spawn` resolve binaries differently than `Bun.spawn`, causing ENOENT on some devices. All Clopen-owned subprocess spawning uses `Bun.spawn` for consistent binary resolution. Interactive sessions (terminal emulator, Claude auth) use `bun-pty` for full PTY emulation including Windows support.
+**Trade-offs:** Must avoid relying on third-party SDK spawn functions for CLI binaries.
 
 ---

@@ -5,7 +5,7 @@
  * Converts Open Code messages/events → SDKMessage (Claude format)
  * so stream-manager and frontend remain unchanged.
  *
- * Server lifecycle is managed by ./server.ts (bun-pty spawn).
+ * Server lifecycle is managed by ./server.ts (Bun.spawn).
  * This file only contains the OpenCodeEngine class (per-project instance).
  */
 
