@@ -383,15 +383,43 @@ async function startServer(options: CLIOptions) {
 	if (options.host) env.CLOPEN_HOST = options.host;
 	if (options.log) env.CLOPEN_DEBUG = 'true';
 
+	startSpinner('Starting server...');
+
 	const serverProc = Bun.spawn(['bun', startScript], {
 		cwd: __dirname,
-		stdout: 'inherit',
-		stderr: 'inherit',
+		stdout: 'pipe',
+		stderr: 'pipe',
 		stdin: 'inherit',
 		env,
 	});
 
-	await serverProc.exited;
+	// Forward subprocess output, stopping spinner on first chunk
+	let spinnerActive = true;
+
+	async function pipeStream(stream: ReadableStream<Uint8Array>, target: NodeJS.WriteStream) {
+		const reader = stream.getReader();
+		try {
+			while (true) {
+				const { done, value } = await reader.read();
+				if (done) break;
+				if (spinnerActive) {
+					stopSpinner();
+					spinnerActive = false;
+				}
+				target.write(value);
+			}
+		} finally {
+			reader.releaseLock();
+		}
+	}
+
+	await Promise.all([
+		pipeStream(serverProc.stdout, process.stdout),
+		pipeStream(serverProc.stderr, process.stderr),
+		serverProc.exited,
+	]);
+
+	if (spinnerActive) stopSpinner();
 }
 
 // ============================================================
