@@ -659,8 +659,8 @@ async function startServer(options: CLIOptions) {
 	const startScript = join(__dirname, 'scripts/start.ts');
 
 	const env = { ...process.env, ...loadEnvFile(ENV_FILE) };
-	if (options.port) env.PORT = options.port.toString();
-	if (options.host) env.HOST = options.host;
+	if (options.port) env.CLOPEN_PORT = options.port.toString();
+	if (options.host) env.CLOPEN_HOST = options.host;
 	if (options.log) env.CLOPEN_DEBUG = 'true';
 
 	const serverProc = Bun.spawn(['bun', startScript], {

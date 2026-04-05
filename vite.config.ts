@@ -3,8 +3,8 @@ import { defineConfig } from 'vite';
 import tailwindcss from '@tailwindcss/vite';
 import { resolve } from 'path';
 
-const frontendPort = parseInt(process.env.PORT_FRONTEND || '9151');
-const backendPort = parseInt(process.env.PORT_BACKEND || '9161');
+const frontendPort = parseInt(process.env.CLOPEN_PORT_FRONTEND || '9151');
+const backendPort = parseInt(process.env.CLOPEN_PORT_BACKEND || '9161');
 
 export default defineConfig({
 	plugins: [tailwindcss(), svelte()],

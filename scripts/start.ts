@@ -8,7 +8,7 @@
 
 import { findAvailablePort } from '../backend/utils/port-utils';
 
-const desiredPort = process.env.PORT ? parseInt(process.env.PORT) : 9141;
+const desiredPort = process.env.CLOPEN_PORT ? parseInt(process.env.CLOPEN_PORT) : 9141;
 
 const port = await findAvailablePort(desiredPort);
 
@@ -17,8 +17,8 @@ if (port !== desiredPort) {
 }
 
 // Set resolved values before importing backend (env.ts reads at import time)
-process.env.PORT = String(port);
-process.env.HOST = process.env.HOST || 'localhost';
+process.env.CLOPEN_PORT = String(port);
+process.env.CLOPEN_HOST = process.env.CLOPEN_HOST || 'localhost';
 process.env.NODE_ENV = 'production';
 
 await import('../backend/index.ts');
