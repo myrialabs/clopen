@@ -19,6 +19,7 @@ import { debug } from '$shared/utils/logger';
 const OPENCODE_HOST = '127.0.0.1';
 const DB_KEY = 'opencode.server.url';
 const HEALTH_TIMEOUT = 1500;
+const SERVER_START_TIMEOUT = 30_000; // 30s — generous for slow devices
 
 let serverHandle: { url: string; close(): void } | null = null;
 let client: OpencodeClient | null = null;
@@ -26,10 +27,9 @@ let initPromise: Promise<void> | null = null;
 let ready = false;
 let ownsProcess = false;
 
-function resetState(): void {
+function clearClientState(): void {
 	client = null;
 	ready = false;
-	initPromise = null;
 	serverHandle = null;
 	ownsProcess = false;
 }
@@ -51,22 +51,36 @@ async function isServerAlive(url: string): Promise<boolean> {
  * If the server died (bun --watch restart, crash, etc.), state is reset and
  * init() is re-invoked — the same DB-check → reuse-or-spawn flow handles
  * recovery automatically.
+ *
+ * Race-condition guard: after any `await` (health check), we re-check
+ * `initPromise` before starting a new init — another caller may have
+ * already kicked one off during our async gap.
  */
 export async function ensureClient(): Promise<OpencodeClient> {
+	// Wait for any in-progress init first
+	if (initPromise) {
+		try { await initPromise; } catch { /* handled below */ }
+		if (client && ready) return client;
+	}
+
+	// Fast path: server is up and healthy
 	if (client && ready && serverHandle) {
 		if (await isServerAlive(serverHandle.url)) return client;
 
-		// Server disconnected — purge stale DB entry and re-init
+		// Server disconnected — purge stale DB entry
+		// Do NOT clear initPromise — another caller may have started one
 		debug.log('engine', 'Open Code server disconnected, recovering...');
 		settingsQueries.delete(DB_KEY);
-		resetState();
+		clearClientState();
 	}
 
+	// Re-check after async gap — another caller may have started init
 	if (initPromise) {
-		await initPromise;
-		return client!;
+		try { await initPromise; } catch { /* handled below */ }
+		if (client && ready) return client;
 	}
 
+	// Start init — no other caller is initializing at this point
 	initPromise = init();
 	try {
 		await initPromise;
@@ -102,17 +116,34 @@ async function init(): Promise<void> {
 	// 2. Spawn a new server — port 0 lets opencode pick an OS-assigned port
 	const { createOpencode } = await import('@opencode-ai/sdk');
 
-	const mcpConfig = getOpenCodeMcpConfig();
+	// Build MCP config — but only inject if the MCP endpoint is actually reachable.
+	// The opencode binary may initialize MCP connections synchronously before printing
+	// "opencode server listening", so an unreachable/slow MCP endpoint can stall startup.
+	let mcpConfig = getOpenCodeMcpConfig();
 	if (Object.keys(mcpConfig).length > 0) {
-		debug.log('engine', `Open Code server: injecting ${Object.keys(mcpConfig).length} MCP server(s)`);
-		for (const [name, config] of Object.entries(mcpConfig)) {
-			debug.log('engine', `  → ${name}: ${config.type} (${(config as any).url || (config as any).command?.join(' ')})`);
+		const mcpUrls = Object.values(mcpConfig).map(c => (c as any).url).filter(Boolean);
+		const reachable = await Promise.all(
+			mcpUrls.map(url => isServerAlive(url))
+		);
+
+		if (reachable.every(Boolean)) {
+			debug.log('engine', `Open Code server: injecting ${Object.keys(mcpConfig).length} MCP server(s)`);
+			for (const [name, config] of Object.entries(mcpConfig)) {
+				debug.log('engine', `  → ${name}: ${config.type} (${(config as any).url || (config as any).command?.join(' ')})`);
+			}
+		} else {
+			debug.warn('engine', 'Open Code server: MCP endpoint not reachable, starting without MCP');
+			mcpConfig = {};
 		}
 	}
 
+	// No retry — SDK does not kill the child process on timeout, so retrying
+	// would leave zombie `opencode serve` processes running in the background.
+	// 30s timeout is generous enough for slow devices.
 	const result = await createOpencode({
 		hostname: OPENCODE_HOST,
 		port: 0,
+		timeout: SERVER_START_TIMEOUT,
 		...(Object.keys(mcpConfig).length > 0 && {
 			config: { mcp: mcpConfig },
 		}),
@@ -152,6 +183,7 @@ export async function disposeOpenCodeClient(): Promise<void> {
 		}
 	}
 
-	resetState();
+	clearClientState();
+	initPromise = null;
 	debug.log('engine', 'Open Code client disposed');
 }
