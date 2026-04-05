@@ -1,5 +1,5 @@
 import type { Browser, BrowserContext, Page } from 'puppeteer';
-import type { DeviceSize, Rotation } from '$frontend/utils/preview-constants.js';
+import type { DeviceSize, Rotation } from '$shared/constants/preview.js';
 
 // Re-export types from preview config
 export type { DeviceSize, Rotation };

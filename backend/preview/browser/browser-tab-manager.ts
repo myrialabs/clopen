@@ -1,6 +1,6 @@
 import type { Browser, BrowserContext, Page } from 'puppeteer';
 import { EventEmitter } from 'events';
-import { getViewportDimensions } from '$frontend/utils/preview-constants.js';
+import { getViewportDimensions } from '$shared/constants/preview.js';
 import type { BrowserTab, BrowserTabInfo, DeviceSize, Rotation } from './types';
 import { DEFAULT_STREAMING_CONFIG } from './types';
 import { browserPool } from './browser-pool';
