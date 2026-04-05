@@ -16,12 +16,13 @@ if (typeof globalThis.Bun === 'undefined') {
  * Handles:
  * - CLI argument parsing
  * - Environment setup (.env from .env.example)
- * - Dependency installation (always runs to ensure up-to-date)
- * - Build verification
  * - Server startup
+ *
+ * Note: dist/ is pre-built and included in the published package.
+ * Dependencies are installed by the package manager (bun add -g).
  */
 
-import { existsSync, copyFileSync, readFileSync, writeFileSync } from 'fs';
+import { existsSync, copyFileSync, readFileSync } from 'fs';
 import { join } from 'path';
 import { loadEnvFile } from '../backend/utils/env';
 
@@ -79,216 +80,9 @@ function stopSpinner() {
 	}
 }
 
-// ============================================================
-// Multi-step progress display (used for startup sequence)
-// ============================================================
-
-const SPINNER_FRAMES = ['⠋', '⠙', '⠹', '⠸', '⠼', '⠴', '⠦', '⠧', '⠇', '⠏'];
-const MAX_OUTPUT_LINES = 5;
-const OUTPUT_TRUNCATE = 72;
-
-type StepState = 'pending' | 'running' | 'done' | 'skipped' | 'error';
-
-interface ProgressStep {
-	id: string;
-	label: string;
-	activeLabel: string;
-}
-
-interface StepStatus {
-	state: StepState;
-	startTime?: number;
-	outputLines: string[];
-}
-
-const isTTY = process.stdout.isTTY === true;
-let progressSteps: ProgressStep[] = [];
-const stepStatuses = new Map<string, StepStatus>();
-let frameIdx = 0;
-let renderTimer: Timer | null = null;
-let drawnLines = 0;
-
-function stripAnsi(str: string): string {
-	return str.replace(/\x1b\[[0-9;]*[mGKHFABCDJhls]/g, '');
-}
-
-function trunc(str: string, max: number): string {
-	if (str.length <= max) return str;
-	return str.slice(0, max - 1) + '…';
-}
-
-function initProgress(steps: ProgressStep[]) {
-	progressSteps = steps;
-	stepStatuses.clear();
-	drawnLines = 0;
-	frameIdx = 0;
-	for (const s of steps) {
-		stepStatuses.set(s.id, { state: 'pending', outputLines: [] });
-	}
-	if (isTTY) {
-		process.stdout.write('\x1b[?25l'); // hide cursor
-		renderTimer = setInterval(renderProgress, 80);
-		renderProgress();
-	}
-}
-
-function renderProgress() {
-	if (!isTTY) return;
-
-	if (drawnLines > 0) {
-		process.stdout.write(`\x1b[${drawnLines}A\x1b[J`);
-	}
-
-	let output = '';
-	let lines = 0;
-
-	for (const step of progressSteps) {
-		const status = stepStatuses.get(step.id)!;
-		let icon: string;
-		let label: string;
-
-		switch (status.state) {
-			case 'pending':
-				icon = '\x1b[90m·\x1b[0m';
-				label = `\x1b[90m${step.label}\x1b[0m`;
-				break;
-			case 'running': {
-				const elapsed = Math.floor((Date.now() - (status.startTime ?? Date.now())) / 1000);
-				icon = `\x1b[36m${SPINNER_FRAMES[frameIdx]}\x1b[0m`;
-				const timer = elapsed >= 3 ? ` \x1b[90m(${elapsed}s)\x1b[0m` : '';
-				label = `${step.activeLabel}${timer}`;
-				break;
-			}
-			case 'done':
-				icon = '\x1b[32m✓\x1b[0m';
-				label = step.label;
-				break;
-			case 'skipped':
-				icon = '\x1b[90m✓\x1b[0m';
-				label = `\x1b[90m${step.label} (up to date)\x1b[0m`;
-				break;
-			case 'error':
-				icon = '\x1b[31m✗\x1b[0m';
-				label = `\x1b[31m${step.label}\x1b[0m`;
-				break;
-		}
-
-		output += `\x1b[K  ${icon} ${label}\n`;
-		lines++;
-
-		// Show last N output lines for the currently running step
-		if (status.state === 'running' && status.outputLines.length > 0) {
-			const visible = status.outputLines.slice(-MAX_OUTPUT_LINES);
-			for (const line of visible) {
-				output += `\x1b[K     \x1b[90m│ ${trunc(line, OUTPUT_TRUNCATE)}\x1b[0m\n`;
-				lines++;
-			}
-		}
-	}
-
-	process.stdout.write(output);
-	drawnLines = lines;
-	frameIdx = (frameIdx + 1) % SPINNER_FRAMES.length;
-}
-
-function stopProgress() {
-	if (renderTimer) {
-		clearInterval(renderTimer);
-		renderTimer = null;
-	}
-	if (isTTY) {
-		renderProgress(); // final render
-		process.stdout.write('\x1b[?25h'); // show cursor
-	}
-}
-
-function clearProgress() {
-	if (renderTimer) {
-		clearInterval(renderTimer);
-		renderTimer = null;
-	}
-	if (isTTY) {
-		if (drawnLines > 0) {
-			process.stdout.write(`\x1b[${drawnLines}A\x1b[J`);
-			drawnLines = 0;
-		}
-		process.stdout.write('\x1b[?25h');
-	}
-}
-
-function progressStepStart(id: string) {
-	const s = stepStatuses.get(id);
-	if (!s) return;
-	s.state = 'running';
-	s.startTime = Date.now();
-	s.outputLines = [];
-	if (!isTTY) {
-		const step = progressSteps.find(p => p.id === id);
-		process.stdout.write(`  ${step?.activeLabel ?? id}...\n`);
-	}
-}
-
-function progressStepDone(id: string) {
-	const s = stepStatuses.get(id);
-	if (!s) return;
-	s.state = 'done';
-	if (!isTTY) {
-		const step = progressSteps.find(p => p.id === id);
-		process.stdout.write(`  ✓ ${step?.label ?? id}\n`);
-	}
-}
-
-function progressStepSkip(id: string) {
-	const s = stepStatuses.get(id);
-	if (!s) return;
-	s.state = 'skipped';
-	if (!isTTY) {
-		const step = progressSteps.find(p => p.id === id);
-		process.stdout.write(`  ✓ ${step?.label ?? id} (up to date)\n`);
-	}
-}
-
-function progressStepFail(id: string) {
-	const s = stepStatuses.get(id);
-	if (!s) return;
-	s.state = 'error';
-}
-
-function progressAppendOutput(id: string, line: string) {
-	const s = stepStatuses.get(id);
-	if (!s || s.state !== 'running') return;
-	s.outputLines.push(stripAnsi(line).trim());
-}
-
-async function streamSubprocess(stream: ReadableStream<Uint8Array>, stepId: string): Promise<void> {
-	const reader = stream.getReader();
-	const decoder = new TextDecoder();
-	let buffer = '';
-	try {
-		for (;;) {
-			const { done, value } = await reader.read();
-			if (done) break;
-			buffer += decoder.decode(value, { stream: true });
-			const parts = buffer.split('\n');
-			buffer = parts.pop() ?? '';
-			for (const part of parts) {
-				const line = part.trim();
-				if (line) progressAppendOutput(stepId, line);
-			}
-		}
-		if (buffer.trim()) progressAppendOutput(stepId, buffer.trim());
-	} catch {
-		// stream closed or error — fine
-	} finally {
-		reader.releaseLock();
-	}
-}
-
 // Restore cursor on unexpected exit
 process.on('exit', () => {
-	if (renderTimer) clearInterval(renderTimer);
 	if (spinnerInterval) clearInterval(spinnerInterval);
-	if (isTTY) process.stdout.write('\x1b[?25h');
 });
 
 // ============================================================
@@ -299,18 +93,11 @@ const __dirname = join(import.meta.dir, '..');
 const ENV_EXAMPLE = join(__dirname, '.env.example');
 const ENV_FILE = join(__dirname, '.env');
 const DIST_DIR = join(__dirname, 'dist');
-const BUILD_VERSION_FILE = join(DIST_DIR, '.build-version');
 
 const DEFAULT_PORT = 9141;
 const DEFAULT_HOST = 'localhost';
 const MIN_PORT = 1024;
 const MAX_PORT = 65535;
-
-const STARTUP_STEPS: ProgressStep[] = [
-	{ id: 'deps', label: 'Dependencies', activeLabel: 'Installing dependencies' },
-	{ id: 'build', label: 'Build', activeLabel: 'Building' },
-	{ id: 'server', label: 'Server', activeLabel: 'Starting server' },
-];
 
 // ============================================================
 // CLI helpers
@@ -579,83 +366,16 @@ async function setupEnvironment() {
 	}
 }
 
-async function installDependencies() {
-	progressStepStart('deps');
-
-	const proc = Bun.spawn(['bun', 'install'], {
-		cwd: __dirname,
-		stdout: 'pipe',
-		stderr: 'pipe',
-	});
-
-	const [exitCode] = await Promise.all([
-		proc.exited,
-		streamSubprocess(proc.stdout as ReadableStream<Uint8Array>, 'deps'),
-		streamSubprocess(proc.stderr as ReadableStream<Uint8Array>, 'deps'),
-	]);
-
-	if (exitCode !== 0) {
-		progressStepFail('deps');
-		clearProgress();
-		const status = stepStatuses.get('deps');
-		console.error('❌ Dependency installation failed:');
-		if (status?.outputLines.length) console.error(status.outputLines.join('\n'));
-		process.exit(exitCode);
+function ensureBuild() {
+	if (!existsSync(DIST_DIR)) {
+		console.error('❌ Build artifacts not found (dist/ is missing).');
+		console.error('   This usually means the package was not published correctly.');
+		console.error('   Try reinstalling: bun add -g @myrialabs/clopen');
+		process.exit(1);
 	}
-
-	progressStepDone('deps');
-}
-
-function needsBuild(): boolean {
-	if (!existsSync(DIST_DIR)) return true;
-	if (!existsSync(BUILD_VERSION_FILE)) return true;
-	try {
-		const builtVersion = readFileSync(BUILD_VERSION_FILE, 'utf-8').trim();
-		return builtVersion !== getVersion();
-	} catch {
-		return true;
-	}
-}
-
-async function verifyBuild() {
-	if (!needsBuild()) {
-		progressStepSkip('build');
-		return;
-	}
-
-	progressStepStart('build');
-
-	const proc = Bun.spawn(['bun', 'run', 'build'], {
-		cwd: __dirname,
-		stdout: 'pipe',
-		stderr: 'pipe',
-	});
-
-	const [exitCode] = await Promise.all([
-		proc.exited,
-		streamSubprocess(proc.stdout as ReadableStream<Uint8Array>, 'build'),
-		streamSubprocess(proc.stderr as ReadableStream<Uint8Array>, 'build'),
-	]);
-
-	if (exitCode !== 0) {
-		progressStepFail('build');
-		clearProgress();
-		const status = stepStatuses.get('build');
-		console.error('❌ Build failed:');
-		if (status?.outputLines.length) console.error(status.outputLines.join('\n'));
-		process.exit(exitCode);
-	}
-
-	writeFileSync(BUILD_VERSION_FILE, getVersion());
-	progressStepDone('build');
 }
 
 async function startServer(options: CLIOptions) {
-	progressStepStart('server');
-	progressStepDone('server');
-	stopProgress();
-	console.log('');
-
 	const startScript = join(__dirname, 'scripts/start.ts');
 
 	const env = { ...process.env, ...loadEnvFile(ENV_FILE) };
@@ -728,16 +448,11 @@ async function main() {
 		// Print header
 		console.log(`\n\x1b[36mClopen\x1b[0m v${getVersion()}\n`);
 
-		// Init multi-step progress
-		initProgress(STARTUP_STEPS);
-
 		await setupEnvironment();
-		await installDependencies();
-		await verifyBuild();
+		ensureBuild();
 		await startServer(options);
 
 	} catch (error) {
-		clearProgress();
 		console.error('❌ Failed to start Clopen:', error);
 		process.exit(1);
 	}

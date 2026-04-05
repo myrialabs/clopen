@@ -41,6 +41,14 @@
     "cloudflare-tunnel",
     "mcp"
   ],
+  "files": [
+    "bin",
+    "backend",
+    "scripts/start.ts",
+    "shared",
+    "dist",
+    ".env.example"
+  ],
   "engines": {
     "bun": ">=1.2.12"
   },
@@ -53,7 +61,8 @@
     "check": "svelte-check --tsconfig ./tsconfig.json",
     "lint": "eslint .",
     "lint:fix": "eslint . --fix",
-    "generate-icons": "bun scripts/generate-icons.ts"
+    "generate-icons": "bun scripts/generate-icons.ts",
+    "prepublishOnly": "bun run build"
   },
   "devDependencies": {
     "@eslint/js": "^9.31.0",
