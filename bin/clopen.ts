@@ -359,10 +359,8 @@ async function clearAllData() {
 // ============================================================
 
 async function setupEnvironment() {
-	if (!existsSync(ENV_FILE)) {
-		if (existsSync(ENV_EXAMPLE)) {
-			copyFileSync(ENV_EXAMPLE, ENV_FILE);
-		}
+	if (existsSync(ENV_EXAMPLE)) {
+		copyFileSync(ENV_EXAMPLE, ENV_FILE);
 	}
 }
 
