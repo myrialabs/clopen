@@ -10,19 +10,22 @@ import { debug } from '$shared/utils/logger';
 
 export const VS_CONFIG = {
 	/** Max messages rendered at once */
-	WINDOW_SIZE: 50,
+	WINDOW_SIZE: 24,
 	/** Messages to load when hitting a sentinel */
-	BUFFER_SIZE: 20,
-	/** Trim when window exceeds this count */
-	TRIM_THRESHOLD: 80,
+	BUFFER_SIZE: 8,
+	/** Distance in px before sentinel to trigger load more */
+	LOAD_MORE_MARGIN: 600,
 } as const;
 
 /**
  * Creates a virtual scroll state manager for chat messages.
  * Only manages window bounds — the component handles DOM/observers.
+ *
+ * Expand and trim are separate operations so the component can
+ * restore scroll position between them (expand → restore → trim).
  */
 export function createVirtualScroll() {
-	const { WINDOW_SIZE, BUFFER_SIZE, TRIM_THRESHOLD } = VS_CONFIG;
+	const { WINDOW_SIZE, BUFFER_SIZE } = VS_CONFIG;
 
 	let windowStart = $state(0);
 	let windowEnd = $state(0);
@@ -62,18 +65,17 @@ export function createVirtualScroll() {
 
 		isActive = true;
 
-		// Extend window end to include new messages when at bottom or streaming
 		if (isAtBottom || isStreaming) {
 			windowEnd = newTotal;
-			// Auto-trim top if window grew too large and user is at bottom
-			if (windowEnd - windowStart > TRIM_THRESHOLD && isAtBottom) {
+			if (windowEnd - windowStart > WINDOW_SIZE) {
 				windowStart = windowEnd - WINDOW_SIZE;
 			}
 		}
 	}
 
 	/**
-	 * Expand window upward (older messages). Returns count added.
+	 * Expand window upward (older messages). Does NOT trim.
+	 * Call trimBottom() after scroll position is restored.
 	 */
 	function expandUp(): number {
 		if (windowStart <= 0) return 0;
@@ -84,7 +86,8 @@ export function createVirtualScroll() {
 	}
 
 	/**
-	 * Expand window downward (newer messages). Returns count added.
+	 * Expand window downward (newer messages). Does NOT trim.
+	 * Call trimTop() after if needed.
 	 */
 	function expandDown(): number {
 		if (windowEnd >= totalCount) return 0;
@@ -94,16 +97,16 @@ export function createVirtualScroll() {
 		return count;
 	}
 
-	/** Trim excess messages from top of window. */
-	function trimTop() {
-		if (windowEnd - windowStart <= WINDOW_SIZE) return;
-		windowStart = windowEnd - WINDOW_SIZE;
-	}
-
-	/** Trim excess messages from bottom of window. */
+	/** Trim bottom to keep window at WINDOW_SIZE. */
 	function trimBottom() {
 		if (windowEnd - windowStart <= WINDOW_SIZE) return;
 		windowEnd = windowStart + WINDOW_SIZE;
+	}
+
+	/** Trim top to keep window at WINDOW_SIZE. */
+	function trimTop() {
+		if (windowEnd - windowStart <= WINDOW_SIZE) return;
+		windowStart = windowEnd - WINDOW_SIZE;
 	}
 
 	/**

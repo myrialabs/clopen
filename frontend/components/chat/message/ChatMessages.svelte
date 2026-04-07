@@ -37,10 +37,6 @@
 	// ========================================
 
 	const vs = createVirtualScroll();
-	let topSentinelEl: HTMLElement | undefined = $state();
-	let bottomSentinelEl: HTMLElement | undefined = $state();
-	let topObserver: IntersectionObserver | null = null;
-	let bottomObserver: IntersectionObserver | null = null;
 	let isLoadingOlder = $state(false);
 
 	// ========================================
@@ -109,113 +105,60 @@
 		}
 	}
 
-	// Scroll detection with bottom position tracking
+	// Scroll detection with bottom position tracking + load more triggers
 	function handleMessagesScroll() {
 		// Don't override isUserAtBottom during/after a programmatic scroll
 		if (Date.now() < scrollLockUntil) return;
 
 		const el = getScrollEl();
-		if (el) {
-			const { scrollTop, scrollHeight, clientHeight } = el;
-			const threshold = 200;
-			isUserAtBottom = scrollTop + clientHeight >= scrollHeight - threshold;
-		}
-	}
+		if (!el) return;
 
-	// ========================================
-	// VIRTUAL SCROLL: SENTINELS & OBSERVERS
-	// ========================================
-
-	function onTopSentinelVisible() {
-		if (!vs.hasMoreAbove || isLoadingOlder) return;
-		isLoadingOlder = true;
-
-		const el = getScrollEl();
-		if (!el) { isLoadingOlder = false; return; }
-
-		// Capture scroll state before expanding window
-		const prevScrollHeight = el.scrollHeight;
-		const prevScrollTop = el.scrollTop;
-
-		const added = vs.expandUp();
-		if (added > 0) {
-			// After DOM updates, restore scroll position so content doesn't jump
-			tick().then(() => {
-				requestAnimationFrame(() => {
-					const newScrollHeight = el.scrollHeight;
-					const heightAdded = newScrollHeight - prevScrollHeight;
-					el.scrollTop = prevScrollTop + heightAdded;
-
-					setTimeout(() => { isLoadingOlder = false; }, 150);
-
-					// Trim bottom if window grew too large and not streaming
-					if (vs.windowEnd - vs.windowStart > VS_CONFIG.TRIM_THRESHOLD && !appState.isLoading) {
-						vs.trimBottom();
-					}
-				});
-			});
-		} else {
-			isLoadingOlder = false;
-		}
-	}
-
-	function onBottomSentinelVisible() {
-		if (!vs.hasMoreBelow) return;
-
-		vs.expandDown();
-
-		// Trim top if window grew too large
-		if (vs.windowEnd - vs.windowStart > VS_CONFIG.TRIM_THRESHOLD) {
-			vs.trimTop();
-		}
-	}
-
-	function setupObservers() {
-		cleanupObservers();
+		const { scrollTop, scrollHeight, clientHeight } = el;
+		const threshold = 200;
+		isUserAtBottom = scrollTop + clientHeight >= scrollHeight - threshold;
 
 		if (!vs.isActive) return;
 
-		const root = getScrollEl();
-		if (!root) return;
+		const margin = VS_CONFIG.LOAD_MORE_MARGIN;
 
-		topObserver = new IntersectionObserver(
-			(entries) => {
-				if (entries[0]?.isIntersecting) onTopSentinelVisible();
-			},
-			{ root, rootMargin: '200px 0px 0px 0px', threshold: 0 }
-		);
+		// Load older messages when near top
+		if (scrollTop <= margin && vs.hasMoreAbove && !isLoadingOlder) {
+			isLoadingOlder = true;
 
-		bottomObserver = new IntersectionObserver(
-			(entries) => {
-				if (entries[0]?.isIntersecting) onBottomSentinelVisible();
-			},
-			{ root, rootMargin: '0px 0px 200px 0px', threshold: 0 }
-		);
+			const prevScrollHeight = el.scrollHeight;
+			const prevScrollTop = el.scrollTop;
 
-		if (topSentinelEl) topObserver.observe(topSentinelEl);
-		if (bottomSentinelEl) bottomObserver.observe(bottomSentinelEl);
-	}
+			const added = vs.expandUp();
+			if (added > 0) {
+				// Phase 1: DOM updates with expanded window (no trim yet)
+				tick().then(() => {
+					requestAnimationFrame(() => {
+						// Restore scroll position based on content added at top
+						const heightAdded = el.scrollHeight - prevScrollHeight;
+						el.scrollTop = prevScrollTop + heightAdded;
+						// Lock scroll to prevent re-triggering from programmatic scroll
+						scrollLockUntil = Date.now() + 200;
 
-	function cleanupObservers() {
-		topObserver?.disconnect();
-		bottomObserver?.disconnect();
-		topObserver = null;
-		bottomObserver = null;
-	}
-
-	// Re-setup observers when elements or activation state changes
-	$effect(() => {
-		const active = vs.isActive;
-		topSentinelEl;
-		bottomSentinelEl;
-		messagesScrollEl;
-
-		if (active && messagesScrollEl) {
-			setupObservers();
-		} else {
-			cleanupObservers();
+						// Phase 2: trim bottom after scroll is settled
+						requestAnimationFrame(() => {
+							vs.trimBottom();
+							setTimeout(() => { isLoadingOlder = false; }, 150);
+						});
+					});
+				});
+			} else {
+				isLoadingOlder = false;
+			}
 		}
-	});
+
+		// Load newer messages when near bottom
+		const distanceFromBottom = scrollHeight - scrollTop - clientHeight;
+		if (distanceFromBottom <= margin && vs.hasMoreBelow) {
+			vs.expandDown();
+			// Trim top immediately — removed content is above viewport
+			vs.trimTop();
+		}
+	}
 
 	// ========================================
 	// AUTO-SCROLL & VIRTUAL SCROLL SYNC
@@ -488,7 +431,6 @@
 
 		// Cleanup on component destroy
 		return () => {
-			cleanupObservers();
 			if (currentListenerEl) {
 				currentListenerEl.removeEventListener('scroll', handleMessagesScroll);
 			}
@@ -503,9 +445,6 @@
 		bind:this={messagesScrollEl}
 		class="flex-1 overflow-y-auto pt-3 pb-14 lg:pb-16 px-3 lg:px-4 {isContentReady ? '' : 'invisible'}"
 		style="{!isContentReady ? 'scroll-behavior: auto' : ''}">
-
-		<!-- Top sentinel for virtual scroll (always present, observed only when active) -->
-		<div bind:this={topSentinelEl} class="h-px w-full" aria-hidden="true"></div>
 
 		<!-- Loading older messages indicator -->
 		{#if isLoadingOlder}
@@ -547,7 +486,5 @@
 			{/if}
 		{/each}
 
-		<!-- Bottom sentinel for virtual scroll -->
-		<div bind:this={bottomSentinelEl} class="h-px w-full" aria-hidden="true"></div>
 	</div>
 </div>
