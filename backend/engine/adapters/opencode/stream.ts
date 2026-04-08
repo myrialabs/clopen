@@ -214,7 +214,8 @@ export class OpenCodeEngine implements AIEngine {
 			});
 
 			// 2. Send prompt asynchronously (non-blocking) — parse "providerId/modelId"
-			const [providerID, modelID] = model.includes('/') ? model.split('/', 2) : ['', model];
+			const idx = model.indexOf('/');
+			const [providerID, modelID] = idx >= 0 ? [model.substring(0, idx), model.substring(idx + 1)] : ['', model];
 
 			client.session.promptAsync({
 				path: { id: sessionId },
@@ -1059,7 +1060,8 @@ export class OpenCodeEngine implements AIEngine {
 		}
 
 		// Parse model into providerID/modelID
-		const [providerID, modelID] = model.includes('/') ? model.split('/', 2) : ['', model];
+		const idx = model.indexOf('/');
+		const [providerID, modelID] = idx >= 0 ? [model.substring(0, idx), model.substring(idx + 1)] : ['', model];
 
 		// Wrap prompt with JSON instruction since v1 doesn't support format option
 		const jsonPrompt = `${prompt}
