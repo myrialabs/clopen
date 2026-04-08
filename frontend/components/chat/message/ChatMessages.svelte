@@ -459,7 +459,7 @@
 		{#each messagesWithDateSeparators as item (item.key)}
 			{#if disableTransitions}
 				<!-- No transition during restoration or initial load with many messages -->
-				<div>
+				<div class="chat-item">
 					{#if item.type === 'date'}
 						<DateSeparator date={item.data} />
 					{:else if item.type === 'message'}
@@ -472,7 +472,7 @@
 				</div>
 			{:else}
 				<!-- Normal transition for new messages -->
-				<div in:fade={{ duration: 300, delay: 0 }} out:fade={{ duration: 200 }}>
+				<div class="chat-item" in:fade={{ duration: 300, delay: 0 }} out:fade={{ duration: 200 }}>
 					{#if item.type === 'date'}
 						<DateSeparator date={item.data} />
 					{:else if item.type === 'message'}
@@ -488,3 +488,10 @@
 
 	</div>
 </div>
+
+<style>
+	.chat-item {
+		content-visibility: auto;
+		contain-intrinsic-size: auto 200px;
+	}
+</style>

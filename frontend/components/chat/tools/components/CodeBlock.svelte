@@ -1,8 +1,9 @@
 <script lang="ts">
-	import Icon from '$frontend/components/common/display/Icon.svelte';
 	import type { IconName } from '$shared/types/ui/icons';
 	import { removeCommonIndentation } from '../../shared/utils';
-	import { isTerminalOutput, processAnsiCodes, escapeHtml } from '$frontend/utils/terminal-formatter';
+	import { isTerminalOutput, processAnsiCodes } from '$frontend/utils/terminal-formatter';
+
+	const MAX_LINES = 80;
 
 	interface Props {
 		code: string;
@@ -13,19 +14,26 @@
 
 	const { code, type, label }: Props = $props();
 
-	function formatCode(code: string) {
-		// First remove common indentation
-		const cleanCode = removeCommonIndentation(code);
+	let expanded = $state(false);
 
-		// Check if it's terminal output and process ANSI codes if needed
+	// Truncate at the string level before any formatting
+	const truncation = $derived.by(() => {
+		const lines = code.split('\n');
+		if (lines.length <= MAX_LINES || expanded) {
+			return { code, truncated: false, totalLines: lines.length };
+		}
+		return {
+			code: lines.slice(0, MAX_LINES).join('\n'),
+			truncated: true,
+			totalLines: lines.length
+		};
+	});
+
+	function formatCode(raw: string) {
+		const cleanCode = removeCommonIndentation(raw);
 		if (isTerminalOutput(cleanCode)) {
-			// For terminal output, process ANSI codes but don't escape HTML
-			// since we're displaying it in a <pre> tag
 			return processAnsiCodes(cleanCode);
 		}
-
-		// For non-terminal code, don't escape HTML either since it's in <pre>
-		// The <pre> tag already handles text display safely
 		return cleanCode;
 	}
 
@@ -57,14 +65,13 @@
 	};
 
 	const style = $derived(styles[type]);
-	const formattedCode = $derived(formatCode(code));
-	const isTerminal = $derived(isTerminalOutput(code));
+	const formattedCode = $derived(formatCode(truncation.code));
+	const isTerminal = $derived(isTerminalOutput(truncation.code));
 </script>
 
 <div>
 	{#if label}
 		<div class="flex items-center gap-2 mb-2">
-			<!-- <Icon name={style.icon} class="{style.iconColor} w-4 h-4" /> -->
 			<span class="text-xs font-medium {style.labelColor}">{label}:</span>
 		</div>
 	{/if}
@@ -74,6 +81,14 @@
 			<pre class="text-xs {style.textColor} font-mono">{@html formattedCode}</pre>
 		{:else}
 			<pre class="text-xs {style.textColor} font-mono">{formattedCode}</pre>
+		{/if}
+		{#if truncation.truncated}
+			<button
+				onclick={() => expanded = true}
+				class="w-full flex mt-2 text-xs text-violet-600 dark:text-violet-400 hover:underline cursor-pointer"
+			>
+				Show all {truncation.totalLines} lines ({truncation.totalLines - MAX_LINES} more)
+			</button>
 		{/if}
 	</div>
 </div>

@@ -2,6 +2,7 @@
 	import { onMount } from 'svelte';
 	import { fade, scale } from 'svelte/transition';
 	import { cubicOut } from 'svelte/easing';
+	import { portal } from '$frontend/utils/portal';
 
 	interface Props {
 		isOpen: boolean;
@@ -92,6 +93,7 @@
 	<!-- Modal backdrop -->
 	<div
 		bind:this={modalElement}
+		use:portal
 		class="fixed inset-0 z-[150] bg-black/60 dark:bg-slate-900/70 backdrop-blur-sm flex items-center justify-center p-2 md:p-4"
 		role="dialog"
 		aria-modal="true"

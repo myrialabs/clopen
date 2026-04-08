@@ -2,6 +2,8 @@
 	import Icon from '$frontend/components/common/display/Icon.svelte';
 	import { removeCommonIndentationFromLines } from '../../shared/utils';
 
+	const MAX_LINES = 60;
+
 	interface Props {
 		oldString: string;
 		newString: string;
@@ -22,6 +24,8 @@
 	}
 
 	const { oldString, newString, label }: Props = $props();
+
+	let expanded = $state(false);
 
 	// Myers diff algorithm for finding longest common subsequence
 	function findLCS(arr1: string[], arr2: string[]): number[][] {
@@ -44,7 +48,6 @@
 
 	// Character-level diff for highlighting specific changes within lines
 	function findCharacterDiff(oldLine: string, newLine: string): { oldHighlights: Array<{ start: number; end: number }>, newHighlights: Array<{ start: number; end: number }> } {
-		// Use patience diff algorithm for better results
 		const oldHighlights: Array<{ start: number; end: number }> = [];
 		const newHighlights: Array<{ start: number; end: number }> = [];
 
@@ -70,11 +73,9 @@
 		const newMiddleEnd = newLine.length - suffixLen;
 
 		if (oldMiddleStart < oldMiddleEnd || newMiddleStart < newMiddleEnd) {
-			// There are differences
 			const oldMiddle = oldLine.substring(oldMiddleStart, oldMiddleEnd);
 			const newMiddle = newLine.substring(newMiddleStart, newMiddleEnd);
 
-			// If the middle parts are completely different or one is empty, highlight the whole middle
 			if (oldMiddle.length === 0 || newMiddle.length === 0 ||
 				!hasCommonSubstring(oldMiddle, newMiddle)) {
 				if (oldMiddle.length > 0) {
@@ -84,10 +85,8 @@
 					newHighlights.push({ start: newMiddleStart, end: newMiddleEnd });
 				}
 			} else {
-				// Find fine-grained differences using recursive approach
 				const middleDiff = findFineDiff(oldMiddle, newMiddle);
 
-				// Adjust positions relative to full string
 				for (const range of middleDiff.oldRanges) {
 					oldHighlights.push({
 						start: oldMiddleStart + range.start,
@@ -106,7 +105,6 @@
 		return { oldHighlights, newHighlights };
 	}
 
-	// Helper function to check if strings have common substrings
 	function hasCommonSubstring(str1: string, str2: string, minLength: number = 3): boolean {
 		if (str1.length < minLength || str2.length < minLength) return false;
 
@@ -117,7 +115,6 @@
 		return false;
 	}
 
-	// Fine-grained diff for the middle differing part
 	function findFineDiff(oldStr: string, newStr: string): {
 		oldRanges: Array<{ start: number; end: number }>,
 		newRanges: Array<{ start: number; end: number }>
@@ -125,43 +122,35 @@
 		const oldRanges: Array<{ start: number; end: number }> = [];
 		const newRanges: Array<{ start: number; end: number }> = [];
 
-		// Use word-based chunking for better diff
 		const oldChunks = splitIntoChunks(oldStr);
 		const newChunks = splitIntoChunks(newStr);
 
-		// Find LCS of chunks
 		const dp = findLCS(oldChunks.map(c => c.text), newChunks.map(c => c.text));
 
 		let i = oldChunks.length;
 		let j = newChunks.length;
 
-		// Backtrack to find differences
 		while (i > 0 || j > 0) {
 			if (i > 0 && j > 0 && oldChunks[i - 1].text === newChunks[j - 1].text) {
-				// Chunks match
 				i--;
 				j--;
 			} else if (j === 0 || (i > 0 && dp[i][j] === dp[i - 1][j])) {
-				// Chunk deleted from old
 				const chunk = oldChunks[i - 1];
 				oldRanges.unshift({ start: chunk.start, end: chunk.end });
 				i--;
 			} else {
-				// Chunk added to new
 				const chunk = newChunks[j - 1];
 				newRanges.unshift({ start: chunk.start, end: chunk.end });
 				j--;
 			}
 		}
 
-		// Merge adjacent ranges
 		return {
 			oldRanges: mergeRanges(oldRanges),
 			newRanges: mergeRanges(newRanges)
 		};
 	}
 
-	// Split string into chunks (words and delimiters)
 	function splitIntoChunks(str: string): Array<{ text: string; start: number; end: number }> {
 		const chunks: Array<{ text: string; start: number; end: number }> = [];
 		const regex = /(\w+|[^\w]+)/g;
@@ -178,7 +167,6 @@
 		return chunks;
 	}
 
-	// Merge adjacent or overlapping ranges
 	function mergeRanges(ranges: Array<{ start: number; end: number }>): Array<{ start: number; end: number }> {
 		if (ranges.length === 0) return [];
 
@@ -189,7 +177,6 @@
 		for (let i = 1; i < ranges.length; i++) {
 			const next = ranges[i];
 			if (next.start <= current.end) {
-				// Merge overlapping or adjacent regions
 				current = { start: current.start, end: Math.max(current.end, next.end) };
 			} else {
 				merged.push(current);
@@ -205,18 +192,15 @@
 		const oldLines = oldStr.split('\n');
 		const newLines = newStr.split('\n');
 
-		// Remove common indentation from both old and new strings
 		const { lines: cleanOldLines } = removeCommonIndentationFromLines(oldLines);
 		const { lines: cleanNewLines } = removeCommonIndentationFromLines(newLines);
 
-		// Compute line-level diff using LCS
 		const dp = findLCS(cleanOldLines, cleanNewLines);
 
 		const diffLines: DiffLine[] = [];
 		let i = cleanOldLines.length;
 		let j = cleanNewLines.length;
 
-		// Backtrack to generate diff
 		while (i > 0 || j > 0) {
 			if (i > 0 && j > 0 && cleanOldLines[i - 1] === cleanNewLines[j - 1]) {
 				diffLines.unshift({ type: 'unchanged', content: cleanOldLines[i - 1] });
@@ -263,15 +247,13 @@
 			if (group.type === 'change' && group.removed && group.added) {
 				const minLen = Math.min(group.removed.length, group.added.length);
 
-				// For paired lines, compute character-level diff
 				for (let idx = 0; idx < minLen; idx++) {
 					const oldLine = group.removed[idx];
 					const newLine = group.added[idx];
 
-					// Only compute character diff if lines are similar enough
 					if (oldLine.content.length > 0 && newLine.content.length > 0) {
 						const similarity = computeSimilarity(oldLine.content, newLine.content);
-						if (similarity > 0.3) { // Lines are at least 30% similar
+						if (similarity > 0.3) {
 							const { oldHighlights, newHighlights } = findCharacterDiff(oldLine.content, newLine.content);
 							if (oldHighlights.length > 0) {
 								oldLine.highlights = oldHighlights;
@@ -288,7 +270,6 @@
 		return grouped;
 	}
 
-	// Compute similarity ratio between two strings
 	function computeSimilarity(str1: string, str2: string): number {
 		const chars1 = str1.split('');
 		const chars2 = str2.split('');
@@ -298,35 +279,115 @@
 		return maxLen === 0 ? 0 : lcsLength / maxLen;
 	}
 
-	// Render text with highlights
-	function renderLineWithHighlights(line: DiffLine): string {
-		if (!line.highlights || line.highlights.length === 0) {
-			return line.content;
-		}
+	function escapeHtml(text: string): string {
+		return text
+			.replace(/&/g, '&amp;')
+			.replace(/</g, '&lt;')
+			.replace(/>/g, '&gt;')
+			.replace(/"/g, '&quot;');
+	}
 
-		let result = '';
-		let lastEnd = 0;
-
-		for (const highlight of line.highlights) {
-			// Add non-highlighted part
-			if (highlight.start > lastEnd) {
-				result += line.content.substring(lastEnd, highlight.start);
+	function renderLineContent(line: DiffLine, colorClass: string, highlightClass: string): string {
+		if (line.highlights && line.highlights.length > 0) {
+			let html = '';
+			const content = line.content;
+			for (let idx = 0; idx < line.highlights.length; idx++) {
+				const highlight = line.highlights[idx];
+				if (idx === 0 && highlight.start > 0) {
+					html += `<span class="${colorClass}">${escapeHtml(content.substring(0, highlight.start))}</span>`;
+				}
+				html += `<span class="${highlightClass}">${escapeHtml(content.substring(highlight.start, highlight.end))}</span>`;
+				if (idx < line.highlights.length - 1) {
+					html += `<span class="${colorClass}">${escapeHtml(content.substring(highlight.end, line.highlights[idx + 1].start))}</span>`;
+				} else if (highlight.end < content.length) {
+					html += `<span class="${colorClass}">${escapeHtml(content.substring(highlight.end))}</span>`;
+				}
 			}
-			// Add highlighted part with special marker
-			result += '{{HIGHLIGHT_START}}' + line.content.substring(highlight.start, highlight.end) + '{{HIGHLIGHT_END}}';
-			lastEnd = highlight.end;
+			return html;
 		}
+		return `<span class="${colorClass}">${escapeHtml(line.content)}</span>`;
+	}
 
-		// Add any remaining non-highlighted part
-		if (lastEnd < line.content.length) {
-			result += line.content.substring(lastEnd);
+	function renderDiffHtml(groups: GroupedDiff[]): string {
+		let html = '';
+		for (const group of groups) {
+			if (group.type === 'unchanged') {
+				for (const line of group.lines || []) {
+					html += `<div class="relative flex"><div class="sticky left-0 w-1 bg-slate-50 dark:bg-slate-950"></div><pre class="flex-1 px-3 text-slate-600 dark:text-slate-400 whitespace-pre">${escapeHtml(line.content)}</pre></div>`;
+				}
+			} else if (group.type === 'change') {
+				for (const line of group.removed || []) {
+					html += `<div class="relative flex bg-red-100 dark:bg-red-500/10"><div class="sticky left-0 w-1 bg-red-500 dark:bg-red-500/80"></div><pre class="flex-1 px-3 whitespace-pre">${renderLineContent(line, 'text-red-700 dark:text-red-300', 'bg-red-300 dark:bg-red-400/30 text-red-900 dark:text-red-100 px-0.5')}</pre></div>`;
+				}
+				for (const line of group.added || []) {
+					html += `<div class="relative flex bg-green-100 dark:bg-green-500/10"><div class="sticky left-0 w-1 bg-green-500 dark:bg-green-500/80"></div><pre class="flex-1 px-3 whitespace-pre">${renderLineContent(line, 'text-green-700 dark:text-green-300', 'bg-green-300 dark:bg-green-400/30 text-green-900 dark:text-green-100 px-0.5')}</pre></div>`;
+				}
+			}
 		}
-
-		return result;
+		return html;
 	}
 
 	const diffGroups = $derived(computeDiff(oldString, newString));
 	const hasChanges = $derived(diffGroups.some(group => group.type === 'change'));
+
+	// Count total rendered lines and truncate at group level
+	const displayData = $derived.by(() => {
+		if (expanded) return { groups: diffGroups, truncated: false, totalLines: 0 };
+
+		let lineCount = 0;
+		let totalLines = 0;
+
+		// Count total lines
+		for (const group of diffGroups) {
+			if (group.type === 'unchanged') {
+				totalLines += (group.lines?.length ?? 0);
+			} else {
+				totalLines += (group.removed?.length ?? 0) + (group.added?.length ?? 0);
+			}
+		}
+
+		if (totalLines <= MAX_LINES) return { groups: diffGroups, truncated: false, totalLines };
+
+		// Collect groups up to MAX_LINES
+		const truncated: GroupedDiff[] = [];
+		for (const group of diffGroups) {
+			if (group.type === 'unchanged') {
+				const lines = group.lines ?? [];
+				const remaining = MAX_LINES - lineCount;
+				if (remaining <= 0) break;
+				if (lines.length <= remaining) {
+					truncated.push(group);
+					lineCount += lines.length;
+				} else {
+					truncated.push({ type: 'unchanged', lines: lines.slice(0, remaining) });
+					lineCount += remaining;
+					break;
+				}
+			} else {
+				const removed = group.removed ?? [];
+				const added = group.added ?? [];
+				const groupLines = removed.length + added.length;
+				const remaining = MAX_LINES - lineCount;
+				if (remaining <= 0) break;
+				if (groupLines <= remaining) {
+					truncated.push(group);
+					lineCount += groupLines;
+				} else {
+					// Include partial change group — prefer showing removed then added
+					const partialRemoved = removed.slice(0, Math.min(removed.length, remaining));
+					const leftover = remaining - partialRemoved.length;
+					const partialAdded = added.slice(0, Math.max(0, leftover));
+					truncated.push({ type: 'change', removed: partialRemoved, added: partialAdded });
+					lineCount += partialRemoved.length + partialAdded.length;
+					break;
+				}
+			}
+		}
+
+		return { groups: truncated, truncated: true, totalLines };
+	});
+
+	const diffHtml = $derived(renderDiffHtml(displayData.groups));
 </script>
 
 <div>
@@ -339,66 +400,15 @@
 
 	<div class="relative max-h-96 bg-slate-50 dark:bg-slate-950 border border-slate-200/60 dark:border-slate-800/60 rounded-md overflow-auto">
 		{#if hasChanges}
-			<div class="text-xs font-mono leading-5 min-w-fit"><!--
-			-->{#each diffGroups as group}<!--
-				-->{#if group.type === 'unchanged'}<!--
-					-->{#each group.lines || [] as line}<!--
-				--><div class="relative flex"><!--
-					--><div class="sticky left-0 w-1 bg-slate-50 dark:bg-slate-950"></div><!--
-					--><pre class="flex-1 px-3 text-slate-600 dark:text-slate-400 whitespace-pre">{line.content}</pre><!--
-				--></div><!--
-					-->{/each}<!--
-				-->{:else if group.type === 'change'}<!--
-					-->{#each group.removed || [] as line}<!--
-				--><div class="relative flex bg-red-100 dark:bg-red-500/10"><!--
-					--><div class="sticky left-0 w-1 bg-red-500 dark:bg-red-500/80"></div><!--
-					--><pre class="flex-1 px-3 whitespace-pre"><!--
-						-->{#if line.highlights && line.highlights.length > 0}<!--
-							-->{@const rendered = line.content}<!--
-							-->{#each line.highlights as highlight, idx}<!--
-								-->{#if idx === 0 && highlight.start > 0}<!--
-									--><span class="text-red-700 dark:text-red-300">{rendered.substring(0, highlight.start)}</span><!--
-								-->{/if}<!--
-								--><span class="bg-red-300 dark:bg-red-400/30 text-red-900 dark:text-red-100 px-0.5">{rendered.substring(highlight.start, highlight.end)}</span><!--
-								-->{#if idx < line.highlights.length - 1}<!--
-									--><span class="text-red-700 dark:text-red-300">{rendered.substring(highlight.end, line.highlights[idx + 1].start)}</span><!--
-								-->{:else if highlight.end < rendered.length}<!--
-									--><span class="text-red-700 dark:text-red-300">{rendered.substring(highlight.end)}</span><!--
-								-->{/if}<!--
-							-->{/each}<!--
-						-->{:else}<!--
-							--><span class="text-red-700 dark:text-red-300">{line.content}</span><!--
-						-->{/if}<!--
-					--></pre><!--
-				--></div><!--
-					-->{/each}<!--
-					-->{#each group.added || [] as line}<!--
-				--><div class="relative flex bg-green-100 dark:bg-green-500/10"><!--
-					--><div class="sticky left-0 w-1 bg-green-500 dark:bg-green-500/80"></div><!--
-					--><pre class="flex-1 px-3 whitespace-pre"><!--
-						-->{#if line.highlights && line.highlights.length > 0}<!--
-							-->{@const rendered = line.content}<!--
-							-->{#each line.highlights as highlight, idx}<!--
-								-->{#if idx === 0 && highlight.start > 0}<!--
-									--><span class="text-green-700 dark:text-green-300">{rendered.substring(0, highlight.start)}</span><!--
-								-->{/if}<!--
-								--><span class="bg-green-300 dark:bg-green-400/30 text-green-900 dark:text-green-100 px-0.5">{rendered.substring(highlight.start, highlight.end)}</span><!--
-								-->{#if idx < line.highlights.length - 1}<!--
-									--><span class="text-green-700 dark:text-green-300">{rendered.substring(highlight.end, line.highlights[idx + 1].start)}</span><!--
-								-->{:else if highlight.end < rendered.length}<!--
-									--><span class="text-green-700 dark:text-green-300">{rendered.substring(highlight.end)}</span><!--
-								-->{/if}<!--
-							-->{/each}<!--
-						-->{:else}<!--
-							--><span class="text-green-700 dark:text-green-300">{line.content}</span><!--
-						-->{/if}<!--
-					--></pre><!--
-				--></div>
-<!--
-					-->{/each}<!--
-				-->{/if}<!--
-			-->{/each}<!--
-			--></div>
+			<div class="text-xs font-mono leading-5 min-w-fit">{@html diffHtml}</div>
+			{#if displayData.truncated}
+				<button
+					onclick={() => expanded = true}
+					class="w-full flex text-xs text-violet-600 dark:text-violet-400 px-3 py-2 border-t border-slate-200/60 dark:border-slate-800/60 hover:underline cursor-pointer"
+				>
+					Show all {displayData.totalLines} lines ({displayData.totalLines - MAX_LINES} more)
+				</button>
+			{/if}
 		{:else}
 			<div class="text-sm text-slate-600 dark:text-slate-400">
 				No changes detected

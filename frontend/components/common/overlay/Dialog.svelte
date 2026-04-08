@@ -3,6 +3,7 @@
 	import { fade, scale } from 'svelte/transition';
 	import { cubicOut } from 'svelte/easing';
 	import Icon from '../display/Icon.svelte';
+	import { portal } from '$frontend/utils/portal';
 	import type { IconName } from '$shared/types/ui/icons';
 
 	interface Props {
@@ -172,6 +173,7 @@
 {#if isOpen}
 	<div
 		bind:this={dialogElement}
+		use:portal
 		class="fixed inset-0 z-[200] bg-slate-900/70 backdrop-blur-xs flex items-center justify-center p-4"
 		role="dialog"
 		aria-modal="true"

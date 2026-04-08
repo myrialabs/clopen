@@ -109,6 +109,4 @@
 		</div>
 	</Card>
 
-	<!-- Hover glow effect -->
-	<div class="absolute inset-0 bg-gradient-to-r from-violet-500/5 to-violet-500/5 rounded-xl opacity-0 group-hover:opacity-100 transition-opacity -z-10 blur-xl"></div>
 </div>

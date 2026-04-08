@@ -10,9 +10,9 @@ import { debug } from '$shared/utils/logger';
 
 export const VS_CONFIG = {
 	/** Max messages rendered at once */
-	WINDOW_SIZE: 24,
+	WINDOW_SIZE: 20,
 	/** Messages to load when hitting a sentinel */
-	BUFFER_SIZE: 8,
+	BUFFER_SIZE: 5,
 	/** Distance in px before sentinel to trigger load more */
 	LOAD_MORE_MARGIN: 600,
 } as const;
