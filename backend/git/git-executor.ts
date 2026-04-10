@@ -22,8 +22,11 @@ export async function execGit(
 ): Promise<GitExecResult> {
 	debug.log('git', `Executing: git ${args.join(' ')} in ${cwd}`);
 
+	const gitPath = Bun.which('git');
+	if (!gitPath) throw new Error('git binary not found on PATH');
+
 	const safeCwd = cwd.replace(/\\/g, '/');
-	const proc = Bun.spawn(['git', '-c', `safe.directory=${safeCwd}`, ...args], {
+	const proc = Bun.spawn([gitPath, '-c', `safe.directory=${safeCwd}`, ...args], {
 		cwd,
 		stdout: 'pipe',
 		stderr: 'pipe',

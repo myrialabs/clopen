@@ -7,7 +7,8 @@
 import { t } from 'elysia';
 import { createRouter } from '$shared/utils/ws-server';
 import { debug } from '$shared/utils/logger';
-import { getBackendOS, detectCLI } from '../utils';
+import { getBackendOS } from '../../../utils/os';
+import { getStatus } from '../../../utils/cli';
 
 export const openCodeStatusHandler = createRouter()
 	.http('engine:opencode-status', {
@@ -20,7 +21,7 @@ export const openCodeStatusHandler = createRouter()
 	}, async () => {
 		debug.log('engine', 'Checking Open Code status...');
 
-		const { installed, version } = await detectCLI('opencode');
+		const { installed, version } = await getStatus('opencode');
 
 		return {
 			installed,

@@ -15,7 +15,6 @@ import type { OpencodeClient } from '@opencode-ai/sdk';
 import type { Subprocess } from 'bun';
 import { getOpenCodeMcpConfig } from '../../../mcp';
 import { settingsQueries } from '../../../database/queries';
-import { resolveCommand } from '../../../ws/engine/utils';
 import { debug } from '$shared/utils/logger';
 
 const OPENCODE_HOST = '127.0.0.1';
@@ -117,8 +116,9 @@ async function init(): Promise<void> {
 		settingsQueries.delete(DB_KEY);
 	}
 
-	// 2. Spawn a new server via Bun.spawn — uses same binary resolution as detectCLI
-	const command = await resolveCommand('opencode');
+	// 2. Spawn a new server via Bun.spawn with absolute binary path
+	const command = Bun.which('opencode');
+	if (!command) throw new Error('opencode binary not found on PATH');
 	const args = [command, 'serve', `--hostname=${OPENCODE_HOST}`, '--port=0'];
 
 	// Build MCP config — but only inject if the MCP endpoint is actually reachable.

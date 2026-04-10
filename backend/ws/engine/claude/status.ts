@@ -8,7 +8,8 @@ import { t } from 'elysia';
 import { createRouter } from '$shared/utils/ws-server';
 import { engineQueries } from '../../../database/queries';
 import { debug } from '$shared/utils/logger';
-import { getBackendOS, detectCLI } from '../utils';
+import { getBackendOS } from '../../../utils/os';
+import { getStatus } from '../../../utils/cli';
 
 export const claudeCodeStatusHandler = createRouter()
 	.http('engine:claude-status', {
@@ -29,7 +30,7 @@ export const claudeCodeStatusHandler = createRouter()
 	}, async () => {
 		debug.log('engine', 'Checking Claude Code status...');
 
-		const { installed, version } = await detectCLI('claude');
+		const { installed, version } = await getStatus('claude');
 		const accounts = engineQueries.getClaudeAccounts();
 		const activeAccount = engineQueries.getActiveClaudeAccount();
 

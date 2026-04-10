@@ -99,10 +99,9 @@ export async function getShellConfig(preferGitBash = false): Promise<{
 	isUnixLike: boolean;
 }> {
 	if (isWindows) {
-		// For Windows, always use PowerShell as the primary shell
-		// PowerShell is available on all modern Windows systems
+		const psPath = Bun.which('powershell.exe') ?? 'powershell.exe';
 		return {
-			shell: 'powershell.exe',
+			shell: psPath,
 			args: (command: string) => ['-NoProfile', '-Command', command],
 			name: 'PowerShell',
 			isUnixLike: false
@@ -184,16 +183,12 @@ export function createPty(shell: string, args: string[], cwd: string, terminalSi
 	const cols = terminalSize?.cols || 80;
 	const rows = terminalSize?.rows || 24;
 	
-	// Extract the actual command from args
-	const actualCommand: string = '';
-	
 	if (isWindows) {
-		// Windows: Always use PowerShell
-		if (shell === 'powershell' || shell === 'powershell.exe') {
-			// Extract the actual command from args
+		const psPath = Bun.which('powershell.exe') ?? 'powershell.exe';
+		const isPowershell = shell === 'powershell' || shell === 'powershell.exe' || shell.endsWith('powershell.exe') || shell.endsWith('pwsh.exe');
+		if (isPowershell) {
 			let actualCommand = args.join(' ');
 			if (args.length >= 2 && (args[0] === '-Command' || args[0] === '-NoProfile')) {
-				// Find the actual command in the args
 				const commandIndex = args.findIndex(arg => arg === '-Command');
 				if (commandIndex !== -1 && commandIndex + 1 < args.length) {
 					actualCommand = args[commandIndex + 1];
@@ -201,7 +196,7 @@ export function createPty(shell: string, args: string[], cwd: string, terminalSi
 					actualCommand = args[args.length - 1];
 				}
 			}
-			return spawn('powershell.exe', ['-NoProfile', '-NoLogo', '-Command', actualCommand], {
+			return spawn(psPath, ['-NoProfile', '-NoLogo', '-Command', actualCommand], {
 				name: 'xterm-256color',
 				cols,
 				rows,
@@ -210,8 +205,7 @@ export function createPty(shell: string, args: string[], cwd: string, terminalSi
 			});
 		}
 		
-		// Default to PowerShell if shell is not recognized
-		return spawn('powershell.exe', ['-NoProfile', '-NoLogo', '-Command', args.join(' ') || 'Write-Host "Terminal ready"'], {
+		return spawn(psPath, ['-NoProfile', '-NoLogo', '-Command', args.join(' ') || 'Write-Host "Terminal ready"'], {
 			name: 'xterm-256color',
 			cols,
 			rows,

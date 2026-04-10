@@ -110,7 +110,7 @@
 ### 13. OpenCode via SDK Client + Bun.spawn Server
 
 **Decision:** Spawn `opencode serve` via Bun.spawn, connect via `createOpencodeClient` from `@opencode-ai/sdk`
-**Rationale:** The SDK's `createOpencode` uses `node:child_process.spawn` internally, which resolves binaries differently than `Bun.spawn` — causing ENOENT on devices where `opencode` is installed in non-standard PATH locations (e.g. `~/.local/bin`, `~/go/bin`). By spawning with Bun.spawn and using `resolveCommand()` (same as version detection), binary resolution is consistent. The SDK's client (`createOpencodeClient`) is still used for HTTP communication.
+**Rationale:** The SDK's `createOpencode` uses `node:child_process.spawn` internally, which resolves binaries differently than `Bun.spawn` — causing ENOENT on devices where `opencode` is installed in non-standard PATH locations (e.g. `~/.local/bin`, `~/go/bin`). By spawning with Bun.spawn and resolving the binary via `Bun.which()` (absolute path), binary resolution works even when explicit `env` is passed to `Bun.spawn`. The SDK's client (`createOpencodeClient`) is still used for HTTP communication.
 **Trade-offs:** Must maintain stdout parsing for server URL (`"opencode server listening on <url>"`), background server process adds memory overhead.
 
 ---
