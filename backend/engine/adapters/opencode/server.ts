@@ -15,6 +15,7 @@ import type { OpencodeClient } from '@opencode-ai/sdk';
 import type { Subprocess } from 'bun';
 import { getOpenCodeMcpConfig } from '../../../mcp';
 import { settingsQueries } from '../../../database/queries';
+import { generateOpenCodeProviderConfig } from './config';
 import { debug } from '$shared/utils/logger';
 
 const OPENCODE_HOST = '127.0.0.1';
@@ -142,8 +143,25 @@ async function init(): Promise<void> {
 		}
 	}
 
-	const configContent = Object.keys(mcpConfig).length > 0
-		? JSON.stringify({ mcp: mcpConfig })
+	// Build provider config from DB (enabled providers + env vars)
+	const providerConfig = generateOpenCodeProviderConfig();
+	if (providerConfig.enabledProviders.length > 0) {
+		debug.log('engine', `Open Code server: enabling ${providerConfig.enabledProviders.length} provider(s): ${providerConfig.enabledProviders.join(', ')}`);
+	}
+	if (Object.keys(providerConfig.envVars).length > 0) {
+		debug.log('engine', `Open Code server: injecting ${Object.keys(providerConfig.envVars).length} env var(s): ${Object.keys(providerConfig.envVars).join(', ')}`);
+	}
+
+	// Merge MCP config + enabled_providers into a single OPENCODE_CONFIG_CONTENT
+	const mergedConfig: Record<string, unknown> = {};
+	if (Object.keys(mcpConfig).length > 0) {
+		mergedConfig.mcp = mcpConfig;
+	}
+	if (providerConfig.enabledProviders.length > 0) {
+		mergedConfig.enabled_providers = providerConfig.enabledProviders;
+	}
+	const configContent = Object.keys(mergedConfig).length > 0
+		? JSON.stringify(mergedConfig)
 		: '{}';
 
 	debug.log('engine', `Spawning: ${args.join(' ')}`);
@@ -153,6 +171,7 @@ async function init(): Promise<void> {
 		stderr: 'pipe',
 		env: {
 			...process.env,
+			...providerConfig.envVars,
 			OPENCODE_CONFIG_CONTENT: configContent,
 		},
 	});
@@ -230,18 +249,41 @@ export function getServerUrl(): string | null {
 /**
  * Dispose the OpenCode client and stop the server.
  *
- * Only kills the child process when we spawned it. Reused servers stay alive
- * so the next session can pick them up without spawning a new process.
+ * @param forRestart — When true, always kills the server process (even if
+ *   we didn't spawn it) and purges the stored URL so the next init() spawns
+ *   a fresh server with updated config. Used by the Restart Server flow.
+ *
+ *   When false (default), only kills the child process when we spawned it.
+ *   Reused servers stay alive so the next session can pick them up.
  */
-export async function disposeOpenCodeClient(): Promise<void> {
-	if (serverHandle && ownsProcess) {
-		try {
-			debug.log('engine', `Stopping Open Code server (${serverHandle.url})...`);
-			serverHandle.close();
-			settingsQueries.delete(DB_KEY);
-		} catch (error) {
-			debug.error('engine', 'Error stopping Open Code server:', error);
+export async function disposeOpenCodeClient(forRestart = false): Promise<void> {
+	if (serverHandle) {
+		if (ownsProcess || forRestart) {
+			try {
+				debug.log('engine', `Stopping Open Code server (${serverHandle.url}, forRestart=${forRestart})...`);
+				if (ownsProcess) {
+					serverHandle.close();
+				} else if (forRestart) {
+					// Server we didn't spawn — kill it by sending a request or just
+					// purging the stored URL. The server process may be external, but
+					// clearing DB ensures we spawn a new one on next init().
+					try {
+						await fetch(`${serverHandle.url}/shutdown`, {
+							method: 'POST',
+							signal: AbortSignal.timeout(2000),
+						});
+					} catch {
+						// shutdown endpoint may not exist — that's fine
+					}
+				}
+				settingsQueries.delete(DB_KEY);
+			} catch (error) {
+				debug.error('engine', 'Error stopping Open Code server:', error);
+			}
 		}
+	} else if (forRestart) {
+		// No active handle but forRestart requested — ensure DB is clean
+		settingsQueries.delete(DB_KEY);
 	}
 
 	clearClientState();

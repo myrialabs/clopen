@@ -14,7 +14,6 @@
 	const { engine, model, onEngineChange, onModelChange }: Props = $props();
 
 	let searchQuery = $state('');
-	let refreshing = $state(false);
 	let collapsedProviders = $state<Set<string>>(new Set());
 
 	// Models for the selected engine, filtered by search
@@ -99,14 +98,6 @@
 		syncAccordionState();
 	}
 
-	async function handleRefresh() {
-		refreshing = true;
-		try {
-			await modelStore.refreshModels(engine);
-		} finally {
-			refreshing = false;
-		}
-	}
 </script>
 
 <!-- Engine Selection -->
@@ -145,21 +136,8 @@
 
 <!-- Model Selection -->
 <div>
-	<div class="flex items-center justify-between mb-1.5">
+	<div class="mb-1.5">
 		<label class="text-sm font-semibold text-slate-700 dark:text-slate-300">Model</label>
-		<button
-			type="button"
-			class="flex items-center gap-1.5 px-2.5 py-1 text-xs font-medium rounded-lg transition-colors cursor-pointer
-				text-slate-500 hover:text-violet-600 hover:bg-violet-500/10 dark:hover:text-violet-400 dark:hover:bg-violet-500/15
-				disabled:opacity-50 disabled:cursor-not-allowed"
-			onclick={handleRefresh}
-			disabled={refreshing || modelStore.loading}
-		>
-			<svg viewBox="0 0 24 24" fill="none" class="w-3.5 h-3.5 {refreshing ? 'animate-spin' : ''}" aria-hidden="true">
-				<path d="M21 12a9 9 0 11-2.636-6.364M21 3v5h-5" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" />
-			</svg>
-			{refreshing ? 'Refreshing...' : 'Refresh'}
-		</button>
 	</div>
 	<p class="text-sm text-slate-600 dark:text-slate-500 mb-3">
 		Select the model for the {ENGINES.find(e => e.type === engine)?.name || 'selected'} engine
@@ -181,7 +159,7 @@
 
 	<!-- Model List -->
 	<div class="flex flex-col gap-1.5">
-		{#if modelStore.loading && engine !== 'claude-code' && !refreshing}
+		{#if modelStore.loading && engine !== 'claude-code'}
 			<!-- Loading skeleton -->
 			<div class="border border-slate-200/80 dark:border-slate-700/50 rounded-lg overflow-hidden">
 				<div class="bg-white/80 dark:bg-slate-800/40 px-3 py-3 flex items-center gap-3">

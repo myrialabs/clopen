@@ -36,10 +36,9 @@ export const modelStore = {
 	 * Uses cache by default — call refreshModels() to bypass.
 	 */
 	async fetchModels(engine: EngineType): Promise<EngineModel[]> {
-		// Skip if already fetched for this engine
+		// Skip if already fetched for this engine (even if 0 models)
 		if (fetchedEngines.has(engine)) {
-			const existing = models.filter(m => m.engine === engine);
-			if (existing.length > 0) return existing;
+			return models.filter(m => m.engine === engine);
 		}
 
 		return this._doFetch(engine);

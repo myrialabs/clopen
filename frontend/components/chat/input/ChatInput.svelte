@@ -134,7 +134,7 @@
 		return null;
 	});
 
-	const isInputDisabled = $derived(appState.isLoading || !hasActiveProject || !!chatBlockedReason);
+	const isInputDisabled = $derived(appState.isLoading || modelStore.loading || !hasActiveProject || !!chatBlockedReason);
 
 	const chatPlaceholder = $derived.by(() => {
 		if (chatBlockedReason === 'no-claude-account') {

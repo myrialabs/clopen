@@ -38,6 +38,19 @@ export const settingsSections: SettingsSectionMeta[] = [
 		description: 'Chat and commit model'
 	},
 	{
+		id: 'engines',
+		label: 'Engines',
+		icon: 'lucide:plug',
+		description: 'Installation and accounts',
+		adminOnly: true
+	},
+	{
+		id: 'tunnel',
+		label: 'Tunnel',
+		icon: 'lucide:globe',
+		description: 'Cloudflare tunnel services'
+	},
+	{
 		id: 'appearance',
 		label: 'Appearance',
 		icon: 'lucide:palette',
@@ -50,30 +63,10 @@ export const settingsSections: SettingsSectionMeta[] = [
 		description: 'Sound and push notifications'
 	},
 	{
-		id: 'tunnel',
-		label: 'Tunnel',
-		icon: 'lucide:globe',
-		description: 'Cloudflare tunnel services'
-	},
-	{
 		id: 'account',
 		label: 'User Profile',
 		icon: 'lucide:user',
 		description: 'Your profile and access'
-	},
-	{
-		id: 'engines',
-		label: 'Engines',
-		icon: 'lucide:plug',
-		description: 'Installation and accounts',
-		adminOnly: true
-	},
-	{
-		id: 'team',
-		label: 'Team',
-		icon: 'lucide:users',
-		description: 'Users and invites',
-		adminOnly: true
 	},
 	{
 		id: 'security',
@@ -87,6 +80,13 @@ export const settingsSections: SettingsSectionMeta[] = [
 		label: 'System',
 		icon: 'lucide:settings-2',
 		description: 'Updates and data',
+		adminOnly: true
+	},
+	{
+		id: 'team',
+		label: 'Team',
+		icon: 'lucide:users',
+		description: 'Users and invites',
 		adminOnly: true
 	}
 ];

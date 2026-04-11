@@ -6,6 +6,8 @@
 
 import { createRouter } from '$shared/utils/ws-server';
 import { openCodeStatusHandler } from './status';
+import { openCodeProviderHandler } from './providers';
 
 export const openCodeEngineRouter = createRouter()
-	.merge(openCodeStatusHandler);
+	.merge(openCodeStatusHandler)
+	.merge(openCodeProviderHandler);

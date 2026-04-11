@@ -7,6 +7,9 @@
 	import { isDarkMode } from '$frontend/utils/theme';
 	import { ENGINES } from '$shared/constants/engines';
 	import { claudeAccountsStore, type ClaudeAccountItem as ClaudeCodeAccountItem } from '$frontend/stores/features/claude-accounts.svelte';
+	import { opencodeProvidersStore, type OpenCodeProviderItem, type ModelsDevProviderItem } from '$frontend/stores/features/opencode-providers.svelte';
+	import { modelStore } from '$frontend/stores/features/models.svelte';
+	import { showSuccess } from '$frontend/stores/ui/notification.svelte';
 	import type { Terminal } from '@xterm/xterm';
 	import type { FitAddon } from '@xterm/addon-fit';
 
@@ -71,6 +74,53 @@
 	// Copy command feedback - OpenCode
 	let openCodeCommandCopied = $state(false);
 	let openCodeCommandCopiedTimer: ReturnType<typeof setTimeout> | null = null;
+
+	// OpenCode provider management
+	const ocProviders = $derived(opencodeProvidersStore.providers);
+	const ocCatalog = $derived(opencodeProvidersStore.catalog);
+
+	// Add provider flow
+	type OCAddStep = 'idle' | 'picking' | 'configuring' | 'saving' | 'success' | 'error';
+	let ocAddStep = $state<OCAddStep>('idle');
+	let ocAddError = $state('');
+	let ocCatalogSearch = $state('');
+	let ocSelectedCatalogProvider = $state<ModelsDevProviderItem | null>(null);
+	let ocAddAccountName = $state('');
+	let ocAddApiKey = $state('');
+	let ocAddOptions = $state<Record<string, string>>({});
+	let ocCatalogRefreshing = $state(false);
+
+	// Provider account management
+	let ocRenamingAccountId = $state<number | null>(null);
+	let ocRenameValue = $state('');
+	let ocAddingAccountForProvider = $state<number | null>(null);
+	let ocNewAccountName = $state('');
+	let ocNewAccountApiKey = $state('');
+
+	// Delete confirmation
+	let ocDeleteDialogOpen = $state(false);
+	let ocDeleteTargetType = $state<'provider' | 'account'>('provider');
+	let ocDeleteTargetId = $state<number | null>(null);
+	let ocDeleteTargetName = $state('');
+
+	// Server restart
+	let ocRestarting = $state(false);
+	let ocRestartConfirmOpen = $state(false);
+	let ocRestartActiveChats = $state(0);
+
+	// Filtered catalog (exclude already-configured providers)
+	const ocFilteredCatalog = $derived.by(() => {
+		const configuredIds = new Set(ocProviders.map(p => p.providerId));
+		let filtered = ocCatalog.filter(c => !configuredIds.has(c.id));
+		if (ocCatalogSearch.trim()) {
+			const q = ocCatalogSearch.toLowerCase();
+			filtered = filtered.filter(c =>
+				c.name.toLowerCase().includes(q) ||
+				c.id.toLowerCase().includes(q)
+			);
+		}
+		return filtered;
+	});
 
 	// Debug PTY (xterm.js)
 	const showDebug = $state(false);
@@ -348,6 +398,188 @@
 			openCodeStatus = null;
 		}
 		isLoadingOpenCodeStatus = false;
+
+		if (openCodeStatus?.installed) {
+			await opencodeProvidersStore.fetchProviders();
+			await opencodeProvidersStore.fetchCatalog();
+		}
+	}
+
+	// ── OpenCode Provider Management ──
+
+	function startAddProvider() {
+		ocAddStep = 'picking';
+		ocAddError = '';
+		ocCatalogSearch = '';
+		ocSelectedCatalogProvider = null;
+		ocAddAccountName = '';
+		ocAddApiKey = '';
+		ocAddOptions = {};
+	}
+
+	function selectCatalogProvider(provider: ModelsDevProviderItem) {
+		ocSelectedCatalogProvider = provider;
+		ocAddAccountName = '';
+		ocAddApiKey = '';
+		ocAddOptions = {};
+		ocAddStep = 'configuring';
+	}
+
+	function isAddProviderValid(): boolean {
+		if (!ocSelectedCatalogProvider || !ocAddAccountName.trim() || !ocAddApiKey.trim()) return false;
+		// Check all additional env vars are filled
+		for (const envVar of ocSelectedCatalogProvider.env.slice(1)) {
+			if (!ocAddOptions[envVar]?.trim()) return false;
+		}
+		return true;
+	}
+
+	async function submitAddProvider() {
+		if (!isAddProviderValid() || !ocSelectedCatalogProvider) return;
+
+		ocAddStep = 'saving';
+		ocAddError = '';
+		try {
+			// Build options JSON from the key-value pairs (excluding apiKey which is separate)
+			const options: Record<string, string> = {};
+			for (const [key, value] of Object.entries(ocAddOptions)) {
+				if (value.trim()) options[key] = value.trim();
+			}
+
+			await opencodeProvidersStore.addProvider({
+				providerId: ocSelectedCatalogProvider.id,
+				name: ocSelectedCatalogProvider.name,
+				npm: ocSelectedCatalogProvider.npm,
+				apiUrl: ocSelectedCatalogProvider.api || undefined,
+				options: Object.keys(options).length > 0 ? JSON.stringify(options) : undefined,
+				accountName: ocAddAccountName.trim(),
+				apiKey: ocAddApiKey.trim(),
+			});
+			ocAddStep = 'success';
+		} catch (error: any) {
+			ocAddError = error?.message || 'Failed to add provider';
+			ocAddStep = 'error';
+		}
+	}
+
+	function cancelAddProvider() {
+		ocAddStep = 'idle';
+		ocSelectedCatalogProvider = null;
+	}
+
+	async function handleRefetchCatalog() {
+		ocCatalogRefreshing = true;
+		try {
+			await opencodeProvidersStore.refetchCatalog();
+		} finally {
+			ocCatalogRefreshing = false;
+		}
+	}
+
+	// Get env var label for a provider by looking it up in the catalog
+	function getProviderEnvLabel(providerId: string): string {
+		const catalogEntry = ocCatalog.find(c => c.id === providerId);
+		return catalogEntry?.env?.[0] || 'API Key';
+	}
+
+	// Account CRUD within a provider
+	function startAddAccount(providerDbId: number) {
+		ocAddingAccountForProvider = providerDbId;
+		ocNewAccountName = '';
+		ocNewAccountApiKey = '';
+	}
+
+	async function submitAddAccount() {
+		if (ocAddingAccountForProvider === null || !ocNewAccountName.trim() || !ocNewAccountApiKey.trim()) return;
+		try {
+			await opencodeProvidersStore.addAccount(ocAddingAccountForProvider, ocNewAccountName.trim(), ocNewAccountApiKey.trim());
+			ocAddingAccountForProvider = null;
+		} catch {
+			// Ignore
+		}
+	}
+
+	function cancelAddAccount() {
+		ocAddingAccountForProvider = null;
+	}
+
+	async function switchOCAccount(accountId: number) {
+		await opencodeProvidersStore.switchAccount(accountId);
+	}
+
+	function startOCRename(accountId: number, currentName: string) {
+		ocRenamingAccountId = accountId;
+		ocRenameValue = currentName;
+	}
+
+	async function submitOCRename() {
+		if (ocRenamingAccountId === null || !ocRenameValue.trim()) return;
+		await opencodeProvidersStore.renameAccount(ocRenamingAccountId, ocRenameValue.trim());
+		ocRenamingAccountId = null;
+		ocRenameValue = '';
+	}
+
+	function cancelOCRename() {
+		ocRenamingAccountId = null;
+		ocRenameValue = '';
+	}
+
+	function confirmDeleteOCProvider(provider: OpenCodeProviderItem) {
+		ocDeleteTargetType = 'provider';
+		ocDeleteTargetId = provider.id;
+		ocDeleteTargetName = provider.name;
+		ocDeleteDialogOpen = true;
+	}
+
+	function confirmDeleteOCAccount(accountId: number, accountName: string) {
+		ocDeleteTargetType = 'account';
+		ocDeleteTargetId = accountId;
+		ocDeleteTargetName = accountName;
+		ocDeleteDialogOpen = true;
+	}
+
+	async function executeOCDelete() {
+		if (ocDeleteTargetId === null) return;
+		if (ocDeleteTargetType === 'provider') {
+			await opencodeProvidersStore.removeProvider(ocDeleteTargetId);
+		} else {
+			await opencodeProvidersStore.deleteAccount(ocDeleteTargetId);
+		}
+	}
+
+	// Server restart
+	async function handleRestartServer() {
+		ocRestarting = true;
+		try {
+			const result = await opencodeProvidersStore.restartServer(false);
+			if (result.needsConfirmation) {
+				ocRestartActiveChats = result.activeChats || 0;
+				ocRestartConfirmOpen = true;
+				return;
+			}
+			if (result.success) {
+				await modelStore.refreshModels('opencode');
+				showSuccess('Server Restarted', 'OpenCode server restarted successfully. Models refreshed.');
+			}
+		} catch {
+			// Ignore
+		} finally {
+			ocRestarting = false;
+		}
+	}
+
+	async function forceRestartServer() {
+		ocRestarting = true;
+		ocRestartConfirmOpen = false;
+		try {
+			await opencodeProvidersStore.restartServer(true);
+			await modelStore.refreshModels('opencode');
+			showSuccess('Server Restarted', 'OpenCode server force-restarted. Models refreshed.');
+		} catch {
+			// Ignore
+		} finally {
+			ocRestarting = false;
+		}
 	}
 
 	async function copyToClipboard(text: string) {
@@ -884,21 +1116,299 @@
 				</div>
 			{:else if openCodeStatus}
 				<!-- Installed View -->
-				<div class="space-y-4">
-					<!-- Version -->
-					<div class="flex items-center gap-2 text-sm text-slate-600 dark:text-slate-300">
-						<Icon name="lucide:tag" class="w-4 h-4 text-slate-400" />
-						<span>Version: <span class="font-mono font-medium text-slate-900 dark:text-slate-100">{openCodeStatus.version || 'Unknown'}</span></span>
+				<div class="space-y-5">
+					<!-- Version + Restart Server -->
+					<div class="flex items-center justify-between">
+						<div class="flex items-center gap-2 text-sm text-slate-600 dark:text-slate-300">
+							<Icon name="lucide:tag" class="w-4 h-4 text-slate-400" />
+							<span>Version: <span class="font-mono font-medium text-slate-900 dark:text-slate-100">{openCodeStatus.version || 'Unknown'}</span></span>
+						</div>
+						<button
+							type="button"
+							class="flex items-center gap-1.5 px-3 py-1.5 text-xs font-medium rounded-lg transition-colors
+								text-amber-600 dark:text-amber-400 bg-amber-50 dark:bg-amber-900/20 border border-amber-200 dark:border-amber-700/50
+								hover:bg-amber-100 dark:hover:bg-amber-900/30 disabled:opacity-50 disabled:cursor-not-allowed"
+							onclick={handleRestartServer}
+							disabled={ocRestarting}
+						>
+							<Icon name={ocRestarting ? 'lucide:loader' : 'lucide:rotate-cw'} class="w-3.5 h-3.5 {ocRestarting ? 'animate-spin' : ''}" />
+							{ocRestarting ? 'Restarting...' : 'Restart Server'}
+						</button>
 					</div>
 
-					<!-- Info note -->
-					<div class="flex gap-2.5 p-3 rounded-lg bg-slate-50 dark:bg-slate-800/80 border border-slate-200 dark:border-slate-700/50">
-						<Icon name="lucide:info" class="w-4 h-4 shrink-0 mt-0.5 text-slate-500 dark:text-slate-400" />
-						<p class="text-xs text-slate-600 dark:text-slate-400">
-							Open Code is installed and ready to use. API keys and provider configuration are managed through Open Code's own settings via the <span class="font-mono">/connect</span> command.
-						</p>
-					</div>
+					<!-- Configured Providers -->
+					<div class="space-y-3">
+						<div class="flex items-center justify-between">
+							<h4 class="text-sm font-semibold text-slate-700 dark:text-slate-300">Providers</h4>
+							<span class="text-xs text-slate-500">{ocProviders.length + 1} provider{ocProviders.length !== 0 ? 's' : ''}</span>
+						</div>
 
+						<!-- Built-in Opencode Free provider (always shown, not configurable) -->
+						<div class="rounded-lg border border-slate-200 dark:border-slate-700/50 bg-slate-50 dark:bg-slate-800/80 overflow-hidden">
+							<div class="flex items-center justify-between px-3.5 py-2.5">
+								<div class="flex items-center gap-2 min-w-0">
+									<span class="text-sm font-semibold text-slate-900 dark:text-slate-100">Opencode</span>
+									<span class="inline-flex items-center px-2 py-0.5 rounded-full text-3xs font-semibold bg-green-100 dark:bg-green-900/30 text-green-700 dark:text-green-300">Free</span>
+									<span class="inline-flex items-center px-2 py-0.5 rounded-full text-3xs font-semibold bg-violet-100 dark:bg-violet-900/30 text-violet-700 dark:text-violet-300">Built-in</span>
+								</div>
+							</div>
+						</div>
+
+						{#each ocProviders as provider (provider.id)}
+							<div class="rounded-lg border border-slate-200 dark:border-slate-700/50 bg-slate-50 dark:bg-slate-800/80 overflow-hidden">
+								<!-- Provider header -->
+								<div class="flex items-center justify-between px-3.5 py-2.5 border-b border-slate-200 dark:border-slate-700/50">
+									<div class="flex items-center gap-2 min-w-0">
+										<span class="text-sm font-semibold text-slate-900 dark:text-slate-100 truncate">{provider.name}</span>
+										<span class="text-2xs text-slate-400 font-mono">{provider.providerId}</span>
+										{#if !provider.isEnabled}
+											<span class="px-1.5 py-0.5 text-3xs rounded bg-slate-200 dark:bg-slate-700 text-slate-500 dark:text-slate-400">Disabled</span>
+										{/if}
+									</div>
+									<div class="flex items-center gap-1">
+										<button
+											type="button"
+											class="flex p-1.5 rounded-md text-slate-400 hover:text-red-600 hover:bg-red-50 dark:hover:bg-red-900/20 transition-colors"
+											onclick={() => confirmDeleteOCProvider(provider)}
+											title="Remove provider"
+										>
+											<Icon name="lucide:trash-2" class="w-3.5 h-3.5" />
+										</button>
+									</div>
+								</div>
+
+								<!-- Accounts list -->
+								<div class="px-3.5 py-2.5 space-y-2">
+									{#if provider.accounts.length === 0}
+										<p class="text-xs text-slate-500 italic">No accounts</p>
+									{:else}
+										{#each provider.accounts as account (account.id)}
+											<div class="flex items-center justify-between px-3.5 py-2.5 rounded-lg border border-slate-200 dark:border-slate-700/50 bg-slate-50 dark:bg-slate-800/80 {account.isActive ? 'ring-1 ring-violet-500/40' : ''}">
+												<div class="w-full flex items-center gap-2.5 min-w-0">
+													<Icon name="lucide:key" class="w-4 h-4 shrink-0 text-slate-400" />
+													{#if ocRenamingAccountId === account.id}
+														<div class="w-full flex items-center gap-2.5">
+															<input
+																type="text"
+																bind:value={ocRenameValue}
+																class="w-full px-2 py-0.5 text-sm rounded border border-slate-300 dark:border-slate-600 bg-white dark:bg-slate-700 text-slate-900 dark:text-slate-100 focus:outline-none focus:ring-1 focus:ring-violet-500"
+															/>
+															<div class="flex items-center gap-1">
+																<button
+																	type="button"
+																	class="flex p-1.5 rounded-md text-slate-400 hover:text-green-600 hover:bg-green-50 dark:hover:bg-green-900/20 transition-colors"
+																	onclick={submitOCRename}
+																	aria-label="Save"
+																>
+																	<Icon name="lucide:check" class="w-3.5 h-3.5" />
+																</button>
+																<button
+																	type="button"
+																	class="flex p-1.5 rounded-md text-slate-400 hover:text-red-600 hover:bg-red-50 dark:hover:bg-red-900/20 transition-colors"
+																	onclick={cancelOCRename}
+																	aria-label="Cancel"
+																>
+																	<Icon name="lucide:x" class="w-3.5 h-3.5" />
+																</button>
+															</div>
+														</div>
+													{:else}
+														<span class="text-sm font-medium text-slate-900 dark:text-slate-100 truncate">{account.name}</span>
+														{#if account.isActive}
+															<span class="inline-flex items-center px-2 py-0.5 rounded-full text-3xs font-semibold bg-violet-100 dark:bg-violet-900/30 text-violet-700 dark:text-violet-300">Active</span>
+														{/if}
+													{/if}
+												</div>
+
+												{#if ocRenamingAccountId !== account.id}
+													<div class="flex items-center gap-1">
+														{#if !account.isActive}
+															<button
+																type="button"
+																class="flex p-1.5 rounded-md text-slate-400 hover:text-violet-600 hover:bg-violet-50 dark:hover:bg-violet-900/20 transition-colors"
+																onclick={() => switchOCAccount(account.id)}
+																title="Switch to this account"
+															>
+																<Icon name="lucide:arrow-right-left" class="w-3.5 h-3.5" />
+															</button>
+														{/if}
+														<button
+															type="button"
+															class="flex p-1.5 rounded-md text-slate-400 hover:text-blue-600 hover:bg-blue-50 dark:hover:bg-blue-900/20 transition-colors"
+															onclick={() => startOCRename(account.id, account.name)}
+															title="Rename"
+														>
+															<Icon name="lucide:pencil" class="w-3.5 h-3.5" />
+														</button>
+														<button
+															type="button"
+															class="flex p-1.5 rounded-md text-slate-400 hover:text-red-600 hover:bg-red-50 dark:hover:bg-red-900/20 transition-colors"
+															onclick={() => confirmDeleteOCAccount(account.id, account.name)}
+															title="Delete"
+														>
+															<Icon name="lucide:trash-2" class="w-3.5 h-3.5" />
+														</button>
+													</div>
+												{/if}
+											</div>
+										{/each}
+									{/if}
+
+									<!-- Add account inline -->
+									{#if ocAddingAccountForProvider === provider.id}
+										<div class="space-y-2 pt-2 border-t border-slate-200 dark:border-slate-700/50">
+											<input type="text" bind:value={ocNewAccountName} placeholder="Account name (e.g. Personal, Work)" class="w-full px-3 py-1.5 text-xs rounded-lg border border-slate-300 dark:border-slate-600 bg-white dark:bg-slate-800 text-slate-900 dark:text-slate-100 placeholder:text-slate-400 focus:outline-none focus:ring-1 focus:ring-violet-500" />
+											<input type="text" bind:value={ocNewAccountApiKey} placeholder={getProviderEnvLabel(provider.providerId)} class="w-full px-3 py-1.5 text-xs rounded-lg border border-slate-300 dark:border-slate-600 bg-white dark:bg-slate-800 text-slate-900 dark:text-slate-100 placeholder:text-slate-400 focus:outline-none focus:ring-1 focus:ring-violet-500 font-mono" />
+											<div class="flex gap-2">
+												<button type="button" class="flex-1 flex items-center justify-center gap-1.5 px-3 py-1.5 text-xs font-medium rounded-lg bg-violet-600 text-white hover:bg-violet-700 transition-colors disabled:opacity-50" onclick={submitAddAccount} disabled={!ocNewAccountName.trim() || !ocNewAccountApiKey.trim()}>
+													<Icon name="lucide:plus" class="w-3 h-3" />Add
+												</button>
+												<button type="button" class="px-3 py-1.5 text-xs font-medium rounded-lg border border-slate-300 dark:border-slate-600 text-slate-600 dark:text-slate-400 hover:bg-slate-100 dark:hover:bg-slate-700 transition-colors" onclick={cancelAddAccount}>Cancel</button>
+											</div>
+										</div>
+									{:else}
+										<button type="button" class="flex items-center gap-1.5 text-xs text-slate-500 hover:text-violet-600 dark:hover:text-violet-400 transition-colors mt-1" onclick={() => startAddAccount(provider.id)}>
+											<Icon name="lucide:plus" class="w-3 h-3" />Add account
+										</button>
+									{/if}
+								</div>
+							</div>
+						{/each}
+
+						<!-- Add Provider Flow -->
+						<div class="mt-3">
+							{#if ocAddStep === 'idle'}
+								<button
+									type="button"
+									class="flex items-center gap-2 px-4 py-2 text-sm font-medium rounded-lg border border-dashed border-slate-300 dark:border-slate-600 text-slate-600 dark:text-slate-400 hover:border-violet-400 hover:text-violet-600 dark:hover:text-violet-400 transition-colors w-full justify-center"
+									onclick={startAddProvider}
+								>
+									<Icon name="lucide:plus" class="w-4 h-4" />
+									Add Provider
+								</button>
+							{:else if ocAddStep === 'picking'}
+								<!-- Provider Picker -->
+								<div class="space-y-3 p-4 rounded-lg border border-violet-200 dark:border-violet-800/50 bg-violet-50/50 dark:bg-violet-900/10">
+									<div class="flex items-center justify-between">
+										<div class="flex items-center gap-2 text-xs font-medium text-violet-600 dark:text-violet-400">
+											<Icon name="lucide:search" class="w-3.5 h-3.5" />
+											Select a provider
+										</div>
+										<button
+											type="button"
+											class="flex items-center gap-1 text-3xs text-slate-500 hover:text-violet-600 transition-colors disabled:opacity-50"
+											onclick={handleRefetchCatalog}
+											disabled={ocCatalogRefreshing}
+										>
+											<Icon name={ocCatalogRefreshing ? 'lucide:loader' : 'lucide:refresh-cw'} class="w-3 h-3 {ocCatalogRefreshing ? 'animate-spin' : ''}" />
+											{ocCatalogRefreshing ? 'Fetching...' : 'Re-fetch catalog'}
+										</button>
+									</div>
+
+									<input
+										type="text"
+										bind:value={ocCatalogSearch}
+										placeholder="Search providers..."
+										class="w-full px-3 py-2 text-sm rounded-lg border border-slate-300 dark:border-slate-600 bg-white dark:bg-slate-800 text-slate-900 dark:text-slate-100 placeholder:text-slate-400 focus:outline-none focus:ring-2 focus:ring-violet-500/40"
+									/>
+
+									<div class="max-h-48 overflow-y-auto space-y-1">
+										{#if ocFilteredCatalog.length === 0}
+											<p class="text-xs text-slate-500 text-center py-2">{ocCatalogSearch ? 'No matching providers' : 'No providers available'}</p>
+										{:else}
+											{#each ocFilteredCatalog as cp (cp.id)}
+												<button
+													type="button"
+													class="flex items-center justify-between w-full px-3 py-2 text-left rounded-lg hover:bg-violet-100/50 dark:hover:bg-violet-900/20 transition-colors"
+													onclick={() => selectCatalogProvider(cp)}
+												>
+													<div>
+														<span class="text-sm font-medium text-slate-900 dark:text-slate-100">{cp.name}</span>
+														<span class="text-2xs text-slate-400 font-mono ml-2">{cp.id}</span>
+													</div>
+													<Icon name="lucide:chevron-right" class="w-3.5 h-3.5 text-slate-400" />
+												</button>
+											{/each}
+										{/if}
+									</div>
+
+									<button type="button" class="w-full px-3 py-1.5 text-xs font-medium rounded-lg border border-slate-300 dark:border-slate-600 text-slate-600 dark:text-slate-400 hover:bg-slate-100 dark:hover:bg-slate-700 transition-colors" onclick={cancelAddProvider}>Cancel</button>
+								</div>
+							{:else if ocAddStep === 'configuring' && ocSelectedCatalogProvider}
+								<!-- Configure Provider + First Account -->
+								<div class="space-y-3 p-4 rounded-lg border border-violet-200 dark:border-violet-800/50 bg-violet-50/50 dark:bg-violet-900/10">
+									<div class="flex items-center gap-2 text-xs font-medium text-violet-600 dark:text-violet-400">
+										<Icon name="lucide:settings" class="w-3.5 h-3.5" />
+										Configure {ocSelectedCatalogProvider.name}
+									</div>
+
+																		<!-- Account name -->
+									<div>
+										<label class="block text-xs font-medium text-slate-700 dark:text-slate-300 mb-1">Account name</label>
+										<input type="text" bind:value={ocAddAccountName} placeholder="e.g. Personal, Work" class="w-full px-3 py-2 text-sm rounded-lg border border-slate-300 dark:border-slate-600 bg-white dark:bg-slate-800 text-slate-900 dark:text-slate-100 placeholder:text-slate-400 focus:outline-none focus:ring-2 focus:ring-violet-500/40" />
+									</div>
+
+									<!-- API Key with env var label -->
+									<div>
+										<label class="block text-xs font-medium text-slate-700 dark:text-slate-300 mb-1">
+											{ocSelectedCatalogProvider.env.length > 0 ? ocSelectedCatalogProvider.env[0] : 'API Key'}
+										</label>
+										<input type="text" bind:value={ocAddApiKey} placeholder={`Enter ${ocSelectedCatalogProvider.env.length > 0 ? ocSelectedCatalogProvider.env[0] : 'API Key'}`} class="w-full px-3 py-2 text-sm rounded-lg border border-slate-300 dark:border-slate-600 bg-white dark:bg-slate-800 text-slate-900 dark:text-slate-100 placeholder:text-slate-400 focus:outline-none focus:ring-2 focus:ring-violet-500/40" />
+									</div>
+
+									<!-- Additional env vars (if provider has more than 1) -->
+									{#each ocSelectedCatalogProvider.env.slice(1) as envVar (envVar)}
+										<div>
+											<label class="block text-xs font-medium text-slate-700 dark:text-slate-300 mb-1">{envVar}</label>
+											<input
+												type="text"
+												value={ocAddOptions[envVar] || ''}
+												oninput={(e) => { ocAddOptions = { ...ocAddOptions, [envVar]: (e.target as HTMLInputElement).value }; }}
+												placeholder={`Enter ${envVar}`}
+												class="w-full px-3 py-2 text-sm rounded-lg border border-slate-300 dark:border-slate-600 bg-white dark:bg-slate-800 text-slate-900 dark:text-slate-100 placeholder:text-slate-400 focus:outline-none focus:ring-2 focus:ring-violet-500/40"
+											/>
+										</div>
+									{/each}
+
+									<div class="flex gap-2">
+										<button
+											type="button"
+											class="flex-1 flex items-center justify-center gap-2 px-4 py-2 text-sm font-medium rounded-lg bg-violet-600 text-white hover:bg-violet-700 transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
+											onclick={submitAddProvider}
+											disabled={!isAddProviderValid()}
+										>
+											<Icon name="lucide:plus" class="w-4 h-4" />
+											Add Provider
+										</button>
+										<button type="button" class="px-4 py-2 text-sm font-medium rounded-lg border border-slate-300 dark:border-slate-600 text-slate-600 dark:text-slate-400 hover:bg-slate-100 dark:hover:bg-slate-700 transition-colors" onclick={() => { ocAddStep = 'picking'; }}>Back</button>
+									</div>
+								</div>
+							{:else if ocAddStep === 'saving'}
+								<div class="p-4 rounded-lg border border-violet-200 dark:border-violet-800/50 bg-violet-50/50 dark:bg-violet-900/10">
+									<div class="flex items-center justify-center gap-2 text-sm text-slate-500">
+										<Icon name="lucide:loader" class="w-4 h-4 animate-spin" />
+										<span>Adding provider...</span>
+									</div>
+								</div>
+							{:else if ocAddStep === 'success'}
+								<div class="flex items-center gap-2 p-3 rounded-lg bg-green-50 dark:bg-green-900/20 border border-green-200 dark:border-green-800/50">
+									<Icon name="lucide:circle-check" class="w-5 h-5 text-green-600 dark:text-green-400" />
+									<span class="text-sm text-green-700 dark:text-green-300">Provider added! Restart the server to apply.</span>
+									<button type="button" class="ml-auto text-xs text-green-600 dark:text-green-400 hover:underline" onclick={() => { ocAddStep = 'idle'; }}>Dismiss</button>
+								</div>
+							{:else if ocAddStep === 'error'}
+								<div class="space-y-2">
+									<div class="flex items-center gap-2 p-3 rounded-lg bg-red-50 dark:bg-red-900/20 border border-red-200 dark:border-red-800/50">
+										<Icon name="lucide:circle-alert" class="w-5 h-5 shrink-0 text-red-600 dark:text-red-400" />
+										<span class="text-sm text-red-700 dark:text-red-300">{ocAddError}</span>
+									</div>
+									<button type="button" class="flex items-center justify-center gap-2 w-full px-4 py-2 text-sm font-medium rounded-lg border border-slate-300 dark:border-slate-700 text-slate-700 dark:text-slate-400 hover:bg-slate-100 dark:hover:bg-slate-800 transition-colors" onclick={() => { ocAddStep = 'configuring'; }}>
+										<Icon name="lucide:rotate-ccw" class="w-4 h-4" />Try Again
+									</button>
+								</div>
+							{/if}
+						</div>
+					</div>
 				</div>
 			{/if}
 		</div>
@@ -914,4 +1424,26 @@
 	confirmText="Delete"
 	cancelText="Cancel"
 	onConfirm={deleteClaudeCodeAccount}
+/>
+
+<Dialog
+	bind:isOpen={ocDeleteDialogOpen}
+	onClose={() => { ocDeleteDialogOpen = false; ocDeleteTargetId = null; }}
+	type="error"
+	title="Delete {ocDeleteTargetType === 'provider' ? 'Provider' : 'Account'}"
+	message="Are you sure you want to delete {ocDeleteTargetType === 'provider' ? 'provider' : 'account'} &quot;{ocDeleteTargetName}&quot;?{ocDeleteTargetType === 'provider' ? ' All accounts for this provider will also be removed.' : ''} This action cannot be undone."
+	confirmText="Delete"
+	cancelText="Cancel"
+	onConfirm={executeOCDelete}
+/>
+
+<Dialog
+	bind:isOpen={ocRestartConfirmOpen}
+	onClose={() => { ocRestartConfirmOpen = false; }}
+	type="warning"
+	title="Active Chats Detected"
+	message="There {ocRestartActiveChats === 1 ? 'is' : 'are'} {ocRestartActiveChats} active chat{ocRestartActiveChats !== 1 ? 's' : ''} using the OpenCode engine. Restarting the server will force-stop all of them. Continue?"
+	confirmText="Force Restart"
+	cancelText="Cancel"
+	onConfirm={forceRestartServer}
 />
