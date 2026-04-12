@@ -70,7 +70,7 @@
 		const userMessages = filteredMessages.filter(m => m.type === 'user');
 		if (userMessages.length === 0) return undefined;
 		const lastUserMsg = userMessages[userMessages.length - 1];
-		return lastUserMsg.metadata?.message_id;
+		return 'id' in lastUserMsg ? lastUserMsg.id : undefined;
 	});
 
 	// ========================================
@@ -365,7 +365,7 @@
 
 		// Ensure message is within the virtual scroll window
 		if (vs.isActive) {
-			const msgIndex = filteredMessages.findIndex(m => m.metadata?.message_id === messageId);
+			const msgIndex = filteredMessages.findIndex(m => 'id' in m ? m.id === messageId : false);
 			if (msgIndex >= 0 && (msgIndex < vs.windowStart || msgIndex >= vs.windowEnd)) {
 				vs.ensureVisible(msgIndex);
 				// Wait for DOM to update after window change

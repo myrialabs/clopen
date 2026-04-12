@@ -1,11 +1,13 @@
 <script lang="ts">
-	import type { TaskStopToolInput } from '$shared/types/messaging';
+	import type { ToolUseBlock, TaskStopInput } from '$shared/types/unified';
 	import { InfoLine } from './components';
 	import TextMessage from '../formatters/TextMessage.svelte';
 
-	const { toolInput }: { toolInput: TaskStopToolInput } = $props();
+	const { toolInput }: { toolInput: ToolUseBlock } = $props();
+	const input = $derived(toolInput.input as TaskStopInput);
+	const result = $derived(toolInput.result);
 
-	const taskId = $derived(toolInput.input.task_id || toolInput.input.shell_id || 'unknown');
+	const taskId = $derived(input.taskId || 'unknown');
 </script>
 
 <div class="bg-white dark:bg-slate-800 rounded-md border border-slate-200/60 dark:border-slate-700/60 p-3">
@@ -15,12 +17,12 @@
 </div>
 
 <!-- Tool Result -->
-{#if toolInput.$result}
+{#if result}
 	<div class="mt-4 bg-white dark:bg-slate-800 rounded-md border border-slate-200/60 dark:border-slate-700/60 p-3">
-		{#if typeof toolInput.$result.content === 'string'}
-			<TextMessage content={toolInput.$result.content} />
+		{#if typeof result.content === 'string'}
+			<TextMessage content={result.content} />
 		{:else}
-			<TextMessage content={JSON.stringify(toolInput.$result.content)} />
+			<TextMessage content={JSON.stringify(result.content)} />
 		{/if}
 	</div>
 {/if}

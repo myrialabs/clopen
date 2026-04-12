@@ -1,9 +1,10 @@
 <script lang="ts">
-	import type { EnterPlanModeToolInput } from '$shared/types/messaging';
+	import type { ToolUseBlock } from '$shared/types/unified';
 	import { InfoLine } from './components';
 	import TextMessage from '../formatters/TextMessage.svelte';
 
-	const { toolInput }: { toolInput: EnterPlanModeToolInput } = $props();
+	const { toolInput }: { toolInput: ToolUseBlock } = $props();
+	const result = $derived(toolInput.result);
 </script>
 
 <div class="bg-white dark:bg-slate-800 rounded-md border border-slate-200/60 dark:border-slate-700/60 p-3">
@@ -13,12 +14,12 @@
 </div>
 
 <!-- Tool Result -->
-{#if toolInput.$result}
+{#if result}
 	<div class="mt-4">
-		{#if typeof toolInput.$result.content === 'string'}
-			<TextMessage content={toolInput.$result.content} />
+		{#if typeof result.content === 'string'}
+			<TextMessage content={result.content} />
 		{:else}
-			<TextMessage content={JSON.stringify(toolInput.$result.content)} />
+			<TextMessage content={JSON.stringify(result.content)} />
 		{/if}
 	</div>
 {/if}

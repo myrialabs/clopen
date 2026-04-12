@@ -9,7 +9,7 @@
 -->
 
 <script lang="ts">
-	import type { SDKMessageFormatter } from '$shared/types/database/schema';
+	import type { FrontendMessage } from '$frontend/stores/core/sessions.svelte';
 	import type { IconName } from '$shared/types/ui/icons';
 	import Icon from '$frontend/components/common/display/Icon.svelte';
 	import { appState } from '$frontend/stores/core/app.svelte';
@@ -28,7 +28,7 @@
 		onEdit,
 		onShowDebug
 	}: {
-		message: SDKMessageFormatter;
+		message: FrontendMessage;
 		messageTimestamp: string;
 		isLastUserMessage?: boolean;
 		roleConfig: { gradient: string; icon: IconName; name: string };

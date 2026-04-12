@@ -7,19 +7,34 @@
  * No localStorage usage - server is single source of truth
  */
 
-import type { ChatSession, SDKMessageFormatter } from '$shared/types/database/schema';
-import type { SDKMessage } from '$shared/types/messaging';
-import { buildMetadataFromTransport } from '$shared/utils/message-formatter';
+import type { ChatSession } from '$shared/types/database/schema';
+import type { UnifiedMessage } from '$shared/types/unified';
 import ws, { onWsReconnect } from '$frontend/utils/ws';
 import { projectState } from './projects.svelte';
 import { setupEditModeListener, restoreEditMode } from '$frontend/stores/ui/edit-mode.svelte';
 import { markSessionUnread, markSessionRead, clearSessionState, appState } from '$frontend/stores/core/app.svelte';
 import { debug } from '$shared/utils/logger';
 
+/**
+ * Frontend-only streaming message type.
+ * Created by chat.service.ts during active streaming, replaced by
+ * finalized UnifiedMessage when the backend delivers the full message.
+ */
+export interface StreamingMessage {
+	type: 'stream_event';
+	processId: string;
+	partialText: string;
+	reasoning: boolean;
+	createdAt: string;
+}
+
+/** Union of all message types that can appear in the frontend messages array */
+export type FrontendMessage = UnifiedMessage | StreamingMessage;
+
 interface SessionState {
 	sessions: ChatSession[];
 	currentSession: ChatSession | null;
-	messages: SDKMessageFormatter[];
+	messages: FrontendMessage[];
 	isLoading: boolean;
 	error: string | null;
 	/** True if the current session has message history (even if HEAD is null after restore to initial) */
@@ -194,19 +209,11 @@ export async function endSession(sessionId: string) {
 // MESSAGE MANAGEMENT
 // ========================================
 
-export function addMessage(message: SDKMessage | SDKMessageFormatter): void {
-	// Convert to SDKMessageFormatter if needed
-	const messageFormatter: SDKMessageFormatter = {
-		...message,
-		metadata: ('metadata' in message && message.metadata)
-			? message.metadata
-			: buildMetadataFromTransport({ timestamp: new Date().toISOString() })
-	};
-	// Update unified store - single source of truth
-	sessionState.messages.push(messageFormatter);
+export function addMessage(message: UnifiedMessage): void {
+	sessionState.messages.push(message);
 }
 
-export function updateMessages(messages: SDKMessageFormatter[]) {
+export function updateMessages(messages: FrontendMessage[]) {
 	sessionState.messages = messages;
 }
 
@@ -220,8 +227,8 @@ export async function loadMessagesForSession(sessionId: string) {
 		const response = await ws.http('messages:list', { session_id: sessionId });
 
 		if (response && Array.isArray(response)) {
-			// Messages from server already have correct SDKMessageFormatter shape with metadata
-			sessionState.messages = response as SDKMessageFormatter[];
+			// Messages from server already have correct UnifiedMessage shape
+			sessionState.messages = response as UnifiedMessage[];
 
 			if (response.length > 0) {
 				sessionState.hasMessageHistory = true;

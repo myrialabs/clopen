@@ -7,165 +7,129 @@ import type {
   ToolGroup,
   BackgroundBashData
 } from './message-grouper';
-import type { SDKMessageFormatter } from '$shared/types/database/schema';
-import type { SubAgentActivity } from '$shared/types/messaging';
-
-// Extended ToolUse with embedded result and metadata
-export interface ToolUseWithResult {
-  type: 'tool_use';
-  id: string;
-  name: string;
-  input: any;
-  $result?: any;
-  $subMessages?: SubAgentActivity[];
-  $skillPrompt?: string;
-  metadata?: Record<string, unknown>;
-}
+import type { FrontendMessage } from '$frontend/stores/core/sessions.svelte';
+import type {
+  ToolUseBlock,
+  ToolResult,
+  SubAgentActivity,
+  AssistantContentBlock,
+} from '$shared/types/unified';
 
 // Process a tool message with embedded results
 export function processToolMessage(
   message: ProcessedMessage,
   toolUseMap: Map<string, ToolGroup>,
   backgroundBashMap: Map<string, BackgroundBashData>,
-  subAgentMap: Map<string, SDKMessageFormatter[]>,
+  subAgentMap: Map<string, FrontendMessage[]>,
   skillPromptMap: Map<string, string> = new Map()
 ): ProcessedMessage {
-  const messageAny = message as any;
-  const content = messageAny.message?.content ?
-    (Array.isArray(messageAny.message.content) ? messageAny.message.content : [messageAny.message.content]) : [];
+  if (message.type !== 'assistant' || !('content' in message)) return message;
 
-  // Check if parent message is marked as interrupted
-  const isInterrupted = !!(messageAny.metadata?.interrupted);
-
-  // Create modified content with embedded tool_result in tool_use objects
-  const modifiedContent = content
-    .map((item: any): any => {
-      if (typeof item === 'object' && item && 'type' in item && item.type === 'tool_use') {
-        const processed = processToolUse(item, toolUseMap, backgroundBashMap, subAgentMap, skillPromptMap);
-        // Propagate message-level interrupted flag to ALL tool_use blocks
-        if (processed && isInterrupted) {
-          return { ...processed, metadata: { ...processed.metadata, interrupted: true } };
-        }
-        return processed;
+  // Create modified content with embedded tool results
+  const modifiedContent = message.content
+    .map((block): AssistantContentBlock | null => {
+      if (block.type === 'tool_use') {
+        return processToolUse(block, toolUseMap, backgroundBashMap, subAgentMap, skillPromptMap);
       }
-      return item;
+      return block;
     })
-    .filter((item: any) => item !== null); // Remove null items (hidden tools)
+    .filter((item): item is AssistantContentBlock => item !== null);
 
-  // Return modified message with embedded tool_results
   return {
     ...message,
-    message: {
-      ...messageAny.message,
-      content: modifiedContent
-    }
-  } as ProcessedMessage;
+    content: modifiedContent
+  };
 }
 
-// Process individual tool_use item
+// Process individual tool_use block
 function processToolUse(
-  item: any,
+  block: ToolUseBlock,
   toolUseMap: Map<string, ToolGroup>,
   backgroundBashMap: Map<string, BackgroundBashData>,
-  subAgentMap: Map<string, SDKMessageFormatter[]>,
+  subAgentMap: Map<string, FrontendMessage[]>,
   skillPromptMap: Map<string, string>
-): ToolUseWithResult | null {
+): ToolUseBlock | null {
   // Hide certain tools completely
-  if (shouldHideTool(item.name)) {
+  if (shouldHideTool(block.name)) {
     return null;
   }
 
   // Special handling for Bash with run_in_background
-  if (item.name === 'Bash' && item.input &&
-      typeof item.input === 'object' &&
-      'run_in_background' in item.input &&
-      item.input.run_in_background && item.id) {
-    return handleBackgroundBash(item, toolUseMap, backgroundBashMap);
+  if (block.name === 'Bash' && block.input &&
+      typeof block.input === 'object' &&
+      'run_in_background' in block.input &&
+      (block.input as any).run_in_background && block.id) {
+    return handleBackgroundBash(block, toolUseMap, backgroundBashMap);
   }
 
   // Special handling for Agent tool — embed sub-agent activities
-  if (item.name === 'Agent' && item.id && subAgentMap.has(item.id)) {
-    return handleAgentTool(item, toolUseMap, subAgentMap);
+  if (block.name === 'Agent' && block.id && subAgentMap.has(block.id)) {
+    return handleAgentTool(block, toolUseMap, subAgentMap);
   }
 
   // Special handling for Skill tool — embed expanded skill prompt
-  if (item.name === 'Skill' && item.id && skillPromptMap.has(item.id)) {
-    return handleSkillTool(item, toolUseMap, skillPromptMap);
+  if (block.name === 'Skill' && block.id && skillPromptMap.has(block.id)) {
+    return handleSkillTool(block, toolUseMap, skillPromptMap);
   }
 
   // Regular tool handling
-  if (item.id && item.name && shouldEmbedResult(item.name) && toolUseMap.has(item.id)) {
-    return handleRegularTool(item, toolUseMap);
+  if (block.id && block.name && shouldEmbedResult(block.name) && toolUseMap.has(block.id)) {
+    return handleRegularTool(block, toolUseMap);
   }
 
-  return item;
+  return block;
 }
 
 // Handle Agent tool — process sub-agent messages into activities
 function handleAgentTool(
-  item: any,
+  block: ToolUseBlock,
   toolUseMap: Map<string, ToolGroup>,
-  subAgentMap: Map<string, SDKMessageFormatter[]>
-): ToolUseWithResult {
-  const subMessages = subAgentMap.get(item.id) || [];
+  subAgentMap: Map<string, FrontendMessage[]>
+): ToolUseBlock {
+  const subMessages = subAgentMap.get(block.id) || [];
   const activities = processSubAgentMessages(subMessages);
 
-  // Also embed the $result if available
-  let result: any = undefined;
-  if (item.id && toolUseMap.has(item.id)) {
-    const group = toolUseMap.get(item.id);
-    if (group?.toolResultMessage) {
-      const resultMessage = group.toolResultMessage as any;
-      const resultContent = resultMessage.message ?
-        (Array.isArray(resultMessage.message.content) ? resultMessage.message.content : [resultMessage.message.content]) : [];
-      result = findToolResult(resultContent, item.id);
-    }
-  }
+  // Also embed the result if available
+  const result = findToolResultFromGroup(toolUseMap, block.id);
 
   return {
-    ...item,
-    ...(result ? { $result: result } : {}),
-    ...(activities.length > 0 ? { $subMessages: activities } : {})
-  } as ToolUseWithResult;
+    ...block,
+    result: result ?? block.result,
+    subActivities: activities.length > 0 ? activities : block.subActivities,
+  } as ToolUseBlock;
 }
 
 // Process sub-agent messages into a flat activity list
-function processSubAgentMessages(messages: SDKMessageFormatter[]): SubAgentActivity[] {
+function processSubAgentMessages(messages: FrontendMessage[]): SubAgentActivity[] {
   const activities: SubAgentActivity[] = [];
-  const toolResultMap = new Map<string, any>();
+  const toolResultMap = new Map<string, ToolResult>();
 
   // First pass: collect all tool_results from user messages
   for (const msg of messages) {
-    if (msg.type === 'user' && 'message' in msg && msg.message?.content) {
-      const content = Array.isArray(msg.message.content) ? msg.message.content : [msg.message.content];
-      for (const item of content) {
-        if (typeof item === 'object' && item && item.type === 'tool_result' && item.tool_use_id) {
-          toolResultMap.set(item.tool_use_id, item);
-        }
+    if (msg.type !== 'user' || !('content' in msg)) continue;
+    for (const item of msg.content) {
+      if (item.type === 'tool_result') {
+        toolResultMap.set(item.toolUseId, item);
       }
     }
   }
 
   // Second pass: build activity list from assistant messages
   for (const msg of messages) {
-    if (msg.type === 'assistant' && 'message' in msg && msg.message?.content) {
-      const content = Array.isArray(msg.message.content) ? msg.message.content : [msg.message.content];
-      for (const item of content) {
-        if (typeof item === 'object' && item) {
-          if (item.type === 'tool_use') {
-            activities.push({
-              type: 'tool_use',
-              toolName: item.name,
-              toolInput: item.input,
-              toolResult: toolResultMap.get(item.id) || undefined
-            });
-          } else if (item.type === 'text' && item.text?.trim()) {
-            activities.push({
-              type: 'text',
-              text: item.text
-            });
-          }
-        }
+    if (msg.type !== 'assistant' || !('content' in msg)) continue;
+    for (const item of msg.content) {
+      if (item.type === 'tool_use') {
+        activities.push({
+          type: 'tool_use',
+          toolName: item.name,
+          toolInput: item.input as Record<string, unknown>,
+          toolResult: toolResultMap.get(item.id) ?? null
+        });
+      } else if (item.type === 'text' && (item as any).text?.trim()) {
+        activities.push({
+          type: 'text',
+          text: (item as any).text
+        });
       }
     }
   }
@@ -175,113 +139,74 @@ function processSubAgentMessages(messages: SDKMessageFormatter[]): SubAgentActiv
 
 // Handle Skill tool — embed expanded skill prompt
 function handleSkillTool(
-  item: any,
+  block: ToolUseBlock,
   toolUseMap: Map<string, ToolGroup>,
   skillPromptMap: Map<string, string>
-): ToolUseWithResult {
-  const skillPrompt = skillPromptMap.get(item.id);
-
-  // Also embed the $result if available
-  let result: any = undefined;
-  if (item.id && toolUseMap.has(item.id)) {
-    const group = toolUseMap.get(item.id);
-    if (group?.toolResultMessage) {
-      const resultMessage = group.toolResultMessage as any;
-      const resultContent = resultMessage.message ?
-        (Array.isArray(resultMessage.message.content) ? resultMessage.message.content : [resultMessage.message.content]) : [];
-      result = findToolResult(resultContent, item.id);
-    }
-  }
+): ToolUseBlock {
+  const skillPrompt = skillPromptMap.get(block.id) || null;
+  const result = findToolResultFromGroup(toolUseMap, block.id);
 
   return {
-    ...item,
-    ...(result ? { $result: result } : {}),
-    ...(skillPrompt ? { $skillPrompt: skillPrompt } : {})
-  } as ToolUseWithResult;
+    ...block,
+    result: result ?? block.result,
+    skillPrompt: skillPrompt ?? block.skillPrompt,
+  } as ToolUseBlock;
 }
 
 // Handle background bash commands
 function handleBackgroundBash(
-  item: any,
+  block: ToolUseBlock,
   toolUseMap: Map<string, ToolGroup>,
   backgroundBashMap: Map<string, BackgroundBashData>
-): ToolUseWithResult {
-  const group = toolUseMap.get(item.id);
-  if (!group?.toolResultMessage) return item;
-
-  const resultMessage = group.toolResultMessage as any;
-  const resultContent = resultMessage.message ?
-    (Array.isArray(resultMessage.message.content) ? resultMessage.message.content : [resultMessage.message.content]) : [];
-
-  const toolResult = findToolResult(resultContent, item.id);
-
-  if (!toolResult?.content || typeof toolResult.content !== 'string') return item;
+): ToolUseBlock {
+  const result = findToolResultFromGroup(toolUseMap, block.id);
+  if (!result?.content || typeof result.content !== 'string') return block;
 
   // Extract bash ID and check for BashOutput
-  const idMatch = toolResult.content.match(/Command running in background with ID:\s*(\w+)/);
-  if (!idMatch) return item;
+  const idMatch = result.content.match(/Command running in background with ID:\s*(\w+)/);
+  if (!idMatch) return block;
 
   const bashId = idMatch[1];
   const bashData = backgroundBashMap.get(bashId);
 
   if (bashData && bashData.bashOutputs.length > 0) {
-    // Use the last BashOutput result
     const lastOutput = bashData.bashOutputs[bashData.bashOutputs.length - 1];
     return {
-      ...item,
-      $result: {
-        ...toolResult,
-        content: lastOutput.content || ""
-      }
-    } as ToolUseWithResult;
+      ...block,
+      result: { ...result, content: lastOutput.content || "" }
+    } as ToolUseBlock;
   } else {
-    // No BashOutput found, clear the content
     return {
-      ...item,
-      $result: {
-        ...toolResult,
-        content: ""
-      }
-    } as ToolUseWithResult;
+      ...block,
+      result: { ...result, content: "" }
+    } as ToolUseBlock;
   }
 }
 
 // Handle regular tools
 function handleRegularTool(
-  item: any,
+  block: ToolUseBlock,
   toolUseMap: Map<string, ToolGroup>
-): ToolUseWithResult {
-  const group = toolUseMap.get(item.id);
-  if (!group || !group.toolResultMessage) return item;
-
-  const resultMessage = group.toolResultMessage as any;
-  const resultContent = resultMessage.message ?
-    (Array.isArray(resultMessage.message.content) ? resultMessage.message.content : [resultMessage.message.content]) : [];
-
-  const toolResult = findToolResult(resultContent, item.id);
-
-  if (toolResult) {
-    // Embed tool_result as $result property in tool_use object
-    return {
-      ...item,
-      $result: toolResult
-    } as ToolUseWithResult;
+): ToolUseBlock {
+  const result = findToolResultFromGroup(toolUseMap, block.id);
+  if (result) {
+    return { ...block, result } as ToolUseBlock;
   }
-
-  return item;
+  return block;
 }
 
-// Helper to find tool result by id
-function findToolResult(
-  content: any[],
+// Helper to find tool result from a ToolGroup's result message
+function findToolResultFromGroup(
+  toolUseMap: Map<string, ToolGroup>,
   toolUseId: string
-): any {
-  return content.find((resultItem: any) =>
-    typeof resultItem === 'object' &&
-    resultItem !== null &&
-    'type' in resultItem &&
-    resultItem.type === 'tool_result' &&
-    'tool_use_id' in resultItem &&
-    resultItem.tool_use_id === toolUseId
-  );
+): ToolResult | null {
+  const group = toolUseMap.get(toolUseId);
+  if (!group?.toolResultMessage) return null;
+
+  const resultMsg = group.toolResultMessage;
+  if (resultMsg.type !== 'user' || !('content' in resultMsg)) return null;
+
+  return resultMsg.content.find(
+    (item): item is ToolResult => item.type === 'tool_result' && item.toolUseId === toolUseId
+  ) ?? null;
 }

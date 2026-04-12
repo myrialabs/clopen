@@ -1,13 +1,14 @@
 <script lang="ts">
-	import type { WriteToolInput } from '$shared/types/messaging';
+	import type { ToolUseBlock, WriteInput } from '$shared/types/unified';
 	import { FileHeader, DiffBlock } from './components';
 	import TextMessage from '../formatters/TextMessage.svelte';
 
-	const { toolInput }: { toolInput: WriteToolInput } = $props();
+	const { toolInput }: { toolInput: ToolUseBlock } = $props();
+	const input = $derived(toolInput.input as WriteInput);
 
-	const filePath = $derived(toolInput.input.file_path || '');
+	const filePath = $derived(input.filePath || '');
 	const fileName = $derived(filePath.split(/[/\\]/).pop() || filePath || 'unknown');
-	const content = $derived(toolInput.input.content || '');
+	const content = $derived(input.content || '');
 </script>
 
 <FileHeader
@@ -20,14 +21,3 @@
 <div class="mt-4">
 	<DiffBlock oldString="" newString={content} label="Write" />
 </div>
-
-<!-- Tool Result -->
-<!-- {#if toolInput.$result}
-	<div class="mt-4 bg-white dark:bg-slate-800 rounded-md border border-slate-200/60 dark:border-slate-700/60 p-3">
-		{#if typeof toolInput.$result.content === 'string'}
-			<TextMessage content={toolInput.$result.content} />
-		{:else}
-			<TextMessage content={JSON.stringify(toolInput.$result.content)} />
-		{/if}
-	</div>
-{/if} -->

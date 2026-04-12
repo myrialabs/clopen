@@ -85,10 +85,10 @@
 				return text.length > 0;
 			})
 			.map(msg => ({
-				id: msg.metadata?.message_id,
-				timestamp: msg.metadata?.created_at || '',
-				date: msg.metadata?.created_at ? new Date(msg.metadata.created_at).toLocaleDateString() : 'Unknown',
-				time: msg.metadata?.created_at ? new Date(msg.metadata.created_at).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }) : 'Unknown',
+				id: 'id' in msg ? msg.id : undefined,
+				timestamp: msg.createdAt || '',
+				date: msg.createdAt ? new Date(msg.createdAt).toLocaleDateString() : 'Unknown',
+				time: msg.createdAt ? new Date(msg.createdAt).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }) : 'Unknown',
 				text: extractMessageText(msg)
 			}))
 	);

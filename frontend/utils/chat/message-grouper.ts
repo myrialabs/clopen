@@ -1,4 +1,8 @@
-import type { SDKMessageFormatter } from '$shared/types/database/schema';
+import type { FrontendMessage } from '$frontend/stores/core/sessions.svelte';
+import type {
+  ToolUseBlock,
+  ToolResult,
+} from '$shared/types/unified';
 import {
   shouldFilterMessage,
   extractToolUses,
@@ -10,68 +14,62 @@ import { processToolMessage } from './tool-handler';
 
 // Tool group for mapping tool_use with tool_result
 export interface ToolGroup {
-  toolUseMessage: SDKMessageFormatter;
-  toolResultMessage: SDKMessageFormatter | null;
+  toolUseMessage: FrontendMessage;
+  toolResultMessage: FrontendMessage | null;
 }
 
 // Background bash session data
 export interface BackgroundBashData {
   bashToolId: string;
-  bashOutputs: any[];
+  bashOutputs: ToolResult[];
 }
 
-// Processed message type
-export type ProcessedMessage = SDKMessageFormatter;
+// Processed message type (same as FrontendMessage)
+export type ProcessedMessage = FrontendMessage;
 
 // Module-level map for compact summary lookup (rebuilt each groupMessages call)
-let _compactSummaryMap = new WeakMap<SDKMessageFormatter, string>();
+let _compactSummaryMap = new WeakMap<FrontendMessage, string>();
 
 // Lookup compact summary for a given compact_boundary message
-export function getCompactSummary(message: SDKMessageFormatter): string | undefined {
+export function getCompactSummary(message: FrontendMessage): string | undefined {
   return _compactSummaryMap.get(message);
 }
 
 // Extract text content from a user message
-function extractUserTextContent(message: SDKMessageFormatter): string {
-  if (!('message' in message) || !message.message?.content) return '';
-  const content = message.message.content;
-  if (typeof content === 'string') return content;
-  if (Array.isArray(content)) {
-    return content
-      .filter((item: any) => typeof item === 'object' && item?.type === 'text')
-      .map((item: any) => item.text)
-      .join('\n');
-  }
-  return '';
+function extractUserTextContent(message: FrontendMessage): string {
+  if (message.type !== 'user' || !('content' in message)) return '';
+  return message.content
+    .filter((item) => item.type === 'text')
+    .map((item) => (item as any).text as string)
+    .join('\n');
 }
 
-// Get parent_tool_use_id from any message type
-function getParentToolUseId(message: SDKMessageFormatter): string | null {
-  if ('parent_tool_use_id' in message) {
-    return (message as any).parent_tool_use_id ?? null;
+// Get parentToolUseId from any message type
+function getParentToolUseId(message: FrontendMessage): string | null {
+  if ('parentToolUseId' in message) {
+    return (message as any).parentToolUseId ?? null;
   }
   return null;
 }
 
 // Group tool_use and tool_result messages together
-export function groupMessages(messages: SDKMessageFormatter[]): {
+export function groupMessages(messages: FrontendMessage[]): {
   groups: ProcessedMessage[],
   toolUseMap: Map<string, ToolGroup>,
-  subAgentMap: Map<string, SDKMessageFormatter[]>,
+  subAgentMap: Map<string, FrontendMessage[]>,
   skillPromptMap: Map<string, string>
 } {
   const groups: ProcessedMessage[] = [];
   const toolUseMap = new Map<string, ToolGroup>();
   const agentToolUseIds = new Set<string>();
-  const subAgentMap = new Map<string, SDKMessageFormatter[]>();
+  const subAgentMap = new Map<string, FrontendMessage[]>();
   const skillToolUseIds = new Set<string>();
   const skillPromptMap = new Map<string, string>();
   let lastCompactBoundaryIdx = -1;
-  // Track last Skill tool_use ID for associating synthetic user messages
   let lastSkillToolUseId: string | null = null;
 
   // Rebuild compact summary map each call
-  _compactSummaryMap = new WeakMap<SDKMessageFormatter, string>();
+  _compactSummaryMap = new WeakMap<FrontendMessage, string>();
 
   messages.forEach(message => {
     // Skip messages that should be filtered
@@ -79,8 +77,7 @@ export function groupMessages(messages: SDKMessageFormatter[]): {
       return;
     }
 
-    // Intercept ALL sub-agent messages (any parent_tool_use_id !== null)
-    // before normal processing — these belong to Agent tool sub-conversations
+    // Intercept ALL sub-agent messages (any parentToolUseId !== null)
     const parentToolId = getParentToolUseId(message);
     if (parentToolId) {
       if (agentToolUseIds.has(parentToolId)) {
@@ -89,53 +86,47 @@ export function groupMessages(messages: SDKMessageFormatter[]): {
         }
         subAgentMap.get(parentToolId)!.push(message);
       }
-      // Don't add any sub-agent message to main groups
       return;
     }
 
-    // Handle compact boundary messages — track for synthetic user embedding
+    // Handle compact boundary messages
     if (isCompactBoundaryMessage(message)) {
       lastCompactBoundaryIdx = groups.length;
       lastSkillToolUseId = null;
-      groups.push(message as ProcessedMessage);
+      groups.push(message);
       return;
     }
 
     // Handle assistant messages with tool_use
-    if (message.type === 'assistant' && 'message' in message && message.message?.content) {
+    if (message.type === 'assistant' && 'content' in message) {
       lastCompactBoundaryIdx = -1;
       lastSkillToolUseId = null;
-      const toolUses = extractToolUses(message.message.content);
+      const toolUses = extractToolUses(message.content);
 
       if (toolUses.length > 0) {
-        // Store tool_use messages for grouping
-        toolUses.forEach((toolUse: any) => {
+        toolUses.forEach((toolUse) => {
           if (toolUse.id) {
             toolUseMap.set(toolUse.id, {
               toolUseMessage: message,
               toolResultMessage: null
             });
-            // Track Agent tool IDs for sub-agent message collection
             if (toolUse.name === 'Agent') {
               agentToolUseIds.add(toolUse.id);
             }
-            // Track Skill tool IDs for synthetic user message capture
             if (toolUse.name === 'Skill') {
               skillToolUseIds.add(toolUse.id);
               lastSkillToolUseId = toolUse.id;
             }
           }
         });
-        groups.push(message as ProcessedMessage);
-      } else {
-        groups.push(message as ProcessedMessage);
       }
+      groups.push(message);
       return;
     }
 
     // Handle user messages
-    if (message.type === 'user' && 'message' in message && message.message?.content) {
-      // Synthetic user messages (after compaction): store summary in WeakMap keyed by compact boundary message
+    if (message.type === 'user' && 'content' in message) {
+      // Synthetic user messages (after compaction)
       if (isSyntheticUserMessage(message) && lastCompactBoundaryIdx >= 0) {
         const compactMsg = groups[lastCompactBoundaryIdx];
         const summaryText = extractUserTextContent(message);
@@ -146,7 +137,7 @@ export function groupMessages(messages: SDKMessageFormatter[]): {
         return;
       }
 
-      // Synthetic user messages after Skill tool: capture expanded skill prompt
+      // Synthetic user messages after Skill tool
       if (isSyntheticUserMessage(message) && lastSkillToolUseId) {
         const promptText = extractUserTextContent(message);
         if (promptText) {
@@ -158,14 +149,11 @@ export function groupMessages(messages: SDKMessageFormatter[]): {
 
       lastCompactBoundaryIdx = -1;
 
-      const toolResults = extractToolResults(message.message.content);
+      const toolResults = extractToolResults(message.content);
       if (toolResults.length > 0) {
-        // Group tool_result with corresponding tool_use
-        // Note: don't reset lastSkillToolUseId here — tool_result may precede
-        // the synthetic skill prompt user message
-        toolResults.forEach((toolResult: any) => {
-          if (toolResult.tool_use_id && toolUseMap.has(toolResult.tool_use_id)) {
-            const group = toolUseMap.get(toolResult.tool_use_id);
+        toolResults.forEach((toolResult) => {
+          if (toolResult.toolUseId && toolUseMap.has(toolResult.toolUseId)) {
+            const group = toolUseMap.get(toolResult.toolUseId);
             if (group) {
               group.toolResultMessage = message;
             }
@@ -173,46 +161,43 @@ export function groupMessages(messages: SDKMessageFormatter[]): {
         });
         // Don't add tool_result messages separately
       } else {
-        // Regular user message — reset skill tracking
         lastSkillToolUseId = null;
-        groups.push(message as ProcessedMessage);
+        groups.push(message);
       }
       return;
     }
 
-    // Include stream_event and other messages
+    // Include stream_event, reasoning, and other messages
     lastCompactBoundaryIdx = -1;
     lastSkillToolUseId = null;
-    groups.push(message as ProcessedMessage);
+    groups.push(message);
   });
 
   return { groups, toolUseMap, subAgentMap, skillPromptMap };
 }
 
-// Add tool results to messages
+// Embed tool results into assistant messages
 export function embedToolResults(
   groups: ProcessedMessage[],
   toolUseMap: Map<string, ToolGroup>,
-  subAgentMap: Map<string, SDKMessageFormatter[]>,
+  subAgentMap: Map<string, FrontendMessage[]>,
   skillPromptMap: Map<string, string>
 ): ProcessedMessage[] {
   // Track background bash sessions
   const backgroundBashMap = trackBackgroundBashSessions(groups, toolUseMap);
 
-  // Create combined messages with tool_use including $result property
   return groups.map(message => {
-    if (message.type === 'assistant' && 'message' in message && message.message?.content) {
-      const toolUses = extractToolUses(message.message.content);
+    if (message.type === 'assistant' && 'content' in message) {
+      const toolUses = extractToolUses(message.content);
 
       if (toolUses.length > 0) {
-        const processedMessage = processToolMessage(
+        return processToolMessage(
           message,
           toolUseMap,
           backgroundBashMap,
           subAgentMap,
           skillPromptMap
         );
-        return processedMessage;
       }
     }
 
@@ -228,29 +213,24 @@ function trackBackgroundBashSessions(
   const backgroundBashMap = new Map<string, BackgroundBashData>();
 
   groups.forEach(message => {
-    if (message.type === 'assistant' && 'message' in message && message.message?.content) {
-      const contentArray = Array.isArray(message.message.content)
-        ? message.message.content
-        : [message.message.content];
+    if (message.type !== 'assistant' || !('content' in message)) return;
 
-      contentArray.forEach((item: unknown) => {
-        if (typeof item === 'object' && item && 'type' in item && item.type === 'tool_use') {
-          const toolUse = item as any;
-          // Check for Bash with run_in_background
-          if (toolUse.name === 'Bash' && toolUse.input &&
-              typeof toolUse.input === 'object' &&
-              'run_in_background' in toolUse.input &&
-              toolUse.input.run_in_background) {
-            trackBackgroundBash(toolUse, toolUseMap, backgroundBashMap);
-          }
-          // Collect all BashOutput results
-          else if (toolUse.name === 'BashOutput' && toolUse.input &&
-                   typeof toolUse.input === 'object' &&
-                   'bash_id' in toolUse.input) {
-            trackBashOutput(toolUse, toolUseMap, backgroundBashMap);
-          }
-        }
-      });
+    for (const block of message.content) {
+      if (block.type !== 'tool_use') continue;
+
+      // Check for Bash with run_in_background
+      if (block.name === 'Bash' && block.input &&
+          typeof block.input === 'object' &&
+          'run_in_background' in block.input &&
+          (block.input as any).run_in_background) {
+        trackBackgroundBash(block, toolUseMap, backgroundBashMap);
+      }
+      // Collect all TaskOutput results
+      else if (block.name === 'TaskOutput' && block.input &&
+               typeof block.input === 'object' &&
+               'bash_id' in block.input) {
+        trackBashOutput(block, toolUseMap, backgroundBashMap);
+      }
     }
   });
 
@@ -258,31 +238,24 @@ function trackBackgroundBashSessions(
 }
 
 function trackBackgroundBash(
-  item: any,
+  block: ToolUseBlock,
   toolUseMap: Map<string, ToolGroup>,
   backgroundBashMap: Map<string, BackgroundBashData>
 ): void {
-  const toolId = item.id;
+  const toolId = block.id;
   if (!toolId || !toolUseMap.has(toolId)) return;
 
   const group = toolUseMap.get(toolId);
   if (!group?.toolResultMessage) return;
 
-  const resultMessage = group.toolResultMessage as any;
-  const resultContent = resultMessage.message ?
-    (Array.isArray(resultMessage.message.content) ? resultMessage.message.content : [resultMessage.message.content]) : [];
+  const resultMsg = group.toolResultMessage;
+  if (resultMsg.type !== 'user' || !('content' in resultMsg)) return;
 
-  const toolResult = resultContent.find((resultItem: any) =>
-    typeof resultItem === 'object' &&
-    resultItem &&
-    'type' in resultItem &&
-    resultItem.type === 'tool_result' &&
-    'tool_use_id' in resultItem &&
-    resultItem.tool_use_id === toolId
-  ) as any | undefined;
+  const toolResult = resultMsg.content.find(
+    (item): item is ToolResult => item.type === 'tool_result' && item.toolUseId === toolId
+  );
 
   if (toolResult?.content && typeof toolResult.content === 'string') {
-    // Extract bash ID from "Command running in background with ID: xxxxx"
     const idMatch = toolResult.content.match(/Command running in background with ID:\s*(\w+)/);
     if (idMatch) {
       const bashId = idMatch[1];
@@ -295,30 +268,24 @@ function trackBackgroundBash(
 }
 
 function trackBashOutput(
-  item: any,
+  block: ToolUseBlock,
   toolUseMap: Map<string, ToolGroup>,
   backgroundBashMap: Map<string, BackgroundBashData>
 ): void {
-  const bashId = (item.input as any).bash_id as string;
-  const toolId = item.id;
+  const bashId = (block.input as any).bash_id as string;
+  const toolId = block.id;
 
   if (!toolId || !toolUseMap.has(toolId)) return;
 
   const group = toolUseMap.get(toolId);
   if (!group?.toolResultMessage) return;
 
-  const resultMessage = group.toolResultMessage as any;
-  const resultContent = resultMessage.message ?
-    (Array.isArray(resultMessage.message.content) ? resultMessage.message.content : [resultMessage.message.content]) : [];
+  const resultMsg = group.toolResultMessage;
+  if (resultMsg.type !== 'user' || !('content' in resultMsg)) return;
 
-  const toolResult = resultContent.find((resultItem: any) =>
-    typeof resultItem === 'object' &&
-    resultItem &&
-    'type' in resultItem &&
-    resultItem.type === 'tool_result' &&
-    'tool_use_id' in resultItem &&
-    resultItem.tool_use_id === toolId
-  ) as any | undefined;
+  const toolResult = resultMsg.content.find(
+    (item): item is ToolResult => item.type === 'tool_result' && item.toolUseId === toolId
+  );
 
   if (toolResult && backgroundBashMap.has(bashId)) {
     const bashData = backgroundBashMap.get(bashId);

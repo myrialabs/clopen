@@ -1,17 +1,17 @@
 <script lang="ts">
-	import type { AskUserQuestionToolInput } from '$shared/types/messaging';
+	import type { ToolUseBlock, AskUserQuestionInput } from '$shared/types/unified';
 	import Icon from '$frontend/components/common/display/Icon.svelte';
 	import ws from '$frontend/utils/ws';
 	import { currentSessionId } from '$frontend/stores/core/sessions.svelte';
 	import { appState, updateSessionProcessState } from '$frontend/stores/core/app.svelte';
 	import { debug } from '$shared/utils/logger';
 
-	const { toolInput }: { toolInput: AskUserQuestionToolInput } = $props();
+	const { toolInput }: { toolInput: ToolUseBlock } = $props();
+	const input = $derived(toolInput.input as AskUserQuestionInput);
+	const result = $derived(toolInput.result);
 
-	// Parse answers from the SDK's $result.content string using known question texts as anchors.
+	// Parse answers from the result.content string using known question texts as anchors.
 	// Format: User has answered your questions: "q1"="a1", "q2"="a2", ... . You can now continue...
-	// Regex-based parsing breaks when answers contain quotes or "=", so we use
-	// the known question texts to delimit each answer's boundaries.
 	function parseResultAnswers(content: string, questions: { question: string }[]): Record<string, string> {
 		const answers: Record<string, string> = {};
 
@@ -31,9 +31,6 @@
 
 			const answerStart = startIdx + searchStr.length;
 
-			// Find the end of this answer:
-			// If there's a next question, use its marker as delimiter.
-			// Otherwise, use the SDK's closing marker.
 			let answerEnd = -1;
 
 			if (i < questions.length - 1) {
@@ -55,16 +52,16 @@
 		return answers;
 	}
 
-	// Detect whether the tool has a $result (answered or errored)
-	const hasResult = $derived(!!toolInput.$result?.content);
+	// Detect whether the tool has a result (answered or errored)
+	const hasResult = $derived(!!result?.content);
 
 	// Parse per-question answers from the result content
 	let parsedAnswers = $derived.by(() => {
-		if (!toolInput.$result?.content) return {};
-		return parseResultAnswers(toolInput.$result.content, toolInput.input.questions);
+		if (!result?.content) return {};
+		return parseResultAnswers(result.content, input.questions);
 	});
 
-	// Detect error: $result exists but no answers could be parsed (error message instead of answer format)
+	// Detect error: result exists but no answers could be parsed (error message instead of answer format)
 	const isError = $derived(hasResult && Object.keys(parsedAnswers).length === 0);
 
 	// Successfully answered: has result and parsed answers exist
@@ -79,16 +76,16 @@
 	let isSubmitting = $state(false);
 	let hasSubmitted = $state(false);
 
-	// Tool was interrupted — metadata set by chat service when stream ends (error/cancel/complete)
-	const isInterrupted = $derived(!!toolInput.metadata?.interrupted);
+	// Tool was interrupted — set on ToolUseBlock directly
+	const isInterrupted = $derived(toolInput.interrupted);
 
 	// Initialize selections
 	$effect(() => {
-		if (!toolInput.input.questions) return;
+		if (!input.questions) return;
 		const initial: Record<number, Set<string>> = {};
 		const initialCustom: Record<number, string> = {};
 		const initialOther: Record<number, boolean> = {};
-		for (let i = 0; i < toolInput.input.questions.length; i++) {
+		for (let i = 0; i < input.questions.length; i++) {
 			initial[i] = new Set();
 			initialCustom[i] = '';
 			initialOther[i] = false;
@@ -97,10 +94,6 @@
 		customInputs = initialCustom;
 		otherActive = initialOther;
 	});
-
-	// Sound/push notifications for AskUserQuestion are handled globally by
-	// GlobalStreamMonitor (via chat:waiting-input event) — works cross-session,
-	// plays once per tool_use, and does not replay when returning to session.
 
 	function toggleSelection(questionIdx: number, label: string, isMultiSelect: boolean) {
 		const current = selections[questionIdx] || new Set();
@@ -113,7 +106,6 @@
 		} else {
 			current.clear();
 			current.add(label);
-			// Single-select: deselect Other when picking a regular option
 			otherActive[questionIdx] = false;
 			customInputs[questionIdx] = '';
 		}
@@ -139,7 +131,7 @@
 
 		try {
 			const answers: Record<string, string> = {};
-			const questions = toolInput.input.questions;
+			const questions = input.questions;
 
 			for (let i = 0; i < questions.length; i++) {
 				const q = questions[i];
@@ -189,7 +181,7 @@
 {#if isError || isInterrupted}
 	<!-- Error/interrupted state — show questions as read-only with error indicator -->
 	<div class="space-y-3">
-		{#each toolInput.input.questions as question}
+		{#each input.questions as question}
 			<div class="bg-white dark:bg-slate-800 rounded-lg border border-red-200/60 dark:border-red-800/40 p-4 space-y-2.5">
 				<div class="flex items-center gap-2">
 					<Icon name="lucide:circle-x" class="text-red-500 w-4 h-4 shrink-0" />
@@ -200,8 +192,8 @@
 				<p class="text-sm text-slate-500 dark:text-slate-400">{question.question}</p>
 			</div>
 		{/each}
-		{#if isError && toolInput.$result?.content}
-			<p class="text-xs text-red-500 dark:text-red-400">{toolInput.$result.content}</p>
+		{#if isError && result?.content}
+			<p class="text-xs text-red-500 dark:text-red-400">{result.content}</p>
 		{:else}
 			<p class="text-xs text-red-500 dark:text-red-400">Session ended before question was answered</p>
 		{/if}
@@ -210,7 +202,7 @@
 {:else if isAnswered}
 	<!-- Answered state — each question in its own card -->
 	<div class="space-y-3">
-		{#each toolInput.input.questions as question}
+		{#each input.questions as question}
 			<div class="bg-white dark:bg-slate-800 rounded-lg border border-slate-200/60 dark:border-slate-700/60 p-4 space-y-2.5">
 				<div class="flex items-center gap-2">
 					<Icon name="lucide:circle-check" class="text-green-500 w-4 h-4 shrink-0" />
@@ -229,7 +221,7 @@
 {:else if hasSubmitted}
 	<!-- Submitted state — each question in its own card with local answer -->
 	<div class="space-y-3">
-		{#each toolInput.input.questions as question, idx}
+		{#each input.questions as question, idx}
 			{@const selected = selections[idx] || new Set()}
 			{@const customText = customInputs[idx]?.trim()}
 			{@const isOther = otherActive[idx]}
@@ -255,7 +247,7 @@
 {:else}
 	<!-- Interactive form — each question in its own card -->
 	<div class="space-y-3">
-		{#each toolInput.input.questions as question, idx}
+		{#each input.questions as question, idx}
 			<div class="bg-white dark:bg-slate-800 rounded-lg border border-slate-200/60 dark:border-slate-700/60 p-4 space-y-3">
 				<!-- Question header badge -->
 				<div class="flex items-center gap-2">

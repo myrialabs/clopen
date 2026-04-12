@@ -1,16 +1,18 @@
 <script lang="ts">
-	import type { NotebookEditToolInput } from '$shared/types/messaging';
+	import type { ToolUseBlock, NotebookEditInput } from '$shared/types/unified';
 	import { FileHeader, InfoLine, CodeBlock } from './components';
 	import TextMessage from '../formatters/TextMessage.svelte';
 
-	const { toolInput }: { toolInput: NotebookEditToolInput } = $props();
-	
-	const notebookPath = $derived(toolInput.input.notebook_path);
+	const { toolInput }: { toolInput: ToolUseBlock } = $props();
+	const input = $derived(toolInput.input as NotebookEditInput);
+	const result = $derived(toolInput.result);
+
+	const notebookPath = $derived(input.notebookPath);
 	const fileName = $derived(notebookPath.split(/[/\\]/).pop() || notebookPath);
-	const cellId = $derived(toolInput.input.cell_id);
-	const cellType = $derived(toolInput.input.cell_type || 'code');
-	const editMode = $derived(toolInput.input.edit_mode || 'replace');
-	const newSource = $derived(toolInput.input.new_source);
+	const cellId = $derived(input.cellId);
+	const cellType = $derived(input.cellType || 'code');
+	const editMode = $derived(input.editMode || 'replace');
+	const newSource = $derived(input.newSource);
 </script>
 
 <FileHeader filePath={notebookPath} fileName={fileName} />
@@ -27,12 +29,12 @@
 <CodeBlock code={newSource} type={editMode === 'insert' ? 'add' : editMode === 'delete' ? 'remove' : 'neutral'} label="{editMode === 'insert' ? 'Adding' : editMode === 'delete' ? 'Deleting' : 'Updating'} cell content" />
 
 <!-- Tool Result -->
-{#if toolInput.$result}
+{#if result}
 	<div class="mt-4 bg-white dark:bg-slate-800 rounded-md border border-slate-200/60 dark:border-slate-700/60 p-3">
-		{#if typeof toolInput.$result.content === 'string'}
-			<TextMessage content={toolInput.$result.content} />
+		{#if typeof result.content === 'string'}
+			<TextMessage content={result.content} />
 		{:else}
-			<TextMessage content={JSON.stringify(toolInput.$result.content)} />
+			<TextMessage content={JSON.stringify(result.content)} />
 		{/if}
 	</div>
 {/if}

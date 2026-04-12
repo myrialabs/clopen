@@ -11,7 +11,7 @@
 	import { todoPanelState, saveTodoPanelState } from '$frontend/stores/ui/todo-panel.svelte';
 	import Icon from '$frontend/components/common/display/Icon.svelte';
 	import { fly } from 'svelte/transition';
-	import type { TodoWriteToolInput } from '$shared/types/messaging';
+	import type { TodoItem, TodoWriteInput } from '$shared/types/unified';
 
 	// Drag-only local state (posX is always transient, posY syncs to store on drop)
 	let posY = $state(todoPanelState.posY);
@@ -117,18 +117,12 @@
 		for (let i = sessionState.messages.length - 1; i >= 0; i--) {
 			const message = sessionState.messages[i];
 
-			if (message.type === 'assistant' && 'message' in message && message.message?.content) {
-				const content = Array.isArray(message.message.content)
-					? message.message.content
-					: [message.message.content];
-
+			if (message.type === 'assistant' && 'content' in message) {
 				// Find TodoWrite tool_use in content
-				for (const item of content) {
-					if (typeof item === 'object' && item && 'type' in item && item.type === 'tool_use') {
-						const toolItem = item as any;
-						if (toolItem.name === 'TodoWrite' && toolItem.input?.todos) {
-							return toolItem.input.todos;
-						}
+				for (const item of message.content) {
+					if (item.type === 'tool_use' && item.name === 'TodoWrite') {
+						const input = item.input as TodoWriteInput;
+						if (input.todos) return input.todos;
 					}
 				}
 			}
@@ -142,7 +136,7 @@
 		if (!latestTodos) return { completed: 0, total: 0, percentage: 0 };
 
 		const total = latestTodos.length;
-		const completed = latestTodos.filter((t: any) => t.status === 'completed').length;
+		const completed = latestTodos.filter((t) => t.status === 'completed').length;
 		const percentage = total > 0 ? Math.round((completed / total) * 100) : 0;
 
 		return { completed, total, percentage };
@@ -323,7 +317,7 @@
 									{/if} -->
 								</div>
 								<span class="text-xs text-slate-400 dark:text-slate-500 mt-0.5">
-									{index + 1}/{latestTodos.length}
+									{index + 1}/{latestTodos?.length}
 								</span>
 							</div>
 						{/each}

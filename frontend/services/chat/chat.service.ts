@@ -19,9 +19,18 @@ import { sessionState, setCurrentSession, createSession, updateSession } from '$
 import { addNotification } from '$frontend/stores/ui/notification.svelte';
 import { userStore } from '$frontend/stores/features/user.svelte';
 import { SDK_CONFIG, parseModelId } from '$shared/constants/engines';
-import type { ChatServiceOptions } from '$shared/types/messaging';
-import { buildMetadataFromTransport } from '$shared/utils/message-formatter';
+import type { UnifiedMessage, AssistantMessage } from '$shared/types/unified';
+import type { StreamingMessage, FrontendMessage } from '$frontend/stores/core/sessions.svelte';
 import { debug } from '$shared/utils/logger';
+
+/** Chat service configuration */
+interface ChatServiceOptions {
+  onLoadingTextChange?: (text: string) => void;
+  onStreamStart?: (processId: string) => void;
+  onStreamEnd?: () => void;
+  onError?: (error: Error) => void;
+  attachedFiles?: { type: 'image' | 'document'; data: string; mediaType: string; fileName: string }[];
+}
 import ws from '$frontend/utils/ws';
 
 /**
@@ -276,8 +285,7 @@ class ChatService {
       // The actual error bubble is now emitted as a chat:message from the backend and saved to DB,
       // so it persists across browser refresh. No need to inject a synthetic bubble here.
       for (let i = sessionState.messages.length - 1; i >= 0; i--) {
-        const msg = sessionState.messages[i] as any;
-        if (msg.type === 'stream_event') {
+        if (sessionState.messages[i].type === 'stream_event') {
           sessionState.messages.splice(i, 1);
         }
       }
@@ -381,54 +389,56 @@ class ChatService {
 
     try {
       // Build message content (text + optional file attachments)
-      let messageContent: any = userMessage;
+      const contentBlocks: any[] = [];
       if (options.attachedFiles && options.attachedFiles.length > 0) {
-        const contentBlocks: any[] = [];
         // Add file attachments first
         for (const file of options.attachedFiles) {
           if (file.type === 'image') {
             contentBlocks.push({
               type: 'image',
-              source: { type: 'base64', media_type: file.mediaType, data: file.data }
+              mediaType: file.mediaType,
+              data: file.data,
             });
           } else {
             contentBlocks.push({
               type: 'document',
-              source: { type: 'base64', media_type: file.mediaType, data: file.data },
-              title: file.fileName
+              mediaType: file.mediaType,
+              data: file.data,
+              title: file.fileName,
             });
           }
         }
-        // Add text block
-        if (userMessage) {
-          contentBlocks.push({ type: 'text', text: userMessage });
-        }
-        messageContent = contentBlocks;
       }
+      // Add text block
+      if (userMessage) {
+        contentBlocks.push({ type: 'text', text: userMessage });
+      }
+      const messageContent = contentBlocks.length > 0 ? contentBlocks : [{ type: 'text', text: userMessage }];
 
-      // Create SDKUserMessage format for prompt
-      const sdkUserMessage = {
+      // Create UserMessage format for prompt
+      const userMsgId = crypto.randomUUID();
+      const userMsg = {
         type: 'user' as const,
-        uuid: crypto.randomUUID(),
-        session_id: sessionState.currentSession.id,
-        parent_tool_use_id: null,
-        message: {
-          role: 'user' as const,
-          content: messageContent
-        }
+        id: userMsgId,
+        sessionId: sessionState.currentSession.id,
+        createdAt: new Date().toISOString(),
+        parentMessageId: null,
+        senderId: userStore.currentUser?.id || null,
+        senderName: userStore.currentUser?.name || null,
+        model: null,
+        engine: null,
+        parentToolUseId: null,
+        content: messageContent,
+        synthetic: false,
       };
 
       // Optimistic UI: show user message immediately (before server confirms)
       const optimisticMessage = {
-        ...sdkUserMessage,
+        ...userMsg,
         _optimistic: true,
-        metadata: buildMetadataFromTransport({
-          timestamp: new Date().toISOString(),
-          sender_id: userStore.currentUser?.id || null,
-          sender_name: userStore.currentUser?.name || null,
-        })
+        _optimisticId: userMsgId,
       };
-      (sessionState.messages as any[]).push(optimisticMessage);
+      (sessionState.messages as FrontendMessage[]).push(optimisticMessage as any);
 
       // Parse engine and model from the local chat model state (isolated from Settings)
       const { engine, modelId } = parseModelId(chatModelState.model);
@@ -443,20 +453,24 @@ class ChatService {
         sessionId: crypto.randomUUID(), // ephemeral session ID for this stream
         chatSessionId: sessionState.currentSession.id,
         projectPath: projectState.currentProject?.path || '',
-        prompt: sdkUserMessage,
-        messages: sessionState.messages.filter((msg: any) => !msg._optimistic).map(msg => {
-          // Convert SDKMessage to API format
-          if (msg.type === 'user' && 'message' in msg) {
+        prompt: userMsg,
+        messages: sessionState.messages.filter((msg) => !((msg as any)._optimistic) && msg.type !== 'stream_event').map(msg => {
+          // Convert UnifiedMessage to API format
+          if (msg.type === 'user' && 'content' in msg) {
+            const textParts = msg.content
+              .filter(c => c.type === 'text')
+              .map(c => (c as any).text as string);
             return {
-              role: msg.message.role,
-              content: typeof msg.message.content === 'string' ? msg.message.content : JSON.stringify(msg.message.content)
+              role: 'user',
+              content: textParts.join('\n') || ''
             };
-          } else if (msg.type === 'assistant' && 'message' in msg) {
+          } else if (msg.type === 'assistant' && 'content' in msg) {
+            const textParts = msg.content
+              .filter(c => c.type === 'text')
+              .map(c => (c as any).text as string);
             return {
-              role: msg.message.role,
-              content: Array.isArray(msg.message.content)
-                ? msg.message.content.map((c: { type: string; text?: string }) => c.type === 'text' && c.text ? c.text : JSON.stringify(c)).join(' ')
-                : JSON.stringify(msg.message.content)
+              role: 'assistant',
+              content: textParts.join(' ') || ''
             };
           }
           return {
@@ -572,13 +586,27 @@ class ChatService {
   }
 
   /**
+   * Merge transport metadata into a UnifiedMessage.
+   * Backend sends DB-assigned fields (id, parentMessageId, etc.) alongside the message.
+   */
+  private enrichMessage(message: UnifiedMessage, data: any): UnifiedMessage {
+    const enriched = { ...message };
+    if (data.message_id) enriched.id = data.message_id;
+    if (data.parent_message_id !== undefined) enriched.parentMessageId = data.parent_message_id ?? null;
+    if (data.sender_id) enriched.senderId = data.sender_id;
+    if (data.sender_name) enriched.senderName = data.sender_name;
+    if (data.timestamp) enriched.createdAt = data.timestamp;
+    return enriched;
+  }
+
+  /**
    * Handle message events from stream
    */
   private handleMessageEvent(data: any): void {
-    const sdkMessage = data.message;
+    const rawMessage = data.message as UnifiedMessage | undefined;
 
     // Early return if no message
-    if (!sdkMessage) return;
+    if (!rawMessage) return;
 
     // Ignore messages from a completed/cancelled stream
     if (this.streamCompleted) return;
@@ -588,125 +616,89 @@ class ChatService {
       return;
     }
 
+    // Enrich with transport metadata (DB id, parent, sender)
+    const message = this.enrichMessage(rawMessage, data);
+    const isReasoning = message.type === 'reasoning';
+
     // If this is a user message from server, replace the optimistic message
-    if (sdkMessage.type === 'user' && sdkMessage.message?.role === 'user') {
+    if (message.type === 'user') {
       const optimisticIndex = sessionState.messages.findIndex(
-        (m: any) => m._optimistic && m.type === 'user' && m.uuid === sdkMessage.uuid
+        (m) => (m as any)._optimistic && m.type === 'user' && (m as any)._optimisticId === message.id
       );
       if (optimisticIndex !== -1) {
-        // Replace optimistic with server-confirmed message
-        const confirmedMessage = {
-          ...sdkMessage,
-          metadata: buildMetadataFromTransport(data)
-        };
-        sessionState.messages[optimisticIndex] = confirmedMessage;
+        sessionState.messages[optimisticIndex] = message;
         return;
       }
     }
 
-    // If this is an assistant message, replace the matching streaming message
-    if (sdkMessage.message?.role === 'assistant') {
-      const isReasoning = sdkMessage.metadata?.reasoning === true;
-      if (isReasoning) {
-        // Replace reasoning stream_event IN PLACE to preserve message order
-        for (let i = sessionState.messages.length - 1; i >= 0; i--) {
-          const msg = sessionState.messages[i] as any;
-          if (msg.type === 'stream_event' && msg.metadata?.reasoning) {
-            const messageFormatter = {
-              ...sdkMessage,
-              metadata: buildMetadataFromTransport({ ...data, reasoning: true })
-            };
-            sessionState.messages[i] = messageFormatter;
-            return; // Already replaced in-place, skip push below
-          }
-        }
-        // If no reasoning stream_event found, fall through to push at end
-      } else {
-        // Replace text stream_event IN PLACE to preserve message position
-        // (same approach as reasoning — prevents visual displacement)
-        for (let i = sessionState.messages.length - 1; i >= 0; i--) {
-          const msg = sessionState.messages[i] as any;
-          if (msg.type === 'stream_event' && !msg.metadata?.reasoning) {
-            const messageFormatter = {
-              ...sdkMessage,
-              metadata: buildMetadataFromTransport(data)
-            };
-            sessionState.messages[i] = messageFormatter;
+    // If this is an assistant/reasoning message, replace the matching streaming message
+    if (message.type === 'assistant' || isReasoning) {
+      const matchReasoning = isReasoning;
+      for (let i = sessionState.messages.length - 1; i >= 0; i--) {
+        const msg = sessionState.messages[i];
+        if (msg.type === 'stream_event' && msg.reasoning === matchReasoning) {
+          sessionState.messages[i] = message;
 
-            // Detect interactive tool_use blocks in the replaced message
-            if (sdkMessage.type === 'assistant' && sdkMessage.message?.content) {
-              const content = Array.isArray(sdkMessage.message.content) ? sdkMessage.message.content : [];
-              const hasInteractiveTool = content.some(
-                (item: any) => item.type === 'tool_use' && INTERACTIVE_TOOLS.has(item.name)
-              );
-              if (hasInteractiveTool) {
-                this.setProcessState({ isWaitingInput: true });
-              }
-            }
-
-            return; // Replaced in-place, skip push below
+          // Detect interactive tool_use blocks in the replaced message
+          if (message.type === 'assistant') {
+            this.checkInteractiveTools(message);
           }
+
+          return;
         }
-        // No stream_event found, fall through to push at end
       }
+      // No matching stream_event found, fall through to push
     }
 
-    // Deduplicate: skip if a message with the same uuid already exists
-    if (sdkMessage.uuid) {
+    // Deduplicate: skip if a message with the same id already exists
+    if (message.id) {
       const alreadyExists = sessionState.messages.some(
-        (m: any) => m.uuid === sdkMessage.uuid && m.type === sdkMessage.type && !m._optimistic
+        (m) => m.type !== 'stream_event' && 'id' in m && m.id === message.id && !((m as any)._optimistic)
       );
       if (alreadyExists) return;
     }
 
-    // Update UI state (message already saved to DB by server)
-    const isReasoning = sdkMessage.metadata?.reasoning === true;
-    const messageFormatter = {
-      ...sdkMessage,
-      metadata: buildMetadataFromTransport({
-        ...data,
-        ...(isReasoning && { reasoning: true }),
-      })
-    };
-
-    // Detect interactive tool_use blocks (e.g., AskUserQuestion) and set waiting status.
-    // When the SDK is blocked on canUseTool, partial events stop and the user must interact.
-    if (sdkMessage.type === 'assistant' && sdkMessage.message?.content) {
-      const content = Array.isArray(sdkMessage.message.content) ? sdkMessage.message.content : [];
-      const hasInteractiveTool = content.some(
-        (item: any) => item.type === 'tool_use' && INTERACTIVE_TOOLS.has(item.name)
-      );
-      if (hasInteractiveTool) {
-        this.setProcessState({ isWaitingInput: true });
-      }
+    // Detect interactive tool_use blocks (e.g., AskUserQuestion) and set waiting status
+    if (message.type === 'assistant') {
+      this.checkInteractiveTools(message);
     }
 
     // When a user message with tool_result arrives, the SDK is unblocked — clear waiting status
-    if (sdkMessage.type === 'user' && sdkMessage.message?.content) {
-      const content = Array.isArray(sdkMessage.message.content) ? sdkMessage.message.content : [];
-      const hasToolResult = content.some((item: any) => item.type === 'tool_result');
+    if (message.type === 'user') {
+      const hasToolResult = message.content.some((item) => item.type === 'tool_result');
       if (hasToolResult && appState.isWaitingInput) {
         this.setProcessState({ isWaitingInput: false });
       }
     }
 
-    // For reasoning messages that couldn't find a matching stream_event,
-    // insert BEFORE trailing non-reasoning assistant messages (tools/text)
+    // For reasoning messages, insert BEFORE trailing non-reasoning assistant messages
     // to preserve reasoning-before-tool ordering within the same turn.
     if (isReasoning) {
       let insertIdx = sessionState.messages.length;
       for (let i = sessionState.messages.length - 1; i >= 0; i--) {
-        const msg = sessionState.messages[i] as any;
-        // Stop at user messages or other reasoning messages — they mark turn boundaries
-        if (msg.type === 'user' || (msg.type === 'assistant' && msg.metadata?.reasoning)) break;
+        const msg = sessionState.messages[i];
+        // Stop at user messages or other reasoning messages
+        if (msg.type === 'user' || msg.type === 'reasoning') break;
         // Insert before non-reasoning assistant messages and non-reasoning stream_events
-        if (msg.type === 'assistant' || (msg.type === 'stream_event' && !msg.metadata?.reasoning)) {
+        if (msg.type === 'assistant' || (msg.type === 'stream_event' && !msg.reasoning)) {
           insertIdx = i;
         }
       }
-      (sessionState.messages as any[]).splice(insertIdx, 0, messageFormatter);
+      (sessionState.messages as FrontendMessage[]).splice(insertIdx, 0, message);
     } else {
-      (sessionState.messages as any[]).push(messageFormatter);
+      (sessionState.messages as FrontendMessage[]).push(message);
+    }
+  }
+
+  /**
+   * Check for interactive tool_use blocks and set waiting status
+   */
+  private checkInteractiveTools(message: AssistantMessage): void {
+    const hasInteractiveTool = message.content.some(
+      (item) => item.type === 'tool_use' && INTERACTIVE_TOOLS.has(item.name)
+    );
+    if (hasInteractiveTool) {
+      this.setProcessState({ isWaitingInput: true });
     }
   }
 
@@ -726,99 +718,67 @@ class ChatService {
     const isReasoning = data.reasoning === true;
 
     if (eventType === 'start') {
-      if (isReasoning) {
-        // Check if there's already a reasoning stream_event (from catchup)
-        const existingReasoning = sessionState.messages.find(
-          (m: any) => m.type === 'stream_event' && m.metadata?.reasoning && m.processId === data.processId
-        );
-        if (existingReasoning) {
-          // Already have one, just update it
-          (existingReasoning as any).partialText = partialText || '';
-          return;
-        }
-      } else {
-        // Check if there's already a regular stream_event for this process (from catchup)
-        const existingStream = sessionState.messages.find(
-          (m: any) => m.type === 'stream_event' && !m.metadata?.reasoning && m.processId === data.processId
-        );
-        if (existingStream) {
-          // Already have one, just update it
-          (existingStream as any).partialText = partialText || '';
-          return;
-        }
+      // Check if there's already a matching stream_event (from catchup)
+      const existing = sessionState.messages.find(
+        (m) => m.type === 'stream_event' && m.reasoning === isReasoning && m.processId === data.processId
+      );
+      if (existing && existing.type === 'stream_event') {
+        existing.partialText = partialText || '';
+        return;
       }
 
-      // Create new streaming message (reasoning or text)
-      const streamingMessage = {
-        type: 'stream_event' as const,
+      // Create new streaming message
+      const streamingMessage: StreamingMessage = {
+        type: 'stream_event',
         processId: data.processId,
         partialText: partialText || '',
-        metadata: buildMetadataFromTransport({
-          timestamp: data.timestamp,
-          ...(isReasoning && { reasoning: true }),
-        })
+        reasoning: isReasoning,
+        createdAt: data.timestamp || new Date().toISOString(),
       };
 
       if (isReasoning) {
         // Insert reasoning stream BEFORE any existing non-reasoning stream_event
-        // to preserve logical order (reasoning comes before text in the model's output)
-        const textStreamIdx = (sessionState.messages as any[]).findIndex(
-          (m: any) => m.type === 'stream_event' && !m.metadata?.reasoning
+        const textStreamIdx = sessionState.messages.findIndex(
+          (m) => m.type === 'stream_event' && !m.reasoning
         );
         if (textStreamIdx >= 0) {
-          (sessionState.messages as any[]).splice(textStreamIdx, 0, streamingMessage);
+          (sessionState.messages as FrontendMessage[]).splice(textStreamIdx, 0, streamingMessage);
         } else {
-          (sessionState.messages as any[]).push(streamingMessage);
+          (sessionState.messages as FrontendMessage[]).push(streamingMessage);
         }
       } else {
-        // Text stream always goes to the end (after any reasoning)
-        (sessionState.messages as any[]).push(streamingMessage);
+        (sessionState.messages as FrontendMessage[]).push(streamingMessage);
       }
     } else if (eventType === 'update') {
-      if (isReasoning) {
-        // Update reasoning streaming message — find last reasoning stream_event
-        for (let i = sessionState.messages.length - 1; i >= 0; i--) {
-          const msg = sessionState.messages[i] as any;
-          if (msg.type === 'stream_event' && msg.metadata?.reasoning) {
-            msg.partialText = partialText || '';
-            return;
-          }
-        }
-      } else {
-        // Update regular text streaming message — find matching stream_event
-        // Search backwards to find the most recent non-reasoning stream_event
-        for (let i = sessionState.messages.length - 1; i >= 0; i--) {
-          const msg = sessionState.messages[i] as any;
-          if (msg.type === 'stream_event' && !msg.metadata?.reasoning) {
-            msg.partialText = partialText || '';
-            return;
-          }
+      // Find matching stream_event and update
+      for (let i = sessionState.messages.length - 1; i >= 0; i--) {
+        const msg = sessionState.messages[i];
+        if (msg.type === 'stream_event' && msg.reasoning === isReasoning) {
+          msg.partialText = partialText || '';
+          return;
         }
       }
 
-      // Fallback: no matching stream_event found (start event was missed).
-      // Create one now so text doesn't get lost.
-      const fallbackMessage = {
-        type: 'stream_event' as const,
+      // Fallback: no matching stream_event found (start event was missed)
+      const fallbackMessage: StreamingMessage = {
+        type: 'stream_event',
         processId: data.processId,
         partialText: partialText || '',
-        metadata: buildMetadataFromTransport({
-          timestamp: data.timestamp,
-          ...(isReasoning && { reasoning: true }),
-        })
+        reasoning: isReasoning,
+        createdAt: data.timestamp || new Date().toISOString(),
       };
 
       if (isReasoning) {
-        const textStreamIdx = (sessionState.messages as any[]).findIndex(
-          (m: any) => m.type === 'stream_event' && !m.metadata?.reasoning
+        const textStreamIdx = sessionState.messages.findIndex(
+          (m) => m.type === 'stream_event' && !m.reasoning
         );
         if (textStreamIdx >= 0) {
-          (sessionState.messages as any[]).splice(textStreamIdx, 0, fallbackMessage);
+          (sessionState.messages as FrontendMessage[]).splice(textStreamIdx, 0, fallbackMessage);
         } else {
-          (sessionState.messages as any[]).push(fallbackMessage);
+          (sessionState.messages as FrontendMessage[]).push(fallbackMessage);
         }
       } else {
-        (sessionState.messages as any[]).push(fallbackMessage);
+        (sessionState.messages as FrontendMessage[]).push(fallbackMessage);
       }
     }
     // Note: 'end' event is not needed - streaming message will be replaced by final message in handleMessageEvent
@@ -831,36 +791,56 @@ class ChatService {
    */
   private cleanupStreamEvents(): void {
     for (let i = sessionState.messages.length - 1; i >= 0; i--) {
-      if ((sessionState.messages[i] as any).type === 'stream_event') {
+      if (sessionState.messages[i].type === 'stream_event') {
         sessionState.messages.splice(i, 1);
       }
     }
   }
 
   /**
-   * Convert stream_event messages with text to finalized assistant messages.
+   * Convert stream_event messages with text to finalized messages.
    * Called on cancel to preserve partial reasoning/text that was visible.
-   * Empty stream_events (no text) are removed.
+   * Empty stream_events are removed.
    * The backend saves these to DB independently, so on refresh the DB version takes over.
    */
   private finalizeStreamEvents(): void {
     for (let i = sessionState.messages.length - 1; i >= 0; i--) {
-      const msg = sessionState.messages[i] as any;
+      const msg = sessionState.messages[i];
       if (msg.type !== 'stream_event') continue;
 
       if (msg.partialText) {
-        const isReasoning = msg.metadata?.reasoning === true;
-        sessionState.messages[i] = {
-          type: 'assistant',
-          message: {
-            role: 'assistant',
-            content: [{ type: 'text', text: msg.partialText }]
-          },
-          metadata: {
-            ...msg.metadata,
-            ...(isReasoning && { reasoning: true }),
-          }
-        } as any;
+        if (msg.reasoning) {
+          // Convert to ReasoningMessage
+          sessionState.messages[i] = {
+            type: 'reasoning',
+            id: crypto.randomUUID(),
+            sessionId: sessionState.currentSession?.id || '',
+            createdAt: msg.createdAt,
+            parentMessageId: null,
+            senderId: null,
+            senderName: null,
+            model: null,
+            engine: null,
+            text: msg.partialText,
+          } satisfies UnifiedMessage;
+        } else {
+          // Convert to AssistantMessage
+          sessionState.messages[i] = {
+            type: 'assistant',
+            id: crypto.randomUUID(),
+            sessionId: sessionState.currentSession?.id || '',
+            createdAt: msg.createdAt,
+            parentMessageId: null,
+            senderId: null,
+            senderName: null,
+            model: null,
+            engine: null,
+            parentToolUseId: null,
+            content: [{ type: 'text', text: msg.partialText }],
+            stopReason: 'interrupted',
+            usage: null,
+          } satisfies UnifiedMessage;
+        }
       } else {
         sessionState.messages.splice(i, 1);
       }
@@ -877,24 +857,19 @@ class ChatService {
     // Collect all tool_use IDs that have a matching tool_result
     const answeredToolIds = new Set<string>();
     for (const msg of sessionState.messages) {
-      const msgAny = msg as any;
-      if (msgAny.type !== 'user' || !msgAny.message?.content) continue;
-      const content = Array.isArray(msgAny.message.content) ? msgAny.message.content : [];
-      for (const item of content) {
-        if (item.type === 'tool_result' && item.tool_use_id) {
-          answeredToolIds.add(item.tool_use_id);
+      if (msg.type !== 'user' || !('content' in msg)) continue;
+      for (const item of msg.content) {
+        if (item.type === 'tool_result') {
+          answeredToolIds.add(item.toolUseId);
         }
       }
     }
 
-    // Check if any interactive tool is unanswered (skip interrupted/cancelled messages)
+    // Check if any interactive tool is unanswered (skip interrupted blocks)
     for (const msg of sessionState.messages) {
-      const msgAny = msg as any;
-      if (msgAny.type !== 'assistant' || !msgAny.message?.content) continue;
-      if (msgAny.metadata?.interrupted) continue;
-      const content = Array.isArray(msgAny.message.content) ? msgAny.message.content : [];
-      const hasPendingInteractive = content.some(
-        (item: any) => item.type === 'tool_use' && INTERACTIVE_TOOLS.has(item.name) && item.id && !answeredToolIds.has(item.id)
+      if (msg.type !== 'assistant' || !('content' in msg)) continue;
+      const hasPendingInteractive = msg.content.some(
+        (item) => item.type === 'tool_use' && !item.interrupted && INTERACTIVE_TOOLS.has(item.name) && !answeredToolIds.has(item.id)
       );
       if (hasPendingInteractive) {
         this.setProcessState({ isWaitingInput: true });
@@ -904,8 +879,8 @@ class ChatService {
   }
 
   /**
-   * Mark assistant messages with unanswered tool_use blocks as interrupted.
-   * Sets metadata.interrupted at the MESSAGE level (not tool_use content level).
+   * Mark unanswered tool_use blocks as interrupted.
+   * Sets interrupted on individual ToolUseBlock instances.
    * Called when stream ends (complete/error/cancel) for immediate in-memory update.
    * The backend persists this to DB via stream:lifecycle for durability.
    */
@@ -914,30 +889,21 @@ class ChatService {
     const answeredToolIds = new Set<string>();
 
     for (const msg of sessionState.messages) {
-      const msgAny = msg as any;
-      if (msgAny.type !== 'user' || !msgAny.message?.content) continue;
-      const content = Array.isArray(msgAny.message.content) ? msgAny.message.content : [];
-
-      for (const item of content) {
-        if (item.type === 'tool_result' && item.tool_use_id) {
-          answeredToolIds.add(item.tool_use_id);
+      if (msg.type !== 'user' || !('content' in msg)) continue;
+      for (const item of msg.content) {
+        if (item.type === 'tool_result') {
+          answeredToolIds.add(item.toolUseId);
         }
       }
     }
 
-    // Mark messages with unanswered tool_use blocks as interrupted (message-level metadata)
+    // Mark individual tool_use blocks as interrupted
     for (const msg of sessionState.messages) {
-      const msgAny = msg as any;
-      if (msgAny.type !== 'assistant' || !msgAny.message?.content) continue;
-      const content = Array.isArray(msgAny.message.content) ? msgAny.message.content : [];
-
-      const hasUnansweredTool = content.some(
-        (item: any) => item.type === 'tool_use' && item.id && !answeredToolIds.has(item.id)
-      );
-
-      if (hasUnansweredTool && !msgAny.metadata?.interrupted) {
-        if (!msgAny.metadata) msgAny.metadata = {};
-        msgAny.metadata.interrupted = true;
+      if (msg.type !== 'assistant' || !('content' in msg)) continue;
+      for (const block of msg.content) {
+        if (block.type === 'tool_use' && !answeredToolIds.has(block.id) && !block.interrupted) {
+          (block as any).interrupted = true;
+        }
       }
     }
   }

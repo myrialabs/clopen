@@ -12,7 +12,6 @@ export { default as NotebookEditTool } from './NotebookEditTool.svelte';
 export { default as ReadTool } from './ReadTool.svelte';
 export { default as ReadMcpResourceTool } from './ReadMcpResourceTool.svelte';
 export { default as AgentTool } from './AgentTool.svelte';
-export { default as TaskTool } from './TaskTool.svelte';
 export { default as TodoWriteTool } from './TodoWriteTool.svelte';
 export { default as WebFetchTool } from './WebFetchTool.svelte';
 export { default as WebSearchTool } from './WebSearchTool.svelte';

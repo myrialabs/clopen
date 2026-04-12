@@ -8,7 +8,7 @@
 -->
 
 <script lang="ts">
-	import type { SDKMessageFormatter } from '$shared/types/database/schema';
+	import type { FrontendMessage } from '$frontend/stores/core/sessions.svelte';
 	import Modal from '$frontend/components/common/overlay/Modal.svelte';
 	import Icon from '$frontend/components/common/display/Icon.svelte';
 
@@ -18,7 +18,7 @@
 		onClose
 	}: {
 		isOpen: boolean;
-		message: SDKMessageFormatter;
+		message: FrontendMessage;
 		onClose: () => void;
 	} = $props();
 

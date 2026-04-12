@@ -1,4 +1,4 @@
-import type { SDKMessageFormatter } from '$shared/types/database/schema';
+import type { FrontendMessage } from '$frontend/stores/core/sessions.svelte';
 
 // Interface for date separator items
 export interface DateSeparatorItem {
@@ -9,12 +9,12 @@ export interface DateSeparatorItem {
 
 // Add date separators to messages
 // startIndex: global offset for stable keys when using windowed slices
-export function addDateSeparators(messages: SDKMessageFormatter[], startIndex: number = 0): DateSeparatorItem[] {
+export function addDateSeparators(messages: FrontendMessage[], startIndex: number = 0): DateSeparatorItem[] {
   const result: DateSeparatorItem[] = [];
   let lastDate: string | null = null;
 
   messages.forEach((message, index) => {
-    const createdAt = message.metadata?.created_at || new Date().toISOString();
+    const createdAt = message.createdAt || new Date().toISOString();
     const messageDate = new Date(createdAt).toDateString();
 
     // Add date separator if date has changed

@@ -72,7 +72,7 @@ backend/engine/types.ts
 backend/engine/adapters/claude/stream.ts
   - Import converters dari ./message-converter
   - Tetap v1 query() (v2 belum support cwd, mcpServers, dll)
-  - Import resolveOsPath dari $shared/utils/path
+  - Import resolveOsPath dari $backend/utils/paths
 
 backend/engine/adapters/claude/message-converter.ts (BARU)
   - Converter terpisah menggunakan proper SDK types
@@ -109,7 +109,8 @@ backend/database/queries/message-queries.ts
   - create() menerima SDKMessage | UnifiedMessage (transitional)
 
 shared/utils/path.ts
-  - Tambah resolveOsPath() (dari claude/path-utils.ts yang dihapus)
+  - Browser-safe: hanya normalizePath/pathsEqual/getRelativePath
+  - resolveOsPath() dipindah ke backend/utils/paths.ts (Phase 3)
 ```
 
 ### SDK v2 API Status
@@ -150,8 +151,9 @@ Migrasi ke v2 menunggu SDKSessionOptions mendapat options ini.
 [x] backend/chat/stream-manager.ts — selesai (switch output.type routing)
 [x] backend/chat/helpers.ts — selesai
 [x] backend/database/queries/message-queries.ts — transitional (SDKMessage | UnifiedMessage)
-[x] shared/utils/path.ts — tambah resolveOsPath()
-[x] backend/engine/adapters/claude/path-utils.ts — DIHAPUS (pindah ke shared)
+[x] shared/utils/path.ts — browser-safe (resolveOsPath dipindah ke backend/utils/paths.ts)
+[x] backend/utils/paths.ts — resolveOsPath() ditambahkan (dari shared, menghindari Vite error)
+[x] backend/engine/adapters/claude/path-utils.ts — DIHAPUS
 
 bun run check && bun run lint — PASS [x]
 
@@ -349,27 +351,43 @@ Tool components yang perlu diupdate:
 ### Checkpoint Phase 3
 
 ```
-[ ] frontend/services/chat/chat.service.ts — selesai
-[ ] frontend/stores/core/sessions.svelte.ts — selesai
-[ ] frontend/stores/core/projects.svelte.ts — selesai
-[ ] frontend/utils/chat/message-processor.ts — selesai
-[ ] frontend/utils/chat/message-grouper.ts — selesai
-[ ] frontend/utils/chat/tool-handler.ts — selesai
-[ ] frontend/utils/chat/date-separator.ts — selesai
-[ ] frontend/utils/context-manager.ts — selesai
-[ ] frontend/utils/tree-visualizer.ts — selesai
-[ ] frontend/components — semua message/formatter/tool components selesai
-[ ] frontend/components — semua other components selesai
+[x] frontend/services/chat/chat.service.ts — selesai
+[x] frontend/stores/core/sessions.svelte.ts — selesai (FrontendMessage = UnifiedMessage | StreamingMessage)
+[x] frontend/stores/core/projects.svelte.ts — verified (tidak ada messaging imports)
+[x] frontend/utils/chat/message-processor.ts — selesai
+[x] frontend/utils/chat/message-grouper.ts — selesai
+[x] frontend/utils/chat/tool-handler.ts — selesai
+[x] frontend/utils/chat/date-separator.ts — selesai
+[x] frontend/utils/context-manager.ts — selesai
+[x] frontend/utils/tree-visualizer.ts — verified (tidak ada messaging imports)
+[x] frontend/components — semua message/formatter/tool components selesai (21 tool components)
+[x] frontend/components — ChatInterface, ChatPanel, ChatMessages, FloatingTodoList selesai
+[x] backend/engine/adapters/claude/message-converter.ts — convertToolInput() snake_case→camelCase
+[x] shared/types/unified/tool.ts — Task dihapus dari ToolInputMap (dinormalisasi ke Agent)
+[x] shared/utils/path.ts — resolveOsPath() dipindah ke backend/utils/paths.ts (browser-safe)
 
 Cleanup:
-[ ] shared/types/messaging/ — dihapus
-[ ] shared/utils/message-formatter.ts — dihapus / disederhanakan
-[ ] @anthropic-ai/sdk — dihapus dari dependencies
+[ ] shared/types/messaging/ — belum dihapus (masih ada consumer backend: SSEEventData di stream-manager.ts)
+[ ] shared/utils/message-formatter.ts — belum dihapus
+[ ] @anthropic-ai/sdk — belum dihapus dari dependencies
 
-bun run check && bun run lint — PASS [ ]
+bun run check && bun run lint — PASS [x]
 
 Notes:
-(isi catatan/blocker/keputusan yang dibuat selama phase ini)
+- Tool components menerima ToolUseBlock sebagai prop, lalu narrow internal via
+  `$derived(toolInput.input as SpecificInput)`. Enrichment fields (result, subActivities,
+  skillPrompt, interrupted) diakses langsung dari toolInput.
+- Claude adapter message-converter menambahkan convertToolInput() untuk konversi
+  snake_case→camelCase (file_path→filePath, old_string→oldString, dll).
+  Grep options juga dinormalisasi (-i→caseInsensitive, -A→afterContext, dll).
+- Tool name "Task" dinormalisasi ke "Agent" di message-converter. TaskTool.svelte dihapus,
+  semua Agent/Task tool menggunakan AgentTool.svelte.
+- resolveOsPath() dipindah dari shared/utils/path.ts ke backend/utils/paths.ts karena
+  import Node `path` module menyebabkan Vite browser externalization error.
+  shared/utils/path.ts sekarang browser-safe (hanya string utils).
+- Frontend zero import dari shared/types/messaging/ — migrasi frontend selesai.
+- Cleanup (hapus messaging/, hapus @anthropic-ai/sdk) menunggu migrasi backend consumer
+  terakhir (SSEEventData di backend/chat/stream-manager.ts).
 ```
 
 ---

@@ -1,11 +1,12 @@
 <script lang="ts">
 	import Icon from '$frontend/components/common/display/Icon.svelte';
-	import type { TodoWriteToolInput } from '$shared/types/messaging';
+	import type { ToolUseBlock, TodoWriteInput } from '$shared/types/unified';
 	import type { IconName } from '$shared/types/ui/icons';
 
-	const { toolInput }: { toolInput: TodoWriteToolInput } = $props();
+	const { toolInput }: { toolInput: ToolUseBlock } = $props();
+	const input = $derived(toolInput.input as TodoWriteInput);
 
-	const todos = $derived(toolInput.input.todos);
+	const todos = $derived(input.todos);
 	const totalTodos = $derived(todos.length);
 	const completedTodos = $derived(todos.filter((t) => t.status === 'completed').length);
 	const percentage = $derived(totalTodos > 0 ? Math.round((completedTodos / totalTodos) * 100) : 0);

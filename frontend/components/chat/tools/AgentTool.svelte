@@ -1,16 +1,17 @@
 <script lang="ts">
 	import { tick } from 'svelte';
-	import type { AgentToolInput, SubAgentActivity } from '$shared/types/messaging';
+	import type { ToolUseBlock, AgentInput, SubAgentActivity, SubAgentToolActivity } from '$shared/types/unified';
 	import { InfoLine } from './components';
 	import TextMessage from '../formatters/TextMessage.svelte';
 
-	const { toolInput }: { toolInput: AgentToolInput } = $props();
+	const { toolInput }: { toolInput: ToolUseBlock } = $props();
+	const input = $derived(toolInput.input as AgentInput);
 
-	const description = $derived(toolInput.input.description || '');
-	const subagentType = $derived(toolInput.input.subagent_type || 'general-purpose');
-	const subMessages = $derived(toolInput.$subMessages);
+	const description = $derived(input.description || '');
+	const subagentType = $derived(input.subagentType || 'general-purpose');
+	const subMessages = $derived(toolInput.subActivities);
 	const toolUseCount = $derived(subMessages?.filter(a => a.type === 'tool_use').length ?? 0);
-	const result = $derived(toolInput.$result);
+	const result = $derived(toolInput.result);
 
 	let scrollContainer: HTMLDivElement | undefined = $state();
 
@@ -26,17 +27,17 @@
 		}
 	});
 
-	function getToolBrief(activity: SubAgentActivity): string {
+	function getToolBrief(activity: SubAgentToolActivity): string {
 		if (!activity.toolInput) return '';
 		switch (activity.toolName) {
-			case 'Bash': return activity.toolInput.command || '';
-			case 'Read': return activity.toolInput.file_path || '';
-			case 'Write': return activity.toolInput.file_path || '';
-			case 'Edit': return activity.toolInput.file_path || '';
-			case 'Glob': return activity.toolInput.pattern || '';
-			case 'Grep': return activity.toolInput.pattern || '';
-			case 'WebFetch': return activity.toolInput.url || '';
-			case 'WebSearch': return activity.toolInput.query || '';
+			case 'Bash': return (activity.toolInput as Record<string, string>).command || '';
+			case 'Read': return (activity.toolInput as Record<string, string>).filePath || '';
+			case 'Write': return (activity.toolInput as Record<string, string>).filePath || '';
+			case 'Edit': return (activity.toolInput as Record<string, string>).filePath || '';
+			case 'Glob': return (activity.toolInput as Record<string, string>).pattern || '';
+			case 'Grep': return (activity.toolInput as Record<string, string>).pattern || '';
+			case 'WebFetch': return (activity.toolInput as Record<string, string>).url || '';
+			case 'WebSearch': return (activity.toolInput as Record<string, string>).query || '';
 			default: return '';
 		}
 	}
@@ -76,21 +77,3 @@
 	</div>
 </div>
 {/if}
-
-<!-- Tool Result -->
-<!-- {#if result}
-	{@const resultContent = result.content as any}
-	<div class="mt-4">
-		{#if typeof resultContent === 'string'}
-			<TextMessage content={resultContent} />
-		{:else if Array.isArray(resultContent)}
-			{#each resultContent as block}
-				{#if typeof block === 'object' && block.type === 'text'}
-					<TextMessage content={block.text} />
-				{/if}
-			{/each}
-		{:else}
-			<TextMessage content={JSON.stringify(resultContent)} />
-		{/if}
-	</div>
-{/if} -->

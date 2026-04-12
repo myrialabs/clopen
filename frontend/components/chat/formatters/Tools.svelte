@@ -1,16 +1,16 @@
 <script lang="ts">
 	import Icon from '$frontend/components/common/display/Icon.svelte';
-	import type { ToolInput } from '$shared/types/messaging';
+	import type { ToolUseBlock } from '$shared/types/unified';
 	import {
 		BashTool, BashOutputTool, EditTool, EnterPlanModeTool, ExitPlanModeTool,
 		GlobTool, GrepTool, TaskStopTool, ListMcpResourcesTool,
 		NotebookEditTool,
-		ReadTool, ReadMcpResourceTool, AgentTool, TaskTool, TodoWriteTool,
+		ReadTool, ReadMcpResourceTool, AgentTool, TodoWriteTool,
 		WebFetchTool, WebSearchTool, WriteTool, CustomMcpTool,
 		AskUserQuestionTool, SkillTool
 	} from '../tools';
 
-	const { toolInput }: { toolInput: ToolInput } = $props();
+	const { toolInput }: { toolInput: ToolUseBlock } = $props();
 
 	/**
 	 * Check if tool is a custom MCP tool
@@ -53,8 +53,6 @@
 	<ReadMcpResourceTool {toolInput} />
 {:else if toolInput.name === 'Agent'}
 	<AgentTool {toolInput} />
-{:else if toolInput.name === 'Task'}
-	<TaskTool {toolInput} />
 {:else if toolInput.name === 'WebFetch'}
 	<WebFetchTool {toolInput} />
 {:else if toolInput.name === 'WebSearch'}

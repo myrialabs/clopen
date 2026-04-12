@@ -7,11 +7,10 @@
 	import { getFileIcon } from '$frontend/utils/file-icon-mappings';
 	import { formatFileSize } from '../shared/utils';
 
-	import type { SDKMessage, SDKPartialAssistantMessage } from '$shared/types/messaging';
-	import type { SDKMessageFormatter } from '$shared/types/database/schema';
+	import type { FrontendMessage } from '$frontend/stores/core/sessions.svelte';
 	import { getCompactSummary } from '$frontend/utils/chat/message-grouper';
 
-	const { message }: { message: SDKMessageFormatter } = $props();
+	const { message }: { message: FrontendMessage } = $props();
 
 	let lightboxOpen = $state(false);
 	let lightboxData = $state<{ type: 'image' | 'document', data: string, mediaType: string, fileName?: string }>({
@@ -40,115 +39,61 @@
 	function parseContent() {
 		const elements: ContentElement[] = [];
 
-		// Handle compact boundary messages (conversation compaction indicator)
-		if (message.type === 'system' && (message as any).subtype === 'compact_boundary') {
-			const compactMeta = (message as any).compact_metadata;
-			const trigger = compactMeta?.trigger === 'manual' ? 'Manual' : 'Auto';
+		// Handle compact boundary messages
+		if (message.type === 'compact_boundary') {
+			const trigger = message.trigger === 'manual' ? 'Manual' : 'Auto';
 			elements.push({
 				type: 'text',
 				content: `Context was compacted (${trigger}). Previous messages have been summarized to free up context space.`
 			});
-			// Include synthetic user content (continuation summary) via side-channel lookup
 			const summary = getCompactSummary(message);
 			if (summary) {
-				elements.push({
-					type: 'text',
-					content: summary
-				});
+				elements.push({ type: 'text', content: summary });
 			}
 			return elements;
 		}
 
-		// Handle partial messages (streaming) — both text and reasoning
+		// Handle partial messages (streaming)
 		if (message.type === 'stream_event') {
-			if ('partialText' in message && message.partialText) {
-				elements.push({
-					type: 'text',
-					content: message.partialText
-				});
+			if (message.partialText) {
+				elements.push({ type: 'text', content: message.partialText });
 			}
 			return elements;
 		}
 
-		// Handle reasoning messages (final, with metadata.reasoning flag)
-		if (message.metadata?.reasoning && message.type === 'assistant') {
-			const content = message.message.content;
-			if (Array.isArray(content)) {
-				for (const item of content) {
-					if (item.type === 'text') {
-						elements.push({ type: 'text', content: item.text });
-					}
-				}
+		// Handle reasoning messages
+		if (message.type === 'reasoning') {
+			if (message.text) {
+				elements.push({ type: 'text', content: message.text });
 			}
 			return elements;
 		}
 
-
-		if (message.type === 'assistant') {
-			const content = message.message.content;
+		// Handle assistant messages
+		if (message.type === 'assistant' && 'content' in message) {
 			const elements: ContentElement[] = [];
 
-			for (const contentItem of content) {
+			for (const contentItem of message.content) {
 				if (contentItem.type === 'text') {
-					// Text block
-					elements.push({
-						type: 'text',
-						content: contentItem.text
-					});
+					elements.push({ type: 'text', content: (contentItem as any).text });
 				} else if (contentItem.type === 'tool_use') {
-					// Tool use block (may contain embedded $result)
-					elements.push({
-						type: 'tool_use',
-						content: contentItem
-					});
+					elements.push({ type: 'tool_use', content: contentItem });
 				}
 			}
 
 			return elements;
 		}
 
-		else if (message.type === 'user') {
-			const content = message.message.content;
-			// Get attachment filenames from metadata if available (now an array)
-			const attachmentFilenames = (message as any).attachmentFilenames || [];
-
-			// Handle array content (for tool_result and file attachments)
-			if (Array.isArray(content)) {
-				for (let i = 0; i < content.length; i++) {
-					const contentItem = content[i];
-
-					if (typeof contentItem === 'string') {
-						elements.push({
-							type: 'text',
-							content: contentItem
-						});
-					} else if (contentItem.type === 'text') {
-						elements.push({
-							type: 'text',
-							content: contentItem.text
-						});
-					} else if (contentItem.type === 'image') {
-						// Handle image attachments with filename from metadata
-						elements.push({
-							type: 'image',
-							content: contentItem,
-							fileName: attachmentFilenames[i] || undefined
-						});
-					} else if (contentItem.type === 'document') {
-						// Handle document attachments with filename from metadata
-						elements.push({
-							type: 'document',
-							content: contentItem,
-							fileName: attachmentFilenames[i] || undefined
-						});
-					}
+		// Handle user messages
+		if (message.type === 'user' && 'content' in message) {
+			for (const contentItem of message.content) {
+				if (contentItem.type === 'text') {
+					elements.push({ type: 'text', content: (contentItem as any).text });
+				} else if (contentItem.type === 'image') {
+					elements.push({ type: 'image', content: contentItem });
+				} else if (contentItem.type === 'document') {
+					elements.push({ type: 'document', content: contentItem });
 				}
-			} else {
-				// String content
-				elements.push({
-					type: 'text',
-					content: content
-				});
 			}
 
 			return elements;
@@ -171,14 +116,14 @@
 	{:else if element.type === 'image'}
 		<div class="inline-block mr-2 mb-2">
 			<div class="flex flex-col gap-1">
-				{#if element.content.source?.type === 'base64'}
+				{#if element.content.data}
 					<button
-						onclick={() => openAttachment('image', element.content.source.data, element.content.source.media_type, element.fileName || 'Image')}
+						onclick={() => openAttachment('image', element.content.data, element.content.mediaType, element.fileName || 'Image')}
 						class="relative w-28 h-28 overflow-hidden rounded-lg border border-slate-200 dark:border-slate-700 bg-slate-100 dark:bg-slate-800 cursor-pointer hover:opacity-80 transition-opacity focus:outline-none focus:ring-2 focus:ring-violet-500"
 						aria-label="Click to view full image"
 					>
 						<img
-							src="data:{element.content.source.media_type};base64,{element.content.source.data}"
+							src="data:{element.content.mediaType};base64,{element.content.data}"
 							alt={element.fileName || "User uploaded content"}
 							class="absolute inset-0 w-full h-full object-cover"
 							loading="lazy"
@@ -196,9 +141,9 @@
 	{:else if element.type === 'document'}
 		<div class="inline-block mr-2 mb-2">
 			<div class="flex flex-col gap-1">
-				{#if element.content.source?.type === 'base64'}
+				{#if element.content.data}
 					<button
-						onclick={() => openAttachment('document', element.content.source.data, element.content.source.media_type, element.fileName || 'Document')}
+						onclick={() => openAttachment('document', element.content.data, element.content.mediaType, element.fileName || 'Document')}
 						class="relative w-28 h-28 overflow-hidden rounded-lg border border-slate-200 dark:border-slate-700 bg-slate-50 dark:bg-slate-800 cursor-pointer hover:opacity-80 transition-opacity focus:outline-none focus:ring-2 focus:ring-violet-500"
 						aria-label="Click to view document"
 					>
@@ -213,7 +158,7 @@
 								</span>
 							{/if}
 							<span class="text-xs text-slate-500 dark:text-slate-400 -mt-0.5">
-								{formatFileSize(element.content.source.data.length * 0.75)}
+								{formatFileSize(element.content.data.length * 0.75)}
 							</span>
 						</div>
 					</button>

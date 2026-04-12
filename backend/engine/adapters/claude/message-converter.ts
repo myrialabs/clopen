@@ -78,6 +78,41 @@ function mapRawUsage(raw: Record<string, number> | null | undefined): TokenUsage
 }
 
 // ============================================================
+// Tool Input Converter (snake_case → camelCase)
+// ============================================================
+
+/** Grep option mapping for dash-prefixed parameters → camelCase */
+const GREP_OPTION_MAP: Record<string, string> = {
+	'-i': 'caseInsensitive',
+	'-n': 'lineNumbers',
+	'-A': 'afterContext',
+	'-B': 'beforeContext',
+	'-C': 'context',
+};
+
+/** Convert snake_case string to camelCase */
+function snakeToCamel(str: string): string {
+	return str.replace(/_([a-z])/g, (_, c: string) => c.toUpperCase());
+}
+
+/**
+ * Convert raw SDK tool input to unified camelCase format.
+ * Handles standard snake_case → camelCase and Grep's dash-prefixed options.
+ * Already-camelCase properties (e.g. multiline, activeForm) pass through unchanged.
+ */
+function convertToolInput(toolName: string, raw: Record<string, unknown>): Record<string, unknown> {
+	const converted: Record<string, unknown> = {};
+	for (const [key, value] of Object.entries(raw)) {
+		if (toolName === 'Grep' && key in GREP_OPTION_MAP) {
+			converted[GREP_OPTION_MAP[key]] = value;
+		} else {
+			converted[snakeToCamel(key)] = value;
+		}
+	}
+	return converted;
+}
+
+// ============================================================
 // Content Block Converters
 // ============================================================
 
@@ -93,8 +128,8 @@ export function mapAssistantContent(sdkContent: BetaContentBlock[]): AssistantCo
 				blocks.push({
 					type: 'tool_use',
 					id: block.id,
-					name: block.name,
-					input: block.input as Record<string, never>,
+					name: block.name === 'Task' ? 'Agent' : block.name,
+					input: convertToolInput(block.name, block.input as Record<string, unknown>),
 					result: null,
 					subActivities: [],
 					skillPrompt: null,

@@ -10,7 +10,7 @@
 
 <script lang="ts">
 	import { tick } from 'svelte';
-	import type { SDKMessageFormatter } from '$shared/types/database/schema';
+	import type { FrontendMessage } from '$frontend/stores/core/sessions.svelte';
 	import type { IconName } from '$shared/types/ui/icons';
 	import Card from '$frontend/components/common/display/Card.svelte';
 	import MessageFormatter from '../formatters/MessageFormatter.svelte';
@@ -30,7 +30,7 @@
 		onEdit,
 		onShowDebug
 	}: {
-		message: SDKMessageFormatter;
+		message: FrontendMessage;
 		messageTimestamp: string;
 		isLastUserMessage?: boolean;
 		roleConfig: { gradient: string; icon: IconName; name: string };
@@ -51,7 +51,7 @@
 		if (roleCategory !== 'reasoning' && roleCategory !== 'system' && roleCategory !== 'compact') return;
 		if (!scrollContainer) return;
 		// Track message content changes (partialText for streaming, message for final)
-		const _track = message.type === 'stream_event' && 'partialText' in message
+		const _track = message.type === 'stream_event'
 			? message.partialText
 			: message;
 		tick().then(() => {
@@ -68,9 +68,6 @@
 	$effect(() => {
 		if (roleCategory !== 'assistant') return;
 		if (message.type !== 'stream_event') return;
-		if (!('partialText' in message)) return;
-		// Reading partialText subscribes this effect to changes,
-		// which forces the component to re-evaluate its derived values
 		const _track = message.partialText;
 	});
 </script>

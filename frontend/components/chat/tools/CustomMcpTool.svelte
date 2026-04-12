@@ -1,9 +1,10 @@
 <script lang="ts">
 	import { FileHeader, CodeBlock } from './components';
 	import Icon from '$frontend/components/common/display/Icon.svelte';
-	import type { ToolInput } from '$shared/types/messaging';
+	import type { ToolUseBlock } from '$shared/types/unified';
 
-	const { toolInput }: { toolInput: ToolInput } = $props();
+	const { toolInput }: { toolInput: ToolUseBlock } = $props();
+	const result = $derived(toolInput.result);
 
 	/**
 	 * Parse MCP tool name
@@ -47,29 +48,13 @@
 
 	// Extract result content
 	const resultContent = $derived.by(() => {
-		if (!toolInput.$result?.content) return null;
+		if (!result?.content) return null;
 
-		const content = toolInput.$result.content;
+		const content = result.content;
 
 		// If content is already a string, return it
 		if (typeof content === 'string') {
 			return content;
-		}
-
-		// If content is an array (MCP format)
-		if (Array.isArray(content)) {
-			// Extract text from first text block
-			const textBlock = (content as any[]).find((block: any) => block.type === 'text');
-			if (textBlock && textBlock.text) {
-				return textBlock.text;
-			}
-			// Fallback: stringify the array
-			return JSON.stringify(content, null, 2);
-		}
-
-		// If content is an object, stringify it
-		if (typeof content === 'object' && content !== null) {
-			return JSON.stringify(content, null, 2);
 		}
 
 		// Fallback: convert to string
@@ -78,26 +63,13 @@
 
 	// Check if result is an error
 	const isError = $derived.by(() => {
-		if (!toolInput.$result?.content) return false;
+		if (!result?.content) return false;
 
-		const content = toolInput.$result.content;
+		const content = result.content;
 
 		// Check for error markers in string content
 		if (typeof content === 'string') {
 			return content.toLowerCase().includes('error:');
-		}
-
-		// Check for error markers in array content (MCP format)
-		if (Array.isArray(content)) {
-			const textBlock = (content as any[]).find((block: any) => block.type === 'text');
-			if (textBlock && textBlock.text) {
-				return textBlock.text.toLowerCase().includes('error:');
-			}
-		}
-
-		// Check for isError property in object content
-		if (typeof content === 'object' && content !== null) {
-			return (content as any).isError === true;
 		}
 
 		return false;
@@ -131,9 +103,8 @@
 {#if resultContent}
 	<div class="mt-4 bg-white dark:bg-slate-800 rounded-md border border-slate-200/60 dark:border-slate-700/60 p-3">
 		<CodeBlock code={resultContent} type="neutral" label={isError ? 'Error' : 'Result'} />
-		<!-- {@html resultContent.replace(/\n/g, '<br>')} -->
 	</div>
-{:else if toolInput.$result}
+{:else if result}
 	<!-- Empty result -->
 	<div class="mt-4 bg-white dark:bg-slate-800 rounded-md border border-slate-200/60 dark:border-slate-700/60 p-3">
 		<p class="text-sm text-slate-500 dark:text-slate-400 italic">No result returned</p>

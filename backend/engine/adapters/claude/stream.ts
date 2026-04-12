@@ -23,7 +23,7 @@ import type {
 import type { EngineOutput } from '$shared/types/unified';
 import type { StructuredGenerationOptions } from '../../types';
 import { convertSdkMessage, toSdkUserMessage } from './message-converter';
-import { resolveOsPath } from '$shared/utils/path';
+import { resolveOsPath } from '$backend/utils/paths';
 import { setupEnvironmentOnce, getEngineEnv } from './environment';
 import { handleStreamError } from './error-handler';
 import { getEnabledMcpServers, getAllowedMcpTools } from '../../../mcp';

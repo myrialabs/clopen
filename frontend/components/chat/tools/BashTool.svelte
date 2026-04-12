@@ -1,5 +1,5 @@
 <script lang="ts">
-	import type { BashToolInput } from '$shared/types/messaging';
+	import type { ToolUseBlock, BashInput } from '$shared/types/unified';
 	import { TerminalCommand } from './components';
 	import CodeBlock from './components/CodeBlock.svelte';
 
@@ -9,12 +9,14 @@
 		output: string;
 	}
 
-	const { toolInput }: { toolInput: BashToolInput } = $props();
+	const { toolInput }: { toolInput: ToolUseBlock } = $props();
+	const input = $derived(toolInput.input as BashInput);
+	const result = $derived(toolInput.result);
 
-	const command = $derived(toolInput.input.command || '');
-	const description = $derived(toolInput.input.description);
-	const timeout = $derived(toolInput.input.timeout);
-	const isBackground = $derived(toolInput.input.run_in_background);
+	const command = $derived(input.command || '');
+	const description = $derived(input.description);
+	const timeout = $derived(input.timeout);
+	const isBackground = $derived(input.runInBackground);
 
 	function parseBashOutputToolOutput(content: string): ParsedBashOutput {
 		const statusMatch = content.match(/<status>(.*?)<\/status>/);
@@ -28,15 +30,15 @@
 
 	// Parse the output content if it's from BashOutput format
 	const outputContent = $derived.by(() => {
-		if (!toolInput.$result?.content) return '';
+		if (!result?.content) return '';
 
 		// Check if this is a background command that has been merged with BashOutput
-		if (isBackground && toolInput.$result.content.includes('<status>')) {
-			const parsed = parseBashOutputToolOutput(toolInput.$result.content);
+		if (isBackground && result.content.includes('<status>')) {
+			const parsed = parseBashOutputToolOutput(result.content);
 			return parsed.output;
 		}
 
-		return toolInput.$result.content;
+		return result.content;
 	});
 
 </script>

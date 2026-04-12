@@ -10,8 +10,7 @@
 -->
 
 <script lang="ts">
-	import type { SDKMessage } from '$shared/types/messaging';
-	import type { SDKMessageFormatter } from '$shared/types/database/schema';
+	import type { FrontendMessage } from '$frontend/stores/core/sessions.svelte';
 	import Icon from '$frontend/components/common/display/Icon.svelte';
 	import type { IconName } from '$shared/types/ui/icons';
 	import { addNotification } from '$frontend/stores/ui/notification.svelte';
@@ -31,7 +30,7 @@
 		message,
 		isLastUserMessage = false
 	}: {
-		message: SDKMessageFormatter;
+		message: FrontendMessage;
 		isLastUserMessage?: boolean;
 	} = $props();
 
@@ -51,92 +50,69 @@
 		return date.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
 	};
 
-	// Get timestamp from metadata
-	const messageTimestamp = $derived.by(() => {
-		if (message.metadata?.created_at) {
-			return message.metadata.created_at;
-		}
-		return new Date().toISOString();
-	});
+	// Get timestamp
+	const messageTimestamp = $derived(message.createdAt || new Date().toISOString());
 
-	// Get message ID from metadata
-	const messageId = $derived(message.metadata?.message_id);
+	// Get message ID
+	const messageId = $derived('id' in message ? message.id : undefined);
 
 	// Check if this message should be dimmed in edit mode
 	const shouldBeDimmed = $derived(shouldDimMessage(messageId));
 
 	const roleCategory = $derived.by(() => {
-		// Compact boundary messages (conversation compaction indicator)
-		if (message.type === 'system' && (message as any).subtype === 'compact_boundary') {
+		// Compact boundary messages
+		if (message.type === 'compact_boundary') {
 			return 'compact';
 		}
-		// Reasoning messages (from both engines)
-		if (message.metadata?.reasoning) {
+		// Reasoning messages
+		if (message.type === 'reasoning') {
 			return 'reasoning';
 		}
+		// Streaming messages — show as reasoning or assistant
 		if (message.type === 'stream_event') {
-			return 'assistant';
+			return message.reasoning ? 'reasoning' : 'assistant';
 		}
-		if (message.type === 'assistant' && 'message' in message && Array.isArray(message.message.content)) {
-			const hasToolUse = message.message.content.some((c: unknown) =>
-				typeof c === 'object' && c !== null && 'type' in c && (c as Record<string, unknown>).type === 'tool_use');
+		if (message.type === 'assistant' && 'content' in message) {
+			const hasToolUse = message.content.some((c) => c.type === 'tool_use');
 			if (hasToolUse) return 'agent';
 		}
-		if (message.type === 'user' && 'message' in message && Array.isArray(message.message.content)) {
-			const hasToolResult = message.message.content.some((c: unknown) =>
-				typeof c === 'object' && c !== null && 'type' in c && (c as Record<string, unknown>).type === 'tool_result');
+		if (message.type === 'user' && 'content' in message) {
+			const hasToolResult = message.content.some((c) => c.type === 'tool_result');
 			if (hasToolResult) return 'agent';
 		}
 		return message.type;
 	});
 
-	// Get sender info from metadata
-	const senderName = $derived(message.metadata?.sender_name ?? null);
+	// Get sender info
+	const senderName = $derived('senderName' in message ? (message as any).senderName : null);
 
 	// Copy message content to clipboard (content text only, not full JSON)
 	function copyToClipboard() {
 		let content = '';
 
-		if (roleCategory === 'user' && 'message' in message && message.message?.content) {
-			// Extract text from user message
-			const messageContent = message.message.content;
-			if (typeof messageContent === 'string') {
-				content = messageContent;
-			} else if (Array.isArray(messageContent)) {
-				// Extract text from array content
-				const textParts: string[] = [];
-				for (const item of messageContent) {
-					if (typeof item === 'object' && 'text' in item) {
-						textParts.push(item.text);
-					} else if (typeof item === 'string') {
-						textParts.push(item);
-					}
+		if (message.type === 'user' && 'content' in message) {
+			const textParts: string[] = [];
+			for (const item of message.content) {
+				if (item.type === 'text' && 'text' in item) {
+					textParts.push((item as any).text);
 				}
-				content = textParts.join('\n\n');
 			}
-		} else if (roleCategory === 'assistant' && 'message' in message && message.message?.content) {
-			// Extract text from assistant message (text only, not tool_use)
-			const messageContent = message.message.content;
-			if (Array.isArray(messageContent)) {
-				const textParts: string[] = [];
-				for (const item of messageContent) {
-					if (typeof item === 'object' && item.type === 'text' && 'text' in item) {
-						textParts.push(item.text);
-					}
+			content = textParts.join('\n\n');
+		} else if (message.type === 'assistant' && 'content' in message) {
+			const textParts: string[] = [];
+			for (const item of message.content) {
+				if (item.type === 'text' && 'text' in item) {
+					textParts.push((item as any).text);
 				}
-				content = textParts.join('\n\n');
 			}
-		} else if (message.type === 'stream_event' && 'partialText' in message) {
-			// Copy partial text from streaming message
+			content = textParts.join('\n\n');
+		} else if (message.type === 'reasoning' && 'text' in message) {
+			content = message.text || '';
+		} else if (message.type === 'stream_event') {
 			content = message.partialText || '';
 		}
 
-		// Fallback to empty string if no content found
-		if (!content) {
-			content = '';
-		}
-
-		navigator.clipboard.writeText(content);
+		navigator.clipboard.writeText(content || '');
 	}
 
 	// Handle copy file content button clicks
@@ -167,23 +143,19 @@
 	const agentStatus = $derived.by((): 'processing' | 'waiting' | 'success' | 'error' | null => {
 		if (roleCategory !== 'agent') return null;
 
-		if (message.type === 'assistant' && 'message' in message && Array.isArray(message.message.content)) {
-			const toolUses = message.message.content.filter((c: any) =>
-				typeof c === 'object' && c !== null && 'type' in c && c.type === 'tool_use');
+		if (message.type === 'assistant' && 'content' in message) {
+			const toolUses = message.content.filter((c) => c.type === 'tool_use');
 
 			if (toolUses.length === 0) return null;
 
-			const allHaveResults = toolUses.every((tool: any) => '$result' in tool && tool.$result);
+			const allHaveResults = toolUses.every((tool) => tool.type === 'tool_use' && (tool as any).result);
 
 			if (!allHaveResults) {
-				// If stream is active and waiting for user input → show as waiting
 				if (appState.isWaitingInput) return 'waiting';
-				// If stream is still active, tools are processing
-				// If stream ended (not loading), tools were interrupted/cancelled → show as error
 				return appState.isLoading ? 'processing' : 'error';
 			}
 
-			const hasError = toolUses.some((tool: any) => tool.$result?.is_error === true);
+			const hasError = toolUses.some((tool) => tool.type === 'tool_use' && (tool as any).result?.isError === true);
 
 			return hasError ? 'error' : 'success';
 		}
@@ -339,8 +311,8 @@
 			return;
 		}
 
-		// Get parent_message_id from metadata (already available)
-		const parentMessageId = message.metadata?.parent_message_id || null;
+		// Get parent message ID
+		const parentMessageId = 'parentMessageId' in message ? (message as any).parentMessageId : null;
 
 		// Extract message text and attachments
 		let messageText = '';
@@ -351,37 +323,28 @@
 			fileName: string;
 		}> = [];
 
-		if (roleCategory === 'user' && 'message' in message && message.message?.content) {
-			const content = message.message.content;
-			const attachmentFilenames = (message as any).attachmentFilenames || [];
+		if (roleCategory === 'user' && message.type === 'user' && 'content' in message) {
+			let attachmentIndex = 0;
 
-			if (typeof content === 'string') {
-				messageText = content;
-			} else if (Array.isArray(content)) {
-				let attachmentIndex = 0;
-
-				for (const item of content) {
-					if (typeof item === 'object' && 'text' in item) {
-						messageText = item.text;
-					} else if (typeof item === 'object' && 'type' in item) {
-						if (item.type === 'image' && item.source?.type === 'base64') {
-							messageAttachments.push({
-								type: 'image',
-								data: item.source.data,
-								mediaType: item.source.media_type,
-								fileName: attachmentFilenames[attachmentIndex] || 'image.png'
-							});
-							attachmentIndex++;
-						} else if (item.type === 'document' && item.source?.type === 'base64') {
-							messageAttachments.push({
-								type: 'document',
-								data: item.source.data,
-								mediaType: item.source.media_type,
-								fileName: attachmentFilenames[attachmentIndex] || 'document.pdf'
-							});
-							attachmentIndex++;
-						}
-					}
+			for (const item of message.content) {
+				if (item.type === 'text' && 'text' in item) {
+					messageText = (item as any).text;
+				} else if (item.type === 'image' && 'data' in item) {
+					messageAttachments.push({
+						type: 'image',
+						data: (item as any).data,
+						mediaType: (item as any).mediaType || 'image/png',
+						fileName: 'image.png'
+					});
+					attachmentIndex++;
+				} else if (item.type === 'document' && 'data' in item) {
+					messageAttachments.push({
+						type: 'document',
+						data: (item as any).data,
+						mediaType: (item as any).mediaType || 'application/pdf',
+						fileName: 'document.pdf'
+					});
+					attachmentIndex++;
 				}
 			}
 		}
@@ -395,20 +358,15 @@
 
 	// Get message text preview for dialog
 	function getMessagePreview(): string {
-		if (roleCategory === 'user' && 'message' in message && message.message?.content) {
-			const content = message.message.content;
-			if (typeof content === 'string') {
-				return content.length > 85 ? content.substring(0, 85) + '...' : content;
-			} else if (Array.isArray(content)) {
-				const textParts: string[] = [];
-				for (const item of content) {
-					if (typeof item === 'object' && 'text' in item) {
-						textParts.push(item.text);
-					}
+		if (message.type === 'user' && 'content' in message) {
+			const textParts: string[] = [];
+			for (const item of message.content) {
+				if (item.type === 'text' && 'text' in item) {
+					textParts.push((item as any).text);
 				}
-				const fullText = textParts.join(' ');
-				return fullText.length > 85 ? fullText.substring(0, 85) + '...' : fullText;
 			}
+			const fullText = textParts.join(' ');
+			return fullText.length > 85 ? fullText.substring(0, 85) + '...' : fullText;
 		}
 		return 'this checkpoint';
 	}

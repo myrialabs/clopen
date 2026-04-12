@@ -1,13 +1,15 @@
 <script lang="ts">
-	import type { GlobToolInput } from '$shared/types/messaging';
+	import type { ToolUseBlock, GlobInput } from '$shared/types/unified';
 	import { InfoLine } from './components';
 	import { formatPath } from '../shared/utils';
 	import CodeBlock from './components/CodeBlock.svelte';
 
-	const { toolInput }: { toolInput: GlobToolInput } = $props();
+	const { toolInput }: { toolInput: ToolUseBlock } = $props();
+	const input = $derived(toolInput.input as GlobInput);
+	const result = $derived(toolInput.result);
 
-	const pattern = $derived(toolInput.input.pattern || '');
-	const searchPath = $derived(toolInput.input.path || 'current directory');
+	const pattern = $derived(input.pattern || '');
+	const searchPath = $derived(input.path || 'current directory');
 
 	// Parse the pattern to get a readable description
 	function getPatternDescription(p: string): string {
@@ -44,8 +46,8 @@
 </div>
 
 <!-- Tool Result -->
-{#if toolInput.$result?.content}
+{#if result?.content}
 	<div class="mt-4 bg-white dark:bg-slate-800 rounded-md border border-slate-200/60 dark:border-slate-700/60 p-3">
-		<CodeBlock code={toolInput.$result.content} type="neutral" label="Output" />
+		<CodeBlock code={result.content} type="neutral" label="Output" />
 	</div>
 {/if}

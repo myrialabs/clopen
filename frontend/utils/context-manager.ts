@@ -6,7 +6,8 @@
  * assistant message represents total context consumed at that turn.
  */
 
-import type { SDKMessage } from '$shared/types/messaging';
+import type { FrontendMessage } from '$frontend/stores/core/sessions.svelte';
+import type { TokenUsage } from '$shared/types/unified';
 
 const WARNING_THRESHOLD = 0.8;
 
@@ -22,17 +23,14 @@ export interface ContextUsage {
  *
  * Cache tokens (creation + read) also count toward the context window.
  */
-export function getContextUsage(messages: SDKMessage[], contextWindow: number): ContextUsage {
+export function getContextUsage(messages: FrontendMessage[], contextWindow: number): ContextUsage {
   // Find the last assistant message with usage data (iterate backwards)
-  let lastUsage: { input_tokens: number; cache_creation_input_tokens?: number; cache_read_input_tokens?: number } | null = null;
+  let lastUsage: TokenUsage | null = null;
   for (let i = messages.length - 1; i >= 0; i--) {
     const msg = messages[i];
-    if (msg.type === 'assistant' && 'message' in msg) {
-      const usage = (msg as any).message?.usage;
-      if (usage && typeof usage.input_tokens === 'number') {
-        lastUsage = usage;
-        break;
-      }
+    if (msg.type === 'assistant' && 'usage' in msg && msg.usage) {
+      lastUsage = msg.usage;
+      break;
     }
   }
 
@@ -40,9 +38,9 @@ export function getContextUsage(messages: SDKMessage[], contextWindow: number): 
     return { current: 0, max: contextWindow, percentage: 0, nearLimit: false };
   }
 
-  const current = (lastUsage.input_tokens || 0)
-    + (lastUsage.cache_creation_input_tokens || 0)
-    + (lastUsage.cache_read_input_tokens || 0);
+  const current = (lastUsage.inputTokens || 0)
+    + (lastUsage.cacheCreationInputTokens || 0)
+    + (lastUsage.cacheReadInputTokens || 0);
 
   const percentage = Math.min(100, Math.round((current / contextWindow) * 1000) / 10);
 
