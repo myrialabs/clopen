@@ -1,16 +1,16 @@
 import { getDatabase } from '../index';
-import type { DatabaseMessage, SDKMessageFormatter } from '$shared/types/database/schema';
-import type { SDKMessage } from '$shared/types/messaging';
+import type { DatabaseMessage } from '$shared/types/database/schema';
 import type { UnifiedMessage } from '$shared/types/unified';
-import { formatDatabaseMessage } from '$shared/utils/message-formatter';
+import { loadMessage } from '$shared/utils/message-formatter';
 import { debug } from '$shared/utils/logger';
 
 export const messageQueries = {
 	/**
 	 * Get visible messages for a session (git-like: from HEAD to root)
-	 * This is the main function used to display messages in UI
+	 * This is the main function used to display messages in UI.
+	 * Returns UnifiedMessage[] with runtime migration for legacy data.
 	 */
-	getBySessionId(sessionId: string): SDKMessageFormatter[] {
+	getBySessionId(sessionId: string): UnifiedMessage[] {
 		const db = getDatabase();
 
 		// Get current HEAD from session
@@ -25,7 +25,7 @@ export const messageQueries = {
 		// Build path from HEAD to root (git-like)
 		const path = this.getPathToRoot(session.current_head_message_id);
 
-		// Parse SDK messages — propagate sender from user to subsequent messages
+		// Parse messages — propagate sender from user to subsequent messages
 		let lastSenderId: string | null = null;
 		let lastSenderName: string | null = null;
 
@@ -36,7 +36,7 @@ export const messageQueries = {
 				lastSenderName = msg.sender_name || null;
 			}
 
-			return formatDatabaseMessage(msg, {
+			return loadMessage(msg, {
 				sender_id: msg.sender_id || lastSenderId,
 				sender_name: msg.sender_name || lastSenderName,
 			});
@@ -110,7 +110,7 @@ export const messageQueries = {
 
 	create(messageData: {
 		session_id: string;
-		sdk_message: SDKMessage | UnifiedMessage;
+		sdk_message: UnifiedMessage;
 		timestamp?: string;
 		sender_id?: string;
 		sender_name?: string;
@@ -175,14 +175,12 @@ export const messageQueries = {
 	softDeleteAfterTimestamp(sessionId: string, checkpointTimestamp: string, branchId: string): void {
 		const db = getDatabase();
 
-		// Get all messages with their SDK message for type checking
 		const allMessages = db.prepare(`
-			SELECT id, timestamp, sdk_message FROM messages
+			SELECT * FROM messages
 			WHERE session_id = ?
 			ORDER BY timestamp ASC
-		`).all(sessionId) as { id: string; timestamp: string; sdk_message: string }[];
+		`).all(sessionId) as DatabaseMessage[];
 
-		// Find the checkpoint message index
 		const checkpointIndex = allMessages.findIndex(msg => msg.timestamp === checkpointTimestamp);
 
 		if (checkpointIndex === -1) {
@@ -193,8 +191,8 @@ export const messageQueries = {
 		// Find next USER message after checkpoint (this is where we start deleting)
 		let deleteFromIndex = -1;
 		for (let i = checkpointIndex + 1; i < allMessages.length; i++) {
-			const sdkMessage = JSON.parse(allMessages[i].sdk_message);
-			if (sdkMessage.type === 'user') {
+			const msg = loadMessage(allMessages[i]);
+			if (msg.type === 'user') {
 				deleteFromIndex = i;
 				break;
 			}
@@ -314,17 +312,16 @@ export const messageQueries = {
 	 */
 	getFirstAssistantAfterTimestamp(sessionId: string, timestamp: string): DatabaseMessage | null {
 		const db = getDatabase();
-		const messages = db.prepare(`
+		const rows = db.prepare(`
 			SELECT * FROM messages
 			WHERE session_id = ? AND timestamp > ? AND (is_deleted IS NULL OR is_deleted = 0)
 			ORDER BY timestamp ASC
 		`).all(sessionId, timestamp) as DatabaseMessage[];
 
-		// Find first assistant message
-		for (const message of messages) {
-			const sdkMessage = JSON.parse(message.sdk_message);
-			if (sdkMessage.type === 'assistant') {
-				return message;
+		for (const row of rows) {
+			const msg = loadMessage(row);
+			if (msg.type === 'assistant') {
+				return row;
 			}
 		}
 
@@ -483,27 +480,24 @@ export const messageQueries = {
 	/**
 	 * Mark messages with unanswered tool_use blocks as interrupted.
 	 * Called when stream ends (complete/error/cancel) to persist the interrupted state.
-	 * Adds metadata.interrupted = true to the sdk_message JSON at the message level.
 	 */
 	markInterruptedMessages(sessionId: string): void {
 		const db = getDatabase();
 
-		// Get all visible messages for the session
-		const messages = db.prepare(`
-			SELECT id, sdk_message FROM messages
+		const rows = db.prepare(`
+			SELECT * FROM messages
 			WHERE session_id = ? AND (is_deleted IS NULL OR is_deleted = 0)
 			ORDER BY timestamp ASC
-		`).all(sessionId) as { id: string; sdk_message: string }[];
+		`).all(sessionId) as DatabaseMessage[];
 
 		// Collect all tool_use_ids that have a matching tool_result
 		const answeredToolIds = new Set<string>();
-		for (const msg of messages) {
-			const sdk = JSON.parse(msg.sdk_message);
-			if (sdk.type !== 'user' || !sdk.message?.content) continue;
-			const content = Array.isArray(sdk.message.content) ? sdk.message.content : [];
-			for (const item of content) {
-				if (item.type === 'tool_result' && item.tool_use_id) {
-					answeredToolIds.add(item.tool_use_id);
+		for (const row of rows) {
+			const msg = loadMessage(row);
+			if (msg.type !== 'user') continue;
+			for (const block of msg.content) {
+				if (block.type === 'tool_result' && block.toolUseId) {
+					answeredToolIds.add(block.toolUseId);
 				}
 			}
 		}
@@ -511,19 +505,19 @@ export const messageQueries = {
 		// Find assistant messages with unanswered tool_use blocks and mark them
 		const updateStmt = db.prepare(`UPDATE messages SET sdk_message = ? WHERE id = ?`);
 
-		for (const msg of messages) {
-			const sdk = JSON.parse(msg.sdk_message);
-			if (sdk.type !== 'assistant' || !sdk.message?.content) continue;
-			const content = Array.isArray(sdk.message.content) ? sdk.message.content : [];
+		for (const row of rows) {
+			const msg = loadMessage(row);
+			if (msg.type !== 'assistant') continue;
 
-			const hasUnansweredTool = content.some(
-				(item: any) => item.type === 'tool_use' && item.id && !answeredToolIds.has(item.id)
+			const hasUnansweredTool = msg.content.some(
+				block => block.type === 'tool_use' && block.id && !answeredToolIds.has(block.id)
 			);
 
-			if (hasUnansweredTool && !sdk.metadata?.interrupted) {
-				sdk.metadata = { ...sdk.metadata, interrupted: true };
-				updateStmt.run(JSON.stringify(sdk), msg.id);
-			}
+			if (!hasUnansweredTool || msg.stopReason === 'interrupted') continue;
+
+			// Write back as UnifiedMessage with interrupted stopReason
+			const updated = { ...msg, stopReason: 'interrupted' as const };
+			updateStmt.run(JSON.stringify(updated), row.id);
 		}
 	},
 

@@ -224,21 +224,33 @@ backend/mcp/types.ts
 ### Checkpoint Phase 2
 
 ```
-[ ] shared/types/database/schema.ts — selesai
-[ ] shared/utils/message-formatter.ts — selesai / dihapus
-[ ] backend/database/queries/message-queries.ts — selesai
-[ ] backend/database/queries/session-queries.ts — selesai
-[ ] backend/database/queries/snapshot-queries.ts — selesai
-[ ] backend/snapshot/helpers.ts — selesai
-[ ] backend/snapshot/snapshot-service.ts — selesai
-[ ] backend/ws/snapshot/timeline.ts — selesai
-[ ] backend/mcp/config.ts — verified (no changes / updated)
-[ ] backend/mcp/types.ts — verified (no changes / updated)
+[x] shared/types/database/schema.ts — SDKMessageFormatter + EngineSDKMessage import dihapus total
+[x] shared/utils/message-formatter.ts — hanya loadMessage() + old-format converter internal
+[x] backend/database/queries/message-queries.ts — semua fungsi pakai loadMessage()
+[x] backend/database/queries/session-queries.ts — verified (tidak ada messaging imports)
+[x] backend/database/queries/snapshot-queries.ts — verified (tidak ada messaging imports)
+[x] backend/snapshot/helpers.ts — semua fungsi terima UnifiedMessage, pakai loadMessage()
+[x] backend/snapshot/snapshot-service.ts — verified (tidak ada messaging imports)
+[x] backend/ws/snapshot/timeline.ts — pakai loadMessage(), tidak ada raw JSON.parse
+[x] backend/ws/messages/crud.ts — pakai loadMessage() + extractMessageText dari helpers
+[x] backend/mcp/config.ts — verified (runtime API saja)
+[x] backend/mcp/types.ts — verified (runtime config type saja)
 
-bun run check && bun run lint — PASS [ ]
+bun run check — 12 errors (semua di frontend/, expected untuk Phase 3)
+bun run lint — PASS [x]
 
 Notes:
-(isi catatan/blocker/keputusan yang dibuat selama phase ini)
+- TIDAK ada dual-format handling di consumer code.
+  loadMessage() adalah satu-satunya entry point untuk konversi old format → UnifiedMessage.
+- Semua consumer (helpers.ts, timeline.ts, crud.ts, message-queries.ts) hanya bekerja
+  dengan UnifiedMessage — tidak ada lagi Record<string, unknown> atau raw JSON.parse
+  kecuali di dalam loadMessage() sendiri.
+- markInterruptedMessages(): load via loadMessage(), write back sebagai UnifiedMessage
+  (effectively migrate-on-write untuk old format data).
+- helpers.ts: isInternalToolMessage() dan extractMessageText() hanya terima UnifiedMessage.
+  isSessionContinuation() helper baru menggantikan inline type checks.
+- crud.ts: sessions:preview pakai loadMessage() + extractMessageText(), tidak ada
+  extractTextContent() manual lagi.
 ```
 
 ---

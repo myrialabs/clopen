@@ -1,7 +1,8 @@
 import { snapshotQueries, messageQueries, checkpointQueries } from '../database/queries';
 import { debug } from '$shared/utils/logger';
-import type { SDKMessage } from '$shared/types/messaging';
+import { loadMessage } from '$shared/utils/message-formatter';
 import type { DatabaseMessage } from '$shared/types/database/schema';
+import type { UnifiedMessage, UserMessage } from '$shared/types/unified';
 
 /**
  * Snapshot domain helper functions
@@ -37,50 +38,31 @@ export interface TimelineResponse {
 /**
  * Check if a user message is an internal/non-genuine user message.
  *
- * The SDK uses `type: 'user'` for several kinds of messages that are NOT
- * typed by the real human user:
+ * Internal messages include:
  *   1. Tool-result confirmations — content contains `tool_result` blocks
- *   2. Sub-agent / Task prompts — `parent_tool_use_id` is non-null
- *   3. Post-compaction synthetic summaries — `isSynthetic` is true
- *
- * Only messages that pass none of these checks are genuine user input.
+ *   2. Sub-agent / Task prompts — parentToolUseId is non-null
+ *   3. Post-compaction synthetic summaries — synthetic is true
  */
-export function isInternalToolMessage(sdkMessage: any): boolean {
-	if (sdkMessage.type !== 'user') return false;
+export function isInternalToolMessage(msg: UnifiedMessage): boolean {
+	if (msg.type !== 'user') return false;
+	const user = msg as UserMessage;
 
-	// Sub-agent or tool-result message (parent_tool_use_id is set)
-	if (sdkMessage.parent_tool_use_id != null) return true;
+	if (user.parentToolUseId != null) return true;
+	if (user.synthetic) return true;
 
-	// Synthetic message generated after context compaction
-	if (sdkMessage.isSynthetic === true) return true;
-
-	const content = sdkMessage.message?.content;
-	if (!content) return false;
-
-	// Check if content is array and contains tool_result blocks
-	if (Array.isArray(content)) {
-		return content.some((block: any) => block.type === 'tool_result');
-	}
-
-	return false;
+	return user.content.some(block => block.type === 'tool_result');
 }
 
 /**
- * Extract user message text from SDK message
+ * Extract text from a UnifiedMessage.
  */
-export function extractMessageText(sdkMessage: SDKMessage): string {
-	if ('message' in sdkMessage && sdkMessage.message?.content) {
-		const content = sdkMessage.message.content;
-		if (typeof content === 'string') {
-			return content;
-		} else if (Array.isArray(content)) {
-			const textBlock = content.find(
-				(item: any) => typeof item === 'object' && 'text' in item
-			);
-			if (textBlock && 'text' in textBlock) {
-				return textBlock.text;
-			}
-		}
+export function extractMessageText(msg: UnifiedMessage): string {
+	if (msg.type === 'reasoning') return msg.text;
+	if (msg.type === 'compact_boundary') return '';
+
+	// user or assistant — both have content arrays
+	for (const block of msg.content) {
+		if (block.type === 'text' && block.text) return block.text;
 	}
 	return '';
 }
@@ -88,13 +70,12 @@ export function extractMessageText(sdkMessage: SDKMessage): string {
 /**
  * Check if a database message is a checkpoint (real user message with text)
  */
-export function isCheckpointMessage(msg: DatabaseMessage): boolean {
+export function isCheckpointMessage(row: DatabaseMessage): boolean {
 	try {
-		const sdk = JSON.parse(msg.sdk_message) as SDKMessage;
-		if (sdk.type !== 'user') return false;
-		if (isInternalToolMessage(sdk)) return false;
-		const text = extractMessageText(sdk);
-		return text.trim() !== '';
+		const msg = loadMessage(row);
+		if (msg.type !== 'user') return false;
+		if (isInternalToolMessage(msg)) return false;
+		return extractMessageText(msg).trim() !== '';
 	} catch {
 		return false;
 	}
@@ -224,7 +205,6 @@ export function findSessionEnd(
 	}
 
 	// Fallback: timestamp-based approach
-	// Walk chronologically through messages after checkpoint until next real user message
 	debug.log('snapshot', `findSessionEnd: parent-based returned checkpoint itself, trying timestamp fallback`);
 	const timestampResult = findSessionEndByTimestamp(checkpointMsg, allMessages);
 
@@ -235,6 +215,17 @@ export function findSessionEnd(
 
 	debug.log('snapshot', `findSessionEnd: no session continuation found, returning checkpoint ${checkpointMsg.id.slice(0, 8)}`);
 	return checkpointMsg;
+}
+
+/**
+ * Check if a DatabaseMessage is a session continuation
+ * (assistant, internal user, or compact boundary — NOT a real user message).
+ */
+function isSessionContinuation(row: DatabaseMessage): boolean {
+	const msg = loadMessage(row);
+	if (msg.type === 'assistant' || msg.type === 'reasoning' || msg.type === 'compact_boundary') return true;
+	if (msg.type === 'user' && isInternalToolMessage(msg)) return true;
+	return false;
 }
 
 /**
@@ -262,34 +253,10 @@ function findSessionEndByParent(
 		const children = childrenMap.get(current.id) || [];
 		children.sort((a, b) => a.timestamp.localeCompare(b.timestamp));
 
-		let sessionContinuation: DatabaseMessage | null = null;
+		const continuation = children.find(child => isSessionContinuation(child));
+		if (!continuation) return lastValidEnd;
 
-		for (const child of children) {
-			try {
-				const sdk = JSON.parse(child.sdk_message);
-				if (sdk.type === 'assistant') {
-					sessionContinuation = child;
-					break;
-				}
-				if (sdk.type === 'user' && isInternalToolMessage(sdk)) {
-					sessionContinuation = child;
-					break;
-				}
-				// System messages (e.g. compact_boundary) are part of session continuation
-				if (sdk.type === 'system') {
-					sessionContinuation = child;
-					break;
-				}
-			} catch {
-				continue;
-			}
-		}
-
-		if (!sessionContinuation) {
-			return lastValidEnd;
-		}
-
-		current = sessionContinuation;
+		current = continuation;
 		lastValidEnd = current;
 	}
 }
@@ -311,23 +278,12 @@ function findSessionEndByTimestamp(
 	let lastValidEnd = checkpointMsg;
 
 	for (let i = checkpointIndex + 1; i < sorted.length; i++) {
-		const msg = sorted[i];
-		try {
-			const sdk = JSON.parse(msg.sdk_message);
-
-			if (sdk.type === 'assistant') {
-				lastValidEnd = msg;
-			} else if (sdk.type === 'user' && isInternalToolMessage(sdk)) {
-				lastValidEnd = msg;
-			} else if (sdk.type === 'system') {
-				// System messages (e.g. compact_boundary) are part of session continuation
-				lastValidEnd = msg;
-			} else if (sdk.type === 'user' && !isInternalToolMessage(sdk)) {
-				// Hit the next real user message (checkpoint) - stop
-				break;
-			}
-		} catch {
-			continue;
+		const row = sorted[i];
+		if (isSessionContinuation(row)) {
+			lastValidEnd = row;
+		} else {
+			// Hit a real user message — stop
+			break;
 		}
 	}
 

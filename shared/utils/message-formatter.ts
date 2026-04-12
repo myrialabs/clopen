@@ -1,80 +1,206 @@
 /**
- * Message Formatter - Single source of truth for SDK message formatting
+ * Message Formatter
  *
- * Converts raw data → SDKMessageFormatter with metadata.
- * Used by ALL paths that return messages to the frontend:
- * - Backend: message-queries.ts, messages/crud.ts
- * - Frontend: chat.service.ts (stream transport → metadata)
+ * loadMessage() — DB row → UnifiedMessage
  *
- * This ensures stream response and DB response produce identical structure.
+ * Handles runtime migration: old SDK format rows are converted to
+ * UnifiedMessage on read. New rows are returned as-is.
  */
 
-import type { DatabaseMessage, SDKMessageFormatter } from '$shared/types/database/schema';
-import type { EngineSDKMessage } from '$shared/types/messaging';
+import type { DatabaseMessage } from '$shared/types/database/schema';
+import type {
+	UnifiedMessage,
+	UserMessage,
+	AssistantMessage,
+	ReasoningMessage,
+	CompactBoundaryMessage,
+	UserContentBlock,
+	AssistantContentBlock,
+	TextBlock,
+	ToolUseBlock,
+	ToolResult,
+	TokenUsage,
+	StopReason,
+} from '$shared/types/unified';
 
 /**
- * Format a DatabaseMessage into SDKMessageFormatter
- * Parses sdk_message JSON and attaches system metadata
+ * Load a DatabaseMessage row as UnifiedMessage.
+ *
+ * DB metadata (id, timestamp, sender, parent) overrides the JSON blob
+ * so the DB columns remain the source of truth.
  */
-export function formatDatabaseMessage(
-	msg: DatabaseMessage,
+export function loadMessage(
+	row: DatabaseMessage,
 	overrides?: {
 		sender_id?: string | null;
 		sender_name?: string | null;
 	}
-): SDKMessageFormatter {
-	const sdkMessage = JSON.parse(msg.sdk_message) as EngineSDKMessage;
+): UnifiedMessage {
+	const raw = JSON.parse(row.sdk_message);
 
+	// Already unified format
+	if ('sessionId' in raw && raw.sessionId) {
+		raw.id = row.id;
+		raw.createdAt = row.timestamp;
+		raw.parentMessageId = row.parent_message_id || null;
+		raw.senderId = overrides?.sender_id ?? row.sender_id ?? raw.senderId ?? null;
+		raw.senderName = overrides?.sender_name ?? row.sender_name ?? raw.senderName ?? null;
+		return raw as UnifiedMessage;
+	}
+
+	// Old SDK format → convert to UnifiedMessage
+	return convertOldFormat(raw, row, overrides);
+}
+
+// ============================================================================
+// Old SDK format conversion (runtime migration)
+// ============================================================================
+
+function convertOldFormat(
+	raw: Record<string, unknown>,
+	row: DatabaseMessage,
+	overrides?: {
+		sender_id?: string | null;
+		sender_name?: string | null;
+	}
+): UnifiedMessage {
+	const base = {
+		id: row.id,
+		sessionId: row.session_id,
+		createdAt: row.timestamp,
+		parentMessageId: row.parent_message_id || null,
+		senderId: overrides?.sender_id ?? row.sender_id ?? null,
+		senderName: overrides?.sender_name ?? row.sender_name ?? null,
+		model: null as string | null,
+		engine: null as string | null,
+	};
+
+	const metadata = raw.metadata as Record<string, unknown> | undefined;
+	if (metadata?.engine) base.engine = metadata.engine as string;
+
+	const sdkType = raw.type as string;
+	const message = raw.message as Record<string, unknown> | undefined;
+
+	// Reasoning (old format stores as assistant + metadata.reasoning)
+	if (metadata?.reasoning === true && sdkType === 'assistant') {
+		return { ...base, type: 'reasoning', text: extractText(message) } satisfies ReasoningMessage;
+	}
+
+	// Compact boundary (old format stores as type: 'system')
+	if (sdkType === 'system') {
+		const cb = raw.compactBoundary as Record<string, unknown> | undefined;
+		return {
+			...base,
+			type: 'compact_boundary',
+			trigger: (cb?.trigger as 'manual' | 'auto') || 'auto',
+			preTokens: (cb?.preTokens as number) || 0,
+		} satisfies CompactBoundaryMessage;
+	}
+
+	// User message
+	if (sdkType === 'user') {
+		return {
+			...base,
+			type: 'user',
+			parentToolUseId: (raw.parent_tool_use_id as string) || null,
+			content: convertUserContent(message),
+			synthetic: (raw.isSynthetic as boolean) || false,
+		} satisfies UserMessage;
+	}
+
+	// Assistant message
+	if (sdkType === 'assistant') {
+		return {
+			...base,
+			type: 'assistant',
+			parentToolUseId: (raw.parent_tool_use_id as string) || null,
+			content: convertAssistantContent(message),
+			stopReason: (message?.stop_reason as StopReason) || null,
+			usage: convertUsage(raw),
+		} satisfies AssistantMessage;
+	}
+
+	// Fallback
 	return {
-		...sdkMessage,
-		metadata: {
-			...buildMetadataFromDb(msg, overrides),
-			...(sdkMessage.metadata?.reasoning && { reasoning: true }),
-			...(sdkMessage.metadata?.interrupted && { interrupted: true }),
+		...base,
+		type: 'assistant',
+		parentToolUseId: null,
+		content: [{ type: 'text', text: '' }],
+		stopReason: null,
+		usage: null,
+	} satisfies AssistantMessage;
+}
+
+// ── Content extraction helpers ──────────────────────────────
+
+function extractText(message: Record<string, unknown> | undefined): string {
+	if (!message) return '';
+	const content = message.content;
+	if (typeof content === 'string') return content;
+	if (Array.isArray(content)) {
+		return content
+			.filter((b: Record<string, unknown>) => b.type === 'text')
+			.map((b: Record<string, unknown>) => (b.text as string) || '')
+			.join('\n');
+	}
+	return '';
+}
+
+function convertUserContent(message: Record<string, unknown> | undefined): UserContentBlock[] {
+	if (!message) return [{ type: 'text', text: '' }];
+	const rawContent = message.content;
+	if (typeof rawContent === 'string') return [{ type: 'text', text: rawContent }];
+	if (!Array.isArray(rawContent)) return [{ type: 'text', text: '' }];
+
+	return rawContent.map((block: Record<string, unknown>): UserContentBlock => {
+		if (block.type === 'tool_result') {
+			return {
+				type: 'tool_result',
+				toolUseId: (block.tool_use_id as string) || '',
+				content: typeof block.content === 'string'
+					? block.content
+					: JSON.stringify(block.content ?? ''),
+				isError: (block.is_error as boolean) || false,
+			} satisfies ToolResult;
 		}
-	};
+		if (block.type === 'image') {
+			const source = block.source as Record<string, unknown> | undefined;
+			return {
+				type: 'image',
+				mediaType: (source?.media_type as string) || 'image/png',
+				data: (source?.data as string) || '',
+			};
+		}
+		return { type: 'text', text: (block.text as string) || '' } satisfies TextBlock;
+	});
 }
 
-/**
- * Build metadata object from DatabaseMessage fields
- * This is the SINGLE definition of what metadata contains from DB
- */
-export function buildMetadataFromDb(
-	msg: DatabaseMessage,
-	overrides?: {
-		sender_id?: string | null;
-		sender_name?: string | null;
-	}
-): NonNullable<SDKMessageFormatter['metadata']> {
-	return {
-		message_id: msg.id,
-		created_at: msg.timestamp,
-		parent_message_id: msg.parent_message_id || null,
-		sender_id: overrides?.sender_id ?? msg.sender_id ?? null,
-		sender_name: overrides?.sender_name ?? msg.sender_name ?? null,
-	};
+function convertAssistantContent(message: Record<string, unknown> | undefined): AssistantContentBlock[] {
+	if (!message) return [{ type: 'text', text: '' }];
+	const rawContent = message.content;
+	if (typeof rawContent === 'string') return [{ type: 'text', text: rawContent }];
+	if (!Array.isArray(rawContent)) return [{ type: 'text', text: '' }];
+
+	return rawContent.map((block: Record<string, unknown>): AssistantContentBlock => {
+		if (block.type === 'tool_use') {
+			return {
+				type: 'tool_use',
+				id: (block.id as string) || '',
+				name: (block.name as string) || '',
+				input: (block.input as Record<string, unknown>) || {},
+			} as ToolUseBlock;
+		}
+		return { type: 'text', text: (block.text as string) || '' } satisfies TextBlock;
+	});
 }
 
-/**
- * Build metadata from stream transport fields (used by frontend during stream)
- * Produces identical structure as buildMetadataFromDb
- */
-export function buildMetadataFromTransport(transport: {
-	message_id?: string;
-	timestamp?: string;
-	parent_message_id?: string | null;
-	sender_id?: string | null;
-	sender_name?: string | null;
-	engine?: string;
-	reasoning?: boolean;
-}): NonNullable<SDKMessageFormatter['metadata']> {
+function convertUsage(raw: Record<string, unknown>): TokenUsage | null {
+	const usage = (raw.message as Record<string, unknown>)?.usage as Record<string, unknown> | undefined;
+	if (!usage) return null;
 	return {
-		message_id: transport.message_id || undefined,
-		created_at: transport.timestamp || new Date().toISOString(),
-		parent_message_id: transport.parent_message_id ?? null,
-		sender_id: transport.sender_id ?? null,
-		sender_name: transport.sender_name ?? null,
-		engine: transport.engine,
-		...(transport.reasoning && { reasoning: true }),
+		inputTokens: (usage.input_tokens as number) || 0,
+		outputTokens: (usage.output_tokens as number) || 0,
+		cacheCreationInputTokens: (usage.cache_creation_input_tokens as number) || 0,
+		cacheReadInputTokens: (usage.cache_read_input_tokens as number) || 0,
 	};
 }

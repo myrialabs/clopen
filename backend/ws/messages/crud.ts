@@ -10,16 +10,8 @@
 import { t } from 'elysia';
 import { createRouter } from '$shared/utils/ws-server';
 import { messageQueries } from '../../database/queries';
-import { formatDatabaseMessage } from '$shared/utils/message-formatter';
-
-function extractTextContent(content: unknown): string {
-	if (typeof content === 'string') return content;
-	if (!Array.isArray(content)) return '';
-	return content
-		.filter((c: any) => c.type === 'text')
-		.map((b: any) => b.text || '')
-		.join(' ');
-}
+import { loadMessage } from '$shared/utils/message-formatter';
+import { extractMessageText } from '../../snapshot/helpers';
 
 export const crudHandler = createRouter()
 	// List messages
@@ -33,12 +25,10 @@ export const crudHandler = createRouter()
 		if (data.include_all) {
 			// Return all messages including those in other branches (for History view)
 			const allMessages = messageQueries.getAllBySessionId(data.session_id);
-			const messages = allMessages.map(msg => formatDatabaseMessage(msg));
-			return messages;
+			return allMessages.map(msg => loadMessage(msg));
 		} else {
 			// Default: return only messages in current HEAD path (for Chat view)
-			const messages = messageQueries.getBySessionId(data.session_id);
-			return messages;
+			return messageQueries.getBySessionId(data.session_id);
 		}
 	})
 
@@ -56,8 +46,8 @@ export const crudHandler = createRouter()
 			// Title from first user message
 			let title = 'New Conversation';
 			if (preview.firstUserMessage) {
-				const sdk = JSON.parse(preview.firstUserMessage.sdk_message);
-				const textContent = extractTextContent(sdk.message?.content).trim();
+				const msg = loadMessage(preview.firstUserMessage);
+				const textContent = extractMessageText(msg).trim();
 				if (textContent) {
 					title = textContent.slice(0, 60) + (textContent.length > 60 ? '...' : '');
 				}
@@ -66,8 +56,8 @@ export const crudHandler = createRouter()
 			// Summary from last assistant message
 			let summary = 'No messages yet';
 			if (preview.lastAssistantMessage) {
-				const sdk = JSON.parse(preview.lastAssistantMessage.sdk_message);
-				const rawText = extractTextContent(sdk.message?.content);
+				const msg = loadMessage(preview.lastAssistantMessage);
+				const rawText = extractMessageText(msg);
 				const cleanText = rawText.replace(/```[\s\S]*?```/g, '').trim();
 				if (cleanText) {
 					summary = cleanText.slice(0, 100) + (cleanText.length > 100 ? '...' : '');
@@ -98,8 +88,7 @@ export const crudHandler = createRouter()
 			throw new Error('Message not found');
 		}
 
-		// Parse SDK message and return with database metadata
-		return formatDatabaseMessage(message);
+		return loadMessage(message);
 	})
 
 	// Delete message

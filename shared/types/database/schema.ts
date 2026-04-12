@@ -1,10 +1,7 @@
 /**
  * Database-specific types
- *
- * Uses official @anthropic-ai/claude-agent-sdk types for consistency
  */
 
-import type { SDKMessage, EngineSDKMessage } from '../messaging';
 import type { EngineType } from '../engine';
 
 // Core database entities moved from core folder
@@ -38,14 +35,14 @@ export interface Settings {
 
 /**
  * Database Message interface
- * Stores official SDKMessage as JSON with additional metadata
+ * Stores serialized UnifiedMessage (or legacy SDKMessage) as JSON with additional metadata.
+ * Runtime migration from legacy format is handled by loadMessage() in message-formatter.ts.
  */
 export interface DatabaseMessage {
 	id: string;
 	session_id: string;
 	timestamp: string;
-	// Store the complete SDKMessage as JSON for full fidelity
-	sdk_message: string; // JSON string of SDKMessage
+	sdk_message: string; // JSON string of UnifiedMessage (or legacy SDKMessage)
 	// User identification for shared chat
 	sender_id?: string | null;
 	sender_name?: string | null;
@@ -55,23 +52,6 @@ export interface DatabaseMessage {
 	is_deleted?: number; // 0 = active, 1 = soft deleted
 	branch_id?: string | null; // Branch identifier (now used as branch name)
 }
-
-/**
- * SDK Message with database timestamp and user info for UI display
- */
-export type SDKMessageFormatter = EngineSDKMessage & {
-	partialText?: string; // Accumulated partial text for streaming messages (transient, not persisted)
-	metadata?: { // System-added info (not part of official SDK response)
-		message_id?: string; // Database message ID
-		created_at?: string; // Message creation timestamp
-		sender_id?: string | null; // User ID who submitted the chat (user messages only)
-		sender_name?: string | null; // Display name of who submitted the chat (user messages only)
-		parent_message_id?: string | null; // Git-like parent pointer
-		engine?: string; // Engine type that produced this message (claude-code, opencode)
-		reasoning?: boolean; // Whether this message is a reasoning/thinking message
-		interrupted?: boolean; // Whether the stream ended before all tools got results
-	};
-};
 
 /**
  * Database-specific Setting interface

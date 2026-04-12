@@ -9,6 +9,7 @@ import { t } from 'elysia';
 import { createRouter } from '$shared/utils/ws-server';
 import { messageQueries, sessionQueries, checkpointQueries, snapshotQueries } from '../../database/queries';
 import { debug } from '$shared/utils/logger';
+import { loadMessage } from '$shared/utils/message-formatter';
 import {
 	extractMessageText,
 	buildCheckpointTree,
@@ -19,7 +20,6 @@ import {
 	INITIAL_NODE_ID
 } from '../../snapshot/helpers';
 import type { CheckpointNode, TimelineResponse } from '../../snapshot/helpers';
-import type { SDKMessage } from '$shared/types/messaging';
 
 export const timelineHandler = createRouter()
 	.http('snapshot:get-timeline', {
@@ -119,8 +119,8 @@ export const timelineHandler = createRouter()
 		});
 
 		for (const cp of checkpoints) {
-			const sdk = JSON.parse(cp.sdk_message) as SDKMessage;
-			const messageText = extractMessageText(sdk).trim().slice(0, 100);
+			const msg = loadMessage(cp);
+			const messageText = extractMessageText(msg).trim().slice(0, 100);
 			const parentCpId = parentMap.get(cp.id) || null;
 			const activeChildId = activeChildrenMap.get(cp.id) || null;
 			const isOnActivePath = activePathIds.has(cp.id);
