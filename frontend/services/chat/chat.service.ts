@@ -455,7 +455,7 @@ class ChatService {
             return {
               role: msg.message.role,
               content: Array.isArray(msg.message.content)
-                ? msg.message.content.map(c => c.type === 'text' ? c.text : JSON.stringify(c)).join(' ')
+                ? msg.message.content.map((c: { type: string; text?: string }) => c.type === 'text' && c.text ? c.text : JSON.stringify(c)).join(' ')
                 : JSON.stringify(msg.message.content)
             };
           }

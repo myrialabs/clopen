@@ -1,6 +1,7 @@
 import { getDatabase } from '../index';
 import type { DatabaseMessage, SDKMessageFormatter } from '$shared/types/database/schema';
 import type { SDKMessage } from '$shared/types/messaging';
+import type { UnifiedMessage } from '$shared/types/unified';
 import { formatDatabaseMessage } from '$shared/utils/message-formatter';
 import { debug } from '$shared/utils/logger';
 
@@ -109,7 +110,7 @@ export const messageQueries = {
 
 	create(messageData: {
 		session_id: string;
-		sdk_message: SDKMessage;
+		sdk_message: SDKMessage | UnifiedMessage;
 		timestamp?: string;
 		sender_id?: string;
 		sender_name?: string;

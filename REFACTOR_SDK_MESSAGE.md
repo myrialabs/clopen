@@ -17,11 +17,11 @@ Migrasi total dari SDK-coupled types ke `shared/types/unified/`.
 
 ## SDK Versions
 
-| Package | Current | Action |
-|---------|---------|--------|
-| `@anthropic-ai/claude-agent-sdk` | 0.2.63 (v1) | Update ke latest, migrate ke v2 API |
-| `@anthropic-ai/sdk` | 0.78.0 | Hapus setelah migrasi (content block types sudah di unified) |
-| `@opencode-ai/sdk` | 1.2.15 | Update ke latest |
+| Package | Before | After | Action |
+|---------|--------|-------|--------|
+| `@anthropic-ai/claude-agent-sdk` | 0.2.63 | 0.2.101 | ✅ Updated. v2 API masih @alpha, tetap v1 query() |
+| `@anthropic-ai/sdk` | 0.78.0 | 0.88.0 | ✅ Updated. Hapus setelah Phase 3 |
+| `@opencode-ai/sdk` | 1.2.15 | 1.4.3 | ✅ Updated |
 
 ---
 
@@ -44,50 +44,87 @@ Type system terpusat di `shared/types/unified/`:
 
 ---
 
-## Phase 1: Backend Engine Interface
+## Phase 1: Backend Engine & Adapters
 
-**File:** `backend/engine/types.ts`
+Scope: engine interface + semua adapters + stream manager.
+
+### Adapter File Pattern
+
+Kedua adapter mengikuti pola file yang sama agar engine baru mudah ditambahkan:
 
 ```
-- Import semua types dari `shared/types/unified`
-- EngineQueryOptions.prompt → UserMessage
-- AIEngine.streamQuery() → AsyncGenerator<EngineOutput>
-- Hapus import dari shared/types/messaging
-```
-
----
-
-## Phase 2: Claude Code SDK v1 → v2
-
-Migrasi dari `query()` ke session-based API.
-
-### SDK v2 API
-
-```ts
-import {
-  unstable_v2_createSession,
-  unstable_v2_resumeSession
-} from '@anthropic-ai/claude-agent-sdk';
-
-const session = unstable_v2_createSession({ ... });
-const session = unstable_v2_resumeSession(sessionId, { ... });
-
-for await (const event of session.stream(prompt)) {
-  // process events
-}
+adapters/<engine>/
+  index.ts              # re-exports
+  stream.ts             # AIEngine implementation (class)
+  message-converter.ts  # SDK → EngineOutput converters
+  ...                   # engine-specific files (environment, server, config, etc.)
 ```
 
 ### Files
 
 ```
+backend/engine/types.ts
+  - Import semua types dari shared/types/unified
+  - EngineQueryOptions.prompt → UserMessage
+  - AIEngine.streamQuery() → AsyncGenerator<EngineOutput>
+  - Hapus import dari shared/types/messaging
+
 backend/engine/adapters/claude/stream.ts
-  - Ganti query() dengan createSession/resumeSession
-  - Convert SDK events → EngineOutput
-  - Handle v2 session lifecycle (create, resume, close)
+  - Import converters dari ./message-converter
+  - Tetap v1 query() (v2 belum support cwd, mcpServers, dll)
+  - Import resolveOsPath dari $shared/utils/path
+
+backend/engine/adapters/claude/message-converter.ts (BARU)
+  - Converter terpisah menggunakan proper SDK types
+  - SDKAssistantMessage, SDKUserMessage, SDKPartialAssistantMessage, dll
+  - BetaContentBlock, BetaUsage dari @anthropic-ai/sdk
+  - convertSdkMessage() generator: SDKMessage → EngineOutput
+  - toSdkUserMessage(): UserMessage → SDKUserMessage
 
 backend/engine/adapters/claude/index.ts
-  - Manage SDKSession state untuk cancel/interrupt/resume
+  - Re-exports (tidak berubah)
+
+backend/engine/adapters/opencode/message-converter.ts
+  - Convert langsung: OpenCode events → EngineOutput
+  - Hapus semua Claude SDK type imports
+  - Tool input normalisasi camelCase
+
+backend/engine/adapters/opencode/stream.ts
+  - Yield EngineOutput
+  - extractPromptParts() menerima UserMessage
+
+backend/engine/adapters/opencode/index.ts
+  - Re-exports (tidak berubah)
+
+backend/chat/stream-manager.ts
+  - Import dari shared/types/unified
+  - Route berdasarkan type discriminant (switch output.type)
+  - saveMessage() menerima UnifiedMessage
+  - cancelStream() membuat partial messages dalam unified format
+
+backend/chat/helpers.ts
+  - Import UnifiedMessage, StreamRequest dari unified
+
+backend/database/queries/message-queries.ts
+  - create() menerima SDKMessage | UnifiedMessage (transitional)
+
+shared/utils/path.ts
+  - Tambah resolveOsPath() (dari claude/path-utils.ts yang dihapus)
 ```
+
+### SDK v2 API Status
+
+v2 (`unstable_v2_createSession`) masih @alpha di SDK 0.2.101.
+SDKSessionOptions hanya support: model, executable, env, allowedTools, canUseTool, hooks, permissionMode.
+
+**Missing critical options:**
+- `cwd` — Clopen multi-project, server cwd ≠ project path
+- `mcpServers` — custom MCP server configuration
+- `systemPrompt`, `settingSources`, `forkSession`
+- `maxTurns`, `abortController`, `includePartialMessages`
+- `outputFormat` — dibutuhkan generateStructured()
+
+Migrasi ke v2 menunggu SDKSessionOptions mendapat options ini.
 
 ### Conversion Table
 
@@ -100,100 +137,72 @@ backend/engine/adapters/claude/index.ts
 | SDKResultMessage | ResultEvent |
 | thinking/reasoning blocks | ReasoningMessage |
 
+### Checkpoint Phase 1
+
+```
+[x] backend/engine/types.ts — selesai
+[x] backend/engine/adapters/claude/stream.ts — selesai (tetap v1, import dari message-converter)
+[x] backend/engine/adapters/claude/message-converter.ts — BARU, proper SDK types
+[x] backend/engine/adapters/claude/index.ts — selesai (tidak berubah)
+[x] backend/engine/adapters/opencode/message-converter.ts — selesai (camelCase, unified return)
+[x] backend/engine/adapters/opencode/stream.ts — selesai
+[x] backend/engine/adapters/opencode/index.ts — selesai (tidak berubah)
+[x] backend/chat/stream-manager.ts — selesai (switch output.type routing)
+[x] backend/chat/helpers.ts — selesai
+[x] backend/database/queries/message-queries.ts — transitional (SDKMessage | UnifiedMessage)
+[x] shared/utils/path.ts — tambah resolveOsPath()
+[x] backend/engine/adapters/claude/path-utils.ts — DIHAPUS (pindah ke shared)
+
+bun run check && bun run lint — PASS [x]
+
+Notes:
+- SDK diupdate: claude-agent-sdk 0.2.63→0.2.101, sdk 0.78.0→0.88.0, opencode 1.2.15→1.4.3
+- v2 API (unstable_v2_createSession) masih @alpha, SDKSessionOptions tidak punya cwd/mcpServers/
+  systemPrompt — blocker untuk Clopen multi-project. Tetap v1 query() sampai v2 stabil.
+- Claude message-converter menggunakan proper SDK types (SDKAssistantMessage, BetaContentBlock,
+  BetaUsage, dll) bukan Record<string, unknown>.
+- Adapter file structure diselaraskan: kedua adapter punya index.ts + stream.ts + message-converter.ts.
+- DB layer transisi: messageQueries.create() menerima SDKMessage | UnifiedMessage.
+  Phase 2 akan full-migrate ke UnifiedMessage.
+- SDK 0.88.0 mengubah export path (@anthropic-ai/claude-agent-sdk/sdk → root export)
+  dan memperluas BetaContentBlock union → fix implicit any di frontend.
+- Async Iteration (AsyncGenerator<EngineOutput>) dipertahankan:
+  backpressure natural, single-consumer pattern, lifecycle clean.
+  EventEmitter tetap untuk broadcast manager→WebSocket (1:N).
+```
+
 ---
 
-## Phase 3: OpenCode Adapter
+## Phase 2: Data Layer
+
+Scope: database queries, schema, message formatter, snapshot system, dan MCP.
 
 ### Files
-
-```
-backend/engine/adapters/opencode/message-converter.ts
-  - Convert langsung: OpenCode events → EngineOutput
-  - Hapus semua Claude SDK type imports
-
-backend/engine/adapters/opencode/stream.ts
-  - Yield EngineOutput
-
-backend/engine/adapters/opencode/index.ts
-  - Update imports
-```
-
----
-
-## Phase 4: Stream Manager
-
-Central hub yang memproses EngineOutput dari adapters.
-
-### Files
-
-```
-backend/chat/stream-manager.ts
-  - Import dari shared/types/unified
-  - Route berdasarkan type discriminant:
-    - user/assistant/reasoning/compact_boundary → persist + emit via WebSocket
-    - stream_event → forward ke frontend (PartialMessageData)
-    - result → extract usage, log completion
-    - system_init → emit notifications
-    - rate_limit → emit notification
-  - MessageTransportData hanya berisi processId + message + usage
-  - StreamNotification tanpa icon (icon dikelola frontend)
-
-backend/chat/helpers.ts
-  - Update imports
-```
-
----
-
-## Phase 5: Database Layer
-
-### Schema
 
 ```
 shared/types/database/schema.ts
   - Hapus SDKMessageFormatter (diganti UnifiedMessage langsung)
   - DatabaseMessage.sdk_message menyimpan serialized UnifiedMessage
   - Hapus import dari shared/types/messaging
-```
 
-### Message Formatter
-
-```
 shared/utils/message-formatter.ts
   - Sederhanakan menjadi JSON.parse → UnifiedMessage
   - Atau hapus jika tidak diperlukan
-```
 
-### Database Queries
-
-```
 backend/database/queries/message-queries.ts
   - Return UnifiedMessage[]
   - JSON.parse(row.sdk_message) → UnifiedMessage
+  - Runtime migration untuk data lama:
+    function loadMessage(row): UnifiedMessage {
+      const raw = JSON.parse(row.sdk_message);
+      if (raw.id && raw.sessionId) return raw;
+      return convertLegacyMessage(raw, row);
+    }
 
 backend/database/queries/session-queries.ts
 backend/database/queries/snapshot-queries.ts
   - Update type references
-```
 
-### DB Migration
-
-Data lama di DB perlu di-convert saat dibaca. Gunakan runtime migration:
-
-```ts
-function loadMessage(row: DatabaseRow): UnifiedMessage {
-  const raw = JSON.parse(row.sdk_message);
-  if (raw.id && raw.sessionId) return raw;
-  return convertLegacyMessage(raw, row);
-}
-```
-
-Fungsi `convertLegacyMessage` mapping format lama ke UnifiedMessage. Setelah seluruh migrasi selesai dan data lama sudah tidak ada, fungsi ini bisa dihapus.
-
----
-
-## Phase 6: Snapshot System
-
-```
 backend/snapshot/helpers.ts
   - Gunakan UnifiedMessage
 
@@ -202,36 +211,56 @@ backend/snapshot/snapshot-service.ts
 
 backend/ws/snapshot/timeline.ts
   - Update type references
+
+backend/mcp/config.ts
+  - Tetap import createSdkMcpServer, tool dari claude-agent-sdk (runtime API, tidak berubah)
+
+backend/mcp/types.ts
+  - Tetap import McpSdkServerConfigWithInstance (runtime config type, tidak berubah)
+```
+
+> MCP server creation menggunakan runtime API dari Claude SDK (`tool()`, `createSdkMcpServer()`), bukan message types. Perlu verifikasi tidak ada message type imports yang perlu diganti.
+
+### Checkpoint Phase 2
+
+```
+[ ] shared/types/database/schema.ts — selesai
+[ ] shared/utils/message-formatter.ts — selesai / dihapus
+[ ] backend/database/queries/message-queries.ts — selesai
+[ ] backend/database/queries/session-queries.ts — selesai
+[ ] backend/database/queries/snapshot-queries.ts — selesai
+[ ] backend/snapshot/helpers.ts — selesai
+[ ] backend/snapshot/snapshot-service.ts — selesai
+[ ] backend/ws/snapshot/timeline.ts — selesai
+[ ] backend/mcp/config.ts — verified (no changes / updated)
+[ ] backend/mcp/types.ts — verified (no changes / updated)
+
+bun run check && bun run lint — PASS [ ]
+
+Notes:
+(isi catatan/blocker/keputusan yang dibuat selama phase ini)
 ```
 
 ---
 
-## Phase 7: Frontend Services & Stores
+## Phase 3: Frontend + Cleanup
 
-### Chat Service
+Scope: semua frontend code (services, stores, utilities, components) dan penghapusan legacy.
+
+### Files
 
 ```
 frontend/services/chat/chat.service.ts
   - Handle MessageTransportData format baru
   - Import dari shared/types/unified
-```
 
-### Stores
-
-```
 frontend/stores/core/sessions.svelte.ts
   - Message arrays menggunakan UnifiedMessage[]
   - addMessage() langsung menerima UnifiedMessage
 
 frontend/stores/core/projects.svelte.ts
   - Update type imports
-```
 
----
-
-## Phase 8: Frontend Utilities
-
-```
 frontend/utils/chat/message-processor.ts
   - Gunakan UnifiedMessage dan ToolUseBlock
   - isToolUseBlock(): block.type === 'tool_use'
@@ -253,32 +282,28 @@ frontend/utils/chat/date-separator.ts
 frontend/utils/context-manager.ts
 frontend/utils/tree-visualizer.ts
   - Update type imports
-```
 
----
-
-## Phase 9: Frontend Components
-
-### Message Display
-
-```
 frontend/components/chat/message/ChatMessage.svelte
 frontend/components/chat/message/MessageBubble.svelte
 frontend/components/chat/message/MessageHeader.svelte
 frontend/components/chat/modal/DebugModal.svelte
   - Gunakan UnifiedMessage
   - Akses langsung: message.id, message.createdAt, message.model, dll
-```
 
-### Formatters
-
-```
 frontend/components/chat/formatters/MessageFormatter.svelte
   - Gunakan UnifiedMessage
 
 frontend/components/chat/formatters/Tools.svelte
   - Gunakan ToolUseBlock
   - Discriminate pada block.name untuk narrowing input type
+
+frontend/components/chat/ChatInterface.svelte
+frontend/components/chat/widgets/FloatingTodoList.svelte
+frontend/components/history/HistoryView.svelte
+frontend/components/history/HistoryModal.svelte
+frontend/components/workspace/DesktopNavigator.svelte
+frontend/components/workspace/MobileNavigator.svelte
+  - Update type imports
 ```
 
 ### Tool Components
@@ -292,70 +317,60 @@ Setiap tool component menerima props dari ToolUseBlock yang sudah di-narrow:
 </script>
 ```
 
-Tool components:
+Tool components yang perlu diupdate:
 - BashTool, BashOutputTool, EditTool, GlobTool, GrepTool, ReadTool
 - WebFetchTool, WebSearchTool, WriteTool, TodoWriteTool
 - TaskTool, TaskStopTool, AskUserQuestionTool
 - EnterPlanModeTool, ExitPlanModeTool, SkillTool, AgentTool
 - ListMcpResourcesTool, ReadMcpResourceTool, NotebookEditTool, CustomMcpTool
 
-### Other Components
-
-```
-frontend/components/chat/ChatInterface.svelte
-frontend/components/chat/widgets/FloatingTodoList.svelte
-frontend/components/history/HistoryView.svelte
-frontend/components/history/HistoryModal.svelte
-frontend/components/workspace/DesktopNavigator.svelte
-frontend/components/workspace/MobileNavigator.svelte
-  - Update type imports
-```
-
----
-
-## Phase 10: MCP Integration
-
-```
-backend/mcp/config.ts
-  - Tetap import createSdkMcpServer, tool dari claude-agent-sdk (runtime API)
-
-backend/mcp/types.ts
-  - Tetap import McpSdkServerConfigWithInstance (runtime config type)
-```
-
-MCP server creation menggunakan runtime API dari Claude SDK (`tool()`, `createSdkMcpServer()`), bukan message types. Tidak perlu migrasi.
-
----
-
-## Phase 11: Cleanup
+### Cleanup
 
 ```
 1. Hapus shared/types/messaging/ (seluruh directory)
-2. Hapus atau sederhanakan shared/utils/message-formatter.ts
-3. Hapus SDKMessageFormatter dari shared/types/database/schema.ts
+2. Hapus atau sederhanakan shared/utils/message-formatter.ts (jika belum di phase 2)
+3. Hapus SDKMessageFormatter dari shared/types/database/schema.ts (jika belum di phase 2)
 4. Hapus @anthropic-ai/sdk dari dependencies
 5. bun run check && bun run lint
 ```
 
+### Checkpoint Phase 3
+
+```
+[ ] frontend/services/chat/chat.service.ts — selesai
+[ ] frontend/stores/core/sessions.svelte.ts — selesai
+[ ] frontend/stores/core/projects.svelte.ts — selesai
+[ ] frontend/utils/chat/message-processor.ts — selesai
+[ ] frontend/utils/chat/message-grouper.ts — selesai
+[ ] frontend/utils/chat/tool-handler.ts — selesai
+[ ] frontend/utils/chat/date-separator.ts — selesai
+[ ] frontend/utils/context-manager.ts — selesai
+[ ] frontend/utils/tree-visualizer.ts — selesai
+[ ] frontend/components — semua message/formatter/tool components selesai
+[ ] frontend/components — semua other components selesai
+
+Cleanup:
+[ ] shared/types/messaging/ — dihapus
+[ ] shared/utils/message-formatter.ts — dihapus / disederhanakan
+[ ] @anthropic-ai/sdk — dihapus dari dependencies
+
+bun run check && bun run lint — PASS [ ]
+
+Notes:
+(isi catatan/blocker/keputusan yang dibuat selama phase ini)
+```
+
 ---
 
-## Execution Order
+## Execution Summary
 
-| # | Phase | Scope | Risk |
-|---|-------|-------|------|
-| 1 | Engine interface | 1 file | Low |
-| 2 | Claude adapter v2 | 2 files | High |
-| 3 | OpenCode adapter | 3 files | Medium |
-| 4 | Stream manager | 2 files | High |
-| 5 | Database layer | 4 files | Medium |
-| 6 | Snapshot system | 3 files | Low |
-| 7 | Frontend services/stores | 3 files | Medium |
-| 8 | Frontend utilities | 6 files | Medium |
-| 9 | Frontend components | ~30 files | Low |
-| 10 | MCP integration | 2 files | Low |
-| 11 | Cleanup | Delete old files | Low |
+| # | Phase | Scope | Risk | Files |
+|---|-------|-------|------|-------|
+| 1 | Backend Engine & Adapters | engine + adapters + stream manager | High | ~8 files |
+| 2 | Data Layer | DB + snapshot + MCP | Medium | ~10 files |
+| 3 | Frontend + Cleanup | services + stores + utils + components + cleanup | Medium-Low | ~50 files |
 
-**Total: ~67 files**
+**Total: ~68 files**
 
 ---
 
@@ -363,6 +378,6 @@ MCP server creation menggunakan runtime API dari Claude SDK (`tool()`, `createSd
 
 | Package | Status | Alasan |
 |---------|--------|--------|
-| `@anthropic-ai/claude-agent-sdk` | Tetap | Runtime: createSession, MCP tools, permission system |
-| `@anthropic-ai/sdk` | Hapus | Content block types sudah di unified |
+| `@anthropic-ai/claude-agent-sdk` | Tetap | Runtime: query(), MCP tools, permission system |
+| `@anthropic-ai/sdk` | Hapus (Phase 3) | Beta types dipakai di message-converter, hapus setelah frontend migrated |
 | `@opencode-ai/sdk` | Tetap | Runtime: createOpencode, SSE stream |

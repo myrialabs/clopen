@@ -9,9 +9,26 @@
  */
 
 import { EventEmitter } from 'events';
-import type { SDKMessage, SSEEventData, SDKCompactBoundaryMessage, SDKPartialAssistantMessage, SDKUserMessage, EngineSDKMessage } from '$shared/types/messaging';
+import type {
+	EngineOutput,
+	UnifiedMessage,
+	UserMessage,
+	AssistantMessage,
+	ReasoningMessage,
+	CompactBoundaryMessage,
+	StreamEvent as UnifiedStreamEvent,
+	TextDeltaEvent,
+	StreamLifecycleEvent,
+	SuccessResultEvent,
+	ErrorResultEvent,
+	SystemInitEvent,
+	RateLimitEvent,
+	TokenUsage,
+	UserContentBlock,
+} from '$shared/types/unified';
+import type { EngineType } from '$shared/types/unified';
+import type { SSEEventData } from '$shared/types/messaging';
 import type { DatabaseMessage } from '$shared/types/database/schema';
-import type { EngineType } from '$shared/types/engine';
 import { getProjectEngine, initializeProjectEngine } from '../engine';
 import { messageQueries, sessionQueries } from '../database/queries';
 import { snapshotService } from '../snapshot/snapshot-service';
@@ -34,22 +51,26 @@ export interface StreamState {
 	startedAt: Date;
 	completedAt?: Date;
 	messages: SSEEventData[];
-	currentMessage?: SDKMessage;
+	currentMessage?: UnifiedMessage;
 	currentPartialText?: string;
 	currentReasoningText?: string;
 	error?: string;
 	abortController?: AbortController;
 	streamPromise?: Promise<void>;
 	sdkSessionId?: string;
-	preStreamSdkSessionId?: string | null; // latest_sdk_session_id before this stream started
+	preStreamSdkSessionId?: string | null;
 	hasCompactBoundary?: boolean;
-	eventSeq: number; // Sequence number for deduplication
+	eventSeq: number;
 }
 
+/**
+ * StreamRequest still accepts the raw SDK prompt format from WS handlers.
+ * The processStream() method converts it to UserMessage before passing to the engine.
+ */
 interface StreamRequest {
 	projectPath: string;
 	projectId?: string;
-	prompt: SDKUserMessage;
+	prompt: any; // SDKUserMessage from WS handler — converted to UserMessage internally
 	messages: any[];
 	chatSessionId: string;
 	engine?: EngineType;
@@ -58,6 +79,62 @@ interface StreamRequest {
 	senderId?: string;
 	senderName?: string;
 	claudeAccountId?: number;
+}
+
+// ============================================================================
+// SDK → Unified Prompt Converter
+// ============================================================================
+
+/** Convert raw SDKUserMessage prompt from WS handler → UserMessage (unified) */
+function convertRawPromptToUserMessage(
+	rawPrompt: any,
+	senderId?: string,
+	senderName?: string,
+): UserMessage {
+	const content: UserContentBlock[] = [];
+	const rawContent = rawPrompt?.message?.content;
+
+	if (typeof rawContent === 'string') {
+		content.push({ type: 'text', text: rawContent });
+	} else if (Array.isArray(rawContent)) {
+		for (const block of rawContent as Array<Record<string, unknown>>) {
+			if (block.type === 'text') {
+				content.push({ type: 'text', text: block.text as string });
+			} else if (block.type === 'image') {
+				const source = block.source as Record<string, unknown> | undefined;
+				content.push({
+					type: 'image',
+					mediaType: (source?.media_type as string) || '',
+					data: (source?.data as string) || '',
+				});
+			} else if (block.type === 'document') {
+				const source = block.source as Record<string, unknown> | undefined;
+				content.push({
+					type: 'document',
+					mediaType: (source?.media_type as string) || '',
+					data: (source?.data as string) || '',
+					title: (block.title as string) || null,
+				});
+			}
+		}
+	}
+
+	if (content.length === 0) content.push({ type: 'text', text: '' });
+
+	return {
+		type: 'user',
+		id: rawPrompt?.uuid || crypto.randomUUID(),
+		sessionId: '',
+		createdAt: new Date().toISOString(),
+		parentMessageId: null,
+		senderId: senderId || null,
+		senderName: senderName || null,
+		model: null,
+		engine: null,
+		parentToolUseId: rawPrompt?.parent_tool_use_id || null,
+		content,
+		synthetic: false,
+	};
 }
 
 // ============================================================================
@@ -274,13 +351,11 @@ class StreamManager extends EventEmitter {
 	}
 
 	/**
-	 * Process stream in background
+	 * Process stream in background — routes EngineOutput events by type discriminant
 	 */
 	private async processStream(streamState: StreamState, requestData: StreamRequest): Promise<void> {
-		// Track user message ID for stream-end snapshot capture
 		let userMessageId: string | undefined;
 
-		// Initialize session baseline for snapshot system (non-blocking)
 		if (requestData.projectPath && requestData.chatSessionId) {
 			snapshotService.initializeSessionBaseline(
 				requestData.projectPath,
@@ -289,17 +364,11 @@ class StreamManager extends EventEmitter {
 		}
 
 		try {
-			const { projectPath, prompt, chatSessionId, engine: engineType = 'claude-code', model, temperature, claudeAccountId } = requestData;
+			const { projectPath, prompt: rawPrompt, chatSessionId, engine: engineType = 'claude-code', model, claudeAccountId } = requestData;
 
-			// Validate project path
 			const projectPathExists = projectPath ? await this.existsSync(projectPath) : false;
-			if (!projectPath) {
-				throw new Error('Project path is required. Please select a valid project directory.');
-			}
-			if (!projectPathExists) {
-				throw new Error(`Project path does not exist: ${projectPath}. Please select a valid project directory.`);
-			}
-			const actualProjectPath = projectPath;
+			if (!projectPath) throw new Error('Project path is required. Please select a valid project directory.');
+			if (!projectPathExists) throw new Error(`Project path does not exist: ${projectPath}. Please select a valid project directory.`);
 
 			// Get resume session ID
 			let resumeSessionId: string | undefined = undefined;
@@ -313,34 +382,25 @@ class StreamManager extends EventEmitter {
 					debug.error('chat', 'Failed to get chat session for resume:', error);
 				}
 			}
-
-			// Store pre-stream session ID so cancelStream() can restore it
 			streamState.preStreamSdkSessionId = resumeSessionId ?? null;
 
-			// Prepare user message
-			const userMessage = {
-				...(prompt as SDKMessage),
-				resume: resumeSessionId ?? null
-			} as SDKMessage & { resume: string | null };
+			// Convert raw SDK prompt → UserMessage (unified)
+			const userMessage = convertRawPromptToUserMessage(rawPrompt, requestData.senderId, requestData.senderName);
 
-			// Save user message
+			// Save user message to DB
 			const userMessageTimestamp = new Date().toISOString();
 			const savedMessage = await this.saveMessage(
-				userMessage as SDKMessage,
+				userMessage,
 				chatSessionId,
 				userMessageTimestamp,
 				requestData.senderId,
 				requestData.senderName
 			);
-
-			// Track user message ID for stream-end snapshot
 			userMessageId = savedMessage?.id;
 
-			// Add user message to stream state and emit
-			// Keep SDK message clean — non-SDK info goes as transport fields
 			streamState.messages.push({
 				processId: streamState.processId,
-				message: userMessage,
+				message: userMessage as any,
 				timestamp: userMessageTimestamp,
 				message_id: savedMessage?.id,
 				parent_message_id: savedMessage?.parent_message_id || null,
@@ -348,7 +408,6 @@ class StreamManager extends EventEmitter {
 				sender_name: requestData.senderName
 			});
 
-			// Emit user message event
 			this.emitStreamEvent(streamState, 'message', {
 				processId: streamState.processId,
 				message: userMessage,
@@ -359,26 +418,15 @@ class StreamManager extends EventEmitter {
 				sender_name: requestData.senderName
 			});
 
-			// Check for cancellation after saving user message (async DB operation)
 			if ((streamState.status as string) === 'cancelled' || streamState.abortController?.signal.aborted) {
 				debug.log('chat', 'Stream cancelled after saving user message, skipping query');
 				return;
 			}
 
-			let sdkSessionId: string | null = null;
-			// Track last assistant text for deduplication — some engines (Claude Code) can
-			// emit identical error messages multiple times (e.g. on process exit retry).
+			let sdkSessionId: string | undefined;
 			let lastAssistantTextContent: string | null = null;
-
-			// Get per-project engine instance for stream isolation.
-			// Each project gets its own engine so cancel/abort only affects this project.
 			const projectId = streamState.projectId || 'default';
 
-			// Check if already cancelled BEFORE initializing the engine.
-			// This prevents starting a new engine query with an already-aborted controller,
-			// which can cause unhandled rejections in the SDK and crash the server.
-			// Note: status is mutated to 'cancelled' by cancelStream() from a different async context;
-			// TypeScript's control flow analysis doesn't track this, so we cast to string.
 			if ((streamState.status as string) === 'cancelled' || streamState.abortController?.signal.aborted) {
 				debug.log('chat', 'Stream cancelled before engine initialization, skipping query');
 				return;
@@ -386,35 +434,29 @@ class StreamManager extends EventEmitter {
 
 			const engine = await initializeProjectEngine(projectId, engineType);
 
-			// Check again after async engine initialization — cancellation may have occurred
-			// while awaiting initialization
 			if ((streamState.status as string) === 'cancelled' || streamState.abortController?.signal.aborted) {
 				debug.log('chat', 'Stream cancelled during engine initialization, skipping query');
 				return;
 			}
 
-			// Detect orphaned user messages and prepend context (claude-code only).
-			// When a stream is cancelled before the SDK returns a session_id,
-			// the user's message is saved to DB but unknown to the SDK session.
-			// We prepend those orphaned messages as context so the AI has full history.
-			let enginePrompt = prompt;
+			// Detect orphaned user messages and prepend context (claude-code only)
+			let enginePrompt = userMessage;
 			if (engineType === 'claude-code' && chatSessionId) {
 				try {
 					const head = sessionQueries.getHead(chatSessionId);
 					if (head) {
 						const chain = messageQueries.getPathToRoot(head);
-						// Remove the current user message (last in chain, just saved)
 						const previousChain = chain.slice(0, -1);
 
 						if (previousChain.length > 0) {
-							// Find boundary: last message with session_id matching resumeSessionId
 							let boundaryIndex = -1;
-
 							if (resumeSessionId) {
 								for (let i = previousChain.length - 1; i >= 0; i--) {
 									try {
 										const sdk = JSON.parse(previousChain[i].sdk_message);
-										if (sdk.session_id === resumeSessionId) {
+										// Check both old SDK format and new unified format
+										const msgSessionId = sdk.session_id || sdk.sessionId;
+										if (msgSessionId === resumeSessionId) {
 											boundaryIndex = i;
 											break;
 										}
@@ -422,14 +464,14 @@ class StreamManager extends EventEmitter {
 								}
 							}
 
-							// Collect orphaned user messages after boundary
 							const orphanedUserTexts: string[] = [];
 							for (let i = boundaryIndex + 1; i < previousChain.length; i++) {
 								try {
 									const sdk = JSON.parse(previousChain[i].sdk_message);
 									if (sdk.type === 'user') {
-										const content = sdk.message?.content;
 										let text = '';
+										// Handle both old SDK format (message.content) and new unified format (content)
+										const content = sdk.content || sdk.message?.content;
 										if (typeof content === 'string') {
 											text = content;
 										} else if (Array.isArray(content)) {
@@ -438,17 +480,13 @@ class StreamManager extends EventEmitter {
 												.map((block: any) => block.text)
 												.join('\n');
 										}
-										if (text.trim()) {
-											orphanedUserTexts.push(text.trim());
-										}
+										if (text.trim()) orphanedUserTexts.push(text.trim());
 									}
 								} catch { /* skip unparseable */ }
 							}
 
-							// Prepend context if there are orphaned messages
 							if (orphanedUserTexts.length > 0) {
 								debug.log('chat', `Prepending ${orphanedUserTexts.length} orphaned user message(s) as context`);
-
 								const contextPrefix = [
 									'[Previous unprocessed messages from the user:]',
 									...orphanedUserTexts.map((text, i) => `${i + 1}. "${text}"`),
@@ -456,27 +494,13 @@ class StreamManager extends EventEmitter {
 									'[Current message:]'
 								].join('\n');
 
-								const originalContent = prompt.message.content;
-								let modifiedContent: typeof originalContent;
-
-								if (typeof originalContent === 'string') {
-									modifiedContent = contextPrefix + '\n' + originalContent;
-								} else if (Array.isArray(originalContent)) {
-									modifiedContent = [
-										{ type: 'text' as const, text: contextPrefix },
-										...originalContent
-									];
-								} else {
-									modifiedContent = originalContent;
-								}
-
 								enginePrompt = {
-									...prompt,
-									message: {
-										...prompt.message,
-										content: modifiedContent
-									}
-								} as SDKUserMessage;
+									...userMessage,
+									content: [
+										{ type: 'text' as const, text: contextPrefix },
+										...userMessage.content,
+									],
+								};
 							}
 						}
 					}
@@ -485,10 +509,9 @@ class StreamManager extends EventEmitter {
 				}
 			}
 
-			// Stream messages through the engine adapter
-			// Wrap in execution context so MCP tool handlers can access chatSessionId/projectId
+			// Stream EngineOutput events through the engine adapter
 			const streamIterable = engine.streamQuery({
-				projectPath: actualProjectPath,
+				projectPath,
 				prompt: enginePrompt,
 				resume: resumeSessionId,
 				model: model || 'sonnet',
@@ -502,126 +525,99 @@ class StreamManager extends EventEmitter {
 
 			await projectContextService.runWithContextAsync(
 				{ chatSessionId, projectId, streamId: streamState.streamId },
-				async () => { for await (const message of streamIterable) {
-				// Check if cancelled (cancelStream() already set status and emitted event)
+				async () => { for await (const output of streamIterable) {
 				if ((streamState.status as string) === 'cancelled' || streamState.abortController?.signal.aborted) {
 					break;
 				}
 
-				// Update SDK session ID
-				if (!sdkSessionId && message.session_id) {
-					sdkSessionId = message.session_id;
-					streamState.sdkSessionId = sdkSessionId;
-					if (chatSessionId) {
-						try {
-							sessionQueries.updateLatestSdkSessionId(chatSessionId, sdkSessionId);
-						} catch (error) {
-							// Ignore
+				// ── Route by type discriminant ──────────────────────────────
+
+				// Extract session ID from first event that has one
+				if (!sdkSessionId) {
+					const eventSessionId = 'sessionId' in output ? (output as any).sessionId : null;
+					if (eventSessionId) {
+						sdkSessionId = eventSessionId;
+						streamState.sdkSessionId = sdkSessionId;
+						if (chatSessionId) {
+							try { sessionQueries.updateLatestSdkSessionId(chatSessionId, sdkSessionId!); }
+							catch { /* ignore */ }
 						}
 					}
 				}
 
-				// Handle system init message - Check MCP server status, then skip DB save.
-				// System init messages are SDK metadata (not conversation content) and don't need
-				// to be persisted or snapshotted. Saving them adds unnecessary latency from git ops.
-				if (message.type === 'system' && message.subtype === 'init') {
-					const systemMessage = message as any;
-
-					// Check for failed MCP servers
-					if (systemMessage.mcp_servers && Array.isArray(systemMessage.mcp_servers)) {
-						const failedServers = systemMessage.mcp_servers.filter(
-							(server: any) => server.status !== 'connected'
-						);
-
-						// Emit warning notification for each failed server
-						failedServers.forEach((server: any) => {
+				switch (output.type) {
+					// ── System Init ────────────────────────────────────────
+					case 'system_init': {
+						const initEvent = output as SystemInitEvent;
+						const failedServers = initEvent.mcpServers.filter(s => s.status !== 'connected');
+						failedServers.forEach(server => {
 							debug.warn('mcp', `MCP server connection failed: ${server.name} (${server.status})`);
-
 							this.emitStreamEvent(streamState, 'notification', {
 								notification: {
 									type: 'warning',
 									title: 'MCP Server Connection Failed',
 									message: `Failed to connect to custom MCP server "${server.name}". Status: ${server.status}`,
-									icon: 'lucide:alert-triangle'
 								},
 								timestamp: new Date().toISOString()
 							});
 						});
-
-						// Log successful connections
-						const connectedServers = systemMessage.mcp_servers.filter(
-							(server: any) => server.status === 'connected'
-						);
-						if (connectedServers.length > 0) {
-							debug.log('mcp', `✓ Connected MCP servers: ${connectedServers.map((s: any) => s.name).join(', ')}`);
+						const connected = initEvent.mcpServers.filter(s => s.status === 'connected');
+						if (connected.length > 0) {
+							debug.log('mcp', `✓ Connected MCP servers: ${connected.map(s => s.name).join(', ')}`);
 						}
+						continue; // Don't save to DB
 					}
 
-					// Skip DB save — system init is engine metadata, not conversation content
-					continue;
-				}
+					// ── Compact Boundary ───────────────────────────────────
+					case 'compact_boundary': {
+						const boundary = output as CompactBoundaryMessage;
+						streamState.hasCompactBoundary = true;
+						const compactTimestamp = boundary.createdAt;
 
-				// Handle compact boundary messages — save to DB and show in chat UI
-				if (message.type === 'system' && message.subtype === 'compact_boundary') {
-					const compactMessage = message as SDKCompactBoundaryMessage;
-					streamState.hasCompactBoundary = true;
-					const compactTimestamp = new Date().toISOString();
+						let savedCompactId: string | undefined;
+						let savedCompactParentId: string | null = null;
+						if (chatSessionId) {
+							const saved = await this.saveMessage(
+								boundary,
+								chatSessionId,
+								compactTimestamp,
+								requestData.senderId,
+								requestData.senderName
+							);
+							savedCompactId = saved?.id;
+							savedCompactParentId = saved?.parent_message_id || null;
+						}
 
-					// Save to DB so compact boundary persists across refresh
-					let savedCompactId: string | undefined;
-					let savedCompactParentId: string | null = null;
-					if (chatSessionId) {
-						const saved = await this.saveMessage(
-							message,
-							chatSessionId,
-							compactTimestamp,
-							requestData.senderId,
-							requestData.senderName
-						);
-						savedCompactId = saved?.id;
-						savedCompactParentId = saved?.parent_message_id || null;
+						streamState.messages.push({
+							processId: streamState.processId,
+							message: boundary as any,
+							timestamp: compactTimestamp,
+							message_id: savedCompactId,
+							parent_message_id: savedCompactParentId,
+							compactBoundary: {
+								trigger: boundary.trigger,
+								preTokens: boundary.preTokens
+							}
+						});
+
+						this.emitStreamEvent(streamState, 'message', {
+							processId: streamState.processId,
+							message: boundary,
+							timestamp: compactTimestamp,
+							message_id: savedCompactId,
+							parent_message_id: savedCompactParentId,
+							sender_id: requestData.senderId,
+							sender_name: requestData.senderName
+						});
+						continue;
 					}
 
-					streamState.messages.push({
-						processId: streamState.processId,
-						message,
-						timestamp: compactTimestamp,
-						message_id: savedCompactId,
-						parent_message_id: savedCompactParentId,
-						compactBoundary: {
-							trigger: compactMessage.compact_metadata.trigger,
-							preTokens: compactMessage.compact_metadata.pre_tokens
-						}
-					});
-
-					// Emit as chat:message so it shows in the chat UI
-					this.emitStreamEvent(streamState, 'message', {
-						processId: streamState.processId,
-						message,
-						timestamp: compactTimestamp,
-						message_id: savedCompactId,
-						parent_message_id: savedCompactParentId,
-						sender_id: requestData.senderId,
-						sender_name: requestData.senderName
-					});
-
-					continue;
-				}
-
-				// ──────────────────────────────────────────────────────────────
-				// Filter non-conversation SDK message types
-				// These are transient/metadata events that should NOT be saved
-				// to the database. Some are converted to notifications.
-				// ──────────────────────────────────────────────────────────────
-
-				// Handle rate_limit_event — convert to notification, don't save
-				if (message.type === 'rate_limit_event') {
-					const rateLimitMsg = message as any;
-					const info = rateLimitMsg.rate_limit_info;
-					if (info?.status === 'rejected' || info?.status === 'allowed_warning') {
-						const isRejected = info.status === 'rejected';
-						const resetTime = info.resetsAt
-							? new Date(info.resetsAt * 1000).toLocaleTimeString()
+					// ── Rate Limit ─────────────────────────────────────────
+					case 'rate_limit': {
+						const rl = output as RateLimitEvent;
+						const isRejected = rl.status === 'rejected';
+						const resetTime = rl.resetsAt
+							? new Date(rl.resetsAt * 1000).toLocaleTimeString()
 							: 'unknown';
 						this.emitStreamEvent(streamState, 'notification', {
 							notification: {
@@ -629,317 +625,232 @@ class StreamManager extends EventEmitter {
 								title: isRejected ? 'Rate Limit Reached' : 'Rate Limit Warning',
 								message: isRejected
 									? `Rate limit exceeded. Resets at ${resetTime}.`
-									: `Approaching rate limit (${Math.round((info.utilization || 0) * 100)}% used). Resets at ${resetTime}.`,
-								icon: isRejected ? 'lucide:ban' : 'lucide:alert-triangle'
+									: `Approaching rate limit (${Math.round((rl.utilization || 0) * 100)}% used). Resets at ${resetTime}.`,
 							},
 							timestamp: new Date().toISOString()
 						});
-					}
-					continue;
-				}
-
-				// Handle result messages — extract useful info, don't save to DB
-				if (message.type === 'result') {
-					const resultMsg = message as any;
-					if (resultMsg.subtype !== 'success' && resultMsg.errors?.length) {
-						debug.warn('chat', `SDK result error: ${resultMsg.subtype}`, resultMsg.errors);
-					}
-					continue;
-				}
-
-				// Skip all other system subtypes that aren't conversation content
-				// (init and compact_boundary are already handled above)
-				if (message.type === 'system') {
-					const subtype = (message as any).subtype;
-					// Compact boundary is handled above — this catches remaining subtypes:
-					// status, hook_started, hook_progress, hook_response,
-					// task_notification, task_started, task_progress,
-					// files_persisted, elicitation_complete, local_command_output
-					if (subtype !== 'compact_boundary') {
-						debug.log('chat', `[SM] Skipping system message subtype: ${subtype}`);
 						continue;
 					}
-				}
 
-				// Skip transient metadata events (not conversation content)
-				if (
-					message.type === 'tool_progress' ||
-					message.type === 'auth_status' ||
-					message.type === 'tool_use_summary' ||
-					message.type === 'prompt_suggestion'
-				) {
-					debug.log('chat', `[SM] Skipping transient message type: ${message.type}`);
-					continue;
-				}
-
-				// ──────────────────────────────────────────────────────────────
-				// Handle partial messages (streaming events)
-				// ──────────────────────────────────────────────────────────────
-
-				// Handle partial messages (streaming events)
-				if (message.type === 'stream_event') {
-					const partialMessage = message as SDKPartialAssistantMessage;
-					const event = partialMessage.event;
-					const isReasoning = message.metadata?.reasoning === true;
-
-					if (event.type === 'message_start') {
-						if (isReasoning) {
-							streamState.currentReasoningText = '';
-						} else {
-							streamState.currentPartialText = '';
+					// ── Result ─────────────────────────────────────────────
+					case 'result': {
+						if (output.subtype !== 'success') {
+							const errResult = output as ErrorResultEvent;
+							if (errResult.errors?.length) {
+								debug.warn('chat', `SDK result error: ${errResult.subtype}`, errResult.errors);
+							}
 						}
-						this.emitStreamEvent(streamState, 'partial', {
-							processId: streamState.processId,
-							eventType: 'start',
-							partialText: '',
-							deltaText: '',
-							...(isReasoning && { reasoning: true }),
-							timestamp: new Date().toISOString()
-						});
-					} else if (event.type === 'content_block_start') {
-						debug.log('chat', `[SM] content_block_start: type=${(event as any).content_block?.type}`);
-						// Claude Code: detect thinking blocks
-						if ((event as any).content_block?.type === 'thinking') {
-							streamState.currentReasoningText = '';
+						continue; // Don't save to DB
+					}
+
+					// ── Stream Events (deltas, start/stop) ────────────────
+					case 'stream_event': {
+						const streamEvt = output as UnifiedStreamEvent;
+
+						if (streamEvt.event === 'start') {
+							const lifecycle = streamEvt as StreamLifecycleEvent;
+							if (lifecycle.reasoning) {
+								streamState.currentReasoningText = '';
+							} else {
+								streamState.currentPartialText = '';
+							}
 							this.emitStreamEvent(streamState, 'partial', {
 								processId: streamState.processId,
 								eventType: 'start',
 								partialText: '',
 								deltaText: '',
-								reasoning: true,
+								...(lifecycle.reasoning && { reasoning: true }),
 								timestamp: new Date().toISOString()
 							});
-						} else if ((event as any).content_block?.type === 'text') {
-							// Reset partial text for new text content block
-							streamState.currentPartialText = '';
-							// Emit a start event so frontend has a text stream_event
-							// before deltas arrive (matches thinking block behavior)
-							this.emitStreamEvent(streamState, 'partial', {
-								processId: streamState.processId,
-								eventType: 'start',
-								partialText: '',
-								deltaText: '',
-								timestamp: new Date().toISOString()
-							});
-						}
-					} else if (event.type === 'content_block_delta') {
-						debug.log('chat', `[SM] content_block_delta: deltaType=${(event as any).delta?.type}, hasThinking=${'thinking' in ((event as any).delta || {})}, hasText=${'text' in ((event as any).delta || {})}`);
-						// Claude Code: thinking deltas
-						if (event.delta && 'thinking' in (event.delta as any)) {
-							const thinkingText = (event.delta as any).thinking;
-							streamState.currentReasoningText = (streamState.currentReasoningText || '') + thinkingText;
-							this.emitStreamEvent(streamState, 'partial', {
-								processId: streamState.processId,
-								eventType: 'update',
-								partialText: streamState.currentReasoningText,
-								deltaText: thinkingText,
-								reasoning: true,
-								timestamp: new Date().toISOString()
-							});
-						} else if (event.delta && 'text' in event.delta) {
-							if (isReasoning) {
-								// Open Code: reasoning delta (packaged as text_delta with metadata.reasoning flag)
-								const deltaText = event.delta.text;
-								streamState.currentReasoningText = (streamState.currentReasoningText || '') + deltaText;
+						} else if (streamEvt.event === 'delta') {
+							const delta = streamEvt as TextDeltaEvent;
+							if (delta.reasoning) {
+								streamState.currentReasoningText = (streamState.currentReasoningText || '') + delta.text;
 								this.emitStreamEvent(streamState, 'partial', {
 									processId: streamState.processId,
 									eventType: 'update',
 									partialText: streamState.currentReasoningText,
-									deltaText: deltaText,
+									deltaText: delta.text,
 									reasoning: true,
 									timestamp: new Date().toISOString()
 								});
 							} else {
-								// Regular text delta
-								const deltaText = event.delta.text;
-								streamState.currentPartialText = (streamState.currentPartialText || '') + deltaText;
+								streamState.currentPartialText = (streamState.currentPartialText || '') + delta.text;
 								this.emitStreamEvent(streamState, 'partial', {
 									processId: streamState.processId,
 									eventType: 'update',
 									partialText: streamState.currentPartialText,
-									deltaText: deltaText,
+									deltaText: delta.text,
+									timestamp: new Date().toISOString()
+								});
+							}
+						} else if (streamEvt.event === 'stop') {
+							const lifecycle = streamEvt as StreamLifecycleEvent;
+							if (lifecycle.reasoning && streamState.currentReasoningText) {
+								this.emitStreamEvent(streamState, 'partial', {
+									processId: streamState.processId,
+									eventType: 'end',
+									partialText: streamState.currentReasoningText,
+									deltaText: '',
+									reasoning: true,
+									timestamp: new Date().toISOString()
+								});
+								streamState.currentReasoningText = '';
+							} else {
+								this.emitStreamEvent(streamState, 'partial', {
+									processId: streamState.processId,
+									eventType: 'end',
+									partialText: streamState.currentPartialText || '',
+									deltaText: '',
 									timestamp: new Date().toISOString()
 								});
 							}
 						}
-					} else if (event.type === 'content_block_stop') {
-						// Claude Code: end of a thinking block — emit reasoning end and clear state
-						if (streamState.currentReasoningText) {
-							this.emitStreamEvent(streamState, 'partial', {
-								processId: streamState.processId,
-								eventType: 'end',
-								partialText: streamState.currentReasoningText,
-								deltaText: '',
-								reasoning: true,
-								timestamp: new Date().toISOString()
-							});
-							// Clear so subsequent content_block_stop (text/tool) doesn't re-trigger
-							streamState.currentReasoningText = '';
-						}
-					} else if (event.type === 'message_stop') {
-						if (isReasoning) {
-							this.emitStreamEvent(streamState, 'partial', {
-								processId: streamState.processId,
-								eventType: 'end',
-								partialText: streamState.currentReasoningText || '',
-								deltaText: '',
-								reasoning: true,
-								timestamp: new Date().toISOString()
-							});
-						} else {
-							this.emitStreamEvent(streamState, 'partial', {
-								processId: streamState.processId,
-								eventType: 'end',
-								partialText: streamState.currentPartialText || '',
-								deltaText: '',
-								timestamp: new Date().toISOString()
-							});
-						}
+						continue;
 					}
-					continue;
-				}
 
-				// Split Claude Code assistant messages that contain thinking blocks
-				// into separate reasoning + text messages
-				if (message.type === 'assistant' && !message.metadata?.reasoning
-					&& Array.isArray(message.message?.content)) {
-					const content = (message as any).message.content;
-					const contentTypes = content.map((b: any) => b.type);
-					debug.log('chat', `[SM] assistant message content types: ${JSON.stringify(contentTypes)}`);
-					const thinkingBlocks = content.filter((b: any) => b.type === 'thinking');
+					// ── Reasoning Message ──────────────────────────────────
+					case 'reasoning': {
+						const reasoning = output as ReasoningMessage;
+						streamState.currentReasoningText = undefined;
 
-					if (thinkingBlocks.length > 0) {
-						const reasoningText = thinkingBlocks
-							.map((b: any) => b.thinking || '')
-							.join('\n');
-						const otherBlocks = content.filter((b: any) => b.type !== 'thinking');
-
-						// 1. Emit reasoning message
-						// Synthetic reasoning message — extracted thinking blocks as text
-						const reasoningMsg = {
-							type: 'assistant' as const,
-							message: {
-								...message.message,
-								content: [{ type: 'text' as const, text: reasoningText }],
-							},
-							uuid: crypto.randomUUID(),
-							session_id: message.session_id,
-							parent_tool_use_id: null,
-							metadata: { reasoning: true },
-						} as unknown as EngineSDKMessage;
-
-						const reasoningTimestamp = new Date().toISOString();
+						const reasoningTimestamp = reasoning.createdAt;
 						let savedReasoningId: string | undefined;
 						let savedReasoningParentId: string | null = null;
 						if (chatSessionId) {
 							const saved = await this.saveMessage(
-								reasoningMsg, chatSessionId, reasoningTimestamp,
-								requestData.senderId, requestData.senderName
+								reasoning,
+								chatSessionId,
+								reasoningTimestamp,
+								requestData.senderId,
+								requestData.senderName
 							);
 							savedReasoningId = saved?.id;
 							savedReasoningParentId = saved?.parent_message_id || null;
 						}
 
-						// Clear reasoning text after save to prevent stale catchup injection
-						streamState.currentReasoningText = undefined;
-
 						this.emitStreamEvent(streamState, 'message', {
 							processId: streamState.processId,
-							message: reasoningMsg,
+							message: reasoning,
 							timestamp: reasoningTimestamp,
 							message_id: savedReasoningId,
 							parent_message_id: savedReasoningParentId,
 							sender_id: requestData.senderId,
 							sender_name: requestData.senderName
 						});
-
-						// 2. Strip thinking blocks from original message
-						(message as any).message.content = otherBlocks.length > 0
-							? otherBlocks
-							: [{ type: 'text', text: '' }];
+						continue;
 					}
-				}
 
-				// Deduplicate consecutive identical assistant messages.
-				// Some engines (e.g. Claude Code on process exit) can emit the same error
-				// text multiple times. Skip if current text matches the previous assistant message.
-				if (message.type === 'assistant' && !message.metadata?.reasoning) {
-					const content = message.message?.content;
-					if (Array.isArray(content)) {
-						const currentText = content
-							.filter((c: any) => c.type === 'text')
-							.map((c: any) => c.text as string)
+					// ── Assistant Message ──────────────────────────────────
+					case 'assistant': {
+						const assistantMsg = output as AssistantMessage;
+
+						// Deduplicate consecutive identical assistant messages
+						const currentText = assistantMsg.content
+							.filter(c => c.type === 'text')
+							.map(c => (c as any).text as string)
 							.join('');
 						if (currentText && currentText === lastAssistantTextContent) {
 							debug.warn('chat', 'Skipping duplicate consecutive assistant message');
 							continue;
 						}
 						if (currentText) lastAssistantTextContent = currentText;
+
+						const usage = assistantMsg.usage;
+						const messageTimestamp = assistantMsg.createdAt;
+
+						let savedMsgId: string | undefined;
+						let savedParentId: string | null = null;
+						if (chatSessionId) {
+							const saved = await this.saveMessage(
+								assistantMsg,
+								chatSessionId,
+								messageTimestamp,
+								requestData.senderId,
+								requestData.senderName
+							);
+							savedMsgId = saved?.id;
+							savedParentId = saved?.parent_message_id || null;
+						}
+
+						streamState.currentPartialText = undefined;
+
+						streamState.messages.push({
+							processId: streamState.processId,
+							message: assistantMsg as any,
+							usage: usage as any,
+							timestamp: messageTimestamp,
+							message_id: savedMsgId,
+							parent_message_id: savedParentId,
+							sender_id: requestData.senderId,
+							sender_name: requestData.senderName
+						});
+
+						streamState.currentMessage = assistantMsg;
+
+						this.emitStreamEvent(streamState, 'message', {
+							processId: streamState.processId,
+							message: assistantMsg,
+							usage,
+							timestamp: messageTimestamp,
+							message_id: savedMsgId,
+							parent_message_id: savedParentId,
+							sender_id: requestData.senderId,
+							sender_name: requestData.senderName
+						});
+						continue;
 					}
-				} else if (message.type !== 'assistant') {
-					// Reset tracker on non-assistant messages (user/system/tool result)
-					lastAssistantTextContent = null;
+
+					// ── User Message (tool results from SDK) ───────────────
+					case 'user': {
+						const userMsg = output as UserMessage;
+						lastAssistantTextContent = null; // Reset dedup tracker
+
+						const messageTimestamp = userMsg.createdAt;
+						let savedMsgId: string | undefined;
+						let savedParentId: string | null = null;
+						if (chatSessionId) {
+							const saved = await this.saveMessage(
+								userMsg,
+								chatSessionId,
+								messageTimestamp,
+								requestData.senderId,
+								requestData.senderName
+							);
+							savedMsgId = saved?.id;
+							savedParentId = saved?.parent_message_id || null;
+						}
+
+						streamState.messages.push({
+							processId: streamState.processId,
+							message: userMsg as any,
+							timestamp: messageTimestamp,
+							message_id: savedMsgId,
+							parent_message_id: savedParentId,
+							sender_id: requestData.senderId,
+							sender_name: requestData.senderName
+						});
+
+						streamState.currentMessage = userMsg;
+
+						this.emitStreamEvent(streamState, 'message', {
+							processId: streamState.processId,
+							message: userMsg,
+							timestamp: messageTimestamp,
+							message_id: savedMsgId,
+							parent_message_id: savedParentId,
+							sender_id: requestData.senderId,
+							sender_name: requestData.senderName
+						});
+						continue;
+					}
+
+					default:
+						debug.log('chat', `[SM] Skipping unknown EngineOutput type: ${(output as any).type}`);
+						continue;
 				}
-
-				// Handle complete messages
-				const usage = message.type === 'assistant' && message.message?.usage
-					? message.message.usage
-					: undefined;
-
-				const messageTimestamp = new Date().toISOString();
-
-				// Save to database first to get message_id and parent_message_id
-				let savedMsgId: string | undefined;
-				let savedParentId: string | null = null;
-				if (chatSessionId) {
-					const saved = await this.saveMessage(
-						message,
-						chatSessionId,
-						messageTimestamp,
-						requestData.senderId,
-						requestData.senderName
-					);
-					savedMsgId = saved?.id;
-					savedParentId = saved?.parent_message_id || null;
-				}
-
-				// Clear partial text after saving a complete assistant message to prevent
-				// cancelStream from saving a duplicate text-only message to DB.
-				// Also prevents catchupActiveStream from injecting a stale stream_event
-				// with text that's already part of the saved message.
-				if (message.type === 'assistant' && !message.metadata?.reasoning) {
-					streamState.currentPartialText = undefined;
-				} else if (message.type === 'assistant' && message.metadata?.reasoning) {
-					streamState.currentReasoningText = undefined;
-				}
-
-				streamState.messages.push({
-					processId: streamState.processId,
-					message,
-					usage,
-					timestamp: messageTimestamp,
-					message_id: savedMsgId,
-					parent_message_id: savedParentId,
-					sender_id: requestData.senderId,
-					sender_name: requestData.senderName
-				});
-
-				streamState.currentMessage = message;
-
-				// Emit message event
-				this.emitStreamEvent(streamState, 'message', {
-					processId: streamState.processId,
-					message,
-					usage,
-					timestamp: messageTimestamp,
-					message_id: savedMsgId,
-					parent_message_id: savedParentId,
-					sender_id: requestData.senderId,
-					sender_name: requestData.senderName
-				});
 			} }); // end runWithContextAsync + for await
 
-			// Only mark as completed if not already cancelled/errored
 			if (streamState.status === 'active') {
 				streamState.status = 'completed';
 				streamState.completedAt = new Date();
@@ -948,18 +859,15 @@ class StreamManager extends EventEmitter {
 					processId: streamState.processId,
 					timestamp: streamState.completedAt.toISOString()
 				});
-
 				this.emitStreamLifecycle(streamState, 'completed');
 			}
 
-			// Auto-release all MCP-controlled tabs for this chat session
 			if (chatSessionId) {
 				browserMcpControl.releaseSession(chatSessionId);
 				debug.log('mcp', `✅ Auto-released MCP tabs for session ${chatSessionId.slice(0, 8)} on stream completion`);
 			}
 
 		} catch (error) {
-			// Don't overwrite status if already cancelled by cancelStream()
 			if (streamState.status !== 'cancelled') {
 				streamState.status = 'error';
 				streamState.error = this.extractErrorDetail(error);
@@ -967,20 +875,23 @@ class StreamManager extends EventEmitter {
 
 				const errorTimestamp = streamState.completedAt.toISOString();
 
-				// Build a synthetic assistant message for the error so it is saved to DB
-				// and persists across browser refresh (not just an ephemeral UI injection).
-				const errorAssistantMsg = {
-					type: 'assistant' as const,
-					uuid: crypto.randomUUID(),
-					session_id: streamState.sdkSessionId || '',
-					parent_tool_use_id: null,
-					message: {
-						role: 'assistant' as const,
-						content: [{ type: 'text' as const, text: `**Error:** ${streamState.error}` }],
-					},
-				} as EngineSDKMessage;
+				// Build a synthetic error assistant message (unified type)
+				const errorAssistantMsg: AssistantMessage = {
+					type: 'assistant',
+					id: crypto.randomUUID(),
+					sessionId: streamState.sdkSessionId || '',
+					createdAt: errorTimestamp,
+					parentMessageId: null,
+					senderId: null,
+					senderName: null,
+					model: null,
+					engine: streamState.engine,
+					parentToolUseId: null,
+					content: [{ type: 'text', text: `**Error:** ${streamState.error}` }],
+					stopReason: null,
+					usage: null,
+				};
 
-				// Save error message to DB (no snapshot needed for error messages)
 				let savedErrorMsgId: string | undefined;
 				let savedErrorParentId: string | null = null;
 				if (requestData.chatSessionId) {
@@ -995,8 +906,6 @@ class StreamManager extends EventEmitter {
 					savedErrorParentId = saved?.parent_message_id || null;
 				}
 
-				// Emit as chat:message so the error appears in the conversation list
-				// and is loaded from DB on browser refresh
 				this.emitStreamEvent(streamState, 'message', {
 					processId: streamState.processId,
 					message: errorAssistantMsg,
@@ -1007,8 +916,6 @@ class StreamManager extends EventEmitter {
 					sender_name: requestData.senderName,
 				});
 
-				// Emit chat:error to signal stream termination (triggers isLoading=false,
-				// sound/push notification, and stream cleanup on the frontend)
 				this.emitStreamEvent(streamState, 'error', {
 					processId: streamState.processId,
 					error: streamState.error,
@@ -1018,14 +925,11 @@ class StreamManager extends EventEmitter {
 				this.emitStreamLifecycle(streamState, 'error');
 			}
 
-			// Auto-release all MCP-controlled tabs for this chat session
 			if (requestData.chatSessionId) {
 				browserMcpControl.releaseSession(requestData.chatSessionId);
 				debug.log('mcp', `✅ Auto-released MCP tabs for session ${requestData.chatSessionId.slice(0, 8)} on stream error`);
 			}
 		} finally {
-			// Capture snapshot ONCE at stream end (regardless of completion/error/cancel).
-			// Associates the snapshot with the user message (checkpoint) that triggered the stream.
 			const { projectPath, projectId, chatSessionId } = requestData;
 			if (projectPath && projectId && chatSessionId && userMessageId) {
 				snapshotService.captureSnapshot(projectPath, projectId, chatSessionId, userMessageId)
@@ -1120,14 +1024,8 @@ class StreamManager extends EventEmitter {
 		if (streamState.currentReasoningText && streamState.chatSessionId) {
 			try {
 				const reasoningMessage = {
-					type: 'assistant' as const,
-					parent_tool_use_id: null,
-					message: {
-						role: 'assistant' as const,
-						content: [{ type: 'text' as const, text: streamState.currentReasoningText }]
-					},
-					session_id: streamState.sdkSessionId || '',
-					metadata: { reasoning: true }
+					type: 'reasoning' as const,
+					text: streamState.currentReasoningText,
 				};
 
 				const timestamp = new Date().toISOString();
@@ -1152,13 +1050,10 @@ class StreamManager extends EventEmitter {
 			try {
 				const partialMessage = {
 					type: 'assistant' as const,
-					parent_tool_use_id: null,
-					message: {
-						role: 'assistant' as const,
-						content: [{ type: 'text' as const, text: streamState.currentPartialText }]
-					},
-					session_id: streamState.sdkSessionId || '',
-					partialText: streamState.currentPartialText
+					parentToolUseId: null,
+					content: [{ type: 'text' as const, text: streamState.currentPartialText }],
+					stopReason: null,
+					usage: null,
 				};
 
 				const timestamp = new Date().toISOString();
@@ -1277,7 +1172,7 @@ class StreamManager extends EventEmitter {
 	 * Save message to database
 	 */
 	private async saveMessage(
-		message: EngineSDKMessage,
+		message: UnifiedMessage,
 		sessionId: string,
 		timestamp: string,
 		senderId?: string,

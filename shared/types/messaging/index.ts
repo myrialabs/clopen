@@ -96,7 +96,7 @@ export type {
 } from '@anthropic-ai/sdk/resources/messages';
 
 
-import type { SDKMessage, SDKCompactBoundaryMessage, SDKPartialAssistantMessage } from '@anthropic-ai/claude-agent-sdk/sdk';
+import type { SDKMessage, SDKCompactBoundaryMessage, SDKPartialAssistantMessage } from '@anthropic-ai/claude-agent-sdk';
 import type { Usage } from '@anthropic-ai/sdk/resources/messages';
 
 // Import content type statically

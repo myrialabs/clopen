@@ -78,13 +78,13 @@
 			return 'assistant';
 		}
 		if (message.type === 'assistant' && 'message' in message && Array.isArray(message.message.content)) {
-			const hasToolUse = message.message.content.some((c) =>
-				typeof c === 'object' && c !== null && 'type' in c && c.type === 'tool_use');
+			const hasToolUse = message.message.content.some((c: unknown) =>
+				typeof c === 'object' && c !== null && 'type' in c && (c as Record<string, unknown>).type === 'tool_use');
 			if (hasToolUse) return 'agent';
 		}
 		if (message.type === 'user' && 'message' in message && Array.isArray(message.message.content)) {
-			const hasToolResult = message.message.content.some((c) =>
-				typeof c === 'object' && c !== null && 'type' in c && c.type === 'tool_result');
+			const hasToolResult = message.message.content.some((c: unknown) =>
+				typeof c === 'object' && c !== null && 'type' in c && (c as Record<string, unknown>).type === 'tool_result');
 			if (hasToolResult) return 'agent';
 		}
 		return message.type;

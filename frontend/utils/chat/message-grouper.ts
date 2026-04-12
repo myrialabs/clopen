@@ -233,7 +233,7 @@ function trackBackgroundBashSessions(
         ? message.message.content
         : [message.message.content];
 
-      contentArray.forEach((item) => {
+      contentArray.forEach((item: unknown) => {
         if (typeof item === 'object' && item && 'type' in item && item.type === 'tool_use') {
           const toolUse = item as any;
           // Check for Bash with run_in_background

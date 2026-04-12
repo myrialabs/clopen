@@ -1,23 +1,37 @@
 /**
- * Open Code → Claude SDK Message Converter
+ * Open Code → EngineOutput Converter
  *
- * Converts Open Code SDK messages and parts into Claude SDK format (SDKMessage)
- * with type-safe tool input normalization (camelCase → snake_case).
+ * Converts Open Code SDK messages and parts into EngineOutput (unified types)
+ * with type-safe tool input normalization.
  *
  * Content blocks are split into separate messages:
  * - Consecutive text blocks → one message
  * - Each tool_use block → its own message
  */
 
-import type { SDKMessage, EngineSDKMessage } from '$shared/types/messaging';
-import type { ToolResult } from '$shared/types/messaging/tool';
 import { resolveOpenCodeToolName } from '../../../mcp';
 import type { Message as OCMessage, Part, ToolPart, AssistantMessage } from '@opencode-ai/sdk';
 import type {
+	EngineOutput,
+	UserMessage,
+	AssistantMessage as UnifiedAssistantMessage,
+	ReasoningMessage,
+	TextDeltaEvent,
+	StreamLifecycleEvent,
+	SuccessResultEvent,
+	ErrorResultEvent,
+	SystemInitEvent,
+	TextBlock,
+	ToolUseBlock,
+	ToolResult,
+	AssistantContentBlock,
+	UserContentBlock,
+	TokenUsage,
+	StopReason,
 	BashInput,
-	FileReadInput,
-	FileEditInput,
-	FileWriteInput,
+	ReadInput,
+	EditInput,
+	WriteInput,
 	GlobInput,
 	GrepInput,
 	WebFetchInput,
@@ -26,7 +40,7 @@ import type {
 	ListMcpResourcesInput,
 	ReadMcpResourceInput,
 	TodoWriteInput,
-} from '@anthropic-ai/claude-agent-sdk/sdk-tools';
+} from '$shared/types/unified';
 
 // ============================================================
 // Types
@@ -64,33 +78,14 @@ export function getToolInput(toolPart: ToolPart): OCToolInput {
 }
 
 /**
- * Normalized tool input types.
- * Only includes tools that exist in OpenCode SDK:
- * bash, read, edit, write, glob, grep, webfetch, websearch,
- * question, todowrite, todoread, patch, list, skill, lsp
+ * Normalized tool input types (unified camelCase format).
  */
 type NormalizedToolInput =
-	| BashInput | FileReadInput | FileEditInput | FileWriteInput
+	| BashInput | ReadInput | EditInput | WriteInput
 	| GlobInput | GrepInput | WebFetchInput | WebSearchInput
 	| AskUserQuestionInput | TodoWriteInput
-	| ListMcpResourcesInput | ReadMcpResourceInput;
-
-/** Text content block */
-interface TextContentBlock {
-	type: 'text';
-	text: string;
-}
-
-/** Tool use content block with optional result */
-interface ToolUseContentBlock {
-	type: 'tool_use';
-	id: string;
-	name: string;
-	input: NormalizedToolInput;
-	$result?: ToolResult;
-}
-
-type ContentBlock = TextContentBlock | ToolUseContentBlock;
+	| ListMcpResourcesInput | ReadMcpResourceInput
+	| Record<string, unknown>;
 
 // ============================================================
 // Tool Name Mapping
@@ -186,9 +181,9 @@ function camelToSnake(s: string): string {
 // Per-Tool Input Normalizers
 // ============================================================
 
-function normalizeReadInput(raw: OCToolInput): FileReadInput {
-	const result: FileReadInput = {
-		file_path: str(raw, 'file_path', 'filePath'),
+function normalizeReadInput(raw: OCToolInput): ReadInput {
+	const result: ReadInput = {
+		filePath: str(raw, 'file_path', 'filePath'),
 	};
 	const offset = optNum(raw, 'offset', 'offset');
 	if (offset != null) result.offset = offset;
@@ -197,20 +192,20 @@ function normalizeReadInput(raw: OCToolInput): FileReadInput {
 	return result;
 }
 
-function normalizeEditInput(raw: OCToolInput): FileEditInput {
-	const result: FileEditInput = {
-		file_path: str(raw, 'file_path', 'filePath'),
-		old_string: str(raw, 'old_string', 'oldString'),
-		new_string: str(raw, 'new_string', 'newString'),
+function normalizeEditInput(raw: OCToolInput): EditInput {
+	const result: EditInput = {
+		filePath: str(raw, 'file_path', 'filePath'),
+		oldString: str(raw, 'old_string', 'oldString'),
+		newString: str(raw, 'new_string', 'newString'),
 	};
 	const replaceAll = optBool(raw, 'replace_all', 'replaceAll');
-	if (replaceAll != null) result.replace_all = replaceAll;
+	if (replaceAll != null) result.replaceAll = replaceAll;
 	return result;
 }
 
-function normalizeWriteInput(raw: OCToolInput): FileWriteInput {
+function normalizeWriteInput(raw: OCToolInput): WriteInput {
 	return {
-		file_path: str(raw, 'file_path', 'filePath'),
+		filePath: str(raw, 'file_path', 'filePath'),
 		content: str(raw, 'content', 'content'),
 	};
 }
@@ -224,7 +219,7 @@ function normalizeBashInput(raw: OCToolInput): BashInput {
 	const description = optStr(raw, 'description', 'description');
 	if (description != null) result.description = description;
 	const runInBackground = optBool(raw, 'run_in_background', 'runInBackground');
-	if (runInBackground != null) result.run_in_background = runInBackground;
+	if (runInBackground != null) result.runInBackground = runInBackground;
 	return result;
 }
 
@@ -243,36 +238,36 @@ function normalizeGrepInput(raw: OCToolInput): GrepInput {
 	};
 	const path = optStr(raw, 'path', 'path');
 	if (path != null) result.path = path;
-	// OpenCode uses 'include' for file filter, Claude Code uses 'glob'
+	// OpenCode uses 'include' for file filter
 	const glob = optStr(raw, 'glob', 'glob') ?? optStr(raw, 'include', 'include');
 	if (glob != null) result.glob = glob;
-	const outputMode = optStr(raw, 'output_mode', 'outputMode') as GrepInput['output_mode'];
-	if (outputMode != null) result.output_mode = outputMode;
+	const outputMode = optStr(raw, 'output_mode', 'outputMode') as GrepInput['outputMode'];
+	if (outputMode != null) result.outputMode = outputMode;
 	const type = optStr(raw, 'type', 'type');
 	if (type != null) result.type = type;
 	const headLimit = optNum(raw, 'head_limit', 'headLimit');
-	if (headLimit != null) result.head_limit = headLimit;
+	if (headLimit != null) result.headLimit = headLimit;
 	const offset = optNum(raw, 'offset', 'offset');
 	if (offset != null) result.offset = offset;
 	const multiline = optBool(raw, 'multiline', 'multiline');
 	if (multiline != null) result.multiline = multiline;
-	const caseInsensitive = optBool(raw, '-i', '-i');
-	if (caseInsensitive != null) result['-i'] = caseInsensitive;
-	const beforeContext = optNum(raw, '-B', '-B');
-	if (beforeContext != null) result['-B'] = beforeContext;
-	const afterContext = optNum(raw, '-A', '-A');
-	if (afterContext != null) result['-A'] = afterContext;
-	const context = optNum(raw, '-C', '-C');
-	if (context != null) result['-C'] = context;
-	const lineNumbers = optBool(raw, '-n', '-n');
-	if (lineNumbers != null) result['-n'] = lineNumbers;
+	const caseInsensitive = optBool(raw, '-i', 'caseInsensitive');
+	if (caseInsensitive != null) result.caseInsensitive = caseInsensitive;
+	const beforeContext = optNum(raw, '-B', 'beforeContext');
+	if (beforeContext != null) result.beforeContext = beforeContext;
+	const afterContext = optNum(raw, '-A', 'afterContext');
+	if (afterContext != null) result.afterContext = afterContext;
+	const context = optNum(raw, '-C', 'context');
+	if (context != null) result.context = context;
+	const lineNumbers = optBool(raw, '-n', 'lineNumbers');
+	if (lineNumbers != null) result.lineNumbers = lineNumbers;
 	return result;
 }
 
 function normalizeWebFetchInput(raw: OCToolInput): WebFetchInput {
 	return {
 		url: str(raw, 'url', 'url'),
-		// OpenCode uses 'format', Claude Code uses 'prompt'
+		// OpenCode uses 'format', unified uses 'prompt'
 		prompt: str(raw, 'prompt', 'prompt') || str(raw, 'format', 'format'),
 	};
 }
@@ -283,11 +278,11 @@ function normalizeWebSearchInput(raw: OCToolInput): WebSearchInput {
 	};
 	const allowedDomains = raw.allowed_domains ?? raw.allowedDomains;
 	if (Array.isArray(allowedDomains) && allowedDomains.length) {
-		result.allowed_domains = allowedDomains as string[];
+		result.allowedDomains = allowedDomains as string[];
 	}
 	const blockedDomains = raw.blocked_domains ?? raw.blockedDomains;
 	if (Array.isArray(blockedDomains) && blockedDomains.length) {
-		result.blocked_domains = blockedDomains as string[];
+		result.blockedDomains = blockedDomains as string[];
 	}
 	return result;
 }
@@ -389,55 +384,37 @@ function isToolError(status: string, content: string): boolean {
 // Stop Reason Mapping
 // ============================================================
 
-/** Map OpenCode finish reason → Claude Code stop_reason */
-function mapStopReason(finish: string | undefined): string | null {
+/** Map OpenCode finish reason → unified StopReason */
+function mapStopReason(finish: string | undefined): StopReason | null {
 	switch (finish) {
 		case 'tool-calls': return 'tool_use';
 		case 'stop': return 'end_turn';
 		case 'length': return 'max_tokens';
-		default: return finish || 'end_turn';
+		default: return finish ? 'end_turn' : null;
 	}
 }
 
-// ============================================================
-// Message Builder Helper
-// ============================================================
-
-interface AssistantMessageParams {
-	content: ContentBlock[];
-	ocMessage: OCMessage;
-	modelId: string;
-	usage?: {
-		input_tokens: number;
-		output_tokens: number;
-		cache_creation_input_tokens: number;
-		cache_read_input_tokens: number;
+/** Map OpenCode tokens → unified TokenUsage */
+function mapUsage(tokens: { input?: number; output?: number; cache?: { write?: number; read?: number } } | undefined): TokenUsage | null {
+	if (!tokens) return null;
+	return {
+		inputTokens: tokens.input || 0,
+		outputTokens: tokens.output || 0,
+		cacheCreationInputTokens: tokens.cache?.write || 0,
+		cacheReadInputTokens: tokens.cache?.read || 0,
 	};
-	sessionId: string;
-	stopReason: string | null;
-	uuid: string;
-	parentToolUseId?: string | null;
 }
 
-/** Build a single SDKAssistantMessage from content blocks */
-function buildAssistantSDKMessage(params: AssistantMessageParams): SDKMessage {
+/** Build common MessageBase fields for OpenCode messages */
+function baseFields(sessionId: string) {
 	return {
-		type: 'assistant',
-		message: {
-			model: params.modelId,
-			id: params.uuid,
-			type: 'message',
-			role: 'assistant',
-			content: params.content,
-			stop_reason: params.stopReason,
-			stop_sequence: null,
-			...(params.usage && { usage: params.usage }),
-			context_management: null
-		},
-		parent_tool_use_id: params.parentToolUseId ?? null,
-		session_id: params.sessionId,
-		uuid: params.uuid
-	} as unknown as SDKMessage;
+		createdAt: new Date().toISOString(),
+		parentMessageId: null as string | null,
+		senderId: null as string | null,
+		senderName: null as string | null,
+		model: null as string | null,
+		engine: 'opencode' as const,
+	};
 }
 
 // ============================================================
@@ -445,93 +422,90 @@ function buildAssistantSDKMessage(params: AssistantMessageParams): SDKMessage {
 // ============================================================
 
 /**
- * Convert Open Code user message → SDKMessage (user type)
+ * Convert Open Code user message → UserMessage (unified)
  */
 export function convertUserMessage(
 	ocMessage: OCMessage,
 	ocParts: Part[],
 	sessionId: string
-): SDKMessage {
-	const textBlocks: TextContentBlock[] = [];
+): UserMessage {
+	const content: UserContentBlock[] = [];
 
 	for (const part of ocParts) {
 		if (part.type === 'text') {
-			textBlocks.push({ type: 'text', text: part.text || '' });
+			content.push({ type: 'text', text: part.text || '' });
 		}
 	}
 
-	if (textBlocks.length === 0) {
-		textBlocks.push({ type: 'text', text: '' });
+	if (content.length === 0) {
+		content.push({ type: 'text', text: '' });
 	}
 
 	return {
 		type: 'user',
-		uuid: ocMessage.id || crypto.randomUUID(),
-		session_id: sessionId,
-		parent_tool_use_id: null,
-		message: {
-			role: 'user',
-			content: textBlocks.length === 1
-				? textBlocks[0].text
-				: textBlocks
-		}
-	} as unknown as SDKMessage;
+		id: ocMessage.id || crypto.randomUUID(),
+		sessionId,
+		...baseFields(sessionId),
+		parentToolUseId: null,
+		content,
+		synthetic: false,
+	};
 }
 
 /**
- * Convert Open Code assistant message + parts → SDKMessage[] (split by content type)
+ * Convert Open Code assistant message + parts → EngineOutput[]
  *
  * Splits content into separate messages:
  * - Consecutive text blocks → one message
  * - Each tool_use block → its own message
- *
- * This matches Claude Code's UI behavior where each tool call is a separate bubble.
  */
 export function convertAssistantMessages(
 	ocMessage: OCMessage,
 	ocParts: Part[],
 	sessionId: string
-): SDKMessage[] {
+): EngineOutput[] {
 	// 1. Build typed content blocks from parts
-	const allBlocks: ContentBlock[] = [];
+	const allBlocks: AssistantContentBlock[] = [];
 
 	for (const part of ocParts) {
 		if (part.type === 'text') {
-			allBlocks.push({ type: 'text', text: part.text || '' });
+			allBlocks.push({ type: 'text', text: part.text || '' } as TextBlock);
 		} else if (part.type === 'tool') {
 			const toolPart = part as ToolPart;
 			const claudeName = mapToolName(toolPart.tool || 'unknown');
 			const resolvedInput = getToolInput(toolPart);
 			const normalizedInput = normalizeToolInput(claudeName, resolvedInput);
+			const toolUseId = toolPart.callID || toolPart.id || crypto.randomUUID();
 
-			const block: ToolUseContentBlock = {
-				type: 'tool_use',
-				id: toolPart.callID || toolPart.id || crypto.randomUUID(),
-				name: claudeName,
-				input: normalizedInput,
-			};
-
+			let result: ToolResult | null = null;
 			if (toolPart.state.status === 'completed') {
 				const output = toolPart.state.output || '';
-				block.$result = {
+				result = {
 					type: 'tool_result',
-					tool_use_id: block.id,
+					toolUseId,
 					content: output,
-					...(isToolError('completed', output) && { is_error: true }),
+					isError: isToolError('completed', output),
 				};
 			} else if (toolPart.state.status === 'error') {
-				block.$result = {
+				result = {
 					type: 'tool_result',
-					tool_use_id: block.id,
+					toolUseId,
 					content: toolPart.state.error || 'Tool execution failed',
-					is_error: true,
+					isError: true,
 				};
 			}
 
-			allBlocks.push(block);
-		}
-		else if (part.type === 'subtask') {
-			// Subtask = Agent/sub-agent invocation
+			allBlocks.push({
+				type: 'tool_use',
+				id: toolUseId,
+				name: claudeName,
+				input: normalizedInput,
+				result,
+				subActivities: [],
+				skillPrompt: null,
+				interrupted: false,
+			} as ToolUseBlock);
+		} else if (part.type === 'subtask') {
 			const subtaskPart = part as any;
 			allBlocks.push({
 				type: 'tool_use',
@@ -540,61 +514,54 @@ export function convertAssistantMessages(
 				input: {
 					prompt: subtaskPart.prompt || '',
 					description: subtaskPart.description || '',
-					subagent_type: subtaskPart.agent || 'general-purpose',
-				} as NormalizedToolInput,
-			});
+					subagentType: subtaskPart.agent || 'general-purpose',
+				},
+				result: null,
+				subActivities: [],
+				skillPrompt: null,
+				interrupted: false,
+			} as ToolUseBlock);
 		}
 		// Skip: reasoning, step-start, step-finish, snapshot, patch, agent, retry, compaction
 	}
 
 	// 2. Split into groups: consecutive text → one group, each tool_use → its own group
-	const groups: ContentBlock[][] = [];
-	let currentTextGroup: TextContentBlock[] = [];
+	const groups: AssistantContentBlock[][] = [];
+	let currentTextGroup: TextBlock[] = [];
 
 	for (const block of allBlocks) {
 		if (block.type === 'text') {
 			currentTextGroup.push(block);
 		} else {
-			// Flush accumulated text blocks as a group
 			if (currentTextGroup.length > 0) {
 				groups.push([...currentTextGroup]);
 				currentTextGroup = [];
 			}
-			// Each tool_use is its own group
 			groups.push([block]);
 		}
 	}
-	// Flush remaining text
 	if (currentTextGroup.length > 0) {
 		groups.push([...currentTextGroup]);
 	}
-
-	// If no content at all, add an empty text block
 	if (groups.length === 0) {
-		groups.push([{ type: 'text', text: '' }]);
+		groups.push([{ type: 'text', text: '' } as TextBlock]);
 	}
 
-	// 3. Build SDKMessages from groups
+	// 3. Build unified messages from groups
 	const assistantMsg = ocMessage.role === 'assistant' ? ocMessage as AssistantMessage : null;
 	const modelId = assistantMsg ? `${assistantMsg.providerID}/${assistantMsg.modelID}` : '';
 	const mappedStop = mapStopReason(assistantMsg?.finish);
-	const usage = assistantMsg?.tokens ? {
-		input_tokens: assistantMsg.tokens.input || 0,
-		output_tokens: assistantMsg.tokens.output || 0,
-		cache_creation_input_tokens: assistantMsg.tokens.cache?.write || 0,
-		cache_read_input_tokens: assistantMsg.tokens.cache?.read || 0,
-	} : undefined;
+	const usage = mapUsage(assistantMsg?.tokens);
 
-	const messages: SDKMessage[] = [];
-	const baseUuid = ocMessage.id || crypto.randomUUID();
+	const messages: EngineOutput[] = [];
+	const baseId = ocMessage.id || crypto.randomUUID();
 
 	for (let i = 0; i < groups.length; i++) {
 		const isLast = i === groups.length - 1;
 		const group = groups[i];
 		const hasToolUse = group.some(b => b.type === 'tool_use');
 
-		// Determine stop_reason for this split
-		let stopReason: string | null;
+		let stopReason: StopReason | null;
 		if (isLast) {
 			stopReason = mappedStop;
 		} else if (hasToolUse) {
@@ -603,136 +570,118 @@ export function convertAssistantMessages(
 			stopReason = null;
 		}
 
-		messages.push(buildAssistantSDKMessage({
-			content: group,
-			ocMessage,
-			modelId,
-			// Only the last message carries usage (to avoid double-counting)
-			usage: isLast ? usage : undefined,
+		const msg: UnifiedAssistantMessage = {
+			type: 'assistant',
+			id: i === 0 ? baseId : crypto.randomUUID(),
 			sessionId,
+			...baseFields(sessionId),
+			model: modelId || null,
+			parentToolUseId: null,
+			content: group,
 			stopReason,
-			uuid: i === 0 ? baseUuid : crypto.randomUUID(),
-		}));
+			usage: isLast ? usage : null,
+		};
+		messages.push(msg);
 	}
 
 	return messages;
 }
 
 /**
- * Convert Open Code result/completion → SDKResultMessage
+ * Convert Open Code result/completion → ResultEvent
  */
 export function convertResultMessage(
 	ocMessage: OCMessage,
 	sessionId: string
-): SDKMessage {
+): EngineOutput {
 	const assistantMsg = ocMessage.role === 'assistant' ? ocMessage as AssistantMessage : null;
+
+	if (assistantMsg?.error) {
+		return {
+			type: 'result',
+			subtype: 'error_during_execution',
+			sessionId,
+			errors: [JSON.stringify(assistantMsg.error)],
+		} as ErrorResultEvent;
+	}
 
 	return {
 		type: 'result',
-		subtype: assistantMsg?.error ? 'error_during_execution' : 'success',
-		uuid: crypto.randomUUID(),
-		session_id: sessionId,
-		duration_ms: assistantMsg?.time?.completed
-			? (assistantMsg.time.completed - assistantMsg.time.created) * 1000
-			: 0,
-		duration_api_ms: 0,
-		is_error: !!assistantMsg?.error,
-		num_turns: 1,
-		total_cost_usd: assistantMsg?.cost || 0,
-		usage: {
-			input_tokens: assistantMsg?.tokens?.input || 0,
-			output_tokens: assistantMsg?.tokens?.output || 0,
-			cache_creation_input_tokens: assistantMsg?.tokens?.cache?.write || 0,
-			cache_read_input_tokens: assistantMsg?.tokens?.cache?.read || 0
+		subtype: 'success',
+		sessionId,
+		numTurns: 1,
+		totalCostUsd: assistantMsg?.cost || 0,
+		usage: mapUsage(assistantMsg?.tokens) || {
+			inputTokens: 0, outputTokens: 0,
+			cacheCreationInputTokens: 0, cacheReadInputTokens: 0,
 		},
-		...(assistantMsg?.error
-			? { errors: [JSON.stringify(assistantMsg.error)] }
-			: { result: '' }
-		)
-	} as unknown as SDKMessage;
+	} as SuccessResultEvent;
 }
 
 /**
- * Convert Open Code system/init event → SDKSystemMessage
+ * Convert Open Code system/init event → SystemInitEvent
  */
-export function convertSystemInitMessage(sessionId: string, model: string): SDKMessage {
+export function convertSystemInitMessage(sessionId: string, model: string): SystemInitEvent {
 	return {
-		type: 'system',
-		subtype: 'init',
-		uuid: crypto.randomUUID(),
-		session_id: sessionId,
-		tools: [],
-		mcp_servers: [],
+		type: 'system_init',
+		sessionId,
 		model,
-		permissionMode: 'bypassPermissions',
-		cwd: process.cwd(),
-		apiKeySource: 'user',
-		slash_commands: [],
-		skills: [],
-		plugins: [],
-		claude_code_version: 'opencode',
-		output_style: 'text'
-	} as unknown as SDKMessage;
+		engine: 'opencode',
+		tools: [],
+		mcpServers: [],
+	};
 }
 
 /**
- * Convert Open Code text delta → SDKPartialAssistantMessage
+ * Convert Open Code text delta → TextDeltaEvent
  */
 export function convertPartialTextDelta(
 	text: string,
 	sessionId: string,
-	parentToolUseId: string | null = null
-): SDKMessage {
+): TextDeltaEvent {
 	return {
 		type: 'stream_event',
-		event: {
-			type: 'content_block_delta',
-			index: 0,
-			delta: { type: 'text_delta', text }
-		},
-		parent_tool_use_id: parentToolUseId,
-		uuid: crypto.randomUUID(),
-		session_id: sessionId
-	} as unknown as SDKMessage;
+		event: 'delta',
+		sessionId,
+		text,
+		reasoning: false,
+	};
 }
 
 /**
- * Convert Open Code stream start → SDKPartialAssistantMessage
+ * Convert Open Code stream start → StreamLifecycleEvent
  */
-export function convertStreamStart(sessionId: string): SDKMessage {
+export function convertStreamStart(sessionId: string): StreamLifecycleEvent {
 	return {
 		type: 'stream_event',
-		event: { type: 'message_start', message: { role: 'assistant', content: [] } },
-		parent_tool_use_id: null,
-		uuid: crypto.randomUUID(),
-		session_id: sessionId
-	} as unknown as SDKMessage;
+		event: 'start',
+		sessionId,
+		reasoning: false,
+	};
 }
 
 /**
- * Convert Open Code stream stop → SDKPartialAssistantMessage
+ * Convert Open Code stream stop → StreamLifecycleEvent
  */
-export function convertStreamStop(sessionId: string): SDKMessage {
+export function convertStreamStop(sessionId: string): StreamLifecycleEvent {
 	return {
 		type: 'stream_event',
-		event: { type: 'message_stop' },
-		parent_tool_use_id: null,
-		uuid: crypto.randomUUID(),
-		session_id: sessionId
-	} as unknown as SDKMessage;
+		event: 'stop',
+		sessionId,
+		reasoning: false,
+	};
 }
 
 /**
- * Convert a single tool part → assistant message with tool_use only (no $result).
- * Used for progressive tool rendering — tool appears immediately in UI
- * before the tool finishes executing.
+ * Convert a single tool part → AssistantMessage with tool_use only (no result).
+ * Used for progressive tool rendering.
  */
 export function convertToolUseOnly(
 	toolPart: ToolPart,
 	ocMessage: OCMessage,
 	sessionId: string,
-	parentToolUseId: string | null = null,
-): SDKMessage {
+	parentToolUseId?: string,
+): UnifiedAssistantMessage {
 	const claudeName = mapToolName(toolPart.tool || 'unknown');
 	const resolvedInput = getToolInput(toolPart);
 	const normalizedInput = normalizeToolInput(claudeName, resolvedInput);
@@ -741,112 +690,107 @@ export function convertToolUseOnly(
 	const assistantMsg = ocMessage.role === 'assistant' ? ocMessage as AssistantMessage : null;
 	const modelId = assistantMsg ? `${assistantMsg.providerID}/${assistantMsg.modelID}` : '';
 
-	return buildAssistantSDKMessage({
+	return {
+		type: 'assistant',
+		id: crypto.randomUUID(),
+		sessionId,
+		...baseFields(sessionId),
+		model: modelId || null,
+		parentToolUseId: parentToolUseId || null,
 		content: [{
 			type: 'tool_use',
 			id: toolUseId,
 			name: claudeName,
 			input: normalizedInput,
-		}],
-		ocMessage,
-		modelId,
-		sessionId,
+			result: null,
+			subActivities: [],
+			skillPrompt: null,
+			interrupted: false,
+		} as ToolUseBlock],
 		stopReason: 'tool_use',
-		uuid: crypto.randomUUID(),
-		parentToolUseId,
-	});
+		usage: null,
+	};
 }
 
 /**
- * Convert reasoning text → assistant message with metadata.reasoning flag.
- * Displayed as separate "Reasoning" bubble in UI.
+ * Convert reasoning text → ReasoningMessage
  */
 export function convertReasoningMessage(
 	reasoningText: string,
 	ocMessage: OCMessage,
 	sessionId: string,
-): EngineSDKMessage {
+): ReasoningMessage {
 	const assistantMsg = ocMessage.role === 'assistant' ? ocMessage as AssistantMessage : null;
 	const modelId = assistantMsg ? `${assistantMsg.providerID}/${assistantMsg.modelID}` : '';
 
 	return {
-		...buildAssistantSDKMessage({
-			content: [{ type: 'text', text: reasoningText }],
-			ocMessage,
-			modelId,
-			sessionId,
-			stopReason: null,
-			uuid: crypto.randomUUID(),
-		}),
-		metadata: { reasoning: true },
+		type: 'reasoning',
+		id: crypto.randomUUID(),
+		sessionId,
+		...baseFields(sessionId),
+		model: modelId || null,
+		text: reasoningText,
 	};
 }
 
 /**
- * Convert reasoning delta → stream event with metadata.reasoning flag.
+ * Convert reasoning delta → TextDeltaEvent (reasoning: true)
  */
 export function convertPartialReasoningDelta(
 	text: string,
 	sessionId: string,
-): EngineSDKMessage {
-	// Synthetic stream event — partial SDK structure by design
+): TextDeltaEvent {
 	return {
 		type: 'stream_event',
-		event: {
-			type: 'content_block_delta',
-			index: 0,
-			delta: { type: 'text_delta', text }
-		},
-		metadata: { reasoning: true },
-		parent_tool_use_id: null,
-		uuid: crypto.randomUUID(),
-		session_id: sessionId
-	} as unknown as EngineSDKMessage;
+		event: 'delta',
+		sessionId,
+		text,
+		reasoning: true,
+	};
 }
 
 /**
- * Convert reasoning stream start → stream event with metadata.reasoning flag.
+ * Convert reasoning stream start → StreamLifecycleEvent (reasoning: true)
  */
-export function convertReasoningStreamStart(sessionId: string): EngineSDKMessage {
-	// Synthetic stream event — partial SDK structure by design
+export function convertReasoningStreamStart(sessionId: string): StreamLifecycleEvent {
 	return {
 		type: 'stream_event',
-		event: { type: 'message_start', message: { role: 'assistant', content: [] } },
-		metadata: { reasoning: true },
-		parent_tool_use_id: null,
-		uuid: crypto.randomUUID(),
-		session_id: sessionId
-	} as unknown as EngineSDKMessage;
+		event: 'start',
+		sessionId,
+		reasoning: true,
+	};
 }
 
 /**
- * Convert reasoning stream stop → stream event with metadata.reasoning flag.
+ * Convert reasoning stream stop → StreamLifecycleEvent (reasoning: true)
  */
-export function convertReasoningStreamStop(sessionId: string): EngineSDKMessage {
-	// Synthetic stream event — partial SDK structure by design
+export function convertReasoningStreamStop(sessionId: string): StreamLifecycleEvent {
 	return {
 		type: 'stream_event',
-		event: { type: 'message_stop' },
-		metadata: { reasoning: true },
-		parent_tool_use_id: null,
-		uuid: crypto.randomUUID(),
-		session_id: sessionId
-	} as unknown as EngineSDKMessage;
+		event: 'stop',
+		sessionId,
+		reasoning: true,
+	};
 }
 
 /**
- * Convert a subtask part → assistant message with Agent tool_use.
- * Used for progressive rendering when OpenCode emits subtask parts.
+ * Convert a subtask part → AssistantMessage with Agent tool_use.
  */
 export function convertSubtaskToolUseOnly(
 	subtaskPart: { id: string; prompt: string; description: string; agent: string },
 	ocMessage: OCMessage,
 	sessionId: string,
-): SDKMessage {
+): UnifiedAssistantMessage {
 	const assistantMsg = ocMessage.role === 'assistant' ? ocMessage as AssistantMessage : null;
 	const modelId = assistantMsg ? `${assistantMsg.providerID}/${assistantMsg.modelID}` : '';
 
-	return buildAssistantSDKMessage({
+	return {
+		type: 'assistant',
+		id: crypto.randomUUID(),
+		sessionId,
+		...baseFields(sessionId),
+		model: modelId || null,
+		parentToolUseId: null,
 		content: [{
 			type: 'tool_use',
 			id: subtaskPart.id || crypto.randomUUID(),
@@ -854,27 +798,26 @@ export function convertSubtaskToolUseOnly(
 			input: {
 				prompt: subtaskPart.prompt || '',
 				description: subtaskPart.description || '',
-				subagent_type: subtaskPart.agent || 'general-purpose',
-			} as NormalizedToolInput,
-		}],
-		ocMessage,
-		modelId,
-		sessionId,
+				subagentType: subtaskPart.agent || 'general-purpose',
+			},
+			result: null,
+			subActivities: [],
+			skillPrompt: null,
+			interrupted: false,
+		} as ToolUseBlock],
 		stopReason: 'tool_use',
-		uuid: crypto.randomUUID(),
-	});
+		usage: null,
+	};
 }
 
 /**
- * Convert a completed/errored tool part → user message with tool_result.
- * Sent after the tool finishes executing, matching Claude Code's pattern
- * where tool_result arrives as a separate user message.
+ * Convert a completed/errored tool part → UserMessage with tool_result content.
  */
 export function convertToolResultOnly(
 	toolPart: ToolPart,
 	sessionId: string,
-	parentToolUseId: string | null = null,
-): SDKMessage {
+	parentToolUseId?: string,
+): UserMessage {
 	const toolUseId = toolPart.callID || toolPart.id || crypto.randomUUID();
 
 	let content: string;
@@ -890,17 +833,16 @@ export function convertToolResultOnly(
 
 	return {
 		type: 'user',
-		uuid: crypto.randomUUID(),
-		session_id: sessionId,
-		parent_tool_use_id: parentToolUseId,
-		message: {
-			role: 'user',
-			content: [{
-				type: 'tool_result',
-				tool_use_id: toolUseId,
-				content,
-				...(hasError && { is_error: true }),
-			}]
-		}
-	} as unknown as SDKMessage;
+		id: crypto.randomUUID(),
+		sessionId,
+		...baseFields(sessionId),
+		parentToolUseId: parentToolUseId || null,
+		content: [{
+			type: 'tool_result',
+			toolUseId,
+			content,
+			isError: hasError,
+		}],
+		synthetic: true,
+	};
 }

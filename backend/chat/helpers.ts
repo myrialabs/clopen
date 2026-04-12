@@ -1,6 +1,7 @@
 import { messageQueries } from '../database/queries';
 import { debug } from '$shared/utils/logger';
-import type { SDKMessage, ClaudeStreamRequest } from '$shared/types/messaging';
+import type { UnifiedMessage } from '$shared/types/unified';
+import type { StreamRequest } from '$shared/types/unified/stream';
 
 /**
  * Bun-compatible existsSync implementation
@@ -18,7 +19,7 @@ export async function existsSync(filePath: string): Promise<boolean> {
 /**
  * In-memory storage for stream sessions (in production, use Redis or database)
  */
-export const sessionStore = new Map<string, ClaudeStreamRequest>();
+export const sessionStore = new Map<string, StreamRequest>();
 
 /**
  * Track active connections to prevent duplicates
@@ -28,7 +29,7 @@ export const activeConnections = new Map<string, string>(); // streamId -> conne
 /**
  * Save message to database using database function with current timestamp
  */
-export async function saveMessageToDatabase(message: SDKMessage, sessionId: string, timestamp?: string): Promise<void> {
+export async function saveMessageToDatabase(message: UnifiedMessage, sessionId: string, timestamp?: string): Promise<void> {
 	try {
 		messageQueries.create({
 			session_id: sessionId,

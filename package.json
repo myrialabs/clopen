@@ -85,14 +85,14 @@
     "vite": "^7.0.4"
   },
   "dependencies": {
-    "@anthropic-ai/claude-agent-sdk": "0.2.63",
-    "@anthropic-ai/sdk": "0.78.0",
+    "@anthropic-ai/claude-agent-sdk": "^0.2.101",
+    "@anthropic-ai/sdk": "^0.88.0",
     "@elysiajs/cors": "^1.4.0",
     "@iconify-json/lucide": "^1.2.57",
     "@iconify-json/material-icon-theme": "^1.2.16",
     "@modelcontextprotocol/sdk": "^1.26.0",
     "@monaco-editor/loader": "^1.5.0",
-    "@opencode-ai/sdk": "1.2.15",
+    "@opencode-ai/sdk": "^1.4.3",
     "@xterm/addon-clipboard": "^0.2.0",
     "@xterm/addon-fit": "^0.11.0",
     "@xterm/addon-ligatures": "^0.10.0",
