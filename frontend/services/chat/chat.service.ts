@@ -20,7 +20,7 @@ import { addNotification } from '$frontend/stores/ui/notification.svelte';
 import { userStore } from '$frontend/stores/features/user.svelte';
 import { SDK_CONFIG, parseModelId } from '$shared/constants/engines';
 import type { UnifiedMessage, AssistantMessage } from '$shared/types/unified';
-import type { StreamingMessage, FrontendMessage } from '$frontend/stores/core/sessions.svelte';
+import type { StreamingMessage, OptimisticUserMessage, FrontendMessage } from '$frontend/stores/core/sessions.svelte';
 import { debug } from '$shared/utils/logger';
 
 /** Chat service configuration */
@@ -415,30 +415,22 @@ class ChatService {
       }
       const messageContent = contentBlocks.length > 0 ? contentBlocks : [{ type: 'text', text: userMessage }];
 
-      // Create UserMessage format for prompt
-      const userMsgId = crypto.randomUUID();
-      const userMsg = {
-        type: 'user' as const,
-        id: userMsgId,
-        sessionId: sessionState.currentSession.id,
-        createdAt: new Date().toISOString(),
-        parentMessageId: null,
-        senderId: userStore.currentUser?.id || null,
-        senderName: userStore.currentUser?.name || null,
-        model: null,
-        engine: null,
-        parentToolUseId: null,
-        content: messageContent,
-        synthetic: false,
-      };
-
-      // Optimistic UI: show user message immediately (before server confirms)
-      const optimisticMessage = {
-        ...userMsg,
-        _optimistic: true,
-        _optimisticId: userMsgId,
-      };
-      (sessionState.messages as FrontendMessage[]).push(optimisticMessage as any);
+      // Determine the SDK session ID for the current branch HEAD.
+      // After non-linear operations (edit/undo/restore), sessionState.messages
+      // reflects the correct branch — find the last assistant/reasoning message
+      // whose sessionId differs from the clopen session ID.
+      const currentSessionId = sessionState.currentSession.id;
+      let parentSessionId: string | null = null;
+      for (let i = sessionState.messages.length - 1; i >= 0; i--) {
+        const m = sessionState.messages[i];
+        if ((m.type === 'assistant' || m.type === 'reasoning') && 'sessionId' in m) {
+          const sid = (m as any).sessionId as string;
+          if (sid && sid !== currentSessionId) {
+            parentSessionId = sid;
+            break;
+          }
+        }
+      }
 
       // Parse engine and model from the local chat model state (isolated from Settings)
       const { engine, modelId } = parseModelId(chatModelState.model);
@@ -446,6 +438,32 @@ class ChatService {
       // Capture selected engine/model/account before sending
       const selectedEngine = chatModelState.engine || engine;
       const selectedModel = chatModelState.model;
+
+      // Create UserMessage format for prompt
+      const userMsgId = crypto.randomUUID();
+      const userMsg = {
+        type: 'user' as const,
+        createdAt: new Date().toISOString(),
+        messageId: userMsgId,
+        sessionId: currentSessionId,
+        parent: { messageId: null, sessionId: parentSessionId, toolUseId: null },
+        engine: selectedEngine,
+        model: selectedModel,
+        sender: {
+          id: userStore.currentUser?.id || null,
+          name: userStore.currentUser?.name || null,
+        },
+        content: messageContent,
+        synthetic: false,
+      };
+
+      // Optimistic UI: show user message immediately (before server confirms)
+      const optimisticMessage: OptimisticUserMessage = {
+        ...userMsg,
+        optimistic: true,
+        optimisticId: userMsgId,
+      };
+      (sessionState.messages as FrontendMessage[]).push(optimisticMessage);
       const selectedAccountId = chatModelState.claudeAccountId;
 
       // Send WebSocket message to start streaming
@@ -454,7 +472,7 @@ class ChatService {
         chatSessionId: sessionState.currentSession.id,
         projectPath: projectState.currentProject?.path || '',
         prompt: userMsg,
-        messages: sessionState.messages.filter((msg) => !((msg as any)._optimistic) && msg.type !== 'stream_event').map(msg => {
+        messages: sessionState.messages.filter((msg) => !('optimistic' in msg && msg.optimistic) && msg.type !== 'stream_event').map(msg => {
           // Convert UnifiedMessage to API format
           if (msg.type === 'user' && 'content' in msg) {
             const textParts = msg.content
@@ -591,10 +609,11 @@ class ChatService {
    */
   private enrichMessage(message: UnifiedMessage, data: any): UnifiedMessage {
     const enriched = { ...message };
-    if (data.message_id) enriched.id = data.message_id;
-    if (data.parent_message_id !== undefined) enriched.parentMessageId = data.parent_message_id ?? null;
-    if (data.sender_id) enriched.senderId = data.sender_id;
-    if (data.sender_name) enriched.senderName = data.sender_name;
+    if (data.message_id) enriched.messageId = data.message_id;
+    if (data.parent_message_id !== undefined) enriched.parent = { ...enriched.parent, messageId: data.parent_message_id ?? null };
+    if (data.sender_id || data.sender_name) {
+      enriched.sender = { id: data.sender_id ?? null, name: data.sender_name ?? null };
+    }
     if (data.timestamp) enriched.createdAt = data.timestamp;
     return enriched;
   }
@@ -618,12 +637,13 @@ class ChatService {
 
     // Enrich with transport metadata (DB id, parent, sender)
     const message = this.enrichMessage(rawMessage, data);
-    const isReasoning = message.type === 'reasoning';
 
-    // If this is a user message from server, replace the optimistic message
+    // If this is a user message from server, replace the optimistic message.
+    // Match by rawMessage.messageId (the frontend-provided UUID preserved in the stream event)
+    // rather than message.messageId (which gets overwritten by the DB-assigned ID in enrichMessage).
     if (message.type === 'user') {
       const optimisticIndex = sessionState.messages.findIndex(
-        (m) => (m as any)._optimistic && m.type === 'user' && (m as any)._optimisticId === message.id
+        (m) => 'optimistic' in m && m.optimistic && m.type === 'user' && (m as OptimisticUserMessage).optimisticId === rawMessage!.messageId
       );
       if (optimisticIndex !== -1) {
         sessionState.messages[optimisticIndex] = message;
@@ -631,29 +651,37 @@ class ChatService {
       }
     }
 
-    // If this is an assistant/reasoning message, replace the matching streaming message
-    if (message.type === 'assistant' || isReasoning) {
-      const matchReasoning = isReasoning;
+    // If this is an assistant message, replace the matching stream_event placeholder.
+    if (message.type === 'assistant') {
       for (let i = sessionState.messages.length - 1; i >= 0; i--) {
         const msg = sessionState.messages[i];
-        if (msg.type === 'stream_event' && msg.reasoning === matchReasoning) {
+        if (msg.type === 'stream_event') {
           sessionState.messages[i] = message;
-
-          // Detect interactive tool_use blocks in the replaced message
-          if (message.type === 'assistant') {
-            this.checkInteractiveTools(message);
-          }
-
+          this.checkInteractiveTools(message);
           return;
         }
       }
       // No matching stream_event found, fall through to push
     }
 
-    // Deduplicate: skip if a message with the same id already exists
-    if (message.id) {
+    // Reasoning messages arrive complete but the text stream_event may have already
+    // started by the time they arrive. Insert before any stream_event so the display
+    // order stays: reasoning → (streaming text) rather than reversed.
+    if (message.type === 'reasoning') {
+      const streamEventIdx = (sessionState.messages as FrontendMessage[]).findIndex(
+        m => m.type === 'stream_event'
+      );
+      if (streamEventIdx !== -1) {
+        (sessionState.messages as FrontendMessage[]).splice(streamEventIdx, 0, message);
+        return;
+      }
+      // No stream_event yet — fall through to dedup + push
+    }
+
+    // Deduplicate: skip if a message with the same messageId already exists
+    if (message.messageId) {
       const alreadyExists = sessionState.messages.some(
-        (m) => m.type !== 'stream_event' && 'id' in m && m.id === message.id && !((m as any)._optimistic)
+        (m) => m.type !== 'stream_event' && 'messageId' in m && m.messageId === message.messageId && !('optimistic' in m && m.optimistic)
       );
       if (alreadyExists) return;
     }
@@ -671,23 +699,8 @@ class ChatService {
       }
     }
 
-    // For reasoning messages, insert BEFORE trailing non-reasoning assistant messages
-    // to preserve reasoning-before-tool ordering within the same turn.
-    if (isReasoning) {
-      let insertIdx = sessionState.messages.length;
-      for (let i = sessionState.messages.length - 1; i >= 0; i--) {
-        const msg = sessionState.messages[i];
-        // Stop at user messages or other reasoning messages
-        if (msg.type === 'user' || msg.type === 'reasoning') break;
-        // Insert before non-reasoning assistant messages and non-reasoning stream_events
-        if (msg.type === 'assistant' || (msg.type === 'stream_event' && !msg.reasoning)) {
-          insertIdx = i;
-        }
-      }
-      (sessionState.messages as FrontendMessage[]).splice(insertIdx, 0, message);
-    } else {
-      (sessionState.messages as FrontendMessage[]).push(message);
-    }
+    // Messages arrive from the backend in correct temporal order — just push.
+    (sessionState.messages as FrontendMessage[]).push(message);
   }
 
   /**
@@ -714,74 +727,43 @@ class ChatService {
       return;
     }
 
+    // Reasoning arrives as a complete message — no streaming placeholder needed.
+    if (data.reasoning) return;
+
     const { eventType, partialText } = data;
-    const isReasoning = data.reasoning === true;
 
     if (eventType === 'start') {
       // Check if there's already a matching stream_event (from catchup)
       const existing = sessionState.messages.find(
-        (m) => m.type === 'stream_event' && m.reasoning === isReasoning && m.processId === data.processId
+        (m): m is StreamingMessage => m.type === 'stream_event' && (m as StreamingMessage).processId === data.processId
       );
-      if (existing && existing.type === 'stream_event') {
-        existing.partialText = partialText || '';
+      if (existing) {
+        existing.text = partialText || '';
         return;
       }
-
-      // Create new streaming message
-      const streamingMessage: StreamingMessage = {
+      (sessionState.messages as FrontendMessage[]).push({
         type: 'stream_event',
         processId: data.processId,
-        partialText: partialText || '',
-        reasoning: isReasoning,
+        text: partialText || '',
         createdAt: data.timestamp || new Date().toISOString(),
-      };
-
-      if (isReasoning) {
-        // Insert reasoning stream BEFORE any existing non-reasoning stream_event
-        const textStreamIdx = sessionState.messages.findIndex(
-          (m) => m.type === 'stream_event' && !m.reasoning
-        );
-        if (textStreamIdx >= 0) {
-          (sessionState.messages as FrontendMessage[]).splice(textStreamIdx, 0, streamingMessage);
-        } else {
-          (sessionState.messages as FrontendMessage[]).push(streamingMessage);
-        }
-      } else {
-        (sessionState.messages as FrontendMessage[]).push(streamingMessage);
-      }
+      } satisfies StreamingMessage);
     } else if (eventType === 'update') {
-      // Find matching stream_event and update
       for (let i = sessionState.messages.length - 1; i >= 0; i--) {
         const msg = sessionState.messages[i];
-        if (msg.type === 'stream_event' && msg.reasoning === isReasoning) {
-          msg.partialText = partialText || '';
+        if (msg.type === 'stream_event') {
+          (msg as StreamingMessage).text = partialText || '';
           return;
         }
       }
-
-      // Fallback: no matching stream_event found (start event was missed)
-      const fallbackMessage: StreamingMessage = {
+      // Fallback: missed start event
+      (sessionState.messages as FrontendMessage[]).push({
         type: 'stream_event',
         processId: data.processId,
-        partialText: partialText || '',
-        reasoning: isReasoning,
+        text: partialText || '',
         createdAt: data.timestamp || new Date().toISOString(),
-      };
-
-      if (isReasoning) {
-        const textStreamIdx = sessionState.messages.findIndex(
-          (m) => m.type === 'stream_event' && !m.reasoning
-        );
-        if (textStreamIdx >= 0) {
-          (sessionState.messages as FrontendMessage[]).splice(textStreamIdx, 0, fallbackMessage);
-        } else {
-          (sessionState.messages as FrontendMessage[]).push(fallbackMessage);
-        }
-      } else {
-        (sessionState.messages as FrontendMessage[]).push(fallbackMessage);
-      }
+      } satisfies StreamingMessage);
     }
-    // Note: 'end' event is not needed - streaming message will be replaced by final message in handleMessageEvent
+    // Note: 'end' event is not needed - stream_event is replaced by the final message in handleMessageEvent
   }
 
   /**
@@ -798,8 +780,8 @@ class ChatService {
   }
 
   /**
-   * Convert stream_event messages with text to finalized messages.
-   * Called on cancel to preserve partial reasoning/text that was visible.
+   * Convert stream_event messages with text to finalized AssistantMessages.
+   * Called on cancel to preserve partial text that was visible.
    * Empty stream_events are removed.
    * The backend saves these to DB independently, so on refresh the DB version takes over.
    */
@@ -808,39 +790,20 @@ class ChatService {
       const msg = sessionState.messages[i];
       if (msg.type !== 'stream_event') continue;
 
-      if (msg.partialText) {
-        if (msg.reasoning) {
-          // Convert to ReasoningMessage
-          sessionState.messages[i] = {
-            type: 'reasoning',
-            id: crypto.randomUUID(),
-            sessionId: sessionState.currentSession?.id || '',
-            createdAt: msg.createdAt,
-            parentMessageId: null,
-            senderId: null,
-            senderName: null,
-            model: null,
-            engine: null,
-            text: msg.partialText,
-          } satisfies UnifiedMessage;
-        } else {
-          // Convert to AssistantMessage
-          sessionState.messages[i] = {
-            type: 'assistant',
-            id: crypto.randomUUID(),
-            sessionId: sessionState.currentSession?.id || '',
-            createdAt: msg.createdAt,
-            parentMessageId: null,
-            senderId: null,
-            senderName: null,
-            model: null,
-            engine: null,
-            parentToolUseId: null,
-            content: [{ type: 'text', text: msg.partialText }],
-            stopReason: 'interrupted',
-            usage: null,
-          } satisfies UnifiedMessage;
-        }
+      if (msg.text) {
+        sessionState.messages[i] = {
+          type: 'assistant',
+          createdAt: msg.createdAt,
+          messageId: crypto.randomUUID(),
+          sessionId: sessionState.currentSession?.id || '',
+          parent: { messageId: null, sessionId: null, toolUseId: null },
+          engine: null,
+          model: null,
+          sender: { id: null, name: null },
+          content: [{ type: 'text', text: msg.text }],
+          stopReason: 'interrupted',
+          usage: null,
+        } satisfies UnifiedMessage;
       } else {
         sessionState.messages.splice(i, 1);
       }

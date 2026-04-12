@@ -152,7 +152,7 @@
 				return text.length > 0;
 			})
 			.map(msg => ({
-				id: 'id' in msg ? msg.id : undefined,
+				id: 'messageId' in msg ? msg.messageId : undefined,
 				timestamp: msg.createdAt || '',
 				date: msg.createdAt ? new Date(msg.createdAt).toLocaleDateString() : 'Unknown',
 				time: msg.createdAt ? new Date(msg.createdAt).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }) : 'Unknown',

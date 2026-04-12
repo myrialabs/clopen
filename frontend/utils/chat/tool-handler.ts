@@ -121,9 +121,9 @@ function processSubAgentMessages(messages: FrontendMessage[]): SubAgentActivity[
       if (item.type === 'tool_use') {
         activities.push({
           type: 'tool_use',
-          toolName: item.name,
-          toolInput: item.input as Record<string, unknown>,
-          toolResult: toolResultMap.get(item.id) ?? null
+          name: item.name,
+          input: item.input as Record<string, unknown>,
+          result: toolResultMap.get(item.id) ?? null
         });
       } else if (item.type === 'text' && (item as any).text?.trim()) {
         activities.push({

@@ -275,57 +275,26 @@
 			});
 
 			if (streamState && streamState.status === 'active' && streamState.processId) {
-				// ── Inject reasoning stream_event (if available) ──
-				if (streamState.currentReasoningText) {
-					const hasReasoningStream = sessionState.messages.some(
-						(m: any) => m.type === 'stream_event' && m.metadata?.reasoning && m.processId === streamState.processId
-					);
-
-					if (!hasReasoningStream) {
-						const reasoningMessage = {
-							type: 'stream_event' as const,
-							processId: streamState.processId,
-							partialText: streamState.currentReasoningText,
-							metadata: { reasoning: true }
-						};
-						(sessionState.messages as any[]).push(reasoningMessage);
-					} else {
-						const existingReasoning = sessionState.messages.find(
-							(m: any) => m.type === 'stream_event' && m.metadata?.reasoning && m.processId === streamState.processId
-						);
-						if (existingReasoning) {
-							(existingReasoning as any).partialText = streamState.currentReasoningText;
-						}
-					}
-				}
-
-				// ── Inject regular text stream_event (if available) ──
+				// ── Inject text stream_event (if available) ──
 				if (streamState.currentPartialText) {
-					const hasTextStream = sessionState.messages.some(
-						(m: any) => m.type === 'stream_event' && !m.metadata?.reasoning && m.processId === streamState.processId
+					const existingText = sessionState.messages.find(
+						(m: any) => m.type === 'stream_event' && m.processId === streamState.processId
 					);
 
-					if (!hasTextStream) {
-						const streamingMessage = {
+					if (!existingText) {
+						(sessionState.messages as any[]).push({
 							type: 'stream_event' as const,
 							processId: streamState.processId,
-							partialText: streamState.currentPartialText,
-							metadata: {}
-						};
-						(sessionState.messages as any[]).push(streamingMessage);
+							text: streamState.currentPartialText,
+							createdAt: new Date().toISOString(),
+						});
 					} else {
-						const existingMsg = sessionState.messages.find(
-							(m: any) => m.type === 'stream_event' && !m.metadata?.reasoning && m.processId === streamState.processId
-						);
-						if (existingMsg) {
-							(existingMsg as any).partialText = streamState.currentPartialText;
-						}
+						(existingText as any).text = streamState.currentPartialText;
 					}
 				}
 
-				// If neither text nor reasoning is available yet, inject an empty
-				// stream_event placeholder so the loading indicator is visible
-				if (!streamState.currentPartialText && !streamState.currentReasoningText) {
+				// If no text yet, inject an empty stream_event so the loading indicator is visible
+				if (!streamState.currentPartialText) {
 					const hasAnyStream = sessionState.messages.some(
 						(m: any) => m.type === 'stream_event' && m.processId === streamState.processId
 					);
@@ -333,8 +302,8 @@
 						(sessionState.messages as any[]).push({
 							type: 'stream_event' as const,
 							processId: streamState.processId,
-							partialText: '',
-							metadata: {}
+							text: '',
+							createdAt: new Date().toISOString(),
 						});
 					}
 				}

@@ -12,16 +12,30 @@ import type { ToolUseBlock, ToolResult } from './tool';
 // Message Base
 // ============================================================
 
+/** Sender identity attached to every message */
+export interface MessageSender {
+	id: string | null;
+	name: string | null;
+}
+
+/** Parent references carried by every message */
+export interface MessageParent {
+	messageId: string | null;
+	sessionId: string | null;
+	toolUseId: string | null;
+}
+
 /** Common fields present on every message */
 export interface MessageBase {
-	id: string;
-	sessionId: string;
 	createdAt: string;
-	parentMessageId: string | null;
-	senderId: string | null;
-	senderName: string | null;
-	model: string | null;
+	messageId: string;
+	/** SDK-issued session ID. Null for messages that have no SDK session context
+	 *  (e.g. user messages from the frontend, or messages where the SDK did not provide one). */
+	sessionId: string | null;
+	parent: MessageParent;
 	engine: string | null;
+	model: string | null;
+	sender: MessageSender;
 }
 
 // ============================================================
@@ -66,7 +80,6 @@ export type AssistantContentBlock =
  */
 export interface UserMessage extends MessageBase {
 	type: 'user';
-	parentToolUseId: string | null;
 	content: UserContentBlock[];
 	synthetic: boolean;
 }
@@ -77,7 +90,6 @@ export interface UserMessage extends MessageBase {
  */
 export interface AssistantMessage extends MessageBase {
 	type: 'assistant';
-	parentToolUseId: string | null;
 	content: AssistantContentBlock[];
 	stopReason: StopReason | null;
 	usage: TokenUsage | null;

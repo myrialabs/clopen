@@ -405,18 +405,6 @@ function mapUsage(tokens: { input?: number; output?: number; cache?: { write?: n
 	};
 }
 
-/** Build common MessageBase fields for OpenCode messages */
-function baseFields(sessionId: string) {
-	return {
-		createdAt: new Date().toISOString(),
-		parentMessageId: null as string | null,
-		senderId: null as string | null,
-		senderName: null as string | null,
-		model: null as string | null,
-		engine: 'opencode' as const,
-	};
-}
-
 // ============================================================
 // Public Converters
 // ============================================================
@@ -443,10 +431,13 @@ export function convertUserMessage(
 
 	return {
 		type: 'user',
-		id: ocMessage.id || crypto.randomUUID(),
+		createdAt: new Date().toISOString(),
+		messageId: ocMessage.id || crypto.randomUUID(),
 		sessionId,
-		...baseFields(sessionId),
-		parentToolUseId: null,
+		parent: { messageId: null, sessionId: null, toolUseId: null },
+		engine: 'opencode' as const,
+		model: null,
+		sender: { id: null, name: null },
 		content,
 		synthetic: false,
 	};
@@ -572,11 +563,13 @@ export function convertAssistantMessages(
 
 		const msg: UnifiedAssistantMessage = {
 			type: 'assistant',
-			id: i === 0 ? baseId : crypto.randomUUID(),
+			createdAt: new Date().toISOString(),
+			messageId: i === 0 ? baseId : crypto.randomUUID(),
 			sessionId,
-			...baseFields(sessionId),
+			parent: { messageId: null, sessionId: null, toolUseId: null },
+			engine: 'opencode' as const,
 			model: modelId || null,
-			parentToolUseId: null,
+			sender: { id: null, name: null },
 			content: group,
 			stopReason,
 			usage: isLast ? usage : null,
@@ -692,11 +685,13 @@ export function convertToolUseOnly(
 
 	return {
 		type: 'assistant',
-		id: crypto.randomUUID(),
+		createdAt: new Date().toISOString(),
+		messageId: crypto.randomUUID(),
 		sessionId,
-		...baseFields(sessionId),
+		parent: { messageId: null, sessionId: null, toolUseId: parentToolUseId || null },
+		engine: 'opencode' as const,
 		model: modelId || null,
-		parentToolUseId: parentToolUseId || null,
+		sender: { id: null, name: null },
 		content: [{
 			type: 'tool_use',
 			id: toolUseId,
@@ -725,10 +720,13 @@ export function convertReasoningMessage(
 
 	return {
 		type: 'reasoning',
-		id: crypto.randomUUID(),
+		createdAt: new Date().toISOString(),
+		messageId: crypto.randomUUID(),
 		sessionId,
-		...baseFields(sessionId),
+		parent: { messageId: null, sessionId: null, toolUseId: null },
+		engine: 'opencode' as const,
 		model: modelId || null,
+		sender: { id: null, name: null },
 		text: reasoningText,
 	};
 }
@@ -786,11 +784,13 @@ export function convertSubtaskToolUseOnly(
 
 	return {
 		type: 'assistant',
-		id: crypto.randomUUID(),
+		createdAt: new Date().toISOString(),
+		messageId: crypto.randomUUID(),
 		sessionId,
-		...baseFields(sessionId),
+		parent: { messageId: null, sessionId: null, toolUseId: null },
+		engine: 'opencode' as const,
 		model: modelId || null,
-		parentToolUseId: null,
+		sender: { id: null, name: null },
 		content: [{
 			type: 'tool_use',
 			id: subtaskPart.id || crypto.randomUUID(),
@@ -833,10 +833,13 @@ export function convertToolResultOnly(
 
 	return {
 		type: 'user',
-		id: crypto.randomUUID(),
+		createdAt: new Date().toISOString(),
+		messageId: crypto.randomUUID(),
 		sessionId,
-		...baseFields(sessionId),
-		parentToolUseId: parentToolUseId || null,
+		parent: { messageId: null, sessionId: null, toolUseId: parentToolUseId || null },
+		engine: 'opencode' as const,
+		model: null,
+		sender: { id: null, name: null },
 		content: [{
 			type: 'tool_result',
 			toolUseId,

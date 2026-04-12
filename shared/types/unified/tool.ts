@@ -197,9 +197,9 @@ export type McpToolName = `mcp__${string}`;
 
 export interface SubAgentToolActivity {
 	type: 'tool_use';
-	toolName: string;
-	toolInput: Record<string, unknown>;
-	toolResult: ToolResult | null;
+	name: string;
+	input: Record<string, unknown>;
+	result: ToolResult | null;
 }
 
 export interface SubAgentTextActivity {

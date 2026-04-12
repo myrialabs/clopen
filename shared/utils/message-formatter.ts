@@ -14,6 +14,7 @@ import type {
 	AssistantMessage,
 	ReasoningMessage,
 	CompactBoundaryMessage,
+	MessageParent,
 	UserContentBlock,
 	AssistantContentBlock,
 	TextBlock,
@@ -21,6 +22,7 @@ import type {
 	ToolResult,
 	TokenUsage,
 	StopReason,
+	MessageSender,
 } from '$shared/types/unified';
 
 /**
@@ -38,13 +40,18 @@ export function loadMessage(
 ): UnifiedMessage {
 	const raw = JSON.parse(row.sdk_message);
 
-	// Already unified format
-	if ('sessionId' in raw && raw.sessionId) {
-		raw.id = row.id;
+	// Already unified format — all unified messages carry a `parent` object.
+	// Old SDK blobs use a nested { message: {...} } shape and never have `parent`.
+	if ('parent' in raw) {
+		raw.messageId = row.id;
 		raw.createdAt = row.timestamp;
-		raw.parentMessageId = row.parent_message_id || null;
-		raw.senderId = overrides?.sender_id ?? row.sender_id ?? raw.senderId ?? null;
-		raw.senderName = overrides?.sender_name ?? row.sender_name ?? raw.senderName ?? null;
+		(raw.parent as MessageParent).messageId = row.parent_message_id || null;
+		// DB columns are source of truth; support both old flat and new nested sender in blob
+		const existingSender = raw.sender as MessageSender | undefined;
+		raw.sender = {
+			id: overrides?.sender_id ?? row.sender_id ?? existingSender?.id ?? null,
+			name: overrides?.sender_name ?? row.sender_name ?? existingSender?.name ?? null,
+		} satisfies MessageSender;
 		return raw as UnifiedMessage;
 	}
 
@@ -65,14 +72,20 @@ function convertOldFormat(
 	}
 ): UnifiedMessage {
 	const base = {
-		id: row.id,
-		sessionId: row.session_id,
 		createdAt: row.timestamp,
-		parentMessageId: row.parent_message_id || null,
-		senderId: overrides?.sender_id ?? row.sender_id ?? null,
-		senderName: overrides?.sender_name ?? row.sender_name ?? null,
-		model: null as string | null,
+		messageId: row.id,
+		sessionId: row.session_id,
+		parent: {
+			messageId: row.parent_message_id || null,
+			sessionId: null,
+			toolUseId: null,
+		} satisfies MessageParent,
 		engine: null as string | null,
+		model: null as string | null,
+		sender: {
+			id: overrides?.sender_id ?? row.sender_id ?? null,
+			name: overrides?.sender_name ?? row.sender_name ?? null,
+		} satisfies MessageSender,
 	};
 
 	const metadata = raw.metadata as Record<string, unknown> | undefined;
@@ -101,8 +114,12 @@ function convertOldFormat(
 	if (sdkType === 'user') {
 		return {
 			...base,
+			parent: {
+				messageId: row.parent_message_id || null,
+				sessionId: null,
+				toolUseId: (raw.parent_tool_use_id as string) || null,
+			} satisfies MessageParent,
 			type: 'user',
-			parentToolUseId: (raw.parent_tool_use_id as string) || null,
 			content: convertUserContent(message),
 			synthetic: (raw.isSynthetic as boolean) || false,
 		} satisfies UserMessage;
@@ -112,8 +129,12 @@ function convertOldFormat(
 	if (sdkType === 'assistant') {
 		return {
 			...base,
+			parent: {
+				messageId: row.parent_message_id || null,
+				sessionId: null,
+				toolUseId: (raw.parent_tool_use_id as string) || null,
+			} satisfies MessageParent,
 			type: 'assistant',
-			parentToolUseId: (raw.parent_tool_use_id as string) || null,
 			content: convertAssistantContent(message),
 			stopReason: (message?.stop_reason as StopReason) || null,
 			usage: convertUsage(raw),
@@ -124,7 +145,6 @@ function convertOldFormat(
 	return {
 		...base,
 		type: 'assistant',
-		parentToolUseId: null,
 		content: [{ type: 'text', text: '' }],
 		stopReason: null,
 		usage: null,

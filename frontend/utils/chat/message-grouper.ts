@@ -44,10 +44,10 @@ function extractUserTextContent(message: FrontendMessage): string {
     .join('\n');
 }
 
-// Get parentToolUseId from any message type
+// Get parent.toolUseId from any message type
 function getParentToolUseId(message: FrontendMessage): string | null {
-  if ('parentToolUseId' in message) {
-    return (message as any).parentToolUseId ?? null;
+  if ('parent' in message) {
+    return (message as any).parent.toolUseId ?? null;
   }
   return null;
 }

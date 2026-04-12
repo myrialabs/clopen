@@ -47,7 +47,7 @@ export function isInternalToolMessage(msg: UnifiedMessage): boolean {
 	if (msg.type !== 'user') return false;
 	const user = msg as UserMessage;
 
-	if (user.parentToolUseId != null) return true;
+	if (user.parent.toolUseId != null) return true;
 	if (user.synthetic) return true;
 
 	return user.content.some(block => block.type === 'tool_result');

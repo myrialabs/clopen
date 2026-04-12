@@ -8,7 +8,7 @@
  */
 
 import type { ChatSession } from '$shared/types/database/schema';
-import type { UnifiedMessage } from '$shared/types/unified';
+import type { UnifiedMessage, UserMessage } from '$shared/types/unified';
 import ws, { onWsReconnect } from '$frontend/utils/ws';
 import { projectState } from './projects.svelte';
 import { setupEditModeListener, restoreEditMode } from '$frontend/stores/ui/edit-mode.svelte';
@@ -16,20 +16,29 @@ import { markSessionUnread, markSessionRead, clearSessionState, appState } from 
 import { debug } from '$shared/utils/logger';
 
 /**
- * Frontend-only streaming message type.
+ * Frontend-only streaming message for assistant text.
  * Created by chat.service.ts during active streaming, replaced by
- * finalized UnifiedMessage when the backend delivers the full message.
+ * AssistantMessage when the backend delivers the full message.
+ * Reasoning messages (type: 'reasoning') always arrive complete — no streaming placeholder needed.
  */
 export interface StreamingMessage {
 	type: 'stream_event';
 	processId: string;
-	partialText: string;
-	reasoning: boolean;
+	text: string;
 	createdAt: string;
 }
 
+/**
+ * Frontend-only optimistic user message.
+ * Shown immediately after sending, replaced by the server-confirmed message.
+ */
+export interface OptimisticUserMessage extends UserMessage {
+	optimistic: true;
+	optimisticId: string;
+}
+
 /** Union of all message types that can appear in the frontend messages array */
-export type FrontendMessage = UnifiedMessage | StreamingMessage;
+export type FrontendMessage = UnifiedMessage | StreamingMessage | OptimisticUserMessage;
 
 interface SessionState {
 	sessions: ChatSession[];

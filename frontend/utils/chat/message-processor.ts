@@ -55,8 +55,8 @@ export function isSyntheticUserMessage(message: FrontendMessage): boolean {
 // Check if this is a sub-agent user message (prompt sent to a sub-agent)
 export function isSubAgentUserMessage(message: FrontendMessage): boolean {
   return message.type === 'user' &&
-    'parentToolUseId' in message &&
-    (message as any).parentToolUseId !== null;
+    'parent' in message &&
+    (message as any).parent.toolUseId !== null;
 }
 
 // Check if a message should be filtered out
@@ -71,9 +71,9 @@ export function shouldFilterMessage(message: FrontendMessage): boolean {
     return true;
   }
 
-  // Filter out stream_event messages with no partial text
+  // Filter out streaming messages with no text
   if (message.type === 'stream_event') {
-    if (!message.partialText) {
+    if (!message.text) {
       return true;
     }
   }

@@ -70,7 +70,7 @@
 		const userMessages = filteredMessages.filter(m => m.type === 'user');
 		if (userMessages.length === 0) return undefined;
 		const lastUserMsg = userMessages[userMessages.length - 1];
-		return 'id' in lastUserMsg ? lastUserMsg.id : undefined;
+		return 'messageId' in lastUserMsg ? lastUserMsg.messageId : undefined;
 	});
 
 	// ========================================
@@ -185,9 +185,9 @@
 		let hasStreamingMessage = false;
 		let currentPartialHash = '';
 		for (const msg of filteredMessages) {
-			if ('type' in msg && msg.type === 'stream_event' && 'partialText' in msg) {
+			if ('type' in msg && msg.type === 'stream_event' && 'text' in msg) {
 				hasStreamingMessage = true;
-				currentPartialHash += `${(msg as any).partialText?.length || 0}:`;
+				currentPartialHash += `${(msg as any).text?.length || 0}:`;
 			}
 		}
 		if (currentPartialHash !== lastPartialTextHash) {
@@ -365,7 +365,7 @@
 
 		// Ensure message is within the virtual scroll window
 		if (vs.isActive) {
-			const msgIndex = filteredMessages.findIndex(m => 'id' in m ? m.id === messageId : false);
+			const msgIndex = filteredMessages.findIndex(m => 'messageId' in m ? m.messageId === messageId : false);
 			if (msgIndex >= 0 && (msgIndex < vs.windowStart || msgIndex >= vs.windowEnd)) {
 				vs.ensureVisible(msgIndex);
 				// Wait for DOM to update after window change

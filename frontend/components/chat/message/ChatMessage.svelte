@@ -54,7 +54,7 @@
 	const messageTimestamp = $derived(message.createdAt || new Date().toISOString());
 
 	// Get message ID
-	const messageId = $derived('id' in message ? message.id : undefined);
+	const messageId = $derived('messageId' in message ? message.messageId : undefined);
 
 	// Check if this message should be dimmed in edit mode
 	const shouldBeDimmed = $derived(shouldDimMessage(messageId));
@@ -68,10 +68,8 @@
 		if (message.type === 'reasoning') {
 			return 'reasoning';
 		}
-		// Streaming messages — show as reasoning or assistant
-		if (message.type === 'stream_event') {
-			return message.reasoning ? 'reasoning' : 'assistant';
-		}
+		// Streaming assistant text — displayed as assistant
+		if (message.type === 'stream_event') return 'assistant';
 		if (message.type === 'assistant' && 'content' in message) {
 			const hasToolUse = message.content.some((c) => c.type === 'tool_use');
 			if (hasToolUse) return 'agent';
@@ -84,7 +82,7 @@
 	});
 
 	// Get sender info
-	const senderName = $derived('senderName' in message ? (message as any).senderName : null);
+	const senderName = $derived('sender' in message ? (message as any).sender?.name ?? null : null);
 
 	// Copy message content to clipboard (content text only, not full JSON)
 	function copyToClipboard() {
@@ -109,7 +107,7 @@
 		} else if (message.type === 'reasoning' && 'text' in message) {
 			content = message.text || '';
 		} else if (message.type === 'stream_event') {
-			content = message.partialText || '';
+			content = message.text || '';
 		}
 
 		navigator.clipboard.writeText(content || '');
@@ -312,7 +310,7 @@
 		}
 
 		// Get parent message ID
-		const parentMessageId = 'parentMessageId' in message ? (message as any).parentMessageId : null;
+		const parentMessageId = 'parent' in message ? (message as any).parent.messageId : null;
 
 		// Extract message text and attachments
 		let messageText = '';

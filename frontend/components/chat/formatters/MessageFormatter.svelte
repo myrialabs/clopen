@@ -53,10 +53,10 @@
 			return elements;
 		}
 
-		// Handle partial messages (streaming)
+		// Handle streaming messages
 		if (message.type === 'stream_event') {
-			if (message.partialText) {
-				elements.push({ type: 'text', content: message.partialText });
+			if (message.text) {
+				elements.push({ type: 'text', content: message.text });
 			}
 			return elements;
 		}

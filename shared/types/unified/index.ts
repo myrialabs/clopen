@@ -58,6 +58,8 @@ export type {
 // ── Messages ─────────────────────────────────────────────────
 export type {
 	MessageBase,
+	MessageParent,
+	MessageSender,
 	TextBlock,
 	ImageBlock,
 	DocumentBlock,

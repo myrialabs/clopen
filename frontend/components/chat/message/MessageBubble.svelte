@@ -50,9 +50,9 @@
 	$effect(() => {
 		if (roleCategory !== 'reasoning' && roleCategory !== 'system' && roleCategory !== 'compact') return;
 		if (!scrollContainer) return;
-		// Track message content changes (partialText for streaming, message for final)
+		// Track message content changes (text for streaming, message for final)
 		const _track = message.type === 'stream_event'
-			? message.partialText
+			? message.text
 			: message;
 		tick().then(() => {
 			if (scrollContainer) {
@@ -62,13 +62,13 @@
 	});
 
 	// Force reactive tracking for assistant text streaming.
-	// Without an explicit $effect that reads partialText, Svelte 5's derived chain
-	// may not re-render the component when partialText changes on a proxied object.
+	// Without an explicit $effect that reads text, Svelte 5's derived chain
+	// may not re-render the component when text changes on a proxied object.
 	// Reasoning gets this implicitly via the auto-scroll effect above.
 	$effect(() => {
 		if (roleCategory !== 'assistant') return;
 		if (message.type !== 'stream_event') return;
-		const _track = message.partialText;
+		const _track = message.text;
 	});
 </script>
 

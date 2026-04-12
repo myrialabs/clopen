@@ -204,14 +204,13 @@ export function convertAssistantMessage(msg: SDKAssistantMessage): EngineOutput[
 			.join('\n');
 		const reasoning: ReasoningMessage = {
 			type: 'reasoning',
-			id: crypto.randomUUID(),
-			sessionId,
 			createdAt: new Date().toISOString(),
-			parentMessageId: null,
-			senderId: null,
-			senderName: null,
-			model: betaMessage.model || null,
+			messageId: crypto.randomUUID(),
+			sessionId,
+			parent: { messageId: null, sessionId: null, toolUseId: null },
 			engine: 'claude-code',
+			model: betaMessage.model || null,
+			sender: { id: null, name: null },
 			text: reasoningText,
 		};
 		outputs.push(reasoning);
@@ -225,15 +224,13 @@ export function convertAssistantMessage(msg: SDKAssistantMessage): EngineOutput[
 
 	const assistant: AssistantMessage = {
 		type: 'assistant',
-		id: msg.uuid || crypto.randomUUID(),
-		sessionId,
 		createdAt: new Date().toISOString(),
-		parentMessageId: null,
-		senderId: null,
-		senderName: null,
-		model: betaMessage.model || null,
+		messageId: msg.uuid || crypto.randomUUID(),
+		sessionId,
+		parent: { messageId: null, sessionId: null, toolUseId: msg.parent_tool_use_id || null },
 		engine: 'claude-code',
-		parentToolUseId: msg.parent_tool_use_id || null,
+		model: betaMessage.model || null,
+		sender: { id: null, name: null },
 		content: assistantContent,
 		stopReason: mapStopReason(betaMessage.stop_reason),
 		usage: mapUsage(betaMessage.usage),
@@ -250,15 +247,13 @@ export function convertUserMessage(msg: SDKUserMessage): UserMessage {
 
 	return {
 		type: 'user',
-		id: msg.uuid || crypto.randomUUID(),
-		sessionId: msg.session_id || '',
 		createdAt: new Date().toISOString(),
-		parentMessageId: null,
-		senderId: null,
-		senderName: null,
-		model: null,
+		messageId: msg.uuid || crypto.randomUUID(),
+		sessionId: msg.session_id || null,
+		parent: { messageId: null, sessionId: null, toolUseId: msg.parent_tool_use_id || null },
 		engine: 'claude-code',
-		parentToolUseId: msg.parent_tool_use_id || null,
+		model: null,
+		sender: { id: null, name: null },
 		content,
 		synthetic: true, // SDK-generated tool_result messages
 	};
@@ -369,14 +364,13 @@ export function convertSystemInit(msg: SDKSystemMessage): SystemInitEvent {
 export function convertCompactBoundary(msg: SDKCompactBoundaryMessage): CompactBoundaryMessage {
 	return {
 		type: 'compact_boundary',
-		id: msg.uuid || crypto.randomUUID(),
-		sessionId: msg.session_id,
 		createdAt: new Date().toISOString(),
-		parentMessageId: null,
-		senderId: null,
-		senderName: null,
-		model: null,
+		messageId: msg.uuid || crypto.randomUUID(),
+		sessionId: msg.session_id,
+		parent: { messageId: null, sessionId: null, toolUseId: null },
 		engine: 'claude-code',
+		model: null,
+		sender: { id: null, name: null },
 		trigger: msg.compact_metadata.trigger,
 		preTokens: msg.compact_metadata.pre_tokens || 0,
 	};
@@ -501,9 +495,9 @@ export function toSdkUserMessage(msg: UserMessage): SDKUserMessage {
 
 	return {
 		type: 'user',
-		uuid: msg.id,
+		uuid: msg.messageId,
 		session_id: msg.sessionId,
-		parent_tool_use_id: msg.parentToolUseId,
+		parent_tool_use_id: msg.parent.toolUseId,
 		message: { role: 'user', content },
 	} as unknown as SDKUserMessage;
 }

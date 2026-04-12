@@ -85,55 +85,34 @@ interface StreamRequest {
 // SDK → Unified Prompt Converter
 // ============================================================================
 
-/** Convert raw SDKUserMessage prompt from WS handler → UserMessage (unified) */
+/** Normalize raw UserMessage prompt from WS handler into a validated UserMessage */
 function convertRawPromptToUserMessage(
 	rawPrompt: any,
 	senderId?: string,
 	senderName?: string,
 ): UserMessage {
-	const content: UserContentBlock[] = [];
-	const rawContent = rawPrompt?.message?.content;
-
-	if (typeof rawContent === 'string') {
-		content.push({ type: 'text', text: rawContent });
-	} else if (Array.isArray(rawContent)) {
-		for (const block of rawContent as Array<Record<string, unknown>>) {
-			if (block.type === 'text') {
-				content.push({ type: 'text', text: block.text as string });
-			} else if (block.type === 'image') {
-				const source = block.source as Record<string, unknown> | undefined;
-				content.push({
-					type: 'image',
-					mediaType: (source?.media_type as string) || '',
-					data: (source?.data as string) || '',
-				});
-			} else if (block.type === 'document') {
-				const source = block.source as Record<string, unknown> | undefined;
-				content.push({
-					type: 'document',
-					mediaType: (source?.media_type as string) || '',
-					data: (source?.data as string) || '',
-					title: (block.title as string) || null,
-				});
-			}
-		}
-	}
-
-	if (content.length === 0) content.push({ type: 'text', text: '' });
+	const content: UserContentBlock[] = Array.isArray(rawPrompt?.content) && rawPrompt.content.length > 0
+		? rawPrompt.content as UserContentBlock[]
+		: [{ type: 'text', text: '' }];
 
 	return {
 		type: 'user',
-		id: rawPrompt?.uuid || crypto.randomUUID(),
-		sessionId: '',
-		createdAt: new Date().toISOString(),
-		parentMessageId: null,
-		senderId: senderId || null,
-		senderName: senderName || null,
-		model: null,
-		engine: null,
-		parentToolUseId: rawPrompt?.parent_tool_use_id || null,
+		createdAt: rawPrompt?.createdAt || new Date().toISOString(),
+		messageId: rawPrompt?.messageId || rawPrompt?.id || crypto.randomUUID(),
+		sessionId: null, // User messages from the frontend have no SDK session ID
+		parent: {
+			messageId: rawPrompt?.parent?.messageId ?? rawPrompt?.parentMessageId ?? null,
+			sessionId: rawPrompt?.parent?.sessionId ?? rawPrompt?.parentSessionId ?? null,
+			toolUseId: rawPrompt?.parent?.toolUseId ?? rawPrompt?.parentToolUseId ?? null,
+		},
+		engine: rawPrompt?.engine || null,
+		model: rawPrompt?.model || null,
+		sender: {
+			id: senderId || rawPrompt?.sender?.id || null,
+			name: senderName || rawPrompt?.sender?.name || null,
+		},
 		content,
-		synthetic: false,
+		synthetic: rawPrompt?.synthetic ?? false,
 	};
 }
 
@@ -370,16 +349,38 @@ class StreamManager extends EventEmitter {
 			if (!projectPath) throw new Error('Project path is required. Please select a valid project directory.');
 			if (!projectPathExists) throw new Error(`Project path does not exist: ${projectPath}. Please select a valid project directory.`);
 
-			// Get resume session ID
+			// Get resume session ID (branch-aware).
+			// Primary: use parentSessionId carried by the UserMessage — set by the
+			// frontend from the last assistant/reasoning sessionId in the current branch.
+			// Fallback: walk the HEAD chain in the DB (handles messages sent from
+			// older clients or tool-result user messages that lack parentSessionId).
 			let resumeSessionId: string | undefined = undefined;
 			if (chatSessionId) {
-				try {
-					const chatSession = sessionQueries.getById(chatSessionId);
-					if (chatSession?.latest_sdk_session_id) {
-						resumeSessionId = chatSession.latest_sdk_session_id;
+				// Primary source: parent.sessionId on the raw prompt
+				const promptParentSessionId = rawPrompt?.parent?.sessionId ?? rawPrompt?.parentSessionId;
+				if (promptParentSessionId && promptParentSessionId !== chatSessionId) {
+					resumeSessionId = promptParentSessionId;
+				} else {
+					// Fallback: walk HEAD chain
+					try {
+						const head = sessionQueries.getHead(chatSessionId);
+						if (head) {
+							const chain = messageQueries.getPathToRoot(head);
+							for (let i = chain.length - 1; i >= 0; i--) {
+								try {
+									const sdk = JSON.parse(chain[i].sdk_message);
+									if (sdk.type === 'user') continue;
+									const msgSessionId = sdk.sessionId || sdk.session_id;
+									if (msgSessionId && msgSessionId !== chatSessionId) {
+										resumeSessionId = msgSessionId;
+										break;
+									}
+								} catch { /* skip unparseable blobs */ }
+							}
+						}
+					} catch (error) {
+						debug.error('chat', 'Failed to get resume session ID from HEAD chain:', error);
 					}
-				} catch (error) {
-					debug.error('chat', 'Failed to get chat session for resume:', error);
 				}
 			}
 			streamState.preStreamSdkSessionId = resumeSessionId ?? null;
@@ -878,15 +879,13 @@ class StreamManager extends EventEmitter {
 				// Build a synthetic error assistant message (unified type)
 				const errorAssistantMsg: AssistantMessage = {
 					type: 'assistant',
-					id: crypto.randomUUID(),
-					sessionId: streamState.sdkSessionId || '',
 					createdAt: errorTimestamp,
-					parentMessageId: null,
-					senderId: null,
-					senderName: null,
-					model: null,
+					messageId: crypto.randomUUID(),
+					sessionId: streamState.sdkSessionId || null,
+					parent: { messageId: null, sessionId: null, toolUseId: null },
 					engine: streamState.engine,
-					parentToolUseId: null,
+					model: null,
+					sender: { id: null, name: null },
 					content: [{ type: 'text', text: `**Error:** ${streamState.error}` }],
 					stopReason: null,
 					usage: null,
@@ -1023,17 +1022,24 @@ class StreamManager extends EventEmitter {
 		// Save partial reasoning text to DB before cancelling (persists across refresh/project switch)
 		if (streamState.currentReasoningText && streamState.chatSessionId) {
 			try {
-				const reasoningMessage = {
-					type: 'reasoning' as const,
-					text: streamState.currentReasoningText,
-				};
-
 				const timestamp = new Date().toISOString();
 				const currentHead = sessionQueries.getHead(streamState.chatSessionId);
 
+				const reasoningMessage: ReasoningMessage = {
+					type: 'reasoning',
+					createdAt: timestamp,
+					messageId: crypto.randomUUID(),
+					sessionId: null, // Partial cancel saves are not valid resume targets
+					parent: { messageId: currentHead || null, sessionId: null, toolUseId: null },
+					engine: streamState.engine || null,
+					model: null,
+					sender: { id: null, name: null },
+					text: streamState.currentReasoningText,
+				};
+
 				const savedMessage = messageQueries.create({
 					session_id: streamState.chatSessionId,
-					sdk_message: reasoningMessage as any,
+					sdk_message: reasoningMessage,
 					timestamp,
 					parent_message_id: currentHead || undefined
 				});
@@ -1048,20 +1054,26 @@ class StreamManager extends EventEmitter {
 		// Save partial text to DB before cancelling (persists across refresh/project switch)
 		if (streamState.currentPartialText && streamState.chatSessionId) {
 			try {
-				const partialMessage = {
-					type: 'assistant' as const,
-					parentToolUseId: null,
-					content: [{ type: 'text' as const, text: streamState.currentPartialText }],
-					stopReason: null,
-					usage: null,
-				};
-
 				const timestamp = new Date().toISOString();
 				const currentHead = sessionQueries.getHead(streamState.chatSessionId);
 
+				const partialMessage: AssistantMessage = {
+					type: 'assistant',
+					createdAt: timestamp,
+					messageId: crypto.randomUUID(),
+					sessionId: null, // Partial cancel saves are not valid resume targets
+					parent: { messageId: currentHead || null, sessionId: null, toolUseId: null },
+					engine: streamState.engine || null,
+					model: null,
+					sender: { id: null, name: null },
+					content: [{ type: 'text', text: streamState.currentPartialText }],
+					stopReason: 'interrupted',
+					usage: null,
+				};
+
 				const savedMessage = messageQueries.create({
 					session_id: streamState.chatSessionId,
-					sdk_message: partialMessage as any,
+					sdk_message: partialMessage,
 					timestamp,
 					parent_message_id: currentHead || undefined
 				});

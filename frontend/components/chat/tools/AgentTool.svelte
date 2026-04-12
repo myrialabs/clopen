@@ -28,16 +28,16 @@
 	});
 
 	function getToolBrief(activity: SubAgentToolActivity): string {
-		if (!activity.toolInput) return '';
-		switch (activity.toolName) {
-			case 'Bash': return (activity.toolInput as Record<string, string>).command || '';
-			case 'Read': return (activity.toolInput as Record<string, string>).filePath || '';
-			case 'Write': return (activity.toolInput as Record<string, string>).filePath || '';
-			case 'Edit': return (activity.toolInput as Record<string, string>).filePath || '';
-			case 'Glob': return (activity.toolInput as Record<string, string>).pattern || '';
-			case 'Grep': return (activity.toolInput as Record<string, string>).pattern || '';
-			case 'WebFetch': return (activity.toolInput as Record<string, string>).url || '';
-			case 'WebSearch': return (activity.toolInput as Record<string, string>).query || '';
+		if (!activity.input) return '';
+		switch (activity.name) {
+			case 'Bash': return (activity.input as Record<string, string>).command || '';
+			case 'Read': return (activity.input as Record<string, string>).filePath || '';
+			case 'Write': return (activity.input as Record<string, string>).filePath || '';
+			case 'Edit': return (activity.input as Record<string, string>).filePath || '';
+			case 'Glob': return (activity.input as Record<string, string>).pattern || '';
+			case 'Grep': return (activity.input as Record<string, string>).pattern || '';
+			case 'WebFetch': return (activity.input as Record<string, string>).url || '';
+			case 'WebSearch': return (activity.input as Record<string, string>).query || '';
 			default: return '';
 		}
 	}
@@ -62,7 +62,7 @@
 			{#each subMessages as activity}
 				{#if activity.type === 'tool_use'}
 					<li class="text-xs text-slate-600 dark:text-slate-400">
-						<span class="font-medium">{activity.toolName}</span>
+						<span class="font-medium">{activity.name}</span>
 						{#if getToolBrief(activity)}
 							<span class="text-slate-400 dark:text-slate-500 ml-1">{getToolBrief(activity)}</span>
 						{/if}
