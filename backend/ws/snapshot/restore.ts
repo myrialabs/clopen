@@ -11,6 +11,7 @@ import { createRouter } from '$shared/utils/ws-server';
 import { messageQueries, sessionQueries, projectQueries, checkpointQueries } from '../../database/queries';
 import { snapshotService } from '../../snapshot/snapshot-service';
 import { debug } from '$shared/utils/logger';
+import type { UnifiedMessage } from '$shared/types/unified';
 import {
 	buildCheckpointTree,
 	getCheckpointPathToRoot,
@@ -209,15 +210,15 @@ export const restoreHandler = createRouter()
 			const sessionRecord = sessionQueries.getById(sessionId);
 			const isClaudeCode = sessionRecord?.engine === 'claude-code';
 
-			// Claude Code only: detect cancelled stream by partialText marker on sessionEnd
+			// Claude Code only: detect cancelled stream by stopReason on sessionEnd
 			let cancelledSessionId: string | null = null;
 			if (isClaudeCode) {
 				try {
 					const endMsg = msgLookup.get(sessionEnd.id);
 					if (endMsg) {
-						const endSdk = JSON.parse(endMsg.sdk_message);
-						if (endSdk.partialText) {
-							cancelledSessionId = endSdk.session_id || null;
+						const endParsed = JSON.parse(endMsg.data) as UnifiedMessage;
+						if (endParsed.type === 'assistant' && endParsed.stopReason === 'interrupted') {
+							cancelledSessionId = endParsed.sessionId || null;
 						}
 					}
 				} catch { /* skip */ }
@@ -229,29 +230,23 @@ export const restoreHandler = createRouter()
 				if (!walkMsg) break;
 
 				try {
-					const sdk = JSON.parse(walkMsg.sdk_message);
+					const msg = JSON.parse(walkMsg.data) as UnifiedMessage;
 
-					// Claude Code only: skip partial messages (from cancelled streams)
-					if (isClaudeCode && sdk.partialText) {
+					// Claude Code only: skip interrupted messages (from cancelled streams)
+					if (isClaudeCode && msg.type === 'assistant' && msg.stopReason === 'interrupted') {
 						walkId = walkMsg.parent_message_id || null;
 						continue;
 					}
 
-					// Claude Code only: skip assistant messages from the same cancelled fork
-					if (isClaudeCode && cancelledSessionId && sdk.session_id === cancelledSessionId) {
+					// Claude Code only: skip messages from the same cancelled fork
+					if (isClaudeCode && cancelledSessionId && msg.sessionId === cancelledSessionId) {
 						walkId = walkMsg.parent_message_id || null;
 						continue;
 					}
 
-					// Claude Code only: user message's `resume` field records the last valid session_id
-					if (isClaudeCode && sdk.type === 'user' && 'resume' in sdk) {
-						foundSdkSessionId = sdk.resume || null;
-						break;
-					}
-
-					// Any engine: message with session_id
-					if (sdk.session_id) {
-						foundSdkSessionId = sdk.session_id;
+					// Any engine: message with sessionId
+					if (msg.sessionId) {
+						foundSdkSessionId = msg.sessionId;
 						break;
 					}
 				} catch { /* skip */ }
@@ -315,7 +310,7 @@ export const restoreHandler = createRouter()
 		return {
 			restoredTo: {
 				messageId: sessionEnd.id,
-				timestamp: sessionEnd.timestamp
+				timestamp: sessionEnd.created_at
 			},
 			filesRestored,
 			filesSkipped

@@ -27,7 +27,6 @@ import type {
 	UserContentBlock,
 } from '$shared/types/unified';
 import type { EngineType } from '$shared/types/unified';
-import type { SSEEventData } from '$shared/types/messaging';
 import type { DatabaseMessage } from '$shared/types/database/schema';
 import { getProjectEngine, initializeProjectEngine } from '../engine';
 import { messageQueries, sessionQueries } from '../database/queries';
@@ -50,7 +49,7 @@ export interface StreamState {
 	status: 'active' | 'completed' | 'error' | 'cancelled';
 	startedAt: Date;
 	completedAt?: Date;
-	messages: SSEEventData[];
+	messages: unknown[];
 	currentMessage?: UnifiedMessage;
 	currentPartialText?: string;
 	currentReasoningText?: string;
@@ -368,11 +367,10 @@ class StreamManager extends EventEmitter {
 							const chain = messageQueries.getPathToRoot(head);
 							for (let i = chain.length - 1; i >= 0; i--) {
 								try {
-									const sdk = JSON.parse(chain[i].sdk_message);
-									if (sdk.type === 'user') continue;
-									const msgSessionId = sdk.sessionId || sdk.session_id;
-									if (msgSessionId && msgSessionId !== chatSessionId) {
-										resumeSessionId = msgSessionId;
+									const msg = JSON.parse(chain[i].data) as UnifiedMessage;
+									if (msg.type === 'user') continue;
+									if (msg.sessionId && msg.sessionId !== chatSessionId) {
+										resumeSessionId = msg.sessionId;
 										break;
 									}
 								} catch { /* skip unparseable blobs */ }
@@ -393,9 +391,7 @@ class StreamManager extends EventEmitter {
 			const savedMessage = await this.saveMessage(
 				userMessage,
 				chatSessionId,
-				userMessageTimestamp,
-				requestData.senderId,
-				requestData.senderName
+				userMessageTimestamp
 			);
 			userMessageId = savedMessage?.id;
 
@@ -454,10 +450,8 @@ class StreamManager extends EventEmitter {
 							if (resumeSessionId) {
 								for (let i = previousChain.length - 1; i >= 0; i--) {
 									try {
-										const sdk = JSON.parse(previousChain[i].sdk_message);
-										// Check both old SDK format and new unified format
-										const msgSessionId = sdk.session_id || sdk.sessionId;
-										if (msgSessionId === resumeSessionId) {
+										const msg = JSON.parse(previousChain[i].data) as UnifiedMessage;
+										if (msg.sessionId === resumeSessionId) {
 											boundaryIndex = i;
 											break;
 										}
@@ -468,20 +462,13 @@ class StreamManager extends EventEmitter {
 							const orphanedUserTexts: string[] = [];
 							for (let i = boundaryIndex + 1; i < previousChain.length; i++) {
 								try {
-									const sdk = JSON.parse(previousChain[i].sdk_message);
-									if (sdk.type === 'user') {
-										let text = '';
-										// Handle both old SDK format (message.content) and new unified format (content)
-										const content = sdk.content || sdk.message?.content;
-										if (typeof content === 'string') {
-											text = content;
-										} else if (Array.isArray(content)) {
-											text = content
-												.filter((block: any) => block.type === 'text')
-												.map((block: any) => block.text)
+									const msg = JSON.parse(previousChain[i].data) as UnifiedMessage;
+									if (msg.type === 'user') {
+											const text = msg.content
+												.filter(block => block.type === 'text')
+												.map(block => block.text)
 												.join('\n');
-										}
-										if (text.trim()) orphanedUserTexts.push(text.trim());
+											if (text.trim()) orphanedUserTexts.push(text.trim());
 									}
 								} catch { /* skip unparseable */ }
 							}
@@ -581,9 +568,7 @@ class StreamManager extends EventEmitter {
 							const saved = await this.saveMessage(
 								boundary,
 								chatSessionId,
-								compactTimestamp,
-								requestData.senderId,
-								requestData.senderName
+								compactTimestamp
 							);
 							savedCompactId = saved?.id;
 							savedCompactParentId = saved?.parent_message_id || null;
@@ -722,9 +707,7 @@ class StreamManager extends EventEmitter {
 							const saved = await this.saveMessage(
 								reasoning,
 								chatSessionId,
-								reasoningTimestamp,
-								requestData.senderId,
-								requestData.senderName
+								reasoningTimestamp
 							);
 							savedReasoningId = saved?.id;
 							savedReasoningParentId = saved?.parent_message_id || null;
@@ -766,9 +749,7 @@ class StreamManager extends EventEmitter {
 							const saved = await this.saveMessage(
 								assistantMsg,
 								chatSessionId,
-								messageTimestamp,
-								requestData.senderId,
-								requestData.senderName
+								messageTimestamp
 							);
 							savedMsgId = saved?.id;
 							savedParentId = saved?.parent_message_id || null;
@@ -814,9 +795,7 @@ class StreamManager extends EventEmitter {
 							const saved = await this.saveMessage(
 								userMsg,
 								chatSessionId,
-								messageTimestamp,
-								requestData.senderId,
-								requestData.senderName
+								messageTimestamp
 							);
 							savedMsgId = saved?.id;
 							savedParentId = saved?.parent_message_id || null;
@@ -897,9 +876,7 @@ class StreamManager extends EventEmitter {
 					const saved = await this.saveMessage(
 						errorAssistantMsg,
 						requestData.chatSessionId,
-						errorTimestamp,
-						requestData.senderId,
-						requestData.senderName
+						errorTimestamp
 					);
 					savedErrorMsgId = saved?.id;
 					savedErrorParentId = saved?.parent_message_id || null;
@@ -1039,7 +1016,7 @@ class StreamManager extends EventEmitter {
 
 				const savedMessage = messageQueries.create({
 					session_id: streamState.chatSessionId,
-					sdk_message: reasoningMessage,
+					message: reasoningMessage,
 					timestamp,
 					parent_message_id: currentHead || undefined
 				});
@@ -1073,7 +1050,7 @@ class StreamManager extends EventEmitter {
 
 				const savedMessage = messageQueries.create({
 					session_id: streamState.chatSessionId,
-					sdk_message: partialMessage,
+					message: partialMessage,
 					timestamp,
 					parent_message_id: currentHead || undefined
 				});
@@ -1186,19 +1163,15 @@ class StreamManager extends EventEmitter {
 	private async saveMessage(
 		message: UnifiedMessage,
 		sessionId: string,
-		timestamp: string,
-		senderId?: string,
-		senderName?: string
+		timestamp: string
 	): Promise<DatabaseMessage | null> {
 		try {
 			const currentHead = sessionQueries.getHead(sessionId);
 
 			const savedMessage = messageQueries.create({
 				session_id: sessionId,
-				sdk_message: message,
+				message: message,
 				timestamp,
-				sender_id: senderId,
-				sender_name: senderName,
 				parent_message_id: currentHead || undefined
 			});
 

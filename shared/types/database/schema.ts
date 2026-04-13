@@ -34,23 +34,25 @@ export interface Settings {
 
 
 /**
- * Database Message interface
- * Stores serialized UnifiedMessage (or legacy SDKMessage) as JSON with additional metadata.
- * Runtime migration from legacy format is handled by loadMessage() in message-formatter.ts.
+ * Database Message interface.
+ *
+ * `data` (JSON blob of UnifiedMessage) is the **single source of truth**.
+ * The other columns are **indexed projections** of fields inside the JSON,
+ * kept in sync at write-time for SQL performance (WHERE, ORDER BY, graph traversal).
  */
 export interface DatabaseMessage {
+	/** Primary key — projection of data.messageId */
 	id: string;
+	/** Projection of data.sessionId — used in WHERE filters */
 	session_id: string;
-	timestamp: string;
-	sdk_message: string; // JSON string of UnifiedMessage (or legacy SDKMessage)
-	// User identification for shared chat
-	sender_id?: string | null;
-	sender_name?: string | null;
-	// Git-like commit graph support
-	parent_message_id?: string | null; // Parent message (like git parent commit)
-	// Soft delete and branch support for undo/redo (deprecated, kept for backward compatibility)
-	is_deleted?: number; // 0 = active, 1 = soft deleted
-	branch_id?: string | null; // Branch identifier (now used as branch name)
+	/** Projection of data.createdAt — used in ORDER BY and range queries */
+	created_at: string;
+	/** Serialized UnifiedMessage JSON — the canonical source of truth */
+	data: string;
+	/** Projection of data.parent.messageId — used in graph traversal (getPathToRoot, getChildren) */
+	parent_message_id?: string | null;
+	is_deleted?: number;
+	branch_id?: string | null;
 }
 
 /**

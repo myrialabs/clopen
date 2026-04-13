@@ -347,7 +347,7 @@ export class SnapshotService {
 				const headMsg = messageQueries.getById(currentHead);
 				if (headMsg) {
 					for (let i = sessionSnapshots.length - 1; i >= 0; i--) {
-						if (sessionSnapshots[i].created_at <= headMsg.timestamp) {
+						if (sessionSnapshots[i].created_at <= headMsg.created_at) {
 							if (sessionSnapshots[i].created_at < targetTime) {
 								referenceTime = sessionSnapshots[i].created_at;
 							}

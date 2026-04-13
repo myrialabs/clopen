@@ -251,7 +251,7 @@ function findSessionEndByParent(
 
 	while (true) {
 		const children = childrenMap.get(current.id) || [];
-		children.sort((a, b) => a.timestamp.localeCompare(b.timestamp));
+		children.sort((a, b) => a.created_at.localeCompare(b.created_at));
 
 		const continuation = children.find(child => isSessionContinuation(child));
 		if (!continuation) return lastValidEnd;
@@ -270,7 +270,7 @@ function findSessionEndByTimestamp(
 	checkpointMsg: DatabaseMessage,
 	allMessages: DatabaseMessage[]
 ): DatabaseMessage {
-	const sorted = [...allMessages].sort((a, b) => a.timestamp.localeCompare(b.timestamp));
+	const sorted = [...allMessages].sort((a, b) => a.created_at.localeCompare(b.created_at));
 
 	const checkpointIndex = sorted.findIndex(m => m.id === checkpointMsg.id);
 	if (checkpointIndex === -1) return checkpointMsg;

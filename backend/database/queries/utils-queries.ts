@@ -30,8 +30,8 @@ export const dbUtils = {
 			FROM messages m
 			JOIN chat_sessions cs ON m.session_id = cs.id
 			JOIN projects p ON cs.project_id = p.id
-			WHERE m.content LIKE ?
-			ORDER BY m.timestamp DESC
+			WHERE m.data LIKE ?
+			ORDER BY m.created_at DESC
 			LIMIT ?
 		`).all(`%${query}%`, limit) as (DatabaseMessage & { project_name: string })[];
 	},

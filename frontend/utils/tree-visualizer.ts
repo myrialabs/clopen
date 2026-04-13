@@ -4,6 +4,7 @@
  */
 
 import type { DatabaseMessage } from '$shared/types/database/schema';
+import type { UnifiedMessage } from '$shared/types/unified';
 import { debug } from '$shared/utils/logger';
 
 export interface TreeNode {
@@ -25,18 +26,18 @@ export function buildTreeFromMessages(messages: DatabaseMessage[]): TreeNode[] {
 
 	// Create nodes
 	messages.forEach(msg => {
-		const sdkMessage = JSON.parse(msg.sdk_message);
+		const parsed = JSON.parse(msg.data) as UnifiedMessage;
 
 		// Only process user messages (checkpoints)
-		if (sdkMessage.type !== 'user') return;
+		if (parsed.type !== 'user') return;
 
-		const messageText = extractMessageText(sdkMessage);
+		const messageText = extractMessageText(parsed);
 		if (!messageText.trim()) return;
 
 		nodeMap.set(msg.id, {
 			id: msg.id,
 			messageText: messageText.trim().slice(0, 50),
-			timestamp: msg.timestamp,
+			timestamp: msg.created_at,
 			branchId: msg.branch_id || null,
 			parentId: msg.parent_message_id || null,
 			children: [],
@@ -66,19 +67,12 @@ export function buildTreeFromMessages(messages: DatabaseMessage[]): TreeNode[] {
 }
 
 /**
- * Extract message text from SDK message
+ * Extract message text from UnifiedMessage
  */
-function extractMessageText(sdkMessage: any): string {
-	if ('message' in sdkMessage && sdkMessage.message?.content) {
-		const content = sdkMessage.message.content;
-		if (typeof content === 'string') {
-			return content;
-		} else if (Array.isArray(content)) {
-			const textBlock = content.find((item: any) => typeof item === 'object' && 'text' in item);
-			if (textBlock && 'text' in textBlock) {
-				return textBlock.text;
-			}
-		}
+function extractMessageText(msg: UnifiedMessage): string {
+	if (msg.type !== 'user') return '';
+	for (const block of msg.content) {
+		if (block.type === 'text' && block.text) return block.text;
 	}
 	return '';
 }
@@ -178,10 +172,10 @@ export function logParentChildRelationships(messages: DatabaseMessage[]) {
 	debug.log('checkpoint', '\nParent-Child Relationships:');
 
 	messages.forEach(msg => {
-		const sdkMessage = JSON.parse(msg.sdk_message);
-		if (sdkMessage.type !== 'user') return;
+		const parsed = JSON.parse(msg.data) as UnifiedMessage;
+		if (parsed.type !== 'user') return;
 
-		const messageText = extractMessageText(sdkMessage).trim().slice(0, 30);
+		const messageText = extractMessageText(parsed).trim().slice(0, 30);
 		const parentId = msg.parent_message_id || 'none';
 		const branchId = msg.branch_id || 'none';
 
@@ -189,7 +183,7 @@ export function logParentChildRelationships(messages: DatabaseMessage[]) {
 		debug.log('checkpoint', `  ID: ${msg.id}`);
 		debug.log('checkpoint', `  Parent: ${parentId}`);
 		debug.log('checkpoint', `  Branch: ${branchId}`);
-		debug.log('checkpoint', `  Timestamp: ${msg.timestamp}`);
+		debug.log('checkpoint', `  Timestamp: ${msg.created_at}`);
 		debug.log('checkpoint', '');
 	});
 

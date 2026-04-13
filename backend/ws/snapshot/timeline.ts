@@ -147,13 +147,13 @@ export const timelineHandler = createRouter()
 				// Root checkpoints have initial node as parent
 				parentId: parentCpId || INITIAL_NODE_ID,
 				activeChildId,
-				timestamp: cp.timestamp,
+				timestamp: cp.created_at,
 				messageText,
 				isOnActivePath,
 				isOrphaned,
 				isCurrent,
 				hasSnapshot: !!snapshot,
-				senderName: cp.sender_name,
+				senderName: msg.sender?.name || null,
 				filesChanged: stats.filesChanged,
 				insertions: stats.insertions,
 				deletions: stats.deletions

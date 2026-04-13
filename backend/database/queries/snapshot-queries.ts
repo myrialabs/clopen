@@ -5,6 +5,7 @@
 
 import type { MessageSnapshot, SessionRelationship } from '$shared/types/database/schema';
 import { getDatabase } from '../index';
+import type { UnifiedMessage } from '$shared/types/unified';
 
 import { debug } from '$shared/utils/logger';
 export const snapshotQueries = {
@@ -160,12 +161,12 @@ export const snapshotQueries = {
 
 		// Get snapshots with their associated messages to determine type
 		const allSnapshots = db.prepare(`
-			SELECT ms.id, ms.created_at, ms.message_id, m.sdk_message
+			SELECT ms.id, ms.created_at, ms.message_id, m.data
 			FROM message_snapshots ms
 			JOIN messages m ON ms.message_id = m.id
 			WHERE ms.session_id = ?
 			ORDER BY ms.created_at ASC
-		`).all(sessionId) as { id: string; created_at: string; message_id: string; sdk_message: string }[];
+		`).all(sessionId) as { id: string; created_at: string; message_id: string; data: string }[];
 
 		// Find the checkpoint snapshot index
 		const checkpointIndex = allSnapshots.findIndex(snap => snap.created_at === checkpointTimestamp);
@@ -178,8 +179,8 @@ export const snapshotQueries = {
 		// Find next USER message snapshot after checkpoint
 		let deleteFromIndex = -1;
 		for (let i = checkpointIndex + 1; i < allSnapshots.length; i++) {
-			const sdkMessage = JSON.parse(allSnapshots[i].sdk_message);
-			if (sdkMessage.type === 'user') {
+			const msg = JSON.parse(allSnapshots[i].data) as UnifiedMessage;
+			if (msg.type === 'user') {
 				deleteFromIndex = i;
 				break;
 			}

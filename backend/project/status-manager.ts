@@ -5,6 +5,7 @@
 
 import { streamManager, type StreamState } from '../chat/stream-manager.js';
 import { ws } from '../utils/ws.js';
+import type { UnifiedMessage } from '$shared/types/unified';
 
 // Interactive tools that block the stream waiting for user input
 const INTERACTIVE_TOOLS = new Set(['AskUserQuestion']);
@@ -18,26 +19,22 @@ const INTERACTIVE_TOOLS = new Set(['AskUserQuestion']);
 function detectStreamWaitingInput(stream: StreamState): boolean {
   if (stream.status !== 'active') return false;
 
-  // SSEEventData.message is SDKMessage: { type, message: { content: [...] } }
-  // Content blocks live at msg.message.content, NOT msg.content
   const answeredToolIds = new Set<string>();
   for (const event of stream.messages) {
-    const msg = event.message;
-    if (!msg || (msg as any).type !== 'user') continue;
-    const content = Array.isArray((msg as any).message?.content) ? (msg as any).message.content : [];
-    for (const item of content) {
-      if (item.type === 'tool_result' && item.tool_use_id) {
-        answeredToolIds.add(item.tool_use_id);
+    const msg = (event as { message?: UnifiedMessage }).message;
+    if (!msg || msg.type !== 'user') continue;
+    for (const block of msg.content) {
+      if (block.type === 'tool_result' && block.toolUseId) {
+        answeredToolIds.add(block.toolUseId);
       }
     }
   }
 
   for (const event of stream.messages) {
-    const msg = event.message;
-    if (!msg || (msg as any).type !== 'assistant') continue;
-    const content = Array.isArray((msg as any).message?.content) ? (msg as any).message.content : [];
-    if (content.some((item: any) =>
-      item.type === 'tool_use' && INTERACTIVE_TOOLS.has(item.name) && item.id && !answeredToolIds.has(item.id)
+    const msg = (event as { message?: UnifiedMessage }).message;
+    if (!msg || msg.type !== 'assistant') continue;
+    if (msg.content.some(block =>
+      block.type === 'tool_use' && INTERACTIVE_TOOLS.has(block.name) && block.id && !answeredToolIds.has(block.id)
     )) {
       return true;
     }

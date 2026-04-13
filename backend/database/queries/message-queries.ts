@@ -1,19 +1,21 @@
 import { getDatabase } from '../index';
 import type { DatabaseMessage } from '$shared/types/database/schema';
 import type { UnifiedMessage } from '$shared/types/unified';
-import { loadMessage } from '$shared/utils/message-formatter';
 import { debug } from '$shared/utils/logger';
+
+/** Parse message JSON from a DB row. */
+function parseMessage(row: DatabaseMessage): UnifiedMessage {
+	return JSON.parse(row.data) as UnifiedMessage;
+}
 
 export const messageQueries = {
 	/**
 	 * Get visible messages for a session (git-like: from HEAD to root)
 	 * This is the main function used to display messages in UI.
-	 * Returns UnifiedMessage[] with runtime migration for legacy data.
 	 */
 	getBySessionId(sessionId: string): UnifiedMessage[] {
 		const db = getDatabase();
 
-		// Get current HEAD from session
 		const session = db.prepare(`
 			SELECT current_head_message_id FROM chat_sessions WHERE id = ?
 		`).get(sessionId) as { current_head_message_id: string | null } | null;
@@ -22,25 +24,8 @@ export const messageQueries = {
 			return [];
 		}
 
-		// Build path from HEAD to root (git-like)
 		const path = this.getPathToRoot(session.current_head_message_id);
-
-		// Parse messages — propagate sender from user to subsequent messages
-		let lastSenderId: string | null = null;
-		let lastSenderName: string | null = null;
-
-		return path.map(msg => {
-			// Track sender from messages that have it stored
-			if (msg.sender_id) {
-				lastSenderId = msg.sender_id;
-				lastSenderName = msg.sender_name || null;
-			}
-
-			return loadMessage(msg, {
-				sender_id: msg.sender_id || lastSenderId,
-				sender_name: msg.sender_name || lastSenderName,
-			});
-		});
+		return path.map(parseMessage);
 	},
 
 	/**
@@ -57,22 +42,22 @@ export const messageQueries = {
 
 		const firstUserMessage = db.prepare(`
 			SELECT * FROM messages
-			WHERE session_id = ? AND json_extract(sdk_message, '$.type') = 'user'
-			ORDER BY timestamp ASC
+			WHERE session_id = ? AND json_extract(data, '$.type') = 'user'
+			ORDER BY created_at ASC
 			LIMIT 1
 		`).get(sessionId) as DatabaseMessage | null;
 
 		const lastAssistantMessage = db.prepare(`
 			SELECT * FROM messages
-			WHERE session_id = ? AND json_extract(sdk_message, '$.type') = 'assistant'
-			ORDER BY timestamp DESC
+			WHERE session_id = ? AND json_extract(data, '$.type') = 'assistant'
+			ORDER BY created_at DESC
 			LIMIT 1
 		`).get(sessionId) as DatabaseMessage | null;
 
 		const counts = db.prepare(`
 			SELECT
-				SUM(CASE WHEN json_extract(sdk_message, '$.type') = 'user' THEN 1 ELSE 0 END) AS user_count,
-				SUM(CASE WHEN json_extract(sdk_message, '$.type') = 'assistant' THEN 1 ELSE 0 END) AS assistant_count
+				SUM(CASE WHEN json_extract(data, '$.type') = 'user' THEN 1 ELSE 0 END) AS user_count,
+				SUM(CASE WHEN json_extract(data, '$.type') = 'assistant' THEN 1 ELSE 0 END) AS assistant_count
 			FROM messages
 			WHERE session_id = ?
 		`).get(sessionId) as { user_count: number; assistant_count: number } | null;
@@ -93,7 +78,7 @@ export const messageQueries = {
 		const messages = db.prepare(`
 			SELECT * FROM messages
 			WHERE session_id = ?
-			ORDER BY timestamp ASC
+			ORDER BY created_at ASC
 		`).all(sessionId) as DatabaseMessage[];
 
 		return messages;
@@ -110,43 +95,50 @@ export const messageQueries = {
 
 	create(messageData: {
 		session_id: string;
-		sdk_message: UnifiedMessage;
+		message: UnifiedMessage;
 		timestamp?: string;
-		sender_id?: string;
-		sender_name?: string;
 		branch_id?: string;
 		parent_message_id?: string;
 	}): DatabaseMessage {
 		const db = getDatabase();
 		const id = crypto.randomUUID();
-
 		const timestamp = messageData.timestamp || new Date().toISOString();
+		const parentMessageId = messageData.parent_message_id || null;
 
-		// Save SDK message with git-like parent pointer
+		// Sync metadata into JSON blob so it is the single source of truth
+		const msg: UnifiedMessage = {
+			...messageData.message,
+			messageId: id,
+			createdAt: timestamp,
+			sessionId: messageData.message.sessionId,
+			parent: {
+				...messageData.message.parent,
+				messageId: parentMessageId,
+			},
+		};
+
+		const serialized = JSON.stringify(msg);
+
 		db.prepare(`
-			INSERT INTO messages (id, session_id, timestamp, sdk_message, sender_id, sender_name, is_deleted, branch_id, parent_message_id)
-			VALUES (?, ?, ?, ?, ?, ?, 0, ?, ?)
+			INSERT INTO messages (id, session_id, created_at, data, is_deleted, branch_id, parent_message_id)
+			VALUES (?, ?, ?, ?, 0, ?, ?)
 		`).run(
 			id,
 			messageData.session_id,
 			timestamp,
-			JSON.stringify(messageData.sdk_message),
-			messageData.sender_id || null,
-			messageData.sender_name || null,
+			serialized,
 			messageData.branch_id || null,
-			messageData.parent_message_id || null
+			parentMessageId
 		);
 
 		return {
 			id,
 			session_id: messageData.session_id,
-			timestamp,
-			sdk_message: JSON.stringify(messageData.sdk_message),
-			sender_id: messageData.sender_id || null,
-			sender_name: messageData.sender_name || null,
+			created_at: timestamp,
+			data: serialized,
 			is_deleted: 0,
 			branch_id: messageData.branch_id || null,
-			parent_message_id: messageData.parent_message_id || null
+			parent_message_id: parentMessageId
 		};
 	},
 
@@ -164,7 +156,7 @@ export const messageQueries = {
 		const db = getDatabase();
 		db.prepare(`
 			DELETE FROM messages
-			WHERE session_id = ? AND timestamp >= ?
+			WHERE session_id = ? AND created_at >= ?
 		`).run(sessionId, timestamp);
 	},
 
@@ -178,10 +170,10 @@ export const messageQueries = {
 		const allMessages = db.prepare(`
 			SELECT * FROM messages
 			WHERE session_id = ?
-			ORDER BY timestamp ASC
+			ORDER BY created_at ASC
 		`).all(sessionId) as DatabaseMessage[];
 
-		const checkpointIndex = allMessages.findIndex(msg => msg.timestamp === checkpointTimestamp);
+		const checkpointIndex = allMessages.findIndex(msg => msg.created_at === checkpointTimestamp);
 
 		if (checkpointIndex === -1) {
 			debug.warn('database', `Checkpoint message with timestamp ${checkpointTimestamp} not found`);
@@ -191,7 +183,7 @@ export const messageQueries = {
 		// Find next USER message after checkpoint (this is where we start deleting)
 		let deleteFromIndex = -1;
 		for (let i = checkpointIndex + 1; i < allMessages.length; i++) {
-			const msg = loadMessage(allMessages[i]);
+			const msg = parseMessage(allMessages[i]);
 			if (msg.type === 'user') {
 				deleteFromIndex = i;
 				break;
@@ -247,17 +239,17 @@ export const messageQueries = {
 		// Also restore messages that are on main branch (no branch_id) up to the branching point
 		// We need to restore all messages before the first message in the target branch
 		const firstBranchMessage = db.prepare(`
-			SELECT MIN(timestamp) as min_timestamp
+			SELECT MIN(created_at) as min_created_at
 			FROM messages
 			WHERE session_id = ? AND branch_id = ?
-		`).get(sessionId, branchId) as { min_timestamp: string } | undefined;
+		`).get(sessionId, branchId) as { min_created_at: string } | undefined;
 
-		if (firstBranchMessage?.min_timestamp) {
+		if (firstBranchMessage?.min_created_at) {
 			db.prepare(`
 				UPDATE messages
 				SET is_deleted = 0
-				WHERE session_id = ? AND (branch_id IS NULL OR branch_id = '') AND timestamp < ?
-			`).run(sessionId, firstBranchMessage.min_timestamp);
+				WHERE session_id = ? AND (branch_id IS NULL OR branch_id = '') AND created_at < ?
+			`).run(sessionId, firstBranchMessage.min_created_at);
 		}
 	},
 
@@ -269,7 +261,7 @@ export const messageQueries = {
 		const messages = db.prepare(`
 			SELECT * FROM messages
 			WHERE session_id = ? AND branch_id = ?
-			ORDER BY timestamp ASC
+			ORDER BY created_at ASC
 		`).all(sessionId, branchId) as DatabaseMessage[];
 
 		return messages;
@@ -298,8 +290,8 @@ export const messageQueries = {
 		const db = getDatabase();
 		const message = db.prepare(`
 			SELECT * FROM messages
-			WHERE session_id = ? AND timestamp < ? AND (is_deleted IS NULL OR is_deleted = 0)
-			ORDER BY timestamp DESC
+			WHERE session_id = ? AND created_at < ? AND (is_deleted IS NULL OR is_deleted = 0)
+			ORDER BY created_at DESC
 			LIMIT 1
 		`).get(sessionId, timestamp) as DatabaseMessage | null;
 
@@ -314,12 +306,12 @@ export const messageQueries = {
 		const db = getDatabase();
 		const rows = db.prepare(`
 			SELECT * FROM messages
-			WHERE session_id = ? AND timestamp > ? AND (is_deleted IS NULL OR is_deleted = 0)
-			ORDER BY timestamp ASC
+			WHERE session_id = ? AND created_at > ? AND (is_deleted IS NULL OR is_deleted = 0)
+			ORDER BY created_at ASC
 		`).all(sessionId, timestamp) as DatabaseMessage[];
 
 		for (const row of rows) {
-			const msg = loadMessage(row);
+			const msg = parseMessage(row);
 			if (msg.type === 'assistant') {
 				return row;
 			}
@@ -338,7 +330,7 @@ export const messageQueries = {
 		const messages = db.prepare(`
 			SELECT * FROM messages
 			WHERE parent_message_id = ?
-			ORDER BY timestamp ASC
+			ORDER BY created_at ASC
 		`).all(messageId) as DatabaseMessage[];
 
 		return messages;
@@ -428,7 +420,7 @@ export const messageQueries = {
 		const messages = db.prepare(`
 			SELECT * FROM messages
 			WHERE session_id = ?
-			ORDER BY timestamp ASC
+			ORDER BY created_at ASC
 		`).all(sessionId) as DatabaseMessage[];
 
 		const graph = new Map<string, DatabaseMessage>();
@@ -487,13 +479,13 @@ export const messageQueries = {
 		const rows = db.prepare(`
 			SELECT * FROM messages
 			WHERE session_id = ? AND (is_deleted IS NULL OR is_deleted = 0)
-			ORDER BY timestamp ASC
+			ORDER BY created_at ASC
 		`).all(sessionId) as DatabaseMessage[];
 
 		// Collect all tool_use_ids that have a matching tool_result
 		const answeredToolIds = new Set<string>();
 		for (const row of rows) {
-			const msg = loadMessage(row);
+			const msg = parseMessage(row);
 			if (msg.type !== 'user') continue;
 			for (const block of msg.content) {
 				if (block.type === 'tool_result' && block.toolUseId) {
@@ -503,10 +495,10 @@ export const messageQueries = {
 		}
 
 		// Find assistant messages with unanswered tool_use blocks and mark them
-		const updateStmt = db.prepare(`UPDATE messages SET sdk_message = ? WHERE id = ?`);
+		const updateStmt = db.prepare(`UPDATE messages SET data = ? WHERE id = ?`);
 
 		for (const row of rows) {
-			const msg = loadMessage(row);
+			const msg = parseMessage(row);
 			if (msg.type !== 'assistant') continue;
 
 			const hasUnansweredTool = msg.content.some(
