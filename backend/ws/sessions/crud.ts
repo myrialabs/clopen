@@ -13,6 +13,7 @@
 import { t } from 'elysia';
 import { createRouter } from '$shared/utils/ws-server';
 import type { EngineType } from '$shared/types/engine';
+import type { ChatSession } from '$shared/types/database/schema';
 import { sessionQueries, messageQueries, projectQueries, snapshotQueries } from '../../database/queries';
 import { ws } from '$backend/utils/ws';
 import { streamManager } from '../../chat/stream-manager';
@@ -21,22 +22,60 @@ import { blobStore } from '../../snapshot/blob-store';
 import { broadcastPresence } from '../projects/status';
 import { debug } from '$shared/utils/logger';
 
+/** Elysia schema for ChatSession responses — all optional fields use t.Optional */
+const sessionSchema = t.Object({
+	// Identity
+	id: t.String(),
+	project_id: t.String(),
+	started_at: t.String(),
+	ended_at: t.Optional(t.String()),
+	// Session preferences
+	title: t.Optional(t.String()),
+	engine: t.Optional(t.Union([t.Literal('claude-code'), t.Literal('opencode')])),
+	model: t.Optional(t.String()),
+	account_id: t.Optional(t.Number()),
+	account_name: t.Optional(t.String()),
+	// HEAD state
+	head_message_id: t.Optional(t.String()),
+	head_session_id: t.Optional(t.String()),
+	head_title: t.Optional(t.String()),
+	head_summary: t.Optional(t.String()),
+	// Activity tracking
+	sender_id: t.Optional(t.String()),
+	sender_name: t.Optional(t.String()),
+	message_count: t.Optional(t.Number()),
+	user_count: t.Optional(t.Number()),
+	last_message_at: t.Optional(t.String()),
+});
+
+/** Convert ChatSession DB row → response (null → undefined for Elysia optional fields) */
+function serializeSession(session: ChatSession) {
+	return {
+		...session,
+		title: session.title ?? undefined,
+		engine: session.engine ?? 'claude-code' as const,
+		model: session.model ?? undefined,
+		account_id: session.account_id ?? undefined,
+		account_name: session.account_name ?? undefined,
+		head_message_id: session.head_message_id ?? undefined,
+		head_session_id: session.head_session_id ?? undefined,
+		ended_at: session.ended_at ?? undefined,
+		sender_id: session.sender_id ?? undefined,
+		sender_name: session.sender_name ?? undefined,
+		head_title: session.head_title ?? undefined,
+		head_summary: session.head_summary ?? undefined,
+		message_count: session.message_count ?? undefined,
+		user_count: session.user_count ?? undefined,
+		last_message_at: session.last_message_at ?? undefined,
+	};
+}
+
 export const crudHandler = createRouter()
 	// List sessions (includes server-saved current session ID for refresh restore)
 	.http('sessions:list', {
 		data: t.Object({}),
 		response: t.Object({
-			sessions: t.Array(t.Object({
-				id: t.String(),
-				project_id: t.String(),
-				title: t.Optional(t.String()),
-				engine: t.Optional(t.Union([t.Literal('claude-code'), t.Literal('opencode')])),
-				model: t.Optional(t.String()),
-				latest_sdk_session_id: t.Optional(t.String()),
-				current_head_message_id: t.Optional(t.String()),
-				started_at: t.String(),
-				ended_at: t.Optional(t.String())
-			})),
+			sessions: t.Array(sessionSchema),
 			currentSessionId: t.Optional(t.String()),
 			unreadSessionIds: t.Array(t.Object({
 				sessionId: t.String(),
@@ -55,17 +94,8 @@ export const crudHandler = createRouter()
 		const unreadRows = sessionQueries.getUnreadSessions(userId, projectId);
 		debug.log('session', `[unread] sessions:list — user=${userId}, project=${projectId}, unreadCount=${unreadRows.length}`, unreadRows);
 
-		// Convert null to undefined for TypeScript optional fields
 		return {
-			sessions: sessions.map(session => ({
-				...session,
-				title: session.title ?? undefined,
-				engine: session.engine ?? 'claude-code',
-				model: session.model ?? undefined,
-				latest_sdk_session_id: session.latest_sdk_session_id ?? undefined,
-				current_head_message_id: session.current_head_message_id ?? undefined,
-				ended_at: session.ended_at ?? undefined
-			})),
+			sessions: sessions.map(serializeSession),
 			currentSessionId: currentSessionId ?? undefined,
 			unreadSessionIds: unreadRows.map(r => ({ sessionId: r.session_id, projectId: r.project_id }))
 		};
@@ -74,30 +104,11 @@ export const crudHandler = createRouter()
 	// List active (non-ended) sessions for current project
 	.http('sessions:list-active', {
 		data: t.Object({}),
-		response: t.Array(t.Object({
-			id: t.String(),
-			project_id: t.String(),
-			title: t.Optional(t.String()),
-			engine: t.Optional(t.Union([t.Literal('claude-code'), t.Literal('opencode')])),
-			model: t.Optional(t.String()),
-			latest_sdk_session_id: t.Optional(t.String()),
-			current_head_message_id: t.Optional(t.String()),
-			started_at: t.String(),
-			ended_at: t.Optional(t.String())
-		}))
+		response: t.Array(sessionSchema)
 	}, async ({ conn }) => {
 		const projectId = ws.getProjectId(conn);
 		const sessions = sessionQueries.getActiveSessionsForProject(projectId);
-
-		return sessions.map(session => ({
-			...session,
-			title: session.title ?? undefined,
-			engine: session.engine ?? 'claude-code',
-			model: session.model ?? undefined,
-			latest_sdk_session_id: session.latest_sdk_session_id ?? undefined,
-			current_head_message_id: session.current_head_message_id ?? undefined,
-			ended_at: session.ended_at ?? undefined
-		}));
+		return sessions.map(serializeSession);
 	})
 
 	// Create new session
@@ -106,17 +117,7 @@ export const crudHandler = createRouter()
 			title: t.Optional(t.String()),
 			engine: t.Optional(t.Union([t.Literal('claude-code'), t.Literal('opencode')]))
 		}),
-		response: t.Object({
-			id: t.String(),
-			project_id: t.String(),
-			title: t.Optional(t.String()),
-			engine: t.Optional(t.Union([t.Literal('claude-code'), t.Literal('opencode')])),
-			model: t.Optional(t.String()),
-			latest_sdk_session_id: t.Optional(t.String()),
-			current_head_message_id: t.Optional(t.String()),
-			started_at: t.String(),
-			ended_at: t.Optional(t.String())
-		})
+		response: sessionSchema
 	}, async ({ data, conn }) => {
 		const projectId = ws.getProjectId(conn);
 		const now = new Date().toISOString();
@@ -128,16 +129,7 @@ export const crudHandler = createRouter()
 			started_at: now
 		});
 
-		// Convert null to undefined for TypeScript optional fields
-		return {
-			...session,
-			title: session.title ?? undefined,
-			engine: session.engine ?? 'claude-code',
-			model: session.model ?? undefined,
-			latest_sdk_session_id: session.latest_sdk_session_id ?? undefined,
-			current_head_message_id: session.current_head_message_id ?? undefined,
-			ended_at: session.ended_at ?? undefined
-		};
+		return serializeSession(session);
 	})
 
 	// Get session by ID (with messages)
@@ -146,17 +138,7 @@ export const crudHandler = createRouter()
 			id: t.String({ minLength: 1 })
 		}),
 		response: t.Object({
-			session: t.Object({
-				id: t.String(),
-				project_id: t.String(),
-				title: t.Optional(t.String()),
-				engine: t.Optional(t.Union([t.Literal('claude-code'), t.Literal('opencode')])),
-				model: t.Optional(t.String()),
-				latest_sdk_session_id: t.Optional(t.String()),
-				current_head_message_id: t.Optional(t.String()),
-				started_at: t.String(),
-				ended_at: t.Optional(t.String())
-			}),
+			session: sessionSchema,
 			messages: t.Array(t.Any())
 		})
 	}, async ({ data }) => {
@@ -169,17 +151,8 @@ export const crudHandler = createRouter()
 		// Also get messages for this session
 		const messages = messageQueries.getBySessionId(data.id);
 
-		// Convert null to undefined for TypeScript optional fields
 		return {
-			session: {
-				...session,
-				title: session.title ?? undefined,
-				engine: session.engine ?? undefined,
-				model: session.model ?? undefined,
-				latest_sdk_session_id: session.latest_sdk_session_id ?? undefined,
-				current_head_message_id: session.current_head_message_id ?? undefined,
-				ended_at: session.ended_at ?? undefined
-			},
+			session: serializeSession(session),
 			messages
 		};
 	})
@@ -189,17 +162,7 @@ export const crudHandler = createRouter()
 		data: t.Object({
 			forceNew: t.Optional(t.Boolean())
 		}),
-		response: t.Object({
-			id: t.String(),
-			project_id: t.String(),
-			title: t.Optional(t.String()),
-			engine: t.Optional(t.Union([t.Literal('claude-code'), t.Literal('opencode')])),
-			model: t.Optional(t.String()),
-			latest_sdk_session_id: t.Optional(t.String()),
-			current_head_message_id: t.Optional(t.String()),
-			started_at: t.String(),
-			ended_at: t.Optional(t.String())
-		})
+		response: sessionSchema
 	}, async ({ data, conn }) => {
 		const projectId = ws.getProjectId(conn);
 
@@ -219,15 +182,7 @@ export const crudHandler = createRouter()
 			data.forceNew || false
 		);
 
-		const sessionResponse = {
-			...session,
-			title: session.title ?? undefined,
-			engine: session.engine ?? 'claude-code',
-			model: session.model ?? undefined,
-			latest_sdk_session_id: session.latest_sdk_session_id ?? undefined,
-			current_head_message_id: session.current_head_message_id ?? undefined,
-			ended_at: session.ended_at ?? undefined
-		};
+		const sessionResponse = serializeSession(session);
 
 		// Broadcast when a NEW session was actually created.
 		// Covers both forceNew=true and the case where no active session existed.
@@ -251,50 +206,27 @@ export const crudHandler = createRouter()
 			reactivate: t.Optional(t.Boolean()),
 			end_session: t.Optional(t.Boolean())
 		}),
-		response: t.Object({
-			id: t.String(),
-			project_id: t.String(),
-			title: t.Optional(t.String()),
-			engine: t.Optional(t.Union([t.Literal('claude-code'), t.Literal('opencode')])),
-			model: t.Optional(t.String()),
-			latest_sdk_session_id: t.Optional(t.String()),
-			current_head_message_id: t.Optional(t.String()),
-			started_at: t.String(),
-			ended_at: t.Optional(t.String())
-		})
+		response: sessionSchema
 	}, async ({ data }) => {
 		const session = sessionQueries.getById(data.id);
 		if (!session) {
 			throw new Error('Session not found');
 		}
 
-		// Update session title if provided
 		if (data.title) {
 			sessionQueries.updateTitle(data.id, data.title);
 		}
 
-		// Reactivate session if requested (clear ended_at and end other sessions in same project)
 		if (data.reactivate) {
 			sessionQueries.reactivate(data.id);
 		}
 
-		// End session if requested
 		if (data.end_session) {
 			sessionQueries.end(data.id);
 		}
 
 		const updatedSession = sessionQueries.getById(data.id)!;
-
-		// Convert null to undefined for TypeScript optional fields
-		return {
-			...updatedSession,
-			title: updatedSession.title ?? undefined,
-			engine: updatedSession.engine ?? 'claude-code',
-			model: updatedSession.model ?? undefined,
-			latest_sdk_session_id: updatedSession.latest_sdk_session_id ?? undefined,
-			current_head_message_id: updatedSession.current_head_message_id ?? undefined,
-			ended_at: updatedSession.ended_at ?? undefined
-		};
+		return serializeSession(updatedSession);
 	})
 
 	// Delete session (with full related data cleanup)
@@ -473,4 +405,18 @@ export const crudHandler = createRouter()
 		const userId = ws.getUserId(conn);
 		sessionQueries.markUnread(userId, data.sessionId, data.projectId);
 		debug.log('session', `[unread] Marked session ${data.sessionId} as UNREAD for user ${userId} in project ${data.projectId}`);
+	})
+
+	// Search sessions by message content (deep search)
+	.http('sessions:search', {
+		data: t.Object({
+			query: t.String({ minLength: 1 })
+		}),
+		response: t.Object({
+			sessionIds: t.Array(t.String())
+		})
+	}, async ({ data, conn }) => {
+		const projectId = ws.getProjectId(conn);
+		const sessionIds = sessionQueries.searchByMessageContent(projectId, data.query);
+		return { sessionIds };
 	});

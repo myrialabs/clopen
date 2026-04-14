@@ -1,18 +1,16 @@
 <script lang="ts">
-	import { onMount } from 'svelte';
 	import { sessionState, removeSession, setCurrentSession } from '$frontend/stores/core/sessions.svelte';
 	import { projectState, setCurrentProject } from '$frontend/stores/core/projects.svelte';
 	import { addNotification } from '$frontend/stores/ui/notification.svelte';
 	import { setCurrentView } from '$frontend/stores/core/app.svelte';
 	import ws from '$frontend/utils/ws';
-	import type { ChatSession, Project } from '$shared/types/database/schema';
+	import type { ChatSession } from '$shared/types/database/schema';
 	import Input from '../common/form/Input.svelte';
 	import Select from '../common/form/Select.svelte';
 	import Icon from '$frontend/components/common/display/Icon.svelte';
 	import PageTemplate from '../common/display/PageTemplate.svelte';
 	import Button from '../common/display/Button.svelte';
 	import { showConfirm } from '$frontend/stores/ui/dialog.svelte';
-	import Modal from '$frontend/components/common/overlay/Modal.svelte';
 	import TimelineModal from '../checkpoint/TimelineModal.svelte';
 	import { presenceState } from '$frontend/stores/core/presence.svelte';
 	import { debug } from '$shared/utils/logger';
@@ -27,13 +25,13 @@
 
 	// Use real session data from session store
 	const sessions = $derived(sessionState.sessions);
-	
+
 	// Helper to get project name from project ID
 	function getProjectName(projectId: string): string {
 		const project = projectState.projects.find(p => p.id === projectId);
 		return project?.name || 'Unknown Project';
 	}
-	
+
 	// Helper to get relative time (last active)
 	function getRelativeTime(dateString: string): string {
 		const now = Date.now();
@@ -54,129 +52,51 @@
 
 	// Helper to get last activity timestamp
 	function getLastActive(session: ChatSession): string {
-		// Use ended_at if available, otherwise use started_at
-		const timestamp = session.ended_at && session.ended_at !== ''
-			? session.ended_at
-			: session.started_at;
+		const timestamp = session.last_message_at || session.ended_at || session.started_at;
 		return getRelativeTime(timestamp);
 	}
-	
+
 	// Helper to calculate session duration in minutes
 	function getSessionDuration(session: ChatSession): number {
 		const start = new Date(session.started_at).getTime();
 		const end = session.ended_at ? new Date(session.ended_at).getTime() : Date.now();
 		return Math.round((end - start) / 1000 / 60);
 	}
-	
-	// Cache for session data to avoid multiple API calls
-	const sessionDataCache = $state<Record<string, {
-		title: string;
-		summary: string;
-		count: number;
-		userCount: number;
-		assistantCount: number;
-	}>>({});
-	let loadingSessionData = $state(true);
 
-	// Helper to get session data from cache or API (single session fallback)
-	async function getSessionData(sessionId: string) {
-		if (sessionDataCache[sessionId]) {
-			return sessionDataCache[sessionId];
-		}
-
-		try {
-			const previews = await ws.http('sessions:preview', { session_ids: [sessionId] });
-			const preview = previews[0];
-			if (preview) {
-				sessionDataCache[sessionId] = {
-					title: preview.title,
-					summary: preview.summary,
-					count: preview.count,
-					userCount: preview.userCount,
-					assistantCount: preview.assistantCount
-				};
-				return sessionDataCache[sessionId];
-			}
-		} catch (error) {
-			debug.error('session', 'Error fetching session data:', error);
-		}
-
-		return { title: 'New Conversation', summary: 'No messages yet', count: 0, userCount: 0, assistantCount: 0 };
-	}
-
-	// Helper functions that use cached data
-	function getMessageCount(sessionId: string): number {
-		return sessionDataCache[sessionId]?.count || 0;
-	}
-
-	function getUserMessageCount(sessionId: string): number {
-		return sessionDataCache[sessionId]?.userCount || 0;
-	}
-
-	function getSessionTitle(sessionId: string): string {
-		return sessionDataCache[sessionId]?.title || 'New Conversation';
-	}
-
-	function getSessionSummary(sessionId: string): string {
-		return sessionDataCache[sessionId]?.summary || 'No messages yet';
-	}
-
-	// Preload session data for visible sessions using a single bulk request
-	async function preloadSessionData() {
-		loadingSessionData = true;
-		try {
-			const sessionIds = sessions.slice(0, 20).map(s => s.id);
-			if (sessionIds.length === 0) return;
-
-			const previews = await ws.http('sessions:preview', { session_ids: sessionIds });
-			for (const preview of previews) {
-				sessionDataCache[preview.session_id] = {
-					title: preview.title,
-					summary: preview.summary,
-					count: preview.count,
-					userCount: preview.userCount,
-					assistantCount: preview.assistantCount
-				};
-			}
-		} catch (error) {
-			debug.error('session', 'Error preloading session data:', error);
-		} finally {
-			loadingSessionData = false;
-		}
-	}
-
-	// Initialize session data on mount
-	onMount(() => {
-		preloadSessionData();
-	});
-
-	// Reload session data when new sessions arrive
-	$effect(() => {
-		if (sessions.length > 0 && !loadingSessionData) {
-			const uncachedIds = sessions.filter(s => !sessionDataCache[s.id]).map(s => s.id);
-			if (uncachedIds.length > 0) {
-				debug.log('session', `Found ${uncachedIds.length} uncached sessions, loading...`);
-				ws.http('sessions:preview', { session_ids: uncachedIds }).then((previews: any[]) => {
-					for (const preview of previews) {
-						sessionDataCache[preview.session_id] = {
-							title: preview.title,
-							summary: preview.summary,
-							count: preview.count,
-							userCount: preview.userCount,
-							assistantCount: preview.assistantCount
-						};
-					}
-				}).catch((err: unknown) => {
-					debug.error('session', 'Error loading uncached sessions:', err);
-				});
-			}
-		}
-	});
-	
 	let searchQuery = $state('');
 	let projectFilter = $state('all');
 	let showTimelineModal = $state(false);
 	let timelineSession = $state<ChatSession | null>(null);
+
+	// Deep search state
+	let deepSearchResults = $state<Set<string> | null>(null);
+	let deepSearching = $state(false);
+	let searchDebounceTimer: ReturnType<typeof setTimeout> | undefined;
+
+	function triggerDeepSearch(query: string) {
+		clearTimeout(searchDebounceTimer);
+		if (!query.trim()) {
+			deepSearchResults = null;
+			deepSearching = false;
+			return;
+		}
+		deepSearching = true;
+		searchDebounceTimer = setTimeout(async () => {
+			try {
+				const result = await ws.http('sessions:search', { query: query.trim() });
+				deepSearchResults = new Set(result.sessionIds);
+			} catch (err) {
+				debug.error('session', 'Deep search failed:', err);
+				deepSearchResults = null;
+			} finally {
+				deepSearching = false;
+			}
+		}, 300);
+	}
+
+	$effect(() => {
+		triggerDeepSearch(searchQuery);
+	});
 
 	function openTimelineModal(session: ChatSession) {
 		timelineSession = session;
@@ -187,48 +107,57 @@
 		timelineSession = null;
 		showTimelineModal = false;
 	}
-	
+
 	// Get unique projects
 	const projects = $derived(
 		Array.from(new Set(sessions.map(s => getProjectName(s.project_id))))
 	);
-	
+
 	// Filtered sessions (sorted newest first)
 	const filteredSessions = $derived(
 		sessions
 			.filter(session => {
-				const title = getSessionTitle(session.id);
-				const summary = getSessionSummary(session.id);
+				const messageCount = session.message_count ?? 0;
 				const projectName = getProjectName(session.project_id);
-				const messageCount = getMessageCount(session.id);
 
 				// Filter out sessions with 0 messages
 				if (messageCount === 0) {
 					return false;
 				}
 
-				const matchesSearch = searchQuery === '' ||
+				const matchesProject = projectFilter === 'all' || projectName === projectFilter;
+				if (!matchesProject) return false;
+
+				if (!searchQuery.trim()) return true;
+
+				const title = session.title || session.head_title || 'New Conversation';
+				const summary = session.head_summary || '';
+				const localMatch =
 					title.toLowerCase().includes(searchQuery.toLowerCase()) ||
 					summary.toLowerCase().includes(searchQuery.toLowerCase()) ||
 					projectName.toLowerCase().includes(searchQuery.toLowerCase());
 
-				const matchesProject = projectFilter === 'all' || projectName === projectFilter;
+				const deepMatch = deepSearchResults?.has(session.id) ?? false;
 
-				return matchesSearch && matchesProject;
+				return localMatch || deepMatch;
 			})
-			.sort((a, b) => new Date(b.started_at).getTime() - new Date(a.started_at).getTime())
+			.sort((a, b) => {
+				const aTime = a.last_message_at || a.started_at;
+				const bTime = b.last_message_at || b.started_at;
+				return new Date(bTime).getTime() - new Date(aTime).getTime();
+			})
 	);
-	
+
 	// Session stats (only count sessions with messages)
-	const sessionsWithMessages = $derived(sessions.filter(s => getMessageCount(s.id) > 0));
+	const sessionsWithMessages = $derived(sessions.filter(s => (s.message_count ?? 0) > 0));
 
 	const stats = $derived({
 		totalSessions: sessionsWithMessages.length,
-		totalChats: sessionsWithMessages.reduce((sum, s) => sum + getUserMessageCount(s.id), 0),
-		totalMessages: sessionsWithMessages.reduce((sum, s) => sum + getMessageCount(s.id), 0),
+		totalChats: sessionsWithMessages.reduce((sum, s) => sum + (s.user_count ?? 0), 0),
+		totalMessages: sessionsWithMessages.reduce((sum, s) => sum + (s.message_count ?? 0), 0),
 		totalDuration: sessionsWithMessages.reduce((sum, s) => sum + getSessionDuration(s), 0)
 	});
-	
+
 	function formatDuration(minutes: number): string {
 		const hours = Math.floor(minutes / 60);
 		const mins = minutes % 60;
@@ -237,7 +166,7 @@
 		}
 		return `${mins}m`;
 	}
-	
+
 	function formatDate(dateString: string): string {
 		return new Date(dateString).toLocaleDateString('en-US', {
 			month: 'short',
@@ -250,12 +179,11 @@
 	function isActiveSession(session: ChatSession): boolean {
 		return sessionState.currentSession?.id === session.id;
 	}
-	
+
 	async function resumeSession(session: ChatSession | null) {
 		if (!session) return;
 
-		const sessionData = await getSessionData(session.id);
-		const title = sessionData.title;
+		const title = session.title || session.head_title || 'New Conversation';
 		const projectName = getProjectName(session.project_id);
 
 		const confirmed = await showConfirm({
@@ -308,10 +236,9 @@
 			});
 		}
 	}
-	
+
 	async function deleteSession(session: ChatSession) {
-		const sessionData = await getSessionData(session.id);
-		const title = sessionData.title;
+		const title = session.title || session.head_title || 'New Conversation';
 		const streaming = isSessionStreaming(session.id);
 
 		const confirmed = await showConfirm({
@@ -328,7 +255,6 @@
 			try {
 				await ws.http('sessions:delete', { id: session.id });
 				removeSession(session.id);
-				delete sessionDataCache[session.id];
 			} catch (error) {
 				addNotification({
 					type: 'error',
@@ -382,8 +308,8 @@
 	}
 </script>
 
-<PageTemplate 
-	title="Session History" 
+<PageTemplate
+	title="Session History"
 	description="Previous conversation sessions"
 >
 	{#snippet actions()}
@@ -413,17 +339,22 @@
 				<div class="text-sm text-slate-600 dark:text-slate-400 mt-1">Total Duration</div>
 			</div>
 		</div>
-		
+
 		<!-- Modern Filters -->
 		<div class="bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-700 rounded-lg p-4">
 			<div class="flex flex-col lg:flex-row gap-4">
 				<!-- Search -->
-				<div class="flex-1">
+				<div class="flex-1 relative">
 					<Input
 						bind:value={searchQuery}
 						placeholder="Search sessions by title, summary, or project..."
 						type="search"
 					/>
+					{#if deepSearching}
+						<div class="absolute right-3 top-1/2 -translate-y-1/2">
+							<div class="w-4 h-4 border-2 border-slate-300 border-t-violet-500 rounded-full animate-spin"></div>
+						</div>
+					{/if}
 				</div>
 
 				<!-- Modern Project Filter -->
@@ -438,15 +369,10 @@
 				/>
 			</div>
 		</div>
-		
+
 		<!-- Modern Sessions List -->
 		<div class="flex-1 overflow-auto">
-			{#if loadingSessionData}
-				<div class="flex items-center justify-center py-12">
-					<div class="animate-spin rounded-full h-8 w-8 border-b-2 border-violet-600"></div>
-					<span class="ml-3 text-slate-600 dark:text-slate-400">Loading session data...</span>
-				</div>
-			{:else if filteredSessions.length === 0}
+			{#if filteredSessions.length === 0}
 				<div class="flex items-center justify-center h-full">
 					<div class="text-center">
 						<div class="bg-slate-100 dark:bg-slate-800 rounded-full w-24 h-24 flex items-center justify-center mx-auto mb-6">
@@ -461,6 +387,10 @@
 			{:else}
 				<div class="space-y-4">
 					{#each filteredSessions as session (session.id)}
+						{@const title = session.title || session.head_title || 'New Conversation'}
+						{@const summary = session.head_summary || 'No messages yet'}
+						{@const userCount = session.user_count ?? 0}
+						{@const messageCount = session.message_count ?? 0}
 						<div class="bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-700 rounded-lg p-6 transition-all duration-200">
 							<div class="flex flex-col lg:flex-row lg:items-center gap-6">
 								<!-- Session Info -->
@@ -468,7 +398,7 @@
 									<!-- Title and Badges -->
 									<div class="flex flex-wrap items-center gap-2">
 										<h3 class="font-bold text-violet-700 dark:text-violet-500">
-											{getSessionTitle(session.id)}
+											{title}
 										</h3>
 										{#if isActiveSession(session)}
 											<span class="flex items-center gap-1.5 px-2.5 py-1 text-xs font-medium rounded-full bg-green-100 dark:bg-green-900/30 text-green-700 dark:text-green-400 border border-green-200 dark:border-green-700">
@@ -494,11 +424,11 @@
 										</span>
 										<span class="flex items-center gap-1" title="Chat exchanges">
 											<Icon name="lucide:messages-square" class="w-3 h-3 sm:w-3.5 sm:h-3.5" />
-											{getUserMessageCount(session.id)} chats
+											{userCount} chats
 										</span>
 										<span class="flex items-center gap-1" title="Total message bubbles">
 											<Icon name="lucide:message-circle" class="w-3 h-3 sm:w-3.5 sm:h-3.5" />
-											{getMessageCount(session.id)} msgs
+											{messageCount} msgs
 										</span>
 										<span class="flex items-center gap-1">
 											<Icon name="lucide:timer" class="w-3 h-3 sm:w-3.5 sm:h-3.5" />
@@ -508,11 +438,11 @@
 
 									<!-- Summary -->
 									<p class="text-sm text-slate-600 dark:text-slate-400 line-clamp-2">
-										{getSessionSummary(session.id)}
+										{summary}
 									</p>
 
 								</div>
-								
+
 								<!-- Modern Actions -->
 								<div class="flex flex-wrap sm:flex-nowrap items-center gap-2 sm:gap-3 w-full lg:w-auto">
 									<button

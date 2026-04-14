@@ -28,7 +28,7 @@ export interface EngineQueryOptions {
 	model?: string;
 	includePartialMessages?: boolean;
 	abortController?: AbortController;
-	claudeAccountId?: number;
+	accountId?: number;
 	/** Context bound to MCP tool handlers for project isolation */
 	mcpContext?: McpExecutionContext;
 }
@@ -40,7 +40,7 @@ export interface StructuredGenerationOptions {
 	schema: Record<string, unknown>;
 	projectPath: string;
 	abortController?: AbortController;
-	claudeAccountId?: number;
+	accountId?: number;
 }
 
 /** The contract every engine adapter must fulfil */

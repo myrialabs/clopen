@@ -87,7 +87,7 @@ export class ClaudeCodeEngine implements AIEngine {
       model = 'sonnet',
       includePartialMessages = false,
       abortController,
-      claudeAccountId
+      accountId
     } = options;
 
     debug.log('chat', "Claude Code - Stream Query");
@@ -109,13 +109,13 @@ export class ClaudeCodeEngine implements AIEngine {
 
       // SDK uses cwd from options — no process.chdir() needed.
       // Environment is passed via env option — no process.env mutation.
-      // When claudeAccountId is specified, the env uses that account's token
-      // instead of the globally active account.
+      // When accountId is specified, the env overrides the OAuth token
+      // with that specific account's token instead of the globally active one.
       const sdkOptions: Options = {
         permissionMode: 'bypassPermissions' as PermissionMode,
         allowDangerouslySkipPermissions: true,
         cwd: resolvedProjectPath,
-        env: getEngineEnv(claudeAccountId),
+        env: getEngineEnv(accountId),
         systemPrompt: { type: "preset", preset: "claude_code" },
         settingSources: ["user", "project", "local"],
         forkSession: true,
@@ -276,7 +276,7 @@ export class ClaudeCodeEngine implements AIEngine {
       schema,
       projectPath,
       abortController,
-      claudeAccountId
+      accountId
     } = options;
 
     if (!this._isInitialized) {
@@ -297,7 +297,7 @@ export class ClaudeCodeEngine implements AIEngine {
       permissionMode: 'bypassPermissions' as PermissionMode,
       allowDangerouslySkipPermissions: true,
       cwd: resolvedPath,
-      env: getEngineEnv(claudeAccountId),
+      env: getEngineEnv(accountId),
       systemPrompt: 'You are a structured data generator. Return JSON matching the provided schema.',
       tools: [],
       outputFormat: {

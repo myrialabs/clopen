@@ -449,6 +449,7 @@ class ChatService {
         parent: { messageId: null, sessionId: parentSessionId, toolUseId: null },
         engine: selectedEngine,
         model: selectedModel,
+        account: { id: chatModelState.accountId ?? null, name: null },
         sender: {
           id: userStore.currentUser?.id || null,
           name: userStore.currentUser?.name || null,
@@ -464,7 +465,7 @@ class ChatService {
         optimisticId: userMsgId,
       };
       (sessionState.messages as FrontendMessage[]).push(optimisticMessage);
-      const selectedAccountId = chatModelState.claudeAccountId;
+      const selectedAccountId = chatModelState.accountId;
 
       // Send WebSocket message to start streaming
       ws.emit('chat:stream', {
@@ -501,7 +502,7 @@ class ChatService {
         temperature: SDK_CONFIG.DEFAULT_TEMPERATURE,
         senderId: userStore.currentUser?.id,
         senderName: userStore.currentUser?.name,
-        ...(selectedEngine === 'claude-code' && selectedAccountId !== null && { claudeAccountId: selectedAccountId }),
+        ...(selectedEngine === 'claude-code' && selectedAccountId !== null && { accountId: selectedAccountId }),
       });
 
       // Persist engine/model to frontend session state immediately.
@@ -517,7 +518,7 @@ class ChatService {
           ...sessionState.currentSession,
           engine: selectedEngine,
           model: selectedModel,
-          ...(selectedEngine === 'claude-code' && selectedAccountId !== null && { claude_account_id: selectedAccountId }),
+          ...(selectedEngine === 'claude-code' && selectedAccountId !== null && { account_id: selectedAccountId }),
         });
       }
 
@@ -799,6 +800,7 @@ class ChatService {
           parent: { messageId: null, sessionId: null, toolUseId: null },
           engine: null,
           model: null,
+          account: { id: null, name: null },
           sender: { id: null, name: null },
           content: [{ type: 'text', text: msg.text }],
           stopReason: 'interrupted',

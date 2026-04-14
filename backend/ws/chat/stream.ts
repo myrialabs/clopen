@@ -68,7 +68,7 @@ const chatSessionEditMode = new Map<string, { isEditing: boolean; messageId: str
 const chatSessionModelState = new Map<string, { engine: string; model: string; senderId: string }>();
 
 // In-memory store for account state per chat session (keyed by chatSessionId)
-const chatSessionAccountState = new Map<string, { claudeAccountId: number | null; senderId: string }>();
+const chatSessionAccountState = new Map<string, { accountId: number | null; senderId: string }>();
 
 export const streamHandler = createRouter()
 	// Join a chat session room (subscribe to chat events for this session)
@@ -108,7 +108,7 @@ export const streamHandler = createRouter()
 			temperature: t.Optional(t.Number()),
 			senderId: t.Optional(t.String()),
 			senderName: t.Optional(t.String()),
-			claudeAccountId: t.Optional(t.Number())
+			accountId: t.Optional(t.Number())
 		})
 	}, async ({ data, conn }) => {
 		const projectId = ws.getProjectId(conn);
@@ -132,7 +132,7 @@ export const streamHandler = createRouter()
 				temperature: data.temperature,
 				senderId: data.senderId,
 				senderName: data.senderName,
-				claudeAccountId: data.claudeAccountId
+				accountId: data.accountId
 			});
 
 			debug.log('chat', 'Stream started with ID:', streamId);
@@ -650,20 +650,21 @@ export const streamHandler = createRouter()
 		data: t.Object({
 			senderId: t.String(),
 			chatSessionId: t.String(),
-			claudeAccountId: t.Union([t.Number(), t.Null()])
+			accountId: t.Union([t.Number(), t.Null()]),
+			accountName: t.Optional(t.Union([t.String(), t.Null()]))
 		})
 	}, ({ data }) => {
 		const chatSessionId = data.chatSessionId;
 
 		// Store latest account state on server for late joiners / refresh
 		chatSessionAccountState.set(chatSessionId, {
-			claudeAccountId: data.claudeAccountId,
+			accountId: data.accountId,
 			senderId: data.senderId
 		});
 
-		// Persist claude_account_id to the session record in the database
+		// Persist account to the session record in the database
 		try {
-			sessionQueries.updateClaudeAccountId(chatSessionId, data.claudeAccountId);
+			sessionQueries.updateAccount(chatSessionId, data.accountId, data.accountName ?? null);
 		} catch (err) {
 			debug.error('chat', 'Failed to persist account sync to DB:', err);
 		}
@@ -671,7 +672,8 @@ export const streamHandler = createRouter()
 		// Broadcast to all users in the same chat session
 		ws.emit.chatSession(chatSessionId, 'chat:account-sync', {
 			senderId: data.senderId,
-			claudeAccountId: data.claudeAccountId
+			accountId: data.accountId,
+			accountName: data.accountName ?? null
 		});
 	})
 
@@ -681,13 +683,13 @@ export const streamHandler = createRouter()
 			chatSessionId: t.Optional(t.String())
 		}),
 		response: t.Object({
-			claudeAccountId: t.Union([t.Number(), t.Null()]),
+			accountId: t.Union([t.Number(), t.Null()]),
 			senderId: t.String()
 		})
 	}, ({ data }) => {
 		const chatSessionId = data.chatSessionId || '';
 		const state = chatSessionAccountState.get(chatSessionId);
-		return state || { claudeAccountId: null, senderId: '' };
+		return state || { accountId: null, senderId: '' };
 	})
 
 	// Event declarations
@@ -719,7 +721,8 @@ export const streamHandler = createRouter()
 
 	.emit('chat:account-sync', t.Object({
 		senderId: t.String(),
-		claudeAccountId: t.Union([t.Number(), t.Null()])
+		accountId: t.Union([t.Number(), t.Null()]),
+		accountName: t.Union([t.String(), t.Null()])
 	}))
 
 	.emit('chat:connection', t.Object({

@@ -437,6 +437,7 @@ export function convertUserMessage(
 		parent: { messageId: null, sessionId: null, toolUseId: null },
 		engine: 'opencode' as const,
 		model: null,
+		account: { id: null, name: null },
 		sender: { id: null, name: null },
 		content,
 		synthetic: false,
@@ -569,6 +570,7 @@ export function convertAssistantMessages(
 			parent: { messageId: null, sessionId: null, toolUseId: null },
 			engine: 'opencode' as const,
 			model: modelId || null,
+			account: { id: null, name: null },
 			sender: { id: null, name: null },
 			content: group,
 			stopReason,
@@ -691,6 +693,7 @@ export function convertToolUseOnly(
 		parent: { messageId: null, sessionId: null, toolUseId: parentToolUseId || null },
 		engine: 'opencode' as const,
 		model: modelId || null,
+		account: { id: null, name: null },
 		sender: { id: null, name: null },
 		content: [{
 			type: 'tool_use',
@@ -726,6 +729,7 @@ export function convertReasoningMessage(
 		parent: { messageId: null, sessionId: null, toolUseId: null },
 		engine: 'opencode' as const,
 		model: modelId || null,
+		account: { id: null, name: null },
 		sender: { id: null, name: null },
 		text: reasoningText,
 	};
@@ -790,6 +794,7 @@ export function convertSubtaskToolUseOnly(
 		parent: { messageId: null, sessionId: null, toolUseId: null },
 		engine: 'opencode' as const,
 		model: modelId || null,
+		account: { id: null, name: null },
 		sender: { id: null, name: null },
 		content: [{
 			type: 'tool_use',
@@ -839,6 +844,7 @@ export function convertToolResultOnly(
 		parent: { messageId: null, sessionId: null, toolUseId: parentToolUseId || null },
 		engine: 'opencode' as const,
 		model: null,
+		account: { id: null, name: null },
 		sender: { id: null, name: null },
 		content: [{
 			type: 'tool_result',

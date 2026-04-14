@@ -210,6 +210,7 @@ export function convertAssistantMessage(msg: SDKAssistantMessage): EngineOutput[
 			parent: { messageId: null, sessionId: null, toolUseId: null },
 			engine: 'claude-code',
 			model: betaMessage.model || null,
+			account: { id: null, name: null },
 			sender: { id: null, name: null },
 			text: reasoningText,
 		};
@@ -230,6 +231,7 @@ export function convertAssistantMessage(msg: SDKAssistantMessage): EngineOutput[
 		parent: { messageId: null, sessionId: null, toolUseId: msg.parent_tool_use_id || null },
 		engine: 'claude-code',
 		model: betaMessage.model || null,
+		account: { id: null, name: null },
 		sender: { id: null, name: null },
 		content: assistantContent,
 		stopReason: mapStopReason(betaMessage.stop_reason),
@@ -253,6 +255,7 @@ export function convertUserMessage(msg: SDKUserMessage): UserMessage {
 		parent: { messageId: null, sessionId: null, toolUseId: msg.parent_tool_use_id || null },
 		engine: 'claude-code',
 		model: null,
+		account: { id: null, name: null },
 		sender: { id: null, name: null },
 		content,
 		synthetic: true, // SDK-generated tool_result messages
@@ -370,6 +373,7 @@ export function convertCompactBoundary(msg: SDKCompactBoundaryMessage): CompactB
 		parent: { messageId: null, sessionId: null, toolUseId: null },
 		engine: 'claude-code',
 		model: null,
+		account: { id: null, name: null },
 		sender: { id: null, name: null },
 		trigger: msg.compact_metadata.trigger,
 		preTokens: msg.compact_metadata.pre_tokens || 0,

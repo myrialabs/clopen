@@ -1,5 +1,7 @@
 import { getDatabase } from '../index';
-import type { ChatSession, Branch } from '$shared/types/database/schema';
+import type { ChatSession, Branch, DatabaseMessage } from '$shared/types/database/schema';
+import { loadMessage } from '$shared/utils/message-formatter';
+import { extractMessageText } from '../../snapshot/helpers';
 
 export const sessionQueries = {
 	getAll(): ChatSession[] {
@@ -32,15 +34,15 @@ export const sessionQueries = {
 		const newSession = { id, ...session };
 
 		db.prepare(`
-			INSERT INTO chat_sessions (id, project_id, title, engine, latest_sdk_session_id, current_head_message_id, started_at, ended_at)
+			INSERT INTO chat_sessions (id, project_id, title, engine, head_session_id, head_message_id, started_at, ended_at)
 			VALUES (?, ?, ?, ?, ?, ?, ?, ?)
 		`).run(
 			id,
 			session.project_id,
 			session.title || null,
 			session.engine || 'claude-code',
-			session.latest_sdk_session_id || null,
-			session.current_head_message_id || null,
+			session.head_session_id || null,
+			session.head_message_id || null,
 			session.started_at,
 			session.ended_at || null
 		);
@@ -57,20 +59,20 @@ export const sessionQueries = {
 		`).run(title, id);
 	},
 
-	updateLatestSdkSessionId(id: string, sdkSessionId: string): void {
+	updateSessionId(id: string, sessionId: string): void {
 		const db = getDatabase();
 		db.prepare(`
 			UPDATE chat_sessions
-			SET latest_sdk_session_id = ?
+			SET head_session_id = ?
 			WHERE id = ?
-		`).run(sdkSessionId, id);
+		`).run(sessionId, id);
 	},
 
-	clearLatestSdkSessionId(id: string): void {
+	clearSessionId(id: string): void {
 		const db = getDatabase();
 		db.prepare(`
 			UPDATE chat_sessions
-			SET latest_sdk_session_id = NULL
+			SET head_session_id = NULL
 			WHERE id = ?
 		`).run(id);
 	},
@@ -84,13 +86,157 @@ export const sessionQueries = {
 		`).run(engine, model, id);
 	},
 
-	updateClaudeAccountId(id: string, claudeAccountId: number | null): void {
+	updateAccountId(id: string, accountId: number | null): void {
 		const db = getDatabase();
 		db.prepare(`
 			UPDATE chat_sessions
-			SET claude_account_id = ?
+			SET account_id = ?
 			WHERE id = ?
-		`).run(claudeAccountId, id);
+		`).run(accountId, id);
+	},
+
+	updateAccount(id: string, accountId: number | null, accountName: string | null): void {
+		const db = getDatabase();
+		db.prepare(`
+			UPDATE chat_sessions
+			SET account_id = ?, account_name = ?
+			WHERE id = ?
+		`).run(accountId, accountName, id);
+	},
+
+	/**
+	 * Update session metadata after a message is saved.
+	 * Increments counts, updates sender, timestamps, and HEAD content snapshot.
+	 */
+	updateOnMessage(id: string, opts: {
+		messageType: string;
+		senderId?: string | null;
+		senderName?: string | null;
+		timestamp: string;
+		headTitle?: string | null;
+		headSummary?: string | null;
+		isFirstUserMessage?: boolean;
+		title?: string;
+	}): void {
+		const db = getDatabase();
+		const sets: string[] = [
+			'message_count = COALESCE(message_count, 0) + 1',
+			'last_message_at = ?',
+		];
+		const params: (string | number | null)[] = [opts.timestamp];
+
+		if (opts.messageType === 'user') {
+			sets.push('user_count = COALESCE(user_count, 0) + 1');
+		}
+
+		if (opts.senderId !== undefined) {
+			sets.push('sender_id = ?');
+			params.push(opts.senderId ?? null);
+		}
+		if (opts.senderName !== undefined) {
+			sets.push('sender_name = ?');
+			params.push(opts.senderName ?? null);
+		}
+
+		if (opts.headTitle !== undefined) {
+			sets.push('head_title = ?');
+			params.push(opts.headTitle ?? null);
+		}
+		if (opts.headSummary !== undefined) {
+			sets.push('head_summary = ?');
+			params.push(opts.headSummary ?? null);
+		}
+
+		// Auto-set title from first user message
+		if (opts.isFirstUserMessage && opts.title) {
+			sets.push('title = ?');
+			params.push(opts.title);
+		}
+
+		params.push(id);
+		db.prepare(`UPDATE chat_sessions SET ${sets.join(', ')} WHERE id = ?`).run(...params);
+	},
+
+	/**
+	 * Re-derive HEAD content snapshot from the HEAD chain.
+	 * Called after undo/redo/restore when HEAD changes.
+	 */
+	updateHeadSnapshot(id: string, headTitle: string | null, headSummary: string | null): void {
+		const db = getDatabase();
+		db.prepare(`
+			UPDATE chat_sessions
+			SET head_title = ?, head_summary = ?
+			WHERE id = ?
+		`).run(headTitle, headSummary, id);
+	},
+
+	/**
+	 * Re-derive HEAD snapshot by walking the HEAD chain.
+	 * Called after undo/redo/restore when HEAD changes.
+	 */
+	rederiveHeadSnapshot(sessionId: string): void {
+		const db = getDatabase();
+		const session = db.prepare('SELECT head_message_id FROM chat_sessions WHERE id = ?')
+			.get(sessionId) as { head_message_id: string | null } | null;
+
+		if (!session?.head_message_id) {
+			// HEAD cleared (initial state) — clear snapshot
+			this.updateHeadSnapshot(sessionId, null, null);
+			return;
+		}
+
+		// Build lookup for HEAD chain walk
+		const allMsgs = db.prepare(
+			'SELECT id, data, parent_message_id FROM messages WHERE session_id = ?'
+		).all(sessionId) as DatabaseMessage[];
+		const msgLookup = new Map(allMsgs.map(m => [m.id, m]));
+
+		let headTitle: string | null = null;
+		let headSummary: string | null = null;
+		let walkId: string | null = session.head_message_id;
+
+		while (walkId) {
+			const row = msgLookup.get(walkId);
+			if (!row) break;
+
+			const msg = loadMessage(row);
+
+			if (!headSummary && msg.type === 'assistant') {
+				const text = extractMessageText(msg);
+				const clean = text.replace(/```[\s\S]*?```/g, '').trim();
+				if (clean) {
+					headSummary = clean.slice(0, 200) + (clean.length > 200 ? '...' : '');
+				}
+			}
+			if (!headTitle && msg.type === 'user') {
+				const text = extractMessageText(msg).trim();
+				if (text) {
+					headTitle = text.slice(0, 80) + (text.length > 80 ? '...' : '');
+				}
+			}
+
+			if (headTitle && headSummary) break;
+			walkId = row.parent_message_id || null;
+		}
+
+		this.updateHeadSnapshot(sessionId, headTitle, headSummary);
+	},
+
+	/**
+	 * Search sessions by message content.
+	 * Returns session IDs that have matching messages.
+	 */
+	searchByMessageContent(projectId: string, query: string, limit: number = 20): string[] {
+		const db = getDatabase();
+		const rows = db.prepare(`
+			SELECT DISTINCT m.session_id
+			FROM messages m
+			INNER JOIN chat_sessions cs ON cs.id = m.session_id
+			WHERE cs.project_id = ?
+			  AND m.data LIKE ?
+			LIMIT ?
+		`).all(projectId, `%${query}%`, limit) as { session_id: string }[];
+		return rows.map(r => r.session_id);
 	},
 
 	end(id: string): void {
@@ -213,7 +359,7 @@ export const sessionQueries = {
 			title: `Shared Chat - ${projectName} (${new Date().toLocaleString()})`,
 			started_at: now,
 			ended_at: undefined,
-			latest_sdk_session_id: undefined
+			head_session_id: undefined
 		});
 	},
 
@@ -227,7 +373,7 @@ export const sessionQueries = {
 		const db = getDatabase();
 		db.prepare(`
 			UPDATE chat_sessions
-			SET current_head_message_id = ?
+			SET head_message_id = ?
 			WHERE id = ?
 		`).run(messageId, sessionId);
 	},
@@ -240,7 +386,7 @@ export const sessionQueries = {
 		const db = getDatabase();
 		db.prepare(`
 			UPDATE chat_sessions
-			SET current_head_message_id = NULL
+			SET head_message_id = NULL
 			WHERE id = ?
 		`).run(sessionId);
 	},
@@ -251,10 +397,10 @@ export const sessionQueries = {
 	getHead(sessionId: string): string | null {
 		const db = getDatabase();
 		const session = db.prepare(`
-			SELECT current_head_message_id FROM chat_sessions WHERE id = ?
-		`).get(sessionId) as { current_head_message_id: string | null } | null;
+			SELECT head_message_id FROM chat_sessions WHERE id = ?
+		`).get(sessionId) as { head_message_id: string | null } | null;
 
-		return session?.current_head_message_id || null;
+		return session?.head_message_id || null;
 	},
 
 	/**

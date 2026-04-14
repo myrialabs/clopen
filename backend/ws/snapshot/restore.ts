@@ -119,11 +119,12 @@ export const restoreHandler = createRouter()
 		if (isInitialRestore) {
 			// Clear HEAD (no messages active)
 			sessionQueries.clearHead(sessionId);
+			sessionQueries.rederiveHeadSnapshot(sessionId);
 			debug.log('snapshot', 'HEAD cleared (initial state)');
 
-			// Clear latest_sdk_session_id so next chat starts fresh
+			// Clear head_session_id so next chat starts fresh
 			const db = (await import('../../database')).getDatabase();
-			db.prepare(`UPDATE chat_sessions SET latest_sdk_session_id = NULL WHERE id = ?`).run(sessionId);
+			db.prepare(`UPDATE chat_sessions SET head_session_id = NULL WHERE id = ?`).run(sessionId);
 
 			// Clear checkpoint_tree_state
 			checkpointQueries.deleteForSession(sessionId);
@@ -199,9 +200,10 @@ export const restoreHandler = createRouter()
 
 		// 5. Update HEAD to session end
 		sessionQueries.updateHead(sessionId, sessionEnd.id);
+		sessionQueries.rederiveHeadSnapshot(sessionId);
 		debug.log('snapshot', `HEAD updated to: ${sessionEnd.id}`);
 
-		// 5b. Update latest_sdk_session_id so resume works correctly.
+		// 5b. Update head_session_id so resume works correctly.
 		// Claude Code: skip cancelled fork session_ids (partial messages from cancelStream).
 		// OpenCode: simple walk — any session_id is valid (sessions created synchronously).
 		{
@@ -255,11 +257,11 @@ export const restoreHandler = createRouter()
 			}
 
 			if (foundSdkSessionId) {
-				sessionQueries.updateLatestSdkSessionId(sessionId, foundSdkSessionId);
-				debug.log('snapshot', `latest_sdk_session_id updated to: ${foundSdkSessionId}`);
+				sessionQueries.updateSessionId(sessionId, foundSdkSessionId);
+				debug.log('snapshot', `head_session_id updated to: ${foundSdkSessionId}`);
 			} else {
-				sessionQueries.clearLatestSdkSessionId(sessionId);
-				debug.log('snapshot', 'latest_sdk_session_id cleared (no valid session found in restored chain)');
+				sessionQueries.clearSessionId(sessionId);
+				debug.log('snapshot', 'head_session_id cleared (no valid session found in restored chain)');
 			}
 		}
 

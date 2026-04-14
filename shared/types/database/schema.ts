@@ -14,16 +14,31 @@ export interface Project {
 }
 
 export interface ChatSession {
+	// ── Identity ──
 	id: string;
 	project_id: string;
-	title?: string;
-	engine?: EngineType; // AI engine used for this session
-	model?: string; // Compound model ID (e.g., 'claude-code:haiku', 'opencode:gpt-5.2')
-	claude_account_id?: number; // Per-session Claude account override (references claude_accounts.id)
-	latest_sdk_session_id?: string; // Latest SDK session_id from responses
-	current_head_message_id?: string; // Git-like HEAD pointer to current branch tip
 	started_at: string;
 	ended_at?: string;
+
+	// ── Session preferences (user-selected, persist across HEAD changes) ──
+	title?: string; // Conversation title — auto-set from first user message, editable
+	engine?: EngineType; // AI engine used for this session
+	model?: string; // Compound model ID (e.g., 'claude-code:haiku', 'opencode:gpt-5.2')
+	account_id?: number; // Engine account used for this session
+	account_name?: string; // Display name of the selected account
+
+	// ── HEAD state (re-derived when HEAD changes: undo/redo/restore/branch) ──
+	head_message_id?: string; // Git-like HEAD pointer to current branch tip
+	head_session_id?: string; // Engine-issued session ID for resume (aligns with MessageBase.sessionId)
+	head_title?: string; // Last user message text at HEAD (truncated)
+	head_summary?: string; // Last assistant response text at HEAD (truncated)
+
+	// ── Activity tracking (updated on each message) ──
+	sender_id?: string; // Last active user
+	sender_name?: string;
+	message_count?: number; // Total messages (all types)
+	user_count?: number; // User messages only
+	last_message_at?: string; // Timestamp of the latest message
 }
 
 export interface Settings {

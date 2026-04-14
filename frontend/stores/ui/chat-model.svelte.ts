@@ -14,7 +14,7 @@ interface ChatModelState {
 	engine: EngineType;
 	model: string;
 	engineModelMemory: Record<string, string>;
-	claudeAccountId: number | null;
+	accountId: number | null;
 }
 
 // Local reactive state — starts from compile-time defaults.
@@ -23,7 +23,7 @@ export const chatModelState = $state<ChatModelState>({
 	engine: DEFAULT_ENGINE,
 	model: DEFAULT_MODEL,
 	engineModelMemory: { 'claude-code': DEFAULT_MODEL },
-	claudeAccountId: null
+	accountId: null
 });
 
 /**
@@ -38,8 +38,8 @@ export function initChatModel(
 	chatModelState.engine = engine;
 	chatModelState.model = model;
 	chatModelState.engineModelMemory = { ...memory };
-	// claudeAccountId will be set by EngineModelPicker after fetching accounts
-	chatModelState.claudeAccountId = null;
+	// accountId is set by EngineModelPicker after fetching engine-specific accounts
+	chatModelState.accountId = null;
 }
 
 /**
@@ -50,12 +50,12 @@ export function initChatModel(
 export function restoreChatModelFromSession(
 	engine: EngineType,
 	model: string,
-	claudeAccountId?: number | null
+	accountId?: number | null
 ): void {
 	chatModelState.engine = engine;
 	chatModelState.model = model;
 	// Only set the current engine's model — avoids reading chatModelState.engineModelMemory
 	// which would cause UpdatedAtError in Svelte 5 $effect tracking
 	chatModelState.engineModelMemory = { [engine]: model };
-	chatModelState.claudeAccountId = claudeAccountId ?? null;
+	chatModelState.accountId = accountId ?? null;
 }

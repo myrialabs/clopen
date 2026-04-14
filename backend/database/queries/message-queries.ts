@@ -17,57 +17,15 @@ export const messageQueries = {
 		const db = getDatabase();
 
 		const session = db.prepare(`
-			SELECT current_head_message_id FROM chat_sessions WHERE id = ?
-		`).get(sessionId) as { current_head_message_id: string | null } | null;
+			SELECT head_message_id FROM chat_sessions WHERE id = ?
+		`).get(sessionId) as { head_message_id: string | null } | null;
 
-		if (!session || !session.current_head_message_id) {
+		if (!session || !session.head_message_id) {
 			return [];
 		}
 
-		const path = this.getPathToRoot(session.current_head_message_id);
+		const path = this.getPathToRoot(session.head_message_id);
 		return path.map(parseMessage);
-	},
-
-	/**
-	 * Get minimal preview data for a session: first user msg, last assistant msg, and counts.
-	 * Used by the Sessions/History modal to avoid loading all messages.
-	 */
-	getSessionPreview(sessionId: string): {
-		firstUserMessage: DatabaseMessage | null;
-		lastAssistantMessage: DatabaseMessage | null;
-		userCount: number;
-		assistantCount: number;
-	} {
-		const db = getDatabase();
-
-		const firstUserMessage = db.prepare(`
-			SELECT * FROM messages
-			WHERE session_id = ? AND json_extract(data, '$.type') = 'user'
-			ORDER BY created_at ASC
-			LIMIT 1
-		`).get(sessionId) as DatabaseMessage | null;
-
-		const lastAssistantMessage = db.prepare(`
-			SELECT * FROM messages
-			WHERE session_id = ? AND json_extract(data, '$.type') = 'assistant'
-			ORDER BY created_at DESC
-			LIMIT 1
-		`).get(sessionId) as DatabaseMessage | null;
-
-		const counts = db.prepare(`
-			SELECT
-				SUM(CASE WHEN json_extract(data, '$.type') = 'user' THEN 1 ELSE 0 END) AS user_count,
-				SUM(CASE WHEN json_extract(data, '$.type') = 'assistant' THEN 1 ELSE 0 END) AS assistant_count
-			FROM messages
-			WHERE session_id = ?
-		`).get(sessionId) as { user_count: number; assistant_count: number } | null;
-
-		return {
-			firstUserMessage,
-			lastAssistantMessage,
-			userCount: counts?.user_count ?? 0,
-			assistantCount: counts?.assistant_count ?? 0
-		};
 	},
 
 	/**

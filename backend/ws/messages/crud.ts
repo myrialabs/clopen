@@ -11,7 +11,6 @@ import { t } from 'elysia';
 import { createRouter } from '$shared/utils/ws-server';
 import { messageQueries } from '../../database/queries';
 import { loadMessage } from '$shared/utils/message-formatter';
-import { extractMessageText } from '../../snapshot/helpers';
 
 export const crudHandler = createRouter()
 	// List messages
@@ -30,49 +29,6 @@ export const crudHandler = createRouter()
 			// Default: return only messages in current HEAD path (for Chat view)
 			return messageQueries.getBySessionId(data.session_id);
 		}
-	})
-
-	// Bulk session preview — returns title, summary, and message counts for multiple sessions
-	// without loading all messages. Used by the Sessions/History modal.
-	.http('sessions:preview', {
-		data: t.Object({
-			session_ids: t.Array(t.String())
-		}),
-		response: t.Array(t.Any())
-	}, ({ data }) => {
-		return data.session_ids.map(sessionId => {
-			const preview = messageQueries.getSessionPreview(sessionId);
-
-			// Title from first user message
-			let title = 'New Conversation';
-			if (preview.firstUserMessage) {
-				const msg = loadMessage(preview.firstUserMessage);
-				const textContent = extractMessageText(msg).trim();
-				if (textContent) {
-					title = textContent.slice(0, 60) + (textContent.length > 60 ? '...' : '');
-				}
-			}
-
-			// Summary from last assistant message
-			let summary = 'No messages yet';
-			if (preview.lastAssistantMessage) {
-				const msg = loadMessage(preview.lastAssistantMessage);
-				const rawText = extractMessageText(msg);
-				const cleanText = rawText.replace(/```[\s\S]*?```/g, '').trim();
-				if (cleanText) {
-					summary = cleanText.slice(0, 100) + (cleanText.length > 100 ? '...' : '');
-				}
-			}
-
-			return {
-				session_id: sessionId,
-				title,
-				summary,
-				userCount: preview.userCount,
-				assistantCount: preview.assistantCount,
-				count: preview.userCount + preview.assistantCount
-			};
-		});
 	})
 
 	// Get message by ID

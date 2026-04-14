@@ -18,6 +18,12 @@ export interface MessageSender {
 	name: string | null;
 }
 
+/** Engine account identity attached to every message */
+export interface MessageAccount {
+	id: number | null;
+	name: string | null;
+}
+
 /** Parent references carried by every message */
 export interface MessageParent {
 	messageId: string | null;
@@ -35,6 +41,8 @@ export interface MessageBase {
 	parent: MessageParent;
 	engine: string | null;
 	model: string | null;
+	/** Engine account used for this message (aligns with ChatSession.account_id) */
+	account: MessageAccount;
 	sender: MessageSender;
 }
 

@@ -33,6 +33,7 @@ import { messageQueries, sessionQueries } from '../database/queries';
 import { snapshotService } from '../snapshot/snapshot-service';
 import { projectContextService } from '../mcp/project-context';
 import { browserMcpControl } from '../preview';
+import { extractMessageText } from '../snapshot/helpers';
 import { debug } from '$shared/utils/logger';
 
 // ============================================================================
@@ -57,7 +58,7 @@ export interface StreamState {
 	abortController?: AbortController;
 	streamPromise?: Promise<void>;
 	sdkSessionId?: string;
-	preStreamSdkSessionId?: string | null;
+	preStreamSessionId?: string | null;
 	hasCompactBoundary?: boolean;
 	eventSeq: number;
 }
@@ -77,7 +78,7 @@ interface StreamRequest {
 	temperature?: number;
 	senderId?: string;
 	senderName?: string;
-	claudeAccountId?: number;
+	accountId?: number;
 }
 
 // ============================================================================
@@ -106,6 +107,7 @@ function convertRawPromptToUserMessage(
 		},
 		engine: rawPrompt?.engine || null,
 		model: rawPrompt?.model || null,
+		account: { id: rawPrompt?.account?.id ?? null, name: rawPrompt?.account?.name ?? null },
 		sender: {
 			id: senderId || rawPrompt?.sender?.id || null,
 			name: senderName || rawPrompt?.sender?.name || null,
@@ -231,8 +233,8 @@ class StreamManager extends EventEmitter {
 					request.engine || 'claude-code',
 					compoundModelId
 				);
-				if (request.claudeAccountId !== undefined) {
-					sessionQueries.updateClaudeAccountId(request.chatSessionId, request.claudeAccountId);
+				if (request.accountId !== undefined) {
+					sessionQueries.updateAccountId(request.chatSessionId, request.accountId);
 				}
 			} catch (error) {
 				debug.error('chat', 'Failed to save engine/model to session:', error);
@@ -342,7 +344,7 @@ class StreamManager extends EventEmitter {
 		}
 
 		try {
-			const { projectPath, prompt: rawPrompt, chatSessionId, engine: engineType = 'claude-code', model, claudeAccountId } = requestData;
+			const { projectPath, prompt: rawPrompt, chatSessionId, engine: engineType = 'claude-code', model, accountId } = requestData;
 
 			const projectPathExists = projectPath ? await this.existsSync(projectPath) : false;
 			if (!projectPath) throw new Error('Project path is required. Please select a valid project directory.');
@@ -381,7 +383,7 @@ class StreamManager extends EventEmitter {
 					}
 				}
 			}
-			streamState.preStreamSdkSessionId = resumeSessionId ?? null;
+			streamState.preStreamSessionId = resumeSessionId ?? null;
 
 			// Convert raw SDK prompt → UserMessage (unified)
 			const userMessage = convertRawPromptToUserMessage(rawPrompt, requestData.senderId, requestData.senderName);
@@ -505,7 +507,7 @@ class StreamManager extends EventEmitter {
 				model: model || 'sonnet',
 				includePartialMessages: true,
 				abortController: streamState.abortController,
-				...(claudeAccountId !== undefined && { claudeAccountId }),
+				...(accountId !== undefined && { accountId }),
 				...(projectId && chatSessionId && {
 					mcpContext: { projectId, chatSessionId, streamId: streamState.streamId }
 				}),
@@ -527,7 +529,7 @@ class StreamManager extends EventEmitter {
 						sdkSessionId = eventSessionId;
 						streamState.sdkSessionId = sdkSessionId;
 						if (chatSessionId) {
-							try { sessionQueries.updateLatestSdkSessionId(chatSessionId, sdkSessionId!); }
+							try { sessionQueries.updateSessionId(chatSessionId, sdkSessionId!); }
 							catch { /* ignore */ }
 						}
 					}
@@ -864,6 +866,7 @@ class StreamManager extends EventEmitter {
 					parent: { messageId: null, sessionId: null, toolUseId: null },
 					engine: streamState.engine,
 					model: null,
+					account: { id: null, name: null },
 					sender: { id: null, name: null },
 					content: [{ type: 'text', text: `**Error:** ${streamState.error}` }],
 					stopReason: null,
@@ -1010,6 +1013,7 @@ class StreamManager extends EventEmitter {
 					parent: { messageId: currentHead || null, sessionId: null, toolUseId: null },
 					engine: streamState.engine || null,
 					model: null,
+					account: { id: null, name: null },
 					sender: { id: null, name: null },
 					text: streamState.currentReasoningText,
 				};
@@ -1022,6 +1026,9 @@ class StreamManager extends EventEmitter {
 				});
 
 				sessionQueries.updateHead(streamState.chatSessionId, savedMessage.id);
+				sessionQueries.updateOnMessage(streamState.chatSessionId, {
+					messageType: 'reasoning', timestamp,
+				});
 				debug.log('chat', 'Saved partial reasoning on cancel:', savedMessage.id);
 			} catch (error) {
 				debug.error('chat', 'Failed to save partial reasoning on cancel:', error);
@@ -1042,6 +1049,7 @@ class StreamManager extends EventEmitter {
 					parent: { messageId: currentHead || null, sessionId: null, toolUseId: null },
 					engine: streamState.engine || null,
 					model: null,
+					account: { id: null, name: null },
 					sender: { id: null, name: null },
 					content: [{ type: 'text', text: streamState.currentPartialText }],
 					stopReason: 'interrupted',
@@ -1056,26 +1064,31 @@ class StreamManager extends EventEmitter {
 				});
 
 				sessionQueries.updateHead(streamState.chatSessionId, savedMessage.id);
+				const clean = streamState.currentPartialText.replace(/```[\s\S]*?```/g, '').trim();
+				sessionQueries.updateOnMessage(streamState.chatSessionId, {
+					messageType: 'assistant', timestamp,
+					headSummary: clean ? clean.slice(0, 200) + (clean.length > 200 ? '...' : '') : undefined,
+				});
 				debug.log('chat', 'Saved partial text on cancel:', savedMessage.id);
 			} catch (error) {
 				debug.error('chat', 'Failed to save partial text on cancel:', error);
 			}
 		}
 
-		// Claude Code only: restore latest_sdk_session_id to pre-stream value.
+		// Claude Code only: restore head_session_id to pre-stream value.
 		// Claude Code SDK only returns session_id inside yielded messages, so a cancelled
 		// stream's fork session_id is not a valid resume target. OpenCode creates sessions
-		// synchronously, so its session_id is always valid — no restoration needed.
-		if (streamState.engine === 'claude-code' && streamState.chatSessionId && streamState.preStreamSdkSessionId !== undefined) {
+		// synchronously, so its head_session_id is always valid — no restoration needed.
+		if (streamState.engine === 'claude-code' && streamState.chatSessionId && streamState.preStreamSessionId !== undefined) {
 			try {
-				if (streamState.preStreamSdkSessionId) {
-					sessionQueries.updateLatestSdkSessionId(streamState.chatSessionId, streamState.preStreamSdkSessionId);
+				if (streamState.preStreamSessionId) {
+					sessionQueries.updateSessionId(streamState.chatSessionId, streamState.preStreamSessionId);
 				} else {
-					sessionQueries.clearLatestSdkSessionId(streamState.chatSessionId);
+					sessionQueries.clearSessionId(streamState.chatSessionId);
 				}
-				debug.log('chat', `Restored latest_sdk_session_id to: ${streamState.preStreamSdkSessionId || 'null'}`);
+				debug.log('chat', `Restored head_session_id to: ${streamState.preStreamSessionId || 'null'}`);
 			} catch (error) {
-				debug.error('chat', 'Failed to restore latest_sdk_session_id:', error);
+				debug.error('chat', 'Failed to restore head_session_id:', error);
 			}
 		}
 
@@ -1158,7 +1171,7 @@ class StreamManager extends EventEmitter {
 	}
 
 	/**
-	 * Save message to database
+	 * Save message to database and update session metadata.
 	 */
 	private async saveMessage(
 		message: UnifiedMessage,
@@ -1176,6 +1189,35 @@ class StreamManager extends EventEmitter {
 			});
 
 			sessionQueries.updateHead(sessionId, savedMessage.id);
+
+			// ── Update session metadata ──
+			try {
+				const text = extractMessageText(message);
+				const updateOpts: Parameters<typeof sessionQueries.updateOnMessage>[1] = {
+					messageType: message.type,
+					senderId: message.sender?.id,
+					senderName: message.sender?.name,
+					timestamp,
+				};
+
+				if (message.type === 'user' && text.trim()) {
+					updateOpts.headTitle = text.slice(0, 80) + (text.length > 80 ? '...' : '');
+					// Auto-set title if this is the first user message
+					if (!currentHead) {
+						updateOpts.isFirstUserMessage = true;
+						updateOpts.title = updateOpts.headTitle;
+					}
+				} else if (message.type === 'assistant' && text.trim()) {
+					const clean = text.replace(/```[\s\S]*?```/g, '').trim();
+					if (clean) {
+						updateOpts.headSummary = clean.slice(0, 200) + (clean.length > 200 ? '...' : '');
+					}
+				}
+
+				sessionQueries.updateOnMessage(sessionId, updateOpts);
+			} catch (err) {
+				debug.error('chat', 'Failed to update session metadata:', err);
+			}
 
 			// Update checkpoint_tree_state when saving a new checkpoint (real user message)
 			if (message.type === 'user') {

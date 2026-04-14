@@ -60,6 +60,7 @@ export type {
 	MessageBase,
 	MessageParent,
 	MessageSender,
+	MessageAccount,
 	TextBlock,
 	ImageBlock,
 	DocumentBlock,

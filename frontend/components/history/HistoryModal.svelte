@@ -47,147 +47,17 @@
 
 	// Helper to get last activity timestamp
 	function getLastActive(session: ChatSession): string {
-		const timestamp = session.ended_at && session.ended_at !== ''
-			? session.ended_at
-			: session.started_at;
+		const timestamp = session.last_message_at || session.ended_at || session.started_at;
 		return getRelativeTime(timestamp);
 	}
 
-	// Cache for session data to avoid multiple API calls
-	let sessionDataCache = $state<Record<string, {
-		title: string;
-		summary: string;
-		count: number;
-		userCount: number;
-		assistantCount: number;
-	}>>({});
-	let loadingSessionData = $state(false);
-
-	// Helper to get session data from cache or API (single session fallback)
-	async function getSessionData(sessionId: string) {
-		if (sessionDataCache[sessionId]) {
-			return sessionDataCache[sessionId];
+	// Get the engine/model display for a session
+	function getSessionModel(session: ChatSession): string {
+		if (session.model) {
+			return modelStore.getById(session.model)?.name || session.model;
 		}
-
-		try {
-			const previews = await ws.http('sessions:preview', { session_ids: [sessionId] });
-			const preview = previews[0];
-			if (preview) {
-				sessionDataCache[sessionId] = {
-					title: preview.title,
-					summary: preview.summary,
-					count: preview.count,
-					userCount: preview.userCount,
-					assistantCount: preview.assistantCount
-				};
-				return sessionDataCache[sessionId];
-			}
-		} catch (error) {
-			debug.error('session', 'Error fetching session data:', error);
-		}
-
-		return { title: 'New Conversation', summary: 'No messages yet', count: 0, userCount: 0, assistantCount: 0 };
+		return '';
 	}
-
-	function getMessageCount(sessionId: string): number {
-		return sessionDataCache[sessionId]?.count || 0;
-	}
-
-	function getUserMessageCount(sessionId: string): number {
-		return sessionDataCache[sessionId]?.userCount || 0;
-	}
-
-	function getSessionTitle(sessionId: string): string {
-		return sessionDataCache[sessionId]?.title || 'New Conversation';
-	}
-
-	function getSessionSummary(sessionId: string): string {
-		return sessionDataCache[sessionId]?.summary || 'No messages yet';
-	}
-
-	async function preloadSessionData() {
-		loadingSessionData = true;
-		try {
-			// Sort newest first and load top 20 so new sessions are always included
-			const sessionIds = [...sessions]
-				.sort((a, b) => new Date(b.started_at).getTime() - new Date(a.started_at).getTime())
-				.slice(0, 20)
-				.map(s => s.id);
-
-			if (sessionIds.length === 0) return;
-
-			const previews = await ws.http('sessions:preview', { session_ids: sessionIds });
-			for (const preview of previews) {
-				sessionDataCache[preview.session_id] = {
-					title: preview.title,
-					summary: preview.summary,
-					count: preview.count,
-					userCount: preview.userCount,
-					assistantCount: preview.assistantCount
-				};
-			}
-		} catch (error) {
-			debug.error('session', 'Error preloading session data:', error);
-		} finally {
-			loadingSessionData = false;
-		}
-	}
-
-	// Refresh sessions from server and reload data each time the modal opens.
-	// Uses untrack() so only isOpen is tracked — prevents infinite loops from
-	// session/cache mutations re-triggering this effect.
-	$effect(() => {
-		if (isOpen) {
-			untrack(() => {
-				// Clear stale cache so all data is fetched fresh
-				sessionDataCache = {};
-				// Fetch latest sessions from server, then load message data
-				reloadSessionsForProject().then(() => {
-					preloadSessionData();
-				});
-			});
-		}
-	});
-
-	// Incrementally load new sessions that arrive while the modal is open
-	// (e.g., from sessions:session-available broadcasts). No spinner — background load.
-	$effect(() => {
-		if (!isOpen || loadingSessionData) return;
-		const currentSessions = sessions;
-		if (currentSessions.length === 0) return;
-
-		const uncached = currentSessions.filter(s => !sessionDataCache[s.id]);
-		if (uncached.length > 0) {
-			debug.log('session', `Found ${uncached.length} new sessions, loading data...`);
-			// Load individually without showing spinner
-			Promise.all(uncached.map(s => getSessionData(s.id)));
-		}
-	});
-
-	// Track streaming sessions to detect when a stream completes.
-	// When a session stops streaming, refresh its cache to show the new summary.
-	let previouslyStreamingIds = new Set<string>();
-
-	$effect(() => {
-		if (!isOpen) return;
-
-		// Read presence state to detect stream changes
-		const projectId = projectState.currentProject?.id;
-		if (!projectId) return;
-		const status = presenceState.statuses.get(projectId);
-		const activeStreams = status?.streams?.filter((s: any) => s.status === 'active') || [];
-		const currentlyStreamingIds = new Set(activeStreams.map((s: any) => s.chatSessionId));
-
-		// Sessions that stopped streaming → refresh their cache for updated summary
-		for (const sessionId of previouslyStreamingIds) {
-			if (!currentlyStreamingIds.has(sessionId)) {
-				delete sessionDataCache[sessionId];
-				getSessionData(sessionId);
-			}
-		}
-
-		previouslyStreamingIds = currentlyStreamingIds;
-	});
 
 	// Get users in a specific chat session (excluding self)
 	function getSessionUsers(chatSessionId: string): { userId: string; userName: string }[] {
@@ -211,36 +81,78 @@
 		);
 	}
 
-	// Get the engine/model display for a session
-	function getSessionModel(session: ChatSession): string {
-		if (session.model) {
-			return modelStore.getById(session.model)?.name || session.model;
+	// Search state
+	let searchQuery = $state('');
+	let deepSearchResults = $state<Set<string> | null>(null);
+	let deepSearching = $state(false);
+	let searchDebounceTimer: ReturnType<typeof setTimeout> | undefined;
+
+	// Deep search: query backend for message-level search
+	function triggerDeepSearch(query: string) {
+		clearTimeout(searchDebounceTimer);
+		if (!query.trim()) {
+			deepSearchResults = null;
+			deepSearching = false;
+			return;
 		}
-		return '';
+		deepSearching = true;
+		searchDebounceTimer = setTimeout(async () => {
+			try {
+				const result = await ws.http('sessions:search', { query: query.trim() });
+				deepSearchResults = new Set(result.sessionIds);
+			} catch (err) {
+				debug.error('session', 'Deep search failed:', err);
+				deepSearchResults = null;
+			} finally {
+				deepSearching = false;
+			}
+		}, 300);
 	}
 
-	let searchQuery = $state('');
+	// Trigger deep search when query changes
+	$effect(() => {
+		triggerDeepSearch(searchQuery);
+	});
 
 	const filteredSessions = $derived(
 		sessions
 			.filter(session => {
-				const title = getSessionTitle(session.id);
-				const summary = getSessionSummary(session.id);
-				const messageCount = getMessageCount(session.id);
+				const messageCount = session.message_count ?? 0;
 
 				// Show sessions that are currently streaming even if 0 messages yet
 				if (messageCount === 0 && !isSessionStreaming(session.id)) {
 					return false;
 				}
 
-				const matchesSearch = searchQuery === '' ||
+				if (!searchQuery.trim()) return true;
+
+				// Local match on session-level fields
+				const title = session.title || session.head_title || 'New Conversation';
+				const summary = session.head_summary || '';
+				const localMatch =
 					title.toLowerCase().includes(searchQuery.toLowerCase()) ||
 					summary.toLowerCase().includes(searchQuery.toLowerCase());
 
-				return matchesSearch;
+				// Deep search match (message-level)
+				const deepMatch = deepSearchResults?.has(session.id) ?? false;
+
+				return localMatch || deepMatch;
 			})
-			.sort((a, b) => new Date(b.started_at).getTime() - new Date(a.started_at).getTime())
+			.sort((a, b) => {
+				const aTime = a.last_message_at || a.started_at;
+				const bTime = b.last_message_at || b.started_at;
+				return new Date(bTime).getTime() - new Date(aTime).getTime();
+			})
 	);
+
+	// Refresh sessions from server each time the modal opens.
+	$effect(() => {
+		if (isOpen) {
+			untrack(() => {
+				reloadSessionsForProject();
+			});
+		}
+	});
 
 	function isActiveSession(session: ChatSession): boolean {
 		return sessionState.currentSession?.id === session.id;
@@ -293,9 +205,6 @@
 			await ws.http('sessions:delete', { id: deleteId });
 			removeSession(deleteId);
 
-			// Clean cache
-			delete sessionDataCache[deleteId];
-
 			addNotification({
 				type: 'success',
 				title: 'Session Deleted',
@@ -341,9 +250,6 @@
 				}
 			}
 
-			// Clear cache
-			sessionDataCache = {};
-
 			addNotification({
 				type: 'success',
 				title: 'All Sessions Deleted',
@@ -371,6 +277,7 @@
 
 	function closeModal() {
 		searchQuery = '';
+		deepSearchResults = null;
 		onClose();
 	}
 </script>
@@ -424,6 +331,9 @@
 						placeholder="Search sessions..."
 						class="flex-1 bg-transparent border-none outline-none text-slate-900 dark:text-slate-100 text-sm placeholder:text-slate-500 dark:placeholder:text-slate-400"
 					/>
+					{#if deepSearching}
+						<div class="w-3.5 h-3.5 border-2 border-slate-300 border-t-violet-500 rounded-full animate-spin shrink-0"></div>
+					{/if}
 					{#if searchQuery}
 						<button
 							type="button"
@@ -439,12 +349,7 @@
 		{/if}
 
 		<!-- Sessions List -->
-		{#if loadingSessionData}
-			<div class="flex items-center justify-center gap-3 py-12">
-				<div class="animate-spin rounded-full h-6 w-6 border-b-2 border-violet-600"></div>
-				<span class="text-sm text-slate-600 dark:text-slate-400">Loading sessions...</span>
-			</div>
-		{:else if filteredSessions.length === 0}
+		{#if filteredSessions.length === 0}
 			<div class="flex flex-col items-center gap-3 py-8 text-slate-600 dark:text-slate-500 text-sm">
 				<Icon name="lucide:message-square-off" class="w-12 h-12 text-slate-400 opacity-40" />
 				<p class="font-medium">No sessions found</p>
@@ -468,6 +373,9 @@
 					{@const sessionUsers = getSessionUsers(session.id)}
 					{@const streaming = isSessionStreaming(session.id)}
 					{@const modelName = getSessionModel(session)}
+					{@const title = session.title || session.head_title || 'New Conversation'}
+					{@const summary = session.head_summary || 'No messages yet'}
+					{@const userCount = session.user_count ?? 0}
 					<div
 						class="flex items-center gap-2 w-full p-3 bg-transparent border border-slate-200 dark:border-slate-700 rounded-lg text-slate-900 dark:text-slate-100 text-sm text-left transition-all duration-150
 							{isActive
@@ -502,7 +410,7 @@
 							<div class="flex-1 min-w-0">
 								<div class="flex items-center gap-2">
 									<p class="font-semibold text-slate-900 dark:text-slate-100 truncate text-sm">
-										{getSessionTitle(session.id)}
+										{title}
 									</p>
 									{#if isActive}
 										<span
@@ -516,7 +424,7 @@
 								<div class="flex items-center gap-2 mt-0.5 text-xs text-slate-500 dark:text-slate-400">
 									<span class="flex items-center gap-1 flex-none">
 										<Icon name="lucide:messages-square" class="w-3 h-3" />
-										{getUserMessageCount(session.id)}
+										{userCount}
 									</span>
 									<span>·</span>
 									<span class="flex items-center gap-1 flex-none">
@@ -542,7 +450,7 @@
 								{/if}
 							{:else}
 								<p class="text-xs text-slate-400 dark:text-slate-500 truncate mt-0.5">
-									{getSessionSummary(session.id)}
+									{summary}
 								</p>
 							{/if}
 							</div>

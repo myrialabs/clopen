@@ -1,7 +1,7 @@
 import type { DatabaseConnection } from '$shared/types/database/connection';
 import { debug } from '$shared/utils/logger';
 
-export const description = 'Deep-convert messages to unified format, enrich both engines, rename columns, drop sender columns';
+export const description = 'Deep-convert messages to unified format, enrich both engines, rename columns, drop sender columns, rename session columns';
 
 // ============================================================
 // Row Types (before and after column rename)
@@ -289,6 +289,7 @@ function convertOldFormat(raw: Record<string, unknown>, row: OldRow, sessionEngi
 		},
 		engine,
 		model,
+		account: { id: null, name: null },
 		sender: {
 			id: row.sender_id || null,
 			name: row.sender_name || null,
@@ -386,6 +387,7 @@ function syncMetadata(raw: Record<string, unknown>, row: OldRow, sessionEngine: 
 	};
 
 	if (!raw.engine) raw.engine = sessionEngine;
+	if (!('account' in raw)) raw.account = { id: null, name: null };
 
 	return raw;
 }
@@ -550,6 +552,22 @@ function deepEnrich(msg: Record<string, unknown>, sessionEngine: string): boolea
 }
 
 // ============================================================
+// Text Extraction (for backfill)
+// ============================================================
+
+/** Extract first text content from a unified message data blob */
+function extractTextFromData(msg: Record<string, unknown>): string {
+	if (msg.type === 'reasoning') return (msg.text as string) || '';
+	if (msg.type === 'compact_boundary') return '';
+	const content = msg.content;
+	if (!Array.isArray(content)) return '';
+	for (const block of content as Record<string, unknown>[]) {
+		if (block.type === 'text' && block.text) return (block.text as string);
+	}
+	return '';
+}
+
+// ============================================================
 // Migration Entry Points
 // ============================================================
 
@@ -670,6 +688,138 @@ export const up = (db: DatabaseConnection): void => {
 	}
 
 	debug.log('migration', `Phase 3 complete: ${enrichedCount} messages enriched (${newRows.length} total)`);
+
+	// ── Phase 4: Rename session columns to engine-agnostic names ──
+	debug.log('migration', 'Phase 4: Renaming chat_sessions columns...');
+	db.exec(`ALTER TABLE chat_sessions RENAME COLUMN claude_account_id TO account_id`);
+	db.exec(`ALTER TABLE chat_sessions RENAME COLUMN latest_sdk_session_id TO head_session_id`);
+	db.exec(`ALTER TABLE chat_sessions RENAME COLUMN current_head_message_id TO head_message_id`);
+	debug.log('migration', 'Phase 4 complete: chat_sessions columns renamed');
+
+	// ── Phase 5: Enrich chat_sessions with HEAD snapshot, counts, sender ──
+	debug.log('migration', 'Phase 5: Adding session metadata columns and backfilling...');
+
+	db.exec(`ALTER TABLE chat_sessions ADD COLUMN account_name TEXT`);
+	db.exec(`ALTER TABLE chat_sessions ADD COLUMN sender_id TEXT`);
+	db.exec(`ALTER TABLE chat_sessions ADD COLUMN sender_name TEXT`);
+	db.exec(`ALTER TABLE chat_sessions ADD COLUMN head_title TEXT`);
+	db.exec(`ALTER TABLE chat_sessions ADD COLUMN head_summary TEXT`);
+	db.exec(`ALTER TABLE chat_sessions ADD COLUMN message_count INTEGER DEFAULT 0`);
+	db.exec(`ALTER TABLE chat_sessions ADD COLUMN user_count INTEGER DEFAULT 0`);
+	db.exec(`ALTER TABLE chat_sessions ADD COLUMN last_message_at TEXT`);
+
+	// Backfill from existing messages
+	const backfillSessions = db.prepare('SELECT id, head_message_id FROM chat_sessions').all() as {
+		id: string;
+		head_message_id: string | null;
+	}[];
+
+	const backfillUpdate = db.prepare(`
+		UPDATE chat_sessions
+		SET title = ?, head_title = ?, head_summary = ?,
+		    message_count = ?, user_count = ?,
+		    sender_id = ?, sender_name = ?,
+		    last_message_at = ?
+		WHERE id = ?
+	`);
+
+	let backfilledCount = 0;
+
+	for (const session of backfillSessions) {
+		// Get counts
+		const counts = db.prepare(`
+			SELECT
+				COUNT(*) AS total,
+				SUM(CASE WHEN json_extract(data, '$.type') = 'user' THEN 1 ELSE 0 END) AS user_count
+			FROM messages WHERE session_id = ?
+		`).get(session.id) as { total: number; user_count: number } | null;
+
+		if (!counts || counts.total === 0) continue;
+
+		// Get first user message for title
+		const firstUser = db.prepare(`
+			SELECT data FROM messages
+			WHERE session_id = ? AND json_extract(data, '$.type') = 'user'
+			ORDER BY created_at ASC LIMIT 1
+		`).get(session.id) as { data: string } | null;
+
+		let title: string | null = null;
+		if (firstUser) {
+			const msg = JSON.parse(firstUser.data) as Record<string, unknown>;
+			const text = extractTextFromData(msg);
+			if (text) {
+				title = text.slice(0, 80) + (text.length > 80 ? '...' : '');
+			}
+		}
+
+		// Walk HEAD chain for head_title and head_summary
+		let headTitle: string | null = null;
+		let headSummary: string | null = null;
+
+		if (session.head_message_id) {
+			const msgLookup = new Map<string, { data: string; parent_message_id: string | null }>();
+			const allMsgs = db.prepare(
+				'SELECT id, data, parent_message_id FROM messages WHERE session_id = ?'
+			).all(session.id) as { id: string; data: string; parent_message_id: string | null }[];
+			for (const m of allMsgs) {
+				msgLookup.set(m.id, m);
+			}
+
+			let walkId: string | null = session.head_message_id;
+			while (walkId) {
+				const row = msgLookup.get(walkId);
+				if (!row) break;
+				const msg = JSON.parse(row.data) as Record<string, unknown>;
+				const msgType = msg.type as string;
+
+				if (!headSummary && msgType === 'assistant') {
+					const text = extractTextFromData(msg);
+					const clean = text.replace(/```[\s\S]*?```/g, '').trim();
+					if (clean) {
+						headSummary = clean.slice(0, 200) + (clean.length > 200 ? '...' : '');
+					}
+				}
+				if (!headTitle && msgType === 'user') {
+					const text = extractTextFromData(msg);
+					if (text) {
+						headTitle = text.slice(0, 80) + (text.length > 80 ? '...' : '');
+					}
+				}
+				if (headTitle && headSummary) break;
+				walkId = row.parent_message_id;
+			}
+		}
+
+		// Get last message sender and timestamp
+		const lastMsg = db.prepare(`
+			SELECT data, created_at FROM messages
+			WHERE session_id = ?
+			ORDER BY created_at DESC LIMIT 1
+		`).get(session.id) as { data: string; created_at: string } | null;
+
+		let senderId: string | null = null;
+		let senderName: string | null = null;
+		let lastMessageAt: string | null = null;
+
+		if (lastMsg) {
+			const msg = JSON.parse(lastMsg.data) as Record<string, unknown>;
+			const sender = msg.sender as Record<string, unknown> | undefined;
+			senderId = (sender?.id as string) || null;
+			senderName = (sender?.name as string) || null;
+			lastMessageAt = lastMsg.created_at;
+		}
+
+		backfillUpdate.run(
+			title, headTitle, headSummary,
+			counts.total, counts.user_count,
+			senderId, senderName,
+			lastMessageAt,
+			session.id
+		);
+		backfilledCount++;
+	}
+
+	debug.log('migration', `Phase 5 complete: ${backfilledCount} sessions backfilled (${backfillSessions.length} total)`);
 };
 
 export const down = (db: DatabaseConnection): void => {
@@ -683,6 +833,21 @@ export const down = (db: DatabaseConnection): void => {
 	db.exec(`ALTER TABLE messages ADD COLUMN sender_id TEXT`);
 	db.exec(`ALTER TABLE messages ADD COLUMN sender_name TEXT`);
 	db.exec(`CREATE INDEX IF NOT EXISTS idx_messages_sender_id ON messages(sender_id)`);
+
+	// Revert Phase 5: drop session metadata columns
+	db.exec(`ALTER TABLE chat_sessions DROP COLUMN account_name`);
+	db.exec(`ALTER TABLE chat_sessions DROP COLUMN sender_id`);
+	db.exec(`ALTER TABLE chat_sessions DROP COLUMN sender_name`);
+	db.exec(`ALTER TABLE chat_sessions DROP COLUMN head_title`);
+	db.exec(`ALTER TABLE chat_sessions DROP COLUMN head_summary`);
+	db.exec(`ALTER TABLE chat_sessions DROP COLUMN message_count`);
+	db.exec(`ALTER TABLE chat_sessions DROP COLUMN user_count`);
+	db.exec(`ALTER TABLE chat_sessions DROP COLUMN last_message_at`);
+
+	// Revert session column renames
+	db.exec(`ALTER TABLE chat_sessions RENAME COLUMN account_id TO claude_account_id`);
+	db.exec(`ALTER TABLE chat_sessions RENAME COLUMN head_session_id TO latest_sdk_session_id`);
+	db.exec(`ALTER TABLE chat_sessions RENAME COLUMN head_message_id TO current_head_message_id`);
 
 	debug.log('migration', 'Columns reverted (data conversion is irreversible)');
 };

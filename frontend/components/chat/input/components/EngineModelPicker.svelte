@@ -21,7 +21,7 @@
 	const claudeAccounts = $derived(claudeAccountsStore.accounts);
 
 	const currentAccount = $derived(
-		claudeAccounts.find(a => a.id === chatModelState.claudeAccountId) || null
+		claudeAccounts.find(a => a.id === chatModelState.accountId) || null
 	);
 
 	const showAccountPicker = $derived(chatModelState.engine === 'claude-code');
@@ -39,7 +39,7 @@
 	$effect(() => {
 		const engine = chatModelState.engine;
 		const accounts = claudeAccounts;
-		const currentId = chatModelState.claudeAccountId;
+		const currentId = chatModelState.accountId;
 
 		if (engine === 'claude-code' && accounts.length > 0) {
 			untrack(() => {
@@ -48,7 +48,7 @@
 				if (!hasValidAccount) {
 					const activeAccount = accounts.find(a => a.isActive);
 					if (activeAccount) {
-						chatModelState.claudeAccountId = activeAccount.id;
+						chatModelState.accountId = activeAccount.id;
 					}
 				}
 			});
@@ -60,37 +60,40 @@
 	let ignoringRemoteAccountSync = false;
 
 	$effect(() => {
-		const accountId = chatModelState.claudeAccountId;
+		const accountId = chatModelState.accountId;
 		const engine = chatModelState.engine;
 		const chatSessionId = sessionState.currentSession?.id;
 		const senderId = userStore.currentUser?.id;
 		if (!chatSessionId || !senderId || ignoringRemoteAccountSync || engine !== 'claude-code') return;
 		if (accountId !== null && accountId !== lastSyncedAccountId) {
 			lastSyncedAccountId = accountId;
+			const account = claudeAccounts.find(a => a.id === accountId);
 			ws.emit('chat:account-sync', {
 				senderId,
 				chatSessionId,
-				claudeAccountId: accountId
+				accountId,
+				accountName: account?.name ?? null
 			});
 		}
 	});
 
 	// Listen for remote account changes from other users
 	$effect(() => {
-		const unsub = ws.on('chat:account-sync', (data: { senderId: string; claudeAccountId: number | null }) => {
+		const unsub = ws.on('chat:account-sync', (data: { senderId: string; accountId: number | null; accountName: string | null }) => {
 			const currentUserId = userStore.currentUser?.id;
 			if (data.senderId === currentUserId) return;
 			debug.log('chat', 'Remote account sync:', data);
 			ignoringRemoteAccountSync = true;
-			chatModelState.claudeAccountId = data.claudeAccountId;
-			lastSyncedAccountId = data.claudeAccountId;
+			chatModelState.accountId = data.accountId;
+			lastSyncedAccountId = data.accountId;
 			ignoringRemoteAccountSync = false;
 
 			// Also update session state so init $effect won't overwrite on re-render
 			if (sessionState.currentSession) {
 				sessionState.currentSession = {
 					...sessionState.currentSession,
-					claude_account_id: data.claudeAccountId ?? undefined
+					account_id: data.accountId ?? undefined,
+					account_name: data.accountName ?? undefined
 				};
 			}
 		});
@@ -115,7 +118,7 @@
 	}
 
 	function selectAccount(account: ClaudeAccountItem) {
-		chatModelState.claudeAccountId = account.id;
+		chatModelState.accountId = account.id;
 		closeAccountDropdown();
 	}
 
@@ -244,7 +247,7 @@
 		const sMemory = settings.engineModelMemory;
 		const sessionEngine = session?.engine;
 		const sessionModel = session?.model;
-		const sessionAccountId = session?.claude_account_id;
+		const sessionAccountId = session?.account_id;
 
 		untrack(() => {
 			if (sessionEngine && sessionModel) {
@@ -564,7 +567,7 @@
 		</div>
 		<div class="overflow-y-auto py-1">
 			{#each claudeAccounts as account (account.id)}
-				{@const isSelected = chatModelState.claudeAccountId === account.id}
+				{@const isSelected = chatModelState.accountId === account.id}
 				<button
 					type="button"
 					class="flex items-center gap-2.5 w-full px-3 py-2 text-left transition-all duration-150

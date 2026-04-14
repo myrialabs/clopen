@@ -16,15 +16,7 @@ export const sessionsRouter = createRouter()
 	// Collaborative broadcast events (Server → Client)
 	// Notification: a new session is available (no auto-switch)
 	.emit('sessions:session-available', t.Object({
-		session: t.Object({
-			id: t.String(),
-			project_id: t.String(),
-			title: t.Optional(t.String()),
-			latest_sdk_session_id: t.Optional(t.String()),
-			current_head_message_id: t.Optional(t.String()),
-			started_at: t.String(),
-			ended_at: t.Optional(t.String())
-		})
+		session: t.Any()
 	}))
 	// Notification: a session was deleted by another user
 	.emit('sessions:session-deleted', t.Object({
