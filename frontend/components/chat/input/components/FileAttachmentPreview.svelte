@@ -22,8 +22,12 @@
 								alt={attachment.file.name}
 								class="w-8 h-8 object-cover rounded"
 							/>
-						{:else if attachment.type === 'document'}
+						{:else if attachment.type === 'pdf'}
 							<Icon name="lucide:file-text" class="w-4 h-4 text-slate-500" />
+						{:else if attachment.type === 'audio'}
+							<Icon name="lucide:audio-lines" class="w-4 h-4 text-slate-500" />
+						{:else if attachment.type === 'video'}
+							<Icon name="lucide:video" class="w-4 h-4 text-slate-500" />
 						{:else}
 							<Icon name="lucide:file" class="w-4 h-4 text-slate-500" />
 						{/if}

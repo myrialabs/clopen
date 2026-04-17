@@ -6,7 +6,7 @@ import { sessionState } from '$frontend/stores/core/sessions.svelte';
 import { userStore } from '$frontend/stores/features/user.svelte';
 import { debug } from '$shared/utils/logger';
 import ws from '$frontend/utils/ws';
-import type { FileAttachment } from './use-file-handling.svelte';
+import type { FileAttachment, FileCategory } from './use-file-handling.svelte';
 
 /**
  * Composable for managing input state synchronization
@@ -137,7 +137,7 @@ export function useInputState(params: InputStateParams) {
 				const attachment: FileAttachment = {
 					id: att.id,
 					file,
-					type: att.type as 'image' | 'document',
+					type: att.type as FileCategory,
 					base64: att.base64
 				};
 
@@ -187,7 +187,7 @@ export function useInputState(params: InputStateParams) {
 				const attachment: FileAttachment = {
 					id: crypto.randomUUID(),
 					file: file,
-					type: editAttachment.type as 'image' | 'document',
+					type: editAttachment.type as FileCategory,
 					base64: editAttachment.data
 				};
 

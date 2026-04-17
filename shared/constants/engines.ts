@@ -206,3 +206,14 @@ export const getModelById = (modelId: string): EngineModel | undefined => {
 export const getModelsByEngine = (engine: EngineType): EngineModel[] => {
 	return modelRegistry.filter(model => model.engine.type === engine);
 };
+
+/** Get human-readable tags for a model (capabilities + input modalities) */
+export function getModelTags(model: EngineModel): string[] {
+	const tags: string[] = [];
+	if (model.capabilities.reasoning) tags.push('Reasoning');
+	if (model.modalities.input.image) tags.push('Image');
+	if (model.modalities.input.pdf) tags.push('PDF');
+	if (model.modalities.input.audio) tags.push('Audio');
+	if (model.modalities.input.video) tags.push('Video');
+	return tags;
+}

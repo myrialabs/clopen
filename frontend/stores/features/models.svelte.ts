@@ -21,9 +21,14 @@ export const modelStore = {
 	get models() { return models; },
 	get loading() { return loading; },
 
-	/** Get models filtered by engine */
+	/** Get chat-compatible models filtered by engine (must support text I/O and tools) */
 	getByEngine(engine: EngineType): EngineModel[] {
-		return models.filter(m => m.engine.type === engine);
+		return models.filter(m =>
+			m.engine.type === engine &&
+			m.modalities.input.text &&
+			m.modalities.output.text &&
+			m.capabilities.tools
+		);
 	},
 
 	/** Get a model by its ID */

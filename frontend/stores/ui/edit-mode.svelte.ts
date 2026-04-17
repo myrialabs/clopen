@@ -10,7 +10,7 @@ import { sessionState } from '$frontend/stores/core/sessions.svelte';
 import { debug } from '$shared/utils/logger';
 
 export interface EditAttachment {
-	type: 'image' | 'document';
+	type: string;
 	data: string; // base64
 	mediaType: string;
 	fileName: string;

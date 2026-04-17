@@ -1,6 +1,6 @@
 <script lang="ts">
 	import { modelStore } from '$frontend/stores/features/models.svelte';
-	import { ENGINES } from '$shared/constants/engines';
+	import { ENGINES, getModelTags } from '$shared/constants/engines';
 	import type { EngineType, EngineModel } from '$shared/types/unified';
 
 	interface Props {
@@ -238,6 +238,13 @@
 												<span class="text-2xs text-slate-400 dark:text-slate-500">{formatTokenLimit(mdl.limit.input)}</span>
 											{/if}
 										</div>
+										{#if getModelTags(mdl).length > 0}
+										<div class="flex flex-wrap gap-1 mt-1">
+											{#each getModelTags(mdl) as tag}
+												<span class="px-1.5 py-0.5 text-3xs font-medium rounded bg-slate-100 dark:bg-slate-700/60 text-slate-500 dark:text-slate-400">{tag}</span>
+											{/each}
+										</div>
+									{/if}
 									</div>
 								</button>
 							{/each}

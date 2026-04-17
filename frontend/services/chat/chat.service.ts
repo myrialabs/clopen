@@ -28,7 +28,7 @@ interface ChatServiceOptions {
   onStreamStart?: (processId: string) => void;
   onStreamEnd?: () => void;
   onError?: (error: Error) => void;
-  attachedFiles?: { type: 'image' | 'document'; data: string; mediaType: string; fileName: string }[];
+  attachedFiles?: { type: string; data: string; mediaType: string; fileName: string }[];
 }
 import ws from '$frontend/utils/ws';
 

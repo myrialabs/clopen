@@ -1,30 +1,52 @@
 import { addNotification } from '$frontend/stores/ui/notification.svelte';
 import { debug } from '$shared/utils/logger';
 
-// File attachments interface
+// ── File attachment type ──────────────────────────────────────
+export type FileCategory = 'image' | 'pdf' | 'audio' | 'video';
+
 export interface FileAttachment {
 	id: string;
 	file: File;
-	type: 'image' | 'document';
+	type: FileCategory;
 	base64?: string;
 	previewUrl?: string;
 }
 
-// Maximum file size (10MB)
-const MAX_FILE_SIZE = 10 * 1024 * 1024;
+// ── MIME types per input modality ─────────────────────────────
+export const MIME_BY_MODALITY: Record<FileCategory, readonly string[]> = {
+	image: ['image/jpeg', 'image/png', 'image/gif', 'image/webp'],
+	pdf: ['application/pdf'],
+	audio: ['audio/mpeg', 'audio/wav', 'audio/ogg', 'audio/webm', 'audio/mp4'],
+	video: ['video/mp4', 'video/webm', 'video/ogg'],
+};
 
-// Supported file types - Images and PDF only
-const SUPPORTED_IMAGE_TYPES = ['image/jpeg', 'image/png', 'image/gif', 'image/webp'];
-const SUPPORTED_DOCUMENT_TYPES = ['application/pdf'];
+/** Build a flat list of allowed MIME types from model input modalities */
+export function buildAcceptedMimeTypes(modalities: { image: boolean; pdf: boolean; audio: boolean; video: boolean }): string[] {
+	const types: string[] = [];
+	for (const key of Object.keys(MIME_BY_MODALITY) as FileCategory[]) {
+		if (modalities[key]) types.push(...MIME_BY_MODALITY[key]);
+	}
+	return types;
+}
 
+// ── Constants ─────────────────────────────────────────────────
+const MAX_FILE_SIZE = 10 * 1024 * 1024; // 10 MB
+const ALL_MIME_TYPES = Object.values(MIME_BY_MODALITY).flat();
+
+// ── Composable ────────────────────────────────────────────────
 export function useFileHandling() {
 	let attachedFiles = $state<FileAttachment[]>([]);
 	let isDragging = $state(false);
 	let isProcessingFiles = $state(false);
 
-	function getFileType(mimeType: string): 'image' | 'document' {
-		if (SUPPORTED_IMAGE_TYPES.includes(mimeType)) return 'image';
-		return 'document';
+	/** Currently allowed MIME types — updated by ChatInput based on the active model */
+	let allowedTypes = $state<string[]>(ALL_MIME_TYPES);
+
+	function detectCategory(mimeType: string): FileCategory {
+		for (const [category, mimes] of Object.entries(MIME_BY_MODALITY)) {
+			if ((mimes as readonly string[]).includes(mimeType)) return category as FileCategory;
+		}
+		return 'image'; // fallback
 	}
 
 	async function fileToBase64(file: File): Promise<string> {
@@ -32,7 +54,6 @@ export function useFileHandling() {
 			const reader = new FileReader();
 			reader.onload = () => {
 				const base64 = reader.result as string;
-				// Remove the data:type/subtype;base64, prefix
 				const base64Data = base64.split(',')[1];
 				resolve(base64Data);
 			};
@@ -46,7 +67,6 @@ export function useFileHandling() {
 		const fileArray = Array.from(files);
 
 		for (const file of fileArray) {
-			// Check file size
 			if (file.size > MAX_FILE_SIZE) {
 				addNotification({
 					type: 'error',
@@ -57,38 +77,31 @@ export function useFileHandling() {
 				continue;
 			}
 
-			// Check if file type is supported
-			const isSupported = [...SUPPORTED_IMAGE_TYPES, ...SUPPORTED_DOCUMENT_TYPES].includes(
-				file.type
-			);
-			if (!isSupported) {
+			if (!allowedTypes.includes(file.type)) {
 				addNotification({
 					type: 'error',
 					title: 'Unsupported File Type',
-					message: `${file.name} is not supported. Only images (JPEG, PNG, GIF, WebP) and PDF documents are allowed.`,
+					message: `${file.name} is not supported by the current model.`,
 					duration: 4000
 				});
 				continue;
 			}
 
-			// Check for duplicates
 			if (attachedFiles.some((f) => f.file.name === file.name && f.file.size === file.size)) {
 				continue;
 			}
 
-			const fileType = getFileType(file.type);
+			const category = detectCategory(file.type);
 			const attachment: FileAttachment = {
 				id: crypto.randomUUID(),
 				file,
-				type: fileType
+				type: category
 			};
 
-			// Convert to base64
 			try {
 				attachment.base64 = await fileToBase64(file);
 
-				// Create preview URL for images
-				if (fileType === 'image') {
+				if (category === 'image') {
 					attachment.previewUrl = URL.createObjectURL(file);
 				}
 
@@ -124,7 +137,6 @@ export function useFileHandling() {
 		attachedFiles = [];
 	}
 
-	// File input handlers
 	function handleFileSelect(fileInputElement: HTMLInputElement | undefined) {
 		fileInputElement?.click();
 	}
@@ -133,12 +145,10 @@ export function useFileHandling() {
 		const input = event.target as HTMLInputElement;
 		if (input.files && input.files.length > 0) {
 			await processFiles(input.files);
-			// Reset input so same file can be selected again
 			input.value = '';
 		}
 	}
 
-	// Drag and drop handlers
 	function handleDragOver(event: DragEvent) {
 		event.preventDefault();
 		isDragging = true;
@@ -158,7 +168,6 @@ export function useFileHandling() {
 		}
 	}
 
-	// Paste handler for images and documents
 	async function handlePaste(event: ClipboardEvent) {
 		const items = event.clipboardData?.items;
 		if (!items) return;
@@ -167,39 +176,28 @@ export function useFileHandling() {
 
 		for (let i = 0; i < items.length; i++) {
 			const item = items[i];
-
-			// Check if the item is a file
 			if (item.kind === 'file') {
 				const file = item.getAsFile();
-				if (file) {
-					files.push(file);
-				}
+				if (file) files.push(file);
 			}
 		}
 
-		// Process the pasted files if any
 		if (files.length > 0) {
-			event.preventDefault(); // Prevent default paste behavior for files
+			event.preventDefault();
 			await processFiles(files);
 		}
-		// If no files, let the default paste behavior handle text
 	}
 
 	return {
-		// State
-		get attachedFiles() {
-			return attachedFiles;
-		},
-		set attachedFiles(value: FileAttachment[]) {
-			attachedFiles = value;
-		},
-		get isDragging() {
-			return isDragging;
-		},
-		get isProcessingFiles() {
-			return isProcessingFiles;
-		},
-		// Methods
+		get attachedFiles() { return attachedFiles; },
+		set attachedFiles(value: FileAttachment[]) { attachedFiles = value; },
+		get isDragging() { return isDragging; },
+		get isProcessingFiles() { return isProcessingFiles; },
+
+		/** Set allowed MIME types (call when model changes) */
+		set allowedTypes(types: string[]) { allowedTypes = types; },
+		get allowedTypes() { return allowedTypes; },
+
 		processFiles,
 		removeAttachment,
 		clearAllAttachments,
@@ -209,8 +207,5 @@ export function useFileHandling() {
 		handleDragLeave,
 		handleDrop,
 		handlePaste,
-		// Constants
-		SUPPORTED_IMAGE_TYPES,
-		SUPPORTED_DOCUMENT_TYPES
 	};
 }

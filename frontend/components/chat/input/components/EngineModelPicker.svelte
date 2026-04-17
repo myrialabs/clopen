@@ -6,7 +6,7 @@
 	import { appState } from '$frontend/stores/core/app.svelte';
 	import { userStore } from '$frontend/stores/features/user.svelte';
 	import { chatModelState, initChatModel, restoreChatModelFromSession } from '$frontend/stores/ui/chat-model.svelte';
-	import { ENGINES } from '$shared/constants/engines';
+	import { ENGINES, getModelTags } from '$shared/constants/engines';
 	import type { EngineType, EngineModel } from '$shared/types/unified';
 	import Icon from '$frontend/components/common/display/Icon.svelte';
 	import { claudeAccountsStore, type ClaudeAccountItem } from '$frontend/stores/features/claude-accounts.svelte';
@@ -787,6 +787,13 @@
 											<span class="text-3xs text-slate-400 dark:text-slate-500">{formatTokenLimit(model.limit.input)}</span>
 										{/if}
 									</div>
+								{#if getModelTags(model).length > 0}
+									<div class="flex flex-wrap gap-1 mt-0.5">
+										{#each getModelTags(model) as tag}
+											<span class="px-1 py-px text-4xs font-medium rounded bg-slate-100 dark:bg-slate-700/60 text-slate-500 dark:text-slate-400">{tag}</span>
+										{/each}
+									</div>
+								{/if}
 								</div>
 							</button>
 						{/each}

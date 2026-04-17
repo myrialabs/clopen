@@ -37,7 +37,7 @@
 	import EngineModelPicker from './components/EngineModelPicker.svelte';
 
 	// Composables
-	import { useFileHandling } from './composables/use-file-handling.svelte';
+	import { useFileHandling, buildAcceptedMimeTypes } from './composables/use-file-handling.svelte';
 	import { usePlaceholderAnimation, useLoadingTextAnimation } from './composables/use-animations.svelte';
 	import { useTextareaResize } from './composables/use-textarea-resize.svelte';
 	import { useChatActions } from './composables/use-chat-actions.svelte';
@@ -106,11 +106,18 @@
 		};
 	});
 
-	// Check if the current model supports file attachments
-	const modelSupportsAttachments = $derived.by(() => {
+	// Accepted MIME types based on model's input modalities
+	const acceptedMimeTypes = $derived.by(() => {
 		const model = modelStore.getById(chatModelState.modelId);
-		if (!model) return true; // Default to enabled if model not found
-		return model.modalities.input.image || model.modalities.input.pdf;
+		if (!model) return buildAcceptedMimeTypes({ image: true, pdf: true, audio: false, video: false });
+		return buildAcceptedMimeTypes(model.modalities.input);
+	});
+
+	const modelSupportsAttachments = $derived(acceptedMimeTypes.length > 0);
+
+	// Sync allowed types to the file handling composable when model changes
+	$effect(() => {
+		fileHandling.allowedTypes = acceptedMimeTypes;
 	});
 
 	// Check if we're in welcome state (no messages)
@@ -378,9 +385,7 @@
 		bind:this={fileInputElement}
 		type="file"
 		multiple
-		accept={[...fileHandling.SUPPORTED_IMAGE_TYPES, ...fileHandling.SUPPORTED_DOCUMENT_TYPES].join(
-			','
-		)}
+		accept={acceptedMimeTypes.join(',')}
 		onchange={fileHandling.handleFileInputChange}
 		class="hidden"
 	/>
