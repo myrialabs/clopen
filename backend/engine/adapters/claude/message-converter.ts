@@ -19,8 +19,10 @@ import type {
 	SDKCompactBoundaryMessage,
 	SDKRateLimitEvent,
 } from '@anthropic-ai/claude-agent-sdk';
-import type { BetaContentBlock } from '@anthropic-ai/sdk/resources/beta/messages/messages';
-import type { BetaUsage } from '@anthropic-ai/sdk/resources/beta/messages/messages';
+// Infer block/usage types from the agent SDK so we stay in sync with whichever
+// @anthropic-ai/sdk version claude-agent-sdk bundles internally.
+type BetaContentBlock = SDKAssistantMessage['message']['content'][number];
+type BetaUsage = SDKAssistantMessage['message']['usage'];
 import type {
 	EngineOutput,
 	UserMessage,
@@ -199,22 +201,28 @@ export function convertAssistantMessage(msg: SDKAssistantMessage): EngineOutput[
 	const content = betaMessage.content;
 	const outputs: EngineOutput[] = [];
 
-	// Extract thinking blocks → ReasoningMessage
+	// Extract thinking blocks → ReasoningMessage. Skip emission when all
+	// thinking blocks are empty (e.g. when adaptive thinking is in 'omitted'
+	// mode and only signatures arrive); otherwise we'd persist a blank
+	// reasoning entry that confuses the UI.
 	const thinkingBlocks = content.filter(b => b.type === 'thinking');
 	if (thinkingBlocks.length > 0) {
 		const reasoningText = thinkingBlocks
 			.map(b => b.type === 'thinking' ? b.thinking : '')
-			.join('\n');
-		const reasoning: ReasoningMessage = {
-			type: 'reasoning',
-			createdAt: new Date().toISOString(),
-			messageId: crypto.randomUUID(),
-			sessionId,
-			parent: { messageId: null, sessionId: null, toolUseId: null },
-			engine: { type: 'claude-code', provider: 'anthropic', model: { id: betaMessage.model || '', name: '' }, account: { id: 0, name: '' } },
-			text: reasoningText,
-		};
-		outputs.push(reasoning);
+			.join('\n')
+			.trim();
+		if (reasoningText) {
+			const reasoning: ReasoningMessage = {
+				type: 'reasoning',
+				createdAt: new Date().toISOString(),
+				messageId: crypto.randomUUID(),
+				sessionId,
+				parent: { messageId: null, sessionId: null, toolUseId: null },
+				engine: { type: 'claude-code', provider: 'anthropic', model: { id: betaMessage.model || '', name: '' }, account: { id: 0, name: '' } },
+				text: reasoningText,
+			};
+			outputs.push(reasoning);
+		}
 	}
 
 	// Build AssistantMessage with non-thinking content
@@ -257,8 +265,26 @@ export function convertUserMessage(msg: SDKUserMessage): UserMessage {
 	};
 }
 
+/**
+ * Stateful per-stream tracking. The SDK emits content_block_stop without a
+ * content_block payload, so we must remember which block indices belong to
+ * thinking blocks to emit the correct `reasoning` flag on stop. A Map per
+ * converter instance keeps state isolated between concurrent queries.
+ */
+export interface StreamConverterState {
+	/** index → true when the block is a thinking block */
+	reasoningBlocks: Map<number, boolean>;
+}
+
+export function createStreamConverterState(): StreamConverterState {
+	return { reasoningBlocks: new Map() };
+}
+
 /** Convert SDKPartialAssistantMessage (stream_event) → TextDeltaEvent | StreamLifecycleEvent */
-export function convertStreamEvent(msg: SDKPartialAssistantMessage): EngineOutput[] {
+export function convertStreamEvent(
+	msg: SDKPartialAssistantMessage,
+	state: StreamConverterState,
+): EngineOutput[] {
 	const sessionId = msg.session_id;
 	const event = msg.event;
 	const outputs: EngineOutput[] = [];
@@ -278,7 +304,9 @@ export function convertStreamEvent(msg: SDKPartialAssistantMessage): EngineOutpu
 
 		case 'content_block_start': {
 			const blockType = event.content_block.type;
-			if (blockType === 'thinking') {
+			const isReasoning = blockType === 'thinking' || blockType === 'redacted_thinking';
+			state.reasoningBlocks.set(event.index, isReasoning);
+			if (isReasoning) {
 				outputs.push({ type: 'stream_event', event: 'start', sessionId, reasoning: true } as StreamLifecycleEvent);
 			} else if (blockType === 'text') {
 				outputs.push({ type: 'stream_event', event: 'start', sessionId, reasoning: false } as StreamLifecycleEvent);
@@ -311,7 +339,9 @@ export function convertStreamEvent(msg: SDKPartialAssistantMessage): EngineOutpu
 		}
 
 		case 'content_block_stop': {
-			outputs.push({ type: 'stream_event', event: 'stop', sessionId, reasoning: false } as StreamLifecycleEvent);
+			const isReasoning = state.reasoningBlocks.get(event.index) === true;
+			state.reasoningBlocks.delete(event.index);
+			outputs.push({ type: 'stream_event', event: 'stop', sessionId, reasoning: isReasoning } as StreamLifecycleEvent);
 			break;
 		}
 	}
@@ -392,14 +422,32 @@ export function convertRateLimit(msg: SDKRateLimitEvent): RateLimitEvent | null 
 // ============================================================
 
 /**
- * Convert a single SDKMessage to zero or more EngineOutput events.
+ * Create a stateful per-stream SDK message converter.
  *
- * Dispatches on the SDK message discriminant using proper SDK types.
- * Handles thinking block extraction: assistant messages with thinking
- * blocks yield a ReasoningMessage first, then the AssistantMessage
- * with thinking blocks stripped.
+ * Returns a generator function that converts a single SDKMessage into zero or
+ * more EngineOutput events. The closure tracks per-block reasoning state so
+ * `content_block_stop` events can carry the correct `reasoning` flag (the SDK
+ * does not include the block payload on stop).
+ *
+ * Use one converter per query; do not share across concurrent streams.
+ */
+export function createSdkMessageConverter(): (msg: SDKMessage) => Generator<EngineOutput> {
+	const state = createStreamConverterState();
+	return function* convertSdkMessage(msg: SDKMessage): Generator<EngineOutput> {
+		yield* dispatchSdkMessage(msg, state);
+	};
+}
+
+/**
+ * Stateless dispatcher kept for backwards compatibility. Allocates a fresh
+ * state on every call, so block-stop reasoning tracking only works within a
+ * single SDK message. Prefer `createSdkMessageConverter()` for streaming.
  */
 export function* convertSdkMessage(msg: SDKMessage): Generator<EngineOutput> {
+	yield* dispatchSdkMessage(msg, createStreamConverterState());
+}
+
+function* dispatchSdkMessage(msg: SDKMessage, state: StreamConverterState): Generator<EngineOutput> {
 	switch (msg.type) {
 		case 'assistant':
 			for (const output of convertAssistantMessage(msg as SDKAssistantMessage)) {
@@ -413,7 +461,7 @@ export function* convertSdkMessage(msg: SDKMessage): Generator<EngineOutput> {
 			break;
 
 		case 'stream_event':
-			for (const output of convertStreamEvent(msg as SDKPartialAssistantMessage)) {
+			for (const output of convertStreamEvent(msg as SDKPartialAssistantMessage, state)) {
 				yield output;
 			}
 			break;

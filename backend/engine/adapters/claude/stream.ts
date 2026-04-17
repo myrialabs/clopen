@@ -22,7 +22,7 @@ import type {
 } from '@anthropic-ai/claude-agent-sdk';
 import type { EngineOutput } from '$shared/types/unified';
 import type { StructuredGenerationOptions } from '../../types';
-import { convertSdkMessage, toSdkUserMessage } from './message-converter';
+import { createSdkMessageConverter, toSdkUserMessage } from './message-converter';
 import { resolveOsPath } from '$backend/utils/paths';
 import { setupEnvironmentOnce, getEngineEnv } from './environment';
 import { handleStreamError } from './error-handler';
@@ -119,6 +119,10 @@ export class ClaudeCodeEngine implements AIEngine {
         systemPrompt: { type: "preset", preset: "claude_code" },
         settingSources: ["user", "project", "local"],
         forkSession: true,
+        // Explicit adaptive thinking with summarized display so Opus 4.6+ emits
+        // visible thinking_delta events; without this the SDK can default to
+        // 'omitted' and reasoning blocks arrive empty.
+        thinking: { type: 'adaptive', display: 'summarized' },
         // Custom permission handler: blocks on AskUserQuestion until user answers,
         // auto-allows everything else. Works alongside bypassPermissions.
         canUseTool: async (_toolName, input, canUseToolOptions) => {
@@ -173,6 +177,9 @@ export class ClaudeCodeEngine implements AIEngine {
 
       this.activeQuery = queryInstance;
 
+      // Per-query stateful converter so block-stop reasoning tracking persists
+      // across the stream of SDK messages.
+      const convertSdkMessage = createSdkMessageConverter();
       for await (const sdkMessage of queryInstance) {
         // Convert SDK message → EngineOutput (may yield 0-N events per SDK message)
         yield* convertSdkMessage(sdkMessage);
