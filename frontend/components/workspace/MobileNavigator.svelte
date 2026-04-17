@@ -2,16 +2,10 @@
 	import Icon from '$frontend/components/common/display/Icon.svelte';
 	import Modal from '$frontend/components/common/overlay/Modal.svelte';
 	import Dialog from '$frontend/components/common/overlay/Dialog.svelte';
-	import {
-		workspaceState,
-		setActiveMobilePanel,
-		type PanelId
-	} from '$frontend/stores/ui/workspace.svelte';
 	import { projectState, removeProject } from '$frontend/stores/core/projects.svelte';
 	import { presenceState, getProjectStatusColor } from '$frontend/stores/core/presence.svelte';
 	import { openSettingsModal } from '$frontend/stores/ui/settings-modal.svelte';
 	import { addNotification } from '$frontend/stores/ui/notification.svelte';
-	import type { IconName } from '$shared/types/ui/icons';
 	import TunnelButton from '$frontend/components/tunnel/TunnelButton.svelte';
 	import TunnelModal from '$frontend/components/tunnel/TunnelModal.svelte';
 	import type { Project } from '$shared/types/database/schema';
@@ -37,14 +31,6 @@
 			: undefined
 	);
 
-	const panels: { id: PanelId; icon: IconName; label: string }[] = [
-		{ id: 'chat', icon: 'lucide:bot', label: 'AI' },
-		{ id: 'files', icon: 'lucide:folder', label: 'Files' },
-		{ id: 'git', icon: 'lucide:git-branch', label: 'Source Control' },
-		{ id: 'terminal', icon: 'lucide:terminal', label: 'Terminal' },
-		{ id: 'preview', icon: 'lucide:globe', label: 'Preview' }
-	];
-
 	// Filtered projects based on search query
 	const filteredProjects = $derived(() => {
 		if (!searchQuery.trim()) return projectState.projects;
@@ -53,10 +39,6 @@
 			(p) => p.name.toLowerCase().includes(query) || p.path.toLowerCase().includes(query)
 		);
 	});
-
-	function selectPanel(panelId: PanelId) {
-		setActiveMobilePanel(panelId);
-	}
 
 	function toggleProjectMenu() {
 		showProjectMenu = !showProjectMenu;
@@ -165,31 +147,6 @@
 		</div>
 		<Icon name="lucide:chevron-down" class="w-3 h-3 opacity-60 shrink-0" />
 	</button>
-
-	<!-- Panel Tabs (Icon Only) -->
-	<div
-		class="flex gap-1 bg-slate-100/80 dark:bg-slate-800/50 p-1 border border-slate-200 dark:border-slate-800 rounded-lg"
-		role="tablist"
-		aria-label="Panel Tabs"
-	>
-		{#each panels as panel}
-			<button
-				type="button"
-				class="flex items-center justify-center w-9 h-8 bg-transparent border-none rounded-md text-slate-500 cursor-pointer transition-all duration-150
-					{workspaceState.activeMobilePanel === panel.id
-					? 'bg-violet-500/10 dark:bg-violet-500/20 text-slate-900 dark:text-slate-100 shadow-violet-500/20'
-					: 'active:bg-violet-500/10'}"
-				role="tab"
-				aria-selected={workspaceState.activeMobilePanel === panel.id}
-				aria-controls={`panel-${panel.id}`}
-				aria-label={panel.label}
-				title={panel.label}
-				onclick={() => selectPanel(panel.id)}
-			>
-				<Icon name={panel.icon} class="w-5 h-5" />
-			</button>
-		{/each}
-	</div>
 
 	<!-- Action Buttons -->
 	<div

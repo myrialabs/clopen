@@ -10,9 +10,35 @@
 		stagedCount: number;
 		isCommitting: boolean;
 		onCommit: (message: string) => void;
+		hasRemotes?: boolean;
+		selectedRemote?: string;
+		branchAhead?: number;
+		branchBehind?: number;
+		isPushing?: boolean;
+		isPulling?: boolean;
+		isFetching?: boolean;
+		onPush?: () => void;
+		onPull?: () => void;
+		onFetch?: () => void;
 	}
 
-	const { stagedCount, isCommitting, onCommit }: Props = $props();
+	const {
+		stagedCount,
+		isCommitting,
+		onCommit,
+		hasRemotes = false,
+		selectedRemote = 'origin',
+		branchAhead = 0,
+		branchBehind = 0,
+		isPushing = false,
+		isPulling = false,
+		isFetching = false,
+		onPush,
+		onPull,
+		onFetch
+	}: Props = $props();
+
+	const showSyncActions = $derived(Boolean(onPush || onPull || onFetch));
 
 	let commitMessage = $state('');
 	let textareaEl = $state<HTMLTextAreaElement | null>(null);
@@ -109,22 +135,77 @@
 				{/if}
 			</button>
 		</div>
-		<button
-			type="button"
-			class="flex items-center justify-center gap-1.5 w-full py-1.5 px-3 rounded-md text-xs font-medium transition-all duration-150
-				{stagedCount > 0 && commitMessage.trim() && !isCommitting
-					? 'bg-violet-600 text-white hover:bg-violet-700 cursor-pointer'
-					: 'bg-slate-100 dark:bg-slate-800 text-slate-400 dark:text-slate-600 cursor-not-allowed'}"
-			onclick={handleCommit}
-			disabled={stagedCount === 0 || !commitMessage.trim() || isCommitting}
-		>
-			{#if isCommitting}
-				<div class="w-3.5 h-3.5 border-2 border-white/30 border-t-white rounded-full animate-spin"></div>
-				<span>Committing...</span>
-			{:else}
-				<Icon name="lucide:check" class="w-3.5 h-3.5" />
-				<span>Commit{stagedCount > 0 ? ` (${stagedCount})` : ''}</span>
+		<div class="flex items-center gap-1.5">
+			<button
+				type="button"
+				class="flex items-center justify-center gap-1.5 flex-1 h-7 px-3 border rounded-md text-xs font-medium transition-all duration-150
+					{stagedCount > 0 && commitMessage.trim() && !isCommitting
+						? 'bg-violet-600 border-violet-700 text-white hover:bg-violet-700 cursor-pointer'
+						: 'bg-slate-100 dark:bg-slate-800 border-slate-200 dark:border-slate-700 text-slate-400 dark:text-slate-600 cursor-not-allowed'}"
+				onclick={handleCommit}
+				disabled={stagedCount === 0 || !commitMessage.trim() || isCommitting}
+			>
+				{#if isCommitting}
+					<div class="w-3.5 h-3.5 border-2 border-white/30 border-t-white rounded-full animate-spin"></div>
+					<span>Committing...</span>
+				{:else}
+					<Icon name="lucide:check" class="w-3.5 h-3.5" />
+					<span>Commit{stagedCount > 0 ? ` (${stagedCount})` : ''}</span>
+				{/if}
+			</button>
+
+			{#if showSyncActions}
+				<!-- Push -->
+				<button
+					type="button"
+					class="relative flex items-center justify-center w-8 h-7 bg-white dark:bg-slate-800/80 border border-slate-200 dark:border-slate-700 rounded-md text-slate-500 cursor-pointer transition-all duration-150 hover:bg-violet-500/10 hover:text-violet-600 dark:hover:text-violet-400 disabled:opacity-50 disabled:cursor-not-allowed disabled:hover:bg-white dark:disabled:hover:bg-slate-800/80 disabled:hover:text-slate-500"
+					onclick={onPush}
+					disabled={isPushing || !hasRemotes || !onPush}
+					title={hasRemotes ? `Push to ${selectedRemote}${branchAhead > 0 ? ` (${branchAhead} ahead)` : ''}` : 'No remote configured'}
+				>
+					{#if isPushing}
+						<div class="w-3.5 h-3.5 border-2 border-slate-300/30 border-t-slate-500 rounded-full animate-spin"></div>
+					{:else}
+						<Icon name="lucide:arrow-up-from-line" class="w-3.5 h-3.5" />
+						{#if branchAhead > 0}
+							<span class="absolute -top-1 -right-1 min-w-3.5 h-3.5 px-0.5 rounded-full bg-violet-600 text-white text-3xs font-semibold flex items-center justify-center">{branchAhead}</span>
+						{/if}
+					{/if}
+				</button>
+
+				<!-- Pull -->
+				<button
+					type="button"
+					class="relative flex items-center justify-center w-8 h-7 bg-white dark:bg-slate-800/80 border border-slate-200 dark:border-slate-700 rounded-md text-slate-500 cursor-pointer transition-all duration-150 hover:bg-violet-500/10 hover:text-violet-600 dark:hover:text-violet-400 disabled:opacity-50 disabled:cursor-not-allowed disabled:hover:bg-white dark:disabled:hover:bg-slate-800/80 disabled:hover:text-slate-500"
+					onclick={onPull}
+					disabled={isPulling || !hasRemotes || !onPull}
+					title={hasRemotes ? `Pull from ${selectedRemote}${branchBehind > 0 ? ` (${branchBehind} behind)` : ''}` : 'No remote configured'}
+				>
+					{#if isPulling}
+						<div class="w-3.5 h-3.5 border-2 border-slate-300/30 border-t-slate-500 rounded-full animate-spin"></div>
+					{:else}
+						<Icon name="lucide:arrow-down-to-line" class="w-3.5 h-3.5" />
+						{#if branchBehind > 0}
+							<span class="absolute -top-1 -right-1 min-w-3.5 h-3.5 px-0.5 rounded-full bg-violet-600 text-white text-3xs font-semibold flex items-center justify-center">{branchBehind}</span>
+						{/if}
+					{/if}
+				</button>
+
+				<!-- Fetch -->
+				<button
+					type="button"
+					class="flex items-center justify-center w-8 h-7 bg-white dark:bg-slate-800/80 border border-slate-200 dark:border-slate-700 rounded-md text-slate-500 cursor-pointer transition-all duration-150 hover:bg-violet-500/10 hover:text-violet-600 dark:hover:text-violet-400 disabled:opacity-50 disabled:cursor-not-allowed disabled:hover:bg-white dark:disabled:hover:bg-slate-800/80 disabled:hover:text-slate-500"
+					onclick={onFetch}
+					disabled={isFetching || !hasRemotes || !onFetch}
+					title={hasRemotes ? `Fetch from ${selectedRemote}` : 'No remote configured'}
+				>
+					{#if isFetching}
+						<div class="w-3.5 h-3.5 border-2 border-slate-300/30 border-t-slate-500 rounded-full animate-spin"></div>
+					{:else}
+						<Icon name="lucide:cloud-download" class="w-3.5 h-3.5" />
+					{/if}
+				</button>
 			{/if}
-		</button>
+		</div>
 	</div>
 </div>

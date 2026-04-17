@@ -14,9 +14,9 @@
 		splitPanel,
 		closePanel,
 		canClosePanel,
+		setActiveMobilePanel,
 		PANEL_OPTIONS
 	} from '$frontend/stores/ui/workspace.svelte';
-	import type { IconName } from '$shared/types/ui/icons';
 	import type { DeviceSize } from '$frontend/utils/preview-constants';
 
 	import { DEVICE_VIEWPORTS } from '$frontend/utils/preview-constants';
@@ -41,9 +41,6 @@
 		gitPanelRef,
 		onHistoryOpen
 	}: Props = $props();
-
-	const panel = $derived(workspaceState.panels[panelId]);
-	const iconName = $derived((panel?.icon ?? 'lucide:box') as IconName);
 
 	// Mobile detection
 	let isMobile = $state(false);
@@ -103,9 +100,13 @@
 		showActionsMenu = false;
 	}
 
-	function handleSwap(newPanelId: PanelId) {
-		swapPanel(panelId, newPanelId);
-		closeActionsMenu();
+	function handleSwitch(targetId: PanelId) {
+		if (targetId === panelId) return;
+		if (isMobile) {
+			setActiveMobilePanel(targetId);
+		} else {
+			swapPanel(panelId, targetId);
+		}
 	}
 
 	function handleSplit(direction: 'vertical' | 'horizontal') {
@@ -161,87 +162,80 @@
 <header
 	class="flex items-center justify-between shrink-0 {isMobile
 		? 'h-11 pb-2 px-4 bg-white/90 dark:bg-slate-900/98 border-b border-slate-200 dark:border-slate-800'
-		: 'py-2 px-3.5 bg-slate-100 dark:bg-slate-800/80 border-b border-slate-200 dark:border-slate-800'}"
+		: 'py-1 px-3.5 bg-slate-100 dark:bg-slate-800/80 border-b border-slate-200 dark:border-slate-800'}"
 >
 	<div class="flex items-center text-sm font-medium text-slate-900 dark:text-slate-100">
-		<!-- Panel layout actions (⋮ menu) -->
-		{#if !isMobile}
-			<div class="relative -ml-0.5 mr-2 border-slate-200 dark:border-slate-700">
+		<div
+			class="flex gap-1"
+			role="tablist"
+			aria-label="Switch panel"
+		>
+			{#if !isMobile}
 				<button
 					bind:this={actionsButtonRef}
-
 					type="button"
-					class="flex items-center justify-center w-6 h-6 bg-transparent border-none rounded-md text-slate-400 cursor-pointer transition-all duration-150 hover:bg-violet-500/10 hover:text-slate-700 dark:hover:text-slate-200"
+					class="flex items-center justify-center w-7 h-7 bg-transparent border-none rounded-md text-slate-400 cursor-pointer transition-all duration-150 hover:bg-violet-500/10 hover:text-slate-700 dark:hover:text-slate-200"
 					onclick={toggleActionsMenu}
 					title="Panel actions"
 				>
-					<Icon name="lucide:ellipsis-vertical" class="w-3.5 h-3.5" />
+					<Icon name="lucide:ellipsis-vertical" class="w-4 h-4" />
+				</button>
+			{/if}
+			{#each PANEL_OPTIONS as option}
+				<button
+					type="button"
+					class="flex items-center justify-center {isMobile ? 'w-10 h-9' : 'w-7 h-7'} bg-transparent border-none rounded-md cursor-pointer transition-all duration-150
+						{option.id === panelId
+						? 'bg-violet-500/10 dark:bg-violet-500/20 text-violet-600 dark:text-violet-400'
+						: 'text-slate-500 hover:bg-violet-500/10 hover:text-slate-900 dark:hover:text-slate-100'}"
+					role="tab"
+					aria-selected={option.id === panelId}
+					aria-label={option.title}
+					title={option.title}
+					onclick={() => handleSwitch(option.id)}
+				>
+					<Icon name={option.icon} class={isMobile ? 'w-5.5 h-5.5' : 'w-4 h-4'} />
+				</button>
+			{/each}
+		</div>
+
+		{#if showActionsMenu}
+			<div class="fixed inset-0 z-40" onclick={closeActionsMenu}></div>
+			<div class="fixed z-50 bg-white dark:bg-slate-800 border border-slate-200 dark:border-slate-700 rounded-lg shadow-lg overflow-hidden min-w-44 py-1" style="top: {menuPosition.top}px; left: {menuPosition.left}px;">
+				<!-- Split actions -->
+				<button
+					type="button"
+					class="flex items-center gap-2.5 w-full px-3 py-1.5 text-left text-xs bg-transparent border-none cursor-pointer transition-all duration-150 hover:bg-violet-500/10 text-slate-700 dark:text-slate-300"
+					onclick={() => handleSplit('vertical')}
+				>
+					<Icon name="lucide:columns-2" class="w-3.5 h-3.5" />
+					<span>Split Right</span>
+				</button>
+				<button
+					type="button"
+					class="flex items-center gap-2.5 w-full px-3 py-1.5 text-left text-xs bg-transparent border-none cursor-pointer transition-all duration-150 hover:bg-violet-500/10 text-slate-700 dark:text-slate-300"
+					onclick={() => handleSplit('horizontal')}
+				>
+					<Icon name="lucide:rows-2" class="w-3.5 h-3.5" />
+					<span>Split Down</span>
 				</button>
 
-				{#if showActionsMenu}
-					<div class="fixed inset-0 z-40" onclick={closeActionsMenu}></div>
-					<div class="fixed z-50 bg-white dark:bg-slate-800 border border-slate-200 dark:border-slate-700 rounded-lg shadow-lg overflow-hidden min-w-44 py-1" style="top: {menuPosition.top}px; left: {menuPosition.left}px;">
-						<!-- Switch to section -->
-						<div class="px-3 py-1.5 text-3xs font-semibold text-slate-400 dark:text-slate-500 uppercase tracking-wider">
-							Switch to
-						</div>
-						{#each PANEL_OPTIONS as option}
-							<button
-								type="button"
-								class="flex items-center gap-2.5 w-full px-3 py-1.5 text-left text-xs bg-transparent border-none cursor-pointer transition-all duration-150 hover:bg-violet-500/10
-									{option.id === panelId ? 'text-violet-600 dark:text-violet-400 font-medium' : 'text-slate-700 dark:text-slate-300'}"
-								onclick={() => handleSwap(option.id)}
-								disabled={option.id === panelId}
-							>
-								<Icon name={option.icon} class="w-3.5 h-3.5" />
-								<span class="flex-1">{option.title}</span>
-								{#if option.id === panelId}
-									<Icon name="lucide:check" class="w-3 h-3 text-violet-600 dark:text-violet-400" />
-								{/if}
-							</button>
-						{/each}
+				<!-- Divider -->
+				<div class="my-1 border-t border-slate-200 dark:border-slate-700"></div>
 
-						<!-- Divider -->
-						<div class="my-1 border-t border-slate-200 dark:border-slate-700"></div>
-
-						<!-- Split actions -->
-						<button
-							type="button"
-							class="flex items-center gap-2.5 w-full px-3 py-1.5 text-left text-xs bg-transparent border-none cursor-pointer transition-all duration-150 hover:bg-violet-500/10 text-slate-700 dark:text-slate-300"
-							onclick={() => handleSplit('vertical')}
-						>
-							<Icon name="lucide:columns-2" class="w-3.5 h-3.5" />
-							<span>Split Right</span>
-						</button>
-						<button
-							type="button"
-							class="flex items-center gap-2.5 w-full px-3 py-1.5 text-left text-xs bg-transparent border-none cursor-pointer transition-all duration-150 hover:bg-violet-500/10 text-slate-700 dark:text-slate-300"
-							onclick={() => handleSplit('horizontal')}
-						>
-							<Icon name="lucide:rows-2" class="w-3.5 h-3.5" />
-							<span>Split Down</span>
-						</button>
-
-						<!-- Divider -->
-						<div class="my-1 border-t border-slate-200 dark:border-slate-700"></div>
-
-						<!-- Close -->
-						<button
-							type="button"
-							class="flex items-center gap-2.5 w-full px-3 py-1.5 text-left text-xs bg-transparent border-none cursor-pointer transition-all duration-150 hover:bg-red-500/10 text-red-600 dark:text-red-400 disabled:opacity-40 disabled:cursor-not-allowed"
-							onclick={handleClose}
-							disabled={!canClosePanel()}
-							title={!canClosePanel() ? 'Cannot close last panel' : 'Close this panel'}
-						>
-							<Icon name="lucide:x" class="w-3.5 h-3.5" />
-							<span>Close Panel</span>
-						</button>
-					</div>
-				{/if}
+				<!-- Close -->
+				<button
+					type="button"
+					class="flex items-center gap-2.5 w-full px-3 py-1.5 text-left text-xs bg-transparent border-none cursor-pointer transition-all duration-150 hover:bg-red-500/10 text-red-600 dark:text-red-400 disabled:opacity-40 disabled:cursor-not-allowed"
+					onclick={handleClose}
+					disabled={!canClosePanel()}
+					title={!canClosePanel() ? 'Cannot close last panel' : 'Close this panel'}
+				>
+					<Icon name="lucide:x" class="w-3.5 h-3.5" />
+					<span>Close Panel</span>
+				</button>
 			</div>
 		{/if}
-		<Icon name={iconName} class="w-4 h-4 text-violet-600" />
-		<span class="ml-2.5">{panel?.title ?? 'Panel'}</span>
 	</div>
 
 	<div class="flex items-center">
@@ -615,48 +609,6 @@
 					</div>
 				{/if}
 
-				<!-- Fetch -->
-				<button
-					type="button"
-					class="flex items-center justify-center gap-1 {isMobile ? 'h-9 px-2' : 'h-6 px-1.5'} bg-transparent border-none rounded-md text-slate-500 cursor-pointer transition-all duration-150 hover:bg-violet-500/10 hover:text-slate-900 dark:hover:text-slate-100 disabled:opacity-50 disabled:cursor-not-allowed"
-					onclick={() => gitPanelRef?.panelActions?.fetch()}
-					disabled={gitPanelRef?.panelActions?.getIsFetching() || !hasRemotes}
-					title={hasRemotes ? `Fetch from ${remoteName}` : 'No remote configured'}
-				>
-					{#if gitPanelRef?.panelActions?.getIsFetching()}
-						<div class="{isMobile ? 'w-4.5 h-4.5' : 'w-4 h-4'} border-2 border-slate-300/30 border-t-slate-500 rounded-full animate-spin"></div>
-					{:else}
-						<Icon name="lucide:cloud-download" class={isMobile ? 'w-4.5 h-4.5' : 'w-4 h-4'} />
-					{/if}
-				</button>
-				<!-- Pull -->
-				<button
-					type="button"
-					class="flex items-center justify-center gap-1 {isMobile ? 'h-9 px-2' : 'h-6 px-1.5'} bg-transparent border-none rounded-md text-slate-500 cursor-pointer transition-all duration-150 hover:bg-violet-500/10 hover:text-slate-900 dark:hover:text-slate-100 disabled:opacity-50 disabled:cursor-not-allowed"
-					onclick={() => gitPanelRef?.panelActions?.pull()}
-					disabled={gitPanelRef?.panelActions?.getIsPulling() || !hasRemotes}
-					title={hasRemotes ? `Pull from ${remoteName}` : 'No remote configured'}
-				>
-					{#if gitPanelRef?.panelActions?.getIsPulling()}
-						<div class="{isMobile ? 'w-4.5 h-4.5' : 'w-4 h-4'} border-2 border-slate-300/30 border-t-slate-500 rounded-full animate-spin"></div>
-					{:else}
-						<Icon name="lucide:arrow-down-to-line" class={isMobile ? 'w-4.5 h-4.5' : 'w-4 h-4'} />
-					{/if}
-				</button>
-				<!-- Push -->
-				<button
-					type="button"
-					class="flex items-center justify-center gap-1 {isMobile ? 'h-9 px-2' : 'h-6 px-1.5'} bg-transparent border-none rounded-md text-slate-500 cursor-pointer transition-all duration-150 hover:bg-violet-500/10 hover:text-slate-900 dark:hover:text-slate-100 disabled:opacity-50 disabled:cursor-not-allowed"
-					onclick={() => gitPanelRef?.panelActions?.push()}
-					disabled={gitPanelRef?.panelActions?.getIsPushing() || !hasRemotes}
-					title={hasRemotes ? `Push to ${remoteName}` : 'No remote configured'}
-				>
-					{#if gitPanelRef?.panelActions?.getIsPushing()}
-						<div class="{isMobile ? 'w-4.5 h-4.5' : 'w-4 h-4'} border-2 border-slate-300/30 border-t-slate-500 rounded-full animate-spin"></div>
-					{:else}
-						<Icon name="lucide:arrow-up-from-line" class={isMobile ? 'w-4.5 h-4.5' : 'w-4 h-4'} />
-					{/if}
-				</button>
 			{/if}
 		</div>
 

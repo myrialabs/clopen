@@ -1143,16 +1143,10 @@
 
 	// Exported panel actions for PanelHeader
 	export const panelActions = {
-		push: handlePush,
-		pull: handlePull,
-		fetch: handleFetch,
 		init: handleInit,
 		openBranchManager: () => { showBranchManager = true; },
 		getBranchInfo: () => branchInfo,
 		getIsRepo: () => isRepo,
-		getIsFetching: () => isFetching,
-		getIsPulling: () => isPulling,
-		getIsPushing: () => isPushing,
 		getRemotes: () => remotes,
 		getHasRemotes: () => remotes.length > 0,
 		getSelectedRemote: () => selectedRemote,
@@ -1223,6 +1217,16 @@
 			stagedCount={gitStatus.staged.length}
 			{isCommitting}
 			onCommit={handleCommit}
+			hasRemotes={remotes.length > 0}
+			{selectedRemote}
+			branchAhead={branchInfo?.ahead ?? 0}
+			branchBehind={branchInfo?.behind ?? 0}
+			{isPushing}
+			{isPulling}
+			{isFetching}
+			onPush={handlePush}
+			onPull={handlePull}
+			onFetch={handleFetch}
 		/>
 
 		<!-- Changes sections -->
