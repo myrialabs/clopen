@@ -130,7 +130,7 @@
 	// Container width for responsive layout (same threshold as Files: 800)
 	let containerRef = $state<HTMLDivElement | null>(null);
 	let containerWidth = $state(0);
-	let leftPanelWidth = $state(288); // default w-72
+	let leftPanelWidth = $state(256); // default w-64
 	let isResizing = $state(false);
 	const TWO_COLUMN_THRESHOLD = $derived(Math.round(600 * (settings.fontSize / 13)));
 	const isTwoColumnMode = $derived(containerWidth >= TWO_COLUMN_THRESHOLD);

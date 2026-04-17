@@ -144,7 +144,7 @@
 	// Container width detection for 2-column layout
 	let containerRef = $state<HTMLDivElement | null>(null);
 	let containerWidth = $state(0);
-	let leftPanelWidth = $state(288); // default w-72
+	let leftPanelWidth = $state(256); // default w-64
 	let isResizing = $state(false);
 	const TWO_COLUMN_THRESHOLD = $derived(Math.round(600 * (settings.fontSize / 13)));
 

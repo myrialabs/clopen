@@ -56,13 +56,16 @@
 	<!-- File icon -->
 	<Icon name={fileIcon} class="w-4 h-4 shrink-0" />
 
-	<!-- File name - truncated -->
-	<span class="text-xs font-medium truncate min-w-0 flex-1">{fileName}</span>
-
-	<!-- Dir path - truncated, dimmed -->
-	{#if dirPath()}
-		<span class="text-3xs text-slate-400 dark:text-slate-500 truncate max-w-20 shrink">{dirPath()}</span>
-	{/if}
+	<!-- File name + dir path grouped like native Git UIs -->
+	<div class="flex items-baseline gap-1.5 min-w-0 flex-1">
+		<span class="text-xs font-medium truncate">{fileName}</span>
+		{#if dirPath()}
+			<span
+				class="text-3xs text-slate-400 dark:text-slate-500 truncate min-w-0"
+				dir="rtl"
+			>{dirPath()}</span>
+		{/if}
+	</div>
 
 	<!-- Status badge -->
 	<span class="w-4 text-center text-xs font-bold {statusColor} shrink-0">{statusLabel}</span>
