@@ -7,7 +7,7 @@
 	import { fade } from 'svelte/transition';
 	import ChatMessages from '$frontend/components/chat/message/ChatMessages.svelte';
 	import ChatInput from '$frontend/components/chat/input/ChatInput.svelte';
-	import FloatingTodoList from '$frontend/components/chat/widgets/FloatingTodoList.svelte';
+	import TaskProgress from '$frontend/components/chat/widgets/TaskProgress.svelte';
 	import TimelineModal from '$frontend/components/checkpoint/TimelineModal.svelte';
 	import Icon from '$frontend/components/common/display/Icon.svelte';
 	import Button from '$frontend/components/common/display/Button.svelte';
@@ -241,8 +241,11 @@
 					</div>
 				</div>
 			{:else}
-				<!-- Enhanced chat interface -->
+				<!-- Enhanced chat interface: Task Progress docked above chat -->
 				<div class="flex-1 flex flex-col overflow-hidden">
+					{#if sessionState.currentSession}
+						<TaskProgress />
+					{/if}
 					<div class="flex-1 flex justify-center overflow-hidden">
 						<div class="w-full flex flex-col overflow-hidden">
 							<div class="flex-1 overflow-y-auto overflow-x-hidden">
@@ -267,11 +270,6 @@
 				{/if}
 			{/if}
 		</div>
-
-		<!-- Floating TodoList (only shown when there's an active session with todos) -->
-		{#if sessionState.currentSession}
-			<FloatingTodoList />
-		{/if}
 
 		<!-- Checkpoint Modal -->
 		<TimelineModal
