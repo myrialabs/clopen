@@ -3,8 +3,9 @@
 	import { cubicOut } from 'svelte/easing';
 	import Icon from '$frontend/components/common/display/Icon.svelte';
 	import { getFileIcon } from '$frontend/utils/file-icon-mappings';
-	import { formatFileSize } from '$frontend/components/chat/shared/utils';
+	import { formatFileSize } from '$frontend/utils/format';
 	import { debug } from '$shared/utils/logger';
+	import { portal } from '$frontend/utils/portal';
 
 	interface Props {
 		isOpen: boolean;
@@ -124,7 +125,8 @@
 {#if isOpen}
 	<div
 		bind:this={modalElement}
-		class="fixed inset-0 z-50 flex items-center justify-center bg-black/80 backdrop-blur-sm"
+		use:portal
+		class="fixed inset-0 z-[150] flex items-center justify-center bg-black/80 backdrop-blur-sm"
 		role="dialog"
 		aria-modal="true"
 		aria-label="View attachment"

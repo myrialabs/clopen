@@ -13,6 +13,7 @@
 	import { getContextUsage } from '$frontend/utils/context-manager';
 	import type { TokenUsage } from '$shared/types/unified';
 	import Icon from '$frontend/components/common/display/Icon.svelte';
+	import { formatTokens } from '$frontend/utils/format';
 
 	interface Props {
 		isMobile?: boolean;
@@ -66,12 +67,6 @@
 		}
 	});
 
-	// Format token numbers compactly (e.g. 125k, 1.2M)
-	function formatTokens(n: number): string {
-		if (n >= 1_000_000) return `${(n / 1_000_000).toFixed(1)}M`;
-		if (n >= 1_000) return `${Math.round(n / 1_000)}k`;
-		return n.toString();
-	}
 
 	// Get last assistant message usage for detail breakdown
 	const lastUsage = $derived.by((): TokenUsage | null => {

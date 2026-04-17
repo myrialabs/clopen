@@ -4,6 +4,7 @@
 	import { settings } from '$frontend/stores/features/settings.svelte';
 	import { modelStore } from '$frontend/stores/features/models.svelte';
 	import Icon from '$frontend/components/common/display/Icon.svelte';
+	import { formatTokens } from '$frontend/utils/format';
 
 	let {
 		value = $bindable(DEFAULT_MODEL_ID),
@@ -31,14 +32,6 @@
 		}
 	}
 
-	function formatTokenLimit(tokens: number): string {
-		if (tokens >= 1_000_000) {
-			return `${(tokens / 1_000_000).toFixed(tokens % 1_000_000 === 0 ? 0 : 1)}M tokens`;
-		} else if (tokens >= 1_000) {
-			return `${(tokens / 1_000).toFixed(tokens % 1_000 === 0 ? 0 : 1)}K tokens`;
-		}
-		return `${tokens} tokens`;
-	}
 </script>
 
 <div>
@@ -77,7 +70,7 @@
 			<div class="flex items-center space-x-4 text-xs text-slate-600 dark:text-slate-500">
 				<div class="flex items-center space-x-1">
 					<Icon name="lucide:layers" class="w-3 h-3" />
-					<span>Input: {formatTokenLimit(selectedModel.limit.input)}</span>
+					<span>Input: {formatTokens(selectedModel.limit.input)} tokens</span>
 				</div>
 			</div>
 		</div>

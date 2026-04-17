@@ -2,6 +2,7 @@
 	import { modelStore } from '$frontend/stores/features/models.svelte';
 	import { ENGINES, getModelTags } from '$shared/constants/engines';
 	import type { EngineType, EngineModel } from '$shared/types/unified';
+	import { formatProvider, formatTokens } from '$frontend/utils/format';
 
 	interface Props {
 		engine: EngineType;
@@ -73,16 +74,6 @@
 		if (next.has(provider)) next.delete(provider);
 		else next.add(provider);
 		collapsedProviders = next;
-	}
-
-	function formatProvider(provider: string): string {
-		return provider.split(/[-_]/).map(w => w.charAt(0).toUpperCase() + w.slice(1)).join(' ');
-	}
-
-	function formatTokenLimit(tokens: number): string {
-		if (tokens >= 1_000_000) return `${(tokens / 1_000_000).toFixed(tokens % 1_000_000 === 0 ? 0 : 1)}M`;
-		if (tokens >= 1_000) return `${(tokens / 1_000).toFixed(tokens % 1_000 === 0 ? 0 : 1)}K`;
-		return `${tokens}`;
 	}
 
 	async function handleEngineChange(engineType: EngineType) {
@@ -235,7 +226,7 @@
 										<div class="flex items-center gap-2">
 											<span class="text-sm font-medium text-slate-900 dark:text-slate-100">{mdl.engine.model.name}</span>
 											{#if mdl.limit.input}
-												<span class="text-2xs text-slate-400 dark:text-slate-500">{formatTokenLimit(mdl.limit.input)}</span>
+												<span class="text-2xs text-slate-400 dark:text-slate-500">{formatTokens(mdl.limit.input)}</span>
 											{/if}
 										</div>
 										{#if getModelTags(mdl).length > 0}

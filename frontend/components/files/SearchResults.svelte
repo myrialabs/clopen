@@ -4,6 +4,7 @@
 	import { getFolderIcon } from '$frontend/utils/folder-icon-mappings';
 	import { normalizePath } from '$shared/utils/path';
 	import type { IconName } from '$shared/types/ui/icons';
+	import { formatFileSize } from '$frontend/utils/format';
 
 	interface FileSearchResult {
 		name: string;
@@ -82,14 +83,6 @@
 			return getFolderIcon(fileName, false);
 		}
 		return getFileIcon(fileName);
-	}
-
-	function formatFileSize(bytes: number): string {
-		if (bytes === 0) return '0 B';
-		const k = 1024;
-		const sizes = ['B', 'KB', 'MB', 'GB'];
-		const i = Math.floor(Math.log(bytes) / Math.log(k));
-		return parseFloat((bytes / Math.pow(k, i)).toFixed(1)) + ' ' + sizes[i];
 	}
 
 	function escapeHtml(str: string): string {

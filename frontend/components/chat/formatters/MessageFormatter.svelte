@@ -5,7 +5,7 @@
 	import Lightbox from '$frontend/components/common/overlay/Lightbox.svelte';
 	import Icon from '$frontend/components/common/display/Icon.svelte';
 	import { getFileIcon } from '$frontend/utils/file-icon-mappings';
-	import { formatFileSize } from '../shared/utils';
+	import { formatFileSize } from '$frontend/utils/format';
 
 	import type { FrontendMessage } from '$frontend/stores/core/sessions.svelte';
 	import { getCompactSummary } from '$frontend/utils/chat/message-grouper';

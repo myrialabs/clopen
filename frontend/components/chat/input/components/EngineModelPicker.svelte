@@ -13,6 +13,7 @@
 	import { opencodeProvidersStore, type OpenCodeProviderItem, type OpenCodeAccountItem } from '$frontend/stores/features/opencode-providers.svelte';
 	import ws from '$frontend/utils/ws';
 	import { debug } from '$shared/utils/logger';
+	import { formatProvider, formatTokens } from '$frontend/utils/format';
 
 	// ════════════════════════════════════════════
 	// Claude Accounts (reads from shared store)
@@ -434,19 +435,6 @@
 		collapsedProviders = next;
 	}
 
-	function formatProvider(provider: string): string {
-		return provider
-			.split(/[-_]/)
-			.map(w => w.charAt(0).toUpperCase() + w.slice(1))
-			.join(' ');
-	}
-
-	function formatTokenLimit(tokens: number): string {
-		if (tokens >= 1_000_000) return `${(tokens / 1_000_000).toFixed(tokens % 1_000_000 === 0 ? 0 : 1)}M`;
-		if (tokens >= 1_000) return `${(tokens / 1_000).toFixed(tokens % 1_000 === 0 ? 0 : 1)}K`;
-		return `${tokens}`;
-	}
-
 	// Dropdown state
 	let showDropdown = $state(false);
 	let triggerButton: HTMLButtonElement;
@@ -784,7 +772,7 @@
 									<div class="flex items-center gap-2">
 										<span class="font-medium text-xs">{model.engine.model.name}</span>
 										{#if model.limit.input}
-											<span class="text-3xs text-slate-400 dark:text-slate-500">{formatTokenLimit(model.limit.input)}</span>
+											<span class="text-3xs text-slate-400 dark:text-slate-500">{formatTokens(model.limit.input)}</span>
 										{/if}
 									</div>
 								{#if getModelTags(model).length > 0}

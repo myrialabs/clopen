@@ -51,7 +51,7 @@ export const CLAUDE_CODE_MODELS: EngineModel[] = [
 			},
 		},
 		limit: {
-			input: 1_000_000,
+			input: 200_000,
 			output: 128_000,
 		},
 		modalities: {
@@ -94,7 +94,7 @@ export const CLAUDE_CODE_MODELS: EngineModel[] = [
 			},
 		},
 		limit: {
-			input: 1_000_000,
+			input: 200_000,
 			output: 64_000,
 		},
 		modalities: {

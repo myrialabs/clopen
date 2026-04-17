@@ -6,6 +6,7 @@
 	import type { EngineType, EngineModel } from '$shared/types/unified';
 	import type { CommitMessageFormat } from '$shared/types/git';
 	import type { IconName } from '$shared/types/ui/icons';
+	import { formatProvider } from '$frontend/utils/format';
 
 	const formatOptions: { id: CommitMessageFormat; label: string; desc: string; icon: IconName }[] = [
 		{ id: 'single-line', label: 'Single Line', desc: 'type(scope): subject', icon: 'lucide:minus' },
@@ -84,10 +85,6 @@
 		if (next.has(provider)) next.delete(provider);
 		else next.add(provider);
 		collapsedProviders = next;
-	}
-
-	function formatProvider(provider: string): string {
-		return provider.split(/[-_]/).map(w => w.charAt(0).toUpperCase() + w.slice(1)).join(' ');
 	}
 
 	function toggleCustomModel() {
