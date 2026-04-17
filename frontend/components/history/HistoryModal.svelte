@@ -53,8 +53,8 @@
 
 	// Get the engine/model display for a session
 	function getSessionModel(session: ChatSession): string {
-		if (session.model) {
-			return modelStore.getById(session.model)?.name || session.model;
+		if (session.model_id) {
+			return session.model_name || modelStore.getById(session.model_id)?.engine.model.name || session.model_id;
 		}
 		return '';
 	}

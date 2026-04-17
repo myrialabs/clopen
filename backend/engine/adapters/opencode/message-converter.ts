@@ -435,10 +435,8 @@ export function convertUserMessage(
 		messageId: ocMessage.id || crypto.randomUUID(),
 		sessionId,
 		parent: { messageId: null, sessionId: null, toolUseId: null },
-		engine: 'opencode' as const,
-		model: null,
-		account: { id: null, name: null },
-		sender: { id: null, name: null },
+		engine: { type: 'opencode' as const, provider: '', model: { id: '', name: '' }, account: { id: 0, name: '' } },
+		sender: { id: '', name: '' },
 		content,
 		synthetic: false,
 	};
@@ -541,7 +539,8 @@ export function convertAssistantMessages(
 
 	// 3. Build unified messages from groups
 	const assistantMsg = ocMessage.role === 'assistant' ? ocMessage as AssistantMessage : null;
-	const modelId = assistantMsg ? `${assistantMsg.providerID}/${assistantMsg.modelID}` : '';
+	const providerID = assistantMsg?.providerID || '';
+	const modelID = assistantMsg?.modelID || '';
 	const mappedStop = mapStopReason(assistantMsg?.finish);
 	const usage = mapUsage(assistantMsg?.tokens);
 
@@ -568,10 +567,7 @@ export function convertAssistantMessages(
 			messageId: i === 0 ? baseId : crypto.randomUUID(),
 			sessionId,
 			parent: { messageId: null, sessionId: null, toolUseId: null },
-			engine: 'opencode' as const,
-			model: modelId || null,
-			account: { id: null, name: null },
-			sender: { id: null, name: null },
+			engine: { type: 'opencode' as const, provider: providerID, model: { id: modelID, name: '' }, account: { id: 0, name: '' } },
 			content: group,
 			stopReason,
 			usage: isLast ? usage : null,
@@ -610,6 +606,7 @@ export function convertResultMessage(
 			inputTokens: 0, outputTokens: 0,
 			cacheCreationInputTokens: 0, cacheReadInputTokens: 0,
 		},
+		stopReason: assistantMsg?.finish || null,
 	} as SuccessResultEvent;
 }
 
@@ -683,7 +680,8 @@ export function convertToolUseOnly(
 	const toolUseId = toolPart.callID || toolPart.id || crypto.randomUUID();
 
 	const assistantMsg = ocMessage.role === 'assistant' ? ocMessage as AssistantMessage : null;
-	const modelId = assistantMsg ? `${assistantMsg.providerID}/${assistantMsg.modelID}` : '';
+	const provId = assistantMsg?.providerID || '';
+	const mdlId = assistantMsg?.modelID || '';
 
 	return {
 		type: 'assistant',
@@ -691,10 +689,7 @@ export function convertToolUseOnly(
 		messageId: crypto.randomUUID(),
 		sessionId,
 		parent: { messageId: null, sessionId: null, toolUseId: parentToolUseId || null },
-		engine: 'opencode' as const,
-		model: modelId || null,
-		account: { id: null, name: null },
-		sender: { id: null, name: null },
+		engine: { type: 'opencode' as const, provider: provId, model: { id: mdlId, name: '' }, account: { id: 0, name: '' } },
 		content: [{
 			type: 'tool_use',
 			id: toolUseId,
@@ -719,7 +714,8 @@ export function convertReasoningMessage(
 	sessionId: string,
 ): ReasoningMessage {
 	const assistantMsg = ocMessage.role === 'assistant' ? ocMessage as AssistantMessage : null;
-	const modelId = assistantMsg ? `${assistantMsg.providerID}/${assistantMsg.modelID}` : '';
+	const provId = assistantMsg?.providerID || '';
+	const mdlId = assistantMsg?.modelID || '';
 
 	return {
 		type: 'reasoning',
@@ -727,10 +723,7 @@ export function convertReasoningMessage(
 		messageId: crypto.randomUUID(),
 		sessionId,
 		parent: { messageId: null, sessionId: null, toolUseId: null },
-		engine: 'opencode' as const,
-		model: modelId || null,
-		account: { id: null, name: null },
-		sender: { id: null, name: null },
+		engine: { type: 'opencode' as const, provider: provId, model: { id: mdlId, name: '' }, account: { id: 0, name: '' } },
 		text: reasoningText,
 	};
 }
@@ -784,7 +777,8 @@ export function convertSubtaskToolUseOnly(
 	sessionId: string,
 ): UnifiedAssistantMessage {
 	const assistantMsg = ocMessage.role === 'assistant' ? ocMessage as AssistantMessage : null;
-	const modelId = assistantMsg ? `${assistantMsg.providerID}/${assistantMsg.modelID}` : '';
+	const provId = assistantMsg?.providerID || '';
+	const mdlId = assistantMsg?.modelID || '';
 
 	return {
 		type: 'assistant',
@@ -792,10 +786,7 @@ export function convertSubtaskToolUseOnly(
 		messageId: crypto.randomUUID(),
 		sessionId,
 		parent: { messageId: null, sessionId: null, toolUseId: null },
-		engine: 'opencode' as const,
-		model: modelId || null,
-		account: { id: null, name: null },
-		sender: { id: null, name: null },
+		engine: { type: 'opencode' as const, provider: provId, model: { id: mdlId, name: '' }, account: { id: 0, name: '' } },
 		content: [{
 			type: 'tool_use',
 			id: subtaskPart.id || crypto.randomUUID(),
@@ -842,10 +833,8 @@ export function convertToolResultOnly(
 		messageId: crypto.randomUUID(),
 		sessionId,
 		parent: { messageId: null, sessionId: null, toolUseId: parentToolUseId || null },
-		engine: 'opencode' as const,
-		model: null,
-		account: { id: null, name: null },
-		sender: { id: null, name: null },
+		engine: { type: 'opencode' as const, provider: '', model: { id: '', name: '' }, account: { id: 0, name: '' } },
+		sender: { id: '', name: '' },
 		content: [{
 			type: 'tool_result',
 			toolUseId,

@@ -1,4 +1,4 @@
-import type { EngineType, EngineModel, EngineInfo } from '$shared/types/engine';
+import type { EngineType, EngineModel, EngineInfo } from '$shared/types/unified';
 
 // Re-export engine types for convenience
 export type { EngineModel, EngineType, EngineInfo };
@@ -38,39 +38,134 @@ export const getEngineInfo = (engineType: EngineType): EngineInfo | undefined =>
 
 export const CLAUDE_CODE_MODELS: EngineModel[] = [
 	{
-		id: 'claude-code:opus',
-		engine: 'claude-code',
-		modelId: 'opus',
-		name: 'Opus 4.6',
-		provider: 'anthropic',
-		description: 'Most capable model with sustained performance for complex, long-running tasks',
-		capabilities: ['Reasoning', 'Attachments'],
-		contextWindow: 200000,
-		category: 'latest'
+		engine: {
+			type: 'claude-code',
+			provider: 'anthropic',
+			model: {
+				id: 'claude-opus-4-7',
+				name: 'Claude Opus 4.7',
+			},
+			account: {
+				id: 0,
+				name: '',
+			},
+		},
+		limit: {
+			input: 1_000_000,
+			output: 128_000,
+		},
+		modalities: {
+			input: {
+				text: true,
+				image: true,
+				audio: false,
+				video: false,
+				pdf: true,
+			},
+			output: {
+				text: true,
+				image: false,
+				audio: false,
+				video: false,
+				pdf: false,
+			},
+		},
+		capabilities: {
+			reasoning: true,
+			tools: true,
+			structuredOutput: true,
+		},
+		cost: {
+			input: 5,
+			output: 25,
+		},
 	},
 	{
-		id: 'claude-code:sonnet',
-		engine: 'claude-code',
-		modelId: 'sonnet',
-		name: 'Sonnet 4.6',
-		provider: 'anthropic',
-		description: 'High-performance model with excellent coding capabilities and extended thinking',
-		capabilities: ['Reasoning', 'Attachments'],
-		contextWindow: 200000,
-		category: 'latest',
-		recommended: true
+		engine: {
+			type: 'claude-code',
+			provider: 'anthropic',
+			model: {
+				id: 'claude-sonnet-4-6',
+				name: 'Claude Sonnet 4.6',
+			},
+			account: {
+				id: 0,
+				name: '',
+			},
+		},
+		limit: {
+			input: 1_000_000,
+			output: 64_000,
+		},
+		modalities: {
+			input: {
+				text: true,
+				image: true,
+				audio: false,
+				video: false,
+				pdf: true,
+			},
+			output: {
+				text: true,
+				image: false,
+				audio: false,
+				video: false,
+				pdf: false,
+			},
+		},
+		capabilities: {
+			reasoning: true,
+			tools: true,
+			structuredOutput: true,
+		},
+		cost: {
+			input: 3,
+			output: 15,
+		},
 	},
 	{
-		id: 'claude-code:haiku',
-		engine: 'claude-code',
-		modelId: 'haiku',
-		name: 'Haiku 4.5',
-		provider: 'anthropic',
-		description: 'Fast and efficient model for quick tasks and responses',
-		capabilities: ['Reasoning', 'Attachments'],
-		contextWindow: 200000,
-		category: 'latest'
-	}
+		engine: {
+			type: 'claude-code',
+			provider: 'anthropic',
+			model: {
+				id: 'claude-haiku-4-5',
+				name: 'Claude Haiku 4.5',
+			},
+			account: {
+				id: 0,
+				name: '',
+			},
+		},
+		limit: {
+			input: 200_000,
+			output: 64_000,
+		},
+		modalities: {
+			input: {
+				text: true,
+				image: true,
+				audio: false,
+				video: false,
+				pdf: true,
+			},
+			output: {
+				text: true,
+				image: false,
+				audio: false,
+				video: false,
+				pdf: false,
+			},
+		},
+		capabilities: {
+			reasoning: true,
+			tools: true,
+			structuredOutput: true,
+		},
+		cost: {
+			input: 1,
+			output: 5,
+		},
+	},
 ];
 
 // ============================================================================
@@ -83,7 +178,7 @@ const modelRegistry: EngineModel[] = [...CLAUDE_CODE_MODELS];
 /** Register models for a specific engine (replaces any existing models for that engine) */
 export const registerModels = (engine: EngineType, models: EngineModel[]): void => {
 	// Remove existing models for this engine
-	const filtered = modelRegistry.filter(m => m.engine !== engine);
+	const filtered = modelRegistry.filter(m => m.engine.type !== engine);
 	modelRegistry.length = 0;
 	modelRegistry.push(...filtered, ...models);
 };
@@ -96,39 +191,18 @@ export const getAllModels = (): EngineModel[] => [...modelRegistry];
 // Defaults
 // ============================================================================
 
-export const DEFAULT_ENGINE: EngineType = 'claude-code';
-export const DEFAULT_MODEL = 'claude-code:sonnet';
+export const DEFAULT_ENGINE = CLAUDE_CODE_MODELS[1].engine.type;
+export const DEFAULT_MODEL_ID = CLAUDE_CODE_MODELS[1].engine.model.id;
+export const DEFAULT_MODEL_NAME = CLAUDE_CODE_MODELS[1].engine.model.name;
 
 // ============================================================================
 // Lookup Helpers
 // ============================================================================
 
 export const getModelById = (modelId: string): EngineModel | undefined => {
-	return modelRegistry.find(model => model.id === modelId);
+	return modelRegistry.find(model => model.engine.model.id === modelId);
 };
 
 export const getModelsByEngine = (engine: EngineType): EngineModel[] => {
-	return modelRegistry.filter(model => model.engine === engine);
+	return modelRegistry.filter(model => model.engine.type === engine);
 };
-
-/**
- * Parse a compound model ID into engine + modelId
- * e.g. "claude-code:sonnet" → { engine: "claude-code", modelId: "sonnet" }
- */
-export const parseModelId = (compoundId: string): { engine: EngineType; modelId: string } => {
-	const colonIndex = compoundId.indexOf(':');
-	if (colonIndex !== -1) {
-		const engine = compoundId.slice(0, colonIndex) as EngineType;
-		const modelId = compoundId.slice(colonIndex + 1);
-		return { engine, modelId };
-	}
-	return { engine: 'claude-code', modelId: compoundId };
-};
-
-// SDK Configuration - NO LIMITS FOR LOCAL PROJECT
-export const SDK_CONFIG = {
-	DEFAULT_MAX_TURNS: undefined, // No limit - unlimited conversation
-	DEFAULT_TEMPERATURE: 0.7,
-	DEFAULT_MAX_TOKENS: undefined, // No limit - unlimited tokens
-	TIMEOUT_MS: undefined, // No timeout - unlimited duration
-} as const;

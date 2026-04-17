@@ -374,8 +374,8 @@
 	let ocNewAccountName = $state('');
 	let ocNewAccountApiKey = $state('');
 
-	function getProviderEnvLabel(providerId: string): string {
-		const catalogEntry = ocCatalog.find(c => c.id === providerId);
+	function getProviderEnvLabel(slug: string): string {
+		const catalogEntry = ocCatalog.find(c => c.id === slug);
 		return catalogEntry?.env?.[0] || 'API Key';
 	}
 
@@ -429,7 +429,7 @@
 	}
 
 	const ocFilteredCatalog = $derived.by(() => {
-		const configuredIds = new Set(ocProviders.map(p => p.providerId));
+		const configuredIds = new Set(ocProviders.map(p => p.slug));
 		let filtered = ocCatalog.filter(c => !configuredIds.has(c.id));
 		if (ocCatalogSearch.trim()) {
 			const q = ocCatalogSearch.toLowerCase();
@@ -479,13 +479,13 @@
 			}
 
 			await opencodeProvidersStore.addProvider({
-				providerId: ocSelectedCatalogProvider.id,
+				slug: ocSelectedCatalogProvider.id,
 				name: ocSelectedCatalogProvider.name,
 				npm: ocSelectedCatalogProvider.npm,
 				apiUrl: ocSelectedCatalogProvider.api || undefined,
 				options: Object.keys(options).length > 0 ? JSON.stringify(options) : undefined,
 				accountName: ocAddAccountName.trim(),
-				apiKey: ocAddApiKey.trim(),
+				credential: ocAddApiKey.trim(),
 			});
 			ocAddStep = 'success';
 		} catch (error: any) {
@@ -1201,7 +1201,7 @@
 											<div class="flex items-center justify-between px-3 py-2 border-b border-slate-200 dark:border-slate-700/50">
 												<div class="flex items-center gap-2 min-w-0">
 													<span class="text-xs font-semibold text-slate-900 dark:text-slate-100 truncate">{provider.name}</span>
-													<span class="text-2xs text-slate-400 font-mono">{provider.providerId}</span>
+													<span class="text-2xs text-slate-400 font-mono">{provider.slug}</span>
 													{#if !provider.isEnabled}
 														<span class="px-1.5 py-0.5 text-3xs rounded bg-slate-200 dark:bg-slate-700 text-slate-500 dark:text-slate-400">Disabled</span>
 													{/if}
@@ -1263,7 +1263,7 @@
 												{#if ocAddingAccountForProvider === provider.id}
 													<div class="space-y-2 pt-2 border-t border-slate-200 dark:border-slate-700/50">
 														<input type="text" bind:value={ocNewAccountName} placeholder="Account name (e.g. Personal, Work)" class="w-full px-2.5 py-1.5 text-xs rounded-lg border border-slate-300 dark:border-slate-600 bg-white dark:bg-slate-800 text-slate-900 dark:text-slate-100 placeholder:text-slate-400 focus:outline-none focus:ring-1 focus:ring-violet-500" />
-														<input type="text" bind:value={ocNewAccountApiKey} placeholder={getProviderEnvLabel(provider.providerId)} class="w-full px-2.5 py-1.5 text-xs rounded-lg border border-slate-300 dark:border-slate-600 bg-white dark:bg-slate-800 text-slate-900 dark:text-slate-100 placeholder:text-slate-400 focus:outline-none focus:ring-1 focus:ring-violet-500 font-mono" />
+														<input type="text" bind:value={ocNewAccountApiKey} placeholder={getProviderEnvLabel(provider.slug)} class="w-full px-2.5 py-1.5 text-xs rounded-lg border border-slate-300 dark:border-slate-600 bg-white dark:bg-slate-800 text-slate-900 dark:text-slate-100 placeholder:text-slate-400 focus:outline-none focus:ring-1 focus:ring-violet-500 font-mono" />
 														<div class="flex gap-1.5">
 															<button type="button" class="flex-1 flex items-center justify-center gap-1.5 px-3 py-1.5 text-xs font-medium rounded-lg bg-violet-600 text-white hover:bg-violet-700 transition-colors disabled:opacity-50" onclick={submitAddAccount} disabled={!ocNewAccountName.trim() || !ocNewAccountApiKey.trim()}>
 																<Icon name="lucide:plus" class="w-3 h-3" />Add

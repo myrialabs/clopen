@@ -6,7 +6,7 @@
 
 import { t } from 'elysia';
 import { createRouter } from '$shared/utils/ws-server';
-import { opencodeProviderQueries } from '../../../database/queries';
+import { engineQueries } from '../../../database/queries';
 import {
 	fetchAndCacheModelsDevCatalog,
 	getCachedModelsDevCatalog,
@@ -26,9 +26,9 @@ const AccountSchema = t.Object({
 
 const ProviderSchema = t.Object({
 	id: t.Number(),
-	providerId: t.String(),
+	slug: t.String(),
 	name: t.String(),
-	npm: t.String(),
+	npm: t.Union([t.String(), t.Null()]),
 	apiUrl: t.Union([t.String(), t.Null()]),
 	options: t.String(),
 	isEnabled: t.Boolean(),
@@ -48,11 +48,11 @@ export const openCodeProviderHandler = createRouter()
 			providers: t.Array(ProviderSchema)
 		})
 	}, async () => {
-		const providers = opencodeProviderQueries.getProvidersWithAccounts();
+		const providers = engineQueries.getProvidersWithAccounts('opencode');
 		return {
 			providers: providers.map(p => ({
 				id: p.id,
-				providerId: p.provider_id,
+				slug: p.slug,
 				name: p.name,
 				npm: p.npm,
 				apiUrl: p.api_url,
@@ -71,42 +71,43 @@ export const openCodeProviderHandler = createRouter()
 
 	.http('engine:opencode-provider-add', {
 		data: t.Object({
-			providerId: t.String({ minLength: 1 }),
+			slug: t.String({ minLength: 1 }),
 			name: t.String({ minLength: 1 }),
-			npm: t.String({ minLength: 1 }),
+			npm: t.Optional(t.Union([t.String(), t.Null()])),
 			apiUrl: t.Optional(t.String()),
 			options: t.Optional(t.String()),
 			accountName: t.String({ minLength: 1 }),
-			apiKey: t.String({ minLength: 1 }),
+			credential: t.String({ minLength: 1 }),
 		}),
 		response: t.Object({
 			provider: ProviderSchema
 		})
 	}, async ({ data }) => {
 		// Check if provider already exists
-		const existing = opencodeProviderQueries.getProviderByProviderId(data.providerId);
+		const existing = engineQueries.getProviderBySlug('opencode', data.slug);
 		if (existing) {
-			throw new Error(`Provider "${data.providerId}" already configured`);
+			throw new Error(`Provider "${data.slug}" already configured`);
 		}
 
 		// Create provider
-		const provider = opencodeProviderQueries.createProvider({
-			providerId: data.providerId,
+		const provider = engineQueries.createProvider({
+			engineType: 'opencode',
+			slug: data.slug,
 			name: data.name,
-			npm: data.npm,
+			npm: data.npm ?? undefined,
 			apiUrl: data.apiUrl,
 			options: data.options,
 		});
 
 		// Create first account (auto-active)
-		const account = opencodeProviderQueries.createAccount(provider.id, data.accountName, data.apiKey);
+		const account = engineQueries.createAccount(provider.id, data.accountName, data.credential);
 
-		debug.log('engine', `OpenCode provider added: ${data.providerId} with account "${data.accountName}"`);
+		debug.log('engine', `OpenCode provider added: ${data.slug} with account "${data.accountName}"`);
 
 		return {
 			provider: {
 				id: provider.id,
-				providerId: provider.provider_id,
+				slug: provider.slug,
 				name: provider.name,
 				npm: provider.npm,
 				apiUrl: provider.api_url,
@@ -127,7 +128,7 @@ export const openCodeProviderHandler = createRouter()
 		data: t.Object({ id: t.Number() }),
 		response: t.Object({ success: t.Boolean() })
 	}, async ({ data }) => {
-		opencodeProviderQueries.deleteProvider(data.id);
+		engineQueries.deleteProvider(data.id);
 		debug.log('engine', `OpenCode provider removed: ${data.id}`);
 		return { success: true };
 	})
@@ -136,7 +137,7 @@ export const openCodeProviderHandler = createRouter()
 		data: t.Object({ id: t.Number(), enabled: t.Boolean() }),
 		response: t.Object({ success: t.Boolean() })
 	}, async ({ data }) => {
-		opencodeProviderQueries.toggleProvider(data.id, data.enabled);
+		engineQueries.toggleProvider(data.id, data.enabled);
 		return { success: true };
 	})
 
@@ -146,7 +147,7 @@ export const openCodeProviderHandler = createRouter()
 	}, async ({ data }) => {
 		// Validate JSON
 		try { JSON.parse(data.options); } catch { throw new Error('Invalid JSON for options'); }
-		opencodeProviderQueries.updateProviderOptions(data.id, data.options);
+		engineQueries.updateProviderOptions(data.id, data.options);
 		return { success: true };
 	})
 
@@ -158,13 +159,13 @@ export const openCodeProviderHandler = createRouter()
 		data: t.Object({
 			providerDbId: t.Number(),
 			name: t.String({ minLength: 1 }),
-			apiKey: t.String({ minLength: 1 }),
+			credential: t.String({ minLength: 1 }),
 		}),
 		response: t.Object({
 			account: AccountSchema
 		})
 	}, async ({ data }) => {
-		const account = opencodeProviderQueries.createAccount(data.providerDbId, data.name, data.apiKey);
+		const account = engineQueries.createAccount(data.providerDbId, data.name, data.credential);
 		debug.log('engine', `OpenCode account added: "${data.name}" for provider ${data.providerDbId}`);
 		return {
 			account: {
@@ -180,7 +181,7 @@ export const openCodeProviderHandler = createRouter()
 		data: t.Object({ accountId: t.Number() }),
 		response: t.Object({ success: t.Boolean() })
 	}, async ({ data }) => {
-		opencodeProviderQueries.switchAccount(data.accountId);
+		engineQueries.switchAccount(data.accountId);
 		return { success: true };
 	})
 
@@ -188,7 +189,7 @@ export const openCodeProviderHandler = createRouter()
 		data: t.Object({ accountId: t.Number() }),
 		response: t.Object({ success: t.Boolean() })
 	}, async ({ data }) => {
-		opencodeProviderQueries.deleteAccount(data.accountId);
+		engineQueries.deleteAccount(data.accountId);
 		return { success: true };
 	})
 
@@ -196,7 +197,7 @@ export const openCodeProviderHandler = createRouter()
 		data: t.Object({ accountId: t.Number(), name: t.String({ minLength: 1 }) }),
 		response: t.Object({ success: t.Boolean() })
 	}, async ({ data }) => {
-		opencodeProviderQueries.renameAccount(data.accountId, data.name);
+		engineQueries.renameAccount(data.accountId, data.name);
 		return { success: true };
 	})
 

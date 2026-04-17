@@ -9,8 +9,7 @@ import { createRouter } from '$shared/utils/ws-server';
 import { execGit } from '../../git/git-executor';
 import { projectQueries } from '../../database/queries/project-queries';
 import { initializeEngine } from '../../engine';
-import { parseModelId } from '$shared/constants/engines';
-import type { EngineType } from '$shared/types/engine';
+import type { EngineType } from '$shared/types/unified';
 import type { GeneratedCommitMessage } from '$shared/types/git';
 import { debug } from '$shared/utils/logger';
 
@@ -43,7 +42,8 @@ export const commitMessageHandler = createRouter()
 		data: t.Object({
 			projectId: t.String(),
 			engine: t.String(),
-			model: t.String(),
+			providerSlug: t.String(),
+			modelId: t.String(),
 			format: t.Union([t.Literal('single-line'), t.Literal('multi-line')])
 		}),
 		response: t.Object({
@@ -83,14 +83,12 @@ Rules:
 Git diff:
 ${rawDiff}`;
 
-		// Parse model ID: "claude-code:haiku" → modelId "haiku", "opencode:anthropic/claude-sonnet" → modelId "anthropic/claude-sonnet"
-		const { modelId } = parseModelId(data.model);
-
-		debug.log('git', `Generating commit message via ${engineType}/${modelId}`);
+		debug.log('git', `Generating commit message via ${engineType}/${data.modelId}`);
 
 		const result = await engine.generateStructured<GeneratedCommitMessage>({
 			prompt,
-			model: modelId,
+			providerSlug: data.providerSlug,
+			modelId: data.modelId,
 			schema: COMMIT_MESSAGE_SCHEMA,
 			projectPath: project.path
 		});

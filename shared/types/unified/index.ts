@@ -17,6 +17,12 @@ export type {
 	EngineType,
 } from './common';
 
+// ── Engine ──────────────────────────────────────────────────
+export type {
+	EngineModel,
+	EngineInfo,
+} from './engine';
+
 // ── Tools ────────────────────────────────────────────────────
 export type {
 	BashInput,
@@ -58,6 +64,8 @@ export type {
 // ── Messages ─────────────────────────────────────────────────
 export type {
 	MessageBase,
+	MessageEngine,
+	MessageModel,
 	MessageParent,
 	MessageSender,
 	MessageAccount,

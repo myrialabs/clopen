@@ -17,9 +17,9 @@ export interface OpenCodeAccountItem {
 
 export interface OpenCodeProviderItem {
 	id: number;
-	providerId: string;
+	slug: string;
 	name: string;
-	npm: string;
+	npm: string | null;
 	apiUrl: string | null;
 	options: string;
 	isEnabled: boolean;
@@ -72,13 +72,13 @@ export const opencodeProvidersStore = {
 	},
 
 	async addProvider(data: {
-		providerId: string;
+		slug: string;
 		name: string;
-		npm: string;
+		npm?: string | null;
 		apiUrl?: string;
 		options?: string;
 		accountName: string;
-		apiKey: string;
+		credential: string;
 	}): Promise<OpenCodeProviderItem | null> {
 		try {
 			const result = await ws.http('engine:opencode-provider-add', data);
@@ -109,8 +109,8 @@ export const opencodeProvidersStore = {
 	// Accounts
 	// ========================================================================
 
-	async addAccount(providerDbId: number, name: string, apiKey: string): Promise<void> {
-		await ws.http('engine:opencode-account-add', { providerDbId, name, apiKey });
+	async addAccount(providerDbId: number, name: string, credential: string): Promise<void> {
+		await ws.http('engine:opencode-account-add', { providerDbId, name, credential });
 		await this.refreshProviders();
 	},
 

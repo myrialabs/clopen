@@ -289,7 +289,7 @@
 									{@const status = projectId ? presenceState.statuses.get(projectId) : undefined}
 									{@const isStreaming = status?.streams?.some((s: any) => s.status === 'active' && s.chatSessionId === session.id) ?? false}
 									{@const sessionUsers = getSessionUsers(session.id)}
-									{@const sessionModel = session.model ? (session.model.includes(':') ? session.model.split(':')[1] : session.model) : ''}
+									{@const sessionModel = session.model_id || ''}
 									<button
 										onclick={() => switchToSession(session)}
 										class="w-full text-left px-3 py-2.5 flex items-center gap-2.5 transition-colors duration-150

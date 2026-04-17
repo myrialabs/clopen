@@ -161,7 +161,7 @@
 <header
 	class="flex items-center justify-between shrink-0 {isMobile
 		? 'h-11 pb-2 px-4 bg-white/90 dark:bg-slate-900/98 border-b border-slate-200 dark:border-slate-800'
-		: 'py-2.5 px-3.5 bg-slate-100 dark:bg-slate-800/80 border-b border-slate-200 dark:border-slate-800'}"
+		: 'py-2 px-3.5 bg-slate-100 dark:bg-slate-800/80 border-b border-slate-200 dark:border-slate-800'}"
 >
 	<div class="flex items-center text-sm font-medium text-slate-900 dark:text-slate-100">
 		<!-- Panel layout actions (⋮ menu) -->

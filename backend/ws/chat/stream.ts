@@ -65,7 +65,7 @@ const chatSessionInputState = new Map<string, { text: string; senderId: string; 
 const chatSessionEditMode = new Map<string, { isEditing: boolean; messageId: string | null; messageTimestamp: string | null }>();
 
 // In-memory store for model state per chat session (keyed by chatSessionId)
-const chatSessionModelState = new Map<string, { engine: string; model: string; senderId: string }>();
+const chatSessionModelState = new Map<string, { engine: string; provider: string; modelId: string; modelName: string; senderId: string }>();
 
 // In-memory store for account state per chat session (keyed by chatSessionId)
 const chatSessionAccountState = new Map<string, { accountId: number | null; senderId: string }>();
@@ -101,14 +101,23 @@ export const streamHandler = createRouter()
 			sessionId: t.String(),
 			chatSessionId: t.String(),
 			projectPath: t.String(),
-			prompt: t.Any(), // SDKUserMessage object
-			messages: t.Optional(t.Array(t.Any())),
-			engine: t.Optional(t.Union([t.Literal('claude-code'), t.Literal('opencode')])),
-			model: t.Optional(t.String()),
-			temperature: t.Optional(t.Number()),
-			senderId: t.Optional(t.String()),
-			senderName: t.Optional(t.String()),
-			accountId: t.Optional(t.Number())
+			prompt: t.Any(), // UserMessage object
+			engine: t.Object({
+				type: t.Union([t.Literal('claude-code'), t.Literal('opencode')]),
+				provider: t.String(),
+				model: t.Object({
+					id: t.String(),
+					name: t.String()
+				}),
+				account: t.Object({
+					id: t.Number(),
+					name: t.String()
+				})
+			}),
+			sender: t.Object({
+				id: t.String(),
+				name: t.String()
+			})
 		})
 	}, async ({ data, conn }) => {
 		const projectId = ws.getProjectId(conn);
@@ -116,8 +125,7 @@ export const streamHandler = createRouter()
 		try {
 			debug.log('chat', 'WS chat:stream received:', {
 				chatSessionId: data.chatSessionId,
-				projectId,
-				messagesCount: data.messages?.length || 0
+				projectId
 			});
 
 			// Start background stream
@@ -125,14 +133,9 @@ export const streamHandler = createRouter()
 				projectPath: data.projectPath,
 				projectId,
 				prompt: data.prompt,
-				messages: data.messages || [],
 				chatSessionId: data.chatSessionId,
-				engine: data.engine || 'claude-code',
-				model: data.model,
-				temperature: data.temperature,
-				senderId: data.senderId,
-				senderName: data.senderName,
-				accountId: data.accountId
+				engine: data.engine,
+				sender: data.sender
 			});
 
 			debug.log('chat', 'Stream started with ID:', streamId);
@@ -452,6 +455,63 @@ export const streamHandler = createRouter()
 		}
 	})
 
+	// Get active stream state (for reconnect after browser refresh / project switch)
+	.http('chat:stream-state', {
+		data: t.Object({
+			chatSessionId: t.Optional(t.String())
+		}),
+		response: t.Object({
+			streamId: t.String(),
+			status: t.Union([
+				t.Literal('active'),
+				t.Literal('completed'),
+				t.Literal('error'),
+				t.Literal('cancelled')
+			]),
+			processId: t.String(),
+			messages: t.Array(t.Any()),
+			currentPartialText: t.Optional(t.String()),
+			currentReasoningText: t.Optional(t.String()),
+			error: t.Optional(t.String()),
+			startedAt: t.String(),
+			completedAt: t.Optional(t.String())
+		})
+	}, async ({ data, conn }) => {
+		const projectId = ws.getProjectId(conn);
+
+		const streamState = data.chatSessionId
+			? streamManager.getSessionStream(data.chatSessionId, projectId)
+			: undefined;
+
+		// Return a "not found" response instead of throwing
+		// This happens normally when a stream was cancelled/completed and cleaned up
+		if (!streamState) {
+			return {
+				streamId: data.chatSessionId || '',
+				status: 'completed' as const,
+				processId: '',
+				messages: [],
+				currentPartialText: undefined,
+				currentReasoningText: undefined,
+				error: undefined,
+				startedAt: new Date().toISOString(),
+				completedAt: new Date().toISOString()
+			};
+		}
+
+		return {
+			streamId: streamState.streamId,
+			status: streamState.status,
+			processId: streamState.processId,
+			messages: streamState.messages,
+			currentPartialText: streamState.currentPartialText,
+			currentReasoningText: streamState.currentReasoningText,
+			error: streamState.error,
+			startedAt: streamState.startedAt.toISOString(),
+			completedAt: streamState.completedAt?.toISOString()
+		};
+	})
+
 	// Cancel stream
 	.on('chat:cancel', {
 		data: t.Object({
@@ -601,7 +661,9 @@ export const streamHandler = createRouter()
 			senderId: t.String(),
 			chatSessionId: t.String(),
 			engine: t.String(),
-			model: t.String()
+			provider: t.String(),
+			modelId: t.String(),
+			modelName: t.String()
 		})
 	}, ({ data }) => {
 		const chatSessionId = data.chatSessionId;
@@ -609,14 +671,16 @@ export const streamHandler = createRouter()
 		// Store latest model state on server for late joiners / refresh
 		chatSessionModelState.set(chatSessionId, {
 			engine: data.engine,
-			model: data.model,
+			provider: data.provider,
+			modelId: data.modelId,
+			modelName: data.modelName,
 			senderId: data.senderId
 		});
 
 		// Persist engine/model to the session record in the database
 		// so refreshes and late joiners get the correct model
 		try {
-			sessionQueries.updateEngineModel(chatSessionId, data.engine, data.model);
+			sessionQueries.updateEngineModel(chatSessionId, data.engine, data.provider, data.modelId, data.modelName);
 		} catch (err) {
 			debug.error('chat', 'Failed to persist model sync to DB:', err);
 		}
@@ -625,24 +689,10 @@ export const streamHandler = createRouter()
 		ws.emit.chatSession(chatSessionId, 'chat:model-sync', {
 			senderId: data.senderId,
 			engine: data.engine,
-			model: data.model
+			provider: data.provider,
+			modelId: data.modelId,
+			modelName: data.modelName
 		});
-	})
-
-	// Get current model state for a chat session (for refresh / late joiners)
-	.http('chat:get-model-state', {
-		data: t.Object({
-			chatSessionId: t.Optional(t.String())
-		}),
-		response: t.Object({
-			engine: t.String(),
-			model: t.String(),
-			senderId: t.String()
-		})
-	}, ({ data }) => {
-		const chatSessionId = data.chatSessionId || '';
-		const state = chatSessionModelState.get(chatSessionId);
-		return state || { engine: '', model: '', senderId: '' };
 	})
 
 	// Collaborative account sync - broadcast account changes to other users in the same chat session
@@ -677,21 +727,6 @@ export const streamHandler = createRouter()
 		});
 	})
 
-	// Get current account state for a chat session (for refresh / late joiners)
-	.http('chat:get-account-state', {
-		data: t.Object({
-			chatSessionId: t.Optional(t.String())
-		}),
-		response: t.Object({
-			accountId: t.Union([t.Number(), t.Null()]),
-			senderId: t.String()
-		})
-	}, ({ data }) => {
-		const chatSessionId = data.chatSessionId || '';
-		const state = chatSessionAccountState.get(chatSessionId);
-		return state || { accountId: null, senderId: '' };
-	})
-
 	// Event declarations
 	.emit('chat:edit-mode', t.Object({
 		senderId: t.String(),
@@ -716,7 +751,9 @@ export const streamHandler = createRouter()
 	.emit('chat:model-sync', t.Object({
 		senderId: t.String(),
 		engine: t.String(),
-		model: t.String()
+		provider: t.String(),
+		modelId: t.String(),
+		modelName: t.String()
 	}))
 
 	.emit('chat:account-sync', t.Object({

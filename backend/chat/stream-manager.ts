@@ -24,7 +24,9 @@ import type {
 	SystemInitEvent,
 	RateLimitEvent,
 	TokenUsage,
+	StopReason,
 	UserContentBlock,
+	StreamRequest,
 } from '$shared/types/unified';
 import type { EngineType } from '$shared/types/unified';
 import type { DatabaseMessage } from '$shared/types/database/schema';
@@ -35,6 +37,7 @@ import { projectContextService } from '../mcp/project-context';
 import { browserMcpControl } from '../preview';
 import { extractMessageText } from '../snapshot/helpers';
 import { debug } from '$shared/utils/logger';
+import { DEFAULT_MODEL_ID, DEFAULT_MODEL_NAME } from '$shared/constants/engines';
 
 // ============================================================================
 // Types
@@ -63,24 +66,6 @@ export interface StreamState {
 	eventSeq: number;
 }
 
-/**
- * StreamRequest still accepts the raw SDK prompt format from WS handlers.
- * The processStream() method converts it to UserMessage before passing to the engine.
- */
-interface StreamRequest {
-	projectPath: string;
-	projectId?: string;
-	prompt: any; // SDKUserMessage from WS handler — converted to UserMessage internally
-	messages: any[];
-	chatSessionId: string;
-	engine?: EngineType;
-	model?: string;
-	temperature?: number;
-	senderId?: string;
-	senderName?: string;
-	accountId?: number;
-}
-
 // ============================================================================
 // SDK → Unified Prompt Converter
 // ============================================================================
@@ -95,6 +80,20 @@ function convertRawPromptToUserMessage(
 		? rawPrompt.content as UserContentBlock[]
 		: [{ type: 'text', text: '' }];
 
+	// Build engine object from raw prompt
+	const rawEngine = rawPrompt?.engine;
+	const engineObj = rawEngine && typeof rawEngine === 'object'
+		? rawEngine
+		: {
+			type: rawEngine || 'claude-code',
+			provider: '',
+			model: {
+				id: rawPrompt?.model?.id ?? rawPrompt?.modelId ?? '',
+				name: rawPrompt?.model?.name ?? rawPrompt?.modelName ?? '',
+			},
+			account: { id: rawPrompt?.account?.id ?? 0, name: rawPrompt?.account?.name ?? '' },
+		};
+
 	return {
 		type: 'user',
 		createdAt: rawPrompt?.createdAt || new Date().toISOString(),
@@ -105,15 +104,46 @@ function convertRawPromptToUserMessage(
 			sessionId: rawPrompt?.parent?.sessionId ?? rawPrompt?.parentSessionId ?? null,
 			toolUseId: rawPrompt?.parent?.toolUseId ?? rawPrompt?.parentToolUseId ?? null,
 		},
-		engine: rawPrompt?.engine || null,
-		model: rawPrompt?.model || null,
-		account: { id: rawPrompt?.account?.id ?? null, name: rawPrompt?.account?.name ?? null },
+		engine: engineObj,
 		sender: {
-			id: senderId || rawPrompt?.sender?.id || null,
-			name: senderName || rawPrompt?.sender?.name || null,
+			id: senderId || rawPrompt?.sender?.id || '',
+			name: senderName || rawPrompt?.sender?.name || '',
 		},
 		content,
 		synthetic: rawPrompt?.synthetic ?? false,
+	};
+}
+
+/** Request-level engine context injected into every SDK-emitted message */
+interface RequestEngineContext {
+	accountId: number;
+	accountName: string;
+	modelName: string;
+}
+
+/**
+ * Enrich a message's engine block with request-level data that SDK adapters
+ * cannot know (display-name for the selected account and the human-readable
+ * model name). The adapter supplies type/provider/model.id; stream-manager
+ * is the single source of truth for the rest.
+ */
+function enrichMessageEngine(
+	message: UnifiedMessage,
+	ctx: RequestEngineContext,
+): UnifiedMessage {
+	return {
+		...message,
+		engine: {
+			...message.engine,
+			model: {
+				...message.engine.model,
+				name: ctx.modelName || message.engine.model.name,
+			},
+			account: {
+				id: ctx.accountId || message.engine.account.id,
+				name: ctx.accountName || message.engine.account.name,
+			},
+		},
 	};
 }
 
@@ -191,7 +221,7 @@ class StreamManager extends EventEmitter {
 			const existingStream = this.activeStreams.get(existingStreamId);
 			if (existingStream && existingStream.status === 'active') {
 				if (existingStream.projectId === request.projectId) {
-					if ((request.engine || 'claude-code') === 'claude-code') {
+					if (request.engine.type === 'claude-code') {
 						// Claude Code: cancel existing stream to prevent message loss from race condition.
 						// Claude Code SDK only returns session_id inside yielded messages, so a cancelled
 						// stream may never have established a valid session — safe to cancel and restart.
@@ -213,7 +243,7 @@ class StreamManager extends EventEmitter {
 			projectId: request.projectId,
 			projectPath: request.projectPath,
 			processId,
-			engine: request.engine || 'claude-code',
+			engine: request.engine.type,
 			status: 'active',
 			startedAt: new Date(),
 			messages: [],
@@ -227,14 +257,15 @@ class StreamManager extends EventEmitter {
 		// Save engine+model+account to session for persistence across refresh/switch
 		if (request.chatSessionId) {
 			try {
-				const compoundModelId = `${request.engine || 'claude-code'}:${request.model || 'sonnet'}`;
 				sessionQueries.updateEngineModel(
 					request.chatSessionId,
-					request.engine || 'claude-code',
-					compoundModelId
+					request.engine.type,
+					request.engine.provider,
+					request.engine.model.id || DEFAULT_MODEL_ID,
+					request.engine.model.name || DEFAULT_MODEL_NAME
 				);
-				if (request.accountId !== undefined) {
-					sessionQueries.updateAccountId(request.chatSessionId, request.accountId);
+				if (request.engine.account.id) {
+					sessionQueries.updateAccount(request.chatSessionId, request.engine.account.id, request.engine.account.name || null);
 				}
 			} catch (error) {
 				debug.error('chat', 'Failed to save engine/model to session:', error);
@@ -285,7 +316,8 @@ class StreamManager extends EventEmitter {
 		// Increment sequence number for deduplication
 		streamState.eventSeq++;
 
-		// Attach engine type to all event data for frontend metadata
+		// Attach engine type string to event data for frontend routing metadata
+		// (stream-level metadata, distinct from message.engine which is the full MessageEngine object)
 		if (data && typeof data === 'object') {
 			data.engine = streamState.engine;
 		}
@@ -344,7 +376,15 @@ class StreamManager extends EventEmitter {
 		}
 
 		try {
-			const { projectPath, prompt: rawPrompt, chatSessionId, engine: engineType = 'claude-code', model, accountId } = requestData;
+			const { projectPath, prompt: rawPrompt, chatSessionId, engine: requestEngine, sender: requestSender } = requestData;
+
+			// Engine context that stream-manager injects into every SDK-emitted message.
+			// (SDK adapters cannot know these values; only the request layer can.)
+			const engineCtx: RequestEngineContext = {
+				accountId: requestEngine.account.id,
+				accountName: requestEngine.account.name,
+				modelName: requestEngine.model.name,
+			};
 
 			const projectPathExists = projectPath ? await this.existsSync(projectPath) : false;
 			if (!projectPath) throw new Error('Project path is required. Please select a valid project directory.');
@@ -358,7 +398,7 @@ class StreamManager extends EventEmitter {
 			let resumeSessionId: string | undefined = undefined;
 			if (chatSessionId) {
 				// Primary source: parent.sessionId on the raw prompt
-				const promptParentSessionId = rawPrompt?.parent?.sessionId ?? rawPrompt?.parentSessionId;
+				const promptParentSessionId = rawPrompt?.parent?.sessionId;
 				if (promptParentSessionId && promptParentSessionId !== chatSessionId) {
 					resumeSessionId = promptParentSessionId;
 				} else {
@@ -386,7 +426,7 @@ class StreamManager extends EventEmitter {
 			streamState.preStreamSessionId = resumeSessionId ?? null;
 
 			// Convert raw SDK prompt → UserMessage (unified)
-			const userMessage = convertRawPromptToUserMessage(rawPrompt, requestData.senderId, requestData.senderName);
+			const userMessage = convertRawPromptToUserMessage(rawPrompt, requestSender.id, requestSender.name);
 
 			// Save user message to DB
 			const userMessageTimestamp = new Date().toISOString();
@@ -403,8 +443,8 @@ class StreamManager extends EventEmitter {
 				timestamp: userMessageTimestamp,
 				message_id: savedMessage?.id,
 				parent_message_id: savedMessage?.parent_message_id || null,
-				sender_id: requestData.senderId,
-				sender_name: requestData.senderName
+				sender_id: requestSender.id,
+				sender_name: requestSender.name
 			});
 
 			this.emitStreamEvent(streamState, 'message', {
@@ -413,8 +453,8 @@ class StreamManager extends EventEmitter {
 				timestamp: userMessageTimestamp,
 				message_id: savedMessage?.id,
 				parent_message_id: savedMessage?.parent_message_id || null,
-				sender_id: requestData.senderId,
-				sender_name: requestData.senderName
+				sender_id: requestSender.id,
+				sender_name: requestSender.name
 			});
 
 			if ((streamState.status as string) === 'cancelled' || streamState.abortController?.signal.aborted) {
@@ -431,7 +471,7 @@ class StreamManager extends EventEmitter {
 				return;
 			}
 
-			const engine = await initializeProjectEngine(projectId, engineType);
+			const engine = await initializeProjectEngine(projectId, requestEngine.type);
 
 			if ((streamState.status as string) === 'cancelled' || streamState.abortController?.signal.aborted) {
 				debug.log('chat', 'Stream cancelled during engine initialization, skipping query');
@@ -440,7 +480,7 @@ class StreamManager extends EventEmitter {
 
 			// Detect orphaned user messages and prepend context (claude-code only)
 			let enginePrompt = userMessage;
-			if (engineType === 'claude-code' && chatSessionId) {
+			if (requestEngine.type === 'claude-code' && chatSessionId) {
 				try {
 					const head = sessionQueries.getHead(chatSessionId);
 					if (head) {
@@ -504,10 +544,11 @@ class StreamManager extends EventEmitter {
 				projectPath,
 				prompt: enginePrompt,
 				resume: resumeSessionId,
-				model: model || 'sonnet',
+				providerSlug: requestEngine.provider,
+				modelId: requestEngine.model.id,
 				includePartialMessages: true,
 				abortController: streamState.abortController,
-				...(accountId !== undefined && { accountId }),
+				...(requestEngine.account.id !== 0 && { accountId: requestEngine.account.id }),
 				...(projectId && chatSessionId && {
 					mcpContext: { projectId, chatSessionId, streamId: streamState.streamId }
 				}),
@@ -560,7 +601,7 @@ class StreamManager extends EventEmitter {
 
 					// ── Compact Boundary ───────────────────────────────────
 					case 'compact_boundary': {
-						const boundary = output as CompactBoundaryMessage;
+						const boundary = enrichMessageEngine(output, engineCtx) as CompactBoundaryMessage;
 						streamState.hasCompactBoundary = true;
 						const compactTimestamp = boundary.createdAt;
 
@@ -594,8 +635,8 @@ class StreamManager extends EventEmitter {
 							timestamp: compactTimestamp,
 							message_id: savedCompactId,
 							parent_message_id: savedCompactParentId,
-							sender_id: requestData.senderId,
-							sender_name: requestData.senderName
+							sender_id: requestSender.id,
+							sender_name: requestSender.name
 						});
 						continue;
 					}
@@ -622,7 +663,30 @@ class StreamManager extends EventEmitter {
 
 					// ── Result ─────────────────────────────────────────────
 					case 'result': {
-						if (output.subtype !== 'success') {
+						if (output.subtype === 'success') {
+							const successResult = output as SuccessResultEvent;
+							// Backfill stopReason to last assistant message if SDK left it null
+							if (successResult.stopReason && chatSessionId) {
+								const mapped = this.backfillStopReason(chatSessionId, successResult.stopReason);
+								// Re-emit patched assistant message so frontend updates live data
+								if (mapped && streamState.currentMessage?.type === 'assistant' && !streamState.currentMessage.stopReason) {
+									const patched = { ...streamState.currentMessage, stopReason: mapped } as AssistantMessage;
+									streamState.currentMessage = patched;
+									// Find the saved message ID from the last emitted assistant
+									const lastEntry = [...streamState.messages].reverse()
+										.find((m: any) => m.message?.type === 'assistant') as any;
+									this.emitStreamEvent(streamState, 'message', {
+										processId: streamState.processId,
+										message: patched,
+										timestamp: patched.createdAt,
+										message_id: lastEntry?.message_id ?? undefined,
+										parent_message_id: lastEntry?.parent_message_id ?? null,
+										sender_id: requestSender.id,
+										sender_name: requestSender.name
+									});
+								}
+							}
+						} else {
 							const errResult = output as ErrorResultEvent;
 							if (errResult.errors?.length) {
 								debug.warn('chat', `SDK result error: ${errResult.subtype}`, errResult.errors);
@@ -699,7 +763,7 @@ class StreamManager extends EventEmitter {
 
 					// ── Reasoning Message ──────────────────────────────────
 					case 'reasoning': {
-						const reasoning = output as ReasoningMessage;
+						const reasoning = enrichMessageEngine(output, engineCtx) as ReasoningMessage;
 						streamState.currentReasoningText = undefined;
 
 						const reasoningTimestamp = reasoning.createdAt;
@@ -721,15 +785,15 @@ class StreamManager extends EventEmitter {
 							timestamp: reasoningTimestamp,
 							message_id: savedReasoningId,
 							parent_message_id: savedReasoningParentId,
-							sender_id: requestData.senderId,
-							sender_name: requestData.senderName
+							sender_id: requestSender.id,
+							sender_name: requestSender.name
 						});
 						continue;
 					}
 
 					// ── Assistant Message ──────────────────────────────────
 					case 'assistant': {
-						const assistantMsg = output as AssistantMessage;
+						const assistantMsg = enrichMessageEngine(output, engineCtx) as AssistantMessage;
 
 						// Deduplicate consecutive identical assistant messages
 						const currentText = assistantMsg.content
@@ -766,8 +830,8 @@ class StreamManager extends EventEmitter {
 							timestamp: messageTimestamp,
 							message_id: savedMsgId,
 							parent_message_id: savedParentId,
-							sender_id: requestData.senderId,
-							sender_name: requestData.senderName
+							sender_id: requestSender.id,
+							sender_name: requestSender.name
 						});
 
 						streamState.currentMessage = assistantMsg;
@@ -779,15 +843,15 @@ class StreamManager extends EventEmitter {
 							timestamp: messageTimestamp,
 							message_id: savedMsgId,
 							parent_message_id: savedParentId,
-							sender_id: requestData.senderId,
-							sender_name: requestData.senderName
+							sender_id: requestSender.id,
+							sender_name: requestSender.name
 						});
 						continue;
 					}
 
 					// ── User Message (tool results from SDK) ───────────────
 					case 'user': {
-						const userMsg = output as UserMessage;
+						const userMsg = enrichMessageEngine(output, engineCtx) as UserMessage;
 						lastAssistantTextContent = null; // Reset dedup tracker
 
 						const messageTimestamp = userMsg.createdAt;
@@ -809,8 +873,8 @@ class StreamManager extends EventEmitter {
 							timestamp: messageTimestamp,
 							message_id: savedMsgId,
 							parent_message_id: savedParentId,
-							sender_id: requestData.senderId,
-							sender_name: requestData.senderName
+							sender_id: requestSender.id,
+							sender_name: requestSender.name
 						});
 
 						streamState.currentMessage = userMsg;
@@ -821,8 +885,8 @@ class StreamManager extends EventEmitter {
 							timestamp: messageTimestamp,
 							message_id: savedMsgId,
 							parent_message_id: savedParentId,
-							sender_id: requestData.senderId,
-							sender_name: requestData.senderName
+							sender_id: requestSender.id,
+							sender_name: requestSender.name
 						});
 						continue;
 					}
@@ -864,10 +928,7 @@ class StreamManager extends EventEmitter {
 					messageId: crypto.randomUUID(),
 					sessionId: streamState.sdkSessionId || null,
 					parent: { messageId: null, sessionId: null, toolUseId: null },
-					engine: streamState.engine,
-					model: null,
-					account: { id: null, name: null },
-					sender: { id: null, name: null },
+					engine: { type: streamState.engine, provider: '', model: { id: '', name: '' }, account: { id: 0, name: '' } },
 					content: [{ type: 'text', text: `**Error:** ${streamState.error}` }],
 					stopReason: null,
 					usage: null,
@@ -891,8 +952,8 @@ class StreamManager extends EventEmitter {
 					timestamp: errorTimestamp,
 					message_id: savedErrorMsgId,
 					parent_message_id: savedErrorParentId,
-					sender_id: requestData.senderId,
-					sender_name: requestData.senderName,
+					sender_id: requestData.sender.id,
+					sender_name: requestData.sender.name,
 				});
 
 				this.emitStreamEvent(streamState, 'error', {
@@ -1011,10 +1072,7 @@ class StreamManager extends EventEmitter {
 					messageId: crypto.randomUUID(),
 					sessionId: null, // Partial cancel saves are not valid resume targets
 					parent: { messageId: currentHead || null, sessionId: null, toolUseId: null },
-					engine: streamState.engine || null,
-					model: null,
-					account: { id: null, name: null },
-					sender: { id: null, name: null },
+					engine: { type: streamState.engine, provider: '', model: { id: '', name: '' }, account: { id: 0, name: '' } },
 					text: streamState.currentReasoningText,
 				};
 
@@ -1047,10 +1105,7 @@ class StreamManager extends EventEmitter {
 					messageId: crypto.randomUUID(),
 					sessionId: null, // Partial cancel saves are not valid resume targets
 					parent: { messageId: currentHead || null, sessionId: null, toolUseId: null },
-					engine: streamState.engine || null,
-					model: null,
-					account: { id: null, name: null },
-					sender: { id: null, name: null },
+					engine: { type: streamState.engine, provider: '', model: { id: '', name: '' }, account: { id: 0, name: '' } },
 					content: [{ type: 'text', text: streamState.currentPartialText }],
 					stopReason: 'interrupted',
 					usage: null,
@@ -1195,8 +1250,8 @@ class StreamManager extends EventEmitter {
 				const text = extractMessageText(message);
 				const updateOpts: Parameters<typeof sessionQueries.updateOnMessage>[1] = {
 					messageType: message.type,
-					senderId: message.sender?.id,
-					senderName: message.sender?.name,
+					senderId: message.type === 'user' ? message.sender?.id : undefined,
+					senderName: message.type === 'user' ? message.sender?.name : undefined,
 					timestamp,
 				};
 
@@ -1246,6 +1301,38 @@ class StreamManager extends EventEmitter {
 			return savedMessage;
 		} catch (error) {
 			debug.error('chat', 'Failed to save message to database:', error);
+			return null;
+		}
+	}
+
+	/**
+	 * Backfill stopReason from a result event to the last assistant message in DB.
+	 * Claude Code SDK may yield assistant messages with stop_reason: null during streaming;
+	 * the actual stop_reason only arrives in the result event after the turn completes.
+	 * Returns the mapped StopReason if backfill succeeded, null otherwise.
+	 */
+	private backfillStopReason(chatSessionId: string, rawStopReason: string): StopReason | null {
+		try {
+			const mapped: StopReason = (['end_turn', 'tool_use', 'max_tokens', 'interrupted'] as StopReason[])
+				.find(r => r === rawStopReason) || 'end_turn';
+
+			const currentHead = sessionQueries.getHead(chatSessionId);
+			if (!currentHead) return null;
+
+			const headRow = messageQueries.getById(currentHead);
+			if (!headRow) return null;
+
+			const headMsg = JSON.parse(headRow.data) as UnifiedMessage;
+			if (headMsg.type !== 'assistant' || headMsg.stopReason) return null;
+
+			const updated = { ...headMsg, stopReason: mapped };
+			const { getDatabase } = require('../database');
+			getDatabase().prepare('UPDATE messages SET data = ? WHERE id = ?')
+				.run(JSON.stringify(updated), headRow.id);
+
+			return mapped;
+		} catch (err) {
+			debug.error('chat', 'Failed to backfill stopReason:', err);
 			return null;
 		}
 	}

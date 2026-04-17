@@ -7,23 +7,29 @@
  * affect the current session's selection after the first message is sent.
  */
 
-import { DEFAULT_ENGINE, DEFAULT_MODEL } from '$shared/constants/engines';
-import type { EngineType } from '$shared/types/engine';
+import { DEFAULT_ENGINE, DEFAULT_MODEL_ID, DEFAULT_MODEL_NAME } from '$shared/constants/engines';
+import type { EngineType } from '$shared/types/unified';
 
 interface ChatModelState {
 	engine: EngineType;
-	model: string;
-	engineModelMemory: Record<string, string>;
+	provider: string;
+	modelId: string;
+	modelName: string;
+	engineModelMemory: Record<string, { provider: string; id: string; name: string }>;
 	accountId: number | null;
+	accountName: string | null;
 }
 
 // Local reactive state — starts from compile-time defaults.
 // Initialized from Settings on each new session via initChatModel().
 export const chatModelState = $state<ChatModelState>({
 	engine: DEFAULT_ENGINE,
-	model: DEFAULT_MODEL,
-	engineModelMemory: { 'claude-code': DEFAULT_MODEL },
-	accountId: null
+	provider: 'anthropic',
+	modelId: DEFAULT_MODEL_ID,
+	modelName: DEFAULT_MODEL_NAME,
+	engineModelMemory: { 'claude-code': { provider: 'anthropic', id: DEFAULT_MODEL_ID, name: DEFAULT_MODEL_NAME } },
+	accountId: null,
+	accountName: null
 });
 
 /**
@@ -32,14 +38,19 @@ export const chatModelState = $state<ChatModelState>({
  */
 export function initChatModel(
 	engine: EngineType,
-	model: string,
-	memory: Record<string, string>
+	provider: string,
+	modelId: string,
+	modelName: string,
+	memory: Record<string, { provider: string; id: string; name: string }>
 ): void {
 	chatModelState.engine = engine;
-	chatModelState.model = model;
+	chatModelState.provider = provider;
+	chatModelState.modelId = modelId;
+	chatModelState.modelName = modelName;
 	chatModelState.engineModelMemory = { ...memory };
-	// accountId is set by EngineModelPicker after fetching engine-specific accounts
+	// accountId/accountName are set by EngineModelPicker after fetching engine-specific accounts
 	chatModelState.accountId = null;
+	chatModelState.accountName = null;
 }
 
 /**
@@ -49,13 +60,19 @@ export function initChatModel(
  */
 export function restoreChatModelFromSession(
 	engine: EngineType,
-	model: string,
-	accountId?: number | null
+	provider: string,
+	modelId: string,
+	modelName: string,
+	accountId?: number | null,
+	accountName?: string | null
 ): void {
 	chatModelState.engine = engine;
-	chatModelState.model = model;
+	chatModelState.provider = provider;
+	chatModelState.modelId = modelId;
+	chatModelState.modelName = modelName;
 	// Only set the current engine's model — avoids reading chatModelState.engineModelMemory
 	// which would cause UpdatedAtError in Svelte 5 $effect tracking
-	chatModelState.engineModelMemory = { [engine]: model };
+	chatModelState.engineModelMemory = { [engine]: { provider, id: modelId, name: modelName } };
 	chatModelState.accountId = accountId ?? null;
+	chatModelState.accountName = accountName ?? null;
 }

@@ -1,4 +1,4 @@
-import type { EngineType } from '$shared/types/engine';
+import type { EngineType } from '$shared/types/unified';
 import type { CommitMessageFormat } from '$shared/types/git';
 
 /** AI commit message generator settings */
@@ -6,16 +6,20 @@ export interface CommitGeneratorSettings {
 	/** When false, uses the chat model (selectedEngine/selectedModel). When true, uses custom engine/model below. */
 	useCustomModel: boolean;
 	engine: EngineType;
-	model: string;
+	provider: string;
+	modelId: string;
+	modelName: string;
 	format: CommitMessageFormat;
 }
 
 /** Per-user settings (stored per user) */
 export interface AppSettings {
 	selectedEngine: EngineType;
-	selectedModel: string;
+	selectedProvider: string;
+	selectedModelId: string;
+	selectedModelName: string;
 	/** Remembers the last selected model per engine so switching engines preserves choices */
-	engineModelMemory: Record<string, string>;
+	engineModelMemory: Record<string, { provider: string; id: string; name: string }>;
 	autoSave: boolean;
 	theme: 'light' | 'dark' | 'system';
 	soundNotifications: boolean;

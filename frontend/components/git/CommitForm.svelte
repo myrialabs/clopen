@@ -55,13 +55,15 @@
 
 		isGenerating = true;
 		try {
-			const { useCustomModel, engine, model, format } = settings.commitGenerator;
+			const { useCustomModel, engine, provider, modelId, format } = settings.commitGenerator;
 			const resolvedEngine = useCustomModel ? engine : settings.selectedEngine;
-			const resolvedModel = useCustomModel ? model : settings.selectedModel;
+			const resolvedProvider = useCustomModel ? provider : settings.selectedProvider;
+			const resolvedModel = useCustomModel ? modelId : settings.selectedModelId;
 			const result = await ws.http('git:generate-commit-message', {
 				projectId,
 				engine: resolvedEngine,
-				model: resolvedModel,
+				providerSlug: resolvedProvider,
+				modelId: resolvedModel,
 				format
 			});
 			commitMessage = result.message;

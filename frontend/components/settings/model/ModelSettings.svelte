@@ -3,7 +3,7 @@
 	import { settings, updateSettings } from '$frontend/stores/features/settings.svelte';
 	import { modelStore } from '$frontend/stores/features/models.svelte';
 	import { ENGINES } from '$shared/constants/engines';
-	import type { EngineType } from '$shared/types/engine';
+	import type { EngineType } from '$shared/types/unified';
 	import type { CommitMessageFormat } from '$shared/types/git';
 	import type { IconName } from '$shared/types/ui/icons';
 	import EngineModelPicker from './EngineModelPicker.svelte';
@@ -27,39 +27,45 @@
 
 		if (engineType !== 'claude-code') {
 			modelStore.fetchModels(engineType).then(models => {
-				const target = (remembered && models.find(m => m.id === remembered))
-					|| models.find(m => m.recommended)
+				const target = (remembered && models.find(m => m.engine.model.id === remembered.id))
 					|| models[0];
 				if (target) {
 					updateSettings({
-						selectedModel: target.id,
-						engineModelMemory: { ...memory, [engineType]: target.id }
+						selectedProvider: target.engine.provider,
+						selectedModelId: target.engine.model.id,
+						selectedModelName: target.engine.model.name,
+						engineModelMemory: { ...memory, [engineType]: { provider: target.engine.provider, id: target.engine.model.id, name: target.engine.model.name } }
 					});
 				} else {
-					updateSettings({ selectedModel: '' });
+					updateSettings({ selectedProvider: '', selectedModelId: '', selectedModelName: '' });
 				}
 			});
 		} else {
 			const models = modelStore.getByEngine('claude-code');
-			const target = (remembered && models.find(m => m.id === remembered))
-				|| models.find(m => m.recommended)
+			const target = (remembered && models.find(m => m.engine.model.id === remembered.id))
 				|| models[0];
 			if (target) {
 				updateSettings({
-					selectedModel: target.id,
-					engineModelMemory: { ...memory, [engineType]: target.id }
+					selectedProvider: target.engine.provider,
+					selectedModelId: target.engine.model.id,
+					selectedModelName: target.engine.model.name,
+					engineModelMemory: { ...memory, [engineType]: { provider: target.engine.provider, id: target.engine.model.id, name: target.engine.model.name } }
 				});
 			} else {
-				updateSettings({ selectedModel: '' });
+				updateSettings({ selectedProvider: '', selectedModelId: '', selectedModelName: '' });
 			}
 		}
 	}
 
 	function handleAssistantModelChange(modelId: string) {
 		const memory = settings.engineModelMemory || {};
+		const model = modelStore.getById(modelId);
+		const provider = model?.engine.provider || settings.selectedProvider;
 		updateSettings({
-			selectedModel: modelId,
-			engineModelMemory: { ...memory, [settings.selectedEngine]: modelId }
+			selectedProvider: provider,
+			selectedModelId: modelId,
+			selectedModelName: model?.engine.model.name || modelId,
+			engineModelMemory: { ...memory, [settings.selectedEngine]: { provider, id: modelId, name: model?.engine.model.name || modelId } }
 		});
 	}
 
@@ -75,9 +81,9 @@
 
 	// Resolve which model is being used for display
 	const activeEngine = $derived(useCustomModel ? commitGen.engine : settings.selectedEngine);
-	const activeModel = $derived(useCustomModel ? commitGen.model : settings.selectedModel);
+	const activeModelId = $derived(useCustomModel ? commitGen.modelId : settings.selectedModelId);
 	const activeEngineMeta = $derived(ENGINES.find(e => e.type === activeEngine));
-	const activeModelMeta = $derived(modelStore.getById(activeModel));
+	const activeModelMeta = $derived(modelStore.getById(activeModelId));
 
 	function toggleCustomModel() {
 		updateSettings({
@@ -87,14 +93,13 @@
 
 	function handleCommitEngineChange(engineType: EngineType) {
 		const models = modelStore.getByEngine(engineType);
-		const defaultModel = engineType === 'claude-code'
-			? 'claude-code:haiku'
-			: (models[0]?.id || '');
+		const defaultModel = models[0];
 		updateSettings({
 			commitGenerator: {
 				...commitGen,
 				engine: engineType,
-				model: defaultModel
+				modelId: defaultModel?.engine.model.id || '',
+				modelName: defaultModel?.engine.model.name || ''
 			}
 		});
 
@@ -102,7 +107,7 @@
 			modelStore.fetchModels(engineType).then(fetched => {
 				if (fetched.length > 0) {
 					updateSettings({
-						commitGenerator: { ...settings.commitGenerator, model: fetched[0].id }
+						commitGenerator: { ...settings.commitGenerator, modelId: fetched[0].engine.model.id, modelName: fetched[0].engine.model.name }
 					});
 				}
 			});
@@ -110,8 +115,9 @@
 	}
 
 	function handleCommitModelChange(modelId: string) {
+		const model = modelStore.getById(modelId);
 		updateSettings({
-			commitGenerator: { ...commitGen, model: modelId }
+			commitGenerator: { ...commitGen, modelId, modelName: model?.engine.model.name || modelId }
 		});
 	}
 
@@ -149,7 +155,7 @@
 
 		<EngineModelPicker
 			engine={settings.selectedEngine}
-			model={settings.selectedModel}
+			model={settings.selectedModelId}
 			onEngineChange={handleAssistantEngineChange}
 			onModelChange={handleAssistantModelChange}
 		/>
@@ -217,7 +223,7 @@
 					{/if}
 					<div class="flex-1 min-w-0">
 						<span class="text-sm font-medium text-slate-900 dark:text-slate-100">
-							{activeModelMeta?.name || activeModel}
+							{activeModelMeta?.engine.model.name || activeModelId}
 						</span>
 						<span class="text-xs text-slate-500 dark:text-slate-400 ml-1.5">(same as assistant)</span>
 					</div>
@@ -230,7 +236,7 @@
 			<div class="mb-2">
 				<EngineModelPicker
 					engine={commitGen.engine}
-					model={commitGen.model}
+					model={commitGen.modelId}
 					onEngineChange={handleCommitEngineChange}
 					onModelChange={handleCommitModelChange}
 				/>

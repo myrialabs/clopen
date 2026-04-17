@@ -110,7 +110,7 @@
 
 	// Filtered catalog (exclude already-configured providers)
 	const ocFilteredCatalog = $derived.by(() => {
-		const configuredIds = new Set(ocProviders.map(p => p.providerId));
+		const configuredIds = new Set(ocProviders.map(p => p.slug));
 		let filtered = ocCatalog.filter(c => !configuredIds.has(c.id));
 		if (ocCatalogSearch.trim()) {
 			const q = ocCatalogSearch.toLowerCase();
@@ -447,13 +447,13 @@
 			}
 
 			await opencodeProvidersStore.addProvider({
-				providerId: ocSelectedCatalogProvider.id,
+				slug: ocSelectedCatalogProvider.id,
 				name: ocSelectedCatalogProvider.name,
 				npm: ocSelectedCatalogProvider.npm,
 				apiUrl: ocSelectedCatalogProvider.api || undefined,
 				options: Object.keys(options).length > 0 ? JSON.stringify(options) : undefined,
 				accountName: ocAddAccountName.trim(),
-				apiKey: ocAddApiKey.trim(),
+				credential: ocAddApiKey.trim(),
 			});
 			ocAddStep = 'success';
 		} catch (error: any) {
@@ -477,8 +477,8 @@
 	}
 
 	// Get env var label for a provider by looking it up in the catalog
-	function getProviderEnvLabel(providerId: string): string {
-		const catalogEntry = ocCatalog.find(c => c.id === providerId);
+	function getProviderEnvLabel(slug: string): string {
+		const catalogEntry = ocCatalog.find(c => c.id === slug);
 		return catalogEntry?.env?.[0] || 'API Key';
 	}
 
@@ -749,94 +749,105 @@
 						<span>Version: <span class="font-mono font-medium text-slate-900 dark:text-slate-100">{claudeCodeStatus.version || 'Unknown'}</span></span>
 					</div>
 
-					<!-- Accounts Section -->
+					<!-- Providers Section (2-level display: Provider → Accounts) -->
 					<div class="space-y-3">
 						<div class="flex items-center justify-between">
-							<h4 class="text-sm font-semibold text-slate-700 dark:text-slate-300">Accounts</h4>
-							<span class="text-xs text-slate-500">{claudeCodeAccounts.length} account{claudeCodeAccounts.length !== 1 ? 's' : ''}</span>
+							<h4 class="text-sm font-semibold text-slate-700 dark:text-slate-300">Providers</h4>
+							<span class="text-xs text-slate-500">1 provider</span>
 						</div>
 
-						{#if claudeCodeAccounts.length === 0}
-							<p class="text-sm text-slate-500 dark:text-slate-400 italic">No accounts configured</p>
-						{:else}
-							<div class="space-y-2">
-								{#each claudeCodeAccounts as account (account.id)}
-									<div class="flex items-center justify-between px-3.5 py-2.5 rounded-lg border border-slate-200 dark:border-slate-700/50 bg-slate-50 dark:bg-slate-800/80 {account.isActive ? 'ring-1 ring-violet-500/40' : ''}">
-										<div class="w-full flex items-center gap-2.5 min-w-0">
-											<Icon name="lucide:user" class="w-4 h-4 shrink-0 text-slate-400" />
-											{#if claudeCodeRenamingId === account.id}
-												<div class="w-full flex items-center gap-2.5">
-													<input
-														type="text"
-														bind:value={claudeCodeRenameValue}
-														class="w-full px-2 py-0.5 text-sm rounded border border-slate-300 dark:border-slate-600 bg-white dark:bg-slate-700 text-slate-900 dark:text-slate-100 focus:outline-none focus:ring-1 focus:ring-violet-500"
-													/>
-													<div class="flex items-center gap-1">
-														<button
-															type="button"
-															class="flex p-1.5 rounded-md text-slate-400 hover:text-green-600 hover:bg-green-50 dark:hover:bg-green-900/20 transition-colors"
-															onclick={submitClaudeCodeRename}
-															aria-label="Save"
-														>
-															<Icon name="lucide:check" class="w-3.5 h-3.5" />
-														</button>
-														<button
-															type="button"
-															class="flex p-1.5 rounded-md text-slate-400 hover:text-red-600 hover:bg-red-50 dark:hover:bg-red-900/20 transition-colors"
-															onclick={cancelClaudeCodeRename} 
-															aria-label="Cancel"
-														>
-															<Icon name="lucide:x" class="w-3.5 h-3.5" />
-														</button>
-													</div>
-												</div>
-											{:else}
-												<span class="text-sm font-medium text-slate-900 dark:text-slate-100 truncate">{account.name}</span>
-												{#if account.isActive}
-													<span class="inline-flex items-center px-2 py-0.5 rounded-full text-3xs font-semibold bg-violet-100 dark:bg-violet-900/30 text-violet-700 dark:text-violet-300">
-														Active
-													</span>
-												{/if}
-											{/if}
-										</div>
+						<!-- Anthropic provider (pre-seeded, no delete/add-provider buttons) -->
+						<div class="rounded-lg border border-slate-200 dark:border-slate-700/50 bg-slate-50 dark:bg-slate-800/80 overflow-hidden">
+							<!-- Provider header -->
+							<div class="flex items-center justify-between px-3.5 py-2.5 border-b border-slate-200 dark:border-slate-700/50">
+								<div class="flex items-center gap-2 min-w-0">
+									<span class="text-sm font-semibold text-slate-900 dark:text-slate-100 truncate">Anthropic</span>
+									<span class="text-2xs text-slate-400 font-mono">anthropic</span>
+									<span class="inline-flex items-center px-2 py-0.5 rounded-full text-3xs font-semibold bg-violet-100 dark:bg-violet-900/30 text-violet-700 dark:text-violet-300">Built-in</span>
+								</div>
+							</div>
 
-										{#if claudeCodeRenamingId !== account.id}
-											<div class="flex items-center gap-1">
-												{#if !account.isActive}
+							<!-- Accounts list -->
+							<div class="px-3.5 py-2.5 space-y-2">
+								{#if claudeCodeAccounts.length === 0}
+									<p class="text-xs text-slate-500 italic">No accounts</p>
+								{:else}
+									{#each claudeCodeAccounts as account (account.id)}
+										<div class="flex items-center justify-between px-3.5 py-2.5 rounded-lg border border-slate-200 dark:border-slate-700/50 bg-slate-50 dark:bg-slate-800/80 {account.isActive ? 'ring-1 ring-violet-500/40' : ''}">
+											<div class="w-full flex items-center gap-2.5 min-w-0">
+												<Icon name="lucide:user" class="w-4 h-4 shrink-0 text-slate-400" />
+												{#if claudeCodeRenamingId === account.id}
+													<div class="w-full flex items-center gap-2.5">
+														<input
+															type="text"
+															bind:value={claudeCodeRenameValue}
+															class="w-full px-2 py-0.5 text-sm rounded border border-slate-300 dark:border-slate-600 bg-white dark:bg-slate-700 text-slate-900 dark:text-slate-100 focus:outline-none focus:ring-1 focus:ring-violet-500"
+														/>
+														<div class="flex items-center gap-1">
+															<button
+																type="button"
+																class="flex p-1.5 rounded-md text-slate-400 hover:text-green-600 hover:bg-green-50 dark:hover:bg-green-900/20 transition-colors"
+																onclick={submitClaudeCodeRename}
+																aria-label="Save"
+															>
+																<Icon name="lucide:check" class="w-3.5 h-3.5" />
+															</button>
+															<button
+																type="button"
+																class="flex p-1.5 rounded-md text-slate-400 hover:text-red-600 hover:bg-red-50 dark:hover:bg-red-900/20 transition-colors"
+																onclick={cancelClaudeCodeRename}
+																aria-label="Cancel"
+															>
+																<Icon name="lucide:x" class="w-3.5 h-3.5" />
+															</button>
+														</div>
+													</div>
+												{:else}
+													<span class="text-sm font-medium text-slate-900 dark:text-slate-100 truncate">{account.name}</span>
+													{#if account.isActive}
+														<span class="inline-flex items-center px-2 py-0.5 rounded-full text-3xs font-semibold bg-violet-100 dark:bg-violet-900/30 text-violet-700 dark:text-violet-300">
+															Active
+														</span>
+													{/if}
+												{/if}
+											</div>
+
+											{#if claudeCodeRenamingId !== account.id}
+												<div class="flex items-center gap-1">
+													{#if !account.isActive}
+														<button
+															type="button"
+															class="flex p-1.5 rounded-md text-slate-400 hover:text-violet-600 hover:bg-violet-50 dark:hover:bg-violet-900/20 transition-colors"
+															onclick={() => switchClaudeCodeAccount(account.id)}
+															title="Switch to this account"
+														>
+															<Icon name="lucide:arrow-right-left" class="w-3.5 h-3.5" />
+														</button>
+													{/if}
 													<button
 														type="button"
-														class="flex p-1.5 rounded-md text-slate-400 hover:text-violet-600 hover:bg-violet-50 dark:hover:bg-violet-900/20 transition-colors"
-														onclick={() => switchClaudeCodeAccount(account.id)}
-														title="Switch to this account"
+														class="flex p-1.5 rounded-md text-slate-400 hover:text-blue-600 hover:bg-blue-50 dark:hover:bg-blue-900/20 transition-colors"
+														onclick={() => startClaudeCodeRename(account)}
+														title="Rename"
 													>
-														<Icon name="lucide:arrow-right-left" class="w-3.5 h-3.5" />
+														<Icon name="lucide:pencil" class="w-3.5 h-3.5" />
 													</button>
-												{/if}
-												<button
-													type="button"
-													class="flex p-1.5 rounded-md text-slate-400 hover:text-blue-600 hover:bg-blue-50 dark:hover:bg-blue-900/20 transition-colors"
-													onclick={() => startClaudeCodeRename(account)}
-													title="Rename"
-												>
-													<Icon name="lucide:pencil" class="w-3.5 h-3.5" />
-												</button>
-												<button
-													type="button"
-													class="flex p-1.5 rounded-md text-slate-400 hover:text-red-600 hover:bg-red-50 dark:hover:bg-red-900/20 transition-colors"
-													onclick={() => confirmDeleteClaudeCodeAccount(account.id)}
-													title="Delete account"
-												>
-													<Icon name="lucide:trash-2" class="w-3.5 h-3.5" />
-												</button>
-											</div>
-										{/if}
-									</div>
-								{/each}
-							</div>
-						{/if}
+													<button
+														type="button"
+														class="flex p-1.5 rounded-md text-slate-400 hover:text-red-600 hover:bg-red-50 dark:hover:bg-red-900/20 transition-colors"
+														onclick={() => confirmDeleteClaudeCodeAccount(account.id)}
+														title="Delete account"
+													>
+														<Icon name="lucide:trash-2" class="w-3.5 h-3.5" />
+													</button>
+												</div>
+											{/if}
+										</div>
+									{/each}
+								{/if}
 
-						<!-- Add Account Flow -->
-						<div class="mt-3">
+								<!-- Add Account Flow -->
+								<div class="pt-1">
 							{#if claudeCodeSetupStep === 'idle'}
 								<button
 									type="button"
@@ -982,6 +993,8 @@
 									</button>
 								</div>
 							{/if}
+						</div>
+						</div>
 						</div>
 					</div>
 				</div>
@@ -1160,7 +1173,7 @@
 								<div class="flex items-center justify-between px-3.5 py-2.5 border-b border-slate-200 dark:border-slate-700/50">
 									<div class="flex items-center gap-2 min-w-0">
 										<span class="text-sm font-semibold text-slate-900 dark:text-slate-100 truncate">{provider.name}</span>
-										<span class="text-2xs text-slate-400 font-mono">{provider.providerId}</span>
+										<span class="text-2xs text-slate-400 font-mono">{provider.slug}</span>
 										{#if !provider.isEnabled}
 											<span class="px-1.5 py-0.5 text-3xs rounded bg-slate-200 dark:bg-slate-700 text-slate-500 dark:text-slate-400">Disabled</span>
 										{/if}
@@ -1258,7 +1271,7 @@
 									{#if ocAddingAccountForProvider === provider.id}
 										<div class="space-y-2 pt-2 border-t border-slate-200 dark:border-slate-700/50">
 											<input type="text" bind:value={ocNewAccountName} placeholder="Account name (e.g. Personal, Work)" class="w-full px-3 py-1.5 text-xs rounded-lg border border-slate-300 dark:border-slate-600 bg-white dark:bg-slate-800 text-slate-900 dark:text-slate-100 placeholder:text-slate-400 focus:outline-none focus:ring-1 focus:ring-violet-500" />
-											<input type="text" bind:value={ocNewAccountApiKey} placeholder={getProviderEnvLabel(provider.providerId)} class="w-full px-3 py-1.5 text-xs rounded-lg border border-slate-300 dark:border-slate-600 bg-white dark:bg-slate-800 text-slate-900 dark:text-slate-100 placeholder:text-slate-400 focus:outline-none focus:ring-1 focus:ring-violet-500 font-mono" />
+											<input type="text" bind:value={ocNewAccountApiKey} placeholder={getProviderEnvLabel(provider.slug)} class="w-full px-3 py-1.5 text-xs rounded-lg border border-slate-300 dark:border-slate-600 bg-white dark:bg-slate-800 text-slate-900 dark:text-slate-100 placeholder:text-slate-400 focus:outline-none focus:ring-1 focus:ring-violet-500 font-mono" />
 											<div class="flex gap-2">
 												<button type="button" class="flex-1 flex items-center justify-center gap-1.5 px-3 py-1.5 text-xs font-medium rounded-lg bg-violet-600 text-white hover:bg-violet-700 transition-colors disabled:opacity-50" onclick={submitAddAccount} disabled={!ocNewAccountName.trim() || !ocNewAccountApiKey.trim()}>
 													<Icon name="lucide:plus" class="w-3 h-3" />Add

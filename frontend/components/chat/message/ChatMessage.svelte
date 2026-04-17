@@ -82,7 +82,7 @@
 	});
 
 	// Get sender info
-	const senderName = $derived('sender' in message ? (message as any).sender?.name ?? null : null);
+	const senderName = $derived(message.type === 'user' ? message.sender?.name ?? null : null);
 
 	// Copy message content to clipboard (content text only, not full JSON)
 	function copyToClipboard() {

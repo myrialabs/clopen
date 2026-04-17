@@ -12,7 +12,7 @@
 
 import { t } from 'elysia';
 import { createRouter } from '$shared/utils/ws-server';
-import type { EngineType } from '$shared/types/engine';
+import type { EngineType } from '$shared/types/unified';
 import type { ChatSession } from '$shared/types/database/schema';
 import { sessionQueries, messageQueries, projectQueries, snapshotQueries } from '../../database/queries';
 import { ws } from '$backend/utils/ws';
@@ -32,7 +32,8 @@ const sessionSchema = t.Object({
 	// Session preferences
 	title: t.Optional(t.String()),
 	engine: t.Optional(t.Union([t.Literal('claude-code'), t.Literal('opencode')])),
-	model: t.Optional(t.String()),
+	model_id: t.Optional(t.String()),
+	model_name: t.Optional(t.String()),
 	account_id: t.Optional(t.Number()),
 	account_name: t.Optional(t.String()),
 	// HEAD state
@@ -54,7 +55,8 @@ function serializeSession(session: ChatSession) {
 		...session,
 		title: session.title ?? undefined,
 		engine: session.engine ?? 'claude-code' as const,
-		model: session.model ?? undefined,
+		model_id: session.model_id ?? undefined,
+		model_name: session.model_name ?? undefined,
 		account_id: session.account_id ?? undefined,
 		account_name: session.account_name ?? undefined,
 		head_message_id: session.head_message_id ?? undefined,

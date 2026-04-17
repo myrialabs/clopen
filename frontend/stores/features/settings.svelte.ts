@@ -6,7 +6,7 @@
  * System settings: stored via settings:get / settings:update-system (admin-only write)
  */
 
-import { DEFAULT_MODEL, DEFAULT_ENGINE } from '$shared/constants/engines';
+import { DEFAULT_MODEL_ID, DEFAULT_MODEL_NAME, DEFAULT_ENGINE } from '$shared/constants/engines';
 import type { AppSettings, SystemSettings } from '$shared/types/stores/settings';
 import { builtInPresets } from '$frontend/stores/ui/workspace.svelte';
 import ws from '$frontend/utils/ws';
@@ -25,8 +25,10 @@ const createDefaultPresetVisibility = (): Record<string, boolean> => {
 // Default per-user settings
 const defaultSettings: AppSettings = {
 	selectedEngine: DEFAULT_ENGINE,
-	selectedModel: DEFAULT_MODEL,
-	engineModelMemory: { 'claude-code': DEFAULT_MODEL },
+	selectedProvider: 'anthropic',
+	selectedModelId: DEFAULT_MODEL_ID,
+	selectedModelName: DEFAULT_MODEL_NAME,
+	engineModelMemory: { 'claude-code': { provider: 'anthropic', id: DEFAULT_MODEL_ID, name: DEFAULT_MODEL_NAME } },
 	autoSave: true,
 	theme: 'system',
 	soundNotifications: true,
@@ -36,7 +38,9 @@ const defaultSettings: AppSettings = {
 	commitGenerator: {
 		useCustomModel: false,
 		engine: 'claude-code',
-		model: 'claude-code:haiku',
+		provider: 'anthropic',
+		modelId: 'haiku',
+		modelName: 'Haiku 4.5',
 		format: 'single-line'
 	}
 };

@@ -1,8 +1,7 @@
 <script lang="ts">
 	import { modelStore } from '$frontend/stores/features/models.svelte';
 	import { ENGINES } from '$shared/constants/engines';
-	import type { EngineType } from '$shared/types/engine';
-	import type { EngineModel } from '$shared/types/engine';
+	import type { EngineType, EngineModel } from '$shared/types/unified';
 
 	interface Props {
 		engine: EngineType;
@@ -22,10 +21,9 @@
 		if (!searchQuery.trim()) return models;
 		const q = searchQuery.toLowerCase();
 		return models.filter(m =>
-			m.name.toLowerCase().includes(q) ||
-			m.modelId.toLowerCase().includes(q) ||
-			m.provider.toLowerCase().includes(q) ||
-			m.capabilities.some(c => c.toLowerCase().includes(q))
+			m.engine.model.name.toLowerCase().includes(q) ||
+			m.engine.model.id.toLowerCase().includes(q) ||
+			m.engine.provider.toLowerCase().includes(q)
 		);
 	});
 
@@ -33,7 +31,7 @@
 	const groupedModels = $derived.by(() => {
 		const groups = new Map<string, EngineModel[]>();
 		for (const m of filteredModels) {
-			const key = m.provider;
+			const key = m.engine.provider;
 			if (!groups.has(key)) groups.set(key, []);
 			groups.get(key)!.push(m);
 		}
@@ -60,7 +58,7 @@
 		const allProviders = [...groupedModels.keys()];
 		let selectedProvider: string | null = null;
 		for (const [provider, models] of groupedModels) {
-			if (models.some(m => m.id === model)) {
+			if (models.some(m => m.engine.model.id === model)) {
 				selectedProvider = provider;
 				break;
 			}
@@ -81,7 +79,7 @@
 		return provider.split(/[-_]/).map(w => w.charAt(0).toUpperCase() + w.slice(1)).join(' ');
 	}
 
-	function formatContextWindow(tokens: number): string {
+	function formatTokenLimit(tokens: number): string {
 		if (tokens >= 1_000_000) return `${(tokens / 1_000_000).toFixed(tokens % 1_000_000 === 0 ? 0 : 1)}M`;
 		if (tokens >= 1_000) return `${(tokens / 1_000).toFixed(tokens % 1_000 === 0 ? 0 : 1)}K`;
 		return `${tokens}`;
@@ -188,7 +186,7 @@
 		{:else}
 			{#each [...groupedModels.entries()] as [provider, providerModels] (provider)}
 				{@const isCollapsed = collapsedProviders.has(provider)}
-				{@const hasSelectedModel = providerModels.some(m => m.id === model)}
+				{@const hasSelectedModel = providerModels.some(m => m.engine.model.id === model)}
 				<div class="border border-slate-200/80 dark:border-slate-700/50 rounded-lg overflow-hidden">
 					<!-- Accordion header -->
 					<button
@@ -217,16 +215,15 @@
 					<!-- Accordion body -->
 					{#if !isCollapsed}
 						<div class="flex flex-col bg-white/40 dark:bg-slate-800/20">
-							{#each providerModels as mdl (mdl.id)}
-								{@const isSelected = model === mdl.id}
-								{@const caps = mdl.capabilities}
+							{#each providerModels as mdl (mdl.engine.model.id)}
+								{@const isSelected = model === mdl.engine.model.id}
 								<button
 									type="button"
 									class="flex items-start gap-3 px-3 py-2.5 text-left cursor-pointer transition-all duration-150
 										{isSelected
 										? 'bg-violet-500/10 dark:bg-violet-500/12'
 										: 'hover:bg-slate-100/80 dark:hover:bg-slate-700/30'}"
-									onclick={() => onModelChange(mdl.id)}
+									onclick={() => onModelChange(mdl.engine.model.id)}
 								>
 									<div class="flex-shrink-0 w-4 h-4 rounded-full border-2 flex items-center justify-center mt-0.5
 										{isSelected ? 'border-violet-600' : 'border-slate-300 dark:border-slate-600'}">
@@ -236,20 +233,11 @@
 									</div>
 									<div class="flex-1 min-w-0">
 										<div class="flex items-center gap-2">
-											<span class="text-sm font-medium text-slate-900 dark:text-slate-100">{mdl.name}</span>
-											{#if mdl.contextWindow}
-												<span class="text-2xs text-slate-400 dark:text-slate-500">{formatContextWindow(mdl.contextWindow)}</span>
+											<span class="text-sm font-medium text-slate-900 dark:text-slate-100">{mdl.engine.model.name}</span>
+											{#if mdl.limit.input}
+												<span class="text-2xs text-slate-400 dark:text-slate-500">{formatTokenLimit(mdl.limit.input)}</span>
 											{/if}
 										</div>
-										{#if caps.length > 0}
-											<div class="flex flex-wrap gap-1 mt-1.5">
-												{#each caps as cap}
-													<span class="px-1.5 py-0.5 text-2xs rounded bg-slate-100 dark:bg-slate-700/50 text-slate-500 dark:text-slate-400 leading-none">
-														{cap}
-													</span>
-												{/each}
-											</div>
-										{/if}
 									</div>
 								</button>
 							{/each}

@@ -21,11 +21,11 @@
 
 	// Resolve model: prefer session model (actual), fallback to selected model
 	const model = $derived(
-		modelStore.getById(sessionState.currentSession?.model || settings.selectedModel)
+		modelStore.getById(sessionState.currentSession?.model_id || settings.selectedModelId)
 	);
 
 	const usage = $derived(
-		model ? getContextUsage(sessionState.messages, model.contextWindow) : null
+		model ? getContextUsage(sessionState.messages, model.limit.input) : null
 	);
 
 	const barColor = $derived.by(() => {
@@ -136,7 +136,7 @@
 							<div class="flex justify-between items-center">
 								<span class="text-2xs text-slate-500">Model</span>
 								<span class="text-2xs font-mono font-medium text-slate-700 dark:text-slate-300 truncate max-w-32">
-									{model.name}
+									{model.engine.model.name}
 								</span>
 							</div>
 						{/if}

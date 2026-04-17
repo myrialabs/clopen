@@ -11,7 +11,7 @@
 
 import type { EngineOutput, UserMessage } from '$shared/types/unified';
 import type { AIEngine, EngineQueryOptions, StructuredGenerationOptions } from '../../types';
-import type { EngineModel } from '$shared/types/engine';
+import type { EngineModel } from '$shared/types/unified';
 import type {
 	Provider,
 	Model,
@@ -42,27 +42,6 @@ import {
 } from './message-converter';
 import { ensureClient, getClient, getServerUrl } from './server';
 import { debug } from '$shared/utils/logger';
-
-/** Map SDK Model.status to our category */
-function mapStatusToCategory(status: Model['status']): EngineModel['category'] {
-	switch (status) {
-		case 'deprecated': return 'legacy';
-		case 'alpha':
-		case 'beta': return 'stable';
-		default: return 'latest';
-	}
-}
-
-/** Build capability tags from SDK Model.capabilities */
-function buildCapabilityTags(model: Model): string[] {
-	const tags: string[] = [];
-	const caps = model.capabilities;
-
-	if (caps.reasoning) tags.push('Reasoning');
-	if (caps.attachment) tags.push('Attachments');
-
-	return tags;
-}
 
 // ============================================================================
 // OpenCode Engine (per-project instance)
@@ -123,19 +102,48 @@ export class OpenCodeEngine implements AIEngine {
 				const providerModels: Record<string, Model> = provider.models ?? {};
 
 				for (const [modelKey, model] of Object.entries(providerModels)) {
-					const modelId = model.id || modelKey;
-					const compoundId = `opencode:${provider.id}/${modelId}`;
-
 					models.push({
-						id: compoundId,
-						engine: 'opencode',
-						modelId: `${provider.id}/${modelId}`,
-						name: model.name || modelId,
-						provider: provider.id,
-						description: `${model.name || modelId} via ${provider.name || provider.id}`,
-						capabilities: buildCapabilityTags(model),
-						contextWindow: model.limit.context,
-						category: mapStatusToCategory(model.status),
+						engine: {
+							type: 'opencode',
+							provider: provider.id,
+							model: {
+								id: model.id,
+								name: model.name,
+							},
+							account: {
+								id: 0,
+								name: '',
+							},
+						},
+						limit: {
+							input: model.limit.context,
+							output: model.limit.output,
+						},
+						modalities: {
+							input: {
+								text: model.capabilities.input.text,
+								image: model.capabilities.input.image,
+								audio: model.capabilities.input.audio,
+								video: model.capabilities.input.video,
+								pdf: model.capabilities.input.pdf,
+							},
+							output: {
+								text: model.capabilities.output.text,
+								image: model.capabilities.output.image,
+								audio: model.capabilities.output.audio,
+								video: model.capabilities.output.video,
+								pdf: model.capabilities.output.pdf,
+							},
+						},
+						capabilities: {
+							reasoning: model.capabilities.reasoning,
+							tools: model.capabilities.toolcall,
+							structuredOutput: true,
+						},
+						cost: {
+							input: model.cost.input,
+							output: model.cost.output,
+						},
 					});
 				}
 			}
@@ -162,7 +170,8 @@ export class OpenCodeEngine implements AIEngine {
 			projectPath,
 			prompt,
 			resume,
-			model = 'claude-sonnet',
+			providerSlug,
+			modelId,
 			abortController
 		} = options;
 
@@ -204,7 +213,7 @@ export class OpenCodeEngine implements AIEngine {
 
 			this.activeSessionId = sessionId;
 
-			yield convertSystemInitMessage(sessionId, model);
+			yield convertSystemInitMessage(sessionId, modelId);
 			yield convertStreamStart(sessionId);
 
 			// 1. Subscribe to event stream FIRST (before sending prompt)
@@ -213,15 +222,12 @@ export class OpenCodeEngine implements AIEngine {
 				signal: this.activeAbortController.signal
 			});
 
-			// 2. Send prompt asynchronously (non-blocking) — parse "providerId/modelId"
-			const idx = model.indexOf('/');
-			const [providerID, modelID] = idx >= 0 ? [model.substring(0, idx), model.substring(idx + 1)] : ['', model];
-
+			// 2. Send prompt asynchronously (non-blocking)
 			client.session.promptAsync({
 				path: { id: sessionId },
 				body: {
 					parts: promptParts as any,
-					...(providerID && modelID ? { model: { providerID, modelID } } : {}),
+					...(providerSlug && modelId ? { model: { providerID: providerSlug, modelID: modelId } } : {}),
 				},
 				query: { directory: projectPath },
 			}).catch(error => {
@@ -1018,7 +1024,8 @@ export class OpenCodeEngine implements AIEngine {
 	async generateStructured<T = unknown>(options: StructuredGenerationOptions): Promise<T> {
 		const {
 			prompt,
-			model = 'claude-sonnet',
+			providerSlug,
+			modelId,
 			schema,
 			projectPath,
 			abortController
@@ -1039,24 +1046,20 @@ export class OpenCodeEngine implements AIEngine {
 			throw new Error('Failed to create OpenCode session');
 		}
 
-		// Parse model into providerID/modelID
-		const idx = model.indexOf('/');
-		const [providerID, modelID] = idx >= 0 ? [model.substring(0, idx), model.substring(idx + 1)] : ['', model];
-
 		// Wrap prompt with JSON instruction since v1 doesn't support format option
 		const jsonPrompt = `${prompt}
 
 IMPORTANT: You MUST respond with ONLY a valid JSON object matching this schema, no other text:
 ${JSON.stringify(schema, null, 2)}`;
 
-		debug.log('engine', `[OC structured] Sending prompt to session ${sessionId}, model=${model}`);
+		debug.log('engine', `[OC structured] Sending prompt to session ${sessionId}, provider=${providerSlug}, modelId=${modelId}`);
 
 		// Use v1 SDK synchronous prompt method — waits for completion
 		const response = await client.session.prompt({
 			path: { id: sessionId },
 			body: {
 				parts: [{ type: 'text', text: jsonPrompt }],
-				...(providerID && modelID ? { model: { providerID, modelID } } : {}),
+				...(providerSlug && modelId ? { model: { providerID: providerSlug, modelID: modelId } } : {}),
 				tools: {}
 			},
 			query: { directory: projectPath },

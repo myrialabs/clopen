@@ -18,7 +18,6 @@ import { projectState } from '$frontend/stores/core/projects.svelte';
 import { sessionState, setCurrentSession, createSession, updateSession } from '$frontend/stores/core/sessions.svelte';
 import { addNotification } from '$frontend/stores/ui/notification.svelte';
 import { userStore } from '$frontend/stores/features/user.svelte';
-import { SDK_CONFIG, parseModelId } from '$shared/constants/engines';
 import type { UnifiedMessage, AssistantMessage } from '$shared/types/unified';
 import type { StreamingMessage, OptimisticUserMessage, FrontendMessage } from '$frontend/stores/core/sessions.svelte';
 import { debug } from '$shared/utils/logger';
@@ -432,12 +431,11 @@ class ChatService {
         }
       }
 
-      // Parse engine and model from the local chat model state (isolated from Settings)
-      const { engine, modelId } = parseModelId(chatModelState.model);
-
       // Capture selected engine/model/account before sending
-      const selectedEngine = chatModelState.engine || engine;
-      const selectedModel = chatModelState.model;
+      const selectedEngine = chatModelState.engine;
+      const selectedProvider = chatModelState.provider;
+      const selectedModelId = chatModelState.modelId;
+      const selectedModelName = chatModelState.modelName;
 
       // Create UserMessage format for prompt
       const userMsgId = crypto.randomUUID();
@@ -447,12 +445,15 @@ class ChatService {
         messageId: userMsgId,
         sessionId: currentSessionId,
         parent: { messageId: null, sessionId: parentSessionId, toolUseId: null },
-        engine: selectedEngine,
-        model: selectedModel,
-        account: { id: chatModelState.accountId ?? null, name: null },
+        engine: {
+          type: selectedEngine,
+          provider: selectedProvider,
+          model: { id: selectedModelId, name: selectedModelName },
+          account: { id: chatModelState.accountId ?? 0, name: chatModelState.accountName ?? '' },
+        },
         sender: {
-          id: userStore.currentUser?.id || null,
-          name: userStore.currentUser?.name || null,
+          id: userStore.currentUser?.id || '',
+          name: userStore.currentUser?.name || '',
         },
         content: messageContent,
         synthetic: false,
@@ -466,6 +467,7 @@ class ChatService {
       };
       (sessionState.messages as FrontendMessage[]).push(optimisticMessage);
       const selectedAccountId = chatModelState.accountId;
+      const selectedAccountName = chatModelState.accountName;
 
       // Send WebSocket message to start streaming
       ws.emit('chat:stream', {
@@ -473,39 +475,19 @@ class ChatService {
         chatSessionId: sessionState.currentSession.id,
         projectPath: projectState.currentProject?.path || '',
         prompt: userMsg,
-        messages: sessionState.messages.filter((msg) => !('optimistic' in msg && msg.optimistic) && msg.type !== 'stream_event').map(msg => {
-          // Convert UnifiedMessage to API format
-          if (msg.type === 'user' && 'content' in msg) {
-            const textParts = msg.content
-              .filter(c => c.type === 'text')
-              .map(c => (c as any).text as string);
-            return {
-              role: 'user',
-              content: textParts.join('\n') || ''
-            };
-          } else if (msg.type === 'assistant' && 'content' in msg) {
-            const textParts = msg.content
-              .filter(c => c.type === 'text')
-              .map(c => (c as any).text as string);
-            return {
-              role: 'assistant',
-              content: textParts.join(' ') || ''
-            };
-          }
-          return {
-            role: 'assistant',
-            content: ''
-          };
-        }).filter(msg => msg.content),
-        engine: selectedEngine,
-        model: modelId,
-        temperature: SDK_CONFIG.DEFAULT_TEMPERATURE,
-        senderId: userStore.currentUser?.id,
-        senderName: userStore.currentUser?.name,
-        ...(selectedEngine === 'claude-code' && selectedAccountId !== null && { accountId: selectedAccountId }),
+        engine: {
+          type: selectedEngine,
+          provider: selectedProvider,
+          model: { id: selectedModelId, name: selectedModelName },
+          account: { id: selectedAccountId ?? 0, name: selectedAccountName ?? '' },
+        },
+        sender: {
+          id: userStore.currentUser?.id || '',
+          name: userStore.currentUser?.name || '',
+        },
       });
 
-      // Persist engine/model to frontend session state immediately.
+      // Persist engine/model/account to frontend session state immediately.
       // Backend also saves to DB (for refresh/project-switch restore),
       // but we update the frontend state here so the $effect in
       // EngineModelPicker can see it without a server round-trip.
@@ -517,8 +499,11 @@ class ChatService {
         updateSession({
           ...sessionState.currentSession,
           engine: selectedEngine,
-          model: selectedModel,
-          ...(selectedEngine === 'claude-code' && selectedAccountId !== null && { account_id: selectedAccountId }),
+          provider: selectedProvider,
+          model_id: selectedModelId,
+          model_name: selectedModelName,
+          ...(selectedAccountId !== null && { account_id: selectedAccountId }),
+          ...(selectedAccountName !== null && { account_name: selectedAccountName }),
         });
       }
 
@@ -612,8 +597,8 @@ class ChatService {
     const enriched = { ...message };
     if (data.message_id) enriched.messageId = data.message_id;
     if (data.parent_message_id !== undefined) enriched.parent = { ...enriched.parent, messageId: data.parent_message_id ?? null };
-    if (data.sender_id || data.sender_name) {
-      enriched.sender = { id: data.sender_id ?? null, name: data.sender_name ?? null };
+    if (enriched.type === 'user' && (data.sender_id || data.sender_name)) {
+      enriched.sender = { id: data.sender_id ?? '', name: data.sender_name ?? '' };
     }
     if (data.timestamp) enriched.createdAt = data.timestamp;
     return enriched;
@@ -679,12 +664,16 @@ class ChatService {
       // No stream_event yet — fall through to dedup + push
     }
 
-    // Deduplicate: skip if a message with the same messageId already exists
+    // Deduplicate: if a message with the same messageId already exists, update it in place
+    // (e.g., stopReason backfill arrives after initial assistant message was emitted)
     if (message.messageId) {
-      const alreadyExists = sessionState.messages.some(
+      const existingIdx = (sessionState.messages as FrontendMessage[]).findIndex(
         (m) => m.type !== 'stream_event' && 'messageId' in m && m.messageId === message.messageId && !('optimistic' in m && m.optimistic)
       );
-      if (alreadyExists) return;
+      if (existingIdx !== -1) {
+        (sessionState.messages as FrontendMessage[])[existingIdx] = message;
+        return;
+      }
     }
 
     // Detect interactive tool_use blocks (e.g., AskUserQuestion) and set waiting status
@@ -798,10 +787,7 @@ class ChatService {
           messageId: crypto.randomUUID(),
           sessionId: sessionState.currentSession?.id || '',
           parent: { messageId: null, sessionId: null, toolUseId: null },
-          engine: null,
-          model: null,
-          account: { id: null, name: null },
-          sender: { id: null, name: null },
+          engine: { type: 'claude-code', provider: '', model: { id: '', name: '' }, account: { id: 0, name: '' } },
           content: [{ type: 'text', text: msg.text }],
           stopReason: 'interrupted',
           usage: null,

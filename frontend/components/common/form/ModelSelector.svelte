@@ -1,21 +1,17 @@
 <script lang="ts">
-	import { DEFAULT_MODEL } from '$shared/constants/engines';
-	import type { EngineModel } from '$shared/types/engine';
+	import { DEFAULT_MODEL_ID } from '$shared/constants/engines';
+	import type { EngineModel } from '$shared/types/unified';
 	import { settings } from '$frontend/stores/features/settings.svelte';
 	import { modelStore } from '$frontend/stores/features/models.svelte';
 	import Icon from '$frontend/components/common/display/Icon.svelte';
 
 	let {
-		value = $bindable(DEFAULT_MODEL),
+		value = $bindable(DEFAULT_MODEL_ID),
 		disabled = false,
-		showDescription = true,
-		showCapabilities = true,
 		onModelChange
 	}: {
 		value?: string;
 		disabled?: boolean;
-		showDescription?: boolean;
-		showCapabilities?: boolean;
 		onModelChange?: (model: EngineModel) => void;
 	} = $props();
 
@@ -35,11 +31,11 @@
 		}
 	}
 
-	function formatContextWindow(tokens: number): string {
-		if (tokens >= 1000000) {
-			return `${(tokens / 1000000).toFixed(1)}M tokens`;
-		} else if (tokens >= 1000) {
-			return `${(tokens / 1000).toFixed(0)}K tokens`;
+	function formatTokenLimit(tokens: number): string {
+		if (tokens >= 1_000_000) {
+			return `${(tokens / 1_000_000).toFixed(tokens % 1_000_000 === 0 ? 0 : 1)}M tokens`;
+		} else if (tokens >= 1_000) {
+			return `${(tokens / 1_000).toFixed(tokens % 1_000 === 0 ? 0 : 1)}K tokens`;
 		}
 		return `${tokens} tokens`;
 	}
@@ -54,9 +50,9 @@
 			class="w-full px-4 py-3 pr-10 bg-white dark:bg-slate-800 border border-slate-200 dark:border-slate-800 rounded-lg focus:ring-2 focus:ring-violet-500/20 focus:border-violet-600 transition-colors text-sm text-slate-900 dark:text-slate-100 appearance-none outline-none"
 			class:opacity-50={disabled}
 		>
-			{#each availableModels as model (model.id)}
-				<option value={model.id}>
-					{model.name}{model.recommended ? ' (Default)' : ''} — {model.provider}
+			{#each availableModels as model (model.engine.model.id)}
+				<option value={model.engine.model.id}>
+					{model.engine.model.name} — {model.engine.provider}
 				</option>
 			{/each}
 		</select>
@@ -66,45 +62,24 @@
 		</div>
 	</div>
 
-	{#if selectedModel && showDescription}
+	{#if selectedModel}
 		<div
 			class="mt-3 p-3 bg-slate-100/80 dark:bg-slate-800 rounded-lg border border-slate-200 dark:border-slate-800"
 		>
 			<div class="flex items-center space-x-2 mb-2">
 				<Icon name="lucide:star" class="w-4 h-4 text-violet-600" />
 				<h4 class="font-medium text-sm text-slate-900 dark:text-slate-100">
-					{selectedModel.name}
-					{#if selectedModel.recommended}
-						<span class="ml-1 text-xs text-violet-600">(Default)</span>
-					{/if}
+					{selectedModel.engine.model.name}
 				</h4>
-				<span class="text-xs px-1.5 py-0.5 bg-slate-200 dark:bg-slate-700 rounded text-slate-500 uppercase">{selectedModel.provider}</span>
+				<span class="text-xs px-1.5 py-0.5 bg-slate-200 dark:bg-slate-700 rounded text-slate-500 uppercase">{selectedModel.engine.provider}</span>
 			</div>
-
-			<p class="text-xs text-slate-500 mb-2">
-				{selectedModel.description}
-			</p>
 
 			<div class="flex items-center space-x-4 text-xs text-slate-600 dark:text-slate-500">
 				<div class="flex items-center space-x-1">
 					<Icon name="lucide:layers" class="w-3 h-3" />
-					<span>Context: {formatContextWindow(selectedModel.contextWindow)}</span>
+					<span>Input: {formatTokenLimit(selectedModel.limit.input)}</span>
 				</div>
 			</div>
-
-			{#if showCapabilities && selectedModel.capabilities.length > 0}
-				<div class="mt-2">
-					<div class="flex flex-wrap gap-1">
-						{#each selectedModel.capabilities as capability (capability)}
-							<span
-								class="px-2 py-1 bg-violet-500/10 dark:bg-violet-500/20 text-violet-600 text-xs rounded-full"
-							>
-								{capability}
-							</span>
-						{/each}
-					</div>
-				</div>
-			{/if}
 		</div>
 	{/if}
 </div>

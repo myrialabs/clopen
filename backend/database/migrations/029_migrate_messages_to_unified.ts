@@ -1,7 +1,7 @@
 import type { DatabaseConnection } from '$shared/types/database/connection';
 import { debug } from '$shared/utils/logger';
 
-export const description = 'Deep-convert messages to unified format, enrich both engines, rename columns, drop sender columns, rename session columns';
+export const description = 'Deep-convert messages to unified format, enrich both engines, rename columns, drop sender columns, rename session columns, and unify engine providers/accounts tables';
 
 // ============================================================
 // Row Types (before and after column rename)
@@ -287,12 +287,10 @@ function convertOldFormat(raw: Record<string, unknown>, row: OldRow, sessionEngi
 			sessionId: null,
 			toolUseId: null,
 		},
-		engine,
-		model,
-		account: { id: null, name: null },
+		engine: { type: engine, provider: '', model: { id: model || '', name: '' }, account: { id: 0, name: '' } },
 		sender: {
-			id: row.sender_id || null,
-			name: row.sender_name || null,
+			id: row.sender_id || '',
+			name: row.sender_name || '',
 		},
 	};
 
@@ -382,12 +380,28 @@ function syncMetadata(raw: Record<string, unknown>, row: OldRow, sessionEngine: 
 	parent.messageId = row.parent_message_id || null;
 
 	raw.sender = {
-		id: row.sender_id || (raw.sender as Record<string, unknown>)?.id || null,
-		name: row.sender_name || (raw.sender as Record<string, unknown>)?.name || null,
+		id: row.sender_id || (raw.sender as Record<string, unknown>)?.id || '',
+		name: row.sender_name || (raw.sender as Record<string, unknown>)?.name || '',
 	};
 
-	if (!raw.engine) raw.engine = sessionEngine;
-	if (!('account' in raw)) raw.account = { id: null, name: null };
+	// Migrate flat engine/model/account → nested engine: { type, model, account }
+	if (raw.engine && typeof raw.engine === 'string') {
+		// Old flat format → restructure
+		const oldEngine = raw.engine as string;
+		const oldModel = raw.model as string | null;
+		const rawAccount = (raw.account as Record<string, unknown>) || {};
+		const oldAccount = { id: (rawAccount.id as number) || 0, name: (rawAccount.name as string) || '' };
+		raw.engine = { type: oldEngine, provider: '', model: { id: oldModel || '', name: '' }, account: oldAccount };
+		delete raw.model;
+		delete raw.account;
+	} else if (!raw.engine) {
+		raw.engine = { type: sessionEngine, provider: '', model: { id: '', name: '' }, account: { id: 0, name: '' } };
+	}
+	// Ensure engine.provider exists
+	const engineObj = raw.engine as Record<string, unknown>;
+	if (!('provider' in engineObj)) engineObj.provider = '';
+	// Ensure engine.account exists
+	if (!engineObj.account) engineObj.account = { id: 0, name: '' };
 
 	return raw;
 }
@@ -507,11 +521,47 @@ function normalizeStopReason(raw: string | null | undefined, engine: string): st
 /** Deep-enrich an already-unified message */
 function deepEnrich(msg: Record<string, unknown>, sessionEngine: string): boolean {
 	let changed = false;
-	const engine = (msg.engine as string) || sessionEngine;
 
-	// Ensure engine is set
+	// Migrate flat engine/model → nested format if still in old format
+	if (msg.engine && typeof msg.engine === 'string') {
+		const oldEngine = msg.engine as string;
+		const oldModel = msg.model as string | null;
+		const rawAccount = (msg.account as Record<string, unknown>) || {};
+		const oldAccount = { id: (rawAccount.id as number) || 0, name: (rawAccount.name as string) || '' };
+		msg.engine = { type: oldEngine, provider: '', model: { id: oldModel || '', name: '' }, account: oldAccount };
+		delete msg.model;
+		delete msg.account;
+		changed = true;
+	}
+
+	// Ensure engine object exists
 	if (!msg.engine) {
-		msg.engine = sessionEngine;
+		msg.engine = { type: sessionEngine, provider: '', model: { id: '', name: '' }, account: { id: 0, name: '' } };
+		changed = true;
+	}
+
+	// Ensure engine.provider exists
+	const engineForProviderCheck = msg.engine as Record<string, unknown>;
+	if (!('provider' in engineForProviderCheck)) {
+		engineForProviderCheck.provider = '';
+		changed = true;
+	}
+
+	// Migrate engine.model from flat string to object format
+	if (engineForProviderCheck.model && typeof engineForProviderCheck.model === 'string') {
+		engineForProviderCheck.model = { id: engineForProviderCheck.model, name: '' };
+		changed = true;
+	} else if (!engineForProviderCheck.model) {
+		engineForProviderCheck.model = { id: '', name: '' };
+		changed = true;
+	}
+
+	const engineObj = msg.engine as Record<string, unknown>;
+	const engine = (engineObj.type as string) || sessionEngine;
+
+	// Ensure engine.account exists
+	if (!engineObj.account) {
+		engineObj.account = { id: 0, name: '' };
 		changed = true;
 	}
 
@@ -649,8 +699,21 @@ export const up = (db: DatabaseConnection): void => {
 		if (msg.sessionId) {
 			sessionIdMap.set(row.id, msg.sessionId as string);
 		}
-		if (msg.model && (msg.type === 'assistant' || msg.type === 'reasoning')) {
-			realModelMap.set(row.session_id, msg.model as string);
+		// Extract model from engine object (new format) or flat field (old format)
+		const msgEngine = msg.engine as Record<string, unknown> | string | null;
+		let msgModelId: string | null = null;
+		if (typeof msgEngine === 'object' && msgEngine) {
+			const modelField = msgEngine.model;
+			if (typeof modelField === 'object' && modelField) {
+				msgModelId = (modelField as Record<string, unknown>).id as string | null;
+			} else if (typeof modelField === 'string') {
+				msgModelId = modelField;
+			}
+		} else {
+			msgModelId = (msg.model as string | null);
+		}
+		if (msgModelId && (msg.type === 'assistant' || msg.type === 'reasoning')) {
+			realModelMap.set(row.session_id, msgModelId);
 		}
 	}
 
@@ -663,10 +726,12 @@ export const up = (db: DatabaseConnection): void => {
 		let changed = deepEnrich(msg, sessionEngine);
 
 		// Fill model from assistant/reasoning messages in same session (real SDK model ID)
-		if (!msg.model) {
+		const enrichedEngine = msg.engine as Record<string, unknown>;
+		const modelObj = enrichedEngine.model as Record<string, unknown> | null;
+		if (!modelObj || !modelObj.id) {
 			const realModel = realModelMap.get(row.session_id);
 			if (realModel) {
-				msg.model = realModel;
+				enrichedEngine.model = { id: realModel, name: '' };
 				changed = true;
 			}
 		}
@@ -694,6 +759,21 @@ export const up = (db: DatabaseConnection): void => {
 	db.exec(`ALTER TABLE chat_sessions RENAME COLUMN claude_account_id TO account_id`);
 	db.exec(`ALTER TABLE chat_sessions RENAME COLUMN latest_sdk_session_id TO head_session_id`);
 	db.exec(`ALTER TABLE chat_sessions RENAME COLUMN current_head_message_id TO head_message_id`);
+
+	// Rename model → model_id and add model_name
+	db.exec(`ALTER TABLE chat_sessions RENAME COLUMN model TO model_id`);
+	db.exec(`ALTER TABLE chat_sessions ADD COLUMN model_name TEXT`);
+
+	// Strip compound ID prefix (e.g., 'claude-code:sonnet' → 'sonnet')
+	db.exec(`
+		UPDATE chat_sessions
+		SET model_id = CASE
+			WHEN model_id LIKE '%:%' THEN SUBSTR(model_id, INSTR(model_id, ':') + 1)
+			ELSE model_id
+		END
+		WHERE model_id IS NOT NULL
+	`);
+
 	debug.log('migration', 'Phase 4 complete: chat_sessions columns renamed');
 
 	// ── Phase 5: Enrich chat_sessions with HEAD snapshot, counts, sender ──
@@ -820,6 +900,171 @@ export const up = (db: DatabaseConnection): void => {
 	}
 
 	debug.log('migration', `Phase 5 complete: ${backfilledCount} sessions backfilled (${backfillSessions.length} total)`);
+
+	// ── Phase 6: Create unified engine_providers / engine_accounts tables ──
+	debug.log('migration', 'Phase 6: Creating unified engine_providers / engine_accounts tables...');
+
+	// engine_providers: one row per (engine_type, slug).
+	//   - slug        = machine id (e.g. 'anthropic', 'openai'). Always lowercase.
+	//   - name        = display name (e.g. 'Anthropic', 'OpenAI').
+	//   - npm         = npm package for opencode providers (null for claude-code).
+	//   - api_url     = optional custom API endpoint.
+	//   - options     = provider-specific JSON (extra env vars, flags, etc).
+	//   - is_enabled  = whether the provider shows up to the user.
+	db.exec(`
+		CREATE TABLE IF NOT EXISTS engine_providers (
+			id          INTEGER PRIMARY KEY AUTOINCREMENT,
+			engine_type TEXT NOT NULL,
+			slug        TEXT NOT NULL,
+			name        TEXT NOT NULL,
+			npm         TEXT,
+			api_url     TEXT,
+			options     TEXT NOT NULL DEFAULT '{}',
+			is_enabled  INTEGER NOT NULL DEFAULT 1,
+			created_at  TEXT NOT NULL DEFAULT (datetime('now')),
+			UNIQUE (engine_type, slug)
+		)
+	`);
+	db.exec(`CREATE INDEX IF NOT EXISTS idx_engine_providers_engine_type ON engine_providers(engine_type)`);
+
+	// engine_accounts: credentials under a provider.
+	//   - credential = generic secret (OAuth token for claude-code, API key for opencode).
+	db.exec(`
+		CREATE TABLE IF NOT EXISTS engine_accounts (
+			id          INTEGER PRIMARY KEY AUTOINCREMENT,
+			provider_id INTEGER NOT NULL,
+			name        TEXT NOT NULL,
+			credential  TEXT NOT NULL,
+			is_active   INTEGER NOT NULL DEFAULT 0,
+			created_at  TEXT NOT NULL DEFAULT (datetime('now')),
+			FOREIGN KEY (provider_id) REFERENCES engine_providers(id) ON DELETE CASCADE
+		)
+	`);
+	db.exec(`CREATE INDEX IF NOT EXISTS idx_engine_accounts_provider_id ON engine_accounts(provider_id)`);
+
+	debug.log('migration', 'Phase 6 complete: unified tables created');
+
+	// ── Phase 7: Migrate data into unified tables ──
+	debug.log('migration', 'Phase 7: Migrating data into engine_providers / engine_accounts...');
+
+	// 7a. Seed claude-code / anthropic provider (single row).
+	db.prepare(`
+		INSERT OR IGNORE INTO engine_providers (engine_type, slug, name, npm, api_url, options, is_enabled)
+		VALUES ('claude-code', 'anthropic', 'Anthropic', NULL, NULL, '{}', 1)
+	`).run();
+
+	const anthropicProvider = db.prepare(`
+		SELECT id FROM engine_providers WHERE engine_type = 'claude-code' AND slug = 'anthropic'
+	`).get() as { id: number } | null;
+	const anthropicProviderId = anthropicProvider?.id ?? null;
+
+	// 7b. Migrate claude_accounts → engine_accounts (linked to anthropic).
+	const hasClaudeAccounts = db.prepare(
+		`SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'claude_accounts'`
+	).get() as { name: string } | undefined;
+
+	let migratedClaudeAccounts = 0;
+	if (hasClaudeAccounts && anthropicProviderId !== null) {
+		const claudeRows = db.prepare(
+			`SELECT id, name, oauth_token, is_active, created_at FROM claude_accounts ORDER BY created_at ASC`
+		).all() as { id: number; name: string; oauth_token: string; is_active: number; created_at: string }[];
+
+		const insertClaudeAccount = db.prepare(`
+			INSERT INTO engine_accounts (provider_id, name, credential, is_active, created_at)
+			VALUES (?, ?, ?, ?, ?)
+		`);
+
+		for (const row of claudeRows) {
+			insertClaudeAccount.run(anthropicProviderId, row.name, row.oauth_token, row.is_active, row.created_at);
+			migratedClaudeAccounts++;
+		}
+	}
+
+	// 7c. Migrate opencode_providers → engine_providers.
+	// We need a map from old opencode_providers.id → new engine_providers.id
+	const hasOpenCodeProviders = db.prepare(
+		`SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'opencode_providers'`
+	).get() as { name: string } | undefined;
+
+	const opencodeProviderIdMap = new Map<number, number>();
+	let migratedOpenCodeProviders = 0;
+	if (hasOpenCodeProviders) {
+		const ocProviderRows = db.prepare(
+			`SELECT id, provider_id, name, npm, api_url, options, is_enabled, created_at FROM opencode_providers ORDER BY created_at ASC`
+		).all() as {
+			id: number;
+			provider_id: string;
+			name: string;
+			npm: string;
+			api_url: string | null;
+			options: string;
+			is_enabled: number;
+			created_at: string;
+		}[];
+
+		const insertOcProvider = db.prepare(`
+			INSERT INTO engine_providers (engine_type, slug, name, npm, api_url, options, is_enabled, created_at)
+			VALUES ('opencode', ?, ?, ?, ?, ?, ?, ?)
+		`);
+
+		for (const row of ocProviderRows) {
+			const result = insertOcProvider.run(
+				row.provider_id,
+				row.name,
+				row.npm || null,
+				row.api_url,
+				row.options || '{}',
+				row.is_enabled,
+				row.created_at,
+			) as { lastInsertRowid: number | bigint };
+			const newId = Number(result.lastInsertRowid);
+			opencodeProviderIdMap.set(row.id, newId);
+			migratedOpenCodeProviders++;
+		}
+	}
+
+	// 7d. Migrate opencode_accounts → engine_accounts (with remapped provider_id).
+	const hasOpenCodeAccounts = db.prepare(
+		`SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'opencode_accounts'`
+	).get() as { name: string } | undefined;
+
+	let migratedOpenCodeAccounts = 0;
+	if (hasOpenCodeAccounts) {
+		const ocAccountRows = db.prepare(
+			`SELECT id, provider_id, name, api_key, is_active, created_at FROM opencode_accounts ORDER BY created_at ASC`
+		).all() as {
+			id: number;
+			provider_id: number;
+			name: string;
+			api_key: string;
+			is_active: number;
+			created_at: string;
+		}[];
+
+		const insertOcAccount = db.prepare(`
+			INSERT INTO engine_accounts (provider_id, name, credential, is_active, created_at)
+			VALUES (?, ?, ?, ?, ?)
+		`);
+
+		for (const row of ocAccountRows) {
+			const newProviderId = opencodeProviderIdMap.get(row.provider_id);
+			if (newProviderId === undefined) continue; // orphan — skip
+			insertOcAccount.run(newProviderId, row.name, row.api_key, row.is_active, row.created_at);
+			migratedOpenCodeAccounts++;
+		}
+	}
+
+	debug.log(
+		'migration',
+		`Phase 7 complete: ${migratedClaudeAccounts} claude accounts, ${migratedOpenCodeProviders} opencode providers, ${migratedOpenCodeAccounts} opencode accounts migrated`
+	);
+
+	// ── Phase 8: Drop legacy tables ──
+	debug.log('migration', 'Phase 8: Dropping legacy claude_accounts / opencode_* tables...');
+	db.exec(`DROP TABLE IF EXISTS opencode_accounts`);
+	db.exec(`DROP TABLE IF EXISTS opencode_providers`);
+	db.exec(`DROP TABLE IF EXISTS claude_accounts`);
+	debug.log('migration', 'Phase 8 complete: legacy tables dropped');
 };
 
 export const down = (db: DatabaseConnection): void => {
@@ -848,6 +1093,14 @@ export const down = (db: DatabaseConnection): void => {
 	db.exec(`ALTER TABLE chat_sessions RENAME COLUMN account_id TO claude_account_id`);
 	db.exec(`ALTER TABLE chat_sessions RENAME COLUMN head_session_id TO latest_sdk_session_id`);
 	db.exec(`ALTER TABLE chat_sessions RENAME COLUMN head_message_id TO current_head_message_id`);
+	db.exec(`ALTER TABLE chat_sessions RENAME COLUMN model_id TO model`);
+	db.exec(`ALTER TABLE chat_sessions DROP COLUMN model_name`);
 
 	debug.log('migration', 'Columns reverted (data conversion is irreversible)');
+
+	// Revert Phase 6-8: drop unified tables (data loss — cannot safely rebuild
+	// the original split tables from the merged data).
+	db.exec(`DROP TABLE IF EXISTS engine_accounts`);
+	db.exec(`DROP TABLE IF EXISTS engine_providers`);
+	debug.log('migration', 'Unified engine tables dropped (original split tables are not restored)');
 };

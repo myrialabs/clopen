@@ -12,7 +12,7 @@ import { createRouter } from '$shared/utils/ws-server';
 import { settingsQueries } from '../../database/queries';
 import { initializeEngine } from '../../engine';
 import { CLAUDE_CODE_MODELS, registerModels } from '$shared/constants/engines';
-import type { EngineType } from '$shared/types/engine';
+import type { EngineType } from '$shared/types/unified';
 
 export const crudHandler = createRouter()
 	// Get settings
@@ -82,16 +82,19 @@ export const crudHandler = createRouter()
 			engine: t.Union([t.Literal('claude-code'), t.Literal('opencode')])
 		}),
 		response: t.Array(t.Object({
-			id: t.String(),
-			engine: t.Union([t.Literal('claude-code'), t.Literal('opencode')]),
-			modelId: t.String(),
-			name: t.String(),
-			provider: t.String(),
-			description: t.String(),
-			capabilities: t.Array(t.String()),
-			contextWindow: t.Number(),
-			category: t.Union([t.Literal('latest'), t.Literal('stable'), t.Literal('legacy')]),
-			recommended: t.Optional(t.Boolean())
+			engine: t.Object({
+				type: t.Union([t.Literal('claude-code'), t.Literal('opencode')]),
+				provider: t.String(),
+				model: t.Object({ id: t.String(), name: t.String() }),
+				account: t.Object({ id: t.Number(), name: t.String() }),
+			}),
+			limit: t.Object({ input: t.Number(), output: t.Number() }),
+			modalities: t.Object({
+				input: t.Object({ text: t.Boolean(), image: t.Boolean(), audio: t.Boolean(), video: t.Boolean(), pdf: t.Boolean() }),
+				output: t.Object({ text: t.Boolean(), image: t.Boolean(), audio: t.Boolean(), video: t.Boolean(), pdf: t.Boolean() }),
+			}),
+			capabilities: t.Object({ reasoning: t.Boolean(), tools: t.Boolean(), structuredOutput: t.Boolean() }),
+			cost: t.Object({ input: t.Number(), output: t.Number() }),
 		}))
 	}, async ({ data }) => {
 		const engineType: EngineType = data.engine;

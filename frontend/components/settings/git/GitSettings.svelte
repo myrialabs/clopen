@@ -3,8 +3,7 @@
 	import { settings, updateSettings } from '$frontend/stores/features/settings.svelte';
 	import { modelStore } from '$frontend/stores/features/models.svelte';
 	import { ENGINES } from '$shared/constants/engines';
-	import type { EngineType } from '$shared/types/engine';
-	import type { EngineModel } from '$shared/types/engine';
+	import type { EngineType, EngineModel } from '$shared/types/unified';
 	import type { CommitMessageFormat } from '$shared/types/git';
 	import type { IconName } from '$shared/types/ui/icons';
 
@@ -22,9 +21,9 @@
 
 	// Resolve which model is being used for display
 	const activeEngine = $derived(useCustomModel ? commitGen.engine : settings.selectedEngine);
-	const activeModel = $derived(useCustomModel ? commitGen.model : settings.selectedModel);
+	const activeModelId = $derived(useCustomModel ? commitGen.modelId : settings.selectedModelId);
 	const activeEngineMeta = $derived(ENGINES.find(e => e.type === activeEngine));
-	const activeModelMeta = $derived(modelStore.getById(activeModel));
+	const activeModelMeta = $derived(activeModelId ? modelStore.getById(activeModelId) : undefined);
 
 	// Models for the custom engine, filtered by search
 	const filteredModels = $derived.by(() => {
@@ -32,10 +31,9 @@
 		if (!searchQuery.trim()) return models;
 		const q = searchQuery.toLowerCase();
 		return models.filter(m =>
-			m.name.toLowerCase().includes(q) ||
-			m.modelId.toLowerCase().includes(q) ||
-			m.provider.toLowerCase().includes(q) ||
-			m.capabilities.some(c => c.toLowerCase().includes(q))
+			m.engine.model.name.toLowerCase().includes(q) ||
+			m.engine.model.id.toLowerCase().includes(q) ||
+			m.engine.provider.toLowerCase().includes(q)
 		);
 	});
 
@@ -43,7 +41,7 @@
 	const groupedModels = $derived.by(() => {
 		const groups = new Map<string, EngineModel[]>();
 		for (const model of filteredModels) {
-			const key = model.provider;
+			const key = model.engine.provider;
 			if (!groups.has(key)) groups.set(key, []);
 			groups.get(key)!.push(model);
 		}
@@ -71,7 +69,7 @@
 		const allProviders = [...groupedModels.keys()];
 		let selectedProvider: string | null = null;
 		for (const [provider, models] of groupedModels) {
-			if (models.some(m => m.id === commitGen.model)) {
+			if (models.some(m => m.engine.model.id === commitGen.modelId)) {
 				selectedProvider = provider;
 				break;
 			}
@@ -100,14 +98,13 @@
 
 	async function selectEngine(engineType: EngineType) {
 		const models = modelStore.getByEngine(engineType);
-		const defaultModel = engineType === 'claude-code'
-			? 'claude-code:haiku'
-			: (models[0]?.id || '');
+		const defaultModel = models[0];
 		updateSettings({
 			commitGenerator: {
 				...commitGen,
 				engine: engineType,
-				model: defaultModel
+				modelId: defaultModel?.engine.model.id || '',
+				modelName: defaultModel?.engine.model.name || ''
 			}
 		});
 		searchQuery = '';
@@ -116,7 +113,7 @@
 			const fetched = await modelStore.fetchModels(engineType);
 			if (fetched.length > 0) {
 				updateSettings({
-					commitGenerator: { ...settings.commitGenerator, model: fetched[0].id }
+					commitGenerator: { ...settings.commitGenerator, modelId: fetched[0].engine.model.id, modelName: fetched[0].engine.model.name }
 				});
 			}
 		}
@@ -124,9 +121,9 @@
 		syncAccordionState();
 	}
 
-	function selectModel(modelId: string) {
+	function selectModel(mdl: EngineModel) {
 		updateSettings({
-			commitGenerator: { ...commitGen, model: modelId }
+			commitGenerator: { ...commitGen, modelId: mdl.engine.model.id, modelName: mdl.engine.model.name }
 		});
 	}
 
@@ -164,7 +161,7 @@
 			{/if}
 			<div class="flex-1 min-w-0">
 				<span class="text-sm font-medium text-slate-900 dark:text-slate-100">
-					{activeModelMeta?.name || activeModel}
+					{activeModelMeta?.engine.model.name || activeModelId}
 				</span>
 				{#if !useCustomModel}
 					<span class="text-xs text-slate-500 dark:text-slate-400 ml-1.5">(same as assistant)</span>
@@ -295,7 +292,7 @@
 				{:else}
 					{#each [...groupedModels.entries()] as [provider, providerModels] (provider)}
 						{@const isCollapsed = collapsedProviders.has(provider)}
-						{@const hasSelectedModel = providerModels.some(m => m.id === commitGen.model)}
+						{@const hasSelectedModel = providerModels.some(m => m.engine.model.id === commitGen.modelId)}
 						<div class="border border-slate-200/80 dark:border-slate-700/50 rounded-lg overflow-hidden">
 							<!-- Accordion header -->
 							<button
@@ -324,16 +321,15 @@
 							<!-- Accordion body -->
 							{#if !isCollapsed}
 								<div class="flex flex-col bg-white/40 dark:bg-slate-800/20">
-									{#each providerModels as model (model.id)}
-										{@const isSelected = commitGen.model === model.id}
-										{@const caps = model.capabilities}
-										<button
+									{#each providerModels as model (model.engine.model.id)}
+										{@const isSelected = commitGen.modelId === model.engine.model.id}
+																				<button
 											type="button"
 											class="flex items-start gap-3 px-3 py-2.5 text-left cursor-pointer transition-all duration-150
 												{isSelected
 												? 'bg-violet-500/10 dark:bg-violet-500/12'
 												: 'hover:bg-slate-100/80 dark:hover:bg-slate-700/30'}"
-											onclick={() => selectModel(model.id)}
+											onclick={() => selectModel(model)}
 										>
 											<div class="flex-shrink-0 w-4 h-4 rounded-full border-2 flex items-center justify-center mt-0.5
 												{isSelected ? 'border-violet-600' : 'border-slate-300 dark:border-slate-600'}">
@@ -343,17 +339,8 @@
 											</div>
 											<div class="flex-1 min-w-0">
 												<div class="flex items-center gap-2">
-													<span class="text-sm font-medium text-slate-900 dark:text-slate-100">{model.name}</span>
+													<span class="text-sm font-medium text-slate-900 dark:text-slate-100">{model.engine.model.name}</span>
 												</div>
-												{#if caps.length > 0}
-													<div class="flex flex-wrap gap-1 mt-1.5">
-														{#each caps as cap}
-															<span class="px-1.5 py-0.5 text-2xs rounded bg-slate-100 dark:bg-slate-700/50 text-slate-500 dark:text-slate-400 leading-none">
-																{cap}
-															</span>
-														{/each}
-													</div>
-												{/if}
 											</div>
 										</button>
 									{/each}

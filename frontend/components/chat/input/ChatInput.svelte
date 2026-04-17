@@ -93,24 +93,24 @@
 
 	// Enhanced model info based on user settings
 	const modelInfo = $derived.by(() => {
-		const selectedModel = settings.selectedModel;
-		const model = modelStore.getById(selectedModel);
-		const modelName = model?.name || 'AI Assistant';
+		const selectedModelId = settings.selectedModelId;
+		const model = modelStore.getById(selectedModelId);
+		const modelName = model?.engine.model.name || 'AI Assistant';
 		const engineInfo = getEngineInfo(settings.selectedEngine);
 
 		return {
 			name: modelName,
 			description: engineInfo?.description || 'AI-powered development assistant',
 			icon: 'lucide:brain-circuit' as IconName,
-			model: selectedModel
+			modelId: selectedModelId
 		};
 	});
 
 	// Check if the current model supports file attachments
 	const modelSupportsAttachments = $derived.by(() => {
-		const model = modelStore.getById(chatModelState.model);
+		const model = modelStore.getById(chatModelState.modelId);
 		if (!model) return true; // Default to enabled if model not found
-		return model.capabilities.some(c => c.toLowerCase() === 'attachments');
+		return model.modalities.input.image || model.modalities.input.pdf;
 	});
 
 	// Check if we're in welcome state (no messages)
@@ -127,7 +127,7 @@
 				return 'no-claude-account' as const;
 			}
 		} else {
-			if (!chatModelState.model) {
+			if (!chatModelState.modelId) {
 				return 'no-model' as const;
 			}
 		}
@@ -270,7 +270,7 @@
 		if (!activeStream) return;
 
 		try {
-			const streamState = await ws.http('chat:background-state', {
+			const streamState = await ws.http('chat:stream-state', {
 				chatSessionId: sessionState.currentSession.id
 			});
 

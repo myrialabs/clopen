@@ -1,0 +1,459 @@
+# claude-code :
+
+data langsung :
+
+{
+  "type": "user",
+  "createdAt": "2026-04-14T08:37:40.916Z",
+  "messageId": "56a2b631-8ca5-482f-b75c-45ec75f9a420",
+  "sessionId": null,
+  "parent": {
+    "messageId": null,
+    "sessionId": null,
+    "toolUseId": null
+  },
+  "engine": "claude-code",
+  "model": "sonnet",
+  "account": {
+    "id": 3,
+    "name": null
+  },
+  "sender": {
+    "id": "user-53e25876-455d-4ae6-bbbc-e43769da3914",
+    "name": "Arga Fairuz"
+  },
+  "content": [
+    {
+      "type": "text",
+      "text": "1+1="
+    }
+  ],
+  "synthetic": false
+}
+
+{
+  "type": "assistant",
+  "createdAt": "2026-04-14T08:37:43.021Z",
+  "messageId": "20946ee8-51cd-4f36-b73d-a5be109dffb2",
+  "sessionId": "7f3046eb-d460-47f8-8a64-bb96e089da10",
+  "parent": {
+    "messageId": "56a2b631-8ca5-482f-b75c-45ec75f9a420",
+    "sessionId": null,
+    "toolUseId": null
+  },
+  "engine": "claude-code",
+  "model": "claude-sonnet-4-6",
+  "content": [
+    {
+      "type": "text",
+      "text": "2"
+    }
+  ],
+  "stopReason": null,
+  "usage": {
+    "inputTokens": 3,
+    "outputTokens": 1,
+    "cacheCreationInputTokens": 5697,
+    "cacheReadInputTokens": 11812
+  }
+}
+
+{
+  "type": "user",
+  "createdAt": "2026-04-14T08:37:46.764Z",
+  "messageId": "39c7ae67-24bf-47a6-97bd-66f8f13ed4a1",
+  "sessionId": null,
+  "parent": {
+    "messageId": "20946ee8-51cd-4f36-b73d-a5be109dffb2",
+    "sessionId": "7f3046eb-d460-47f8-8a64-bb96e089da10",
+    "toolUseId": null
+  },
+  "engine": "claude-code",
+  "model": "sonnet",
+  "account": {
+    "id": 3,
+    "name": null
+  },
+  "sender": {
+    "id": "user-53e25876-455d-4ae6-bbbc-e43769da3914",
+    "name": "Arga Fairuz"
+  },
+  "content": [
+    {
+      "type": "text",
+      "text": "2+2="
+    }
+  ],
+  "synthetic": false
+}
+
+{
+  "type": "assistant",
+  "createdAt": "2026-04-14T08:37:49.029Z",
+  "messageId": "6cd376f4-a432-4e90-9899-2454bd8600eb",
+  "sessionId": "bd0a4bcd-ca64-4816-8e3c-132a41e7be29",
+  "parent": {
+    "messageId": "39c7ae67-24bf-47a6-97bd-66f8f13ed4a1",
+    "sessionId": null,
+    "toolUseId": null
+  },
+  "engine": "claude-code",
+  "model": "claude-sonnet-4-6",
+  "content": [
+    {
+      "type": "text",
+      "text": "4"
+    }
+  ],
+  "stopReason": null,
+  "usage": {
+    "inputTokens": 3,
+    "outputTokens": 5,
+    "cacheCreationInputTokens": 13,
+    "cacheReadInputTokens": 17509
+  }
+}
+
+data restore :
+
+{
+  "type": "user",
+  "createdAt": "2026-04-14T08:37:40.916Z",
+  "messageId": "56a2b631-8ca5-482f-b75c-45ec75f9a420",
+  "sessionId": null,
+  "parent": {
+    "messageId": null,
+    "sessionId": null,
+    "toolUseId": null
+  },
+  "engine": "claude-code",
+  "model": "sonnet",
+  "account": {
+    "id": 3,
+    "name": null
+  },
+  "sender": {
+    "id": "user-53e25876-455d-4ae6-bbbc-e43769da3914",
+    "name": "Arga Fairuz"
+  },
+  "content": [
+    {
+      "type": "text",
+      "text": "1+1="
+    }
+  ],
+  "synthetic": false
+}
+
+{
+  "type": "assistant",
+  "createdAt": "2026-04-14T08:37:43.021Z",
+  "messageId": "20946ee8-51cd-4f36-b73d-a5be109dffb2",
+  "sessionId": "7f3046eb-d460-47f8-8a64-bb96e089da10",
+  "parent": {
+    "messageId": "56a2b631-8ca5-482f-b75c-45ec75f9a420",
+    "sessionId": null,
+    "toolUseId": null
+  },
+  "engine": "claude-code",
+  "model": "claude-sonnet-4-6",
+  "content": [
+    {
+      "type": "text",
+      "text": "2"
+    }
+  ],
+  "stopReason": "end_turn",
+  "usage": {
+    "inputTokens": 3,
+    "outputTokens": 1,
+    "cacheCreationInputTokens": 5697,
+    "cacheReadInputTokens": 11812
+  }
+}
+
+{
+  "type": "user",
+  "createdAt": "2026-04-14T08:37:46.764Z",
+  "messageId": "39c7ae67-24bf-47a6-97bd-66f8f13ed4a1",
+  "sessionId": null,
+  "parent": {
+    "messageId": "20946ee8-51cd-4f36-b73d-a5be109dffb2",
+    "sessionId": "7f3046eb-d460-47f8-8a64-bb96e089da10",
+    "toolUseId": null
+  },
+  "engine": "claude-code",
+  "model": "sonnet",
+  "account": {
+    "id": 3,
+    "name": null
+  },
+  "sender": {
+    "id": "user-53e25876-455d-4ae6-bbbc-e43769da3914",
+    "name": "Arga Fairuz"
+  },
+  "content": [
+    {
+      "type": "text",
+      "text": "2+2="
+    }
+  ],
+  "synthetic": false
+}
+
+{
+  "type": "assistant",
+  "createdAt": "2026-04-14T08:37:49.029Z",
+  "messageId": "6cd376f4-a432-4e90-9899-2454bd8600eb",
+  "sessionId": "bd0a4bcd-ca64-4816-8e3c-132a41e7be29",
+  "parent": {
+    "messageId": "39c7ae67-24bf-47a6-97bd-66f8f13ed4a1",
+    "sessionId": null,
+    "toolUseId": null
+  },
+  "engine": "claude-code",
+  "model": "claude-sonnet-4-6",
+  "content": [
+    {
+      "type": "text",
+      "text": "4"
+    }
+  ],
+  "stopReason": "end_turn",
+  "usage": {
+    "inputTokens": 3,
+    "outputTokens": 5,
+    "cacheCreationInputTokens": 13,
+    "cacheReadInputTokens": 17509
+  }
+}
+
+# opencode :
+
+data langsung :
+
+{
+  "type": "user",
+  "createdAt": "2026-04-14T08:41:09.815Z",
+  "messageId": "89d2baaa-539d-401a-843c-1984d138518d",
+  "sessionId": null,
+  "parent": {
+    "messageId": null,
+    "sessionId": null,
+    "toolUseId": null
+  },
+  "engine": "opencode",
+  "model": "ollama-cloud/ministral-3:14b",
+  "account": {
+    "id": 3,
+    "name": null
+  },
+  "sender": {
+    "id": "user-53e25876-455d-4ae6-bbbc-e43769da3914",
+    "name": "Arga Fairuz"
+  },
+  "content": [
+    {
+      "type": "text",
+      "text": "1+1="
+    }
+  ],
+  "synthetic": false
+}
+
+{
+  "type": "assistant",
+  "createdAt": "2026-04-14T08:41:11.482Z",
+  "messageId": "6a4ef16a-8c0d-41e3-9efd-19fca9dd1fb5",
+  "sessionId": "ses_274d93036ffenA4K5farcfSgx7",
+  "parent": {
+    "messageId": "89d2baaa-539d-401a-843c-1984d138518d",
+    "sessionId": null,
+    "toolUseId": null
+  },
+  "engine": "opencode",
+  "model": "ollama-cloud/ministral-3:14b",
+  "content": [
+    {
+      "type": "text",
+      "text": "2"
+    }
+  ],
+  "stopReason": "end_turn",
+  "usage": {
+    "inputTokens": 19178,
+    "outputTokens": 2,
+    "cacheCreationInputTokens": 0,
+    "cacheReadInputTokens": 0
+  }
+}
+
+{
+  "type": "user",
+  "createdAt": "2026-04-14T08:41:20.079Z",
+  "messageId": "aaaabbf4-e604-4c26-affb-57b1e9611ce8",
+  "sessionId": null,
+  "parent": {
+    "messageId": "6a4ef16a-8c0d-41e3-9efd-19fca9dd1fb5",
+    "sessionId": "ses_274d93036ffenA4K5farcfSgx7",
+    "toolUseId": null
+  },
+  "engine": "opencode",
+  "model": "ollama-cloud/ministral-3:14b",
+  "account": {
+    "id": null,
+    "name": null
+  },
+  "sender": {
+    "id": "user-53e25876-455d-4ae6-bbbc-e43769da3914",
+    "name": "Arga Fairuz"
+  },
+  "content": [
+    {
+      "type": "text",
+      "text": "2+2="
+    }
+  ],
+  "synthetic": false
+}
+
+{
+  "type": "assistant",
+  "createdAt": "2026-04-14T08:41:21.838Z",
+  "messageId": "1ad95e92-173e-4833-be3e-6da355e10d61",
+  "sessionId": "ses_274d90821ffeX8rxhBrUwu7aGK",
+  "parent": {
+    "messageId": "aaaabbf4-e604-4c26-affb-57b1e9611ce8",
+    "sessionId": null,
+    "toolUseId": null
+  },
+  "engine": "opencode",
+  "model": "ollama-cloud/ministral-3:14b",
+  "content": [
+    {
+      "type": "text",
+      "text": "4"
+    }
+  ],
+  "stopReason": "end_turn",
+  "usage": {
+    "inputTokens": 19186,
+    "outputTokens": 2,
+    "cacheCreationInputTokens": 0,
+    "cacheReadInputTokens": 0
+  }
+}
+
+data restore :
+
+{
+  "type": "user",
+  "createdAt": "2026-04-14T08:41:09.815Z",
+  "messageId": "89d2baaa-539d-401a-843c-1984d138518d",
+  "sessionId": null,
+  "parent": {
+    "messageId": null,
+    "sessionId": null,
+    "toolUseId": null
+  },
+  "engine": "opencode",
+  "model": "ollama-cloud/ministral-3:14b",
+  "account": {
+    "id": 3,
+    "name": null
+  },
+  "sender": {
+    "id": "user-53e25876-455d-4ae6-bbbc-e43769da3914",
+    "name": "Arga Fairuz"
+  },
+  "content": [
+    {
+      "type": "text",
+      "text": "1+1="
+    }
+  ],
+  "synthetic": false
+}
+
+{
+  "type": "assistant",
+  "createdAt": "2026-04-14T08:41:11.482Z",
+  "messageId": "6a4ef16a-8c0d-41e3-9efd-19fca9dd1fb5",
+  "sessionId": "ses_274d93036ffenA4K5farcfSgx7",
+  "parent": {
+    "messageId": "89d2baaa-539d-401a-843c-1984d138518d",
+    "sessionId": null,
+    "toolUseId": null
+  },
+  "engine": "opencode",
+  "model": "ollama-cloud/ministral-3:14b",
+  "content": [
+    {
+      "type": "text",
+      "text": "2"
+    }
+  ],
+  "stopReason": "end_turn",
+  "usage": {
+    "inputTokens": 19178,
+    "outputTokens": 2,
+    "cacheCreationInputTokens": 0,
+    "cacheReadInputTokens": 0
+  }
+}
+
+{
+  "type": "user",
+  "createdAt": "2026-04-14T08:41:20.079Z",
+  "messageId": "aaaabbf4-e604-4c26-affb-57b1e9611ce8",
+  "sessionId": null,
+  "parent": {
+    "messageId": "6a4ef16a-8c0d-41e3-9efd-19fca9dd1fb5",
+    "sessionId": "ses_274d93036ffenA4K5farcfSgx7",
+    "toolUseId": null
+  },
+  "engine": "opencode",
+  "model": "ollama-cloud/ministral-3:14b",
+  "account": {
+    "id": null,
+    "name": null
+  },
+  "sender": {
+    "id": "user-53e25876-455d-4ae6-bbbc-e43769da3914",
+    "name": "Arga Fairuz"
+  },
+  "content": [
+    {
+      "type": "text",
+      "text": "2+2="
+    }
+  ],
+  "synthetic": false
+}
+
+{
+  "type": "assistant",
+  "createdAt": "2026-04-14T08:41:21.838Z",
+  "messageId": "1ad95e92-173e-4833-be3e-6da355e10d61",
+  "sessionId": "ses_274d90821ffeX8rxhBrUwu7aGK",
+  "parent": {
+    "messageId": "aaaabbf4-e604-4c26-affb-57b1e9611ce8",
+    "sessionId": null,
+    "toolUseId": null
+  },
+  "engine": "opencode",
+  "model": "ollama-cloud/ministral-3:14b",
+  "content": [
+    {
+      "type": "text",
+      "text": "4"
+    }
+  ],
+  "stopReason": "end_turn",
+  "usage": {
+    "inputTokens": 19186,
+    "outputTokens": 2,
+    "cacheCreationInputTokens": 0,
+    "cacheReadInputTokens": 0
+  }
+}

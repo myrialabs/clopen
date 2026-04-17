@@ -15,6 +15,8 @@ import type {
 	ReasoningMessage,
 	CompactBoundaryMessage,
 	UnifiedMessage,
+	MessageEngine,
+	MessageSender,
 } from './message';
 
 // ============================================================
@@ -51,6 +53,7 @@ export interface SuccessResultEvent {
 	numTurns: number;
 	totalCostUsd: number;
 	usage: TokenUsage;
+	stopReason: string | null;
 }
 
 export interface ErrorResultEvent {
@@ -146,13 +149,9 @@ export interface MessageTransportData {
 
 export interface StreamRequest {
 	projectPath: string;
-	projectId?: string;
-	prompt: string;
-	chatSessionId?: string;
-	model?: string;
-	engine?: string;
-	temperature?: number;
-	senderId?: string;
-	senderName?: string;
-	forkSession?: boolean;
+	projectId: string;
+	chatSessionId: string;
+	prompt: UserMessage;
+	engine: MessageEngine;
+	sender: MessageSender;
 }

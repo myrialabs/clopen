@@ -127,7 +127,9 @@ export const accountsHandler = createRouter()
 			}))
 		})
 	}, async () => {
-		const accounts = engineQueries.getClaudeAccounts();
+		const provider = engineQueries.getProviderBySlug('claude-code', 'anthropic');
+		if (!provider) return { accounts: [] };
+		const accounts = engineQueries.getAccountsByProvider(provider.id);
 		return {
 			accounts: accounts.map(a => ({
 				id: a.id,
@@ -142,7 +144,7 @@ export const accountsHandler = createRouter()
 		data: t.Object({ id: t.Number() }),
 		response: t.Object({ success: t.Boolean() })
 	}, async ({ data }) => {
-		engineQueries.switchClaudeAccount(data.id);
+		engineQueries.switchAccount(data.id);
 		resetEnvironment();
 		return { success: true };
 	})
@@ -151,8 +153,8 @@ export const accountsHandler = createRouter()
 		data: t.Object({ id: t.Number() }),
 		response: t.Object({ success: t.Boolean() })
 	}, async ({ data }) => {
-		const active = engineQueries.getActiveClaudeAccount();
-		engineQueries.deleteClaudeAccount(data.id);
+		const active = engineQueries.getActiveAccountForEngine('claude-code');
+		engineQueries.deleteAccount(data.id);
 		if (active?.id === data.id) resetEnvironment();
 		return { success: true };
 	})
@@ -161,7 +163,7 @@ export const accountsHandler = createRouter()
 		data: t.Object({ id: t.Number(), name: t.String({ minLength: 1 }) }),
 		response: t.Object({ success: t.Boolean() })
 	}, async ({ data }) => {
-		engineQueries.renameClaudeAccount(data.id, data.name);
+		engineQueries.renameAccount(data.id, data.name);
 		return { success: true };
 	})
 
@@ -258,7 +260,16 @@ export const accountsHandler = createRouter()
 					entry.phase = 'done';
 					debug.log('engine', `[${setupId}] Token captured`);
 
-					const account = engineQueries.createClaudeAccount(entry.accountName, token);
+					const provider = engineQueries.getProviderBySlug('claude-code', 'anthropic');
+					if (!provider) {
+						ws.emit.user(userId, 'engine:claude-account-setup-error', {
+							setupId,
+							message: 'Anthropic provider not found in DB'
+						});
+						cleanupSetup(setupId);
+						return;
+					}
+					const account = engineQueries.createAccount(provider.id, entry.accountName, token);
 					resetEnvironment();
 
 					ws.emit.user(userId, 'engine:claude-account-setup-complete', {
@@ -303,7 +314,16 @@ export const accountsHandler = createRouter()
 				const token = extractOAuthToken(clean);
 				if (token) {
 					debug.log('engine', `[${setupId}] Token found in final buffer`);
-					const account = engineQueries.createClaudeAccount(entry.accountName, token);
+					const provider = engineQueries.getProviderBySlug('claude-code', 'anthropic');
+					if (!provider) {
+						ws.emit.user(userId, 'engine:claude-account-setup-error', {
+							setupId,
+							message: 'Anthropic provider not found in DB'
+						});
+						cleanupSetup(setupId);
+						return;
+					}
+					const account = engineQueries.createAccount(provider.id, entry.accountName, token);
 					resetEnvironment();
 					ws.emit.user(userId, 'engine:claude-account-setup-complete', {
 						setupId,

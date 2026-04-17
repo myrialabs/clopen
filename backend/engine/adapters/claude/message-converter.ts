@@ -208,10 +208,7 @@ export function convertAssistantMessage(msg: SDKAssistantMessage): EngineOutput[
 			messageId: crypto.randomUUID(),
 			sessionId,
 			parent: { messageId: null, sessionId: null, toolUseId: null },
-			engine: 'claude-code',
-			model: betaMessage.model || null,
-			account: { id: null, name: null },
-			sender: { id: null, name: null },
+			engine: { type: 'claude-code', provider: 'anthropic', model: { id: betaMessage.model || '', name: '' }, account: { id: 0, name: '' } },
 			text: reasoningText,
 		};
 		outputs.push(reasoning);
@@ -229,10 +226,7 @@ export function convertAssistantMessage(msg: SDKAssistantMessage): EngineOutput[
 		messageId: msg.uuid || crypto.randomUUID(),
 		sessionId,
 		parent: { messageId: null, sessionId: null, toolUseId: msg.parent_tool_use_id || null },
-		engine: 'claude-code',
-		model: betaMessage.model || null,
-		account: { id: null, name: null },
-		sender: { id: null, name: null },
+		engine: { type: 'claude-code', provider: 'anthropic', model: { id: betaMessage.model || '', name: '' }, account: { id: 0, name: '' } },
 		content: assistantContent,
 		stopReason: mapStopReason(betaMessage.stop_reason),
 		usage: mapUsage(betaMessage.usage),
@@ -253,10 +247,8 @@ export function convertUserMessage(msg: SDKUserMessage): UserMessage {
 		messageId: msg.uuid || crypto.randomUUID(),
 		sessionId: msg.session_id || null,
 		parent: { messageId: null, sessionId: null, toolUseId: msg.parent_tool_use_id || null },
-		engine: 'claude-code',
-		model: null,
-		account: { id: null, name: null },
-		sender: { id: null, name: null },
+		engine: { type: 'claude-code', provider: 'anthropic', model: { id: '', name: '' }, account: { id: 0, name: '' } },
+		sender: { id: '', name: '' },
 		content,
 		synthetic: true, // SDK-generated tool_result messages
 	};
@@ -333,6 +325,7 @@ export function convertResultSuccess(msg: SDKResultSuccess): SuccessResultEvent 
 		numTurns: msg.num_turns || 0,
 		totalCostUsd: msg.total_cost_usd || 0,
 		usage: mapRawUsage(msg.usage as unknown as Record<string, number>),
+		stopReason: msg.stop_reason || null,
 	};
 }
 
@@ -371,10 +364,7 @@ export function convertCompactBoundary(msg: SDKCompactBoundaryMessage): CompactB
 		messageId: msg.uuid || crypto.randomUUID(),
 		sessionId: msg.session_id,
 		parent: { messageId: null, sessionId: null, toolUseId: null },
-		engine: 'claude-code',
-		model: null,
-		account: { id: null, name: null },
-		sender: { id: null, name: null },
+		engine: { type: 'claude-code', provider: 'anthropic', model: { id: '', name: '' }, account: { id: 0, name: '' } },
 		trigger: msg.compact_metadata.trigger,
 		preTokens: msg.compact_metadata.pre_tokens || 0,
 	};

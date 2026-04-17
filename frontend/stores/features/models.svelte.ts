@@ -7,7 +7,7 @@
  */
 
 import { CLAUDE_CODE_MODELS, registerModels } from '$shared/constants/engines';
-import type { EngineModel, EngineType } from '$shared/types/engine';
+import type { EngineModel, EngineType } from '$shared/types/unified';
 import ws from '$frontend/utils/ws';
 
 import { debug } from '$shared/utils/logger';
@@ -23,12 +23,12 @@ export const modelStore = {
 
 	/** Get models filtered by engine */
 	getByEngine(engine: EngineType): EngineModel[] {
-		return models.filter(m => m.engine === engine);
+		return models.filter(m => m.engine.type === engine);
 	},
 
-	/** Get a model by its compound ID */
+	/** Get a model by its ID */
 	getById(modelId: string): EngineModel | undefined {
-		return models.find(m => m.id === modelId);
+		return models.find(m => m.engine.model.id === modelId);
 	},
 
 	/**
@@ -38,7 +38,7 @@ export const modelStore = {
 	async fetchModels(engine: EngineType): Promise<EngineModel[]> {
 		// Skip if already fetched for this engine (even if 0 models)
 		if (fetchedEngines.has(engine)) {
-			return models.filter(m => m.engine === engine);
+			return models.filter(m => m.engine.type === engine);
 		}
 
 		return this._doFetch(engine);
@@ -62,7 +62,7 @@ export const modelStore = {
 			registerModels(engine, engineModels);
 
 			// Update local reactive state: replace models for this engine
-			const otherModels = models.filter(m => m.engine !== engine);
+			const otherModels = models.filter(m => m.engine.type !== engine);
 			models = [...otherModels, ...engineModels];
 			fetchedEngines = new Set([...fetchedEngines, engine]);
 

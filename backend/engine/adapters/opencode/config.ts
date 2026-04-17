@@ -6,7 +6,7 @@
  * - Provides restart logic for the OpenCode server
  */
 
-import { settingsQueries, opencodeProviderQueries } from '../../../database/queries';
+import { settingsQueries, engineQueries } from '../../../database/queries';
 import { debug } from '$shared/utils/logger';
 
 const MODELS_DEV_URL = 'https://models.dev/api.json';
@@ -116,15 +116,15 @@ export interface OpenCodeProviderConfigResult {
  * hardcoded "apiKey" in the config JSON.
  */
 export function generateOpenCodeProviderConfig(): OpenCodeProviderConfigResult {
-	const providers = opencodeProviderQueries.getEnabledProviders();
+	const providers = engineQueries.getEnabledProviders('opencode');
 	const enabledProviders: string[] = ['opencode'];
 	const envVars: Record<string, string> = {};
 
 	for (const provider of providers) {
-		const activeAccount = opencodeProviderQueries.getActiveAccount(provider.id);
+		const activeAccount = engineQueries.getActiveAccount(provider.id);
 		if (!activeAccount) continue;
 
-		enabledProviders.push(provider.provider_id);
+		enabledProviders.push(provider.slug);
 
 		// Parse stored options which may contain additional env var values
 		let options: Record<string, string> = {};
@@ -136,12 +136,12 @@ export function generateOpenCodeProviderConfig(): OpenCodeProviderConfigResult {
 
 		// Look up the catalog entry to get the actual env var names
 		const cached = getCachedModelsDevCatalog();
-		const catalogEntry = cached?.catalog.find(c => c.id === provider.provider_id);
+		const catalogEntry = cached?.catalog.find(c => c.id === provider.slug);
 		const envNames = catalogEntry?.env || [];
 
-		// First env var gets the active account's API key
+		// First env var gets the active account's credential
 		if (envNames.length > 0) {
-			envVars[envNames[0]] = activeAccount.api_key;
+			envVars[envNames[0]] = activeAccount.credential;
 		}
 
 		// Additional env vars from options (stored by their env var name)

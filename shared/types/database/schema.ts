@@ -2,7 +2,7 @@
  * Database-specific types
  */
 
-import type { EngineType } from '../engine';
+import type { EngineType } from '../unified';
 
 // Core database entities moved from core folder
 export interface Project {
@@ -23,7 +23,9 @@ export interface ChatSession {
 	// ── Session preferences (user-selected, persist across HEAD changes) ──
 	title?: string; // Conversation title — auto-set from first user message, editable
 	engine?: EngineType; // AI engine used for this session
-	model?: string; // Compound model ID (e.g., 'claude-code:haiku', 'opencode:gpt-5.2')
+	provider?: string; // Provider slug (e.g., 'anthropic', 'openai', 'opencode')
+	model_id?: string; // Model identifier (e.g., 'sonnet', 'gpt-5.2')
+	model_name?: string; // Display name (e.g., 'Sonnet 4.6', 'GPT-5.2')
 	account_id?: number; // Engine account used for this session
 	account_name?: string; // Display name of the selected account
 

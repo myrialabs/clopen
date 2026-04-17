@@ -1,38 +1,587 @@
+# claude-code :
+
+data langsung :
+
 {
-  "type": "assistant",
-  "id": "3d3fa658-78dc-47ce-a41e-88e72ce7538c",
-  "sessionId": "ses_27d8baf51ffe1aoLS2X00ktfX4",
-  "createdAt": "2026-04-12T16:09:25.830Z",
-  "parentMessageId": "3f087f47-98a7-47ce-a3b5-d47d1943bd99",
-  "sender": {
-    "id": "user-b45fd8aa-aa33-453b-8bad-d9a4ed49c437",
-    "name": "Admin"
+  "type": "user",
+  "createdAt": "2026-04-15T17:53:01.200Z",
+  "messageId": "0c851b18-fc37-4cac-b48a-58e276e40920",
+  "sessionId": null,
+  "parent": {
+    "messageId": null,
+    "sessionId": null,
+    "toolUseId": null
   },
-  "model": "ollama-cloud/glm-5.1",
-  "engine": "opencode",
-  "parentToolUseId": null,
+  "engine": {
+    "type": "claude-code",
+    "provider": "",
+    "model": {
+      "id": "claude-haiku-4-5",
+      "name": "Claude Haiku 4.5"
+    },
+    "account": {
+      "id": 3,
+      "name": "Work"
+    }
+  },
+  "sender": {
+    "id": "user-53e25876-455d-4ae6-bbbc-e43769da3914",
+    "name": "Arga Fairuz"
+  },
   "content": [
     {
-      "type": "tool_use",
-      "id": "call_8o8ma1ex",
-      "name": "Agent",
-      "input": {
-        "description": "Explore calc-pro project",
-        "prompt": "Explore this project thoroughly and report back what this project is about. Look at:\n1. The root directory structure\n2. Package.json or any config files (Cargo.toml, pyproject.toml, etc.)\n3. README or any documentation files\n4. Main source code files to understand what the app does\n\nThe project is at /Users/platkadigital/Codes/Experiment/calc-pro\n\nProvide a comprehensive summary including:\n- What kind of project this is (framework, language, etc.)\n- What the app does (based on code and docs)\n- Key technologies and dependencies\n- Project structure overview\n- Current state (is it complete, in progress, etc.)",
-        "subagent_type": "explore"
-      },
-      "result": {...},
-      "subActivities": [
-        {
-          "type": "tool_use",
-          "toolName": "Read",
-          "toolInput": {
-            "filePath": "/Users/platkadigital/Codes/Experiment/calc-pro"
-          },
-          "toolResult": {
-            "type": "tool_result",
-            "toolUseId": "call_zxvm181f",
-            "content": "<path>/Users/platkadigital/Codes/Experiment/calc-pro</path>\n<type>directory</type>\n<entries>\n.git/\n.gitignore\n.nuxt/\napp.vue\nassets/\ncomponents/\nnode_modules/\nnuxt.config.ts\npackage-lock.json\npackage.json\npages/\nsveltekit/\n\n(12 entries)\n</entries>",
-            "isError": false
-          }
-        },
+      "type": "text",
+      "text": "1+1="
+    }
+  ],
+  "synthetic": false
+}
+
+{
+  "type": "assistant",
+  "createdAt": "2026-04-15T17:53:04.121Z",
+  "messageId": "3e0fafc7-2d67-4319-86b4-165285d602b6",
+  "sessionId": "038173a4-23ef-4f0b-908c-19d6574494b8",
+  "parent": {
+    "messageId": "0c851b18-fc37-4cac-b48a-58e276e40920",
+    "sessionId": null,
+    "toolUseId": null
+  },
+  "engine": {
+    "type": "claude-code",
+    "provider": "anthropic",
+    "model": {
+      "id": "claude-haiku-4-5",
+      "name": ""
+    },
+    "account": {
+      "id": 3,
+      "name": "Work"
+    }
+  },
+  "content": [
+    {
+      "type": "text",
+      "text": "2"
+    }
+  ],
+  "stopReason": "end_turn",
+  "usage": {
+    "inputTokens": 3,
+    "outputTokens": 1,
+    "cacheCreationInputTokens": 5697,
+    "cacheReadInputTokens": 11812
+  }
+}
+
+{
+  "type": "user",
+  "createdAt": "2026-04-15T17:53:12.361Z",
+  "messageId": "ac090d15-c0c4-42f3-ace6-bdb08749d0a2",
+  "sessionId": null,
+  "parent": {
+    "messageId": "3e0fafc7-2d67-4319-86b4-165285d602b6",
+    "sessionId": "038173a4-23ef-4f0b-908c-19d6574494b8",
+    "toolUseId": null
+  },
+  "engine": {
+    "type": "claude-code",
+    "provider": "",
+    "model": {
+      "id": "claude-haiku-4-5",
+      "name": "Claude Haiku 4.5"
+    },
+    "account": {
+      "id": 3,
+      "name": "Work"
+    }
+  },
+  "sender": {
+    "id": "user-53e25876-455d-4ae6-bbbc-e43769da3914",
+    "name": "Arga Fairuz"
+  },
+  "content": [
+    {
+      "type": "text",
+      "text": "2+2="
+    }
+  ],
+  "synthetic": false
+}
+
+{
+  "type": "assistant",
+  "createdAt": "2026-04-15T17:53:14.708Z",
+  "messageId": "85b9fec4-c0d5-49f6-8512-b26b7eece1c2",
+  "sessionId": "0c919b1c-cf11-4a45-ac0d-5896bd25eb7b",
+  "parent": {
+    "messageId": "ac090d15-c0c4-42f3-ace6-bdb08749d0a2",
+    "sessionId": null,
+    "toolUseId": null
+  },
+  "engine": {
+    "type": "claude-code",
+    "provider": "anthropic",
+    "model": {
+      "id": "claude-haiku-4-5",
+      "name": ""
+    },
+    "account": {
+      "id": 3,
+      "name": "Work"
+    }
+  },
+  "content": [
+    {
+      "type": "text",
+      "text": "4"
+    }
+  ],
+  "stopReason": "end_turn",
+  "usage": {
+    "inputTokens": 3,
+    "outputTokens": 5,
+    "cacheCreationInputTokens": 13,
+    "cacheReadInputTokens": 17509
+  }
+}
+
+data restore :
+
+{
+  "type": "user",
+  "createdAt": "2026-04-15T17:53:01.200Z",
+  "messageId": "0c851b18-fc37-4cac-b48a-58e276e40920",
+  "sessionId": null,
+  "parent": {
+    "messageId": null,
+    "sessionId": null,
+    "toolUseId": null
+  },
+  "engine": {
+    "type": "claude-code",
+    "provider": "",
+    "model": {
+      "id": "claude-haiku-4-5",
+      "name": "Claude Haiku 4.5"
+    },
+    "account": {
+      "id": 3,
+      "name": "Work"
+    }
+  },
+  "sender": {
+    "id": "user-53e25876-455d-4ae6-bbbc-e43769da3914",
+    "name": "Arga Fairuz"
+  },
+  "content": [
+    {
+      "type": "text",
+      "text": "1+1="
+    }
+  ],
+  "synthetic": false
+}
+
+{
+  "type": "assistant",
+  "createdAt": "2026-04-15T17:53:04.121Z",
+  "messageId": "3e0fafc7-2d67-4319-86b4-165285d602b6",
+  "sessionId": "038173a4-23ef-4f0b-908c-19d6574494b8",
+  "parent": {
+    "messageId": "0c851b18-fc37-4cac-b48a-58e276e40920",
+    "sessionId": null,
+    "toolUseId": null
+  },
+  "engine": {
+    "type": "claude-code",
+    "provider": "anthropic",
+    "model": {
+      "id": "claude-haiku-4-5",
+      "name": ""
+    },
+    "account": {
+      "id": 3,
+      "name": "Work"
+    }
+  },
+  "content": [
+    {
+      "type": "text",
+      "text": "2"
+    }
+  ],
+  "stopReason": "end_turn",
+  "usage": {
+    "inputTokens": 3,
+    "outputTokens": 1,
+    "cacheCreationInputTokens": 5697,
+    "cacheReadInputTokens": 11812
+  }
+}
+
+{
+  "type": "user",
+  "createdAt": "2026-04-15T17:53:12.361Z",
+  "messageId": "ac090d15-c0c4-42f3-ace6-bdb08749d0a2",
+  "sessionId": null,
+  "parent": {
+    "messageId": "3e0fafc7-2d67-4319-86b4-165285d602b6",
+    "sessionId": "038173a4-23ef-4f0b-908c-19d6574494b8",
+    "toolUseId": null
+  },
+  "engine": {
+    "type": "claude-code",
+    "provider": "",
+    "model": {
+      "id": "claude-haiku-4-5",
+      "name": "Claude Haiku 4.5"
+    },
+    "account": {
+      "id": 3,
+      "name": "Work"
+    }
+  },
+  "sender": {
+    "id": "user-53e25876-455d-4ae6-bbbc-e43769da3914",
+    "name": "Arga Fairuz"
+  },
+  "content": [
+    {
+      "type": "text",
+      "text": "2+2="
+    }
+  ],
+  "synthetic": false
+}
+
+{
+  "type": "assistant",
+  "createdAt": "2026-04-15T17:53:14.708Z",
+  "messageId": "85b9fec4-c0d5-49f6-8512-b26b7eece1c2",
+  "sessionId": "0c919b1c-cf11-4a45-ac0d-5896bd25eb7b",
+  "parent": {
+    "messageId": "ac090d15-c0c4-42f3-ace6-bdb08749d0a2",
+    "sessionId": null,
+    "toolUseId": null
+  },
+  "engine": {
+    "type": "claude-code",
+    "provider": "anthropic",
+    "model": {
+      "id": "claude-haiku-4-5",
+      "name": ""
+    },
+    "account": {
+      "id": 3,
+      "name": "Work"
+    }
+  },
+  "content": [
+    {
+      "type": "text",
+      "text": "4"
+    }
+  ],
+  "stopReason": "end_turn",
+  "usage": {
+    "inputTokens": 3,
+    "outputTokens": 5,
+    "cacheCreationInputTokens": 13,
+    "cacheReadInputTokens": 17509
+  }
+}
+
+# opencode :
+
+data langsung :
+
+{
+  "type": "user",
+  "createdAt": "2026-04-15T17:56:24.427Z",
+  "messageId": "a78f44cd-649a-4a70-930d-0d6b5f6fa391",
+  "sessionId": null,
+  "parent": {
+    "messageId": null,
+    "sessionId": null,
+    "toolUseId": null
+  },
+  "engine": {
+    "type": "opencode",
+    "provider": "",
+    "model": {
+      "id": "qwen3-235b-a22b",
+      "name": "Qwen3 235B-A22B"
+    },
+    "account": {
+      "id": 9,
+      "name": "arga.fairuz.7"
+    }
+  },
+  "sender": {
+    "id": "user-53e25876-455d-4ae6-bbbc-e43769da3914",
+    "name": "Arga Fairuz"
+  },
+  "content": [
+    {
+      "type": "text",
+      "text": "1+1="
+    }
+  ],
+  "synthetic": false
+}
+
+{
+  "type": "assistant",
+  "createdAt": "2026-04-15T17:56:25.939Z",
+  "messageId": "efe5e87f-4d91-4fb8-b622-39e088058411",
+  "sessionId": "ses_26db67d07ffe5Pip4lLmBAQ1iE",
+  "parent": {
+    "messageId": "887e9edb-a541-4103-926e-ddebed0954f4",
+    "sessionId": null,
+    "toolUseId": null
+  },
+  "engine": {
+    "type": "opencode",
+    "provider": "opencode",
+    "model": {
+      "id": "opencode/minimax-m2.5-free",
+      "name": ""
+    },
+    "account": {
+      "id": 9,
+      "name": "arga.fairuz.7"
+    }
+  },
+  "content": [
+    {
+      "type": "text",
+      "text": "\n\n2"
+    }
+  ],
+  "stopReason": "end_turn",
+  "usage": {
+    "inputTokens": 33,
+    "outputTokens": 23,
+    "cacheCreationInputTokens": 0,
+    "cacheReadInputTokens": 19936
+  }
+}
+
+{
+  "type": "user",
+  "createdAt": "2026-04-15T17:56:44.308Z",
+  "messageId": "a408b4bc-f961-4ff3-8a0f-01ccc5b1c0a4",
+  "sessionId": null,
+  "parent": {
+    "messageId": "efe5e87f-4d91-4fb8-b622-39e088058411",
+    "sessionId": "ses_26db67d07ffe5Pip4lLmBAQ1iE",
+    "toolUseId": null
+  },
+  "engine": {
+    "type": "opencode",
+    "provider": "",
+    "model": {
+      "id": "qwen3-235b-a22b",
+      "name": "Qwen3 235B-A22B"
+    },
+    "account": {
+      "id": 9,
+      "name": "arga.fairuz.7"
+    }
+  },
+  "sender": {
+    "id": "user-53e25876-455d-4ae6-bbbc-e43769da3914",
+    "name": "Arga Fairuz"
+  },
+  "content": [
+    {
+      "type": "text",
+      "text": "2+2="
+    }
+  ],
+  "synthetic": false
+}
+
+{
+  "type": "assistant",
+  "createdAt": "2026-04-15T17:56:46.101Z",
+  "messageId": "1181fdfb-2f2d-4d9d-882e-8fb3a511fbd9",
+  "sessionId": "ses_26db62f4affe8Me33f0578Ax2n",
+  "parent": {
+    "messageId": "7afca4b6-6f98-4425-b533-31368ff544ba",
+    "sessionId": null,
+    "toolUseId": null
+  },
+  "engine": {
+    "type": "opencode",
+    "provider": "opencode",
+    "model": {
+      "id": "opencode/minimax-m2.5-free",
+      "name": ""
+    },
+    "account": {
+      "id": 9,
+      "name": "arga.fairuz.7"
+    }
+  },
+  "content": [
+    {
+      "type": "text",
+      "text": "\n\n4"
+    }
+  ],
+  "stopReason": "end_turn",
+  "usage": {
+    "inputTokens": 48,
+    "outputTokens": 19,
+    "cacheCreationInputTokens": 0,
+    "cacheReadInputTokens": 19936
+  }
+}
+
+data restore :
+
+{
+  "type": "user",
+  "createdAt": "2026-04-15T17:56:24.427Z",
+  "messageId": "a78f44cd-649a-4a70-930d-0d6b5f6fa391",
+  "sessionId": null,
+  "parent": {
+    "messageId": null,
+    "sessionId": null,
+    "toolUseId": null
+  },
+  "engine": {
+    "type": "opencode",
+    "provider": "",
+    "model": {
+      "id": "qwen3-235b-a22b",
+      "name": "Qwen3 235B-A22B"
+    },
+    "account": {
+      "id": 9,
+      "name": "arga.fairuz.7"
+    }
+  },
+  "sender": {
+    "id": "user-53e25876-455d-4ae6-bbbc-e43769da3914",
+    "name": "Arga Fairuz"
+  },
+  "content": [
+    {
+      "type": "text",
+      "text": "1+1="
+    }
+  ],
+  "synthetic": false
+}
+
+{
+  "type": "assistant",
+  "createdAt": "2026-04-15T17:56:25.939Z",
+  "messageId": "efe5e87f-4d91-4fb8-b622-39e088058411",
+  "sessionId": "ses_26db67d07ffe5Pip4lLmBAQ1iE",
+  "parent": {
+    "messageId": "887e9edb-a541-4103-926e-ddebed0954f4",
+    "sessionId": null,
+    "toolUseId": null
+  },
+  "engine": {
+    "type": "opencode",
+    "provider": "opencode",
+    "model": {
+      "id": "opencode/minimax-m2.5-free",
+      "name": ""
+    },
+    "account": {
+      "id": 9,
+      "name": "arga.fairuz.7"
+    }
+  },
+  "content": [
+    {
+      "type": "text",
+      "text": "\n\n2"
+    }
+  ],
+  "stopReason": "end_turn",
+  "usage": {
+    "inputTokens": 33,
+    "outputTokens": 23,
+    "cacheCreationInputTokens": 0,
+    "cacheReadInputTokens": 19936
+  }
+}
+
+{
+  "type": "user",
+  "createdAt": "2026-04-15T17:56:44.308Z",
+  "messageId": "a408b4bc-f961-4ff3-8a0f-01ccc5b1c0a4",
+  "sessionId": null,
+  "parent": {
+    "messageId": "efe5e87f-4d91-4fb8-b622-39e088058411",
+    "sessionId": "ses_26db67d07ffe5Pip4lLmBAQ1iE",
+    "toolUseId": null
+  },
+  "engine": {
+    "type": "opencode",
+    "provider": "",
+    "model": {
+      "id": "qwen3-235b-a22b",
+      "name": "Qwen3 235B-A22B"
+    },
+    "account": {
+      "id": 9,
+      "name": "arga.fairuz.7"
+    }
+  },
+  "sender": {
+    "id": "user-53e25876-455d-4ae6-bbbc-e43769da3914",
+    "name": "Arga Fairuz"
+  },
+  "content": [
+    {
+      "type": "text",
+      "text": "2+2="
+    }
+  ],
+  "synthetic": false
+}
+
+{
+  "type": "assistant",
+  "createdAt": "2026-04-15T17:56:46.101Z",
+  "messageId": "1181fdfb-2f2d-4d9d-882e-8fb3a511fbd9",
+  "sessionId": "ses_26db62f4affe8Me33f0578Ax2n",
+  "parent": {
+    "messageId": "7afca4b6-6f98-4425-b533-31368ff544ba",
+    "sessionId": null,
+    "toolUseId": null
+  },
+  "engine": {
+    "type": "opencode",
+    "provider": "opencode",
+    "model": {
+      "id": "opencode/minimax-m2.5-free",
+      "name": ""
+    },
+    "account": {
+      "id": 9,
+      "name": "arga.fairuz.7"
+    }
+  },
+  "content": [
+    {
+      "type": "text",
+      "text": "\n\n4"
+    }
+  ],
+  "stopReason": "end_turn",
+  "usage": {
+    "inputTokens": 48,
+    "outputTokens": 19,
+    "cacheCreationInputTokens": 0,
+    "cacheReadInputTokens": 19936
+  }
+}

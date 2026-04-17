@@ -28,7 +28,7 @@ import { setupEnvironmentOnce, getEngineEnv } from './environment';
 import { handleStreamError } from './error-handler';
 import { getEnabledMcpServers, getAllowedMcpTools } from '../../../mcp';
 import type { AIEngine, EngineQueryOptions } from '../../types';
-import type { EngineModel } from '$shared/types/engine';
+import type { EngineModel } from '$shared/types/unified';
 import { CLAUDE_CODE_MODELS } from '$shared/constants/engines';
 
 import { debug } from '$shared/utils/logger';
@@ -84,7 +84,7 @@ export class ClaudeCodeEngine implements AIEngine {
       prompt,
       resume,
       maxTurns = undefined,
-      model = 'sonnet',
+      modelId,
       includePartialMessages = false,
       abortController,
       accountId
@@ -151,7 +151,7 @@ export class ClaudeCodeEngine implements AIEngine {
           // Auto-allow all other tools
           return { behavior: 'allow' as const, updatedInput: input };
         },
-        ...(model && { model }),
+        ...(modelId && { model: modelId }),
         ...(resume && { resume }),
         ...(maxTurns && { maxTurns }),
         ...(includePartialMessages && { includePartialMessages }),
@@ -272,7 +272,7 @@ export class ClaudeCodeEngine implements AIEngine {
   async generateStructured<T = unknown>(options: StructuredGenerationOptions): Promise<T> {
     const {
       prompt,
-      model = 'haiku',
+      modelId,
       schema,
       projectPath,
       abortController,
@@ -307,7 +307,7 @@ export class ClaudeCodeEngine implements AIEngine {
       persistSession: false,
       effort: 'low',
       thinking: { type: 'disabled' },
-      ...(model && { model }),
+      ...(modelId && { model: modelId }),
       abortController: controller
     };
 

@@ -14,14 +14,14 @@ import type { ToolUseBlock, ToolResult } from './tool';
 
 /** Sender identity attached to every message */
 export interface MessageSender {
-	id: string | null;
-	name: string | null;
+	id: string;
+	name: string;
 }
 
 /** Engine account identity attached to every message */
 export interface MessageAccount {
-	id: number | null;
-	name: string | null;
+	id: number;
+	name: string;
 }
 
 /** Parent references carried by every message */
@@ -29,6 +29,20 @@ export interface MessageParent {
 	messageId: string | null;
 	sessionId: string | null;
 	toolUseId: string | null;
+}
+
+/** Model identity attached to every message */
+export interface MessageModel {
+	id: string;
+	name: string;
+}
+
+/** Engine context attached to every message */
+export interface MessageEngine {
+	type: 'claude-code' | 'opencode';
+	provider: string;
+	model: MessageModel;
+	account: MessageAccount;
 }
 
 /** Common fields present on every message */
@@ -39,11 +53,7 @@ export interface MessageBase {
 	 *  (e.g. user messages from the frontend, or messages where the SDK did not provide one). */
 	sessionId: string | null;
 	parent: MessageParent;
-	engine: string | null;
-	model: string | null;
-	/** Engine account used for this message (aligns with ChatSession.account_id) */
-	account: MessageAccount;
-	sender: MessageSender;
+	engine: MessageEngine;
 }
 
 // ============================================================
@@ -88,6 +98,7 @@ export type AssistantContentBlock =
  */
 export interface UserMessage extends MessageBase {
 	type: 'user';
+	sender: MessageSender;
 	content: UserContentBlock[];
 	synthetic: boolean;
 }

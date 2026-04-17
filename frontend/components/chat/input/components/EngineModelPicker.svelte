@@ -7,7 +7,7 @@
 	import { userStore } from '$frontend/stores/features/user.svelte';
 	import { chatModelState, initChatModel, restoreChatModelFromSession } from '$frontend/stores/ui/chat-model.svelte';
 	import { ENGINES } from '$shared/constants/engines';
-	import type { EngineType, EngineModel } from '$shared/types/engine';
+	import type { EngineType, EngineModel } from '$shared/types/unified';
 	import Icon from '$frontend/components/common/display/Icon.svelte';
 	import { claudeAccountsStore, type ClaudeAccountItem } from '$frontend/stores/features/claude-accounts.svelte';
 	import { opencodeProvidersStore, type OpenCodeProviderItem, type OpenCodeAccountItem } from '$frontend/stores/features/opencode-providers.svelte';
@@ -49,6 +49,7 @@
 					const activeAccount = accounts.find(a => a.isActive);
 					if (activeAccount) {
 						chatModelState.accountId = activeAccount.id;
+						chatModelState.accountName = activeAccount.name;
 					}
 				}
 			});
@@ -61,18 +62,17 @@
 
 	$effect(() => {
 		const accountId = chatModelState.accountId;
-		const engine = chatModelState.engine;
+		const accountName = chatModelState.accountName;
 		const chatSessionId = sessionState.currentSession?.id;
 		const senderId = userStore.currentUser?.id;
-		if (!chatSessionId || !senderId || ignoringRemoteAccountSync || engine !== 'claude-code') return;
+		if (!chatSessionId || !senderId || ignoringRemoteAccountSync) return;
 		if (accountId !== null && accountId !== lastSyncedAccountId) {
 			lastSyncedAccountId = accountId;
-			const account = claudeAccounts.find(a => a.id === accountId);
 			ws.emit('chat:account-sync', {
 				senderId,
 				chatSessionId,
 				accountId,
-				accountName: account?.name ?? null
+				accountName: accountName ?? null
 			});
 		}
 	});
@@ -85,6 +85,7 @@
 			debug.log('chat', 'Remote account sync:', data);
 			ignoringRemoteAccountSync = true;
 			chatModelState.accountId = data.accountId;
+			chatModelState.accountName = data.accountName;
 			lastSyncedAccountId = data.accountId;
 			ignoringRemoteAccountSync = false;
 
@@ -119,6 +120,7 @@
 
 	function selectAccount(account: ClaudeAccountItem) {
 		chatModelState.accountId = account.id;
+		chatModelState.accountName = account.name;
 		closeAccountDropdown();
 	}
 
@@ -131,20 +133,20 @@
 	// Determine the provider of the currently selected model
 	const ocSelectedModelProvider = $derived.by(() => {
 		if (chatModelState.engine !== 'opencode' || !currentModel) return null;
-		return currentModel.provider || null;
+		return currentModel.engine.provider || null;
 	});
 
 	// Find the DB provider matching the selected model's provider
 	const ocMatchingProvider = $derived.by((): OpenCodeProviderItem | null => {
 		if (!ocSelectedModelProvider) return null;
-		return ocProviders.find(p => p.providerId === ocSelectedModelProvider) || null;
+		return ocProviders.find(p => p.slug === ocSelectedModelProvider) || null;
 	});
 
 	// Show OpenCode account picker only for non-free providers with accounts
 	const showOCAccountPicker = $derived(
 		chatModelState.engine === 'opencode' &&
 		ocMatchingProvider !== null &&
-		ocMatchingProvider.providerId !== 'opencode' &&
+		ocMatchingProvider.slug !== 'opencode' &&
 		ocMatchingProvider.accounts.length > 0
 	);
 
@@ -158,6 +160,19 @@
 		const engine = chatModelState.engine;
 		if (engine === 'opencode') {
 			opencodeProvidersStore.fetchProviders();
+		}
+	});
+
+	// Auto-select active opencode account into chatModelState
+	$effect(() => {
+		const engine = chatModelState.engine;
+		const ocAccount = currentOCAccount;
+
+		if (engine === 'opencode' && ocAccount) {
+			untrack(() => {
+				chatModelState.accountId = ocAccount.id;
+				chatModelState.accountName = ocAccount.name;
+			});
 		}
 	});
 
@@ -183,6 +198,8 @@
 
 	async function selectOCAccount(account: OpenCodeAccountItem) {
 		await opencodeProvidersStore.switchAccount(account.id);
+		chatModelState.accountId = account.id;
+		chatModelState.accountName = account.name;
 		ocNeedsRestart = true;
 		closeOCAccountDropdown();
 	}
@@ -218,14 +235,14 @@
 
 	// Read from local chat model state (isolated from Settings)
 	const currentEngine = $derived(ENGINES.find(e => e.type === chatModelState.engine));
-	const currentModel = $derived(modelStore.getById(chatModelState.model));
+	const currentModel = $derived(modelStore.getById(chatModelState.modelId));
 	const availableModels = $derived(modelStore.getByEngine(chatModelState.engine));
 
 	// Label shown in the trigger button
 	const triggerLabel = $derived.by(() => {
 		if (chatModelState.engine !== 'claude-code' && modelStore.loading) return 'Loading...';
 		if (!currentModel) return 'No model selected';
-		return currentModel.name;
+		return currentModel.engine.model.name;
 	});
 
 	// Initialize model picker based on session state:
@@ -243,25 +260,30 @@
 		const _sessionId = session?.id;
 		const started = hasStartedChat;
 		const sEngine = settings.selectedEngine;
-		const sModel = settings.selectedModel;
+		const sProvider = settings.selectedProvider;
+		const sModelId = settings.selectedModelId;
+		const sModelName = settings.selectedModelName;
 		const sMemory = settings.engineModelMemory;
 		const sessionEngine = session?.engine;
-		const sessionModel = session?.model;
+		const sessionProvider = session?.provider;
+		const sessionModelId = session?.model_id;
+		const sessionModelName = session?.model_name;
 		const sessionAccountId = session?.account_id;
+		const sessionAccountName = session?.account_name;
 
 		untrack(() => {
-			if (sessionEngine && sessionModel) {
+			if (sessionEngine && sessionModelId) {
 				// Session has persisted engine/model: always restore from session.
 				// This works for both existing sessions (has messages) and sessions
 				// where messages are still loading asynchronously.
-				restoreChatModelFromSession(sessionEngine, sessionModel, sessionAccountId);
+				restoreChatModelFromSession(sessionEngine, sessionProvider || sProvider, sessionModelId, sessionModelName || '', sessionAccountId, sessionAccountName);
 			} else if (!started) {
 				// New session (no messages, no persisted engine/model): apply Settings defaults
-				initChatModel(sEngine, sModel, sMemory || {});
+				initChatModel(sEngine, sProvider, sModelId, sModelName, sMemory || {});
 			} else {
 				// Existing session without engine/model (pre-migration or not yet set):
 				// fall back to Settings defaults
-				initChatModel(sEngine, sModel, sMemory || {});
+				initChatModel(sEngine, sProvider, sModelId, sModelName, sMemory || {});
 			}
 		});
 	});
@@ -280,58 +302,65 @@
 	// to prevent circular chatModelState read-write (UpdatedAtError).
 	$effect(() => {
 		const engine = chatModelState.engine;
-		const modelValid = currentModel?.engine === engine;
+		const modelValid = currentModel?.engine.type === engine;
 		const models = availableModels;
 		if (!modelValid && models.length > 0) {
 			untrack(() => {
 				const memory = chatModelState.engineModelMemory;
 				const remembered = memory[engine];
 				const target =
-					(remembered && models.find(m => m.id === remembered)) ||
-					models.find(m => m.recommended) ||
+					(remembered && models.find(m => m.engine.model.id === remembered.id)) ||
 					models[0];
 				if (target) {
-					chatModelState.model = target.id;
-					chatModelState.engineModelMemory = { ...memory, [engine]: target.id };
+					chatModelState.provider = target.engine.provider;
+					chatModelState.modelId = target.engine.model.id;
+					chatModelState.modelName = target.engine.model.name;
+					chatModelState.engineModelMemory = { ...memory, [engine]: { provider: target.engine.provider, id: target.engine.model.id, name: target.engine.model.name } };
 				}
 			});
 		}
 	});
 
 	// Emit model changes to other users in the same chat session
-	let lastSyncedModel = '';
+	let lastSyncedModelId = '';
 	let lastSyncedEngine = '';
 	let ignoringRemoteSync = false;
 
 	$effect(() => {
 		const engine = chatModelState.engine;
-		const model = chatModelState.model;
+		const provider = chatModelState.provider;
+		const modelId = chatModelState.modelId;
+		const modelName = chatModelState.modelName;
 		const chatSessionId = sessionState.currentSession?.id;
 		const senderId = userStore.currentUser?.id;
 		if (!chatSessionId || !senderId || ignoringRemoteSync) return;
 		// Only emit if model actually changed (not on init)
-		if (model && (model !== lastSyncedModel || engine !== lastSyncedEngine)) {
-			lastSyncedModel = model;
+		if (modelId && (modelId !== lastSyncedModelId || engine !== lastSyncedEngine)) {
+			lastSyncedModelId = modelId;
 			lastSyncedEngine = engine;
 			ws.emit('chat:model-sync', {
 				senderId,
 				chatSessionId,
 				engine,
-				model
+				provider,
+				modelId,
+				modelName
 			});
 		}
 	});
 
 	// Listen for remote model changes from other users
 	$effect(() => {
-		const unsub = ws.on('chat:model-sync', (data: { senderId: string; engine: string; model: string }) => {
+		const unsub = ws.on('chat:model-sync', (data: { senderId: string; engine: string; provider: string; modelId: string; modelName: string }) => {
 			const currentUserId = userStore.currentUser?.id;
 			if (data.senderId === currentUserId) return; // Ignore own events
 			debug.log('chat', 'Remote model sync:', data);
 			ignoringRemoteSync = true;
 			chatModelState.engine = data.engine as EngineType;
-			chatModelState.model = data.model;
-			lastSyncedModel = data.model;
+			chatModelState.provider = data.provider;
+			chatModelState.modelId = data.modelId;
+			chatModelState.modelName = data.modelName;
+			lastSyncedModelId = data.modelId;
 			lastSyncedEngine = data.engine;
 			ignoringRemoteSync = false;
 
@@ -340,7 +369,9 @@
 				sessionState.currentSession = {
 					...sessionState.currentSession,
 					engine: data.engine as EngineType,
-					model: data.model
+					provider: data.provider,
+					model_id: data.modelId,
+					model_name: data.modelName
 				};
 			}
 		});
@@ -355,10 +386,9 @@
 		if (!searchQuery.trim()) return availableModels;
 		const q = searchQuery.toLowerCase();
 		return availableModels.filter(m =>
-			m.name.toLowerCase().includes(q) ||
-			m.modelId.toLowerCase().includes(q) ||
-			m.provider.toLowerCase().includes(q) ||
-			m.capabilities.some(c => c.toLowerCase().includes(q))
+			m.engine.model.name.toLowerCase().includes(q) ||
+			m.engine.model.id.toLowerCase().includes(q) ||
+			m.engine.provider.toLowerCase().includes(q)
 		);
 	});
 
@@ -366,7 +396,7 @@
 	const groupedModels = $derived.by(() => {
 		const groups = new Map<string, EngineModel[]>();
 		for (const model of filteredModels) {
-			const key = model.provider;
+			const key = model.engine.provider;
 			if (!groups.has(key)) groups.set(key, []);
 			groups.get(key)!.push(model);
 		}
@@ -381,7 +411,7 @@
 			const allProviders = [...groupedModels.keys()];
 			let selectedProvider: string | null = null;
 			for (const [provider, models] of groupedModels) {
-				if (models.some(m => m.id === chatModelState.model)) {
+				if (models.some(m => m.engine.model.id === chatModelState.modelId)) {
 					selectedProvider = provider;
 					break;
 				}
@@ -411,7 +441,7 @@
 			.join(' ');
 	}
 
-	function formatContextWindow(tokens: number): string {
+	function formatTokenLimit(tokens: number): string {
 		if (tokens >= 1_000_000) return `${(tokens / 1_000_000).toFixed(tokens % 1_000_000 === 0 ? 0 : 1)}M`;
 		if (tokens >= 1_000) return `${(tokens / 1_000).toFixed(tokens % 1_000 === 0 ? 0 : 1)}K`;
 		return `${tokens}`;
@@ -445,7 +475,8 @@
 
 		// Fetch models if needed; clear model immediately so it shows null during loading
 		if (engineType !== 'claude-code') {
-			chatModelState.model = '';
+			chatModelState.modelId = '';
+			chatModelState.modelName = '';
 			await modelStore.fetchModels(engineType);
 		}
 
@@ -454,21 +485,24 @@
 		const remembered = memory[engineType];
 		const models = modelStore.getByEngine(engineType);
 		const target =
-			(remembered && models.find(m => m.id === remembered)) ||
-			models.find(m => m.recommended) ||
+			(remembered && models.find(m => m.engine.model.id === remembered.id)) ||
 			models[0];
 
 		if (target) {
-			chatModelState.model = target.id;
-			chatModelState.engineModelMemory = { ...memory, [engineType]: target.id };
+			chatModelState.provider = target.engine.provider;
+			chatModelState.modelId = target.engine.model.id;
+			chatModelState.modelName = target.engine.model.name;
+			chatModelState.engineModelMemory = { ...memory, [engineType]: { provider: target.engine.provider, id: target.engine.model.id, name: target.engine.model.name } };
 		}
 	}
 
 	function selectModel(model: EngineModel) {
-		chatModelState.model = model.id;
+		chatModelState.provider = model.engine.provider;
+		chatModelState.modelId = model.engine.model.id;
+		chatModelState.modelName = model.engine.model.name;
 		chatModelState.engineModelMemory = {
 			...chatModelState.engineModelMemory,
-			[chatModelState.engine]: model.id
+			[chatModelState.engine]: { provider: model.engine.provider, id: model.engine.model.id, name: model.engine.model.name }
 		};
 		closeDropdown();
 	}
@@ -699,7 +733,7 @@
 			{:else}
 				{#each [...groupedModels.entries()] as [provider, providerModels] (provider)}
 					{@const isCollapsed = collapsedProviders.has(provider)}
-					{@const hasSelectedModel = providerModels.some(m => m.id === chatModelState.model)}
+					{@const hasSelectedModel = providerModels.some(m => m.engine.model.id === chatModelState.modelId)}
 
 					<!-- Provider header -->
 					<button
@@ -727,8 +761,8 @@
 
 					<!-- Provider models -->
 					{#if !isCollapsed}
-						{#each providerModels as model (model.id)}
-							{@const isSelected = chatModelState.model === model.id}
+						{#each providerModels as model (model.engine.model.id)}
+							{@const isSelected = chatModelState.modelId === model.engine.model.id}
 							<button
 								type="button"
 								class="flex items-start gap-2.5 w-full pl-5 pr-3 py-2 text-left transition-all duration-150
@@ -748,20 +782,11 @@
 								<!-- Model info -->
 								<div class="flex-1 min-w-0">
 									<div class="flex items-center gap-2">
-										<span class="font-medium text-xs">{model.name}</span>
-										{#if model.contextWindow}
-											<span class="text-3xs text-slate-400 dark:text-slate-500">{formatContextWindow(model.contextWindow)}</span>
+										<span class="font-medium text-xs">{model.engine.model.name}</span>
+										{#if model.limit.input}
+											<span class="text-3xs text-slate-400 dark:text-slate-500">{formatTokenLimit(model.limit.input)}</span>
 										{/if}
 									</div>
-									{#if model.capabilities.length > 0}
-										<div class="flex flex-wrap gap-1 mt-1">
-											{#each model.capabilities as cap}
-												<span class="px-1.5 py-0.5 text-3xs rounded bg-slate-100 dark:bg-slate-700/50 text-slate-500 dark:text-slate-400 leading-none">
-													{cap}
-												</span>
-											{/each}
-										</div>
-									{/if}
 								</div>
 							</button>
 						{/each}

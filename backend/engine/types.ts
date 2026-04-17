@@ -7,7 +7,7 @@
  */
 
 import type { EngineType, UserMessage, EngineOutput } from '$shared/types/unified';
-import type { EngineModel } from '$shared/types/engine';
+import type { EngineModel } from '$shared/types/unified';
 
 export type { EngineType };
 
@@ -25,7 +25,10 @@ export interface EngineQueryOptions {
 	resume?: string;
 	forkSession?: boolean;
 	maxTurns?: number;
-	model?: string;
+	/** Provider slug (e.g. 'anthropic', 'openai'). Required for OpenCode. */
+	providerSlug: string;
+	/** Model ID (e.g. 'claude-opus-4-6', 'gpt-5'). */
+	modelId: string;
 	includePartialMessages?: boolean;
 	abortController?: AbortController;
 	accountId?: number;
@@ -36,7 +39,10 @@ export interface EngineQueryOptions {
 /** Options for one-shot structured generation (no tools, no streaming) */
 export interface StructuredGenerationOptions {
 	prompt: string;
-	model?: string;
+	/** Provider slug (e.g. 'anthropic', 'openai'). Required for OpenCode. */
+	providerSlug: string;
+	/** Model ID. */
+	modelId: string;
 	schema: Record<string, unknown>;
 	projectPath: string;
 	abortController?: AbortController;

@@ -153,7 +153,7 @@ export const timelineHandler = createRouter()
 				isOrphaned,
 				isCurrent,
 				hasSnapshot: !!snapshot,
-				senderName: msg.sender?.name || null,
+				senderName: msg.type === 'user' ? msg.sender?.name || null : null,
 				filesChanged: stats.filesChanged,
 				insertions: stats.insertions,
 				deletions: stats.deletions

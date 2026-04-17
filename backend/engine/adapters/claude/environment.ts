@@ -68,10 +68,9 @@ export function getEngineEnv(accountId?: number): Record<string, string> {
   // Override with specific account token if requested
   if (accountId !== undefined) {
     try {
-      const accounts = engineQueries.getClaudeAccounts();
-      const account = accounts.find(a => a.id === accountId);
+      const account = engineQueries.getAccount(accountId);
       if (account) {
-        env['CLAUDE_CODE_OAUTH_TOKEN'] = account.oauth_token;
+        env['CLAUDE_CODE_OAUTH_TOKEN'] = account.credential;
         debug.log('engine', `Claude Code: Per-session account override → "${account.name}"`);
       }
     } catch {
@@ -95,9 +94,9 @@ async function _doSetup(): Promise<void> {
 
   // Inject OAuth token from active account (if any)
   try {
-    const activeAccount = engineQueries.getActiveClaudeAccount();
+    const activeAccount = engineQueries.getActiveAccountForEngine('claude-code');
     if (activeAccount) {
-      overrides['CLAUDE_CODE_OAUTH_TOKEN'] = activeAccount.oauth_token;
+      overrides['CLAUDE_CODE_OAUTH_TOKEN'] = activeAccount.credential;
       debug.log('engine', `✅ Claude Code: Using account "${activeAccount.name}"`);
     }
   } catch {

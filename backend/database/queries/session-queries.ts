@@ -77,13 +77,13 @@ export const sessionQueries = {
 		`).run(id);
 	},
 
-	updateEngineModel(id: string, engine: string, model: string): void {
+	updateEngineModel(id: string, engine: string, provider: string, modelId: string, modelName: string): void {
 		const db = getDatabase();
 		db.prepare(`
 			UPDATE chat_sessions
-			SET engine = ?, model = ?
+			SET engine = ?, provider = ?, model_id = ?, model_name = ?
 			WHERE id = ?
-		`).run(engine, model, id);
+		`).run(engine, provider, modelId, modelName, id);
 	},
 
 	updateAccountId(id: string, accountId: number | null): void {
