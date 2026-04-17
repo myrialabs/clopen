@@ -760,9 +760,10 @@ export const up = (db: DatabaseConnection): void => {
 	db.exec(`ALTER TABLE chat_sessions RENAME COLUMN latest_sdk_session_id TO head_session_id`);
 	db.exec(`ALTER TABLE chat_sessions RENAME COLUMN current_head_message_id TO head_message_id`);
 
-	// Rename model → model_id and add model_name
+	// Rename model → model_id and add model_name, provider
 	db.exec(`ALTER TABLE chat_sessions RENAME COLUMN model TO model_id`);
 	db.exec(`ALTER TABLE chat_sessions ADD COLUMN model_name TEXT`);
+	db.exec(`ALTER TABLE chat_sessions ADD COLUMN provider TEXT`);
 
 	// Strip compound ID prefix (e.g., 'claude-code:sonnet' → 'sonnet')
 	db.exec(`
@@ -1095,6 +1096,7 @@ export const down = (db: DatabaseConnection): void => {
 	db.exec(`ALTER TABLE chat_sessions RENAME COLUMN head_message_id TO current_head_message_id`);
 	db.exec(`ALTER TABLE chat_sessions RENAME COLUMN model_id TO model`);
 	db.exec(`ALTER TABLE chat_sessions DROP COLUMN model_name`);
+	db.exec(`ALTER TABLE chat_sessions DROP COLUMN provider`);
 
 	debug.log('migration', 'Columns reverted (data conversion is irreversible)');
 

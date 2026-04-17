@@ -11,6 +11,7 @@
 	import { settings } from '$frontend/stores/features/settings.svelte';
 	import { modelStore } from '$frontend/stores/features/models.svelte';
 	import { getContextUsage } from '$frontend/utils/context-manager';
+	import type { TokenUsage } from '$shared/types/unified';
 	import Icon from '$frontend/components/common/display/Icon.svelte';
 
 	interface Props {
@@ -73,12 +74,11 @@
 	}
 
 	// Get last assistant message usage for detail breakdown
-	const lastUsage = $derived.by(() => {
+	const lastUsage = $derived.by((): TokenUsage | null => {
 		for (let i = sessionState.messages.length - 1; i >= 0; i--) {
 			const msg = sessionState.messages[i];
-			if (msg.type === 'assistant' && 'message' in msg) {
-				const u = (msg as any).message?.usage;
-				if (u && typeof u.input_tokens === 'number') return u;
+			if (msg.type === 'assistant' && 'usage' in msg && msg.usage) {
+				return msg.usage as TokenUsage;
 			}
 		}
 		return null;
@@ -143,28 +143,28 @@
 						<div class="flex justify-between items-center">
 							<span class="text-2xs text-slate-500">Input</span>
 							<span class="text-2xs font-mono font-medium text-slate-700 dark:text-slate-300">
-								{(lastUsage.input_tokens ?? 0).toLocaleString()}
+								{(lastUsage.inputTokens ?? 0).toLocaleString()}
 							</span>
 						</div>
 						<div class="flex justify-between items-center">
 							<span class="text-2xs text-slate-500">Output</span>
 							<span class="text-2xs font-mono font-medium text-slate-700 dark:text-slate-300">
-								{(lastUsage.output_tokens ?? 0).toLocaleString()}
+								{(lastUsage.outputTokens ?? 0).toLocaleString()}
 							</span>
 						</div>
-						{#if lastUsage.cache_read_input_tokens > 0}
+						{#if lastUsage.cacheReadInputTokens > 0}
 							<div class="flex justify-between items-center">
 								<span class="text-2xs text-slate-500">Cache Read</span>
 								<span class="text-2xs font-mono font-medium text-emerald-600 dark:text-emerald-400">
-									{(lastUsage.cache_read_input_tokens).toLocaleString()}
+									{(lastUsage.cacheReadInputTokens).toLocaleString()}
 								</span>
 							</div>
 						{/if}
-						{#if lastUsage.cache_creation_input_tokens > 0}
+						{#if lastUsage.cacheCreationInputTokens > 0}
 							<div class="flex justify-between items-center">
 								<span class="text-2xs text-slate-500">Cache Write</span>
 								<span class="text-2xs font-mono font-medium text-slate-700 dark:text-slate-300">
-									{(lastUsage.cache_creation_input_tokens).toLocaleString()}
+									{(lastUsage.cacheCreationInputTokens).toLocaleString()}
 								</span>
 							</div>
 						{/if}
