@@ -646,7 +646,7 @@ class StreamManager extends EventEmitter {
 						const rl = output as RateLimitEvent;
 						const isRejected = rl.status === 'rejected';
 						const resetTime = rl.resetsAt
-							? new Date(rl.resetsAt * 1000).toLocaleTimeString()
+							? new Date(rl.resetsAt * 1000).toLocaleString(undefined, { dateStyle: 'medium', timeStyle: 'short' })
 							: 'unknown';
 						this.emitStreamEvent(streamState, 'notification', {
 							notification: {

@@ -370,13 +370,15 @@ export function convertCompactBoundary(msg: SDKCompactBoundaryMessage): CompactB
 	};
 }
 
-/** Convert SDKRateLimitEvent → RateLimitEvent */
-export function convertRateLimit(msg: SDKRateLimitEvent): RateLimitEvent {
+/** Convert SDKRateLimitEvent → RateLimitEvent (returns null for non-actionable 'allowed' status) */
+export function convertRateLimit(msg: SDKRateLimitEvent): RateLimitEvent | null {
 	const info = msg.rate_limit_info;
+	// Only emit for actual warnings/rejections — 'allowed' is just informational
+	if (info.status === 'allowed') return null;
 	return {
 		type: 'rate_limit',
 		sessionId: msg.session_id,
-		status: (info.status === 'rejected' ? 'rejected' : 'allowed_warning'),
+		status: info.status === 'rejected' ? 'rejected' : 'allowed_warning',
 		utilization: info.utilization || 0,
 		resetsAt: info.resetsAt || null,
 	};
@@ -433,9 +435,11 @@ export function* convertSdkMessage(msg: SDKMessage): Generator<EngineOutput> {
 			break;
 		}
 
-		case 'rate_limit_event':
-			yield convertRateLimit(msg as SDKRateLimitEvent);
+		case 'rate_limit_event': {
+			const rlEvent = convertRateLimit(msg as SDKRateLimitEvent);
+			if (rlEvent) yield rlEvent;
 			break;
+		}
 
 		// Transient SDK message types — skip
 		default:
