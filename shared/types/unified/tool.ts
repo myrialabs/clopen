@@ -159,37 +159,167 @@ export interface SkillInput {
 	args?: string;
 }
 
+export interface ExitWorktreeInput {
+	keep?: boolean;
+}
+
+export interface ToolSearchInput {
+	query: string;
+	maxResults?: number;
+}
+
+export interface ScheduleWakeupInput {
+	delaySeconds: number;
+	reason: string;
+	prompt: string;
+}
+
+export interface MonitorInput {
+	bashId?: string;
+	processId?: string;
+	source?: string;
+	until?: string;
+	timeout?: number;
+}
+
+export interface PushNotificationInput {
+	title: string;
+	message: string;
+	url?: string;
+}
+
+export interface RemoteTriggerInput {
+	name?: string;
+	payload?: Record<string, unknown>;
+}
+
+export interface CronCreateInput {
+	name: string;
+	schedule: string;
+	prompt: string;
+	description?: string;
+}
+
+export interface CronDeleteInput {
+	id: string;
+}
+
+export interface CronListInput {
+	filter?: string;
+}
+
+export interface PatchInput {
+	filePath: string;
+	patch: string;
+}
+
+export interface ListInput {
+	path?: string;
+	ignore?: string[];
+}
+
+export interface LspInput {
+	operation: string;
+	filePath?: string;
+	line?: number;
+	column?: number;
+	symbol?: string;
+}
+
 // ============================================================
 // Tool Input Map
 // ============================================================
 
-/** Maps each known tool name to its strongly-typed input interface */
+/**
+ * Single source of truth for every canonical tool name accepted by the
+ * chat UI. Any tool emitted by an engine adapter MUST normalize to one
+ * of these names — otherwise the backend emits an `Unknown:*` marker
+ * and the UI renders it as an error (no silent fallback).
+ */
 export interface ToolInputMap {
+	// File operations
 	Bash: BashInput;
 	Read: ReadInput;
 	Edit: EditInput;
 	Write: WriteInput;
+	Patch: PatchInput;
+	NotebookEdit: NotebookEditInput;
+	// Discovery
 	Glob: GlobInput;
 	Grep: GrepInput;
+	List: ListInput;
+	// Web
 	WebFetch: WebFetchInput;
 	WebSearch: WebSearchInput;
+	// Planning & questions
 	TodoWrite: TodoWriteInput;
-	Agent: AgentInput;
 	AskUserQuestion: AskUserQuestionInput;
-	TaskOutput: TaskOutputInput;
-	TaskStop: TaskStopInput;
-	NotebookEdit: NotebookEditInput;
-	ListMcpResources: ListMcpResourcesInput;
-	ReadMcpResource: ReadMcpResourceInput;
-	Config: ConfigInput;
-	EnterWorktree: EnterWorktreeInput;
 	EnterPlanMode: EnterPlanModeInput;
 	ExitPlanMode: ExitPlanModeInput;
+	// Sub-agents & tasks
+	Agent: AgentInput;
+	TaskOutput: TaskOutputInput;
+	TaskStop: TaskStopInput;
+	// MCP
+	ListMcpResources: ListMcpResourcesInput;
+	ReadMcpResource: ReadMcpResourceInput;
+	// Harness / workspace
+	Config: ConfigInput;
+	EnterWorktree: EnterWorktreeInput;
+	ExitWorktree: ExitWorktreeInput;
 	Skill: SkillInput;
+	ToolSearch: ToolSearchInput;
+	Lsp: LspInput;
+	// Automation & notifications
+	ScheduleWakeup: ScheduleWakeupInput;
+	Monitor: MonitorInput;
+	PushNotification: PushNotificationInput;
+	RemoteTrigger: RemoteTriggerInput;
+	CronCreate: CronCreateInput;
+	CronDelete: CronDeleteInput;
+	CronList: CronListInput;
 }
 
 export type KnownToolName = keyof ToolInputMap;
 export type McpToolName = `mcp__${string}`;
+/**
+ * Placeholder name for a tool emitted by an engine adapter that does not
+ * map to any canonical name. Adapters MUST wrap the original name (e.g.
+ * `Unknown:weird_tool`) so the UI can render a visible error instead of
+ * silently falling back to a generic box.
+ */
+export type UnknownToolName = `Unknown:${string}`;
+
+/**
+ * Runtime set of every canonical tool name. Kept in sync with `ToolInputMap`.
+ * Use this in engine adapters to decide whether to emit the tool name as-is
+ * or wrap it with the `Unknown:` prefix.
+ */
+export const CANONICAL_TOOL_NAMES = new Set<KnownToolName>([
+	'Bash', 'Read', 'Edit', 'Write', 'Patch', 'NotebookEdit',
+	'Glob', 'Grep', 'List',
+	'WebFetch', 'WebSearch',
+	'TodoWrite', 'AskUserQuestion', 'EnterPlanMode', 'ExitPlanMode',
+	'Agent', 'TaskOutput', 'TaskStop',
+	'ListMcpResources', 'ReadMcpResource',
+	'Config', 'EnterWorktree', 'ExitWorktree', 'Skill', 'ToolSearch', 'Lsp',
+	'ScheduleWakeup', 'Monitor', 'PushNotification', 'RemoteTrigger',
+	'CronCreate', 'CronDelete', 'CronList',
+]);
+
+/**
+ * Normalize an arbitrary tool name emitted by an engine into a shape the UI
+ * is guaranteed to handle:
+ *   - canonical names pass through unchanged;
+ *   - `mcp__*` names pass through unchanged;
+ *   - anything else is wrapped as `Unknown:<original>` so the UI renders a
+ *     visible error with a pointer to the fix (add to the registry).
+ */
+export function toCanonicalToolName(rawName: string): KnownToolName | McpToolName | UnknownToolName {
+	if (rawName.startsWith('mcp__')) return rawName as McpToolName;
+	if (CANONICAL_TOOL_NAMES.has(rawName as KnownToolName)) return rawName as KnownToolName;
+	return `Unknown:${rawName}` as UnknownToolName;
+}
 
 // ============================================================
 // Sub-Agent Activity (populated in Agent tool blocks)
@@ -265,4 +395,15 @@ export interface McpToolUseBlock {
 	interrupted: boolean;
 }
 
-export type ToolUseBlock = KnownToolUseBlock | McpToolUseBlock;
+export interface UnknownToolUseBlock {
+	type: 'tool_use';
+	id: string;
+	name: UnknownToolName;
+	input: Record<string, unknown>;
+	result: ToolResult | null;
+	subActivities: SubAgentActivity[];
+	skillPrompt: string | null;
+	interrupted: boolean;
+}
+
+export type ToolUseBlock = KnownToolUseBlock | McpToolUseBlock | UnknownToolUseBlock;

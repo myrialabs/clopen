@@ -46,18 +46,40 @@ export type {
 	ReadMcpResourceInput,
 	ConfigInput,
 	EnterWorktreeInput,
+	ExitWorktreeInput,
 	EnterPlanModeInput,
 	ExitPlanModeInput,
 	ExitPlanModePrompt,
 	SkillInput,
+	ToolSearchInput,
+	ScheduleWakeupInput,
+	MonitorInput,
+	PushNotificationInput,
+	RemoteTriggerInput,
+	CronCreateInput,
+	CronDeleteInput,
+	CronListInput,
+	PatchInput,
+	ListInput,
+	LspInput,
 	ToolInputMap,
 	KnownToolName,
 	McpToolName,
+	UnknownToolName,
+} from './tool';
+
+export {
+	CANONICAL_TOOL_NAMES,
+	toCanonicalToolName,
+} from './tool';
+
+export type {
 	SubAgentToolActivity,
 	SubAgentTextActivity,
 	SubAgentActivity,
 	ToolResult,
 	McpToolUseBlock,
+	UnknownToolUseBlock,
 	ToolUseBlock,
 } from './tool';
 

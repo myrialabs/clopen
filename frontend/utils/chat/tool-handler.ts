@@ -1,7 +1,4 @@
-import {
-  shouldEmbedResult,
-  shouldHideTool
-} from './message-processor';
+import { shouldHideTool } from './message-processor';
 import type {
   ProcessedMessage,
   ToolGroup,
@@ -54,11 +51,11 @@ function processToolUse(
     return null;
   }
 
-  // Special handling for Bash with run_in_background
+  // Special handling for Bash with runInBackground
   if (block.name === 'Bash' && block.input &&
       typeof block.input === 'object' &&
-      'run_in_background' in block.input &&
-      (block.input as any).run_in_background && block.id) {
+      'runInBackground' in block.input &&
+      (block.input as { runInBackground?: boolean }).runInBackground && block.id) {
     return handleBackgroundBash(block, toolUseMap, backgroundBashMap);
   }
 
@@ -72,8 +69,10 @@ function processToolUse(
     return handleSkillTool(block, toolUseMap, skillPromptMap);
   }
 
-  // Regular tool handling
-  if (block.id && block.name && shouldEmbedResult(block.name) && toolUseMap.has(block.id)) {
+  // Regular tool handling — every tool with a matching tool_result gets it
+  // attached. No opt-in list: if a tool_result exists for this tool_use_id,
+  // it belongs on the block.
+  if (block.id && toolUseMap.has(block.id)) {
     return handleRegularTool(block, toolUseMap);
   }
 

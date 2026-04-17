@@ -10,6 +10,7 @@
  */
 
 import { resolveOpenCodeToolName } from '../../../mcp';
+import { toCanonicalToolName } from '$shared/types/unified';
 import type { Message as OCMessage, Part, ToolPart, AssistantMessage } from '@opencode-ai/sdk';
 import type {
 	EngineOutput,
@@ -134,14 +135,15 @@ const TOOL_NAME_MAP: Record<string, string> = {
 	'read_mcp_resource': 'ReadMcpResource',
 };
 
-/** Map Open Code tool name to Claude Code tool name for UI rendering */
+/** Map Open Code tool name to canonical UI tool name. */
 export function mapToolName(openCodeToolName: string): string {
 	// Check if this is a custom MCP tool (resolves via single source in backend/mcp)
 	const mcpName = resolveOpenCodeToolName(openCodeToolName);
 	if (mcpName) return mcpName;
 
 	const lower = openCodeToolName.toLowerCase();
-	return TOOL_NAME_MAP[lower] || TOOL_NAME_MAP[openCodeToolName] || openCodeToolName;
+	const mapped = TOOL_NAME_MAP[lower] || TOOL_NAME_MAP[openCodeToolName] || openCodeToolName;
+	return toCanonicalToolName(mapped);
 }
 
 // ============================================================
@@ -445,21 +447,28 @@ export function convertUserMessage(
 /**
  * Convert Open Code assistant message + parts → EngineOutput[]
  *
+ * Follows the Claude Code pattern: every tool_use block is emitted with
+ * `result: null`, and completed/errored tools emit a separate UserMessage
+ * with the tool_result so the frontend has a single stitching path.
+ *
  * Splits content into separate messages:
- * - Consecutive text blocks → one message
- * - Each tool_use block → its own message
+ * - Consecutive text blocks → one assistant message
+ * - Each tool_use block → its own assistant message (+ optional tool_result user message)
  */
 export function convertAssistantMessages(
 	ocMessage: OCMessage,
 	ocParts: Part[],
 	sessionId: string
 ): EngineOutput[] {
-	// 1. Build typed content blocks from parts
-	const allBlocks: AssistantContentBlock[] = [];
+	// 1. Parse parts into (block, optional trailing tool_result) entries.
+	type Entry =
+		| { kind: 'text'; block: TextBlock }
+		| { kind: 'tool'; block: ToolUseBlock; result: ToolResult | null };
+	const entries: Entry[] = [];
 
 	for (const part of ocParts) {
 		if (part.type === 'text') {
-			allBlocks.push({ type: 'text', text: part.text || '' } as TextBlock);
+			entries.push({ kind: 'text', block: { type: 'text', text: part.text || '' } as TextBlock });
 		} else if (part.type === 'tool') {
 			const toolPart = part as ToolPart;
 			const claudeName = mapToolName(toolPart.tool || 'unknown');
@@ -485,59 +494,66 @@ export function convertAssistantMessages(
 				};
 			}
 
-			allBlocks.push({
-				type: 'tool_use',
-				id: toolUseId,
-				name: claudeName,
-				input: normalizedInput,
+			entries.push({
+				kind: 'tool',
+				block: {
+					type: 'tool_use',
+					id: toolUseId,
+					name: claudeName,
+					input: normalizedInput,
+					result: null,
+					subActivities: [],
+					skillPrompt: null,
+					interrupted: false,
+				} as ToolUseBlock,
 				result,
-				subActivities: [],
-				skillPrompt: null,
-				interrupted: false,
-			} as ToolUseBlock);
+			});
 		} else if (part.type === 'subtask') {
-			const subtaskPart = part as any;
-			allBlocks.push({
-				type: 'tool_use',
-				id: subtaskPart.id || crypto.randomUUID(),
-				name: 'Agent',
-				input: {
-					prompt: subtaskPart.prompt || '',
-					description: subtaskPart.description || '',
-					subagentType: subtaskPart.agent || 'general-purpose',
-				},
+			const subtaskPart = part as { id?: string; prompt?: string; description?: string; agent?: string };
+			entries.push({
+				kind: 'tool',
+				block: {
+					type: 'tool_use',
+					id: subtaskPart.id || crypto.randomUUID(),
+					name: 'Agent',
+					input: {
+						prompt: subtaskPart.prompt || '',
+						description: subtaskPart.description || '',
+						subagentType: subtaskPart.agent || 'general-purpose',
+					},
+					result: null,
+					subActivities: [],
+					skillPrompt: null,
+					interrupted: false,
+				} as ToolUseBlock,
 				result: null,
-				subActivities: [],
-				skillPrompt: null,
-				interrupted: false,
-			} as ToolUseBlock);
+			});
 		}
 		// Skip: reasoning, step-start, step-finish, snapshot, patch, agent, retry, compaction
 	}
 
-	// 2. Split into groups: consecutive text → one group, each tool_use → its own group
-	const groups: AssistantContentBlock[][] = [];
-	let currentTextGroup: TextBlock[] = [];
+	// 2. Collapse consecutive text entries into groups; each tool entry is its own group.
+	type Group =
+		| { kind: 'text'; blocks: TextBlock[] }
+		| { kind: 'tool'; entry: Extract<Entry, { kind: 'tool' }> };
+	const groups: Group[] = [];
+	let textBuf: TextBlock[] = [];
 
-	for (const block of allBlocks) {
-		if (block.type === 'text') {
-			currentTextGroup.push(block);
+	for (const entry of entries) {
+		if (entry.kind === 'text') {
+			textBuf.push(entry.block);
 		} else {
-			if (currentTextGroup.length > 0) {
-				groups.push([...currentTextGroup]);
-				currentTextGroup = [];
+			if (textBuf.length > 0) {
+				groups.push({ kind: 'text', blocks: textBuf });
+				textBuf = [];
 			}
-			groups.push([block]);
+			groups.push({ kind: 'tool', entry });
 		}
 	}
-	if (currentTextGroup.length > 0) {
-		groups.push([...currentTextGroup]);
-	}
-	if (groups.length === 0) {
-		groups.push([{ type: 'text', text: '' } as TextBlock]);
-	}
+	if (textBuf.length > 0) groups.push({ kind: 'text', blocks: textBuf });
+	if (groups.length === 0) groups.push({ kind: 'text', blocks: [{ type: 'text', text: '' } as TextBlock] });
 
-	// 3. Build unified messages from groups
+	// 3. Build unified messages from groups.
 	const assistantMsg = ocMessage.role === 'assistant' ? ocMessage as AssistantMessage : null;
 	const providerID = assistantMsg?.providerID || '';
 	const modelID = assistantMsg?.modelID || '';
@@ -550,7 +566,7 @@ export function convertAssistantMessages(
 	for (let i = 0; i < groups.length; i++) {
 		const isLast = i === groups.length - 1;
 		const group = groups[i];
-		const hasToolUse = group.some(b => b.type === 'tool_use');
+		const hasToolUse = group.kind === 'tool';
 
 		let stopReason: StopReason | null;
 		if (isLast) {
@@ -561,6 +577,8 @@ export function convertAssistantMessages(
 			stopReason = null;
 		}
 
+		const content: AssistantContentBlock[] = group.kind === 'text' ? group.blocks : [group.entry.block];
+
 		const msg: UnifiedAssistantMessage = {
 			type: 'assistant',
 			createdAt: new Date().toISOString(),
@@ -568,11 +586,29 @@ export function convertAssistantMessages(
 			sessionId,
 			parent: { messageId: null, sessionId: null, toolUseId: null },
 			engine: { type: 'opencode' as const, provider: providerID, model: { id: modelID, name: '' }, account: { id: 0, name: '' } },
-			content: group,
+			content,
 			stopReason,
 			usage: isLast ? usage : null,
 		};
 		messages.push(msg);
+
+		// For completed/errored tools, emit a paired tool_result user message —
+		// matches the Claude Code adapter's contract.
+		if (group.kind === 'tool' && group.entry.result) {
+			const result = group.entry.result;
+			const toolResultMsg: UserMessage = {
+				type: 'user',
+				createdAt: new Date().toISOString(),
+				messageId: crypto.randomUUID(),
+				sessionId,
+				parent: { messageId: null, sessionId: null, toolUseId: null },
+				engine: { type: 'opencode' as const, provider: providerID, model: { id: modelID, name: '' }, account: { id: 0, name: '' } },
+				sender: { id: '', name: '' },
+				content: [result],
+				synthetic: true,
+			};
+			messages.push(toolResultMsg);
+		}
 	}
 
 	return messages;

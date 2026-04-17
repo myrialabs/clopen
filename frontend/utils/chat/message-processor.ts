@@ -1,43 +1,12 @@
+import { HIDDEN_TOOLS } from '$frontend/components/chat/tools/registry';
 import type { FrontendMessage } from '$frontend/stores/core/sessions.svelte';
 import type {
-  UnifiedMessage,
   AssistantContentBlock,
   UserContentBlock,
   ToolUseBlock,
   ToolResult,
   KnownToolName,
 } from '$shared/types/unified';
-
-// List of tool names that should include tool_result in content
-export const TOOLS_WITH_RESULTS: readonly string[] = [
-  'Bash',
-  'TaskOutput',
-  'Edit',
-  'ExitPlanMode',
-  'Glob',
-  'Grep',
-  'TaskStop',
-  'ListMcpResources',
-  'NotebookEdit',
-  'ReadMcpResource',
-  'Read',
-  'TodoWrite',
-  'WebFetch',
-  'WebSearch',
-  'Write',
-  'AskUserQuestion',
-  'Config',
-  'EnterWorktree',
-  'Agent',
-  'EnterPlanMode',
-  'Skill'
-];
-
-// Tools that should be hidden from display
-export const HIDDEN_TOOLS: readonly string[] = [
-  'TaskOutput',
-  'TodoWrite'
-];
 
 // Message types that represent actual conversation content and should be rendered.
 const RENDERABLE_MESSAGE_TYPES = new Set(['assistant', 'user', 'reasoning', 'stream_event']);
@@ -109,15 +78,7 @@ export function extractToolResults(content: UserContentBlock[]): ToolResult[] {
   return content.filter((item): item is ToolResult => item.type === 'tool_result');
 }
 
-// Check if a tool should have its result embedded
-export function shouldEmbedResult(toolName: string): boolean {
-  if (toolName.startsWith('mcp__')) {
-    return true;
-  }
-  return TOOLS_WITH_RESULTS.includes(toolName);
-}
-
-// Check if a tool should be hidden
+// Check if a tool should be hidden from the chat stream
 export function shouldHideTool(toolName: string): boolean {
-  return HIDDEN_TOOLS.includes(toolName);
+  return HIDDEN_TOOLS.has(toolName as KnownToolName);
 }

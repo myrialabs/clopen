@@ -218,17 +218,17 @@ function trackBackgroundBashSessions(
     for (const block of message.content) {
       if (block.type !== 'tool_use') continue;
 
-      // Check for Bash with run_in_background
+      // Check for Bash with runInBackground
       if (block.name === 'Bash' && block.input &&
           typeof block.input === 'object' &&
-          'run_in_background' in block.input &&
-          (block.input as any).run_in_background) {
+          'runInBackground' in block.input &&
+          (block.input as { runInBackground?: boolean }).runInBackground) {
         trackBackgroundBash(block, toolUseMap, backgroundBashMap);
       }
       // Collect all TaskOutput results
       else if (block.name === 'TaskOutput' && block.input &&
                typeof block.input === 'object' &&
-               'bash_id' in block.input) {
+               'taskId' in block.input) {
         trackBashOutput(block, toolUseMap, backgroundBashMap);
       }
     }
@@ -272,8 +272,9 @@ function trackBashOutput(
   toolUseMap: Map<string, ToolGroup>,
   backgroundBashMap: Map<string, BackgroundBashData>
 ): void {
-  const bashId = (block.input as any).bash_id as string;
+  const bashId = (block.input as { taskId?: string }).taskId;
   const toolId = block.id;
+  if (!bashId) return;
 
   if (!toolId || !toolUseMap.has(toolId)) return;
 

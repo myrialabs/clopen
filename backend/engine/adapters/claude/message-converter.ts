@@ -39,6 +39,7 @@ import type {
 	TokenUsage,
 	StopReason,
 } from '$shared/types/unified';
+import { toCanonicalToolName } from '$shared/types/unified';
 
 // ============================================================
 // Helper Mappers
@@ -124,11 +125,12 @@ export function mapAssistantContent(sdkContent: BetaContentBlock[]): AssistantCo
 			case 'text':
 				blocks.push({ type: 'text', text: block.text });
 				break;
-			case 'tool_use':
+			case 'tool_use': {
+				const rawName = block.name === 'Task' ? 'Agent' : block.name;
 				blocks.push({
 					type: 'tool_use',
 					id: block.id,
-					name: block.name === 'Task' ? 'Agent' : block.name,
+					name: toCanonicalToolName(rawName),
 					input: convertToolInput(block.name, block.input as Record<string, unknown>),
 					result: null,
 					subActivities: [],
@@ -136,6 +138,7 @@ export function mapAssistantContent(sdkContent: BetaContentBlock[]): AssistantCo
 					interrupted: false,
 				} as ToolUseBlock);
 				break;
+			}
 		}
 	}
 	return blocks;
