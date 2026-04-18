@@ -5,7 +5,8 @@ export { default as Button } from './common/display/Button.svelte';
 export { default as Input } from './common/form/Input.svelte';
 export { default as Card } from './common/display/Card.svelte';
 export { default as ModelSelector } from './common/form/ModelSelector.svelte';
-export { default as MonacoEditor } from './common/editor/MonacoEditor.svelte';
+export { default as MonacoCodeEditor } from './common/editor/MonacoCodeEditor.svelte';
+export { default as MonacoDiffEditor } from './common/editor/MonacoDiffEditor.svelte';
 export { default as PageTemplate } from './common/display/PageTemplate.svelte';
 export { default as Modal } from './common/overlay/Modal.svelte';
 

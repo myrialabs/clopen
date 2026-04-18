@@ -1,18 +1,14 @@
 <script lang="ts">
-	import { onDestroy, untrack } from 'svelte';
 	import Icon from '$frontend/components/common/display/Icon.svelte';
 	import MediaPreview from '$frontend/components/common/media/MediaPreview.svelte';
+	import MonacoDiffEditor from '$frontend/components/common/editor/MonacoDiffEditor.svelte';
+	import { detectLanguageFromFilename } from '$frontend/components/common/editor/monaco-languages';
 	import { getFileIcon } from '$frontend/utils/file-icon-mappings';
 	import { isPreviewableFile } from '$frontend/utils/file-type';
 	import { getGitStatusBadgeLabel, getGitStatusBadgeColor } from '$frontend/utils/git-status';
-	import { themeStore } from '$frontend/stores/ui/theme.svelte';
 	import { projectState } from '$frontend/stores/core/projects.svelte';
-	import { settings } from '$frontend/stores/features/settings.svelte';
-	import loader from '@monaco-editor/loader';
-	import type { editor } from 'monaco-editor';
 	import type { GitFileDiff } from '$shared/types/git';
 	import type { IconName } from '$shared/types/ui/icons';
-	import { debug } from '$shared/utils/logger';
 	import { requestRevealFile } from '$frontend/stores/core/files.svelte';
 	import { getVisiblePanels, workspaceState } from '$frontend/stores/ui/workspace.svelte';
 
@@ -29,13 +25,11 @@
 	const allDiffs = $derived(diffs.length > 0 ? diffs : diff ? [diff] : []);
 	const activeDiff = $derived(allDiffs.length > 0 ? allDiffs[selectedFileIndex] ?? allDiffs[0] : null);
 
-	// Monaco diff editor
-	let containerRef = $state<HTMLDivElement | null>(null);
-	let diffEditorInstance: editor.IDiffEditor | null = null;
-	let monacoInstance: typeof import('monaco-editor') | null = null;
-	const isDark = $derived(themeStore.isDark);
+	const activePath = $derived(activeDiff?.newPath || activeDiff?.oldPath || '');
+	const activeLanguage = $derived(detectLanguageFromFilename(getFileName(activePath)));
+	const originalContent = $derived(activeDiff ? buildContent(activeDiff, 'old') : '');
+	const modifiedContent = $derived(activeDiff ? buildContent(activeDiff, 'new') : '');
 
-	// Derive absolute path for binary preview
 	const binaryPreviewPath = $derived.by(() => {
 		if (!activeDiff?.isBinary || activeDiff.status === 'D') return null;
 		const filePath = activeDiff.newPath || activeDiff.oldPath;
@@ -52,7 +46,6 @@
 		return getFileName(activeDiff.newPath || activeDiff.oldPath);
 	});
 
-	// Build full content from hunks
 	function buildContent(diff: GitFileDiff, side: 'old' | 'new'): string {
 		if (!diff || diff.isBinary || diff.hunks.length === 0) return '';
 		const lines: string[] = [];
@@ -72,25 +65,6 @@
 		return lines.join('\n');
 	}
 
-	function getLanguageFromPath(filePath: string): string {
-		const ext = filePath.split('.').pop()?.toLowerCase();
-		if (!ext) return 'plaintext';
-		const map: Record<string, string> = {
-			js: 'javascript', jsx: 'javascript', ts: 'typescript', tsx: 'typescript',
-			mjs: 'javascript', cjs: 'javascript',
-			html: 'html', htm: 'html', css: 'css', scss: 'scss', sass: 'sass', less: 'less',
-			py: 'python', java: 'java', c: 'c', cpp: 'cpp', h: 'c', hpp: 'cpp',
-			cs: 'csharp', go: 'go', rs: 'rust', php: 'php', rb: 'ruby',
-			swift: 'swift', kt: 'kotlin', scala: 'scala',
-			sh: 'shell', bash: 'shell', zsh: 'shell',
-			sql: 'sql', xml: 'xml', json: 'json', yaml: 'yaml', yml: 'yaml',
-			toml: 'toml', md: 'markdown', dockerfile: 'dockerfile',
-			svelte: 'html', vue: 'html', svg: 'xml',
-			gitignore: 'plaintext', env: 'plaintext', txt: 'plaintext', log: 'plaintext'
-		};
-		return map[ext] || 'plaintext';
-	}
-
 	function getFileName(path: string): string {
 		return path.split(/[\\/]/).pop() || path;
 	}
@@ -107,119 +81,6 @@
 	}
 
 	const isFilesPanelVisible = $derived(getVisiblePanels(workspaceState.layout).includes('files'));
-
-	async function initDiffEditor() {
-		if (!containerRef || !activeDiff) return;
-
-		try {
-			if (!monacoInstance) {
-				monacoInstance = await loader.init();
-
-				// Define themes
-				monacoInstance.editor.defineTheme('diff-dark', {
-					base: 'vs-dark',
-					inherit: true,
-					rules: [],
-					colors: {
-						'editor.background': '#0d1117',
-						'editor.foreground': '#e6edf3',
-						'editor.lineHighlightBackground': '#161b22',
-						'editorLineNumber.foreground': '#6e7681',
-						'editorLineNumber.activeForeground': '#f0f6fc',
-						'diffEditor.insertedTextBackground': '#23863633',
-						'diffEditor.removedTextBackground': '#f8514933',
-						'diffEditor.insertedLineBackground': '#23863620',
-						'diffEditor.removedLineBackground': '#f8514920',
-					}
-				});
-				monacoInstance.editor.defineTheme('diff-light', {
-					base: 'vs',
-					inherit: true,
-					rules: [],
-					colors: {
-						'editor.background': '#ffffff',
-						'diffEditor.insertedTextBackground': '#dafbe133',
-						'diffEditor.removedTextBackground': '#ffc3c333',
-						'diffEditor.insertedLineBackground': '#dafbe120',
-						'diffEditor.removedLineBackground': '#ffc3c320',
-					}
-				});
-			}
-
-			// Dispose previous
-			if (diffEditorInstance) {
-				diffEditorInstance.dispose();
-				diffEditorInstance = null;
-			}
-
-			const language = getLanguageFromPath(activeDiff.newPath || activeDiff.oldPath || '');
-			const oldContent = buildContent(activeDiff, 'old');
-			const newContent = buildContent(activeDiff, 'new');
-
-			const originalModel = monacoInstance.editor.createModel(oldContent, language);
-			const modifiedModel = monacoInstance.editor.createModel(newContent, language);
-
-			diffEditorInstance = monacoInstance.editor.createDiffEditor(containerRef, {
-				theme: isDark ? 'diff-dark' : 'diff-light',
-				readOnly: true,
-				renderSideBySide: true,
-				renderSideBySideInlineBreakpoint: Math.round(600 * (settings.fontSize / 13)),
-				minimap: { enabled: false },
-				scrollBeyondLastLine: false,
-				fontSize: Math.round(settings.fontSize * 0.9),
-				lineHeight: Math.round(settings.fontSize * 0.9 * 1.5),
-				renderOverviewRuler: false,
-				enableSplitViewResizing: true,
-				automaticLayout: true,
-				scrollbar: {
-					verticalScrollbarSize: 8,
-					horizontalScrollbarSize: 8
-				}
-			});
-
-			diffEditorInstance.setModel({
-				original: originalModel,
-				modified: modifiedModel
-			});
-		} catch (err) {
-			debug.error('git', 'Failed to init diff editor:', err);
-		}
-	}
-
-	// Update theme when it changes
-	$effect(() => {
-		const theme = isDark ? 'diff-dark' : 'diff-light';
-		if (diffEditorInstance && monacoInstance) {
-			monacoInstance.editor.setTheme(theme);
-		}
-	});
-
-	// Update font size when setting changes
-	$effect(() => {
-		const size = settings.fontSize;
-		if (diffEditorInstance) {
-			diffEditorInstance.updateOptions({
-				fontSize: Math.round(size * 0.9),
-				lineHeight: Math.round(size * 0.9 * 1.5),
-				renderSideBySideInlineBreakpoint: Math.round(600 * (size / 13))
-			});
-		}
-	});
-
-	// Reinitialize when diff or selected file changes
-	$effect(() => {
-		if (activeDiff && containerRef) {
-			selectedFileIndex;
-			untrack(() => initDiffEditor());
-		}
-	});
-
-	onDestroy(() => {
-		if (diffEditorInstance) {
-			diffEditorInstance.dispose();
-			diffEditorInstance = null;
-		}
-	});
 </script>
 
 <div class="h-full flex flex-col">
@@ -291,7 +152,15 @@
 		{:else}
 			<!-- Monaco Diff Editor -->
 			<div class="flex-1 overflow-hidden">
-				<div class="h-full w-full" bind:this={containerRef}></div>
+				{#key activePath}
+					<MonacoDiffEditor
+						original={originalContent}
+						modified={modifiedContent}
+						language={activeLanguage}
+						originalPath={activeDiff.oldPath}
+						modifiedPath={activeDiff.newPath}
+					/>
+				{/key}
 			</div>
 		{/if}
 	{/if}

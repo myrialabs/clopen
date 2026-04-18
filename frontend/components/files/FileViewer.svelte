@@ -1,7 +1,7 @@
 <script lang="ts">
 	import type { FileNode } from '$shared/types/filesystem';
 	import LoadingSpinner from '../common/feedback/LoadingSpinner.svelte';
-	import MonacoEditor from '../common/editor/MonacoEditor.svelte';
+	import MonacoCodeEditor from '../common/editor/MonacoCodeEditor.svelte';
 	import MediaPreview from '../common/media/MediaPreview.svelte';
 	import { themeStore } from '$frontend/stores/ui/theme.svelte';
 	import Icon from '$frontend/components/common/display/Icon.svelte';
@@ -14,7 +14,7 @@
 	import type { editor } from 'monaco-editor';
 	import { debug } from '$shared/utils/logger';
 
-	// Interface untuk MonacoEditor component
+	// Interface untuk MonacoCodeEditor component
 	interface MonacoEditorComponent {
 		getEditor: () => editor.IStandaloneCodeEditor | null;
 		getValue: () => string;
@@ -427,10 +427,11 @@
 						<div class="flex-1 relative overflow-hidden">
 							<div class="absolute inset-0">
 								{#key themeKey}
-								<MonacoEditor
+								<MonacoCodeEditor
 									bind:this={monacoEditorRef}
 									bind:value={editableContent}
 									language="xml"
+									path={file.path}
 									readonly={false}
 									onChange={handleContentChange}
 									options={{
@@ -477,10 +478,11 @@
 				<div class="h-full relative bg-slate-50 dark:bg-slate-950">
 					<div class="absolute inset-0">
 						{#key themeKey}
-						<MonacoEditor
+						<MonacoCodeEditor
 							bind:this={monacoEditorRef}
 							bind:value={editableContent}
 							language={getDetectedLanguage()}
+							path={file.path}
 							readonly={false}
 							onChange={handleContentChange}
 							options={{
