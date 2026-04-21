@@ -19,6 +19,7 @@ import { loggerMiddleware } from './middleware/logger';
 // Database initialization
 import { initializeDatabase, closeDatabase } from './database';
 import { disposeAllEngines } from './engine';
+import { refreshProcessPath } from './utils/path-harvest';
 import { debug } from '$shared/utils/logger';
 import { networkInterfaces } from 'os';
 import { resolve } from 'node:path';
@@ -126,6 +127,16 @@ async function startServer() {
 	// - CLI:         bin/clopen.ts resolves port and passes via PORT env
 	// This avoids double port-check race conditions (e.g. zombie processes on
 	// Windows causing silent desync between Vite proxy and backend).
+
+	// Harvest user's interactive-shell PATH into process.env (Unix only).
+	// Ensures Bun.which / Bun.spawn / bun-pty see the same PATH as the user's
+	// terminal, so CLI binaries installed via nvm/fnm/volta/asdf/bun/homebrew
+	// are discoverable even when clopen is launched from a minimal environment.
+	try {
+		await refreshProcessPath();
+	} catch (error) {
+		debug.warn('path', '⚠️ Initial PATH harvest failed:', error);
+	}
 
 	// Initialize database first before accepting connections
 	try {

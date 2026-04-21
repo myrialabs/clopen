@@ -45,7 +45,8 @@ export type LogLabel =
 	| 'server'
 	| 'database'
 	| 'migration'
-	| 'seeder';
+	| 'seeder'
+	| 'path';
 export type LogMethod = 'log' | 'info' | 'warn' | 'error' | 'debug' | 'trace';
 
 interface LoggerConfig {
