@@ -19,6 +19,7 @@ import { createRouter } from '$shared/utils/ws-server';
 import { ws } from '$backend/utils/ws';
 import { engineQueries } from '../../../database/queries';
 import { resetEnvironment, getClaudeUserConfigDir } from '../../../engine/adapters/claude/environment';
+import { resolveBinaryWithRefresh } from '../../../utils/cli';
 import { debug } from '$shared/utils/logger';
 import { getCleanSpawnEnv } from '../../../utils/env';
 
@@ -190,7 +191,7 @@ export const accountsHandler = createRouter()
 		ptyEnv['CLAUDE_CONFIG_DIR'] = getClaudeUserConfigDir();
 		ptyEnv['BROWSER'] = 'false';
 
-		const claudeCmd = Bun.which('claude');
+		const claudeCmd = await resolveBinaryWithRefresh('claude');
 		if (!claudeCmd) throw new Error('claude binary not found on PATH');
 		let pty: ReturnType<typeof spawn>;
 		try {

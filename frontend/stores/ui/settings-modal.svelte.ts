@@ -8,6 +8,7 @@ import type { IconName } from '$shared/types/ui/icons';
 export type SettingsSection =
 	| 'models'
 	| 'engines'
+	| 'system-tools'
 	| 'appearance'
 	| 'notifications'
 	| 'tunnel'
@@ -41,7 +42,7 @@ export const settingsSections: SettingsSectionMeta[] = [
 		id: 'engines',
 		label: 'Engines',
 		icon: 'lucide:plug',
-		description: 'Installation and accounts',
+		description: 'Accounts and providers',
 		adminOnly: true
 	},
 	{
@@ -77,9 +78,16 @@ export const settingsSections: SettingsSectionMeta[] = [
 	},
 	{
 		id: 'system',
-		label: 'System',
+		label: 'Maintenance',
 		icon: 'lucide:settings-2',
 		description: 'Updates and data',
+		adminOnly: true
+	},
+	{
+		id: 'system-tools',
+		label: 'System Tools',
+		icon: 'lucide:hammer',
+		description: 'Server-side binaries',
 		adminOnly: true
 	},
 	{

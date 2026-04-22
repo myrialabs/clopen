@@ -7,6 +7,7 @@
 	import { claudeAccountsStore, type ClaudeAccountItem } from '$frontend/stores/features/claude-accounts.svelte';
 	import { opencodeProvidersStore, type ModelsDevProviderItem } from '$frontend/stores/features/opencode-providers.svelte';
 	import Icon from '$frontend/components/common/display/Icon.svelte';
+	import SystemToolsSettings from '$frontend/components/settings/system-tools/SystemToolsSettings.svelte';
 	import ws from '$frontend/utils/ws';
 	import type { AuthMode } from '$shared/types/stores/settings';
 	import type { IconName } from '$shared/types/ui/icons';
@@ -17,8 +18,8 @@
 	});
 
 	// ─── Wizard state ───
-	type WizardStep = 'auth-mode' | 'admin-account' | 'engines' | 'preferences';
-	const ALL_STEPS: WizardStep[] = ['auth-mode', 'admin-account', 'engines', 'preferences'];
+	type WizardStep = 'auth-mode' | 'admin-account' | 'system-tools' | 'engines' | 'preferences';
+	const ALL_STEPS: WizardStep[] = ['auth-mode', 'admin-account', 'system-tools', 'engines', 'preferences'];
 
 	let currentStep = $state<WizardStep>('auth-mode');
 	let completedSteps = $state<Set<WizardStep>>(new Set());
@@ -96,6 +97,7 @@
 	const stepLabels: Record<WizardStep, { label: string; icon: IconName }> = {
 		'auth-mode': { label: 'Login', icon: 'lucide:shield' },
 		'admin-account': { label: 'Account', icon: 'lucide:user-plus' },
+		'system-tools': { label: 'System Tools', icon: 'lucide:hammer' },
 		'engines': { label: 'Engines', icon: 'lucide:plug' },
 		'preferences': { label: 'Preferences', icon: 'lucide:palette' }
 	};
@@ -116,7 +118,7 @@
 					completedSteps.add('auth-mode');
 					completedSteps.add('admin-account');
 					completedSteps = new Set(completedSteps);
-					currentStep = 'engines';
+					currentStep = 'system-tools';
 				} else {
 					goToNextStep();
 				}
@@ -129,17 +131,17 @@
 					completedSteps.add('auth-mode');
 					completedSteps.add('admin-account');
 					completedSteps = new Set(completedSteps);
-					currentStep = 'engines';
+					currentStep = 'system-tools';
 				} else if (selectedAuthMode === 'required' && previousMode !== 'required') {
 					// no-auth → with-auth: update mode, regenerate PAT, go to admin-account
 					await authStore.switchToWithAuth();
 					goToNextStep();
 				} else if (selectedAuthMode === 'none') {
-					// Same mode (none) — skip admin-account, go to engines
+					// Same mode (none) — skip admin-account, go to system-tools
 					completedSteps.add('auth-mode');
 					completedSteps.add('admin-account');
 					completedSteps = new Set(completedSteps);
-					currentStep = 'engines';
+					currentStep = 'system-tools';
 				} else {
 					// Same mode (required) — advance to admin-account
 					goToNextStep();
@@ -826,7 +828,37 @@
 					{/if}
 				</div>
 
-			<!-- ════════ Step 3: AI Engines ════════ -->
+			<!-- ════════ Step 3: System Tools ════════ -->
+			{:else if currentStep === 'system-tools'}
+				<div class="space-y-4">
+					<div class="text-center">
+						<h2 class="text-base font-semibold text-slate-900 dark:text-slate-100 mb-1">System Tools</h2>
+						<p class="text-sm text-slate-500 dark:text-slate-400">
+							Install binaries clopen depends on, directly on the server.
+						</p>
+					</div>
+
+					<div class="text-left">
+						<SystemToolsSettings showHeader={false} />
+					</div>
+
+					<div class="flex gap-2">
+						<button
+							onclick={goToPrevStep}
+							class="px-4 py-2 rounded-lg border border-slate-300 dark:border-slate-700 text-slate-600 dark:text-slate-400 text-sm font-medium hover:bg-slate-50 dark:hover:bg-slate-800 transition-colors"
+						>
+							Back
+						</button>
+						<button
+							onclick={goToNextStep}
+							class="flex-1 py-2.5 px-4 rounded-lg bg-violet-600 hover:bg-violet-700 text-white text-sm font-medium transition-colors"
+						>
+							Continue
+						</button>
+					</div>
+				</div>
+
+			<!-- ════════ Step 4: AI Engines ════════ -->
 			{:else if currentStep === 'engines'}
 				<div class="space-y-4">
 					<div class="text-center">
@@ -838,29 +870,11 @@
 
 						<!-- Claude Code -->
 						<div class="text-left p-4 rounded-xl border border-slate-200 dark:border-slate-700/50 bg-white dark:bg-slate-800/50">
-							<div class="flex items-center justify-between mb-2">
-								<div class="flex items-center gap-2.5">
-									<div class="flex items-center justify-center [&>svg]:w-5 [&>svg]:h-5">
-										{@html isDarkMode() ? claudeEngine.icon.dark : claudeEngine.icon.light}
-									</div>
-									<span class="text-sm font-semibold text-slate-900 dark:text-slate-100">{claudeEngine.name}</span>
+							<div class="flex items-center gap-2.5 mb-2">
+								<div class="flex items-center justify-center [&>svg]:w-5 [&>svg]:h-5">
+									{@html isDarkMode() ? claudeEngine.icon.dark : claudeEngine.icon.light}
 								</div>
-								{#if isLoadingClaude}
-									<span class="inline-flex items-center gap-1.5 px-2 py-0.5 rounded-full text-xs font-medium bg-slate-100 dark:bg-slate-700 text-slate-500 dark:text-slate-400">
-										<Icon name="lucide:loader" class="w-3 h-3 animate-spin" />
-										Checking...
-									</span>
-								{:else if claudeStatus?.installed}
-									<span class="inline-flex items-center gap-1.5 px-2 py-0.5 rounded-full text-xs font-medium bg-green-100 dark:bg-green-900/30 text-green-700 dark:text-green-400">
-										<span class="w-1.5 h-1.5 rounded-full bg-green-500"></span>
-										{claudeStatus.version || 'Installed'}
-									</span>
-								{:else}
-									<span class="inline-flex items-center gap-1.5 px-2 py-0.5 rounded-full text-xs font-medium bg-red-100 dark:bg-red-900/30 text-red-700 dark:text-red-400">
-										<span class="w-1.5 h-1.5 rounded-full bg-red-500"></span>
-										Not Installed
-									</span>
-								{/if}
+								<span class="text-sm font-semibold text-slate-900 dark:text-slate-100">{claudeEngine.name}</span>
 							</div>
 							<p class="text-xs text-slate-500 dark:text-slate-400">{claudeEngine.description}</p>
 
@@ -1101,29 +1115,11 @@
 
 						<!-- OpenCode -->
 						<div class="text-left p-4 rounded-xl border border-slate-200 dark:border-slate-700/50 bg-white dark:bg-slate-800/50">
-							<div class="flex items-center justify-between mb-2">
-								<div class="flex items-center gap-2.5">
-									<div class="flex items-center justify-center [&>svg]:w-5 [&>svg]:h-5">
-										{@html isDarkMode() ? openCodeEngine.icon.dark : openCodeEngine.icon.light}
-									</div>
-									<span class="text-sm font-semibold text-slate-900 dark:text-slate-100">{openCodeEngine.name}</span>
+							<div class="flex items-center gap-2.5 mb-2">
+								<div class="flex items-center justify-center [&>svg]:w-5 [&>svg]:h-5">
+									{@html isDarkMode() ? openCodeEngine.icon.dark : openCodeEngine.icon.light}
 								</div>
-								{#if isLoadingOpenCode}
-									<span class="inline-flex items-center gap-1.5 px-2 py-0.5 rounded-full text-xs font-medium bg-slate-100 dark:bg-slate-700 text-slate-500 dark:text-slate-400">
-										<Icon name="lucide:loader" class="w-3 h-3 animate-spin" />
-										Checking...
-									</span>
-								{:else if openCodeStatus?.installed}
-									<span class="inline-flex items-center gap-1.5 px-2 py-0.5 rounded-full text-xs font-medium bg-green-100 dark:bg-green-900/30 text-green-700 dark:text-green-400">
-										<span class="w-1.5 h-1.5 rounded-full bg-green-500"></span>
-										{openCodeStatus.version || 'Installed'}
-									</span>
-								{:else}
-									<span class="inline-flex items-center gap-1.5 px-2 py-0.5 rounded-full text-xs font-medium bg-red-100 dark:bg-red-900/30 text-red-700 dark:text-red-400">
-										<span class="w-1.5 h-1.5 rounded-full bg-red-500"></span>
-										Not Installed
-									</span>
-								{/if}
+								<span class="text-sm font-semibold text-slate-900 dark:text-slate-100">{openCodeEngine.name}</span>
 							</div>
 							<p class="text-xs text-slate-500 dark:text-slate-400">{openCodeEngine.description}</p>
 
@@ -1436,7 +1432,7 @@
 					</div>
 				</div>
 
-			<!-- ════════ Step 4: Preferences ════════ -->
+			<!-- ════════ Step 5: Preferences ════════ -->
 			{:else if currentStep === 'preferences'}
 				<div class="space-y-4">
 					<div class="text-center">

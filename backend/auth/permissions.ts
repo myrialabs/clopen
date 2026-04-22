@@ -26,7 +26,13 @@ export const ADMIN_ONLY_ROUTES = new Set([
 	'auth:revoke-invite',
 	'auth:list-users',
 	'auth:remove-user',
-	'settings:update-system'
+	'settings:update-system',
+	// System Tools — binary installation is an admin-only operation.
+	'system-tools:status',
+	'system-tools:status-all',
+	'system-tools:install-start',
+	'system-tools:install-cancel',
+	'system-tools:install-session'
 ]);
 
 /**

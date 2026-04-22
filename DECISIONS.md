@@ -258,3 +258,19 @@
 **Trade-offs:** Must avoid relying on third-party SDK spawn functions for CLI binaries.
 
 ---
+
+### 31. User PATH Harvesting
+
+**Decision:** On Unix, spawn the user's login+interactive shell (`$SHELL -ilc 'printf %s "$PATH"'`) to capture its `PATH` and merge into `process.env.PATH` before binary detection. Implemented in `backend/utils/path-harvest.ts` and called from tool-status checks and the install runner.
+**Rationale:** Clopen may be launched from environments (systemd, launchd, Finder) whose PATH does not include entries set by `.zshrc`/`.bashrc`/`.profile`. Without harvesting, `Bun.which('claude')` returns null even though `claude -v` works in the user's terminal. Harvesting once per call (no TTL) keeps "Recheck Installation" live: install a CLI in the terminal, click recheck, it appears.
+**Trade-offs:** Adds ~100ms latency on first detection and a 2-second cap if the shell is unresponsive. Skipped on Windows (PATH is inherited correctly by child processes).
+
+---
+
+### 32. System Tools Installer (Server-side)
+
+**Decision:** Admin-only **Settings → System Tools** section installs Git, Claude Code, OpenCode, and Chrome via a server-side recipe registry (`backend/engine/install-recipes.ts`). Each install runs through `backend/engine/install-runner.ts`, which spawns the recipe via `Bun.spawn`, streams stdout/stderr line-by-line over WebSocket (`system-tools:install-stream`), buffers output in a bounded ring buffer (so late subscribers can catch up), and supports cancellation. Output renders client-side in xterm.js so ANSI escapes and `\r`-based progress bars display correctly. After a successful install, the runner re-harvests PATH so downstream code paths (e.g. `models:list` → `Bun.which('opencode')`) immediately see the new binary without a process restart.
+**Rationale:** Asking admins to drop into a terminal to install dependencies is friction, especially for non-developer admins running clopen as a managed workspace. Recipes are server-only (clients can only pick a tool id) so the client cannot supply arbitrary commands. Privilege detection (`backend/utils/privilege.ts`) determines whether sudo/admin is available and selects the right recipe variant per platform; tools that require interactive elevation (e.g. apt-get with sudo on a non-elevated server) are marked non-auto-installable and surface manual instructions instead.
+**Trade-offs:** Recipe coverage must be maintained per platform/package-manager; non-admin platforms surface manual instructions only. The post-install PATH harvest assumes the installer either modified the user's shell rc files or wrote into a directory already on the harvested PATH; otherwise the user must add the binary to PATH manually.
+
+---

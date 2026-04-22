@@ -28,6 +28,7 @@ import { systemRouter } from './system';
 import { tunnelRouter } from './tunnel';
 import { gitRouter } from './git';
 import { engineRouter } from './engine';
+import { systemToolsRouter } from './system-tools';
 
 // ============================================
 // Main App Router - Merge All Module Routers
@@ -63,7 +64,10 @@ export const wsRouter = createRouter()
 	.merge(gitRouter)
 
 	// AI Engine Management
-	.merge(engineRouter);
+	.merge(engineRouter)
+
+	// System Tools (install Git, Claude Code, OpenCode, Chrome binaries)
+	.merge(systemToolsRouter);
 
 // Export API type for frontend type-safe access
 export type WSAPI = typeof wsRouter['$api'];

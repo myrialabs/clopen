@@ -19,6 +19,7 @@ import type { Browser, BrowserContext, Page } from 'puppeteer';
 import { debug } from '$shared/utils/logger';
 import puppeteer from 'puppeteer-extra';
 import StealthPlugin from 'puppeteer-extra-plugin-stealth';
+import { getChromeExecutablePath } from '$backend/engine/install-recipes';
 
 puppeteer.use(StealthPlugin());
 
@@ -98,11 +99,18 @@ class BrowserPool {
 	private async launchBrowser(): Promise<Browser> {
 		debug.log('preview', '🚀 Launching browser with puppeteer-extra + StealthPlugin...');
 
-		const browser = await puppeteer.launch({
-			headless: true,
-			channel: 'chrome',
-			args: CHROMIUM_ARGS
-		}) as unknown as Browser;
+		// Prefer the clopen-managed Chrome under ~/.clopen/bin, then system Chrome.
+		// Fall back to puppeteer's `channel: 'chrome'` discovery only if neither exists.
+		const executablePath = getChromeExecutablePath();
+		const launchOptions: Parameters<typeof puppeteer.launch>[0] = executablePath
+			? { headless: true, executablePath, args: CHROMIUM_ARGS }
+			: { headless: true, channel: 'chrome', args: CHROMIUM_ARGS };
+
+		if (executablePath) {
+			debug.log('preview', `  using Chrome at: ${executablePath}`);
+		}
+
+		const browser = await puppeteer.launch(launchOptions) as unknown as Browser;
 
 		debug.log('preview', '✅ Browser launched successfully');
 

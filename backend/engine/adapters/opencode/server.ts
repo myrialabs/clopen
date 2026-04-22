@@ -16,6 +16,7 @@ import type { Subprocess } from 'bun';
 import { getOpenCodeMcpConfig } from '../../../mcp';
 import { settingsQueries } from '../../../database/queries';
 import { generateOpenCodeProviderConfig } from './config';
+import { resolveBinaryWithRefresh } from '$backend/utils/cli';
 import { debug } from '$shared/utils/logger';
 
 const OPENCODE_HOST = '127.0.0.1';
@@ -117,8 +118,10 @@ async function init(): Promise<void> {
 		settingsQueries.delete(DB_KEY);
 	}
 
-	// 2. Spawn a new server via Bun.spawn with absolute binary path
-	const command = Bun.which('opencode');
+	// 2. Spawn a new server via Bun.spawn with absolute binary path.
+	// Re-harvest PATH and fall back to known install locations so freshly
+	// installed binaries are picked up without a clopen restart.
+	const command = await resolveBinaryWithRefresh('opencode');
 	if (!command) throw new Error('opencode binary not found on PATH');
 	const args = [command, 'serve', `--hostname=${OPENCODE_HOST}`, '--port=0'];
 

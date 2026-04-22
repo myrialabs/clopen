@@ -5,6 +5,7 @@
 
 import { debug } from '$shared/utils/logger';
 import { getCleanSpawnEnv } from '../utils/env';
+import { resolveBinary } from '../utils/cli';
 
 export interface GitExecResult {
 	stdout: string;
@@ -22,7 +23,7 @@ export async function execGit(
 ): Promise<GitExecResult> {
 	debug.log('git', `Executing: git ${args.join(' ')} in ${cwd}`);
 
-	const gitPath = Bun.which('git');
+	const gitPath = resolveBinary('git');
 	if (!gitPath) throw new Error('git binary not found on PATH');
 
 	const safeCwd = cwd.replace(/\\/g, '/');

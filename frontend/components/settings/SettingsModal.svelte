@@ -15,6 +15,7 @@
 	// Import settings components
 	import ModelSettings from './model/ModelSettings.svelte';
 	import AIEnginesSettings from './engines/AIEnginesSettings.svelte';
+	import SystemToolsSettings from './system-tools/SystemToolsSettings.svelte';
 	import AppearanceSettings from './appearance/AppearanceSettings.svelte';
 	import AccountSettings from './account/AccountSettings.svelte';
 	import NotificationSettings from './notifications/NotificationSettings.svelte';
@@ -243,6 +244,10 @@
 						{:else if activeSection === 'engines' && isAdmin}
 							<div in:fly={{ x: 20, duration: 200 }}>
 								<AIEnginesSettings />
+							</div>
+						{:else if activeSection === 'system-tools' && isAdmin}
+							<div in:fly={{ x: 20, duration: 200 }}>
+								<SystemToolsSettings />
 							</div>
 						{:else if activeSection === 'team' && isAdmin && !isNoAuth}
 							<div in:fly={{ x: 20, duration: 200 }}>

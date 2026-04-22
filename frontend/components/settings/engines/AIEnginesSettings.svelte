@@ -5,6 +5,7 @@
 	import Dialog from '$frontend/components/common/overlay/Dialog.svelte';
 	import ws from '$frontend/utils/ws';
 	import { isDarkMode } from '$frontend/utils/theme';
+	import { setActiveSection } from '$frontend/stores/ui/settings-modal.svelte';
 	import { ENGINES } from '$shared/constants/engines';
 	import { claudeAccountsStore, type ClaudeAccountItem as ClaudeCodeAccountItem } from '$frontend/stores/features/claude-accounts.svelte';
 	import { opencodeProvidersStore, type OpenCodeProviderItem, type ModelsDevProviderItem } from '$frontend/stores/features/opencode-providers.svelte';
@@ -47,14 +48,6 @@
 	let claudeCodeAccountName = $state('');
 	let claudeCodeSetupError = $state('');
 
-	// Install guide - Claude Code
-	type ClaudeCodeInstallTab = 'unix' | 'powershell';
-	let activeClaudeCodeInstallTab = $state<ClaudeCodeInstallTab>('unix');
-
-	// Install guide - OpenCode
-	type OpenCodeInstallTab = 'unix' | 'bun';
-	let activeOpenCodeInstallTab = $state<OpenCodeInstallTab>('unix');
-
 	// Rename
 	let claudeCodeRenamingId = $state<number | null>(null);
 	let claudeCodeRenameValue = $state('');
@@ -66,14 +59,6 @@
 	// Copy URL feedback
 	let claudeCodeUrlCopied = $state(false);
 	let claudeCodeUrlCopiedTimer: ReturnType<typeof setTimeout> | null = null;
-
-	// Copy command feedback
-	let claudeCodeCommandCopied = $state(false);
-	let claudeCodeCommandCopiedTimer: ReturnType<typeof setTimeout> | null = null;
-
-	// Copy command feedback - OpenCode
-	let openCodeCommandCopied = $state(false);
-	let openCodeCommandCopiedTimer: ReturnType<typeof setTimeout> | null = null;
 
 	// OpenCode provider management
 	const ocProviders = $derived(opencodeProvidersStore.providers);
@@ -134,16 +119,6 @@
 
 	// Event listener cleanup functions
 	const cleanups: Array<() => void> = [];
-
-	const claudeCodeInstallCommands: Record<ClaudeCodeInstallTab, { label: string; command: string }> = {
-		unix: { label: 'macOS / Linux / WSL', command: 'curl -fsSL https://claude.ai/install.sh | bash' },
-		powershell: { label: 'Windows PowerShell', command: 'irm https://claude.ai/install.ps1 | iex' },
-	};
-
-	const openCodeInstallCommands: Record<OpenCodeInstallTab, { label: string; command: string }> = {
-		unix: { label: 'macOS / Linux / WSL', command: 'curl -fsSL https://opencode.ai/install | bash' },
-		bun: { label: 'Bun', command: 'bun add -g opencode-ai' },
-	};
 
 	async function initDebugTerminal() {
 		if (!browser || !debugTermContainer || debugTerminal) return;
@@ -273,10 +248,6 @@
 		try {
 			claudeCodeStatus = await ws.http('engine:claude-status', {});
 
-			if (claudeCodeStatus) {
-				activeClaudeCodeInstallTab = claudeCodeStatus.backendOS === 'windows' ? 'powershell' : 'unix';
-			}
-
 			if (claudeCodeStatus?.installed) {
 				await refreshClaudeCodeAccounts();
 			}
@@ -389,11 +360,6 @@
 		isLoadingOpenCodeStatus = true;
 		try {
 			openCodeStatus = await ws.http('engine:opencode-status', {});
-
-			if (openCodeStatus) {
-				// On Windows, default to bun since quick install requires WSL
-				activeOpenCodeInstallTab = openCodeStatus.backendOS === 'windows' ? 'bun' : 'unix';
-			}
 		} catch {
 			openCodeStatus = null;
 		}
@@ -590,18 +556,8 @@
 		}
 	}
 
-	async function copyClaudeCodeCommand() {
-		await copyToClipboard(claudeCodeInstallCommands[activeClaudeCodeInstallTab].command);
-		claudeCodeCommandCopied = true;
-		if (claudeCodeCommandCopiedTimer) clearTimeout(claudeCodeCommandCopiedTimer);
-		claudeCodeCommandCopiedTimer = setTimeout(() => { claudeCodeCommandCopied = false; }, 2000);
-	}
-
-	async function copyOpenCodeCommand() {
-		await copyToClipboard(openCodeInstallCommands[activeOpenCodeInstallTab].command);
-		openCodeCommandCopied = true;
-		if (openCodeCommandCopiedTimer) clearTimeout(openCodeCommandCopiedTimer);
-		openCodeCommandCopiedTimer = setTimeout(() => { openCodeCommandCopied = false; }, 2000);
+	function openSystemToolsSection() {
+		setActiveSection('system-tools');
 	}
 
 	async function copyClaudeCodeAuthUrl() {
@@ -617,7 +573,7 @@
 	<!-- Header -->
 	<h3 class="text-base font-bold text-slate-900 dark:text-slate-100 mb-1.5">Engines</h3>
 	<p class="text-sm text-slate-600 dark:text-slate-500 mb-4">
-		Manage engine installations and accounts
+		Connect accounts and configure providers for your AI engines.
 	</p>
 
 	<!-- Claude Code Card -->
@@ -633,23 +589,6 @@
 					<p class="text-xs text-slate-500 dark:text-slate-400">{claudeCodeEngine.description}</p>
 				</div>
 			</div>
-
-			{#if isLoadingClaudeCodeStatus}
-				<span class="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full text-xs font-medium bg-slate-100 dark:bg-slate-700 text-slate-500 dark:text-slate-400">
-					<Icon name="lucide:loader" class="w-3 h-3 animate-spin" />
-					Checking...
-				</span>
-			{:else if claudeCodeStatus?.installed}
-				<span class="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full text-xs font-medium bg-green-100 dark:bg-green-900/30 text-green-700 dark:text-green-400">
-					<span class="w-1.5 h-1.5 rounded-full bg-green-500"></span>
-					Installed
-				</span>
-			{:else}
-				<span class="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full text-xs font-medium bg-red-100 dark:bg-red-900/30 text-red-700 dark:text-red-400">
-					<span class="w-1.5 h-1.5 rounded-full bg-red-500"></span>
-					Not Installed
-				</span>
-			{/if}
 		</div>
 
 		<!-- Card Body -->
@@ -659,96 +598,27 @@
 					<Icon name="lucide:loader" class="w-6 h-6 animate-spin text-slate-400" />
 				</div>
 			{:else if claudeCodeStatus && !claudeCodeStatus.installed}
-				<!-- Install Guide -->
-				<div class="space-y-4">
-					<p class="text-sm text-slate-600 dark:text-slate-300">
-						Claude Code is not installed on this system. Install it using one of the methods below:
-					</p>
-
-					<!-- Tab Buttons -->
-					<div class="flex flex-wrap gap-1.5">
-						{#each Object.entries(claudeCodeInstallCommands) as [key, { label }]}
-							<button
-								type="button"
-								class="px-3 py-1.5 rounded-lg text-xs font-medium transition-colors
-									{activeClaudeCodeInstallTab === key
-									? 'bg-violet-500/15 text-violet-700 dark:text-violet-300'
-									: 'bg-slate-100 dark:bg-slate-700/50 text-slate-600 dark:text-slate-400 hover:bg-slate-200 dark:hover:bg-slate-700'}"
-								onclick={() => (activeClaudeCodeInstallTab = key as ClaudeCodeInstallTab)}
-							>
-								{label}
-							</button>
-						{/each}
-					</div>
-
-					<!-- Command Block -->
-					<div class="relative group">
-						<pre class="bg-slate-100 dark:bg-slate-950 text-slate-800 dark:text-slate-200 rounded-lg px-4 py-3 text-sm font-mono overflow-x-auto">{claudeCodeInstallCommands[activeClaudeCodeInstallTab].command}</pre>
+				<!-- Redirect to System Tools -->
+				<div class="flex items-start gap-3 p-4 rounded-lg bg-violet-50 dark:bg-violet-900/10 border border-violet-200 dark:border-violet-800/50">
+					<Icon name="lucide:hammer" class="w-5 h-5 shrink-0 mt-0.5 text-violet-600 dark:text-violet-400" />
+					<div class="flex-1 space-y-2">
+						<div>
+							<p class="text-sm font-semibold text-slate-900 dark:text-slate-100">Claude Code is not installed</p>
+							<p class="text-xs text-slate-600 dark:text-slate-400">Install it from the System Tools section. You can return here once it's installed to connect accounts.</p>
+						</div>
 						<button
 							type="button"
-							class="flex absolute top-2 right-2 p-1.5 rounded-md transition-colors {claudeCodeCommandCopied ? 'bg-violet-600/80 text-white' : 'bg-slate-300/80 dark:bg-slate-700/80 text-slate-600 dark:text-slate-300 hover:bg-slate-400/80 dark:hover:bg-slate-600'}"
-							onclick={copyClaudeCodeCommand}
-							aria-label="Copy command"
+							class="inline-flex items-center gap-2 px-3 py-1.5 text-xs font-medium rounded-lg bg-violet-600 text-white hover:bg-violet-700 transition-colors"
+							onclick={openSystemToolsSection}
 						>
-							<Icon name={claudeCodeCommandCopied ? 'lucide:check' : 'lucide:copy'} class="w-3.5 h-3.5" />
+							<Icon name="lucide:arrow-right" class="w-3.5 h-3.5" />
+							Open System Tools
 						</button>
 					</div>
-
-					<!-- Windows Git Bash note -->
-					{#if claudeCodeStatus.backendOS === 'windows'}
-						<div class="flex gap-2.5 p-3 rounded-lg bg-amber-50 dark:bg-amber-900/15 border border-amber-200 dark:border-amber-700/50">
-							<Icon name="lucide:info" class="w-4 h-4 shrink-0 mt-0.5 text-amber-600 dark:text-amber-400" />
-							<div class="text-sm text-amber-800 dark:text-amber-300 space-y-1">
-								<p class="font-medium">Git Bash is required</p>
-								<p class="text-xs text-amber-700 dark:text-amber-400">
-									Claude Code requires Git Bash to run on Windows. If you haven't installed it yet, download and install it first:
-								</p>
-								<a
-									href="https://git-scm.com/install/windows"
-									target="_blank"
-									rel="noopener noreferrer"
-									class="inline-flex items-center gap-1 text-xs font-medium text-amber-700 dark:text-amber-300 hover:text-amber-900 dark:hover:text-amber-100 underline underline-offset-2"
-								>
-									https://git-scm.com/install/windows
-								</a>
-							</div>
-						</div>
-					{/if}
-
-					<!-- More info link -->
-					<div class="flex items-center gap-2 text-xs text-slate-500 dark:text-slate-400">
-						<Icon name="lucide:book-open" class="w-3.5 h-3.5 shrink-0" />
-						<div>
-							<span>For complete installation instructions, visit the</span>
-							<a
-								href="https://code.claude.com/docs/en/quickstart"
-								target="_blank"
-								rel="noopener noreferrer"
-								class="inline-flex items-center gap-1 font-medium text-violet-600 dark:text-violet-400 hover:text-violet-800 dark:hover:text-violet-200 underline underline-offset-2"
-							>
-								official documentation
-							</a>
-						</div>
-					</div>
-
-					<button
-						type="button"
-						class="flex items-center gap-2 px-4 py-2 text-sm font-medium rounded-lg bg-violet-600 text-white hover:bg-violet-700 transition-colors"
-						onclick={refreshClaudeCodeStatus}
-					>
-						<Icon name="lucide:refresh-cw" class="w-4 h-4" />
-						Recheck Installation
-					</button>
 				</div>
 			{:else if claudeCodeStatus}
 				<!-- Installed View -->
 				<div class="space-y-5">
-					<!-- Version -->
-					<div class="flex items-center gap-2 text-sm text-slate-600 dark:text-slate-300">
-						<Icon name="lucide:tag" class="w-4 h-4 text-slate-400" />
-						<span>Version: <span class="font-mono font-medium text-slate-900 dark:text-slate-100">{claudeCodeStatus.version || 'Unknown'}</span></span>
-					</div>
-
 					<!-- Providers Section (2-level display: Provider → Accounts) -->
 					<div class="space-y-3">
 						<div class="flex items-center justify-between">
@@ -1041,22 +911,18 @@
 					<p class="text-xs text-slate-500 dark:text-slate-400">{openCodeEngine.description}</p>
 				</div>
 			</div>
-
-			{#if isLoadingOpenCodeStatus}
-				<span class="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full text-xs font-medium bg-slate-100 dark:bg-slate-700 text-slate-500 dark:text-slate-400">
-					<Icon name="lucide:loader" class="w-3 h-3 animate-spin" />
-					Checking...
-				</span>
-			{:else if openCodeStatus?.installed}
-				<span class="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full text-xs font-medium bg-green-100 dark:bg-green-900/30 text-green-700 dark:text-green-400">
-					<span class="w-1.5 h-1.5 rounded-full bg-green-500"></span>
-					Installed
-				</span>
-			{:else}
-				<span class="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full text-xs font-medium bg-red-100 dark:bg-red-900/30 text-red-700 dark:text-red-400">
-					<span class="w-1.5 h-1.5 rounded-full bg-red-500"></span>
-					Not Installed
-				</span>
+			{#if openCodeStatus?.installed}
+				<button
+					type="button"
+					class="flex items-center gap-1.5 px-3 py-1.5 text-xs font-medium rounded-lg transition-colors
+						text-amber-600 dark:text-amber-400 bg-amber-50 dark:bg-amber-900/20 border border-amber-200 dark:border-amber-700/50
+						hover:bg-amber-100 dark:hover:bg-amber-900/30 disabled:opacity-50 disabled:cursor-not-allowed"
+					onclick={handleRestartServer}
+					disabled={ocRestarting}
+				>
+					<Icon name={ocRestarting ? 'lucide:loader' : 'lucide:rotate-cw'} class="w-3.5 h-3.5 {ocRestarting ? 'animate-spin' : ''}" />
+					{ocRestarting ? 'Restarting...' : 'Restart Server'}
+				</button>
 			{/if}
 		</div>
 
@@ -1067,88 +933,27 @@
 					<Icon name="lucide:loader" class="w-6 h-6 animate-spin text-slate-400" />
 				</div>
 			{:else if openCodeStatus && !openCodeStatus.installed}
-				<!-- Install Guide -->
-				<div class="space-y-4">
-					<p class="text-sm text-slate-600 dark:text-slate-300">
-						Open Code is not installed on this system. Install it using one of the methods below:
-					</p>
-
-					<!-- Tab Buttons -->
-					<div class="flex flex-wrap gap-1.5">
-						{#each Object.entries(openCodeInstallCommands) as [key, { label }]}
-							<button
-								type="button"
-								class="px-3 py-1.5 rounded-lg text-xs font-medium transition-colors
-									{activeOpenCodeInstallTab === key
-									? 'bg-violet-500/15 text-violet-700 dark:text-violet-300'
-									: 'bg-slate-100 dark:bg-slate-700/50 text-slate-600 dark:text-slate-400 hover:bg-slate-200 dark:hover:bg-slate-700'}"
-								onclick={() => (activeOpenCodeInstallTab = key as OpenCodeInstallTab)}
-							>
-								{label}
-							</button>
-						{/each}
-					</div>
-
-					<!-- Command Block -->
-					<div class="relative group">
-						<pre class="bg-slate-100 dark:bg-slate-950 text-slate-800 dark:text-slate-200 rounded-lg px-4 py-3 text-sm font-mono overflow-x-auto">{openCodeInstallCommands[activeOpenCodeInstallTab].command}</pre>
+				<!-- Redirect to System Tools -->
+				<div class="flex items-start gap-3 p-4 rounded-lg bg-violet-50 dark:bg-violet-900/10 border border-violet-200 dark:border-violet-800/50">
+					<Icon name="lucide:hammer" class="w-5 h-5 shrink-0 mt-0.5 text-violet-600 dark:text-violet-400" />
+					<div class="flex-1 space-y-2">
+						<div>
+							<p class="text-sm font-semibold text-slate-900 dark:text-slate-100">OpenCode is not installed</p>
+							<p class="text-xs text-slate-600 dark:text-slate-400">Install it from the System Tools section. You can return here once it's installed to configure providers.</p>
+						</div>
 						<button
 							type="button"
-							class="flex absolute top-2 right-2 p-1.5 rounded-md transition-colors {openCodeCommandCopied ? 'bg-violet-600/80 text-white' : 'bg-slate-300/80 dark:bg-slate-700/80 text-slate-600 dark:text-slate-300 hover:bg-slate-400/80 dark:hover:bg-slate-600'}"
-							onclick={copyOpenCodeCommand}
-							aria-label="Copy command"
+							class="inline-flex items-center gap-2 px-3 py-1.5 text-xs font-medium rounded-lg bg-violet-600 text-white hover:bg-violet-700 transition-colors"
+							onclick={openSystemToolsSection}
 						>
-							<Icon name={openCodeCommandCopied ? 'lucide:check' : 'lucide:copy'} class="w-3.5 h-3.5" />
+							<Icon name="lucide:arrow-right" class="w-3.5 h-3.5" />
+							Open System Tools
 						</button>
 					</div>
-
-					<!-- More info link -->
-					<div class="flex items-center gap-2 text-xs text-slate-500 dark:text-slate-400">
-						<Icon name="lucide:book-open" class="w-3.5 h-3.5 shrink-0" />
-						<div>
-							<span>For complete installation instructions, visit the</span>
-							<a
-								href="https://opencode.ai/docs"
-								target="_blank"
-								rel="noopener noreferrer"
-								class="inline-flex items-center gap-1 font-medium text-violet-600 dark:text-violet-400 hover:text-violet-800 dark:hover:text-violet-200 underline underline-offset-2"
-							>
-								official documentation
-							</a>
-						</div>
-					</div>
-
-					<button
-						type="button"
-						class="flex items-center gap-2 px-4 py-2 text-sm font-medium rounded-lg bg-violet-600 text-white hover:bg-violet-700 transition-colors"
-						onclick={refreshOpenCodeStatus}
-					>
-						<Icon name="lucide:refresh-cw" class="w-4 h-4" />
-						Recheck Installation
-					</button>
 				</div>
 			{:else if openCodeStatus}
 				<!-- Installed View -->
 				<div class="space-y-5">
-					<!-- Version + Restart Server -->
-					<div class="flex items-center justify-between">
-						<div class="flex items-center gap-2 text-sm text-slate-600 dark:text-slate-300">
-							<Icon name="lucide:tag" class="w-4 h-4 text-slate-400" />
-							<span>Version: <span class="font-mono font-medium text-slate-900 dark:text-slate-100">{openCodeStatus.version || 'Unknown'}</span></span>
-						</div>
-						<button
-							type="button"
-							class="flex items-center gap-1.5 px-3 py-1.5 text-xs font-medium rounded-lg transition-colors
-								text-amber-600 dark:text-amber-400 bg-amber-50 dark:bg-amber-900/20 border border-amber-200 dark:border-amber-700/50
-								hover:bg-amber-100 dark:hover:bg-amber-900/30 disabled:opacity-50 disabled:cursor-not-allowed"
-							onclick={handleRestartServer}
-							disabled={ocRestarting}
-						>
-							<Icon name={ocRestarting ? 'lucide:loader' : 'lucide:rotate-cw'} class="w-3.5 h-3.5 {ocRestarting ? 'animate-spin' : ''}" />
-							{ocRestarting ? 'Restarting...' : 'Restart Server'}
-						</button>
-					</div>
-
 					<!-- Configured Providers -->
 					<div class="space-y-3">
 						<div class="flex items-center justify-between">

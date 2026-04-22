@@ -174,7 +174,7 @@
 	<div
 		bind:this={dialogElement}
 		use:portal
-		class="fixed inset-0 z-[200] bg-slate-900/70 backdrop-blur-xs flex items-center justify-center p-4"
+		class="fixed inset-0 z-[10000] bg-slate-900/70 backdrop-blur-xs flex items-center justify-center p-4"
 		role="dialog"
 		aria-modal="true"
 		aria-labelledby="dialog-title"

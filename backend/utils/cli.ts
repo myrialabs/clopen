@@ -1,23 +1,37 @@
 /**
  * CLI Binary Resolution & Status
  *
- * Uses Bun.which() for cross-platform PATH resolution.
- * Bun.which() returns absolute paths and handles PATHEXT
- * extensions (.exe, .cmd) on Windows automatically.
+ * Single source of truth for detecting tools like `opencode`, `claude`, `git`.
  *
- * Before resolving, we refresh process.env.PATH from the user's interactive
- * shell (Unix only). This catches binaries installed via nvm/fnm/volta/asdf
- * /bun/homebrew whose paths are only added by rc files, and also makes the
- * "Recheck Installation" UI work after a fresh install without a restart.
+ * Resolution strategy:
+ *   1. Refresh process.env.PATH from the user's interactive shell (Unix only)
+ *      so binaries installed via nvm/fnm/volta/asdf/bun/homebrew (and our own
+ *      System Tools installer) become visible without a clopen restart.
+ *   2. Call `Bun.which(binary, { PATH: process.env.PATH })` — the explicit
+ *      PATH option is critical: without it, Bun.which uses a cached startup
+ *      PATH and ignores runtime updates, so newly-installed binaries remain
+ *      invisible even though process.env.PATH has been refreshed.
  */
 
 import { refreshProcessPath } from './path-harvest';
 
 export type CLIStatus = { installed: boolean; version: string | null };
 
-export async function getStatus(command: string): Promise<CLIStatus> {
+export function resolveBinary(binary: string): string | null {
+	return Bun.which(binary, { PATH: process.env.PATH }) ?? null;
+}
+
+/**
+ * Refresh $PATH from the user's shell, then resolve. Use at any spawn site
+ * that may run after a fresh install (e.g. models:list, setup-token).
+ */
+export async function resolveBinaryWithRefresh(binary: string): Promise<string | null> {
 	await refreshProcessPath();
-	const resolved = Bun.which(command);
+	return resolveBinary(binary);
+}
+
+export async function getStatus(command: string): Promise<CLIStatus> {
+	const resolved = await resolveBinaryWithRefresh(command);
 	if (!resolved) return { installed: false, version: null };
 
 	try {
