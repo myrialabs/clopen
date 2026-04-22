@@ -6,7 +6,6 @@
 <script lang="ts">
 	import { tick } from 'svelte';
 	import type { FrontendMessage } from '$frontend/stores/core/sessions.svelte';
-	import { sessionState } from '$frontend/stores/core/sessions.svelte';
 	import type { IconName } from '$shared/types/ui/icons';
 	import Icon from '$frontend/components/common/display/Icon.svelte';
 	import MessageFormatter from '../../../formatters/MessageFormatter.svelte';
@@ -19,6 +18,7 @@
 		isLastUserMessage = false,
 		senderName,
 		formatTime,
+		onCopy,
 		onRestore,
 		onEdit,
 	}: {
@@ -37,6 +37,13 @@
 	} = $props();
 
 	let scrollContainer: HTMLDivElement | undefined = $state();
+	let isCopied = $state(false);
+
+	function handleCopy() {
+		onCopy();
+		isCopied = true;
+		setTimeout(() => { isCopied = false; }, 1000);
+	}
 
 	$effect(() => {
 		if (roleCategory !== 'system' && roleCategory !== 'compact') return;
@@ -55,26 +62,21 @@
 		void _track;
 	});
 
-	// Reasoning is always received complete — no partial state exists.
-	// "Thinking..." is shown only while loading AND no text generation has started
-	// for THIS specific reasoning block (checked by position in the messages array).
-	// Checking globally for any stream_event is wrong: agent sub-tools stream their
-	// own events inside subActivities (not top-level), so there would be no top-level
-	// stream_event during agent execution even though this reasoning block is done.
-	const isThinkingInProgress = $derived.by(() => {
-		if (!appState.isLoading) return false;
-		const msgs = sessionState.messages;
-		const idx = msgs.findIndex(
-			m => m === message ||
-			('messageId' in m && 'messageId' in message && (m as any).messageId === (message as any).messageId)
-		);
-		if (idx === -1) return false;
-		return !msgs.slice(idx + 1).some(m => m.type === 'stream_event' || m.type === 'assistant');
+	const isThinkingInProgress = $derived(message.type === 'stream_event');
+
+	let thinkingDotCount = $state(1);
+	$effect(() => {
+		if (!isThinkingInProgress) return;
+		const interval = setInterval(() => {
+			thinkingDotCount = (thinkingDotCount % 8) + 1;
+		}, 400);
+		return () => clearInterval(interval);
 	});
+	const thinkingDots = $derived('.'.repeat(thinkingDotCount));
 </script>
 
 {#if roleCategory === 'user'}
-	<div class="space-y-1 rounded-sm px-2 py-1.5 bg-slate-100 dark:bg-slate-700/30">
+	<div class="space-y-1 rounded-sm px-3 py-2 bg-slate-100 dark:bg-slate-700/30">
 		<!-- Slim user header -->
 		<div class="flex items-center gap-2 text-xs text-slate-400 dark:text-slate-500">
 			<span class="shrink-0">{formatTime(messageTimestamp)}</span>
@@ -82,6 +84,14 @@
 				{senderName || 'You'}
 			</span>
 			<div class="flex items-center gap-1 ml-auto shrink-0">
+				<button
+					type="button"
+					onclick={(e) => { e.stopPropagation(); handleCopy(); }}
+					class="flex p-0.5 rounded transition-colors hover:bg-slate-200 dark:hover:bg-slate-700"
+					title="Copy message"
+				>
+					<Icon name={isCopied ? "lucide:check" : "lucide:copy"} class="w-3.5 h-3.5" />
+				</button>
 				{#if !isLastUserMessage}
 					<button
 						type="button"
@@ -117,7 +127,7 @@
 		{#if roleCategory === 'reasoning'}
 			<div class="text-xs text-slate-400 dark:text-slate-500">
 				{#if isThinkingInProgress}
-					<span class="animate-pulse">Thinking...</span>
+					<span>Thinking{thinkingDots}</span>
 				{:else}
 					<span>Thought for a moment</span>
 				{/if}

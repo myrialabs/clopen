@@ -143,7 +143,7 @@
 						? [...Array.from(selected), ...(isOther && customText ? [customText] : [])].join(', ')
 						: (isOther && customText ? customText : Array.from(selected).join(', '));
 				})()}
-			<div class="border-l-2 border-slate-300 dark:border-slate-600 pl-2 space-y-0.5">
+			<div class="border-l-2 border-slate-300 dark:border-slate-600 pl-2.5 space-y-0.5">
 				<div class="text-sm font-medium text-slate-600 dark:text-slate-400">{question.header}</div>
 				<p class="text-sm text-slate-500 dark:text-slate-400">{question.question}</p>
 				<p class="text-sm font-medium text-slate-700 dark:text-slate-300">{answer || 'No answer'}</p>
@@ -154,19 +154,19 @@
 {:else}
 	<div class="space-y-2">
 		{#each input.questions as question, idx}
-			<div class="border-l-2 border-slate-300 dark:border-slate-600 pl-2 space-y-1.5">
+			<div class="border-l-2 border-slate-300 dark:border-slate-600 pl-2.5 space-y-1.5">
 				<div class="text-sm font-semibold text-slate-700 dark:text-slate-300">{question.header}</div>
 				<p class="text-sm text-slate-600 dark:text-slate-400">{question.question}</p>
 				<div class="space-y-1">
 					{#each question.options as option}
 						<button
-							class="w-full text-left flex items-center gap-2 px-2 py-1 rounded text-sm transition-colors
+							class="w-full text-left flex items-start gap-2 px-2 py-1 rounded text-sm transition-colors
 								{isSelected(idx, option.label)
 									? 'bg-slate-100 dark:bg-slate-700 text-slate-700 dark:text-slate-300'
 									: 'hover:bg-slate-100 dark:hover:bg-slate-800 text-slate-600 dark:text-slate-400'}"
 							onclick={() => toggleSelection(idx, option.label, question.multiSelect)}
 						>
-							<div class="w-3 h-3 shrink-0 rounded{question.multiSelect ? '' : '-full'} border flex items-center justify-center
+							<div class="w-3 h-3 shrink-0 mt-1 rounded{question.multiSelect ? '' : '-full'} border flex items-center justify-center
 								{isSelected(idx, option.label) ? 'border-slate-500 bg-slate-500' : 'border-slate-400'}">
 								{#if isSelected(idx, option.label)}
 									{#if question.multiSelect}
@@ -176,8 +176,10 @@
 									{/if}
 								{/if}
 							</div>
-							<span class="font-medium">{option.label}</span>
-							<span class="opacity-50 truncate">— {option.description}</span>
+							<div>
+								<span class="font-medium">{option.label}</span>
+								<span class="opacity-50">— {option.description}</span>
+							</div>
 						</button>
 					{/each}
 					<div

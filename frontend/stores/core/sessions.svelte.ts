@@ -16,16 +16,18 @@ import { markSessionUnread, markSessionRead, clearSessionState, appState } from 
 import { debug } from '$shared/utils/logger';
 
 /**
- * Frontend-only streaming message for assistant text.
- * Created by chat.service.ts during active streaming, replaced by
- * AssistantMessage when the backend delivers the full message.
- * Reasoning messages (type: 'reasoning') always arrive complete — no streaming placeholder needed.
+ * Frontend-only streaming message for assistant text or reasoning.
+ * Created by chat.service.ts during active streaming, replaced by the
+ * corresponding AssistantMessage or ReasoningMessage when the backend
+ * delivers the full message. The `reasoning` flag distinguishes thinking
+ * placeholders from regular text placeholders so both can coexist in a turn.
  */
 export interface StreamingMessage {
 	type: 'stream_event';
 	processId: string;
 	text: string;
 	createdAt: string;
+	reasoning?: boolean;
 }
 
 /**

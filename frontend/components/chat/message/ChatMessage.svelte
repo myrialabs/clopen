@@ -70,8 +70,11 @@
 		if (message.type === 'reasoning') {
 			return 'reasoning';
 		}
-		// Streaming assistant text — displayed as assistant
-		if (message.type === 'stream_event') return 'assistant';
+		// Streaming placeholder — displayed as reasoning if the backend flagged it
+		// as a thinking block, otherwise as regular assistant text.
+		if (message.type === 'stream_event') {
+			return message.reasoning ? 'reasoning' : 'assistant';
+		}
 		if (message.type === 'assistant' && 'content' in message) {
 			const hasToolUse = message.content.some((c) => c.type === 'tool_use');
 			if (hasToolUse) return 'agent';

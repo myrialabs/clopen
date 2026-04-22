@@ -18,7 +18,7 @@ import { projectState } from '$frontend/stores/core/projects.svelte';
 import { sessionState, setCurrentSession, createSession, updateSession } from '$frontend/stores/core/sessions.svelte';
 import { addNotification } from '$frontend/stores/ui/notification.svelte';
 import { userStore } from '$frontend/stores/features/user.svelte';
-import type { UnifiedMessage, AssistantMessage } from '$shared/types/unified';
+import type { UnifiedMessage, AssistantMessage, ReasoningMessage } from '$shared/types/unified';
 import type { StreamingMessage, OptimisticUserMessage, FrontendMessage } from '$frontend/stores/core/sessions.svelte';
 import { debug } from '$shared/utils/logger';
 
@@ -637,11 +637,13 @@ class ChatService {
       }
     }
 
-    // If this is an assistant message, replace the matching stream_event placeholder.
+    // If this is an assistant message, replace the matching non-reasoning
+    // stream_event placeholder (leave any reasoning placeholder alone —
+    // it will be replaced by its own ReasoningMessage).
     if (message.type === 'assistant') {
       for (let i = sessionState.messages.length - 1; i >= 0; i--) {
         const msg = sessionState.messages[i];
-        if (msg.type === 'stream_event') {
+        if (msg.type === 'stream_event' && !(msg as StreamingMessage).reasoning) {
           sessionState.messages[i] = message;
           this.checkInteractiveTools(message);
           return;
@@ -650,15 +652,22 @@ class ChatService {
       // No matching stream_event found, fall through to push
     }
 
-    // Reasoning messages arrive complete but the text stream_event may have already
-    // started by the time they arrive. Insert before any stream_event so the display
-    // order stays: reasoning → (streaming text) rather than reversed.
+    // If this is a reasoning message, replace the matching reasoning
+    // stream_event placeholder. Fall back to inserting before the first
+    // non-reasoning stream_event so the display order stays reasoning → text.
     if (message.type === 'reasoning') {
-      const streamEventIdx = (sessionState.messages as FrontendMessage[]).findIndex(
-        m => m.type === 'stream_event'
+      for (let i = sessionState.messages.length - 1; i >= 0; i--) {
+        const msg = sessionState.messages[i];
+        if (msg.type === 'stream_event' && (msg as StreamingMessage).reasoning) {
+          sessionState.messages[i] = message;
+          return;
+        }
+      }
+      const textStreamIdx = (sessionState.messages as FrontendMessage[]).findIndex(
+        m => m.type === 'stream_event' && !(m as StreamingMessage).reasoning
       );
-      if (streamEventIdx !== -1) {
-        (sessionState.messages as FrontendMessage[]).splice(streamEventIdx, 0, message);
+      if (textStreamIdx !== -1) {
+        (sessionState.messages as FrontendMessage[]).splice(textStreamIdx, 0, message);
         return;
       }
       // No stream_event yet — fall through to dedup + push
@@ -717,41 +726,68 @@ class ChatService {
       return;
     }
 
-    // Reasoning arrives as a complete message — no streaming placeholder needed.
-    if (data.reasoning) return;
-
+    const isReasoning = data.reasoning === true;
     const { eventType, partialText } = data;
 
+    // Match placeholders on (processId, reasoning) so a reasoning stream and
+    // a text stream within the same turn don't clobber each other's text.
+    const findPlaceholder = (): StreamingMessage | undefined => {
+      for (let i = sessionState.messages.length - 1; i >= 0; i--) {
+        const msg = sessionState.messages[i];
+        if (
+          msg.type === 'stream_event' &&
+          (msg as StreamingMessage).processId === data.processId &&
+          !!(msg as StreamingMessage).reasoning === isReasoning
+        ) {
+          return msg as StreamingMessage;
+        }
+      }
+      return undefined;
+    };
+
+    // Insert a reasoning placeholder BEFORE any existing non-reasoning
+    // stream_event so the on-screen order stays reasoning → text within a
+    // turn. Non-reasoning placeholders go to the end. Without this, engines
+    // that emit a preliminary non-reasoning stream_start at turn boundaries
+    // (e.g. OpenCode) leave a stale empty text placeholder ahead of the
+    // reasoning block, which then gets claimed by the next tool message
+    // and visually swaps reasoning behind the tool.
+    const insertNewPlaceholder = (): void => {
+      const newMessage: StreamingMessage = {
+        type: 'stream_event',
+        processId: data.processId,
+        text: partialText || '',
+        createdAt: data.timestamp || new Date().toISOString(),
+        reasoning: isReasoning,
+      };
+
+      if (isReasoning) {
+        const textIdx = (sessionState.messages as FrontendMessage[]).findIndex(
+          (m) => m.type === 'stream_event' && !(m as StreamingMessage).reasoning
+        );
+        if (textIdx !== -1) {
+          (sessionState.messages as FrontendMessage[]).splice(textIdx, 0, newMessage);
+          return;
+        }
+      }
+      (sessionState.messages as FrontendMessage[]).push(newMessage);
+    };
+
     if (eventType === 'start') {
-      // Check if there's already a matching stream_event (from catchup)
-      const existing = sessionState.messages.find(
-        (m): m is StreamingMessage => m.type === 'stream_event' && (m as StreamingMessage).processId === data.processId
-      );
+      const existing = findPlaceholder();
       if (existing) {
         existing.text = partialText || '';
         return;
       }
-      (sessionState.messages as FrontendMessage[]).push({
-        type: 'stream_event',
-        processId: data.processId,
-        text: partialText || '',
-        createdAt: data.timestamp || new Date().toISOString(),
-      } satisfies StreamingMessage);
+      insertNewPlaceholder();
     } else if (eventType === 'update') {
-      for (let i = sessionState.messages.length - 1; i >= 0; i--) {
-        const msg = sessionState.messages[i];
-        if (msg.type === 'stream_event') {
-          (msg as StreamingMessage).text = partialText || '';
-          return;
-        }
+      const existing = findPlaceholder();
+      if (existing) {
+        existing.text = partialText || '';
+        return;
       }
       // Fallback: missed start event
-      (sessionState.messages as FrontendMessage[]).push({
-        type: 'stream_event',
-        processId: data.processId,
-        text: partialText || '',
-        createdAt: data.timestamp || new Date().toISOString(),
-      } satisfies StreamingMessage);
+      insertNewPlaceholder();
     }
     // Note: 'end' event is not needed - stream_event is replaced by the final message in handleMessageEvent
   }
@@ -780,7 +816,22 @@ class ChatService {
       const msg = sessionState.messages[i];
       if (msg.type !== 'stream_event') continue;
 
-      if (msg.text) {
+      if (!msg.text) {
+        sessionState.messages.splice(i, 1);
+        continue;
+      }
+
+      if (msg.reasoning) {
+        sessionState.messages[i] = {
+          type: 'reasoning',
+          createdAt: msg.createdAt,
+          messageId: crypto.randomUUID(),
+          sessionId: sessionState.currentSession?.id || '',
+          parent: { messageId: null, sessionId: null, toolUseId: null },
+          engine: { type: 'claude-code', provider: '', model: { id: '', name: '' }, account: { id: 0, name: '' } },
+          text: msg.text,
+        } satisfies ReasoningMessage;
+      } else {
         sessionState.messages[i] = {
           type: 'assistant',
           createdAt: msg.createdAt,
@@ -792,8 +843,6 @@ class ChatService {
           stopReason: 'interrupted',
           usage: null,
         } satisfies UnifiedMessage;
-      } else {
-        sessionState.messages.splice(i, 1);
       }
     }
   }
