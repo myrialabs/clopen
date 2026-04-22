@@ -27,6 +27,8 @@ export interface AppSettings {
 	layoutPresetVisibility: Record<string, boolean>;
 	/** Base font size in pixels (10–20). Default: 13. */
 	fontSize: number;
+	/** Chat message appearance variant. Default: 'classic'. */
+	chatAppearance: 'classic' | 'compact';
 	/** AI commit message generator configuration */
 	commitGenerator: CommitGeneratorSettings;
 }

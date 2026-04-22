@@ -35,6 +35,7 @@ const defaultSettings: AppSettings = {
 	pushNotifications: false,
 	layoutPresetVisibility: createDefaultPresetVisibility(),
 	fontSize: 13,
+	chatAppearance: 'classic',
 	commitGenerator: {
 		useCustomModel: false,
 		engine: 'claude-code',

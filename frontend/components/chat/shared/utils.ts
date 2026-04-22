@@ -1,21 +1,6 @@
 // Utility functions for tool displays
 
 /**
- * Format file path for display by shortening long paths
- */
-export function formatPath(path: string): string {
-	if (path === 'current directory') return path;
-	
-	if (path.length > 60) {
-		const parts = path.split(/[/\\]/);
-		if (parts.length > 3) {
-			return `.../${parts.slice(-3).join('/')}`;
-		}
-	}
-	return path;
-}
-
-/**
  * Format content by truncating long text intelligently
  */
 export function formatContent(content: string, maxLength: number = 500): string {

@@ -11,7 +11,8 @@
 	import { groupMessages, embedToolResults } from '$frontend/utils/chat/message-grouper';
 	import { addDateSeparators, type DateSeparatorItem } from '$frontend/utils/chat/date-separator';
 	import { editModeState } from '$frontend/stores/ui/edit-mode.svelte';
-	import { createVirtualScroll, VS_CONFIG } from '$frontend/utils/chat/virtual-scroll.svelte';
+	import { createVirtualScroll, VS_CONFIG_CLASSIC, VS_CONFIG_COMPACT } from '$frontend/utils/chat/virtual-scroll.svelte';
+	import { settings } from '$frontend/stores/features/settings.svelte';
 
 	interface Props {
 		scrollContainer?: HTMLElement | undefined;
@@ -36,7 +37,7 @@
 	// VIRTUAL SCROLL
 	// ========================================
 
-	const vs = createVirtualScroll();
+	const vs = createVirtualScroll(() => settings.chatAppearance === 'compact' ? VS_CONFIG_COMPACT : VS_CONFIG_CLASSIC);
 	let isLoadingOlder = $state(false);
 
 	// ========================================
@@ -119,7 +120,7 @@
 
 		if (!vs.isActive) return;
 
-		const margin = VS_CONFIG.LOAD_MORE_MARGIN;
+		const margin = vs.loadMoreMargin;
 
 		// Load older messages when near top
 		if (scrollTop <= margin && vs.hasMoreAbove && !isLoadingOlder) {
@@ -270,6 +271,8 @@
 	// ========================================
 	// TRANSITIONS & SCROLL LISTENERS
 	// ========================================
+
+	const isCompact = $derived(settings.chatAppearance === 'compact');
 
 	// Track if we should disable transitions (during restoration)
 	const disableTransitions = $derived(appState.isRestoring || (!hasInitiallyScrolled && filteredMessages.length > 5));
@@ -459,26 +462,26 @@
 		{#each messagesWithDateSeparators as item (item.key)}
 			{#if disableTransitions}
 				<!-- No transition during restoration or initial load with many messages -->
-				<div class="chat-item">
+				<div class={isCompact ? '' : 'chat-item'}>
 					{#if item.type === 'date'}
 						<DateSeparator date={item.data} />
 					{:else if item.type === 'message'}
 						{@const messageId = item.data.metadata?.message_id}
 						{@const isLastUser = messageId === lastUserMessageId}
-						<div class="mb-2 lg:mb-4" data-message-id={messageId}>
+						<div class={isCompact ? 'mb-2' : 'mb-2 lg:mb-4'} data-message-id={messageId}>
 							<ChatMessage message={item.data} isLastUserMessage={isLastUser} />
 						</div>
 					{/if}
 				</div>
 			{:else}
 				<!-- Normal transition for new messages -->
-				<div class="chat-item" in:fade={{ duration: 300, delay: 0 }} out:fade={{ duration: 200 }}>
+				<div class={isCompact ? '' : 'chat-item'} in:fade={{ duration: 300, delay: 0 }} out:fade={{ duration: 200 }}>
 					{#if item.type === 'date'}
 						<DateSeparator date={item.data} />
 					{:else if item.type === 'message'}
 						{@const messageId = item.data.metadata?.message_id}
 						{@const isLastUser = messageId === lastUserMessageId}
-						<div class="mb-2 lg:mb-4" data-message-id={messageId}>
+						<div class={isCompact ? 'mb-2' : 'mb-2 lg:mb-4'} data-message-id={messageId}>
 							<ChatMessage message={item.data} isLastUserMessage={isLastUser} />
 						</div>
 					{/if}

@@ -1,7 +1,7 @@
 <script lang="ts">
 	import Modal from '$frontend/components/common/overlay/Modal.svelte';
 	import Icon from '$frontend/components/common/display/Icon.svelte';
-	import DiffBlock from '$frontend/components/chat/tools/components/DiffBlock.svelte';
+	import DiffBlock from '$frontend/components/chat/tools/variants/classic/components/DiffBlock.svelte';
 	import type { RestoreConflict, ConflictResolution } from '$frontend/services/snapshot/snapshot.service';
 
 	let {

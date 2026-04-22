@@ -19,7 +19,9 @@
 	import { setInputText } from '$frontend/stores/ui/chat-input.svelte';
 	import { startEdit, shouldDimMessage } from '$frontend/stores/ui/edit-mode.svelte';
 	import { debug } from '$shared/utils/logger';
-	import MessageBubble from './MessageBubble.svelte';
+	import MessageBubbleClassic from './variants/classic/MessageBubble.svelte';
+	import MessageBubbleCompact from './variants/compact/MessageBubble.svelte';
+	import { settings } from '$frontend/stores/features/settings.svelte';
 	import DebugModal from '../modal/DebugModal.svelte';
 	import Dialog from '$frontend/components/common/overlay/Dialog.svelte';
 	import ConflictResolutionModal from '$frontend/components/checkpoint/ConflictResolutionModal.svelte';
@@ -370,49 +372,74 @@
 	}
 </script>
 
-<div
-	class="flex {roleCategory === 'user' ? 'justify-end my-6 md:my-8' : 'justify-start mb-2 md:mb-4'} group transition-opacity {shouldBeDimmed ? 'opacity-40 cursor-not-allowed' : ''}"
-	onclick={handleMessageClick}
-	role="button"
-	tabindex="0"
-	onkeydown={handleBubbleKeydown}
->
-	<div class="flex items-start space-x-2 md:space-x-3 max-w-[95%] md:max-w-[85%] lg:max-w-[75%] {shouldBeDimmed ? 'pointer-events-none' : ''}"
->
-		{#if roleCategory !== 'user'}
-			<!-- Avatar for assistant/system -->
-			<div class="flex-shrink-0 w-7 h-7 relative top-1.5 md:w-8 md:h-8 bg-gradient-to-br {roleConfig.gradient} rounded-full flex items-center justify-center">
-				<Icon name={roleConfig.icon} class="text-white w-3.5 h-3.5 md:w-4 md:h-4" />
-			</div>
-		{/if}
-
-		<!-- Message content -->
-		<div class="grid space-y-1 md:space-y-2 min-w-44">
-			<!-- Message bubble -->
-			<MessageBubble
-				{message}
-				{messageTimestamp}
-				{isLastUserMessage}
-				{roleConfig}
-				{roleCategory}
-				{agentStatus}
-				{senderName}
-				{formatTime}
-				onCopy={copyToClipboard}
-				onRestore={handleRestore}
-				onEdit={handleEdit}
-				onShowDebug={openDebugInfoModal}
-			/>
-		</div>
-
-		{#if roleCategory === 'user'}
-			<!-- User avatar -->
-			<div class="flex-shrink-0 w-7 h-7 relative top-1.5 md:w-8 md:h-8 bg-gradient-to-br {roleConfig.gradient} rounded-full flex items-center justify-center">
-				<Icon name={roleConfig.icon} class="text-white w-4 h-4" />
-			</div>
-		{/if}
+{#if settings.chatAppearance === 'compact'}
+	<div
+		class="group transition-opacity py-1 {shouldBeDimmed ? 'opacity-40 cursor-not-allowed pointer-events-none' : ''}"
+		onclick={handleMessageClick}
+		role="button"
+		tabindex="0"
+		onkeydown={handleBubbleKeydown}
+	>
+		<MessageBubbleCompact
+			{message}
+			{messageTimestamp}
+			{isLastUserMessage}
+			{roleConfig}
+			{roleCategory}
+			{agentStatus}
+			{senderName}
+			{formatTime}
+			onCopy={copyToClipboard}
+			onRestore={handleRestore}
+			onEdit={handleEdit}
+			onShowDebug={openDebugInfoModal}
+		/>
 	</div>
-</div>
+{:else}
+	<div
+		class="flex {roleCategory === 'user' ? 'justify-end my-6 md:my-8' : 'justify-start mb-2 md:mb-4'} group transition-opacity {shouldBeDimmed ? 'opacity-40 cursor-not-allowed' : ''}"
+		onclick={handleMessageClick}
+		role="button"
+		tabindex="0"
+		onkeydown={handleBubbleKeydown}
+	>
+		<div class="flex items-start space-x-2 md:space-x-3 max-w-[95%] md:max-w-[85%] lg:max-w-[75%] {shouldBeDimmed ? 'pointer-events-none' : ''}"
+	>
+			{#if roleCategory !== 'user'}
+				<!-- Avatar for assistant/system -->
+				<div class="flex-shrink-0 w-7 h-7 relative top-1.5 md:w-8 md:h-8 bg-gradient-to-br {roleConfig.gradient} rounded-full flex items-center justify-center">
+					<Icon name={roleConfig.icon} class="text-white w-3.5 h-3.5 md:w-4 md:h-4" />
+				</div>
+			{/if}
+
+			<!-- Message content -->
+			<div class="grid space-y-1 md:space-y-2 min-w-44">
+				<!-- Message bubble -->
+				<MessageBubbleClassic
+					{message}
+					{messageTimestamp}
+					{isLastUserMessage}
+					{roleConfig}
+					{roleCategory}
+					{agentStatus}
+					{senderName}
+					{formatTime}
+					onCopy={copyToClipboard}
+					onRestore={handleRestore}
+					onEdit={handleEdit}
+					onShowDebug={openDebugInfoModal}
+				/>
+			</div>
+
+			{#if roleCategory === 'user'}
+				<!-- User avatar -->
+				<div class="flex-shrink-0 w-7 h-7 relative top-1.5 md:w-8 md:h-8 bg-gradient-to-br {roleConfig.gradient} rounded-full flex items-center justify-center">
+					<Icon name={roleConfig.icon} class="text-white w-4 h-4" />
+				</div>
+			{/if}
+		</div>
+	</div>
+{/if}
 
 <!-- Debug Info Popup -->
 <DebugModal

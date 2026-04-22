@@ -15,6 +15,10 @@
 	function fontSizePercent() {
 		return ((settings.fontSize - FONT_SIZE_MIN) / (FONT_SIZE_MAX - FONT_SIZE_MIN)) * 100;
 	}
+
+	function setChatAppearance(value: 'classic' | 'compact') {
+		updateSettings({ chatAppearance: value });
+	}
 </script>
 
 <div class="py-1">
@@ -98,6 +102,91 @@
 					></div>
 				</div>
 				<span class="text-base text-slate-500 dark:text-slate-500 shrink-0">A</span>
+			</div>
+		</div>
+
+		<!-- Message Layout -->
+		<div
+			class="flex flex-col gap-3 p-4 bg-slate-100/80 dark:bg-slate-800/80 border border-slate-200 dark:border-slate-800 rounded-xl transition-all duration-150 hover:border-violet-500/20"
+		>
+			<div class="flex items-center gap-3.5">
+				<div
+					class="flex items-center justify-center w-10 h-10 bg-violet-500/10 dark:bg-violet-500/15 rounded-lg text-violet-600 dark:text-violet-400"
+				>
+					<Icon name="lucide:layout-list" class="w-5 h-5" />
+				</div>
+				<div class="flex flex-col gap-0.5 flex-1">
+					<div class="text-sm font-semibold text-slate-900 dark:text-slate-100">Message Layout</div>
+					<div class="text-xs text-slate-600 dark:text-slate-500">
+						Choose how AI chat messages are displayed
+					</div>
+				</div>
+			</div>
+
+			<div class="grid grid-cols-2 gap-3">
+				<button
+					type="button"
+					onclick={() => setChatAppearance('classic')}
+					class="flex flex-col gap-2 p-3 rounded-lg border-2 transition-all duration-150 text-left {settings.chatAppearance === 'classic'
+						? 'border-violet-500 bg-violet-500/5'
+						: 'border-slate-200 dark:border-slate-700 hover:border-violet-500/40'}"
+					aria-pressed={settings.chatAppearance === 'classic'}
+				>
+					<div class="flex flex-col gap-1 rounded-md bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-700 overflow-hidden h-15">
+						<!-- Card 1: header strip + content -->
+						<div class="border border-slate-200 dark:border-slate-700 rounded mx-1.5 mt-1.5 overflow-hidden">
+							<div class="flex items-center gap-1 px-1.5 py-0.5 bg-slate-100 dark:bg-slate-800">
+								<div class="w-4 h-1 rounded-full bg-slate-300 dark:bg-slate-600"></div>
+								<div class="flex-1"></div>
+								<div class="w-2 h-1 rounded-full bg-slate-300 dark:bg-slate-600"></div>
+							</div>
+							<div class="px-1.5 py-0.5">
+								<div class="w-full h-1 rounded-full bg-slate-200 dark:bg-slate-700"></div>
+							</div>
+						</div>
+						<!-- Card 2 -->
+						<div class="border border-slate-200 dark:border-slate-700 rounded mx-1.5 overflow-hidden">
+							<div class="flex items-center gap-1 px-1.5 py-0.5 bg-slate-100 dark:bg-slate-800">
+								<div class="w-3 h-1 rounded-full bg-slate-300 dark:bg-slate-600"></div>
+								<div class="flex-1"></div>
+								<div class="w-2 h-1 rounded-full bg-slate-300 dark:bg-slate-600"></div>
+							</div>
+							<div class="px-1.5 py-0.5">
+								<div class="w-3/4 h-1 rounded-full bg-slate-200 dark:bg-slate-700"></div>
+							</div>
+						</div>
+					</div>
+					<div class="flex items-center justify-between">
+						<span class="text-sm font-semibold text-slate-900 dark:text-slate-100">Classic</span>
+						{#if settings.chatAppearance === 'classic'}
+							<Icon name="lucide:circle-check" class="w-4 h-4 text-violet-500" />
+						{/if}
+					</div>
+					<span class="text-xs text-slate-600 dark:text-slate-500">Cards with headers and content sections</span>
+				</button>
+
+				<button
+					type="button"
+					onclick={() => setChatAppearance('compact')}
+					class="flex flex-col gap-2 p-3 rounded-lg border-2 transition-all duration-150 text-left {settings.chatAppearance === 'compact'
+						? 'border-violet-500 bg-violet-500/5'
+						: 'border-slate-200 dark:border-slate-700 hover:border-violet-500/40'}"
+					aria-pressed={settings.chatAppearance === 'compact'}
+				>
+					<div class="flex flex-col gap-1.5 rounded-md bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-700 p-2 h-15 overflow-hidden">
+						<div class="w-3/4 h-1 rounded-full bg-slate-200 dark:bg-slate-700"></div>
+						<div class="w-full h-1 rounded-full bg-slate-200 dark:bg-slate-700"></div>
+						<div class="w-2/3 h-1 rounded-full bg-slate-200 dark:bg-slate-700"></div>
+						<div class="w-full h-1 rounded-full bg-slate-200 dark:bg-slate-700"></div>
+					</div>
+					<div class="flex items-center justify-between">
+						<span class="text-sm font-semibold text-slate-900 dark:text-slate-100">Compact</span>
+						{#if settings.chatAppearance === 'compact'}
+							<Icon name="lucide:circle-check" class="w-4 h-4 text-violet-500" />
+						{/if}
+					</div>
+					<span class="text-xs text-slate-600 dark:text-slate-500">Dense lines, no borders or cards</span>
+				</button>
 			</div>
 		</div>
 	</div>
