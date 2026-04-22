@@ -41,6 +41,7 @@ import type {
 	ListMcpResourcesInput,
 	ReadMcpResourceInput,
 	TodoWriteInput,
+	PatchInput,
 } from '$shared/types/unified';
 
 // ============================================================
@@ -86,6 +87,7 @@ type NormalizedToolInput =
 	| GlobInput | GrepInput | WebFetchInput | WebSearchInput
 	| AskUserQuestionInput | TodoWriteInput
 	| ListMcpResourcesInput | ReadMcpResourceInput
+	| PatchInput
 	| Record<string, unknown>;
 
 // ============================================================
@@ -109,6 +111,9 @@ const TOOL_NAME_MAP: Record<string, string> = {
 	'write': 'Write',
 	'edit': 'Edit',
 	'patch': 'Patch',
+	// OpenAI GPT-5 family emits `apply_patch` with a V4A-format `patch_text`
+	// payload. Normalize to canonical `Patch` so PatchTool.svelte renders it.
+	'apply_patch': 'Patch',
 	// Search & discovery
 	'glob': 'Glob',
 	'grep': 'Grep',
@@ -315,6 +320,26 @@ function normalizeTodoWriteInput(raw: OCToolInput): TodoWriteInput {
 	};
 }
 
+/**
+ * Handle both OpenCode's `patch` tool (`{ file_path, patch }`) and OpenAI
+ * GPT-5's `apply_patch` (`{ patch_text }`). For apply_patch we extract the
+ * first file path from the V4A header so the Patch tool header has something
+ * meaningful; the full patch body still shows every file.
+ */
+function normalizePatchInput(raw: OCToolInput): PatchInput {
+	const patchText = str(raw, 'patch_text', 'patchText');
+	const patchBody = patchText || str(raw, 'patch', 'patch');
+	const explicitPath = str(raw, 'file_path', 'filePath');
+
+	let filePath = explicitPath;
+	if (!filePath && patchBody) {
+		const match = patchBody.match(/^\*\*\*\s+(?:Add|Update|Delete)\s+File:\s*(.+)$/m);
+		if (match) filePath = match[1].trim();
+	}
+
+	return { filePath, patch: patchBody };
+}
+
 // ============================================================
 // Normalizer Dispatcher
 // ============================================================
@@ -342,6 +367,7 @@ function normalizeToolInput(claudeToolName: string, raw: OCToolInput): Normalize
 		case 'ListMcpResources': return normalizeListMcpResourcesInput(raw);
 		case 'ReadMcpResource': return normalizeReadMcpResourceInput(raw);
 		case 'TodoWrite': return normalizeTodoWriteInput(raw);
+		case 'Patch': return normalizePatchInput(raw);
 		default: {
 			// Unknown tool: generic camelCase → snake_case key normalization
 			const normalized: Record<string, string | number | boolean> = {};
