@@ -335,23 +335,21 @@
 				>
 					<Icon name="lucide:trash-2" class={isMobile ? 'w-4.5 h-4.5' : 'w-4 h-4'} />
 				</button>
-				{#if !isMobile || terminalPanelRef?.panelActions?.isExecuting()}
-					<button
-						type="button"
-						class="flex items-center justify-center {isMobile ? 'w-9 h-9' : 'w-6 h-6'} bg-transparent border-none rounded-md {isMobile ? 'text-red-600 dark:text-red-400' : 'text-slate-500'} cursor-pointer transition-all duration-150 hover:bg-red-500/10 hover:text-red-600 dark:hover:text-red-400 disabled:opacity-50 disabled:cursor-not-allowed"
-						onclick={() => terminalPanelRef?.panelActions?.handleCancel()}
-						disabled={terminalPanelRef?.panelActions?.isCancelling()}
-						title="{isMobile ? 'Cancel Command (Ctrl+C)' : 'Send Ctrl+C Signal'}"
-					>
-						{#if terminalPanelRef?.panelActions?.isCancelling()}
-							<div
-								class="{isMobile ? 'w-4.5 h-4.5' : 'w-4 h-4'} border-2 border-red-500/20 border-t-red-600 rounded-full animate-spin"
-							></div>
-						{:else}
-							<Icon name="lucide:square" class={isMobile ? 'w-4.5 h-4.5' : 'w-4 h-4'} />
-						{/if}
-					</button>
-				{/if}
+				<button
+					type="button"
+					class="flex items-center justify-center {isMobile ? 'w-9 h-9' : 'w-6 h-6'} bg-transparent border-none rounded-md text-slate-500 cursor-pointer transition-all duration-150 hover:bg-red-500/10 hover:text-red-600 dark:hover:text-red-400 disabled:opacity-50 disabled:cursor-not-allowed"
+					onclick={() => terminalPanelRef?.panelActions?.handleCancel()}
+					disabled={terminalPanelRef?.panelActions?.isCancelling()}
+					title="{isMobile ? 'Cancel Command (Ctrl+C)' : 'Send Ctrl+C Signal'}"
+				>
+					{#if terminalPanelRef?.panelActions?.isCancelling()}
+						<div
+							class="{isMobile ? 'w-4.5 h-4.5' : 'w-4 h-4'} border-2 border-red-500/20 border-t-red-600 rounded-full animate-spin"
+						></div>
+					{:else}
+						<Icon name="lucide:square" class={isMobile ? 'w-4.5 h-4.5' : 'w-4 h-4'} />
+					{/if}
+				</button>
 			{:else if panelId === 'preview'}
 				<!-- Connection status indicator -->
 				<!-- {@const sessionInfo = previewPanelRef?.panelActions?.getSessionInfo()}

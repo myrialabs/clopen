@@ -335,9 +335,10 @@
 		
 		// ALWAYS re-render from session lines to preserve ANSI colors
 		// This ensures colors are preserved when switching tabs
-		
-		// Clear terminal first
-		xtermService.clear();
+
+		// Full reset on session switch — clear() keeps the cursor row, which
+		// leaks the last line from the previous tab into a freshly opened tab
+		xtermService.reset();
 		
 		// Don't set the flag here - it's already set in the session change handler
 		// justRestoredFromBuffer = true;
@@ -723,15 +724,6 @@
 
 	:global(.dark .xterm .xterm-viewport::-webkit-scrollbar-thumb:hover) {
 		background-color: rgb(71 85 105 / 0.6); /* slate-600 with higher opacity */
-	}
-
-	/* Ensure proper focus styling */
-	:global(.xterm.focus .xterm-cursor) {
-		background-color: #22c55e !important; /* green-500 */
-	}
-
-	:global(.xterm:not(.focus) .xterm-cursor) {
-		background-color: #52525b !important; /* zinc-600 */
 	}
 
 	/* Responsive font size adjustments */

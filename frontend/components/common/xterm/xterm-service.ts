@@ -276,6 +276,23 @@ export class XTermService {
 	}
 
 	/**
+	 * Full terminal reset (RIS \x1bc) — clears buffer, scrollback, and current row.
+	 * Use this on session switches; plain clear() keeps the cursor row intact and
+	 * leaks 1–2 lines from the previous tab into a freshly opened tab.
+	 *
+	 * Also re-asserts cursor visibility/blink via DEC private modes. TUI apps like
+	 * claude, opencode, and vim can leave the shared xterm in a state where RIS
+	 * alone doesn't fully restore cursor rendering on the next tab.
+	 */
+	reset(): void {
+		if (!this.terminal) return;
+		this.terminal.reset();
+		this.terminal.write('\x1b[?25h\x1b[?12h');
+		this.terminal.options.cursorBlink = true;
+		this.terminal.options.cursorStyle = 'block';
+	}
+
+	/**
 	 * Fit terminal to container size
 	 */
 	fit(sessionId?: string): void {
