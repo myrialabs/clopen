@@ -157,6 +157,119 @@ export class InstallNotAutoInstallableError extends Error {
 	}
 }
 
+function finalizeSession(session: Session, preferredStatus: SessionStatus, exitCode: number): void {
+	// `cancelled` (set preemptively by cancelInstall) or earlier failure paths
+	// must not be overwritten by the caller's preferred status.
+	if (session.status === 'running') {
+		session.status = preferredStatus;
+	}
+	session.exitCode = exitCode;
+	session.endedAt = Date.now();
+	session.proc = null;
+
+	debug.log('path', `[install:${session.id}] Finished status=${session.status} exit=${exitCode}`);
+
+	ws.emit.user(session.startedBy, 'system-tools:install-finished', {
+		sessionId: session.id,
+		tool: session.tool,
+		status: session.status,
+		exitCode: exitCode ?? -1,
+		endedAt: session.endedAt
+	});
+
+	scheduleRetention(session);
+}
+
+async function runStreamedProcess(session: Session, proc: ReturnType<typeof Bun.spawn>): Promise<number> {
+	const [, , exitCode] = await Promise.all([
+		pipeStream(session, proc.stdout as ReadableStream<Uint8Array>, 'stdout'),
+		pipeStream(session, proc.stderr as ReadableStream<Uint8Array>, 'stderr'),
+		proc.exited
+	]);
+	flushPending(session);
+	return exitCode;
+}
+
+async function runInstall(session: Session, env: Record<string, string>): Promise<void> {
+	const { recipe } = session;
+	let proc: ReturnType<typeof Bun.spawn>;
+
+	if (recipe.fetchAndPipe) {
+		const { url, interpreter } = recipe.fetchAndPipe;
+		emitStream(session, 'stdout', `» fetching ${url}\n`);
+
+		let body: string;
+		try {
+			const response = await fetch(url, { redirect: 'follow' });
+			if (!response.ok) {
+				emitStream(session, 'stderr', `fetch failed: HTTP ${response.status} ${response.statusText}\n`);
+				finalizeSession(session, 'failed', -1);
+				return;
+			}
+			body = await response.text();
+		} catch (err) {
+			emitStream(session, 'stderr', `fetch error: ${err instanceof Error ? err.message : String(err)}\n`);
+			finalizeSession(session, 'failed', -1);
+			return;
+		}
+
+		// Cancel may have fired while the fetch was in flight.
+		if (session.status !== 'running') {
+			finalizeSession(session, session.status, -1);
+			return;
+		}
+
+		emitStream(session, 'stdout', `» piping ${body.length} bytes to ${interpreter.join(' ')}\n`);
+
+		try {
+			proc = Bun.spawn(interpreter, {
+				stdout: 'pipe',
+				stderr: 'pipe',
+				stdin: 'pipe',
+				env
+			});
+		} catch (err) {
+			emitStream(session, 'stderr', `spawn failed: ${err instanceof Error ? err.message : String(err)}\n`);
+			finalizeSession(session, 'failed', -1);
+			return;
+		}
+
+		session.proc = proc;
+
+		try {
+			const stdin = proc.stdin as import('bun').FileSink;
+			stdin.write(body);
+			stdin.end();
+		} catch (err) {
+			debug.warn('path', `[install:${session.id}] stdin write error:`, err);
+		}
+	} else {
+		const spawnArgs = recipe.shell
+			? [recipe.shell.program, ...recipe.shell.args, ...recipe.command!]
+			: recipe.command!;
+
+		debug.log('path', `[install:${session.id}] Spawning: ${spawnArgs.join(' ')}`);
+
+		try {
+			proc = Bun.spawn(spawnArgs, {
+				stdout: 'pipe',
+				stderr: 'pipe',
+				stdin: 'ignore',
+				env
+			});
+		} catch (err) {
+			emitStream(session, 'stderr', `spawn failed: ${err instanceof Error ? err.message : String(err)}\n`);
+			finalizeSession(session, 'failed', -1);
+			return;
+		}
+
+		session.proc = proc;
+	}
+
+	const exitCode = await runStreamedProcess(session, proc);
+	finalizeSession(session, exitCode === 0 ? 'success' : 'failed', exitCode);
+}
+
 export async function startInstall(tool: ToolId, userId: string): Promise<Session> {
 	await refreshProcessPath();
 
@@ -169,36 +282,19 @@ export async function startInstall(tool: ToolId, userId: string): Promise<Sessio
 	}
 
 	const recipe = await resolveRecipe(tool);
-	if (!recipe.autoInstallable || !recipe.command) {
+	const hasExecutable = recipe.autoInstallable && (recipe.command || recipe.fetchAndPipe);
+	if (!hasExecutable) {
 		throw new InstallNotAutoInstallableError(tool, recipe.unavailableReason ?? 'Not auto-installable on this platform');
 	}
 
 	const id = crypto.randomUUID();
-	const spawnArgs = recipe.shell
-		? [recipe.shell.program, ...recipe.shell.args, ...recipe.command]
-		: recipe.command;
-
 	const env = { ...getCleanSpawnEnv(), ...(recipe.env ?? {}) };
-
-	debug.log('path', `[install:${id}] Spawning: ${spawnArgs.join(' ')}`);
-
-	let proc: ReturnType<typeof Bun.spawn>;
-	try {
-		proc = Bun.spawn(spawnArgs, {
-			stdout: 'pipe',
-			stderr: 'pipe',
-			stdin: 'ignore',
-			env
-		});
-	} catch (err) {
-		throw new Error(`Failed to spawn: ${err instanceof Error ? err.message : String(err)}`);
-	}
 
 	const session: Session = {
 		id,
 		tool,
 		recipe,
-		proc,
+		proc: null,
 		status: 'running',
 		exitCode: null,
 		startedAt: Date.now(),
@@ -213,7 +309,7 @@ export async function startInstall(tool: ToolId, userId: string): Promise<Sessio
 	activeByTool.set(tool, id);
 
 	// Initial marker line so clients see something immediately.
-	const banner = `$ ${recipe.displayCommand ?? spawnArgs.join(' ')}`;
+	const banner = `$ ${recipe.displayCommand ?? ''}`;
 	emitStream(session, 'stdout', banner + '\n');
 
 	// Broadcast the session-started event so clients that subscribe mid-run can attach.
@@ -224,46 +320,10 @@ export async function startInstall(tool: ToolId, userId: string): Promise<Sessio
 		startedAt: session.startedAt
 	});
 
-	(async () => {
-		const [, , exitCode] = await Promise.all([
-			pipeStream(session, proc.stdout as ReadableStream<Uint8Array>, 'stdout'),
-			pipeStream(session, proc.stderr as ReadableStream<Uint8Array>, 'stderr'),
-			proc.exited
-		]);
-		flushPending(session);
-
-		// `cancelled` is set preemptively by cancelInstall(); don't overwrite.
-		if (session.status === 'running') {
-			session.status = exitCode === 0 ? 'success' : 'failed';
-		}
-		session.exitCode = exitCode;
-		session.endedAt = Date.now();
-		session.proc = null;
-
-		debug.log('path', `[install:${id}] Finished status=${session.status} exit=${exitCode}`);
-
-		ws.emit.user(userId, 'system-tools:install-finished', {
-			sessionId: id,
-			tool,
-			status: session.status,
-			exitCode: exitCode ?? -1,
-			endedAt: session.endedAt
-		});
-
-		scheduleRetention(session);
-	})().catch((err) => {
+	runInstall(session, env).catch((err) => {
 		debug.error('path', `[install:${id}] runner crash:`, err);
-		session.status = 'failed';
-		session.endedAt = Date.now();
-		session.exitCode = -1;
-		ws.emit.user(userId, 'system-tools:install-finished', {
-			sessionId: id,
-			tool,
-			status: session.status,
-			exitCode: -1,
-			endedAt: session.endedAt
-		});
-		scheduleRetention(session);
+		emitStream(session, 'stderr', `runner crash: ${err instanceof Error ? err.message : String(err)}\n`);
+		finalizeSession(session, 'failed', -1);
 	});
 
 	return session;
@@ -271,12 +331,16 @@ export async function startInstall(tool: ToolId, userId: string): Promise<Sessio
 
 export function cancelInstall(sessionId: string): boolean {
 	const session = sessions.get(sessionId);
-	if (!session || session.status !== 'running' || !session.proc) return false;
+	if (!session || session.status !== 'running') return false;
 	session.status = 'cancelled';
-	try {
-		session.proc.kill();
-	} catch {
-		// Already dead — the exited promise will resolve regardless.
+	// `proc` may be null during the fetchAndPipe fetch phase; runInstall
+	// re-checks status after fetch and finalizes accordingly.
+	if (session.proc) {
+		try {
+			session.proc.kill();
+		} catch {
+			// Already dead — the exited promise will resolve regardless.
+		}
 	}
 	return true;
 }

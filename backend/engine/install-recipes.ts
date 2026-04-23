@@ -20,7 +20,7 @@ import { isElevated } from '$backend/utils/privilege';
 import { getClopenDir } from '$backend/utils/paths';
 import { resolveBinary, resolveBinaryWithRefresh } from '$backend/utils/cli';
 
-export type ToolId = 'git' | 'claude' | 'opencode' | 'chrome' | 'curl';
+export type ToolId = 'git' | 'claude' | 'opencode' | 'chrome';
 
 export interface ManualInstruction {
 	label: string;
@@ -37,6 +37,13 @@ export interface Recipe {
 	command?: string[];
 	/** Optional shell to wrap command (e.g. sh -c for pipe chains). */
 	shell?: { program: string; args: string[] };
+	/**
+	 * Fetch a remote script via Bun.fetch and pipe its body to the
+	 * interpreter's stdin. Used in place of `curl | bash` so clopen can
+	 * install tools like Claude/OpenCode without requiring curl to be
+	 * present on the system. Exclusive with `command`/`shell`.
+	 */
+	fetchAndPipe?: { url: string; interpreter: string[] };
 	/** Human-readable command string for confirmation dialog preview. */
 	displayCommand?: string;
 	/** Extra env vars for the install subprocess. */
@@ -194,10 +201,6 @@ export async function getToolStatus(tool: ToolId): Promise<ToolStatus> {
 // Recipe resolution
 // ─────────────────────────────────────────────────────────────────────────────
 
-function needsCurl(): boolean {
-	return !resolveBinary('curl');
-}
-
 async function resolveGitRecipe(): Promise<Recipe> {
 	const base: Recipe = {
 		tool: 'git',
@@ -301,54 +304,6 @@ async function resolveGitRecipe(): Promise<Recipe> {
 	return base;
 }
 
-async function resolveCurlRecipe(): Promise<Recipe> {
-	const base: Recipe = {
-		tool: 'curl',
-		autoInstallable: false,
-		missingPrereqs: [],
-		manualInstructions: [
-			{ label: 'apt (Debian/Ubuntu)', command: 'sudo apt update && sudo apt install -y curl' },
-			{ label: 'dnf (Fedora/RHEL)', command: 'sudo dnf install -y curl' },
-			{ label: 'pacman (Arch)', command: 'sudo pacman -S --noconfirm curl' },
-			{ label: 'apk (Alpine)', command: 'sudo apk add curl' }
-		]
-	};
-	if (process.platform === 'win32' || process.platform === 'darwin') {
-		// curl ships with both — if it's missing, defer to manual.
-		base.unavailableReason = 'curl is expected to be available on this platform.';
-		return base;
-	}
-	const mgr = detectLinuxPkgMgr();
-	if (!mgr) {
-		base.unavailableReason = 'No supported Linux package manager found.';
-		return base;
-	}
-	const elevated = await isElevated();
-	if (!elevated) {
-		base.unavailableReason = 'Linux package install requires root. Run the command manually with sudo.';
-		return base;
-	}
-	base.autoInstallable = true;
-	if (mgr === 'apt') {
-		base.shell = { program: 'sh', args: ['-c'] };
-		base.command = ['apt-get update && apt-get install -y curl'];
-		base.displayCommand = 'apt-get update && apt-get install -y curl';
-	} else if (mgr === 'dnf') {
-		base.command = ['dnf', 'install', '-y', 'curl'];
-		base.displayCommand = 'dnf install -y curl';
-	} else if (mgr === 'pacman') {
-		base.command = ['pacman', '-S', '--noconfirm', 'curl'];
-		base.displayCommand = 'pacman -S --noconfirm curl';
-	} else if (mgr === 'apk') {
-		base.command = ['apk', 'add', 'curl'];
-		base.displayCommand = 'apk add curl';
-	} else if (mgr === 'zypper') {
-		base.command = ['zypper', '--non-interactive', 'install', 'curl'];
-		base.displayCommand = 'zypper --non-interactive install curl';
-	}
-	return base;
-}
-
 async function resolveClaudeRecipe(): Promise<Recipe> {
 	const base: Recipe = {
 		tool: 'claude',
@@ -370,20 +325,15 @@ async function resolveClaudeRecipe(): Promise<Recipe> {
 		return base;
 	}
 
-	// macOS / Linux
+	// macOS / Linux — fetch the script via Bun.fetch and pipe it to bash
+	// so curl does not need to be installed.
 	base.manualInstructions.push({
 		label: 'curl + bash',
 		command: 'curl -fsSL https://claude.ai/install.sh | bash',
 		docs: 'https://docs.claude.com/en/docs/claude-code/overview'
 	});
-	if (needsCurl()) {
-		base.missingPrereqs.push('curl');
-		base.unavailableReason = 'curl is required to run the install script.';
-		return base;
-	}
 	base.autoInstallable = true;
-	base.shell = { program: 'bash', args: ['-c'] };
-	base.command = ['curl -fsSL https://claude.ai/install.sh | bash'];
+	base.fetchAndPipe = { url: 'https://claude.ai/install.sh', interpreter: ['bash'] };
 	base.displayCommand = 'curl -fsSL https://claude.ai/install.sh | bash';
 	return base;
 }
@@ -405,14 +355,8 @@ async function resolveOpenCodeRecipe(): Promise<Recipe> {
 		return base;
 	}
 
-	if (needsCurl()) {
-		base.missingPrereqs.push('curl');
-		base.unavailableReason = 'curl is required to run the install script.';
-		return base;
-	}
 	base.autoInstallable = true;
-	base.shell = { program: 'bash', args: ['-c'] };
-	base.command = ['curl -fsSL https://opencode.ai/install | bash'];
+	base.fetchAndPipe = { url: 'https://opencode.ai/install', interpreter: ['bash'] };
 	base.displayCommand = 'curl -fsSL https://opencode.ai/install | bash';
 	return base;
 }
@@ -442,7 +386,6 @@ async function resolveChromeRecipe(): Promise<Recipe> {
 export async function resolveRecipe(tool: ToolId): Promise<Recipe> {
 	switch (tool) {
 		case 'git': return resolveGitRecipe();
-		case 'curl': return resolveCurlRecipe();
 		case 'claude': return resolveClaudeRecipe();
 		case 'opencode': return resolveOpenCodeRecipe();
 		case 'chrome': return resolveChromeRecipe();
