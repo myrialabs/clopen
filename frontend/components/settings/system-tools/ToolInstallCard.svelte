@@ -23,6 +23,12 @@
 		displayCommand?: string;
 		missingPrereqs: ToolId[];
 		manualInstructions: ManualInstruction[];
+		pendingCurlDownload?: {
+			version: string;
+			url: string;
+			sha256: string;
+			archKey: string;
+		};
 	}
 
 	interface ToolStatusDTO {
@@ -77,6 +83,25 @@
 
 	const isRunning = $derived(sessionStatus === 'running');
 	const hasSession = $derived(sessionId !== null && sessionStatus !== null);
+
+	const confirmMessage = $derived.by(() => {
+		if (!recipe) return '';
+		const lines = [
+			'The following command will run on the clopen server:',
+			recipe.displayCommand ?? ''
+		];
+		if (recipe.pendingCurlDownload) {
+			const { version, url, sha256, archKey } = recipe.pendingCurlDownload;
+			lines.push(
+				'',
+				'This installer needs curl, which is not present on the server.',
+				`Clopen will first download a verified static curl (${archKey}, v${version}):`,
+				url,
+				`SHA256: ${sha256}`
+			);
+		}
+		return lines.join('\n');
+	});
 
 	async function refresh() {
 		isLoading = true;
@@ -503,7 +528,7 @@
 	onClose={() => (confirmInstallOpen = false)}
 	type="info"
 	title="Install {title}?"
-	message={`The following command will run on the clopen server:\n${recipe?.displayCommand ?? ''}`}
+	message={confirmMessage}
 	confirmText="Install"
 	cancelText="Cancel"
 	onConfirm={doInstall}

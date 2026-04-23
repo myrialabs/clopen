@@ -19,6 +19,7 @@ import { join } from 'node:path';
 import { isElevated } from '$backend/utils/privilege';
 import { getClopenDir } from '$backend/utils/paths';
 import { resolveBinary, resolveBinaryWithRefresh } from '$backend/utils/cli';
+import { resolveStaticCurlAsset } from '$backend/utils/static-curl';
 
 export type ToolId = 'git' | 'claude' | 'opencode' | 'chrome';
 
@@ -38,12 +39,20 @@ export interface Recipe {
 	/** Optional shell to wrap command (e.g. sh -c for pipe chains). */
 	shell?: { program: string; args: string[] };
 	/**
-	 * Fetch a remote script via Bun.fetch and pipe its body to the
-	 * interpreter's stdin. Used in place of `curl | bash` so clopen can
-	 * install tools like Claude/OpenCode without requiring curl to be
-	 * present on the system. Exclusive with `command`/`shell`.
+	 * True when the install command (or script it downloads) shells out
+	 * to `curl`. When set, the runner ensures curl is on PATH —
+	 * downloading a SHA-pinned static curl from stunnel/static-curl if
+	 * the system lacks one.
 	 */
-	fetchAndPipe?: { url: string; interpreter: string[] };
+	requiresCurl?: boolean;
+	/**
+	 * When requiresCurl is true and the system has no curl, this carries
+	 * the pinned asset metadata so the frontend can surface URL + SHA256
+	 * in the install confirmation dialog for explicit user consent.
+	 * Undefined when system curl is already present or no asset covers
+	 * the current platform/arch.
+	 */
+	pendingCurlDownload?: { version: string; url: string; sha256: string; archKey: string };
 	/** Human-readable command string for confirmation dialog preview. */
 	displayCommand?: string;
 	/** Extra env vars for the install subprocess. */
@@ -304,6 +313,29 @@ async function resolveGitRecipe(): Promise<Recipe> {
 	return base;
 }
 
+/**
+ * Populate `requiresCurl` and (when the system lacks curl) the pending
+ * static-curl download metadata. Returns false when this platform/arch
+ * has no pinned asset — caller should mark the recipe unavailable.
+ */
+function attachCurlRequirement(base: Recipe, toolLabel: string): boolean {
+	base.requiresCurl = true;
+	if (resolveBinary('curl')) return true;
+
+	const asset = resolveStaticCurlAsset();
+	if (!asset) {
+		base.unavailableReason = `curl is required by the ${toolLabel} installer, and no static curl is available for ${process.platform}/${process.arch}.`;
+		return false;
+	}
+	base.pendingCurlDownload = {
+		version: asset.version,
+		url: asset.url,
+		sha256: asset.sha256,
+		archKey: asset.archKey
+	};
+	return true;
+}
+
 async function resolveClaudeRecipe(): Promise<Recipe> {
 	const base: Recipe = {
 		tool: 'claude',
@@ -325,15 +357,17 @@ async function resolveClaudeRecipe(): Promise<Recipe> {
 		return base;
 	}
 
-	// macOS / Linux — fetch the script via Bun.fetch and pipe it to bash
-	// so curl does not need to be installed.
+	// macOS / Linux
 	base.manualInstructions.push({
 		label: 'curl + bash',
 		command: 'curl -fsSL https://claude.ai/install.sh | bash',
 		docs: 'https://docs.claude.com/en/docs/claude-code/overview'
 	});
+	if (!attachCurlRequirement(base, 'Claude Code')) return base;
+
 	base.autoInstallable = true;
-	base.fetchAndPipe = { url: 'https://claude.ai/install.sh', interpreter: ['bash'] };
+	base.shell = { program: 'bash', args: ['-c'] };
+	base.command = ['curl -fsSL https://claude.ai/install.sh | bash'];
 	base.displayCommand = 'curl -fsSL https://claude.ai/install.sh | bash';
 	return base;
 }
@@ -355,8 +389,11 @@ async function resolveOpenCodeRecipe(): Promise<Recipe> {
 		return base;
 	}
 
+	if (!attachCurlRequirement(base, 'OpenCode')) return base;
+
 	base.autoInstallable = true;
-	base.fetchAndPipe = { url: 'https://opencode.ai/install', interpreter: ['bash'] };
+	base.shell = { program: 'bash', args: ['-c'] };
+	base.command = ['curl -fsSL https://opencode.ai/install | bash'];
 	base.displayCommand = 'curl -fsSL https://opencode.ai/install | bash';
 	return base;
 }

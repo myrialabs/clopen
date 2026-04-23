@@ -21,6 +21,7 @@ import { debug } from '$shared/utils/logger';
 import { ws } from '$backend/utils/ws';
 import { getCleanSpawnEnv } from '$backend/utils/env';
 import { refreshProcessPath } from '$backend/utils/path-enrich';
+import { ensureCurlAvailable } from '$backend/utils/static-curl';
 import type { Recipe, ToolId } from './install-recipes';
 import { resolveRecipe } from './install-recipes';
 
@@ -194,77 +195,49 @@ async function runInstall(session: Session, env: Record<string, string>): Promis
 	const { recipe } = session;
 	let proc: ReturnType<typeof Bun.spawn>;
 
-	if (recipe.fetchAndPipe) {
-		const { url, interpreter } = recipe.fetchAndPipe;
-		emitStream(session, 'stdout', `» fetching ${url}\n`);
-
-		let body: string;
+	// Ensure curl is available when the recipe shells out to it. Prepends
+	// the static-curl directory to PATH when a managed binary is staged.
+	if (recipe.requiresCurl) {
 		try {
-			const response = await fetch(url, { redirect: 'follow' });
-			if (!response.ok) {
-				emitStream(session, 'stderr', `fetch failed: HTTP ${response.status} ${response.statusText}\n`);
-				finalizeSession(session, 'failed', -1);
-				return;
+			const curlDir = await ensureCurlAvailable((event) => {
+				emitStream(session, 'stdout', `» curl: ${event.message}\n`);
+			});
+			if (curlDir) {
+				env.PATH = `${curlDir}${process.platform === 'win32' ? ';' : ':'}${env.PATH ?? ''}`;
 			}
-			body = await response.text();
 		} catch (err) {
-			emitStream(session, 'stderr', `fetch error: ${err instanceof Error ? err.message : String(err)}\n`);
+			emitStream(session, 'stderr', `curl setup failed: ${err instanceof Error ? err.message : String(err)}\n`);
 			finalizeSession(session, 'failed', -1);
 			return;
 		}
 
-		// Cancel may have fired while the fetch was in flight.
+		// Cancel may have fired while curl was being staged.
 		if (session.status !== 'running') {
 			finalizeSession(session, session.status, -1);
 			return;
 		}
-
-		emitStream(session, 'stdout', `» piping ${body.length} bytes to ${interpreter.join(' ')}\n`);
-
-		try {
-			proc = Bun.spawn(interpreter, {
-				stdout: 'pipe',
-				stderr: 'pipe',
-				stdin: 'pipe',
-				env
-			});
-		} catch (err) {
-			emitStream(session, 'stderr', `spawn failed: ${err instanceof Error ? err.message : String(err)}\n`);
-			finalizeSession(session, 'failed', -1);
-			return;
-		}
-
-		session.proc = proc;
-
-		try {
-			const stdin = proc.stdin as import('bun').FileSink;
-			stdin.write(body);
-			stdin.end();
-		} catch (err) {
-			debug.warn('path', `[install:${session.id}] stdin write error:`, err);
-		}
-	} else {
-		const spawnArgs = recipe.shell
-			? [recipe.shell.program, ...recipe.shell.args, ...recipe.command!]
-			: recipe.command!;
-
-		debug.log('path', `[install:${session.id}] Spawning: ${spawnArgs.join(' ')}`);
-
-		try {
-			proc = Bun.spawn(spawnArgs, {
-				stdout: 'pipe',
-				stderr: 'pipe',
-				stdin: 'ignore',
-				env
-			});
-		} catch (err) {
-			emitStream(session, 'stderr', `spawn failed: ${err instanceof Error ? err.message : String(err)}\n`);
-			finalizeSession(session, 'failed', -1);
-			return;
-		}
-
-		session.proc = proc;
 	}
+
+	const spawnArgs = recipe.shell
+		? [recipe.shell.program, ...recipe.shell.args, ...recipe.command!]
+		: recipe.command!;
+
+	debug.log('path', `[install:${session.id}] Spawning: ${spawnArgs.join(' ')}`);
+
+	try {
+		proc = Bun.spawn(spawnArgs, {
+			stdout: 'pipe',
+			stderr: 'pipe',
+			stdin: 'ignore',
+			env
+		});
+	} catch (err) {
+		emitStream(session, 'stderr', `spawn failed: ${err instanceof Error ? err.message : String(err)}\n`);
+		finalizeSession(session, 'failed', -1);
+		return;
+	}
+
+	session.proc = proc;
 
 	const exitCode = await runStreamedProcess(session, proc);
 	finalizeSession(session, exitCode === 0 ? 'success' : 'failed', exitCode);
@@ -282,8 +255,7 @@ export async function startInstall(tool: ToolId, userId: string): Promise<Sessio
 	}
 
 	const recipe = await resolveRecipe(tool);
-	const hasExecutable = recipe.autoInstallable && (recipe.command || recipe.fetchAndPipe);
-	if (!hasExecutable) {
+	if (!recipe.autoInstallable || !recipe.command) {
 		throw new InstallNotAutoInstallableError(tool, recipe.unavailableReason ?? 'Not auto-installable on this platform');
 	}
 
@@ -333,8 +305,8 @@ export function cancelInstall(sessionId: string): boolean {
 	const session = sessions.get(sessionId);
 	if (!session || session.status !== 'running') return false;
 	session.status = 'cancelled';
-	// `proc` may be null during the fetchAndPipe fetch phase; runInstall
-	// re-checks status after fetch and finalizes accordingly.
+	// `proc` may be null during the static-curl download phase; runInstall
+	// re-checks status after each await and finalizes accordingly.
 	if (session.proc) {
 		try {
 			session.proc.kill();

@@ -30,6 +30,12 @@ const RECIPE_SCHEMA = t.Object({
 		label: t.String(),
 		command: t.String(),
 		docs: t.Optional(t.String())
+	})),
+	pendingCurlDownload: t.Optional(t.Object({
+		version: t.String(),
+		url: t.String(),
+		sha256: t.String(),
+		archKey: t.String()
 	}))
 });
 
@@ -67,7 +73,8 @@ function toRecipeDTO(tool: 'git' | 'claude' | 'opencode' | 'chrome', recipe: Awa
 		unavailableReason: recipe.unavailableReason,
 		displayCommand: recipe.displayCommand,
 		missingPrereqs: recipe.missingPrereqs,
-		manualInstructions: recipe.manualInstructions
+		manualInstructions: recipe.manualInstructions,
+		pendingCurlDownload: recipe.pendingCurlDownload
 	};
 }
 
