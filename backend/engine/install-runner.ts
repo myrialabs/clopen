@@ -20,7 +20,7 @@
 import { debug } from '$shared/utils/logger';
 import { ws } from '$backend/utils/ws';
 import { getCleanSpawnEnv } from '$backend/utils/env';
-import { refreshProcessPath } from '$backend/utils/path-harvest';
+import { refreshProcessPath } from '$backend/utils/path-enrich';
 import type { Recipe, ToolId } from './install-recipes';
 import { resolveRecipe } from './install-recipes';
 

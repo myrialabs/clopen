@@ -4,16 +4,17 @@
  * Single source of truth for detecting tools like `opencode`, `claude`, `git`.
  *
  * Resolution strategy:
- *   1. Refresh process.env.PATH from the user's interactive shell (Unix only)
- *      so binaries installed via nvm/fnm/volta/asdf/bun/homebrew (and our own
- *      System Tools installer) become visible without a clopen restart.
+ *   1. Enrich process.env.PATH with known install directories (and, on Unix
+ *      desktops, the user's interactive-shell PATH) so binaries installed
+ *      via our System Tools installer, nvm/fnm/volta/asdf/bun/homebrew, or
+ *      by the user become visible without a clopen restart.
  *   2. Call `Bun.which(binary, { PATH: process.env.PATH })` — the explicit
  *      PATH option is critical: without it, Bun.which uses a cached startup
  *      PATH and ignores runtime updates, so newly-installed binaries remain
  *      invisible even though process.env.PATH has been refreshed.
  */
 
-import { refreshProcessPath } from './path-harvest';
+import { refreshProcessPath } from './path-enrich';
 
 export type CLIStatus = { installed: boolean; version: string | null };
 
