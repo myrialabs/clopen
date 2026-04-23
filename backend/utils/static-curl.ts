@@ -16,9 +16,9 @@
  *    the stunnel team. Release: https://github.com/stunnel/static-curl
  */
 
-import { existsSync, readdirSync, mkdirSync, mkdtempSync, chmodSync, renameSync, rmSync } from 'node:fs';
+import { existsSync, readdirSync, mkdirSync, chmodSync, renameSync } from 'node:fs';
 import { join, dirname } from 'node:path';
-import { tmpdir } from 'node:os';
+import { XzReadableStream } from 'xz-decompress';
 import { debug } from '$shared/utils/logger';
 import { getClopenDir } from '$backend/utils/paths';
 import { resolveBinary } from '$backend/utils/cli';
@@ -98,19 +98,65 @@ export function hasCachedStaticCurl(): boolean {
 	return existsSync(getStaticCurlPath());
 }
 
-async function sha256OfFile(path: string): Promise<string> {
+function sha256(bytes: Uint8Array): string {
 	const hasher = new Bun.CryptoHasher('sha256');
-	const reader = Bun.file(path).stream().getReader();
-	try {
-		while (true) {
-			const { done, value } = await reader.read();
-			if (done) break;
-			hasher.update(value);
-		}
-	} finally {
-		reader.releaseLock();
-	}
+	hasher.update(bytes);
 	return hasher.digest('hex');
+}
+
+function parseTarOctal(bytes: Uint8Array): number {
+	let end = bytes.length;
+	for (let i = 0; i < bytes.length; i++) {
+		if (bytes[i] === 0 || bytes[i] === 0x20) {
+			end = i;
+			break;
+		}
+	}
+	const str = new TextDecoder().decode(bytes.subarray(0, end)).trim();
+	return str === '' ? 0 : parseInt(str, 8);
+}
+
+/**
+ * Minimal POSIX tar reader: walks header blocks and returns the first
+ * regular file whose name matches. Sufficient for static-curl archives
+ * which contain `curl` at the root with a short name.
+ */
+function findFileInTar(tarBytes: Uint8Array, filename: string): Uint8Array | null {
+	const decoder = new TextDecoder();
+	let offset = 0;
+	while (offset + 512 <= tarBytes.length) {
+		const header = tarBytes.subarray(offset, offset + 512);
+		let allZero = true;
+		for (let i = 0; i < 512; i++) {
+			if (header[i] !== 0) { allZero = false; break; }
+		}
+		if (allZero) return null;
+
+		const nameBytes = header.subarray(0, 100);
+		const nameEnd = nameBytes.indexOf(0);
+		const name = decoder.decode(nameEnd >= 0 ? nameBytes.subarray(0, nameEnd) : nameBytes);
+		const size = parseTarOctal(header.subarray(124, 136));
+		const typeflag = header[156];
+		const isRegularFile = typeflag === 0 || typeflag === 0x30; // '\0' or '0'
+
+		offset += 512;
+		if (isRegularFile && name === filename) {
+			return tarBytes.subarray(offset, offset + size);
+		}
+		offset += Math.ceil(size / 512) * 512;
+	}
+	return null;
+}
+
+async function decompressXz(xzBytes: Uint8Array): Promise<Uint8Array> {
+	const input = new ReadableStream<Uint8Array>({
+		start(controller) {
+			controller.enqueue(xzBytes);
+			controller.close();
+		}
+	});
+	const decompressed = new Response(new XzReadableStream(input));
+	return new Uint8Array(await decompressed.arrayBuffer());
 }
 
 export type CurlProgressPhase = 'cached' | 'fetching' | 'verifying' | 'extracting' | 'done';
@@ -148,51 +194,35 @@ export async function ensureCurlAvailable(
 	}
 
 	mkdirSync(binDir, { recursive: true });
-	const workDir = mkdtempSync(join(tmpdir(), 'clopen-curl-'));
-	const archivePath = join(workDir, 'curl.tar.xz');
 
-	try {
-		onProgress({ phase: 'fetching', message: `downloading ${asset.url}` });
-		const response = await fetch(asset.url, { redirect: 'follow' });
-		if (!response.ok) {
-			throw new Error(`HTTP ${response.status} ${response.statusText}`);
-		}
-		await Bun.write(archivePath, response);
-
-		onProgress({ phase: 'verifying', message: `verifying SHA256 ${asset.sha256}` });
-		const actualSha = await sha256OfFile(archivePath);
-		if (actualSha !== asset.sha256) {
-			throw new Error(`SHA256 mismatch: expected ${asset.sha256}, got ${actualSha}`);
-		}
-
-		onProgress({ phase: 'extracting', message: `extracting curl to ${binDir}` });
-		const proc = Bun.spawn(['tar', '-xJf', archivePath, '-C', workDir, 'curl'], {
-			stdout: 'pipe',
-			stderr: 'pipe'
-		});
-		const exit = await proc.exited;
-		if (exit !== 0) {
-			const stderr = (await new Response(proc.stderr).text()).trim();
-			throw new Error(`tar extract failed (exit ${exit}): ${stderr || 'unknown error'}`);
-		}
-
-		const extractedBinary = join(workDir, 'curl');
-		if (!existsSync(extractedBinary)) {
-			throw new Error('tar succeeded but curl binary not found in archive');
-		}
-
-		// Atomic move — finalPath either exists and is valid, or doesn't exist.
-		renameSync(extractedBinary, finalPath);
-		chmodSync(finalPath, 0o755);
-
-		onProgress({ phase: 'done', message: `curl installed at ${finalPath}` });
-		debug.log('path', `static-curl: installed ${asset.archKey} v${asset.version} at ${finalPath}`);
-		return binDir;
-	} finally {
-		try {
-			rmSync(workDir, { recursive: true, force: true });
-		} catch {
-			// best-effort cleanup
-		}
+	onProgress({ phase: 'fetching', message: `downloading ${asset.url}` });
+	const response = await fetch(asset.url, { redirect: 'follow' });
+	if (!response.ok) {
+		throw new Error(`HTTP ${response.status} ${response.statusText}`);
 	}
+	const archiveBytes = new Uint8Array(await response.arrayBuffer());
+
+	onProgress({ phase: 'verifying', message: `verifying SHA256 ${asset.sha256}` });
+	const actualSha = sha256(archiveBytes);
+	if (actualSha !== asset.sha256) {
+		throw new Error(`SHA256 mismatch: expected ${asset.sha256}, got ${actualSha}`);
+	}
+
+	onProgress({ phase: 'extracting', message: `extracting curl to ${binDir}` });
+	const tarBytes = await decompressXz(archiveBytes);
+	const curlBytes = findFileInTar(tarBytes, 'curl');
+	if (!curlBytes) {
+		throw new Error('curl binary not found in archive');
+	}
+
+	// Write via a sibling tmp path then rename, so finalPath is always
+	// either absent or a complete, valid binary.
+	const tmpPath = `${finalPath}.tmp-${process.pid}`;
+	await Bun.write(tmpPath, curlBytes);
+	chmodSync(tmpPath, 0o755);
+	renameSync(tmpPath, finalPath);
+
+	onProgress({ phase: 'done', message: `curl installed at ${finalPath}` });
+	debug.log('path', `static-curl: installed ${asset.archKey} v${asset.version} at ${finalPath}`);
+	return binDir;
 }

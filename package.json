@@ -111,7 +111,8 @@
     "puppeteer": "^24.37.5",
     "puppeteer-extra": "^3.3.6",
     "puppeteer-extra-plugin-stealth": "^2.11.2",
-    "qrcode": "^1.5.4"
+    "qrcode": "^1.5.4",
+    "xz-decompress": "^0.2.3"
   },
   "trustedDependencies": [
     "cloudflared",
