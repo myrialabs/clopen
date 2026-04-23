@@ -393,7 +393,7 @@
 				{/if}
 				<div class="flex-1 flex justify-center overflow-hidden">
 					<div class="w-full flex flex-col overflow-hidden">
-						<div class="flex-1 overflow-y-auto overflow-x-hidden">
+						<div class="wrap-anywhere flex-1 overflow-y-auto overflow-x-hidden">
 							<ChatMessages {scrollContainer} />
 						</div>
 					</div>

@@ -24,6 +24,6 @@
 		<span class="text-slate-800 dark:text-slate-200">{formatDelay(delaySeconds)}</span>
 	</div>
 	{#if reason}
-		<div class="text-xs text-slate-400 dark:text-slate-500 truncate">{reason}</div>
+		<div class="text-xs text-slate-400 dark:text-slate-500">{reason}</div>
 	{/if}
 </div>

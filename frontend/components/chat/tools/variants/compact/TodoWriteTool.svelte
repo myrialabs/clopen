@@ -15,7 +15,7 @@
 		<span class="text-slate-500 dark:text-slate-400 shrink-0">Todo:</span>
 		<span class="text-slate-800 dark:text-slate-200">{completed}/{total} done</span>
 		{#if inProgress}
-			<span class="text-xs text-slate-400 dark:text-slate-500 truncate">· {inProgress.activeForm || inProgress.content}</span>
+			<span class="text-xs text-slate-400 dark:text-slate-500">· {inProgress.activeForm || inProgress.content}</span>
 		{/if}
 	</div>
 	<div class="space-y-0.5 pl-4">
@@ -24,7 +24,7 @@
 				<span class="shrink-0 w-3 text-center text-xs">
 					{#if todo.status === 'completed'}✓{:else if todo.status === 'in_progress'}›{:else}·{/if}
 				</span>
-				<span class="truncate {todo.status === 'completed' ? 'line-through opacity-50' : ''}">
+				<span class="{todo.status === 'completed' ? 'line-through opacity-50' : ''}">
 					{todo.status === 'in_progress' && todo.activeForm ? todo.activeForm : todo.content}
 				</span>
 			</div>

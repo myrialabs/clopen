@@ -12,7 +12,7 @@
 
 <div class="space-y-1">
 	<div class="flex items-center gap-1.5 text-sm text-slate-600 dark:text-slate-400">
-		<span class="font-mono truncate">{path}</span>
+		<span class="font-mono">{path}</span>
 		{#if ignore && ignore.length > 0}
 			<span class="opacity-50">· ignore: {ignore.join(', ')}</span>
 		{/if}

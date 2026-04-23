@@ -199,13 +199,11 @@
 		border-radius: 0.25rem;
 		font-family: monospace;
 		font-size: 0.875rem;
-		border: 1px solid rgb(226 232 240);
 	}
 	
 	:global(.dark .message-content code) {
 		background-color: rgb(30 41 59);
 		color: rgb(203 213 225);
-		border-color: rgb(51 65 85);
 	}
 	
 	/* Code blocks */

@@ -58,14 +58,12 @@
 	}
 
 	const activeParameters = $derived(getActiveParameters());
-
-	const formattedPattern = $derived(truncateText(pattern, 40));
 </script>
 
 <div class="bg-white dark:bg-slate-800 rounded-md border border-slate-200/60 dark:border-slate-700/60 p-3">
 	<div class="mb-2">
 		<h3 class="font-medium text-slate-900 dark:text-slate-100 truncate" title={pattern}>
-			Searching for: <span class="font-mono">{formattedPattern}</span>
+			Searching for: <span class="font-mono">{pattern}</span>
 		</h3>
 		<p class="text-xs text-slate-600 dark:text-slate-400 truncate" title={searchPath}>
 			in {searchPath}

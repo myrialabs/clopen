@@ -9,7 +9,7 @@
 
 <div class="space-y-1">
 	<div class="flex items-center gap-1.5 text-sm text-slate-600 dark:text-slate-400">
-		<span class="truncate">{input.name || 'remote trigger'}</span>
+		<span>{input.name || 'remote trigger'}</span>
 	</div>
 	{#if result?.content}
 		<TextMessage content={typeof result.content === 'string' ? result.content : JSON.stringify(result.content)} />

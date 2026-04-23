@@ -12,7 +12,7 @@
 	<div class="flex items-center gap-1.5 text-sm text-slate-600 dark:text-slate-400">
 		<span>{input.server}</span>
 		<span class="opacity-50">·</span>
-		<code class="font-mono truncate">{input.uri}</code>
+		<code class="font-mono">{input.uri}</code>
 	</div>
 	{#if result?.content}
 		<TextMessage content={typeof result.content === 'string' ? result.content : JSON.stringify(result.content)} />

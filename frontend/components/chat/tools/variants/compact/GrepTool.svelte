@@ -1,11 +1,10 @@
 <script lang="ts">
 	import type { ToolUseBlock, GrepInput } from '$shared/types/unified';
-	import { truncateText } from '../../../shared/utils';
 
 	const { toolInput }: { toolInput: ToolUseBlock } = $props();
 	const input = $derived(toolInput.input as GrepInput);
 
-	const pattern = $derived(truncateText(input.pattern || '', 50));
+	const pattern = $derived(input.pattern || '');
 	const searchPath = $derived(input.path || 'current directory');
 	const modifiers = $derived([
 		input.glob ? `glob:${input.glob}` : '',
