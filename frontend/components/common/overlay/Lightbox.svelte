@@ -173,7 +173,7 @@
 
 		<!-- Content container -->
 		<div
-			class="relative max-w-[95vw] max-h-[95dvh] flex items-center justify-center"
+			class="relative max-w-[95vw] max-h-[95dvh] flex items-center justify-center wrap-anywhere"
 			onclick={(e) => e.stopPropagation()}
 			onkeydown={(e) => e.stopPropagation()}
 			role="document"

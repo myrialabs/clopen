@@ -108,7 +108,7 @@
 		<div
 			class="bg-white dark:bg-slate-900 rounded-lg md:rounded-xl border border-slate-200 dark:border-slate-800 shadow-2xl w-full {sizeClasses[
 				size
-			]} max-h-[calc(100dvh-1rem)] md:max-h-[calc(100dvh-2rem)] overflow-hidden flex flex-col {className}"
+			]} max-h-[calc(100dvh-1rem)] md:max-h-[calc(100dvh-2rem)] overflow-hidden flex flex-col wrap-anywhere {className}"
 			role="document"
 			onclick={(e) => e.stopPropagation()}
 			onkeydown={(e) => e.stopPropagation()}

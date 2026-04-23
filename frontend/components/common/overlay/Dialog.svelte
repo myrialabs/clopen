@@ -186,7 +186,7 @@
 		out:fade={{ duration: 150, easing: cubicOut }}
 	>
 		<div
-			class="bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-700 rounded-xl max-w-md w-full p-6 space-y-4 shadow-xl max-h-[calc(100dvh-2rem)] overflow-y-auto"
+			class="bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-700 rounded-xl max-w-md w-full p-6 space-y-4 shadow-xl max-h-[calc(100dvh-2rem)] overflow-y-auto wrap-anywhere"
 			role="document"
 			onclick={(e) => e.stopPropagation()}
 			onkeydown={(e) => e.stopPropagation()}
