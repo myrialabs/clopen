@@ -17,6 +17,7 @@
  * may only pick a tool id; it cannot supply arbitrary command strings.
  */
 
+import { freemem, totalmem } from 'node:os';
 import { debug } from '$shared/utils/logger';
 import { ws } from '$backend/utils/ws';
 import { getCleanSpawnEnv } from '$backend/utils/env';
@@ -191,6 +192,40 @@ async function runStreamedProcess(session: Session, proc: ReturnType<typeof Bun.
 	return exitCode;
 }
 
+function formatBytes(bytes: number): string {
+	const mb = bytes / (1024 * 1024);
+	if (mb < 1024) return `${mb.toFixed(0)} MB`;
+	return `${(mb / 1024).toFixed(1)} GB`;
+}
+
+/**
+ * Build a human-readable hint for non-zero exit codes that likely indicate
+ * an environmental problem (OOM kill, external termination) rather than a
+ * recipe bug. Returns null when no specific guidance applies.
+ *
+ * Shells propagate signals as `128 + signum`: 137 = SIGKILL (OOM killer on
+ * Linux), 143 = SIGTERM. On a cancelled session we skip the hint — the UI
+ * already labels the run as "Cancelled".
+ */
+function explainFailure(exitCode: number, cancelled: boolean): string | null {
+	if (cancelled) return null;
+	if (exitCode === 137) {
+		const total = formatBytes(totalmem());
+		const free = formatBytes(freemem());
+		return [
+			'',
+			'⚠ Exit 137 — the process was killed (SIGKILL), almost always by the kernel out-of-memory killer.',
+			`  System memory: total=${total}, free=${free}.`,
+			'  Common causes: low-RAM VPS / container / WSL without enough swap. Installer subprocesses can briefly peak at several hundred MB of memory.',
+			'  Remedies: add swap, raise the container memory limit, or run the install command in a shell with more memory, then retry.'
+		].join('\n');
+	}
+	if (exitCode === 143) {
+		return '\n⚠ Exit 143 — the process received SIGTERM (external termination). Possible causes: systemd/container shutdown, manual kill, or an orchestrator timeout.';
+	}
+	return null;
+}
+
 async function runInstall(session: Session, env: Record<string, string>): Promise<void> {
 	const { recipe } = session;
 	let proc: ReturnType<typeof Bun.spawn>;
@@ -240,6 +275,10 @@ async function runInstall(session: Session, env: Record<string, string>): Promis
 	session.proc = proc;
 
 	const exitCode = await runStreamedProcess(session, proc);
+	if (exitCode !== 0) {
+		const hint = explainFailure(exitCode, session.status === 'cancelled');
+		if (hint) emitStream(session, 'stderr', hint + '\n');
+	}
 	finalizeSession(session, exitCode === 0 ? 'success' : 'failed', exitCode);
 }
 
