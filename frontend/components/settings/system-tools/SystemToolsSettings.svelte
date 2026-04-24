@@ -37,8 +37,8 @@
 	/>
 
 	<ToolInstallCard
-		tool="chrome"
-		title="Chrome"
+		tool="chromium"
+		title="Chromium"
 		description="Used by clopen to render the browser preview."
 	/>
 </div>
