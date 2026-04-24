@@ -383,28 +383,18 @@
 				{/if} -->
 
 				<!-- Device size dropdown -->
+				{@const currentDevice = previewPanelRef?.panelActions?.getDeviceSize()}
+				{@const deviceLabel = currentDevice === 'desktop' ? 'Desktop' : currentDevice === 'laptop' ? 'Laptop' : currentDevice === 'tablet' ? 'Tablet' : 'Mobile'}
+				{@const deviceIcon = currentDevice === 'desktop' ? 'lucide:monitor' : currentDevice === 'laptop' ? 'lucide:laptop' : currentDevice === 'tablet' ? 'lucide:tablet' : 'lucide:smartphone'}
 				<div class="relative">
 					<button
 						type="button"
-						class="flex items-center justify-center gap-1.5 {isMobile ? 'px-2 h-9' : 'px-1 h-6'} bg-transparent border-none rounded-md transition-all duration-150 {previewPanelRef?.panelActions?.getIsMcpControlled() ? 'text-slate-400 dark:text-slate-600 cursor-not-allowed opacity-50' : 'text-slate-500 cursor-pointer hover:bg-violet-500/10 hover:text-slate-900 dark:hover:text-slate-100'}"
+						class="flex items-center justify-center {isMobile ? 'w-9 h-9' : 'w-6 h-6'} bg-transparent border-none rounded-md transition-all duration-150 {previewPanelRef?.panelActions?.getIsMcpControlled() ? 'text-slate-400 dark:text-slate-600 cursor-not-allowed opacity-50' : 'text-slate-500 cursor-pointer hover:bg-violet-500/10 hover:text-slate-900 dark:hover:text-slate-100'}"
 						onclick={previewPanelRef?.panelActions?.getIsMcpControlled() ? undefined : toggleDeviceDropdown}
 						disabled={previewPanelRef?.panelActions?.getIsMcpControlled()}
-						title={previewPanelRef?.panelActions?.getIsMcpControlled() ? 'Controlled by MCP agent' : 'Select device size'}
+						title={previewPanelRef?.panelActions?.getIsMcpControlled() ? 'Controlled by MCP agent' : `Device: ${deviceLabel}`}
 					>
-						{#if previewPanelRef?.panelActions?.getDeviceSize() === 'desktop'}
-							<Icon name="lucide:monitor" class={isMobile ? 'w-4.5 h-4.5' : 'w-4 h-4'} />
-							<span class="text-xs font-medium">Desktop</span>
-						{:else if previewPanelRef?.panelActions?.getDeviceSize() === 'laptop'}
-							<Icon name="lucide:laptop" class={isMobile ? 'w-4.5 h-4.5' : 'w-4 h-4'} />
-							<span class="text-xs font-medium">Laptop</span>
-						{:else if previewPanelRef?.panelActions?.getDeviceSize() === 'tablet'}
-							<Icon name="lucide:tablet" class={isMobile ? 'w-4.5 h-4.5' : 'w-4 h-4'} />
-							<span class="text-xs font-medium">Tablet</span>
-						{:else}
-							<Icon name="lucide:smartphone" class={isMobile ? 'w-4.5 h-4.5' : 'w-4 h-4'} />
-							<span class="text-xs font-medium">Mobile</span>
-						{/if}
-						<Icon name="lucide:chevron-down" class={isMobile ? 'w-3.5 h-3.5' : 'w-3 h-3'} />
+						<Icon name={deviceIcon} class={isMobile ? 'w-4.5 h-4.5' : 'w-4 h-4'} />
 					</button>
 
 					<!-- Dropdown menu -->
@@ -484,40 +474,33 @@
 
 				<!-- Touch mode toggle (scroll ↔ trackpad cursor) — only shown on touchscreen devices -->
 				{#if isTouchDevice}
+					{@const touchMode = previewPanelRef?.panelActions?.getTouchMode()}
 					<button
 						type="button"
-						class="flex items-center justify-center gap-1.5 {isMobile ? 'px-2 h-9' : 'px-1 h-6'} bg-transparent border-none rounded-md cursor-pointer transition-all duration-150 hover:bg-violet-500/10
-							{previewPanelRef?.panelActions?.getTouchMode() === 'cursor' ? 'text-violet-600 dark:text-violet-400' : 'text-slate-500 hover:text-slate-900 dark:hover:text-slate-100'}"
+						class="flex items-center justify-center {isMobile ? 'w-9 h-9' : 'w-6 h-6'} bg-transparent border-none rounded-md cursor-pointer transition-all duration-150 hover:bg-violet-500/10
+							{touchMode === 'cursor' ? 'text-violet-600 dark:text-violet-400' : 'text-slate-500 hover:text-slate-900 dark:hover:text-slate-100'}"
 						onclick={() => {
-							const current = previewPanelRef?.panelActions?.getTouchMode() || 'scroll';
+							const current = touchMode || 'scroll';
 							previewPanelRef?.panelActions?.setTouchMode(current === 'scroll' ? 'cursor' : 'scroll');
 						}}
-						title={previewPanelRef?.panelActions?.getTouchMode() === 'cursor' ? 'Trackpad mode: 1-finger moves cursor, tap=click, 2-finger scroll/right-click' : 'Scroll mode: touch scrolls the page (tap to click)'}
+						title={touchMode === 'cursor' ? 'Cursor mode — tap switches to touch' : 'Touch mode — tap switches to cursor'}
 					>
-						<Icon name={previewPanelRef?.panelActions?.getTouchMode() === 'cursor' ? 'lucide:mouse-pointer-2' : 'lucide:pointer'} class={isMobile ? 'w-4.5 h-4.5' : 'w-4 h-4'} />
-						<span class="text-xs font-medium">{previewPanelRef?.panelActions?.getTouchMode() === 'cursor' ? 'Cursor' : 'Touch'}</span>
+						<Icon name={touchMode === 'cursor' ? 'lucide:mouse-pointer-2' : 'lucide:pointer'} class={isMobile ? 'w-4.5 h-4.5' : 'w-4 h-4'} />
 					</button>
 				{/if}
 
 				<!-- Rotation toggle -->
+				{@const rotation = previewPanelRef?.panelActions?.getRotation()}
 				<button
 					type="button"
-					class="flex items-center justify-center gap-1.5 {isMobile ? 'px-2 h-9' : 'px-1 h-6'} bg-transparent border-none rounded-md transition-all duration-150 {previewPanelRef?.panelActions?.getIsMcpControlled() ? 'text-slate-400 dark:text-slate-600 cursor-not-allowed opacity-50' : 'text-slate-500 cursor-pointer hover:bg-violet-500/10 hover:text-slate-900 dark:hover:text-slate-100'}"
+					class="flex items-center justify-center {isMobile ? 'w-9 h-9' : 'w-6 h-6'} bg-transparent border-none rounded-md transition-all duration-150 {previewPanelRef?.panelActions?.getIsMcpControlled() ? 'text-slate-400 dark:text-slate-600 cursor-not-allowed opacity-50' : 'text-slate-500 cursor-pointer hover:bg-violet-500/10 hover:text-slate-900 dark:hover:text-slate-100'}"
 					onclick={previewPanelRef?.panelActions?.getIsMcpControlled() ? undefined : () => previewPanelRef?.panelActions?.toggleRotation()}
 					disabled={previewPanelRef?.panelActions?.getIsMcpControlled()}
-					title={previewPanelRef?.panelActions?.getIsMcpControlled() ? 'Controlled by MCP agent' : 'Toggle orientation'}
+					title={previewPanelRef?.panelActions?.getIsMcpControlled() ? 'Controlled by MCP agent' : `Orientation: ${rotation === 'portrait' ? 'Portrait' : 'Landscape'} — click to toggle`}
 				>
 					<Icon name="lucide:rotate-cw" class={isMobile ? 'w-4.5 h-4.5' : 'w-4 h-4'} />
-					<span class="text-xs font-medium">
-						{previewPanelRef?.panelActions?.getRotation() === 'portrait' ? 'Portrait' : 'Landscape'}
-					</span>
 				</button>
 
-				<!-- Scale info badge -->
-				<div class="flex items-center gap-1.5 {isMobile ? 'px-1 h-9 bg-transparent' : 'px-1 h-6 bg-slate-100/60 dark:bg-slate-800/40'} rounded-md text-xs font-medium text-slate-500">
-					<Icon name="lucide:move-diagonal" class={isMobile ? 'w-4 h-4' : 'w-3.5 h-3.5'} />
-					<span>{Math.round((previewPanelRef?.panelActions?.getScale() || 1) * 100)}%</span>
-				</div>
 			{:else if panelId === 'git'}
 				<!-- View mode toggles (only in single-column mode, like Files panel) -->
 				{#if !gitPanelRef?.panelActions?.isTwoColumnMode()}

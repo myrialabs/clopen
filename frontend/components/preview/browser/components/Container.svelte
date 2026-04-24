@@ -1,11 +1,17 @@
 <script lang="ts">
 	import Icon from '$frontend/components/common/display/Icon.svelte';
 	import Canvas from './Canvas.svelte';
+	import DeviceFrame from './DeviceFrame.svelte';
 	import VirtualCursor from './VirtualCursor.svelte';
 	import { scale } from 'svelte/transition';
 	import { cubicOut } from 'svelte/easing';
 	import { onDestroy } from 'svelte';
-	import { getViewportDimensions, type DeviceSize, type Rotation } from '$frontend/utils/preview-constants';
+	import {
+		getViewportDimensions,
+		getFrameMetrics,
+		type DeviceSize,
+		type Rotation
+	} from '$frontend/utils/preview-constants';
 	import { debug } from '$shared/utils/logger';
 	import { sendScaleUpdate } from '../core/interactions.svelte';
 
@@ -133,40 +139,64 @@
 				width: '100%',
 				height: '100%',
 				scale: 1,
-				frameWidth: '120rem',
-				frameHeight: '67.5rem',
-				containerWidth: '100%',
-				containerHeight: '100%'
+				canvasWidth: 1440,
+				canvasHeight: 900,
+				bodyWidth: '1440px',
+				bodyHeight: '900px',
+				screenOffsetLeft: '0px',
+				screenOffsetTop: '0px',
+				screenWidth: '1440px',
+				screenHeight: '900px',
+				screenRadius: '0px'
 			};
 			return;
 		}
 
 		const containerRect = previewContainer.getBoundingClientRect();
-		const availableWidth = containerRect.width * 1.2;
-		const availableHeight = containerRect.height * 1.2;
+		// Small breathing room so the frame (and desktop stand) doesn't touch edges.
+		const padding = 16;
+		const availableWidth = Math.max(0, containerRect.width - padding);
+		const availableHeight = Math.max(0, containerRect.height - padding);
 
 		// Use getViewportDimensions for consistent viewport calculation
 		// This ensures portrait = height > width, landscape = width > height
-		const { width: deviceWidth, height: deviceHeight } = getViewportDimensions(deviceSize as DeviceSize, rotation as Rotation);
+		const { width: canvasWidth, height: canvasHeight } = getViewportDimensions(
+			deviceSize as DeviceSize,
+			rotation as Rotation
+		);
 
-		// Calculate scale to fit in container while maintaining aspect ratio
-		// Important: Never scale up beyond original size (scale max = 1)
-		const scaleX = Math.min(1, availableWidth / deviceWidth);
-		const scaleY = Math.min(1, availableHeight / deviceHeight);
+		// Include device bezel (and accessories) in the fit calculation so the whole
+		// mockup stays inside the dock container regardless of root font-size.
+		const frame = getFrameMetrics(deviceSize as DeviceSize, rotation as Rotation);
+		const standReserve = frame.stand ? 42 : 0; // desktop stand extends below body
+		const bodyWidth = canvasWidth + frame.left + frame.right;
+		const bodyHeight = canvasHeight + frame.top + frame.bottom + frame.statusBarHeight;
+		const totalWidth = bodyWidth;
+		const totalHeight = bodyHeight + standReserve;
+
+		// Scale to fit. Never scale up beyond original size (scale max = 1).
+		const scaleX = availableWidth > 0 ? Math.min(1, availableWidth / totalWidth) : 1;
+		const scaleY = availableHeight > 0 ? Math.min(1, availableHeight / totalHeight) : 1;
 		const scale = Math.min(scaleX, scaleY);
 
-		// Calculate container dimensions (what user sees)
-		const containerWidth = deviceWidth * scale;
-		const containerHeight = deviceHeight * scale;
-
 		previewDimensions = {
-			width: `${containerWidth / 16}rem`,
-			height: `${containerHeight / 16}rem`,
-			scale: scale,
-			frameWidth: `${deviceWidth / 16}rem`,
-			frameHeight: `${deviceHeight / 16}rem`,
-			containerWidth: `${containerWidth / 16}rem`,
-			containerHeight: `${containerHeight / 16}rem`
+			// Outer wrapper = full scaled footprint (body + stand accessory)
+			width: `${totalWidth * scale}px`,
+			height: `${totalHeight * scale}px`,
+			scale,
+			// Unscaled canvas (native viewport) — used inside DeviceFrame
+			canvasWidth,
+			canvasHeight,
+			// Unscaled body (canvas + bezel) — used as the scaled transform target
+			bodyWidth: `${bodyWidth}px`,
+			bodyHeight: `${bodyHeight}px`,
+			// Screen rect in scaled (display) pixels — used to position overlays
+			// precisely over the canvas area, not the decorative bezel.
+			screenOffsetLeft: `${frame.left * scale}px`,
+			screenOffsetTop: `${(frame.top + frame.statusBarHeight) * scale}px`,
+			screenWidth: `${canvasWidth * scale}px`,
+			screenHeight: `${canvasHeight * scale}px`,
+			screenRadius: `${frame.screenRadius * scale}px`
 		};
 	}
 
@@ -370,51 +400,64 @@
 	{:else if url}
 		<!-- Scaled container for proper viewport simulation -->
 		<div
-			class="relative rounded overflow-hidden flex-shrink-0 {isMcpControlled ? 'ring-2 ring-amber-500 ring-offset-2 ring-offset-slate-900' : ''}"
+			class="relative flex-shrink-0 {isMcpControlled ? 'ring-2 ring-amber-500 ring-offset-2 ring-offset-slate-900 rounded-xl' : ''}"
 			class:mcp-control-border={isMcpControlled}
 			style="width: {previewDimensions.width}; height: {previewDimensions.height};"
 			in:scale={{ duration: 250, easing: cubicOut, start: 0.95 }}
 			out:scale={{ duration: 200, easing: cubicOut, start: 0.95 }}
 		>
-			<!-- Canvas container - always render when session exists so WebCodecs can start -->
+			<!-- Device frame + canvas - always render when session exists so WebCodecs can start -->
 			{#if sessionInfo}
 				<div
-					class="w-full h-full flex items-center justify-center"
 					style="
-						width: {previewDimensions.frameWidth};
-						height: {previewDimensions.frameHeight};
+						width: {previewDimensions.bodyWidth};
+						height: {previewDimensions.bodyHeight};
 						transform: scale({previewDimensions.scale});
 						transform-origin: top left;
 						transition: none;
 					"
 				>
-					<Canvas
-						projectId={projectId}
-						bind:sessionId
-						bind:sessionInfo
-						bind:deviceSize
-						bind:rotation
-						bind:canvasAPI
-						bind:lastFrameData
-						bind:isConnected
-						bind:isStreamReady
-						bind:isNavigating
-						bind:isReconnecting
-						bind:touchMode
-						touchTarget={previewContainer}
-						onInteraction={handleCanvasInteraction}
-						onCursorUpdate={handleCursorUpdate}
-						onFrameUpdate={handleFrameUpdate}
-						onRequestScreencastRefresh={handleScreencastRefresh}
-						onTouchCursorUpdate={handleTouchCursorUpdate}
-					/>
+					<DeviceFrame
+						deviceSize={deviceSize as DeviceSize}
+						rotation={rotation as Rotation}
+						canvasWidth={previewDimensions.canvasWidth}
+						canvasHeight={previewDimensions.canvasHeight}
+					>
+						<Canvas
+							projectId={projectId}
+							bind:sessionId
+							bind:sessionInfo
+							bind:deviceSize
+							bind:rotation
+							bind:canvasAPI
+							bind:lastFrameData
+							bind:isConnected
+							bind:isStreamReady
+							bind:isNavigating
+							bind:isReconnecting
+							bind:touchMode
+							touchTarget={previewContainer}
+							onInteraction={handleCanvasInteraction}
+							onCursorUpdate={handleCursorUpdate}
+							onFrameUpdate={handleFrameUpdate}
+							onRequestScreencastRefresh={handleScreencastRefresh}
+							onTouchCursorUpdate={handleTouchCursorUpdate}
+						/>
+					</DeviceFrame>
 				</div>
 			{/if}
 
 			<!-- Solid Loading Overlay: Initial load states (launching, no session, waiting for first frame) -->
 			{#if showSolidOverlay}
 				<div
-					class="absolute inset-0 bg-white dark:bg-slate-800 flex items-center justify-center z-10"
+					class="absolute bg-white dark:bg-slate-800 flex items-center justify-center z-10"
+					style="
+						left: {previewDimensions.screenOffsetLeft};
+						top: {previewDimensions.screenOffsetTop};
+						width: {previewDimensions.screenWidth};
+						height: {previewDimensions.screenHeight};
+						border-radius: 0 0 {previewDimensions.screenRadius} {previewDimensions.screenRadius};
+					"
 				>
 					<div class="flex flex-col items-center gap-2">
 						<Icon name="lucide:loader-circle" class="w-8 h-8 animate-spin text-violet-600" />
@@ -429,7 +472,14 @@
 			<!-- In-browser link clicks only show the progress bar, not this overlay -->
 			{#if showNavigationOverlay}
 				<div
-					class="absolute inset-0 bg-white/60 dark:bg-slate-800/60 backdrop-blur-[2px] flex items-center justify-center z-10"
+					class="absolute bg-white/60 dark:bg-slate-800/60 backdrop-blur-[2px] flex items-center justify-center z-10"
+					style="
+						left: {previewDimensions.screenOffsetLeft};
+						top: {previewDimensions.screenOffsetTop};
+						width: {previewDimensions.screenWidth};
+						height: {previewDimensions.screenHeight};
+						border-radius: 0 0 {previewDimensions.screenRadius} {previewDimensions.screenRadius};
+					"
 				>
 					<div class="flex flex-col items-center gap-2">
 						<Icon name="lucide:loader-circle" class="w-8 h-8 animate-spin text-violet-600" />
@@ -440,24 +490,24 @@
 				</div>
 			{/if}
 
-			<!-- MCP Control Overlay - blocks user interaction -->
+			<!-- MCP Control Overlay - blocks user interaction (screen only) -->
 			{#if isMcpControlled && isStreamReady}
 				<div
-					class="absolute inset-0 z-20 pointer-events-auto cursor-not-allowed"
+					class="absolute z-20 pointer-events-auto cursor-not-allowed"
 					role="presentation"
 					aria-hidden="true"
-					style="background: transparent;"
+					style="
+						left: {previewDimensions.screenOffsetLeft};
+						top: {previewDimensions.screenOffsetTop};
+						width: {previewDimensions.screenWidth};
+						height: {previewDimensions.screenHeight};
+						background: transparent;
+					"
 					onclick={(e) => { e.preventDefault(); e.stopPropagation(); }}
 					onmousedown={(e) => { e.preventDefault(); e.stopPropagation(); }}
 					onmousemove={(e) => { e.preventDefault(); e.stopPropagation(); }}
 					onkeydown={(e) => { e.preventDefault(); e.stopPropagation(); }}
-				>
-					<!-- MCP Control Badge at top -->
-					<!-- <div class="absolute top-2 left-1/2 -translate-x-1/2 bg-amber-500/90 text-black text-xs font-semibold px-3 py-1.5 rounded-full flex items-center gap-1.5 shadow-lg">
-						<Icon name="lucide:bot" class="w-3.5 h-3.5" />
-						<span>MCP Controlling</span>
-					</div> -->
-				</div>
+				></div>
 			{/if}
 
 

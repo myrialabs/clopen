@@ -68,9 +68,9 @@ Automatically creates session. New tab is immediately active - no need to switch
 
 VIEWPORT MODES:
 - desktop: 1920x1080 (default rotation: landscape) - For testing full desktop layouts
-- laptop: 1280x800 (default, default rotation: landscape) - Most common desktop viewport
-- tablet: 820x1050 (default rotation: portrait) - iPad-like tablet viewport
-- mobile: 393x740 (default rotation: portrait) - Modern smartphone viewport
+- laptop: 1440x900 (default, default rotation: landscape) - Modern 14" laptop viewport
+- tablet: 834x1194 (default rotation: portrait) - iPad Pro 11" class viewport
+- mobile: 402x874 (default rotation: portrait) - iPhone 16 / modern flagship viewport
 
 ROTATION:
 - portrait: Standard vertical orientation (default for tablet/mobile)
@@ -114,9 +114,9 @@ OUTPUT: Confirmation with tab ID and new viewport settings.
 
 VIEWPORT MODES:
 - desktop: 1920x1080 - For testing full desktop layouts
-- laptop: 1280x800 - Most common desktop viewport
-- tablet: 820x1050 - iPad-like tablet viewport
-- mobile: 393x740 - Modern smartphone viewport
+- laptop: 1440x900 - Modern 14" laptop viewport
+- tablet: 834x1194 - iPad Pro 11" class viewport
+- mobile: 402x874 - iPhone 16 / modern flagship viewport
 
 ROTATION:
 - portrait: Standard vertical orientation
