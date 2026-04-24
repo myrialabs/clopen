@@ -2,7 +2,7 @@
  * System Tool Install Recipes
  *
  * Data-driven registry of install commands for system tools that clopen
- * depends on (Git, Claude Code, OpenCode, Chromium for puppeteer). Each
+ * depends on (Git, Claude Code, OpenCode, Chrome for puppeteer). Each
  * recipe is platform-aware and privilege-aware: when the runner cannot
  * reasonably complete the install non-interactively (e.g. `apt` without
  * root, `choco` without Administrator), the recipe is marked
@@ -13,15 +13,14 @@
  * surface a copy-able command and a docs link, regardless of platform.
  */
 
-import { homedir } from 'node:os';
-import { existsSync, readdirSync, readFileSync } from 'node:fs';
+import { existsSync, readdirSync } from 'node:fs';
 import { join } from 'node:path';
 import { isElevated } from '$backend/utils/privilege';
 import { getClopenDir } from '$backend/utils/paths';
 import { resolveBinary, resolveBinaryWithRefresh } from '$backend/utils/cli';
 import { resolveStaticCurlAsset } from '$backend/utils/static-curl';
 
-export type ToolId = 'git' | 'claude' | 'opencode' | 'chromium';
+export type ToolId = 'git' | 'claude' | 'opencode' | 'chrome';
 
 export interface ManualInstruction {
 	label: string;
@@ -99,32 +98,41 @@ function detectMacPkgMgr(): 'brew' | null {
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
-// Chromium detection
+// Chrome detection
 // ─────────────────────────────────────────────────────────────────────────────
 
 /**
- * Resolve the Chromium executable path under ~/.clopen/bin using the
- * @puppeteer/browsers cache layout: <cache>/chromium/<platform>-<buildId>/<archive>/<binary>.
- * Only macOS and Windows install via @puppeteer/browsers — on Linux we
- * delegate to the distro package manager and skip this scan.
+ * Resolve the Chrome for Testing executable path under ~/.clopen/bin using
+ * the @puppeteer/browsers cache layout: <cache>/chrome/<platform>-<buildId>/<archive>/<binary>.
+ * Only macOS and Windows install Chrome this way — on Linux we install
+ * Google Chrome via the distro package manager and skip this scan.
  */
-export function resolveClopenChromiumPath(): string | null {
+export function resolveClopenChromePath(): string | null {
 	if (process.platform !== 'darwin' && process.platform !== 'win32') return null;
 
-	const cacheDir = join(getClopenDir(), 'bin', 'chromium');
+	const cacheDir = join(getClopenDir(), 'bin', 'chrome');
 	if (!existsSync(cacheDir)) return null;
 
 	try {
 		const entries = readdirSync(cacheDir);
 		for (const entry of entries) {
 			const buildDir = join(cacheDir, entry);
-			let candidate: string;
 			if (process.platform === 'darwin') {
-				candidate = join(buildDir, 'chrome-mac', 'Chromium.app', 'Contents', 'MacOS', 'Chromium');
-				if (existsSync(candidate)) return candidate;
+				const macDirs = ['chrome-mac-arm64', 'chrome-mac-x64', 'chrome-mac'];
+				for (const dir of macDirs) {
+					const candidate = join(
+						buildDir, dir,
+						'Google Chrome for Testing.app',
+						'Contents', 'MacOS', 'Google Chrome for Testing'
+					);
+					if (existsSync(candidate)) return candidate;
+				}
 			} else {
-				candidate = join(buildDir, 'chrome-win', 'chrome.exe');
-				if (existsSync(candidate)) return candidate;
+				const winDirs = ['chrome-win64', 'chrome-win'];
+				for (const dir of winDirs) {
+					const candidate = join(buildDir, dir, 'chrome.exe');
+					if (existsSync(candidate)) return candidate;
+				}
 			}
 		}
 	} catch {
@@ -133,29 +141,37 @@ export function resolveClopenChromiumPath(): string | null {
 	return null;
 }
 
-function detectSystemChromium(): string | null {
+function detectSystemChrome(): string | null {
 	if (process.platform === 'darwin') {
-		const paths = ['/Applications/Chromium.app/Contents/MacOS/Chromium'];
-		for (const p of paths) if (existsSync(p)) return p;
-		return null;
+		const p = '/Applications/Google Chrome.app/Contents/MacOS/Google Chrome';
+		return existsSync(p) ? p : null;
 	}
 	if (process.platform === 'win32') {
-		// Chromium has no canonical Windows install location; rely on PATH.
-		return resolveBinary('chromium');
+		const paths = [
+			'C:\\Program Files\\Google\\Chrome\\Application\\chrome.exe',
+			'C:\\Program Files (x86)\\Google\\Chrome\\Application\\chrome.exe'
+		];
+		for (const p of paths) if (existsSync(p)) return p;
+		return resolveBinary('chrome');
 	}
-	// Linux: distro package + snap (Ubuntu).
-	const snapPath = '/snap/bin/chromium';
-	if (existsSync(snapPath)) return snapPath;
-	return resolveBinary('chromium') ?? resolveBinary('chromium-browser');
+	// Linux: Google Chrome only (installed via apt/dnf/zypper from dl.google.com).
+	const chromePaths = [
+		'/opt/google/chrome/chrome',
+		'/usr/bin/google-chrome-stable',
+		'/usr/bin/google-chrome'
+	];
+	for (const p of chromePaths) if (existsSync(p)) return p;
+	return resolveBinary('google-chrome-stable') ?? resolveBinary('google-chrome');
 }
 
 /**
- * Preferred Chromium executable path for puppeteer. Clopen-managed install
- * (macOS/Windows via @puppeteer/browsers) wins over system Chromium so the
- * bundled version stays consistent; on Linux only the system path is used.
+ * Preferred Chrome executable path for puppeteer. Clopen-managed install
+ * (macOS/Windows via @puppeteer/browsers → Chrome for Testing) wins over
+ * system Google Chrome so the bundled version stays consistent; on Linux
+ * only the system Google Chrome path is used.
  */
-export function getChromiumExecutablePath(): string | null {
-	return resolveClopenChromiumPath() ?? detectSystemChromium();
+export function getChromeExecutablePath(): string | null {
+	return resolveClopenChromePath() ?? detectSystemChrome();
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -176,11 +192,11 @@ async function runVersion(binary: string, versionFlag = '--version'): Promise<st
 }
 
 export async function getToolStatus(tool: ToolId): Promise<ToolStatus> {
-	if (tool === 'chromium') {
-		const resolved = getChromiumExecutablePath();
+	if (tool === 'chrome') {
+		const resolved = getChromeExecutablePath();
 		if (!resolved) return { tool, installed: false, version: null, source: null };
 		const version = await runVersion(resolved);
-		const source = resolveClopenChromiumPath() ? 'clopen' : 'system';
+		const source = resolveClopenChromePath() ? 'clopen' : resolved;
 		return { tool, installed: true, version, source };
 	}
 
@@ -384,132 +400,92 @@ async function resolveOpenCodeRecipe(): Promise<Recipe> {
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
-// Linux distro detection (apt sub-flavour: Debian vs Ubuntu)
+// Chrome recipe — Puppeteer download (macOS/Windows) or Google Chrome (Linux)
 // ─────────────────────────────────────────────────────────────────────────────
 
-interface LinuxDistro {
-	id: string;
-	idLike: string[];
-}
+const PPTR_CHROME_DOCS = 'https://pptr.dev/browsers-api';
+const CHROME_LINUX_DOCS = 'https://www.google.com/chrome/';
 
-function readLinuxDistro(): LinuxDistro | null {
-	try {
-		const text = readFileSync('/etc/os-release', 'utf8');
-		const fields: Record<string, string> = {};
-		for (const line of text.split('\n')) {
-			const eq = line.indexOf('=');
-			if (eq < 0) continue;
-			const key = line.slice(0, eq).trim();
-			let value = line.slice(eq + 1).trim();
-			if (value.startsWith('"') && value.endsWith('"')) value = value.slice(1, -1);
-			fields[key] = value;
-		}
-		return {
-			id: (fields['ID'] ?? '').toLowerCase(),
-			idLike: (fields['ID_LIKE'] ?? '').toLowerCase().split(/\s+/).filter(Boolean)
-		};
-	} catch {
-		return null;
-	}
-}
+// Google Chrome Linux package URLs. Google only publishes Linux x86_64
+// .deb (apt) and .rpm (dnf/zypper) — other distros / arm64 surface manual
+// instructions.
+const GOOGLE_CHROME_DEB_URL = 'https://dl.google.com/linux/direct/google-chrome-stable_current_amd64.deb';
+const GOOGLE_CHROME_RPM_URL = 'https://dl.google.com/linux/direct/google-chrome-stable_current_x86_64.rpm';
 
-function isUbuntuLike(distro: LinuxDistro | null): boolean {
-	if (!distro) return false;
-	if (distro.id === 'ubuntu') return true;
-	return distro.idLike.includes('ubuntu');
-}
-
-// ─────────────────────────────────────────────────────────────────────────────
-// Chromium recipe — Puppeteer download (macOS/Windows) or distro pkg (Linux)
-// ─────────────────────────────────────────────────────────────────────────────
-
-const PPTR_CHROMIUM_DOCS = 'https://pptr.dev/browsers-api';
-const PPTR_LINUX_DOCS = 'https://pptr.dev/troubleshooting#chrome-doesnt-launch-on-linux';
-
-async function resolveChromiumRecipe(): Promise<Recipe> {
+async function resolveChromeRecipe(): Promise<Recipe> {
 	const cacheDir = join(getClopenDir(), 'bin');
-	const pptrArgs = ['bun', 'x', '@puppeteer/browsers', 'install', 'chromium@latest', '--path', cacheDir];
-	const pptrDisplay = `bun x @puppeteer/browsers install chromium@latest --path "${cacheDir}"`;
+	const pptrArgs = ['bun', 'x', '@puppeteer/browsers', 'install', 'chrome@stable', '--path', cacheDir];
+	const pptrDisplay = `bun x @puppeteer/browsers install chrome@stable --path "${cacheDir}"`;
 
-	// macOS / Windows: Puppeteer download is self-contained.
+	// macOS / Windows: Puppeteer downloads Chrome for Testing, self-contained.
 	if (process.platform === 'darwin' || process.platform === 'win32') {
 		return {
-			tool: 'chromium',
+			tool: 'chrome',
 			autoInstallable: true,
 			missingPrereqs: [],
 			manualInstructions: [{
 				label: 'Puppeteer browsers CLI',
 				command: pptrDisplay,
-				docs: PPTR_CHROMIUM_DOCS
+				docs: PPTR_CHROME_DOCS
 			}],
 			command: pptrArgs,
 			displayCommand: pptrDisplay
 		};
 	}
 
-	// Linux: delegate to distro package manager so deps auto-resolve.
-	return resolveLinuxChromiumRecipe();
+	// Linux: Google Chrome deb/rpm for x86_64 (apt/dnf/zypper). Other
+	// distros / arm64 are marked non-auto-installable with manual steps.
+	return resolveLinuxChromeRecipe();
 }
 
-interface LinuxChromiumStrategy {
+interface LinuxChromeStrategy {
 	pkgMgrLabel: string;
 	/** Argv-form command to spawn (sh -c <string>). */
 	installCommand: string;
 	/** User-facing display command (with sudo prefix if interactive). */
 	manualCommand: string;
+	/** Whether this strategy shells out to curl (for static-curl fallback). */
+	requiresCurl?: boolean;
 	/** Extra env to inject into the spawn. */
 	env?: Record<string, string>;
 }
 
-async function resolveLinuxChromiumRecipe(): Promise<Recipe> {
-	const distro = readLinuxDistro();
-	const ubuntuLike = isUbuntuLike(distro);
+async function resolveLinuxChromeRecipe(): Promise<Recipe> {
 	const mgr = detectLinuxPkgMgr();
+	const arch = process.arch;
 
 	const manual: ManualInstruction[] = [];
-
-	// Always surface the recommended manual command(s) for this platform.
-	const strategy = pickLinuxChromiumStrategy(mgr, ubuntuLike);
+	const strategy = pickLinuxChromeStrategy(mgr, arch);
 
 	if (strategy) {
 		manual.push({
 			label: `${strategy.pkgMgrLabel} (recommended)`,
 			command: strategy.manualCommand,
-			docs: PPTR_LINUX_DOCS
-		});
-	}
-
-	// Ubuntu users may want a non-snap fallback; mention common alternatives.
-	if (ubuntuLike) {
-		manual.push({
-			label: 'Ubuntu — install snapd first if missing',
-			command: 'sudo apt-get update && sudo apt-get install -y snapd && sudo snap install chromium',
-			docs: 'https://snapcraft.io/chromium'
+			docs: CHROME_LINUX_DOCS
 		});
 	}
 
 	const base: Recipe = {
-		tool: 'chromium',
+		tool: 'chrome',
 		autoInstallable: false,
 		missingPrereqs: [],
 		manualInstructions: manual
 	};
 
-	if (!mgr || !strategy) {
-		base.unavailableReason = mgr
-			? `No Chromium install strategy is mapped for ${mgr} on this distro. Install Chromium manually with your package manager.`
-			: 'No supported Linux package manager found (apt / dnf / pacman / apk / zypper). Install Chromium manually.';
+	if (!strategy) {
+		base.unavailableReason = arch !== 'x64'
+			? `Google Chrome is only published for Linux x86_64. No Chrome build exists for ${arch}. Download Chrome manually from google.com/chrome.`
+			: `Google Chrome is only available via apt, dnf, or zypper on Linux${mgr ? ` (this system uses ${mgr})` : ' — no supported package manager was detected'}. Download Chrome manually from google.com/chrome.`;
 		return base;
 	}
 
-	if (ubuntuLike && !resolveBinary('snap')) {
-		base.unavailableReason = 'Ubuntu Chromium is distributed as a snap, but snapd is not installed on this system. Install snapd first (`sudo apt-get install -y snapd`), then retry — or use the manual instructions below.';
+	if (strategy.requiresCurl && !attachCurlRequirement(base, 'Google Chrome')) {
 		return base;
 	}
 
 	const elevated = await isElevated();
 	if (!elevated) {
-		base.unavailableReason = `Installing Chromium via ${strategy.pkgMgrLabel} requires root. Run clopen as root, or install Chromium manually with the command below and retry.`;
+		base.unavailableReason = `Installing Google Chrome via ${strategy.pkgMgrLabel} requires root. Run clopen as root, or install Chrome manually with the command below and retry.`;
 		return base;
 	}
 
@@ -521,52 +497,46 @@ async function resolveLinuxChromiumRecipe(): Promise<Recipe> {
 	return base;
 }
 
-function pickLinuxChromiumStrategy(
+function pickLinuxChromeStrategy(
 	mgr: LinuxPkgMgr | null,
-	ubuntuLike: boolean
-): LinuxChromiumStrategy | null {
-	if (mgr === 'apt' && ubuntuLike) {
-		// Ubuntu's `chromium` / `chromium-browser` deb is a snap shim. Use snap directly.
-		return {
-			pkgMgrLabel: 'snap',
-			installCommand: 'snap install chromium',
-			manualCommand: 'sudo snap install chromium'
-		};
-	}
+	arch: string
+): LinuxChromeStrategy | null {
+	// Google only publishes Linux Chrome for x86_64.
+	if (arch !== 'x64') return null;
+
 	if (mgr === 'apt') {
+		// Download + install the .deb from dl.google.com. apt-get install with
+		// a local deb path auto-resolves dependencies (libatk, libnss3, etc.)
+		// from the distro repos. The postinst adds Google's apt source for
+		// future updates.
+		const cmd =
+			'apt-get update && apt-get install -y curl ca-certificates && ' +
+			`curl -fsSL -o /tmp/google-chrome-stable.deb ${GOOGLE_CHROME_DEB_URL} && ` +
+			'apt-get install -y /tmp/google-chrome-stable.deb && ' +
+			'rm -f /tmp/google-chrome-stable.deb';
 		return {
 			pkgMgrLabel: 'apt',
-			installCommand: 'apt-get update && apt-get install -y chromium',
-			manualCommand: 'sudo apt-get update && sudo apt-get install -y chromium',
+			installCommand: cmd,
+			manualCommand:
+				`sudo apt-get update && sudo apt-get install -y curl ca-certificates && ` +
+				`curl -fsSL -o /tmp/google-chrome-stable.deb ${GOOGLE_CHROME_DEB_URL} && ` +
+				`sudo apt-get install -y /tmp/google-chrome-stable.deb`,
+			requiresCurl: true,
 			env: { DEBIAN_FRONTEND: 'noninteractive' }
 		};
 	}
 	if (mgr === 'dnf') {
 		return {
 			pkgMgrLabel: 'dnf',
-			installCommand: 'dnf install -y chromium',
-			manualCommand: 'sudo dnf install -y chromium'
-		};
-	}
-	if (mgr === 'pacman') {
-		return {
-			pkgMgrLabel: 'pacman',
-			installCommand: 'pacman -S --noconfirm chromium',
-			manualCommand: 'sudo pacman -S --noconfirm chromium'
-		};
-	}
-	if (mgr === 'apk') {
-		return {
-			pkgMgrLabel: 'apk',
-			installCommand: 'apk add --no-cache chromium',
-			manualCommand: 'sudo apk add --no-cache chromium'
+			installCommand: `dnf install -y ${GOOGLE_CHROME_RPM_URL}`,
+			manualCommand: `sudo dnf install -y ${GOOGLE_CHROME_RPM_URL}`
 		};
 	}
 	if (mgr === 'zypper') {
 		return {
 			pkgMgrLabel: 'zypper',
-			installCommand: 'zypper --non-interactive install chromium',
-			manualCommand: 'sudo zypper install chromium'
+			installCommand: `zypper --non-interactive --gpg-auto-import-keys install ${GOOGLE_CHROME_RPM_URL}`,
+			manualCommand: `sudo zypper install ${GOOGLE_CHROME_RPM_URL}`
 		};
 	}
 	return null;
@@ -582,6 +552,6 @@ export async function resolveRecipe(tool: ToolId): Promise<Recipe> {
 		case 'git': return resolveGitRecipe();
 		case 'claude': return resolveClaudeRecipe();
 		case 'opencode': return resolveOpenCodeRecipe();
-		case 'chromium': return resolveChromiumRecipe();
+		case 'chrome': return resolveChromeRecipe();
 	}
 }

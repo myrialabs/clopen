@@ -2,7 +2,7 @@
  * System Tool Status Handlers
  *
  * Reports installation status for each managed tool (git, claude,
- * opencode, chromium). The corresponding recipe is bundled so the
+ * opencode, chrome). The corresponding recipe is bundled so the
  * frontend can render the install button state and manual fallback
  * without a second round-trip.
  */
@@ -17,7 +17,7 @@ const TOOL_UNION = t.Union([
 	t.Literal('git'),
 	t.Literal('claude'),
 	t.Literal('opencode'),
-	t.Literal('chromium')
+	t.Literal('chrome')
 ]);
 
 const RECIPE_SCHEMA = t.Object({
@@ -66,7 +66,7 @@ const ACTIVE_SESSION_SCHEMA = t.Union([
 	})
 ]);
 
-function toRecipeDTO(tool: 'git' | 'claude' | 'opencode' | 'chromium', recipe: Awaited<ReturnType<typeof resolveRecipe>>) {
+function toRecipeDTO(tool: 'git' | 'claude' | 'opencode' | 'chrome', recipe: Awaited<ReturnType<typeof resolveRecipe>>) {
 	return {
 		tool,
 		autoInstallable: recipe.autoInstallable,
@@ -109,7 +109,7 @@ export const systemToolsStatusHandler = createRouter()
 		})
 	}, async () => {
 		debug.log('path', 'system-tools:status-all');
-		const ids = ['git', 'claude', 'opencode', 'chromium'] as const;
+		const ids = ['git', 'claude', 'opencode', 'chrome'] as const;
 		const tools = await Promise.all(ids.map(async (id) => {
 			const [status, recipe] = await Promise.all([
 				getToolStatus(id),

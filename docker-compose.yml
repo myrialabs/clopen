@@ -8,10 +8,12 @@ services:
         RUN apt-get update && apt-get install -y --no-install-recommends \
             git \
             curl \
-            chromium \
+            ca-certificates \
+            && curl -fsSL -o /tmp/google-chrome-stable.deb \
+                https://dl.google.com/linux/direct/google-chrome-stable_current_amd64.deb \
+            && apt-get install -y /tmp/google-chrome-stable.deb \
+            && rm -f /tmp/google-chrome-stable.deb \
             && rm -rf /var/lib/apt/lists/*
-        ENV PUPPETEER_SKIP_CHROMIUM_DOWNLOAD=true
-        ENV PUPPETEER_EXECUTABLE_PATH=/usr/bin/chromium
         RUN curl -fsSL https://claude.ai/install.sh | bash
         ENV PATH="/root/.claude/local:$PATH"
         RUN curl -fsSL https://opencode.ai/install | bash

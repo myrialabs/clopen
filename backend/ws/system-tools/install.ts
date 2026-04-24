@@ -23,7 +23,7 @@ const TOOL_UNION = t.Union([
 	t.Literal('git'),
 	t.Literal('claude'),
 	t.Literal('opencode'),
-	t.Literal('chromium')
+	t.Literal('chrome')
 ]);
 
 const STATUS_UNION = t.Union([

@@ -66,7 +66,7 @@ export const wsRouter = createRouter()
 	// AI Engine Management
 	.merge(engineRouter)
 
-	// System Tools (install Git, Claude Code, OpenCode, Chromium binaries)
+	// System Tools (install Git, Claude Code, OpenCode, Chrome binaries)
 	.merge(systemToolsRouter);
 
 // Export API type for frontend type-safe access

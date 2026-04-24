@@ -19,7 +19,7 @@ import type { Browser, BrowserContext, Page } from 'puppeteer';
 import { debug } from '$shared/utils/logger';
 import puppeteer from 'puppeteer-extra';
 import StealthPlugin from 'puppeteer-extra-plugin-stealth';
-import { getChromiumExecutablePath } from '$backend/engine/install-recipes';
+import { getChromeExecutablePath } from '$backend/engine/install-recipes';
 
 puppeteer.use(StealthPlugin());
 
@@ -45,9 +45,9 @@ const DEFAULT_CONFIG: PoolConfig = {
 };
 
 /**
- * Chromium launch arguments for stealth (matches test-cf.ts exactly)
+ * Chrome launch arguments for stealth (matches test-cf.ts exactly)
  */
-const CHROMIUM_ARGS = [
+const CHROME_ARGS = [
 	'--no-sandbox',
 	'--disable-blink-features=AutomationControlled',
 	'--window-size=1366,768',
@@ -99,18 +99,19 @@ class BrowserPool {
 	private async launchBrowser(): Promise<Browser> {
 		debug.log('preview', '🚀 Launching browser with puppeteer-extra + StealthPlugin...');
 
-		// Use the clopen-managed Chromium under ~/.clopen/bin (macOS/Windows)
-		// or the system Chromium installed via the distro package manager (Linux).
-		const executablePath = getChromiumExecutablePath();
+		// Use the clopen-managed Chrome for Testing under ~/.clopen/bin
+		// (macOS/Windows) or the system Google Chrome / chromium installed
+		// via the distro package manager (Linux).
+		const executablePath = getChromeExecutablePath();
 		if (!executablePath) {
-			throw new Error('Chromium not installed. Go to Settings → System Tools and click Install.');
+			throw new Error('Chrome not installed. Go to Settings → System Tools and click Install.');
 		}
-		debug.log('preview', `  using Chromium at: ${executablePath}`);
+		debug.log('preview', `  using Chrome at: ${executablePath}`);
 
 		const browser = await puppeteer.launch({
 			headless: true,
 			executablePath,
-			args: CHROMIUM_ARGS
+			args: CHROME_ARGS
 		}) as unknown as Browser;
 
 		debug.log('preview', '✅ Browser launched successfully');

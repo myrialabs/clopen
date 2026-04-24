@@ -57,7 +57,7 @@ A complete development environment designed around AI-assisted workflows, built 
 - **Cloudflare Tunnel** — One-click public HTTPS URL for your local dev server. Built-in QR code for instant mobile access. Share your work without deploying
 - **MCP Support** — Full Model Context Protocol integration. Connect AI tools, external APIs, and custom capabilities to your AI agents with zero friction
 - **Flexible Authentication** — No Login or With Login mode with admin/member roles, invite links, rate-limited login, and CLI token recovery
-- **System Tools Installer** — Install Git, Claude Code, OpenCode, and Chromium straight from the admin Settings UI, with live install output streamed to the browser via xterm.js
+- **System Tools Installer** — Install Git, Claude Code, OpenCode, and Chrome straight from the admin Settings UI, with live install output streamed to the browser via xterm.js
 - **Background Processing** — Chat, terminal, and other processes continue running even when you close the browser — come back later and pick up where you left off
 - **Database Management** — Browse tables, run queries, and inspect your database directly from the workspace *(coming soon)*
 
