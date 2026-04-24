@@ -13,6 +13,9 @@ services:
                 https://dl.google.com/linux/direct/google-chrome-stable_current_amd64.deb \
             && apt-get install -y /tmp/google-chrome-stable.deb \
             && rm -f /tmp/google-chrome-stable.deb \
+            && curl -fsSL -o /usr/local/bin/cloudflared \
+                https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-linux-amd64 \
+            && chmod +x /usr/local/bin/cloudflared \
             && rm -rf /var/lib/apt/lists/*
         RUN curl -fsSL https://claude.ai/install.sh | bash
         ENV PATH="/root/.claude/local:$PATH"

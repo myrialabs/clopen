@@ -13,7 +13,7 @@ import { homedir } from 'os';
 import { join } from 'path';
 import { getTunnelDir } from './tunnel-config';
 import type { RemoteTunnelConfig, LocalTunnelConfig } from './tunnel-config';
-import { getBinaryPath, isBinaryInstalled, installBinary, CloudflaredTunnel, type LoginHandle } from './cloudflared';
+import { resolveCloudflaredBinary, CloudflaredTunnel, CloudflaredMissingError, type LoginHandle } from './cloudflared';
 
 // --- Types ---
 
@@ -63,7 +63,6 @@ class GlobalTunnelManager {
 	private quickTunnels = new Map<number, QuickTunnelInstance>();
 	private remoteTunnels = new Map<string, RemoteTunnelInstance>();
 	private localTunnels = new Map<string, LocalTunnelInstance>();
-	private binaryInstalled = false;
 	private loginHandle: LoginHandle | null = null;
 
 	// Callback for pushing ingress updates to connected clients
@@ -85,39 +84,21 @@ class GlobalTunnelManager {
 
 	// --- Binary management ---
 
-	private async ensureBinaryInstalled(
+	/**
+	 * Verify cloudflared is available before a tunnel operation. Never
+	 * downloads — installation is user-initiated through Settings → System
+	 * Tools. Throws CloudflaredMissingError when nothing is resolvable.
+	 */
+	private ensureBinaryAvailable(
 		onProgress?: (stage: string, data?: any) => void
-	): Promise<{ needsDownload: boolean; downloadTime?: number }> {
-		if (this.binaryInstalled) {
-			onProgress?.('binary-ready', { cached: true });
-			return { needsDownload: false };
+	): void {
+		const resolved = resolveCloudflaredBinary();
+		if (!resolved) {
+			debug.warn('tunnel', 'Cloudflared binary not available; install via Settings → System Tools');
+			throw new CloudflaredMissingError();
 		}
-
-		if (!isBinaryInstalled()) {
-			debug.log('tunnel', 'Cloudflared binary not found, downloading...');
-			onProgress?.('downloading-binary', { size: '~66MB' });
-
-			const startTime = Date.now();
-			try {
-				await installBinary();
-				const downloadTime = Date.now() - startTime;
-				debug.log('tunnel', `Cloudflared binary installed in ${downloadTime}ms at: ${getBinaryPath()}`);
-
-				this.binaryInstalled = true;
-				onProgress?.('binary-ready', { downloaded: true, time: downloadTime });
-				return { needsDownload: true, downloadTime };
-			} catch (error) {
-				debug.error('tunnel', 'Failed to install cloudflared binary:', error);
-				throw new Error(
-					'Failed to download cloudflared binary. Please check your internet connection and try again.'
-				);
-			}
-		}
-
-		debug.log('tunnel', 'Cloudflared binary already installed at:', getBinaryPath());
-		this.binaryInstalled = true;
+		debug.log('tunnel', 'Cloudflared binary available at:', resolved);
 		onProgress?.('binary-ready', { cached: true });
-		return { needsDownload: false };
 	}
 
 	// --- Quick tunnel ---
@@ -126,15 +107,14 @@ class GlobalTunnelManager {
 		port: number,
 		autoStopMinutes: number = 60,
 		onProgress?: (stage: string, data?: any) => void
-	): Promise<{ publicUrl: string; binaryDownloaded: boolean; timings: Record<string, number> }> {
+	): Promise<{ publicUrl: string; timings: Record<string, number> }> {
 		onProgress?.('checking-binary');
-		const binaryInfo = await this.ensureBinaryInstalled(onProgress);
+		this.ensureBinaryAvailable(onProgress);
 		const timings: Record<string, number> = {};
-		if (binaryInfo.downloadTime) timings.binaryDownload = binaryInfo.downloadTime;
 
 		if (this.quickTunnels.has(port)) {
 			const existing = this.quickTunnels.get(port)!;
-			return { publicUrl: existing.publicUrl, binaryDownloaded: binaryInfo.needsDownload, timings };
+			return { publicUrl: existing.publicUrl, timings };
 		}
 
 		onProgress?.('starting-tunnel', { port });
@@ -201,7 +181,7 @@ class GlobalTunnelManager {
 			onProgress?.('connected', { publicUrl, timings });
 			this.notifyStatusChanged();
 
-			return { publicUrl, binaryDownloaded: binaryInfo.needsDownload, timings };
+			return { publicUrl, timings };
 		} catch (error) {
 			debug.error('tunnel', `Failed to start quick tunnel on port ${port}:`, error);
 			throw error;
@@ -226,14 +206,13 @@ class GlobalTunnelManager {
 	async startRemoteTunnel(
 		config: RemoteTunnelConfig,
 		onProgress?: (stage: string, data?: any) => void
-	): Promise<{ binaryDownloaded: boolean; timings: Record<string, number> }> {
+	): Promise<{ timings: Record<string, number> }> {
 		onProgress?.('checking-binary');
-		const binaryInfo = await this.ensureBinaryInstalled(onProgress);
+		this.ensureBinaryAvailable(onProgress);
 		const timings: Record<string, number> = {};
-		if (binaryInfo.downloadTime) timings.binaryDownload = binaryInfo.downloadTime;
 
 		if (this.remoteTunnels.has(config.id)) {
-			return { binaryDownloaded: binaryInfo.needsDownload, timings };
+			return { timings };
 		}
 
 		onProgress?.('starting-tunnel', { label: config.label });
@@ -305,7 +284,7 @@ class GlobalTunnelManager {
 			onProgress?.('connected', { timings });
 			this.notifyStatusChanged();
 
-			return { binaryDownloaded: binaryInfo.needsDownload, timings };
+			return { timings };
 		} catch (error) {
 			debug.error('tunnel', `Failed to start remote tunnel ${config.label}:`, error);
 			throw error;
@@ -348,7 +327,7 @@ class GlobalTunnelManager {
 		onComplete?: () => void,
 		onError?: (error: string) => void
 	): Promise<void> {
-		await this.ensureBinaryInstalled();
+		this.ensureBinaryAvailable();
 
 		if (this.loginHandle) {
 			onError?.('Login process already running');
@@ -410,7 +389,7 @@ class GlobalTunnelManager {
 	}
 
 	async createLocalTunnel(name: string): Promise<{ tunnelId: string; credentialsFile: string }> {
-		await this.ensureBinaryInstalled();
+		this.ensureBinaryAvailable();
 
 		// Write credentials directly to our dir (not ~/.cloudflared/)
 		const tunnelBaseDir = getTunnelDir();
@@ -433,7 +412,7 @@ class GlobalTunnelManager {
 	}
 
 	async deleteLocalTunnel(tunnelId: string, credentialsFile?: string): Promise<void> {
-		await this.ensureBinaryInstalled();
+		this.ensureBinaryAvailable();
 
 		await CloudflaredTunnel.deleteTunnel(tunnelId, { credentialsFile, origincert: CERT_PATH });
 		debug.log('tunnel', `Local tunnel deleted: ${tunnelId}`);
@@ -448,7 +427,7 @@ class GlobalTunnelManager {
 	}
 
 	async routeDns(tunnelName: string, hostname: string): Promise<{ alreadyExists: boolean }> {
-		await this.ensureBinaryInstalled();
+		this.ensureBinaryAvailable();
 
 		const result = await CloudflaredTunnel.routeDns(tunnelName, hostname, { overwriteDns: true, origincert: CERT_PATH });
 		debug.log('tunnel', `DNS route ${result.alreadyExists ? 'updated' : 'added'}: ${hostname} -> ${tunnelName}`);
@@ -483,14 +462,13 @@ class GlobalTunnelManager {
 	async startLocalTunnel(
 		config: LocalTunnelConfig,
 		onProgress?: (stage: string, data?: any) => void
-	): Promise<{ binaryDownloaded: boolean; timings: Record<string, number> }> {
+	): Promise<{ timings: Record<string, number> }> {
 		onProgress?.('checking-binary');
-		const binaryInfo = await this.ensureBinaryInstalled(onProgress);
+		this.ensureBinaryAvailable(onProgress);
 		const timings: Record<string, number> = {};
-		if (binaryInfo.downloadTime) timings.binaryDownload = binaryInfo.downloadTime;
 
 		if (this.localTunnels.has(config.id)) {
-			return { binaryDownloaded: binaryInfo.needsDownload, timings };
+			return { timings };
 		}
 
 		if (config.ingress.length === 0) {
@@ -557,7 +535,7 @@ class GlobalTunnelManager {
 			onProgress?.('connected', { timings });
 			this.notifyStatusChanged();
 
-			return { binaryDownloaded: binaryInfo.needsDownload, timings };
+			return { timings };
 		} catch (error) {
 			debug.error('tunnel', `Failed to start local tunnel ${config.name}:`, error);
 			throw error;

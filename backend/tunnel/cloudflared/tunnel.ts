@@ -20,7 +20,20 @@ import { EventEmitter } from 'events';
 import { existsSync, mkdirSync, writeFileSync, chmodSync } from 'fs';
 import { tmpdir, platform } from 'os';
 import { join } from 'path';
-import { getBinaryPath } from './binary';
+import { resolveCloudflaredBinary } from './binary';
+
+export class CloudflaredMissingError extends Error {
+	constructor() {
+		super('Cloudflared binary is not installed. Install it from Settings → System Tools, or install cloudflared system-wide and restart clopen.');
+		this.name = 'CloudflaredMissingError';
+	}
+}
+
+function requireBinary(): string {
+	const resolved = resolveCloudflaredBinary();
+	if (!resolved) throw new CloudflaredMissingError();
+	return resolved;
+}
 
 // --- Output parsing regexes (from cloudflared npm package) ---
 
@@ -167,7 +180,7 @@ export class CloudflaredTunnel extends EventEmitter {
 			env = { ...process.env, BROWSER: 'false', PATH: `${fakeOpenDir}:${process.env.PATH ?? ''}` };
 		}
 
-		const proc = spawn(getBinaryPath(), ['tunnel', 'login'], {
+		const proc = spawn(requireBinary(), ['tunnel', 'login'], {
 			stdio: ['ignore', 'pipe', 'pipe'],
 			env
 		});
@@ -280,7 +293,7 @@ export class CloudflaredTunnel extends EventEmitter {
 	/** Run a one-shot cloudflared command and collect all output. */
 	private static run(args: string[]): Promise<{ output: string; exitCode: number }> {
 		return new Promise((resolve, reject) => {
-			const proc = spawn(getBinaryPath(), args, {
+			const proc = spawn(requireBinary(), args, {
 				stdio: ['ignore', 'pipe', 'pipe']
 			});
 
@@ -360,7 +373,7 @@ export class CloudflaredTunnel extends EventEmitter {
 	}
 
 	private createProcess(args: string[]): ChildProcess {
-		const binPath = getBinaryPath();
+		const binPath = requireBinary();
 		const child = spawn(binPath, args, { stdio: ['ignore', 'pipe', 'pipe'] });
 
 		child.on('error', (error) => this.emit('error', error));

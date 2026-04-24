@@ -161,7 +161,7 @@
 
 ### 19. Flexible Authentication (No-Auth + Multi-User)
 
-**Decision:** Dual authentication mode — No Login or With Login (token-based) — configurable during setup wizard and togglable in Settings > Security
+**Decision:** Dual authentication mode — No Login or With Login (token-based) — configurable during setup wizard and togglable in Settings → Security
 **Rationale:** Not all deployments need authentication. Personal/local use should be frictionless (No Login), while team/production deployments need access control (With Login). The system stores `authMode` in `system:settings` (`'none'` or `'required'`). In No Login mode, a default admin user is auto-created and all WS routes bypass authentication checks. Existing users and sessions are preserved when switching modes (bypassed, not deleted). Switching from No Login to With Login generates a PAT for the existing admin. Three token types remain for With Login: session (`clp_ses_*`, 30-day, auto-reconnect), PAT (`clp_pat_*`, permanent, cross-device login), invite (`clp_inv_*`, single-use). Rate limiting, admin-only routes, and CLI `clopen reset-pat` recovery all apply in With Login mode.
 **Trade-offs:** No Login mode has no access control, admin must be aware when exposing via tunnel. UI sections (user management, invites, PAT settings) are hidden in No Login mode to avoid confusion.
 
@@ -179,9 +179,9 @@
 
 ### 21. Cloudflare Tunnel Built-In
 
-**Decision:** Built-in Cloudflare Tunnel support
-**Rationale:** One-click public URL with HTTPS, no port forwarding needed, works across networks and firewalls, QR code for mobile access.
-**Trade-offs:** Requires internet access, dependent on Cloudflare availability.
+**Decision:** Built-in Cloudflare Tunnel support; the `cloudflared` binary is installed on demand from **Settings → System Tools** (not auto-downloaded on first tunnel use).
+**Rationale:** One-click public URL with HTTPS, no port forwarding needed, works across networks and firewalls, QR code for mobile access. Routing the binary install through System Tools gives admins explicit, audit-able control and mirrors how Git/Claude Code/OpenCode/Chrome are managed.
+**Trade-offs:** Requires internet access, dependent on Cloudflare availability. Public Tunnel now fails with a "install cloudflared" prompt until an admin installs it once.
 
 ---
 

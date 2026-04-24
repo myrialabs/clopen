@@ -5,9 +5,10 @@
  * Provides binary management and tunnel process control.
  */
 
-export { getBinaryPath, isBinaryInstalled, installBinary } from './binary';
+export { getBinaryPath, isBinaryInstalled, installBinary, resolveCloudflaredBinary } from './binary';
 export {
 	CloudflaredTunnel,
+	CloudflaredMissingError,
 	type ConnectionInfo,
 	type LoginHandle,
 	type LoginCallbacks,

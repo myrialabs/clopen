@@ -20,7 +20,7 @@ import { getClopenDir } from '$backend/utils/paths';
 import { resolveBinary, resolveBinaryWithRefresh } from '$backend/utils/cli';
 import { resolveStaticCurlAsset } from '$backend/utils/static-curl';
 
-export type ToolId = 'git' | 'claude' | 'opencode' | 'chrome';
+export type ToolId = 'git' | 'claude' | 'opencode' | 'chrome' | 'cloudflared';
 
 export interface ManualInstruction {
 	label: string;
@@ -204,6 +204,16 @@ export async function getToolStatus(tool: ToolId): Promise<ToolStatus> {
 	if (!resolved) return { tool, installed: false, version: null, source: null };
 	const version = await runVersion(resolved);
 	if (!version) return { tool, installed: false, version: null, source: null };
+
+	// Cloudflared: tag binaries under ~/.clopen/bin as "clopen"-managed so the
+	// UI distinguishes System Tools installs from system-wide ones.
+	if (tool === 'cloudflared') {
+		const clopenBinDir = join(getClopenDir(), 'bin');
+		if (resolved.startsWith(clopenBinDir)) {
+			return { tool, installed: true, version, source: 'clopen' };
+		}
+	}
+
 	return { tool, installed: true, version, source: resolved };
 }
 
@@ -542,6 +552,104 @@ function pickLinuxChromeStrategy(
 	return null;
 }
 
+// ─────────────────────────────────────────────────────────────────────────────
+// Cloudflared recipe — downloads the Cloudflare-signed binary into ~/.clopen/bin
+// ─────────────────────────────────────────────────────────────────────────────
+
+const CLOUDFLARED_RELEASE_BASE = 'https://github.com/cloudflare/cloudflared/releases/latest/download';
+const CLOUDFLARED_DOCS = 'https://developers.cloudflare.com/cloudflare-one/connections/connect-networks/downloads/';
+
+const CLOUDFLARED_LINUX_ARCH: Record<string, string> = {
+	x64: 'amd64',
+	arm64: 'arm64',
+	arm: 'arm',
+	ia32: '386'
+};
+
+async function resolveCloudflaredRecipe(): Promise<Recipe> {
+	const base: Recipe = {
+		tool: 'cloudflared',
+		autoInstallable: false,
+		missingPrereqs: [],
+		manualInstructions: []
+	};
+
+	const binDir = join(getClopenDir(), 'bin');
+
+	if (process.platform === 'darwin') {
+		const archKey = process.arch === 'arm64' ? 'arm64' : 'amd64';
+		const file = `cloudflared-darwin-${archKey}.tgz`;
+		const url = `${CLOUDFLARED_RELEASE_BASE}/${file}`;
+		const cmd =
+			`mkdir -p "${binDir}" && ` +
+			`curl -fsSL -o "${binDir}/${file}" "${url}" && ` +
+			`tar -xzf "${binDir}/${file}" -C "${binDir}" && ` +
+			`rm -f "${binDir}/${file}" && ` +
+			`chmod +x "${binDir}/cloudflared"`;
+
+		base.manualInstructions.push({
+			label: 'curl + tar',
+			command: cmd,
+			docs: CLOUDFLARED_DOCS
+		});
+		if (!attachCurlRequirement(base, 'Cloudflared')) return base;
+		base.autoInstallable = true;
+		base.shell = { program: 'bash', args: ['-c'] };
+		base.command = [cmd];
+		base.displayCommand = cmd;
+		return base;
+	}
+
+	if (process.platform === 'linux') {
+		const archKey = CLOUDFLARED_LINUX_ARCH[process.arch];
+		if (!archKey) {
+			base.unavailableReason = `Cloudflared has no published Linux build for ${process.arch}.`;
+			return base;
+		}
+		const file = `cloudflared-linux-${archKey}`;
+		const url = `${CLOUDFLARED_RELEASE_BASE}/${file}`;
+		const cmd =
+			`mkdir -p "${binDir}" && ` +
+			`curl -fsSL -o "${binDir}/cloudflared" "${url}" && ` +
+			`chmod +x "${binDir}/cloudflared"`;
+
+		base.manualInstructions.push({
+			label: 'curl',
+			command: cmd,
+			docs: CLOUDFLARED_DOCS
+		});
+		if (!attachCurlRequirement(base, 'Cloudflared')) return base;
+		base.autoInstallable = true;
+		base.shell = { program: 'bash', args: ['-c'] };
+		base.command = [cmd];
+		base.displayCommand = cmd;
+		return base;
+	}
+
+	if (process.platform === 'win32') {
+		const archKey = process.arch === 'ia32' ? '386' : 'amd64';
+		const file = `cloudflared-windows-${archKey}.exe`;
+		const url = `${CLOUDFLARED_RELEASE_BASE}/${file}`;
+		const psCmd =
+			`New-Item -ItemType Directory -Path "${binDir}" -Force | Out-Null; ` +
+			`Invoke-WebRequest -Uri "${url}" -OutFile "${binDir}\\cloudflared.exe"`;
+
+		base.manualInstructions.push({
+			label: 'PowerShell',
+			command: psCmd,
+			docs: CLOUDFLARED_DOCS
+		});
+		base.autoInstallable = true;
+		base.shell = { program: 'powershell.exe', args: ['-NoProfile', '-ExecutionPolicy', 'Bypass', '-Command'] };
+		base.command = [psCmd];
+		base.displayCommand = psCmd;
+		return base;
+	}
+
+	base.unavailableReason = `Unsupported platform: ${process.platform}`;
+	return base;
+}
+
 /**
  * Resolve the install recipe for a tool on the current platform.
  * Result is platform- and privilege-aware: recipes that would fail
@@ -553,5 +661,6 @@ export async function resolveRecipe(tool: ToolId): Promise<Recipe> {
 		case 'claude': return resolveClaudeRecipe();
 		case 'opencode': return resolveOpenCodeRecipe();
 		case 'chrome': return resolveChromeRecipe();
+		case 'cloudflared': return resolveCloudflaredRecipe();
 	}
 }

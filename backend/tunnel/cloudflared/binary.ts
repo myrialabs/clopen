@@ -1,11 +1,16 @@
 /**
  * Cloudflared Binary Manager
  *
- * Handles downloading and managing the cloudflared binary.
- * Replaces the `cloudflared` npm package for binary management.
+ * Handles resolving and managing the cloudflared binary.
  *
- * Binary is stored in ~/.clopen/bin/cloudflared (or .clopen-dev for dev)
- * Downloads from GitHub releases: https://github.com/cloudflare/cloudflared/releases
+ * Primary install path is ~/.clopen/bin/cloudflared (.clopen-dev in dev), which
+ * the System Tools installer downloads from GitHub releases. A system-wide
+ * cloudflared (e.g. brew, apt) is also honored via PATH so users who already
+ * have it on their machine don't have to install through clopen.
+ *
+ * installBinary() is kept for programmatic use (CLI, one-off scripts) but
+ * the server never auto-downloads — tunnel flows fail with a pointer to
+ * Settings → System Tools when the binary is missing.
  */
 
 import { existsSync, mkdirSync, createWriteStream, chmodSync, unlinkSync, renameSync } from 'fs';
@@ -13,6 +18,7 @@ import { join, dirname } from 'path';
 import { platform, arch } from 'os';
 import { execSync } from 'child_process';
 import { getClopenDir } from '../../utils/paths';
+import { resolveBinary } from '../../utils/cli';
 import { debug } from '$shared/utils/logger';
 
 const RELEASE_BASE = 'https://github.com/cloudflare/cloudflared/releases/';
@@ -45,6 +51,18 @@ export function getBinaryPath(): string {
 /** Check if binary exists */
 export function isBinaryInstalled(): boolean {
 	return existsSync(getBinaryPath());
+}
+
+/**
+ * Resolve an executable cloudflared binary. Prefers the System Tools install
+ * under ~/.clopen/bin; falls back to any cloudflared on PATH so users who
+ * installed it via brew/apt/winget don't have to reinstall via clopen.
+ * Returns null when nothing is found.
+ */
+export function resolveCloudflaredBinary(): string | null {
+	const managed = getBinaryPath();
+	if (existsSync(managed)) return managed;
+	return resolveBinary('cloudflared');
 }
 
 /** Download a file via HTTPS, following redirects */

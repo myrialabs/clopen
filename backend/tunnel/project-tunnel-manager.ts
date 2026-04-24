@@ -1,5 +1,5 @@
 import { debug } from '$shared/utils/logger';
-import { getBinaryPath, isBinaryInstalled, installBinary, CloudflaredTunnel } from './cloudflared';
+import { resolveCloudflaredBinary, CloudflaredTunnel, CloudflaredMissingError } from './cloudflared';
 
 interface TunnelInstance {
 	tunnel: any;
@@ -18,7 +18,6 @@ interface TunnelConnection {
 class ProjectTunnelManager {
 	// Key format: "projectId:port" to support multiple tunnels per project
 	private activeTunnels = new Map<string, TunnelInstance>();
-	private binaryInstalled = false;
 
 	/**
 	 * Generate unique key for tunnel
@@ -28,51 +27,19 @@ class ProjectTunnelManager {
 	}
 
 	/**
-	 * Ensure cloudflared binary is installed
-	 * Downloads binary on first use (~66MB, takes 30-60 seconds)
+	 * Verify cloudflared is available. Installation is user-initiated via
+	 * Settings → System Tools; this manager never auto-downloads.
 	 */
-	private async ensureBinaryInstalled(
+	private ensureBinaryAvailable(
 		onProgress?: (stage: string, data?: any) => void
-	): Promise<{
-		needsDownload: boolean;
-		downloadTime?: number;
-	}> {
-		// Check if already verified in this session
-		if (this.binaryInstalled) {
-			onProgress?.('binary-ready', { cached: true });
-			return { needsDownload: false };
+	): void {
+		const resolved = resolveCloudflaredBinary();
+		if (!resolved) {
+			debug.warn('tunnel', 'Cloudflared binary not available; install via Settings → System Tools');
+			throw new CloudflaredMissingError();
 		}
-
-		// Check if binary file exists
-		if (!isBinaryInstalled()) {
-			debug.log('tunnel', '[PROGRESS:DOWNLOADING_BINARY] Cloudflared binary not found, downloading...');
-			debug.log('tunnel', 'This may take 30-60 seconds on first use (downloading ~66MB)');
-			onProgress?.('downloading-binary', { size: '~66MB' });
-
-			const startTime = Date.now();
-
-			try {
-				await installBinary();
-
-				const downloadTime = Date.now() - startTime;
-				debug.log('tunnel', `[PROGRESS:BINARY_READY] Cloudflared binary installed successfully in ${downloadTime}ms at: ${getBinaryPath()}`);
-
-				this.binaryInstalled = true;
-				onProgress?.('binary-ready', { downloaded: true, time: downloadTime });
-				return { needsDownload: true, downloadTime };
-			} catch (error) {
-				debug.error('tunnel', 'Failed to install cloudflared binary:', error);
-				throw new Error(
-					'Failed to download cloudflared binary. Please check your internet connection and try again. ' +
-						'The tunnel feature requires downloading ~66MB on first use.'
-				);
-			}
-		} else {
-			debug.log('tunnel', '[PROGRESS:BINARY_READY] Cloudflared binary already installed at:', getBinaryPath());
-			this.binaryInstalled = true;
-			onProgress?.('binary-ready', { cached: true });
-			return { needsDownload: false };
-		}
+		debug.log('tunnel', '[PROGRESS:BINARY_READY] Cloudflared binary available at:', resolved);
+		onProgress?.('binary-ready', { cached: true });
 	}
 
 	/**
@@ -83,17 +50,12 @@ class ProjectTunnelManager {
 		port: number,
 		autoStopMinutes: number = 60,
 		onProgress?: (stage: string, data?: any) => void
-	): Promise<{ publicUrl: string; status: 'active'; binaryDownloaded: boolean; timings: any }> {
-		debug.log('tunnel', '[PROGRESS:CHECKING_BINARY] Checking if binary is installed...');
+	): Promise<{ publicUrl: string; status: 'active'; timings: any }> {
+		debug.log('tunnel', '[PROGRESS:CHECKING_BINARY] Checking if binary is available...');
 		onProgress?.('checking-binary');
 
-		// Ensure binary is installed
-		const binaryInfo = await this.ensureBinaryInstalled(onProgress);
+		this.ensureBinaryAvailable(onProgress);
 		const timings: any = {};
-
-		if (binaryInfo.needsDownload) {
-			timings.binaryDownload = binaryInfo.downloadTime;
-		}
 
 		// Check if tunnel already exists for this port
 		const tunnelKey = this.getTunnelKey(projectId, port);
@@ -209,7 +171,6 @@ class ProjectTunnelManager {
 		return {
 			publicUrl,
 			status: 'active',
-			binaryDownloaded: binaryInfo.needsDownload,
 			timings
 		};
 	}
