@@ -619,58 +619,64 @@ Each checkpoint ends in a STOP for user review per `CLAUDE.md`.
 
 Goal: verify which Bun-native APIs work for each driver, find the right SSH tunnel library, identify limitations. **No production code written.** Results recorded in CHECKPOINT 0 table and used as binding reference for Phases 1–2.
 
-#### 0.1 Bun.sql — MySQL `[ ]`
-- [ ] Install test MySQL instance (local Docker or existing).
-- [ ] Test `Bun.sql` (Bun ≥1.2) with MySQL: `connect`, `ping`, `SELECT 1`.
-- [ ] Verify parameterized queries work.
-- [ ] Test connection close / reconnect.
-- [ ] If fails → test `mysql2` npm package as alternative.
-- [ ] Record: API chosen, Bun version required, known limitations.
+> Test environment: Bun 1.3.9, macOS 26.3 (arm64), MySQL 9.6.0, PostgreSQL 14.21, MongoDB 7.0.31, Redis (local). All servers reached via `root` / `password` (PG also accepts `root`). Scratch tests in `/tmp/phase0-dbclient/`.
 
-#### 0.2 Bun.sql — PostgreSQL `[ ]`
-- [ ] Same test suite as above with PostgreSQL.
-- [ ] Test `EXPLAIN FORMAT JSON`.
-- [ ] If fails → test `pg` npm package.
-- [ ] Record findings.
+#### 0.1 Bun.sql — MySQL `[x]`
+- [x] Install test MySQL instance (local Docker or existing). — Local MySQL 9.6.0 on 127.0.0.1:3306.
+- [x] Test `Bun.sql` (Bun ≥1.2) with MySQL: `connect`, `ping`, `SELECT 1`. — PASS via `new SQL("mysql://root:password@127.0.0.1:3306/mysql")`.
+- [x] Verify parameterized queries work. — Tagged-template `db\`SELECT ${n} AS n\`` returned `n=42`.
+- [x] Test connection close / reconnect. — `db.close()` returns; new `SQL` instance reconnects cleanly.
+- [x] If fails → test `mysql2` npm package as alternative. — Not needed.
+- [x] Record: API chosen, Bun version required, known limitations. — `Bun.sql` MySQL on Bun 1.3.9. Result objects expose `.count`, `.command`, `.lastInsertRowid`, `.affectedRows` alongside row data.
 
-#### 0.3 bun:sqlite — SQLite `[ ]`
-- [ ] Confirm `bun:sqlite` works (expected: yes).
-- [ ] Check SQLite version bundled in current Bun — determines `DROP COLUMN` / `RENAME COLUMN` availability.
-- [ ] Record SQLite version and resulting feature constraints.
+#### 0.2 Bun.sql — PostgreSQL `[x]`
+- [x] Same test suite as above with PostgreSQL. — PASS via `new SQL("postgres://root:password@127.0.0.1:5432/postgres")` (PG 14.21).
+- [x] Test `EXPLAIN FORMAT JSON`. — `EXPLAIN (FORMAT JSON) SELECT 1` returned a valid `QUERY PLAN` JSON tree.
+- [x] If fails → test `pg` npm package. — Not needed.
+- [x] Record findings. — `Bun.sql` PG on Bun 1.3.9. Same tagged-template + parameterization. PG-style cast `${n}::int` works.
 
-#### 0.4 Bun.redis — Redis `[ ]`
-- [ ] Test `Bun.redis` (Bun ≥1.2.9): `PING`, `SET`, `GET`, `SCAN`, `HSET`.
-- [ ] Test command array interface.
-- [ ] If fails → test `ioredis` npm package.
-- [ ] Record findings.
+#### 0.3 bun:sqlite — SQLite `[x]`
+- [x] Confirm `bun:sqlite` works (expected: yes). — PASS.
+- [x] Check SQLite version bundled in current Bun — determines `DROP COLUMN` / `RENAME COLUMN` availability. — SQLite **3.51.0** ships with Bun 1.3.9.
+- [x] Record SQLite version and resulting feature constraints. — Both `ALTER TABLE … DROP COLUMN` (≥3.35) and `RENAME COLUMN` (≥3.25) supported. `MODIFY COLUMN` still unavailable — recreate-table workaround needed.
 
-#### 0.5 mongodb npm — MongoDB `[ ]`
-- [ ] `bun add mongodb` — confirm Bun compatibility.
-- [ ] Test: connect, `ping`, `listCollections`, `find`, `insertOne`.
-- [ ] Record version and any Bun-specific quirks.
+#### 0.4 Bun.redis — Redis `[x]`
+- [x] Test `Bun.redis` (Bun ≥1.2.9): `PING`, `SET`, `GET`, `SCAN`, `HSET`. — PASS via `new RedisClient("redis://127.0.0.1:6379")` + `await client.connect()`.
+- [x] Test command array interface. — Use `client.send("HSET", ["k","f","v"])` / `client.send("SCAN", ["0","MATCH","p:*","COUNT","100"])`. First-class `get`/`set` also exposed.
+- [x] If fails → test `ioredis` npm package. — Not needed.
+- [x] Record findings. — `Bun.redis` on Bun 1.3.9. `HGETALL` returns a null-prototype object; treat as plain `Record<string,string>`.
 
-#### 0.6 SSH tunnel library `[ ]`
-- [ ] Test `ssh2` npm with Bun: install, open TCP forward to a remote host.
-- [ ] Verify both `password` and `privateKey` auth work.
-- [ ] Test tunnel through which `Bun.sql` (or chosen MySQL driver) connects.
-- [ ] If `ssh2` fails → test `node-ssh` or `tunnel-ssh`.
-- [ ] Record: library chosen, auth methods confirmed, limitations.
+#### 0.5 mongodb npm — MongoDB `[x]`
+- [x] `bun add mongodb` — confirm Bun compatibility. — Installed `mongodb@7.2.0`; loads under Bun 1.3.9.
+- [x] Test: connect, `ping`, `listCollections`, `find`, `insertOne`. — All PASS against MongoDB 7.0.31 with `mongodb://root:password@127.0.0.1:27017/?authSource=admin`.
+- [x] Record version and any Bun-specific quirks. — Driver `mongodb@7.2.0`. **Auth must include `authSource=admin`** when binding the workspace `root` user; bare `mongodb://127.0.0.1:27017` connects but most ops fail authorization. No Bun-specific quirks observed.
 
-#### CHECKPOINT 0 `[ ]`
+#### 0.6 SSH tunnel library `[x]`
+- [x] Test `ssh2` npm with Bun: install, open TCP forward to a remote host. — Installed `ssh2@1.17.0` + `@types/ssh2@1.15.5`. Loaded under Bun 1.3.9.
+- [x] Verify both `password` and `privateKey` auth work. — End-to-end test (in-process `ssh2.Server` + `ssh2.Client.forwardOut` + echo backend) passed for both auth methods; bidirectional payload `hello-tunnel` round-tripped.
+- [x] Test tunnel through which `Bun.sql` (or chosen MySQL driver) connects. — `test-ssh-mysql.ts` opens a local TCP listener that pipes each accepted socket through `ssh2.Client.forwardOut(..., 127.0.0.1, 3306)`; `Bun.sql` connects to the local port and runs `SELECT 1` + `SELECT VERSION()` — both return MySQL 9.6.0 results.
+- [x] If `ssh2` fails → test `node-ssh` or `tunnel-ssh`. — Not needed.
+- [x] Record: library chosen, auth methods confirmed, limitations. — `ssh2@1.17.0`. Both `password` and `privateKey` (+ optional `passphrase`) auth verified. **`utils.parseKey` rejects ed25519 keys exported as PKCS8 PEM (`Unsupported key format`)** — accept OpenSSH-format keys for ed25519, or RSA in PKCS1 PEM. Document this in the connection form's private-key field.
 
-Fill in this table before proceeding:
+#### CHECKPOINT 0 `[x]`
 
 | Driver | Bun-native API | Alternative (if needed) | Min Bun version | SQLite version | Known limitations |
 |---|---|---|---|---|---|
-| MySQL | `Bun.sql` / `mysql2` | — | ? | — | ? |
-| PostgreSQL | `Bun.sql` / `pg` | — | ? | — | ? |
-| SQLite | `bun:sqlite` | — | any | ? | DROP/MODIFY COLUMN? |
-| MongoDB | `mongodb` vX.X | — | any | — | ? |
-| Redis | `Bun.redis` / `ioredis` | — | ? | — | ? |
-| SSH tunnel | `ssh2` vX.X / other | — | any | — | key auth quirks? |
+| MySQL | `Bun.sql` (mysql://) | `mysql2` (not needed) | 1.3.9 (tested) | — | Result is an array carrying `.count`/`.command`/`.lastInsertRowid`/`.affectedRows` extras — adapter must normalize into `DbClientQueryResult`. |
+| PostgreSQL | `Bun.sql` (postgres://) | `pg` (not needed) | 1.3.9 (tested) | — | Same `Bun.sql` result shape; use PG-style `${n}::int` casts when the protocol can't infer types. `EXPLAIN (FORMAT JSON)` works. |
+| SQLite | `bun:sqlite` | — | any (Bun 1.3.9 ships SQLite 3.51.0) | 3.51.0 | `DROP COLUMN` (≥3.35) ✅, `RENAME COLUMN` (≥3.25) ✅, `MODIFY COLUMN` ❌ — implement recreate-table workaround or surface a clear error. |
+| MongoDB | `mongodb` v7.2.0 | — | any | — | Connect string for the workspace `root` user **must** include `?authSource=admin`. Server tested at 7.0.31. |
+| Redis | `Bun.redis` (`RedisClient`) | `ioredis` (not needed) | 1.3.9 (tested) | — | Use `client.send(CMD, args[])` for arbitrary commands; `HGETALL` returns a null-prototype object (treat as `Record<string,string>`). |
+| SSH tunnel | `ssh2` v1.17.0 (+ `@types/ssh2` v1.15.5) | — | any | — | `utils.parseKey` rejects ed25519 keys in PKCS8 PEM (`Unsupported key format`); accept OpenSSH format for ed25519, or RSA PKCS1 PEM. Password + privateKey (+ optional passphrase) both verified end-to-end through `forwardOut`. |
 
-- [ ] All 6 rows filled in.
-- [ ] Implementation notes written for any driver with a non-native fallback.
+Implementation notes carried into Phase 1:
+- **Adapter result normalization** — MySQL/PG share `Bun.sql`; build a single helper that maps the `Bun.sql` array+meta shape into `DbClientQueryResult` (column inference comes from the first row; `affectedRows`/`lastInsertRowid` from the array properties).
+- **MongoDB connection builder** — when the user enters `username`/`password` without explicit options, the adapter must auto-append `authSource=admin` (or expose it as a default in `options_json`).
+- **SSH tunnel module** — implement `openSshTunnel(ssh, remoteHost, remotePort)` as: (a) `ssh2.Client.connect`, (b) `net.createServer` on an ephemeral port that calls `client.forwardOut(...)` per accepted socket and pipes both directions, (c) `close()` shuts down the local listener and ends the ssh client. Pattern verified in `test-ssh-mysql.ts`.
+- **Private key field UX** — the connection form should warn when a pasted PEM looks like PKCS8 ed25519 (header `BEGIN PRIVATE KEY` + small body); recommend `ssh-keygen -p -m PEM` or pasting the OpenSSH original.
+
+- [x] All 6 rows filled in.
+- [x] Implementation notes written for any driver with a non-native fallback.
 - [ ] **STOP for user review.**
 
 ---
