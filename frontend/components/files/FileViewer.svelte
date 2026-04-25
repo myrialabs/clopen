@@ -13,6 +13,9 @@
 	import type { IconName } from '$shared/types/ui/icons';
 	import type { editor } from 'monaco-editor';
 	import { debug } from '$shared/utils/logger';
+	import ws from '$frontend/utils/ws';
+	import { computeLineDiff } from '$frontend/utils/line-diff';
+	import { gitStatusState } from '$frontend/stores/features/git-status.svelte';
 
 	// Interface untuk MonacoCodeEditor component
 	interface MonacoEditorComponent {
@@ -24,6 +27,9 @@
 		detectLanguageFromFilename: (filename: string) => string;
 		focus: () => void;
 		layout: () => void;
+		getScrollTop: () => number;
+		setScrollTop: (top: number) => void;
+		onDidScrollChange: (cb: (top: number) => void) => () => void;
 	}
 
 	interface Props {
@@ -42,6 +48,9 @@
 		onForceReload?: () => void;
 		isBinary?: boolean;
 		projectPath?: string;
+		projectId?: string;
+		editorScrollTop?: number;
+		onEditorScroll?: (scrollTop: number) => void;
 	}
 
 	const {
@@ -59,7 +68,10 @@
 		externallyChanged = false,
 		onForceReload,
 		isBinary = false,
-		projectPath = ''
+		projectPath = '',
+		projectId = '',
+		editorScrollTop = 0,
+		onEditorScroll
 	}: Props = $props();
 
 	// Relative path for display
@@ -91,6 +103,14 @@
 	// Line highlighting state
 	let currentDecorations: string[] = $state([]);
 
+	// Git gutter decorations + HEAD content cache
+	let gutterDecorations: string[] = [];
+	let headContent = $state<string | null>(null);
+	let headContentForPath = '';
+	let pendingScrollRestore: number | null = null;
+	let scrollListenerDispose: (() => void) | null = null;
+	let gutterUpdateTimer: ReturnType<typeof setTimeout> | null = null;
+
 	// SVG view mode
 	let svgViewMode = $state<'visual' | 'code'>('visual');
 
@@ -109,6 +129,9 @@
 
 		return () => {
 			window.removeEventListener('keydown', handleKeyDown);
+			if (gutterUpdateTimer) clearTimeout(gutterUpdateTimer);
+			scrollListenerDispose?.();
+			scrollListenerDispose = null;
 		};
 	});
 
@@ -118,10 +141,12 @@
 	// Sync editable content when file or content changes (not when user types)
 	let lastSyncedContent = '';
 	let lastSyncedFilePath = '';
+	let scrollRestoredForPath = '';
 	$effect(() => {
 		const currentFilePath = file?.path || '';
 		// Force sync when file changes OR when content changes
 		if (content !== lastSyncedContent || currentFilePath !== lastSyncedFilePath) {
+			const isFileSwitch = currentFilePath !== lastSyncedFilePath;
 			lastSyncedContent = content;
 			lastSyncedFilePath = currentFilePath;
 			editableContent = content;
@@ -133,13 +158,160 @@
 			if (editor && editor.getValue() !== content) {
 				editor.setValue(content);
 			}
+
+			// On file switch, mark this file's scroll position as needing restore.
+			if (isFileSwitch) {
+				scrollRestoredForPath = '';
+			}
+
+			// Apply scroll restore once content is non-empty and we haven't
+			// applied yet for this file. Restoring on an empty editor is a no-op
+			// because Monaco's scrollHeight is zero before lines render.
+			if (
+				currentFilePath &&
+				currentFilePath !== scrollRestoredForPath &&
+				content &&
+				editorScrollTop > 0
+			) {
+				scrollRestoredForPath = currentFilePath;
+				const target = editorScrollTop;
+				requestAnimationFrame(() => {
+					requestAnimationFrame(() => {
+						monacoEditorRef?.setScrollTop(target);
+					});
+				});
+			} else if (currentFilePath && currentFilePath !== scrollRestoredForPath && editorScrollTop === 0 && content) {
+				// Nothing to restore but mark as resolved so subsequent typing
+				// doesn't re-trigger the check
+				scrollRestoredForPath = currentFilePath;
+			}
+
+			// Refresh gutter on content sync (debounced)
+			scheduleGutterUpdate();
 		}
 	});
+
+	// Fetch HEAD content for the active file (used by the git gutter diff)
+	$effect(() => {
+		const path = file?.path || '';
+		if (!path || !projectId) {
+			headContent = null;
+			headContentForPath = '';
+			return;
+		}
+		if (path === headContentForPath) return;
+		headContentForPath = path;
+		headContent = null;
+
+		// Only fetch when git is tracking this file
+		if (!gitStatusState.isRepo) return;
+
+		ws.http('files:read-file-at', { projectId, filePath: path, ref: 'HEAD' })
+			.then((res) => {
+				if (file?.path !== path) return; // file changed mid-flight
+				headContent = res.content;
+				scheduleGutterUpdate();
+			})
+			.catch(() => {
+				if (file?.path !== path) return;
+				headContent = null;
+			});
+	});
+
+	// Recompute gutter when git status (i.e. HEAD reference) changes — this
+	// triggers when the user commits, stages, or otherwise mutates the working tree
+	$effect(() => {
+		// Track gitStatusState identity so the effect re-runs on refresh
+		void gitStatusState.map;
+		void gitStatusState.isRepo;
+		// Force re-fetch of HEAD next render cycle by clearing the cache key
+		const path = file?.path || '';
+		if (path && headContentForPath === path && projectId) {
+			ws.http('files:read-file-at', { projectId, filePath: path, ref: 'HEAD' })
+				.then((res) => {
+					if (file?.path !== path) return;
+					headContent = res.content;
+					scheduleGutterUpdate();
+				})
+				.catch(() => {});
+		}
+	});
+
+	function scheduleGutterUpdate() {
+		if (gutterUpdateTimer) clearTimeout(gutterUpdateTimer);
+		gutterUpdateTimer = setTimeout(() => {
+			gutterUpdateTimer = null;
+			updateGutterDecorations();
+		}, 200);
+	}
+
+	function updateGutterDecorations() {
+		const editor = monacoEditorRef?.getEditor();
+		if (!editor) return;
+
+		// No HEAD content (untracked, missing repo) — clear any existing gutter
+		if (headContent === null || headContent === undefined) {
+			gutterDecorations = editor.deltaDecorations(gutterDecorations, []);
+			return;
+		}
+
+		const changes = computeLineDiff(headContent, editableContent);
+		const newDecorations = changes.map((change) => ({
+			range: {
+				startLineNumber: change.startLine,
+				startColumn: 1,
+				endLineNumber: change.endLine,
+				endColumn: 1
+			},
+			options: {
+				isWholeLine: false,
+				linesDecorationsClassName:
+					change.type === 'added'
+						? 'git-gutter-added'
+						: change.type === 'modified'
+							? 'git-gutter-modified'
+							: 'git-gutter-deleted'
+			}
+		}));
+		gutterDecorations = editor.deltaDecorations(gutterDecorations, newDecorations);
+	}
+
+	// Called by MonacoCodeEditor once the editor instance is fully constructed.
+	// Re-runs after every theme remount, so re-attach the scroll listener and
+	// re-apply gutter decorations + pending scroll restore each time.
+	function handleEditorMount(editorInstance: editor.IStandaloneCodeEditor) {
+		scrollListenerDispose?.();
+		const disposable = editorInstance.onDidScrollChange((e) => {
+			if (e.scrollTopChanged) onEditorScroll?.(e.scrollTop);
+		});
+		scrollListenerDispose = () => disposable.dispose();
+
+		// Reset decoration ids — the prior editor instance is gone so its ids
+		// are no longer valid.
+		gutterDecorations = [];
+
+		// Restore pending scroll if applicable
+		if (pendingScrollRestore !== null) {
+			const top = pendingScrollRestore;
+			pendingScrollRestore = null;
+			requestAnimationFrame(() => editorInstance.setScrollTop(top));
+		} else if (editorScrollTop > 0) {
+			requestAnimationFrame(() => editorInstance.setScrollTop(editorScrollTop));
+		}
+
+		scheduleGutterUpdate();
+	}
 
 	// Handle content changes from editor
 	function handleContentChange(newContent: string) {
 		hasChanges = newContent !== referenceContent;
 		onContentChange?.(newContent);
+		scheduleGutterUpdate();
+	}
+
+	// Expose scroll position to parent (FilesPanel snapshots it on tab switches)
+	export function getEditorScrollTop(): number {
+		return monacoEditorRef?.getScrollTop?.() ?? 0;
 	}
 
 	// Update Monaco word wrap when prop changes
@@ -434,6 +606,7 @@
 									path={file.path}
 									readonly={false}
 									onChange={handleContentChange}
+									onEditorMount={handleEditorMount}
 									options={{
 										minimap: { enabled: false },
 										wordWrap: 'off',
@@ -485,6 +658,7 @@
 							path={file.path}
 							readonly={false}
 							onChange={handleContentChange}
+							onEditorMount={handleEditorMount}
 							options={{
 								minimap: { enabled: false },
 								wordWrap: wordWrap ? 'on' : 'off',
@@ -515,6 +689,25 @@
 {/if}
 
 <style>
+	/* Git gutter decorations — thin colored bars in the line-numbers margin */
+	:global(.git-gutter-added) {
+		background-color: #10b981;
+		width: 3px !important;
+		margin-left: 3px;
+	}
+	:global(.git-gutter-modified) {
+		background-color: #f59e0b;
+		width: 3px !important;
+		margin-left: 3px;
+	}
+	:global(.git-gutter-deleted) {
+		width: 0 !important;
+		margin-left: 3px;
+		border-top: 4px solid #ef4444;
+		border-right: 4px solid transparent;
+		height: 0 !important;
+	}
+
 	:global(.line-highlight) {
 		background-color: rgba(255, 235, 59, 0.3) !important;
 		animation: fade-out 3s ease-out forwards;

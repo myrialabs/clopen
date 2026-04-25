@@ -18,6 +18,9 @@ import {
 	readFileContents
 } from '../../files/file-reading';
 import { handlePathBrowsing } from '../../files/path-browsing';
+import { gitService } from '../../git/git-service';
+import { projectQueries } from '../../database/queries/project-queries';
+import { isAbsolute, relative } from 'node:path';
 
 // Bun-compatible existsSync implementation
 async function existsSync(path: string): Promise<boolean> {
@@ -152,6 +155,35 @@ export const readHandler = createRouter()
 	}, async ({ data }) => {
 		const result = await readFileContents(data.file_path);
 		return result;
+	})
+
+	// Read file content at a git ref (e.g. HEAD) for diff comparison
+	.http('files:read-file-at', {
+		data: t.Object({
+			projectId: t.String(),
+			filePath: t.String(),
+			ref: t.Optional(t.String())
+		}),
+		response: t.Object({
+			content: t.Union([t.String(), t.Null()]),
+			ref: t.String()
+		})
+	}, async ({ data }) => {
+		const project = projectQueries.getById(data.projectId);
+		if (!project) throw new Error('Project not found');
+
+		const ref = data.ref || 'HEAD';
+
+		// Make filePath relative to project root for `git show`
+		let relativePath = data.filePath;
+		if (isAbsolute(data.filePath)) {
+			relativePath = relative(project.path, data.filePath);
+		}
+		// Normalize path separators for git
+		relativePath = relativePath.replace(/\\/g, '/');
+
+		const content = await gitService.getFileAtRef(project.path, ref, relativePath);
+		return { content, ref };
 	})
 
 	// Read file content (binary - for images, etc.) as base64

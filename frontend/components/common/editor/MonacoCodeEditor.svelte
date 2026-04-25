@@ -281,6 +281,15 @@
 	};
 	export const focus = () => monacoEditor?.focus();
 	export const layout = () => monacoEditor?.layout();
+	export const getScrollTop = () => monacoEditor?.getScrollTop() ?? 0;
+	export const setScrollTop = (top: number) => monacoEditor?.setScrollTop(top);
+	export const onDidScrollChange = (cb: (top: number) => void) => {
+		if (!monacoEditor) return () => {};
+		const disposable = monacoEditor.onDidScrollChange((e) => {
+			if (e.scrollTopChanged) cb(e.scrollTop);
+		});
+		return () => disposable.dispose();
+	};
 </script>
 
 <div

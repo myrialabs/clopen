@@ -187,6 +187,18 @@ export class GitService {
 		return parseDiff(result.stdout);
 	}
 
+	/**
+	 * Read a file's content at a specific git ref (e.g. HEAD).
+	 * Returns null when the file does not exist at that ref (untracked / new file).
+	 */
+	async getFileAtRef(cwd: string, ref: string, filePath: string): Promise<string | null> {
+		const result = await execGit(['show', `${ref}:${filePath}`], cwd);
+		if (result.exitCode !== 0) {
+			return null;
+		}
+		return result.stdout;
+	}
+
 	// ============================================
 	// Branches
 	// ============================================

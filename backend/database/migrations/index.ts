@@ -28,6 +28,7 @@ import * as migration026 from './026_create_invite_tokens_table';
 import * as migration027 from './027_create_opencode_providers_table';
 import * as migration028 from './028_create_opencode_accounts_table';
 import * as migration029 from './029_migrate_messages_to_unified';
+import * as migration030 from './030_add_files_panel_state_to_user_projects';
 
 // Export all migrations in order
 export const migrations = [
@@ -204,6 +205,12 @@ export const migrations = [
 		description: migration029.description,
 		up: migration029.up,
 		down: migration029.down
+	},
+	{
+		id: '030',
+		description: migration030.description,
+		up: migration030.up,
+		down: migration030.down
 	}
 ];
 

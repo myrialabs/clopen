@@ -110,5 +110,28 @@ export const projectQueries = {
 			SET current_session_id = ?
 			WHERE user_id = ? AND project_id = ?
 		`).run(sessionId, userId, projectId);
+	},
+
+	getFilesPanelState(userId: string, projectId: string): string | null {
+		const db = getDatabase();
+		const result = db.prepare(`
+			SELECT files_panel_state FROM user_projects
+			WHERE user_id = ? AND project_id = ?
+		`).get(userId, projectId) as { files_panel_state: string | null } | null;
+		return result?.files_panel_state || null;
+	},
+
+	setFilesPanelState(userId: string, projectId: string, state: string | null): void {
+		const db = getDatabase();
+		const now = new Date().toISOString();
+		db.prepare(`
+			INSERT OR IGNORE INTO user_projects (user_id, project_id, joined_at)
+			VALUES (?, ?, ?)
+		`).run(userId, projectId, now);
+		db.prepare(`
+			UPDATE user_projects
+			SET files_panel_state = ?
+			WHERE user_id = ? AND project_id = ?
+		`).run(state, userId, projectId);
 	}
 };

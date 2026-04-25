@@ -1,6 +1,19 @@
 <script module lang="ts">
-	// Persistent state that survives component destruction (mobile/desktop switch)
-	const projectFileStates = new Map<string, any>();
+	// In-memory snapshot survives component destruction within the same SPA
+	// session (e.g. mobile/desktop layout switch). DB remains the source of
+	// truth for cross-device persistence.
+	const projectFileStates = new Map<string, PersistedPanelState>();
+
+	export interface PersistedPanelState {
+		v: number;
+		expandedFolders: string[]; // relative to projectPath
+		openTabs: { path: string; scrollTop: number }[]; // relative to projectPath
+		activeTabPath: string | null; // relative to projectPath
+		treeScrollTop: number;
+		viewMode: 'tree' | 'viewer';
+	}
+
+	const PANEL_STATE_VERSION = 1;
 </script>
 
 <script lang="ts">
@@ -19,6 +32,12 @@
 	import { getFileIcon } from '$frontend/utils/file-icon-mappings';
 	import type { IconName } from '$shared/types/ui/icons';
 	import { fileState, clearRevealRequest } from '$frontend/stores/core/files.svelte';
+	import {
+		gitStatusState,
+		initGitStatus,
+		refreshGitStatus,
+		syncGitStatusForProject
+	} from '$frontend/stores/features/git-status.svelte';
 
 	// Props
 	interface Props {
@@ -53,6 +72,7 @@
 		isLoading: boolean;
 		externallyChanged?: boolean;
 		isBinary?: boolean;
+		scrollTop: number;
 	}
 
 	let openTabs = $state<EditorTab[]>([]);
@@ -140,6 +160,7 @@
 
 	// projectFileStates is at module level to survive component destruction (mobile/desktop switch)
 	let lastProjectPath = $state<string>('');
+	let lastProjectId = $state<string>('');
 
 	// Container width detection for 2-column layout
 	let containerRef = $state<HTMLDivElement | null>(null);
@@ -148,45 +169,95 @@
 	let isResizing = $state(false);
 	const TWO_COLUMN_THRESHOLD = $derived(Math.round(600 * (settings.fontSize / 13)));
 
-	// FileTree ref
+	// FileTree ref + FileViewer ref (for editor scroll save/restore)
 	let fileTreeRef = $state<any>(null);
+	let fileViewerRef = $state<any>(null);
 	const isTwoColumnMode = $derived(containerWidth >= TWO_COLUMN_THRESHOLD);
 
 	// Tree state preservation
 	let treeScrollContainer = $state<HTMLElement | null>(null);
-	let savedScrollPosition = 0;
+	let treeScrollTop = $state(0);
+	let pendingTreeScrollRestore = $state<number | null>(null);
+	let panelStateLoaded = $state(false);
 
-	// Cache key for sessionStorage
-	const getCacheKey = (path: string) => `files_cache_${path}`;
-
-	function saveFilesToCache(path: string, files: FileNode[]) {
-		try {
-			const cacheData = { files, timestamp: Date.now() };
-			sessionStorage.setItem(getCacheKey(path), JSON.stringify(cacheData));
-		} catch (err) {
-			debug.error('file', 'Failed to save files cache:', err);
-		}
+	// Path conversion helpers
+	function toRelative(absolute: string): string {
+		if (!projectPath || !absolute) return absolute;
+		if (!absolute.startsWith(projectPath)) return absolute;
+		return absolute.slice(projectPath.length).replace(/^[/\\]/, '');
 	}
 
-	function loadFilesFromCache(path: string): FileNode[] | null {
-		try {
-			const cached = sessionStorage.getItem(getCacheKey(path));
-			if (!cached) return null;
-			const cacheData = JSON.parse(cached);
-			if (Date.now() - cacheData.timestamp > 3600000) {
-				sessionStorage.removeItem(getCacheKey(path));
-				return null;
-			}
-			const convertDates = (file: any): FileNode => ({
-				...file,
-				modified: new Date(file.modified),
-				children: file.children?.map(convertDates)
-			});
-			return cacheData.files.map(convertDates);
-		} catch (err) {
-			debug.error('file', 'Failed to load files cache:', err);
-			return null;
-		}
+	function toAbsolute(relative: string): string {
+		if (!projectPath || !relative) return relative;
+		const sep = projectPath.includes('\\') ? '\\' : '/';
+		const normalized = sep === '\\' ? relative.replace(/\//g, '\\') : relative.replace(/\\/g, '/');
+		return `${projectPath}${sep}${normalized}`;
+	}
+
+	function readActiveEditorScrollTop(): number {
+		const top = fileViewerRef?.getEditorScrollTop?.();
+		return typeof top === 'number' ? top : 0;
+	}
+
+	function snapshotActiveTabScroll() {
+		if (!activeTabPath) return;
+		const top = readActiveEditorScrollTop();
+		openTabs = openTabs.map(t =>
+			t.file.path === activeTabPath ? { ...t, scrollTop: top } : t
+		);
+	}
+
+	function buildPersistedStateFor(basePath: string): PersistedPanelState {
+		const sep = basePath.includes('\\') ? '\\' : '/';
+		const toRel = (absolute: string): string => {
+			if (!basePath || !absolute) return absolute;
+			if (!absolute.startsWith(basePath)) return absolute;
+			return absolute.slice(basePath.length).replace(/^[/\\]/, '');
+		};
+		// Read current scroll positions live (tree from DOM, editor from Monaco)
+		const liveTreeScroll = treeScrollContainer ? treeScrollContainer.scrollTop : treeScrollTop;
+		const liveEditorScroll = activeTabPath ? readActiveEditorScrollTop() : 0;
+		void sep; // separator implicit in toRel
+		return {
+			v: PANEL_STATE_VERSION,
+			expandedFolders: Array.from(expandedFolders).map(toRel),
+			openTabs: openTabs.map(t => ({
+				path: toRel(t.file.path),
+				scrollTop: t.file.path === activeTabPath ? liveEditorScroll : t.scrollTop
+			})),
+			activeTabPath: activeTabPath ? toRel(activeTabPath) : null,
+			treeScrollTop: liveTreeScroll,
+			viewMode: isTwoColumnMode
+				? (activeTabPath && openTabs.length > 0 ? 'viewer' : 'tree')
+				: viewMode
+		};
+	}
+
+	let panelStateSaveTimer: ReturnType<typeof setTimeout> | null = null;
+	function schedulePanelStateSave() {
+		if (!projectId || !panelStateLoaded) return;
+		if (panelStateSaveTimer) clearTimeout(panelStateSaveTimer);
+		panelStateSaveTimer = setTimeout(() => {
+			panelStateSaveTimer = null;
+			persistPanelStateNow();
+		}, 500);
+	}
+
+	function persistPanelStateNow() {
+		persistStateForProject(projectId, projectPath);
+	}
+
+	// Persist using explicit project refs — required when switching projects
+	// because $derived projectId/projectPath have already advanced to the new
+	// project by the time the change-effect fires.
+	function persistStateForProject(targetId: string, targetPath: string) {
+		if (!targetId || !targetPath) return;
+		const state = buildPersistedStateFor(targetPath);
+		projectFileStates.set(targetPath, state);
+		ws.http('files:set-panel-state', {
+			projectId: targetId,
+			state: JSON.stringify(state)
+		}).catch((err) => debug.error('file', 'Failed to persist panel state:', err));
 	}
 
 	// ============================
@@ -199,34 +270,25 @@
 			return;
 		}
 
-		if (isInitialLoad && !preserveState) {
-			const cachedFiles = loadFilesFromCache(projectPath);
-			if (cachedFiles) {
-				projectFiles = cachedFiles;
-				debug.log('file', 'Loaded files from cache, fetching fresh data...');
-				isLoading = false;
-			} else {
-				isLoading = true;
-			}
-		} else {
-			if (!preserveState) {
-				isLoading = true;
-			}
-		}
+		// Use the current expandedFolders set as the source for `expanded` —
+		// this works both for refreshes (preserveState=true) and for the
+		// initial load after restoring state from DB (expandedFolders has
+		// already been populated from PersistedPanelState).
+		const savedExpandedFolders = new Set(expandedFolders);
+		const savedTreeScrollTop = treeScrollContainer
+			? treeScrollContainer.scrollTop
+			: pendingTreeScrollRestore ?? treeScrollTop;
 
-		let savedExpandedFolders: Set<string> | null = null;
-		if (preserveState) {
-			savedExpandedFolders = new Set(expandedFolders);
-			if (treeScrollContainer) {
-				savedScrollPosition = treeScrollContainer.scrollTop;
-			}
+		if (!preserveState) {
+			isLoading = true;
 		}
-
 		error = '';
 
 		try {
-			const requestData: any = { project_path: projectPath };
-			if (preserveState && savedExpandedFolders && savedExpandedFolders.size > 0) {
+			const requestData: { project_path: string; expanded?: string } = {
+				project_path: projectPath
+			};
+			if (savedExpandedFolders.size > 0) {
 				requestData.expanded = Array.from(savedExpandedFolders).join(',');
 			}
 
@@ -250,19 +312,25 @@
 			const rootFile = convertToFileNode(data);
 			projectFiles = rootFile.type === 'directory' && rootFile.children ? rootFile.children : [rootFile];
 
-			saveFilesToCache(projectPath, projectFiles);
-
 			if (isInitialLoad) {
 				isInitialLoad = false;
 			}
 
-			if (preserveState && savedExpandedFolders) {
+			// Restore expanded folders set (in case any were trimmed during load)
+			if (savedExpandedFolders.size > 0) {
 				expandedFolders = savedExpandedFolders;
+			}
+
+			// Restore tree scroll after the DOM has rendered the (possibly deeper) tree
+			const targetScroll = preserveState ? savedTreeScrollTop : (pendingTreeScrollRestore ?? null);
+			if (targetScroll !== null) {
 				requestAnimationFrame(() => {
 					requestAnimationFrame(() => {
 						if (treeScrollContainer) {
-							treeScrollContainer.scrollTop = savedScrollPosition;
+							treeScrollContainer.scrollTop = targetScroll;
+							treeScrollTop = targetScroll;
 						}
+						pendingTreeScrollRestore = null;
 					});
 				});
 			}
@@ -317,12 +385,16 @@
 	function openFileInTab(file: FileNode, targetLine?: number) {
 		if (file.type === 'directory') return;
 
+		// Snapshot current active tab's editor scroll before switching
+		snapshotActiveTabScroll();
+
 		// Check if tab already exists
 		const existingTab = openTabs.find(t => t.file.path === file.path);
 		if (existingTab) {
 			activeTabPath = file.path;
 			displayTargetLine = targetLine;
 			if (!isTwoColumnMode) viewMode = 'viewer';
+			schedulePanelStateSave();
 			return;
 		}
 
@@ -331,7 +403,8 @@
 			file,
 			currentContent: '',
 			savedContent: '',
-			isLoading: true
+			isLoading: true,
+			scrollTop: 0
 		};
 		openTabs = [...openTabs, newTab];
 		activeTabPath = file.path;
@@ -340,6 +413,7 @@
 
 		// Load content
 		loadTabContent(file.path);
+		schedulePanelStateSave();
 	}
 
 	async function loadTabContent(filePath: string): Promise<boolean> {
@@ -374,6 +448,9 @@
 	}
 
 	function selectTab(path: string) {
+		// Snapshot current active tab's editor scroll before switching away
+		snapshotActiveTabScroll();
+
 		activeTabPath = path;
 		displayTargetLine = undefined;
 
@@ -386,6 +463,7 @@
 			displayLoading = tab.isLoading;
 			displayIsBinary = tab.isBinary || false;
 		}
+		schedulePanelStateSave();
 	}
 
 	// Scroll to active file in tree (without auto-expanding parent folders)
@@ -415,6 +493,10 @@
 		const idx = openTabs.findIndex(t => t.file.path === path);
 		if (idx === -1) return;
 
+		// Snapshot scroll of the tab being closed if it's active (in case the
+		// user reopens it later via reveal or recent files)
+		if (activeTabPath === path) snapshotActiveTabScroll();
+
 		openTabs = openTabs.filter(t => t.file.path !== path);
 
 		if (activeTabPath === path) {
@@ -427,6 +509,7 @@
 				if (!isTwoColumnMode) viewMode = 'tree';
 			}
 		}
+		schedulePanelStateSave();
 	}
 
 	function handleEditorContentChange(newContent: string) {
@@ -738,6 +821,7 @@
 			}
 		}
 		expandedFolders = new Set(expandedFolders);
+		schedulePanelStateSave();
 	}
 
 	function handleFileSelect(file: FileNode) {
@@ -905,48 +989,132 @@
 	// Effects
 	// ============================
 
-	// Load files when project changes
+	// Load files when project changes — restore persisted state first, then
+	// fetch tree with the correct `expanded` paths so children are populated.
 	$effect(() => {
-		if (hasActiveProject) {
-			// Save current project state before switching
-			if (lastProjectPath && lastProjectPath !== projectPath) {
-				projectFileStates.set(lastProjectPath, {
-					openTabs: [...openTabs],
-					activeTabPath,
-					expandedFolders: new Set(expandedFolders),
-					viewMode
-				});
-			}
+		const currentProjectId = projectId;
+		const currentProjectPath = projectPath;
 
-			if (lastProjectPath !== projectPath) {
-				isInitialLoad = true;
-			}
-
-			loadProjectFiles();
-
-			// Restore previous state for this project
-			if (projectPath) {
-				const savedState = projectFileStates.get(projectPath);
-				if (savedState) {
-					openTabs = savedState.openTabs;
-					activeTabPath = savedState.activeTabPath;
-					expandedFolders = savedState.expandedFolders;
-					viewMode = savedState.viewMode;
-				} else {
-					openTabs = [];
-					activeTabPath = null;
-					viewMode = 'tree';
-				}
-				lastProjectPath = projectPath;
-			}
-		} else {
+		if (!hasActiveProject) {
 			openTabs = [];
 			activeTabPath = null;
 			viewMode = 'tree';
 			lastProjectPath = '';
+			lastProjectId = '';
 			isInitialLoad = true;
+			panelStateLoaded = false;
+			return;
 		}
+
+		// Persist outgoing project's state (best effort) before switching —
+		// must use the OLD project's id/path because $derived projectPath has
+		// already advanced and openTabs still contain absolute paths under it.
+		if (lastProjectPath && lastProjectPath !== currentProjectPath) {
+			snapshotActiveTabScroll();
+			if (panelStateSaveTimer) {
+				clearTimeout(panelStateSaveTimer);
+				panelStateSaveTimer = null;
+			}
+			persistStateForProject(lastProjectId, lastProjectPath);
+		}
+
+		if (lastProjectPath !== currentProjectPath) {
+			isInitialLoad = true;
+			panelStateLoaded = false;
+			// Reset transient state — restore() will repopulate
+			openTabs = [];
+			activeTabPath = null;
+			expandedFolders = new Set();
+			viewMode = 'tree';
+		}
+
+		lastProjectPath = currentProjectPath;
+		lastProjectId = currentProjectId;
+
+		// Sync git status for the new project
+		syncGitStatusForProject();
+
+		// Restore from DB then load the tree
+		restoreAndLoad(currentProjectId, currentProjectPath);
 	});
+
+	async function restoreAndLoad(targetProjectId: string, targetProjectPath: string) {
+		// Try in-memory snapshot first (instant for same-session mobile/desktop switch)
+		const inMem = projectFileStates.get(targetProjectPath);
+		let restored = false;
+
+		if (inMem) {
+			applyPersistedState(inMem, targetProjectPath);
+			restored = true;
+		}
+
+		// Always fetch DB state too — it may be newer (cross-device, refresh)
+		try {
+			const result = await ws.http('files:get-panel-state', { projectId: targetProjectId });
+			if (projectId !== targetProjectId) return; // race: project changed mid-fetch
+			if (result?.state) {
+				try {
+					const parsed: PersistedPanelState = JSON.parse(result.state);
+					applyPersistedState(parsed, targetProjectPath);
+					restored = true;
+				} catch (err) {
+					debug.error('file', 'Failed to parse panel state JSON:', err);
+				}
+			}
+		} catch (err) {
+			debug.error('file', 'Failed to fetch panel state:', err);
+		}
+
+		// Mark as loaded BEFORE loadProjectFiles so any post-load saves are kept
+		panelStateLoaded = true;
+
+		await loadProjectFiles(restored);
+
+		// After tree load, hydrate tab content for any restored tabs that
+		// don't yet have content (their loadTabContent was triggered in
+		// applyPersistedState but may still be in flight)
+	}
+
+	function applyPersistedState(state: PersistedPanelState, basePath: string) {
+		const sep = basePath.includes('\\') ? '\\' : '/';
+		const toAbs = (rel: string) => {
+			const normalized = sep === '\\' ? rel.replace(/\//g, '\\') : rel.replace(/\\/g, '/');
+			return `${basePath}${sep}${normalized}`;
+		};
+
+		expandedFolders = new Set((state.expandedFolders || []).map(toAbs));
+		viewMode = state.viewMode || 'tree';
+		treeScrollTop = state.treeScrollTop || 0;
+		pendingTreeScrollRestore = treeScrollTop;
+
+		// Rebuild tabs as placeholders; loadTabContent will populate content
+		const restoredTabs: EditorTab[] = (state.openTabs || []).map((t) => {
+			const absPath = toAbs(t.path);
+			const fileName = absPath.split(/[\\/]/).pop() || 'Untitled';
+			return {
+				file: {
+					name: fileName,
+					path: absPath,
+					type: 'file',
+					size: 0,
+					modified: new Date()
+				},
+				currentContent: '',
+				savedContent: '',
+				isLoading: true,
+				scrollTop: t.scrollTop || 0
+			};
+		});
+		openTabs = restoredTabs;
+		activeTabPath = state.activeTabPath ? toAbs(state.activeTabPath) : null;
+
+		// Trigger content fetch for each restored tab; closeTab() if it fails
+		for (const tab of restoredTabs) {
+			loadTabContent(tab.file.path).then((ok) => {
+				if (!ok) closeTab(tab.file.path);
+			});
+		}
+	}
 
 	// Start/stop file watcher when project changes
 	$effect(() => {
@@ -1139,7 +1307,8 @@
 			file,
 			currentContent: '',
 			savedContent: '',
-			isLoading: true
+			isLoading: true,
+			scrollTop: 0
 		};
 		openTabs = [...openTabs, newTab];
 		activeTabPath = filePath;
@@ -1160,20 +1329,19 @@
 		scrollToActiveFile(filePath);
 	}
 
-	// Save state to persistent storage on component destruction (mobile/desktop switch)
+	// Save state on component destruction (mobile/desktop switch / panel close)
 	onDestroy(() => {
-		if (projectPath) {
-			// When in 2-column mode, compute correct viewMode for 1-column restoration
-			let savedViewMode = viewMode;
-			if (isTwoColumnMode) {
-				savedViewMode = (activeTabPath && openTabs.length > 0) ? 'viewer' : 'tree';
-			}
-			projectFileStates.set(projectPath, {
-				openTabs: [...openTabs],
-				activeTabPath,
-				expandedFolders: new Set(expandedFolders),
-				viewMode: savedViewMode
-			});
+		if (panelStateSaveTimer) {
+			clearTimeout(panelStateSaveTimer);
+			panelStateSaveTimer = null;
+		}
+		if (treeScrollSaveTimer) {
+			clearTimeout(treeScrollSaveTimer);
+			treeScrollSaveTimer = null;
+		}
+		if (projectPath && projectId) {
+			snapshotActiveTabScroll();
+			persistPanelStateNow();
 		}
 	});
 
@@ -1199,6 +1367,9 @@
 
 	// Monitor container width for responsive layout
 	onMount(() => {
+		// Subscribe git status to file change events (idempotent)
+		initGitStatus();
+
 		if (containerRef && typeof ResizeObserver !== 'undefined') {
 			const resizeObserver = new ResizeObserver((entries) => {
 				for (const entry of entries) {
@@ -1209,6 +1380,26 @@
 			return () => resizeObserver.disconnect();
 		}
 	});
+
+	// Tree scroll persistence — debounced on scroll, immediate on tab/etc
+	let treeScrollSaveTimer: ReturnType<typeof setTimeout> | null = null;
+	function handleTreeScroll() {
+		if (!treeScrollContainer) return;
+		treeScrollTop = treeScrollContainer.scrollTop;
+		if (treeScrollSaveTimer) clearTimeout(treeScrollSaveTimer);
+		treeScrollSaveTimer = setTimeout(() => {
+			treeScrollSaveTimer = null;
+			schedulePanelStateSave();
+		}, 750);
+	}
+
+	function handleEditorScroll(scrollTop: number) {
+		if (!activeTabPath) return;
+		// Mutate in place to avoid triggering re-render of the tab list
+		const tab = openTabs.find(t => t.file.path === activeTabPath);
+		if (tab) tab.scrollTop = scrollTop;
+		schedulePanelStateSave();
+	}
 
 	// ============================
 	// Panel Actions Export
@@ -1286,7 +1477,7 @@
 						: (viewMode === 'tree' ? 'w-full h-full overflow-hidden' : 'hidden')}
 					style={isTwoColumnMode ? `width: ${leftPanelWidth}px` : undefined}
 				>
-					<div class="h-full overflow-auto" bind:this={treeScrollContainer}>
+					<div class="h-full overflow-auto" bind:this={treeScrollContainer} onscroll={handleTreeScroll}>
 						<FileTree
 							bind:this={fileTreeRef}
 							files={projectFiles}
@@ -1303,6 +1494,8 @@
 							onNewFolderInRoot={createNewFolderInRoot}
 							onRefresh={refreshAll}
 							modifiedFiles={modifiedFilePaths}
+							gitStatusMap={gitStatusState.map}
+							gitFolderStatusMap={gitStatusState.folderMap}
 						/>
 					</div>
 				</div>
@@ -1331,6 +1524,7 @@
 					{@render tabBar()}
 					<div class="flex-1 overflow-hidden">
 						<FileViewer
+							bind:this={fileViewerRef}
 							file={displayFile}
 							content={displayContent}
 							savedContent={displaySavedContent}
@@ -1344,7 +1538,10 @@
 							externallyChanged={displayExternallyChanged}
 							onForceReload={forceReloadTab}
 							isBinary={displayIsBinary}
-						projectPath={projectPath}
+							projectPath={projectPath}
+							projectId={projectId}
+							editorScrollTop={activeTab?.scrollTop ?? 0}
+							onEditorScroll={handleEditorScroll}
 						/>
 					</div>
 				</div>

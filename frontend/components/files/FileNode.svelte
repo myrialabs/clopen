@@ -5,6 +5,7 @@
 	import type { IconName } from '$shared/types/ui/icons';
 	import { getFileIcon } from '$frontend/utils/file-icon-mappings';
 	import { getFolderIcon } from '$frontend/utils/folder-icon-mappings';
+	import { getGitStatusColor, getGitStatusBadgeLabel } from '$frontend/utils/git-status';
 	import { onMount } from 'svelte';
 
 	const {
@@ -21,7 +22,9 @@
 		expandedFolders,
 		hasClipboard = false,
 		modifiedFiles = new Set<string>(),
-		activeFilePath = null
+		activeFilePath = null,
+		gitStatusMap = new Map<string, string>(),
+		gitFolderStatusMap = new Map<string, string>()
 	}: {
 		file: FileNodeType;
 		isSelected?: boolean;
@@ -37,6 +40,8 @@
 		hasClipboard?: boolean;
 		modifiedFiles?: Set<string>;
 		activeFilePath?: string | null;
+		gitStatusMap?: Map<string, string>;
+		gitFolderStatusMap?: Map<string, string>;
 	} = $props();
 
 	// Determine if this node is the active file
@@ -58,6 +63,19 @@
 	}
 	const showModifiedIndicator = $derived(
 		isModified || (file.type === 'directory' && hasModifiedDescendant(file, modifiedFiles))
+	);
+
+	// Git status code for this node — files lookup direct, folders use aggregated map
+	const gitStatusCode = $derived(
+		file.type === 'directory'
+			? gitFolderStatusMap.get(file.path) || ''
+			: gitStatusMap.get(file.path) || ''
+	);
+	const gitDotColor = $derived(
+		gitStatusCode ? getGitStatusColor(gitStatusCode).replace('text-', 'bg-') : ''
+	);
+	const gitDotTitle = $derived(
+		gitStatusCode ? getGitStatusBadgeLabel(gitStatusCode) : ''
 	);
 
 	let nodeElement: HTMLDivElement;
@@ -171,8 +189,21 @@
 	<!-- File/folder name -->
 	<span class="flex-1 text-sm font-medium text-slate-700 dark:text-slate-300 truncate min-w-0">
 		{file.name}
-		{#if showModifiedIndicator}
-			<span class="inline-flex w-1.5 h-1.5 rounded-full bg-amber-500 dark:bg-amber-600 ml-1"></span>
+		{#if showModifiedIndicator || gitStatusCode}
+			<span class="inline-flex items-center gap-0.5 ml-1 align-middle">
+				{#if showModifiedIndicator}
+					<span
+						class="w-1.5 h-1.5 rounded-full bg-amber-500 dark:bg-amber-600"
+						title="Unsaved changes"
+					></span>
+				{/if}
+				{#if gitStatusCode}
+					<span
+						class="w-1.5 h-1.5 rounded-full {gitDotColor}"
+						title={gitDotTitle}
+					></span>
+				{/if}
+			</span>
 		{/if}
 	</span>
 
@@ -322,6 +353,8 @@
 			{hasClipboard}
 			{modifiedFiles}
 			{activeFilePath}
+			{gitStatusMap}
+			{gitFolderStatusMap}
 		/>
 	{/each}
 {/if}

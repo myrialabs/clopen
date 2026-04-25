@@ -15,6 +15,7 @@ import { readHandler } from './read';
 import { writeHandler } from './write';
 import { fileSearchHandler } from './search';
 import { watchHandler } from './watch';
+import { filesStateHandler } from './state';
 
 export const filesRouter = createRouter()
 	// Read Operations (HTTP)
@@ -27,4 +28,7 @@ export const filesRouter = createRouter()
 	.merge(fileSearchHandler)
 
 	// Watch Operations (Events)
-	.merge(watchHandler);
+	.merge(watchHandler)
+
+	// Panel state (HTTP)
+	.merge(filesStateHandler);

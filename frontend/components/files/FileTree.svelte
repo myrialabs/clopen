@@ -30,6 +30,8 @@
 		onRefresh?: () => void;
 		modifiedFiles?: Set<string>;
 		activeFilePath?: string | null;
+		gitStatusMap?: Map<string, string>;
+		gitFolderStatusMap?: Map<string, string>;
 	}
 
 	let {
@@ -46,7 +48,9 @@
 		onFileOpen,
 		onRefresh,
 		modifiedFiles = new Set(),
-		activeFilePath = null
+		activeFilePath = null,
+		gitStatusMap = new Map(),
+		gitFolderStatusMap = new Map()
 	}: Props = $props();
 
 	// Create local state if expandedFolders is not provided
@@ -681,6 +685,8 @@
 							{hasClipboard}
 							{modifiedFiles}
 							{activeFilePath}
+							{gitStatusMap}
+							{gitFolderStatusMap}
 						/>
 					{/each}
 				</div>
