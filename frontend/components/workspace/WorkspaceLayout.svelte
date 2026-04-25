@@ -16,9 +16,8 @@
 	import DesktopLayout from './layout/DesktopLayout.svelte';
 	import MobileLayout from './layout/MobileLayout.svelte';
 	import LoadingScreen from '$frontend/components/common/feedback/LoadingScreen.svelte';
-	import ModalProvider from '$frontend/components/common/overlay/ModalProvider.svelte';
+	import ModalProvider from '$frontend/components/workspace/ModalProvider.svelte';
 	import SettingsModal from '$frontend/components/settings/SettingsModal.svelte';
-	import HistoryModal from '$frontend/components/history/HistoryModal.svelte';
 	import NotificationToast from '$frontend/components/common/feedback/NotificationToast.svelte';
 
 	// Services
@@ -39,13 +38,6 @@
 	// Responsive state
 	let isMobile = $state(false);
 	let windowWidth = $state(0);
-
-	// Chat History modal state
-	let showHistoryModal = $state(false);
-
-	function closeHistoryModal() {
-		showHistoryModal = false;
-	}
 
 	// Loading state
 	let loadingProgress = $state(0);
@@ -185,9 +177,6 @@
 
 <!-- Settings Modal -->
 <SettingsModal />
-
-<!-- History Modal -->
-<HistoryModal bind:isOpen={showHistoryModal} onClose={closeHistoryModal} />
 
 <!-- Toast Notifications -->
 {#if notificationStore.notifications.length > 0}
