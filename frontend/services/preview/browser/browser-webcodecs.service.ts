@@ -115,9 +115,14 @@ export class BrowserWebCodecsService {
 	private lastAudioBytesReceived = 0;
 	private lastStatsTime = 0;
 
-	// ICE servers - empty for local connections (both peers on same machine)
-	// STUN servers are unnecessary for localhost and add 100-500ms ICE gathering latency
-	private readonly iceServers: RTCIceServer[] = [];
+	// Public STUN lets the client discover its public IP via srflx candidates.
+	// Required when peers are on different machines/networks (e.g. clopen
+	// deployed to Railway/VPS with the client browser elsewhere). Host
+	// candidates still resolve first on same-machine setups.
+	private readonly iceServers: RTCIceServer[] = [
+		{ urls: 'stun:stun.l.google.com:19302' },
+		{ urls: 'stun:stun1.l.google.com:19302' }
+	];
 
 	// Callbacks
 	private onConnectionChange: ((connected: boolean) => void) | null = null;

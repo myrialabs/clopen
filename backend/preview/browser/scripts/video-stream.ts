@@ -34,9 +34,15 @@ export function videoEncoderScript(config: StreamingConfig['video']) {
 	let lastCursor = 'default';
 	let cursorCheckInterval: any = null;
 
-	// ICE servers - empty for local connections (both peers on same machine)
-	// STUN servers are unnecessary for localhost and add 100-500ms ICE gathering latency
-	const iceServers: { urls: string }[] = [];
+	// Public STUN lets the headless browser discover its public IP via srflx
+	// candidates. Required when peers are on different machines/networks
+	// (e.g. clopen deployed to Railway/VPS with the client browser elsewhere).
+	// Host candidates still resolve first on same-machine setups, so the
+	// happy path is not slowed.
+	const iceServers: { urls: string }[] = [
+		{ urls: 'stun:stun.l.google.com:19302' },
+		{ urls: 'stun:stun1.l.google.com:19302' }
+	];
 
 	// Create a loopback (127.0.0.1) copy of a host ICE candidate.
 	// Ensures WebRTC connects via loopback when VPN (e.g. Cloudflare WARP)
