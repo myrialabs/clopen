@@ -157,3 +157,49 @@ export interface Branch {
 	head_message_id: string; // Points to the tip of this branch
 	created_at: string;
 }
+
+/**
+ * db-client connection row (raw SQLite shape).
+ * Mirrors columns in `db_client_connections` (migration 031).
+ */
+export interface DBDbClientConnectionRow {
+	id: string;
+	name: string;
+	driver: 'mysql' | 'postgres' | 'sqlite' | 'mongodb' | 'redis';
+	host: string | null;
+	port: number | null;
+	username: string | null;
+	password: string | null;
+	database: string | null;
+	ssl_mode: 'disable' | 'require' | 'verify-ca' | 'verify-full';
+	ssl_ca: string | null;
+	ssh_enabled: number;
+	ssh_host: string | null;
+	ssh_port: number | null;
+	ssh_username: string | null;
+	ssh_auth_method: 'password' | 'key';
+	ssh_password: string | null;
+	ssh_private_key: string | null;
+	ssh_passphrase: string | null;
+	options_json: string | null;
+	color: string | null;
+	created_at: string;
+	updated_at: string;
+	last_used_at: string | null;
+}
+
+/**
+ * db-client query history row (raw SQLite shape).
+ * Mirrors columns in `db_client_query_history` (migration 031).
+ */
+export interface DBDbClientQueryHistoryRow {
+	id: string;
+	connection_id: string;
+	user_id: string | null;
+	query: string;
+	duration_ms: number | null;
+	row_count: number | null;
+	status: 'success' | 'error';
+	error: string | null;
+	executed_at: string;
+}

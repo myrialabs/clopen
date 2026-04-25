@@ -16,6 +16,8 @@
 	import ViewMenu from '$frontend/components/workspace/ViewMenu.svelte';
 	import TunnelButton from '$frontend/components/tunnel/TunnelButton.svelte';
 	import TunnelModal from '$frontend/components/tunnel/TunnelModal.svelte';
+	import DbClientButton from '$frontend/components/db-client/DbClientButton.svelte';
+	import DbClientModal from '$frontend/components/db-client/DbClientModal.svelte';
 	import ProjectUserAvatars from '$frontend/components/common/display/ProjectUserAvatars.svelte';
 	import ws from '$frontend/utils/ws';
 
@@ -26,6 +28,7 @@
 	let projectToDelete = $state<Project | null>(null);
 	let searchQuery = $state('');
 	let showTunnelModal = $state(false);
+	let showDbClientModal = $state(false);
 	let hoveredProject = $state<Project | null>(null);
 	let tooltipY = $state(0);
 	let tooltipX = $state(0);
@@ -298,6 +301,7 @@
 			<footer class="flex flex-col p-3 border-t border-slate-200 dark:border-slate-800" in:fade={{ duration: 150 }}>
 				<ViewMenu />
 				<TunnelButton onClick={() => (showTunnelModal = true)} />
+				<DbClientButton onClick={() => (showDbClientModal = true)} />
 
 				<button
 					type="button"
@@ -355,6 +359,7 @@
 			<footer class="flex flex-col gap-2 py-3 px-2 border-t border-slate-200 dark:border-slate-800">
 				<ViewMenu collapsed={true} />
 				<TunnelButton collapsed={true} onClick={() => (showTunnelModal = true)} />
+				<DbClientButton collapsed={true} onClick={() => (showDbClientModal = true)} />
 
 				<button
 					type="button"
@@ -443,3 +448,6 @@
 
 <!-- Tunnel Modal -->
 <TunnelModal bind:isOpen={showTunnelModal} onClose={() => (showTunnelModal = false)} />
+
+<!-- DB Client Modal -->
+<DbClientModal bind:isOpen={showDbClientModal} onClose={() => (showDbClientModal = false)} />

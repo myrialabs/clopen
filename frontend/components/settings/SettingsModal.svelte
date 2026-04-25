@@ -126,7 +126,7 @@
 			>
 				{#if !isMobile}
 					<header
-						class="flex items-center justify-between py-5 px-4 pl-6.5 border-b border-slate-200 dark:border-slate-800"
+						class="flex items-center justify-between py-3 px-4 pl-6.5 border-b border-slate-200 dark:border-slate-800"
 					>
 						<div
 							class="flex items-center gap-2.5 text-lg font-bold text-slate-900 dark:text-slate-100"

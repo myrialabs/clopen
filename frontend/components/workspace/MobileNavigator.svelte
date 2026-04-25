@@ -8,6 +8,8 @@
 	import { addNotification } from '$frontend/stores/ui/notification.svelte';
 	import TunnelButton from '$frontend/components/tunnel/TunnelButton.svelte';
 	import TunnelModal from '$frontend/components/tunnel/TunnelModal.svelte';
+	import DbClientButton from '$frontend/components/db-client/DbClientButton.svelte';
+	import DbClientModal from '$frontend/components/db-client/DbClientModal.svelte';
 	import type { Project } from '$shared/types/database/schema';
 	import FolderBrowser from '$frontend/components/common/form/FolderBrowser.svelte';
 	import ProjectUserAvatars from '$frontend/components/common/display/ProjectUserAvatars.svelte';
@@ -16,6 +18,7 @@
 
 	// Modal states
 	let showTunnelModal = $state(false);
+	let showDbClientModal = $state(false);
 
 	// Project dropdown state
 	let showProjectMenu = $state(false);
@@ -156,6 +159,9 @@
 	>
 		<!-- Tunnel Button -->
 		<TunnelButton collapsed={true} onClick={() => (showTunnelModal = true)} mobile={true} />
+
+		<!-- DB Client Button -->
+		<DbClientButton collapsed={true} onClick={() => (showDbClientModal = true)} mobile={true} />
 
 		<!-- Settings Button -->
 		<button
@@ -382,3 +388,6 @@
 
 <!-- Tunnel Modal -->
 <TunnelModal bind:isOpen={showTunnelModal} onClose={() => (showTunnelModal = false)} />
+
+<!-- DB Client Modal -->
+<DbClientModal bind:isOpen={showDbClientModal} onClose={() => (showDbClientModal = false)} />

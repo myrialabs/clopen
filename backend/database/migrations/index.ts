@@ -29,6 +29,7 @@ import * as migration027 from './027_create_opencode_providers_table';
 import * as migration028 from './028_create_opencode_accounts_table';
 import * as migration029 from './029_migrate_messages_to_unified';
 import * as migration030 from './030_add_files_panel_state_to_user_projects';
+import * as migration031 from './031_create_db_client_tables';
 
 // Export all migrations in order
 export const migrations = [
@@ -211,6 +212,12 @@ export const migrations = [
 		description: migration030.description,
 		up: migration030.up,
 		down: migration030.down
+	},
+	{
+		id: '031',
+		description: migration031.description,
+		up: migration031.up,
+		down: migration031.down
 	}
 ];
 

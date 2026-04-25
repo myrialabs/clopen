@@ -73,6 +73,7 @@
     "@types/node": "^24.0.14",
     "@types/qrcode": "^1.5.6",
     "@types/random-useragent": "^0.3.3",
+    "@types/ssh2": "^1.15.5",
     "concurrently": "^9.2.1",
     "eslint": "^9.31.0",
     "eslint-plugin-svelte": "^3.10.1",
@@ -107,11 +108,13 @@
     "is-text-path": "^3.0.0",
     "marked": "^16.1.1",
     "monaco-editor": "^0.52.2",
+    "mongodb": "^7.2.0",
     "nanoid": "^5.1.6",
     "puppeteer": "^24.37.5",
     "puppeteer-extra": "^3.3.6",
     "puppeteer-extra-plugin-stealth": "^2.11.2",
     "qrcode": "^1.5.4",
+    "ssh2": "^1.17.0",
     "xz-decompress": "^0.2.3"
   },
   "trustedDependencies": [

@@ -677,7 +677,7 @@ Implementation notes carried into Phase 1:
 
 - [x] All 6 rows filled in.
 - [x] Implementation notes written for any driver with a non-native fallback.
-- [ ] **STOP for user review.**
+- [x] **STOP for user review.**
 
 ---
 
@@ -685,55 +685,55 @@ Implementation notes carried into Phase 1:
 
 Goal: persist connections (with SSH), test them, open empty 2-pane modal from navigator.
 
-#### 1.1 Migration + types + queries `[ ]`
-- [ ] `backend/database/migrations/030_create_db_client_tables.ts` (2 tables, §2).
-- [ ] Register in `backend/database/migrations/index.ts`.
-- [ ] `shared/types/db-client/{connection,query,index}.ts` (§3).
-- [ ] Row types for 2 new tables in `shared/types/database/schema.ts`.
-- [ ] `backend/database/queries/db-client-connection-queries.ts`: `list`, `get`, `create`, `update`, `delete`, `markUsed`.
-- [ ] `backend/database/queries/db-client-query-history-queries.ts`: `insert`, `list`, `deleteByConnection`, `deleteOne`.
-- [ ] Export from `backend/database/queries/index.ts`.
+#### 1.1 Migration + types + queries `[x]`
+- [x] `backend/database/migrations/031_create_db_client_tables.ts` (2 tables, §2). _(030 was already used by `030_add_files_panel_state_to_user_projects.ts`; renumbered to 031.)_
+- [x] Register in `backend/database/migrations/index.ts`.
+- [x] `shared/types/db-client/{connection,query,index}.ts` (§3).
+- [x] Row types for 2 new tables in `shared/types/database/schema.ts`.
+- [x] `backend/database/queries/db-client-connection-queries.ts`: `list`, `get`, `create`, `update`, `delete`, `markUsed`.
+- [x] `backend/database/queries/db-client-query-history-queries.ts`: `insert`, `list`, `deleteByConnection`, `deleteOne`.
+- [x] Export from `backend/database/queries/index.ts`.
 
-#### 1.2 SSH tunnel `[ ]`
-- [ ] `bun add <ssh-library-from-phase-0>`.
-- [ ] `backend/db-client/ssh-tunnel.ts` — `openSshTunnel(ssh, remoteHost, remotePort): Promise<SshTunnel>`.
-- [ ] Support `password` and `key` auth methods.
-- [ ] Cleanup: tunnel auto-closes when `SshTunnel.close()` called.
+#### 1.2 SSH tunnel `[x]`
+- [x] `bun add <ssh-library-from-phase-0>`. _(`ssh2@1.17.0`.)_
+- [x] `backend/db-client/ssh-tunnel.ts` — `openSshTunnel(ssh, remoteHost, remotePort): Promise<SshTunnel>`.
+- [x] Support `password` and `key` auth methods.
+- [x] Cleanup: tunnel auto-closes when `SshTunnel.close()` called.
 
-#### 1.3 Driver layer + connection manager `[ ]`
-- [ ] `bun add mongodb` + SSH library (if not above).
-- [ ] `backend/db-client/drivers/types.ts` — full `DbClientDriverAdapter` interface (§5.1).
-- [ ] `backend/db-client/drivers/mysql.ts` — connect/close/health/executeRead/executeWrite/explain (Phase 1 only; structure + data CRUD in Phase 2).
-- [ ] `backend/db-client/drivers/postgres.ts` — same.
-- [ ] `backend/db-client/drivers/sqlite.ts` — same.
-- [ ] `backend/db-client/drivers/mongodb.ts` — connect/close/health/ping/listCollections.
-- [ ] `backend/db-client/drivers/redis.ts` — connect/close/health/PING.
-- [ ] `backend/db-client/connection-manager.ts` — singleton, SSH tunnel lifecycle, lazy connect, idle sweep (10 min).
-- [ ] `backend/db-client/query-executor.ts` — `classifyQuery` + skeleton `runSafely` (auto-LIMIT 500 for read SELECT).
+#### 1.3 Driver layer + connection manager `[x]`
+- [x] `bun add mongodb` + SSH library (if not above).
+- [x] `backend/db-client/drivers/types.ts` — full `DbClientDriverAdapter` interface (§5.1).
+- [x] `backend/db-client/drivers/mysql.ts` — connect/close/health/executeRead/executeWrite/explain (Phase 1 only; structure + data CRUD in Phase 2).
+- [x] `backend/db-client/drivers/postgres.ts` — same.
+- [x] `backend/db-client/drivers/sqlite.ts` — same.
+- [x] `backend/db-client/drivers/mongodb.ts` — connect/close/health/ping/listCollections.
+- [x] `backend/db-client/drivers/redis.ts` — connect/close/health/PING.
+- [x] `backend/db-client/connection-manager.ts` — singleton, SSH tunnel lifecycle, lazy connect, idle sweep (10 min).
+- [x] `backend/db-client/query-executor.ts` — `classifyQuery` + skeleton `runSafely` (auto-LIMIT 500 for read SELECT).
 
-#### 1.4 WS handlers — connections only `[ ]`
-- [ ] `backend/ws/db-client/connections.ts` — list/get/create/update/delete/test/health.
-- [ ] `backend/ws/db-client/index.ts` — router.
-- [ ] Register in `backend/ws/index.ts`.
+#### 1.4 WS handlers — connections only `[x]`
+- [x] `backend/ws/db-client/connections.ts` — list/get/create/update/delete/test/health.
+- [x] `backend/ws/db-client/index.ts` — router.
+- [x] Register in `backend/ws/index.ts`.
 
-#### 1.5 Frontend shell `[ ]`
-- [ ] `frontend/stores/features/db-client.svelte.ts` — connections CRUD + test (skeleton).
-- [ ] `frontend/components/db-client/DbClientButton.svelte` — icon `lucide:database`, badge = live connection count.
-- [ ] `frontend/components/db-client/DbClientModal.svelte` — `Modal.svelte` bare mode, `min(95vw,1400px)`, 2-pane placeholder.
-- [ ] `frontend/components/db-client/sidebar/ConnectionList.svelte`.
-- [ ] `frontend/components/db-client/sidebar/ConnectionForm.svelte` — driver-aware; default ports (decision #17); SSH section (collapsible, off by default); Test + Save buttons; shows `DbClientHealth` result inline.
-- [ ] `frontend/components/db-client/sidebar/ConnectionBadge.svelte` — driver icon + health dot.
-- [ ] `frontend/components/db-client/shared/DriverIcon.svelte`.
-- [ ] Wire button into `DesktopNavigator.svelte` (expanded + collapsed) and `MobileNavigator.svelte`.
+#### 1.5 Frontend shell `[x]`
+- [x] `frontend/stores/features/db-client.svelte.ts` — connections CRUD + test (skeleton).
+- [x] `frontend/components/db-client/DbClientButton.svelte` — icon `lucide:database`, badge = live connection count.
+- [x] `frontend/components/db-client/DbClientModal.svelte` — `Modal.svelte` bare mode, 2-pane placeholder. _(Width revised to `max-w-[90vw]` per user feedback; layout follows SettingsModal pattern with sidebar-only header and mobile menu toggle.)_
+- [x] `frontend/components/db-client/sidebar/ConnectionList.svelte`. _(Form replaces list while in create/edit mode rather than stacking below.)_
+- [x] `frontend/components/db-client/sidebar/ConnectionForm.svelte` — driver-aware; default ports (decision #17); SSH section (collapsible, off by default); Test + Save buttons; shows `DbClientHealth` result inline.
+- [x] `frontend/components/db-client/sidebar/ConnectionBadge.svelte` — driver icon + health dot.
+- [x] `frontend/components/db-client/shared/DriverIcon.svelte`.
+- [x] Wire button into `DesktopNavigator.svelte` (expanded + collapsed) and `MobileNavigator.svelte`.
 
-#### CHECKPOINT 1 `[ ]`
-- [ ] `bun run check` passes.
-- [ ] `bun run lint` passes.
-- [ ] Manual: button visible between TunnelButton and Settings (desktop + mobile + collapsed nav).
-- [ ] Manual: create one connection per driver — Test returns health (success or descriptive error).
-- [ ] Manual: create connection with SSH tunnel enabled — Test shows both SSH and DB status.
-- [ ] Manual: empty `database` field → health check still passes (no error for missing DB field).
-- [ ] **STOP for user review.**
+#### CHECKPOINT 1 `[x]`
+- [x] `bun run check` passes.
+- [x] `bun run lint` passes.
+- [x] Manual: button visible between TunnelButton and Settings (desktop + mobile + collapsed nav).
+- [x] Manual: create one connection per driver — Test returns health (success or descriptive error).
+- [x] Manual: create connection with SSH tunnel enabled — Test shows both SSH and DB status.
+- [x] Manual: empty `database` field → health check still passes (no error for missing DB field).
+- [x] **STOP for user review.**
 
 ---
 

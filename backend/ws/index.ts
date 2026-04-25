@@ -29,6 +29,7 @@ import { tunnelRouter } from './tunnel';
 import { gitRouter } from './git';
 import { engineRouter } from './engine';
 import { systemToolsRouter } from './system-tools';
+import { dbClientRouter } from './db-client';
 
 // ============================================
 // Main App Router - Merge All Module Routers
@@ -67,7 +68,10 @@ export const wsRouter = createRouter()
 	.merge(engineRouter)
 
 	// System Tools (install Git, Claude Code, OpenCode, Chrome binaries)
-	.merge(systemToolsRouter);
+	.merge(systemToolsRouter)
+
+	// DB Client (global database management)
+	.merge(dbClientRouter);
 
 // Export API type for frontend type-safe access
 export type WSAPI = typeof wsRouter['$api'];

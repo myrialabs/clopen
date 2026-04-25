@@ -35,6 +35,7 @@ export type LogLabel =
 	| 'settings'
 	| 'engine'
 	| 'tunnel'
+	| 'db-client'
 	
 	// User
 	| 'user'
