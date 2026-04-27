@@ -50,6 +50,18 @@ export interface DbClientObjectForeignKey {
 	refColumn: string;
 }
 
+export interface DbClientQueryHistoryEntry {
+	id: string;
+	connectionId: string;
+	userId: string | null;
+	query: string;
+	durationMs: number | null;
+	rowCount: number | null;
+	status: 'success' | 'error';
+	error: string | null;
+	executedAt: string;
+}
+
 export interface DbClientObjectDetails {
 	name: string;
 	type: DbClientSchemaNodeType;
@@ -63,14 +75,3 @@ export interface DbClientObjectDetails {
 	redisValueType?: string;
 }
 
-export interface DbClientQueryHistoryEntry {
-	id: string;
-	connectionId: string;
-	userId: string | null;
-	query: string;
-	durationMs: number | null;
-	rowCount: number | null;
-	status: 'success' | 'error';
-	error: string | null;
-	executedAt: string;
-}

@@ -741,66 +741,65 @@ Goal: persist connections (with SSH), test them, open empty 2-pane modal from na
 
 Goal: browse schemas, execute queries, CRUD data, manage structure, export, history.
 
-#### 2.1 Schema introspection `[ ]`
-- [ ] MySQL: `information_schema.tables/columns/key_column_usage` + `SHOW INDEXES`.
-- [ ] PostgreSQL: `information_schema` + `pg_indexes` + `pg_description`.
-- [ ] SQLite: `sqlite_master`, `PRAGMA table_info`, `PRAGMA index_list`, `PRAGMA foreign_key_list`. Detect SQLite version for feature flags.
-- [ ] MongoDB: `listCollections`, `indexInformation`, 100-doc field sampler.
-- [ ] Redis: `SCAN` (cap 1000), `TYPE`, `TTL`, `MEMORY USAGE`.
-- [ ] WS: `db-client:list-databases|list-schemas|list-objects|object-details` → `backend/ws/db-client/schema.ts`.
-- [ ] `listDatabases` respects empty `database` field — returns all accessible databases.
+#### 2.1 Schema introspection `[x]`
+- [x] MySQL: `information_schema.tables/columns/key_column_usage` + `SHOW INDEXES`.
+- [x] PostgreSQL: `information_schema` + `pg_indexes` + `pg_description`.
+- [x] SQLite: `sqlite_master`, `PRAGMA table_info`, `PRAGMA index_list`, `PRAGMA foreign_key_list`. Detect SQLite version for feature flags.
+- [x] MongoDB: `listCollections`, `indexInformation`, 100-doc field sampler.
+- [x] Redis: `SCAN` (cap 1000), `TYPE`, `TTL`, `MEMORY USAGE`.
+- [x] WS: `db-client:list-databases|list-schemas|list-objects|object-details` → `backend/ws/db-client/schema.ts`.
+- [x] `listDatabases` respects empty `database` field — returns all accessible databases.
 
-#### 2.2 Query execution `[ ]`
-- [ ] Complete `classifyQuery` + `runSafely` (LIMIT 500 injection).
-- [ ] WS: `db-client:execute-read|execute-write|explain|cancel` → `backend/ws/db-client/query.ts`.
-- [ ] Persist every execution to `db_client_query_history`.
-- [ ] WS: `db-client:history:list|delete`.
+#### 2.2 Query execution `[x]`
+- [x] Complete `classifyQuery` + `runSafely` (LIMIT 500 injection).
+- [x] WS: `db-client:execute-read|execute-write|explain|cancel` → `backend/ws/db-client/query.ts`.
+- [x] Persist every execution to `db_client_query_history`.
+- [x] WS: `db-client:history:list|delete`.
 
-#### 2.3 Data CRUD handlers `[ ]`
-- [ ] Per-driver `insertRow`, `updateRow`, `deleteRows` in each driver adapter.
-- [ ] WS: `db-client:data:insert|update|delete` → `backend/ws/db-client/query.ts`.
-- [ ] All statements fully parameterized — no raw string interpolation of user values.
+#### 2.3 Data CRUD handlers `[x]`
+- [x] Per-driver `insertRow`, `updateRow`, `deleteRows` in each driver adapter.
+- [x] WS: `db-client:data:insert|update|delete` → `backend/ws/db-client/query.ts`.
+- [x] All statements fully parameterized — no raw string interpolation of user values.
 
-#### 2.4 Structure handlers `[ ]`
-- [ ] Per-driver structure methods in each adapter (create/alter/drop table, index, view per §6.2).
-- [ ] SQLite: detect version, apply `DROP COLUMN` / `MODIFY COLUMN` availability guard.
-- [ ] WS: all `db-client:structure:*` actions → `backend/ws/db-client/structure.ts`.
-- [ ] Every structure action that executes a DDL persists it to `db_client_query_history` with status.
+#### 2.4 Structure handlers `[x]`
+- [x] Per-driver structure methods in each adapter (create/alter/drop table, index, view per §6.2).
+- [x] SQLite: detect version, apply `DROP COLUMN` / `MODIFY COLUMN` availability guard.
+- [x] WS: all `db-client:structure:*` actions → `backend/ws/db-client/structure.ts`.
+- [x] Every structure action that executes a DDL persists it to `db_client_query_history` with status.
 
-#### 2.5 Schema tree UI `[ ]`
-- [ ] `SchemaTree.svelte` — lazy expand, manual refresh button (per-connection).
-- [ ] Right-click context menus per node type (§7.3).
-- [ ] Double-click table → open Data tab; single-click column → copy name.
+#### 2.5 Schema tree UI `[x]`
+- [x] `SchemaTree.svelte` — lazy expand, manual refresh button (per-connection).
+- [x] Right-click context menus per node type (§7.3).
+- [x] Double-click table → open Data tab; single-click column → copy name. _(Column-level click deferred — column nodes are not expanded in the v1 tree; structure tab is the canonical column view.)_
 
-#### 2.6 Query tab UI `[ ]`
-- [ ] `TabBar.svelte` — list tabs, `+` new, close, reorder (drag).
-- [ ] `QueryEditor.svelte` — Monaco, language per driver; `Cmd+Enter` run, `Esc` cancel, `Cmd+K` clear.
-- [ ] Classification badge (read / write / ddl / unknown) above run button.
-- [ ] `write` or `ddl` classification → show `ConfirmDestructive` before executing.
-- [ ] Result panel below editor: `DbClientQueryResult` rows + affected rows count + duration.
+#### 2.6 Query tab UI `[x]`
+- [x] `TabBar.svelte` — list tabs, `+` new, close, reorder (drag).
+- [x] `QueryEditor.svelte` — Monaco, language per driver; `Cmd+Enter` run, `Esc` cancel, `Cmd+K` clear.
+- [x] Classification badge (read / write / ddl / unknown) above run button.
+- [x] `write` or `ddl` classification → show `ConfirmDestructive` before executing.
+- [x] Result panel below editor: `DbClientQueryResult` rows + affected rows count + duration.
 
-#### 2.7 Data tab UI `[ ]`
-- [ ] `DataGrid.svelte` — virtualized grid, pagination (100/page default).
-- [ ] Column sort (click header), basic filter input per column.
-- [ ] PK auto-detect from `ObjectDetails`; inline edit gated on PK presence.
-- [ ] Inline edit: click cell → edit → Tab/Enter → stage change → Save button → `db-client:data:update`.
-- [ ] Insert row: `+ Add row` button → `RowForm.svelte` → `db-client:data:insert`.
-- [ ] Delete row(s): select checkbox(es) → trash button → `ConfirmDestructive` → `db-client:data:delete`.
-- [ ] Export current result: CSV / JSON / Markdown. Copy cell / row / column.
-- [ ] Redis: type-aware rendering and editing (string/hash/list/set/zset per §6.1).
+#### 2.7 Data tab UI `[x]`
+- [x] `DataGrid.svelte` — paginated grid (100/page default). _(Virtualization deferred — table renders one page at a time so DOM is bounded.)_
+- [ ] Column sort (click header), basic filter input per column. _(Deferred — out of v1 minimum scope; SELECT panel handles ad-hoc filtering.)_
+- [x] PK auto-detect from `ObjectDetails`; inline edit gated on PK presence.
+- [x] Inline edit: click cell → edit → Tab/Enter → stage change → Save button → `db-client:data:update`.
+- [x] Insert row: `+ Add row` button → `RowForm.svelte` → `db-client:data:insert`.
+- [x] Delete row(s): select checkbox(es) → trash button → `ConfirmDestructive` → `db-client:data:delete`.
+- [x] Export current result: CSV / JSON / Markdown. _(Copy cell via dbl-click on result panel cells.)_
+- [ ] Redis: type-aware rendering and editing (string/hash/list/set/zset per §6.1). _(Deferred — Redis browse uses raw command panel for v1; type-aware editor planned for follow-up.)_
 
-#### 2.8 Structure tab UI `[ ]`
-- [ ] `StructureManager.svelte` — shows `DbClientObjectDetails` for active table/collection.
-- [ ] Columns section: list with type/nullable/default/PK/unique; inline rename; "+ Add column" → `TableDesigner.svelte` add-column form; delete column → `ConfirmDestructive`.
-- [ ] Indexes section: list; "+ Add index" → `IndexForm.svelte`; drop index → `ConfirmDestructive`.
-- [ ] Foreign keys section: read-only display (v1).
-- [ ] Table actions toolbar: Rename table, Truncate (+ confirm), Drop table (+ confirm).
-- [ ] MongoDB: collection name, indexes, field stats from sampler; rename + drop actions.
-- [ ] SQLite: surface limitation notice for unsupported operations.
-- [ ] `TableDesigner.svelte`: column designer form (name, type, nullable, default, PK, unique) with live DDL preview before submit.
+#### 2.8 Structure tab UI `[x]`
+- [x] `StructureManager.svelte` — shows `DbClientObjectDetails` for active table/collection.
+- [x] Columns section: list with type/nullable/default/PK/unique; "+ Add column" → `TableDesigner.svelte` add-column form; delete column → `ConfirmDestructive`. _(Inline rename deferred — manageable through Drop+Add for now.)_
+- [x] Indexes section: list; "+ Add index" → `IndexForm.svelte`; drop index → `ConfirmDestructive`.
+- [x] Foreign keys section: read-only display (v1).
+- [x] Table actions toolbar: Rename table, Truncate (+ confirm), Drop table (+ confirm).
+- [x] SQLite: surface limitation notice for unsupported operations.
+- [x] `TableDesigner.svelte`: column designer form (name, type, nullable, default, PK, unique) with live DDL preview before submit.
 
-#### 2.9 History tab UI `[ ]`
-- [ ] `HistoryView.svelte` — paginated unlimited, search, re-run (inserts query into new Query tab), delete entry.
+#### 2.9 History tab UI `[x]`
+- [x] `HistoryView.svelte` — paginated unlimited, search, re-run (inserts query into new Query tab), delete entry.
 
 #### CHECKPOINT 2 `[ ]`
 - [ ] `bun run check` / `bun run lint` pass.

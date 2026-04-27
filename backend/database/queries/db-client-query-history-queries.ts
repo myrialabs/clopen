@@ -55,7 +55,7 @@ export const dbClientQueryHistoryQueries = {
 		search?: string;
 	}): { items: DbClientQueryHistoryEntry[]; total: number } {
 		const db = getDatabase();
-		const limit = opts.limit ?? 100;
+		const limit = opts.limit ?? 50;
 		const offset = opts.offset ?? 0;
 		const search = opts.search?.trim();
 
@@ -94,5 +94,20 @@ export const dbClientQueryHistoryQueries = {
 	deleteOne(id: string): void {
 		const db = getDatabase();
 		db.prepare('DELETE FROM db_client_query_history WHERE id = ?').run(id);
+	},
+
+	prune(connectionId: string, keep: number): number {
+		const db = getDatabase();
+		const result = db.prepare(`
+			DELETE FROM db_client_query_history
+			WHERE connection_id = ?
+				AND id NOT IN (
+					SELECT id FROM db_client_query_history
+					WHERE connection_id = ?
+					ORDER BY executed_at DESC
+					LIMIT ?
+				)
+		`).run(connectionId, connectionId, keep) as { changes: number };
+		return result.changes;
 	}
 };

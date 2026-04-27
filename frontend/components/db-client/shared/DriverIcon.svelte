@@ -13,17 +13,17 @@
 	const ICONS: Record<DbDriver, IconName> = {
 		mysql: 'lucide:database',
 		postgres: 'lucide:database',
-		sqlite: 'lucide:database-zap',
-		mongodb: 'lucide:database-backup',
+		sqlite: 'lucide:database',
+		mongodb: 'lucide:database',
 		redis: 'lucide:server'
 	};
 
 	const COLORS: Record<DbDriver, string> = {
-		mysql: 'text-sky-500',
-		postgres: 'text-indigo-500',
-		sqlite: 'text-emerald-500',
-		mongodb: 'text-green-600',
-		redis: 'text-red-500'
+		mysql: 'text-slate-500 dark:text-slate-400',
+		postgres: 'text-slate-500 dark:text-slate-400',
+		sqlite: 'text-slate-500 dark:text-slate-400',
+		mongodb: 'text-slate-500 dark:text-slate-400',
+		redis: 'text-slate-500 dark:text-slate-400'
 	};
 </script>
 

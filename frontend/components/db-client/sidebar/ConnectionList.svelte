@@ -19,6 +19,10 @@
 	let mode = $state<Mode>({ kind: 'list' });
 	let searchQuery = $state('');
 
+	$effect(() => {
+		dbClientStore.setFormOpen(mode.kind !== 'list');
+	});
+
 	const connections = $derived(dbClientStore.connections);
 	const activeId = $derived(dbClientStore.activeConnectionId);
 	const health = $derived(dbClientStore.health);
@@ -59,18 +63,32 @@
 
 <div class="flex flex-col h-full min-h-0">
 	{#if mode.kind === 'list'}
-		<!-- Header -->
+		<!-- Unified header: title/search + add -->
 		<div
-			class="flex items-center justify-between px-3 py-2 border-b border-slate-200 dark:border-slate-800 shrink-0"
+			class="flex items-center gap-2 px-3 py-2 border-b border-slate-200 dark:border-slate-800 shrink-0"
 		>
-			<span
-				class="text-xs font-semibold uppercase tracking-wider text-slate-500 dark:text-slate-400"
-			>
-				Connections
-			</span>
+			{#if connections.length > 0}
+				<div
+					class="flex-1 flex items-center gap-2 px-2.5 py-1 bg-slate-100/80 dark:bg-slate-800/60 rounded-md"
+				>
+					<Icon name="lucide:search" class="w-3.5 h-3.5 text-slate-400" />
+					<input
+						type="text"
+						bind:value={searchQuery}
+						placeholder="Search connections…"
+						class="py-1 flex-1 bg-transparent border-none outline-none text-xs text-slate-900 dark:text-slate-100 placeholder:text-slate-400 min-w-0"
+					/>
+				</div>
+			{:else}
+				<span
+					class="flex-1 text-xs font-semibold uppercase tracking-wider text-slate-500 dark:text-slate-400"
+				>
+					Connections
+				</span>
+			{/if}
 			<button
 				type="button"
-				class="flex items-center justify-center w-6 h-6 rounded-md text-slate-500 hover:bg-violet-500/10 hover:text-violet-600 transition-colors"
+				class="flex items-center justify-center w-6 h-6 rounded-md text-slate-500 hover:bg-violet-500/10 hover:text-violet-600 transition-colors shrink-0"
 				onclick={startCreate}
 				aria-label="New connection"
 				title="New connection"
@@ -78,23 +96,6 @@
 				<Icon name="lucide:plus" class="w-4 h-4" />
 			</button>
 		</div>
-
-		<!-- Search -->
-		{#if connections.length > 0}
-			<div class="px-3 py-2 border-b border-slate-200 dark:border-slate-800 shrink-0">
-				<div
-					class="flex items-center gap-2 px-2.5 py-1.5 bg-slate-100/80 dark:bg-slate-800/60 rounded-md"
-				>
-					<Icon name="lucide:search" class="w-3.5 h-3.5 text-slate-400" />
-					<input
-						type="text"
-						bind:value={searchQuery}
-						placeholder="Search…"
-						class="flex-1 bg-transparent border-none outline-none text-xs text-slate-900 dark:text-slate-100 placeholder:text-slate-400"
-					/>
-				</div>
-			</div>
-		{/if}
 
 		<!-- List -->
 		<div class="flex-1 min-h-0 overflow-y-auto p-2 flex flex-col gap-1">

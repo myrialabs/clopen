@@ -1,12 +1,14 @@
 /**
- * db-client — query classification + safe-execute skeleton.
+ * db-client — query classification + safe-execute helpers.
  *
- * Phase 1 ships `classifyQuery` + a thin `runSafely` wrapper that
- * auto-applies `LIMIT 500` to bare SELECT/WITH statements. The full
- * cancellation + history persistence flow lands in Phase 2.
+ * `runSafely` applies auto-LIMIT 500 to bare SELECT/WITH reads.
  */
 
-import type { DbDriver } from '$shared/types/db-client';
+import type {
+	DbClientQueryResult,
+	DbDriver
+} from '$shared/types/db-client';
+import type { DbClientDriverAdapter } from './drivers/types';
 
 export type QueryClass = 'read' | 'write' | 'ddl' | 'unknown';
 
@@ -25,7 +27,6 @@ const REDIS_READ_CMDS = new Set([
 ]);
 
 function firstSqlKeyword(query: string): string {
-	// Strip leading whitespace, /* */ block comments, and -- line comments.
 	let i = 0;
 	while (i < query.length) {
 		const ch = query[i];
@@ -61,7 +62,22 @@ export function classifyQuery(driver: DbDriver, query: string): QueryClass {
 	}
 
 	if (driver === 'redis') {
-		const cmd = (query.trim().split(/\s+/)[0] ?? '').toUpperCase();
+		const trimmed = query.trim();
+		let cmd: string;
+		if (trimmed.startsWith('[')) {
+			try {
+				const parsed = JSON.parse(trimmed) as unknown;
+				if (Array.isArray(parsed) && parsed.length > 0) {
+					cmd = String(parsed[0]).toUpperCase();
+				} else {
+					return 'unknown';
+				}
+			} catch {
+				return 'unknown';
+			}
+		} else {
+			cmd = (trimmed.split(/\s+/)[0] ?? '').toUpperCase();
+		}
 		if (!cmd) return 'unknown';
 		return REDIS_READ_CMDS.has(cmd) ? 'read' : 'write';
 	}
@@ -76,8 +92,7 @@ export function classifyQuery(driver: DbDriver, query: string): QueryClass {
 
 /**
  * Append `LIMIT n` to a SELECT/WITH query that does not already specify
- * one. Conservative — leaves the query untouched if it isn't a plain
- * read or already contains a limit clause.
+ * one. Conservative — only touches plain SQL reads.
  */
 export function applyAutoLimit(query: string, limit = 500): string {
 	const trimmed = query.replace(/;\s*$/, '');
@@ -85,4 +100,27 @@ export function applyAutoLimit(query: string, limit = 500): string {
 	if (kw !== 'SELECT' && kw !== 'WITH') return query;
 	if (/\blimit\s+\d+/i.test(trimmed)) return query;
 	return `${trimmed} LIMIT ${limit}`;
+}
+
+interface RunSafelyInput {
+	driver: DbDriver;
+	adapter: DbClientDriverAdapter;
+	query: string;
+	params?: unknown[];
+	mode: 'read' | 'write';
+	database?: string;
+	limit?: number;
+}
+
+export async function runSafely(input: RunSafelyInput): Promise<DbClientQueryResult> {
+	const { adapter, driver, mode, params, database, limit } = input;
+	let query = input.query;
+
+	if (mode === 'read' && (driver === 'mysql' || driver === 'postgres' || driver === 'sqlite')) {
+		query = applyAutoLimit(query, limit ?? 500);
+	}
+
+	const fn = mode === 'read' ? adapter.executeRead : adapter.executeWrite;
+	if (!fn) throw new Error(`Driver ${driver} does not support ${mode}`);
+	return fn.call(adapter, query, params, { database });
 }

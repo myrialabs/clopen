@@ -1,12 +1,17 @@
 /**
  * db-client WebSocket router.
- *
- * Phase 1 ships connection CRUD + health.
- * Schema, query, structure, and data CRUD handlers land in Phase 2.
  */
 
 import { createRouter } from '$shared/utils/ws-server';
 import { connectionsHandler } from './connections';
+import { schemaHandler } from './schema';
+import { queryHandler } from './query';
+import { structureHandler } from './structure';
+import { ioHandler } from './io';
 
 export const dbClientRouter = createRouter()
-	.merge(connectionsHandler);
+	.merge(connectionsHandler)
+	.merge(schemaHandler)
+	.merge(queryHandler)
+	.merge(structureHandler)
+	.merge(ioHandler);

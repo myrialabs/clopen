@@ -94,11 +94,14 @@
 				}
 			: { enabled: false };
 
+		const resolvedHost = showHostFields ? (host.trim() || hostPlaceholder) : undefined;
+		const resolvedPort = showHostFields ? (port ?? DEFAULT_PORTS[driver] ?? undefined) : undefined;
+
 		return {
 			name: name.trim(),
 			driver,
-			host: showHostFields ? host.trim() || undefined : undefined,
-			port: showHostFields ? (port ?? undefined) : undefined,
+			host: resolvedHost,
+			port: resolvedPort,
 			username: username || undefined,
 			password: password || undefined,
 			database: database || undefined,

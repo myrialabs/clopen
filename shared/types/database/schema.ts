@@ -159,6 +159,22 @@ export interface Branch {
 }
 
 /**
+ * db-client query history row (raw SQLite shape).
+ * Mirrors columns in `db_client_query_history` (migration 031).
+ */
+export interface DBDbClientQueryHistoryRow {
+	id: string;
+	connection_id: string;
+	user_id: string | null;
+	query: string;
+	duration_ms: number | null;
+	row_count: number | null;
+	status: 'success' | 'error';
+	error: string | null;
+	executed_at: string;
+}
+
+/**
  * db-client connection row (raw SQLite shape).
  * Mirrors columns in `db_client_connections` (migration 031).
  */
@@ -188,18 +204,3 @@ export interface DBDbClientConnectionRow {
 	last_used_at: string | null;
 }
 
-/**
- * db-client query history row (raw SQLite shape).
- * Mirrors columns in `db_client_query_history` (migration 031).
- */
-export interface DBDbClientQueryHistoryRow {
-	id: string;
-	connection_id: string;
-	user_id: string | null;
-	query: string;
-	duration_ms: number | null;
-	row_count: number | null;
-	status: 'success' | 'error';
-	error: string | null;
-	executed_at: string;
-}
