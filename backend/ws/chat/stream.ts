@@ -103,7 +103,7 @@ export const streamHandler = createRouter()
 			projectPath: t.String(),
 			prompt: t.Any(), // UserMessage object
 			engine: t.Object({
-				type: t.Union([t.Literal('claude-code'), t.Literal('opencode')]),
+				type: t.Union([t.Literal('claude-code'), t.Literal('opencode'), t.Literal('copilot')]),
 				provider: t.String(),
 				model: t.Object({
 					id: t.String(),

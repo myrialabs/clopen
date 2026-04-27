@@ -8,7 +8,9 @@
 import { createRouter } from '$shared/utils/ws-server';
 import { claudeCodeEngineRouter } from './claude';
 import { openCodeEngineRouter } from './opencode';
+import { copilotEngineRouter } from './copilot';
 
 export const engineRouter = createRouter()
 	.merge(claudeCodeEngineRouter)
-	.merge(openCodeEngineRouter);
+	.merge(openCodeEngineRouter)
+	.merge(copilotEngineRouter);

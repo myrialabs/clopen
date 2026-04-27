@@ -23,6 +23,7 @@ const TOOL_UNION = t.Union([
 	t.Literal('git'),
 	t.Literal('claude'),
 	t.Literal('opencode'),
+	t.Literal('copilot'),
 	t.Literal('chrome'),
 	t.Literal('cloudflared')
 ]);

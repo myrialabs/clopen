@@ -10,39 +10,59 @@
 	import type { EngineType, EngineModel } from '$shared/types/unified';
 	import Icon from '$frontend/components/common/display/Icon.svelte';
 	import { claudeAccountsStore, type ClaudeAccountItem } from '$frontend/stores/features/claude-accounts.svelte';
+	import { copilotAccountsStore, type CopilotAccountItem } from '$frontend/stores/features/copilot-accounts.svelte';
 	import { opencodeProvidersStore, type OpenCodeProviderItem, type OpenCodeAccountItem } from '$frontend/stores/features/opencode-providers.svelte';
 	import ws from '$frontend/utils/ws';
 	import { debug } from '$shared/utils/logger';
 	import { formatProvider, formatTokens } from '$frontend/utils/format';
 
 	// ════════════════════════════════════════════
-	// Claude Accounts (reads from shared store)
+	// Single-account-list engines: Claude Code + Copilot
+	// (Both stores expose the same { accounts, fetch, refresh, set, reset } API,
+	// so a single picker UI handles both — engine-specific logic only diverges
+	// at the store reference resolved by `accountsForEngine`.)
 	// ════════════════════════════════════════════
 
-	const claudeAccounts = $derived(claudeAccountsStore.accounts);
+	type SimpleAccount = ClaudeAccountItem | CopilotAccountItem;
 
-	const currentAccount = $derived(
-		claudeAccounts.find(a => a.id === chatModelState.accountId) || null
+	const accountsForEngine = $derived<SimpleAccount[]>(
+		chatModelState.engine === 'claude-code'
+			? claudeAccountsStore.accounts
+			: chatModelState.engine === 'copilot'
+				? copilotAccountsStore.accounts
+				: []
 	);
 
-	const showAccountPicker = $derived(chatModelState.engine === 'claude-code');
-	const hasClaudeAccounts = $derived(claudeAccounts.length > 0);
+	const currentAccount = $derived(
+		accountsForEngine.find(a => a.id === chatModelState.accountId) || null
+	);
 
-	// Fetch accounts when engine switches to claude-code
+	const accountPickerLabel = $derived(
+		chatModelState.engine === 'copilot' ? 'Copilot Account' : 'Claude Account'
+	);
+
+	const showAccountPicker = $derived(
+		chatModelState.engine === 'claude-code' || chatModelState.engine === 'copilot'
+	);
+	const hasEngineAccounts = $derived(accountsForEngine.length > 0);
+
+	// Fetch accounts when engine switches into a single-account-list engine
 	$effect(() => {
 		const engine = chatModelState.engine;
 		if (engine === 'claude-code') {
 			claudeAccountsStore.fetch();
+		} else if (engine === 'copilot') {
+			copilotAccountsStore.fetch();
 		}
 	});
 
 	// Auto-select active account when no account is set and accounts are loaded
 	$effect(() => {
 		const engine = chatModelState.engine;
-		const accounts = claudeAccounts;
+		const accounts = accountsForEngine;
 		const currentId = chatModelState.accountId;
 
-		if (engine === 'claude-code' && accounts.length > 0) {
+		if ((engine === 'claude-code' || engine === 'copilot') && accounts.length > 0) {
 			untrack(() => {
 				// If no account set, or current account not found in list, use active account
 				const hasValidAccount = currentId !== null && accounts.some(a => a.id === currentId);
@@ -119,7 +139,7 @@
 		showAccountDropdown = false;
 	}
 
-	function selectAccount(account: ClaudeAccountItem) {
+	function selectAccount(account: SimpleAccount) {
 		chatModelState.accountId = account.id;
 		chatModelState.accountName = account.name;
 		closeAccountDropdown();
@@ -516,9 +536,9 @@
 		<Icon name="lucide:chevron-down" class="w-3 h-3" />
 	</button>
 
-	<!-- Account picker (always shown for Claude Code engine) -->
+	<!-- Account picker (Claude Code + Copilot — both use one-account-per-engine) -->
 	{#if showAccountPicker}
-		{#if hasClaudeAccounts}
+		{#if hasEngineAccounts}
 			<button
 				bind:this={accountTriggerButton}
 				type="button"
@@ -578,17 +598,17 @@
 	{/if}
 </div>
 
-<!-- Claude Account dropdown -->
+<!-- Account dropdown (Claude Code + Copilot) -->
 {#if showAccountDropdown}
 	<div class="fixed inset-0" style="z-index: 9998;" onclick={closeAccountDropdown}></div>
 
 	<div style={accountDropdownStyle} class="bg-white dark:bg-slate-800 border border-slate-200 dark:border-slate-700 rounded-lg shadow-xl overflow-hidden min-w-48 max-h-64 flex flex-col">
 		<div class="flex gap-1.5 px-3 py-2 border-b border-slate-200 dark:border-slate-700 flex-shrink-0">
 			<Icon name="lucide:user" class="w-3.5 h-3.5" />
-			<span class="text-xs font-medium text-slate-500 dark:text-slate-400 tracking-wide">Claude Account</span>
+			<span class="text-xs font-medium text-slate-500 dark:text-slate-400 tracking-wide">{accountPickerLabel}</span>
 		</div>
 		<div class="overflow-y-auto py-1">
-			{#each claudeAccounts as account (account.id)}
+			{#each accountsForEngine as account (account.id)}
 				{@const isSelected = chatModelState.accountId === account.id}
 				<button
 					type="button"

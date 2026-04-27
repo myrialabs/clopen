@@ -17,6 +17,7 @@
 import type { AIEngine, EngineType } from './types';
 import { ClaudeCodeEngine } from './adapters/claude';
 import { OpenCodeEngine, disposeOpenCodeClient } from './adapters/opencode';
+import { CopilotEngine } from './adapters/copilot';
 import { debug } from '$shared/utils/logger';
 
 // ============================================================================
@@ -29,6 +30,8 @@ function createEngine(type: EngineType): AIEngine {
 			return new ClaudeCodeEngine();
 		case 'opencode':
 			return new OpenCodeEngine();
+		case 'copilot':
+			return new CopilotEngine();
 		default:
 			throw new Error(`Unknown engine type: ${type}`);
 	}
@@ -171,6 +174,32 @@ export async function disposeProjectEngines(projectId: string): Promise<void> {
 		}
 		projectEngines.delete(projectId);
 	}
+}
+
+/**
+ * Dispose all instances of a given engine type across all projects, plus the
+ * global singleton. Call when an account/credential change requires every
+ * client to re-initialise (e.g. Copilot account switch).
+ */
+export async function disposeAllProjectEnginesByType(type: EngineType): Promise<void> {
+	for (const [projectId, engines] of projectEngines) {
+		const engine = engines.get(type);
+		if (engine) {
+			try {
+				await engine.dispose();
+				debug.log('engine', `Project engine disposed: ${type} for project ${projectId.slice(0, 8)}`);
+			} catch (error) {
+				debug.error('engine', `Error disposing project engine ${type} for ${projectId.slice(0, 8)}:`, error);
+			}
+			engines.delete(type);
+		}
+		if (engines.size === 0) {
+			projectEngines.delete(projectId);
+		}
+	}
+
+	// Also drop the global singleton so the next non-streaming op rebuilds it.
+	await disposeEngine(type);
 }
 
 /**

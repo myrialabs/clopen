@@ -6,6 +6,7 @@
 	import { ENGINES } from '$shared/constants/engines';
 	import { claudeAccountsStore, type ClaudeAccountItem } from '$frontend/stores/features/claude-accounts.svelte';
 	import { opencodeProvidersStore, type ModelsDevProviderItem } from '$frontend/stores/features/opencode-providers.svelte';
+	import { copilotAccountsStore, type CopilotAccountItem } from '$frontend/stores/features/copilot-accounts.svelte';
 	import Icon from '$frontend/components/common/display/Icon.svelte';
 	import SystemToolsSettings from '$frontend/components/settings/system-tools/SystemToolsSettings.svelte';
 	import ws from '$frontend/utils/ws';
@@ -217,12 +218,16 @@
 
 	let claudeStatus = $state<EngineStatus | null>(null);
 	let openCodeStatus = $state<EngineStatus | null>(null);
+	let copilotStatus = $state<EngineStatus | null>(null);
 	let isLoadingClaude = $state(false);
 	let isLoadingOpenCode = $state(false);
+	let isLoadingCopilot = $state(false);
 	const claudeAccounts = $derived(claudeAccountsStore.accounts);
+	const copilotAccounts = $derived(copilotAccountsStore.accounts);
 
 	const claudeEngine = ENGINES.find(e => e.type === 'claude-code')!;
 	const openCodeEngine = ENGINES.find(e => e.type === 'opencode')!;
+	const copilotEngine = ENGINES.find(e => e.type === 'copilot')!;
 
 	// Claude Code account setup flow
 	type ClaudeSetupStep = 'idle' | 'loading-url' | 'waiting-code' | 'submitting' | 'success' | 'error';
@@ -422,6 +427,87 @@
 		await opencodeProvidersStore.deleteAccount(accountId);
 	}
 
+	// Copilot account management (paste-token PAT)
+	let copilotAdding = $state(false);
+	let copilotAddName = $state('');
+	let copilotAddToken = $state('');
+	let copilotAddError = $state('');
+	let copilotAddLoading = $state(false);
+	let copilotRenamingId = $state<number | null>(null);
+	let copilotRenameValue = $state('');
+
+	function startCopilotAdd() {
+		copilotAdding = true;
+		copilotAddName = '';
+		copilotAddToken = '';
+		copilotAddError = '';
+	}
+
+	function cancelCopilotAdd() {
+		copilotAdding = false;
+		copilotAddName = '';
+		copilotAddToken = '';
+		copilotAddError = '';
+	}
+
+	async function submitCopilotAdd() {
+		if (!copilotAddName.trim() || !copilotAddToken.trim()) return;
+		copilotAddLoading = true;
+		copilotAddError = '';
+		try {
+			await ws.http('engine:copilot-accounts-add', {
+				name: copilotAddName.trim(),
+				token: copilotAddToken.trim()
+			});
+			await copilotAccountsStore.refresh();
+			cancelCopilotAdd();
+		} catch (error: any) {
+			copilotAddError = error?.message || 'Failed to add account';
+		} finally {
+			copilotAddLoading = false;
+		}
+	}
+
+	async function switchCopilotAccount(id: number) {
+		try {
+			await ws.http('engine:copilot-accounts-switch', { id });
+			await copilotAccountsStore.refresh();
+		} catch {
+			// Ignore
+		}
+	}
+
+	function startCopilotRename(account: CopilotAccountItem) {
+		copilotRenamingId = account.id;
+		copilotRenameValue = account.name;
+	}
+
+	async function submitCopilotRename() {
+		if (copilotRenamingId === null || !copilotRenameValue.trim()) return;
+		try {
+			await ws.http('engine:copilot-accounts-rename', { id: copilotRenamingId, name: copilotRenameValue.trim() });
+			copilotRenamingId = null;
+			copilotRenameValue = '';
+			await copilotAccountsStore.refresh();
+		} catch {
+			// Ignore
+		}
+	}
+
+	function cancelCopilotRename() {
+		copilotRenamingId = null;
+		copilotRenameValue = '';
+	}
+
+	async function deleteCopilotAccount(id: number) {
+		try {
+			await ws.http('engine:copilot-accounts-delete', { id });
+			await copilotAccountsStore.refresh();
+		} catch {
+			// Ignore
+		}
+	}
+
 	const ocFilteredCatalog = $derived.by(() => {
 		const configuredIds = new Set(ocProviders.map(p => p.slug));
 		let filtered = ocCatalog.filter(c => !configuredIds.has(c.id));
@@ -505,6 +591,7 @@
 	async function checkEngines() {
 		checkClaudeEngine();
 		checkOpenCodeEngine();
+		checkCopilotEngine();
 	}
 
 	async function checkClaudeEngine() {
@@ -540,6 +627,20 @@
 		isLoadingOpenCode = false;
 	}
 
+	async function checkCopilotEngine() {
+		isLoadingCopilot = true;
+		try {
+			const copilot = await ws.http('engine:copilot-status', {}).catch(() => null);
+			copilotStatus = copilot;
+			if (copilot?.installed) {
+				await copilotAccountsStore.refresh();
+			}
+		} catch {
+			// Ignore
+		}
+		isLoadingCopilot = false;
+	}
+
 	// Load engines when reaching that step
 	$effect(() => {
 		if (currentStep === 'engines' && !claudeStatus && !isLoadingClaude) {
@@ -550,6 +651,12 @@
 	$effect(() => {
 		if (currentStep === 'engines' && !openCodeStatus && !isLoadingOpenCode) {
 			checkOpenCodeEngine();
+		}
+	});
+
+	$effect(() => {
+		if (currentStep === 'engines' && !copilotStatus && !isLoadingCopilot) {
+			checkCopilotEngine();
 		}
 	});
 
@@ -1305,11 +1412,153 @@
 							{/if}
 						</div>
 
+						<!-- Copilot -->
+						<div class="text-left p-4 rounded-xl border border-slate-200 dark:border-slate-700/50 bg-white dark:bg-slate-800/50">
+							<div class="flex items-center gap-2.5 mb-2">
+								<div class="flex items-center justify-center [&>svg]:w-5 [&>svg]:h-5">
+									{@html isDarkMode() ? copilotEngine.icon.dark : copilotEngine.icon.light}
+								</div>
+								<span class="text-sm font-semibold text-slate-900 dark:text-slate-100">{copilotEngine.name}</span>
+							</div>
+							<p class="text-xs text-slate-500 dark:text-slate-400">{copilotEngine.description}</p>
+
+							{#if isLoadingCopilot}
+								<div class="flex items-center justify-center py-6">
+									<Icon name="lucide:loader" class="w-5 h-5 animate-spin text-slate-400" />
+								</div>
+							{:else if copilotStatus?.installed}
+								<!-- Account Management -->
+								<div class="mt-3 pt-3 border-t border-slate-200 dark:border-slate-700/50 space-y-2.5">
+									<div class="flex items-center justify-between">
+										<span class="text-xs font-semibold text-slate-600 dark:text-slate-400">Accounts</span>
+										<span class="text-2xs text-slate-400">{copilotAccounts.length} account{copilotAccounts.length !== 1 ? 's' : ''}</span>
+									</div>
+
+									{#if copilotAccounts.length > 0}
+										<div class="space-y-1.5">
+											{#each copilotAccounts as account (account.id)}
+												<div class="flex items-center justify-between px-3 py-2 rounded-lg bg-slate-50 dark:bg-slate-800/80 border border-slate-200 dark:border-slate-700/50 {account.isActive ? 'ring-1 ring-violet-500/30' : ''}">
+													<div class="w-full flex items-center gap-2 min-w-0">
+														<Icon name="lucide:key" class="w-3.5 h-3.5 shrink-0 text-slate-400" />
+														{#if copilotRenamingId === account.id}
+															<div class="w-full flex items-center gap-2">
+																<input
+																	type="text"
+																	bind:value={copilotRenameValue}
+																	class="w-full px-2 py-0.5 text-xs rounded border border-slate-300 dark:border-slate-600 bg-white dark:bg-slate-700 text-slate-900 dark:text-slate-100 focus:outline-none focus:ring-1 focus:ring-violet-500"
+																/>
+																<div class="flex items-center gap-0.5">
+																	<button type="button" class="flex p-1 rounded-md text-slate-400 hover:text-green-600 hover:bg-green-50 dark:hover:bg-green-900/20 transition-colors" onclick={submitCopilotRename} aria-label="Save">
+																		<Icon name="lucide:check" class="w-3 h-3" />
+																	</button>
+																	<button type="button" class="flex p-1 rounded-md text-slate-400 hover:text-red-600 hover:bg-red-50 dark:hover:bg-red-900/20 transition-colors" onclick={cancelCopilotRename} aria-label="Cancel">
+																		<Icon name="lucide:x" class="w-3 h-3" />
+																	</button>
+																</div>
+															</div>
+														{:else}
+															<span class="text-xs font-medium text-slate-900 dark:text-slate-100 truncate">{account.name}</span>
+															{#if account.isActive}
+																<span class="inline-flex items-center px-1.5 py-0.5 rounded-full text-3xs font-semibold bg-violet-100 dark:bg-violet-900/30 text-violet-700 dark:text-violet-300">Active</span>
+															{/if}
+														{/if}
+													</div>
+													{#if copilotRenamingId !== account.id}
+														<div class="flex items-center gap-0.5">
+															{#if !account.isActive}
+																<button type="button" class="flex p-1 rounded-md text-slate-400 hover:text-violet-600 hover:bg-violet-50 dark:hover:bg-violet-900/20 transition-colors" onclick={() => switchCopilotAccount(account.id)} title="Switch to this account">
+																	<Icon name="lucide:arrow-right-left" class="w-3 h-3" />
+																</button>
+															{/if}
+															<button type="button" class="flex p-1 rounded-md text-slate-400 hover:text-blue-600 hover:bg-blue-50 dark:hover:bg-blue-900/20 transition-colors" onclick={() => startCopilotRename(account)} title="Rename">
+																<Icon name="lucide:pencil" class="w-3 h-3" />
+															</button>
+															<button type="button" class="flex p-1 rounded-md text-slate-400 hover:text-red-600 hover:bg-red-50 dark:hover:bg-red-900/20 transition-colors" onclick={() => deleteCopilotAccount(account.id)} title="Delete">
+																<Icon name="lucide:trash-2" class="w-3 h-3" />
+															</button>
+														</div>
+													{/if}
+												</div>
+											{/each}
+										</div>
+									{:else}
+										<p class="text-xs text-slate-400 italic">No accounts configured</p>
+									{/if}
+
+									<!-- Add Account Flow -->
+									{#if !copilotAdding}
+										<button
+											type="button"
+											class="flex items-center gap-1.5 justify-center w-full px-3 py-2 text-xs font-medium rounded-lg border border-dashed border-slate-300 dark:border-slate-600 text-slate-600 dark:text-slate-400 hover:border-violet-400 hover:text-violet-600 dark:hover:text-violet-400 transition-colors"
+											onclick={startCopilotAdd}
+										>
+											<Icon name="lucide:plus" class="w-3.5 h-3.5" />
+											Add Account
+										</button>
+									{:else}
+										<div class="space-y-2.5 p-3 rounded-lg border border-violet-200 dark:border-violet-800/50 bg-violet-50/50 dark:bg-violet-900/10">
+											<p class="text-xs text-slate-600 dark:text-slate-400">
+												Create a fine-grained Personal Access Token at
+												<a href="https://github.com/settings/personal-access-tokens/new" target="_blank" rel="noopener noreferrer" class="text-violet-600 dark:text-violet-400 hover:underline">github.com/settings/personal-access-tokens/new</a>
+												with the <span class="font-semibold">Copilot Requests</span> permission, then paste it below.
+											</p>
+
+											<div class="space-y-1.5">
+												<input
+													type="text"
+													bind:value={copilotAddName}
+													placeholder="Account name (e.g. Personal, Work)"
+													class="w-full px-2.5 py-1.5 text-xs rounded-lg border border-slate-300 dark:border-slate-600 bg-white dark:bg-slate-800 text-slate-900 dark:text-slate-100 placeholder:text-slate-400 focus:outline-none focus:ring-2 focus:ring-violet-500/40"
+												/>
+												<input
+													type="text"
+													bind:value={copilotAddToken}
+													placeholder="github_pat_..."
+													class="w-full px-2.5 py-1.5 text-xs rounded-lg border border-slate-300 dark:border-slate-600 bg-white dark:bg-slate-800 text-slate-900 dark:text-slate-100 placeholder:text-slate-400 focus:outline-none focus:ring-2 focus:ring-violet-500/40"
+												/>
+											</div>
+
+											{#if copilotAddError}
+												<div class="flex items-center gap-2 p-2 rounded-md bg-red-50 dark:bg-red-900/20 border border-red-200 dark:border-red-800/50">
+													<Icon name="lucide:circle-alert" class="w-3.5 h-3.5 shrink-0 text-red-600 dark:text-red-400" />
+													<span class="text-2xs text-red-700 dark:text-red-300">{copilotAddError}</span>
+												</div>
+											{/if}
+
+											<div class="flex gap-1.5">
+												<button
+													type="button"
+													class="flex-1 flex items-center justify-center gap-1.5 px-3 py-1.5 text-xs font-medium rounded-lg bg-violet-600 text-white hover:bg-violet-700 transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
+													onclick={submitCopilotAdd}
+													disabled={!copilotAddName.trim() || !copilotAddToken.trim() || copilotAddLoading}
+												>
+													{#if copilotAddLoading}
+														<Icon name="lucide:loader" class="w-3.5 h-3.5 animate-spin" />
+														Adding...
+													{:else}
+														<Icon name="lucide:plus" class="w-3.5 h-3.5" />
+														Add
+													{/if}
+												</button>
+												<button
+													type="button"
+													class="px-3 py-1.5 text-xs font-medium rounded-lg border border-slate-300 dark:border-slate-600 text-slate-600 dark:text-slate-400 hover:bg-slate-100 dark:hover:bg-slate-700 transition-colors"
+													onclick={cancelCopilotAdd}
+												>
+													Cancel
+												</button>
+											</div>
+										</div>
+									{/if}
+								</div>
+							{/if}
+						</div>
+
 						<!-- Recheck button -->
 						<button
 							type="button"
 							onclick={checkEngines}
-							disabled={isLoadingClaude || isLoadingOpenCode}
+							disabled={isLoadingClaude || isLoadingOpenCode || isLoadingCopilot}
 							class="flex items-center justify-center gap-2 w-full py-2 px-4 text-xs font-medium rounded-lg border border-slate-200 dark:border-slate-700 text-slate-600 dark:text-slate-400 hover:bg-slate-50 dark:hover:bg-slate-800 transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
 						>
 							<Icon name="lucide:refresh-cw" class="w-3.5 h-3.5" />

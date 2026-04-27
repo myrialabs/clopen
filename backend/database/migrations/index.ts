@@ -30,6 +30,7 @@ import * as migration028 from './028_create_opencode_accounts_table';
 import * as migration029 from './029_migrate_messages_to_unified';
 import * as migration030 from './030_add_files_panel_state_to_user_projects';
 import * as migration031 from './031_create_db_client_tables';
+import * as migration032 from './032_seed_copilot_provider';
 
 // Export all migrations in order
 export const migrations = [
@@ -218,6 +219,12 @@ export const migrations = [
 		description: migration031.description,
 		up: migration031.up,
 		down: migration031.down
+	},
+	{
+		id: '032',
+		description: migration032.description,
+		up: migration032.up,
+		down: migration032.down
 	}
 ];
 

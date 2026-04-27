@@ -20,7 +20,7 @@ import { getClopenDir } from '$backend/utils/paths';
 import { resolveBinary, resolveBinaryWithRefresh } from '$backend/utils/cli';
 import { resolveStaticCurlAsset } from '$backend/utils/static-curl';
 
-export type ToolId = 'git' | 'claude' | 'opencode' | 'chrome' | 'cloudflared';
+export type ToolId = 'git' | 'claude' | 'opencode' | 'copilot' | 'chrome' | 'cloudflared';
 
 export interface ManualInstruction {
 	label: string;
@@ -409,6 +409,22 @@ async function resolveOpenCodeRecipe(): Promise<Recipe> {
 	return base;
 }
 
+async function resolveCopilotRecipe(): Promise<Recipe> {
+	const base: Recipe = {
+		tool: 'copilot',
+		autoInstallable: true,
+		missingPrereqs: [],
+		manualInstructions: [{
+			label: 'bun',
+			command: 'bun add -g @github/copilot',
+			docs: 'https://docs.github.com/en/copilot/how-tos/copilot-cli/set-up-copilot-cli/install-copilot-cli'
+		}],
+		command: ['bun', 'add', '-g', '@github/copilot'],
+		displayCommand: 'bun add -g @github/copilot'
+	};
+	return base;
+}
+
 // ─────────────────────────────────────────────────────────────────────────────
 // Chrome recipe — Puppeteer download (macOS/Windows) or Google Chrome (Linux)
 // ─────────────────────────────────────────────────────────────────────────────
@@ -660,6 +676,7 @@ export async function resolveRecipe(tool: ToolId): Promise<Recipe> {
 		case 'git': return resolveGitRecipe();
 		case 'claude': return resolveClaudeRecipe();
 		case 'opencode': return resolveOpenCodeRecipe();
+		case 'copilot': return resolveCopilotRecipe();
 		case 'chrome': return resolveChromeRecipe();
 		case 'cloudflared': return resolveCloudflaredRecipe();
 	}

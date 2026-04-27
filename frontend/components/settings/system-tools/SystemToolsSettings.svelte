@@ -37,6 +37,12 @@
 	/>
 
 	<ToolInstallCard
+		tool="copilot"
+		title="GitHub Copilot CLI"
+		description="Used by clopen to run the GitHub Copilot engine."
+	/>
+
+	<ToolInstallCard
 		tool="chrome"
 		title="Chrome"
 		description="Used by clopen to render the browser preview."
