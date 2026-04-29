@@ -20,7 +20,7 @@ import { getClopenDir } from '$backend/utils/paths';
 import { resolveBinary, resolveBinaryWithRefresh } from '$backend/utils/cli';
 import { resolveStaticCurlAsset } from '$backend/utils/static-curl';
 
-export type ToolId = 'git' | 'claude' | 'opencode' | 'copilot' | 'chrome' | 'cloudflared';
+export type ToolId = 'git' | 'claude' | 'opencode' | 'copilot' | 'codex' | 'chrome' | 'cloudflared';
 
 export interface ManualInstruction {
 	label: string;
@@ -425,6 +425,36 @@ async function resolveCopilotRecipe(): Promise<Recipe> {
 	return base;
 }
 
+async function resolveCodexRecipe(): Promise<Recipe> {
+	const manualInstructions: ManualInstruction[] = [{
+		label: 'bun',
+		command: 'bun add -g @openai/codex',
+		docs: 'https://developers.openai.com/codex'
+	}];
+
+	// Codex CLI is installed via `bun add -g`. Bun must be on PATH for the
+	// auto-installer to work; otherwise we fall back to the manual instructions
+	// (the user installs Bun first via the existing Bun recipe / website).
+	if (!resolveBinary('bun')) {
+		return {
+			tool: 'codex',
+			autoInstallable: false,
+			unavailableReason: 'Bun is required to install the Codex CLI. Install Bun first (https://bun.sh).',
+			missingPrereqs: [],
+			manualInstructions
+		};
+	}
+
+	return {
+		tool: 'codex',
+		autoInstallable: true,
+		missingPrereqs: [],
+		manualInstructions,
+		command: ['bun', 'add', '-g', '@openai/codex'],
+		displayCommand: 'bun add -g @openai/codex'
+	};
+}
+
 // ─────────────────────────────────────────────────────────────────────────────
 // Chrome recipe — Puppeteer download (macOS/Windows) or Google Chrome (Linux)
 // ─────────────────────────────────────────────────────────────────────────────
@@ -677,6 +707,7 @@ export async function resolveRecipe(tool: ToolId): Promise<Recipe> {
 		case 'claude': return resolveClaudeRecipe();
 		case 'opencode': return resolveOpenCodeRecipe();
 		case 'copilot': return resolveCopilotRecipe();
+		case 'codex': return resolveCodexRecipe();
 		case 'chrome': return resolveChromeRecipe();
 		case 'cloudflared': return resolveCloudflaredRecipe();
 	}

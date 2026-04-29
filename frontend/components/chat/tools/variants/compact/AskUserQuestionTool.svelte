@@ -121,7 +121,9 @@
 	<div class="space-y-1.5">
 		{#each input.questions as question}
 			<div class="border-l-2 border-slate-300 dark:border-slate-600 pl-2 space-y-0.5">
-				<div class="text-sm font-medium text-slate-600 dark:text-slate-400">{question.header}</div>
+				{#if question.header}
+					<div class="text-sm font-medium text-slate-600 dark:text-slate-400">{question.header}</div>
+				{/if}
 				<p class="text-sm text-slate-500 dark:text-slate-400">{question.question}</p>
 			</div>
 		{/each}
@@ -144,7 +146,9 @@
 						: (isOther && customText ? customText : Array.from(selected).join(', '));
 				})()}
 			<div class="border-l-2 border-slate-300 dark:border-slate-600 pl-2.5 space-y-0.5">
-				<div class="text-sm font-medium text-slate-600 dark:text-slate-400">{question.header}</div>
+				{#if question.header}
+					<div class="text-sm font-medium text-slate-600 dark:text-slate-400">{question.header}</div>
+				{/if}
 				<p class="text-sm text-slate-500 dark:text-slate-400">{question.question}</p>
 				<p class="text-sm font-medium text-slate-700 dark:text-slate-300">{answer || 'No answer'}</p>
 			</div>
@@ -155,7 +159,9 @@
 	<div class="space-y-2">
 		{#each input.questions as question, idx}
 			<div class="border-l-2 border-slate-300 dark:border-slate-600 pl-2.5 space-y-1.5">
-				<div class="text-sm font-semibold text-slate-700 dark:text-slate-300">{question.header}</div>
+				{#if question.header}
+					<div class="text-sm font-semibold text-slate-700 dark:text-slate-300">{question.header}</div>
+				{/if}
 				<p class="text-sm text-slate-600 dark:text-slate-400">{question.question}</p>
 				<div class="space-y-1">
 					{#each question.options as option}
@@ -178,7 +184,9 @@
 							</div>
 							<div>
 								<span class="font-medium">{option.label}</span>
-								<span class="opacity-50">— {option.description}</span>
+								{#if option.description}
+									<span class="opacity-50">— {option.description}</span>
+								{/if}
 							</div>
 						</button>
 					{/each}

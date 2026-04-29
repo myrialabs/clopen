@@ -95,7 +95,7 @@ interface SetupProcess {
 const setupProcesses = new Map<string, SetupProcess>();
 const userSetups = new Map<string, string>();
 
-const SETUP_TIMEOUT_MS = 5 * 60 * 1000;
+const SETUP_TIMEOUT_MS = 15 * 60 * 1000;
 
 function cleanupSetup(setupId: string): void {
 	const entry = setupProcesses.get(setupId);
@@ -210,12 +210,12 @@ export const accountsHandler = createRouter()
 			return;
 		}
 
-		// 5-minute timeout
+		// 15-minute timeout — matches the OAuth code expiry window shown in the UI
 		const timer = setTimeout(() => {
 			debug.warn('engine', `[${setupId}] Setup-token timeout`);
 			ws.emit.user(userId, 'engine:claude-account-setup-error', {
 				setupId,
-				message: 'Setup timed out after 5 minutes'
+				message: 'Setup timed out after 15 minutes'
 			});
 			cleanupSetup(setupId);
 		}, SETUP_TIMEOUT_MS);

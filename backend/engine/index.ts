@@ -18,6 +18,7 @@ import type { AIEngine, EngineType } from './types';
 import { ClaudeCodeEngine } from './adapters/claude';
 import { OpenCodeEngine, disposeOpenCodeClient } from './adapters/opencode';
 import { CopilotEngine } from './adapters/copilot';
+import { CodexEngine } from './adapters/codex';
 import { debug } from '$shared/utils/logger';
 
 // ============================================================================
@@ -32,6 +33,8 @@ function createEngine(type: EngineType): AIEngine {
 			return new OpenCodeEngine();
 		case 'copilot':
 			return new CopilotEngine();
+		case 'codex':
+			return new CodexEngine();
 		default:
 			throw new Error(`Unknown engine type: ${type}`);
 	}

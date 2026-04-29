@@ -9,6 +9,7 @@
 	import { ENGINES } from '$shared/constants/engines';
 	import { claudeAccountsStore, type ClaudeAccountItem as ClaudeCodeAccountItem } from '$frontend/stores/features/claude-accounts.svelte';
 	import { copilotAccountsStore, type CopilotAccountItem } from '$frontend/stores/features/copilot-accounts.svelte';
+	import { codexAccountsStore, type CodexAccountItem } from '$frontend/stores/features/codex-accounts.svelte';
 	import { opencodeProvidersStore, type OpenCodeProviderItem, type ModelsDevProviderItem } from '$frontend/stores/features/opencode-providers.svelte';
 	import { modelStore } from '$frontend/stores/features/models.svelte';
 	import { showSuccess } from '$frontend/stores/ui/notification.svelte';
@@ -18,6 +19,7 @@
 	const claudeCodeEngine = ENGINES.find(e => e.type === 'claude-code')!;
 	const openCodeEngine = ENGINES.find(e => e.type === 'opencode')!;
 	const copilotEngine = ENGINES.find(e => e.type === 'copilot')!;
+	const codexEngine = ENGINES.find(e => e.type === 'codex')!;
 
 	interface ClaudeCodeStatus {
 		installed: boolean;
@@ -71,6 +73,50 @@
 
 	// Copilot restart/refresh
 	let copilotRestarting = $state(false);
+
+	// ── Codex state ──
+	interface CodexStatus {
+		installed: boolean;
+		version: string | null;
+		sdkVersion: string | null;
+		activeAccount: { id: number; name: string; authMode: 'api_key' | 'chatgpt' | null } | null;
+		accountsCount: number;
+		backendOS: 'windows' | 'macos' | 'linux';
+	}
+	let codexStatus = $state<CodexStatus | null>(null);
+	let isLoadingCodexStatus = $state(true);
+	const codexAccounts = $derived(codexAccountsStore.accounts);
+
+	// Codex add-account flow — dual mode
+	// ChatGPT flow always runs `codex login --device-auth` (works on
+	// remote/headless machines and gives a stable URL+code prompt we can
+	// scrape). The browser-OAuth variant is intentionally not exposed.
+	type CodexAuthMode = 'api_key' | 'chatgpt';
+	type CodexAddStep =
+		| 'idle'
+		| 'picking-mode'
+		| 'editing-api-key'
+		| 'chatgpt-loading'      // codex login spawned, waiting for device code
+		| 'chatgpt-waiting'      // device code shown, waiting for user to verify in browser
+		| 'saving'
+		| 'success'
+		| 'error';
+	let codexAddStep = $state<CodexAddStep>('idle');
+	let codexAddMode = $state<CodexAuthMode | null>(null);
+	let codexAddName = $state('');
+	let codexAddApiKey = $state('');
+	let codexAddError = $state('');
+	let codexSetupId = $state<string | null>(null);
+	let codexDeviceCode = $state<{ code: string; verificationUrl: string } | null>(null);
+	let codexUrlCopied = $state(false);
+	let codexCodeCopied = $state(false);
+
+	// Codex rename / delete / restart
+	let codexRenamingId = $state<number | null>(null);
+	let codexRenameValue = $state('');
+	let codexDeleteDialogOpen = $state(false);
+	let codexDeleteTargetId = $state<number | null>(null);
+	let codexRestarting = $state(false);
 
 	// Add account flow
 	type ClaudeCodeSetupStep = 'idle' | 'loading-url' | 'waiting-code' | 'submitting' | 'success' | 'error';
@@ -140,21 +186,34 @@
 		return filtered;
 	});
 
-	// Debug PTY (xterm.js)
-	const showDebug = $state(false);
-	let debugTermContainer = $state<HTMLDivElement>();
-	let debugTerminal: Terminal | null = null;
-	let debugFitAddon: FitAddon | null = null;
-	let debugTermReady = $state(false);
-	let ptyPhase = $state('');
-	let ptyBufferLen = $state(0);
-	let hasPtyData = $state(false);
+	// Debug stream (xterm.js) — Claude Code
+	// `showClaudeDebug` is intentionally hardcoded — flip to `true` in source
+	// when debugging the setup-token PTY flow. No UI toggle on purpose.
+	let showClaudeDebug = $state(false);
+	let claudeDebugTermContainer = $state<HTMLDivElement>();
+	let claudeDebugTerminal: Terminal | null = null;
+	let claudeDebugFitAddon: FitAddon | null = null;
+	let claudeDebugTermReady = $state(false);
+	let claudeDebugPhase = $state('');
+	let claudeDebugBufferLen = $state(0);
+	let hasClaudeDebugData = $state(false);
+
+	// Debug stream (xterm.js) — Codex
+	// `showCodexDebug` is intentionally hardcoded — flip to `true` in source
+	// when debugging the codex login PTY flow. No UI toggle on purpose.
+	let showCodexDebug = $state(false);
+	let codexDebugTermContainer = $state<HTMLDivElement>();
+	let codexDebugTerminal: Terminal | null = null;
+	let codexDebugFitAddon: FitAddon | null = null;
+	let codexDebugTermReady = $state(false);
+	let codexDebugBufferLen = $state(0);
+	let hasCodexDebugData = $state(false);
 
 	// Event listener cleanup functions
 	const cleanups: Array<() => void> = [];
 
-	async function initDebugTerminal() {
-		if (!browser || !debugTermContainer || debugTerminal) return;
+	async function initClaudeDebugTerminal() {
+		if (!browser || !claudeDebugTermContainer || claudeDebugTerminal) return;
 
 		const [{ Terminal }, { FitAddon }] = await Promise.all([
 			import('@xterm/xterm'),
@@ -163,7 +222,7 @@
 
 		await import('@xterm/xterm/css/xterm.css');
 
-		debugTerminal = new Terminal({
+		claudeDebugTerminal = new Terminal({
 			theme: {
 				background: '#0f172a',
 				foreground: '#e2e8f0',
@@ -198,19 +257,80 @@
 			rows: 20
 		});
 
-		debugFitAddon = new FitAddon();
-		debugTerminal.loadAddon(debugFitAddon);
-		debugTerminal.open(debugTermContainer);
-		debugFitAddon.fit();
-		debugTermReady = true;
+		claudeDebugFitAddon = new FitAddon();
+		claudeDebugTerminal.loadAddon(claudeDebugFitAddon);
+		claudeDebugTerminal.open(claudeDebugTermContainer);
+		claudeDebugFitAddon.fit();
+		claudeDebugTermReady = true;
 	}
 
-	function disposeDebugTerminal() {
-		if (debugTerminal) {
-			debugTerminal.dispose();
-			debugTerminal = null;
-			debugFitAddon = null;
-			debugTermReady = false;
+	function disposeClaudeDebugTerminal() {
+		if (claudeDebugTerminal) {
+			claudeDebugTerminal.dispose();
+			claudeDebugTerminal = null;
+			claudeDebugFitAddon = null;
+			claudeDebugTermReady = false;
+		}
+	}
+
+	async function initCodexDebugTerminal() {
+		if (!browser || !codexDebugTermContainer || codexDebugTerminal) return;
+
+		const [{ Terminal }, { FitAddon }] = await Promise.all([
+			import('@xterm/xterm'),
+			import('@xterm/addon-fit')
+		]);
+
+		await import('@xterm/xterm/css/xterm.css');
+
+		codexDebugTerminal = new Terminal({
+			theme: {
+				background: '#0f172a',
+				foreground: '#e2e8f0',
+				cursor: '#22c55e',
+				black: '#18181b',
+				red: '#ef4444',
+				green: '#22c55e',
+				yellow: '#eab308',
+				blue: '#60a5fa',
+				magenta: '#a855f7',
+				cyan: '#06b6d4',
+				white: '#f4f4f5',
+				brightBlack: '#52525b',
+				brightRed: '#f87171',
+				brightGreen: '#4ade80',
+				brightYellow: '#facc15',
+				brightBlue: '#60a5fa',
+				brightMagenta: '#c084fc',
+				brightCyan: '#22d3ee',
+				brightWhite: '#ffffff'
+			},
+			fontSize: 11,
+			fontFamily: 'JetBrains Mono, Monaco, "Cascadia Code", Consolas, monospace',
+			lineHeight: 1.1,
+			cursorBlink: false,
+			cursorStyle: 'underline' as const,
+			convertEol: true,
+			scrollback: 5000,
+			disableStdin: true,
+			allowTransparency: false,
+			cols: 120,
+			rows: 20
+		});
+
+		codexDebugFitAddon = new FitAddon();
+		codexDebugTerminal.loadAddon(codexDebugFitAddon);
+		codexDebugTerminal.open(codexDebugTermContainer);
+		codexDebugFitAddon.fit();
+		codexDebugTermReady = true;
+	}
+
+	function disposeCodexDebugTerminal() {
+		if (codexDebugTerminal) {
+			codexDebugTerminal.dispose();
+			codexDebugTerminal = null;
+			codexDebugFitAddon = null;
+			codexDebugTermReady = false;
 		}
 	}
 
@@ -231,17 +351,58 @@
 				claudeCodeSetupStep = 'error';
 			}),
 			ws.on('engine:claude-account-setup-pty-data', (data: { setupId: string; data: string; phase: string; bufferLength: number }) => {
-				hasPtyData = true;
-				ptyPhase = data.phase;
-				ptyBufferLen = data.bufferLength;
+				hasClaudeDebugData = true;
+				claudeDebugPhase = data.phase;
+				claudeDebugBufferLen = data.bufferLength;
 				// Write raw data to xterm.js — it handles ANSI natively
-				if (debugTerminal) {
-					debugTerminal.write(data.data);
+				if (claudeDebugTerminal) {
+					claudeDebugTerminal.write(data.data);
 				}
 			})
 		);
 
-		await Promise.all([refreshClaudeCodeStatus(), refreshOpenCodeStatus(), refreshCopilotStatus()]);
+		// Codex login event listeners
+		// Note: the backend generates its own setupId per session — we capture
+		// it from the first inbound event (mirroring the Claude Code flow).
+		// Filtering by setupId on these per-user broadcasts isn't necessary;
+		// the backend already serializes one login at a time per user.
+		cleanups.push(
+			ws.on('engine:codex-account-setup-device-code', (data: { setupId: string; code: string; verificationUrl: string }) => {
+				if (codexAddStep !== 'chatgpt-loading' && codexAddStep !== 'chatgpt-waiting') return;
+				codexSetupId = data.setupId;
+				codexDeviceCode = { code: data.code, verificationUrl: data.verificationUrl };
+				codexAddStep = 'chatgpt-waiting';
+			}),
+			ws.on('engine:codex-account-setup-complete', async (data: { setupId: string; accountId: number }) => {
+				if (codexAddStep !== 'chatgpt-loading' && codexAddStep !== 'chatgpt-waiting') return;
+				codexSetupId = data.setupId;
+				codexAddStep = 'success';
+				await codexAccountsStore.refresh();
+				await refreshCodexStatus();
+			}),
+			ws.on('engine:codex-account-setup-error', (data: { setupId: string; message: string }) => {
+				if (codexAddStep !== 'chatgpt-loading' && codexAddStep !== 'chatgpt-waiting') return;
+				codexSetupId = data.setupId;
+				codexAddError = data.message;
+				codexAddStep = 'error';
+			}),
+			ws.on('engine:codex-account-setup-stream-data', (data: { setupId: string; data: string }) => {
+				if (codexAddStep !== 'chatgpt-loading' && codexAddStep !== 'chatgpt-waiting') return;
+				codexSetupId = data.setupId;
+				hasCodexDebugData = true;
+				codexDebugBufferLen += data.data.length;
+				if (codexDebugTerminal) {
+					codexDebugTerminal.write(data.data);
+				}
+			})
+		);
+
+		await Promise.all([
+			refreshClaudeCodeStatus(),
+			refreshOpenCodeStatus(),
+			refreshCopilotStatus(),
+			refreshCodexStatus(),
+		]);
 	});
 
 	onDestroy(() => {
@@ -249,8 +410,9 @@
 		for (const cleanup of cleanups) cleanup();
 		cleanups.length = 0;
 
-		// Dispose debug terminal
-		disposeDebugTerminal();
+		// Dispose debug terminals
+		disposeClaudeDebugTerminal();
+		disposeCodexDebugTerminal();
 
 		// Cancel any running setup
 		if (claudeCodeSetupId && claudeCodeSetupStep !== 'idle' && claudeCodeSetupStep !== 'success' && claudeCodeSetupStep !== 'error') {
@@ -258,20 +420,38 @@
 		}
 	});
 
-	// Init debug terminal when container is available
+	// Init Claude debug terminal when container is available
 	$effect(() => {
-		if (debugTermContainer && !debugTerminal && showDebug) {
-			initDebugTerminal();
+		if (claudeDebugTermContainer && !claudeDebugTerminal && showClaudeDebug) {
+			initClaudeDebugTerminal();
 		}
 	});
 
-	// Fit debug terminal on resize
+	// Fit Claude debug terminal on resize
 	$effect(() => {
-		if (debugTermReady && debugFitAddon && debugTermContainer) {
+		if (claudeDebugTermReady && claudeDebugFitAddon && claudeDebugTermContainer) {
 			const observer = new ResizeObserver(() => {
-				debugFitAddon?.fit();
+				claudeDebugFitAddon?.fit();
 			});
-			observer.observe(debugTermContainer);
+			observer.observe(claudeDebugTermContainer);
+			return () => observer.disconnect();
+		}
+	});
+
+	// Init Codex debug terminal when container is available
+	$effect(() => {
+		if (codexDebugTermContainer && !codexDebugTerminal && showCodexDebug) {
+			initCodexDebugTerminal();
+		}
+	});
+
+	// Fit Codex debug terminal on resize
+	$effect(() => {
+		if (codexDebugTermReady && codexDebugFitAddon && codexDebugTermContainer) {
+			const observer = new ResizeObserver(() => {
+				codexDebugFitAddon?.fit();
+			});
+			observer.observe(codexDebugTermContainer);
 			return () => observer.disconnect();
 		}
 	});
@@ -299,13 +479,13 @@
 		claudeCodeSetupError = '';
 		claudeCodeAuthCode = '';
 		claudeCodeAccountName = '';
-		ptyPhase = '';
-		ptyBufferLen = 0;
-		hasPtyData = false;
+		claudeDebugPhase = '';
+		claudeDebugBufferLen = 0;
+		hasClaudeDebugData = false;
 		// Clear debug terminal
-		if (debugTerminal) {
-			debugTerminal.clear();
-			debugTerminal.reset();
+		if (claudeDebugTerminal) {
+			claudeDebugTerminal.clear();
+			claudeDebugTerminal.reset();
 		}
 
 		// Fire-and-forget: server will emit 'setup-url' or 'setup-error' back
@@ -510,6 +690,180 @@
 			// Ignore — errors surface via existing notification flow when models load
 		} finally {
 			copilotRestarting = false;
+		}
+	}
+
+	// ── Codex Account Management ──
+
+	async function refreshCodexStatus() {
+		isLoadingCodexStatus = true;
+		try {
+			codexStatus = await ws.http('engine:codex-status', {});
+			await codexAccountsStore.refresh();
+		} catch {
+			codexStatus = null;
+		}
+		isLoadingCodexStatus = false;
+	}
+
+	function startCodexAdd() {
+		codexAddStep = 'picking-mode';
+		codexAddMode = null;
+		codexAddName = '';
+		codexAddApiKey = '';
+		codexAddError = '';
+		codexSetupId = null;
+		codexDeviceCode = null;
+		codexUrlCopied = false;
+		codexCodeCopied = false;
+	}
+
+	function proceedCodexMode() {
+		if (!codexAddName.trim() || !codexAddMode) return;
+		if (codexAddMode === 'api_key') {
+			codexAddStep = 'editing-api-key';
+		} else {
+			startCodexChatGptLogin();
+		}
+	}
+
+	async function submitCodexApiKey() {
+		if (!codexAddName.trim() || !codexAddApiKey.trim()) return;
+		codexAddStep = 'saving';
+		codexAddError = '';
+		try {
+			await ws.http('engine:codex-accounts-add-api-key', {
+				name: codexAddName.trim(),
+				apiKey: codexAddApiKey.trim(),
+			});
+			codexAddStep = 'success';
+			await codexAccountsStore.refresh();
+			await refreshCodexStatus();
+		} catch (error: unknown) {
+			codexAddError = error instanceof Error ? error.message : String(error);
+			codexAddStep = 'error';
+		}
+	}
+
+	function startCodexChatGptLogin() {
+		if (!codexAddName.trim()) {
+			codexAddError = 'Account name is required';
+			codexAddStep = 'error';
+			return;
+		}
+		codexAddStep = 'chatgpt-loading';
+		codexAddError = '';
+		codexDeviceCode = null;
+		codexUrlCopied = false;
+		codexCodeCopied = false;
+		hasCodexDebugData = false;
+		codexDebugBufferLen = 0;
+		if (codexDebugTerminal) {
+			codexDebugTerminal.clear();
+			codexDebugTerminal.reset();
+		}
+		// The backend generates the canonical setupId — we capture it from
+		// the first inbound event (device-code / stream-data).
+		codexSetupId = null;
+		ws.emit('engine:codex-account-setup-start', {
+			name: codexAddName.trim(),
+			deviceAuth: true,
+		});
+	}
+
+	function cancelCodexAdd() {
+		const inFlight = codexAddStep === 'chatgpt-loading' || codexAddStep === 'chatgpt-waiting';
+		if (codexSetupId && inFlight) {
+			ws.emit('engine:codex-account-setup-cancel', { setupId: codexSetupId });
+		}
+		codexAddStep = 'idle';
+		codexSetupId = null;
+		codexDeviceCode = null;
+		codexAddName = '';
+		codexAddApiKey = '';
+		codexAddError = '';
+		codexUrlCopied = false;
+		codexCodeCopied = false;
+	}
+
+	async function copyCodexVerificationUrl() {
+		if (!codexDeviceCode) return;
+		try {
+			await navigator.clipboard.writeText(codexDeviceCode.verificationUrl);
+			codexUrlCopied = true;
+			setTimeout(() => { codexUrlCopied = false; }, 2000);
+		} catch { /* ignore */ }
+	}
+
+	async function copyCodexDeviceCode() {
+		if (!codexDeviceCode) return;
+		try {
+			await navigator.clipboard.writeText(codexDeviceCode.code);
+			codexCodeCopied = true;
+			setTimeout(() => { codexCodeCopied = false; }, 2000);
+		} catch { /* ignore */ }
+	}
+
+	async function switchCodexAccount(id: number) {
+		try {
+			await ws.http('engine:codex-accounts-switch', { id });
+			await codexAccountsStore.refresh();
+			await refreshCodexStatus();
+			await modelStore.refreshModels('codex');
+		} catch {
+			// Ignore
+		}
+	}
+
+	function confirmDeleteCodexAccount(id: number) {
+		codexDeleteTargetId = id;
+		codexDeleteDialogOpen = true;
+	}
+
+	async function deleteCodexAccount() {
+		if (codexDeleteTargetId === null) return;
+		try {
+			await ws.http('engine:codex-accounts-delete', { id: codexDeleteTargetId });
+			await codexAccountsStore.refresh();
+			await refreshCodexStatus();
+		} catch {
+			// Ignore
+		}
+	}
+
+	function startCodexRename(account: CodexAccountItem) {
+		codexRenamingId = account.id;
+		codexRenameValue = account.name;
+	}
+
+	async function submitCodexRename() {
+		if (codexRenamingId === null || !codexRenameValue.trim()) return;
+		try {
+			await ws.http('engine:codex-accounts-rename', { id: codexRenamingId, name: codexRenameValue.trim() });
+			codexRenamingId = null;
+			codexRenameValue = '';
+			await codexAccountsStore.refresh();
+		} catch {
+			// Ignore
+		}
+	}
+
+	function cancelCodexRename() {
+		codexRenamingId = null;
+		codexRenameValue = '';
+	}
+
+	async function handleCodexRestart() {
+		codexRestarting = true;
+		try {
+			await ws.http('engine:codex-restart', {});
+			await modelStore.refreshModels('codex');
+			await refreshCodexStatus();
+			showSuccess('Codex Restarted', 'Codex engine restarted. Models refreshed.');
+		} catch {
+			// Ignore
+		} finally {
+			codexRestarting = false;
 		}
 	}
 
@@ -1014,27 +1368,27 @@
 		</div>
 	</div>
 
-	<!-- Debug PTY Output (xterm.js) -->
-	{#if showDebug && (hasPtyData || claudeCodeSetupStep !== 'idle')}
+	<!-- Claude Code Debug Stream (xterm.js) — toggled via the hardcoded showClaudeDebug flag -->
+	{#if showClaudeDebug && (hasClaudeDebugData || claudeCodeSetupStep !== 'idle')}
 		<div class="rounded-xl border border-amber-300 dark:border-amber-700/50 bg-amber-50 dark:bg-amber-900/10 overflow-hidden">
 			<div class="flex items-center justify-between px-4 py-2 border-b border-amber-200 dark:border-amber-700/50">
 				<div class="flex items-center gap-2">
 					<Icon name="lucide:bug" class="w-4 h-4 text-amber-600" />
-					<span class="text-xs font-semibold text-amber-700 dark:text-amber-300">Debug: PTY Output</span>
+					<span class="text-xs font-semibold text-amber-700 dark:text-amber-300">Claude Debug: Setup-Token PTY</span>
 					<span class="text-3xs font-mono px-1.5 py-0.5 rounded bg-amber-200 dark:bg-amber-800 text-amber-800 dark:text-amber-200">
-						phase={ptyPhase} | buf={ptyBufferLen} | step={claudeCodeSetupStep}
+						phase={claudeDebugPhase} | buf={claudeDebugBufferLen} | step={claudeCodeSetupStep}
 					</span>
 				</div>
 				<button
 					type="button"
 					class="text-xs text-amber-600 hover:text-amber-800 dark:text-amber-400 dark:hover:text-amber-200"
-					onclick={() => { if (debugTerminal) { debugTerminal.clear(); debugTerminal.reset(); } hasPtyData = false; }}
+					onclick={() => { if (claudeDebugTerminal) { claudeDebugTerminal.clear(); claudeDebugTerminal.reset(); } hasClaudeDebugData = false; claudeDebugBufferLen = 0; }}
 				>
 					Clear
 				</button>
 			</div>
 			<div
-				bind:this={debugTermContainer}
+				bind:this={claudeDebugTermContainer}
 				class="h-80 bg-[#0f172a]"
 			></div>
 		</div>
@@ -1271,6 +1625,367 @@
 			{/if}
 		</div>
 	</div>
+
+	<!-- Codex Card -->
+	<div class="rounded-xl border border-slate-200 dark:border-slate-700/50 bg-white dark:bg-slate-800/50 overflow-hidden">
+		<!-- Card Header -->
+		<div class="flex items-center justify-between px-5 py-4 border-b border-slate-200 dark:border-slate-700/50">
+			<div class="flex items-center gap-3">
+				<div class="flex items-center justify-center [&>svg]:w-6 [&>svg]:h-6">
+					{@html isDarkMode() ? codexEngine.icon.dark : codexEngine.icon.light}
+				</div>
+				<div>
+					<h3 class="font-semibold text-slate-900 dark:text-slate-100">{codexEngine.name}</h3>
+					<p class="text-xs text-slate-500 dark:text-slate-400">{codexEngine.description}</p>
+				</div>
+			</div>
+			<div class="flex items-center gap-2">
+				{#if codexStatus?.installed && codexStatus?.activeAccount}
+					<button
+						type="button"
+						class="flex items-center gap-1.5 px-3 py-1.5 text-xs font-medium rounded-lg transition-colors
+							text-amber-600 dark:text-amber-400 bg-amber-50 dark:bg-amber-900/20 border border-amber-200 dark:border-amber-700/50
+							hover:bg-amber-100 dark:hover:bg-amber-900/30 disabled:opacity-50 disabled:cursor-not-allowed"
+						onclick={handleCodexRestart}
+						disabled={codexRestarting}
+					>
+						<Icon name={codexRestarting ? 'lucide:loader' : 'lucide:rotate-cw'} class="w-3.5 h-3.5 {codexRestarting ? 'animate-spin' : ''}" />
+						{codexRestarting ? 'Restarting...' : 'Restart Server'}
+					</button>
+				{/if}
+			</div>
+		</div>
+
+		<!-- Card Body -->
+		<div class="px-5 py-4">
+			{#if isLoadingCodexStatus}
+				<div class="flex items-center justify-center py-8">
+					<Icon name="lucide:loader" class="w-6 h-6 animate-spin text-slate-400" />
+				</div>
+			{:else if codexStatus && !codexStatus.installed}
+				<!-- Redirect to System Tools -->
+				<div class="flex items-start gap-3 p-4 rounded-lg bg-violet-50 dark:bg-violet-900/10 border border-violet-200 dark:border-violet-800/50">
+					<Icon name="lucide:hammer" class="w-5 h-5 shrink-0 mt-0.5 text-violet-600 dark:text-violet-400" />
+					<div class="flex-1 space-y-2">
+						<div>
+							<p class="text-sm font-semibold text-slate-900 dark:text-slate-100">Codex CLI is not installed</p>
+							<p class="text-xs text-slate-600 dark:text-slate-400">Install it from the System Tools section. You can return here once it's installed to connect accounts.</p>
+						</div>
+						<button
+							type="button"
+							class="inline-flex items-center gap-2 px-3 py-1.5 text-xs font-medium rounded-lg bg-violet-600 text-white hover:bg-violet-700 transition-colors"
+							onclick={openSystemToolsSection}
+						>
+							<Icon name="lucide:arrow-right" class="w-3.5 h-3.5" />
+							Open System Tools
+						</button>
+					</div>
+				</div>
+			{:else if codexStatus}
+				<div class="space-y-5">
+					<div class="space-y-3">
+						<div class="flex items-center justify-between">
+							<h4 class="text-sm font-semibold text-slate-700 dark:text-slate-300">Providers</h4>
+							<span class="text-xs text-slate-500">1 provider</span>
+						</div>
+
+						<div class="rounded-lg border border-slate-200 dark:border-slate-700/50 bg-slate-50 dark:bg-slate-800/80 overflow-hidden">
+							<div class="flex items-center justify-between px-3.5 py-2.5 border-b border-slate-200 dark:border-slate-700/50">
+								<div class="flex items-center gap-2 min-w-0">
+									<span class="text-sm font-semibold text-slate-900 dark:text-slate-100 truncate">OpenAI</span>
+									<span class="text-2xs text-slate-400 font-mono">openai</span>
+									<span class="inline-flex items-center px-2 py-0.5 rounded-full text-3xs font-semibold bg-violet-100 dark:bg-violet-900/30 text-violet-700 dark:text-violet-300">Built-in</span>
+								</div>
+							</div>
+
+							<div class="px-3.5 py-2.5 space-y-2">
+								{#if codexAccounts.length === 0}
+									<p class="text-xs text-slate-500 italic">No accounts</p>
+								{:else}
+									{#each codexAccounts as account (account.id)}
+										<div class="flex items-center justify-between px-3.5 py-2.5 rounded-lg border border-slate-200 dark:border-slate-700/50 bg-slate-50 dark:bg-slate-800/80 {account.isActive ? 'ring-1 ring-violet-500/40' : ''}">
+											<div class="w-full flex items-center gap-2.5 min-w-0">
+												<Icon name={account.authMode === 'chatgpt' ? 'lucide:user-round' : 'lucide:key'} class="w-4 h-4 shrink-0 text-slate-400" />
+												{#if codexRenamingId === account.id}
+													<div class="w-full flex items-center gap-2.5">
+														<input
+															type="text"
+															bind:value={codexRenameValue}
+															class="w-full px-2 py-0.5 text-sm rounded border border-slate-300 dark:border-slate-600 bg-white dark:bg-slate-700 text-slate-900 dark:text-slate-100 focus:outline-none focus:ring-1 focus:ring-violet-500"
+														/>
+														<div class="flex items-center gap-1">
+															<button type="button" class="flex p-1.5 rounded-md text-slate-400 hover:text-green-600 hover:bg-green-50 dark:hover:bg-green-900/20" onclick={submitCodexRename} aria-label="Save">
+																<Icon name="lucide:check" class="w-3.5 h-3.5" />
+															</button>
+															<button type="button" class="flex p-1.5 rounded-md text-slate-400 hover:text-red-600 hover:bg-red-50 dark:hover:bg-red-900/20" onclick={cancelCodexRename} aria-label="Cancel">
+																<Icon name="lucide:x" class="w-3.5 h-3.5" />
+															</button>
+														</div>
+													</div>
+												{:else}
+													<span class="text-sm font-medium text-slate-900 dark:text-slate-100 truncate">{account.name}</span>
+													<span class="text-3xs px-1.5 py-px rounded bg-slate-100 dark:bg-slate-700/60 text-slate-500 dark:text-slate-400">
+														{account.authMode === 'chatgpt' ? 'ChatGPT' : 'API key'}
+													</span>
+													{#if account.isActive}
+														<span class="inline-flex items-center px-2 py-0.5 rounded-full text-3xs font-semibold bg-violet-100 dark:bg-violet-900/30 text-violet-700 dark:text-violet-300">Active</span>
+													{/if}
+												{/if}
+											</div>
+
+											{#if codexRenamingId !== account.id}
+												<div class="flex items-center gap-1">
+													{#if !account.isActive}
+														<button type="button" class="flex p-1.5 rounded-md text-slate-400 hover:text-violet-600 hover:bg-violet-50 dark:hover:bg-violet-900/20" onclick={() => switchCodexAccount(account.id)} title="Switch to this account">
+															<Icon name="lucide:arrow-right-left" class="w-3.5 h-3.5" />
+														</button>
+													{/if}
+													<button type="button" class="flex p-1.5 rounded-md text-slate-400 hover:text-blue-600 hover:bg-blue-50 dark:hover:bg-blue-900/20" onclick={() => startCodexRename(account)} title="Rename">
+														<Icon name="lucide:pencil" class="w-3.5 h-3.5" />
+													</button>
+													<button type="button" class="flex p-1.5 rounded-md text-slate-400 hover:text-red-600 hover:bg-red-50 dark:hover:bg-red-900/20" onclick={() => confirmDeleteCodexAccount(account.id)} title="Delete account">
+														<Icon name="lucide:trash-2" class="w-3.5 h-3.5" />
+													</button>
+												</div>
+											{/if}
+										</div>
+									{/each}
+								{/if}
+
+								<!-- Add Account Flow (dual mode) -->
+								<div class="pt-1">
+									{#if codexAddStep === 'idle'}
+										<button type="button" class="flex items-center gap-2 px-4 py-2 text-sm font-medium rounded-lg border border-dashed border-slate-300 dark:border-slate-600 text-slate-600 dark:text-slate-400 hover:border-violet-400 hover:text-violet-600 dark:hover:text-violet-400 transition-colors w-full justify-center" onclick={startCodexAdd}>
+											<Icon name="lucide:plus" class="w-4 h-4" />
+											Add Account
+										</button>
+									{:else if codexAddStep === 'picking-mode'}
+										<div class="space-y-3 p-4 rounded-lg border border-violet-200 dark:border-violet-800/50 bg-violet-50/50 dark:bg-violet-900/10">
+											<div class="flex items-center gap-2 text-xs font-medium text-violet-600 dark:text-violet-400">
+												<Icon name="lucide:user-plus" class="w-3.5 h-3.5" />
+												Add a Codex account
+											</div>
+											<input
+												type="text"
+												bind:value={codexAddName}
+												placeholder="Account name (e.g. Personal, Work)"
+												class="w-full px-3 py-2 text-sm rounded-lg border border-slate-300 dark:border-slate-600 bg-white dark:bg-slate-800 text-slate-900 dark:text-slate-100 placeholder:text-slate-400 focus:outline-none focus:ring-2 focus:ring-violet-500/40 focus:border-violet-500"
+											/>
+
+											<div class="space-y-2" role="radiogroup" aria-label="Authentication mode">
+												<button type="button" role="radio" aria-checked={codexAddMode === 'api_key'} onclick={() => { codexAddMode = 'api_key'; }} class="w-full flex items-center gap-2.5 px-3 py-2 text-sm font-medium rounded-lg border cursor-pointer transition-colors text-left focus:outline-none focus-visible:ring-2 focus-visible:ring-violet-500/40 {codexAddMode === 'api_key' ? 'border-violet-400 ring-1 ring-violet-500/40 bg-white dark:bg-slate-800 text-slate-900 dark:text-slate-100' : 'border-slate-300 dark:border-slate-600 text-slate-700 dark:text-slate-300 hover:border-violet-400'}">
+													<span class="relative flex items-center justify-center w-4 h-4 rounded-full border-2 transition-colors {codexAddMode === 'api_key' ? 'border-violet-500' : 'border-slate-300 dark:border-slate-500'}">
+														<span class="w-2 h-2 rounded-full bg-violet-500 transition-transform {codexAddMode === 'api_key' ? 'scale-100' : 'scale-0'}"></span>
+													</span>
+													<Icon name="lucide:key" class="w-3.5 h-3.5" />
+													<span>API key</span>
+												</button>
+												<button type="button" role="radio" aria-checked={codexAddMode === 'chatgpt'} onclick={() => { codexAddMode = 'chatgpt'; }} class="w-full flex items-center gap-2.5 px-3 py-2 text-sm font-medium rounded-lg border cursor-pointer transition-colors text-left focus:outline-none focus-visible:ring-2 focus-visible:ring-violet-500/40 {codexAddMode === 'chatgpt' ? 'border-violet-400 ring-1 ring-violet-500/40 bg-white dark:bg-slate-800 text-slate-900 dark:text-slate-100' : 'border-slate-300 dark:border-slate-600 text-slate-700 dark:text-slate-300 hover:border-violet-400'}">
+													<span class="relative flex items-center justify-center w-4 h-4 rounded-full border-2 transition-colors {codexAddMode === 'chatgpt' ? 'border-violet-500' : 'border-slate-300 dark:border-slate-500'}">
+														<span class="w-2 h-2 rounded-full bg-violet-500 transition-transform {codexAddMode === 'chatgpt' ? 'scale-100' : 'scale-0'}"></span>
+													</span>
+													<Icon name="lucide:user-round" class="w-3.5 h-3.5" />
+													<span>Sign in with ChatGPT</span>
+												</button>
+											</div>
+
+											<div class="flex gap-2">
+												<button type="button" class="flex-1 flex items-center justify-center gap-2 px-4 py-2 text-sm font-medium rounded-lg bg-violet-600 text-white hover:bg-violet-700 transition-colors disabled:opacity-50 disabled:cursor-not-allowed" onclick={proceedCodexMode} disabled={!codexAddName.trim() || !codexAddMode}>
+													<Icon name="lucide:arrow-right" class="w-4 h-4" />
+													Next
+												</button>
+												<button type="button" class="px-4 py-2 text-sm font-medium rounded-lg border border-slate-300 dark:border-slate-600 text-slate-600 dark:text-slate-400 hover:bg-slate-100 dark:hover:bg-slate-700 transition-colors" onclick={cancelCodexAdd}>
+													Cancel
+												</button>
+											</div>
+										</div>
+									{:else if codexAddStep === 'editing-api-key'}
+										<div class="space-y-3 p-4 rounded-lg border border-violet-200 dark:border-violet-800/50 bg-violet-50/50 dark:bg-violet-900/10">
+											<div class="flex items-center gap-2 text-xs font-medium text-violet-600 dark:text-violet-400">
+												<Icon name="lucide:key" class="w-3.5 h-3.5" />
+												Paste your OpenAI API key
+											</div>
+											<input
+												type="text"
+												bind:value={codexAddApiKey}
+												placeholder="sk-…"
+												class="w-full px-3 py-2 text-sm rounded-lg border border-slate-300 dark:border-slate-600 bg-white dark:bg-slate-800 text-slate-900 dark:text-slate-100 placeholder:text-slate-400 focus:outline-none focus:ring-2 focus:ring-violet-500/40 focus:border-violet-500"
+											/>
+											<div class="flex gap-2">
+												<button type="button" class="flex-1 flex items-center justify-center gap-2 px-4 py-2 text-sm font-medium rounded-lg bg-violet-600 text-white hover:bg-violet-700 transition-colors disabled:opacity-50 disabled:cursor-not-allowed" onclick={submitCodexApiKey} disabled={!codexAddName.trim() || !codexAddApiKey.trim()}>
+													<Icon name="lucide:plus" class="w-4 h-4" />
+													Save
+												</button>
+												<button type="button" class="px-4 py-2 text-sm font-medium rounded-lg border border-slate-300 dark:border-slate-600 text-slate-600 dark:text-slate-400 hover:bg-slate-100 dark:hover:bg-slate-700 transition-colors" onclick={cancelCodexAdd}>
+													Cancel
+												</button>
+											</div>
+										</div>
+									{:else if codexAddStep === 'chatgpt-loading'}
+										<div class="p-4 rounded-lg border border-violet-200 dark:border-violet-800/50 bg-violet-50/50 dark:bg-violet-900/10">
+											<div class="flex items-center justify-center gap-2 text-sm text-slate-500">
+												<Icon name="lucide:loader" class="w-4 h-4 animate-spin" />
+												<span>Starting Codex device-auth…</span>
+											</div>
+										</div>
+									{:else if codexAddStep === 'chatgpt-waiting' && codexDeviceCode}
+										<div class="space-y-3 p-4 rounded-lg border border-violet-200 dark:border-violet-800/50 bg-violet-50/50 dark:bg-violet-900/10">
+											<!-- Step 1 -->
+											<div class="flex items-center gap-2 text-xs font-medium text-violet-600 dark:text-violet-400">
+												<Icon name="lucide:external-link" class="w-3.5 h-3.5" />
+												Step 1: Open the verification URL
+											</div>
+
+											<p class="text-sm text-slate-600 dark:text-slate-400">
+												Open the URL below in your browser and sign in to your ChatGPT account.
+											</p>
+
+											<div>
+												<div class="bg-white dark:bg-slate-800 rounded-lg px-3 py-2 text-xs font-mono text-slate-700 dark:text-slate-300 break-all border border-slate-200 dark:border-slate-700">
+													{codexDeviceCode.verificationUrl}
+												</div>
+												<div class="flex gap-2 mt-2">
+													<button
+														type="button"
+														class="flex items-center gap-1.5 px-3 py-1.5 text-xs font-medium rounded-md transition-colors
+															{codexUrlCopied
+															? 'bg-green-100 dark:bg-green-900/30 text-green-700 dark:text-green-300'
+															: 'bg-slate-100 dark:bg-slate-700 text-slate-700 dark:text-slate-300 hover:bg-slate-200 dark:hover:bg-slate-600'}"
+														onclick={copyCodexVerificationUrl}
+													>
+														{#if codexUrlCopied}
+															<Icon name="lucide:check" class="w-3 h-3" />
+															Copied
+														{:else}
+															<Icon name="lucide:copy" class="w-3 h-3" />
+															Copy URL
+														{/if}
+													</button>
+													<a
+														href={codexDeviceCode.verificationUrl}
+														target="_blank"
+														rel="noopener noreferrer"
+														class="flex items-center gap-1.5 px-3 py-1.5 text-xs font-medium rounded-md bg-violet-100 dark:bg-violet-900/30 text-violet-700 dark:text-violet-300 hover:bg-violet-200 dark:hover:bg-violet-800/40 transition-colors"
+													>
+														<Icon name="lucide:external-link" class="w-3 h-3" />
+														Open in Browser
+													</a>
+												</div>
+											</div>
+
+											<!-- Divider -->
+											<div class="border-t border-slate-200 dark:border-slate-700/50"></div>
+
+											<!-- Step 2 -->
+											<div class="flex items-center gap-2 text-xs font-medium text-violet-600 dark:text-violet-400">
+												<Icon name="lucide:hash" class="w-3.5 h-3.5" />
+												Step 2: Enter the one-time code
+											</div>
+
+											<p class="text-sm text-slate-600 dark:text-slate-400">
+												Enter this code on the verification page. It expires in 15 minutes.
+											</p>
+
+											<div>
+												<div class="px-4 py-3 rounded-lg border-2 border-violet-300 dark:border-violet-700/50 bg-white dark:bg-slate-800 font-mono text-2xl tracking-[0.2em] text-violet-700 dark:text-violet-300 text-center select-all">
+													{codexDeviceCode.code}
+												</div>
+												<div class="flex gap-2 mt-2">
+													<button
+														type="button"
+														class="flex items-center gap-1.5 px-3 py-1.5 text-xs font-medium rounded-md transition-colors
+															{codexCodeCopied
+															? 'bg-green-100 dark:bg-green-900/30 text-green-700 dark:text-green-300'
+															: 'bg-slate-100 dark:bg-slate-700 text-slate-700 dark:text-slate-300 hover:bg-slate-200 dark:hover:bg-slate-600'}"
+														onclick={copyCodexDeviceCode}
+													>
+														{#if codexCodeCopied}
+															<Icon name="lucide:check" class="w-3 h-3" />
+															Copied
+														{:else}
+															<Icon name="lucide:copy" class="w-3 h-3" />
+															Copy code
+														{/if}
+													</button>
+												</div>
+											</div>
+
+											<!-- Divider -->
+											<div class="border-t border-slate-200 dark:border-slate-700/50"></div>
+
+											<!-- Status -->
+											<div class="flex items-center gap-2 text-xs text-slate-500 dark:text-slate-400">
+												<Icon name="lucide:loader" class="w-3.5 h-3.5 animate-spin text-violet-500" />
+												Waiting for verification… the CLI will detect it automatically once you submit the code in the browser.
+											</div>
+
+											<button type="button" class="w-full px-4 py-2 text-sm font-medium rounded-lg border border-slate-300 dark:border-slate-600 text-slate-600 dark:text-slate-400 hover:bg-slate-100 dark:hover:bg-slate-700 transition-colors" onclick={cancelCodexAdd}>
+												Cancel
+											</button>
+
+											<p class="text-2xs text-slate-400 dark:text-slate-500">
+												A background process is running. It will auto-close in 10 minutes if not completed.
+											</p>
+										</div>
+									{:else if codexAddStep === 'saving'}
+										<div class="p-4 rounded-lg border border-violet-200 dark:border-violet-800/50 bg-violet-50/50 dark:bg-violet-900/10">
+											<div class="flex items-center justify-center gap-2 text-sm text-slate-500">
+												<Icon name="lucide:loader" class="w-4 h-4 animate-spin" />
+												<span>Saving account…</span>
+											</div>
+										</div>
+									{:else if codexAddStep === 'success'}
+										<div class="flex items-center gap-2 p-3 rounded-lg bg-green-50 dark:bg-green-900/20 border border-green-200 dark:border-green-800/50">
+											<Icon name="lucide:circle-check" class="w-5 h-5 text-green-600 dark:text-green-400" />
+											<span class="text-sm text-green-700 dark:text-green-300">Codex account added!</span>
+											<button type="button" class="ml-auto text-xs text-green-600 dark:text-green-400 hover:underline" onclick={cancelCodexAdd}>Dismiss</button>
+										</div>
+									{:else if codexAddStep === 'error'}
+										<div class="space-y-3">
+											<div class="flex items-center gap-2 p-3 rounded-lg bg-red-50 dark:bg-red-900/20 border border-red-200 dark:border-red-800/50">
+												<Icon name="lucide:circle-alert" class="w-5 h-5 shrink-0 text-red-600 dark:text-red-400" />
+												<span class="text-sm text-red-700 dark:text-red-300">{codexAddError}</span>
+											</div>
+											<button type="button" class="flex items-center justify-center gap-2 w-full px-4 py-2 text-sm font-medium rounded-lg border border-slate-300 dark:border-slate-700 text-slate-700 dark:text-slate-400 hover:bg-slate-100 dark:hover:bg-slate-800 transition-colors" onclick={() => { codexAddStep = 'picking-mode'; codexAddError = ''; }}>
+												<Icon name="lucide:rotate-ccw" class="w-4 h-4" />
+												Try Again
+											</button>
+										</div>
+									{/if}
+								</div>
+							</div>
+						</div>
+					</div>
+				</div>
+			{/if}
+		</div>
+	</div>
+
+	<!-- Codex Debug Stream Output (xterm.js) -->
+	{#if showCodexDebug && (hasCodexDebugData || codexAddStep === 'chatgpt-loading' || codexAddStep === 'chatgpt-waiting')}
+		<div class="rounded-xl border border-amber-300 dark:border-amber-700/50 bg-amber-50 dark:bg-amber-900/10 overflow-hidden">
+			<div class="flex items-center justify-between px-4 py-2 border-b border-amber-200 dark:border-amber-700/50">
+				<div class="flex items-center gap-2">
+					<Icon name="lucide:bug" class="w-4 h-4 text-amber-600" />
+					<span class="text-xs font-semibold text-amber-700 dark:text-amber-300">Codex Debug: Login Stream</span>
+					<span class="text-3xs font-mono px-1.5 py-0.5 rounded bg-amber-200 dark:bg-amber-800 text-amber-800 dark:text-amber-200">
+						buf={codexDebugBufferLen} | step={codexAddStep}
+					</span>
+				</div>
+				<button
+					type="button"
+					class="text-xs text-amber-600 hover:text-amber-800 dark:text-amber-400 dark:hover:text-amber-200"
+					onclick={() => { if (codexDebugTerminal) { codexDebugTerminal.clear(); codexDebugTerminal.reset(); } hasCodexDebugData = false; codexDebugBufferLen = 0; }}
+				>
+					Clear
+				</button>
+			</div>
+			<div
+				bind:this={codexDebugTermContainer}
+				class="h-80 bg-[#0f172a]"
+			></div>
+		</div>
+	{/if}
 
 	<!-- OpenCode Card -->
 	<div class="rounded-xl border border-slate-200 dark:border-slate-700/50 bg-white dark:bg-slate-800/50 overflow-hidden">
@@ -1638,6 +2353,17 @@
 	confirmText="Delete"
 	cancelText="Cancel"
 	onConfirm={deleteCopilotAccount}
+/>
+
+<Dialog
+	bind:isOpen={codexDeleteDialogOpen}
+	onClose={() => { codexDeleteDialogOpen = false; codexDeleteTargetId = null; }}
+	type="error"
+	title="Delete Codex Account"
+	message="Are you sure you want to delete this Codex account? This action cannot be undone."
+	confirmText="Delete"
+	cancelText="Cancel"
+	onConfirm={deleteCodexAccount}
 />
 
 <Dialog

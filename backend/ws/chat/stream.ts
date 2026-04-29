@@ -103,7 +103,7 @@ export const streamHandler = createRouter()
 			projectPath: t.String(),
 			prompt: t.Any(), // UserMessage object
 			engine: t.Object({
-				type: t.Union([t.Literal('claude-code'), t.Literal('opencode'), t.Literal('copilot')]),
+				type: t.Union([t.Literal('claude-code'), t.Literal('opencode'), t.Literal('copilot'), t.Literal('codex')]),
 				provider: t.String(),
 				model: t.Object({
 					id: t.String(),
@@ -422,7 +422,12 @@ export const streamHandler = createRouter()
 		}
 	})
 
-	// Handle AskUserQuestion answer from user
+	// Handle AskUserQuestion answer from user.
+	//
+	// Routed to the engine's built-in resolveUserAnswer (Claude: canUseTool,
+	// OpenCode: event hook). Codex has no callback hook in the SDK — when
+	// the SDK adds native support, route it here too instead of resurrecting
+	// the previous MCP-based fallback.
 	.on('chat:ask-user-answer', {
 		data: t.Object({
 			chatSessionId: t.String(),
@@ -439,15 +444,14 @@ export const streamHandler = createRouter()
 				answers: data.answers
 			});
 
-			const success = streamManager.resolveUserAnswer(
+			const handled = streamManager.resolveUserAnswer(
 				data.chatSessionId,
 				projectId,
 				data.toolUseId,
 				data.answers
 			);
-
-			if (!success) {
-				debug.warn('chat', 'Failed to resolve user answer for stream');
+			if (!handled) {
+				debug.warn('chat', 'Failed to resolve user answer (no engine handler for this toolUseId)');
 			}
 		} catch (error) {
 			const errorMessage = error instanceof Error ? error.message : 'Unknown error';

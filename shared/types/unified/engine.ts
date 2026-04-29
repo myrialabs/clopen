@@ -41,6 +41,16 @@ export interface EngineModel {
 		reasoning: boolean;
 		tools: boolean;
 		structuredOutput: boolean;
+		/**
+		 * Auth modes the model is compatible with. Models that require a
+		 * ChatGPT (OAuth) login are flagged `'chatgpt'`; models that only
+		 * accept API keys are flagged `'api_key'`. Models compatible with
+		 * either mode leave this `undefined`.
+		 *
+		 * The chat input's account picker uses this to grey out models that
+		 * the active Codex account can't reach.
+		 */
+		requiresAuthMode?: 'chatgpt' | 'api_key';
 	};
 
 	cost: {
@@ -51,7 +61,7 @@ export interface EngineModel {
 
 // Engine metadata for UI display
 export interface EngineInfo {
-	type: 'claude-code' | 'opencode' | 'copilot';
+	type: 'claude-code' | 'opencode' | 'copilot' | 'codex';
 	name: string;
 	description: string;
 	icon: {

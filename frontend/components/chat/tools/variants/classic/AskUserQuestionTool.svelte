@@ -146,9 +146,11 @@
 			<div class="bg-white dark:bg-slate-800 rounded-lg border border-red-200/60 dark:border-red-800/40 p-4 space-y-2.5">
 				<div class="flex items-center gap-2">
 					<Icon name="lucide:circle-x" class="text-red-500 w-4 h-4 shrink-0" />
-					<span class="text-xs font-semibold px-2 py-0.5 rounded-full bg-slate-100 dark:bg-slate-700/50 text-slate-500 dark:text-slate-400">
-						{question.header}
-					</span>
+					{#if question.header}
+						<span class="text-xs font-semibold px-2 py-0.5 rounded-full bg-slate-100 dark:bg-slate-700/50 text-slate-500 dark:text-slate-400">
+							{question.header}
+						</span>
+					{/if}
 				</div>
 				<p class="text-sm text-slate-500 dark:text-slate-400">{question.question}</p>
 			</div>
@@ -166,9 +168,11 @@
 			<div class="bg-white dark:bg-slate-800 rounded-lg border border-slate-200/60 dark:border-slate-700/60 p-4 space-y-2.5">
 				<div class="flex items-center gap-2">
 					<Icon name="lucide:circle-check" class="text-green-500 w-4 h-4 shrink-0" />
-					<span class="text-xs font-semibold px-2 py-0.5 rounded-full bg-blue-100 dark:bg-blue-800/50 text-blue-700 dark:text-blue-300">
-						{question.header}
-					</span>
+					{#if question.header}
+						<span class="text-xs font-semibold px-2 py-0.5 rounded-full bg-blue-100 dark:bg-blue-800/50 text-blue-700 dark:text-blue-300">
+							{question.header}
+						</span>
+					{/if}
 				</div>
 				<p class="text-sm font-medium text-slate-700 dark:text-slate-200">{question.question}</p>
 				<p class="text-sm text-green-700 dark:text-green-300 font-medium">
@@ -191,9 +195,11 @@
 			<div class="bg-white dark:bg-slate-800 rounded-lg border border-slate-200/60 dark:border-slate-700/60 p-4 space-y-2.5">
 				<div class="flex items-center gap-2">
 					<div class="w-4 h-4 border-2 border-blue-400 border-t-transparent rounded-full animate-spin shrink-0"></div>
-					<span class="text-xs font-semibold px-2 py-0.5 rounded-full bg-blue-100 dark:bg-blue-800/50 text-blue-700 dark:text-blue-300">
-						{question.header}
-					</span>
+					{#if question.header}
+						<span class="text-xs font-semibold px-2 py-0.5 rounded-full bg-blue-100 dark:bg-blue-800/50 text-blue-700 dark:text-blue-300">
+							{question.header}
+						</span>
+					{/if}
 				</div>
 				<p class="text-sm font-medium text-slate-700 dark:text-slate-200">{question.question}</p>
 				<p class="text-sm text-slate-500 dark:text-slate-400">
@@ -209,9 +215,11 @@
 			<div class="bg-white dark:bg-slate-800 rounded-lg border border-slate-200/60 dark:border-slate-700/60 p-4 space-y-3">
 				<div class="flex items-center gap-2">
 					<Icon name="lucide:message-circle-question-mark" class="text-blue-500 dark:text-blue-400 w-4 h-4 shrink-0" />
-					<span class="text-xs font-semibold px-2 py-0.5 rounded-full bg-blue-100 dark:bg-blue-800/50 text-blue-700 dark:text-blue-300">
-						{question.header}
-					</span>
+					{#if question.header}
+						<span class="text-xs font-semibold px-2 py-0.5 rounded-full bg-blue-100 dark:bg-blue-800/50 text-blue-700 dark:text-blue-300">
+							{question.header}
+						</span>
+					{/if}
 				</div>
 
 				<p class="text-sm font-medium text-slate-700 dark:text-slate-200">{question.question}</p>
@@ -253,7 +261,9 @@
 							</div>
 							<div class="min-w-0">
 								<span class="text-sm font-medium text-slate-800 dark:text-slate-200">{option.label}</span>
-								<span class="text-sm text-slate-500 dark:text-slate-400"> — {option.description}</span>
+								{#if option.description}
+									<span class="text-sm text-slate-500 dark:text-slate-400"> — {option.description}</span>
+								{/if}
 							</div>
 						</button>
 					{/each}

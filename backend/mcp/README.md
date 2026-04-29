@@ -1,6 +1,6 @@
 # Custom MCP Tools
 
-Custom MCP (Model Context Protocol) tools for adding specialized functionality to both **Claude Code** and **Open Code** engines. Servers are defined once and shared across both engines via a single-source-of-truth architecture.
+Custom MCP (Model Context Protocol) tools for adding specialized functionality to all AI engines (**Claude Code**, **Open Code**, **Codex**, **Copilot**, …). Servers are defined once and shared across every engine via a single-source-of-truth architecture.
 
 ## 📚 Table of Contents
 
@@ -22,10 +22,11 @@ Custom MCP (Model Context Protocol) tools for adding specialized functionality t
 System for adding custom tools to AI engines with type-safe TypeScript definitions. Tools are defined once using `defineServer()` and automatically available to both Claude Code (in-process) and Open Code (remote HTTP MCP server).
 
 **Features:**
-- Single source of truth — define tools once, use in both engines
+- Single source of truth — define tools once, use in every engine
 - In-process execution for Claude Code via `createSdkMcpServer`
-- Remote HTTP MCP server for Open Code via `createRemoteMcpServer`
-- Both engines execute handlers in-process (no subprocess, no bridge)
+- Remote HTTP MCP server (Streamable HTTP) for Open Code, Codex, and
+  Copilot via `createRemoteMcpServer` mounted at `/mcp`
+- All engines execute handlers in-process (no subprocess, no bridge)
 - Type-safe with TypeScript
 - Auto metadata extraction and registration
 - Configuration-based enable/disable
@@ -537,12 +538,30 @@ const mcpConfig = getOpenCodeMcpConfig();
 ```
 
 #### `resolveOpenCodeToolName(toolName)`
-Resolve an Open Code tool name to `mcp__server__tool` format (single source of truth).
+Resolve a remote-MCP tool name to `mcp__server__tool` format (single source
+of truth — used by every non-Claude engine adapter).
+
+The remote-MCP namespace key is always `clopen-mcp`, but engines disagree on
+the separator they use to join the namespace and the bare tool name:
+
+| Engine    | Tool name shape                  | Separator |
+| --------- | -------------------------------- | --------- |
+| Open Code | `clopen-mcp_open_new_tab`        | `_`       |
+| Copilot   | `clopen-mcp-open_new_tab`        | `-`       |
+| Codex     | `open_new_tab` (bare)            | n/a       |
+
+The resolver strips **both** `clopen-mcp_` and `clopen-mcp-` prefixes and
+falls back to the bare-name path. **Adapters must call this helper instead
+of building a per-engine resolver** — if a future SDK introduces yet another
+separator, extend the prefix list here, not at the call site.
 
 ```typescript
 import { resolveOpenCodeToolName } from '$backend/mcp';
 
 resolveOpenCodeToolName("clopen-mcp_get_temperature");
+// Returns: "mcp__weather-service__get_temperature"
+
+resolveOpenCodeToolName("clopen-mcp-get_temperature");
 // Returns: "mcp__weather-service__get_temperature"
 
 resolveOpenCodeToolName("get_temperature");
@@ -551,6 +570,30 @@ resolveOpenCodeToolName("get_temperature");
 resolveOpenCodeToolName("unknown_tool");
 // Returns: null
 ```
+
+**Symptom of skipping this helper:** the UI renders the tool with a
+doubled-up name like `mcp__clopen-mcp__clopen-mcp-open_new_tab` instead
+of `mcp__browser-automation__open_new_tab`. The prefix didn't strip and
+the registry lookup fell through.
+
+#### `getCodexMcpConfig()` / `getCopilotMcpConfig()`
+Sibling helpers to `getOpenCodeMcpConfig()` for the Codex and Copilot
+engines. Each returns the **same** `/mcp` URL in the SDK-specific shape:
+
+```typescript
+// Codex (config object flattened to --config flags)
+getCodexMcpConfig();
+// { 'clopen-mcp': { url: 'http://localhost:9151/mcp', tools: { ... } } }
+
+// Copilot (MCPHTTPServerConfig from @github/copilot-sdk)
+getCopilotMcpConfig();
+// { 'clopen-mcp': { type: 'http', url: 'http://localhost:9151/mcp', tools: [...] } }
+```
+
+When adding a new engine that consumes streamable-HTTP MCP, add a sibling
+`getXxxMcpConfig()` here — do **not** introduce a new HTTP listener or a
+new namespace key. See `backend/engine/README.md` §9.12 for the full
+checklist (variable naming, type imports, auto-approval surface, etc.).
 
 ### Helper Functions
 
@@ -1078,34 +1121,61 @@ schema: {
 
 ---
 
-## Open Code Integration
+## Engine Integration (Open Code, Codex, Copilot, …)
 
 ### How It Works
 
-Open Code connects to a **remote HTTP MCP server** running in the main Clopen process. Tool handlers execute directly in-process — no subprocess, no bridge. This is architecturally identical to how Claude Code uses in-process MCP servers.
+Every non-Claude engine connects to the **same remote HTTP MCP server**
+running in the main Clopen process. Tool handlers execute directly
+in-process — no subprocess, no per-engine bridge. This is
+architecturally identical to how Claude Code uses in-process MCP
+servers.
 
 1. **`remote-server.ts`** — HTTP MCP server mounted at `/mcp` on the main Elysia server. Uses `WebStandardStreamableHTTPServerTransport` from `@modelcontextprotocol/sdk` for the Streamable HTTP transport protocol.
 
 2. **`createRemoteMcpServer()`** — Factory in `servers/helper.ts` that creates a `McpServer` instance with tools registered from the same `RawToolDef` definitions used by Claude Code. Each MCP session gets its own server instance.
 
-3. **`getOpenCodeMcpConfig()`** — Returns `{ type: 'remote', url: 'http://localhost:<port>/mcp' }` so Open Code connects directly to the main server.
+3. **`getXxxMcpConfig()` per engine** — `config.ts` exports one helper per
+   engine that returns the **same** `/mcp` URL in the engine's expected
+   shape. They all share the `'clopen-mcp'` namespace key:
+   - `getOpenCodeMcpConfig()` → `{ type: 'remote', url, ... }`
+   - `getCodexMcpConfig()` → `{ url, tools: { <tool>: { approval_mode: 'approve' } } }`
+   - `getCopilotMcpConfig()` → `{ type: 'http', url, tools: [...] }`
 
-### Adding Open Code Support to New Tools
+### Adding a New Tool
 
-No extra work needed! When you add a new tool via `defineServer()`, it's automatically available to both engines:
+No extra work needed! When you add a new tool via `defineServer()`, it's
+automatically available to **every** engine:
 
 - **Claude Code**: Uses the in-process `createSdkMcpServer` instance
-- **Open Code**: `remote-server.ts` uses `createRemoteMcpServer()` with the same `allServers` and `mcpServersConfig`
+- **Everyone else**: `remote-server.ts` uses `createRemoteMcpServer()`
+  with the same `allServers` and `mcpServersConfig`
+
+### Adding a New Engine
+
+If your engine's CLI/SDK accepts a streamable-HTTP MCP URL, follow the
+checklist in `backend/engine/README.md` §9.12. The summary:
+
+1. Add a sibling `getXxxMcpConfig()` next to the existing helpers in
+   `config.ts`. Reuse the `'clopen-mcp'` namespace key. Use the SDK's
+   exported config type if it has one.
+2. In the adapter, name the local variable holding the helper's return
+   value `mcpConfig` (not `mcpServers` — that shadows the registry).
+3. Use `resolveOpenCodeToolName()` to canonicalise incoming tool names.
+   If the SDK introduces a new prefix separator, extend the prefix list
+   in that helper rather than building a per-engine resolver.
+4. Wire the engine's auto-approval path (runtime callback or static
+   per-tool config) so MCP tool calls don't get cancelled.
 
 ### File Locations
 
 | File | Location | Purpose |
 |------|----------|---------|
 | Tool definitions | `backend/mcp/servers/` | Single source of truth |
-| Remote MCP server | `backend/mcp/remote-server.ts` | HTTP server for Open Code |
+| Remote MCP server | `backend/mcp/remote-server.ts` | HTTP server for every non-Claude engine |
 | Server factory | `backend/mcp/servers/helper.ts` | `createRemoteMcpServer()` |
-| Open Code config | `backend/mcp/config.ts` | `getOpenCodeMcpConfig()` |
-| Tool name resolver | `backend/mcp/config.ts` | `resolveOpenCodeToolName()` |
+| Per-engine config | `backend/mcp/config.ts` | `getOpenCodeMcpConfig()`, `getCodexMcpConfig()`, `getCopilotMcpConfig()` |
+| Tool name resolver | `backend/mcp/config.ts` | `resolveOpenCodeToolName()` (handles every engine's prefix variant) |
 
 ---
 

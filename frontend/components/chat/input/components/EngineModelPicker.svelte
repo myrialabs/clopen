@@ -11,6 +11,7 @@
 	import Icon from '$frontend/components/common/display/Icon.svelte';
 	import { claudeAccountsStore, type ClaudeAccountItem } from '$frontend/stores/features/claude-accounts.svelte';
 	import { copilotAccountsStore, type CopilotAccountItem } from '$frontend/stores/features/copilot-accounts.svelte';
+	import { codexAccountsStore, type CodexAccountItem } from '$frontend/stores/features/codex-accounts.svelte';
 	import { opencodeProvidersStore, type OpenCodeProviderItem, type OpenCodeAccountItem } from '$frontend/stores/features/opencode-providers.svelte';
 	import ws from '$frontend/utils/ws';
 	import { debug } from '$shared/utils/logger';
@@ -23,26 +24,39 @@
 	// at the store reference resolved by `accountsForEngine`.)
 	// ════════════════════════════════════════════
 
-	type SimpleAccount = ClaudeAccountItem | CopilotAccountItem;
+	type SimpleAccount = ClaudeAccountItem | CopilotAccountItem | CodexAccountItem;
 
 	const accountsForEngine = $derived<SimpleAccount[]>(
 		chatModelState.engine === 'claude-code'
 			? claudeAccountsStore.accounts
 			: chatModelState.engine === 'copilot'
 				? copilotAccountsStore.accounts
-				: []
+				: chatModelState.engine === 'codex'
+					? codexAccountsStore.accounts
+					: []
 	);
 
 	const currentAccount = $derived(
 		accountsForEngine.find(a => a.id === chatModelState.accountId) || null
 	);
 
+	/** Auth mode for the active Codex account — drives ChatGPT-only model filtering. */
+	const codexActiveAuthMode = $derived<'chatgpt' | 'api_key' | null>(
+		chatModelState.engine === 'codex' && currentAccount && 'authMode' in currentAccount
+			? (currentAccount as CodexAccountItem).authMode ?? null
+			: null
+	);
+
 	const accountPickerLabel = $derived(
-		chatModelState.engine === 'copilot' ? 'Copilot Account' : 'Claude Account'
+		chatModelState.engine === 'copilot' ? 'Copilot Account'
+			: chatModelState.engine === 'codex' ? 'Codex Account'
+			: 'Claude Account'
 	);
 
 	const showAccountPicker = $derived(
-		chatModelState.engine === 'claude-code' || chatModelState.engine === 'copilot'
+		chatModelState.engine === 'claude-code'
+		|| chatModelState.engine === 'copilot'
+		|| chatModelState.engine === 'codex'
 	);
 	const hasEngineAccounts = $derived(accountsForEngine.length > 0);
 
@@ -53,6 +67,8 @@
 			claudeAccountsStore.fetch();
 		} else if (engine === 'copilot') {
 			copilotAccountsStore.fetch();
+		} else if (engine === 'codex') {
+			codexAccountsStore.fetch();
 		}
 	});
 
@@ -62,7 +78,7 @@
 		const accounts = accountsForEngine;
 		const currentId = chatModelState.accountId;
 
-		if ((engine === 'claude-code' || engine === 'copilot') && accounts.length > 0) {
+		if ((engine === 'claude-code' || engine === 'copilot' || engine === 'codex') && accounts.length > 0) {
 			untrack(() => {
 				// If no account set, or current account not found in list, use active account
 				const hasValidAccount = currentId !== null && accounts.some(a => a.id === currentId);
@@ -139,9 +155,24 @@
 		showAccountDropdown = false;
 	}
 
-	function selectAccount(account: SimpleAccount) {
+	async function selectAccount(account: SimpleAccount) {
 		chatModelState.accountId = account.id;
 		chatModelState.accountName = account.name;
+
+		// For Codex, switching the account also swaps `~/.codex/auth.json`
+		// (server-side) so the next subprocess picks up the right blob. We
+		// fire-and-forget — the per-stream `accountId` override would still
+		// apply this if the user sends immediately after switching, but
+		// touching the file early matters for the model-listing path.
+		if (chatModelState.engine === 'codex') {
+			try {
+				await ws.http('engine:codex-accounts-switch', { id: account.id });
+				await codexAccountsStore.refresh();
+			} catch (err) {
+				debug.warn('chat', 'Codex account switch failed:', err);
+			}
+		}
+
 		closeAccountDropdown();
 	}
 
@@ -257,7 +288,19 @@
 	// Read from local chat model state (isolated from Settings)
 	const currentEngine = $derived(ENGINES.find(e => e.type === chatModelState.engine));
 	const currentModel = $derived(modelStore.getById(chatModelState.modelId));
-	const availableModels = $derived(modelStore.getByEngine(chatModelState.engine));
+	const availableModels = $derived.by(() => {
+		const all = modelStore.getByEngine(chatModelState.engine);
+		// Codex auth-mode filter (plan §6 + README §6.2): hide ChatGPT-only
+		// models when the active account is API-key, and vice versa.
+		if (chatModelState.engine === 'codex' && codexActiveAuthMode) {
+			return all.filter(m => {
+				const required = m.capabilities?.requiresAuthMode;
+				if (!required) return true;
+				return required === codexActiveAuthMode;
+			});
+		}
+		return all;
+	});
 
 	// Label shown in the trigger button
 	const triggerLabel = $derived.by(() => {

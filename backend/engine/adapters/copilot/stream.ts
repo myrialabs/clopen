@@ -19,7 +19,14 @@ import type { AIEngine, EngineQueryOptions } from '../../types';
 import { engineQueries } from '$backend/database/queries/engine-queries';
 import { resolveOsPath } from '$backend/utils/paths';
 import { debug } from '$shared/utils/logger';
+import { getCopilotMcpConfig } from '../../../mcp/config';
 import { handleStreamError, buildSessionError } from './error-handler';
+
+// `UserInputResponse` isn't part of the SDK's public type exports
+// (see `node_modules/@github/copilot-sdk/dist/index.d.ts`), but
+// `onUserInputRequest`'s return type is exactly that shape — derive
+// it from the SessionConfig field so we don't drift from the SDK.
+type UserInputResponse = Awaited<ReturnType<NonNullable<SessionConfig['onUserInputRequest']>>>;
 import {
 	createStreamConverterState,
 	convertSessionStart,
@@ -34,10 +41,30 @@ import {
 	captureUsage,
 	buildResultEvent,
 	flushPending,
+	resolveParentToolUseId,
+	convertSubagentStarted,
+	convertSubagentEnded,
 } from './message-converter';
 import { forkCopilotSessionState, sessionStateExists } from './session-fork';
 
 const ABORT_TIMEOUT_MS = 5000;
+
+/**
+ * Pending AskUserQuestion entry — the Copilot SDK's `onUserInputRequest`
+ * callback is parked on a Promise stored here, keyed by the `toolCallId`
+ * of the originating `ask_user` tool block. `resolveUserAnswer` looks it
+ * up and resolves the Promise, unblocking the SDK so the agent's turn
+ * can continue.
+ *
+ * `choices` is captured so we can decide `wasFreeform` (Copilot's SDK
+ * field) by checking whether the user's answer is one of the predefined
+ * choices — a freeform answer would mean the user typed something not
+ * in the choices array.
+ */
+interface PendingCopilotUserAnswer {
+	resolve: (response: UserInputResponse) => void;
+	choices?: string[];
+}
 
 export class CopilotEngine implements AIEngine {
 	readonly name = 'copilot' as const;
@@ -53,6 +80,24 @@ export class CopilotEngine implements AIEngine {
 	 * require disposing and re-creating the client (see streamQuery below).
 	 */
 	private currentAccountId: number | null = null;
+
+	/**
+	 * AskUserQuestion bookkeeping. The Copilot SDK splits the `ask_user`
+	 * flow across two channels:
+	 *   - the `assistant.message` / `tool.execution_start` /
+	 *     `user_input.requested` events all carry the `toolCallId` of the
+	 *     `ask_user` invocation (matching the tool_use block in the UI)
+	 *   - `onUserInputRequest` callback carries the question/choices but
+	 *     NOT the toolCallId (see `node_modules/@github/copilot-sdk/dist/client.js::handleUserInputRequest`)
+	 *
+	 * To correlate the two we capture the most recent `toolCallId` from
+	 * those events into `pendingAskUserToolCallId`, then read it inside
+	 * the callback. Only one `ask_user` can be outstanding per session at
+	 * a time (the SDK blocks the agent's turn until the callback returns),
+	 * so a single-slot variable is sufficient.
+	 */
+	private pendingUserAnswers = new Map<string, PendingCopilotUserAnswer>();
+	private pendingAskUserToolCallId: string | null = null;
 
 	get isInitialized(): boolean {
 		return this._isInitialized;
@@ -170,7 +215,32 @@ export class CopilotEngine implements AIEngine {
 			}
 		};
 
-		const handler = (event: SessionEvent) => pushEvent(event);
+		const handler = (event: SessionEvent) => {
+			// The Copilot SDK does NOT pass `toolCallId` to the
+			// `onUserInputRequest` callback, so we have to capture it from
+			// the surrounding event stream and read it inside the callback.
+			//
+			// Capture order matters — `assistant.message` is dispatched
+			// FIRST (when the model decides to call `ask_user`), then
+			// `tool.execution_start`, then the RPC that triggers our
+			// callback. `user_input.requested` is ephemeral and not
+			// guaranteed to be observed before the callback fires (in
+			// practice it can race or be dropped), so we cannot depend on
+			// it alone — that was the bug behind the empty-answer
+			// auto-resolve.
+			if (event.type === 'assistant.message' && event.data.toolRequests) {
+				for (const req of event.data.toolRequests) {
+					if (req.name === 'ask_user') {
+						this.pendingAskUserToolCallId = req.toolCallId;
+					}
+				}
+			} else if (event.type === 'tool.execution_start' && event.data.toolName === 'ask_user') {
+				this.pendingAskUserToolCallId = event.data.toolCallId;
+			} else if (event.type === 'user_input.requested' && event.data.toolCallId) {
+				this.pendingAskUserToolCallId = event.data.toolCallId;
+			}
+			pushEvent(event);
+		};
 
 		const onAbort = () => {
 			finished = true;
@@ -179,14 +249,64 @@ export class CopilotEngine implements AIEngine {
 		this.activeController.signal.addEventListener('abort', onAbort, { once: true });
 
 		try {
+			const mcpConfig = getCopilotMcpConfig();
+
 			const baseConfig: ResumeSessionConfig = {
 				onPermissionRequest: approveAll,
+				// Enables the agent's `ask_user` tool. Without this callback the
+				// SDK reports `requestUserInput: false` to the server and the
+				// tool is not exposed to the model, so the AskUserQuestion
+				// converter at message-converter.ts::normalizeAskUserQuestionInput
+				// never fires. Mirrors the in-process callback pattern documented
+				// in README.md §6.4 (Claude's `canUseTool`).
+				onUserInputRequest: async (request) => {
+					// Match Claude's `canUseTool` and OpenCode's `question.asked`
+					// patterns: park the callback on a Promise and only resolve
+					// it when the user submits an answer via the chat UI (routed
+					// through `resolveUserAnswer` below). Returning early would
+					// inject a fake answer into the model's context.
+					//
+					// `pendingAskUserToolCallId` was captured from the preceding
+					// `assistant.message` / `tool.execution_start` event (see
+					// handler above). If for any reason it's missing, fall back
+					// to a synthetic id so `cancel()` can still release the
+					// Promise — but log loudly because the chat UI's answer
+					// submission won't reach this entry.
+					const captured = this.pendingAskUserToolCallId;
+					this.pendingAskUserToolCallId = null;
+					const toolCallId = captured ?? `copilot-ask-user-${crypto.randomUUID()}`;
+
+					if (captured) {
+						debug.log('engine', `Copilot ask_user: parking on resolveUserAnswer (toolCallId: ${toolCallId})`);
+					} else {
+						debug.warn('engine', `Copilot ask_user: no toolCallId captured from event stream — parked on synthetic id ${toolCallId} (UI answer will not unblock; only cancel() will)`);
+					}
+
+					return await new Promise<UserInputResponse>((resolve) => {
+						this.pendingUserAnswers.set(toolCallId, {
+							resolve,
+							choices: request.choices,
+						});
+					});
+				},
 				model: modelId,
 				workingDirectory: resolvedProjectPath,
 				onEvent: handler,
 				// Emit assistant.message_delta / assistant.reasoning_delta events
 				// so the chat UI can render text token-by-token.
 				streaming: true,
+				// Sub-agent (`task`) activity is rendered nested inside the parent
+				// Agent tool block (see frontend/utils/chat/tool-handler.ts), not as
+				// live deltas in the main stream. Suppressing sub-agent streaming
+				// keeps reasoning/text from sub-agents from leaking into the main
+				// turn; the final non-streaming `assistant.message`,
+				// `assistant.reasoning`, and `tool.execution_*` events still arrive
+				// and are routed via parent.toolUseId.
+				includeSubAgentStreamingEvents: false,
+				// Custom MCP tools served from Clopen's in-process remote MCP HTTP
+				// endpoint (`/mcp`). Same `clopen-mcp` namespace and URL Open Code
+				// and Codex consume — see backend/engine/README.md §9.12.
+				...(Object.keys(mcpConfig).length > 0 && { mcpServers: mcpConfig }),
 			};
 
 			let session: CopilotSession;
@@ -256,56 +376,93 @@ export class CopilotEngine implements AIEngine {
 
 				if (!event || this.activeController.signal.aborted) break;
 
+				// Resolve the parent Agent (`task`) tool call id for events
+				// originating inside a sub-agent. Null for the root agent and
+				// session-level events. Stamped on persisted messages so the
+				// frontend grouper nests sub-agent activity under the parent
+				// Agent tool — same shape Claude/OpenCode produce.
+				const parentToolUseId = resolveParentToolUseId(event, state);
+
 				switch (event.type) {
 					case 'session.start':
 						yield convertSessionStart(event.data, state.modelId);
 						break;
 
 					case 'assistant.turn_start':
+						// Sub-agent turn lifecycle is internal to the Agent tool block —
+						// don't toggle the main chat's stream lifecycle for it.
+						if (parentToolUseId) break;
 						yield convertTurnStart(state);
 						break;
 
 					case 'assistant.reasoning_delta':
+						if (parentToolUseId) break;
 						yield* convertReasoningDelta(event.data, state);
 						break;
 
 					case 'assistant.reasoning':
-						yield* convertReasoning(event.data, state);
+						yield* convertReasoning(event.data, state, parentToolUseId);
 						break;
 
 					case 'assistant.message_delta':
+						if (parentToolUseId) break;
 						yield* convertMessageDelta(event.data, state);
 						break;
 
 					case 'assistant.message':
 						// May yield previously-buffered messages; the new message
 						// is buffered until assistant.usage attaches token counts.
-						yield* convertAssistantMessage(event.data, state);
+						yield* convertAssistantMessage(event.data, state, parentToolUseId);
 						break;
 
 					case 'tool.execution_start':
-						// Don't flush pending assistant messages here — the SDK
-						// often emits `assistant.usage` AFTER `assistant.message`
-						// but BEFORE this event, and we want to preserve that
-						// usage attachment by leaving messages buffered. Tool
-						// start has no user-visible output so deferring is safe.
+						// Normally we DON'T flush pending assistant messages
+						// here — the SDK typically emits `assistant.usage`
+						// AFTER `assistant.message` but BEFORE this event, and
+						// we want to preserve that usage attachment by leaving
+						// messages buffered. Tool start has no user-visible
+						// output so deferring is usually safe.
+						//
+						// EXCEPTION: `ask_user` parks the SDK on the
+						// `onUserInputRequest` callback (see baseConfig above),
+						// so no further events arrive until the user responds.
+						// If we don't flush here, the assistant.message holding
+						// the `ask_user` tool_use block stays buffered forever
+						// and the AskUserQuestion bubble never reaches the UI
+						// — leaving the user with no way to answer.
+						if (event.data.toolName === 'ask_user') {
+							yield* flushPending(state);
+						}
 						yield* convertToolStart(event.data, state);
 						break;
 
 					case 'tool.execution_complete':
 						yield* flushPending(state);
-						yield* convertToolComplete(event.data, state);
+						yield* convertToolComplete(event.data, state, parentToolUseId);
 						break;
 
 					case 'assistant.usage':
+						// Sub-agent usage belongs to its own LLM call, not the main
+						// turn — skip so we don't attach it to a parent message.
+						if (parentToolUseId) break;
 						// Attaches usage to the last pending message and flushes.
 						yield* captureUsage(event.data, state);
 						break;
 
 					case 'assistant.turn_end':
+						if (parentToolUseId) break;
 						for (const ev of convertTurnEnd(event.data, state)) {
 							yield ev;
 						}
+						break;
+
+					case 'subagent.started':
+						yield* convertSubagentStarted(event, state);
+						break;
+
+					case 'subagent.completed':
+					case 'subagent.failed':
+						yield* convertSubagentEnded(event, state);
 						break;
 
 					case 'abort':
@@ -342,14 +499,24 @@ export class CopilotEngine implements AIEngine {
 	}
 
 	async cancel(): Promise<void> {
-		// 1. Abort the local stream first so the loop exits even if RPC hangs.
+		// 1. Release any parked `onUserInputRequest` callbacks with an empty
+		// answer so the SDK isn't left blocked on a Promise that will never
+		// resolve. Empty `answer` + `wasFreeform: false` is the SDK-safe way
+		// to unblock without injecting fake user input.
+		for (const [, pending] of this.pendingUserAnswers) {
+			pending.resolve({ answer: '', wasFreeform: false });
+		}
+		this.pendingUserAnswers.clear();
+		this.pendingAskUserToolCallId = null;
+
+		// 2. Abort the local stream first so the loop exits even if RPC hangs.
 		const session = this.activeSession;
 		if (this.activeController && !this.activeController.signal.aborted) {
 			this.activeController.abort();
 		}
 		this.activeController = null;
 
-		// 2. Tell the Copilot server to stop processing (with timeout).
+		// 3. Tell the Copilot server to stop processing (with timeout).
 		if (session) {
 			try {
 				await Promise.race([
@@ -365,6 +532,33 @@ export class CopilotEngine implements AIEngine {
 
 	async interrupt(): Promise<void> {
 		await this.cancel();
+	}
+
+	/**
+	 * Resolve a pending Copilot AskUserQuestion. Routed here from
+	 * `backend/chat/stream-manager.ts::resolveUserAnswer` when the user
+	 * submits an answer via the `chat:ask-user-answer` WS event.
+	 *
+	 * The unified UI passes `answers` keyed by question text. Copilot's
+	 * `ask_user` only ever has a single question per call, so we take the
+	 * first value and feed it to the SDK as `{ answer, wasFreeform }`.
+	 * `wasFreeform` is derived by checking whether the answer matches one
+	 * of the predefined `choices` captured when the callback was parked.
+	 */
+	resolveUserAnswer(toolUseId: string, answers: Record<string, string>): boolean {
+		const pending = this.pendingUserAnswers.get(toolUseId);
+		if (!pending) {
+			debug.warn('engine', 'Copilot resolveUserAnswer: no pending question for toolUseId:', toolUseId);
+			return false;
+		}
+
+		const answer = Object.values(answers)[0] ?? '';
+		const wasFreeform = pending.choices ? !pending.choices.includes(answer) : true;
+
+		debug.log('engine', `Copilot resolveUserAnswer (toolUseId: ${toolUseId}, wasFreeform: ${wasFreeform})`);
+		pending.resolve({ answer, wasFreeform });
+		this.pendingUserAnswers.delete(toolUseId);
+		return true;
 	}
 }
 

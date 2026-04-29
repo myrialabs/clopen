@@ -308,15 +308,30 @@ export const CANONICAL_TOOL_NAMES = new Set<KnownToolName>([
 ]);
 
 /**
+ * MCP tools that the UI renders via a canonical (non-`mcp__*`) component.
+ *
+ * Currently empty — kept as a hook so a future engine that surfaces a
+ * canonical-equivalent tool through MCP (rather than its native SDK) can
+ * collapse it without re-introducing the registry plumbing.
+ */
+const MCP_CANONICAL_OVERRIDES: Record<string, KnownToolName> = {};
+
+/**
  * Normalize an arbitrary tool name emitted by an engine into a shape the UI
  * is guaranteed to handle:
  *   - canonical names pass through unchanged;
- *   - `mcp__*` names pass through unchanged;
+ *   - whitelisted `mcp__*` overrides collapse to their canonical equivalent
+ *     (see MCP_CANONICAL_OVERRIDES);
+ *   - other `mcp__*` names pass through unchanged;
  *   - anything else is wrapped as `Unknown:<original>` so the UI renders a
  *     visible error with a pointer to the fix (add to the registry).
  */
 export function toCanonicalToolName(rawName: string): KnownToolName | McpToolName | UnknownToolName {
-	if (rawName.startsWith('mcp__')) return rawName as McpToolName;
+	if (rawName.startsWith('mcp__')) {
+		const override = MCP_CANONICAL_OVERRIDES[rawName];
+		if (override) return override;
+		return rawName as McpToolName;
+	}
 	if (CANONICAL_TOOL_NAMES.has(rawName as KnownToolName)) return rawName as KnownToolName;
 	return `Unknown:${rawName}` as UnknownToolName;
 }

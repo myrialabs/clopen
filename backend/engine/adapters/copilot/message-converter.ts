@@ -33,6 +33,7 @@ import type {
 	SuccessResultEvent,
 	SystemInitEvent,
 	TokenUsage,
+	AgentInput,
 	BashInput,
 	ReadInput,
 	EditInput,
@@ -48,6 +49,7 @@ import type {
 } from '$shared/types/unified';
 import { toCanonicalToolName } from '$shared/types/unified';
 import type { SessionEvent } from '@github/copilot-sdk';
+import { resolveOpenCodeToolName } from '../../../mcp/config';
 
 // Derive data payload types from the SessionEvent discriminated union so we
 // don't depend on internal type re-exports that aren't part of the SDK's
@@ -62,6 +64,10 @@ type AssistantTurnEndData = Extract<SessionEvent, { type: 'assistant.turn_end' }
 type AssistantUsageData = Extract<SessionEvent, { type: 'assistant.usage' }>['data'];
 type ToolExecutionStartData = Extract<SessionEvent, { type: 'tool.execution_start' }>['data'];
 type ToolExecutionCompleteData = Extract<SessionEvent, { type: 'tool.execution_complete' }>['data'];
+type SubagentStartedData = Extract<SessionEvent, { type: 'subagent.started' }>['data'];
+type SubagentCompletedData = Extract<SessionEvent, { type: 'subagent.completed' }>['data'];
+type SubagentFailedData = Extract<SessionEvent, { type: 'subagent.failed' }>['data'];
+
 
 // ============================================================================
 // Engine Identity
@@ -129,6 +135,11 @@ const COPILOT_TOOL_NAME_MAP: Record<string, string> = {
 	'todo_write': 'TodoWrite',
 	'todowrite': 'TodoWrite',
 
+	// Sub-agent dispatch (Copilot's `task` tool spawns a sub-agent that runs
+	// asynchronously; events from the sub-agent arrive with `agentId` set and
+	// must thread back to this tool's call id via parent.toolUseId).
+	'task': 'Agent',
+
 	// User interaction
 	'ask_user': 'AskUserQuestion',
 	'question': 'AskUserQuestion',
@@ -167,7 +178,15 @@ export function isIgnoredCopilotTool(rawName: string, mcpServerName?: string): b
 
 /** Map a raw Copilot tool name (with optional MCP server) to a canonical UI name. */
 function mapCopilotToolName(rawName: string, mcpServerName?: string): string {
-	if (mcpServerName) return `mcp__${mcpServerName}__${rawName}`;
+	if (mcpServerName) {
+		// Tools served via our remote MCP HTTP endpoint (`clopen-mcp`) come
+		// back as `{ name: '<bare-tool>', mcpServerName: 'clopen-mcp' }`. Resolve
+		// the bare name to `mcp__<server>__<tool>` via the same registry helper
+		// Open Code uses so the UI renders the matching MCP tool component.
+		const resolved = resolveOpenCodeToolName(rawName);
+		if (resolved) return resolved;
+		return `mcp__${mcpServerName}__${rawName}`;
+	}
 	const lower = rawName.toLowerCase();
 	const mapped = COPILOT_TOOL_NAME_MAP[lower] ?? COPILOT_TOOL_NAME_MAP[rawName] ?? rawName;
 	return toCanonicalToolName(mapped);
@@ -373,6 +392,21 @@ function normalizeToolSearchInput(raw: RawToolArgs): ToolSearchInput {
 }
 
 /**
+ * Copilot's `task` tool dispatches a named sub-agent. Its arguments look like:
+ *   { name, agent_type, description, prompt, mode }
+ * Map those to the unified `AgentInput` so the Agent tool component renders
+ * the same way as Claude's `Task` and OpenCode's `task`.
+ */
+function normalizeAgentInput(raw: RawToolArgs): AgentInput {
+	return {
+		prompt: str(raw, 'prompt', 'task', 'instruction'),
+		description: optStr(raw, 'description', 'desc') ?? '',
+		subagentType: optStr(raw, 'agent_type', 'agentType', 'subagent_type', 'subagentType', 'agent', 'name')
+			?? 'general-purpose',
+	};
+}
+
+/**
  * Normalize raw Copilot tool arguments → canonical input shape. Unknown/MCP
  * tools fall through with their args unchanged.
  */
@@ -391,6 +425,7 @@ function normalizeCopilotToolInput(canonical: string, raw: RawToolArgs): Record<
 		case 'AskUserQuestion': return normalizeAskUserQuestionInput(raw) as unknown as Record<string, unknown>;
 		case 'TodoWrite': return normalizeTodoWriteInput(raw) as unknown as Record<string, unknown>;
 		case 'ToolSearch': return normalizeToolSearchInput(raw) as unknown as Record<string, unknown>;
+		case 'Agent': return normalizeAgentInput(raw) as unknown as Record<string, unknown>;
 		default: return raw;
 	}
 }
@@ -426,6 +461,30 @@ export interface StreamConverterState {
 	 * never receives an orphan tool_result without its tool_use.
 	 */
 	ignoredToolCallIds: Set<string>;
+	/**
+	 * Sub-agent instance id → tool call id of the parent `task` (Agent) tool.
+	 *
+	 * Populated on `subagent.started`. Every event a sub-agent emits carries
+	 * `event.agentId`; we use this map to resolve the originating Agent
+	 * tool_use id and stamp `parent.toolUseId` on the sub-agent's
+	 * assistant/user messages. Without this, the message grouper at
+	 * `frontend/utils/chat/message-grouper.ts` cannot route sub-agent activity
+	 * into the parent Agent block — sub-agent tool calls render as orphan
+	 * top-level messages.
+	 */
+	agentParentMap: Map<string, string>;
+	/**
+	 * AskUserQuestion tool call id → original question text. Captured when
+	 * the `ask_user` tool_use block is built so that, on
+	 * `tool.execution_complete`, we can reformat Copilot's plain-text
+	 * "User selected: X" payload into the JSON shape
+	 * (`{"answers": {<question>: <answer>}}`) the UI's parser expects (see
+	 * `frontend/components/chat/tools/variants/.../AskUserQuestionTool.svelte`).
+	 * Without this, the UI fails to parse the answer and renders the
+	 * AskUserQuestion bubble as a red error instead of the green answered
+	 * state.
+	 */
+	askUserQuestions: Map<string, string>;
 }
 
 export function createStreamConverterState(sessionId: string, modelId: string): StreamConverterState {
@@ -440,7 +499,57 @@ export function createStreamConverterState(sessionId: string, modelId: string): 
 		lastAssistantMessageId: null,
 		pendingMessages: [],
 		ignoredToolCallIds: new Set(),
+		agentParentMap: new Map(),
+		askUserQuestions: new Map(),
 	};
+}
+
+/**
+ * Resolve the parent Agent tool call id for an event emitted from inside a
+ * sub-agent. Prefers the (deprecated but still emitted) `data.parentToolCallId`
+ * direct hint; falls back to `event.agentId` looked up in `agentParentMap`.
+ * Returns `null` for events from the root agent or session-level events.
+ */
+export function resolveParentToolUseId(
+	event: SessionEvent,
+	state: StreamConverterState,
+): string | null {
+	const data = (event as { data?: { parentToolCallId?: string } }).data;
+	const direct = data?.parentToolCallId;
+	if (direct) return direct;
+	const agentId = (event as { agentId?: string }).agentId;
+	if (agentId) {
+		const mapped = state.agentParentMap.get(agentId);
+		if (mapped) return mapped;
+	}
+	return null;
+}
+
+/**
+ * `subagent.started` registers a sub-agent instance. Every subsequent event
+ * with the same `agentId` belongs to this sub-agent, and its `toolCallId` is
+ * the parent Agent (`task`) tool block id.
+ */
+export function convertSubagentStarted(
+	event: { agentId?: string; data: SubagentStartedData },
+	state: StreamConverterState,
+): EngineOutput[] {
+	if (event.agentId) {
+		state.agentParentMap.set(event.agentId, event.data.toolCallId);
+	}
+	return [];
+}
+
+/**
+ * Cleanup mapping when a sub-agent finishes. Late-arriving events still resolve
+ * via `data.parentToolCallId`, so dropping the entry is safe.
+ */
+export function convertSubagentEnded(
+	event: { agentId?: string; data: SubagentCompletedData | SubagentFailedData },
+	state: StreamConverterState,
+): EngineOutput[] {
+	if (event.agentId) state.agentParentMap.delete(event.agentId);
+	return [];
 }
 
 /**
@@ -536,7 +645,11 @@ export function convertReasoningDelta(data: AssistantReasoningDeltaData, state: 
 	return out;
 }
 
-export function convertReasoning(data: AssistantReasoningData, state: StreamConverterState): EngineOutput[] {
+export function convertReasoning(
+	data: AssistantReasoningData,
+	state: StreamConverterState,
+	parentToolUseId: string | null = null,
+): EngineOutput[] {
 	const out: EngineOutput[] = [];
 	const text = (data.content ?? state.reasoningBuffers.get(data.reasoningId) ?? '').trim();
 	state.reasoningBuffers.delete(data.reasoningId);
@@ -553,7 +666,7 @@ export function convertReasoning(data: AssistantReasoningData, state: StreamConv
 		createdAt: new Date().toISOString(),
 		messageId: crypto.randomUUID(),
 		sessionId: state.sessionId,
-		parent: { messageId: null, sessionId: null, toolUseId: null },
+		parent: { messageId: null, sessionId: null, toolUseId: parentToolUseId },
 		engine: buildEngine(state.modelId),
 		text,
 	};
@@ -599,7 +712,11 @@ export function convertMessageDelta(data: AssistantMessageDeltaData, state: Stre
  * emission happens lazily so `assistant.usage` (which arrives next in the
  * stream) can attach to the most recent message before it leaves the adapter.
  */
-export function convertAssistantMessage(data: AssistantMessageData, state: StreamConverterState): EngineOutput[] {
+export function convertAssistantMessage(
+	data: AssistantMessageData,
+	state: StreamConverterState,
+	parentToolUseId: string | null = null,
+): EngineOutput[] {
 	state.lastAssistantMessageId = data.messageId;
 
 	const flushed = flushPending(state);
@@ -633,7 +750,7 @@ export function convertAssistantMessage(data: AssistantMessageData, state: Strea
 		createdAt: new Date().toISOString(),
 		messageId: blocks.length === 1 ? baseId : `${baseId}:${idx}`,
 		sessionId: state.sessionId,
-		parent: { messageId: null, sessionId: null, toolUseId: null },
+		parent: { messageId: null, sessionId: null, toolUseId: parentToolUseId },
 		engine: buildEngine(state.modelId),
 		content: [block],
 		stopReason: block.type === 'tool_use' ? 'tool_use' : 'end_turn',
@@ -644,9 +761,18 @@ export function convertAssistantMessage(data: AssistantMessageData, state: Strea
 	return flushed;
 }
 
-function buildToolUseBlock(req: AssistantMessageToolRequest, _state: StreamConverterState): ToolUseBlock {
+function buildToolUseBlock(req: AssistantMessageToolRequest, state: StreamConverterState): ToolUseBlock {
 	const canonical = mapCopilotToolName(req.name, req.mcpServerName);
 	const input = normalizeCopilotToolInput(canonical, (req.arguments ?? {}) as RawToolArgs);
+
+	// Remember the question text per ask_user toolCallId so we can rewrite
+	// `tool.execution_complete` content into the JSON shape the UI expects.
+	if (canonical === 'AskUserQuestion') {
+		const askInput = input as unknown as AskUserQuestionInput;
+		const firstQuestion = askInput.questions?.[0]?.question;
+		if (firstQuestion) state.askUserQuestions.set(req.toolCallId, firstQuestion);
+	}
+
 	return {
 		type: 'tool_use',
 		id: req.toolCallId,
@@ -695,14 +821,32 @@ export function convertToolStart(data: ToolExecutionStartData, state: StreamConv
  * Setting it on `parent.toolUseId` was a bug that caused tool_results to
  * never reach the UI, leaving `tool_use.result` null at render time.
  */
-export function convertToolComplete(data: ToolExecutionCompleteData, state: StreamConverterState): EngineOutput[] {
+export function convertToolComplete(
+	data: ToolExecutionCompleteData,
+	state: StreamConverterState,
+	parentToolUseId: string | null = null,
+): EngineOutput[] {
 	if (state.ignoredToolCallIds.has(data.toolCallId)) {
 		state.ignoredToolCallIds.delete(data.toolCallId);
 		state.toolNames.delete(data.toolCallId);
 		return [];
 	}
 
-	const resultText = extractToolResultContent(data);
+	let resultText = extractToolResultContent(data);
+
+	// AskUserQuestion: rewrite Copilot's plain-text result
+	// (e.g. "User selected: X") into the `{"answers": {<q>: <a>}}` JSON
+	// shape the UI's parseResultAnswers expects. Without this rewrite, the
+	// parser finds no matching question key and renders the bubble in the
+	// red error state even though the user answered successfully.
+	if (state.toolNames.get(data.toolCallId) === 'AskUserQuestion') {
+		const question = state.askUserQuestions.get(data.toolCallId);
+		state.askUserQuestions.delete(data.toolCallId);
+		if (question) {
+			const answer = extractAskUserAnswer(resultText);
+			resultText = JSON.stringify({ answers: { [question]: answer } });
+		}
+	}
 
 	const userBlock: UserContentBlock = {
 		type: 'tool_result',
@@ -716,13 +860,28 @@ export function convertToolComplete(data: ToolExecutionCompleteData, state: Stre
 		createdAt: new Date().toISOString(),
 		messageId: crypto.randomUUID(),
 		sessionId: state.sessionId,
-		parent: { messageId: null, sessionId: null, toolUseId: null },
+		parent: { messageId: null, sessionId: null, toolUseId: parentToolUseId },
 		engine: buildEngine(state.modelId),
 		sender: { id: '', name: '' },
 		content: [userBlock],
 		synthetic: true,
 	};
 	return [message];
+}
+
+/**
+ * Pull the user's answer out of Copilot's `ask_user` result text. The
+ * Copilot CLI formats the result as "User selected: <answer>" for the
+ * agent's own context, so we strip that prefix to recover the raw answer
+ * before re-emitting it as JSON for the UI.
+ */
+function extractAskUserAnswer(resultText: string): string {
+	const trimmed = resultText.trim();
+	const prefix = 'User selected:';
+	if (trimmed.toLowerCase().startsWith(prefix.toLowerCase())) {
+		return trimmed.slice(prefix.length).trim();
+	}
+	return trimmed;
 }
 
 /**

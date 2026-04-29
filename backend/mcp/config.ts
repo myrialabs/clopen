@@ -7,6 +7,7 @@
 
 import { createSdkMcpServer, tool, type McpSdkServerConfigWithInstance, type McpServerConfig } from "@anthropic-ai/claude-agent-sdk";
 import type { McpRemoteConfig } from '@opencode-ai/sdk';
+import type { MCPHTTPServerConfig } from '@github/copilot-sdk';
 import type { ServerConfig, ParsedMcpToolName, ServerName } from './types';
 import type { McpExecutionContext } from '../engine/types';
 import { serverRegistry, serverFactories, serverMetadata } from './servers';
@@ -273,15 +274,17 @@ export function getMcpStats() {
 // ============================================================================
 
 /**
- * Resolve an Open Code tool name to our mcp__server__tool format.
+ * Resolve a remote-MCP tool name to our mcp__server__tool format.
  *
- * Open Code prefixes tool names with the MCP server name:
- * e.g. "clopen-mcp_open_new_tab" → "mcp__browser-automation__open_new_tab"
+ * Different SDKs prepend the MCP server config key (`clopen-mcp`) to tool
+ * names with different separators:
+ *   - Open Code:  "clopen-mcp_open_new_tab"   (underscore)
+ *   - Copilot:    "clopen-mcp-open_new_tab"   (hyphen)
+ *   - Codex:      "open_new_tab"              (no prefix; mcpServerName carried separately)
  *
- * This function strips the prefix and maps back using the mcpServers
- * registry — the SAME source that defines which tools exist.
- *
- * Works for both remote HTTP MCP and legacy stdio MCP (same naming convention).
+ * This function strips whichever prefix is present and maps the bare tool
+ * name back using the `mcpServers` registry — the SAME source of truth that
+ * defines which tools exist.
  *
  * Returns null if the tool name is not one of our custom MCP tools.
  */
@@ -289,12 +292,14 @@ export function resolveOpenCodeToolName(toolName: string): string | null {
 	// Already in our format
 	if (toolName.startsWith('mcp__')) return toolName;
 
-	// Strip Open Code MCP server prefix if present
-	// Open Code prefixes with the server config key: "clopen-mcp_<tool>"
+	// Strip the remote-MCP server prefix if present. Both `_` and `-` are
+	// observed in the wild depending on the engine's SDK.
 	let rawName = toolName;
-	const ocPrefix = 'clopen-mcp_';
-	if (rawName.startsWith(ocPrefix)) {
-		rawName = rawName.slice(ocPrefix.length);
+	for (const prefix of ['clopen-mcp_', 'clopen-mcp-']) {
+		if (rawName.startsWith(prefix)) {
+			rawName = rawName.slice(prefix.length);
+			break;
+		}
 	}
 
 	// Look up which server owns this tool
@@ -337,6 +342,120 @@ export function getOpenCodeMcpConfig(): Record<string, McpRemoteConfig> {
 			url: `http://localhost:${port}/mcp`,
 			enabled: true,
 			timeout: 10000,
+		},
+	};
+}
+
+// ============================================================================
+// Codex MCP Configuration
+// ============================================================================
+
+/**
+ * Per-MCP-server config shape consumed by the Codex CLI.
+ *
+ * Mirrors the subset of `RawMcpServerConfig` we actually emit. The SDK
+ * flattens this object to `--config mcp_servers.<server>.<key>=<value>` flags
+ * on every `codex exec` invocation.
+ */
+type CodexMcpServerConfig = {
+	url: string;
+	tools?: Record<string, { approval_mode: 'auto' | 'prompt' | 'approve' }>;
+};
+
+/**
+ * Get MCP configuration for Codex engine.
+ *
+ * Codex's CLI accepts an `mcp_servers.<name>.url` config that points at any
+ * Streamable HTTP MCP endpoint. We reuse the SAME `/mcp` URL Open Code
+ * already consumes — no new HTTP server, no per-engine bridge. Tool handlers
+ * execute in-process in the Clopen backend.
+ *
+ * Approval: in non-interactive `codex exec` mode there is no UI to approve
+ * MCP tool calls, so the CLI auto-cancels them with
+ * "Error: user cancelled MCP tool call". Codex has no top-level
+ * "auto-approve all MCP" switch — it only exposes per-tool
+ * `mcp_servers.<name>.tools.<tool>.approval_mode`. We enumerate every
+ * enabled tool here and set `approval_mode = "approve"` so the subprocess
+ * runs them without asking. Open Code achieves the same outcome by replying
+ * to permission events at runtime — Codex requires the decision up-front.
+ *
+ * The shape returned here is flattened by the Codex SDK into
+ * `--config mcp_servers.clopen-mcp.<dotted-key>=<value>` flags when the SDK
+ * invokes the CLI subprocess for each turn.
+ */
+export function getCodexMcpConfig(): Record<string, CodexMcpServerConfig> {
+	const enabledServers = getEnabledServerNames();
+	if (enabledServers.length === 0) {
+		return {};
+	}
+
+	const port = SERVER_ENV.PORT;
+
+	const tools: Record<string, { approval_mode: 'approve' }> = {};
+	for (const serverName of enabledServers) {
+		const serverConfig = mcpServers[serverName];
+		for (const toolName of serverConfig.tools as readonly string[]) {
+			tools[toolName] = { approval_mode: 'approve' };
+		}
+	}
+
+	debug.log('mcp', `📦 Codex MCP: remote server at http://localhost:${port}/mcp (auto-approving ${Object.keys(tools).length} tools)`);
+
+	return {
+		'clopen-mcp': {
+			url: `http://localhost:${port}/mcp`,
+			tools,
+		},
+	};
+}
+
+// ============================================================================
+// Copilot MCP Configuration
+// ============================================================================
+
+/**
+ * Get MCP configuration for the Copilot engine.
+ *
+ * The Copilot SDK accepts a `mcpServers` map on both `SessionConfig` and
+ * `ResumeSessionConfig` and supports the streamable-HTTP transport directly
+ * (`MCPHTTPServerConfig` with `type: 'http'`). We reuse the SAME `/mcp` URL
+ * Open Code and Codex already consume — no new HTTP server, no per-engine
+ * bridge. Tool handlers execute in-process in the Clopen backend.
+ *
+ * Approval: Copilot already auto-approves every tool call via
+ * `onPermissionRequest: approveAll` in `copilot/stream.ts`, which covers MCP
+ * tools too. No per-tool approval enumeration is required (unlike Codex).
+ *
+ * The `tools` field lists the bare tool names exposed by our remote MCP
+ * server. The SDK delivers tool calls back with `mcpServerName: 'clopen-mcp'`
+ * + the bare tool name; `mapCopilotToolName()` then routes them through
+ * `resolveOpenCodeToolName()` to recover the canonical
+ * `mcp__<server>__<tool>` form.
+ */
+export function getCopilotMcpConfig(): Record<string, MCPHTTPServerConfig> {
+	const enabledServers = getEnabledServerNames();
+	if (enabledServers.length === 0) {
+		return {};
+	}
+
+	const port = SERVER_ENV.PORT;
+
+	const tools: string[] = [];
+	for (const serverName of enabledServers) {
+		const serverConfig = mcpServers[serverName];
+		for (const toolName of serverConfig.tools as readonly string[]) {
+			tools.push(toolName);
+		}
+	}
+
+	debug.log('mcp', `📦 Copilot MCP: remote server at http://localhost:${port}/mcp (${tools.length} tools)`);
+
+	return {
+		'clopen-mcp': {
+			type: 'http',
+			url: `http://localhost:${port}/mcp`,
+			tools,
+			timeout: 10_000,
 		},
 	};
 }

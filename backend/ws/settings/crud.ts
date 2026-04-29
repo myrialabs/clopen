@@ -11,7 +11,7 @@ import { t } from 'elysia';
 import { createRouter } from '$shared/utils/ws-server';
 import { settingsQueries } from '../../database/queries';
 import { initializeEngine } from '../../engine';
-import { CLAUDE_CODE_MODELS, registerModels } from '$shared/constants/engines';
+import { CLAUDE_CODE_MODELS, CODEX_MODELS, registerModels } from '$shared/constants/engines';
 import type { EngineType } from '$shared/types/unified';
 
 export const crudHandler = createRouter()
@@ -79,11 +79,11 @@ export const crudHandler = createRouter()
 	// List available models for an engine
 	.http('models:list', {
 		data: t.Object({
-			engine: t.Union([t.Literal('claude-code'), t.Literal('opencode'), t.Literal('copilot')])
+			engine: t.Union([t.Literal('claude-code'), t.Literal('opencode'), t.Literal('copilot'), t.Literal('codex')])
 		}),
 		response: t.Array(t.Object({
 			engine: t.Object({
-				type: t.Union([t.Literal('claude-code'), t.Literal('opencode'), t.Literal('copilot')]),
+				type: t.Union([t.Literal('claude-code'), t.Literal('opencode'), t.Literal('copilot'), t.Literal('codex')]),
 				provider: t.String(),
 				model: t.Object({ id: t.String(), name: t.String() }),
 				account: t.Object({ id: t.Number(), name: t.String() }),
@@ -93,15 +93,23 @@ export const crudHandler = createRouter()
 				input: t.Object({ text: t.Boolean(), image: t.Boolean(), audio: t.Boolean(), video: t.Boolean(), pdf: t.Boolean() }),
 				output: t.Object({ text: t.Boolean(), image: t.Boolean(), audio: t.Boolean(), video: t.Boolean(), pdf: t.Boolean() }),
 			}),
-			capabilities: t.Object({ reasoning: t.Boolean(), tools: t.Boolean(), structuredOutput: t.Boolean() }),
+			capabilities: t.Object({
+				reasoning: t.Boolean(),
+				tools: t.Boolean(),
+				structuredOutput: t.Boolean(),
+				requiresAuthMode: t.Optional(t.Union([t.Literal('chatgpt'), t.Literal('api_key')])),
+			}),
 			cost: t.Object({ input: t.Number(), output: t.Number() }),
 		}))
 	}, async ({ data }) => {
 		const engineType: EngineType = data.engine;
 
-		// Claude Code models are static
+		// Claude Code + Codex models are static
 		if (engineType === 'claude-code') {
 			return CLAUDE_CODE_MODELS;
+		}
+		if (engineType === 'codex') {
+			return CODEX_MODELS;
 		}
 
 		// Dynamic engines: initialize and fetch models

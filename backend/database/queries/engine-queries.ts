@@ -220,6 +220,18 @@ export const engineQueries = {
 		db.prepare(`UPDATE engine_accounts SET name = ? WHERE id = ?`).run(name, accountId);
 	},
 
+	/**
+	 * Replace the stored credential for an existing account. Used by adapters
+	 * whose CLI mutates an external dotfile in place (e.g. Codex's
+	 * ~/.codex/auth.json token refresh) — the adapter snapshots the file back
+	 * into `credential` after each stream so refreshed tokens survive across
+	 * account switches.
+	 */
+	updateAccountCredential(accountId: number, credential: string): void {
+		const db = getDatabase();
+		db.prepare(`UPDATE engine_accounts SET credential = ? WHERE id = ?`).run(credential, accountId);
+	},
+
 	// ------------------------------------------------------------------
 	// Composite
 	// ------------------------------------------------------------------

@@ -43,6 +43,12 @@
 	/>
 
 	<ToolInstallCard
+		tool="codex"
+		title="Codex CLI"
+		description="Used by clopen to run the OpenAI Codex engine."
+	/>
+
+	<ToolInstallCard
 		tool="chrome"
 		title="Chrome"
 		description="Used by clopen to render the browser preview."

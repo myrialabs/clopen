@@ -87,6 +87,27 @@ Three key rules that **every** layer upholds:
   New methods are not added ad-hoc — they are added to the interface first,
   then implemented in **every** adapter.
 
+> ⚠️ **Before you propose new infrastructure, read this.**
+> Two design pitfalls have repeatedly tripped people adding new adapters.
+> Before sketching architecture, double-check:
+>
+> 1. **MCP over HTTP already exists.** `backend/mcp/remote-server.ts` mounts
+>    every `defineServer()`-registered MCP server as a Streamable HTTP
+>    endpoint at `http://localhost:<port>/mcp`. OpenCode consumes it via
+>    `getOpenCodeMcpConfig()`. Any engine whose CLI/SDK accepts a
+>    `streamable-http` MCP URL (Codex, future engines) reuses **the same
+>    URL** by adding a sibling `getXxxMcpConfig()` helper in
+>    `backend/mcp/config.ts`. Do **NOT** propose a "new MCP bridge",
+>    "per-engine MCP server", or "per-stream MCP path". See §9.12.
+> 2. **Shared CLI dotfiles are swapped from DB, not isolated.** When a CLI
+>    stores its credentials in a known location (e.g. `~/.codex/auth.json`),
+>    the multi-account approach is to snapshot that file into the DB on
+>    login and write the chosen account's snapshot back on switch. Do
+>    **NOT** propose per-account isolated home directories
+>    (`CODEX_HOME=/foo/account-1/`); that path complicates session-state
+>    sharing, token refresh persistence, and user-level config inheritance.
+>    See §9.13.
+
 ---
 
 ## 2. The `backend/engine/` layer — core contract
@@ -210,6 +231,15 @@ calling `getEnabledMcpServers(options.mcpContext)`.
 - ❌ Define shared types inline — extend `shared/types/unified/*`.
 - ❌ Use `console.*` — use `debug` from `$shared/utils/logger` with
   category `'engine'`, `'chat'`, or `'mcp'`.
+- ❌ **Build a new MCP HTTP server for the adapter.** Use the existing
+  `backend/mcp/remote-server.ts` and add a `getXxxMcpConfig()` helper in
+  `backend/mcp/config.ts` returning the URL in the engine's expected
+  shape. New MCP servers are added via `defineServer()` — never via a
+  parallel HTTP listener.
+- ❌ **Create per-account isolated home directories** to multiplex two
+  accounts into the same CLI's shared dotfile. Snapshot the CLI's auth
+  file into `engine_accounts.credential` on login; write the chosen
+  account's snapshot back into the shared location on switch. See §9.13.
 
 ### 2.6 Standard files in each adapter
 
@@ -331,6 +361,18 @@ getProvidersWithAccounts(engineType?) // join used by endpoint listing
   per-stream account switch requires `dispose()` + `initialize(newId)` —
   see `streamQuery` in `copilot/stream.ts` and §9.9 below.
 
+> **Pattern: auth-blob materialization for shared CLI dotfiles.**
+> Some CLIs (e.g. Codex's `~/.codex/auth.json`) read credentials from a
+> fixed location on disk that **cannot** be redirected per-process without
+> isolating the entire home dir. For those engines, `credential` stores
+> the **whole file content** as a JSON wrapper
+> (`{ kind: 'chatgpt', authJson: '...' }`), and the adapter / WS handler
+> writes that blob back to the shared dotfile on `accounts-switch`. After
+> each stream, snapshot the (possibly-refreshed-by-the-CLI) dotfile back
+> into `engine_accounts.credential` so token refreshes survive across
+> account switches. This keeps multi-account support working without
+> isolated `XYZ_HOME` directories — see §9.13 for the rationale.
+
 ### 3.4 The models.dev catalog (OpenCode-specific)
 
 `config.ts` caches the catalog in the `settings` table under
@@ -407,6 +449,48 @@ followed by `disposeEngine('opencode')` + `disposeOpenCodeClient(true)` —
 the `forRestart` flag drops the stored URL and kills the server even if
 Clopen did not spawn it (the reuse case).
 
+#### Restart-Server pattern (long-lived server engines)
+
+Engines that hold a **long-lived process or client** (OpenCode's `opencode
+serve` subprocess, Copilot's `CopilotClient`) cache provider/account
+credentials at boot or construction time. Adding, removing, or switching
+an account does **not** automatically take effect for in-flight streams or
+the cached client — the engine must be **restarted**. The adapter exposes
+a `*-server-restart` event; the UI surfaces this to the user as a
+**"Restart Server"** button in two places:
+
+1. **Settings → Engines** card — shown whenever the user has just changed
+   provider/account state (add / remove / switch). See
+   `AIEnginesSettings.svelte::handleRestartServer` (with the
+   `needsConfirmation` confirm-dialog flow) and
+   `forceRestartServer`.
+2. **Chat Input → next to the model/account picker** — shown when the
+   active session's account has just been switched mid-flight and the
+   user needs to apply it before sending the next prompt. See
+   `EngineModelPicker.svelte::ocNeedsRestart` / `restartOCServer`. The
+   button uses `force: true` so users in chat don't see another modal.
+
+The handler contract any restart event must follow:
+
+| Step | Behavior |
+|---|---|
+| 1 | Inspect the engine's active streams. If any exist and `force !== true`, return `{ needsConfirmation: true, activeChats: N }` — UI then opens a confirm dialog. |
+| 2 | When `force === true`, call `cancelStream` on every active stream for that engine. |
+| 3 | Call `disposeEngine(engineType)` (clears the per-project map) and any adapter-specific shared-resource cleanup (`disposeOpenCodeClient(true)`, etc.). The flag tells the cleanup routine that this is a restart, not a shutdown — drop cached URLs / sockets even if reused from outside. |
+| 4 | Resolve. The next `streamQuery` call will lazy-init the engine fresh against the new account state. |
+
+After a successful restart the UI also refreshes models
+(`modelStore.refreshModels(engineType)`) because the model catalog can
+change with the credential.
+
+**When a new engine does NOT need this:** if the engine spawns a
+**fresh subprocess per turn** (Codex's `codex exec`, Claude's per-turn
+`query()`), the credential is re-read at every turn and there is nothing
+to "restart". Such engines do not implement `*-server-restart`. The
+appropriate analog for shared-CLI-dotfile engines like Codex is the
+auth-blob swap (§9.13) — performed inside `accounts-switch`, not via a
+separate restart event.
+
 ### 4.3 Copilot — `engine:copilot-*`
 
 `backend/ws/engine/copilot/index.ts` merges:
@@ -419,10 +503,16 @@ Clopen did not spawn it (the reuse case).
 | `engine:copilot-accounts-switch`     | Set active                                    |
 | `engine:copilot-accounts-delete`     |                                               |
 | `engine:copilot-accounts-rename`     |                                               |
+| `engine:copilot-server-restart`      | Restart cached `CopilotClient` so a new PAT applies — same Restart-Server pattern as §4.2 |
 
 The Copilot setup flow does not need a PTY — the user pastes a GitHub
 Personal Access Token in the UI (Copilot Requests + read:user scope), and
 the handler stores it via `engineQueries.createAccount`. No re-auth dance.
+
+Copilot follows the **same Restart-Server pattern** documented in §4.2
+because `CopilotClient` takes the PAT at construction time. Account
+add / remove / switch flips a `needsRestart` flag in the UI that surfaces
+a "Restart Server" button in both Settings → Engines and Chat Input.
 
 ### 4.4 System Tools — `system-tools:*`
 
@@ -635,10 +725,18 @@ Backend `chat:stream` then `streamManager.startStream(...)`, which:
   content blocks, OpenCode uses `extractPromptParts()` to
   `data:<mime>;base64,...`.
 - **AskUserQuestion**: a standard tool that the adapter must intercept.
-  See `claude/stream.ts::canUseTool` (in-process) and
-  `opencode/stream.ts::question.asked` (event-driven + HTTP fallback).
-  The answer arrives via `engine.resolveUserAnswer(toolUseId, answers)`
-  from the chat router.
+  Three patterns exist depending on what the SDK supports:
+  1. **In-process callback** (Claude) — `claude/stream.ts::canUseTool`
+     blocks the SDK until the user answers.
+  2. **SDK event + HTTP fallback** (OpenCode) — `opencode/stream.ts`
+     listens for `question.asked` and resolves via
+     `engine.resolveUserAnswer(toolUseId, answers)`.
+  3. **MCP tool** (engines whose SDK has neither, e.g. Codex) — the
+     question is exposed as an MCP tool registered via `defineServer()`;
+     the tool handler emits `chat:partial` and blocks on a Promise; the
+     answer arrives via a chat WS event that resolves the Promise from a
+     module-local registry. The flow is **engine-agnostic** — no
+     `resolveUserAnswer` method on the adapter. See §9.12.
 
 ---
 
@@ -1137,7 +1235,7 @@ if (sessionStateExists(resume)) {
 session = await this.client.resumeSession(resumeId, baseConfig);
 ```
 
-The expected effect (compare against `log-2.txt`):
+The expected effect, observable by logging `data.sessionId` per turn:
 
 ```
 turn 1   user → assistant   sessionId: A
@@ -1174,6 +1272,253 @@ async dispose(): Promise<void> {
 }
 ```
 
+### 9.12 Reuse the existing MCP HTTP infrastructure — never build a new bridge
+
+`backend/mcp/remote-server.ts` already mounts every server registered via
+`defineServer()` as a **Streamable HTTP MCP** endpoint at
+`http://localhost:<port>/mcp`. OpenCode consumes it via
+`getOpenCodeMcpConfig()`. Tool handlers run **in-process** in the Clopen
+backend — there is no subprocess, no per-engine HTTP listener, no
+per-stream MCP path. Project context propagates via
+`projectContextService` (AsyncLocalStorage with a `mostRecentActiveStream`
+fallback when the transport doesn't preserve the context).
+
+When you add an engine whose CLI/SDK accepts a streamable-http MCP URL
+(e.g. Codex, Copilot):
+
+1. Add a sibling helper next to `getOpenCodeMcpConfig()` —
+   `getXxxMcpConfig()` — that returns the **same** URL in the engine's
+   expected shape (Codex format: `{ '<server-name>': { url: '...' } }`;
+   Copilot format: `{ '<server-name>': { type: 'http', url: '...', tools: [...] } }`).
+   The engine sees every enabled MCP server (`browser-automation`,
+   `weather-service`, …) as one logical MCP server namespace exposing all
+   the tools.
+
+   **Naming conventions for the helper** (mirror the existing two so the
+   reviewer doesn't ping you twice):
+   - Use the SDK's **exported type** for the return shape if one exists
+     — e.g. Open Code's `McpRemoteConfig` from `@opencode-ai/sdk`,
+     Copilot's `MCPHTTPServerConfig` from `@github/copilot-sdk`. Only
+     define a local type alias when the SDK doesn't export one (Codex).
+   - Reuse the `'clopen-mcp'` namespace key. Don't invent a new one
+     per engine — the tool-name resolver below depends on it.
+   - In the adapter, name the local variable holding the helper's return
+     value **`mcpConfig`**, not `mcpServers`. The latter shadows both the
+     SDK's config field name AND the registry exported from
+     `backend/mcp/config.ts`, and reads as a bug at the call site.
+
+2. Use `resolveOpenCodeToolName()` (in `backend/mcp/config.ts`) on
+   incoming tool names; it strips the `clopen-mcp_` / `clopen-mcp-`
+   prefix and reverse-maps to `mcp__<server>__<tool>`. The same helper
+   works for any engine that uses the same naming convention.
+
+   **Engines DO NOT agree on the prefix separator.** Open Code joins the
+   server-config key to the tool name with `_` (`clopen-mcp_open_new_tab`);
+   Copilot joins with `-` (`clopen-mcp-open_new_tab`); Codex emits a bare
+   tool name and carries the server name separately on the event payload.
+   `resolveOpenCodeToolName()` strips **both** `clopen-mcp_` and
+   `clopen-mcp-` prefixes for this reason. If a new engine introduces yet
+   another separator, extend the prefix list in that helper — do **not**
+   add a parallel resolver in the adapter.
+
+   The symptom of skipping this step is a tool that renders in the UI
+   with the doubled-up name `mcp__clopen-mcp__clopen-mcp-<tool>` instead
+   of `mcp__<server>__<tool>` — the prefix didn't strip and the registry
+   lookup fell through to the `mcp__<mcpServerName>__<rawName>` fallback.
+
+3. If your engine has **no callback hook** for AskUserQuestion (Codex's
+   SDK is the canonical example), AskUserQuestion stays unsupported for
+   that engine until the upstream SDK exposes a native primitive. The
+   previous engine-agnostic MCP fallback (`ask-user-question` tool +
+   stream-keyed pending registry) was removed once the carrying cost —
+   AsyncLocalStorage plumbing, dual resolve paths in
+   `backend/ws/chat/stream.ts`, manual cancel-aborts — outweighed the
+   benefit. Wire the engine's native hook to `resolveUserAnswer` when it
+   ships; do not reintroduce a parallel MCP path.
+
+4. Auto-approval of MCP tool calls is **per-engine**, not centralised.
+   Each SDK exposes its own approval surface and they are not
+   interchangeable:
+   - Claude Code: `canUseTool` returns `{ behavior: 'allow' }` for all
+     non-AskUserQuestion tools (already handled by the adapter).
+   - Open Code: replies `'once'` to `permission.asked` events at runtime
+     via `autoApprovePermission()`.
+   - Codex: enumerates every enabled tool with `approval_mode: 'approve'`
+     in the per-server config — `codex exec` is non-interactive and has
+     no runtime approval channel, so the decision must be baked in
+     up-front.
+   - Copilot: `onPermissionRequest: approveAll` covers MCP tools
+     too — no per-tool enumeration needed.
+
+   Wire whichever path exists; do not assume Codex-style enumeration is
+   required when a runtime hook is available, and do not assume runtime
+   approval works when only static config is offered.
+
+What you must NOT do:
+- ❌ A second HTTP listener (e.g. "MCP HTTP bridge for Codex"). Reuse `/mcp`.
+- ❌ Per-engine MCP servers in `backend/mcp/servers/` (e.g. one folder
+  per engine). All MCP servers are engine-agnostic and registered via
+  `defineServer()` once.
+- ❌ Per-stream bearer tokens or unique URLs. Authorization piggy-backs
+  on `projectContextService` exactly like the Claude in-process path.
+- ❌ A new namespace key in `getXxxMcpConfig()` (e.g. `'copilot-mcp'`).
+  Always use `'clopen-mcp'` — `resolveOpenCodeToolName()` keys off it.
+- ❌ A local type alias when the SDK exports the type (Open Code,
+  Copilot). Import `McpRemoteConfig` / `MCPHTTPServerConfig` directly.
+
+### 9.13 Auth-blob swap into a shared CLI dotfile (vs. per-account isolated dirs)
+
+When a CLI hard-codes its credential location (Codex reads
+`~/.codex/auth.json`; Gemini CLI reads `~/.gemini/oauth_creds.json`;
+etc.), the naïve approach is to give each Clopen account its own
+isolated home directory and override the CLI's home env var
+(`CODEX_HOME`, `GEMINI_HOME`). **Don't.** That approach has bitten us:
+
+- Session/thread state lives in the same dir tree (`~/.codex/sessions/`,
+  `~/.codex/projects/`), so isolating the dir splits session memory,
+  breaks fork-by-copy, and loses the user's `config.toml` overrides.
+- Token refresh happens in-place in the dotfile — refreshes performed
+  inside an isolated dir do not propagate back to the user's "real"
+  home unless we add a watcher.
+- The CLI's other features (e.g. project trust, `.agents` allowlist)
+  expect the dir to be the user's normal one.
+
+**Use the shared-location-with-DB-swap pattern instead:**
+
+| Step | Behavior |
+|---|---|
+| **Login** | Spawn the CLI's login command (`codex login`, etc.) which writes the user's normal dotfile. On success, **read the dotfile content** and persist it to `engine_accounts.credential` as a JSON wrapper, e.g. `{ kind: 'chatgpt', authJson: '<file content>' }`. |
+| **Switch account** | `accounts-switch` handler reads the chosen account's `credential`, parses the wrapper, writes `authJson` **back to the shared dotfile** with an atomic replace (`write to .tmp` + `rename`). |
+| **Stream-start** | Adapter ensures the dotfile reflects the right blob (re-write if drift detected; cheap idempotent op). |
+| **Stream-end** | Read the dotfile back and snapshot it into the active account's `credential` so any token refresh the CLI performed during the turn survives across switches. |
+
+Trade-off: only **one** Codex/CLI account is "active" on disk at a
+time. Concurrent streams from two different accounts will race; UI must
+surface only one active account per engine and document the limitation.
+For Clopen, that matches existing UI assumptions. If a future engine
+genuinely needs concurrent multi-account streams, escalate the trade-off
+explicitly — do **not** silently switch to per-account home dirs.
+
+Concurrency caveat: if the login command itself writes to the shared
+dotfile (Codex's `codex login` does), serialize the login flows with a
+backend-wide mutex so two simultaneous "Add Account" attempts can't
+clobber each other.
+
+### 9.14 Long-lived server engines need a "Restart Server" UX
+
+If your engine boots a process or constructs an SDK client that **caches
+credentials** beyond a single stream (OpenCode's `opencode serve`
+subprocess, Copilot's `CopilotClient` constructor), then add / remove /
+switch account does NOT take effect until that cached state is rebuilt.
+The fix is the **Restart-Server pattern** documented in §4.2:
+
+1. Add a `*-server-restart` WS event with the standard contract: check
+   active streams, return `{ needsConfirmation, activeChats }` when not
+   forced; on `force === true`, cancel streams + dispose engine + drop
+   any cached subprocess/client; the next `streamQuery` lazy-inits fresh.
+2. Surface a **"Restart Server"** button in **two** UI places:
+   - **Settings → Engines** — visible after add/remove/switch in the
+     engines settings panel itself. Confirmation dialog for non-forced.
+   - **Chat Input** — visible next to the model/account picker when the
+     user has switched account mid-session. Uses `force: true` so the
+     send-flow stays inline. See `EngineModelPicker.svelte::ocNeedsRestart`
+     for the flag and `restartOCServer` for the handler.
+3. After a successful restart, refresh the model catalog
+   (`modelStore.refreshModels(engineType)`) since model availability can
+   depend on credential state.
+
+Engines that **do not** need this:
+
+- Subprocess-per-turn engines (Claude Code's `query()`, Codex's
+  `codex exec`) re-read credentials at every turn — there is nothing
+  cached to invalidate.
+- Engines using the auth-blob swap pattern (§9.13) — the swap happens
+  inside `accounts-switch`, and the next turn's subprocess picks up the
+  new dotfile without a restart event.
+
+If you are tempted to add a `*-server-restart` event for an engine that
+spawns a fresh subprocess per turn, you almost certainly want the
+auth-blob swap (§9.13) instead — adding the restart event ships dead
+code and confuses the UX (button that does nothing observable).
+
+### 9.15 Sub-agent (`Task` / `Agent` tool) routing — name, input, parent id
+
+Every engine SDK we support exposes a "dispatch sub-agent" tool. Each
+SDK names it differently (Claude → `Task`, OpenCode → `task`, Copilot →
+`task`) and emits the sub-agent's tool calls / messages on the **same
+event stream** as the main turn. Without explicit routing those nested
+messages render as orphan top-level rows in the UI, and the dispatch
+tool itself appears as `Unknown:task`. There are three independent
+fixes — miss any one and the symptom shows up in the UI.
+
+**1. Canonicalise the dispatch tool name to `Agent`.** Every adapter
+must map its native name into the unified `Agent` block so the frontend
+tool renderer (`handleAgentTool`) and `subAgentMap` lookups work:
+
+```ts
+// claude/message-converter.ts
+const name = block.name === 'Task' ? 'Agent' : block.name;
+
+// opencode + copilot tool-name maps
+'task': 'Agent',
+```
+
+Then normalise the SDK's raw input fields into `AgentInput { prompt,
+description, subagentType }` (see §9.1). Field names vary —
+`prompt`/`task`/`instruction`, `agent_type`/`subagent_type`/`agent` —
+so the normaliser must accept them all and default `subagentType` to
+`'general-purpose'`.
+
+**2. Stamp `parent.toolUseId` on every sub-agent message.** The
+frontend grouper (`message-grouper.ts`) routes messages with
+`parent.toolUseId !== null` into `subAgentMap[parentToolId]` and
+attaches them as `subActivities` on the parent `Agent` tool block.
+Top-level messages must keep `parent.toolUseId = null` (see §9.5);
+sub-agent messages must carry the **parent dispatch tool's** call id.
+Each SDK exposes that linkage differently:
+
+| Engine   | How the parent id is discovered                                  |
+|----------|------------------------------------------------------------------|
+| Claude   | `msg.parent_tool_use_id` is on every nested SDK message          |
+| OpenCode | `convertToolUseOnly` / `convertToolResultOnly` / `convertSubtaskToolUseOnly` take a `parentToolUseId` parameter; the caller threads it through when iterating the subtask part |
+| Copilot  | `subagent.started` event carries `data.toolCallId` (parent) and `agentId` (child instance). The converter records `agentParentMap[agentId] = data.toolCallId` and `resolveParentToolUseId(event, state)` resolves later events: `data.parentToolCallId` first (deprecated direct hint), else map lookup by `agentId` |
+
+The converter functions for assistant messages, reasoning messages and
+`tool.execution_complete` then accept an optional `parentToolUseId` and
+stamp it onto `parent: { ..., toolUseId: parentToolUseId ?? null }`.
+On `subagent.completed` / `subagent.failed`, delete the map entry so
+the next sub-agent dispatch re-registers cleanly.
+
+**3. Suppress the SDK's sub-agent streaming deltas.** Some SDKs
+double-emit sub-agent activity: once as live text/reasoning deltas
+inside the main stream, and again as final non-streaming
+`assistant.message` / `assistant.reasoning` / `tool.execution_complete`
+events scoped to the sub-agent. The deltas have no clean parent
+linkage and would leak into the main chat bubble. The fix is to disable
+streaming for sub-agents at the SDK config level so only the final
+bundled events arrive — those carry `agentId` and route correctly via
+step 2 above:
+
+```ts
+// copilot/stream.ts — baseConfig
+includeSubAgentStreamingEvents: false,
+```
+
+If your SDK has no equivalent flag, the fallback is client-side: in the
+event switch, `if (parentToolUseId) break` for any
+`assistant.turn_start` / text-delta / reasoning-delta lifecycle event,
+since those lifecycles belong to the sub-agent and would corrupt the
+main turn's stream state.
+
+**Cross-engine consistency.** Once all three fixes are in place, the
+frontend treats the three engines identically: the `Agent` block in the
+main timeline carries `subActivities`, no orphan top-level messages
+appear, and the dispatch tool's name renders as `Agent`. If only step 1
+ships, sub-agent tool calls float to the top of the chat. If only step
+2 ships, the dispatch tool still says `Unknown:task`. If only step 3 is
+missed (in an SDK that does double-emit), sub-agent text appears in
+both places.
+
 ---
 
 ## 10. Quick reference table
@@ -1190,7 +1535,11 @@ async dispose(): Promise<void> {
 | Reasoning stream lifecycle                  | `opencode/stream.ts::flushReasoning`, `copilot/message-converter.ts::convertReasoningDelta` |
 | Cancel-before-RPC ordering                  | `opencode/stream.ts::cancel`, `claude/stream.ts::cancel`, `copilot/stream.ts::cancel`  |
 | Fork session (native vs. on-disk workaround) | `claude/stream.ts` (`forkSession: true`), `opencode/stream.ts` (`client.session.fork`), `copilot/session-fork.ts` (copy disk state) |
+| Sub-agent (`Task`/`Agent`) routing          | `claude/message-converter.ts` (`parent_tool_use_id`), `opencode/message-converter.ts::convertSubtaskToolUseOnly`, `copilot/message-converter.ts::resolveParentToolUseId` + `agentParentMap` (see §9.15) |
 | AskUserQuestion event + HTTP fallback       | `opencode/stream.ts::resolveUserAnswer`, `claude/stream.ts::canUseTool` |
+| MCP servers exposed over HTTP (single source) | `backend/mcp/remote-server.ts`, `backend/mcp/config.ts::getOpenCodeMcpConfig` (and future `getXxxMcpConfig`) |
+| Auth-blob swap into shared CLI dotfile      | Pattern only (no implementation yet); see §3.3 callout + §9.13 |
+| Restart-Server pattern (long-lived engines) | `backend/ws/engine/opencode/providers.ts::engine:opencode-server-restart`, `frontend/components/chat/input/components/EngineModelPicker.svelte::restartOCServer`, `AIEnginesSettings.svelte::handleRestartServer`/`forceRestartServer` |
 | `generateStructured` (no tools, JSON)       | `claude/stream.ts::generateStructured`, `opencode/stream.ts::generateStructured` |
 | Error normalisation                         | `claude/error-handler.ts`, `copilot/error-handler.ts`, `opencode/stream.ts` `session.error` handler |
 | DB provider/account access                  | `backend/database/queries/engine-queries.ts`              |

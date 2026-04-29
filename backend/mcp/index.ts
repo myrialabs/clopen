@@ -31,6 +31,8 @@ export {
 	getEnabledToolsForServer,
 	getMcpStats,
 	getOpenCodeMcpConfig,
+	getCodexMcpConfig,
+	getCopilotMcpConfig,
 	resolveOpenCodeToolName
 } from './config';
 

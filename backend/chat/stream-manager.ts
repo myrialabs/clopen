@@ -686,6 +686,13 @@ class StreamManager extends EventEmitter {
 									});
 								}
 							}
+							// Codex emits usage only once per turn (after all items
+							// streamed live), so saved assistant rows have usage:null.
+							// Backfill the turn's aggregate to every saved assistant
+							// without usage so it survives a refresh.
+							if (successResult.usage && streamState.engine === 'codex') {
+								this.backfillUsageForStream(streamState, successResult.usage, requestSender);
+							}
 						} else {
 							const errResult = output as ErrorResultEvent;
 							if (errResult.errors?.length) {
@@ -1334,6 +1341,63 @@ class StreamManager extends EventEmitter {
 		} catch (err) {
 			debug.error('chat', 'Failed to backfill stopReason:', err);
 			return null;
+		}
+	}
+
+	/**
+	 * Backfill `usage` onto every saved assistant row for a stream.
+	 *
+	 * Codex SDK emits its `Usage` aggregate exactly once per turn (in
+	 * `turn.completed`), well after the individual assistant items have
+	 * streamed and been persisted live with `usage: null`. Without this
+	 * backfill the persisted tool_use rows would carry no usage data, and
+	 * after a browser refresh the frontend would lose the per-message usage
+	 * that the live stream had attached in memory.
+	 *
+	 * Engine-gated to Codex by the caller: Claude Code and Copilot already
+	 * attach per-call usage on each assistant message, so applying a
+	 * stream-wide aggregate to them would overwrite that finer-grained data.
+	 */
+	private backfillUsageForStream(
+		streamState: StreamState,
+		usage: TokenUsage,
+		requestSender: StreamRequest['sender'],
+	): void {
+		try {
+			const { getDatabase } = require('../database');
+			const db = getDatabase();
+			const updateStmt = db.prepare('UPDATE messages SET data = ? WHERE id = ?');
+
+			for (const entry of streamState.messages as any[]) {
+				const msg = entry?.message as UnifiedMessage | undefined;
+				if (!msg || msg.type !== 'assistant') continue;
+				if (msg.usage) continue;
+				if (!entry.message_id) continue;
+
+				const patched: AssistantMessage = { ...(msg as AssistantMessage), usage };
+				try {
+					updateStmt.run(JSON.stringify(patched), entry.message_id);
+				} catch (err) {
+					debug.error('chat', 'Failed to UPDATE usage row:', err);
+					continue;
+				}
+
+				entry.message = patched;
+				entry.usage = usage;
+
+				this.emitStreamEvent(streamState, 'message', {
+					processId: streamState.processId,
+					message: patched,
+					usage,
+					timestamp: patched.createdAt,
+					message_id: entry.message_id,
+					parent_message_id: entry.parent_message_id ?? null,
+					sender_id: requestSender.id,
+					sender_name: requestSender.name,
+				});
+			}
+		} catch (err) {
+			debug.error('chat', 'Failed to backfill usage for stream:', err);
 		}
 	}
 
