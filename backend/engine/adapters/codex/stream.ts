@@ -26,7 +26,7 @@ import { engineQueries } from '$backend/database/queries/engine-queries';
 import { resolveOsPath } from '$backend/utils/paths';
 import { resolveBinary } from '$backend/utils/cli';
 import { getCodexMcpConfig } from '../../../mcp/config';
-import { CODEX_MODELS } from '$shared/constants/engines';
+import { CODEX_MODELS } from './models';
 import { debug } from '$shared/utils/logger';
 import { handleStreamError, buildTurnError } from './error-handler';
 import {
@@ -43,7 +43,7 @@ import {
 	parseCodexCredential,
 	applyAccountAuth,
 	snapshotAuthJsonToActiveAccount,
-} from './auth';
+} from './credential';
 import { forkCodexSessionState, sessionStateExists } from './session-fork';
 import path from 'node:path';
 import os from 'node:os';

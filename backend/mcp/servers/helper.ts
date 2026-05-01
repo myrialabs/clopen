@@ -12,6 +12,7 @@
 import { createSdkMcpServer, tool } from "@anthropic-ai/claude-agent-sdk";
 import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import type { z } from "zod";
+import { projectContextService } from '../project-context';
 
 /**
  * Infer argument types from Zod schema
@@ -191,6 +192,18 @@ export function createRemoteMcpServer(
 				description: def.description,
 				inputSchema: def.schema,
 			}, async (args: Record<string, unknown>) => {
+				// Fast-fail when the owning chat stream has already been
+				// cancelled — the handler never runs. Without this, the
+				// engine subprocess dies on cancel but in-flight HTTP-MCP
+				// tool calls continue to drive puppeteer ops, surfacing as
+				// "preview keeps moving by itself" after interrupt.
+				const signal = projectContextService.getCurrentSignal();
+				if (signal?.aborted) {
+					return {
+						content: [{ type: 'text' as const, text: `Tool ${String(toolName)} was cancelled because the chat stream was interrupted.` }],
+						isError: true,
+					} as any;
+				}
 				return await def.handler(args) as any;
 			});
 		}

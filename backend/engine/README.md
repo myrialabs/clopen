@@ -62,10 +62,13 @@ This document covers **end to end**:
 │  │    index.ts                public surface (re-exports only)      │ │
 │  │    stream.ts               class implements AIEngine             │ │
 │  │    message-converter.ts    SDK message → EngineOutput            │ │
-│  │    environment.ts          env setup (claude only)               │ │
-│  │    server.ts               subprocess + client (opencode only)   │ │
-│  │    config.ts               provider catalog (opencode only)      │ │
+│  │    models.ts               static array OR dynamic fetcher       │ │
 │  │    error-handler.ts        SDK error → user-facing string        │ │
+│  │    credential.ts?          credential parsing / auth-blob swap   │ │
+│  │    environment.ts?         env-var / dotfile setup               │ │
+│  │    server.ts?              subprocess + client (opencode only)   │ │
+│  │    config.ts?              runtime config builder (opencode only)│ │
+│  │    presets.ts?             provider/region preset catalog        │ │
 │  └──────────────────────────────────────────────────────────────────┘ │
 │           │                                  │                        │
 │           ▼                                  ▼                        │
@@ -243,16 +246,34 @@ calling `getEnabledMcpServers(options.mcpContext)`.
 
 ### 2.6 Standard files in each adapter
 
+Adapters follow a fixed file taxonomy. **Mandatory** files exist in every
+adapter; **optional** files may be omitted, but when present they MUST use
+the canonical name below — never a synonym (`auth.ts`, `provider-catalog.ts`,
+etc.). This keeps `git grep` and the README's quick-reference rows usable.
+
 ```
 adapters/<name>/
-├── index.ts                ← re-exports only, NO logic
-├── stream.ts               ← class implements AIEngine
-├── message-converter.ts    ← SDK message → EngineOutput (pure functions)
-├── environment.ts?         ← env-var setup (Claude needs this)
-├── server.ts?              ← spawn + manage subprocess (OpenCode needs this)
-├── config.ts?              ← provider catalog / config builder (OpenCode needs this)
-└── error-handler.ts?       ← SDK error → user-facing string (Claude & Copilot have one)
+├── index.ts                ← MANDATORY  re-exports only, NO logic
+├── stream.ts               ← MANDATORY  class implements AIEngine
+├── models.ts               ← MANDATORY  static EngineModel[] OR dynamic fetcher
+├── message-converter.ts    ← MANDATORY  SDK message → EngineOutput (pure)
+├── error-handler.ts        ← MANDATORY  SDK error → user-facing string
+├── credential.ts?          ← OPTIONAL   credential parse / auth-blob swap (codex, qwen)
+├── environment.ts?         ← OPTIONAL   env / dotfile setup (claude, qwen)
+├── server.ts?              ← OPTIONAL   subprocess + client lifecycle (opencode)
+├── config.ts?              ← OPTIONAL   runtime config builder (opencode)
+├── presets.ts?             ← OPTIONAL   multi-provider/region preset catalog (qwen, opencode)
+└── session-fork.ts?        ← OPTIONAL   on-disk session fork workaround (codex, copilot)
 ```
+
+Naming rules — strict, even when an SDK's local jargon differs:
+
+| File              | Owns                                                                  |
+|-------------------|-----------------------------------------------------------------------|
+| `credential.ts`   | Parse `engine_accounts.credential` (JSON wrapper or raw key); for shared-CLI engines, materialise the auth-blob into the dotfile and snapshot it back. **Never** name this `auth.ts` — credentials are the unified concept (see §9.13). |
+| `error-handler.ts`| Export `handleStreamError(error: unknown, ...): void` that swallows abort errors and re-throws everything else as a sanitised `Error`. Required even when the body is short — `OpenCodeEngine` previously inlined ~50 lines into the catch block; that pattern is no longer accepted. |
+| `presets.ts`      | Multi-provider/region picker catalog (Qwen's DashScope/OpenRouter/Fireworks; OpenCode's models.dev cache). Multi-provider engines that lacked a `presets.ts` (OpenCode used to call this `config.ts`) have been migrated. |
+| `config.ts`       | Runtime config builder ONLY — turning DB providers + accounts into env vars / spawn options. Catalog data goes in `presets.ts`. |
 
 Important conventions:
 - `message-converter.ts` is generally pure. If you need per-stream state
@@ -266,6 +287,10 @@ Important conventions:
   to the SDK/server. RPCs can hang; the local abort cuts the `for await`
   loop deterministically. See `OpenCodeEngine.cancel`,
   `ClaudeCodeEngine.cancel`, `CopilotEngine.cancel`.
+- Dynamic-catalog fetchers in `models.ts` MUST return `EngineModel[]` and
+  use `[]` as the failure sentinel (network, auth, parse error). Do **not**
+  return `null` — both `fetchOpenCodeModels` and `fetchQwenModels` return
+  `[]` on failure so the picker renders empty rather than a stale catalog.
 
 ---
 
@@ -347,7 +372,8 @@ getProvidersWithAccounts(engineType?) // join used by endpoint listing
 - **OpenCode** — `config.ts::generateOpenCodeProviderConfig()`:
   1. `engineQueries.getEnabledProviders('opencode')`
   2. For each provider, `getActiveAccount(provider.id)`
-  3. Look up the env-var name(s) from the `models.dev` catalog (see §3.4)
+  3. Look up the env-var name(s) from the `models.dev` catalog cached in
+     `presets.ts::getCachedModelsDevCatalog()` (see §3.4)
   4. Inject the first env var with `account.credential`, remaining env vars
      from `provider.options` JSON
   5. Result: `enabledProviders[]` (for `OPENCODE_CONFIG_CONTENT`) +
@@ -375,12 +401,17 @@ getProvidersWithAccounts(engineType?) // join used by endpoint listing
 
 ### 3.4 The models.dev catalog (OpenCode-specific)
 
-`config.ts` caches the catalog in the `settings` table under
-`opencode.models_dev_cache` (+ `opencode.models_dev_cached_at`). The catalog
-lists the providers OpenCode supports along with the env-var names they
-expect. The frontend uses the catalog in the "Add Provider" picker — the
-user just selects a provider, enters the API key, and the env-var mapping
-is automatically correct.
+`presets.ts::fetchAndCacheModelsDevCatalog()` caches the catalog in the
+`settings` table under `opencode.models_dev_cache`
+(+ `opencode.models_dev_cached_at`). `getCachedModelsDevCatalog()` reads it
+back. The catalog lists the providers OpenCode supports along with the
+env-var names they expect. The frontend uses the catalog in the "Add
+Provider" picker — the user just selects a provider, enters the API key,
+and the env-var mapping is automatically correct.
+
+The split between `presets.ts` (catalog data + cache) and `config.ts`
+(runtime env-var builder) mirrors `qwen/`, the canonical multi-provider
+adapter — see §2.6 and §4.6.
 
 ---
 
@@ -533,7 +564,6 @@ a "Restart Server" button in both Settings → Engines and Chat Input.
 
 ```ts
 .http('models:list', { data: { engine } }, async ({ data }) => {
-  if (data.engine === 'claude-code') return CLAUDE_CODE_MODELS;
   const engine = await initializeEngine(data.engine);
   const models = await engine.getAvailableModels();
   registerModels(data.engine, models);
@@ -541,13 +571,66 @@ a "Restart Server" button in both Settings → Engines and Chat Input.
 })
 ```
 
-Claude models are **static** in `shared/constants/engines.ts`. OpenCode
-calls `client.config.providers()` against the running server and maps the
-provider catalog to `EngineModel[]` (see `OpenCodeEngine.getAvailableModels`).
-Copilot calls `client.listModels()` after `client.start()` and maps each
-`ModelInfo` to `EngineModel` (see `CopilotEngine.getAvailableModels`).
+The handler is **uniform across engines** — no per-engine short-circuits.
+Every engine flows through `initializeEngine` → `engine.getAvailableModels()`
+→ `registerModels(...)` so the shared in-memory `modelRegistry` is always
+populated regardless of whether the catalog is static or dynamic.
 
-### 4.6 `chat:stream` — the streaming entry point
+> **Why uniform.** The previous version hard-coded `if (engine === 'claude-code') return CLAUDE_CODE_MODELS`
+> for static engines. That short-circuit bypassed `registerModels()`, so the
+> backend registry stayed empty for static engines and the frontend's
+> `getByEngine('claude-code')` returned nothing — the symptom that motivated
+> this whole standardization. Don't reintroduce the special case; if a static
+> engine's `getAvailableModels()` is too expensive to call repeatedly, cache
+> inside the adapter (`CLAUDE_CODE_MODELS` is already a module-level const,
+> so the call is free).
+
+Each engine owns its model catalog in `backend/engine/adapters/<engine>/models.ts`:
+
+| Engine        | Catalog kind | Source                                              |
+|---------------|--------------|-----------------------------------------------------|
+| `claude-code` | static       | hardcoded `CLAUDE_CODE_MODELS` array                |
+| `codex`       | static       | hardcoded `CODEX_MODELS` array                      |
+| `copilot`     | dynamic      | `client.listModels()` via `fetchCopilotModels`      |
+| `opencode`    | dynamic      | `client.config.providers()` via `fetchOpenCodeModels`|
+| `qwen`        | dynamic      | OpenAI-compatible `/models` via `fetchQwenModels`   |
+
+Failure-mode contract (dynamic engines): return `EngineModel[]` and use
+`[]` as the failure sentinel — never `null` (see §2.6). The picker then
+renders an empty list rather than a stale cached catalog. `fetchOpenCodeModels`
+and `fetchQwenModels` already follow this; new dynamic fetchers must too.
+
+### 4.6 Engine-specific config (presets — multi-provider / multi-region)
+
+Anything else an engine needs that the frontend has to render — provider
+choice, region selection, BYOK templates — also lives with the adapter
+rather than `shared/constants/engines.ts`. The canonical filename is
+`presets.ts` (see §2.6). Two adapters use this slot:
+
+- **Qwen** (`backend/engine/adapters/qwen/presets.ts`) — `QWEN_PROVIDER_PRESETS`
+  array (DashScope CN/INTL, OpenRouter, Fireworks), `DEFAULT_QWEN_PRESET`,
+  `getQwenPreset(id)`. Static, hardcoded.
+- **OpenCode** (`backend/engine/adapters/opencode/presets.ts`) — the
+  models.dev provider catalog: `fetchAndCacheModelsDevCatalog()` +
+  `getCachedModelsDevCatalog()`. Dynamic (fetched + cached in `settings`).
+
+The wire-format types (`QwenProviderPresetId`, `QwenProviderPreset`,
+`ModelsDevProvider`) live in `shared/types/unified/engine.ts` (or are
+re-exported there) so the frontend stays typed without importing from
+`$backend`.
+
+Each adapter that has a `presets.ts` ships a thin WS router exposing it:
+
+| Engine    | WS event                                 | Frontend store                                    |
+|-----------|------------------------------------------|---------------------------------------------------|
+| `qwen`    | `engine:qwen-presets-list`               | `qwenPresetsStore` (`frontend/stores/features/qwen-presets.svelte.ts`) |
+| `opencode`| `engine:opencode-models-dev-list` (+ `…-fetch` to refresh) | `opencodeProvidersStore.catalog` (`frontend/stores/features/opencode-providers.svelte.ts`) |
+
+The rule: **frontend never imports `$backend` directly**. Runtime values
+the frontend needs (model lists, presets, …) flow through WS endpoints;
+types flow through `$shared`.
+
+### 4.7 `chat:stream` — the streaming entry point
 
 `backend/ws/chat/stream.ts` accepts:
 
@@ -833,22 +916,42 @@ blueprint for the next engine you add.
 - [ ] `shared/types/unified/message.ts`: add `'newengine'` to `MessageEngine.type`.
 - [ ] `shared/constants/engines.ts`: add an entry in `ENGINES[]`
       (`type, name, description, icon.light, icon.dark`).
-- [ ] (Optional) `NEWENGINE_MODELS` if the model list is static. If it's
-      dynamic via the SDK, leave it empty.
+- [ ] `backend/engine/adapters/newengine/models.ts`: own the catalog. Static
+      engines export a `NEWENGINE_MODELS: EngineModel[]` array; dynamic
+      engines export a fetcher (`fetchNewengineModels(...)`) consumed by
+      `getAvailableModels()`. Don't add anything to `shared/constants/engines.ts`
+      for the catalog itself — the frontend loads it via `models:list`.
+- [ ] (Optional) `backend/engine/adapters/newengine/presets.ts` if the
+      engine needs provider/region/BYOK presets exposed to the UI.
+      Mirror `qwen/presets.ts`: keep runtime values in the adapter,
+      export wire types from `shared/types/unified/engine.ts`, and ship
+      a WS endpoint (see Stage 4) — never import these from frontend
+      via `$backend`.
 
 ### Stage 2 — Adapter `backend/engine/`
 
+Refer to §2.6 for the full file taxonomy. Every adapter ships these five
+mandatory files; optional files use the canonical names from §2.6.
+
 - [ ] Create `backend/engine/adapters/newengine/`
-- [ ] `index.ts` → `export { NewEngineEngine } from './stream';`
+- [ ] `index.ts` (mandatory) → `export { NewEngineEngine } from './stream';`
       (+ `disposeXxxClient` if there is a subprocess).
-- [ ] `stream.ts` → class `NewEngineEngine implements AIEngine`. Pick a
-      template: `claude/stream.ts` (in-process SDK), `opencode/stream.ts`
-      (subprocess), or `copilot/stream.ts` (in-process SDK with
-      construction-time credential).
-- [ ] `message-converter.ts` → pure functions SDK → `EngineOutput`.
+- [ ] `stream.ts` (mandatory) → class `NewEngineEngine implements AIEngine`.
+      Pick a template: `claude/stream.ts` (in-process SDK),
+      `opencode/stream.ts` (subprocess), `copilot/stream.ts` (in-process
+      with construction-time credential), or `qwen/stream.ts` (CLI subprocess
+      via SDK with auth-blob swap).
+- [ ] `models.ts` (mandatory) → static `NEWENGINE_MODELS: EngineModel[]`
+      OR `fetchNewengineModels(...): Promise<EngineModel[]>` (dynamic;
+      return `[]` on failure — see §4.5).
+- [ ] `message-converter.ts` (mandatory) → pure functions SDK → `EngineOutput`.
       Use `toCanonicalToolName()` for tool names.
-- [ ] `environment.ts` / `server.ts` / `config.ts` / `error-handler.ts`
-      as the SDK requires.
+- [ ] `error-handler.ts` (mandatory) → exports `handleStreamError(error,
+      ...): void` (and any helper formatters specific to the SDK's error
+      payload — see `opencode/error-handler.ts::formatSessionError` for the
+      pattern).
+- [ ] `credential.ts` / `environment.ts` / `server.ts` / `config.ts` /
+      `presets.ts` / `session-fork.ts` (optional; canonical names only).
 - [ ] `backend/engine/index.ts`: import + add a case in
       `createEngine(type)`. If there is a shared subprocess, call
       `disposeXxxClient()` from `disposeAllProjectEngines()`.
@@ -868,6 +971,8 @@ blueprint for the next engine you add.
     - List, add, switch, delete, rename.
     - Setup flow: PTY (Claude-style) OR direct API-key/PAT input
       (OpenCode/Copilot-style) depending on the SDK's auth mechanism.
+  - (Optional) `presets.ts` — `engine:newengine-presets-list` if the
+    adapter has a `presets.ts` module. See `backend/ws/engine/qwen/presets.ts`.
   - `index.ts` — merge the sub-router.
 - [ ] `backend/ws/engine/index.ts`: `.merge(newengineEngineRouter)`.
 - [ ] `backend/ws/chat/stream.ts`: add the `'newengine'` literal to the
@@ -1541,7 +1646,7 @@ both places.
 | Auth-blob swap into shared CLI dotfile      | Pattern only (no implementation yet); see §3.3 callout + §9.13 |
 | Restart-Server pattern (long-lived engines) | `backend/ws/engine/opencode/providers.ts::engine:opencode-server-restart`, `frontend/components/chat/input/components/EngineModelPicker.svelte::restartOCServer`, `AIEnginesSettings.svelte::handleRestartServer`/`forceRestartServer` |
 | `generateStructured` (no tools, JSON)       | `claude/stream.ts::generateStructured`, `opencode/stream.ts::generateStructured` |
-| Error normalisation                         | `claude/error-handler.ts`, `copilot/error-handler.ts`, `opencode/stream.ts` `session.error` handler |
+| Error normalisation                         | `claude/error-handler.ts`, `copilot/error-handler.ts`, `opencode/error-handler.ts`, `qwen/error-handler.ts`, `codex/error-handler.ts` |
 | DB provider/account access                  | `backend/database/queries/engine-queries.ts`              |
 | Per-platform install recipe                 | `backend/engine/install-recipes.ts`                       |
 | Streaming install logs                      | `backend/engine/install-runner.ts`                        |

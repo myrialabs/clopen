@@ -32,7 +32,7 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import type { Usage } from '@openai/codex-sdk';
-import { getCodexHomeDir } from './auth';
+import { getCodexHomeDir } from './credential';
 import { debug } from '$shared/utils/logger';
 
 const SESSIONS_DIR_NAME = 'sessions';

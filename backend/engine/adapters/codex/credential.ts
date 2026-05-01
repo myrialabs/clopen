@@ -1,5 +1,5 @@
 /**
- * Codex authentication: dual-mode credential storage + shared `~/.codex/auth.json` swap.
+ * Codex credential resolution: dual-mode credential storage + shared `~/.codex/auth.json` swap.
  *
  * Codex supports two auth modes:
  *   - **API key** — paste `sk-…` token; `Codex({ apiKey })` auto-injects it

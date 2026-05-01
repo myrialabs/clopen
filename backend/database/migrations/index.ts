@@ -32,6 +32,7 @@ import * as migration030 from './030_add_files_panel_state_to_user_projects';
 import * as migration031 from './031_create_db_client_tables';
 import * as migration032 from './032_seed_copilot_provider';
 import * as migration033 from './033_seed_codex_provider';
+import * as migration034 from './034_seed_qwen_provider';
 
 // Export all migrations in order
 export const migrations = [
@@ -232,6 +233,12 @@ export const migrations = [
 		description: migration033.description,
 		up: migration033.up,
 		down: migration033.down
+	},
+	{
+		id: '034',
+		description: migration034.description,
+		up: migration034.up,
+		down: migration034.down
 	}
 ];
 

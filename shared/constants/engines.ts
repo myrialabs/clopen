@@ -43,6 +43,15 @@ export const ENGINES: EngineInfo[] = [
 			light: '<svg width="24" height="24" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg"><path fill="#000000" d="M22.2819 9.8211a5.9847 5.9847 0 0 0-.5157-4.9108 6.0462 6.0462 0 0 0-6.5098-2.9 6.0651 6.0651 0 0 0-4.5837-2.083 6.0469 6.0469 0 0 0-5.7669 4.1843 5.9854 5.9854 0 0 0-3.9982 2.9001 6.0461 6.0461 0 0 0 .7427 7.0966 5.98 5.98 0 0 0 .511 4.9107 6.051 6.051 0 0 0 6.5146 2.9001A5.9847 5.9847 0 0 0 13.2599 24a6.0557 6.0557 0 0 0 5.7718-4.2056 5.9894 5.9894 0 0 0 3.9981-2.9001 6.0557 6.0557 0 0 0-.7475-7.0729zm-9.022 12.6081a4.4755 4.4755 0 0 1-2.8764-1.0408l.1419-.0804 4.7783-2.7582a.7948.7948 0 0 0 .3927-.6813v-6.7369l2.02 1.1686a.071.071 0 0 1 .038.052v5.5826a4.504 4.504 0 0 1-4.4945 4.4944zm-9.6607-4.1254a4.4708 4.4708 0 0 1-.5346-3.0137l.142.0852 4.783 2.7582a.7712.7712 0 0 0 .7806 0l5.8428-3.3685v2.3324a.0804.0804 0 0 1-.0332.0615L9.74 19.9502a4.4992 4.4992 0 0 1-6.1408-1.6464zM2.3408 7.8956a4.485 4.485 0 0 1 2.3655-1.9728V11.6a.7664.7664 0 0 0 .3879.6765l5.8144 3.3543-2.0201 1.1685a.0757.0757 0 0 1-.071 0l-4.8303-2.7865A4.504 4.504 0 0 1 2.3408 7.872zm16.5963 3.8558L13.1038 8.364 15.1192 7.2a.0757.0757 0 0 1 .071 0l4.8303 2.7913a4.4944 4.4944 0 0 1-.6765 8.1042v-5.6772a.79.79 0 0 0-.407-.667zm2.0107-3.0231l-.142-.0852-4.7735-2.7818a.7759.7759 0 0 0-.7854 0L9.409 9.2297V6.8974a.0662.0662 0 0 1 .0284-.0615l4.8303-2.7866a4.4992 4.4992 0 0 1 6.6802 4.66zM8.3065 12.863l-2.02-1.1638a.0804.0804 0 0 1-.038-.0567V6.0742a4.4992 4.4992 0 0 1 7.3757-3.4537l-.142.0805L8.704 5.459a.7948.7948 0 0 0-.3927.6813zm1.0976-2.3654l2.602-1.4998 2.6069 1.4998v2.9994l-2.5974 1.5093-2.6067-1.4997z"/></svg>',
 			dark: '<svg width="24" height="24" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg"><path fill="#ffffff" d="M22.2819 9.8211a5.9847 5.9847 0 0 0-.5157-4.9108 6.0462 6.0462 0 0 0-6.5098-2.9 6.0651 6.0651 0 0 0-4.5837-2.083 6.0469 6.0469 0 0 0-5.7669 4.1843 5.9854 5.9854 0 0 0-3.9982 2.9001 6.0461 6.0461 0 0 0 .7427 7.0966 5.98 5.98 0 0 0 .511 4.9107 6.051 6.051 0 0 0 6.5146 2.9001A5.9847 5.9847 0 0 0 13.2599 24a6.0557 6.0557 0 0 0 5.7718-4.2056 5.9894 5.9894 0 0 0 3.9981-2.9001 6.0557 6.0557 0 0 0-.7475-7.0729zm-9.022 12.6081a4.4755 4.4755 0 0 1-2.8764-1.0408l.1419-.0804 4.7783-2.7582a.7948.7948 0 0 0 .3927-.6813v-6.7369l2.02 1.1686a.071.071 0 0 1 .038.052v5.5826a4.504 4.504 0 0 1-4.4945 4.4944zm-9.6607-4.1254a4.4708 4.4708 0 0 1-.5346-3.0137l.142.0852 4.783 2.7582a.7712.7712 0 0 0 .7806 0l5.8428-3.3685v2.3324a.0804.0804 0 0 1-.0332.0615L9.74 19.9502a4.4992 4.4992 0 0 1-6.1408-1.6464zM2.3408 7.8956a4.485 4.485 0 0 1 2.3655-1.9728V11.6a.7664.7664 0 0 0 .3879.6765l5.8144 3.3543-2.0201 1.1685a.0757.0757 0 0 1-.071 0l-4.8303-2.7865A4.504 4.504 0 0 1 2.3408 7.872zm16.5963 3.8558L13.1038 8.364 15.1192 7.2a.0757.0757 0 0 1 .071 0l4.8303 2.7913a4.4944 4.4944 0 0 1-.6765 8.1042v-5.6772a.79.79 0 0 0-.407-.667zm2.0107-3.0231l-.142-.0852-4.7735-2.7818a.7759.7759 0 0 0-.7854 0L9.409 9.2297V6.8974a.0662.0662 0 0 1 .0284-.0615l4.8303-2.7866a4.4992 4.4992 0 0 1 6.6802 4.66zM8.3065 12.863l-2.02-1.1638a.0804.0804 0 0 1-.038-.0567V6.0742a4.4992 4.4992 0 0 1 7.3757-3.4537l-.142.0805L8.704 5.459a.7948.7948 0 0 0-.3927.6813zm1.0976-2.3654l2.602-1.4998 2.6069 1.4998v2.9994l-2.5974 1.5093-2.6067-1.4997z"/></svg>'
 		}
+	},
+	{
+		type: 'qwen',
+		name: 'Qwen Code',
+		description: 'Alibaba Qwen models',
+		icon: {
+			light: '<svg width="24" height="24" viewBox="0 0 200 200" fill="none" xmlns="http://www.w3.org/2000/svg"><path d="M174.82 108.75L155.38 75L165.64 57.75C166.46 56.31 166.46 54.53 165.64 53.09L155.38 35.84C154.86 34.91 153.87 34.33 152.78 34.33H114.88L106.14 19.03C105.62 18.1 104.63 17.52 103.54 17.52H83.3C82.21 17.52 81.22 18.1 80.7 19.03L61.26 52.77H41.02C39.93 52.77 38.94 53.35 38.42 54.28L28.16 71.53C27.34 72.97 27.34 74.75 28.16 76.19L45.52 107.5L36.78 122.8C35.96 124.24 35.96 126.02 36.78 127.46L47.04 144.71C47.56 145.64 48.55 146.22 49.64 146.22H87.54L96.28 161.52C96.8 162.45 97.79 163.03 98.88 163.03H119.12C120.21 163.03 121.2 162.45 121.72 161.52L141.16 127.78H158.52C159.61 127.78 160.6 127.2 161.12 126.27L171.38 109.02C172.2 107.58 172.2 105.8 171.38 104.36L174.82 108.75Z" fill="url(#qwen-grad-light-a)"/><path d="M119.12 163.03H98.88L87.54 144.71H49.64L61.26 126.39H80.7L38.42 55.29H61.26L83.3 19.03L93.56 37.35L83.3 55.29H161.58L151.32 72.54L170.76 106.28H151.32L141.16 88.34L101.18 163.03H119.12Z" fill="#ffffff"/><path d="M127.86 79.83H76.14L101.18 122.11L127.86 79.83Z" fill="url(#qwen-grad-light-b)"/><defs><radialGradient id="qwen-grad-light-a" cx="0" cy="0" r="1" gradientUnits="userSpaceOnUse" gradientTransform="translate(100 100) rotate(90) scale(100)"><stop stop-color="#665CEE"/><stop offset="1" stop-color="#332E91"/></radialGradient><radialGradient id="qwen-grad-light-b" cx="0" cy="0" r="1" gradientUnits="userSpaceOnUse" gradientTransform="translate(100 100) rotate(90) scale(100)"><stop stop-color="#665CEE"/><stop offset="1" stop-color="#332E91"/></radialGradient></defs></svg>',
+			dark: '<svg width="24" height="24" viewBox="0 0 200 200" fill="none" xmlns="http://www.w3.org/2000/svg"><path d="M174.82 108.75L155.38 75L165.64 57.75C166.46 56.31 166.46 54.53 165.64 53.09L155.38 35.84C154.86 34.91 153.87 34.33 152.78 34.33H114.88L106.14 19.03C105.62 18.1 104.63 17.52 103.54 17.52H83.3C82.21 17.52 81.22 18.1 80.7 19.03L61.26 52.77H41.02C39.93 52.77 38.94 53.35 38.42 54.28L28.16 71.53C27.34 72.97 27.34 74.75 28.16 76.19L45.52 107.5L36.78 122.8C35.96 124.24 35.96 126.02 36.78 127.46L47.04 144.71C47.56 145.64 48.55 146.22 49.64 146.22H87.54L96.28 161.52C96.8 162.45 97.79 163.03 98.88 163.03H119.12C120.21 163.03 121.2 162.45 121.72 161.52L141.16 127.78H158.52C159.61 127.78 160.6 127.2 161.12 126.27L171.38 109.02C172.2 107.58 172.2 105.8 171.38 104.36L174.82 108.75Z" fill="url(#qwen-grad-dark-a)"/><path d="M119.12 163.03H98.88L87.54 144.71H49.64L61.26 126.39H80.7L38.42 55.29H61.26L83.3 19.03L93.56 37.35L83.3 55.29H161.58L151.32 72.54L170.76 106.28H151.32L141.16 88.34L101.18 163.03H119.12Z" fill="#ffffff"/><path d="M127.86 79.83H76.14L101.18 122.11L127.86 79.83Z" fill="url(#qwen-grad-dark-b)"/><defs><radialGradient id="qwen-grad-dark-a" cx="0" cy="0" r="1" gradientUnits="userSpaceOnUse" gradientTransform="translate(100 100) rotate(90) scale(100)"><stop stop-color="#a39afa"/><stop offset="1" stop-color="#615ced"/></radialGradient><radialGradient id="qwen-grad-dark-b" cx="0" cy="0" r="1" gradientUnits="userSpaceOnUse" gradientTransform="translate(100 100) rotate(90) scale(100)"><stop stop-color="#a39afa"/><stop offset="1" stop-color="#615ced"/></radialGradient></defs></svg>'
+		}
 	}
 ];
 
@@ -51,250 +60,21 @@ export const getEngineInfo = (engineType: EngineType): EngineInfo | undefined =>
 };
 
 // ============================================================================
-// Claude Code Models (static)
-// ============================================================================
-
-export const CLAUDE_CODE_MODELS: EngineModel[] = [
-	{
-		engine: {
-			type: 'claude-code',
-			provider: 'anthropic',
-			model: {
-				id: 'claude-opus-4-7',
-				name: 'Claude Opus 4.7',
-			},
-			account: {
-				id: 0,
-				name: '',
-			},
-		},
-		limit: {
-			input: 200_000,
-			output: 128_000,
-		},
-		modalities: {
-			input: {
-				text: true,
-				image: true,
-				audio: false,
-				video: false,
-				pdf: true,
-			},
-			output: {
-				text: true,
-				image: false,
-				audio: false,
-				video: false,
-				pdf: false,
-			},
-		},
-		capabilities: {
-			reasoning: true,
-			tools: true,
-			structuredOutput: true,
-		},
-		cost: {
-			input: 5,
-			output: 25,
-		},
-	},
-	{
-		engine: {
-			type: 'claude-code',
-			provider: 'anthropic',
-			model: {
-				id: 'claude-sonnet-4-6',
-				name: 'Claude Sonnet 4.6',
-			},
-			account: {
-				id: 0,
-				name: '',
-			},
-		},
-		limit: {
-			input: 200_000,
-			output: 64_000,
-		},
-		modalities: {
-			input: {
-				text: true,
-				image: true,
-				audio: false,
-				video: false,
-				pdf: true,
-			},
-			output: {
-				text: true,
-				image: false,
-				audio: false,
-				video: false,
-				pdf: false,
-			},
-		},
-		capabilities: {
-			reasoning: true,
-			tools: true,
-			structuredOutput: true,
-		},
-		cost: {
-			input: 3,
-			output: 15,
-		},
-	},
-	{
-		engine: {
-			type: 'claude-code',
-			provider: 'anthropic',
-			model: {
-				id: 'claude-haiku-4-5',
-				name: 'Claude Haiku 4.5',
-			},
-			account: {
-				id: 0,
-				name: '',
-			},
-		},
-		limit: {
-			input: 200_000,
-			output: 64_000,
-		},
-		modalities: {
-			input: {
-				text: true,
-				image: true,
-				audio: false,
-				video: false,
-				pdf: true,
-			},
-			output: {
-				text: true,
-				image: false,
-				audio: false,
-				video: false,
-				pdf: false,
-			},
-		},
-		capabilities: {
-			reasoning: true,
-			tools: true,
-			structuredOutput: true,
-		},
-		cost: {
-			input: 1,
-			output: 5,
-		},
-	},
-];
-
-// ============================================================================
-// Codex Models (static)
+// Engine-specific catalogs & presets
 //
-// Sourced from https://developers.openai.com/codex/models.md and pruned to the
-// IDs the Codex CLI actually accepts via `--model`. Models tagged with
-// `requiresAuthMode` are filtered by the chat-input account picker so the
-// user can't pick a ChatGPT-only model while signed in with an API key
-// account (and vice versa).
+// Per-engine data (model lists, provider presets, etc.) lives with the adapter
+// in `backend/engine/adapters/<engine>/`. The frontend never imports those
+// modules directly — it loads what it needs at runtime via WS endpoints
+// (`models:list`, `engine:qwen-presets-list`, …).
 // ============================================================================
 
-export const CODEX_MODELS: EngineModel[] = [
-	{
-		engine: {
-			type: 'codex',
-			provider: 'openai',
-			model: { id: 'gpt-5.4', name: 'GPT-5.4' },
-			account: { id: 0, name: '' },
-		},
-		limit: { input: 200_000, output: 128_000 },
-		modalities: {
-			input: { text: true, image: true, audio: false, video: false, pdf: false },
-			output: { text: true, image: false, audio: false, video: false, pdf: false },
-		},
-		capabilities: { reasoning: true, tools: true, structuredOutput: true },
-		cost: { input: 0, output: 0 },
-	},
-	{
-		engine: {
-			type: 'codex',
-			provider: 'openai',
-			model: { id: 'gpt-5.4-mini', name: 'GPT-5.4 mini' },
-			account: { id: 0, name: '' },
-		},
-		limit: { input: 200_000, output: 128_000 },
-		modalities: {
-			input: { text: true, image: true, audio: false, video: false, pdf: false },
-			output: { text: true, image: false, audio: false, video: false, pdf: false },
-		},
-		capabilities: { reasoning: true, tools: true, structuredOutput: true },
-		cost: { input: 0, output: 0 },
-	},
-	{
-		engine: {
-			type: 'codex',
-			provider: 'openai',
-			model: { id: 'gpt-5.3-codex', name: 'GPT-5.3 Codex' },
-			account: { id: 0, name: '' },
-		},
-		limit: { input: 200_000, output: 128_000 },
-		modalities: {
-			input: { text: true, image: true, audio: false, video: false, pdf: false },
-			output: { text: true, image: false, audio: false, video: false, pdf: false },
-		},
-		capabilities: { reasoning: true, tools: true, structuredOutput: true },
-		cost: { input: 0, output: 0 },
-	},
-	{
-		engine: {
-			type: 'codex',
-			provider: 'openai',
-			model: { id: 'gpt-5.2', name: 'GPT-5.2' },
-			account: { id: 0, name: '' },
-		},
-		limit: { input: 200_000, output: 128_000 },
-		modalities: {
-			input: { text: true, image: true, audio: false, video: false, pdf: false },
-			output: { text: true, image: false, audio: false, video: false, pdf: false },
-		},
-		capabilities: { reasoning: true, tools: true, structuredOutput: true },
-		cost: { input: 0, output: 0 },
-	},
-	{
-		engine: {
-			type: 'codex',
-			provider: 'openai',
-			model: { id: 'gpt-5.5', name: 'GPT-5.5 (ChatGPT only)' },
-			account: { id: 0, name: '' },
-		},
-		limit: { input: 200_000, output: 128_000 },
-		modalities: {
-			input: { text: true, image: true, audio: false, video: false, pdf: false },
-			output: { text: true, image: false, audio: false, video: false, pdf: false },
-		},
-		capabilities: { reasoning: true, tools: true, structuredOutput: true, requiresAuthMode: 'chatgpt' },
-		cost: { input: 0, output: 0 },
-	},
-	{
-		engine: {
-			type: 'codex',
-			provider: 'openai',
-			model: { id: 'gpt-5.3-codex-spark', name: 'GPT-5.3 Codex Spark (ChatGPT Pro)' },
-			account: { id: 0, name: '' },
-		},
-		limit: { input: 200_000, output: 128_000 },
-		modalities: {
-			input: { text: true, image: false, audio: false, video: false, pdf: false },
-			output: { text: true, image: false, audio: false, video: false, pdf: false },
-		},
-		capabilities: { reasoning: false, tools: true, structuredOutput: false, requiresAuthMode: 'chatgpt' },
-		cost: { input: 0, output: 0 },
-	},
-];
-
 // ============================================================================
-// Model Registry (mutable — dynamic engines can register models at runtime)
+// Model Registry (mutable — engines register their catalog at runtime via
+// the `models:list` WS endpoint, which calls each adapter's getAvailableModels()
+// and replaces the engine's slice of the registry).
 // ============================================================================
 
-/** All registered models. Claude Code and Codex models are static; Open Code and Copilot models are fetched dynamically. */
-const modelRegistry: EngineModel[] = [...CLAUDE_CODE_MODELS, ...CODEX_MODELS];
+const modelRegistry: EngineModel[] = [];
 
 /** Register models for a specific engine (replaces any existing models for that engine) */
 export const registerModels = (engine: EngineType, models: EngineModel[]): void => {
@@ -310,11 +90,15 @@ export const getAllModels = (): EngineModel[] => [...modelRegistry];
 
 // ============================================================================
 // Defaults
+//
+// Hardcoded so the shared module has no dependency on the per-adapter model
+// catalogs. The chosen default (`claude-sonnet-4-6`) is the same model that
+// previously lived at `CLAUDE_CODE_MODELS[1]`.
 // ============================================================================
 
-export const DEFAULT_ENGINE = CLAUDE_CODE_MODELS[1].engine.type;
-export const DEFAULT_MODEL_ID = CLAUDE_CODE_MODELS[1].engine.model.id;
-export const DEFAULT_MODEL_NAME = CLAUDE_CODE_MODELS[1].engine.model.name;
+export const DEFAULT_ENGINE: EngineType = 'claude-code';
+export const DEFAULT_MODEL_ID = 'claude-sonnet-4-6';
+export const DEFAULT_MODEL_NAME = 'Claude Sonnet 4.6';
 
 // ============================================================================
 // Lookup Helpers

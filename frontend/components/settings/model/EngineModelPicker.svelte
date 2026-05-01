@@ -39,11 +39,9 @@
 		return groups;
 	});
 
-	// Fetch models when engine changes (for non-claude-code)
+	// Fetch models when engine changes
 	$effect(() => {
-		if (engine !== 'claude-code') {
-			modelStore.fetchModels(engine);
-		}
+		modelStore.fetchModels(engine);
 	});
 
 	// Sync accordion state when search or models change
@@ -80,9 +78,7 @@
 		searchQuery = '';
 		onEngineChange(engineType);
 
-		if (engineType !== 'claude-code') {
-			await modelStore.fetchModels(engineType);
-		}
+		await modelStore.fetchModels(engineType);
 
 		syncAccordionState();
 	}
@@ -148,7 +144,7 @@
 
 	<!-- Model List -->
 	<div class="flex flex-col gap-1.5">
-		{#if modelStore.loading && engine !== 'claude-code'}
+		{#if modelStore.loading}
 			<!-- Loading skeleton -->
 			<div class="border border-slate-200/80 dark:border-slate-700/50 rounded-lg overflow-hidden">
 				<div class="bg-white/80 dark:bg-slate-800/40 px-3 py-3 flex items-center gap-3">

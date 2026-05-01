@@ -61,11 +61,29 @@ export interface EngineModel {
 
 // Engine metadata for UI display
 export interface EngineInfo {
-	type: 'claude-code' | 'opencode' | 'copilot' | 'codex';
+	type: 'claude-code' | 'opencode' | 'copilot' | 'codex' | 'qwen';
 	name: string;
 	description: string;
 	icon: {
 		light: string;
 		dark: string;
 	}
+}
+
+// ── Qwen provider presets (wire format for `engine:qwen-presets-list`) ──
+//
+// Defined here so the frontend can stay typed without importing from
+// `$backend`. The runtime values live in `backend/engine/adapters/qwen/presets.ts`.
+
+export type QwenProviderPresetId =
+	| 'dashscope-cn'
+	| 'dashscope-intl'
+	| 'openrouter'
+	| 'fireworks';
+
+export interface QwenProviderPreset {
+	id: QwenProviderPresetId;
+	name: string;
+	defaultBaseUrl: string;
+	docsUrl?: string;
 }

@@ -40,9 +40,17 @@ export function shouldFilterMessage(message: FrontendMessage): boolean {
     return true;
   }
 
-  // Filter out streaming messages with no text
+  // Filter out streaming messages whose text is empty or whitespace-only
+  // (engines sometimes emit lone "\n" deltas that produce blank bubbles)
   if (message.type === 'stream_event') {
-    if (!message.text) {
+    if (!message.text?.trim()) {
+      return true;
+    }
+  }
+
+  // Filter out reasoning messages whose text is empty or whitespace-only
+  if (message.type === 'reasoning' && 'text' in message) {
+    if (!(message as any).text?.trim()) {
       return true;
     }
   }

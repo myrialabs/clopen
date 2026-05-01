@@ -11,7 +11,7 @@ import { t } from 'elysia';
 import { createRouter } from '$shared/utils/ws-server';
 import { settingsQueries } from '../../database/queries';
 import { initializeEngine } from '../../engine';
-import { CLAUDE_CODE_MODELS, CODEX_MODELS, registerModels } from '$shared/constants/engines';
+import { registerModels } from '$shared/constants/engines';
 import type { EngineType } from '$shared/types/unified';
 
 export const crudHandler = createRouter()
@@ -79,11 +79,11 @@ export const crudHandler = createRouter()
 	// List available models for an engine
 	.http('models:list', {
 		data: t.Object({
-			engine: t.Union([t.Literal('claude-code'), t.Literal('opencode'), t.Literal('copilot'), t.Literal('codex')])
+			engine: t.Union([t.Literal('claude-code'), t.Literal('opencode'), t.Literal('copilot'), t.Literal('codex'), t.Literal('qwen')])
 		}),
 		response: t.Array(t.Object({
 			engine: t.Object({
-				type: t.Union([t.Literal('claude-code'), t.Literal('opencode'), t.Literal('copilot'), t.Literal('codex')]),
+				type: t.Union([t.Literal('claude-code'), t.Literal('opencode'), t.Literal('copilot'), t.Literal('codex'), t.Literal('qwen')]),
 				provider: t.String(),
 				model: t.Object({ id: t.String(), name: t.String() }),
 				account: t.Object({ id: t.Number(), name: t.String() }),
@@ -104,20 +104,12 @@ export const crudHandler = createRouter()
 	}, async ({ data }) => {
 		const engineType: EngineType = data.engine;
 
-		// Claude Code + Codex models are static
-		if (engineType === 'claude-code') {
-			return CLAUDE_CODE_MODELS;
-		}
-		if (engineType === 'codex') {
-			return CODEX_MODELS;
-		}
-
-		// Dynamic engines: initialize and fetch models
+		// Uniform path for every engine. Each adapter's getAvailableModels()
+		// owns the catalog logic (static array or dynamic fetch); this handler
+		// just initialises the engine, asks for the catalog, and registers it
+		// in the shared registry so backend callers can resolve models too.
 		const engine = await initializeEngine(engineType);
 		const models = await engine.getAvailableModels();
-
-		// Register fetched models in the shared registry
 		registerModels(engineType, models);
-
 		return models;
 	});

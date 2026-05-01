@@ -277,6 +277,13 @@ class StreamManager extends EventEmitter {
 			projectContextService.registerSession(request.chatSessionId, request.projectId);
 			projectContextService.registerStream(streamId, request.projectId, request.chatSessionId);
 		}
+		// Hand the AbortSignal to MCP so tool handlers can fast-fail on
+		// cancellation. Without this, the engine subprocess dies on cancel
+		// but the in-flight HTTP-MCP tool keeps issuing puppeteer ops —
+		// surfacing as "preview keeps moving by itself" after interrupt.
+		if (streamState.abortController) {
+			projectContextService.registerStreamSignal(streamId, streamState.abortController.signal);
+		}
 
 		// Emit connection event immediately
 		this.emitStreamEvent(streamState, 'connection', {

@@ -25,23 +25,7 @@
 		const memory = settings.engineModelMemory || {};
 		const remembered = memory[engineType];
 
-		if (engineType !== 'claude-code') {
-			modelStore.fetchModels(engineType).then(models => {
-				const target = (remembered && models.find(m => m.engine.model.id === remembered.id))
-					|| models[0];
-				if (target) {
-					updateSettings({
-						selectedProvider: target.engine.provider,
-						selectedModelId: target.engine.model.id,
-						selectedModelName: target.engine.model.name,
-						engineModelMemory: { ...memory, [engineType]: { provider: target.engine.provider, id: target.engine.model.id, name: target.engine.model.name } }
-					});
-				} else {
-					updateSettings({ selectedProvider: '', selectedModelId: '', selectedModelName: '' });
-				}
-			});
-		} else {
-			const models = modelStore.getByEngine('claude-code');
+		modelStore.fetchModels(engineType).then(models => {
 			const target = (remembered && models.find(m => m.engine.model.id === remembered.id))
 				|| models[0];
 			if (target) {
@@ -54,7 +38,7 @@
 			} else {
 				updateSettings({ selectedProvider: '', selectedModelId: '', selectedModelName: '' });
 			}
-		}
+		});
 	}
 
 	function handleAssistantModelChange(modelId: string) {
@@ -103,15 +87,13 @@
 			}
 		});
 
-		if (engineType !== 'claude-code') {
-			modelStore.fetchModels(engineType).then(fetched => {
-				if (fetched.length > 0) {
-					updateSettings({
-						commitGenerator: { ...settings.commitGenerator, modelId: fetched[0].engine.model.id, modelName: fetched[0].engine.model.name }
-					});
-				}
-			});
-		}
+		modelStore.fetchModels(engineType).then(fetched => {
+			if (fetched.length > 0) {
+				updateSettings({
+					commitGenerator: { ...settings.commitGenerator, modelId: fetched[0].engine.model.id, modelName: fetched[0].engine.model.name }
+				});
+			}
+		});
 	}
 
 	function handleCommitModelChange(modelId: string) {

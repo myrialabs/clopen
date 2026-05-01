@@ -7,7 +7,7 @@
 	import type { Terminal } from '@xterm/xterm';
 	import type { FitAddon } from '@xterm/addon-fit';
 
-	type ToolId = 'git' | 'claude' | 'opencode' | 'copilot' | 'codex' | 'chrome' | 'cloudflared';
+	type ToolId = 'git' | 'claude' | 'opencode' | 'copilot' | 'codex' | 'qwen' | 'chrome' | 'cloudflared';
 	type SessionStatus = 'running' | 'success' | 'failed' | 'cancelled';
 
 	interface ManualInstruction {

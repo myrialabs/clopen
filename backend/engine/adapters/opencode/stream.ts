@@ -13,8 +13,6 @@ import type { EngineOutput, UserMessage } from '$shared/types/unified';
 import type { AIEngine, EngineQueryOptions, StructuredGenerationOptions } from '../../types';
 import type { EngineModel } from '$shared/types/unified';
 import type {
-	Provider,
-	Model,
 	EventMessageUpdated,
 	EventMessagePartUpdated,
 	EventSessionIdle,
@@ -24,6 +22,7 @@ import type {
 	ToolPart,
 	Message as OCMessage,
 } from '@opencode-ai/sdk';
+import { fetchOpenCodeModels } from './models';
 import {
 	convertAssistantMessages,
 	convertResultMessage,
@@ -41,6 +40,7 @@ import {
 	getToolInput,
 } from './message-converter';
 import { ensureClient, getClient, getServerUrl } from './server';
+import { formatSessionError, handleStreamError } from './error-handler';
 import { debug } from '$shared/utils/logger';
 
 // ============================================================================
@@ -90,71 +90,7 @@ export class OpenCodeEngine implements AIEngine {
 
 	async getAvailableModels(): Promise<EngineModel[]> {
 		const client = await ensureClient();
-
-		try {
-			// config.providers() returns { data: { providers: Provider[] } }
-			const response = await client.config.providers();
-			const providers: Provider[] = response.data?.providers ?? [];
-			const models: EngineModel[] = [];
-
-			for (const provider of providers) {
-				// Provider.models is Record<string, Model>
-				const providerModels: Record<string, Model> = provider.models ?? {};
-
-				for (const [modelKey, model] of Object.entries(providerModels)) {
-					models.push({
-						engine: {
-							type: 'opencode',
-							provider: provider.id,
-							model: {
-								id: model.id,
-								name: model.name,
-							},
-							account: {
-								id: 0,
-								name: '',
-							},
-						},
-						limit: {
-							input: model.limit.context,
-							output: model.limit.output,
-						},
-						modalities: {
-							input: {
-								text: model.capabilities.input.text,
-								image: model.capabilities.input.image,
-								audio: model.capabilities.input.audio,
-								video: model.capabilities.input.video,
-								pdf: model.capabilities.input.pdf,
-							},
-							output: {
-								text: model.capabilities.output.text,
-								image: model.capabilities.output.image,
-								audio: model.capabilities.output.audio,
-								video: model.capabilities.output.video,
-								pdf: model.capabilities.output.pdf,
-							},
-						},
-						capabilities: {
-							reasoning: model.capabilities.reasoning,
-							tools: model.capabilities.toolcall,
-							structuredOutput: true,
-						},
-						cost: {
-							input: model.cost.input,
-							output: model.cost.output,
-						},
-					});
-				}
-			}
-
-			debug.log('engine', `Fetched ${models.length} models from ${providers.length} Open Code providers`);
-			return models;
-		} catch (error) {
-			debug.error('engine', 'Failed to fetch Open Code providers:', error);
-		}
-
-		return [];
+		return fetchOpenCodeModels(client);
 	}
 
 	/**
@@ -711,48 +647,7 @@ export class OpenCodeEngine implements AIEngine {
 							const errorProps = (event as EventSessionError).properties;
 							// Only handle errors for our session (sessionID is optional on errors)
 							if (errorProps.sessionID && errorProps.sessionID !== sessionId) break;
-							const { error } = errorProps;
-							// Extract a human-readable error message.
-							// OpenCode SDK errors follow: { name: string, data: { message, statusCode?, providerID?, responseBody? } }
-							// Don't prepend error class names (e.g. "APIError") — those are SDK
-							// implementation details, not useful for the end user.
-							let errorMsg = 'Unknown Open Code error';
-							if (error) {
-								const errObj = error as Record<string, any>;
-								const name = errObj.name || '';
-								const dataMsg = errObj.data?.message || '';
-								const statusCode = errObj.data?.statusCode;
-								const providerID = errObj.data?.providerID;
-								const responseBody = errObj.data?.responseBody;
-
-								if (dataMsg) {
-									errorMsg = dataMsg;
-								} else if (responseBody) {
-									// No data.message — try to parse responseBody for the actual error
-									try {
-										const body = typeof responseBody === 'string' ? JSON.parse(responseBody) : responseBody;
-										errorMsg = body?.error?.message || body?.message || String(responseBody);
-									} catch {
-										errorMsg = String(responseBody);
-									}
-								} else if (name) {
-									errorMsg = name;
-								} else if (typeof error === 'string') {
-									errorMsg = error;
-								} else {
-									errorMsg = JSON.stringify(error);
-								}
-
-								// Append status code
-								if (statusCode) {
-									errorMsg += ` (status ${statusCode})`;
-								}
-
-								// Append provider ID to help identify which provider failed
-								if (providerID) {
-									errorMsg += ` [provider: ${providerID}]`;
-								}
-							}
+							const errorMsg = formatSessionError(errorProps);
 							debug.error('engine', '[OC] session.error:', errorMsg);
 							throw new Error(errorMsg);
 						}
@@ -761,12 +656,7 @@ export class OpenCodeEngine implements AIEngine {
 			}
 
 		} catch (error) {
-			if (error instanceof Error) {
-				if (error.name === 'AbortError' || error.message.includes('aborted')) {
-					return;
-				}
-			}
-			throw error;
+			handleStreamError(error);
 		} finally {
 			this._isActive = false;
 			this.activeAbortController = null;

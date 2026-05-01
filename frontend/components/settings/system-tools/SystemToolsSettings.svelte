@@ -49,6 +49,12 @@
 	/>
 
 	<ToolInstallCard
+		tool="qwen"
+		title="Qwen Code CLI"
+		description="Used by clopen to run the Qwen Code engine. The CLI is bundled with the SDK — installing it standalone is only needed for shell use."
+	/>
+
+	<ToolInstallCard
 		tool="chrome"
 		title="Chrome"
 		description="Used by clopen to render the browser preview."

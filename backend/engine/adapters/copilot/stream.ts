@@ -21,6 +21,7 @@ import { resolveOsPath } from '$backend/utils/paths';
 import { debug } from '$shared/utils/logger';
 import { getCopilotMcpConfig } from '../../../mcp/config';
 import { handleStreamError, buildSessionError } from './error-handler';
+import { fetchCopilotModels } from './models';
 
 // `UserInputResponse` isn't part of the SDK's public type exports
 // (see `node_modules/@github/copilot-sdk/dist/index.d.ts`), but
@@ -168,14 +169,9 @@ export class CopilotEngine implements AIEngine {
 		}
 		if (!this.client) return [];
 
-		try {
-			const infos = this.modelsCache ?? await this.client.listModels();
-			this.modelsCache = infos;
-			return infos.map(info => mapModelInfoToEngineModel(info));
-		} catch (error) {
-			debug.warn('engine', `Copilot models unavailable: ${summariseModelsError(error)}`);
-			return [];
-		}
+		const result = await fetchCopilotModels(this.client, this.modelsCache);
+		this.modelsCache = result.cache;
+		return result.models;
 	}
 
 	async *streamQuery(options: EngineQueryOptions): AsyncGenerator<EngineOutput, void, unknown> {
@@ -566,27 +562,6 @@ export class CopilotEngine implements AIEngine {
 // Helpers
 // ============================================================================
 
-/**
- * Build a one-line, human-readable summary of a models.list failure for the
- * server log. Strips the JSON-RPC stack frame noise and maps known GitHub
- * Copilot 4xx responses to actionable hints.
- */
-function summariseModelsError(error: unknown): string {
-	const raw = error instanceof Error ? error.message : String(error);
-	const firstLine = raw.split('\n')[0]?.trim() || raw;
-
-	if (raw.includes('Personal Access Tokens are not supported')) {
-		return 'the models.list endpoint does not accept fine-grained PATs (chat will still work if the PAT has Copilot Requests).';
-	}
-	if (raw.includes('Copilot Requests')) {
-		return 'PAT is missing the "Copilot Requests" permission.';
-	}
-	if (raw.includes('401') || raw.toLowerCase().includes('unauthorized')) {
-		return 'unauthorized — check that the GitHub PAT is valid and has Copilot access.';
-	}
-	return firstLine;
-}
-
 function extractPromptText(prompt: EngineQueryOptions['prompt']): string {
 	const parts: string[] = [];
 	for (const block of prompt.content) {
@@ -595,46 +570,4 @@ function extractPromptText(prompt: EngineQueryOptions['prompt']): string {
 		}
 	}
 	return parts.join('\n').trim();
-}
-
-function mapModelInfoToEngineModel(info: ModelInfo): EngineModel {
-	const limits = info.capabilities?.limits;
-	const supports = info.capabilities?.supports;
-	return {
-		engine: {
-			type: 'copilot',
-			provider: 'github',
-			model: { id: info.id, name: info.name },
-			account: { id: 0, name: '' },
-		},
-		limit: {
-			input: limits?.max_context_window_tokens ?? 0,
-			output: 0,
-		},
-		modalities: {
-			input: {
-				text: true,
-				image: !!supports?.vision,
-				audio: false,
-				video: false,
-				pdf: false,
-			},
-			output: {
-				text: true,
-				image: false,
-				audio: false,
-				video: false,
-				pdf: false,
-			},
-		},
-		capabilities: {
-			reasoning: !!supports?.reasoningEffort,
-			tools: true,
-			structuredOutput: false,
-		},
-		cost: {
-			input: info.billing?.multiplier ?? 0,
-			output: 0,
-		},
-	};
 }

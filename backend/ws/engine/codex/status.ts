@@ -70,7 +70,7 @@ export const codexStatusHandler = createRouter()
 		// the status hot path; only matters when an active account exists.
 		let authMode: 'api_key' | 'chatgpt' | null = null;
 		if (activeAccount) {
-			const { authModeOf } = await import('../../../engine/adapters/codex/auth');
+			const { authModeOf } = await import('../../../engine/adapters/codex/credential');
 			authMode = authModeOf(activeAccount);
 		}
 

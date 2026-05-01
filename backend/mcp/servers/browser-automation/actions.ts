@@ -114,7 +114,12 @@ export async function actionsHandler(args: {
 
 		// Note: Cursor events are emitted by performAutonomousActions internally
 		// with proper delays between each action. No need to emit here.
-		const results = await previewService.performAutonomousActions(sessionId, processedActions);
+		// Pass the chat stream's AbortSignal so the action loop breaks the
+		// moment the user clicks interrupt — without this, multi-step click
+		// sequences keep firing for a few seconds after the engine subprocess
+		// dies (the "preview keeps moving by itself" symptom).
+		const abortSignal = projectContextService.getCurrentSignal();
+		const results = await previewService.performAutonomousActions(sessionId, processedActions, abortSignal);
 
 		// Format response with extracted data if any
 		const extractedData = results?.filter((r: any) => r.action === 'extract_data') || [];

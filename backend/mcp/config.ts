@@ -8,6 +8,7 @@
 import { createSdkMcpServer, tool, type McpSdkServerConfigWithInstance, type McpServerConfig } from "@anthropic-ai/claude-agent-sdk";
 import type { McpRemoteConfig } from '@opencode-ai/sdk';
 import type { MCPHTTPServerConfig } from '@github/copilot-sdk';
+import type { CLIMcpServerConfig as QwenMcpServerConfig } from '@qwen-code/sdk';
 import type { ServerConfig, ParsedMcpToolName, ServerName } from './types';
 import type { McpExecutionContext } from '../engine/types';
 import { serverRegistry, serverFactories, serverMetadata } from './servers';
@@ -104,12 +105,20 @@ export function getEnabledMcpServers(context?: McpExecutionContext): Record<stri
 		if (serverConfig.enabled) {
 			if (context) {
 				// Create context-bound instance: wrap each tool handler so
-				// AsyncLocalStorage context is restored on invocation
+				// AsyncLocalStorage context is restored on invocation, then
+				// short-circuit if the owning stream's AbortSignal has fired
+				// — handler never runs, no half-completed browser ops.
 				const meta = serverMetadata[serverName as ServerName];
 				const sdkTools = (serverConfig.tools as readonly string[]).map(toolName => {
 					const def = meta.toolDefs[toolName];
 					const boundHandler = async (args: any) => {
-						return projectContextService.runWithContextAsync(context, () => def.handler(args));
+						return projectContextService.runWithContextAsync(context, async () => {
+							const signal = projectContextService.getCurrentSignal();
+							if (signal?.aborted) {
+								return abortedToolResult(toolName);
+							}
+							return def.handler(args);
+						});
 					};
 					return tool(toolName, def.description, def.schema, boundHandler as any);
 				});
@@ -132,6 +141,25 @@ export function getEnabledMcpServers(context?: McpExecutionContext): Record<stri
 
 	return enabledServers;
 }
+
+/**
+ * Standard MCP error response when a tool call is rejected because the
+ * owning chat stream has been cancelled. Returned by both the in-process
+ * (Claude) wrapper and the remote-HTTP wrapper so engines see a consistent
+ * "tool refused" outcome no matter which transport they used.
+ */
+function abortedToolResult(toolName: string): { content: Array<{ type: 'text'; text: string }>; isError: true } {
+	return {
+		content: [{ type: 'text' as const, text: `Tool ${toolName} was cancelled because the chat stream was interrupted.` }],
+		isError: true,
+	};
+}
+
+/**
+ * Re-export for use by `backend/mcp/servers/helper.ts::createRemoteMcpServer`,
+ * which wraps remote-HTTP handlers with the same abort check.
+ */
+export { abortedToolResult };
 
 /**
  * Get list of all allowed MCP tool names
@@ -278,9 +306,10 @@ export function getMcpStats() {
  *
  * Different SDKs prepend the MCP server config key (`clopen-mcp`) to tool
  * names with different separators:
- *   - Open Code:  "clopen-mcp_open_new_tab"   (underscore)
- *   - Copilot:    "clopen-mcp-open_new_tab"   (hyphen)
- *   - Codex:      "open_new_tab"              (no prefix; mcpServerName carried separately)
+ *   - Open Code:  "clopen-mcp_open_new_tab"          (underscore)
+ *   - Copilot:    "clopen-mcp-open_new_tab"          (hyphen)
+ *   - Codex:      "open_new_tab"                     (no prefix; mcpServerName carried separately)
+ *   - Qwen Code:  "mcp__clopen-mcp__open_new_tab"    (already mcp-prefixed using OUR namespace key)
  *
  * This function strips whichever prefix is present and maps the bare tool
  * name back using the `mcpServers` registry — the SAME source of truth that
@@ -289,18 +318,24 @@ export function getMcpStats() {
  * Returns null if the tool name is not one of our custom MCP tools.
  */
 export function resolveOpenCodeToolName(toolName: string): string | null {
-	// Already in our format
-	if (toolName.startsWith('mcp__')) return toolName;
-
 	// Strip the remote-MCP server prefix if present. Both `_` and `-` are
-	// observed in the wild depending on the engine's SDK.
+	// observed in the wild depending on the engine's SDK; Qwen prepends the
+	// full `mcp__<namespace>__` form so the bare tool name still needs to be
+	// re-resolved against the registry to land on the correct server alias
+	// (`mcp__browser-automation__open_new_tab`, not `mcp__clopen-mcp__...`).
 	let rawName = toolName;
-	for (const prefix of ['clopen-mcp_', 'clopen-mcp-']) {
+	let strippedNamespace = false;
+	for (const prefix of ['mcp__clopen-mcp__', 'clopen-mcp_', 'clopen-mcp-']) {
 		if (rawName.startsWith(prefix)) {
 			rawName = rawName.slice(prefix.length);
+			strippedNamespace = true;
 			break;
 		}
 	}
+
+	// Already in our canonical format and not the legacy double-prefixed
+	// `mcp__clopen-mcp__<tool>` shape — pass through unchanged.
+	if (!strippedNamespace && rawName.startsWith('mcp__')) return rawName;
 
 	// Look up which server owns this tool
 	for (const [serverName, serverConfig] of Object.entries(mcpServers)) {
@@ -456,6 +491,53 @@ export function getCopilotMcpConfig(): Record<string, MCPHTTPServerConfig> {
 			url: `http://localhost:${port}/mcp`,
 			tools,
 			timeout: 10_000,
+		},
+	};
+}
+
+// ============================================================================
+// Qwen Code MCP Configuration
+// ============================================================================
+
+/**
+ * Get MCP configuration for the Qwen Code engine.
+ *
+ * The Qwen Code SDK / CLI accepts a `mcpServers` map keyed by server name with
+ * a `CLIMcpServerConfig` value that supports the Streamable-HTTP transport via
+ * `httpUrl`. We reuse the SAME `/mcp` URL Open Code, Codex and Copilot already
+ * consume — no new HTTP server, no per-engine bridge. Tool handlers run
+ * in-process in the Clopen backend (README §9.12).
+ *
+ * Approval: the Qwen adapter uses `permissionMode: 'default'` with a
+ * `canUseTool` callback that auto-allows everything. `AskUserQuestion` is
+ * blocked at the SDK level via `excludeTools` (highest permission priority),
+ * so the model never sees it. The callback covers MCP tool calls too — no
+ * per-tool enumeration needed.
+ */
+export function getQwenMcpConfig(): Record<string, QwenMcpServerConfig> {
+	const enabledServers = getEnabledServerNames();
+	if (enabledServers.length === 0) {
+		return {};
+	}
+
+	const port = SERVER_ENV.PORT;
+
+	const includeTools: string[] = [];
+	for (const serverName of enabledServers) {
+		const serverConfig = mcpServers[serverName];
+		for (const toolName of serverConfig.tools as readonly string[]) {
+			includeTools.push(toolName);
+		}
+	}
+
+	debug.log('mcp', `📦 Qwen MCP: remote server at http://localhost:${port}/mcp (${includeTools.length} tools)`);
+
+	return {
+		'clopen-mcp': {
+			httpUrl: `http://localhost:${port}/mcp`,
+			includeTools,
+			timeout: 10_000,
+			trust: true,
 		},
 	};
 }

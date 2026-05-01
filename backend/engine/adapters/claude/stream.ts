@@ -29,7 +29,7 @@ import { handleStreamError } from './error-handler';
 import { getEnabledMcpServers, getAllowedMcpTools } from '../../../mcp';
 import type { AIEngine, EngineQueryOptions } from '../../types';
 import type { EngineModel } from '$shared/types/unified';
-import { CLAUDE_CODE_MODELS } from '$shared/constants/engines';
+import { CLAUDE_CODE_MODELS } from './models';
 
 import { debug } from '$shared/utils/logger';
 

@@ -19,6 +19,7 @@ const TOOL_UNION = t.Union([
 	t.Literal('opencode'),
 	t.Literal('copilot'),
 	t.Literal('codex'),
+	t.Literal('qwen'),
 	t.Literal('chrome'),
 	t.Literal('cloudflared')
 ]);
@@ -69,7 +70,7 @@ const ACTIVE_SESSION_SCHEMA = t.Union([
 	})
 ]);
 
-function toRecipeDTO(tool: 'git' | 'claude' | 'opencode' | 'copilot' | 'codex' | 'chrome' | 'cloudflared', recipe: Awaited<ReturnType<typeof resolveRecipe>>) {
+function toRecipeDTO(tool: 'git' | 'claude' | 'opencode' | 'copilot' | 'codex' | 'qwen' | 'chrome' | 'cloudflared', recipe: Awaited<ReturnType<typeof resolveRecipe>>) {
 	return {
 		tool,
 		autoInstallable: recipe.autoInstallable,
@@ -112,7 +113,7 @@ export const systemToolsStatusHandler = createRouter()
 		})
 	}, async () => {
 		debug.log('path', 'system-tools:status-all');
-		const ids = ['git', 'claude', 'opencode', 'copilot', 'codex', 'chrome', 'cloudflared'] as const;
+		const ids = ['git', 'claude', 'opencode', 'copilot', 'codex', 'qwen', 'chrome', 'cloudflared'] as const;
 		const tools = await Promise.all(ids.map(async (id) => {
 			const [status, recipe] = await Promise.all([
 				getToolStatus(id),

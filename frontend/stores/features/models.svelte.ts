@@ -1,19 +1,19 @@
 /**
  * Models Store with Svelte 5 Runes
  *
- * Manages available AI models per engine.
- * All engines (Claude Code and Open Code) fetch models dynamically
- * from the backend via `models:list` endpoint.
+ * Manages available AI models per engine. All engines fetch their catalog
+ * from the backend via the `models:list` WS endpoint — there is no static
+ * frontend fallback. Each engine adapter owns its catalog logic in
+ * `backend/engine/adapters/<engine>/models.ts`.
  */
 
-import { CLAUDE_CODE_MODELS, registerModels } from '$shared/constants/engines';
+import { registerModels } from '$shared/constants/engines';
 import type { EngineModel, EngineType } from '$shared/types/unified';
 import ws from '$frontend/utils/ws';
 
 import { debug } from '$shared/utils/logger';
 
-// Reactive state — start with static fallback until first fetch completes
-let models = $state<EngineModel[]>([...CLAUDE_CODE_MODELS]);
+let models = $state<EngineModel[]>([]);
 let loading = $state(false);
 let fetchedEngines = $state<Set<EngineType>>(new Set());
 
@@ -75,19 +75,15 @@ export const modelStore = {
 			return engineModels;
 		} catch (error) {
 			debug.error('settings', `Failed to fetch models for ${engine}:`, error);
-			// For claude-code, return static fallback on fetch failure
-			if (engine === 'claude-code') {
-				return CLAUDE_CODE_MODELS;
-			}
 			return [];
 		} finally {
 			loading = false;
 		}
 	},
 
-	/** Reset to only static models */
+	/** Clear the model cache so the next fetchModels() call re-hits the backend. */
 	reset(): void {
-		models = [...CLAUDE_CODE_MODELS];
+		models = [];
 		fetchedEngines = new Set();
 	}
 };

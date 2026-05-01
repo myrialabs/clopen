@@ -10,7 +10,7 @@ import { engineQueries } from '../../../database/queries';
 import {
 	fetchAndCacheModelsDevCatalog,
 	getCachedModelsDevCatalog,
-} from '../../../engine/adapters/opencode/config';
+} from '../../../engine/adapters/opencode/presets';
 import { disposeOpenCodeClient } from '../../../engine/adapters/opencode/server';
 import { disposeEngine } from '../../../engine';
 import { streamManager } from '../../../chat';

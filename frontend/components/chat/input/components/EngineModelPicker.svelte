@@ -12,6 +12,7 @@
 	import { claudeAccountsStore, type ClaudeAccountItem } from '$frontend/stores/features/claude-accounts.svelte';
 	import { copilotAccountsStore, type CopilotAccountItem } from '$frontend/stores/features/copilot-accounts.svelte';
 	import { codexAccountsStore, type CodexAccountItem } from '$frontend/stores/features/codex-accounts.svelte';
+	import { qwenAccountsStore, type QwenAccountItem } from '$frontend/stores/features/qwen-accounts.svelte';
 	import { opencodeProvidersStore, type OpenCodeProviderItem, type OpenCodeAccountItem } from '$frontend/stores/features/opencode-providers.svelte';
 	import ws from '$frontend/utils/ws';
 	import { debug } from '$shared/utils/logger';
@@ -24,7 +25,7 @@
 	// at the store reference resolved by `accountsForEngine`.)
 	// ════════════════════════════════════════════
 
-	type SimpleAccount = ClaudeAccountItem | CopilotAccountItem | CodexAccountItem;
+	type SimpleAccount = ClaudeAccountItem | CopilotAccountItem | CodexAccountItem | QwenAccountItem;
 
 	const accountsForEngine = $derived<SimpleAccount[]>(
 		chatModelState.engine === 'claude-code'
@@ -33,7 +34,9 @@
 				? copilotAccountsStore.accounts
 				: chatModelState.engine === 'codex'
 					? codexAccountsStore.accounts
-					: []
+					: chatModelState.engine === 'qwen'
+						? qwenAccountsStore.accounts
+						: []
 	);
 
 	const currentAccount = $derived(
@@ -50,6 +53,7 @@
 	const accountPickerLabel = $derived(
 		chatModelState.engine === 'copilot' ? 'Copilot Account'
 			: chatModelState.engine === 'codex' ? 'Codex Account'
+			: chatModelState.engine === 'qwen' ? 'Qwen Code Account'
 			: 'Claude Account'
 	);
 
@@ -57,6 +61,7 @@
 		chatModelState.engine === 'claude-code'
 		|| chatModelState.engine === 'copilot'
 		|| chatModelState.engine === 'codex'
+		|| chatModelState.engine === 'qwen'
 	);
 	const hasEngineAccounts = $derived(accountsForEngine.length > 0);
 
@@ -69,6 +74,8 @@
 			copilotAccountsStore.fetch();
 		} else if (engine === 'codex') {
 			codexAccountsStore.fetch();
+		} else if (engine === 'qwen') {
+			qwenAccountsStore.fetch();
 		}
 	});
 
@@ -78,7 +85,7 @@
 		const accounts = accountsForEngine;
 		const currentId = chatModelState.accountId;
 
-		if ((engine === 'claude-code' || engine === 'copilot' || engine === 'codex') && accounts.length > 0) {
+		if ((engine === 'claude-code' || engine === 'copilot' || engine === 'codex' || engine === 'qwen') && accounts.length > 0) {
 			untrack(() => {
 				// If no account set, or current account not found in list, use active account
 				const hasValidAccount = currentId !== null && accounts.some(a => a.id === currentId);
@@ -170,6 +177,20 @@
 				await codexAccountsStore.refresh();
 			} catch (err) {
 				debug.warn('chat', 'Codex account switch failed:', err);
+			}
+		}
+
+		// Qwen models are discovered dynamically against the active account's
+		// `/models` endpoint, so promoting the chat-picked account to DB-active
+		// and refreshing the model list keeps the picker in sync with the
+		// preset's actual catalog.
+		if (chatModelState.engine === 'qwen') {
+			try {
+				await ws.http('engine:qwen-accounts-switch', { id: account.id });
+				await qwenAccountsStore.refresh();
+				await modelStore.refreshModels('qwen');
+			} catch (err) {
+				debug.warn('chat', 'Qwen account switch failed:', err);
 			}
 		}
 
@@ -304,7 +325,7 @@
 
 	// Label shown in the trigger button
 	const triggerLabel = $derived.by(() => {
-		if (chatModelState.engine !== 'claude-code' && modelStore.loading) return 'Loading...';
+		if (modelStore.loading) return 'Loading...';
 		if (!currentModel) return 'No model selected';
 		return currentModel.engine.model.name;
 	});
@@ -356,9 +377,7 @@
 	// Ensures models are ready without waiting for the user to open the dropdown.
 	$effect(() => {
 		const engine = chatModelState.engine;
-		if (engine !== 'claude-code') {
-			modelStore.fetchModels(engine);
-		}
+		modelStore.fetchModels(engine);
 	});
 
 	// Auto-select a model if no valid model is set for the current engine.
@@ -524,12 +543,10 @@
 		chatModelState.engine = engineType;
 		searchQuery = '';
 
-		// Fetch models if needed; clear model immediately so it shows null during loading
-		if (engineType !== 'claude-code') {
-			chatModelState.modelId = '';
-			chatModelState.modelName = '';
-			await modelStore.fetchModels(engineType);
-		}
+		// Clear model immediately so it shows null during loading, then fetch
+		chatModelState.modelId = '';
+		chatModelState.modelName = '';
+		await modelStore.fetchModels(engineType);
 
 		// After models are loaded, pick a model for this engine
 		const memory = chatModelState.engineModelMemory;

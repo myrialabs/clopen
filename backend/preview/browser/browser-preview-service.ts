@@ -479,7 +479,7 @@ export class BrowserPreviewService extends EventEmitter {
 	// ============================================================================
 	// Interaction & Autonomous Actions Methods
 	// ============================================================================
-	async performAutonomousActions(tabId: string, actions: BrowserAutonomousAction[]) {
+	async performAutonomousActions(tabId: string, actions: BrowserAutonomousAction[], abortSignal?: AbortSignal) {
 		const tab = this.getTab(tabId);
 		if (!tab) throw new Error('Tab not found or invalid');
 
@@ -487,7 +487,7 @@ export class BrowserPreviewService extends EventEmitter {
 			tabId,
 			tab,
 			actions,
-			() => this.isValidTab(tabId)
+			() => this.isValidTab(tabId) && !(abortSignal?.aborted ?? false)
 		);
 
 		return results;
@@ -497,12 +497,12 @@ export class BrowserPreviewService extends EventEmitter {
 	 * Perform autonomous actions using tab object directly
 	 * More efficient when tab is already available
 	 */
-	async performAutonomousActionsWithTab(tab: BrowserTab, actions: BrowserAutonomousAction[]) {
+	async performAutonomousActionsWithTab(tab: BrowserTab, actions: BrowserAutonomousAction[], abortSignal?: AbortSignal) {
 		const results = await this.interactionHandler.performAutonomousActions(
 			tab.id,
 			tab,
 			actions,
-			() => this.isValidTab(tab.id)
+			() => this.isValidTab(tab.id) && !(abortSignal?.aborted ?? false)
 		);
 
 		return results;

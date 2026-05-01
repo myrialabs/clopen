@@ -30,7 +30,7 @@
 
 import fs from 'node:fs';
 import path from 'node:path';
-import { getCodexHomeDir } from './auth';
+import { getCodexHomeDir } from './credential';
 import { debug } from '$shared/utils/logger';
 
 const SESSION_DIR_NAME = 'sessions';

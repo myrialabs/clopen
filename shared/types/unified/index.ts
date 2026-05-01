@@ -21,6 +21,8 @@ export type {
 export type {
 	EngineModel,
 	EngineInfo,
+	QwenProviderPresetId,
+	QwenProviderPreset,
 } from './engine';
 
 // ── Tools ────────────────────────────────────────────────────

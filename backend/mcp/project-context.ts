@@ -39,6 +39,16 @@ class ProjectContextService {
 	private lastUsedProjectId: string | null = null;
 
 	/**
+	 * Per-stream AbortSignal map. The stream-manager registers each stream's
+	 * AbortController.signal here when the stream starts so MCP tool handlers
+	 * can fast-fail on cancellation. The remote-MCP HTTP transport (used by
+	 * OpenCode/Codex/Copilot/Qwen) does not preserve the engine's
+	 * AsyncLocalStorage context across the HTTP boundary — `mostRecentActiveStream`
+	 * is the practical fallback for resolving "which stream is asking right now".
+	 */
+	private streamSignals = new Map<string, AbortSignal>();
+
+	/**
 	 * Register a chat session with its project ID
 	 * Should be called when a chat stream starts
 	 */
@@ -110,11 +120,55 @@ class ProjectContextService {
 	}
 
 	/**
+	 * Register an AbortSignal for a stream. MCP tool handlers can read this
+	 * via `getCurrentSignal()` to short-circuit when the engine is cancelled
+	 * — without it, in-flight browser-automation calls keep running for a
+	 * second or two after the user interrupts the chat (visible as the
+	 * "preview keeps moving by itself" symptom).
+	 */
+	registerStreamSignal(streamId: string, signal: AbortSignal): void {
+		if (!streamId) return;
+		this.streamSignals.set(streamId, signal);
+	}
+
+	/**
+	 * Resolve the AbortSignal that belongs to the currently-executing MCP
+	 * tool invocation. Tries (in order):
+	 *   1. AsyncLocalStorage context's `streamId` (Claude in-process path).
+	 *   2. AsyncLocalStorage context's `chatSessionId` mapped to its stream.
+	 *   3. The most recent active stream (fallback for the remote HTTP MCP
+	 *      path — OpenCode/Codex/Copilot/Qwen — where context doesn't carry).
+	 *
+	 * Returns `undefined` when no stream is in-flight; handlers should treat
+	 * absence as "not abortable" rather than as "aborted".
+	 */
+	getCurrentSignal(): AbortSignal | undefined {
+		const context = this.getCurrentContext();
+		if (context?.streamId) {
+			const signal = this.streamSignals.get(context.streamId);
+			if (signal) return signal;
+		}
+		if (context?.chatSessionId) {
+			for (const [streamId, info] of this.activeStreams) {
+				if (info.chatSessionId === context.chatSessionId) {
+					const signal = this.streamSignals.get(streamId);
+					if (signal) return signal;
+				}
+			}
+		}
+		if (this.mostRecentActiveStream) {
+			return this.streamSignals.get(this.mostRecentActiveStream.streamId);
+		}
+		return undefined;
+	}
+
+	/**
 	 * Unregister a stream (cleanup)
 	 */
 	unregisterStream(streamId: string): void {
 		this.streamProjectMap.delete(streamId);
 		this.activeStreams.delete(streamId);
+		this.streamSignals.delete(streamId);
 
 		// Clear most recent if it was this stream
 		if (this.mostRecentActiveStream?.streamId === streamId) {
@@ -158,6 +212,7 @@ class ProjectContextService {
 	clear(): void {
 		this.sessionProjectMap.clear();
 		this.streamProjectMap.clear();
+		this.streamSignals.clear();
 		this.lastUsedProjectId = null;
 		debug.log('mcp', '🧹 Cleared all project context mappings');
 	}

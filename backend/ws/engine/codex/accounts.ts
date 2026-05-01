@@ -46,7 +46,7 @@ import {
 	applyAccountAuth,
 	readAuthJson,
 	serializeCodexCredential,
-} from '../../../engine/adapters/codex/auth';
+} from '../../../engine/adapters/codex/credential';
 import { resolveBinaryWithRefresh } from '../../../utils/cli';
 import { getCleanSpawnEnv } from '../../../utils/env';
 import { debug } from '$shared/utils/logger';

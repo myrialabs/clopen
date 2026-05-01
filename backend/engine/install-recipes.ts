@@ -20,7 +20,7 @@ import { getClopenDir } from '$backend/utils/paths';
 import { resolveBinary, resolveBinaryWithRefresh } from '$backend/utils/cli';
 import { resolveStaticCurlAsset } from '$backend/utils/static-curl';
 
-export type ToolId = 'git' | 'claude' | 'opencode' | 'copilot' | 'codex' | 'chrome' | 'cloudflared';
+export type ToolId = 'git' | 'claude' | 'opencode' | 'copilot' | 'codex' | 'qwen' | 'chrome' | 'cloudflared';
 
 export interface ManualInstruction {
 	label: string;
@@ -425,6 +425,40 @@ async function resolveCopilotRecipe(): Promise<Recipe> {
 	return base;
 }
 
+async function resolveQwenRecipe(): Promise<Recipe> {
+	const manualInstructions: ManualInstruction[] = [{
+		label: 'bun',
+		command: 'bun add -g @qwen-code/qwen-code',
+		docs: 'https://github.com/QwenLM/qwen-code'
+	}, {
+		label: 'npm',
+		command: 'npm install -g @qwen-code/qwen-code',
+		docs: 'https://github.com/QwenLM/qwen-code'
+	}];
+
+	// Qwen Code CLI ships bundled with `@qwen-code/sdk` from v0.1.1+ so the
+	// SDK path doesn't need a standalone install. We still expose this recipe
+	// for users who prefer the standalone CLI for `qwen-oauth` / shell use.
+	if (!resolveBinary('bun')) {
+		return {
+			tool: 'qwen',
+			autoInstallable: false,
+			unavailableReason: 'Bun is required to install the Qwen Code CLI. Install Bun first (https://bun.sh).',
+			missingPrereqs: [],
+			manualInstructions
+		};
+	}
+
+	return {
+		tool: 'qwen',
+		autoInstallable: true,
+		missingPrereqs: [],
+		manualInstructions,
+		command: ['bun', 'add', '-g', '@qwen-code/qwen-code'],
+		displayCommand: 'bun add -g @qwen-code/qwen-code'
+	};
+}
+
 async function resolveCodexRecipe(): Promise<Recipe> {
 	const manualInstructions: ManualInstruction[] = [{
 		label: 'bun',
@@ -708,6 +742,7 @@ export async function resolveRecipe(tool: ToolId): Promise<Recipe> {
 		case 'opencode': return resolveOpenCodeRecipe();
 		case 'copilot': return resolveCopilotRecipe();
 		case 'codex': return resolveCodexRecipe();
+		case 'qwen': return resolveQwenRecipe();
 		case 'chrome': return resolveChromeRecipe();
 		case 'cloudflared': return resolveCloudflaredRecipe();
 	}
