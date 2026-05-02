@@ -1,10 +1,8 @@
 <script lang="ts">
 	import type { ToolUseBlock, LspInput } from '$shared/types/unified';
-	import TextMessage from '../../../formatters/TextMessage.svelte';
 
 	const { toolInput }: { toolInput: ToolUseBlock } = $props();
 	const input = $derived(toolInput.input as LspInput);
-	const result = $derived(toolInput.result);
 
 	const location = $derived([
 		input.filePath,
@@ -13,17 +11,14 @@
 	].filter(Boolean).join(':'));
 </script>
 
-<div class="space-y-1">
-	<div class="flex items-center gap-1.5 text-sm text-slate-600 dark:text-slate-400">
-		<span>{input.operation || 'lsp'}</span>
+<div class="text-sm">
+	<div class="flex items-center flex-wrap gap-x-1.5 gap-y-0.5">
+		<span class="text-slate-500 dark:text-slate-400 shrink-0">LSP {input.operation || 'lsp'}:</span>
 		{#if input.symbol}
-			<code class="font-mono">{input.symbol}</code>
+			<code class="font-mono font-medium text-slate-800 dark:text-slate-200">{input.symbol}</code>
 		{/if}
 		{#if location}
-			<span class="font-mono opacity-60">{location}</span>
+			<span class="font-mono text-xs text-slate-400 dark:text-slate-500">{location}</span>
 		{/if}
 	</div>
-	{#if result?.content}
-		<TextMessage content={typeof result.content === 'string' ? result.content : JSON.stringify(result.content)} />
-	{/if}
 </div>

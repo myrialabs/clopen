@@ -280,6 +280,36 @@
 		deepSearchResults = null;
 		onClose();
 	}
+
+	// Infinite scroll
+	const PAGE_SIZE = 20;
+	let displayCount = $state(PAGE_SIZE);
+	let sentinel = $state<HTMLElement | null>(null);
+
+	const visibleSessions = $derived(filteredSessions.slice(0, displayCount));
+	const hasMore = $derived(filteredSessions.length > displayCount);
+
+	$effect(() => {
+		if (isOpen) displayCount = PAGE_SIZE;
+	});
+
+	$effect(() => {
+		searchQuery;
+		untrack(() => {
+			displayCount = PAGE_SIZE;
+		});
+	});
+
+	$effect(() => {
+		if (!sentinel || !hasMore) return;
+		const observer = new IntersectionObserver((entries) => {
+			if (entries[0]?.isIntersecting) {
+				displayCount = Math.min(displayCount + PAGE_SIZE, filteredSessions.length);
+			}
+		}, { rootMargin: '100px' });
+		observer.observe(sentinel);
+		return () => observer.disconnect();
+	});
 </script>
 
 <Modal bind:isOpen onClose={closeModal} size="md">
@@ -368,7 +398,7 @@
 			</div>
 		{:else}
 			<div class="space-y-2">
-				{#each filteredSessions.slice(0, 20) as session (session.id)}
+				{#each visibleSessions as session (session.id)}
 					{@const isActive = isActiveSession(session)}
 					{@const sessionUsers = getSessionUsers(session.id)}
 					{@const streaming = isSessionStreaming(session.id)}
@@ -478,6 +508,9 @@
 						</button>
 					</div>
 				{/each}
+				{#if hasMore}
+					<div bind:this={sentinel} class="h-4"></div>
+				{/if}
 			</div>
 		{/if}
 	{/snippet}

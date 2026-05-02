@@ -45,17 +45,26 @@
 	} = $props();
 
 	let scrollContainer: HTMLDivElement | undefined = $state();
+	let stickToBottom = $state(true);
 
-	// Auto-scroll reasoning/system content to bottom while receiving partial text
+	function handleScroll() {
+		if (!scrollContainer) return;
+		const distanceFromBottom = scrollContainer.scrollHeight - scrollContainer.scrollTop - scrollContainer.clientHeight;
+		stickToBottom = distanceFromBottom <= 16;
+	}
+
+	// Auto-scroll reasoning/system/compact content to bottom while receiving partial text,
+	// but only when the user is already at the bottom (stickToBottom).
 	$effect(() => {
 		if (roleCategory !== 'reasoning' && roleCategory !== 'system' && roleCategory !== 'compact') return;
 		if (!scrollContainer) return;
-		// Track message content changes (text for streaming, message for final)
 		const _track = message.type === 'stream_event'
 			? message.text
 			: message;
+		void _track;
+		if (!stickToBottom) return;
 		tick().then(() => {
-			if (scrollContainer) {
+			if (scrollContainer && stickToBottom) {
 				scrollContainer.scrollTop = scrollContainer.scrollHeight;
 			}
 		});
@@ -97,6 +106,7 @@
 		<!-- Message Content -->
 		<div
 			bind:this={scrollContainer}
+			onscroll={handleScroll}
 			class="p-3 md:p-4 {roleCategory === 'reasoning' || roleCategory === 'system' || roleCategory === 'compact' ? 'max-h-80 overflow-y-auto' : ''}"
 		>
 			<div class="max-w-none space-y-4">

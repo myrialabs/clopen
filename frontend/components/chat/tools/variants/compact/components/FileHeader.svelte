@@ -6,7 +6,7 @@
 		filePath: string;
 		fileName?: string;
 		operation?: string;
-		badges?: Array<{ text: string; color: string }>;
+		badges?: string[];
 	}
 
 	const { filePath, fileName, operation, badges = [] }: Props = $props();
@@ -30,11 +30,11 @@
 			<span class="text-slate-500 dark:text-slate-400 shrink-0">{operation}:</span>
 		{/if}
 		<span class="font-mono font-medium text-slate-800 dark:text-slate-200">{displayFileName}</span>
+		{#each badges as badge}
+			<span class="text-xs text-slate-500 dark:text-slate-400">{badge}</span>
+		{/each}
 	</div>
 	<div class="flex items-center flex-wrap gap-x-1.5 gap-y-0.5">
 		<span class="text-slate-400 dark:text-slate-500 text-xs">{filePath}</span>
-		{#each badges as badge}
-			<span class="text-xs px-1 py-0.5 rounded {badge.color}">{badge.text}</span>
-		{/each}
 	</div>
 </button>

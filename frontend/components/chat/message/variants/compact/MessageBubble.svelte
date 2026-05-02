@@ -38,6 +38,7 @@
 
 	let scrollContainer: HTMLDivElement | undefined = $state();
 	let isCopied = $state(false);
+	let stickToBottom = $state(true);
 
 	function handleCopy() {
 		onCopy();
@@ -45,15 +46,24 @@
 		setTimeout(() => { isCopied = false; }, 1000);
 	}
 
+	function handleScroll() {
+		if (!scrollContainer) return;
+		const distanceFromBottom = scrollContainer.scrollHeight - scrollContainer.scrollTop - scrollContainer.clientHeight;
+		stickToBottom = distanceFromBottom <= 16;
+	}
+
 	$effect(() => {
-		if (roleCategory !== 'system' && roleCategory !== 'compact') return;
+		if (roleCategory !== 'system') return;
 		if (!scrollContainer) return;
 		const _track = message.type === 'stream_event' ? message.text : message;
 		void _track;
+		if (!stickToBottom) return;
 		tick().then(() => {
-			if (scrollContainer) scrollContainer.scrollTop = scrollContainer.scrollHeight;
+			if (scrollContainer && stickToBottom) scrollContainer.scrollTop = scrollContainer.scrollHeight;
 		});
 	});
+
+	const compactTrigger = $derived(message.type === 'compact_boundary' ? message.trigger : null);
 
 	$effect(() => {
 		if (roleCategory !== 'assistant') return;
@@ -119,10 +129,15 @@
 			<MessageFormatter {message} />
 		</div>
 	</div>
+{:else if roleCategory === 'compact'}
+	<div class="text-xs text-slate-400 dark:text-slate-500">
+		<span>Context compacted{compactTrigger ? ` (${compactTrigger})` : ''}</span>
+	</div>
 {:else}
 	<div
 		bind:this={scrollContainer}
-		class="text-slate-900 dark:text-slate-100 {roleCategory === 'system' || roleCategory === 'compact' ? 'max-h-48 overflow-y-auto' : ''}"
+		onscroll={handleScroll}
+		class="text-slate-900 dark:text-slate-100 {roleCategory === 'system' ? 'max-h-48 overflow-y-auto' : ''}"
 	>
 		{#if roleCategory === 'reasoning'}
 			<div class="text-xs text-slate-400 dark:text-slate-500">

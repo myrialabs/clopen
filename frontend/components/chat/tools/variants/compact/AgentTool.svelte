@@ -11,12 +11,19 @@
 	const toolUseCount = $derived(subMessages?.filter(a => a.type === 'tool_use').length ?? 0);
 
 	let scrollContainer: HTMLDivElement | undefined = $state();
+	let stickToBottom = $state(true);
+
+	function handleScroll() {
+		if (!scrollContainer) return;
+		const distanceFromBottom = scrollContainer.scrollHeight - scrollContainer.scrollTop - scrollContainer.clientHeight;
+		stickToBottom = distanceFromBottom <= 16;
+	}
 
 	$effect(() => {
 		const len = subMessages?.length ?? 0;
-		if (len > 0 && scrollContainer) {
+		if (len > 0 && scrollContainer && stickToBottom) {
 			tick().then(() => {
-				if (scrollContainer) scrollContainer.scrollTop = scrollContainer.scrollHeight;
+				if (scrollContainer && stickToBottom) scrollContainer.scrollTop = scrollContainer.scrollHeight;
 			});
 		}
 	});
@@ -46,7 +53,7 @@
 		{/if}
 	</div>
 	{#if subMessages && subMessages.length > 0}
-		<div bind:this={scrollContainer} class="max-h-39 overflow-y-auto">
+		<div bind:this={scrollContainer} onscroll={handleScroll} class="max-h-39 overflow-y-auto">
 			<ul class="space-y-0.5 pl-5 list-disc text-sm text-slate-500 dark:text-slate-400">
 				{#each subMessages as activity}
 					{#if activity.type === 'tool_use'}

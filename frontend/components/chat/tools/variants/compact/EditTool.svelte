@@ -9,7 +9,16 @@
 	const fileName = $derived(filePath.split(/[/\\]/).pop() || filePath || 'unknown');
 	const replaceAll = $derived(input.replaceAll || false);
 
-	const badges = $derived(replaceAll ? [{ text: 'replace all', color: 'bg-slate-100 dark:bg-slate-800 text-slate-500 dark:text-slate-400' }] : []);
+	const additions = $derived(input.newString ? input.newString.split('\n').length : 0);
+	const deletions = $derived(input.oldString ? input.oldString.split('\n').length : 0);
+
+	const badges = $derived.by(() => {
+		const list: string[] = [];
+		if (additions > 0) list.push(`+${additions}`);
+		if (deletions > 0) list.push(`-${deletions}`);
+		if (replaceAll) list.push('replace all');
+		return list;
+	});
 </script>
 
 <FileHeader {filePath} {fileName} operation="Edit" {badges} />

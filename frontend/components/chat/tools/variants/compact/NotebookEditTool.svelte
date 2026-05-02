@@ -12,8 +12,8 @@
 	const editMode = $derived(input.editMode || 'replace');
 
 	const badges = $derived([
-		{ text: editMode, color: 'bg-slate-100 dark:bg-slate-800 text-slate-600 dark:text-slate-400' },
-		{ text: `${cellType} cell${cellId ? ` #${cellId}` : ''}`, color: 'bg-slate-100 dark:bg-slate-800 text-slate-600 dark:text-slate-400' },
+		editMode,
+		`${cellType} cell${cellId ? ` #${cellId}` : ''}`,
 	]);
 </script>
 

@@ -7,8 +7,44 @@
 		formatTerminalOutput,
 		escapeHtml
 	} from '$frontend/utils/terminal-formatter';
+	import { requestRevealFile } from '$frontend/stores/core/files.svelte';
+	import { getVisiblePanels, workspaceState } from '$frontend/stores/ui/workspace.svelte';
 
 	const { content }: { content: string } = $props();
+
+	// Detect URLs that point to a local absolute file path served by the current host.
+	// Returns the resolved file path if matched, otherwise null.
+	function matchLocalFilePath(href: string): string | null {
+		try {
+			const url = new URL(href, window.location.origin);
+			const sameHost =
+				url.hostname === window.location.hostname ||
+				url.hostname === 'localhost' ||
+				url.hostname === '127.0.0.1';
+			if (!sameHost) return null;
+			const path = decodeURIComponent(url.pathname);
+			// Unix-style absolute file path
+			if (/^\/(Users|home|tmp|opt|var|root|mnt|private|etc)\//.test(path)) return path;
+			// Windows-style /C:/...
+			const winMatch = path.match(/^\/([A-Za-z]):\/(.*)$/);
+			if (winMatch) return `${winMatch[1]}:/${winMatch[2]}`;
+			return null;
+		} catch {
+			return null;
+		}
+	}
+
+	function handleRevealClick(event: MouseEvent) {
+		const target = event.target as HTMLElement | null;
+		if (!target) return;
+		const button = target.closest('[data-reveal-file]') as HTMLElement | null;
+		if (!button) return;
+		event.preventDefault();
+		const filePath = button.getAttribute('data-reveal-file');
+		if (!filePath) return;
+		const visiblePanels = getVisiblePanels(workspaceState.layout);
+		if (visiblePanels.includes('files')) requestRevealFile(filePath);
+	}
 
 	// Configure marked for better styling
 	marked.setOptions({
@@ -35,6 +71,19 @@
 	// Override inline code to escape HTML but allow normal markdown processing
 	renderer.codespan = function(token) {
 		return `<code>${escapeHtml(token.text)}</code>`;
+	};
+
+	// Override link rendering to convert local-file URLs into reveal-file buttons.
+	renderer.link = function(token) {
+		const href = token.href || '';
+		const text = this.parser.parseInline(token.tokens);
+		const filePath = matchLocalFilePath(href);
+		if (filePath) {
+			return `<button type="button" class="reveal-file-link" data-reveal-file="${escapeHtml(filePath)}" title="Reveal in Files panel">${text}</button>`;
+		}
+		const safeHref = escapeHtml(href);
+		const titleAttr = token.title ? ` title="${escapeHtml(token.title)}"` : '';
+		return `<a href="${safeHref}" target="_blank" rel="noopener noreferrer"${titleAttr}>${text}</a>`;
 	};
 
 	// Wrap tables in a responsive scroll container
@@ -91,7 +140,8 @@
 	const processedContent = $derived(processContent(content));
 </script>
 
-<div class="message-content space-y-4 wrap-break-word">
+<!-- svelte-ignore a11y_click_events_have_key_events a11y_no_static_element_interactions -->
+<div class="message-content space-y-4 wrap-break-word" onclick={handleRevealClick}>
 	{@html processedContent}
 </div>
 
@@ -174,21 +224,34 @@
 	}
 	
 	/* Links */
-	:global(.message-content a) {
+	:global(.message-content a),
+	:global(.message-content .reveal-file-link) {
 		color: rgb(37 99 235);
 		text-decoration: underline;
 	}
-	
-	:global(.dark .message-content a) {
+
+	:global(.dark .message-content a),
+	:global(.dark .message-content .reveal-file-link) {
 		color: rgb(96 165 250);
 	}
-	
-	:global(.message-content a:hover) {
+
+	:global(.message-content a:hover),
+	:global(.message-content .reveal-file-link:hover) {
 		color: rgb(29 78 216);
 	}
-	
-	:global(.dark .message-content a:hover) {
+
+	:global(.dark .message-content a:hover),
+	:global(.dark .message-content .reveal-file-link:hover) {
 		color: rgb(147 197 253);
+	}
+
+	:global(.message-content .reveal-file-link) {
+		background: transparent;
+		border: 0;
+		padding: 0;
+		font: inherit;
+		cursor: pointer;
+		word-break: break-all;
 	}
 	
 	/* Code */

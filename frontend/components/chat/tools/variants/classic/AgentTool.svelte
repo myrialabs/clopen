@@ -14,13 +14,20 @@
 	const result = $derived(toolInput.result);
 
 	let scrollContainer: HTMLDivElement | undefined = $state();
+	let stickToBottom = $state(true);
 
-	// Auto-scroll to bottom when new activities arrive
+	function handleScroll() {
+		if (!scrollContainer) return;
+		const distanceFromBottom = scrollContainer.scrollHeight - scrollContainer.scrollTop - scrollContainer.clientHeight;
+		stickToBottom = distanceFromBottom <= 16;
+	}
+
+	// Auto-scroll to bottom when new activities arrive, only if user is at bottom.
 	$effect(() => {
 		const len = subMessages?.length ?? 0;
-		if (len > 0 && scrollContainer) {
+		if (len > 0 && scrollContainer && stickToBottom) {
 			tick().then(() => {
-				if (scrollContainer) {
+				if (scrollContainer && stickToBottom) {
 					scrollContainer.scrollTop = scrollContainer.scrollHeight;
 				}
 			});
@@ -57,7 +64,7 @@
 	<div class="text-xs text-slate-500 dark:text-slate-400 mb-2">
 		{toolUseCount} tool {toolUseCount === 1 ? 'call' : 'calls'}:
 	</div>
-	<div bind:this={scrollContainer} class="max-h-64 overflow-y-auto wrap-break-word">
+	<div bind:this={scrollContainer} onscroll={handleScroll} class="max-h-64 overflow-y-auto wrap-break-word">
 		<ul class="list-disc pl-5 space-y-0.5">
 			{#each subMessages as activity}
 				{#if activity.type === 'tool_use'}

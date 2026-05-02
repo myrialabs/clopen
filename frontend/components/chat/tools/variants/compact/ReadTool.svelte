@@ -9,15 +9,13 @@
 	const fileName = $derived(filePath.split(/[/\\]/).pop() || filePath || 'unknown');
 	const hasLimit = $derived(input.limit !== undefined);
 	const hasOffset = $derived(input.offset !== undefined);
-	const meta = $derived([
-		hasOffset ? `from line ${input.offset}` : '',
-		hasLimit ? `${input.limit} lines` : '',
-	].filter(Boolean).join(' · '));
+	const meta = $derived.by(() => {
+		if (!hasLimit && !hasOffset) return '';
+		const start = hasOffset ? (input.offset as number) : 0;
+		if (hasLimit) return `${start}-${start + (input.limit as number)}`;
+		return `from ${start}`;
+	});
+	const badges = $derived(meta ? [meta] : []);
 </script>
 
-<div class="space-y-0.5">
-	<FileHeader {filePath} {fileName} operation="Read" />
-	{#if meta}
-		<div class="text-xs text-slate-400 dark:text-slate-500">{meta}</div>
-	{/if}
-</div>
+<FileHeader {filePath} {fileName} operation="Read" {badges} />
