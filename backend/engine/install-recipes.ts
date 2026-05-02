@@ -430,10 +430,6 @@ async function resolveQwenRecipe(): Promise<Recipe> {
 		label: 'bun',
 		command: 'bun add -g @qwen-code/qwen-code',
 		docs: 'https://github.com/QwenLM/qwen-code'
-	}, {
-		label: 'npm',
-		command: 'npm install -g @qwen-code/qwen-code',
-		docs: 'https://github.com/QwenLM/qwen-code'
 	}];
 
 	// Qwen Code CLI ships bundled with `@qwen-code/sdk` from v0.1.1+ so the

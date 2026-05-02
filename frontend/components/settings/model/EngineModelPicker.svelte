@@ -88,24 +88,24 @@
 <!-- Engine Selection -->
 <div class="mb-6">
 	<label class="block text-sm font-semibold text-slate-700 dark:text-slate-300 mb-2">Engine</label>
-	<div class="flex gap-3">
+	<div class="grid grid-cols-2 sm:grid-cols-3 gap-2.5">
 		{#each ENGINES as eng (eng.type)}
 			{@const isActive = engine === eng.type}
 			<button
 				type="button"
-				class="flex-1 flex items-center gap-3 p-3.5 overflow-hidden border-2 rounded-xl text-left cursor-pointer transition-all duration-200
+				class="flex items-center gap-2.5 p-3 overflow-hidden border-2 rounded-xl text-left cursor-pointer transition-all duration-200
 					{isActive
 					? 'border-violet-600 bg-gradient-to-br from-violet-500/10 to-purple-500/5 dark:from-violet-500/12 dark:to-purple-500/8'
 					: 'border-slate-200 dark:border-slate-800 bg-slate-100/80 dark:bg-slate-800/80 hover:border-violet-500/20 dark:hover:border-violet-500/35'}"
 				onclick={() => handleEngineChange(eng.type)}
 			>
-				<div>
+				<div class="shrink-0">
 					<div class="flex dark:hidden items-center justify-center w-5 h-5">{@html eng.icon.light}</div>
 					<div class="hidden dark:flex items-center justify-center w-5 h-5">{@html eng.icon.dark}</div>
 				</div>
-				<div>
-					<div class="font-bold text-sm text-slate-900 dark:text-slate-100">{eng.name}</div>
-					<div class="text-xs text-slate-500 dark:text-slate-400 mt-0.5">{eng.description}</div>
+				<div class="flex-1 min-w-0">
+					<div class="font-bold text-sm text-slate-900 dark:text-slate-100 truncate">{eng.name}</div>
+					<div class="text-xs text-slate-500 dark:text-slate-400 mt-0.5 truncate">{eng.description}</div>
 				</div>
 				{#if isActive}
 					<div class="flex items-center justify-center w-5 h-5 bg-gradient-to-br from-violet-600 to-purple-600 rounded-full text-white ml-auto flex-shrink-0">

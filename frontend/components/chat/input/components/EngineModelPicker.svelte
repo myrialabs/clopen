@@ -745,7 +745,8 @@
 				{@const isDisabled = engineLocked && engine.type !== lockedEngine}
 				<button
 					type="button"
-					class="flex-1 flex items-center justify-center gap-1.5 px-3 py-2 text-xs font-medium transition-all duration-150
+					class="flex items-center justify-center gap-1.5 px-2 py-2 text-xs font-medium transition-all duration-150 whitespace-nowrap
+						{isActive ? 'flex-1' : 'flex-shrink-0'}
 						{isActive
 							? 'bg-violet-50 dark:bg-violet-900/20 text-violet-600 dark:text-violet-400 border-b-2 border-violet-600'
 							: isDisabled
@@ -753,10 +754,13 @@
 								: 'text-slate-600 dark:text-slate-400 hover:bg-slate-50 dark:hover:bg-slate-700/50'}"
 					onclick={() => !isDisabled && selectEngine(engine.type)}
 					disabled={isDisabled}
+					title={engine.name}
 				>
 					<div class="flex dark:hidden items-center justify-center w-3.5 h-3.5 [&>svg]:w-full [&>svg]:h-full">{@html engine.icon.light}</div>
 					<div class="hidden dark:flex items-center justify-center w-3.5 h-3.5 [&>svg]:w-full [&>svg]:h-full">{@html engine.icon.dark}</div>
-					{engine.name}
+					{#if isActive}
+						<span>{engine.name}</span>
+					{/if}
 					{#if isDisabled}
 						<Icon name="lucide:lock" class="w-3 h-3" />
 					{/if}

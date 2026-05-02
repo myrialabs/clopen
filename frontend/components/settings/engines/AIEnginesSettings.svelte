@@ -7,7 +7,15 @@
 	import { isDarkMode } from '$frontend/utils/theme';
 	import { setActiveSection } from '$frontend/stores/ui/settings-modal.svelte';
 	import { ENGINES } from '$shared/constants/engines';
-	import type { QwenProviderPresetId } from '$shared/types/unified';
+	import type { EngineType, QwenProviderPresetId } from '$shared/types/unified';
+
+	interface Props {
+		showHeader?: boolean;
+		compact?: boolean;
+	}
+	const { showHeader = true, compact = false }: Props = $props();
+
+	let activeEngine = $state<EngineType>('claude-code');
 	import { claudeAccountsStore, type ClaudeAccountItem as ClaudeCodeAccountItem } from '$frontend/stores/features/claude-accounts.svelte';
 	import { copilotAccountsStore, type CopilotAccountItem } from '$frontend/stores/features/copilot-accounts.svelte';
 	import { codexAccountsStore, type CodexAccountItem } from '$frontend/stores/features/codex-accounts.svelte';
@@ -190,6 +198,7 @@
 	let ocAddingAccountForProvider = $state<number | null>(null);
 	let ocNewAccountName = $state('');
 	let ocNewAccountApiKey = $state('');
+	let ocNewAccountOptions = $state<Record<string, string>>({});
 
 	// Delete confirmation
 	let ocDeleteDialogOpen = $state(false);
@@ -934,26 +943,36 @@
 		ocAddStep = 'saving';
 		ocAddError = '';
 		try {
-			// Build options JSON from the key-value pairs (excluding apiKey which is separate)
-			const options: Record<string, string> = {};
-			for (const [key, value] of Object.entries(ocAddOptions)) {
-				if (value.trim()) options[key] = value.trim();
-			}
+			const envNames = ocSelectedCatalogProvider.env;
+			const credential = buildAccountCredential(envNames, ocAddApiKey.trim(), ocAddOptions);
 
 			await opencodeProvidersStore.addProvider({
 				slug: ocSelectedCatalogProvider.id,
 				name: ocSelectedCatalogProvider.name,
 				npm: ocSelectedCatalogProvider.npm,
 				apiUrl: ocSelectedCatalogProvider.api || undefined,
-				options: Object.keys(options).length > 0 ? JSON.stringify(options) : undefined,
 				accountName: ocAddAccountName.trim(),
-				credential: ocAddApiKey.trim(),
+				credential,
 			});
 			ocAddStep = 'success';
 		} catch (error: any) {
 			ocAddError = error?.message || 'Failed to add provider';
 			ocAddStep = 'error';
 		}
+	}
+
+	// Build the credential string sent to the backend.
+	// - Single-env providers store the raw secret (legacy compat).
+	// - Multi-env providers store every secret as a JSON object so each
+	//   account has its own complete credential bundle.
+	function buildAccountCredential(envNames: string[], primary: string, extras: Record<string, string>): string {
+		if (envNames.length <= 1) return primary;
+		const bundle: Record<string, string> = { [envNames[0]]: primary };
+		for (const envName of envNames.slice(1)) {
+			const value = (extras[envName] ?? '').trim();
+			if (value) bundle[envName] = value;
+		}
+		return JSON.stringify(bundle);
 	}
 
 	function cancelAddProvider() {
@@ -970,23 +989,37 @@
 		}
 	}
 
-	// Get env var label for a provider by looking it up in the catalog
-	function getProviderEnvLabel(slug: string): string {
-		const catalogEntry = ocCatalog.find(c => c.id === slug);
-		return catalogEntry?.env?.[0] || 'API Key';
-	}
-
 	// Account CRUD within a provider
 	function startAddAccount(providerDbId: number) {
 		ocAddingAccountForProvider = providerDbId;
 		ocNewAccountName = '';
 		ocNewAccountApiKey = '';
+		ocNewAccountOptions = {};
+	}
+
+	function getProviderEnvNames(slug: string): string[] {
+		return ocCatalog.find(c => c.id === slug)?.env || [];
+	}
+
+	function isAddAccountValid(): boolean {
+		if (ocAddingAccountForProvider === null) return false;
+		if (!ocNewAccountName.trim() || !ocNewAccountApiKey.trim()) return false;
+		const provider = ocProviders.find(p => p.id === ocAddingAccountForProvider);
+		if (!provider) return false;
+		for (const envName of getProviderEnvNames(provider.slug).slice(1)) {
+			if (!ocNewAccountOptions[envName]?.trim()) return false;
+		}
+		return true;
 	}
 
 	async function submitAddAccount() {
-		if (ocAddingAccountForProvider === null || !ocNewAccountName.trim() || !ocNewAccountApiKey.trim()) return;
+		if (!isAddAccountValid() || ocAddingAccountForProvider === null) return;
+		const provider = ocProviders.find(p => p.id === ocAddingAccountForProvider);
+		if (!provider) return;
+		const envNames = getProviderEnvNames(provider.slug);
 		try {
-			await opencodeProvidersStore.addAccount(ocAddingAccountForProvider, ocNewAccountName.trim(), ocNewAccountApiKey.trim());
+			const credential = buildAccountCredential(envNames, ocNewAccountApiKey.trim(), ocNewAccountOptions);
+			await opencodeProvidersStore.addAccount(ocAddingAccountForProvider, ocNewAccountName.trim(), credential);
 			ocAddingAccountForProvider = null;
 		} catch {
 			// Ignore
@@ -995,6 +1028,7 @@
 
 	function cancelAddAccount() {
 		ocAddingAccountForProvider = null;
+		ocNewAccountOptions = {};
 	}
 
 	async function switchOCAccount(accountId: number) {
@@ -1197,13 +1231,60 @@
 	}
 </script>
 
-<div class="space-y-6">
-	<!-- Header -->
-	<h3 class="text-base font-bold text-slate-900 dark:text-slate-100 mb-1.5">Engines</h3>
-	<p class="text-sm text-slate-600 dark:text-slate-500 mb-4">
-		Connect accounts and configure providers for your AI engines.
-	</p>
+<div class={compact ? '' : 'space-y-6'}>
+	{#if showHeader}
+		<!-- Header -->
+		<h3 class="text-base font-bold text-slate-900 dark:text-slate-100 mb-1.5">Engines</h3>
+		<p class="text-sm text-slate-600 dark:text-slate-500 mb-4">
+			Connect accounts and configure providers for your AI engines.
+		</p>
+	{/if}
 
+	<!-- Engine selector grid -->
+	<div class="grid grid-cols-2 sm:grid-cols-3 gap-2.5 mb-6">
+		{#each ENGINES as eng (eng.type)}
+			{@const isActive = activeEngine === eng.type}
+			{@const stat =
+				eng.type === 'claude-code' ? { installed: claudeCodeStatus?.installed ?? null, count: claudeCodeAccounts.length } :
+				eng.type === 'opencode' ? { installed: openCodeStatus?.installed ?? null, count: ocProviders.reduce((sum, p) => sum + p.accounts.length, 0) } :
+				eng.type === 'copilot' ? { installed: copilotStatus?.installed ?? null, count: copilotAccounts.length } :
+				eng.type === 'codex' ? { installed: codexStatus?.installed ?? null, count: codexAccounts.length } :
+				{ installed: qwenStatus?.installed ?? null, count: qwenAccounts.length }}
+			{@const countLabel = `${stat.count} account${stat.count === 1 ? '' : 's'}`}
+			<button
+				type="button"
+				class="flex items-center gap-2.5 p-3 overflow-hidden border-2 rounded-xl text-left cursor-pointer transition-all duration-200
+					{isActive
+						? 'border-violet-600 bg-gradient-to-br from-violet-500/10 to-purple-500/5 dark:from-violet-500/12 dark:to-purple-500/8'
+						: 'border-slate-200 dark:border-slate-800 bg-slate-100/80 dark:bg-slate-800/80 hover:border-violet-500/20 dark:hover:border-violet-500/35'}"
+				onclick={() => { activeEngine = eng.type; }}
+				title={eng.name}
+			>
+				<div class="shrink-0 flex items-center justify-center w-5 h-5 [&>svg]:w-5 [&>svg]:h-5">
+					{@html isDarkMode() ? eng.icon.dark : eng.icon.light}
+				</div>
+				<div class="flex-1 min-w-0">
+					<div class="font-bold text-sm text-slate-900 dark:text-slate-100 truncate">{eng.name}</div>
+					{#if !compact}
+						<div class="text-xs text-slate-500 dark:text-slate-400 mt-0.5 truncate">
+							{#if stat.installed === false}
+								Not installed
+							{:else if stat.installed === null}
+								—
+							{:else}
+								{countLabel}
+							{/if}
+						</div>
+					{/if}
+				</div>
+			</button>
+		{/each}
+	</div>
+
+	<!-- Active engine pane -->
+	<div class="space-y-6">
+
+	{#if activeEngine === 'claude-code'}
 	<!-- Claude Code Card -->
 	<div class="rounded-xl border border-slate-200 dark:border-slate-700/50 bg-white dark:bg-slate-800/50 overflow-hidden">
 		<!-- Card Header -->
@@ -1526,6 +1607,7 @@
 		</div>
 	{/if}
 
+	{:else if activeEngine === 'copilot'}
 	<!-- Copilot Card -->
 	<div class="rounded-xl border border-slate-200 dark:border-slate-700/50 bg-white dark:bg-slate-800/50 overflow-hidden">
 		<!-- Card Header -->
@@ -1758,6 +1840,7 @@
 		</div>
 	</div>
 
+	{:else if activeEngine === 'codex'}
 	<!-- Codex Card -->
 	<div class="rounded-xl border border-slate-200 dark:border-slate-700/50 bg-white dark:bg-slate-800/50 overflow-hidden">
 		<!-- Card Header -->
@@ -2119,6 +2202,7 @@
 		</div>
 	{/if}
 
+	{:else if activeEngine === 'qwen'}
 	<!-- Qwen Code Card -->
 	<div class="rounded-xl border border-slate-200 dark:border-slate-700/50 bg-white dark:bg-slate-800/50 overflow-hidden">
 		<!-- Card Header -->
@@ -2349,6 +2433,7 @@
 		</div>
 	</div>
 
+	{:else if activeEngine === 'opencode'}
 	<!-- OpenCode Card -->
 	<div class="rounded-xl border border-slate-200 dark:border-slate-700/50 bg-white dark:bg-slate-800/50 overflow-hidden">
 		<!-- Card Header -->
@@ -2525,11 +2610,22 @@
 
 									<!-- Add account inline -->
 									{#if ocAddingAccountForProvider === provider.id}
+										{@const envNames = getProviderEnvNames(provider.slug)}
+										{@const primaryEnv = envNames[0] || 'API Key'}
 										<div class="space-y-2 pt-2 border-t border-slate-200 dark:border-slate-700/50">
 											<input type="text" bind:value={ocNewAccountName} placeholder="Account name (e.g. Personal, Work)" class="w-full px-3 py-1.5 text-xs rounded-lg border border-slate-300 dark:border-slate-600 bg-white dark:bg-slate-800 text-slate-900 dark:text-slate-100 placeholder:text-slate-400 focus:outline-none focus:ring-1 focus:ring-violet-500" />
-											<input type="text" bind:value={ocNewAccountApiKey} placeholder={getProviderEnvLabel(provider.slug)} class="w-full px-3 py-1.5 text-xs rounded-lg border border-slate-300 dark:border-slate-600 bg-white dark:bg-slate-800 text-slate-900 dark:text-slate-100 placeholder:text-slate-400 focus:outline-none focus:ring-1 focus:ring-violet-500 font-mono" />
+											<input type="text" bind:value={ocNewAccountApiKey} placeholder={primaryEnv} class="w-full px-3 py-1.5 text-xs rounded-lg border border-slate-300 dark:border-slate-600 bg-white dark:bg-slate-800 text-slate-900 dark:text-slate-100 placeholder:text-slate-400 focus:outline-none focus:ring-1 focus:ring-violet-500 font-mono" />
+											{#each envNames.slice(1) as envVar (envVar)}
+												<input
+													type="text"
+													value={ocNewAccountOptions[envVar] || ''}
+													oninput={(e) => { ocNewAccountOptions = { ...ocNewAccountOptions, [envVar]: (e.target as HTMLInputElement).value }; }}
+													placeholder={envVar}
+													class="w-full px-3 py-1.5 text-xs rounded-lg border border-slate-300 dark:border-slate-600 bg-white dark:bg-slate-800 text-slate-900 dark:text-slate-100 placeholder:text-slate-400 focus:outline-none focus:ring-1 focus:ring-violet-500 font-mono"
+												/>
+											{/each}
 											<div class="flex gap-2">
-												<button type="button" class="flex-1 flex items-center justify-center gap-1.5 px-3 py-1.5 text-xs font-medium rounded-lg bg-violet-600 text-white hover:bg-violet-700 transition-colors disabled:opacity-50" onclick={submitAddAccount} disabled={!ocNewAccountName.trim() || !ocNewAccountApiKey.trim()}>
+												<button type="button" class="flex-1 flex items-center justify-center gap-1.5 px-3 py-1.5 text-xs font-medium rounded-lg bg-violet-600 text-white hover:bg-violet-700 transition-colors disabled:opacity-50" onclick={submitAddAccount} disabled={!isAddAccountValid()}>
 													<Icon name="lucide:plus" class="w-3 h-3" />Add
 												</button>
 												<button type="button" class="px-3 py-1.5 text-xs font-medium rounded-lg border border-slate-300 dark:border-slate-600 text-slate-600 dark:text-slate-400 hover:bg-slate-100 dark:hover:bg-slate-700 transition-colors" onclick={cancelAddAccount}>Cancel</button>
@@ -2681,6 +2777,9 @@
 				</div>
 			{/if}
 		</div>
+	</div>
+	{/if}
+
 	</div>
 </div>
 

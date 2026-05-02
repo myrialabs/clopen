@@ -18,51 +18,63 @@
 		</div>
 	{/if}
 
-	<ToolInstallCard
-		tool="git"
-		title="Git"
-		description="Used by clopen for source control and project syncing."
-	/>
+	<!-- Engines -->
+	<section class="space-y-3">
+		<h4 class="text-xs font-semibold uppercase tracking-wider text-slate-500 dark:text-slate-400">Engines</h4>
+		<div class="space-y-3">
+			<ToolInstallCard
+				tool="claude"
+				title="Claude Code"
+				description="Used by clopen to run the Claude Code engine."
+			/>
 
-	<ToolInstallCard
-		tool="claude"
-		title="Claude Code"
-		description="Used by clopen to run the Claude Code engine."
-	/>
+			<ToolInstallCard
+				tool="opencode"
+				title="OpenCode"
+				description="Used by clopen to run the OpenCode engine."
+			/>
 
-	<ToolInstallCard
-		tool="opencode"
-		title="OpenCode"
-		description="Used by clopen to run the OpenCode engine."
-	/>
+			<ToolInstallCard
+				tool="copilot"
+				title="GitHub Copilot CLI"
+				description="Used by clopen to run the GitHub Copilot engine."
+			/>
 
-	<ToolInstallCard
-		tool="copilot"
-		title="GitHub Copilot CLI"
-		description="Used by clopen to run the GitHub Copilot engine."
-	/>
+			<ToolInstallCard
+				tool="codex"
+				title="Codex CLI"
+				description="Used by clopen to run the OpenAI Codex engine."
+			/>
 
-	<ToolInstallCard
-		tool="codex"
-		title="Codex CLI"
-		description="Used by clopen to run the OpenAI Codex engine."
-	/>
+			<ToolInstallCard
+				tool="qwen"
+				title="Qwen Code CLI"
+				description="Used by clopen to run the Qwen Code engine. The CLI is bundled with the SDK — installing it standalone is only needed for shell use."
+			/>
+		</div>
+	</section>
 
-	<ToolInstallCard
-		tool="qwen"
-		title="Qwen Code CLI"
-		description="Used by clopen to run the Qwen Code engine. The CLI is bundled with the SDK — installing it standalone is only needed for shell use."
-	/>
+	<!-- Utilities -->
+	<section class="space-y-3">
+		<h4 class="text-xs font-semibold uppercase tracking-wider text-slate-500 dark:text-slate-400">Utilities</h4>
+		<div class="space-y-3">
+			<ToolInstallCard
+				tool="git"
+				title="Git"
+				description="Used by clopen for source control and project syncing."
+			/>
 
-	<ToolInstallCard
-		tool="chrome"
-		title="Chrome"
-		description="Used by clopen to render the browser preview."
-	/>
+			<ToolInstallCard
+				tool="chrome"
+				title="Chrome"
+				description="Used by clopen to render the browser preview."
+			/>
 
-	<ToolInstallCard
-		tool="cloudflared"
-		title="Cloudflared"
-		description="Used by clopen to expose local dev servers via Public Tunnel."
-	/>
+			<ToolInstallCard
+				tool="cloudflared"
+				title="Cloudflared"
+				description="Used by clopen to expose local dev servers via Public Tunnel."
+			/>
+		</div>
+	</section>
 </div>
