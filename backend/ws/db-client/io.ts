@@ -12,8 +12,8 @@
 import { t } from 'elysia';
 import { createRouter } from '$shared/utils/ws-server';
 import { connectionManager } from '../../db-client/connection-manager';
-import { dbClientConnectionQueries } from '../../database/queries';
 import type { DbClientObjectDetails, DbClientQueryResult } from '$shared/types/db-client';
+import { requireDbClientConnectionAccess } from './access';
 
 type SqlDriver = 'mysql' | 'postgres' | 'sqlite';
 
@@ -154,10 +154,9 @@ export const ioHandler = createRouter()
 			content: t.String(),
 			mimeType: t.String()
 		})
-	}, async ({ data }) => {
-		const conn = dbClientConnectionQueries.get(data.connectionId);
-		if (!conn) throw new Error('connection not found');
-		const driver = conn.driver;
+	}, async ({ data, conn }) => {
+		const connection = requireDbClientConnectionAccess(conn, data.connectionId);
+		const driver = connection.driver;
 		const withData = data.schemaOnly ? false : (data.withData ?? true);
 
 		const stamp = new Date().toISOString().replace(/[:.]/g, '-').slice(0, 19);
@@ -340,10 +339,9 @@ export const ioHandler = createRouter()
 			count: t.Number(),
 			message: t.String()
 		})
-	}, async ({ data }) => {
-		const conn = dbClientConnectionQueries.get(data.connectionId);
-		if (!conn) throw new Error('connection not found');
-		const driver = conn.driver;
+	}, async ({ data, conn }) => {
+		const connection = requireDbClientConnectionAccess(conn, data.connectionId);
+		const driver = connection.driver;
 		const adapter = await connectionManager.get(data.connectionId);
 
 		if (driver === 'mysql' || driver === 'postgres' || driver === 'sqlite') {

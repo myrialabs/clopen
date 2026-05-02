@@ -64,6 +64,28 @@ function rowToConnection(row: DBDbClientConnectionRow): DbClientConnection {
 	};
 }
 
+function redactConnectionSecrets(connection: DbClientConnection): DbClientConnection {
+	return {
+		...connection,
+		password: null,
+		ssh: {
+			...connection.ssh,
+			password: undefined,
+			privateKey: undefined,
+			passphrase: undefined
+		}
+	};
+}
+
+function hasConnectionAccess(
+	row: DBDbClientConnectionRow,
+	userId: string,
+	isAdmin: boolean
+): boolean {
+	if (isAdmin) return true;
+	return row.owner_user_id === userId;
+}
+
 interface InsertParams {
 	name: string;
 	driver: DbDriver;
@@ -77,9 +99,10 @@ interface InsertParams {
 	ssh: DbClientSshConfig;
 	options: Record<string, unknown>;
 	color: string | null;
+	ownerUserId: string | null;
 }
 
-function normalizeInput(input: DbClientConnectionInput): InsertParams {
+function normalizeInput(input: DbClientConnectionInput, ownerUserId: string | null): InsertParams {
 	const ssh: DbClientSshConfig = {
 		...DEFAULT_SSH,
 		...(input.ssh ?? {})
@@ -96,11 +119,102 @@ function normalizeInput(input: DbClientConnectionInput): InsertParams {
 		sslCa: input.sslCa ?? null,
 		ssh,
 		options: input.options ?? {},
-		color: input.color ?? null
+		color: input.color ?? null,
+		ownerUserId
 	};
 }
 
+function getRowById(id: string): DBDbClientConnectionRow | null {
+	const db = getDatabase();
+	return db.prepare(`
+		SELECT * FROM db_client_connections WHERE id = ?
+	`).get(id) as DBDbClientConnectionRow | null;
+}
+
+function insertConnection(input: DbClientConnectionInput, ownerUserId: string | null): DbClientConnection {
+	const db = getDatabase();
+	const id = crypto.randomUUID();
+	const now = new Date().toISOString();
+	const params = normalizeInput(input, ownerUserId);
+
+	db.prepare(`
+		INSERT INTO db_client_connections (
+			id, name, driver,
+			host, port, username, password, database,
+			ssl_mode, ssl_ca,
+			ssh_enabled, ssh_host, ssh_port, ssh_username, ssh_auth_method,
+			ssh_password, ssh_private_key, ssh_passphrase,
+			options_json, color,
+			owner_user_id,
+			created_at, updated_at, last_used_at
+		) VALUES (
+			?, ?, ?,
+			?, ?, ?, ?, ?,
+			?, ?,
+			?, ?, ?, ?, ?,
+			?, ?, ?,
+			?, ?,
+			?,
+			?, ?, ?
+		)
+	`).run(
+		id, params.name, params.driver,
+		params.host, params.port, params.username, params.password, params.database,
+		params.sslMode, params.sslCa,
+		params.ssh.enabled ? 1 : 0,
+		params.ssh.host || null,
+		params.ssh.port,
+		params.ssh.username || null,
+		params.ssh.authMethod,
+		params.ssh.password || null,
+		params.ssh.privateKey || null,
+		params.ssh.passphrase || null,
+		JSON.stringify(params.options),
+		params.color,
+		params.ownerUserId,
+		now, now, null
+	);
+
+	const row = getRowById(id);
+	if (!row) {
+		throw new Error('db-client connection not found');
+	}
+	return rowToConnection(row);
+}
+
 export const dbClientConnectionQueries = {
+	listForUser(userId: string, isAdmin: boolean): DbClientConnection[] {
+		const db = getDatabase();
+		const rows = (isAdmin
+			? db.prepare(`
+				SELECT * FROM db_client_connections
+				ORDER BY (last_used_at IS NULL), last_used_at DESC, created_at DESC
+			`).all()
+			: db.prepare(`
+				SELECT * FROM db_client_connections
+				WHERE owner_user_id = ?
+				ORDER BY (last_used_at IS NULL), last_used_at DESC, created_at DESC
+			`).all(userId)) as DBDbClientConnectionRow[];
+
+		return rows.map((row) => redactConnectionSecrets(rowToConnection(row)));
+	},
+
+	getForUser(id: string, userId: string, isAdmin: boolean): DbClientConnection | null {
+		const row = getRowById(id);
+		if (!row || !hasConnectionAccess(row, userId, isAdmin)) {
+			return null;
+		}
+		return redactConnectionSecrets(rowToConnection(row));
+	},
+
+	ensureAccess(id: string, userId: string, isAdmin: boolean): DbClientConnection {
+		const row = getRowById(id);
+		if (!row || !hasConnectionAccess(row, userId, isAdmin)) {
+			throw new Error('db-client connection not found');
+		}
+		return rowToConnection(row);
+	},
+
 	list(): DbClientConnection[] {
 		const db = getDatabase();
 		const rows = db.prepare(`
@@ -111,61 +225,22 @@ export const dbClientConnectionQueries = {
 	},
 
 	get(id: string): DbClientConnection | null {
-		const db = getDatabase();
-		const row = db.prepare(`
-			SELECT * FROM db_client_connections WHERE id = ?
-		`).get(id) as DBDbClientConnectionRow | null;
+		const row = getRowById(id);
 		return row ? rowToConnection(row) : null;
 	},
 
 	create(input: DbClientConnectionInput): DbClientConnection {
-		const db = getDatabase();
-		const id = crypto.randomUUID();
-		const now = new Date().toISOString();
-		const params = normalizeInput(input);
+		return insertConnection(input, null);
+	},
 
-		db.prepare(`
-			INSERT INTO db_client_connections (
-				id, name, driver,
-				host, port, username, password, database,
-				ssl_mode, ssl_ca,
-				ssh_enabled, ssh_host, ssh_port, ssh_username, ssh_auth_method,
-				ssh_password, ssh_private_key, ssh_passphrase,
-				options_json, color,
-				created_at, updated_at, last_used_at
-			) VALUES (
-				?, ?, ?,
-				?, ?, ?, ?, ?,
-				?, ?,
-				?, ?, ?, ?, ?,
-				?, ?, ?,
-				?, ?,
-				?, ?, ?
-			)
-		`).run(
-			id, params.name, params.driver,
-			params.host, params.port, params.username, params.password, params.database,
-			params.sslMode, params.sslCa,
-			params.ssh.enabled ? 1 : 0,
-			params.ssh.host || null,
-			params.ssh.port,
-			params.ssh.username || null,
-			params.ssh.authMethod,
-			params.ssh.password || null,
-			params.ssh.privateKey || null,
-			params.ssh.passphrase || null,
-			JSON.stringify(params.options),
-			params.color,
-			now, now, null
-		);
-
-		const row = db.prepare('SELECT * FROM db_client_connections WHERE id = ?').get(id) as DBDbClientConnectionRow;
-		return rowToConnection(row);
+	createForUser(input: DbClientConnectionInput, ownerUserId: string): DbClientConnection {
+		const connection = insertConnection(input, ownerUserId);
+		return redactConnectionSecrets(connection);
 	},
 
 	update(id: string, patch: Partial<DbClientConnectionInput>): DbClientConnection {
 		const db = getDatabase();
-		const existing = db.prepare('SELECT * FROM db_client_connections WHERE id = ?').get(id) as DBDbClientConnectionRow | null;
+		const existing = getRowById(id);
 		if (!existing) {
 			throw new Error('db-client connection not found');
 		}
@@ -220,8 +295,22 @@ export const dbClientConnectionQueries = {
 		values.push(id);
 		db.prepare(`UPDATE db_client_connections SET ${sets.join(', ')} WHERE id = ?`).run(...values);
 
-		const row = db.prepare('SELECT * FROM db_client_connections WHERE id = ?').get(id) as DBDbClientConnectionRow;
+		const row = getRowById(id);
+		if (!row) {
+			throw new Error('db-client connection not found');
+		}
 		return rowToConnection(row);
+	},
+
+	updateForUser(
+		id: string,
+		patch: Partial<DbClientConnectionInput>,
+		userId: string,
+		isAdmin: boolean
+	): DbClientConnection {
+		this.ensureAccess(id, userId, isAdmin);
+		const updated = this.update(id, patch);
+		return redactConnectionSecrets(updated);
 	},
 
 	delete(id: string): void {
@@ -229,9 +318,19 @@ export const dbClientConnectionQueries = {
 		db.prepare('DELETE FROM db_client_connections WHERE id = ?').run(id);
 	},
 
+	deleteForUser(id: string, userId: string, isAdmin: boolean): void {
+		this.ensureAccess(id, userId, isAdmin);
+		this.delete(id);
+	},
+
 	markUsed(id: string): void {
 		const db = getDatabase();
 		const now = new Date().toISOString();
 		db.prepare('UPDATE db_client_connections SET last_used_at = ? WHERE id = ?').run(now, id);
+	},
+
+	markUsedForUser(id: string, userId: string, isAdmin: boolean): void {
+		this.ensureAccess(id, userId, isAdmin);
+		this.markUsed(id);
 	}
 };

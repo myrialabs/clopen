@@ -14,6 +14,7 @@ import type {
 	DbSslMode
 } from '$shared/types/db-client';
 import { debug } from '$shared/utils/logger';
+import { getDbClientPrincipal, requireDbClientConnectionAccess } from './access';
 
 const driverSchema = t.Union([
 	t.Literal('mysql'),
@@ -111,28 +112,34 @@ export const connectionsHandler = createRouter()
 	.http('db-client:list', {
 		data: t.Object({}),
 		response: t.Array(t.Any())
-	}, async () => {
+	}, async ({ conn }) => {
 		await initializeDatabase();
-		return dbClientConnectionQueries.list();
+		const { userId, isAdmin } = getDbClientPrincipal(conn);
+		return dbClientConnectionQueries.listForUser(userId, isAdmin);
 	})
 
 	.http('db-client:get', {
 		data: t.Object({ id: t.String({ minLength: 1 }) }),
 		response: t.Any()
-	}, async ({ data }) => {
-		const conn = dbClientConnectionQueries.get(data.id);
-		if (!conn) throw new Error('db-client connection not found');
-		return conn;
+	}, async ({ data, conn }) => {
+		const { userId, isAdmin } = getDbClientPrincipal(conn);
+		const connection = dbClientConnectionQueries.getForUser(data.id, userId, isAdmin);
+		if (!connection) throw new Error('db-client connection not found');
+		return connection;
 	})
 
 	.http('db-client:create', {
 		data: connectionInputSchema,
 		response: t.Any()
-	}, async ({ data }) => {
+	}, async ({ data, conn }) => {
 		await initializeDatabase();
-		const conn = dbClientConnectionQueries.create(ensureInputDefaults(data as DbClientConnectionInput));
-		debug.log('db-client', `created connection ${conn.id} (${conn.driver})`);
-		return conn;
+		const { userId } = getDbClientPrincipal(conn);
+		const created = dbClientConnectionQueries.createForUser(
+			ensureInputDefaults(data as DbClientConnectionInput),
+			userId
+		);
+		debug.log('db-client', `created connection ${created.id} (${created.driver})`);
+		return created;
 	})
 
 	.http('db-client:update', {
@@ -141,7 +148,9 @@ export const connectionsHandler = createRouter()
 			patch: connectionPatchSchema
 		}),
 		response: t.Any()
-	}, async ({ data }) => {
+	}, async ({ data, conn }) => {
+		const { userId, isAdmin } = getDbClientPrincipal(conn);
+		requireDbClientConnectionAccess(conn, data.id);
 		const patch = data.patch as Partial<DbClientConnectionInput>;
 		const normalized: Partial<DbClientConnectionInput> = {
 			...patch,
@@ -149,32 +158,36 @@ export const connectionsHandler = createRouter()
 		};
 		// Drop the live adapter so the next access re-opens with new settings.
 		await connectionManager.release(data.id);
-		return dbClientConnectionQueries.update(data.id, normalized);
+		return dbClientConnectionQueries.updateForUser(data.id, normalized, userId, isAdmin);
 	})
 
 	.http('db-client:delete', {
 		data: t.Object({ id: t.String({ minLength: 1 }) }),
 		response: t.Object({ ok: t.Boolean() })
-	}, async ({ data }) => {
+	}, async ({ data, conn }) => {
+		const { userId, isAdmin } = getDbClientPrincipal(conn);
+		requireDbClientConnectionAccess(conn, data.id);
 		await connectionManager.release(data.id);
-		dbClientConnectionQueries.delete(data.id);
+		dbClientConnectionQueries.deleteForUser(data.id, userId, isAdmin);
 		return { ok: true };
 	})
 
 	.http('db-client:test', {
 		data: connectionTestSchema,
 		response: healthSchema
-	}, async ({ data }) => {
+	}, async ({ data, conn }) => {
 		await initializeDatabase();
 		if (isInput(data)) {
 			return connectionManager.test(ensureInputDefaults(data as DbClientConnectionInput));
 		}
+		requireDbClientConnectionAccess(conn, data.id);
 		return connectionManager.test({ id: (data as { id: string }).id });
 	})
 
 	.http('db-client:health', {
 		data: t.Object({ id: t.String({ minLength: 1 }) }),
 		response: healthSchema
-	}, async ({ data }) => {
+	}, async ({ data, conn }) => {
+		requireDbClientConnectionAccess(conn, data.id);
 		return connectionManager.test({ id: data.id });
 	});

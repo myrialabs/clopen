@@ -199,6 +199,7 @@ export interface DBDbClientConnectionRow {
 	ssh_passphrase: string | null;
 	options_json: string | null;
 	color: string | null;
+	owner_user_id: string | null;
 	created_at: string;
 	updated_at: string;
 	last_used_at: string | null;
