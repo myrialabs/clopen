@@ -26,7 +26,10 @@ export const ADMIN_ONLY_ROUTES = new Set([
 	'auth:revoke-invite',
 	'auth:list-users',
 	'auth:remove-user',
-	'settings:update-system',
+	'settings:update',
+	'settings:update-batch',
+	'system:run-update',
+	'system:clear-data',
 	// System Tools — binary installation is an admin-only operation.
 	'system-tools:status',
 	'system-tools:status-all',
@@ -67,3 +70,4 @@ export function checkRouteAccess(
 	// All other routes — any authenticated user
 	return { allowed: true };
 }
+
