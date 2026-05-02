@@ -10,6 +10,8 @@
 		files: GitFileChange[];
 		section: 'staged' | 'unstaged' | 'untracked' | 'conflicted';
 		collapsed?: boolean;
+		activeFilePath?: string | null;
+		activeSection?: string | null;
 		onStage?: (path: string) => void;
 		onUnstage?: (path: string) => void;
 		onDiscard?: (path: string) => void;
@@ -23,10 +25,21 @@
 	let {
 		title, icon, files, section,
 		collapsed: isCollapsed = $bindable(false),
+		activeFilePath = null,
+		activeSection = null,
 		onStage, onUnstage, onDiscard,
 		onStageAll, onUnstageAll, onDiscardAll,
 		onViewDiff, onResolve
 	}: Props = $props();
+
+	function isFileActive(filePath: string): boolean {
+		if (!activeFilePath || activeFilePath !== filePath) return false;
+		// Treat 'unstaged' and 'untracked' as the same group — viewDiff dispatches via 'unstaged'
+		if (activeSection === section) return true;
+		const unstagedGroup = section === 'unstaged' || section === 'untracked';
+		const activeUnstagedGroup = activeSection === 'unstaged' || activeSection === 'untracked';
+		return unstagedGroup && activeUnstagedGroup;
+	}
 
 	// Virtual scroll — only render visible items when list is large
 	const ITEM_HEIGHT = 32;
@@ -166,6 +179,7 @@
 								<FileChangeItem
 									{file}
 									{section}
+									isActive={isFileActive(file.path)}
 									{onStage}
 									{onUnstage}
 									{onDiscard}
@@ -182,6 +196,7 @@
 						<FileChangeItem
 							{file}
 							{section}
+							isActive={isFileActive(file.path)}
 							{onStage}
 							{onUnstage}
 							{onDiscard}

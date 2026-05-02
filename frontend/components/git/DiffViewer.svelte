@@ -27,8 +27,12 @@
 
 	const activePath = $derived(activeDiff?.newPath || activeDiff?.oldPath || '');
 	const activeLanguage = $derived(detectLanguageFromFilename(getFileName(activePath)));
-	const originalContent = $derived(activeDiff ? buildContent(activeDiff, 'old') : '');
-	const modifiedContent = $derived(activeDiff ? buildContent(activeDiff, 'new') : '');
+	const originalSide = $derived(activeDiff ? buildContent(activeDiff, 'old') : { text: '', lineNumbers: [] });
+	const modifiedSide = $derived(activeDiff ? buildContent(activeDiff, 'new') : { text: '', lineNumbers: [] });
+	const originalContent = $derived(originalSide.text);
+	const modifiedContent = $derived(modifiedSide.text);
+	const originalLineNumbers = $derived(originalSide.lineNumbers);
+	const modifiedLineNumbers = $derived(modifiedSide.lineNumbers);
 
 	const binaryPreviewPath = $derived.by(() => {
 		if (!activeDiff?.isBinary || activeDiff.status === 'D') return null;
@@ -46,23 +50,26 @@
 		return getFileName(activeDiff.newPath || activeDiff.oldPath);
 	});
 
-	function buildContent(diff: GitFileDiff, side: 'old' | 'new'): string {
-		if (!diff || diff.isBinary || diff.hunks.length === 0) return '';
+	function buildContent(diff: GitFileDiff, side: 'old' | 'new'): { text: string; lineNumbers: number[] } {
+		if (!diff || diff.isBinary || diff.hunks.length === 0) return { text: '', lineNumbers: [] };
 		const lines: string[] = [];
+		const lineNumbers: number[] = [];
 		for (const hunk of diff.hunks) {
 			for (const line of hunk.lines) {
 				if (side === 'old') {
 					if (line.type === 'context' || line.type === 'delete') {
 						lines.push(line.content);
+						lineNumbers.push(line.oldLineNumber ?? 0);
 					}
 				} else {
 					if (line.type === 'context' || line.type === 'add') {
 						lines.push(line.content);
+						lineNumbers.push(line.newLineNumber ?? 0);
 					}
 				}
 			}
 		}
-		return lines.join('\n');
+		return { text: lines.join('\n'), lineNumbers };
 	}
 
 	function getFileName(path: string): string {
@@ -156,6 +163,8 @@
 					<MonacoDiffEditor
 						original={originalContent}
 						modified={modifiedContent}
+						{originalLineNumbers}
+						{modifiedLineNumbers}
 						language={activeLanguage}
 						originalPath={activeDiff.oldPath}
 						modifiedPath={activeDiff.newPath}
