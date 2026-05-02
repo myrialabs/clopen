@@ -20,6 +20,7 @@ import { streamManager } from '../../chat/stream-manager';
 import { terminalStreamManager } from '../../terminal/stream-manager';
 import { broadcastPresence } from '../projects/status';
 import { debug } from '$shared/utils/logger';
+import { requireProjectAccess } from '../access';
 
 export const crudHandler = createRouter()
 	// List all projects for the current user
@@ -73,12 +74,8 @@ export const crudHandler = createRouter()
 			id: t.String({ minLength: 1 })
 		}),
 		response: t.Any()
-	}, async ({ data }) => {
-		const project = projectQueries.getById(data.id);
-
-		if (!project) {
-			throw new Error('Project not found');
-		}
+	}, async ({ data, conn }) => {
+		requireProjectAccess(conn, data.id);
 
 		// Update last_opened_at when getting project
 		projectQueries.updateLastOpened(data.id);
@@ -99,10 +96,7 @@ export const crudHandler = createRouter()
 		})
 	}, async ({ data, conn }) => {
 		const userId = ws.getUserId(conn);
-		const project = projectQueries.getById(data.id);
-		if (!project) {
-			throw new Error('Project not found');
-		}
+		requireProjectAccess(conn, data.id);
 
 		const mode = data.mode ?? 'remove';
 

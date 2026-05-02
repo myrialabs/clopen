@@ -5,7 +5,7 @@
 import { t } from 'elysia';
 import { createRouter } from '$shared/utils/ws-server';
 import { gitService } from '../../git/git-service';
-import { projectQueries } from '../../database/queries/project-queries';
+import { requireProjectAccess } from '../access';
 
 export const stagingHandler = createRouter()
 	.http('git:stage', {
@@ -14,9 +14,8 @@ export const stagingHandler = createRouter()
 			filePath: t.String()
 		}),
 		response: t.Object({ ok: t.Boolean() })
-	}, async ({ data }) => {
-		const project = projectQueries.getById(data.projectId);
-		if (!project) throw new Error('Project not found');
+	}, async ({ data, conn }) => {
+		const project = requireProjectAccess(conn, data.projectId);
 		await gitService.stageFile(project.path, data.filePath);
 		return { ok: true };
 	})
@@ -26,9 +25,8 @@ export const stagingHandler = createRouter()
 			projectId: t.String()
 		}),
 		response: t.Object({ ok: t.Boolean() })
-	}, async ({ data }) => {
-		const project = projectQueries.getById(data.projectId);
-		if (!project) throw new Error('Project not found');
+	}, async ({ data, conn }) => {
+		const project = requireProjectAccess(conn, data.projectId);
 		await gitService.stageAll(project.path);
 		return { ok: true };
 	})
@@ -39,9 +37,8 @@ export const stagingHandler = createRouter()
 			filePath: t.String()
 		}),
 		response: t.Object({ ok: t.Boolean() })
-	}, async ({ data }) => {
-		const project = projectQueries.getById(data.projectId);
-		if (!project) throw new Error('Project not found');
+	}, async ({ data, conn }) => {
+		const project = requireProjectAccess(conn, data.projectId);
 		await gitService.unstageFile(project.path, data.filePath);
 		return { ok: true };
 	})
@@ -51,9 +48,8 @@ export const stagingHandler = createRouter()
 			projectId: t.String()
 		}),
 		response: t.Object({ ok: t.Boolean() })
-	}, async ({ data }) => {
-		const project = projectQueries.getById(data.projectId);
-		if (!project) throw new Error('Project not found');
+	}, async ({ data, conn }) => {
+		const project = requireProjectAccess(conn, data.projectId);
 		await gitService.unstageAll(project.path);
 		return { ok: true };
 	})
@@ -64,9 +60,8 @@ export const stagingHandler = createRouter()
 			filePath: t.String()
 		}),
 		response: t.Object({ ok: t.Boolean() })
-	}, async ({ data }) => {
-		const project = projectQueries.getById(data.projectId);
-		if (!project) throw new Error('Project not found');
+	}, async ({ data, conn }) => {
+		const project = requireProjectAccess(conn, data.projectId);
 		await gitService.discardFile(project.path, data.filePath);
 		return { ok: true };
 	})
@@ -76,9 +71,8 @@ export const stagingHandler = createRouter()
 			projectId: t.String()
 		}),
 		response: t.Object({ ok: t.Boolean() })
-	}, async ({ data }) => {
-		const project = projectQueries.getById(data.projectId);
-		if (!project) throw new Error('Project not found');
+	}, async ({ data, conn }) => {
+		const project = requireProjectAccess(conn, data.projectId);
 		await gitService.discardAll(project.path);
 		return { ok: true };
 	});

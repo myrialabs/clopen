@@ -5,7 +5,7 @@
 import { t } from 'elysia';
 import { createRouter } from '$shared/utils/ws-server';
 import { gitService } from '../../git/git-service';
-import { projectQueries } from '../../database/queries/project-queries';
+import { requireProjectAccess } from '../access';
 
 export const logHandler = createRouter()
 	.http('git:log', {
@@ -29,9 +29,8 @@ export const logHandler = createRouter()
 			total: t.Number(),
 			hasMore: t.Boolean()
 		})
-	}, async ({ data }) => {
-		const project = projectQueries.getById(data.projectId);
-		if (!project) throw new Error('Project not found');
+	}, async ({ data, conn }) => {
+		const project = requireProjectAccess(conn, data.projectId);
 		return await gitService.getLog(
 			project.path,
 			data.limit ?? 50,

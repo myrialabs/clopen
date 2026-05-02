@@ -5,7 +5,7 @@
 import { t } from 'elysia';
 import { createRouter } from '$shared/utils/ws-server';
 import { gitService } from '../../git/git-service';
-import { projectQueries } from '../../database/queries/project-queries';
+import { requireProjectAccess } from '../access';
 
 const BranchSchema = t.Object({
 	name: t.String(),
@@ -29,9 +29,8 @@ export const branchHandler = createRouter()
 			ahead: t.Number(),
 			behind: t.Number()
 		})
-	}, async ({ data }) => {
-		const project = projectQueries.getById(data.projectId);
-		if (!project) throw new Error('Project not found');
+	}, async ({ data, conn }) => {
+		const project = requireProjectAccess(conn, data.projectId);
 		return await gitService.getBranches(project.path);
 	})
 
@@ -42,9 +41,8 @@ export const branchHandler = createRouter()
 			startPoint: t.Optional(t.String())
 		}),
 		response: t.Object({ ok: t.Boolean() })
-	}, async ({ data }) => {
-		const project = projectQueries.getById(data.projectId);
-		if (!project) throw new Error('Project not found');
+	}, async ({ data, conn }) => {
+		const project = requireProjectAccess(conn, data.projectId);
 		await gitService.createBranch(project.path, data.name, data.startPoint);
 		return { ok: true };
 	})
@@ -55,9 +53,8 @@ export const branchHandler = createRouter()
 			name: t.String()
 		}),
 		response: t.Object({ ok: t.Boolean() })
-	}, async ({ data }) => {
-		const project = projectQueries.getById(data.projectId);
-		if (!project) throw new Error('Project not found');
+	}, async ({ data, conn }) => {
+		const project = requireProjectAccess(conn, data.projectId);
 		await gitService.switchBranch(project.path, data.name);
 		return { ok: true };
 	})
@@ -69,9 +66,8 @@ export const branchHandler = createRouter()
 			force: t.Optional(t.Boolean())
 		}),
 		response: t.Object({ ok: t.Boolean() })
-	}, async ({ data }) => {
-		const project = projectQueries.getById(data.projectId);
-		if (!project) throw new Error('Project not found');
+	}, async ({ data, conn }) => {
+		const project = requireProjectAccess(conn, data.projectId);
 		await gitService.deleteBranch(project.path, data.name, data.force);
 		return { ok: true };
 	})
@@ -83,9 +79,8 @@ export const branchHandler = createRouter()
 			newName: t.String({ minLength: 1 })
 		}),
 		response: t.Object({ ok: t.Boolean() })
-	}, async ({ data }) => {
-		const project = projectQueries.getById(data.projectId);
-		if (!project) throw new Error('Project not found');
+	}, async ({ data, conn }) => {
+		const project = requireProjectAccess(conn, data.projectId);
 		await gitService.renameBranch(project.path, data.oldName, data.newName);
 		return { ok: true };
 	})
@@ -99,8 +94,7 @@ export const branchHandler = createRouter()
 			success: t.Boolean(),
 			message: t.String()
 		})
-	}, async ({ data }) => {
-		const project = projectQueries.getById(data.projectId);
-		if (!project) throw new Error('Project not found');
+	}, async ({ data, conn }) => {
+		const project = requireProjectAccess(conn, data.projectId);
 		return await gitService.mergeBranch(project.path, data.branchName);
 	});

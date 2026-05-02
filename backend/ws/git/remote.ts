@@ -5,7 +5,7 @@
 import { t } from 'elysia';
 import { createRouter } from '$shared/utils/ws-server';
 import { gitService } from '../../git/git-service';
-import { projectQueries } from '../../database/queries/project-queries';
+import { requireProjectAccess } from '../access';
 
 export const remoteHandler = createRouter()
 	.http('git:remotes', {
@@ -17,9 +17,8 @@ export const remoteHandler = createRouter()
 			fetchUrl: t.String(),
 			pushUrl: t.String()
 		}))
-	}, async ({ data }) => {
-		const project = projectQueries.getById(data.projectId);
-		if (!project) throw new Error('Project not found');
+	}, async ({ data, conn }) => {
+		const project = requireProjectAccess(conn, data.projectId);
 		return await gitService.getRemotes(project.path);
 	})
 
@@ -31,9 +30,8 @@ export const remoteHandler = createRouter()
 		response: t.Object({
 			message: t.String()
 		})
-	}, async ({ data }) => {
-		const project = projectQueries.getById(data.projectId);
-		if (!project) throw new Error('Project not found');
+	}, async ({ data, conn }) => {
+		const project = requireProjectAccess(conn, data.projectId);
 		const message = await gitService.fetch(project.path, data.remote);
 		return { message };
 	})
@@ -48,9 +46,8 @@ export const remoteHandler = createRouter()
 			success: t.Boolean(),
 			message: t.String()
 		})
-	}, async ({ data }) => {
-		const project = projectQueries.getById(data.projectId);
-		if (!project) throw new Error('Project not found');
+	}, async ({ data, conn }) => {
+		const project = requireProjectAccess(conn, data.projectId);
 		return await gitService.pull(project.path, data.remote, data.branch);
 	})
 
@@ -65,9 +62,8 @@ export const remoteHandler = createRouter()
 			success: t.Boolean(),
 			message: t.String()
 		})
-	}, async ({ data }) => {
-		const project = projectQueries.getById(data.projectId);
-		if (!project) throw new Error('Project not found');
+	}, async ({ data, conn }) => {
+		const project = requireProjectAccess(conn, data.projectId);
 		return await gitService.push(project.path, data.remote, data.branch, data.force);
 	})
 
@@ -78,9 +74,8 @@ export const remoteHandler = createRouter()
 			url: t.String()
 		}),
 		response: t.Object({ ok: t.Boolean() })
-	}, async ({ data }) => {
-		const project = projectQueries.getById(data.projectId);
-		if (!project) throw new Error('Project not found');
+	}, async ({ data, conn }) => {
+		const project = requireProjectAccess(conn, data.projectId);
 		await gitService.addRemote(project.path, data.name, data.url);
 		return { ok: true };
 	})
@@ -91,9 +86,8 @@ export const remoteHandler = createRouter()
 			name: t.String()
 		}),
 		response: t.Object({ ok: t.Boolean() })
-	}, async ({ data }) => {
-		const project = projectQueries.getById(data.projectId);
-		if (!project) throw new Error('Project not found');
+	}, async ({ data, conn }) => {
+		const project = requireProjectAccess(conn, data.projectId);
 		await gitService.removeRemote(project.path, data.name);
 		return { ok: true };
 	})
@@ -107,9 +101,8 @@ export const remoteHandler = createRouter()
 			message: t.String(),
 			date: t.String()
 		}))
-	}, async ({ data }) => {
-		const project = projectQueries.getById(data.projectId);
-		if (!project) throw new Error('Project not found');
+	}, async ({ data, conn }) => {
+		const project = requireProjectAccess(conn, data.projectId);
 		return await gitService.stashList(project.path);
 	})
 
@@ -119,9 +112,8 @@ export const remoteHandler = createRouter()
 			message: t.Optional(t.String())
 		}),
 		response: t.Object({ ok: t.Boolean() })
-	}, async ({ data }) => {
-		const project = projectQueries.getById(data.projectId);
-		if (!project) throw new Error('Project not found');
+	}, async ({ data, conn }) => {
+		const project = requireProjectAccess(conn, data.projectId);
 		await gitService.stashSave(project.path, data.message);
 		return { ok: true };
 	})
@@ -132,9 +124,8 @@ export const remoteHandler = createRouter()
 			index: t.Optional(t.Number())
 		}),
 		response: t.Object({ ok: t.Boolean() })
-	}, async ({ data }) => {
-		const project = projectQueries.getById(data.projectId);
-		if (!project) throw new Error('Project not found');
+	}, async ({ data, conn }) => {
+		const project = requireProjectAccess(conn, data.projectId);
 		await gitService.stashPop(project.path, data.index);
 		return { ok: true };
 	})
@@ -145,9 +136,8 @@ export const remoteHandler = createRouter()
 			index: t.Optional(t.Number())
 		}),
 		response: t.Object({ ok: t.Boolean() })
-	}, async ({ data }) => {
-		const project = projectQueries.getById(data.projectId);
-		if (!project) throw new Error('Project not found');
+	}, async ({ data, conn }) => {
+		const project = requireProjectAccess(conn, data.projectId);
 		await gitService.stashDrop(project.path, data.index);
 		return { ok: true };
 	})
@@ -163,9 +153,8 @@ export const remoteHandler = createRouter()
 			date: t.String(),
 			isAnnotated: t.Boolean()
 		}))
-	}, async ({ data }) => {
-		const project = projectQueries.getById(data.projectId);
-		if (!project) throw new Error('Project not found');
+	}, async ({ data, conn }) => {
+		const project = requireProjectAccess(conn, data.projectId);
 		return await gitService.getTags(project.path);
 	})
 
@@ -177,9 +166,8 @@ export const remoteHandler = createRouter()
 			commitHash: t.Optional(t.String())
 		}),
 		response: t.Object({ ok: t.Boolean() })
-	}, async ({ data }) => {
-		const project = projectQueries.getById(data.projectId);
-		if (!project) throw new Error('Project not found');
+	}, async ({ data, conn }) => {
+		const project = requireProjectAccess(conn, data.projectId);
 		await gitService.createTag(project.path, data.name, data.message, data.commitHash);
 		return { ok: true };
 	})
@@ -190,9 +178,8 @@ export const remoteHandler = createRouter()
 			name: t.String()
 		}),
 		response: t.Object({ ok: t.Boolean() })
-	}, async ({ data }) => {
-		const project = projectQueries.getById(data.projectId);
-		if (!project) throw new Error('Project not found');
+	}, async ({ data, conn }) => {
+		const project = requireProjectAccess(conn, data.projectId);
 		await gitService.deleteTag(project.path, data.name);
 		return { ok: true };
 	})
@@ -207,8 +194,8 @@ export const remoteHandler = createRouter()
 			success: t.Boolean(),
 			message: t.String()
 		})
-	}, async ({ data }) => {
-		const project = projectQueries.getById(data.projectId);
-		if (!project) throw new Error('Project not found');
+	}, async ({ data, conn }) => {
+		const project = requireProjectAccess(conn, data.projectId);
 		return await gitService.pushTag(project.path, data.name, data.remote);
 	});
+

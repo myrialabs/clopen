@@ -5,7 +5,7 @@
 import { t } from 'elysia';
 import { createRouter } from '$shared/utils/ws-server';
 import { gitService } from '../../git/git-service';
-import { projectQueries } from '../../database/queries/project-queries';
+import { requireProjectAccess } from '../access';
 
 const ConflictMarkerSchema = t.Object({
 	ourStart: t.Number(),
@@ -29,9 +29,8 @@ export const conflictHandler = createRouter()
 			content: t.String(),
 			markers: t.Array(ConflictMarkerSchema)
 		}))
-	}, async ({ data }) => {
-		const project = projectQueries.getById(data.projectId);
-		if (!project) throw new Error('Project not found');
+	}, async ({ data, conn }) => {
+		const project = requireProjectAccess(conn, data.projectId);
 		return await gitService.getConflictFiles(project.path);
 	})
 
@@ -43,9 +42,8 @@ export const conflictHandler = createRouter()
 			customContent: t.Optional(t.String())
 		}),
 		response: t.Object({ ok: t.Boolean() })
-	}, async ({ data }) => {
-		const project = projectQueries.getById(data.projectId);
-		if (!project) throw new Error('Project not found');
+	}, async ({ data, conn }) => {
+		const project = requireProjectAccess(conn, data.projectId);
 		await gitService.resolveConflict(
 			project.path,
 			data.filePath,
@@ -60,9 +58,8 @@ export const conflictHandler = createRouter()
 			projectId: t.String()
 		}),
 		response: t.Object({ ok: t.Boolean() })
-	}, async ({ data }) => {
-		const project = projectQueries.getById(data.projectId);
-		if (!project) throw new Error('Project not found');
+	}, async ({ data, conn }) => {
+		const project = requireProjectAccess(conn, data.projectId);
 		await gitService.abortMerge(project.path);
 		return { ok: true };
 	});

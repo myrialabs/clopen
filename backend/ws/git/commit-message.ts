@@ -7,11 +7,11 @@
 import { t } from 'elysia';
 import { createRouter } from '$shared/utils/ws-server';
 import { execGit } from '../../git/git-executor';
-import { projectQueries } from '../../database/queries/project-queries';
 import { initializeEngine } from '../../engine';
 import type { EngineType } from '$shared/types/unified';
 import type { GeneratedCommitMessage } from '$shared/types/git';
 import { debug } from '$shared/utils/logger';
+import { requireProjectAccess } from '../access';
 
 const COMMIT_MESSAGE_SCHEMA = {
 	type: 'object',
@@ -49,9 +49,8 @@ export const commitMessageHandler = createRouter()
 		response: t.Object({
 			message: t.String()
 		})
-	}, async ({ data }) => {
-		const project = projectQueries.getById(data.projectId);
-		if (!project) throw new Error('Project not found');
+	}, async ({ data, conn }) => {
+		const project = requireProjectAccess(conn, data.projectId);
 
 		// Get raw staged diff text
 		const diffResult = await execGit(['diff', '--cached'], project.path);

@@ -5,8 +5,7 @@
 import { t } from 'elysia';
 import { createRouter } from '$shared/utils/ws-server';
 import { gitService } from '../../git/git-service';
-import { projectQueries } from '../../database/queries/project-queries';
-import { ws as wsServer } from '../../utils/ws';
+import { requireProjectAccess } from '../access';
 
 export const statusHandler = createRouter()
 	.http('git:status', {
@@ -40,9 +39,8 @@ export const statusHandler = createRouter()
 				oldPath: t.Optional(t.String())
 			}))
 		})
-	}, async ({ data }) => {
-		const project = projectQueries.getById(data.projectId);
-		if (!project) throw new Error('Project not found');
+	}, async ({ data, conn }) => {
+		const project = requireProjectAccess(conn, data.projectId);
 
 		const isRepo = await gitService.isRepo(project.path);
 		if (!isRepo) {
@@ -65,9 +63,8 @@ export const statusHandler = createRouter()
 			defaultBranch: t.Optional(t.String())
 		}),
 		response: t.Object({ ok: t.Boolean() })
-	}, async ({ data }) => {
-		const project = projectQueries.getById(data.projectId);
-		if (!project) throw new Error('Project not found');
+	}, async ({ data, conn }) => {
+		const project = requireProjectAccess(conn, data.projectId);
 		await gitService.init(project.path, data.defaultBranch);
 		return { ok: true };
 	})
@@ -80,9 +77,8 @@ export const statusHandler = createRouter()
 			isRepo: t.Boolean(),
 			root: t.Optional(t.String())
 		})
-	}, async ({ data }) => {
-		const project = projectQueries.getById(data.projectId);
-		if (!project) throw new Error('Project not found');
+	}, async ({ data, conn }) => {
+		const project = requireProjectAccess(conn, data.projectId);
 
 		const isRepo = await gitService.isRepo(project.path);
 		const root = isRepo ? await gitService.getRoot(project.path) : undefined;

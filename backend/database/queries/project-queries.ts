@@ -34,6 +34,16 @@ export const projectQueries = {
 		`).get(path) as Project | null;
 	},
 
+	userHasProject(userId: string, projectId: string): boolean {
+		const db = getDatabase();
+		const result = db.prepare(`
+			SELECT 1 as ok FROM user_projects
+			WHERE user_id = ? AND project_id = ?
+			LIMIT 1
+		`).get(userId, projectId) as { ok: number } | undefined;
+		return Boolean(result);
+	},
+
 	create(project: Omit<Project, 'id'>): Project {
 		const db = getDatabase();
 		const id = crypto.randomUUID();

@@ -5,7 +5,7 @@
 import { t } from 'elysia';
 import { createRouter } from '$shared/utils/ws-server';
 import { gitService } from '../../git/git-service';
-import { projectQueries } from '../../database/queries/project-queries';
+import { requireProjectAccess } from '../access';
 
 export const commitHandler = createRouter()
 	.http('git:commit', {
@@ -16,9 +16,8 @@ export const commitHandler = createRouter()
 		response: t.Object({
 			hash: t.String()
 		})
-	}, async ({ data }) => {
-		const project = projectQueries.getById(data.projectId);
-		if (!project) throw new Error('Project not found');
+	}, async ({ data, conn }) => {
+		const project = requireProjectAccess(conn, data.projectId);
 		const hash = await gitService.commit(project.path, data.message);
 		return { hash };
 	})
@@ -31,9 +30,8 @@ export const commitHandler = createRouter()
 		response: t.Object({
 			hash: t.String()
 		})
-	}, async ({ data }) => {
-		const project = projectQueries.getById(data.projectId);
-		if (!project) throw new Error('Project not found');
+	}, async ({ data, conn }) => {
+		const project = requireProjectAccess(conn, data.projectId);
 		const hash = await gitService.amendCommit(project.path, data.message);
 		return { hash };
 	});

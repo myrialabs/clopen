@@ -5,7 +5,7 @@
 import { t } from 'elysia';
 import { createRouter } from '$shared/utils/ws-server';
 import { gitService } from '../../git/git-service';
-import { projectQueries } from '../../database/queries/project-queries';
+import { requireProjectAccess } from '../access';
 
 const DiffHunkLineSchema = t.Object({
 	type: t.Union([t.Literal('add'), t.Literal('delete'), t.Literal('context'), t.Literal('header')]),
@@ -38,9 +38,8 @@ export const diffHandler = createRouter()
 			filePath: t.Optional(t.String())
 		}),
 		response: t.Array(FileDiffSchema)
-	}, async ({ data }) => {
-		const project = projectQueries.getById(data.projectId);
-		if (!project) throw new Error('Project not found');
+	}, async ({ data, conn }) => {
+		const project = requireProjectAccess(conn, data.projectId);
 		return await gitService.getDiffUnstaged(project.path, data.filePath);
 	})
 
@@ -50,9 +49,8 @@ export const diffHandler = createRouter()
 			filePath: t.Optional(t.String())
 		}),
 		response: t.Array(FileDiffSchema)
-	}, async ({ data }) => {
-		const project = projectQueries.getById(data.projectId);
-		if (!project) throw new Error('Project not found');
+	}, async ({ data, conn }) => {
+		const project = requireProjectAccess(conn, data.projectId);
 		return await gitService.getDiffStaged(project.path, data.filePath);
 	})
 
@@ -62,8 +60,7 @@ export const diffHandler = createRouter()
 			commitHash: t.String()
 		}),
 		response: t.Array(FileDiffSchema)
-	}, async ({ data }) => {
-		const project = projectQueries.getById(data.projectId);
-		if (!project) throw new Error('Project not found');
+	}, async ({ data, conn }) => {
+		const project = requireProjectAccess(conn, data.projectId);
 		return await gitService.getDiffCommit(project.path, data.commitHash);
 	});

@@ -11,6 +11,7 @@ import { t } from 'elysia';
 import { createRouter } from '$shared/utils/ws-server';
 import { messageQueries } from '../../database/queries';
 import { loadMessage } from '$shared/utils/message-formatter';
+import { requireMessageAccess, requireSessionAccess } from '../access';
 
 export const crudHandler = createRouter()
 	// List messages
@@ -20,7 +21,8 @@ export const crudHandler = createRouter()
 			include_all: t.Optional(t.Boolean())
 		}),
 		response: t.Array(t.Any())
-	}, async ({ data }) => {
+	}, async ({ data, conn }) => {
+		requireSessionAccess(conn, data.session_id);
 		if (data.include_all) {
 			// Return all messages including those in other branches (for History view)
 			const allMessages = messageQueries.getAllBySessionId(data.session_id);
@@ -37,13 +39,8 @@ export const crudHandler = createRouter()
 			messageId: t.String({ minLength: 1 })
 		}),
 		response: t.Any()
-	}, async ({ data }) => {
-		const message = messageQueries.getById(data.messageId);
-
-		if (!message) {
-			throw new Error('Message not found');
-		}
-
+	}, async ({ data, conn }) => {
+		const message = requireMessageAccess(conn, data.messageId);
 		return loadMessage(message);
 	})
 
@@ -55,12 +52,9 @@ export const crudHandler = createRouter()
 		response: t.Object({
 			message: t.String()
 		})
-	}, async ({ data }) => {
+	}, async ({ data, conn }) => {
 		// Check if message exists first
-		const message = messageQueries.getById(data.messageId);
-		if (!message) {
-			throw new Error('Message not found');
-		}
+		requireMessageAccess(conn, data.messageId);
 
 		// Delete the message
 		messageQueries.delete(data.messageId);

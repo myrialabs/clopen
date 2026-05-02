@@ -21,6 +21,7 @@ import { snapshotService } from '../../snapshot/snapshot-service';
 import { blobStore } from '../../snapshot/blob-store';
 import { broadcastPresence } from '../projects/status';
 import { debug } from '$shared/utils/logger';
+import { requireCurrentProjectAccess, requireProjectAccess, requireSessionAccess } from '../access';
 
 /** Elysia schema for ChatSession responses — all optional fields use t.Optional */
 const sessionSchema = t.Object({
@@ -85,8 +86,7 @@ export const crudHandler = createRouter()
 			}))
 		})
 	}, async ({ conn }) => {
-		const projectId = ws.getProjectId(conn);
-		const userId = ws.getUserId(conn);
+		const { projectId, userId } = requireCurrentProjectAccess(conn);
 		const sessions = sessionQueries.getByProjectId(projectId);
 
 		// Get the user's saved current session for this project
@@ -108,7 +108,7 @@ export const crudHandler = createRouter()
 		data: t.Object({}),
 		response: t.Array(sessionSchema)
 	}, async ({ conn }) => {
-		const projectId = ws.getProjectId(conn);
+		const { projectId } = requireCurrentProjectAccess(conn);
 		const sessions = sessionQueries.getActiveSessionsForProject(projectId);
 		return sessions.map(serializeSession);
 	})
@@ -121,7 +121,7 @@ export const crudHandler = createRouter()
 		}),
 		response: sessionSchema
 	}, async ({ data, conn }) => {
-		const projectId = ws.getProjectId(conn);
+		const { projectId } = requireCurrentProjectAccess(conn);
 		const now = new Date().toISOString();
 		const engine: EngineType = data.engine ?? 'claude-code';
 		const session = sessionQueries.create({
@@ -143,12 +143,8 @@ export const crudHandler = createRouter()
 			session: sessionSchema,
 			messages: t.Array(t.Any())
 		})
-	}, async ({ data }) => {
-		const session = sessionQueries.getById(data.id);
-
-		if (!session) {
-			throw new Error('Session not found');
-		}
+	}, async ({ data, conn }) => {
+		const session = requireSessionAccess(conn, data.id);
 
 		// Also get messages for this session
 		const messages = messageQueries.getBySessionId(data.id);
@@ -166,13 +162,7 @@ export const crudHandler = createRouter()
 		}),
 		response: sessionSchema
 	}, async ({ data, conn }) => {
-		const projectId = ws.getProjectId(conn);
-
-		// Get project details
-		const project = projectQueries.getById(projectId);
-		if (!project) {
-			throw new Error('Project not found');
-		}
+		const { projectId, project } = requireCurrentProjectAccess(conn);
 
 		// Check if an active session already exists BEFORE get-or-create
 		const existingActiveSession = (data.forceNew) ? null : sessionQueries.getActiveSessionForProject(projectId);
@@ -209,11 +199,8 @@ export const crudHandler = createRouter()
 			end_session: t.Optional(t.Boolean())
 		}),
 		response: sessionSchema
-	}, async ({ data }) => {
-		const session = sessionQueries.getById(data.id);
-		if (!session) {
-			throw new Error('Session not found');
-		}
+	}, async ({ data, conn }) => {
+		requireSessionAccess(conn, data.id);
 
 		if (data.title) {
 			sessionQueries.updateTitle(data.id, data.title);
@@ -240,11 +227,7 @@ export const crudHandler = createRouter()
 			message: t.String()
 		})
 	}, async ({ data, conn }) => {
-		const session = sessionQueries.getById(data.id);
-
-		if (!session) {
-			throw new Error('Session not found');
-		}
+		const session = requireSessionAccess(conn, data.id);
 
 		const projectId = session.project_id;
 
@@ -304,7 +287,7 @@ export const crudHandler = createRouter()
 			deletedCount: t.Number()
 		})
 	}, async ({ conn }) => {
-		const projectId = ws.getProjectId(conn);
+		const { projectId } = requireCurrentProjectAccess(conn);
 
 		// Get all sessions for this project to clean up streams
 		const sessions = sessionQueries.getByProjectId(projectId);
@@ -380,8 +363,8 @@ export const crudHandler = createRouter()
 			sessionId: t.String()
 		})
 	}, async ({ data, conn }) => {
-		const projectId = ws.getProjectId(conn);
-		const userId = ws.getUserId(conn);
+		const { projectId, userId } = requireCurrentProjectAccess(conn);
+		requireSessionAccess(conn, data.sessionId);
 		projectQueries.setCurrentSessionId(userId, projectId, data.sessionId);
 		debug.log('session', `User ${userId} set current session to ${data.sessionId} in project ${projectId}`);
 	})
@@ -393,6 +376,7 @@ export const crudHandler = createRouter()
 		})
 	}, async ({ data, conn }) => {
 		const userId = ws.getUserId(conn);
+		requireSessionAccess(conn, data.sessionId);
 		sessionQueries.markRead(userId, data.sessionId);
 		debug.log('session', `[unread] Marked session ${data.sessionId} as READ for user ${userId}`);
 	})
@@ -405,6 +389,11 @@ export const crudHandler = createRouter()
 		})
 	}, async ({ data, conn }) => {
 		const userId = ws.getUserId(conn);
+		const session = requireSessionAccess(conn, data.sessionId);
+		requireProjectAccess(conn, data.projectId);
+		if (session.project_id !== data.projectId) {
+			throw new Error('Session not found');
+		}
 		sessionQueries.markUnread(userId, data.sessionId, data.projectId);
 		debug.log('session', `[unread] Marked session ${data.sessionId} as UNREAD for user ${userId} in project ${data.projectId}`);
 	})
@@ -418,7 +407,7 @@ export const crudHandler = createRouter()
 			sessionIds: t.Array(t.String())
 		})
 	}, async ({ data, conn }) => {
-		const projectId = ws.getProjectId(conn);
+		const { projectId } = requireCurrentProjectAccess(conn);
 		const sessionIds = sessionQueries.searchByMessageContent(projectId, data.query);
 		return { sessionIds };
 	});
