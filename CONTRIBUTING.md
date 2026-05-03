@@ -86,12 +86,60 @@ git checkout -b feature/your-feature
 # 3. Develop & verify
 bun run check && bun run lint && bun run build
 
-# 4. Commit & push
+# 4. Commit
 git commit -m "feat(scope): description"
+
+# 5. Sync with upstream main again (resolve conflicts locally, not in GitHub UI)
+git fetch upstream && git merge upstream/main
+bun run check && bun run lint && bun run build   # re-verify after merge
+
+# 6. Push & open PR
 git push origin feature/your-feature
 ```
 
-Open a PR targeting the `dev` branch on GitHub.
+Open a PR targeting the `main` branch on GitHub.
+
+---
+
+## Pull Request Format
+
+### Title
+
+Same format as commit messages: `<type>(<scope>): <subject>` (lowercase, imperative, no period, ≤72 chars).
+
+### Description Template
+
+```markdown
+## Summary
+One or two sentences: what this PR does.
+
+## Why
+The motivation — bug it fixes, behavior it changes, constraint it addresses.
+
+## Changes
+- bullet list of concrete changes (files, modules, behaviors)
+
+## Notes (optional)
+Anything reviewers should know: trade-offs, follow-ups, areas needing extra eyes.
+```
+
+### Optional Sections
+
+Add only when relevant — empty headers add noise:
+
+| Section | When to use |
+|---------|-------------|
+| `## Test plan` | Any non-trivial change. Bulleted checklist of how the change was verified (`bun run check`, manual UI test, regression test, etc.). |
+| `## Security impact` | Any change touching auth, authorization, input validation, file/path handling, or external execution. State the threat model in one paragraph. |
+| `## Breaking changes` | Public API, WebSocket schema, DB schema, or config keys changed. Include migration path. |
+| `## Migration` | Steps existing installs need to follow (DB migration, config update, manual cleanup). |
+| `## Screenshots` | UI changes — before/after images or a short clip. |
+| `## Follow-ups` | Known TODOs deferred to a separate PR (with link/issue if one exists). |
+| `## Related` | Links to related issues, PRs, or external discussions. |
+
+### Comments on Existing PRs
+
+When a maintainer or contributor adds substantive context (e.g. additional commits, scope expansion, regression caught in review), use the same `## Summary / ## Why / ## Changes / ## Notes` structure. Keep paths/identifiers in backticks. Use `@username` for mentions.
 
 ---
 
