@@ -23,6 +23,8 @@ import {
 	uploadFileOperation,
 	deleteOperation
 } from '../../files/file-operations';
+import { join } from 'node:path';
+import { requireFilePathAccess } from './path-access';
 
 export const writeHandler = createRouter()
 	// Write file operation
@@ -36,12 +38,13 @@ export const writeHandler = createRouter()
 			size: t.Number(),
 			modified: t.String()
 		})
-	}, async ({ data }) => {
+	}, async ({ data, conn }) => {
+		const filePath = requireFilePathAccess(conn, data.filePath);
 		debug.log('file', 'Write file operation:', {
-			filePath: data.filePath,
+			filePath,
 			contentLength: data.content.length
 		});
-		return await writeFileOperation(data.filePath, data.content);
+		return await writeFileOperation(filePath, data.content);
 	})
 
 	// Create file operation
@@ -56,8 +59,9 @@ export const writeHandler = createRouter()
 			size: t.Number(),
 			modified: t.String()
 		})
-	}, async ({ data }) => {
-		return await createFileOperation(data.filePath, data.content);
+	}, async ({ data, conn }) => {
+		const filePath = requireFilePathAccess(conn, data.filePath);
+		return await createFileOperation(filePath, data.content);
 	})
 
 	// Create directory operation
@@ -70,8 +74,9 @@ export const writeHandler = createRouter()
 			path: t.String(),
 			modified: t.String()
 		})
-	}, async ({ data }) => {
-		return await createDirectoryOperation(data.dirPath);
+	}, async ({ data, conn }) => {
+		const dirPath = requireFilePathAccess(conn, data.dirPath);
+		return await createDirectoryOperation(dirPath);
 	})
 
 	// Rename operation
@@ -86,8 +91,10 @@ export const writeHandler = createRouter()
 			newPath: t.String(),
 			modified: t.String()
 		})
-	}, async ({ data }) => {
-		return await renameOperation(data.oldPath, data.newPath);
+	}, async ({ data, conn }) => {
+		const oldPath = requireFilePathAccess(conn, data.oldPath);
+		const newPath = requireFilePathAccess(conn, data.newPath);
+		return await renameOperation(oldPath, newPath);
 	})
 
 	// Duplicate operation
@@ -103,8 +110,10 @@ export const writeHandler = createRouter()
 			size: t.Number(),
 			modified: t.String()
 		})
-	}, async ({ data }) => {
-		return await duplicateOperation(data.sourcePath, data.targetPath);
+	}, async ({ data, conn }) => {
+		const sourcePath = requireFilePathAccess(conn, data.sourcePath);
+		const targetPath = requireFilePathAccess(conn, data.targetPath);
+		return await duplicateOperation(sourcePath, targetPath);
 	})
 
 	// Upload file operation
@@ -124,8 +133,10 @@ export const writeHandler = createRouter()
 			size: t.Number(),
 			modified: t.String()
 		})
-	}, async ({ data }) => {
-		return await uploadFileOperation(data.file, data.targetPath);
+	}, async ({ data, conn }) => {
+		const targetPath = requireFilePathAccess(conn, data.targetPath);
+		requireFilePathAccess(conn, join(targetPath, data.file.name));
+		return await uploadFileOperation(data.file, targetPath);
 	})
 
 	// Delete operation
@@ -138,6 +149,7 @@ export const writeHandler = createRouter()
 			message: t.String(),
 			path: t.String()
 		})
-	}, async ({ data }) => {
-		return await deleteOperation(data.filePath, data.force);
+	}, async ({ data, conn }) => {
+		const filePath = requireFilePathAccess(conn, data.filePath);
+		return await deleteOperation(filePath, data.force);
 	});

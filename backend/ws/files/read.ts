@@ -22,6 +22,11 @@ import { gitService } from '../../git/git-service';
 import { projectQueries } from '../../database/queries/project-queries';
 import { isAbsolute, relative } from 'node:path';
 import { requireProjectAccess } from '../access';
+import {
+	filterAccessibleExpandedPaths,
+	requireFilePathAccess,
+	requireProjectPathAccess
+} from './path-access';
 
 // Bun-compatible existsSync implementation
 async function existsSync(path: string): Promise<boolean> {
@@ -64,8 +69,11 @@ export const readHandler = createRouter()
 				})
 			])
 		)
-	}, async ({ data }) => {
-		if (!(await existsSync(data.project_path))) {
+	}, async ({ data, conn }) => {
+		const project = requireProjectPathAccess(conn, data.project_path);
+		const projectPath = project.path;
+
+		if (!(await existsSync(projectPath))) {
 			throw new Error('Project path does not exist');
 		}
 
@@ -80,8 +88,9 @@ export const readHandler = createRouter()
 				.filter(Boolean);
 			expandedPaths = new Set(paths);
 		}
+		expandedPaths = filterAccessibleExpandedPaths(projectPath, expandedPaths);
 
-		const fileTree = await buildFileTree(data.project_path, 3, 0, expandedPaths);
+		const fileTree = await buildFileTree(projectPath, 3, 0, expandedPaths);
 		return fileTree as any;
 	})
 
@@ -111,8 +120,9 @@ export const readHandler = createRouter()
 			),
 			error: t.Optional(t.String())
 		})
-	}, async ({ data }) => {
-		const result = await handlePathBrowsing(data.path);
+	}, async ({ data, conn }) => {
+		const path = requireFilePathAccess(conn, data.path);
+		const result = await handlePathBrowsing(path);
 		return result;
 	})
 
@@ -134,8 +144,9 @@ export const readHandler = createRouter()
 				})
 			)
 		)
-	}, async ({ data }) => {
-		const result = await listDirectoryContents(data.dir_path);
+	}, async ({ data, conn }) => {
+		const dirPath = requireFilePathAccess(conn, data.dir_path);
+		const result = await listDirectoryContents(dirPath);
 		return result;
 	})
 
@@ -153,8 +164,9 @@ export const readHandler = createRouter()
 			isBinary: t.Optional(t.Boolean()),
 			error: t.Optional(t.String())
 		})
-	}, async ({ data }) => {
-		const result = await readFileContents(data.file_path);
+	}, async ({ data, conn }) => {
+		const filePath = requireFilePathAccess(conn, data.file_path);
+		const result = await readFileContents(filePath);
 		return result;
 	})
 
@@ -197,8 +209,8 @@ export const readHandler = createRouter()
 			content: t.String(), // Base64 encoded binary content
 			contentType: t.String()
 		})
-	}, async ({ data }) => {
-		const { path } = data;
+	}, async ({ data, conn }) => {
+		const path = requireFilePathAccess(conn, data.path);
 
 		// Read file as binary
 		const file = Bun.file(path);

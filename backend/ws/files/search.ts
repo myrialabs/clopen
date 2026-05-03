@@ -3,6 +3,7 @@ import { createRouter } from '$shared/utils/ws-server';
 import { debug } from '$shared/utils/logger';
 import { join, extname, basename, relative } from 'path';
 import { readdir } from 'fs/promises';
+import { requireProjectPathAccess } from './path-access';
 
 // Directories to skip during search
 const SKIP_DIRS = new Set([
@@ -347,14 +348,15 @@ export const fileSearchHandler = createRouter()
 			query: t.String()
 		}),
 		response: t.Array(FileSearchResultSchema)
-	}, async ({ data }) => {
+	}, async ({ data, conn }) => {
 		const { project_path, query } = data;
+		const project = requireProjectPathAccess(conn, project_path);
 
 		if (!query || query.trim().length === 0) {
 			return [];
 		}
 
-		return await searchFilesByName(project_path, query);
+		return await searchFilesByName(project.path, query);
 	})
 	.http('files:search-code', {
 		data: t.Object({
@@ -376,7 +378,7 @@ export const fileSearchHandler = createRouter()
 			})),
 			totalMatches: t.Number()
 		}))
-	}, async ({ data }) => {
+	}, async ({ data, conn }) => {
 		const {
 			project_path,
 			query,
@@ -386,12 +388,13 @@ export const fileSearchHandler = createRouter()
 			include_pattern,
 			exclude_pattern
 		} = data;
+		const project = requireProjectPathAccess(conn, project_path);
 
 		if (!query || query.trim().length === 0) {
 			return [];
 		}
 
-		return await searchCodeContent(project_path, query, {
+		return await searchCodeContent(project.path, query, {
 			caseSensitive: case_sensitive,
 			wholeWord: whole_word,
 			useRegex: use_regex,
@@ -419,7 +422,7 @@ export const fileSearchHandler = createRouter()
 			totalReplacements: t.Number(),
 			totalFiles: t.Number()
 		})
-	}, async ({ data }) => {
+	}, async ({ data, conn }) => {
 		const {
 			project_path,
 			search_query,
@@ -430,12 +433,13 @@ export const fileSearchHandler = createRouter()
 			include_pattern,
 			exclude_pattern
 		} = data;
+		const project = requireProjectPathAccess(conn, project_path);
 
 		if (!search_query || search_query.trim().length === 0) {
 			return { results: [], totalReplacements: 0, totalFiles: 0 };
 		}
 
-		const results = await replaceInFiles(project_path, search_query, replace_with, {
+		const results = await replaceInFiles(project.path, search_query, replace_with, {
 			caseSensitive: case_sensitive,
 			wholeWord: whole_word,
 			useRegex: use_regex,
