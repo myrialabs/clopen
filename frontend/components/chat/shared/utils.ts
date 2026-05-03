@@ -86,6 +86,32 @@ export function removeCommonIndentationFromLines(lines: string[]): { lines: stri
 			commonIndent
 		};
 	}
-	
+
 	return { lines, commonIndent: '' };
+}
+
+/**
+ * Dedent two line-arrays jointly: find the common-indent across BOTH sides
+ * combined, then strip the same prefix length from each side.
+ *
+ * Why: per-side dedent silently absorbs whitespace-only diffs. If `old` is
+ * `[" :root {"]` and `new` is `[":root {"]`, dedenting each independently
+ * makes both `[":root {"]` — the leading-space change vanishes and the
+ * diff renders as "no changes". Using a joint min-indent preserves any
+ * leading-whitespace difference while still trimming the shared indent
+ * for clean display.
+ */
+export function removeCommonIndentationFromTwoSides(
+	oldLines: string[],
+	newLines: string[],
+): { oldLines: string[]; newLines: string[]; commonIndent: string } {
+	const { commonIndent } = removeCommonIndentationFromLines([...oldLines, ...newLines]);
+	if (!commonIndent) return { oldLines, newLines, commonIndent: '' };
+	const strip = commonIndent.length;
+	const apply = (line: string) => (line.startsWith(commonIndent) ? line.substring(strip) : line);
+	return {
+		oldLines: oldLines.map(apply),
+		newLines: newLines.map(apply),
+		commonIndent,
+	};
 }

@@ -1,6 +1,6 @@
 <script lang="ts">
 	import Icon from '$frontend/components/common/display/Icon.svelte';
-	import { removeCommonIndentationFromLines } from '../../../../shared/utils';
+	import { removeCommonIndentationFromTwoSides } from '../../../../shared/utils';
 
 	const MAX_LINES = 60;
 
@@ -192,8 +192,7 @@
 		const oldLines = oldStr.split('\n');
 		const newLines = newStr.split('\n');
 
-		const { lines: cleanOldLines } = removeCommonIndentationFromLines(oldLines);
-		const { lines: cleanNewLines } = removeCommonIndentationFromLines(newLines);
+		const { oldLines: cleanOldLines, newLines: cleanNewLines } = removeCommonIndentationFromTwoSides(oldLines, newLines);
 
 		const dp = findLCS(cleanOldLines, cleanNewLines);
 

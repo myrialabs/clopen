@@ -1,5 +1,5 @@
 <script lang="ts">
-	import { removeCommonIndentationFromLines } from '../../../../shared/utils';
+	import { removeCommonIndentationFromTwoSides } from '../../../../shared/utils';
 
 	const MAX_LINES = 40;
 
@@ -40,8 +40,7 @@
 	function computeDiff(oldStr: string, newStr: string): GroupedDiff[] {
 		const oldLines = oldStr.split('\n');
 		const newLines = newStr.split('\n');
-		const { lines: cleanOld } = removeCommonIndentationFromLines(oldLines);
-		const { lines: cleanNew } = removeCommonIndentationFromLines(newLines);
+		const { oldLines: cleanOld, newLines: cleanNew } = removeCommonIndentationFromTwoSides(oldLines, newLines);
 		const dp = findLCS(cleanOld, cleanNew);
 		const diffLines: DiffLine[] = [];
 		let i = cleanOld.length, j = cleanNew.length;
