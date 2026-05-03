@@ -180,8 +180,9 @@ export const connectionsHandler = createRouter()
 		if (isInput(data)) {
 			return connectionManager.test(ensureInputDefaults(data as DbClientConnectionInput));
 		}
-		requireDbClientConnectionAccess(conn, data.id);
-		return connectionManager.test({ id: (data as { id: string }).id });
+		const id = (data as { id: string }).id;
+		requireDbClientConnectionAccess(conn, id);
+		return connectionManager.test({ id });
 	})
 
 	.http('db-client:health', {

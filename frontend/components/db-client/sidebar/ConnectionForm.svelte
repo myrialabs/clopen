@@ -88,9 +88,9 @@
 					port: sshPort || 22,
 					username: sshUsername,
 					authMethod: sshAuthMethod,
-					password: sshAuthMethod === 'password' ? sshPassword : undefined,
-					privateKey: sshAuthMethod === 'key' ? sshPrivateKey : undefined,
-					passphrase: sshAuthMethod === 'key' ? sshPassphrase : undefined
+					password: sshAuthMethod === 'password' ? sshPassword || undefined : undefined,
+					privateKey: sshAuthMethod === 'key' ? sshPrivateKey || undefined : undefined,
+					passphrase: sshAuthMethod === 'key' ? sshPassphrase || undefined : undefined
 				}
 			: { enabled: false };
 

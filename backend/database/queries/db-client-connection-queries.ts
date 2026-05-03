@@ -86,6 +86,14 @@ function hasConnectionAccess(
 	return row.owner_user_id === userId;
 }
 
+function preserveExistingSecret(
+	patchValue: string | undefined,
+	existingValue: string | null
+): string | null {
+	if (patchValue === undefined || patchValue === '') return existingValue;
+	return patchValue;
+}
+
 interface InsertParams {
 	name: string;
 	driver: DbDriver;
@@ -257,7 +265,7 @@ export const dbClientConnectionQueries = {
 		if (patch.host !== undefined) push('host', patch.host || null);
 		if (patch.port !== undefined) push('port', patch.port ?? null);
 		if (patch.username !== undefined) push('username', patch.username || null);
-		if (patch.password !== undefined) push('password', patch.password || null);
+		if (patch.password !== undefined && patch.password !== '') push('password', patch.password);
 		if (patch.database !== undefined) push('database', patch.database || null);
 		if (patch.sslMode !== undefined) push('ssl_mode', patch.sslMode);
 		if (patch.sslCa !== undefined) push('ssl_ca', patch.sslCa || null);
@@ -276,14 +284,18 @@ export const dbClientConnectionQueries = {
 				passphrase: existing.ssh_passphrase ?? '',
 				...patch.ssh
 			};
+			const sshPassword = preserveExistingSecret(patch.ssh.password, existing.ssh_password);
+			const sshPrivateKey = preserveExistingSecret(patch.ssh.privateKey, existing.ssh_private_key);
+			const sshPassphrase = preserveExistingSecret(patch.ssh.passphrase, existing.ssh_passphrase);
+
 			push('ssh_enabled', merged.enabled ? 1 : 0);
 			push('ssh_host', merged.host || null);
 			push('ssh_port', merged.port);
 			push('ssh_username', merged.username || null);
 			push('ssh_auth_method', merged.authMethod);
-			push('ssh_password', merged.password || null);
-			push('ssh_private_key', merged.privateKey || null);
-			push('ssh_passphrase', merged.passphrase || null);
+			push('ssh_password', sshPassword);
+			push('ssh_private_key', sshPrivateKey);
+			push('ssh_passphrase', sshPassphrase);
 		}
 
 		push('updated_at', new Date().toISOString());
@@ -327,10 +339,5 @@ export const dbClientConnectionQueries = {
 		const db = getDatabase();
 		const now = new Date().toISOString();
 		db.prepare('UPDATE db_client_connections SET last_used_at = ? WHERE id = ?').run(now, id);
-	},
-
-	markUsedForUser(id: string, userId: string, isAdmin: boolean): void {
-		this.ensureAccess(id, userId, isAdmin);
-		this.markUsed(id);
 	}
 };
