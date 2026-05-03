@@ -13,7 +13,7 @@ import { terminalStreamManager } from '../../terminal/stream-manager';
 import { debug } from '$shared/utils/logger';
 import { ws } from '$backend/utils/ws';
 import { ptySessionManager } from '../../terminal/pty-session-manager';
-import { requireProjectAccess } from '../access';
+import { requireTerminalStreamAccess, requireTerminalLookupAccess } from './access';
 
 export const persistenceHandler = createRouter()
 	// Get stream status
@@ -25,9 +25,7 @@ export const persistenceHandler = createRouter()
 	}, async ({ data, conn }) => {
 		const { streamId } = data;
 
-		const stream = terminalStreamManager.getStream(streamId);
-		if (!stream || !stream.projectId) throw new Error('Stream not found');
-		requireProjectAccess(conn, stream.projectId);
+		requireTerminalStreamAccess(conn, streamId);
 
 		const status = terminalStreamManager.getStreamStatus(streamId);
 
@@ -54,11 +52,7 @@ export const persistenceHandler = createRouter()
 	}, async ({ data, conn }) => {
 		const { sessionId, streamId } = data;
 
-		const ptySession = ptySessionManager.getSession(sessionId);
-		const stream = streamId ? terminalStreamManager.getStream(streamId) : terminalStreamManager.getStreamBySession(sessionId);
-		const projectId = ptySession?.projectId || stream?.projectId;
-		if (!projectId) throw new Error('Session not found');
-		requireProjectAccess(conn, projectId);
+		requireTerminalLookupAccess(conn, sessionId, streamId);
 
 		// Get serialized terminal state from headless xterm
 		let output = '';
@@ -90,7 +84,6 @@ export const persistenceHandler = createRouter()
 		const { streamId, sessionId } = data;
 
 		const stream = terminalStreamManager.getStream(streamId);
-
 		if (!stream || !stream.projectId) {
 			const fallbackProjectId = ws.getProjectId(conn);
 			ws.emit.project(fallbackProjectId, 'terminal:error', {
@@ -99,7 +92,7 @@ export const persistenceHandler = createRouter()
 			});
 			return;
 		}
-		requireProjectAccess(conn, stream.projectId);
+		requireTerminalStreamAccess(conn, streamId);
 		const projectId = stream.projectId;
 
 		try {

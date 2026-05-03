@@ -35,7 +35,42 @@ export const ADMIN_ONLY_ROUTES = new Set([
 	'system-tools:status-all',
 	'system-tools:install-start',
 	'system-tools:install-cancel',
-	'system-tools:install-session'
+	'system-tools:install-session',
+	// Engine — account/provider mutations are global system credentials and
+	// must only be changed by admins. Read-only routes (status, *-list) stay
+	// open so any authenticated user can see what is configured.
+	'engine:claude-accounts-switch',
+	'engine:claude-accounts-delete',
+	'engine:claude-accounts-rename',
+	'engine:claude-account-setup-start',
+	'engine:claude-account-setup-submit',
+	'engine:claude-account-setup-cancel',
+	'engine:codex-accounts-add-api-key',
+	'engine:codex-accounts-switch',
+	'engine:codex-accounts-delete',
+	'engine:codex-accounts-rename',
+	'engine:codex-account-setup-start',
+	'engine:codex-account-setup-cancel',
+	'engine:codex-restart',
+	'engine:copilot-accounts-add',
+	'engine:copilot-accounts-switch',
+	'engine:copilot-accounts-delete',
+	'engine:copilot-accounts-rename',
+	'engine:copilot-restart',
+	'engine:qwen-accounts-add',
+	'engine:qwen-accounts-switch',
+	'engine:qwen-accounts-delete',
+	'engine:qwen-accounts-rename',
+	'engine:opencode-provider-add',
+	'engine:opencode-provider-remove',
+	'engine:opencode-provider-toggle',
+	'engine:opencode-provider-update-options',
+	'engine:opencode-account-add',
+	'engine:opencode-account-switch',
+	'engine:opencode-account-delete',
+	'engine:opencode-account-rename',
+	'engine:opencode-server-restart',
+	'engine:opencode-models-dev-fetch'
 ]);
 
 /**

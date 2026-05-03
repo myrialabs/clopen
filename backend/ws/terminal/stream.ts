@@ -14,7 +14,7 @@ import { createRouter } from '$shared/utils/ws-server';
 import { ptySessionManager } from '../../terminal/pty-session-manager';
 import { debug } from '$shared/utils/logger';
 import { ws } from '$backend/utils/ws';
-import { requireProjectAccess } from '../access';
+import { requirePtySessionAccess } from './access';
 
 export const streamHandler = createRouter()
 	// Send keyboard input to terminal
@@ -26,12 +26,8 @@ export const streamHandler = createRouter()
 	}, async ({ data, conn }) => {
 		const { sessionId, data: input } = data;
 
-		const ptySession = ptySessionManager.getSession(sessionId);
-		if (!ptySession || !ptySession.projectId) {
-			throw new Error('Session not found');
-		}
-		requireProjectAccess(conn, ptySession.projectId);
-		const projectId = ptySession.projectId;
+		const ptySession = requirePtySessionAccess(conn, sessionId);
+		const projectId = ptySession.projectId!;
 
 		try {
 			// Write to PTY stdin

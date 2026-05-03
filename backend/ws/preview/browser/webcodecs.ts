@@ -8,8 +8,8 @@
 
 import { createRouter } from '$shared/utils/ws-server';
 import { t } from 'elysia';
-import { browserPreviewServiceManager } from '$backend/preview';
 import { ws } from '$backend/utils/ws';
+import { requireBrowserTabAccess } from '../access';
 
 export const streamPreviewHandler = createRouter()
 	// Start streaming
@@ -31,16 +31,7 @@ export const streamPreviewHandler = createRouter()
 			})
 		},
 		async ({ data, conn }) => {
-			const projectId = ws.getProjectId(conn);
-
-			// Get project-specific preview service
-			const previewService = browserPreviewServiceManager.getService(projectId);
-
-			// Use explicit tabId if provided, otherwise fall back to active tab
-			const tab = data.tabId ? previewService.getTab(data.tabId) : previewService.getActiveTab();
-			if (!tab) {
-				throw new Error(data.tabId ? `Tab not found: ${data.tabId}` : 'No active tab');
-			}
+			const { previewService, tab } = requireBrowserTabAccess(conn, data.tabId);
 
 			const sessionId = tab.id;
 
@@ -90,15 +81,7 @@ export const streamPreviewHandler = createRouter()
 			})
 		},
 		async ({ data, conn }) => {
-			const projectId = ws.getProjectId(conn);
-
-			// Get project-specific preview service
-			const previewService = browserPreviewServiceManager.getService(projectId);
-
-			const tab = data.tabId ? previewService.getTab(data.tabId) : previewService.getActiveTab();
-			if (!tab) {
-				throw new Error(data.tabId ? `Tab not found: ${data.tabId}` : 'No active tab');
-			}
+			const { previewService, tab } = requireBrowserTabAccess(conn, data.tabId);
 
 			const offer = await previewService.getWebCodecsOffer(tab.id);
 
@@ -130,15 +113,7 @@ export const streamPreviewHandler = createRouter()
 			})
 		},
 		async ({ data, conn }) => {
-			const projectId = ws.getProjectId(conn);
-
-			// Get project-specific preview service
-			const previewService = browserPreviewServiceManager.getService(projectId);
-
-			const tab = data.tabId ? previewService.getTab(data.tabId) : previewService.getActiveTab();
-			if (!tab) {
-				throw new Error(data.tabId ? `Tab not found: ${data.tabId}` : 'No active tab');
-			}
+			const { previewService, tab } = requireBrowserTabAccess(conn, data.tabId);
 
 			const { answer } = data;
 			const success = await previewService.handleWebCodecsAnswer(tab.id, answer as RTCSessionDescriptionInit);
@@ -164,15 +139,7 @@ export const streamPreviewHandler = createRouter()
 			})
 		},
 		async ({ data, conn }) => {
-			const projectId = ws.getProjectId(conn);
-
-			// Get project-specific preview service
-			const previewService = browserPreviewServiceManager.getService(projectId);
-
-			const tab = data.tabId ? previewService.getTab(data.tabId) : previewService.getActiveTab();
-			if (!tab) {
-				throw new Error(data.tabId ? `Tab not found: ${data.tabId}` : 'No active tab');
-			}
+			const { previewService, tab } = requireBrowserTabAccess(conn, data.tabId);
 
 			const { candidate } = data;
 			const success = await previewService.addWebCodecsIceCandidate(tab.id, candidate as RTCIceCandidateInit);
@@ -193,15 +160,7 @@ export const streamPreviewHandler = createRouter()
 			})
 		},
 		async ({ data, conn }) => {
-			const projectId = ws.getProjectId(conn);
-
-			// Get project-specific preview service
-			const previewService = browserPreviewServiceManager.getService(projectId);
-
-			const tab = data.tabId ? previewService.getTab(data.tabId) : previewService.getActiveTab();
-			if (!tab) {
-				throw new Error(data.tabId ? `Tab not found: ${data.tabId}` : 'No active tab');
-			}
+			const { previewService, tab } = requireBrowserTabAccess(conn, data.tabId);
 
 			await previewService.stopWebCodecsStreaming(tab.id);
 

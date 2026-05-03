@@ -6,8 +6,7 @@
 
 import { t } from 'elysia';
 import { createRouter } from '$shared/utils/ws-server';
-import { browserPreviewServiceManager } from '../../../preview/index';
-import { ws } from '$backend/utils/ws';
+import { requireBrowserTabAccess } from '../access';
 
 export const statsPreviewHandler = createRouter()
 	.http('preview:browser-tab-stats', {
@@ -32,16 +31,7 @@ export const statsPreviewHandler = createRouter()
 		})
 	}, async ({ data, conn }) => {
 		const { tabId } = data;
-		const projectId = ws.getProjectId(conn);
-
-		// Get project-specific preview service
-		const previewService = browserPreviewServiceManager.getService(projectId);
-
-		// Get tab (active tab if not specified)
-		const tab = tabId ? previewService.getTab(tabId) : previewService.getActiveTab();
-		if (!tab) {
-			throw new Error(tabId ? `Tab not found: ${tabId}` : 'No active tab');
-		}
+		const { previewService, tab } = requireBrowserTabAccess(conn, tabId);
 
 		const stats = await previewService.getWebCodecsStats(tab.id);
 

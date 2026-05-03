@@ -6,9 +6,7 @@
 
 import { t } from 'elysia';
 import { createRouter } from '$shared/utils/ws-server';
-import { browserPreviewServiceManager } from '../../../preview/index';
-import { ws } from '$backend/utils/ws';
-import { debug } from '$shared/utils/logger';
+import { requireBrowserTabAccess } from '../access';
 
 export const consolePreviewHandler = createRouter()
 	// Get console logs
@@ -18,16 +16,7 @@ export const consolePreviewHandler = createRouter()
 			logs: t.Any()
 		})
 	}, async ({ conn }) => {
-		const projectId = ws.getProjectId(conn);
-
-		// Get project-specific preview service
-		const previewService = browserPreviewServiceManager.getService(projectId);
-
-		const tab = previewService.getActiveTab();
-		if (!tab) {
-			throw new Error('No active tab');
-		}
-
+		const { previewService, tab } = requireBrowserTabAccess(conn);
 		const consoleLogs = previewService.getConsoleLogs(tab.id);
 		return { logs: consoleLogs };
 	})
@@ -39,15 +28,7 @@ export const consolePreviewHandler = createRouter()
 			message: t.String()
 		})
 	}, async ({ conn }) => {
-		const projectId = ws.getProjectId(conn);
-
-		// Get project-specific preview service
-		const previewService = browserPreviewServiceManager.getService(projectId);
-
-		const tab = previewService.getActiveTab();
-		if (!tab) {
-			throw new Error('No active tab');
-		}
+		const { previewService, tab } = requireBrowserTabAccess(conn);
 
 		const success = previewService.clearConsoleLogs(tab.id);
 
@@ -67,15 +48,7 @@ export const consolePreviewHandler = createRouter()
 			result: t.Any()
 		})
 	}, async ({ data, conn }) => {
-		const projectId = ws.getProjectId(conn);
-
-		// Get project-specific preview service
-		const previewService = browserPreviewServiceManager.getService(projectId);
-
-		const tab = previewService.getActiveTab();
-		if (!tab) {
-			throw new Error('No active tab');
-		}
+		const { previewService, tab } = requireBrowserTabAccess(conn);
 
 		const result = await previewService.executeConsoleCommand(tab.id, data.command);
 		return { result };
@@ -91,15 +64,7 @@ export const consolePreviewHandler = createRouter()
 			message: t.String()
 		})
 	}, async ({ data, conn }) => {
-		const projectId = ws.getProjectId(conn);
-
-		// Get project-specific preview service
-		const previewService = browserPreviewServiceManager.getService(projectId);
-
-		const tab = previewService.getActiveTab();
-		if (!tab) {
-			throw new Error('No active tab');
-		}
+		const { previewService, tab } = requireBrowserTabAccess(conn);
 
 		const success = previewService.toggleConsoleLogging(tab.id, data.enabled);
 

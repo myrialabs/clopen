@@ -6,9 +6,8 @@
 
 import { t } from 'elysia';
 import { createRouter } from '$shared/utils/ws-server';
-import { browserPreviewServiceManager } from '../../../preview/index';
-import { ws } from '$backend/utils/ws';
 import { debug } from '$shared/utils/logger';
+import { requireBrowserPreviewAccess, requireBrowserTabAccess } from '../access';
 
 // Timeout for browser tab open (60 seconds)
 const OPEN_TIMEOUT = 60000;
@@ -38,7 +37,7 @@ export const tabPreviewHandler = createRouter()
 			message: t.String()
 		})
 	}, async ({ data, conn }) => {
-		const projectId = ws.getProjectId(conn);
+		const { projectId, previewService } = requireBrowserPreviewAccess(conn);
 
 		debug.log('preview', `🔴🔴🔴 browser-tab-open - Request received for project: ${projectId} 🔴🔴🔴`);
 
@@ -49,9 +48,6 @@ export const tabPreviewHandler = createRouter()
 		} = data;
 
 		debug.log('preview', `📥 Tab open params - URL: ${url || 'about:blank'}, deviceSize: ${deviceSize}, rotation: ${rotation}`);
-
-		// Get project-specific preview service
-		const previewService = browserPreviewServiceManager.getService(projectId);
 
 		// Create browser tab
 		const tabPromise = previewService.createTab(
@@ -94,16 +90,7 @@ export const tabPreviewHandler = createRouter()
 		})
 	}, async ({ data, conn }) => {
 		const { url, tabId } = data;
-		const projectId = ws.getProjectId(conn);
-
-		// Get project-specific preview service
-		const previewService = browserPreviewServiceManager.getService(projectId);
-
-		// Get tab to navigate (active tab if not specified)
-		const tab = tabId ? previewService.getTab(tabId) : previewService.getActiveTab();
-		if (!tab) {
-			throw new Error(tabId ? `Tab not found: ${tabId}` : 'No active tab');
-		}
+		const { projectId, previewService, tab } = requireBrowserTabAccess(conn, tabId);
 
 		debug.log('preview', `🌐 Navigating tab ${tab.id} to: ${url} (project: ${projectId})`);
 
@@ -132,17 +119,7 @@ export const tabPreviewHandler = createRouter()
 		})
 	}, async ({ data, conn }) => {
 		const { tabId } = data;
-		const projectId = ws.getProjectId(conn);
-
-		// Get project-specific preview service
-		const previewService = browserPreviewServiceManager.getService(projectId);
-
-		// Get tab to close (active tab if not specified)
-		const tab = tabId ? previewService.getTab(tabId) : previewService.getActiveTab();
-
-		if (!tab) {
-			throw new Error(tabId ? `Tab not found: ${tabId}` : 'No active tab');
-		}
+		const { projectId, previewService, tab } = requireBrowserTabAccess(conn, tabId);
 
 		const closingTabId = tab.id;
 

@@ -10,8 +10,7 @@
 import { t } from 'elysia';
 import { createRouter } from '$shared/utils/ws-server';
 import { debug } from '$shared/utils/logger';
-import { browserPreviewServiceManager } from '../../../preview/index';
-import { ws } from '$backend/utils/ws';
+import { requireBrowserPreviewAccess } from '../access';
 
 // Event forwarding is now handled automatically by BrowserPreviewServiceManager
 // when service instances are created, ensuring proper project isolation.
@@ -27,10 +26,7 @@ export const nativeUIPreviewHandler = createRouter()
 	}, async ({ data, conn }) => {
 		try {
 			const { dialogId, accept, promptText } = data;
-			const projectId = ws.getProjectId(conn);
-
-			// Get project-specific preview service
-			const previewService = browserPreviewServiceManager.getService(projectId);
+			const { projectId, previewService } = requireBrowserPreviewAccess(conn);
 
 			debug.log('preview', `📬 Dialog response received from frontend - dialogId: ${dialogId}, accept: ${accept}${promptText ? `, promptText: "${promptText}"` : ''} (project: ${projectId})`);
 
@@ -66,10 +62,7 @@ export const nativeUIPreviewHandler = createRouter()
 		data: t.Object({})
 	}, async ({ conn }) => {
 		try {
-			const projectId = ws.getProjectId(conn);
-
-			// Get project-specific preview service
-			const previewService = browserPreviewServiceManager.getService(projectId);
+			const { projectId, previewService } = requireBrowserPreviewAccess(conn);
 
 			const tab = previewService.getActiveTab();
 			if (!tab) {
@@ -96,10 +89,7 @@ export const nativeUIPreviewHandler = createRouter()
 	}, async ({ data, conn }) => {
 		try {
 			const { sessionId, selectId, selectedIndex } = data;
-			const projectId = ws.getProjectId(conn);
-
-			// Get project-specific preview service
-			const previewService = browserPreviewServiceManager.getService(projectId);
+			const { projectId, previewService } = requireBrowserPreviewAccess(conn);
 
 			debug.log('preview', `📋 Select response received - selectId: ${selectId}, selectedIndex: ${selectedIndex} (project: ${projectId})`);
 
@@ -125,10 +115,7 @@ export const nativeUIPreviewHandler = createRouter()
 	}, async ({ data, conn }) => {
 		try {
 			const { sessionId, menuId, itemId, clipboardText } = data;
-			const projectId = ws.getProjectId(conn);
-
-			// Get project-specific preview service
-			const previewService = browserPreviewServiceManager.getService(projectId);
+			const { projectId, previewService } = requireBrowserPreviewAccess(conn);
 
 			debug.log('preview', `📜 Context menu response received - menuId: ${menuId}, itemId: ${itemId} (project: ${projectId})`);
 

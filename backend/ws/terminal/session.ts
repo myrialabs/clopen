@@ -21,6 +21,7 @@ import { existsSync } from '../../terminal/helpers';
 import { ws } from '$backend/utils/ws';
 import { activePtyProcesses } from '../../terminal/pty-manager';
 import { requireProjectAccess, requireCurrentProjectAccess } from '../access';
+import { requirePtySessionAccess } from './access';
 
 export const sessionHandler = createRouter()
 	// Create new terminal session
@@ -229,9 +230,7 @@ export const sessionHandler = createRouter()
 		})
 	}, async ({ data, conn }) => {
 		const { sessionId } = data;
-		const ptySession = ptySessionManager.getSession(sessionId);
-		if (!ptySession || !ptySession.projectId) throw new Error('Session not found');
-		requireProjectAccess(conn, ptySession.projectId);
+		requirePtySessionAccess(conn, sessionId);
 		terminalStreamManager.clearHeadlessTerminal(sessionId);
 		return { sessionId };
 	})
@@ -251,9 +250,7 @@ export const sessionHandler = createRouter()
 	}, async ({ data, conn }) => {
 		const { sessionId, cols, rows } = data;
 
-		const ptySession = ptySessionManager.getSession(sessionId);
-		if (!ptySession || !ptySession.projectId) throw new Error('Session not found');
-		requireProjectAccess(conn, ptySession.projectId);
+		requirePtySessionAccess(conn, sessionId);
 
 		debug.log('terminal', `🔧 Resizing PTY session ${sessionId} to ${cols}x${rows}`);
 
@@ -281,13 +278,7 @@ export const sessionHandler = createRouter()
 	}, async ({ data, conn }) => {
 		const { sessionId } = data;
 
-		const session = ptySessionManager.getSession(sessionId);
-
-		if (!session) {
-			throw new Error('No active PTY process found for this session');
-		}
-		if (!session.projectId) throw new Error('Session not found');
-		requireProjectAccess(conn, session.projectId);
+		const session = requirePtySessionAccess(conn, sessionId);
 
 		debug.log('terminal', `🛑 Sending Ctrl+C signal to PTY session: ${sessionId}`);
 

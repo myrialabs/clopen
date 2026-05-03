@@ -22,6 +22,7 @@ import { resetEnvironment, getClaudeUserConfigDir } from '../../../engine/adapte
 import { resolveBinaryWithRefresh } from '../../../utils/cli';
 import { debug } from '$shared/utils/logger';
 import { getCleanSpawnEnv } from '../../../utils/env';
+import { requireSetupSessionAccess } from '../access';
 
 // ── Helpers ──
 
@@ -353,9 +354,10 @@ export const accountsHandler = createRouter()
 		})
 	}, async ({ data, conn }) => {
 		const userId = ws.getUserId(conn);
-		const entry = setupProcesses.get(data.setupId);
-
-		if (!entry || entry.disposed) {
+		let entry: SetupProcess;
+		try {
+			entry = requireSetupSessionAccess(conn, data.setupId, setupProcesses);
+		} catch {
 			ws.emit.user(userId, 'engine:claude-account-setup-error', {
 				setupId: data.setupId,
 				message: 'Setup session not found or expired'
@@ -385,11 +387,14 @@ export const accountsHandler = createRouter()
 		data: t.Object({
 			setupId: t.String()
 		})
-	}, async ({ data }) => {
-		if (setupProcesses.has(data.setupId)) {
-			debug.log('engine', `[${data.setupId}] Setup cancelled by user`);
-			cleanupSetup(data.setupId);
+	}, async ({ data, conn }) => {
+		try {
+			requireSetupSessionAccess(conn, data.setupId, setupProcesses);
+		} catch {
+			return;
 		}
+		debug.log('engine', `[${data.setupId}] Setup cancelled by user`);
+		cleanupSetup(data.setupId);
 	})
 
 	// ═══════════════════════════════════════

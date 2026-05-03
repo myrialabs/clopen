@@ -6,9 +6,7 @@
 
 import { t } from 'elysia';
 import { createRouter } from '$shared/utils/ws-server';
-import { browserPreviewServiceManager } from '../../../preview/index';
-import { ws } from '$backend/utils/ws';
-import { debug } from '$shared/utils/logger';
+import { requireBrowserPreviewAccess } from '../access';
 
 export const cleanupPreviewHandler = createRouter()
 	// Get cleanup status
@@ -26,10 +24,7 @@ export const cleanupPreviewHandler = createRouter()
 			}))
 		})
 	}, async ({ conn }) => {
-		const projectId = ws.getProjectId(conn);
-
-		// Get project-specific preview service
-		const previewService = browserPreviewServiceManager.getService(projectId);
+		const { previewService } = requireBrowserPreviewAccess(conn);
 		const status = previewService.getTabsStatus();
 
 		return {
@@ -75,10 +70,7 @@ export const cleanupPreviewHandler = createRouter()
 		})
 	}, async ({ data, conn }) => {
 		const mode = data.mode || 'inactive';
-		const projectId = ws.getProjectId(conn);
-
-		// Get project-specific preview service
-		const previewService = browserPreviewServiceManager.getService(projectId);
+		const { projectId, previewService } = requireBrowserPreviewAccess(conn);
 
 		// Get tab status before cleanup
 		const statusBefore = previewService.getTabsStatus();

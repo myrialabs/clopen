@@ -14,11 +14,10 @@ import { debug } from '$shared/utils/logger';
 import {
 	startInstall,
 	cancelInstall,
-	getSession,
-	getSessionOwner,
 	InstallAlreadyRunningError,
 	InstallNotAutoInstallableError
 } from '$backend/engine/install-runner';
+import { requireInstallSessionAccess } from './access';
 
 const TOOL_UNION = t.Union([
 	t.Literal('git'),
@@ -78,8 +77,7 @@ export const systemToolsInstallHandler = createRouter()
 	}, async ({ data, conn }) => {
 		const userId = ws.getUserId(conn);
 		if (!userId) throw new Error('Not authenticated');
-		const owner = getSessionOwner(data.sessionId);
-		if (owner && owner !== userId) throw new Error('Install session not found');
+		requireInstallSessionAccess(conn, data.sessionId);
 		const cancelled = cancelInstall(data.sessionId);
 		return { cancelled };
 	})
@@ -105,9 +103,8 @@ export const systemToolsInstallHandler = createRouter()
 	}, async ({ data, conn }) => {
 		const userId = ws.getUserId(conn);
 		if (!userId) throw new Error('Not authenticated');
-		const owner = getSessionOwner(data.sessionId);
-		if (owner && owner !== userId) return { session: null };
-		return { session: getSession(data.sessionId) };
+		const session = requireInstallSessionAccess(conn, data.sessionId);
+		return { session };
 	})
 
 	// ═══ Server → client events ═══

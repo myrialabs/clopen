@@ -1293,7 +1293,18 @@ verify **whether they may touch the resource they named in the payload**. Requir
 whenever a handler accepts a `projectId`, `sessionId`, `messageId`, `streamId`,
 `projectPath`, or any other resource id from the client.
 
-**Guards live in `backend/ws/access.ts`:**
+Guards live in **two tiers**:
+
+1. **Global guards** in `backend/ws/access.ts` — the cross-cutting checks every
+   module reuses (project membership, chat-session ownership, message ownership).
+2. **Scoped guards** in `backend/ws/<module>/access.ts` — module-specific helpers
+   that resolve module-owned resources to one of the global checks (or apply
+   admin/ownership rules unique to that module). They exist so handlers don't
+   re-implement the same `manager.get(id) → null check → requireProjectAccess`
+   boilerplate, and so subtle module-specific rules (e.g. "this engine setup
+   PTY belongs to a single admin") have one home.
+
+**Global guards (`backend/ws/access.ts`):**
 
 | Helper                          | Use when handler accepts…                                           |
 | ------------------------------- | ------------------------------------------------------------------- |
@@ -1302,22 +1313,40 @@ whenever a handler accepts a `projectId`, `sessionId`, `messageId`, `streamId`,
 | `requireMessageAccess`          | a `messageId` from `chat_messages`                                  |
 | `requireCurrentProjectAccess`   | the handler relies on `ws.getProjectId(conn)` and must enforce it  |
 
+**Scoped guards (`backend/ws/<module>/access.ts`):**
+
+| Module        | Helper                              | Use when handler accepts…                                                       |
+| ------------- | ----------------------------------- | ------------------------------------------------------------------------------- |
+| `terminal`    | `requirePtySessionAccess`           | a PTY `sessionId` — resolves to its owning project, then `requireProjectAccess` |
+| `terminal`    | `requireTerminalStreamAccess`       | a `streamId` — same pattern                                                     |
+| `terminal`    | `requireTerminalLookupAccess`       | a `(sessionId, streamId?)` pair (used by `terminal:missed-output`)              |
+| `preview`     | `requireBrowserPreviewAccess`       | the connection's current project — adds membership check + service lookup       |
+| `preview`     | `requireBrowserTabAccess`           | an optional `tabId` — combines membership check with active/explicit tab lookup |
+| `db-client`   | `requireDbClientConnectionAccess`   | a connection id from `db_client_connections` (admin override + owner check)     |
+| `system-tools`| `requireInstallSessionAccess`       | a system-tools install `sessionId` — owner check                                |
+| `engine`      | `requireSetupSessionAccess`         | a setup-flow `setupId` — admin who started the flow only                        |
+
 **DO:**
 ```typescript
 .http('snapshot:restore', {
   data: t.Object({ sessionId: t.String(), messageId: t.String() })
 }, async ({ data, conn }) => {
-  requireSessionAccess(conn, data.sessionId);  // ✅ guard before any work
+  requireSessionAccess(conn, data.sessionId);  // ✅ global guard before any work
   // … perform restore
 })
 
 .on('terminal:input', {
   data: t.Object({ sessionId: t.String(), data: t.Any() })
 }, async ({ data, conn }) => {
-  const ptySession = ptySessionManager.getSession(data.sessionId);
-  if (!ptySession?.projectId) throw new Error('Session not found');
-  requireProjectAccess(conn, ptySession.projectId); // ✅ resolve to projectId, then guard
+  const ptySession = requirePtySessionAccess(conn, data.sessionId); // ✅ scoped guard
   // … forward input
+})
+
+.http('preview:browser-tab-stats', {
+  data: t.Object({ tabId: t.Optional(t.String()) })
+}, async ({ data, conn }) => {
+  const { previewService, tab } = requireBrowserTabAccess(conn, data.tabId); // ✅
+  // … return stats
 })
 ```
 
@@ -1329,6 +1358,15 @@ whenever a handler accepts a `projectId`, `sessionId`, `messageId`, `streamId`,
   // ❌ Anyone with a session id can mutate another user's project
   await snapshotService.restore(data.sessionId);
 })
+
+.http('preview:browser-tab-stats', {
+  data: t.Object({ tabId: t.Optional(t.String()) })
+}, async ({ conn }) => {
+  // ❌ Trusts the conn's projectId without verifying membership; a stray
+  //    connection in another project's room can drive that project's browser.
+  const projectId = ws.getProjectId(conn);
+  const previewService = browserPreviewServiceManager.getService(projectId);
+})
 ```
 
 **Why:**
@@ -1339,8 +1377,20 @@ whenever a handler accepts a `projectId`, `sessionId`, `messageId`, `streamId`,
   upsert membership rows (e.g., `INSERT OR IGNORE INTO user_projects`); that pattern
   bypasses the guard. Membership is established only through `projects:join` flows.
 
-**When you need a new shape of guard, extend `access.ts` rather than inlining ad-hoc
-queries** so the audit surface stays in one file.
+**When you need a new shape of guard:**
+- If the rule is general (cross-module), extend `backend/ws/access.ts`.
+- If the rule is module-specific (resolves a manager-owned resource, applies an
+  admin-override unique to that module, etc.), put it in
+  `backend/ws/<module>/access.ts` and import the global helpers it composes with.
+- Either way, keep the audit surface in `access.ts` files — never inline ad-hoc
+  ownership queries in handlers.
+
+**Router-level admin gating.** Some namespaces operate on global system state
+(engine credentials, system tools, settings). Those routes are gated to admins
+*before* the handler runs by adding them to `ADMIN_ONLY_ROUTES` in
+`backend/auth/permissions.ts`. The scoped `access.ts` then covers leftover
+per-resource ownership inside that admin set (e.g. one admin cannot drive
+another admin's setup PTY).
 
 ---
 
@@ -1494,11 +1544,19 @@ Use this checklist when creating or auditing modules:
 
 ### 6. Authorization Guards
 - [ ] Every handler that accepts a resource id (`projectId`, `sessionId`, `messageId`,
-      `streamId`, `projectPath`, etc.) calls the matching `require*Access` helper
-      from `backend/ws/access.ts` BEFORE touching the resource
-- [ ] Handlers that rely on connection's current project use `requireCurrentProjectAccess`
-- [ ] Resources without a direct id (PTY sessions, install sessions) resolve to a
-      `projectId` / owner first, then guard
+      `streamId`, `projectPath`, `tabId`, etc.) calls the matching `require*Access`
+      helper BEFORE touching the resource
+- [ ] Cross-cutting ids (project / chat-session / message) use the global helpers
+      in `backend/ws/access.ts`
+- [ ] Module-owned resources (PTY sessions, browser tabs, install sessions, engine
+      setup PTYs, db-client connections) use the scoped helpers in
+      `backend/ws/<module>/access.ts` — handlers don't re-implement the
+      `manager.get(id) → null check → requireProjectAccess` boilerplate
+- [ ] Handlers that rely on connection's current project use either
+      `requireCurrentProjectAccess` (global) or a scoped wrapper that calls it
+      (e.g. `requireBrowserPreviewAccess`)
+- [ ] Mutation routes for global system state (engine credentials, system tools,
+      settings) appear in `ADMIN_ONLY_ROUTES` in `backend/auth/permissions.ts`
 - [ ] DB-layer functions do NOT silently `INSERT OR IGNORE` membership rows
 
 ---

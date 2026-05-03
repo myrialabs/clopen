@@ -6,11 +6,11 @@
 
 import { t } from 'elysia';
 import { createRouter } from '$shared/utils/ws-server';
-import { browserPreviewServiceManager } from '../../../preview/index';
 import { ws } from '$backend/utils/ws';
 import type { KeyInput } from 'puppeteer';
 import { debug } from '$shared/utils/logger';
 import { sleep } from '$shared/utils/async';
+import { requireBrowserPreviewAccess } from '../access';
 
 // Throttle cursor detection evaluate calls per session (100ms = ~10/sec is plenty)
 const lastCursorEvalTime = new Map<string, number>();
@@ -63,11 +63,7 @@ export const interactPreviewHandler = createRouter()
 			}),
 		})
 	}, async ({ data, conn }) => {
-		const userId = ws.getUserId(conn);
-		const projectId = ws.getProjectId(conn);
-
-		// Get project-specific preview service
-		const previewService = browserPreviewServiceManager.getService(projectId);
+		const { userId, projectId, previewService } = requireBrowserPreviewAccess(conn);
 
 		try {
 			const { action } = data;

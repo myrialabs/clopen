@@ -50,6 +50,7 @@ import {
 import { resolveBinaryWithRefresh } from '../../../utils/cli';
 import { getCleanSpawnEnv } from '../../../utils/env';
 import { debug } from '$shared/utils/logger';
+import { requireSetupSessionAccess } from '../access';
 
 // ─────────────────────────────────────────────────────────────────────────────
 // ANSI helpers — Codex emits coloured output and cursor moves; we strip them
@@ -463,9 +464,13 @@ export const codexAccountsHandler = createRouter()
 
 	.on('engine:codex-account-setup-cancel', {
 		data: t.Object({ setupId: t.String() })
-	}, async ({ data }) => {
-		const entry = setupProcesses.get(data.setupId);
-		if (!entry) return;
+	}, async ({ data, conn }) => {
+		let entry: CodexLoginProcess;
+		try {
+			entry = requireSetupSessionAccess(conn, data.setupId, setupProcesses);
+		} catch {
+			return;
+		}
 		entry.cancelled = true;
 		cleanupSetup(data.setupId);
 	})

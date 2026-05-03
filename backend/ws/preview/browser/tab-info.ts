@@ -6,10 +6,9 @@
 
 import { t } from 'elysia';
 import { createRouter } from '$shared/utils/ws-server';
-import { browserPreviewServiceManager } from '../../../preview/index';
 import { browserMcpControl } from '../../../preview/browser/browser-mcp-control';
-import { ws } from '$backend/utils/ws';
 import { debug } from '$shared/utils/logger';
+import { requireBrowserPreviewAccess, requireBrowserTabAccess } from '../access';
 
 export const tabInfoPreviewHandler = createRouter()
 	// Get single tab info
@@ -29,16 +28,7 @@ export const tabInfoPreviewHandler = createRouter()
 		})
 	}, async ({ data, conn }) => {
 		const { tabId } = data;
-		const projectId = ws.getProjectId(conn);
-
-		// Get project-specific preview service
-		const previewService = browserPreviewServiceManager.getService(projectId);
-
-		// Get tab (active tab if not specified)
-		const tab = tabId ? previewService.getTab(tabId) : previewService.getActiveTab();
-		if (!tab) {
-			throw new Error(tabId ? `Tab not found: ${tabId}` : 'No active tab');
-		}
+		const { previewService, tab } = requireBrowserTabAccess(conn, tabId);
 
 		const tabInfo = previewService.getTabInfo(tab.id);
 		if (!tabInfo) {
@@ -70,10 +60,7 @@ export const tabInfoPreviewHandler = createRouter()
 			count: t.Number()
 		})
 	}, async ({ conn }) => {
-		const projectId = ws.getProjectId(conn);
-
-		// Get project-specific preview service
-		const previewService = browserPreviewServiceManager.getService(projectId);
+		const { projectId, previewService } = requireBrowserPreviewAccess(conn);
 
 		const allTabsInfo = previewService.getAllTabsInfo();
 		const activeTab = previewService.getActiveTab();
@@ -109,10 +96,7 @@ export const tabInfoPreviewHandler = createRouter()
 		})
 	}, async ({ data, conn }) => {
 		const { tabId } = data;
-		const projectId = ws.getProjectId(conn);
-
-		// Get project-specific preview service
-		const previewService = browserPreviewServiceManager.getService(projectId);
+		const { projectId, previewService } = requireBrowserPreviewAccess(conn);
 
 		const success = previewService.switchTab(tabId);
 		if (!success) {
