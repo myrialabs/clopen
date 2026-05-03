@@ -45,7 +45,7 @@ const SESSIONS_DIR_NAME = 'sessions';
  * looking for a filename ending in `<thread_id>.jsonl`. Returns the freshest
  * match by mtime (forks/restarts can create multiple).
  */
-function findRolloutFile(threadId: string): string | null {
+export function findRolloutFile(threadId: string): string | null {
 	if (!threadId) return null;
 	const sessionsRoot = path.join(getCodexHomeDir(), SESSIONS_DIR_NAME);
 	const suffix = `${threadId}.jsonl`;
