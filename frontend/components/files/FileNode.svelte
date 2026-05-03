@@ -5,7 +5,7 @@
 	import type { IconName } from '$shared/types/ui/icons';
 	import { getFileIcon } from '$frontend/utils/file-icon-mappings';
 	import { getFolderIcon } from '$frontend/utils/folder-icon-mappings';
-	import { getGitStatusColor, getGitStatusBadgeLabel } from '$frontend/utils/git-status';
+	import { getGitStatusColor, getGitStatusBadgeLabel, getGitStatusLabel } from '$frontend/utils/git-status';
 	import { onMount } from 'svelte';
 
 	const {
@@ -71,10 +71,13 @@
 			? gitFolderStatusMap.get(file.path) || ''
 			: gitStatusMap.get(file.path) || ''
 	);
-	const gitDotColor = $derived(
-		gitStatusCode ? getGitStatusColor(gitStatusCode).replace('text-', 'bg-') : ''
+	const gitStatusLetter = $derived(
+		gitStatusCode ? getGitStatusLabel(gitStatusCode) : ''
 	);
-	const gitDotTitle = $derived(
+	const gitStatusTextColor = $derived(
+		gitStatusCode ? getGitStatusColor(gitStatusCode) : ''
+	);
+	const gitStatusTitle = $derived(
 		gitStatusCode ? getGitStatusBadgeLabel(gitStatusCode) : ''
 	);
 
@@ -151,7 +154,9 @@
 
 <div
 	bind:this={nodeElement}
-	class="{isActiveFile ? '!bg-violet-100 dark:!bg-violet-900/50' : ''} group relative flex items-center space-x-2 px-2 py-1.5 rounded-md cursor-pointer transition-colors hover:bg-slate-100/50 dark:hover:bg-slate-800/50"
+	class="group relative flex items-center space-x-2 px-2 py-1.5 rounded-md cursor-pointer transition-colors {isActiveFile
+		? 'bg-violet-500/10 dark:bg-violet-500/15 text-slate-900 dark:text-slate-100'
+		: 'hover:bg-slate-100/50 dark:hover:bg-slate-800/50'}"
 	class:selected={isActiveFile}
 	class:directory={file.type === 'directory'}
 	title={file.name}
@@ -189,23 +194,25 @@
 	<!-- File/folder name -->
 	<span class="flex-1 text-sm font-medium text-slate-700 dark:text-slate-300 truncate min-w-0">
 		{file.name}
-		{#if showModifiedIndicator || gitStatusCode}
-			<span class="inline-flex items-center gap-0.5 ml-1 align-middle">
-				{#if showModifiedIndicator}
-					<span
-						class="w-1.5 h-1.5 rounded-full bg-amber-500 dark:bg-amber-600"
-						title="Unsaved changes"
-					></span>
-				{/if}
-				{#if gitStatusCode}
-					<span
-						class="w-1.5 h-1.5 rounded-full {gitDotColor}"
-						title={gitDotTitle}
-					></span>
-				{/if}
-			</span>
-		{/if}
 	</span>
+
+	<!-- Status indicators (unsaved dot + git status letter) -->
+	{#if showModifiedIndicator || gitStatusCode}
+		<span class="flex items-center gap-1 flex-shrink-0">
+			{#if showModifiedIndicator}
+				<span
+					class="w-1.5 h-1.5 rounded-full bg-amber-500 dark:bg-amber-600"
+					title="Unsaved changes"
+				></span>
+			{/if}
+			{#if gitStatusCode}
+				<span
+					class="text-xs font-bold {gitStatusTextColor}"
+					title={gitStatusTitle}
+				>{gitStatusLetter}</span>
+			{/if}
+		</span>
+	{/if}
 
 	<!-- Actions menu (always visible, triggered by click) -->
 	<div class="flex-shrink-0">

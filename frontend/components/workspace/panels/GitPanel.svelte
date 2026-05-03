@@ -29,6 +29,7 @@
 	import DiffViewer from '$frontend/components/git/DiffViewer.svelte';
 	import BranchManager from '$frontend/components/git/BranchManager.svelte';
 	import GitLog from '$frontend/components/git/GitLog.svelte';
+	import CommitFileList from '$frontend/components/git/CommitFileList.svelte';
 	import ConflictResolver from '$frontend/components/git/ConflictResolver.svelte';
 
 	// Derived state
@@ -122,6 +123,17 @@
 	let isLogLoading = $state(false);
 	let logHasMore = $state(false);
 	let logSkip = $state(0);
+
+	// Commit detail state — when set, History view shows a per-commit file list
+	// instead of the commit log. Cleared via the back button.
+	let selectedCommit = $state<{
+		hash: string;
+		hashShort: string;
+		message: string;
+		author: string;
+		files: GitFileDiff[];
+		isLoading: boolean;
+	} | null>(null);
 
 	// Conflict state
 	let conflictFiles = $state<GitConflictFile[]>([]);
@@ -298,6 +310,7 @@
 		try {
 			await ws.http('git:stage', { projectId, filePath: path });
 			await loadStatus();
+			await migrateActiveTabAfterStatusChange(path);
 		} catch (err) {
 			debug.error('git', 'Failed to stage file:', err);
 		}
@@ -308,6 +321,9 @@
 		try {
 			await ws.http('git:stage-all', { projectId });
 			await loadStatus();
+			if (activeTab && activeTab.section !== 'commit') {
+				await migrateActiveTabAfterStatusChange(activeTab.filePath);
+			}
 		} catch (err) {
 			debug.error('git', 'Failed to stage all:', err);
 		}
@@ -318,6 +334,7 @@
 		try {
 			await ws.http('git:unstage', { projectId, filePath: path });
 			await loadStatus();
+			await migrateActiveTabAfterStatusChange(path);
 		} catch (err) {
 			debug.error('git', 'Failed to unstage file:', err);
 		}
@@ -328,6 +345,9 @@
 		try {
 			await ws.http('git:unstage-all', { projectId });
 			await loadStatus();
+			if (activeTab && activeTab.section !== 'commit') {
+				await migrateActiveTabAfterStatusChange(activeTab.filePath);
+			}
 		} catch (err) {
 			debug.error('git', 'Failed to unstage all:', err);
 		}
@@ -345,6 +365,7 @@
 				try {
 					await ws.http('git:discard', { projectId, filePath: path });
 					await loadStatus();
+					await migrateActiveTabAfterStatusChange(path);
 				} catch (err) {
 					debug.error('git', 'Failed to discard file:', err);
 				}
@@ -363,6 +384,9 @@
 				try {
 					await ws.http('git:discard-all', { projectId });
 					await loadStatus();
+					if (activeTab && activeTab.section !== 'commit') {
+						await migrateActiveTabAfterStatusChange(activeTab.filePath);
+					}
 				} catch (err) {
 					debug.error('git', 'Failed to discard all:', err);
 				}
@@ -397,6 +421,99 @@
 
 	function selectTab(id: string) {
 		activeTabId = id;
+	}
+
+	function closeTab(id: string) {
+		const idx = openTabs.findIndex(t => t.id === id);
+		if (idx === -1) return;
+		openTabs = openTabs.filter(t => t.id !== id);
+		if (activeTabId === id) {
+			if (openTabs.length > 0) {
+				const newIdx = Math.min(idx, openTabs.length - 1);
+				activeTabId = openTabs[newIdx].id;
+			} else {
+				activeTabId = null;
+				if (!isTwoColumnMode) viewMode = 'list';
+			}
+		}
+	}
+
+	function closeAllTabs() {
+		openTabs = [];
+		activeTabId = null;
+		if (!isTwoColumnMode) viewMode = 'list';
+	}
+
+	// Drag-and-drop reorder state
+	let dragSrcIndex = $state<number | null>(null);
+	let dragOverIndex = $state<number | null>(null);
+
+	function onTabDragStart(e: DragEvent, index: number) {
+		dragSrcIndex = index;
+		if (e.dataTransfer) {
+			e.dataTransfer.effectAllowed = 'move';
+			e.dataTransfer.setData('text/plain', String(index));
+		}
+	}
+
+	function onTabDragOver(e: DragEvent, index: number) {
+		e.preventDefault();
+		if (e.dataTransfer) e.dataTransfer.dropEffect = 'move';
+		dragOverIndex = index;
+	}
+
+	function onTabDragLeave() {
+		dragOverIndex = null;
+	}
+
+	function onTabDrop(e: DragEvent, targetIndex: number) {
+		e.preventDefault();
+		const srcIdx = dragSrcIndex;
+		dragSrcIndex = null;
+		dragOverIndex = null;
+		if (srcIdx === null || srcIdx === targetIndex) return;
+		const newTabs = [...openTabs];
+		const [moved] = newTabs.splice(srcIdx, 1);
+		newTabs.splice(targetIndex, 0, moved);
+		openTabs = newTabs;
+	}
+
+	function onTabDragEnd() {
+		dragSrcIndex = null;
+		dragOverIndex = null;
+	}
+
+	// After stage/unstage/discard, the active tab's file may have moved between
+	// staged ⇄ unstaged or vanished entirely. Migrate it so the diff view stays
+	// in sync instead of going blank.
+	async function migrateActiveTabAfterStatusChange(filePath: string) {
+		const tab = openTabs.find(t => t.filePath === filePath && t.id === activeTabId);
+		if (!tab) return;
+		if (tab.section === 'commit') return;
+
+		const stagedFile = gitStatus.staged.find(f => f.path === filePath);
+		const unstagedFile = gitStatus.unstaged.find(f => f.path === filePath);
+		const untrackedFile = gitStatus.untracked.find(f => f.path === filePath);
+		const conflictedFile = gitStatus.conflicted.find(f => f.path === filePath);
+
+		if (!stagedFile && !unstagedFile && !untrackedFile && !conflictedFile) {
+			openTabs = openTabs.filter(t => t.id !== tab.id);
+			if (activeTabId === tab.id) {
+				activeTabId = openTabs.length > 0 ? openTabs[openTabs.length - 1].id : null;
+				if (!activeTabId && !isTwoColumnMode) viewMode = 'list';
+			}
+			return;
+		}
+
+		if (stagedFile) {
+			await viewDiff(stagedFile, 'staged');
+		} else if (unstagedFile) {
+			await viewDiff(unstagedFile, 'unstaged');
+		} else if (untrackedFile) {
+			await viewDiff(untrackedFile, 'unstaged');
+		} else if (conflictedFile) {
+			await viewDiff(conflictedFile, 'conflicted');
+		}
 	}
 
 	// ============================
@@ -513,69 +630,56 @@
 
 	async function viewCommitDiff(hash: string) {
 		if (!projectId) return;
-		const loadingTabId = `commit:${hash}`;
+		const commit = commits.find(c => c.hash === hash);
+		if (!commit) return;
 
-		// History view: show loading placeholder, then replace with per-file tabs
-		openTabs = [{
-			id: loadingTabId,
-			filePath: hash,
-			fileName: `Commit ${hash.substring(0, 7)}`,
-			section: 'commit',
-			diff: null,
-			diffs: [],
-			isLoading: true,
-			commitHash: hash
-		}];
-		activeTabId = loadingTabId;
-		if (!isTwoColumnMode) viewMode = 'diff';
+		// Show the commit-detail file list in the left panel — diff tabs only
+		// open when the user picks a specific file from that list.
+		selectedCommit = {
+			hash,
+			hashShort: commit.hashShort,
+			message: commit.message,
+			author: commit.author,
+			files: [],
+			isLoading: true
+		};
 
 		try {
 			const diffs = await ws.http('git:diff-commit', { projectId, commitHash: hash });
-			if (diffs.length === 0) {
-				openTabs = [{
-					id: loadingTabId,
-					filePath: hash,
-					fileName: `Commit ${hash.substring(0, 7)}`,
-					section: 'commit',
-					diff: null,
-					diffs: [],
-					isLoading: false,
-					commitHash: hash
-				}];
-				return;
-			}
-
-			// Create one tab per file in the commit
-			const fileTabs: DiffTab[] = diffs.map((d: GitFileDiff, i: number) => {
-				const path = d.newPath || d.oldPath || `file-${i}`;
-				const name = path.split(/[\\/]/).pop() || path;
-				return {
-					id: `commit:${hash}:${path}`,
-					filePath: path,
-					fileName: name,
-					section: 'commit',
-					diff: d,
-					diffs: [],
-					isLoading: false,
-					commitHash: hash,
-					status: d.status
-				};
-			});
-			openTabs = fileTabs;
-			activeTabId = fileTabs[0].id;
+			if (selectedCommit?.hash !== hash) return;
+			selectedCommit = { ...selectedCommit, files: diffs, isLoading: false };
 		} catch (err) {
 			debug.error('git', 'Failed to load commit diff:', err);
-			openTabs = [{
-				id: loadingTabId,
-				filePath: hash,
-				fileName: `Commit ${hash.substring(0, 7)}`,
-				section: 'commit',
-				diff: null,
-				diffs: [],
-				isLoading: false,
-				commitHash: hash
-			}];
+			if (selectedCommit?.hash === hash) {
+				selectedCommit = { ...selectedCommit, isLoading: false };
+			}
 		}
+	}
+
+	function viewCommitFileDiff(file: GitFileDiff) {
+		if (!selectedCommit) return;
+		const path = file.newPath || file.oldPath;
+		if (!path) return;
+		const fileName = path.split(/[\\/]/).pop() || path;
+		const tabId = `commit:${selectedCommit.hash}:${path}`;
+
+		openTabs = [{
+			id: tabId,
+			filePath: path,
+			fileName,
+			section: 'commit',
+			diff: file,
+			diffs: [],
+			isLoading: false,
+			commitHash: selectedCommit.hash,
+			status: file.status
+		}];
+		activeTabId = tabId;
+		if (!isTwoColumnMode) viewMode = 'diff';
+	}
+
+	function backToCommitList() {
+		selectedCommit = null;
 	}
 
 	// ============================
@@ -965,6 +1069,7 @@
 				resetAllViewTabs();
 				commits = [];
 				logSkip = 0;
+				selectedCommit = null;
 				loadAll();
 			}
 		}
@@ -1034,19 +1139,11 @@
 				loadRemotes();
 			}
 
-			// Refresh the active diff tab if currently viewing one
-			if (activeTab && !activeTab.isLoading && activeTab.section !== 'commit' && activeTab.status !== '?') {
-				const tab = activeTab;
-				try {
-					const action = tab.section === 'staged' ? 'git:diff-staged' : 'git:diff-unstaged';
-					const diffs = await ws.http(action, { projectId, filePath: tab.filePath });
-					const diffResult = diffs.length > 0 ? diffs[0] : null;
-					openTabs = openTabs.map(t =>
-						t.id === tab.id ? { ...t, diff: diffResult } : t
-					);
-				} catch {
-					// Silently ignore — file may have been removed from status
-				}
+			// Refresh the active diff tab if currently viewing one. The file may
+			// have moved between staged/unstaged/untracked since the last view —
+			// migrate the section so we don't render an empty diff.
+			if (activeTab && !activeTab.isLoading && activeTab.section !== 'commit') {
+				await migrateActiveTabAfterStatusChange(activeTab.filePath);
 			}
 		}, 400);
 	}
@@ -1163,24 +1260,48 @@
 <!-- Tab Bar Snippet -->
 {#snippet tabBar()}
 	{#if openTabs.length > 0}
-		<div class="flex items-center border-b border-slate-200 dark:border-slate-700 bg-slate-50/80 dark:bg-slate-800/50 overflow-x-auto flex-shrink-0">
-			{#each openTabs as tab (tab.id)}
-				{@const isActive = tab.id === activeTabId}
-				<div
-					class="flex items-center gap-1.5 pl-3 pr-4 py-2 text-xs border-r border-slate-200/50 dark:border-slate-700/50 whitespace-nowrap transition-colors flex-shrink-0 cursor-pointer {isActive
-						? 'bg-white dark:bg-slate-900 text-slate-900 dark:text-slate-100'
-						: 'text-slate-500 dark:text-slate-400 hover:bg-slate-100 dark:hover:bg-slate-800 hover:text-slate-700 dark:hover:text-slate-300'}"
-					onclick={() => selectTab(tab.id)}
-				>
-					<Icon name={getFileIcon(tab.fileName) as IconName} class="w-3.5 h-3.5 flex-shrink-0" />
-					<span class="truncate max-w-28">{tab.fileName}</span>
-					{#if tab.isLoading}
-						<div class="w-2 h-2 border border-slate-400 border-t-transparent rounded-full animate-spin flex-shrink-0"></div>
-					{:else if tab.status}
-						<span class="text-xs font-bold {getGitStatusColor(tab.status)} flex-shrink-0">{getGitStatusLabel(tab.status)}</span>
-					{/if}
-				</div>
-			{/each}
+		<div class="flex items-stretch border-b border-slate-200 dark:border-slate-700 bg-slate-50/80 dark:bg-slate-800/50 flex-shrink-0">
+			<div class="flex items-center overflow-x-auto flex-1 min-w-0">
+				{#each openTabs as tab, index (tab.id)}
+					{@const isActive = tab.id === activeTabId}
+					{@const isDragOver = dragOverIndex === index && dragSrcIndex !== null && dragSrcIndex !== index}
+					<div
+						class="flex items-center gap-1.5 pl-3 pr-2 py-2 text-xs border-r border-slate-200/50 dark:border-slate-700/50 whitespace-nowrap transition-colors flex-shrink-0 cursor-pointer {isActive
+							? 'bg-white dark:bg-slate-900 text-slate-900 dark:text-slate-100'
+							: 'text-slate-500 dark:text-slate-400 hover:bg-slate-100 dark:hover:bg-slate-800 hover:text-slate-700 dark:hover:text-slate-300'} {isDragOver ? 'ring-2 ring-violet-500/40 ring-inset' : ''}"
+						draggable="true"
+						ondragstart={(e) => onTabDragStart(e, index)}
+						ondragover={(e) => onTabDragOver(e, index)}
+						ondragleave={onTabDragLeave}
+						ondrop={(e) => onTabDrop(e, index)}
+						ondragend={onTabDragEnd}
+						onclick={() => selectTab(tab.id)}
+					>
+						<Icon name={getFileIcon(tab.fileName) as IconName} class="w-3.5 h-3.5 flex-shrink-0" />
+						<span class="truncate max-w-28">{tab.fileName}</span>
+						{#if tab.isLoading}
+							<div class="w-2 h-2 border border-slate-400 border-t-transparent rounded-full animate-spin flex-shrink-0"></div>
+						{:else if tab.status}
+							<span class="text-xs font-bold {getGitStatusColor(tab.status)} flex-shrink-0">{getGitStatusLabel(tab.status)}</span>
+						{/if}
+						<button
+							class="flex p-0.5 hover:bg-slate-200 dark:hover:bg-slate-700 rounded flex-shrink-0 opacity-60 hover:opacity-100"
+							onclick={(e) => { e.stopPropagation(); closeTab(tab.id); }}
+							title="Close tab"
+						>
+							<Icon name="lucide:x" class="w-3 h-3" />
+						</button>
+					</div>
+				{/each}
+			</div>
+			<button
+				type="button"
+				class="flex items-center justify-center px-2.5 border-l border-slate-200/50 dark:border-slate-700/50 text-slate-400 hover:text-slate-700 dark:hover:text-slate-300 hover:bg-slate-100 dark:hover:bg-slate-800 transition-colors bg-transparent cursor-pointer flex-shrink-0"
+				onclick={closeAllTabs}
+				title="Close all tabs"
+			>
+				<Icon name="lucide:x" class="w-3.5 h-3.5" />
+			</button>
 		</div>
 	{/if}
 {/snippet}
@@ -1237,6 +1358,8 @@
 					icon="lucide:triangle-alert"
 					files={gitStatus.conflicted}
 					section="conflicted"
+					activeFilePath={activeTab?.filePath ?? null}
+					activeSection={activeTab?.section ?? null}
 					onViewDiff={viewDiff}
 					onResolve={openConflictResolver}
 				/>
@@ -1247,6 +1370,8 @@
 				icon="lucide:circle-check"
 				files={gitStatus.staged}
 				section="staged"
+				activeFilePath={activeTab?.filePath ?? null}
+				activeSection={activeTab?.section ?? null}
 				onUnstage={unstageFile}
 				onUnstageAll={unstageAll}
 				onViewDiff={viewDiff}
@@ -1257,6 +1382,8 @@
 				icon="lucide:file-pen"
 				files={allChanges}
 				section="unstaged"
+				activeFilePath={activeTab?.filePath ?? null}
+				activeSection={activeTab?.section ?? null}
 				onStage={stageFile}
 				onStageAll={stageAll}
 				onDiscard={discardFile}
@@ -1272,13 +1399,28 @@
 			{/if}
 		</div>
 	{:else if activeView === 'log'}
-		<GitLog
-			{commits}
-			isLoading={isLogLoading}
-			hasMore={logHasMore}
-			onLoadMore={() => loadLog()}
-			onViewCommit={viewCommitDiff}
-		/>
+		{#if selectedCommit}
+			<CommitFileList
+				commitHash={selectedCommit.hash}
+				commitHashShort={selectedCommit.hashShort}
+				commitMessage={selectedCommit.message}
+				commitAuthor={selectedCommit.author}
+				files={selectedCommit.files}
+				isLoading={selectedCommit.isLoading}
+				activeFilePath={activeTab?.filePath ?? null}
+				onBack={backToCommitList}
+				onViewFile={viewCommitFileDiff}
+			/>
+		{:else}
+			<GitLog
+				{commits}
+				isLoading={isLogLoading}
+				hasMore={logHasMore}
+				activeHash={activeTab?.commitHash ?? null}
+				onLoadMore={() => loadLog()}
+				onViewCommit={viewCommitDiff}
+			/>
+		{/if}
 	{:else if activeView === 'stash'}
 		<!-- Stash View -->
 		<div class="flex-1 overflow-y-auto pt-2">

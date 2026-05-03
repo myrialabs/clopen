@@ -7,13 +7,15 @@
 		commits: GitCommit[];
 		isLoading: boolean;
 		hasMore: boolean;
+		activeHash?: string | null;
 		onLoadMore: () => void;
 		onViewCommit: (hash: string) => void;
 	}
 
-	const { commits, isLoading, hasMore, onLoadMore, onViewCommit }: Props = $props();
+	const { commits, isLoading, hasMore, activeHash = null, onLoadMore, onViewCommit }: Props = $props();
 
 	let selectedHash = $state('');
+	const effectiveActiveHash = $derived(activeHash ?? selectedHash);
 	let sentinelEl = $state<HTMLDivElement | null>(null);
 
 	// Infinite scroll: auto load more when sentinel is visible
@@ -255,8 +257,8 @@
 				{@const graphWidth = (graph ? graph.maxCol + 1 : 1) * LANE_WIDTH + GRAPH_PAD * 2}
 				<div
 					class="group flex items-stretch w-full text-left cursor-pointer transition-colors
-						{selectedHash === commit.hash
-							? 'bg-violet-50 dark:bg-violet-900/10'
+						{effectiveActiveHash === commit.hash
+							? 'bg-violet-500/10 dark:bg-violet-500/15 text-slate-900 dark:text-slate-100'
 							: 'hover:bg-slate-50 dark:hover:bg-slate-800/40'}"
 					style="height: {ROW_HEIGHT}px;"
 					role="button"

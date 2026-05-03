@@ -13,6 +13,8 @@
 		language: string;
 		originalPath?: string;
 		modifiedPath?: string;
+		originalLineNumbers?: number[];
+		modifiedLineNumbers?: number[];
 		readonly?: boolean;
 		renderSideBySide?: boolean;
 		onEditorMount?: (editor: editor.IDiffEditor) => void;
@@ -26,12 +28,22 @@
 		language,
 		originalPath,
 		modifiedPath,
+		originalLineNumbers,
+		modifiedLineNumbers,
 		readonly = true,
 		renderSideBySide = true,
 		onEditorMount,
 		width = '100%',
 		height = '100%',
 	}: Props = $props();
+
+	function makeLineNumberFn(numbers: number[] | undefined) {
+		if (!numbers || numbers.length === 0) return undefined;
+		return (n: number): string => {
+			const real = numbers[n - 1];
+			return real && real > 0 ? String(real) : '';
+		};
+	}
 
 	let container = $state<HTMLDivElement | null>(null);
 	let diffEditor: editor.IDiffEditor | null = null;
@@ -85,6 +97,8 @@
 				modified: modifiedModel,
 			});
 
+			applyLineNumberFns();
+
 			if (onEditorMount) {
 				onEditorMount(diffEditor);
 			}
@@ -113,6 +127,26 @@
 	$effect(() => {
 		if (diffEditor) {
 			diffEditor.updateOptions({ readOnly: readonly, renderSideBySide });
+		}
+	});
+
+	function applyLineNumberFns() {
+		if (!diffEditor) return;
+		const origFn = makeLineNumberFn(originalLineNumbers);
+		const modFn = makeLineNumberFn(modifiedLineNumbers);
+		diffEditor.getOriginalEditor().updateOptions({
+			lineNumbers: origFn ?? 'on'
+		});
+		diffEditor.getModifiedEditor().updateOptions({
+			lineNumbers: modFn ?? 'on'
+		});
+	}
+
+	$effect(() => {
+		originalLineNumbers;
+		modifiedLineNumbers;
+		if (diffEditor) {
+			applyLineNumberFns();
 		}
 	});
 
