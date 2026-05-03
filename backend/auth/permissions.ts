@@ -38,6 +38,8 @@ export const ADMIN_ONLY_ROUTES = new Set([
 	'system-tools:install-session'
 ]);
 
+const ADMIN_ONLY_ROUTE_PREFIXES = ['tunnel:'];
+
 /**
  * Check if a route action is allowed for the given auth state.
  * In no-auth mode, all routes are allowed (bypasses authentication check).
@@ -63,7 +65,10 @@ export function checkRouteAccess(
 	}
 
 	// Admin-only routes
-	if (ADMIN_ONLY_ROUTES.has(action) && role !== 'admin') {
+	const requiresAdmin = ADMIN_ONLY_ROUTES.has(action) ||
+		ADMIN_ONLY_ROUTE_PREFIXES.some((prefix) => action.startsWith(prefix));
+
+	if (requiresAdmin && role !== 'admin') {
 		return { allowed: false, error: 'Admin access required' };
 	}
 
