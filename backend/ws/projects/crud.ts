@@ -3,7 +3,7 @@
  *
  * HTTP endpoints for project management:
  * - List all projects (per-user)
- * - Create new project (or join existing)
+ * - Create new project (or return an existing project already joined by the user)
  * - Get project by ID
  * - Update project info
  * - Delete project (remove user association, cleanup if orphaned)
@@ -34,7 +34,7 @@ export const crudHandler = createRouter()
 		return projects;
 	})
 
-	// Create new project (or join existing by path)
+	// Create new project (or return an existing project already joined by the user)
 	.http('projects:create', {
 		data: t.Object({
 			name: t.String({ minLength: 1 }),
@@ -49,8 +49,9 @@ export const crudHandler = createRouter()
 		// Check if project with this path already exists
 		const existing = projectQueries.getByPath(path);
 		if (existing) {
-			// Project exists - just add user association (join)
-			projectQueries.addUserProject(userId, existing.id);
+			if (!projectQueries.userHasProject(userId, existing.id)) {
+				throw new Error('Project path is already registered');
+			}
 			return existing;
 		}
 
