@@ -11,6 +11,7 @@ import { t } from 'elysia';
 import { createRouter } from '$shared/utils/ws-server';
 import { projectQueries } from '../../database/queries/project-queries';
 import { ws as wsServer } from '../../utils/ws';
+import { requireProjectAccess } from '../access';
 
 export const filesStateHandler = createRouter()
 	.http('files:get-panel-state', {
@@ -21,6 +22,7 @@ export const filesStateHandler = createRouter()
 			state: t.Union([t.String(), t.Null()])
 		})
 	}, async ({ data, conn }) => {
+		requireProjectAccess(conn, data.projectId);
 		const userId = wsServer.getUserId(conn);
 		const state = projectQueries.getFilesPanelState(userId, data.projectId);
 		return { state };
@@ -33,6 +35,7 @@ export const filesStateHandler = createRouter()
 		}),
 		response: t.Object({ ok: t.Boolean() })
 	}, async ({ data, conn }) => {
+		requireProjectAccess(conn, data.projectId);
 		const userId = wsServer.getUserId(conn);
 		projectQueries.setFilesPanelState(userId, data.projectId, data.state);
 		return { ok: true };

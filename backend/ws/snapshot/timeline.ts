@@ -20,6 +20,7 @@ import {
 	INITIAL_NODE_ID
 } from '../../snapshot/helpers';
 import type { CheckpointNode, TimelineResponse } from '../../snapshot/helpers';
+import { requireSessionAccess } from '../access';
 
 export const timelineHandler = createRouter()
 	.http('snapshot:get-timeline', {
@@ -30,8 +31,9 @@ export const timelineHandler = createRouter()
 			nodes: t.Array(t.Any()),
 			currentHeadId: t.Union([t.String(), t.Null()])
 		})
-	}, async ({ data }) => {
+	}, async ({ data, conn }) => {
 		const { sessionId } = data;
+		requireSessionAccess(conn, sessionId);
 
 		debug.log('snapshot', 'TIMELINE - Building tree view');
 

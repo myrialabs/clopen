@@ -15,6 +15,7 @@ import {
 	startInstall,
 	cancelInstall,
 	getSession,
+	getSessionOwner,
 	InstallAlreadyRunningError,
 	InstallNotAutoInstallableError
 } from '$backend/engine/install-runner';
@@ -74,7 +75,11 @@ export const systemToolsInstallHandler = createRouter()
 	.http('system-tools:install-cancel', {
 		data: t.Object({ sessionId: t.String() }),
 		response: t.Object({ cancelled: t.Boolean() })
-	}, async ({ data }) => {
+	}, async ({ data, conn }) => {
+		const userId = ws.getUserId(conn);
+		if (!userId) throw new Error('Not authenticated');
+		const owner = getSessionOwner(data.sessionId);
+		if (owner && owner !== userId) throw new Error('Install session not found');
 		const cancelled = cancelInstall(data.sessionId);
 		return { cancelled };
 	})
@@ -97,7 +102,11 @@ export const systemToolsInstallHandler = createRouter()
 				})
 			])
 		})
-	}, async ({ data }) => {
+	}, async ({ data, conn }) => {
+		const userId = ws.getUserId(conn);
+		if (!userId) throw new Error('Not authenticated');
+		const owner = getSessionOwner(data.sessionId);
+		if (owner && owner !== userId) return { session: null };
 		return { session: getSession(data.sessionId) };
 	})
 

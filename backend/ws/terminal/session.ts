@@ -20,6 +20,7 @@ import { isWindows } from '../../terminal/shell-utils';
 import { existsSync } from '../../terminal/helpers';
 import { ws } from '$backend/utils/ws';
 import { activePtyProcesses } from '../../terminal/pty-manager';
+import { requireProjectAccess, requireCurrentProjectAccess } from '../access';
 
 export const sessionHandler = createRouter()
 	// Create new terminal session
@@ -50,7 +51,14 @@ export const sessionHandler = createRouter()
 			rows = 24
 		} = data;
 
-		const projectId = ws.getProjectId(conn);
+		const { projectId } = requireCurrentProjectAccess(conn);
+
+		// If a PTY session already exists for this id, it must belong to the
+		// caller's current project. Prevents hijacking another project's PTY id.
+		const existingForOwnership = ptySessionManager.getSession(sessionId);
+		if (existingForOwnership && existingForOwnership.projectId && existingForOwnership.projectId !== projectId) {
+			throw new Error('Session not found');
+		}
 
 		debug.log('terminal', `🌐 WebSocket: Creating PTY session: ${sessionId}`);
 
@@ -219,8 +227,11 @@ export const sessionHandler = createRouter()
 		response: t.Object({
 			sessionId: t.String()
 		})
-	}, async ({ data }) => {
+	}, async ({ data, conn }) => {
 		const { sessionId } = data;
+		const ptySession = ptySessionManager.getSession(sessionId);
+		if (!ptySession || !ptySession.projectId) throw new Error('Session not found');
+		requireProjectAccess(conn, ptySession.projectId);
 		terminalStreamManager.clearHeadlessTerminal(sessionId);
 		return { sessionId };
 	})
@@ -237,8 +248,12 @@ export const sessionHandler = createRouter()
 			cols: t.Number(),
 			rows: t.Number()
 		})
-	}, async ({ data }) => {
+	}, async ({ data, conn }) => {
 		const { sessionId, cols, rows } = data;
+
+		const ptySession = ptySessionManager.getSession(sessionId);
+		if (!ptySession || !ptySession.projectId) throw new Error('Session not found');
+		requireProjectAccess(conn, ptySession.projectId);
 
 		debug.log('terminal', `🔧 Resizing PTY session ${sessionId} to ${cols}x${rows}`);
 
@@ -263,16 +278,18 @@ export const sessionHandler = createRouter()
 			sessionId: t.String(),
 			pid: t.Number()
 		})
-	}, async ({ data }) => {
+	}, async ({ data, conn }) => {
 		const { sessionId } = data;
-
-		debug.log('terminal', `🛑 Sending Ctrl+C signal to PTY session: ${sessionId}`);
 
 		const session = ptySessionManager.getSession(sessionId);
 
 		if (!session) {
 			throw new Error('No active PTY process found for this session');
 		}
+		if (!session.projectId) throw new Error('Session not found');
+		requireProjectAccess(conn, session.projectId);
+
+		debug.log('terminal', `🛑 Sending Ctrl+C signal to PTY session: ${sessionId}`);
 
 		const pid = session.pty.pid;
 
@@ -299,14 +316,16 @@ export const sessionHandler = createRouter()
 	}, async ({ data, conn }) => {
 		const { sessionId } = data;
 
-		debug.log('terminal', `💀 [kill-session] Killing PTY session: ${sessionId}`);
-
 		const session = ptySessionManager.getSession(sessionId);
 
 		if (!session) {
 			debug.log('terminal', `💀 [kill-session] No active PTY session found for: ${sessionId}`);
 			return { sessionId };
 		}
+		if (!session.projectId) throw new Error('Session not found');
+		requireProjectAccess(conn, session.projectId);
+
+		debug.log('terminal', `💀 [kill-session] Killing PTY session: ${sessionId}`);
 
 		const pid = session.pty?.pid;
 		debug.log('terminal', `💀 [kill-session] Found PTY session with PID: ${pid}`);
@@ -393,8 +412,18 @@ export const sessionHandler = createRouter()
 			pid: t.Optional(t.Number()),
 			message: t.Optional(t.String())
 		})
-	}, async ({ data }) => {
+	}, async ({ data, conn }) => {
 		const { sessionId } = data;
+
+		const ptySession = ptySessionManager.getSession(sessionId);
+		if (!ptySession || !ptySession.projectId) {
+			return {
+				isActive: false,
+				sessionId,
+				message: 'PTY not found'
+			};
+		}
+		requireProjectAccess(conn, ptySession.projectId);
 
 		const pty = activePtyProcesses.get(sessionId);
 
@@ -430,8 +459,9 @@ export const sessionHandler = createRouter()
 				lastActivityAt: t.String()
 			}))
 		})
-	}, async ({ data }) => {
+	}, async ({ data, conn }) => {
 		const { projectId } = data;
+		requireProjectAccess(conn, projectId);
 
 		const allSessions = ptySessionManager.getAllSessions();
 		const projectSessions = allSessions

@@ -20,6 +20,7 @@ import {
 	INITIAL_NODE_ID
 } from '../../snapshot/helpers';
 import { ws } from '$backend/utils/ws';
+import { requireSessionAccess } from '../access';
 
 export const restoreHandler = createRouter()
 	/**
@@ -43,8 +44,9 @@ export const restoreHandler = createRouter()
 			})),
 			checkpointsToUndo: t.Array(t.String())
 		})
-	}, async ({ data }) => {
+	}, async ({ data, conn }) => {
 		const { messageId, sessionId } = data;
+		requireSessionAccess(conn, sessionId);
 
 		debug.log('snapshot', `Checking restore conflicts for checkpoint ${messageId} in session ${sessionId}`);
 
@@ -107,8 +109,9 @@ export const restoreHandler = createRouter()
 			filesRestored: t.Optional(t.Number()),
 			filesSkipped: t.Optional(t.Number())
 		})
-	}, async ({ data }) => {
+	}, async ({ data, conn }) => {
 		const { messageId, sessionId, conflictResolutions } = data;
+		requireSessionAccess(conn, sessionId);
 		const isInitialRestore = messageId === INITIAL_NODE_ID;
 
 		debug.log('snapshot', `RESTORE - ${isInitialRestore ? 'Restoring to initial state' : 'Moving HEAD to checkpoint'}`);

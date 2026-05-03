@@ -21,6 +21,7 @@ import { handlePathBrowsing } from '../../files/path-browsing';
 import { gitService } from '../../git/git-service';
 import { projectQueries } from '../../database/queries/project-queries';
 import { isAbsolute, relative } from 'node:path';
+import { requireProjectAccess } from '../access';
 
 // Bun-compatible existsSync implementation
 async function existsSync(path: string): Promise<boolean> {
@@ -168,7 +169,8 @@ export const readHandler = createRouter()
 			content: t.Union([t.String(), t.Null()]),
 			ref: t.String()
 		})
-	}, async ({ data }) => {
+	}, async ({ data, conn }) => {
+		requireProjectAccess(conn, data.projectId);
 		const project = projectQueries.getById(data.projectId);
 		if (!project) throw new Error('Project not found');
 

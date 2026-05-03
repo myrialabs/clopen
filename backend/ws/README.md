@@ -129,7 +129,7 @@ export const wsRouter = createRouter()
 ### 3. Use in Frontend
 
 ```typescript
-import ws from '$lib/utils/ws';
+import ws from '$frontend/utils/ws';
 
 // HTTP-style request-response
 try {
@@ -781,10 +781,10 @@ ws.getConnectionCount(projectId?)
 
 ### Frontend Client API
 
-**File: `frontend/shared/ws.ts`**
+**File: `frontend/utils/ws.ts`**
 
 ```typescript
-import ws from '$lib/utils/ws';
+import ws from '$frontend/utils/ws';
 
 // HTTP request
 const data = await ws.http('namespace:action', { ... });
@@ -1286,6 +1286,64 @@ email: t.String({ format: 'email' })
 
 ---
 
+### 10. Authorization Guards (IDOR Prevention)
+
+Connection context (Best Practice 6) tells you **who** is calling. Authorization guards
+verify **whether they may touch the resource they named in the payload**. Required
+whenever a handler accepts a `projectId`, `sessionId`, `messageId`, `streamId`,
+`projectPath`, or any other resource id from the client.
+
+**Guards live in `backend/ws/access.ts`:**
+
+| Helper                          | Use when handler accepts…                                           |
+| ------------------------------- | ------------------------------------------------------------------- |
+| `requireProjectAccess`          | a `projectId` (or a path/PTY/stream you resolved to a `projectId`) |
+| `requireSessionAccess`          | a `chatSessionId` / `sessionId` from `chat_sessions`                |
+| `requireMessageAccess`          | a `messageId` from `chat_messages`                                  |
+| `requireCurrentProjectAccess`   | the handler relies on `ws.getProjectId(conn)` and must enforce it  |
+
+**DO:**
+```typescript
+.http('snapshot:restore', {
+  data: t.Object({ sessionId: t.String(), messageId: t.String() })
+}, async ({ data, conn }) => {
+  requireSessionAccess(conn, data.sessionId);  // ✅ guard before any work
+  // … perform restore
+})
+
+.on('terminal:input', {
+  data: t.Object({ sessionId: t.String(), data: t.Any() })
+}, async ({ data, conn }) => {
+  const ptySession = ptySessionManager.getSession(data.sessionId);
+  if (!ptySession?.projectId) throw new Error('Session not found');
+  requireProjectAccess(conn, ptySession.projectId); // ✅ resolve to projectId, then guard
+  // … forward input
+})
+```
+
+**DON'T:**
+```typescript
+.http('snapshot:restore', {
+  data: t.Object({ sessionId: t.String() })
+}, async ({ data }) => {
+  // ❌ Anyone with a session id can mutate another user's project
+  await snapshotService.restore(data.sessionId);
+})
+```
+
+**Why:**
+- Connection identity ≠ resource ownership. A user authenticated as Alice can still
+  send Bob's `sessionId` in the payload — the guard is what stops that.
+- Guards throw on miss; treat them as fail-closed. Never `try/catch` away an access error.
+- DB-layer functions (`projectQueries.setFilesPanelState`, etc.) must NOT silently
+  upsert membership rows (e.g., `INSERT OR IGNORE INTO user_projects`); that pattern
+  bypasses the guard. Membership is established only through `projects:join` flows.
+
+**When you need a new shape of guard, extend `access.ts` rather than inlining ad-hoc
+queries** so the audit surface stays in one file.
+
+---
+
 ## Troubleshooting
 
 ### Handler Not Working
@@ -1433,6 +1491,15 @@ Use this checklist when creating or auditing modules:
 - [ ] Same event uses same scope across files
 - [ ] User-specific events use `user` scope
 - [ ] Project-shared events use `project` scope
+
+### 6. Authorization Guards
+- [ ] Every handler that accepts a resource id (`projectId`, `sessionId`, `messageId`,
+      `streamId`, `projectPath`, etc.) calls the matching `require*Access` helper
+      from `backend/ws/access.ts` BEFORE touching the resource
+- [ ] Handlers that rely on connection's current project use `requireCurrentProjectAccess`
+- [ ] Resources without a direct id (PTY sessions, install sessions) resolve to a
+      `projectId` / owner first, then guard
+- [ ] DB-layer functions do NOT silently `INSERT OR IGNORE` membership rows
 
 ---
 

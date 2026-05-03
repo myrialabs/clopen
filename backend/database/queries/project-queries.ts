@@ -133,11 +133,6 @@ export const projectQueries = {
 
 	setFilesPanelState(userId: string, projectId: string, state: string | null): void {
 		const db = getDatabase();
-		const now = new Date().toISOString();
-		db.prepare(`
-			INSERT OR IGNORE INTO user_projects (user_id, project_id, joined_at)
-			VALUES (?, ?, ?)
-		`).run(userId, projectId, now);
 		db.prepare(`
 			UPDATE user_projects
 			SET files_panel_state = ?

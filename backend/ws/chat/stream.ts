@@ -14,6 +14,7 @@ import { debug } from '$shared/utils/logger';
 import { ws } from '$backend/utils/ws';
 import { broadcastPresence } from '../projects/status';
 import { sessionQueries, messageQueries } from '../../database/queries';
+import { requireSessionAccess } from '../access';
 
 // ============================================================================
 // Global stream lifecycle handler (module-level, not per-connection)
@@ -77,6 +78,7 @@ export const streamHandler = createRouter()
 			chatSessionId: t.String()
 		})
 	}, ({ data, conn }) => {
+		requireSessionAccess(conn, data.chatSessionId);
 		// Leave all previous chat sessions first (1 session at a time per connection)
 		ws.leaveAllChatSessions(conn);
 		ws.joinChatSession(conn, data.chatSessionId);
@@ -120,6 +122,7 @@ export const streamHandler = createRouter()
 			})
 		})
 	}, async ({ data, conn }) => {
+		requireSessionAccess(conn, data.chatSessionId);
 		const projectId = ws.getProjectId(conn);
 
 		try {
@@ -291,6 +294,7 @@ export const streamHandler = createRouter()
 			chatSessionId: t.String()
 		})
 	}, async ({ data, conn }) => {
+		requireSessionAccess(conn, data.chatSessionId);
 		const projectId = ws.getProjectId(conn);
 
 		try {
@@ -435,6 +439,7 @@ export const streamHandler = createRouter()
 			answers: t.Record(t.String(), t.String())
 		})
 	}, async ({ data, conn }) => {
+		requireSessionAccess(conn, data.chatSessionId);
 		const projectId = ws.getProjectId(conn);
 
 		try {
@@ -483,6 +488,10 @@ export const streamHandler = createRouter()
 	}, async ({ data, conn }) => {
 		const projectId = ws.getProjectId(conn);
 
+		if (data.chatSessionId) {
+			requireSessionAccess(conn, data.chatSessionId);
+		}
+
 		const streamState = data.chatSessionId
 			? streamManager.getSessionStream(data.chatSessionId, projectId)
 			: undefined;
@@ -523,6 +532,7 @@ export const streamHandler = createRouter()
 			chatSessionId: t.String()
 		})
 	}, async ({ data, conn }) => {
+		requireSessionAccess(conn, data.chatSessionId);
 		const projectId = ws.getProjectId(conn);
 		const chatSessionId = data.chatSessionId;
 
@@ -568,7 +578,8 @@ export const streamHandler = createRouter()
 			messageId: t.Union([t.String(), t.Null()]),
 			messageTimestamp: t.Union([t.String(), t.Null()])
 		})
-	}, ({ data }) => {
+	}, ({ data, conn }) => {
+		requireSessionAccess(conn, data.chatSessionId);
 		const chatSessionId = data.chatSessionId;
 
 		// Store on server for late joiners / refresh (keyed by chatSessionId)
@@ -600,8 +611,11 @@ export const streamHandler = createRouter()
 			messageId: t.Union([t.String(), t.Null()]),
 			messageTimestamp: t.Union([t.String(), t.Null()])
 		})
-	}, ({ data }) => {
+	}, ({ data, conn }) => {
 		const chatSessionId = data.chatSessionId || '';
+		if (chatSessionId) {
+			requireSessionAccess(conn, chatSessionId);
+		}
 		const editState = chatSessionEditMode.get(chatSessionId);
 		return editState || { isEditing: false, messageId: null, messageTimestamp: null };
 	})
@@ -620,7 +634,8 @@ export const streamHandler = createRouter()
 				base64: t.String()
 			})))
 		})
-	}, ({ data }) => {
+	}, ({ data, conn }) => {
+		requireSessionAccess(conn, data.chatSessionId);
 		const chatSessionId = data.chatSessionId;
 
 		// Store latest input state on server for late-joining users (keyed by chatSessionId)
@@ -653,8 +668,11 @@ export const streamHandler = createRouter()
 				base64: t.String()
 			})))
 		})
-	}, ({ data }) => {
+	}, ({ data, conn }) => {
 		const chatSessionId = data.chatSessionId || '';
+		if (chatSessionId) {
+			requireSessionAccess(conn, chatSessionId);
+		}
 		const state = chatSessionInputState.get(chatSessionId);
 		return state || { text: '', senderId: '' };
 	})
@@ -669,7 +687,8 @@ export const streamHandler = createRouter()
 			modelId: t.String(),
 			modelName: t.String()
 		})
-	}, ({ data }) => {
+	}, ({ data, conn }) => {
+		requireSessionAccess(conn, data.chatSessionId);
 		const chatSessionId = data.chatSessionId;
 
 		// Store latest model state on server for late joiners / refresh
@@ -707,7 +726,8 @@ export const streamHandler = createRouter()
 			accountId: t.Union([t.Number(), t.Null()]),
 			accountName: t.Optional(t.Union([t.String(), t.Null()]))
 		})
-	}, ({ data }) => {
+	}, ({ data, conn }) => {
+		requireSessionAccess(conn, data.chatSessionId);
 		const chatSessionId = data.chatSessionId;
 
 		// Store latest account state on server for late joiners / refresh

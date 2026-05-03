@@ -12,6 +12,8 @@ import { createRouter } from '$shared/utils/ws-server';
 import { fileWatcher } from '$backend/files/file-watcher';
 import { debug } from '$shared/utils/logger';
 import { ws } from '$backend/utils/ws';
+import { projectQueries } from '../../database/queries/project-queries';
+import { requireProjectAccess } from '../access';
 
 export const watchHandler = createRouter()
 	// Start watching a project directory
@@ -20,8 +22,12 @@ export const watchHandler = createRouter()
 			projectPath: t.String({ minLength: 1 })
 		})
 	}, async ({ data, conn }) => {
-		const projectId = ws.getProjectId(conn);
 		const { projectPath } = data;
+
+		const project = projectQueries.getByPath(projectPath);
+		if (!project) throw new Error('Project not found');
+		requireProjectAccess(conn, project.id);
+		const projectId = project.id;
 
 		try {
 			// Check if already watching

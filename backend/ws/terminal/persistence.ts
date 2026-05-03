@@ -13,6 +13,7 @@ import { terminalStreamManager } from '../../terminal/stream-manager';
 import { debug } from '$shared/utils/logger';
 import { ws } from '$backend/utils/ws';
 import { ptySessionManager } from '../../terminal/pty-session-manager';
+import { requireProjectAccess } from '../access';
 
 export const persistenceHandler = createRouter()
 	// Get stream status
@@ -21,8 +22,12 @@ export const persistenceHandler = createRouter()
 			streamId: t.String()
 		}),
 		response: t.Any()
-	}, async ({ data }) => {
+	}, async ({ data, conn }) => {
 		const { streamId } = data;
+
+		const stream = terminalStreamManager.getStream(streamId);
+		if (!stream || !stream.projectId) throw new Error('Stream not found');
+		requireProjectAccess(conn, stream.projectId);
 
 		const status = terminalStreamManager.getStreamStatus(streamId);
 
@@ -46,8 +51,14 @@ export const persistenceHandler = createRouter()
 			status: t.String(),
 			timestamp: t.String()
 		})
-	}, async ({ data }) => {
+	}, async ({ data, conn }) => {
 		const { sessionId, streamId } = data;
+
+		const ptySession = ptySessionManager.getSession(sessionId);
+		const stream = streamId ? terminalStreamManager.getStream(streamId) : terminalStreamManager.getStreamBySession(sessionId);
+		const projectId = ptySession?.projectId || stream?.projectId;
+		if (!projectId) throw new Error('Session not found');
+		requireProjectAccess(conn, projectId);
 
 		// Get serialized terminal state from headless xterm
 		let output = '';
@@ -77,17 +88,19 @@ export const persistenceHandler = createRouter()
 		})
 	}, async ({ data, conn }) => {
 		const { streamId, sessionId } = data;
-		const projectId = ws.getProjectId(conn);
 
 		const stream = terminalStreamManager.getStream(streamId);
 
-		if (!stream) {
-			ws.emit.project(projectId, 'terminal:error', {
+		if (!stream || !stream.projectId) {
+			const fallbackProjectId = ws.getProjectId(conn);
+			ws.emit.project(fallbackProjectId, 'terminal:error', {
 				sessionId,
 				error: 'Stream not found'
 			});
 			return;
 		}
+		requireProjectAccess(conn, stream.projectId);
+		const projectId = stream.projectId;
 
 		try {
 			// Send serialized terminal state (frontend writes it to xterm to restore)

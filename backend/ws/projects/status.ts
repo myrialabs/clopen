@@ -16,6 +16,7 @@ import { getProjectStatusData, updateUserPresence } from '../../project/status-m
 import { streamManager } from '../../chat/stream-manager';
 import { ws } from '$backend/utils/ws';
 import { debug } from '$shared/utils/logger';
+import { requireProjectAccess } from '../access';
 
 /**
  * Broadcast full presence state of all projects to all connected clients
@@ -94,6 +95,7 @@ export const statusHandler = createRouter()
 		// Use explicit projectId from client (avoids race condition when switching projects)
 		const projectId = data.projectId || ws.getProjectId(conn);
 		const userId = ws.getUserId(conn);
+		requireProjectAccess(conn, projectId);
 
 		try {
 			updateUserPresence(projectId, userId, '', 'leave');

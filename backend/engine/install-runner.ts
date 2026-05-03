@@ -361,6 +361,10 @@ export function getSession(sessionId: string) {
 	return session ? sessionSnapshot(session) : null;
 }
 
+export function getSessionOwner(sessionId: string): string | null {
+	return sessions.get(sessionId)?.startedBy ?? null;
+}
+
 export function getActiveSessionForTool(tool: ToolId) {
 	const id = activeByTool.get(tool);
 	if (!id) return null;
