@@ -4,17 +4,23 @@
  * The Codex SDK does not yet expose a native `forkSession()` API. To support
  * Clopen's multi-branch checkpoints feature — which lets the user replay an
  * earlier point in the conversation as a sibling branch — we copy the
- * on-disk session state directory to a fresh ID and patch any embedded
- * thread identifiers we can find.
+ * on-disk rollout file to a fresh thread id and patch the embedded id.
  *
- * On-disk layout (`~/.codex/sessions/<thread_id>/`):
+ * On-disk layout (`~/.codex/sessions/`):
  *
- *   The exact file layout used by the Codex CLI is not documented in the
- *   SDK's public surface. From observation it includes JSONL rollout files
- *   and the thread id is referenced inside the directory's contents. We
- *   copy the entire directory tree, then walk every file and best-effort
- *   replace the source thread id with the fork id. This mirrors how the
- *   Copilot adapter handles its own undocumented session-state layout.
+ *   ~/.codex/sessions/<YYYY>/<MM>/<DD>/rollout-<TIMESTAMP>-<thread_id>.jsonl
+ *
+ *   Each thread is a SINGLE JSONL file inside a date-tree, NOT a directory.
+ *   The first line is `session_meta` whose `payload.id` is the thread_id.
+ *   The Codex CLI's `resume <id>` walks this tree and matches the file
+ *   whose name ends with `-<id>.jsonl`.
+ *
+ * Earlier versions of this helper assumed a directory layout
+ * (`~/.codex/sessions/<thread_id>/`) and so `sessionStateExists()` always
+ * returned false — the fork block was silently skipped and resume reused
+ * the source thread id, breaking multi-branch checkpoints (README §9.10
+ * sharp edge: "reusing the same id across turns is the symptom that
+ * forking is gated or skipped").
  *
  * TODO: when @openai/codex-sdk gains a native `forkSession()` (or
  * `Codex.forkThread()`), delete this helper and switch
@@ -39,60 +45,28 @@ function getSessionsRoot(): string {
 	return path.join(getCodexHomeDir(), SESSION_DIR_NAME);
 }
 
-export function getSessionStatePath(threadId: string): string {
-	return path.join(getSessionsRoot(), threadId);
-}
-
-export function sessionStateExists(threadId: string): boolean {
-	return fs.existsSync(getSessionStatePath(threadId));
-}
-
 /**
- * Copy `sourceThreadId`'s state directory to `forkThreadId` and patch the
- * thread identifiers stored inside. Returns true on success, false if the
- * source directory is missing (caller should fall back to a fresh thread).
+ * Walk the date-tree under `~/.codex/sessions/` and return the rollout
+ * file whose name ends with `-<threadId>.jsonl`. Returns null when no
+ * matching file is found (likely a thread that was deleted, never
+ * persisted, or belongs to a different `CODEX_HOME`).
  *
- * The destination is removed first if it already exists so a re-fork from
- * the same source produces a clean copy.
+ * The walk is bounded: Codex organises rollouts by date so the search
+ * space is at most O(years × months × days) directories. We don't index
+ * because thread ids are UUIDs — collisions are not a concern.
  */
-export function forkCodexSessionState(sourceThreadId: string, forkThreadId: string): boolean {
-	const srcDir = getSessionStatePath(sourceThreadId);
-	const dstDir = getSessionStatePath(forkThreadId);
+function findRolloutFile(threadId: string): string | null {
+	const root = getSessionsRoot();
+	if (!fs.existsSync(root)) return null;
 
-	if (!fs.existsSync(srcDir)) {
-		debug.warn('engine', `Codex fork: source session ${sourceThreadId} not found on disk`);
-		return false;
-	}
-
-	if (fs.existsSync(dstDir)) {
-		fs.rmSync(dstDir, { recursive: true, force: true });
-	}
-
-	fs.cpSync(srcDir, dstDir, { recursive: true });
-	patchEmbeddedIds(dstDir, sourceThreadId, forkThreadId);
-
-	debug.log('engine', `Codex fork: ${sourceThreadId} → ${forkThreadId}`);
-	return true;
-}
-
-/**
- * Best-effort patch of embedded thread ids inside the forked directory.
- * Walks every regular file and replaces the source id with the fork id.
- *
- * We don't try to be surgical (specific JSON keys, specific lines) because
- * the on-disk schema is undocumented and likely to change. A blanket
- * search-and-replace on the source UUID is safe — UUIDs don't appear in
- * unrelated content.
- */
-function patchEmbeddedIds(dstDir: string, sourceId: string, forkId: string): void {
-	const stack = [dstDir];
+	const suffix = `-${threadId}.jsonl`;
+	const stack: string[] = [root];
 	while (stack.length > 0) {
 		const dir = stack.pop()!;
 		let entries: fs.Dirent[];
 		try {
 			entries = fs.readdirSync(dir, { withFileTypes: true });
-		} catch (err) {
-			debug.warn('engine', `Codex fork: failed to read ${dir}:`, err);
+		} catch {
 			continue;
 		}
 		for (const entry of entries) {
@@ -101,20 +75,75 @@ function patchEmbeddedIds(dstDir: string, sourceId: string, forkId: string): voi
 				stack.push(full);
 				continue;
 			}
-			if (!entry.isFile()) continue;
-
-			try {
-				const stat = fs.statSync(full);
-				// Skip very large binary blobs — unlikely to contain the thread id.
-				if (stat.size > 5 * 1024 * 1024) continue;
-
-				const content = fs.readFileSync(full, 'utf-8');
-				if (!content.includes(sourceId)) continue;
-				const patched = content.split(sourceId).join(forkId);
-				fs.writeFileSync(full, patched);
-			} catch {
-				// Probably a binary or unreadable file — skip.
+			if (entry.isFile() && entry.name.endsWith(suffix)) {
+				return full;
 			}
 		}
 	}
+	return null;
+}
+
+/**
+ * Format `Date` as `YYYY-MM-DDTHH-MM-SS` (matches Codex's filename
+ * timestamp — colons in ISO are replaced with dashes so the path is
+ * filesystem-safe on every OS).
+ */
+function formatRolloutTimestamp(date: Date): string {
+	const iso = date.toISOString(); // 2026-05-03T22:46:00.000Z
+	return iso.slice(0, 19).replace(/:/g, '-'); // 2026-05-03T22-46-00
+}
+
+/**
+ * Build the destination path for a fork: place it in the *current* day's
+ * dated subdirectory, NOT the source's day. Codex's CLI doesn't care
+ * which dated dir holds the rollout — it walks the whole tree on resume —
+ * and stamping forks with the current date keeps "recent activity"
+ * semantics intact for any tooling that orders by directory mtime.
+ */
+function buildForkPath(forkThreadId: string, now: Date = new Date()): string {
+	const yyyy = now.getUTCFullYear().toString().padStart(4, '0');
+	const mm = (now.getUTCMonth() + 1).toString().padStart(2, '0');
+	const dd = now.getUTCDate().toString().padStart(2, '0');
+	const dir = path.join(getSessionsRoot(), yyyy, mm, dd);
+	const filename = `rollout-${formatRolloutTimestamp(now)}-${forkThreadId}.jsonl`;
+	return path.join(dir, filename);
+}
+
+export function sessionStateExists(threadId: string): boolean {
+	return findRolloutFile(threadId) !== null;
+}
+
+/**
+ * Copy `sourceThreadId`'s rollout file to a new file keyed by
+ * `forkThreadId` and patch the embedded thread id. Returns true on
+ * success, false if the source file is missing (caller falls back to a
+ * fresh thread).
+ *
+ * The destination is removed first if it already exists so a re-fork
+ * from the same source produces a clean copy.
+ */
+export function forkCodexSessionState(sourceThreadId: string, forkThreadId: string): boolean {
+	const srcPath = findRolloutFile(sourceThreadId);
+	if (!srcPath) {
+		debug.warn('engine', `Codex fork: rollout for thread ${sourceThreadId} not found under ${getSessionsRoot()}`);
+		return false;
+	}
+
+	const dstPath = buildForkPath(forkThreadId);
+	const dstDir = path.dirname(dstPath);
+	fs.mkdirSync(dstDir, { recursive: true });
+
+	if (fs.existsSync(dstPath)) {
+		fs.rmSync(dstPath, { force: true });
+	}
+
+	// UUIDs don't collide with unrelated content, so a blanket
+	// search-and-replace on the source thread id is safe and avoids
+	// parsing the (undocumented) JSONL schema line-by-line.
+	const content = fs.readFileSync(srcPath, 'utf-8');
+	const patched = content.split(sourceThreadId).join(forkThreadId);
+	fs.writeFileSync(dstPath, patched);
+
+	debug.log('engine', `Codex fork: ${sourceThreadId} → ${forkThreadId} (${dstPath})`);
+	return true;
 }

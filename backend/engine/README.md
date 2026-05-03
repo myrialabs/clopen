@@ -1295,24 +1295,30 @@ spawn a fresh session id, so the engine continues from that point
 it differently, but the contract is the same: fork unconditionally on
 resume.
 
-| Adapter   | How                                                                                |
-|-----------|------------------------------------------------------------------------------------|
-| Claude    | Pass `forkSession: true` in the SDK options on every call — native.               |
-| OpenCode  | Call `client.session.fork({ path: { id: resume } })` on every resume — native.    |
-| Copilot   | **No native API yet** — fork by copying the on-disk session state on every resume.|
+| Adapter   | How                                                                                          |
+|-----------|----------------------------------------------------------------------------------------------|
+| Claude    | Pass `forkSession: true` in the SDK options on every call — native.                          |
+| OpenCode  | Call `client.session.fork({ path: { id: resume } })` on every resume — native.               |
+| Copilot   | **No native API yet** — fork by copying the on-disk session-state DIRECTORY on every resume. |
+| Codex     | **No native API yet** — fork by copying the rollout JSONL FILE on every resume.              |
+| Qwen Code | **No native API yet** — fork by copying the chat JSONL FILE on every resume.                 |
 
 > **Sharp edge — fork is NOT gated on `EngineQueryOptions.forkSession`.**
 > The `forkSession` field exists on the type but the stream-manager
-> never sets it; Claude/OpenCode hard-code their fork call. The Copilot
+> never sets it; Claude/OpenCode hard-code their fork call. Every other
 > adapter must do the same. If you only fork "when forkSession is true"
-> the same Copilot session id is reused across every turn (visible in
-> persisted assistant messages) and downstream branch logic breaks.
+> the same session id is reused across every turn (visible in persisted
+> assistant messages) and downstream branch logic breaks.
 
-The Copilot CLI / SDK does not currently expose a fork primitive
-(tracking issues: github/copilot-cli#1313, #1697, #2058). The
-SDK's own recommended workaround — also what we implement in
-`copilot/session-fork.ts` — is to copy the on-disk session state
-directory and patch the embedded session identifiers:
+The three on-disk workarounds all follow the same shape — copy the
+state, replace the source id with a fresh one, then resume against the
+fork — but the SDKs lay state out differently. Get the layout wrong and
+`sessionStateExists()` silently returns false on every turn, the fork
+block is skipped, and the engine resumes the original session — exactly
+the symptom multi-branch checkpoints surface as.
+
+**Copilot — directory layout.** Tracking issues:
+github/copilot-cli#1313, #1697, #2058. State lives in a directory:
 
 ```
 ~/.copilot/session-state/<sessionId>/
@@ -1328,19 +1334,53 @@ Both `workspace.yaml#id` and the first `events.jsonl` line's
 `client.resumeSession(forkId, ...)` picks the directory up as a fresh
 independent session.
 
+**Codex — single rollout JSONL in a date-tree.** The thread id is in
+the filename, not a directory name:
+
+```
+~/.codex/sessions/<YYYY>/<MM>/<DD>/rollout-<TIMESTAMP>-<thread_id>.jsonl
+```
+
+The fork helper walks the date-tree to find the source by
+`-<thread_id>.jsonl` suffix, copies it into TODAY's `YYYY/MM/DD` dir
+under a new `rollout-<now>-<forkId>.jsonl` filename, and replaces every
+occurrence of the source id (UUIDs don't collide with other content in
+the file). Earlier versions of `codex/session-fork.ts` mistakenly
+assumed a directory layout (`~/.codex/sessions/<thread_id>/`) — the
+result was a permanently-broken fork because `sessionStateExists()`
+never matched. If you change the helper, watch for that regression.
+
+**Qwen Code — single chat JSONL keyed by sanitised cwd.** The chat id
+is the filename basename; the parent directory is derived from the
+project's cwd via the SDK's `sanitizeCwd()`
+(`cwd.replace(/[^a-zA-Z0-9]/g, '-')`, lowercased on win32):
+
+```
+~/.qwen/projects/<sanitized-cwd>/chats/<sessionId>.jsonl
+```
+
+Every record line carries a `sessionId` field equal to the file's
+basename. The fork helper copies the file to
+`<chats>/<forkId>.jsonl` in the same project directory and replaces
+the source id throughout. The Qwen `session-fork.ts` therefore takes
+`projectPath` as an extra argument — Codex and Copilot are
+cwd-agnostic because their layouts aren't keyed on it.
+
 ```ts
-// copilot/stream.ts (resume path) — fork on EVERY resume
+// stream.ts (resume path) — fork on EVERY resume; pattern is identical
+// across copilot/codex/qwen, only the helper signature differs.
 let resumeId = resume;
-if (sessionStateExists(resume)) {
+if (resume && sessionStateExists(/* projectPath if qwen, */ resume)) {
   const forkId = crypto.randomUUID();
-  if (forkCopilotSessionState(resume, forkId)) {
+  if (forkXxxSessionState(/* projectPath if qwen, */ resume, forkId)) {
     resumeId = forkId;
   }
 }
-session = await this.client.resumeSession(resumeId, baseConfig);
+// then pass resumeId to the SDK's resume entry point.
 ```
 
-The expected effect, observable by logging `data.sessionId` per turn:
+The expected effect, observable by logging the session/thread id per
+turn:
 
 ```
 turn 1   user → assistant   sessionId: A
@@ -1351,11 +1391,11 @@ turn 3   user → assistant   sessionId: C   (forked from B)
 Every assistant message carries its **own** session id. Reusing the
 same id across turns is the symptom that forking is gated or skipped.
 
-When the SDK eventually adds a native `forkSession` (or
-`client.session.fork()`), the migration is a one-liner: delete
-`session-fork.ts`, drop the `forkCopilotSessionState` block, and pass
-the SDK flag the same way Claude and OpenCode already do. The `// TODO`
-comment in `copilot/stream.ts` pins the migration target.
+When an SDK eventually adds a native `forkSession` (or equivalent), the
+migration is a one-liner: delete that adapter's `session-fork.ts`, drop
+the fork block in `stream.ts`, and pass the SDK flag the same way
+Claude and OpenCode already do. The `// TODO` comment at the top of
+each `session-fork.ts` pins the migration target.
 
 ### 9.11 Reset `currentAccountId` in `dispose()`
 

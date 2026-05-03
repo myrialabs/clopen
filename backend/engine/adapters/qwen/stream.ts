@@ -45,6 +45,7 @@ import { handleStreamError } from './error-handler';
 import { createSdkMessageConverter, toSdkUserMessage, type SdkMessageConverter } from './message-converter';
 import { fetchQwenModels } from './models';
 import { getQwenMcpConfig } from '../../../mcp/config';
+import { forkQwenSessionState, sessionStateExists } from './session-fork';
 
 interface PendingAskUserQuestion {
 	resolve: (result: PermissionResult) => void;
@@ -137,6 +138,25 @@ export class QwenEngine implements AIEngine {
 		this.activeController = abortController || new AbortController();
 		const resolvedProjectPath = resolveOsPath(projectPath);
 		const mcpConfig = getQwenMcpConfig();
+
+		// Fork-by-copy on EVERY resume — same semantics as Claude
+		// (`forkSession: true`), OpenCode (`client.session.fork()`),
+		// Copilot, and Codex (README §9.10): each turn must produce a
+		// brand-new session id so the original branch's history is never
+		// mutated and the multi-branch checkpoint tree stays consistent.
+		// Falls through to a plain resume only when the source chat can't
+		// be found on disk (best-effort recovery).
+		//
+		// TODO: replace with a native SDK fork call when @qwen-code/sdk
+		// adds one. The block is the same one-liner Claude/OpenCode use.
+		let resumeId = resume;
+		if (resume && sessionStateExists(resolvedProjectPath, resume)) {
+			const forkId = crypto.randomUUID();
+			if (forkQwenSessionState(resolvedProjectPath, resume, forkId)) {
+				resumeId = forkId;
+				debug.log('engine', `Qwen resumed session: ${forkId} (forked from ${resume})`);
+			}
+		}
 
 		// Capture the last few stderr lines from the bundled CLI so we can
 		// surface them when the SDK reports a generic "CLI process exited
@@ -254,7 +274,7 @@ export class QwenEngine implements AIEngine {
 					return { behavior: 'allow' as const, updatedInput: input };
 				},
 				...(maxTurns !== undefined ? { maxSessionTurns: maxTurns } : {}),
-				...(resume ? { resume } : {}),
+				...(resumeId ? { resume: resumeId } : {}),
 				...(Object.keys(mcpConfig).length > 0 ? { mcpServers: mcpConfig } : {}),
 			};
 
