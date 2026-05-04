@@ -44,6 +44,7 @@ export class BrowserTabManager extends EventEmitter {
 	// Tab activity tracking for cleanup
 	private tabActivity = new Map<string, number>();
 	private cleanupInterval: NodeJS.Timeout | null = null;
+	private signalHandlers: { sigterm: () => void; sigint: () => void } | null = null;
 
 	// Audio capture manager
 	private audioCapture = new BrowserAudioCapture();
@@ -1038,14 +1039,30 @@ export class BrowserTabManager extends EventEmitter {
 			this.performCleanup();
 		}, CLEANUP_INTERVAL);
 
-		// Cleanup on shutdown
+		// Cleanup on shutdown — track references so we can remove them later
+		// and prevent duplicate listeners if multiple BrowserTabManager
+		// instances are created.
 		const cleanup = () => {
 			if (this.cleanupInterval) clearInterval(this.cleanupInterval);
+			this.cleanupInterval = null;
 			this.tabActivity.clear();
+			this.removeSignalHandlers();
 		};
 
-		process.on('SIGTERM', cleanup);
-		process.on('SIGINT', cleanup);
+		this.signalHandlers = { sigterm: cleanup, sigint: cleanup };
+		process.on('SIGTERM', this.signalHandlers.sigterm);
+		process.on('SIGINT', this.signalHandlers.sigint);
+	}
+
+	/**
+	 * Remove previously registered signal handlers to prevent leaks
+	 * when multiple BrowserTabManager instances are created.
+	 */
+	private removeSignalHandlers(): void {
+		if (!this.signalHandlers) return;
+		process.off('SIGTERM', this.signalHandlers.sigterm);
+		process.off('SIGINT', this.signalHandlers.sigint);
+		this.signalHandlers = null;
 	}
 
 	/**
@@ -1147,6 +1164,9 @@ export class BrowserTabManager extends EventEmitter {
 			clearInterval(this.cleanupInterval);
 			this.cleanupInterval = null;
 		}
+
+		// Remove signal handlers to prevent leaks
+		this.removeSignalHandlers();
 
 		const tabIds = Array.from(this.tabs.keys());
 
