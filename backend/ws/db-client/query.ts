@@ -8,6 +8,7 @@ import { connectionManager } from '../../db-client/connection-manager';
 import { runSafely } from '../../db-client/query-executor';
 import { dbClientQueryHistoryQueries } from '../../database/queries';
 import { getDbClientPrincipal, requireDbClientConnectionAccess } from './access';
+import { debug } from '$shared/utils/logger';
 
 const HISTORY_KEEP_PER_CONNECTION = 200;
 
@@ -33,8 +34,9 @@ function recordHistory(input: {
 		if (Math.random() < 0.05) {
 			dbClientQueryHistoryQueries.prune(input.connectionId, HISTORY_KEEP_PER_CONNECTION);
 		}
-	} catch {
+	} catch (err) {
 		// history must never break query execution
+		debug.warn('db-client', 'Failed to record query history:', err);
 	}
 }
 

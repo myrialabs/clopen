@@ -182,7 +182,11 @@ class WSServer {
 		// Run all registered cleanup functions
 		if (state?.cleanups.size) {
 			for (const cleanup of state.cleanups) {
-				try { cleanup(); } catch { /* ignore cleanup errors */ }
+				try {
+				cleanup();
+			} catch (err) {
+				debug.warn('websocket', `Cleanup error for connection ${id}:`, err);
+			}
 			}
 			debug.log('websocket', `Ran ${state.cleanups.size} cleanup(s) for connection ${id}`);
 		}

@@ -272,7 +272,9 @@ export const crudHandler = createRouter()
 		});
 
 		// Broadcast updated presence so status indicators reflect the deletion
-		broadcastPresence().catch(() => {});
+		broadcastPresence().catch((err) => {
+			debug.warn('session', 'Presence broadcast error after session deletion:', err);
+		});
 
 		return {
 			message: 'Session deleted successfully'
@@ -297,7 +299,9 @@ export const crudHandler = createRouter()
 
 		// Cancel and clean up active streams for all sessions
 		await Promise.all(
-			sessions.map(s => streamManager.cleanupSessionStreams(s.id).catch(() => {}))
+			sessions.map(s => streamManager.cleanupSessionStreams(s.id).catch((err) => {
+				debug.warn('session', `Stream cleanup error for session ${s.id}:`, err);
+			}))
 		);
 
 		// Collect ALL blob hashes before deleting anything:
@@ -348,7 +352,9 @@ export const crudHandler = createRouter()
 			});
 		}
 
-		broadcastPresence().catch(() => {});
+		broadcastPresence().catch((err) => {
+			debug.warn('session', 'Presence broadcast error after bulk session deletion:', err);
+		});
 
 		debug.log('session', `Deleted all ${deletedIds.length} sessions in project: ${projectId}`);
 		return {

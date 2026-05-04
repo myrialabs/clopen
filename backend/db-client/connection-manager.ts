@@ -73,7 +73,9 @@ class ConnectionManager {
 		try {
 			await adapter.connect(conn, tunnel?.localPort);
 		} catch (err) {
-			if (tunnel) await tunnel.close().catch(() => {});
+			if (tunnel) await tunnel.close().catch((err) => {
+				debug.warn('db-client', 'Failed to close SSH tunnel after adapter connect error:', err);
+			});
 			throw err;
 		}
 
@@ -164,8 +166,12 @@ class ConnectionManager {
 				error: err instanceof Error ? err.message : String(err)
 			};
 		} finally {
-			if (adapter) await adapter.close().catch(() => {});
-			if (tunnel) await tunnel.close().catch(() => {});
+			if (adapter) await adapter.close().catch((err) => {
+				debug.warn('db-client', 'Transient adapter close error during health test:', err);
+			});
+			if (tunnel) await tunnel.close().catch((err) => {
+				debug.warn('db-client', 'Transient tunnel close error during health test:', err);
+			});
 		}
 	}
 
