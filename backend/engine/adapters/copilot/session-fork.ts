@@ -29,7 +29,7 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import os from 'node:os';
-import { debug } from '$shared/utils/logger';
+import { copyDirectory, patchFileRegex, patchJsonlFirstLine, logForkResult } from '../shared/session-fork';
 
 const SESSION_STATE_DIR = path.join(os.homedir(), '.copilot', 'session-state');
 
@@ -53,59 +53,30 @@ export function forkCopilotSessionState(sourceSessionId: string, forkSessionId: 
 	const srcDir = getSessionStatePath(sourceSessionId);
 	const dstDir = getSessionStatePath(forkSessionId);
 
-	if (!fs.existsSync(srcDir)) {
-		debug.warn('engine', `Copilot fork: source session ${sourceSessionId} not found on disk`);
-		return false;
+	if (!copyDirectory(srcDir, dstDir)) {
+		return logForkResult('Copilot', sourceSessionId, forkSessionId, false);
 	}
 
-	if (fs.existsSync(dstDir)) {
-		fs.rmSync(dstDir, { recursive: true, force: true });
-	}
+	// Replace the `id:` field at the top of workspace.yaml with the fork ID.
+	// Targeted regex replace is safer than parsing & re-serialising YAML
+	// (which would lose comments / formatting).
+	patchFileRegex(
+		path.join(dstDir, 'workspace.yaml'),
+		/^id:\s*.*$/m,
+		`id: ${forkSessionId}`,
+	);
 
-	fs.cpSync(srcDir, dstDir, { recursive: true });
-	patchWorkspaceYaml(dstDir, forkSessionId);
-	patchEventsJsonl(dstDir, forkSessionId);
+	// Rewrite `data.sessionId` on the first line of events.jsonl (the
+	// `session.start` event) so the SDK's resume path treats this directory
+	// as the fork's own history.
+	patchJsonlFirstLine(
+		path.join(dstDir, 'events.jsonl'),
+		(parsed) => {
+			const data = parsed.data as Record<string, unknown> | undefined;
+			if (data) data.sessionId = forkSessionId;
+		},
+		'Copilot fork',
+	);
 
-	debug.log('engine', `Copilot fork: ${sourceSessionId} → ${forkSessionId}`);
-	return true;
-}
-
-/**
- * Replace the `id:` field at the top of workspace.yaml with the fork ID.
- * The file is a small YAML map written by the SDK with one key per line, so
- * a targeted regex replace is safer than parsing & re-serialising YAML
- * (which would lose comments / formatting).
- */
-function patchWorkspaceYaml(dstDir: string, forkSessionId: string): void {
-	const wsPath = path.join(dstDir, 'workspace.yaml');
-	if (!fs.existsSync(wsPath)) return;
-
-	const original = fs.readFileSync(wsPath, 'utf-8');
-	const patched = original.replace(/^id:\s*.*$/m, `id: ${forkSessionId}`);
-	fs.writeFileSync(wsPath, patched);
-}
-
-/**
- * Rewrite `data.sessionId` on the first line of events.jsonl (the
- * `session.start` event) so the SDK's resume path treats this directory
- * as the fork's own history.
- */
-function patchEventsJsonl(dstDir: string, forkSessionId: string): void {
-	const evPath = path.join(dstDir, 'events.jsonl');
-	if (!fs.existsSync(evPath)) return;
-
-	const raw = fs.readFileSync(evPath, 'utf-8');
-	const newlineIdx = raw.indexOf('\n');
-	const firstLine = newlineIdx === -1 ? raw : raw.slice(0, newlineIdx);
-	const rest = newlineIdx === -1 ? '' : raw.slice(newlineIdx);
-
-	try {
-		const parsed = JSON.parse(firstLine) as { data?: { sessionId?: string } };
-		if (parsed?.data) {
-			parsed.data.sessionId = forkSessionId;
-			fs.writeFileSync(evPath, JSON.stringify(parsed) + rest);
-		}
-	} catch (err) {
-		debug.warn('engine', `Copilot fork: failed to patch events.jsonl session.start (non-fatal):`, err);
-	}
+	return logForkResult('Copilot', sourceSessionId, forkSessionId, true);
 }

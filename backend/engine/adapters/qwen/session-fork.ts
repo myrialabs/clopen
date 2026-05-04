@@ -35,6 +35,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import os from 'node:os';
 import { debug } from '$shared/utils/logger';
+import { copyFile, patchFileContent, logForkResult } from '../shared/session-fork';
 
 const QWEN_PROJECTS_DIR = path.join(os.homedir(), '.qwen', 'projects');
 
@@ -78,20 +79,18 @@ export function forkQwenSessionState(
 ): boolean {
 	const srcPath = getSessionStatePath(projectPath, sourceSessionId);
 	if (!fs.existsSync(srcPath)) {
-		debug.warn('engine', `Qwen fork: source chat ${sourceSessionId} not found at ${srcPath}`);
-		return false;
+		return logForkResult('Qwen', sourceSessionId, forkSessionId, false);
 	}
 
 	const dstPath = getSessionStatePath(projectPath, forkSessionId);
-	fs.mkdirSync(path.dirname(dstPath), { recursive: true });
-	if (fs.existsSync(dstPath)) {
-		fs.rmSync(dstPath, { force: true });
+
+	if (!copyFile(srcPath, dstPath)) {
+		return logForkResult('Qwen', sourceSessionId, forkSessionId, false);
 	}
 
-	const content = fs.readFileSync(srcPath, 'utf-8');
-	const patched = content.split(sourceSessionId).join(forkSessionId);
-	fs.writeFileSync(dstPath, patched);
+	// Per-record sessionId equals the file basename (without .jsonl).
+	// A blanket replace of the source session id is safe.
+	patchFileContent(dstPath, sourceSessionId, forkSessionId);
 
-	debug.log('engine', `Qwen fork: ${sourceSessionId} → ${forkSessionId}`);
-	return true;
+	return logForkResult('Qwen', sourceSessionId, forkSessionId, true);
 }

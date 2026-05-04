@@ -38,6 +38,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { getCodexHomeDir } from './credential';
 import { debug } from '$shared/utils/logger';
+import { copyFile, patchFileContent, logForkResult } from '../shared/session-fork';
 
 const SESSION_DIR_NAME = 'sessions';
 
@@ -130,19 +131,15 @@ export function forkCodexSessionState(sourceThreadId: string, forkThreadId: stri
 	}
 
 	const dstPath = buildForkPath(forkThreadId);
-	const dstDir = path.dirname(dstPath);
-	fs.mkdirSync(dstDir, { recursive: true });
 
-	if (fs.existsSync(dstPath)) {
-		fs.rmSync(dstPath, { force: true });
+	if (!copyFile(srcPath, dstPath)) {
+		return logForkResult('Codex', sourceThreadId, forkThreadId, false);
 	}
 
 	// UUIDs don't collide with unrelated content, so a blanket
 	// search-and-replace on the source thread id is safe and avoids
 	// parsing the (undocumented) JSONL schema line-by-line.
-	const content = fs.readFileSync(srcPath, 'utf-8');
-	const patched = content.split(sourceThreadId).join(forkThreadId);
-	fs.writeFileSync(dstPath, patched);
+	patchFileContent(dstPath, sourceThreadId, forkThreadId);
 
 	debug.log('engine', `Codex fork: ${sourceThreadId} → ${forkThreadId} (${dstPath})`);
 	return true;
