@@ -4,6 +4,7 @@
  */
 
 import type { IconName } from '$shared/types/ui/icons';
+import type { EngineType } from '$shared/types/unified';
 
 export type SettingsSection =
 	| 'models'
@@ -20,6 +21,12 @@ export type SettingsSection =
 interface SettingsModalState {
 	isOpen: boolean;
 	activeSection: SettingsSection;
+	/**
+	 * Engine to focus when the Engines section is shown. Set by callers that
+	 * deep-link into a specific engine sub-tab (e.g. EngineModelPicker's
+	 * "Go to Engines" CTA); AIEnginesSettings consumes and clears it.
+	 */
+	engineFocus: EngineType | null;
 }
 
 // Settings sections metadata
@@ -102,7 +109,8 @@ export const settingsSections: SettingsSectionMeta[] = [
 // Create the state using Svelte 5 runes
 export const settingsModalState = $state<SettingsModalState>({
 	isOpen: false,
-	activeSection: 'models'
+	activeSection: 'models',
+	engineFocus: null
 });
 
 // Helper functions
@@ -121,4 +129,15 @@ export function setActiveSection(section: SettingsSection) {
 
 export function toggleSettingsModal() {
 	settingsModalState.isOpen = !settingsModalState.isOpen;
+}
+
+/** Switch to the Engines section and request a specific engine sub-tab. */
+export function focusEngineSection(engine: EngineType) {
+	settingsModalState.activeSection = 'engines';
+	settingsModalState.engineFocus = engine;
+}
+
+/** Called by AIEnginesSettings after consuming the focus request. */
+export function clearEngineFocus() {
+	settingsModalState.engineFocus = null;
 }

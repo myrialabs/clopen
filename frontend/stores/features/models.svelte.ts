@@ -16,10 +16,16 @@ import { debug } from '$shared/utils/logger';
 let models = $state<EngineModel[]>([]);
 let loading = $state(false);
 let fetchedEngines = $state<Set<EngineType>>(new Set());
+let errors = $state<Map<EngineType, string>>(new Map());
 
 export const modelStore = {
 	get models() { return models; },
 	get loading() { return loading; },
+
+	/** Get the most recent fetch error for an engine, if any */
+	getError(engine: EngineType): string | undefined {
+		return errors.get(engine);
+	},
 
 	/** Get chat-compatible models filtered by engine (must support text I/O and tools) */
 	getByEngine(engine: EngineType): EngineModel[] {
@@ -71,10 +77,29 @@ export const modelStore = {
 			models = [...otherModels, ...engineModels];
 			fetchedEngines = new Set([...fetchedEngines, engine]);
 
+			if (errors.has(engine)) {
+				const next = new Map(errors);
+				next.delete(engine);
+				errors = next;
+			}
+
 			debug.log('settings', `Fetched ${engineModels.length} models for ${engine}`);
 			return engineModels;
 		} catch (error) {
+			const message = error instanceof Error ? error.message : String(error);
 			debug.error('settings', `Failed to fetch models for ${engine}:`, error);
+
+			// Drop any stale models for this engine so the picker reflects the failure.
+			// Intentionally do NOT add this engine to fetchedEngines so a remount
+			// (e.g. after the user configures an account in Settings → Engines)
+			// retries the fetch instead of serving the cached failure.
+			const otherModels = models.filter(m => m.engine.type !== engine);
+			models = otherModels;
+
+			const next = new Map(errors);
+			next.set(engine, message);
+			errors = next;
+
 			return [];
 		} finally {
 			loading = false;
@@ -85,5 +110,6 @@ export const modelStore = {
 	reset(): void {
 		models = [];
 		fetchedEngines = new Set();
+		errors = new Map();
 	}
 };

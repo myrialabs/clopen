@@ -5,7 +5,7 @@
 	import Dialog from '$frontend/components/common/overlay/Dialog.svelte';
 	import ws from '$frontend/utils/ws';
 	import { isDarkMode } from '$frontend/utils/theme';
-	import { setActiveSection } from '$frontend/stores/ui/settings-modal.svelte';
+	import { setActiveSection, settingsModalState, clearEngineFocus } from '$frontend/stores/ui/settings-modal.svelte';
 	import { ENGINES } from '$shared/constants/engines';
 	import type { EngineType, QwenProviderPresetId } from '$shared/types/unified';
 
@@ -15,7 +15,16 @@
 	}
 	const { showHeader = true, compact = false }: Props = $props();
 
-	let activeEngine = $state<EngineType>('claude-code');
+	let activeEngine = $state<EngineType>(settingsModalState.engineFocus ?? 'claude-code');
+
+	// Consume engineFocus deep-link requests (set when other settings pages
+	// route the user here, e.g. EngineModelPicker's "Go to Engines" button).
+	$effect(() => {
+		if (settingsModalState.engineFocus) {
+			activeEngine = settingsModalState.engineFocus;
+			clearEngineFocus();
+		}
+	});
 	import { claudeAccountsStore, type ClaudeAccountItem as ClaudeCodeAccountItem } from '$frontend/stores/features/claude-accounts.svelte';
 	import { copilotAccountsStore, type CopilotAccountItem } from '$frontend/stores/features/copilot-accounts.svelte';
 	import { codexAccountsStore, type CodexAccountItem } from '$frontend/stores/features/codex-accounts.svelte';

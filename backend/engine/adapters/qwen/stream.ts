@@ -107,8 +107,7 @@ export class QwenEngine implements AIEngine {
 	async getAvailableModels(): Promise<EngineModel[]> {
 		const env = getEngineEnv();
 		if (!env) {
-			debug.log('engine', 'Qwen getAvailableModels: no active account configured');
-			return [];
+			throw new Error('Qwen Code is not configured. Add an API key in Settings → Engines → Qwen Code.');
 		}
 		const dynamic = await fetchQwenModels(env);
 		debug.log('engine', `Qwen getAvailableModels: ${dynamic.length} models from ${env.preset}`);

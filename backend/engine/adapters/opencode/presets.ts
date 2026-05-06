@@ -3,7 +3,7 @@
  *
  * Multi-provider preset metadata for OpenCode — fetched from
  * `models.dev/api.json` and cached in the settings table. Drives the
- * "Add Provider" picker in Settings → Engines → OpenCode.
+ * "Add Provider" picker in Settings → Engines → Open Code.
  *
  * This file mirrors `qwen/presets.ts` (the canonical name for multi-provider
  * preset catalogs — see README §4.5). The runtime config builder that turns

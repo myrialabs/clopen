@@ -90,7 +90,11 @@ export class OpenCodeEngine implements AIEngine {
 
 	async getAvailableModels(): Promise<EngineModel[]> {
 		const client = await ensureClient();
-		return fetchOpenCodeModels(client);
+		const models = await fetchOpenCodeModels(client);
+		if (models.length === 0) {
+			throw new Error('Open Code is not configured. Add a provider in Settings → Engines → Open Code.');
+		}
+		return models;
 	}
 
 	/**

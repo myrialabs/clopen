@@ -3,6 +3,8 @@
 	import { ENGINES, getModelTags } from '$shared/constants/engines';
 	import type { EngineType, EngineModel } from '$shared/types/unified';
 	import { formatProvider, formatTokens } from '$frontend/utils/format';
+	import { focusEngineSection } from '$frontend/stores/ui/settings-modal.svelte';
+	import { authStore } from '$frontend/stores/features/auth.svelte';
 
 	interface Props {
 		engine: EngineType;
@@ -15,6 +17,10 @@
 
 	let searchQuery = $state('');
 	let collapsedProviders = $state<Set<string>>(new Set());
+
+	const engineMeta = $derived(ENGINES.find(e => e.type === engine));
+	const engineError = $derived(modelStore.getError(engine));
+	const isAdmin = $derived(authStore.isAdmin);
 
 	// Models for the selected engine, filtered by search
 	const filteredModels = $derived.by(() => {
@@ -167,9 +173,35 @@
 				</div>
 			</div>
 		{:else if filteredModels.length === 0}
-			<div class="py-4 text-sm text-slate-500 text-center">
-				{searchQuery ? 'No models matching your search.' : 'No models available for this engine.'}
-			</div>
+			{#if searchQuery}
+				<div class="py-4 text-sm text-slate-500 text-center">
+					No models matching your search.
+				</div>
+			{:else if engineError}
+				<div class="flex items-start gap-3 p-4 rounded-lg border border-amber-300/60 dark:border-amber-500/30 bg-amber-50 dark:bg-amber-500/10">
+					<svg viewBox="0 0 24 24" fill="none" class="w-5 h-5 text-amber-600 dark:text-amber-400 flex-shrink-0 mt-0.5" aria-hidden="true">
+						<path d="M12 9v4M12 17h.01M10.29 3.86L1.82 18a2 2 0 001.71 3h16.94a2 2 0 001.71-3L13.71 3.86a2 2 0 00-3.42 0z" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" />
+					</svg>
+					<div class="flex-1 min-w-0">
+						<p class="text-sm text-amber-900 dark:text-amber-100">
+							{engineError}
+						</p>
+						{#if isAdmin}
+							<button
+								type="button"
+								class="mt-2.5 inline-flex items-center gap-1.5 px-3 py-1.5 text-xs font-semibold rounded-md bg-amber-600 hover:bg-amber-700 text-white cursor-pointer transition-colors"
+								onclick={() => focusEngineSection(engine)}
+							>
+								Configure {engineMeta?.name ?? 'engine'}
+							</button>
+						{/if}
+					</div>
+				</div>
+			{:else}
+				<div class="py-4 text-sm text-slate-500 text-center">
+					No models available for this engine.
+				</div>
+			{/if}
 		{:else}
 			{#each [...groupedModels.entries()] as [provider, providerModels] (provider)}
 				{@const isCollapsed = collapsedProviders.has(provider)}

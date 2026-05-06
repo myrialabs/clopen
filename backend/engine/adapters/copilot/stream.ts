@@ -117,7 +117,7 @@ export class CopilotEngine implements AIEngine {
 			? engineQueries.getAccount(accountId)
 			: engineQueries.getActiveAccountForEngine('copilot');
 		if (!account) {
-			throw new Error('No active GitHub Copilot account. Add a Personal Access Token in Settings → Engines.');
+			throw new Error('Copilot is not configured. Add a Personal Access Token in Settings → Engines → Copilot.');
 		}
 
 		this.client = new CopilotClient({
@@ -160,14 +160,11 @@ export class CopilotEngine implements AIEngine {
 
 	async getAvailableModels(): Promise<EngineModel[]> {
 		if (!this.client) {
-			try {
-				await this.initialize();
-			} catch (error) {
-				debug.warn('engine', 'Copilot getAvailableModels: initialize failed:', error);
-				return [];
-			}
+			await this.initialize();
 		}
-		if (!this.client) return [];
+		if (!this.client) {
+			throw new Error('Copilot client unavailable.');
+		}
 
 		const result = await fetchCopilotModels(this.client, this.modelsCache);
 		this.modelsCache = result.cache;

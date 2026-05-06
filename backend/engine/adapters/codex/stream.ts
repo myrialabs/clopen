@@ -76,12 +76,12 @@ export class CodexEngine implements AIEngine {
 			? engineQueries.getAccount(accountId)
 			: engineQueries.getActiveAccountForEngine('codex');
 		if (!account) {
-			throw new Error('No active Codex account. Add an OpenAI API key or sign in with ChatGPT in Settings → Engines → Codex.');
+			throw new Error('Codex is not configured. Add an OpenAI API key or sign in with ChatGPT in Settings → Engines → Codex.');
 		}
 
 		const credential = parseCodexCredential(account.credential);
 		if (!credential) {
-			throw new Error(`Codex account "${account.name}" has an invalid credential. Re-add it in Settings → Engines.`);
+			throw new Error(`Codex account "${account.name}" has invalid credentials. Re-add it in Settings → Engines → Codex.`);
 		}
 
 		// For ChatGPT mode, ensure ~/.codex/auth.json reflects this account
