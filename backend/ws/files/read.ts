@@ -120,9 +120,10 @@ export const readHandler = createRouter()
 			),
 			error: t.Optional(t.String())
 		})
-	}, async ({ data, conn }) => {
-		const path = requireFilePathAccess(conn, data.path);
-		const result = await handlePathBrowsing(path);
+	}, async ({ data }) => {
+		// FolderBrowser uses this before a project exists, so it must be able to
+		// browse roots like "home", "drives", ".", and arbitrary candidate paths.
+		const result = await handlePathBrowsing(data.path);
 		return result;
 	})
 

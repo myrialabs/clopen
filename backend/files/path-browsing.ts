@@ -1,4 +1,5 @@
 import { join, extname } from 'path';
+import { existsSync } from 'fs';
 
 import { debug } from '$shared/utils/logger';
 
@@ -365,6 +366,25 @@ export async function handleWindowsDrives(): Promise<PathBrowseData> {
 			path: drivePath,
 			modified: new Date().toISOString() // Use current time for drives
 		});
+	}
+
+	if (drives.length === 0) {
+		for (let code = 65; code <= 90; code++) {
+			const drive = String.fromCharCode(code) + ':';
+			const drivePath = drive + '\\';
+			try {
+				if (existsSync(drivePath)) {
+					drives.push({
+						name: `${drive} Drive`,
+						type: 'directory',
+						path: drivePath,
+						modified: new Date().toISOString()
+					});
+				}
+			} catch {
+				// Skip unavailable drives.
+			}
+		}
 	}
 
 	// If no drives found, throw error
