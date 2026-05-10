@@ -18,11 +18,18 @@ export function requireProjectPathAccess(conn: WSConnection, projectPath: string
 	if (!project) {
 		throw new Error('Project not found');
 	}
+	if (ws.getRole(conn) === 'admin') {
+		return project;
+	}
 	return requireProjectAccess(conn, project.id);
 }
 
 export function requireFilePathAccess(conn: WSConnection, filePath: string): string {
 	const normalizedPath = resolve(filePath);
+	if (ws.getRole(conn) === 'admin') {
+		return normalizedPath;
+	}
+
 	const userId = ws.getUserId(conn);
 	const projects = projectQueries.getAllForUser(userId);
 
@@ -31,6 +38,52 @@ export function requireFilePathAccess(conn: WSConnection, filePath: string): str
 		throw new Error('File path is outside accessible projects');
 	}
 
+	return normalizedPath;
+}
+
+// Picker-style guard: allow paths inside the user's accessible projects OR
+// outside every registered project. Rejects only when the path lives inside
+// another project the user cannot access. Used by FolderBrowser flows that
+// operate around / before a project exists.
+export function requireSharedFilePathAccess(conn: WSConnection, filePath: string): string {
+	const normalizedPath = resolve(filePath);
+	if (ws.getRole(conn) === 'admin') {
+		return normalizedPath;
+	}
+	const userId = ws.getUserId(conn);
+	const allProjects = projectQueries.getAll();
+
+	// Ancestor guard: reject if the path is a parent of another user's project.
+	// Without this, renaming/deleting `/foo` would break a project rooted at
+	// `/foo/bar` even though `/foo` itself is not "inside" any project.
+	for (const project of allProjects) {
+		const projectRoot = resolve(project.path);
+		if (projectRoot === normalizedPath) continue; // equality is handled below
+		if (!isPathInside(normalizedPath, project.path)) continue;
+		if (!projectQueries.userHasProject(userId, project.id)) {
+			throw new Error('File path contains another project');
+		}
+	}
+
+	// Pick the most specific (longest matching root) project so nested project
+	// roots resolve to the inner one, not whichever the DB returns first.
+	let containing: { id: string; path: string } | null = null;
+	for (const project of allProjects) {
+		if (!isPathInside(project.path, normalizedPath)) continue;
+		const projectRoot = resolve(project.path);
+		if (!containing || projectRoot.length > resolve(containing.path).length) {
+			containing = project;
+		}
+	}
+
+	if (!containing) {
+		return normalizedPath;
+	}
+
+	const hasAccess = projectQueries.userHasProject(userId, containing.id);
+	if (!hasAccess) {
+		throw new Error('File path is inside another project');
+	}
 	return normalizedPath;
 }
 

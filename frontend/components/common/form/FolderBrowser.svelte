@@ -41,6 +41,9 @@
 	let showDeleteFolder = $state(false);
 	let folderToDelete: FileItem | null = $state(null);
 	let deleteFolderConfirmName = $state('');
+	let showRenameFolder = $state(false);
+	let folderToRename: FileItem | null = $state(null);
+	let renameFolderName = $state('');
 	let showHidden = $state(false);
 
 	const filteredItems = $derived(
@@ -420,10 +423,10 @@
 		try {
 			const folderPath = folderToDelete.path;
 
-			// Delete folder via WebSocket
-			await ws.http('files:delete', {
-				filePath: folderPath,
-				force: true  // Allow deletion of non-empty directories
+			// Picker-only route: rejects non-empty directories and paths inside
+			// other users' projects, even when forced.
+			await ws.http('files:delete-directory', {
+				dirPath: folderPath
 			});
 
 			// Store current path before clearing dialog state
@@ -454,7 +457,58 @@
 			error = err instanceof Error ? err.message : 'Failed to delete folder';
 		}
 	}
-	
+
+	function openRenameDialog(item: FileItem) {
+		folderToRename = item;
+		renameFolderName = item.name;
+		showRenameFolder = true;
+	}
+
+	async function renameFolder() {
+		if (!folderToRename) return;
+		const trimmed = renameFolderName.trim();
+		if (!trimmed || trimmed === folderToRename.name) {
+			showRenameFolder = false;
+			folderToRename = null;
+			return;
+		}
+
+		const oldPath = folderToRename.path;
+		const usesBackslash = oldPath.includes('\\');
+		const sep = usesBackslash ? '\\' : '/';
+		const lastSep = usesBackslash ? oldPath.lastIndexOf('\\') : oldPath.lastIndexOf('/');
+		const parent = lastSep >= 0 ? oldPath.slice(0, lastSep) : '';
+		const newPath = parent ? `${parent}${sep}${trimmed}` : trimmed;
+
+		try {
+			await ws.http('files:rename-directory', {
+				oldPath,
+				newPath
+			});
+
+			const pathToReload = currentPath;
+
+			if (selectedPath === oldPath) {
+				selectedPath = newPath;
+			}
+
+			showRenameFolder = false;
+			folderToRename = null;
+			renameFolderName = '';
+
+			await new Promise(resolve => setTimeout(resolve, 100));
+
+			if (pathToReload) {
+				loadDirectory(pathToReload);
+			} else {
+				const fallbackPath = currentPath || '.';
+				loadDirectory(fallbackPath);
+			}
+		} catch (err) {
+			error = err instanceof Error ? err.message : 'Failed to rename folder';
+		}
+	}
+
 	// Initialize when dialog opens
 	$effect(() => {
 		if (isOpen) {
@@ -765,20 +819,34 @@
 								<button
 									onclick={(e) => {
 										e.stopPropagation();
+										openRenameDialog(item);
+									}}
+									class="flex p-1.5 rounded-lg hover:bg-violet-100 dark:hover:bg-violet-900/20 transition-colors group"
+									title="Rename folder"
+									aria-label="Rename {item.name}"
+								>
+									<Icon
+										name="lucide:pencil"
+										class="text-sm text-slate-400 dark:text-slate-500 group-hover:text-violet-500 dark:group-hover:text-violet-400"
+									/>
+								</button>
+								<button
+									onclick={(e) => {
+										e.stopPropagation();
 										openDeleteDialog(item);
 									}}
 									class="flex p-1.5 rounded-lg hover:bg-red-100 dark:hover:bg-red-900/20 transition-colors group"
 									title="Delete folder"
 									aria-label="Delete {item.name}"
 								>
-									<Icon 
-										name="lucide:trash-2" 
-										class="text-sm text-slate-400 dark:text-slate-500 group-hover:text-red-500 dark:group-hover:text-red-400" 
+									<Icon
+										name="lucide:trash-2"
+										class="text-sm text-slate-400 dark:text-slate-500 group-hover:text-red-500 dark:group-hover:text-red-400"
 									/>
 								</button>
-								<Icon 
-									name="lucide:chevron-right" 
-									class="text-sm text-slate-400 dark:text-slate-500" 
+								<Icon
+									name="lucide:chevron-right"
+									class="text-sm text-slate-400 dark:text-slate-500"
 								/>
 							</div>
 						{/if}
@@ -853,4 +921,24 @@
 	showCancel={true}
 	confirmDisabled={deleteFolderConfirmName !== folderToDelete?.name}
 	onConfirm={deleteFolder}
+/>
+
+<!-- Rename Folder Dialog -->
+<Dialog
+	bind:isOpen={showRenameFolder}
+	onClose={() => {
+		showRenameFolder = false;
+		folderToRename = null;
+		renameFolderName = '';
+	}}
+	title="Rename Folder"
+	type="info"
+	message={`Rename "${folderToRename?.name || ''}" to:`}
+	bind:inputValue={renameFolderName}
+	inputPlaceholder="Enter new folder name"
+	confirmText="Rename"
+	cancelText="Cancel"
+	showCancel={true}
+	confirmDisabled={!renameFolderName.trim() || renameFolderName.trim() === folderToRename?.name}
+	onConfirm={renameFolder}
 />

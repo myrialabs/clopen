@@ -24,7 +24,8 @@ import {
 	deleteOperation
 } from '../../files/file-operations';
 import { join } from 'node:path';
-import { requireFilePathAccess } from './path-access';
+import { stat as fsStat, readdir as fsReaddir, rename as fsRename, access as fsAccess } from 'node:fs/promises';
+import { requireFilePathAccess, requireSharedFilePathAccess } from './path-access';
 
 export const writeHandler = createRouter()
 	// Write file operation
@@ -75,7 +76,10 @@ export const writeHandler = createRouter()
 			modified: t.String()
 		})
 	}, async ({ data, conn }) => {
-		const dirPath = requireFilePathAccess(conn, data.dirPath);
+		// Uses the shared guard so FolderBrowser can create candidate project
+		// folders outside any existing project, while still preventing writes
+		// inside another user's project.
+		const dirPath = requireSharedFilePathAccess(conn, data.dirPath);
 		return await createDirectoryOperation(dirPath);
 	})
 
@@ -152,4 +156,82 @@ export const writeHandler = createRouter()
 	}, async ({ data, conn }) => {
 		const filePath = requireFilePathAccess(conn, data.filePath);
 		return await deleteOperation(filePath, data.force);
+	})
+
+	// Delete an empty directory from FolderBrowser. Restricted to:
+	// - real directory (not a file)
+	// - empty contents (no force, no recursive)
+	// - shared guard (outside all projects, or inside the user's own project)
+	.http('files:delete-directory', {
+		data: t.Object({
+			dirPath: t.String()
+		}),
+		response: t.Object({
+			message: t.String(),
+			path: t.String()
+		})
+	}, async ({ data, conn }) => {
+		const dirPath = requireSharedFilePathAccess(conn, data.dirPath);
+
+		const stats = await fsStat(dirPath);
+		if (!stats.isDirectory()) {
+			throw new Error('Path is not a directory');
+		}
+		const entries = await fsReaddir(dirPath);
+		if (entries.length > 0) {
+			throw new Error('Directory is not empty');
+		}
+
+		return await deleteOperation(dirPath, false);
+	})
+
+	// Rename a directory from FolderBrowser (e.g. fix typo on a candidate
+	// project folder). Restricted to real directories on both sides and
+	// guarded by the shared path access policy. Uses fs.rename directly
+	// because Bun.file(...).exists() returns false for directories, which
+	// makes the generic renameOperation unusable here.
+	.http('files:rename-directory', {
+		data: t.Object({
+			oldPath: t.String(),
+			newPath: t.String()
+		}),
+		response: t.Object({
+			message: t.String(),
+			oldPath: t.String(),
+			newPath: t.String(),
+			modified: t.String()
+		})
+	}, async ({ data, conn }) => {
+		const oldPath = requireSharedFilePathAccess(conn, data.oldPath);
+		const newPath = requireSharedFilePathAccess(conn, data.newPath);
+
+		let oldStats;
+		try {
+			oldStats = await fsStat(oldPath);
+		} catch {
+			throw new Error('Source path does not exist');
+		}
+		if (!oldStats.isDirectory()) {
+			throw new Error('Source path is not a directory');
+		}
+
+		try {
+			await fsAccess(newPath);
+			throw new Error('Destination path already exists');
+		} catch (err) {
+			if (err instanceof Error && err.message === 'Destination path already exists') {
+				throw err;
+			}
+			// fsAccess threw because newPath does not exist — that is what we want.
+		}
+
+		await fsRename(oldPath, newPath);
+		const newStats = await fsStat(newPath);
+
+		return {
+			message: 'Directory renamed successfully',
+			oldPath,
+			newPath,
+			modified: newStats.mtime.toISOString()
+		};
 	});
