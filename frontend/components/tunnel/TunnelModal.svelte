@@ -6,6 +6,7 @@
 	import TunnelActive from './TunnelActive.svelte';
 	import { tunnelStore } from '$frontend/stores/features/tunnel.svelte';
 	import { openSettingsModal } from '$frontend/stores/ui/settings-modal.svelte';
+	import { authStore } from '$frontend/stores/features/auth.svelte';
 	import ws from '$frontend/utils/ws';
 
 	interface Props {
@@ -16,6 +17,7 @@
 	let { isOpen = $bindable(), onClose }: Props = $props();
 
 	const activeTunnels = $derived(tunnelStore.tunnels);
+	const isAdmin = $derived(authStore.isAdmin);
 
 	// Deduplicate tunnels by unique key to prevent each_key_duplicate
 	const uniqueTunnels = $derived(() => {
@@ -87,15 +89,17 @@
 			</div>
 		{/if}
 
-		<!-- Settings hint -->
-		<div class="flex items-center gap-2 px-3 py-2 rounded-lg bg-slate-50 dark:bg-slate-800/50 border border-slate-200 dark:border-slate-700/30">
-			<Icon name="lucide:info" class="w-3.5 h-3.5 text-slate-400 shrink-0" />
-			<p class="text-xs text-slate-400 dark:text-slate-500">
-				For persistent custom domains, configure tunnels in
-				<button type="button" class="text-violet-600 dark:text-violet-400 hover:underline cursor-pointer font-medium" onclick={goToSettings}>
-					Settings &rarr; Tunnel
-				</button>
-			</p>
-		</div>
+		<!-- Settings hint (admin only — non-admin users cannot access Settings → Tunnel) -->
+		{#if isAdmin}
+			<div class="flex items-center gap-2 px-3 py-2 rounded-lg bg-slate-50 dark:bg-slate-800/50 border border-slate-200 dark:border-slate-700/30">
+				<Icon name="lucide:info" class="w-3.5 h-3.5 text-slate-400 shrink-0" />
+				<p class="text-xs text-slate-400 dark:text-slate-500">
+					For persistent custom domains, configure tunnels in
+					<button type="button" class="text-violet-600 dark:text-violet-400 hover:underline cursor-pointer font-medium" onclick={goToSettings}>
+						Settings &rarr; Tunnel
+					</button>
+				</p>
+			</div>
+		{/if}
 	</div>
 </Modal>

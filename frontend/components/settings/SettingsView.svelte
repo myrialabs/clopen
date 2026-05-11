@@ -33,8 +33,10 @@
 			<!-- Notification Settings -->
 			<NotificationSettings />
 
-			<!-- Tunnel Settings -->
-			<TunnelSettings />
+			<!-- Tunnel Settings (admin-only) -->
+			{#if isAdmin}
+				<TunnelSettings />
+			{/if}
 
 			<!-- Account (hidden in no-auth mode) -->
 			{#if !isNoAuth}

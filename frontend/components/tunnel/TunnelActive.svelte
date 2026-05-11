@@ -1,5 +1,6 @@
 <script lang="ts">
 	import { tunnelStore } from '$frontend/stores/features/tunnel.svelte';
+	import { authStore } from '$frontend/stores/features/auth.svelte';
 	import Icon from '$frontend/components/common/display/Icon.svelte';
 	import TunnelQRCode from './TunnelQRCode.svelte';
 	import { addNotification } from '$frontend/stores/ui/notification.svelte';
@@ -37,6 +38,7 @@
 	);
 	const ingressHostnames = $derived(ingress?.filter((r) => r.hostname) ?? []);
 	const isManagedTunnel = $derived(type === 'remote' || type === 'local');
+	const isAdmin = $derived(authStore.isAdmin);
 
 	// Build a unified list of URL entries for consistent rendering
 	const urlEntries = $derived(() => {
@@ -149,7 +151,7 @@
 					<Icon name="lucide:circle-x" class="w-3.5 h-3.5" />
 					Stop
 				</button>
-			{:else}
+			{:else if isAdmin}
 				<span class="text-2xs text-slate-400 dark:text-slate-500 italic">Managed in Settings</span>
 			{/if}
 		</div>

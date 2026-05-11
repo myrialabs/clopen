@@ -34,11 +34,12 @@
 	const isAdmin = $derived(authStore.isAdmin);
 	const isNoAuth = $derived(systemSettings.authMode === 'none');
 
-	// Filter sections: hide admin-only tabs for non-admins, hide team in no-auth mode
+	// Filter sections: hide admin-only tabs for non-admins. Team stays visible for
+	// admins in both modes; the No Login case renders an informational notice
+	// inside the section instead of hiding it.
 	const visibleSections = $derived(
 		settingsSections.filter(s => {
 			if (s.adminOnly && !isAdmin) return false;
-			if (s.id === 'team' && isNoAuth) return false;
 			return true;
 		})
 	);
@@ -200,7 +201,7 @@
 						<div in:fly={{ x: 20, duration: 200 }}>
 							<NotificationSettings />
 						</div>
-					{:else if activeSection === 'tunnel'}
+					{:else if activeSection === 'tunnel' && isAdmin}
 						<div in:fly={{ x: 20, duration: 200 }}>
 							<TunnelSettings />
 						</div>
@@ -216,12 +217,28 @@
 						<div in:fly={{ x: 20, duration: 200 }}>
 							<SystemToolsSettings />
 						</div>
-					{:else if activeSection === 'team' && isAdmin && !isNoAuth}
+					{:else if activeSection === 'team' && isAdmin}
 						<div in:fly={{ x: 20, duration: 200 }}>
-							<TeamSettings />
-							<div class="mt-6">
-								<InviteManagement />
-							</div>
+							{#if isNoAuth}
+								<div class="py-1">
+									<h3 class="text-base font-bold text-slate-900 dark:text-slate-100 mb-1.5">Team</h3>
+									<p class="text-sm text-slate-600 dark:text-slate-500 mb-5">Manage team members and invites</p>
+									<div class="flex items-start gap-3 p-4 bg-amber-500/5 dark:bg-amber-500/10 border border-amber-500/20 rounded-xl">
+										<Icon name="lucide:info" class="w-5 h-5 text-amber-600 dark:text-amber-400 flex-shrink-0 mt-0.5" />
+										<div class="text-sm text-slate-700 dark:text-slate-300">
+											<p class="font-semibold mb-1">Team management is only available in With Login mode</p>
+											<p class="text-slate-600 dark:text-slate-400">
+												The server is currently running in No Login mode, where a single anonymous user has full access. Switch the auth mode to With Login in Settings &rarr; Security to enable user invites, role assignment, and member removal.
+											</p>
+										</div>
+									</div>
+								</div>
+							{:else}
+								<TeamSettings />
+								<div class="mt-6">
+									<InviteManagement />
+								</div>
+							{/if}
 						</div>
 					{:else if activeSection === 'security' && isAdmin}
 						<div in:fly={{ x: 20, duration: 200 }}>

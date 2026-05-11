@@ -56,7 +56,8 @@ export const settingsSections: SettingsSectionMeta[] = [
 		id: 'tunnel',
 		label: 'Tunnel',
 		icon: 'lucide:globe',
-		description: 'Cloudflare tunnel services'
+		description: 'Cloudflare tunnel services',
+		adminOnly: true
 	},
 	{
 		id: 'appearance',

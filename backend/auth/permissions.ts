@@ -70,7 +70,25 @@ export const ADMIN_ONLY_ROUTES = new Set([
 	'engine:opencode-account-delete',
 	'engine:opencode-account-rename',
 	'engine:opencode-server-restart',
-	'engine:opencode-models-dev-fetch'
+	'engine:opencode-models-dev-fetch',
+	// Tunnel — remote/local management mutates global Cloudflare credentials,
+	// cloudflared auth, and ingress rules. Quick Tunnel is ephemeral and stays
+	// open. Read-only routes (status, *-list, ingress, auth-status) stay open so
+	// any authenticated user can see what is active.
+	'tunnel:remote:config:add',
+	'tunnel:remote:config:remove',
+	'tunnel:remote:start',
+	'tunnel:remote:stop',
+	'tunnel:local:login-start',
+	'tunnel:local:login-cancel',
+	'tunnel:local:logout',
+	'tunnel:local:set-zone',
+	'tunnel:local:create',
+	'tunnel:local:delete',
+	'tunnel:local:ingress:add',
+	'tunnel:local:ingress:remove',
+	'tunnel:local:start',
+	'tunnel:local:stop'
 ]);
 
 /**
