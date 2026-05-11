@@ -37,6 +37,7 @@ import { handleMcpRequest, closeMcpServer } from './mcp/remote-server';
 // Auth middleware
 import { checkRouteAccess } from './auth/permissions';
 import { authRateLimiter } from './auth';
+import { sessionCleanupScheduler } from './auth/session-cleanup';
 import { ws as wsServer } from './utils/ws';
 
 // Register auth gate on WebSocket router — blocks unauthenticated/unauthorized access
@@ -141,6 +142,8 @@ async function startServer() {
 	try {
 		await initializeDatabase();
 		debug.log('database', '✅ Database initialized successfully');
+		// Start expired session cleanup now that the database is ready
+		sessionCleanupScheduler.start();
 	} catch (error) {
 		debug.warn('database', '⚠️ Database initialization failed:', error);
 	}
@@ -189,6 +192,8 @@ async function gracefulShutdown() {
 		app.stop();
 		// Dispose rate limiter timer
 		authRateLimiter.dispose();
+		// Dispose expired session cleanup timer
+		sessionCleanupScheduler.dispose();
 		// Close MCP remote server (before engines, as they may still reference it)
 		await closeMcpServer();
 		// Cleanup browser preview sessions
