@@ -10,6 +10,22 @@ import ws from '$frontend/utils/ws';
 import type { Project } from '$shared/types/database/schema';
 
 import { debug } from '$shared/utils/logger';
+
+// Subscribe to admin-driven project assignment changes for the current user.
+// Event is broadcast globally; only react when this client is the target.
+ws.on('auth:user-projects-changed', async (payload) => {
+	const { authStore } = await import('$frontend/stores/features/auth.svelte');
+	if (payload.userId !== authStore.currentUser?.id) return;
+
+	debug.log('project', `User-projects changed: ${payload.type} ${payload.projectId}`);
+	loadProjects().catch((err) => {
+		debug.error('project', 'Failed to reload after assignment change:', err);
+	});
+
+	if (payload.type === 'unassigned' && projectState.currentProject?.id === payload.projectId) {
+		setCurrentProject(null).catch(() => {});
+	}
+});
 interface ProjectState {
 	projects: Project[];
 	currentProject: Project | null;

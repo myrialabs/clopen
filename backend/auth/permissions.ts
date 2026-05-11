@@ -26,6 +26,13 @@ export const ADMIN_ONLY_ROUTES = new Set([
 	'auth:revoke-invite',
 	'auth:list-users',
 	'auth:remove-user',
+	'auth:list-user-projects',
+	'auth:assign-project',
+	'auth:unassign-project',
+	// Project lifecycle — members can only access projects they are assigned to
+	// by an admin. Create/delete remain admin-only operations.
+	'projects:create',
+	'projects:delete',
 	'settings:update',
 	'settings:update-batch',
 	'system:run-update',

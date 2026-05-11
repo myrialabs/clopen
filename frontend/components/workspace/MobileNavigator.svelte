@@ -13,6 +13,7 @@
 	import type { Project } from '$shared/types/database/schema';
 	import FolderBrowser from '$frontend/components/common/form/FolderBrowser.svelte';
 	import ProjectUserAvatars from '$frontend/components/common/display/ProjectUserAvatars.svelte';
+	import { authStore } from '$frontend/stores/features/auth.svelte';
 	import ws from '$frontend/utils/ws';
 	import { debug } from '$shared/utils/logger';
 
@@ -26,6 +27,8 @@
 	let showDeleteDialog = $state(false);
 	let projectToDelete = $state<Project | null>(null);
 	let searchQuery = $state('');
+
+	const canManageProjects = $derived(authStore.isAdmin);
 
 	// Get current project status from shared store
 	const currentProjectStatus = $derived(
@@ -183,15 +186,17 @@
 		<div class="flex items-center justify-between px-4 py-3 md:px-6 md:py-4">
 			<h2 class="text-base md:text-lg font-bold text-slate-900 dark:text-slate-100">Projects</h2>
 			<div class="flex items-center gap-2">
-				<button
-					type="button"
-					class="flex items-center justify-center w-8 h-8 bg-violet-500/10 dark:bg-violet-500/15 border border-violet-500/20 rounded-lg text-violet-600 dark:text-violet-400 cursor-pointer transition-all duration-150 hover:bg-violet-500/20"
-					onclick={openAddProject}
-					aria-label="Add project"
-					title="Add project"
-				>
-					<Icon name="lucide:plus" class="w-4 h-4" />
-				</button>
+				{#if canManageProjects}
+					<button
+						type="button"
+						class="flex items-center justify-center w-8 h-8 bg-violet-500/10 dark:bg-violet-500/15 border border-violet-500/20 rounded-lg text-violet-600 dark:text-violet-400 cursor-pointer transition-all duration-150 hover:bg-violet-500/20"
+						onclick={openAddProject}
+						aria-label="Add project"
+						title="Add project"
+					>
+						<Icon name="lucide:plus" class="w-4 h-4" />
+					</button>
+				{/if}
 				<button
 					type="button"
 					class="p-1.5 md:p-2 rounded-lg text-slate-500 hover:text-slate-900 dark:hover:text-slate-100 hover:bg-violet-500/10 transition-colors"
@@ -242,8 +247,13 @@
 		{#if projectState.projects.length === 0}
 			<div class="flex flex-col items-center gap-3 py-8 text-slate-600 dark:text-slate-500 text-sm">
 				<Icon name="lucide:folder-x" class="w-12 h-12 text-slate-400 opacity-40" />
-				<p class="font-medium">No projects yet</p>
-				<p class="text-xs text-slate-500 dark:text-slate-500">Create your first project below</p>
+				{#if canManageProjects}
+					<p class="font-medium">No projects yet</p>
+					<p class="text-xs text-slate-500 dark:text-slate-500">Create your first project below</p>
+				{:else}
+					<p class="font-medium">No projects assigned</p>
+					<p class="text-xs text-slate-500 dark:text-slate-500">Ask an admin to invite you to a project.</p>
+				{/if}
 			</div>
 		{:else}
 			<div class="space-y-2">
@@ -295,15 +305,17 @@
 							</div>
 						</button>
 						<ProjectUserAvatars projectStatus={presenceState.statuses.get(project.id ?? '')} maxVisible={2} />
-						<button
-							type="button"
-							class="flex items-center justify-center w-8 h-8 bg-transparent border-none rounded-lg text-slate-400 dark:text-slate-500 cursor-pointer transition-all duration-150 hover:bg-red-500/15 hover:text-red-500 shrink-0"
-							onclick={(e) => handleDeleteClick(project, e)}
-							aria-label="Delete project"
-							title="Delete"
-						>
-							<Icon name="lucide:trash-2" class="w-4 h-4" />
-						</button>
+						{#if canManageProjects}
+							<button
+								type="button"
+								class="flex items-center justify-center w-8 h-8 bg-transparent border-none rounded-lg text-slate-400 dark:text-slate-500 cursor-pointer transition-all duration-150 hover:bg-red-500/15 hover:text-red-500 shrink-0"
+								onclick={(e) => handleDeleteClick(project, e)}
+								aria-label="Delete project"
+								title="Delete"
+							>
+								<Icon name="lucide:trash-2" class="w-4 h-4" />
+							</button>
+						{/if}
 					</div>
 				{:else}
 					<div

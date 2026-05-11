@@ -4,7 +4,8 @@
  * Core authentication logic: user creation, session management, invite handling.
  */
 
-import { authQueries, settingsQueries } from '$backend/database/queries';
+import { authQueries, projectQueries, settingsQueries } from '$backend/database/queries';
+import type { Project } from '$shared/types/database/schema';
 import { generateSessionToken, generatePAT, generateInviteToken, hashToken, getTokenType } from './tokens';
 import { generateColorFromString, getInitials } from '$backend/utils/user-helpers';
 import { debug } from '$shared/utils/logger';
@@ -470,6 +471,60 @@ export function logoutAllSessions(): number {
 	const count = authQueries.deleteAllSessions();
 	debug.log('auth', `All sessions deleted: ${count}`);
 	return count;
+}
+
+/**
+ * List projects assigned to a specific user (admin view)
+ */
+export function listUserProjects(userId: string): Project[] {
+	const user = authQueries.getUserById(userId);
+	if (!user) {
+		throw new Error('User not found');
+	}
+	return projectQueries.getAllForUser(userId);
+}
+
+/**
+ * Assign a project to a user. Admins are implicitly assigned to all projects
+ * they create, but this is used to grant a member access to a project.
+ * Returns true if a new assignment was added, false if user already had access.
+ */
+export function assignProjectToUser(userId: string, projectId: string): boolean {
+	const user = authQueries.getUserById(userId);
+	if (!user) {
+		throw new Error('User not found');
+	}
+	const project = projectQueries.getById(projectId);
+	if (!project) {
+		throw new Error('Project not found');
+	}
+	if (projectQueries.userHasProject(userId, projectId)) {
+		return false;
+	}
+	projectQueries.addUserProject(userId, projectId);
+	debug.log('auth', `Project ${projectId} assigned to user ${userId}`);
+	return true;
+}
+
+/**
+ * Revoke a user's access to a project. Refuses to remove the last admin
+ * association to avoid orphaning the project.
+ */
+export function unassignProjectFromUser(userId: string, projectId: string): boolean {
+	const user = authQueries.getUserById(userId);
+	if (!user) {
+		throw new Error('User not found');
+	}
+	const project = projectQueries.getById(projectId);
+	if (!project) {
+		throw new Error('Project not found');
+	}
+	if (!projectQueries.userHasProject(userId, projectId)) {
+		return false;
+	}
+	projectQueries.removeUserProject(userId, projectId);
+	debug.log('auth', `Project ${projectId} unassigned from user ${userId}`);
+	return true;
 }
 
 /**

@@ -3,6 +3,7 @@
 	import { addNotification } from '$frontend/stores/ui/notification.svelte';
 	import Icon from '../../common/display/Icon.svelte';
 	import Dialog from '../../common/overlay/Dialog.svelte';
+	import UserProjectsModal from './UserProjectsModal.svelte';
 	import ws from '$frontend/utils/ws';
 	import { debug } from '$shared/utils/logger';
 
@@ -20,6 +21,19 @@
 
 	let showRemoveConfirm = $state(false);
 	let userToRemove = $state<User | null>(null);
+
+	let showProjectsModal = $state(false);
+	let userForProjects = $state<User | null>(null);
+
+	function openProjectsModal(user: User) {
+		userForProjects = user;
+		showProjectsModal = true;
+	}
+
+	function closeProjectsModal() {
+		showProjectsModal = false;
+		userForProjects = null;
+	}
 
 	async function loadUsers() {
 		loading = true;
@@ -39,12 +53,13 @@
 	}
 
 	async function removeUser() {
-		if (!userToRemove) return;
+		// Dialog clears userToRemove via onClose immediately after onConfirm fires,
+		// so capture a local reference before any await.
+		const target = userToRemove;
+		if (!target) return;
 		try {
-			await ws.http('auth:remove-user', { userId: userToRemove.id });
-			addNotification({ type: 'success', title: 'Removed', message: `${userToRemove.name} has been removed` });
-			showRemoveConfirm = false;
-			userToRemove = null;
+			await ws.http('auth:remove-user', { userId: target.id });
+			addNotification({ type: 'success', title: 'Removed', message: `${target.name} has been removed` });
 			await loadUsers();
 		} catch (error) {
 			debug.error('settings', 'Failed to remove user:', error);
@@ -52,11 +67,16 @@
 		}
 	}
 
-	// Load on mount
+	// Load on mount + keep list in sync with backend events
 	$effect(() => {
-		if (authStore.isAdmin) {
+		if (!authStore.isAdmin) return;
+
+		loadUsers();
+
+		const unsubscribe = ws.on('auth:users-changed', () => {
 			loadUsers();
-		}
+		});
+		return () => unsubscribe();
 	});
 </script>
 
@@ -96,6 +116,17 @@
 						<Icon name="lucide:{user.role === 'admin' ? 'shield' : 'user'}" class="w-3 h-3" />
 						{user.role === 'admin' ? 'Admin' : 'Member'}
 					</span>
+					{#if user.role !== 'admin'}
+						<button
+							type="button"
+							onclick={() => openProjectsModal(user)}
+							class="flex items-center justify-center w-8 h-8 rounded-lg hover:bg-violet-100 dark:hover:bg-violet-900/30 text-slate-400 hover:text-violet-600 dark:hover:text-violet-400 transition-all"
+							title="Manage projects"
+							aria-label="Manage projects for {user.name}"
+						>
+							<Icon name="lucide:folder-cog" class="w-4 h-4" />
+						</button>
+					{/if}
 					{#if user.role !== 'admin' && user.id !== authStore.currentUser?.id}
 						<button
 							type="button"
@@ -124,4 +155,13 @@
 	showCancel={true}
 	onConfirm={removeUser}
 />
+
+{#if userForProjects}
+	<UserProjectsModal
+		bind:isOpen={showProjectsModal}
+		userId={userForProjects.id}
+		userName={userForProjects.name}
+		onClose={closeProjectsModal}
+	/>
+{/if}
 {/if}

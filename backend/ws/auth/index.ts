@@ -18,4 +18,18 @@ export const authRouter = createRouter()
 	// Declare auth:force-logout event (emitted when auth mode switches to required)
 	.emit('auth:force-logout', t.Object({
 		reason: t.String()
+	}))
+	// Declare auth:user-projects-changed event (broadcast on every assignment
+	// change so the target user's navigator and any admin viewing the
+	// per-user projects modal can both refresh in realtime).
+	.emit('auth:user-projects-changed', t.Object({
+		type: t.Union([t.Literal('assigned'), t.Literal('unassigned')]),
+		userId: t.String(),
+		projectId: t.String()
+	}))
+	// Declare auth:users-changed event (broadcast when a user is created or
+	// removed, so any admin viewing the user list refreshes in realtime).
+	.emit('auth:users-changed', t.Object({
+		type: t.Union([t.Literal('added'), t.Literal('removed')]),
+		userId: t.String()
 	}));

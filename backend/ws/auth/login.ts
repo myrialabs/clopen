@@ -190,6 +190,9 @@ export const loginHandler = createRouter()
 			const tokenHash = (await import('$backend/auth/tokens')).hashToken(result.sessionToken);
 			ws.setAuth(conn, result.user.id, result.user.role, tokenHash);
 
+			// Notify admin sessions so their User Management list refreshes.
+			ws.emit.global('auth:users-changed', { type: 'added', userId: result.user.id });
+
 			return result;
 		} catch (err) {
 			authRateLimiter.recordFailure(ip, 'auth:accept-invite');

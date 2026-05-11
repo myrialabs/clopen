@@ -1,8 +1,7 @@
 <script lang="ts">
-	import { onMount } from 'svelte';
 	import { fade } from 'svelte/transition';
 	import Icon from '$frontend/components/common/display/Icon.svelte';
-	import { projectState, setCurrentProject, removeProject } from '$frontend/stores/core/projects.svelte';
+	import { projectState, setCurrentProject, removeProject, addProject } from '$frontend/stores/core/projects.svelte';
 	import { workspaceState, toggleNavigator } from '$frontend/stores/ui/workspace.svelte';
 	import { addNotification } from '$frontend/stores/ui/notification.svelte';
 	import { openSettingsModal } from '$frontend/stores/ui/settings-modal.svelte';
@@ -11,6 +10,7 @@
 	import type { Project } from '$shared/types/database/schema';
 	import { debug } from '$shared/utils/logger';
 	import { settings } from '$frontend/stores/features/settings.svelte';
+	import { authStore } from '$frontend/stores/features/auth.svelte';
 	import FolderBrowser from '$frontend/components/common/form/FolderBrowser.svelte';
 	import Dialog from '$frontend/components/common/overlay/Dialog.svelte';
 	import ViewMenu from '$frontend/components/workspace/ViewMenu.svelte';
@@ -22,7 +22,6 @@
 	import ws from '$frontend/utils/ws';
 
 	// State
-	let existingProjects = $state<Project[]>([]);
 	let showFolderBrowser = $state(false);
 	let showDeleteDialog = $state(false);
 	let projectToDelete = $state<Project | null>(null);
@@ -36,29 +35,18 @@
 	// Derived
 	const isCollapsed = $derived(workspaceState.navigatorCollapsed);
 	const currentProjectId = $derived(projectState.currentProject?.id);
+	const canManageProjects = $derived(authStore.isAdmin);
 	const navigatorWidth = $derived(
 		workspaceState.navigatorCollapsed ? 48 : Math.round(workspaceState.navigatorWidth * (settings.fontSize / 13))
 	);
 
 	const filteredProjects = $derived(() => {
-		if (!searchQuery.trim()) return existingProjects;
+		if (!searchQuery.trim()) return projectState.projects;
 		const query = searchQuery.toLowerCase();
-		return existingProjects.filter(
+		return projectState.projects.filter(
 			(p) => p.name.toLowerCase().includes(query) || p.path.toLowerCase().includes(query)
 		);
 	});
-
-	// Load projects
-	async function loadProjects() {
-		try {
-			const projects = await ws.http('projects:list', {});
-			if (Array.isArray(projects)) {
-				existingProjects = projects;
-			}
-		} catch (error) {
-			debug.error('workspace', 'Failed to load projects:', error);
-		}
-	}
 
 	// Select project
 	async function selectProject(project: Project) {
@@ -74,7 +62,7 @@
 			showFolderBrowser = false;
 
 			// Check if already exists
-			const existing = existingProjects.find((p) => p.path === folderPath);
+			const existing = projectState.projects.find((p) => p.path === folderPath);
 			if (existing) {
 				await selectProject(existing);
 				return;
@@ -82,8 +70,8 @@
 
 			const newProject = await ws.http('projects:create', { name: folderName, path: folderPath });
 
+			addProject(newProject);
 			await setCurrentProject(newProject);
-			await loadProjects();
 		} catch (error) {
 			debug.error('workspace', 'Failed to create project:', error);
 			addNotification({
@@ -106,7 +94,6 @@
 		try {
 			await ws.http('projects:delete', { id: deleteId, mode });
 			removeProject(deleteId);
-			existingProjects = existingProjects.filter(p => p.id !== deleteId);
 			showDeleteDialog = false;
 			projectToDelete = null;
 		} catch (error) {
@@ -141,10 +128,6 @@
 		projectToDelete = project;
 		showDeleteDialog = true;
 	}
-
-	onMount(async () => {
-		await loadProjects();
-	});
 
 	// Get project initials (max 2 characters)
 	function getProjectInitials(name: string): string {
@@ -228,15 +211,17 @@
 					class="flex items-center justify-between py-2 px-1 text-xs font-semibold text-slate-600 dark:text-slate-500 uppercase tracking-wider"
 				>
 					<span>Projects</span>
-					<button
-						type="button"
-						class="flex items-center justify-center w-6 h-6 bg-transparent border-none rounded-md text-slate-600 dark:text-slate-500 cursor-pointer transition-all duration-150 hover:bg-violet-500/20 hover:text-violet-600"
-						onclick={() => (showFolderBrowser = true)}
-						aria-label="Add project"
-						title="Add project"
-					>
-						<Icon name="lucide:plus" class="w-4 h-4" />
-					</button>
+					{#if canManageProjects}
+						<button
+							type="button"
+							class="flex items-center justify-center w-6 h-6 bg-transparent border-none rounded-md text-slate-600 dark:text-slate-500 cursor-pointer transition-all duration-150 hover:bg-violet-500/20 hover:text-violet-600"
+							onclick={() => (showFolderBrowser = true)}
+							aria-label="Add project"
+							title="Add project"
+						>
+							<Icon name="lucide:plus" class="w-4 h-4" />
+						</button>
+					{/if}
 				</div>
 
 				<div class="flex-1 overflow-y-auto flex flex-col">
@@ -267,15 +252,17 @@
 								</div>
 								<div class="flex items-center gap-1 shrink-0">
 									<ProjectUserAvatars projectStatus={presenceState.statuses.get(project.id ?? '')} maxVisible={2} />
-									<button
-										type="button"
-										class="flex items-center justify-center w-6 h-6 bg-transparent border-none rounded-md text-slate-400 dark:text-slate-600 cursor-pointer transition-all duration-150 hover:bg-red-500/20 hover:text-red-500 shrink-0"
-										onclick={(e) => handleDeleteClick(project, e)}
-										aria-label="Delete project"
-										title="Delete"
-									>
-										<Icon name="lucide:trash-2" class="w-3.5 h-3.5" />
-									</button>
+									{#if canManageProjects}
+										<button
+											type="button"
+											class="flex items-center justify-center w-6 h-6 bg-transparent border-none rounded-md text-slate-400 dark:text-slate-600 cursor-pointer transition-all duration-150 hover:bg-red-500/20 hover:text-red-500 shrink-0"
+											onclick={(e) => handleDeleteClick(project, e)}
+											aria-label="Delete project"
+											title="Delete"
+										>
+											<Icon name="lucide:trash-2" class="w-3.5 h-3.5" />
+										</button>
+									{/if}
 								</div>
 							</div>
 						</div>
@@ -284,14 +271,19 @@
 							class="flex flex-col items-center gap-3 py-8 px-4 text-slate-600 dark:text-slate-500 text-sm text-center"
 						>
 							<Icon name="lucide:folder-plus" class="w-8 h-8 opacity-40" />
-							<span>No projects yet</span>
-							<button
-								type="button"
-								class="py-2 px-4 bg-violet-500/10 dark:bg-violet-500/15 border border-violet-500/20 dark:border-violet-500/30 rounded-lg text-violet-600 text-xs font-medium cursor-pointer transition-all duration-150 hover:bg-violet-500/20 dark:hover:bg-violet-500/25"
-								onclick={() => (showFolderBrowser = true)}
-							>
-								Add your first project
-							</button>
+							{#if canManageProjects}
+								<span>No projects yet</span>
+								<button
+									type="button"
+									class="py-2 px-4 bg-violet-500/10 dark:bg-violet-500/15 border border-violet-500/20 dark:border-violet-500/30 rounded-lg text-violet-600 text-xs font-medium cursor-pointer transition-all duration-150 hover:bg-violet-500/20 dark:hover:bg-violet-500/25"
+									onclick={() => (showFolderBrowser = true)}
+								>
+									Add your first project
+								</button>
+							{:else}
+								<span class="font-medium text-slate-700 dark:text-slate-300">No projects assigned</span>
+								<span class="text-xs text-slate-500 dark:text-slate-500 leading-relaxed">Ask an admin to invite you to a project.</span>
+							{/if}
 						</div>
 					{/each}
 				</div>
@@ -314,21 +306,23 @@
 			</footer>
 		{:else}
 			<!-- Collapsed State: Icon Buttons -->
-			<div class="flex flex-col items-center pt-4 px-2 shrink-0">
-				<button
-					type="button"
-					class="flex items-center justify-center w-9 h-9 bg-transparent border-none rounded-lg text-slate-500 cursor-pointer transition-all duration-150 relative hover:bg-violet-500/10 hover:text-slate-900 dark:hover:text-slate-100"
-					onclick={() => (showFolderBrowser = true)}
-					title="Add Project"
-				>
-					<Icon name="lucide:folder-plus" class="w-5 h-5" />
-				</button>
+			{#if canManageProjects}
+				<div class="flex flex-col items-center pt-4 px-2 shrink-0">
+					<button
+						type="button"
+						class="flex items-center justify-center w-9 h-9 bg-transparent border-none rounded-lg text-slate-500 cursor-pointer transition-all duration-150 relative hover:bg-violet-500/10 hover:text-slate-900 dark:hover:text-slate-100"
+						onclick={() => (showFolderBrowser = true)}
+						title="Add Project"
+					>
+						<Icon name="lucide:folder-plus" class="w-5 h-5" />
+					</button>
 
-				<div class="w-6 h-px bg-violet-500/10 my-1"></div>
-			</div>
+					<div class="w-6 h-px bg-violet-500/10 my-1"></div>
+				</div>
+			{/if}
 
 			<div class="flex-1 flex flex-col items-center gap-2 px-2 pb-4 min-h-0 overflow-y-auto">
-				{#each existingProjects as project (project.id)}
+				{#each projectState.projects as project (project.id)}
 					{@const projectStatus = presenceState.statuses.get(project.id ?? '')}
 					{@const activeUserCount = (projectStatus?.activeUsers || []).length}
 					<button
