@@ -195,7 +195,9 @@ class GlobalTunnelManager {
 		if (instance.autoStopTimer) clearTimeout(instance.autoStopTimer);
 		try {
 			instance.tunnel.stop();
-		} catch { /* ignore */ }
+		} catch (err) {
+			debug.warn('tunnel', `Failed to stop quick tunnel on port ${port}:`, err);
+		}
 		this.quickTunnels.delete(port);
 		debug.log('tunnel', `Quick tunnel stopped on port ${port}`);
 		this.notifyStatusChanged();
@@ -297,7 +299,9 @@ class GlobalTunnelManager {
 
 		try {
 			instance.tunnel.stop();
-		} catch { /* ignore */ }
+		} catch (err) {
+			debug.warn('tunnel', `Failed to stop remote tunnel ${instance.label}:`, err);
+		}
 		this.remoteTunnels.delete(configId);
 		debug.log('tunnel', `Remote tunnel stopped: ${instance.label}`);
 		this.notifyStatusChanged();
@@ -548,7 +552,9 @@ class GlobalTunnelManager {
 
 		try {
 			instance.tunnel.stop();
-		} catch { /* ignore */ }
+		} catch (err) {
+			debug.warn('tunnel', `Failed to stop local tunnel ${instance.name}:`, err);
+		}
 		this.localTunnels.delete(configId);
 		debug.log('tunnel', `Local tunnel stopped: ${instance.name}`);
 		this.notifyStatusChanged();

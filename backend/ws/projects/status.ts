@@ -71,7 +71,9 @@ export const statusHandler = createRouter()
 				ws.addCleanup(conn, () => {
 					updateUserPresence(projectId, userId, '', 'leave');
 					debug.log('project', `Auto-cleaned presence for ${userId} from project ${projectId}`);
-					broadcastPresence().catch(() => {});
+					broadcastPresence().catch((err) => {
+						debug.warn('project', `Presence broadcast error after auto-cleanup for ${userId}:`, err);
+					});
 				});
 
 				await broadcastPresence();

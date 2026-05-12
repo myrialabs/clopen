@@ -111,7 +111,9 @@ export const crudHandler = createRouter()
 			if (sessions.length > 0) {
 				// Cancel active chat streams
 				await Promise.all(
-					sessions.map(s => streamManager.cleanupSessionStreams(s.id).catch(() => {}))
+					sessions.map(s => streamManager.cleanupSessionStreams(s.id).catch((err) => {
+						debug.warn('project', `Stream cleanup error for session ${s.id} during project delete:`, err);
+					}))
 				);
 
 				// Collect blob hashes before deleting
@@ -163,7 +165,9 @@ export const crudHandler = createRouter()
 			}
 		}
 
-		broadcastPresence().catch(() => {});
+		broadcastPresence().catch((err) => {
+			debug.warn('project', 'Presence broadcast error after project delete:', err);
+		});
 
 		return {
 			id: data.id,

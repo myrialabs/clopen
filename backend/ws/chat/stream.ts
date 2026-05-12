@@ -48,7 +48,9 @@ streamManager.on('stream:lifecycle', (event: { status: string; streamId: string;
 	});
 
 	// Broadcast updated presence (status indicators for all projects)
-	broadcastPresence().catch(() => {});
+	broadcastPresence().catch((err) => {
+		debug.warn('chat', 'Presence broadcast error after stream lifecycle:', err);
+	});
 });
 
 // Notify project members when a snapshot is captured (so the timeline modal can refresh stats)
@@ -83,7 +85,9 @@ export const streamHandler = createRouter()
 		ws.leaveAllChatSessions(conn);
 		ws.joinChatSession(conn, data.chatSessionId);
 		// Broadcast presence so all clients see updated chatSessionUsers
-		broadcastPresence().catch(() => {});
+		broadcastPresence().catch((err) => {
+			debug.warn('chat', 'Presence broadcast error after chat join-session:', err);
+		});
 	})
 
 	// Leave a chat session room
@@ -94,7 +98,9 @@ export const streamHandler = createRouter()
 	}, ({ data, conn }) => {
 		ws.leaveChatSession(conn, data.chatSessionId);
 		// Broadcast presence so all clients see updated chatSessionUsers
-		broadcastPresence().catch(() => {});
+		broadcastPresence().catch((err) => {
+			debug.warn('chat', 'Presence broadcast error after chat leave-session:', err);
+		});
 	})
 
 	// Start chat stream
@@ -155,7 +161,9 @@ export const streamHandler = createRouter()
 				// User message is broadcast by stream-manager via event subscription below
 				// (includes resume, sender info, and saved message ID)
 			}
-			broadcastPresence().catch(() => {});
+			broadcastPresence().catch((err) => {
+				debug.warn('chat', 'Presence broadcast error on chat:stream start:', err);
+			});
 
 			// Subscribe to stream events (event-driven, no polling)
 			// Use ws.emit.chatSession() for session-scoped chat events
@@ -170,7 +178,9 @@ export const streamHandler = createRouter()
 								timestamp: event.data.timestamp,
 								seq: event.seq
 							});
-							broadcastPresence().catch(() => {});
+							broadcastPresence().catch((err) => {
+								debug.warn('chat', 'Presence broadcast error on stream connection event:', err);
+							});
 							break;
 
 						case 'message': {
@@ -193,7 +203,9 @@ export const streamHandler = createRouter()
 								item.type === 'tool_use' && item.name === 'AskUserQuestion'
 							);
 							if (askToolUse || msgContent.some((item: any) => item.type === 'tool_result')) {
-								broadcastPresence().catch(() => {});
+								broadcastPresence().catch((err) => {
+									debug.warn('chat', 'Presence broadcast error on waiting-input state change:', err);
+								});
 							}
 							// Notify all project members when AskUserQuestion arrives (sound + push)
 							if (askToolUse && projectId) {
@@ -338,7 +350,9 @@ export const streamHandler = createRouter()
 								item.type === 'tool_use' && item.name === 'AskUserQuestion'
 							);
 							if (reconnAskToolUse || reconnMsgContent.some((item: any) => item.type === 'tool_result')) {
-								broadcastPresence().catch(() => {});
+								broadcastPresence().catch((err) => {
+									debug.warn('chat', 'Presence broadcast error on reconnect waiting-input state change:', err);
+								});
 							}
 							if (reconnAskToolUse && projectId) {
 								ws.emit.projectMembers(projectId, 'chat:waiting-input', {
@@ -546,7 +560,9 @@ export const streamHandler = createRouter()
 					status: 'cancelled',
 					processId: ''
 				});
-				broadcastPresence().catch(() => {});
+				broadcastPresence().catch((err) => {
+					debug.warn('chat', 'Presence broadcast error after cancel (stream not found):', err);
+				});
 				return;
 			}
 
@@ -557,7 +573,9 @@ export const streamHandler = createRouter()
 				processId: streamState.processId
 			});
 			// Always broadcast presence after cancel attempt to update all clients
-			broadcastPresence().catch(() => {});
+			broadcastPresence().catch((err) => {
+				debug.warn('chat', 'Presence broadcast error after stream cancel:', err);
+			});
 		} catch (error) {
 			const errorMessage = error instanceof Error ? error.message : 'Unknown error';
 			ws.emit.chatSession(chatSessionId, 'chat:error', {
@@ -565,7 +583,9 @@ export const streamHandler = createRouter()
 				error: errorMessage,
 				timestamp: new Date().toISOString()
 			});
-			broadcastPresence().catch(() => {});
+			broadcastPresence().catch((err) => {
+				debug.warn('chat', 'Presence broadcast error after cancel exception:', err);
+			});
 		}
 	})
 
