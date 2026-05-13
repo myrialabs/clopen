@@ -16,7 +16,7 @@
 import { existsSync, mkdirSync, createWriteStream, chmodSync, unlinkSync, renameSync } from 'fs';
 import { join, dirname } from 'path';
 import { platform, arch } from 'os';
-import { execSync } from 'child_process';
+import { execFileSync } from 'child_process';
 import { getClopenDir } from '../../utils/paths';
 import { resolveBinary } from '../../utils/cli';
 import { debug } from '$shared/utils/logger';
@@ -148,7 +148,7 @@ export async function installBinary(version = 'latest'): Promise<string> {
 		// macOS: download .tgz, extract, rename
 		const tgzPath = `${binPath}.tgz`;
 		await download(url, tgzPath);
-		execSync(`tar -xzf ${tgzPath}`, { cwd: dirname(binPath) });
+		execFileSync('tar', ['-xzf', tgzPath], { cwd: dirname(binPath), stdio: 'pipe' });
 		unlinkSync(tgzPath);
 		// tar extracts as "cloudflared" in the same directory
 		const extractedPath = join(dirname(binPath), 'cloudflared');

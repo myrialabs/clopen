@@ -24,6 +24,14 @@ import type {
 	GitConflictFile
 } from '$shared/types/git';
 import { debug } from '$shared/utils/logger';
+import {
+	assertSafeGitCommitMessage,
+	assertSafeGitPathOperand,
+	assertSafeGitRemoteName,
+	assertSafeGitRemoteUrl,
+	assertSafeGitRevish,
+	assertSafeGitShowRef
+} from './git-spawn-validation';
 
 export class GitService {
 	/**
@@ -45,7 +53,10 @@ export class GitService {
 	 */
 	async init(cwd: string, defaultBranch?: string): Promise<void> {
 		const args = ['init'];
-		if (defaultBranch) args.push('-b', defaultBranch);
+		if (defaultBranch) {
+			assertSafeGitRevish(defaultBranch, 'default branch');
+			args.push('-b', defaultBranch);
+		}
 		const result = await execGit(args, cwd);
 		if (result.exitCode !== 0) {
 			throw new Error(`git init failed: ${result.stderr}`);
@@ -69,6 +80,7 @@ export class GitService {
 	// ============================================
 
 	async stageFile(cwd: string, filePath: string): Promise<void> {
+		assertSafeGitPathOperand(filePath, 'stage path');
 		const result = await execGit(['add', '--', filePath], cwd);
 		if (result.exitCode !== 0) {
 			throw new Error(`git add failed: ${result.stderr}`);
@@ -83,10 +95,11 @@ export class GitService {
 	}
 
 	async unstageFile(cwd: string, filePath: string): Promise<void> {
+		assertSafeGitPathOperand(filePath, 'unstage path');
 		// Try normal reset first, fall back to rm --cached for initial commit
 		const result = await execGit(['reset', 'HEAD', '--', filePath], cwd);
 		if (result.exitCode !== 0) {
-			const fallback = await execGit(['rm', '--cached', '--', filePath], cwd);
+			const fallback = await execGit(['rm', '--cached', '--', filePath], cwd); // filePath validated above
 			if (fallback.exitCode !== 0) {
 				throw new Error(`git unstage failed: ${result.stderr}`);
 			}
@@ -105,6 +118,7 @@ export class GitService {
 	}
 
 	async discardFile(cwd: string, filePath: string): Promise<void> {
+		assertSafeGitPathOperand(filePath, 'discard path');
 		// Check if file is untracked
 		const statusResult = await execGit(['status', '--porcelain=v1', '--', filePath], cwd);
 		const statusLine = statusResult.stdout.trim();
@@ -135,6 +149,7 @@ export class GitService {
 	// ============================================
 
 	async commit(cwd: string, message: string): Promise<string> {
+		assertSafeGitCommitMessage(message);
 		const result = await execGit(['commit', '-m', message], cwd);
 		if (result.exitCode !== 0) {
 			throw new Error(`git commit failed: ${result.stderr}`);
@@ -147,6 +162,7 @@ export class GitService {
 	async amendCommit(cwd: string, message?: string): Promise<string> {
 		const args = ['commit', '--amend'];
 		if (message) {
+			assertSafeGitCommitMessage(message);
 			args.push('-m', message);
 		} else {
 			args.push('--no-edit');
@@ -165,24 +181,33 @@ export class GitService {
 
 	async getDiffUnstaged(cwd: string, filePath?: string): Promise<GitFileDiff[]> {
 		const args = ['diff'];
-		if (filePath) args.push('--', filePath);
+		if (filePath) {
+			assertSafeGitPathOperand(filePath, 'diff path');
+			args.push('--', filePath);
+		}
 		const result = await execGit(args, cwd);
 		return parseDiff(result.stdout);
 	}
 
 	async getDiffStaged(cwd: string, filePath?: string): Promise<GitFileDiff[]> {
 		const args = ['diff', '--cached'];
-		if (filePath) args.push('--', filePath);
+		if (filePath) {
+			assertSafeGitPathOperand(filePath, 'diff path');
+			args.push('--', filePath);
+		}
 		const result = await execGit(args, cwd);
 		return parseDiff(result.stdout);
 	}
 
 	async getDiffCommit(cwd: string, commitHash: string): Promise<GitFileDiff[]> {
+		assertSafeGitRevish(commitHash, 'commit hash');
 		const result = await execGit(['diff', `${commitHash}^`, commitHash], cwd);
 		return parseDiff(result.stdout);
 	}
 
 	async getDiffBetween(cwd: string, from: string, to: string): Promise<GitFileDiff[]> {
+		assertSafeGitRevish(from, 'diff from');
+		assertSafeGitRevish(to, 'diff to');
 		const result = await execGit(['diff', from, to], cwd);
 		return parseDiff(result.stdout);
 	}
@@ -192,6 +217,8 @@ export class GitService {
 	 * Returns null when the file does not exist at that ref (untracked / new file).
 	 */
 	async getFileAtRef(cwd: string, ref: string, filePath: string): Promise<string | null> {
+		assertSafeGitShowRef(ref);
+		assertSafeGitPathOperand(filePath, 'show path');
 		const result = await execGit(['show', `${ref}:${filePath}`], cwd);
 		if (result.exitCode !== 0) {
 			return null;
@@ -247,8 +274,12 @@ export class GitService {
 	}
 
 	async createBranch(cwd: string, name: string, startPoint?: string): Promise<void> {
+		assertSafeGitRevish(name, 'branch name');
 		const args = ['checkout', '-b', name];
-		if (startPoint) args.push(startPoint);
+		if (startPoint) {
+			assertSafeGitRevish(startPoint, 'start point');
+			args.push(startPoint);
+		}
 		const result = await execGit(args, cwd);
 		if (result.exitCode !== 0) {
 			throw new Error(`git checkout -b failed: ${result.stderr}`);
@@ -256,6 +287,7 @@ export class GitService {
 	}
 
 	async switchBranch(cwd: string, name: string): Promise<void> {
+		assertSafeGitRevish(name, 'branch name');
 		const result = await execGit(['checkout', name], cwd);
 		if (result.exitCode !== 0) {
 			throw new Error(`git checkout failed: ${result.stderr}`);
@@ -263,6 +295,7 @@ export class GitService {
 	}
 
 	async deleteBranch(cwd: string, name: string, force = false): Promise<void> {
+		assertSafeGitRevish(name, 'branch name');
 		const flag = force ? '-D' : '-d';
 		const result = await execGit(['branch', flag, name], cwd);
 		if (result.exitCode !== 0) {
@@ -271,6 +304,8 @@ export class GitService {
 	}
 
 	async renameBranch(cwd: string, oldName: string, newName: string): Promise<void> {
+		assertSafeGitRevish(oldName, 'old branch name');
+		assertSafeGitRevish(newName, 'new branch name');
 		const result = await execGit(['branch', '-m', oldName, newName], cwd);
 		if (result.exitCode !== 0) {
 			throw new Error(`git branch -m failed: ${result.stderr}`);
@@ -278,6 +313,7 @@ export class GitService {
 	}
 
 	async mergeBranch(cwd: string, branchName: string): Promise<{ success: boolean; message: string }> {
+		assertSafeGitRevish(branchName, 'merge branch');
 		const result = await execGit(['merge', branchName], cwd);
 		return {
 			success: result.exitCode === 0,
@@ -301,7 +337,10 @@ export class GitService {
 			`--skip=${skip}`
 		];
 
-		if (branch) args.push(branch);
+		if (branch) {
+			assertSafeGitRevish(branch, 'log branch');
+			args.push(branch);
+		}
 
 		const result = await execGit(args, cwd);
 		if (result.exitCode !== 0) {
@@ -313,7 +352,8 @@ export class GitService {
 		if (hasMore) commits.pop(); // Remove the extra one
 
 		// Get total count
-		const countResult = await execGit(['rev-list', '--count', branch || 'HEAD'], cwd);
+		const countRef = branch ?? 'HEAD';
+		const countResult = await execGit(['rev-list', '--count', countRef], cwd);
 		const total = parseInt(countResult.stdout.trim()) || commits.length;
 
 		return { commits, total, hasMore };
@@ -329,6 +369,7 @@ export class GitService {
 	}
 
 	async fetch(cwd: string, remote = 'origin'): Promise<string> {
+		assertSafeGitRemoteName(remote);
 		// Use explicit refspec to ensure all branches are fetched regardless of clone config
 		const result = await execGit(['fetch', remote, `+refs/heads/*:refs/remotes/${remote}/*`, '--prune'], cwd, 60000);
 		if (result.exitCode !== 0) {
@@ -338,8 +379,12 @@ export class GitService {
 	}
 
 	async pull(cwd: string, remote = 'origin', branch?: string): Promise<{ success: boolean; message: string }> {
+		assertSafeGitRemoteName(remote);
 		const args = ['pull', remote];
-		if (branch) args.push(branch);
+		if (branch) {
+			assertSafeGitRevish(branch, 'pull branch');
+			args.push(branch);
+		}
 		const result = await execGit(args, cwd, 60000);
 		return {
 			success: result.exitCode === 0,
@@ -348,8 +393,12 @@ export class GitService {
 	}
 
 	async push(cwd: string, remote = 'origin', branch?: string, force = false): Promise<{ success: boolean; message: string }> {
+		assertSafeGitRemoteName(remote);
 		const args = ['push', remote];
-		if (branch) args.push(branch);
+		if (branch) {
+			assertSafeGitRevish(branch, 'push branch');
+			args.push(branch);
+		}
 		if (force) args.push('--force-with-lease');
 		// Set upstream if needed
 		args.push('-u');
@@ -361,6 +410,8 @@ export class GitService {
 	}
 
 	async addRemote(cwd: string, name: string, url: string): Promise<void> {
+		assertSafeGitRemoteName(name);
+		assertSafeGitRemoteUrl(url);
 		const result = await execGit(['remote', 'add', name, url], cwd);
 		if (result.exitCode !== 0) {
 			throw new Error(`git remote add failed: ${result.stderr}`);
@@ -368,6 +419,7 @@ export class GitService {
 	}
 
 	async removeRemote(cwd: string, name: string): Promise<void> {
+		assertSafeGitRemoteName(name);
 		const result = await execGit(['remote', 'remove', name], cwd);
 		if (result.exitCode !== 0) {
 			throw new Error(`git remote remove failed: ${result.stderr}`);
@@ -385,7 +437,10 @@ export class GitService {
 
 	async stashSave(cwd: string, message?: string): Promise<void> {
 		const args = ['stash', 'push'];
-		if (message) args.push('-m', message);
+		if (message) {
+			assertSafeGitCommitMessage(message);
+			args.push('-m', message);
+		}
 		const result = await execGit(args, cwd);
 		if (result.exitCode !== 0) {
 			throw new Error(`git stash failed: ${result.stderr}`);
@@ -393,6 +448,9 @@ export class GitService {
 	}
 
 	async stashPop(cwd: string, index = 0): Promise<void> {
+		if (!Number.isInteger(index) || index < 0) {
+			throw new Error('Invalid stash index');
+		}
 		const result = await execGit(['stash', 'pop', `stash@{${index}}`], cwd);
 		if (result.exitCode !== 0) {
 			throw new Error(`git stash pop failed: ${result.stderr}`);
@@ -400,6 +458,9 @@ export class GitService {
 	}
 
 	async stashDrop(cwd: string, index = 0): Promise<void> {
+		if (!Number.isInteger(index) || index < 0) {
+			throw new Error('Invalid stash index');
+		}
 		const result = await execGit(['stash', 'drop', `stash@{${index}}`], cwd);
 		if (result.exitCode !== 0) {
 			throw new Error(`git stash drop failed: ${result.stderr}`);
@@ -435,13 +496,18 @@ export class GitService {
 	}
 
 	async createTag(cwd: string, name: string, message?: string, commitHash?: string): Promise<void> {
+		assertSafeGitRevish(name, 'tag name');
 		const args = ['tag'];
 		if (message) {
+			assertSafeGitCommitMessage(message);
 			args.push('-a', name, '-m', message);
 		} else {
 			args.push(name);
 		}
-		if (commitHash) args.push(commitHash);
+		if (commitHash) {
+			assertSafeGitRevish(commitHash, 'tag target');
+			args.push(commitHash);
+		}
 		const result = await execGit(args, cwd);
 		if (result.exitCode !== 0) {
 			throw new Error(`git tag failed: ${result.stderr}`);
@@ -449,6 +515,7 @@ export class GitService {
 	}
 
 	async deleteTag(cwd: string, name: string): Promise<void> {
+		assertSafeGitRevish(name, 'tag name');
 		const result = await execGit(['tag', '-d', name], cwd);
 		if (result.exitCode !== 0) {
 			throw new Error(`git tag -d failed: ${result.stderr}`);
@@ -456,6 +523,8 @@ export class GitService {
 	}
 
 	async pushTag(cwd: string, name: string, remote = 'origin'): Promise<{ success: boolean; message: string }> {
+		assertSafeGitRemoteName(remote);
+		assertSafeGitRevish(name, 'tag name');
 		const result = await execGit(['push', remote, name], cwd, 60000);
 		return {
 			success: result.exitCode === 0,
@@ -492,6 +561,7 @@ export class GitService {
 		resolution: 'ours' | 'theirs' | 'custom',
 		customContent?: string
 	): Promise<void> {
+		assertSafeGitPathOperand(filePath, 'conflict path');
 		if (resolution === 'custom' && customContent !== undefined) {
 			// Write custom content
 			const { writeFile } = await import('node:fs/promises');

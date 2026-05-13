@@ -11,6 +11,7 @@
 import fs from 'fs/promises';
 import path from 'path';
 import { debug } from '$shared/utils/logger';
+import { execGit } from '../git/git-executor';
 
 /**
  * Safety-net directories to always exclude regardless of .gitignore.
@@ -49,15 +50,9 @@ async function scanWithGit(dirPath: string): Promise<string[] | null> {
 	}
 
 	try {
-		const proc = Bun.spawn(
-			['git', 'ls-files', '-co', '--exclude-standard'],
-			{ cwd: dirPath, stdout: 'pipe', stderr: 'pipe' }
-		);
-
-		const output = await new Response(proc.stdout).text();
-		const exitCode = await proc.exited;
-
-		if (exitCode !== 0) return null;
+		const result = await execGit(['ls-files', '-co', '--exclude-standard'], dirPath, 60_000);
+		if (result.exitCode !== 0) return null;
+		const output = result.stdout;
 
 		const files: string[] = [];
 		for (const line of output.split('\n')) {
