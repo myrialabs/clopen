@@ -17,6 +17,7 @@ import { chatModelState } from '$frontend/stores/ui/chat-model.svelte';
 import { projectState } from '$frontend/stores/core/projects.svelte';
 import { sessionState, setCurrentSession, createSession, updateSession } from '$frontend/stores/core/sessions.svelte';
 import { addNotification } from '$frontend/stores/ui/notification.svelte';
+import { setRateLimit } from '$frontend/stores/ui/rate-limit.svelte';
 import { userStore } from '$frontend/stores/features/user.svelte';
 import type { UnifiedMessage, AssistantMessage, ReasoningMessage } from '$shared/types/unified';
 import type { StreamingMessage, OptimisticUserMessage, FrontendMessage } from '$frontend/stores/core/sessions.svelte';
@@ -210,6 +211,22 @@ class ChatService {
           duration: notif.type === 'warning' ? 7000 : 5000
         });
       }
+    });
+
+    // Rate limit event — renders as a docked banner above task progress.
+    // Keyed by engine + accountId so the banner applies to every session
+    // sharing the rate-limited account.
+    ws.on('chat:rate_limit', (data) => {
+      if (this.shouldSkipEvent('rate_limit', data.seq)) return;
+      if (!data.engine || !data.accountId) return;
+
+      setRateLimit({
+        engine: data.engine,
+        accountId: data.accountId,
+        status: data.status,
+        utilization: data.utilization,
+        resetsAt: data.resetsAt
+      });
     });
 
     // Complete event
