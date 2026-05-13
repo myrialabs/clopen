@@ -17,7 +17,7 @@ type TerminalStream = NonNullable<ReturnType<typeof terminalStreamManager.getStr
 export function requirePtySessionAccess(conn: WSConnection, sessionId: string): PtySession {
 	const session = ptySessionManager.getSession(sessionId);
 	if (!session || !session.projectId) {
-		throw new Error('Session not found');
+		throw new Error('Access denied');
 	}
 	requireProjectAccess(conn, session.projectId);
 	return session;
@@ -26,7 +26,7 @@ export function requirePtySessionAccess(conn: WSConnection, sessionId: string): 
 export function requireTerminalStreamAccess(conn: WSConnection, streamId: string): TerminalStream {
 	const stream = terminalStreamManager.getStream(streamId);
 	if (!stream || !stream.projectId) {
-		throw new Error('Stream not found');
+		throw new Error('Access denied');
 	}
 	requireProjectAccess(conn, stream.projectId);
 	return stream;
@@ -49,7 +49,7 @@ export function requireTerminalLookupAccess(
 
 	const projectId = session?.projectId || stream?.projectId;
 	if (!projectId) {
-		throw new Error('Session not found');
+		throw new Error('Access denied');
 	}
 	requireProjectAccess(conn, projectId);
 	return { projectId, stream, session };

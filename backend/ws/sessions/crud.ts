@@ -398,7 +398,7 @@ export const crudHandler = createRouter()
 		const session = requireSessionAccess(conn, data.sessionId);
 		requireProjectAccess(conn, data.projectId);
 		if (session.project_id !== data.projectId) {
-			throw new Error('Session not found');
+			throw new Error('Access denied');
 		}
 		sessionQueries.markUnread(userId, data.sessionId, data.projectId);
 		debug.log('session', `[unread] Marked session ${data.sessionId} as UNREAD for user ${userId} in project ${data.projectId}`);

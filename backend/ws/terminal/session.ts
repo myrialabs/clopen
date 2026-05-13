@@ -58,7 +58,7 @@ export const sessionHandler = createRouter()
 		// caller's current project. Prevents hijacking another project's PTY id.
 		const existingForOwnership = ptySessionManager.getSession(sessionId);
 		if (existingForOwnership && existingForOwnership.projectId && existingForOwnership.projectId !== projectId) {
-			throw new Error('Session not found');
+			throw new Error('Access denied');
 		}
 
 		debug.log('terminal', `🌐 WebSocket: Creating PTY session: ${sessionId}`);
@@ -313,7 +313,7 @@ export const sessionHandler = createRouter()
 			debug.log('terminal', `💀 [kill-session] No active PTY session found for: ${sessionId}`);
 			return { sessionId };
 		}
-		if (!session.projectId) throw new Error('Session not found');
+		if (!session.projectId) throw new Error('Access denied');
 		requireProjectAccess(conn, session.projectId);
 
 		debug.log('terminal', `💀 [kill-session] Killing PTY session: ${sessionId}`);

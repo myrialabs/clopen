@@ -492,11 +492,11 @@ export function listUserProjects(userId: string): Project[] {
 export function assignProjectToUser(userId: string, projectId: string): boolean {
 	const user = authQueries.getUserById(userId);
 	if (!user) {
-		throw new Error('User not found');
+		throw new Error('Access denied');
 	}
 	const project = projectQueries.getById(projectId);
 	if (!project) {
-		throw new Error('Project not found');
+		throw new Error('Access denied');
 	}
 	if (projectQueries.userHasProject(userId, projectId)) {
 		return false;
@@ -513,11 +513,11 @@ export function assignProjectToUser(userId: string, projectId: string): boolean 
 export function unassignProjectFromUser(userId: string, projectId: string): boolean {
 	const user = authQueries.getUserById(userId);
 	if (!user) {
-		throw new Error('User not found');
+		throw new Error('Access denied');
 	}
 	const project = projectQueries.getById(projectId);
 	if (!project) {
-		throw new Error('Project not found');
+		throw new Error('Access denied');
 	}
 	if (!projectQueries.userHasProject(userId, projectId)) {
 		return false;

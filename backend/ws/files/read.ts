@@ -185,7 +185,7 @@ export const readHandler = createRouter()
 	}, async ({ data, conn }) => {
 		requireProjectAccess(conn, data.projectId);
 		const project = projectQueries.getById(data.projectId);
-		if (!project) throw new Error('Project not found');
+		if (!project) throw new Error('Access denied');
 
 		const ref = data.ref || 'HEAD';
 

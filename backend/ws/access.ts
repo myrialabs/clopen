@@ -7,12 +7,12 @@ export function requireProjectAccess(conn: WSConnection, projectId: string): Pro
 	const userId = ws.getUserId(conn);
 	const hasAccess = projectQueries.userHasProject(userId, projectId);
 	if (!hasAccess) {
-		throw new Error('Project not found');
+		throw new Error('Access denied');
 	}
 
 	const project = projectQueries.getById(projectId);
 	if (!project) {
-		throw new Error('Project not found');
+		throw new Error('Access denied');
 	}
 
 	return project;
@@ -32,13 +32,13 @@ export function requireCurrentProjectAccess(conn: WSConnection): {
 export function requireSessionAccess(conn: WSConnection, sessionId: string): ChatSession {
 	const session = sessionQueries.getById(sessionId);
 	if (!session) {
-		throw new Error('Session not found');
+		throw new Error('Access denied');
 	}
 
 	const userId = ws.getUserId(conn);
 	const hasAccess = projectQueries.userHasProject(userId, session.project_id);
 	if (!hasAccess) {
-		throw new Error('Session not found');
+		throw new Error('Access denied');
 	}
 
 	return session;
@@ -47,7 +47,7 @@ export function requireSessionAccess(conn: WSConnection, sessionId: string): Cha
 export function requireMessageAccess(conn: WSConnection, messageId: string): DatabaseMessage {
 	const message = messageQueries.getById(messageId);
 	if (!message) {
-		throw new Error('Message not found');
+		throw new Error('Access denied');
 	}
 
 	// Message access inherits session access controls.

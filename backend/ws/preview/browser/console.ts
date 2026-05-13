@@ -33,7 +33,7 @@ export const consolePreviewHandler = createRouter()
 		const success = previewService.clearConsoleLogs(tab.id);
 
 		if (!success) {
-			throw new Error('Session not found');
+			throw new Error('Access denied');
 		}
 
 		return { message: 'Console logs cleared' };
@@ -69,7 +69,7 @@ export const consolePreviewHandler = createRouter()
 		const success = previewService.toggleConsoleLogging(tab.id, data.enabled);
 
 		if (!success) {
-			throw new Error('Session not found');
+			throw new Error('Access denied');
 		}
 
 		return {

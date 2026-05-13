@@ -25,7 +25,7 @@ export const watchHandler = createRouter()
 		const { projectPath } = data;
 
 		const project = projectQueries.getByPath(projectPath);
-		if (!project) throw new Error('Project not found');
+		if (!project) throw new Error('Access denied');
 		requireProjectAccess(conn, project.id);
 		const projectId = project.id;
 

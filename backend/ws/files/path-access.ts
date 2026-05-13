@@ -16,7 +16,7 @@ function isPathInside(rootPath: string, candidatePath: string): boolean {
 export function requireProjectPathAccess(conn: WSConnection, projectPath: string): Project {
 	const project = projectQueries.getByPath(projectPath);
 	if (!project) {
-		throw new Error('Project not found');
+		throw new Error('Access denied');
 	}
 	if (ws.getRole(conn) === 'admin') {
 		return project;
@@ -35,7 +35,7 @@ export function requireFilePathAccess(conn: WSConnection, filePath: string): str
 
 	const hasAccess = projects.some((project) => isPathInside(project.path, normalizedPath));
 	if (!hasAccess) {
-		throw new Error('File path is outside accessible projects');
+		throw new Error('Access denied');
 	}
 
 	return normalizedPath;
@@ -61,7 +61,7 @@ export function requireSharedFilePathAccess(conn: WSConnection, filePath: string
 		if (projectRoot === normalizedPath) continue; // equality is handled below
 		if (!isPathInside(normalizedPath, project.path)) continue;
 		if (!projectQueries.userHasProject(userId, project.id)) {
-			throw new Error('File path contains another project');
+			throw new Error('Access denied');
 		}
 	}
 
@@ -82,7 +82,7 @@ export function requireSharedFilePathAccess(conn: WSConnection, filePath: string
 
 	const hasAccess = projectQueries.userHasProject(userId, containing.id);
 	if (!hasAccess) {
-		throw new Error('File path is inside another project');
+		throw new Error('Access denied');
 	}
 	return normalizedPath;
 }
