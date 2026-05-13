@@ -10,6 +10,7 @@
 import { t } from 'elysia';
 import { createRouter } from '$shared/utils/ws-server';
 import { streamManager, type StreamEvent } from '../../chat/stream-manager';
+import type { EngineType } from '$shared/types/unified';
 import { debug } from '$shared/utils/logger';
 import { ws } from '$backend/utils/ws';
 import { broadcastPresence } from '../projects/status';
@@ -88,6 +89,41 @@ export const streamHandler = createRouter()
 		broadcastPresence().catch((err) => {
 			debug.warn('chat', 'Presence broadcast error after chat join-session:', err);
 		});
+
+		// Rehydrate rate-limit banners: replay every active snapshot to the
+		// user so banners persist across page refresh AND across session /
+		// project switches. Rate limits are scoped to account, not session,
+		// so all active snapshots remain visible regardless of which session
+		// the user is currently viewing.
+		try {
+			const userId = ws.getUserId(conn);
+			const snapshots = streamManager.getAllActiveRateLimits();
+			for (const snap of snapshots) {
+				ws.emit.user(userId, 'chat:rate_limit', {
+					chatSessionId: data.chatSessionId,
+					engine: snap.engine,
+					accountId: snap.accountId,
+					status: snap.status,
+					utilization: snap.utilization,
+					resetsAt: snap.resetsAt,
+					timestamp: snap.receivedAt
+				});
+			}
+		} catch (err) {
+			debug.warn('chat', 'Failed to rehydrate rate-limit on join-session:', err);
+		}
+	})
+
+	// Dismiss the active rate-limit snapshot for a given engine/account so the
+	// banner stops re-hydrating on subsequent join-session calls.
+	.on('chat:rate-limit-dismiss', {
+		data: t.Object({
+			engine: t.String(),
+			accountId: t.Number()
+		})
+	}, ({ data }) => {
+		if (!data.accountId) return;
+		streamManager.dismissRateLimit(data.engine as EngineType, data.accountId);
 	})
 
 	// Leave a chat session room
@@ -239,6 +275,19 @@ export const streamHandler = createRouter()
 							});
 							break;
 
+						case 'rate_limit':
+							ws.emit.chatSession(chatSessionId, 'chat:rate_limit', {
+								chatSessionId: event.data.chatSessionId,
+								engine: event.data.engine,
+								accountId: event.data.accountId,
+								status: event.data.status,
+								utilization: event.data.utilization,
+								resetsAt: event.data.resetsAt,
+								timestamp: event.data.timestamp,
+								seq: event.seq
+							});
+							break;
+
 						case 'complete':
 							ws.emit.chatSession(chatSessionId, 'chat:complete', {
 								processId: event.processId,
@@ -380,6 +429,19 @@ export const streamHandler = createRouter()
 						case 'notification':
 							ws.emit.chatSession(chatSessionId, 'chat:notification', {
 								notification: event.data.notification,
+								timestamp: event.data.timestamp,
+								seq: event.seq
+							});
+							break;
+
+						case 'rate_limit':
+							ws.emit.chatSession(chatSessionId, 'chat:rate_limit', {
+								chatSessionId: event.data.chatSessionId,
+								engine: event.data.engine,
+								accountId: event.data.accountId,
+								status: event.data.status,
+								utilization: event.data.utilization,
+								resetsAt: event.data.resetsAt,
 								timestamp: event.data.timestamp,
 								seq: event.seq
 							});
@@ -846,6 +908,17 @@ export const streamHandler = createRouter()
 			message: t.String(),
 			icon: t.Optional(t.String())
 		}),
+		timestamp: t.String(),
+		seq: t.Optional(t.Number())
+	}))
+
+	.emit('chat:rate_limit', t.Object({
+		chatSessionId: t.String(),
+		engine: t.String(),
+		accountId: t.Number(),
+		status: t.Union([t.Literal('allowed_warning'), t.Literal('rejected')]),
+		utilization: t.Number(),
+		resetsAt: t.Union([t.Number(), t.Null()]),
 		timestamp: t.String(),
 		seq: t.Optional(t.Number())
 	}))

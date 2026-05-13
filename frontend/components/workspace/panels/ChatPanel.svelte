@@ -8,6 +8,7 @@
 	import ChatMessages from '$frontend/components/chat/message/ChatMessages.svelte';
 	import ChatInput from '$frontend/components/chat/input/ChatInput.svelte';
 	import TaskProgress from '$frontend/components/chat/widgets/TaskProgress.svelte';
+	import RateLimitBanner from '$frontend/components/chat/widgets/RateLimitBanner.svelte';
 	import TimelineModal from '$frontend/components/checkpoint/TimelineModal.svelte';
 	import Icon from '$frontend/components/common/display/Icon.svelte';
 	import Button from '$frontend/components/common/display/Button.svelte';
@@ -241,9 +242,10 @@
 					</div>
 				</div>
 			{:else}
-				<!-- Enhanced chat interface: Task Progress docked above chat -->
+				<!-- Enhanced chat interface: Rate Limit banner + Task Progress docked above chat -->
 				<div class="flex-1 flex flex-col overflow-hidden">
 					{#if sessionState.currentSession}
+						<RateLimitBanner />
 						<TaskProgress />
 					{/if}
 					<div class="flex-1 flex justify-center overflow-hidden">

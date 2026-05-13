@@ -50,6 +50,7 @@ export interface StreamState {
 	projectPath?: string;
 	processId: string;
 	engine: EngineType;
+	accountId?: number;
 	status: 'active' | 'completed' | 'error' | 'cancelled';
 	startedAt: Date;
 	completedAt?: Date;
@@ -156,6 +157,7 @@ export type StreamEventType =
 	| 'message'
 	| 'partial'
 	| 'notification'
+	| 'rate_limit'
 	| 'complete'
 	| 'error'
 	| 'cancelled';
@@ -173,11 +175,57 @@ export interface StreamEvent {
 // Stream Manager
 // ============================================================================
 
+export interface RateLimitSnapshot {
+	engine: EngineType;
+	accountId: number;
+	status: 'allowed_warning' | 'rejected';
+	utilization: number;
+	resetsAt: number | null;
+	receivedAt: string;
+}
+
 class StreamManager extends EventEmitter {
 	private activeStreams = new Map<string, StreamState>();
 	private sessionStreams = new Map<string, string>(); // composite key -> streamId
 	/** Guard against duplicate lifecycle events (e.g. if both inner and outer error paths fire) */
 	private lifecycleEmitted = new Set<string>();
+	/** Latest rate-limit snapshot per `${engine}:${accountId}`. Persists across refresh so the UI banner can rehydrate on join. */
+	private activeRateLimits = new Map<string, RateLimitSnapshot>();
+
+	private getAccountKey(engine: EngineType, accountId: number): string {
+		return `${engine}:${accountId}`;
+	}
+
+	/** Return active rate limit for an account, purging it lazily if `resetsAt` has passed. */
+	getRateLimitForAccount(engine: EngineType, accountId: number): RateLimitSnapshot | null {
+		const key = this.getAccountKey(engine, accountId);
+		const snap = this.activeRateLimits.get(key);
+		if (!snap) return null;
+		if (snap.resetsAt && snap.resetsAt * 1000 < Date.now()) {
+			this.activeRateLimits.delete(key);
+			return null;
+		}
+		return snap;
+	}
+
+	/** Return every active rate-limit snapshot, lazily purging expired entries. */
+	getAllActiveRateLimits(): RateLimitSnapshot[] {
+		const now = Date.now();
+		const active: RateLimitSnapshot[] = [];
+		for (const [key, snap] of this.activeRateLimits) {
+			if (snap.resetsAt && snap.resetsAt * 1000 < now) {
+				this.activeRateLimits.delete(key);
+				continue;
+			}
+			active.push(snap);
+		}
+		return active;
+	}
+
+	/** Clear an active rate limit (called when the user dismisses the banner). */
+	dismissRateLimit(engine: EngineType, accountId: number): void {
+		this.activeRateLimits.delete(this.getAccountKey(engine, accountId));
+	}
 
 	constructor() {
 		super();
@@ -244,6 +292,7 @@ class StreamManager extends EventEmitter {
 			projectPath: request.projectPath,
 			processId,
 			engine: request.engine.type,
+			accountId: request.engine.account?.id || undefined,
 			status: 'active',
 			startedAt: new Date(),
 			messages: [],
@@ -651,19 +700,29 @@ class StreamManager extends EventEmitter {
 					// ── Rate Limit ─────────────────────────────────────────
 					case 'rate_limit': {
 						const rl = output as RateLimitEvent;
-						const isRejected = rl.status === 'rejected';
-						const resetTime = rl.resetsAt
-							? new Date(rl.resetsAt * 1000).toLocaleString(undefined, { dateStyle: 'medium', timeStyle: 'short' })
-							: 'unknown';
-						this.emitStreamEvent(streamState, 'notification', {
-							notification: {
-								type: isRejected ? 'error' : 'warning',
-								title: isRejected ? 'Rate Limit Reached' : 'Rate Limit Warning',
-								message: isRejected
-									? `Rate limit exceeded. Resets at ${resetTime}.`
-									: `Approaching rate limit (${Math.round((rl.utilization || 0) * 100)}% used). Resets at ${resetTime}.`,
-							},
-							timestamp: new Date().toISOString()
+						const accountId = streamState.accountId;
+						const nowIso = new Date().toISOString();
+						if (accountId) {
+							this.activeRateLimits.set(
+								this.getAccountKey(streamState.engine, accountId),
+								{
+									engine: streamState.engine,
+									accountId,
+									status: rl.status,
+									utilization: rl.utilization,
+									resetsAt: rl.resetsAt,
+									receivedAt: nowIso
+								}
+							);
+						}
+						this.emitStreamEvent(streamState, 'rate_limit', {
+							chatSessionId: streamState.chatSessionId,
+							engine: streamState.engine,
+							accountId: accountId ?? 0,
+							status: rl.status,
+							utilization: rl.utilization,
+							resetsAt: rl.resetsAt,
+							timestamp: nowIso
 						});
 						continue;
 					}
