@@ -88,7 +88,7 @@ export const persistenceHandler = createRouter()
 			const fallbackProjectId = ws.getProjectId(conn);
 			ws.emit.project(fallbackProjectId, 'terminal:error', {
 				sessionId,
-				error: 'Stream not found'
+				error: 'Access denied'
 			});
 			return;
 		}
