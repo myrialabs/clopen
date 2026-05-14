@@ -3,6 +3,7 @@
 	import { appState } from '$frontend/stores/core/app.svelte';
 	import ChatMessage from './ChatMessage.svelte';
 	import DateSeparator from './DateSeparator.svelte';
+	import ChatNavigationRail, { type NavItem } from './ChatNavigationRail.svelte';
 	import { onMount, tick } from 'svelte';
 	import { fade } from 'svelte/transition';
 
@@ -72,6 +73,35 @@
 		if (userMessages.length === 0) return undefined;
 		const lastUserMsg = userMessages[userMessages.length - 1];
 		return 'messageId' in lastUserMsg ? lastUserMsg.messageId : undefined;
+	});
+
+	// Extract first text snippet from a user message (for nav preview)
+	function extractUserText(message: any): string {
+		const content = message?.content;
+		if (!Array.isArray(content)) return '';
+		for (const item of content) {
+			if (item?.type === 'text' && typeof item.text === 'string' && item.text.trim()) {
+				return item.text;
+			}
+		}
+		return '';
+	}
+
+	// Nav items for ChatNavigationRail — only real user messages (no synthetic / sub-agent prompts)
+	const userNavItems = $derived.by<NavItem[]>(() => {
+		const result: NavItem[] = [];
+		filteredMessages.forEach((msg, globalIndex) => {
+			if (msg.type !== 'user') return;
+			if ((msg as any).synthetic) return;
+			const parentToolUseId = (msg as any).parent?.toolUseId;
+			if (parentToolUseId) return;
+			const messageId = 'messageId' in msg ? msg.messageId : undefined;
+			const text = extractUserText(msg);
+			if (!messageId || !text) return;
+			const sender = (msg as any).sender?.name as string | undefined;
+			result.push({ globalIndex, messageId, text, sender });
+		});
+		return result;
 	});
 
 	// ========================================
@@ -407,6 +437,34 @@
 	});
 
 	// ========================================
+	// NAV RAIL: JUMP TO USER MESSAGE
+	// ========================================
+
+	function handleNavJump(item: NavItem) {
+		const el = getScrollEl();
+		if (!el) return;
+
+		// Lock scroll detection so jump doesn't flip isUserAtBottom incorrectly
+		scrollLockUntil = Date.now() + 400;
+
+		const performScroll = () => {
+			const target = el.querySelector<HTMLElement>(`[data-message-id="${item.messageId}"]`);
+			if (target) {
+				target.scrollIntoView({ behavior: 'smooth', block: 'start' });
+			}
+		};
+
+		if (vs.isActive && (item.globalIndex < vs.windowStart || item.globalIndex >= vs.windowEnd)) {
+			vs.ensureVisible(item.globalIndex);
+			tick().then(() => {
+				requestAnimationFrame(performScroll);
+			});
+		} else {
+			performScroll();
+		}
+	}
+
+	// ========================================
 	// LIFECYCLE
 	// ========================================
 
@@ -443,6 +501,15 @@
 </script>
 
 <div class="flex flex-col h-full" style="position: relative">
+	<!-- User-message navigation rail (side dots) -->
+	{#if isContentReady}
+		<ChatNavigationRail
+			scrollEl={messagesScrollEl}
+			items={userNavItems}
+			onJump={handleNavJump}
+		/>
+	{/if}
+
 	<!-- Messages container -->
 	<div
 		bind:this={messagesScrollEl}
@@ -466,7 +533,7 @@
 					{#if item.type === 'date'}
 						<DateSeparator date={item.data} />
 					{:else if item.type === 'message'}
-						{@const messageId = item.data.metadata?.message_id}
+						{@const messageId = 'messageId' in item.data ? item.data.messageId : undefined}
 						{@const isLastUser = messageId === lastUserMessageId}
 						<div class={isCompact ? 'mb-2' : 'mb-2 lg:mb-4'} data-message-id={messageId}>
 							<ChatMessage message={item.data} isLastUserMessage={isLastUser} />
@@ -479,7 +546,7 @@
 					{#if item.type === 'date'}
 						<DateSeparator date={item.data} />
 					{:else if item.type === 'message'}
-						{@const messageId = item.data.metadata?.message_id}
+						{@const messageId = 'messageId' in item.data ? item.data.messageId : undefined}
 						{@const isLastUser = messageId === lastUserMessageId}
 						<div class={isCompact ? 'mb-2' : 'mb-2 lg:mb-4'} data-message-id={messageId}>
 							<ChatMessage message={item.data} isLastUserMessage={isLastUser} />
