@@ -25,7 +25,8 @@ import { requireProjectAccess } from '../access';
 import {
 	filterAccessibleExpandedPaths,
 	requireFilePathAccess,
-	requireProjectPathAccess
+	requireProjectPathAccess,
+	requireSharedFilePathAccess
 } from './path-access';
 
 // Bun-compatible existsSync implementation
@@ -120,10 +121,19 @@ export const readHandler = createRouter()
 			),
 			error: t.Optional(t.String())
 		})
-	}, async ({ data }) => {
+	}, async ({ data, conn }) => {
 		// FolderBrowser uses this before a project exists, so it must be able to
 		// browse roots like "home", "drives", ".", and arbitrary candidate paths.
-		const result = await handlePathBrowsing(data.path);
+		// Security: enforce backend path ownership checks for real filesystem
+		// paths so non-admin users can't enumerate directories inside projects
+		// they are not assigned to.
+		const requestedPath = data.path === 'home'
+			? (process.env.HOME || process.env.USERPROFILE || process.cwd())
+			: (data.path === '.' || data.path === '' ? process.cwd() : data.path);
+		const guardedPath = data.path === 'drives'
+			? 'drives'
+			: requireSharedFilePathAccess(conn, requestedPath);
+		const result = await handlePathBrowsing(guardedPath);
 		return result;
 	})
 
