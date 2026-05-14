@@ -21,6 +21,8 @@ export const PUBLIC_ROUTES = new Set([
 
 /** Routes that require admin role */
 export const ADMIN_ONLY_ROUTES = new Set([
+	// Auth session controls with global impact.
+	'auth:logout-all',
 	'auth:create-invite',
 	'auth:list-invites',
 	'auth:revoke-invite',
