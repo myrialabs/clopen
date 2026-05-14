@@ -93,15 +93,20 @@ export class CodexEngine implements AIEngine {
 		const mcpConfig = getCodexMcpConfig();
 
 		// Codex SDK takes config at construction. We pass `show_raw_agent_reasoning`
-		// (so the SDK forwards reasoning text events), enable network access in the
-		// workspace-write sandbox (matches Claude/Copilot trust model — see plan §7),
-		// and forward the Clopen MCP HTTP endpoint to the spawned subprocess.
+		// (so the SDK forwards reasoning text events) and forward the Clopen MCP
+		// HTTP endpoint to the spawned subprocess. Sandbox is disabled at the
+		// thread level (`sandboxMode: 'danger-full-access'`) to match the trust
+		// model of every other engine in this repo — Claude bypasses permissions,
+		// OpenCode auto-approves every permission event, Copilot uses `approveAll`,
+		// and Qwen's `canUseTool` returns allow for everything. Codex's
+		// `workspace-write` sandbox relies on platform primitives (Seatbelt on
+		// macOS, Landlock on Linux) that are absent on Windows, where the CLI
+		// degrades to read-only — using full-access keeps behaviour consistent.
 		this.codex = new Codex({
 			apiKey: credential.kind === 'api_key' ? credential.apiKey : undefined,
 			...(codexBinary ? { codexPathOverride: codexBinary } : {}),
 			config: {
 				show_raw_agent_reasoning: true,
-				sandbox_workspace_write: { network_access: true },
 				...(Object.keys(mcpConfig).length > 0 ? { mcp_servers: mcpConfig } : {}),
 			},
 		});
@@ -158,10 +163,9 @@ export class CodexEngine implements AIEngine {
 			model: modelId,
 			workingDirectory: resolvedProjectPath,
 			skipGitRepoCheck: true,
-			sandboxMode: 'workspace-write',
+			sandboxMode: 'danger-full-access',
 			approvalPolicy: 'never',
 			modelReasoningEffort: 'medium',
-			networkAccessEnabled: true,
 			webSearchMode: 'cached',
 			webSearchEnabled: true,
 		};
