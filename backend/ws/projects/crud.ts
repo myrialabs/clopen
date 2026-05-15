@@ -46,11 +46,14 @@ export const crudHandler = createRouter()
 		const userId = ws.getUserId(conn);
 		const { name, path } = data;
 
-		// Check if project with this path already exists
+		// Check if project with this path already exists. If so, ensure the
+		// current user is joined to it and return the existing record. This
+		// covers re-adding a project that was previously removed (mode='remove')
+		// which preserves the project row for session restoration.
 		const existing = projectQueries.getByPath(path);
 		if (existing) {
 			if (!projectQueries.userHasProject(userId, existing.id)) {
-				throw new Error('Project path is already registered');
+				projectQueries.addUserProject(userId, existing.id);
 			}
 			return existing;
 		}
