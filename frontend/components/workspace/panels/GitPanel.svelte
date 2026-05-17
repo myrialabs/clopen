@@ -10,6 +10,9 @@
 	import { getFileIcon } from '$frontend/utils/file-icon-mappings';
 	import { isPreviewableFile, isBinaryFile } from '$frontend/utils/file-type';
 	import { getGitStatusLabel, getGitStatusColor } from '$frontend/utils/git-status';
+	import { chatService } from '$frontend/services/chat/chat.service';
+	import { showPanel } from '$frontend/stores/ui/workspace.svelte';
+	import { detectLanguageFromFilename } from '$frontend/components/common/editor/monaco-languages';
 	import type { IconName } from '$shared/types/ui/icons';
 	import type {
 		GitStatus,
@@ -138,6 +141,7 @@
 	// Conflict state
 	let conflictFiles = $state<GitConflictFile[]>([]);
 	let isConflictLoading = $state(false);
+	let conflictInitialPath = $state<string | null>(null);
 
 	// Container width for responsive layout (same threshold as Files: 800)
 	let containerRef = $state<HTMLDivElement | null>(null);
@@ -549,7 +553,60 @@
 		try {
 			let diffResult: GitFileDiff | null = null;
 
-			if (status === '?') {
+			if (section === 'conflicted') {
+				// Conflicted files have no meaningful staged/unstaged diff. Read the
+				// working tree (which still contains <<<<<<< markers) and render it
+				// as a single-side preview so the user can at least see the markers.
+				const isBinary = isBinaryByExtension(file.path);
+				if (isBinary) {
+					diffResult = {
+						oldPath: file.path,
+						newPath: file.path,
+						status: status || 'U',
+						hunks: [],
+						isBinary: true
+					};
+				} else {
+					try {
+						const basePath = projectState.currentProject?.path || '';
+						const separator = basePath.includes('\\') ? '\\' : '/';
+						const fullPath = `${basePath}${separator}${file.path}`;
+						const fileData = await ws.http('files:read-file', { file_path: fullPath });
+						if (fileData.isBinary) {
+							diffResult = {
+								oldPath: file.path,
+								newPath: file.path,
+								status: status || 'U',
+								hunks: [],
+								isBinary: true
+							};
+						} else {
+							const lines = (fileData.content || '').split('\n');
+							diffResult = {
+								oldPath: file.path,
+								newPath: file.path,
+								status: status || 'U',
+								hunks: [{
+									oldStart: 0,
+									oldLines: 0,
+									newStart: 1,
+									newLines: lines.length,
+									header: `@@ -0,0 +1,${lines.length} @@`,
+									lines: lines.map((line, i) => ({
+										type: 'add' as const,
+										content: line,
+										newLineNumber: i + 1
+									}))
+								}],
+								isBinary: false
+							};
+						}
+					} catch (readErr) {
+						debug.error('git', 'Failed to read conflicted file:', readErr);
+						diffResult = null;
+					}
+				}
+			} else if (status === '?') {
 				// Untracked files have no git diff — read file content to build a synthetic diff
 				const isBinary = isBinaryByExtension(file.path);
 				if (isBinary) {
@@ -889,9 +946,65 @@
 		}
 	}
 
-	function resolveWithAI(filePath: string) {
+	function buildAIPromptForFile(file: GitConflictFile): string {
+		const lang = detectLanguageFromFilename(file.path);
+		const count = file.markers.length;
+		return `Please help me resolve the merge conflict${count === 1 ? '' : 's'} in \`${file.path}\`. Analyze the conflict${count === 1 ? '' : 's'} and edit the file directly using your tools to apply the resolution, then stage it with \`git add\`.
+
+The file currently has ${count} conflict marker${count === 1 ? '' : 's'}:
+
+\`\`\`${lang}
+${file.content}
+\`\`\``;
+	}
+
+	async function resolveWithAI(filePath: string) {
+		const file = conflictFiles.find((f) => f.path === filePath);
+		if (!file) return;
+		const prompt = buildAIPromptForFile(file);
 		showConflictResolver = false;
-		showInfo('AI Conflict Resolution', `To resolve "${filePath}" with AI, open the Chat panel and describe the conflict. The AI will help you resolve it.`);
+		showPanel('chat');
+		try {
+			await chatService.sendMessage(prompt);
+		} catch (err) {
+			debug.error('git', 'Failed to send AI conflict resolution prompt:', err);
+			showError(
+				'AI Resolution Failed',
+				err instanceof Error ? err.message : 'Could not send conflict to chat.'
+			);
+		}
+	}
+
+	async function resolveAllWithAI() {
+		if (conflictFiles.length === 0) return;
+		const summary = conflictFiles
+			.map(
+				(f, i) =>
+					`${i + 1}. \`${f.path}\` (${f.markers.length} conflict${f.markers.length === 1 ? '' : 's'})`
+			)
+			.join('\n');
+		const bodies = conflictFiles
+			.map((f) => {
+				const lang = detectLanguageFromFilename(f.path);
+				return `### \`${f.path}\`\n\n\`\`\`${lang}\n${f.content}\n\`\`\``;
+			})
+			.join('\n\n');
+		const prompt = `Please help me resolve merge conflicts in these files. For each file, analyze the conflicts, edit the file directly using your tools to apply the resolution, then stage each one with \`git add\`.
+
+${summary}
+
+${bodies}`;
+		showConflictResolver = false;
+		showPanel('chat');
+		try {
+			await chatService.sendMessage(prompt);
+		} catch (err) {
+			debug.error('git', 'Failed to send AI bulk conflict resolution prompt:', err);
+			showError(
+				'AI Resolution Failed',
+				err instanceof Error ? err.message : 'Could not send conflicts to chat.'
+			);
+		}
 	}
 
 	async function abortMerge() {
@@ -914,6 +1027,7 @@
 	}
 
 	function openConflictResolver(path: string) {
+		conflictInitialPath = path;
 		loadConflicts().then(() => {
 			showConflictResolver = true;
 		});
@@ -951,11 +1065,24 @@
 	async function handleStashPop(index: number) {
 		if (!projectId) return;
 		try {
-			await ws.http('git:stash-pop', { projectId, index });
+			const result = await ws.http('git:stash-pop', { projectId, index });
 			await Promise.all([loadStash(), loadStatus()]);
+			if (!result.success && result.hasConflicts) {
+				await loadConflicts();
+				const count = conflictFiles.length;
+				showError(
+					'Stash Pop — Conflicts',
+					`Applied the stash but ${count} file${count === 1 ? '' : 's'} ${count === 1 ? 'has' : 'have'} conflicts. Opening the resolver — the stash is still saved in case you need to abort.`
+				);
+				conflictInitialPath = conflictFiles[0]?.path ?? null;
+				showConflictResolver = true;
+			} else if (result.success) {
+				showInfo('Stash Applied', 'Stash popped successfully.');
+			}
 		} catch (err) {
 			debug.error('git', 'Stash pop failed:', err);
-			showError('Stash Pop Failed', err instanceof Error ? err.message : 'Unknown error');
+			const msg = err instanceof Error ? err.message : 'Unknown error';
+			showError('Stash Pop Failed', msg.replace(/^git stash pop failed:\s*/i, '').trim() || msg);
 		}
 	}
 
@@ -1621,6 +1748,7 @@
 			<DiffViewer
 				diff={activeTab.diff}
 				isLoading={activeTab.isLoading}
+				inlinePreview={activeTab.section === 'conflicted'}
 			/>
 		{:else}
 			<div class="h-full flex flex-col items-center justify-center gap-2 text-slate-500 text-xs">
@@ -1727,10 +1855,15 @@
 		isOpen={showConflictResolver}
 		{conflictFiles}
 		isLoading={isConflictLoading}
+		initialPath={conflictInitialPath}
 		onResolve={resolveConflict}
 		onResolveWithAI={resolveWithAI}
+		onResolveAllWithAI={resolveAllWithAI}
 		onAbortMerge={abortMerge}
-		onClose={() => showConflictResolver = false}
+		onClose={() => {
+			showConflictResolver = false;
+			conflictInitialPath = null;
+		}}
 	/>
 
 	<!-- Confirm Dialog -->

@@ -2,6 +2,7 @@
 	import Icon from '$frontend/components/common/display/Icon.svelte';
 	import MediaPreview from '$frontend/components/common/media/MediaPreview.svelte';
 	import MonacoDiffEditor from '$frontend/components/common/editor/MonacoDiffEditor.svelte';
+	import MonacoCodeEditor from '$frontend/components/common/editor/MonacoCodeEditor.svelte';
 	import { detectLanguageFromFilename } from '$frontend/components/common/editor/monaco-languages';
 	import { getFileIcon } from '$frontend/utils/file-icon-mappings';
 	import { isPreviewableFile } from '$frontend/utils/file-type';
@@ -18,9 +19,13 @@
 		isLoading: boolean;
 		onSelectFile?: (index: number) => void;
 		selectedFileIndex?: number;
+		// When true (e.g. for unmerged conflict files), render the file content in
+		// a single-pane code editor instead of the side-by-side diff — there is no
+		// "original" to compare against, so the left pane would just be empty.
+		inlinePreview?: boolean;
 	}
 
-	const { diff, diffs = [], isLoading, onSelectFile, selectedFileIndex = 0 }: Props = $props();
+	const { diff, diffs = [], isLoading, onSelectFile, selectedFileIndex = 0, inlinePreview = false }: Props = $props();
 
 	const allDiffs = $derived(diffs.length > 0 ? diffs : diff ? [diff] : []);
 	const activeDiff = $derived(allDiffs.length > 0 ? allDiffs[selectedFileIndex] ?? allDiffs[0] : null);
@@ -156,6 +161,19 @@
 					</p>
 				</div>
 			{/if}
+		{:else if inlinePreview}
+			<!-- Single-pane preview: shows the working-tree file (with conflict
+				markers, for unmerged files) without a useless empty "original" pane. -->
+			<div class="flex-1 overflow-hidden">
+				{#key activePath}
+					<MonacoCodeEditor
+						value={modifiedContent}
+						language={activeLanguage}
+						path={activeDiff.newPath || activeDiff.oldPath}
+						readonly
+					/>
+				{/key}
+			</div>
 		{:else}
 			<!-- Monaco Diff Editor -->
 			<div class="flex-1 overflow-hidden">

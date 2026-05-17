@@ -123,11 +123,14 @@ export const remoteHandler = createRouter()
 			projectId: t.String(),
 			index: t.Optional(t.Number())
 		}),
-		response: t.Object({ ok: t.Boolean() })
+		response: t.Object({
+			success: t.Boolean(),
+			hasConflicts: t.Boolean(),
+			message: t.String()
+		})
 	}, async ({ data, conn }) => {
 		const project = requireProjectAccess(conn, data.projectId);
-		await gitService.stashPop(project.path, data.index);
-		return { ok: true };
+		return await gitService.stashPop(project.path, data.index);
 	})
 
 	.http('git:stash-drop', {

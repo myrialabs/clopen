@@ -447,14 +447,26 @@ export class GitService {
 		}
 	}
 
-	async stashPop(cwd: string, index = 0): Promise<void> {
+	async stashPop(
+		cwd: string,
+		index = 0
+	): Promise<{ success: boolean; hasConflicts: boolean; message: string }> {
 		if (!Number.isInteger(index) || index < 0) {
 			throw new Error('Invalid stash index');
 		}
 		const result = await execGit(['stash', 'pop', `stash@{${index}}`], cwd);
+		// Conflict during pop: git exits non-zero but the working tree now contains
+		// unmerged paths. Surface this as a normal result so the caller can prompt
+		// the user to resolve — throwing here would just produce an opaque toast.
+		const combined = `${result.stdout}\n${result.stderr}`;
+		const hasConflicts = /CONFLICT \(/.test(combined) || /needs merge/.test(combined);
 		if (result.exitCode !== 0) {
+			if (hasConflicts) {
+				return { success: false, hasConflicts: true, message: result.stderr || result.stdout };
+			}
 			throw new Error(`git stash pop failed: ${result.stderr}`);
 		}
+		return { success: true, hasConflicts: false, message: result.stdout };
 	}
 
 	async stashDrop(cwd: string, index = 0): Promise<void> {
@@ -577,10 +589,42 @@ export class GitService {
 		await this.stageFile(cwd, filePath);
 	}
 
+	/**
+	 * Aborts the in-progress conflict-producing operation: merge, cherry-pick,
+	 * revert, rebase, or a stash pop that left unmerged paths. We detect the
+	 * type via `.git/*_HEAD` sentinel files and pick the matching abort command.
+	 * For stash conflicts (no sentinel) we fall back to `git reset --merge`,
+	 * which unwinds the unmerged paths while keeping unrelated local edits.
+	 */
 	async abortMerge(cwd: string): Promise<void> {
-		const result = await execGit(['merge', '--abort'], cwd);
-		if (result.exitCode !== 0) {
-			throw new Error(`git merge --abort failed: ${result.stderr}`);
+		const { existsSync } = await import('node:fs');
+		const { join } = await import('node:path');
+
+		const gitDirResult = await execGit(['rev-parse', '--git-dir'], cwd);
+		const gitDirRaw = gitDirResult.exitCode === 0 ? gitDirResult.stdout.trim() : '.git';
+		const gitDir = gitDirRaw.startsWith('/') ? gitDirRaw : join(cwd, gitDirRaw);
+
+		const has = (name: string) => existsSync(join(gitDir, name));
+
+		let args: string[] | null = null;
+		if (has('MERGE_HEAD')) args = ['merge', '--abort'];
+		else if (has('CHERRY_PICK_HEAD')) args = ['cherry-pick', '--abort'];
+		else if (has('REVERT_HEAD')) args = ['revert', '--abort'];
+		else if (has('rebase-merge') || has('rebase-apply')) args = ['rebase', '--abort'];
+
+		if (args) {
+			const result = await execGit(args, cwd);
+			if (result.exitCode !== 0) {
+				throw new Error(`git ${args.join(' ')} failed: ${result.stderr}`);
+			}
+			return;
+		}
+
+		// No standard in-progress operation — likely a stash pop conflict. Use
+		// `git reset --merge` to unwind unmerged paths safely.
+		const reset = await execGit(['reset', '--merge'], cwd);
+		if (reset.exitCode !== 0) {
+			throw new Error(`git reset --merge failed: ${reset.stderr}`);
 		}
 	}
 }
