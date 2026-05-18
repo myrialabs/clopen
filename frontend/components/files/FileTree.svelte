@@ -1,6 +1,15 @@
 <script module lang="ts">
+	import { registerProjectCleanup } from '$frontend/utils/project-state-cleanup';
+
 	// Persistent state that survives component destruction (mobile/desktop switch)
 	const projectSearchStates = new Map<string, any>();
+
+	function cleanupFileTreeSearchState(projectId: string): void {
+		projectSearchStates.delete(projectId);
+	}
+
+	// Register once at module load to avoid duplicate closures on remount.
+	registerProjectCleanup(cleanupFileTreeSearchState);
 </script>
 
 <script lang="ts">
