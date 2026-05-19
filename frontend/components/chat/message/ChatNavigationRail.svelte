@@ -158,7 +158,10 @@
 		class="absolute right-3 lg:right-4 top-3 bottom-14 lg:bottom-16 w-8 pointer-events-none z-20 flex flex-col items-center justify-center"
 		aria-hidden="false"
 	>
-		<div class="relative pointer-events-auto">
+		<div
+			class="pointer-events-auto flex flex-col items-center rounded-full py-2 bg-white/30 dark:bg-slate-900/20 backdrop-blur-sm ring-1 ring-slate-200/40 dark:ring-slate-700/40 opacity-40 hover:opacity-100 transition-opacity duration-200"
+		>
+		<div class="relative">
 			<button
 				type="button"
 				onclick={goUp}
@@ -167,7 +170,7 @@
 				onfocus={() => (hovered = 'up')}
 				onblur={() => (hovered = null)}
 				disabled={!canGoUp}
-				class="p-0.5 text-slate-400 dark:text-slate-500 hover:text-slate-700 dark:hover:text-slate-200 disabled:opacity-30 disabled:cursor-not-allowed transition-colors"
+				class="flex p-0.5 text-slate-400 dark:text-slate-500 hover:text-slate-700 dark:hover:text-slate-200 disabled:opacity-30 disabled:cursor-not-allowed transition-colors"
 				aria-label="Previous user message"
 			>
 				<Icon name="lucide:chevron-up" class="w-4 h-4" />
@@ -180,7 +183,7 @@
 		<div class="flex flex-col items-center gap-0.5 py-1.5">
 			{#each items as item, idx (item.messageId)}
 				{@const active = activeId === item.messageId}
-				<div class="relative pointer-events-auto">
+				<div class="relative">
 					<button
 						type="button"
 						onclick={() => jumpTo(item)}
@@ -205,7 +208,7 @@
 			{/each}
 		</div>
 
-		<div class="relative pointer-events-auto">
+		<div class="relative">
 			<button
 				type="button"
 				onclick={goDown}
@@ -214,7 +217,7 @@
 				onfocus={() => (hovered = 'down')}
 				onblur={() => (hovered = null)}
 				disabled={!canGoDown}
-				class="p-0.5 text-slate-400 dark:text-slate-500 hover:text-slate-700 dark:hover:text-slate-200 disabled:opacity-30 disabled:cursor-not-allowed transition-colors"
+				class="flex p-0.5 text-slate-400 dark:text-slate-500 hover:text-slate-700 dark:hover:text-slate-200 disabled:opacity-30 disabled:cursor-not-allowed transition-colors"
 				aria-label="Next user message"
 			>
 				<Icon name="lucide:chevron-down" class="w-4 h-4" />
@@ -222,6 +225,7 @@
 			{#if hovered === 'down' && downTarget}
 				{@render tooltip(downTarget)}
 			{/if}
+		</div>
 		</div>
 	</div>
 {/if}
