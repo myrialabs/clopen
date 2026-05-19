@@ -1,7 +1,11 @@
-import { describe, expect, test } from 'bun:test';
+import { beforeEach, describe, expect, test } from 'bun:test';
 import { projectCleanupRegistry } from './project-cleanup-registry';
 
 describe('projectCleanupRegistry', () => {
+	beforeEach(() => {
+		projectCleanupRegistry._clearHandlers();
+	});
+
 	test('runAll invokes registered handlers', async () => {
 		const calls: string[] = [];
 		projectCleanupRegistry.register({
@@ -20,7 +24,6 @@ describe('projectCleanupRegistry', () => {
 		await projectCleanupRegistry.runAll('proj-1');
 
 		expect(calls).toEqual(['a:proj-1', 'b:proj-1']);
-		projectCleanupRegistry._clearHandlers();
 	});
 
 	test('runAll continues when a handler throws', async () => {
@@ -41,6 +44,5 @@ describe('projectCleanupRegistry', () => {
 		await projectCleanupRegistry.runAll('proj-2');
 
 		expect(calls).toEqual(['ok']);
-		projectCleanupRegistry._clearHandlers();
 	});
 });
