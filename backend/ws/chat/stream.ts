@@ -106,6 +106,7 @@ export const streamHandler = createRouter()
 					status: snap.status,
 					utilization: snap.utilization,
 					resetsAt: snap.resetsAt,
+					rateLimitType: snap.rateLimitType,
 					timestamp: snap.receivedAt
 				});
 			}
@@ -283,6 +284,7 @@ export const streamHandler = createRouter()
 								status: event.data.status,
 								utilization: event.data.utilization,
 								resetsAt: event.data.resetsAt,
+								rateLimitType: event.data.rateLimitType ?? null,
 								timestamp: event.data.timestamp,
 								seq: event.seq
 							});
@@ -442,6 +444,7 @@ export const streamHandler = createRouter()
 								status: event.data.status,
 								utilization: event.data.utilization,
 								resetsAt: event.data.resetsAt,
+								rateLimitType: event.data.rateLimitType ?? null,
 								timestamp: event.data.timestamp,
 								seq: event.seq
 							});
@@ -919,6 +922,14 @@ export const streamHandler = createRouter()
 		status: t.Union([t.Literal('allowed_warning'), t.Literal('rejected')]),
 		utilization: t.Number(),
 		resetsAt: t.Union([t.Number(), t.Null()]),
+		rateLimitType: t.Union([
+			t.Literal('five_hour'),
+			t.Literal('seven_day'),
+			t.Literal('seven_day_opus'),
+			t.Literal('seven_day_sonnet'),
+			t.Literal('overage'),
+			t.Null()
+		]),
 		timestamp: t.String(),
 		seq: t.Optional(t.Number())
 	}))

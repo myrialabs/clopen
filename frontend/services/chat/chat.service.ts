@@ -225,7 +225,8 @@ class ChatService {
         accountId: data.accountId,
         status: data.status,
         utilization: data.utilization,
-        resetsAt: data.resetsAt
+        resetsAt: data.resetsAt,
+        rateLimitType: data.rateLimitType ?? null
       });
     });
 

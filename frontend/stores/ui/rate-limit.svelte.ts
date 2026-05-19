@@ -9,12 +9,20 @@
 
 export type RateLimitStatus = 'allowed_warning' | 'rejected';
 
+export type RateLimitType =
+	| 'five_hour'
+	| 'seven_day'
+	| 'seven_day_opus'
+	| 'seven_day_sonnet'
+	| 'overage';
+
 export interface RateLimitState {
 	engine: string;
 	accountId: number;
 	status: RateLimitStatus;
 	utilization: number;
 	resetsAt: number | null;
+	rateLimitType: RateLimitType | null;
 }
 
 export function getAccountKey(engine: string, accountId: number): string {

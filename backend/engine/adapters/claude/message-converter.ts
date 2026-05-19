@@ -414,6 +414,7 @@ export function convertRateLimit(msg: SDKRateLimitEvent): RateLimitEvent | null 
 		status: info.status === 'rejected' ? 'rejected' : 'allowed_warning',
 		utilization: info.utilization || 0,
 		resetsAt: info.resetsAt || null,
+		rateLimitType: info.rateLimitType || null,
 	};
 }
 

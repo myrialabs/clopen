@@ -85,12 +85,20 @@ export interface McpServerStatus {
 	status: 'connected' | 'disconnected' | 'error';
 }
 
+export type RateLimitType =
+	| 'five_hour'
+	| 'seven_day'
+	| 'seven_day_opus'
+	| 'seven_day_sonnet'
+	| 'overage';
+
 export interface RateLimitEvent {
 	type: 'rate_limit';
 	sessionId: string;
 	status: 'rejected' | 'allowed_warning';
 	utilization: number;
 	resetsAt: number | null;
+	rateLimitType: RateLimitType | null;
 }
 
 // ============================================================

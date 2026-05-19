@@ -37,10 +37,29 @@
 		});
 	}
 
+	function typeLabel(state: RateLimitState): string | null {
+		switch (state.rateLimitType) {
+			case 'five_hour':
+				return '5-hour session';
+			case 'seven_day':
+				return 'Weekly';
+			case 'seven_day_opus':
+				return 'Weekly · Opus';
+			case 'seven_day_sonnet':
+				return 'Weekly · Sonnet';
+			case 'overage':
+				return 'Overage';
+			default:
+				return null;
+		}
+	}
+
 	function headerLabel(state: RateLimitState): string {
+		const type = typeLabel(state);
+		const prefix = type ? `${type} rate limit` : 'Rate limit';
 		const base = isRejected(state)
-			? 'Rate limit reached'
-			: `Rate limit · ${percentUsed(state)}% used`;
+			? `${prefix} reached`
+			: `${prefix} · ${percentUsed(state)}% used`;
 		const reset = resetLabel(state);
 		return reset ? `${base} · Resets ${reset}` : base;
 	}

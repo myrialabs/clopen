@@ -122,6 +122,7 @@ export type {
 	SystemInitEvent,
 	McpServerStatus,
 	RateLimitEvent,
+	RateLimitType,
 	EngineOutput,
 	StreamEventType,
 	StreamStatus,

@@ -23,6 +23,7 @@ import type {
 	ErrorResultEvent,
 	SystemInitEvent,
 	RateLimitEvent,
+	RateLimitType,
 	TokenUsage,
 	StopReason,
 	UserContentBlock,
@@ -181,6 +182,7 @@ export interface RateLimitSnapshot {
 	status: 'allowed_warning' | 'rejected';
 	utilization: number;
 	resetsAt: number | null;
+	rateLimitType: RateLimitType | null;
 	receivedAt: string;
 }
 
@@ -711,6 +713,7 @@ class StreamManager extends EventEmitter {
 									status: rl.status,
 									utilization: rl.utilization,
 									resetsAt: rl.resetsAt,
+									rateLimitType: rl.rateLimitType,
 									receivedAt: nowIso
 								}
 							);
@@ -722,6 +725,7 @@ class StreamManager extends EventEmitter {
 							status: rl.status,
 							utilization: rl.utilization,
 							resetsAt: rl.resetsAt,
+							rateLimitType: rl.rateLimitType,
 							timestamp: nowIso
 						});
 						continue;
