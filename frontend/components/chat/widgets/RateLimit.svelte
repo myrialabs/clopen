@@ -1,5 +1,5 @@
 <!--
-  Rate Limit Banner
+  Rate Limit
   Static panel docked at the top of the AI Assistant chat (above TaskProgress).
   Shows every active engine rate-limit snapshot keyed by account, regardless
   of which project / session the user is currently viewing — rate limits are
@@ -14,6 +14,7 @@
 	} from '$frontend/stores/ui/rate-limit.svelte';
 	import Icon from '$frontend/components/common/display/Icon.svelte';
 	import ws from '$frontend/utils/ws';
+	import { slide } from 'svelte/transition';
 
 	const activeLimits = $derived.by(() => Object.values(rateLimitStore.byAccount));
 
@@ -75,6 +76,7 @@
 
 {#each activeLimits as state (`${state.engine}:${state.accountId}`)}
 	<div
+		transition:slide={{ duration: 220 }}
 		class="shrink-0 border-b {isRejected(state)
 			? 'bg-red-50 dark:bg-red-950/30 border-red-200 dark:border-red-900/60'
 			: 'bg-amber-50 dark:bg-amber-950/30 border-amber-200 dark:border-amber-900/60'}"

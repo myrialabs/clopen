@@ -82,7 +82,10 @@
 </script>
 
 {#if shouldShow && !appState.isRestoring}
-	<div class="shrink-0 bg-white dark:bg-slate-900 border-b border-slate-200 dark:border-slate-800">
+	<div
+		transition:slide={{ duration: 220 }}
+		class="shrink-0 bg-white dark:bg-slate-900 border-b border-slate-200 dark:border-slate-800"
+	>
 		<button
 			type="button"
 			onclick={toggleExpand}
