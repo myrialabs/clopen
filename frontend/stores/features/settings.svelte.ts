@@ -36,6 +36,7 @@ const defaultSettings: AppSettings = {
 	layoutPresetVisibility: createDefaultPresetVisibility(),
 	fontSize: 13,
 	chatAppearance: 'classic',
+	gitDiffSideBySide: true,
 	commitGenerator: {
 		useCustomModel: false,
 		engine: 'claude-code',

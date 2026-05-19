@@ -29,6 +29,8 @@ export interface AppSettings {
 	fontSize: number;
 	/** Chat message appearance variant. Default: 'classic'. */
 	chatAppearance: 'classic' | 'compact';
+	/** Git diff viewer layout — true = side-by-side (2 columns), false = inline (1 column). Default: true. */
+	gitDiffSideBySide: boolean;
 	/** AI commit message generator configuration */
 	commitGenerator: CommitGeneratorSettings;
 }

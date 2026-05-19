@@ -3,6 +3,7 @@
 	import LoadingSpinner from '../common/feedback/LoadingSpinner.svelte';
 	import MonacoCodeEditor from '../common/editor/MonacoCodeEditor.svelte';
 	import MediaPreview from '../common/media/MediaPreview.svelte';
+	import MarkdownPreview from '../common/media/MarkdownPreview.svelte';
 	import { themeStore } from '$frontend/stores/ui/theme.svelte';
 	import Icon from '$frontend/components/common/display/Icon.svelte';
 	import { getFileIcon } from '$frontend/utils/file-icon-mappings';
@@ -16,6 +17,7 @@
 	import ws from '$frontend/utils/ws';
 	import { computeLineDiff } from '$frontend/utils/line-diff';
 	import { gitStatusState } from '$frontend/stores/features/git-status.svelte';
+	import { requestRevealFile } from '$frontend/stores/core/files.svelte';
 
 	// Interface untuk MonacoCodeEditor component
 	interface MonacoEditorComponent {
@@ -113,6 +115,85 @@
 
 	// SVG view mode
 	let svgViewMode = $state<'visual' | 'code'>('visual');
+
+	// Markdown view mode
+	let mdViewMode = $state<'visual' | 'code'>('code');
+	let mdScroll = $state<{ path: string; percent: number }>({ path: '', percent: 0 });
+	let pendingMdScrollPercent: number | null = null;
+
+	function isMarkdownFile(name: string): boolean {
+		const ext = name.split('.').pop()?.toLowerCase();
+		return ext === 'md' || ext === 'markdown' || ext === 'mdx';
+	}
+
+	const isMarkdown = $derived(!!file && file.type === 'file' && isMarkdownFile(file.name));
+	const currentMdScrollPercent = $derived(
+		mdScroll.path === (file?.path || '') ? mdScroll.percent : 0
+	);
+
+	function recordMdScroll(percent: number) {
+		const p = file?.path || '';
+		if (!p) return;
+		mdScroll = { path: p, percent };
+	}
+
+	function getMonacoScrollPercent(): number {
+		const ed = monacoEditorRef?.getEditor();
+		if (!ed) return currentMdScrollPercent;
+		const scrollTop = ed.getScrollTop();
+		const scrollHeight = ed.getScrollHeight();
+		const layoutInfo = ed.getLayoutInfo();
+		const max = scrollHeight - layoutInfo.height;
+		if (max <= 0) return 0;
+		return Math.max(0, Math.min(1, scrollTop / max));
+	}
+
+	function resolveRelativeFilePath(href: string): string | null {
+		if (!file?.path) return null;
+		// Strip fragment/query — only the path resolves to a file.
+		const hashIdx = href.indexOf('#');
+		const queryIdx = href.indexOf('?');
+		let cut = href.length;
+		if (hashIdx >= 0) cut = Math.min(cut, hashIdx);
+		if (queryIdx >= 0) cut = Math.min(cut, queryIdx);
+		const pathPart = href.slice(0, cut);
+		if (!pathPart) return null;
+
+		const sep = file.path.includes('\\') ? '\\' : '/';
+		// Absolute path within the same fs style — use as-is.
+		if (pathPart.startsWith('/') || /^[A-Za-z]:[\\/]/.test(pathPart)) {
+			return pathPart;
+		}
+
+		const baseDir = file.path.substring(0, file.path.lastIndexOf(sep));
+		const normalizedRel = pathPart.replace(/\\/g, '/');
+		const combined = baseDir.replace(/\\/g, '/') + '/' + normalizedRel;
+		const parts = combined.split('/');
+		const resolved: string[] = [];
+		for (const p of parts) {
+			if (p === '..') resolved.pop();
+			else if (p !== '.' && p !== '') resolved.push(p);
+		}
+		const isUnix = file.path.startsWith('/');
+		return (isUnix ? '/' : '') + resolved.join(sep);
+	}
+
+	function handleMdFileLink(href: string) {
+		const resolved = resolveRelativeFilePath(href);
+		if (!resolved) return;
+		requestRevealFile(resolved);
+	}
+
+	function switchMdMode(next: 'visual' | 'code') {
+		if (!isMarkdown || mdViewMode === next) return;
+		if (mdViewMode === 'code') {
+			recordMdScroll(getMonacoScrollPercent());
+		}
+		mdViewMode = next;
+		if (next === 'code') {
+			pendingMdScrollPercent = currentMdScrollPercent;
+		}
+	}
 
 	// Keyboard shortcut for save
 	onMount(() => {
@@ -282,7 +363,17 @@
 	function handleEditorMount(editorInstance: editor.IStandaloneCodeEditor) {
 		scrollListenerDispose?.();
 		const disposable = editorInstance.onDidScrollChange((e) => {
-			if (e.scrollTopChanged) onEditorScroll?.(e.scrollTop);
+			if (e.scrollTopChanged) {
+				onEditorScroll?.(e.scrollTop);
+				if (isMarkdown && mdViewMode === 'code') {
+					const scrollHeight = editorInstance.getScrollHeight();
+					const layoutInfo = editorInstance.getLayoutInfo();
+					const max = scrollHeight - layoutInfo.height;
+					if (max > 0) {
+						recordMdScroll(Math.max(0, Math.min(1, e.scrollTop / max)));
+					}
+				}
+			}
 		});
 		scrollListenerDispose = () => disposable.dispose();
 
@@ -290,8 +381,22 @@
 		// are no longer valid.
 		gutterDecorations = [];
 
-		// Restore pending scroll if applicable
-		if (pendingScrollRestore !== null) {
+		// Markdown mode-switch scroll restore takes precedence over the
+		// tab-switch absolute scroll restore.
+		if (pendingMdScrollPercent !== null) {
+			const target = pendingMdScrollPercent;
+			pendingMdScrollPercent = null;
+			requestAnimationFrame(() => {
+				requestAnimationFrame(() => {
+					const scrollHeight = editorInstance.getScrollHeight();
+					const layoutInfo = editorInstance.getLayoutInfo();
+					const max = scrollHeight - layoutInfo.height;
+					if (max > 0) {
+						editorInstance.setScrollTop(max * target);
+					}
+				});
+			});
+		} else if (pendingScrollRestore !== null) {
 			const top = pendingScrollRestore;
 			pendingScrollRestore = null;
 			requestAnimationFrame(() => editorInstance.setScrollTop(top));
@@ -483,6 +588,26 @@
 					</div>
 				{/if}
 
+				<!-- Markdown view mode toggle -->
+				{#if isMarkdown}
+					<div class="flex bg-slate-100 dark:bg-slate-800 rounded-lg overflow-hidden mr-1">
+						<button
+							class="flex px-2 py-1.5 text-xs font-medium transition-colors {mdViewMode === 'visual' ? 'bg-violet-600 text-white' : 'text-slate-600 dark:text-slate-400 hover:bg-slate-200 dark:hover:bg-slate-700'}"
+							onclick={() => switchMdMode('visual')}
+							title="Rendered markdown preview"
+						>
+							<Icon name="lucide:book-open" class="w-3.5 h-3.5" />
+						</button>
+						<button
+							class="flex px-2 py-1.5 text-xs font-medium transition-colors {mdViewMode === 'code' ? 'bg-violet-600 text-white' : 'text-slate-600 dark:text-slate-400 hover:bg-slate-200 dark:hover:bg-slate-700'}"
+							onclick={() => switchMdMode('code')}
+							title="Source view"
+						>
+							<Icon name="lucide:code" class="w-3.5 h-3.5" />
+						</button>
+					</div>
+				{/if}
+
 				<!-- External change badge + refresh button -->
 				{#if externallyChanged && onForceReload}
 					<div class="flex items-center gap-1 mr-1">
@@ -500,7 +625,7 @@
 				{/if}
 
 				<!-- Actions for editable files -->
-				{#if file && file.type === 'file' && !isBinary && !isBinaryContent(content) && !isImageFile(file.name) && !isBinaryFile(file.name) && !isPdfFile(file.name) && !isAudioFile(file.name) && !isVideoFile(file.name) && !(isSvgFile(file.name) && svgViewMode === 'visual')}
+				{#if file && file.type === 'file' && !isBinary && !isBinaryContent(content) && !isImageFile(file.name) && !isBinaryFile(file.name) && !isPdfFile(file.name) && !isAudioFile(file.name) && !isVideoFile(file.name) && !(isSvgFile(file.name) && svgViewMode === 'visual') && !(isMarkdown && mdViewMode === 'visual')}
 					<!-- Word Wrap toggle -->
 					{#if onToggleWordWrap}
 						<button
@@ -628,6 +753,15 @@
 						{/if}
 					</div>
 				{/if}
+			{:else if isMarkdown && mdViewMode === 'visual'}
+				{#key file.path}
+					<MarkdownPreview
+						content={editableContent || content}
+						initialScrollPercent={currentMdScrollPercent}
+						onScrollPercent={recordMdScroll}
+						onFileLink={handleMdFileLink}
+					/>
+				{/key}
 			{:else if isPreviewableFile(file.name)}
 				<MediaPreview fileName={file.name} filePath={file.path} />
 			{:else if isBinary || isBinaryFile(file.name) || isBinaryContent(content)}

@@ -98,6 +98,7 @@
 	let openTabs = $state<EditorTab[]>([]);
 	let activeTabPath = $state<string | null>(null);
 	let wordWrapEnabled = $state(false);
+	let tabsScrollContainer = $state<HTMLDivElement | null>(null);
 
 	const activeTab = $derived(openTabs.find(t => t.file.path === activeTabPath) || null);
 	const modifiedFilePaths = $derived(new Set(
@@ -485,6 +486,26 @@
 		}
 		schedulePanelStateSave();
 	}
+
+	// Keep the active editor tab visible inside the horizontally-scrollable tab strip.
+	$effect(() => {
+		const path = activeTabPath;
+		const container = tabsScrollContainer;
+		if (!path || !container) return;
+		requestAnimationFrame(() => {
+			const el = container.querySelector(
+				`[data-tab-path="${CSS.escape(path)}"]`
+			) as HTMLElement | null;
+			if (!el) return;
+			const cRect = container.getBoundingClientRect();
+			const eRect = el.getBoundingClientRect();
+			if (eRect.left < cRect.left) {
+				container.scrollBy({ left: eRect.left - cRect.left, behavior: 'smooth' });
+			} else if (eRect.right > cRect.right) {
+				container.scrollBy({ left: eRect.right - cRect.right, behavior: 'smooth' });
+			}
+		});
+	});
 
 	// Scroll to active file in tree (without auto-expanding parent folders)
 	function scrollToActiveFile(filePath: string) {
@@ -1487,13 +1508,14 @@
 {#snippet tabBar()}
 	{#if openTabs.length > 0}
 		<div class="flex items-stretch border-b border-slate-200 dark:border-slate-700 bg-slate-50/80 dark:bg-slate-800/50 flex-shrink-0">
-			<div class="flex items-center overflow-x-auto flex-1 min-w-0">
+			<div bind:this={tabsScrollContainer} class="flex items-center overflow-x-auto flex-1 min-w-0">
 				{#each openTabs as tab, index (tab.file.path)}
 					{@const isActive = tab.file.path === activeTabPath}
 					{@const isModified = tab.currentContent !== tab.savedContent}
 					{@const gitStatusCode = gitStatusState.map.get(tab.file.path) || ''}
 					{@const isDragOver = dragOverIndex === index && dragSrcIndex !== null && dragSrcIndex !== index}
 					<div
+						data-tab-path={tab.file.path}
 						class="flex items-center gap-1.5 px-3 py-2 text-xs border-r border-slate-200/50 dark:border-slate-700/50 whitespace-nowrap transition-colors flex-shrink-0 cursor-pointer {isActive
 							? 'bg-white dark:bg-slate-900 text-slate-900 dark:text-slate-100'
 							: 'text-slate-500 dark:text-slate-400 hover:bg-slate-100 dark:hover:bg-slate-800 hover:text-slate-700 dark:hover:text-slate-300'} {isDragOver ? 'ring-2 ring-violet-500/40 ring-inset' : ''}"

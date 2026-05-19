@@ -79,6 +79,7 @@
 				readOnly: readonly,
 				renderSideBySide,
 				renderSideBySideInlineBreakpoint: Math.round(600 * (settings.fontSize / 13)),
+				useInlineViewWhenSpaceIsLimited: false,
 				minimap: { enabled: false },
 				scrollBeyondLastLine: false,
 				fontSize: Math.round(settings.fontSize * 0.9),
@@ -126,7 +127,7 @@
 
 	$effect(() => {
 		if (diffEditor) {
-			diffEditor.updateOptions({ readOnly: readonly, renderSideBySide });
+			diffEditor.updateOptions({ readOnly: readonly });
 		}
 	});
 
@@ -154,6 +155,7 @@
 		original;
 		modified;
 		language;
+		renderSideBySide;
 		if (container) {
 			untrack(() => initDiffEditor());
 		}

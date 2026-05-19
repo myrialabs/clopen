@@ -12,6 +12,7 @@
 	import type { IconName } from '$shared/types/ui/icons';
 	import { requestRevealFile } from '$frontend/stores/core/files.svelte';
 	import { getVisiblePanels, workspaceState } from '$frontend/stores/ui/workspace.svelte';
+	import { settings, updateSettings } from '$frontend/stores/features/settings.svelte';
 
 	interface Props {
 		diff: GitFileDiff | null;
@@ -26,6 +27,12 @@
 	}
 
 	const { diff, diffs = [], isLoading, onSelectFile, selectedFileIndex = 0, inlinePreview = false }: Props = $props();
+
+	const renderSideBySide = $derived(settings.gitDiffSideBySide);
+
+	function toggleRenderSideBySide() {
+		updateSettings({ gitDiffSideBySide: !settings.gitDiffSideBySide });
+	}
 
 	const allDiffs = $derived(diffs.length > 0 ? diffs : diff ? [diff] : []);
 	const activeDiff = $derived(allDiffs.length > 0 ? allDiffs[selectedFileIndex] ?? allDiffs[0] : null);
@@ -120,6 +127,16 @@
 				</div>
 			</div>
 			<div class="flex items-center gap-1.5 sm:gap-1 flex-shrink-0">
+				{#if !activeDiff.isBinary && !inlinePreview}
+					<button
+						type="button"
+						class="flex p-2 text-slate-600 dark:text-slate-400 hover:text-violet-600 dark:hover:text-violet-400 hover:bg-violet-50 dark:hover:bg-violet-900/30 rounded-lg transition-all duration-200 cursor-pointer"
+						onclick={toggleRenderSideBySide}
+						title={renderSideBySide ? 'Switch to inline (1 column)' : 'Switch to side-by-side (2 columns)'}
+					>
+						<Icon name={renderSideBySide ? 'lucide:columns-2' : 'lucide:rows-2'} class="w-4 h-4" />
+					</button>
+				{/if}
 				{#if isFilesPanelVisible && activeDiff.status !== 'D'}
 					<button
 						type="button"
@@ -186,6 +203,7 @@
 						language={activeLanguage}
 						originalPath={activeDiff.oldPath}
 						modifiedPath={activeDiff.newPath}
+						{renderSideBySide}
 					/>
 				{/key}
 			</div>
