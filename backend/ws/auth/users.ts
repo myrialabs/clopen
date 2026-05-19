@@ -101,7 +101,6 @@ export const usersHandler = createRouter()
 				eventDetails: `Project ${data.projectId} unassigned from user ${data.userId}`,
 				ipAddress: ws.getRemoteAddress(conn)
 			});
-			invalidateUserSessions(data.userId);
 			ws.emit.global('auth:user-projects-changed', {
 				type: 'unassigned',
 				userId: data.userId,
