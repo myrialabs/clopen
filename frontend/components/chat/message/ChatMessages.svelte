@@ -450,7 +450,8 @@
 		const performScroll = () => {
 			const target = el.querySelector<HTMLElement>(`[data-message-id="${item.messageId}"]`);
 			if (target) {
-				target.scrollIntoView({ behavior: 'smooth', block: 'start' });
+				const top = target.getBoundingClientRect().top - el.getBoundingClientRect().top + el.scrollTop - 24;
+				el.scrollTo({ top, behavior: 'auto' });
 			}
 		};
 

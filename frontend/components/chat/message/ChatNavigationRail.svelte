@@ -170,7 +170,7 @@
 				onfocus={() => (hovered = 'up')}
 				onblur={() => (hovered = null)}
 				disabled={!canGoUp}
-				class="flex p-0.5 text-slate-400 dark:text-slate-500 hover:text-slate-700 dark:hover:text-slate-200 disabled:opacity-30 disabled:cursor-not-allowed transition-colors"
+				class="flex p-0.5 text-slate-400 dark:text-slate-500 hover:text-slate-600 dark:hover:text-slate-300 disabled:opacity-30 disabled:cursor-not-allowed transition-colors"
 				aria-label="Previous user message"
 			>
 				<Icon name="lucide:chevron-up" class="w-4 h-4" />
@@ -197,7 +197,7 @@
 						<span
 							class="block h-px rounded-full transition-all duration-150
 								{active
-									? 'w-4 bg-slate-800 dark:bg-slate-100'
+									? 'w-4 bg-slate-600 dark:bg-slate-300'
 									: 'w-2 bg-slate-400 dark:bg-slate-500 group-hover:w-3 group-hover:bg-slate-600 dark:group-hover:bg-slate-300'}"
 						></span>
 					</button>
