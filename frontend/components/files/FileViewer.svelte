@@ -15,8 +15,9 @@
 	import type { editor } from 'monaco-editor';
 	import { debug } from '$shared/utils/logger';
 	import ws from '$frontend/utils/ws';
-	import { computeLineDiff } from '$frontend/utils/line-diff';
+	import { computeLineDiff, type GutterChange } from '$frontend/utils/line-diff';
 	import { gitStatusState } from '$frontend/stores/features/git-status.svelte';
+	import { settings } from '$frontend/stores/features/settings.svelte';
 	import { requestRevealFile } from '$frontend/stores/core/files.svelte';
 
 	// Interface untuk MonacoCodeEditor component
@@ -107,11 +108,28 @@
 
 	// Git gutter decorations + HEAD content cache
 	let gutterDecorations: string[] = [];
+	let gutterChanges: GutterChange[] = [];
 	let headContent = $state<string | null>(null);
 	let headContentForPath = '';
 	let pendingScrollRestore: number | null = null;
 	let scrollListenerDispose: (() => void) | null = null;
 	let gutterUpdateTimer: ReturnType<typeof setTimeout> | null = null;
+	let gutterClickDispose: (() => void) | null = null;
+	let activeDiffZone: {
+		id: string;
+		line: number;
+		escHandler: (e: KeyboardEvent) => void;
+		domNode: HTMLElement;
+		scrollDispose: () => void;
+		layoutDispose: () => void;
+	} | null = null;
+
+	// Monaco MouseTargetType.GUTTER_LINE_DECORATIONS — clicks on the colored bar
+	// land in the line-decorations strip (between line-numbers and content).
+	const GUTTER_LINE_DECORATIONS = 4;
+
+	// Monaco OverviewRulerLane.Right — places the marker in the scrollbar lane.
+	const OVERVIEW_RULER_RIGHT = 4;
 
 	// SVG view mode
 	let svgViewMode = $state<'visual' | 'code'>('visual');
@@ -213,6 +231,14 @@
 			if (gutterUpdateTimer) clearTimeout(gutterUpdateTimer);
 			scrollListenerDispose?.();
 			scrollListenerDispose = null;
+			gutterClickDispose?.();
+			gutterClickDispose = null;
+			if (activeDiffZone) {
+				window.removeEventListener('keydown', activeDiffZone.escHandler);
+				activeDiffZone.scrollDispose();
+				activeDiffZone.layoutDispose();
+				activeDiffZone = null;
+			}
 		};
 	});
 
@@ -326,35 +352,324 @@
 		}, 200);
 	}
 
+	function colorForChangeType(type: GutterChange['type']): string {
+		if (isDark) {
+			return type === 'added' ? '#047857' : type === 'modified' ? '#b45309' : '#b91c1c';
+		}
+		return type === 'added' ? '#10b981' : type === 'modified' ? '#f59e0b' : '#ef4444';
+	}
+
 	function updateGutterDecorations() {
 		const editor = monacoEditorRef?.getEditor();
 		if (!editor) return;
 
 		// No HEAD content (untracked, missing repo) — clear any existing gutter
 		if (headContent === null || headContent === undefined) {
+			gutterChanges = [];
 			gutterDecorations = editor.deltaDecorations(gutterDecorations, []);
+			closeDiffPeek();
 			return;
 		}
 
 		const changes = computeLineDiff(headContent, editableContent);
-		const newDecorations = changes.map((change) => ({
-			range: {
-				startLineNumber: change.startLine,
-				startColumn: 1,
-				endLineNumber: change.endLine,
-				endColumn: 1
-			},
-			options: {
-				isWholeLine: false,
-				linesDecorationsClassName:
-					change.type === 'added'
-						? 'git-gutter-added'
-						: change.type === 'modified'
-							? 'git-gutter-modified'
-							: 'git-gutter-deleted'
-			}
-		}));
+		gutterChanges = changes;
+
+		// Close any open peek whose anchor line is no longer marked as changed
+		if (activeDiffZone) {
+			const stillExists = changes.some(
+				(c) => activeDiffZone!.line >= c.startLine && activeDiffZone!.line <= c.endLine
+			);
+			if (!stillExists) closeDiffPeek();
+		}
+
+		const newDecorations = changes.map((change) => {
+			const color = colorForChangeType(change.type);
+			return {
+				range: {
+					startLineNumber: change.startLine,
+					startColumn: 1,
+					endLineNumber: change.endLine,
+					endColumn: 1
+				},
+				options: {
+					isWholeLine: false,
+					linesDecorationsClassName:
+						change.type === 'added'
+							? 'git-gutter-added'
+							: change.type === 'modified'
+								? 'git-gutter-modified'
+								: 'git-gutter-deleted',
+					overviewRuler: {
+						color,
+						position: OVERVIEW_RULER_RIGHT
+					}
+				}
+			};
+		});
 		gutterDecorations = editor.deltaDecorations(gutterDecorations, newDecorations);
+	}
+
+	function findChangeAtLine(line: number): GutterChange | null {
+		for (const change of gutterChanges) {
+			if (line >= change.startLine && line <= change.endLine) return change;
+		}
+		return null;
+	}
+
+	// Icon SVGs (inline so we can attach them to dynamically-created DOM nodes)
+	const ICON_CHEVRON_UP =
+		'<svg viewBox="0 0 16 16" width="14" height="14" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><polyline points="3 10 8 5 13 10"/></svg>';
+	const ICON_CHEVRON_DOWN =
+		'<svg viewBox="0 0 16 16" width="14" height="14" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><polyline points="3 6 8 11 13 6"/></svg>';
+	const ICON_CLOSE =
+		'<svg viewBox="0 0 16 16" width="14" height="14" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><line x1="4" y1="4" x2="12" y2="12"/><line x1="12" y1="4" x2="4" y2="12"/></svg>';
+
+	// Buttons inside view zones must intercept pointerdown FIRST — Monaco's
+	// cursor-placement uses pointer events, which fire before mousedown, so
+	// stopping only mousedown lets Monaco still steal the click.
+	function attachPeekButton(btn: HTMLButtonElement, handler: () => void) {
+		const stop = (e: Event) => {
+			e.stopPropagation();
+			e.preventDefault();
+		};
+		btn.addEventListener('pointerdown', stop);
+		btn.addEventListener('mousedown', stop);
+		btn.addEventListener('click', (e) => {
+			e.stopPropagation();
+			e.preventDefault();
+			handler();
+		});
+	}
+
+	function buildPeekDom(change: GutterChange, index: number, total: number): HTMLElement {
+		const root = document.createElement('div');
+		root.className = `git-diff-peek git-diff-peek-${change.type}`;
+		// Block Monaco's pointer handlers from interpreting clicks inside the
+		// peek as cursor moves. pointerdown fires before mousedown in modern
+		// browsers, so we must intercept the pointer event explicitly.
+		const swallow = (e: Event) => e.stopPropagation();
+		root.addEventListener('pointerdown', swallow);
+		root.addEventListener('mousedown', swallow);
+		root.addEventListener('click', swallow);
+		root.addEventListener('dblclick', swallow);
+
+		const inner = document.createElement('div');
+		inner.className = 'git-diff-peek-inner';
+		root.appendChild(inner);
+
+		const header = document.createElement('div');
+		header.className = 'git-diff-peek-header';
+
+		const title = document.createElement('span');
+		title.className = 'git-diff-peek-title';
+		const typeLabel =
+			change.type === 'added' ? 'added' : change.type === 'deleted' ? 'removed' : 'modified';
+		const fileName = file?.name ?? '';
+		title.textContent = `${fileName} · HEAD diff · ${typeLabel} · ${index} of ${total}`;
+		header.appendChild(title);
+
+		const actions = document.createElement('div');
+		actions.className = 'git-diff-peek-actions';
+
+		const prevBtn = document.createElement('button');
+		prevBtn.className = 'git-diff-peek-iconbtn';
+		prevBtn.type = 'button';
+		prevBtn.title = 'Previous change';
+		prevBtn.setAttribute('aria-label', 'Previous change');
+		prevBtn.innerHTML = ICON_CHEVRON_UP;
+		prevBtn.disabled = total <= 1;
+		attachPeekButton(prevBtn, () => navigatePeek(-1));
+		actions.appendChild(prevBtn);
+
+		const nextBtn = document.createElement('button');
+		nextBtn.className = 'git-diff-peek-iconbtn';
+		nextBtn.type = 'button';
+		nextBtn.title = 'Next change';
+		nextBtn.setAttribute('aria-label', 'Next change');
+		nextBtn.innerHTML = ICON_CHEVRON_DOWN;
+		nextBtn.disabled = total <= 1;
+		attachPeekButton(nextBtn, () => navigatePeek(1));
+		actions.appendChild(nextBtn);
+
+		const closeBtn = document.createElement('button');
+		closeBtn.className = 'git-diff-peek-iconbtn git-diff-peek-close';
+		closeBtn.type = 'button';
+		closeBtn.title = 'Close (Esc)';
+		closeBtn.setAttribute('aria-label', 'Close diff preview');
+		closeBtn.innerHTML = ICON_CLOSE;
+		attachPeekButton(closeBtn, () => closeDiffPeek());
+		actions.appendChild(closeBtn);
+
+		header.appendChild(actions);
+		inner.appendChild(header);
+
+		if (change.oldLines.length > 0) {
+			const body = document.createElement('div');
+			body.className = 'git-diff-peek-body';
+			change.oldLines.forEach((line) => {
+				const row = document.createElement('div');
+				row.className = 'git-diff-peek-row';
+				// No line-number column here — line numbers render in the
+				// marginDomNode so the text aligns with the editor's content
+				// area below. Preserve indentation via white-space: pre.
+				row.textContent = line.length > 0 ? line : '\u00A0';
+				body.appendChild(row);
+			});
+			inner.appendChild(body);
+		} else {
+			const empty = document.createElement('div');
+			empty.className = 'git-diff-peek-empty';
+			empty.textContent = 'No previous content — these lines are new since the last commit.';
+			inner.appendChild(empty);
+		}
+
+		return root;
+	}
+
+	function buildPeekMargin(change: GutterChange): HTMLElement {
+		const margin = document.createElement('div');
+		margin.className = 'git-diff-peek-margin';
+
+		// Spacer matches the header height in domNode so the line-number rows
+		// stay vertically aligned with the body rows on the right.
+		const spacer = document.createElement('div');
+		spacer.className = 'git-diff-peek-margin-spacer';
+		margin.appendChild(spacer);
+
+		change.oldLines.forEach((_, idx) => {
+			const row = document.createElement('div');
+			row.className = 'git-diff-peek-margin-row';
+			row.textContent = String(change.oldStartLine + idx);
+			margin.appendChild(row);
+		});
+
+		return margin;
+	}
+
+	function navigatePeek(direction: 1 | -1) {
+		if (!activeDiffZone || gutterChanges.length === 0) return;
+		const currentLine = activeDiffZone.line;
+		const currentIdx = gutterChanges.findIndex(
+			(c) => c.startLine === currentLine
+		);
+		if (currentIdx === -1) return;
+		const nextIdx =
+			(currentIdx + direction + gutterChanges.length) % gutterChanges.length;
+		const next = gutterChanges[nextIdx];
+		const editor = monacoEditorRef?.getEditor();
+		if (editor) editor.revealLineInCenter(next.startLine);
+		showDiffPeek(next);
+	}
+
+	function applyPeekSizing(editorInstance: editor.IStandaloneCodeEditor, domNode: HTMLElement) {
+		const layoutInfo = editorInstance.getLayoutInfo();
+		// Constrain peek width to the visible content viewport so the action
+		// buttons stay reachable when the source has long lines.
+		const fontSize = Math.round(settings.fontSize * 0.9);
+		const lineHeight = Math.round(fontSize * 1.5);
+		// Match the editor's tab width so leading tabs in the peek body align
+		// 1:1 with the editor's content above/below.
+		const tabSize = editorInstance.getModel()?.getOptions().tabSize ?? 2;
+		domNode.style.setProperty('--peek-viewport-width', `${layoutInfo.contentWidth}px`);
+		domNode.style.setProperty('--peek-font-size', `${fontSize}px`);
+		domNode.style.setProperty('--peek-line-height', `${lineHeight}px`);
+		domNode.style.setProperty('--peek-tab-size', String(tabSize));
+	}
+
+	function applyPeekScroll(domNode: HTMLElement, scrollLeft: number) {
+		// Cancel out the parent view-zone container's horizontal scroll so the
+		// peek stays anchored to the editor's visible left edge.
+		domNode.style.transform = `translateX(${scrollLeft}px)`;
+	}
+
+	function showDiffPeek(change: GutterChange) {
+		const editorInstance = monacoEditorRef?.getEditor();
+		if (!editorInstance) return;
+
+		closeDiffPeek();
+
+		const index = gutterChanges.indexOf(change) + 1;
+		const total = gutterChanges.length;
+		const domNode = buildPeekDom(change, index, total);
+		const marginDomNode = buildPeekMargin(change);
+		applyPeekSizing(editorInstance, domNode);
+		applyPeekScroll(domNode, editorInstance.getScrollLeft());
+
+		const afterLineNumber = Math.max(0, change.startLine - 1);
+		const fontSize = Math.round(settings.fontSize * 0.9);
+		const editorLineHeight = Math.round(fontSize * 1.5);
+		const HEADER_PX = 28;
+		const contentLines = change.oldLines.length;
+		const contentPx =
+			contentLines > 0 ? contentLines * editorLineHeight : editorLineHeight;
+		const heightInPx = HEADER_PX + contentPx + 6;
+
+		let zoneId = '';
+		editorInstance.changeViewZones((accessor) => {
+			zoneId = accessor.addZone({
+				afterLineNumber,
+				heightInPx,
+				domNode,
+				marginDomNode,
+				suppressMouseDown: true
+			});
+		});
+
+		const escHandler = (e: KeyboardEvent) => {
+			if (e.key === 'Escape') {
+				e.stopPropagation();
+				closeDiffPeek();
+			}
+		};
+		window.addEventListener('keydown', escHandler);
+
+		const scrollDisposable = editorInstance.onDidScrollChange((e) => {
+			if (e.scrollLeftChanged) applyPeekScroll(domNode, e.scrollLeft);
+		});
+		const layoutDisposable = editorInstance.onDidLayoutChange(() => {
+			applyPeekSizing(editorInstance, domNode);
+		});
+
+		activeDiffZone = {
+			id: zoneId,
+			line: change.startLine,
+			escHandler,
+			domNode,
+			scrollDispose: () => scrollDisposable.dispose(),
+			layoutDispose: () => layoutDisposable.dispose()
+		};
+	}
+
+	function closeDiffPeek() {
+		if (!activeDiffZone) return;
+		const editorInstance = monacoEditorRef?.getEditor();
+		const { id, escHandler, scrollDispose, layoutDispose } = activeDiffZone;
+		activeDiffZone = null;
+		window.removeEventListener('keydown', escHandler);
+		scrollDispose();
+		layoutDispose();
+		if (editorInstance) {
+			editorInstance.changeViewZones((accessor) => {
+				accessor.removeZone(id);
+			});
+		}
+	}
+
+	function attachGutterClickHandler(editorInstance: editor.IStandaloneCodeEditor) {
+		gutterClickDispose?.();
+		const disposable = editorInstance.onMouseDown((e) => {
+			if (e.target.type !== GUTTER_LINE_DECORATIONS) return;
+			const line = e.target.position?.lineNumber;
+			if (!line) return;
+			const change = findChangeAtLine(line);
+			if (!change) return;
+			if (activeDiffZone && activeDiffZone.line === change.startLine) {
+				closeDiffPeek();
+			} else {
+				showDiffPeek(change);
+			}
+		});
+		gutterClickDispose = () => disposable.dispose();
 	}
 
 	// Called by MonacoCodeEditor once the editor instance is fully constructed.
@@ -380,6 +695,16 @@
 		// Reset decoration ids — the prior editor instance is gone so its ids
 		// are no longer valid.
 		gutterDecorations = [];
+
+		// Previous editor's view zones are gone with the disposed instance
+		if (activeDiffZone) {
+			window.removeEventListener('keydown', activeDiffZone.escHandler);
+			activeDiffZone.scrollDispose();
+			activeDiffZone.layoutDispose();
+			activeDiffZone = null;
+		}
+
+		attachGutterClickHandler(editorInstance);
 
 		// Markdown mode-switch scroll restore takes precedence over the
 		// tab-switch absolute scroll restore.
@@ -411,6 +736,9 @@
 	function handleContentChange(newContent: string) {
 		hasChanges = newContent !== referenceContent;
 		onContentChange?.(newContent);
+		// User edits invalidate the captured HEAD-side hunk in the peek; close it
+		// so the next click reflects the up-to-date diff.
+		if (activeDiffZone) closeDiffPeek();
 		scheduleGutterUpdate();
 	}
 
@@ -736,7 +1064,9 @@
 										minimap: { enabled: false },
 										wordWrap: 'off',
 										renderWhitespace: 'none',
-										mouseWheelZoom: false
+										mouseWheelZoom: false,
+										overviewRulerLanes: 1,
+										overviewRulerBorder: false
 									}}
 								/>
 								{/key}
@@ -797,7 +1127,9 @@
 								minimap: { enabled: false },
 								wordWrap: wordWrap ? 'on' : 'off',
 								renderWhitespace: 'none',
-								mouseWheelZoom: false
+								mouseWheelZoom: false,
+								overviewRulerLanes: 1,
+								overviewRulerBorder: false
 							}}
 						/>
 						{/key}
@@ -824,6 +1156,13 @@
 
 <style>
 	/* Git gutter decorations — thin colored bars in the line-numbers margin */
+	:global(.git-gutter-added),
+	:global(.git-gutter-modified),
+	:global(.git-gutter-deleted) {
+		cursor: pointer;
+		transition: width 80ms ease, margin-left 80ms ease, filter 80ms ease;
+	}
+
 	:global(.git-gutter-added) {
 		background-color: #10b981;
 		width: 3px !important;
@@ -840,6 +1179,202 @@
 		border-top: 4px solid #ef4444;
 		border-right: 4px solid transparent;
 		height: 0 !important;
+	}
+
+	/* Dark mode — slightly darker so it doesn't glare against the editor bg */
+	:global(.dark .git-gutter-added) {
+		background-color: #059669;
+	}
+	:global(.dark .git-gutter-modified) {
+		background-color: #d97706;
+	}
+	:global(.dark .git-gutter-deleted) {
+		border-top-color: #dc2626;
+	}
+
+	/* Hover — widen the bar and brighten it slightly to signal clickability */
+	:global(.git-gutter-added:hover),
+	:global(.git-gutter-modified:hover) {
+		width: 6px !important;
+		margin-left: 1px;
+		filter: brightness(1.15);
+	}
+	:global(.git-gutter-deleted:hover) {
+		margin-left: 1px;
+		border-top-width: 6px;
+		border-right-width: 6px;
+		filter: brightness(1.15);
+	}
+
+	/* Narrow the overview ruler so the change markers align visually with the
+	   3px gutter bars. The canvas content scales to fit the CSS width. */
+	:global(.monaco-editor .decorationsOverviewRuler) {
+		width: 5px !important;
+	}
+
+	/* Inline diff peek view — VS Code-like presentation of the HEAD-side hunk.
+	   .git-diff-peek matches the full view-zone width (which can equal the
+	   source scrollWidth); .git-diff-peek-inner is constrained to the visible
+	   viewport so the action buttons remain reachable. */
+	:global(.git-diff-peek) {
+		position: relative;
+		width: 100%;
+		height: 100%;
+		overflow: hidden;
+		pointer-events: auto;
+		-moz-tab-size: var(--peek-tab-size, 2);
+		tab-size: var(--peek-tab-size, 2);
+	}
+
+	:global(.git-diff-peek-inner) {
+		display: flex;
+		flex-direction: column;
+		width: var(--peek-viewport-width, 100%);
+		height: 100%;
+		font-family: 'SF Mono', Monaco, Inconsolata, 'Roboto Mono', Consolas, 'Courier New',
+			monospace;
+		font-size: var(--peek-font-size, 12px);
+		background-color: #ffffff;
+		border-top: 1px solid #d4d4d4;
+		border-bottom: 1px solid #d4d4d4;
+		overflow: hidden;
+		box-sizing: border-box;
+		pointer-events: auto;
+	}
+	:global(.dark .git-diff-peek-inner) {
+		background-color: #0d1117;
+		border-top-color: #30363d;
+		border-bottom-color: #30363d;
+	}
+
+	:global(.git-diff-peek-header) {
+		flex-shrink: 0;
+		display: flex;
+		align-items: center;
+		justify-content: space-between;
+		height: 28px;
+		padding: 0 8px 0 12px;
+		font-size: 11px;
+		font-weight: 600;
+		color: #444;
+		background-color: #f3f3f3;
+		border-bottom: 1px solid #e0e0e0;
+	}
+	:global(.dark .git-diff-peek-header) {
+		color: #c9d1d9;
+		background-color: #161b22;
+		border-bottom-color: #30363d;
+	}
+
+	:global(.git-diff-peek-title) {
+		overflow: hidden;
+		text-overflow: ellipsis;
+		white-space: nowrap;
+	}
+
+	:global(.git-diff-peek-actions) {
+		flex-shrink: 0;
+		display: flex;
+		align-items: center;
+		gap: 2px;
+		margin-left: 8px;
+	}
+
+	:global(.git-diff-peek-iconbtn) {
+		display: inline-flex;
+		align-items: center;
+		justify-content: center;
+		width: 22px;
+		height: 22px;
+		padding: 0;
+		background: transparent;
+		border: none;
+		border-radius: 4px;
+		color: inherit;
+		cursor: pointer;
+		opacity: 0.65;
+		pointer-events: auto;
+		z-index: 1;
+	}
+	:global(.git-diff-peek-iconbtn:hover:not(:disabled)) {
+		background-color: rgba(0, 0, 0, 0.08);
+		opacity: 1;
+	}
+	:global(.dark .git-diff-peek-iconbtn:hover:not(:disabled)) {
+		background-color: rgba(255, 255, 255, 0.12);
+	}
+	:global(.git-diff-peek-iconbtn:disabled) {
+		opacity: 0.3;
+		cursor: default;
+	}
+
+	:global(.git-diff-peek-body) {
+		flex: 1;
+		min-width: 0;
+		overflow: auto;
+		background-color: rgba(248, 81, 73, 0.08);
+		color: #333;
+	}
+	:global(.dark .git-diff-peek-body) {
+		background-color: rgba(248, 81, 73, 0.14);
+		color: #e6edf3;
+	}
+
+	:global(.git-diff-peek-row) {
+		display: block;
+		white-space: pre;
+		line-height: var(--peek-line-height, 18px);
+		min-height: var(--peek-line-height, 18px);
+	}
+
+	/* Margin area — Monaco places this in the gutter, so line numbers
+	   visually align with the editor's own line-number column above/below. */
+	:global(.git-diff-peek-margin) {
+		display: flex;
+		flex-direction: column;
+		width: 100%;
+		height: 100%;
+		font-family: 'SF Mono', Monaco, Inconsolata, 'Roboto Mono', Consolas, 'Courier New',
+			monospace;
+		font-size: var(--peek-font-size, 12px);
+		background-color: rgba(248, 81, 73, 0.08);
+		color: rgba(0, 0, 0, 0.4);
+		user-select: none;
+		overflow: hidden;
+		box-sizing: border-box;
+		pointer-events: auto;
+	}
+	:global(.dark .git-diff-peek-margin) {
+		background-color: rgba(248, 81, 73, 0.14);
+		color: rgba(255, 255, 255, 0.35);
+	}
+
+	/* Spacer absorbs the header height so the first line-number row aligns
+	   with the first body row to the right. */
+	:global(.git-diff-peek-margin-spacer) {
+		flex-shrink: 0;
+		height: 28px;
+	}
+
+	:global(.git-diff-peek-margin-row) {
+		flex-shrink: 0;
+		line-height: var(--peek-line-height, 18px);
+		min-height: var(--peek-line-height, 18px);
+		padding-right: 10px;
+		text-align: right;
+	}
+
+	:global(.git-diff-peek-empty) {
+		flex: 1;
+		display: flex;
+		align-items: center;
+		padding: 0 16px;
+		font-size: var(--peek-font-size, 12px);
+		font-style: italic;
+		color: rgba(0, 0, 0, 0.5);
+	}
+	:global(.dark .git-diff-peek-empty) {
+		color: rgba(255, 255, 255, 0.5);
 	}
 
 	:global(.line-highlight) {

@@ -81,7 +81,7 @@
 				onclick={() => handleDismiss(state)}
 				title="Dismiss"
 				aria-label="Dismiss rate limit banner"
-				class="shrink-0 rounded p-0.5 transition-colors {isRejected(state)
+				class="flex shrink-0 rounded p-0.5 transition-colors {isRejected(state)
 					? 'text-red-600/80 hover:bg-red-100 hover:text-red-700 dark:text-red-400/80 dark:hover:bg-red-900/40 dark:hover:text-red-300'
 					: 'text-amber-600/80 hover:bg-amber-100 hover:text-amber-700 dark:text-amber-400/80 dark:hover:bg-amber-900/40 dark:hover:text-amber-300'}"
 			>
