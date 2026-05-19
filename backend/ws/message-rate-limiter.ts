@@ -14,17 +14,17 @@ import { debug } from '$shared/utils/logger';
 import type { WSConnection } from '$shared/utils/ws-server';
 
 interface RateLimitConfig {
-  warningThreshold: number;
-  throttleThreshold: number;
-  disconnectThreshold: number;
-  windowMs: number;
+	warningThreshold: number;
+	throttleThreshold: number;
+	disconnectThreshold: number;
+	windowMs: number;
 }
 
 const DEFAULT_CONFIG: RateLimitConfig = {
-  warningThreshold: 50,
-  throttleThreshold: 100,
-  disconnectThreshold: 200,
-  windowMs: 1000
+	warningThreshold: 50,
+	throttleThreshold: 100,
+	disconnectThreshold: 200,
+	windowMs: 1000
 };
 
 interface ConnectionRateState {
@@ -59,12 +59,12 @@ export class MessageRateLimiter {
 		return state;
 	}
 
-  checkRateLimit(conn: WSConnection, action: string): boolean {
-    const state = this.getState(conn);
-    const now = Date.now();
-    const windowStart = now - this.config.windowMs;
-    state.messageTimestamps = state.messageTimestamps.filter(ts => ts > windowStart);
-    state.messageTimestamps.push(now);
+	checkRateLimit(conn: WSConnection, action: string): boolean {
+		const state = this.getState(conn);
+		const now = Date.now();
+		const windowStart = now - this.config.windowMs;
+		state.messageTimestamps = state.messageTimestamps.filter(ts => ts > windowStart);
+		state.messageTimestamps.push(now);
 
 		const messageCount = state.messageTimestamps.length;
 		const messagesPerSecond = messageCount / (this.config.windowMs / 1000);
@@ -111,23 +111,23 @@ export class MessageRateLimiter {
 		return true;
 	}
 
-  isFlaggedForDisconnect(conn: WSConnection): boolean {
-    return this.getState(conn).isFlagged;
-  }
+	isFlaggedForDisconnect(conn: WSConnection): boolean {
+		return this.getState(conn).isFlagged;
+	}
 
-  getConnectionStats(conn: WSConnection): { messagesPerSecond: number; isThrottled: boolean; isFlagged: boolean; messagesDropped: number } | null {
-    const state = this.getState(conn);
-    const now = Date.now();
-    const windowStart = now - this.config.windowMs;
-    const recentMessages = state.messageTimestamps.filter(ts => ts > windowStart);
-    const messagesPerSecond = recentMessages.length / (this.config.windowMs / 1000);
-    return { messagesPerSecond, isThrottled: state.isThrottled, isFlagged: state.isFlagged, messagesDropped: state.messagesDropped };
-  }
+	getConnectionStats(conn: WSConnection): { messagesPerSecond: number; isThrottled: boolean; isFlagged: boolean; messagesDropped: number } | null {
+		const state = this.getState(conn);
+		const now = Date.now();
+		const windowStart = now - this.config.windowMs;
+		const recentMessages = state.messageTimestamps.filter(ts => ts > windowStart);
+		const messagesPerSecond = recentMessages.length / (this.config.windowMs / 1000);
+		return { messagesPerSecond, isThrottled: state.isThrottled, isFlagged: state.isFlagged, messagesDropped: state.messagesDropped };
+	}
 
-  reset(conn: WSConnection): void {
-    const raw = (conn as any).raw ?? conn;
-    this.connectionStates.delete(raw);
-  }
+	reset(conn: WSConnection): void {
+		const raw = (conn as any).raw ?? conn;
+		this.connectionStates.delete(raw);
+	}
 
 }
 

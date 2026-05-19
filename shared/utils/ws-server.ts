@@ -295,8 +295,8 @@ export class WSRouter<
 		this.rateLimiter = fn;
 	}
 
-  /**
-   * Register built-in ws:set-context handler
+	/**
+	 * Register built-in ws:set-context handler
 	 * Allows frontend to sync user/project context
 	 */
 	private registerContextHandler(): void {
@@ -625,13 +625,13 @@ export class WSRouter<
 					return;
 				}
 			}
-				// ═══ END AUTH GATE ═══
+			// ═══ END AUTH GATE ═══
 
-				// ═══ RATE LIMIT GATE ═══
-				if (this.rateLimiter && !this.rateLimiter(conn, action)) {
-					return;
-				}
-				// ═══ END RATE LIMIT GATE ═══
+			// ═══ RATE LIMIT GATE ═══
+			if (this.rateLimiter && !this.rateLimiter(conn, action)) {
+				return;
+			}
+			// ═══ END RATE LIMIT GATE ═══
 
 			// Check if this is an HTTP route
 			const httpRoute = this.httpRoutes.get(action);
