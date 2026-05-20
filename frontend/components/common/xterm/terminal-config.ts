@@ -38,7 +38,7 @@ export const terminalConfig: ITerminalOptions = {
 	cursorBlink: true,
 	cursorStyle: 'block' as const,
 	convertEol: true,
-	scrollback: 1000,
+	scrollback: 5000,
 	tabStopWidth: 4,
 	allowProposedApi: true,
 	altClickMovesCursor: true,

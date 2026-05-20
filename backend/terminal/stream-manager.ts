@@ -32,7 +32,7 @@ class TerminalStreamManager {
    */
   private createHeadlessTerminal(cols: number, rows: number): { terminal: Terminal; serializeAddon: SerializeAddon } {
     const terminal = new Terminal({
-      scrollback: 1000,
+      scrollback: 5000,
       cols,
       rows,
       allowProposedApi: true
