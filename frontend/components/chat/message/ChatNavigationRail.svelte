@@ -1,5 +1,6 @@
 <script lang="ts">
 	import { onMount } from 'svelte';
+	import { fade } from 'svelte/transition';
 	import Icon from '$frontend/components/common/display/Icon.svelte';
 
 	export interface NavItem {
@@ -12,10 +13,12 @@
 	interface Props {
 		scrollEl: HTMLElement | undefined;
 		items: NavItem[];
+		isUserAtBottom: boolean;
 		onJump: (item: NavItem) => void;
+		onJumpToBottom: () => void;
 	}
 
-	const { scrollEl, items, onJump }: Props = $props();
+	const { scrollEl, items, isUserAtBottom, onJump, onJumpToBottom }: Props = $props();
 
 	type HoverKey = string | 'up' | 'down' | null;
 	let hovered = $state<HoverKey>(null);
@@ -228,4 +231,17 @@
 		</div>
 		</div>
 	</div>
+{/if}
+
+{#if !isUserAtBottom}
+	<button
+		type="button"
+		onclick={onJumpToBottom}
+		in:fade={{ duration: 150 }}
+		out:fade={{ duration: 100 }}
+		class="absolute right-3 lg:right-4 bottom-3 lg:bottom-4 z-30 flex items-center justify-center w-9 h-9 rounded-full bg-white/95 dark:bg-slate-700/95 backdrop-blur-sm ring-1 ring-slate-200 dark:ring-slate-600 shadow-lg text-slate-600 dark:text-slate-300 hover:text-slate-900 dark:hover:text-white transition-colors"
+		aria-label="Scroll to bottom"
+	>
+		<Icon name="lucide:arrow-down" class="w-4 h-4" />
+	</button>
 {/if}
