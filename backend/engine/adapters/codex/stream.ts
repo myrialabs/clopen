@@ -21,7 +21,8 @@
 
 import { Codex, type Thread, type ThreadOptions, type Input as CodexInput } from '@openai/codex-sdk';
 import type { EngineOutput, EngineModel } from '$shared/types/unified';
-import type { AIEngine, EngineQueryOptions } from '../../types';
+import type { AIEngine, EngineQueryOptions, StructuredGenerationOptions } from '../../types';
+import { extractJson } from '../../structured-helpers';
 import { engineQueries } from '$backend/database/queries/engine-queries';
 import { resolveOsPath } from '$backend/utils/paths';
 import { resolveBinary } from '$backend/utils/cli';
@@ -265,6 +266,58 @@ export class CodexEngine implements AIEngine {
 
 	async interrupt(): Promise<void> {
 		await this.cancel();
+	}
+
+	/**
+	 * One-shot structured JSON generation via the SDK's native `outputSchema`.
+	 * The CLI returns the JSON-serialised object as `Turn.finalResponse` (and
+	 * as the text of the trailing `agent_message` item) — see codex-sdk
+	 * `TurnOptions.outputSchema` in `dist/index.d.ts`.
+	 */
+	async generateStructured<T = unknown>(options: StructuredGenerationOptions): Promise<T> {
+		const {
+			prompt,
+			modelId,
+			schema,
+			projectPath,
+			abortController,
+			accountId,
+		} = options;
+
+		if (!this._isInitialized || !this.codex || (accountId != null && accountId !== this.currentAccountId)) {
+			if (this._isInitialized) {
+				await this.dispose();
+			}
+			await this.initialize(accountId);
+		}
+		if (!this.codex) {
+			throw new Error('Codex client unavailable.');
+		}
+
+		const controller = abortController || new AbortController();
+		const resolvedProjectPath = resolveOsPath(projectPath);
+
+		const thread = this.codex.startThread({
+			model: modelId,
+			workingDirectory: resolvedProjectPath,
+			skipGitRepoCheck: true,
+			sandboxMode: 'read-only',
+			approvalPolicy: 'never',
+			modelReasoningEffort: 'low',
+		});
+
+		debug.log('engine', `[codex structured] running with model=${modelId}`);
+
+		const turn = await thread.run(prompt, {
+			outputSchema: schema,
+			signal: controller.signal,
+		});
+
+		if (!turn.finalResponse) {
+			throw new Error('Codex returned empty response');
+		}
+
+		return extractJson<T>(turn.finalResponse);
 	}
 }
 

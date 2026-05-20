@@ -1664,6 +1664,94 @@ ships, sub-agent tool calls float to the top of the chat. If only step
 missed (in an SDK that does double-emit), sub-agent text appears in
 both places.
 
+### 9.16 `generateStructured` — schema strictness & part-extraction fallback
+
+`generateStructured` powers the AI commit-message generator (and any
+future one-shot JSON callers). Each adapter satisfies the same
+`StructuredGenerationOptions → Promise<T>` contract, but the SDKs split
+sharply on whether they accept a schema natively:
+
+| Engine       | Strategy        | Mechanism                                                    |
+|--------------|-----------------|--------------------------------------------------------------|
+| Claude       | Native          | `outputFormat: { type: 'json_schema', schema }` on `query()` |
+| Codex        | Native (strict) | `Thread.run(prompt, { outputSchema })` → `Turn.finalResponse`|
+| OpenCode     | Prompt          | `client.session.prompt({ tools: {}, … })`, parse text/reasoning parts |
+| Copilot      | Prompt          | `createSession({ availableTools: [], streaming: false })` + `sendAndWait` |
+| Qwen         | Prompt          | `query({ coreTools: [], maxSessionTurns: 1 })`, read `SDKResultMessageSuccess.result` |
+
+**Two cross-cutting gotchas you will hit.**
+
+**1. OpenAI strict mode demands a fully-closed schema.** Codex (via the
+Responses API) rejects any object that omits `additionalProperties:
+false` (`invalid_request_error / invalid_json_schema`) and requires
+every property to appear in `required`. Optional fields must be
+expressed as nullable type unions, not absent from `required`:
+
+```ts
+// backend/ws/git/commit-message.ts — shape that satisfies Codex.
+{
+  type: 'object',
+  additionalProperties: false,
+  required: ['type', 'scope', 'subject', 'body'],
+  properties: {
+    type:    { type: 'string', enum: [...] },
+    scope:   { type: ['string', 'null'] },   // was just 'string'
+    subject: { type: 'string' },
+    body:    { type: ['string', 'null'] },
+  },
+}
+```
+
+This is the **lowest common denominator** — Claude, OpenCode, Copilot,
+and Qwen all accept the same shape, so authoring all
+`generateStructured` schemas to Codex's rules keeps the call site
+engine-agnostic. Don't lift constraints into the adapter; lift the
+schema in the caller.
+
+The consumer of the parsed JSON must then handle `null` for any field
+that used to be "absent" — the existing falsy guards in
+`commit-message.ts` (`result.scope ? …`, `result.body ? …`) already do
+that. The corresponding TS type in `shared/types/git.ts` mirrors this
+(`scope: string | null`).
+
+**2. Prompt-engineered engines can return empty `text` parts.** OpenCode
+in particular emits `reasoning` parts in addition to `text` parts, and
+on some thinking-heavy models the JSON answer lands in the reasoning
+stream while `text` is empty. The early implementation that filtered
+only `p.type === 'text'` raised "OpenCode returned no text content" in
+that case.
+
+Two defences, both in `backend/engine/structured-helpers.ts` and the
+OpenCode adapter:
+
+- **Fall back across part types.** `text` first, then `reasoning`.
+  Filter out `ignored`/`synthetic` parts so the SDK's own scratch text
+  doesn't leak into the JSON parser. Log the part-type breakdown in the
+  error message so the next failure is diagnosable.
+- **Extract JSON tolerantly.** `extractJson()` tries, in order: a
+  ` ```json ` fenced block, the first balanced `{ … }`, then the raw
+  trimmed text. Models routinely ignore the "no markdown fences"
+  instruction; the parser should not.
+
+The native engines (Claude, Codex) skip these — Claude exposes
+`structured_output` on the `result` message and Codex's
+`Turn.finalResponse` is already the JSON string. They only fall through
+to `extractJson` defensively against the (rare) `finalResponse` arriving
+fenced.
+
+**Cancellation.** Every adapter accepts `options.abortController` and
+hands its `signal` to whatever the SDK exposes (Codex
+`TurnOptions.signal`, Claude `Options.abortController`, OpenCode `prompt
+{ signal }`, Copilot `session.abort()`, Qwen `QueryOptions.abortController`).
+The contract is the same as `streamQuery`: aborting cancels the in-flight
+request, not just the await.
+
+**Engine-not-implemented errors.** `backend/ws/git/commit-message.ts`
+guards on `engine.generateStructured` — if you add an engine that can't
+implement structured output, leave the property `undefined` and the WS
+route will surface `Engine "<name>" does not support structured
+generation` cleanly.
+
 ---
 
 ## 10. Quick reference table
@@ -1685,7 +1773,7 @@ both places.
 | MCP servers exposed over HTTP (single source) | `backend/mcp/remote-server.ts`, `backend/mcp/config.ts::getOpenCodeMcpConfig` (and future `getXxxMcpConfig`) |
 | Auth-blob swap into shared CLI dotfile      | Pattern only (no implementation yet); see §3.3 callout + §9.13 |
 | Restart-Server pattern (long-lived engines) | `backend/ws/engine/opencode/providers.ts::engine:opencode-server-restart`, `frontend/components/chat/input/components/EngineModelPicker.svelte::restartOCServer`, `AIEnginesSettings.svelte::handleRestartServer`/`forceRestartServer` |
-| `generateStructured` (no tools, JSON)       | `claude/stream.ts::generateStructured`, `opencode/stream.ts::generateStructured` |
+| `generateStructured` (no tools, JSON)       | `claude/stream.ts::generateStructured` (native `outputFormat`), `codex/stream.ts::generateStructured` (native `outputSchema`), `opencode/stream.ts::generateStructured` + `copilot/stream.ts::generateStructured` + `qwen/stream.ts::generateStructured` (prompt-engineered via `backend/engine/structured-helpers.ts`). See §9.16 for the strict-schema + part-fallback gotchas. |
 | Error normalisation                         | `claude/error-handler.ts`, `copilot/error-handler.ts`, `opencode/error-handler.ts`, `qwen/error-handler.ts`, `codex/error-handler.ts` |
 | DB provider/account access                  | `backend/database/queries/engine-queries.ts`              |
 | Per-platform install recipe                 | `backend/engine/install-recipes.ts`                       |

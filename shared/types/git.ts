@@ -180,7 +180,9 @@ export type CommitMessageFormat = 'single-line' | 'multi-line';
 /** Structured commit message output from AI */
 export interface GeneratedCommitMessage {
 	type: string;
-	scope: string;
+	/** Null when no scope applies — strict-schema engines (Codex) require explicit null over omission. */
+	scope: string | null;
 	subject: string;
-	body: string;
+	/** Null for single-line commits — strict-schema engines (Codex) require explicit null over omission. */
+	body: string | null;
 }

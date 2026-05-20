@@ -15,7 +15,8 @@ import type {
 	ModelInfo,
 } from '@github/copilot-sdk';
 import type { EngineOutput, EngineModel } from '$shared/types/unified';
-import type { AIEngine, EngineQueryOptions } from '../../types';
+import type { AIEngine, EngineQueryOptions, StructuredGenerationOptions } from '../../types';
+import { buildJsonPrompt, extractJson } from '../../structured-helpers';
 import { engineQueries } from '$backend/database/queries/engine-queries';
 import { resolveOsPath } from '$backend/utils/paths';
 import { debug } from '$shared/utils/logger';
@@ -538,6 +539,71 @@ export class CopilotEngine implements AIEngine {
 	 * `wasFreeform` is derived by checking whether the answer matches one
 	 * of the predefined `choices` captured when the callback was parked.
 	 */
+	/**
+	 * One-shot structured JSON generation via prompt engineering.
+	 *
+	 * The Copilot SDK has no native `outputSchema` / `response_format`
+	 * option, so we instruct the model to emit JSON only, disable every
+	 * tool with `availableTools: []`, and parse the assistant's final
+	 * message text.
+	 */
+	async generateStructured<T = unknown>(options: StructuredGenerationOptions): Promise<T> {
+		const {
+			prompt,
+			modelId,
+			schema,
+			projectPath,
+			abortController,
+			accountId,
+		} = options;
+
+		if (this._isInitialized && accountId != null && accountId !== this.currentAccountId) {
+			await this.dispose();
+		}
+		if (!this._isInitialized || !this.client) {
+			await this.initialize(accountId);
+		}
+		if (!this.client) {
+			throw new Error('Copilot client unavailable.');
+		}
+
+		const controller = abortController || new AbortController();
+		const resolvedProjectPath = resolveOsPath(projectPath);
+		const jsonPrompt = buildJsonPrompt(prompt, schema);
+
+		const session = await this.client.createSession({
+			model: modelId,
+			workingDirectory: resolvedProjectPath,
+			onPermissionRequest: approveAll,
+			availableTools: [],
+			streaming: false,
+		} as SessionConfig);
+
+		const onAbort = () => {
+			session.abort().catch((err) => {
+				debug.warn('engine', 'Copilot structured: abort failed (non-fatal):', err);
+			});
+		};
+		controller.signal.addEventListener('abort', onAbort, { once: true });
+
+		debug.log('engine', `[copilot structured] sending prompt to session ${session.sessionId}, model=${modelId}`);
+
+		try {
+			const final = await session.sendAndWait({ prompt: jsonPrompt });
+			if (!final?.data?.content) {
+				throw new Error('Copilot returned no assistant message content');
+			}
+			return extractJson<T>(final.data.content);
+		} finally {
+			controller.signal.removeEventListener('abort', onAbort);
+			try {
+				await session.disconnect();
+			} catch (error) {
+				debug.warn('engine', 'Copilot structured: session.disconnect failed (non-fatal):', error);
+			}
+		}
+	}
+
 	resolveUserAnswer(toolUseId: string, answers: Record<string, string>): boolean {
 		const pending = this.pendingUserAnswers.get(toolUseId);
 		if (!pending) {

@@ -13,8 +13,15 @@ import type { GeneratedCommitMessage } from '$shared/types/git';
 import { debug } from '$shared/utils/logger';
 import { requireProjectAccess } from '../access';
 
+// Schema is shaped to satisfy OpenAI's strict structured-output mode (used by
+// Codex via `outputSchema`): every object must declare `additionalProperties:
+// false`, every property must appear in `required`, and optional fields are
+// expressed as nullable type unions rather than being absent from `required`.
+// Claude/OpenCode/Copilot/Qwen accept this same shape — strict is the lowest
+// common denominator.
 const COMMIT_MESSAGE_SCHEMA = {
 	type: 'object',
+	additionalProperties: false,
 	properties: {
 		type: {
 			type: 'string',
@@ -22,19 +29,19 @@ const COMMIT_MESSAGE_SCHEMA = {
 			description: 'The conventional commit type'
 		},
 		scope: {
-			type: 'string',
-			description: 'Optional scope of the change (e.g., component name, module)'
+			type: ['string', 'null'],
+			description: 'Scope of the change (e.g., component name, module). Null when no scope applies.'
 		},
 		subject: {
 			type: 'string',
 			description: 'Short imperative description, lowercase, no period, max 72 chars'
 		},
 		body: {
-			type: 'string',
-			description: 'Optional longer description explaining the why behind the change'
+			type: ['string', 'null'],
+			description: 'Longer description explaining the why behind the change. Null for single-line commits.'
 		}
 	},
-	required: ['type', 'subject']
+	required: ['type', 'scope', 'subject', 'body']
 };
 
 export const commitMessageHandler = createRouter()

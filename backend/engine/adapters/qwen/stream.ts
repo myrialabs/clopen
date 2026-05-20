@@ -37,7 +37,8 @@ import {
 	type ToolInput,
 } from '@qwen-code/sdk';
 import type { EngineOutput, EngineModel } from '$shared/types/unified';
-import type { AIEngine, EngineQueryOptions } from '../../types';
+import type { AIEngine, EngineQueryOptions, StructuredGenerationOptions } from '../../types';
+import { buildJsonPrompt, extractJson } from '../../structured-helpers';
 import { resolveOsPath } from '$backend/utils/paths';
 import { debug } from '$shared/utils/logger';
 import { getEngineEnv } from './environment';
@@ -343,6 +344,87 @@ export class QwenEngine implements AIEngine {
 				/* fall through to cancel */
 			}
 		}
+	}
+
+	/**
+	 * One-shot structured JSON generation via prompt engineering.
+	 *
+	 * The Qwen SDK has no native `outputSchema` / `response_format` option,
+	 * so we instruct the model to emit JSON only, restrict tools with
+	 * `coreTools: []`, and parse the final `result` text returned by the
+	 * SDK's `SDKResultMessageSuccess`.
+	 */
+	async generateStructured<T = unknown>(options: StructuredGenerationOptions): Promise<T> {
+		const {
+			prompt,
+			modelId,
+			schema,
+			projectPath,
+			abortController,
+			accountId,
+		} = options;
+
+		const resolution = getEngineEnv(accountId);
+		if (!resolution) {
+			throw new Error('Qwen Code is not configured. Add an API key in Settings → Engines → Qwen Code.');
+		}
+		const { env } = resolution;
+
+		const controller = abortController || new AbortController();
+		const resolvedProjectPath = resolveOsPath(projectPath);
+		const jsonPrompt = buildJsonPrompt(prompt, schema);
+
+		debug.log('engine', `[qwen structured] running with model=${modelId}`);
+
+		const sdkOptions: QueryOptions = {
+			cwd: resolvedProjectPath,
+			model: modelId,
+			env,
+			authType: 'openai',
+			abortController: controller,
+			includePartialMessages: false,
+			permissionMode: 'default',
+			coreTools: [],
+			maxSessionTurns: 1,
+		};
+
+		const sdkPrompt: SDKUserMessage = {
+			type: 'user',
+			uuid: crypto.randomUUID(),
+			session_id: '',
+			parent_tool_use_id: null,
+			message: { role: 'user', content: jsonPrompt },
+		};
+		const promptIterable = (async function* (): AsyncIterable<SDKUserMessage> {
+			yield sdkPrompt;
+		})();
+
+		const queryInstance = query({ prompt: promptIterable, options: sdkOptions });
+
+		let resultText = '';
+		let errorMessage = '';
+		try {
+			for await (const message of queryInstance) {
+				if (message.type === 'result') {
+					if (message.subtype === 'success') {
+						resultText = message.result || '';
+					} else {
+						errorMessage = message.error?.message || message.subtype || 'unknown error';
+					}
+				}
+			}
+		} catch (error) {
+			if (controller.signal.aborted) {
+				throw new Error('Generation was cancelled');
+			}
+			throw error;
+		}
+
+		if (!resultText) {
+			throw new Error(errorMessage || 'Qwen returned no result text');
+		}
+
+		return extractJson<T>(resultText);
 	}
 
 	resolveUserAnswer(toolUseId: string, answers: Record<string, string>): boolean {

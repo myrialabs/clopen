@@ -41,6 +41,7 @@ import {
 } from './message-converter';
 import { ensureClient, getClient, getServerUrl } from './server';
 import { formatSessionError, handleStreamError } from './error-handler';
+import { buildJsonPrompt, extractJson } from '../../structured-helpers';
 import { debug } from '$shared/utils/logger';
 
 // ============================================================================
@@ -940,11 +941,7 @@ export class OpenCodeEngine implements AIEngine {
 			throw new Error('Failed to create OpenCode session');
 		}
 
-		// Wrap prompt with JSON instruction since v1 doesn't support format option
-		const jsonPrompt = `${prompt}
-
-IMPORTANT: You MUST respond with ONLY a valid JSON object matching this schema, no other text:
-${JSON.stringify(schema, null, 2)}`;
+		const jsonPrompt = buildJsonPrompt(prompt, schema);
 
 		debug.log('engine', `[OC structured] Sending prompt to session ${sessionId}, provider=${providerSlug}, modelId=${modelId}`);
 
@@ -965,26 +962,29 @@ ${JSON.stringify(schema, null, 2)}`;
 			throw new Error('OpenCode returned empty response');
 		}
 
-		debug.log('engine', `[OC structured] Got response with ${data.parts?.length || 0} parts`);
+		const parts = data.parts || [];
+		debug.log('engine', `[OC structured] Got response with ${parts.length} parts (${parts.map((p: any) => p.type).join(', ')})`);
 
-		// Extract text content from response parts and parse as JSON
-		const textParts = (data.parts || []).filter((p: any) => p.type === 'text');
-		const fullText = textParts.map((p: any) => p.text || '').join('');
+		// Prefer `text` parts but fall back to `reasoning` parts: some models
+		// (notably thinking-heavy ones) emit JSON inside reasoning when tools
+		// are disabled and the prompt is short. Both carry a `.text` field.
+		const collectText = (type: 'text' | 'reasoning') =>
+			parts
+				.filter((p: any) => p.type === type && !p.ignored)
+				.map((p: any) => p.text || '')
+				.join('');
 
-		if (!fullText) {
-			throw new Error('OpenCode returned no text content');
+		const textContent = collectText('text');
+		const source = textContent || collectText('reasoning');
+
+		if (!source) {
+			throw new Error(
+				`OpenCode returned no parseable content (received parts: ${parts.map((p: any) => p.type).join(', ') || 'none'})`
+			);
 		}
 
-		debug.log('engine', `[OC structured] Raw text: ${fullText.slice(0, 200)}`);
+		debug.log('engine', `[OC structured] Raw text: ${source.slice(0, 200)}`);
 
-		// Try to extract JSON from the response (may include markdown fences)
-		const jsonMatch = fullText.match(/```(?:json)?\s*([\s\S]*?)```/) || fullText.match(/(\{[\s\S]*\})/);
-		const jsonText = jsonMatch ? jsonMatch[1].trim() : fullText.trim();
-
-		try {
-			return JSON.parse(jsonText) as T;
-		} catch {
-			throw new Error(`OpenCode did not return valid JSON: ${jsonText.slice(0, 200)}`);
-		}
+		return extractJson<T>(source);
 	}
 }
