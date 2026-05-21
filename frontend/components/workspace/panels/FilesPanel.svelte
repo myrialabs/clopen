@@ -819,77 +819,151 @@
 	}
 
 	// ============================
+	// Multi-Selection
+	// ============================
+
+	let selectedPaths = $state<Set<string>>(new Set());
+	let selectionAnchor = $state<string | null>(null);
+
+	// Flatten the tree into the order rows are rendered (DFS, only expanded
+	// folders' children), so shift-range can compute a contiguous slice.
+	function getVisiblePaths(): string[] {
+		const out: string[] = [];
+		const walk = (nodes: FileNode[]) => {
+			for (const n of nodes) {
+				out.push(n.path);
+				if (n.type === 'directory' && expandedFolders.has(n.path) && n.children) {
+					walk(n.children);
+				}
+			}
+		};
+		walk(projectFiles);
+		return out;
+	}
+
+	function selectRange(anchor: string, target: string) {
+		const visible = getVisiblePaths();
+		const i1 = visible.indexOf(anchor);
+		const i2 = visible.indexOf(target);
+		if (i1 === -1 || i2 === -1) {
+			selectedPaths = new Set([target]);
+			return;
+		}
+		const [a, b] = i1 < i2 ? [i1, i2] : [i2, i1];
+		selectedPaths = new Set(visible.slice(a, b + 1));
+	}
+
+	function handleNodeClick(file: FileNode, event: MouseEvent | KeyboardEvent) {
+		const ctrl = event.ctrlKey || event.metaKey;
+		const shift = event.shiftKey;
+
+		if (shift && selectionAnchor) {
+			selectRange(selectionAnchor, file.path);
+			return;
+		}
+		if (ctrl) {
+			const next = new Set(selectedPaths);
+			if (next.has(file.path)) {
+				next.delete(file.path);
+			} else {
+				next.add(file.path);
+			}
+			selectedPaths = next;
+			selectionAnchor = file.path;
+			return;
+		}
+
+		// Plain click: replace selection, then continue with normal open/toggle.
+		selectedPaths = new Set([file.path]);
+		selectionAnchor = file.path;
+		if (file.type === 'directory') {
+			handleFolderToggle(file.path);
+		} else {
+			handleFileSelect(file);
+		}
+	}
+
+	function clearSelection() {
+		selectedPaths = new Set();
+		selectionAnchor = null;
+	}
+
+	// Collect FileNodes for an action — operate on the multi-selection when
+	// the clicked node is part of a >1 selection, otherwise just the clicked
+	// node.
+	function getActionTargets(file: FileNode): FileNode[] {
+		if (selectedPaths.has(file.path) && selectedPaths.size > 1) {
+			return Array.from(selectedPaths)
+				.map((p) => findFileInTree(projectFiles, p))
+				.filter((n): n is FileNode => n !== null);
+		}
+		return [file];
+	}
+
+	// ============================
 	// Clipboard
 	// ============================
 
-	let clipboard = $state<{ file: FileNode; operation: 'copy' | 'cut' } | null>(null);
+	let clipboard = $state<{ files: FileNode[]; operation: 'copy' | 'cut' } | null>(null);
 
 	async function pasteFile(targetFolder: FileNode) {
 		if (!clipboard) return;
-		try {
-			const { file: sourceFile, operation } = clipboard;
-			let basePath: string;
-			if (targetFolder.type === 'directory') {
-				basePath = targetFolder.path;
-			} else {
+		const basePath = targetFolder.type === 'directory'
+			? targetFolder.path
+			: (() => {
 				const pathParts = targetFolder.path.split(/[\\/]/);
 				pathParts.pop();
-				basePath = pathParts.join(targetFolder.path.includes('\\') ? '\\' : '/');
-			}
-			const targetPath = generateUniqueFilename(basePath, sourceFile.name);
+				return pathParts.join(targetFolder.path.includes('\\') ? '\\' : '/');
+			})();
 
-			if (operation === 'copy') {
-				projectFiles = duplicateNodeInTree(projectFiles, sourceFile.path, targetPath);
-				if (targetFolder.type === 'directory' && !expandedFolders.has(targetFolder.path)) {
-					expandedFolders.add(targetFolder.path);
-					expandedFolders = new Set(expandedFolders);
-				}
-				await ws.http('files:duplicate', { sourcePath: sourceFile.path, targetPath });
-			} else if (operation === 'cut') {
-				projectFiles = moveNodeInTree(projectFiles, sourceFile.path, targetPath);
-				if (targetFolder.type === 'directory' && !expandedFolders.has(targetFolder.path)) {
-					expandedFolders.add(targetFolder.path);
-					expandedFolders = new Set(expandedFolders);
-				}
-				const savedClipboard = clipboard;
-				clipboard = null;
-				try {
-					await ws.http('files:rename', { oldPath: sourceFile.path, newPath: targetPath });
-				} catch (err) {
-					projectFiles = moveNodeInTree(projectFiles, targetPath, sourceFile.path);
-					clipboard = savedClipboard;
-					throw err;
-				}
-			}
-		} catch (error) {
-			debug.error('file', 'Failed to paste file:', error);
-			showErrorAlert(error instanceof Error ? error.message : 'Unknown error', 'Paste Failed');
-		}
+		await pasteToBase(basePath, targetFolder.type === 'directory' ? targetFolder.path : null);
 	}
 
 	async function pasteToRoot() {
 		if (!clipboard || !projectPath) return;
-		try {
-			const { file: sourceFile, operation } = clipboard;
-			const targetPath = generateUniqueFilename(projectPath, sourceFile.name);
+		await pasteToBase(projectPath, null);
+	}
 
-			if (operation === 'copy') {
-				projectFiles = duplicateNodeInTree(projectFiles, sourceFile.path, targetPath);
-				await ws.http('files:duplicate', { sourcePath: sourceFile.path, targetPath });
-			} else if (operation === 'cut') {
-				projectFiles = moveNodeInTree(projectFiles, sourceFile.path, targetPath);
-				const savedClipboard = clipboard;
-				clipboard = null;
-				try {
-					await ws.http('files:rename', { oldPath: sourceFile.path, newPath: targetPath });
-				} catch (err) {
-					projectFiles = moveNodeInTree(projectFiles, targetPath, sourceFile.path);
-					clipboard = savedClipboard;
-					throw err;
+	async function pasteToBase(basePath: string, expandFolder: string | null) {
+		if (!clipboard) return;
+		const { files: sourceFiles, operation } = clipboard;
+		const movedPairs: { from: string; to: string }[] = [];
+
+		try {
+			for (const sourceFile of sourceFiles) {
+				const targetPath = generateUniqueFilename(basePath, sourceFile.name);
+
+				if (operation === 'copy') {
+					projectFiles = duplicateNodeInTree(projectFiles, sourceFile.path, targetPath);
+					try {
+						await ws.http('files:duplicate', { sourcePath: sourceFile.path, targetPath });
+					} catch (err) {
+						projectFiles = removeNodeFromTree(projectFiles, targetPath);
+						throw err;
+					}
+				} else {
+					projectFiles = moveNodeInTree(projectFiles, sourceFile.path, targetPath);
+					try {
+						await ws.http('files:rename', { oldPath: sourceFile.path, newPath: targetPath });
+						movedPairs.push({ from: sourceFile.path, to: targetPath });
+					} catch (err) {
+						projectFiles = moveNodeInTree(projectFiles, targetPath, sourceFile.path);
+						throw err;
+					}
 				}
 			}
+
+			if (expandFolder && !expandedFolders.has(expandFolder)) {
+				expandedFolders.add(expandFolder);
+				expandedFolders = new Set(expandedFolders);
+			}
+
+			if (operation === 'cut') {
+				clipboard = null;
+				clearSelection();
+			}
 		} catch (error) {
-			debug.error('file', 'Failed to paste to root:', error);
+			debug.error('file', 'Failed to paste:', error);
 			showErrorAlert(error instanceof Error ? error.message : 'Unknown error', 'Paste Failed');
 		}
 	}
@@ -929,6 +1003,8 @@
 	}
 
 	async function handleFileAction(action: string, file: FileNode) {
+		const targets = getActionTargets(file);
+
 		switch (action) {
 			case 'copy-path':
 				navigator.clipboard.writeText(file.path);
@@ -948,10 +1024,10 @@
 				openDialog('rename', file);
 				break;
 			case 'copy':
-				clipboard = { file, operation: 'copy' };
+				clipboard = { files: targets, operation: 'copy' };
 				break;
 			case 'cut':
-				clipboard = { file, operation: 'cut' };
+				clipboard = { files: targets, operation: 'cut' };
 				break;
 			case 'paste':
 				if (clipboard) await pasteFile(file);
@@ -966,21 +1042,34 @@
 				await duplicateFile(file);
 				break;
 			case 'delete':
-				await deleteFile(file);
+				await deleteFiles(targets);
 				break;
 			case 'refresh':
 				await refreshAll();
 				break;
+			case 'upload':
+				if (file.type === 'directory') triggerUpload(file.path);
+				break;
+			case 'zip':
+				await zipFiles(targets);
+				break;
+			case 'extract':
+				if (file.type === 'file') await extractZip(file);
+				break;
 		}
 	}
 
-	async function deleteFile(file: FileNode) {
-		const confirmMessage = file.type === 'directory'
-			? `Are you sure you want to delete the folder "${file.name}" and all its contents?`
-			: `Are you sure you want to delete "${file.name}"?`;
+	async function deleteFiles(files: FileNode[]) {
+		if (files.length === 0) return;
+
+		const confirmMessage = files.length === 1
+			? (files[0].type === 'directory'
+				? `Are you sure you want to delete the folder "${files[0].name}" and all its contents?`
+				: `Are you sure you want to delete "${files[0].name}"?`)
+			: `Are you sure you want to delete ${files.length} items?`;
 
 		const confirmed = await showConfirm({
-			title: file.type === 'directory' ? 'Delete Folder' : 'Delete File',
+			title: files.length === 1 && files[0].type === 'directory' ? 'Delete Folder' : (files.length === 1 ? 'Delete File' : 'Delete Items'),
 			message: confirmMessage,
 			type: 'error',
 			confirmText: 'Delete',
@@ -988,28 +1077,32 @@
 		});
 		if (!confirmed) return;
 
-		try {
-			const deletedNode = findFileInTree(projectFiles, file.path);
-			projectFiles = removeNodeFromTree(projectFiles, file.path);
-
-			// Close tab if open
-			closeTab(file.path);
-
+		for (const file of files) {
 			try {
-				await ws.http('files:delete', { filePath: file.path, force: file.type === 'directory' });
-			} catch (err) {
-				if (deletedNode) {
-					const pathParts = file.path.split(/[\\/]/);
-					pathParts.pop();
-					const parentPath = pathParts.length > 0 ? pathParts.join(file.path.includes('\\') ? '\\' : '/') : null;
-					projectFiles = addNodeToTree(projectFiles, parentPath, deletedNode);
+				const deletedNode = findFileInTree(projectFiles, file.path);
+				projectFiles = removeNodeFromTree(projectFiles, file.path);
+
+				// Close tab if open
+				closeTab(file.path);
+
+				try {
+					await ws.http('files:delete', { filePath: file.path, force: file.type === 'directory' });
+				} catch (err) {
+					if (deletedNode) {
+						const pathParts = file.path.split(/[\\/]/);
+						pathParts.pop();
+						const parentPath = pathParts.length > 0 ? pathParts.join(file.path.includes('\\') ? '\\' : '/') : null;
+						projectFiles = addNodeToTree(projectFiles, parentPath, deletedNode);
+					}
+					throw err;
 				}
-				throw err;
+			} catch (error) {
+				debug.error('file', 'Failed to delete file:', error);
+				showErrorAlert(error instanceof Error ? error.message : 'Unknown error', 'Delete Failed');
+				break;
 			}
-		} catch (error) {
-			debug.error('file', 'Failed to delete file:', error);
-			showErrorAlert(error instanceof Error ? error.message : 'Unknown error', 'Delete Failed');
 		}
+		clearSelection();
 	}
 
 	async function duplicateFile(file: FileNode) {
@@ -1037,6 +1130,266 @@
 
 	function createNewFolderInRoot() {
 		openDialog('new-folder', undefined, null);
+	}
+
+	// ============================
+	// Upload
+	// ============================
+
+	let uploadInputRef = $state<HTMLInputElement | null>(null);
+	let uploadTargetDir = $state<string>('');
+
+	function triggerUpload(targetDir: string) {
+		uploadTargetDir = targetDir || projectPath;
+		uploadInputRef?.click();
+	}
+
+	function triggerUploadToRoot() {
+		triggerUpload(projectPath);
+	}
+
+	async function handleUploadInputChange(event: Event) {
+		const input = event.target as HTMLInputElement;
+		if (!input.files || input.files.length === 0) return;
+		await uploadFilesTo(input.files, uploadTargetDir);
+		input.value = '';
+	}
+
+	async function uploadFilesTo(files: FileList | File[], targetDir: string) {
+		if (!targetDir) return;
+		const list = Array.from(files);
+		for (const f of list) {
+			try {
+				const buf = await f.arrayBuffer();
+				const targetFullPath = generateUniqueFilename(targetDir, f.name);
+				const finalName = targetFullPath.split(/[\\/]/).pop() || f.name;
+				await ws.http('files:upload-file', {
+					targetPath: targetDir,
+					fileName: finalName,
+					fileType: f.type || 'application/octet-stream',
+					fileSize: f.size,
+					data: new Uint8Array(buf)
+				});
+				// Optimistically add to tree so subsequent uploads in the same
+				// batch see the new name and auto-rename correctly.
+				const parentForAdd = targetDir === projectPath ? null : targetDir;
+				const newNode: FileNode = {
+					name: finalName,
+					path: targetFullPath,
+					type: 'file',
+					size: f.size,
+					modified: new Date()
+				};
+				projectFiles = addNodeToTree(projectFiles, parentForAdd, newNode);
+				if (parentForAdd && !expandedFolders.has(parentForAdd)) {
+					expandedFolders.add(parentForAdd);
+					expandedFolders = new Set(expandedFolders);
+				}
+			} catch (error) {
+				debug.error('file', 'Failed to upload file:', error);
+				showErrorAlert(error instanceof Error ? error.message : 'Upload failed', 'Upload Failed');
+			}
+		}
+	}
+
+	// ============================
+	// Zip / Extract
+	// ============================
+
+	async function zipFiles(targets: FileNode[]) {
+		if (targets.length === 0) return;
+		const first = targets[0];
+		const parts = first.path.split(/[\\/]/);
+		parts.pop();
+		const sep = first.path.includes('\\') ? '\\' : '/';
+		const parentPath = parts.length > 0 ? parts.join(sep) : projectPath;
+		const baseName = targets.length === 1 ? `${targets[0].name}.zip` : 'archive.zip';
+		const targetPath = generateUniqueFilename(parentPath, baseName);
+
+		try {
+			await ws.http('files:zip', {
+				sourcePaths: targets.map((t) => t.path),
+				targetPath
+			});
+			// Watcher will pick the new zip up; explicitly refresh for snappier UI.
+			await loadProjectFiles(true);
+		} catch (error) {
+			debug.error('file', 'Failed to create archive:', error);
+			showErrorAlert(error instanceof Error ? error.message : 'Compress failed', 'Compress Failed');
+		}
+	}
+
+	async function extractZip(file: FileNode) {
+		const parts = file.path.split(/[\\/]/);
+		const fileName = parts.pop() || file.name;
+		const sep = file.path.includes('\\') ? '\\' : '/';
+		const parentPath = parts.length > 0 ? parts.join(sep) : projectPath;
+		const baseName = fileName.replace(/\.zip$/i, '') || 'extracted';
+		const targetDir = generateUniqueFilename(parentPath, baseName);
+
+		try {
+			await ws.http('files:extract', {
+				archivePath: file.path,
+				targetDir
+			});
+			await loadProjectFiles(true);
+		} catch (error) {
+			debug.error('file', 'Failed to extract archive:', error);
+			showErrorAlert(error instanceof Error ? error.message : 'Extract failed', 'Extract Failed');
+		}
+	}
+
+	// ============================
+	// Drag-and-Drop (move + OS upload)
+	// ============================
+
+	const DND_MIME = 'application/x-clopen-fileops';
+	let dropTargetPath = $state<string | null>(null);
+	let isRootDropTarget = $state(false);
+
+	function getDragPaths(file: FileNode): string[] {
+		if (selectedPaths.has(file.path) && selectedPaths.size > 1) {
+			return Array.from(selectedPaths);
+		}
+		return [file.path];
+	}
+
+	function onNodeDragStart(file: FileNode, event: DragEvent) {
+		const paths = getDragPaths(file);
+		if (!selectedPaths.has(file.path)) {
+			selectedPaths = new Set([file.path]);
+			selectionAnchor = file.path;
+		}
+		if (event.dataTransfer) {
+			event.dataTransfer.effectAllowed = 'move';
+			event.dataTransfer.setData(DND_MIME, JSON.stringify({ paths }));
+			event.dataTransfer.setData('text/plain', paths.join('\n'));
+		}
+	}
+
+	function hasInternalDrag(event: DragEvent): boolean {
+		return event.dataTransfer ? Array.from(event.dataTransfer.types).includes(DND_MIME) : false;
+	}
+
+	function hasOSFiles(event: DragEvent): boolean {
+		return event.dataTransfer ? Array.from(event.dataTransfer.types).includes('Files') : false;
+	}
+
+	function onNodeDragOver(file: FileNode, event: DragEvent) {
+		if (file.type !== 'directory') return;
+		if (!hasInternalDrag(event) && !hasOSFiles(event)) return;
+		event.preventDefault();
+		event.stopPropagation();
+		if (event.dataTransfer) {
+			event.dataTransfer.dropEffect = hasInternalDrag(event) ? 'move' : 'copy';
+		}
+		dropTargetPath = file.path;
+		isRootDropTarget = false;
+	}
+
+	function onNodeDragLeave(file: FileNode, _event: DragEvent) {
+		if (dropTargetPath === file.path) {
+			dropTargetPath = null;
+		}
+	}
+
+	async function onNodeDrop(file: FileNode, event: DragEvent) {
+		if (file.type !== 'directory') return;
+		event.preventDefault();
+		event.stopPropagation();
+		dropTargetPath = null;
+		isRootDropTarget = false;
+
+		if (hasOSFiles(event) && event.dataTransfer?.files && event.dataTransfer.files.length > 0) {
+			await uploadFilesTo(event.dataTransfer.files, file.path);
+			return;
+		}
+
+		if (hasInternalDrag(event) && event.dataTransfer) {
+			try {
+				const raw = event.dataTransfer.getData(DND_MIME);
+				const payload = JSON.parse(raw) as { paths: string[] };
+				await moveNodesTo(payload.paths, file.path);
+			} catch (err) {
+				debug.error('file', 'Drop parse failed:', err);
+			}
+		}
+	}
+
+	function onNodeDragEnd(_file: FileNode, _event: DragEvent) {
+		dropTargetPath = null;
+		isRootDropTarget = false;
+	}
+
+	function onRootDragOver(event: DragEvent) {
+		if (!hasInternalDrag(event) && !hasOSFiles(event)) return;
+		event.preventDefault();
+		if (event.dataTransfer) {
+			event.dataTransfer.dropEffect = hasInternalDrag(event) ? 'move' : 'copy';
+		}
+		isRootDropTarget = true;
+	}
+
+	function onRootDragLeave(_event: DragEvent) {
+		isRootDropTarget = false;
+	}
+
+	async function onRootDrop(event: DragEvent) {
+		event.preventDefault();
+		isRootDropTarget = false;
+		dropTargetPath = null;
+
+		if (hasOSFiles(event) && event.dataTransfer?.files && event.dataTransfer.files.length > 0) {
+			await uploadFilesTo(event.dataTransfer.files, projectPath);
+			return;
+		}
+
+		if (hasInternalDrag(event) && event.dataTransfer) {
+			try {
+				const raw = event.dataTransfer.getData(DND_MIME);
+				const payload = JSON.parse(raw) as { paths: string[] };
+				await moveNodesTo(payload.paths, projectPath);
+			} catch (err) {
+				debug.error('file', 'Root drop parse failed:', err);
+			}
+		}
+	}
+
+	async function moveNodesTo(sourcePaths: string[], targetDirPath: string) {
+		const sep = targetDirPath.includes('\\') ? '\\' : '/';
+		for (const src of sourcePaths) {
+			if (src === targetDirPath) continue;
+			// Reject moving a folder into itself or its descendant
+			if (targetDirPath === src || targetDirPath.startsWith(`${src}${sep}`)) {
+				showErrorAlert('Cannot move a folder into itself or its descendant.', 'Move Failed');
+				return;
+			}
+			// No-op when already in target
+			const srcParts = src.split(/[\\/]/);
+			srcParts.pop();
+			const srcParent = srcParts.join(sep);
+			if (srcParent === targetDirPath) continue;
+
+			const name = src.split(/[\\/]/).pop() || '';
+			const targetPath = generateUniqueFilename(targetDirPath, name);
+
+			projectFiles = moveNodeInTree(projectFiles, src, targetPath);
+			try {
+				await ws.http('files:rename', { oldPath: src, newPath: targetPath });
+				// Update any open tab whose path matches
+				openTabs = openTabs.map((t) =>
+					t.file.path === src
+						? { ...t, file: { ...t.file, path: targetPath, name: targetPath.split(/[\\/]/).pop() || t.file.name } }
+						: t
+				);
+				if (activeTabPath === src) activeTabPath = targetPath;
+			} catch (err) {
+				projectFiles = moveNodeInTree(projectFiles, targetPath, src);
+				showErrorAlert(err instanceof Error ? err.message : 'Move failed', 'Move Failed');
+				return;
+			}
+		}
+		clearSelection();
 	}
 
 	// Save file
@@ -1603,10 +1956,24 @@
 							onPasteToRoot={pasteToRoot}
 							onNewFileInRoot={createNewFileInRoot}
 							onNewFolderInRoot={createNewFolderInRoot}
+							onUploadToRoot={triggerUploadToRoot}
 							onRefresh={refreshAll}
 							modifiedFiles={modifiedFilePaths}
 							gitStatusMap={gitStatusState.map}
 							gitFolderStatusMap={gitStatusState.folderMap}
+							{selectedPaths}
+							onNodeClick={handleNodeClick}
+							{onNodeDragStart}
+							{onNodeDragOver}
+							{onNodeDragLeave}
+							{onNodeDrop}
+							{onNodeDragEnd}
+							{dropTargetPath}
+							{onRootDragOver}
+							{onRootDragLeave}
+							{onRootDrop}
+							onClearSelection={clearSelection}
+							{isRootDropTarget}
 						/>
 					</div>
 				</div>
@@ -1680,5 +2047,14 @@
 		message={alertMessage}
 		type={alertType}
 		onClose={() => { showAlert = false; }}
+	/>
+
+	<!-- Hidden file input used by upload triggers -->
+	<input
+		bind:this={uploadInputRef}
+		type="file"
+		multiple
+		class="hidden"
+		onchange={handleUploadInputChange}
 	/>
 </div>

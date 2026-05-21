@@ -31,6 +31,7 @@
 		onPasteToRoot?: () => void;
 		onNewFileInRoot?: () => void;
 		onNewFolderInRoot?: () => void;
+		onUploadToRoot?: () => void;
 		selectedFile?: FileNodeType | null;
 		expandedFolders?: Set<string>;
 		onToggle?: (folderPath: string) => void;
@@ -41,6 +42,19 @@
 		activeFilePath?: string | null;
 		gitStatusMap?: Map<string, string>;
 		gitFolderStatusMap?: Map<string, string>;
+		selectedPaths?: Set<string>;
+		onNodeClick?: (file: FileNodeType, event: MouseEvent | KeyboardEvent) => void;
+		onNodeDragStart?: (file: FileNodeType, event: DragEvent) => void;
+		onNodeDragOver?: (file: FileNodeType, event: DragEvent) => void;
+		onNodeDragLeave?: (file: FileNodeType, event: DragEvent) => void;
+		onNodeDrop?: (file: FileNodeType, event: DragEvent) => void;
+		onNodeDragEnd?: (file: FileNodeType, event: DragEvent) => void;
+		dropTargetPath?: string | null;
+		onRootDragOver?: (event: DragEvent) => void;
+		onRootDragLeave?: (event: DragEvent) => void;
+		onRootDrop?: (event: DragEvent) => void;
+		onClearSelection?: () => void;
+		isRootDropTarget?: boolean;
 	}
 
 	let {
@@ -50,6 +64,7 @@
 		onPasteToRoot,
 		onNewFileInRoot,
 		onNewFolderInRoot,
+		onUploadToRoot,
 		selectedFile = null,
 		expandedFolders,
 		onToggle,
@@ -59,7 +74,20 @@
 		modifiedFiles = new Set(),
 		activeFilePath = null,
 		gitStatusMap = new Map(),
-		gitFolderStatusMap = new Map()
+		gitFolderStatusMap = new Map(),
+		selectedPaths = new Set<string>(),
+		onNodeClick,
+		onNodeDragStart,
+		onNodeDragOver,
+		onNodeDragLeave,
+		onNodeDrop,
+		onNodeDragEnd,
+		dropTargetPath = null,
+		onRootDragOver,
+		onRootDragLeave,
+		onRootDrop,
+		onClearSelection,
+		isRootDropTarget = false
 	}: Props = $props();
 
 	// Create local state if expandedFolders is not provided
@@ -462,6 +490,15 @@
 						<Icon name="lucide:folder-plus" class="w-4 h-4" />
 					</button>
 				{/if}
+				{#if onUploadToRoot}
+					<button
+						class="flex flex-shrink-0 p-1.5 text-slate-600 dark:text-slate-400 hover:text-violet-600 dark:hover:text-violet-400 hover:bg-violet-50 dark:hover:bg-violet-900/30 rounded-md transition-colors"
+						onclick={onUploadToRoot}
+						title="Upload File"
+					>
+						<Icon name="lucide:upload" class="w-4 h-4" />
+					</button>
+				{/if}
 					{#if hasClipboard && onPasteToRoot}
 					<button
 						class="flex flex-shrink-0 p-1.5 text-slate-600 dark:text-slate-400 hover:text-violet-600 dark:hover:text-violet-400 hover:bg-violet-50 dark:hover:bg-violet-900/30 rounded-md transition-colors"
@@ -666,7 +703,17 @@
 			</div>
 		{/if}
 	{:else}
-		<div class="overflow-auto flex-1 p-2 select-none">
+		<div
+			class="overflow-auto flex-1 p-2 select-none {isRootDropTarget ? 'ring-2 ring-violet-500/40 ring-inset' : ''}"
+			ondragover={onRootDragOver ? (e) => onRootDragOver(e) : undefined}
+			ondragleave={onRootDragLeave ? (e) => onRootDragLeave(e) : undefined}
+			ondrop={onRootDrop ? (e) => onRootDrop(e) : undefined}
+			onclick={(e) => {
+				if (e.target === e.currentTarget && onClearSelection) onClearSelection();
+			}}
+			role="tree"
+			tabindex="-1"
+		>
 			{#if files.length === 0}
 				<div class="text-center py-12">
 					<div class="bg-slate-100 dark:bg-slate-800 rounded-full w-16 h-16 flex items-center justify-center mx-auto mb-4">
@@ -696,6 +743,14 @@
 							{activeFilePath}
 							{gitStatusMap}
 							{gitFolderStatusMap}
+							{selectedPaths}
+							onClick={onNodeClick}
+							{onNodeDragStart}
+							{onNodeDragOver}
+							{onNodeDragLeave}
+							{onNodeDrop}
+							{onNodeDragEnd}
+							{dropTargetPath}
 						/>
 					{/each}
 				</div>

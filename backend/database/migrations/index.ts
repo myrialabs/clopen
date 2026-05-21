@@ -35,6 +35,7 @@ import * as migration033 from './033_seed_codex_provider';
 import * as migration034 from './034_seed_qwen_provider';
 import * as migration035 from './035_add_owner_to_db_client_connections';
 import * as migration036 from './036_create_auth_audit_log';
+import * as migration037 from './037_repair_auth_audit_log_schema';
 
 // Export all migrations in order
 export const migrations = [
@@ -253,6 +254,12 @@ export const migrations = [
 		description: migration036.description,
 		up: migration036.up,
 		down: migration036.down
+	},
+	{
+		id: '037',
+		description: migration037.description,
+		up: migration037.up,
+		down: migration037.down
 	}
 ];
 

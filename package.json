@@ -108,6 +108,7 @@
     "@xterm/xterm": "^6.0.0",
     "bun-pty": "^0.4.2",
     "elysia": "^1.4.19",
+    "fflate": "^0.8.3",
     "file-type": "^21.0.0",
     "is-text-path": "^3.0.0",
     "marked": "^16.1.1",

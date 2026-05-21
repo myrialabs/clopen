@@ -23,6 +23,7 @@ import {
 	uploadFileOperation,
 	deleteOperation
 } from '../../files/file-operations';
+import { createZipOperation, extractZipOperation } from '../../files/file-archive';
 import { join } from 'node:path';
 import { stat as fsStat, readdir as fsReaddir, rename as fsRename, access as fsAccess } from 'node:fs/promises';
 import { requireFilePathAccess, requireSharedFilePathAccess } from './path-access';
@@ -120,16 +121,16 @@ export const writeHandler = createRouter()
 		return await duplicateOperation(sourcePath, targetPath);
 	})
 
-	// Upload file operation
+	// Upload file operation. The binary WS protocol only flattens a single
+	// top-level Uint8Array field, so the payload uses a flat shape with the
+	// file bytes at `data` and metadata as siblings.
 	.http('files:upload-file', {
 		data: t.Object({
 			targetPath: t.String(),
-			file: t.Object({
-				name: t.String(),
-				type: t.String(),
-				size: t.Number(),
-				data: t.Uint8Array()
-			})
+			fileName: t.String(),
+			fileType: t.String(),
+			fileSize: t.Number(),
+			data: t.Uint8Array()
 		}),
 		response: t.Object({
 			message: t.String(),
@@ -139,8 +140,53 @@ export const writeHandler = createRouter()
 		})
 	}, async ({ data, conn }) => {
 		const targetPath = await requireFilePathAccess(conn, data.targetPath);
-		await requireFilePathAccess(conn, join(targetPath, data.file.name));
-		return await uploadFileOperation(data.file, targetPath);
+		await requireFilePathAccess(conn, join(targetPath, data.fileName));
+		return await uploadFileOperation(
+			{ name: data.fileName, type: data.fileType, size: data.fileSize, data: data.data },
+			targetPath
+		);
+	})
+
+	// Zip operation — compress a set of files/directories into a single archive
+	.http('files:zip', {
+		data: t.Object({
+			sourcePaths: t.Array(t.String()),
+			targetPath: t.String()
+		}),
+		response: t.Object({
+			message: t.String(),
+			path: t.String(),
+			size: t.Number(),
+			modified: t.String()
+		})
+	}, async ({ data, conn }) => {
+		if (data.sourcePaths.length === 0) {
+			throw new Error('At least one source path is required');
+		}
+		const resolvedSources: string[] = [];
+		for (const p of data.sourcePaths) {
+			resolvedSources.push(await requireFilePathAccess(conn, p));
+		}
+		const resolvedTarget = await requireFilePathAccess(conn, data.targetPath);
+		return await createZipOperation(resolvedSources, resolvedTarget);
+	})
+
+	// Extract operation — extract a zip archive into a target directory
+	.http('files:extract', {
+		data: t.Object({
+			archivePath: t.String(),
+			targetDir: t.String()
+		}),
+		response: t.Object({
+			message: t.String(),
+			path: t.String(),
+			entries: t.Number(),
+			modified: t.String()
+		})
+	}, async ({ data, conn }) => {
+		const archivePath = await requireFilePathAccess(conn, data.archivePath);
+		const targetDir = await requireFilePathAccess(conn, data.targetDir);
+		return await extractZipOperation(archivePath, targetDir);
 	})
 
 	// Delete operation
