@@ -246,14 +246,22 @@ export async function renameOperation(oldPath: string, newPath: string) {
 		const normalizedNewPath = process.platform === 'win32' ?
 			newPath.replace(/\//g, '\\') : newPath;
 
-		const oldFile = Bun.file(normalizedOldPath);
-		const newFile = Bun.file(normalizedNewPath);
-
-		if (!(await oldFile.exists())) {
+		// Use node:fs stat for existence checks (Bun.file().exists() returns
+		// false for directories, so it can't be used to rename folders).
+		try {
+			await fsStat(normalizedOldPath);
+		} catch {
 			throw new Error('Source path does not exist');
 		}
 
-		if (await newFile.exists()) {
+		let destinationExists = false;
+		try {
+			await fsStat(normalizedNewPath);
+			destinationExists = true;
+		} catch {
+			// Destination does not exist — good.
+		}
+		if (destinationExists) {
 			throw new Error('Destination path already exists');
 		}
 
@@ -263,7 +271,7 @@ export async function renameOperation(oldPath: string, newPath: string) {
 		}
 
 		await rename(normalizedOldPath, normalizedNewPath);
-		const stats = await newFile.stat();
+		const stats = await fsStat(normalizedNewPath);
 
 		return {
 			message: 'File/directory renamed successfully',
