@@ -48,14 +48,24 @@ export function requireProjectPathAccess(conn: WSConnection, projectPath: string
 }
 
 export async function requireFilePathAccess(conn: WSConnection, filePath: string): Promise<string> {
+	return await requireFilePathAccessFor(filePath, ws.getRole(conn), ws.getUserId(conn));
+}
+
+/**
+ * Identity-based variant of {@link requireFilePathAccess} — usable from HTTP
+ * routes (which have no `WSConnection`) once the caller has resolved the user
+ * from a bearer token. Same access policy as the WS version.
+ */
+export async function requireFilePathAccessFor(filePath: string, role: string | null, userId: string | null): Promise<string> {
 	const normalizedPath = await resolveRealPath(filePath);
-	if (ws.getRole(conn) === 'admin') {
+	if (role === 'admin') {
 		return normalizedPath;
 	}
+	if (!userId) {
+		throw new Error('Access denied');
+	}
 
-	const userId = ws.getUserId(conn);
 	const projects = projectQueries.getAllForUser(userId);
-
 	for (const project of projects) {
 		if (await isPathInside(project.path, normalizedPath)) {
 			return normalizedPath;

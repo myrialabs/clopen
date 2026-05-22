@@ -373,65 +373,10 @@ export async function duplicateOperation(sourcePath: string, targetPath: string)
 	}
 }
 
-export async function uploadFileOperation(file: { name: string; type: string; size: number; data: Uint8Array } | any, targetPath: string) {
-	if (!file || !file.name || !file.data) {
-		throw new Error('File is required for upload');
-	}
-
-	if (!targetPath) {
-		throw new Error('Target path is required');
-	}
-
-	// Validate the actual byte length of the payload, not the client-supplied
-	// `file.size` field — a mismatched value would otherwise bypass the limit.
-	validateFileSize(file.data.byteLength);
-
-	try {
-		// Normalize target path for Windows only
-		const normalizedTargetPath = process.platform === 'win32' ?
-			targetPath.replace(/\//g, '\\') : targetPath;
-		const finalPath = join(normalizedTargetPath, file.name);
-
-		// Create parent directory if it doesn't exist
-		const targetDir = Bun.file(normalizedTargetPath);
-		if (!(await targetDir.exists())) {
-			await mkdir(normalizedTargetPath, { recursive: true });
-		}
-
-		// Check if file already exists
-		const finalFile = Bun.file(finalPath);
-		if (await finalFile.exists()) {
-			throw new Error('File already exists');
-		}
-
-		// Write file
-		await Bun.write(finalPath, file.data);
-		const stats = await finalFile.stat();
-
-		return {
-			message: 'File uploaded successfully',
-			path: finalPath,
-			size: stats.size,
-			modified: stats.mtime.toISOString()
-		};
-	} catch (error) {
-		debug.error('file', 'Upload file error:', error);
-		if (error instanceof Error) {
-			if (error.message === 'File already exists') {
-				throw error;
-			}
-			if (error.message.includes('EPERM')) {
-				throw new Error('Permission denied - you may not have sufficient permissions to upload files to this location');
-			} else if (error.message.includes('ENOENT')) {
-				throw new Error('Target directory does not exist or is invalid');
-			} else if (error.message.includes('ENOSPC')) {
-				throw new Error('Not enough space on disk');
-			}
-			throw error;
-		}
-		throw new Error('Failed to upload file');
-	}
-}
+// Upload is served by the HTTP route (backend/http/files-upload.ts). The
+// earlier WS-based chunked uploader was removed because the Vite dev proxy
+// dropped sustained WS binary transfers with `write EPIPE`, regardless of
+// chunk size.
 
 export async function deleteOperation(filePath: string, force: boolean = false) {
 	if (!filePath) {

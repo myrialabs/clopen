@@ -20,11 +20,9 @@ import {
 	createDirectoryOperation,
 	renameOperation,
 	duplicateOperation,
-	uploadFileOperation,
 	deleteOperation
 } from '../../files/file-operations';
 import { createZipOperation, extractZipOperation } from '../../files/file-archive';
-import { join } from 'node:path';
 import { stat as fsStat, readdir as fsReaddir, rename as fsRename, access as fsAccess } from 'node:fs/promises';
 import { requireFilePathAccess, requireSharedFilePathAccess } from './path-access';
 
@@ -121,31 +119,9 @@ export const writeHandler = createRouter()
 		return await duplicateOperation(sourcePath, targetPath);
 	})
 
-	// Upload file operation. The binary WS protocol only flattens a single
-	// top-level Uint8Array field, so the payload uses a flat shape with the
-	// file bytes at `data` and metadata as siblings.
-	.http('files:upload-file', {
-		data: t.Object({
-			targetPath: t.String(),
-			fileName: t.String(),
-			fileType: t.String(),
-			fileSize: t.Number(),
-			data: t.Uint8Array()
-		}),
-		response: t.Object({
-			message: t.String(),
-			path: t.String(),
-			size: t.Number(),
-			modified: t.String()
-		})
-	}, async ({ data, conn }) => {
-		const targetPath = await requireFilePathAccess(conn, data.targetPath);
-		await requireFilePathAccess(conn, join(targetPath, data.fileName));
-		return await uploadFileOperation(
-			{ name: data.fileName, type: data.fileType, size: data.fileSize, data: data.data },
-			targetPath
-		);
-	})
+	// Uploads moved to the HTTP route POST /api/files/upload — the WS path
+	// kept getting dropped by the Vite dev proxy with `write EPIPE` on
+	// sustained binary transfers (any chunk size). See backend/http/files-upload.ts.
 
 	// Zip operation — compress a set of files/directories into a single archive
 	.http('files:zip', {

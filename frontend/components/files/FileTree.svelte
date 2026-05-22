@@ -55,6 +55,10 @@
 		onRootDrop?: (event: DragEvent) => void;
 		onClearSelection?: () => void;
 		isRootDropTarget?: boolean;
+		/** Paths currently in a long-running operation (zip, extract, upload, …). */
+		busyPaths?: Set<string>;
+		/** Root-level operation in progress (e.g. upload to project root). */
+		isRootBusy?: boolean;
 	}
 
 	let {
@@ -87,7 +91,9 @@
 		onRootDragLeave,
 		onRootDrop,
 		onClearSelection,
-		isRootDropTarget = false
+		isRootDropTarget = false,
+		busyPaths = new Set<string>(),
+		isRootBusy = false
 	}: Props = $props();
 
 	// Create local state if expandedFolders is not provided
@@ -492,11 +498,18 @@
 				{/if}
 				{#if onUploadToRoot}
 					<button
-						class="flex flex-shrink-0 p-1.5 text-slate-600 dark:text-slate-400 hover:text-violet-600 dark:hover:text-violet-400 hover:bg-violet-50 dark:hover:bg-violet-900/30 rounded-md transition-colors"
+						class="flex flex-shrink-0 p-1.5 text-slate-600 dark:text-slate-400 hover:text-violet-600 dark:hover:text-violet-400 hover:bg-violet-50 dark:hover:bg-violet-900/30 rounded-md transition-colors disabled:opacity-60 disabled:cursor-not-allowed"
 						onclick={onUploadToRoot}
-						title="Upload File"
+						disabled={isRootBusy}
+						title={isRootBusy ? 'Uploading…' : 'Upload File'}
 					>
-						<Icon name="lucide:upload" class="w-4 h-4" />
+						{#if isRootBusy}
+							<span class="w-4 h-4 inline-flex items-center justify-center">
+								<span class="w-3.5 h-3.5 border-2 border-violet-500/30 border-t-violet-500 rounded-full animate-spin"></span>
+							</span>
+						{:else}
+							<Icon name="lucide:upload" class="w-4 h-4" />
+						{/if}
 					</button>
 				{/if}
 					{#if hasClipboard && onPasteToRoot}
@@ -751,6 +764,7 @@
 							{onNodeDrop}
 							{onNodeDragEnd}
 							{dropTargetPath}
+							{busyPaths}
 						/>
 					{/each}
 				</div>

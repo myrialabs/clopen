@@ -668,6 +668,12 @@ export class WSRouter<
 	asPlugin(path: string = '/ws') {
 		return (app: Elysia) => {
 			return app.ws(path, {
+				// Allow large binary frames (file uploads, zip extracts).
+				// Bun/uWS default is 16MB which trips EPIPE on the dev proxy
+				// long before the configurable per-file limit kicks in.
+				maxPayloadLength: 1024 * 1024 * 1024, // 1 GiB
+				// Disable inactivity disconnects during long binary transfers.
+				idleTimeout: 960, // seconds (max allowed by uWS)
 				message: (conn, message) => {
 					this.handleMessage(conn, message);
 				},

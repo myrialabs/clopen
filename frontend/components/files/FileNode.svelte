@@ -32,7 +32,8 @@
 		onNodeDragLeave,
 		onNodeDrop,
 		onNodeDragEnd,
-		dropTargetPath = null
+		dropTargetPath = null,
+		busyPaths = new Set<string>()
 	}: {
 		file: FileNodeType;
 		isSelected?: boolean;
@@ -58,7 +59,10 @@
 		onNodeDrop?: (file: FileNodeType, event: DragEvent) => void;
 		onNodeDragEnd?: (file: FileNodeType, event: DragEvent) => void;
 		dropTargetPath?: string | null;
+		busyPaths?: Set<string>;
 	} = $props();
+
+	const isBusy = $derived(busyPaths.has(file.path));
 
 	// Determine if this node is the active file
 	const isActiveFile = $derived(
@@ -139,6 +143,7 @@
 	}
 
 	function handleClick(event: MouseEvent | KeyboardEvent) {
+		if (isBusy) return;
 		if (onClick) {
 			onClick(file, event);
 			return;
@@ -152,6 +157,7 @@
 
 	function handleContextMenu(event: MouseEvent) {
 		event.preventDefault();
+		if (isBusy) return;
 		if (!isMenuOpen) {
 			menuStyle = computeMenuStyle(event.clientX, event.clientY, false);
 		}
@@ -160,6 +166,7 @@
 
 	function handleAction(action: string, event: Event) {
 		event.stopPropagation();
+		if (isBusy) return;
 		onAction?.(action, file);
 	}
 
@@ -180,15 +187,16 @@
 
 <div
 	bind:this={nodeElement}
-	class="group relative flex items-center space-x-2 px-2 py-1.5 rounded-md cursor-pointer transition-colors {isActiveFile
+	class="group relative flex items-center space-x-2 px-2 py-1.5 rounded-md transition-colors {isActiveFile
 		? 'bg-violet-500/10 dark:bg-violet-500/15 text-slate-900 dark:text-slate-100'
 		: isInSelection
 			? 'bg-violet-500/5 dark:bg-violet-500/10 text-slate-900 dark:text-slate-100'
-			: 'hover:bg-slate-100/50 dark:hover:bg-slate-800/50'} {isDropTarget ? 'ring-2 ring-violet-500/60 ring-inset' : ''}"
+			: 'hover:bg-slate-100/50 dark:hover:bg-slate-800/50'} {isDropTarget ? 'ring-2 ring-violet-500/60 ring-inset' : ''} {isBusy ? 'opacity-60 cursor-not-allowed pointer-events-none' : 'cursor-pointer'}"
 	class:selected={isActiveFile}
 	class:directory={file.type === 'directory'}
 	title={file.name}
 	style="padding-left: {(depth * 12 + 6) / 16}rem"
+	aria-busy={isBusy ? 'true' : undefined}
 	onclick={handleClick}
 	oncontextmenu={handleContextMenu}
 	onkeydown={(e) => {
@@ -200,12 +208,12 @@
 	role="button"
 	tabindex="0"
 	aria-label="{file.type === 'directory' ? 'Folder' : 'File'}: {file.name}"
-	draggable={onNodeDragStart ? true : undefined}
-	ondragstart={onNodeDragStart ? (e) => onNodeDragStart(file, e) : undefined}
-	ondragover={onNodeDragOver ? (e) => onNodeDragOver(file, e) : undefined}
-	ondragleave={onNodeDragLeave ? (e) => onNodeDragLeave(file, e) : undefined}
-	ondrop={onNodeDrop ? (e) => onNodeDrop(file, e) : undefined}
-	ondragend={onNodeDragEnd ? (e) => onNodeDragEnd(file, e) : undefined}
+	draggable={onNodeDragStart && !isBusy ? true : undefined}
+	ondragstart={onNodeDragStart && !isBusy ? (e) => onNodeDragStart(file, e) : undefined}
+	ondragover={onNodeDragOver && !isBusy ? (e) => onNodeDragOver(file, e) : undefined}
+	ondragleave={onNodeDragLeave && !isBusy ? (e) => onNodeDragLeave(file, e) : undefined}
+	ondrop={onNodeDrop && !isBusy ? (e) => onNodeDrop(file, e) : undefined}
+	ondragend={onNodeDragEnd && !isBusy ? (e) => onNodeDragEnd(file, e) : undefined}
 >
 	<!-- Expand/collapse arrow for directories -->
 	{#if file.type === 'directory'}
@@ -220,9 +228,17 @@
 		<span class="w-4"></span>
 	{/if}
 
-	<!-- File/folder icon -->
-	<span class="flex-shrink-0">
-		<Icon name={getDisplayIcon(file.name, file.type === 'directory')} />
+	<!-- File/folder icon (or spinner while busy) -->
+	<span class="flex-shrink-0 inline-flex items-center justify-center w-4 h-4">
+		{#if isBusy}
+			<span
+				class="w-3.5 h-3.5 border-2 border-violet-500/30 border-t-violet-500 rounded-full animate-spin"
+				title="Working…"
+				aria-label="Working"
+			></span>
+		{:else}
+			<Icon name={getDisplayIcon(file.name, file.type === 'directory')} />
+		{/if}
 	</span>
 
 	<!-- File/folder name -->
@@ -433,6 +449,7 @@
 			{onNodeDrop}
 			{onNodeDragEnd}
 			{dropTargetPath}
+			{busyPaths}
 		/>
 	{/each}
 {/if}

@@ -50,4 +50,6 @@ export interface SystemSettings {
 	autoUpdate: boolean;
 	/** Session lifetime in days. Default: 30. */
 	sessionLifetimeDays: number;
+	/** Maximum file size (megabytes) for write, upload, zip, and extract operations. Default: 500. */
+	maxFileSizeMB: number;
 }

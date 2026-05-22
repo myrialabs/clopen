@@ -28,6 +28,10 @@ import { statSync } from 'node:fs';
 // Import WebSocket router
 import { wsRouter } from './ws';
 
+// HTTP upload route — bypasses the Vite WS proxy, which corrupts sustained
+// binary transfers with `write EPIPE`. See backend/http/files-upload.ts.
+import { filesUploadRoute } from './http/files-upload';
+
 // Import browser preview manager for graceful shutdown
 import { browserPreviewServiceManager } from './preview';
 
@@ -91,6 +95,10 @@ const app = new Elysia()
 	// MCP remote server endpoint for Open Code custom tools
 	// Handles GET (SSE stream), POST (JSON-RPC), DELETE (session close)
 	.all('/mcp', async ({ request }) => handleMcpRequest(request))
+
+	// HTTP file upload — mounted before the WS plugin so /api/files/upload
+	// stays on the HTTP path through the Vite dev proxy.
+	.use(filesUploadRoute)
 
 	// Mount WebSocket router (all functionality now via WebSocket)
 	.use(wsRouter.asPlugin('/ws'));

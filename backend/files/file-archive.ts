@@ -3,7 +3,7 @@ import { mkdir, readdir, stat, writeFile } from 'node:fs/promises';
 import { zipSync, unzipSync } from 'fflate';
 
 import { debug } from '$shared/utils/logger';
-import { MAX_FILE_SIZE, validateFileSize } from './file-size-limit';
+import { getMaxFileSize, validateFileSize } from './file-size-limit';
 
 interface ZipTree {
 	[path: string]: Uint8Array | ZipTree;
@@ -120,9 +120,11 @@ export async function extractZipOperation(archivePath: string, targetDir: string
 		throw new Error('Archive does not exist');
 	}
 
+	const limit = getMaxFileSize();
+	const limitMB = Math.floor(limit / (1024 * 1024));
 	const stats = await stat(archivePath);
-	if (stats.size > MAX_FILE_SIZE) {
-		throw new Error(`Archive exceeds maximum allowed size of ${MAX_FILE_SIZE / (1024 * 1024)}MB`);
+	if (stats.size > limit) {
+		throw new Error(`Archive exceeds maximum allowed size of ${limitMB}MB`);
 	}
 
 	try {
@@ -142,8 +144,8 @@ export async function extractZipOperation(archivePath: string, targetDir: string
 		let totalBytes = 0;
 		for (const buf of Object.values(unzipped)) {
 			totalBytes += buf.byteLength;
-			if (totalBytes > MAX_FILE_SIZE) {
-				throw new Error(`Extracted content exceeds maximum allowed size of ${MAX_FILE_SIZE / (1024 * 1024)}MB`);
+			if (totalBytes > limit) {
+				throw new Error(`Extracted content exceeds maximum allowed size of ${limitMB}MB`);
 			}
 		}
 

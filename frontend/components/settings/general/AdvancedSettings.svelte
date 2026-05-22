@@ -75,6 +75,46 @@
 		if (e.key === 'Enter') saveEdit();
 		else if (e.key === 'Escape') cancelEdit();
 	}
+
+	// Draft input for the max file size limit so the user can type freely before saving.
+	// State is initialized to defaults and synced from `settings` via `$effect` because
+	// `settings` is itself a `$derived` — referencing it directly in an initializer would
+	// only capture its initial value.
+	let maxFileSizeDraft = $state<string>('500');
+	let lastSyncedMaxFileSize = $state<number>(500);
+	$effect(() => {
+		const current = settings.maxFileSizeMB ?? 500;
+		if (current !== lastSyncedMaxFileSize) {
+			lastSyncedMaxFileSize = current;
+			maxFileSizeDraft = String(current);
+		}
+	});
+
+	const maxFileSizeError = $derived.by(() => {
+		const trimmed = maxFileSizeDraft.trim();
+		if (trimmed === '') return 'Enter a value in megabytes.';
+		const parsed = Number(trimmed);
+		if (!Number.isFinite(parsed) || !Number.isInteger(parsed)) return 'Enter a whole number.';
+		if (parsed < 1) return 'Must be at least 1 MB.';
+		if (parsed > 102400) return 'Must be 102400 MB (100 GB) or less.';
+		return '';
+	});
+	const maxFileSizeDirty = $derived(
+		!maxFileSizeError && Number(maxFileSizeDraft.trim()) !== lastSyncedMaxFileSize
+	);
+
+	function saveMaxFileSize() {
+		if (maxFileSizeError || !maxFileSizeDirty) return;
+		const next = Number(maxFileSizeDraft.trim());
+		updateSystemSettings({ maxFileSizeMB: next });
+	}
+
+	function handleMaxFileSizeKeydown(e: KeyboardEvent) {
+		if (e.key === 'Enter') {
+			e.preventDefault();
+			saveMaxFileSize();
+		}
+	}
 </script>
 
 {#if isAdmin}
@@ -171,6 +211,49 @@
 					<Icon name="lucide:folder-plus" class="w-3.5 h-3.5" />
 					Add Allowed Path
 				</button>
+			</div>
+		</div>
+
+		<!-- Maximum file size for write/upload/zip/extract -->
+		<div class="p-4 bg-slate-100/80 dark:bg-slate-800/80 border border-slate-200 dark:border-slate-800 rounded-xl">
+			<div class="flex items-start gap-3.5 mb-4">
+				<div class="flex items-center justify-center w-10 h-10 rounded-lg shrink-0 bg-violet-400/15 text-violet-500">
+					<Icon name="lucide:hard-drive-upload" class="w-5 h-5" />
+				</div>
+				<div class="flex flex-col gap-0.5 min-w-0 flex-1">
+					<div class="text-sm font-semibold text-slate-900 dark:text-slate-100">
+						Maximum File Size
+					</div>
+					<div class="text-xs text-slate-600 dark:text-slate-500">
+						Upper bound (in megabytes) for file writes, uploads, ZIP archives, and extracted contents.
+					</div>
+				</div>
+			</div>
+
+			<div class="flex flex-col gap-1.5">
+				<div class="flex items-center gap-2">
+					<input
+						type="text"
+						inputmode="numeric"
+						pattern="[0-9]*"
+						bind:value={maxFileSizeDraft}
+						onkeydown={handleMaxFileSizeKeydown}
+						class="w-32 font-mono text-xs bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-700 rounded-md px-2 py-1.5 text-slate-700 dark:text-slate-300 focus:outline-none focus:ring-1 focus:ring-violet-500/30 focus:border-violet-400 dark:focus:border-violet-500"
+					/>
+					<span class="text-xs text-slate-600 dark:text-slate-400">MB</span>
+					<button
+						type="button"
+						onclick={saveMaxFileSize}
+						disabled={!!maxFileSizeError || !maxFileSizeDirty}
+						class="inline-flex items-center gap-1.5 py-1.5 px-3 bg-violet-500/10 border border-violet-500/20 rounded-md text-violet-600 dark:text-violet-400 text-xs font-semibold cursor-pointer transition-all duration-150 hover:bg-violet-500/20 hover:border-violet-600/40 disabled:opacity-40 disabled:cursor-not-allowed disabled:hover:bg-violet-500/10 disabled:hover:border-violet-500/20"
+					>
+						<Icon name="lucide:check" class="w-3.5 h-3.5" />
+						Save
+					</button>
+				</div>
+				{#if maxFileSizeError}
+					<span class="text-xs text-red-500 dark:text-red-400">{maxFileSizeError}</span>
+				{/if}
 			</div>
 		</div>
 	</div>

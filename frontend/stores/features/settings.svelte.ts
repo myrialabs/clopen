@@ -53,7 +53,8 @@ const defaultSystemSettings: SystemSettings = {
 	onboardingComplete: false,
 	allowedBasePaths: [],
 	autoUpdate: false,
-	sessionLifetimeDays: 30
+	sessionLifetimeDays: 30,
+	maxFileSizeMB: 500
 };
 
 // Create and export reactive settings state directly (starts with defaults)

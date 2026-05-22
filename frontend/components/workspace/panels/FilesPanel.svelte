@@ -47,7 +47,9 @@
 	import { settings } from '$frontend/stores/features/settings.svelte';
 	import { onMount, onDestroy } from 'svelte';
 	import ws from '$frontend/utils/ws';
+	import { authStore } from '$frontend/stores/features/auth.svelte';
 	import { showConfirm } from '$frontend/stores/ui/dialog.svelte';
+	import { SvelteMap } from 'svelte/reactivity';
 	import { getFileIcon } from '$frontend/utils/file-icon-mappings';
 	import { getGitStatusLabel, getGitStatusColor } from '$frontend/utils/git-status';
 	import type { IconName } from '$shared/types/ui/icons';
@@ -670,7 +672,10 @@
 		const movedNode: FileNode = { ...sourceNode, path: targetPath, name: newName };
 		const pathParts = targetPath.split(/[\\/]/);
 		pathParts.pop();
-		const parentPath = pathParts.length > 0 ? pathParts.join(targetPath.includes('\\') ? '\\' : '/') : null;
+		const computedParent = pathParts.length > 0 ? pathParts.join(targetPath.includes('\\') ? '\\' : '/') : null;
+		// Root nodes are stored at the top of the tree, not under a node whose
+		// path === projectPath. Map that case to `null` so addNodeToTree appends.
+		const parentPath = computedParent === projectPath ? null : computedParent;
 		return addNodeToTree(newTree, parentPath, movedNode);
 	}
 
@@ -1133,6 +1138,54 @@
 	}
 
 	// ============================
+	// Busy state — per-path counters so concurrent ops on the same node
+	// don't clear each other prematurely. `rootBusyOps` covers operations
+	// targeting the project root (where there is no file node to spinner).
+	// `activeOps` drives the top-of-tree banner so the user has a clearly
+	// visible indicator even when the affected node is collapsed or
+	// scrolled out of view.
+	//
+	// IMPORTANT: Plain Map/Set are NOT made reactive by $state() in Svelte 5
+	// — we have to use SvelteMap so mutations notify the UI.
+	// ============================
+
+	const busyOps = new SvelteMap<string, number>();
+	const busyPaths = $derived(new Set(busyOps.keys()));
+	let rootBusyOps = $state(0);
+	const isRootBusy = $derived(rootBusyOps > 0);
+
+	type ActiveOp = {
+		id: string;
+		kind: 'upload' | 'zip' | 'extract';
+		label: string;
+		progress?: number; // 0–1, only set for chunked uploads
+	};
+	const activeOps = new SvelteMap<string, ActiveOp>();
+	const activeOpsList = $derived(Array.from(activeOps.values()));
+
+	function pushOp(op: ActiveOp): void {
+		activeOps.set(op.id, op);
+	}
+	function updateOp(id: string, patch: Partial<ActiveOp>): void {
+		const existing = activeOps.get(id);
+		if (!existing) return;
+		activeOps.set(id, { ...existing, ...patch });
+	}
+	function popOp(id: string): void {
+		activeOps.delete(id);
+	}
+
+	function markBusy(path: string, delta: 1 | -1): void {
+		const current = busyOps.get(path) ?? 0;
+		const next = current + delta;
+		if (next <= 0) {
+			busyOps.delete(path);
+		} else {
+			busyOps.set(path, next);
+		}
+	}
+
+	// ============================
 	// Upload
 	// ============================
 
@@ -1155,39 +1208,117 @@
 		input.value = '';
 	}
 
+	function formatBytes(bytes: number): string {
+		if (bytes < 1024) return `${bytes} B`;
+		if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KB`;
+		if (bytes < 1024 * 1024 * 1024) return `${(bytes / 1024 / 1024).toFixed(1)} MB`;
+		return `${(bytes / 1024 / 1024 / 1024).toFixed(2)} GB`;
+	}
+
+	// HTTP upload via /api/files/upload. The WS path used to wedge on the Vite
+	// dev proxy (`write EPIPE`) on sustained binary transfers; HTTP through the
+	// same proxy streams cleanly. XHR is used so we can drive a real progress
+	// bar via `upload.onprogress`.
+	async function uploadSingleFileHttp(file: File, targetDir: string, opId: string, fileIndex: number, total: number): Promise<{ finalName: string; finalPath: string } | null> {
+		const targetFullPath = generateUniqueFilename(targetDir, file.name);
+		const finalName = targetFullPath.split(/[\\/]/).pop() || file.name;
+
+		updateOp(opId, {
+			label: total === 1
+				? `Uploading ${finalName} (${formatBytes(file.size)})`
+				: `Uploading ${fileIndex + 1}/${total}: ${finalName} (${formatBytes(file.size)})`,
+			progress: 0
+		});
+
+		const token = authStore.sessionToken;
+		if (!token) throw new Error('Not authenticated');
+
+		const params = new URLSearchParams({
+			targetPath: targetDir,
+			fileName: finalName,
+			fileSize: String(file.size)
+		});
+
+		return await new Promise<{ finalName: string; finalPath: string }>((resolve, reject) => {
+			const xhr = new XMLHttpRequest();
+			xhr.open('POST', `/api/files/upload?${params.toString()}`);
+			xhr.setRequestHeader('Authorization', `Bearer ${token}`);
+			xhr.responseType = 'text';
+
+			xhr.upload.onprogress = (e) => {
+				if (e.lengthComputable && e.total > 0) {
+					updateOp(opId, { progress: e.loaded / e.total });
+				}
+			};
+
+			xhr.onload = () => {
+				if (xhr.status >= 200 && xhr.status < 300) {
+					updateOp(opId, { progress: 1 });
+					resolve({ finalName, finalPath: targetFullPath });
+				} else {
+					const msg = (xhr.responseText || '').trim();
+					reject(new Error(msg || `Upload failed (HTTP ${xhr.status})`));
+				}
+			};
+			xhr.onerror = () => reject(new Error('Network error during upload'));
+			xhr.onabort = () => reject(new Error('Upload aborted'));
+
+			xhr.send(file);
+		});
+	}
+
 	async function uploadFilesTo(files: FileList | File[], targetDir: string) {
 		if (!targetDir) return;
 		const list = Array.from(files);
-		for (const f of list) {
-			try {
-				const buf = await f.arrayBuffer();
-				const targetFullPath = generateUniqueFilename(targetDir, f.name);
-				const finalName = targetFullPath.split(/[\\/]/).pop() || f.name;
-				await ws.http('files:upload-file', {
-					targetPath: targetDir,
-					fileName: finalName,
-					fileType: f.type || 'application/octet-stream',
-					fileSize: f.size,
-					data: new Uint8Array(buf)
-				});
-				// Optimistically add to tree so subsequent uploads in the same
-				// batch see the new name and auto-rename correctly.
-				const parentForAdd = targetDir === projectPath ? null : targetDir;
-				const newNode: FileNode = {
-					name: finalName,
-					path: targetFullPath,
-					type: 'file',
-					size: f.size,
-					modified: new Date()
-				};
-				projectFiles = addNodeToTree(projectFiles, parentForAdd, newNode);
-				if (parentForAdd && !expandedFolders.has(parentForAdd)) {
-					expandedFolders.add(parentForAdd);
-					expandedFolders = new Set(expandedFolders);
+		if (list.length === 0) return;
+
+		const isRoot = targetDir === projectPath;
+		if (isRoot) {
+			rootBusyOps += 1;
+		} else {
+			markBusy(targetDir, 1);
+		}
+
+		const opId = crypto.randomUUID();
+		pushOp({
+			id: opId,
+			kind: 'upload',
+			label: list.length === 1 ? `Uploading ${list[0].name}` : `Uploading ${list.length} files`,
+			progress: 0
+		});
+
+		try {
+			for (let i = 0; i < list.length; i++) {
+				const f = list[i];
+				try {
+					const result = await uploadSingleFileHttp(f, targetDir, opId, i, list.length);
+					if (!result) continue;
+					// Optimistically add to tree so subsequent uploads in the same
+					// batch see the new name and auto-rename correctly.
+					const parentForAdd = targetDir === projectPath ? null : targetDir;
+					const newNode: FileNode = {
+						name: result.finalName,
+						path: result.finalPath,
+						type: 'file',
+						size: f.size,
+						modified: new Date()
+					};
+					projectFiles = addNodeToTree(projectFiles, parentForAdd, newNode);
+					if (parentForAdd && !expandedFolders.has(parentForAdd)) {
+						expandedFolders.add(parentForAdd);
+						expandedFolders = new Set(expandedFolders);
+					}
+				} catch (error) {
+					debug.error('file', 'Failed to upload file:', error);
+					showErrorAlert(error instanceof Error ? error.message : 'Upload failed', 'Upload Failed');
 				}
-			} catch (error) {
-				debug.error('file', 'Failed to upload file:', error);
-				showErrorAlert(error instanceof Error ? error.message : 'Upload failed', 'Upload Failed');
+			}
+		} finally {
+			popOp(opId);
+			if (isRoot) {
+				rootBusyOps = Math.max(0, rootBusyOps - 1);
+			} else {
+				markBusy(targetDir, -1);
 			}
 		}
 	}
@@ -1205,17 +1336,36 @@
 		const parentPath = parts.length > 0 ? parts.join(sep) : projectPath;
 		const baseName = targets.length === 1 ? `${targets[0].name}.zip` : 'archive.zip';
 		const targetPath = generateUniqueFilename(parentPath, baseName);
+		const targetName = targetPath.split(/[\\/]/).pop() || baseName;
 
+		const busyTargets = targets.map((t) => t.path);
+		for (const p of busyTargets) markBusy(p, 1);
+		const opId = crypto.randomUUID();
+		pushOp({
+			id: opId,
+			kind: 'zip',
+			label: targets.length === 1
+				? `Compressing ${targets[0].name} → ${targetName}`
+				: `Compressing ${targets.length} items → ${targetName}`
+		});
 		try {
-			await ws.http('files:zip', {
-				sourcePaths: targets.map((t) => t.path),
-				targetPath
-			});
+			await ws.http(
+				'files:zip',
+				{
+					sourcePaths: targets.map((t) => t.path),
+					targetPath
+				},
+				// Compression can take a while for big trees — give it room.
+				300_000
+			);
 			// Watcher will pick the new zip up; explicitly refresh for snappier UI.
 			await loadProjectFiles(true);
 		} catch (error) {
 			debug.error('file', 'Failed to create archive:', error);
 			showErrorAlert(error instanceof Error ? error.message : 'Compress failed', 'Compress Failed');
+		} finally {
+			popOp(opId);
+			for (const p of busyTargets) markBusy(p, -1);
 		}
 	}
 
@@ -1226,16 +1376,31 @@
 		const parentPath = parts.length > 0 ? parts.join(sep) : projectPath;
 		const baseName = fileName.replace(/\.zip$/i, '') || 'extracted';
 		const targetDir = generateUniqueFilename(parentPath, baseName);
+		const targetName = targetDir.split(/[\\/]/).pop() || baseName;
 
+		markBusy(file.path, 1);
+		const opId = crypto.randomUUID();
+		pushOp({
+			id: opId,
+			kind: 'extract',
+			label: `Extracting ${fileName} → ${targetName}`
+		});
 		try {
-			await ws.http('files:extract', {
-				archivePath: file.path,
-				targetDir
-			});
+			await ws.http(
+				'files:extract',
+				{
+					archivePath: file.path,
+					targetDir
+				},
+				300_000
+			);
 			await loadProjectFiles(true);
 		} catch (error) {
 			debug.error('file', 'Failed to extract archive:', error);
 			showErrorAlert(error instanceof Error ? error.message : 'Extract failed', 'Extract Failed');
+		} finally {
+			popOp(opId);
+			markBusy(file.path, -1);
 		}
 	}
 
@@ -1910,7 +2075,37 @@
 	{/if}
 {/snippet}
 
-<div class="h-full flex flex-col bg-transparent" bind:this={containerRef}>
+<div class="relative h-full flex flex-col bg-transparent" bind:this={containerRef}>
+	<!-- Active operations banner — pinned to the bottom of the panel so it
+	     stays visible regardless of tree scroll position. Mirrors the per-row
+	     spinner for users whose target node is collapsed or off-screen. -->
+	{#if activeOpsList.length > 0}
+		<div
+			class="absolute left-2 right-2 bottom-2 z-30 flex flex-col gap-1.5 pointer-events-none"
+			aria-live="polite"
+			aria-label="File operations in progress"
+		>
+			{#each activeOpsList as op (op.id)}
+				<div
+					class="pointer-events-auto flex items-center gap-2 px-3 py-2 rounded-lg bg-slate-900/95 dark:bg-slate-800/95 text-slate-100 shadow-lg backdrop-blur border border-slate-700/60 text-xs"
+				>
+					<span class="w-3.5 h-3.5 border-2 border-violet-300/40 border-t-violet-300 rounded-full animate-spin flex-shrink-0"></span>
+					<div class="flex-1 min-w-0">
+						<div class="truncate">{op.label}</div>
+						{#if op.progress !== undefined}
+							<div class="mt-1 h-1 w-full rounded-full bg-slate-700/60 overflow-hidden">
+								<div
+									class="h-full bg-violet-400 transition-all duration-150"
+									style="width: {Math.min(100, Math.max(0, op.progress * 100)).toFixed(1)}%"
+								></div>
+							</div>
+						{/if}
+					</div>
+				</div>
+			{/each}
+		</div>
+	{/if}
+
 	{#if !hasActiveProject}
 		<div class="flex-1 flex flex-col items-center justify-center gap-3 text-slate-600 dark:text-slate-500 text-sm">
 			<Icon name="lucide:folder" class="w-10 h-10 opacity-30" />
@@ -1974,6 +2169,8 @@
 							{onRootDrop}
 							onClearSelection={clearSelection}
 							{isRootDropTarget}
+							{busyPaths}
+							{isRootBusy}
 						/>
 					</div>
 				</div>
