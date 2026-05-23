@@ -263,7 +263,7 @@ adapters/<name>/
 ├── server.ts?              ← OPTIONAL   subprocess + client lifecycle (opencode)
 ├── config.ts?              ← OPTIONAL   runtime config builder (opencode)
 ├── presets.ts?             ← OPTIONAL   multi-provider/region preset catalog (qwen, opencode)
-└── session-fork.ts?        ← OPTIONAL   on-disk session fork workaround (codex, copilot)
+└── session-fork.ts?        ← OPTIONAL   on-disk session fork workaround (codex, qwen)
 ```
 
 Naming rules — strict, even when an SDK's local jargon differs:
@@ -1299,7 +1299,7 @@ resume.
 |-----------|----------------------------------------------------------------------------------------------|
 | Claude    | Pass `forkSession: true` in the SDK options on every call — native.                          |
 | OpenCode  | Call `client.session.fork({ path: { id: resume } })` on every resume — native.               |
-| Copilot   | **No native API yet** — fork by copying the on-disk session-state DIRECTORY on every resume. |
+| Copilot   | Call `client.rpc.sessions.fork({ sessionId: resume })` on every resume — native (`@experimental`, added in `@github/copilot-sdk` 1.0.0-beta.4). |
 | Codex     | **No native API yet** — fork by copying the rollout JSONL FILE on every resume.              |
 | Qwen Code | **No native API yet** — fork by copying the chat JSONL FILE on every resume.                 |
 
@@ -1310,29 +1310,13 @@ resume.
 > the same session id is reused across every turn (visible in persisted
 > assistant messages) and downstream branch logic breaks.
 
-The three on-disk workarounds all follow the same shape — copy the
-state, replace the source id with a fresh one, then resume against the
-fork — but the SDKs lay state out differently. Get the layout wrong and
-`sessionStateExists()` silently returns false on every turn, the fork
-block is skipped, and the engine resumes the original session — exactly
-the symptom multi-branch checkpoints surface as.
-
-**Copilot — directory layout.** Tracking issues:
-github/copilot-cli#1313, #1697, #2058. State lives in a directory:
-
-```
-~/.copilot/session-state/<sessionId>/
-├── workspace.yaml      ← first line: `id: <sessionId>`     ← rewrite
-├── events.jsonl        ← first event session.start.data.sessionId ← rewrite
-├── checkpoints/
-├── files/
-└── research/
-```
-
-Both `workspace.yaml#id` and the first `events.jsonl` line's
-`data.sessionId` must be replaced with the new fork id. After that,
-`client.resumeSession(forkId, ...)` picks the directory up as a fresh
-independent session.
+The two remaining on-disk workarounds (Codex and Qwen) follow the same
+shape — copy the state, replace the source id with a fresh one, then
+resume against the fork — but the SDKs lay state out differently. Get
+the layout wrong and `sessionStateExists()` silently returns false on
+every turn, the fork block is skipped, and the engine resumes the
+original session — exactly the symptom multi-branch checkpoints
+surface as.
 
 **Codex — single rollout JSONL in a date-tree.** The thread id is in
 the filename, not a directory name:
@@ -1394,8 +1378,8 @@ same id across turns is the symptom that forking is gated or skipped.
 When an SDK eventually adds a native `forkSession` (or equivalent), the
 migration is a one-liner: delete that adapter's `session-fork.ts`, drop
 the fork block in `stream.ts`, and pass the SDK flag the same way
-Claude and OpenCode already do. The `// TODO` comment at the top of
-each `session-fork.ts` pins the migration target.
+Claude, OpenCode, and Copilot already do. The `// TODO` comment at the
+top of each `session-fork.ts` pins the migration target.
 
 ### 9.11 Reset `currentAccountId` in `dispose()`
 
@@ -1767,7 +1751,7 @@ generation` cleanly.
 | Buffer until usage event arrives            | `copilot/message-converter.ts::flushPending` + `captureUsage` |
 | Reasoning stream lifecycle                  | `opencode/stream.ts::flushReasoning`, `copilot/message-converter.ts::convertReasoningDelta` |
 | Cancel-before-RPC ordering                  | `opencode/stream.ts::cancel`, `claude/stream.ts::cancel`, `copilot/stream.ts::cancel`  |
-| Fork session (native vs. on-disk workaround) | `claude/stream.ts` (`forkSession: true`), `opencode/stream.ts` (`client.session.fork`), `copilot/session-fork.ts` (copy disk state) |
+| Fork session (native vs. on-disk workaround) | `claude/stream.ts` (`forkSession: true`), `opencode/stream.ts` (`client.session.fork`), `copilot/stream.ts` (`client.rpc.sessions.fork`), `codex/session-fork.ts` + `qwen/session-fork.ts` (copy disk state) |
 | Sub-agent (`Task`/`Agent`) routing          | `claude/message-converter.ts` (`parent_tool_use_id`), `opencode/message-converter.ts::convertSubtaskToolUseOnly`, `copilot/message-converter.ts::resolveParentToolUseId` + `agentParentMap` (see §9.15) |
 | AskUserQuestion event + HTTP fallback       | `opencode/stream.ts::resolveUserAnswer`, `claude/stream.ts::canUseTool` |
 | MCP servers exposed over HTTP (single source) | `backend/mcp/remote-server.ts`, `backend/mcp/config.ts::getOpenCodeMcpConfig` (and future `getXxxMcpConfig`) |

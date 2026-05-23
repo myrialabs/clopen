@@ -191,7 +191,11 @@ export function createRemoteMcpServer(
 
 			mcpServer.registerTool(toolName as string, {
 				description: def.description,
-				inputSchema: def.schema,
+				// MCP SDK 1.29 typed `inputSchema` as `ZodRawShapeCompat` (Record of
+				// z3 | z4-core schemas). Our shapes are zod v4 instances whose
+				// nominal type doesn't satisfy that union, but they are accepted
+				// at runtime. Cast to bridge the mismatch.
+				inputSchema: def.schema as Record<string, any>,
 			}, async (args: Record<string, unknown>) => {
 				// Fast-fail when the owning chat stream has already been
 				// cancelled — the handler never runs. Without this, the

@@ -47,7 +47,6 @@ import {
 	convertSubagentStarted,
 	convertSubagentEnded,
 } from './message-converter';
-import { forkCopilotSessionState, sessionStateExists } from './session-fork';
 
 const ABORT_TIMEOUT_MS = 5000;
 
@@ -305,28 +304,23 @@ export class CopilotEngine implements AIEngine {
 
 			let session: CopilotSession;
 			if (resume) {
-				// Fork-by-copy on EVERY resume — same semantics as Claude
+				// Fork on EVERY resume — same semantics as Claude
 				// (`forkSession: true`) and OpenCode (`client.session.fork()`):
 				// each turn must produce a brand-new session id so the original
 				// branch's history is never mutated and the multi-branch
-				// checkpoint tree stays consistent. Without this, every turn
-				// reuses the same Copilot session id and downstream
-				// checkpoint/branch logic loses the ability to replay an
-				// earlier point as an independent sibling.
+				// checkpoint tree stays consistent.
 				//
-				// Falls through to a plain resume only when the source state
-				// can't be found on disk (best-effort recovery).
-				//
-				// TODO: replace this fork-by-copy block with a native SDK API
-				// once @github/copilot-sdk adds `forkSession` (issues
-				// github/copilot-cli#1313, #1697, #2058). The migration is the
-				// same one-liner Claude and OpenCode already use.
+				// Uses `client.rpc.sessions.fork` (added in @github/copilot-sdk
+				// 1.0.0-beta.4, marked @experimental — see node_modules/
+				// @github/copilot-sdk/dist/generated/rpc.d.ts::SessionsForkRequest).
+				// Falls back to plain resume if the SDK rejects the fork (source
+				// session no longer on disk, server doesn't support the RPC, etc.).
 				let resumeId = resume;
-				if (sessionStateExists(resume)) {
-					const forkId = crypto.randomUUID();
-					if (forkCopilotSessionState(resume, forkId)) {
-						resumeId = forkId;
-					}
+				try {
+					const result = await this.client.rpc.sessions.fork({ sessionId: resume });
+					resumeId = result.sessionId;
+				} catch (forkErr) {
+					debug.warn('engine', `Copilot fork failed for ${resume}, falling back to plain resume (non-fatal):`, forkErr);
 				}
 
 				try {

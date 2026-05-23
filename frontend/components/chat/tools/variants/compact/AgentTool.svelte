@@ -54,7 +54,7 @@
 	</div>
 	{#if subMessages && subMessages.length > 0}
 		<div bind:this={scrollContainer} onscroll={handleScroll} class="max-h-39 overflow-y-auto">
-			<ul class="space-y-0.5 pl-5 list-disc text-sm text-slate-500 dark:text-slate-400">
+			<ul class="space-y-0.5 pl-5 list-disc text-xs text-slate-500 dark:text-slate-400">
 				{#each subMessages as activity}
 					{#if activity.type === 'tool_use'}
 						<li>
