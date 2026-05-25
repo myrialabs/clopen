@@ -17,6 +17,48 @@ import { broadcastPresence } from '../projects/status';
 import { sessionQueries, messageQueries } from '../../database/queries';
 import { requireSessionAccess } from '../access';
 
+/**
+ * Broadcast presence + notify project members when a chat message may flip the
+ * stream's waiting-for-input state (an AskUserQuestion tool_use arrives, or a
+ * tool_result answers it). `event.data.message` IS the UnifiedMessage, so its
+ * blocks live at `.content` — reading `.message.content` (one level too deep)
+ * silently yields `[]` and the status indicators never update until refresh.
+ *
+ * Shared by the initial-stream and reconnect message handlers so the two paths
+ * cannot drift apart again.
+ */
+function handleWaitingInputChange(
+	event: StreamEvent,
+	chatSessionId: string,
+	projectId: string | undefined,
+): void {
+	const message = event.data?.message;
+	const msgContent = Array.isArray(message?.content) ? message.content : [];
+
+	const askToolUse = msgContent.find(
+		(item: any) => item.type === 'tool_use' && item.name === 'AskUserQuestion'
+	);
+	const hasToolResult = msgContent.some((item: any) => item.type === 'tool_result');
+
+	// Recompute presence whenever the waiting state may have changed in either
+	// direction (AskUserQuestion → amber, tool_result → green).
+	if (askToolUse || hasToolResult) {
+		broadcastPresence().catch((err) => {
+			debug.warn('chat', 'Presence broadcast error on waiting-input state change:', err);
+		});
+	}
+
+	// Notify all project members when AskUserQuestion arrives (sound + push)
+	if (askToolUse && projectId) {
+		ws.emit.projectMembers(projectId, 'chat:waiting-input', {
+			projectId,
+			chatSessionId,
+			toolUseId: askToolUse.id,
+			timestamp: event.data?.timestamp || new Date().toISOString()
+		});
+	}
+}
+
 // ============================================================================
 // Global stream lifecycle handler (module-level, not per-connection)
 //
@@ -233,26 +275,8 @@ export const streamHandler = createRouter()
 								engine: event.data.engine,
 								seq: event.seq
 							});
-							// Broadcast presence when waiting-input state may change
-							// (AskUserQuestion tool_use arrives or tool_result clears it)
-							const msgContent = Array.isArray(event.data.message?.message?.content) ? event.data.message.message.content : [];
-							const askToolUse = msgContent.find((item: any) =>
-								item.type === 'tool_use' && item.name === 'AskUserQuestion'
-							);
-							if (askToolUse || msgContent.some((item: any) => item.type === 'tool_result')) {
-								broadcastPresence().catch((err) => {
-									debug.warn('chat', 'Presence broadcast error on waiting-input state change:', err);
-								});
-							}
-							// Notify all project members when AskUserQuestion arrives (sound + push)
-							if (askToolUse && projectId) {
-								ws.emit.projectMembers(projectId, 'chat:waiting-input', {
-									projectId,
-									chatSessionId,
-									toolUseId: askToolUse.id,
-									timestamp: event.data.timestamp || new Date().toISOString()
-								});
-							}
+							// Broadcast presence + notify when waiting-input state may change
+							handleWaitingInputChange(event, chatSessionId, projectId);
 							break;
 						}
 
@@ -395,24 +419,8 @@ export const streamHandler = createRouter()
 								engine: event.data.engine,
 								seq: event.seq
 							});
-							// Broadcast presence when waiting-input state may change
-							const reconnMsgContent = Array.isArray(event.data.message?.message?.content) ? event.data.message.message.content : [];
-							const reconnAskToolUse = reconnMsgContent.find((item: any) =>
-								item.type === 'tool_use' && item.name === 'AskUserQuestion'
-							);
-							if (reconnAskToolUse || reconnMsgContent.some((item: any) => item.type === 'tool_result')) {
-								broadcastPresence().catch((err) => {
-									debug.warn('chat', 'Presence broadcast error on reconnect waiting-input state change:', err);
-								});
-							}
-							if (reconnAskToolUse && projectId) {
-								ws.emit.projectMembers(projectId, 'chat:waiting-input', {
-									projectId,
-									chatSessionId,
-									toolUseId: reconnAskToolUse.id,
-									timestamp: event.data.timestamp || new Date().toISOString()
-								});
-							}
+							// Broadcast presence + notify when waiting-input state may change
+							handleWaitingInputChange(event, chatSessionId, projectId);
 							break;
 						}
 
