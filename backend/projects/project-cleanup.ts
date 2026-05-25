@@ -20,7 +20,7 @@ registerProjectCleanup({
 registerProjectCleanup({
 	name: 'file-watcher',
 	run: (projectId) => {
-		fileWatcher.stopWatching(projectId);
+		fileWatcher.releaseProject(projectId);
 	}
 });
 

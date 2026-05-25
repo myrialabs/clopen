@@ -83,6 +83,19 @@ class FileWatcherManager {
 	private watchers = new Map<string, ProjectWatcher>();
 
 	/**
+	 * Per-project set of connection ids currently viewing the project.
+	 * The watcher is a shared singleton per project; it must stay alive while
+	 * ANY connection is viewing (multi-tab / multi-device) and be torn down
+	 * only when the last viewer leaves. Reference-counting here avoids the
+	 * previous bug where one viewer's unwatch killed the watcher for everyone,
+	 * and where switching projects leaked orphaned watchers.
+	 */
+	private viewers = new Map<string, Set<string>>();
+
+	/** Projects with an in-flight auto-restart, to avoid overlapping restarts. */
+	private restarting = new Set<string>();
+
+	/**
 	 * Per-project dirty file tracking for snapshot system.
 	 * Accumulates changed file relative paths between snapshot captures.
 	 */
@@ -113,7 +126,51 @@ class FileWatcherManager {
 	}
 
 	/**
-	 * Start watching a project directory
+	 * Register a connection as a viewer of a project and ensure a watcher is
+	 * running. Returns true if the project is being watched after the call.
+	 */
+	async addViewer(connId: string, projectId: string, projectPath: string): Promise<boolean> {
+		if (!this.viewers.has(projectId)) {
+			this.viewers.set(projectId, new Set());
+		}
+		this.viewers.get(projectId)!.add(connId);
+
+		if (this.watchers.has(projectId)) return true;
+		return this.startWatching(projectId, projectPath);
+	}
+
+	/**
+	 * Remove a connection as a viewer of a project. Stops the watcher only when
+	 * no viewers remain.
+	 */
+	removeViewer(connId: string, projectId: string): void {
+		const set = this.viewers.get(projectId);
+		if (!set) return;
+		set.delete(connId);
+		if (set.size === 0) {
+			this.viewers.delete(projectId);
+			this.stopWatching(projectId);
+		}
+	}
+
+	/**
+	 * Remove a connection from every project it was viewing. Called on hard
+	 * disconnect (tab close, network drop) where no explicit unwatch arrives.
+	 */
+	removeViewerFromAll(connId: string): void {
+		for (const projectId of Array.from(this.viewers.keys())) {
+			this.removeViewer(connId, projectId);
+		}
+	}
+
+	/** In-flight start promises, to coalesce concurrent start requests. */
+	private starting = new Map<string, Promise<boolean>>();
+
+	/**
+	 * Start watching a project directory. Concurrent calls for the same project
+	 * are coalesced: `fs.watch` setup awaits a `stat`, so without this guard two
+	 * near-simultaneous viewers (e.g. two devices) could each build a watcher and
+	 * leak one.
 	 */
 	async startWatching(projectId: string, projectPath: string): Promise<boolean> {
 		// Already watching this project
@@ -122,6 +179,19 @@ class FileWatcherManager {
 			return true;
 		}
 
+		const inflight = this.starting.get(projectId);
+		if (inflight) return inflight;
+
+		const startPromise = this.doStartWatching(projectId, projectPath);
+		this.starting.set(projectId, startPromise);
+		try {
+			return await startPromise;
+		} finally {
+			this.starting.delete(projectId);
+		}
+	}
+
+	private async doStartWatching(projectId: string, projectPath: string): Promise<boolean> {
 		try {
 			// Normalize path
 			const normalizedPath = normalize(projectPath);
@@ -140,14 +210,16 @@ class FileWatcherManager {
 				}
 			});
 
-			// Handle watcher errors
+			// Handle watcher errors. fs.watch can fault (and on some platforms go
+			// silently deaf) under heavy churn or after sleep/wake — recover by
+			// rebuilding the watcher instead of leaving the project stuck stale.
 			watcher.on('error', (error) => {
 				debug.error('file', `Watcher error for project ${projectId}:`, error);
-				// Try to emit error to clients
 				ws.emit.project(projectId, 'files:watch-error', {
 					projectId,
 					error: error.message || 'File watcher error'
 				});
+				this.scheduleRestart(projectId);
 			});
 
 			// Store watcher instance
@@ -215,6 +287,17 @@ class FileWatcherManager {
 			debug.error('file', `Error stopping watcher for project ${projectId}:`, error);
 			return false;
 		}
+	}
+
+	/**
+	 * Fully release a project: drop all viewers and any pending restart, then
+	 * stop the watcher. Used when a project is removed entirely (not just when a
+	 * single viewer navigates away).
+	 */
+	releaseProject(projectId: string): void {
+		this.viewers.delete(projectId);
+		this.restarting.delete(projectId);
+		this.stopWatching(projectId);
 	}
 
 	/**
@@ -400,6 +483,37 @@ class FileWatcherManager {
 			});
 			debug.log('file', `Emitted git:changed for project ${projectId}`);
 		}, GIT_DEBOUNCE_MS);
+	}
+
+	/**
+	 * Schedule a debounced rebuild of a project's watcher after a fault.
+	 * Guarded so overlapping error events don't spawn multiple restarts.
+	 */
+	private scheduleRestart(projectId: string): void {
+		if (this.restarting.has(projectId)) return;
+		// Only restart if someone is still viewing the project.
+		if (!this.viewers.get(projectId)?.size) return;
+		this.restarting.add(projectId);
+
+		setTimeout(async () => {
+			this.restarting.delete(projectId);
+			if (!this.viewers.get(projectId)?.size) return;
+
+			const projectPath = this.watchers.get(projectId)?.projectPath;
+			if (!projectPath) return;
+
+			debug.warn('file', `Restarting faulted watcher for project ${projectId}`);
+			this.stopWatching(projectId);
+			await this.startWatching(projectId, projectPath);
+
+			// A faulted watcher may have dropped events while down — nudge clients
+			// to reconcile so nothing stays stale.
+			ws.emit.project(projectId, 'files:changed', {
+				projectId,
+				changes: [],
+				timestamp: Date.now()
+			});
+		}, 1000);
 	}
 
 	/**

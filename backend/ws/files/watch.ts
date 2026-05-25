@@ -15,6 +15,10 @@ import { ws } from '$backend/utils/ws';
 import { projectQueries } from '../../database/queries/project-queries';
 import { requireProjectAccess } from '../access';
 
+// Connection ids that already have a disconnect cleanup registered, so we
+// don't stack duplicate cleanups when a connection re-watches across switches.
+const cleanupRegistered = new Set<string>();
+
 export const watchHandler = createRouter()
 	// Start watching a project directory
 	.on('files:watch', {
@@ -30,19 +34,23 @@ export const watchHandler = createRouter()
 		const projectId = project.id;
 
 		try {
-			// Check if already watching
-			if (fileWatcher.isWatching(projectId)) {
-				// Already watching, broadcast confirmation (frontend filters by projectId)
-				ws.emit.project(projectId, 'files:watching', {
-					projectId,
-					watching: true,
-					timestamp: Date.now()
+			const connId = ws.getConnectionId(conn);
+
+			// Tear down the watcher automatically if the connection drops without
+			// sending an explicit unwatch (tab close, network loss).
+			if (connId && !cleanupRegistered.has(connId)) {
+				cleanupRegistered.add(connId);
+				ws.addCleanup(conn, () => {
+					cleanupRegistered.delete(connId);
+					fileWatcher.removeViewerFromAll(connId);
 				});
-				return;
 			}
 
-			// Start watching
-			const success = await fileWatcher.startWatching(projectId, projectPath);
+			// Register this connection as a viewer; starts the watcher if it is
+			// the first viewer, otherwise reuses the existing one.
+			const success = connId
+				? await fileWatcher.addViewer(connId, projectId, projectPath)
+				: await fileWatcher.startWatching(projectId, projectPath);
 
 			if (success) {
 				// Broadcast confirmation (frontend filters by projectId)
@@ -69,25 +77,46 @@ export const watchHandler = createRouter()
 		}
 	})
 
-	// Stop watching a project directory
+	// Stop watching a project directory.
+	// Resolves the target project from the explicit `projectPath` (the project
+	// being left) rather than the connection's current project context — by the
+	// time this fires the context has usually already advanced to the new
+	// project, so relying on it would unwatch the wrong one.
 	.on('files:unwatch', {
-		data: t.Object({})
+		data: t.Object({
+			projectPath: t.Optional(t.String())
+		})
 	}, async ({ data, conn }) => {
-		const projectId = ws.getProjectId(conn);
+		let projectId: string;
+		if (data.projectPath) {
+			const project = projectQueries.getByPath(data.projectPath);
+			if (!project) return; // unknown path — nothing to unwatch
+			requireProjectAccess(conn, project.id);
+			projectId = project.id;
+		} else {
+			// Backwards-compatible fallback for callers that don't send a path.
+			projectId = ws.getProjectId(conn);
+		}
 
 		try {
-			const success = fileWatcher.stopWatching(projectId);
+			const connId = ws.getConnectionId(conn);
+			if (connId) {
+				// Drops this viewer; watcher is stopped only when none remain.
+				fileWatcher.removeViewer(connId, projectId);
+			} else {
+				fileWatcher.stopWatching(projectId);
+			}
 
-			// Broadcast confirmation (frontend filters by projectId)
+			// Broadcast the ACTUAL resulting state — other devices may still be
+			// viewing this project, in which case the watcher is still alive and
+			// they must not be told it stopped.
 			ws.emit.project(projectId, 'files:watching', {
 				projectId,
-				watching: false,
+				watching: fileWatcher.isWatching(projectId),
 				timestamp: Date.now()
 			});
 
-			if (success) {
-				debug.log('file', `Stopped watching project ${projectId}`);
-			}
+			debug.log('file', `Viewer left project ${projectId}`);
 		} catch (error) {
 			debug.error('file', 'Error stopping file watch:', error);
 		}

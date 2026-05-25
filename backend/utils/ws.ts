@@ -527,6 +527,15 @@ class WSServer {
 	}
 
 	/**
+	 * Get the stable connection id for a connection, or null if not registered.
+	 * Exposed so services (e.g. the file watcher) can reference-count viewers
+	 * per connection without duplicating room bookkeeping.
+	 */
+	getConnectionId(conn: WSConnection): string | null {
+		return this.resolveId(conn);
+	}
+
+	/**
 	 * Set authentication state for a connection.
 	 * Called by auth handlers after successful login/setup/invite.
 	 */

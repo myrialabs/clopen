@@ -31,7 +31,11 @@ export const writeHandler = createRouter()
 	.http('files:write-file', {
 		data: t.Object({
 			filePath: t.String(),
-			content: t.String()
+			content: t.String(),
+			// Optimistic concurrency token: the disk mtime the client's buffer is
+			// based on. When present and it no longer matches disk, the write is
+			// rejected instead of overwriting newer content. Omit to force-write.
+			baseModified: t.Optional(t.String())
 		}),
 		response: t.Object({
 			message: t.String(),
@@ -44,7 +48,7 @@ export const writeHandler = createRouter()
 			filePath,
 			contentLength: data.content.length
 		});
-		return await writeFileOperation(filePath, data.content);
+		return await writeFileOperation(filePath, data.content, data.baseModified);
 	})
 
 	// Create file operation

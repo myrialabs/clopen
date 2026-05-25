@@ -28,7 +28,8 @@ export const gitStatusState = $state<GitStatusState>({
 let refreshTimer: ReturnType<typeof setTimeout> | null = null;
 let inFlight = false;
 let pendingRefresh = false;
-let unsubscribeChanges: (() => void) | null = null;
+let unsubscribeFiles: (() => void) | null = null;
+let unsubscribeGit: (() => void) | null = null;
 let lastProjectId = '';
 
 /**
@@ -133,13 +134,24 @@ export function refreshGitStatus(delay = 250): void {
 }
 
 /**
- * Initialize the store: subscribe to file change events for auto-refresh.
+ * Initialize the store: subscribe to change events for auto-refresh.
  * Should be called once after the WS connection is ready.
+ *
+ * Listens to BOTH `files:changed` (working-tree edits) and `git:changed`
+ * (index/HEAD/refs mutations such as commit, stage, branch switch). A bare
+ * `git commit` touches only `.git/`, which the working-tree watcher ignores —
+ * so without the `git:changed` subscription the M/A/D badges would go stale
+ * until some unrelated file write happened to trigger a refresh.
  */
 export function initGitStatus(): void {
-	if (unsubscribeChanges) return;
-	unsubscribeChanges = ws.on('files:changed', () => {
+	if (unsubscribeFiles || unsubscribeGit) return;
+	unsubscribeFiles = ws.on('files:changed', (payload) => {
+		if (payload.projectId !== projectState.currentProject?.id) return;
 		refreshGitStatus(500);
+	});
+	unsubscribeGit = ws.on('git:changed', (payload) => {
+		if (payload.projectId !== projectState.currentProject?.id) return;
+		refreshGitStatus(150);
 	});
 }
 

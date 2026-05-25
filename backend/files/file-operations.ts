@@ -112,7 +112,7 @@ async function rmdir(path: string, options?: { recursive?: boolean }) {
 	return rm(path, options);
 }
 
-export async function writeFileOperation(filePath: string, content: string) {
+export async function writeFileOperation(filePath: string, content: string, baseModified?: string) {
 	if (!filePath) {
 		throw new Error('File path is required');
 	}
@@ -124,6 +124,26 @@ export async function writeFileOperation(filePath: string, content: string) {
 	// Validate content size before writing
 	const contentSize = Buffer.byteLength(content, 'utf8');
 	validateFileSize(contentSize);
+
+	// Optimistic concurrency: if the caller told us which on-disk version their
+	// content is based on, refuse to overwrite when the file has since changed.
+	// Skipped when the file no longer exists (treated as a fresh create) or when
+	// no base token is supplied (explicit force-write).
+	if (baseModified) {
+		try {
+			const currentStats = await fsStat(filePath);
+			if (currentStats.mtime.toISOString() !== baseModified) {
+				throw new Error(
+					'FILE_CONFLICT: file changed on disk since it was last loaded'
+				);
+			}
+		} catch (err) {
+			if (err instanceof Error && err.message.startsWith('FILE_CONFLICT')) {
+				throw err;
+			}
+			// stat failed because the file is gone — fall through and create it.
+		}
+	}
 
 	try {
 		debug.log('file', 'Writing file:', { filePath, contentLength: content.length });

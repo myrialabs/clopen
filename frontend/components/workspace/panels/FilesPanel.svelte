@@ -47,6 +47,7 @@
 	import { settings } from '$frontend/stores/features/settings.svelte';
 	import { onMount, onDestroy } from 'svelte';
 	import ws from '$frontend/utils/ws';
+	import { acquireFileWatch } from '$frontend/utils/file-watch';
 	import { authStore } from '$frontend/stores/features/auth.svelte';
 	import { showConfirm } from '$frontend/stores/ui/dialog.svelte';
 	import { SvelteMap } from 'svelte/reactivity';
@@ -95,6 +96,10 @@
 		externallyChanged?: boolean;
 		isBinary?: boolean;
 		scrollTop: number;
+		// Disk mtime of the content we last read/wrote — used as an optimistic
+		// concurrency token so a save can't silently clobber a newer on-disk
+		// version that arrived while the tab held stale content.
+		savedMtime?: string;
 	}
 
 	let openTabs = $state<EditorTab[]>([]);
@@ -444,9 +449,10 @@
 			const data = await ws.http('files:read-file', { file_path: filePath });
 			const content = data.content || '';
 			const isBinary = data.isBinary || false;
+			const savedMtime = data.modified;
 			openTabs = openTabs.map(t =>
 				t.file.path === filePath
-					? { ...t, currentContent: content, savedContent: content, isLoading: false, isBinary }
+					? { ...t, currentContent: content, savedContent: content, isLoading: false, isBinary, savedMtime, externallyChanged: false }
 					: t
 			);
 			// Update display if this is the active tab
@@ -1557,20 +1563,48 @@
 		clearSelection();
 	}
 
-	// Save file
+	// Save file with optimistic-concurrency protection.
+	// Sends the disk mtime the tab is based on; the backend rejects the write
+	// if the file changed underneath us, so a stale buffer can't silently
+	// clobber newer on-disk content. If the tab is already flagged as changed
+	// externally, the user has been warned — this save is an explicit overwrite,
+	// so we omit the base token to force it through.
 	async function saveFile(filePath: string, content: string) {
-		await ws.http('files:write-file', { filePath, content });
-		// Update tab's savedContent and clear external change flag
-		openTabs = openTabs.map(t =>
-			t.file.path === filePath
-				? { ...t, savedContent: content, externallyChanged: false }
-				: t
-		);
-		// Update display if active tab
-		if (filePath === activeTabPath) {
-			displaySavedContent = content;
-			displayExternallyChanged = false;
+		const tab = openTabs.find(t => t.file.path === filePath);
+		const forcing = tab?.externallyChanged === true;
+		const baseModified = forcing ? undefined : tab?.savedMtime;
+
+		try {
+			const res = await ws.http('files:write-file', { filePath, content, baseModified });
+			openTabs = openTabs.map(t =>
+				t.file.path === filePath
+					? { ...t, savedContent: content, savedMtime: res.modified, externallyChanged: false }
+					: t
+			);
+			if (filePath === activeTabPath) {
+				displaySavedContent = content;
+				displayExternallyChanged = false;
+			}
+		} catch (err) {
+			if (isWriteConflict(err)) {
+				// Disk diverged — surface the "Changed externally" badge so the
+				// user can reload or deliberately overwrite, and rethrow so the
+				// editor keeps the unsaved buffer instead of marking it clean.
+				openTabs = openTabs.map(t =>
+					t.file.path === filePath
+						? { ...t, externallyChanged: true }
+						: t
+				);
+				if (filePath === activeTabPath) {
+					displayExternallyChanged = true;
+				}
+			}
+			throw err;
 		}
+	}
+
+	function isWriteConflict(err: unknown): boolean {
+		return err instanceof Error && err.message.includes('FILE_CONFLICT');
 	}
 
 	// Force reload active tab from server (discard local changes)
@@ -1590,6 +1624,108 @@
 	// Refresh all
 	async function refreshAll(preserveState = false) {
 		await loadProjectFiles(preserveState);
+	}
+
+	// ============================
+	// Reconciliation
+	// ============================
+
+	// Re-establish the truth of the panel against disk: reload the tree and
+	// re-sync every open tab. Push events (the file watcher) are best-effort —
+	// the OS can drop them under bursts and watchers can go silently deaf — so
+	// this is the self-healing path, invoked both on watcher events and when the
+	// window/tab regains focus. Unsaved edits are never overwritten: a diverged
+	// file is flagged `externallyChanged` instead.
+	async function reconcile(
+		changes: Array<{ path: string; type: 'created' | 'modified' | 'deleted'; timestamp: string }> = [],
+		allowClose = false
+	) {
+		await loadProjectFiles(true);
+
+		const tabsSnapshot = [...openTabs];
+		for (const tab of tabsSnapshot) {
+			const hasUnsavedChanges = tab.currentContent !== tab.savedContent;
+
+			if (hasUnsavedChanges) {
+				// Tab has unsaved changes — check if the file changed externally,
+				// but keep the user's buffer intact regardless.
+				try {
+					const data = await ws.http('files:read-file', { file_path: tab.file.path });
+					const serverContent = data.content || '';
+					if (serverContent !== tab.savedContent) {
+						openTabs = openTabs.map(t =>
+							t.file.path === tab.file.path
+								? { ...t, externallyChanged: true }
+								: t
+						);
+						if (tab.file.path === activeTabPath) {
+							displayExternallyChanged = true;
+						}
+					}
+				} catch {
+					// File deleted/renamed while user has unsaved changes — keep tab open
+				}
+				continue;
+			}
+
+			// Tab has no unsaved changes — auto-sync from disk.
+			const success = await loadTabContent(tab.file.path);
+			if (!success) {
+				// File no longer exists — try to detect a rename within the same
+				// parent directory (only possible when we have change hints).
+				const tabDir = tab.file.path.replace(/\\/g, '/').split('/').slice(0, -1).join('/');
+				const renameTarget = changes.find(c => {
+					if (c.type !== 'created') return false;
+					const cDir = c.path.replace(/\\/g, '/').split('/').slice(0, -1).join('/');
+					return cDir === tabDir;
+				});
+
+				if (renameTarget) {
+					const newPath = renameTarget.path;
+					const newName = newPath.split(/[\\/]/).pop() || tab.file.name;
+					const oldPath = tab.file.path;
+
+					openTabs = openTabs.map(t =>
+						t.file.path === oldPath
+							? { ...t, file: { ...t.file, path: newPath, name: newName } }
+							: t
+					);
+					if (activeTabPath === oldPath) {
+						activeTabPath = newPath;
+					}
+
+					await loadTabContent(newPath);
+				} else if (allowClose) {
+					// No rename target and a watcher event told us the tree changed —
+					// the file was truly deleted, so drop the tab. We don't close on
+					// the focus safety-net path, where a failed read could just be a
+					// transient reconnect rather than a real deletion.
+					closeTab(tab.file.path);
+				}
+			}
+		}
+	}
+
+	// Debounced safety-net reconcile (used by focus/visibility), separate from
+	// the watcher-event debounce so they don't cancel each other.
+	let reconcileTimer: ReturnType<typeof setTimeout> | null = null;
+	function scheduleReconcile() {
+		if (!hasActiveProject || !projectId || !projectPath) return;
+		if (reconcileTimer) clearTimeout(reconcileTimer);
+		reconcileTimer = setTimeout(() => {
+			reconcileTimer = null;
+			// Re-arm the server watcher in case it was torn down or went deaf
+			// while we were away, then refresh git status and reconcile content.
+			ws.emit('files:watch', { projectPath });
+			refreshGitStatus(0);
+			reconcile();
+		}, 200);
+	}
+
+	function handleVisibilityChange() {
+		if (typeof document !== 'undefined' && document.visibilityState === 'visible') {
+			scheduleReconcile();
+		}
 	}
 
 	// ============================
@@ -1723,16 +1859,17 @@
 		}
 	}
 
-	// Start/stop file watcher when project changes
+	// Start/stop file watcher when project changes. Routed through the shared
+	// client-side ref-count so that closing this panel doesn't tear down the
+	// watcher while the Git dock still needs it (both share one connection).
+	// acquireFileWatch captures the path, so the cleanup releases the project
+	// this effect started — not whatever `projectPath` has since become.
 	$effect(() => {
 		if (hasActiveProject && projectId && projectPath) {
-			ws.emit('files:watch', { projectPath });
-			debug.log('file', `Started watching project: ${projectId}`);
-
+			const release = acquireFileWatch(projectPath);
 			return () => {
-				ws.emit('files:unwatch', {});
+				release();
 				isWatching = false;
-				debug.log('file', `Stopped watching project: ${projectId}`);
 			};
 		}
 	});
@@ -1755,74 +1892,8 @@
 			watchDebounceTimer = setTimeout(async () => {
 				const changes = [...accumulatedChanges];
 				accumulatedChanges = [];
-
-				// Reload file tree
-				await loadProjectFiles(true);
-
-				// Refresh all open tabs after tree reload
-				const tabsSnapshot = [...openTabs];
-				for (const tab of tabsSnapshot) {
-					const hasUnsavedChanges = tab.currentContent !== tab.savedContent;
-
-					if (hasUnsavedChanges) {
-						// Tab has unsaved changes — check if file changed externally
-						try {
-							const data = await ws.http('files:read-file', { file_path: tab.file.path });
-							const serverContent = data.content || '';
-							if (serverContent !== tab.savedContent) {
-								openTabs = openTabs.map(t =>
-									t.file.path === tab.file.path
-										? { ...t, externallyChanged: true }
-										: t
-								);
-								if (tab.file.path === activeTabPath) {
-									displayExternallyChanged = true;
-								}
-							}
-						} catch {
-							// File deleted/renamed while user has unsaved changes — keep tab open
-						}
-						continue;
-					}
-
-					// Tab has no unsaved changes — auto-sync
-					const success = await loadTabContent(tab.file.path);
-					if (!success) {
-						// File no longer exists — try to detect rename
-						const tabDir = tab.file.path.replace(/\\/g, '/').split('/').slice(0, -1).join('/');
-
-						// Find a 'created' change in the same parent directory
-						const renameTarget = changes.find(c => {
-							if (c.type !== 'created') return false;
-							const cDir = c.path.replace(/\\/g, '/').split('/').slice(0, -1).join('/');
-							return cDir === tabDir;
-						});
-
-						if (renameTarget) {
-							const newPath = renameTarget.path;
-							const newName = newPath.split(/[\\/]/).pop() || tab.file.name;
-							const oldPath = tab.file.path;
-
-							// Update tab path and name
-							openTabs = openTabs.map(t =>
-								t.file.path === oldPath
-									? { ...t, file: { ...t.file, path: newPath, name: newName } }
-									: t
-							);
-							if (activeTabPath === oldPath) {
-								activeTabPath = newPath;
-							}
-
-							// Load content from new path
-							await loadTabContent(newPath);
-						} else {
-							// No rename target found — file was truly deleted
-							closeTab(tab.file.path);
-						}
-					}
-				}
-
 				watchDebounceTimer = null;
+				await reconcile(changes, true);
 			}, 500);
 		});
 
@@ -1977,15 +2048,33 @@
 		// Subscribe git status to file change events (idempotent)
 		initGitStatus();
 
+		// Safety-net reconcile when the user returns to the app/tab. File-watch
+		// push events can be missed while the window is hidden (OS throttling,
+		// sleep/wake, dropped events); reconciling on focus re-establishes truth
+		// without relying on the watcher having stayed perfectly live.
+		if (typeof window !== 'undefined') {
+			window.addEventListener('focus', scheduleReconcile);
+			document.addEventListener('visibilitychange', handleVisibilityChange);
+		}
+
+		let resizeObserver: ResizeObserver | null = null;
 		if (containerRef && typeof ResizeObserver !== 'undefined') {
-			const resizeObserver = new ResizeObserver((entries) => {
+			resizeObserver = new ResizeObserver((entries) => {
 				for (const entry of entries) {
 					containerWidth = entry.contentRect.width;
 				}
 			});
 			resizeObserver.observe(containerRef);
-			return () => resizeObserver.disconnect();
 		}
+
+		return () => {
+			if (typeof window !== 'undefined') {
+				window.removeEventListener('focus', scheduleReconcile);
+				document.removeEventListener('visibilitychange', handleVisibilityChange);
+			}
+			if (reconcileTimer) clearTimeout(reconcileTimer);
+			resizeObserver?.disconnect();
+		};
 	});
 
 	// Tree scroll persistence — debounced on scroll, immediate on tab/etc

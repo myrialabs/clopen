@@ -7,6 +7,7 @@
 	import { debug } from '$shared/utils/logger';
 	import { settings } from '$frontend/stores/features/settings.svelte';
 	import ws from '$frontend/utils/ws';
+	import { acquireFileWatch } from '$frontend/utils/file-watch';
 	import { getFileIcon } from '$frontend/utils/file-icon-mappings';
 	import { isPreviewableFile, isBinaryFile } from '$frontend/utils/file-type';
 	import { getGitStatusLabel, getGitStatusColor } from '$frontend/utils/git-status';
@@ -1242,10 +1243,15 @@ ${bodies}`;
 		prevTwoColumnMode = isTwoColumnMode;
 	});
 
-	// Start file watcher for this project (idempotent — won't duplicate if FilesPanel already started it)
+	// Keep the project watched while this panel is mounted. Routed through the
+	// shared client-side ref-count so watch/unwatch stays balanced with the
+	// Files dock (both share one connection); releasing here only stops the
+	// watcher if no other panel still holds it.
 	$effect(() => {
-		if (hasActiveProject && projectId && projectState.currentProject?.path) {
-			ws.emit('files:watch', { projectPath: projectState.currentProject.path });
+		const path = projectState.currentProject?.path;
+		if (hasActiveProject && projectId && path) {
+			const release = acquireFileWatch(path);
+			return release;
 		}
 	});
 
