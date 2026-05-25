@@ -29,7 +29,7 @@
 	import { applyServerSettings, loadSystemSettings } from '$frontend/stores/features/settings.svelte';
 	import { applyTodoPanelState } from '$frontend/stores/ui/todo-panel.svelte';
 	import { presenceState, initPresence } from '$frontend/stores/core/presence.svelte';
-	import { updateFaviconBadge } from '$frontend/services/favicon.service';
+	import { updateTitleBadge } from '$frontend/services/title.service';
 	import ws from '$frontend/utils/ws';
 	import { debug } from '$shared/utils/logger';
 
@@ -124,7 +124,7 @@
 		}
 	});
 
-	// Reactive favicon badge: count non-idle indicators across all projects
+	// Reactive title badge: count non-idle indicators across all projects
 	$effect(() => {
 		const statuses = presenceState.statuses;
 		const unreadSessions = appState.unreadSessions;
@@ -150,7 +150,7 @@
 		}
 
 		const totalCount = streamingSessionIds.size + unreadCount;
-		updateFaviconBadge(totalCount);
+		updateTitleBadge(totalCount);
 	});
 </script>
 
