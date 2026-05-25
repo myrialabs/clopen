@@ -96,6 +96,34 @@ export interface TodoItem {
 	activeForm: string;
 }
 
+/** Task tools (Claude Agent SDK 0.3.142+ — replace the now-default-off TodoWrite). */
+export type TaskStatus = 'pending' | 'in_progress' | 'completed';
+
+export interface TaskCreateInput {
+	subject: string;
+	description: string;
+	activeForm?: string;
+	metadata?: Record<string, unknown>;
+}
+
+export interface TaskGetInput {
+	taskId: string;
+}
+
+export interface TaskUpdateInput {
+	taskId: string;
+	subject?: string;
+	description?: string;
+	activeForm?: string;
+	status?: TaskStatus | 'deleted';
+	addBlocks?: string[];
+	addBlockedBy?: string[];
+	owner?: string;
+	metadata?: Record<string, unknown>;
+}
+
+export interface TaskListInput {}
+
 export interface AgentInput {
 	prompt: string;
 	description: string;
@@ -105,6 +133,12 @@ export interface AgentInput {
 	isolation?: 'worktree';
 	runInBackground?: boolean;
 	resume?: string;
+	/** Addressable name for a spawned teammate (Claude SDK 0.3.148). */
+	name?: string;
+	/** Team to spawn into; uses current team context if omitted. */
+	teamName?: string;
+	/** Permission mode for the spawned teammate. */
+	mode?: 'acceptEdits' | 'auto' | 'bypassPermissions' | 'default' | 'dontAsk' | 'plan' | 'bubble';
 }
 
 export interface TaskOutputInput {
@@ -141,6 +175,8 @@ export interface ConfigInput {
 
 export interface EnterWorktreeInput {
 	name?: string;
+	/** Switch into an existing worktree instead of creating one (Claude SDK 0.3.148). */
+	path?: string;
 }
 
 export interface EnterPlanModeInput {}
@@ -260,6 +296,10 @@ export interface ToolInputMap {
 	Agent: AgentInput;
 	TaskOutput: TaskOutputInput;
 	TaskStop: TaskStopInput;
+	TaskCreate: TaskCreateInput;
+	TaskGet: TaskGetInput;
+	TaskUpdate: TaskUpdateInput;
+	TaskList: TaskListInput;
 	// MCP
 	ListMcpResources: ListMcpResourcesInput;
 	ReadMcpResource: ReadMcpResourceInput;
@@ -300,7 +340,7 @@ export const CANONICAL_TOOL_NAMES = new Set<KnownToolName>([
 	'Glob', 'Grep', 'List',
 	'WebFetch', 'WebSearch',
 	'TodoWrite', 'AskUserQuestion', 'EnterPlanMode', 'ExitPlanMode',
-	'Agent', 'TaskOutput', 'TaskStop',
+	'Agent', 'TaskOutput', 'TaskStop', 'TaskCreate', 'TaskGet', 'TaskUpdate', 'TaskList',
 	'ListMcpResources', 'ReadMcpResource',
 	'Config', 'EnterWorktree', 'ExitWorktree', 'Skill', 'ToolSearch', 'Lsp',
 	'ScheduleWakeup', 'Monitor', 'PushNotification', 'RemoteTrigger',

@@ -7,6 +7,10 @@ export { default as ExitPlanModeTool } from './variants/classic/ExitPlanModeTool
 export { default as GlobTool } from './variants/classic/GlobTool.svelte';
 export { default as GrepTool } from './variants/classic/GrepTool.svelte';
 export { default as TaskStopTool } from './variants/classic/TaskStopTool.svelte';
+export { default as TaskCreateTool } from './variants/classic/TaskCreateTool.svelte';
+export { default as TaskGetTool } from './variants/classic/TaskGetTool.svelte';
+export { default as TaskUpdateTool } from './variants/classic/TaskUpdateTool.svelte';
+export { default as TaskListTool } from './variants/classic/TaskListTool.svelte';
 export { default as ListMcpResourcesTool } from './variants/classic/ListMcpResourcesTool.svelte';
 export { default as NotebookEditTool } from './variants/classic/NotebookEditTool.svelte';
 export { default as ReadTool } from './variants/classic/ReadTool.svelte';
@@ -44,6 +48,10 @@ export { default as ExitPlanModeToolCompact } from './variants/compact/ExitPlanM
 export { default as GlobToolCompact } from './variants/compact/GlobTool.svelte';
 export { default as GrepToolCompact } from './variants/compact/GrepTool.svelte';
 export { default as TaskStopToolCompact } from './variants/compact/TaskStopTool.svelte';
+export { default as TaskCreateToolCompact } from './variants/compact/TaskCreateTool.svelte';
+export { default as TaskGetToolCompact } from './variants/compact/TaskGetTool.svelte';
+export { default as TaskUpdateToolCompact } from './variants/compact/TaskUpdateTool.svelte';
+export { default as TaskListToolCompact } from './variants/compact/TaskListTool.svelte';
 export { default as ListMcpResourcesToolCompact } from './variants/compact/ListMcpResourcesTool.svelte';
 export { default as NotebookEditToolCompact } from './variants/compact/NotebookEditTool.svelte';
 export { default as ReadToolCompact } from './variants/compact/ReadTool.svelte';

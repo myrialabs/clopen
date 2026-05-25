@@ -38,6 +38,7 @@ import type {
 	ErrorResultEvent,
 	SystemInitEvent,
 	RateLimitEvent,
+	NotificationEvent,
 	TokenUsage,
 	StopReason,
 } from '$shared/types/unified';
@@ -389,6 +390,26 @@ export function convertSystemInit(msg: SDKSystemMessage): SystemInitEvent {
 	};
 }
 
+/**
+ * Convert SDKTaskNotificationMessage (terminal background-task event) →
+ * NotificationEvent. Fires when a backgrounded Agent/teammate finishes
+ * (status completed | failed | stopped). The non-terminal task_started /
+ * task_progress / task_updated messages are intentionally not surfaced —
+ * they would spam the toast and there is no dedicated tasks panel.
+ */
+function convertTaskNotification(
+	msg: { session_id: string; status: string; summary?: string; task_id: string },
+): NotificationEvent {
+	const completed = msg.status === 'completed';
+	return {
+		type: 'notification',
+		sessionId: msg.session_id,
+		level: completed ? 'info' : 'warning',
+		title: completed ? 'Background task completed' : `Background task ${msg.status}`,
+		message: msg.summary || `Task ${msg.task_id} ${msg.status}`,
+	};
+}
+
 /** Convert SDKCompactBoundaryMessage → CompactBoundaryMessage */
 export function convertCompactBoundary(msg: SDKCompactBoundaryMessage): CompactBoundaryMessage {
 	return {
@@ -476,14 +497,20 @@ function* dispatchSdkMessage(msg: SDKMessage, state: StreamConverterState): Gene
 			break;
 
 		case 'system': {
-			const systemMsg = msg as SDKSystemMessage | SDKCompactBoundaryMessage;
-			if ('subtype' in systemMsg) {
-				if (systemMsg.subtype === 'init') {
-					yield convertSystemInit(systemMsg as SDKSystemMessage);
-				} else if (systemMsg.subtype === 'compact_boundary') {
-					yield convertCompactBoundary(systemMsg as SDKCompactBoundaryMessage);
-				}
+			// Read subtype as a plain string: the SDKMessage `system` arm covers
+			// more subtypes (task_*, etc.) than the SDKSystemMessage |
+			// SDKCompactBoundaryMessage union, so narrowing on that union would
+			// collapse the task branch to `never`.
+			const subtype = (msg as { subtype?: string }).subtype;
+			if (subtype === 'init') {
+				yield convertSystemInit(msg as SDKSystemMessage);
+			} else if (subtype === 'compact_boundary') {
+				yield convertCompactBoundary(msg as SDKCompactBoundaryMessage);
+			} else if (subtype === 'task_notification') {
+				yield convertTaskNotification(msg as unknown as Parameters<typeof convertTaskNotification>[0]);
 			}
+			// task_started / task_progress / task_updated: background-task
+			// progress noise — intentionally not surfaced (no tasks panel).
 			break;
 		}
 

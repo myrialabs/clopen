@@ -45,6 +45,10 @@ import RemoteTriggerToolClassic from './variants/classic/RemoteTriggerTool.svelt
 import ScheduleWakeupToolClassic from './variants/classic/ScheduleWakeupTool.svelte';
 import SkillToolClassic from './variants/classic/SkillTool.svelte';
 import TaskStopToolClassic from './variants/classic/TaskStopTool.svelte';
+import TaskCreateToolClassic from './variants/classic/TaskCreateTool.svelte';
+import TaskGetToolClassic from './variants/classic/TaskGetTool.svelte';
+import TaskUpdateToolClassic from './variants/classic/TaskUpdateTool.svelte';
+import TaskListToolClassic from './variants/classic/TaskListTool.svelte';
 import TodoWriteToolClassic from './variants/classic/TodoWriteTool.svelte';
 import ToolSearchToolClassic from './variants/classic/ToolSearchTool.svelte';
 import WebFetchToolClassic from './variants/classic/WebFetchTool.svelte';
@@ -80,6 +84,10 @@ import RemoteTriggerToolCompact from './variants/compact/RemoteTriggerTool.svelt
 import ScheduleWakeupToolCompact from './variants/compact/ScheduleWakeupTool.svelte';
 import SkillToolCompact from './variants/compact/SkillTool.svelte';
 import TaskStopToolCompact from './variants/compact/TaskStopTool.svelte';
+import TaskCreateToolCompact from './variants/compact/TaskCreateTool.svelte';
+import TaskGetToolCompact from './variants/compact/TaskGetTool.svelte';
+import TaskUpdateToolCompact from './variants/compact/TaskUpdateTool.svelte';
+import TaskListToolCompact from './variants/compact/TaskListTool.svelte';
 import TodoWriteToolCompact from './variants/compact/TodoWriteTool.svelte';
 import ToolSearchToolCompact from './variants/compact/ToolSearchTool.svelte';
 import WebFetchToolCompact from './variants/compact/WebFetchTool.svelte';
@@ -112,6 +120,10 @@ export const TOOL_COMPONENTS_CLASSIC: Record<KnownToolName, ToolComponent> = {
 	Agent: AgentToolClassic,
 	TaskOutput: BashOutputToolClassic,
 	TaskStop: TaskStopToolClassic,
+	TaskCreate: TaskCreateToolClassic,
+	TaskGet: TaskGetToolClassic,
+	TaskUpdate: TaskUpdateToolClassic,
+	TaskList: TaskListToolClassic,
 	// MCP
 	ListMcpResources: ListMcpResourcesToolClassic,
 	ReadMcpResource: ReadMcpResourceToolClassic,
@@ -156,6 +168,10 @@ export const TOOL_COMPONENTS_COMPACT: Record<KnownToolName, ToolComponent> = {
 	Agent: AgentToolCompact,
 	TaskOutput: BashOutputToolCompact,
 	TaskStop: TaskStopToolCompact,
+	TaskCreate: TaskCreateToolCompact,
+	TaskGet: TaskGetToolCompact,
+	TaskUpdate: TaskUpdateToolCompact,
+	TaskList: TaskListToolCompact,
 	// MCP
 	ListMcpResources: ListMcpResourcesToolCompact,
 	ReadMcpResource: ReadMcpResourceToolCompact,
@@ -185,4 +201,10 @@ export const HIDDEN_TOOLS = new Set<KnownToolName>([
 	'TodoWrite',
 	'TaskOutput',
 	'ToolSearch',
+	// Task tools drive the TaskProgress panel (see TaskProgress.svelte) rather
+	// than rendering inline — same treatment as TodoWrite.
+	'TaskCreate',
+	'TaskUpdate',
+	'TaskGet',
+	'TaskList',
 ]);

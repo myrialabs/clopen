@@ -101,6 +101,19 @@ export interface RateLimitEvent {
 	rateLimitType: RateLimitType | null;
 }
 
+/**
+ * Transient, non-persisted notification surfaced as a toast. Currently emitted
+ * for Claude background-task completion (SDKTaskNotificationMessage); the
+ * stream-manager routes it to a `chat:notification`.
+ */
+export interface NotificationEvent {
+	type: 'notification';
+	sessionId: string;
+	level: 'info' | 'warning' | 'error';
+	title: string;
+	message: string;
+}
+
 // ============================================================
 // Engine Output
 // ============================================================
@@ -117,7 +130,8 @@ export type EngineOutput =
 	| StreamEvent
 	| ResultEvent
 	| SystemInitEvent
-	| RateLimitEvent;
+	| RateLimitEvent
+	| NotificationEvent;
 
 // ============================================================
 // Stream Transport (WebSocket layer)

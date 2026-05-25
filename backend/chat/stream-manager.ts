@@ -24,6 +24,7 @@ import type {
 	SystemInitEvent,
 	RateLimitEvent,
 	RateLimitType,
+	NotificationEvent,
 	TokenUsage,
 	StopReason,
 	UserContentBlock,
@@ -729,6 +730,20 @@ class StreamManager extends EventEmitter {
 							timestamp: nowIso
 						});
 						continue;
+					}
+
+					// ── Notification (e.g. background-task completion) ─────
+					case 'notification': {
+						const note = output as NotificationEvent;
+						this.emitStreamEvent(streamState, 'notification', {
+							notification: {
+								type: note.level,
+								title: note.title,
+								message: note.message,
+							},
+							timestamp: new Date().toISOString()
+						});
+						continue; // transient — don't save to DB
 					}
 
 					// ── Result ─────────────────────────────────────────────

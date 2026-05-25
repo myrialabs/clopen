@@ -1,0 +1,36 @@
+[← Engine adapter guide](../README.md)
+
+## 10. Quick reference table
+
+| Need                                        | File                                                      |
+|---------------------------------------------|-----------------------------------------------------------|
+| Lazy + concurrency-safe init                | `claude/environment.ts::setupEnvironmentOnce`, `opencode/server.ts::ensureClient` |
+| Per-account credential override (env-var SDK) | `claude/environment.ts::getEngineEnv(accountId)`        |
+| Per-account credential override (constructor SDK) | `copilot/stream.ts::initialize(accountId)` + dispose+reinit in `streamQuery` |
+| Subprocess spawn + health + recovery        | `opencode/server.ts`                                      |
+| Stateful per-stream converter               | `claude/message-converter.ts::createSdkMessageConverter`  |
+| Split one SDK message → N `EngineOutput`    | `opencode/message-converter.ts::convertAssistantMessages`, `copilot/message-converter.ts::convertAssistantMessage` |
+| Buffer until usage event arrives            | `copilot/message-converter.ts::flushPending` + `captureUsage` |
+| Reasoning stream lifecycle                  | `opencode/stream.ts::flushReasoning`, `copilot/message-converter.ts::convertReasoningDelta` |
+| Cancel-before-RPC ordering                  | `opencode/stream.ts::cancel`, `claude/stream.ts::cancel`, `copilot/stream.ts::cancel`  |
+| Fork session (native vs. on-disk workaround) | `claude/stream.ts` (`forkSession: true`), `opencode/stream.ts` (`client.session.fork`), `copilot/stream.ts` (`client.rpc.sessions.fork`), `codex/session-fork.ts` + `qwen/session-fork.ts` (copy disk state) |
+| Sub-agent (`Task`/`Agent`) routing          | `claude/message-converter.ts` (`parent_tool_use_id`), `opencode/message-converter.ts::convertSubtaskToolUseOnly`, `copilot/message-converter.ts::resolveParentToolUseId` + `agentParentMap` (see §9.15) |
+| AskUserQuestion event + HTTP fallback       | `opencode/stream.ts::resolveUserAnswer`, `claude/stream.ts::canUseTool` |
+| MCP servers exposed over HTTP (single source) | `backend/mcp/remote-server.ts`, `backend/mcp/config.ts::getOpenCodeMcpConfig` (and future `getXxxMcpConfig`) |
+| Auth-blob swap into shared CLI dotfile      | Pattern only (no implementation yet); see §3.3 callout + §9.13 |
+| Restart-Server pattern (long-lived engines) | `backend/ws/engine/opencode/providers.ts::engine:opencode-server-restart`, `frontend/components/chat/input/components/EngineModelPicker.svelte::restartOCServer`, `AIEnginesSettings.svelte::handleRestartServer`/`forceRestartServer` |
+| `generateStructured` (no tools, JSON)       | `claude/stream.ts::generateStructured` (native `outputFormat`), `codex/stream.ts::generateStructured` (native `outputSchema`), `opencode/stream.ts::generateStructured` + `copilot/stream.ts::generateStructured` + `qwen/stream.ts::generateStructured` (prompt-engineered via `backend/engine/structured-helpers.ts`). See §9.16 for the strict-schema + part-fallback gotchas. |
+| Error normalisation                         | `claude/error-handler.ts`, `copilot/error-handler.ts`, `opencode/error-handler.ts`, `qwen/error-handler.ts`, `codex/error-handler.ts` |
+| DB provider/account access                  | `backend/database/queries/engine-queries.ts`              |
+| Per-platform install recipe                 | `backend/engine/install-recipes.ts`                       |
+| Streaming install logs                      | `backend/engine/install-runner.ts`                        |
+| Frontend account/provider stores            | `frontend/stores/features/{claude-accounts,copilot-accounts,opencode-providers}.svelte.ts` |
+| Frontend chat-model state                   | `frontend/stores/ui/chat-model.svelte.ts`                 |
+| Settings UI (Engines)                       | `frontend/components/settings/engines/AIEnginesSettings.svelte` |
+| Settings UI (System Tools)                  | `frontend/components/settings/system-tools/{SystemToolsSettings,ToolInstallCard}.svelte` |
+| Chat picker (engine + model + account)      | `frontend/components/chat/input/components/EngineModelPicker.svelte` |
+| Chat send → backend                         | `frontend/services/chat/chat.service.ts` (`ws.emit('chat:stream', …)`), `backend/ws/chat/stream.ts` |
+| Stream-manager (`EngineOutput` routing)     | `backend/chat/stream-manager.ts`                          |
+
+When in doubt: **mirror** the existing adapters and let `EngineOutput`
+remain the only contract that crosses the adapter boundary.
