@@ -1,6 +1,6 @@
 import { basename, dirname, isAbsolute, join, relative, sep } from 'node:path';
 import { mkdir, readdir, stat, writeFile } from 'node:fs/promises';
-import { zipSync, unzipSync } from 'fflate';
+import { zipSync, Unzip, UnzipInflate, UnzipPassThrough } from 'fflate';
 
 import { debug } from '$shared/utils/logger';
 import { getMaxFileSize, validateFileSize } from './file-size-limit';
@@ -139,33 +139,7 @@ export async function extractZipOperation(archivePath: string, targetDir: string
 		}
 
 		const data = new Uint8Array(await archiveFile.arrayBuffer());
-		const unzipped = unzipSync(data);
-
-		let totalBytes = 0;
-		for (const buf of Object.values(unzipped)) {
-			totalBytes += buf.byteLength;
-			if (totalBytes > limit) {
-				throw new Error(`Extracted content exceeds maximum allowed size of ${limitMB}MB`);
-			}
-		}
-
-		let entryCount = 0;
-		for (const [entryPath, content] of Object.entries(unzipped)) {
-			if (!isSafeEntryPath(entryPath, targetDir)) {
-				throw new Error(`Unsafe path in archive: ${entryPath}`);
-			}
-			const normalized = entryPath.replace(/\\/g, '/');
-			const isDirEntry = normalized.endsWith('/');
-			const fullPath = join(targetDir, normalized.split('/').join(sep));
-
-			if (isDirEntry) {
-				await mkdir(fullPath, { recursive: true });
-				continue;
-			}
-			await mkdir(dirname(fullPath), { recursive: true });
-			await writeFile(fullPath, content);
-			entryCount++;
-		}
+		const entryCount = await extractWithinLimit(data, targetDir, limit, limitMB);
 
 		const targetStats = await stat(targetDir);
 		return {
@@ -187,5 +161,92 @@ export async function extractZipOperation(archivePath: string, targetDir: string
 		}
 		throw new Error('Failed to extract archive');
 	}
+}
+
+const STREAM_CHUNK_SIZE = 64 * 1024;
+
+function concatChunks(chunks: Uint8Array[], total: number): Uint8Array {
+	const out = new Uint8Array(total);
+	let pos = 0;
+	for (const chunk of chunks) {
+		out.set(chunk, pos);
+		pos += chunk.length;
+	}
+	return out;
+}
+
+async function writeEntry(fullPath: string, content: Uint8Array): Promise<void> {
+	await mkdir(dirname(fullPath), { recursive: true });
+	await writeFile(fullPath, content);
+}
+
+/**
+ * Stream-extract a ZIP, aborting as soon as the running total of *actual*
+ * decompressed bytes exceeds the limit. Feeding the compressed data in small
+ * chunks bounds how much a single decode step can emit, so a crafted archive
+ * cannot allocate more than the limit before being rejected — unlike trusting
+ * the uncompressed-size fields in the central directory, which an attacker
+ * controls and can forge to defeat a pre-decompression size check.
+ */
+async function extractWithinLimit(
+	data: Uint8Array,
+	targetDir: string,
+	limit: number,
+	limitMB: number
+): Promise<number> {
+	let totalBytes = 0;
+	let entryCount = 0;
+	let failure: Error | null = null;
+	const writes: Promise<void>[] = [];
+
+	const unzipper = new Unzip((file) => {
+		if (failure) return;
+
+		if (!isSafeEntryPath(file.name, targetDir)) {
+			failure = new Error(`Unsafe path in archive: ${file.name}`);
+			return;
+		}
+
+		const normalized = file.name.replace(/\\/g, '/');
+		const fullPath = join(targetDir, normalized.split('/').join(sep));
+
+		if (normalized.endsWith('/')) {
+			writes.push(mkdir(fullPath, { recursive: true }).then(() => undefined));
+			return;
+		}
+
+		const chunks: Uint8Array[] = [];
+		let fileBytes = 0;
+		file.ondata = (err, chunk, final) => {
+			if (failure) return;
+			if (err) {
+				failure = err;
+				return;
+			}
+			totalBytes += chunk.length;
+			if (totalBytes > limit) {
+				failure = new Error(`Extracted content exceeds maximum allowed size of ${limitMB}MB`);
+				return;
+			}
+			chunks.push(chunk);
+			fileBytes += chunk.length;
+			if (final) {
+				writes.push(writeEntry(fullPath, concatChunks(chunks, fileBytes)));
+				entryCount++;
+			}
+		};
+		file.start();
+	});
+	unzipper.register(UnzipInflate);
+	unzipper.register(UnzipPassThrough);
+
+	for (let offset = 0; offset < data.length && !failure; offset += STREAM_CHUNK_SIZE) {
+		const end = Math.min(offset + STREAM_CHUNK_SIZE, data.length);
+		unzipper.push(data.subarray(offset, end), end >= data.length);
+	}
+
+	if (failure) throw failure;
+	await Promise.all(writes);
+	return entryCount;
 }
 
