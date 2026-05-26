@@ -11,7 +11,7 @@ import { debug } from '$shared/utils/logger';
 import { existsSync, mkdirSync, renameSync, writeFileSync, unlinkSync, rmSync } from 'fs';
 import { homedir } from 'os';
 import { join } from 'path';
-import { getTunnelDir } from './tunnel-config';
+import { getTunnelDir, getLocalTunnelConfigs } from './tunnel-config';
 import type { RemoteTunnelConfig, LocalTunnelConfig } from './tunnel-config';
 import { resolveCloudflaredBinary, CloudflaredTunnel, CloudflaredMissingError, type LoginHandle } from './cloudflared';
 
@@ -56,6 +56,11 @@ interface LocalTunnelInstance extends BaseTunnelInstance {
 
 const CERT_PATH = join(getTunnelDir(), 'cert.pem');
 const DEFAULT_CLOUDFLARED_CERT = join(homedir(), '.cloudflared', 'cert.pem');
+
+function isTunnelNameConflict(error: unknown): boolean {
+	const message = error instanceof Error ? error.message : String(error);
+	return /tunnel with name already exists/i.test(message);
+}
 
 // --- Manager ---
 
@@ -395,6 +400,19 @@ class GlobalTunnelManager {
 	async createLocalTunnel(name: string): Promise<{ tunnelId: string; credentialsFile: string }> {
 		this.ensureBinaryAvailable();
 
+		try {
+			return await this.runCreateLocalTunnel(name);
+		} catch (error) {
+			if (!isTunnelNameConflict(error)) throw error;
+
+			// Name collides on Cloudflare. Auto-recover only when it's a true orphan,
+			// then retry once. Anything else surfaces a clear, actionable message.
+			await this.resolveTunnelNameConflict(name);
+			return await this.runCreateLocalTunnel(name);
+		}
+	}
+
+	private async runCreateLocalTunnel(name: string): Promise<{ tunnelId: string; credentialsFile: string }> {
 		// Write credentials directly to our dir (not ~/.cloudflared/)
 		const tunnelBaseDir = getTunnelDir();
 		if (!existsSync(tunnelBaseDir)) {
@@ -413,6 +431,39 @@ class GlobalTunnelManager {
 
 		debug.log('tunnel', `Local tunnel created: ${name} (${result.tunnelId})`);
 		return { tunnelId: result.tunnelId, credentialsFile: finalCredentials };
+	}
+
+	/**
+	 * Handle a "tunnel with name already exists" conflict. A tunnel that exists on
+	 * Cloudflare but isn't tracked locally and has no active connections is an orphan
+	 * (usually a half-failed create) and is safe to delete so the create can retry.
+	 * Everything else throws a clear message instead.
+	 */
+	private async resolveTunnelNameConflict(name: string): Promise<void> {
+		let existing;
+		try {
+			existing = await CloudflaredTunnel.listTunnels({ origincert: CERT_PATH });
+		} catch (listError) {
+			debug.warn('tunnel', 'Could not list tunnels to resolve name conflict:', listError);
+			throw new Error(`A Cloudflare tunnel named "${name}" already exists on your account. Choose a different name, or remove it from the Cloudflare dashboard.`);
+		}
+
+		const match = existing.find((t) => t.name === name);
+		if (!match) {
+			throw new Error(`A Cloudflare tunnel named "${name}" already exists on your account. Choose a different name, or remove it from the Cloudflare dashboard.`);
+		}
+
+		if (getLocalTunnelConfigs().some((c) => c.tunnelId === match.id)) {
+			throw new Error(`A tunnel named "${name}" already exists. Choose a different name, or delete the existing tunnel first.`);
+		}
+
+		if (match.connections.length > 0) {
+			throw new Error(`A Cloudflare tunnel named "${name}" already exists and has active connections. Choose a different name, or remove it from the Cloudflare dashboard.`);
+		}
+
+		debug.warn('tunnel', `Orphaned tunnel "${name}" (${match.id}) found on Cloudflare; deleting before recreate`);
+		await CloudflaredTunnel.deleteTunnel(match.id, { force: true, origincert: CERT_PATH });
+		this.cleanupLocalTunnelFiles(match.id);
 	}
 
 	async deleteLocalTunnel(tunnelId: string, credentialsFile?: string): Promise<void> {

@@ -18,5 +18,7 @@ export {
 	type DeleteTunnelOptions,
 	type DeleteTunnelResult,
 	type RouteDnsOptions,
-	type RouteDnsResult
+	type RouteDnsResult,
+	type ListTunnelsOptions,
+	type TunnelListEntry
 } from './tunnel';

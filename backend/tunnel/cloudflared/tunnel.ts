@@ -106,6 +106,17 @@ export interface RouteDnsResult {
 	output: string;
 }
 
+export interface ListTunnelsOptions {
+	/** Custom path for the origin certificate */
+	origincert?: string;
+}
+
+export interface TunnelListEntry {
+	id: string;
+	name: string;
+	connections: unknown[];
+}
+
 type OutputHandler = (output: string, tunnel: CloudflaredTunnel) => void;
 
 export class CloudflaredTunnel extends EventEmitter {
@@ -286,6 +297,37 @@ export class CloudflaredTunnel extends EventEmitter {
 		}
 
 		throw new Error(`Failed to route DNS: ${output.trim()}`);
+	}
+
+	/** List all tunnels on the authenticated Cloudflare account. */
+	static async listTunnels(options?: ListTunnelsOptions): Promise<TunnelListEntry[]> {
+		const args = ['tunnel'];
+		if (options?.origincert) args.push('--origincert', options.origincert);
+		args.push('list', '--output', 'json');
+
+		const { output, exitCode } = await CloudflaredTunnel.run(args);
+
+		if (exitCode !== 0) {
+			throw new Error(`Failed to list tunnels: ${output.trim()}`);
+		}
+
+		// cloudflared prints warnings (e.g. outdated-version notice) alongside the
+		// JSON array, so isolate the array span before parsing.
+		const start = output.indexOf('[');
+		const end = output.lastIndexOf(']');
+		if (start === -1 || end === -1 || end < start) return [];
+
+		try {
+			const parsed = JSON.parse(output.slice(start, end + 1));
+			if (!Array.isArray(parsed)) return [];
+			return parsed.map((entry) => ({
+				id: String(entry.id),
+				name: String(entry.name),
+				connections: Array.isArray(entry.connections) ? entry.connections : []
+			}));
+		} catch {
+			return [];
+		}
 	}
 
 	// --- Private helpers ---
