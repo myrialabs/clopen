@@ -23,7 +23,7 @@ import {
 	deleteOperation
 } from '../../files/file-operations';
 import { createZipOperation, extractZipOperation } from '../../files/file-archive';
-import { stat as fsStat, readdir as fsReaddir, rename as fsRename, access as fsAccess } from 'node:fs/promises';
+import { stat as fsStat, readdir as fsReaddir, rename as fsRename } from 'node:fs/promises';
 import { requireFilePathAccess, requireSharedFilePathAccess } from './path-access';
 
 export const writeHandler = createRouter()
@@ -241,14 +241,21 @@ export const writeHandler = createRouter()
 			throw new Error('Source path is not a directory');
 		}
 
+		// Reject only when the destination is a genuinely different entry. On
+		// case-insensitive filesystems (default on macOS and Windows) a
+		// case-only rename like "Foo" -> "foo" makes the destination resolve to
+		// the same inode as the source, so allow that case through.
 		try {
-			await fsAccess(newPath);
-			throw new Error('Destination path already exists');
+			const newStats = await fsStat(newPath);
+			const sameEntry = newStats.ino === oldStats.ino && newStats.dev === oldStats.dev;
+			if (!sameEntry) {
+				throw new Error('Destination path already exists');
+			}
 		} catch (err) {
 			if (err instanceof Error && err.message === 'Destination path already exists') {
 				throw err;
 			}
-			// fsAccess threw because newPath does not exist — that is what we want.
+			// fsStat threw because newPath does not exist — that is what we want.
 		}
 
 		await fsRename(oldPath, newPath);
