@@ -310,7 +310,7 @@ export const builtInPresets: LayoutPreset[] = [
 		name: 'Sidebar',
 		description: 'Narrow left, wide right',
 		icon: 'lucide:panel-left',
-		layout: createSplit('vertical', 25, createPanel('files'), createPanel('chat')),
+		layout: createSplit('vertical', 25, createPanel('chat'), createPanel('files')),
 		isCustom: false
 	},
 
@@ -501,8 +501,8 @@ export const PANEL_OPTIONS: { id: PanelId; title: string; icon: IconName }[] = [
 	{ id: 'preview', title: 'Preview', icon: 'lucide:globe' }
 ];
 
-// Default: Full Grid layout (5 panels)
-const defaultPreset = builtInPresets.find((p) => p.id === 'full-grid')!;
+// Default: Sidebar layout (chat narrow left, files wide right)
+const defaultPreset = builtInPresets.find((p) => p.id === 'sidebar-main')!;
 
 // ============================================
 // CORE STATE
@@ -511,7 +511,7 @@ const defaultPreset = builtInPresets.find((p) => p.id === 'full-grid')!;
 export const workspaceState = $state<WorkspaceState>({
 	panels: { ...defaultPanels },
 	layout: defaultPreset.layout,
-	activePresetId: 'full-grid',
+	activePresetId: 'sidebar-main',
 	navigatorCollapsed: false,
 	navigatorWidth: 200,
 	activeMobilePanel: 'chat'
@@ -720,7 +720,7 @@ export function applyLayoutPreset(preset: LayoutPreset): void {
 
 export function resetToDefault(): void {
 	applyLayoutPreset(defaultPreset);
-	debug.log('workspace', 'Reset to default layout (Full Grid)');
+	debug.log('workspace', 'Reset to default layout (Sidebar)');
 }
 
 // ============================================
