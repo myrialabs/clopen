@@ -62,7 +62,7 @@
     "check": "svelte-check --tsconfig ./tsconfig.json",
     "lint": "eslint .",
     "lint:fix": "eslint . --fix",
-    "test": "bun test",
+    "test": "bun test --isolate",
     "generate-icons": "bun scripts/generate-icons.ts",
     "prepublishOnly": "bun run build"
   },
