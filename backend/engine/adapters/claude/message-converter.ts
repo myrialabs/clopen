@@ -393,19 +393,20 @@ export function convertSystemInit(msg: SDKSystemMessage): SystemInitEvent {
 /**
  * Convert SDKTaskNotificationMessage (terminal background-task event) →
  * NotificationEvent. Fires when a backgrounded Agent/teammate finishes
- * (status completed | failed | stopped). The non-terminal task_started /
- * task_progress / task_updated messages are intentionally not surfaced —
- * they would spam the toast and there is no dedicated tasks panel.
+ * abnormally (failed | stopped). Successful completion is intentionally
+ * not surfaced — the result already lands in the conversation, and a
+ * success toast is just noise. The non-terminal task_started /
+ * task_progress / task_updated messages are also not surfaced.
  */
 function convertTaskNotification(
 	msg: { session_id: string; status: string; summary?: string; task_id: string },
-): NotificationEvent {
-	const completed = msg.status === 'completed';
+): NotificationEvent | null {
+	if (msg.status === 'completed') return null;
 	return {
 		type: 'notification',
 		sessionId: msg.session_id,
-		level: completed ? 'info' : 'warning',
-		title: completed ? 'Background task completed' : `Background task ${msg.status}`,
+		level: 'warning',
+		title: `Background task ${msg.status}`,
 		message: msg.summary || `Task ${msg.task_id} ${msg.status}`,
 	};
 }
@@ -507,7 +508,8 @@ function* dispatchSdkMessage(msg: SDKMessage, state: StreamConverterState): Gene
 			} else if (subtype === 'compact_boundary') {
 				yield convertCompactBoundary(msg as SDKCompactBoundaryMessage);
 			} else if (subtype === 'task_notification') {
-				yield convertTaskNotification(msg as unknown as Parameters<typeof convertTaskNotification>[0]);
+				const note = convertTaskNotification(msg as unknown as Parameters<typeof convertTaskNotification>[0]);
+				if (note) yield note;
 			}
 			// task_started / task_progress / task_updated: background-task
 			// progress noise — intentionally not surfaced (no tasks panel).
