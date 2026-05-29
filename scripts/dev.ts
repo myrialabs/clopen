@@ -38,9 +38,30 @@ const portEnv = {
 	CLOPEN_PORT_FRONTEND: String(frontendPort),
 };
 
-concurrently([
-	{ command: 'bun --watch backend/index.ts', name: 'backend', prefixColor: 'blue', env: portEnv },
-	{ command: 'bunx vite dev', name: 'frontend', prefixColor: 'green', env: portEnv },
-], {
-	killOthersOn: ['failure'],
-});
+const { result } = concurrently(
+	[
+		{ command: 'bun --watch backend/index.ts', name: 'backend', prefixColor: 'blue', env: portEnv },
+		{ command: 'bunx vite dev', name: 'frontend', prefixColor: 'green', env: portEnv },
+	],
+	{
+		killOthersOn: ['failure'],
+	},
+);
+
+// SIGINT (130) and SIGTERM (143) are user-initiated shutdowns, not failures.
+// Without this, concurrently's rejected Promise becomes an unhandled rejection
+// and Bun dumps the full CloseEvent[] (with RxJS circular refs) on Ctrl+C.
+const CLEAN_EXIT_CODES = new Set([0, 130, 143]);
+
+try {
+	await result;
+	process.exit(0);
+} catch (events) {
+	const hasRealFailure =
+		Array.isArray(events) &&
+		events.some((e) => {
+			const code = typeof e?.exitCode === 'number' ? e.exitCode : Number.parseInt(String(e?.exitCode), 10);
+			return Number.isFinite(code) && !CLEAN_EXIT_CODES.has(code);
+		});
+	process.exit(hasRealFailure ? 1 : 0);
+}
