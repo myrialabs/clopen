@@ -123,7 +123,6 @@ export class CopilotEngine implements AIEngine {
 		this.client = new CopilotClient({
 			gitHubToken: account.credential,
 			useLoggedInUser: false,
-			autoStart: true,
 		});
 
 		await this.client.start();
