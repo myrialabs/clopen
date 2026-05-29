@@ -20,6 +20,7 @@
 	interface CodeMatch {
 		line: number;
 		column: number;
+		length?: number;
 		text: string;
 		beforeContext?: string;
 		afterContext?: string;

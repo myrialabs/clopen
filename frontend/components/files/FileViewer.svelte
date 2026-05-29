@@ -43,7 +43,7 @@
 		error?: string;
 		onSave?: (filePath: string, content: string) => Promise<void>;
 		hideHeader?: boolean;
-		targetLine?: number;
+		target?: { line: number; column?: number; length?: number };
 		onContentChange?: (content: string) => void;
 		wordWrap?: boolean;
 		onToggleWordWrap?: () => void;
@@ -64,7 +64,7 @@
 		error = '',
 		onSave,
 		hideHeader = false,
-		targetLine = undefined,
+		target = undefined,
 		onContentChange,
 		wordWrap = false,
 		onToggleWordWrap,
@@ -103,8 +103,15 @@
 
 	let monacoEditorRef: MonacoEditorComponent | null = $state(null);
 
-	// Line highlighting state
-	let currentDecorations: string[] = $state([]);
+	// Line highlighting state. `currentDecorations` holds Monaco's decoration IDs
+	// so a later deltaDecorations call can remove them — kept as a plain `let`
+	// (NOT $state) because the target $effect both reads and writes it. With
+	// $state, every write inside applyTargetHighlight would re-trigger the
+	// effect, which cancels the just-scheduled fade timer and re-runs the whole
+	// highlight pipeline in a loop.
+	let currentDecorations: string[] = [];
+	let targetHighlightTimer: ReturnType<typeof setTimeout> | null = null;
+	let targetFadeTimer: ReturnType<typeof setTimeout> | null = null;
 
 	// Git gutter decorations + HEAD content cache
 	let gutterDecorations: string[] = [];
@@ -231,6 +238,7 @@
 		return () => {
 			window.removeEventListener('keydown', handleKeyDown);
 			if (gutterUpdateTimer) clearTimeout(gutterUpdateTimer);
+			clearTargetTimers();
 			scrollListenerDispose?.();
 			scrollListenerDispose = null;
 			gutterClickDispose?.();
@@ -848,41 +856,116 @@
 		}
 	});
 
-	// Handle line highlighting when targetLine changes
-	$effect(() => {
-		if (targetLine !== undefined && targetLine > 0) {
-			setTimeout(() => {
-				const editor = monacoEditorRef?.getEditor();
-				if (editor) {
-					editor.revealLineInCenter(targetLine);
-
-					const newDecorations = editor.deltaDecorations(currentDecorations, [
-						{
-							range: {
-								startLineNumber: targetLine,
-								startColumn: 1,
-								endLineNumber: targetLine,
-								endColumn: 1
-							},
-							options: {
-								isWholeLine: true,
-								className: 'line-highlight',
-								marginClassName: 'line-highlight-margin'
-							}
-						}
-					]);
-
-					currentDecorations = newDecorations;
-
-					setTimeout(() => {
-						if (editor) {
-							editor.deltaDecorations(currentDecorations, []);
-							currentDecorations = [];
-						}
-					}, 3000);
-				}
-			}, 100);
+	function clearTargetTimers() {
+		if (targetHighlightTimer) {
+			clearTimeout(targetHighlightTimer);
+			targetHighlightTimer = null;
 		}
+		if (targetFadeTimer) {
+			clearTimeout(targetFadeTimer);
+			targetFadeTimer = null;
+		}
+	}
+
+	// Apply line + column highlight for the given target. Returns false when the
+	// editor model isn't ready yet (file content still loading, line out of range),
+	// so the caller can retry — clicking a search result on a not-yet-open file
+	// triggers `target` before `displayContent` finishes loading.
+	function applyTargetHighlight(
+		t: { line: number; column?: number; length?: number },
+		attempt: number
+	): void {
+		const ed = monacoEditorRef?.getEditor();
+		const model = ed?.getModel();
+
+		if (!ed || !model || model.getLineCount() < t.line) {
+			// Retry every 100ms up to ~1.5s while the file finishes loading.
+			if (attempt < 15) {
+				targetHighlightTimer = setTimeout(() => {
+					targetHighlightTimer = null;
+					applyTargetHighlight(t, attempt + 1);
+				}, 100);
+			}
+			return;
+		}
+
+		const lineMaxColumn = model.getLineMaxColumn(t.line);
+		const decos: editor.IModelDeltaDecoration[] = [
+			{
+				range: {
+					startLineNumber: t.line,
+					startColumn: 1,
+					endLineNumber: t.line,
+					endColumn: 1
+				},
+				options: {
+					isWholeLine: true,
+					className: 'line-highlight',
+					marginClassName: 'line-highlight-margin'
+				}
+			}
+		];
+
+		// Clamp the match range so an out-of-bounds column never throws.
+		if (t.column !== undefined && t.column > 0) {
+			const startCol = Math.min(t.column, lineMaxColumn);
+			const matchLen = t.length && t.length > 0 ? t.length : 1;
+			const endCol = Math.min(startCol + matchLen, lineMaxColumn);
+			decos.push({
+				range: {
+					startLineNumber: t.line,
+					startColumn: startCol,
+					endLineNumber: t.line,
+					endColumn: endCol
+				},
+				options: {
+					className: 'match-highlight',
+					overviewRuler: {
+						color: '#facc15',
+						position: OVERVIEW_RULER_RIGHT
+					}
+				}
+			});
+
+			// revealRangeInCenter scrolls both vertically AND horizontally so the
+			// match is visible even when the line is far wider than the viewport.
+			ed.revealRangeInCenter({
+				startLineNumber: t.line,
+				startColumn: startCol,
+				endLineNumber: t.line,
+				endColumn: endCol
+			});
+		} else {
+			ed.revealLineInCenter(t.line);
+		}
+
+		currentDecorations = ed.deltaDecorations(currentDecorations, decos);
+
+		targetFadeTimer = setTimeout(() => {
+			targetFadeTimer = null;
+			const e = monacoEditorRef?.getEditor();
+			if (e) e.deltaDecorations(currentDecorations, []);
+			currentDecorations = [];
+		}, 3000);
+	}
+
+	// Handle line + column highlighting when target changes
+	$effect(() => {
+		// Always cancel any pending highlight/fade from a prior click before
+		// reacting to the new target — a stale fade timer firing later would
+		// wipe the decoration the new click places, and a stale highlight
+		// timer firing after a tab switch would paint the old line/column on
+		// the *new* file's content.
+		clearTargetTimers();
+
+		if (target === undefined || target.line <= 0) return;
+		// Snapshot before timers — `target` may change before the closure fires.
+		const t = { line: target.line, column: target.column, length: target.length };
+
+		targetHighlightTimer = setTimeout(() => {
+			targetHighlightTimer = null;
+			applyTargetHighlight(t, 0);
+		}, 100);
 	});
 
 	// Save changes
@@ -1524,12 +1607,27 @@
 		background-color: rgba(255, 235, 59, 0.5) !important;
 	}
 
+	/* Inline range highlight for the specific match within a line — sits on top
+	   of .line-highlight so a single line with several matches still calls out
+	   the one the user actually clicked. */
+	:global(.match-highlight) {
+		background-color: rgba(250, 204, 21, 0.55) !important;
+		border-radius: 2px;
+		box-shadow: 0 0 0 1px rgba(202, 138, 4, 0.6);
+		animation: match-fade-out 3s ease-out forwards;
+	}
+
 	:global(.monaco-editor.vs-dark .line-highlight) {
 		background-color: rgba(255, 235, 59, 0.15) !important;
 	}
 
 	:global(.monaco-editor.vs-dark .line-highlight-margin) {
 		background-color: rgba(255, 235, 59, 0.25) !important;
+	}
+
+	:global(.monaco-editor.vs-dark .match-highlight) {
+		background-color: rgba(250, 204, 21, 0.35) !important;
+		box-shadow: 0 0 0 1px rgba(250, 204, 21, 0.55);
 	}
 
 	@keyframes fade-out {
@@ -1541,6 +1639,16 @@
 		}
 	}
 
+	@keyframes match-fade-out {
+		0% {
+			background-color: rgba(250, 204, 21, 0.55);
+		}
+		100% {
+			background-color: transparent;
+			box-shadow: 0 0 0 1px transparent;
+		}
+	}
+
 	:global(.monaco-editor.vs-dark) {
 		@keyframes fade-out {
 			0% {
@@ -1548,6 +1656,15 @@
 			}
 			100% {
 				background-color: transparent;
+			}
+		}
+		@keyframes match-fade-out {
+			0% {
+				background-color: rgba(250, 204, 21, 0.35);
+			}
+			100% {
+				background-color: transparent;
+				box-shadow: 0 0 0 1px transparent;
 			}
 		}
 	}

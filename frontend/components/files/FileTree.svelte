@@ -36,7 +36,7 @@
 		expandedFolders?: Set<string>;
 		onToggle?: (folderPath: string) => void;
 		hasClipboard?: boolean;
-		onFileOpen?: (path: string, lineNumber?: number) => void;
+		onFileOpen?: (path: string, target?: { line: number; column?: number; length?: number }) => void;
 		onRefresh?: () => void;
 		modifiedFiles?: Set<string>;
 		activeFilePath?: string | null;
@@ -442,7 +442,11 @@
 		const fullPath = `${projectPath}${separator}${relPath}`;
 
 		if (onFileOpen) {
-			onFileOpen(fullPath, match.line);
+			onFileOpen(fullPath, {
+				line: match.line,
+				column: match.column,
+				length: match.length
+			});
 		}
 	}
 

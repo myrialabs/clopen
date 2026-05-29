@@ -149,6 +149,7 @@ interface CodeMatch {
 	line: number;
 	text: string;
 	column: number;
+	length: number;
 }
 
 interface CodeSearchResult {
@@ -231,7 +232,8 @@ async function searchCodeContent(
 						matches.push({
 							line: i + 1,
 							text: lines[i].trimEnd(),
-							column: match.index + 1
+							column: match.index + 1,
+							length: match[0].length
 						});
 						// Prevent infinite loop for zero-length matches
 						if (match[0].length === 0) {
@@ -378,7 +380,8 @@ export const fileSearchHandler = createRouter()
 			matches: t.Array(t.Object({
 				line: t.Number(),
 				text: t.String(),
-				column: t.Number()
+				column: t.Number(),
+				length: t.Number()
 			})),
 			totalMatches: t.Number()
 		}))

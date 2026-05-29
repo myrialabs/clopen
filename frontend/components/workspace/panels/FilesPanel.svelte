@@ -117,7 +117,7 @@
 	let displaySavedContent = $state('');
 	let displayFile = $state<FileNode | null>(null);
 	let displayLoading = $state(false);
-	let displayTargetLine = $state<number | undefined>(undefined);
+	let displayTarget = $state<{ line: number; column?: number; length?: number } | undefined>(undefined);
 	let displayIsBinary = $state(false);
 	let displayExternallyChanged = $state(false);
 
@@ -410,7 +410,7 @@
 	// Tab Operations
 	// ============================
 
-	function openFileInTab(file: FileNode, targetLine?: number) {
+	function openFileInTab(file: FileNode, target?: { line: number; column?: number; length?: number }) {
 		if (file.type === 'directory') return;
 
 		// Snapshot current active tab's editor scroll before switching
@@ -420,7 +420,7 @@
 		const existingTab = openTabs.find(t => t.file.path === file.path);
 		if (existingTab) {
 			activeTabPath = file.path;
-			displayTargetLine = targetLine;
+			displayTarget = target;
 			if (!isTwoColumnMode) viewMode = 'viewer';
 			schedulePanelStateSave();
 			return;
@@ -436,7 +436,7 @@
 		};
 		openTabs = [...openTabs, newTab];
 		activeTabPath = file.path;
-		displayTargetLine = targetLine;
+		displayTarget = target;
 		if (!isTwoColumnMode) viewMode = 'viewer';
 
 		// Load content
@@ -481,7 +481,7 @@
 		snapshotActiveTabScroll();
 
 		activeTabPath = path;
-		displayTargetLine = undefined;
+		displayTarget = undefined;
 
 		// Directly sync display state for immediate editor update
 		const tab = openTabs.find(t => t.file.path === path);
@@ -1004,13 +1004,13 @@
 		}
 	}
 
-	async function handleFileOpen(filePath: string, lineNumber?: number) {
+	async function handleFileOpen(filePath: string, target?: { line: number; column?: number; length?: number }) {
 		let file = findFileInTree(projectFiles, filePath);
 		if (!file) {
 			const fileName = filePath.split(/[/\\]/).pop() || 'Untitled';
 			file = { name: fileName, path: filePath, type: 'file', size: 0, modified: new Date() };
 		}
-		openFileInTab(file, lineNumber);
+		openFileInTab(file, target);
 	}
 
 	async function handleFileAction(action: string, file: FileNode) {
@@ -2295,7 +2295,7 @@
 							isLoading={displayLoading}
 							error=""
 							onSave={saveFile}
-							targetLine={displayTargetLine}
+							target={displayTarget}
 							onContentChange={handleEditorContentChange}
 							wordWrap={wordWrapEnabled}
 							onToggleWordWrap={() => { wordWrapEnabled = !wordWrapEnabled; }}
