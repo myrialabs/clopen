@@ -32,6 +32,8 @@ const defaultSettings: AppSettings = {
 	autoSave: true,
 	theme: 'system',
 	soundNotifications: true,
+	notificationSound: 'chime',
+	notificationVolume: 1,
 	pushNotifications: false,
 	layoutPresetVisibility: createDefaultPresetVisibility(),
 	fontSize: 13,

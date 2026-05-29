@@ -32,6 +32,9 @@ import { wsRouter } from './ws';
 // binary transfers with `write EPIPE`. See backend/http/files-upload.ts.
 import { filesUploadRoute } from './http/files-upload';
 
+// HTTP routes for per-user notification sounds (upload / serve / delete).
+import { audioRoute } from './http/audio';
+
 // Import browser preview manager for graceful shutdown
 import { browserPreviewServiceManager } from './preview';
 
@@ -99,6 +102,9 @@ const app = new Elysia()
 	// HTTP file upload — mounted before the WS plugin so /api/files/upload
 	// stays on the HTTP path through the Vite dev proxy.
 	.use(filesUploadRoute)
+
+	// Per-user notification sound upload/serve/delete.
+	.use(audioRoute)
 
 	// Mount WebSocket router (all functionality now via WebSocket)
 	.use(wsRouter.asPlugin('/ws'));

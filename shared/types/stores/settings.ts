@@ -23,6 +23,10 @@ export interface AppSettings {
 	autoSave: boolean;
 	theme: 'light' | 'dark' | 'system';
 	soundNotifications: boolean;
+	/** Sound id — preset id (e.g. 'default', 'chime') or 'custom' for the user-uploaded file. */
+	notificationSound: string;
+	/** Playback volume, 0..1. Default: 1. */
+	notificationVolume: number;
 	pushNotifications: boolean;
 	layoutPresetVisibility: Record<string, boolean>;
 	/** Base font size in pixels (10–20). Default: 13. */
