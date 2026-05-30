@@ -20,6 +20,16 @@ export function isImageFile(fileName: string): boolean {
 	return IMAGE_EXTENSIONS.includes(getExtension(fileName));
 }
 
+// Raster formats the image editor can both read and write back via sharp.
+// SVG (vector), ICO and BMP are intentionally excluded — sharp cannot encode
+// them, so they stay view-only.
+const EDITABLE_IMAGE_EXTENSIONS = ['.png', '.jpg', '.jpeg', '.webp', '.gif'];
+
+/** Returns true if the file is a raster image the editor can edit and save. */
+export function isEditableImageFile(fileName: string): boolean {
+	return EDITABLE_IMAGE_EXTENSIONS.includes(getExtension(fileName));
+}
+
 export function isSvgFile(fileName: string): boolean {
 	return fileName.toLowerCase().endsWith('.svg');
 }

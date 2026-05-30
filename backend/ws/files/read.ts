@@ -218,7 +218,11 @@ export const readHandler = createRouter()
 		}),
 		response: t.Object({
 			content: t.String(), // Base64 encoded binary content
-			contentType: t.String()
+			contentType: t.String(),
+			// Disk mtime + size — used by the image editor as an optimistic
+			// concurrency token and to report compression savings.
+			modified: t.Optional(t.String()),
+			size: t.Optional(t.Number())
 		})
 	}, async ({ data, conn }) => {
 		const path = await requireFilePathAccess(conn, data.path);
@@ -239,8 +243,12 @@ export const readHandler = createRouter()
 		// Detect content type
 		const contentType = file.type || 'application/octet-stream';
 
+		const stats = await file.stat();
+
 		return {
 			content: base64,
-			contentType
+			contentType,
+			modified: stats.mtime.toISOString(),
+			size: stats.size
 		};
 	});

@@ -13,6 +13,7 @@
 import { createRouter } from '$shared/utils/ws-server';
 import { readHandler } from './read';
 import { writeHandler } from './write';
+import { imageEditHandler } from './image-edit';
 import { fileSearchHandler } from './search';
 import { watchHandler } from './watch';
 import { filesStateHandler } from './state';
@@ -23,6 +24,9 @@ export const filesRouter = createRouter()
 
 	// Write Operations (HTTP)
 	.merge(writeHandler)
+
+	// Image Edit Operation (HTTP)
+	.merge(imageEditHandler)
 
 	// Search Operations (HTTP)
 	.merge(fileSearchHandler)

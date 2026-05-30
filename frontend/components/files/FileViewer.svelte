@@ -4,11 +4,12 @@
 	import MonacoCodeEditor from '../common/editor/MonacoCodeEditor.svelte';
 	import MediaPreview from '../common/media/MediaPreview.svelte';
 	import MarkdownPreview from '../common/media/MarkdownPreview.svelte';
+	import ImageEditor from './ImageEditor.svelte';
 	import { themeStore } from '$frontend/stores/ui/theme.svelte';
 	import Icon from '$frontend/components/common/display/Icon.svelte';
 	import { getFileIcon } from '$frontend/utils/file-icon-mappings';
 	import { getFolderIcon } from '$frontend/utils/folder-icon-mappings';
-	import { isImageFile, isSvgFile, isPdfFile, isAudioFile, isVideoFile, isBinaryFile, isBinaryContent, isPreviewableFile } from '$frontend/utils/file-type';
+	import { isImageFile, isSvgFile, isPdfFile, isAudioFile, isVideoFile, isBinaryFile, isBinaryContent, isPreviewableFile, isEditableImageFile } from '$frontend/utils/file-type';
 	import { formatFileSize } from '$frontend/utils/format';
 	import { onMount } from 'svelte';
 	import type { IconName } from '$shared/types/ui/icons';
@@ -96,6 +97,14 @@
 	let editableContent = $state('');
 	let isSaving = $state(false);
 	let hasChanges = $state(false);
+
+	// Image editor overlay state. `imageReloadToken` is bumped after an in-place
+	// save so MediaPreview re-fetches the (now changed) file at the same path.
+	let showImageEditor = $state(false);
+	let imageReloadToken = $state(0);
+	const canEditImage = $derived(
+		!!file && file.type === 'file' && isImageFile(file.name) && isEditableImageFile(file.name)
+	);
 
 	// Derived state for save button
 	const canSave = $derived(hasChanges && !isSaving && !!file && !!onSave);
@@ -1178,6 +1187,16 @@
 						<Icon name="lucide:download" class="w-4 h-4" />
 					</button>
 				{:else if file && file.type === 'file'}
+					<!-- Edit button for raster images the editor can round-trip -->
+					{#if canEditImage}
+						<button
+							class="flex items-center gap-1.5 px-2.5 py-1.5 text-xs font-medium text-white bg-violet-600 hover:bg-violet-700 rounded-lg transition-all duration-200"
+							onclick={() => { showImageEditor = true; }}
+							title="Edit image"
+						>
+							<Icon name="lucide:pencil" class="w-3.5 h-3.5" /> Edit
+						</button>
+					{/if}
 					<!-- Non-editable file actions -->
 					<button
 						class="flex p-2 text-slate-600 dark:text-slate-400 hover:text-violet-600 dark:hover:text-violet-400 hover:bg-violet-50 dark:hover:bg-violet-900/30 rounded-lg transition-all duration-200"
@@ -1267,7 +1286,14 @@
 					/>
 				{/key}
 			{:else if isPreviewableFile(file.name)}
-				<MediaPreview fileName={file.name} filePath={file.path} />
+				<MediaPreview fileName={file.name} filePath={file.path} reloadToken={imageReloadToken} />
+				{#if showImageEditor && canEditImage}
+					<ImageEditor
+						{file}
+						onClose={() => { showImageEditor = false; }}
+						onSaved={() => { imageReloadToken += 1; }}
+					/>
+				{/if}
 			{:else if isBinary || isBinaryFile(file.name) || isBinaryContent(content)}
 				<div class="flex flex-col items-center justify-center h-full p-8">
 					<Icon name="lucide:file-text" class="w-16 h-16 text-slate-400 mb-4" />

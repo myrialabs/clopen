@@ -13,9 +13,11 @@
 		filePath: string;
 		/** Optional text content for SVG inline rendering */
 		svgContent?: string;
+		/** Bump to force a reload of the same path (e.g. after an in-place edit). */
+		reloadToken?: number;
 	}
 
-	const { fileName, filePath, svgContent }: Props = $props();
+	const { fileName, filePath, svgContent, reloadToken = 0 }: Props = $props();
 
 	let blobUrl = $state<string | null>(null);
 	let pdfBlobUrl = $state<string | null>(null);
@@ -71,6 +73,8 @@
 	$effect(() => {
 		const name = fileName;
 		const path = filePath;
+		// Track reloadToken so an in-place edit re-fetches the same path.
+		void reloadToken;
 		untrack(() => {
 			cleanup();
 			if (name && path) {
