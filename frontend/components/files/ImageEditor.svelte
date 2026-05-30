@@ -80,7 +80,6 @@
 		compress &&
 			(format === 'jpeg' ||
 				format === 'avif' ||
-				format === 'tiff' ||
 				((format === 'png' || format === 'webp') && !lossless))
 	);
 	const canOverwrite = $derived(format === originalFormat);
@@ -343,7 +342,6 @@
 		if (ext === 'webp') return 'webp';
 		if (ext === 'gif') return 'gif';
 		if (ext === 'avif') return 'avif';
-		if (ext === 'tif' || ext === 'tiff') return 'tiff';
 		return 'png';
 	}
 	const formatToExt = (fmt: ImageEditFormat) => (fmt === 'jpeg' ? 'jpg' : fmt);
@@ -1122,17 +1120,17 @@
 				<span id="image-editor-title" class="text-sm font-semibold truncate">{file.name}</span>
 			</div>
 			<div class="flex items-center gap-1 shrink-0">
-				<button onclick={undo} disabled={!canUndo} class="p-2 rounded-lg text-slate-500 dark:text-slate-300 hover:text-slate-900 dark:hover:text-white hover:bg-slate-100 dark:hover:bg-slate-700/70 transition-colors disabled:opacity-40 disabled:cursor-not-allowed disabled:hover:bg-transparent" title="Undo" aria-label="Undo">
+				<button onclick={undo} disabled={!canUndo} class="flex p-2 rounded-lg text-slate-500 dark:text-slate-300 hover:text-slate-900 dark:hover:text-white hover:bg-slate-100 dark:hover:bg-slate-700/70 transition-colors disabled:opacity-40 disabled:cursor-not-allowed disabled:hover:bg-transparent" title="Undo" aria-label="Undo">
 					<Icon name="lucide:undo-2" class="w-4 h-4" />
 				</button>
-				<button onclick={redo} disabled={!canRedo} class="p-2 rounded-lg text-slate-500 dark:text-slate-300 hover:text-slate-900 dark:hover:text-white hover:bg-slate-100 dark:hover:bg-slate-700/70 transition-colors disabled:opacity-40 disabled:cursor-not-allowed disabled:hover:bg-transparent" title="Redo" aria-label="Redo">
+				<button onclick={redo} disabled={!canRedo} class="flex p-2 rounded-lg text-slate-500 dark:text-slate-300 hover:text-slate-900 dark:hover:text-white hover:bg-slate-100 dark:hover:bg-slate-700/70 transition-colors disabled:opacity-40 disabled:cursor-not-allowed disabled:hover:bg-transparent" title="Redo" aria-label="Redo">
 					<Icon name="lucide:redo-2" class="w-4 h-4" />
 				</button>
 				<div class="w-px h-5 bg-slate-200 dark:bg-slate-700 mx-0.5"></div>
-				<button onclick={resetAll} class="p-2 rounded-lg text-slate-500 dark:text-slate-300 hover:text-slate-900 dark:hover:text-white hover:bg-slate-100 dark:hover:bg-slate-700/70 transition-colors" title="Reset all changes" aria-label="Reset all changes">
+				<button onclick={resetAll} class="flex p-2 rounded-lg text-slate-500 dark:text-slate-300 hover:text-slate-900 dark:hover:text-white hover:bg-slate-100 dark:hover:bg-slate-700/70 transition-colors" title="Reset all changes" aria-label="Reset all changes">
 					<Icon name="lucide:rotate-ccw" class="w-4 h-4" />
 				</button>
-				<button onclick={requestClose} class="p-2 rounded-lg text-slate-500 dark:text-slate-300 hover:text-slate-900 dark:hover:text-white hover:bg-slate-100 dark:hover:bg-slate-700/70 transition-colors" aria-label="Close editor">
+				<button onclick={requestClose} class="flex p-2 rounded-lg text-slate-500 dark:text-slate-300 hover:text-slate-900 dark:hover:text-white hover:bg-slate-100 dark:hover:bg-slate-700/70 transition-colors" aria-label="Close editor">
 					<Icon name="lucide:x" class="w-5 h-5" />
 				</button>
 			</div>
@@ -1312,7 +1310,6 @@
 								<option value="webp">WebP</option>
 								<option value="gif">GIF</option>
 								<option value="avif">AVIF</option>
-								<option value="tiff">TIFF</option>
 							</select>
 							{#if format === 'jpeg'}
 								<label class="flex items-center justify-between gap-2 text-xs text-slate-700 dark:text-slate-300">

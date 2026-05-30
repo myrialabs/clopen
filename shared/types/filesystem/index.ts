@@ -22,7 +22,7 @@ export interface FileChange {
 }
 
 /** Raster output formats the image editor can encode (round-trippable by sharp). */
-export type ImageEditFormat = 'png' | 'jpeg' | 'webp' | 'gif' | 'avif' | 'tiff';
+export type ImageEditFormat = 'png' | 'jpeg' | 'webp' | 'gif' | 'avif';
 
 /** A freehand annotation stroke, in oriented (post-rotate/flip) source pixels. */
 export interface ImageEditStroke {

@@ -71,8 +71,7 @@ const recipeSchema = t.Object({
 			t.Literal('jpeg'),
 			t.Literal('webp'),
 			t.Literal('gif'),
-			t.Literal('avif'),
-			t.Literal('tiff')
+			t.Literal('avif')
 		]),
 		compress: t.Optional(t.Boolean()),
 		quality: t.Optional(t.Number()),

@@ -1046,17 +1046,39 @@
 		}
 	}
 
-	function downloadFile() {
-		if (file) {
-			if (editableContent) {
-				const blob = new Blob([editableContent], { type: 'text/plain' });
-				const url = URL.createObjectURL(blob);
-				const a = document.createElement('a');
-				a.href = url;
-				a.download = file.name;
-				a.click();
-				URL.revokeObjectURL(url);
+	function saveBlob(blob: Blob, name: string) {
+		const url = URL.createObjectURL(blob);
+		const a = document.createElement('a');
+		a.href = url;
+		a.download = name;
+		a.click();
+		URL.revokeObjectURL(url);
+	}
+
+	async function downloadFile() {
+		if (!file || file.type !== 'file') return;
+
+		// Text/code/SVG/markdown files are held in the editor — download exactly
+		// what the user sees (including any unsaved edits).
+		const isTextFile = !isPreviewableFile(file.name) && !isBinaryFile(file.name) && !isBinary;
+		if (isTextFile && editableContent != null) {
+			saveBlob(new Blob([editableContent], { type: 'text/plain;charset=utf-8' }), file.name);
+			return;
+		}
+
+		// Binary / media files: fetch the original bytes from disk so the download
+		// is byte-for-byte intact. `preview` is omitted so transcodable formats
+		// (TIFF/HEIC) download in their original format, not a PNG copy.
+		try {
+			const response = await ws.http('files:read-content', { path: file.path });
+			const binaryString = atob(response.content);
+			const bytes = new Uint8Array(binaryString.length);
+			for (let i = 0; i < binaryString.length; i++) {
+				bytes[i] = binaryString.charCodeAt(i);
 			}
+			saveBlob(new Blob([bytes], { type: response.contentType || 'application/octet-stream' }), file.name);
+		} catch (err) {
+			debug.error('file', 'Failed to download file:', err);
 		}
 	}
 </script>

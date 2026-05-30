@@ -170,8 +170,6 @@ function encode(pipeline: Sharp, output: ImageEditRecipe['output'], fast = false
 			// Keep the two clearly apart so toggling compression changes the size.
 			// AVIF effort is the slowest knob — drop it hard for the estimate.
 			return pipeline.avif({ quality: compress ? (output.quality ?? 80) : 92, effort: fast ? 0 : 4 });
-		case 'tiff':
-			return pipeline.tiff({ quality: compress ? quality : 95, compression: 'jpeg' });
 		default: {
 			// Exhaustiveness guard — unreachable for valid recipes.
 			const never: never = output.format;

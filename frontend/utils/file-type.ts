@@ -6,24 +6,26 @@
  * to stay in sync with the backend's file-type-detection.
  */
 
-import { NON_PREVIEWABLE_BINARY_EXTENSIONS } from '$shared/constants/binary-extensions';
-
-const IMAGE_EXTENSIONS = ['.png', '.jpg', '.jpeg', '.gif', '.webp', '.ico', '.bmp'];
-const AUDIO_EXTENSIONS = ['.mp3', '.wav', '.ogg', '.flac', '.aac', '.m4a', '.wma', '.opus'];
-const VIDEO_EXTENSIONS = ['.mp4', '.webm', '.ogv', '.mov', '.avi', '.mkv', '.flv', '.wmv', '.m4v'];
+import {
+	NON_PREVIEWABLE_BINARY_EXTENSIONS,
+	IMAGE_EXTENSIONS,
+	AUDIO_EXTENSIONS,
+	VIDEO_EXTENSIONS
+} from '$shared/constants/binary-extensions';
 
 function getExtension(fileName: string): string {
 	return fileName.substring(fileName.lastIndexOf('.')).toLowerCase();
 }
 
 export function isImageFile(fileName: string): boolean {
-	return IMAGE_EXTENSIONS.includes(getExtension(fileName));
+	return IMAGE_EXTENSIONS.has(getExtension(fileName));
 }
 
 // Raster formats the image editor can both read and write back via sharp.
-// SVG (vector), ICO and BMP are intentionally excluded — sharp cannot encode
-// them, so they stay view-only.
-const EDITABLE_IMAGE_EXTENSIONS = ['.png', '.jpg', '.jpeg', '.webp', '.gif'];
+// Limited to formats browsers can decode in an <img> (the editor loads the
+// source client-side). SVG (vector), ICO and BMP are excluded — sharp cannot
+// encode them — and TIFF/HEIC are excluded because browsers can't decode them.
+const EDITABLE_IMAGE_EXTENSIONS = ['.png', '.jpg', '.jpeg', '.webp', '.gif', '.avif'];
 
 /** Returns true if the file is a raster image the editor can edit and save. */
 export function isEditableImageFile(fileName: string): boolean {
@@ -39,11 +41,11 @@ export function isPdfFile(fileName: string): boolean {
 }
 
 export function isAudioFile(fileName: string): boolean {
-	return AUDIO_EXTENSIONS.includes(getExtension(fileName));
+	return AUDIO_EXTENSIONS.has(getExtension(fileName));
 }
 
 export function isVideoFile(fileName: string): boolean {
-	return VIDEO_EXTENSIONS.includes(getExtension(fileName));
+	return VIDEO_EXTENSIONS.has(getExtension(fileName));
 }
 
 /** Non-previewable binary file detection, sourced from shared constants. */
