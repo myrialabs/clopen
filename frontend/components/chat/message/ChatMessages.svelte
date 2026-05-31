@@ -255,19 +255,20 @@
 		let subAgentChanged = false;
 		let currentSubAgentHash = '';
 
-		// Build a hash of all tool results and sub-agent activities to detect changes
+		// Build a hash of all tool results and sub-agent activities to detect changes.
+		// Tool results are embedded onto the tool_use block (block.result /
+		// block.subActivities) by the grouper, so they never arrive as new entries
+		// in filteredMessages — this hash is the only signal that lets auto-scroll
+		// follow tool output as it streams in.
 		for (const message of filteredMessages) {
-			if ('message' in message) {
-				const messageContent = (message as any).message?.content;
-				if (Array.isArray(messageContent)) {
-					for (const item of messageContent) {
-						if (item?.type === 'tool_use' && item.$result) {
-							currentToolResultsHash += `${item.id}:${JSON.stringify(item.$result).length}|`;
-						}
-						if (item?.type === 'tool_use' && item.$subMessages) {
-							currentSubAgentHash += `${item.id}:${item.$subMessages.length}|`;
-						}
-					}
+			if (!('content' in message) || !Array.isArray(message.content)) continue;
+			for (const item of message.content) {
+				if (item?.type !== 'tool_use') continue;
+				if (item.result) {
+					currentToolResultsHash += `${item.id}:${JSON.stringify(item.result).length}|`;
+				}
+				if (item.subActivities?.length) {
+					currentSubAgentHash += `${item.id}:${item.subActivities.length}|`;
 				}
 			}
 		}
