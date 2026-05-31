@@ -199,7 +199,10 @@ export async function getExistingTabs(projectId: string): Promise<ExistingTabsRe
 	try {
 		debug.log('preview', `🔍 Checking for existing browser tabs (project: ${projectId})...`);
 
-		const data = await ws.http('preview:browser-tabs-list', {}, 5000);
+		// Pass projectId explicitly: during a project switch the connection's room
+		// context may not have caught up, so relying on it could recover the
+		// previous project's tabs (cross-project leak).
+		const data = await ws.http('preview:browser-tabs-list', { projectId }, 5000);
 
 		if (data.count > 0) {
 			debug.log('preview', `✅ Found ${data.count} existing browser tabs`);
@@ -230,7 +233,7 @@ export async function switchToBackendTab(tabId: string, projectId: string): Prom
 	try {
 		debug.log('preview', `🔄 Switching to backend tab: ${tabId} (project: ${projectId})`);
 
-		await ws.http('preview:browser-tab-switch', { tabId }, 5000);
+		await ws.http('preview:browser-tab-switch', { tabId, projectId }, 5000);
 
 		debug.log('preview', `✅ Switched to backend tab: ${tabId}`);
 		return true;

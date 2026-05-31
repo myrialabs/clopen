@@ -13,6 +13,7 @@
 	import { createBrowserCoordinator } from './core/coordinator.svelte';
 	import { sendScaleUpdate } from './core/interactions.svelte';
 	import { projectState } from '$frontend/stores/core/projects.svelte';
+	import { appState } from '$frontend/stores/core/app.svelte';
 
 	let {
 		url = $bindable(''),
@@ -64,9 +65,6 @@
 	// Touch interaction mode for canvas
 	let touchMode = $state<'scroll' | 'cursor'>('scroll');
 
-	// Flag to track if sessions were recovered (prevents creating empty tab on mount)
-	let sessionsRecovered = $state(false);
-
 	// Create browser coordinator with projectId
 	const coordinator = createBrowserCoordinator({
 		projectId: () => projectId, // Pass projectId as getter function
@@ -84,10 +82,6 @@
 		},
 		onErrorChange: (error) => {
 			errorMessage = error;
-		},
-		onSessionsRecovered: (tabCount) => {
-			debug.log('preview', `📦 Sessions recovered callback: ${tabCount} tabs`);
-			sessionsRecovered = tabCount > 0;
 		},
 		onSelectOpen: (selectInfo) => {
 			currentSelectInfo = selectInfo;
@@ -129,13 +123,11 @@
 	const activeTabId = $derived(tabManager.activeTabId);
 	const activeTab = $derived(tabManager.activeTab);
 
-	// Initialize - session recovery is handled inside coordinator.initialize()
+	// Initialize event listeners. Tab recovery itself is driven by the
+	// preview-tabs dock's load() inside the workspace switch barrier — we just
+	// adopt the singleton state below.
 	onMount(() => {
 		coordinator.initialize();
-		// Note: We don't create a new tab here anymore
-		// The coordinator will either:
-		// 1. Recover existing tabs from backend (after refresh)
-		// 2. Or we create a new tab via the $effect below when isOpen is true and tabs.length === 0
 	});
 
 	// Cleanup
@@ -143,18 +135,24 @@
 		await coordinator.cleanup();
 	});
 
-	// Watch for project changes and reload sessions
+	// Watch for project changes and reload sessions.
+	//
+	// Bail while a workspace switch is in flight: the singleton tabManager is
+	// mid clear/restore/load during that window and adopting it now would race
+	// with the dock — observed as a spurious "New Tab" or duplicated/cross-
+	// project tabs once load() completes. Once the barrier drops, isSwitching
+	// flips and the effect re-runs against the authoritative state.
 	let previousProjectId = '';
 	let initialRecoveryDone = false;
 	$effect(() => {
 		const currentProjectId = projectId;
+		if (appState.isSwitching) return;
 
 		// Initial recovery - trigger when projectId first becomes available after mount
 		if (!initialRecoveryDone && currentProjectId && previousProjectId === '') {
-			debug.log('preview', `🔄 Initial project loaded: ${currentProjectId}, triggering session recovery`);
+			debug.log('preview', `🔄 Initial project loaded: ${currentProjectId}, adopting recovered tabs`);
 			previousProjectId = currentProjectId;
 			initialRecoveryDone = true;
-			// Trigger recovery for initial project
 			coordinator.switchProject();
 			return;
 		}
@@ -163,7 +161,6 @@
 		if (currentProjectId && currentProjectId !== previousProjectId && previousProjectId !== '') {
 			debug.log('preview', `🔄 Project changed: ${previousProjectId} → ${currentProjectId}`);
 			previousProjectId = currentProjectId;
-			sessionsRecovered = false; // Reset for new project (enables empty tab creation if needed)
 			coordinator.switchProject();
 		}
 	});
@@ -195,27 +192,6 @@
 					canvasAPI.setupCanvas();
 				}, 50);
 			}
-		}
-	});
-
-	// Create initial tab if opened and no tabs exist (and sessions weren't just recovered)
-	$effect(() => {
-		// Wait a bit for session recovery to complete before deciding to create empty tab
-		// The recovery happens async in initialize(), so we need to give it time
-		if (isOpen && tabs.length === 0 && !sessionsRecovered) {
-			// Longer delay to ensure session recovery has time to complete
-			// This prevents race condition where empty tab is created during restore
-			const timeout = setTimeout(() => {
-				// Double-check tabs.length after delay in case recovery happened
-				// Only create tab if still no tabs and not currently restoring
-				if (tabs.length === 0 && !sessionsRecovered) {
-					debug.log('preview', '📝 No recovered sessions after wait, creating empty tab');
-					coordinator.createNewTab('');
-				} else {
-					debug.log('preview', '📝 Tabs recovered during wait period, skipping empty tab creation');
-				}
-			}, 1000); // Increased from 500ms to 1000ms for safer delay
-			return () => clearTimeout(timeout);
 		}
 	});
 

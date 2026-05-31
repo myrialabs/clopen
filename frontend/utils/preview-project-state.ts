@@ -8,7 +8,6 @@ import {
 
 export interface ProjectPreviewState {
 	isOpen: boolean;
-	url: string;
 	mode: 'split' | 'tab';
 	deviceSize: DeviceSize;
 	rotation: Rotation;

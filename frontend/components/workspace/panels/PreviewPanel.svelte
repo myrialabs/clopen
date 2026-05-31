@@ -57,11 +57,15 @@
 	// Save and restore preview state when project changes
 	$effect(() => {
 		if (hasActiveProject && projectId) {
-			// Save current project state before switching
+			// Save current project state before switching.
+			// NOTE: `url` is intentionally NOT persisted/restored here. Tabs (and
+			// their URLs) are owned by the preview-tabs dock; the active tab's URL
+			// flows back through onUrlChange. Restoring a URL here would feed
+			// BrowserPreview's URL-watcher and spawn a duplicate tab on every
+			// switch, racing the dock's recovery.
 			if (lastProjectId && lastProjectId !== projectId) {
 				setProjectPreviewState(lastProjectId, {
 					isOpen,
-					url,
 					mode,
 					deviceSize,
 					rotation
@@ -73,7 +77,6 @@
 			const savedState = getProjectPreviewState(projectId);
 			if (savedState) {
 				isOpen = savedState.isOpen;
-				url = savedState.url;
 				mode = savedState.mode;
 				deviceSize = savedState.deviceSize;
 				rotation = savedState.rotation;
@@ -81,7 +84,6 @@
 			} else {
 				// Reset state for new project
 				isOpen = true;
-				url = '';
 				mode = 'split';
 				deviceSize = 'laptop';
 				rotation = 'portrait';
@@ -92,7 +94,6 @@
 		} else {
 			// No active project - reset everything
 			isOpen = true;
-			url = '';
 			mode = 'split';
 			deviceSize = 'laptop';
 			rotation = 'portrait';
@@ -103,7 +104,7 @@
 	// Expose live preview prefs to the workspace coordinator so a switch flushes
 	// the leaving project's prefs to the server accurately.
 	$effect(() => {
-		setPreviewSnapshotProvider(() => ({ isOpen, url, mode, deviceSize, rotation }));
+		setPreviewSnapshotProvider(() => ({ isOpen, mode, deviceSize, rotation }));
 		return () => setPreviewSnapshotProvider(null);
 	});
 

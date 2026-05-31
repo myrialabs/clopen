@@ -29,48 +29,57 @@ export function createMcpHandler(config: McpHandlerConfig) {
 	let controlledSessionIds = $state(new Set<string>());
 
 	/**
-	 * Setup WebSocket event listeners for MCP control events
+	 * Setup WebSocket event listeners for MCP control events.
+	 * Returns a teardown that removes every listener. Without it, each
+	 * BrowserPreview re-mount would leave a live handler behind — surfacing as
+	 * duplicate "MCP Control Started" toasts (one per stale handler).
 	 */
-	function setupEventListeners() {
+	function setupEventListeners(): () => void {
 		debug.log('preview', '🎧 Setting up MCP event listeners...');
 
-		// Listen for MCP control start/end events (per-tab)
-		ws.on('preview:browser-mcp-control-start', (data) => {
-			debug.log('preview', `📥 Received mcp-control-start:`, data);
-			handleControlStart(data);
-		});
+		const unsubscribers = [
+			// Listen for MCP control start/end events (per-tab)
+			ws.on('preview:browser-mcp-control-start', (data) => {
+				debug.log('preview', `📥 Received mcp-control-start:`, data);
+				handleControlStart(data);
+			}),
 
-		ws.on('preview:browser-mcp-control-end', (data) => {
-			debug.log('preview', `📥 Received mcp-control-end:`, data);
-			handleControlEnd(data);
-		});
+			ws.on('preview:browser-mcp-control-end', (data) => {
+				debug.log('preview', `📥 Received mcp-control-end:`, data);
+				handleControlEnd(data);
+			}),
 
-		// Listen for MCP cursor events
-		ws.on('preview:browser-mcp-cursor-position', (data) => {
-			handleCursorPosition(data);
-		});
+			// Listen for MCP cursor events
+			ws.on('preview:browser-mcp-cursor-position', (data) => {
+				handleCursorPosition(data);
+			}),
 
-		ws.on('preview:browser-mcp-cursor-click', (data) => {
-			handleCursorClick(data);
-		});
+			ws.on('preview:browser-mcp-cursor-click', (data) => {
+				handleCursorClick(data);
+			}),
 
-		ws.on('preview:browser-mcp-test-completed', (data) => {
-			handleTestCompleted(data);
-		});
+			ws.on('preview:browser-mcp-test-completed', (data) => {
+				handleTestCompleted(data);
+			}),
 
-		// Hide cursor when the entire Claude request finishes or is stopped
-		ws.on('chat:complete', () => {
-			if (onCursorHide) onCursorHide();
-		});
+			// Hide cursor when the entire Claude request finishes or is stopped
+			ws.on('chat:complete', () => {
+				if (onCursorHide) onCursorHide();
+			}),
 
-		ws.on('chat:cancelled', () => {
-			if (onCursorHide) onCursorHide();
-		});
+			ws.on('chat:cancelled', () => {
+				if (onCursorHide) onCursorHide();
+			})
+		];
 
 		// MCP Tab Management - Request/Response handlers
 		setupTabManagementListeners();
 
 		debug.log('preview', '✅ MCP event listeners registered');
+
+		return () => {
+			for (const unsub of unsubscribers) unsub();
+		};
 	}
 
 	/**

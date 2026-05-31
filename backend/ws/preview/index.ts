@@ -60,6 +60,9 @@ export const previewRouter = createRouter()
 	.merge(mcpPreviewHandler)
 	// Server-emitted events (for type safety)
 	.emit('preview:browser-tab-opened', t.Object({
+		// projectId lets the frontend reject events that belong to a project it has
+		// since switched away from (prevents cross-project tab leaks).
+		projectId: t.String(),
 		tabId: t.String(),
 		url: t.String(),
 		title: t.String(),
@@ -67,16 +70,19 @@ export const previewRouter = createRouter()
 		timestamp: t.Number()
 	}))
 	.emit('preview:browser-tab-closed', t.Object({
+		projectId: t.String(),
 		tabId: t.String(),
 		newActiveTabId: t.Union([t.String(), t.Null()]),
 		timestamp: t.Number()
 	}))
 	.emit('preview:browser-tab-switched', t.Object({
+		projectId: t.String(),
 		previousTabId: t.String(),
 		newTabId: t.String(),
 		timestamp: t.Number()
 	}))
 	.emit('preview:browser-tab-navigated', t.Object({
+		projectId: t.String(),
 		tabId: t.String(),
 		url: t.String(),
 		title: t.String(),
@@ -145,6 +151,7 @@ export const previewRouter = createRouter()
 		source: t.Literal('mcp')
 	}))
 	.emit('preview:browser-viewport-changed', t.Object({
+		projectId: t.String(),
 		tabId: t.String(),
 		deviceSize: t.String(),
 		rotation: t.String(),

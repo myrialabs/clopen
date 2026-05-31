@@ -9,7 +9,8 @@
  */
 
 import type { WSConnection } from '$shared/utils/ws-server';
-import { requireCurrentProjectAccess } from '../access';
+import { ws } from '$backend/utils/ws';
+import { requireCurrentProjectAccess, requireProjectAccess } from '../access';
 import { browserPreviewServiceManager } from '../../preview/index';
 
 type PreviewService = ReturnType<typeof browserPreviewServiceManager.getService>;
@@ -23,6 +24,24 @@ export interface BrowserPreviewContext {
 
 export function requireBrowserPreviewAccess(conn: WSConnection): BrowserPreviewContext {
 	const { userId, projectId } = requireCurrentProjectAccess(conn);
+	const previewService = browserPreviewServiceManager.getService(projectId);
+	return { userId, projectId, previewService };
+}
+
+/**
+ * Resolve preview access for an explicitly-supplied project, after verifying
+ * the caller is a member. Used by session-recovery reads (tab list / switch)
+ * that fire during a project switch: the connection's room context may not have
+ * caught up yet (the context-sync round-trip can resolve via timeout), so
+ * trusting it would recover the *previous* project's tabs. Passing the target
+ * projectId explicitly makes recovery deterministic.
+ */
+export function requireBrowserPreviewAccessFor(
+	conn: WSConnection,
+	projectId: string
+): BrowserPreviewContext {
+	requireProjectAccess(conn, projectId); // throws if the caller isn't a member
+	const userId = ws.getUserId(conn);
 	const previewService = browserPreviewServiceManager.getService(projectId);
 	return { userId, projectId, previewService };
 }

@@ -669,26 +669,29 @@ class BrowserPreviewServiceManager {
 			ws.emit.project(projectId, 'preview:browser-navigation-spa', data);
 		});
 
-		// Forward tab events
+		// Forward tab events. Each carries projectId so the frontend can drop
+		// events for a project it has since switched away from — without it, a
+		// background stream (or a late event) could create/mutate tabs in the
+		// project the user is now viewing.
 		service.on('preview:browser-tab-opened', (data) => {
 			debug.log('preview', `🚀 Forwarding preview:browser-tab-opened to project ${projectId}:`, data);
-			ws.emit.project(projectId, 'preview:browser-tab-opened', data);
+			ws.emit.project(projectId, 'preview:browser-tab-opened', { ...data, projectId });
 		});
 
 		service.on('preview:browser-tab-closed', (data) => {
-			ws.emit.project(projectId, 'preview:browser-tab-closed', data);
+			ws.emit.project(projectId, 'preview:browser-tab-closed', { ...data, projectId });
 		});
 
 		service.on('preview:browser-tab-switched', (data) => {
-			ws.emit.project(projectId, 'preview:browser-tab-switched', data);
+			ws.emit.project(projectId, 'preview:browser-tab-switched', { ...data, projectId });
 		});
 
 		service.on('preview:browser-tab-navigated', (data) => {
-			ws.emit.project(projectId, 'preview:browser-tab-navigated', data);
+			ws.emit.project(projectId, 'preview:browser-tab-navigated', { ...data, projectId });
 		});
 
 		service.on('preview:browser-viewport-changed', (data) => {
-			ws.emit.project(projectId, 'preview:browser-viewport-changed', data);
+			ws.emit.project(projectId, 'preview:browser-viewport-changed', { ...data, projectId });
 		});
 
 		// Forward console events

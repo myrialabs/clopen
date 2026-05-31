@@ -8,7 +8,7 @@ import { t } from 'elysia';
 import { createRouter } from '$shared/utils/ws-server';
 import { browserMcpControl } from '../../../preview/browser/browser-mcp-control';
 import { debug } from '$shared/utils/logger';
-import { requireBrowserPreviewAccess, requireBrowserTabAccess } from '../access';
+import { requireBrowserPreviewAccess, requireBrowserPreviewAccessFor, requireBrowserTabAccess } from '../access';
 
 export const tabInfoPreviewHandler = createRouter()
 	// Get single tab info
@@ -43,7 +43,10 @@ export const tabInfoPreviewHandler = createRouter()
 
 	// Get all active tabs (for session recovery after browser refresh)
 	.http('preview:browser-tabs-list', {
-		data: t.Object({}),
+		data: t.Object({
+			// Explicit project target for switch-time recovery (see access helper).
+			projectId: t.Optional(t.String())
+		}),
 		response: t.Object({
 			tabs: t.Array(t.Object({
 				tabId: t.String(),
@@ -59,8 +62,10 @@ export const tabInfoPreviewHandler = createRouter()
 			activeTabId: t.Union([t.String(), t.Null()]),
 			count: t.Number()
 		})
-	}, async ({ conn }) => {
-		const { projectId, previewService } = requireBrowserPreviewAccess(conn);
+	}, async ({ data, conn }) => {
+		const { projectId, previewService } = data.projectId
+			? requireBrowserPreviewAccessFor(conn, data.projectId)
+			: requireBrowserPreviewAccess(conn);
 
 		const allTabsInfo = previewService.getAllTabsInfo();
 		const activeTab = previewService.getActiveTab();
@@ -87,7 +92,9 @@ export const tabInfoPreviewHandler = createRouter()
 	// Switch to a specific tab (for session recovery)
 	.http('preview:browser-tab-switch', {
 		data: t.Object({
-			tabId: t.String()
+			tabId: t.String(),
+			// Explicit project target for switch-time recovery (see access helper).
+			projectId: t.Optional(t.String())
 		}),
 		response: t.Object({
 			success: t.Boolean(),
@@ -96,7 +103,9 @@ export const tabInfoPreviewHandler = createRouter()
 		})
 	}, async ({ data, conn }) => {
 		const { tabId } = data;
-		const { projectId, previewService } = requireBrowserPreviewAccess(conn);
+		const { projectId, previewService } = data.projectId
+			? requireBrowserPreviewAccessFor(conn, data.projectId)
+			: requireBrowserPreviewAccess(conn);
 
 		const success = previewService.switchTab(tabId);
 		if (!success) {

@@ -35,32 +35,25 @@ export function createNativeUIHandler(config: NativeUIHandlerConfig) {
 	} = config;
 
 	/**
-	 * Setup WebSocket event listeners for native UI events
+	 * Setup WebSocket event listeners for native UI events.
+	 * Returns a teardown that removes every listener — the coordinator calls it
+	 * on unmount so listeners don't accumulate across BrowserPreview re-mounts.
 	 */
-	function setupEventListeners() {
-		// Listen to dialog events
-		ws.on('preview:browser-dialog', handleDialogEvent);
+	function setupEventListeners(): () => void {
+		const unsubscribers = [
+			ws.on('preview:browser-dialog', handleDialogEvent),
+			ws.on('preview:browser-print', handlePrintEvent),
+			ws.on('preview:browser-select', handleSelectEvent),
+			ws.on('preview:browser-context-menu', handleContextMenuEvent),
+			ws.on('preview:browser-copy-to-clipboard', handleCopyToClipboard),
+			ws.on('preview:browser-open-url-new-tab', handleOpenUrlNewTab),
+			ws.on('preview:browser-download-image', handleDownloadImage),
+			ws.on('preview:browser-copy-image-to-clipboard', handleCopyImageToClipboard)
+		];
 
-		// Listen to print events
-		ws.on('preview:browser-print', handlePrintEvent);
-
-		// Listen to select events
-		ws.on('preview:browser-select', handleSelectEvent);
-
-		// Listen to context menu events
-		ws.on('preview:browser-context-menu', handleContextMenuEvent);
-
-		// Listen to clipboard copy events
-		ws.on('preview:browser-copy-to-clipboard', handleCopyToClipboard);
-
-		// Listen to open URL events
-		ws.on('preview:browser-open-url-new-tab', handleOpenUrlNewTab);
-
-		// Listen to download image events
-		ws.on('preview:browser-download-image', handleDownloadImage);
-
-		// Listen to copy image to clipboard events
-		ws.on('preview:browser-copy-image-to-clipboard', handleCopyImageToClipboard);
+		return () => {
+			for (const unsub of unsubscribers) unsub();
+		};
 	}
 
 	/**

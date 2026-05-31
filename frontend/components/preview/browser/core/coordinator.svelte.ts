@@ -5,7 +5,7 @@
 
 import { debug } from '$shared/utils/logger';
 import type { DeviceSize, Rotation } from '$frontend/utils/preview-constants';
-import { createTabManager, type TabManager, type PreviewTab, getTabTitle } from './tab-manager.svelte';
+import { type TabManager } from './tab-manager.svelte';
 import { createStreamMessageHandler, type StreamMessageHandler } from './stream-handler.svelte';
 import { createNativeUIHandler, type NativeUIHandler } from './native-ui-handlers.svelte';
 import { createMcpHandler, type McpHandler } from './mcp-handlers.svelte';
@@ -14,12 +14,15 @@ import {
 	navigateBrowser as navigateBrowserOp,
 	destroyBrowser,
 	destroyBrowserTab,
-	getExistingTabs,
-	switchToBackendTab,
-	type ExistingTabInfo
+	switchToBackendTab
 } from './tab-operations.svelte';
 import { browserCleanup } from './cleanup.svelte';
 import { sendInteraction, updateViewport, setInteractionProjectId } from './interactions.svelte';
+import {
+	previewTabManager,
+	getRecoveredMcpControlledTabs
+} from '$frontend/stores/features/preview-tabs-workspace.svelte';
+import { getActiveWorkspaceProjectId } from '$frontend/stores/ui/project-workspace.svelte';
 import type { BrowserSelectInfo, BrowserContextMenuInfo } from '$frontend/utils/native-ui';
 
 export interface BrowserCoordinatorConfig {
@@ -32,9 +35,6 @@ export interface BrowserCoordinatorConfig {
 	onSessionChange?: (sessionId: string | null) => void;
 	onLoadingChange?: (isLoading: boolean) => void;
 	onErrorChange?: (errorMessage: string | null) => void;
-
-	// Session recovery callback - called when sessions are recovered after page refresh
-	onSessionsRecovered?: (tabCount: number) => void;
 
 	// UI state callbacks
 	onSelectOpen?: (selectInfo: BrowserSelectInfo) => void;
@@ -59,7 +59,6 @@ export function createBrowserCoordinator(config: BrowserCoordinatorConfig) {
 		onSessionChange,
 		onLoadingChange,
 		onErrorChange,
-		onSessionsRecovered,
 		onSelectOpen,
 		onContextMenuOpen,
 		onVirtualCursorUpdate,
@@ -69,12 +68,26 @@ export function createBrowserCoordinator(config: BrowserCoordinatorConfig) {
 		transformBrowserToDisplayCoordinates
 	} = config;
 
-	// Restore lock to prevent race conditions
-	let isRestoring = $state(false);
-	let eventListenersReady = $state(false);
+	// Use the module-level singleton tab manager. It is populated by the
+	// preview-tabs dock's load() during the workspace switch barrier, so tabs are
+	// already authoritative by the time BrowserPreview mounts/re-renders.
+	const tabManager = previewTabManager;
 
-	// Create managers
-	const tabManager = createTabManager();
+	// WS listener teardown handles, removed on cleanup(). The handlers operate on
+	// the shared singleton, so a per-mount registration that is never torn down
+	// accumulates across re-mounts — surfacing as duplicate event handling and
+	// duplicate "MCP Control Started" toasts.
+	const disposers: Array<() => void> = [];
+	let disposed = false;
+
+	function track(unsub: () => void): void {
+		if (disposed) {
+			// cleanup() already ran (e.g. an async import resolved after unmount).
+			unsub();
+			return;
+		}
+		disposers.push(unsub);
+	}
 
 	// Create stream handler
 	const streamHandler = createStreamMessageHandler({
@@ -264,12 +277,6 @@ export function createBrowserCoordinator(config: BrowserCoordinatorConfig) {
 	 * Create new tab
 	 */
 	function createNewTab(tabUrl: string = ''): string {
-		// Prevent creating tabs during restore to avoid race conditions
-		if (isRestoring) {
-			debug.warn('preview', '⚠️ Cannot create tab while restoring sessions');
-			return '';
-		}
-
 		const tabId = tabManager.createTab(tabUrl);
 
 		// Update parent state
@@ -455,157 +462,30 @@ export function createBrowserCoordinator(config: BrowserCoordinatorConfig) {
 	 * to ensure projectId is available before attempting recovery
 	 */
 	function initialize() {
+		disposed = false;
 		browserCleanup.initialize();
-		nativeUIHandler.setupEventListeners();
-		mcpHandler.setupEventListeners();
+		track(nativeUIHandler.setupEventListeners());
+		track(mcpHandler.setupEventListeners());
 
 		// CRITICAL: Setup event listeners FIRST before any recovery
 		// This ensures we don't miss events from backend
 		setupTabEventListeners();
 		setupNavigationListeners();
-
-		// Mark event listeners as ready
-		eventListenersReady = true;
-
-		// Note: setInteractionProjectId and recoverExistingSessions are called by switchProject()
-		// which is triggered by the project watcher effect after projectId becomes available
 	}
 
 	/**
-	 * Recover existing browser sessions from backend (after page refresh)
+	 * Whether a project-stamped backend event targets the project currently
+	 * shown by the singleton tabManager. The workspace coordinator's active
+	 * project is authoritative; fall back to the component's own projectId.
+	 * Unstamped events (older backend / no projectId) are accepted so we never
+	 * drop legitimate events we can't attribute.
 	 */
-	async function recoverExistingSessions() {
-		// Wait for event listeners to be ready before recovering
-		// This prevents missing events from backend during recovery
-		if (!eventListenersReady) {
-			debug.warn('preview', '⚠️ Event listeners not ready, waiting...');
-			await new Promise(resolve => {
-				const checkInterval = setInterval(() => {
-					if (eventListenersReady) {
-						clearInterval(checkInterval);
-						resolve(true);
-					}
-				}, 50);
-			});
-		}
-
-		// Set restore lock to prevent race conditions
-		isRestoring = true;
-
-		try {
-			const projectId = getProjectId();
-			const existingTabs = await getExistingTabs(projectId);
-
-			if (!existingTabs || existingTabs.count === 0) {
-				debug.log('preview', '📭 No existing sessions to recover');
-				// Notify parent about 0-tab recovery (enables empty tab creation)
-				if (onSessionsRecovered) {
-					onSessionsRecovered(0);
-				}
-				return;
-			}
-
-			// Track which frontend tab corresponds to the active tab
-			let activeTabFrontendId: string | null = null;
-			let totalRestored = 0;
-
-			// Restore backend tabs
-			debug.log('preview', `🔄 Recovering ${existingTabs.count} existing browser sessions...`);
-
-			for (const backendTab of existingTabs.tabs) {
-				const frontendId = restoreTabFromBackend(backendTab, backendTab.isActive);
-
-				// Register session for cleanup tracking
-				browserCleanup.registerSession(backendTab.tabId);
-
-				// Remember which frontend tab should be active
-				if (backendTab.isActive && frontendId) {
-					activeTabFrontendId = frontendId;
-				}
-
-				// Restore MCP control state if this tab was being controlled
-				if (backendTab.isMcpControlled && frontendId) {
-					debug.log('preview', `🎮 Restoring MCP control state for recovered tab: ${frontendId} (session: ${backendTab.tabId})`);
-					mcpHandler.restoreControlState(frontendId, backendTab.tabId);
-				}
-
-				totalRestored++;
-			}
-
-			// Now switch to the active tab (after all tabs are restored)
-			if (activeTabFrontendId) {
-				debug.log('preview', `🎯 Switching to active tab: ${activeTabFrontendId}`);
-				tabManager.switchTab(activeTabFrontendId);
-
-				// If active tab has a backend session, notify backend
-				const activeTab = tabManager.getTab(activeTabFrontendId);
-				if (activeTab?.sessionId) {
-					await switchToBackendTab(activeTab.sessionId, projectId);
-				}
-
-				// Update parent state with active tab info
-				if (activeTab) {
-					if (onUrlChange) onUrlChange(activeTab.url);
-					if (onUrlInputChange) onUrlInputChange(activeTab.url);
-					if (onSessionChange) onSessionChange(activeTab.sessionId);
-					if (onLoadingChange) onLoadingChange(false);
-					if (onErrorChange) onErrorChange(null);
-				}
-			}
-
-			debug.log('preview', `✅ Session recovery complete - restored ${totalRestored} tabs`);
-
-			// Diagnostic: dump state of all restored tabs
-			for (const tab of tabManager.getAllTabs()) {
-				debug.log('preview', `[DIAG] Restored tab: id=${tab.id}, sessionId=${tab.sessionId}, url=${tab.url}, isConnected=${tab.isConnected}, isStreamReady=${tab.isStreamReady}, isLaunchingBrowser=${tab.isLaunchingBrowser}, sessionInfo=${!!tab.sessionInfo}`);
-			}
-
-			// Notify parent that sessions were recovered
-			if (onSessionsRecovered) {
-				onSessionsRecovered(totalRestored);
-			}
-		} catch (error) {
-			debug.error('preview', '❌ Error recovering sessions:', error);
-		} finally {
-			// Always release restore lock
-			isRestoring = false;
-		}
-	}
-
-	/**
-	 * Restore a single tab from backend session
-	 * Returns the frontend tab ID for this restored tab
-	 */
-	function restoreTabFromBackend(backendTab: ExistingTabInfo, isActive: boolean): string {
-		debug.log('preview', `🔧 Restoring tab: ${backendTab.tabId} (${backendTab.url})`);
-
-		// Create frontend tab matching backend tab
-		const frontendTabId = tabManager.createTab(backendTab.url);
-
-		// Update tab with backend session info
-		tabManager.updateTab(frontendTabId, {
-			sessionId: backendTab.tabId,
-			sessionInfo: {
-				quality: backendTab.quality,
-				url: backendTab.url,
-				deviceSize: backendTab.deviceSize as DeviceSize,
-				rotation: backendTab.rotation as Rotation
-			},
-			url: backendTab.url,
-			title: backendTab.title || getTabTitle(backendTab.url),
-			deviceSize: backendTab.deviceSize as DeviceSize,
-			rotation: backendTab.rotation as Rotation,
-			isConnected: true,
-			isStreamReady: false, // Will be set true when stream reconnects
-			isLoading: false,
-			isLaunchingBrowser: false,
-			isNavigating: false,
-			errorMessage: null
-		});
-
-		debug.log('preview', `✅ Tab restored: ${frontendTabId} → ${backendTab.tabId}`);
-
-		return frontendTabId;
+	function isEventForActiveProject(data: { projectId?: string } | null | undefined): boolean {
+		const eventProjectId = data?.projectId;
+		if (!eventProjectId) return true;
+		const activeProjectId = getActiveWorkspaceProjectId() ?? getProjectId();
+		if (!activeProjectId) return true;
+		return eventProjectId === activeProjectId;
 	}
 
 	/**
@@ -620,13 +500,18 @@ export function createBrowserCoordinator(config: BrowserCoordinatorConfig) {
 		import('$frontend/utils/ws').then(({ default: ws }) => {
 			debug.log('preview', '✅ WebSocket module loaded, registering tab event listeners');
 
+			// Register + track so listeners are removed on unmount.
+			const on = (event: any, cb: any) => track((ws.on as any)(event, cb));
+
 			// Listen for tab opened events (from MCP or backend)
-			ws.on('preview:browser-tab-opened', (data: any) => {
+			on('preview:browser-tab-opened', (data: any) => {
 				debug.log('preview', `📥 Frontend received preview:browser-tab-opened:`, data);
 
-				// Skip if we're currently restoring to prevent conflicts
-				if (isRestoring) {
-					debug.log('preview', `⏭️ Skipping tab-opened event during restore: ${data.tabId}`);
+				// Drop events for a project the user has switched away from. The
+				// singleton tabManager only ever holds the active project's tabs, so
+				// a stale/background event must never create a tab here.
+				if (!isEventForActiveProject(data)) {
+					debug.log('preview', `⏭️ Ignoring tab-opened for inactive project ${data?.projectId}`);
 					return;
 				}
 
@@ -700,8 +585,10 @@ export function createBrowserCoordinator(config: BrowserCoordinatorConfig) {
 			});
 
 			// Listen for tab closed events
-			ws.on('preview:browser-tab-closed', (data) => {
+			on('preview:browser-tab-closed', (data: any) => {
 				debug.log('preview', `📥 Frontend received preview:browser-tab-closed:`, data);
+
+				if (!isEventForActiveProject(data)) return;
 
 				// Find frontend tab by backend session ID
 				const tab = tabManager.tabs.find(t => t.sessionId === data.tabId);
@@ -709,12 +596,21 @@ export function createBrowserCoordinator(config: BrowserCoordinatorConfig) {
 					tabManager.closeTab(tab.id);
 					browserCleanup.unregisterSession(data.tabId);
 					debug.log('preview', `✅ Frontend tab closed: ${tab.id}`);
+
+					// Backend-driven close (e.g. MCP) left zero tabs → reseed an empty
+					// one so the panel doesn't render as a void.
+					if (tabManager.getAllTabs().length === 0) {
+						debug.log('preview', '📝 No tabs after backend close, seeding empty tab');
+						tabManager.createTab('');
+					}
 				}
 			});
 
 			// Listen for tab switched events
-			ws.on('preview:browser-tab-switched', (data) => {
+			on('preview:browser-tab-switched', (data: any) => {
 				debug.log('preview', `📥 Frontend received preview:browser-tab-switched:`, data);
+
+				if (!isEventForActiveProject(data)) return;
 
 				// Find frontend tab by backend session ID
 				const tab = tabManager.tabs.find(t => t.sessionId === data.newTabId);
@@ -725,8 +621,10 @@ export function createBrowserCoordinator(config: BrowserCoordinatorConfig) {
 			});
 
 			// Listen for viewport changed events
-			ws.on('preview:browser-viewport-changed' as any, (data: any) => {
+			on('preview:browser-viewport-changed' as any, (data: any) => {
 				debug.log('preview', `📥 Frontend received preview:browser-viewport-changed:`, data);
+
+				if (!isEventForActiveProject(data)) return;
 
 				// Find frontend tab by backend session ID
 				const tab = tabManager.tabs.find(t => t.sessionId === data.tabId);
@@ -752,8 +650,11 @@ export function createBrowserCoordinator(config: BrowserCoordinatorConfig) {
 	function setupNavigationListeners() {
 		// Import ws at runtime to avoid circular dependencies
 		import('$frontend/utils/ws').then(({ default: ws }) => {
+			// Register + track so listeners are removed on unmount.
+			const on = (event: any, cb: any) => track((ws.on as any)(event, cb));
+
 			// Listen for navigation loading events
-			ws.on('preview:browser-navigation-loading', (data: { sessionId: string; type: string; url: string; timestamp: number }) => {
+			on('preview:browser-navigation-loading', (data: { sessionId: string; type: string; url: string; timestamp: number }) => {
 				debug.log('preview', `🔄 Navigation loading event received: ${data.sessionId} → ${data.url}`);
 
 				// Find tab by sessionId (backend sends backend tab ID as sessionId)
@@ -769,7 +670,7 @@ export function createBrowserCoordinator(config: BrowserCoordinatorConfig) {
 			});
 
 			// Listen for navigation completed events
-			ws.on('preview:browser-navigation', (data: { sessionId: string; type: string; url: string; timestamp: number }) => {
+			on('preview:browser-navigation', (data: { sessionId: string; type: string; url: string; timestamp: number }) => {
 				debug.log('preview', `✅ Navigation completed event received: ${data.sessionId} → ${data.url}`);
 
 				// Find tab by sessionId (backend sends backend tab ID as sessionId)
@@ -785,7 +686,7 @@ export function createBrowserCoordinator(config: BrowserCoordinatorConfig) {
 			});
 
 			// Listen for SPA navigation events (pushState/replaceState)
-			ws.on('preview:browser-navigation-spa', (data: { sessionId: string; type: string; url: string; timestamp: number }) => {
+			on('preview:browser-navigation-spa', (data: { sessionId: string; type: string; url: string; timestamp: number }) => {
 				debug.log('preview', `🔄 SPA navigation event received: ${data.sessionId} → ${data.url}`);
 
 				const tab = tabManager.tabs.find(t => t.sessionId === data.sessionId);
@@ -807,6 +708,18 @@ export function createBrowserCoordinator(config: BrowserCoordinatorConfig) {
 	 * To explicitly close tabs, use closeTab() which calls destroyBrowser().
 	 */
 	async function cleanup() {
+		// Remove every WS listener registered for this mount so handlers don't
+		// pile up across re-mounts (the root cause of duplicate events/toasts).
+		disposed = true;
+		for (const dispose of disposers) {
+			try {
+				dispose();
+			} catch (err) {
+				debug.warn('preview', 'Listener teardown failed:', err);
+			}
+		}
+		disposers.length = 0;
+
 		// Just clear frontend tracking - don't destroy backend sessions
 		// Backend sessions will be recovered on next page load
 		browserCleanup.clearAll();
@@ -814,41 +727,40 @@ export function createBrowserCoordinator(config: BrowserCoordinatorConfig) {
 	}
 
 	/**
-	 * Switch to a different project
-	 * Clears current tabs and loads sessions from the new project
+	 * Sync the per-coordinator state with the singleton tab manager.
+	 *
+	 * The preview-tabs dock's load() runs inside the workspace switch barrier
+	 * and populates `previewTabManager` from backend before the panel reveals,
+	 * so this just adopts that authoritative state: hands MCP-controlled tabs to
+	 * the per-mount mcpHandler and fires the parent's UI callbacks once.
 	 */
 	async function switchProject() {
 		const newProjectId = getProjectId();
 		debug.log('preview', `🔄 Switching to project: ${newProjectId}`);
 
-		// Set restore lock during entire project switch (prevents race conditions)
-		isRestoring = true;
+		// Keep interactions' projectId in sync (dock load() also does this on
+		// project switches; this covers the no-switch path, e.g. panel re-mount).
+		setInteractionProjectId(newProjectId);
 
-		try {
-			// Update projectId for interactions
-			setInteractionProjectId(newProjectId);
-
-			// Clear all local tabs
-			tabManager.clearAllTabs();
-
-			// Clear frontend tracking
-			browserCleanup.clearAll();
-
-			// Reset MCP control state to avoid stale tab IDs after tab recreation
-			mcpHandler.resetControlState();
-
-			// Recover sessions from new project
-			await recoverExistingSessions();
-		} catch (error) {
-			debug.error('preview', '❌ Error switching project:', error);
-		} finally {
-			isRestoring = false;
+		// Reset per-mount MCP control state — it doesn't survive remount, and any
+		// MCP-controlled tabs picked up by dock load() are re-registered below.
+		mcpHandler.resetControlState();
+		for (const { frontendId, backendId } of getRecoveredMcpControlledTabs()) {
+			debug.log(
+				'preview',
+				`🎮 Restoring MCP control state for recovered tab: ${frontendId} (session: ${backendId})`
+			);
+			mcpHandler.restoreControlState(frontendId, backendId);
 		}
 
-		// After recovery and lock release, create empty tab if no tabs exist
-		if (tabManager.getAllTabs().length === 0) {
-			debug.log('preview', '📭 No tabs after project switch, creating empty tab');
-			createNewTab('');
+		// Fire parent UI callbacks for whichever tab the dock load() activated.
+		const activeTab = tabManager.activeTab;
+		if (activeTab) {
+			if (onUrlChange) onUrlChange(activeTab.url);
+			if (onUrlInputChange) onUrlInputChange(activeTab.url);
+			if (onSessionChange) onSessionChange(activeTab.sessionId);
+			if (onLoadingChange) onLoadingChange(false);
+			if (onErrorChange) onErrorChange(null);
 		}
 	}
 
