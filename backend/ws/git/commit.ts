@@ -34,4 +34,67 @@ export const commitHandler = createRouter()
 		const project = requireProjectAccess(conn, data.projectId);
 		const hash = await gitService.amendCommit(project.path, data.message);
 		return { hash };
+	})
+
+	.http('git:undo-commit', {
+		data: t.Object({
+			projectId: t.String(),
+			mode: t.Union([t.Literal('soft'), t.Literal('mixed'), t.Literal('hard')])
+		}),
+		response: t.Object({ ok: t.Boolean() })
+	}, async ({ data, conn }) => {
+		const project = requireProjectAccess(conn, data.projectId);
+		await gitService.undoLastCommit(project.path, data.mode);
+		return { ok: true };
+	})
+
+	.http('git:revert', {
+		data: t.Object({
+			projectId: t.String(),
+			ref: t.Optional(t.String())
+		}),
+		response: t.Object({
+			success: t.Boolean(),
+			message: t.String()
+		})
+	}, async ({ data, conn }) => {
+		const project = requireProjectAccess(conn, data.projectId);
+		return await gitService.revertCommit(project.path, data.ref);
+	})
+
+	.http('git:clean', {
+		data: t.Object({
+			projectId: t.String()
+		}),
+		response: t.Object({ message: t.String() })
+	}, async ({ data, conn }) => {
+		const project = requireProjectAccess(conn, data.projectId);
+		const message = await gitService.cleanUntracked(project.path);
+		return { message };
+	})
+
+	.http('git:gc', {
+		data: t.Object({
+			projectId: t.String()
+		}),
+		response: t.Object({ message: t.String() })
+	}, async ({ data, conn }) => {
+		const project = requireProjectAccess(conn, data.projectId);
+		const message = await gitService.optimize(project.path);
+		return { message };
+	})
+
+	.http('git:npm-version', {
+		data: t.Object({
+			projectId: t.String(),
+			bump: t.Union([t.Literal('patch'), t.Literal('minor'), t.Literal('major')])
+		}),
+		response: t.Object({
+			success: t.Boolean(),
+			version: t.String(),
+			message: t.String()
+		})
+	}, async ({ data, conn }) => {
+		const project = requireProjectAccess(conn, data.projectId);
+		return await gitService.npmVersion(project.path, data.bump);
 	});

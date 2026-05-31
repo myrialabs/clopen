@@ -37,6 +37,7 @@
 
 	// Sub-components
 	import CommitForm from '$frontend/components/git/CommitForm.svelte';
+	import type { GitMoreAction } from '$frontend/components/git/GitMoreMenu.svelte';
 	import ChangesSection from '$frontend/components/git/ChangesSection.svelte';
 	import DiffViewer from '$frontend/components/git/DiffViewer.svelte';
 	import BranchManager from '$frontend/components/git/BranchManager.svelte';
@@ -955,6 +956,7 @@
 	let isFetching = $state(false);
 	let isPulling = $state(false);
 	let isPushing = $state(false);
+	let isMoreBusy = $state(false);
 
 	async function handleFetch() {
 		if (!projectId || isFetching) return;
@@ -1035,6 +1037,237 @@
 			showError('Push Failed', err instanceof Error ? err.message : 'Unknown error');
 		} finally {
 			isPushing = false;
+		}
+	}
+
+	// ============================
+	// More Git Actions (push variants, undo, npm version, maintenance)
+	// ============================
+
+	async function runMore(fn: () => Promise<void>) {
+		if (!projectId || isMoreBusy) return;
+		isMoreBusy = true;
+		try {
+			await fn();
+		} finally {
+			isMoreBusy = false;
+		}
+	}
+
+	async function pushVariant(mode: 'with-tags' | 'all-tags' | 'force-lease' | 'force', label: string) {
+		await runMore(async () => {
+			try {
+				const result = await ws.http('git:push-advanced', {
+					projectId,
+					mode,
+					remote: selectedRemote,
+					branch: branchInfo?.current
+				});
+				if (!result.success) {
+					showError('Push Failed', result.message);
+				} else {
+					await loadBranches();
+					await loadTags();
+					showInfo('Push Complete', `${label} to ${selectedRemote}.`);
+				}
+			} catch (err) {
+				debug.error('git', 'Push variant failed:', err);
+				showError('Push Failed', err instanceof Error ? err.message : 'Unknown error');
+			}
+		});
+	}
+
+	async function pullRebase() {
+		await runMore(async () => {
+			try {
+				const result = await ws.http('git:pull', {
+					projectId,
+					remote: selectedRemote,
+					branch: branchInfo?.current,
+					rebase: true
+				});
+				if (!result.success) {
+					if (result.message.includes('conflict')) {
+						await loadAll();
+						await loadConflicts();
+						showConflictResolver = true;
+					} else {
+						showError('Pull Failed', result.message);
+					}
+				} else {
+					await loadAll();
+					showInfo('Pull Complete', `Rebased onto ${selectedRemote}.`);
+				}
+			} catch (err) {
+				debug.error('git', 'Pull (rebase) failed:', err);
+				showError('Pull Failed', err instanceof Error ? err.message : 'Unknown error');
+			}
+		});
+	}
+
+	async function fetchAll() {
+		await runMore(async () => {
+			try {
+				await ws.http('git:fetch-all', { projectId });
+				await loadBranches();
+				await loadTags();
+				showInfo('Fetch Complete', 'Fetched all remotes and pruned stale branches.');
+			} catch (err) {
+				debug.error('git', 'Fetch all failed:', err);
+				showError('Fetch Failed', err instanceof Error ? err.message : 'Unknown error');
+			}
+		});
+	}
+
+	async function undoCommit(mode: 'soft' | 'mixed' | 'hard') {
+		await runMore(async () => {
+			try {
+				await ws.http('git:undo-commit', { projectId, mode });
+				await loadAll();
+				if (activeView === 'log') await loadLog(true);
+				const detail =
+					mode === 'soft'
+						? 'Changes kept staged.'
+						: mode === 'mixed'
+							? 'Changes kept in working tree.'
+							: 'Changes discarded.';
+				showInfo('Commit Undone', detail);
+			} catch (err) {
+				debug.error('git', 'Undo commit failed:', err);
+				showError('Undo Failed', err instanceof Error ? err.message : 'Unknown error');
+			}
+		});
+	}
+
+	async function revertLast() {
+		await runMore(async () => {
+			try {
+				const result = await ws.http('git:revert', { projectId });
+				if (!result.success) {
+					if (gitStatus.conflicted.length > 0 || result.message.includes('conflict')) {
+						await loadAll();
+						await loadConflicts();
+						showConflictResolver = true;
+					} else {
+						showError('Revert Failed', result.message);
+					}
+				} else {
+					await loadAll();
+					if (activeView === 'log') await loadLog(true);
+					showInfo('Commit Reverted', 'Created a new commit that undoes the last one.');
+				}
+			} catch (err) {
+				debug.error('git', 'Revert failed:', err);
+				showError('Revert Failed', err instanceof Error ? err.message : 'Unknown error');
+			}
+		});
+	}
+
+	async function npmVersion(bump: 'patch' | 'minor' | 'major') {
+		await runMore(async () => {
+			try {
+				const result = await ws.http('git:npm-version', { projectId, bump });
+				if (!result.success) {
+					showError('npm version Failed', result.message);
+				} else {
+					await loadAll();
+					if (activeView === 'log') await loadLog(true);
+					showInfo('Version Bumped', `Package is now ${result.version}.`);
+				}
+			} catch (err) {
+				debug.error('git', 'npm version failed:', err);
+				showError('npm version Failed', err instanceof Error ? err.message : 'Unknown error');
+			}
+		});
+	}
+
+	async function cleanUntracked() {
+		await runMore(async () => {
+			try {
+				await ws.http('git:clean', { projectId });
+				await loadStatus();
+				showInfo('Clean Complete', 'Removed untracked files.');
+			} catch (err) {
+				debug.error('git', 'Clean failed:', err);
+				showError('Clean Failed', err instanceof Error ? err.message : 'Unknown error');
+			}
+		});
+	}
+
+	async function optimizeRepo() {
+		await runMore(async () => {
+			try {
+				await ws.http('git:gc', { projectId });
+				showInfo('Optimized', 'Repository garbage collection complete.');
+			} catch (err) {
+				debug.error('git', 'Optimize failed:', err);
+				showError('Optimize Failed', err instanceof Error ? err.message : 'Unknown error');
+			}
+		});
+	}
+
+	function handleMoreAction(action: GitMoreAction) {
+		switch (action) {
+			case 'push-follow-tags':
+				return void pushVariant('with-tags', 'Pushed branch with tags');
+			case 'push-all-tags':
+				return void pushVariant('all-tags', 'Pushed all tags');
+			case 'push-force-lease':
+				return requestConfirm({
+					title: 'Force Push (with lease)',
+					message: `Force push "${branchInfo?.current}" to ${selectedRemote}? This overwrites the remote branch but aborts if someone else has pushed.`,
+					type: 'warning',
+					confirmText: 'Force Push',
+					onConfirm: () => void pushVariant('force-lease', 'Force-pushed branch')
+				});
+			case 'push-force':
+				return requestConfirm({
+					title: 'Force Push',
+					message: `Force push "${branchInfo?.current}" to ${selectedRemote}? This unconditionally overwrites the remote branch and can destroy others' commits.`,
+					type: 'error',
+					confirmText: 'Force Push',
+					onConfirm: () => void pushVariant('force', 'Force-pushed branch')
+				});
+			case 'pull-rebase':
+				return void pullRebase();
+			case 'fetch-all':
+				return void fetchAll();
+			case 'undo-soft':
+				return void undoCommit('soft');
+			case 'undo-mixed':
+				return void undoCommit('mixed');
+			case 'undo-hard':
+				return requestConfirm({
+					title: 'Undo Last Commit (discard)',
+					message: 'Undo the last commit and discard all its changes? This cannot be undone.',
+					type: 'error',
+					confirmText: 'Discard',
+					onConfirm: () => void undoCommit('hard')
+				});
+			case 'revert-last':
+				return void revertLast();
+			case 'npm-patch':
+			case 'npm-minor':
+			case 'npm-major': {
+				const bump = action.replace('npm-', '') as 'patch' | 'minor' | 'major';
+				return requestConfirm({
+					title: `npm version ${bump}`,
+					message: `Bump the package version (${bump}) and create a version commit and tag? Requires a clean working tree.`,
+					type: 'info',
+					confirmText: 'Bump Version',
+					onConfirm: () => void npmVersion(bump)
+				});
+			}
+			case 'clean-untracked':
+				return requestConfirm({
+					title: 'Clean Untracked Files',
+					message: 'Permanently delete all untracked files and directories? This cannot be undone.',
+					type: 'error',
+					confirmText: 'Clean',
+					onConfirm: () => void cleanUntracked()
+				});
+			case 'gc':
+				return void optimizeRepo();
 		}
 	}
 
@@ -1640,14 +1873,17 @@ ${bodies}`;
 			onCommit={handleCommit}
 			hasRemotes={remotes.length > 0}
 			{selectedRemote}
+			currentBranch={branchInfo?.current}
 			branchAhead={branchInfo?.ahead ?? 0}
 			branchBehind={branchInfo?.behind ?? 0}
 			{isPushing}
 			{isPulling}
 			{isFetching}
+			{isMoreBusy}
 			onPush={handlePush}
 			onPull={handlePull}
 			onFetch={handleFetch}
+			onMoreAction={handleMoreAction}
 		/>
 
 		<!-- Changes sections -->

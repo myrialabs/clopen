@@ -40,6 +40,28 @@ export const remoteHandler = createRouter()
 		data: t.Object({
 			projectId: t.String(),
 			remote: t.Optional(t.String()),
+			branch: t.Optional(t.String()),
+			rebase: t.Optional(t.Boolean())
+		}),
+		response: t.Object({
+			success: t.Boolean(),
+			message: t.String()
+		})
+	}, async ({ data, conn }) => {
+		const project = requireProjectAccess(conn, data.projectId);
+		return await gitService.pull(project.path, data.remote, data.branch, data.rebase);
+	})
+
+	.http('git:push-advanced', {
+		data: t.Object({
+			projectId: t.String(),
+			mode: t.Union([
+				t.Literal('with-tags'),
+				t.Literal('all-tags'),
+				t.Literal('force-lease'),
+				t.Literal('force')
+			]),
+			remote: t.Optional(t.String()),
 			branch: t.Optional(t.String())
 		}),
 		response: t.Object({
@@ -48,7 +70,20 @@ export const remoteHandler = createRouter()
 		})
 	}, async ({ data, conn }) => {
 		const project = requireProjectAccess(conn, data.projectId);
-		return await gitService.pull(project.path, data.remote, data.branch);
+		return await gitService.pushAdvanced(project.path, data.mode, data.remote, data.branch);
+	})
+
+	.http('git:fetch-all', {
+		data: t.Object({
+			projectId: t.String()
+		}),
+		response: t.Object({
+			message: t.String()
+		})
+	}, async ({ data, conn }) => {
+		const project = requireProjectAccess(conn, data.projectId);
+		const message = await gitService.fetchAll(project.path);
+		return { message };
 	})
 
 	.http('git:push', {
