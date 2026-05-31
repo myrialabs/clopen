@@ -81,6 +81,24 @@
 		);
 	}
 
+	// Resolve a session's visual status (matches the colored dot in the list)
+	type SessionStatus = 'needs_input' | 'running' | 'unread' | 'idle';
+	function getSessionStatus(session: ChatSession): SessionStatus {
+		if (isSessionStreaming(session.id)) {
+			return isSessionWaitingInput(session.id, projectState.currentProject?.id)
+				? 'needs_input'
+				: 'running';
+		}
+		if (isSessionUnread(session.id) && session.id !== sessionState.currentSession?.id) {
+			return 'unread';
+		}
+		return 'idle';
+	}
+
+	// Status filter state
+	type StatusFilter = 'all' | 'needs_input' | 'unread' | 'running';
+	let statusFilter = $state<StatusFilter>('all');
+
 	// Search state
 	let searchQuery = $state('');
 	let deepSearchResults = $state<Set<string> | null>(null);
@@ -114,6 +132,28 @@
 		triggerDeepSearch(searchQuery);
 	});
 
+	// Sessions visible regardless of the active status filter (used for counts)
+	const statusEligibleSessions = $derived(
+		sessions.filter(session => {
+			const messageCount = session.message_count ?? 0;
+			// Show sessions that are currently streaming even if 0 messages yet
+			return messageCount > 0 || isSessionStreaming(session.id);
+		})
+	);
+
+	// Count of sessions per status (for the filter badges)
+	const statusCounts = $derived.by(() => {
+		const counts = { all: 0, needs_input: 0, unread: 0, running: 0 };
+		for (const session of statusEligibleSessions) {
+			counts.all++;
+			const status = getSessionStatus(session);
+			if (status === 'needs_input') counts.needs_input++;
+			else if (status === 'unread') counts.unread++;
+			else if (status === 'running') counts.running++;
+		}
+		return counts;
+	});
+
 	const filteredSessions = $derived(
 		sessions
 			.filter(session => {
@@ -121,6 +161,11 @@
 
 				// Show sessions that are currently streaming even if 0 messages yet
 				if (messageCount === 0 && !isSessionStreaming(session.id)) {
+					return false;
+				}
+
+				// Status filter
+				if (statusFilter !== 'all' && getSessionStatus(session) !== statusFilter) {
 					return false;
 				}
 
@@ -278,6 +323,7 @@
 	function closeModal() {
 		searchQuery = '';
 		deepSearchResults = null;
+		statusFilter = 'all';
 		onClose();
 	}
 
@@ -295,6 +341,7 @@
 
 	$effect(() => {
 		searchQuery;
+		statusFilter;
 		untrack(() => {
 			displayCount = PAGE_SIZE;
 		});
@@ -378,21 +425,63 @@
 			</div>
 		{/if}
 
+		<!-- Status Filter -->
+		{#if statusEligibleSessions.length > 0}
+			{@const filters = [
+				{ value: 'all', label: 'All', count: statusCounts.all, dot: '' },
+				{ value: 'needs_input', label: 'Needs input', count: statusCounts.needs_input, dot: 'bg-amber-500' },
+				{ value: 'unread', label: 'Unread', count: statusCounts.unread, dot: 'bg-blue-500' },
+				{ value: 'running', label: 'Running', count: statusCounts.running, dot: 'bg-emerald-500' }
+			] as const}
+			<div class="flex items-center gap-1.5 mb-4 overflow-x-auto pb-0.5">
+				{#each filters as filter}
+					{@const isSelected = statusFilter === filter.value}
+					<button
+						type="button"
+						class="flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg text-xs font-medium whitespace-nowrap transition-colors shrink-0
+							{isSelected
+							? 'bg-violet-500/15 text-violet-700 dark:text-violet-300 border border-violet-300 dark:border-violet-700'
+							: 'bg-slate-100/80 dark:bg-slate-800/80 text-slate-600 dark:text-slate-400 border border-transparent hover:bg-slate-200/80 dark:hover:bg-slate-700/80'}"
+						onclick={() => (statusFilter = filter.value)}
+					>
+						{#if filter.dot}
+							<span class="w-2 h-2 rounded-full {filter.dot} shrink-0"></span>
+						{/if}
+						<span>{filter.label}</span>
+						<span
+							class="px-1.5 rounded-full text-[10px] font-semibold {isSelected
+								? 'bg-violet-500/20 text-violet-700 dark:text-violet-300'
+								: 'bg-slate-200/80 dark:bg-slate-700/80 text-slate-500 dark:text-slate-400'}"
+						>
+							{filter.count}
+						</span>
+					</button>
+				{/each}
+			</div>
+		{/if}
+
 		<!-- Sessions List -->
 		{#if filteredSessions.length === 0}
 			<div class="flex flex-col items-center gap-3 py-8 text-slate-600 dark:text-slate-500 text-sm">
 				<Icon name="lucide:message-square-off" class="w-12 h-12 text-slate-400 opacity-40" />
 				<p class="font-medium">No sessions found</p>
 				<p class="text-xs text-slate-500 dark:text-slate-500">
-					{searchQuery ? 'Try adjusting your search' : 'Start a new chat to see it here'}
+					{searchQuery
+						? 'Try adjusting your search'
+						: statusFilter !== 'all'
+							? 'No sessions match this status'
+							: 'Start a new chat to see it here'}
 				</p>
-				{#if searchQuery}
+				{#if searchQuery || statusFilter !== 'all'}
 					<button
 						type="button"
 						class="text-xs text-violet-600 dark:text-violet-400 underline cursor-pointer hover:text-violet-700 dark:hover:text-violet-300"
-						onclick={() => (searchQuery = '')}
+						onclick={() => {
+							searchQuery = '';
+							statusFilter = 'all';
+						}}
 					>
-						Clear search
+						{searchQuery ? 'Clear search' : 'Clear filter'}
 					</button>
 				{/if}
 			</div>
