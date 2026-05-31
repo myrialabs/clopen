@@ -62,6 +62,15 @@ export interface DbClientQueryHistoryEntry {
 	executedAt: string;
 }
 
+export interface DbClientOverview {
+	serverVersion: string | null;
+	latencyMs: number | null;
+	sizeBytes: number | null;
+	tableCount: number | null;
+	viewCount: number | null;
+	extra: Array<{ label: string; value: string }>;
+}
+
 export interface DbClientObjectDetails {
 	name: string;
 	type: DbClientSchemaNodeType;

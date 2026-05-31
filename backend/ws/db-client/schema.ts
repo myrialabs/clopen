@@ -20,6 +20,20 @@ const nodeTypeSchema = t.Union([
 ]);
 
 export const schemaHandler = createRouter()
+	.http('db-client:overview', {
+		data: t.Object({
+			connectionId: t.String({ minLength: 1 }),
+			database: t.Optional(t.String()),
+			schema: t.Optional(t.String())
+		}),
+		response: t.Any()
+	}, async ({ data, conn }) => {
+		requireDbClientConnectionAccess(conn, data.connectionId);
+		const adapter = await connectionManager.get(data.connectionId);
+		if (!adapter.overview) throw new Error('Driver does not support overview');
+		return adapter.overview({ database: data.database, schema: data.schema });
+	})
+
 	.http('db-client:list-databases', {
 		data: t.Object({ connectionId: t.String({ minLength: 1 }) }),
 		response: t.Array(t.Any())

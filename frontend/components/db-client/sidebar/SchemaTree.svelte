@@ -9,11 +9,12 @@
 	interface Props {
 		connectionId: string;
 		onContextMenu?: (e: MouseEvent, node: DbClientSchemaNode) => void;
+		onScopeMenu?: (e: MouseEvent, database?: string) => void;
 		onBackToConnections?: () => void;
 		onCreateTable?: (database?: string) => void;
 	}
 
-	const { connectionId, onContextMenu, onBackToConnections, onCreateTable }: Props = $props();
+	const { connectionId, onContextMenu, onScopeMenu, onBackToConnections, onCreateTable }: Props = $props();
 
 	let loading = $state(false);
 	let error = $state<string | null>(null);
@@ -41,6 +42,9 @@
 	const canCreateTable = $derived(driver !== 'redis');
 
 	$effect(() => {
+		// Re-run whenever an external action requests a reload (drop/rename/etc.)
+		// — this drives the same fetch path as the manual Refresh button.
+		dbClientStore.schemaNonce;
 		if (!connection) return;
 		if (useDatabaseTree && currentDb === null) {
 			loadDatabases();
@@ -159,6 +163,7 @@
 	}
 
 	const showingDatabases = $derived(useDatabaseTree && currentDb === null);
+	const scopeDatabase = $derived(useDatabaseTree ? (currentDb ?? undefined) : (connection?.database ?? undefined));
 </script>
 
 <div class="flex flex-col h-full min-h-0">
@@ -226,6 +231,17 @@
 			>
 				<Icon name={loading ? 'lucide:loader' : 'lucide:refresh-cw'} class="w-3.5 h-3.5 {loading ? 'animate-spin' : ''}" />
 			</button>
+			{#if !showingDatabases && onScopeMenu}
+				<button
+					type="button"
+					class="flex items-center justify-center w-7 h-7 rounded-md text-slate-500 hover:bg-violet-500/10 hover:text-violet-600 transition-colors"
+					onclick={(e) => onScopeMenu?.(e, scopeDatabase)}
+					aria-label="Database actions"
+					title="Database actions"
+				>
+					<Icon name="lucide:ellipsis-vertical" class="w-4 h-4" />
+				</button>
+			{/if}
 		</div>
 	</div>
 

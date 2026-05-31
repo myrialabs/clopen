@@ -10,6 +10,7 @@ import type {
 	DbClientObjectDetails,
 	DbClientObjectForeignKey,
 	DbClientObjectIndex,
+	DbClientOverview,
 	DbClientQueryResult,
 	DbClientSchemaNode,
 	DbClientSchemaNodeType
@@ -154,6 +155,37 @@ export class PostgresAdapter implements DbClientDriverAdapter {
 		return this.executeRead(`EXPLAIN ${q}`, [], opts);
 	}
 
+	// ── Overview ──────────────────────────────────────────────────────────
+
+	async overview(opts?: SchemaOpts): Promise<DbClientOverview> {
+		await this.ensureDatabase(opts?.database);
+		const sql = this.requireSql();
+		const start = performance.now();
+		const verRows = (await sql.unsafe('SELECT version() AS v')) as Array<{ v: string }>;
+		const latencyMs = Math.round(performance.now() - start);
+		const schema = this.targetSchema(opts);
+		const sizeRows = (await sql.unsafe('SELECT pg_database_size(current_database()) AS size')) as Array<{ size: unknown }>;
+		const countRows = (await sql.unsafe(
+			`SELECT
+			   COUNT(*) FILTER (WHERE table_type = 'BASE TABLE') AS tables,
+			   COUNT(*) FILTER (WHERE table_type = 'VIEW') AS views
+			 FROM information_schema.tables WHERE table_schema = $1`,
+			[schema] as never
+		)) as Array<Record<string, unknown>>;
+		const c = countRows[0] ?? {};
+		return {
+			serverVersion: verRows[0]?.v ?? null,
+			latencyMs,
+			sizeBytes: sizeRows[0]?.size === undefined ? null : Number(sizeRows[0].size),
+			tableCount: c.tables === undefined ? null : Number(c.tables),
+			viewCount: c.views === undefined ? null : Number(c.views),
+			extra: [
+				{ label: 'Database', value: this.defaultDb ?? 'postgres' },
+				{ label: 'Schema', value: schema }
+			]
+		};
+	}
+
 	// ── Schema ────────────────────────────────────────────────────────────
 
 	async listDatabases(): Promise<DbClientSchemaNode[]> {
@@ -279,6 +311,86 @@ export class PostgresAdapter implements DbClientDriverAdapter {
 		const ddl = `CREATE DATABASE ${Q(name)}`;
 		await this.requireSql().unsafe(ddl);
 		return ddl;
+	}
+
+	async dropDatabase(name: string): Promise<string> {
+		assertSafeIdentifier(name);
+		// Postgres refuses to drop the database the session is connected to —
+		// hop to the maintenance database first when needed.
+		if (this.defaultDb === name) await this.ensureDatabase('postgres');
+		const ddl = `DROP DATABASE ${Q(name)}`;
+		await this.requireSql().unsafe(ddl);
+		return ddl;
+	}
+
+	async renameDatabase(name: string, newName: string): Promise<string> {
+		assertSafeIdentifier(name);
+		assertSafeIdentifier(newName);
+		if (this.defaultDb === name) await this.ensureDatabase('postgres');
+		const ddl = `ALTER DATABASE ${Q(name)} RENAME TO ${Q(newName)}`;
+		await this.requireSql().unsafe(ddl);
+		return ddl;
+	}
+
+	async resetDatabase(opts?: SchemaOpts): Promise<string> {
+		await this.ensureDatabase(opts?.database);
+		const target = this.targetSchema(opts);
+		const sql = this.requireSql();
+		const rows = (await sql.unsafe(
+			`SELECT table_name FROM information_schema.tables
+			 WHERE table_schema = $1 AND table_type = 'BASE TABLE' ORDER BY table_name`,
+			[target] as never
+		)) as Array<{ table_name: string }>;
+		if (rows.length === 0) return '-- no tables to empty';
+		rows.forEach((r) => assertSafeIdentifier(r.table_name));
+		const list = rows.map((r) => qualified(Q, [target, r.table_name])).join(', ');
+		const ddl = `TRUNCATE TABLE ${list} RESTART IDENTITY CASCADE`;
+		await sql.unsafe(ddl);
+		return ddl;
+	}
+
+	async resetTable(name: string, opts?: SchemaOpts): Promise<string> {
+		await this.ensureDatabase(opts?.database);
+		assertSafeIdentifier(name);
+		const ddl = `TRUNCATE TABLE ${qualified(Q, [this.targetSchema(opts), name])} RESTART IDENTITY`;
+		await this.requireSql().unsafe(ddl);
+		return ddl;
+	}
+
+	async duplicateTable(name: string, newName: string, opts?: (SchemaOpts & { withData?: boolean })): Promise<string> {
+		await this.ensureDatabase(opts?.database);
+		assertSafeIdentifier(name);
+		assertSafeIdentifier(newName);
+		const schema = this.targetSchema(opts);
+		const src = qualified(Q, [schema, name]);
+		const dst = qualified(Q, [schema, newName]);
+		const sql = this.requireSql();
+		const create = `CREATE TABLE ${dst} (LIKE ${src} INCLUDING ALL)`;
+		await sql.unsafe(create);
+		const statements = [create];
+		if (opts?.withData) {
+			const copy = `INSERT INTO ${dst} SELECT * FROM ${src}`;
+			await sql.unsafe(copy);
+			statements.push(copy);
+		}
+		return statements.join(';\n');
+	}
+
+	async getCreateStatement(name: string, _type: DbClientSchemaNodeType, opts?: SchemaOpts): Promise<string> {
+		// Postgres has no SHOW CREATE; reconstruct a best-effort CREATE TABLE.
+		const details = await this.getObjectDetails(name, 'table', opts?.database, opts?.schema);
+		const schema = this.targetSchema(opts);
+		const detailColumns = details.columns ?? [];
+		const cols = detailColumns.map((c) => {
+			const parts = [Q(c.name), c.type];
+			if (!c.nullable) parts.push('NOT NULL');
+			if (c.default !== null && c.default !== undefined && c.default !== '') parts.push(`DEFAULT ${c.default}`);
+			return `  ${parts.join(' ')}`;
+		});
+		const pk = detailColumns.filter((c) => c.isPrimary).map((c) => Q(c.name));
+		if (pk.length > 0) cols.push(`  PRIMARY KEY (${pk.join(', ')})`);
+		const lines = [`CREATE TABLE ${qualified(Q, [schema, name])} (`, cols.join(',\n'), ');'];
+		return lines.join('\n');
 	}
 
 	async createTable(definition: TableDefinition, opts?: SchemaOpts): Promise<string> {

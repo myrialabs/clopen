@@ -12,6 +12,7 @@ import type {
 	DbClientObjectDetails,
 	DbClientObjectForeignKey,
 	DbClientObjectIndex,
+	DbClientOverview,
 	DbClientQueryResult,
 	DbClientSchemaNode,
 	DbClientSchemaNodeType
@@ -151,6 +152,27 @@ export class SqliteAdapter implements DbClientDriverAdapter {
 		return this.executeRead(`EXPLAIN QUERY PLAN ${q}`);
 	}
 
+	// ── Overview ──────────────────────────────────────────────────────────
+
+	async overview(): Promise<DbClientOverview> {
+		const db = this.requireDb();
+		const start = performance.now();
+		const pageCount = (db.query('PRAGMA page_count').get() as { page_count?: number } | null)?.page_count ?? 0;
+		const pageSize = (db.query('PRAGMA page_size').get() as { page_size?: number } | null)?.page_size ?? 0;
+		const latencyMs = Math.round(performance.now() - start);
+		const counts = db.query(
+			"SELECT SUM(type = 'table') AS tables, SUM(type = 'view') AS views FROM sqlite_master WHERE name NOT LIKE 'sqlite_%'"
+		).get() as { tables: number | null; views: number | null } | null;
+		return {
+			serverVersion: this.version,
+			latencyMs,
+			sizeBytes: pageCount * pageSize,
+			tableCount: counts?.tables ?? 0,
+			viewCount: counts?.views ?? 0,
+			extra: [{ label: 'File', value: db.filename || 'main' }]
+		};
+	}
+
 	// ── Schema ────────────────────────────────────────────────────────────
 
 	async listDatabases(): Promise<DbClientSchemaNode[]> {
@@ -266,6 +288,50 @@ export class SqliteAdapter implements DbClientDriverAdapter {
 		const ddl = `DELETE FROM ${Q(name)}`;
 		this.requireDb().run(ddl);
 		return ddl;
+	}
+
+	async resetTable(name: string): Promise<string> {
+		assertSafeIdentifier(name);
+		const db = this.requireDb();
+		const ddl = `DELETE FROM ${Q(name)}`;
+		db.run(ddl);
+		// AUTOINCREMENT counters live in sqlite_sequence (absent if unused).
+		db.prepare('DELETE FROM sqlite_sequence WHERE name = ?').run(name);
+		return `${ddl}; DELETE FROM sqlite_sequence WHERE name = '${name}'`;
+	}
+
+	async resetDatabase(): Promise<string> {
+		const db = this.requireDb();
+		const rows = db.query(
+			"SELECT name FROM sqlite_master WHERE type = 'table' AND name NOT LIKE 'sqlite_%' ORDER BY name"
+		).all() as Array<{ name: string }>;
+		if (rows.length === 0) return '-- no tables to empty';
+		rows.forEach((r) => assertSafeIdentifier(r.name));
+		const statements = rows.map((r) => `DELETE FROM ${Q(r.name)}`);
+		db.transaction(() => {
+			for (const stmt of statements) db.run(stmt);
+			db.run('DELETE FROM sqlite_sequence');
+		})();
+		return `${statements.join(';\n')};\nDELETE FROM sqlite_sequence`;
+	}
+
+	async duplicateTable(name: string, newName: string, opts?: { withData?: boolean }): Promise<string> {
+		assertSafeIdentifier(name);
+		assertSafeIdentifier(newName);
+		// SQLite cannot copy constraints via DDL; CREATE … AS SELECT preserves
+		// columns and (optionally) rows. Constraints/keys are not carried over.
+		const where = opts?.withData ? '' : ' WHERE 0';
+		const ddl = `CREATE TABLE ${Q(newName)} AS SELECT * FROM ${Q(name)}${where}`;
+		this.requireDb().run(ddl);
+		return ddl;
+	}
+
+	async getCreateStatement(name: string): Promise<string> {
+		assertSafeIdentifier(name);
+		const row = this.requireDb()
+			.prepare("SELECT sql FROM sqlite_master WHERE name = ? AND sql IS NOT NULL")
+			.get(name) as { sql: string } | null;
+		return row?.sql ? `${row.sql};` : '';
 	}
 
 	async renameTable(name: string, newName: string): Promise<string> {

@@ -14,6 +14,7 @@ import type {
 	DbClientConnection,
 	DbClientHealth,
 	DbClientObjectDetails,
+	DbClientOverview,
 	DbClientQueryResult,
 	DbClientSchemaNode,
 	DbClientSchemaNodeType
@@ -93,6 +94,27 @@ export class RedisAdapter implements DbClientDriverAdapter {
 		return this.client;
 	}
 
+	// ── Overview ──────────────────────────────────────────────────────────
+
+	async overview(): Promise<DbClientOverview> {
+		const client = this.requireClient();
+		const start = performance.now();
+		const info = (await client.send('INFO', [])) as string;
+		const latencyMs = Math.round(performance.now() - start);
+		const ver = /redis_version:([^\r\n]+)/.exec(info ?? '')?.[1]?.trim() ?? null;
+		const usedMemory = /used_memory:([0-9]+)/.exec(info ?? '')?.[1];
+		const dbsize = (await client.send('DBSIZE', [])) as number | string;
+		const keys = Number(dbsize);
+		return {
+			serverVersion: ver,
+			latencyMs,
+			sizeBytes: usedMemory ? Number(usedMemory) : null,
+			tableCount: Number.isFinite(keys) ? keys : null,
+			viewCount: null,
+			extra: [{ label: 'Keys', value: Number.isFinite(keys) ? String(keys) : '—' }]
+		};
+	}
+
 	// ── Schema (key listing) ──────────────────────────────────────────────
 
 	async listDatabases(): Promise<DbClientSchemaNode[]> {
@@ -168,6 +190,11 @@ export class RedisAdapter implements DbClientDriverAdapter {
 	async dropTable(name: string): Promise<string> {
 		await this.requireClient().send('DEL', [name]);
 		return `DEL ${name}`;
+	}
+
+	async flushDatabase(): Promise<string> {
+		await this.requireClient().send('FLUSHDB', []);
+		return 'FLUSHDB';
 	}
 
 	async renameTable(name: string, newName: string): Promise<string> {

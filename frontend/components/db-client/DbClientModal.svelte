@@ -8,9 +8,12 @@
 	import SchemaTreeContextMenu from './sidebar/SchemaTreeContextMenu.svelte';
 	import type { ContextMenuItem } from './sidebar/context-menu-types';
 	import ConfirmDestructive from './shared/ConfirmDestructive.svelte';
+	import ConfirmTyped from './shared/ConfirmTyped.svelte';
+	import Checkbox from './shared/Checkbox.svelte';
 	import QueryEditor from './main/QueryEditor.svelte';
 	import DataGrid from './main/DataGrid.svelte';
 	import StructureManager from './main/StructureManager.svelte';
+	import OverviewPanel from './main/OverviewPanel.svelte';
 	import TableDesigner from './main/TableDesigner.svelte';
 	import ExportModal from './main/ExportModal.svelte';
 	import ImportModal from './main/ImportModal.svelte';
@@ -55,7 +58,32 @@
 	let createViewQuery = $state('');
 	let createViewDb = $state<string | undefined>(undefined);
 	let exportOpen = $state(false);
+	let exportPreselect = $state<string[]>([]);
 	let importOpen = $state(false);
+
+	let confirmReset = $state(false);
+	let confirmDropDatabase = $state(false);
+	let confirmEmptyDatabase = $state(false);
+	let confirmFlushDatabase = $state(false);
+	let dbActionTarget = $state<{ name: string; scope?: string } | null>(null);
+
+	let renameDbOpen = $state(false);
+	let renameDbValue = $state('');
+	let renameDbTarget = $state<string | null>(null);
+
+	let duplicateOpen = $state(false);
+	let duplicateName = $state('');
+	let duplicateWithData = $state(true);
+	let duplicateSource = $state<{ name: string; database?: string } | null>(null);
+
+	const driver = $derived(activeConnection?.driver);
+	const canDropDatabase = $derived(driver === 'mysql' || driver === 'postgres' || driver === 'mongodb');
+	const canRenameDatabase = $derived(driver === 'postgres');
+	const canEmptyDatabase = $derived(driver === 'mysql' || driver === 'postgres' || driver === 'sqlite' || driver === 'mongodb');
+	const canFlushDatabase = $derived(driver === 'redis');
+	const canResetTable = $derived(driver === 'mysql' || driver === 'postgres' || driver === 'sqlite' || driver === 'mongodb');
+	const canDuplicateTable = $derived(driver === 'mysql' || driver === 'postgres' || driver === 'sqlite' || driver === 'mongodb');
+	const canCopyCreate = $derived(driver === 'mysql' || driver === 'postgres' || driver === 'sqlite');
 
 	$effect(() => {
 		if (isOpen) {
@@ -90,8 +118,8 @@
 
 	function itemsForNode(node: DbClientSchemaNode): ContextMenuItem[] {
 		switch (node.type) {
-			case 'database':
-				return [
+			case 'database': {
+				const items: ContextMenuItem[] = [
 					{ id: 'open-db', label: 'Open' },
 					{ id: 'sep0', label: '', separator: true },
 					{ id: 'refresh', label: 'Refresh' },
@@ -99,28 +127,58 @@
 					{ id: 'new-table', label: 'New table…' },
 					{ id: 'new-view', label: 'New view…' }
 				];
+				if (canEmptyDatabase || canRenameDatabase || canDropDatabase) {
+					items.push({ id: 'sep2', label: '', separator: true });
+				}
+				if (canEmptyDatabase) items.push({ id: 'empty-database', label: 'Empty database…', danger: true });
+				if (canRenameDatabase) items.push({ id: 'rename-database', label: 'Rename database…' });
+				if (canDropDatabase) items.push({ id: 'drop-database', label: 'Drop database…', danger: true });
+				return items;
+			}
 			case 'table':
-			case 'collection':
-				return [
+			case 'collection': {
+				const items: ContextMenuItem[] = [
 					{ id: 'open-data', label: 'Open data' },
 					{ id: 'open-structure', label: 'Open structure' },
 					{ id: 'new-query', label: 'Query (SELECT *)' },
 					{ id: 'sep1', label: '', separator: true },
-					{ id: 'rename', label: 'Rename…' },
-					{ id: 'truncate', label: 'Truncate', danger: true },
-					{ id: 'drop', label: 'Drop', danger: true }
+					{ id: 'copy-name', label: 'Copy name' }
 				];
-			case 'view':
-				return [
+				if (canCopyCreate) items.push({ id: 'copy-create', label: 'Copy CREATE statement' });
+				items.push({ id: 'export-object', label: 'Export…' });
+				if (canDuplicateTable) items.push({ id: 'duplicate', label: 'Duplicate…' });
+				items.push({ id: 'sep2', label: '', separator: true });
+				items.push({ id: 'rename', label: 'Rename…' });
+				items.push({ id: 'truncate', label: 'Truncate', danger: true });
+				if (canResetTable) items.push({ id: 'reset', label: 'Reset (empty + reset counter)', danger: true });
+				items.push({ id: 'drop', label: 'Drop', danger: true });
+				return items;
+			}
+			case 'view': {
+				const items: ContextMenuItem[] = [
 					{ id: 'open-query', label: 'Query view' },
 					{ id: 'sep1', label: '', separator: true },
-					{ id: 'drop', label: 'Drop', danger: true }
+					{ id: 'copy-name', label: 'Copy name' }
 				];
+				if (canCopyCreate) items.push({ id: 'copy-create', label: 'Copy CREATE statement' });
+				items.push({ id: 'sep2', label: '', separator: true });
+				items.push({ id: 'drop', label: 'Drop', danger: true });
+				return items;
+			}
 			case 'index':
 				return [{ id: 'drop-index', label: 'Drop index', danger: true }];
 			default:
-				return [{ id: 'refresh', label: 'Refresh' }];
+				return [{ id: 'copy-name', label: 'Copy name' }, { id: 'refresh', label: 'Refresh' }];
 		}
+	}
+
+	function scopeMenuItems(): ContextMenuItem[] {
+		const items: ContextMenuItem[] = [];
+		if (canEmptyDatabase) items.push({ id: 'empty-scope', label: 'Empty database…', danger: true });
+		if (canFlushDatabase) items.push({ id: 'flush-scope', label: 'Flush database (FLUSHDB)…', danger: true });
+		if (canRenameDatabase) items.push({ id: 'rename-scope', label: 'Rename database…' });
+		if (canDropDatabase) items.push({ id: 'drop-scope', label: 'Drop database…', danger: true });
+		return items;
 	}
 
 	function onContextMenu(e: MouseEvent, node: DbClientSchemaNode): void {
@@ -131,6 +189,27 @@
 		menuOpen = true;
 	}
 
+	let menuScopeDb = $state<string | undefined>(undefined);
+
+	function onScopeMenu(e: MouseEvent, database?: string): void {
+		const items = scopeMenuItems();
+		if (items.length === 0) return;
+		menuNode = null;
+		menuScopeDb = database;
+		menuItems = items;
+		menuX = e.clientX;
+		menuY = e.clientY;
+		menuOpen = true;
+	}
+
+	async function copyToClipboard(text: string): Promise<void> {
+		try {
+			await navigator.clipboard.writeText(text);
+		} catch (e) {
+			debug.error('db-client', 'clipboard write failed:', e);
+		}
+	}
+
 	function nodeDb(node: DbClientSchemaNode): string | undefined {
 		const meta = node.meta as { database?: string } | undefined;
 		return meta?.database;
@@ -139,16 +218,44 @@
 	let schemaRefreshKey = $state(0);
 
 	async function onMenuSelect(id: string): Promise<void> {
-		const node = menuNode;
 		const conn = activeConnection;
-		if (!node || !conn) return;
+		if (!conn) return;
+
+		// Scope-level actions (header ⋯ menu) have no associated node.
+		switch (id) {
+			case 'empty-scope':
+				// Use the friendly connection name as the confirm token — the raw
+				// scope can be a long file path (SQLite) or numeric index (Redis).
+				dbActionTarget = { name: conn.name, scope: menuScopeDb };
+				confirmEmptyDatabase = true;
+				return;
+			case 'flush-scope':
+				dbActionTarget = { name: conn.name, scope: menuScopeDb };
+				confirmFlushDatabase = true;
+				return;
+			case 'rename-scope':
+				if (!menuScopeDb) return;
+				renameDbTarget = menuScopeDb;
+				renameDbValue = menuScopeDb;
+				renameDbOpen = true;
+				return;
+			case 'drop-scope':
+				if (!menuScopeDb) return;
+				// Real database name is required for the drop and the typed confirm.
+				dbActionTarget = { name: menuScopeDb, scope: menuScopeDb };
+				confirmDropDatabase = true;
+				return;
+		}
+
+		const node = menuNode;
+		if (!node) return;
 		const db = nodeDb(node);
 		switch (id) {
 			case 'open-db':
 				schemaRefreshKey++;
 				break;
 			case 'refresh':
-				await dbClientStore.refreshSchema(conn.id, { database: node.type === 'database' ? node.name : db });
+				dbClientStore.requestSchemaReload();
 				break;
 			case 'new-table':
 				createTableDb = node.type === 'database' ? node.name : db;
@@ -189,12 +296,51 @@
 				confirmDropTarget = { name: node.name, database: db };
 				confirmDrop = true;
 				break;
+			case 'reset':
+				confirmDropTarget = { name: node.name, database: db };
+				confirmReset = true;
+				break;
+			case 'duplicate':
+				duplicateSource = { name: node.name, database: db };
+				duplicateName = `${node.name}_copy`;
+				duplicateWithData = true;
+				duplicateOpen = true;
+				break;
+			case 'copy-name':
+				await copyToClipboard(node.name);
+				break;
+			case 'copy-create': {
+				try {
+					const stmt = await dbClientStore.getCreateStatement(conn.id, node.name, node.type, { database: db });
+					await copyToClipboard(stmt);
+				} catch (e) {
+					debug.error('db-client', 'copy create statement failed:', e);
+				}
+				break;
+			}
+			case 'export-object':
+				exportPreselect = [node.name];
+				exportOpen = true;
+				break;
+			case 'empty-database':
+				dbActionTarget = { name: node.name, scope: node.name };
+				confirmEmptyDatabase = true;
+				break;
+			case 'rename-database':
+				renameDbTarget = node.name;
+				renameDbValue = node.name;
+				renameDbOpen = true;
+				break;
+			case 'drop-database':
+				dbActionTarget = { name: node.name, scope: node.name };
+				confirmDropDatabase = true;
+				break;
 			case 'drop-index': {
 				const tableName = (node.meta as { tableName?: string } | undefined)?.tableName;
 				if (tableName) {
 					try {
 						await dbClientStore.dropIndex(conn.id, tableName, node.name, { database: db });
-						await dbClientStore.refreshSchema(conn.id, { database: db });
+						dbClientStore.requestSchemaReload();
 					} catch (e) {
 						debug.error('db-client', 'drop-index failed:', e);
 					}
@@ -209,7 +355,10 @@
 		if (!conn || !renameTarget || !renameValue) return;
 		try {
 			await dbClientStore.renameTable(conn.id, renameTarget.name, renameValue, { database: renameTarget.database });
-			await dbClientStore.refreshSchema(conn.id, { database: renameTarget.database });
+			if (activeObject && activeObject.name === renameTarget.name && (activeObject.database ?? undefined) === (renameTarget.database ?? undefined)) {
+				dbClientStore.setActiveObject(conn.id, { ...activeObject, name: renameValue });
+			}
+			dbClientStore.requestSchemaReload();
 		} catch (e) {
 			debug.error('db-client', 'rename failed:', e);
 		}
@@ -221,6 +370,7 @@
 		if (!conn || !confirmDropTarget) return;
 		try {
 			await dbClientStore.truncateTable(conn.id, confirmDropTarget.name, { database: confirmDropTarget.database });
+			dbClientStore.touchData();
 		} catch (e) {
 			debug.error('db-client', 'truncate failed:', e);
 		}
@@ -231,13 +381,95 @@
 		if (!conn || !confirmDropTarget) return;
 		try {
 			await dbClientStore.dropTable(conn.id, confirmDropTarget.name, { database: confirmDropTarget.database });
-			await dbClientStore.refreshSchema(conn.id, { database: confirmDropTarget.database });
 			if (activeObject?.name === confirmDropTarget.name) {
 				dbClientStore.setActiveObject(conn.id, null);
 			}
+			dbClientStore.requestSchemaReload();
 		} catch (e) {
 			debug.error('db-client', 'drop failed:', e);
 		}
+	}
+
+	async function doReset(): Promise<void> {
+		const conn = activeConnection;
+		if (!conn || !confirmDropTarget) return;
+		try {
+			await dbClientStore.resetTable(conn.id, confirmDropTarget.name, { database: confirmDropTarget.database });
+			dbClientStore.touchData();
+		} catch (e) {
+			debug.error('db-client', 'reset table failed:', e);
+		}
+	}
+
+	async function doDuplicate(): Promise<void> {
+		const conn = activeConnection;
+		if (!conn || !duplicateSource || !duplicateName.trim()) return;
+		try {
+			await dbClientStore.duplicateTable(conn.id, duplicateSource.name, duplicateName.trim(), {
+				database: duplicateSource.database,
+				withData: duplicateWithData
+			});
+			dbClientStore.requestSchemaReload();
+		} catch (e) {
+			debug.error('db-client', 'duplicate table failed:', e);
+		}
+		duplicateSource = null;
+	}
+
+	async function doDropDatabase(): Promise<void> {
+		const conn = activeConnection;
+		if (!conn || !dbActionTarget) return;
+		try {
+			await dbClientStore.dropDatabase(conn.id, dbActionTarget.name);
+			if (activeObject?.database === dbActionTarget.name) {
+				dbClientStore.setActiveObject(conn.id, null);
+			}
+			dbClientStore.requestSchemaReload();
+		} catch (e) {
+			debug.error('db-client', 'drop database failed:', e);
+		}
+		dbActionTarget = null;
+	}
+
+	async function doEmptyDatabase(): Promise<void> {
+		const conn = activeConnection;
+		if (!conn || !dbActionTarget) return;
+		try {
+			await dbClientStore.resetDatabase(conn.id, { database: dbActionTarget.scope });
+			dbClientStore.requestSchemaReload();
+			dbClientStore.touchData();
+		} catch (e) {
+			debug.error('db-client', 'empty database failed:', e);
+		}
+		dbActionTarget = null;
+	}
+
+	async function doFlushDatabase(): Promise<void> {
+		const conn = activeConnection;
+		if (!conn || !dbActionTarget) return;
+		try {
+			await dbClientStore.flushDatabase(conn.id);
+			dbClientStore.requestSchemaReload();
+			dbClientStore.touchData();
+		} catch (e) {
+			debug.error('db-client', 'flush database failed:', e);
+		}
+		dbActionTarget = null;
+	}
+
+	async function doRenameDatabase(): Promise<void> {
+		const conn = activeConnection;
+		if (!conn || !renameDbTarget || !renameDbValue.trim()) return;
+		try {
+			await dbClientStore.renameDatabase(conn.id, renameDbTarget, renameDbValue.trim());
+			if (activeObject?.database === renameDbTarget) {
+				dbClientStore.setActiveObject(conn.id, null);
+			}
+			dbClientStore.requestSchemaReload();
+		} catch (e) {
+			debug.error('db-client', 'rename database failed:', e);
+		}
+		renameDbTarget = null;
 	}
 
 	async function doCreateTable(payload: { name: string; columns: { name: string; type: string; nullable: boolean; default: string; primary: boolean; unique: boolean; autoIncrement: boolean }[] }): Promise<void> {
@@ -255,7 +487,7 @@
 				autoIncrement: c.autoIncrement
 			}))
 		}, { database: createTableDb });
-		await dbClientStore.refreshSchema(conn.id, { database: createTableDb });
+		dbClientStore.requestSchemaReload();
 	}
 
 	async function doCreateView(): Promise<void> {
@@ -263,7 +495,7 @@
 		if (!conn || !createViewName || !createViewQuery) return;
 		try {
 			await ws_createView(conn.id);
-			await dbClientStore.refreshSchema(conn.id, { database: createViewDb });
+			dbClientStore.requestSchemaReload();
 		} catch (e) {
 			debug.error('db-client', 'create view failed:', e);
 		}
@@ -280,6 +512,7 @@
 	}
 
 	const VIEW_DEFS: { id: DbClientView; label: string; icon: IconName }[] = [
+		{ id: 'overview', label: 'Overview', icon: 'lucide:info' },
 		{ id: 'query', label: 'Query', icon: 'lucide:code' },
 		{ id: 'data', label: 'Data', icon: 'lucide:table' },
 		{ id: 'structure', label: 'Structure', icon: 'lucide:layout-list' }
@@ -367,6 +600,7 @@
 								<SchemaTree
 									connectionId={activeConnection.id}
 									{onContextMenu}
+									{onScopeMenu}
 									onBackToConnections={backToConnections}
 									onCreateTable={(db) => { createTableDb = db; createTableOpen = true; }}
 								/>
@@ -440,7 +674,12 @@
 
 						<!-- block 2: content -->
 						<div class="flex-1 min-h-0 flex flex-col bg-white dark:bg-slate-900 rounded-xl border border-slate-200 dark:border-slate-800 overflow-hidden">
-							{#if activeView === 'query'}
+							{#if activeView === 'overview'}
+								<OverviewPanel
+									connectionId={activeConnection.id}
+									database={activeObject?.database ?? activeConnection.database ?? undefined}
+								/>
+							{:else if activeView === 'query'}
 								<QueryEditor
 									connectionId={activeConnection.id}
 									driver={activeConnection.driver}
@@ -542,6 +781,84 @@
 	onClose={() => (confirmDrop = false)}
 />
 
+<ConfirmDestructive
+	bind:isOpen={confirmReset}
+	title="Reset?"
+	message={`Remove all rows from "${confirmDropTarget?.name ?? ''}" and reset its auto-increment counter? This cannot be undone.`}
+	confirmText="Reset"
+	onConfirm={doReset}
+	onClose={() => (confirmReset = false)}
+/>
+
+<ConfirmDestructive
+	bind:isOpen={confirmFlushDatabase}
+	title="Flush database?"
+	message={`Delete every key in this Redis database? This cannot be undone.`}
+	confirmText="Flush"
+	onConfirm={doFlushDatabase}
+	onClose={() => (confirmFlushDatabase = false)}
+/>
+
+<ConfirmTyped
+	bind:isOpen={confirmEmptyDatabase}
+	title="Empty database?"
+	message={`This deletes all rows from every table in "${dbActionTarget?.name ?? ''}". The schema is kept, but the data cannot be recovered.`}
+	expected={dbActionTarget?.name ?? ''}
+	confirmText="Empty database"
+	onConfirm={doEmptyDatabase}
+	onClose={() => (confirmEmptyDatabase = false)}
+/>
+
+<ConfirmTyped
+	bind:isOpen={confirmDropDatabase}
+	title="Drop database?"
+	message={`This permanently drops the database "${dbActionTarget?.name ?? ''}" and everything in it. This cannot be undone.`}
+	expected={dbActionTarget?.name ?? ''}
+	confirmText="Drop database"
+	onConfirm={doDropDatabase}
+	onClose={() => (confirmDropDatabase = false)}
+/>
+
+<Dialog
+	bind:isOpen={renameDbOpen}
+	onClose={() => (renameDbOpen = false)}
+	title="Rename database"
+	type="info"
+	bind:inputValue={renameDbValue}
+	confirmText="Rename"
+	onConfirm={doRenameDatabase}
+/>
+
+{#if activeConnection}
+	<Modal
+		bind:isOpen={duplicateOpen}
+		onClose={() => (duplicateOpen = false)}
+		title="Duplicate"
+		size="md"
+	>
+		{#snippet children()}
+			<div class="space-y-3">
+				<div>
+					<label for="dup-name" class="text-xs font-medium text-slate-700 dark:text-slate-300">New name</label>
+					<input
+						id="dup-name"
+						type="text"
+						class="w-full mt-1 px-2 py-1.5 text-sm bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-700 rounded"
+						bind:value={duplicateName}
+					/>
+				</div>
+				<label class="inline-flex items-center gap-1.5 text-sm cursor-pointer">
+					<Checkbox bind:checked={duplicateWithData} ariaLabel="Copy data" /> Copy data
+				</label>
+			</div>
+		{/snippet}
+		{#snippet footer()}
+			<Button variant="outline" size="sm" onclick={() => (duplicateOpen = false)}>Cancel</Button>
+			<Button variant="primary" size="sm" onclick={async () => { await doDuplicate(); duplicateOpen = false; }} disabled={!duplicateName.trim()}>Duplicate</Button>
+		{/snippet}
+	</Modal>
+{/if}
+
 {#if activeConnection}
 	<TableDesigner
 		bind:isOpen={createTableOpen}
@@ -555,6 +872,7 @@
 		connectionId={activeConnection.id}
 		driver={activeConnection.driver}
 		database={activeConnection.database ?? undefined}
+		initialSelection={exportPreselect}
 		onClose={() => (exportOpen = false)}
 	/>
 	<ImportModal
@@ -563,7 +881,7 @@
 		driver={activeConnection.driver}
 		database={activeConnection.database ?? undefined}
 		onClose={() => (importOpen = false)}
-		onImported={() => activeConnection && dbClientStore.refreshSchema(activeConnection.id, { database: activeConnection.database ?? undefined })}
+		onImported={() => dbClientStore.requestSchemaReload()}
 	/>
 {/if}
 

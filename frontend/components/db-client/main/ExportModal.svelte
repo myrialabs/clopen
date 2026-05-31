@@ -14,6 +14,7 @@
 		driver: DbDriver;
 		database?: string;
 		schema?: string;
+		initialSelection?: string[];
 		onClose: () => void;
 	}
 
@@ -25,6 +26,7 @@
 		driver,
 		database,
 		schema,
+		initialSelection = [],
 		onClose
 	}: Props = $props();
 
@@ -51,7 +53,7 @@
 	$effect(() => {
 		if (isOpen) {
 			void load();
-			selected = new Set();
+			selected = new Set(initialSelection);
 			error = null;
 		}
 	});

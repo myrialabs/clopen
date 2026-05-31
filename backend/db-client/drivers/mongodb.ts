@@ -11,6 +11,7 @@ import type {
 	DbClientConnection,
 	DbClientHealth,
 	DbClientObjectDetails,
+	DbClientOverview,
 	DbClientQueryResult,
 	DbClientSchemaNode,
 	DbClientSchemaNodeType
@@ -108,6 +109,28 @@ export class MongoDbAdapter implements DbClientDriverAdapter {
 
 	private getDb(opts?: SchemaOpts): Db {
 		return this.requireClient().db(this.targetDb(opts));
+	}
+
+	// ── Overview ──────────────────────────────────────────────────────────
+
+	async overview(opts?: SchemaOpts): Promise<DbClientOverview> {
+		const client = this.requireClient();
+		const start = performance.now();
+		const info = await client.db('admin').command({ buildInfo: 1 }) as { version?: string };
+		const latencyMs = Math.round(performance.now() - start);
+		const db = this.getDb(opts);
+		const stats = await db.command({ dbStats: 1 }) as { dataSize?: number; collections?: number; objects?: number };
+		return {
+			serverVersion: info.version ?? null,
+			latencyMs,
+			sizeBytes: typeof stats.dataSize === 'number' ? stats.dataSize : null,
+			tableCount: typeof stats.collections === 'number' ? stats.collections : null,
+			viewCount: null,
+			extra: [
+				{ label: 'Database', value: this.targetDb(opts) },
+				...(typeof stats.objects === 'number' ? [{ label: 'Documents', value: String(stats.objects) }] : [])
+			]
+		};
 	}
 
 	// ── Schema ────────────────────────────────────────────────────────────
@@ -234,9 +257,38 @@ export class MongoDbAdapter implements DbClientDriverAdapter {
 		return `db.${name}.drop()`;
 	}
 
+	async dropDatabase(name: string): Promise<string> {
+		await this.requireClient().db(name).dropDatabase();
+		if (this.defaultDb === name) this.defaultDb = null;
+		return `db.getSiblingDB('${name}').dropDatabase()`;
+	}
+
+	async resetDatabase(opts?: SchemaOpts): Promise<string> {
+		const db = this.getDb(opts);
+		const collections = await db.listCollections({}, { nameOnly: true }).toArray();
+		if (collections.length === 0) return '// no collections to empty';
+		for (const c of collections) await db.collection(c.name).deleteMany({});
+		return collections.map((c) => `db.${c.name}.deleteMany({})`).join('\n');
+	}
+
 	async truncateTable(name: string, opts?: SchemaOpts): Promise<string> {
 		await this.getDb(opts).collection(name).deleteMany({});
 		return `db.${name}.deleteMany({})`;
+	}
+
+	async resetTable(name: string, opts?: SchemaOpts): Promise<string> {
+		// MongoDB has no sequence counter; reset is equivalent to emptying.
+		return this.truncateTable(name, opts);
+	}
+
+	async duplicateTable(name: string, newName: string, opts?: (SchemaOpts & { withData?: boolean })): Promise<string> {
+		const db = this.getDb(opts);
+		if (opts?.withData) {
+			await db.collection(name).aggregate([{ $match: {} }, { $out: newName }]).toArray();
+			return `db.${name}.aggregate([{ $match: {} }, { $out: '${newName}' }])`;
+		}
+		await db.createCollection(newName);
+		return `db.createCollection('${newName}')`;
 	}
 
 	async renameTable(name: string, newName: string, opts?: SchemaOpts): Promise<string> {

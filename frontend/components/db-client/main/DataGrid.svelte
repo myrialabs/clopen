@@ -1,6 +1,8 @@
 <script lang="ts">
+	import { untrack } from 'svelte';
 	import Icon from '$frontend/components/common/display/Icon.svelte';
 	import ConfirmDestructive from '../shared/ConfirmDestructive.svelte';
+	import CellViewer from '../shared/CellViewer.svelte';
 	import RowForm from '../shared/RowForm.svelte';
 	import Checkbox from '../shared/Checkbox.svelte';
 	import NullValue from '../shared/NullValue.svelte';
@@ -73,6 +75,26 @@
 	let selected = $state<Set<number>>(new Set());
 	let confirmDelete = $state(false);
 	let insertOpen = $state(false);
+
+	let cellOpen = $state(false);
+	let cellColumn = $state('');
+	let cellValue = $state<unknown>(null);
+
+	const fkMap = $derived(new Map((details?.foreignKeys ?? []).map((fk) => [fk.column, fk])));
+
+	function openCell(col: string, value: unknown): void {
+		cellColumn = col;
+		cellValue = value;
+		cellOpen = true;
+	}
+
+	function jumpToFk(col: string, value: unknown): void {
+		const fk = fkMap.get(col);
+		if (!fk || value === null || value === undefined) return;
+		dbClientStore.setPendingDataFilter({ table: fk.refTable, column: fk.refColumn, value: String(value) });
+		dbClientStore.setActiveObject(connectionId, { name: fk.refTable, type: 'table', database, schema });
+		dbClientStore.setView(connectionId, 'data');
+	}
 
 	let showSearch = $state(false);
 	let conditions = $state<FilterCondition[]>([]);
@@ -235,8 +257,33 @@
 			sortColumn = null;
 			sortDir = null;
 			totalRows = null;
+			// Apply a queued foreign-key filter, if it targets this object.
+			// Read untracked so clearing it doesn't re-trigger this effect.
+			untrack(() => {
+				const pf = dbClientStore.pendingDataFilter;
+				if (pf && pf.table === objectName) {
+					conditions = [{ column: pf.column, op: '=', value: pf.value }];
+					showSearch = true;
+					dbClientStore.clearPendingDataFilter();
+				}
+			});
 			load();
 		}
+	});
+
+	// External reload signal (e.g. after truncate/reset on this object).
+	// Tracks only dataNonce; reads object refs untracked so switching tables
+	// doesn't double-load via this effect.
+	let dataSignalReady = false;
+	$effect(() => {
+		dbClientStore.dataNonce;
+		untrack(() => {
+			if (dataSignalReady && objectName && connectionId) {
+				totalRows = null;
+				load();
+			}
+			dataSignalReady = true;
+		});
 	});
 
 	function applyFilter(): void {
@@ -662,7 +709,7 @@
 			<pre class="p-3 text-sm text-red-600 dark:text-red-400 whitespace-pre-wrap">{error}</pre>
 		{:else if result && (result.rows?.length ?? 0) > 0}
 			<table class="w-full text-sm border-collapse">
-				<thead class="sticky top-0 bg-slate-100 dark:bg-slate-900 z-10">
+				<thead class="sticky top-0 bg-slate-100 dark:bg-slate-800 z-10">
 					<tr>
 						<th class="px-3 py-1.5 w-8 border-b border-slate-200 dark:border-slate-800">
 							<Checkbox disabled={!hasPk} checked={selected.size > 0 && selected.size === result.rows.length} onchange={toggleAll} />
@@ -694,19 +741,45 @@
 				<tbody>
 					{#each result.rows as row, i (i)}
 						<tr class="hover:bg-slate-50 dark:hover:bg-slate-900/50">
-							<td class="px-3 py-1.5 border-b border-slate-100 dark:border-slate-900">
+							<td class="px-3 py-1.5 border-b border-slate-100 dark:border-slate-800">
 								<Checkbox disabled={!hasPk} checked={selected.has(i)} onchange={() => toggleSelect(i)} />
 							</td>
-							<td class="px-3 py-1.5 text-slate-400 border-b border-slate-100 dark:border-slate-900">{page * pageSize + i + 1}</td>
+							<td class="px-3 py-1.5 text-slate-400 border-b border-slate-100 dark:border-slate-800">{page * pageSize + i + 1}</td>
 							{#each result.columns as col (col.name)}
 								{@const isEditing = editing?.rowIdx === i && editing.col === col.name}
 								{@const pendingVal = pendingChanges.get(pkKey(i))?.[col.name]}
 								{@const display = pendingVal !== undefined ? pendingVal : row[col.name]}
 								<td
-									class="px-3 py-1.5 border-b border-slate-100 dark:border-slate-900 text-slate-700 dark:text-slate-300 max-w-[400px] {pendingVal !== undefined ? 'bg-amber-50 dark:bg-amber-900/20' : ''}"
+									class="relative group px-3 py-1.5 border-b border-slate-100 dark:border-slate-800 text-slate-700 dark:text-slate-300 max-w-[400px] {pendingVal !== undefined ? 'bg-amber-50 dark:bg-amber-900/20' : ''}"
 									ondblclick={() => startEdit(i, col.name, display)}
 									title={hasPk ? 'Double-click to edit' : 'Read-only (no PK)'}
 								>
+									{#if !isEditing}
+										<div class="absolute right-1 top-1/2 -translate-y-1/2 hidden group-hover:flex items-center gap-0.5">
+											{#if fkMap.has(col.name) && !isNullish(display)}
+												<button
+													type="button"
+													class="flex items-center justify-center w-5 h-5 rounded bg-white dark:bg-slate-800 border border-slate-200 dark:border-slate-700 text-slate-500 hover:text-violet-600 dark:hover:text-violet-400 shadow-sm"
+													title={`Go to ${fkMap.get(col.name)?.refTable}`}
+													onmousedown={(e) => e.stopPropagation()}
+													onclick={(e) => { e.stopPropagation(); jumpToFk(col.name, display); }}
+												>
+													<Icon name="lucide:arrow-up-right" class="w-3 h-3" />
+												</button>
+											{/if}
+											{#if !isNullish(display)}
+												<button
+													type="button"
+													class="flex items-center justify-center w-5 h-5 rounded bg-white dark:bg-slate-800 border border-slate-200 dark:border-slate-700 text-slate-500 hover:text-violet-600 dark:hover:text-violet-400 shadow-sm"
+													title="View value"
+													onmousedown={(e) => e.stopPropagation()}
+													onclick={(e) => { e.stopPropagation(); openCell(col.name, display); }}
+												>
+													<Icon name="lucide:maximize-2" class="w-3 h-3" />
+												</button>
+											{/if}
+										</div>
+									{/if}
 									{#if isEditing}
 										{@const colMeta = details?.columns?.find((c) => c.name === col.name)}
 										<div class="flex items-start gap-1.5">
@@ -767,4 +840,11 @@
 	confirmText="Delete"
 	onConfirm={doDelete}
 	onClose={() => (confirmDelete = false)}
+/>
+
+<CellViewer
+	bind:isOpen={cellOpen}
+	column={cellColumn}
+	value={cellValue}
+	onClose={() => (cellOpen = false)}
 />

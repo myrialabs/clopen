@@ -120,7 +120,7 @@
 			<pre class="p-3 text-sm text-red-600 dark:text-red-400 whitespace-pre-wrap">{error}</pre>
 		{:else if result && result.rows.length > 0}
 			<table class="w-full text-sm border-collapse">
-				<thead class="sticky top-0 bg-slate-100 dark:bg-slate-900 z-10">
+				<thead class="sticky top-0 bg-slate-100 dark:bg-slate-800 z-10">
 					<tr>
 						<th class="px-2 py-1 text-left font-semibold text-slate-500 border-b border-slate-200 dark:border-slate-800 w-10">#</th>
 						{#each result.columns as col (col.name)}
@@ -138,10 +138,10 @@
 				<tbody>
 					{#each result.rows as row, i (i)}
 						<tr class="hover:bg-slate-50 dark:hover:bg-slate-900/50">
-							<td class="px-2 py-1 text-slate-400 border-b border-slate-100 dark:border-slate-900">{i + 1}</td>
+							<td class="px-2 py-1 text-slate-400 border-b border-slate-100 dark:border-slate-800">{i + 1}</td>
 							{#each result.columns as col (col.name)}
 								<td
-									class="px-2 py-1 border-b border-slate-100 dark:border-slate-900 text-slate-700 dark:text-slate-300 cursor-pointer max-w-[400px] truncate"
+									class="px-2 py-1 border-b border-slate-100 dark:border-slate-800 text-slate-700 dark:text-slate-300 cursor-pointer max-w-[400px] truncate"
 									title={fmt(row[col.name])}
 									ondblclick={() => copyCell(row[col.name])}
 								>

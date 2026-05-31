@@ -11,6 +11,7 @@ import type {
 	DbClientConnection,
 	DbClientHealth,
 	DbClientObjectDetails,
+	DbClientOverview,
 	DbClientQueryResult,
 	DbClientSchemaNode,
 	DbClientSchemaNodeType,
@@ -58,6 +59,7 @@ export interface DbClientDriverAdapter {
 	isAlive(): boolean;
 	health(): Promise<DbClientHealth>;
 
+	overview?(opts?: SchemaOpts): Promise<DbClientOverview>;
 	listDatabases?(): Promise<DbClientSchemaNode[]>;
 	listSchemas?(database?: string): Promise<DbClientSchemaNode[]>;
 	listObjects?(database?: string, schema?: string): Promise<DbClientSchemaNode[]>;
@@ -75,11 +77,22 @@ export interface DbClientDriverAdapter {
 
 	// Structure
 	createDatabase?(name: string): Promise<string>;
+	dropDatabase?(name: string): Promise<string>;
+	renameDatabase?(name: string, newName: string): Promise<string>;
+	/** Empty every table/collection in a database without dropping the schema. */
+	resetDatabase?(opts?: SchemaOpts): Promise<string>;
+	/** Redis FLUSHDB — wipe every key in the selected logical database. */
+	flushDatabase?(): Promise<string>;
 	createTable?(definition: TableDefinition, opts?: SchemaOpts): Promise<string>;
 	alterTable?(name: string, operations: AlterOperation[], opts?: SchemaOpts): Promise<string>;
 	dropTable?(name: string, opts?: SchemaOpts): Promise<string>;
 	truncateTable?(name: string, opts?: SchemaOpts): Promise<string>;
+	/** Truncate and reset the auto-increment / sequence / identity counter. */
+	resetTable?(name: string, opts?: SchemaOpts): Promise<string>;
 	renameTable?(name: string, newName: string, opts?: SchemaOpts): Promise<string>;
+	duplicateTable?(name: string, newName: string, opts?: SchemaOpts & { withData?: boolean }): Promise<string>;
+	/** Best-effort CREATE statement for an object (DDL), for copy-to-clipboard. */
+	getCreateStatement?(name: string, type: DbClientSchemaNodeType, opts?: SchemaOpts): Promise<string>;
 	createIndex?(tableName: string, def: IndexDefinition, opts?: SchemaOpts): Promise<string>;
 	dropIndex?(tableName: string, indexName: string, opts?: SchemaOpts): Promise<string>;
 	createView?(name: string, query: string, opts?: SchemaOpts): Promise<string>;

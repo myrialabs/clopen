@@ -9,12 +9,13 @@ import type {
 	DbClientConnectionInput,
 	DbClientHealth,
 	DbClientObjectDetails,
+	DbClientOverview,
 	DbClientQueryResult,
 	DbClientSchemaNode,
 	DbClientSchemaNodeType
 } from '$shared/types/db-client';
 
-export type DbClientView = 'query' | 'data' | 'structure';
+export type DbClientView = 'overview' | 'query' | 'data' | 'structure';
 
 export interface DbClientActiveObject {
 	name: string;
@@ -74,6 +75,9 @@ interface DbClientState {
 	isLoading: boolean;
 	isFormOpen: boolean;
 	error: string | null;
+	dataNonce: number;
+	schemaNonce: number;
+	pendingDataFilter: { table: string; column: string; value: string } | null;
 }
 
 const state = $state<DbClientState>({
@@ -85,7 +89,10 @@ const state = $state<DbClientState>({
 	health: {},
 	isLoading: false,
 	isFormOpen: false,
-	error: null
+	error: null,
+	dataNonce: 0,
+	schemaNonce: 0,
+	pendingDataFilter: null
 });
 
 function detailsKey(connId: string, opts: { database?: string; schema?: string; name: string }): string {
@@ -94,7 +101,7 @@ function detailsKey(connId: string, opts: { database?: string; schema?: string; 
 
 function emptyView(): DbClientConnectionView {
 	return {
-		activeView: 'structure',
+		activeView: 'overview',
 		activeObject: null,
 		query: { text: '', result: null, error: null, running: false }
 	};
@@ -137,6 +144,30 @@ export const dbClientStore = {
 	},
 	get error(): string | null {
 		return state.error;
+	},
+	get dataNonce(): number {
+		return state.dataNonce;
+	},
+	/** Signal open data views to reload (e.g. after truncate/reset/empty). */
+	touchData(): void {
+		state.dataNonce++;
+	},
+	get schemaNonce(): number {
+		return state.schemaNonce;
+	},
+	/** Ask the sidebar tree to re-fetch its current scope (after DDL changes). */
+	requestSchemaReload(): void {
+		state.schemaNonce++;
+	},
+	get pendingDataFilter(): { table: string; column: string; value: string } | null {
+		return state.pendingDataFilter;
+	},
+	/** Queue a filter for the next data view load (foreign-key navigation). */
+	setPendingDataFilter(filter: { table: string; column: string; value: string }): void {
+		state.pendingDataFilter = filter;
+	},
+	clearPendingDataFilter(): void {
+		state.pendingDataFilter = null;
 	},
 	get liveCount(): number {
 		return Object.values(state.health).filter((h) => h?.ok).length;
@@ -232,6 +263,14 @@ export const dbClientStore = {
 
 	// ── Schema ───────────────────────────────────────────────────────────
 
+	async overview(connId: string, opts?: { database?: string; schema?: string }): Promise<DbClientOverview> {
+		return (await ws.http('db-client:overview', {
+			connectionId: connId,
+			database: opts?.database,
+			schema: opts?.schema
+		})) as DbClientOverview;
+	},
+
 	async listDatabases(connId: string): Promise<DbClientSchemaNode[]> {
 		const result = (await ws.http('db-client:list-databases', { connectionId: connId })) as DbClientSchemaNode[];
 		return result;
@@ -243,7 +282,9 @@ export const dbClientStore = {
 			database: opts?.database,
 			schema: opts?.schema
 		})) as DbClientSchemaNode[];
-		state.schema[connId] = result;
+		// Reassign the container (not just the key) so cross-component $derived
+		// consumers re-run even when refreshed externally (e.g. after a drop).
+		state.schema = { ...state.schema, [connId]: result };
 		return result;
 	},
 
@@ -333,6 +374,35 @@ export const dbClientStore = {
 		})) as { ok: boolean; ddl: string };
 	},
 
+	async dropDatabase(connId: string, name: string): Promise<{ ok: boolean; ddl: string }> {
+		return (await ws.http('db-client:structure:drop-database', {
+			connectionId: connId,
+			name
+		})) as { ok: boolean; ddl: string };
+	},
+
+	async renameDatabase(connId: string, name: string, newName: string): Promise<{ ok: boolean; ddl: string }> {
+		return (await ws.http('db-client:structure:rename-database', {
+			connectionId: connId,
+			name,
+			newName
+		})) as { ok: boolean; ddl: string };
+	},
+
+	async resetDatabase(connId: string, opts?: { database?: string; schema?: string }): Promise<{ ok: boolean; ddl: string }> {
+		return (await ws.http('db-client:structure:reset-database', {
+			connectionId: connId,
+			database: opts?.database,
+			schema: opts?.schema
+		})) as { ok: boolean; ddl: string };
+	},
+
+	async flushDatabase(connId: string): Promise<{ ok: boolean; ddl: string }> {
+		return (await ws.http('db-client:structure:flush-database', {
+			connectionId: connId
+		})) as { ok: boolean; ddl: string };
+	},
+
 	async createTable(connId: string, definition: TableDefinitionInput, opts?: { database?: string; schema?: string }): Promise<{ ok: boolean; ddl: string }> {
 		return (await ws.http('db-client:structure:create-table', {
 			connectionId: connId,
@@ -368,6 +438,37 @@ export const dbClientStore = {
 			database: opts?.database,
 			schema: opts?.schema
 		})) as { ok: boolean; ddl: string };
+	},
+
+	async resetTable(connId: string, name: string, opts?: { database?: string; schema?: string }): Promise<{ ok: boolean; ddl: string }> {
+		return (await ws.http('db-client:structure:reset-table', {
+			connectionId: connId,
+			name,
+			database: opts?.database,
+			schema: opts?.schema
+		})) as { ok: boolean; ddl: string };
+	},
+
+	async duplicateTable(connId: string, name: string, newName: string, opts?: { database?: string; schema?: string; withData?: boolean }): Promise<{ ok: boolean; ddl: string }> {
+		return (await ws.http('db-client:structure:duplicate-table', {
+			connectionId: connId,
+			name,
+			newName,
+			database: opts?.database,
+			schema: opts?.schema,
+			withData: opts?.withData
+		})) as { ok: boolean; ddl: string };
+	},
+
+	async getCreateStatement(connId: string, name: string, type: DbClientSchemaNodeType, opts?: { database?: string; schema?: string }): Promise<string> {
+		const result = (await ws.http('db-client:structure:create-statement', {
+			connectionId: connId,
+			name,
+			type,
+			database: opts?.database,
+			schema: opts?.schema
+		})) as { ok: boolean; statement: string };
+		return result.statement;
 	},
 
 	async renameTable(connId: string, name: string, newName: string, opts?: { database?: string; schema?: string }): Promise<{ ok: boolean; ddl: string }> {
