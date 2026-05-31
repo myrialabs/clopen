@@ -4,7 +4,12 @@
 	import { themeStore } from '$frontend/stores/ui/theme.svelte';
 	import { settings } from '$frontend/stores/features/settings.svelte';
 	import { debug } from '$shared/utils/logger';
-	import { initMonaco, createModel } from './monaco-loader';
+	import {
+		initMonaco,
+		getOrCreateCachedModel,
+		saveModelViewState,
+		getModelViewState
+	} from './monaco-loader';
 	import { THEMES, getThemeName, registerThemes } from './monaco-themes';
 	import { detectLanguageFromFilename as detectLang } from './monaco-languages';
 
@@ -41,6 +46,17 @@
 	let monacoEditor: editor.IStandaloneCodeEditor;
 	let monaco: typeof import('monaco-editor');
 	let ownedModel: editor.ITextModel | null = null;
+	// True when the model is shared via the per-path registry (do NOT dispose it
+	// on unmount — its undo stack must survive for the next mount of this file).
+	let modelIsCached = false;
+	// Snapshot of `path` taken at mount. cleanup() must NOT read the reactive
+	// `path` prop directly: during teardown the parent's `file` can already be
+	// null, so `path={file.path}` throws — and a throw in teardown kills Svelte's
+	// scheduler (whole UI freezes). Read this captured copy instead.
+	let modelPath: string | undefined = undefined;
+	// True once this mount restored a real (scroll/cursor/fold) view state, so the
+	// parent knows not to fight it with its own coarser scroll restore.
+	let restoredViewState = false;
 	let resizeObserver: ResizeObserver | null = null;
 
 	const EDITOR_CONFIG: editor.IStandaloneEditorConstructionOptions = {
@@ -145,7 +161,7 @@
 		if (!monaco || !monacoEditor || !container || !container.parentNode) return;
 
 		const existingModel = monacoEditor.getModel();
-		const currentPosition = monacoEditor.getPosition();
+		const savedViewState = monacoEditor.saveViewState();
 
 		monacoEditor.dispose();
 
@@ -156,8 +172,9 @@
 			createEditorOptions(existingModel, currentTheme)
 		);
 
-		if (currentPosition) {
-			monacoEditor.setPosition(currentPosition);
+		// Preserve scroll/cursor/selection/folds across the theme rebuild.
+		if (savedViewState) {
+			monacoEditor.restoreViewState(savedViewState);
 		}
 
 		setupEditorEventHandlers();
@@ -210,13 +227,21 @@
 			resizeObserver.disconnect();
 			resizeObserver = null;
 		}
+		// Persist scroll/cursor/folds for this file before tearing down so the
+		// next mount restores them. Use the captured modelPath, never the reactive
+		// `path` prop (see modelPath declaration).
+		if (monacoEditor && modelIsCached) {
+			saveModelViewState(modelPath, monacoEditor.saveViewState());
+		}
 		if (monacoEditor) {
 			monacoEditor.dispose();
 		}
-		if (ownedModel) {
+		// Only dispose models we own outright. Cached (per-path) models are kept
+		// alive by the registry so their undo stack survives the next mount.
+		if (ownedModel && !modelIsCached) {
 			ownedModel.dispose();
-			ownedModel = null;
 		}
+		ownedModel = null;
 	}
 
 	onMount(() => {
@@ -231,12 +256,29 @@
 
 				registerThemes(monaco);
 
-				ownedModel = createModel(monaco, value, language, path);
+				// Reuse a cached per-path model so undo/redo survives remounts when
+				// previewing other files. Content-loss-safe: reuse only on a content
+				// match, else a fresh model is created.
+				const result = getOrCreateCachedModel(monaco, value, language, path);
+				ownedModel = result.model;
+				modelIsCached = result.cached;
+				modelPath = path;
 
 				monacoEditor = monaco.editor.create(
 					container,
 					createEditorOptions(ownedModel, currentTheme)
 				);
+
+				// Restore scroll/cursor/selection/folds from the last time this file
+				// was open (captured on unmount). Only meaningful once the model has
+				// real content (the editor is gated on isLoading upstream, so it is).
+				if (modelIsCached) {
+					const vs = getModelViewState(path);
+					if (vs && (ownedModel?.getValueLength() ?? 0) > 0) {
+						monacoEditor.restoreViewState(vs);
+						restoredViewState = true;
+					}
+				}
 
 				monaco.editor.setTheme(currentTheme);
 				isInitialized = true;
@@ -283,6 +325,9 @@
 	export const layout = () => monacoEditor?.layout();
 	export const getScrollTop = () => monacoEditor?.getScrollTop() ?? 0;
 	export const setScrollTop = (top: number) => monacoEditor?.setScrollTop(top);
+	// Whether this mount already restored scroll/cursor/folds from saved view
+	// state — the parent uses this to avoid clobbering it with a plain scrollTop.
+	export const hasRestoredViewState = () => restoredViewState;
 	export const onDidScrollChange = (cb: (top: number) => void) => {
 		if (!monacoEditor) return () => {};
 		const disposable = monacoEditor.onDidScrollChange((e) => {

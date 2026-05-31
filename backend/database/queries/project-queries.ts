@@ -138,5 +138,23 @@ export const projectQueries = {
 			SET files_panel_state = ?
 			WHERE user_id = ? AND project_id = ?
 		`).run(state, userId, projectId);
+	},
+
+	getWorkspaceState(userId: string, projectId: string): string | null {
+		const db = getDatabase();
+		const result = db.prepare(`
+			SELECT workspace_state FROM user_projects
+			WHERE user_id = ? AND project_id = ?
+		`).get(userId, projectId) as { workspace_state: string | null } | null;
+		return result?.workspace_state || null;
+	},
+
+	setWorkspaceState(userId: string, projectId: string, state: string | null): void {
+		const db = getDatabase();
+		db.prepare(`
+			UPDATE user_projects
+			SET workspace_state = ?
+			WHERE user_id = ? AND project_id = ?
+		`).run(state, userId, projectId);
 	}
 };

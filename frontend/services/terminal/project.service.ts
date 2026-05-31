@@ -11,6 +11,12 @@ import { terminalService } from './terminal.service';
 import { debug } from '$shared/utils/logger';
 import { onWsReconnect } from '$frontend/utils/ws';
 import { registerProjectCleanup } from '$frontend/utils/project-state-cleanup';
+import {
+	setTerminalSnapshotProvider,
+	getRestoredTerminalSlice,
+	markTerminalDirty,
+	type TerminalSlice
+} from '$frontend/stores/features/terminal-workspace.svelte';
 interface ProjectTerminalContext {
 	projectId: string;
 	projectPath: string;
@@ -28,7 +34,29 @@ class TerminalProjectManager {
 	private currentProjectId: string | null = null;
 
 	constructor() {
-		// Initialize will be called from outside to set up event listeners
+		// Initialize will be called from outside to set up event listeners.
+		// Expose the live tab-list so the workspace coordinator can snapshot it
+		// into the per-project blob (DB) for deterministic restore after a refresh.
+		setTerminalSnapshotProvider((projectId) => this.getWorkspaceSlice(projectId));
+	}
+
+	/**
+	 * The active tab-list for a project, for the workspace coordinator's snapshot.
+	 * Returns undefined when the project has no terminals (nothing to persist).
+	 */
+	getWorkspaceSlice(projectId: string): TerminalSlice | undefined {
+		const context = this.projectContexts.get(projectId);
+		if (!context || context.sessionIds.length === 0) return undefined;
+		// Prefer the store's live active session for the current project; fall back
+		// to the context's record for background projects.
+		const activeSessionId =
+			projectId === this.currentProjectId
+				? terminalStore.activeSessionId ?? context.activeSessionId
+				: context.activeSessionId;
+		return {
+			sessionIds: [...context.sessionIds],
+			activeSessionId: activeSessionId ?? context.sessionIds[0] ?? null
+		};
 	}
 
 	/**
@@ -58,7 +86,26 @@ class TerminalProjectManager {
 	 * Switch to a different project's terminal context
 	 */
 	async switchToProject(projectId: string, projectPath: string): Promise<void> {
-		// Switching to project
+		// Idempotency guard. Restoration is now driven once per activation by the
+		// terminal dock's load() in the workspace coordinator, but this can still be
+		// re-entered (e.g. a redundant call while already on the project). Without
+		// this guard a re-entry clears + re-adds the sessions, remounting the
+		// <Terminal>/<XTerm> components, triggering a connect storm and leaving the
+		// dock transiently empty. If we're already on this project and the store
+		// already shows exactly its sessions, do nothing.
+		if (this.currentProjectId === projectId) {
+			const existing = this.projectContexts.get(projectId);
+			if (existing && existing.sessionIds.length > 0) {
+				const storeIds = terminalStore.sessions.map((s) => s.id).sort();
+				const ctxIds = existing.sessionIds.slice().sort();
+				const sameSet =
+					storeIds.length === ctxIds.length && storeIds.every((id, i) => id === ctxIds[i]);
+				if (sameSet) {
+					await this.checkAndRestoreActiveStreams(projectId);
+					return;
+				}
+			}
+		}
 
 		// Save current project's terminal state if switching away
 		if (this.currentProjectId && this.currentProjectId !== projectId) {
@@ -73,6 +120,18 @@ class TerminalProjectManager {
 		const context = this.getOrCreateProjectContext(projectId, projectPath);
 
 		// Context for project
+
+		// Cold start (e.g. after a browser refresh): no in-memory context yet, but
+		// the workspace blob (DB) knows this project's tab-list. Seed it as the
+		// authoritative set so we restore the real tabs deterministically instead
+		// of racing the backend PTY query (which used to yield a lone empty tab).
+		if (context.sessionIds.length === 0) {
+			const restored = getRestoredTerminalSlice(projectId);
+			if (restored && restored.sessionIds.length > 0) {
+				context.sessionIds = [...restored.sessionIds];
+				context.activeSessionId = restored.activeSessionId ?? restored.sessionIds[0] ?? null;
+			}
+		}
 
 		// Clear any existing sessions in store to prevent cross-contamination
 		if (this.currentProjectId !== projectId) {
@@ -105,8 +164,18 @@ class TerminalProjectManager {
 	private async createProjectTerminalSessions(projectId: string, projectPath: string): Promise<void> {
 		const context = this.getOrCreateProjectContext(projectId, projectPath);
 
-		// Check backend for existing PTY sessions (survives browser refresh)
-		const existingBackendSessions = await terminalService.listProjectSessions(projectId);
+		// Check backend for existing PTY sessions (survives browser refresh).
+		let existingBackendSessions = await terminalService.listProjectSessions(projectId);
+
+		// Race guard: right after a project switch the backend may not have the
+		// project's PTY sessions associated yet, so the first query can come back
+		// empty even though sessions exist. Without this retry we'd wrongly spawn a
+		// single empty tab, and the user would have to re-select the project to get
+		// the real tabs back. Retry once briefly before falling back to "create new".
+		if (existingBackendSessions.length === 0) {
+			await new Promise((resolve) => setTimeout(resolve, 120));
+			existingBackendSessions = await terminalService.listProjectSessions(projectId);
+		}
 
 		if (existingBackendSessions.length > 0) {
 			debug.log('terminal', `Found ${existingBackendSessions.length} existing PTY sessions for project ${projectId}`);
@@ -582,7 +651,8 @@ class TerminalProjectManager {
 		context.sessionIds.push(sessionId);
 		context.activeSessionId = sessionId;
 		this.persistContexts();
-		
+		markTerminalDirty();
+
 		return sessionId;
 	}
 
@@ -611,6 +681,7 @@ class TerminalProjectManager {
 		terminalSessionManager.removeSession(sessionId);
 
 		this.persistContexts();
+		markTerminalDirty();
 		return true;
 	}
 
@@ -650,6 +721,7 @@ class TerminalProjectManager {
 
 				// Persist changes
 				this.persistContexts();
+				markTerminalDirty();
 				debug.log('terminal', `🗑️ [projectManager] Context persisted`);
 				return;
 			}
@@ -826,6 +898,9 @@ class TerminalProjectManager {
 				if (match) {
 					terminalStore.updateNextSessionId(parseInt(match[1], 10) + 1);
 				}
+
+				// Persist the updated tab-list so a refresh restores it.
+				markTerminalDirty();
 			});
 
 			// Listen for terminal tab closed by another user

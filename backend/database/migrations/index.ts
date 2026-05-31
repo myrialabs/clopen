@@ -36,6 +36,7 @@ import * as migration034 from './034_seed_qwen_provider';
 import * as migration035 from './035_add_owner_to_db_client_connections';
 import * as migration036 from './036_create_auth_audit_log';
 import * as migration037 from './037_repair_auth_audit_log_schema';
+import * as migration038 from './038_add_workspace_state_to_user_projects';
 
 // Export all migrations in order
 export const migrations = [
@@ -260,6 +261,12 @@ export const migrations = [
 		description: migration037.description,
 		up: migration037.up,
 		down: migration037.down
+	},
+	{
+		id: '038',
+		description: migration038.description,
+		up: migration038.up,
+		down: migration038.down
 	}
 ];
 

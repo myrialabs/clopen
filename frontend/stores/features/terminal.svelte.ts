@@ -6,6 +6,8 @@
 import type { TerminalSession, TerminalLine, TerminalCommand } from '$shared/types/terminal';
 import { terminalService, type StreamingResponse } from '$frontend/services/terminal';
 import { addNotification } from '../ui/notification.svelte';
+import { markTerminalDirty } from './terminal-workspace.svelte';
+import ws from '$frontend/utils/ws';
 
 import { debug } from '$shared/utils/logger';
 interface TerminalState {
@@ -83,7 +85,11 @@ export const terminalStore = {
 			createdAt: new Date(),
 			lastUsedAt: new Date(),
 			shellType: 'Unknown', // Will be detected later
-			terminalBuffer: undefined
+			terminalBuffer: undefined,
+			// Tag the owning project so the cross-project connect guard works even
+			// for freshly-created sessions (restore paths already set this).
+			projectId,
+			projectPath
 		};
 
 		// Set all other sessions as inactive
@@ -150,6 +156,11 @@ export const terminalStore = {
 				// sessionStorage not available
 			}
 		}
+
+		// Persist the active tab into the per-project workspace blob (DB) too, so a
+		// refresh restores the same active tab without relying on sessionStorage.
+		// Ignored mid-switch by the coordinator, so restore-driven switches are safe.
+		markTerminalDirty();
 	},
 
 	async closeSession(sessionId: string): Promise<boolean> {
@@ -260,6 +271,21 @@ export const terminalStore = {
 	async connectToSession(projectPath?: string, projectId?: string, terminalSize?: { cols: number; rows: number }): Promise<void> {
 		const activeSession = this.activeSession;
 		if (!activeSession) {
+			return;
+		}
+
+		// Cross-project leakage guard. During a project switch the previous
+		// project's XTerm can still be mounted for a moment while the WebSocket
+		// room has ALREADY moved to the new project. Connecting a stale session
+		// here would register the OLD project's terminal in the NEW project's room
+		// — the "terminal not restored until you select the project twice" bug.
+		//
+		// Compare against the WS connection's CURRENT room (ws context), NOT the
+		// passed projectId / projectState: those lag behind the room change during
+		// a switch, so they'd still read the old project and the guard would miss.
+		const roomProjectId = ws.getContext().projectId;
+		if (activeSession.projectId && roomProjectId && activeSession.projectId !== roomProjectId) {
+			debug.log('terminal', `Skip cross-project connect: session=${activeSession.projectId} room=${roomProjectId}`);
 			return;
 		}
 

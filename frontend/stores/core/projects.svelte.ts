@@ -11,6 +11,11 @@ import type { Project } from '$shared/types/database/schema';
 
 import { debug } from '$shared/utils/logger';
 import { cleanupProjectState } from '$frontend/utils/project-state-cleanup';
+import {
+	activateProjectWorkspace,
+	raiseSwitchBarrier,
+	lowerSwitchBarrier
+} from '$frontend/stores/ui/project-workspace.svelte';
 
 // Subscribe to admin-driven project assignment changes for the current user.
 // Event is broadcast globally; only react when this client is the target.
@@ -76,13 +81,19 @@ export async function setCurrentProject(project: Project | null) {
 	// Check if we're switching to a different project
 	const currentProjectId = projectState.currentProject?.id;
 	const newProjectId = project?.id;
+	const isProjectSwitch = currentProjectId !== newProjectId;
+
+	// Raise the switch barrier as early as possible — BEFORE the terminal context
+	// swap below — so the uniform dock skeletons cover the entire transition,
+	// including the terminal's clear-then-restore. Balanced by lowerSwitchBarrier()
+	// in the session-transition block's finally (same isProjectSwitch condition).
+	if (isProjectSwitch) raiseSwitchBarrier();
 
 	// Handle project status tracking and terminal context switching
 	if (typeof window !== 'undefined') {
 		try {
 			// Import services dynamically to avoid circular dependency
 			const { projectStatusService } = await import('$frontend/services/project');
-			const { terminalProjectManager } = await import('$frontend/services/terminal');
 
 			// Stop tracking previous project if switching
 			if (currentProjectId && currentProjectId !== newProjectId) {
@@ -92,24 +103,35 @@ export async function setCurrentProject(project: Project | null) {
 				appState.isLoading = false;
 			}
 
-			// Start tracking new project
+			// Start tracking new project. The terminal context is now restored by the
+			// terminal dock inside activateProjectWorkspace() (below) — deterministically
+			// under the switch barrier — instead of out-of-band here, which used to race
+			// the WS room change and leave the new project's terminal blank until a
+			// second project-click.
 			if (project?.id) {
 				await projectStatusService.startTracking(project.id);
-				// Switch terminal context to the new project
-				await terminalProjectManager.switchToProject(project.id, project.path);
 			}
 		} catch (error) {
 			debug.error('project', 'Error updating project tracking:', error);
 		}
 	}
 
-	// If switching to a different project, handle session transition
-	if (currentProjectId !== newProjectId) {
+	// If switching to a different project, handle session transition.
+	// The switch barrier was already raised above (before the terminal swap); it
+	// is released in this block's finally so skeletons stay up for the whole
+	// transition — no stale data, no staggered fade-ins.
+	if (isProjectSwitch) {
+		try {
 		// Set restoring flag FIRST - prevents reactive effects from syncing stale state
 		// to the new project during transition
 		if (project) {
 			appState.isRestoring = true;
 		}
+
+		// Swap the per-project workspace: clears all docks, restores this
+		// project's layout + dock view-state, and awaits dock data loads under
+		// the same barrier.
+		await activateProjectWorkspace(project?.id ?? null);
 
 		// Clear edit mode state from previous project (server retains per-project state)
 		const { onProjectLeave, onProjectEnter } = await import('$frontend/stores/ui/edit-mode.svelte');
@@ -168,6 +190,9 @@ export async function setCurrentProject(project: Project | null) {
 				// Clear restoring flag after project state is fully set
 				appState.isRestoring = false;
 			}
+		}
+		} finally {
+			lowerSwitchBarrier();
 		}
 	} else {
 		projectState.currentProject = project;
@@ -269,6 +294,11 @@ export async function loadProjects(restoreProjectId?: string | null) {
 					// This ensures server knows the project before any reactive effects fire
 					await ws.setProject(existingProject.id);
 					debug.log('project', 'WebSocket context synced for restored project:', existingProject.id);
+
+					// Activate this project's per-project workspace (layout + dock
+					// view-state). During app init this runs behind the loading
+					// screen, so the restored layout is ready on first paint.
+					await activateProjectWorkspace(existingProject.id);
 
 					projectState.currentProject = existingProject;
 

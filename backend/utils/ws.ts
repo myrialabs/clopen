@@ -747,7 +747,9 @@ class WSServer {
 
 			const room = this.projectRooms.get(projectId);
 			if (!room || room.size === 0) {
-				debug.warn('websocket', `No connections in project room: ${projectId} for event: ${String(event)}`);
+				// Expected/benign: e.g. a background terminal in a project the client
+				// has switched away from keeps emitting output to an empty room.
+				debug.log('websocket', `No connections in project room: ${projectId} for event: ${String(event)}`);
 				return;
 			}
 

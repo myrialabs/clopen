@@ -55,7 +55,7 @@ interface LoggerConfig {
 	enabled: boolean; // Global enable/disable based on NODE_ENV (production = disabled)
 	filterLabels: LogLabel[] | null; // null = show all, array = only show specified labels
 	filterMethods: LogMethod[] | null; // null = show all, array = only show specified methods
-	filterText: string | null; // null = no text filter, string = only show logs containing this text (case-sensitive)
+	filterTexts: string[] | null; // null = no text filter, array = only show logs containing any of these texts (case-sensitive)
 }
 
 // Default configuration - null means no filtering
@@ -64,7 +64,7 @@ const config: LoggerConfig = {
 	enabled: process.env.NODE_ENV !== 'production' || process.env.CLOPEN_DEBUG === 'true',
 	filterLabels: null,
 	filterMethods: null,
-	filterText: null
+	filterTexts: null
 };
 
 /**
@@ -87,8 +87,7 @@ function shouldLog(label: LogLabel, method: LogMethod, args: any[]): boolean {
 	}
 
 	// Filter by text (case-sensitive)
-	if (config.filterText !== null) {
-		// Convert all arguments to string for searching
+	if (config.filterTexts !== null) {
 		const argsString = args
 			.map((arg) => {
 				if (typeof arg === 'object') {
@@ -102,8 +101,7 @@ function shouldLog(label: LogLabel, method: LogMethod, args: any[]): boolean {
 			})
 			.join(' ');
 
-		// Case-sensitive search
-		if (!argsString.includes(config.filterText)) {
+		if (!config.filterTexts.some((text) => argsString.includes(text))) {
 			return false;
 		}
 	}

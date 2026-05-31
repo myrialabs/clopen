@@ -24,6 +24,7 @@ import { messagesRouter } from './messages';
 import { settingsRouter } from './settings';
 import { userRouter } from './user';
 import { filesRouter } from './files';
+import { workspaceRouter } from './workspace';
 import { systemRouter } from './system';
 import { tunnelRouter } from './tunnel';
 import { gitRouter } from './git';
@@ -58,6 +59,7 @@ export const wsRouter = createRouter()
 	.merge(settingsRouter)
 	.merge(userRouter)
 	.merge(filesRouter)
+	.merge(workspaceRouter)
 	.merge(systemRouter)
 	.merge(tunnelRouter)
 

@@ -2,6 +2,7 @@
 	import { browser } from '$frontend/app-environment';
 	import { onMount, onDestroy } from 'svelte';
 	import PanelHeader from './PanelHeader.svelte';
+	import Icon from '$frontend/components/common/display/Icon.svelte';
 	import ChatPanel from './panels/ChatPanel.svelte';
 	import PreviewPanel from './panels/PreviewPanel.svelte';
 	import FilesPanel from './panels/FilesPanel.svelte';
@@ -9,6 +10,7 @@
 	import GitPanel from './panels/GitPanel.svelte';
 	import HistoryModal from '$frontend/components/history/HistoryModal.svelte';
 	import { workspaceState, type PanelId } from '$frontend/stores/ui/workspace.svelte';
+	import { appState } from '$frontend/stores/core/app.svelte';
 
 	interface Props {
 		panelId: PanelId;
@@ -61,7 +63,7 @@
 </script>
 
 <div
-	class="flex flex-col h-full {isMobile
+	class="relative flex flex-col h-full {isMobile
 		? 'bg-transparent'
 		: 'bg-white/90 dark:bg-slate-900/60 backdrop-blur-3 border border-slate-200 dark:border-slate-800 rounded-xl'} overflow-hidden"
 >
@@ -78,7 +80,7 @@
 
 	<!-- Panel Content -->
 	{#if !isMinimized}
-		<div class="flex-1 overflow-hidden {noPadding ? '' : panelId === 'chat' ? 'p-3' : ''}">
+		<div class="relative flex-1 overflow-hidden {noPadding ? '' : panelId === 'chat' ? 'p-3' : ''}">
 			{#if panelId === 'chat'}
 				<ChatPanel bind:this={chatPanelRef} />
 			{:else if panelId === 'preview'}
@@ -89,6 +91,18 @@
 				<TerminalPanel bind:this={terminalPanelRef} />
 			{:else if panelId === 'git'}
 				<GitPanel bind:this={gitPanelRef} />
+			{/if}
+
+			<!-- During a project switch only the CONTENT is waiting on data. Blank it
+			     to a plain "Loading…" (the header stays live and updates instantly).
+			     No stale data from the previous project shows through. -->
+			{#if appState.isSwitching}
+				<div
+					class="absolute inset-0 flex items-center justify-center gap-2 bg-white dark:bg-slate-900 text-sm text-slate-500 dark:text-slate-400"
+				>
+					<Icon name="lucide:loader" class="w-4 h-4 animate-spin" />
+					<span>Loading…</span>
+				</div>
 			{/if}
 		</div>
 	{/if}

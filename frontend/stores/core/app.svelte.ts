@@ -59,6 +59,11 @@ interface AppState {
 	// App Loading State
 	isAppLoading: boolean;
 	isAppInitialized: boolean;
+
+	// Project-switch transition: true while docks are being torn down and the
+	// new project's workspace is being restored. Drives the uniform dock
+	// skeletons so every dock reveals together and no stale data leaks through.
+	isSwitching: boolean;
 }
 
 // Core app state using Svelte 5 runes
@@ -86,7 +91,10 @@ export const appState = $state<AppState>({
 
 	// App Loading State
 	isAppLoading: true,
-	isAppInitialized: false
+	isAppInitialized: false,
+
+	// Project-switch transition
+	isSwitching: false
 });
 
 // ========================================

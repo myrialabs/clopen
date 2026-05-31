@@ -14,6 +14,7 @@
 	import { editModeState } from '$frontend/stores/ui/edit-mode.svelte';
 	import { createVirtualScroll, VS_CONFIG_CLASSIC, VS_CONFIG_COMPACT } from '$frontend/utils/chat/virtual-scroll.svelte';
 	import { settings } from '$frontend/stores/features/settings.svelte';
+	import { getChatScroll, setChatScroll } from '$frontend/stores/features/chat-workspace.svelte';
 
 	interface Props {
 		scrollContainer?: HTMLElement | undefined;
@@ -33,6 +34,9 @@
 	let lastSubAgentHash = $state('');
 	// Prevent scroll events from overriding isUserAtBottom during programmatic scroll
 	let scrollLockUntil = 0;
+	// While restoring a saved reading position, suppress the auto-scroll effect so
+	// it can't snap to the bottom before applyInitialScroll positions the anchor.
+	let suppressAutoScroll = false;
 
 	// ========================================
 	// VIRTUAL SCROLL
@@ -148,6 +152,25 @@
 		const threshold = 200;
 		isUserAtBottom = scrollTop + clientHeight >= scrollHeight - threshold;
 
+		// Remember this session's reading position so returning to the project
+		// restores it instead of always snapping to the bottom. Use a message
+		// anchor (robust to the virtual window) rather than a raw scrollTop.
+		if (!appState.isRestoring) {
+			const sid = sessionState.currentSession?.id;
+			if (sid) {
+				if (isUserAtBottom) {
+					setChatScroll(sid, { atBottom: true, anchorMessageId: null, anchorOffset: 0 });
+				} else {
+					const anchor = captureChatAnchor(el);
+					setChatScroll(sid, {
+						atBottom: false,
+						anchorMessageId: anchor?.id ?? null,
+						anchorOffset: anchor?.offset ?? 0
+					});
+				}
+			}
+		}
+
 		if (!vs.isActive) return;
 
 		const margin = vs.loadMoreMargin;
@@ -202,7 +225,7 @@
 		const isMessageCountDecreased = currentMessageCount < previousMessageCount;
 
 		// Sync virtual scroll with message count changes
-		if (hasInitiallyScrolled) {
+		if (hasInitiallyScrolled && !suppressAutoScroll) {
 			if (isMessageCountDecreased) {
 				vs.reset(currentMessageCount);
 			} else if (isNewMessage) {
@@ -270,8 +293,18 @@
 			return;
 		}
 
-		// Scroll on new message, partial text changes, tool result changes, or sub-agent updates
-		if ((isNewMessage || partialTextChanged || toolResultChanged || subAgentChanged) && isUserAtBottom) {
+		// Scroll on new message, partial text changes, tool result changes, or sub-agent updates.
+		// Gated on hasInitiallyScrolled so applyInitialScroll() owns the FIRST position:
+		// otherwise, on a full refresh (where appState.isRestoring is never set), this
+		// effect would snap to the bottom before applyInitialScroll() can restore the
+		// saved reading position — clobbering it. After the initial restore, normal
+		// auto-scroll resumes. Mirrors the same guard already used for vs.sync above.
+		if (
+			hasInitiallyScrolled &&
+			(isNewMessage || partialTextChanged || toolResultChanged || subAgentChanged) &&
+			isUserAtBottom &&
+			!suppressAutoScroll
+		) {
 			requestAnimationFrame(() => {
 				if (editModeState.isEditing) return;
 
@@ -328,15 +361,71 @@
 	// RESTORATION & INITIAL SCROLL
 	// ========================================
 
+	// Find the message at the top of the viewport (the anchor) and its pixel
+	// offset from the container top. Cheap: the virtual window renders few nodes.
+	function captureChatAnchor(el: HTMLElement): { id: string; offset: number } | null {
+		const containerTop = el.getBoundingClientRect().top;
+		const nodes = el.querySelectorAll<HTMLElement>('[data-message-id]');
+		for (const node of nodes) {
+			const rect = node.getBoundingClientRect();
+			if (rect.bottom > containerTop + 4) {
+				const id = node.dataset.messageId;
+				if (id) return { id, offset: rect.top - containerTop };
+			}
+		}
+		return null;
+	}
+
+	// Restore the session's saved reading position, or fall back to the bottom.
+	// Only restores when the user had genuinely scrolled up — the common
+	// at-bottom case behaves exactly as before. Async: restoring an anchor may
+	// require expanding the virtual window and waiting for the DOM to render.
+	async function applyInitialScroll(el: HTMLElement) {
+		if (editModeState.isEditing) return;
+		// Lock scroll detection across the (possibly async) positioning so the
+		// scroll events we cause don't flip isUserAtBottom back to true.
+		scrollLockUntil = Date.now() + 800;
+		const sid = sessionState.currentSession?.id;
+		const saved = sid ? getChatScroll(sid) : undefined;
+
+		if (saved && !saved.atBottom && saved.anchorMessageId) {
+			const anchorId = saved.anchorMessageId;
+			const idx = filteredMessages.findIndex(
+				(m) => 'messageId' in m && (m as { messageId?: string }).messageId === anchorId
+			);
+			if (idx >= 0) {
+				isUserAtBottom = false;
+				// Pull the anchor into the virtual window, then wait for it to render.
+				if (vs.isActive) vs.ensureVisible(idx);
+				await tick();
+				await new Promise<void>((resolve) => requestAnimationFrame(() => resolve()));
+				const anchorEl = el.querySelector<HTMLElement>(`[data-message-id="${anchorId}"]`);
+				if (anchorEl) {
+					const offsetNow = anchorEl.getBoundingClientRect().top - el.getBoundingClientRect().top;
+					el.scrollTop = el.scrollTop + offsetNow - saved.anchorOffset;
+					return;
+				}
+			}
+		}
+
+		// Default / fallback: pin to the bottom.
+		el.scrollTop = el.scrollHeight;
+		isUserAtBottom = true;
+	}
+
 	// Handle restoration and initial scroll
 	$effect(() => {
 		const currentMessages = filteredMessages.length;
 		const isRestoring = appState.isRestoring;
 
 		if (isRestoring) {
-			// Keep content hidden during restoration
+			// Keep content hidden during restoration. Crucially, suppress the
+			// auto-scroll effect NOW (it runs before this effect): otherwise, when
+			// the new session's messages load, it would snap to the bottom before
+			// applyInitialScroll gets a chance to restore the saved position.
 			isContentReady = false;
 			hasInitiallyScrolled = false;
+			suppressAutoScroll = true;
 			return;
 		}
 
@@ -351,30 +440,34 @@
 				// Initialize virtual scroll
 				vs.reset(currentMessages);
 
-				// Scroll to bottom immediately (while still hidden)
-				// Skip if edit mode is active - scroll-to-edit-message will handle positioning
-				if (!editModeState.isEditing) {
-					el.scrollTop = el.scrollHeight;
-				}
-
-				// Show content after a micro delay to ensure scroll is set
-				requestAnimationFrame(() => {
-					isContentReady = true;
+				// Restore the saved reading position (or bottom) while still hidden,
+				// then reveal + re-enable auto-scroll once positioned.
+				applyInitialScroll(el).then(() => {
+					suppressAutoScroll = false;
+					requestAnimationFrame(() => {
+						isContentReady = true;
+					});
 				});
 			} else if (currentMessages === 0) {
 				// No messages, show immediately
 				isContentReady = true;
 				hasInitiallyScrolled = true;
+				suppressAutoScroll = false;
 			} else {
 				// Wait for container
 				setTimeout(() => {
 					const el2 = getScrollEl();
 					if (el2) {
 						vs.reset(filteredMessages.length);
-						el2.scrollTop = el2.scrollHeight;
 						hasInitiallyScrolled = true;
+						applyInitialScroll(el2).then(() => {
+							suppressAutoScroll = false;
+							isContentReady = true;
+						});
+					} else {
+						suppressAutoScroll = false;
+						isContentReady = true;
 					}
-					isContentReady = true;
 				}, 50);
 			}
 		}

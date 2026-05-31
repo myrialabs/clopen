@@ -97,13 +97,28 @@
 			await loadSystemSettings();
 			initPresence();
 
-			// Step 5: Load projects (with server-restored currentProjectId)
-			setProgress(50, 'Loading projects...');
-			await initializeProjects(serverState?.currentProjectId);
+			// Step 5 + 6: Restore the saved project and its session.
+			//
+			// Mirror the project-switch path (setCurrentProject) by holding
+			// isRestoring across the whole project + session restore. On a full
+			// refresh of the current project this is the ONLY signal the chat dock
+			// has to restore its saved reading position instead of auto-scrolling
+			// to the bottom and clobbering it. Without it, ChatMessages' restore
+			// protections (suppressAutoScroll + the scroll-recording guard) never
+			// engage and the saved anchor is overwritten with `atBottom`.
+			const isRestoringProject = !!serverState?.currentProjectId;
+			if (isRestoringProject) appState.isRestoring = true;
+			try {
+				// Step 5: Load projects (with server-restored currentProjectId)
+				setProgress(50, 'Loading projects...');
+				await initializeProjects(serverState?.currentProjectId);
 
-			// Step 6: Load sessions
-			setProgress(70, 'Restoring sessions...');
-			await initializeSessions();
+				// Step 6: Load sessions
+				setProgress(70, 'Restoring sessions...');
+				await initializeSessions();
+			} finally {
+				if (isRestoringProject) appState.isRestoring = false;
+			}
 
 			// Step 7: Ready
 			setProgress(100, 'Ready!');

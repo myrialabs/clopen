@@ -5,6 +5,7 @@
 
 import { debug } from '$shared/utils/logger';
 import type { IconName } from '$shared/types/ui/icons';
+import { registerDock, requestWorkspaceSave } from '$frontend/stores/ui/project-workspace.svelte';
 
 // ============================================
 // TYPE DEFINITIONS
@@ -750,49 +751,118 @@ export function setActiveMobilePanel(panelId: PanelId): void {
 // ============================================
 // PERSISTENCE
 // ============================================
+//
+// The dock layout (split tree, ratios, preset, panel visibility, active mobile
+// panel) is now PER-PROJECT — persisted server-side through the project
+// workspace coordinator. Only the navigator (sidebar) is global per-user, so it
+// stays in localStorage.
 
-const STORAGE_KEY = 'clopen-workspace-layout';
+const NAV_STORAGE_KEY = 'clopen-workspace-nav';
+const LEGACY_STORAGE_KEY = 'clopen-workspace-layout';
 
+/** The per-project slice of workspace state owned by the layout dock. */
+interface LayoutSlice {
+	layout: WorkspaceLayout;
+	activePresetId?: string;
+	panels: Record<PanelId, PanelConfig>;
+	activeMobilePanel: PanelId;
+}
+
+function deepClone<T>(value: T): T {
+	return JSON.parse(JSON.stringify(value)) as T;
+}
+
+/** Snapshot the current active project's layout for persistence. */
+function snapshotLayoutSlice(): LayoutSlice {
+	return {
+		layout: deepClone(workspaceState.layout),
+		activePresetId: workspaceState.activePresetId,
+		panels: deepClone(workspaceState.panels),
+		activeMobilePanel: workspaceState.activeMobilePanel
+	};
+}
+
+/** Apply a restored layout slice (or fall back to defaults when absent). */
+function applyLayoutSlice(slice: LayoutSlice | undefined): void {
+	if (!slice || !slice.layout) {
+		// Project has no saved layout yet — start from the default preset.
+		workspaceState.layout = deepClone(defaultPreset.layout);
+		workspaceState.activePresetId = defaultPreset.id;
+		workspaceState.panels = deepClone(defaultPanels);
+		workspaceState.activeMobilePanel = 'chat';
+		return;
+	}
+
+	// Merge panels with defaults so panels added since the save still exist and
+	// always carry up-to-date title/icon.
+	const panels = slice.panels ?? ({} as Record<PanelId, PanelConfig>);
+	for (const [id, defaultPanel] of Object.entries(defaultPanels)) {
+		if (!panels[id as PanelId]) {
+			panels[id as PanelId] = { ...defaultPanel };
+		} else {
+			panels[id as PanelId].title = defaultPanel.title;
+			panels[id as PanelId].icon = defaultPanel.icon;
+		}
+	}
+
+	workspaceState.layout = slice.layout;
+	workspaceState.activePresetId = slice.activePresetId;
+	workspaceState.panels = panels;
+	workspaceState.activeMobilePanel = slice.activeMobilePanel ?? 'chat';
+}
+
+/**
+ * Persist workspace state. Navigator goes to localStorage (global); the
+ * per-project layout is queued for a debounced server save via the coordinator.
+ */
 export function saveWorkspaceState(): void {
 	try {
-		localStorage.setItem(STORAGE_KEY, JSON.stringify(workspaceState));
+		localStorage.setItem(
+			NAV_STORAGE_KEY,
+			JSON.stringify({
+				navigatorCollapsed: workspaceState.navigatorCollapsed,
+				navigatorWidth: workspaceState.navigatorWidth
+			})
+		);
 	} catch (error) {
-		debug.error('workspace', 'Failed to save workspace state:', error);
+		debug.error('workspace', 'Failed to save navigator state:', error);
+	}
+	requestWorkspaceSave();
+}
+
+/** Restore the global navigator state from localStorage (per-user chrome). */
+function restoreNavigatorState(): void {
+	try {
+		const saved =
+			localStorage.getItem(NAV_STORAGE_KEY) ?? localStorage.getItem(LEGACY_STORAGE_KEY);
+		if (!saved) return;
+		const parsed = JSON.parse(saved) as Partial<WorkspaceState>;
+		if (typeof parsed.navigatorCollapsed === 'boolean') {
+			workspaceState.navigatorCollapsed = parsed.navigatorCollapsed;
+		}
+		if (typeof parsed.navigatorWidth === 'number') {
+			workspaceState.navigatorWidth = parsed.navigatorWidth;
+		}
+	} catch (error) {
+		debug.error('workspace', 'Failed to restore navigator state:', error);
 	}
 }
 
-export function restoreWorkspaceState(): void {
-	try {
-		const saved = localStorage.getItem(STORAGE_KEY);
-		if (saved) {
-			const parsed = JSON.parse(saved) as WorkspaceState;
-			// Merge panels: ensure all default panels exist (new panels added after save are preserved)
-			if (parsed.panels) {
-				for (const [id, defaultPanel] of Object.entries(defaultPanels)) {
-					if (!parsed.panels[id as PanelId]) {
-						parsed.panels[id as PanelId] = defaultPanel;
-					} else {
-						// Ensure title and icon are always up-to-date from defaults
-						parsed.panels[id as PanelId].title = defaultPanel.title;
-						parsed.panels[id as PanelId].icon = defaultPanel.icon;
-					}
-				}
-			}
-			Object.assign(workspaceState, parsed);
-			debug.log('workspace', 'Workspace state restored');
-		} else {
-			debug.log('workspace', 'No saved state found, using defaults');
-		}
-	} catch (error) {
-		debug.error('workspace', 'Failed to restore workspace state:', error);
-	}
-}
+// Register the layout as a dock so the coordinator drives its per-project
+// persistence and restoration in lockstep with the other docks.
+registerDock({
+	id: 'layout',
+	snapshot: snapshotLayoutSlice,
+	restore: (slice) => applyLayoutSlice(slice as LayoutSlice | undefined)
+	// No clear(): the incoming layout is applied in restore() before reveal, so
+	// there is never a moment where a stale layout is shown without skeletons.
+});
 
 // ============================================
 // INITIALIZATION
 // ============================================
 
 export function initializeWorkspace(): void {
-	restoreWorkspaceState();
+	restoreNavigatorState();
 	debug.log('workspace', 'Workspace initialized');
 }

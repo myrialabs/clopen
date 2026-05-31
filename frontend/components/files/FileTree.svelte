@@ -22,7 +22,13 @@
 	import { addNotification } from '$frontend/stores/ui/notification.svelte';
 	import { showConfirm } from '$frontend/stores/ui/dialog.svelte';
 	import { normalizePath } from '$shared/utils/path';
-	import { onDestroy } from 'svelte';
+	import { onDestroy, untrack } from 'svelte';
+	import {
+		setFileSearchSnapshotProvider,
+		loadFileSearchSlice,
+		markFileSearchDirty,
+		type FileSearchSlice
+	} from '$frontend/stores/features/files-search-workspace.svelte';
 
 	interface Props {
 		files: FileNodeType[];
@@ -137,65 +143,119 @@
 
 	// projectSearchStates is at module level to survive component destruction (mobile/desktop switch)
 	let lastProjectId = $state('');
+	// Gate the persist effect so applying a restored slice doesn't echo back a save.
+	let searchHydrated = $state(false);
 
-	// Save/restore search state per project
+	/** Serializable slice of the search view (results excluded — re-run on restore). */
+	function buildSearchSlice(): FileSearchSlice {
+		return {
+			searchVisible,
+			searchQuery,
+			submittedQuery,
+			searchMode,
+			caseSensitive,
+			wholeWord,
+			useRegex,
+			filesToInclude,
+			filesToExclude,
+			showFilters,
+			showReplace,
+			replaceQuery
+		};
+	}
+
+	function applySearchSlice(slice: FileSearchSlice): void {
+		searchVisible = slice.searchVisible;
+		searchQuery = slice.searchQuery;
+		submittedQuery = slice.submittedQuery;
+		searchMode = slice.searchMode;
+		caseSensitive = slice.caseSensitive;
+		wholeWord = slice.wholeWord;
+		useRegex = slice.useRegex;
+		filesToInclude = slice.filesToInclude;
+		filesToExclude = slice.filesToExclude;
+		showFilters = slice.showFilters;
+		showReplace = slice.showReplace;
+		replaceQuery = slice.replaceQuery;
+	}
+
+	function resetSearchState(): void {
+		searchVisible = false;
+		searchQuery = '';
+		submittedQuery = '';
+		searchMode = 'files';
+		fileSearchResults = [];
+		codeSearchResults = [];
+		caseSensitive = false;
+		wholeWord = false;
+		useRegex = false;
+		filesToInclude = '';
+		filesToExclude = '';
+		showFilters = false;
+		showReplace = false;
+		replaceQuery = '';
+	}
+
+	// Save/restore search state per project. The in-memory `projectSearchStates`
+	// map gives instant same-session A→B→A restore (and keeps results); the
+	// server-persisted slice (via the workspace coordinator) is the source of
+	// truth across a refresh / other devices, where the map is empty.
 	$effect(() => {
 		const currentProjectId = projectState.currentProject?.id || '';
-		if (currentProjectId !== lastProjectId) {
-			// Save current state for old project
+		if (currentProjectId === lastProjectId) return;
+
+		untrack(() => {
+			// Save current state for old project (in-memory; DB save flows through
+			// the coordinator's snapshot provider + flush-before-switch).
 			if (lastProjectId) {
 				projectSearchStates.set(lastProjectId, {
-					searchVisible,
-					searchQuery,
-					submittedQuery,
-					searchMode,
+					...buildSearchSlice(),
 					fileSearchResults,
-					codeSearchResults,
-					caseSensitive,
-					wholeWord,
-					useRegex,
-					filesToInclude,
-					filesToExclude,
-					showFilters,
-					showReplace,
-					replaceQuery
+					codeSearchResults
 				});
 			}
-			// Restore or reset for new project
+
+			searchHydrated = false;
 			const saved = projectSearchStates.get(currentProjectId);
 			if (saved) {
-				searchVisible = saved.searchVisible;
-				searchQuery = saved.searchQuery;
-				submittedQuery = saved.submittedQuery;
-				searchMode = saved.searchMode;
-				fileSearchResults = saved.fileSearchResults;
-				codeSearchResults = saved.codeSearchResults;
-				caseSensitive = saved.caseSensitive;
-				wholeWord = saved.wholeWord;
-				useRegex = saved.useRegex;
-				filesToInclude = saved.filesToInclude;
-				filesToExclude = saved.filesToExclude;
-				showFilters = saved.showFilters;
-				showReplace = saved.showReplace;
-				replaceQuery = saved.replaceQuery;
+				// Same-session cache hit — restore everything including results.
+				applySearchSlice(saved);
+				fileSearchResults = saved.fileSearchResults ?? [];
+				codeSearchResults = saved.codeSearchResults ?? [];
 			} else {
-				searchVisible = false;
-				searchQuery = '';
-				submittedQuery = '';
-				searchMode = 'files';
-				fileSearchResults = [];
-				codeSearchResults = [];
-				caseSensitive = false;
-				wholeWord = false;
-				useRegex = false;
-				filesToInclude = '';
-				filesToExclude = '';
-				showFilters = false;
-				showReplace = false;
-				replaceQuery = '';
+				// Cache miss (refresh / cross-device) — restore the server slice and
+				// re-run the search so results repopulate fresh.
+				const slice = currentProjectId ? loadFileSearchSlice(currentProjectId) : null;
+				if (slice) {
+					applySearchSlice(slice);
+					fileSearchResults = [];
+					codeSearchResults = [];
+					if (slice.searchVisible && slice.searchQuery.trim()) {
+						// Defer so projectState.currentProject.path is settled.
+						setTimeout(() => performSearch(), 0);
+					}
+				} else {
+					resetSearchState();
+				}
 			}
 			lastProjectId = currentProjectId;
-		}
+			searchHydrated = true;
+		});
+	});
+
+	// Persist search view changes (server, via the coordinator). Gated on
+	// `searchHydrated` so applying a restored slice above doesn't trigger a save.
+	$effect(() => {
+		// Track the persistable fields so any change schedules a save.
+		void buildSearchSlice();
+		if (!searchHydrated) return;
+		markFileSearchDirty();
+	});
+
+	// Hand the coordinator a live snapshot of the search view for server saves.
+	$effect(() => {
+		setFileSearchSnapshotProvider(() => buildSearchSlice());
+		return () => setFileSearchSnapshotProvider(null);
 	});
 
 	// Save search state to persistent storage on component destruction (mobile/desktop switch)

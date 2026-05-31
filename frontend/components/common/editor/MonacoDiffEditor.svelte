@@ -18,6 +18,10 @@
 		readonly?: boolean;
 		renderSideBySide?: boolean;
 		onEditorMount?: (editor: editor.IDiffEditor) => void;
+		/** Initial vertical scroll to restore once the diff has rendered. */
+		scrollTop?: number;
+		/** Fired when the user scrolls (the modified/right pane drives scroll). */
+		onScroll?: (top: number) => void;
 		width?: string;
 		height?: string;
 	}
@@ -33,6 +37,8 @@
 		readonly = true,
 		renderSideBySide = true,
 		onEditorMount,
+		scrollTop = 0,
+		onScroll,
 		width = '100%',
 		height = '100%',
 	}: Props = $props();
@@ -103,6 +109,24 @@
 			if (onEditorMount) {
 				onEditorMount(diffEditor);
 			}
+
+			const modEditor = diffEditor.getModifiedEditor();
+			const restoreTo = scrollTop;
+			// Force a layout after the first paint. A diff editor created during a
+			// project switch (when the panel may momentarily have no stable size)
+			// can otherwise render blank until something else triggers a resize.
+			requestAnimationFrame(() => {
+				diffEditor?.layout();
+				// Restore scroll once lines have rendered (scrollHeight is 0 before
+				// the first layout, so an earlier restore would be a no-op).
+				if (restoreTo > 0) {
+					requestAnimationFrame(() => modEditor.setScrollTop(restoreTo));
+				}
+			});
+			// Persist scroll changes (the modified/right pane drives diff scroll).
+			modEditor.onDidScrollChange((e) => {
+				if (e.scrollTopChanged) onScroll?.(e.scrollTop);
+			});
 		} catch (err) {
 			debug.error('git', 'Failed to init diff editor:', err);
 		}

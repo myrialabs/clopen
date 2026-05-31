@@ -5,7 +5,13 @@
 	import { debug } from '$shared/utils/logger';
 	import Icon from '$frontend/components/common/display/Icon.svelte';
 	import type { DeviceSize, Rotation } from '$frontend/utils/preview-constants';
-	import { getProjectPreviewState, setProjectPreviewState } from '$frontend/utils/preview-project-state';
+	import {
+		getProjectPreviewState,
+		setProjectPreviewState,
+		setPreviewSnapshotProvider
+	} from '$frontend/utils/preview-project-state';
+	import { requestWorkspaceSave } from '$frontend/stores/ui/project-workspace.svelte';
+	import { appState } from '$frontend/stores/core/app.svelte';
 
 	// Project-aware state
 	const hasActiveProject = $derived(projectState.currentProject !== null);
@@ -92,6 +98,26 @@
 			rotation = 'portrait';
 			lastProjectId = '';
 		}
+	});
+
+	// Expose live preview prefs to the workspace coordinator so a switch flushes
+	// the leaving project's prefs to the server accurately.
+	$effect(() => {
+		setPreviewSnapshotProvider(() => ({ isOpen, url, mode, deviceSize, rotation }));
+		return () => setPreviewSnapshotProvider(null);
+	});
+
+	// Persist in-place pref changes (device/rotation/url/mode) to the server,
+	// debounced. Skipped during a project switch (those are restores, not edits).
+	$effect(() => {
+		// Track the persisted fields.
+		void isOpen;
+		void url;
+		void mode;
+		void deviceSize;
+		void rotation;
+		if (!hasActiveProject || appState.isSwitching) return;
+		requestWorkspaceSave();
 	});
 
 	// Export actions for DesktopPanel header

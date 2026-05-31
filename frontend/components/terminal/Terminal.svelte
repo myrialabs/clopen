@@ -52,10 +52,15 @@
 						// Now safe to initialize terminal store
 						terminalStore.initialize(hasActiveProject, projectPath);
 
-						// Ensure project context is set up in terminalProjectManager
-						if (projectId && projectPath) {
-							await terminalProjectManager.switchToProject(projectId, projectPath);
-						}
+						// NOTE: We deliberately do NOT call switchToProject() here. The
+						// project's terminal tabs are restored by the terminal dock's
+						// load() inside the workspace coordinator, deterministically and
+						// under the switch barrier. Calling it here too is not only
+						// redundant — because this component remounts on every project
+						// switch, a switchToProject() started here can finish AFTER the
+						// user has already moved on, then re-applies a STALE projectId and
+						// reverts the terminal to the previous project (the "macet, only
+						// the last tab shows, data empty" bug).
 
 						isInitialized = true;
 					} catch (error) {

@@ -13,6 +13,14 @@
 	import { getGitStatusLabel, getGitStatusColor } from '$frontend/utils/git-status';
 	import { chatService } from '$frontend/services/chat/chat.service';
 	import { showPanel } from '$frontend/stores/ui/workspace.svelte';
+	import {
+		gitDraft,
+		setGitSnapshotProvider,
+		loadGitUiState,
+		markGitUiDirty,
+		type GitUiState,
+		type GitActiveDiff
+	} from '$frontend/stores/features/git-workspace.svelte';
 	import { detectLanguageFromFilename } from '$frontend/components/common/editor/monaco-languages';
 	import type { IconName } from '$shared/types/ui/icons';
 	import type {
@@ -84,6 +92,8 @@
 		isLoading: boolean;
 		commitHash?: string;
 		status?: string;
+		/** Saved diff-editor scroll, used to restore on re-open after refresh/switch. */
+		scrollTop?: number;
 	}
 
 	// Per-view tab isolation — each view (Changes, History, Stash, Tags) has its own tabs
@@ -96,6 +106,22 @@
 
 	const activeTab = $derived(openTabs.find(t => t.id === activeTabId) || null);
 
+	// Latest diff-editor scroll for the active tab. Kept as a plain (non-reactive)
+	// ref so high-frequency scroll events don't churn `openTabs`; the snapshot
+	// provider reads it on demand and `markGitUiDirty()` (debounced) persists it.
+	let liveDiffScroll: { tabId: string | null; top: number } = { tabId: null, top: 0 };
+
+	function handleDiffScroll(top: number) {
+		liveDiffScroll = { tabId: activeTabId, top };
+		markGitUiDirty();
+	}
+
+	/** Current scroll of the active diff tab — live value if we have one, else the saved one. */
+	function activeDiffScrollTop(): number {
+		if (activeTab && liveDiffScroll.tabId === activeTab.id) return liveDiffScroll.top;
+		return activeTab?.scrollTop ?? 0;
+	}
+
 	function switchToView(newView: typeof activeView) {
 		// Save current view's tab state
 		_tabStore[activeView] = openTabs;
@@ -106,6 +132,8 @@
 		activeTabId = _activeTabStore[newView] || null;
 		viewMode = _viewModeStore[newView] || 'list';
 		activeView = newView;
+		// Remember which view this project is on (per-project, server-persisted).
+		markGitUiDirty();
 	}
 
 	function resetAllViewTabs() {
@@ -127,6 +155,12 @@
 	let isLogLoading = $state(false);
 	let logHasMore = $state(false);
 	let logSkip = $state(0);
+	// A commit detail to re-open once the log finishes loading (per-project restore).
+	let pendingSelectedCommitHash = $state<string | null>(null);
+	// A diff tab to re-open once its data source is loaded (per-project restore):
+	// for changes sections, once git status is in; for commit files, once the
+	// commit detail's file list is fetched.
+	let pendingActiveDiff = $state<GitActiveDiff | null>(null);
 
 	// Commit detail state — when set, History view shows a per-commit file list
 	// instead of the commit log. Cleared via the back button.
@@ -222,7 +256,10 @@
 		if (!hasActiveProject || !projectId) return;
 		isLoading = true;
 		try {
-			await Promise.all([loadStatus(), loadBranches(), loadRemotes()]);
+			// Stash + tags are loaded here too (not just lazily on their view) so the
+			// Stash/Tags badge counts are correct immediately after a switch/refresh,
+			// not only once the user opens those views.
+			await Promise.all([loadStatus(), loadBranches(), loadRemotes(), loadStash(), loadTags()]);
 		} catch (err) {
 			debug.error('git', 'Failed to load git data:', err);
 		} finally {
@@ -273,6 +310,11 @@
 
 	async function loadLog(reset = false) {
 		if (!projectId) return;
+		// Guard against concurrent loads. On restore both the explicit load and the
+		// reactive view effect can fire for the same view; without this they'd
+		// double-fetch (and a failed first attempt is what intermittently left the
+		// History view stuck on "No commits yet").
+		if (isLogLoading) return;
 		isLogLoading = true;
 		try {
 			if (reset) {
@@ -287,6 +329,16 @@
 			}
 			logHasMore = data.hasMore;
 			logSkip += data.commits.length;
+
+			// Re-open a previously-selected commit detail for this project, once
+			// its entry is present in the loaded log (lazy restore).
+			if (pendingSelectedCommitHash) {
+				const hash = pendingSelectedCommitHash;
+				pendingSelectedCommitHash = null;
+				if (commits.some(c => c.hash === hash)) {
+					viewCommitDiff(hash);
+				}
+			}
 		} catch (err) {
 			debug.error('git', 'Failed to load log:', err);
 		} finally {
@@ -426,6 +478,7 @@
 
 	function selectTab(id: string) {
 		activeTabId = id;
+		markGitUiDirty();
 	}
 
 	function closeTab(id: string) {
@@ -441,12 +494,14 @@
 				if (!isTwoColumnMode) viewMode = 'list';
 			}
 		}
+		markGitUiDirty();
 	}
 
 	function closeAllTabs() {
 		openTabs = [];
 		activeTabId = null;
 		if (!isTwoColumnMode) viewMode = 'list';
+		markGitUiDirty();
 	}
 
 	// Drag-and-drop reorder state
@@ -521,6 +576,36 @@
 		}
 	}
 
+	// Re-open the diff tab that was open before a refresh/switch, now that git
+	// status is loaded. Only handles Changes-section tabs (staged/unstaged/
+	// untracked/conflicted); commit-file tabs re-open from viewCommitDiff. The
+	// tab is only restored while its section's view is the active one.
+	function reopenPendingChangesDiff() {
+		const pend = pendingActiveDiff;
+		if (!pend || pend.section === 'commit') return;
+		if (activeView !== 'changes') return;
+		pendingActiveDiff = null;
+
+		const path = pend.filePath;
+		const top = pend.scrollTop ?? 0;
+		const staged = gitStatus.staged.find(f => f.path === path);
+		const unstaged = gitStatus.unstaged.find(f => f.path === path);
+		const untracked = gitStatus.untracked.find(f => f.path === path);
+		const conflicted = gitStatus.conflicted.find(f => f.path === path);
+
+		// Prefer the persisted section if the file is still there; otherwise fall
+		// back to wherever it currently lives, so a staged⇄unstaged move (or a new
+		// untracked→tracked transition) since the last session still restores the
+		// tab with a diff that matches the current git state. If the file is no
+		// longer changed at all (committed/discarded), there is nothing to restore.
+		if (pend.section === 'staged' && staged) return void viewDiff(staged, 'staged', top);
+		if (pend.section === 'conflicted' && conflicted) return void viewDiff(conflicted, 'conflicted', top);
+		if (staged) return void viewDiff(staged, 'staged', top);
+		if (unstaged) return void viewDiff(unstaged, 'unstaged', top);
+		if (untracked) return void viewDiff(untracked, 'unstaged', top);
+		if (conflicted) return void viewDiff(conflicted, 'conflicted', top);
+	}
+
 	// ============================
 	// Diff
 	// ============================
@@ -531,7 +616,7 @@
 		return isPreviewableFile(fileName) || isBinaryFile(fileName);
 	}
 
-	async function viewDiff(file: GitFileChange, section: string) {
+	async function viewDiff(file: GitFileChange, section: string, restoreScrollTop = 0) {
 		if (!projectId) return;
 		const tabId = `${section}:${file.path}`;
 		const fileName = file.path.split(/[\\/]/).pop() || file.path;
@@ -546,7 +631,8 @@
 			diff: null,
 			diffs: [],
 			isLoading: true,
-			status
+			status,
+			scrollTop: restoreScrollTop
 		}];
 		activeTabId = tabId;
 		if (!isTwoColumnMode) viewMode = 'diff';
@@ -657,7 +743,14 @@
 				}
 			} else {
 				const action = section === 'staged' ? 'git:diff-staged' : 'git:diff-unstaged';
-				const diffs = await ws.http(action, { projectId, filePath: file.path });
+				let diffs = await ws.http(action, { projectId, filePath: file.path });
+				// A project switch / refresh can momentarily return an empty diff while
+				// the backend settles right after the WS room change. Retry once before
+				// falling back to an empty diff (which would render as a blank editor).
+				if (diffs.length === 0) {
+					await new Promise((r) => setTimeout(r, 150));
+					diffs = await ws.http(action, { projectId, filePath: file.path });
+				}
 				diffResult = diffs.length > 0 ? diffs[0] : null;
 
 				if (!diffResult) {
@@ -684,6 +777,8 @@
 				t.id === tabId ? { ...t, diff: null, isLoading: false } : t
 			);
 		}
+		// Remember the open diff tab per-project (server-persisted).
+		markGitUiDirty();
 	}
 
 	async function viewCommitDiff(hash: string) {
@@ -701,11 +796,22 @@
 			files: [],
 			isLoading: true
 		};
+		// Remember the open commit detail per-project (server-persisted).
+		markGitUiDirty();
 
 		try {
 			const diffs = await ws.http('git:diff-commit', { projectId, commitHash: hash });
 			if (selectedCommit?.hash !== hash) return;
 			selectedCommit = { ...selectedCommit, files: diffs, isLoading: false };
+
+			// Re-open a previously-open commit-file diff tab for this project, now
+			// that the commit's file list is available (lazy restore).
+			const pend = pendingActiveDiff;
+			if (pend && pend.section === 'commit' && pend.commitHash === hash) {
+				pendingActiveDiff = null;
+				const target = diffs.find(d => (d.newPath || d.oldPath) === pend.filePath);
+				if (target) viewCommitFileDiff(target, pend.scrollTop ?? 0);
+			}
 		} catch (err) {
 			debug.error('git', 'Failed to load commit diff:', err);
 			if (selectedCommit?.hash === hash) {
@@ -714,7 +820,7 @@
 		}
 	}
 
-	function viewCommitFileDiff(file: GitFileDiff) {
+	function viewCommitFileDiff(file: GitFileDiff, restoreScrollTop = 0) {
 		if (!selectedCommit) return;
 		const path = file.newPath || file.oldPath;
 		if (!path) return;
@@ -734,10 +840,13 @@
 		}];
 		activeTabId = tabId;
 		if (!isTwoColumnMode) viewMode = 'diff';
+		// Remember the open commit-file diff tab per-project (server-persisted).
+		markGitUiDirty();
 	}
 
 	function backToCommitList() {
 		selectedCommit = null;
+		markGitUiDirty();
 	}
 
 	// ============================
@@ -1192,15 +1301,69 @@ ${bodies}`;
 		if (hasActiveProject && projectId) {
 			const prevId = untrack(() => lastProjectId);
 			if (projectId !== prevId) {
-				lastProjectId = projectId;
-				activeView = 'changes';
-				resetAllViewTabs();
-				commits = [];
-				logSkip = 0;
-				selectedCommit = null;
-				loadAll();
+				untrack(() => {
+					lastProjectId = projectId;
+
+					// Heavy data (open diffs, history) is always re-fetched lazily.
+					resetAllViewTabs();
+					commits = [];
+					logSkip = 0;
+					selectedCommit = null;
+
+					// Restore this project's view. Persistence of the LEAVING project
+					// is handled by the workspace coordinator (snapshot provider +
+					// flush-before-switch), so we ONLY restore here — never save the
+					// already-cleared draft (that previously clobbered it).
+					const restored = loadGitUiState(projectId);
+					if (restored) {
+						activeView = restored.activeView;
+						leftPanelWidth = restored.leftPanelWidth;
+						selectedRemote = restored.selectedRemote;
+						gitDraft.commitMessage = restored.commitMessage;
+						pendingSelectedCommitHash = restored.selectedCommitHash;
+						pendingActiveDiff = restored.activeDiff;
+					} else {
+						activeView = 'changes';
+						selectedRemote = 'origin';
+						gitDraft.commitMessage = '';
+						pendingSelectedCommitHash = null;
+						pendingActiveDiff = null;
+					}
+
+					// Once git status is loaded (isRepo known), re-open the restored
+					// diff tab and load the data behind the restored view. We do this
+					// explicitly rather than leaning solely on the reactive view
+					// effects, which can miss the isRepo flip during a busy switch and
+					// leave History stuck on "No commits yet".
+					loadAll().then(() => {
+						if (!isRepo) return;
+						reopenPendingChangesDiff();
+						if (activeView === 'log' && commits.length === 0) loadLog(true);
+					});
+				});
 			}
 		}
+	});
+
+	// Expose live git view state to the workspace coordinator for server saves.
+	$effect(() => {
+		const provider = (): GitUiState => ({
+			activeView,
+			leftPanelWidth,
+			selectedRemote,
+			commitMessage: gitDraft.commitMessage,
+			selectedCommitHash: selectedCommit?.hash ?? null,
+			activeDiff: activeTab
+				? {
+					section: activeTab.section,
+					filePath: activeTab.filePath,
+					commitHash: activeTab.commitHash,
+					scrollTop: activeDiffScrollTop()
+				}
+				: null
+		});
+		setGitSnapshotProvider(provider);
+		return () => setGitSnapshotProvider(null);
 	});
 
 	// Load log when switching to log view
@@ -1309,6 +1472,10 @@ ${bodies}`;
 			// Refresh branches and remotes in case of branch switch/create/delete
 			loadBranches();
 			loadRemotes();
+			// Keep the Stash/Tags badge counts live when git changes out-of-band
+			// (e.g. `git stash` / `git tag` run from the terminal).
+			loadStash();
+			loadTags();
 			// Refresh log if it was already loaded (History tab was visited)
 			if (commits.length > 0) {
 				loadLog(true);
@@ -1755,6 +1922,8 @@ ${bodies}`;
 				diff={activeTab.diff}
 				isLoading={activeTab.isLoading}
 				inlinePreview={activeTab.section === 'conflicted'}
+				scrollTop={activeTab.scrollTop ?? 0}
+				onScroll={handleDiffScroll}
 			/>
 		{:else}
 			<div class="h-full flex flex-col items-center justify-center gap-2 text-slate-500 text-xs">

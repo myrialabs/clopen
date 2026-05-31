@@ -34,6 +34,7 @@
 		getScrollTop: () => number;
 		setScrollTop: (top: number) => void;
 		onDidScrollChange: (cb: (top: number) => void) => () => void;
+		hasRestoredViewState: () => boolean;
 	}
 
 	interface Props {
@@ -298,18 +299,25 @@
 				currentFilePath &&
 				currentFilePath !== scrollRestoredForPath &&
 				content &&
-				editorScrollTop > 0
+				editorScrollTop > 0 &&
+				// Don't fight a search-result jump: when a target line is set, the
+				// target effect reveals it. Restoring the saved scroll here (which
+				// can fire AFTER the reveal once content loads late) is exactly what
+				// snapped the editor back to the top.
+				target === undefined &&
+				// Don't fight the editor's own (richer) view-state restore.
+				!monacoEditorRef?.hasRestoredViewState?.()
 			) {
 				scrollRestoredForPath = currentFilePath;
-				const target = editorScrollTop;
+				const restoreTo = editorScrollTop;
 				requestAnimationFrame(() => {
 					requestAnimationFrame(() => {
-						monacoEditorRef?.setScrollTop(target);
+						monacoEditorRef?.setScrollTop(restoreTo);
 					});
 				});
-			} else if (currentFilePath && currentFilePath !== scrollRestoredForPath && editorScrollTop === 0 && content) {
-				// Nothing to restore but mark as resolved so subsequent typing
-				// doesn't re-trigger the check
+			} else if (currentFilePath && currentFilePath !== scrollRestoredForPath && content) {
+				// Nothing to restore (or a target reveal owns positioning) — mark as
+				// resolved so subsequent typing doesn't re-trigger the check.
 				scrollRestoredForPath = currentFilePath;
 			}
 
@@ -833,7 +841,9 @@
 			const top = pendingScrollRestore;
 			pendingScrollRestore = null;
 			requestAnimationFrame(() => editorInstance.setScrollTop(top));
-		} else if (editorScrollTop > 0) {
+		} else if (editorScrollTop > 0 && !monacoEditorRef?.hasRestoredViewState?.()) {
+			// Fallback only: if the editor already restored full view state (scroll +
+			// cursor + folds), don't fight it with a coarser scroll-only restore.
 			requestAnimationFrame(() => editorInstance.setScrollTop(editorScrollTop));
 		}
 

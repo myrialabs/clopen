@@ -24,9 +24,13 @@
 		// a single-pane code editor instead of the side-by-side diff — there is no
 		// "original" to compare against, so the left pane would just be empty.
 		inlinePreview?: boolean;
+		/** Initial vertical scroll to restore once the diff has rendered. */
+		scrollTop?: number;
+		/** Fired when the user scrolls the diff. */
+		onScroll?: (top: number) => void;
 	}
 
-	const { diff, diffs = [], isLoading, onSelectFile, selectedFileIndex = 0, inlinePreview = false }: Props = $props();
+	const { diff, diffs = [], isLoading, onSelectFile, selectedFileIndex = 0, inlinePreview = false, scrollTop = 0, onScroll }: Props = $props();
 
 	const renderSideBySide = $derived(settings.gitDiffSideBySide);
 
@@ -204,6 +208,8 @@
 						originalPath={activeDiff.oldPath}
 						modifiedPath={activeDiff.newPath}
 						{renderSideBySide}
+						{scrollTop}
+						{onScroll}
 					/>
 				{/key}
 			</div>
