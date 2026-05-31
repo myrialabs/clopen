@@ -54,11 +54,11 @@ async function loadCustomBlobUrl(force: boolean): Promise<string | null> {
 }
 
 async function resolveSourceUrl(): Promise<string> {
-	const id = settings.notificationSound || 'chime';
+	const id = settings.notificationSound || 'message';
 	if (id === NOTIFICATION_SOUND_CUSTOM) {
 		const url = await loadCustomBlobUrl(false);
 		// Fallback to a preset if custom is unavailable.
-		return url ?? presetUrl('chime');
+		return url ?? presetUrl('message');
 	}
 	return presetUrl(id);
 }

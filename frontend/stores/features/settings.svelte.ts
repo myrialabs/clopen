@@ -32,7 +32,7 @@ const defaultSettings: AppSettings = {
 	autoSave: true,
 	theme: 'system',
 	soundNotifications: true,
-	notificationSound: 'chime',
+	notificationSound: 'message',
 	notificationVolume: 1,
 	pushNotifications: false,
 	layoutPresetVisibility: createDefaultPresetVisibility(),

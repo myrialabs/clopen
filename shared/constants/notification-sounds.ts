@@ -1,7 +1,7 @@
 /** Notification sound presets bundled with the app (served from /audio/<id>.ogg). */
 export const NOTIFICATION_SOUND_PRESETS = [
-	{ id: 'chime', label: 'Chime' },
 	{ id: 'message', label: 'Message' },
+	{ id: 'chime', label: 'Chime' },
 	{ id: 'alert', label: 'Alert' },
 	{ id: 'chirp', label: 'Chirp' },
 	{ id: 'blip', label: 'Blip' },
