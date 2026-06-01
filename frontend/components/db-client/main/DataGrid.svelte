@@ -744,8 +744,8 @@
 		{#if error}
 			<pre class="p-3 text-sm text-red-600 dark:text-red-400 whitespace-pre-wrap">{error}</pre>
 		{:else if result && (result.rows?.length ?? 0) > 0}
-			<table class="w-full text-sm border-collapse">
-				<thead class="sticky top-0 bg-slate-100 dark:bg-slate-800 z-10">
+			<table class="w-full text-sm border-collapse bg-slate-50 dark:bg-slate-800/50">
+				<thead class="sticky top-0 bg-slate-200 dark:bg-slate-800 z-10">
 					<tr>
 						<th class="px-3 py-1.5 w-8 border-b border-slate-200 dark:border-slate-800">
 							<Checkbox disabled={!hasPk} checked={selected.size > 0 && selected.size === result.rows.length} onchange={toggleAll} />
@@ -776,7 +776,7 @@
 				</thead>
 				<tbody>
 					{#each result.rows as row, i (i)}
-						<tr class="hover:bg-slate-50 dark:hover:bg-slate-900/50">
+						<tr class="hover:bg-slate-100 dark:hover:bg-slate-800/60">
 							<td class="px-3 py-1.5 border-b border-slate-100 dark:border-slate-800">
 								<Checkbox disabled={!hasPk} checked={selected.has(i)} onchange={() => toggleSelect(i)} />
 							</td>

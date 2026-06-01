@@ -382,10 +382,10 @@ export class XTermService {
 		const isDark = document.documentElement.classList.contains('dark');
 
 		this.terminal.options.theme = {
-			background: isDark ? 'rgba(15, 23, 42, 0.7)' : '#f8fafc', // slate-900/70 : slate-50
+			background: isDark ? 'rgba(15, 23, 42, 0.6)' : 'rgba(255, 255, 255, 0.9)', // slate-900/60 : white/90
 			foreground: isDark ? '#e2e8f0' : '#1e293b', // slate-200 : slate-800
 			cursor: '#22c55e', // green-500
-			cursorAccent: isDark ? 'rgba(15, 23, 42, 0.7)' : '#f8fafc',
+			cursorAccent: isDark ? 'rgba(15, 23, 42, 0.6)' : 'rgba(255, 255, 255, 0.9)',
 			selectionBackground: isDark ? '#4ade8080' : '#22c55e80', // green-400 : green-500 with opacity
 			selectionForeground: undefined,
 			// Improved color visibility for both modes

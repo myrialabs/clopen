@@ -239,8 +239,8 @@
 				</button>
 			</div>
 			<div class="border border-slate-200 dark:border-slate-800 rounded overflow-hidden">
-				<table class="w-full text-sm">
-					<thead class="bg-slate-100 dark:bg-slate-800">
+				<table class="w-full text-sm bg-slate-50 dark:bg-slate-800/50">
+					<thead class="bg-slate-200 dark:bg-slate-800">
 						<tr>
 							<th class="px-3 py-1.5 text-left font-semibold">Name</th>
 							<th class="px-3 py-1.5 text-left font-semibold">Type</th>
@@ -304,8 +304,8 @@
 				</button>
 			</div>
 			<div class="border border-slate-200 dark:border-slate-800 rounded overflow-hidden">
-				<table class="w-full text-sm">
-					<thead class="bg-slate-100 dark:bg-slate-800">
+				<table class="w-full text-sm bg-slate-50 dark:bg-slate-800/50">
+					<thead class="bg-slate-200 dark:bg-slate-800">
 						<tr>
 							<th class="px-3 py-1.5 text-left font-semibold">Name</th>
 							<th class="px-3 py-1.5 text-left font-semibold">Columns</th>
@@ -342,8 +342,8 @@
 			<section>
 				<h3 class="text-sm font-semibold text-slate-700 dark:text-slate-200 mb-2">Foreign keys</h3>
 				<div class="border border-slate-200 dark:border-slate-800 rounded overflow-hidden">
-					<table class="w-full text-sm">
-						<thead class="bg-slate-100 dark:bg-slate-800">
+					<table class="w-full text-sm bg-slate-50 dark:bg-slate-800/50">
+						<thead class="bg-slate-200 dark:bg-slate-800">
 							<tr>
 								<th class="px-3 py-1.5 text-left font-semibold">Column</th>
 								<th class="px-3 py-1.5 text-left font-semibold">References</th>

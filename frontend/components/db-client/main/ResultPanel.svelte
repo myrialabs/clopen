@@ -71,7 +71,7 @@
 	}
 </script>
 
-<div class="flex-1 min-h-0 flex flex-col bg-white dark:bg-slate-950 border-t border-slate-200 dark:border-slate-800">
+<div class="flex-1 min-h-0 flex flex-col bg-white dark:bg-slate-900 border-t border-slate-200 dark:border-slate-800">
 	<div class="flex items-center justify-between px-3 py-1.5 border-b border-slate-200 dark:border-slate-800 text-sm">
 		<div class="flex items-center gap-3 text-slate-600 dark:text-slate-400">
 			{#if running}
@@ -119,8 +119,8 @@
 		{#if error}
 			<pre class="p-3 text-sm text-red-600 dark:text-red-400 whitespace-pre-wrap">{error}</pre>
 		{:else if result && result.rows.length > 0}
-			<table class="w-full text-sm border-collapse">
-				<thead class="sticky top-0 bg-slate-100 dark:bg-slate-800 z-10">
+			<table class="w-full text-sm border-collapse bg-slate-50 dark:bg-slate-800/50">
+				<thead class="sticky top-0 bg-slate-200 dark:bg-slate-800 z-10">
 					<tr>
 						<th class="px-2 py-1 text-left font-semibold text-slate-500 border-b border-slate-200 dark:border-slate-800 w-10">#</th>
 						{#each result.columns as col (col.name)}
@@ -137,7 +137,7 @@
 				</thead>
 				<tbody>
 					{#each result.rows as row, i (i)}
-						<tr class="hover:bg-slate-50 dark:hover:bg-slate-900/50">
+						<tr class="hover:bg-slate-100 dark:hover:bg-slate-800/60">
 							<td class="px-2 py-1 text-slate-400 border-b border-slate-100 dark:border-slate-800">{i + 1}</td>
 							{#each result.columns as col (col.name)}
 								<td

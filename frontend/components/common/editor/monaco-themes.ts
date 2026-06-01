@@ -39,9 +39,9 @@ export const THEMES = {
 		name: 'custom-dark',
 		base: 'vs-dark',
 		colors: {
-			background: '#0d1117',
+			background: '#0f172a99',
 			foreground: '#e6edf3',
-			lineHighlight: '#161b22',
+			lineHighlight: '#ffffff0d',
 			lineNumber: '#6e7681',
 			lineNumberActive: '#f0f6fc',
 			selection: '#264f78',
@@ -72,9 +72,9 @@ export const THEMES = {
 		name: 'custom-light',
 		base: 'vs',
 		colors: {
-			background: '#ffffff',
+			background: '#ffffffe6',
 			foreground: '#000000',
-			lineHighlight: '#f6f6f6',
+			lineHighlight: '#0000000d',
 			lineNumber: '#999999',
 			lineNumberActive: '#333333',
 			selection: '#add6ff',

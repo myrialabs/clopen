@@ -32,15 +32,6 @@
 	const language = $derived(languageForDriver(driver));
 	const classification = $derived(classifyQuery(driver, queryText));
 
-	function classBadgeClasses(c: QueryClass): string {
-		switch (c) {
-			case 'read': return 'bg-emerald-500/10 text-emerald-600 dark:text-emerald-400';
-			case 'write': return 'bg-amber-500/10 text-amber-600 dark:text-amber-400';
-			case 'ddl': return 'bg-red-500/10 text-red-600 dark:text-red-400';
-			default: return 'bg-slate-500/10 text-slate-500 dark:text-slate-400';
-		}
-	}
-
 	function onChange(value: string): void {
 		dbClientStore.setQueryText(connectionId, value);
 	}
@@ -160,9 +151,6 @@
 
 <div class="flex flex-col h-full min-h-0">
 	<div class="flex items-center gap-2 px-3 py-2 border-b border-slate-200 dark:border-slate-800 shrink-0">
-		<span class="text-[10px] uppercase tracking-wider px-2 py-0.5 rounded font-semibold {classBadgeClasses(classification)}">
-			{classification}
-		</span>
 		{#if running}
 			<button
 				type="button"

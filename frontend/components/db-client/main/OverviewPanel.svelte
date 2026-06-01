@@ -105,8 +105,8 @@
 			{/each}
 		</div>
 
-		<div class="bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 rounded-xl overflow-hidden">
-			<dl class="divide-y divide-slate-100 dark:divide-slate-800 text-sm">
+		<div class="bg-slate-50 dark:bg-slate-800/50 border border-slate-200 dark:border-slate-800 rounded-xl overflow-hidden">
+			<dl class="divide-y divide-slate-200 dark:divide-slate-800 text-sm">
 				{#snippet row(label: string, value: string)}
 					<div class="flex items-center justify-between gap-4 px-4 py-2.5">
 						<dt class="text-slate-500 dark:text-slate-400">{label}</dt>
