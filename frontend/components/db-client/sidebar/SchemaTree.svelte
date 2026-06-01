@@ -9,7 +9,7 @@
 	interface Props {
 		connectionId: string;
 		onContextMenu?: (e: MouseEvent, node: DbClientSchemaNode) => void;
-		onScopeMenu?: (e: MouseEvent, database?: string) => void;
+		onScopeMenu?: (e: MouseEvent) => void;
 		onBackToConnections?: () => void;
 		onCreateTable?: (database?: string) => void;
 	}
@@ -19,7 +19,9 @@
 	let loading = $state(false);
 	let error = $state<string | null>(null);
 	let databases = $state<DbClientSchemaNode[]>([]);
-	let currentDb = $state<string | null>(null);
+	// Source of truth lives in the store so the modal (overview, post-action
+	// navigation) and the sidebar agree on which database is open.
+	const currentDb = $derived(dbClientStore.openedDatabase[connectionId] ?? null);
 
 	let createDbOpen = $state(false);
 	let createDbName = $state('');
@@ -94,12 +96,12 @@
 	}
 
 	function openDatabase(name: string): void {
-		currentDb = name;
+		dbClientStore.setOpenedDatabase(connectionId, name);
 		dbClientStore.setActiveObject(connectionId, null);
 	}
 
 	function backToDatabases(): void {
-		currentDb = null;
+		dbClientStore.setOpenedDatabase(connectionId, null);
 		dbClientStore.setActiveObject(connectionId, null);
 	}
 
@@ -163,7 +165,6 @@
 	}
 
 	const showingDatabases = $derived(useDatabaseTree && currentDb === null);
-	const scopeDatabase = $derived(useDatabaseTree ? (currentDb ?? undefined) : (connection?.database ?? undefined));
 </script>
 
 <div class="flex flex-col h-full min-h-0">
@@ -235,7 +236,7 @@
 				<button
 					type="button"
 					class="flex items-center justify-center w-7 h-7 rounded-md text-slate-500 hover:bg-violet-500/10 hover:text-violet-600 transition-colors"
-					onclick={(e) => onScopeMenu?.(e, scopeDatabase)}
+					onclick={(e) => onScopeMenu?.(e)}
 					aria-label="Database actions"
 					title="Database actions"
 				>

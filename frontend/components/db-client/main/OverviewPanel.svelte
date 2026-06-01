@@ -20,7 +20,13 @@
 		dbClientStore.connections.find((c) => c.id === connectionId) ?? null
 	);
 
+	// A signature that changes whenever the scope (connection or in-scope
+	// database) changes — including database → undefined when stepping back up
+	// to the connection. A derived string is unambiguously tracked.
+	const scopeSig = $derived(`${connectionId}::${database ?? ''}`);
+
 	$effect(() => {
+		void scopeSig;
 		if (connectionId) void load();
 	});
 
@@ -61,7 +67,10 @@
 	<div class="flex items-center gap-2 px-4 py-3 border-b border-slate-200 dark:border-slate-800 shrink-0">
 		{#if connection}
 			<DriverIcon driver={connection.driver} class="w-5 h-5 shrink-0" />
-			<span class="text-sm font-semibold text-slate-900 dark:text-slate-100 truncate">{connection.name}</span>
+			<span class="text-sm font-semibold text-slate-900 dark:text-slate-100 truncate">{database ?? connection.name}</span>
+			{#if database}
+				<span class="text-xs text-slate-400 dark:text-slate-500 truncate">in {connection.name}</span>
+			{/if}
 		{/if}
 		<div class="flex-1"></div>
 		<button

@@ -61,10 +61,18 @@
 	});
 
 	async function doRename(): Promise<void> {
-		if (!renameValue) return;
+		if (!renameValue || renameValue === objectName) return;
 		try {
 			await dbClientStore.renameTable(connectionId, objectName, renameValue, { database, schema });
-			await load();
+			// Point the active object at the new name (this re-drives load via the
+			// effect) and refresh the sidebar so the rename is reflected there too.
+			dbClientStore.setActiveObject(connectionId, {
+				name: renameValue,
+				type: driver === 'mongodb' ? 'collection' : 'table',
+				database,
+				schema
+			});
+			dbClientStore.requestSchemaReload();
 		} catch (e) {
 			error = e instanceof Error ? e.message : String(e);
 		}
@@ -82,6 +90,10 @@
 	async function doDrop(): Promise<void> {
 		try {
 			await dbClientStore.dropTable(connectionId, objectName, { database, schema });
+			// Clear the now-gone object and refresh the sidebar so the dropped
+			// table disappears from the navigation list immediately.
+			dbClientStore.setActiveObject(connectionId, null);
+			dbClientStore.requestSchemaReload();
 		} catch (e) {
 			error = e instanceof Error ? e.message : String(e);
 		}

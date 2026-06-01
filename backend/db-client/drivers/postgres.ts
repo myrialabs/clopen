@@ -44,7 +44,17 @@ export class PostgresAdapter implements DbClientDriverAdapter {
 
 	private sql: SQL | null = null;
 	private alive = false;
+	// The database the active connection currently points at (switched by
+	// reconnecting in ensureDatabase).
 	private defaultDb: string | null = null;
+	// The connection's home database — what we revert to when no specific
+	// database is requested, so a connection-level overview doesn't keep
+	// reporting the last-browsed database.
+	private homeDb = 'postgres';
+	// Whether the connection was created with a fixed database. `conn` itself is
+	// rewritten when switching databases, so this stable flag is what tells us a
+	// connection-level (cluster) overview is appropriate.
+	private hasConfiguredDb = false;
 	private defaultSchema: string | null = null;
 	private conn: DbClientConnection | null = null;
 	private tunnelPort: number | undefined = undefined;
@@ -70,7 +80,9 @@ export class PostgresAdapter implements DbClientDriverAdapter {
 
 		this.sql = new SQL(url);
 		await this.sql.connect();
-		this.defaultDb = conn.database || null;
+		this.hasConfiguredDb = !!conn.database;
+		this.homeDb = conn.database || 'postgres';
+		this.defaultDb = this.homeDb;
 		this.defaultSchema = typeof conn.options?.schema === 'string' ? conn.options.schema : 'public';
 		this.conn = conn;
 		this.tunnelPort = tunnelPort;
@@ -78,15 +90,18 @@ export class PostgresAdapter implements DbClientDriverAdapter {
 	}
 
 	private async ensureDatabase(database?: string): Promise<void> {
-		if (!database || !this.conn) return;
-		if (database === this.defaultDb) return;
-		const newConn = { ...this.conn, database };
+		if (!this.conn) return;
+		// No specific database → revert to the home database, so connection-level
+		// operations don't run against whatever database was last browsed.
+		const target = database || this.homeDb;
+		if (target === this.defaultDb) return;
+		const newConn = { ...this.conn, database: target };
 		const url = this.buildUrl(newConn, this.tunnelPort);
 		const next = new SQL(url);
 		await next.connect();
 		const prev = this.sql;
 		this.sql = next;
-		this.defaultDb = database;
+		this.defaultDb = target;
 		this.conn = newConn;
 		this.alive = true;
 		if (prev) await prev.close().catch((err) => debug.warn('db-client', 'pg switch close error:', err));
@@ -163,6 +178,26 @@ export class PostgresAdapter implements DbClientDriverAdapter {
 		const start = performance.now();
 		const verRows = (await sql.unsafe('SELECT version() AS v')) as Array<{ v: string }>;
 		const latencyMs = Math.round(performance.now() - start);
+
+		// Connection level (no configured database, none in scope) → cluster-wide
+		// stats rather than the home database's, so it never looks "stuck" on the
+		// last-browsed database.
+		if (!this.hasConfiguredDb && !opts?.database) {
+			const rows = (await sql.unsafe(
+				`SELECT COUNT(*) AS dbs, SUM(pg_database_size(datname)) AS size
+				 FROM pg_database WHERE datistemplate = false`
+			)) as Array<Record<string, unknown>>;
+			const r = rows[0] ?? {};
+			return {
+				serverVersion: verRows[0]?.v ?? null,
+				latencyMs,
+				sizeBytes: r.size === null || r.size === undefined ? null : Number(r.size),
+				tableCount: null,
+				viewCount: null,
+				extra: [{ label: 'Databases', value: String(r.dbs === null || r.dbs === undefined ? 0 : Number(r.dbs)) }]
+			};
+		}
+
 		const schema = this.targetSchema(opts);
 		const sizeRows = (await sql.unsafe('SELECT pg_database_size(current_database()) AS size')) as Array<{ size: unknown }>;
 		const countRows = (await sql.unsafe(

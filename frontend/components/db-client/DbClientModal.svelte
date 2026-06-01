@@ -78,12 +78,34 @@
 
 	const driver = $derived(activeConnection?.driver);
 	const canDropDatabase = $derived(driver === 'mysql' || driver === 'postgres' || driver === 'mongodb');
-	const canRenameDatabase = $derived(driver === 'postgres');
+	const canRenameDatabase = $derived(driver === 'postgres' || driver === 'mysql');
 	const canEmptyDatabase = $derived(driver === 'mysql' || driver === 'postgres' || driver === 'sqlite' || driver === 'mongodb');
 	const canFlushDatabase = $derived(driver === 'redis');
 	const canResetTable = $derived(driver === 'mysql' || driver === 'postgres' || driver === 'sqlite' || driver === 'mongodb');
 	const canDuplicateTable = $derived(driver === 'mysql' || driver === 'postgres' || driver === 'sqlite' || driver === 'mongodb');
 	const canCopyCreate = $derived(driver === 'mysql' || driver === 'postgres' || driver === 'sqlite');
+
+	// The database currently in scope: the one opened in the sidebar (tree
+	// drivers) or the connection's fixed database. Single source of truth so
+	// overview and database-level actions never target the parent by mistake.
+	const scopeDb = $derived(
+		activeConnection
+			? (dbClientStore.openedDatabase[activeConnection.id] ?? activeConnection.database ?? undefined)
+			: undefined
+	);
+
+	// True when the sidebar shows the database list (connection has no fixed
+	// database and none is opened yet). At this level there is no table context,
+	// so the Data/Structure tabs are meaningless.
+	const useDatabaseTree = $derived(
+		!!activeConnection && !activeConnection.database && (driver === 'mysql' || driver === 'postgres' || driver === 'mongodb')
+	);
+	const atConnectionScope = $derived(
+		useDatabaseTree && !!activeConnection && (dbClientStore.openedDatabase[activeConnection.id] ?? null) === null
+	);
+
+	const canNavBack = $derived(dbClientStore.canNavBack(activeConnection?.id));
+	const canNavForward = $derived(dbClientStore.canNavForward(activeConnection?.id));
 
 	$effect(() => {
 		if (isOpen) {
@@ -91,6 +113,25 @@
 				debug.error('db-client', 'failed to load connections on modal open:', err);
 			});
 		}
+	});
+
+	// Data and Structure need a table in scope; bounce back to Overview when we
+	// step up to the connection (database-list) level while on one of them.
+	// Declared before the recorder so the correction lands before we snapshot.
+	$effect(() => {
+		if (atConnectionScope && activeConnection && (activeView === 'data' || activeView === 'structure')) {
+			dbClientStore.setView(activeConnection.id, 'overview');
+		}
+	});
+
+	// Record every navigation (view / object / database change) so the
+	// back/forward buttons can replay it. Reading the deriveds registers deps.
+	$effect(() => {
+		if (!activeConnection) return;
+		void activeView;
+		void activeObject;
+		void scopeDb;
+		dbClientStore.recordNav(activeConnection.id);
 	});
 
 	function handleResize(): void {
@@ -189,13 +230,10 @@
 		menuOpen = true;
 	}
 
-	let menuScopeDb = $state<string | undefined>(undefined);
-
-	function onScopeMenu(e: MouseEvent, database?: string): void {
+	function onScopeMenu(e: MouseEvent): void {
 		const items = scopeMenuItems();
 		if (items.length === 0) return;
 		menuNode = null;
-		menuScopeDb = database;
 		menuItems = items;
 		menuX = e.clientX;
 		menuY = e.clientY;
@@ -221,28 +259,28 @@
 		const conn = activeConnection;
 		if (!conn) return;
 
-		// Scope-level actions (header ⋯ menu) have no associated node.
+		// Scope-level actions (header ⋯ menu) operate on the open database.
 		switch (id) {
 			case 'empty-scope':
-				// Use the friendly connection name as the confirm token — the raw
-				// scope can be a long file path (SQLite) or numeric index (Redis).
-				dbActionTarget = { name: conn.name, scope: menuScopeDb };
+				if (!scopeDb) return;
+				// Confirm against the database name — that's what gets emptied.
+				dbActionTarget = { name: scopeDb, scope: scopeDb };
 				confirmEmptyDatabase = true;
 				return;
 			case 'flush-scope':
-				dbActionTarget = { name: conn.name, scope: menuScopeDb };
+				dbActionTarget = { name: conn.name, scope: scopeDb };
 				confirmFlushDatabase = true;
 				return;
 			case 'rename-scope':
-				if (!menuScopeDb) return;
-				renameDbTarget = menuScopeDb;
-				renameDbValue = menuScopeDb;
+				if (!scopeDb) return;
+				renameDbTarget = scopeDb;
+				renameDbValue = scopeDb;
 				renameDbOpen = true;
 				return;
 			case 'drop-scope':
-				if (!menuScopeDb) return;
+				if (!scopeDb) return;
 				// Real database name is required for the drop and the typed confirm.
-				dbActionTarget = { name: menuScopeDb, scope: menuScopeDb };
+				dbActionTarget = { name: scopeDb, scope: scopeDb };
 				confirmDropDatabase = true;
 				return;
 		}
@@ -420,9 +458,15 @@
 		const conn = activeConnection;
 		if (!conn || !dbActionTarget) return;
 		try {
-			await dbClientStore.dropDatabase(conn.id, dbActionTarget.name);
-			if (activeObject?.database === dbActionTarget.name) {
+			const dropped = dbActionTarget.name;
+			await dbClientStore.dropDatabase(conn.id, dropped);
+			if (activeObject?.database === dropped) {
 				dbClientStore.setActiveObject(conn.id, null);
+			}
+			// If we dropped the database we were browsing, step back to the
+			// database list so we don't query a database that no longer exists.
+			if (dbClientStore.openedDatabase[conn.id] === dropped) {
+				dbClientStore.setOpenedDatabase(conn.id, null);
 			}
 			dbClientStore.requestSchemaReload();
 		} catch (e) {
@@ -461,9 +505,16 @@
 		const conn = activeConnection;
 		if (!conn || !renameDbTarget || !renameDbValue.trim()) return;
 		try {
-			await dbClientStore.renameDatabase(conn.id, renameDbTarget, renameDbValue.trim());
-			if (activeObject?.database === renameDbTarget) {
+			const oldName = renameDbTarget;
+			const newName = renameDbValue.trim();
+			await dbClientStore.renameDatabase(conn.id, oldName, newName);
+			if (activeObject?.database === oldName) {
 				dbClientStore.setActiveObject(conn.id, null);
+			}
+			// Follow the rename: if we were browsing it, open the new name so its
+			// (preserved) data stays visible instead of the now-missing old name.
+			if (dbClientStore.openedDatabase[conn.id] === oldName) {
+				dbClientStore.setOpenedDatabase(conn.id, newName);
 			}
 			dbClientStore.requestSchemaReload();
 		} catch (e) {
@@ -517,6 +568,11 @@
 		{ id: 'data', label: 'Data', icon: 'lucide:table' },
 		{ id: 'structure', label: 'Structure', icon: 'lucide:layout-list' }
 	];
+
+	// At connection scope (no table context) Data/Structure are hidden.
+	const visibleViews = $derived(
+		atConnectionScope ? VIEW_DEFS.filter((v) => v.id === 'overview' || v.id === 'query') : VIEW_DEFS
+	);
 
 	function pickView(v: DbClientView): void {
 		if (!activeConnection) return;
@@ -649,7 +705,7 @@
 						<!-- block 1: header -->
 						<div class="flex items-center gap-2 px-3 py-1.5 bg-white dark:bg-slate-900 rounded-xl border border-slate-200 dark:border-slate-800 shrink-0">
 							<div class="flex items-center gap-1 shrink-0">
-								{#each VIEW_DEFS as v (v.id)}
+								{#each visibleViews as v (v.id)}
 									<button
 										type="button"
 										class="flex items-center gap-1.5 px-3 py-1.5 rounded-md text-sm transition-colors
@@ -670,6 +726,28 @@
 									<span class="truncate max-w-[240px]">{activeObject.name}</span>
 								</div>
 							{/if}
+							<div class="flex items-center gap-0.5 shrink-0 pl-1">
+								<button
+									type="button"
+									class="flex items-center justify-center w-7 h-7 rounded-md text-slate-500 dark:text-slate-400 hover:bg-slate-100 dark:hover:bg-slate-800/60 disabled:opacity-40 disabled:cursor-not-allowed transition-colors"
+									onclick={() => activeConnection && dbClientStore.navBack(activeConnection.id)}
+									disabled={!canNavBack}
+									title="Back"
+									aria-label="Back"
+								>
+									<Icon name="lucide:arrow-left" class="w-4 h-4" />
+								</button>
+								<button
+									type="button"
+									class="flex items-center justify-center w-7 h-7 rounded-md text-slate-500 dark:text-slate-400 hover:bg-slate-100 dark:hover:bg-slate-800/60 disabled:opacity-40 disabled:cursor-not-allowed transition-colors"
+									onclick={() => activeConnection && dbClientStore.navForward(activeConnection.id)}
+									disabled={!canNavForward}
+									title="Forward"
+									aria-label="Forward"
+								>
+									<Icon name="lucide:arrow-right" class="w-4 h-4" />
+								</button>
+							</div>
 						</div>
 
 						<!-- block 2: content -->
@@ -677,7 +755,7 @@
 							{#if activeView === 'overview'}
 								<OverviewPanel
 									connectionId={activeConnection.id}
-									database={activeObject?.database ?? activeConnection.database ?? undefined}
+									database={scopeDb}
 								/>
 							{:else if activeView === 'query'}
 								<QueryEditor
@@ -693,6 +771,7 @@
 										objectName={activeObject.name}
 										database={activeObject.database}
 										schema={activeObject.schema}
+										filter={activeObject.filter ?? null}
 									/>
 								{:else}
 									<div class="flex-1 flex items-center justify-center text-slate-400 dark:text-slate-600">

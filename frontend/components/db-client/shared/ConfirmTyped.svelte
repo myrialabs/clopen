@@ -41,7 +41,7 @@
 	{onClose}
 	{title}
 	type="error"
-	message={`${message}\n\nType "${expected}" to confirm.`}
+	message={`${message}\nType "${expected}" to confirm.`}
 	bind:inputValue={typed}
 	inputPlaceholder={expected}
 	{confirmText}

@@ -43,7 +43,12 @@ export class MysqlAdapter implements DbClientDriverAdapter {
 
 	private sql: SQL | null = null;
 	private alive = false;
+	// The session's currently-USEd database (mutated by ensureDatabase).
 	private defaultDb: string | null = null;
+	// The connection's configured database — immutable, used as the scope
+	// fallback so a connection-level overview never resolves to the last-browsed
+	// database that only the session happens to be sitting on.
+	private configuredDb: string | null = null;
 
 	async connect(conn: DbClientConnection, tunnelPort?: number): Promise<void> {
 		const host = tunnelPort ? '127.0.0.1' : (conn.host ?? '127.0.0.1');
@@ -57,6 +62,7 @@ export class MysqlAdapter implements DbClientDriverAdapter {
 		this.sql = new SQL(url);
 		await this.sql.connect();
 		this.defaultDb = conn.database || null;
+		this.configuredDb = conn.database || null;
 		this.alive = true;
 	}
 
@@ -104,7 +110,8 @@ export class MysqlAdapter implements DbClientDriverAdapter {
 	}
 
 	private targetDb(opts?: SchemaOpts): string | undefined {
-		return opts?.database || this.defaultDb || undefined;
+		// Fall back to the configured database, never the session's last-USEd one.
+		return opts?.database || this.configuredDb || undefined;
 	}
 
 	private async ensureDatabase(database?: string): Promise<void> {
@@ -140,30 +147,43 @@ export class MysqlAdapter implements DbClientDriverAdapter {
 		const verRows = (await sql.unsafe('SELECT VERSION() AS v')) as Array<{ v: string }>;
 		const latencyMs = Math.round(performance.now() - start);
 		const target = this.targetDb(opts);
-		let sizeBytes: number | null = null;
-		let tableCount: number | null = null;
-		let viewCount: number | null = null;
-		if (target) {
+		if (!target) {
+			// Connection level — aggregate across all user databases on the server.
 			const rows = (await sql.unsafe(
 				`SELECT
+				   COUNT(DISTINCT table_schema) AS dbs,
 				   SUM(data_length + index_length) AS size,
 				   SUM(table_type = 'BASE TABLE') AS tables,
 				   SUM(table_type = 'VIEW') AS views
-				 FROM information_schema.tables WHERE table_schema = ?`,
-				[target] as never
+				 FROM information_schema.tables
+				 WHERE table_schema NOT IN ('mysql', 'information_schema', 'performance_schema', 'sys')`
 			)) as Array<Record<string, unknown>>;
 			const r = rows[0] ?? {};
-			sizeBytes = r.size === null || r.size === undefined ? null : Number(r.size);
-			tableCount = r.tables === null || r.tables === undefined ? null : Number(r.tables);
-			viewCount = r.views === null || r.views === undefined ? null : Number(r.views);
+			return {
+				serverVersion: verRows[0]?.v ?? null,
+				latencyMs,
+				sizeBytes: r.size === null || r.size === undefined ? null : Number(r.size),
+				tableCount: r.tables === null || r.tables === undefined ? null : Number(r.tables),
+				viewCount: r.views === null || r.views === undefined ? null : Number(r.views),
+				extra: [{ label: 'Databases', value: String(r.dbs === null || r.dbs === undefined ? 0 : Number(r.dbs)) }]
+			};
 		}
+		const rows = (await sql.unsafe(
+			`SELECT
+			   SUM(data_length + index_length) AS size,
+			   SUM(table_type = 'BASE TABLE') AS tables,
+			   SUM(table_type = 'VIEW') AS views
+			 FROM information_schema.tables WHERE table_schema = ?`,
+			[target] as never
+		)) as Array<Record<string, unknown>>;
+		const r = rows[0] ?? {};
 		return {
 			serverVersion: verRows[0]?.v ?? null,
 			latencyMs,
-			sizeBytes,
-			tableCount,
-			viewCount,
-			extra: target ? [{ label: 'Database', value: target }] : []
+			sizeBytes: r.size === null || r.size === undefined ? null : Number(r.size),
+			tableCount: r.tables === null || r.tables === undefined ? null : Number(r.tables),
+			viewCount: r.views === null || r.views === undefined ? null : Number(r.views),
+			extra: [{ label: 'Database', value: target }]
 		};
 	}
 
@@ -272,6 +292,28 @@ export class MysqlAdapter implements DbClientDriverAdapter {
 		await this.requireSql().unsafe(ddl);
 		if (this.defaultDb === name) this.defaultDb = null;
 		return ddl;
+	}
+
+	async renameDatabase(name: string, newName: string): Promise<string> {
+		// MySQL has no RENAME DATABASE. Create the target, move every base table
+		// into it (RENAME TABLE moves data instantly, no copy), then drop the old
+		// one. Tables (and their data) are migrated losslessly.
+		assertSafeIdentifier(name);
+		assertSafeIdentifier(newName);
+		const sql = this.requireSql();
+		await sql.unsafe(`CREATE DATABASE ${Q(newName)}`);
+		const rows = (await sql.unsafe(
+			"SELECT TABLE_NAME FROM information_schema.tables WHERE TABLE_SCHEMA = ? AND TABLE_TYPE = 'BASE TABLE'",
+			[name] as never
+		)) as Array<{ TABLE_NAME: string }>;
+		for (const r of rows) {
+			assertSafeIdentifier(r.TABLE_NAME);
+			await sql.unsafe(`RENAME TABLE ${qualified(Q, [name, r.TABLE_NAME])} TO ${qualified(Q, [newName, r.TABLE_NAME])}`);
+		}
+		await sql.unsafe(`DROP DATABASE ${Q(name)}`);
+		// Force a fresh `USE` on next access — the session's selected db is gone.
+		if (this.defaultDb === name) this.defaultDb = null;
+		return `CREATE DATABASE ${Q(newName)}; RENAME TABLE …; DROP DATABASE ${Q(name)}`;
 	}
 
 	async resetDatabase(opts?: SchemaOpts): Promise<string> {

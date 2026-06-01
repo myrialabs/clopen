@@ -21,9 +21,11 @@
 		objectName: string;
 		database?: string;
 		schema?: string;
+		/** Pre-applied filter (foreign-key jump / history replay). */
+		filter?: { column: string; op: string; value: string } | null;
 	}
 
-	const { connectionId, driver, objectName, database, schema }: Props = $props();
+	const { connectionId, driver, objectName, database, schema, filter = null }: Props = $props();
 
 	type SortDir = 'asc' | 'desc' | null;
 
@@ -79,20 +81,45 @@
 	let cellOpen = $state(false);
 	let cellColumn = $state('');
 	let cellValue = $state<unknown>(null);
+	let cellRowIdx = $state(-1);
 
 	const fkMap = $derived(new Map((details?.foreignKeys ?? []).map((fk) => [fk.column, fk])));
 
-	function openCell(col: string, value: unknown): void {
+	const cellFk = $derived(cellColumn ? fkMap.get(cellColumn) ?? null : null);
+	const cellNullable = $derived(
+		(details?.columns ?? []).find((c) => c.name === cellColumn)?.nullable ?? false
+	);
+
+	function openCell(rowIdx: number, col: string, value: unknown): void {
+		cellRowIdx = rowIdx;
 		cellColumn = col;
 		cellValue = value;
 		cellOpen = true;
 	}
 
+	// Stage an edit made from the cell viewer the same way an inline edit is
+	// staged — it joins pendingChanges and is written on "Save changes".
+	function saveCell(value: unknown): void {
+		if (cellRowIdx < 0 || !cellColumn) return;
+		const key = pkKey(cellRowIdx);
+		const map = new Map(pendingChanges);
+		const existing = map.get(key) ?? {};
+		map.set(key, { ...existing, [cellColumn]: value });
+		pendingChanges = map;
+	}
+
 	function jumpToFk(col: string, value: unknown): void {
 		const fk = fkMap.get(col);
 		if (!fk || value === null || value === undefined) return;
-		dbClientStore.setPendingDataFilter({ table: fk.refTable, column: fk.refColumn, value: String(value) });
-		dbClientStore.setActiveObject(connectionId, { name: fk.refTable, type: 'table', database, schema });
+		// Carry the filter on the active object so back/forward history replays
+		// the same filtered view of the referenced table.
+		dbClientStore.setActiveObject(connectionId, {
+			name: fk.refTable,
+			type: 'table',
+			database,
+			schema,
+			filter: { column: fk.refColumn, op: '=', value: String(value) }
+		});
 		dbClientStore.setView(connectionId, 'data');
 	}
 
@@ -251,22 +278,31 @@
 	}
 
 	$effect(() => {
+		// Re-evaluate on object change, explicit (re)selection, and history jumps
+		// (navObjectTick). The pre-applied filter is read untracked and consumed,
+		// so switching tabs (which remounts the grid) or reloading the same object
+		// never re-applies a filter the user has navigated past — while back/forward
+		// still replays it, because each history jump bumps the tick and re-seeds
+		// the filter from its own snapshot copy.
+		const tick = dbClientStore.navObjectTick;
+		const objKey = `${connectionId}::${objectName}`;
+		void objKey;
 		if (objectName && connectionId) {
+			// Apply the relation filter once per navigation. Claimed untracked so it
+			// neither re-triggers this effect nor mutates the object history relies on.
+			const applied = untrack(() =>
+				filter && dbClientStore.claimFilterApplication(connectionId, tick) ? filter : null
+			);
 			page = 0;
-			conditions = [];
 			sortColumn = null;
 			sortDir = null;
 			totalRows = null;
-			// Apply a queued foreign-key filter, if it targets this object.
-			// Read untracked so clearing it doesn't re-trigger this effect.
-			untrack(() => {
-				const pf = dbClientStore.pendingDataFilter;
-				if (pf && pf.table === objectName) {
-					conditions = [{ column: pf.column, op: '=', value: pf.value }];
-					showSearch = true;
-					dbClientStore.clearPendingDataFilter();
-				}
-			});
+			if (applied) {
+				conditions = [{ column: applied.column, op: applied.op as Operator, value: applied.value }];
+				showSearch = true;
+			} else {
+				conditions = [];
+			}
 			load();
 		}
 	});
@@ -773,7 +809,7 @@
 													class="flex items-center justify-center w-5 h-5 rounded bg-white dark:bg-slate-800 border border-slate-200 dark:border-slate-700 text-slate-500 hover:text-violet-600 dark:hover:text-violet-400 shadow-sm"
 													title="View value"
 													onmousedown={(e) => e.stopPropagation()}
-													onclick={(e) => { e.stopPropagation(); openCell(col.name, display); }}
+													onclick={(e) => { e.stopPropagation(); openCell(i, col.name, display); }}
 												>
 													<Icon name="lucide:maximize-2" class="w-3 h-3" />
 												</button>
@@ -828,6 +864,11 @@
 		bind:isOpen={insertOpen}
 		title={`Insert into ${objectName}`}
 		columns={details.columns}
+		foreignKeys={details.foreignKeys ?? []}
+		{connectionId}
+		{driver}
+		{database}
+		{schema}
 		onSubmit={doInsert}
 		onClose={() => (insertOpen = false)}
 	/>
@@ -846,5 +887,14 @@
 	bind:isOpen={cellOpen}
 	column={cellColumn}
 	value={cellValue}
+	table={objectName}
+	editable={hasPk}
+	nullable={cellNullable}
+	onSave={saveCell}
+	fk={cellFk}
+	{connectionId}
+	{driver}
+	{database}
+	{schema}
 	onClose={() => (cellOpen = false)}
 />
