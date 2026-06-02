@@ -140,36 +140,75 @@
 		}
 	}
 
+	// Persist the session's reading position so returning to the project restores
+	// it instead of snapping to the bottom. Uses a message ANCHOR (robust to the
+	// virtual window) rather than a raw scrollTop. Skipped while restoring so a
+	// transient mid-restore position can't overwrite the saved one.
+	function saveReadingPosition(el: HTMLElement) {
+		if (appState.isRestoring || suppressAutoScroll) return;
+		const sid = sessionState.currentSession?.id;
+		if (!sid) return;
+		const { scrollTop, scrollHeight, clientHeight } = el;
+		const atBottom = scrollTop + clientHeight >= scrollHeight - 200;
+		if (atBottom) {
+			setChatScroll(sid, { atBottom: true, anchorMessageId: null, anchorOffset: 0 });
+		} else {
+			const anchor = captureChatAnchor(el);
+			setChatScroll(sid, {
+				atBottom: false,
+				anchorMessageId: anchor?.id ?? null,
+				anchorOffset: anchor?.offset ?? 0
+			});
+		}
+	}
+
+	// Debounced "settle" capture. The scroll lock suppresses the synchronous save
+	// path so programmatic-scroll echoes can't flip isUserAtBottom — but a genuine
+	// user scroll during that window (e.g. scrolling up right after a project
+	// switch restores the chat) must still be remembered, otherwise we keep
+	// persisting the stale restored position. We can't tell echo from gesture
+	// synchronously, so we defer to this capture which reads the FINAL resting
+	// position after any programmatic animation settles: for an untouched
+	// programmatic scroll that's the bottom (correct), and for a user scroll it's
+	// wherever they stopped (correct).
+	let saveScrollTimer: ReturnType<typeof setTimeout> | null = null;
+	function scheduleReadingPositionSave() {
+		if (saveScrollTimer) clearTimeout(saveScrollTimer);
+		saveScrollTimer = setTimeout(() => {
+			saveScrollTimer = null;
+			const el = getScrollEl();
+			if (!el) return;
+			// The lock has expired by now; refresh isUserAtBottom too so live
+			// auto-scroll follows from the user's real position.
+			if (Date.now() >= scrollLockUntil) {
+				const { scrollTop, scrollHeight, clientHeight } = el;
+				isUserAtBottom = scrollTop + clientHeight >= scrollHeight - 200;
+			}
+			saveReadingPosition(el);
+		}, 120);
+	}
+
 	// Scroll detection with bottom position tracking + load more triggers
 	function handleMessagesScroll() {
-		// Don't override isUserAtBottom during/after a programmatic scroll
-		if (Date.now() < scrollLockUntil) return;
-
 		const el = getScrollEl();
 		if (!el) return;
+
+		// While the lock is active we can't trust scroll events to reflect user
+		// intent (they may be echoes of our own programmatic scroll), so leave
+		// isUserAtBottom and load-more untouched — but DO schedule a settle-capture
+		// so a real user scroll during the lock still updates the saved position.
+		if (Date.now() < scrollLockUntil) {
+			scheduleReadingPositionSave();
+			return;
+		}
 
 		const { scrollTop, scrollHeight, clientHeight } = el;
 		const threshold = 200;
 		isUserAtBottom = scrollTop + clientHeight >= scrollHeight - threshold;
 
-		// Remember this session's reading position so returning to the project
-		// restores it instead of always snapping to the bottom. Use a message
-		// anchor (robust to the virtual window) rather than a raw scrollTop.
-		if (!appState.isRestoring) {
-			const sid = sessionState.currentSession?.id;
-			if (sid) {
-				if (isUserAtBottom) {
-					setChatScroll(sid, { atBottom: true, anchorMessageId: null, anchorOffset: 0 });
-				} else {
-					const anchor = captureChatAnchor(el);
-					setChatScroll(sid, {
-						atBottom: false,
-						anchorMessageId: anchor?.id ?? null,
-						anchorOffset: anchor?.offset ?? 0
-					});
-				}
-			}
-		}
+		// Remember this session's reading position (synchronous in the common,
+		// unlocked case so a project switch immediately after still flushes it).
+		saveReadingPosition(el);
 
 		if (!vs.isActive) return;
 
@@ -399,13 +438,29 @@
 				// Pull the anchor into the virtual window, then wait for it to render.
 				if (vs.isActive) vs.ensureVisible(idx);
 				await tick();
-				await new Promise<void>((resolve) => requestAnimationFrame(() => resolve()));
-				const anchorEl = el.querySelector<HTMLElement>(`[data-message-id="${anchorId}"]`);
-				if (anchorEl) {
+
+				// Align the anchor to its saved offset, then RE-ALIGN across several
+				// frames. Messages use `content-visibility: auto` with a 200px
+				// intrinsic-size estimate, so those above the anchor are laid out as
+				// short placeholders until they near the viewport — once they render
+				// at their real height (often far more than 200px for long messages)
+				// they shove the anchor away from where we just put it. Each pass
+				// re-measures and corrects until the position stabilizes, keeping the
+				// lock raised so these programmatic scrolls aren't mistaken for user
+				// input.
+				let aligned = false;
+				for (let pass = 0; pass < 12; pass++) {
+					await new Promise<void>((resolve) => requestAnimationFrame(() => resolve()));
+					const anchorEl = el.querySelector<HTMLElement>(`[data-message-id="${anchorId}"]`);
+					if (!anchorEl) break;
+					scrollLockUntil = Date.now() + 800;
 					const offsetNow = anchorEl.getBoundingClientRect().top - el.getBoundingClientRect().top;
-					el.scrollTop = el.scrollTop + offsetNow - saved.anchorOffset;
-					return;
+					const delta = offsetNow - saved.anchorOffset;
+					aligned = true;
+					if (Math.abs(delta) <= 1) break;
+					el.scrollTop += delta;
 				}
+				if (aligned) return;
 			}
 		}
 
@@ -623,6 +678,7 @@
 			if (currentListenerEl) {
 				currentListenerEl.removeEventListener('scroll', handleMessagesScroll);
 			}
+			if (saveScrollTimer) clearTimeout(saveScrollTimer);
 			hasInitiallyScrolled = false;
 		};
 	});
