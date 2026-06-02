@@ -10,6 +10,7 @@ import { t } from 'elysia';
 import { createRouter } from '$shared/utils/ws-server';
 import { messageQueries, sessionQueries, projectQueries, checkpointQueries } from '../../database/queries';
 import { snapshotService } from '../../snapshot/snapshot-service';
+import { streamManager } from '../../chat/stream-manager';
 import { debug } from '$shared/utils/logger';
 import type { UnifiedMessage } from '$shared/types/unified';
 import {
@@ -40,7 +41,8 @@ export const restoreHandler = createRouter()
 				modifiedBySnapshotId: t.String(),
 				modifiedAt: t.String(),
 				restoreContent: t.Optional(t.String()),
-				currentContent: t.Optional(t.String())
+				currentContent: t.Optional(t.String()),
+				reason: t.Optional(t.Union([t.Literal('cross-session'), t.Literal('local')]))
 			})),
 			checkpointsToUndo: t.Array(t.String())
 		})
@@ -111,7 +113,16 @@ export const restoreHandler = createRouter()
 		})
 	}, async ({ data, conn }) => {
 		const { messageId, sessionId, conflictResolutions } = data;
-		requireSessionAccess(conn, sessionId);
+		const session = requireSessionAccess(conn, sessionId);
+
+		// Refuse to restore while this session is still generating. Restore rewrites
+		// the working tree and resets the in-memory baseline; doing that mid-stream
+		// would corrupt the end-of-turn snapshot and race the engine's own writes.
+		const activeStream = streamManager.getSessionStream(sessionId, session.project_id);
+		if (activeStream?.status === 'active') {
+			throw new Error('Cannot restore while the chat is still generating. Stop the stream first, then try again.');
+		}
+
 		const isInitialRestore = messageId === INITIAL_NODE_ID;
 
 		debug.log('snapshot', `RESTORE - ${isInitialRestore ? 'Restoring to initial state' : 'Moving HEAD to checkpoint'}`);
@@ -136,19 +147,16 @@ export const restoreHandler = createRouter()
 			let filesRestored = 0;
 			let filesSkipped = 0;
 
-			const session = sessionQueries.getById(sessionId);
-			if (session) {
-				const project = projectQueries.getById(session.project_id);
-				if (project) {
-					const result = await snapshotService.restoreSessionScoped(
-						project.path,
-						sessionId,
-						null, // null = restore to initial (before all snapshots)
-						conflictResolutions
-					);
-					filesRestored = result.restoredFiles;
-					filesSkipped = result.skippedFiles;
-				}
+			const project = projectQueries.getById(session.project_id);
+			if (project) {
+				const result = await snapshotService.restoreSessionScoped(
+					project.path,
+					sessionId,
+					null, // null = restore to initial (before all snapshots)
+					conflictResolutions
+				);
+				filesRestored = result.restoredFiles;
+				filesSkipped = result.skippedFiles;
 			}
 
 			// Broadcast messages-changed
@@ -285,20 +293,17 @@ export const restoreHandler = createRouter()
 		let filesRestored = 0;
 		let filesSkipped = 0;
 
-		const session = sessionQueries.getById(sessionId);
-		if (session) {
-			const project = projectQueries.getById(session.project_id);
-			if (project) {
-				const result = await snapshotService.restoreSessionScoped(
-					project.path,
-					sessionId,
-					resolvedCheckpointId,
-					conflictResolutions,
-					checkpointPath.length > 0 ? checkpointPath : undefined
-				);
-				filesRestored = result.restoredFiles;
-				filesSkipped = result.skippedFiles;
-			}
+		const project = projectQueries.getById(session.project_id);
+		if (project) {
+			const result = await snapshotService.restoreSessionScoped(
+				project.path,
+				sessionId,
+				resolvedCheckpointId,
+				conflictResolutions,
+				checkpointPath.length > 0 ? checkpointPath : undefined
+			);
+			filesRestored = result.restoredFiles;
+			filesSkipped = result.skippedFiles;
 		}
 
 		// 8. Broadcast messages-changed

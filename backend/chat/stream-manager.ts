@@ -427,8 +427,13 @@ class StreamManager extends EventEmitter {
 	private async processStream(streamState: StreamState, requestData: StreamRequest): Promise<void> {
 		let userMessageId: string | undefined;
 
+		// Launch the pre-edit baseline scan as early as possible so it overlaps with
+		// engine initialization. It MUST finish before the engine can write any files
+		// (awaited just before streamQuery below) — otherwise early writes would be
+		// folded into the baseline and silently dropped from this turn's checkpoint.
+		let baselineInitPromise: Promise<void> | null = null;
 		if (requestData.projectPath && requestData.chatSessionId) {
-			snapshotService.initializeSessionBaseline(
+			baselineInitPromise = snapshotService.initializeSessionBaseline(
 				requestData.projectPath,
 				requestData.chatSessionId
 			).catch(err => debug.error('snapshot', 'Failed to initialize session baseline:', err));
@@ -597,6 +602,11 @@ class StreamManager extends EventEmitter {
 					debug.error('chat', 'Failed to detect orphaned messages:', error);
 				}
 			}
+
+			// Guarantee the pre-edit baseline is captured before the engine can write
+			// any files (see processStream top). Without this await a fast engine on a
+			// large repo could begin editing while the baseline scan is still running.
+			if (baselineInitPromise) await baselineInitPromise;
 
 			// Stream EngineOutput events through the engine adapter
 			const streamIterable = engine.streamQuery({

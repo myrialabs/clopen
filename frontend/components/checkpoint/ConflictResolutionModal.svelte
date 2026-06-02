@@ -88,7 +88,7 @@
 					Restore Conflict Detected
 				</h3>
 				<p class="text-sm text-slate-500 dark:text-slate-400 mt-1">
-					The following files were also modified in other sessions. Choose how to handle each file:
+					The following files have changes that conflict with this restore. Choose how to handle each file:
 				</p>
 			</div>
 		</div>
@@ -120,7 +120,11 @@
 						{/if}
 					</div>
 					<p class="text-xs text-slate-500 dark:text-slate-400 mb-2">
-						Modified by another session on {formatTimestamp(conflict.modifiedAt)}
+						{#if conflict.reason === 'local'}
+							You have local edits to this file that aren't part of any checkpoint — restoring will overwrite them.
+						{:else}
+							Modified by another session on {formatTimestamp(conflict.modifiedAt)}
+						{/if}
 					</p>
 
 					<!-- Diff View -->

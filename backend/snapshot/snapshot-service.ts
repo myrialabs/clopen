@@ -45,6 +45,13 @@ export interface RestoreConflict {
 	modifiedAt: string;
 	restoreContent?: string;
 	currentContent?: string;
+	/**
+	 * 'cross-session' (default): file was changed by a different session after the
+	 * reference time. 'local': the current on-disk content was never captured by
+	 * this session's snapshots, so restoring would overwrite an unrecoverable
+	 * manual edit.
+	 */
+	reason?: 'cross-session' | 'local';
 }
 
 /**
@@ -295,7 +302,10 @@ export class SnapshotService {
 			return { hasConflicts: false, conflicts: [], checkpointsToUndo: [] };
 		}
 
-		// Filter out files already in expected state on disk (no actual change needed)
+		// Filter out files already in expected state on disk (no actual change needed),
+		// and remember the current on-disk hash of the files that WOULD change so the
+		// local-drift pass below can run without re-reading them.
+		const currentHashByFile = new Map<string, string>();
 		if (projectPath) {
 			for (const [filepath, expectedHash] of expectedState) {
 				const fullPath = path.join(projectPath, filepath);
@@ -309,6 +319,8 @@ export class SnapshotService {
 				}
 				if (currentHash === expectedHash) {
 					expectedState.delete(filepath);
+				} else {
+					currentHashByFile.set(filepath, currentHash);
 				}
 			}
 
@@ -389,6 +401,30 @@ export class SnapshotService {
 		}
 
 		const uniqueConflicts = Array.from(conflictMap.values());
+
+		// Local-drift detection: a file restore would overwrite/delete whose CURRENT
+		// on-disk content was never captured by this session's snapshots. Overwriting
+		// it would lose an unrecoverable manual edit, so surface it as a conflict and
+		// let the user decide. Normal undo/redo never trips this — the working tree's
+		// content there always maps to a captured oldHash/newHash.
+		if (projectPath) {
+			const sessionReferenced = snapshotQueries.collectBlobHashes(sessionSnapshots);
+			const alreadyFlagged = new Set(uniqueConflicts.map(c => c.filepath));
+			for (const [filepath] of expectedState) {
+				if (alreadyFlagged.has(filepath)) continue;
+				const currentHash = currentHashByFile.get(filepath) || '';
+				if (!currentHash) continue; // no file on disk → nothing to lose
+				if (!sessionReferenced.has(currentHash)) {
+					uniqueConflicts.push({
+						filepath,
+						modifiedBySessionId: sessionId,
+						modifiedBySnapshotId: '',
+						modifiedAt: '',
+						reason: 'local'
+					});
+				}
+			}
+		}
 
 		// Populate file contents for diff display
 		if (uniqueConflicts.length > 0 && projectPath) {

@@ -18,6 +18,11 @@ export interface RestoreConflict {
 	modifiedAt: string;
 	restoreContent?: string;
 	currentContent?: string;
+	/**
+	 * 'cross-session' (default): changed by another session. 'local': current
+	 * on-disk content was never checkpointed, so restoring overwrites a manual edit.
+	 */
+	reason?: 'cross-session' | 'local';
 }
 
 /**
