@@ -49,6 +49,7 @@ export class MysqlAdapter implements DbClientDriverAdapter {
 	// fallback so a connection-level overview never resolves to the last-browsed
 	// database that only the session happens to be sitting on.
 	private configuredDb: string | null = null;
+	private ensureLock = Promise.resolve();
 
 	async connect(conn: DbClientConnection, tunnelPort?: number): Promise<void> {
 		const host = tunnelPort ? '127.0.0.1' : (conn.host ?? '127.0.0.1');
@@ -67,14 +68,20 @@ export class MysqlAdapter implements DbClientDriverAdapter {
 	}
 
 	async close(): Promise<void> {
-		this.alive = false;
-		if (!this.sql) return;
+		let release: () => void;
+		const prev = this.ensureLock;
+		this.ensureLock = new Promise<void>((resolve) => { release = resolve; });
+		await prev;
+
 		try {
-			await this.sql.close();
-		} catch (err) {
-			debug.warn('db-client', 'MySQL close error:', err);
+			this.alive = false;
+			this.defaultDb = null;
+			if (!this.sql) return;
+			await this.sql.close().catch((err) => debug.warn('db-client', 'MySQL close error:', err));
+			this.sql = null;
+		} finally {
+			release!();
 		}
-		this.sql = null;
 	}
 
 	isAlive(): boolean {
@@ -117,10 +124,21 @@ export class MysqlAdapter implements DbClientDriverAdapter {
 	private async ensureDatabase(database?: string): Promise<void> {
 		if (!database) return;
 		if (database === this.defaultDb) return;
-		const sql = this.requireSql();
-		assertSafeIdentifier(database);
-		await sql.unsafe(`USE ${quoteMysql(database)}`);
-		this.defaultDb = database;
+
+		let release: () => void;
+		const prev = this.ensureLock;
+		this.ensureLock = new Promise<void>((resolve) => { release = resolve; });
+		await prev;
+
+		try {
+			if (database === this.defaultDb) return;
+			const sql = this.requireSql();
+			assertSafeIdentifier(database);
+			await sql.unsafe(`USE ${quoteMysql(database)}`);
+			this.defaultDb = database;
+		} finally {
+			release!();
+		}
 	}
 
 	async executeRead(q: string, params: unknown[] = [], opts?: { database?: string }): Promise<DbClientQueryResult> {

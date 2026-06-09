@@ -58,6 +58,7 @@ export class PostgresAdapter implements DbClientDriverAdapter {
 	private defaultSchema: string | null = null;
 	private conn: DbClientConnection | null = null;
 	private tunnelPort: number | undefined = undefined;
+	private ensureLock = Promise.resolve();
 
 	private buildUrl(conn: DbClientConnection, tunnelPort?: number): string {
 		const host = tunnelPort ? '127.0.0.1' : (conn.host ?? '127.0.0.1');
@@ -91,31 +92,46 @@ export class PostgresAdapter implements DbClientDriverAdapter {
 
 	private async ensureDatabase(database?: string): Promise<void> {
 		if (!this.conn) return;
-		// No specific database → revert to the home database, so connection-level
-		// operations don't run against whatever database was last browsed.
 		const target = database || this.homeDb;
 		if (target === this.defaultDb) return;
-		const newConn = { ...this.conn, database: target };
-		const url = this.buildUrl(newConn, this.tunnelPort);
-		const next = new SQL(url);
-		await next.connect();
-		const prev = this.sql;
-		this.sql = next;
-		this.defaultDb = target;
-		this.conn = newConn;
-		this.alive = true;
-		if (prev) await prev.close().catch((err) => debug.warn('db-client', 'pg switch close error:', err));
+
+		let release: () => void;
+		const prev = this.ensureLock;
+		this.ensureLock = new Promise<void>((resolve) => { release = resolve; });
+		await prev;
+
+		try {
+			if (target === this.defaultDb) return;
+			const newConn = { ...this.conn, database: target };
+			const url = this.buildUrl(newConn, this.tunnelPort);
+			const next = new SQL(url);
+			await next.connect();
+			const prevSql = this.sql;
+			this.sql = next;
+			this.defaultDb = target;
+			this.conn = newConn;
+			this.alive = true;
+			if (prevSql) await prevSql.close().catch((err) => debug.warn('db-client', 'pg switch close error:', err));
+		} finally {
+			release!();
+		}
 	}
 
 	async close(): Promise<void> {
-		this.alive = false;
-		if (!this.sql) return;
+		let release: () => void;
+		const prev = this.ensureLock;
+		this.ensureLock = new Promise<void>((resolve) => { release = resolve; });
+		await prev;
+
 		try {
-			await this.sql.close();
-		} catch (err) {
-			debug.warn('db-client', 'Postgres close error:', err);
+			this.alive = false;
+			this.conn = null;
+			if (!this.sql) return;
+			await this.sql.close().catch((err) => debug.warn('db-client', 'Postgres close error:', err));
+			this.sql = null;
+		} finally {
+			release!();
 		}
-		this.sql = null;
 	}
 
 	isAlive(): boolean {
