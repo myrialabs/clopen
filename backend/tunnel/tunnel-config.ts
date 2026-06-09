@@ -1,234 +1,101 @@
 /**
- * Tunnel Config Manager
- *
- * Manages Cloudflare Tunnel configurations:
- * - Remote (dashboard-managed): token + label
- * - Local (locally-managed): tunnel name, ID, credentials, ingress rules
- *
- * Config stored in ~/.clopen/tunnel/config.json
+ * Tunnel config & runtime — owns the single `TunnelKit` instance and the
+ * `TunnelStore` it auto-saves to (`~/.clopen/tunnel/config.json`). The WS layer
+ * reads/writes the store directly and calls `tunnelKit.*` for lifecycle
+ * operations (start/stop/create/login/…), so we don't need a separate manager.
  */
 
 import { join } from 'path';
-import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'fs';
+import { TunnelKit, TunnelStore, type ActiveTunnel, type IngressInfo, type TunnelType } from 'tunnelkit';
 import { getClopenDir } from '../utils/paths';
 import { debug } from '$shared/utils/logger';
-import { randomUUID } from 'crypto';
 
-// --- Types ---
-
-export interface RemoteTunnelConfig {
-	id: string;
-	label: string;
-	token: string;
-}
-
-export interface LocalTunnelIngressRule {
-	hostname: string;
-	service: string;
-}
-
-export interface LocalTunnelConfig {
-	id: string;
-	name: string;
-	tunnelId: string;
-	credentialsFile: string;
-	ingress: LocalTunnelIngressRule[];
-}
-
-interface TunnelConfigFile {
-	remotes: RemoteTunnelConfig[];
-	locals: LocalTunnelConfig[];
-	authorizedZone?: string;
+/**
+ * Narrow tunnelkit's `IngressInfo[]` (where `hostname` is optional, to allow
+ * catch-all remote rules) to the hostname-bearing rules local tunnels always
+ * have — the shape the local WS responses declare.
+ */
+export function namedIngress(ingress: IngressInfo[]): { hostname: string; service: string }[] {
+	return ingress.filter((r): r is { hostname: string; service: string } => typeof r.hostname === 'string');
 }
 
 // --- Paths ---
 
 const TUNNEL_DIR = join(getClopenDir(), 'tunnel');
-const CONFIG_FILE = join(TUNNEL_DIR, 'config.json');
 
 export function getTunnelDir(): string {
 	return TUNNEL_DIR;
 }
 
-// --- Internal helpers ---
+// --- Shared logger ---
 
-function ensureDir(): void {
-	if (!existsSync(TUNNEL_DIR)) {
-		mkdirSync(TUNNEL_DIR, { recursive: true });
-	}
+const tunnelLogger = {
+	log: (...args: unknown[]) => debug.log('tunnel', ...args),
+	warn: (...args: unknown[]) => debug.warn('tunnel', ...args),
+	error: (...args: unknown[]) => debug.error('tunnel', ...args)
+};
+
+// --- Singleton store + kit ---
+
+export const tunnelStore = new TunnelStore({ dataDir: TUNNEL_DIR, logger: tunnelLogger });
+
+/**
+ * The shared `TunnelKit` instance the WS layer uses. Persistence is on (via
+ * `tunnelStore`), and tunnelkit's default `isTunnelKnown` predicate
+ * automatically treats any tunnel in the store as known, so name-conflict
+ * recovery won't delete tunnels we already track.
+ */
+export const tunnelKit = new TunnelKit({
+	dataDir: TUNNEL_DIR,
+	store: tunnelStore,
+	logger: tunnelLogger
+});
+
+// --- ActiveTunnel adapter ---
+
+export interface ActiveTunnelInfo {
+	port: number;
+	publicUrl: string;
+	startedAt: string;
+	autoStopMinutes: number;
+	type: TunnelType;
+	name?: string;
+	id?: string;
+	ingress?: IngressInfo[];
+	/** Number of live edge connections cloudflared has to Cloudflare; > 0 means the tunnel is publicly reachable. */
+	connections: number;
 }
 
-function readConfigFile(): TunnelConfigFile {
+/** Recover the local port from a quick tunnel's resolved service URL (Clopen only ever exposes localhost ports). */
+export function portFromService(service?: string): number {
+	if (!service) return 0;
 	try {
-		if (!existsSync(CONFIG_FILE)) {
-			return { remotes: [], locals: [] };
-		}
-		const raw = readFileSync(CONFIG_FILE, 'utf-8');
-		const data = JSON.parse(raw);
+		return Number(new URL(service).port) || 0;
+	} catch {
+		return 0;
+	}
+}
 
-		// Migration: old format { configs: [{ id, token, domain }] }
-		if (data.configs && !data.remotes) {
-			const migrated: TunnelConfigFile = {
-				remotes: data.configs.map((c: { id: string; token: string; domain: string }) => ({
-					id: c.id,
-					label: c.domain,
-					token: c.token
-				})),
-				locals: []
+/** Flatten tunnelkit's `ActiveTunnel` into the UI-facing shape (port extraction, connection count, etc.). */
+export function mapActiveTunnel(t: ActiveTunnel): ActiveTunnelInfo {
+	return t.type === 'quick'
+		? {
+				port: portFromService(t.service),
+				publicUrl: t.publicUrl,
+				startedAt: t.startedAt,
+				autoStopMinutes: t.autoStopMinutes ?? 0,
+				type: t.type,
+				connections: t.connections.length
+			}
+		: {
+				port: 0,
+				publicUrl: t.publicUrl,
+				startedAt: t.startedAt,
+				autoStopMinutes: 0,
+				type: t.type,
+				name: t.name,
+				id: t.id,
+				ingress: t.ingress,
+				connections: t.connections.length
 			};
-			writeConfigFile(migrated);
-			debug.log('tunnel', 'Migrated old tunnel config to remote/local format');
-			return migrated;
-		}
-
-		// Migration: single entry format { token, domain }
-		if (data.token && data.domain && !data.remotes && !data.configs) {
-			const migrated: TunnelConfigFile = {
-				remotes: [{ id: randomUUID(), label: data.domain, token: data.token }],
-				locals: []
-			};
-			writeConfigFile(migrated);
-			debug.log('tunnel', 'Migrated single tunnel config to remote/local format');
-			return migrated;
-		}
-
-		return {
-			remotes: data.remotes ?? [],
-			locals: data.locals ?? [],
-			authorizedZone: data.authorizedZone
-		};
-	} catch (error) {
-		debug.error('tunnel', 'Failed to read tunnel config:', error);
-		return { remotes: [], locals: [] };
-	}
-}
-
-function writeConfigFile(data: TunnelConfigFile): void {
-	ensureDir();
-	writeFileSync(CONFIG_FILE, JSON.stringify(data, null, '\t'), 'utf-8');
-}
-
-// --- Remote tunnel config ---
-
-export function getRemoteTunnelConfigs(): RemoteTunnelConfig[] {
-	return readConfigFile().remotes;
-}
-
-export function getRemoteTunnelConfigById(id: string): RemoteTunnelConfig | null {
-	return readConfigFile().remotes.find((c) => c.id === id) ?? null;
-}
-
-export function addRemoteTunnelConfig(label: string, token: string): RemoteTunnelConfig {
-	const data = readConfigFile();
-	const entry: RemoteTunnelConfig = { id: randomUUID(), label, token };
-	data.remotes.push(entry);
-	writeConfigFile(data);
-	debug.log('tunnel', `Remote tunnel config added: ${label}`);
-	return entry;
-}
-
-export function removeRemoteTunnelConfig(id: string): boolean {
-	const data = readConfigFile();
-	const before = data.remotes.length;
-	data.remotes = data.remotes.filter((c) => c.id !== id);
-	if (data.remotes.length < before) {
-		writeConfigFile(data);
-		debug.log('tunnel', `Remote tunnel config removed: ${id}`);
-		return true;
-	}
-	return false;
-}
-
-// --- Local tunnel config ---
-
-export function getLocalTunnelConfigs(): LocalTunnelConfig[] {
-	return readConfigFile().locals;
-}
-
-export function getLocalTunnelConfigById(id: string): LocalTunnelConfig | null {
-	return readConfigFile().locals.find((c) => c.id === id) ?? null;
-}
-
-export function addLocalTunnelConfig(
-	name: string,
-	tunnelId: string,
-	credentialsFile: string
-): LocalTunnelConfig {
-	const data = readConfigFile();
-	const entry: LocalTunnelConfig = {
-		id: randomUUID(),
-		name,
-		tunnelId,
-		credentialsFile,
-		ingress: []
-	};
-	data.locals.push(entry);
-	writeConfigFile(data);
-	debug.log('tunnel', `Local tunnel config added: ${name} (${tunnelId})`);
-	return entry;
-}
-
-export function removeLocalTunnelConfig(id: string): boolean {
-	const data = readConfigFile();
-	const before = data.locals.length;
-	data.locals = data.locals.filter((c) => c.id !== id);
-	if (data.locals.length < before) {
-		writeConfigFile(data);
-		debug.log('tunnel', `Local tunnel config removed: ${id}`);
-		return true;
-	}
-	return false;
-}
-
-export function addLocalTunnelIngress(
-	id: string,
-	hostname: string,
-	service: string
-): LocalTunnelConfig | null {
-	const data = readConfigFile();
-	const config = data.locals.find((c) => c.id === id);
-	if (!config) return null;
-
-	// Update existing or add new
-	const existing = config.ingress.findIndex((r) => r.hostname === hostname);
-	if (existing >= 0) {
-		config.ingress[existing].service = service;
-	} else {
-		config.ingress.push({ hostname, service });
-	}
-
-	writeConfigFile(data);
-	debug.log('tunnel', `Ingress rule added/updated for ${config.name}: ${hostname} -> ${service}`);
-	return config;
-}
-
-export function removeLocalTunnelIngress(id: string, hostname: string): LocalTunnelConfig | null {
-	const data = readConfigFile();
-	const config = data.locals.find((c) => c.id === id);
-	if (!config) return null;
-
-	config.ingress = config.ingress.filter((r) => r.hostname !== hostname);
-	writeConfigFile(data);
-	debug.log('tunnel', `Ingress rule removed for ${config.name}: ${hostname}`);
-	return config;
-}
-
-// --- Authorized zone ---
-
-export function getAuthorizedZone(): string | null {
-	return readConfigFile().authorizedZone ?? null;
-}
-
-export function setAuthorizedZone(zone: string): void {
-	const data = readConfigFile();
-	data.authorizedZone = zone;
-	writeConfigFile(data);
-	debug.log('tunnel', `Authorized zone set: ${zone}`);
-}
-
-export function clearAuthorizedZone(): void {
-	const data = readConfigFile();
-	delete data.authorizedZone;
-	writeConfigFile(data);
-	debug.log('tunnel', 'Authorized zone cleared');
 }

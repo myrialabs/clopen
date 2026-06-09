@@ -2,19 +2,13 @@
  * Tunnel Config Endpoints
  *
  * HTTP endpoints for managing tunnel configurations:
- * - Remote: list, add (token+label), remove
+ * - Remote: list, add (token+name), remove
  * - Local: list configs
  */
 
 import { t } from 'elysia';
 import { createRouter } from '$shared/utils/ws-server';
-import {
-	getRemoteTunnelConfigs,
-	addRemoteTunnelConfig,
-	removeRemoteTunnelConfig,
-	getLocalTunnelConfigs
-} from '../../tunnel/tunnel-config';
-import { globalTunnelManager } from '../../tunnel/global-tunnel-manager';
+import { tunnelKit, tunnelStore, namedIngress } from '../../tunnel/tunnel-config';
 
 export const configHandler = createRouter()
 
@@ -27,7 +21,7 @@ export const configHandler = createRouter()
 		response: t.Object({
 			configs: t.Array(t.Object({
 				id: t.String(),
-				label: t.String(),
+				name: t.String(),
 				isActive: t.Boolean(),
 				ingress: t.Array(t.Object({
 					hostname: t.Optional(t.String()),
@@ -36,30 +30,30 @@ export const configHandler = createRouter()
 			}))
 		})
 	}, async () => {
-		const configs = getRemoteTunnelConfigs();
+		const configs = tunnelStore.getRemotes();
 		return {
 			// Never expose tokens to the frontend
 			configs: configs.map((c) => ({
 				id: c.id,
-				label: c.label,
-				isActive: globalTunnelManager.isRemoteTunnelActive(c.id),
-				ingress: globalTunnelManager.getRemoteTunnelIngress(c.id)
+				name: c.name,
+				isActive: tunnelKit.remote.isActive(c.id),
+				ingress: tunnelKit.remote.ingress(c.id)
 			}))
 		};
 	})
 
 	.http('tunnel:remote:config:add', {
 		data: t.Object({
-			label: t.String({ minLength: 1 }),
+			name: t.String({ minLength: 1 }),
 			token: t.String({ minLength: 1 })
 		}),
 		response: t.Object({
 			id: t.String(),
-			label: t.String()
+			name: t.String()
 		})
 	}, async ({ data }) => {
-		const entry = addRemoteTunnelConfig(data.label, data.token);
-		return { id: entry.id, label: entry.label };
+		const entry = tunnelStore.addRemote(data.name, data.token);
+		return { id: entry.id, name: entry.name };
 	})
 
 	.http('tunnel:remote:config:remove', {
@@ -68,11 +62,9 @@ export const configHandler = createRouter()
 		}),
 		response: t.Object({ success: t.Boolean() })
 	}, async ({ data }) => {
-		// Stop if running
-		if (globalTunnelManager.isRemoteTunnelActive(data.id)) {
-			await globalTunnelManager.stopRemoteTunnel(data.id);
-		}
-		const removed = removeRemoteTunnelConfig(data.id);
+		// Stop if running (tunnelKit.stop is a no-op for unknown ids).
+		await tunnelKit.stop(data.id);
+		const removed = tunnelStore.removeRemote(data.id);
 		return { success: removed };
 	})
 
@@ -95,14 +87,14 @@ export const configHandler = createRouter()
 			}))
 		})
 	}, async () => {
-		const configs = getLocalTunnelConfigs();
+		const configs = tunnelStore.getLocals();
 		return {
 			configs: configs.map((c) => ({
 				id: c.id,
 				name: c.name,
 				tunnelId: c.tunnelId,
-				ingress: c.ingress,
-				isActive: globalTunnelManager.isLocalTunnelActive(c.id)
+				ingress: namedIngress(c.ingress),
+				isActive: tunnelKit.local.isActive(c.id)
 			}))
 		};
 	});

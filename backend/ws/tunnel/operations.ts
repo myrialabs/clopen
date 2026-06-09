@@ -5,34 +5,27 @@
  * - Quick tunnel: start/stop with random URL
  * - Remote tunnel: start/stop dashboard-managed tunnels
  * - Local tunnel: auth, create, delete, ingress, route-dns, start/stop
+ *
+ * Each handler that needs cloudflared calls `tunnelKit.bin.ensure()` first
+ * (it resolves from the managed dir or PATH, downloading on first use); the
+ * remaining calls are direct passthroughs to `tunnelKit.*` and the singleton
+ * `tunnelStore` for persistence.
  */
 
 import { t } from 'elysia';
 import { createRouter } from '$shared/utils/ws-server';
-import { globalTunnelManager } from '../../tunnel/global-tunnel-manager';
-import {
-	getRemoteTunnelConfigById,
-	getLocalTunnelConfigById,
-	addLocalTunnelConfig,
-	removeLocalTunnelConfig,
-	addLocalTunnelIngress,
-	removeLocalTunnelIngress,
-	getAuthorizedZone,
-	setAuthorizedZone,
-	clearAuthorizedZone
-} from '../../tunnel/tunnel-config';
+import { tunnelKit, tunnelStore, namedIngress, mapActiveTunnel } from '../../tunnel/tunnel-config';
 import { debug } from '$shared/utils/logger';
 import { ws } from '$backend/utils/ws';
 
 // Wire up ingress update callback to push via WS
-globalTunnelManager.setRemoteIngressUpdateCallback((configId, ingress) => {
-	ws.emit.global('tunnel:remote:ingress-update', { configId, ingress });
+tunnelKit.on('ingress-update', ({ id, ingress }) => {
+	ws.emit.global('tunnel:remote:ingress-update', { id, ingress });
 });
 
 // Wire up status changed callback to push tunnel list via WS
-globalTunnelManager.setStatusChangedCallback(() => {
-	const tunnels = globalTunnelManager.getActiveTunnels();
-	ws.emit.global('tunnel:status-changed', { tunnels });
+tunnelKit.on('status-changed', () => {
+	ws.emit.global('tunnel:status-changed', { tunnels: tunnelKit.list().map(mapActiveTunnel) });
 });
 
 export const operationsHandler = createRouter()
@@ -51,8 +44,9 @@ export const operationsHandler = createRouter()
 		const { port, autoStopMinutes = 60 } = data;
 		debug.log('tunnel', `[WS] Quick tunnel start: port=${port}, autoStop=${autoStopMinutes}`);
 
-		const result = await globalTunnelManager.startQuickTunnel(port, autoStopMinutes);
-		return result;
+		await tunnelKit.bin.ensure();
+		const { publicUrl, timings } = await tunnelKit.quick.start({ service: port, autoStopMinutes });
+		return { publicUrl, timings };
 	})
 
 	.http('tunnel:quick:stop', {
@@ -61,7 +55,7 @@ export const operationsHandler = createRouter()
 		}),
 		response: t.Object({ stopped: t.Boolean() })
 	}, async ({ data }) => {
-		await globalTunnelManager.stopQuickTunnel(data.port);
+		await tunnelKit.quick.stop(data.port);
 		return { stopped: true };
 	})
 
@@ -71,31 +65,34 @@ export const operationsHandler = createRouter()
 
 	.http('tunnel:remote:start', {
 		data: t.Object({
-			configId: t.String({ minLength: 1 })
+			id: t.String({ minLength: 1 })
 		}),
 		response: t.Any()
 	}, async ({ data }) => {
-		const config = getRemoteTunnelConfigById(data.configId);
+		const config = tunnelStore.getRemote(data.id);
 		if (!config) throw new Error('Remote tunnel config not found');
 
-		debug.log('tunnel', `[WS] Remote tunnel start: ${config.label}`);
-		const result = await globalTunnelManager.startRemoteTunnel(config);
-		return result;
+		debug.log('tunnel', `[WS] Remote tunnel start: ${config.name}`);
+		await tunnelKit.bin.ensure();
+		const { timings } = await tunnelKit.remote.start(
+			{ id: config.id, token: config.token, name: config.name }
+		);
+		return { timings };
 	})
 
 	.http('tunnel:remote:stop', {
 		data: t.Object({
-			configId: t.String({ minLength: 1 })
+			id: t.String({ minLength: 1 })
 		}),
 		response: t.Object({ stopped: t.Boolean() })
 	}, async ({ data }) => {
-		await globalTunnelManager.stopRemoteTunnel(data.configId);
+		await tunnelKit.stop(data.id);
 		return { stopped: true };
 	})
 
 	.http('tunnel:remote:ingress', {
 		data: t.Object({
-			configId: t.String({ minLength: 1 })
+			id: t.String({ minLength: 1 })
 		}),
 		response: t.Object({
 			ingress: t.Array(t.Object({
@@ -104,8 +101,7 @@ export const operationsHandler = createRouter()
 			}))
 		})
 	}, async ({ data }) => {
-		const ingress = globalTunnelManager.getRemoteTunnelIngress(data.configId);
-		return { ingress };
+		return { ingress: tunnelKit.remote.ingress(data.id) };
 	})
 
 	// ═══════════════════════════════════════
@@ -120,17 +116,15 @@ export const operationsHandler = createRouter()
 			zone: t.Nullable(t.String())
 		})
 	}, async () => {
-		const auth = globalTunnelManager.checkCloudflaredAuth();
-		const zone = getAuthorizedZone();
-		return { ...auth, zone };
+		return { ...tunnelKit.local.checkAuth(), zone: tunnelStore.getZone() };
 	})
 
 	.http('tunnel:local:logout', {
 		data: t.Object({}),
 		response: t.Object({ success: t.Boolean() })
 	}, async () => {
-		globalTunnelManager.logoutCloudflared();
-		clearAuthorizedZone();
+		tunnelKit.local.logout();
+		tunnelStore.clearZone();
 		return { success: true };
 	})
 
@@ -140,7 +134,7 @@ export const operationsHandler = createRouter()
 		}),
 		response: t.Object({ success: t.Boolean(), zone: t.String() })
 	}, async ({ data }) => {
-		setAuthorizedZone(data.zone);
+		tunnelStore.setZone(data.zone);
 		return { success: true, zone: data.zone };
 	})
 
@@ -150,23 +144,24 @@ export const operationsHandler = createRouter()
 	}, async ({ conn }) => {
 		const userId = ws.getUserId(conn);
 
-		await globalTunnelManager.loginCloudflared(
-			(url) => {
+		await tunnelKit.bin.ensure();
+		tunnelKit.local.login({
+			onUrl: (url) => {
 				ws.emit.user(userId, 'tunnel:local:login-url', { url });
 			},
-			() => {
+			onComplete: () => {
 				ws.emit.user(userId, 'tunnel:local:login-complete', {});
 			},
-			(error) => {
-				ws.emit.user(userId, 'tunnel:local:login-error', { message: error });
+			onError: (message) => {
+				ws.emit.user(userId, 'tunnel:local:login-error', { message });
 			}
-		);
+		});
 	})
 
 	.on('tunnel:local:login-cancel', {
 		data: t.Object({})
 	}, async () => {
-		globalTunnelManager.cancelLogin();
+		tunnelKit.local.cancelLogin();
 	})
 
 	.http('tunnel:local:create', {
@@ -181,8 +176,9 @@ export const operationsHandler = createRouter()
 	}, async ({ data }) => {
 		debug.log('tunnel', `[WS] Creating local tunnel: ${data.name}`);
 
-		const result = await globalTunnelManager.createLocalTunnel(data.name);
-		const config = addLocalTunnelConfig(data.name, result.tunnelId, result.credentialsFile);
+		await tunnelKit.bin.ensure();
+		const result = await tunnelKit.local.create(data.name);
+		const config = tunnelStore.addLocal(data.name, result.tunnelId, result.credentialsFile);
 
 		return { id: config.id, name: config.name, tunnelId: config.tunnelId };
 	})
@@ -193,24 +189,22 @@ export const operationsHandler = createRouter()
 		}),
 		response: t.Object({ success: t.Boolean() })
 	}, async ({ data }) => {
-		const config = getLocalTunnelConfigById(data.id);
+		const config = tunnelStore.getLocal(data.id);
 		if (!config) throw new Error('Local tunnel config not found');
 
-		// Stop if running
-		if (globalTunnelManager.isLocalTunnelActive(data.id)) {
-			await globalTunnelManager.stopLocalTunnel(data.id);
-		}
+		// Stop if running (tunnelKit.stop is a no-op for unknown ids).
+		await tunnelKit.stop(data.id);
 
 		// Delete from Cloudflare
 		try {
-			await globalTunnelManager.deleteLocalTunnel(config.tunnelId, config.credentialsFile);
+			await tunnelKit.bin.ensure();
+			await tunnelKit.local.delete(config.tunnelId, config.credentialsFile);
 		} catch (error) {
 			debug.warn('tunnel', `Could not delete tunnel from Cloudflare (may already be deleted):`, error);
 		}
 
-		// Remove from config and cleanup files
-		removeLocalTunnelConfig(data.id);
-		globalTunnelManager.cleanupLocalTunnelFiles(config.tunnelId);
+		tunnelStore.removeLocal(data.id);
+		tunnelKit.local.cleanupFiles(config.tunnelId);
 		return { success: true };
 	})
 
@@ -230,18 +224,18 @@ export const operationsHandler = createRouter()
 			dnsError: t.Nullable(t.String())
 		})
 	}, async ({ data }) => {
-		const tunnelConfig = getLocalTunnelConfigById(data.id);
+		const tunnelConfig = tunnelStore.getLocal(data.id);
 		if (!tunnelConfig) throw new Error('Local tunnel config not found');
 
-		// Add ingress rule
-		const config = addLocalTunnelIngress(data.id, data.hostname, data.service);
+		const config = tunnelStore.addLocalIngress(data.id, data.hostname, data.service);
 		if (!config) throw new Error('Failed to add ingress rule');
 
 		// Auto route DNS using tunnel UUID (more reliable than name)
 		let dnsRouted = false;
 		let dnsError: string | null = null;
 		try {
-			await globalTunnelManager.routeDns(tunnelConfig.tunnelId, data.hostname);
+			await tunnelKit.bin.ensure();
+			await tunnelKit.local.routeDns(tunnelConfig.tunnelId, data.hostname);
 			dnsRouted = true;
 			debug.log('tunnel', `DNS routed for ${data.hostname} -> tunnel ${tunnelConfig.tunnelId}`);
 		} catch (error) {
@@ -249,7 +243,7 @@ export const operationsHandler = createRouter()
 			debug.warn('tunnel', `Auto route-dns for ${data.hostname} failed:`, dnsError);
 		}
 
-		return { success: true, ingress: config.ingress, dnsRouted, dnsError };
+		return { success: true, ingress: namedIngress(config.ingress), dnsRouted, dnsError };
 	})
 
 	.http('tunnel:local:ingress:remove', {
@@ -265,13 +259,13 @@ export const operationsHandler = createRouter()
 			}))
 		})
 	}, async ({ data }) => {
-		const config = removeLocalTunnelIngress(data.id, data.hostname);
+		const config = tunnelStore.removeLocalIngress(data.id, data.hostname);
 		if (!config) throw new Error('Local tunnel config not found');
 
 		// Regenerate config.yml to stay in sync
-		globalTunnelManager.writeLocalTunnelConfig(config);
+		tunnelKit.local.writeConfig(config);
 
-		return { success: true, ingress: config.ingress };
+		return { success: true, ingress: namedIngress(config.ingress) };
 	})
 
 	.http('tunnel:local:start', {
@@ -280,12 +274,13 @@ export const operationsHandler = createRouter()
 		}),
 		response: t.Any()
 	}, async ({ data }) => {
-		const config = getLocalTunnelConfigById(data.id);
+		const config = tunnelStore.getLocal(data.id);
 		if (!config) throw new Error('Local tunnel config not found');
 
 		debug.log('tunnel', `[WS] Starting local tunnel: ${config.name}`);
-		const result = await globalTunnelManager.startLocalTunnel(config);
-		return result;
+		await tunnelKit.bin.ensure();
+		const { timings } = await tunnelKit.local.start(config);
+		return { timings };
 	})
 
 	.http('tunnel:local:stop', {
@@ -294,7 +289,7 @@ export const operationsHandler = createRouter()
 		}),
 		response: t.Object({ stopped: t.Boolean() })
 	}, async ({ data }) => {
-		await globalTunnelManager.stopLocalTunnel(data.id);
+		await tunnelKit.stop(data.id);
 		return { stopped: true };
 	})
 
@@ -308,7 +303,7 @@ export const operationsHandler = createRouter()
 			tunnels: t.Array(t.Any())
 		})
 	}, async () => {
-		return { tunnels: globalTunnelManager.getActiveTunnels() };
+		return { tunnels: tunnelKit.list().map(mapActiveTunnel) };
 	})
 
 	// ═══════════════════════════════════════
@@ -320,7 +315,7 @@ export const operationsHandler = createRouter()
 	}))
 
 	.emit('tunnel:remote:ingress-update', t.Object({
-		configId: t.String(),
+		id: t.String(),
 		ingress: t.Array(t.Object({
 			hostname: t.Optional(t.String()),
 			service: t.String()

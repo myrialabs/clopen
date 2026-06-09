@@ -29,9 +29,11 @@ interface TunnelInfo {
 	startedAt: string;
 	autoStopMinutes: number;
 	type: TunnelType;
-	label?: string;
-	configId?: string;
+	name?: string;
+	id?: string;
 	ingress?: IngressInfo[];
+	/** Live edge connections to Cloudflare; > 0 means the tunnel is publicly reachable. */
+	connections?: number;
 }
 
 interface LoadingState {
@@ -116,7 +118,8 @@ export const tunnelStore = {
 				publicUrl: result.publicUrl,
 				startedAt: new Date().toISOString(),
 				autoStopMinutes: autoStopMinutes ?? 60,
-				type: 'quick'
+				type: 'quick',
+				connections: 0
 			});
 
 			setConnected(key);
@@ -146,30 +149,30 @@ export const tunnelStore = {
 
 	// --- Remote tunnel ---
 
-	async startRemoteTunnel(configId: string) {
-		setLoading(configId);
+	async startRemoteTunnel(id: string) {
+		setLoading(id);
 
 		try {
-			await ws.http('tunnel:remote:start', { configId });
-			setConnected(configId);
-			debug.log('tunnel', `Remote tunnel started: ${configId}`);
+			await ws.http('tunnel:remote:start', { id });
+			setConnected(id);
+			debug.log('tunnel', `Remote tunnel started: ${id}`);
 		} catch (error) {
 			const msg = error instanceof Error ? error.message : 'Unknown error';
-			setFailed(configId, msg);
+			setFailed(id, msg);
 			debug.error('tunnel', 'Remote tunnel error:', msg);
 			throw error;
 		}
 	},
 
-	async stopRemoteTunnel(configId: string) {
+	async stopRemoteTunnel(id: string) {
 		try {
-			const response = await ws.http('tunnel:remote:stop', { configId });
+			const response = await ws.http('tunnel:remote:stop', { id });
 			if (!response.stopped) throw new Error('Failed to stop tunnel');
 
 			tunnelState.tunnels = tunnelState.tunnels.filter(
-				(t) => !(t.configId === configId && t.type === 'remote')
+				(t) => !(t.id === id && t.type === 'remote')
 			);
-			delete tunnelState.loadingStates[configId];
+			delete tunnelState.loadingStates[id];
 		} catch (error) {
 			debug.error('tunnel', 'Failed to stop remote tunnel:', error);
 			throw error;
@@ -178,30 +181,30 @@ export const tunnelStore = {
 
 	// --- Local tunnel ---
 
-	async startLocalTunnel(configId: string) {
-		setLoading(configId);
+	async startLocalTunnel(id: string) {
+		setLoading(id);
 
 		try {
-			await ws.http('tunnel:local:start', { id: configId });
-			setConnected(configId);
-			debug.log('tunnel', `Local tunnel started: ${configId}`);
+			await ws.http('tunnel:local:start', { id });
+			setConnected(id);
+			debug.log('tunnel', `Local tunnel started: ${id}`);
 		} catch (error) {
 			const msg = error instanceof Error ? error.message : 'Unknown error';
-			setFailed(configId, msg);
+			setFailed(id, msg);
 			debug.error('tunnel', 'Local tunnel error:', msg);
 			throw error;
 		}
 	},
 
-	async stopLocalTunnel(configId: string) {
+	async stopLocalTunnel(id: string) {
 		try {
-			const response = await ws.http('tunnel:local:stop', { id: configId });
+			const response = await ws.http('tunnel:local:stop', { id });
 			if (!response.stopped) throw new Error('Failed to stop tunnel');
 
 			tunnelState.tunnels = tunnelState.tunnels.filter(
-				(t) => !(t.configId === configId && t.type === 'local')
+				(t) => !(t.id === id && t.type === 'local')
 			);
-			delete tunnelState.loadingStates[configId];
+			delete tunnelState.loadingStates[id];
 		} catch (error) {
 			debug.error('tunnel', 'Failed to stop local tunnel:', error);
 			throw error;
@@ -247,8 +250,8 @@ export const tunnelStore = {
 	},
 
 	/** Update ingress for a specific tunnel (used by remote ingress-update events) */
-	updateTunnelIngress(configId: string, ingress: IngressInfo[]) {
-		const tunnel = tunnelState.tunnels.find((t) => t.configId === configId);
+	updateTunnelIngress(id: string, ingress: IngressInfo[]) {
+		const tunnel = tunnelState.tunnels.find((t) => t.id === id);
 		if (tunnel) {
 			tunnel.ingress = ingress;
 			// Also update publicUrl from first hostname
@@ -265,8 +268,8 @@ export const tunnelStore = {
 			tunnelState.tunnels = data.tunnels;
 		});
 
-		const cleanupIngress = ws.on('tunnel:remote:ingress-update', (data: { configId: string; ingress: IngressInfo[] }) => {
-			tunnelStore.updateTunnelIngress(data.configId, data.ingress);
+		const cleanupIngress = ws.on('tunnel:remote:ingress-update', (data: { id: string; ingress: IngressInfo[] }) => {
+			tunnelStore.updateTunnelIngress(data.id, data.ingress);
 		});
 
 		return () => {

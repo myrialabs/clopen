@@ -15,7 +15,7 @@ export interface RemoteIngressRule {
 
 export interface RemoteConfigItem {
 	id: string;
-	label: string;
+	name: string;
 	isActive: boolean;
 	ingress: RemoteIngressRule[];
 }
@@ -77,12 +77,12 @@ export const tunnelConfigStore = {
 		state.isLoading = false;
 	},
 
-	async addRemote(label: string, token: string) {
+	async addRemote(name: string, token: string) {
 		state.isSaving = true;
 		state.error = null;
 		try {
-			const result = await ws.http('tunnel:remote:config:add', { label, token });
-			state.remotes.push({ id: result.id, label: result.label, isActive: false, ingress: [] });
+			const result = await ws.http('tunnel:remote:config:add', { name, token });
+			state.remotes.push({ id: result.id, name: result.name, isActive: false, ingress: [] });
 		} catch (error) {
 			debug.error('tunnel', 'Failed to add remote config:', error);
 			state.error = error instanceof Error ? error.message : 'Failed to add config';

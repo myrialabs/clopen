@@ -19,16 +19,17 @@
 		startedAt: string;
 		autoStopMinutes: number;
 		type?: 'quick' | 'remote' | 'local';
-		label?: string;
-		configId?: string;
+		name?: string;
+		id?: string;
 		ingress?: IngressInfo[];
+		connections?: number;
 	}
 
-	const { port, publicUrl, startedAt, autoStopMinutes, type = 'quick', label, configId, ingress }: Props = $props();
+	const { port, publicUrl, startedAt, autoStopMinutes, type = 'quick', name, id, ingress, connections = 0 }: Props = $props();
 
 	const isQuick = $derived(type === 'quick');
 	const displayLabel = $derived(
-		label ? label : isQuick ? `Port ${port}` : type === 'remote' ? 'Remote Tunnel' : 'Local Tunnel'
+		name ? name : isQuick ? `Port ${port}` : type === 'remote' ? 'Remote Tunnel' : 'Local Tunnel'
 	);
 	const typeIcon = $derived(
 		type === 'remote' ? 'lucide:cloud' : type === 'local' ? 'lucide:server' : 'lucide:zap'
@@ -39,6 +40,11 @@
 	const ingressHostnames = $derived(ingress?.filter((r) => r.hostname) ?? []);
 	const isManagedTunnel = $derived(type === 'remote' || type === 'local');
 	const isAdmin = $derived(authStore.isAdmin);
+
+	// Edge-connection status: cloudflared opens several HA connections to Cloudflare
+	// once a tunnel goes live, so `connections > 0` means it is actually reachable.
+	const isPublic = $derived(connections > 0);
+	const connectionLabel = $derived(isPublic ? 'Public' : 'Connecting…');
 
 	// Build a unified list of URL entries for consistent rendering
 	const urlEntries = $derived(() => {
@@ -137,6 +143,20 @@
 			<span class="text-sm font-semibold text-slate-900 dark:text-slate-100">{displayLabel}</span>
 			<span class="text-2xs px-1.5 py-0.5 rounded-full bg-slate-100 dark:bg-slate-700 text-slate-500 dark:text-slate-400 font-medium">
 				{typeBadge}
+			</span>
+			<span
+				class="flex items-center gap-1 text-2xs font-medium {isPublic
+					? 'text-green-600 dark:text-green-400'
+					: 'text-amber-600 dark:text-amber-400'}"
+				title={isPublic ? `${connections} live edge connection${connections > 1 ? 's' : ''} to Cloudflare` : 'Establishing edge connections…'}
+			>
+				<span class="relative flex w-1.5 h-1.5">
+					{#if !isPublic}
+						<span class="absolute inline-flex w-full h-full rounded-full bg-amber-400 opacity-75 animate-ping"></span>
+					{/if}
+					<span class="relative inline-flex w-1.5 h-1.5 rounded-full {isPublic ? 'bg-green-500' : 'bg-amber-500'}"></span>
+				</span>
+				{connectionLabel}
 			</span>
 		</div>
 		<div class="flex items-center gap-2">

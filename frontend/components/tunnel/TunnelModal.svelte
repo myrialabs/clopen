@@ -23,9 +23,7 @@
 	const uniqueTunnels = $derived(() => {
 		const seen = new Set<string>();
 		return activeTunnels.filter((tunnel) => {
-			const key = tunnel.configId
-				? `${tunnel.type}-${tunnel.configId}`
-				: `${tunnel.type}-${tunnel.port}`;
+			const key = tunnel.id ?? `${tunnel.type}-${tunnel.port}`;
 			if (seen.has(key)) return false;
 			seen.add(key);
 			return true;
@@ -73,16 +71,17 @@
 					Active Tunnels
 				</div>
 				<div class="space-y-3">
-					{#each uniqueTunnels() as tunnel (tunnel.configId ? `${tunnel.type}-${tunnel.configId}` : `${tunnel.type}-${tunnel.port}`)}
+					{#each uniqueTunnels() as tunnel (tunnel.id ?? `${tunnel.type}-${tunnel.port}`)}
 						<TunnelActive
 							port={tunnel.port}
 							publicUrl={tunnel.publicUrl}
 							startedAt={tunnel.startedAt}
 							autoStopMinutes={tunnel.autoStopMinutes}
 							type={tunnel.type}
-							label={tunnel.label}
-							configId={tunnel.configId}
+							name={tunnel.name}
+							id={tunnel.id}
 							ingress={tunnel.ingress}
+							connections={tunnel.connections}
 						/>
 					{/each}
 				</div>

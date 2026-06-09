@@ -10,7 +10,7 @@
 	import ws from '$frontend/utils/ws';
 
 	// --- Remote state ---
-	let remoteLabel = $state('');
+	let remoteName = $state('');
 	let remoteToken = $state('');
 	let showRemoteToken = $state(false);
 	let showRemoteAddForm = $state(false);
@@ -60,18 +60,23 @@
 
 			// Sync remote active states
 			for (const remote of tunnelConfigStore.remotes) {
-				const isRunning = activeTunnels.some((t) => t.configId === remote.id && t.type === 'remote');
+				const isRunning = activeTunnels.some((t) => t.id === remote.id && t.type === 'remote');
 				tunnelConfigStore.setRemoteActive(remote.id, isRunning);
 			}
 
 			// Sync local active states
 			for (const local of tunnelConfigStore.locals) {
-				const isRunning = activeTunnels.some((t) => t.configId === local.id && t.type === 'local');
+				const isRunning = activeTunnels.some((t) => t.id === local.id && t.type === 'local');
 				tunnelConfigStore.setLocalActive(local.id, isRunning);
 			}
 		} catch {
 			// Status check failed
 		}
+	}
+
+	/** Live edge-connection count for a configured tunnel; > 0 means it is publicly reachable. */
+	function tunnelConnections(id: string, type: 'remote' | 'local'): number {
+		return tunnelStore.tunnels.find((t) => t.id === id && t.type === type)?.connections ?? 0;
 	}
 
 	onMount(async () => {
@@ -89,10 +94,10 @@
 				loginError = data.message;
 				loginStep = 'error';
 			}),
-			ws.on('tunnel:remote:ingress-update', (data: { configId: string; ingress: Array<{ hostname?: string; service: string }> }) => {
-				tunnelConfigStore.updateRemoteIngress(data.configId, data.ingress);
+			ws.on('tunnel:remote:ingress-update', (data: { id: string; ingress: Array<{ hostname?: string; service: string }> }) => {
+				tunnelConfigStore.updateRemoteIngress(data.id, data.ingress);
 			}),
-			ws.on('tunnel:status-changed', (_data: { tunnels: Array<{ configId?: string; type: string }> }) => {
+			ws.on('tunnel:status-changed', (_data: { tunnels: Array<{ id?: string; type: string }> }) => {
 				// Re-sync active states when tunnel status changes
 				syncActiveStates();
 			})
@@ -123,11 +128,18 @@
 
 	// --- Remote handlers ---
 
+	/** Extract JWT token from various cloudflared command formats */
+	function extractToken(raw: string): string {
+		const match = raw.trim().match(/eyJ[\w-]+(?:\.[\w-]+)*/);
+		return match ? match[0] : raw.trim();
+	}
+
 	async function handleAddRemote() {
-		if (!remoteLabel.trim() || !remoteToken.trim()) return;
+		const token = extractToken(remoteToken);
+		if (!remoteName.trim() || !token) return;
 		try {
-			await tunnelConfigStore.addRemote(remoteLabel.trim(), remoteToken.trim());
-			remoteLabel = '';
+			await tunnelConfigStore.addRemote(remoteName.trim(), token);
+			remoteName = '';
 			remoteToken = '';
 			showRemoteToken = false;
 			showRemoteAddForm = false;
@@ -155,7 +167,7 @@
 		try {
 			await tunnelStore.startRemoteTunnel(config.id);
 			tunnelConfigStore.setRemoteActive(config.id, true);
-			addNotification({ type: 'success', title: 'Started', message: `Remote tunnel "${config.label}" started` });
+			addNotification({ type: 'success', title: 'Started', message: `Remote tunnel "${config.name}" started` });
 		} catch (error) {
 			tunnelConfigStore.setRemoteActive(config.id, false);
 			const msg = error instanceof Error ? error.message : 'Failed to start';
@@ -167,7 +179,7 @@
 		try {
 			await tunnelStore.stopRemoteTunnel(config.id);
 			tunnelConfigStore.setRemoteActive(config.id, false);
-			addNotification({ type: 'success', title: 'Stopped', message: `Remote tunnel "${config.label}" stopped` });
+			addNotification({ type: 'success', title: 'Stopped', message: `Remote tunnel "${config.name}" stopped` });
 		} catch (error) {
 			const msg = error instanceof Error ? error.message : 'Failed to stop';
 			addNotification({ type: 'error', title: 'Error', message: msg });
@@ -372,11 +384,30 @@
 					<div class="space-y-2">
 						{#each remotes as config (config.id)}
 							{@const loadState = getRemoteLoadingState(config.id)}
+							{@const remoteConns = tunnelConnections(config.id, 'remote')}
 							<div class="p-3 rounded-lg bg-slate-50 dark:bg-slate-800/80 border border-slate-200 dark:border-slate-700/50">
 								<div class="flex items-center justify-between gap-3">
 									<div class="flex items-center gap-2.5 min-w-0">
-										<div class="w-2 h-2 rounded-full {config.isActive ? 'bg-green-500' : 'bg-slate-300 dark:bg-slate-600'}"></div>
-										<span class="text-sm font-semibold text-slate-900 dark:text-slate-100 truncate">{config.label}</span>
+										<span
+											class="relative flex w-2 h-2 shrink-0"
+											title={!config.isActive
+												? 'Inactive'
+												: remoteConns > 0
+													? `Public · ${remoteConns} edge connection${remoteConns > 1 ? 's' : ''}`
+													: 'Connecting…'}
+										>
+											{#if config.isActive && remoteConns === 0}
+												<span class="absolute inline-flex w-full h-full rounded-full bg-amber-400 opacity-75 animate-ping"></span>
+											{/if}
+											<span
+												class="relative inline-flex w-2 h-2 rounded-full {!config.isActive
+													? 'bg-slate-300 dark:bg-slate-600'
+													: remoteConns > 0
+														? 'bg-green-500'
+														: 'bg-amber-500'}"
+											></span>
+										</span>
+										<span class="text-sm font-semibold text-slate-900 dark:text-slate-100 truncate">{config.name}</span>
 									</div>
 									<div class="flex items-center gap-2 shrink-0">
 										{#if loadState.isLoading}
@@ -512,15 +543,15 @@
 							</div>
 						</div>
 
-						<!-- Label input -->
+						<!-- Name input -->
 						<div class="space-y-2">
-							<label for="remote-label" class="block text-sm font-semibold text-slate-700 dark:text-slate-300">
-								Label
+							<label for="remote-name" class="block text-sm font-semibold text-slate-700 dark:text-slate-300">
+								Name
 							</label>
 							<input
-								id="remote-label"
+								id="remote-name"
 								type="text"
-								bind:value={remoteLabel}
+								bind:value={remoteName}
 								placeholder="e.g. My Dev Tunnel"
 								class="w-full px-3 py-2 text-sm rounded-lg border border-slate-300 dark:border-slate-600 bg-white dark:bg-slate-900 text-slate-900 dark:text-slate-100 placeholder:text-slate-400 focus:outline-none focus:ring-2 focus:ring-violet-500/40 focus:border-violet-500"
 							/>
@@ -556,7 +587,7 @@
 								type="button"
 								class="flex-1 flex items-center justify-center gap-2 px-4 py-2 text-sm font-medium rounded-lg bg-violet-600 text-white hover:bg-violet-700 transition-colors disabled:opacity-50 disabled:cursor-not-allowed cursor-pointer"
 								onclick={handleAddRemote}
-								disabled={isSaving || !remoteLabel.trim() || !remoteToken.trim()}
+								disabled={isSaving || !remoteName.trim() || !remoteToken.trim()}
 							>
 								{#if isSaving}
 									<div class="w-3.5 h-3.5 border-2 border-white/30 border-t-white rounded-full animate-spin"></div>
@@ -569,7 +600,7 @@
 							<button
 								type="button"
 								class="px-4 py-2 text-sm font-medium rounded-lg border border-slate-300 dark:border-slate-600 text-slate-600 dark:text-slate-400 hover:bg-slate-100 dark:hover:bg-slate-700 transition-colors cursor-pointer"
-								onclick={() => { showRemoteAddForm = false; remoteLabel = ''; remoteToken = ''; showRemoteToken = false; }}
+								onclick={() => { showRemoteAddForm = false; remoteName = ''; remoteToken = ''; showRemoteToken = false; }}
 							>
 								Cancel
 							</button>
@@ -780,11 +811,30 @@
 					<div class="space-y-3">
 						{#each locals as config (config.id)}
 							{@const loadState = getLocalLoadingState(config.id)}
+							{@const localConns = tunnelConnections(config.id, 'local')}
 							<div class="rounded-lg border border-slate-200 dark:border-slate-700/50 overflow-hidden">
 								<!-- Config header -->
 								<div class="flex items-center justify-between gap-3 p-3 bg-slate-50 dark:bg-slate-800/80">
 									<div class="flex items-center gap-2.5 min-w-0">
-										<div class="w-2 h-2 rounded-full {config.isActive ? 'bg-green-500' : 'bg-slate-300 dark:bg-slate-600'}"></div>
+										<span
+											class="relative flex w-2 h-2 shrink-0"
+											title={!config.isActive
+												? 'Inactive'
+												: localConns > 0
+													? `Public · ${localConns} edge connection${localConns > 1 ? 's' : ''}`
+													: 'Connecting…'}
+										>
+											{#if config.isActive && localConns === 0}
+												<span class="absolute inline-flex w-full h-full rounded-full bg-amber-400 opacity-75 animate-ping"></span>
+											{/if}
+											<span
+												class="relative inline-flex w-2 h-2 rounded-full {!config.isActive
+													? 'bg-slate-300 dark:bg-slate-600'
+													: localConns > 0
+														? 'bg-green-500'
+														: 'bg-amber-500'}"
+											></span>
+										</span>
 										<span class="text-sm font-semibold text-slate-900 dark:text-slate-100 truncate">{config.name}</span>
 									</div>
 									<div class="flex items-center gap-2 shrink-0">

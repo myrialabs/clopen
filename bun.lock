@@ -39,6 +39,7 @@
         "qrcode": "^1.5.4",
         "sharp": "^0.34.5",
         "ssh2": "^1.17.0",
+        "tunnelkit": "^0.0.13",
         "xz-decompress": "^0.2.3",
       },
       "devDependencies": {
@@ -1121,6 +1122,8 @@
     "ts-api-utils": ["ts-api-utils@2.4.0", "", { "peerDependencies": { "typescript": ">=4.8.4" } }, "sha512-3TaVTaAv2gTiMB35i3FiGJaRfwb3Pyn/j3m/bfAvGe8FB7CF6u+LMYqYlDh7reQf7UNvoTvdfAqHGmPGOSsPmA=="],
 
     "tslib": ["tslib@2.8.1", "", {}, "sha512-oJFu94HQb+KVduSUQL7wnpmqnfmLsOA/nAh6b6EH0wCEoK0/mPeXU6c3wKDV83MkOuHPRHtSXKKU99IBazS/2w=="],
+
+    "tunnelkit": ["tunnelkit@0.0.13", "", { "bin": { "tunnelkit": "dist/cli.js" } }, "sha512-iwiw9znBYSltEhyNjJqwLF4ZFAEPt+Wr/41KyV4N2u/ImafZSgF8CkpP6NNIXrvB+R3GZQbfhbRMsKnQ0D/86Q=="],
 
     "tweetnacl": ["tweetnacl@0.14.5", "", {}, "sha512-KXXFFdAbFXY4geFIwoyNK+f5Z1b7swfXABfL7HXCmoIWMKU3dmS26672A4EeQtDzLKy7SXmfBu51JolvEKwtGA=="],
 

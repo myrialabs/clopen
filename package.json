@@ -121,6 +121,7 @@
     "qrcode": "^1.5.4",
     "sharp": "^0.34.5",
     "ssh2": "^1.17.0",
+    "tunnelkit": "^0.0.13",
     "xz-decompress": "^0.2.3"
   },
   "trustedDependencies": [
