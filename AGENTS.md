@@ -1,6 +1,6 @@
-# Claude Code Guidelines
+# AI Agent Guidelines for Clopen
 
-This document provides guidelines for Claude Code when working on the Clopen project.
+This document provides guidelines for AI coding agents when working on the Clopen project.
 
 ---
 
