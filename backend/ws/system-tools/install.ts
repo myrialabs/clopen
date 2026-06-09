@@ -27,7 +27,6 @@ const TOOL_UNION = t.Union([
 	t.Literal('codex'),
 	t.Literal('qwen'),
 	t.Literal('chrome'),
-	t.Literal('cloudflared')
 ]);
 
 const STATUS_UNION = t.Union([

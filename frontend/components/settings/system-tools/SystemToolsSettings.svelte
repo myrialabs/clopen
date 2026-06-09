@@ -69,12 +69,6 @@
 				title="Chrome"
 				description="Used by clopen to render the browser preview."
 			/>
-
-			<ToolInstallCard
-				tool="cloudflared"
-				title="Cloudflared"
-				description="Used by clopen to expose local dev servers via Public Tunnel."
-			/>
 		</div>
 	</section>
 </div>
