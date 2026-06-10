@@ -240,20 +240,23 @@ process.on('SIGHUP', () => {
 	debug.log('server', 'Received SIGHUP — ignoring (server stays running)');
 });
 
-// Safety net: prevent server crash from unhandled errors.
-// These can occur when AI engine SDKs emit asynchronous errors that bypass
-// the normal try/catch flow (e.g., subprocess killed during initialization).
+// Safety net: prevent server crash from unhandled promise rejections.
+// These can occur when third-party SDKs emit asynchronous errors that bypass
+// the normal try/catch flow, e.g.:
+//  - AI engine SDKs whose subprocess is killed during initialization
+//  - puppeteer-extra's stealth evasions fire a non-awaited
+//    `Network.setUserAgentOverride` on a newly created popup target; when the
+//    target closes mid-call the resulting TargetCloseError rejects with no
+//    handler attached and would otherwise kill the whole server while the user
+//    is interacting with the Preview.
 //
-// IMPORTANT: Use the Web API (globalThis.addEventListener) instead of Node's
-// process.on('unhandledRejection') because Bun only respects event.preventDefault()
-// from the Web API to suppress the default crash behavior.
-globalThis.addEventListener('unhandledrejection', (event: PromiseRejectionEvent) => {
-	// preventDefault() is the ONLY way to prevent Bun from exiting on unhandled rejections.
-	// process.on('unhandledRejection') alone does NOT prevent the crash in Bun 1.3.x.
-	event.preventDefault();
-
+// IMPORTANT (Bun routing — verified on Bun 1.3.14): top-level unhandled
+// rejections are suppressed by Node's process.on('unhandledRejection') but NOT
+// by the Web API globalThis.addEventListener('unhandledrejection') +
+// preventDefault() (the Web handler does not even fire for these). We register
+// BOTH for cross-version safety; the shared reporter below dedups intent.
+function reportUnhandledRejection(reason: unknown): void {
 	try {
-		const reason = event.reason;
 		const message = reason instanceof Error ? reason.message : String(reason);
 		if (message.includes('Operation aborted') || message.includes('aborted')) {
 			debug.warn('server', 'Suppressed expected SDK abort rejection:', message);
@@ -263,6 +266,18 @@ globalThis.addEventListener('unhandledrejection', (event: PromiseRejectionEvent)
 	} catch {
 		console.error('Unhandled promise rejection (server still running)');
 	}
+}
+
+// Primary net on Bun 1.3.x — registering this handler prevents the default
+// crash-on-unhandled-rejection behavior.
+process.on('unhandledRejection', (reason) => {
+	reportUnhandledRejection(reason);
+});
+
+// Belt-and-suspenders for Bun versions where only the Web API suppresses exit.
+globalThis.addEventListener('unhandledrejection', (event: PromiseRejectionEvent) => {
+	event.preventDefault();
+	reportUnhandledRejection(event.reason);
 });
 
 process.on('uncaughtException', (error) => {
