@@ -56,6 +56,29 @@
 	let branchInfo = $state<GitBranchInfo | null>(null);
 	let isCommitting = $state(false);
 
+	// Repo is in a transitional state (detached HEAD or an in-progress operation
+	// like rebase/merge/cherry-pick). Branch-targeted actions (push/pull/merge)
+	// must be blocked while this is true — running them would operate on a detached
+	// HEAD with no real branch name.
+	const repoBusy = $derived(Boolean(branchInfo?.detached || branchInfo?.operation));
+	const repoBusyReason = $derived(
+		branchInfo?.operation
+			? `A ${branchInfo.operation} is in progress — finish or abort it first.`
+			: branchInfo?.detached
+				? 'HEAD is detached (no branch checked out).'
+				: ''
+	);
+
+	/**
+	 * Guard for branch-targeted actions. Returns true (and surfaces a message) when
+	 * the repo is mid-operation/detached, so callers should bail out.
+	 */
+	function blockedWhileBusy(action: string): boolean {
+		if (!repoBusy) return false;
+		showError(`Cannot ${action}`, repoBusyReason);
+		return true;
+	}
+
 	// Remote state
 	let remotes = $state<GitRemote[]>([]);
 	let selectedRemote = $state('origin');
@@ -921,6 +944,7 @@
 	}
 
 	async function mergeBranch(name: string) {
+		if (blockedWhileBusy('merge')) return;
 		requestConfirm({
 			title: 'Merge Branch',
 			message: `Merge "${name}" into "${branchInfo?.current}"?`,
@@ -988,6 +1012,7 @@
 
 	async function handlePull() {
 		if (!projectId || isPulling) return;
+		if (blockedWhileBusy('pull')) return;
 		isPulling = true;
 		try {
 			const prevBehind = branchInfo?.behind ?? 0;
@@ -1018,6 +1043,7 @@
 
 	async function handlePush() {
 		if (!projectId || isPushing) return;
+		if (blockedWhileBusy('push')) return;
 		isPushing = true;
 		try {
 			const prevAhead = branchInfo?.ahead ?? 0;
@@ -1055,6 +1081,7 @@
 	}
 
 	async function pushVariant(mode: 'with-tags' | 'all-tags' | 'force-lease' | 'force', label: string) {
+		if (blockedWhileBusy('push')) return;
 		await runMore(async () => {
 			try {
 				const result = await ws.http('git:push-advanced', {
@@ -1078,6 +1105,7 @@
 	}
 
 	async function pullRebase() {
+		if (blockedWhileBusy('pull with rebase')) return;
 		await runMore(async () => {
 			try {
 				const result = await ws.http('git:pull', {
@@ -1880,6 +1908,8 @@ ${bodies}`;
 			{isPulling}
 			{isFetching}
 			{isMoreBusy}
+			{repoBusy}
+			{repoBusyReason}
 			onPush={handlePush}
 			onPull={handlePull}
 			onFetch={handleFetch}

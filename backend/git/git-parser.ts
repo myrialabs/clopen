@@ -114,6 +114,17 @@ export function parseBranches(localOutput: string, remoteOutput: string): GitBra
 		// Format: "* main abc1234 commit message" or "  dev abc1234 commit message"
 		const isCurrent = line.startsWith('*');
 		const trimmed = line.replace(/^\*?\s+/, '');
+
+		// When HEAD is detached, git emits a parenthesized pseudo-ref instead of a
+		// branch name, e.g. "* (no branch, rebasing main)" or "* (HEAD detached at
+		// abc1234)". These are not real branches — skip them so they never leak into
+		// the branch list or get treated as the current branch (which produced the
+		// bogus "(no" branch name). Match git's exact pseudo-ref prefixes so legit
+		// branch names containing parentheses (e.g. "feature(x)") are preserved. The
+		// real current branch / detached state is resolved authoritatively in
+		// git-service. Output is forced to en_US locale, so these strings are stable.
+		if (isCurrent && /^\((?:HEAD detached|no branch)\b/.test(trimmed)) continue;
+
 		const parts = trimmed.split(/\s+/);
 		const name = parts[0];
 		const lastCommit = parts[1] || '';

@@ -52,12 +52,20 @@ export interface GitBranch {
 	lastCommit?: string;
 }
 
+/** In-progress git operation that leaves the repo in a detached/transitional state */
+export type GitOperation = 'rebase' | 'merge' | 'cherry-pick' | 'revert' | 'bisect';
+
 export interface GitBranchInfo {
+	/** Active branch name, or a short commit hash when HEAD is detached */
 	current: string;
 	local: GitBranch[];
 	remote: GitBranch[];
 	ahead: number;
 	behind: number;
+	/** True when HEAD is detached (no branch checked out) */
+	detached?: boolean;
+	/** The in-progress operation, if any (rebase, merge, …) */
+	operation?: GitOperation | null;
 }
 
 // ============================================

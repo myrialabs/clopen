@@ -21,6 +21,10 @@
 		isPulling?: boolean;
 		isFetching?: boolean;
 		isMoreBusy?: boolean;
+		/** Repo is detached / mid-operation (rebase, merge, …) — block branch-targeted actions */
+		repoBusy?: boolean;
+		/** Human-readable reason shown in disabled button tooltips */
+		repoBusyReason?: string;
 		onPush?: () => void;
 		onPull?: () => void;
 		onFetch?: () => void;
@@ -40,6 +44,8 @@
 		isPulling = false,
 		isFetching = false,
 		isMoreBusy = false,
+		repoBusy = false,
+		repoBusyReason = '',
 		onPush,
 		onPull,
 		onFetch,
@@ -176,8 +182,8 @@
 					type="button"
 					class="relative flex items-center justify-center w-8 h-7 bg-white dark:bg-slate-800/80 border border-slate-200 dark:border-slate-700 rounded-md text-slate-500 cursor-pointer transition-all duration-150 hover:bg-violet-500/10 hover:text-violet-600 dark:hover:text-violet-400 disabled:opacity-50 disabled:cursor-not-allowed disabled:hover:bg-white dark:disabled:hover:bg-slate-800/80 disabled:hover:text-slate-500"
 					onclick={onPush}
-					disabled={isPushing || !hasRemotes || !onPush}
-					title={hasRemotes ? `Push${branchAhead > 0 ? ` (${branchAhead} ahead)` : ''} — git push -u ${selectedRemote}${branchRef}` : 'No remote configured'}
+					disabled={isPushing || !hasRemotes || !onPush || repoBusy}
+					title={repoBusy ? repoBusyReason : hasRemotes ? `Push${branchAhead > 0 ? ` (${branchAhead} ahead)` : ''} — git push -u ${selectedRemote}${branchRef}` : 'No remote configured'}
 				>
 					{#if isPushing}
 						<div class="w-3.5 h-3.5 border-2 border-slate-300/30 border-t-slate-500 rounded-full animate-spin"></div>
@@ -194,8 +200,8 @@
 					type="button"
 					class="relative flex items-center justify-center w-8 h-7 bg-white dark:bg-slate-800/80 border border-slate-200 dark:border-slate-700 rounded-md text-slate-500 cursor-pointer transition-all duration-150 hover:bg-violet-500/10 hover:text-violet-600 dark:hover:text-violet-400 disabled:opacity-50 disabled:cursor-not-allowed disabled:hover:bg-white dark:disabled:hover:bg-slate-800/80 disabled:hover:text-slate-500"
 					onclick={onPull}
-					disabled={isPulling || !hasRemotes || !onPull}
-					title={hasRemotes ? `Pull${branchBehind > 0 ? ` (${branchBehind} behind)` : ''} — git pull ${selectedRemote}${branchRef}` : 'No remote configured'}
+					disabled={isPulling || !hasRemotes || !onPull || repoBusy}
+					title={repoBusy ? repoBusyReason : hasRemotes ? `Pull${branchBehind > 0 ? ` (${branchBehind} behind)` : ''} — git pull ${selectedRemote}${branchRef}` : 'No remote configured'}
 				>
 					{#if isPulling}
 						<div class="w-3.5 h-3.5 border-2 border-slate-300/30 border-t-slate-500 rounded-full animate-spin"></div>

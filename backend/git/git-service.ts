@@ -19,6 +19,7 @@ import {
 import type {
 	GitStatus,
 	GitBranchInfo,
+	GitOperation,
 	GitFileDiff,
 	GitLogResult,
 	GitRemote,
@@ -233,9 +234,10 @@ export class GitService {
 	// ============================================
 
 	async getBranches(cwd: string): Promise<GitBranchInfo> {
-		const [localResult, remoteResult] = await Promise.all([
+		const [localResult, remoteResult, headRef] = await Promise.all([
 			execGit(['branch', '-v', '--no-color'], cwd),
-			execGit(['branch', '-r', '-v', '--no-color'], cwd)
+			execGit(['branch', '-r', '-v', '--no-color'], cwd),
+			execGit(['rev-parse', '--abbrev-ref', 'HEAD'], cwd)
 		]);
 
 		// Handle empty repo (no commits yet) — branch command returns empty
@@ -247,6 +249,25 @@ export class GitService {
 		}
 
 		const branchInfo = parseBranches(localResult.stdout, remoteResult.stdout);
+		branchInfo.operation = await this.detectGitOperation(cwd);
+
+		// Resolve the current branch authoritatively instead of trusting the parsed
+		// `git branch -v` text: while HEAD is detached (rebase, bisect, or a detached
+		// checkout) git prints a parenthesized pseudo-ref, which previously leaked
+		// through as a bogus "(no" branch name.
+		const headName = headRef.exitCode === 0 ? headRef.stdout.trim() : '';
+		if (headName === '' || headName === 'HEAD') {
+			// Detached HEAD — show a clean short hash, never a real branch.
+			branchInfo.detached = true;
+			const shortHash = await execGit(['rev-parse', '--short', 'HEAD'], cwd);
+			branchInfo.current = shortHash.exitCode === 0 ? shortHash.stdout.trim() : '';
+			for (const b of branchInfo.local) b.isCurrent = false;
+			return branchInfo;
+		}
+
+		branchInfo.detached = false;
+		branchInfo.current = headName;
+		for (const b of branchInfo.local) b.isCurrent = b.name === headName;
 
 		// Get ahead/behind for current branch
 		if (branchInfo.current) {
@@ -643,14 +664,38 @@ export class GitService {
 	 * For stash conflicts (no sentinel) we fall back to `git reset --merge`,
 	 * which unwinds the unmerged paths while keeping unrelated local edits.
 	 */
+	/** Resolve the absolute git dir for a working tree (handles worktrees/.git files). */
+	private async resolveGitDir(cwd: string): Promise<string> {
+		const { join } = await import('node:path');
+		const result = await execGit(['rev-parse', '--git-dir'], cwd);
+		const raw = result.exitCode === 0 ? result.stdout.trim() : '.git';
+		return raw.startsWith('/') ? raw : join(cwd, raw);
+	}
+
+	/**
+	 * Detect an in-progress operation (rebase, merge, cherry-pick, revert, bisect)
+	 * by probing the sentinel files git writes under the git dir. Returns null when
+	 * the working tree is in a normal state.
+	 */
+	private async detectGitOperation(cwd: string): Promise<GitOperation | null> {
+		const { existsSync } = await import('node:fs');
+		const { join } = await import('node:path');
+		const gitDir = await this.resolveGitDir(cwd);
+		const has = (name: string) => existsSync(join(gitDir, name));
+
+		if (has('rebase-merge') || has('rebase-apply')) return 'rebase';
+		if (has('MERGE_HEAD')) return 'merge';
+		if (has('CHERRY_PICK_HEAD')) return 'cherry-pick';
+		if (has('REVERT_HEAD')) return 'revert';
+		if (has('BISECT_LOG')) return 'bisect';
+		return null;
+	}
+
 	async abortMerge(cwd: string): Promise<void> {
 		const { existsSync } = await import('node:fs');
 		const { join } = await import('node:path');
 
-		const gitDirResult = await execGit(['rev-parse', '--git-dir'], cwd);
-		const gitDirRaw = gitDirResult.exitCode === 0 ? gitDirResult.stdout.trim() : '.git';
-		const gitDir = gitDirRaw.startsWith('/') ? gitDirRaw : join(cwd, gitDirRaw);
-
+		const gitDir = await this.resolveGitDir(cwd);
 		const has = (name: string) => existsSync(join(gitDir, name));
 
 		let args: string[] | null = null;
