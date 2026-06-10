@@ -1,5 +1,6 @@
 <script lang="ts">
 	import { marked, type Tokens } from 'marked';
+	import DOMPurify from 'dompurify';
 	import { escapeHtml } from '$frontend/utils/terminal-formatter';
 	import { onMount, tick } from 'svelte';
 
@@ -63,7 +64,7 @@
 	};
 
 	renderer.html = function (token) {
-		return escapeHtml(token.text);
+		return DOMPurify.sanitize(token.text, { USE_PROFILES: { html: true } });
 	};
 
 	renderer.code = function (token) {
@@ -384,7 +385,7 @@
 
 	:global(.markdown-preview hr) {
 		border: 0;
-		border-top: 1px solid rgb(226 232 240);
+		border-top: 3px solid rgb(226 232 240);
 		margin: 1.5rem 0;
 	}
 
@@ -441,6 +442,7 @@
 	}
 
 	:global(.markdown-preview img) {
+		display: initial;
 		max-width: 100%;
 		height: auto;
 		border-radius: 0.25rem;
