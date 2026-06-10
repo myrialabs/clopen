@@ -14,6 +14,49 @@ export const CLAUDE_CODE_MODELS: EngineModel[] = [
 			type: 'claude-code',
 			provider: 'anthropic',
 			model: {
+				id: 'claude-fable-5',
+				name: 'Claude Fable 5',
+			},
+			account: {
+				id: 0,
+				name: '',
+			},
+		},
+		limit: {
+			input: 1_000_000,
+			output: 128_000,
+		},
+		modalities: {
+			input: {
+				text: true,
+				image: true,
+				audio: false,
+				video: false,
+				pdf: true,
+			},
+			output: {
+				text: true,
+				image: false,
+				audio: false,
+				video: false,
+				pdf: false,
+			},
+		},
+		capabilities: {
+			reasoning: true,
+			tools: true,
+			structuredOutput: true,
+		},
+		cost: {
+			input: 10,
+			output: 50,
+		},
+	},
+	{
+		engine: {
+			type: 'claude-code',
+			provider: 'anthropic',
+			model: {
 				id: 'claude-opus-4-8',
 				name: 'Claude Opus 4.8',
 			},
