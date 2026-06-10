@@ -197,6 +197,64 @@ function decodeBinaryMessage(buffer: ArrayBuffer): { action: string; payload: an
 }
 
 // ============================================================================
+// HTTP Request Resilience
+// ============================================================================
+
+/**
+ * An in-flight `http()` request, tracked so it can survive a transport hiccup.
+ *
+ * The browser WebSocket can silently lose a frame when the connection drops
+ * but `onclose` has not fired yet, or when the socket is "open" yet actually
+ * dead (a black-holed tunnel/network). When that happens to a request frame the
+ * server never replies, and the request used to just hang until its 30s
+ * timeout. We keep the request here so it can be re-sent on reconnect.
+ */
+interface PendingHttpRequest {
+	action: string;
+	/** Full wire payload `{ requestId, data }` — re-sent verbatim on resend. */
+	payload: any;
+	/** Whether the request was actually flushed to an OPEN socket. */
+	sent: boolean;
+	/** Number of automatic recovery attempts already spent. */
+	attempts: number;
+	/** (Re)arm the per-request timeout clock. */
+	arm: () => void;
+	/** Tear down: clear timeout, unsubscribe the response listener, drop from map. */
+	cleanup: () => void;
+	/** Settle the request as failed (used when the client is torn down). */
+	fail: (err: Error) => void;
+}
+
+/** Verbs that mark an action as a side-effect-free read, safe to auto-resend. */
+const IDEMPOTENT_VERB_PREFIXES = [
+	'list',
+	'read',
+	'get',
+	'browse',
+	'search',
+	'fetch',
+	'load',
+	'status',
+	'info',
+	'check',
+	'exists',
+	'count',
+	'query'
+];
+
+/**
+ * Is this action safe to transparently re-send after a reconnect?
+ *
+ * Only reads qualify. Re-sending a mutation (create/write/delete/…) whose
+ * response was lost in a hiccup could double-apply it, so anything that is not
+ * a recognised read verb is treated as non-idempotent and never auto-resent.
+ */
+function isIdempotentHttpAction(action: string): boolean {
+	const verb = (action.split(':').pop() || '').toLowerCase();
+	return IDEMPOTENT_VERB_PREFIXES.some((p) => verb.startsWith(p));
+}
+
+// ============================================================================
 // WebSocket Client
 // ============================================================================
 
@@ -214,6 +272,11 @@ export class WSClient<TAPI extends { client: any; server: any }> {
 	private isConnected = false;
 	private shouldReconnect = true;
 	private hasConnectedBefore = false;
+
+	/** In-flight HTTP requests, keyed by requestId, for resend-on-reconnect. */
+	private pendingHttpRequests = new Map<string, PendingHttpRequest>();
+	/** Prevents a heal-reconnect stampede when many requests time out at once. */
+	private healingReconnect = false;
 
 	/** Current context (synced with server) */
 	private context: {
@@ -312,12 +375,28 @@ export class WSClient<TAPI extends { client: any; server: any }> {
 					}
 				}
 
-				// Flush queued messages AFTER context + room re-joins are synced
-				while (this.messageQueue.length > 0) {
-					const msg = this.messageQueue.shift();
-					if (msg) {
-						this.sendRaw(msg.action, msg.payload);
-					}
+				// A fresh socket is live again — clear the heal guard so future
+				// dead-connection recoveries can fire.
+				this.healingReconnect = false;
+
+				// Flush queued fire-and-forget messages AFTER context + room
+				// re-joins are synced. Drain into a local array first so a send
+				// that re-queues (socket died mid-flush) can't spin this loop.
+				const queued = this.messageQueue;
+				this.messageQueue = [];
+				for (const msg of queued) {
+					this.sendRaw(msg.action, msg.payload);
+				}
+
+				// Re-deliver in-flight HTTP requests that the previous socket may
+				// have swallowed. Reads (idempotent) are always safe to resend;
+				// non-idempotent requests are only resent if they were never
+				// actually delivered (so the server has not seen them yet).
+				for (const entry of this.pendingHttpRequests.values()) {
+					if (entry.sent && !isIdempotentHttpAction(entry.action)) continue;
+					entry.sent = true;
+					this.sendRaw(entry.action, entry.payload);
+					entry.arm();
 				}
 
 				// Resolve waitUntilConnected() callers AFTER everything is ready
@@ -457,7 +536,11 @@ export class WSClient<TAPI extends { client: any; server: any }> {
 		action: TEvent,
 		payload: TAPI['client'][TEvent]
 	): void {
-		if (this.isConnected && this.ws) {
+		// Gate on the real socket state, not the manually-tracked `isConnected`
+		// flag. There is a window where the socket is already CLOSING/CLOSED but
+		// `onclose` has not run yet (`isConnected` still true); sending then would
+		// be silently dropped by sendRaw and the caller would hang. Queue instead.
+		if (this.isSocketOpen()) {
 			this.sendRaw(action as string, payload);
 		} else {
 			// Queue message for sending when connected
@@ -466,12 +549,22 @@ export class WSClient<TAPI extends { client: any; server: any }> {
 		}
 	}
 
+	/** True only when the underlying socket is genuinely OPEN and writable. */
+	private isSocketOpen(): boolean {
+		return !!this.ws && this.ws.readyState === WebSocket.OPEN;
+	}
+
 	/**
 	 * Send raw message (JSON or Binary based on payload content)
 	 */
 	private sendRaw(action: string, payload: any): void {
-		if (!this.ws || this.ws.readyState !== WebSocket.OPEN) {
-			debug.log('websocket', 'Cannot send, socket not ready:', action);
+		if (!this.isSocketOpen()) {
+			// Socket not writable — re-queue instead of dropping so the message is
+			// delivered after (re)connect. Dropping here is what made ws.http()
+			// callers hang until their timeout. The onopen flush drains into a
+			// local array, so re-queuing during a flush cannot spin the loop.
+			debug.log('websocket', 'Socket not ready, re-queuing:', action);
+			this.messageQueue.push({ action, payload });
 			return;
 		}
 
@@ -479,15 +572,17 @@ export class WSClient<TAPI extends { client: any; server: any }> {
 			if (isBinaryAction(action, payload)) {
 				// Send as binary message
 				const binaryMessage = encodeBinaryMessage(action, payload);
-				this.ws.send(binaryMessage);
+				this.ws!.send(binaryMessage);
 				debug.log('websocket', 'Sent binary:', action, `(${binaryMessage.byteLength} bytes)`);
 			} else {
 				// Send as JSON message
-				this.ws.send(JSON.stringify({ action, payload }));
+				this.ws!.send(JSON.stringify({ action, payload }));
 				debug.log('websocket', 'Sent JSON:', action);
 			}
 		} catch (err) {
-			debug.error('websocket', 'Send error:', err);
+			// The socket died mid-send — re-queue for delivery after reconnect.
+			debug.error('websocket', 'Send error, re-queuing:', err);
+			this.messageQueue.push({ action, payload });
 		}
 	}
 
@@ -548,6 +643,13 @@ export class WSClient<TAPI extends { client: any; server: any }> {
 		this.listeners.clear();
 		this.messageQueue = [];
 		this.isConnected = false;
+
+		// Fail any in-flight HTTP requests — no socket will come back to answer
+		// them after an explicit disconnect (page unload / HMR dispose).
+		for (const entry of [...this.pendingHttpRequests.values()]) {
+			entry.fail(new Error('WebSocket disconnected'));
+		}
+		this.pendingHttpRequests.clear();
 
 		debug.log('websocket', 'Disconnected and cleaned up');
 	}
@@ -761,6 +863,14 @@ export class WSClient<TAPI extends { client: any; server: any }> {
 	 * - If `success: true` → returns `data` directly
 	 * - If `success: false` → throws Error with `error` message
 	 * - Timeout → throws Error
+	 *
+	 * Resilience: the request is tracked in `pendingHttpRequests` and survives a
+	 * transport hiccup. If the socket drops, idempotent reads (and any request
+	 * never actually delivered) are re-sent automatically on reconnect, and a
+	 * read that times out against a seemingly-open-but-dead socket forces one
+	 * heal-reconnect + retry before giving up. This is what stops sporadic
+	 * "Request timeout: files:list-tree (30000ms)" errors that used to need a
+	 * manual Retry.
 	 */
 	http<TAction extends keyof TAPI['client']>(
 		action: TAction,
@@ -771,21 +881,66 @@ export class WSClient<TAPI extends { client: any; server: any }> {
 			? TData
 			: any
 	> {
-		const responseAction = `${action as string}:response` as any;
+		const actionStr = action as string;
+		const responseAction = `${actionStr}:response` as any;
 		// Generate unique request ID to match request with response
-		const requestId = `${action as string}-${Date.now()}-${Math.random().toString(36).substr(2, 9)}`;
+		const requestId = `${actionStr}-${Date.now()}-${Math.random().toString(36).substr(2, 9)}`;
+		const payload = { requestId, data: data || {} };
+		// Reads can be safely re-sent; mutations can only be re-sent if they were
+		// never delivered (tracked via `entry.sent`).
+		const idempotent = isIdempotentHttpAction(actionStr);
+		// Up to this many automatic heal-reconnect retries for idempotent reads.
+		const MAX_HEAL_ATTEMPTS = 2;
 
 		return new Promise((resolve, reject) => {
 			let unsubResponse: (() => void) | null = null;
 			let timeoutId: ReturnType<typeof setTimeout> | null = null;
 
-			// Cleanup function
-			const cleanup = () => {
-				unsubResponse?.();
-				if (timeoutId) {
-					clearTimeout(timeoutId);
-					timeoutId = null;
+			const entry: PendingHttpRequest = {
+				action: actionStr,
+				payload,
+				sent: false,
+				attempts: 0,
+				arm: () => {
+					if (timeout <= 0) return;
+					if (timeoutId) clearTimeout(timeoutId);
+					timeoutId = setTimeout(onTimeout, timeout);
+				},
+				cleanup: () => {
+					unsubResponse?.();
+					if (timeoutId) {
+						clearTimeout(timeoutId);
+						timeoutId = null;
+					}
+					this.pendingHttpRequests.delete(requestId);
+				},
+				fail: (err: Error) => {
+					entry.cleanup();
+					reject(err);
 				}
+			};
+
+			// Timeout handler — for idempotent reads, try to heal a dead-but-open
+			// socket and retry instead of failing outright.
+			const onTimeout = () => {
+				if (idempotent && entry.attempts < MAX_HEAL_ATTEMPTS) {
+					entry.attempts++;
+					debug.warn(
+						'websocket',
+						`Request stalled, healing connection and retrying: ${actionStr} (attempt ${entry.attempts})`
+					);
+					entry.arm();
+					// If the socket still claims to be open, it is likely black-holed
+					// — force a reconnect (guarded against a stampede). The onopen
+					// resend loop will re-send this request on the fresh socket.
+					if (this.isSocketOpen() && !this.healingReconnect) {
+						this.healingReconnect = true;
+						this.reconnect();
+					}
+					return;
+				}
+				entry.cleanup();
+				reject(new Error(`Request timeout: ${actionStr} (${timeout}ms)`));
 			};
 
 			// Response handler - unwrap { success, data, error } response
@@ -795,7 +950,7 @@ export class WSClient<TAPI extends { client: any; server: any }> {
 					return; // Ignore responses for other requests
 				}
 
-				cleanup();
+				entry.cleanup();
 
 				// Check if response has success field
 				if (response && typeof response === 'object' && 'success' in response) {
@@ -812,24 +967,19 @@ export class WSClient<TAPI extends { client: any; server: any }> {
 				}
 			};
 
-			// Timeout handler
-			if (timeout > 0) {
-				timeoutId = setTimeout(() => {
-					cleanup();
-					reject(new Error(`Request timeout: ${action as string} (${timeout}ms)`));
-				}, timeout);
-			}
-
-			// Register response listener
+			// Register response listener + track the request, then deliver.
 			unsubResponse = this.on(responseAction, handleResponse);
+			this.pendingHttpRequests.set(requestId, entry);
+			entry.arm();
 
-			// Send request with data structure and requestId
-			const payload = {
-				requestId,
-				data: data || {}
-			};
-
-			this.emit(action as any, payload as any);
+			// Deliver directly (not via the fire-and-forget queue) so resend on
+			// reconnect is driven solely by `pendingHttpRequests` — no double-send.
+			if (this.isSocketOpen()) {
+				entry.sent = true;
+				this.sendRaw(actionStr, payload);
+			}
+			// If not open, the request stays pending and the onopen resend loop
+			// delivers it once the socket is back.
 		});
 	}
 }
