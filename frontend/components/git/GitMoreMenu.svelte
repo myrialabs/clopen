@@ -121,13 +121,13 @@
 		const branch = currentBranch || '<branch>';
 		switch (item.id) {
 			case 'push-follow-tags':
-				return `git push ${remote} ${branch} --follow-tags`;
+				return `git push ${remote} ${branch} --follow-tags -u`;
 			case 'push-all-tags':
 				return `git push ${remote} --tags`;
 			case 'push-force-lease':
-				return `git push ${remote} ${branch} --force-with-lease`;
+				return `git push ${remote} ${branch} --force-with-lease -u`;
 			case 'push-force':
-				return `git push ${remote} ${branch} --force`;
+				return `git push ${remote} ${branch} --force -u`;
 			case 'pull-rebase':
 				return `git pull --rebase ${remote} ${branch}`;
 			default:

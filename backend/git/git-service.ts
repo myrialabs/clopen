@@ -787,7 +787,7 @@ export class GitService {
 		if (!npmPath) {
 			throw new Error('npm binary not found on PATH');
 		}
-		const proc = Bun.spawn([npmPath, 'version', bump, '-m', 'chore(release): v%s'], {
+		const proc = Bun.spawn([npmPath, 'version', bump], {
 			cwd,
 			stdout: 'pipe',
 			stderr: 'pipe',
