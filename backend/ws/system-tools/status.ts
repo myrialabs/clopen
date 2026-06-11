@@ -12,6 +12,7 @@ import { createRouter } from '$shared/utils/ws-server';
 import { debug } from '$shared/utils/logger';
 import { getToolStatus, resolveRecipe, type ToolId } from '$backend/engine/install-recipes';
 import { getActiveSessionForTool } from '$backend/engine/install-runner';
+import { checkToolUpdate } from '$backend/engine/version-check';
 
 const TOOL_UNION = t.Union([
 	t.Literal('git'),
@@ -82,6 +83,19 @@ function toRecipeDTO(tool: ToolId, recipe: Awaited<ReturnType<typeof resolveReci
 }
 
 export const systemToolsStatusHandler = createRouter()
+	.http('system-tools:check-update', {
+		data: t.Object({
+			tool: TOOL_UNION,
+			installedVersion: t.Union([t.String(), t.Null()])
+		}),
+		response: t.Object({
+			latestVersion: t.Union([t.String(), t.Null()]),
+			hasUpdate: t.Union([t.Boolean(), t.Null()])
+		})
+	}, async ({ data }) => {
+		debug.log('path', `system-tools:check-update for ${data.tool}`);
+		return checkToolUpdate(data.tool, data.installedVersion);
+	})
 	.http('system-tools:status', {
 		data: t.Object({ tool: TOOL_UNION }),
 		response: t.Object({

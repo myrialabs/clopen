@@ -67,9 +67,14 @@
 	let exitCode = $state<number | null>(null);
 
 	let confirmInstallOpen = $state(false);
+	let confirmUpdateOpen = $state(false);
 	let confirmCancelOpen = $state(false);
 	let manualOpen = $state(false);
 	let errorMessage = $state<string | null>(null);
+
+	type UpdateCheckState = 'idle' | 'checking' | 'update-available' | 'up-to-date' | 'check-failed';
+	let updateCheckState = $state<UpdateCheckState>('idle');
+	let latestVersion = $state<string | null>(null);
 
 	let commandCopied = $state(false);
 	let commandCopiedTimer: ReturnType<typeof setTimeout> | null = null;
@@ -83,6 +88,7 @@
 
 	const isRunning = $derived(sessionStatus === 'running');
 	const hasSession = $derived(sessionId !== null && sessionStatus !== null);
+
 
 	const confirmMessage = $derived.by(() => {
 		if (!recipe) return '';
@@ -105,6 +111,8 @@
 
 	async function refresh() {
 		isLoading = true;
+		updateCheckState = 'idle';
+		latestVersion = null;
 		try {
 			const res = await ws.http('system-tools:status', { tool });
 			status = res.status;
@@ -258,6 +266,32 @@
 	function requestInstall() {
 		errorMessage = null;
 		confirmInstallOpen = true;
+	}
+
+	function requestUpdate() {
+		errorMessage = null;
+		confirmUpdateOpen = true;
+	}
+
+	async function checkForUpdates() {
+		if (!status?.installed) return;
+		updateCheckState = 'checking';
+		try {
+			const res = await ws.http('system-tools:check-update', {
+				tool,
+				installedVersion: status.version
+			});
+			latestVersion = res.latestVersion;
+			if (res.hasUpdate === null) {
+				updateCheckState = 'check-failed';
+			} else if (res.hasUpdate) {
+				updateCheckState = 'update-available';
+			} else {
+				updateCheckState = 'up-to-date';
+			}
+		} catch {
+			updateCheckState = 'check-failed';
+		}
 	}
 
 	async function doInstall() {
@@ -425,13 +459,65 @@
 						Cancel
 					</button>
 				{:else if status.installed}
+					{#if recipe?.autoInstallable}
+						{#if updateCheckState === 'idle'}
+							<button
+								type="button"
+								class="inline-flex items-center gap-2 px-3 py-2 text-sm font-medium rounded-lg border border-slate-300 dark:border-slate-600 text-slate-600 dark:text-slate-400 hover:bg-slate-100 dark:hover:bg-slate-700 transition-colors"
+								onclick={checkForUpdates}
+							>
+								<Icon name="lucide:search" class="w-4 h-4" />
+								Check for Updates
+							</button>
+						{:else if updateCheckState === 'checking'}
+							<button
+								type="button"
+								class="inline-flex items-center gap-2 px-3 py-2 text-sm font-medium rounded-lg border border-slate-300 dark:border-slate-600 text-slate-500 dark:text-slate-500 cursor-wait"
+								disabled
+							>
+								<Icon name="lucide:loader" class="w-4 h-4 animate-spin" />
+								Checking...
+							</button>
+						{:else if updateCheckState === 'update-available'}
+							<button
+								type="button"
+								class="inline-flex items-center gap-2 px-4 py-2 text-sm font-medium rounded-lg border border-transparent bg-violet-600 text-white hover:bg-violet-700 transition-colors"
+								onclick={requestUpdate}
+							>
+								<Icon name="lucide:upload" class="w-4 h-4" />
+								Update{latestVersion ? ` → ${latestVersion}` : ''}
+							</button>
+						{:else if updateCheckState === 'up-to-date'}
+							<span class="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full text-xs font-medium bg-green-100 dark:bg-green-900/30 text-green-700 dark:text-green-400">
+								<Icon name="lucide:circle-check" class="w-3.5 h-3.5" />
+								Up to date
+							</span>
+							<button
+								type="button"
+								class="inline-flex items-center gap-1.5 px-2 py-1 text-xs font-medium rounded-lg text-slate-400 dark:text-slate-500 hover:text-slate-600 dark:hover:text-slate-300 transition-colors"
+								onclick={checkForUpdates}
+							>
+								<Icon name="lucide:search" class="w-3 h-3" />
+								Check again
+							</button>
+						{:else}
+							<button
+								type="button"
+								class="inline-flex items-center gap-2 px-3 py-2 text-sm font-medium rounded-lg border border-amber-300 dark:border-amber-700/50 text-amber-700 dark:text-amber-400 hover:bg-amber-50 dark:hover:bg-amber-900/20 transition-colors"
+								onclick={checkForUpdates}
+							>
+								<Icon name="lucide:search" class="w-4 h-4" />
+								Check again
+							</button>
+						{/if}
+					{/if}
 					<button
 						type="button"
 						class="inline-flex items-center gap-2 px-3 py-2 text-sm font-medium rounded-lg border border-slate-300 dark:border-slate-600 text-slate-600 dark:text-slate-400 hover:bg-slate-100 dark:hover:bg-slate-700 transition-colors"
 						onclick={refresh}
 					>
 						<Icon name="lucide:refresh-cw" class="w-4 h-4" />
-						Recheck
+						Refresh
 					</button>
 				{:else if recipe?.autoInstallable}
 					<button
@@ -448,7 +534,7 @@
 						onclick={refresh}
 					>
 						<Icon name="lucide:refresh-cw" class="w-4 h-4" />
-						Recheck
+						Refresh
 					</button>
 				{:else}
 					<button
@@ -457,7 +543,7 @@
 						onclick={refresh}
 					>
 						<Icon name="lucide:refresh-cw" class="w-4 h-4" />
-						Recheck
+						Refresh
 					</button>
 				{/if}
 
@@ -530,6 +616,17 @@
 	title="Install {title}?"
 	message={confirmMessage}
 	confirmText="Install"
+	cancelText="Cancel"
+	onConfirm={doInstall}
+/>
+
+<Dialog
+	bind:isOpen={confirmUpdateOpen}
+	onClose={() => (confirmUpdateOpen = false)}
+	type="info"
+	title="Update {title}?"
+	message={confirmMessage}
+	confirmText="Update"
 	cancelText="Cancel"
 	onConfirm={doInstall}
 />

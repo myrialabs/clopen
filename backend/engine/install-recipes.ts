@@ -108,8 +108,6 @@ function detectMacPkgMgr(): 'brew' | null {
  * Google Chrome via the distro package manager and skip this scan.
  */
 export function resolveClopenChromePath(): string | null {
-	if (process.platform !== 'darwin' && process.platform !== 'win32') return null;
-
 	const cacheDir = join(getClopenDir(), 'bin', 'chrome');
 	if (!existsSync(cacheDir)) return null;
 
@@ -127,10 +125,16 @@ export function resolveClopenChromePath(): string | null {
 					);
 					if (existsSync(candidate)) return candidate;
 				}
-			} else {
+			} else if (process.platform === 'win32') {
 				const winDirs = ['chrome-win64', 'chrome-win'];
 				for (const dir of winDirs) {
 					const candidate = join(buildDir, dir, 'chrome.exe');
+					if (existsSync(candidate)) return candidate;
+				}
+			} else {
+				const linuxDirs = ['chrome-linux64', 'chrome-linux'];
+				for (const dir of linuxDirs) {
+					const candidate = join(buildDir, dir, 'chrome');
 					if (existsSync(candidate)) return candidate;
 				}
 			}
@@ -387,7 +391,15 @@ async function resolveOpenCodeRecipe(): Promise<Recipe> {
 	};
 
 	if (process.platform === 'win32') {
-		base.unavailableReason = 'OpenCode install script is not available on Windows via PowerShell. Use WSL or the manual instructions.';
+		base.autoInstallable = true;
+		base.shell = { program: 'powershell.exe', args: ['-NoProfile', '-ExecutionPolicy', 'Bypass', '-Command'] };
+		base.command = ['irm https://opencode.ai/install.ps1 | iex'];
+		base.displayCommand = 'irm https://opencode.ai/install.ps1 | iex';
+		base.manualInstructions.push({
+			label: 'PowerShell',
+			command: 'irm https://opencode.ai/install.ps1 | iex',
+			docs: 'https://opencode.ai'
+		});
 		return base;
 	}
 
@@ -530,6 +542,9 @@ interface LinuxChromeStrategy {
 async function resolveLinuxChromeRecipe(): Promise<Recipe> {
 	const mgr = detectLinuxPkgMgr();
 	const arch = process.arch;
+	const cacheDir = join(getClopenDir(), 'bin');
+	const pptrArgs = ['bun', 'x', '@puppeteer/browsers', 'install', 'chrome@stable', '--path', cacheDir];
+	const pptrDisplay = `bun x @puppeteer/browsers install chrome@stable --path "${cacheDir}"`;
 
 	const manual: ManualInstruction[] = [];
 	const strategy = pickLinuxChromeStrategy(mgr, arch);
@@ -541,37 +556,43 @@ async function resolveLinuxChromeRecipe(): Promise<Recipe> {
 			docs: CHROME_LINUX_DOCS
 		});
 	}
+	manual.push({
+		label: 'Puppeteer browsers CLI',
+		command: pptrDisplay,
+		docs: PPTR_CHROME_DOCS
+	});
 
-	const base: Recipe = {
+	// Try Google Chrome via system package manager (x64, apt/dnf/zypper, requires root).
+	if (strategy) {
+		const elevated = await isElevated();
+		if (elevated) {
+			const base: Recipe = {
+				tool: 'chrome',
+				autoInstallable: false,
+				missingPrereqs: [],
+				manualInstructions: manual
+			};
+			if (!strategy.requiresCurl || attachCurlRequirement(base, 'Google Chrome')) {
+				base.autoInstallable = true;
+				base.shell = { program: 'sh', args: ['-c'] };
+				base.command = [strategy.installCommand];
+				base.displayCommand = strategy.manualCommand;
+				if (strategy.env) base.env = strategy.env;
+				return base;
+			}
+			// curl unavailable for system install — fall through to puppeteer
+		}
+	}
+
+	// Fallback: puppeteer Chrome for Testing (no root needed, all distros and arm64).
+	return {
 		tool: 'chrome',
-		autoInstallable: false,
+		autoInstallable: true,
 		missingPrereqs: [],
-		manualInstructions: manual
+		manualInstructions: manual,
+		command: pptrArgs,
+		displayCommand: pptrDisplay
 	};
-
-	if (!strategy) {
-		base.unavailableReason = arch !== 'x64'
-			? `Google Chrome is only published for Linux x86_64. No Chrome build exists for ${arch}. Download Chrome manually from google.com/chrome.`
-			: `Google Chrome is only available via apt, dnf, or zypper on Linux${mgr ? ` (this system uses ${mgr})` : ' — no supported package manager was detected'}. Download Chrome manually from google.com/chrome.`;
-		return base;
-	}
-
-	if (strategy.requiresCurl && !attachCurlRequirement(base, 'Google Chrome')) {
-		return base;
-	}
-
-	const elevated = await isElevated();
-	if (!elevated) {
-		base.unavailableReason = `Installing Google Chrome via ${strategy.pkgMgrLabel} requires root. Run clopen as root, or install Chrome manually with the command below and retry.`;
-		return base;
-	}
-
-	base.autoInstallable = true;
-	base.shell = { program: 'sh', args: ['-c'] };
-	base.command = [strategy.installCommand];
-	base.displayCommand = strategy.manualCommand;
-	if (strategy.env) base.env = strategy.env;
-	return base;
 }
 
 function pickLinuxChromeStrategy(
