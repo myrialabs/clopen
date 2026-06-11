@@ -12,11 +12,17 @@
 		dismissRateLimit,
 		type RateLimitState
 	} from '$frontend/stores/ui/rate-limit.svelte';
+	import { chatModelState } from '$frontend/stores/ui/chat-model.svelte';
 	import Icon from '$frontend/components/common/display/Icon.svelte';
 	import ws from '$frontend/utils/ws';
 	import { slide } from 'svelte/transition';
 
-	const activeLimits = $derived.by(() => Object.values(rateLimitStore.byAccount));
+	const activeLimits = $derived.by(() =>
+		Object.values(rateLimitStore.byAccount).filter(s =>
+			s.engine === chatModelState.engine &&
+			(chatModelState.accountId == null || s.accountId === chatModelState.accountId)
+		)
+	);
 
 	function isRejected(state: RateLimitState) {
 		return state.status === 'rejected';

@@ -132,14 +132,25 @@ export const streamHandler = createRouter()
 			debug.warn('chat', 'Presence broadcast error after chat join-session:', err);
 		});
 
-		// Rehydrate rate-limit banners: replay every active snapshot to the
-		// user so banners persist across page refresh AND across session /
-		// project switches. Rate limits are scoped to account, not session,
-		// so all active snapshots remain visible regardless of which session
-		// the user is currently viewing.
+		// Rehydrate rate-limit banners: replay only snapshots matching the
+		// session's engine+account so banners are scoped to the active context.
+		// In-memory state takes priority (most current); DB is the fallback for
+		// sessions joined after a server restart.
 		try {
 			const userId = ws.getUserId(conn);
-			const snapshots = streamManager.getAllActiveRateLimits();
+			const inMemoryModel = chatSessionModelState.get(data.chatSessionId);
+			const inMemoryAccount = chatSessionAccountState.get(data.chatSessionId);
+			const sessionEngine: string | undefined =
+				inMemoryModel?.engine ?? sessionQueries.getById(data.chatSessionId)?.engine;
+			const sessionAccountId: number | null =
+				inMemoryAccount?.accountId ?? sessionQueries.getById(data.chatSessionId)?.account_id ?? null;
+
+			const snapshots = streamManager.getAllActiveRateLimits().filter(snap => {
+				if (sessionEngine && snap.engine !== sessionEngine) return false;
+				if (sessionAccountId != null && snap.accountId !== sessionAccountId) return false;
+				return true;
+			});
+
 			for (const snap of snapshots) {
 				ws.emit.user(userId, 'chat:rate_limit', {
 					chatSessionId: data.chatSessionId,
