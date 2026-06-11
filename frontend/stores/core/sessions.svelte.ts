@@ -12,7 +12,7 @@ import type { UnifiedMessage, UserMessage } from '$shared/types/unified';
 import ws, { onWsReconnect } from '$frontend/utils/ws';
 import { projectState } from './projects.svelte';
 import { setupEditModeListener, restoreEditMode } from '$frontend/stores/ui/edit-mode.svelte';
-import { markSessionUnread, markSessionRead, clearSessionState, appState } from '$frontend/stores/core/app.svelte';
+import { markSessionUnread, markSessionRead, clearSessionState, syncGlobalStateFromSession, appState } from '$frontend/stores/core/app.svelte';
 import { debug } from '$shared/utils/logger';
 
 /**
@@ -85,6 +85,12 @@ export function messageCount() {
 export async function setCurrentSession(session: ChatSession | null, skipLoadMessages: boolean = false) {
 	const previousSessionId = sessionState.currentSession?.id;
 	sessionState.currentSession = session;
+
+	// Re-derive the global convenience flags from the session now on screen.
+	// Without this the previous session's state (e.g. isWaitingInput) lingers
+	// and leaks into the newly-viewed session/project. A genuinely-waiting
+	// session re-detects its state via catchupActiveStream on switch.
+	syncGlobalStateFromSession(session?.id ?? null);
 
 	// Clear unread status when viewing a session
 	if (session) {

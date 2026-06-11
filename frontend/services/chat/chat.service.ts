@@ -134,7 +134,15 @@ class ChatService {
     if (resolvedId) {
       updateSessionProcessState(resolvedId, update);
     }
-    // Always sync to global convenience flags
+
+    // Mirror to global convenience flags ONLY when this update targets the
+    // session the user is currently viewing. Updates for a background session
+    // (e.g. a stream still running in another session/project) must never
+    // stomp the active session's global UI state — otherwise statuses like
+    // "Waiting for your input" leak across projects/sessions.
+    const viewedSessionId = sessionState.currentSession?.id;
+    if (resolvedId && viewedSessionId && resolvedId !== viewedSessionId) return;
+
     if ('isLoading' in update) appState.isLoading = update.isLoading!;
     if ('isWaitingInput' in update) appState.isWaitingInput = update.isWaitingInput!;
     if ('isCancelling' in update) appState.isCancelling = update.isCancelling!;

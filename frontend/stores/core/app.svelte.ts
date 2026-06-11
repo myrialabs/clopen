@@ -125,10 +125,13 @@ export function updateSessionProcessState(
 
 /**
  * Sync global convenience flags from a session's per-session state.
- * Call when switching sessions to derive global state from the new session.
+ * Call whenever the actively-viewed session changes (switch session/project)
+ * so the global flags always reflect the session on screen and never carry
+ * stale state (e.g. "Waiting for your input") over from the previous one.
+ * Pass null/undefined when no session is active to reset to idle defaults.
  */
-export function syncGlobalStateFromSession(sessionId: string): void {
-	const state = appState.sessionStates[sessionId] ?? DEFAULT_SESSION_STATE;
+export function syncGlobalStateFromSession(sessionId: string | null | undefined): void {
+	const state = (sessionId ? appState.sessionStates[sessionId] : undefined) ?? DEFAULT_SESSION_STATE;
 	appState.isLoading = state.isLoading;
 	appState.isWaitingInput = state.isWaitingInput;
 	appState.isRestoring = state.isRestoring;
