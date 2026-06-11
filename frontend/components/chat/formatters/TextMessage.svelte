@@ -1,12 +1,17 @@
 <script lang="ts">
 	import { marked } from 'marked';
 	import {
+		hasAnsiCodes,
 		isTerminalOutput,
-		processAnsiCodes,
-		splitContentIntoSegments,
 		formatTerminalOutput,
 		escapeHtml
 	} from '$frontend/utils/terminal-formatter';
+	import {
+		configureMarked,
+		renderCodeBlock,
+		renderInlineCode,
+		renderTable
+	} from '$frontend/utils/markdown-renderer';
 	import { requestRevealFile } from '$frontend/stores/core/files.svelte';
 	import { getVisiblePanels, workspaceState } from '$frontend/stores/ui/workspace.svelte';
 
@@ -47,31 +52,21 @@
 	}
 
 	// Configure marked for better styling
-	marked.setOptions({
-		breaks: true,
-		gfm: true,
-		async: false
-	});
+	configureMarked();
 
 	// Custom renderer - with HTML sanitization for security
 	const renderer = new marked.Renderer();
-	
+
 	// Override HTML rendering to escape instead of render - this prevents XSS
 	renderer.html = function(token) {
 		return escapeHtml(token.text);
 	};
-	
-	// Override code blocks to ensure they look good and escape HTML
-	renderer.code = function(token) {
-		const code = escapeHtml(token.text);
-		const language = token.lang || '';
-		return `<pre><code${language ? ` class="language-${escapeHtml(language)}"` : ''}>${code}</code></pre>`;
-	};
-	
+
+	// Override code blocks to escape HTML and colorize any ANSI escapes
+	renderer.code = (token) => renderCodeBlock(token, { ansi: true });
+
 	// Override inline code to escape HTML but allow normal markdown processing
-	renderer.codespan = function(token) {
-		return `<code>${escapeHtml(token.text)}</code>`;
-	};
+	renderer.codespan = (token) => renderInlineCode(token);
 
 	// Override link rendering to convert local-file URLs into reveal-file buttons.
 	renderer.link = function(token) {
@@ -88,53 +83,18 @@
 
 	// Wrap tables in a responsive scroll container
 	renderer.table = function(token) {
-		const headerCells = token.header
-			.map((cell, i) => {
-				const align = token.align[i] ? ` style="text-align:${token.align[i]}"` : '';
-				return `<th${align}>${this.parser.parseInline(cell.tokens)}</th>`;
-			})
-			.join('');
-		const headerRow = `<tr>${headerCells}</tr>`;
-
-		const bodyRows = token.rows
-			.map(row => {
-				const cells = row
-					.map((cell, i) => {
-						const align = token.align[i] ? ` style="text-align:${token.align[i]}"` : '';
-						return `<td${align}>${this.parser.parseInline(cell.tokens)}</td>`;
-					})
-					.join('');
-				return `<tr>${cells}</tr>`;
-			})
-			.join('');
-
-		return `<div class="table-responsive"><table><thead>${headerRow}</thead><tbody>${bodyRows}</tbody></table></div>`;
+		return renderTable(token, this.parser);
 	};
 
-	// Split content into segments (terminal vs regular text)
-	function splitContent(text: string): Array<{type: 'terminal' | 'markdown', content: string}> {
-		const segments = splitContentIntoSegments(text);
-		// Convert 'text' type to 'markdown' for compatibility
-		return segments.map(segment => ({
-			type: segment.type === 'terminal' ? 'terminal' : 'markdown',
-			content: segment.content
-		}));
-	}
-
-	// Process content based on type
+	// Process content: marked owns the full document so markdown structure (nested fenced
+	// code blocks, headings after them, etc.) parses correctly. A whole-message terminal dump
+	// — ANSI escapes, or clearly terminal output with no markdown fences — is rendered as
+	// terminal instead, preserving monospace + whitespace (alignment, box drawing).
 	function processContent(text: string): string {
-		const segments = splitContent(text);
-
-		return segments.map(segment => {
-			if (segment.type === 'terminal') {
-				// For terminal output, use the formatting utility
-				return formatTerminalOutput(segment.content);
-			} else {
-				// For regular text, use marked to parse markdown with prose wrapper
-				const markdownContent = marked.parse(segment.content, { renderer }) as string;
-				return `<div>${markdownContent}</div>`;
-			}
-		}).join('');
+		if ((hasAnsiCodes(text) || isTerminalOutput(text)) && !text.includes('```')) {
+			return formatTerminalOutput(text);
+		}
+		return `<div>${marked.parse(text, { renderer }) as string}</div>`;
 	}
 
 	const processedContent = $derived(processContent(content));

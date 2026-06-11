@@ -1,8 +1,8 @@
 // Terminal output detection and ANSI code processing utilities
 
-export interface TerminalSegment {
-	type: 'terminal' | 'text';
-	content: string;
+// Detect ANSI SGR escape sequences (color/style codes) anywhere in the text.
+export function hasAnsiCodes(text: string): boolean {
+	return /\u001b\[[\d;]*m/.test(text);
 }
 
 // Check if content looks like terminal output
@@ -119,75 +119,6 @@ export function processAnsiCodes(text: string): string {
 	}
 
 	return processedText;
-}
-
-// Split content into segments (terminal vs regular text)
-export function splitContentIntoSegments(text: string): TerminalSegment[] {
-	const segments: TerminalSegment[] = [];
-
-	// First check if the entire text has ANSI codes - if so, it's all terminal
-	if (/\u001b\[[\d;]*m/.test(text)) {
-		return [{ type: 'terminal', content: text }];
-	}
-
-	// For text without ANSI codes, we need to be more careful
-	// Split by code blocks first to preserve them
-	const codeBlockRegex = /```[\s\S]*?```/g;
-	const codeBlocks: {start: number, end: number, content: string}[] = [];
-	let match;
-
-	// Find all code blocks
-	while ((match = codeBlockRegex.exec(text)) !== null) {
-		codeBlocks.push({
-			start: match.index,
-			end: match.index + match[0].length,
-			content: match[0]
-		});
-	}
-
-	// Process text in chunks, avoiding code blocks
-	let lastIndex = 0;
-	for (let i = 0; i <= codeBlocks.length; i++) {
-		const startIndex = lastIndex;
-		const endIndex = i < codeBlocks.length ? codeBlocks[i].start : text.length;
-
-		if (startIndex < endIndex) {
-			const chunk = text.slice(startIndex, endIndex);
-
-			// Split chunk by double newlines
-			const blocks = chunk.split(/\n\n+/);
-
-			for (const block of blocks) {
-				if (!block.trim()) continue;
-
-				const blockType = isTerminalOutput(block) ? 'terminal' : 'text';
-
-				// Merge with previous segment if same type
-				if (segments.length > 0 && segments[segments.length - 1].type === blockType) {
-					segments[segments.length - 1].content += '\n\n' + block;
-				} else {
-					segments.push({ type: blockType, content: block });
-				}
-			}
-		}
-
-		// Add code block as text (not terminal)
-		if (i < codeBlocks.length) {
-			if (segments.length > 0 && segments[segments.length - 1].type === 'text') {
-				segments[segments.length - 1].content += '\n\n' + codeBlocks[i].content;
-			} else {
-				segments.push({ type: 'text', content: codeBlocks[i].content });
-			}
-			lastIndex = codeBlocks[i].end;
-		}
-	}
-
-	// If no segments, treat as text
-	if (segments.length === 0 && text.trim()) {
-		segments.push({ type: 'text', content: text });
-	}
-
-	return segments;
 }
 
 // Format terminal output with proper styling

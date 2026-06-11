@@ -2,6 +2,12 @@
 	import { marked, type Tokens } from 'marked';
 	import DOMPurify from 'dompurify';
 	import { escapeHtml } from '$frontend/utils/terminal-formatter';
+	import {
+		configureMarked,
+		renderCodeBlock,
+		renderInlineCode,
+		renderTable
+	} from '$frontend/utils/markdown-renderer';
 	import { onMount, tick } from 'svelte';
 
 	interface Props {
@@ -19,11 +25,7 @@
 		return PROTOCOL_RE.test(href) || href.startsWith('//') || href.startsWith('mailto:');
 	}
 
-	marked.setOptions({
-		breaks: true,
-		gfm: true,
-		async: false
-	});
+	configureMarked();
 
 	const renderer = new marked.Renderer();
 
@@ -67,15 +69,9 @@
 		return DOMPurify.sanitize(token.text, { USE_PROFILES: { html: true } });
 	};
 
-	renderer.code = function (token) {
-		const code = escapeHtml(token.text);
-		const language = token.lang || '';
-		return `<pre><code${language ? ` class="language-${escapeHtml(language)}"` : ''}>${code}</code></pre>`;
-	};
+	renderer.code = (token) => renderCodeBlock(token);
 
-	renderer.codespan = function (token) {
-		return `<code>${escapeHtml(token.text)}</code>`;
-	};
+	renderer.codespan = (token) => renderInlineCode(token);
 
 	renderer.link = function (token) {
 		const href = token.href || '';
@@ -92,27 +88,7 @@
 	};
 
 	renderer.table = function (token) {
-		const headerCells = token.header
-			.map((cell, i) => {
-				const align = token.align[i] ? ` style="text-align:${token.align[i]}"` : '';
-				return `<th${align}>${this.parser.parseInline(cell.tokens)}</th>`;
-			})
-			.join('');
-		const headerRow = `<tr>${headerCells}</tr>`;
-
-		const bodyRows = token.rows
-			.map((row) => {
-				const cells = row
-					.map((cell, i) => {
-						const align = token.align[i] ? ` style="text-align:${token.align[i]}"` : '';
-						return `<td${align}>${this.parser.parseInline(cell.tokens)}</td>`;
-					})
-					.join('');
-				return `<tr>${cells}</tr>`;
-			})
-			.join('');
-
-		return `<div class="table-responsive"><table><thead>${headerRow}</thead><tbody>${bodyRows}</tbody></table></div>`;
+		return renderTable(token, this.parser);
 	};
 
 	const rendered = $derived.by(() => {
