@@ -6,6 +6,7 @@
 	import type { IconName } from '$shared/types/ui/icons';
 
 	export type GitMoreAction =
+		| 'merge-branch'
 		| 'push-follow-tags'
 		| 'push-all-tags'
 		| 'push-force-lease'
@@ -70,6 +71,12 @@
 			items: [
 				{ id: 'pull-rebase', label: 'Pull with rebase', hint: '--rebase', command: 'git pull --rebase', icon: 'lucide:git-pull-request-arrow', needsRemote: true },
 				{ id: 'fetch-all', label: 'Fetch all & prune', hint: '--all --prune', command: 'git fetch --all --prune --tags', icon: 'lucide:refresh-cw', needsRemote: true }
+			]
+		},
+		{
+			label: 'Branch',
+			items: [
+				{ id: 'merge-branch', label: 'Merge Branch', command: 'git merge <branch>', icon: 'lucide:git-merge' }
 			]
 		},
 		{
