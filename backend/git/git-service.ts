@@ -335,9 +335,12 @@ export class GitService {
 		}
 	}
 
-	async mergeBranch(cwd: string, branchName: string): Promise<{ success: boolean; message: string }> {
+	async mergeBranch(cwd: string, branchName: string, noFastForward = false): Promise<{ success: boolean; message: string }> {
 		assertSafeGitRevish(branchName, 'merge branch');
-		const result = await execGit(['merge', branchName], cwd);
+		const args = ['merge'];
+		if (noFastForward) args.push('--no-ff');
+		args.push(branchName);
+		const result = await execGit(args, cwd);
 		return {
 			success: result.exitCode === 0,
 			message: result.exitCode === 0 ? result.stdout : result.stderr
