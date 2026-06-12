@@ -10,9 +10,10 @@
 		activeHash?: string | null;
 		onLoadMore: () => void;
 		onViewCommit: (hash: string) => void;
+		onCheckoutCommit: (hash: string) => void;
 	}
 
-	const { commits, isLoading, hasMore, activeHash = null, onLoadMore, onViewCommit }: Props = $props();
+	const { commits, isLoading, hasMore, activeHash = null, onLoadMore, onViewCommit, onCheckoutCommit }: Props = $props();
 
 	let selectedHash = $state('');
 	const effectiveActiveHash = $derived(activeHash ?? selectedHash);
@@ -229,6 +230,11 @@
 		onViewCommit(hash);
 	}
 
+	function handleCheckoutCommit(hash: string, e: MouseEvent) {
+		e.stopPropagation();
+		onCheckoutCommit(hash);
+	}
+
 	async function copyCommitHash(hash: string, e: MouseEvent) {
 		e.stopPropagation();
 		try {
@@ -256,7 +262,7 @@
 				{@const graph = graphRows[idx]}
 				{@const graphWidth = (graph ? graph.maxCol + 1 : 1) * LANE_WIDTH + GRAPH_PAD * 2}
 				<div
-					class="group flex items-stretch w-full text-left cursor-pointer transition-colors
+					class="group relative flex items-stretch w-full text-left cursor-pointer transition-colors
 						{effectiveActiveHash === commit.hash
 							? 'bg-violet-500/10 dark:bg-violet-500/15 text-slate-900 dark:text-slate-100'
 							: 'hover:bg-slate-50 dark:hover:bg-slate-800/40'}"
@@ -386,6 +392,17 @@
 								{/if}
 							</div>
 						{/if}
+					</div>
+					<div class="pointer-events-none absolute inset-y-0 right-0 flex w-12 items-center justify-center bg-white/45 opacity-0 backdrop-blur-sm transition-opacity group-hover:opacity-100 group-focus-within:opacity-100 dark:bg-slate-900/45">
+						<button
+							type="button"
+							class="pointer-events-auto flex items-center justify-center w-6 h-6 rounded-md text-slate-500 transition-all hover:bg-violet-500/10 hover:text-violet-600 dark:text-slate-400 dark:hover:text-violet-400"
+							onclick={(e) => handleCheckoutCommit(commit.hash, e)}
+							title={`Checkout commit ${commit.hashShort}`}
+							aria-label={`Checkout commit ${commit.hashShort}`}
+						>
+							<Icon name="lucide:arrow-right-to-line" class="w-3.5 h-3.5" />
+						</button>
 					</div>
 				</div>
 			{/each}

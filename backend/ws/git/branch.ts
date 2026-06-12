@@ -59,6 +59,18 @@ export const branchHandler = createRouter()
 		return { ok: true };
 	})
 
+	.http('git:checkout-commit', {
+		data: t.Object({
+			projectId: t.String(),
+			commitHash: t.String()
+		}),
+		response: t.Object({ ok: t.Boolean() })
+	}, async ({ data, conn }) => {
+		const project = requireProjectAccess(conn, data.projectId);
+		await gitService.checkoutCommit(project.path, data.commitHash);
+		return { ok: true };
+	})
+
 	.http('git:delete-branch', {
 		data: t.Object({
 			projectId: t.String(),

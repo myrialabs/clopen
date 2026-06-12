@@ -317,6 +317,14 @@ export class GitService {
 		}
 	}
 
+	async checkoutCommit(cwd: string, commitHash: string): Promise<void> {
+		assertSafeGitRevish(commitHash, 'commit hash');
+		const result = await execGit(['checkout', commitHash], cwd);
+		if (result.exitCode !== 0) {
+			throw new Error(`git checkout failed: ${result.stderr}`);
+		}
+	}
+
 	async deleteBranch(cwd: string, name: string, force = false): Promise<void> {
 		assertSafeGitRevish(name, 'branch name');
 		const flag = force ? '-D' : '-d';

@@ -889,6 +889,31 @@
 		}
 	}
 
+	function checkoutCommit(hash: string) {
+		const commit = commits.find(item => item.hash === hash);
+		const shortHash = commit?.hashShort ?? hash.slice(0, 7);
+		requestConfirm({
+			title: 'Checkout Commit',
+			message: `Checkout commit ${shortHash}? This will detach HEAD. Create or switch to a branch before committing new work.`,
+			type: 'warning',
+			confirmText: 'Checkout',
+			onConfirm: async () => {
+				if (!projectId) return;
+				try {
+					await ws.http('git:checkout-commit', { projectId, commitHash: hash });
+					selectedCommit = null;
+					openTabs = [];
+					activeTabId = null;
+					await loadAll();
+					showInfo('Commit Checked Out', `Checked out ${shortHash}. HEAD is now detached.`);
+				} catch (err) {
+					debug.error('git', 'Failed to checkout commit:', err);
+					showError('Checkout Failed', err instanceof Error ? err.message : 'Unknown error');
+				}
+			}
+		});
+	}
+
 	async function createBranch(name: string) {
 		if (!projectId) return;
 		try {
@@ -1985,6 +2010,7 @@ ${bodies}`;
 				activeHash={activeTab?.commitHash ?? null}
 				onLoadMore={() => loadLog()}
 				onViewCommit={viewCommitDiff}
+				onCheckoutCommit={checkoutCommit}
 			/>
 		{/if}
 	{:else if activeView === 'stash'}
