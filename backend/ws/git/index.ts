@@ -13,6 +13,7 @@ import { logHandler } from './log';
 import { remoteHandler } from './remote';
 import { conflictHandler } from './conflict';
 import { commitMessageHandler } from './commit-message';
+import { branchNameHandler } from './branch-name';
 
 export const gitRouter = createRouter()
 	.merge(statusHandler)
@@ -23,4 +24,5 @@ export const gitRouter = createRouter()
 	.merge(logHandler)
 	.merge(remoteHandler)
 	.merge(conflictHandler)
-	.merge(commitMessageHandler);
+	.merge(commitMessageHandler)
+	.merge(branchNameHandler);

@@ -889,15 +889,18 @@
 		}
 	}
 
-	async function createBranch(name: string) {
-		if (!projectId) return;
+	async function createBranch(name: string): Promise<boolean> {
+		if (!projectId) return false;
 		try {
 			await ws.http('git:create-branch', { projectId, name });
+			showInfo('Branch Created', `Switched to "${name}".`);
 			showBranchManager = false;
 			await loadAll();
+			return true;
 		} catch (err) {
 			debug.error('git', 'Failed to create branch:', err);
 			showError('Create Branch Failed', err instanceof Error ? err.message : 'Unknown error');
+			return false;
 		}
 	}
 
@@ -1910,6 +1913,7 @@ ${bodies}`;
 			{isMoreBusy}
 			{repoBusy}
 			{repoBusyReason}
+			onCreateBranch={createBranch}
 			onPush={handlePush}
 			onPull={handlePull}
 			onFetch={handleFetch}

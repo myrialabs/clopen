@@ -3,6 +3,13 @@
 	import { settings, updateSettings } from '$frontend/stores/features/settings.svelte';
 	import { modelStore } from '$frontend/stores/features/models.svelte';
 	import { ENGINES } from '$shared/constants/engines';
+	import {
+		DEFAULT_BRANCH_NAME_PREFIX,
+		DEFAULT_BRANCH_SEPARATOR,
+		MAX_BRANCH_SEPARATOR_LENGTH,
+		RELEASE_BRANCH_NAME_PREFIX,
+		TEST_BRANCH_NAME_PREFIX
+	} from '$shared/constants/git';
 	import type { EngineType } from '$shared/types/unified';
 	import type { CommitMessageFormat } from '$shared/types/git';
 	import type { IconName } from '$shared/types/ui/icons';
@@ -68,6 +75,41 @@
 	const activeModelId = $derived(useCustomModel ? commitGen.modelId : settings.selectedModelId);
 	const activeEngineMeta = $derived(ENGINES.find(e => e.type === activeEngine));
 	const activeModelMeta = $derived(modelStore.getById(activeModelId));
+	const INVALID_BRANCH_SEPARATOR_CHARS = /[\s\0~^:?*[\]\\]/;
+
+	let branchSeparatorDraft = $state(DEFAULT_BRANCH_SEPARATOR);
+	let lastSyncedBranchSeparator = $state('');
+
+	$effect(() => {
+		if (commitGen.branchSeparator === lastSyncedBranchSeparator) return;
+		lastSyncedBranchSeparator = commitGen.branchSeparator;
+		branchSeparatorDraft = commitGen.branchSeparator;
+	});
+
+	const branchSeparatorPreview = $derived(branchSeparatorDraft.trim());
+	const branchTemplateExamples = $derived([
+		{ branch: 'main/master', name: `${RELEASE_BRANCH_NAME_PREFIX}${branchSeparatorPreview || DEFAULT_BRANCH_SEPARATOR}login` },
+		{ branch: 'test/testing', name: `${TEST_BRANCH_NAME_PREFIX}${branchSeparatorPreview || DEFAULT_BRANCH_SEPARATOR}login` },
+		{ branch: 'other branches', name: `${DEFAULT_BRANCH_NAME_PREFIX}${branchSeparatorPreview || DEFAULT_BRANCH_SEPARATOR}login` }
+	]);
+	const branchTemplateError = $derived.by(() => {
+		if (branchSeparatorPreview.length === 0) return 'Add a branch separator.';
+		if (branchSeparatorPreview.length > MAX_BRANCH_SEPARATOR_LENGTH) {
+			return `Use ${MAX_BRANCH_SEPARATOR_LENGTH} characters or fewer for the separator.`;
+		}
+		if (INVALID_BRANCH_SEPARATOR_CHARS.test(branchSeparatorPreview)) {
+			return 'Separator cannot contain spaces or Git ref control characters.';
+		}
+		if (
+			branchSeparatorPreview.includes('..') ||
+			branchSeparatorPreview.includes('//') ||
+			branchSeparatorPreview.includes('@{')
+		) {
+			return 'Separator would create an invalid Git branch ref.';
+		}
+		return '';
+	});
+	const branchTemplateDirty = $derived(branchSeparatorPreview !== commitGen.branchSeparator);
 
 	function toggleCustomModel() {
 		updateSettings({
@@ -107,6 +149,32 @@
 		updateSettings({
 			commitGenerator: { ...commitGen, format }
 		});
+	}
+
+	function saveBranchTemplate() {
+		if (branchTemplateError || !branchTemplateDirty) return;
+		updateSettings({
+			commitGenerator: {
+				...commitGen,
+				branchSeparator: branchSeparatorPreview
+			}
+		});
+	}
+
+	function resetBranchTemplate() {
+		updateSettings({
+			commitGenerator: {
+				...commitGen,
+				branchSeparator: DEFAULT_BRANCH_SEPARATOR
+			}
+		});
+	}
+
+	function handleBranchTemplateKeydown(e: KeyboardEvent) {
+		if (e.key === 'Enter') {
+			e.preventDefault();
+			saveBranchTemplate();
+		}
 	}
 </script>
 
@@ -170,6 +238,85 @@
 						</div>
 					</button>
 				{/each}
+			</div>
+		</div>
+
+		<!-- Branch Name Template -->
+		<div class="mb-5">
+			<label class="block text-sm font-semibold text-slate-700 dark:text-slate-300 mb-2">Branch Name</label>
+			<div class="p-3.5 border border-slate-200 dark:border-slate-800 rounded-xl bg-slate-100/80 dark:bg-slate-800/80">
+				<div class="grid grid-cols-1 md:grid-cols-[minmax(0,1fr)_7rem] gap-3">
+					<div class="min-w-0">
+						<label class="block text-xs font-medium text-slate-600 dark:text-slate-400 mb-1.5">
+							Automatic Prefix
+						</label>
+						<div class="flex flex-wrap gap-1.5">
+							<span class="px-2 py-1 rounded-md bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-700 text-xs text-slate-600 dark:text-slate-400">
+								main/master -&gt; <code class="text-slate-800 dark:text-slate-200">{RELEASE_BRANCH_NAME_PREFIX}</code>
+							</span>
+							<span class="px-2 py-1 rounded-md bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-700 text-xs text-slate-600 dark:text-slate-400">
+								test/testing -&gt; <code class="text-slate-800 dark:text-slate-200">{TEST_BRANCH_NAME_PREFIX}</code>
+							</span>
+							<span class="px-2 py-1 rounded-md bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-700 text-xs text-slate-600 dark:text-slate-400">
+								other -&gt; <code class="text-slate-800 dark:text-slate-200">{DEFAULT_BRANCH_NAME_PREFIX}</code>
+							</span>
+						</div>
+						<p class="mt-1.5 text-xs text-slate-500 dark:text-slate-500">
+							Prefix is resolved from the current branch when generating.
+						</p>
+					</div>
+
+					<div>
+						<label class="block text-xs font-medium text-slate-600 dark:text-slate-400 mb-1.5">
+							Separator
+						</label>
+						<input
+							type="text"
+							bind:value={branchSeparatorDraft}
+							onkeydown={handleBranchTemplateKeydown}
+							maxlength={MAX_BRANCH_SEPARATOR_LENGTH}
+							class="w-full font-mono text-xs bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-700 rounded-md px-2.5 py-2 text-slate-700 dark:text-slate-300 placeholder:text-slate-400 dark:placeholder:text-slate-600 focus:outline-none focus:ring-1 focus:ring-violet-500/30 focus:border-violet-400 dark:focus:border-violet-500"
+							placeholder="/"
+						/>
+						<p class="mt-1.5 text-xs text-slate-500 dark:text-slate-500">
+							Example: / or #
+						</p>
+					</div>
+				</div>
+
+				<div class="mt-3 flex flex-wrap items-center gap-2">
+					{#each branchTemplateExamples as example (example.branch)}
+						<div class="flex items-center gap-1.5 px-2 py-1.5 rounded-md bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-700">
+							<Icon name="lucide:git-branch" class="w-3.5 h-3.5 text-violet-500" />
+							<span class="text-xs text-slate-500 dark:text-slate-400">{example.branch}</span>
+							<code class="text-xs text-slate-800 dark:text-slate-200">{example.name}</code>
+						</div>
+					{/each}
+				</div>
+
+				{#if branchTemplateError}
+					<div class="mt-2 text-xs text-red-500 dark:text-red-400">{branchTemplateError}</div>
+				{/if}
+
+				<div class="mt-3 flex items-center gap-2">
+					<button
+						type="button"
+						onclick={saveBranchTemplate}
+						disabled={!!branchTemplateError || !branchTemplateDirty}
+						class="inline-flex items-center gap-1.5 py-1.5 px-3 bg-violet-500/10 border border-violet-500/20 rounded-md text-violet-600 dark:text-violet-400 text-xs font-semibold cursor-pointer transition-all duration-150 hover:bg-violet-500/20 hover:border-violet-600/40 disabled:opacity-40 disabled:cursor-not-allowed disabled:hover:bg-violet-500/10 disabled:hover:border-violet-500/20"
+					>
+						<Icon name="lucide:check" class="w-3.5 h-3.5" />
+						Save
+					</button>
+					<button
+						type="button"
+						onclick={resetBranchTemplate}
+						class="inline-flex items-center gap-1.5 py-1.5 px-3 bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-700 rounded-md text-slate-600 dark:text-slate-400 text-xs font-semibold cursor-pointer transition-all duration-150 hover:bg-slate-50 dark:hover:bg-slate-800 hover:border-slate-300 dark:hover:border-slate-600"
+					>
+						<Icon name="lucide:rotate-ccw" class="w-3.5 h-3.5" />
+						Reset
+					</button>
+				</div>
 			</div>
 		</div>
 

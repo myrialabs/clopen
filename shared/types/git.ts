@@ -194,3 +194,8 @@ export interface GeneratedCommitMessage {
 	/** Null for single-line commits — strict-schema engines (Codex) require explicit null over omission. */
 	body: string | null;
 }
+
+/** Structured branch-name output from AI */
+export interface GeneratedBranchName {
+	description: string;
+}

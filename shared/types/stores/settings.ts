@@ -10,6 +10,8 @@ export interface CommitGeneratorSettings {
 	modelId: string;
 	modelName: string;
 	format: CommitMessageFormat;
+	/** Separator between prefix and generated description, e.g. '/', '#', '-'. */
+	branchSeparator: string;
 }
 
 /** Per-user settings (stored per user) */

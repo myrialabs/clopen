@@ -25,6 +25,7 @@
 		repoBusy?: boolean;
 		/** Human-readable reason shown in disabled button tooltips */
 		repoBusyReason?: string;
+		onCreateBranch?: (name: string) => boolean | Promise<boolean>;
 		onPush?: () => void;
 		onPull?: () => void;
 		onFetch?: () => void;
@@ -46,6 +47,7 @@
 		isMoreBusy = false,
 		repoBusy = false,
 		repoBusyReason = '',
+		onCreateBranch,
 		onPush,
 		onPull,
 		onFetch,
@@ -61,6 +63,10 @@
 	// store so it survives remounts and is isolated/restored per project.
 	let textareaEl = $state<HTMLTextAreaElement | null>(null);
 	let isGenerating = $state(false);
+	let isGeneratingBranch = $state(false);
+	let isCreatingBranch = $state(false);
+	let branchNameDraft = $state('');
+	let showBranchDraft = $state(false);
 
 	function handleCommit() {
 		if (!gitDraft.commitMessage.trim() || stagedCount === 0) return;
@@ -123,6 +129,47 @@
 			isGenerating = false;
 		}
 	}
+
+	async function generateBranchName() {
+		const projectId = projectState.currentProject?.id;
+		if (!projectId || stagedCount === 0 || isGeneratingBranch || repoBusy) return;
+
+		isGeneratingBranch = true;
+		try {
+			const { useCustomModel, engine, provider, modelId, branchSeparator } = settings.commitGenerator;
+			const resolvedEngine = useCustomModel ? engine : settings.selectedEngine;
+			const resolvedProvider = useCustomModel ? provider : settings.selectedProvider;
+			const resolvedModel = useCustomModel ? modelId : settings.selectedModelId;
+			const result = await ws.http('git:generate-branch-name', {
+				projectId,
+				engine: resolvedEngine,
+				providerSlug: resolvedProvider,
+				modelId: resolvedModel,
+				branchSeparator
+			});
+			branchNameDraft = result.branchName;
+			showBranchDraft = true;
+		} catch (err) {
+			showError('Generate Branch Failed', err instanceof Error ? err.message : 'Failed to generate branch name');
+		} finally {
+			isGeneratingBranch = false;
+		}
+	}
+
+	async function createGeneratedBranch() {
+		if (!onCreateBranch || !branchNameDraft.trim() || isCreatingBranch) return;
+
+		isCreatingBranch = true;
+		try {
+			const created = await onCreateBranch(branchNameDraft.trim());
+			if (created !== false) {
+				branchNameDraft = '';
+				showBranchDraft = false;
+			}
+		} finally {
+			isCreatingBranch = false;
+		}
+	}
 </script>
 
 <div class="px-2 py-2">
@@ -157,7 +204,65 @@
 				{/if}
 			</button>
 		</div>
+		{#if showBranchDraft}
+			<div class="flex items-center overflow-hidden rounded-md border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-800/80">
+				<div class="flex items-center gap-1.5 px-2.5 h-8 border-r border-slate-200 dark:border-slate-700 text-slate-500 dark:text-slate-400 shrink-0">
+					<Icon name="lucide:git-branch-plus" class="w-3.5 h-3.5" />
+					<span class="text-xs font-medium">Branch</span>
+				</div>
+				<div class="min-w-0 flex-1 px-2">
+					<input
+						type="text"
+						bind:value={branchNameDraft}
+						class="w-full bg-transparent border-none outline-none text-xs font-mono text-slate-700 dark:text-slate-200 placeholder:text-slate-400"
+						placeholder="dev/login"
+						disabled={isCreatingBranch}
+					/>
+				</div>
+				<button
+					type="button"
+					class="flex items-center justify-center gap-1.5 h-8 px-2.5 border-l border-slate-200 dark:border-slate-700 text-xs font-medium transition-all duration-150 shrink-0
+						{branchNameDraft.trim() && !isCreatingBranch
+							? 'bg-violet-600 text-white hover:bg-violet-700 cursor-pointer'
+							: 'bg-slate-100 dark:bg-slate-800 text-slate-400 dark:text-slate-600 cursor-not-allowed'}"
+					onclick={createGeneratedBranch}
+					disabled={!branchNameDraft.trim() || isCreatingBranch}
+					title="Create and switch to this branch"
+				>
+					{#if isCreatingBranch}
+						<div class="w-3.5 h-3.5 border-2 border-white/30 border-t-white rounded-full animate-spin"></div>
+					{:else}
+						<Icon name="lucide:plus" class="w-3.5 h-3.5" />
+					{/if}
+					<span>Create</span>
+				</button>
+				<button
+					type="button"
+					class="flex items-center justify-center w-8 h-8 border-l border-slate-200 dark:border-slate-700 text-slate-400 hover:text-slate-600 hover:bg-slate-50 dark:hover:text-slate-300 dark:hover:bg-slate-700/50 transition-colors shrink-0"
+					onclick={() => { showBranchDraft = false; }}
+					disabled={isCreatingBranch}
+					aria-label="Cancel generated branch"
+				>
+					<Icon name="lucide:x" class="w-3.5 h-3.5" />
+				</button>
+			</div>
+		{/if}
 		<div class="flex items-center gap-1.5">
+			{#if onCreateBranch}
+				<button
+					type="button"
+					class="flex items-center justify-center w-8 h-7 bg-white dark:bg-slate-800/80 border border-slate-200 dark:border-slate-700 rounded-md text-slate-500 cursor-pointer transition-all duration-150 hover:bg-violet-500/10 hover:text-violet-600 dark:hover:text-violet-400 disabled:opacity-50 disabled:cursor-not-allowed disabled:hover:bg-white dark:disabled:hover:bg-slate-800/80 disabled:hover:text-slate-500"
+					onclick={generateBranchName}
+					disabled={stagedCount === 0 || isGeneratingBranch || isCommitting || repoBusy}
+					title={repoBusy ? repoBusyReason : stagedCount > 0 ? 'Generate branch name from staged changes' : 'Stage changes to generate a branch name'}
+				>
+					{#if isGeneratingBranch}
+						<div class="w-3.5 h-3.5 border-2 border-slate-300/30 border-t-slate-500 rounded-full animate-spin"></div>
+					{:else}
+						<Icon name="lucide:git-branch-plus" class="w-3.5 h-3.5" />
+					{/if}
+				</button>
+			{/if}
 			<button
 				type="button"
 				class="flex items-center justify-center gap-1.5 flex-1 h-7 px-3 border rounded-md text-xs font-medium transition-all duration-150
