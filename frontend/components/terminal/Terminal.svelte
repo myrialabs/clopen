@@ -6,6 +6,7 @@
 	import { terminalStore } from '$frontend/stores/features/terminal.svelte';
 	import { projectState } from '$frontend/stores/core/projects.svelte';
 	import { terminalService } from '$frontend/services/terminal';
+	import { terminalProjectManager } from '$frontend/services/terminal';
 	import TerminalTabs from './TerminalTabs.svelte';
 	import Icon from '$frontend/components/common/display/Icon.svelte';
 	import XTerm from '$frontend/components/common/xterm/XTerm.svelte';
@@ -223,6 +224,10 @@
 		}
 	}
 
+	function handleRenameSession(sessionId: string, name: string) {
+		terminalProjectManager.renameSession(sessionId, name);
+	}
+
 	// Format directory path for display in header
 	function formatDirectory(dir: string): string {
 		if (!dir || typeof dir !== 'string') return '~';
@@ -270,6 +275,7 @@
 			onSwitchSession={(sessionId) => terminalStore.switchToSession(sessionId)}
 			onCloseSession={handleCloseSession}
 			onNewSession={handleNewSession}
+			onRenameSession={handleRenameSession}
 		/>
 	</div>
 

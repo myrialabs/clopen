@@ -11,6 +11,7 @@ import { debug } from '$shared/utils/logger';
 
 export interface PersistedTerminalSession {
 	sessionId: string;
+	name: string;
 	projectId?: string;
 	projectPath?: string;
 	workingDirectory: string;
@@ -57,6 +58,7 @@ class TerminalPersistenceManager {
 		this.persistedData = {
 			sessions: sessions.map(session => ({
 				sessionId: session.id,
+				name: session.name,
 				projectId: session.projectId,
 				projectPath: session.projectPath,
 				workingDirectory: session.directory,

@@ -23,6 +23,7 @@ interface ProjectTerminalContext {
 	sessionIds: string[];
 	activeSessionId: string | null;
 	lastActiveAt: Date;
+	sessionNames: Map<string, string>;
 	// Store terminal output per session for this project
 	sessionOutputs: Map<string, Array<{ content: string; type: string; timestamp: Date }>>;
 	// Store command history per session for this project
@@ -55,7 +56,8 @@ class TerminalProjectManager {
 				: context.activeSessionId;
 		return {
 			sessionIds: [...context.sessionIds],
-			activeSessionId: activeSessionId ?? context.sessionIds[0] ?? null
+			activeSessionId: activeSessionId ?? context.sessionIds[0] ?? null,
+			sessionNames: Object.fromEntries(context.sessionNames)
 		};
 	}
 
@@ -72,6 +74,7 @@ class TerminalProjectManager {
 				sessionIds: [],
 				activeSessionId: null,
 				lastActiveAt: new Date(),
+				sessionNames: new Map(),
 				sessionOutputs: new Map(),
 				sessionCommandHistories: new Map()
 			};
@@ -130,6 +133,7 @@ class TerminalProjectManager {
 			if (restored && restored.sessionIds.length > 0) {
 				context.sessionIds = [...restored.sessionIds];
 				context.activeSessionId = restored.activeSessionId ?? restored.sessionIds[0] ?? null;
+				context.sessionNames = new Map(Object.entries(restored.sessionNames || {}));
 			}
 		}
 
@@ -190,7 +194,7 @@ class TerminalProjectManager {
 
 				const terminalSession: TerminalSession = {
 					id: backendSession.sessionId,
-					name: `Terminal ${terminalNumber}`,
+					name: context.sessionNames.get(backendSession.sessionId) || `Terminal ${terminalNumber}`,
 					directory: backendSession.cwd || projectPath,
 					lines: [],
 					commandHistory: [],
@@ -206,6 +210,7 @@ class TerminalProjectManager {
 				terminalStore.addSession(terminalSession);
 				terminalSessionManager.createSession(backendSession.sessionId, projectId, projectPath, backendSession.cwd || projectPath);
 				context.sessionIds.push(backendSession.sessionId);
+				context.sessionNames.set(backendSession.sessionId, terminalSession.name);
 
 				// Update nextSessionId to avoid ID conflicts
 				const match = backendSession.sessionId.match(/terminal-(\d+)/);
@@ -238,6 +243,7 @@ class TerminalProjectManager {
 		const session = terminalStore.getSession(sessionId);
 		if (session) {
 			session.directory = projectPath;
+			context.sessionNames.set(sessionId, session.name);
 		}
 
 		terminalSessionManager.createSession(sessionId, projectId, projectPath, projectPath);
@@ -303,7 +309,7 @@ class TerminalProjectManager {
 
 				const terminalSession: TerminalSession = {
 					id: sessionId,
-					name: `Terminal ${terminalNumber}`,
+					name: context.sessionNames.get(sessionId) || `Terminal ${terminalNumber}`,
 					directory: context.projectPath, // Always use the project path as base directory
 					lines: [],
 					commandHistory: [],
@@ -483,7 +489,7 @@ class TerminalProjectManager {
 		
 		const terminalSession: TerminalSession = {
 			id: managerSession.id,
-			name: `Terminal ${terminalNumber}`,
+			name: projectContext?.sessionNames.get(managerSession.id) || `Terminal ${terminalNumber}`,
 			directory: correctDirectory,
 			lines: [],
 			commandHistory: managerSession.commandHistory || [],
@@ -557,6 +563,7 @@ class TerminalProjectManager {
 					context.sessionCommandHistories.set(sessionId, session.commandHistory);
 					// Saved command history items for session
 				}
+				context.sessionNames.set(sessionId, session.name);
 				
 				// Update session metadata in manager
 				terminalSessionManager.updateSession(sessionId, {
@@ -642,6 +649,7 @@ class TerminalProjectManager {
 		const session = terminalStore.getSession(sessionId);
 		if (session) {
 			session.directory = context.projectPath;
+			context.sessionNames.set(sessionId, session.name);
 		}
 		
 		// Create corresponding session in manager with correct project association
@@ -707,6 +715,7 @@ class TerminalProjectManager {
 				context.sessionOutputs.delete(sessionId);
 				context.sessionOutputs.delete(`${sessionId}-metadata`);
 				context.sessionCommandHistories.delete(sessionId);
+				context.sessionNames.delete(sessionId);
 
 				// Update active session if needed
 				if (context.activeSessionId === sessionId) {
@@ -736,6 +745,21 @@ class TerminalProjectManager {
 	getProjectSessions(projectId: string): string[] {
 		const context = this.projectContexts.get(projectId);
 		return context?.sessionIds || [];
+	}
+
+	renameSession(sessionId: string, name: string): void {
+		const normalizedName = name.trim();
+		if (!normalizedName) return;
+
+		terminalStore.renameSession(sessionId, normalizedName);
+
+		for (const context of this.projectContexts.values()) {
+			if (!context.sessionIds.includes(sessionId)) continue;
+			context.sessionNames.set(sessionId, normalizedName);
+			this.persistContexts();
+			markTerminalDirty();
+			return;
+		}
 	}
 
 	/**
@@ -868,7 +892,7 @@ class TerminalProjectManager {
 
 				const terminalSession: TerminalSession = {
 					id: data.sessionId,
-					name: `Terminal ${terminalNumber}`,
+					name: context.sessionNames.get(data.sessionId) || `Terminal ${terminalNumber}`,
 					directory: data.currentDirectory,
 					lines: [],
 					commandHistory: [],
@@ -884,6 +908,7 @@ class TerminalProjectManager {
 				// Add to store and context
 				terminalStore.addSession(terminalSession);
 				context.sessionIds.push(data.sessionId);
+				context.sessionNames.set(data.sessionId, terminalSession.name);
 
 				// Create in session manager
 				terminalSessionManager.createSession(

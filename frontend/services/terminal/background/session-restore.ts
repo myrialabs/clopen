@@ -107,7 +107,7 @@ class SessionRestoreService {
 
 			const restoredSession = {
 				id: persistedSession.sessionId,
-				name: `Terminal ${terminalNumber}`,
+				name: persistedSession.name || `Terminal ${terminalNumber}`,
 				directory: persistedSession.workingDirectory,
 				lines: persistedSession.lines || [],
 				commandHistory: persistedSession.commandHistory || [],

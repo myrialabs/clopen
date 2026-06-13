@@ -47,9 +47,9 @@
 	const MAX_INIT_RETRIES = 5; // Max retry attempts
 	const keyboardEventHandler: ((e: KeyboardEvent) => void) | null = null; // Store event handler reference
 
-	// Track which sessions have connected to PTY in this browser session (after refresh)
-	// This prevents reconnection issues after browser refresh
-	const connectedSessions = new Set<string>();
+	function shouldConnectSession(sessionId: string): boolean {
+		return !terminalService.hasActiveListeners(sessionId);
+	}
 	
 	// Initialize terminal
 	async function initializeTerminal() {
@@ -60,14 +60,7 @@
 		await xtermService.initialize(terminalContainer);
 
 		if (xtermService.isInitialized && session) {
-			// CRITICAL: Mark session as connected BEFORE setting isInitialized
-			// This prevents the session change $effect from triggering a duplicate connection
-			// because $effect checks connectedSessions.has(session.id)
-			if (hasActiveProject && onExecuteCommand) {
-				connectedSessions.add(session.id);
-			}
-
-			// Update reactive state AFTER marking connected
+			// Update reactive state after initialization
 			isInitialized = xtermService.isInitialized;
 
 			// Setup input handling - forwards all keystrokes to PTY
@@ -91,26 +84,6 @@
 
 			// Mark terminal as ready immediately - shell handles prompts
 			isTerminalReady = true;
-
-			// CRITICAL: Auto-connect to PTY session right after initialization
-			// This opens the SSE stream to persistent PTY
-			if (hasActiveProject && onExecuteCommand && session) {
-				// IMPORTANT: Get actual terminal dimensions and pass to PTY
-				// This ensures PTY is created with correct size to prevent cursor positioning issues
-				let terminalSize: { cols: number; rows: number } | undefined;
-				if (xtermService.fitAddon && xtermService.terminal) {
-					// First fit to get proper dimensions
-					xtermService.fitAddon.fit();
-					const dims = xtermService.fitAddon.proposeDimensions();
-					if (dims) {
-						terminalSize = { cols: dims.cols, rows: dims.rows };
-					}
-				}
-
-				onExecuteCommand('', terminalSize).catch(() => {
-					// Silently handle connection errors
-				});
-			}
 		} else {
 			// Update reactive state even if not fully initialized
 			isInitialized = xtermService.isInitialized;
@@ -473,10 +446,8 @@
 				// This ensures PTY session is created on server for:
 				// 1. New tabs (session.lines.length === 0)
 				// 2. Restored sessions after browser refresh that haven't connected yet
-				const hasNotConnected = !connectedSessions.has(session.id);
+				const hasNotConnected = shouldConnectSession(session.id);
 				if (hasNotConnected && hasActiveProject && onExecuteCommand) {
-					// Session hasn't connected to PTY yet - create connection
-					connectedSessions.add(session.id);
 					setTimeout(() => {
 						// Get terminal dimensions for PTY size sync
 						let terminalSize: { cols: number; rows: number } | undefined;
@@ -585,13 +556,6 @@
 		// Remove keyboard event listener (must match capture phase)
 		if (keyboardEventHandler && xtermService.terminal?.element) {
 			xtermService.terminal.element.removeEventListener('keydown', keyboardEventHandler, true);
-		}
-
-		// CRITICAL: Clean up terminal service WebSocket listeners for the current session
-		// This prevents stale listeners from accumulating when XTerm is destroyed
-		// during project switches, which would cause duplicate output processing
-		if (lastSessionId) {
-			terminalService.cleanupListeners(lastSessionId);
 		}
 
 		xtermService.dispose();

@@ -11,14 +11,44 @@
 		activeSessionId,
 		onSwitchSession,
 		onCloseSession,
-		onNewSession
+		onNewSession,
+		onRenameSession
 	}: {
 		sessions: TerminalSession[];
 		activeSessionId: string | null;
 		onSwitchSession?: (sessionId: string) => void;
 		onCloseSession?: (sessionId: string) => void;
 		onNewSession?: () => void;
+		onRenameSession?: (sessionId: string, name: string) => void;
 	} = $props();
+
+	let editingSessionId = $state<string | null>(null);
+	let draftName = $state('');
+
+	function focusAndSelect(node: HTMLInputElement) {
+		queueMicrotask(() => {
+			node.focus();
+			node.select();
+		});
+	}
+
+	function startRename(session: TerminalSession) {
+		editingSessionId = session.id;
+		draftName = session.name;
+	}
+
+	function cancelRename() {
+		editingSessionId = null;
+		draftName = '';
+	}
+
+	function saveRename(sessionId: string) {
+		const normalizedName = draftName.trim();
+		if (normalizedName) {
+			onRenameSession?.(sessionId, normalizedName);
+		}
+		cancelRename();
+	}
 
 	// Check for duplicate sessions (for debugging)
 	$effect(() => {
@@ -42,10 +72,31 @@
 					? 'text-violet-600 dark:text-violet-400'
 					: 'text-slate-500 dark:text-slate-400 hover:text-slate-700 dark:hover:text-slate-300'}"
 			onclick={() => onSwitchSession?.(session.id)}
+			ondblclick={() => startRename(session)}
 			role="tab"
 			tabindex="0"
 		>
-			<span class="truncate max-w-28">{session.name}</span>
+			{#if editingSessionId === session.id}
+				<input
+					bind:value={draftName}
+					class="w-28 min-w-0 rounded border border-violet-300 bg-white/90 px-1.5 py-0.5 text-xs text-slate-800 outline-none dark:border-violet-500/60 dark:bg-slate-900 dark:text-slate-100"
+					onclick={(e) => e.stopPropagation()}
+					onblur={() => saveRename(session.id)}
+					onkeydown={(e) => {
+						e.stopPropagation();
+						if (e.key === 'Enter') {
+							e.preventDefault();
+							saveRename(session.id);
+						} else if (e.key === 'Escape') {
+							e.preventDefault();
+							cancelRename();
+						}
+					}}
+					use:focusAndSelect
+				/>
+			{:else}
+				<span class="truncate max-w-28">{session.name}</span>
+			{/if}
 			<!-- Close button -->
 			<span
 				role="button"
@@ -85,4 +136,3 @@
 		</button>
 	{/if}
 </div>
-

@@ -5,6 +5,7 @@
 
 import type { TerminalSession, TerminalLine, TerminalCommand } from '$shared/types/terminal';
 import { terminalService, type StreamingResponse } from '$frontend/services/terminal';
+import { terminalSessionManager } from '$frontend/services/terminal';
 import { addNotification } from '../ui/notification.svelte';
 import { markTerminalDirty } from './terminal-workspace.svelte';
 import ws from '$frontend/utils/ws';
@@ -59,7 +60,22 @@ export const terminalStore = {
 			throw new Error('ProjectId is required to create a terminal session');
 		}
 		
-		const sessionNumber = terminalState.nextSessionId++;
+		const existingNumbers = new Set(
+			terminalState.sessions
+				.filter((session) => session.projectId === projectId)
+				.map((session) => {
+					const match = session.id.match(/terminal-(\d+)$/);
+					return match ? parseInt(match[1], 10) : null;
+				})
+				.filter((value): value is number => value !== null)
+		);
+
+		let sessionNumber = 1;
+		while (existingNumbers.has(sessionNumber)) {
+			sessionNumber++;
+		}
+
+		terminalState.nextSessionId = sessionNumber + 1;
 		// Always include projectId in sessionId to ensure uniqueness across projects
 		const sanitizedProjectId = projectId.replace(/[^a-zA-Z0-9]/g, '').substring(0, 8);
 		const sessionId = `${sanitizedProjectId}-terminal-${sessionNumber}`;
@@ -71,6 +87,12 @@ export const terminalStore = {
 		if (terminalState.sessions.find(s => s.id === sessionId)) {
 			return this.createNewSession(directory, projectPath, projectId);
 		}
+
+		// Reused tab numbers can recreate a previous session ID (e.g. close
+		// Terminal 2, then open a new tab back into slot 2). Make absolutely sure
+		// no stale frontend listener/session metadata survives for that ID.
+		terminalService.cleanupListeners(sessionId);
+		terminalSessionManager.removeSession(sessionId);
 		
 		// Clear any existing buffer for this session
 		terminalState.lineBuffers.delete(sessionId);
@@ -242,6 +264,12 @@ export const terminalStore = {
 		terminalState.sessions = terminalState.sessions.filter(session => session.id !== sessionId);
 		debug.log('terminal', `🔴 [closeSession] Session removed from state. Remaining sessions: ${terminalState.sessions.length}`);
 
+		// When the last tab is closed, reset numbering so the next created tab
+		// starts again from "Terminal 1" instead of continuing the old counter.
+		if (terminalState.sessions.length === 0) {
+			terminalState.nextSessionId = 1;
+		}
+
 		// If we closed the active session, switch to another one (if available)
 		if (sessionId === terminalState.activeSessionId) {
 			const newActiveSession = terminalState.sessions[0];
@@ -265,6 +293,21 @@ export const terminalStore = {
 			// DO NOT update historical input lines - they should preserve their original directory
 			// Historical prompts should show the directory at the time the command was executed
 		}
+	},
+
+	renameSession(sessionId: string, name: string): void {
+		const normalizedName = name.trim();
+		if (!normalizedName) {
+			return;
+		}
+
+		terminalState.sessions = terminalState.sessions.map((session) =>
+			session.id === sessionId
+				? { ...session, name: normalizedName, lastUsedAt: new Date() }
+				: session
+		);
+
+		markTerminalDirty();
 	},
 
 	// Connect to PTY session (for initial auto-connect)

@@ -31,45 +31,17 @@ export class TerminalService {
 	private resizeEndpointAvailable: boolean | null = true; // WebSocket always available
 	private activeListeners = new Map<string, Array<() => void>>();
 	private lastOutputSeq = new Map<string, number>();
+	private connectingSessions = new Set<string>();
 
-	/**
-	 * Connect to persistent PTY session with streaming output via WebSocket
-	 */
-	async connectToSession(
-		options: TerminalConnectOptions,
+	private attachSessionListeners(
+		sessionId: string,
 		onData: (data: StreamingResponse) => void
-	): Promise<void> {
-		const { sessionId, workingDirectory, projectPath, projectId, terminalSize } = options;
-
-		debug.log('terminal', `🔌 Connecting to PTY session via WebSocket: ${sessionId}`);
-
-		// CRITICAL: Cleanup existing listeners BEFORE creating new ones
-		// This prevents duplicate event handlers when reconnecting to the same session
-		// (e.g., when switching between projects and coming back)
-		this.cleanupListeners(sessionId);
-
-		// Reset sequence tracking for fresh deduplication
-		this.lastOutputSeq.delete(sessionId);
-
-		// Get or create session state
-		const session = terminalSessionManager.getOrCreateSession(
-			sessionId,
-			projectId,
-			projectPath,
-			workingDirectory
-		);
-
-		// Create unique stream ID for this connection
-		const streamId = `${sessionId}-${Date.now()}`;
-
-		// Setup WebSocket listeners for this session
+	): void {
 		const listeners: Array<() => void> = [];
 
-		// Listen for ready event
 		const unsubReady = ws.on('terminal:ready', (data) => {
 			if (data.sessionId === sessionId) {
 				debug.log('terminal', `✅ PTY session ready: ${sessionId} (PID: ${data.pid})`);
-				// Update session state with stream ID
 				terminalSessionManager.updateSession(sessionId, {
 					streamId: data.streamId,
 					processId: data.pid,
@@ -79,12 +51,8 @@ export class TerminalService {
 		});
 		listeners.push(unsubReady);
 
-		// Listen for output (with sequence-based deduplication)
 		const unsubOutput = ws.on('terminal:output', (data) => {
 			if (data.sessionId === sessionId) {
-				// Deduplicate: skip if we've already seen this sequence number
-				// Multiple WS connections in the same project room can deliver
-				// the same terminal:output event multiple times
 				if (data.seq !== undefined && data.seq !== null) {
 					const lastSeq = this.lastOutputSeq.get(sessionId) || 0;
 					if (data.seq <= lastSeq) return;
@@ -102,7 +70,6 @@ export class TerminalService {
 		});
 		listeners.push(unsubOutput);
 
-		// Listen for directory changes
 		const unsubDirectory = ws.on('terminal:directory', (data) => {
 			if (data.sessionId === sessionId) {
 				terminalSessionManager.updateWorkingDirectory(sessionId, data.newDirectory);
@@ -115,12 +82,10 @@ export class TerminalService {
 		});
 		listeners.push(unsubDirectory);
 
-		// Listen for exit
 		const unsubExit = ws.on('terminal:exit', (data) => {
 			if (data.sessionId === sessionId) {
 				debug.log('terminal', `🏁 PTY session exited: ${sessionId} (code: ${data.exitCode})`);
 
-				// Clear stream info
 				backgroundTerminalService.endStream(sessionId, true);
 
 				onData({
@@ -129,13 +94,11 @@ export class TerminalService {
 					sessionId: data.sessionId
 				});
 
-				// Cleanup listeners
 				this.cleanupListeners(sessionId);
 			}
 		});
 		listeners.push(unsubExit);
 
-		// Listen for errors
 		const unsubError = ws.on('terminal:error', (data) => {
 			if (data.sessionId === sessionId) {
 				debug.error('terminal', `❌ PTY error for ${sessionId}:`, data.error);
@@ -148,8 +111,53 @@ export class TerminalService {
 		});
 		listeners.push(unsubError);
 
-		// Store listeners for cleanup
 		this.activeListeners.set(sessionId, listeners);
+	}
+
+	/**
+	 * Connect to persistent PTY session with streaming output via WebSocket
+	 */
+	async connectToSession(
+		options: TerminalConnectOptions,
+		onData: (data: StreamingResponse) => void
+	): Promise<void> {
+		const { sessionId, workingDirectory, projectPath, projectId, terminalSize } = options;
+
+		if (this.connectingSessions.has(sessionId)) {
+			debug.log('terminal', `⏳ Connection already in progress for: ${sessionId}`);
+			return;
+		}
+
+		if (this.activeListeners.has(sessionId)) {
+			debug.log('terminal', `⏭️ Reusing existing terminal listeners for: ${sessionId}`);
+			return;
+		}
+
+		debug.log('terminal', `🔌 Connecting to PTY session via WebSocket: ${sessionId}`);
+		this.connectingSessions.add(sessionId);
+
+		// Reset sequence tracking for fresh deduplication
+		this.lastOutputSeq.delete(sessionId);
+
+		// Get or create session state
+		const session = terminalSessionManager.getOrCreateSession(
+			sessionId,
+			projectId,
+			projectPath,
+			workingDirectory
+		);
+
+		const hasLivePty = Boolean(session.processId || session.streamId);
+
+		// Create unique stream ID for this connection
+		const streamId = `${sessionId}-${Date.now()}`;
+		this.attachSessionListeners(sessionId, onData);
+
+		if (hasLivePty) {
+			debug.log('terminal', `🔁 Reattached listeners to existing PTY session: ${sessionId}`);
+			this.connectingSessions.delete(sessionId);
+			return;
+		}
 
 		// Create terminal session (now using HTTP pattern)
 		try {
@@ -175,6 +183,8 @@ export class TerminalService {
 			// Cleanup listeners on error
 			this.cleanupListeners(sessionId);
 			throw error;
+		} finally {
+			this.connectingSessions.delete(sessionId);
 		}
 	}
 
@@ -360,6 +370,11 @@ export class TerminalService {
 			this.lastOutputSeq.delete(sessionId);
 			debug.log('terminal', `🧹 Cleaned up listeners for ${sessionId}`);
 		}
+		this.connectingSessions.delete(sessionId);
+	}
+
+	hasActiveListeners(sessionId: string): boolean {
+		return this.activeListeners.has(sessionId) || this.connectingSessions.has(sessionId);
 	}
 
 	/**

@@ -86,17 +86,7 @@ class PtySessionManager {
 		});
 
 		debug.log('terminal', `✅ PTY spawned with PID: ${pty.pid}`);
-
-		// CRITICAL: Send initial newline to trigger shell prompt display
-		// Without this, shell won't show prompt on first connection
-		setTimeout(() => {
-			try {
-				pty.write('\r');
-				debug.log('terminal', '📝 Sent initial newline to trigger prompt');
-			} catch (error) {
-				debug.error('terminal', 'Failed to send initial newline:', error);
-			}
-		}, 100);
+		let receivedInitialOutput = false;
 
 		// Create session
 		const session: PtySession = {
@@ -117,6 +107,7 @@ class PtySessionManager {
 
 		// Setup PTY event handlers with micro-task batching
 		pty.onData((data: string) => {
+			receivedInitialOutput = true;
 			session.lastActivityAt = new Date();
 
 			// IMPORTANT: Always persist output to stream manager FIRST
@@ -157,6 +148,22 @@ class PtySessionManager {
 				});
 			}
 		});
+
+		// Some shells do not paint the first prompt until they receive input.
+		// Only send a fallback newline if the PTY stayed completely silent after
+		// spawn; otherwise it duplicates the initial prompt on normal shells.
+		setTimeout(() => {
+			if (receivedInitialOutput) {
+				return;
+			}
+
+			try {
+				pty.write('\r');
+				debug.log('terminal', '📝 Sent fallback newline to trigger prompt');
+			} catch (error) {
+				debug.error('terminal', 'Failed to send fallback newline:', error);
+			}
+		}, 350);
 
 		pty.onExit((event: { exitCode: number; signal?: number | string }) => {
 			debug.log('terminal', `🏁 PTY session ${sessionId} exited with code: ${event.exitCode}`);

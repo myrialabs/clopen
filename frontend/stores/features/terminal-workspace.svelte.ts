@@ -28,6 +28,7 @@ import { debug } from '$shared/utils/logger';
 export interface TerminalSlice {
 	sessionIds: string[];
 	activeSessionId: string | null;
+	sessionNames?: Record<string, string>;
 }
 
 // Slices the coordinator restored from the blob, awaiting the terminal manager
@@ -76,7 +77,8 @@ registerDock({
 			const s = slice as TerminalSlice;
 			restoredSlices.set(projectId, {
 				sessionIds: [...s.sessionIds],
-				activeSessionId: s.activeSessionId ?? s.sessionIds[0] ?? null
+				activeSessionId: s.activeSessionId ?? s.sessionIds[0] ?? null,
+				sessionNames: s.sessionNames ? { ...s.sessionNames } : undefined
 			});
 		} else {
 			restoredSlices.delete(projectId);
