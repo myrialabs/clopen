@@ -110,6 +110,9 @@
 
 	// State to track which menu is currently open (only one menu at a time)
 	let openMenuPath = $state<string | null>(null);
+	const isMacOS = $derived(
+		typeof window !== 'undefined' && /Mac|iPhone|iPad|iPod/.test(window.navigator.platform)
+	);
 
 	// Search visibility
 	let searchVisible = $state(false);
@@ -829,6 +832,7 @@
 							{onNodeDragEnd}
 							{dropTargetPath}
 							{busyPaths}
+							{isMacOS}
 						/>
 					{/each}
 				</div>

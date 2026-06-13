@@ -267,4 +267,30 @@ export const writeHandler = createRouter()
 			newPath,
 			modified: newStats.mtime.toISOString()
 		};
+	})
+
+	.http('files:reveal-in-finder', {
+		data: t.Object({
+			path: t.String()
+		}),
+		response: t.Object({
+			ok: t.Boolean()
+		})
+	}, async ({ data, conn }) => {
+		if (process.platform !== 'darwin') {
+			throw new Error('Reveal in Finder is only available on macOS');
+		}
+
+		const targetPath = await requireFilePathAccess(conn, data.path);
+		const proc = Bun.spawn(['open', '-R', targetPath], {
+			stdout: 'ignore',
+			stderr: 'pipe'
+		});
+		const exitCode = await proc.exited;
+		if (exitCode !== 0) {
+			const stderr = proc.stderr ? (await new Response(proc.stderr).text()).trim() : '';
+			throw new Error(stderr || 'Failed to reveal item in Finder');
+		}
+
+		return { ok: true };
 	});

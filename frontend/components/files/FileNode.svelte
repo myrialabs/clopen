@@ -33,7 +33,8 @@
 		onNodeDrop,
 		onNodeDragEnd,
 		dropTargetPath = null,
-		busyPaths = new Set<string>()
+		busyPaths = new Set<string>(),
+		isMacOS = false
 	}: {
 		file: FileNodeType;
 		isSelected?: boolean;
@@ -60,6 +61,7 @@
 		onNodeDragEnd?: (file: FileNodeType, event: DragEvent) => void;
 		dropTargetPath?: string | null;
 		busyPaths?: Set<string>;
+		isMacOS?: boolean;
 	} = $props();
 
 	const isBusy = $derived(busyPaths.has(file.path));
@@ -367,6 +369,16 @@
 					<Icon name="lucide:link" class="w-3 h-3" />
 					Copy Relative Path
 				</button>
+
+				{#if isMacOS}
+					<button
+						class="w-full px-3 py-1.5 text-xs text-left text-slate-700 dark:text-slate-300 hover:bg-slate-100 dark:hover:bg-slate-700 flex items-center gap-2"
+						onclick={(e) => { handleAction('reveal-in-finder', e); closeMenu(); }}
+					>
+						<Icon name="lucide:folder-open" class="w-3 h-3" />
+						Reveal in Finder
+					</button>
+				{/if}
 
 				<div class="border-t border-slate-200 dark:border-slate-700 my-1"></div>
 
