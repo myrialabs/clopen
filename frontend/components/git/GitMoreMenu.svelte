@@ -106,9 +106,18 @@
 	];
 
 	let isOpen = $state(false);
+	let buttonEl: HTMLButtonElement | undefined = $state(undefined);
+	let menuStyle = $state('');
 
 	function toggle() {
 		if (disabled) return;
+		if (!isOpen && buttonEl) {
+			const rect = buttonEl.getBoundingClientRect();
+			const menuHeight = 320;
+			menuStyle = window.innerHeight - rect.bottom < menuHeight && rect.top > menuHeight
+				? `right: ${window.innerWidth - rect.right}px; bottom: ${window.innerHeight - rect.top + 6}px;`
+				: `right: ${window.innerWidth - rect.right}px; top: ${rect.bottom + 6}px;`;
+		}
 		isOpen = !isOpen;
 	}
 
@@ -151,6 +160,7 @@
 
 <div class="relative" use:clickOutside={close}>
 	<button
+		bind:this={buttonEl}
 		type="button"
 		class="flex items-center justify-center w-8 h-7 bg-white dark:bg-slate-800/80 border border-slate-200 dark:border-slate-700 rounded-md text-slate-500 cursor-pointer transition-all duration-150 hover:bg-violet-500/10 hover:text-violet-600 dark:hover:text-violet-400 disabled:opacity-50 disabled:cursor-not-allowed
 			{isOpen ? 'bg-violet-500/10 text-violet-600 dark:text-violet-400' : ''}"
@@ -165,7 +175,8 @@
 
 	{#if isOpen}
 		<div
-			class="absolute top-full right-0 mt-1.5 w-60 max-h-[60vh] overflow-y-auto bg-white dark:bg-slate-800 border border-slate-200 dark:border-slate-700 rounded-lg shadow-lg z-50 py-1.5"
+			class="fixed w-60 max-h-[60vh] overflow-y-auto bg-white dark:bg-slate-800 border border-slate-200 dark:border-slate-700 rounded-lg shadow-lg z-50 py-1.5"
+			style={menuStyle}
 			role="menu"
 			transition:scale={{ duration: 130, easing: cubicOut, start: 0.95, opacity: 0 }}
 		>

@@ -1,6 +1,19 @@
 import type { EngineType } from '$shared/types/unified';
 import type { CommitMessageFormat } from '$shared/types/git';
 
+export interface CommitMessageConfig {
+	style: 'concise' | 'technical' | 'descriptive';
+	subjectLength: 50 | 72 | 100;
+	allowedTypes: string;
+	context: string;
+}
+
+export interface BranchNameConfig {
+	maxWords: 1 | 2 | 3;
+	allowedPrefixes: string;
+	context: string;
+}
+
 /** AI commit message generator settings */
 export interface CommitGeneratorSettings {
 	/** When false, uses the chat model (selectedEngine/selectedModel). When true, uses custom engine/model below. */
@@ -12,6 +25,8 @@ export interface CommitGeneratorSettings {
 	format: CommitMessageFormat;
 	/** Separator between prefix and generated description, e.g. '/', '#', '-'. */
 	branchSeparator: string;
+	commitConfig: CommitMessageConfig;
+	branchConfig: BranchNameConfig;
 }
 
 /** Per-user settings (stored per user) */

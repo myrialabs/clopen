@@ -47,7 +47,9 @@ const defaultSettings: AppSettings = {
 		modelId: 'haiku',
 		modelName: 'Haiku 4.5',
 		format: 'single-line',
-		branchSeparator: DEFAULT_BRANCH_SEPARATOR
+		branchSeparator: DEFAULT_BRANCH_SEPARATOR,
+		commitConfig: { style: 'technical', subjectLength: 72, allowedTypes: '', context: '' },
+		branchConfig: { maxWords: 3, allowedPrefixes: '', context: '' }
 	}
 };
 

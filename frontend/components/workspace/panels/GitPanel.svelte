@@ -1967,14 +1967,12 @@ ${bodies}`;
 			branchBehind={branchInfo?.behind ?? 0}
 			{isPushing}
 			{isPulling}
-			{isFetching}
 			{isMoreBusy}
 			{repoBusy}
 			{repoBusyReason}
 			onCreateBranch={createBranch}
 			onPush={handlePush}
 			onPull={handlePull}
-			onFetch={handleFetch}
 			onMoreAction={handleMoreAction}
 		/>
 

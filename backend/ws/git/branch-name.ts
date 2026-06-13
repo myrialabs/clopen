@@ -40,7 +40,7 @@ const GENERIC_BRANCH_DESCRIPTION_WORDS = new Set([
 ]);
 const MAX_BRANCH_DESCRIPTION_WORDS = 3;
 
-function sanitizeBranchDescription(input: string): string {
+function sanitizeBranchDescription(input: string, maxWords = MAX_BRANCH_DESCRIPTION_WORDS): string {
 	const withoutPrefix = GENERATED_BRANCH_PREFIXES.reduce((value, prefix) => {
 		return value.replace(new RegExp(`^${prefix}[/#._-]+`, 'i'), '');
 	}, input.trim());
@@ -57,7 +57,7 @@ function sanitizeBranchDescription(input: string): string {
 	const words = sanitized
 		.split('-')
 		.filter(word => word && !GENERIC_BRANCH_DESCRIPTION_WORDS.has(word))
-		.slice(0, MAX_BRANCH_DESCRIPTION_WORDS);
+		.slice(0, maxWords);
 
 	return words.join('-');
 }
@@ -96,7 +96,7 @@ function formatCurrentBranchForPrompt(currentBranch: string): string {
 	return currentBranch || 'detached or unknown';
 }
 
-function createBranchNamePrompt(rawDiff: string, currentBranch: string, prefix: string, separator: string): string {
+function createBranchNameInstructions(currentBranch: string, prefix: string, separator: string): string {
 	return `Analyze the following staged git diff and generate a git branch name description.
 
 Current branch: ${formatCurrentBranchForPrompt(currentBranch)}
@@ -109,10 +109,7 @@ Rules:
 - description: lowercase kebab-case, 1-3 words maximum, no trailing punctuation
 - Prefer the shortest changed area/topic over action phrases: login page changes -> login, auth form changes -> auth-form
 - Avoid generic action words like add, fix, update, change, implement, improve, create, remove
-- Do not include ticket IDs unless they appear in the diff
-
-Git diff:
-${rawDiff}`;
+- Do not include ticket IDs unless they appear in the diff`;
 }
 
 export const branchNameHandler = createRouter()
@@ -122,7 +119,9 @@ export const branchNameHandler = createRouter()
 			engine: t.String(),
 			providerSlug: t.String(),
 			modelId: t.String(),
-			branchSeparator: t.Optional(t.String())
+			branchSeparator: t.Optional(t.String()),
+			maxWords: t.Optional(t.Number()),
+			customPrompt: t.Optional(t.String())
 		}),
 		response: t.Object({
 			branchName: t.String()
@@ -148,7 +147,9 @@ export const branchNameHandler = createRouter()
 		const currentBranch = branchResult.stdout.trim();
 		const prefix = getBranchPrefix(currentBranch);
 		const separator = normalizeBranchSeparator(data.branchSeparator);
-		const prompt = createBranchNamePrompt(rawDiff, currentBranch, prefix, separator);
+		const instructions = createBranchNameInstructions(currentBranch, prefix, separator);
+		const extra = data.customPrompt?.trim();
+		const prompt = `${instructions}${extra ? `\n\nAdditional constraints:\n${extra}` : ''}\n\nGit diff:\n${rawDiff}`;
 
 		debug.log('git', `Generating branch name via ${engineType}/${data.modelId}`);
 
@@ -160,7 +161,7 @@ export const branchNameHandler = createRouter()
 			projectPath: project.path
 		});
 
-		const description = sanitizeBranchDescription(result.description);
+		const description = sanitizeBranchDescription(result.description, data.maxWords ?? MAX_BRANCH_DESCRIPTION_WORDS);
 		if (!description) {
 			throw new Error('Generated branch description was empty');
 		}
