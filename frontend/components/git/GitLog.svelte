@@ -212,6 +212,15 @@
 		return ref.substring(0, MAX_REF_LENGTH - 1) + '\u2026';
 	}
 
+	function formatRefs(refs: string[]): string {
+		const visible = refs.slice(0, MAX_VISIBLE_REFS).map(truncateRef);
+		if (refs.length <= MAX_VISIBLE_REFS) {
+			return visible.join('  ·  ');
+		}
+
+		return `${visible.join('  ·  ')}  ·  +${refs.length - MAX_VISIBLE_REFS}`;
+	}
+
 	function formatDate(dateStr: string): string {
 		const date = new Date(dateStr);
 		const now = new Date();
@@ -361,9 +370,9 @@
 					{/if}
 
 					<!-- Commit info (3-line layout) -->
-					<div class="flex-1 min-w-0 px-1.5 py-0.5 pr-2 group-hover:pr-14 group-focus-within:pr-14 flex flex-col justify-center overflow-hidden transition-[padding] duration-150">
+					<div class="flex-1 min-w-0 px-1.5 py-0.5 pr-2 group-hover:pr-10 group-focus-within:pr-10 flex flex-col justify-center overflow-hidden transition-[padding] duration-150">
 						<!-- Line 1: Message + Date -->
-						<div class="flex items-center gap-2">
+						<div class="flex min-w-0 items-center gap-2">
 							<p class="flex-1 min-w-0 text-sm text-slate-900 dark:text-slate-100 leading-tight truncate" title={commit.message}>
 								{commit.message}
 							</p>
@@ -385,23 +394,13 @@
 
 						<!-- Line 3: Refs -->
 						{#if commit.refs && commit.refs.length > 0}
-							<div class="flex min-w-0 items-center gap-1 mt-px overflow-hidden">
-								{#each commit.refs.slice(0, MAX_VISIBLE_REFS) as ref}
-									<span
-										class="text-3xs px-1 rounded bg-blue-500/10 text-blue-600 dark:text-blue-400 shrink min-w-0 truncate max-w-28 group-hover:max-w-22 group-focus-within:max-w-22"
-										title={ref}
-									>
-										{truncateRef(ref)}
-									</span>
-								{/each}
-								{#if commit.refs.length > MAX_VISIBLE_REFS}
-									<span
-										class="text-3xs px-1 py-px rounded bg-slate-500/10 text-slate-500 shrink-0 cursor-default"
-										title={commit.refs.slice(MAX_VISIBLE_REFS).join(', ')}
-									>
-										+{commit.refs.length - MAX_VISIBLE_REFS}
-									</span>
-								{/if}
+							<div class="min-w-0 mt-px max-w-[80%] overflow-hidden">
+								<span
+									class="block min-w-0 truncate text-3xs text-blue-600 dark:text-blue-400"
+									title={commit.refs.join(', ')}
+								>
+									{formatRefs(commit.refs)}
+								</span>
 							</div>
 						{/if}
 					</div>
