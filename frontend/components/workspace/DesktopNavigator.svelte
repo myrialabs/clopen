@@ -282,7 +282,7 @@
 							class="flex items-center gap-2.5 py-2.5 px-3 bg-transparent border-none rounded-lg text-slate-600 dark:text-slate-400 text-sm text-left cursor-pointer transition-all duration-150 relative group
 								hover:bg-violet-500/10
 								{draggedProjectId === project.id ? 'opacity-50' : ''}
-								{dragOverProjectId === project.id ? 'ring-1 ring-violet-400/60 bg-violet-500/10' : ''}
+								{dragOverProjectId === project.id ? 'ring-1 ring-inset ring-violet-400/60 bg-violet-500/10' : ''}
 								{currentProjectId === project.id
 								? 'bg-violet-500/10 dark:bg-violet-500/20 text-slate-900 dark:text-slate-100'
 								: ''}"
@@ -398,11 +398,11 @@
 						type="button"
 						class="flex items-center justify-center w-9 h-9 shrink-0 border-none rounded-lg cursor-pointer transition-all duration-150 relative font-semibold text-sm
 							{draggedProjectId === project.id ? 'opacity-50' : ''}
-							{dragOverProjectId === project.id ? 'ring-1 ring-violet-400/60' : ''}
+							{dragOverProjectId === project.id ? 'ring-1 ring-inset ring-violet-400/60' : ''}
 							{currentProjectId === project.id
 							? 'bg-violet-500/10 dark:bg-violet-500/20 text-violet-700 dark:text-violet-300'
 							: 'bg-slate-200/50 dark:bg-slate-800/50 text-slate-600 dark:text-slate-400 hover:bg-violet-500/10 hover:text-slate-900 dark:hover:text-slate-100'}"
-						draggable={projectState.projects.length > 1}
+						draggable={canReorderProjects()}
 						ondragstart={(event) => handleProjectDragStart(event, project.id)}
 						ondragover={(event) => handleProjectDragOver(event, project.id)}
 						ondragleave={() => handleProjectDragLeave(project.id)}

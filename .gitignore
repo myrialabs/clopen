@@ -51,6 +51,3 @@ temp-videos/
 # Terminal output cache
 .terminal-output-cache/
 
-# Geeto state files
-.geeto
-geeto*
