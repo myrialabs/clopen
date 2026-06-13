@@ -914,8 +914,43 @@
 		});
 	}
 
+	function getPreferredRemoteUrl(): string | null {
+		if (remotes.length === 0) return null;
+		return remotes.find(remote => remote.name === selectedRemote)?.fetchUrl
+			|| remotes.find(remote => remote.name === selectedRemote)?.pushUrl
+			|| remotes[0]?.fetchUrl
+			|| remotes[0]?.pushUrl
+			|| null;
+	}
+
+	function buildRemoteCommitUrl(hash: string): string | null {
+		const remoteUrl = getPreferredRemoteUrl();
+		if (!remoteUrl) return null;
+
+		let normalized = remoteUrl.trim();
+
+		if (normalized.startsWith('git@')) {
+			normalized = normalized.replace(/^git@([^:]+):/, 'https://$1/');
+		} else if (normalized.startsWith('ssh://git@')) {
+			normalized = normalized.replace(/^ssh:\/\/git@/, 'https://');
+		} else if (normalized.startsWith('ssh://')) {
+			normalized = normalized.replace(/^ssh:\/\//, 'https://');
+		}
+
+		normalized = normalized.replace(/\.git$/, '').replace(/\/+$/, '');
+
+		try {
+			const url = new URL(normalized);
+			const basePath = url.pathname.replace(/\/+$/, '');
+			const commitSegment = url.hostname.includes('bitbucket') ? 'commits' : 'commit';
+			return `${url.protocol}//${url.host}${basePath}/${commitSegment}/${hash}`;
+		} catch {
+			return null;
+		}
+	}
+
 	async function createBranch(name: string) {
-		if (!projectId) return;
+		if (!projectId) return false;
 		try {
 			await ws.http('git:create-branch', { projectId, name });
 			showBranchManager = false;
@@ -2011,6 +2046,7 @@ ${bodies}`;
 				onLoadMore={() => loadLog()}
 				onViewCommit={viewCommitDiff}
 				onCheckoutCommit={checkoutCommit}
+				getRemoteCommitUrl={buildRemoteCommitUrl}
 			/>
 		{/if}
 	{:else if activeView === 'stash'}
