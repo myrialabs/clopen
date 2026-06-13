@@ -2,9 +2,11 @@
 	import { untrack } from 'svelte';
 	import { sessionState, setCurrentSession, removeSession, reloadSessionsForProject } from '$frontend/stores/core/sessions.svelte';
 	import { projectState } from '$frontend/stores/core/projects.svelte';
+	import { setCurrentView, appState } from '$frontend/stores/core/app.svelte';
 	import { addNotification } from '$frontend/stores/ui/notification.svelte';
 	import ws from '$frontend/utils/ws';
 	import type { ChatSession } from '$shared/types/database/schema';
+	import type { UnifiedMessage } from '$shared/types/unified';
 	import Icon from '$frontend/components/common/display/Icon.svelte';
 	import AvatarBubble from '$frontend/components/common/display/AvatarBubble.svelte';
 	import Modal from '$frontend/components/common/overlay/Modal.svelte';
@@ -14,6 +16,8 @@
 	import { userStore } from '$frontend/stores/features/user.svelte';
 	import { debug } from '$shared/utils/logger';
 	import { modelStore } from '$frontend/stores/features/models.svelte';
+	import { chatService } from '$frontend/services/chat/chat.service';
+	import { setChatScroll } from '$frontend/stores/features/chat-workspace.svelte';
 
 	interface Props {
 		isOpen: boolean;
@@ -273,6 +277,188 @@
 	function closeDeleteDialog() {
 		showDeleteDialog = false;
 		sessionToDelete = null;
+	}
+
+	let copyingSessionId = $state<string | null>(null);
+	let compressingSessionId = $state<string | null>(null);
+	let openActionsMenuSessionId = $state<string | null>(null);
+
+	function toggleActionsMenu(sessionId: string, event: MouseEvent) {
+		event.stopPropagation();
+		openActionsMenuSessionId = openActionsMenuSessionId === sessionId ? null : sessionId;
+	}
+
+	function closeActionsMenu() {
+		openActionsMenuSessionId = null;
+	}
+
+	function formatMessageRole(message: UnifiedMessage): string {
+		switch (message.type) {
+			case 'user':
+				return message.sender?.name?.trim() || 'User';
+			case 'assistant':
+				return 'Assistant';
+			case 'reasoning':
+				return 'Reasoning';
+			case 'compact_boundary':
+				return 'System';
+			default:
+				return 'Message';
+		}
+	}
+
+	function formatMessageBody(message: UnifiedMessage): string {
+		if (message.type === 'reasoning') {
+			return message.text?.trim() || '[No content]';
+		}
+
+		if (message.type === 'compact_boundary') {
+			return `[Context compacted: ${message.trigger}]`;
+		}
+
+		if (!('content' in message)) {
+			return '[No content]';
+		}
+
+		const parts: string[] = [];
+		for (const block of message.content) {
+			if (block.type === 'text') {
+				const text = block.text?.trim();
+				if (text) parts.push(text);
+				continue;
+			}
+
+			if (block.type === 'tool_use') {
+				parts.push(`[Tool: ${block.name}]`);
+				continue;
+			}
+
+			if (block.type === 'tool_result') {
+				const label = block.isError ? '[Tool error]' : '[Tool result]';
+				const text = block.content?.trim();
+				parts.push(text ? `${label}\n${text}` : label);
+				continue;
+			}
+
+			if (block.type === 'image') {
+				parts.push('[Image attachment]');
+				continue;
+			}
+
+			if (block.type === 'document') {
+				parts.push(`[Document: ${block.title || 'Untitled'}]`);
+			}
+		}
+
+		return parts.join('\n\n').trim() || '[No content]';
+	}
+
+	function formatSessionForClipboard(session: ChatSession, messages: UnifiedMessage[]): string {
+		const title = session.title || session.head_title || 'New Conversation';
+		const lines = [`# ${title}`, ''];
+
+		for (const message of messages) {
+			lines.push(`## ${formatMessageRole(message)}`);
+			lines.push(formatMessageBody(message));
+			lines.push('');
+		}
+
+		return lines.join('\n').trim();
+	}
+
+	function formatSessionForCavemanPrompt(session: ChatSession, messages: UnifiedMessage[]): string {
+		const transcript = formatSessionForClipboard(session, messages);
+		return [
+			'Respond in caveman ultra mode.',
+			'Output only final handoff.',
+			'Do not explain your process.',
+			'Do not restate these instructions.',
+			'Compress session below into ultra-terse handoff.',
+			'Use exactly these sections, in this order: State, Facts, Unknown, Next.',
+			'Each section must be one line only.',
+			'Keep each line very short.',
+			'No bullets. No markdown. No extra sections.',
+			'Include technical facts, decisions, file paths, commands, errors, blockers, unknowns, and next steps only if present.',
+			'If a section has nothing useful, write none.',
+			'Drop filler. Prefer compact phrasing like x2 and ->.',
+			'',
+			transcript
+		].join('\n');
+	}
+
+	async function copySessionChat(session: ChatSession, event: MouseEvent) {
+		event.stopPropagation();
+		if (copyingSessionId) return;
+		closeActionsMenu();
+		copyingSessionId = session.id;
+
+		try {
+			const messages = await ws.http('messages:list', {
+				session_id: session.id
+			}) as UnifiedMessage[];
+
+			const text = formatSessionForClipboard(session, messages);
+			await navigator.clipboard.writeText(text);
+
+			addNotification({
+				type: 'success',
+				title: 'Chat Copied',
+				message: 'Session chat copied to clipboard',
+				duration: 2500
+			});
+		} catch (error) {
+			debug.error('session', 'Failed to copy session chat:', error);
+			addNotification({
+				type: 'error',
+				title: 'Copy Failed',
+				message: 'Failed to copy session chat',
+				duration: 4000
+			});
+		} finally {
+			copyingSessionId = null;
+		}
+	}
+
+	async function compressSessionWithAI(session: ChatSession, event: MouseEvent) {
+		event.stopPropagation();
+		if (compressingSessionId || appState.isLoading) return;
+		closeActionsMenu();
+		compressingSessionId = session.id;
+
+		try {
+			const messages = await ws.http('messages:list', {
+				session_id: session.id
+			}) as UnifiedMessage[];
+
+			const title = session.title || session.head_title || 'New Conversation';
+			const summarySession = await ws.http('sessions:create', {
+				title: `Caveman: ${title.slice(0, 60)}`,
+				engine: session.engine ?? undefined
+			}) as ChatSession;
+
+			sessionState.sessions.push(summarySession);
+			setChatScroll(summarySession.id, {
+				atBottom: true,
+				anchorMessageId: null,
+				anchorOffset: 0
+			});
+			setCurrentView('chat');
+			await setCurrentSession(summarySession);
+			closeModal();
+
+			const prompt = formatSessionForCavemanPrompt(session, messages);
+			await chatService.sendMessage(prompt);
+		} catch (error) {
+			debug.error('session', 'Failed to compress session with AI:', error);
+			addNotification({
+				type: 'error',
+				title: 'Compress Failed',
+				message: 'Failed to start caveman compress session',
+				duration: 4000
+			});
+		} finally {
+			compressingSessionId = null;
+		}
 	}
 
 	// Delete all sessions state
@@ -586,6 +772,53 @@
 								{/if}
 							</div>
 						{/if}
+						<div class="relative shrink-0">
+							<button
+								type="button"
+								class="flex items-center justify-center w-8 h-8 bg-transparent border-none rounded-lg text-slate-400 dark:text-slate-500 cursor-pointer transition-all duration-150 hover:bg-slate-200/70 dark:hover:bg-slate-800/80 hover:text-slate-700 dark:hover:text-slate-300"
+								onclick={(e) => toggleActionsMenu(session.id, e)}
+								aria-label="Session actions"
+								title="Actions"
+							>
+								<Icon name="lucide:ellipsis-vertical" class="w-4 h-4" />
+							</button>
+							{#if openActionsMenuSessionId === session.id}
+								<button
+									type="button"
+									class="fixed inset-0 bg-transparent border-none cursor-default z-40"
+									onclick={closeActionsMenu}
+									aria-label="Close session actions"
+								></button>
+								<div
+									class="absolute right-0 top-full mt-1 w-36 bg-white dark:bg-slate-800 border border-slate-200 dark:border-slate-700 rounded-lg shadow-lg z-50 py-1"
+								>
+									<button
+										type="button"
+										class="flex w-full items-center gap-2 px-2.5 py-1.5 text-left text-xs font-medium text-slate-700 dark:text-slate-200 bg-transparent border-none transition-colors whitespace-nowrap hover:bg-violet-500/10 hover:text-violet-600 dark:hover:text-violet-400 disabled:opacity-50 disabled:cursor-not-allowed"
+										onclick={(e) => copySessionChat(session, e)}
+										disabled={copyingSessionId === session.id}
+									>
+										<Icon
+											name={copyingSessionId === session.id ? 'lucide:loader-circle' : 'lucide:copy'}
+											class="w-4 h-4 shrink-0 {copyingSessionId === session.id ? 'animate-spin' : ''}"
+										/>
+										<span>Copy</span>
+									</button>
+									<button
+										type="button"
+										class="flex w-full items-center gap-2 px-2.5 py-1.5 text-left text-xs font-medium text-slate-700 dark:text-slate-200 bg-transparent border-none transition-colors whitespace-nowrap hover:bg-amber-500/10 hover:text-amber-600 dark:hover:text-amber-400 disabled:opacity-50 disabled:cursor-not-allowed"
+										onclick={(e) => compressSessionWithAI(session, e)}
+										disabled={compressingSessionId === session.id || appState.isLoading}
+									>
+										<Icon
+											name={compressingSessionId === session.id ? 'lucide:loader-circle' : 'lucide:brain-circuit'}
+											class="w-4 h-4 shrink-0 {compressingSessionId === session.id ? 'animate-spin' : ''}"
+										/>
+										<span>Compress</span>
+									</button>
+								</div>
+							{/if}
+						</div>
 						<button
 							type="button"
 							class="flex items-center justify-center w-8 h-8 bg-transparent border-none rounded-lg text-slate-400 dark:text-slate-500 cursor-pointer transition-all duration-150 hover:bg-red-500/15 hover:text-red-500 shrink-0"
