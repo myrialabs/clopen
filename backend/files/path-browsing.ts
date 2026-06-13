@@ -10,6 +10,28 @@ async function readdir(path: string): Promise<string[]> {
 	return entries.map(e => e.name);
 }
 
+async function statIfExists(path: string): Promise<Awaited<ReturnType<ReturnType<typeof Bun.file>['stat']>> | null> {
+	try {
+		return await Bun.file(path).stat();
+	} catch {
+		return null;
+	}
+}
+
+async function isLikelyMacAppVolume(volumePath: string): Promise<boolean> {
+	try {
+		const entries = await readdir(volumePath);
+		const hasApplicationsAlias = entries.includes('Applications');
+		const appBundleCount = entries.filter(entry => entry.endsWith('.app')).length;
+
+		// Typical DMG/app mounts expose one or two app bundles plus an
+		// Applications shortcut. Hide those from the project picker.
+		return hasApplicationsAlias && appBundleCount > 0 && entries.length <= 8;
+	} catch {
+		return false;
+	}
+}
+
 // Return types
 export interface PathBrowseData {
 	name: string;
@@ -165,28 +187,26 @@ export async function handleUnixMountPoints(): Promise<PathBrowseData> {
 	}> = [];
 
 	// Always add root filesystem
-	const rootFile = Bun.file('/');
-	if (await rootFile.exists()) {
-		const stats = await rootFile.stat();
+	const rootStats = await statIfExists('/');
+	if (rootStats?.isDirectory()) {
 		commonMountPoints.push({
 			name: 'Root (/) Filesystem',
 			type: 'directory',
 			path: '/',
-			modified: stats.mtime.toISOString()
+			modified: rootStats.mtime.toISOString()
 		});
 	}
 
 	// Add user home directory
 	const homeDir = process.env.HOME;
 	if (homeDir) {
-		const homeFile = Bun.file(homeDir);
-		if (await homeFile.exists()) {
-			const stats = await homeFile.stat();
+		const homeStats = await statIfExists(homeDir);
+		if (homeStats?.isDirectory()) {
 			commonMountPoints.push({
 				name: 'Home Directory',
 				type: 'directory',
 				path: homeDir,
-				modified: stats.mtime.toISOString()
+				modified: homeStats.mtime.toISOString()
 			});
 		}
 	}
@@ -204,44 +224,41 @@ export async function handleUnixMountPoints(): Promise<PathBrowseData> {
 
 	for (const mountPath of potentialMounts) {
 		try {
-			const mountFile = Bun.file(mountPath);
-			if (await mountFile.exists()) {
-				const stats = await mountFile.stat();
-				if (stats.isDirectory()) {
-					let displayName = mountPath;
+			const stats = await statIfExists(mountPath);
+			if (stats?.isDirectory()) {
+				let displayName = mountPath;
 
-					// Special names for common directories
-					switch (mountPath) {
-						case '/mnt':
-							displayName = 'Mount Points (/mnt)';
-							break;
-						case '/media':
-							displayName = 'Media (/media)';
-							break;
-						case '/Volumes':
-							displayName = 'Volumes (/Volumes)';
-							break;
-						case '/usr':
-							displayName = 'System (/usr)';
-							break;
-						case '/var':
-							displayName = 'Variable (/var)';
-							break;
-						case '/opt':
-							displayName = 'Optional (/opt)';
-							break;
-						case '/tmp':
-							displayName = 'Temporary (/tmp)';
-							break;
-					}
-
-					commonMountPoints.push({
-						name: displayName,
-						type: 'directory',
-						path: mountPath,
-						modified: stats.mtime.toISOString()
-					});
+				// Special names for common directories
+				switch (mountPath) {
+					case '/mnt':
+						displayName = 'Mount Points (/mnt)';
+						break;
+					case '/media':
+						displayName = 'Media (/media)';
+						break;
+					case '/Volumes':
+						displayName = 'Volumes (/Volumes)';
+						break;
+					case '/usr':
+						displayName = 'System (/usr)';
+						break;
+					case '/var':
+						displayName = 'Variable (/var)';
+						break;
+					case '/opt':
+						displayName = 'Optional (/opt)';
+						break;
+					case '/tmp':
+						displayName = 'Temporary (/tmp)';
+						break;
 				}
+
+				commonMountPoints.push({
+					name: displayName,
+					type: 'directory',
+					path: mountPath,
+					modified: stats.mtime.toISOString()
+				});
 			}
 		} catch {
 			// Skip inaccessible mount points
@@ -249,24 +266,25 @@ export async function handleUnixMountPoints(): Promise<PathBrowseData> {
 	}
 
 	// On macOS, try to get mounted volumes from /Volumes
-	const volumesFile = Bun.file('/Volumes');
-	if (process.platform === 'darwin' && await volumesFile.exists()) {
+	const volumesStats = await statIfExists('/Volumes');
+	if (process.platform === 'darwin' && volumesStats?.isDirectory()) {
 		try {
 			const volumeItems = await readdir('/Volumes');
 			for (const volume of volumeItems) {
 				const volumePath = `/Volumes/${volume}`;
 				try {
-					const volumeFile = Bun.file(volumePath);
-					if (await volumeFile.exists()) {
-						const stats = await volumeFile.stat();
-						if (stats.isDirectory()) {
-							commonMountPoints.push({
-								name: `${volume} Volume`,
-								type: 'directory',
-								path: volumePath,
-								modified: stats.mtime.toISOString()
-							});
+					const stats = await statIfExists(volumePath);
+					if (stats?.isDirectory()) {
+						if (await isLikelyMacAppVolume(volumePath)) {
+							continue;
 						}
+
+						commonMountPoints.push({
+							name: `${volume} Volume`,
+							type: 'directory',
+							path: volumePath,
+							modified: stats.mtime.toISOString()
+						});
 					}
 				} catch {
 					// Skip inaccessible volumes
@@ -280,24 +298,21 @@ export async function handleUnixMountPoints(): Promise<PathBrowseData> {
 	// On Linux, try to get mounted filesystems from /mnt and /media
 	if (process.platform === 'linux') {
 		for (const baseMount of ['/mnt', '/media']) {
-			const baseMountFile = Bun.file(baseMount);
-			if (await baseMountFile.exists()) {
+			const baseMountStats = await statIfExists(baseMount);
+			if (baseMountStats?.isDirectory()) {
 				try {
 					const mountItems = await readdir(baseMount);
 					for (const mount of mountItems) {
 						const mountPath = `${baseMount}/${mount}`;
 						try {
-							const mountFile = Bun.file(mountPath);
-							if (await mountFile.exists()) {
-								const stats = await mountFile.stat();
-								if (stats.isDirectory()) {
-									commonMountPoints.push({
-										name: `${mount} (${baseMount})`,
-										type: 'directory',
-										path: mountPath,
-										modified: stats.mtime.toISOString()
-									});
-								}
+							const stats = await statIfExists(mountPath);
+							if (stats?.isDirectory()) {
+								commonMountPoints.push({
+									name: `${mount} (${baseMount})`,
+									type: 'directory',
+									path: mountPath,
+									modified: stats.mtime.toISOString()
+								});
 							}
 						} catch {
 							// Skip inaccessible mounts

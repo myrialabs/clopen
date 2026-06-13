@@ -46,15 +46,49 @@
 	let renameFolderName = $state('');
 	let showHidden = $state(false);
 
-	const filteredItems = $derived(
+	function isUsefulSystemLocation(location: FileItem): boolean {
+		if (location.path.match(/^[A-Z]:\\/i)) return true;
+		if (location.path.startsWith('/Volumes/')) return true;
+
+		const hiddenUnixLocations = new Set([
+			'/',
+			'/usr',
+			'/var',
+			'/opt',
+			'/tmp',
+			'/Volumes',
+			'/mnt',
+			'/media'
+		]);
+
+		if (location.name === 'Home Directory') return false;
+		if (hiddenUnixLocations.has(location.path)) return false;
+
+		return true;
+	}
+
+	const visibleItems = $derived(
 		showHidden ? items : items.filter(item => !item.name.startsWith('.'))
 	);
+	const filteredItems = $derived.by(() => {
+		if (currentPath === 'drives' && !hasWindowsDrives) {
+			return visibleItems.filter(isUsefulSystemLocation);
+		}
+
+		return visibleItems;
+	});
 
 	// Derived: whether directory access is restricted
 	const hasRestrictions = $derived(systemSettings.allowedBasePaths && systemSettings.allowedBasePaths.length > 0);
 
 	// Detect backend OS from current path (drive letter = Windows)
 	const isWindows = $derived(/^[A-Za-z]:/.test(currentPath));
+	const hasWindowsDrives = $derived(availableDrives.some((drive) => /^[A-Za-z]:\\/.test(drive.path)));
+	const quickAccessLocations = $derived.by(() => {
+		if (hasWindowsDrives) return availableDrives;
+
+		return availableDrives.filter(isUsefulSystemLocation);
+	});
 
 	// OS-appropriate placeholder for the path input
 	const pathPlaceholder = $derived(
@@ -182,6 +216,24 @@
 	function isActiveProject(folderPath: string): boolean {
 		return currentProjectPath !== undefined && currentProjectPath === folderPath;
 	}
+
+	function isQuickAccessActive(location: 'home' | 'drives' | string): boolean {
+		if (location === 'drives') {
+			return currentPath === 'drives';
+		}
+
+		if (location === 'home') {
+			if (currentPath === 'drives') return false;
+
+			const homeDir = typeof window !== 'undefined'
+				? currentPath.startsWith('/Users/') || currentPath.startsWith('/home/')
+				: false;
+
+			return homeDir;
+		}
+
+		return pathsEqual(currentPath, location);
+	}
 	
 	// Navigate to a specific common location
 	async function navigateToLocation(location: 'home' | 'cwd' | 'drives' | string) {
@@ -238,8 +290,9 @@
 				return;
 			}
 
-			// Auto-select current directory when loading
-			selectedPath = fileData.path;
+			// Do not auto-select the synthetic "drives" root. A real folder must be
+			// chosen before confirming selection.
+			selectedPath = fileData.path === 'drives' ? '' : fileData.path;
 
 			if (fileData.type === 'directory' && fileData.children) {
 				// Filter to show only directories and common project files
@@ -526,6 +579,10 @@
 	
 	// Sync manualPath with currentPath
 	$effect(() => {
+		if (currentPath === 'drives') {
+			manualPath = hasWindowsDrives ? '' : '/';
+			return;
+		}
 		manualPath = currentPath;
 	});
 	
@@ -619,7 +676,11 @@
 							<!-- Normal mode: home, system, drive buttons -->
 							<button
 								onclick={() => navigateToLocation('home')}
-								class="px-3 py-1.5 text-xs rounded-lg bg-slate-200 dark:bg-slate-700 hover:bg-slate-300 dark:hover:bg-slate-600 text-slate-700 dark:text-slate-300 transition-colors"
+								class={`px-3 py-1.5 text-xs rounded-lg transition-colors ${
+									isQuickAccessActive('home')
+										? 'bg-violet-100 dark:bg-violet-900/30 text-violet-700 dark:text-violet-300'
+										: 'bg-slate-200 dark:bg-slate-700 hover:bg-slate-300 dark:hover:bg-slate-600 text-slate-700 dark:text-slate-300'
+								}`}
 								title="Go to home directory"
 							>
 								<Icon name="lucide:house" class="inline mr-1" />
@@ -627,7 +688,11 @@
 							</button>
 							<button
 								onclick={() => navigateToLocation('drives')}
-								class="px-3 py-1.5 text-xs rounded-lg bg-slate-200 dark:bg-slate-700 hover:bg-slate-300 dark:hover:bg-slate-600 text-slate-700 dark:text-slate-300 transition-colors"
+								class={`px-3 py-1.5 text-xs rounded-lg transition-colors ${
+									isQuickAccessActive('drives')
+										? 'bg-violet-100 dark:bg-violet-900/30 text-violet-700 dark:text-violet-300'
+										: 'bg-slate-200 dark:bg-slate-700 hover:bg-slate-300 dark:hover:bg-slate-600 text-slate-700 dark:text-slate-300'
+								}`}
 								title="Browse system locations"
 							>
 								<Icon name="lucide:monitor" class="inline mr-1" />
@@ -635,11 +700,15 @@
 							</button>
 
 							<!-- Dynamic location buttons (all platforms) -->
-							{#if availableDrives.length > 0}
-								{#each availableDrives as location (location.path)}
+							{#if quickAccessLocations.length > 0}
+								{#each quickAccessLocations as location (location.path)}
 									<button
 										onclick={() => navigateToLocation(location.path)}
-										class="px-3 py-1.5 text-xs rounded-lg bg-slate-200 dark:bg-slate-700 hover:bg-slate-300 dark:hover:bg-slate-600 text-slate-700 dark:text-slate-300 transition-colors"
+										class={`px-3 py-1.5 text-xs rounded-lg transition-colors ${
+											isQuickAccessActive(location.path)
+												? 'bg-violet-100 dark:bg-violet-900/30 text-violet-700 dark:text-violet-300'
+												: 'bg-slate-200 dark:bg-slate-700 hover:bg-slate-300 dark:hover:bg-slate-600 text-slate-700 dark:text-slate-300'
+										}`}
 										title="Go to {location.name}"
 									>
 										{#if location.path.match(/^[A-Z]:\\/i)}
