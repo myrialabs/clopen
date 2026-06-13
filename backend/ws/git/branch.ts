@@ -88,7 +88,8 @@ export const branchHandler = createRouter()
 	.http('git:merge-branch', {
 		data: t.Object({
 			projectId: t.String(),
-			branchName: t.String()
+			branchName: t.String(),
+			noFastForward: t.Optional(t.Boolean())
 		}),
 		response: t.Object({
 			success: t.Boolean(),
@@ -96,5 +97,5 @@ export const branchHandler = createRouter()
 		})
 	}, async ({ data, conn }) => {
 		const project = requireProjectAccess(conn, data.projectId);
-		return await gitService.mergeBranch(project.path, data.branchName);
+		return await gitService.mergeBranch(project.path, data.branchName, data.noFastForward ?? false);
 	});

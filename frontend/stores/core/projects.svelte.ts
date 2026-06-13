@@ -36,6 +36,7 @@ interface ProjectState {
 	projects: Project[];
 	currentProject: Project | null;
 	recentProjects: Project[];
+	projectOrder: string[];
 	isLoading: boolean;
 	error: string | null;
 }
@@ -45,6 +46,7 @@ export const projectState = $state<ProjectState>({
 	projects: [],
 	currentProject: null,
 	recentProjects: [],
+	projectOrder: [],
 	isLoading: false,
 	error: null
 });
@@ -230,6 +232,8 @@ export async function setCurrentProject(project: Project | null) {
 
 export function addProject(project: Project) {
 	projectState.projects.push(project);
+	projectState.projectOrder = projectState.projects.map((p) => p.id);
+	persistProjectOrder();
 	updateRecentProjects();
 }
 
@@ -252,6 +256,8 @@ export function removeProject(projectId: string) {
 	const projectPath = projectToRemove?.path || '';
 
 	projectState.projects = projectState.projects.filter(p => p.id !== projectId);
+	projectState.projectOrder = projectState.projects.map((p) => p.id);
+	persistProjectOrder();
 
 	// Clear current project if it's being removed
 	if (projectState.currentProject?.id === projectId) {
@@ -261,6 +267,59 @@ export function removeProject(projectId: string) {
 	// Clean up in-memory state to prevent memory leaks
 	cleanupProjectState(projectId, projectPath);
 
+	updateRecentProjects();
+}
+
+function persistProjectOrder() {
+	ws.http('user:save-state', { key: 'projectOrder', value: [...projectState.projectOrder] }).catch((err) => {
+		debug.error('project', 'Error saving project order to server:', err);
+	});
+}
+
+function applyProjectOrder(projects: Project[], order: string[]): Project[] {
+	if (order.length === 0) return projects;
+
+	const projectMap = new Map(projects.map((project) => [project.id, project]));
+	const orderedProjects: Project[] = [];
+
+	for (const id of order) {
+		const project = projectMap.get(id);
+		if (!project) continue;
+		orderedProjects.push(project);
+		projectMap.delete(id);
+	}
+
+	for (const project of projects) {
+		if (projectMap.has(project.id)) {
+			orderedProjects.push(project);
+		}
+	}
+
+	return orderedProjects;
+}
+
+export function restoreProjectOrder(order: string[] | null | undefined) {
+	projectState.projectOrder = Array.isArray(order) ? [...order] : [];
+	if (projectState.projects.length > 0) {
+		projectState.projects = applyProjectOrder(projectState.projects, projectState.projectOrder);
+		projectState.projectOrder = projectState.projects.map((project) => project.id);
+	}
+}
+
+export function reorderProjects(sourceProjectId: string, targetProjectId: string) {
+	if (sourceProjectId === targetProjectId) return;
+
+	const projects = [...projectState.projects];
+	const sourceIndex = projects.findIndex((project) => project.id === sourceProjectId);
+	const targetIndex = projects.findIndex((project) => project.id === targetProjectId);
+	if (sourceIndex === -1 || targetIndex === -1) return;
+
+	const [movedProject] = projects.splice(sourceIndex, 1);
+	projects.splice(targetIndex, 0, movedProject);
+
+	projectState.projects = projects;
+	projectState.projectOrder = projects.map((project) => project.id);
+	persistProjectOrder();
 	updateRecentProjects();
 }
 
@@ -281,7 +340,8 @@ export async function loadProjects(restoreProjectId?: string | null) {
 		const projects = await ws.http('projects:list');
 
 		if (projects) {
-			projectState.projects = projects;
+			projectState.projects = applyProjectOrder(projects, projectState.projectOrder);
+			projectState.projectOrder = projectState.projects.map((project) => project.id);
 			updateRecentProjects();
 
 			// Restore current project from server-provided ID if not already set

@@ -51,7 +51,8 @@ export const commitMessageHandler = createRouter()
 			engine: t.String(),
 			providerSlug: t.String(),
 			modelId: t.String(),
-			format: t.Union([t.Literal('single-line'), t.Literal('multi-line')])
+			format: t.Union([t.Literal('single-line'), t.Literal('multi-line')]),
+			customPrompt: t.Optional(t.String())
 		}),
 		response: t.Object({
 			message: t.String()
@@ -78,7 +79,7 @@ export const commitMessageHandler = createRouter()
 			? 'Generate a multi-line conventional commit message with type, scope, subject, AND body fields. The body should explain WHY the change was made.'
 			: 'Generate a single-line conventional commit message with type, optional scope, and subject. Leave body empty.';
 
-		const prompt = `Analyze the following git diff and generate a conventional commit message.
+		const defaultPrompt = `Analyze the following git diff and generate a conventional commit message.
 
 Rules:
 - type: one of feat, fix, refactor, docs, test, chore, style, perf, ci, build
@@ -88,6 +89,11 @@ Rules:
 
 Git diff:
 ${rawDiff}`;
+
+		const extra = data.customPrompt?.trim();
+		const prompt = extra
+			? `${defaultPrompt}\n\nAdditional constraints:\n${extra}`
+			: defaultPrompt;
 
 		debug.log('git', `Generating commit message via ${engineType}/${data.modelId}`);
 

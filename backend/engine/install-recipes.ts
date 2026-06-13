@@ -381,34 +381,16 @@ async function resolveClaudeRecipe(): Promise<Recipe> {
 async function resolveOpenCodeRecipe(): Promise<Recipe> {
 	const base: Recipe = {
 		tool: 'opencode',
-		autoInstallable: false,
+		autoInstallable: true,
 		missingPrereqs: [],
 		manualInstructions: [{
-			label: 'curl + bash',
-			command: 'curl -fsSL https://opencode.ai/install | bash',
+			label: 'bun',
+			command: 'bun add -g opencode-ai',
 			docs: 'https://opencode.ai'
-		}]
+		}],
+		command: ['bun', 'add', '-g', 'opencode-ai'],
+		displayCommand: 'bun add -g opencode-ai'
 	};
-
-	if (process.platform === 'win32') {
-		base.autoInstallable = true;
-		base.shell = { program: 'powershell.exe', args: ['-NoProfile', '-ExecutionPolicy', 'Bypass', '-Command'] };
-		base.command = ['irm https://opencode.ai/install.ps1 | iex'];
-		base.displayCommand = 'irm https://opencode.ai/install.ps1 | iex';
-		base.manualInstructions.push({
-			label: 'PowerShell',
-			command: 'irm https://opencode.ai/install.ps1 | iex',
-			docs: 'https://opencode.ai'
-		});
-		return base;
-	}
-
-	if (!attachCurlRequirement(base, 'OpenCode')) return base;
-
-	base.autoInstallable = true;
-	base.shell = { program: 'bash', args: ['-c'] };
-	base.command = ['curl -fsSL https://opencode.ai/install | bash'];
-	base.displayCommand = 'curl -fsSL https://opencode.ai/install | bash';
 	return base;
 }
 

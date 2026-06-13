@@ -7,6 +7,7 @@
  */
 
 import { DEFAULT_MODEL_ID, DEFAULT_MODEL_NAME, DEFAULT_ENGINE } from '$shared/constants/engines';
+import { DEFAULT_BRANCH_SEPARATOR } from '$shared/constants/git';
 import type { AppSettings, SystemSettings } from '$shared/types/stores/settings';
 import { builtInPresets } from '$frontend/stores/ui/workspace.svelte';
 import ws from '$frontend/utils/ws';
@@ -45,7 +46,10 @@ const defaultSettings: AppSettings = {
 		provider: 'anthropic',
 		modelId: 'haiku',
 		modelName: 'Haiku 4.5',
-		format: 'single-line'
+		format: 'single-line',
+		branchSeparator: DEFAULT_BRANCH_SEPARATOR,
+		commitConfig: { style: 'technical', subjectLength: 72, allowedTypes: '', context: '' },
+		branchConfig: { maxWords: 3, allowedPrefixes: '', context: '' }
 	}
 };
 

@@ -1,6 +1,7 @@
 <script lang="ts">
 	import { onMount, untrack } from 'svelte';
 	import Icon from '$frontend/components/common/display/Icon.svelte';
+	import Modal from '$frontend/components/common/overlay/Modal.svelte';
 	import Dialog from '$frontend/components/common/overlay/Dialog.svelte';
 	import { projectState } from '$frontend/stores/core/projects.svelte';
 	import { showError, showInfo } from '$frontend/stores/ui/notification.svelte';
@@ -87,7 +88,21 @@
 	let activeView = $state<'changes' | 'log' | 'stash' | 'tags'>('changes');
 	let viewMode = $state<'list' | 'diff'>('list');
 	let showBranchManager = $state(false);
+	let showMergeBranchModal = $state(false);
+	let mergeBranchName = $state('');
+	let mergeMode = $state<'default' | 'no-ff'>('default');
 	let showConflictResolver = $state(false);
+	const mergeableBranches = $derived(branchInfo?.local.filter(branch => !branch.isCurrent) ?? []);
+	const selectedMergeBranch = $derived(
+		mergeableBranches.find(branch => branch.name === mergeBranchName) ?? null
+	);
+
+	$effect(() => {
+		if (!showMergeBranchModal) return;
+		if (!mergeableBranches.some(branch => branch.name === mergeBranchName)) {
+			mergeBranchName = mergeableBranches[0]?.name ?? '';
+		}
+	});
 
 	// Git init state
 	let isInitializing = $state(false);
@@ -309,12 +324,15 @@
 		}
 	}
 
-	async function loadBranches() {
-		if (!projectId) return;
+	async function loadBranches(): Promise<GitBranchInfo | null> {
+		if (!projectId) return null;
 		try {
-			branchInfo = await ws.http('git:branches', { projectId });
+			const data = await ws.http('git:branches', { projectId });
+			branchInfo = data;
+			return data;
 		} catch (err) {
 			debug.error('git', 'Failed to load branches:', err);
+			return null;
 		}
 	}
 
@@ -889,15 +907,18 @@
 		}
 	}
 
-	async function createBranch(name: string) {
-		if (!projectId) return;
+	async function createBranch(name: string): Promise<boolean> {
+		if (!projectId) return false;
 		try {
 			await ws.http('git:create-branch', { projectId, name });
+			showInfo('Branch Created', `Switched to "${name}".`);
 			showBranchManager = false;
 			await loadAll();
+			return true;
 		} catch (err) {
 			debug.error('git', 'Failed to create branch:', err);
 			showError('Create Branch Failed', err instanceof Error ? err.message : 'Unknown error');
+			return false;
 		}
 	}
 
@@ -943,33 +964,71 @@
 		}
 	}
 
-	async function mergeBranch(name: string) {
+	async function openMergeBranchModal() {
+		if (blockedWhileBusy('merge')) return;
+		const latestBranchInfo = await loadBranches();
+		const latestMergeableBranches = latestBranchInfo?.local.filter(branch => !branch.isCurrent) ?? [];
+		if (latestMergeableBranches.length === 0) {
+			showError('Merge Branch Unavailable', 'No other local branches are available to merge.');
+			return;
+		}
+		mergeBranchName = latestMergeableBranches.find(branch => branch.name === mergeBranchName)?.name
+			?? latestMergeableBranches[0]?.name
+			?? '';
+		mergeMode = 'default';
+		showMergeBranchModal = true;
+	}
+
+	function closeMergeBranchModal() {
+		showMergeBranchModal = false;
+		mergeMode = 'default';
+	}
+
+	async function runMergeBranch(name: string, noFastForward = false, closeBranchManager = false) {
+		if (!projectId || !name || isMoreBusy) return;
+		if (blockedWhileBusy('merge')) return;
+
+		const targetBranch = branchInfo?.current;
+		await runMore(async () => {
+			try {
+				const result = await ws.http('git:merge-branch', {
+					projectId,
+					branchName: name,
+					noFastForward
+				});
+				showMergeBranchModal = false;
+				if (closeBranchManager) showBranchManager = false;
+
+				if (!result.success) {
+					await loadAll();
+					if (gitStatus.conflicted.length > 0) {
+						await loadConflicts();
+						showConflictResolver = true;
+					} else {
+						showError('Merge Failed', result.message);
+					}
+				} else {
+					await loadAll();
+					showInfo(
+						'Merge Complete',
+						`Merged "${name}" into "${targetBranch ?? 'current branch'}"${noFastForward ? ' with --no-ff' : ''}.`
+					);
+				}
+			} catch (err) {
+				debug.error('git', 'Failed to merge branch:', err);
+				showError('Merge Failed', err instanceof Error ? err.message : 'Unknown error');
+			}
+		});
+	}
+
+	function mergeBranch(name: string) {
 		if (blockedWhileBusy('merge')) return;
 		requestConfirm({
 			title: 'Merge Branch',
 			message: `Merge "${name}" into "${branchInfo?.current}"?`,
 			type: 'info',
 			confirmText: 'Merge',
-			onConfirm: async () => {
-				if (!projectId) return;
-				try {
-					const result = await ws.http('git:merge-branch', { projectId, branchName: name });
-					showBranchManager = false;
-					if (!result.success) {
-						await loadAll();
-						if (gitStatus.conflicted.length > 0) {
-							await loadConflicts();
-							showConflictResolver = true;
-						} else {
-							showError('Merge Failed', result.message);
-						}
-					} else {
-						await loadAll();
-					}
-				} catch (err) {
-					debug.error('git', 'Failed to merge branch:', err);
-				}
-			}
+			onConfirm: () => void runMergeBranch(name, false, true)
 		});
 	}
 
@@ -1236,6 +1295,8 @@
 
 	function handleMoreAction(action: GitMoreAction) {
 		switch (action) {
+			case 'merge-branch':
+				return void openMergeBranchModal();
 			case 'push-follow-tags':
 				return void pushVariant('with-tags', 'Pushed branch with tags');
 			case 'push-all-tags':
@@ -1906,13 +1967,12 @@ ${bodies}`;
 			branchBehind={branchInfo?.behind ?? 0}
 			{isPushing}
 			{isPulling}
-			{isFetching}
 			{isMoreBusy}
 			{repoBusy}
 			{repoBusyReason}
+			onCreateBranch={createBranch}
 			onPush={handlePush}
 			onPull={handlePull}
-			onFetch={handleFetch}
 			onMoreAction={handleMoreAction}
 		/>
 
@@ -2277,6 +2337,139 @@ ${bodies}`;
 			</div>
 		</div>
 	{/if}
+
+	<!-- Merge Branch Modal -->
+	<Modal
+		isOpen={showMergeBranchModal}
+		onClose={closeMergeBranchModal}
+		size="md"
+	>
+		{#snippet header()}
+			<div class="flex items-center justify-between px-4 py-3 md:px-6 md:py-4">
+				<div class="flex items-center gap-2.5">
+					<Icon name="lucide:git-merge" class="w-5 h-5 text-violet-600" />
+					<div>
+						<h2 class="text-base md:text-lg font-bold text-slate-900 dark:text-slate-100">Merge Branch</h2>
+						<p class="text-xs text-slate-500 dark:text-slate-400">
+							Merge into <span class="font-mono text-slate-700 dark:text-slate-300">{branchInfo?.current ?? 'current branch'}</span>
+						</p>
+					</div>
+				</div>
+				<button
+					type="button"
+					class="p-1.5 md:p-2 rounded-lg text-slate-500 hover:text-slate-900 dark:hover:text-slate-100 hover:bg-violet-500/10 transition-colors"
+					onclick={closeMergeBranchModal}
+					aria-label="Close merge branch modal"
+				>
+					<Icon name="lucide:x" class="w-4 h-4 md:w-5 md:h-5" />
+				</button>
+			</div>
+		{/snippet}
+
+		{#snippet children()}
+			<div class="space-y-4">
+					<div>
+						<label class="block text-sm font-semibold text-slate-700 dark:text-slate-300 mb-2" for="merge-branch-select">
+							Source Branch
+						</label>
+						<p class="mb-2 text-xs text-slate-500 dark:text-slate-400">
+							Local branches only. The current branch is selected automatically as the merge target.
+						</p>
+						<select
+						id="merge-branch-select"
+						bind:value={mergeBranchName}
+						class="w-full px-3 py-2 text-sm bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-700 rounded-lg text-slate-900 dark:text-slate-100 outline-none focus:border-violet-500/40"
+						disabled={mergeableBranches.length === 0 || isMoreBusy}
+					>
+						{#each mergeableBranches as branch (branch.name)}
+							<option value={branch.name}>{branch.name}</option>
+						{/each}
+					</select>
+					{#if selectedMergeBranch}
+						<p class="mt-1.5 text-xs text-slate-500 dark:text-slate-400">
+							{selectedMergeBranch.ahead} ahead, {selectedMergeBranch.behind} behind relative to upstream.
+						</p>
+					{/if}
+				</div>
+
+				<div>
+					<div class="text-sm font-semibold text-slate-700 dark:text-slate-300 mb-2">Merge Mode</div>
+					<div class="grid grid-cols-1 gap-2">
+						<button
+							type="button"
+							class="flex items-start gap-3 p-3 rounded-lg border text-left transition-colors
+								{mergeMode === 'default'
+									? 'border-violet-500 bg-violet-500/10'
+									: 'border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-900 hover:border-violet-400'}"
+							onclick={() => mergeMode = 'default'}
+							disabled={isMoreBusy}
+						>
+							<span class="mt-0.5 flex h-4 w-4 items-center justify-center rounded-full border {mergeMode === 'default' ? 'border-violet-600 bg-violet-600' : 'border-slate-300 dark:border-slate-600'}">
+								{#if mergeMode === 'default'}
+									<span class="h-1.5 w-1.5 rounded-full bg-white"></span>
+								{/if}
+							</span>
+							<span class="min-w-0">
+								<span class="block text-sm font-semibold text-slate-900 dark:text-slate-100">Default</span>
+								<span class="block text-xs text-slate-500 dark:text-slate-400">
+									Runs <code class="font-mono">git merge &lt;branch&gt;</code>. Git may fast-forward when possible, otherwise it creates a merge commit.
+								</span>
+							</span>
+						</button>
+
+						<button
+							type="button"
+							class="flex items-start gap-3 p-3 rounded-lg border text-left transition-colors
+								{mergeMode === 'no-ff'
+									? 'border-violet-500 bg-violet-500/10'
+									: 'border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-900 hover:border-violet-400'}"
+							onclick={() => mergeMode = 'no-ff'}
+							disabled={isMoreBusy}
+						>
+							<span class="mt-0.5 flex h-4 w-4 items-center justify-center rounded-full border {mergeMode === 'no-ff' ? 'border-violet-600 bg-violet-600' : 'border-slate-300 dark:border-slate-600'}">
+								{#if mergeMode === 'no-ff'}
+									<span class="h-1.5 w-1.5 rounded-full bg-white"></span>
+								{/if}
+							</span>
+							<span class="min-w-0">
+								<span class="block text-sm font-semibold text-slate-900 dark:text-slate-100">--no-ff</span>
+								<span class="block text-xs text-slate-500 dark:text-slate-400">
+									Runs <code class="font-mono">git merge --no-ff &lt;branch&gt;</code>. Always creates a merge commit to preserve branch history.
+								</span>
+							</span>
+						</button>
+					</div>
+				</div>
+			</div>
+		{/snippet}
+
+		{#snippet footer()}
+			<button
+				type="button"
+				class="px-3 py-2 text-sm font-medium bg-transparent border border-slate-200 dark:border-slate-700 text-slate-600 dark:text-slate-400 rounded-lg hover:bg-slate-100 dark:hover:bg-slate-800 transition-colors cursor-pointer"
+				onclick={closeMergeBranchModal}
+				disabled={isMoreBusy}
+			>
+				Cancel
+			</button>
+			<button
+				type="button"
+				class="inline-flex items-center gap-2 px-3 py-2 text-sm font-semibold rounded-lg transition-colors
+					{mergeBranchName && !isMoreBusy
+						? 'bg-violet-600 text-white hover:bg-violet-700 cursor-pointer'
+						: 'bg-slate-200 dark:bg-slate-700 text-slate-400 dark:text-slate-500 cursor-not-allowed'}"
+				onclick={() => void runMergeBranch(mergeBranchName, mergeMode === 'no-ff')}
+				disabled={!mergeBranchName || isMoreBusy}
+			>
+				{#if isMoreBusy}
+					<div class="w-3.5 h-3.5 border-2 border-white/30 border-t-white rounded-full animate-spin"></div>
+				{:else}
+					<Icon name="lucide:git-merge" class="w-3.5 h-3.5" />
+				{/if}
+				Merge Branch
+			</button>
+		{/snippet}
+	</Modal>
 
 	<!-- Branch Manager Modal -->
 	<BranchManager
