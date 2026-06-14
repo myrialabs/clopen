@@ -2,8 +2,8 @@
  * Files Reveal in File Manager Operation
  *
  * Opens the default file manager to reveal a file or directory, using the
- * platform-native command: `open -R` (macOS), `explorer /select,` (Windows,
- * fire-and-forget — exit codes are unreliable), or `xdg-open` on the parent
+ * platform-native command: `open -R` (macOS), `cmd /c start /max explorer /select,`
+ * (Windows, via cmd to avoid minimized window), or `xdg-open` on the parent
  * directory (Linux).
  */
 
@@ -36,11 +36,10 @@ export const revealHandler = createRouter()
 			}
 		} else if (process.platform === 'win32') {
 			const winPath = targetPath.split('/').join(sep);
-			const proc = Bun.spawn(['explorer', '/select,' + winPath], {
+			Bun.spawn(['cmd', '/c', 'start', '', '/max', 'explorer', '/select,' + winPath], {
 				stdout: 'ignore',
-				stderr: 'pipe'
+				stderr: 'ignore'
 			});
-			await proc.exited;
 		} else if (process.platform === 'linux') {
 			const parentDir = targetPath.lastIndexOf('/') > 0
 				? targetPath.slice(0, targetPath.lastIndexOf('/'))
