@@ -49,7 +49,7 @@
 			<ToolInstallCard
 				tool="qwen"
 				title="Qwen Code CLI"
-				description="Used by clopen to run the Qwen Code engine. The CLI is bundled with the SDK — installing it standalone is only needed for shell use."
+				description="Used by clopen to run the Qwen Code engine."
 			/>
 		</div>
 	</section>

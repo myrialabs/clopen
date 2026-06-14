@@ -901,6 +901,7 @@
 			await ws.http('git:switch-branch', { projectId, name });
 			showBranchManager = false;
 			await loadAll();
+			if (activeView === 'log') await loadLog(true);
 		} catch (err) {
 			debug.error('git', 'Failed to switch branch:', err);
 			showError('Switch Branch Failed', err instanceof Error ? err.message : 'Unknown error');
@@ -923,6 +924,7 @@
 					openTabs = [];
 					activeTabId = null;
 					await loadAll();
+					if (activeView === 'log') await loadLog(true);
 					showInfo('Commit Checked Out', `Checked out ${shortHash}. HEAD is now detached.`);
 				} catch (err) {
 					debug.error('git', 'Failed to checkout commit:', err);
