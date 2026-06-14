@@ -147,17 +147,18 @@ export class TerminalService {
 			workingDirectory
 		);
 
-		const hasLivePty = Boolean(session.processId || session.streamId);
-
 		// Create unique stream ID for this connection
 		const streamId = `${sessionId}-${Date.now()}`;
 		this.attachSessionListeners(sessionId, onData);
 
-		if (hasLivePty) {
-			debug.log('terminal', `🔁 Reattached listeners to existing PTY session: ${sessionId}`);
-			this.connectingSessions.delete(sessionId);
-			return;
-		}
+		// Always (re)issue create-session even when the PTY is already live on the
+		// server. The handler is idempotent — it reuses the running PTY, clears any
+		// stale listeners, and replays the serialized scrollback. That replay is what
+		// repaints the terminal after a project switch, where the store's session
+		// lines were intentionally reset to []. Skipping it here left the terminal
+		// blank until a browser refresh. Duplicate connects are already prevented by
+		// the connectingSessions / activeListeners guards above and XTerm's
+		// shouldConnectSession check.
 
 		// Create terminal session (now using HTTP pattern)
 		try {
