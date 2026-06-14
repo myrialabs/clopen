@@ -111,3 +111,13 @@ export function isWindows(): boolean {
 export function isLinux(): boolean {
 	return detectPlatform() === 'linux';
 }
+
+/**
+ * Check if the app is accessed from the same machine (localhost or 127.0.0.1).
+ * Operations like spawning a file manager only make sense locally.
+ */
+export function isLocalConnection(): boolean {
+	if (typeof window === 'undefined') return false;
+	const hostname = window.location.hostname;
+	return hostname === 'localhost' || hostname === '127.0.0.1';
+}
