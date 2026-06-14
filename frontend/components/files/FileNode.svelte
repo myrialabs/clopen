@@ -7,6 +7,7 @@
 	import { getFolderIcon } from '$frontend/utils/folder-icon-mappings';
 	import { getGitStatusColor, getGitStatusBadgeLabel, getGitStatusLabel } from '$frontend/utils/git-status';
 	import { onMount } from 'svelte';
+	import { isMac, isWindows, isLinux } from '$frontend/utils/platform';
 
 	const {
 		file,
@@ -33,8 +34,7 @@
 		onNodeDrop,
 		onNodeDragEnd,
 		dropTargetPath = null,
-		busyPaths = new Set<string>(),
-		isMacOS = false
+		busyPaths = new Set<string>()
 	}: {
 		file: FileNodeType;
 		isSelected?: boolean;
@@ -61,8 +61,14 @@
 		onNodeDragEnd?: (file: FileNodeType, event: DragEvent) => void;
 		dropTargetPath?: string | null;
 		busyPaths?: Set<string>;
-		isMacOS?: boolean;
 	} = $props();
+
+	const revealLabel = $derived(
+		isMac() ? 'Reveal in Finder' :
+		isWindows() ? 'Show in Explorer' :
+		isLinux() ? 'Show in Files' :
+		'Show in File Manager'
+	);
 
 	const isBusy = $derived(busyPaths.has(file.path));
 
@@ -370,15 +376,13 @@
 					Copy Relative Path
 				</button>
 
-				{#if isMacOS}
-					<button
-						class="w-full px-3 py-1.5 text-xs text-left text-slate-700 dark:text-slate-300 hover:bg-slate-100 dark:hover:bg-slate-700 flex items-center gap-2"
-						onclick={(e) => { handleAction('reveal-in-finder', e); closeMenu(); }}
-					>
-						<Icon name="lucide:folder-open" class="w-3 h-3" />
-						Reveal in Finder
-					</button>
-				{/if}
+				<button
+					class="w-full px-3 py-1.5 text-xs text-left text-slate-700 dark:text-slate-300 hover:bg-slate-100 dark:hover:bg-slate-700 flex items-center gap-2"
+					onclick={(e) => { handleAction('reveal-in-file-manager', e); closeMenu(); }}
+				>
+					<Icon name="lucide:folder-open" class="w-3 h-3" />
+					{revealLabel}
+				</button>
 
 				<div class="border-t border-slate-200 dark:border-slate-700 my-1"></div>
 
