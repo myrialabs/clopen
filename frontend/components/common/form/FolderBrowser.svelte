@@ -13,6 +13,7 @@
 		type: 'file' | 'directory';
 		path: string;
 		modified?: string;
+		kind?: 'home' | 'root' | 'volume' | 'drive';
 		children?: FileItem[];
 		error?: string;
 	}
@@ -46,36 +47,11 @@
 	let renameFolderName = $state('');
 	let showHidden = $state(false);
 
-	function isUsefulSystemLocation(location: FileItem): boolean {
-		if (location.path.match(/^[A-Z]:\\/i)) return true;
-		if (location.path.startsWith('/Volumes/')) return true;
-
-		const hiddenUnixLocations = new Set([
-			'/',
-			'/usr',
-			'/var',
-			'/opt',
-			'/tmp',
-			'/Volumes',
-			'/mnt',
-			'/media'
-		]);
-
-		if (location.name === 'Home Directory') return false;
-		if (hiddenUnixLocations.has(location.path)) return false;
-
-		return true;
-	}
-
-	const visibleItems = $derived(
-		showHidden ? items : items.filter(item => !item.name.startsWith('.'))
-	);
 	const filteredItems = $derived.by(() => {
-		if (currentPath === 'drives' && !hasWindowsDrives) {
-			return visibleItems.filter(isUsefulSystemLocation);
-		}
-
-		return visibleItems;
+		const base = showHidden ? items : items.filter(item => !item.name.startsWith('.'));
+		// When browsing the drives root, hide the home entry — it has a dedicated button
+		if (currentPath === 'drives') return base.filter(item => item.kind !== 'home');
+		return base;
 	});
 
 	// Derived: whether directory access is restricted
@@ -83,12 +59,11 @@
 
 	// Detect backend OS from current path (drive letter = Windows)
 	const isWindows = $derived(/^[A-Za-z]:/.test(currentPath));
-	const hasWindowsDrives = $derived(availableDrives.some((drive) => /^[A-Za-z]:\\/.test(drive.path)));
-	const quickAccessLocations = $derived.by(() => {
-		if (hasWindowsDrives) return availableDrives;
-
-		return availableDrives.filter(isUsefulSystemLocation);
-	});
+	const hasWindowsDrives = $derived(availableDrives.some(d => /^[A-Za-z]:\\/.test(d.path)));
+	// Actual home path sourced from backend — avoids client-side path prefix guessing
+	const homePath = $derived(availableDrives.find(d => d.kind === 'home')?.path ?? '');
+	// Home has its own dedicated button, so exclude it from the dynamic location list
+	const quickAccessLocations = $derived(availableDrives.filter(d => d.kind !== 'home'));
 
 	// OS-appropriate placeholder for the path input
 	const pathPlaceholder = $derived(
@@ -218,20 +193,11 @@
 	}
 
 	function isQuickAccessActive(location: 'home' | 'drives' | string): boolean {
-		if (location === 'drives') {
-			return currentPath === 'drives';
-		}
-
+		if (location === 'drives') return currentPath === 'drives';
 		if (location === 'home') {
-			if (currentPath === 'drives') return false;
-
-			const homeDir = typeof window !== 'undefined'
-				? currentPath.startsWith('/Users/') || currentPath.startsWith('/home/')
-				: false;
-
-			return homeDir;
+			if (currentPath === 'drives' || !homePath) return false;
+			return pathsEqual(currentPath, homePath);
 		}
-
 		return pathsEqual(currentPath, location);
 	}
 	
@@ -580,7 +546,7 @@
 	// Sync manualPath with currentPath
 	$effect(() => {
 		if (currentPath === 'drives') {
-			manualPath = hasWindowsDrives ? '' : '/';
+			manualPath = hasWindowsDrives ? '' : (homePath || '/');
 			return;
 		}
 		manualPath = currentPath;
@@ -630,7 +596,7 @@
 				<div class="flex items-center space-x-2 text-sm">
 					<button
 						onclick={navigateToParent}
-						disabled={currentPath === '/' || loading || atRestrictionBoundary}
+						disabled={currentPath === '/' || currentPath === 'drives' || loading || atRestrictionBoundary}
 						class="flex p-2 rounded-lg hover:bg-slate-100 dark:hover:bg-slate-700 disabled:opacity-50 disabled:cursor-not-allowed transition-colors"
 						aria-label="Go to parent directory"
 					>
@@ -673,7 +639,7 @@
 								</button>
 							{/each}
 						{:else}
-							<!-- Normal mode: home, system, drive buttons -->
+							<!-- Normal mode: home, [volumes/drives], system buttons -->
 							<button
 								onclick={() => navigateToLocation('home')}
 								class={`px-3 py-1.5 text-xs rounded-lg transition-colors ${
@@ -685,18 +651,6 @@
 							>
 								<Icon name="lucide:house" class="inline mr-1" />
 								Home
-							</button>
-							<button
-								onclick={() => navigateToLocation('drives')}
-								class={`px-3 py-1.5 text-xs rounded-lg transition-colors ${
-									isQuickAccessActive('drives')
-										? 'bg-violet-100 dark:bg-violet-900/30 text-violet-700 dark:text-violet-300'
-										: 'bg-slate-200 dark:bg-slate-700 hover:bg-slate-300 dark:hover:bg-slate-600 text-slate-700 dark:text-slate-300'
-								}`}
-								title="Browse system locations"
-							>
-								<Icon name="lucide:monitor" class="inline mr-1" />
-								System
 							</button>
 
 							<!-- Dynamic location buttons (all platforms) -->
@@ -711,30 +665,35 @@
 										}`}
 										title="Go to {location.name}"
 									>
-										{#if location.path.match(/^[A-Z]:\\/i)}
-											<!-- Windows drive -->
+										{#if location.kind === 'drive'}
 											<Icon name="lucide:hard-drive" class="inline mr-1" />
 											{location.path.replace(/\\/g, '')}
-										{:else if location.path === '/'}
-											<!-- Unix root -->
+										{:else if location.kind === 'root'}
 											<Icon name="lucide:folder-root" class="inline mr-1" />
 											/
-										{:else if location.path.startsWith('/Volumes')}
-											<!-- macOS volume -->
-											<Icon name="lucide:disc" class="inline mr-1" />
-											{location.path.split('/').pop()}
-										{:else if location.path.includes('/mnt') || location.path.includes('/media')}
-											<!-- Linux mount point -->
+										{:else if location.kind === 'volume'}
 											<Icon name="lucide:hard-drive" class="inline mr-1" />
-											{location.path.split('/').pop()}
+											{location.name}
 										{:else}
-											<!-- Generic location -->
 											<Icon name="lucide:folder" class="inline mr-1" />
-											{location.path.split('/').pop() || location.name}
+											{location.path.split(/[/\\]/).pop() || location.name}
 										{/if}
 									</button>
 								{/each}
 							{/if}
+
+							<button
+								onclick={() => navigateToLocation('drives')}
+								class={`px-3 py-1.5 text-xs rounded-lg transition-colors ${
+									isQuickAccessActive('drives')
+										? 'bg-violet-100 dark:bg-violet-900/30 text-violet-700 dark:text-violet-300'
+										: 'bg-slate-200 dark:bg-slate-700 hover:bg-slate-300 dark:hover:bg-slate-600 text-slate-700 dark:text-slate-300'
+								}`}
+								title="Browse all system locations"
+							>
+								<Icon name="lucide:monitor" class="inline mr-1" />
+								System
+							</button>
 						{/if}
 					</div>
 					
