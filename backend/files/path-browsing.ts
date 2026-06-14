@@ -74,6 +74,16 @@ export async function handlePathBrowsing(path: string): Promise<PathBrowseData> 
 		targetPath = path;
 	}
 
+	// Windows: a bare drive letter ("C:") is drive-relative — it points at the
+	// drive's *current* directory, not its root. Path normalization (resolve /
+	// realpath) and manual entry can both strip the trailing separator, which
+	// then makes join() produce drive-relative child paths like "C:Users" whose
+	// stat() fails, leaving the listing empty. Append the separator so we always
+	// browse the drive root.
+	if (/^[A-Za-z]:$/.test(targetPath)) {
+		targetPath += '\\';
+	}
+
 	// Check if path exists (use stat instead of exists for directories)
 	const file = Bun.file(targetPath);
 	const stats = await file.stat();
