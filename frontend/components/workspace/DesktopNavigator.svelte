@@ -1,7 +1,13 @@
 <script lang="ts">
 	import { fade } from 'svelte/transition';
 	import Icon from '$frontend/components/common/display/Icon.svelte';
-	import { projectState, setCurrentProject, removeProject, addProject } from '$frontend/stores/core/projects.svelte';
+	import {
+		projectState,
+		setCurrentProject,
+		removeProject,
+		addProject,
+		reorderProjects
+	} from '$frontend/stores/core/projects.svelte';
 	import { workspaceState, toggleNavigator } from '$frontend/stores/ui/workspace.svelte';
 	import { addNotification } from '$frontend/stores/ui/notification.svelte';
 	import { openSettingsModal } from '$frontend/stores/ui/settings-modal.svelte';
@@ -31,6 +37,8 @@
 	let hoveredProject = $state<Project | null>(null);
 	let tooltipY = $state(0);
 	let tooltipX = $state(0);
+	let draggedProjectId = $state<string | null>(null);
+	let dragOverProjectId = $state<string | null>(null);
 
 	// Derived
 	const isCollapsed = $derived(workspaceState.navigatorCollapsed);
@@ -150,6 +158,50 @@
 	function hideProjectTooltip() {
 		hoveredProject = null;
 	}
+
+	function canReorderProjects() {
+		return !searchQuery.trim() && projectState.projects.length > 1;
+	}
+
+	function handleProjectDragStart(event: DragEvent, projectId: string) {
+		if (!canReorderProjects()) {
+			event.preventDefault();
+			return;
+		}
+		draggedProjectId = projectId;
+		if (event.dataTransfer) {
+			event.dataTransfer.effectAllowed = 'move';
+			event.dataTransfer.setData('text/plain', projectId);
+		}
+	}
+
+	function handleProjectDragOver(event: DragEvent, projectId: string) {
+		if (!canReorderProjects() || draggedProjectId === projectId) return;
+		event.preventDefault();
+		if (event.dataTransfer) event.dataTransfer.dropEffect = 'move';
+		dragOverProjectId = projectId;
+	}
+
+	function handleProjectDragLeave(projectId: string) {
+		if (dragOverProjectId === projectId) {
+			dragOverProjectId = null;
+		}
+	}
+
+	function handleProjectDrop(event: DragEvent, targetProjectId: string) {
+		if (!canReorderProjects()) return;
+		event.preventDefault();
+		const sourceProjectId = draggedProjectId;
+		draggedProjectId = null;
+		dragOverProjectId = null;
+		if (!sourceProjectId || sourceProjectId === targetProjectId) return;
+		reorderProjects(sourceProjectId, targetProjectId);
+	}
+
+	function handleProjectDragEnd() {
+		draggedProjectId = null;
+		dragOverProjectId = null;
+	}
 </script>
 
 <!-- Project Navigator Sidebar -->
@@ -229,19 +281,36 @@
 						<div
 							class="flex items-center gap-2.5 py-2.5 px-3 bg-transparent border-none rounded-lg text-slate-600 dark:text-slate-400 text-sm text-left cursor-pointer transition-all duration-150 relative group
 								hover:bg-violet-500/10
+								{draggedProjectId === project.id ? 'opacity-50' : ''}
+								{dragOverProjectId === project.id ? 'ring-1 ring-inset ring-violet-400/60 bg-violet-500/10' : ''}
 								{currentProjectId === project.id
 								? 'bg-violet-500/10 dark:bg-violet-500/20 text-slate-900 dark:text-slate-100'
 								: ''}"
 							role="button"
 							title={project.path}
 							tabindex="0"
+							draggable={canReorderProjects()}
+							ondragstart={(event) => handleProjectDragStart(event, project.id)}
+							ondragover={(event) => handleProjectDragOver(event, project.id)}
+							ondragleave={() => handleProjectDragLeave(project.id)}
+							ondrop={(event) => handleProjectDrop(event, project.id)}
+							ondragend={handleProjectDragEnd}
 							onclick={() => selectProject(project)}
 							onkeydown={(e) => e.key === 'Enter' && selectProject(project)}
 						>
 							<div class="relative shrink-0">
-								<Icon name="lucide:folder" class="w-4 h-4" />
+								<Icon
+									name="lucide:folder"
+									class="w-4 h-4 {canReorderProjects() ? 'group-hover:hidden' : ''}"
+								/>
+								{#if canReorderProjects()}
+									<Icon
+										name="lucide:grip-vertical"
+										class="hidden w-4 h-4 group-hover:block"
+									/>
+								{/if}
 								<span
-									class="absolute -bottom-0.5 -right-0.5 w-2.5 h-2.5 rounded-full border-2 border-slate-50 dark:border-slate-900/95 {getProjectStatusColor(project.id ?? '')}"
+									class="absolute -bottom-0.5 -right-0.5 w-2.5 h-2.5 rounded-full border-2 border-slate-50 dark:border-slate-900/95 {canReorderProjects() ? 'group-hover:hidden' : ''} {getProjectStatusColor(project.id ?? '')}"
 								></span>
 							</div>
 
@@ -328,9 +397,17 @@
 					<button
 						type="button"
 						class="flex items-center justify-center w-9 h-9 shrink-0 border-none rounded-lg cursor-pointer transition-all duration-150 relative font-semibold text-sm
+							{draggedProjectId === project.id ? 'opacity-50' : ''}
+							{dragOverProjectId === project.id ? 'ring-1 ring-inset ring-violet-400/60' : ''}
 							{currentProjectId === project.id
 							? 'bg-violet-500/10 dark:bg-violet-500/20 text-violet-700 dark:text-violet-300'
 							: 'bg-slate-200/50 dark:bg-slate-800/50 text-slate-600 dark:text-slate-400 hover:bg-violet-500/10 hover:text-slate-900 dark:hover:text-slate-100'}"
+						draggable={canReorderProjects()}
+						ondragstart={(event) => handleProjectDragStart(event, project.id)}
+						ondragover={(event) => handleProjectDragOver(event, project.id)}
+						ondragleave={() => handleProjectDragLeave(project.id)}
+						ondrop={(event) => handleProjectDrop(event, project.id)}
+						ondragend={handleProjectDragEnd}
 						onclick={() => selectProject(project)}
 						onmouseenter={(e) => showProjectTooltip(project, e)}
 						onmouseleave={hideProjectTooltip}

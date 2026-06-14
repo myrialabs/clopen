@@ -6,6 +6,54 @@ import { readdir } from 'fs/promises';
 import { requireProjectPathAccess } from './path-access';
 import { validateFileSize } from '../../files/file-size-limit';
 
+// Heuristic patterns that indicate potential ReDoS risk:
+// 1. Nested quantifiers: (a+)+, (.*)+, (a*)*,  (x{1,5})+
+// 2. Alternation (with OR without quantifiers inside) under quantifier: (a|aa)+, (foo|foobar)+, (.*)+
+// 3. Character classes with adjacent quantifiers: [a-z]*[a-z]+
+const REDOS_PATTERNS = [
+	/\(.*[+*?{].*\)[+*?{]/,          // nested quantifiers like (a+)+, (.*)+, or (x{1,5})+
+	/\([^)]*\|[^)]*\)[+*?{]/,        // ANY alternation under quantifier: (a|aa)+, (foo|bar)+
+	/\[[^\]]+\]\s*[+*?]\s*\[[^\]]+\]\s*[+*?]/,  // adjacent char-class quantifiers
+];
+
+// Maximum execution time for regex test (milliseconds)
+const REGEX_TIMEOUT_MS = 100;
+
+export function createSafeRegex(pattern: string, flags: string): RegExp | null {
+	// Check against ReDoS heuristics
+	for (const heuristic of REDOS_PATTERNS) {
+		if (heuristic.test(pattern)) {
+			debug.warn('file', 'ReDoS-risk pattern rejected:', pattern);
+			return null;
+		}
+	}
+
+	let regex: RegExp;
+	try {
+		regex = new RegExp(pattern, flags);
+	} catch (error) {
+		debug.warn('file', 'Invalid regex pattern:', pattern);
+		return null;
+	}
+
+	// Test execution time with a worst-case string to detect catastrophic backtracking
+	const testString = 'a'.repeat(50); // 50-char string of 'a'
+	const startTime = Date.now();
+	try {
+		regex.test(testString);
+		const elapsed = Date.now() - startTime;
+		if (elapsed > REGEX_TIMEOUT_MS) {
+			debug.warn('file', `ReDoS-risk pattern rejected (execution timeout: ${elapsed}ms):`, pattern);
+			return null;
+		}
+	} catch (error) {
+		debug.warn('file', 'Regex execution error:', pattern, error);
+		return null;
+	}
+
+	return regex;
+}
+
 // Directories to skip during search
 const SKIP_DIRS = new Set([
 	'node_modules', '.git', '.svelte-kit', 'build', 'dist', 'coverage',
@@ -180,22 +228,23 @@ async function searchCodeContent(
 
 	const results: CodeSearchResult[] = [];
 
-	// Build the search regex
-	let searchPattern: RegExp;
-	try {
-		if (useRegex) {
-			let regexStr = query;
-			if (wholeWord) regexStr = `\\b${regexStr}\\b`;
-			searchPattern = new RegExp(regexStr, caseSensitive ? 'g' : 'gi');
-		} else {
-			let escaped = query.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
-			if (wholeWord) escaped = `\\b${escaped}\\b`;
+	// Build the search regex with ReDoS protection
+	let searchPattern: RegExp | null;
+	if (useRegex) {
+		let regexStr = query;
+		if (wholeWord) regexStr = `\\b${regexStr}\\b`;
+		searchPattern = createSafeRegex(regexStr, caseSensitive ? 'g' : 'gi');
+	} else {
+		let escaped = query.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+		if (wholeWord) escaped = `\\b${escaped}\\b`;
+		try {
 			searchPattern = new RegExp(escaped, caseSensitive ? 'g' : 'gi');
+		} catch (error) {
+			debug.error('file', 'Invalid escaped search pattern:', error);
+			return [];
 		}
-	} catch (error) {
-		debug.error('file', 'Invalid search pattern:', error);
-		return [];
 	}
+	if (!searchPattern) return [];
 
 	// Parse include/exclude filters
 	const includes = parseFilterPattern(includePattern);
@@ -292,22 +341,24 @@ async function replaceInFiles(
 
 	const results: ReplaceResult[] = [];
 
-	// Build replace regex
-	let pattern: RegExp;
-	try {
-		const flags = caseSensitive ? 'g' : 'gi';
-		if (useRegex) {
-			let regexStr = searchQuery;
-			if (wholeWord) regexStr = `\\b${regexStr}\\b`;
-			pattern = new RegExp(regexStr, flags);
-		} else {
-			let escaped = searchQuery.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
-			if (wholeWord) escaped = `\\b${escaped}\\b`;
+	// Build replace regex with ReDoS protection
+	let pattern: RegExp | null;
+	const flags = caseSensitive ? 'g' : 'gi';
+	if (useRegex) {
+		let regexStr = searchQuery;
+		if (wholeWord) regexStr = `\\b${regexStr}\\b`;
+		pattern = createSafeRegex(regexStr, flags);
+	} else {
+		let escaped = searchQuery.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+		if (wholeWord) escaped = `\\b${escaped}\\b`;
+		try {
 			pattern = new RegExp(escaped, flags);
+		} catch (error) {
+			debug.error('file', 'Invalid escaped replace pattern:', error);
+			return [];
 		}
-	} catch {
-		return [];
 	}
+	if (!pattern) return [];
 
 	for (const searchResult of searchResults) {
 		const fullPath = join(projectPath, searchResult.relativePath);

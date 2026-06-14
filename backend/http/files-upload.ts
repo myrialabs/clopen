@@ -16,7 +16,7 @@
 
 import { Elysia } from 'elysia';
 import { join } from 'node:path';
-import { mkdir, rename, stat, unlink } from 'node:fs/promises';
+import { link, mkdir, stat, unlink } from 'node:fs/promises';
 
 import { debug } from '$shared/utils/logger';
 import { hashToken } from '../auth/tokens';
@@ -24,6 +24,7 @@ import { authQueries, fileAuditLogQueries } from '../database/queries';
 import { findContainingProjectId, requireFilePathAccessFor } from '../ws/files/path-access';
 import { clientIpFromRequest } from '../utils/client-ip';
 import { validateFileSize } from '../files/file-size-limit';
+import { uploadTempCleanup } from './upload-temp-cleanup';
 
 type AuthIdentity = { userId: string; role: string };
 
@@ -125,6 +126,7 @@ export const filesUploadRoute = new Elysia().post('/api/files/upload', async ({ 
 		return new Response(message, { status: 500 });
 	}
 
+	// Early existence check — fast-path rejection before streaming the body
 	if (await Bun.file(resolvedFinal).exists()) {
 		fileAuditLogQueries.logOperation({
 			userId: identity.userId,
@@ -144,11 +146,16 @@ export const filesUploadRoute = new Elysia().post('/api/files/upload', async ({ 
 		return new Response('Request body is empty', { status: 400 });
 	}
 
+	// Stream to a unique temp file, then atomically link into place.
+	// link() uses O_EXCL semantics — fails with EEXIST if final already exists.
+	// The final path only appears with full content (no partial-file visibility).
 	const tempPath = `${resolvedFinal}.${crypto.randomUUID()}.partial`;
+	uploadTempCleanup.register(tempPath);
 	const writer = Bun.file(tempPath).writer();
 	let written = 0;
 
 	const cleanupTemp = async () => {
+		uploadTempCleanup.deregister(tempPath);
 		try { await writer.end(); } catch { /* best-effort */ }
 		try { await unlink(tempPath); } catch { /* best-effort */ }
 	};
@@ -171,6 +178,7 @@ export const filesUploadRoute = new Elysia().post('/api/files/upload', async ({ 
 		await writer.end();
 
 		if (written !== fileSizeParam) {
+			uploadTempCleanup.deregister(tempPath);
 			await unlink(tempPath).catch(() => {});
 			return new Response(`Incomplete upload: received ${written} of ${fileSizeParam} bytes`, { status: 400 });
 		}
@@ -178,6 +186,7 @@ export const filesUploadRoute = new Elysia().post('/api/files/upload', async ({ 
 		try {
 			validateFileSize(written);
 		} catch (error) {
+			uploadTempCleanup.deregister(tempPath);
 			await unlink(tempPath).catch(() => {});
 			fileAuditLogQueries.logOperation({
 				userId: identity.userId,
@@ -193,8 +202,15 @@ export const filesUploadRoute = new Elysia().post('/api/files/upload', async ({ 
 			return new Response(error instanceof Error ? error.message : 'File too large', { status: 413 });
 		}
 
-		// Race-check: refuse to overwrite if the destination appeared mid-upload.
-		if (await Bun.file(resolvedFinal).exists()) {
+		// Atomic exclusive link — fails with EEXIST if final already exists
+		try {
+			await link(tempPath, resolvedFinal);
+		} catch (error: unknown) {
+			if (error && typeof error === 'object' && 'code' in error && error.code === 'EEXIST') {
+				uploadTempCleanup.deregister(tempPath);
+				await unlink(tempPath).catch(() => {});
+				return new Response('File already exists', { status: 409 });
+			}
 			await unlink(tempPath).catch(() => {});
 			fileAuditLogQueries.logOperation({
 				userId: identity.userId,
@@ -205,12 +221,15 @@ export const filesUploadRoute = new Elysia().post('/api/files/upload', async ({ 
 				ipAddress,
 				userAgent,
 				success: false,
-				errorMessage: 'File already exists (race condition)'
+				errorMessage: `link() failed: ${(error as Error).message}`
 			});
-			return new Response('File already exists', { status: 409 });
+			throw error;
 		}
 
-		await rename(tempPath, resolvedFinal);
+		uploadTempCleanup.deregister(tempPath);
+		// Clean up temp — the real file is now the hard-link
+		await unlink(tempPath).catch(() => {});
+
 		const stats = await stat(resolvedFinal);
 
 		fileAuditLogQueries.logOperation({
@@ -230,7 +249,8 @@ export const filesUploadRoute = new Elysia().post('/api/files/upload', async ({ 
 			modified: stats.mtime.toISOString()
 		});
 	} catch (error) {
-		await cleanupTemp();
+		uploadTempCleanup.deregister(tempPath);
+		await unlink(tempPath).catch(() => {});
 		debug.error('file', 'HTTP upload error:', error);
 		const message = error instanceof Error ? error.message : 'Upload failed';
 		fileAuditLogQueries.logOperation({

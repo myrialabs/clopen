@@ -1,46 +1,18 @@
 import { dirname, extname, join } from 'path';
-import { stat as fsStat } from 'node:fs/promises';
+import { mkdir as fsMkdir, readdir as fsReaddir, rename as fsRename, rmdir as fsRmdir, stat as fsStat, unlink as fsUnlink, rm as fsRm } from 'node:fs/promises';
 
 import { debug } from '$shared/utils/logger';
 import { validateFileSize } from './file-size-limit';
 
-// Import Bun native functions and create wrappers for better API compatibility
-const { spawn } = Bun;
-
-// Bun-compatible readdir implementation (cross-platform)
+// Cross-platform readdir using fs.promises
 async function readdir(path: string): Promise<string[]> {
-	let proc;
-	if (process.platform === 'win32') {
-		proc = Bun.spawn(['cmd', '/c', 'dir', '/b', '/a', path], { stdout: 'pipe', stderr: 'ignore' });
-	} else {
-		proc = Bun.spawn(['ls', '-1A', path], { stdout: 'pipe', stderr: 'ignore' });
-	}
-	const result = await new Response(proc.stdout).text();
-	// Split and clean up, removing \r characters for Windows compatibility
-	return result.trim().split(/\r?\n/).map(line => line.trim()).filter(Boolean);
+	const entries = await fsReaddir(path, { withFileTypes: true });
+	return entries.map(e => e.name);
 }
 
 async function mkdir(path: string, options?: { recursive?: boolean }) {
-	// Pure Bun approach: create directory by writing a temp file
 	try {
-		const tempFile = join(path, '.bun_mkdir_temp');
-		await Bun.write(tempFile, '');
-		// Clean up the temp file
-		try {
-			if (process.platform === 'win32') {
-				await spawn(['cmd', '/c', 'del', '/f', '/q', tempFile.replace(/\//g, '\\')], {
-					stdout: 'ignore',
-					stderr: 'ignore'
-				}).exited;
-			} else {
-				await spawn(['rm', '-f', tempFile], {
-					stdout: 'ignore',
-					stderr: 'ignore'
-				}).exited;
-			}
-		} catch {
-			// Ignore cleanup errors
-		}
+		await fsMkdir(path, { recursive: options?.recursive ?? false });
 	} catch (error) {
 		throw new Error(`Failed to create directory ${path}: ${error}`);
 	}
@@ -79,37 +51,19 @@ async function copyDirectory(src: string, dest: string) {
 }
 
 async function rename(oldPath: string, newPath: string) {
-	if (process.platform === 'win32') {
-		const proc = spawn(['cmd', '/c', 'move', oldPath.replace(/\//g, '\\'), newPath.replace(/\//g, '\\')], { stdout: 'ignore', stderr: 'ignore' });
-		await proc.exited;
-	} else {
-		const proc = spawn(['mv', oldPath, newPath], { stdout: 'ignore', stderr: 'ignore' });
-		await proc.exited;
-	}
+	await fsRename(oldPath, newPath);
 }
 
 async function unlink(path: string) {
-	if (process.platform === 'win32') {
-		const proc = spawn(['cmd', '/c', 'del', '/f', '/q', path.replace(/\//g, '\\')], { stdout: 'ignore', stderr: 'ignore' });
-		await proc.exited;
-	} else {
-		const proc = spawn(['rm', '-f', path], { stdout: 'ignore', stderr: 'ignore' });
-		await proc.exited;
-	}
+	await fsUnlink(path);
 }
 
 async function rm(path: string, options?: { recursive?: boolean }) {
-	if (process.platform === 'win32') {
-		const proc = spawn(['cmd', '/c', 'rmdir', '/s', '/q', path.replace(/\//g, '\\')], { stdout: 'ignore', stderr: 'ignore' });
-		await proc.exited;
-	} else {
-		const proc = spawn(['rm', '-rf', path], { stdout: 'ignore', stderr: 'ignore' });
-		await proc.exited;
-	}
+	await fsRm(path, { recursive: options?.recursive ?? false, force: true });
 }
 
-async function rmdir(path: string, options?: { recursive?: boolean }) {
-	return rm(path, options);
+async function rmdir(path: string) {
+	await fsRmdir(path);
 }
 
 export async function writeFileOperation(filePath: string, content: string, baseModified?: string) {

@@ -1,19 +1,13 @@
 import { join, extname } from 'path';
+import { readdir as fsReaddir } from 'node:fs/promises';
 import { existsSync } from 'fs';
 
 import { debug } from '$shared/utils/logger';
 
-// Bun-compatible readdir implementation (cross-platform)
+// Cross-platform readdir using fs.promises
 async function readdir(path: string): Promise<string[]> {
-	let proc;
-	if (process.platform === 'win32') {
-		proc = Bun.spawn(['cmd', '/c', 'dir', '/b', '/a', path], { stdout: 'pipe', stderr: 'ignore' });
-	} else {
-		proc = Bun.spawn(['ls', '-1A', path], { stdout: 'pipe', stderr: 'ignore' });
-	}
-	const result = await new Response(proc.stdout).text();
-	// Split and clean up, removing \r characters for Windows compatibility
-	return result.trim().split(/\r?\n/).map(line => line.trim()).filter(Boolean);
+	const entries = await fsReaddir(path, { withFileTypes: true });
+	return entries.map(e => e.name);
 }
 
 // Return types

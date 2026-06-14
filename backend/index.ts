@@ -45,6 +45,7 @@ import { handleMcpRequest, closeMcpServer } from './mcp/remote-server';
 import { checkRouteAccess } from './auth/permissions';
 import { authRateLimiter } from './auth';
 import { sessionCleanupScheduler } from './auth/session-cleanup';
+import { uploadTempCleanup } from './http/upload-temp-cleanup';
 import { ws as wsServer } from './utils/ws';
 import { messageRateLimiter } from './ws/message-rate-limiter';
 
@@ -164,6 +165,7 @@ async function startServer() {
 		debug.log('database', '✅ Database initialized successfully');
 		// Start expired session cleanup now that the database is ready
 		sessionCleanupScheduler.start();
+		uploadTempCleanup.start();
 	} catch (error) {
 		debug.warn('database', '⚠️ Database initialization failed:', error);
 	}
@@ -214,6 +216,8 @@ async function gracefulShutdown() {
 		authRateLimiter.dispose();
 		// Dispose expired session cleanup timer
 		sessionCleanupScheduler.dispose();
+		// Dispose upload temp cleanup timer
+		uploadTempCleanup.dispose();
 		// Close MCP remote server (before engines, as they may still reference it)
 		await closeMcpServer();
 		// Cleanup browser preview sessions

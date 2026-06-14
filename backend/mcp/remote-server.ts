@@ -16,6 +16,9 @@ import { isInitializeRequest } from '@modelcontextprotocol/sdk/types.js';
 import type { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { createRemoteMcpServer } from './servers/helper';
 import { debug } from '$shared/utils/logger';
+import { authQueries } from '$backend/database/queries';
+import { hashToken } from '$backend/auth/tokens';
+import { getAuthMode } from '$backend/auth/auth-service';
 
 // Lazy imports to avoid circular dependencies at module load time
 let _allServers: Parameters<typeof createRemoteMcpServer>[0] | null = null;
@@ -42,6 +45,53 @@ const transports = new Map<string, WebStandardStreamableHTTPServerTransport>();
 const servers = new Map<string, McpServer>();
 
 /**
+ * Validate authentication token from request headers.
+ * Pure validator - does NOT create new sessions.
+ * Returns user info if valid, null otherwise.
+ */
+function validateAuthToken(request: Request): { userId: string; role: string } | null {
+	const authHeader = request.headers.get('authorization');
+	if (!authHeader || !authHeader.toLowerCase().startsWith('bearer ')) {
+		return null;
+	}
+
+	const token = authHeader.substring(7).trim();
+	if (!token) {
+		return null;
+	}
+
+	const tokenHash = hashToken(token);
+
+	// Try session token first
+	const session = authQueries.getSessionByTokenHash(tokenHash);
+	if (session) {
+		if (new Date(session.expires_at) < new Date()) {
+			return null; // Expired
+		}
+		const user = authQueries.getUserById(session.user_id);
+		if (!user) {
+			return null;
+		}
+		return { userId: user.id, role: user.role };
+	}
+
+	// Try PAT (Personal Access Token)
+	const user = authQueries.getUserByPatHash(tokenHash);
+	if (user) {
+		return { userId: user.id, role: user.role };
+	}
+
+	return null;
+}
+
+/**
+ * Check if authentication is required based on auth mode.
+ */
+function isAuthRequired(): boolean {
+	return getAuthMode() !== 'none';
+}
+
+/**
  * Handle an incoming MCP HTTP request (GET/POST/DELETE).
  *
  * Mounted at /mcp on the main Elysia server.
@@ -52,6 +102,24 @@ const servers = new Map<string, McpServer>();
  * - DELETE with session: close session
  */
 export async function handleMcpRequest(request: Request): Promise<Response> {
+	// Authentication check (skip if authMode is 'none')
+	if (isAuthRequired()) {
+		const auth = validateAuthToken(request);
+		if (!auth) {
+			return new Response(JSON.stringify({
+				jsonrpc: '2.0',
+				error: { code: -32001, message: 'Unauthorized: Valid Bearer token required' },
+				id: null,
+			}), {
+				status: 401,
+				headers: {
+					'Content-Type': 'application/json',
+					'WWW-Authenticate': 'Bearer realm="MCP Server"'
+				},
+			});
+		}
+	}
+
 	const sessionId = request.headers.get('mcp-session-id');
 
 	// Existing session — route to its transport
