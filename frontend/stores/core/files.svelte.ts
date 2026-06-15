@@ -52,6 +52,16 @@ export function collapseFolder(folderPath: string) {
 	fileState.expandedFolders.delete(folderPath);
 }
 
+export function collapseAllFolders() {
+	fileState.expandedFolders = new Set();
+}
+
+// Signal-based collapse: increment to trigger collapse all in FilesPanel
+export const collapseAllTrigger = $state({ count: 0 });
+export function triggerCollapseAll() {
+	collapseAllTrigger.count++;
+}
+
 export function clearFiles() {
 	fileState.files = [];
 	fileState.selectedFile = null;
