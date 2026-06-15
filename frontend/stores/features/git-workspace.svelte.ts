@@ -25,7 +25,7 @@ import {
 } from '$frontend/stores/ui/project-workspace.svelte';
 import { registerProjectCleanup } from '$frontend/utils/project-state-cleanup';
 
-export type GitView = 'changes' | 'log' | 'stash' | 'tags';
+export type GitView = 'changes' | 'log' | 'branches' | 'tags';
 
 /**
  * The diff tab open in the active view (the file the user picked from Changes or

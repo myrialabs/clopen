@@ -26,6 +26,7 @@
 	import type { IconName } from '$shared/types/ui/icons';
 	import type {
 		GitStatus,
+		GitBranch,
 		GitBranchInfo,
 		GitFileChange,
 		GitFileDiff,
@@ -85,7 +86,7 @@
 	let selectedRemote = $state('origin');
 
 	// View state
-	let activeView = $state<'changes' | 'log' | 'stash' | 'tags'>('changes');
+	let activeView = $state<'changes' | 'log' | 'branches' | 'tags'>('changes');
 	let viewMode = $state<'list' | 'diff'>('list');
 	let showBranchManager = $state(false);
 	let showMergeBranchModal = $state(false);
@@ -120,6 +121,54 @@
 	let newTagName = $state('');
 	let newTagMessage = $state('');
 
+	// Inline create branch state
+	let showCreateBranchForm = $state(false);
+	let newBranchName = $state('');
+
+	// Stash bottom panel state
+	let stashPanelCollapsed = $state(true);
+	let stashPanelHeight = $state(150);
+	let isStashResizing = $state(false);
+
+	// Branches view state
+	let branchesSearchQuery = $state('');
+	let branchesSubTab = $state<'local' | 'remote'>('local');
+
+	const filteredLocalBranches = $derived(
+		branchInfo?.local.filter(b =>
+			!branchesSearchQuery || b.name.toLowerCase().includes(branchesSearchQuery.toLowerCase())
+		) ?? []
+	);
+
+	const filteredRemoteBranches = $derived(
+		branchInfo?.remote.filter(b =>
+			!branchesSearchQuery || b.name.toLowerCase().includes(branchesSearchQuery.toLowerCase())
+		) ?? []
+	);
+
+	interface BranchCommitState {
+		commits: GitCommit[];
+		isLoading: boolean;
+		hasMore: boolean;
+		skip: number;
+	}
+	interface BranchCommitFileState {
+		files: GitFileDiff[];
+		isLoading: boolean;
+	}
+
+	let expandedBranches = $state<Set<string>>(new Set());
+	let branchCommitState = $state<Record<string, BranchCommitState>>({});
+	let expandedBranchCommits = $state<Set<string>>(new Set());
+	let branchCommitFileState = $state<Record<string, BranchCommitFileState>>({});
+
+	// Contributor panel state
+	let contributorPanelCollapsed = $state(true);
+	let contributorPanelHeight = $state(120);
+	let isContributorResizing = $state(false);
+	let contributors = $state<{ name: string; email: string; count: number }[]>([]);
+	let isContributorsLoading = $state(false);
+
 	// Tab system (like Files panel)
 	interface DiffTab {
 		id: string;
@@ -136,9 +185,9 @@
 	}
 
 	// Per-view tab isolation — each view (Changes, History, Stash, Tags) has its own tabs
-	const _tabStore: Record<string, DiffTab[]> = { changes: [], log: [], stash: [], tags: [] };
-	const _activeTabStore: Record<string, string | null> = { changes: null, log: null, stash: null, tags: null };
-	const _viewModeStore: Record<string, 'list' | 'diff'> = { changes: 'list', log: 'list', stash: 'list', tags: 'list' };
+	const _tabStore: Record<string, DiffTab[]> = { changes: [], log: [], branches: [], tags: [] };
+	const _activeTabStore: Record<string, string | null> = { changes: null, log: null, branches: null, tags: null };
+	const _viewModeStore: Record<string, 'list' | 'diff'> = { changes: 'list', log: 'list', branches: 'list', tags: 'list' };
 
 	let openTabs = $state<DiffTab[]>([]);
 	let activeTabId = $state<string | null>(null);
@@ -298,7 +347,7 @@
 			// Stash + tags are loaded here too (not just lazily on their view) so the
 			// Stash/Tags badge counts are correct immediately after a switch/refresh,
 			// not only once the user opens those views.
-			await Promise.all([loadStatus(), loadBranches(), loadRemotes(), loadStash(), loadTags()]);
+			await Promise.all([loadStatus(), loadBranches(), loadRemotes(), loadStash(), loadTags(), loadContributors()]);
 		} catch (err) {
 			debug.error('git', 'Failed to load git data:', err);
 		} finally {
@@ -862,12 +911,13 @@
 		}
 	}
 
-	function viewCommitFileDiff(file: GitFileDiff, restoreScrollTop = 0) {
-		if (!selectedCommit) return;
+	function viewCommitFileDiff(file: GitFileDiff, restoreScrollTop = 0, commitHashOverride?: string) {
+		const hash = commitHashOverride ?? selectedCommit?.hash;
+		if (!hash) return;
 		const path = file.newPath || file.oldPath;
 		if (!path) return;
 		const fileName = path.split(/[\\/]/).pop() || path;
-		const tabId = `commit:${selectedCommit.hash}:${path}`;
+		const tabId = `commit:${hash}:${path}`;
 
 		openTabs = [{
 			id: tabId,
@@ -877,7 +927,7 @@
 			diff: file,
 			diffs: [],
 			isLoading: false,
-			commitHash: selectedCommit.hash,
+			commitHash: hash,
 			status: file.status
 		}];
 		activeTabId = tabId;
@@ -967,6 +1017,83 @@
 		} catch {
 			return null;
 		}
+	}
+
+	async function handleCreateBranchFromForm() {
+		if (!projectId || !newBranchName.trim()) return;
+		const success = await createBranch(newBranchName.trim());
+		if (success) { newBranchName = ''; showCreateBranchForm = false; }
+	}
+
+	async function checkoutRemoteBranch(remoteBranch: string) {
+		const parts = remoteBranch.split('/');
+		const localName = parts.slice(1).join('/');
+		await switchBranch(localName);
+	}
+
+	function getBranchRemote(branch: GitBranch): string | null {
+		return branch.upstream?.split('/')[0] || remotes.find(remote => branch.upstream?.startsWith(remote.name + '/'))?.name || null;
+	}
+
+	function getBranchRemoteName(branch: GitBranch): string | null {
+		if (!branch.upstream) return null;
+		const remoteName = getBranchRemote(branch);
+		return remoteName ? branch.upstream.slice(remoteName.length + 1) : branch.upstream;
+	}
+
+	const BRANCH_COMMIT_PAGE_SIZE = 8;
+
+	async function loadBranchCommits(branchName: string, reset = false) {
+		if (!projectId) return;
+		const current = branchCommitState[branchName] ?? { commits: [], isLoading: false, hasMore: true, skip: 0 };
+		if (current.isLoading) return;
+		const skip = reset ? 0 : current.skip;
+		branchCommitState = { ...branchCommitState, [branchName]: { ...current, isLoading: true } };
+		try {
+			const result = await ws.http('git:log', { projectId, branch: branchName, limit: BRANCH_COMMIT_PAGE_SIZE, skip });
+			branchCommitState = { ...branchCommitState, [branchName]: { commits: reset ? result.commits : [...current.commits, ...result.commits], isLoading: false, hasMore: result.hasMore, skip: skip + result.commits.length } };
+		} catch { branchCommitState = { ...branchCommitState, [branchName]: { ...current, isLoading: false } }; }
+	}
+
+	function toggleBranchExpanded(branchName: string) {
+		const next = new Set(expandedBranches);
+		if (next.has(branchName)) { next.delete(branchName); expandedBranches = next; branchCommitState = { ...branchCommitState, [branchName]: { commits: [], isLoading: false, hasMore: true, skip: 0 } }; return; }
+		next.add(branchName); expandedBranches = next;
+		if (!branchCommitState[branchName]?.commits.length) { void loadBranchCommits(branchName, true); }
+	}
+
+	async function loadBranchCommitFiles(hash: string) {
+		if (!projectId) return;
+		const current = branchCommitFileState[hash] ?? { files: [], isLoading: false };
+		if (current.isLoading) return;
+		branchCommitFileState = { ...branchCommitFileState, [hash]: { ...current, isLoading: true } };
+		try {
+			const files = await ws.http('git:diff-commit', { projectId, commitHash: hash });
+			branchCommitFileState = { ...branchCommitFileState, [hash]: { files, isLoading: false } };
+		} catch { branchCommitFileState = { ...branchCommitFileState, [hash]: { ...current, isLoading: false } }; }
+	}
+
+	function toggleBranchCommitExpanded(hash: string) {
+		const next = new Set(expandedBranchCommits);
+		if (next.has(hash)) { next.delete(hash); expandedBranchCommits = next; return; }
+		next.add(hash); expandedBranchCommits = next;
+		if (!branchCommitFileState[hash]?.files.length) { void loadBranchCommitFiles(hash); }
+	}
+
+	async function loadContributors() {
+		if (!projectId || isContributorsLoading) return;
+		isContributorsLoading = true;
+		try {
+		const data = await ws.http('git:log', { projectId, limit: 500, skip: 0 });
+			const map = new Map<string, { name: string; email: string; count: number }>();
+			for (const c of data.commits) {
+				const key = c.author.toLowerCase().trim();
+				const existing = map.get(key);
+				if (existing) { existing.count++; } else { map.set(key, { name: c.author.trim(), email: c.authorEmail, count: 1 }); }
+			}
+			contributors = [...map.values()].sort((a, b) => b.count - a.count);
+		} catch { /* ignore */ }
+		finally { isContributorsLoading = false; }
 	}
 
 	async function createBranch(name: string): Promise<boolean> {
@@ -1761,10 +1888,12 @@ ${bodies}`;
 		}
 	});
 
-	// Load stash when switching to stash view
+
+
+	// Refresh branch list when switching to Branches view
 	$effect(() => {
-		if (activeView === 'stash' && isRepo) {
-			untrack(() => loadStash());
+		if (activeView === 'branches' && isRepo) {
+			untrack(() => loadBranches());
 		}
 	});
 
@@ -1860,6 +1989,7 @@ ${bodies}`;
 			// (e.g. `git stash` / `git tag` run from the terminal).
 			loadStash();
 			loadTags();
+			loadContributors();
 			// Refresh log if it was already loaded (History tab was visited)
 			if (commits.length > 0) {
 				loadLog(true);
@@ -1868,6 +1998,32 @@ ${bodies}`;
 
 		return () => unsub();
 	});
+
+	function startStashResize(e: MouseEvent) {
+		isStashResizing = true;
+		const startY = e.clientY;
+		const startHeight = stashPanelHeight;
+		function onMouseMove(e: MouseEvent) {
+			const delta = startY - e.clientY;
+			stashPanelHeight = Math.max(60, Math.min(startHeight + delta, 400));
+		}
+		function onMouseUp() { isStashResizing = false; window.removeEventListener('mousemove', onMouseMove); window.removeEventListener('mouseup', onMouseUp); }
+		window.addEventListener('mousemove', onMouseMove);
+		window.addEventListener('mouseup', onMouseUp);
+	}
+
+	function startContributorResize(e: MouseEvent) {
+		isContributorResizing = true;
+		const startY = e.clientY;
+		const startHeight = contributorPanelHeight;
+		function onMouseMove(e: MouseEvent) {
+			const delta = startY - e.clientY;
+			contributorPanelHeight = Math.max(60, Math.min(startHeight + delta, 300));
+		}
+		function onMouseUp() { isContributorResizing = false; window.removeEventListener('mousemove', onMouseMove); window.removeEventListener('mouseup', onMouseUp); }
+		window.addEventListener('mousemove', onMouseMove);
+		window.addEventListener('mouseup', onMouseUp);
+	}
 
 	function startColumnResize(e: MouseEvent) {
 		isResizing = true;
@@ -1918,7 +2074,7 @@ ${bodies}`;
 	const viewTabs = $derived([
 		{ id: 'changes' as const, label: 'Changes', icon: 'lucide:file-pen' as IconName, badge: totalChanges > 0 ? totalChanges : null },
 		{ id: 'log' as const, label: 'History', icon: 'lucide:history' as IconName, badge: null },
-		{ id: 'stash' as const, label: 'Stash', icon: 'lucide:archive' as IconName, badge: stashEntries.length > 0 ? stashEntries.length : null },
+		{ id: 'branches' as const, label: 'Branches', icon: 'lucide:git-branch' as IconName, badge: branchInfo?.local.length ? branchInfo.local.length : null },
 		{ id: 'tags' as const, label: 'Tags', icon: 'lucide:tag' as IconName, badge: tags.length > 0 ? tags.length : null }
 	]);
 
@@ -2111,87 +2267,137 @@ ${bodies}`;
 				getRemoteCommitUrl={buildRemoteCommitUrl}
 			/>
 		{/if}
-	{:else if activeView === 'stash'}
-		<!-- Stash View -->
-		<div class="flex-1 overflow-y-auto pt-2">
-			<!-- Stash save button/form -->
-			<div class="px-2 pb-2">
-				{#if showStashSaveForm}
-					<div class="p-2.5 bg-slate-50 dark:bg-slate-800/50 border border-slate-200 dark:border-slate-700 rounded-lg space-y-2">
-						<input
-							type="text"
-							bind:value={stashMessage}
-							placeholder="Stash message (optional)..."
-							class="w-full px-2.5 py-2 text-sm bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-700 rounded-md text-slate-900 dark:text-slate-100 outline-none focus:border-violet-500/40 focus:ring-1 focus:ring-violet-500/20"
-							onkeydown={(e) => e.key === 'Enter' && handleStashSave()}
-						/>
-						<div class="flex gap-1.5">
-							<button
-								type="button"
-								class="flex-1 px-3 py-1.5 text-xs font-medium rounded-md bg-violet-600 text-white hover:bg-violet-700 transition-colors cursor-pointer border-none"
-								onclick={handleStashSave}
-							>
-								Stash Changes
-							</button>
-							<button
-								type="button"
-								class="px-3 py-1.5 text-xs font-medium bg-transparent border border-slate-200 dark:border-slate-700 text-slate-600 dark:text-slate-400 rounded-md hover:bg-slate-100 dark:hover:bg-slate-800 transition-colors cursor-pointer"
-								onclick={() => { showStashSaveForm = false; stashMessage = ''; }}
-							>
-								Cancel
-							</button>
-						</div>
-					</div>
-				{:else}
-					<button
-						type="button"
-						class="flex items-center justify-center gap-2 w-full py-2 px-3 border border-dashed border-slate-300 dark:border-slate-600 rounded-lg text-xs text-slate-500 hover:text-violet-600 hover:border-violet-400 transition-colors cursor-pointer bg-transparent"
-						onclick={() => showStashSaveForm = true}
-					>
-						<Icon name="lucide:archive" class="w-3.5 h-3.5" />
-						<span>Stash Current Changes</span>
-					</button>
-				{/if}
-			</div>
-
-			{#if isStashLoading}
-				<div class="flex items-center justify-center py-8">
-					<div class="w-5 h-5 border-2 border-slate-200 dark:border-slate-700 border-t-violet-600 rounded-full animate-spin"></div>
+	{:else if activeView === 'branches'}
+		<!-- Branches View -->
+		<div class="flex-1 flex flex-col pt-2 min-h-0">
+			<div class="px-2 pb-2 flex-shrink-0">
+				<div class="flex items-center gap-2 py-2 px-3 bg-slate-100/80 dark:bg-slate-800/80 border border-slate-200 dark:border-slate-800 rounded-lg">
+					<Icon name="lucide:search" class="w-3.5 h-3.5 text-slate-500 dark:text-slate-400 shrink-0" />
+					<input type="text" bind:value={branchesSearchQuery} placeholder="Search branches..." class="flex-1 bg-transparent border-none outline-none text-slate-900 dark:text-slate-100 text-sm placeholder:text-slate-500 dark:placeholder:text-slate-400" />
+					{#if branchesSearchQuery}
+						<button type="button" class="flex items-center justify-center w-5 h-5 bg-transparent border-none rounded text-slate-400 cursor-pointer hover:text-slate-600 dark:hover:text-slate-300" onclick={() => (branchesSearchQuery = '')}><Icon name="lucide:x" class="w-3 h-3" /></button>
+					{/if}
 				</div>
-			{:else if stashEntries.length === 0}
-				<div class="flex flex-col items-center justify-center gap-2 py-8 text-slate-500 text-xs">
-					<Icon name="lucide:archive" class="w-6 h-6 opacity-30" />
-					<span>No stashed changes</span>
+			</div>
+			<div class="flex gap-1 px-2 pb-2 flex-shrink-0">
+				<button type="button" class="px-3 py-1.5 text-sm font-medium rounded-lg transition-colors cursor-pointer border-none {branchesSubTab === 'local' ? 'bg-violet-500/10 text-violet-600' : 'bg-transparent text-slate-500 hover:text-slate-700 dark:hover:text-slate-300'}" onclick={() => { branchesSubTab = 'local'; showCreateBranchForm = false; newBranchName = ''; }}>Local ({filteredLocalBranches.length})</button>
+				<button type="button" class="px-3 py-1.5 text-sm font-medium rounded-lg transition-colors cursor-pointer border-none {branchesSubTab === 'remote' ? 'bg-violet-500/10 text-violet-600' : 'bg-transparent text-slate-500 hover:text-slate-700 dark:hover:text-slate-300'}" onclick={() => branchesSubTab = 'remote'}>Remote ({filteredRemoteBranches.length})</button>
+			</div>
+			{#if branchesSubTab === 'local'}
+				<div class="px-2 pb-2 flex-shrink-0">
+					{#if showCreateBranchForm}
+						<div class="p-3 bg-slate-50 dark:bg-slate-800/50 border border-slate-200 dark:border-slate-700 rounded-lg space-y-2">
+							<input type="text" bind:value={newBranchName} placeholder="New branch name..." class="w-full px-3 py-2 text-sm bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-700 rounded-lg text-slate-900 dark:text-slate-100 outline-none focus:border-violet-500/40" onkeydown={(e) => e.key === 'Enter' && handleCreateBranchFromForm()} autofocus />
+							<div class="flex gap-2">
+								<button type="button" class="flex-1 px-3 py-2 text-sm font-medium rounded-lg transition-colors cursor-pointer border-none {newBranchName.trim() ? 'bg-violet-600 text-white hover:bg-violet-700' : 'bg-slate-200 dark:bg-slate-700 text-slate-400 dark:text-slate-500 cursor-not-allowed'}" onclick={handleCreateBranchFromForm} disabled={!newBranchName.trim()}>Create Branch</button>
+								<button type="button" class="px-3 py-2 text-sm font-medium bg-transparent border border-slate-200 dark:border-slate-700 text-slate-600 dark:text-slate-400 rounded-lg hover:bg-slate-100 dark:hover:bg-slate-800 transition-colors cursor-pointer" onclick={() => { showCreateBranchForm = false; newBranchName = ''; }}>Cancel</button>
+							</div>
+						</div>
+					{:else}
+						<button type="button" class="flex items-center justify-center gap-2 w-full py-2.5 px-3 border border-dashed border-slate-300 dark:border-slate-600 rounded-lg text-sm text-slate-500 hover:text-violet-600 hover:border-violet-400 transition-colors cursor-pointer bg-transparent" onclick={() => showCreateBranchForm = true}><Icon name="lucide:plus" class="w-4 h-4" /><span>Create New Branch</span></button>
+					{/if}
+				</div>
+				<div class="flex-1 overflow-y-auto px-2">
+					{#if !branchInfo}
+						<div class="flex items-center justify-center py-8"><div class="w-5 h-5 border-2 border-slate-200 dark:border-slate-700 border-t-violet-600 rounded-full animate-spin"></div></div>
+					{:else if filteredLocalBranches.length === 0}
+						<div class="flex flex-col items-center justify-center gap-2 py-8 text-slate-500 text-xs"><Icon name="lucide:git-branch" class="w-6 h-6 opacity-30" /><span>{branchesSearchQuery ? 'No branches match your search' : 'No branches'}</span></div>
+					{:else}
+						<div class="space-y-1">
+							{#each filteredLocalBranches as branch (branch.name)}
+								{@const upstreamName = getBranchRemoteName(branch)}
+								{@const isExpanded = expandedBranches.has(branch.name)}
+								{@const commitState = branchCommitState[branch.name]}
+								<div>
+									<div class="group relative flex items-center gap-2 px-2.5 py-2 rounded-md transition-colors border {branch.isCurrent ? 'bg-violet-500/10 border-violet-500/20 text-violet-700 dark:text-violet-300' : 'border-transparent hover:bg-slate-100 dark:hover:bg-slate-800/60 text-slate-700 dark:text-slate-300'}">
+										<button type="button" class="flex items-center justify-center w-5 h-5 rounded text-slate-400 hover:bg-slate-200/70 dark:hover:bg-slate-700/70 hover:text-slate-700 dark:hover:text-slate-200 transition-colors bg-transparent border-none cursor-pointer shrink-0" onclick={() => toggleBranchExpanded(branch.name)} title={isExpanded ? 'Collapse' : 'Expand'}><Icon name={isExpanded ? 'lucide:chevron-down' : 'lucide:chevron-right'} class="w-3.5 h-3.5" /></button>
+										<Icon name="lucide:git-branch" class="w-4 h-4 shrink-0 {branch.isCurrent ? 'text-violet-500' : 'text-slate-400'}" />
+										<div class="flex-1 min-w-0 px-0.5 pr-2 {!branch.isCurrent ? 'group-hover:pr-28' : ''} flex flex-col justify-center overflow-hidden transition-[padding] duration-150">
+											<div class="flex min-w-0 items-center gap-2">
+												<span class="flex-1 min-w-0 text-sm text-slate-900 dark:text-slate-100 leading-tight truncate" title={branch.name}>{branch.name}</span>
+												{#if upstreamName}<span class="text-3xs text-slate-400 shrink-0">{upstreamName}</span>{/if}
+											</div>
+											<div class="flex min-w-0 items-center gap-1.5 mt-px">
+												<span class="flex-1 min-w-0 text-xs text-slate-500">{#if branch.ahead > 0}<span>{branch.ahead} ahead </span>{/if}{#if branch.behind > 0}<span>{branch.behind} behind </span>{/if}{#if branch.lastCommit}<span class="truncate">{branch.lastCommit}</span>{/if}</span>
+											</div>
+										</div>
+										{#if !branch.isCurrent}
+										<div class="pointer-events-none absolute inset-y-0 right-0 flex items-center gap-1 pl-1 pr-2 bg-white/20 opacity-0 backdrop-blur-md supports-[backdrop-filter]:bg-white/10 transition-opacity group-hover:opacity-100 dark:bg-slate-900/20 dark:supports-[backdrop-filter]:bg-slate-900/10">
+											<button type="button" class="pointer-events-auto flex items-center justify-center w-7 h-7 rounded-md text-slate-400 hover:bg-violet-500/10 hover:text-violet-500 transition-colors bg-transparent border-none cursor-pointer" onclick={() => switchBranch(branch.name)} title="Switch to this branch"><Icon name="lucide:arrow-right" class="w-3.5 h-3.5" /></button>
+											<button type="button" class="pointer-events-auto flex items-center justify-center w-7 h-7 rounded-md text-slate-400 hover:bg-blue-500/10 hover:text-blue-500 transition-colors bg-transparent border-none cursor-pointer" onclick={() => mergeBranch(branch.name)} title="Merge into current branch"><Icon name="lucide:git-merge" class="w-3.5 h-3.5" /></button>
+											<button type="button" class="pointer-events-auto flex items-center justify-center w-7 h-7 rounded-md text-slate-400 hover:bg-red-500/10 hover:text-red-500 transition-colors bg-transparent border-none cursor-pointer" onclick={() => deleteBranch(branch.name)} title="Delete branch"><Icon name="lucide:trash-2" class="w-3.5 h-3.5" /></button>
+										</div>
+										{/if}
+									</div>
+									{#if isExpanded}
+										<div class="ml-8 mt-1 mb-1 border-l border-slate-200 dark:border-slate-700 pl-3 space-y-1">
+											{#if commitState?.isLoading && commitState.commits.length === 0}
+												<div class="flex items-center gap-2 py-2 text-xs text-slate-400"><div class="w-3 h-3 border border-slate-400 border-t-transparent rounded-full animate-spin"></div><span>Loading commits...</span></div>
+											{:else if !commitState || commitState.commits.length === 0}
+												<div class="py-2 text-xs text-slate-400">No commits</div>
+											{:else}
+												{#each commitState.commits as commit (commit.hash)}
+													{@const commitExpanded = expandedBranchCommits.has(commit.hash)}
+													{@const filesState = branchCommitFileState[commit.hash]}
+													<div>
+														<div class="group/commit flex items-start gap-1.5 w-full px-2 py-1.5 rounded-md hover:bg-slate-100 dark:hover:bg-slate-800/60 transition-colors">
+															<button type="button" class="flex items-center justify-center w-5 h-5 rounded text-slate-400 hover:text-slate-700 dark:hover:text-slate-200 hover:bg-slate-200/70 dark:hover:bg-slate-700/70 transition-colors bg-transparent border-none cursor-pointer shrink-0" onclick={() => toggleBranchCommitExpanded(commit.hash)} title={commitExpanded ? 'Collapse' : 'Expand'}><Icon name={commitExpanded ? 'lucide:chevron-down' : 'lucide:chevron-right'} class="w-3 h-3" /></button>
+															<button type="button" class="flex items-start gap-2 flex-1 min-w-0 text-left bg-transparent border-none cursor-pointer p-0" onclick={() => viewCommitDiff(commit.hash)} title="View commit"><span class="font-mono text-xs text-violet-500 shrink-0 pt-0.5">{commit.hashShort}</span><span class="flex-1 min-w-0 text-xs text-slate-600 dark:text-slate-300 truncate">{commit.message}</span></button>
+														</div>
+														{#if commitExpanded}
+															<div class="ml-7 mb-1 border-l border-slate-200 dark:border-slate-700 pl-2 space-y-0.5">
+																{#if filesState?.isLoading && filesState.files.length === 0}
+																	<div class="flex items-center gap-2 py-1.5 text-xs text-slate-400"><div class="w-3 h-3 border border-slate-400 border-t-transparent rounded-full animate-spin"></div><span>Loading files...</span></div>
+																{:else if !filesState || filesState.files.length === 0}
+																	<div class="py-1.5 text-xs text-slate-400">No files</div>
+																{:else}
+																	{#each filesState.files as file (`${commit.hash}:${file.oldPath}:${file.newPath}`)}
+																		{@const filePath = file.newPath || file.oldPath}
+																		<button type="button" class="flex items-center gap-2 w-full px-2 py-1.5 rounded-md text-left hover:bg-slate-100 dark:hover:bg-slate-800/60 transition-colors bg-transparent border-none cursor-pointer" onclick={() => viewCommitFileDiff(file, 0, commit.hash)} title="View file diff"><Icon name={getFileIcon(filePath) as IconName} class="w-3.5 h-3.5 shrink-0" /><span class="flex-1 min-w-0 text-xs text-slate-600 dark:text-slate-300 truncate">{filePath}</span><span class="text-3xs font-bold {getGitStatusColor(file.status)} shrink-0">{getGitStatusLabel(file.status)}</span></button>
+																	{/each}
+																{/if}
+															</div>
+														{/if}
+													</div>
+												{/each}
+												{#if commitState.hasMore}<button type="button" class="flex items-center justify-center gap-2 w-full px-2 py-1.5 text-xs rounded-md text-slate-500 hover:text-violet-500 hover:bg-slate-100 dark:hover:bg-slate-800/60 transition-colors bg-transparent border-none cursor-pointer disabled:opacity-50" onclick={() => loadBranchCommits(branch.name)} disabled={commitState.isLoading}>{#if commitState.isLoading}<div class="w-3 h-3 border border-slate-400 border-t-transparent rounded-full animate-spin"></div>{/if}<span>Load more</span></button>{/if}
+											{/if}
+										</div>
+									{/if}
+								</div>
+							{/each}
+						</div>
+					{/if}
 				</div>
 			{:else}
-				<div class="space-y-1 px-1">
-					{#each stashEntries as entry (entry.index)}
-						<div class="group flex items-center gap-2 px-2.5 py-2 rounded-md hover:bg-slate-100 dark:hover:bg-slate-800/60 transition-colors">
-							<Icon name="lucide:archive" class="w-4 h-4 text-slate-400 shrink-0" />
-							<div class="flex-1 min-w-0">
-								<p class="text-sm font-medium text-slate-900 dark:text-slate-100 truncate">{entry.message}</p>
-								<p class="text-xs text-slate-400 dark:text-slate-500">stash@&#123;{entry.index}&#125;</p>
-							</div>
-							<div class="flex items-center gap-0.5 shrink-0">
-								<button
-									type="button"
-									class="flex items-center justify-center w-7 h-7 rounded-md text-slate-400 hover:bg-emerald-500/10 hover:text-emerald-500 transition-colors bg-transparent border-none cursor-pointer"
-									onclick={() => handleStashPop(entry.index)}
-									title="Pop (apply and remove)"
-								>
-									<Icon name="lucide:archive-restore" class="w-3.5 h-3.5" />
-								</button>
-								<button
-									type="button"
-									class="flex items-center justify-center w-7 h-7 rounded-md text-slate-400 hover:bg-red-500/10 hover:text-red-500 transition-colors bg-transparent border-none cursor-pointer"
-									onclick={() => handleStashDrop(entry.index)}
-									title="Drop (delete)"
-								>
-									<Icon name="lucide:trash-2" class="w-3.5 h-3.5" />
-								</button>
-							</div>
-						</div>
-					{/each}
+				<div class="flex-1 overflow-y-auto px-2">
+					{#if !branchInfo}
+						<div class="flex items-center justify-center py-8"><div class="w-5 h-5 border-2 border-slate-200 dark:border-slate-700 border-t-violet-600 rounded-full animate-spin"></div></div>
+					{:else if remotes.length === 0}
+						<div class="flex flex-col items-center gap-2 py-8 text-slate-500 dark:text-slate-400 text-sm"><Icon name="lucide:server-off" class="w-8 h-8 opacity-40" /><p class="font-medium text-xs">No remote connections</p></div>
+					{:else}
+						{#each remotes as remote (remote.name)}
+							{@const remoteBranches = filteredRemoteBranches.filter(b => b.name.startsWith(remote.name + '/'))}
+							{#if !branchesSearchQuery || remoteBranches.length > 0}
+								<div class="mb-2">
+									<div class="flex items-center gap-2 px-2 py-1"><Icon name="lucide:server" class="w-3.5 h-3.5 text-slate-400" /><span class="text-xs font-semibold text-slate-600 dark:text-slate-300">{remote.name}</span></div>
+									{#if remoteBranches.length > 0}
+										<div class="ml-5 space-y-1">
+											{#each remoteBranches as branch (branch.name)}
+												<div class="group flex items-center gap-2.5 px-3 py-2 rounded-lg hover:bg-slate-100 dark:hover:bg-slate-800/50 transition-colors border border-slate-200 dark:border-slate-700">
+													<Icon name="lucide:git-branch" class="w-3.5 h-3.5 text-slate-400" />
+													<span class="text-sm text-slate-900 dark:text-slate-100 flex-1 break-all">{branch.name.substring(remote.name.length + 1)}</span>
+													<button type="button" class="flex items-center justify-center w-7 h-7 rounded-lg text-slate-400 hover:bg-violet-500/10 hover:text-violet-600 transition-colors cursor-pointer bg-transparent border-none shrink-0 opacity-0 group-hover:opacity-100" onclick={() => checkoutRemoteBranch(branch.name)} title="Checkout remote branch locally"><Icon name="lucide:arrow-right" class="w-4 h-4" /></button>
+												</div>
+											{/each}
+										</div>
+									{:else if !branchesSearchQuery}
+										<p class="ml-7 text-xs text-slate-400 dark:text-slate-500 py-1">No branches</p>
+									{/if}
+								</div>
+							{/if}
+						{/each}
+					{/if}
 				</div>
 			{/if}
 		</div>
@@ -2363,7 +2569,7 @@ ${bodies}`;
 	{:else}
 		<div class="flex-1 overflow-hidden">
 			<!-- Unified layout: always render both panels to preserve state (like Files panel) -->
-			<div class="h-full flex" class:select-none={isResizing} class:cursor-col-resize={isResizing}>
+			<div class="h-full flex" class:select-none={isResizing || isStashResizing || isContributorResizing} class:cursor-col-resize={isResizing}>
 				<!-- Left panel: Changes list -->
 				<div
 					class={isTwoColumnMode
@@ -2372,8 +2578,97 @@ ${bodies}`;
 					style={isTwoColumnMode ? `width: ${leftPanelWidth}px` : undefined}
 				>
 					{@render viewTabBar()}
-					{@render changesList()}
+					<div class="flex-1 flex flex-col min-h-0 overflow-hidden">
+						{@render changesList()}
+					</div>
+					<!-- Stash bottom panel -->
+					<div class="flex-shrink-0 border-t border-slate-200 dark:border-slate-700" class:hidden={stashPanelCollapsed}>
+						<div class="h-1 -mt-px cursor-row-resize hover:bg-violet-400 dark:hover:bg-violet-500 transition-colors" onmousedown={startStashResize}></div>
+						<div class="overflow-y-auto" style="height: {stashPanelHeight}px">
+							<button type="button" class="flex items-center gap-2 w-full px-2.5 py-1.5 text-xs border-b border-slate-100 dark:border-slate-800 text-slate-600 dark:text-slate-400 hover:bg-slate-50 dark:hover:bg-slate-800/30 transition-colors bg-transparent cursor-pointer" onclick={() => stashPanelCollapsed = true} title="Collapse stash panel">
+								<Icon name="lucide:chevron-down" class="w-3 h-3" />
+								<Icon name="lucide:archive" class="w-3.5 h-3.5" />
+								<span class="font-medium">Stash</span>
+								{#if stashEntries.length > 0}<span class="min-w-4 h-4 px-1 rounded-full bg-violet-500/15 dark:bg-violet-500/25 text-3xs font-semibold flex items-center justify-center">{stashEntries.length}</span>{/if}
+							</button>
+							<div class="p-2">
+								<div class="pb-2">
+									{#if showStashSaveForm}
+										<div class="p-2.5 bg-slate-50 dark:bg-slate-800/50 border border-slate-200 dark:border-slate-700 rounded-lg space-y-2">
+											<input type="text" bind:value={stashMessage} placeholder="Stash message (optional)..." class="w-full px-2.5 py-2 text-sm bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-700 rounded-md text-slate-900 dark:text-slate-100 outline-none focus:border-violet-500/40 focus:ring-1 focus:ring-violet-500/20" onkeydown={(e) => e.key === 'Enter' && handleStashSave()} />
+											<div class="flex gap-1.5"><button type="button" class="flex-1 px-3 py-1.5 text-xs font-medium rounded-md bg-violet-600 text-white hover:bg-violet-700 transition-colors cursor-pointer border-none" onclick={handleStashSave}>Stash Changes</button><button type="button" class="px-3 py-1.5 text-xs font-medium bg-transparent border border-slate-200 dark:border-slate-700 text-slate-600 dark:text-slate-400 rounded-md hover:bg-slate-100 dark:hover:bg-slate-800 transition-colors cursor-pointer" onclick={() => { showStashSaveForm = false; stashMessage = ''; }}>Cancel</button></div>
+										</div>
+									{:else}
+										<button type="button" class="flex items-center justify-center gap-2 w-full py-2 px-3 border border-dashed border-slate-300 dark:border-slate-600 rounded-lg text-xs text-slate-500 hover:text-violet-600 hover:border-violet-400 transition-colors cursor-pointer bg-transparent" onclick={() => showStashSaveForm = true}><Icon name="lucide:archive" class="w-3.5 h-3.5" /><span>Stash Current Changes</span></button>
+									{/if}
+								</div>
+								{#if isStashLoading}
+									<div class="flex items-center justify-center py-4"><div class="w-5 h-5 border-2 border-slate-200 dark:border-slate-700 border-t-violet-600 rounded-full animate-spin"></div></div>
+								{:else if stashEntries.length === 0}
+									<div class="flex flex-col items-center justify-center gap-2 py-4 text-slate-500 text-xs"><Icon name="lucide:archive" class="w-5 h-5 opacity-30" /><span>No stashed changes</span></div>
+								{:else}
+									<div class="space-y-1">
+										{#each stashEntries as entry (entry.index)}
+											<div class="group relative flex items-center gap-2 px-2.5 py-1.5 rounded-md hover:bg-slate-100 dark:hover:bg-slate-800/60 transition-colors">
+												<Icon name="lucide:archive" class="w-4 h-4 text-slate-400 shrink-0" />
+												<div class="flex-1 min-w-0 pr-2 group-hover:pr-16 flex flex-col justify-center overflow-hidden transition-[padding] duration-150">
+													<p class="text-sm font-medium text-slate-900 dark:text-slate-100 truncate">{entry.message}</p>
+													<p class="text-xs text-slate-400 dark:text-slate-500">stash@&#123;{entry.index}&#125;</p>
+												</div>
+												<div class="pointer-events-none absolute inset-y-0 right-0 flex items-center gap-1 pl-1 pr-2 bg-white/20 opacity-0 backdrop-blur-md supports-[backdrop-filter]:bg-white/10 transition-opacity group-hover:opacity-100 dark:bg-slate-900/20 dark:supports-[backdrop-filter]:bg-slate-900/10">
+													<button type="button" class="pointer-events-auto flex items-center justify-center w-7 h-7 rounded-md text-slate-400 hover:bg-emerald-500/10 hover:text-emerald-500 transition-colors bg-transparent border-none cursor-pointer" onclick={() => handleStashPop(entry.index)} title="Pop"><Icon name="lucide:archive-restore" class="w-3.5 h-3.5" /></button>
+													<button type="button" class="pointer-events-auto flex items-center justify-center w-7 h-7 rounded-md text-slate-400 hover:bg-red-500/10 hover:text-red-500 transition-colors bg-transparent border-none cursor-pointer" onclick={() => handleStashDrop(entry.index)} title="Drop"><Icon name="lucide:trash-2" class="w-3.5 h-3.5" /></button>
+												</div>
+											</div>
+										{/each}
+									</div>
+								{/if}
+							</div>
+						</div>
+					</div>
+					{#if stashPanelCollapsed}
+						<button type="button" class="flex items-center gap-2 px-2.5 py-1.5 text-xs border-t border-slate-200 dark:border-slate-700 text-slate-500 dark:text-slate-400 hover:text-slate-700 dark:hover:text-slate-300 hover:bg-slate-50 dark:hover:bg-slate-800/30 transition-colors bg-transparent cursor-pointer flex-shrink-0" onclick={() => stashPanelCollapsed = false} title="Expand stash panel">
+							<Icon name="lucide:chevron-right" class="w-3 h-3" /><Icon name="lucide:archive" class="w-3.5 h-3.5" /><span>Stash</span>
+							{#if stashEntries.length > 0}<span class="min-w-4 h-4 px-1 rounded-full bg-violet-500/15 dark:bg-violet-500/25 text-3xs font-semibold flex items-center justify-center">{stashEntries.length}</span>{/if}
+						</button>
+					{/if}
+					<!-- Contributor section -->
+					{#if contributorPanelCollapsed}
+						<button type="button" class="flex items-center gap-2 px-2.5 py-1.5 text-xs border-t border-slate-200 dark:border-slate-700 text-slate-500 dark:text-slate-400 hover:text-slate-700 dark:hover:text-slate-300 hover:bg-slate-50 dark:hover:bg-slate-800/30 transition-colors bg-transparent cursor-pointer flex-shrink-0" onclick={() => { contributorPanelCollapsed = false; if (contributors.length === 0) loadContributors(); }} title="Expand contributors">
+							<Icon name="lucide:chevron-right" class="w-3 h-3" /><Icon name="lucide:users" class="w-3.5 h-3.5" /><span>Contributors</span>
+							{#if contributors.length > 0}<span class="min-w-4 h-4 px-1 rounded-full bg-violet-500/15 dark:bg-violet-500/25 text-3xs font-semibold flex items-center justify-center">{contributors.length}</span>{/if}
+						</button>
+					{:else}
+						<div class="flex-shrink-0 border-t border-slate-200 dark:border-slate-700">
+							<div class="h-1 -mt-px cursor-row-resize hover:bg-violet-400 dark:hover:bg-violet-500 transition-colors" onmousedown={startContributorResize}></div>
+							<button type="button" class="flex items-center gap-2 w-full px-2.5 py-1.5 text-xs text-slate-600 dark:text-slate-400 hover:bg-slate-50 dark:hover:bg-slate-800/30 transition-colors bg-transparent cursor-pointer" onclick={() => contributorPanelCollapsed = true} title="Collapse contributors">
+								<Icon name="lucide:chevron-down" class="w-3 h-3" /><Icon name="lucide:users" class="w-3.5 h-3.5" /><span class="font-medium">Contributors</span>
+								{#if contributors.length > 0}<span class="min-w-4 h-4 px-1 rounded-full bg-violet-500/15 dark:bg-violet-500/25 text-3xs font-semibold flex items-center justify-center">{contributors.length}</span>{/if}
+							</button>
+							<div class="overflow-y-auto" style="height: {contributorPanelHeight}px">
+								{#if isContributorsLoading}
+									<div class="flex items-center justify-center py-3"><div class="w-4 h-4 border-2 border-slate-200 dark:border-slate-700 border-t-violet-600 rounded-full animate-spin"></div></div>
+								{:else if contributors.length === 0}
+									<div class="py-3 text-xs text-slate-400 text-center">No contributors</div>
+								{:else}
+									<div class="space-y-0.5 p-1">
+										{#each contributors as c}
+											<div class="group relative flex items-center gap-2 px-2 py-1 rounded text-xs hover:bg-slate-100 dark:hover:bg-slate-800/50 transition-colors">
+												<span class="w-5 h-5 rounded-full bg-violet-500/10 text-violet-600 flex items-center justify-center text-3xs font-bold flex-shrink-0">{c.name.charAt(0).toUpperCase()}</span>
+												<span class="flex-1 truncate text-slate-700 dark:text-slate-300">{c.name}</span>
+												<span class="text-slate-400 flex-shrink-0 transition-opacity group-hover:opacity-0">{c.count}</span>
+												<a href="https://github.com/{c.name.replace(/\s+/g, '')}" target="_blank" rel="noopener noreferrer" class="absolute right-1 top-1/2 -translate-y-1/2 flex items-center justify-center w-5 h-5 rounded text-slate-400 hover:text-violet-500 hover:bg-violet-500/10 transition-colors opacity-0 group-hover:opacity-100" title="View {c.name} on GitHub">
+													<Icon name="lucide:globe" class="w-3 h-3" />
+												</a>
+											</div>
+										{/each}
+									</div>
+								{/if}
+							</div>
+						</div>
+					{/if}
 				</div>
+
 
 				{#if isTwoColumnMode}
 				<!-- Column resize handle -->
