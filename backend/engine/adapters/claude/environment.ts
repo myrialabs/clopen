@@ -8,7 +8,6 @@
  */
 
 import { join } from 'path';
-import { isWindows, findGitBash } from '../../../terminal/shell-utils.js';
 import { engineQueries } from '../../../database/queries';
 import { debug } from '$shared/utils/logger';
 import { getCleanSpawnEnv, getClopenDir } from '../../../utils/index.js';
@@ -102,22 +101,6 @@ async function _doSetup(): Promise<void> {
   } catch {
     // DB may not be initialized yet during first startup
     debug.warn('engine', '⚠️ Claude Code: Could not read active account (DB may not be ready)');
-  }
-
-  // Setup Git Bash on Windows
-  if (isWindows) {
-    const existingPath = process.env.CLAUDE_CODE_GIT_BASH_PATH;
-    if (existingPath) {
-      overrides['CLAUDE_CODE_GIT_BASH_PATH'] = existingPath;
-    } else {
-      const gitBashPath = await findGitBash();
-      if (gitBashPath) {
-        overrides['CLAUDE_CODE_GIT_BASH_PATH'] = gitBashPath;
-        debug.log('engine', '✅ Claude Code: Git Bash configured at:', gitBashPath);
-      } else {
-        debug.warn('engine', '⚠️ Claude Code: Git Bash not found - may have limited functionality on Windows');
-      }
-    }
   }
 
   // Terminal environment variables

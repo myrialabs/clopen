@@ -343,39 +343,18 @@ function attachCurlRequirement(base: Recipe, toolLabel: string): boolean {
 }
 
 async function resolveClaudeRecipe(): Promise<Recipe> {
-	const base: Recipe = {
+	return {
 		tool: 'claude',
-		autoInstallable: false,
+		autoInstallable: true,
 		missingPrereqs: [],
-		manualInstructions: []
+		manualInstructions: [{
+			label: 'bun',
+			command: 'bun add -g @anthropic-ai/claude-code',
+			docs: 'https://code.claude.com/docs/en/setup'
+		}],
+		command: ['bun', 'add', '-g', '@anthropic-ai/claude-code'],
+		displayCommand: 'bun add -g @anthropic-ai/claude-code'
 	};
-
-	if (process.platform === 'win32') {
-		base.autoInstallable = true;
-		base.shell = { program: 'powershell.exe', args: ['-NoProfile', '-ExecutionPolicy', 'Bypass', '-Command'] };
-		base.command = ['irm https://claude.ai/install.ps1 | iex'];
-		base.displayCommand = 'irm https://claude.ai/install.ps1 | iex';
-		base.manualInstructions.push({
-			label: 'PowerShell',
-			command: 'irm https://claude.ai/install.ps1 | iex',
-			docs: 'https://docs.claude.com/en/docs/claude-code/overview'
-		});
-		return base;
-	}
-
-	// macOS / Linux
-	base.manualInstructions.push({
-		label: 'curl + bash',
-		command: 'curl -fsSL https://claude.ai/install.sh | bash',
-		docs: 'https://docs.claude.com/en/docs/claude-code/overview'
-	});
-	if (!attachCurlRequirement(base, 'Claude Code')) return base;
-
-	base.autoInstallable = true;
-	base.shell = { program: 'bash', args: ['-c'] };
-	base.command = ['curl -fsSL https://claude.ai/install.sh | bash'];
-	base.displayCommand = 'curl -fsSL https://claude.ai/install.sh | bash';
-	return base;
 }
 
 async function resolveOpenCodeRecipe(): Promise<Recipe> {
@@ -386,7 +365,7 @@ async function resolveOpenCodeRecipe(): Promise<Recipe> {
 		manualInstructions: [{
 			label: 'bun',
 			command: 'bun add -g opencode-ai',
-			docs: 'https://opencode.ai'
+			docs: 'https://opencode.ai/docs'
 		}],
 		command: ['bun', 'add', '-g', 'opencode-ai'],
 		displayCommand: 'bun add -g opencode-ai'
@@ -411,60 +390,30 @@ async function resolveCopilotRecipe(): Promise<Recipe> {
 }
 
 async function resolveQwenRecipe(): Promise<Recipe> {
-	const manualInstructions: ManualInstruction[] = [{
-		label: 'bun',
-		command: 'bun add -g @qwen-code/qwen-code',
-		docs: 'https://github.com/QwenLM/qwen-code'
-	}];
-
-	// Qwen Code CLI ships bundled with `@qwen-code/sdk` from v0.1.1+ so the
-	// SDK path doesn't need a standalone install. We still expose this recipe
-	// for users who prefer the standalone CLI for `qwen-oauth` / shell use.
-	if (!resolveBinary('bun')) {
-		return {
-			tool: 'qwen',
-			autoInstallable: false,
-			unavailableReason: 'Bun is required to install the Qwen Code CLI. Install Bun first (https://bun.sh).',
-			missingPrereqs: [],
-			manualInstructions
-		};
-	}
-
 	return {
 		tool: 'qwen',
 		autoInstallable: true,
 		missingPrereqs: [],
-		manualInstructions,
+		manualInstructions: [{
+			label: 'bun',
+			command: 'bun add -g @qwen-code/qwen-code',
+			docs: 'https://qwen.ai/qwencode'
+		}],
 		command: ['bun', 'add', '-g', '@qwen-code/qwen-code'],
 		displayCommand: 'bun add -g @qwen-code/qwen-code'
 	};
 }
 
 async function resolveCodexRecipe(): Promise<Recipe> {
-	const manualInstructions: ManualInstruction[] = [{
-		label: 'bun',
-		command: 'bun add -g @openai/codex',
-		docs: 'https://developers.openai.com/codex'
-	}];
-
-	// Codex CLI is installed via `bun add -g`. Bun must be on PATH for the
-	// auto-installer to work; otherwise we fall back to the manual instructions
-	// (the user installs Bun first via the existing Bun recipe / website).
-	if (!resolveBinary('bun')) {
-		return {
-			tool: 'codex',
-			autoInstallable: false,
-			unavailableReason: 'Bun is required to install the Codex CLI. Install Bun first (https://bun.sh).',
-			missingPrereqs: [],
-			manualInstructions
-		};
-	}
-
 	return {
 		tool: 'codex',
 		autoInstallable: true,
 		missingPrereqs: [],
-		manualInstructions,
+		manualInstructions: [{
+			label: 'bun',
+			command: 'bun add -g @openai/codex',
+			docs: 'https://developers.openai.com/codex/quickstart'
+		}],
 		command: ['bun', 'add', '-g', '@openai/codex'],
 		displayCommand: 'bun add -g @openai/codex'
 	};

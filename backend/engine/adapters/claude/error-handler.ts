@@ -17,10 +17,6 @@ export function handleStreamError(error: unknown): void {
     throw new Error('Unexpected conversation limit reached. This should not happen with unlimited turns enabled.');
   }
 
-  if (error.message.includes('git-bash') || error.message.includes('requires git-bash')) {
-    throw new Error('Claude Code requires git-bash on Windows. Please ensure Git is installed and accessible.');
-  }
-
   if (error.message.includes('ENOENT') || error.message.includes('spawn claude-code')) {
     throw new Error('Claude Agent SDK not found. Please install it with: npm install @anthropic-ai/claude-agent-sdk');
   }
