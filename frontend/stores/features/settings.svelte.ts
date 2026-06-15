@@ -50,7 +50,8 @@ const defaultSettings: AppSettings = {
 		branchSeparator: DEFAULT_BRANCH_SEPARATOR,
 		commitConfig: { style: 'technical', subjectLength: 72, allowedTypes: '', context: '' },
 		branchConfig: { maxWords: 3, allowedPrefixes: '', context: '' }
-	}
+	},
+	pinnedModels: []
 };
 
 // Default system settings
@@ -143,6 +144,16 @@ export function updateSettings(newSettings: Partial<AppSettings>) {
 export function resetToDefaults() {
 	Object.assign(settings, defaultSettings);
 	saveSettings();
+}
+
+export function togglePinnedModel(modelId: string) {
+	const pinned = settings.pinnedModels;
+	const idx = pinned.indexOf(modelId);
+	if (idx === -1) {
+		updateSettings({ pinnedModels: [...pinned, modelId] });
+	} else {
+		updateSettings({ pinnedModels: pinned.filter(id => id !== modelId) });
+	}
 }
 
 export function exportSettings(): string {

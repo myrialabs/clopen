@@ -1,6 +1,6 @@
 <script lang="ts">
 	import { untrack } from 'svelte';
-	import { settings } from '$frontend/stores/features/settings.svelte';
+	import { settings, togglePinnedModel } from '$frontend/stores/features/settings.svelte';
 	import { modelStore } from '$frontend/stores/features/models.svelte';
 	import { sessionState } from '$frontend/stores/core/sessions.svelte';
 	import { appState } from '$frontend/stores/core/app.svelte';
@@ -476,6 +476,8 @@
 	});
 
 	// Group models by provider
+	const pinnedModelIds = $derived(settings.pinnedModels);
+
 	const groupedModels = $derived.by(() => {
 		const groups = new Map<string, EngineModel[]>();
 		for (const model of filteredModels) {
@@ -806,6 +808,11 @@
 				{#each [...groupedModels.entries()] as [provider, providerModels] (provider)}
 					{@const isCollapsed = collapsedProviders.has(provider)}
 					{@const hasSelectedModel = providerModels.some(m => m.engine.model.id === chatModelState.modelId)}
+					{@const sortedModels = [...providerModels].sort((a, b) => {
+						const aPin = (pinnedModelIds || []).includes(a.engine.model.id) ? 0 : 1;
+						const bPin = (pinnedModelIds || []).includes(b.engine.model.id) ? 0 : 1;
+						return aPin - bPin;
+					})}
 
 					<!-- Provider header -->
 					<button
@@ -833,11 +840,11 @@
 
 					<!-- Provider models -->
 					{#if !isCollapsed}
-						{#each providerModels as model (model.engine.model.id)}
+						{#each sortedModels as model (model.engine.model.id)}
 							{@const isSelected = chatModelState.modelId === model.engine.model.id}
 							<button
 								type="button"
-								class="flex items-start gap-2.5 w-full pl-5 pr-3 py-2 text-left transition-all duration-150
+								class="group flex items-start gap-2.5 w-full pl-5 pr-3 py-2 text-left transition-all duration-150
 									{isSelected
 										? 'bg-violet-50 dark:bg-violet-900/20 text-violet-600 dark:text-violet-400'
 										: 'text-slate-700 dark:text-slate-300 hover:bg-slate-50 dark:hover:bg-slate-700/50'}"
@@ -858,6 +865,9 @@
 										{#if model.limit.input}
 											<span class="text-3xs text-slate-400 dark:text-slate-500">{formatTokens(model.limit.input)}</span>
 										{/if}
+										{#if (pinnedModelIds || []).includes(model.engine.model.id)}
+											<Icon name="lucide:pin" class="w-3 h-3 text-amber-500 flex-shrink-0" />
+										{/if}
 									</div>
 								{#if getModelTags(model).length > 0}
 									<div class="flex flex-wrap gap-1 mt-0.5">
@@ -867,6 +877,14 @@
 									</div>
 								{/if}
 								</div>
+								<!-- Pin toggle -->
+								<span role="button" tabindex="0"
+									class="flex-shrink-0 flex items-center justify-center w-6 h-6 rounded text-slate-400 hover:text-amber-500 hover:bg-amber-500/10 transition-colors cursor-pointer opacity-0 group-hover:opacity-100"
+									onclick={(e) => { e.stopPropagation(); togglePinnedModel(model.engine.model.id); }}
+									onkeydown={(e) => e.key === 'Enter' && togglePinnedModel(model.engine.model.id)}
+									title={(pinnedModelIds || []).includes(model.engine.model.id) ? 'Unpin model' : 'Pin model'}>
+									<Icon name={(pinnedModelIds || []).includes(model.engine.model.id) ? 'lucide:pin-off' : 'lucide:pin'} class="w-3.5 h-3.5" />
+								</span>
 							</button>
 						{/each}
 					{/if}

@@ -54,6 +54,8 @@ export interface AppSettings {
 	gitDiffSideBySide: boolean;
 	/** AI commit message generator configuration */
 	commitGenerator: CommitGeneratorSettings;
+	/** Pinned model IDs — shown at top of provider group in model picker */
+	pinnedModels: string[];
 }
 
 /** Authentication mode */
