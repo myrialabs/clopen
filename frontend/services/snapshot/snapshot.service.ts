@@ -67,6 +67,51 @@ class SnapshotService {
 	}
 
 	/**
+	 * Get changed files for a checkpoint.
+	 */
+	async getChanges(messageId: string, sessionId: string): Promise<{
+		files: { filepath: string; oldHash: string; newHash: string }[];
+	}> {
+		return ws.http('snapshot:get-changes', { messageId, sessionId });
+	}
+
+	/**
+	 * Get old/new file content for diff display.
+	 */
+	async getFileDiff(messageId: string, filepath: string, sessionId: string): Promise<{
+		oldContent: string;
+		newContent: string;
+		filepath: string;
+	}> {
+		return ws.http('snapshot:get-file-diff', { messageId, filepath, sessionId });
+	}
+
+	/**
+	 * Get the dismissed-changes list (per-session marks for files the
+	 * user has staged/discarded from the banner). Returns the current
+	 * full list of dismissed filepaths.
+	 */
+	async getDismissedChanges(sessionId: string): Promise<{ files: string[] }> {
+		return ws.http('snapshot:get-dismissed-changes', { sessionId }) as Promise<{ files: string[] }>;
+	}
+
+	/**
+	 * Add one or more filepaths to the latest snapshot's dismissed_changes
+	 * list (deduplicated). Returns the resulting full list.
+	 */
+	async addDismissedChanges(sessionId: string, filepaths: string[]): Promise<{ files: string[] }> {
+		return ws.http('snapshot:add-dismissed-changes', { sessionId, filepaths }) as Promise<{ files: string[] }>;
+	}
+
+	/**
+	 * Clear all dismissed marks for the session. Used when the user
+	 * undoes a stage/discard.
+	 */
+	async clearDismissedChanges(sessionId: string): Promise<{ cleared: boolean }> {
+		return ws.http('snapshot:clear-dismissed-changes', { sessionId }) as Promise<{ cleared: boolean }>;
+	}
+
+	/**
 	 * @deprecated Use restore() instead. Kept for backward compatibility.
 	 */
 	async undo(messageId: string, sessionId: string): Promise<any> {

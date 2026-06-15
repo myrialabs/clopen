@@ -13,6 +13,8 @@
 	import { isPreviewableFile, isBinaryFile } from '$frontend/utils/file-type';
 	import { getGitStatusLabel, getGitStatusColor } from '$frontend/utils/git-status';
 	import { chatService } from '$frontend/services/chat/chat.service';
+	import { dismissCheckpointFile, dismissCheckpointFiles } from '$frontend/stores/features/checkpoint-changes.svelte';
+	import { buildGitFileDiff } from '$frontend/utils/diff';
 	import { showPanel } from '$frontend/stores/ui/workspace.svelte';
 	import {
 		gitDraft,
@@ -23,6 +25,8 @@
 		type GitActiveDiff
 	} from '$frontend/stores/features/git-workspace.svelte';
 	import { detectLanguageFromFilename } from '$frontend/components/common/editor/monaco-languages';
+	import { checkpointDiff, clearCheckpointDiff, refreshCheckpointBanner } from '$frontend/stores/features/checkpoint-changes.svelte';
+	import { sessionState } from '$frontend/stores/core/sessions.svelte';
 	import type { IconName } from '$shared/types/ui/icons';
 	import type {
 		GitStatus,
@@ -410,6 +414,15 @@
 			await ws.http('git:stage', { projectId, filePath: path });
 			await loadStatus();
 			await migrateActiveTabAfterStatusChange(path);
+			// Persist the mark in the snapshot's `dismissed_changes` column
+			// (synced across devices) and re-sync the banner. We do NOT
+			// touch `session_changes` in the DB — that would break checkpoint
+			// restore for this turn.
+			const sid = sessionState?.currentSession?.id;
+			if (sid) {
+				await dismissCheckpointFile(sid, path);
+				await refreshCheckpointBanner(sid);
+			}
 		} catch (err) {
 			debug.error('git', 'Failed to stage file:', err);
 		}
@@ -418,10 +431,18 @@
 	async function stageAll() {
 		if (!projectId) return;
 		try {
+			const pathsToDismiss = gitStatus.unstaged.map(f => f.path);
 			await ws.http('git:stage-all', { projectId });
 			await loadStatus();
 			if (activeTab && activeTab.section !== 'commit') {
 				await migrateActiveTabAfterStatusChange(activeTab.filePath);
+			}
+			// Same as stageFile — dismiss every previously-unstaged file in
+			// one bulk call.
+			const sid = sessionState?.currentSession?.id;
+			if (sid) {
+				if (pathsToDismiss.length > 0) await dismissCheckpointFiles(sid, pathsToDismiss);
+				await refreshCheckpointBanner(sid);
 			}
 		} catch (err) {
 			debug.error('git', 'Failed to stage all:', err);
@@ -465,6 +486,15 @@
 					await ws.http('git:discard', { projectId, filePath: path });
 					await loadStatus();
 					await migrateActiveTabAfterStatusChange(path);
+					// Persist the mark in the snapshot's `dismissed_changes`
+					// column (synced across devices) and re-sync the banner.
+					// We do NOT strip it from `session_changes` — that would
+					// break checkpoint restore.
+					const sid = sessionState?.currentSession?.id;
+					if (sid) {
+						await dismissCheckpointFile(sid, path);
+						await refreshCheckpointBanner(sid);
+					}
 				} catch (err) {
 					debug.error('git', 'Failed to discard file:', err);
 				}
@@ -481,10 +511,18 @@
 			onConfirm: async () => {
 				if (!projectId) return;
 				try {
+					const pathsToDismiss = [...gitStatus.unstaged, ...gitStatus.untracked].map(f => f.path);
 					await ws.http('git:discard-all', { projectId });
 					await loadStatus();
 					if (activeTab && activeTab.section !== 'commit') {
 						await migrateActiveTabAfterStatusChange(activeTab.filePath);
+					}
+					// Same as stageAll — dismiss every discarded file in one
+					// bulk call.
+					const sid = sessionState?.currentSession?.id;
+					if (sid) {
+						if (pathsToDismiss.length > 0) await dismissCheckpointFiles(sid, pathsToDismiss);
+						await refreshCheckpointBanner(sid);
 					}
 				} catch (err) {
 					debug.error('git', 'Failed to discard all:', err);
@@ -1766,6 +1804,24 @@ ${bodies}`;
 		if (activeView === 'stash' && isRepo) {
 			untrack(() => loadStash());
 		}
+	});
+
+	// Watch for checkpoint diff requests from chat banner
+	$effect(() => {
+		const req = checkpointDiff.data;
+		if (!req) return;
+		untrack(() => {
+			// Build a real GitFileDiff with 3 lines of context (matches git diff
+			// default) and open a normal tab — same flow as clicking a file in
+			// the source control changes list.
+			const fileDiff = buildGitFileDiff(req.oldContent, req.newContent, req.filepath);
+			const tabId = `checkpoint:${req.filepath}`;
+			const fileName = req.filepath.split(/[\\/]/).pop() || req.filepath;
+			openTabs = [{ id: tabId, filePath: req.filepath, fileName, section: 'checkpoint', diff: fileDiff, diffs: [fileDiff], isLoading: false, status: 'M' }];
+			activeTabId = tabId;
+			if (!isTwoColumnMode) viewMode = 'diff';
+			clearCheckpointDiff();
+		});
 	});
 
 	// Load tags when switching to tags view

@@ -138,6 +138,89 @@ export const snapshotQueries = {
 	},
 
 	/**
+	 * Get the dismissed-changes list (per-session marks for files the user
+	 * has staged/discarded from the banner) from the latest snapshot.
+	 */
+	getDismissedChanges(sessionId: string): string[] {
+		const db = getDatabase();
+		const row = db.prepare(`
+			SELECT dismissed_changes FROM message_snapshots
+			WHERE session_id = ? AND dismissed_changes IS NOT NULL
+			ORDER BY created_at DESC
+			LIMIT 1
+		`).get(sessionId) as { dismissed_changes: string | null } | null;
+		if (!row?.dismissed_changes) return [];
+		try {
+			const parsed = JSON.parse(row.dismissed_changes);
+			return Array.isArray(parsed) ? parsed.filter(x => typeof x === 'string') : [];
+		} catch {
+			return [];
+		}
+	},
+
+	/**
+	 * Add one or more filepaths to the latest snapshot's dismissed_changes
+	 * list. Deduplicates against existing entries. Returns the resulting
+	 * list (or null if no snapshot exists for the session yet).
+	 */
+	addDismissedChanges(sessionId: string, filepaths: string[]): string[] | null {
+		if (filepaths.length === 0) return null;
+		const db = getDatabase();
+		const snapshot = db.prepare(`
+			SELECT id, dismissed_changes FROM message_snapshots
+			WHERE session_id = ?
+			ORDER BY created_at DESC
+			LIMIT 1
+		`).get(sessionId) as { id: string; dismissed_changes: string | null } | null;
+
+		if (!snapshot) return null;
+
+		let current: string[] = [];
+		if (snapshot.dismissed_changes) {
+			try {
+				const parsed = JSON.parse(snapshot.dismissed_changes);
+				if (Array.isArray(parsed)) current = parsed.filter(x => typeof x === 'string');
+			} catch {
+				// Corrupt JSON — start fresh.
+			}
+		}
+
+		const set = new Set(current);
+		let changed = false;
+		for (const fp of filepaths) {
+			if (!set.has(fp)) {
+				current.push(fp);
+				set.add(fp);
+				changed = true;
+			}
+		}
+
+		db.prepare(`
+			UPDATE message_snapshots
+			SET dismissed_changes = ?
+			WHERE id = ?
+		`).run(JSON.stringify(current), snapshot.id);
+
+		return current;
+	},
+	/* eslint-disable @typescript-eslint/no-explicit-any */
+
+	/**
+	 * Clear the dismissed-changes list for the latest snapshot of a session.
+	 * Returns true if anything was cleared.
+	 */
+	clearDismissedChanges(sessionId: string): boolean {
+		const db = getDatabase();
+		const result = db.prepare(`
+			UPDATE message_snapshots
+			SET dismissed_changes = NULL
+			WHERE session_id = ?
+			AND dismissed_changes IS NOT NULL
+		`).run(sessionId);
+		return (result as { changes: number }).changes > 0;
+	},
+
+	/**
 	 * Delete snapshots after a certain message in a session
 	 * Used when restoring to a previous state (hard delete - deprecated)
 	 */

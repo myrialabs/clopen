@@ -3,7 +3,7 @@
 	import { projectState } from '$frontend/stores/core/projects.svelte';
 	import { appState } from '$frontend/stores/core/app.svelte';
 	import { addNotification } from '$frontend/stores/ui/notification.svelte';
-	import { onMount } from 'svelte';
+	import { onMount, untrack } from 'svelte';
 	import { fade } from 'svelte/transition';
 	import ChatMessages from '$frontend/components/chat/message/ChatMessages.svelte';
 	import ChatInput from '$frontend/components/chat/input/ChatInput.svelte';
@@ -15,7 +15,12 @@
 	import { debug } from '$shared/utils/logger';
 	import ws from '$frontend/utils/ws';
 	import { chatService } from '$frontend/services/chat/chat.service';
+	import { snapshotService } from '$frontend/services/snapshot/snapshot.service';
 	import { setSkipNextRestore } from '$frontend/stores/ui/chat-input.svelte';
+	import { checkpointChanges, hideCheckpointChanges, changesExpanded, toggleChangesExpanded, showCheckpointChanges, requestCheckpointDiff, refreshCheckpointBanner } from '$frontend/stores/features/checkpoint-changes.svelte';
+	import { getFileIcon } from '$frontend/utils/file-icon-mappings';
+	import { getGitStatusLabel, getGitStatusColor } from '$frontend/utils/git-status';
+	import { showPanel } from '$frontend/stores/ui/workspace.svelte';
 	import { userStore } from '$frontend/stores/features/user.svelte';
 	import { cancelEdit, editModeState } from '$frontend/stores/ui/edit-mode.svelte';
 
@@ -48,6 +53,20 @@
 	function openCheckpoints() {
 		showCheckpoints = true;
 	}
+
+	// Auto-load current checkpoint changes for banner
+	$effect(() => {
+		const sid = sessionState.currentSession?.id;
+		// Only depend on the session id. Reading `checkpointChanges.visible`
+		// here would make the effect re-fire after `hideCheckpointChanges()`
+		// (e.g. when a file gets staged) and re-show the banner with stale
+		// snapshot data.
+		untrack(() => {
+		if (sid && !checkpointChanges.visible) {
+			refreshCheckpointBanner(sid);
+		}
+		});
+	});
 
 	function closeCheckpoints() {
 		showCheckpoints = false;
@@ -265,6 +284,74 @@
 					>
 						<div class="flex justify-center">
 							<div class="w-full max-w-5xl px-4 pb-4 pt-2">
+								<!-- Checkpoint changes banner -->
+								{#if checkpointChanges.visible}
+									<div class="mb-2 p-2 bg-slate-50 dark:bg-slate-800/40 border border-slate-200 dark:border-slate-700 rounded-lg">
+										<div role="button" tabindex="0" class="flex items-center gap-2 w-full text-left bg-transparent cursor-pointer" onclick={toggleChangesExpanded} onkeydown={(e) => e.key === 'Enter' && toggleChangesExpanded()}>
+											<Icon name={changesExpanded.value ? 'lucide:chevron-down' : 'lucide:chevron-right'} class="w-3 h-3 text-slate-500 flex-shrink-0" />
+											<span class="text-xs font-semibold text-slate-700 dark:text-slate-300">Current state · Changed Files ({checkpointChanges.files.length})</span>
+											<span role={appState.isLoading ? undefined : 'button'} tabindex={appState.isLoading ? -1 : 0} class="text-slate-400 bg-transparent ml-auto flex-shrink-0 pr-1.5 {appState.isLoading ? 'cursor-not-allowed opacity-40' : 'hover:text-slate-700 cursor-pointer'}" onclick={(e) => { if (appState.isLoading) return; e.stopPropagation(); hideCheckpointChanges(); }} onkeydown={(e) => { if (appState.isLoading) return; if (e.key === 'Enter') hideCheckpointChanges(); }}><Icon name="lucide:x" class="w-3 h-3" /></span>
+										</div>
+										{#if changesExpanded.value}
+											{#if checkpointChanges.loading}
+												<div class="flex items-center justify-center py-2 mt-1"><div class="w-3 h-3 border-2 border-slate-300 border-t-slate-500 rounded-full animate-spin"></div></div>
+											{:else if checkpointChanges.files.length === 0}
+												<p class="text-xs text-slate-400 mt-1 ml-5">No files changed</p>
+											{:else}
+												<div class="mt-1 ml-2 flex flex-col">
+													{#each checkpointChanges.files as f (f.filepath)}
+														{@const fName = f.filepath.split(/[\\/]/).pop() || f.filepath}
+														{@const fDir = f.filepath.split(/[\\/]/).slice(0, -1).join('/')}
+														{@const fStatus = !f.oldHash ? 'A' : !f.newHash ? 'D' : 'M'}
+														<div
+															role="button"
+															tabindex="0"
+															class="group flex items-center gap-1.5 py-1.5 px-2 rounded-md cursor-pointer transition-colors hover:bg-slate-100 dark:hover:bg-slate-800/60 text-slate-700 dark:text-slate-200"
+															onclick={async (e) => {
+																e.stopPropagation();
+																const sid = sessionState.currentSession?.id;
+																if (sid) {
+																	const tl = await snapshotService.getTimeline(sid);
+																	const headId = tl.currentHeadId;
+																	if (headId && headId !== '__initial__') {
+																		const r = await snapshotService.getFileDiff(headId, f.filepath, sid);
+																		requestCheckpointDiff(r.filepath, r.oldContent, r.newContent);
+																		showPanel('git');
+																	}
+																}
+															}}
+															onkeydown={async (e) => {
+																if (e.key !== 'Enter') return;
+																e.stopPropagation();
+																const sid = sessionState.currentSession?.id;
+																if (sid) {
+																	const tl = await snapshotService.getTimeline(sid);
+																	const headId = tl.currentHeadId;
+																	if (headId && headId !== '__initial__') {
+																		const r = await snapshotService.getFileDiff(headId, f.filepath, sid);
+																		requestCheckpointDiff(r.filepath, r.oldContent, r.newContent);
+																		showPanel('git');
+																	}
+																}
+															}}
+															title={f.filepath}
+														>
+															<Icon name={getFileIcon(fName)} class="w-3.5 h-3.5 shrink-0" />
+															<div class="flex items-baseline gap-1.5 min-w-0 flex-1">
+																<span class="text-xs font-medium truncate font-mono">{fName}</span>
+																{#if fDir}
+																	<span class="text-3xs text-slate-400 dark:text-slate-500 truncate min-w-0" dir="rtl">{fDir}</span>
+																{/if}
+															</div>
+															<span class="w-3 text-center text-3xs font-bold {getGitStatusColor(fStatus)} shrink-0">{getGitStatusLabel(fStatus)}</span>
+														</div>
+													{/each}
+												</div>
+											{/if}
+										{/if}
+
+									</div>
+								{/if}
 								<ChatInput />
 							</div>
 						</div>
