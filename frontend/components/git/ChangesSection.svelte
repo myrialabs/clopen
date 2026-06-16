@@ -38,6 +38,10 @@
 		if (activeSection === section) return true;
 		const unstagedGroup = section === 'unstaged' || section === 'untracked';
 		const activeUnstagedGroup = activeSection === 'unstaged' || activeSection === 'untracked';
+		// A checkpoint tab is opened from the AI banner above chat — if its
+		// file path matches a worktree row, highlight that row too so the
+		// selection stays consistent across the two panels.
+		if (activeSection === 'checkpoint' && unstagedGroup) return true;
 		return unstagedGroup && activeUnstagedGroup;
 	}
 
@@ -98,6 +102,23 @@
 		if (!isCollapsed) {
 			scrollTop = 0;
 		}
+	});
+
+	// Auto-scroll to the active file when it changes (e.g. after clicking
+	// a row in the AI banner above chat). Uses `scrollIntoView` on the
+	// row element directly so it works for both virtualized and
+	// non-virtualized renders. Queries the document because the scroll
+	// container (Git panel itself, or the changes list) lives outside
+	// this component's DOM tree.
+	$effect(() => {
+		if (!activeFilePath) return;
+		// Defer past Svelte's DOM update so the row exists with its
+		// active class applied.
+		const timer = setTimeout(() => {
+			const row = document.querySelector(`[data-filepath="${CSS.escape(activeFilePath ?? '')}"]`);
+			if (row) row.scrollIntoView({ block: 'center', behavior: 'smooth' });
+		}, 50);
+		return () => clearTimeout(timer);
 	});
 
 	function onScroll(e: Event) {
@@ -175,7 +196,7 @@
 				>
 					<div style="padding-top: {topPad}px; padding-bottom: {bottomPad}px;">
 						{#each visibleFiles as file (file.path)}
-							<div style="height: {ITEM_HEIGHT}px" class="overflow-hidden">
+							<div data-filepath={file.path} style="height: {ITEM_HEIGHT}px" class="overflow-hidden">
 								<FileChangeItem
 									{file}
 									{section}
@@ -193,16 +214,18 @@
 			{:else}
 				<div class="ml-2">
 					{#each files as file (file.path)}
-						<FileChangeItem
-							{file}
-							{section}
-							isActive={isFileActive(file.path)}
-							{onStage}
-							{onUnstage}
-							{onDiscard}
-							{onViewDiff}
-							{onResolve}
-						/>
+						<div data-filepath={file.path}>
+							<FileChangeItem
+								{file}
+								{section}
+								isActive={isFileActive(file.path)}
+								{onStage}
+								{onUnstage}
+								{onDiscard}
+								{onViewDiff}
+								{onResolve}
+							/>
+						</div>
 					{/each}
 				</div>
 			{/if}
