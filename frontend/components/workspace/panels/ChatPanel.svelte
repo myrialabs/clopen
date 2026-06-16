@@ -17,7 +17,7 @@
 	import { chatService } from '$frontend/services/chat/chat.service';
 	import { snapshotService } from '$frontend/services/snapshot/snapshot.service';
 	import { setSkipNextRestore } from '$frontend/stores/ui/chat-input.svelte';
-	import { checkpointChanges, hideCheckpointChanges, changesExpanded, toggleChangesExpanded, showCheckpointChanges, requestCheckpointDiff, refreshCheckpointBanner } from '$frontend/stores/features/checkpoint-changes.svelte';
+	import { checkpointChanges, hideCheckpointChanges, changesExpanded, toggleChangesExpanded, showCheckpointChanges, requestCheckpointDiff, refreshCheckpointBanner, checkpointDiff, activeCheckpointFile, clearActiveCheckpointFile } from '$frontend/stores/features/checkpoint-changes.svelte';
 	import { getFileIcon } from '$frontend/utils/file-icon-mappings';
 	import { getGitStatusLabel, getGitStatusColor } from '$frontend/utils/git-status';
 	import { showPanel } from '$frontend/stores/ui/workspace.svelte';
@@ -57,15 +57,82 @@
 	// Auto-load current checkpoint changes for banner
 	$effect(() => {
 		const sid = sessionState.currentSession?.id;
-		// Only depend on the session id. Reading `checkpointChanges.visible`
-		// here would make the effect re-fire after `hideCheckpointChanges()`
-		// (e.g. when a file gets staged) and re-show the banner with stale
-		// snapshot data.
+		const projectId = projectState.currentProject?.id;
+		// Only depend on the session id + project id. Reading
+		// `checkpointChanges.visible` here would make the effect re-fire
+		// after `hideCheckpointChanges()` (e.g. when a file gets staged)
+		// and re-show the banner with stale snapshot data.
 		untrack(() => {
+		// Clear the banner immediately on project switch so the old
+		// project's files don't linger in the UI while we fetch the
+		// new project's data.
+		if (!projectId) {
+			hideCheckpointChanges();
+			return;
+		}
 		if (sid && !checkpointChanges.visible) {
 			refreshCheckpointBanner(sid);
 		}
 		});
+	});
+
+	// Re-sync banner when the project changes — clear the old project's
+	// banner and fetch the new one. Without this, switching projects
+	// leaves the previous project's file list in the UI.
+	$effect(() => {
+		const projectId = projectState.currentProject?.id;
+		untrack(() => {
+			hideCheckpointChanges();
+			clearActiveCheckpointFile();
+			if (!projectId) return;
+			const sid = sessionState.currentSession?.id;
+			if (sid) refreshCheckpointBanner(sid);
+		});
+	});
+
+	// Poll the banner while the AI is processing. `snapshot:captured` is
+	// unreliable in practice (fires before the frontend listener is ready,
+	// gets lost on WS reconnect, etc.), and the message-list effect can't
+	// race the backend's `captureSnapshot` in the stream's finally block.
+	// A 2s poll while `isLoading` is true is dead-simple and guaranteed to
+	// pick up the new snapshot within ~2s of the AI finishing.
+	$effect(() => {
+		if (!appState.isLoading) return;
+		const sid = sessionState.currentSession?.id;
+		if (!sid) return;
+		const interval = setInterval(() => {
+			untrack(() => refreshCheckpointBanner(sid));
+		}, 2000);
+		return () => clearInterval(interval);
+	});
+
+	// Same real-time hook the Git panel uses for its Changes list:
+	// `files:changed` fires the moment the AI writes a file to disk.
+	// We refresh the banner immediately; if the snapshot hasn't been
+	// captured yet, the next poll/`snapshot:captured` will catch up.
+	$effect(() => {
+		const projectPath = projectState.currentProject?.path;
+		const sid = sessionState.currentSession?.id;
+		if (!projectPath || !sid) return;
+		const unsub = ws.on('files:changed', () => {
+			untrack(() => refreshCheckpointBanner(sid));
+		});
+		return unsub;
+	});
+
+	// Backend emits `snapshot:captured` right after `captureSnapshot`
+	// finishes writing the new snapshot row. This is the authoritative
+	// signal that the banner's data is fresh — the file-watcher hook above
+	// fires before the snapshot exists, so we still need this one.
+	$effect(() => {
+		const sid = sessionState.currentSession?.id;
+		if (!sid) return;
+		const unsub = ws.on('snapshot:captured', (data: { chatSessionId: string }) => {
+			if (data.chatSessionId === sid) {
+				untrack(() => refreshCheckpointBanner(sid));
+			}
+		});
+		return unsub;
 	});
 
 	function closeCheckpoints() {
@@ -303,10 +370,11 @@
 														{@const fName = f.filepath.split(/[\\/]/).pop() || f.filepath}
 														{@const fDir = f.filepath.split(/[\\/]/).slice(0, -1).join('/')}
 														{@const fStatus = !f.oldHash ? 'A' : !f.newHash ? 'D' : 'M'}
+														{@const isActiveFile = activeCheckpointFile.path === f.filepath}
 														<div
 															role="button"
 															tabindex="0"
-															class="group flex items-center gap-1.5 py-1.5 px-2 rounded-md cursor-pointer transition-colors hover:bg-slate-100 dark:hover:bg-slate-800/60 text-slate-700 dark:text-slate-200"
+															class="group flex items-center gap-1.5 py-1.5 px-2 rounded-md cursor-pointer transition-colors text-slate-700 dark:text-slate-200 {isActiveFile ? 'bg-slate-200 dark:bg-slate-700/60' : 'hover:bg-slate-100 dark:hover:bg-slate-800/60'}"
 															onclick={async (e) => {
 																e.stopPropagation();
 																const sid = sessionState.currentSession?.id;

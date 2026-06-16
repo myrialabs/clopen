@@ -42,8 +42,35 @@ export const fileDiffHandler = createRouter()
 	}, async ({ data, conn }) => {
 		requireSessionAccess(conn, data.sessionId);
 
-		const snapshot = snapshotQueries.getByMessageId(data.messageId);
-		if (!snapshot || !snapshot.session_changes) {
+		// Accumulate session_changes across every snapshot for the session.
+		// `oldHash` is taken from the first snapshot that touched the file
+		// (pre-AI state) and `newHash` from the latest — same logic as
+		// `snapshot:get-changes` so the diff renders the full accumulated
+		// change from original → current. A `seen` set guards the first-old
+		// assignment so a new-file oldHash of '' doesn't get overwritten by
+		// the next snapshot's entry.
+		const snapshots = snapshotQueries.getBySessionId(data.sessionId);
+
+		const seen = new Set<string>();
+		let firstOld = '';
+		let lastNew = '';
+		for (const snap of snapshots) {
+			if (!snap.session_changes) continue;
+			try {
+				const changes = JSON.parse(snap.session_changes as string) as Record<string, { oldHash: string; newHash: string }>;
+				const entry = changes[data.filepath];
+				if (!entry) continue;
+				if (!seen.has(data.filepath)) {
+					firstOld = entry.oldHash || '';
+					seen.add(data.filepath);
+				}
+				lastNew = entry.newHash || '';
+			} catch {
+				// Skip corrupt snapshots
+			}
+		}
+
+		if (!lastNew) {
 			return { oldContent: '', newContent: '', filepath: data.filepath };
 		}
 
@@ -56,34 +83,27 @@ export const fileDiffHandler = createRouter()
 		let oldContent = '';
 		let newContent = '';
 
+		if (firstOld) {
+			// Try the blob store first — this is the normal path.
+			const buf = await blobStore.readBlob(firstOld);
+			if (buf && buf.length > 0) {
+				oldContent = buf.toString('utf-8');
+			} else {
+				// Blob missing (e.g. after a backend restart that wiped the
+				// in-memory cache, or for sessions initialised before blob
+				// persistence shipped). Fall back to `git show HEAD:file`
+				// so the diff still has a real "before" to render against.
+				oldContent = await readFromGitHead(projectPath, data.filepath);
+				debug.log('snapshot', `Blob ${firstOld.slice(0, 8)} missing for ${data.filepath}, fell back to git HEAD`);
+			}
+		}
+
+		// Read current file from disk
 		try {
-			const changes = JSON.parse(snapshot.session_changes as string) as Record<string, { oldHash: string; newHash: string }>;
-			const fileChange = changes[data.filepath];
-
-			if (fileChange?.oldHash) {
-				// Try the blob store first — this is the normal path.
-				const buf = await blobStore.readBlob(fileChange.oldHash);
-				if (buf && buf.length > 0) {
-					oldContent = buf.toString('utf-8');
-				} else {
-					// Blob missing (e.g. after a backend restart that wiped the
-					// in-memory cache, or for sessions initialised before blob
-					// persistence shipped). Fall back to `git show HEAD:file`
-					// so the diff still has a real "before" to render against.
-					oldContent = await readFromGitHead(projectPath, data.filepath);
-					debug.log('snapshot', `Blob ${fileChange.oldHash.slice(0, 8)} missing for ${data.filepath}, fell back to git HEAD`);
-				}
-			}
-
-			// Read current file from disk
-			try {
-				newContent = await readFile(currentFilePath, 'utf-8');
-			} catch {
-				// File might not exist anymore
-				newContent = '';
-			}
+			newContent = await readFile(currentFilePath, 'utf-8');
 		} catch {
-			// Ignore parse errors
+			// File might not exist anymore
+			newContent = '';
 		}
 
 		return { oldContent, newContent, filepath: data.filepath };

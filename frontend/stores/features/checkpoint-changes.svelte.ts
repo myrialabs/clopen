@@ -43,12 +43,22 @@ export function hideCheckpointChanges() {
 // Checkpoint diff to open in git panel
 export const checkpointDiff = $state<{ data: { filepath: string; oldContent: string; newContent: string } | null }>({ data: null });
 
+/** Which file the user last clicked in the banner. Persists after
+ *  `checkpointDiff.data` is cleared by the GitPanel watcher so the
+ *  active-row highlight stays on the file being viewed. */
+export const activeCheckpointFile = $state<{ path: string | null }>({ path: null });
+
 export function requestCheckpointDiff(filepath: string, oldContent: string, newContent: string) {
+	activeCheckpointFile.path = filepath;
 	checkpointDiff.data = { filepath, oldContent, newContent };
 }
 
 export function clearCheckpointDiff() {
 	checkpointDiff.data = null;
+}
+
+export function clearActiveCheckpointFile() {
+	activeCheckpointFile.path = null;
 }
 
 // ============================================================

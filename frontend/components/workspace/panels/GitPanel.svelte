@@ -25,7 +25,7 @@
 		type GitActiveDiff
 	} from '$frontend/stores/features/git-workspace.svelte';
 	import { detectLanguageFromFilename } from '$frontend/components/common/editor/monaco-languages';
-	import { checkpointDiff, clearCheckpointDiff, refreshCheckpointBanner } from '$frontend/stores/features/checkpoint-changes.svelte';
+	import { checkpointDiff, clearCheckpointDiff, refreshCheckpointBanner, clearActiveCheckpointFile } from '$frontend/stores/features/checkpoint-changes.svelte';
 	import { sessionState } from '$frontend/stores/core/sessions.svelte';
 	import type { IconName } from '$shared/types/ui/icons';
 	import type {
@@ -698,6 +698,9 @@
 
 	async function viewDiff(file: GitFileChange, section: string, restoreScrollTop = 0) {
 		if (!projectId) return;
+		// Opening a worktree diff switches focus away from the AI banner's
+		// active file — clear it so the highlight tracks the new selection.
+		clearActiveCheckpointFile();
 		const tabId = `${section}:${file.path}`;
 		const fileName = file.path.split(/[\\/]/).pop() || file.path;
 		const status = section === 'staged' ? file.indexStatus : file.workingStatus;
