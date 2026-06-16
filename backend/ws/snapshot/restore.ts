@@ -317,6 +317,19 @@ export const restoreHandler = createRouter()
 			debug.error('snapshot', 'Failed to broadcast messages-changed:', err);
 		}
 
+		// 9. Broadcast snapshot:restored so the AI banner above chat can
+		// re-fetch and drop any files the restore removed from the worktree.
+		try {
+			// @ts-expect-error - WS type lags behind new emit
+			ws.emit.chatSession(sessionId, 'snapshot:restored', {
+				sessionId,
+				messageId: data.messageId,
+				timestamp: new Date().toISOString()
+			});
+		} catch (err) {
+			debug.error('snapshot', 'Failed to broadcast snapshot:restored:', err);
+		}
+
 		return {
 			restoredTo: {
 				messageId: sessionEnd.id,

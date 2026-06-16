@@ -135,6 +135,21 @@
 		return unsub;
 	});
 
+	// Backend emits `snapshot:restored` after a checkpoint restore. The
+	// restore may have deleted or reverted files — the banner must drop
+	// any rows that no longer exist in the worktree.
+	$effect(() => {
+		const sid = sessionState.currentSession?.id;
+		if (!sid) return;
+		// @ts-expect-error - WS type lags behind new backend endpoint
+		const unsub = ws.on('snapshot:restored', (data: { sessionId: string }) => {
+			if (data.sessionId === sid) {
+				untrack(() => refreshCheckpointBanner(sid));
+			}
+		});
+		return unsub;
+	});
+
 	function closeCheckpoints() {
 		showCheckpoints = false;
 	}

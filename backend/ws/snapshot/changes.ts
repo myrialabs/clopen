@@ -6,12 +6,18 @@
  * latest wins per filepath) so the banner keeps showing files from
  * earlier AI turns until the user stages or discards them — matching
  * the worktree's "current state" semantics.
+ *
+ * Also filters out files that no longer exist in the working tree
+ * (e.g. after a restore that deleted them) so the banner doesn't show
+ * ghosts.
  */
 
 import { t } from 'elysia';
 import { createRouter } from '$shared/utils/ws-server';
-import { snapshotQueries } from '../../database/queries';
+import { snapshotQueries, sessionQueries, projectQueries } from '../../database/queries';
 import { requireSessionAccess } from '../access';
+import { existsSync } from 'fs';
+import { join } from 'path';
 
 export const changesHandler = createRouter()
 	.http('snapshot:get-changes', {
@@ -55,10 +61,22 @@ export const changesHandler = createRouter()
 			}
 		}
 
-		const files = Object.keys(lastNew).map(filepath => ({
-			filepath,
-			oldHash: firstOld[filepath] || '',
-			newHash: lastNew[filepath] || ''
-		}));
+		// Drop files that no longer exist in the working tree (e.g. a
+		// restore that deleted them). Without this, the banner would show
+		// ghost entries that don't match the worktree.
+		const session = sessionQueries.getById(data.sessionId);
+		const project = session ? projectQueries.getById(session.project_id) : null;
+		const projectPath = project?.path || '';
+
+		const files = Object.keys(lastNew)
+			.filter(filepath => {
+				if (!projectPath) return true;
+				return existsSync(join(projectPath, filepath));
+			})
+			.map(filepath => ({
+				filepath,
+				oldHash: firstOld[filepath] || '',
+				newHash: lastNew[filepath] || ''
+			}));
 		return { files };
 	});
