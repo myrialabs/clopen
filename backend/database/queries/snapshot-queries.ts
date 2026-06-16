@@ -138,14 +138,18 @@ export const snapshotQueries = {
 	},
 
 	/**
-	 * Get the dismissed-changes list (per-session marks for files the user
-	 * has staged/discarded from the banner) from the latest snapshot.
+	 * Get the dismissed-changes list from the LATEST snapshot for the
+	 * session. The latest snapshot is always used — even if its
+	 * `dismissed_changes` is NULL — because per-snapshot marks must
+	 * RESET on each new AI message. Skipping NULL rows here would
+	 * fall back to the previous snapshot's marks and make the banner
+	 * think the file is still dismissed.
 	 */
 	getDismissedChanges(sessionId: string): string[] {
 		const db = getDatabase();
 		const row = db.prepare(`
 			SELECT dismissed_changes FROM message_snapshots
-			WHERE session_id = ? AND dismissed_changes IS NOT NULL
+			WHERE session_id = ?
 			ORDER BY created_at DESC
 			LIMIT 1
 		`).get(sessionId) as { dismissed_changes: string | null } | null;

@@ -11,6 +11,21 @@ import { requireSessionAccess } from '../access';
 import { blobStore } from '../../snapshot/blob-store';
 import { readFile } from 'fs/promises';
 import { join } from 'path';
+import { spawn } from 'child_process';
+import { debug } from '$shared/utils/logger';
+
+async function readFromGitHead(projectPath: string, filepath: string): Promise<string> {
+	return new Promise(resolve => {
+		const child = spawn('git', ['show', `HEAD:${filepath}`], { cwd: projectPath, stdio: ['ignore', 'pipe', 'ignore'] });
+		const chunks: Buffer[] = [];
+		child.stdout.on('data', c => chunks.push(c));
+		child.on('error', () => resolve(''));
+		child.on('close', code => {
+			if (code !== 0) return resolve('');
+			resolve(Buffer.concat(chunks).toString('utf-8'));
+		});
+	});
+}
 
 export const fileDiffHandler = createRouter()
 	.http('snapshot:get-file-diff', {
@@ -46,7 +61,18 @@ export const fileDiffHandler = createRouter()
 			const fileChange = changes[data.filepath];
 
 			if (fileChange?.oldHash) {
-				const buf = await blobStore.readBlob(fileChange.oldHash); oldContent = buf.toString('utf-8');
+				// Try the blob store first — this is the normal path.
+				const buf = await blobStore.readBlob(fileChange.oldHash);
+				if (buf && buf.length > 0) {
+					oldContent = buf.toString('utf-8');
+				} else {
+					// Blob missing (e.g. after a backend restart that wiped the
+					// in-memory cache, or for sessions initialised before blob
+					// persistence shipped). Fall back to `git show HEAD:file`
+					// so the diff still has a real "before" to render against.
+					oldContent = await readFromGitHead(projectPath, data.filepath);
+					debug.log('snapshot', `Blob ${fileChange.oldHash.slice(0, 8)} missing for ${data.filepath}, fell back to git HEAD`);
+				}
 			}
 
 			// Read current file from disk
