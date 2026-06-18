@@ -380,7 +380,7 @@
 											{:else if checkpointChanges.files.length === 0}
 												<p class="text-xs text-slate-400 mt-1 ml-5">No files changed</p>
 											{:else}
-												<div class="mt-1 ml-2 flex flex-col">
+												<div class="mt-1 ml-2 flex flex-col max-h-32 overflow-y-auto">
 													{#each checkpointChanges.files as f (f.filepath)}
 														{@const fName = f.filepath.split(/[\\/]/).pop() || f.filepath}
 														{@const fDir = f.filepath.split(/[\\/]/).slice(0, -1).join('/')}
