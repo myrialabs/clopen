@@ -97,6 +97,19 @@
 		document.addEventListener('click', handler);
 		return () => document.removeEventListener('click', handler);
 	});
+
+	$effect(() => {
+		if (!editingRemote) return;
+		const handler = (e: KeyboardEvent) => {
+			if (e.key === 'Escape' && !savingRemote) {
+				editingRemote = null;
+				editRemoteName = '';
+				editRemoteUrl = '';
+			}
+		};
+		document.addEventListener('keydown', handler);
+		return () => document.removeEventListener('keydown', handler);
+	});
 	let pushingBranch = $state<string | null>(null);
 	let fetchingRemote = $state<string | null>(null);
 	let showAddRemoteForm = $state(false);
@@ -3109,8 +3122,8 @@ ${bodies}`;
 
 	<!-- Edit Remote Modal -->
 	{#if editingRemote}
-		<div class="fixed inset-0 z-50 flex items-center justify-center bg-black/50 backdrop-blur-sm" onclick={() => { if (!savingRemote) { editingRemote = null; editRemoteName = ''; editRemoteUrl = ''; } }} role="presentation">
-			<div class="bg-white dark:bg-slate-800 border border-slate-200 dark:border-slate-700 rounded-xl shadow-xl w-full max-w-md mx-4 p-4" onclick={(e) => e.stopPropagation()} role="dialog" aria-modal="true">
+		<div class="fixed inset-0 z-50 flex items-center justify-center bg-black/50 backdrop-blur-sm" role="presentation">
+			<div class="bg-white dark:bg-slate-800 border border-slate-200 dark:border-slate-700 rounded-xl shadow-xl w-full max-w-md mx-4 p-4" role="dialog" aria-modal="true">
 				<div class="flex items-center gap-2 mb-3">
 					<Icon name="lucide:server" class="w-4 h-4 text-slate-500" />
 					<h3 class="text-sm font-semibold text-slate-900 dark:text-slate-100">Edit Remote</h3>
