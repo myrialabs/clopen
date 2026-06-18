@@ -86,6 +86,17 @@
 	let selectedRemote = $state('origin');
 	let openRemoteBranchMenu = $state<string | null>(null);
 	let deletingRemoteBranch = $state<string | null>(null);
+
+	$effect(() => {
+		if (!openRemoteBranchMenu) return;
+		const handler = (e: MouseEvent) => {
+			const target = e.target as HTMLElement | null;
+			if (target?.closest('[data-remote-branch-menu]')) return;
+			openRemoteBranchMenu = null;
+		};
+		document.addEventListener('click', handler);
+		return () => document.removeEventListener('click', handler);
+	});
 	let pushingBranch = $state<string | null>(null);
 	let fetchingRemote = $state<string | null>(null);
 
@@ -2534,6 +2545,7 @@ ${bodies}`;
 													<div class="relative shrink-0">
 														<button
 															type="button"
+															data-remote-branch-menu
 															class="flex items-center justify-center w-7 h-7 rounded-lg text-slate-400 hover:bg-slate-200 dark:hover:bg-slate-700 hover:text-slate-700 dark:hover:text-slate-200 transition-colors cursor-pointer bg-transparent border-none"
 															onclick={(e) => { e.stopPropagation(); openRemoteBranchMenu = branchMenuOpen ? null : branch.name; }}
 															title="Branch actions"
@@ -2542,7 +2554,7 @@ ${bodies}`;
 															<Icon name="lucide:ellipsis-vertical" class="w-4 h-4" />
 														</button>
 														{#if branchMenuOpen}
-															<div class="absolute right-0 top-full mt-1 z-20 min-w-[160px] bg-white dark:bg-slate-800 border border-slate-200 dark:border-slate-700 rounded-md shadow-lg py-1" onclick={(e) => e.stopPropagation()} role="menu">
+															<div data-remote-branch-menu class="absolute right-0 top-full mt-1 z-20 min-w-[160px] bg-white dark:bg-slate-800 border border-slate-200 dark:border-slate-700 rounded-md shadow-lg py-1" onclick={(e) => e.stopPropagation()} role="menu">
 																<button
 																	type="button"
 																	class="w-full flex items-center gap-2 px-3 py-1.5 text-xs text-left text-slate-700 dark:text-slate-300 hover:bg-slate-100 dark:hover:bg-slate-700 transition-colors bg-transparent border-none cursor-pointer"
