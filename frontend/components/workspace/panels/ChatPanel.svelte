@@ -371,7 +371,7 @@
 									<div class="mb-2 p-2 bg-slate-50 dark:bg-slate-800/40 border border-slate-200 dark:border-slate-700 rounded-lg">
 										<div role="button" tabindex="0" class="flex items-center gap-2 w-full text-left bg-transparent cursor-pointer" onclick={toggleChangesExpanded} onkeydown={(e) => e.key === 'Enter' && toggleChangesExpanded()}>
 											<Icon name={changesExpanded.value ? 'lucide:chevron-down' : 'lucide:chevron-right'} class="w-3 h-3 text-slate-500 flex-shrink-0" />
-											<span class="text-xs font-semibold text-slate-700 dark:text-slate-300">Current state · Changed Files ({checkpointChanges.files.length})</span>
+											<span class="text-xs font-semibold text-slate-700 dark:text-slate-300">Changed Files ({checkpointChanges.files.length})</span>
 											<span role={appState.isLoading ? undefined : 'button'} tabindex={appState.isLoading ? -1 : 0} class="text-slate-400 bg-transparent ml-auto flex-shrink-0 pr-1.5 {appState.isLoading ? 'cursor-not-allowed opacity-40' : 'hover:text-slate-700 cursor-pointer'}" onclick={(e) => { if (appState.isLoading) return; e.stopPropagation(); hideCheckpointChanges(); }} onkeydown={(e) => { if (appState.isLoading) return; if (e.key === 'Enter') hideCheckpointChanges(); }}><Icon name="lucide:x" class="w-3 h-3" /></span>
 										</div>
 										{#if changesExpanded.value}
