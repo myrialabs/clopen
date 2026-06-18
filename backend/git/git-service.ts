@@ -343,6 +343,15 @@ export class GitService {
 		}
 	}
 
+	async deleteRemoteBranch(cwd: string, remote: string, branch: string): Promise<void> {
+		assertSafeGitRevish(remote, 'remote name');
+		assertSafeGitRevish(branch, 'branch name');
+		const result = await execGit(['push', remote, '--delete', branch], cwd);
+		if (result.exitCode !== 0) {
+			throw new Error(`git push --delete failed: ${result.stderr}`);
+		}
+	}
+
 	async mergeBranch(cwd: string, branchName: string, noFastForward = false): Promise<{ success: boolean; message: string }> {
 		assertSafeGitRevish(branchName, 'merge branch');
 		const args = ['merge'];

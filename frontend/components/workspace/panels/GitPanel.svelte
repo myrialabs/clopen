@@ -84,6 +84,38 @@
 	// Remote state
 	let remotes = $state<GitRemote[]>([]);
 	let selectedRemote = $state('origin');
+	let openRemoteBranchMenu = $state<string | null>(null);
+	let deletingRemoteBranch = $state<string | null>(null);
+	let pushingBranch = $state<string | null>(null);
+	let fetchingRemote = $state<string | null>(null);
+
+	function copyToClipboard(text: string) {
+		if (typeof navigator !== 'undefined' && navigator.clipboard) {
+			navigator.clipboard.writeText(text).catch(() => {});
+		}
+	}
+
+	async function handleDeleteRemoteBranch(remote: string, branch: string) {
+		requestConfirm({
+			title: 'Delete remote branch',
+			message: `Delete branch "${branch}" from "${remote}"? This cannot be undone.`,
+			type: 'error',
+			confirmText: 'Delete',
+			onConfirm: async () => {
+				if (!projectId) return;
+				const key = `${remote}/${branch}`;
+				deletingRemoteBranch = key;
+				try {
+					await ws.http('git:delete-remote-branch', { projectId, remote, branch });
+					await loadBranches();
+				} catch (err) {
+					debug.error('git', 'Failed to delete remote branch:', err);
+				} finally {
+					deletingRemoteBranch = null;
+				}
+			}
+		});
+	}
 
 	// View state
 	let activeView = $state<'changes' | 'log' | 'branches' | 'tags'>('changes');
@@ -94,6 +126,24 @@
 	let mergeMode = $state<'default' | 'no-ff'>('default');
 	let showConflictResolver = $state(false);
 	const mergeableBranches = $derived(branchInfo?.local.filter(branch => !branch.isCurrent) ?? []);
+
+	// Local branch names that already exist on at least one remote
+	// (matched by suffix `/{name}` on any remote branch). Used to decide
+	// whether the push button should appear — the backend's `upstream`
+	// field isn't reliably populated, so we cross-reference against the
+	// remote branch list instead.
+	const pushedBranchNames = $derived.by(() => {
+		const set = new Set<string>();
+		const remotes = branchInfo?.remote ?? [];
+		for (const r of remotes) {
+			const slash = r.name.indexOf('/');
+			if (slash >= 0) {
+				const localName = r.name.substring(slash + 1);
+				set.add(localName);
+			}
+		}
+		return set;
+	});
 	const selectedMergeBranch = $derived(
 		mergeableBranches.find(branch => branch.name === mergeBranchName) ?? null
 	);
@@ -461,6 +511,52 @@
 			await migrateActiveTabAfterStatusChange(path);
 		} catch (err) {
 			debug.error('git', 'Failed to stage file:', err);
+		}
+	}
+
+	async function handleRemoveRemote(name: string) {
+		requestConfirm({
+			title: 'Delete remote',
+			message: `Delete remote "${name}"? This will not delete the remote repository itself.`,
+			type: 'error',
+			confirmText: 'Delete',
+			onConfirm: async () => {
+				if (!projectId) return;
+				try {
+					await ws.http('git:remove-remote', { projectId, name });
+					await loadRemotes();
+				} catch (err) {
+					debug.error('git', 'Failed to remove remote:', err);
+				}
+			}
+		});
+	}
+
+	async function handleFetchRemote(remote: string) {
+		if (!projectId) return;
+		fetchingRemote = remote;
+		try {
+			const result = await ws.http('git:fetch', { projectId, remote }) as { message: string };
+			showInfo('Fetched', result.message);
+			await loadBranches();
+		} catch (err) {
+			debug.error('git', 'Failed to fetch remote:', err);
+		} finally {
+			fetchingRemote = null;
+		}
+	}
+
+	async function handlePushBranch(branch: string) {
+		if (!projectId) return;
+		pushingBranch = branch;
+		try {
+			const result = await ws.http('git:push', { projectId, branch }) as { success: boolean; message: string };
+			showInfo(result.success ? 'Pushed' : 'Push failed', result.message);
+			await loadBranches();
+		} catch (err) {
+			debug.error('git', 'Failed to push branch:', err);
+		} finally {
+			pushingBranch = null;
 		}
 	}
 
@@ -2312,7 +2408,7 @@ ${bodies}`;
 									<div class="group relative flex items-center gap-2 px-2.5 py-2 rounded-md transition-colors border {branch.isCurrent ? 'bg-violet-500/10 border-violet-500/20 text-violet-700 dark:text-violet-300' : 'border-transparent hover:bg-slate-100 dark:hover:bg-slate-800/60 text-slate-700 dark:text-slate-300'}">
 										<button type="button" class="flex items-center justify-center w-5 h-5 rounded text-slate-400 hover:bg-slate-200/70 dark:hover:bg-slate-700/70 hover:text-slate-700 dark:hover:text-slate-200 transition-colors bg-transparent border-none cursor-pointer shrink-0" onclick={() => toggleBranchExpanded(branch.name)} title={isExpanded ? 'Collapse' : 'Expand'}><Icon name={isExpanded ? 'lucide:chevron-down' : 'lucide:chevron-right'} class="w-3.5 h-3.5" /></button>
 										<Icon name="lucide:git-branch" class="w-4 h-4 shrink-0 {branch.isCurrent ? 'text-violet-500' : 'text-slate-400'}" />
-										<div class="flex-1 min-w-0 px-0.5 pr-2 {!branch.isCurrent ? 'group-hover:pr-28' : ''} flex flex-col justify-center overflow-hidden transition-[padding] duration-150">
+										<div class="flex-1 min-w-0 px-0.5 pr-2 {!branch.isCurrent ? (pushedBranchNames.has(branch.name) ? 'group-hover:pr-24' : 'group-hover:pr-32') : ''} flex flex-col justify-center overflow-hidden transition-[padding] duration-150">
 											<div class="flex min-w-0 items-center gap-2">
 												<span class="flex-1 min-w-0 text-sm text-slate-900 dark:text-slate-100 leading-tight truncate" title={branch.name}>{branch.name}</span>
 												{#if upstreamName}<span class="text-3xs text-slate-400 shrink-0">{upstreamName}</span>{/if}
@@ -2324,9 +2420,21 @@ ${bodies}`;
 										{#if !branch.isCurrent}
 										<div class="pointer-events-none absolute inset-y-0 right-0 flex items-center gap-1 pl-1 pr-2 bg-white/20 opacity-0 backdrop-blur-md supports-[backdrop-filter]:bg-white/10 transition-opacity group-hover:opacity-100 dark:bg-slate-900/20 dark:supports-[backdrop-filter]:bg-slate-900/10">
 											<button type="button" class="pointer-events-auto flex items-center justify-center w-7 h-7 rounded-md text-slate-400 hover:bg-violet-500/10 hover:text-violet-500 transition-colors bg-transparent border-none cursor-pointer" onclick={() => switchBranch(branch.name)} title="Switch to this branch"><Icon name="lucide:arrow-right" class="w-3.5 h-3.5" /></button>
+											{#if !pushedBranchNames.has(branch.name)}
+												{#if pushingBranch === branch.name}
+													<div class="pointer-events-auto flex items-center justify-center w-7 h-7 rounded-md text-emerald-500"><Icon name="lucide:loader-circle" class="w-3.5 h-3.5 animate-spin" /></div>
+												{:else}
+													<button type="button" class="pointer-events-auto flex items-center justify-center w-7 h-7 rounded-md text-slate-400 hover:bg-emerald-500/10 hover:text-emerald-500 transition-colors bg-transparent border-none cursor-pointer" onclick={() => handlePushBranch(branch.name)} title="Push branch to remote"><Icon name="lucide:upload" class="w-3.5 h-3.5" /></button>
+												{/if}
+											{/if}
 											<button type="button" class="pointer-events-auto flex items-center justify-center w-7 h-7 rounded-md text-slate-400 hover:bg-blue-500/10 hover:text-blue-500 transition-colors bg-transparent border-none cursor-pointer" onclick={() => mergeBranch(branch.name)} title="Merge into current branch"><Icon name="lucide:git-merge" class="w-3.5 h-3.5" /></button>
 											<button type="button" class="pointer-events-auto flex items-center justify-center w-7 h-7 rounded-md text-slate-400 hover:bg-red-500/10 hover:text-red-500 transition-colors bg-transparent border-none cursor-pointer" onclick={() => deleteBranch(branch.name)} title="Delete branch"><Icon name="lucide:trash-2" class="w-3.5 h-3.5" /></button>
 										</div>
+										{/if}
+										<!-- Push button: only for the active branch when it has not
+										     yet been pushed to the remote -->
+										{#if branch.isCurrent && !pushedBranchNames.has(branch.name)}
+											<button type="button" class="ml-1 flex items-center justify-center w-7 h-7 rounded-md text-slate-400 hover:bg-emerald-500/10 hover:text-emerald-500 transition-colors bg-transparent border-none cursor-pointer shrink-0" onclick={() => handlePushBranch(branch.name)} title="Push branch to remote"><Icon name="lucide:upload" class="w-3.5 h-3.5" /></button>
 										{/if}
 									</div>
 									{#if isExpanded}
@@ -2380,14 +2488,89 @@ ${bodies}`;
 							{@const remoteBranches = filteredRemoteBranches.filter(b => b.name.startsWith(remote.name + '/'))}
 							{#if !branchesSearchQuery || remoteBranches.length > 0}
 								<div class="mb-2">
-									<div class="flex items-center gap-2 px-2 py-1"><Icon name="lucide:server" class="w-3.5 h-3.5 text-slate-400" /><span class="text-xs font-semibold text-slate-600 dark:text-slate-300">{remote.name}</span></div>
+									<div class="flex items-center gap-2 px-2 py-1">
+										<Icon name="lucide:server" class="w-3.5 h-3.5 text-slate-400" />
+										<span class="text-xs font-semibold text-slate-600 dark:text-slate-300">{remote.name}</span>
+										<div class="ml-auto flex items-center gap-1">
+											{#if fetchingRemote === remote.name}
+												<div class="flex items-center gap-1 px-1.5 py-0.5 rounded text-2xs font-medium text-slate-500">
+													<Icon name="lucide:loader-circle" class="w-3 h-3 animate-spin" />
+													<span>Reload</span>
+												</div>
+											{:else}
+												<button
+													type="button"
+													class="flex items-center gap-1 px-1.5 py-0.5 rounded text-2xs font-medium text-slate-500 hover:bg-slate-100 dark:hover:bg-slate-800 hover:text-slate-700 dark:hover:text-slate-200 transition-colors cursor-pointer bg-transparent border-none"
+													onclick={() => handleFetchRemote(remote.name)}
+													title="Reload from remote (fetch)"
+												>
+													<Icon name="lucide:refresh-cw" class="w-3 h-3" />
+													<span>Reload</span>
+												</button>
+											{/if}
+											<button
+												type="button"
+												class="flex items-center gap-1 px-1.5 py-0.5 rounded text-2xs font-medium text-rose-500 hover:bg-rose-500/10 transition-colors cursor-pointer bg-transparent border-none"
+												onclick={() => handleRemoveRemote(remote.name)}
+												title="Delete remote"
+											>
+												<Icon name="lucide:trash-2" class="w-3 h-3" />
+												<span>Delete</span>
+											</button>
+										</div>
+									</div>
 									{#if remoteBranches.length > 0}
 										<div class="ml-5 space-y-1">
 											{#each remoteBranches as branch (branch.name)}
-												<div class="group flex items-center gap-2.5 px-3 py-2 rounded-lg hover:bg-slate-100 dark:hover:bg-slate-800/50 transition-colors border border-slate-200 dark:border-slate-700">
+												{@const branchMenuOpen = openRemoteBranchMenu === branch.name}
+												<div class="group flex items-center gap-2.5 px-3 py-2 rounded-lg hover:bg-slate-100 dark:hover:bg-slate-800/50 transition-colors border border-slate-200 dark:border-slate-700 relative">
 													<Icon name="lucide:git-branch" class="w-3.5 h-3.5 text-slate-400" />
 													<span class="text-sm text-slate-900 dark:text-slate-100 flex-1 break-all">{branch.name.substring(remote.name.length + 1)}</span>
-													<button type="button" class="flex items-center justify-center w-7 h-7 rounded-lg text-slate-400 hover:bg-violet-500/10 hover:text-violet-600 transition-colors cursor-pointer bg-transparent border-none shrink-0 opacity-0 group-hover:opacity-100" onclick={() => checkoutRemoteBranch(branch.name)} title="Checkout remote branch locally"><Icon name="lucide:arrow-right" class="w-4 h-4" /></button>
+													{#if deletingRemoteBranch === `${remote.name}/${branch.name.substring(remote.name.length + 1)}`}
+														<Icon name="lucide:loader-circle" class="w-3.5 h-3.5 text-slate-400 animate-spin" />
+													{/if}
+													<div class="relative shrink-0">
+														<button
+															type="button"
+															class="flex items-center justify-center w-7 h-7 rounded-lg text-slate-400 hover:bg-slate-200 dark:hover:bg-slate-700 hover:text-slate-700 dark:hover:text-slate-200 transition-colors cursor-pointer bg-transparent border-none"
+															onclick={(e) => { e.stopPropagation(); openRemoteBranchMenu = branchMenuOpen ? null : branch.name; }}
+															title="Branch actions"
+															aria-label="Branch actions"
+														>
+															<Icon name="lucide:ellipsis-vertical" class="w-4 h-4" />
+														</button>
+														{#if branchMenuOpen}
+															<div class="absolute right-0 top-full mt-1 z-20 min-w-[160px] bg-white dark:bg-slate-800 border border-slate-200 dark:border-slate-700 rounded-md shadow-lg py-1" onclick={(e) => e.stopPropagation()} role="menu">
+																<button
+																	type="button"
+																	class="w-full flex items-center gap-2 px-3 py-1.5 text-xs text-left text-slate-700 dark:text-slate-300 hover:bg-slate-100 dark:hover:bg-slate-700 transition-colors bg-transparent border-none cursor-pointer"
+																	onclick={() => { openRemoteBranchMenu = null; checkoutRemoteBranch(branch.name); }}
+																	role="menuitem"
+																>
+																	<Icon name="lucide:arrow-right" class="w-3 h-3" />
+																	<span>Checkout locally</span>
+																</button>
+																<button
+																	type="button"
+																	class="w-full flex items-center gap-2 px-3 py-1.5 text-xs text-left text-slate-700 dark:text-slate-300 hover:bg-slate-100 dark:hover:bg-slate-700 transition-colors bg-transparent border-none cursor-pointer"
+																	onclick={() => copyToClipboard(branch.name)}
+																	role="menuitem"
+																>
+																	<Icon name="lucide:copy" class="w-3 h-3" />
+																	<span>Copy branch name</span>
+																</button>
+																<button
+																	type="button"
+																	class="w-full flex items-center gap-2 px-3 py-1.5 text-xs text-left text-rose-600 dark:text-rose-400 hover:bg-rose-500/10 transition-colors bg-transparent border-none cursor-pointer"
+																	onclick={() => { openRemoteBranchMenu = null; handleDeleteRemoteBranch(remote.name, branch.name.substring(remote.name.length + 1)); }}
+																	role="menuitem"
+																>
+																	<Icon name="lucide:trash-2" class="w-3 h-3" />
+																	<span>Delete branch</span>
+																</button>
+															</div>
+														{/if}
+													</div>
 												</div>
 											{/each}
 										</div>

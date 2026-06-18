@@ -127,6 +127,19 @@ export const remoteHandler = createRouter()
 		return { ok: true };
 	})
 
+	.http('git:delete-remote-branch', {
+		data: t.Object({
+			projectId: t.String(),
+			remote: t.String(),
+			branch: t.String()
+		}),
+		response: t.Object({ ok: t.Boolean() })
+	}, async ({ data, conn }) => {
+		const project = requireProjectAccess(conn, data.projectId);
+		await gitService.deleteRemoteBranch(project.path, data.remote, data.branch);
+		return { ok: true };
+	})
+
 	.http('git:stash-list', {
 		data: t.Object({
 			projectId: t.String()
