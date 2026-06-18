@@ -2866,16 +2866,13 @@ ${bodies}`;
 									<div class="py-3 text-xs text-slate-400 text-center">No contributors</div>
 								{:else}
 									<div class="space-y-0.5 p-1">
-										{#each contributors as c}
-											<div class="group relative flex items-center gap-2 px-2 py-1 rounded text-xs hover:bg-slate-100 dark:hover:bg-slate-800/50 transition-colors">
-												<span class="w-5 h-5 rounded-full bg-violet-500/10 text-violet-600 flex items-center justify-center text-3xs font-bold flex-shrink-0">{c.name.charAt(0).toUpperCase()}</span>
-												<span class="flex-1 truncate text-slate-700 dark:text-slate-300">{c.name}</span>
-												<span class="text-slate-400 flex-shrink-0 transition-opacity group-hover:opacity-0">{c.count}</span>
-												<a href="https://github.com/{c.name.replace(/\s+/g, '')}" target="_blank" rel="noopener noreferrer" class="absolute right-1 top-1/2 -translate-y-1/2 flex items-center justify-center w-5 h-5 rounded text-slate-400 hover:text-violet-500 hover:bg-violet-500/10 transition-colors opacity-0 group-hover:opacity-100" title="View {c.name} on GitHub">
-													<Icon name="lucide:globe" class="w-3 h-3" />
-												</a>
-											</div>
-										{/each}
+											{#each contributors as c}
+												<div class="flex items-center gap-2 px-2 py-1 rounded text-xs hover:bg-slate-100 dark:hover:bg-slate-800/50 transition-colors">
+													<span class="w-5 h-5 rounded-full bg-violet-500/10 text-violet-600 flex items-center justify-center text-3xs font-bold flex-shrink-0">{c.name.charAt(0).toUpperCase()}</span>
+													<span class="flex-1 truncate text-slate-700 dark:text-slate-300">{c.name}</span>
+													<span class="text-slate-400 flex-shrink-0">{c.count}</span>
+												</div>
+											{/each}
 									</div>
 								{/if}
 							</div>
