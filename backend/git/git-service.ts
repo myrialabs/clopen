@@ -233,7 +233,7 @@ export class GitService {
 	// Branches
 	// ============================================
 
-	async getBranches(cwd: string): Promise<GitBranchInfo> {
+	async getBranches(cwd: string, selectedRemote?: string): Promise<GitBranchInfo> {
 		const [localResult, remoteResult, headRef] = await Promise.all([
 			execGit(['branch', '-v', '--no-color'], cwd),
 			execGit(['branch', '-r', '-v', '--no-color'], cwd),
@@ -269,11 +269,12 @@ export class GitService {
 		branchInfo.current = headName;
 		for (const b of branchInfo.local) b.isCurrent = b.name === headName;
 
-		// Get ahead/behind for current branch
-		if (branchInfo.current) {
+		// Get ahead/behind for current branch relative to the SELECTED remote
+		if (branchInfo.current && selectedRemote) {
 			try {
+				const remoteRef = `${selectedRemote}/${branchInfo.current}`;
 				const abResult = await execGit(
-					['rev-list', '--left-right', '--count', `${branchInfo.current}...@{upstream}`],
+					['rev-list', '--left-right', '--count', `${branchInfo.current}...${remoteRef}`],
 					cwd
 				);
 				if (abResult.exitCode === 0) {
@@ -281,7 +282,6 @@ export class GitService {
 					branchInfo.ahead = ahead;
 					branchInfo.behind = behind;
 
-					// Update the current branch entry too
 					const currentBranch = branchInfo.local.find(b => b.isCurrent);
 					if (currentBranch) {
 						currentBranch.ahead = ahead;
@@ -289,7 +289,7 @@ export class GitService {
 					}
 				}
 			} catch {
-				// No upstream configured
+				// Remote tracking branch doesn't exist — show 0
 			}
 		}
 

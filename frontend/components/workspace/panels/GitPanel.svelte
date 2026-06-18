@@ -84,6 +84,20 @@
 	// Remote state
 	let remotes = $state<GitRemote[]>([]);
 	let selectedRemote = $state('origin');
+
+	function loadSelectedRemote(pid: string) {
+		try {
+			const saved = localStorage.getItem(`clopen:selectedRemote:${pid}`);
+			if (saved) selectedRemote = saved;
+		} catch { /* ignore */ }
+	}
+
+	function saveSelectedRemote() {
+		if (!projectId) return;
+		try {
+			localStorage.setItem(`clopen:selectedRemote:${projectId}`, selectedRemote);
+		} catch { /* ignore */ }
+	}
 	let openRemoteBranchMenu = $state<string | null>(null);
 	let deletingRemoteBranch = $state<string | null>(null);
 
@@ -109,6 +123,14 @@
 		};
 		document.addEventListener('keydown', handler);
 		return () => document.removeEventListener('keydown', handler);
+	});
+
+	$effect(() => {
+		if (projectId && selectedRemote) saveSelectedRemote();
+	});
+
+	$effect(() => {
+		if (projectId && selectedRemote) loadBranches();
 	});
 	let pushingBranch = $state<string | null>(null);
 	let fetchingRemote = $state<string | null>(null);
@@ -460,7 +482,7 @@
 	async function loadBranches(): Promise<GitBranchInfo | null> {
 		if (!projectId) return null;
 		try {
-			const data = await ws.http('git:branches', { projectId });
+			const data = await ws.http('git:branches', { projectId, selectedRemote });
 			branchInfo = data;
 			return data;
 		} catch (err) {
@@ -474,6 +496,7 @@
 		try {
 			const list = await ws.http('git:remotes', { projectId });
 			remotes = list;
+			loadSelectedRemote(projectId);
 			// Auto-select first remote if current selection doesn't exist
 			if (list.length > 0 && !list.find(r => r.name === selectedRemote)) {
 				selectedRemote = list[0].name;

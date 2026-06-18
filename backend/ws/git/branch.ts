@@ -20,7 +20,8 @@ const BranchSchema = t.Object({
 export const branchHandler = createRouter()
 	.http('git:branches', {
 		data: t.Object({
-			projectId: t.String()
+			projectId: t.String(),
+			selectedRemote: t.Optional(t.String())
 		}),
 		response: t.Object({
 			current: t.String(),
@@ -31,7 +32,7 @@ export const branchHandler = createRouter()
 		})
 	}, async ({ data, conn }) => {
 		const project = requireProjectAccess(conn, data.projectId);
-		return await gitService.getBranches(project.path);
+		return await gitService.getBranches(project.path, data.selectedRemote);
 	})
 
 	.http('git:create-branch', {
