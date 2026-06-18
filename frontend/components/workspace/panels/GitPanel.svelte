@@ -91,7 +91,9 @@
 
 	function copyToClipboard(text: string) {
 		if (typeof navigator !== 'undefined' && navigator.clipboard) {
-			navigator.clipboard.writeText(text).catch(() => {});
+			navigator.clipboard.writeText(text)
+				.then(() => showInfo('Copied', `Branch name "${text}" copied to clipboard`))
+				.catch(() => {});
 		}
 	}
 
@@ -2553,7 +2555,7 @@ ${bodies}`;
 																<button
 																	type="button"
 																	class="w-full flex items-center gap-2 px-3 py-1.5 text-xs text-left text-slate-700 dark:text-slate-300 hover:bg-slate-100 dark:hover:bg-slate-700 transition-colors bg-transparent border-none cursor-pointer"
-																	onclick={() => copyToClipboard(branch.name)}
+																	onclick={() => { openRemoteBranchMenu = null; copyToClipboard(branch.name); }}
 																	role="menuitem"
 																>
 																	<Icon name="lucide:copy" class="w-3 h-3" />
