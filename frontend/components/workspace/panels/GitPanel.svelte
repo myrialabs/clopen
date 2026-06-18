@@ -2578,6 +2578,9 @@ ${bodies}`;
 							{@const remoteBranches = filteredRemoteBranches.filter(b => b.name.startsWith(remote.name + '/'))}
 							<div class="mb-2">
 								<div class="group flex items-center gap-2 px-2 py-1.5 rounded-lg hover:bg-slate-100/50 dark:hover:bg-slate-800/30 transition-colors min-w-0">
+										<button type="button" class="flex items-center justify-center w-4 h-4 rounded text-slate-400 hover:text-amber-500 transition-colors cursor-pointer bg-transparent border-none shrink-0" onclick={() => { selectedRemote = remote.name; showInfo('Default remote set', `Now using ${remote.name} for push, pull, and fetch`); }} title={selectedRemote === remote.name ? 'Default remote' : `Set ${remote.name} as default`}>
+											<Icon name={selectedRemote === remote.name ? 'lucide:star' : 'lucide:star-off'} class={selectedRemote === remote.name ? 'w-3.5 h-3.5 text-amber-500' : 'w-3.5 h-3.5'} />
+										</button>
 										<Icon name="lucide:server" class="w-3.5 h-3.5 text-slate-400 shrink-0" />
 										<span class="text-xs font-semibold text-slate-600 dark:text-slate-300 shrink-0">{remote.name}</span>
 										{#if remote.fetchUrl || remote.pushUrl}
