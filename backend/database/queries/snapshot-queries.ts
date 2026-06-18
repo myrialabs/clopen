@@ -97,6 +97,18 @@ export const snapshotQueries = {
 	},
 
 	/**
+	 * Update the `session_changes` JSON for a snapshot.
+	 * Pass `null` to clear (when all changes removed).
+	 */
+	updateSessionChanges(snapshotId: string, sessionChanges: string | null): boolean {
+		const db = getDatabase();
+		const result = db.prepare(`
+			UPDATE message_snapshots SET session_changes = ? WHERE id = ?
+		`).run(sessionChanges, snapshotId);
+		return (result as { changes: number }).changes > 0;
+	},
+
+	/**
 	 * Get snapshot by message ID
 	 */
 	getByMessageId(messageId: string): MessageSnapshot | null {

@@ -75,6 +75,76 @@
 		e.preventDefault();
 	}
 
+	async function acceptCheckpointFile(filepath: string) {
+		const pid = projectState.currentProject?.id;
+		const sid = sessionState.currentSession?.id;
+		if (!pid) return;
+		try {
+			await ws.http('git:stage', { projectId: pid, filePath: filepath });
+			if (sid) {
+				await ws.http('snapshot:add-dismissed-changes', { sessionId: sid, filepaths: [filepath] });
+			}
+			if (sid) await refreshCheckpointBanner(sid);
+		} catch (err) {
+			debug.error('checkpoint', 'Failed to accept file:', err);
+		}
+	}
+
+	async function discardCheckpointFile(filepath: string) {
+		const pid = projectState.currentProject?.id;
+		const sid = sessionState.currentSession?.id;
+		if (!pid) return;
+		try {
+			await ws.http('git:discard', { projectId: pid, filePath: filepath });
+			if (sid) {
+				await Promise.all([
+					ws.http('snapshot:remove-session-change', { sessionId: sid, filepath }),
+					ws.http('snapshot:add-dismissed-changes', { sessionId: sid, filepaths: [filepath] })
+				]);
+			}
+			if (sid) await refreshCheckpointBanner(sid);
+		} catch (err) {
+			debug.error('checkpoint', 'Failed to discard file:', err);
+		}
+	}
+
+	async function acceptAllCheckpointFiles() {
+		const pid = projectState.currentProject?.id;
+		const sid = sessionState.currentSession?.id;
+		if (!pid) return;
+		const filepaths = checkpointChanges.files.map(f => f.filepath);
+		if (filepaths.length === 0) return;
+		try {
+			await ws.http('git:stage-all', { projectId: pid });
+			if (sid) {
+				await ws.http('snapshot:add-dismissed-changes', { sessionId: sid, filepaths });
+			}
+			if (sid) await refreshCheckpointBanner(sid);
+		} catch (err) {
+			debug.error('checkpoint', 'Failed to accept all files:', err);
+		}
+	}
+
+	async function discardAllCheckpointFiles() {
+		const pid = projectState.currentProject?.id;
+		const sid = sessionState.currentSession?.id;
+		if (!pid) return;
+		const filepaths = checkpointChanges.files.map(f => f.filepath);
+		if (filepaths.length === 0) return;
+		try {
+			await ws.http('git:discard-all', { projectId: pid });
+			if (sid) {
+				await Promise.all([
+					ws.http('snapshot:add-dismissed-changes', { sessionId: sid, filepaths }),
+					...filepaths.map(fp => ws.http('snapshot:remove-session-change', { sessionId: sid, filepath: fp }))
+				]);
+			}
+			if (sid) await refreshCheckpointBanner(sid);
+		} catch (err) {
+			debug.error('checkpoint', 'Failed to discard all files:', err);
+		}
+	}
+
 	// Auto-load current checkpoint changes for banner
 	$effect(() => {
 		const sid = sessionState.currentSession?.id;
@@ -393,7 +463,15 @@
 										<div role="button" tabindex="0" class="flex items-center gap-2 w-full text-left bg-transparent cursor-pointer" onclick={toggleChangesExpanded} onkeydown={(e) => e.key === 'Enter' && toggleChangesExpanded()}>
 											<Icon name={changesExpanded.value ? 'lucide:chevron-down' : 'lucide:chevron-right'} class="w-3 h-3 text-slate-500 flex-shrink-0" />
 											<span class="text-xs font-semibold text-slate-700 dark:text-slate-300">Changed Files ({checkpointChanges.files.length})</span>
-											<span role={appState.isLoading ? undefined : 'button'} tabindex={appState.isLoading ? -1 : 0} class="text-slate-400 bg-transparent ml-auto flex-shrink-0 pr-1.5 {appState.isLoading ? 'cursor-not-allowed opacity-40' : 'hover:text-slate-700 cursor-pointer'}" onclick={(e) => { if (appState.isLoading) return; e.stopPropagation(); hideCheckpointChanges(); }} onkeydown={(e) => { if (appState.isLoading) return; if (e.key === 'Enter') hideCheckpointChanges(); }}><Icon name="lucide:x" class="w-3 h-3" /></span>
+										<div class="ml-auto flex items-center gap-1">
+											<button type="button" class="text-2xs px-1.5 py-0.5 rounded text-emerald-600 dark:text-emerald-400 hover:bg-emerald-500/10 transition-colors bg-transparent border-none cursor-pointer" onclick={(e) => { e.stopPropagation(); acceptAllCheckpointFiles(); }} title="Accept all changes (stage all)">
+												<Icon name="lucide:check-check" class="w-3 h-3" />
+											</button>
+											<button type="button" class="text-2xs px-1.5 py-0.5 rounded text-rose-600 dark:text-rose-400 hover:bg-rose-500/10 transition-colors bg-transparent border-none cursor-pointer" onclick={(e) => { e.stopPropagation(); discardAllCheckpointFiles(); }} title="Discard all changes (revert all)">
+												<Icon name="lucide:trash-2" class="w-3 h-3" />
+											</button>
+										</div>
+											<span role={appState.isLoading ? undefined : 'button'} tabindex={appState.isLoading ? -1 : 0} class="text-slate-400 bg-transparent flex-shrink-0 pr-1.5 {appState.isLoading ? 'cursor-not-allowed opacity-40' : 'hover:text-slate-700 cursor-pointer'}" onclick={(e) => { if (appState.isLoading) return; e.stopPropagation(); hideCheckpointChanges(); }} onkeydown={(e) => { if (appState.isLoading) return; if (e.key === 'Enter') hideCheckpointChanges(); }}><Icon name="lucide:x" class="w-3 h-3" /></span>
 										</div>
 										{#if changesExpanded.value}
 											{#if checkpointChanges.loading}
@@ -450,7 +528,9 @@
 																	<span class="text-3xs text-slate-400 dark:text-slate-500 truncate min-w-0" dir="rtl">{fDir}</span>
 																{/if}
 															</div>
-															<span class="w-3 text-center text-3xs font-bold {getGitStatusColor(fStatus)} shrink-0">{getGitStatusLabel(fStatus)}</span>
+															<button type="button" class="flex items-center justify-center w-5 h-5 rounded text-emerald-600 dark:text-emerald-400 hover:bg-emerald-500/15 transition-colors bg-transparent border-none cursor-pointer shrink-0 opacity-0 group-hover:opacity-100" onclick={(e) => { e.stopPropagation(); acceptCheckpointFile(f.filepath); }} title="Accept this file (stage)"><Icon name="lucide:check" class="w-3 h-3" /></button>
+															<button type="button" class="flex items-center justify-center w-5 h-5 rounded text-rose-600 dark:text-rose-400 hover:bg-rose-500/15 transition-colors bg-transparent border-none cursor-pointer shrink-0 opacity-0 group-hover:opacity-100" onclick={(e) => { e.stopPropagation(); discardCheckpointFile(f.filepath); }} title="Discard this file (revert)"><Icon name="lucide:undo-2" class="w-3 h-3" /></button>
+															<span class="w-3 text-center text-3xs font-bold {getGitStatusColor(fStatus)} shrink-0 ml-auto">{getGitStatusLabel(fStatus)}</span>
 														</div>
 													{/each}
 												</div>

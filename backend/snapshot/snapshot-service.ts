@@ -753,6 +753,29 @@ export class SnapshotService {
 	clearSessionBaseline(sessionId: string): void {
 		this.sessionBaselines.delete(sessionId);
 	}
+
+	/**
+	 * Remove a file from the current (latest) snapshot's `session_changes`.
+	 * Called when the user discards an AI change — so restoring the checkpoint
+	 * doesn't re-apply the change the user already reverted.
+	 */
+	removeFileFromCurrentSessionChanges(sessionId: string, filepath: string): boolean {
+		const snapshots = snapshotQueries.getBySessionId(sessionId);
+		if (snapshots.length === 0) return false;
+		const latest = snapshots[snapshots.length - 1];
+		if (!latest.session_changes) return false;
+
+		try {
+			const changes = JSON.parse(latest.session_changes as string) as Record<string, { oldHash: string; newHash: string }>;
+			if (!(filepath in changes)) return false;
+			delete changes[filepath];
+			const updated = Object.keys(changes).length > 0 ? JSON.stringify(changes) : null;
+			snapshotQueries.updateSessionChanges(latest.id, updated);
+			return true;
+		} catch {
+			return false;
+		}
+	}
 }
 
 // Export singleton instance

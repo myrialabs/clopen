@@ -13,6 +13,7 @@
 import { t } from 'elysia';
 import { createRouter } from '$shared/utils/ws-server';
 import { snapshotQueries } from '../../database/queries';
+import { snapshotService } from '../../snapshot/snapshot-service';
 import { requireSessionAccess } from '../access';
 
 export const dismissedChangesHandler = createRouter()
@@ -28,6 +29,18 @@ export const dismissedChangesHandler = createRouter()
 		return { files: snapshotQueries.getDismissedChanges(data.sessionId) };
 	})
 
+	.http('snapshot:remove-session-change', {
+		data: t.Object({
+			sessionId: t.String(),
+			filepath: t.String()
+		}),
+		response: t.Object({ ok: t.Boolean() })
+	}, async ({ data, conn }) => {
+		requireSessionAccess(conn, data.sessionId);
+		const ok = snapshotService.removeFileFromCurrentSessionChanges(data.sessionId, data.filepath);
+		return { ok };
+	})
+	
 	.http('snapshot:add-dismissed-changes', {
 		data: t.Object({
 			sessionId: t.String(),
