@@ -768,6 +768,21 @@ export class GitService {
 		};
 	}
 
+	/** Cherry-pick one or more commits onto the current branch (`git cherry-pick <hash>...`). */
+	async cherryPick(cwd: string, refs: string[]): Promise<{ success: boolean; message: string }> {
+		if (refs.length === 0) {
+			return { success: false, message: 'No commits provided' };
+		}
+		for (const ref of refs) {
+			assertSafeGitRevish(ref, 'cherry-pick ref');
+		}
+		const result = await execGit(['cherry-pick', ...refs], cwd);
+		return {
+			success: result.exitCode === 0,
+			message: result.exitCode === 0 ? (result.stdout || result.stderr || 'Cherry-pick succeeded') : result.stderr
+		};
+	}
+
 	// ============================================
 	// Maintenance
 	// ============================================

@@ -62,6 +62,20 @@ export const commitHandler = createRouter()
 		return await gitService.revertCommit(project.path, data.ref);
 	})
 
+	.http('git:cherry-pick', {
+		data: t.Object({
+			projectId: t.String(),
+			hashes: t.Array(t.String(), { minItems: 1 })
+		}),
+		response: t.Object({
+			success: t.Boolean(),
+			message: t.String()
+		})
+	}, async ({ data, conn }) => {
+		const project = requireProjectAccess(conn, data.projectId);
+		return await gitService.cherryPick(project.path, data.hashes);
+	})
+
 	.http('git:clean', {
 		data: t.Object({
 			projectId: t.String()
