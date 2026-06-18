@@ -506,6 +506,25 @@ export class GitService {
 		}
 	}
 
+	async setRemoteUrl(cwd: string, name: string, url: string): Promise<void> {
+		assertSafeGitRemoteName(name);
+		assertSafeGitRemoteUrl(url);
+		const result = await execGit(['remote', 'set-url', name, url], cwd);
+		if (result.exitCode !== 0) {
+			throw new Error(`git remote set-url failed: ${result.stderr}`);
+		}
+	}
+
+	async renameRemote(cwd: string, oldName: string, newName: string): Promise<void> {
+		assertSafeGitRemoteName(oldName);
+		assertSafeGitRemoteName(newName);
+		if (oldName === newName) return;
+		const result = await execGit(['remote', 'rename', oldName, newName], cwd);
+		if (result.exitCode !== 0) {
+			throw new Error(`git remote rename failed: ${result.stderr}`);
+		}
+	}
+
 	async removeRemote(cwd: string, name: string): Promise<void> {
 		assertSafeGitRemoteName(name);
 		const result = await execGit(['remote', 'remove', name], cwd);

@@ -25,11 +25,11 @@ export function assertSafeGitRevish(value: string, label: string): void {
 	}
 }
 
-/** `git remote` names are a small charset in practice; keep strict. */
+/** `git remote` names — allow common refname chars (slashes for hierarchies, plus signs). */
 export function assertSafeGitRemoteName(name: string): void {
 	assertSafeGitRevish(name, 'remote name');
-	if (!/^[A-Za-z0-9._-]+$/.test(name)) {
-		throw new Error('Invalid git remote name');
+	if (!/^[A-Za-z0-9._\-+/]+$/.test(name)) {
+		throw new Error(`Invalid git remote name "${name}": only letters, digits, '.', '_', '-', '+', '/' allowed`);
 	}
 }
 

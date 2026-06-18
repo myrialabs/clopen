@@ -115,6 +115,49 @@ export const remoteHandler = createRouter()
 		return { ok: true };
 	})
 
+	.http('git:set-remote-url', {
+		data: t.Object({
+			projectId: t.String(),
+			name: t.String(),
+			url: t.String()
+		}),
+		response: t.Object({ ok: t.Boolean() })
+	}, async ({ data, conn }) => {
+		const project = requireProjectAccess(conn, data.projectId);
+		await gitService.setRemoteUrl(project.path, data.name, data.url);
+		return { ok: true };
+	})
+
+	.http('git:rename-remote', {
+		data: t.Object({
+			projectId: t.String(),
+			oldName: t.String(),
+			newName: t.String()
+		}),
+		response: t.Object({ ok: t.Boolean() })
+	}, async ({ data, conn }) => {
+		const project = requireProjectAccess(conn, data.projectId);
+		await gitService.renameRemote(project.path, data.oldName, data.newName);
+		return { ok: true };
+	})
+
+	.http('git:edit-remote', {
+		data: t.Object({
+			projectId: t.String(),
+			oldName: t.String(),
+			newName: t.String(),
+			newUrl: t.String()
+		}),
+		response: t.Object({ ok: t.Boolean() })
+	}, async ({ data, conn }) => {
+		const project = requireProjectAccess(conn, data.projectId);
+		if (data.oldName !== data.newName) {
+			await gitService.renameRemote(project.path, data.oldName, data.newName);
+		}
+		await gitService.setRemoteUrl(project.path, data.newName, data.newUrl);
+		return { ok: true };
+	})
+
 	.http('git:remove-remote', {
 		data: t.Object({
 			projectId: t.String(),
