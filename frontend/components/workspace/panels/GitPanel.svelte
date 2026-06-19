@@ -1386,6 +1386,18 @@
 		mergeMode = 'default';
 	}
 
+	function closeAddRemoteModal() {
+		showAddRemoteForm = false;
+		newRemoteName = '';
+		newRemoteUrl = '';
+	}
+
+	function closeEditRemoteModal() {
+		editingRemote = null;
+		editRemoteName = '';
+		editRemoteUrl = '';
+	}
+
 	async function runMergeBranch(name: string, noFastForward = false, closeBranchManager = false) {
 		if (!projectId || !name || isMoreBusy) return;
 		if (blockedWhileBusy('merge')) return;
@@ -2599,6 +2611,7 @@ ${bodies}`;
 				</div>
 			{:else}
 				<div class="flex-1 overflow-y-auto px-2">
+					<button type="button" class="flex items-center justify-center gap-2 w-full py-2.5 px-3 mb-2 border border-dashed border-slate-300 dark:border-slate-600 rounded-lg text-sm text-slate-500 hover:text-violet-600 hover:border-violet-400 transition-colors cursor-pointer bg-transparent" onclick={() => showAddRemoteForm = true}><Icon name="lucide:plus" class="w-4 h-4" /><span>Add Remote</span></button>
 					{#if !branchInfo}
 						<div class="flex items-center justify-center py-8"><div class="w-5 h-5 border-2 border-slate-200 dark:border-slate-700 border-t-violet-600 rounded-full animate-spin"></div></div>
 					{:else if remotes.length === 0}
@@ -2688,25 +2701,6 @@ ${bodies}`;
 									{/if}
 								</div>
 						{/each}
-
-						<!-- Add remote button + form -->
-						<div class="mt-2">
-							{#if showAddRemoteForm}
-								<div class="mx-1 p-2 border border-slate-200 dark:border-slate-700 rounded-lg bg-slate-50/50 dark:bg-slate-800/30 space-y-1.5">
-									<input type="text" placeholder="Remote name (e.g. origin)" bind:value={newRemoteName} class="w-full px-2 py-1.5 text-xs bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-700 rounded text-slate-900 dark:text-slate-100 placeholder-slate-400 focus:outline-none focus:border-violet-500" />
-									<input type="text" placeholder="URL (https://github.com/user/repo.git)" bind:value={newRemoteUrl} class="w-full px-2 py-1.5 text-xs bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-700 rounded text-slate-900 dark:text-slate-100 placeholder-slate-400 focus:outline-none focus:border-violet-500" />
-									<div class="flex items-center gap-1.5">
-										<button type="button" class="flex-1 flex items-center justify-center gap-1 px-2 py-1.5 text-xs font-medium bg-violet-500 text-white rounded hover:bg-violet-600 transition-colors disabled:opacity-50 border-none cursor-pointer" onclick={handleAddRemote} disabled={addingRemote || !newRemoteName.trim() || !newRemoteUrl.trim()}>
-											{#if addingRemote}<Icon name="lucide:loader-circle" class="w-3 h-3 animate-spin" />{:else}<Icon name="lucide:plus" class="w-3 h-3" />{/if}
-											<span>Add</span>
-										</button>
-										<button type="button" class="px-2 py-1.5 text-xs text-slate-500 hover:bg-slate-200 dark:hover:bg-slate-700 rounded transition-colors bg-transparent border-none cursor-pointer" onclick={() => { showAddRemoteForm = false; newRemoteName = ''; newRemoteUrl = ''; }}>Cancel</button>
-									</div>
-								</div>
-							{:else}
-								<button type="button" class="flex items-center justify-center gap-2 w-full py-2 px-3 border border-dashed border-slate-300 dark:border-slate-600 rounded-lg text-xs text-slate-500 hover:text-violet-600 hover:border-violet-400 transition-colors cursor-pointer bg-transparent" onclick={() => showAddRemoteForm = true}><Icon name="lucide:plus" class="w-3.5 h-3.5" /><span>Add Remote</span></button>
-							{/if}
-						</div>
 					{/if}
 				</div>
 			{/if}
@@ -3004,6 +2998,90 @@ ${bodies}`;
 		</div>
 	{/if}
 
+	<!-- Add Remote Modal -->
+	<Modal
+		isOpen={showAddRemoteForm}
+		onClose={closeAddRemoteModal}
+		size="sm"
+		closable={false}
+	>
+		{#snippet header()}
+			<div class="flex items-center justify-between px-4 py-3 md:px-6 md:py-4">
+				<div class="flex items-center gap-2.5">
+					<Icon name="lucide:server" class="w-5 h-5 text-violet-600" />
+					<div>
+						<h2 class="text-base md:text-lg font-bold text-slate-900 dark:text-slate-100">Add Remote</h2>
+						<p class="text-xs text-slate-500 dark:text-slate-400">Connect a remote repository to fetch and push</p>
+					</div>
+				</div>
+				<button
+					type="button"
+					class="p-1.5 md:p-2 rounded-lg text-slate-500 hover:text-slate-900 dark:hover:text-slate-100 hover:bg-violet-500/10 transition-colors"
+					onclick={closeAddRemoteModal}
+					aria-label="Close add remote modal"
+				>
+					<Icon name="lucide:x" class="w-4 h-4 md:w-5 md:h-5" />
+				</button>
+			</div>
+		{/snippet}
+
+		{#snippet children()}
+			<div class="space-y-4">
+				<div>
+					<label class="block text-sm font-semibold text-slate-700 dark:text-slate-300 mb-2" for="new-remote-name">
+						Remote Name
+					</label>
+					<input
+						id="new-remote-name"
+						type="text"
+						placeholder="e.g. origin"
+						bind:value={newRemoteName}
+						class="w-full px-3 py-2 text-sm bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-700 rounded-lg text-slate-900 dark:text-slate-100 placeholder-slate-400 outline-none focus:border-violet-500/40"
+						disabled={addingRemote}
+					/>
+				</div>
+				<div>
+					<label class="block text-sm font-semibold text-slate-700 dark:text-slate-300 mb-2" for="new-remote-url">
+						Repository URL
+					</label>
+					<input
+						id="new-remote-url"
+						type="text"
+						placeholder="https://github.com/user/repo.git"
+						bind:value={newRemoteUrl}
+						class="w-full px-3 py-2 text-sm bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-700 rounded-lg text-slate-900 dark:text-slate-100 placeholder-slate-400 outline-none focus:border-violet-500/40"
+						disabled={addingRemote}
+					/>
+				</div>
+			</div>
+		{/snippet}
+
+		{#snippet footer()}
+			<button
+				type="button"
+				class="px-4 py-2 text-sm font-medium text-slate-700 dark:text-slate-300 hover:bg-slate-100 dark:hover:bg-slate-800 rounded-lg transition-colors"
+				onclick={closeAddRemoteModal}
+				disabled={addingRemote}
+			>
+				Cancel
+			</button>
+			<button
+				type="button"
+				class="flex items-center gap-2 px-4 py-2 text-sm font-medium bg-violet-500 text-white rounded-lg hover:bg-violet-600 transition-colors disabled:opacity-50"
+				onclick={handleAddRemote}
+				disabled={addingRemote || !newRemoteName.trim() || !newRemoteUrl.trim()}
+			>
+				{#if addingRemote}
+					<Icon name="lucide:loader-circle" class="w-4 h-4 animate-spin" />
+					Adding...
+				{:else}
+					<Icon name="lucide:plus" class="w-4 h-4" />
+					Add Remote
+				{/if}
+			</button>
+		{/snippet}
+	</Modal>
+
 	<!-- Merge Branch Modal -->
 	<Modal
 		isOpen={showMergeBranchModal}
@@ -3151,34 +3229,88 @@ ${bodies}`;
 	/>
 
 	<!-- Edit Remote Modal -->
-	{#if editingRemote}
-		<div class="fixed inset-0 z-50 flex items-center justify-center bg-black/50 backdrop-blur-sm" role="presentation">
-			<div class="bg-white dark:bg-slate-800 border border-slate-200 dark:border-slate-700 rounded-xl shadow-xl w-full max-w-md mx-4 p-4" role="dialog" aria-modal="true">
-				<div class="flex items-center gap-2 mb-3">
-					<Icon name="lucide:server" class="w-4 h-4 text-slate-500" />
-					<h3 class="text-sm font-semibold text-slate-900 dark:text-slate-100">Edit Remote</h3>
-					<button type="button" class="ml-auto flex items-center justify-center w-6 h-6 rounded text-slate-400 hover:bg-slate-100 dark:hover:bg-slate-700 transition-colors bg-transparent border-none cursor-pointer" onclick={() => { if (!savingRemote) { editingRemote = null; editRemoteName = ''; editRemoteUrl = ''; } }} title="Close"><Icon name="lucide:x" class="w-3.5 h-3.5" /></button>
-				</div>
-				<div class="space-y-3">
+	<Modal
+		isOpen={editingRemote !== null}
+		onClose={closeEditRemoteModal}
+		size="sm"
+		closable={false}
+	>
+		{#snippet header()}
+			<div class="flex items-center justify-between px-4 py-3 md:px-6 md:py-4">
+				<div class="flex items-center gap-2.5">
+					<Icon name="lucide:server" class="w-5 h-5 text-violet-600" />
 					<div>
-						<label class="block text-2xs font-medium text-slate-500 dark:text-slate-400 mb-1">Name</label>
-						<input type="text" placeholder="Remote name" bind:value={editRemoteName} class="w-full px-3 py-2 text-sm bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-700 rounded-lg text-slate-900 dark:text-slate-100 placeholder-slate-400 focus:outline-none focus:border-violet-500" />
-					</div>
-					<div>
-						<label class="block text-2xs font-medium text-slate-500 dark:text-slate-400 mb-1">URL</label>
-						<input type="text" placeholder="https://github.com/user/repo.git" bind:value={editRemoteUrl} class="w-full px-3 py-2 text-sm bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-700 rounded-lg text-slate-900 dark:text-slate-100 placeholder-slate-400 focus:outline-none focus:border-violet-500" />
+						<h2 class="text-base md:text-lg font-bold text-slate-900 dark:text-slate-100">Edit Remote</h2>
+						<p class="text-xs text-slate-500 dark:text-slate-400">Update the name or URL of an existing remote</p>
 					</div>
 				</div>
-				<div class="flex items-center gap-2 mt-4">
-					<button type="button" class="flex-1 flex items-center justify-center gap-1.5 px-3 py-2 text-sm font-medium bg-violet-500 text-white rounded-lg hover:bg-violet-600 transition-colors disabled:opacity-50 border-none cursor-pointer" onclick={handleSaveRemote} disabled={savingRemote || !editRemoteName.trim() || !editRemoteUrl.trim() || editRemoteName === editingRemote && editRemoteUrl === (remotes.find(r => r.name === editingRemote)?.fetchUrl || remotes.find(r => r.name === editingRemote)?.pushUrl || '')}>
-						{#if savingRemote}<Icon name="lucide:loader-circle" class="w-3.5 h-3.5 animate-spin" />{:else}<Icon name="lucide:save" class="w-3.5 h-3.5" />{/if}
-						<span>Save</span>
-					</button>
-					<button type="button" class="px-3 py-2 text-sm font-medium text-slate-600 dark:text-slate-300 hover:bg-slate-100 dark:hover:bg-slate-700 rounded-lg transition-colors bg-transparent border-none cursor-pointer" onclick={() => { editingRemote = null; editRemoteName = ''; editRemoteUrl = ''; }} disabled={savingRemote}>Cancel</button>
+				<button
+					type="button"
+					class="p-1.5 md:p-2 rounded-lg text-slate-500 hover:text-slate-900 dark:hover:text-slate-100 hover:bg-violet-500/10 transition-colors"
+					onclick={closeEditRemoteModal}
+					aria-label="Close edit remote modal"
+				>
+					<Icon name="lucide:x" class="w-4 h-4 md:w-5 md:h-5" />
+				</button>
+			</div>
+		{/snippet}
+
+		{#snippet children()}
+			<div class="space-y-4">
+				<div>
+					<label class="block text-sm font-semibold text-slate-700 dark:text-slate-300 mb-2" for="edit-remote-name">
+						Remote Name
+					</label>
+					<input
+						id="edit-remote-name"
+						type="text"
+						placeholder="e.g. origin"
+						bind:value={editRemoteName}
+						class="w-full px-3 py-2 text-sm bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-700 rounded-lg text-slate-900 dark:text-slate-100 placeholder-slate-400 outline-none focus:border-violet-500/40"
+						disabled={savingRemote}
+					/>
+				</div>
+				<div>
+					<label class="block text-sm font-semibold text-slate-700 dark:text-slate-300 mb-2" for="edit-remote-url">
+						Repository URL
+					</label>
+					<input
+						id="edit-remote-url"
+						type="text"
+						placeholder="https://github.com/user/repo.git"
+						bind:value={editRemoteUrl}
+						class="w-full px-3 py-2 text-sm bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-700 rounded-lg text-slate-900 dark:text-slate-100 placeholder-slate-400 outline-none focus:border-violet-500/40"
+						disabled={savingRemote}
+					/>
 				</div>
 			</div>
-		</div>
-	{/if}
+		{/snippet}
+
+		{#snippet footer()}
+			<button
+				type="button"
+				class="px-4 py-2 text-sm font-medium text-slate-700 dark:text-slate-300 hover:bg-slate-100 dark:hover:bg-slate-800 rounded-lg transition-colors"
+				onclick={closeEditRemoteModal}
+				disabled={savingRemote}
+			>
+				Cancel
+			</button>
+			<button
+				type="button"
+				class="flex items-center gap-2 px-4 py-2 text-sm font-medium bg-violet-500 text-white rounded-lg hover:bg-violet-600 transition-colors disabled:opacity-50"
+				onclick={handleSaveRemote}
+				disabled={savingRemote || !editRemoteName.trim() || !editRemoteUrl.trim() || (editRemoteName === editingRemote && editRemoteUrl === (remotes.find(r => r.name === editingRemote)?.fetchUrl || remotes.find(r => r.name === editingRemote)?.pushUrl || ''))}
+			>
+				{#if savingRemote}
+					<Icon name="lucide:loader-circle" class="w-4 h-4 animate-spin" />
+					Saving...
+				{:else}
+					<Icon name="lucide:save" class="w-4 h-4" />
+					Save Changes
+				{/if}
+			</button>
+		{/snippet}
+	</Modal>
 
 	<!-- Conflict Resolver Modal -->
 	<ConflictResolver
