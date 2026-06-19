@@ -52,7 +52,8 @@ export const snapshotQueries = {
 			is_deleted: 0,
 			branch_id: data.branch_id || null,
 			tree_hash: data.tree_hash || null,
-			session_changes: data.session_changes ? JSON.stringify(data.session_changes) : null
+			session_changes: data.session_changes ? JSON.stringify(data.session_changes) : null,
+			dismissed_changes: data.dismissed_changes || null
 		};
 
 		db.prepare(`
@@ -61,8 +62,8 @@ export const snapshotQueries = {
 				files_snapshot, project_metadata, created_at,
 				snapshot_type, parent_snapshot_id, delta_changes,
 				files_changed, insertions, deletions,
-				is_deleted, branch_id, tree_hash, session_changes
-			) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, ?, ?, ?)
+				is_deleted, branch_id, tree_hash, session_changes, dismissed_changes
+			) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, ?, ?, ?, ?)
 		`).run(
 			snapshot.id,
 			snapshot.message_id,
@@ -79,7 +80,8 @@ export const snapshotQueries = {
 			snapshot.deletions,
 			snapshot.branch_id || null,
 			snapshot.tree_hash || null,
-			snapshot.session_changes || null
+			snapshot.session_changes || null,
+			snapshot.dismissed_changes
 		);
 
 		return snapshot;
