@@ -29,6 +29,7 @@ export const snapshotQueries = {
 		branch_id?: string;
 		tree_hash?: string; // Blob store tree hash (new format)
 		session_changes?: any; // SessionScopedChanges object
+		dismissed_changes?: string | null; // Carry-forward dismissed marks
 	}): MessageSnapshot {
 		const db = getDatabase();
 		const id = data.id || `snapshot_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`;

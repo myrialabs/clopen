@@ -246,6 +246,18 @@ export class SnapshotService {
 			// Update in-memory baseline
 			this.sessionBaselines.set(sessionId, { ...currentTree });
 
+			// Carry forward dismissed marks, but REMOVE marks for files in the new
+			// `session_changes` — so when the AI re-modifies an accepted file,
+			// the new change shows up in the banner again.
+			let carriedDismissed: string | null = null;
+			if (previousSnapshot?.dismissed_changes) {
+				try {
+					const prevDismissed = JSON.parse(previousSnapshot.dismissed_changes) as string[];
+					const filtered = prevDismissed.filter(f => !(f in sessionChanges));
+					if (filtered.length > 0) carriedDismissed = JSON.stringify(filtered);
+				} catch { /* ignore corrupt JSON */ }
+			}
+
 			const dbSnapshot = snapshotQueries.createSnapshot({
 				id: snapshotId,
 				message_id: messageId,
@@ -260,7 +272,8 @@ export class SnapshotService {
 				insertions: fileStats.insertions,
 				deletions: fileStats.deletions,
 				tree_hash: undefined,
-				session_changes: sessionChanges
+				session_changes: sessionChanges,
+				dismissed_changes: carriedDismissed
 			});
 
 			const changesCount = Object.keys(sessionChanges).length;

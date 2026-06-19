@@ -108,6 +108,9 @@ export interface MessageSnapshot {
 	tree_hash?: string | null; // When set, snapshot uses blob store (files in ~/.clopen/snapshots/)
 	// Session-scoped changes: { filepath: { oldHash, newHash } }
 	session_changes?: string | null; // JSON string of SessionScopedChanges
+	// Per-snapshot dismissed marks (accepted/discarded files), carried forward
+	// to subsequent snapshots so marks persist across AI messages
+	dismissed_changes?: string | null; // JSON string of string[] filepaths
 }
 
 /**

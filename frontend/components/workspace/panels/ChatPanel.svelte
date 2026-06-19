@@ -488,7 +488,7 @@
 														<div class="w-10 h-1 rounded-full bg-slate-400 dark:bg-slate-500 group-hover/drag:bg-slate-500 dark:group-hover/drag:bg-slate-400 {isDraggingChanges ? '!bg-violet-500' : ''}"></div>
 													</div>
 												{/if}
-												<div class="ml-2 flex flex-col {checkpointChanges.files.length > 3 ? 'overflow-y-auto' : ''}" style={checkpointChanges.files.length > 3 ? 'height: {changesListHeight}px' : ''}>
+												<div class="ml-2 flex flex-col {checkpointChanges.files.length > 3 ? 'overflow-y-auto max-h-32 flex-shrink-0' : ''}" style={checkpointChanges.files.length > 3 ? 'height: {changesListHeight}px' : ''}>
 													{#each checkpointChanges.files as f (f.filepath)}
 														{@const fName = f.filepath.split(/[\\/]/).pop() || f.filepath}
 														{@const fDir = f.filepath.split(/[\\/]/).slice(0, -1).join('/')}
