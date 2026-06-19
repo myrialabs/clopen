@@ -772,6 +772,19 @@ export class SnapshotService {
 	 * Called when the user discards an AI change — so restoring the checkpoint
 	 * doesn't re-apply the change the user already reverted.
 	 */
+	/**
+	 * Clear `session_changes` for all snapshots in a session.
+	 * Called when switching branches — old branch's changes shouldn't
+	 * show in the new branch's banner.
+	 */
+	clearSessionChanges(sessionId: string): number {
+		const db = getDatabase();
+		const result = db.prepare(`
+			UPDATE message_snapshots SET session_changes = NULL WHERE session_id = ?
+		`).run(sessionId);
+		return (result as { changes: number }).changes;
+	}
+
 	removeFileFromCurrentSessionChanges(sessionId: string, filepath: string): boolean {
 		const snapshots = snapshotQueries.getBySessionId(sessionId);
 		if (snapshots.length === 0) return false;

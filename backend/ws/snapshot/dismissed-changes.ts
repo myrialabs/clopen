@@ -69,7 +69,7 @@ export const dismissedChangesHandler = createRouter()
 		return { files: result ?? [] };
 	})
 
-	.http('snapshot:clear-dismissed-changes', {
+	.		http('snapshot:clear-dismissed-changes', {
 		data: t.Object({
 			sessionId: t.String()
 		}),
@@ -79,5 +79,18 @@ export const dismissedChangesHandler = createRouter()
 	}, async ({ data, conn }) => {
 		requireSessionAccess(conn, data.sessionId);
 		const cleared = snapshotQueries.clearDismissedChanges(data.sessionId);
+		return { cleared };
+	})
+
+	.http('snapshot:clear-session-changes', {
+		data: t.Object({
+			sessionId: t.String()
+		}),
+		response: t.Object({
+			cleared: t.Number()
+		})
+	}, async ({ data, conn }) => {
+		requireSessionAccess(conn, data.sessionId);
+		const cleared = snapshotService.clearSessionChanges(data.sessionId);
 		return { cleared };
 	});
