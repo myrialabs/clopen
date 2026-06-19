@@ -150,28 +150,25 @@ export const snapshotQueries = {
 	},
 
 	/**
-	 * Get the dismissed-changes list for the session. Falls back to the
-	 * most recent non-empty `dismissed_changes` across all snapshots in
-	 * the session — so marks PERSIST across AI messages instead of
-	 * resetting on each new snapshot.
+	 * Get the dismissed-changes list from the LATEST snapshot for the
+	 * session. Per-snapshot marks RESET on each new AI message — so the
+	 * user can review new changes from the next AI turn.
 	 */
 	getDismissedChanges(sessionId: string): string[] {
 		const db = getDatabase();
-		const rows = db.prepare(`
+		const row = db.prepare(`
 			SELECT dismissed_changes FROM message_snapshots
-			WHERE session_id = ? AND dismissed_changes IS NOT NULL
+			WHERE session_id = ?
 			ORDER BY created_at DESC
-		`).all(sessionId) as { dismissed_changes: string }[];
-		const merged = new Set<string>();
-		for (const row of rows) {
-			try {
-				const parsed = JSON.parse(row.dismissed_changes);
-				if (Array.isArray(parsed)) {
-					for (const x of parsed) if (typeof x === 'string') merged.add(x);
-				}
-			} catch { /* ignore */ }
+			LIMIT 1
+		`).get(sessionId) as { dismissed_changes: string | null } | null;
+		if (!row?.dismissed_changes) return [];
+		try {
+			const parsed = JSON.parse(row.dismissed_changes);
+			return Array.isArray(parsed) ? parsed.filter(x => typeof x === 'string') : [];
+		} catch {
+			return [];
 		}
-		return [...merged];
 	},
 
 	/**

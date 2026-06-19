@@ -483,10 +483,12 @@
 											{:else if checkpointChanges.files.length === 0}
 												<p class="text-xs text-slate-400 mt-1 ml-5">No files changed</p>
 											{:else}
-												<div class="flex items-center justify-center h-3 mt-1 cursor-ns-resize rounded transition-colors group/drag {isDraggingChanges ? 'bg-violet-500/20' : 'hover:bg-slate-200/80 dark:hover:bg-slate-700/80'}" onmousedown={startDragChanges} role="separator" aria-label="Resize file list" tabindex="0">
-													<div class="w-10 h-1 rounded-full bg-slate-400 dark:bg-slate-500 group-hover/drag:bg-slate-500 dark:group-hover/drag:bg-slate-400 {isDraggingChanges ? '!bg-violet-500' : ''}"></div>
-												</div>
-												<div class="ml-2 flex flex-col overflow-y-auto" style="height: {changesListHeight}px">
+												{#if checkpointChanges.files.length > 3}
+													<div class="flex items-center justify-center h-3 mt-1 cursor-ns-resize rounded transition-colors group/drag {isDraggingChanges ? 'bg-violet-500/20' : 'hover:bg-slate-200/80 dark:hover:bg-slate-700/80'}" onmousedown={startDragChanges} role="separator" aria-label="Resize file list" tabindex="0">
+														<div class="w-10 h-1 rounded-full bg-slate-400 dark:bg-slate-500 group-hover/drag:bg-slate-500 dark:group-hover/drag:bg-slate-400 {isDraggingChanges ? '!bg-violet-500' : ''}"></div>
+													</div>
+												{/if}
+												<div class="ml-2 flex flex-col {checkpointChanges.files.length > 3 ? 'overflow-y-auto' : ''}" style={checkpointChanges.files.length > 3 ? 'height: {changesListHeight}px' : ''}>
 													{#each checkpointChanges.files as f (f.filepath)}
 														{@const fName = f.filepath.split(/[\\/]/).pop() || f.filepath}
 														{@const fDir = f.filepath.split(/[\\/]/).slice(0, -1).join('/')}

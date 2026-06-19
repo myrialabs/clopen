@@ -25,7 +25,7 @@
 		type GitActiveDiff
 	} from '$frontend/stores/features/git-workspace.svelte';
 	import { detectLanguageFromFilename } from '$frontend/components/common/editor/monaco-languages';
-	import { checkpointDiff, clearCheckpointDiff, refreshCheckpointBanner, clearActiveCheckpointFile } from '$frontend/stores/features/checkpoint-changes.svelte';
+	import { checkpointDiff, clearCheckpointDiff, refreshCheckpointBanner, clearActiveCheckpointFile, clearDismissedFiles } from '$frontend/stores/features/checkpoint-changes.svelte';
 	import { sessionState } from '$frontend/stores/core/sessions.svelte';
 	import type { IconName } from '$shared/types/ui/icons';
 	import type {
@@ -941,6 +941,11 @@
 		try {
 			await ws.http('git:switch-branch', { projectId, name });
 			showBranchManager = false;
+			// Clear dismissed marks — they're scoped to the old branch's worktree
+			// state. New branch should show all its own changes fresh.
+			if (sessionState.currentSession?.id) {
+				await clearDismissedFiles(sessionState.currentSession.id);
+			}
 			await loadAll();
 			if (activeView === 'log') await loadLog(true);
 		} catch (err) {
