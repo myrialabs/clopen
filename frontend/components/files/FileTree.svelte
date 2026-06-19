@@ -543,6 +543,15 @@
 				</p>
 			</div>
 			<div class="flex items-center gap-1">
+				{#if localExpandedFolders.size > 0}
+					<button
+						class="flex flex-shrink-0 p-1.5 text-slate-600 dark:text-slate-400 hover:text-violet-600 dark:hover:text-violet-400 hover:bg-violet-50 dark:hover:bg-violet-900/30 rounded-md transition-colors"
+						onclick={triggerCollapseAll}
+						title="Collapse All Folders"
+					>
+						<Icon name="lucide:fold-vertical" class="w-4 h-4" />
+					</button>
+				{/if}
 				{#if onNewFileInRoot}
 					<button
 						class="flex flex-shrink-0 p-1.5 text-slate-600 dark:text-slate-400 hover:text-violet-600 dark:hover:text-violet-400 hover:bg-violet-50 dark:hover:bg-violet-900/30 rounded-md transition-colors"
@@ -576,14 +585,7 @@
 							<Icon name="lucide:upload" class="w-4 h-4" />
 						{/if}
 					</button>
-			{/if}
-				<button
-					class="flex flex-shrink-0 p-1.5 text-slate-600 dark:text-slate-400 hover:text-violet-600 dark:hover:text-violet-400 hover:bg-violet-50 dark:hover:bg-violet-900/30 rounded-md transition-colors"
-					onclick={triggerCollapseAll}
-					title={localExpandedFolders.size > 0 ? 'Collapse All Folders' : 'All Folders Collapsed'}
-				>
-					<Icon name={localExpandedFolders.size > 0 ? 'lucide:folder-open' : 'lucide:folder-closed'} class="w-4 h-4" />
-				</button>
+				{/if}
 				{#if hasClipboard && onPasteToRoot}
 					<button
 						class="flex flex-shrink-0 p-1.5 text-slate-600 dark:text-slate-400 hover:text-violet-600 dark:hover:text-violet-400 hover:bg-violet-50 dark:hover:bg-violet-900/30 rounded-md transition-colors"
