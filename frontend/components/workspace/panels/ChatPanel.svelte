@@ -138,9 +138,11 @@
 			// not ALL local changes including user's own edits
 			await Promise.all(filepaths.map(fp => ws.http('git:discard', { projectId: pid, filePath: fp })));
 			if (sid) {
+				// Batch remove-session-changes (atomic) avoids race condition from
+				// parallel per-file calls where last save wins, losing other deletions
 				await Promise.all([
 					ws.http('snapshot:add-dismissed-changes', { sessionId: sid, filepaths }),
-					...filepaths.map(fp => ws.http('snapshot:remove-session-change', { sessionId: sid, filepath: fp }))
+					ws.http('snapshot:remove-session-changes', { sessionId: sid, filepaths })
 				]);
 			}
 			if (sid) await refreshCheckpointBanner(sid);
@@ -488,7 +490,7 @@
 														<div class="w-10 h-1 rounded-full bg-slate-400 dark:bg-slate-500 group-hover/drag:bg-slate-500 dark:group-hover/drag:bg-slate-400 {isDraggingChanges ? '!bg-violet-500' : ''}"></div>
 													</div>
 												{/if}
-												<div class="ml-2 flex flex-col {checkpointChanges.files.length > 3 ? 'overflow-y-auto max-h-32 flex-shrink-0' : ''}" style={checkpointChanges.files.length > 3 ? 'height: {changesListHeight}px' : ''}>
+												<div class="ml-2 flex flex-col {checkpointChanges.files.length > 3 ? 'overflow-y-auto max-h-[400px] flex-shrink-0' : ''}" style={checkpointChanges.files.length > 3 ? `height: ${changesListHeight}px` : ''}>
 													{#each checkpointChanges.files as f (f.filepath)}
 														{@const fName = f.filepath.split(/[\\/]/).pop() || f.filepath}
 														{@const fDir = f.filepath.split(/[\\/]/).slice(0, -1).join('/')}

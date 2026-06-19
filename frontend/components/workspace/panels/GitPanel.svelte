@@ -948,6 +948,10 @@
 			}
 			await loadAll();
 			if (activeView === 'log') await loadLog(true);
+			// Refresh banner so old files don't show from stale session_changes
+			if (sessionState.currentSession?.id) {
+				await refreshCheckpointBanner(sessionState.currentSession.id);
+			}
 		} catch (err) {
 			debug.error('git', 'Failed to switch branch:', err);
 			showError('Switch Branch Failed', err instanceof Error ? err.message : 'Unknown error');

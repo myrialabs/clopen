@@ -789,6 +789,37 @@ export class SnapshotService {
 			return false;
 		}
 	}
+
+	/**
+	 * Batch version — remove multiple files atomically to avoid race
+	 * conditions from parallel per-file calls (which all read the same
+	 * session_changes and the last save wins, losing other deletions).
+	 */
+	removeFilesFromCurrentSessionChanges(sessionId: string, filepaths: string[]): { removed: number; remaining: string[] } {
+		const snapshots = snapshotQueries.getBySessionId(sessionId);
+		if (snapshots.length === 0) return { removed: 0, remaining: filepaths };
+		const latest = snapshots[snapshots.length - 1];
+		if (!latest.session_changes) return { removed: 0, remaining: filepaths };
+
+		try {
+			const changes = JSON.parse(latest.session_changes as string) as Record<string, { oldHash: string; newHash: string }>;
+			let removed = 0;
+			const remaining: string[] = [];
+			for (const fp of filepaths) {
+				if (fp in changes) {
+					delete changes[fp];
+					removed++;
+				} else {
+					remaining.push(fp);
+				}
+			}
+			const updated = Object.keys(changes).length > 0 ? JSON.stringify(changes) : null;
+			snapshotQueries.updateSessionChanges(latest.id, updated);
+			return { removed, remaining };
+		} catch {
+			return { removed: 0, remaining: filepaths };
+		}
+	}
 }
 
 // Export singleton instance

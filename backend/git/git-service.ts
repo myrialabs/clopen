@@ -127,15 +127,18 @@ export class GitService {
 		const statusLine = statusResult.stdout.trim();
 
 		if (statusLine.startsWith('??')) {
-			// Untracked file - delete it
+			// Untracked file — delete it from worktree
 			const { unlink } = await import('node:fs/promises');
 			const { join } = await import('node:path');
 			await unlink(join(cwd, filePath));
 		} else {
-			// Tracked file - restore it
-			const result = await execGit(['checkout', '--', filePath], cwd);
+			// For staged + modified + deleted: unstage AND restore from HEAD.
+			// `git checkout -- <file>` alone restores from INDEX (not HEAD) if
+			// the file is staged — so the AI's content would persist. Using
+			// `git restore --staged --worktree` handles all tracked cases.
+			const result = await execGit(['restore', '--staged', '--worktree', '--', filePath], cwd);
 			if (result.exitCode !== 0) {
-				throw new Error(`git checkout failed: ${result.stderr}`);
+				throw new Error(`git restore failed: ${result.stderr}`);
 			}
 		}
 	}

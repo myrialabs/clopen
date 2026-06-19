@@ -40,6 +40,20 @@ export const dismissedChangesHandler = createRouter()
 		const ok = snapshotService.removeFileFromCurrentSessionChanges(data.sessionId, data.filepath);
 		return { ok };
 	})
+
+	.http('snapshot:remove-session-changes', {
+		data: t.Object({
+			sessionId: t.String(),
+			filepaths: t.Array(t.String(), { minItems: 1 })
+		}),
+		response: t.Object({
+			removed: t.Number(),
+			remaining: t.Array(t.String())
+		})
+	}, async ({ data, conn }) => {
+		requireSessionAccess(conn, data.sessionId);
+		return snapshotService.removeFilesFromCurrentSessionChanges(data.sessionId, data.filepaths);
+	})
 	
 	.http('snapshot:add-dismissed-changes', {
 		data: t.Object({
