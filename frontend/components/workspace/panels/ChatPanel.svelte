@@ -85,6 +85,7 @@
 				await ws.http('snapshot:add-dismissed-changes', { sessionId: sid, filepaths: [filepath] });
 			}
 			if (sid) await refreshCheckpointBanner(sid);
+			addNotification({type: 'info', title: 'Staged', message: `${filepath.split(/[\\/]/).pop()} staged — commit in Git panel`});
 		} catch (err) {
 			debug.error('checkpoint', 'Failed to accept file:', err);
 		}
@@ -120,6 +121,7 @@
 				await ws.http('snapshot:add-dismissed-changes', { sessionId: sid, filepaths });
 			}
 			if (sid) await refreshCheckpointBanner(sid);
+			addNotification({type: 'info', title: 'Staged', message: `${filepaths.length} file${filepaths.length > 1 ? 's' : ''} staged — commit in Git panel`});
 		} catch (err) {
 			debug.error('checkpoint', 'Failed to accept all files:', err);
 		}
@@ -132,7 +134,9 @@
 		const filepaths = checkpointChanges.files.map(f => f.filepath);
 		if (filepaths.length === 0) return;
 		try {
-			await ws.http('git:discard-all', { projectId: pid });
+			// Per-file discard (not git:discard-all) so we only revert banner files,
+			// not ALL local changes including user's own edits
+			await Promise.all(filepaths.map(fp => ws.http('git:discard', { projectId: pid, filePath: fp })));
 			if (sid) {
 				await Promise.all([
 					ws.http('snapshot:add-dismissed-changes', { sessionId: sid, filepaths }),

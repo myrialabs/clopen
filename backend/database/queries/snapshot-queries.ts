@@ -150,28 +150,28 @@ export const snapshotQueries = {
 	},
 
 	/**
-	 * Get the dismissed-changes list from the LATEST snapshot for the
-	 * session. The latest snapshot is always used — even if its
-	 * `dismissed_changes` is NULL — because per-snapshot marks must
-	 * RESET on each new AI message. Skipping NULL rows here would
-	 * fall back to the previous snapshot's marks and make the banner
-	 * think the file is still dismissed.
+	 * Get the dismissed-changes list for the session. Falls back to the
+	 * most recent non-empty `dismissed_changes` across all snapshots in
+	 * the session — so marks PERSIST across AI messages instead of
+	 * resetting on each new snapshot.
 	 */
 	getDismissedChanges(sessionId: string): string[] {
 		const db = getDatabase();
-		const row = db.prepare(`
+		const rows = db.prepare(`
 			SELECT dismissed_changes FROM message_snapshots
-			WHERE session_id = ?
+			WHERE session_id = ? AND dismissed_changes IS NOT NULL
 			ORDER BY created_at DESC
-			LIMIT 1
-		`).get(sessionId) as { dismissed_changes: string | null } | null;
-		if (!row?.dismissed_changes) return [];
-		try {
-			const parsed = JSON.parse(row.dismissed_changes);
-			return Array.isArray(parsed) ? parsed.filter(x => typeof x === 'string') : [];
-		} catch {
-			return [];
+		`).all(sessionId) as { dismissed_changes: string }[];
+		const merged = new Set<string>();
+		for (const row of rows) {
+			try {
+				const parsed = JSON.parse(row.dismissed_changes);
+				if (Array.isArray(parsed)) {
+					for (const x of parsed) if (typeof x === 'string') merged.add(x);
+				}
+			} catch { /* ignore */ }
 		}
+		return [...merged];
 	},
 
 	/**
