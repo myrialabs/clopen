@@ -17,7 +17,7 @@
 	import { chatService } from '$frontend/services/chat/chat.service';
 	import { snapshotService } from '$frontend/services/snapshot/snapshot.service';
 	import { setSkipNextRestore } from '$frontend/stores/ui/chat-input.svelte';
-	import { checkpointChanges, hideCheckpointChanges, changesExpanded, toggleChangesExpanded, showCheckpointChanges, requestCheckpointDiff, refreshCheckpointBanner, checkpointDiff, activeCheckpointFile, clearActiveCheckpointFile } from '$frontend/stores/features/checkpoint-changes.svelte';
+	import { checkpointChanges, hideCheckpointChanges, changesExpanded, toggleChangesExpanded, showCheckpointChanges, requestCheckpointDiff, refreshCheckpointBanner, checkpointDiff, activeCheckpointFile, clearActiveCheckpointFile, getTotalAdditions, getTotalDeletions } from '$frontend/stores/features/checkpoint-changes.svelte';
 	import { getFileIcon } from '$frontend/utils/file-icon-mappings';
 	import { getGitStatusLabel, getGitStatusColor } from '$frontend/utils/git-status';
 	import { showPanel } from '$frontend/stores/ui/workspace.svelte';
@@ -468,15 +468,23 @@
 									<div class="mb-2 p-2 bg-slate-50 dark:bg-slate-800/40 border border-slate-200 dark:border-slate-700 rounded-lg">
 										<div role="button" tabindex="0" class="flex items-center gap-2 w-full text-left bg-transparent cursor-pointer" onclick={toggleChangesExpanded} onkeydown={(e) => e.key === 'Enter' && toggleChangesExpanded()}>
 											<Icon name={changesExpanded.value ? 'lucide:chevron-down' : 'lucide:chevron-right'} class="w-3 h-3 text-slate-500 flex-shrink-0" />
-											<span class="text-xs font-semibold text-slate-700 dark:text-slate-300">Changed Files ({checkpointChanges.files.length})</span>
-										<div class="ml-auto flex items-center gap-1">
-											<button type="button" class="text-2xs px-1.5 py-0.5 rounded text-emerald-600 dark:text-emerald-400 hover:bg-emerald-500/10 transition-colors bg-transparent border-none cursor-pointer" onclick={(e) => { e.stopPropagation(); acceptAllCheckpointFiles(); }} title="Accept all changes (stage all)">
-												<Icon name="lucide:check-check" class="w-3 h-3" />
-											</button>
-											<button type="button" class="text-2xs px-1.5 py-0.5 rounded text-rose-600 dark:text-rose-400 hover:bg-rose-500/10 transition-colors bg-transparent border-none cursor-pointer" onclick={(e) => { e.stopPropagation(); discardAllCheckpointFiles(); }} title="Discard all changes (revert all)">
-												<Icon name="lucide:trash-2" class="w-3 h-3" />
-											</button>
-										</div>
+											<span class="text-xs font-semibold text-slate-700 dark:text-slate-300">
+												{checkpointChanges.files.length} file{checkpointChanges.files.length === 1 ? '' : 's'} changed
+											</span>
+											<div class="flex items-center gap-1.5 text-2xs font-mono font-semibold shrink-0">
+												<span class="text-emerald-600 dark:text-emerald-400">+{getTotalAdditions()}</span>
+												<span class="text-rose-600 dark:text-rose-400">-{getTotalDeletions()}</span>
+											</div>
+											<div class="ml-auto flex items-center gap-1">
+												<button type="button" class="text-2xs px-2 py-0.5 rounded text-emerald-700 dark:text-emerald-300 hover:bg-emerald-500/10 transition-colors bg-transparent border-none cursor-pointer flex items-center gap-1" onclick={(e) => { e.stopPropagation(); acceptAllCheckpointFiles(); }} title="Keep all changes (stage all)">
+													<Icon name="lucide:check" class="w-3 h-3" />
+													<span>Keep</span>
+												</button>
+												<button type="button" class="text-2xs px-2 py-0.5 rounded text-rose-700 dark:text-rose-300 hover:bg-rose-500/10 transition-colors bg-transparent border-none cursor-pointer flex items-center gap-1" onclick={(e) => { e.stopPropagation(); discardAllCheckpointFiles(); }} title="Discard all changes (revert all)">
+													<Icon name="lucide:undo-2" class="w-3 h-3" />
+													<span>Undo</span>
+												</button>
+											</div>
 											<span role={appState.isLoading ? undefined : 'button'} tabindex={appState.isLoading ? -1 : 0} class="text-slate-400 bg-transparent flex-shrink-0 pr-1.5 {appState.isLoading ? 'cursor-not-allowed opacity-40' : 'hover:text-slate-700 cursor-pointer'}" onclick={(e) => { if (appState.isLoading) return; e.stopPropagation(); hideCheckpointChanges(); }} onkeydown={(e) => { if (appState.isLoading) return; if (e.key === 'Enter') hideCheckpointChanges(); }}><Icon name="lucide:x" class="w-3 h-3" /></span>
 										</div>
 										{#if changesExpanded.value}
@@ -486,20 +494,22 @@
 												<p class="text-xs text-slate-400 mt-1 ml-5">No files changed</p>
 											{:else}
 												{#if checkpointChanges.files.length > 3}
-													<div class="flex items-center justify-center h-3 mt-1 cursor-ns-resize rounded transition-colors group/drag {isDraggingChanges ? 'bg-violet-500/20' : 'hover:bg-slate-200/80 dark:hover:bg-slate-700/80'}" onmousedown={startDragChanges} role="separator" aria-label="Resize file list" tabindex="0">
+													<div class="flex items-center justify-center h-3 mt-1 cursor-ns-resize rounded transition-colors group/drag" onmousedown={startDragChanges} role="separator" aria-label="Resize file list" tabindex="0">
 														<div class="w-10 h-1 rounded-full bg-slate-400 dark:bg-slate-500 group-hover/drag:bg-slate-500 dark:group-hover/drag:bg-slate-400 {isDraggingChanges ? '!bg-violet-500' : ''}"></div>
 													</div>
 												{/if}
 												<div class="ml-2 flex flex-col {checkpointChanges.files.length > 3 ? 'overflow-y-auto max-h-[400px] flex-shrink-0' : ''}" style={checkpointChanges.files.length > 3 ? `height: ${changesListHeight}px` : ''}>
-													{#each checkpointChanges.files as f (f.filepath)}
+													{#each checkpointChanges.files as f, i (f.filepath)}
 														{@const fName = f.filepath.split(/[\\/]/).pop() || f.filepath}
 														{@const fDir = f.filepath.split(/[\\/]/).slice(0, -1).join('/')}
 														{@const fStatus = !f.oldHash ? 'A' : !f.newHash ? 'D' : 'M'}
 														{@const isActiveFile = activeCheckpointFile.path === f.filepath}
+														{@const isTopItem = i === 0}
+														{@const isDefaultTop = isTopItem && !activeCheckpointFile.path}
 														<div
 															role="button"
 															tabindex="0"
-															class="group flex items-center gap-1.5 py-1.5 px-2 rounded-md cursor-pointer transition-colors text-slate-700 dark:text-slate-200 {isActiveFile ? 'bg-slate-200 dark:bg-slate-700/60' : 'hover:bg-slate-100 dark:hover:bg-slate-800/60'}"
+															class="group relative flex items-center gap-1.5 py-1.5 px-2 rounded-md cursor-pointer transition-colors text-slate-700 dark:text-slate-200 {isActiveFile || isDefaultTop ? 'bg-slate-200 dark:bg-slate-700/60' : 'hover:bg-slate-100 dark:hover:bg-slate-800/60'}"
 															onclick={async (e) => {
 																e.stopPropagation();
 																const sid = sessionState.currentSession?.id;
@@ -536,8 +546,18 @@
 																	<span class="text-3xs text-slate-400 dark:text-slate-500 truncate min-w-0" dir="rtl">{fDir}</span>
 																{/if}
 															</div>
-															<button type="button" class="flex items-center justify-center w-5 h-5 rounded text-emerald-600 dark:text-emerald-400 hover:bg-emerald-500/15 transition-colors bg-transparent border-none cursor-pointer shrink-0 opacity-0 group-hover:opacity-100" onclick={(e) => { e.stopPropagation(); acceptCheckpointFile(f.filepath); }} title="Accept this file (stage)"><Icon name="lucide:check" class="w-3 h-3" /></button>
-															<button type="button" class="flex items-center justify-center w-5 h-5 rounded text-rose-600 dark:text-rose-400 hover:bg-rose-500/15 transition-colors bg-transparent border-none cursor-pointer shrink-0 opacity-0 group-hover:opacity-100" onclick={(e) => { e.stopPropagation(); discardCheckpointFile(f.filepath); }} title="Discard this file (revert)"><Icon name="lucide:undo-2" class="w-3 h-3" /></button>
+															<div class="flex items-center gap-1 text-3xs font-mono font-semibold shrink-0">
+																{#if f.additions > 0}
+																	<span class="text-emerald-600 dark:text-emerald-400 tabular-nums">+{f.additions}</span>
+																{/if}
+																{#if f.deletions > 0}
+																	<span class="text-rose-600 dark:text-rose-400 tabular-nums">-{f.deletions}</span>
+																{/if}
+															</div>
+															<div class="flex items-center gap-0.5 shrink-0 transition-opacity duration-150 {isActiveFile || isDefaultTop ? 'opacity-100' : 'opacity-0 group-hover:opacity-100'}">
+																<button type="button" class="flex items-center justify-center w-5 h-5 rounded text-emerald-600 dark:text-emerald-400 hover:bg-emerald-500/15 transition-colors bg-transparent border-none cursor-pointer" onclick={(e) => { e.stopPropagation(); acceptCheckpointFile(f.filepath); }} title="Accept this file (stage)"><Icon name="lucide:check" class="w-3 h-3" /></button>
+																<button type="button" class="flex items-center justify-center w-5 h-5 rounded text-rose-600 dark:text-rose-400 hover:bg-rose-500/15 transition-colors bg-transparent border-none cursor-pointer" onclick={(e) => { e.stopPropagation(); discardCheckpointFile(f.filepath); }} title="Discard this file (revert)"><Icon name="lucide:undo-2" class="w-3 h-3" /></button>
+															</div>
 															<span class="w-3 text-center text-3xs font-bold {getGitStatusColor(fStatus)} shrink-0 ml-auto">{getGitStatusLabel(fStatus)}</span>
 														</div>
 													{/each}

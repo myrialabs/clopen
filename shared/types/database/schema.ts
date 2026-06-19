@@ -122,6 +122,20 @@ export interface SessionFileChange {
 }
 
 /**
+ * Per-file change enriched with line counts (computed at query time
+ * by diffing blob-stored old content against the current worktree).
+ * Returned by `snapshot:get-changes` so the chat banner can show
+ * `+N -N` next to each file and `+Σ -Σ` in the header.
+ */
+export interface SessionFileChangeWithStats {
+	filepath: string; // Repo-relative path (the map key in SessionScopedChanges)
+	oldHash: string; // Hash of file content before change
+	newHash: string; // Hash of file content after change
+	additions: number; // Lines added (0 if binary or unreadable)
+	deletions: number; // Lines removed (0 if binary or unreadable)
+}
+
+/**
  * Session-scoped changes map: filepath → { oldHash, newHash }
  * Used for session-scoped restore and conflict detection
  */

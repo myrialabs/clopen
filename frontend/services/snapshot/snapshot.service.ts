@@ -7,6 +7,7 @@
 
 import ws from '$frontend/utils/ws';
 import type { TimelineResponse } from '$frontend/components/checkpoint/timeline/types';
+import type { SessionFileChangeWithStats } from '$shared/types/database/schema';
 
 /**
  * Conflict information for a single file
@@ -70,7 +71,7 @@ class SnapshotService {
 	 * Get changed files for a checkpoint.
 	 */
 	async getChanges(messageId: string, sessionId: string): Promise<{
-		files: { filepath: string; oldHash: string; newHash: string }[];
+		files: SessionFileChangeWithStats[];
 	}> {
 		return ws.http('snapshot:get-changes', { messageId, sessionId });
 	}

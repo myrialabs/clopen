@@ -5,14 +5,17 @@
  * as a banner above the chat input.
  */
 
+import type { SessionFileChangeWithStats } from '$shared/types/database/schema';
 import { snapshotService } from '$frontend/services/snapshot/snapshot.service';
 import { projectState } from '$frontend/stores/core/projects.svelte';
 import ws from '$frontend/utils/ws';
 
+export type CheckpointFile = SessionFileChangeWithStats;
+
 export const checkpointChanges = $state<{
 	visible: boolean;
 	messageText: string;
-	files: { filepath: string; oldHash: string; newHash: string }[];
+	files: CheckpointFile[];
 	loading: boolean;
 }>({
 	visible: false,
@@ -21,13 +24,28 @@ export const checkpointChanges = $state<{
 	loading: false
 });
 
+/** Aggregate line counts across all visible files — rendered in the
+ *  banner header as `+Σadditions  -Σdeletions` so the user gets a
+ *  glanceable total like `git diff --stat`. */
+export function getTotalAdditions(): number {
+	let total = 0;
+	for (const f of checkpointChanges.files) total += f.additions ?? 0;
+	return total;
+}
+
+export function getTotalDeletions(): number {
+	let total = 0;
+	for (const f of checkpointChanges.files) total += f.deletions ?? 0;
+	return total;
+}
+
 export const changesExpanded = $state({ value: false });
 
 export function toggleChangesExpanded() {
 	changesExpanded.value = !changesExpanded.value;
 }
 
-export function showCheckpointChanges(messageText: string, files: { filepath: string; oldHash: string; newHash: string }[]) {
+export function showCheckpointChanges(messageText: string, files: CheckpointFile[]) {
 	changesExpanded.value = true;
 	checkpointChanges.visible = true;
 	checkpointChanges.messageText = messageText;
