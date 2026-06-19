@@ -128,12 +128,10 @@
 	$effect(() => {
 		if (projectId && selectedRemote) saveSelectedRemote();
 	});
-
-	$effect(() => {
-		if (projectId && selectedRemote) loadBranches();
-	});
 	let pushingBranch = $state<string | null>(null);
 	let fetchingRemote = $state<string | null>(null);
+	let branchesLoadToken = 0;
+	let isLoadingBranches = $state(false);
 	let showAddRemoteForm = $state(false);
 	let newRemoteName = $state('');
 	let newRemoteUrl = $state('');
@@ -479,15 +477,21 @@
 		}
 	}
 
-	async function loadBranches(): Promise<GitBranchInfo | null> {
+	async function loadBranches(remote?: string): Promise<GitBranchInfo | null> {
 		if (!projectId) return null;
+		const useRemote = remote ?? selectedRemote;
+		const token = ++branchesLoadToken;
+		isLoadingBranches = true;
 		try {
-			const data = await ws.http('git:branches', { projectId, selectedRemote });
+			const data = await ws.http('git:branches', { projectId, selectedRemote: useRemote });
+			if (token !== branchesLoadToken) return null; // stale — newer load in flight
 			branchInfo = data;
 			return data;
 		} catch (err) {
 			debug.error('git', 'Failed to load branches:', err);
 			return null;
+		} finally {
+			if (token === branchesLoadToken) isLoadingBranches = false;
 		}
 	}
 
@@ -496,10 +500,13 @@
 		try {
 			const list = await ws.http('git:remotes', { projectId });
 			remotes = list;
-			loadSelectedRemote(projectId);
-			// Auto-select first remote if current selection doesn't exist
-			if (list.length > 0 && !list.find(r => r.name === selectedRemote)) {
-				selectedRemote = list[0].name;
+			// Only restore from localStorage if current selection is empty or invalid
+			// (otherwise we'd overwrite the user's just-clicked star with the stale saved value)
+			if (!selectedRemote || !list.find(r => r.name === selectedRemote)) {
+				loadSelectedRemote(projectId);
+				if (list.length > 0 && !list.find(r => r.name === selectedRemote)) {
+					selectedRemote = list[0].name;
+				}
 			}
 		} catch (err) {
 			debug.error('git', 'Failed to load remotes:', err);
@@ -2601,9 +2608,6 @@ ${bodies}`;
 							{@const remoteBranches = filteredRemoteBranches.filter(b => b.name.startsWith(remote.name + '/'))}
 							<div class="mb-2">
 								<div class="group flex items-center gap-2 px-2 py-1.5 rounded-lg hover:bg-slate-100/50 dark:hover:bg-slate-800/30 transition-colors min-w-0">
-										<button type="button" class="flex items-center justify-center w-4 h-4 rounded text-slate-400 hover:text-amber-500 transition-colors cursor-pointer bg-transparent border-none shrink-0" onclick={() => { selectedRemote = remote.name; showInfo('Default remote set', `Now using ${remote.name} for push, pull, and fetch`); }} title={selectedRemote === remote.name ? 'Default remote' : `Set ${remote.name} as default`}>
-											<Icon name={selectedRemote === remote.name ? 'lucide:star' : 'lucide:star-off'} class={selectedRemote === remote.name ? 'w-3.5 h-3.5 text-amber-500' : 'w-3.5 h-3.5'} />
-										</button>
 										<Icon name="lucide:server" class="w-3.5 h-3.5 text-slate-400 shrink-0" />
 										<span class="text-xs font-semibold text-slate-600 dark:text-slate-300 shrink-0">{remote.name}</span>
 										{#if remote.fetchUrl || remote.pushUrl}
