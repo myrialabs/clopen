@@ -941,13 +941,11 @@
 		try {
 			await ws.http('git:switch-branch', { projectId, name });
 			showBranchManager = false;
-			// Clear only dismissed marks (per-branch scope) — keep session_changes
-			// so switching back to the original branch still shows the AI's changes.
+			// Don't clear dismissed marks or session_changes on branch switch.
+			// Accepted/committed files stay dismissed forever (mark persists).
 			// Files that don't exist in the new branch's worktree are auto-filtered
-			// by the existsSync check in getChanges.
-			if (sessionState.currentSession?.id) {
-				await clearDismissedFiles(sessionState.currentSession.id);
-			}
+			// by the existsSync check in getChanges — so unaccepted changes from
+			// the old branch don't show on the new branch.
 			await loadAll();
 			if (activeView === 'log') await loadLog(true);
 			if (sessionState.currentSession?.id) {
