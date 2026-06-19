@@ -37,23 +37,21 @@ export const changesHandler = createRouter()
 
 		// Accumulate session_changes across every snapshot for the session.
 		// For each filepath:
-		//   - `oldHash` is taken from the FIRST snapshot that touched the file
-		//     (i.e. the pre-AI state) so the diff shows the full accumulated
-		//     change from original → current, not just the latest delta.
+		//   - `oldHash` is taken from the LATEST snapshot that touched the file
+		//     so the diff matches the worktree's `git diff` (which compares
+		//     against the last committed/known state, not the original pre-AI state).
 		//   - `newHash` is taken from the LATEST snapshot that touched the
 		//     file (the current working-tree state).
 		const snapshots = snapshotQueries.getBySessionId(data.sessionId);
 
-		const firstOld: Record<string, string> = {};
+		const lastOld: Record<string, string> = {};
 		const lastNew: Record<string, string> = {};
 		for (const snap of snapshots) {
 			if (!snap.session_changes) continue;
 			try {
 				const changes = JSON.parse(snap.session_changes as string) as Record<string, { oldHash: string; newHash: string }>;
 				for (const [filepath, entry] of Object.entries(changes)) {
-					if (!(filepath in firstOld)) {
-						firstOld[filepath] = entry.oldHash || '';
-					}
+					lastOld[filepath] = entry.oldHash || '';
 					lastNew[filepath] = entry.newHash || '';
 				}
 			} catch {
@@ -75,7 +73,7 @@ export const changesHandler = createRouter()
 			})
 			.map(filepath => ({
 				filepath,
-				oldHash: firstOld[filepath] || '',
+				oldHash: lastOld[filepath] || '',
 				newHash: lastNew[filepath] || ''
 			}));
 		return { files };

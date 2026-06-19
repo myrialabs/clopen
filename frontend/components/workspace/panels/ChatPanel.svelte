@@ -85,7 +85,7 @@
 				await ws.http('snapshot:add-dismissed-changes', { sessionId: sid, filepaths: [filepath] });
 			}
 			if (sid) await refreshCheckpointBanner(sid);
-			addNotification({type: 'info', title: 'Staged', message: `${filepath.split(/[\\/]/).pop()} staged — commit in Git panel`});
+			addNotification({type: 'info', title: 'Staged', message: `${filepath.split(/[\\/]/).pop()} entered staged`});
 		} catch (err) {
 			debug.error('checkpoint', 'Failed to accept file:', err);
 		}
@@ -121,7 +121,7 @@
 				await ws.http('snapshot:add-dismissed-changes', { sessionId: sid, filepaths });
 			}
 			if (sid) await refreshCheckpointBanner(sid);
-			addNotification({type: 'info', title: 'Staged', message: `${filepaths.length} file${filepaths.length > 1 ? 's' : ''} staged — commit in Git panel`});
+			addNotification({type: 'info', title: 'Staged', message: `${filepaths.length} file${filepaths.length > 1 ? 's' : ''} entered staged`});
 		} catch (err) {
 			debug.error('checkpoint', 'Failed to accept all files:', err);
 		}
