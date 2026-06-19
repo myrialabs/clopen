@@ -203,8 +203,7 @@ export const authStore = {
 	 * Regenerates PAT for the existing no-auth admin and updates authMode setting.
 	 */
 	async switchToWithAuth() {
-		const { loadSystemSettings, updateSystemSettings } = await import('$frontend/stores/features/settings.svelte');
-		await loadSystemSettings();
+		const { updateSystemSettings } = await import('$frontend/stores/features/settings.svelte');
 		await updateSystemSettings({ authMode: 'required' });
 
 		const result = await ws.http('auth:regenerate-pat', {});
@@ -218,8 +217,7 @@ export const authStore = {
 	 * Only updates the authMode setting; existing user remains unchanged.
 	 */
 	async switchToNoAuth() {
-		const { loadSystemSettings, updateSystemSettings } = await import('$frontend/stores/features/settings.svelte');
-		await loadSystemSettings();
+		const { updateSystemSettings } = await import('$frontend/stores/features/settings.svelte');
 		await updateSystemSettings({ authMode: 'none' });
 
 		authMode = 'none';
@@ -235,8 +233,7 @@ export const authStore = {
 
 		// Save onboardingComplete to system settings
 		try {
-			const { loadSystemSettings, updateSystemSettings } = await import('$frontend/stores/features/settings.svelte');
-			await loadSystemSettings();
+			const { updateSystemSettings } = await import('$frontend/stores/features/settings.svelte');
 			await updateSystemSettings({ onboardingComplete: true });
 		} catch {
 			// Best-effort — if this fails, wizard may show again

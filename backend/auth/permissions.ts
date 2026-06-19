@@ -36,6 +36,7 @@ export const ADMIN_ONLY_ROUTES = new Set([
 	'projects:create',
 	'projects:delete',
 	'settings:update',
+	'settings:update-system',
 	'settings:update-batch',
 	'system:run-update',
 	'system:clear-data',

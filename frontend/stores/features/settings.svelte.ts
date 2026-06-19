@@ -116,12 +116,13 @@ export async function loadSystemSettings(): Promise<void> {
  * Save system settings (admin only).
  */
 export async function updateSystemSettings(newSettings: Partial<SystemSettings>): Promise<void> {
+	// Optimistically update the local reactive copy.
 	Object.assign(systemSettings, newSettings);
 	try {
-		await ws.http('settings:update', {
-			key: 'system:settings',
-			value: JSON.stringify({ ...systemSettings })
-		});
+		// Send ONLY the changed keys — the backend merges them into the stored
+		// blob, so a partial write never clobbers sibling fields (e.g.
+		// onboardingComplete) even if our in-memory copy was stale.
+		await ws.http('settings:update-system', { patch: { ...newSettings } });
 		debug.log('settings', 'System settings saved');
 	} catch (err) {
 		debug.error('settings', 'Failed to save system settings:', err);

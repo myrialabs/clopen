@@ -54,6 +54,37 @@ export const crudHandler = createRouter()
 		return setting;
 	})
 
+	// Merge-update system settings (admin only).
+	// Reads the current `system:settings` blob, merges the provided patch, and
+	// writes it back atomically. Sending only the changed keys prevents a partial
+	// update from clobbering sibling fields (e.g. onboardingComplete) when a
+	// client's in-memory copy of the settings is stale.
+	.http('settings:update-system', {
+		data: t.Object({
+			patch: t.Record(t.String(), t.Any())
+		}),
+		response: t.Any()
+	}, async ({ data }) => {
+		const KEY = 'system:settings';
+		const existing = settingsQueries.get(KEY);
+
+		let current: Record<string, unknown> = {};
+		if (existing?.value) {
+			try {
+				current = typeof existing.value === 'string'
+					? JSON.parse(existing.value)
+					: (existing.value as Record<string, unknown>);
+			} catch {
+				current = {};
+			}
+		}
+
+		const merged = { ...current, ...data.patch };
+		settingsQueries.set(KEY, JSON.stringify(merged));
+
+		return settingsQueries.get(KEY);
+	})
+
 	// Batch update multiple settings
 	.http('settings:update-batch', {
 		data: t.Object({
