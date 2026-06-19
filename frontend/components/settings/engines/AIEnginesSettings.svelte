@@ -1243,10 +1243,12 @@
 <div class={compact ? '' : 'space-y-6'}>
 	{#if showHeader}
 		<!-- Header -->
-		<h3 class="text-base font-bold text-slate-900 dark:text-slate-100 mb-1.5">Engines</h3>
-		<p class="text-sm text-slate-600 dark:text-slate-500 mb-4">
-			Connect accounts and configure providers for your AI engines.
-		</p>
+		<div class="mb-4">
+			<h3 class="text-base font-bold text-slate-900 dark:text-slate-100 mb-1.5">Engines</h3>
+			<p class="text-sm text-slate-600 dark:text-slate-500">
+				Connect accounts and configure providers for your AI engines.
+			</p>
+		</div>
 	{/if}
 
 	<!-- Engine selector grid -->

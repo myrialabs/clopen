@@ -97,13 +97,13 @@ Three key rules that **every** layer upholds:
 > Two design pitfalls have repeatedly tripped people adding new adapters.
 > Before sketching architecture, double-check:
 >
-> 1. **MCP over HTTP already exists.** `backend/mcp/remote-server.ts` mounts
+> 1. **MCP over HTTP already exists.** `backend/mcp/internal/remote-server.ts` mounts
 >    every `defineServer()`-registered MCP server as a Streamable HTTP
 >    endpoint at `http://localhost:<port>/mcp`. OpenCode consumes it via
 >    `getOpenCodeMcpConfig()`. Any engine whose CLI/SDK accepts a
 >    `streamable-http` MCP URL (Codex, future engines) reuses **the same
 >    URL** by adding a sibling `getXxxMcpConfig()` helper in
->    `backend/mcp/config.ts`. Do **NOT** propose a "new MCP bridge",
+>    `backend/mcp/internal/config.ts`. Do **NOT** propose a "new MCP bridge",
 >    "per-engine MCP server", or "per-stream MCP path". See §9.12.
 > 2. **Shared CLI dotfiles are swapped from DB, not isolated.** When a CLI
 >    stores its credentials in a known location (e.g. `~/.codex/auth.json`),

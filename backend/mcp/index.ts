@@ -1,25 +1,45 @@
 /**
- * MCP (Model Context Protocol) Custom Tools
+ * MCP (Model Context Protocol) — public facade.
  *
- * Main export point for the custom MCP tools system.
+ * This is the ONLY entry point the rest of the backend imports from. It hides
+ * the internal/external split and merges the two before handing config to an
+ * engine adapter:
  *
- * Claude Code: in-process MCP servers via createSdkMcpServer()
- * Open Code:   remote HTTP MCP server via createRemoteMcpServer()
+ *   - INTERNAL (`./internal`) — custom tools defined in code via
+ *     `defineServer()`. Claude runs them in-process; other engines reach them
+ *     through the `/mcp` remote bridge (namespace `clopen-mcp`).
+ *   - EXTERNAL (`./external`) — servers the user installs from the official
+ *     MCP registry, stored in the `mcp_servers` table. Each occupies its own
+ *     `<slug>` namespace and is connected to directly by the engine.
  *
- * Both use the same tool definitions from defineServer() in servers/helper.ts.
+ * Adapters call `getEnabledMcpServers()` / `getXxxMcpConfig()` /
+ * `resolveOpenCodeToolName()` here and receive the COMBINED view. The internal
+ * builders (which only know about `clopen-mcp`) live in `./internal/config`
+ * and are wrapped below.
  */
 
-// Type definitions
+import type { McpExecutionContext } from '../engine/types';
+import type { McpServerConfig } from '@anthropic-ai/claude-agent-sdk';
+
+import * as internal from './internal/config';
+import * as external from './external/config';
+
+// ---------------------------------------------------------------------------
+// Types
+// ---------------------------------------------------------------------------
+
 export type {
 	ParsedMcpToolName,
 	McpServerStatus
-} from './types';
+} from './internal/types';
 
-// Main configuration and all utilities
+// ---------------------------------------------------------------------------
+// Internal config — re-exported unchanged (no external dimension)
+// ---------------------------------------------------------------------------
+
 export {
 	mcpServers,
 	mcpServersConfig,
-	getEnabledMcpServers,
 	getAllowedMcpTools,
 	getServerConfig,
 	getToolConfig,
@@ -30,17 +50,82 @@ export {
 	getEnabledServerNames,
 	getEnabledToolsForServer,
 	getMcpStats,
-	getOpenCodeMcpConfig,
-	getCodexMcpConfig,
-	getCopilotMcpConfig,
-	resolveOpenCodeToolName
-} from './config';
+	syncInternalServers,
+	refreshInternalEnabledCache
+} from './internal/config';
 
-// Server implementations
-export * from './servers';
+// Internal server implementations + registries
+export * from './internal/servers';
 
-// Remote MCP HTTP server for Open Code
-export { handleMcpRequest, closeMcpServer } from './remote-server';
+// Remote MCP HTTP bridge (serves internal tools to non-Claude engines)
+export { handleMcpRequest, closeMcpServer } from './internal/remote-server';
 
 // Project context service for MCP tool handlers
-export { projectContextService } from './project-context';
+export { projectContextService } from './internal/project-context';
+
+// Shared namespace constants/helpers
+export {
+	INTERNAL_BRIDGE_NAMESPACE,
+	INTERNAL_PREFIX,
+	externalNamespace,
+	isInternalNamespace,
+	slugifyRegistryName
+} from './shared/constants';
+
+// External catalog + types (used by the WS layer and Settings → MCP)
+export { listRegistryServers, mapRegistryServer } from './external/registry-client';
+export { getEnabledExternalServers } from './external/config';
+export type { CatalogServer, CatalogEnvVar, CatalogPage, ResolvedExternalServer } from './external/types';
+
+// ---------------------------------------------------------------------------
+// Merged config builders (internal `clopen-mcp` + external bare `<slug>`)
+// ---------------------------------------------------------------------------
+
+/** Claude Agent SDK `mcpServers`: in-process internal servers + external stdio/remote. */
+export function getEnabledMcpServers(context?: McpExecutionContext): Record<string, McpServerConfig> {
+	return {
+		...internal.getEnabledMcpServers(context),
+		...external.getClaudeExternalMcpConfig()
+	};
+}
+
+/** Open Code MCP config: internal `clopen-mcp` remote bridge + external servers. */
+export function getOpenCodeMcpConfig() {
+	return {
+		...internal.getOpenCodeMcpConfig(),
+		...external.getOpenCodeExternalMcpConfig()
+	};
+}
+
+/** Codex MCP config. */
+export function getCodexMcpConfig() {
+	return {
+		...internal.getCodexMcpConfig(),
+		...external.getCodexExternalMcpConfig()
+	};
+}
+
+/** Copilot MCP config. */
+export function getCopilotMcpConfig() {
+	return {
+		...internal.getCopilotMcpConfig(),
+		...external.getCopilotExternalMcpConfig()
+	};
+}
+
+/** Qwen Code MCP config. */
+export function getQwenMcpConfig() {
+	return {
+		...internal.getQwenMcpConfig(),
+		...external.getQwenExternalMcpConfig()
+	};
+}
+
+/**
+ * Resolve a remote-engine tool name to `mcp__<server>__<tool>`. Tries the
+ * internal resolver (handles `clopen-mcp` + already-canonical names) first,
+ * then the external resolver (handles `<slug>` namespaces).
+ */
+export function resolveOpenCodeToolName(toolName: string): string | null {
+	return internal.resolveOpenCodeToolName(toolName) ?? external.resolveExternalToolName(toolName);
+}

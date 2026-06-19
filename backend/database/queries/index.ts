@@ -12,3 +12,5 @@ export { dbClientConnectionQueries } from './db-client-connection-queries';
 export { dbClientQueryHistoryQueries } from './db-client-query-history-queries';
 export { auditLogQueries } from './audit-log-queries';
 export { fileAuditLogQueries } from './file-audit-log-queries';
+export { mcpServerQueries } from './mcp-server-queries';
+export type { McpServerRow, McpServerInput, McpTransport, McpSource } from './mcp-server-queries';

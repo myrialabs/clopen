@@ -352,7 +352,7 @@ async dispose(): Promise<void> {
 
 ### 9.12 Reuse the existing MCP HTTP infrastructure — never build a new bridge
 
-`backend/mcp/remote-server.ts` already mounts every server registered via
+`backend/mcp/internal/remote-server.ts` already mounts every server registered via
 `defineServer()` as a **Streamable HTTP MCP** endpoint at
 `http://localhost:<port>/mcp`. OpenCode consumes it via
 `getOpenCodeMcpConfig()`. Tool handlers run **in-process** in the Clopen
@@ -383,9 +383,9 @@ When you add an engine whose CLI/SDK accepts a streamable-http MCP URL
    - In the adapter, name the local variable holding the helper's return
      value **`mcpConfig`**, not `mcpServers`. The latter shadows both the
      SDK's config field name AND the registry exported from
-     `backend/mcp/config.ts`, and reads as a bug at the call site.
+     `backend/mcp/internal/config.ts`, and reads as a bug at the call site.
 
-2. Use `resolveOpenCodeToolName()` (in `backend/mcp/config.ts`) on
+2. Use `resolveOpenCodeToolName()` (in `backend/mcp/internal/config.ts`) on
    incoming tool names; it strips the `clopen-mcp_` / `clopen-mcp-`
    prefix and reverse-maps to `mcp__<server>__<tool>`. The same helper
    works for any engine that uses the same naming convention.

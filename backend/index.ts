@@ -18,6 +18,7 @@ import { loggerMiddleware } from './middleware/logger';
 
 // Database initialization
 import { initializeDatabase, closeDatabase } from './database';
+import { syncInternalServers } from './mcp';
 import { disposeAllEngines } from './engine';
 import { refreshProcessPath } from './utils/path-enrich';
 import { debug } from '$shared/utils/logger';
@@ -39,7 +40,7 @@ import { audioRoute } from './http/audio';
 import { browserPreviewServiceManager } from './preview';
 
 // MCP remote server for Open Code custom tools
-import { handleMcpRequest, closeMcpServer } from './mcp/remote-server';
+import { handleMcpRequest, closeMcpServer } from './mcp';
 
 // Auth middleware
 import { checkRouteAccess } from './auth/permissions';
@@ -163,6 +164,9 @@ async function startServer() {
 	try {
 		await initializeDatabase();
 		debug.log('database', '✅ Database initialized successfully');
+		// Mirror code-defined internal MCP servers into the DB so Settings → MCP
+		// can list and toggle them. Idempotent; preserves the user's toggles.
+		syncInternalServers();
 		// Start expired session cleanup now that the database is ready
 		sessionCleanupScheduler.start();
 		uploadTempCleanup.start();

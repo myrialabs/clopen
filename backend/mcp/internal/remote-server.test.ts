@@ -12,9 +12,9 @@ import { describe, expect, test, beforeAll, afterAll, beforeEach } from 'bun:tes
 import { randomUUID } from 'node:crypto';
 
 import { handleMcpRequest } from './remote-server';
-import { authQueries, settingsQueries } from '../database/queries';
-import { generatePAT, generateSessionToken, hashToken } from '../auth/tokens';
-import { initializeDatabase, closeDatabase, getDatabase } from '../database';
+import { authQueries, settingsQueries } from '../../database/queries';
+import { generatePAT, generateSessionToken, hashToken } from '../../auth/tokens';
+import { initializeDatabase, closeDatabase, getDatabase } from '../../database';
 
 let testUserId: string;
 let sessionToken: string;

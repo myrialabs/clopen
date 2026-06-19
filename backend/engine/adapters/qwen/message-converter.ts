@@ -51,7 +51,7 @@ import type {
 	AskUserQuestion,
 } from '$shared/types/unified';
 import { toCanonicalToolName } from '$shared/types/unified';
-import { resolveOpenCodeToolName } from '../../../mcp/config';
+import { resolveOpenCodeToolName } from '../../../mcp';
 
 // ============================================================
 // Qwen-specific tool-result content markers

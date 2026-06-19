@@ -10,7 +10,6 @@
  * 3. Done! Registries are auto-built and type-safe.
  */
 
-import weather from './weather/index';
 import browserAutomation from './browser-automation/index';
 import { buildServerRegistries } from './helper';
 
@@ -25,7 +24,6 @@ export { createRemoteMcpServer } from './helper';
  * Metadata and registry will be automatically built.
  */
 export const allServers = [
-	weather,
 	browserAutomation,
 	// Add more servers here...
 ] as const;

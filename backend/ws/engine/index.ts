@@ -11,10 +11,12 @@ import { openCodeEngineRouter } from './opencode';
 import { copilotEngineRouter } from './copilot';
 import { codexEngineRouter } from './codex';
 import { qwenEngineRouter } from './qwen';
+import { engineRestartRouter } from './restart';
 
 export const engineRouter = createRouter()
 	.merge(claudeCodeEngineRouter)
 	.merge(openCodeEngineRouter)
 	.merge(copilotEngineRouter)
 	.merge(codexEngineRouter)
-	.merge(qwenEngineRouter);
+	.merge(qwenEngineRouter)
+	.merge(engineRestartRouter);

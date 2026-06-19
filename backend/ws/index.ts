@@ -31,6 +31,7 @@ import { gitRouter } from './git';
 import { engineRouter } from './engine';
 import { systemToolsRouter } from './system-tools';
 import { dbClientRouter } from './db-client';
+import { mcpRouter } from './mcp';
 
 // ============================================
 // Main App Router - Merge All Module Routers
@@ -73,7 +74,10 @@ export const wsRouter = createRouter()
 	.merge(systemToolsRouter)
 
 	// DB Client (global database management)
-	.merge(dbClientRouter);
+	.merge(dbClientRouter)
+
+	// External MCP server management (install from the official registry)
+	.merge(mcpRouter);
 
 // Export API type for frontend type-safe access
 export type WSAPI = typeof wsRouter['$api'];

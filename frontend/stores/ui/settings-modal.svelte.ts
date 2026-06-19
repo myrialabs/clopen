@@ -10,6 +10,7 @@ export type SettingsSection =
 	| 'models'
 	| 'engines'
 	| 'system-tools'
+	| 'mcp'
 	| 'appearance'
 	| 'notifications'
 	| 'tunnel'
@@ -17,6 +18,23 @@ export type SettingsSection =
 	| 'team'
 	| 'security'
 	| 'system';
+
+/** Sidebar grouping. Sections are rendered under their group header. */
+export type SettingsGroup =
+	| 'assistant'
+	| 'extensions'
+	| 'general'
+	| 'account'
+	| 'administration';
+
+/** Ordered group definitions for the settings sidebar. */
+export const settingsGroups: { id: SettingsGroup; label: string }[] = [
+	{ id: 'assistant', label: 'Assistant' },
+	{ id: 'extensions', label: 'Tools & Extensions' },
+	{ id: 'general', label: 'General' },
+	{ id: 'account', label: 'Account' },
+	{ id: 'administration', label: 'Administration' }
+];
 
 interface SettingsModalState {
 	isOpen: boolean;
@@ -35,6 +53,7 @@ export interface SettingsSectionMeta {
 	label: string;
 	icon: IconName;
 	description: string;
+	group: SettingsGroup;
 	adminOnly?: boolean;
 }
 
@@ -43,52 +62,23 @@ export const settingsSections: SettingsSectionMeta[] = [
 		id: 'models',
 		label: 'Models',
 		icon: 'lucide:sparkles',
-		description: 'Chat and commit model'
+		description: 'Chat and commit model',
+		group: 'assistant'
 	},
 	{
 		id: 'engines',
 		label: 'Engines',
 		icon: 'lucide:plug',
 		description: 'Accounts and providers',
+		group: 'extensions',
 		adminOnly: true
 	},
 	{
-		id: 'tunnel',
-		label: 'Tunnel',
-		icon: 'lucide:globe',
-		description: 'Cloudflare tunnel services',
-		adminOnly: true
-	},
-	{
-		id: 'appearance',
-		label: 'Appearance',
-		icon: 'lucide:palette',
-		description: 'Theme and layout'
-	},
-	{
-		id: 'notifications',
-		label: 'Notifications',
-		icon: 'lucide:bell',
-		description: 'Sound and push notifications'
-	},
-	{
-		id: 'account',
-		label: 'User Profile',
-		icon: 'lucide:user',
-		description: 'Your profile and access'
-	},
-	{
-		id: 'security',
-		label: 'Security',
-		icon: 'lucide:shield',
-		description: 'Login and access control',
-		adminOnly: true
-	},
-	{
-		id: 'system',
-		label: 'Maintenance',
-		icon: 'lucide:settings-2',
-		description: 'Updates and data',
+		id: 'mcp',
+		label: 'MCP Servers',
+		icon: 'lucide:blocks',
+		description: 'Connect external tools',
+		group: 'extensions',
 		adminOnly: true
 	},
 	{
@@ -96,13 +86,60 @@ export const settingsSections: SettingsSectionMeta[] = [
 		label: 'System Tools',
 		icon: 'lucide:hammer',
 		description: 'Server-side binaries',
+		group: 'extensions',
 		adminOnly: true
+	},
+	{
+		id: 'appearance',
+		label: 'Appearance',
+		icon: 'lucide:palette',
+		description: 'Theme and layout',
+		group: 'general'
+	},
+	{
+		id: 'notifications',
+		label: 'Notifications',
+		icon: 'lucide:bell',
+		description: 'Sound and push notifications',
+		group: 'general'
+	},
+	{
+		id: 'tunnel',
+		label: 'Tunnel',
+		icon: 'lucide:globe',
+		description: 'Cloudflare tunnel services',
+		group: 'general',
+		adminOnly: true
+	},
+	{
+		id: 'account',
+		label: 'User Profile',
+		icon: 'lucide:user',
+		description: 'Your profile and access',
+		group: 'account'
 	},
 	{
 		id: 'team',
 		label: 'Team',
 		icon: 'lucide:users',
 		description: 'Users and invites',
+		group: 'administration',
+		adminOnly: true
+	},
+	{
+		id: 'security',
+		label: 'Security',
+		icon: 'lucide:shield',
+		description: 'Login and access control',
+		group: 'administration',
+		adminOnly: true
+	},
+	{
+		id: 'system',
+		label: 'Maintenance',
+		icon: 'lucide:settings-2',
+		description: 'Updates and data',
+		group: 'administration',
 		adminOnly: true
 	}
 ];

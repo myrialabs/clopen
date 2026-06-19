@@ -20,7 +20,7 @@ import { buildJsonPrompt, extractJson } from '../../structured-helpers';
 import { engineQueries } from '$backend/database/queries/engine-queries';
 import { resolveOsPath } from '$backend/utils/paths';
 import { debug } from '$shared/utils/logger';
-import { getCopilotMcpConfig } from '../../../mcp/config';
+import { getCopilotMcpConfig } from '../../../mcp';
 import { handleStreamError, buildSessionError } from './error-handler';
 import { fetchCopilotModels } from './models';
 

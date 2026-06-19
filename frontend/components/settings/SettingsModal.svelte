@@ -7,6 +7,7 @@
 		closeSettingsModal,
 		setActiveSection,
 		settingsSections,
+		settingsGroups,
 		type SettingsSection
 	} from '$frontend/stores/ui/settings-modal.svelte';
 	import { authStore } from '$frontend/stores/features/auth.svelte';
@@ -16,6 +17,7 @@
 	import ModelSettings from './model/ModelSettings.svelte';
 	import AIEnginesSettings from './engines/AIEnginesSettings.svelte';
 	import SystemToolsSettings from './system-tools/SystemToolsSettings.svelte';
+	import McpSettings from './mcp/McpSettings.svelte';
 	import AppearanceSettings from './appearance/AppearanceSettings.svelte';
 	import AccountSettings from './account/AccountSettings.svelte';
 	import NotificationSettings from './notifications/NotificationSettings.svelte';
@@ -24,6 +26,8 @@
 	import SecuritySettings from './security/SecuritySettings.svelte';
 	import SystemSettings from './system/SystemSettings.svelte';
 	import TunnelSettings from './tunnel/TunnelSettings.svelte';
+	import RestartAllEnginesButton from './engines/RestartAllEnginesButton.svelte';
+	import { mcpServersStore } from '$frontend/stores/features/mcp-servers.svelte';
 
 	// Responsive state
 	let isMobileMenuOpen = $state(false);
@@ -42,6 +46,17 @@
 			if (s.adminOnly && !isAdmin) return false;
 			return true;
 		})
+	);
+
+	// Group visible sections under their group header for the sidebar. Empty
+	// groups are dropped so a hidden admin group leaves no orphan header.
+	const visibleGroups = $derived(
+		settingsGroups
+			.map(group => ({
+				...group,
+				sections: visibleSections.filter(s => s.group === group.id)
+			}))
+			.filter(g => g.sections.length > 0)
 	);
 
 	// Handle section change
@@ -146,32 +161,39 @@
 				{/if}
 
 				<nav class="flex-1 overflow-y-auto p-3">
-					{#each visibleSections as section (section.id)}
-						<button
-							type="button"
-							class="flex items-start gap-3 w-full py-3 px-3.5 bg-transparent border-none rounded-lg text-slate-500 text-sm text-left cursor-pointer transition-all duration-150 mb-1
-								hover:bg-violet-500/10 hover:text-slate-600 dark:hover:text-slate-400
-								{activeSection === section.id
-								? 'bg-violet-500/10 dark:bg-violet-500/20 text-slate-900 dark:text-slate-100'
-								: ''}"
-							onclick={() => handleSectionChange(section.id)}
-						>
-							<Icon
-								name={section.icon}
-								class="w-5 h-5 shrink-0 mt-0.5 {activeSection === section.id
-									? 'text-violet-600'
-									: ''}"
-							/>
-							<div class="flex flex-col gap-0.5">
-								<span class="font-semibold">{section.label}</span>
-								<span
-									class="text-xs text-slate-600 dark:text-slate-500 leading-tight {activeSection ===
-									section.id
-										? 'text-violet-600 dark:text-violet-400'
-										: ''}">{section.description}</span
+					{#each visibleGroups as group (group.id)}
+						<div class="mb-2">
+							<h3 class="px-3.5 pt-3 pb-1.5 text-[11px] font-semibold uppercase tracking-wider text-slate-400 dark:text-slate-500">
+								{group.label}
+							</h3>
+							{#each group.sections as section (section.id)}
+								<button
+									type="button"
+									class="flex items-start gap-3 w-full py-3 px-3.5 bg-transparent border-none rounded-lg text-slate-500 text-sm text-left cursor-pointer transition-all duration-150 mb-1
+										hover:bg-violet-500/10 hover:text-slate-600 dark:hover:text-slate-400
+										{activeSection === section.id
+										? 'bg-violet-500/10 dark:bg-violet-500/20 text-slate-900 dark:text-slate-100'
+										: ''}"
+									onclick={() => handleSectionChange(section.id)}
 								>
-							</div>
-						</button>
+									<Icon
+										name={section.icon}
+										class="w-5 h-5 shrink-0 mt-0.5 {activeSection === section.id
+											? 'text-violet-600'
+											: ''}"
+									/>
+									<div class="flex flex-col gap-0.5">
+										<span class="font-semibold">{section.label}</span>
+										<span
+											class="text-xs text-slate-600 dark:text-slate-500 leading-tight {activeSection ===
+											section.id
+												? 'text-violet-600 dark:text-violet-400'
+												: ''}">{section.description}</span
+										>
+									</div>
+								</button>
+							{/each}
+						</div>
 					{/each}
 				</nav>
 			</aside>
@@ -217,6 +239,10 @@
 						<div in:fly={{ x: 20, duration: 200 }}>
 							<SystemToolsSettings />
 						</div>
+					{:else if activeSection === 'mcp' && isAdmin}
+						<div in:fly={{ x: 20, duration: 200 }}>
+							<McpSettings />
+						</div>
 					{:else if activeSection === 'team' && isAdmin}
 						<div in:fly={{ x: 20, duration: 200 }}>
 							{#if isNoAuth}
@@ -250,6 +276,16 @@
 						</div>
 					{/if}
 				</div>
+
+				<!-- Floating MCP restart banner (outside scroll area) -->
+				{#if mcpServersStore.hasPendingChanges}
+					<div class="shrink-0 flex items-center justify-between gap-3 p-3 mx-4 md:mx-5 mb-2 md:mb-3 bg-white/90 dark:bg-slate-950/90 backdrop-blur-sm border-t border-amber-500/20 -mt-1">
+						<p class="text-xs text-slate-600 dark:text-slate-400">
+							Changes apply after engines restart.
+						</p>
+						<RestartAllEnginesButton restartServerStyle onRestarted={() => { mcpServersStore.hasPendingChanges = false; }} />
+					</div>
+				{/if}
 			</main>
 		</div>
 	{/snippet}

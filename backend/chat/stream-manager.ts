@@ -35,7 +35,7 @@ import type { DatabaseMessage } from '$shared/types/database/schema';
 import { getProjectEngine, initializeProjectEngine } from '../engine';
 import { messageQueries, sessionQueries } from '../database/queries';
 import { snapshotService } from '../snapshot/snapshot-service';
-import { projectContextService } from '../mcp/project-context';
+import { projectContextService } from '../mcp';
 import { browserMcpControl } from '../preview';
 import { extractMessageText } from '../snapshot/helpers';
 import { debug } from '$shared/utils/logger';
@@ -649,14 +649,25 @@ class StreamManager extends EventEmitter {
 					// ── System Init ────────────────────────────────────────
 					case 'system_init': {
 						const initEvent = output as SystemInitEvent;
-						const failedServers = initEvent.mcpServers.filter(s => s.status !== 'connected');
+						// Suppress the toast for "soft" statuses: `pending` (still
+						// connecting) and `needs-auth` (server expects OAuth/credentials
+						// configured in Settings → MCP). These are not errors — a scary
+						// toast for them is confusing. (Status is the raw SDK string,
+						// wider than the EngineOutput union, hence the cast.)
+						const SOFT_STATUSES = new Set(['pending', 'needs-auth']);
+						const failedServers = initEvent.mcpServers.filter(
+							s => s.status !== 'connected' && !SOFT_STATUSES.has(s.status as string)
+						);
+						initEvent.mcpServers
+							.filter(s => SOFT_STATUSES.has(s.status as string))
+							.forEach(s => debug.log('mcp', `MCP server "${s.name}" not ready (${s.status}) — suppressing toast`));
 						failedServers.forEach(server => {
 							debug.warn('mcp', `MCP server connection failed: ${server.name} (${server.status})`);
 							this.emitStreamEvent(streamState, 'notification', {
 								notification: {
 									type: 'warning',
 									title: 'MCP Server Connection Failed',
-									message: `Failed to connect to custom MCP server "${server.name}". Status: ${server.status}`,
+									message: `Failed to connect to MCP server "${server.name}".`,
 								},
 								timestamp: new Date().toISOString()
 							});

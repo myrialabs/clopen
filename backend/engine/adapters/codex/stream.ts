@@ -26,7 +26,7 @@ import { extractJson } from '../../structured-helpers';
 import { engineQueries } from '$backend/database/queries/engine-queries';
 import { resolveOsPath } from '$backend/utils/paths';
 import { resolveBinary } from '$backend/utils/cli';
-import { getCodexMcpConfig } from '../../../mcp/config';
+import { getCodexMcpConfig } from '../../../mcp';
 import { CODEX_MODELS } from './models';
 import { debug } from '$shared/utils/logger';
 import { handleStreamError, buildTurnError } from './error-handler';

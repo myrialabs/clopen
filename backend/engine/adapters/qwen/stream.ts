@@ -45,7 +45,7 @@ import { getEngineEnv } from './environment';
 import { handleStreamError } from './error-handler';
 import { createSdkMessageConverter, toSdkUserMessage, type SdkMessageConverter } from './message-converter';
 import { fetchQwenModels } from './models';
-import { getQwenMcpConfig } from '../../../mcp/config';
+import { getQwenMcpConfig } from '../../../mcp';
 import { forkQwenSessionState, sessionStateExists } from './session-fork';
 
 interface PendingAskUserQuestion {

@@ -1,10 +1,14 @@
 <script lang="ts">
+	import { onMount } from 'svelte';
 	import Icon from '$frontend/components/common/display/Icon.svelte';
 	import { FileHeader, CodeBlock } from './components';
 	import type { ToolUseBlock } from '$shared/types/unified';
+	import { mcpServersStore } from '$frontend/stores/features/mcp-servers.svelte';
 
 	const { toolInput }: { toolInput: ToolUseBlock } = $props();
 	const result = $derived(toolInput.result);
+
+	onMount(() => { mcpServersStore.fetchInstalled(); });
 
 	interface ParsedToolName {
 		server: string;
@@ -25,6 +29,9 @@
 	const tool = $derived(parsedToolName.tool);
 
 	const serverDisplayName = $derived.by(() => {
+		// Prefer the human title from the MCP store; fall back to title-casing the key.
+		const title = mcpServersStore.serverTitles[server];
+		if (title) return title;
 		return server
 			.split('-')
 			.map((word) => word.charAt(0).toUpperCase() + word.slice(1))

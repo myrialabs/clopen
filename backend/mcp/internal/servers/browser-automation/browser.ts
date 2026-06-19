@@ -15,7 +15,7 @@
 
 import { debug } from "$shared/utils/logger";
 import { browserMcpControl, browserPreviewServiceManager, type BrowserPreviewService } from "$backend/preview";
-import { projectContextService } from "$backend/mcp/project-context";
+import { projectContextService } from "$backend/mcp/internal/project-context";
 
 /**
  * Get BrowserPreviewService for current MCP execution context

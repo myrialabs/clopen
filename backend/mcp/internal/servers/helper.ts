@@ -61,6 +61,12 @@ interface ServerWithMeta<
 	createInstance: () => ReturnType<typeof createSdkMcpServer>;
 	meta: {
 		readonly name: TName;
+		/** Human-facing title shown in Settings → MCP and the Chat tool header. */
+		readonly title: string;
+		/** Short description of what this server provides. */
+		readonly description: string;
+		/** Semantic version, e.g. `1.0.0`. */
+		readonly version: string;
 		readonly tools: TToolNames;
 		/** Raw tool definitions (schema + description) for reuse by other transports */
 		readonly toolDefs: Record<string, RawToolDef>;
@@ -73,6 +79,8 @@ interface ServerWithMeta<
 export function defineServer<
 	const TConfig extends {
 		name: string;
+		title: string;
+		description: string;
 		version: string;
 		tools: Record<string, { description: string; schema?: any; handler: any }>;
 	}
@@ -123,6 +131,9 @@ export function defineServer<
 		createInstance,
 		meta: {
 			name: config.name,
+			title: config.title,
+			description: config.description,
+			version: config.version,
 			tools: toolNames as any,
 			toolDefs,
 		}

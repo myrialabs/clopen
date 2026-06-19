@@ -122,8 +122,8 @@ calling `getEnabledMcpServers(options.mcpContext)`.
 - ❌ Use `console.*` — use `debug` from `$shared/utils/logger` with
   category `'engine'`, `'chat'`, or `'mcp'`.
 - ❌ **Build a new MCP HTTP server for the adapter.** Use the existing
-  `backend/mcp/remote-server.ts` and add a `getXxxMcpConfig()` helper in
-  `backend/mcp/config.ts` returning the URL in the engine's expected
+  `backend/mcp/internal/remote-server.ts` and add a `getXxxMcpConfig()` helper in
+  `backend/mcp/internal/config.ts` returning the URL in the engine's expected
   shape. New MCP servers are added via `defineServer()` — never via a
   parallel HTTP listener.
 - ❌ **Create per-account isolated home directories** to multiplex two

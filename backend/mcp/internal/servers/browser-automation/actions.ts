@@ -4,7 +4,7 @@
 
 import { browserPreviewServiceManager, type BrowserPreviewService } from "$backend/preview";
 import type { BrowserAutonomousAction } from "$backend/preview/browser/types";
-import { projectContextService } from "$backend/mcp/project-context";
+import { projectContextService } from "$backend/mcp/internal/project-context";
 import { getActiveTabSession } from "./browser";
 import { debug } from "$shared/utils/logger";
 

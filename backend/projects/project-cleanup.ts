@@ -2,7 +2,7 @@
  * Default backend cleanup handlers for fully removed projects.
  */
 import { disposeProjectEngines } from '../engine';
-import { projectContextService } from '../mcp/project-context';
+import { projectContextService } from '../mcp';
 import { fileWatcher } from '../files/file-watcher';
 import { clearProjectPresence } from '../project/status-manager';
 import { registerProjectCleanup } from './project-cleanup-registry';

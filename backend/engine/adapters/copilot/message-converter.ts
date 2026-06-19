@@ -49,7 +49,7 @@ import type {
 } from '$shared/types/unified';
 import { toCanonicalToolName } from '$shared/types/unified';
 import type { SessionEvent } from '@github/copilot-sdk';
-import { resolveOpenCodeToolName } from '../../../mcp/config';
+import { resolveOpenCodeToolName } from '../../../mcp';
 
 // Derive data payload types from the SessionEvent discriminated union so we
 // don't depend on internal type re-exports that aren't part of the SDK's

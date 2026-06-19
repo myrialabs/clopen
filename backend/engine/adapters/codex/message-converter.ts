@@ -75,7 +75,7 @@ import type {
 	ThreadStartedEvent,
 	TurnCompletedEvent,
 } from '@openai/codex-sdk';
-import { resolveOpenCodeToolName } from '../../../mcp/config';
+import { resolveOpenCodeToolName } from '../../../mcp';
 import { readLastTokenUsageFromRollout } from './usage-rollout';
 import { readApplyPatchesFromRollout, findMatchingPatch } from './patch-rollout';
 

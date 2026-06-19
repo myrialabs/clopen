@@ -14,6 +14,8 @@ import { getConsoleLogsHandler, clearConsoleLogsHandler, executeConsoleHandler, 
 
 export default defineServer({
 	name: "browser-automation",
+	title: "Browser Automation",
+	description: "Drives the built-in Preview Browser panel — navigate, click, type, and inspect pages, running multiple actions in one call for efficient interaction.",
 	version: "1.0.0",
 	tools: {
 		// ============================================================================

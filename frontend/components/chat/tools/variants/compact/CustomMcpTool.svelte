@@ -1,5 +1,7 @@
 <script lang="ts">
+	import { onMount } from 'svelte';
 	import type { ToolUseBlock } from '$shared/types/unified';
+	import { mcpServersStore } from '$frontend/stores/features/mcp-servers.svelte';
 
 	const { toolInput }: { toolInput: ToolUseBlock } = $props();
 
@@ -10,8 +12,11 @@
 	}
 
 	const parsed = $derived(parseMcpToolName(toolInput.name));
-	const server = $derived(parsed.server);
+	// Prefer the human title (e.g. "Browser Automation") over the raw key.
+	const server = $derived(mcpServersStore.serverTitles[parsed.server] ?? parsed.server);
 	const tool = $derived(parsed.tool);
+
+	onMount(() => { mcpServersStore.fetchInstalled(); });
 </script>
 
 <div class="text-sm">

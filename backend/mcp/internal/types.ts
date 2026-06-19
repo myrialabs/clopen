@@ -41,11 +41,11 @@ export type McpServerConfigWithInstance<S extends ServerName = ServerName> = Ser
  * Format: mcp__server-name__tool-name
  */
 export interface ParsedMcpToolName {
-	/** Server name (e.g., "weather-service") */
+	/** Server name (e.g., "browser-automation") */
 	server: string;
-	/** Tool name (e.g., "get_temperature") */
+	/** Tool name (e.g., "navigate") */
 	tool: string;
-	/** Full tool name (e.g., "mcp__weather-service__get_temperature") */
+	/** Full tool name (e.g., "mcp__browser-automation__navigate") */
 	fullName: string;
 }
 

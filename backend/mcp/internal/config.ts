@@ -10,11 +10,12 @@ import type { McpRemoteConfig } from '@opencode-ai/sdk';
 import type { MCPHTTPServerConfig } from '@github/copilot-sdk';
 import type { CLIMcpServerConfig as QwenMcpServerConfig } from '@qwen-code/sdk';
 import type { ServerConfig, ParsedMcpToolName, ServerName } from './types';
-import type { McpExecutionContext } from '../engine/types';
+import type { McpExecutionContext } from '../../engine/types';
 import { serverRegistry, serverFactories, serverMetadata } from './servers';
 import { projectContextService } from './project-context';
+import { mcpServerQueries } from '$backend/database/queries';
 import { debug } from '$shared/utils/logger';
-import { SERVER_ENV } from '../utils/env';
+import { SERVER_ENV } from '../../utils/env';
 import { validateMcpOutput } from './output-validator';
 
 /**
@@ -26,12 +27,6 @@ import { validateMcpOutput } from './output-validator';
  * Type-safe: Server names and tool names are validated at compile time!
  */
 export const mcpServersConfig: Record<ServerName, ServerConfig> = {
-	"weather-service": {
-		enabled: true,
-		tools: [
-			"get_temperature",
-		]
-	},
 	"browser-automation": {
 		enabled: true,
 		tools: [
@@ -84,6 +79,39 @@ function createServerConfig<T extends Record<ServerName, ServerConfig>>(
 export const mcpServers: Record<string, ServerConfig & { instance: McpSdkServerConfigWithInstance }> = createServerConfig(mcpServersConfig);
 
 // ============================================================================
+// Runtime enabled state (DB-backed)
+// ============================================================================
+
+/**
+ * In-memory mirror of each internal server's enabled toggle, keyed by server
+ * name (= the seeded `slug`). The DB row in `mcp_servers` is the source of
+ * truth; this cache avoids a query on every tool-name resolution. Refreshed at
+ * startup (after `syncInternalServers`) and whenever the user toggles a server.
+ */
+let internalEnabledCache: Record<string, boolean> | null = null;
+
+/** Reload the internal enabled-state cache from the DB. */
+export function refreshInternalEnabledCache(): void {
+	const map: Record<string, boolean> = {};
+	for (const row of mcpServerQueries.getBySource('internal')) {
+		map[row.slug] = row.is_enabled === 1;
+	}
+	internalEnabledCache = map;
+}
+
+/**
+ * Whether an internal server is enabled right now. Combines the static config
+ * (which tools exist) with the user's DB-backed toggle. Defaults to enabled if
+ * the row hasn't been seeded yet (sync runs at startup, before any stream).
+ */
+function serverEnabled(serverName: string): boolean {
+	const cfg = mcpServers[serverName];
+	if (!cfg?.enabled) return false;
+	if (internalEnabledCache === null) refreshInternalEnabledCache();
+	return internalEnabledCache?.[serverName] ?? true;
+}
+
+// ============================================================================
 // Server Registry Functions
 // ============================================================================
 
@@ -103,7 +131,7 @@ export function getEnabledMcpServers(context?: McpExecutionContext): Record<stri
 	const enabledServers: Record<string, McpServerConfig> = {};
 
 	Object.entries(mcpServers).forEach(([serverName, serverConfig]) => {
-		if (serverConfig.enabled) {
+		if (serverEnabled(serverName)) {
 			if (context) {
 				// Create context-bound instance: wrap each tool handler so
 				// AsyncLocalStorage context is restored on invocation, then
@@ -168,13 +196,13 @@ export { abortedToolResult };
  * Get list of all allowed MCP tool names
  *
  * Tool names follow the format: mcp__{server-name}__{tool-name}
- * Example: "mcp__weather-service__get_temperature"
+ * Example: "mcp__browser-automation__navigate"
  */
 export function getAllowedMcpTools(): string[] {
 	const tools: string[] = [];
 
 	Object.entries(mcpServers).forEach(([serverName, serverConfig]) => {
-		if (!serverConfig.enabled) return;
+		if (!serverEnabled(serverName)) return;
 
 		serverConfig.tools.forEach((toolName) => {
 			const formattedName = `mcp__${serverName}__${toolName}`;
@@ -211,7 +239,7 @@ export function getToolConfig(serverName: string, toolName: string): boolean {
  * Check if a server is enabled
  */
 export function isServerEnabled(serverName: string): boolean {
-	return mcpServers[serverName]?.enabled ?? false;
+	return serverEnabled(serverName);
 }
 
 /**
@@ -219,7 +247,7 @@ export function isServerEnabled(serverName: string): boolean {
  */
 export function isToolEnabled(serverName: string, toolName: string): boolean {
 	const server = mcpServers[serverName];
-	if (!server?.enabled) return false;
+	if (!server || !serverEnabled(serverName)) return false;
 
 	return server.tools.includes(toolName as any);
 }
@@ -232,7 +260,7 @@ export function isToolEnabled(serverName: string, toolName: string): boolean {
  * Parse MCP tool name into components
  *
  * Format: mcp__{server-name}__{tool-name}
- * Example: "mcp__weather-service__get_temperature"
+ * Example: "mcp__browser-automation__navigate"
  */
 export function parseMcpToolName(fullName: string): ParsedMcpToolName | null {
 	if (!fullName.startsWith('mcp__')) {
@@ -268,8 +296,8 @@ export function isMcpTool(toolName: string): boolean {
  */
 export function getEnabledServerNames(): string[] {
 	return Object.entries(mcpServers)
-		.filter(([_, config]) => config.enabled)
-		.map(([name, _]) => name);
+		.filter(([name]) => serverEnabled(name))
+		.map(([name]) => name);
 }
 
 /**
@@ -277,7 +305,7 @@ export function getEnabledServerNames(): string[] {
  */
 export function getEnabledToolsForServer(serverName: string): string[] {
 	const serverConfig = mcpServers[serverName];
-	if (!serverConfig?.enabled) {
+	if (!serverConfig || !serverEnabled(serverName)) {
 		return [];
 	}
 
@@ -298,6 +326,42 @@ export function getMcpStats() {
 		serverNames: enabledServers,
 		toolNames: allTools
 	};
+}
+
+// ============================================================================
+// Internal server ↔ DB sync
+// ============================================================================
+
+/**
+ * Mirror the code-defined internal servers into the `mcp_servers` table so
+ * Settings → MCP can list them alongside external servers and the user can
+ * toggle them on/off. Definitions stay the source of truth in code; the DB row
+ * only carries display metadata + the enabled flag.
+ *
+ * Idempotent: refreshes title/description/version for known servers (preserving
+ * the user's enabled toggle), seeds new ones as enabled, and prunes rows whose
+ * code definition was removed. Call once at startup, after the DB is ready.
+ */
+export function syncInternalServers(): void {
+	const metas = Object.values(serverMetadata) as Array<{
+		name: string;
+		title: string;
+		description: string;
+		version: string;
+	}>;
+	const slugs: string[] = [];
+	for (const meta of metas) {
+		mcpServerQueries.upsertInternal({
+			slug: meta.name,
+			name: meta.title,
+			description: meta.description,
+			version: meta.version
+		});
+		slugs.push(meta.name);
+	}
+	mcpServerQueries.pruneInternalExcept(slugs);
+	refreshInternalEnabledCache();
+	debug.log('mcp', `🔄 Synced ${slugs.length} internal MCP server(s) to DB`);
 }
 
 // ============================================================================
@@ -342,7 +406,7 @@ export function resolveOpenCodeToolName(toolName: string): string | null {
 
 	// Look up which server owns this tool
 	for (const [serverName, serverConfig] of Object.entries(mcpServers)) {
-		if (!serverConfig.enabled) continue;
+		if (!serverEnabled(serverName)) continue;
 		if ((serverConfig.tools as readonly string[]).includes(rawName)) {
 			return `mcp__${serverName}__${rawName}`;
 		}

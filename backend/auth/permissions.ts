@@ -80,6 +80,7 @@ export const ADMIN_ONLY_ROUTES = new Set([
 	'engine:opencode-account-rename',
 	'engine:opencode-server-restart',
 	'engine:opencode-models-dev-fetch',
+	'engine:restart-all',
 	// Tunnel — remote/local management mutates global Cloudflare credentials,
 	// cloudflared auth, and ingress rules. Quick Tunnel is ephemeral and stays
 	// open. Read-only routes (status, *-list, ingress, auth-status) stay open so
@@ -97,7 +98,16 @@ export const ADMIN_ONLY_ROUTES = new Set([
 	'tunnel:local:ingress:add',
 	'tunnel:local:ingress:remove',
 	'tunnel:local:start',
-	'tunnel:local:stop'
+	'tunnel:local:stop',
+	// External MCP — installing/removing servers from the official registry is a
+	// global, system-wide operation (it applies to every engine and project), so
+	// the whole surface is admin-only, mirroring System Tools and Engines.
+	'mcp:catalog',
+	'mcp:list',
+	'mcp:install',
+	'mcp:toggle',
+	'mcp:update-config',
+	'mcp:uninstall'
 ]);
 
 /**

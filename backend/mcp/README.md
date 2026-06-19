@@ -1,6 +1,28 @@
-# Custom MCP Tools
+# MCP (Model Context Protocol)
 
-Custom MCP (Model Context Protocol) tools for adding specialized functionality to all AI engines (**Claude Code**, **Open Code**, **Codex**, **Copilot**, …). Servers are defined once and shared across every engine via a single-source-of-truth architecture.
+Clopen integrates MCP from **two distinct sources**, kept cleanly separated on
+disk and in their namespace keys:
+
+| | **Internal** (`internal/`) | **External** (`external/`) |
+|---|---|---|
+| What | Custom tools defined in code via `defineServer()` | Servers the user installs from the official MCP registry |
+| Managed | By developers (this README) | By users in **Settings → MCP** |
+| Stored | In code (`internal/servers/`) | In the DB (`mcp_servers` table) |
+| Namespace | `clopen-mcp` bridge (non-Claude) / server name (Claude) | one bare `<slug>` per server (no prefix) |
+| Execution | In-process (no subprocess) | Engine connects directly (stdio subprocess or remote HTTP) |
+
+Both are merged behind the **facade** `backend/mcp/index.ts` — the only module
+the rest of the backend imports from (`getEnabledMcpServers()`,
+`getXxxMcpConfig()`, `resolveOpenCodeToolName()` all return the combined view).
+
+The rest of this document covers the **internal** custom-tool system. External
+servers need no code — see `external/registry-client.ts` and `external/config.ts`.
+
+---
+
+## Custom (Internal) MCP Tools
+
+Custom MCP tools add specialized functionality to all AI engines (**Claude Code**, **Open Code**, **Codex**, **Copilot**, …). Servers are defined once and shared across every engine via a single-source-of-truth architecture.
 
 ## 📚 Table of Contents
 
@@ -38,9 +60,9 @@ System for adding custom tools to AI engines with type-safe TypeScript definitio
 
 ### 1. Create a New Server
 
-Create a new folder in `./servers/` (e.g., `calculator/`) and create an `index.ts` file using the `defineServer` helper:
+Create a new folder in `./internal/servers/` (e.g., `calculator/`) and create an `index.ts` file using the `defineServer` helper:
 
-**File: `./servers/calculator/index.ts`**
+**File: `./internal/servers/calculator/index.ts`**
 ```typescript
 import { z } from "zod";
 import { defineServer } from "../helper";
@@ -85,7 +107,7 @@ export default defineServer({
 
 ### 2. Register the Server
 
-Add to `./servers/index.ts` to auto-build registries:
+Add to `./internal/servers/index.ts` to auto-build registries:
 
 ```typescript
 import weather from './weather';
@@ -106,7 +128,7 @@ export const serverRegistry = registry;
 
 ### 3. Configure the Server
 
-Add to `./config.ts` (only specify `enabled` and `tools`):
+Add to `./internal/config.ts` (only specify `enabled` and `tools`):
 
 ```typescript
 const mcpServersConfig: Record<ServerName, ServerConfig> = {
@@ -133,24 +155,33 @@ Tool available to Claude as: `mcp__calculator__calculate`
 
 ```
 backend/mcp/
-├── types.ts            # TypeScript type definitions (auto-inferred from metadata)
-├── config.ts           # User configuration (enabled, tools) + auto-merge with registry
-│                       #   + resolveOpenCodeToolName() & getOpenCodeMcpConfig()
-├── index.ts            # Main export point
-├── remote-server.ts    # Remote HTTP MCP server for Open Code (Streamable HTTP transport)
-├── project-context.ts  # Project context service for MCP tool handlers
-├── servers/            # Server implementations (single source of truth)
-│   ├── index.ts       # Auto-build registries from server array + export allServers
-│   ├── helper.ts      # defineServer, buildServerRegistries & createRemoteMcpServer
-│   ├── weather/       # Example: Weather service
-│   │   ├── index.ts   # Server definition using defineServer
-│   │   └── get-temperature.ts  # Tool handler implementation
-│   └── browser-automation/  # Example: Browser automation service
-│       ├── index.ts   # Server definition
-│       ├── actions.ts # Browser action handlers
-│       ├── browser.ts # Browser instance management
-│       └── inspection.ts  # Page inspection handlers
-└── README.md          # This file
+├── index.ts            # FACADE — the only public entry point. Merges
+│                       #   internal + external before handing config to adapters.
+├── shared/
+│   └── constants.ts    # Namespace constants/helpers (clopen-mcp, clopen-reserved prefix, slugify)
+├── internal/           # Custom tools defined in code (this README)
+│   ├── types.ts        # TypeScript type definitions (auto-inferred from metadata)
+│   ├── config.ts       # User configuration (enabled, tools) + auto-merge with registry
+│   │                   #   + resolveOpenCodeToolName() & getXxxMcpConfig() (clopen-mcp)
+│   ├── remote-server.ts# Remote HTTP MCP bridge for non-Claude engines (/mcp)
+│   ├── project-context.ts  # Project context service for MCP tool handlers
+│   ├── output-validator.ts # Caps oversized tool outputs
+│   └── servers/        # Server implementations (single source of truth)
+│       ├── index.ts    # Auto-build registries from server array + export allServers
+│       ├── helper.ts   # defineServer, buildServerRegistries & createRemoteMcpServer
+│       ├── weather/    # Example: Weather service
+│       │   ├── index.ts
+│       │   └── get-temperature.ts
+│       └── browser-automation/  # Example: Browser automation service
+│           ├── index.ts
+│           ├── actions.ts
+│           ├── browser.ts
+│           └── inspection.ts
+├── external/           # User-installed servers from the official registry
+│   ├── types.ts        # CatalogServer / ResolvedExternalServer
+│   ├── registry-client.ts  # Fetch + normalise registry.modelcontextprotocol.io
+│   └── config.ts       # Per-engine builders (bare <slug>) + resolveExternalToolName
+└── README.md           # This file
 ```
 
 ### Server Organization
@@ -258,9 +289,9 @@ its own transport and `McpServer` instance. Handles session lifecycle
 
 ### Folder Structure
 
-Each MCP server should be in its own folder under `./servers/`:
+Each MCP server should be in its own folder under `./internal/servers/`:
 
-1. **Create a folder**: `./servers/your-server-name/`
+1. **Create a folder**: `./internal/servers/your-server-name/`
 2. **Create index.ts**: Main server definition file
 3. **Optional**: Create separate files for tool handlers (e.g., `tool-name.ts`)
 
@@ -1040,7 +1071,7 @@ export default defineServer({
 **Problem:** My custom tool doesn't appear in Claude's available tools.
 
 **Solutions:**
-1. Verify server folder exists in `./servers/` with an `index.ts` file
+1. Verify server folder exists in `./internal/servers/` with an `index.ts` file
 2. Verify server is defined using `defineServer` and exported as default (`export default defineServer(...)`)
 3. Check server is imported and added to `allServers` array in `servers/index.ts`
 4. Check that server is enabled in `mcpServersConfig` in `config.ts`
@@ -1171,11 +1202,15 @@ checklist in `backend/engine/README.md` §9.12. The summary:
 
 | File | Location | Purpose |
 |------|----------|---------|
-| Tool definitions | `backend/mcp/servers/` | Single source of truth |
-| Remote MCP server | `backend/mcp/remote-server.ts` | HTTP server for every non-Claude engine |
-| Server factory | `backend/mcp/servers/helper.ts` | `createRemoteMcpServer()` |
-| Per-engine config | `backend/mcp/config.ts` | `getOpenCodeMcpConfig()`, `getCodexMcpConfig()`, `getCopilotMcpConfig()` |
-| Tool name resolver | `backend/mcp/config.ts` | `resolveOpenCodeToolName()` (handles every engine's prefix variant) |
+| Public facade | `backend/mcp/index.ts` | Only public entry; merges internal + external |
+| Tool definitions | `backend/mcp/internal/servers/` | Single source of truth (internal) |
+| Remote MCP server | `backend/mcp/internal/remote-server.ts` | HTTP bridge for every non-Claude engine |
+| Server factory | `backend/mcp/internal/servers/helper.ts` | `createRemoteMcpServer()` |
+| Per-engine config (internal) | `backend/mcp/internal/config.ts` | `getOpenCodeMcpConfig()`, `getCodexMcpConfig()`, … (clopen-mcp) |
+| Tool name resolver | `backend/mcp/internal/config.ts` | `resolveOpenCodeToolName()` (handles every engine's prefix variant) |
+| External catalog | `backend/mcp/external/registry-client.ts` | Browse the official MCP registry |
+| Per-engine config (external) | `backend/mcp/external/config.ts` | `getXxxExternalMcpConfig()` (<slug>) |
+| Namespace constants | `backend/mcp/shared/constants.ts` | `clopen-mcp`, clopen-reserved prefix, slugify |
 
 ---
 
