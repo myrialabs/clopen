@@ -50,6 +50,10 @@ export interface GitBranch {
 	ahead: number;
 	behind: number;
 	lastCommit?: string;
+	/** Commit subject of the branch tip */
+	lastCommitMessage?: string;
+	/** ISO 8601 committer date of the branch tip, for "created/updated X ago" UI */
+	lastCommitDate?: string;
 }
 
 /** In-progress git operation that leaves the repo in a detached/transitional state */

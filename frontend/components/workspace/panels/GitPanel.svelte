@@ -1955,9 +1955,9 @@ ${bodies}`;
 	 * Format an ISO date string as a compact relative time (e.g. "2h ago",
 	 * "3d ago"). Mirrors the helper used in HistoryView / HistoryModal so
 	 * the user sees the same wording in the source control and history
-	 * views.
+	 * views. Used for both stash entries and branch last-commit dates.
 	 */
-	function formatStashRelativeTime(iso: string): string {
+	function formatRelativeTime(iso: string | undefined): string {
 		if (!iso) return '';
 		const date = new Date(iso).getTime();
 		if (Number.isNaN(date)) return '';
@@ -2593,6 +2593,7 @@ ${bodies}`;
 								{@const upstreamName = getBranchRemoteName(branch)}
 								{@const isExpanded = expandedBranches.has(branch.name)}
 								{@const commitState = branchCommitState[branch.name]}
+								{@const branchRelativeDate = formatRelativeTime(branch.lastCommitDate)}
 								<div>
 									<div class="group relative flex items-center gap-2 px-2.5 py-2 rounded-md transition-colors border {branch.isCurrent ? 'bg-violet-500/10 border-violet-500/20 text-violet-700 dark:text-violet-300' : 'border-transparent hover:bg-slate-100 dark:hover:bg-slate-800/60 text-slate-700 dark:text-slate-300'}">
 										<button type="button" class="flex items-center justify-center w-5 h-5 rounded text-slate-400 hover:bg-slate-200/70 dark:hover:bg-slate-700/70 hover:text-slate-700 dark:hover:text-slate-200 transition-colors bg-transparent border-none cursor-pointer shrink-0" onclick={() => toggleBranchExpanded(branch.name)} title={isExpanded ? 'Collapse' : 'Expand'}><Icon name={isExpanded ? 'lucide:chevron-down' : 'lucide:chevron-right'} class="w-3.5 h-3.5" /></button>
@@ -2603,7 +2604,7 @@ ${bodies}`;
 												{#if upstreamName}<span class="text-3xs text-slate-400 shrink-0">{upstreamName}</span>{/if}
 											</div>
 											<div class="flex min-w-0 items-center gap-1.5 mt-px">
-												<span class="flex-1 min-w-0 text-xs text-slate-500">{#if branch.ahead > 0}<span>{branch.ahead} ahead </span>{/if}{#if branch.behind > 0}<span>{branch.behind} behind </span>{/if}{#if branch.lastCommit}<span class="truncate">{branch.lastCommit}</span>{/if}</span>
+												<span class="flex-1 min-w-0 text-xs text-slate-500">{#if branch.ahead > 0}<span>{branch.ahead} ahead </span>{/if}{#if branch.behind > 0}<span>{branch.behind} behind </span>{/if}{#if branch.lastCommit}<span class="truncate">{branch.lastCommit}</span>{/if}{#if branchRelativeDate}<span class="shrink-0 ml-1.5">·&nbsp;{branchRelativeDate}</span>{/if}</span>
 											</div>
 										</div>
 										{#if !branch.isCurrent}
@@ -2704,9 +2705,13 @@ ${bodies}`;
 										<div class="ml-5 space-y-1">
 											{#each remoteBranches as branch (branch.name)}
 												{@const branchMenuOpen = openRemoteBranchMenu === branch.name}
+												{@const branchRelativeDate = formatRelativeTime(branch.lastCommitDate)}
 												<div class="group flex items-center gap-2.5 px-3 py-2 rounded-lg hover:bg-slate-100 dark:hover:bg-slate-800/50 transition-colors border border-slate-200 dark:border-slate-700 relative min-w-0">
 													<Icon name="lucide:git-branch" class="w-3.5 h-3.5 text-slate-400 shrink-0" />
-													<span class="text-sm text-slate-900 dark:text-slate-100 flex-1 min-w-0 truncate" title={branch.name}>{branch.name.substring(remote.name.length + 1)}</span>
+													<div class="flex-1 min-w-0 flex items-center gap-1.5 truncate">
+														<span class="text-sm text-slate-900 dark:text-slate-100 truncate" title={branch.name}>{branch.name.substring(remote.name.length + 1)}</span>
+														{#if branchRelativeDate}<span class="text-xs text-slate-500 shrink-0">· {branchRelativeDate}</span>{/if}
+													</div>
 													{#if deletingRemoteBranch === `${remote.name}/${branch.name.substring(remote.name.length + 1)}`}
 														<Icon name="lucide:loader-circle" class="w-3.5 h-3.5 text-slate-400 animate-spin" />
 													{/if}
@@ -2973,7 +2978,7 @@ ${bodies}`;
 								{:else}
 									<div class="space-y-1">
 										{#each stashEntries as entry (entry.index)}
-											{@const relativeDate = formatStashRelativeTime(entry.date)}
+											{@const relativeDate = formatRelativeTime(entry.date)}
 											<div class="group relative flex items-center gap-2 px-2.5 py-1.5 rounded-md hover:bg-slate-100 dark:hover:bg-slate-800/60 transition-colors">
 												<Icon name="lucide:archive" class="w-4 h-4 text-slate-400 shrink-0" />
 												<div class="flex-1 min-w-0 pr-2 group-hover:pr-24 flex flex-col justify-center overflow-hidden transition-[padding] duration-150">

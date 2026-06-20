@@ -234,13 +234,22 @@ export class GitService {
 	// ============================================
 
 	async getBranches(cwd: string, selectedRemote?: string): Promise<GitBranchInfo> {
+		// `git for-each-ref` lets us pull the committer date alongside the
+		// short hash and subject in a single call per ref namespace, which
+		// the old `git branch -v` output doesn't expose. Format:
+		//   `HEAD|short-name|short-hash|subject|iso-date`
+		// where `HEAD` is `*` for the current branch and ` ` for others.
+		// `iso-date` is strict ISO 8601 so it can't collide with the `|`
+		// separators — the parser uses `lastIndexOf('|')` to extract it.
+		const localFmt = '%(HEAD)|%(refname:short)|%(objectname:short)|%(subject)|%(committerdate:iso8601)';
+		const remoteFmt = '%(refname:short)|%(objectname:short)|%(subject)|%(committerdate:iso8601)';
 		const [localResult, remoteResult, headRef] = await Promise.all([
-			execGit(['branch', '-v', '--no-color'], cwd),
-			execGit(['branch', '-r', '-v', '--no-color'], cwd),
+			execGit(['for-each-ref', `--format=${localFmt}`, 'refs/heads/'], cwd),
+			execGit(['for-each-ref', `--format=${remoteFmt}`, 'refs/remotes/'], cwd),
 			execGit(['rev-parse', '--abbrev-ref', 'HEAD'], cwd)
 		]);
 
-		// Handle empty repo (no commits yet) — branch command returns empty
+		// Handle empty repo (no commits yet) — for-each-ref returns empty
 		if (!localResult.stdout.trim()) {
 			// Try to get the initial branch name from HEAD
 			const headResult = await execGit(['symbolic-ref', '--short', 'HEAD'], cwd);
