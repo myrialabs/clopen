@@ -2661,10 +2661,11 @@ ${bodies}`;
 												{#each commitState.commits as commit (commit.hash)}
 													{@const commitExpanded = expandedBranchCommits.has(commit.hash)}
 													{@const filesState = branchCommitFileState[commit.hash]}
+													{@const commitRelativeDate = formatRelativeTime(commit.date)}
 													<div>
 														<div class="group/commit flex items-start gap-1.5 w-full px-2 py-1.5 rounded-md hover:bg-slate-100 dark:hover:bg-slate-800/60 transition-colors">
 															<button type="button" class="flex items-center justify-center w-5 h-5 rounded text-slate-400 hover:text-slate-700 dark:hover:text-slate-200 hover:bg-slate-200/70 dark:hover:bg-slate-700/70 transition-colors bg-transparent border-none cursor-pointer shrink-0" onclick={() => toggleBranchCommitExpanded(commit.hash)} title={commitExpanded ? 'Collapse' : 'Expand'}><Icon name={commitExpanded ? 'lucide:chevron-down' : 'lucide:chevron-right'} class="w-3 h-3" /></button>
-															<button type="button" class="flex items-start gap-2 flex-1 min-w-0 text-left bg-transparent border-none cursor-pointer p-0" onclick={() => viewCommitDiff(commit.hash)} title="View commit"><span class="font-mono text-xs text-violet-500 shrink-0 pt-0.5">{commit.hashShort}</span><span class="flex-1 min-w-0 text-xs text-slate-600 dark:text-slate-300 truncate">{commit.message}</span></button>
+															<button type="button" class="flex items-start gap-2 flex-1 min-w-0 text-left bg-transparent border-none cursor-pointer p-0" onclick={() => viewCommitDiff(commit.hash)} title="View commit"><span class="font-mono text-xs text-violet-500 shrink-0 pt-0.5">{commit.hashShort}</span><span class="flex-1 min-w-0 text-xs text-slate-600 dark:text-slate-300 truncate">{commit.message}{#if commit.author || commitRelativeDate}<span class="text-slate-400 dark:text-slate-500 whitespace-nowrap"> · {commit.author}{#if commit.author && commitRelativeDate}, {/if}{commitRelativeDate}</span>{/if}</span></button>
 															{#if branch.name !== branchInfo?.current}
 																<button type="button" class="flex items-center justify-center w-5 h-5 rounded text-slate-400 hover:text-emerald-500 hover:bg-emerald-500/10 transition-colors bg-transparent border-none cursor-pointer shrink-0 opacity-0 group-hover/commit:opacity-100" onclick={() => handleCherryPick(commit.hash)} title="Cherry-pick this commit onto {branchInfo?.current}"><Icon name="lucide:git-fork" class="w-3 h-3" /></button>
 															{/if}
