@@ -1951,6 +1951,66 @@ ${bodies}`;
 		});
 	}
 
+	/**
+	 * Format an ISO date string as a compact relative time (e.g. "2h ago",
+	 * "3d ago"). Mirrors the helper used in HistoryView / HistoryModal so
+	 * the user sees the same wording in the source control and history
+	 * views.
+	 */
+	function formatStashRelativeTime(iso: string): string {
+		if (!iso) return '';
+		const date = new Date(iso).getTime();
+		if (Number.isNaN(date)) return '';
+		const diffMs = Date.now() - date;
+		const diffMins = Math.floor(diffMs / 1000 / 60);
+		const diffHours = Math.floor(diffMins / 60);
+		const diffDays = Math.floor(diffHours / 24);
+		if (diffMins < 1) return 'just now';
+		if (diffMins < 60) return `${diffMins}m ago`;
+		if (diffHours < 24) return `${diffHours}h ago`;
+		if (diffDays < 7) return `${diffDays}d ago`;
+		if (diffDays < 30) return `${Math.floor(diffDays / 7)}w ago`;
+		if (diffDays < 365) return `${Math.floor(diffDays / 30)}mo ago`;
+		return `${Math.floor(diffDays / 365)}y ago`;
+	}
+
+	async function viewStashDiff(index: number) {
+		if (!projectId) return;
+		try {
+			const diffs = await ws.http('git:stash-diff', { projectId, index });
+			if (diffs.length === 0) {
+				showInfo('Empty Stash', `stash@{${index}} contains no file changes.`);
+				return;
+			}
+			// Open a tab for each file in the stash, like the commit detail
+			// view does. Tab id includes the stash index so re-clicking
+			// reuses the same tab instead of opening duplicates.
+			const newTabs = diffs.map(file => {
+				const path = file.newPath || file.oldPath;
+				const fileName = path.split(/[\\/]/).pop() || path;
+				const tabId = `stash:${index}:${path}`;
+				return {
+					id: tabId,
+					filePath: path,
+					fileName,
+					section: 'stash' as const,
+					diff: file,
+					diffs: [],
+					isLoading: false,
+					stashIndex: index,
+					status: file.status
+				};
+			});
+			openTabs = newTabs;
+			activeTabId = newTabs[0].id;
+			if (!isTwoColumnMode) viewMode = 'diff';
+			markGitUiDirty();
+		} catch (err) {
+			debug.error('git', 'Failed to load stash diff:', err);
+			showError('Stash Diff Failed', err instanceof Error ? err.message : 'Unknown error');
+		}
+	}
+
 	// ============================
 	// Tag Operations
 	// ============================
@@ -2913,13 +2973,17 @@ ${bodies}`;
 								{:else}
 									<div class="space-y-1">
 										{#each stashEntries as entry (entry.index)}
+											{@const relativeDate = formatStashRelativeTime(entry.date)}
 											<div class="group relative flex items-center gap-2 px-2.5 py-1.5 rounded-md hover:bg-slate-100 dark:hover:bg-slate-800/60 transition-colors">
 												<Icon name="lucide:archive" class="w-4 h-4 text-slate-400 shrink-0" />
-												<div class="flex-1 min-w-0 pr-2 group-hover:pr-16 flex flex-col justify-center overflow-hidden transition-[padding] duration-150">
+												<div class="flex-1 min-w-0 pr-2 group-hover:pr-24 flex flex-col justify-center overflow-hidden transition-[padding] duration-150">
 													<p class="text-sm font-medium text-slate-900 dark:text-slate-100 truncate">{entry.message}</p>
-													<p class="text-xs text-slate-400 dark:text-slate-500">stash@&#123;{entry.index}&#125;</p>
+													<p class="text-xs text-slate-400 dark:text-slate-500">
+														<span>stash@&#123;{entry.index}&#125;</span>{#if relativeDate}<span class="mx-1">·</span><span>{relativeDate}</span>{/if}
+													</p>
 												</div>
 												<div class="pointer-events-none absolute inset-y-0 right-0 flex items-center gap-1 pl-1 pr-2 bg-white/20 opacity-0 backdrop-blur-md supports-[backdrop-filter]:bg-white/10 transition-opacity group-hover:opacity-100 dark:bg-slate-900/20 dark:supports-[backdrop-filter]:bg-slate-900/10">
+													<button type="button" class="pointer-events-auto flex items-center justify-center w-7 h-7 rounded-md text-slate-400 hover:bg-violet-500/10 hover:text-violet-500 transition-colors bg-transparent border-none cursor-pointer" onclick={() => viewStashDiff(entry.index)} title="View diff"><Icon name="lucide:file-diff" class="w-3.5 h-3.5" /></button>
 													<button type="button" class="pointer-events-auto flex items-center justify-center w-7 h-7 rounded-md text-slate-400 hover:bg-emerald-500/10 hover:text-emerald-500 transition-colors bg-transparent border-none cursor-pointer" onclick={() => handleStashPop(entry.index)} title="Pop"><Icon name="lucide:archive-restore" class="w-3.5 h-3.5" /></button>
 													<button type="button" class="pointer-events-auto flex items-center justify-center w-7 h-7 rounded-md text-slate-400 hover:bg-red-500/10 hover:text-red-500 transition-colors bg-transparent border-none cursor-pointer" onclick={() => handleStashDrop(entry.index)} title="Drop"><Icon name="lucide:trash-2" class="w-3.5 h-3.5" /></button>
 												</div>

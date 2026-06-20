@@ -236,6 +236,35 @@ export const remoteHandler = createRouter()
 		return { ok: true };
 	})
 
+	.http('git:stash-diff', {
+		data: t.Object({
+			projectId: t.String(),
+			index: t.Optional(t.Number())
+		}),
+		response: t.Array(t.Object({
+			oldPath: t.String(),
+			newPath: t.String(),
+			status: t.String(),
+			hunks: t.Array(t.Object({
+				oldStart: t.Number(),
+				oldLines: t.Number(),
+				newStart: t.Number(),
+				newLines: t.Number(),
+				header: t.String(),
+				lines: t.Array(t.Object({
+					type: t.Union([t.Literal('add'), t.Literal('delete'), t.Literal('context'), t.Literal('header')]),
+					content: t.String(),
+					oldLineNumber: t.Optional(t.Number()),
+					newLineNumber: t.Optional(t.Number())
+				}))
+			})),
+			isBinary: t.Boolean()
+		}))
+	}, async ({ data, conn }) => {
+		const project = requireProjectAccess(conn, data.projectId);
+		return await gitService.stashDiff(project.path, data.index);
+	})
+
 	.http('git:tags', {
 		data: t.Object({
 			projectId: t.String()

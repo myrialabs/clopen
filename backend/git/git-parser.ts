@@ -342,19 +342,30 @@ export function parseRemotes(output: string): GitRemote[] {
 }
 
 /**
- * Parse `git stash list` output
+ * Parse `git stash list` output.
+ *
+ * Expects lines in the custom format produced by `git stash list --format="%gd: %gs | %cI"`:
+ *   `stash@{0}: WIP on main: abc1234 message | 2024-01-15T10:30:00+07:00`
+ *
+ * The ` | ` separator is safe because `%cI` (strict ISO 8601) never contains it.
+ * Falls back to the plain format (`stash@{N}: message`) when the separator is
+ * missing — e.g. older snapshots or a git version that ignores `--format`.
  */
 export function parseStashList(output: string): GitStashEntry[] {
 	const entries: GitStashEntry[] = [];
 	const lines = output.split('\n').filter(Boolean);
 
 	for (const line of lines) {
-		const match = line.match(/^stash@\{(\d+)\}:\s*(.+)$/);
+		const sepIdx = line.lastIndexOf(' | ');
+		const head = sepIdx === -1 ? line : line.substring(0, sepIdx);
+		const date = sepIdx === -1 ? '' : line.substring(sepIdx + 3);
+
+		const match = head.match(/^stash@\{(\d+)\}:\s*(.+)$/);
 		if (match) {
 			entries.push({
 				index: parseInt(match[1]),
 				message: match[2],
-				date: ''
+				date
 			});
 		}
 	}

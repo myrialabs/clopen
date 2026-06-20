@@ -538,7 +538,11 @@ export class GitService {
 	// ============================================
 
 	async stashList(cwd: string): Promise<GitStashEntry[]> {
-		const result = await execGit(['stash', 'list'], cwd);
+		// Custom format appends the committer date (ISO 8601) after a ` | `
+		// separator so the parser can extract it. The default `git stash list`
+		// output has no date. `%cI` is the strict ISO format — it contains
+		// colons and dashes but never ` | `, so the lastIndexOf split is safe.
+		const result = await execGit(['stash', 'list', '--format=%gd: %gs | %cI'], cwd);
 		return parseStashList(result.stdout);
 	}
 
@@ -584,6 +588,19 @@ export class GitService {
 		if (result.exitCode !== 0) {
 			throw new Error(`git stash drop failed: ${result.stderr}`);
 		}
+	}
+
+	async stashDiff(cwd: string, index = 0): Promise<GitFileDiff[]> {
+		if (!Number.isInteger(index) || index < 0) {
+			throw new Error('Invalid stash index');
+		}
+		// `git stash show -p stash@{N}` produces a unified diff in the
+		// same format as `git diff`, so `parseDiff` handles it unchanged.
+		const result = await execGit(['stash', 'show', '-p', `stash@{${index}}`], cwd);
+		if (result.exitCode !== 0) {
+			throw new Error(`git stash show failed: ${result.stderr}`);
+		}
+		return parseDiff(result.stdout);
 	}
 
 	// ============================================
