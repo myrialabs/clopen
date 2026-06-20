@@ -141,7 +141,7 @@
 						onclick={(e) => { e.stopPropagation(); onStash?.(); }}
 						title="Stash changes"
 					>
-						<Icon name="lucide:archive" class="w-4 h-4" />
+						<Icon name="lucide:archive" class="w-3.5 h-3.5" />
 					</button>
 				{/if}
 				{#if section === 'staged' && onUnstageAll}

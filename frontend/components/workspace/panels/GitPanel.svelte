@@ -17,6 +17,7 @@
 	import {
 		gitDraft,
 		setGitSnapshotProvider,
+		captureActiveGitUiState,
 		loadGitUiState,
 		markGitUiDirty,
 		type GitUiState,
@@ -42,7 +43,6 @@
 	import type { GitMoreAction } from '$frontend/components/git/GitMoreMenu.svelte';
 	import ChangesSection from '$frontend/components/git/ChangesSection.svelte';
 	import DiffViewer from '$frontend/components/git/DiffViewer.svelte';
-	import BranchManager from '$frontend/components/git/BranchManager.svelte';
 	import GitLog from '$frontend/components/git/GitLog.svelte';
 	import CommitFileList from '$frontend/components/git/CommitFileList.svelte';
 	import ConflictResolver from '$frontend/components/git/ConflictResolver.svelte';
@@ -98,19 +98,7 @@
 			localStorage.setItem(`clopen:selectedRemote:${projectId}`, selectedRemote);
 		} catch { /* ignore */ }
 	}
-	let openRemoteBranchMenu = $state<string | null>(null);
 	let deletingRemoteBranch = $state<string | null>(null);
-
-	$effect(() => {
-		if (!openRemoteBranchMenu) return;
-		const handler = (e: MouseEvent) => {
-			const target = e.target as HTMLElement | null;
-			if (target?.closest('[data-remote-branch-menu]')) return;
-			openRemoteBranchMenu = null;
-		};
-		document.addEventListener('click', handler);
-		return () => document.removeEventListener('click', handler);
-	});
 
 	$effect(() => {
 		if (!editingRemote) return;
@@ -149,6 +137,22 @@
 		}
 	}
 
+	function copyCommitHash(hash: string, e: MouseEvent) {
+		e.stopPropagation();
+		if (typeof navigator !== 'undefined' && navigator.clipboard) {
+			navigator.clipboard.writeText(hash)
+				.then(() => showInfo('Copied', `Commit ${hash.slice(0, 7)} copied to clipboard`))
+				.catch(() => {});
+		}
+	}
+
+	/** Split a path into its file name and directory, like the History detail list. */
+	function splitPath(path: string): { fileName: string; dirPath: string } {
+		const parts = path.split(/[\\/]/);
+		const fileName = parts.pop() || path;
+		return { fileName, dirPath: parts.join('/') };
+	}
+
 	async function handleDeleteRemoteBranch(remote: string, branch: string) {
 		requestConfirm({
 			title: 'Delete remote branch',
@@ -172,9 +176,10 @@
 	}
 
 	// View state
-	let activeView = $state<'changes' | 'log' | 'branches' | 'tags'>('changes');
+	let activeView = $state<'changes' | 'log' | 'branches' | 'more'>('changes');
+	// Sub-tab for the "More" view (Tags / Stash / Contributors)
+	let moreSubTab = $state<'tags' | 'stash' | 'contributors'>('tags');
 	let viewMode = $state<'list' | 'diff'>('list');
-	let showBranchManager = $state(false);
 	let showMergeBranchModal = $state(false);
 	let mergeBranchName = $state('');
 	let mergeMode = $state<'default' | 'no-ff'>('default');
@@ -217,6 +222,10 @@
 	let isStashLoading = $state(false);
 	let showStashSaveForm = $state(false);
 	let stashMessage = $state('');
+	// Inline expanded stash entries → their file list (lazy-loaded), like the
+	// per-commit file list under a branch.
+	let expandedStashes = $state<Set<number>>(new Set());
+	let stashFileState = $state<Record<number, { files: GitFileDiff[]; isLoading: boolean }>>({});
 
 	// Tags state
 	let tags = $state<GitTag[]>([]);
@@ -228,11 +237,6 @@
 	// Inline create branch state
 	let showCreateBranchForm = $state(false);
 	let newBranchName = $state('');
-
-	// Stash bottom panel state
-	let stashPanelCollapsed = $state(true);
-	let stashPanelHeight = $state(150);
-	let isStashResizing = $state(false);
 
 	// Branches view state
 	let branchesSearchQuery = $state('');
@@ -266,10 +270,7 @@
 	let expandedBranchCommits = $state<Set<string>>(new Set());
 	let branchCommitFileState = $state<Record<string, BranchCommitFileState>>({});
 
-	// Contributor panel state
-	let contributorPanelCollapsed = $state(true);
-	let contributorPanelHeight = $state(120);
-	let isContributorResizing = $state(false);
+	// Contributor state
 	let contributors = $state<{ name: string; email: string; count: number }[]>([]);
 	let isContributorsLoading = $state(false);
 
@@ -288,10 +289,10 @@
 		scrollTop?: number;
 	}
 
-	// Per-view tab isolation — each view (Changes, History, Stash, Tags) has its own tabs
-	const _tabStore: Record<string, DiffTab[]> = { changes: [], log: [], branches: [], tags: [] };
-	const _activeTabStore: Record<string, string | null> = { changes: null, log: null, branches: null, tags: null };
-	const _viewModeStore: Record<string, 'list' | 'diff'> = { changes: 'list', log: 'list', branches: 'list', tags: 'list' };
+	// Per-view tab isolation — each view (Changes, History, Branches, More) has its own tabs
+	const _tabStore: Record<string, DiffTab[]> = { changes: [], log: [], branches: [], more: [] };
+	const _activeTabStore: Record<string, string | null> = { changes: null, log: null, branches: null, more: null };
+	const _viewModeStore: Record<string, 'list' | 'diff'> = { changes: 'list', log: 'list', branches: 'list', more: 'list' };
 
 	let openTabs = $state<DiffTab[]>([]);
 	let activeTabId = $state<string | null>(null);
@@ -615,6 +616,14 @@
 		} finally {
 			savingRemote = false;
 		}
+	}
+
+	// Mark a remote as the active one (drives branch ahead/behind, push target,
+	// and the preferred clone/remote URL). Persisted via the selectedRemote effect.
+	function setActiveRemote(name: string) {
+		if (selectedRemote === name) return;
+		selectedRemote = name;
+		loadBranches(name);
 	}
 
 	async function handleFetchRemote(remote: string) {
@@ -1162,7 +1171,6 @@
 		if (!projectId) return;
 		try {
 			await ws.http('git:switch-branch', { projectId, name });
-			showBranchManager = false;
 			await loadAll();
 			if (activeView === 'log') await loadLog(true);
 		} catch (err) {
@@ -1300,7 +1308,9 @@
 		const data = await ws.http('git:log', { projectId, limit: 500, skip: 0 });
 			const map = new Map<string, { name: string; email: string; count: number }>();
 			for (const c of data.commits) {
-				const key = c.author.toLowerCase().trim();
+				// Group by email when available (one person may commit under several
+				// display names) and fall back to the author name otherwise.
+				const key = (c.authorEmail || c.author).toLowerCase().trim();
 				const existing = map.get(key);
 				if (existing) { existing.count++; } else { map.set(key, { name: c.author.trim(), email: c.authorEmail, count: 1 }); }
 			}
@@ -1314,7 +1324,6 @@
 		try {
 			await ws.http('git:create-branch', { projectId, name });
 			showInfo('Branch Created', `Switched to "${name}".`);
-			showBranchManager = false;
 			await loadAll();
 			return true;
 		} catch (err) {
@@ -1356,16 +1365,6 @@
 		});
 	}
 
-	async function renameBranch(oldName: string, newName: string) {
-		if (!projectId) return;
-		try {
-			await ws.http('git:rename-branch', { projectId, oldName, newName });
-			await loadBranches();
-		} catch (err) {
-			debug.error('git', 'Failed to rename branch:', err);
-		}
-	}
-
 	async function openMergeBranchModal() {
 		if (blockedWhileBusy('merge')) return;
 		const latestBranchInfo = await loadBranches();
@@ -1386,19 +1385,7 @@
 		mergeMode = 'default';
 	}
 
-	function closeAddRemoteModal() {
-		showAddRemoteForm = false;
-		newRemoteName = '';
-		newRemoteUrl = '';
-	}
-
-	function closeEditRemoteModal() {
-		editingRemote = null;
-		editRemoteName = '';
-		editRemoteUrl = '';
-	}
-
-	async function runMergeBranch(name: string, noFastForward = false, closeBranchManager = false) {
+	async function runMergeBranch(name: string, noFastForward = false) {
 		if (!projectId || !name || isMoreBusy) return;
 		if (blockedWhileBusy('merge')) return;
 
@@ -1411,7 +1398,6 @@
 					noFastForward
 				});
 				showMergeBranchModal = false;
-				if (closeBranchManager) showBranchManager = false;
 
 				if (!result.success) {
 					await loadAll();
@@ -1442,7 +1428,7 @@
 			message: `Merge "${name}" into "${branchInfo?.current}"?`,
 			type: 'info',
 			confirmText: 'Merge',
-			onConfirm: () => void runMergeBranch(name, false, true)
+			onConfirm: () => void runMergeBranch(name, false)
 		});
 	}
 
@@ -1910,16 +1896,16 @@ ${bodies}`;
 
 	/**
 	 * Triggered by the stash icon in the Staged/Changes section headers.
-	 * Opens the existing stash-save form at the bottom of the panel,
-	 * expands the (possibly collapsed) stash panel, and focuses the
-	 * message input so the user can type a description and submit.
+	 * Jumps to the More → Stash sub-tab, opens the stash-save form, and
+	 * focuses the message input so the user can type a description and submit.
 	 */
 	function openStashPrompt() {
 		stashMessage = '';
 		showStashSaveForm = true;
-		stashPanelCollapsed = false;
+		moreSubTab = 'stash';
+		switchToView('more');
 		// Focus the message input after Svelte paints the form. Using
-		// rAF + small delay because the panel may need to expand/scroll
+		// rAF + small delay because the panel may need to switch/scroll
 		// before the input is visible and focusable.
 		requestAnimationFrame(() => {
 			setTimeout(() => {
@@ -1996,41 +1982,48 @@ ${bodies}`;
 		return `${Math.floor(diffDays / 365)}y ago`;
 	}
 
-	async function viewStashDiff(index: number) {
+	async function loadStashFiles(index: number) {
 		if (!projectId) return;
+		stashFileState = { ...stashFileState, [index]: { files: stashFileState[index]?.files ?? [], isLoading: true } };
 		try {
 			const diffs = await ws.http('git:stash-diff', { projectId, index });
-			if (diffs.length === 0) {
-				showInfo('Empty Stash', `stash@{${index}} contains no file changes.`);
-				return;
-			}
-			// Open a tab for each file in the stash, like the commit detail
-			// view does. Tab id includes the stash index so re-clicking
-			// reuses the same tab instead of opening duplicates.
-			const newTabs = diffs.map(file => {
-				const path = file.newPath || file.oldPath;
-				const fileName = path.split(/[\\/]/).pop() || path;
-				const tabId = `stash:${index}:${path}`;
-				return {
-					id: tabId,
-					filePath: path,
-					fileName,
-					section: 'stash' as const,
-					diff: file,
-					diffs: [],
-					isLoading: false,
-					stashIndex: index,
-					status: file.status
-				};
-			});
-			openTabs = newTabs;
-			activeTabId = newTabs[0].id;
-			if (!isTwoColumnMode) viewMode = 'diff';
-			markGitUiDirty();
+			stashFileState = { ...stashFileState, [index]: { files: diffs, isLoading: false } };
 		} catch (err) {
 			debug.error('git', 'Failed to load stash diff:', err);
-			showError('Stash Diff Failed', err instanceof Error ? err.message : 'Unknown error');
+			stashFileState = { ...stashFileState, [index]: { files: [], isLoading: false } };
 		}
+	}
+
+	function toggleStashExpanded(index: number) {
+		const next = new Set(expandedStashes);
+		if (next.has(index)) {
+			next.delete(index);
+		} else {
+			next.add(index);
+			if (!stashFileState[index]?.files.length) void loadStashFiles(index);
+		}
+		expandedStashes = next;
+	}
+
+	/** Open a single file from a stash in the diff editor. */
+	function viewStashFileDiff(file: GitFileDiff, index: number) {
+		const path = file.newPath || file.oldPath;
+		if (!path) return;
+		const fileName = path.split(/[\\/]/).pop() || path;
+		const tabId = `stash:${index}:${path}`;
+		openTabs = [{
+			id: tabId,
+			filePath: path,
+			fileName,
+			section: 'stash',
+			diff: file,
+			diffs: [],
+			isLoading: false,
+			status: file.status
+		}];
+		activeTabId = tabId;
+		if (!isTwoColumnMode) viewMode = 'diff';
+		markGitUiDirty();
 	}
 
 	// ============================
@@ -2181,7 +2174,13 @@ ${bodies}`;
 				: null
 		});
 		setGitSnapshotProvider(provider);
-		return () => setGitSnapshotProvider(null);
+		return () => {
+			// Persist the live view into the in-session cache before detaching, so a
+			// panel swap (which unmounts this component) restores the active tab/diff
+			// on remount rather than resetting to the activation-time slice.
+			captureActiveGitUiState();
+			setGitSnapshotProvider(null);
+		};
 	});
 
 	// Load log when switching to log view
@@ -2204,11 +2203,15 @@ ${bodies}`;
 		}
 	});
 
-	// Load tags when switching to tags view
+	// Refresh the active More sub-tab's data when shown
 	$effect(() => {
-		if (activeView === 'tags' && isRepo) {
-			untrack(() => loadTags());
-		}
+		if (activeView !== 'more' || !isRepo) return;
+		const sub = moreSubTab;
+		untrack(() => {
+			if (sub === 'tags') loadTags();
+			else if (sub === 'stash') loadStash();
+			else if (sub === 'contributors') loadContributors();
+		});
 	});
 
 	// Sync view mode on column mode change
@@ -2306,32 +2309,6 @@ ${bodies}`;
 		return () => unsub();
 	});
 
-	function startStashResize(e: MouseEvent) {
-		isStashResizing = true;
-		const startY = e.clientY;
-		const startHeight = stashPanelHeight;
-		function onMouseMove(e: MouseEvent) {
-			const delta = startY - e.clientY;
-			stashPanelHeight = Math.max(60, Math.min(startHeight + delta, 400));
-		}
-		function onMouseUp() { isStashResizing = false; window.removeEventListener('mousemove', onMouseMove); window.removeEventListener('mouseup', onMouseUp); }
-		window.addEventListener('mousemove', onMouseMove);
-		window.addEventListener('mouseup', onMouseUp);
-	}
-
-	function startContributorResize(e: MouseEvent) {
-		isContributorResizing = true;
-		const startY = e.clientY;
-		const startHeight = contributorPanelHeight;
-		function onMouseMove(e: MouseEvent) {
-			const delta = startY - e.clientY;
-			contributorPanelHeight = Math.max(60, Math.min(startHeight + delta, 300));
-		}
-		function onMouseUp() { isContributorResizing = false; window.removeEventListener('mousemove', onMouseMove); window.removeEventListener('mouseup', onMouseUp); }
-		window.addEventListener('mousemove', onMouseMove);
-		window.addEventListener('mouseup', onMouseUp);
-	}
-
 	function startColumnResize(e: MouseEvent) {
 		isResizing = true;
 		const startX = e.clientX;
@@ -2382,19 +2359,15 @@ ${bodies}`;
 		{ id: 'changes' as const, label: 'Changes', icon: 'lucide:file-pen' as IconName, badge: totalChanges > 0 ? totalChanges : null },
 		{ id: 'log' as const, label: 'History', icon: 'lucide:history' as IconName, badge: null },
 		{ id: 'branches' as const, label: 'Branches', icon: 'lucide:git-branch' as IconName, badge: branchInfo?.local.length ? branchInfo.local.length : null },
-		{ id: 'tags' as const, label: 'Tags', icon: 'lucide:tag' as IconName, badge: tags.length > 0 ? tags.length : null }
+		{ id: 'more' as const, label: 'More', icon: 'lucide:ellipsis' as IconName, badge: null }
 	]);
 
 	// Exported panel actions for PanelHeader
 	export const panelActions = {
 		init: handleInit,
-		openBranchManager: () => { showBranchManager = true; },
+		openBranches: (sub: 'local' | 'remote') => { branchesSubTab = sub; switchToView('branches'); },
 		getBranchInfo: () => branchInfo,
 		getIsRepo: () => isRepo,
-		getRemotes: () => remotes,
-		getHasRemotes: () => remotes.length > 0,
-		getSelectedRemote: () => selectedRemote,
-		setSelectedRemote: (name: string) => { selectedRemote = name; },
 		setViewMode: (mode: 'list' | 'diff') => {
 			if (!isTwoColumnMode) viewMode = mode;
 		},
@@ -2540,7 +2513,6 @@ ${bodies}`;
 				onStageAll={stageAll}
 				onDiscard={discardFile}
 				onDiscardAll={discardAll}
-				onStash={openStashPrompt}
 				onViewDiff={viewDiff}
 			/>
 
@@ -2579,31 +2551,31 @@ ${bodies}`;
 	{:else if activeView === 'branches'}
 		<!-- Branches View -->
 		<div class="flex-1 flex flex-col pt-2 min-h-0">
+			<div class="flex gap-1 px-2 pb-2 flex-shrink-0">
+				<button type="button" class="px-2.5 py-1 text-xs font-medium rounded-md transition-colors cursor-pointer border-none {branchesSubTab === 'local' ? 'bg-violet-500/10 text-violet-600' : 'bg-transparent text-slate-500 hover:text-slate-700 dark:hover:text-slate-300'}" onclick={() => { branchesSubTab = 'local'; showCreateBranchForm = false; newBranchName = ''; }}>Local ({filteredLocalBranches.length})</button>
+				<button type="button" class="px-2.5 py-1 text-xs font-medium rounded-md transition-colors cursor-pointer border-none {branchesSubTab === 'remote' ? 'bg-violet-500/10 text-violet-600' : 'bg-transparent text-slate-500 hover:text-slate-700 dark:hover:text-slate-300'}" onclick={() => branchesSubTab = 'remote'}>Remote ({remotes.length})</button>
+			</div>
 			<div class="px-2 pb-2 flex-shrink-0">
-				<div class="flex items-center gap-2 py-2 px-3 bg-slate-100/80 dark:bg-slate-800/80 border border-slate-200 dark:border-slate-800 rounded-lg">
+				<div class="flex items-center gap-2 py-1.5 px-2.5 bg-slate-100/80 dark:bg-slate-800/80 border border-slate-200 dark:border-slate-800 rounded-lg">
 					<Icon name="lucide:search" class="w-3.5 h-3.5 text-slate-500 dark:text-slate-400 shrink-0" />
-					<input type="text" bind:value={branchesSearchQuery} placeholder="Search branches..." class="flex-1 bg-transparent border-none outline-none text-slate-900 dark:text-slate-100 text-sm placeholder:text-slate-500 dark:placeholder:text-slate-400" />
+					<input type="text" bind:value={branchesSearchQuery} placeholder="Search branches..." class="flex-1 bg-transparent border-none outline-none text-slate-900 dark:text-slate-100 text-xs placeholder:text-slate-500 dark:placeholder:text-slate-400" />
 					{#if branchesSearchQuery}
 						<button type="button" class="flex items-center justify-center w-5 h-5 bg-transparent border-none rounded text-slate-400 cursor-pointer hover:text-slate-600 dark:hover:text-slate-300" onclick={() => (branchesSearchQuery = '')}><Icon name="lucide:x" class="w-3 h-3" /></button>
 					{/if}
 				</div>
 			</div>
-			<div class="flex gap-1 px-2 pb-2 flex-shrink-0">
-				<button type="button" class="px-3 py-1.5 text-sm font-medium rounded-lg transition-colors cursor-pointer border-none {branchesSubTab === 'local' ? 'bg-violet-500/10 text-violet-600' : 'bg-transparent text-slate-500 hover:text-slate-700 dark:hover:text-slate-300'}" onclick={() => { branchesSubTab = 'local'; showCreateBranchForm = false; newBranchName = ''; }}>Local ({filteredLocalBranches.length})</button>
-				<button type="button" class="px-3 py-1.5 text-sm font-medium rounded-lg transition-colors cursor-pointer border-none {branchesSubTab === 'remote' ? 'bg-violet-500/10 text-violet-600' : 'bg-transparent text-slate-500 hover:text-slate-700 dark:hover:text-slate-300'}" onclick={() => branchesSubTab = 'remote'}>Remote ({filteredRemoteBranches.length})</button>
-			</div>
 			{#if branchesSubTab === 'local'}
 				<div class="px-2 pb-2 flex-shrink-0">
 					{#if showCreateBranchForm}
-						<div class="p-3 bg-slate-50 dark:bg-slate-800/50 border border-slate-200 dark:border-slate-700 rounded-lg space-y-2">
-							<input type="text" bind:value={newBranchName} placeholder="New branch name..." class="w-full px-3 py-2 text-sm bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-700 rounded-lg text-slate-900 dark:text-slate-100 outline-none focus:border-violet-500/40" onkeydown={(e) => e.key === 'Enter' && handleCreateBranchFromForm()} autofocus />
-							<div class="flex gap-2">
-								<button type="button" class="flex-1 px-3 py-2 text-sm font-medium rounded-lg transition-colors cursor-pointer border-none {newBranchName.trim() ? 'bg-violet-600 text-white hover:bg-violet-700' : 'bg-slate-200 dark:bg-slate-700 text-slate-400 dark:text-slate-500 cursor-not-allowed'}" onclick={handleCreateBranchFromForm} disabled={!newBranchName.trim()}>Create Branch</button>
-								<button type="button" class="px-3 py-2 text-sm font-medium bg-transparent border border-slate-200 dark:border-slate-700 text-slate-600 dark:text-slate-400 rounded-lg hover:bg-slate-100 dark:hover:bg-slate-800 transition-colors cursor-pointer" onclick={() => { showCreateBranchForm = false; newBranchName = ''; }}>Cancel</button>
+						<div class="p-2.5 bg-slate-50 dark:bg-slate-800/50 border border-slate-200 dark:border-slate-700 rounded-lg space-y-2">
+							<input type="text" bind:value={newBranchName} placeholder="New branch name..." class="w-full px-2.5 py-2 text-sm bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-700 rounded-md text-slate-900 dark:text-slate-100 outline-none focus:border-violet-500/40 focus:ring-1 focus:ring-violet-500/20" onkeydown={(e) => e.key === 'Enter' && handleCreateBranchFromForm()} autofocus />
+							<div class="flex gap-1.5">
+								<button type="button" class="flex-1 px-3 py-1.5 text-xs font-medium rounded-md transition-colors cursor-pointer border-none {newBranchName.trim() ? 'bg-violet-600 text-white hover:bg-violet-700' : 'bg-slate-200 dark:bg-slate-700 text-slate-400 dark:text-slate-500 cursor-not-allowed'}" onclick={handleCreateBranchFromForm} disabled={!newBranchName.trim()}>Create Branch</button>
+								<button type="button" class="px-3 py-1.5 text-xs font-medium bg-transparent border border-slate-200 dark:border-slate-700 text-slate-600 dark:text-slate-400 rounded-md hover:bg-slate-100 dark:hover:bg-slate-800 transition-colors cursor-pointer" onclick={() => { showCreateBranchForm = false; newBranchName = ''; }}>Cancel</button>
 							</div>
 						</div>
 					{:else}
-						<button type="button" class="flex items-center justify-center gap-2 w-full py-2.5 px-3 border border-dashed border-slate-300 dark:border-slate-600 rounded-lg text-sm text-slate-500 hover:text-violet-600 hover:border-violet-400 transition-colors cursor-pointer bg-transparent" onclick={() => showCreateBranchForm = true}><Icon name="lucide:plus" class="w-4 h-4" /><span>Create New Branch</span></button>
+						<button type="button" class="flex items-center justify-center gap-2 w-full py-2 px-3 border border-dashed border-slate-300 dark:border-slate-600 rounded-lg text-xs text-slate-500 hover:text-violet-600 hover:border-violet-400 transition-colors cursor-pointer bg-transparent" onclick={() => showCreateBranchForm = true}><Icon name="lucide:plus" class="w-3.5 h-3.5" /><span>Create New Branch</span></button>
 					{/if}
 				</div>
 				<div class="flex-1 overflow-y-auto px-2">
@@ -2612,47 +2584,55 @@ ${bodies}`;
 					{:else if filteredLocalBranches.length === 0}
 						<div class="flex flex-col items-center justify-center gap-2 py-8 text-slate-500 text-xs"><Icon name="lucide:git-branch" class="w-6 h-6 opacity-30" /><span>{branchesSearchQuery ? 'No branches match your search' : 'No branches'}</span></div>
 					{:else}
-						<div class="space-y-1">
+						<div class="space-y-0.5">
 							{#each filteredLocalBranches as branch (branch.name)}
 								{@const upstreamName = getBranchRemoteName(branch)}
 								{@const isExpanded = expandedBranches.has(branch.name)}
 								{@const commitState = branchCommitState[branch.name]}
 								{@const branchRelativeDate = formatRelativeTime(branch.lastCommitDate)}
 								<div>
-									<div class="group relative flex items-center gap-2 px-2.5 py-2 rounded-md transition-colors border {branch.isCurrent ? 'bg-violet-500/10 border-violet-500/20 text-violet-700 dark:text-violet-300' : 'border-transparent hover:bg-slate-100 dark:hover:bg-slate-800/60 text-slate-700 dark:text-slate-300'}">
-										<button type="button" class="flex items-center justify-center w-5 h-5 rounded text-slate-400 hover:bg-slate-200/70 dark:hover:bg-slate-700/70 hover:text-slate-700 dark:hover:text-slate-200 transition-colors bg-transparent border-none cursor-pointer shrink-0" onclick={() => toggleBranchExpanded(branch.name)} title={isExpanded ? 'Collapse' : 'Expand'}><Icon name={isExpanded ? 'lucide:chevron-down' : 'lucide:chevron-right'} class="w-3.5 h-3.5" /></button>
-										<Icon name="lucide:git-branch" class="w-4 h-4 shrink-0 {branch.isCurrent ? 'text-violet-500' : 'text-slate-400'}" />
-										<div class="flex-1 min-w-0 px-0.5 pr-2 {!branch.isCurrent ? (pushedBranchNames.has(branch.name) ? 'group-hover:pr-24' : 'group-hover:pr-32') : ''} flex flex-col justify-center overflow-hidden transition-[padding] duration-150">
+									<div
+										class="group relative flex items-center gap-1.5 pl-1.5 pr-2.5 py-1.5 rounded-md transition-colors border cursor-pointer {branch.isCurrent ? 'bg-violet-500/10 border-violet-500/20 text-violet-700 dark:text-violet-300' : 'border-transparent hover:bg-slate-100 dark:hover:bg-slate-800/60 text-slate-700 dark:text-slate-300'}"
+										role="button"
+										tabindex="0"
+										onclick={() => toggleBranchExpanded(branch.name)}
+										onkeydown={(e) => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); toggleBranchExpanded(branch.name); } }}
+									>
+										<Icon name={isExpanded ? 'lucide:chevron-down' : 'lucide:chevron-right'} class="w-3.5 h-3.5 shrink-0 {branch.isCurrent ? 'text-violet-500' : 'text-slate-400'}" />
+										<div class="flex-1 min-w-0 flex flex-col justify-center overflow-hidden pr-2 {!branch.isCurrent ? (pushedBranchNames.has(branch.name) ? 'group-hover:pr-24' : 'group-hover:pr-32') : ''} transition-[padding] duration-150">
 											<div class="flex min-w-0 items-center gap-2">
 												<span class="flex-1 min-w-0 text-sm text-slate-900 dark:text-slate-100 leading-tight truncate" title={branch.name}>{branch.name}</span>
 												{#if upstreamName}<span class="text-3xs text-slate-400 shrink-0">{upstreamName}</span>{/if}
 											</div>
-											<div class="flex min-w-0 items-center gap-1.5 mt-px">
-												<span class="flex-1 min-w-0 text-xs text-slate-500">{#if branch.ahead > 0}<span>{branch.ahead} ahead </span>{/if}{#if branch.behind > 0}<span>{branch.behind} behind </span>{/if}{#if branch.lastCommit}<span class="truncate">{branch.lastCommit}</span>{/if}{#if branchRelativeDate}<span class="shrink-0 ml-1.5">·&nbsp;{branchRelativeDate}</span>{/if}</span>
+											<div class="flex min-w-0 items-center gap-1.5 mt-0.5 text-xs text-slate-500 leading-tight">
+												{#if branch.ahead > 0}<span class="shrink-0">{branch.ahead} ahead</span>{/if}
+												{#if branch.behind > 0}<span class="shrink-0">{branch.behind} behind</span>{/if}
+												{#if branch.lastCommit}<span class="min-w-0 truncate">{branch.lastCommit}</span>{/if}
+												{#if branchRelativeDate}<span class="shrink-0 whitespace-nowrap">·&nbsp;{branchRelativeDate}</span>{/if}
 											</div>
 										</div>
 										{#if !branch.isCurrent}
 										<div class="pointer-events-none absolute inset-y-0 right-0 flex items-center gap-1 pl-1 pr-2 bg-white/20 opacity-0 backdrop-blur-md supports-[backdrop-filter]:bg-white/10 transition-opacity group-hover:opacity-100 dark:bg-slate-900/20 dark:supports-[backdrop-filter]:bg-slate-900/10">
-											<button type="button" class="pointer-events-auto flex items-center justify-center w-7 h-7 rounded-md text-slate-400 hover:bg-violet-500/10 hover:text-violet-500 transition-colors bg-transparent border-none cursor-pointer" onclick={() => switchBranch(branch.name)} title="Switch to this branch"><Icon name="lucide:arrow-right" class="w-3.5 h-3.5" /></button>
+											<button type="button" class="pointer-events-auto flex items-center justify-center w-7 h-7 rounded-md text-slate-400 hover:bg-violet-500/10 hover:text-violet-500 transition-colors bg-transparent border-none cursor-pointer" onclick={(e) => { e.stopPropagation(); switchBranch(branch.name); }} title="Switch to this branch"><Icon name="lucide:arrow-right" class="w-3.5 h-3.5" /></button>
 											{#if !pushedBranchNames.has(branch.name)}
 												{#if pushingBranch === branch.name}
 													<div class="pointer-events-auto flex items-center justify-center w-7 h-7 rounded-md text-emerald-500"><Icon name="lucide:loader-circle" class="w-3.5 h-3.5 animate-spin" /></div>
 												{:else}
-													<button type="button" class="pointer-events-auto flex items-center justify-center w-7 h-7 rounded-md text-slate-400 hover:bg-emerald-500/10 hover:text-emerald-500 transition-colors bg-transparent border-none cursor-pointer" onclick={() => handlePushBranch(branch.name)} title="Push branch to remote"><Icon name="lucide:upload" class="w-3.5 h-3.5" /></button>
+													<button type="button" class="pointer-events-auto flex items-center justify-center w-7 h-7 rounded-md text-slate-400 hover:bg-emerald-500/10 hover:text-emerald-500 transition-colors bg-transparent border-none cursor-pointer" onclick={(e) => { e.stopPropagation(); handlePushBranch(branch.name); }} title="Push branch to remote"><Icon name="lucide:upload" class="w-3.5 h-3.5" /></button>
 												{/if}
 											{/if}
-											<button type="button" class="pointer-events-auto flex items-center justify-center w-7 h-7 rounded-md text-slate-400 hover:bg-blue-500/10 hover:text-blue-500 transition-colors bg-transparent border-none cursor-pointer" onclick={() => mergeBranch(branch.name)} title="Merge into current branch"><Icon name="lucide:git-merge" class="w-3.5 h-3.5" /></button>
-											<button type="button" class="pointer-events-auto flex items-center justify-center w-7 h-7 rounded-md text-slate-400 hover:bg-red-500/10 hover:text-red-500 transition-colors bg-transparent border-none cursor-pointer" onclick={() => deleteBranch(branch.name)} title="Delete branch"><Icon name="lucide:trash-2" class="w-3.5 h-3.5" /></button>
+											<button type="button" class="pointer-events-auto flex items-center justify-center w-7 h-7 rounded-md text-slate-400 hover:bg-blue-500/10 hover:text-blue-500 transition-colors bg-transparent border-none cursor-pointer" onclick={(e) => { e.stopPropagation(); mergeBranch(branch.name); }} title="Merge into current branch"><Icon name="lucide:git-merge" class="w-3.5 h-3.5" /></button>
+											<button type="button" class="pointer-events-auto flex items-center justify-center w-7 h-7 rounded-md text-slate-400 hover:bg-red-500/10 hover:text-red-500 transition-colors bg-transparent border-none cursor-pointer" onclick={(e) => { e.stopPropagation(); deleteBranch(branch.name); }} title="Delete branch"><Icon name="lucide:trash-2" class="w-3.5 h-3.5" /></button>
 										</div>
 										{/if}
 										<!-- Push button: only for the active branch when it has not
 										     yet been pushed to the remote -->
 										{#if branch.isCurrent && !pushedBranchNames.has(branch.name)}
-											<button type="button" class="ml-1 flex items-center justify-center w-7 h-7 rounded-md text-slate-400 hover:bg-emerald-500/10 hover:text-emerald-500 transition-colors bg-transparent border-none cursor-pointer shrink-0" onclick={() => handlePushBranch(branch.name)} title="Push branch to remote"><Icon name="lucide:upload" class="w-3.5 h-3.5" /></button>
+											<button type="button" class="ml-1 flex items-center justify-center w-7 h-7 rounded-md text-slate-400 hover:bg-emerald-500/10 hover:text-emerald-500 transition-colors bg-transparent border-none cursor-pointer shrink-0" onclick={(e) => { e.stopPropagation(); handlePushBranch(branch.name); }} title="Push branch to remote"><Icon name="lucide:upload" class="w-3.5 h-3.5" /></button>
 										{/if}
 									</div>
 									{#if isExpanded}
-										<div class="ml-8 mt-1 mb-1 border-l border-slate-200 dark:border-slate-700 pl-3 space-y-1">
+										<div class="ml-5 mt-0.5 mb-1 border-l border-slate-200 dark:border-slate-700 pl-2 space-y-0.5">
 											{#if commitState?.isLoading && commitState.commits.length === 0}
 												<div class="flex items-center gap-2 py-2 text-xs text-slate-400"><div class="w-3 h-3 border border-slate-400 border-t-transparent rounded-full animate-spin"></div><span>Loading commits...</span></div>
 											{:else if !commitState || commitState.commits.length === 0}
@@ -2663,15 +2643,30 @@ ${bodies}`;
 													{@const filesState = branchCommitFileState[commit.hash]}
 													{@const commitRelativeDate = formatRelativeTime(commit.date)}
 													<div>
-														<div class="group/commit flex items-start gap-1.5 w-full px-2 py-1.5 rounded-md hover:bg-slate-100 dark:hover:bg-slate-800/60 transition-colors">
-															<button type="button" class="flex items-center justify-center w-5 h-5 rounded text-slate-400 hover:text-slate-700 dark:hover:text-slate-200 hover:bg-slate-200/70 dark:hover:bg-slate-700/70 transition-colors bg-transparent border-none cursor-pointer shrink-0" onclick={() => toggleBranchCommitExpanded(commit.hash)} title={commitExpanded ? 'Collapse' : 'Expand'}><Icon name={commitExpanded ? 'lucide:chevron-down' : 'lucide:chevron-right'} class="w-3 h-3" /></button>
-															<button type="button" class="flex items-start gap-2 flex-1 min-w-0 text-left bg-transparent border-none cursor-pointer p-0" onclick={() => viewCommitDiff(commit.hash)} title="View commit"><span class="font-mono text-xs text-violet-500 shrink-0 pt-0.5">{commit.hashShort}</span><span class="flex-1 min-w-0 text-xs text-slate-600 dark:text-slate-300 truncate">{commit.message}{#if commit.author || commitRelativeDate}<span class="text-slate-400 dark:text-slate-500 whitespace-nowrap">&nbsp;·&nbsp;{commit.author}{#if commit.author && commitRelativeDate},&nbsp;{commitRelativeDate}{/if}</span>{/if}</span></button>															
+														<div
+															class="group/commit relative flex items-center gap-1.5 w-full px-2 py-1.5 rounded-md hover:bg-slate-100 dark:hover:bg-slate-800/60 transition-colors cursor-pointer"
+															role="button"
+															tabindex="0"
+															onclick={() => toggleBranchCommitExpanded(commit.hash)}
+															onkeydown={(e) => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); toggleBranchCommitExpanded(commit.hash); } }}
+														>
+															<Icon name={commitExpanded ? 'lucide:chevron-down' : 'lucide:chevron-right'} class="w-3 h-3 shrink-0 text-slate-400" />
+															<div class="flex-1 min-w-0 flex flex-col justify-center overflow-hidden pr-2 {branch.name !== branchInfo?.current ? 'group-hover/commit:pr-9' : ''} transition-[padding] duration-150">
+																<div class="flex min-w-0 items-center gap-2">
+																	<span class="flex-1 min-w-0 text-sm text-slate-700 dark:text-slate-300 leading-tight truncate" title={commit.message}>{commit.message}</span>
+																	{#if commitRelativeDate}<span class="text-3xs text-slate-400 shrink-0">{commitRelativeDate}</span>{/if}
+																</div>
+																<div class="flex min-w-0 items-center gap-1.5 mt-0.5">
+																	<button type="button" class="font-mono text-xs text-violet-600 dark:text-violet-400 hover:text-violet-800 dark:hover:text-violet-300 bg-transparent border-none cursor-pointer p-0 shrink-0 transition-colors" onclick={(e) => copyCommitHash(commit.hash, e)} title="Copy commit hash">{commit.hashShort}</button>
+																	{#if commit.author}<span class="flex-1 min-w-0 text-xs text-slate-500 truncate">{commit.author}</span>{/if}
+																</div>
+															</div>
 															{#if branch.name !== branchInfo?.current}
-																<button type="button" class="flex items-center justify-center w-5 h-5 rounded text-slate-400 hover:text-emerald-500 hover:bg-emerald-500/10 transition-colors bg-transparent border-none cursor-pointer shrink-0 opacity-0 group-hover/commit:opacity-100" onclick={() => handleCherryPick(commit.hash)} title="Cherry-pick this commit onto {branchInfo?.current}"><Icon name="lucide:git-fork" class="w-3 h-3" /></button>
+																<button type="button" class="absolute right-1.5 top-1/2 -translate-y-1/2 flex items-center justify-center w-7 h-7 rounded-md text-slate-400 hover:text-emerald-500 hover:bg-emerald-500/10 transition-colors bg-transparent border-none cursor-pointer shrink-0 opacity-0 group-hover/commit:opacity-100" onclick={(e) => { e.stopPropagation(); handleCherryPick(commit.hash); }} title="Cherry-pick this commit onto {branchInfo?.current}"><Icon name="lucide:git-fork" class="w-4 h-4" /></button>
 															{/if}
 														</div>
 														{#if commitExpanded}
-															<div class="ml-7 mb-1 border-l border-slate-200 dark:border-slate-700 pl-2 space-y-0.5">
+															<div class="ml-5 mb-1 border-l border-slate-200 dark:border-slate-700 pl-2 space-y-0.5">
 																{#if filesState?.isLoading && filesState.files.length === 0}
 																	<div class="flex items-center gap-2 py-1.5 text-xs text-slate-400"><div class="w-3 h-3 border border-slate-400 border-t-transparent rounded-full animate-spin"></div><span>Loading files...</span></div>
 																{:else if !filesState || filesState.files.length === 0}
@@ -2679,7 +2674,8 @@ ${bodies}`;
 																{:else}
 																	{#each filesState.files as file (`${commit.hash}:${file.oldPath}:${file.newPath}`)}
 																		{@const filePath = file.newPath || file.oldPath}
-																		<button type="button" class="flex items-center gap-2 w-full px-2 py-1.5 rounded-md text-left hover:bg-slate-100 dark:hover:bg-slate-800/60 transition-colors bg-transparent border-none cursor-pointer" onclick={() => viewCommitFileDiff(file, 0, commit.hash)} title="View file diff"><Icon name={getFileIcon(filePath) as IconName} class="w-3.5 h-3.5 shrink-0" /><span class="flex-1 min-w-0 text-xs text-slate-600 dark:text-slate-300 truncate">{filePath}</span><span class="text-3xs font-bold {getGitStatusColor(file.status)} shrink-0">{getGitStatusLabel(file.status)}</span></button>
+																		{@const fileParts = splitPath(filePath)}
+																		<button type="button" class="group/file flex items-center gap-2 w-full px-2 py-1.5 rounded-md text-left hover:bg-slate-100 dark:hover:bg-slate-800/60 transition-colors bg-transparent border-none cursor-pointer" onclick={() => viewCommitFileDiff(file, 0, commit.hash)} title={filePath}><Icon name={getFileIcon(fileParts.fileName) as IconName} class="w-4 h-4 shrink-0" /><div class="flex items-baseline gap-1.5 min-w-0 flex-1"><span class="text-sm text-slate-600 dark:text-slate-300 truncate">{fileParts.fileName}</span>{#if fileParts.dirPath}<span class="text-2xs text-slate-400 dark:text-slate-500 truncate min-w-0" dir="rtl">{fileParts.dirPath}</span>{/if}</div><span class="w-4 text-center text-sm font-bold {getGitStatusColor(file.status)} shrink-0">{getGitStatusLabel(file.status)}</span></button>
 																	{/each}
 																{/if}
 															</div>
@@ -2697,109 +2693,110 @@ ${bodies}`;
 				</div>
 			{:else}
 				<div class="flex-1 overflow-y-auto px-2">
-					<button type="button" class="flex items-center justify-center gap-2 w-full py-2.5 px-3 mb-2 border border-dashed border-slate-300 dark:border-slate-600 rounded-lg text-sm text-slate-500 hover:text-violet-600 hover:border-violet-400 transition-colors cursor-pointer bg-transparent" onclick={() => showAddRemoteForm = true}><Icon name="lucide:plus" class="w-4 h-4" /><span>Add Remote</span></button>
+					<div class="pb-2">
+						{#if showAddRemoteForm}
+							<div class="p-2.5 bg-slate-50 dark:bg-slate-800/50 border border-slate-200 dark:border-slate-700 rounded-lg space-y-2">
+								<input type="text" bind:value={newRemoteName} placeholder="Remote name (e.g. origin)..." class="w-full px-2.5 py-2 text-sm bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-700 rounded-md text-slate-900 dark:text-slate-100 outline-none focus:border-violet-500/40 focus:ring-1 focus:ring-violet-500/20" disabled={addingRemote} />
+								<input type="text" bind:value={newRemoteUrl} placeholder="Repository URL..." class="w-full px-2.5 py-2 text-sm bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-700 rounded-md text-slate-900 dark:text-slate-100 outline-none focus:border-violet-500/40 focus:ring-1 focus:ring-violet-500/20" onkeydown={(e) => e.key === 'Enter' && handleAddRemote()} disabled={addingRemote} />
+								<div class="flex gap-1.5">
+									<button type="button" class="flex-1 px-3 py-1.5 text-xs font-medium rounded-md transition-colors cursor-pointer border-none {newRemoteName.trim() && newRemoteUrl.trim() && !addingRemote ? 'bg-violet-600 text-white hover:bg-violet-700' : 'bg-slate-200 dark:bg-slate-700 text-slate-400 dark:text-slate-500 cursor-not-allowed'}" onclick={handleAddRemote} disabled={addingRemote || !newRemoteName.trim() || !newRemoteUrl.trim()}>Add Remote</button>
+									<button type="button" class="px-3 py-1.5 text-xs font-medium bg-transparent border border-slate-200 dark:border-slate-700 text-slate-600 dark:text-slate-400 rounded-md hover:bg-slate-100 dark:hover:bg-slate-800 transition-colors cursor-pointer" onclick={() => { showAddRemoteForm = false; newRemoteName = ''; newRemoteUrl = ''; }}>Cancel</button>
+								</div>
+							</div>
+						{:else}
+							<button type="button" class="flex items-center justify-center gap-2 w-full py-2 px-3 border border-dashed border-slate-300 dark:border-slate-600 rounded-lg text-xs text-slate-500 hover:text-violet-600 hover:border-violet-400 transition-colors cursor-pointer bg-transparent" onclick={() => showAddRemoteForm = true}><Icon name="lucide:plus" class="w-3.5 h-3.5" /><span>Add Remote</span></button>
+						{/if}
+					</div>
 					{#if !branchInfo}
 						<div class="flex items-center justify-center py-8"><div class="w-5 h-5 border-2 border-slate-200 dark:border-slate-700 border-t-violet-600 rounded-full animate-spin"></div></div>
 					{:else if remotes.length === 0}
-						<div class="flex flex-col items-center gap-2 py-8 text-slate-500 dark:text-slate-400 text-sm"><Icon name="lucide:server-off" class="w-8 h-8 opacity-40" /><p class="font-medium text-xs">No remote connections</p></div>
+						<div class="flex flex-col items-center gap-2 py-8 text-slate-500 dark:text-slate-400 text-xs"><Icon name="lucide:server-off" class="w-6 h-6 opacity-30" /><span>No remote connections</span></div>
 					{:else}
-						{#each remotes as remote (remote.name)}
-							{@const remoteBranches = filteredRemoteBranches.filter(b => b.name.startsWith(remote.name + '/'))}
-							<div class="mb-2">
-								<div class="group flex items-center gap-2 px-2 py-1.5 rounded-lg hover:bg-slate-100/50 dark:hover:bg-slate-800/30 transition-colors min-w-0">
-										<Icon name="lucide:server" class="w-3.5 h-3.5 text-slate-400 shrink-0" />
-										<span class="text-xs font-semibold text-slate-600 dark:text-slate-300 shrink-0">{remote.name}</span>
-										{#if remote.fetchUrl || remote.pushUrl}
-											<span class="text-2xs text-slate-400 dark:text-slate-500 font-mono truncate flex-1 min-w-0 opacity-100 group-hover:opacity-0 transition-opacity" title={remote.fetchUrl || remote.pushUrl}>{remote.fetchUrl || remote.pushUrl}</span>
-										{:else}
-											<span class="flex-1"></span>
-										{/if}
-										{#if fetchingRemote === remote.name}
-											<div class="flex items-center px-1.5 text-slate-500 shrink-0">
-												<Icon name="lucide:loader-circle" class="w-3.5 h-3.5 animate-spin" />
+						<div class="space-y-0.5">
+							{#each remotes as remote (remote.name)}
+								{@const remoteBranches = filteredRemoteBranches.filter(b => b.name.startsWith(remote.name + '/'))}
+								{@const isActiveRemote = remote.name === selectedRemote}
+								<div>
+									{#if editingRemote === remote.name}
+										<div class="p-2.5 bg-slate-50 dark:bg-slate-800/50 border border-slate-200 dark:border-slate-700 rounded-lg space-y-2">
+											<input type="text" bind:value={editRemoteName} placeholder="Remote name..." class="w-full px-2.5 py-2 text-sm bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-700 rounded-md text-slate-900 dark:text-slate-100 outline-none focus:border-violet-500/40 focus:ring-1 focus:ring-violet-500/20" disabled={savingRemote} />
+											<input type="text" bind:value={editRemoteUrl} placeholder="Repository URL..." class="w-full px-2.5 py-2 text-sm bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-700 rounded-md text-slate-900 dark:text-slate-100 outline-none focus:border-violet-500/40 focus:ring-1 focus:ring-violet-500/20" onkeydown={(e) => e.key === 'Enter' && handleSaveRemote()} disabled={savingRemote} />
+											<div class="flex gap-1.5">
+												<button type="button" class="flex-1 px-3 py-1.5 text-xs font-medium rounded-md transition-colors cursor-pointer border-none {editRemoteName.trim() && editRemoteUrl.trim() && !savingRemote ? 'bg-violet-600 text-white hover:bg-violet-700' : 'bg-slate-200 dark:bg-slate-700 text-slate-400 dark:text-slate-500 cursor-not-allowed'}" onclick={handleSaveRemote} disabled={savingRemote || !editRemoteName.trim() || !editRemoteUrl.trim()}>Save</button>
+												<button type="button" class="px-3 py-1.5 text-xs font-medium bg-transparent border border-slate-200 dark:border-slate-700 text-slate-600 dark:text-slate-400 rounded-md hover:bg-slate-100 dark:hover:bg-slate-800 transition-colors cursor-pointer" onclick={() => { editingRemote = null; editRemoteName = ''; editRemoteUrl = ''; }}>Cancel</button>
 											</div>
-										{:else}
-											<div class="flex items-center gap-0.5 shrink-0 opacity-0 group-hover:opacity-100 transition-opacity">
-												<button type="button" class="flex items-center justify-center w-6 h-6 rounded-md text-slate-400 hover:bg-slate-200 dark:hover:bg-slate-700 hover:text-slate-700 dark:hover:text-slate-200 transition-colors cursor-pointer bg-transparent border-none" onclick={() => { editingRemote = remote.name; editRemoteName = remote.name; editRemoteUrl = remote.fetchUrl || remote.pushUrl || ''; }} title="Edit remote"><Icon name="lucide:pencil" class="w-3.5 h-3.5" /></button>
-												<button type="button" class="flex items-center justify-center w-6 h-6 rounded-md text-slate-400 hover:bg-slate-200 dark:hover:bg-slate-700 hover:text-slate-700 dark:hover:text-slate-200 transition-colors cursor-pointer bg-transparent border-none" onclick={() => handleFetchRemote(remote.name)} title="Reload (fetch)"><Icon name="lucide:refresh-cw" class="w-3.5 h-3.5" /></button>
-												<button type="button" class="flex items-center justify-center w-6 h-6 rounded-md text-slate-400 hover:bg-rose-500/10 hover:text-rose-500 transition-colors cursor-pointer bg-transparent border-none" onclick={() => handleRemoveRemote(remote.name)} title="Disconnect"><Icon name="lucide:unlink" class="w-3.5 h-3.5" /></button>
+										</div>
+									{:else}
+										<div class="group relative flex items-center gap-1.5 pl-1.5 pr-2.5 py-1.5 rounded-md border transition-colors {isActiveRemote ? 'bg-violet-500/10 border-violet-500/20' : 'border-transparent hover:bg-slate-100 dark:hover:bg-slate-800/60'}">
+											<Icon name="lucide:server" class="w-4 h-4 shrink-0 text-slate-400" />
+											<div class="flex-1 min-w-0 flex flex-col justify-center overflow-hidden pr-2 {isActiveRemote ? 'group-hover:pr-24' : 'group-hover:pr-32'} transition-[padding] duration-150">
+												<div class="flex min-w-0 items-center gap-2">
+													<span class="min-w-0 text-sm font-medium text-slate-900 dark:text-slate-100 leading-tight truncate">{remote.name}</span>
+													{#if isActiveRemote}<span class="shrink-0 text-3xs font-medium px-1.5 py-0.5 rounded bg-violet-500/15 text-violet-600 dark:text-violet-400">Active</span>{/if}
+												</div>
+												{#if remote.fetchUrl || remote.pushUrl}<span class="text-xs text-slate-500 leading-tight truncate" title={remote.fetchUrl || remote.pushUrl}>{remote.fetchUrl || remote.pushUrl}</span>{/if}
 											</div>
-										{/if}
-									</div>
-									{#if remoteBranches.length > 0}
-										<div class="ml-5 space-y-1">
-											{#each remoteBranches as branch (branch.name)}
-												{@const branchMenuOpen = openRemoteBranchMenu === branch.name}
-												{@const branchRelativeDate = formatRelativeTime(branch.lastCommitDate)}
-												<div class="group flex items-center gap-2.5 px-3 py-2 rounded-lg hover:bg-slate-100 dark:hover:bg-slate-800/50 transition-colors border border-slate-200 dark:border-slate-700 relative min-w-0">
-													<Icon name="lucide:git-branch" class="w-3.5 h-3.5 text-slate-400 shrink-0" />
-													<div class="flex-1 min-w-0 flex items-center gap-1.5 truncate">
-														<span class="text-sm text-slate-900 dark:text-slate-100 truncate" title={branch.name}>{branch.name.substring(remote.name.length + 1)}</span>
-														{#if branchRelativeDate}<span class="text-xs text-slate-500 shrink-0">· {branchRelativeDate}</span>{/if}
-													</div>
-													{#if deletingRemoteBranch === `${remote.name}/${branch.name.substring(remote.name.length + 1)}`}
-														<Icon name="lucide:loader-circle" class="w-3.5 h-3.5 text-slate-400 animate-spin" />
+											{#if fetchingRemote === remote.name}
+												<div class="flex items-center justify-center w-7 h-7 text-slate-500 shrink-0"><Icon name="lucide:loader-circle" class="w-3.5 h-3.5 animate-spin" /></div>
+											{:else}
+												<div class="pointer-events-none absolute inset-y-0 right-0 flex items-center gap-1 pl-1 pr-2 bg-white/20 opacity-0 backdrop-blur-md supports-[backdrop-filter]:bg-white/10 transition-opacity group-hover:opacity-100 dark:bg-slate-900/20 dark:supports-[backdrop-filter]:bg-slate-900/10">
+													{#if !isActiveRemote}
+														<button type="button" class="pointer-events-auto flex items-center justify-center w-7 h-7 rounded-md text-slate-400 hover:bg-violet-500/10 hover:text-violet-500 transition-colors bg-transparent border-none cursor-pointer" onclick={(e) => { e.stopPropagation(); setActiveRemote(remote.name); }} title="Set as active remote"><Icon name="lucide:star" class="w-3.5 h-3.5" /></button>
 													{/if}
-													<div class="relative shrink-0">
-														<button
-															type="button"
-															data-remote-branch-menu
-															class="flex items-center justify-center w-7 h-7 rounded-lg text-slate-400 hover:bg-slate-200 dark:hover:bg-slate-700 hover:text-slate-700 dark:hover:text-slate-200 transition-colors cursor-pointer bg-transparent border-none"
-															onclick={(e) => { e.stopPropagation(); openRemoteBranchMenu = branchMenuOpen ? null : branch.name; }}
-															title="Branch actions"
-															aria-label="Branch actions"
-														>
-															<Icon name="lucide:ellipsis-vertical" class="w-4 h-4" />
-														</button>
-														{#if branchMenuOpen}
-															<div data-remote-branch-menu class="absolute right-0 top-full mt-1 z-20 min-w-[160px] bg-white dark:bg-slate-800 border border-slate-200 dark:border-slate-700 rounded-md shadow-lg py-1" onclick={(e) => e.stopPropagation()} role="menu">
-																<button
-																	type="button"
-																	class="w-full flex items-center gap-2 px-3 py-1.5 text-xs text-left text-slate-700 dark:text-slate-300 hover:bg-slate-100 dark:hover:bg-slate-700 transition-colors bg-transparent border-none cursor-pointer"
-																	onclick={() => { openRemoteBranchMenu = null; checkoutRemoteBranch(branch.name); }}
-																	role="menuitem"
-																>
-																	<Icon name="lucide:arrow-right" class="w-3 h-3" />
-																	<span>Checkout locally</span>
-																</button>
-																<button
-																	type="button"
-																	class="w-full flex items-center gap-2 px-3 py-1.5 text-xs text-left text-slate-700 dark:text-slate-300 hover:bg-slate-100 dark:hover:bg-slate-700 transition-colors bg-transparent border-none cursor-pointer"
-																	onclick={() => { openRemoteBranchMenu = null; copyToClipboard(branch.name); }}
-																	role="menuitem"
-																>
-																	<Icon name="lucide:copy" class="w-3 h-3" />
-																	<span>Copy branch name</span>
-																</button>
-																<button
-																	type="button"
-																	class="w-full flex items-center gap-2 px-3 py-1.5 text-xs text-left text-rose-600 dark:text-rose-400 hover:bg-rose-500/10 transition-colors bg-transparent border-none cursor-pointer"
-																	onclick={() => { openRemoteBranchMenu = null; handleDeleteRemoteBranch(remote.name, branch.name.substring(remote.name.length + 1)); }}
-																	role="menuitem"
-																>
-																	<Icon name="lucide:trash-2" class="w-3 h-3" />
-																	<span>Delete branch</span>
-																</button>
-															</div>
-														{/if}
+													<button type="button" class="pointer-events-auto flex items-center justify-center w-7 h-7 rounded-md text-slate-400 hover:bg-violet-500/10 hover:text-violet-500 transition-colors bg-transparent border-none cursor-pointer" onclick={(e) => { e.stopPropagation(); editingRemote = remote.name; editRemoteName = remote.name; editRemoteUrl = remote.fetchUrl || remote.pushUrl || ''; }} title="Edit remote"><Icon name="lucide:pencil" class="w-3.5 h-3.5" /></button>
+													<button type="button" class="pointer-events-auto flex items-center justify-center w-7 h-7 rounded-md text-slate-400 hover:bg-blue-500/10 hover:text-blue-500 transition-colors bg-transparent border-none cursor-pointer" onclick={(e) => { e.stopPropagation(); handleFetchRemote(remote.name); }} title="Fetch"><Icon name="lucide:refresh-cw" class="w-3.5 h-3.5" /></button>
+													<button type="button" class="pointer-events-auto flex items-center justify-center w-7 h-7 rounded-md text-slate-400 hover:bg-red-500/10 hover:text-red-500 transition-colors bg-transparent border-none cursor-pointer" onclick={(e) => { e.stopPropagation(); handleRemoveRemote(remote.name); }} title="Disconnect"><Icon name="lucide:unlink" class="w-3.5 h-3.5" /></button>
+												</div>
+											{/if}
+										</div>
+									{/if}
+									{#if remoteBranches.length > 0}
+										<div class="ml-5 mt-0.5 mb-1 border-l border-slate-200 dark:border-slate-700 pl-2 space-y-0.5">
+											{#each remoteBranches as branch (branch.name)}
+												{@const branchRelativeDate = formatRelativeTime(branch.lastCommitDate)}
+												{@const shortName = branch.name.substring(remote.name.length + 1)}
+												{@const isDeleting = deletingRemoteBranch === `${remote.name}/${shortName}`}
+												<div class="group/rb relative flex items-center gap-1.5 px-2 py-1.5 rounded-md hover:bg-slate-100 dark:hover:bg-slate-800/60 transition-colors">
+													<div class="flex-1 min-w-0 flex flex-col justify-center overflow-hidden pr-2 group-hover/rb:pr-20 transition-[padding] duration-150">
+														<span class="text-sm text-slate-700 dark:text-slate-300 leading-tight truncate" title={branch.name}>{shortName}</span>
+														{#if branchRelativeDate}<span class="text-xs text-slate-500 leading-tight">{branchRelativeDate}</span>{/if}
 													</div>
+													{#if isDeleting}
+														<div class="flex items-center justify-center w-7 h-7 text-slate-400 shrink-0"><Icon name="lucide:loader-circle" class="w-3.5 h-3.5 animate-spin" /></div>
+													{:else}
+														<div class="pointer-events-none absolute inset-y-0 right-0 flex items-center gap-1 pl-1 pr-2 bg-white/20 opacity-0 backdrop-blur-md supports-[backdrop-filter]:bg-white/10 transition-opacity group-hover/rb:opacity-100 dark:bg-slate-900/20 dark:supports-[backdrop-filter]:bg-slate-900/10">
+															<button type="button" class="pointer-events-auto flex items-center justify-center w-7 h-7 rounded-md text-slate-400 hover:bg-violet-500/10 hover:text-violet-500 transition-colors bg-transparent border-none cursor-pointer" onclick={(e) => { e.stopPropagation(); checkoutRemoteBranch(branch.name); }} title="Checkout locally"><Icon name="lucide:arrow-right" class="w-3.5 h-3.5" /></button>
+															<button type="button" class="pointer-events-auto flex items-center justify-center w-7 h-7 rounded-md text-slate-400 hover:bg-blue-500/10 hover:text-blue-500 transition-colors bg-transparent border-none cursor-pointer" onclick={(e) => { e.stopPropagation(); copyToClipboard(branch.name); }} title="Copy branch name"><Icon name="lucide:copy" class="w-3.5 h-3.5" /></button>
+															<button type="button" class="pointer-events-auto flex items-center justify-center w-7 h-7 rounded-md text-slate-400 hover:bg-red-500/10 hover:text-red-500 transition-colors bg-transparent border-none cursor-pointer" onclick={(e) => { e.stopPropagation(); handleDeleteRemoteBranch(remote.name, shortName); }} title="Delete branch"><Icon name="lucide:trash-2" class="w-3.5 h-3.5" /></button>
+														</div>
+													{/if}
 												</div>
 											{/each}
 										</div>
 									{:else if !branchesSearchQuery}
-										<p class="ml-7 text-xs text-slate-400 dark:text-slate-500 py-1">No branches</p>
+										<p class="ml-5 pl-2 text-xs text-slate-400 dark:text-slate-500 py-1">No branches</p>
 									{/if}
 								</div>
-						{/each}
+							{/each}
+						</div>
 					{/if}
 				</div>
 			{/if}
 		</div>
-	{:else if activeView === 'tags'}
-		<!-- Tags View -->
-		<div class="flex-1 overflow-y-auto pt-2">
-			<!-- Create tag button/form -->
-			<div class="px-2 pb-2">
+	{:else if activeView === 'more'}
+		<!-- More View: Tags / Stash / Contributors -->
+		<div class="flex-1 flex flex-col pt-2 min-h-0">
+			<div class="flex gap-1 px-2 pb-2 flex-shrink-0">
+				<button type="button" class="px-2.5 py-1 text-xs font-medium rounded-md transition-colors cursor-pointer border-none {moreSubTab === 'tags' ? 'bg-violet-500/10 text-violet-600' : 'bg-transparent text-slate-500 hover:text-slate-700 dark:hover:text-slate-300'}" onclick={() => moreSubTab = 'tags'}>Tags{tags.length > 0 ? ` (${tags.length})` : ''}</button>
+				<button type="button" class="px-2.5 py-1 text-xs font-medium rounded-md transition-colors cursor-pointer border-none {moreSubTab === 'stash' ? 'bg-violet-500/10 text-violet-600' : 'bg-transparent text-slate-500 hover:text-slate-700 dark:hover:text-slate-300'}" onclick={() => moreSubTab = 'stash'}>Stash{stashEntries.length > 0 ? ` (${stashEntries.length})` : ''}</button>
+				<button type="button" class="px-2.5 py-1 text-xs font-medium rounded-md transition-colors cursor-pointer border-none {moreSubTab === 'contributors' ? 'bg-violet-500/10 text-violet-600' : 'bg-transparent text-slate-500 hover:text-slate-700 dark:hover:text-slate-300'}" onclick={() => moreSubTab = 'contributors'}>Contributors{contributors.length > 0 ? ` (${contributors.length})` : ''}</button>
+			</div>
+
+			{#if moreSubTab === 'tags'}
+			<!-- Tags -->
+			<div class="flex-1 overflow-y-auto">
+				<!-- Create tag button/form -->
+				<div class="px-2 pb-2">
 				{#if showCreateTagForm}
 					<div class="p-2.5 bg-slate-50 dark:bg-slate-800/50 border border-slate-200 dark:border-slate-700 rounded-lg space-y-2">
 						<input
@@ -2843,7 +2840,7 @@ ${bodies}`;
 						class="flex items-center justify-center gap-2 w-full py-2 px-3 border border-dashed border-slate-300 dark:border-slate-600 rounded-lg text-xs text-slate-500 hover:text-violet-600 hover:border-violet-400 transition-colors cursor-pointer bg-transparent"
 						onclick={() => showCreateTagForm = true}
 					>
-						<Icon name="lucide:tag" class="w-3.5 h-3.5" />
+						<Icon name="lucide:plus" class="w-3.5 h-3.5" />
 						<span>Create New Tag</span>
 					</button>
 				{/if}
@@ -2862,7 +2859,6 @@ ${bodies}`;
 				<div class="space-y-1 px-1">
 					{#each tags as tag (tag.name)}
 						<div class="group flex items-center gap-2 px-2.5 py-2 rounded-md hover:bg-slate-100 dark:hover:bg-slate-800/60 transition-colors">
-							<Icon name="lucide:tag" class="w-4 h-4 text-slate-400 shrink-0" />
 							<div class="flex-1 min-w-0">
 								<p class="text-sm font-medium text-slate-900 dark:text-slate-100 truncate">{tag.name}</p>
 								<div class="flex items-center gap-1.5">
@@ -2898,6 +2894,91 @@ ${bodies}`;
 						</div>
 					{/each}
 				</div>
+			{/if}
+			</div>
+			{:else if moreSubTab === 'stash'}
+			<!-- Stash -->
+			<div class="flex-1 overflow-y-auto px-2">
+				<div class="pb-2">
+					{#if showStashSaveForm}
+						<div class="p-2.5 bg-slate-50 dark:bg-slate-800/50 border border-slate-200 dark:border-slate-700 rounded-lg space-y-2">
+							<input type="text" data-stash-message-input bind:value={stashMessage} placeholder="Stash message (optional)..." class="w-full px-2.5 py-2 text-sm bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-700 rounded-md text-slate-900 dark:text-slate-100 outline-none focus:border-violet-500/40 focus:ring-1 focus:ring-violet-500/20" onkeydown={(e) => e.key === 'Enter' && handleStashSave()} />
+							<div class="flex gap-1.5"><button type="button" class="flex-1 px-3 py-1.5 text-xs font-medium rounded-md bg-violet-600 text-white hover:bg-violet-700 transition-colors cursor-pointer border-none" onclick={handleStashSave}>Stash Changes</button><button type="button" class="px-3 py-1.5 text-xs font-medium bg-transparent border border-slate-200 dark:border-slate-700 text-slate-600 dark:text-slate-400 rounded-md hover:bg-slate-100 dark:hover:bg-slate-800 transition-colors cursor-pointer" onclick={() => { showStashSaveForm = false; stashMessage = ''; }}>Cancel</button></div>
+						</div>
+					{:else}
+						<button type="button" class="flex items-center justify-center gap-2 w-full py-2 px-3 border border-dashed border-slate-300 dark:border-slate-600 rounded-lg text-xs text-slate-500 hover:text-violet-600 hover:border-violet-400 transition-colors cursor-pointer bg-transparent" onclick={() => showStashSaveForm = true}><Icon name="lucide:plus" class="w-3.5 h-3.5" /><span>Stash Current Changes</span></button>
+					{/if}
+				</div>
+				{#if isStashLoading}
+					<div class="flex items-center justify-center py-8"><div class="w-5 h-5 border-2 border-slate-200 dark:border-slate-700 border-t-violet-600 rounded-full animate-spin"></div></div>
+				{:else if stashEntries.length === 0}
+					<div class="flex flex-col items-center justify-center gap-2 py-8 text-slate-500 text-xs"><Icon name="lucide:archive" class="w-6 h-6 opacity-30" /><span>No stashed changes</span></div>
+				{:else}
+					<div class="space-y-0.5">
+						{#each stashEntries as entry (entry.index)}
+							{@const relativeDate = formatRelativeTime(entry.date)}
+							{@const stashExpanded = expandedStashes.has(entry.index)}
+							{@const sFiles = stashFileState[entry.index]}
+							<div>
+								<div
+									class="group relative flex items-center gap-1.5 pl-1.5 pr-2.5 py-1.5 rounded-md hover:bg-slate-100 dark:hover:bg-slate-800/60 transition-colors cursor-pointer"
+									role="button"
+									tabindex="0"
+									onclick={() => toggleStashExpanded(entry.index)}
+									onkeydown={(e) => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); toggleStashExpanded(entry.index); } }}
+								>
+									<Icon name={stashExpanded ? 'lucide:chevron-down' : 'lucide:chevron-right'} class="w-3.5 h-3.5 shrink-0 text-slate-400" />
+									<div class="flex-1 min-w-0 pr-2 group-hover:pr-16 flex flex-col justify-center overflow-hidden transition-[padding] duration-150">
+										<p class="text-sm font-medium text-slate-900 dark:text-slate-100 truncate">{entry.message}</p>
+										<p class="text-xs text-slate-400 dark:text-slate-500"><span>stash@&#123;{entry.index}&#125;</span>{#if relativeDate}<span class="mx-1">·</span><span>{relativeDate}</span>{/if}</p>
+									</div>
+									<div class="pointer-events-none absolute inset-y-0 right-0 flex items-center gap-1 pl-1 pr-2 bg-white/20 opacity-0 backdrop-blur-md supports-[backdrop-filter]:bg-white/10 transition-opacity group-hover:opacity-100 dark:bg-slate-900/20 dark:supports-[backdrop-filter]:bg-slate-900/10">
+										<button type="button" class="pointer-events-auto flex items-center justify-center w-7 h-7 rounded-md text-slate-400 hover:bg-emerald-500/10 hover:text-emerald-500 transition-colors bg-transparent border-none cursor-pointer" onclick={(e) => { e.stopPropagation(); handleStashPop(entry.index); }} title="Pop"><Icon name="lucide:archive-restore" class="w-3.5 h-3.5" /></button>
+										<button type="button" class="pointer-events-auto flex items-center justify-center w-7 h-7 rounded-md text-slate-400 hover:bg-red-500/10 hover:text-red-500 transition-colors bg-transparent border-none cursor-pointer" onclick={(e) => { e.stopPropagation(); handleStashDrop(entry.index); }} title="Drop"><Icon name="lucide:trash-2" class="w-3.5 h-3.5" /></button>
+									</div>
+								</div>
+								{#if stashExpanded}
+									<div class="ml-5 mt-0.5 mb-1 border-l border-slate-200 dark:border-slate-700 pl-2 space-y-0.5">
+										{#if sFiles?.isLoading && sFiles.files.length === 0}
+											<div class="flex items-center gap-2 py-1.5 text-xs text-slate-400"><div class="w-3 h-3 border border-slate-400 border-t-transparent rounded-full animate-spin"></div><span>Loading files...</span></div>
+										{:else if !sFiles || sFiles.files.length === 0}
+											<div class="py-1.5 text-xs text-slate-400">No files</div>
+										{:else}
+											{#each sFiles.files as file (`${entry.index}:${file.oldPath}:${file.newPath}`)}
+												{@const filePath = file.newPath || file.oldPath}
+												{@const fileParts = splitPath(filePath)}
+												<button type="button" class="flex items-center gap-2 w-full px-2 py-1.5 rounded-md text-left hover:bg-slate-100 dark:hover:bg-slate-800/60 transition-colors bg-transparent border-none cursor-pointer" onclick={() => viewStashFileDiff(file, entry.index)} title={filePath}><Icon name={getFileIcon(fileParts.fileName) as IconName} class="w-4 h-4 shrink-0" /><div class="flex items-baseline gap-1.5 min-w-0 flex-1"><span class="text-sm text-slate-600 dark:text-slate-300 truncate">{fileParts.fileName}</span>{#if fileParts.dirPath}<span class="text-2xs text-slate-400 dark:text-slate-500 truncate min-w-0" dir="rtl">{fileParts.dirPath}</span>{/if}</div><span class="w-4 text-center text-sm font-bold {getGitStatusColor(file.status)} shrink-0">{getGitStatusLabel(file.status)}</span></button>
+											{/each}
+										{/if}
+									</div>
+								{/if}
+							</div>
+						{/each}
+					</div>
+				{/if}
+			</div>
+			{:else}
+			<!-- Contributors -->
+			<div class="flex-1 overflow-y-auto px-2">
+				{#if isContributorsLoading}
+					<div class="flex items-center justify-center py-8"><div class="w-5 h-5 border-2 border-slate-200 dark:border-slate-700 border-t-violet-600 rounded-full animate-spin"></div></div>
+				{:else if contributors.length === 0}
+					<div class="flex flex-col items-center justify-center gap-2 py-8 text-slate-500 text-xs"><Icon name="lucide:users" class="w-6 h-6 opacity-30" /><span>No contributors</span></div>
+				{:else}
+					<div class="space-y-0.5">
+						{#each contributors as c, ci (`${c.email}:${ci}`)}
+							<div class="flex items-center gap-2 px-2.5 py-2 rounded-md hover:bg-slate-100 dark:hover:bg-slate-800/60 transition-colors">
+								<span class="w-6 h-6 rounded-full bg-violet-500/10 text-violet-600 flex items-center justify-center text-xs font-bold flex-shrink-0">{c.name.charAt(0).toUpperCase()}</span>
+								<div class="flex-1 min-w-0">
+									<p class="text-sm text-slate-700 dark:text-slate-300 truncate">{c.name}</p>
+									<p class="text-xs text-slate-400 dark:text-slate-500 truncate">{c.email}</p>
+								</div>
+								<span class="text-xs text-slate-400 flex-shrink-0">{c.count}</span>
+							</div>
+						{/each}
+					</div>
+				{/if}
+			</div>
 			{/if}
 		</div>
 	{/if}
@@ -2963,7 +3044,7 @@ ${bodies}`;
 	{:else}
 		<div class="flex-1 overflow-hidden">
 			<!-- Unified layout: always render both panels to preserve state (like Files panel) -->
-			<div class="h-full flex" class:select-none={isResizing || isStashResizing || isContributorResizing} class:cursor-col-resize={isResizing}>
+			<div class="h-full flex" class:select-none={isResizing} class:cursor-col-resize={isResizing}>
 				<!-- Left panel: Changes list -->
 				<div
 					class={isTwoColumnMode
@@ -2975,93 +3056,6 @@ ${bodies}`;
 					<div class="flex-1 flex flex-col min-h-0 overflow-hidden">
 						{@render changesList()}
 					</div>
-					<!-- Stash bottom panel -->
-					<div class="flex-shrink-0 border-t border-slate-200 dark:border-slate-700" class:hidden={stashPanelCollapsed}>
-						<div class="h-1 -mt-px cursor-row-resize hover:bg-violet-400 dark:hover:bg-violet-500 transition-colors" onmousedown={startStashResize}></div>
-						<div class="overflow-y-auto" style="height: {stashPanelHeight}px">
-							<button type="button" class="flex items-center gap-2 w-full px-2.5 py-1.5 text-xs border-b border-slate-100 dark:border-slate-800 text-slate-600 dark:text-slate-400 hover:bg-slate-50 dark:hover:bg-slate-800/30 transition-colors bg-transparent cursor-pointer" onclick={() => stashPanelCollapsed = true} title="Collapse stash panel">
-								<Icon name="lucide:chevron-down" class="w-3 h-3" />
-								<Icon name="lucide:archive" class="w-3.5 h-3.5" />
-								<span class="font-medium">Stash</span>
-								{#if stashEntries.length > 0}<span class="min-w-4 h-4 px-1 rounded-full bg-violet-500/15 dark:bg-violet-500/25 text-3xs font-semibold flex items-center justify-center">{stashEntries.length}</span>{/if}
-							</button>
-							<div class="p-2">
-								<div class="pb-2">
-									{#if showStashSaveForm}
-										<div class="p-2.5 bg-slate-50 dark:bg-slate-800/50 border border-slate-200 dark:border-slate-700 rounded-lg space-y-2">
-											<input type="text" data-stash-message-input bind:value={stashMessage} placeholder="Stash message (optional)..." class="w-full px-2.5 py-2 text-sm bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-700 rounded-md text-slate-900 dark:text-slate-100 outline-none focus:border-violet-500/40 focus:ring-1 focus:ring-violet-500/20" onkeydown={(e) => e.key === 'Enter' && handleStashSave()} />
-											<div class="flex gap-1.5"><button type="button" class="flex-1 px-3 py-1.5 text-xs font-medium rounded-md bg-violet-600 text-white hover:bg-violet-700 transition-colors cursor-pointer border-none" onclick={handleStashSave}>Stash Changes</button><button type="button" class="px-3 py-1.5 text-xs font-medium bg-transparent border border-slate-200 dark:border-slate-700 text-slate-600 dark:text-slate-400 rounded-md hover:bg-slate-100 dark:hover:bg-slate-800 transition-colors cursor-pointer" onclick={() => { showStashSaveForm = false; stashMessage = ''; }}>Cancel</button></div>
-										</div>
-									{:else}
-										<button type="button" class="flex items-center justify-center gap-2 w-full py-2 px-3 border border-dashed border-slate-300 dark:border-slate-600 rounded-lg text-xs text-slate-500 hover:text-violet-600 hover:border-violet-400 transition-colors cursor-pointer bg-transparent" onclick={() => showStashSaveForm = true}><Icon name="lucide:archive" class="w-3.5 h-3.5" /><span>Stash Current Changes</span></button>
-									{/if}
-								</div>
-								{#if isStashLoading}
-									<div class="flex items-center justify-center py-4"><div class="w-5 h-5 border-2 border-slate-200 dark:border-slate-700 border-t-violet-600 rounded-full animate-spin"></div></div>
-								{:else if stashEntries.length === 0}
-									<div class="flex flex-col items-center justify-center gap-2 py-4 text-slate-500 text-xs"><Icon name="lucide:archive" class="w-5 h-5 opacity-30" /><span>No stashed changes</span></div>
-								{:else}
-									<div class="space-y-1">
-										{#each stashEntries as entry (entry.index)}
-											{@const relativeDate = formatRelativeTime(entry.date)}
-											<div class="group relative flex items-center gap-2 px-2.5 py-1.5 rounded-md hover:bg-slate-100 dark:hover:bg-slate-800/60 transition-colors">
-												<Icon name="lucide:archive" class="w-4 h-4 text-slate-400 shrink-0" />
-												<div class="flex-1 min-w-0 pr-2 group-hover:pr-24 flex flex-col justify-center overflow-hidden transition-[padding] duration-150">
-													<p class="text-sm font-medium text-slate-900 dark:text-slate-100 truncate">{entry.message}</p>
-													<p class="text-xs text-slate-400 dark:text-slate-500">
-														<span>stash@&#123;{entry.index}&#125;</span>{#if relativeDate}<span class="mx-1">·</span><span>{relativeDate}</span>{/if}
-													</p>
-												</div>
-												<div class="pointer-events-none absolute inset-y-0 right-0 flex items-center gap-1 pl-1 pr-2 bg-white/20 opacity-0 backdrop-blur-md supports-[backdrop-filter]:bg-white/10 transition-opacity group-hover:opacity-100 dark:bg-slate-900/20 dark:supports-[backdrop-filter]:bg-slate-900/10">
-													<button type="button" class="pointer-events-auto flex items-center justify-center w-7 h-7 rounded-md text-slate-400 hover:bg-violet-500/10 hover:text-violet-500 transition-colors bg-transparent border-none cursor-pointer" onclick={() => viewStashDiff(entry.index)} title="View diff"><Icon name="lucide:file-diff" class="w-3.5 h-3.5" /></button>
-													<button type="button" class="pointer-events-auto flex items-center justify-center w-7 h-7 rounded-md text-slate-400 hover:bg-emerald-500/10 hover:text-emerald-500 transition-colors bg-transparent border-none cursor-pointer" onclick={() => handleStashPop(entry.index)} title="Pop"><Icon name="lucide:archive-restore" class="w-3.5 h-3.5" /></button>
-													<button type="button" class="pointer-events-auto flex items-center justify-center w-7 h-7 rounded-md text-slate-400 hover:bg-red-500/10 hover:text-red-500 transition-colors bg-transparent border-none cursor-pointer" onclick={() => handleStashDrop(entry.index)} title="Drop"><Icon name="lucide:trash-2" class="w-3.5 h-3.5" /></button>
-												</div>
-											</div>
-										{/each}
-									</div>
-								{/if}
-							</div>
-						</div>
-					</div>
-					{#if stashPanelCollapsed}
-						<button type="button" class="flex items-center gap-2 px-2.5 py-1.5 text-xs border-t border-slate-200 dark:border-slate-700 text-slate-500 dark:text-slate-400 hover:text-slate-700 dark:hover:text-slate-300 hover:bg-slate-50 dark:hover:bg-slate-800/30 transition-colors bg-transparent cursor-pointer flex-shrink-0" onclick={() => stashPanelCollapsed = false} title="Expand stash panel">
-							<Icon name="lucide:chevron-right" class="w-3 h-3" /><Icon name="lucide:archive" class="w-3.5 h-3.5" /><span>Stash</span>
-							{#if stashEntries.length > 0}<span class="min-w-4 h-4 px-1 rounded-full bg-violet-500/15 dark:bg-violet-500/25 text-3xs font-semibold flex items-center justify-center">{stashEntries.length}</span>{/if}
-						</button>
-					{/if}
-					<!-- Contributor section -->
-					{#if contributorPanelCollapsed}
-						<button type="button" class="flex items-center gap-2 px-2.5 py-1.5 text-xs border-t border-slate-200 dark:border-slate-700 text-slate-500 dark:text-slate-400 hover:text-slate-700 dark:hover:text-slate-300 hover:bg-slate-50 dark:hover:bg-slate-800/30 transition-colors bg-transparent cursor-pointer flex-shrink-0" onclick={() => { contributorPanelCollapsed = false; if (contributors.length === 0) loadContributors(); }} title="Expand contributors">
-							<Icon name="lucide:chevron-right" class="w-3 h-3" /><Icon name="lucide:users" class="w-3.5 h-3.5" /><span>Contributors</span>
-							{#if contributors.length > 0}<span class="min-w-4 h-4 px-1 rounded-full bg-violet-500/15 dark:bg-violet-500/25 text-3xs font-semibold flex items-center justify-center">{contributors.length}</span>{/if}
-						</button>
-					{:else}
-						<div class="flex-shrink-0 border-t border-slate-200 dark:border-slate-700">
-							<div class="h-1 -mt-px cursor-row-resize hover:bg-violet-400 dark:hover:bg-violet-500 transition-colors" onmousedown={startContributorResize}></div>
-							<button type="button" class="flex items-center gap-2 w-full px-2.5 py-1.5 text-xs text-slate-600 dark:text-slate-400 hover:bg-slate-50 dark:hover:bg-slate-800/30 transition-colors bg-transparent cursor-pointer" onclick={() => contributorPanelCollapsed = true} title="Collapse contributors">
-								<Icon name="lucide:chevron-down" class="w-3 h-3" /><Icon name="lucide:users" class="w-3.5 h-3.5" /><span class="font-medium">Contributors</span>
-								{#if contributors.length > 0}<span class="min-w-4 h-4 px-1 rounded-full bg-violet-500/15 dark:bg-violet-500/25 text-3xs font-semibold flex items-center justify-center">{contributors.length}</span>{/if}
-							</button>
-							<div class="overflow-y-auto" style="height: {contributorPanelHeight}px">
-								{#if isContributorsLoading}
-									<div class="flex items-center justify-center py-3"><div class="w-4 h-4 border-2 border-slate-200 dark:border-slate-700 border-t-violet-600 rounded-full animate-spin"></div></div>
-								{:else if contributors.length === 0}
-									<div class="py-3 text-xs text-slate-400 text-center">No contributors</div>
-								{:else}
-									<div class="space-y-0.5 p-1">
-											{#each contributors as c}
-												<div class="flex items-center gap-2 px-2 py-1 rounded text-xs hover:bg-slate-100 dark:hover:bg-slate-800/50 transition-colors">
-													<span class="w-5 h-5 rounded-full bg-violet-500/10 text-violet-600 flex items-center justify-center text-3xs font-bold flex-shrink-0">{c.name.charAt(0).toUpperCase()}</span>
-													<span class="flex-1 truncate text-slate-700 dark:text-slate-300">{c.name}</span>
-													<span class="text-slate-400 flex-shrink-0">{c.count}</span>
-												</div>
-											{/each}
-									</div>
-								{/if}
-							</div>
-						</div>
-					{/if}
 				</div>
 
 
@@ -3092,89 +3086,6 @@ ${bodies}`;
 		</div>
 	{/if}
 
-	<!-- Add Remote Modal -->
-	<Modal
-		isOpen={showAddRemoteForm}
-		onClose={closeAddRemoteModal}
-		size="sm"
-		closable={false}
-	>
-		{#snippet header()}
-			<div class="flex items-center justify-between px-4 py-3 md:px-6 md:py-4">
-				<div class="flex items-center gap-2.5">
-					<Icon name="lucide:server" class="w-5 h-5 text-violet-600" />
-					<div>
-						<h2 class="text-base md:text-lg font-bold text-slate-900 dark:text-slate-100">Add Remote</h2>
-						<p class="text-xs text-slate-500 dark:text-slate-400">Connect a remote repository to fetch and push</p>
-					</div>
-				</div>
-				<button
-					type="button"
-					class="p-1.5 md:p-2 rounded-lg text-slate-500 hover:text-slate-900 dark:hover:text-slate-100 hover:bg-violet-500/10 transition-colors"
-					onclick={closeAddRemoteModal}
-					aria-label="Close add remote modal"
-				>
-					<Icon name="lucide:x" class="w-4 h-4 md:w-5 md:h-5" />
-				</button>
-			</div>
-		{/snippet}
-
-		{#snippet children()}
-			<div class="space-y-4">
-				<div>
-					<label class="block text-sm font-semibold text-slate-700 dark:text-slate-300 mb-2" for="new-remote-name">
-						Remote Name
-					</label>
-					<input
-						id="new-remote-name"
-						type="text"
-						placeholder="e.g. origin"
-						bind:value={newRemoteName}
-						class="w-full px-3 py-2 text-sm bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-700 rounded-lg text-slate-900 dark:text-slate-100 placeholder-slate-400 outline-none focus:border-violet-500/40"
-						disabled={addingRemote}
-					/>
-				</div>
-				<div>
-					<label class="block text-sm font-semibold text-slate-700 dark:text-slate-300 mb-2" for="new-remote-url">
-						Repository URL
-					</label>
-					<input
-						id="new-remote-url"
-						type="text"
-						placeholder="https://github.com/user/repo.git"
-						bind:value={newRemoteUrl}
-						class="w-full px-3 py-2 text-sm bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-700 rounded-lg text-slate-900 dark:text-slate-100 placeholder-slate-400 outline-none focus:border-violet-500/40"
-						disabled={addingRemote}
-					/>
-				</div>
-			</div>
-		{/snippet}
-
-		{#snippet footer()}
-			<button
-				type="button"
-				class="px-4 py-2 text-sm font-medium text-slate-700 dark:text-slate-300 hover:bg-slate-100 dark:hover:bg-slate-800 rounded-lg transition-colors"
-				onclick={closeAddRemoteModal}
-				disabled={addingRemote}
-			>
-				Cancel
-			</button>
-			<button
-				type="button"
-				class="flex items-center gap-2 px-4 py-2 text-sm font-medium bg-violet-500 text-white rounded-lg hover:bg-violet-600 transition-colors disabled:opacity-50"
-				onclick={handleAddRemote}
-				disabled={addingRemote || !newRemoteName.trim() || !newRemoteUrl.trim()}
-			>
-				{#if addingRemote}
-					<Icon name="lucide:loader-circle" class="w-4 h-4 animate-spin" />
-					Adding...
-				{:else}
-					<Icon name="lucide:plus" class="w-4 h-4" />
-					Add Remote
-				{/if}
-			</button>
-		{/snippet}
-	</Modal>
 
 	<!-- Merge Branch Modal -->
 	<Modal
@@ -3309,102 +3220,6 @@ ${bodies}`;
 		{/snippet}
 	</Modal>
 
-	<!-- Branch Manager Modal -->
-	<BranchManager
-		isOpen={showBranchManager}
-		{branchInfo}
-		onClose={() => showBranchManager = false}
-		onSwitch={switchBranch}
-		onCreate={createBranch}
-		onDelete={deleteBranch}
-		onRename={renameBranch}
-		onMerge={mergeBranch}
-		onRemotesChanged={loadRemotes}
-	/>
-
-	<!-- Edit Remote Modal -->
-	<Modal
-		isOpen={editingRemote !== null}
-		onClose={closeEditRemoteModal}
-		size="sm"
-		closable={false}
-	>
-		{#snippet header()}
-			<div class="flex items-center justify-between px-4 py-3 md:px-6 md:py-4">
-				<div class="flex items-center gap-2.5">
-					<Icon name="lucide:server" class="w-5 h-5 text-violet-600" />
-					<div>
-						<h2 class="text-base md:text-lg font-bold text-slate-900 dark:text-slate-100">Edit Remote</h2>
-						<p class="text-xs text-slate-500 dark:text-slate-400">Update the name or URL of an existing remote</p>
-					</div>
-				</div>
-				<button
-					type="button"
-					class="p-1.5 md:p-2 rounded-lg text-slate-500 hover:text-slate-900 dark:hover:text-slate-100 hover:bg-violet-500/10 transition-colors"
-					onclick={closeEditRemoteModal}
-					aria-label="Close edit remote modal"
-				>
-					<Icon name="lucide:x" class="w-4 h-4 md:w-5 md:h-5" />
-				</button>
-			</div>
-		{/snippet}
-
-		{#snippet children()}
-			<div class="space-y-4">
-				<div>
-					<label class="block text-sm font-semibold text-slate-700 dark:text-slate-300 mb-2" for="edit-remote-name">
-						Remote Name
-					</label>
-					<input
-						id="edit-remote-name"
-						type="text"
-						placeholder="e.g. origin"
-						bind:value={editRemoteName}
-						class="w-full px-3 py-2 text-sm bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-700 rounded-lg text-slate-900 dark:text-slate-100 placeholder-slate-400 outline-none focus:border-violet-500/40"
-						disabled={savingRemote}
-					/>
-				</div>
-				<div>
-					<label class="block text-sm font-semibold text-slate-700 dark:text-slate-300 mb-2" for="edit-remote-url">
-						Repository URL
-					</label>
-					<input
-						id="edit-remote-url"
-						type="text"
-						placeholder="https://github.com/user/repo.git"
-						bind:value={editRemoteUrl}
-						class="w-full px-3 py-2 text-sm bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-700 rounded-lg text-slate-900 dark:text-slate-100 placeholder-slate-400 outline-none focus:border-violet-500/40"
-						disabled={savingRemote}
-					/>
-				</div>
-			</div>
-		{/snippet}
-
-		{#snippet footer()}
-			<button
-				type="button"
-				class="px-4 py-2 text-sm font-medium text-slate-700 dark:text-slate-300 hover:bg-slate-100 dark:hover:bg-slate-800 rounded-lg transition-colors"
-				onclick={closeEditRemoteModal}
-				disabled={savingRemote}
-			>
-				Cancel
-			</button>
-			<button
-				type="button"
-				class="flex items-center gap-2 px-4 py-2 text-sm font-medium bg-violet-500 text-white rounded-lg hover:bg-violet-600 transition-colors disabled:opacity-50"
-				onclick={handleSaveRemote}
-				disabled={savingRemote || !editRemoteName.trim() || !editRemoteUrl.trim() || (editRemoteName === editingRemote && editRemoteUrl === (remotes.find(r => r.name === editingRemote)?.fetchUrl || remotes.find(r => r.name === editingRemote)?.pushUrl || ''))}
-			>
-				{#if savingRemote}
-					<Icon name="lucide:loader-circle" class="w-4 h-4 animate-spin" />
-					Saving...
-				{:else}
-					<Icon name="lucide:save" class="w-4 h-4" />
-					Save Changes
-				{/if}
-			</button>
-		{/snippet}
-	</Modal>
 
 	<!-- Conflict Resolver Modal -->
 	<ConflictResolver

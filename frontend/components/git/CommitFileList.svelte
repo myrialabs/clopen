@@ -105,15 +105,15 @@
 					>
 						<Icon name={getFileIcon(parts.fileName) as IconName} class="w-4 h-4 shrink-0" />
 						<div class="flex items-baseline gap-1.5 min-w-0 flex-1">
-							<span class="text-xs font-medium truncate">{parts.fileName}</span>
+							<span class="text-sm font-medium truncate">{parts.fileName}</span>
 							{#if parts.dirPath}
 								<span
-									class="text-3xs text-slate-400 dark:text-slate-500 truncate min-w-0"
+									class="text-2xs text-slate-400 dark:text-slate-500 truncate min-w-0"
 									dir="rtl"
 								>{parts.dirPath}</span>
 							{/if}
 						</div>
-						<span class="w-4 text-center text-xs font-bold {getGitStatusColor(file.status)} shrink-0">{getGitStatusLabel(file.status)}</span>
+						<span class="w-4 text-center text-sm font-bold {getGitStatusColor(file.status)} shrink-0">{getGitStatusLabel(file.status)}</span>
 					</div>
 				{/each}
 			</div>

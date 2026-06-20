@@ -25,7 +25,7 @@ import {
 } from '$frontend/stores/ui/project-workspace.svelte';
 import { registerProjectCleanup } from '$frontend/utils/project-state-cleanup';
 
-export type GitView = 'changes' | 'log' | 'branches' | 'tags';
+export type GitView = 'changes' | 'log' | 'branches' | 'more';
 
 /**
  * The diff tab open in the active view (the file the user picked from Changes or
@@ -93,6 +93,21 @@ export function markGitUiDirty(): void {
 	requestWorkspaceSave();
 }
 
+/**
+ * Capture the active project's live git view into the in-session `pending` slice.
+ *
+ * Called when GitPanel unmounts on a panel swap (Git → Files → Git). Project
+ * switches persist through the coordinator's snapshot → cache → restore path, but
+ * a panel swap unmounts the component without going through the coordinator — so
+ * without this, the next remount would restore the stale activation-time slice
+ * and the active tab/diff would reset to defaults.
+ */
+export function captureActiveGitUiState(): void {
+	const projectId = getActiveWorkspaceProjectId();
+	if (!projectId || !snapshotProvider) return;
+	pending.set(projectId, snapshotProvider());
+}
+
 registerDock({
 	id: 'git',
 	clear() {
@@ -101,13 +116,21 @@ registerDock({
 		gitDraft.commitMessage = '';
 	},
 	snapshot() {
-		return snapshotProvider ? snapshotProvider() : undefined;
+		if (snapshotProvider) return snapshotProvider();
+		// Provider detached (Git panel currently unmounted): fall back to the last
+		// captured slice so a project switch while the panel is hidden still
+		// persists its view instead of dropping the git slice.
+		const projectId = getActiveWorkspaceProjectId();
+		return projectId ? pending.get(projectId) : undefined;
 	},
 	restore(slice) {
 		const projectId = getActiveWorkspaceProjectId();
 		if (!projectId) return;
 		if (slice && typeof slice === 'object') {
-			pending.set(projectId, { ...defaultGitUiState(), ...(slice as Partial<GitUiState>) });
+			const merged = { ...defaultGitUiState(), ...(slice as Partial<GitUiState>) };
+			// Migrate the former 'tags' view (now merged into the 'more' tab).
+			if ((merged.activeView as string) === 'tags') merged.activeView = 'more';
+			pending.set(projectId, merged);
 		} else {
 			pending.delete(projectId);
 		}

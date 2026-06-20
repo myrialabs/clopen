@@ -58,17 +58,17 @@
 
 	<!-- File name + dir path grouped like native Git UIs -->
 	<div class="flex items-baseline gap-1.5 min-w-0 flex-1">
-		<span class="text-xs font-medium truncate">{fileName}</span>
+		<span class="text-sm font-medium truncate">{fileName}</span>
 		{#if dirPath()}
 			<span
-				class="text-3xs text-slate-400 dark:text-slate-500 truncate min-w-0"
+				class="text-2xs text-slate-400 dark:text-slate-500 truncate min-w-0"
 				dir="rtl"
 			>{dirPath()}</span>
 		{/if}
 	</div>
 
 	<!-- Status badge -->
-	<span class="w-4 text-center text-xs font-bold {statusColor} shrink-0">{statusLabel}</span>
+	<span class="w-4 text-center text-sm font-bold {statusColor} shrink-0">{statusLabel}</span>
 
 	<!-- Actions - always visible -->
 	<div class="flex items-center gap-0.5 shrink-0">
