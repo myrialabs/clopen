@@ -17,6 +17,40 @@ import { terminalConfig } from './terminal-config';
 import { debug } from '$shared/utils/logger';
 import ws from '$frontend/utils/ws';
 
+/**
+ * Escape sequences that ask the terminal to *report back* (color, cursor
+ * position, device attributes, mode/status). They are emitted by shells and
+ * TUI apps (e.g. powerlevel10k, starship, vim) and get captured raw into the
+ * stored session output.
+ *
+ * During live output these must reach xterm so it can answer the program that
+ * is waiting to read the reply. But when we REPLAY stored history (tab switch /
+ * session restore) no program is waiting — xterm still answers via onData, and
+ * that answer (e.g. "11;rgb:0f0f/1717/2a2a" + a "1R" cursor report) gets
+ * forwarded to the live PTY and printed at the idle shell prompt. So we strip
+ * these requests from replayed content only.
+ */
+const REPORT_REQUEST_PATTERNS: RegExp[] = [
+	// OSC color query: ESC ] <ps> ; ? (BEL | ST) — e.g. ESC]11;?BEL, ESC]4;1;?ST
+	/\x1b\][0-9;]*\?(?:\x07|\x1b\\)/g,
+	// Device Status Report / cursor position request: ESC [ ?? <ps> n — e.g. ESC[6n, ESC[5n, ESC[?6n
+	/\x1b\[\??[0-9;]*n/g,
+	// Device Attributes: ESC [ [<=>]? <ps> c — e.g. ESC[c, ESC[>c, ESC[=0c
+	/\x1b\[[<=>]?[0-9;]*c/g,
+	// DECRQM mode query: ESC [ ? <ps> $ p — e.g. ESC[?2026$p
+	/\x1b\[\?[0-9;]*\$p/g,
+	// DECRQSS status string request (DCS): ESC P <ps> $ q ... ESC \ — e.g. ESCP$qm ESC\
+	/\x1bP[0-9;]*\$q[\s\S]*?\x1b\\/g
+];
+
+function stripReportRequests(content: string): string {
+	let result = content;
+	for (const pattern of REPORT_REQUEST_PATTERNS) {
+		result = result.replace(pattern, '');
+	}
+	return result;
+}
+
 export class XTermService {
 	public terminal: Terminal | null = null;
 	public fitAddon: FitAddon | null = null;
@@ -238,9 +272,11 @@ export class XTermService {
 			case 'output':
 			case 'error':
 			case 'input':
-				// Write raw content directly - preserves ANSI colors
+				// Write raw content directly - preserves ANSI colors.
+				// On replay, strip terminal report-requests so xterm doesn't
+				// re-answer queries (color/cursor/DA) into the idle shell prompt.
 				if (line.content) {
-					this.terminal.write(line.content);
+					this.terminal.write(isRestoring ? stripReportRequests(line.content) : line.content);
 				}
 				break;
 
