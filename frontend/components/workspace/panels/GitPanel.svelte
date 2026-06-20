@@ -1908,6 +1908,28 @@ ${bodies}`;
 		}
 	}
 
+	/**
+	 * Triggered by the stash icon in the Staged/Changes section headers.
+	 * Opens the existing stash-save form at the bottom of the panel,
+	 * expands the (possibly collapsed) stash panel, and focuses the
+	 * message input so the user can type a description and submit.
+	 */
+	function openStashPrompt() {
+		stashMessage = '';
+		showStashSaveForm = true;
+		stashPanelCollapsed = false;
+		// Focus the message input after Svelte paints the form. Using
+		// rAF + small delay because the panel may need to expand/scroll
+		// before the input is visible and focusable.
+		requestAnimationFrame(() => {
+			setTimeout(() => {
+				const el = document.querySelector<HTMLInputElement>('[data-stash-message-input]');
+				el?.focus();
+				el?.scrollIntoView({ block: 'center', behavior: 'smooth' });
+			}, 50);
+		});
+	}
+
 	async function handleStashPop(index: number) {
 		if (!projectId) return;
 		try {
@@ -2503,6 +2525,7 @@ ${bodies}`;
 				activeSection={activeTab?.section ?? null}
 				onUnstage={unstageFile}
 				onUnstageAll={unstageAll}
+				onStash={openStashPrompt}
 				onViewDiff={viewDiff}
 			/>
 
@@ -2517,6 +2540,7 @@ ${bodies}`;
 				onStageAll={stageAll}
 				onDiscard={discardFile}
 				onDiscardAll={discardAll}
+				onStash={openStashPrompt}
 				onViewDiff={viewDiff}
 			/>
 
@@ -2964,7 +2988,7 @@ ${bodies}`;
 								<div class="pb-2">
 									{#if showStashSaveForm}
 										<div class="p-2.5 bg-slate-50 dark:bg-slate-800/50 border border-slate-200 dark:border-slate-700 rounded-lg space-y-2">
-											<input type="text" bind:value={stashMessage} placeholder="Stash message (optional)..." class="w-full px-2.5 py-2 text-sm bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-700 rounded-md text-slate-900 dark:text-slate-100 outline-none focus:border-violet-500/40 focus:ring-1 focus:ring-violet-500/20" onkeydown={(e) => e.key === 'Enter' && handleStashSave()} />
+											<input type="text" data-stash-message-input bind:value={stashMessage} placeholder="Stash message (optional)..." class="w-full px-2.5 py-2 text-sm bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-700 rounded-md text-slate-900 dark:text-slate-100 outline-none focus:border-violet-500/40 focus:ring-1 focus:ring-violet-500/20" onkeydown={(e) => e.key === 'Enter' && handleStashSave()} />
 											<div class="flex gap-1.5"><button type="button" class="flex-1 px-3 py-1.5 text-xs font-medium rounded-md bg-violet-600 text-white hover:bg-violet-700 transition-colors cursor-pointer border-none" onclick={handleStashSave}>Stash Changes</button><button type="button" class="px-3 py-1.5 text-xs font-medium bg-transparent border border-slate-200 dark:border-slate-700 text-slate-600 dark:text-slate-400 rounded-md hover:bg-slate-100 dark:hover:bg-slate-800 transition-colors cursor-pointer" onclick={() => { showStashSaveForm = false; stashMessage = ''; }}>Cancel</button></div>
 										</div>
 									{:else}

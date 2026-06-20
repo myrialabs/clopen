@@ -18,6 +18,7 @@
 		onStageAll?: () => void;
 		onUnstageAll?: () => void;
 		onDiscardAll?: () => void;
+		onStash?: () => void;
 		onViewDiff?: (file: GitFileChange, section: string) => void;
 		onResolve?: (path: string) => void;
 	}
@@ -29,6 +30,7 @@
 		activeSection = null,
 		onStage, onUnstage, onDiscard,
 		onStageAll, onUnstageAll, onDiscardAll,
+		onStash,
 		onViewDiff, onResolve
 	}: Props = $props();
 
@@ -159,6 +161,16 @@
 						title="Stage All"
 					>
 						<Icon name="lucide:plus" class="w-4 h-4" />
+					</button>
+				{/if}
+				{#if onStash}
+					<button
+						type="button"
+						class="flex items-center justify-center w-7 h-7 rounded-md text-slate-400 hover:bg-violet-500/10 hover:text-violet-500 transition-colors bg-transparent border-none cursor-pointer"
+						onclick={(e) => { e.stopPropagation(); onStash?.(); }}
+						title="Stash changes"
+					>
+						<Icon name="lucide:archive" class="w-4 h-4" />
 					</button>
 				{/if}
 			</div>
