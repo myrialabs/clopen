@@ -25,7 +25,7 @@
 		type GitActiveDiff
 	} from '$frontend/stores/features/git-workspace.svelte';
 	import { detectLanguageFromFilename } from '$frontend/components/common/editor/monaco-languages';
-	import { checkpointDiff, clearCheckpointDiff, refreshCheckpointBanner, clearActiveCheckpointFile, clearDismissedFiles } from '$frontend/stores/features/checkpoint-changes.svelte';
+	import { checkpointDiff, clearCheckpointDiff, refreshCheckpointBanner, clearDismissedFiles } from '$frontend/stores/features/checkpoint-changes.svelte';
 	import { sessionState } from '$frontend/stores/core/sessions.svelte';
 	import type { IconName } from '$shared/types/ui/icons';
 	import type {
@@ -698,9 +698,12 @@
 
 	async function viewDiff(file: GitFileChange, section: string, restoreScrollTop = 0) {
 		if (!projectId) return;
-		// Opening a worktree diff switches focus away from the AI banner's
-		// active file — clear it so the highlight tracks the new selection.
-		clearActiveCheckpointFile();
+		// NOTE: do NOT clear the banner's active file here. The banner's
+		// active-file highlight is independent of the worktree diff tab —
+		// the user may browse a worktree file while keeping the banner
+		// pointed at a checkpoint file (or vice versa). Clearing here made
+		// the banner snap back to its first file every time the user
+		// clicked a worktree file after a banner file.
 		const tabId = `${section}:${file.path}`;
 		const fileName = file.path.split(/[\\/]/).pop() || file.path;
 		const status = section === 'staged' ? file.indexStatus : file.workingStatus;
@@ -1822,13 +1825,26 @@ ${bodies}`;
 		const req = checkpointDiff.data;
 		if (!req) return;
 		untrack(() => {
+			// Derive the real git-style status from the content. The worktree
+			// diff path gets this from `git status`; the banner path doesn't
+			// (the snapshot's session_changes only carries hashes), so we
+			// infer it the same way `git diff --no-renames` would: empty
+			// old = added, empty new = deleted, else modified. Without this
+			// the tab status badge and DiffViewer would always say
+			// "Modified" even for new or deleted files.
+			const isEmpty = (s: string) => s.length === 0;
+			const status = isEmpty(req.oldContent) && !isEmpty(req.newContent)
+				? 'A'
+				: !isEmpty(req.oldContent) && isEmpty(req.newContent)
+					? 'D'
+					: 'M';
 			// Build a real GitFileDiff with 3 lines of context (matches git diff
 			// default) and open a normal tab — same flow as clicking a file in
 			// the source control changes list.
-			const fileDiff = buildGitFileDiff(req.oldContent, req.newContent, req.filepath);
+			const fileDiff = buildGitFileDiff(req.oldContent, req.newContent, req.filepath, status);
 			const tabId = `checkpoint:${req.filepath}`;
 			const fileName = req.filepath.split(/[\\/]/).pop() || req.filepath;
-			openTabs = [{ id: tabId, filePath: req.filepath, fileName, section: 'checkpoint', diff: fileDiff, diffs: [fileDiff], isLoading: false, status: 'M' }];
+			openTabs = [{ id: tabId, filePath: req.filepath, fileName, section: 'checkpoint', diff: fileDiff, diffs: [fileDiff], isLoading: false, status }];
 			activeTabId = tabId;
 			if (!isTwoColumnMode) viewMode = 'diff';
 			clearCheckpointDiff();

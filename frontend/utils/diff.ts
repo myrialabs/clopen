@@ -135,9 +135,28 @@ export function computeLineDiff(oldContent: string, newContent: string): DiffHun
 }
 
 /**
+ * Heuristic: a file is binary if its first ~8KB contains a NUL byte.
+ * Matches the way `git` itself decides — NUL bytes never appear in valid text
+ * but are common in compiled/asset files. Cheap to compute and good enough for
+ * the "should the diff editor be skipped?" decision.
+ */
+function looksBinary(content: string): boolean {
+	if (!content) return false;
+	const limit = Math.min(content.length, 8192);
+	for (let i = 0; i < limit; i++) {
+		if (content.charCodeAt(i) === 0) return true;
+	}
+	return false;
+}
+
+/**
  * Build a full GitFileDiff with hunks containing 3 lines of context on either
  * side of each change. Consecutive change groups separated by ≤ 6 unchanged
  * lines are merged into a single hunk (matches `git diff` default behaviour).
+ *
+ * Binary detection: scans the first ~8KB of each side for a NUL byte. If either
+ * side looks binary, `isBinary` is set so the viewer renders a "Binary file"
+ * placeholder instead of feeding raw bytes to the text diff editor.
  */
 export function buildGitFileDiff(
 	oldContent: string,
@@ -145,6 +164,19 @@ export function buildGitFileDiff(
 	filepath: string,
 	status: string = 'M'
 ): GitFileDiff {
+	const isBinary = looksBinary(oldContent) || looksBinary(newContent);
+	if (isBinary) {
+		// For binary files we don't produce hunks — the DiffViewer renders
+		// a placeholder based on `isBinary` + `status`.
+		return {
+			oldPath: filepath,
+			newPath: filepath,
+			status,
+			hunks: [],
+			isBinary: true
+		};
+	}
+
 	const oldLines = oldContent.split('\n');
 	const newLines = newContent.split('\n');
 	const ops = computeOps(oldLines, newLines);

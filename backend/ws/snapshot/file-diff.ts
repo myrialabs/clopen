@@ -9,14 +9,15 @@ import { createRouter } from '$shared/utils/ws-server';
 import { snapshotQueries, sessionQueries, projectQueries } from '../../database/queries';
 import { requireSessionAccess } from '../access';
 import { blobStore } from '../../snapshot/blob-store';
+import { findRepoForFile } from '../../snapshot/gitignore';
 import { readFile } from 'fs/promises';
 import { join } from 'path';
 import { spawn } from 'child_process';
 import { debug } from '$shared/utils/logger';
 
-async function readFromGitHead(projectPath: string, filepath: string): Promise<string> {
+async function readFromGitHead(cwd: string, filepath: string): Promise<string> {
 	return new Promise(resolve => {
-		const child = spawn('git', ['show', `HEAD:${filepath}`], { cwd: projectPath, stdio: ['ignore', 'pipe', 'ignore'] });
+		const child = spawn('git', ['show', `HEAD:${filepath}`], { cwd, stdio: ['ignore', 'pipe', 'ignore'] });
 		const chunks: Buffer[] = [];
 		child.stdout.on('data', c => chunks.push(c));
 		child.on('error', () => resolve(''));
@@ -92,8 +93,14 @@ export const fileDiffHandler = createRouter()
 				// Blob missing (e.g. after a backend restart that wiped the
 				// in-memory cache, or for sessions initialised before blob
 				// persistence shipped). Fall back to `git show HEAD:file`
-				// so the diff still has a real "before" to render against.
-				oldContent = await readFromGitHead(projectPath, data.filepath);
+				// in the correct repo (nested repos have their own HEAD) so
+				// the diff still has a real "before" to render against.
+				const repo = projectPath
+					? await findRepoForFile(projectPath, data.filepath)
+					: null;
+				const gitCwd = repo?.repoPath ?? projectPath;
+				const gitFile = repo?.relativeFilePath ?? data.filepath;
+				oldContent = await readFromGitHead(gitCwd, gitFile);
 				debug.log('snapshot', `Blob ${firstOld.slice(0, 8)} missing for ${data.filepath}, fell back to git HEAD`);
 			}
 		}

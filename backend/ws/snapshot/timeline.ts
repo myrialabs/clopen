@@ -139,7 +139,7 @@ export const timelineHandler = createRouter()
 			}
 
 			// File stats from checkpoint's own snapshot
-			const stats = getCheckpointFileStats(cp);
+			const stats = await getCheckpointFileStats(cp);
 
 			const snapshot = snapshotQueries.getByMessageId(cp.id);
 

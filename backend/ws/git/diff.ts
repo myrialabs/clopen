@@ -5,6 +5,7 @@
 import { t } from 'elysia';
 import { createRouter } from '$shared/utils/ws-server';
 import { gitService } from '../../git/git-service';
+import { findRepoForFile } from '../../snapshot/gitignore';
 import { requireProjectAccess } from '../access';
 
 const DiffHunkLineSchema = t.Object({
@@ -40,7 +41,15 @@ export const diffHandler = createRouter()
 		response: t.Array(FileDiffSchema)
 	}, async ({ data, conn }) => {
 		const project = requireProjectAccess(conn, data.projectId);
-		return await gitService.getDiffUnstaged(project.path, data.filePath);
+		// Route the diff to the nested repo that owns the file (if any) —
+		// the outer repo's `git diff` returns nothing for files that are
+		// tracked inside a nested repo and gitignored by the parent.
+		const repo = data.filePath
+			? await findRepoForFile(project.path, data.filePath)
+			: null;
+		const cwd = repo?.repoPath ?? project.path;
+		const filePath = repo?.relativeFilePath ?? data.filePath;
+		return await gitService.getDiffUnstaged(cwd, filePath);
 	})
 
 	.http('git:diff-staged', {
@@ -51,7 +60,12 @@ export const diffHandler = createRouter()
 		response: t.Array(FileDiffSchema)
 	}, async ({ data, conn }) => {
 		const project = requireProjectAccess(conn, data.projectId);
-		return await gitService.getDiffStaged(project.path, data.filePath);
+		const repo = data.filePath
+			? await findRepoForFile(project.path, data.filePath)
+			: null;
+		const cwd = repo?.repoPath ?? project.path;
+		const filePath = repo?.relativeFilePath ?? data.filePath;
+		return await gitService.getDiffStaged(cwd, filePath);
 	})
 
 	.http('git:diff-commit', {
