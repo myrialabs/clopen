@@ -19,11 +19,16 @@ interface PageInfo {
  * Per-session process state.
  * Tracks loading/waiting/cancelling state for each chat session independently,
  * enabling correct multi-session and multi-project support.
+ *
+ * NOTE: `isRestoring` is intentionally NOT part of this per-session state. It is
+ * a global project-switch/refresh TRANSITION flag owned solely by the project
+ * store + workspace bootstrap (see `appState.isRestoring`). Mixing it in here
+ * once caused `syncGlobalStateFromSession()` to reset the transition flag mid
+ * project-switch — leaving the chat dock stuck hidden until a full refresh.
  */
 export interface SessionProcessState {
 	isLoading: boolean;
 	isWaitingInput: boolean;
-	isRestoring: boolean;
 	isCancelling: boolean;
 	error: string | null;
 }
@@ -31,7 +36,6 @@ export interface SessionProcessState {
 const DEFAULT_SESSION_STATE: SessionProcessState = {
 	isLoading: false,
 	isWaitingInput: false,
-	isRestoring: false,
 	isCancelling: false,
 	error: null,
 };
@@ -43,9 +47,16 @@ interface AppState {
 	// Current session process state (convenience — synced from sessionStates for the active session)
 	isLoading: boolean;
 	isWaitingInput: boolean;
-	isRestoring: boolean;
 	isCancelling: boolean;
 	error: string | null;
+
+	// Project-switch/refresh transition flag. NOT a per-session value: owned by
+	// the project store (setCurrentProject) and the workspace bootstrap
+	// (WorkspaceLayout). Held true across the whole project + session restore so
+	// the chat dock keeps stale content hidden and restores its saved reading
+	// position instead of snapping to the bottom. Deliberately excluded from
+	// `syncGlobalStateFromSession` so a mid-switch session change can't clear it.
+	isRestoring: boolean;
 
 	// Per-session process states (source of truth for multi-session support)
 	sessionStates: Record<string, SessionProcessState>;
@@ -134,9 +145,12 @@ export function syncGlobalStateFromSession(sessionId: string | null | undefined)
 	const state = (sessionId ? appState.sessionStates[sessionId] : undefined) ?? DEFAULT_SESSION_STATE;
 	appState.isLoading = state.isLoading;
 	appState.isWaitingInput = state.isWaitingInput;
-	appState.isRestoring = state.isRestoring;
 	appState.isCancelling = state.isCancelling;
 	appState.error = state.error;
+	// NOTE: `appState.isRestoring` is deliberately NOT synced here — it is a
+	// global project-switch transition flag, not per-session. Resetting it during
+	// a switch (setCurrentSession → here) would defeat the transition and leave
+	// the chat dock hidden until refresh.
 }
 
 /**

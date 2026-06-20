@@ -146,7 +146,9 @@ class ChatService {
     if ('isLoading' in update) appState.isLoading = update.isLoading!;
     if ('isWaitingInput' in update) appState.isWaitingInput = update.isWaitingInput!;
     if ('isCancelling' in update) appState.isCancelling = update.isCancelling!;
-    if ('isRestoring' in update) appState.isRestoring = update.isRestoring!;
+    // `isRestoring` is a global project-switch transition flag, not per-session —
+    // it is never set via setProcessState and must not be mirrored from stream
+    // updates (see SessionProcessState note in app.svelte.ts).
     if ('error' in update && update.error !== undefined) appState.error = update.error;
   }
 

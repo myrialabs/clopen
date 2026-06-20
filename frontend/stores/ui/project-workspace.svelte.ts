@@ -197,12 +197,28 @@ async function flushPendingSave(): Promise<void> {
  *   2. raise the switch barrier (docks show uniform skeletons)
  *   3. clear() every dock so no stale data can flash through
  *   4. fetch the new project's blob and restore() every dock's slice
+ *   4b. run `onAfterRestore` (see below)
  *   5. await every dock's load() so they're all ready before reveal
  *   6. drop the barrier — all docks reveal together
  *
+ * `onAfterRestore` runs synchronously between the dock restore loop (4) and the
+ * load phase (5) — i.e. in the SAME synchronous block as `applyLayoutSlice`,
+ * which the `layout` dock's restore() just ran. The caller uses it to publish
+ * the new `projectState.currentProject`, so Svelte batches the layout swap and
+ * the current-project change into one flush: panels that remount on the layout
+ * swap mount ONCE, already pointing at the new project, with their dock
+ * view-state already restored. Setting the current project any later (after the
+ * await below) lets the layout swap flush alone first — remounting live panels
+ * against the OLD project, which then race a reload and can leave them blank
+ * until a full refresh. (The refresh path has no such gap: it activates the
+ * workspace behind the loading screen before any panel mounts.)
+ *
  * Pass `null` to deactivate (e.g. when no project is selected).
  */
-export async function activateProjectWorkspace(projectId: string | null): Promise<void> {
+export async function activateProjectWorkspace(
+	projectId: string | null,
+	onAfterRestore?: () => void
+): Promise<void> {
 	// Nothing to do if we're already on this project.
 	if (projectId === activeProjectId) return;
 
@@ -241,6 +257,15 @@ export async function activateProjectWorkspace(projectId: string | null): Promis
 			} catch (err) {
 				debug.error('workspace', `Dock ${dock.id} restore failed:`, err);
 			}
+		}
+
+		// 4b. Publish the new active project in the SAME synchronous block as the
+		// layout swap above, so Svelte batches them: live panels remount once,
+		// already on the new project, with view-state restored. See the doc above.
+		try {
+			onAfterRestore?.();
+		} catch (err) {
+			debug.error('workspace', 'onAfterRestore failed:', err);
 		}
 
 		// 5. Await every dock's critical data load so they reveal together.

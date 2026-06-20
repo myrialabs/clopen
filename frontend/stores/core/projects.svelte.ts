@@ -133,7 +133,18 @@ export async function setCurrentProject(project: Project | null) {
 		// Swap the per-project workspace: clears all docks, restores this
 		// project's layout + dock view-state, and awaits dock data loads under
 		// the same barrier.
-		await activateProjectWorkspace(project?.id ?? null);
+		//
+		// Publish the new current project via the coordinator's post-restore
+		// hook so it lands in the SAME synchronous flush as the layout swap.
+		// Otherwise the layout swap remounts already-live panels while
+		// currentProject still points at the OLD project — they load the wrong
+		// project, then race a reload, and can end up blank until a full refresh.
+		// isRestoring is already true (set above), so effects that fire on this
+		// change still see the transition flag and won't persist stale state —
+		// matching the previous (late) assignment's intent.
+		await activateProjectWorkspace(project?.id ?? null, () => {
+			if (project) projectState.currentProject = project;
+		});
 
 		// Clear edit mode state from previous project (server retains per-project state)
 		const { onProjectLeave, onProjectEnter } = await import('$frontend/stores/ui/edit-mode.svelte');
@@ -184,10 +195,11 @@ export async function setCurrentProject(project: Project | null) {
 				// (ws.setProject already completed, so server returns correct project's state)
 				await onProjectEnter();
 
-				// Set projectState BEFORE clearing isRestoring
-				// This ensures reactive effects that fire on projectState change
-				// still see isRestoring=true and don't sync stale state to server
-				projectState.currentProject = project;
+				// projectState.currentProject was already published above via the
+				// activateProjectWorkspace post-restore hook (batched with the layout
+				// swap). It is still set while isRestoring is true, so the original
+				// guarantee — reactive effects see the transition flag and don't
+				// persist stale state — is preserved.
 			} finally {
 				// Clear restoring flag after project state is fully set
 				appState.isRestoring = false;
@@ -358,9 +370,11 @@ export async function loadProjects(restoreProjectId?: string | null) {
 					// Activate this project's per-project workspace (layout + dock
 					// view-state). During app init this runs behind the loading
 					// screen, so the restored layout is ready on first paint.
-					await activateProjectWorkspace(existingProject.id);
-
-					projectState.currentProject = existingProject;
+					// Publish currentProject via the post-restore hook (batched with
+					// the layout swap) for parity with the project-switch path.
+					await activateProjectWorkspace(existingProject.id, () => {
+						projectState.currentProject = existingProject;
+					});
 
 					// Start tracking the restored project
 					if (typeof window !== 'undefined') {
