@@ -105,12 +105,28 @@ export const fileDiffHandler = createRouter()
 			}
 		}
 
-		// Read current file from disk
-		try {
-			newContent = await readFile(currentFilePath, 'utf-8');
-		} catch {
-			// File might not exist anymore
-			newContent = '';
+		if (lastNew) {
+			// Read the "new" content from the blob store, NOT from disk.
+			// The banner diff is the AI's cumulative pending change (from
+			// session-start to last AI action) and must stay stable until
+			// the user accepts or discards. If we read from disk, any
+			// manual edit the user makes after the AI's last action would
+			// leak into the banner diff — but the banner is supposed to
+			// show only what the AI changed. The blob is the AI's frozen
+			// output at snapshot time, so it's the correct source.
+			const buf = await blobStore.readBlob(lastNew);
+			if (buf && buf.length > 0) {
+				newContent = buf.toString('utf-8');
+			} else {
+				// Blob missing — fall back to disk. Better to show
+				// something (even with manual edits) than an empty diff.
+				try {
+					newContent = await readFile(currentFilePath, 'utf-8');
+				} catch {
+					newContent = '';
+				}
+				debug.log('snapshot', `Blob ${lastNew.slice(0, 8)} missing for ${data.filepath} (new side), fell back to disk`);
+			}
 		}
 
 		return { oldContent, newContent, filepath: data.filepath };

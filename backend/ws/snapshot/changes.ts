@@ -22,7 +22,6 @@ import { createRouter } from '$shared/utils/ws-server';
 import { snapshotQueries, sessionQueries, projectQueries } from '../../database/queries';
 import { requireSessionAccess } from '../access';
 import { existsSync } from 'fs';
-import { readFile } from 'fs/promises';
 import { join } from 'path';
 import { blobStore } from '../../snapshot/blob-store';
 import { getDetailedFileDiffs } from '$shared/utils/diff-calculator';
@@ -48,21 +47,31 @@ export const changesHandler = createRouter()
 
 		// Accumulate session_changes across every snapshot for the session.
 		// For each filepath:
-		//   - `oldHash` is taken from the LATEST snapshot that touched the file
-		//     so the diff matches the worktree's `git diff` (which compares
-		//     against the last committed/known state, not the original pre-AI state).
+		//   - `oldHash` is taken from the FIRST snapshot that touched the file
+		//     (pre-AI / session-start state) so the diff shows the AI's full
+		//     cumulative change from the original baseline up to the last
+		//     action. A `seen` set guards the first-old assignment so a
+		//     new-file oldHash of '' doesn't get clobbered by a later
+		//     snapshot's entry.
 		//   - `newHash` is taken from the LATEST snapshot that touched the
-		//     file (the current working-tree state).
+		//     file (the AI's most recent output, frozen in the blob store).
+		// Both come from the blob store, NEVER the worktree disk — the
+		// banner is the AI's pending change and must not leak manual
+		// edits the user made after the AI's last action.
 		const snapshots = snapshotQueries.getBySessionId(data.sessionId);
 
-		const lastOld: Record<string, string> = {};
+		const seen = new Set<string>();
+		const firstOld: Record<string, string> = {};
 		const lastNew: Record<string, string> = {};
 		for (const snap of snapshots) {
 			if (!snap.session_changes) continue;
 			try {
 				const changes = JSON.parse(snap.session_changes as string) as Record<string, { oldHash: string; newHash: string }>;
 				for (const [filepath, entry] of Object.entries(changes)) {
-					lastOld[filepath] = entry.oldHash || '';
+					if (!seen.has(filepath)) {
+						firstOld[filepath] = entry.oldHash || '';
+						seen.add(filepath);
+					}
 					lastNew[filepath] = entry.newHash || '';
 				}
 			} catch {
@@ -83,14 +92,16 @@ export const changesHandler = createRouter()
 		});
 
 		// Compute insertions/deletions per file by diffing the blob-stored
-		// old content against the current worktree file. Missing blob
-		// (e.g. legacy snapshots without blob store) or unreadable file
-		// falls back to 0/0 so the banner still renders without failing
-		// the whole request.
+		// pre-AI content against the blob-stored AI-last-action content.
+		// Reading from the worktree disk would include any manual edit the
+		// user made after the AI's last action — the banner is supposed to
+		// show only the AI's pending change, not the current worktree
+		// state. Fall back to 0/0 if a blob is missing so the banner still
+		// renders without failing the whole request.
 		const previousSnapshot: Record<string, Buffer> = {};
 		const currentSnapshot: Record<string, Buffer> = {};
 		for (const filepath of visibleFilepaths) {
-			const oldHash = lastOld[filepath];
+			const oldHash = firstOld[filepath];
 			if (oldHash) {
 				try {
 					previousSnapshot[filepath] = await blobStore.readBlob(oldHash);
@@ -98,11 +109,12 @@ export const changesHandler = createRouter()
 					debug.warn('snapshot', `Missing blob for ${filepath} (${oldHash}):`, err);
 				}
 			}
-			if (projectPath) {
+			const newHash = lastNew[filepath];
+			if (newHash) {
 				try {
-					currentSnapshot[filepath] = await readFile(join(projectPath, filepath));
+					currentSnapshot[filepath] = await blobStore.readBlob(newHash);
 				} catch (err) {
-					debug.warn('snapshot', `Unreadable worktree file ${filepath}:`, err);
+					debug.warn('snapshot', `Missing blob for ${filepath} (${newHash}):`, err);
 				}
 			}
 		}
@@ -120,7 +132,7 @@ export const changesHandler = createRouter()
 			const stats = diffMap.get(filepath);
 			return {
 				filepath,
-				oldHash: lastOld[filepath] || '',
+				oldHash: firstOld[filepath] || '',
 				newHash: lastNew[filepath] || '',
 				additions: stats?.insertions ?? 0,
 				deletions: stats?.deletions ?? 0
