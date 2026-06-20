@@ -134,6 +134,16 @@
 
 			<!-- Bulk actions (hidden until hover) -->
 			<div class="flex items-center gap-0.5 shrink-0 -my-2">
+				{#if onStash}
+					<button
+						type="button"
+						class="flex items-center justify-center w-7 h-7 rounded-md text-slate-400 hover:bg-violet-500/10 hover:text-violet-500 transition-colors bg-transparent border-none cursor-pointer"
+						onclick={(e) => { e.stopPropagation(); onStash?.(); }}
+						title="Stash changes"
+					>
+						<Icon name="lucide:archive" class="w-4 h-4" />
+					</button>
+				{/if}
 				{#if section === 'staged' && onUnstageAll}
 					<button
 						type="button"
@@ -161,16 +171,6 @@
 						title="Stage All"
 					>
 						<Icon name="lucide:plus" class="w-4 h-4" />
-					</button>
-				{/if}
-				{#if onStash}
-					<button
-						type="button"
-						class="flex items-center justify-center w-7 h-7 rounded-md text-slate-400 hover:bg-violet-500/10 hover:text-violet-500 transition-colors bg-transparent border-none cursor-pointer"
-						onclick={(e) => { e.stopPropagation(); onStash?.(); }}
-						title="Stash changes"
-					>
-						<Icon name="lucide:archive" class="w-4 h-4" />
 					</button>
 				{/if}
 			</div>
