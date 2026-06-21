@@ -18,6 +18,7 @@ import { debug } from '$shared/utils/logger';
 import { SERVER_ENV } from '../../utils/env';
 import { validateMcpOutput } from './output-validator';
 import { MCP_TOOL_CALL_TIMEOUT_MS } from '../shared/constants';
+import { getMcpServiceToken } from './service-token';
 
 /**
  * User-defined MCP Servers Configuration
@@ -445,6 +446,7 @@ export function getOpenCodeMcpConfig(): Record<string, McpRemoteConfig> {
 			url: `http://localhost:${port}/mcp`,
 			enabled: true,
 			timeout: MCP_TOOL_CALL_TIMEOUT_MS,
+			headers: { Authorization: `Bearer ${getMcpServiceToken()}` },
 		},
 	};
 }
@@ -462,6 +464,7 @@ export function getOpenCodeMcpConfig(): Record<string, McpRemoteConfig> {
  */
 type CodexMcpServerConfig = {
 	url: string;
+	http_headers?: Record<string, string>;
 	tools?: Record<string, { approval_mode: 'auto' | 'prompt' | 'approve' }>;
 };
 
@@ -507,6 +510,7 @@ export function getCodexMcpConfig(): Record<string, CodexMcpServerConfig> {
 	return {
 		'clopen-mcp': {
 			url: `http://localhost:${port}/mcp`,
+			http_headers: { Authorization: `Bearer ${getMcpServiceToken()}` },
 			tools,
 		},
 	};
@@ -559,6 +563,7 @@ export function getCopilotMcpConfig(): Record<string, MCPHTTPServerConfig> {
 			url: `http://localhost:${port}/mcp`,
 			tools,
 			timeout: MCP_TOOL_CALL_TIMEOUT_MS,
+			headers: { Authorization: `Bearer ${getMcpServiceToken()}` },
 		},
 	};
 }
@@ -606,6 +611,7 @@ export function getQwenMcpConfig(): Record<string, QwenMcpServerConfig> {
 			includeTools,
 			timeout: MCP_TOOL_CALL_TIMEOUT_MS,
 			trust: true,
+			headers: { Authorization: `Bearer ${getMcpServiceToken()}` },
 		},
 	};
 }

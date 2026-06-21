@@ -125,25 +125,30 @@ async function init(): Promise<void> {
 	if (!command) throw new Error('opencode binary not found on PATH');
 	const args = [command, 'serve', `--hostname=${OPENCODE_HOST}`, '--port=0'];
 
-	// Build MCP config — but only inject if the MCP endpoint is actually reachable.
-	// The opencode binary may initialize MCP connections synchronously before printing
-	// "opencode server listening", so an unreachable/slow MCP endpoint can stall startup.
-	let mcpConfig = getOpenCodeMcpConfig();
+	// Build MCP config — but only inject remote servers whose endpoint is
+	// actually reachable. The opencode binary may initialize MCP connections
+	// synchronously before printing "opencode server listening", so an
+	// unreachable/slow remote endpoint can stall startup. Drop ONLY the
+	// unreachable remote entries; stdio/local servers (no `url`) are independent
+	// of the HTTP bridge and must always survive — they were previously thrown
+	// out together with the bridge when it wasn't reachable yet.
+	const mcpConfig = getOpenCodeMcpConfig();
 	if (Object.keys(mcpConfig).length > 0) {
-		const mcpUrls = Object.values(mcpConfig).map(c => (c as any).url).filter(Boolean);
-		const reachable = await Promise.all(
-			mcpUrls.map(url => isServerAlive(url))
+		const entries = Object.entries(mcpConfig);
+		const reachability = await Promise.all(
+			entries.map(([, c]) => {
+				const url = (c as any).url as string | undefined;
+				return url ? isServerAlive(url) : Promise.resolve(true);
+			})
 		);
-
-		if (reachable.every(Boolean)) {
-			debug.log('engine', `Open Code server: injecting ${Object.keys(mcpConfig).length} MCP server(s)`);
-			for (const [name, config] of Object.entries(mcpConfig)) {
-				debug.log('engine', `  → ${name}: ${config.type} (${(config as any).url || (config as any).command?.join(' ')})`);
+		entries.forEach(([name, config], i) => {
+			if (reachability[i]) {
+				debug.log('engine', `Open Code server: injecting MCP server → ${name}: ${config.type} (${(config as any).url || (config as any).command?.join(' ')})`);
+			} else {
+				debug.warn('engine', `Open Code server: MCP endpoint for "${name}" not reachable, skipping it`);
+				delete mcpConfig[name];
 			}
-		} else {
-			debug.warn('engine', 'Open Code server: MCP endpoint not reachable, starting without MCP');
-			mcpConfig = {};
-		}
+		});
 	}
 
 	// Build provider config from DB (enabled providers + env vars)

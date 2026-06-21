@@ -12,6 +12,7 @@ import { describe, expect, test, beforeAll, afterAll, beforeEach } from 'bun:tes
 import { randomUUID } from 'node:crypto';
 
 import { handleMcpRequest } from './remote-server';
+import { getMcpServiceToken } from './service-token';
 import { authQueries, settingsQueries } from '../../database/queries';
 import { generatePAT, generateSessionToken, hashToken } from '../../auth/tokens';
 import { initializeDatabase, closeDatabase, getDatabase } from '../../database';
@@ -128,6 +129,19 @@ describe('MCP Remote Server Authentication', () => {
 	test('accepts a valid PAT token', async () => {
 		const response = await handleMcpRequest(mcpRequest(patToken));
 		expect(response.status).not.toBe(401);
+	});
+
+	test('accepts the internal service token even when auth is required', async () => {
+		// The non-Claude engines authenticate to the bridge with this loopback
+		// token, not a user session. Without it the whole clopen-mcp bridge 401s.
+		const response = await handleMcpRequest(mcpRequest(getMcpServiceToken()));
+		expect(response.status).not.toBe(401);
+	});
+
+	test('does not mint a session for the service token', async () => {
+		const before = sessionCount(testUserId);
+		await handleMcpRequest(mcpRequest(getMcpServiceToken()));
+		expect(sessionCount(testUserId)).toBe(before);
 	});
 
 	test('skips authentication in no-auth mode', async () => {

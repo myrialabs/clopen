@@ -19,6 +19,7 @@ import { debug } from '$shared/utils/logger';
 import { authQueries } from '$backend/database/queries';
 import { hashToken } from '$backend/auth/tokens';
 import { getAuthMode } from '$backend/auth/auth-service';
+import { isMcpServiceToken } from './service-token';
 
 // Lazy imports to avoid circular dependencies at module load time
 let _allServers: Parameters<typeof createRemoteMcpServer>[0] | null = null;
@@ -58,6 +59,13 @@ function validateAuthToken(request: Request): { userId: string; role: string } |
 	const token = authHeader.substring(7).trim();
 	if (!token) {
 		return null;
+	}
+
+	// Internal bridge credential: the non-Claude engines authenticate to this
+	// loopback endpoint with the process-scoped service token, not a user
+	// session. Accept it regardless of auth mode — it never leaves the host.
+	if (isMcpServiceToken(token)) {
+		return { userId: 'mcp-service', role: 'admin' };
 	}
 
 	const tokenHash = hashToken(token);
