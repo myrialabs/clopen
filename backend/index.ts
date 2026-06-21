@@ -99,7 +99,15 @@ const app = new Elysia()
 
 	// MCP remote server endpoint for Open Code custom tools
 	// Handles GET (SSE stream), POST (JSON-RPC), DELETE (session close)
-	.all('/mcp', async ({ request }) => handleMcpRequest(request))
+	.all('/mcp', async ({ request, server }) => {
+		// MCP tool calls can run far longer than Bun's default 10s idle timeout.
+		// While a tool executes, the streaming response sends no bytes, so Bun
+		// would close the idle connection and the call surfaces as MCP error
+		// -32001 ("Request timed out"). Disable the idle timeout for this
+		// long-lived endpoint only — every other route keeps the safe default.
+		server?.timeout(request, 0);
+		return handleMcpRequest(request);
+	})
 
 	// HTTP file upload — mounted before the WS plugin so /api/files/upload
 	// stays on the HTTP path through the Vite dev proxy.

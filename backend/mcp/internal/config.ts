@@ -17,6 +17,7 @@ import { mcpServerQueries } from '$backend/database/queries';
 import { debug } from '$shared/utils/logger';
 import { SERVER_ENV } from '../../utils/env';
 import { validateMcpOutput } from './output-validator';
+import { MCP_TOOL_CALL_TIMEOUT_MS } from '../shared/constants';
 
 /**
  * User-defined MCP Servers Configuration
@@ -443,7 +444,7 @@ export function getOpenCodeMcpConfig(): Record<string, McpRemoteConfig> {
 			type: 'remote',
 			url: `http://localhost:${port}/mcp`,
 			enabled: true,
-			timeout: 10000,
+			timeout: MCP_TOOL_CALL_TIMEOUT_MS,
 		},
 	};
 }
@@ -557,7 +558,7 @@ export function getCopilotMcpConfig(): Record<string, MCPHTTPServerConfig> {
 			type: 'http',
 			url: `http://localhost:${port}/mcp`,
 			tools,
-			timeout: 10_000,
+			timeout: MCP_TOOL_CALL_TIMEOUT_MS,
 		},
 	};
 }
@@ -603,7 +604,7 @@ export function getQwenMcpConfig(): Record<string, QwenMcpServerConfig> {
 		'clopen-mcp': {
 			httpUrl: `http://localhost:${port}/mcp`,
 			includeTools,
-			timeout: 10_000,
+			timeout: MCP_TOOL_CALL_TIMEOUT_MS,
 			trust: true,
 		},
 	};

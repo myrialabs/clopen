@@ -23,6 +23,22 @@
 /** Namespace key of the internal remote-HTTP MCP bridge (`/mcp`). */
 export const INTERNAL_BRIDGE_NAMESPACE = 'clopen-mcp';
 
+/**
+ * Per-tool-call timeout (ms) Clopen hands to non-Claude engines for the
+ * internal `/mcp` bridge. MCP tools can legitimately run far longer than the
+ * engines' short defaults (e.g. OpenCode's 5s), so we make this effectively
+ * unlimited — a finite-but-huge value because the engine SDKs expose no
+ * "disable" sentinel and feed this straight into setTimeout, which overflows
+ * above 2^31-1 ms (~24.8 days). 7 days is beyond any real tool call yet safely
+ * under that ceiling.
+ *
+ * NOTE: this only governs the engine's CLIENT-side request timeout. The Clopen
+ * HTTP server's own idle timeout is disabled separately on the `/mcp` route via
+ * Bun's `server.timeout(request, 0)` (see backend/index.ts) — both layers must
+ * be lifted or a long tool call still dies with MCP error -32001.
+ */
+export const MCP_TOOL_CALL_TIMEOUT_MS = 7 * 24 * 60 * 60 * 1000; // 7 days
+
 /** Prefix reserved for internal MCP namespaces (marks a key as "ours"). */
 export const INTERNAL_PREFIX = 'clopen';
 
