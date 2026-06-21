@@ -16,6 +16,7 @@
         "@openai/codex-sdk": "0.135.0",
         "@opencode-ai/sdk": "1.15.12",
         "@qwen-code/sdk": "0.1.7",
+        "@sinclair/typebox": "0.34.48",
         "@xterm/addon-clipboard": "^0.2.0",
         "@xterm/addon-fit": "^0.11.0",
         "@xterm/addon-ligatures": "^0.10.0",
