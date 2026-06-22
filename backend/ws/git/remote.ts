@@ -200,12 +200,13 @@ export const remoteHandler = createRouter()
 	.http('git:stash-save', {
 		data: t.Object({
 			projectId: t.String(),
-			message: t.Optional(t.String())
+			message: t.Optional(t.String()),
+			staged: t.Optional(t.Boolean())
 		}),
 		response: t.Object({ ok: t.Boolean() })
 	}, async ({ data, conn }) => {
 		const project = requireProjectAccess(conn, data.projectId);
-		await gitService.stashSave(project.path, data.message);
+		await gitService.stashSave(project.path, data.message, data.staged);
 		return { ok: true };
 	})
 

@@ -222,6 +222,9 @@
 	let isStashLoading = $state(false);
 	let showStashSaveForm = $state(false);
 	let stashMessage = $state('');
+	// When true, the create-stash form stashes only the index (`git stash push
+	// --staged`); otherwise it stashes all changes.
+	let stashStagedOnly = $state(false);
 	// Inline expanded stash entries → their file list (lazy-loaded), like the
 	// per-commit file list under a branch.
 	let expandedStashes = $state<Set<number>>(new Set());
@@ -1884,9 +1887,14 @@ ${bodies}`;
 	async function handleStashSave() {
 		if (!projectId) return;
 		try {
-			await ws.http('git:stash-save', { projectId, message: stashMessage.trim() || undefined });
+			await ws.http('git:stash-save', {
+				projectId,
+				message: stashMessage.trim() || undefined,
+				staged: stashStagedOnly
+			});
 			stashMessage = '';
 			showStashSaveForm = false;
+			stashStagedOnly = false;
 			await Promise.all([loadStash(), loadStatus()]);
 		} catch (err) {
 			debug.error('git', 'Stash save failed:', err);
@@ -1895,12 +1903,14 @@ ${bodies}`;
 	}
 
 	/**
-	 * Triggered by the stash icon in the Staged/Changes section headers.
-	 * Jumps to the More → Stash sub-tab, opens the stash-save form, and
-	 * focuses the message input so the user can type a description and submit.
+	 * Triggered by the stash icon in the Staged section header. Jumps to the
+	 * More → Stash sub-tab, opens the stash-save form pre-scoped to the given
+	 * scope, and focuses the message input so the user can type a description
+	 * and submit.
 	 */
-	function openStashPrompt() {
+	function openStashPrompt(scope: 'all' | 'staged' = 'all') {
 		stashMessage = '';
+		stashStagedOnly = scope === 'staged';
 		showStashSaveForm = true;
 		moreSubTab = 'stash';
 		switchToView('more');
@@ -2498,10 +2508,19 @@ ${bodies}`;
 				activeSection={activeTab?.section ?? null}
 				onUnstage={unstageFile}
 				onUnstageAll={unstageAll}
-				onStash={openStashPrompt}
+				onStash={() => openStashPrompt('staged')}
 				onViewDiff={viewDiff}
 			/>
 
+			<!--
+				No `onStash` here on purpose. Unlike `--staged`, Git has no
+				`--unstaged` flag, so stashing only the Changes (working-tree)
+				section would mean stashing by pathspec — which works per file,
+				not per hunk. For partially staged files that would also pull in
+				the staged hunks, making the result inconsistent with what the
+				user sees. Doing it precisely needs layered index manipulation
+				that is risky and demands thorough testing, so it's deferred.
+			-->
 			<ChangesSection
 				title="Changes"
 				icon="lucide:file-pen"
@@ -2903,10 +2922,15 @@ ${bodies}`;
 					{#if showStashSaveForm}
 						<div class="p-2.5 bg-slate-50 dark:bg-slate-800/50 border border-slate-200 dark:border-slate-700 rounded-lg space-y-2">
 							<input type="text" data-stash-message-input bind:value={stashMessage} placeholder="Stash message (optional)..." class="w-full px-2.5 py-2 text-sm bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-700 rounded-md text-slate-900 dark:text-slate-100 outline-none focus:border-violet-500/40 focus:ring-1 focus:ring-violet-500/20" onkeydown={(e) => e.key === 'Enter' && handleStashSave()} />
-							<div class="flex gap-1.5"><button type="button" class="flex-1 px-3 py-1.5 text-xs font-medium rounded-md bg-violet-600 text-white hover:bg-violet-700 transition-colors cursor-pointer border-none" onclick={handleStashSave}>Stash Changes</button><button type="button" class="px-3 py-1.5 text-xs font-medium bg-transparent border border-slate-200 dark:border-slate-700 text-slate-600 dark:text-slate-400 rounded-md hover:bg-slate-100 dark:hover:bg-slate-800 transition-colors cursor-pointer" onclick={() => { showStashSaveForm = false; stashMessage = ''; }}>Cancel</button></div>
+							<!-- Scope: stash everything vs. only the staged (index) changes -->
+							<div class="flex gap-1 p-0.5 bg-slate-100 dark:bg-slate-800 rounded-md">
+								<button type="button" class="flex-1 px-2 py-1 text-xs font-medium rounded transition-colors cursor-pointer border-none {!stashStagedOnly ? 'bg-white dark:bg-slate-700 text-slate-900 dark:text-slate-100 shadow-sm' : 'bg-transparent text-slate-500 hover:text-slate-700 dark:hover:text-slate-300'}" onclick={() => stashStagedOnly = false}>All changes</button>
+								<button type="button" class="flex-1 px-2 py-1 text-xs font-medium rounded transition-colors cursor-pointer border-none {stashStagedOnly ? 'bg-white dark:bg-slate-700 text-slate-900 dark:text-slate-100 shadow-sm' : 'bg-transparent text-slate-500 hover:text-slate-700 dark:hover:text-slate-300'}" onclick={() => stashStagedOnly = true}>Staged only</button>
+							</div>
+							<div class="flex gap-1.5"><button type="button" class="flex-1 px-3 py-1.5 text-xs font-medium rounded-md bg-violet-600 text-white hover:bg-violet-700 transition-colors cursor-pointer border-none" onclick={handleStashSave}>Stash Changes</button><button type="button" class="px-3 py-1.5 text-xs font-medium bg-transparent border border-slate-200 dark:border-slate-700 text-slate-600 dark:text-slate-400 rounded-md hover:bg-slate-100 dark:hover:bg-slate-800 transition-colors cursor-pointer" onclick={() => { showStashSaveForm = false; stashMessage = ''; stashStagedOnly = false; }}>Cancel</button></div>
 						</div>
 					{:else}
-						<button type="button" class="flex items-center justify-center gap-2 w-full py-2 px-3 border border-dashed border-slate-300 dark:border-slate-600 rounded-lg text-xs text-slate-500 hover:text-violet-600 hover:border-violet-400 transition-colors cursor-pointer bg-transparent" onclick={() => showStashSaveForm = true}><Icon name="lucide:plus" class="w-3.5 h-3.5" /><span>Stash Current Changes</span></button>
+						<button type="button" class="flex items-center justify-center gap-2 w-full py-2 px-3 border border-dashed border-slate-300 dark:border-slate-600 rounded-lg text-xs text-slate-500 hover:text-violet-600 hover:border-violet-400 transition-colors cursor-pointer bg-transparent" onclick={() => { stashStagedOnly = false; showStashSaveForm = true; }}><Icon name="lucide:plus" class="w-3.5 h-3.5" /><span>Stash Current Changes</span></button>
 					{/if}
 				</div>
 				{#if isStashLoading}

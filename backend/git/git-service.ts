@@ -555,14 +555,24 @@ export class GitService {
 		return parseStashList(result.stdout);
 	}
 
-	async stashSave(cwd: string, message?: string): Promise<void> {
+	async stashSave(cwd: string, message?: string, stagedOnly = false): Promise<void> {
 		const args = ['stash', 'push'];
+		// `--staged` stashes exactly the index (works at hunk level, so partially
+		// staged files are handled precisely). Requires Git >= 2.35.
+		if (stagedOnly) args.push('--staged');
 		if (message) {
 			assertSafeGitCommitMessage(message);
 			args.push('-m', message);
 		}
 		const result = await execGit(args, cwd);
 		if (result.exitCode !== 0) {
+			// Git < 2.35 doesn't know `--staged`; surface an actionable message
+			// instead of the raw "unknown option" / "usage:" noise.
+			if (stagedOnly && /unknown option|--staged|usage:/i.test(result.stderr)) {
+				throw new Error(
+					'Stashing staged changes only requires Git 2.35 or newer. Please update Git to use this option.'
+				);
+			}
 			throw new Error(`git stash failed: ${result.stderr}`);
 		}
 	}
