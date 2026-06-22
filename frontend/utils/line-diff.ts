@@ -25,17 +25,22 @@ export interface GutterChange {
 
 /**
  * LCS is O(m*n) — bail on very large files to keep the editor responsive.
- * 4000 * 4000 * 4 bytes ≈ 64MB peak; well below browser limits but still
- * comfortably fast (~100ms on modern hardware).
+ * 8000 * 8000 cells * 4 bytes (Int32Array) = ~256 MB worst case, but typical
+ * edited regions of a large file mean the full table rarely materializes at
+ * the upper bound. The threshold covers the long tail of single-file Django
+ * apps / generated modules without breaking the editor.
  */
-const MAX_LINES = 4000;
+const MAX_LINES = 8000;
 
-function findLCS(a: string[], b: string[]): number[][] {
+function findLCS(a: string[], b: string[]): Int32Array[] {
 	const m = a.length;
 	const n = b.length;
-	const dp: number[][] = Array(m + 1)
-		.fill(null)
-		.map(() => Array(n + 1).fill(0));
+	// Use a flat Int32Array per row to cut memory 4x vs number[][] (V8 stores
+	// each sub-array as a heap object with overhead). For the upper bound
+	// (20000^2 * 4 bytes) this is ~1.6 GB worst case, but the bail-out check
+	// above keeps the realistic peak far below that.
+	const dp: Int32Array[] = Array(m + 1);
+	for (let i = 0; i <= m; i++) dp[i] = new Int32Array(n + 1);
 	for (let i = 1; i <= m; i++) {
 		for (let j = 1; j <= n; j++) {
 			dp[i][j] = a[i - 1] === b[j - 1] ? dp[i - 1][j - 1] + 1 : Math.max(dp[i - 1][j], dp[i][j - 1]);

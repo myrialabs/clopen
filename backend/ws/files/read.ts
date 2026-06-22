@@ -19,6 +19,7 @@ import {
 } from '../../files/file-reading';
 import { handlePathBrowsing } from '../../files/path-browsing';
 import { gitService } from '../../git/git-service';
+import { findRepoForFile } from '../../snapshot/gitignore';
 import { projectQueries } from '../../database/queries/project-queries';
 import { isAbsolute, relative } from 'node:path';
 import { requireProjectAccess } from '../access';
@@ -207,7 +208,15 @@ export const readHandler = createRouter()
 		// Normalize path separators for git
 		relativePath = relativePath.replace(/\\/g, '/');
 
-		const content = await gitService.getFileAtRef(project.path, ref, relativePath);
+		// Route to the nested repo that owns the file (if any) — the outer
+		// repo's `git show HEAD:file` returns nothing for files tracked
+		// inside a nested repo and gitignored by the parent, so the editor
+		// gutter diff would silently go empty for subrepo files without this.
+		const repo = await findRepoForFile(project.path, relativePath);
+		const cwd = repo?.repoPath ?? project.path;
+		const gitFilePath = repo?.relativeFilePath ?? relativePath;
+
+		const content = await gitService.getFileAtRef(cwd, ref, gitFilePath);
 		return { content, ref };
 	})
 

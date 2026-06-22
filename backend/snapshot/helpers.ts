@@ -1,6 +1,8 @@
 import { snapshotQueries, messageQueries, checkpointQueries } from '../database/queries';
+import { blobStore } from './blob-store';
 import { debug } from '$shared/utils/logger';
 import { loadMessage } from '$shared/utils/message-formatter';
+import { calculateFileChangeStats } from '$shared/utils/diff-calculator';
 import type { DatabaseMessage } from '$shared/types/database/schema';
 import type { UnifiedMessage, UserMessage } from '$shared/types/unified';
 
@@ -320,27 +322,49 @@ export function isDescendant(
  * The snapshot associated with the checkpoint message itself contains the stats
  * (file changes the assistant made in response to this user message).
  */
-export function getCheckpointFileStats(
+export async function getCheckpointFileStats(
 	checkpointMsg: DatabaseMessage
-): { filesChanged: number; insertions: number; deletions: number } {
+): Promise<{ filesChanged: number; insertions: number; deletions: number }> {
 	const snapshot = snapshotQueries.getByMessageId(checkpointMsg.id);
 	if (!snapshot) {
 		return { filesChanged: 0, insertions: 0, deletions: 0 };
 	}
 
 	let filesChanged = snapshot.files_changed || 0;
-	const insertions = snapshot.insertions || 0;
-	const deletions = snapshot.deletions || 0;
+	let insertions = snapshot.insertions || 0;
+	let deletions = snapshot.deletions || 0;
 
-	// Try to get a more accurate file count from session_changes
-	if (snapshot.session_changes) {
+	// Fallback for snapshots captured before nested-repo files were tracked:
+	// `session_changes` may be non-empty (with nested-repo entries) but
+	// `files_changed`/`insertions`/`deletions` are 0 because the capture
+	// loop never saw those files. Recompute from the blob store so the
+	// Restore Checkpoint UI shows the real numbers retroactively.
+	if (snapshot.session_changes && (insertions === 0 || deletions === 0)) {
 		try {
-			const changes = JSON.parse(snapshot.session_changes as string);
+			const changes = JSON.parse(snapshot.session_changes as string) as Record<string, { oldHash: string; newHash: string }>;
 			const changeCount = Object.keys(changes).length;
 			if (changeCount > 0) {
-				filesChanged = changeCount;
+				const previousSnapshot: Record<string, Buffer> = {};
+				const currentSnapshot: Record<string, Buffer> = {};
+				let allBlobsOk = true;
+				for (const [filepath, entry] of Object.entries(changes)) {
+					if (entry.oldHash) {
+						try { previousSnapshot[filepath] = await blobStore.readBlob(entry.oldHash); }
+						catch { allBlobsOk = false; break; }
+					}
+					if (entry.newHash) {
+						try { currentSnapshot[filepath] = await blobStore.readBlob(entry.newHash); }
+						catch { allBlobsOk = false; break; }
+					}
+				}
+				if (allBlobsOk) {
+					const recomputed = calculateFileChangeStats(previousSnapshot, currentSnapshot);
+					filesChanged = recomputed.filesChanged;
+					insertions = recomputed.insertions;
+					deletions = recomputed.deletions;
+				}
 			}
-		} catch { /* use files_changed from DB */ }
+		} catch { /* use stored values */ }
 	}
 
 	return { filesChanged, insertions, deletions };

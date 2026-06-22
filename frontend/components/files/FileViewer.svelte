@@ -382,9 +382,9 @@
 
 	function colorForChangeType(type: GutterChange['type']): string {
 		if (isDark) {
-			return type === 'added' ? '#047857' : type === 'modified' ? '#b45309' : '#b91c1c';
+			return type === 'added' ? '#047857' : type === 'modified' ? '#2563eb' : '#b91c1c';
 		}
-		return type === 'added' ? '#10b981' : type === 'modified' ? '#f59e0b' : '#ef4444';
+		return type === 'added' ? '#10b981' : type === 'modified' ? '#3b82f6' : '#ef4444';
 	}
 
 	function updateGutterDecorations() {
@@ -451,6 +451,8 @@
 		'<svg viewBox="0 0 16 16" width="14" height="14" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><polyline points="3 6 8 11 13 6"/></svg>';
 	const ICON_CLOSE =
 		'<svg viewBox="0 0 16 16" width="14" height="14" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><line x1="4" y1="4" x2="12" y2="12"/><line x1="12" y1="4" x2="4" y2="12"/></svg>';
+	const ICON_DISCARD =
+		'<svg viewBox="0 0 16 16" width="14" height="14" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><path d="M2 8a6 6 0 1 0 1.76-4.24"/><polyline points="2 2 2 5 5 5"/></svg>';
 
 	// Buttons inside view zones must intercept pointerdown FIRST — Monaco's
 	// cursor-placement uses pointer events, which fire before mousedown, so
@@ -477,27 +479,42 @@
 		inner.className = 'git-diff-peek-inner';
 		root.appendChild(inner);
 
+		// Old (HEAD) lines — red background, shown for deletions and modifications
 		if (change.oldLines.length > 0) {
 			const body = document.createElement('div');
-			body.className = 'git-diff-peek-body';
-			// Inner content track is sized to max-content so it widens past
-			// the body when any row's text overflows — that's what makes the
-			// body's overflow:auto produce a horizontal scrollbar. Block-level
-			// row children alone fill the body width and never trigger scroll.
+			body.className = 'git-diff-peek-body git-diff-peek-body-old';
 			const bodyContent = document.createElement('div');
 			bodyContent.className = 'git-diff-peek-body-content';
 			body.appendChild(bodyContent);
 			change.oldLines.forEach((line) => {
 				const row = document.createElement('div');
-				row.className = 'git-diff-peek-row';
-				// No line-number column here — line numbers render in the
-				// marginDomNode so the text aligns with the editor's content
-				// area below. Preserve indentation via white-space: pre.
+				row.className = 'git-diff-peek-row git-diff-peek-row-old';
 				row.textContent = line.length > 0 ? line : '\u00A0';
 				bodyContent.appendChild(row);
 			});
 			inner.appendChild(body);
-		} else {
+		}
+
+		// New (current) lines — green background, shown for additions and modifications
+		if (change.newLines.length > 0) {
+			const body = document.createElement('div');
+			body.className = 'git-diff-peek-body git-diff-peek-body-new';
+			const bodyContent = document.createElement('div');
+			bodyContent.className = 'git-diff-peek-body-content';
+			body.appendChild(bodyContent);
+			change.newLines.forEach((line) => {
+				const row = document.createElement('div');
+				row.className = 'git-diff-peek-row git-diff-peek-row-new';
+				row.textContent = line.length > 0 ? line : '\u00A0';
+				bodyContent.appendChild(row);
+			});
+			inner.appendChild(body);
+		}
+
+		// Pure addition with no old lines — the new lines already render above,
+		// so only show the empty hint when there are truly no lines at all
+		// (shouldn't happen in practice, but guards against empty hunks).
+		if (change.oldLines.length === 0 && change.newLines.length === 0) {
 			const empty = document.createElement('div');
 			empty.className = 'git-diff-peek-empty';
 			empty.textContent = 'No previous content — these lines are new since the last commit.';
@@ -511,17 +528,83 @@
 		const margin = document.createElement('div');
 		margin.className = 'git-diff-peek-margin';
 
-		// padding-top on .git-diff-peek-margin reserves the header-row strip
-		// where the overlay widget sits, so the first line-number row aligns
-		// with the first body row on the content side.
+		// Old line numbers (HEAD) — rendered for deletions and modifications
 		change.oldLines.forEach((_, idx) => {
 			const row = document.createElement('div');
-			row.className = 'git-diff-peek-margin-row';
+			row.className = 'git-diff-peek-margin-row git-diff-peek-margin-row-old';
 			row.textContent = String(change.oldStartLine + idx);
 			margin.appendChild(row);
 		});
 
+		// New line numbers (current) — rendered for additions and modifications.
+		// For pure additions oldStartLine is 0, so we use startLine (1-based).
+		if (change.newLines.length > 0) {
+			change.newLines.forEach((_, idx) => {
+				const row = document.createElement('div');
+				row.className = 'git-diff-peek-margin-row git-diff-peek-margin-row-new';
+				row.textContent = String(change.startLine + idx);
+				margin.appendChild(row);
+			});
+		}
+
 		return margin;
+	}
+
+	// Discard (revert) a single hunk back to its HEAD content. Uses Monaco's
+	// executeEdits so the change is undoable (Ctrl+Z) and propagates through
+	// onDidChangeModelContent → bind:value → handleContentChange, which closes
+	// the peek and refreshes the gutter automatically.
+	function discardHunk(change: GutterChange) {
+		const editorInstance = monacoEditorRef?.getEditor();
+		if (!editorInstance) return;
+		const model = editorInstance.getModel();
+		if (!model) return;
+
+		editorInstance.pushUndoStop();
+
+		if (change.type === 'added') {
+			// Remove the added lines entirely, including the trailing newline
+			// so we don't leave a blank line behind. If the hunk ends on the
+			// last line of the file there is no trailing newline to consume.
+			const lastLine = model.getLineCount();
+			const range =
+				change.endLine < lastLine
+					? {
+						startLineNumber: change.startLine,
+						startColumn: 1,
+						endLineNumber: change.endLine + 1,
+						endColumn: 1
+					}
+					: {
+						startLineNumber: change.startLine,
+						startColumn: 1,
+						endLineNumber: change.endLine,
+						endColumn: model.getLineMaxColumn(change.endLine)
+					};
+			editorInstance.executeEdits('discard-hunk', [{ range, text: '' }]);
+		} else if (change.type === 'modified') {
+			// Replace current lines with HEAD's original lines
+			const range = {
+				startLineNumber: change.startLine,
+				startColumn: 1,
+				endLineNumber: change.endLine,
+				endColumn: model.getLineMaxColumn(change.endLine)
+			};
+			const text = change.oldLines.join('\n');
+			editorInstance.executeEdits('discard-hunk', [{ range, text }]);
+		} else if (change.type === 'deleted') {
+			// Re-insert the deleted lines before the anchor line
+			const range = {
+				startLineNumber: change.startLine,
+				startColumn: 1,
+				endLineNumber: change.startLine,
+				endColumn: 1
+			};
+			const text = change.oldLines.join('\n') + '\n';
+			editorInstance.executeEdits('discard-hunk', [{ range, text }]);
+		}
+
+		editorInstance.pushUndoStop();
 	}
 
 	// The peek's header is rendered as a Monaco overlay widget instead of
@@ -567,6 +650,15 @@
 		nextBtn.disabled = total <= 1;
 		attachPeekButton(nextBtn, () => navigatePeek(1));
 		actions.appendChild(nextBtn);
+
+		const discardBtn = document.createElement('button');
+		discardBtn.className = 'git-diff-peek-discard-btn';
+		discardBtn.type = 'button';
+		discardBtn.title = 'Discard this change (revert to HEAD)';
+		discardBtn.setAttribute('aria-label', 'Discard this change');
+		discardBtn.innerHTML = `${ICON_DISCARD}<span>Discard</span>`;
+		attachPeekButton(discardBtn, () => discardHunk(change));
+		actions.appendChild(discardBtn);
 
 		const closeBtn = document.createElement('button');
 		closeBtn.className = 'git-diff-peek-iconbtn git-diff-peek-close';
@@ -661,7 +753,7 @@
 		// editor. Trap the event with preventDefault and drive the peek's
 		// own scroll programmatically so the body scrolls under the cursor
 		// instead of the editor below.
-		const bodyEl = domNode.querySelector<HTMLElement>('.git-diff-peek-body');
+		const innerEl = domNode.querySelector<HTMLElement>('.git-diff-peek-inner');
 		const wheelHandler = (e: WheelEvent) => {
 			const target = e.target as Node | null;
 			if (!target) return;
@@ -673,9 +765,13 @@
 				return;
 			e.stopPropagation();
 			e.preventDefault();
-			if (bodyEl) {
-				bodyEl.scrollLeft += e.deltaX;
-				bodyEl.scrollTop += e.deltaY;
+			if (innerEl) {
+				innerEl.scrollTop += e.deltaY;
+				// Sync the margin (line numbers) so it scrolls in lockstep
+				// with the body. They live in separate clipped DOM trees
+				// (Monaco splits view-zone content and margin), so a single
+				// overflow container can't span both.
+				marginDomNode.scrollTop = innerEl.scrollTop;
 			}
 		};
 		document.addEventListener('wheel', wheelHandler, { capture: true, passive: false });
@@ -691,9 +787,16 @@
 		const fontSize = Math.round(settings.fontSize * 0.9);
 		const editorLineHeight = Math.round(fontSize * 1.5);
 		const HEADER_PX = 28;
-		const contentLines = change.oldLines.length;
-		const contentPx =
-			contentLines > 0 ? contentLines * editorLineHeight : editorLineHeight;
+		// Cap each section independently at 40% of the editor viewport so a
+		// massive hunk on one side doesn't bury the other side or the editor.
+		// Each body is scrollable (overflow:auto) so long hunks are still
+		// reachable — just capped in height. Short sections stay auto (their
+		// natural height), so a 2-line change renders at 2 lines, not 40%.
+		const layout = editorInstance.getLayoutInfo();
+		const sectionMaxPx = Math.floor(layout.height * 0.4);
+		const oldPx = Math.min(change.oldLines.length * editorLineHeight, sectionMaxPx);
+		const newPx = Math.min(change.newLines.length * editorLineHeight, sectionMaxPx);
+		const contentPx = (oldPx + newPx) || editorLineHeight;
 		const heightInPx = HEADER_PX + contentPx + 6;
 
 		const widgetId = `git-diff-peek-overlay-${change.startLine}-${Date.now()}`;
@@ -1401,7 +1504,7 @@
 		margin-left: 3px;
 	}
 	:global(.git-gutter-modified) {
-		background-color: #f59e0b;
+		background-color: #3b82f6;
 		width: 3px !important;
 		margin-left: 3px;
 	}
@@ -1418,7 +1521,7 @@
 		background-color: #059669;
 	}
 	:global(.dark .git-gutter-modified) {
-		background-color: #d97706;
+		background-color: #2563eb;
 	}
 	:global(.dark .git-gutter-deleted) {
 		border-top-color: #dc2626;
@@ -1479,12 +1582,9 @@
 		background-color: #ffffff;
 		border-top: 1px solid #d4d4d4;
 		border-bottom: 1px solid #d4d4d4;
-		/* padding-top reserves space for the overlay-widget header that sits
-		   above the body; combined with the matching padding-top on the
-		   margin column, the body's first row and the margin's first row
-		   align at the same Y. */
 		padding-top: 28px;
-		overflow: hidden;
+		overflow-y: auto;
+		overflow-x: hidden;
 		box-sizing: border-box;
 		pointer-events: auto;
 	}
@@ -1522,6 +1622,62 @@
 		color: #c9d1d9;
 		background-color: #161b22;
 		border-bottom-color: #30363d;
+	}
+
+	/* Type-tinted headers — green for added, red for deleted, blue for
+	   modified. The gutter bar already uses the same hues; mirroring them
+	   on the header makes the peek's type identifiable at a glance. */
+	:global(.git-diff-peek-added .git-diff-peek-overlay-header) {
+		background-color: #ecfdf5;
+		border-bottom-color: #a7f3d0;
+		color: #047857;
+	}
+	:global(.dark .git-diff-peek-added .git-diff-peek-overlay-header) {
+		background-color: #052e2b;
+		border-bottom-color: #065f46;
+		color: #6ee7b7;
+	}
+	:global(.git-diff-peek-deleted .git-diff-peek-overlay-header) {
+		background-color: #fef2f2;
+		border-bottom-color: #fecaca;
+		color: #b91c1c;
+	}
+	:global(.dark .git-diff-peek-deleted .git-diff-peek-overlay-header) {
+		background-color: #2b0a0a;
+		border-bottom-color: #7f1d1d;
+		color: #fca5a5;
+	}
+	:global(.git-diff-peek-added .git-diff-peek-inner) {
+		border-top-color: #10b981;
+		border-bottom-color: #10b981;
+	}
+	:global(.dark .git-diff-peek-added .git-diff-peek-inner) {
+		border-top-color: #059669;
+		border-bottom-color: #059669;
+	}
+	:global(.git-diff-peek-added .git-diff-peek-margin) {
+		border-top-color: #10b981;
+		border-bottom-color: #10b981;
+	}
+	:global(.dark .git-diff-peek-added .git-diff-peek-margin) {
+		border-top-color: #059669;
+		border-bottom-color: #059669;
+	}
+	:global(.git-diff-peek-deleted .git-diff-peek-inner) {
+		border-top-color: #ef4444;
+		border-bottom-color: #ef4444;
+	}
+	:global(.dark .git-diff-peek-deleted .git-diff-peek-inner) {
+		border-top-color: #dc2626;
+		border-bottom-color: #dc2626;
+	}
+	:global(.git-diff-peek-deleted .git-diff-peek-margin) {
+		border-top-color: #ef4444;
+		border-bottom-color: #ef4444;
+	}
+	:global(.dark .git-diff-peek-deleted .git-diff-peek-margin) {
+		border-top-color: #dc2626;
+		border-bottom-color: #dc2626;
 	}
 
 	:global(.git-diff-peek-overlay-title) {
@@ -1568,22 +1724,82 @@
 		cursor: default;
 	}
 
+	:global(.git-diff-peek-discard-btn) {
+		display: inline-flex;
+		align-items: center;
+		gap: 4px;
+		padding: 0 8px;
+		height: 22px;
+		background: transparent;
+		border: none;
+		border-radius: 4px;
+		color: inherit;
+		cursor: pointer;
+		opacity: 0.65;
+		font-size: 11px;
+		white-space: nowrap;
+		pointer-events: auto;
+		z-index: 1;
+	}
+	:global(.git-diff-peek-discard-btn:hover) {
+		background-color: rgba(0, 0, 0, 0.08);
+		opacity: 1;
+	}
+	:global(.dark .git-diff-peek-discard-btn:hover) {
+		background-color: rgba(255, 255, 255, 0.12);
+	}
+
 	:global(.git-diff-peek-body) {
-		flex: 1;
+		flex: none;
 		min-width: 0;
-		overflow: auto;
-		background-color: rgba(248, 81, 73, 0.08);
+		overflow: hidden;
 		color: #333;
-		/* Monaco sets user-select:none on the editor container, which inherits
-		   into the view zone and disables text highlighting inside the peek.
-		   Override here so the user can select diff text normally. */
 		-webkit-user-select: text;
 		user-select: text;
 		cursor: text;
 	}
-	:global(.dark .git-diff-peek-body) {
-		background-color: rgba(248, 81, 73, 0.14);
+	:global(.git-diff-peek-body-old) {
+		background-color: rgba(239, 68, 68, 0.10);
+	}
+	:global(.git-diff-peek-body-new) {
+		background-color: rgba(16, 185, 129, 0.10);
+	}
+	:global(.dark .git-diff-peek-body-old) {
+		background-color: rgba(239, 68, 68, 0.16);
 		color: #e6edf3;
+	}
+	:global(.dark .git-diff-peek-body-new) {
+		background-color: rgba(16, 185, 129, 0.16);
+		color: #e6edf3;
+	}
+
+	/* Modified peek — blue tint on the inner frame to signal that both
+	   additions and deletions are present in this hunk. */
+	:global(.git-diff-peek-modified .git-diff-peek-inner) {
+		border-top-color: #3b82f6;
+		border-bottom-color: #3b82f6;
+	}
+	:global(.dark .git-diff-peek-modified .git-diff-peek-inner) {
+		border-top-color: #2563eb;
+		border-bottom-color: #2563eb;
+	}
+	:global(.git-diff-peek-modified .git-diff-peek-overlay-header) {
+		background-color: #eff6ff;
+		border-bottom-color: #bfdbfe;
+		color: #1e40af;
+	}
+	:global(.dark .git-diff-peek-modified .git-diff-peek-overlay-header) {
+		background-color: #172554;
+		border-bottom-color: #1e3a8a;
+		color: #93c5fd;
+	}
+	:global(.git-diff-peek-modified .git-diff-peek-margin) {
+		border-top-color: #3b82f6;
+		border-bottom-color: #3b82f6;
+	}
+	:global(.dark .git-diff-peek-modified .git-diff-peek-margin) {
+		border-top-color: #2563eb;
+		border-bottom-color: #2563eb;
 	}
 
 	/* Content track inside the scroll viewport. width:max-content shrink-wraps
@@ -1618,7 +1834,6 @@
 		font-family: 'SF Mono', Monaco, Inconsolata, 'Roboto Mono', Consolas, 'Courier New',
 			monospace;
 		font-size: var(--peek-font-size, 12px);
-		background-color: rgba(248, 81, 73, 0.08);
 		color: rgba(0, 0, 0, 0.4);
 		user-select: none;
 		overflow: hidden;
@@ -1628,8 +1843,19 @@
 		border-bottom: 1px solid #d4d4d4;
 		padding-top: 28px;
 	}
+	:global(.git-diff-peek-margin-row-old) {
+		background-color: rgba(239, 68, 68, 0.10);
+	}
+	:global(.git-diff-peek-margin-row-new) {
+		background-color: rgba(16, 185, 129, 0.10);
+	}
+	:global(.dark .git-diff-peek-margin-row-old) {
+		background-color: rgba(239, 68, 68, 0.16);
+	}
+	:global(.dark .git-diff-peek-margin-row-new) {
+		background-color: rgba(16, 185, 129, 0.16);
+	}
 	:global(.dark .git-diff-peek-margin) {
-		background-color: rgba(248, 81, 73, 0.14);
 		color: rgba(255, 255, 255, 0.35);
 		border-top-color: #30363d;
 		border-bottom-color: #30363d;
