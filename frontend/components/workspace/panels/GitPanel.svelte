@@ -672,6 +672,90 @@
 		}
 	}
 
+	// Push the current branch from the branch list. If the branch has
+	// diverged from the remote (ahead AND behind, e.g. after undoing a
+	// pushed commit), a normal push would be rejected — offer a force
+	// push (with lease) instead, gated behind a confirmation modal.
+	async function handlePushFromBranchList(branch: GitBranch) {
+		if (!projectId) return;
+		const isDiverged = branch.isCurrent
+			&& pushedBranchNames.has(branch.name)
+			&& (branchInfo?.ahead ?? 0) > 0
+			&& (branchInfo?.behind ?? 0) > 0;
+		if (isDiverged) {
+			requestConfirm({
+				title: 'Force Push',
+				message: `"${branch.name}" has diverged from the remote (${branchInfo?.ahead} ahead, ${branchInfo?.behind} behind). A normal push would be rejected. Force push (with lease) to overwrite the remote?`,
+				type: 'warning',
+				confirmText: 'Force Push',
+				onConfirm: () => void handlePushBranchForce(branch.name)
+			});
+		} else {
+			void handlePushBranch(branch.name);
+		}
+	}
+
+	async function handlePushBranchForce(branch: string) {
+		if (!projectId) return;
+		pushingBranch = branch;
+		try {
+			const result = await ws.http('git:push-advanced', {
+				projectId,
+				mode: 'force-lease',
+				remote: selectedRemote,
+				branch
+			}) as { success: boolean; message: string };
+			if (result.success) {
+				await loadBranches();
+				await loadTags();
+				showInfo('Force Pushed', `Force-pushed ${branch} to ${selectedRemote}.`);
+			} else {
+				showError('Force Push Failed', result.message);
+			}
+		} catch (err) {
+			debug.error('git', 'Force push from branch list failed:', err);
+			showError('Force Push Failed', err instanceof Error ? err.message : 'Unknown error');
+		} finally {
+			pushingBranch = null;
+		}
+	}
+
+	// Load all per-file diffs for a commit and open them as tabs so the
+	// user can browse every changed file from the branch list without
+	// expanding the commit first.
+	async function handleViewCommitDiffs(commit: GitCommit) {
+		if (!projectId) return;
+		try {
+			const diffs = await ws.http('git:diff-commit', { projectId, commitHash: commit.hash }) as GitFileDiff[];
+			if (!diffs || diffs.length === 0) {
+				showInfo('No Changes', 'This commit has no file changes.');
+				return;
+			}
+			const tabs: DiffTab[] = diffs.map(file => {
+				const path = file.newPath || file.oldPath;
+				const fileName = path.split(/[\\/]/).pop() || path;
+				return {
+					id: `commit:${commit.hash}:${path}`,
+					filePath: path,
+					fileName,
+					section: 'commit',
+					diff: file,
+					diffs: [],
+					isLoading: false,
+					commitHash: commit.hash,
+					status: file.status
+				};
+			});
+			openTabs = tabs;
+			activeTabId = tabs[0]?.id ?? null;
+			if (!isTwoColumnMode) viewMode = 'diff';
+			markGitUiDirty();
+		} catch (err) {
+			debug.error('git', 'Failed to load commit diffs:', err);
+			showError('Diff Failed', err instanceof Error ? err.message : 'Unknown error');
+		}
+	}
+
 	async function handleCherryPick(hash: string) {
 		if (!projectId) return;
 		try {
@@ -1624,6 +1708,50 @@
 				showError('Undo Failed', err instanceof Error ? err.message : 'Unknown error');
 			}
 		});
+	}
+
+	// Undo the HEAD commit of the current branch from the branch list.
+	// Soft-reset keeps the changes staged and restores the commit message
+	// into the draft input so the user can tweak and re-commit. If the
+	// branch is already pushed (ahead === 0 on a tracked branch), warn that
+	// a force push will be needed to update the remote afterwards.
+	async function handleUndoHeadCommit(commit: GitCommit, branch: GitBranch) {
+		const isPushed = pushedBranchNames.has(branch.name) && branch.ahead === 0;
+		const doUndo = async () => {
+			await runMore(async () => {
+				try {
+					await ws.http('git:undo-commit', { projectId, mode: 'soft' });
+					gitDraft.commitMessage = commit.message;
+					await loadAll();
+					if (branchCommitState[branch.name]) {
+						branchCommitState = {
+							...branchCommitState,
+							[branch.name]: { commits: [], isLoading: false, hasMore: true, skip: 0 }
+						};
+						await loadBranchCommits(branch.name, true);
+					}
+					if (activeView === 'log') await loadLog(true);
+					showInfo(
+						'Commit Undone',
+						'Changes kept staged. Commit message restored to the input — edit and re-commit when ready.'
+					);
+				} catch (err) {
+					debug.error('git', 'Undo HEAD commit failed:', err);
+					showError('Undo Failed', err instanceof Error ? err.message : 'Unknown error');
+				}
+			});
+		};
+		if (isPushed) {
+			requestConfirm({
+				title: 'Undo Pushed Commit',
+				message: `This commit has been pushed to the remote. Undoing it locally will diverge "${branch.name}" from the remote — you'll need to force push to update it later. Continue?`,
+				type: 'warning',
+				confirmText: 'Undo & Force Push Later',
+				onConfirm: () => void doUndo()
+			});
+		} else {
+			void doUndo();
+		}
 	}
 
 	async function revertLast() {
@@ -2623,13 +2751,8 @@ ${bodies}`;
 											{/if}
 											<button type="button" class="pointer-events-auto flex items-center justify-center w-7 h-7 rounded-md text-slate-400 hover:bg-blue-500/10 hover:text-blue-500 transition-colors bg-transparent border-none cursor-pointer" onclick={(e) => { e.stopPropagation(); mergeBranch(branch.name); }} title="Merge into current branch"><Icon name="lucide:git-merge" class="w-3.5 h-3.5" /></button>
 											<button type="button" class="pointer-events-auto flex items-center justify-center w-7 h-7 rounded-md text-slate-400 hover:bg-red-500/10 hover:text-red-500 transition-colors bg-transparent border-none cursor-pointer" onclick={(e) => { e.stopPropagation(); deleteBranch(branch.name); }} title="Delete branch"><Icon name="lucide:trash-2" class="w-3.5 h-3.5" /></button>
-										</div>
-										{/if}
-										<!-- Push button: only for the active branch when it has not
-										     yet been pushed to the remote -->
-										{#if branch.isCurrent && !pushedBranchNames.has(branch.name)}
-											<button type="button" class="ml-1 flex items-center justify-center w-7 h-7 rounded-md text-slate-400 hover:bg-emerald-500/10 hover:text-emerald-500 transition-colors bg-transparent border-none cursor-pointer shrink-0" onclick={(e) => { e.stopPropagation(); handlePushBranch(branch.name); }} title="Push branch to remote"><Icon name="lucide:upload" class="w-3.5 h-3.5" /></button>
-										{/if}
+									</div>
+									{/if}
 									</div>
 									{#if isExpanded}
 										<div class="ml-5 mt-0.5 mb-1 border-l border-slate-200 dark:border-slate-700 pl-2 space-y-0.5">
@@ -2638,32 +2761,45 @@ ${bodies}`;
 											{:else if !commitState || commitState.commits.length === 0}
 												<div class="py-2 text-xs text-slate-400">No commits</div>
 											{:else}
-												{#each commitState.commits as commit (commit.hash)}
-													{@const commitExpanded = expandedBranchCommits.has(commit.hash)}
-													{@const filesState = branchCommitFileState[commit.hash]}
-													{@const commitRelativeDate = formatRelativeTime(commit.date)}
-													<div>
-														<div
-															class="group/commit relative flex items-center gap-1.5 w-full px-2 py-1.5 rounded-md hover:bg-slate-100 dark:hover:bg-slate-800/60 transition-colors cursor-pointer"
-															role="button"
-															tabindex="0"
-															onclick={() => toggleBranchCommitExpanded(commit.hash)}
-															onkeydown={(e) => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); toggleBranchCommitExpanded(commit.hash); } }}
-														>
-															<Icon name={commitExpanded ? 'lucide:chevron-down' : 'lucide:chevron-right'} class="w-3 h-3 shrink-0 text-slate-400" />
-															<div class="flex-1 min-w-0 flex flex-col justify-center overflow-hidden pr-2 {branch.name !== branchInfo?.current ? 'group-hover/commit:pr-9' : ''} transition-[padding] duration-150">
-																<div class="flex min-w-0 items-center gap-2">
-																	<span class="flex-1 min-w-0 text-sm text-slate-700 dark:text-slate-300 leading-tight truncate" title={commit.message}>{commit.message}</span>
-																	{#if commitRelativeDate}<span class="text-3xs text-slate-400 shrink-0">{commitRelativeDate}</span>{/if}
-																</div>
-																<div class="flex min-w-0 items-center gap-1.5 mt-0.5">
-																	<button type="button" class="font-mono text-xs text-violet-600 dark:text-violet-400 hover:text-violet-800 dark:hover:text-violet-300 bg-transparent border-none cursor-pointer p-0 shrink-0 transition-colors" onclick={(e) => copyCommitHash(commit.hash, e)} title="Copy commit hash">{commit.hashShort}</button>
-																	{#if commit.author}<span class="flex-1 min-w-0 text-xs text-slate-500 truncate">{commit.author}</span>{/if}
-																</div>
+										{#each commitState.commits as commit, i (commit.hash)}
+											{@const commitExpanded = expandedBranchCommits.has(commit.hash)}
+											{@const filesState = branchCommitFileState[commit.hash]}
+											{@const commitRelativeDate = formatRelativeTime(commit.date)}
+											{@const showHeadPush = branch.isCurrent && i === 0 && (!pushedBranchNames.has(branch.name) || (branchInfo?.ahead ?? 0) > 0)}
+											{@const headActionCount = !branch.isCurrent ? 2 : (i === 0 ? (showHeadPush || pushingBranch === branch.name ? 3 : 2) : 1)}
+											<div>
+													<div
+														class="group/commit relative flex items-center gap-1.5 w-full px-2 py-1.5 rounded-md hover:bg-slate-100 dark:hover:bg-slate-800/60 transition-colors cursor-pointer"
+														role="button"
+														tabindex="0"
+														onclick={() => toggleBranchCommitExpanded(commit.hash)}
+														onkeydown={(e) => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); toggleBranchCommitExpanded(commit.hash); } }}
+													>
+														<Icon name={commitExpanded ? 'lucide:chevron-down' : 'lucide:chevron-right'} class="w-3 h-3 shrink-0 text-slate-400" />
+														<div class="flex-1 min-w-0 flex flex-col justify-center overflow-hidden pr-2 {headActionCount === 1 ? 'group-hover/commit:pr-9' : headActionCount === 2 ? 'group-hover/commit:pr-16' : 'group-hover/commit:pr-24'} transition-[padding] duration-150">
+															<div class="flex min-w-0 items-center gap-2">
+																<span class="flex-1 min-w-0 text-sm text-slate-700 dark:text-slate-300 leading-tight truncate" title={commit.message}>{commit.message}</span>
+																{#if commitRelativeDate}<span class="text-3xs text-slate-400 shrink-0">{commitRelativeDate}</span>{/if}
 															</div>
-															{#if branch.name !== branchInfo?.current}
-																<button type="button" class="absolute right-1.5 top-1/2 -translate-y-1/2 flex items-center justify-center w-7 h-7 rounded-md text-slate-400 hover:text-emerald-500 hover:bg-emerald-500/10 transition-colors bg-transparent border-none cursor-pointer shrink-0 opacity-0 group-hover/commit:opacity-100" onclick={(e) => { e.stopPropagation(); handleCherryPick(commit.hash); }} title="Cherry-pick this commit onto {branchInfo?.current}"><Icon name="lucide:git-fork" class="w-4 h-4" /></button>
+															<div class="flex min-w-0 items-center gap-1.5 mt-0.5">
+																<button type="button" class="font-mono text-xs text-violet-600 dark:text-violet-400 hover:text-violet-800 dark:hover:text-violet-300 bg-transparent border-none cursor-pointer p-0 shrink-0 transition-colors" onclick={(e) => copyCommitHash(commit.hash, e)} title="Copy commit hash">{commit.hashShort}</button>
+																{#if commit.author}<span class="flex-1 min-w-0 text-xs text-slate-500 truncate">{commit.author}</span>{/if}
+															</div>
+														</div>
+													<div class="absolute right-1.5 top-1/2 -translate-y-1/2 flex items-center gap-0.5 shrink-0 opacity-0 group-hover/commit:opacity-100">
+														<button type="button" class="flex items-center justify-center w-7 h-7 rounded-md text-slate-400 hover:text-violet-500 hover:bg-violet-500/10 transition-colors bg-transparent border-none cursor-pointer" onclick={(e) => { e.stopPropagation(); handleViewCommitDiffs(commit); }} title="View all file diffs in this commit"><Icon name="lucide:file-diff" class="w-4 h-4" /></button>
+														{#if !branch.isCurrent}
+															<button type="button" class="flex items-center justify-center w-7 h-7 rounded-md text-slate-400 hover:text-emerald-500 hover:bg-emerald-500/10 transition-colors bg-transparent border-none cursor-pointer" onclick={(e) => { e.stopPropagation(); handleCherryPick(commit.hash); }} title="Cherry-pick this commit onto {branchInfo?.current}"><Icon name="lucide:git-fork" class="w-4 h-4" /></button>
+														{:else if i === 0}
+															{#if pushingBranch === branch.name}
+																<div class="flex items-center justify-center w-7 h-7 text-slate-400"><Icon name="lucide:loader-circle" class="w-4 h-4 animate-spin" /></div>
+															{:else if showHeadPush}
+																{@const isDiverged = pushedBranchNames.has(branch.name) && (branchInfo?.ahead ?? 0) > 0 && (branchInfo?.behind ?? 0) > 0}
+																<button type="button" class="flex items-center justify-center w-7 h-7 rounded-md text-slate-400 hover:bg-emerald-500/10 hover:text-emerald-500 transition-colors bg-transparent border-none cursor-pointer" onclick={(e) => { e.stopPropagation(); handlePushFromBranchList(branch); }} title={isDiverged ? `Force push ${branch.name} to ${selectedRemote} (diverged: ${branchInfo?.ahead} ahead, ${branchInfo?.behind} behind)` : `Push ${branch.name} to remote`}><Icon name="lucide:upload" class="w-4 h-4 {isDiverged ? 'text-amber-500' : ''}" /></button>
 															{/if}
+															<button type="button" class="flex items-center justify-center w-7 h-7 rounded-md text-slate-400 hover:text-amber-500 hover:bg-amber-500/10 transition-colors bg-transparent border-none cursor-pointer" onclick={(e) => { e.stopPropagation(); handleUndoHeadCommit(commit, branch); }} title="Undo this commit (keep changes staged){pushedBranchNames.has(branch.name) && branch.ahead === 0 ? ' · force push needed after' : ''}"><Icon name="lucide:undo-2" class="w-4 h-4" /></button>
+														{/if}
+													</div>
 														</div>
 														{#if commitExpanded}
 															<div class="ml-5 mb-1 border-l border-slate-200 dark:border-slate-700 pl-2 space-y-0.5">
