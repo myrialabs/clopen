@@ -713,3 +713,63 @@ event protocol. Until then, v1 is intentional.
 
 ---
 
+### 9.18 External (registry) MCP servers — pass auth headers; OAuth is centralized
+
+§9.12 covers the **internal** `clopen-mcp` bridge. **External** servers (the
+ones users install from the registry, stored in `mcp_servers`) are different:
+the engine connects **directly** to a third-party URL or stdio command, and
+many require authentication.
+
+> **Two distinct token systems — don't conflate them.** The internal bridge
+> uses a process-scoped, in-memory **service token** sent only over loopback
+> (`backend/mcp/internal/service-token.ts`, added in #363 to complete #284) —
+> it intentionally does **not** persist. External servers use **third-party
+> credentials** (OAuth tokens / API keys) that **must** persist across
+> restarts, so they live in the DB (`mcp_servers.oauth` / `mcp_servers.headers`).
+> Both happen to ride the same header fields described below.
+
+Two ways a new adapter silently breaks here:
+
+1. **Your `getXxxExternalMcpConfig()` must forward `headers`.** Clopen is the
+   OAuth client for remote servers (`backend/mcp/external/oauth.ts`): it runs
+   discovery + dynamic registration + PKCE, stores tokens in
+   `mcp_servers.oauth`, and `resolveServerRow()` injects
+   `Authorization: Bearer <token>` into each resolved server's `headers`
+   (alongside any static API-key header). **If your builder drops `headers`,
+   the token never reaches the engine and every authenticated server fails
+   with a 401 — invisibly.** Every existing builder forwards them
+   (`getClaude/OpenCode/Copilot/QwenExternalMcpConfig`); mirror that.
+
+2. **Use the engine's real header field — verify it, don't guess.** The field
+   name is per-SDK and a wrong key can make the engine reject its whole
+   config:
+   - OpenCode / Copilot: `headers` (generic map).
+   - Qwen: `headers` alongside `httpUrl`.
+   - **Codex: `http_headers`** (a TOML table) — **not** `bearer_token`.
+     `bearer_token` is rejected for `streamable_http`
+     (`Error loading config.toml: bearer_token is not supported for
+     streamable_http`), which aborts the entire `codex exec` run. This mirrors
+     the internal bridge in `backend/mcp/internal/config.ts`
+     (`getCodexMcpConfig` → `http_headers: { Authorization: 'Bearer …' }`).
+     When in doubt, confirm against the CLI: `codex mcp add --help`.
+
+The token is refreshed at stream start — `stream-manager` calls
+`refreshExpiringExternalOAuth()` before `engine.streamQuery()`, so the
+**synchronous** config builders below it always read a fresh access token.
+Do not add per-adapter OAuth flows or per-engine token stores; the engine just
+receives a bearer header like any other authenticated remote.
+
+Connection health is surfaced engine-agnostically by `mcp:status`
+(`backend/mcp/external/probe.ts`) — it classifies `ok / needs_auth (OAuth) /
+needs_config (missing API key) / unreachable / error`, and the Settings panel
+offers **Authenticate** (OAuth) or **Configure** (API key) accordingly. A new
+adapter needs no work here; the probe talks to the server, not the engine.
+
+What you must NOT do:
+- ❌ Drop `headers` from an external remote config (silent 401s).
+- ❌ Use `bearer_token` for Codex remote MCP — use `http_headers`.
+- ❌ Add a per-engine OAuth flow or token store — Clopen centralizes it and
+  injects the bearer into every engine, Codex included.
+
+---
+

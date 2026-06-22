@@ -19,6 +19,7 @@ import type { CLIMcpServerConfig as QwenMcpServerConfig } from '@qwen-code/sdk';
 import { debug } from '$shared/utils/logger';
 import { mcpServerQueries } from '$backend/database/queries';
 import { externalNamespace } from '../shared/constants';
+import type { McpServerRow } from '$backend/database/queries';
 import type { ResolvedExternalServer } from './types';
 
 /** Codex flattens `mcp_servers.<name>.<key>` config to `--config` flags. */
@@ -27,6 +28,13 @@ type CodexMcpServerConfig = {
 	args?: string[];
 	env?: Record<string, string>;
 	url?: string;
+	/**
+	 * Streamable-HTTP auth headers. Codex rejects an inline `bearer_token` for
+	 * streamable_http but accepts an `http_headers` table (the same field the
+	 * internal `clopen-mcp` bridge uses), so the centrally-managed
+	 * `Authorization: Bearer …` and any static API-key headers reach Codex.
+	 */
+	http_headers?: Record<string, string>;
 };
 
 function parseJson<T>(raw: string, fallback: T): T {
@@ -37,15 +45,18 @@ function parseJson<T>(raw: string, fallback: T): T {
 	}
 }
 
-/**
- * Load every enabled external server from the DB, parsing JSON columns and
- * computing its `<slug>` namespace key.
- */
-export function getEnabledExternalServers(): ResolvedExternalServer[] {
-	// `mcp_servers` also holds INTERNAL (code-defined) rows used only for the
-	// Settings listing + toggle — exclude them here so they're never emitted as
-	// real external servers the engine would try to connect to.
-	return mcpServerQueries.getEnabled().filter(row => row.source !== 'internal').map(row => ({
+/** Parse a raw DB row into a connection-ready resolved server. */
+export function resolveServerRow(row: McpServerRow): ResolvedExternalServer {
+	const headers = parseJson<Record<string, string>>(row.headers, {});
+	// Inject the Clopen-managed OAuth access token as a bearer header so EVERY
+	// engine (Codex included) authenticates with the same token. A user-set
+	// `Authorization` header always wins. `refreshExpiringExternalOAuth()` runs
+	// at stream start, so the token read here is fresh.
+	const oauth = row.oauth ? parseJson<{ accessToken?: string } | null>(row.oauth, null) : null;
+	if (oauth?.accessToken && !headers.Authorization && !headers.authorization) {
+		headers.Authorization = `Bearer ${oauth.accessToken}`;
+	}
+	return {
 		id: row.id,
 		slug: row.slug,
 		namespace: externalNamespace(row.slug),
@@ -55,8 +66,40 @@ export function getEnabledExternalServers(): ResolvedExternalServer[] {
 		args: parseJson<string[]>(row.args, []),
 		env: parseJson<Record<string, string>>(row.env, {}),
 		url: row.url,
-		headers: parseJson<Record<string, string>>(row.headers, {})
-	}));
+		headers
+	};
+}
+
+/**
+ * Load every enabled external server from the DB, parsing JSON columns and
+ * computing its `<slug>` namespace key.
+ */
+export function getEnabledExternalServers(): ResolvedExternalServer[] {
+	// `mcp_servers` also holds INTERNAL (code-defined) rows used only for the
+	// Settings listing + toggle — exclude them here so they're never emitted as
+	// real external servers the engine would try to connect to.
+	return mcpServerQueries.getEnabled().filter(row => row.source !== 'internal').map(resolveServerRow);
+}
+
+/**
+ * A remote server with no configured static credential (API key / bearer
+ * header) relies on OAuth. We turn on each engine's native OAuth
+ * auto-detection for these so the engine runs the MCP authorization handshake
+ * (dynamic client registration, RFC 7591) instead of hitting an
+ * unauthenticated 401 and silently exposing zero tools — the failure that hid
+ * `com-notion-mcp` on every non-Claude engine. Servers carrying a static
+ * header are left as plain authenticated remotes.
+ */
+export function remoteNeedsOAuth(s: ResolvedExternalServer): boolean {
+	return (s.transport === 'http' || s.transport === 'sse')
+		&& !!s.url
+		&& Object.keys(s.headers).length === 0;
+}
+
+/** Qwen OAuth fields for a credential-less remote (dynamic discovery). */
+function remoteAuthQwen(s: ResolvedExternalServer): Partial<QwenMcpServerConfig> {
+	if (!remoteNeedsOAuth(s)) return {};
+	return { oauth: { enabled: true }, authProviderType: 'dynamic_discovery' };
 }
 
 // ---------------------------------------------------------------------------
@@ -93,6 +136,10 @@ export function getOpenCodeExternalMcpConfig(): Record<string, McpLocalConfig | 
 				enabled: true
 			};
 		} else if ((s.transport === 'http' || s.transport === 'sse') && s.url) {
+			// `oauth` is intentionally left unset: Open Code's default is OAuth
+			// auto-detection (set it to `false` only to opt out). Credential-less
+			// remotes therefore get the authorization handshake for free; the
+			// interactive sign-in is driven separately via the MCP auth flow.
 			out[s.namespace] = {
 				type: 'remote',
 				url: s.url,
@@ -122,7 +169,12 @@ export function getCodexExternalMcpConfig(): Record<string, CodexMcpServerConfig
 				...(Object.keys(s.env).length > 0 ? { env: s.env } : {})
 			};
 		} else if ((s.transport === 'http' || s.transport === 'sse') && s.url) {
-			out[s.namespace] = { url: s.url };
+			// `http_headers` carries the injected OAuth bearer (and any static API
+			// key), matching the internal bridge — so Codex authenticates too.
+			out[s.namespace] = {
+				url: s.url,
+				...(Object.keys(s.headers).length > 0 ? { http_headers: s.headers } : {})
+			};
 		}
 	}
 	logBuilt('Codex', out);
@@ -136,6 +188,10 @@ export function getCopilotExternalMcpConfig(): Record<string, CopilotMcpServerCo
 		if (s.transport === 'stdio' && s.command) {
 			out[s.namespace] = { type: 'local', command: s.command, args: s.args, env: s.env };
 		} else if ((s.transport === 'http' || s.transport === 'sse') && s.url) {
+			// Leaving `oauthClientId` unset makes the Copilot runtime perform
+			// dynamic client registration when the server demands OAuth. The
+			// interactive consent is delegated to us via the `mcp.oauth_required`
+			// event (see the Copilot adapter's MCP auth wiring).
 			out[s.namespace] = {
 				type: s.transport,
 				url: s.url,
@@ -154,9 +210,9 @@ export function getQwenExternalMcpConfig(): Record<string, QwenMcpServerConfig> 
 		if (s.transport === 'stdio' && s.command) {
 			out[s.namespace] = { command: s.command, args: s.args, env: s.env, trust: true };
 		} else if (s.transport === 'http' && s.url) {
-			out[s.namespace] = { httpUrl: s.url, headers: s.headers, trust: true };
+			out[s.namespace] = { httpUrl: s.url, headers: s.headers, trust: true, ...remoteAuthQwen(s) };
 		} else if (s.transport === 'sse' && s.url) {
-			out[s.namespace] = { url: s.url, headers: s.headers, trust: true };
+			out[s.namespace] = { url: s.url, headers: s.headers, trust: true, ...remoteAuthQwen(s) };
 		}
 	}
 	logBuilt('Qwen', out);

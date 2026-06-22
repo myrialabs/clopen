@@ -35,7 +35,7 @@ import type { DatabaseMessage } from '$shared/types/database/schema';
 import { getProjectEngine, initializeProjectEngine } from '../engine';
 import { messageQueries, sessionQueries } from '../database/queries';
 import { snapshotService } from '../snapshot/snapshot-service';
-import { projectContextService } from '../mcp';
+import { projectContextService, refreshExpiringExternalOAuth } from '../mcp';
 import { browserMcpControl } from '../preview';
 import { extractMessageText } from '../snapshot/helpers';
 import { debug } from '$shared/utils/logger';
@@ -607,6 +607,12 @@ class StreamManager extends EventEmitter {
 			// any files (see processStream top). Without this await a fast engine on a
 			// large repo could begin editing while the baseline scan is still running.
 			if (baselineInitPromise) await baselineInitPromise;
+
+			// Refresh any near-expiry managed MCP OAuth tokens so the engine's
+			// (synchronous) MCP config builders below inject a still-valid bearer.
+			await refreshExpiringExternalOAuth().catch(error =>
+				debug.warn('chat', 'MCP OAuth refresh failed:', error)
+			);
 
 			// Stream EngineOutput events through the engine adapter
 			const streamIterable = engine.streamQuery({

@@ -7,9 +7,13 @@
 	import {
 		mcpServersStore,
 		type CatalogServer,
-		type InstalledMcpServer
+		type InstalledMcpServer,
+		type McpConfigField,
+		type McpHealthState,
+		type McpTransport
 	} from '$frontend/stores/features/mcp-servers.svelte';
 	import { debug } from '$shared/utils/logger';
+	import type { IconName } from '$shared/types/ui/icons';
 
 	interface Props {
 		showHeader?: boolean;
@@ -46,15 +50,38 @@
 
 	// Install modal
 	let installTarget = $state<CatalogServer | null>(null);
-	let envDraft = $state<Record<string, string>>({});
-	let headerDraft = $state<Record<string, string>>({});
 	let installing = $state(false);
 	let installError = $state<string | null>(null);
 
-	// Configure modal (set env / headers on an installed server)
+	// A remote catalog entry that declares no credential fields almost always
+	// authenticates via OAuth — surface that so the user knows to finish sign-in
+	// from the Installed list after installing.
+	const installNeedsOAuth = $derived(
+		!!installTarget && installTarget.transport !== 'stdio'
+			&& installTarget.envVars.length === 0 && installTarget.headerVars.length === 0
+	);
+
+	// Configure modal (edit env / headers on an installed server)
 	let configTarget = $state<InstalledMcpServer | null>(null);
-	let configRows = $state<{ key: string; value: string }[]>([]);
 	let savingConfig = $state(false);
+
+	// Shared config-form state — used by BOTH the Install and Configure modals so
+	// the fields, grouping and helper text are identical in each.
+	let cfgTransport = $state<McpTransport>('stdio'); // drives which sections show
+	let cfgFields = $state<McpConfigField[]>([]); // registry-declared fields (fixed key)
+	let cfgDraft = $state<Record<string, string>>({}); // field name → value
+	let cfgCustomEnv = $state<{ key: string; value: string }[]>([]); // user-added env vars
+	let cfgCustomHeader = $state<{ key: string; value: string }[]>([]); // user-added headers
+
+	// Group by source (env vars vs headers), not by required/optional — the
+	// per-field "*" marks what's required within each group.
+	const cfgEnvFields = $derived(cfgFields.filter(f => f.kind === 'env'));
+	const cfgHeaderFields = $derived(cfgFields.filter(f => f.kind === 'header'));
+	const cfgMissingRequired = $derived(cfgFields.filter(f => f.isRequired && !(cfgDraft[f.name] ?? '').trim()));
+	// stdio servers use env vars; remote servers use headers. Show the relevant
+	// section (plus any the registry happens to declare for the other kind).
+	const showEnvSection = $derived(cfgTransport === 'stdio' || cfgEnvFields.length > 0);
+	const showHeaderSection = $derived(cfgTransport !== 'stdio' || cfgHeaderFields.length > 0);
 
 	// Delete confirmation modal
 	let deleteTarget = $state<InstalledMcpServer | null>(null);
@@ -83,8 +110,26 @@
 	});
 
 	onMount(() => {
-		mcpServersStore.refreshInstalled();
+		void (async () => {
+			await mcpServersStore.refreshInstalled();
+			mcpServersStore.checkAllStatuses();
+		})();
 	});
+
+	const statuses = $derived(mcpServersStore.statuses);
+	const checking = $derived(mcpServersStore.checking);
+
+	// Visual mapping for a probed connection state.
+	function statusMeta(state: McpHealthState): { label: string; icon: IconName; class: string } {
+		switch (state) {
+			case 'ok': return { label: 'Connected', icon: 'lucide:circle-check', class: 'text-emerald-600 dark:text-emerald-400' };
+			case 'needs_auth': return { label: 'Needs sign-in', icon: 'lucide:lock', class: 'text-amber-600 dark:text-amber-400' };
+			case 'needs_config': return { label: 'Needs setup', icon: 'lucide:key', class: 'text-amber-600 dark:text-amber-400' };
+			case 'unreachable': return { label: 'Unreachable', icon: 'lucide:wifi-off', class: 'text-red-500 dark:text-red-400' };
+			case 'error': return { label: 'Error', icon: 'lucide:triangle-alert', class: 'text-red-500 dark:text-red-400' };
+			case 'local': return { label: 'Connected', icon: 'lucide:circle-check', class: 'text-emerald-600 dark:text-emerald-400' };
+		}
+	}
 
 	function transportLabel(t: string): string {
 		if (t === 'stdio') return 'local (stdio)';
@@ -95,6 +140,17 @@
 	function commandLine(s: { transport: string; command?: string | null; args?: string[]; url?: string | null }): string {
 		if (s.transport === 'stdio') return `${s.command ?? ''} ${(s.args ?? []).join(' ')}`.trim();
 		return s.url ?? '';
+	}
+
+	async function onAuthenticate(server: InstalledMcpServer) {
+		busyId = server.id;
+		try {
+			await mcpServersStore.authenticate(server.id);
+		} catch (error) {
+			debug.error('settings', 'authenticate MCP failed', error);
+		} finally {
+			busyId = null;
+		}
 	}
 
 	async function onToggle(server: InstalledMcpServer) {
@@ -132,39 +188,87 @@
 		mcpServersStore.searchCatalog(searchInput.trim());
 	}
 
-	function cleanMap(obj: Record<string, string>): Record<string, string> {
-		return Object.fromEntries(Object.entries(obj).filter(([, v]) => v.trim() !== ''));
+	// --- Shared config form helpers (used by both Install and Configure) ---
+
+	// Split the working draft back into the env (stdio) and header (remote) maps
+	// the engines actually read. Blank fields are dropped.
+	function collectConfig(): { env: Record<string, string>; headers: Record<string, string> } {
+		const env: Record<string, string> = {};
+		const headers: Record<string, string> = {};
+		for (const f of cfgFields) {
+			const val = (cfgDraft[f.name] ?? '').trim();
+			if (!val) continue;
+			if (f.kind === 'header') headers[f.name] = val;
+			else env[f.name] = val;
+		}
+		for (const row of cfgCustomEnv) {
+			const key = row.key.trim();
+			if (key && row.value.trim()) env[key] = row.value;
+		}
+		for (const row of cfgCustomHeader) {
+			const key = row.key.trim();
+			if (key && row.value.trim()) headers[key] = row.value;
+		}
+		return { env, headers };
+	}
+
+	function addCustomEnv() {
+		cfgCustomEnv = [...cfgCustomEnv, { key: '', value: '' }];
+	}
+
+	function removeCustomEnv(index: number) {
+		cfgCustomEnv = cfgCustomEnv.filter((_, i) => i !== index);
+	}
+
+	function addCustomHeader() {
+		cfgCustomHeader = [...cfgCustomHeader, { key: '', value: '' }];
+	}
+
+	function removeCustomHeader(index: number) {
+		cfgCustomHeader = cfgCustomHeader.filter((_, i) => i !== index);
+	}
+
+	function resetConfigDraft() {
+		cfgFields = [];
+		cfgDraft = {};
+		cfgCustomEnv = [];
+		cfgCustomHeader = [];
 	}
 
 	// --- Install flow (modal + confirmation) ---
 	function openInstall(server: CatalogServer) {
 		installError = null;
 		installTarget = server;
-		envDraft = Object.fromEntries(server.envVars.map(v => [v.name, v.default ?? '']));
-		headerDraft = Object.fromEntries(server.headerVars.map(v => [v.name, v.default ?? '']));
+		cfgTransport = server.transport;
+		cfgFields = [
+			...server.envVars.map(v => ({ name: v.name, kind: 'env' as const, description: v.description, isRequired: v.isRequired, isSecret: v.isSecret })),
+			...server.headerVars.map(v => ({ name: v.name, kind: 'header' as const, description: v.description, isRequired: v.isRequired, isSecret: v.isSecret }))
+		];
+		cfgDraft = Object.fromEntries([
+			...server.envVars.map(v => [v.name, v.default ?? '']),
+			...server.headerVars.map(v => [v.name, v.default ?? ''])
+		]);
+		cfgCustomEnv = [];
+		cfgCustomHeader = [];
 	}
 
 	function closeInstall() {
 		installTarget = null;
-		envDraft = {};
-		headerDraft = {};
 		installError = null;
+		resetConfigDraft();
 	}
 
 	async function confirmInstall() {
 		const server = installTarget;
 		if (!server) return;
-		const missing = [
-			...server.envVars.filter(v => v.isRequired && !(envDraft[v.name] ?? '').trim()),
-			...server.headerVars.filter(v => v.isRequired && !(headerDraft[v.name] ?? '').trim())
-		];
-		if (missing.length > 0) {
-			installError = `Required: ${missing.map(m => m.name).join(', ')}`;
+		if (cfgMissingRequired.length > 0) {
+			installError = `Required: ${cfgMissingRequired.map(m => m.name).join(', ')}`;
 			return;
 		}
 		installing = true;
 		installError = null;
 		try {
+			const { env, headers } = collectConfig();
 			await mcpServersStore.install({
 				slug: server.slug,
 				name: server.title,
@@ -175,8 +279,9 @@
 				command: server.command,
 				args: server.args,
 				url: server.url,
-				env: cleanMap(envDraft),
-				headers: cleanMap(headerDraft),
+				env,
+				headers,
+				configSchema: cfgFields,
 				source: 'registry'
 			});
 			mcpServersStore.hasPendingChanges = true;
@@ -188,45 +293,39 @@
 		}
 	}
 
-	// --- Configure flow (set env / headers after install) ---
+	// --- Configure flow (edit env / headers after install) ---
 	function openConfig(server: InstalledMcpServer) {
 		configTarget = server;
-		// stdio servers configure env vars; remote servers configure headers.
-		const keys = server.transport === 'stdio' ? server.envKeys : server.headerKeys;
-		configRows = keys.length > 0
-			? keys.map(key => ({ key, value: '' }))
-			: [{ key: '', value: '' }];
+		cfgTransport = server.transport;
+		// Registry-declared fields keep their labels/required markers; their stored
+		// values pre-fill the draft.
+		const schema = server.configSchema ?? [];
+		cfgFields = schema;
+		cfgDraft = Object.fromEntries(
+			schema.map(f => [f.name, (f.kind === 'header' ? server.headers[f.name] : server.env[f.name]) ?? ''])
+		);
+		// Stored keys NOT declared by the registry are user-added — show them,
+		// pre-filled, in the Custom sections so they're clearly distinct.
+		const knownEnv = new Set(schema.filter(f => f.kind === 'env').map(f => f.name));
+		const knownHeader = new Set(schema.filter(f => f.kind === 'header').map(f => f.name));
+		cfgCustomEnv = Object.entries(server.env).filter(([k]) => !knownEnv.has(k)).map(([key, value]) => ({ key, value }));
+		cfgCustomHeader = Object.entries(server.headers).filter(([k]) => !knownHeader.has(k)).map(([key, value]) => ({ key, value }));
 	}
 
 	function closeConfig() {
 		configTarget = null;
-		configRows = [];
-	}
-
-	function addConfigRow() {
-		configRows = [...configRows, { key: '', value: '' }];
-	}
-
-	function removeConfigRow(index: number) {
-		configRows = configRows.filter((_, i) => i !== index);
+		resetConfigDraft();
 	}
 
 	async function saveConfig() {
 		const server = configTarget;
 		if (!server) return;
+		if (cfgMissingRequired.length > 0) return;
 		savingConfig = true;
 		try {
-			const map: Record<string, string> = {};
-			for (const row of configRows) {
-				if (row.key.trim() && row.value.trim()) map[row.key.trim()] = row.value;
-			}
-			// updateConfig overwrites both columns; send the map to the relevant
-			// one for this transport and leave the other empty.
-			if (server.transport === 'stdio') {
-				await mcpServersStore.updateConfig(server.id, map, {});
-			} else {
-				await mcpServersStore.updateConfig(server.id, {}, map);
-			}
+			const { env, headers } = collectConfig();
+			await mcpServersStore.updateConfig(server.id, env, headers);
+			mcpServersStore.hasPendingChanges = true;
 			closeConfig();
 		} catch (error) {
 			debug.error('settings', 'update MCP config failed', error);
@@ -307,7 +406,7 @@
 									{#if server.source === 'internal'}
 										<span class="text-[10px] font-semibold px-1.5 py-0.5 rounded bg-violet-500/10 text-violet-600 dark:text-violet-400">Built-in</span>
 									{/if}
-									<span class="text-[10px] font-mono px-1.5 py-0.5 rounded bg-slate-100 dark:bg-slate-800 text-slate-500">{server.namespace}</span>
+									<span class="text-[10px] px-1.5 py-0.5 rounded bg-slate-100 dark:bg-slate-800 text-slate-500">{server.namespace}</span>
 									<span class="text-[10px] px-1.5 py-0.5 rounded bg-slate-100 dark:bg-slate-800 text-slate-500">{transportLabel(server.transport)}</span>
 									{#if server.version}
 										<span class="text-[10px] px-1.5 py-0.5 rounded bg-slate-100 dark:bg-slate-800 text-slate-500">v{server.version}</span>
@@ -317,10 +416,54 @@
 									<p class="text-xs text-slate-500 dark:text-slate-400 mt-1.5 line-clamp-2">{server.description}</p>
 								{/if}
 								{#if server.source !== 'internal'}
-									<p class="text-[11px] font-mono text-slate-400 mt-1 truncate">{commandLine(server)}</p>
-									{#if server.envKeys.length > 0}
-										<p class="text-[11px] text-slate-400 mt-0.5">env: {server.envKeys.join(', ')}</p>
-									{/if}
+									<p class="text-[11px] text-slate-400 mt-1 truncate">{commandLine(server)}</p>
+								{/if}
+								{#if server.source !== 'internal'}
+									<div class="flex items-center gap-2 mt-2">
+										{#if !server.enabled}
+											<span class="inline-flex items-center gap-1 text-[11px] font-semibold text-slate-400">
+												<Icon name="lucide:ban" class="w-3.5 h-3.5" />
+												Disabled
+											</span>
+										{:else if checking[server.id]}
+											<span class="inline-flex items-center gap-1.5 text-[11px] text-slate-400">
+												<span class="w-3 h-3 border-2 border-slate-300 border-t-transparent rounded-full animate-spin"></span>
+												Checking…
+											</span>
+										{:else if statuses[server.id]}
+											{@const health = statuses[server.id]}
+											{@const meta = statusMeta(health.state)}
+											<span class="inline-flex items-center gap-1 text-[11px] font-semibold {meta.class}" title={health.message ?? ''}>
+												<Icon name={meta.icon} class="w-3.5 h-3.5" />
+												{meta.label}
+											</span>
+											{#if health.state === 'needs_auth'}
+												<button
+													type="button"
+													disabled={busyId === server.id}
+													onclick={() => onAuthenticate(server)}
+													class="text-[11px] font-semibold text-violet-600 hover:text-violet-700 dark:text-violet-400 disabled:opacity-50"
+												>
+													Authenticate
+												</button>
+											{:else if health.state === 'needs_config'}
+												<button
+													type="button"
+													onclick={() => openConfig(server)}
+													class="text-[11px] font-semibold text-violet-600 hover:text-violet-700 dark:text-violet-400"
+												>
+													Configure
+												</button>
+											{/if}
+											<button
+												type="button"
+												onclick={() => mcpServersStore.checkStatus(server.id)}
+												class="text-[11px] text-slate-400 hover:text-slate-600 dark:hover:text-slate-300"
+											>
+												Re-check
+											</button>
+										{/if}
+									</div>
 								{/if}
 							</div>
 							<div class="flex items-center gap-2 shrink-0">
@@ -350,7 +493,7 @@
 										type="button"
 										disabled={busyId === server.id}
 										onclick={() => (deleteTarget = server)}
-										class="p-2 rounded-lg text-slate-400 hover:text-red-500 hover:bg-red-500/10 transition-colors disabled:opacity-50"
+										class="flex p-2 rounded-lg text-slate-400 hover:text-red-500 hover:bg-red-500/10 transition-colors disabled:opacity-50"
 										aria-label="Uninstall server"
 									>
 										<Icon name="lucide:trash-2" class="w-4 h-4" />
@@ -417,19 +560,16 @@
 						<div class="flex-1 min-w-0">
 							<span class="font-semibold text-slate-900 dark:text-slate-100">{server.title}</span>
 							<div class="flex items-center gap-1.5 flex-wrap mt-1">
-								<span class="text-[10px] font-mono px-1.5 py-0.5 rounded bg-slate-100 dark:bg-slate-800 text-slate-500">{server.slug}</span>
+								<span class="text-[10px] px-1.5 py-0.5 rounded bg-slate-100 dark:bg-slate-800 text-slate-500">{server.slug}</span>
 								<span class="text-[10px] px-1.5 py-0.5 rounded bg-slate-100 dark:bg-slate-800 text-slate-500">{transportLabel(server.transport)}</span>
 								{#if server.version}
 									<span class="text-[10px] px-1.5 py-0.5 rounded bg-slate-100 dark:bg-slate-800 text-slate-500">v{server.version}</span>
-								{/if}
-								{#if server.envVars.length > 0}
-									<span class="text-[10px] px-1.5 py-0.5 rounded bg-slate-100 dark:bg-slate-800 text-slate-500">{server.envVars.length} config var{server.envVars.length === 1 ? '' : 's'}</span>
 								{/if}
 							</div>
 							{#if server.description}
 								<p class="text-xs text-slate-500 dark:text-slate-400 mt-1.5 line-clamp-2">{server.description}</p>
 							{/if}
-							<p class="text-[11px] font-mono text-slate-400 mt-1 truncate">{server.packageHint ?? commandLine(server)}</p>
+							<p class="text-[11px] text-slate-400 mt-1 truncate">{server.packageHint ?? commandLine(server)}</p>
 						</div>
 						<div class="shrink-0">
 							{#if alreadyInstalled}
@@ -461,37 +601,107 @@
 	{/if}
 </div>
 
-<!-- Install confirmation modal -->
+<!-- Shared config form: fields grouped by source (Environment variables /
+     Headers), each with its own "+ Add" button for extra fields. Used by BOTH
+     the Install and Configure modals so the experience is identical. Required
+     fields are marked per-field with "*". -->
+{#snippet fieldInput(field: McpConfigField)}
+	<div class="space-y-1">
+		<Input
+			label={field.name}
+			required={field.isRequired}
+			type="text"
+			bind:value={cfgDraft[field.name]}
+		/>
+		{#if field.description}
+			<p class="text-[11px] text-slate-400">{field.description}</p>
+		{/if}
+	</div>
+{/snippet}
+
+{#snippet customList(
+	rows: { key: string; value: string }[],
+	keyPlaceholder: string,
+	addLabel: string,
+	onAdd: () => void,
+	onRemove: (index: number) => void
+)}
+	{#each rows as row, i (i)}
+		<div class="flex gap-2 items-center">
+			<div class="w-2/5">
+				<Input bind:value={row.key} placeholder={keyPlaceholder} />
+			</div>
+			<div class="flex-1">
+				<Input type="text" bind:value={row.value} placeholder="value" />
+			</div>
+			<button
+				type="button"
+				onclick={() => onRemove(i)}
+				class="flex p-2 rounded-lg text-slate-400 hover:text-red-500 hover:bg-red-500/10 transition-colors"
+				aria-label="Remove field"
+			>
+				<Icon name="lucide:x" class="w-4 h-4" />
+			</button>
+		</div>
+	{/each}
+	<Button variant="ghost" size="sm" onclick={onAdd}>{addLabel}</Button>
+{/snippet}
+
+{#snippet configForm()}
+	<div class="space-y-5">
+		{#if showEnvSection}
+			<div class="space-y-5">
+				{#if cfgEnvFields.length > 0}
+					<div class="space-y-2">
+						<p class="text-xs font-semibold text-slate-400 dark:text-slate-500">Environment variables</p>
+						{#each cfgEnvFields as field (field.name)}
+							{@render fieldInput(field)}
+						{/each}
+					</div>
+					<div class="border-t border-slate-300 dark:border-slate-600"></div>
+				{/if}
+				<div class="space-y-2">
+					<p class="text-xs font-semibold text-slate-400 dark:text-slate-500">Custom variables</p>
+					{@render customList(cfgCustomEnv, 'VAR_NAME', '+ Add variable', addCustomEnv, removeCustomEnv)}
+				</div>
+			</div>
+		{/if}
+		{#if showHeaderSection}
+			<div class="space-y-3">
+				{#if cfgHeaderFields.length > 0}
+					<div class="space-y-2">
+						<p class="text-xs font-semibold text-slate-400 dark:text-slate-500">Headers</p>
+						{#each cfgHeaderFields as field (field.name)}
+							{@render fieldInput(field)}
+						{/each}
+					</div>
+				{/if}
+				<div class="space-y-2">
+					<p class="text-xs font-semibold text-slate-400 dark:text-slate-500">Custom headers</p>
+					{@render customList(cfgCustomHeader, 'Header', '+ Add header', addCustomHeader, removeCustomHeader)}
+				</div>
+			</div>
+		{/if}
+	</div>
+{/snippet}
+
+<!-- Install modal -->
 <Modal isOpen={installTarget !== null} onClose={closeInstall} title={`Install ${installTarget?.title ?? ''}`} size="md">
 	{#snippet children()}
 		{#if installTarget}
 			<div class="space-y-4 text-sm">
-				<p class="text-slate-600 dark:text-slate-300">
-					Install this MCP server? It will be available to every engine once enabled.
-				</p>
-				<p class="font-mono text-xs text-slate-500 break-all">{installTarget.packageHint ?? commandLine(installTarget)}</p>
-
-				{#if installTarget.envVars.length > 0 || installTarget.headerVars.length > 0}
-					<div class="space-y-3 pt-2 border-t border-slate-200 dark:border-slate-800">
-						<p class="text-xs text-slate-500 dark:text-slate-400">Configuration (fill what applies — required fields are marked *):</p>
-						{#each installTarget.envVars as v (v.name)}
-							<Input
-								label={`${v.name}${v.isRequired ? ' *' : ''}`}
-								type={v.isSecret ? 'password' : 'text'}
-								placeholder={v.description ?? v.name}
-								bind:value={envDraft[v.name]}
-							/>
-						{/each}
-						{#each installTarget.headerVars as v (v.name)}
-							<Input
-								label={`${v.name}${v.isRequired ? ' *' : ''} (header)`}
-								type={v.isSecret ? 'password' : 'text'}
-								placeholder={v.description ?? v.name}
-								bind:value={headerDraft[v.name]}
-							/>
-						{/each}
+				{#if installNeedsOAuth}
+					<div class="flex items-start gap-2 p-3 bg-violet-500/5 border border-violet-500/20 rounded-lg text-violet-700 dark:text-violet-300">
+						<Icon name="lucide:lock" class="w-4 h-4 mt-0.5 shrink-0" />
+						<span class="text-xs">
+							This server uses OAuth sign-in. After installing, open it under
+							<span class="font-semibold">Installed</span> and click
+							<span class="font-semibold">Authenticate</span> to connect.
+						</span>
 					</div>
 				{/if}
+
+				{@render configForm()}
 
 				{#if installError}
 					<p class="text-xs text-red-500">{installError}</p>
@@ -501,57 +711,30 @@
 	{/snippet}
 	{#snippet footer()}
 		<Button variant="ghost" onclick={closeInstall}>Cancel</Button>
-		<Button variant="primary" loading={installing} onclick={confirmInstall}>Install</Button>
+		<Button variant="primary" loading={installing} disabled={cfgMissingRequired.length > 0} onclick={confirmInstall}>Install</Button>
 	{/snippet}
 </Modal>
 
-<!-- Configure modal (env vars / auth headers) -->
+<!-- Configure modal -->
 <Modal isOpen={configTarget !== null} onClose={closeConfig} title={`Configure ${configTarget?.name ?? ''}`} size="md">
 	{#snippet children()}
 		{#if configTarget}
 			<div class="space-y-4 text-sm">
-				<p class="text-slate-600 dark:text-slate-300">
-					{#if configTarget.transport === 'stdio'}
-						Add environment variables only if this server needs them (e.g. API keys). Leave empty otherwise.
-					{:else}
-						Add an auth header only if this server needs one, e.g.
-						<span class="font-mono">Authorization</span> = <span class="font-mono">Bearer …</span>. Leave empty for public servers.
-					{/if}
-				</p>
+				{@render configForm()}
 
-				<div class="space-y-2">
-					{#each configRows as row, i (i)}
-						<div class="flex gap-2 items-center">
-							<div class="w-2/5">
-								<Input bind:value={row.key} placeholder={configTarget.transport === 'stdio' ? 'VAR_NAME' : 'Header'} />
-							</div>
-							<div class="flex-1">
-								<Input type="password" bind:value={row.value} placeholder="value" />
-							</div>
-							<button
-								type="button"
-								onclick={() => removeConfigRow(i)}
-								class="p-2 rounded-lg text-slate-400 hover:text-red-500 hover:bg-red-500/10 transition-colors"
-								aria-label="Remove row"
-							>
-								<Icon name="lucide:x" class="w-4 h-4" />
-							</button>
-						</div>
-					{/each}
-					<Button variant="ghost" size="sm" onclick={addConfigRow}>+ Add field</Button>
-				</div>
+				{#if cfgMissingRequired.length > 0}
+					<p class="text-xs text-red-500">Required: {cfgMissingRequired.map(m => m.name).join(', ')}</p>
+				{/if}
 
 				{#if configTarget.transport !== 'stdio'}
-					<p class="text-[11px] text-slate-400">
-						If this server signs in via OAuth (browser redirect), header auth won't apply — disable it to stop connection errors.
-					</p>
+					<p class="text-[11px] text-slate-400">For OAuth servers, leave these blank and use Authenticate instead — sign-in is managed for you and applied to every engine.</p>
 				{/if}
 			</div>
 		{/if}
 	{/snippet}
 	{#snippet footer()}
 		<Button variant="ghost" onclick={closeConfig}>Cancel</Button>
-		<Button variant="primary" loading={savingConfig} onclick={saveConfig}>Save</Button>
+		<Button variant="primary" loading={savingConfig} disabled={cfgMissingRequired.length > 0} onclick={saveConfig}>Save</Button>
 	{/snippet}
 </Modal>
 

@@ -108,7 +108,10 @@ export const ADMIN_ONLY_ROUTES = new Set([
 	'mcp:install',
 	'mcp:toggle',
 	'mcp:update-config',
-	'mcp:uninstall'
+	'mcp:uninstall',
+	'mcp:status',
+	'mcp:oauth-start',
+	'mcp:oauth-complete'
 ]);
 
 /**
