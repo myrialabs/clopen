@@ -48,6 +48,8 @@ export interface McpServerRow {
 	url: string | null;
 	headers: string;
 	config_schema: string;
+	/** JSON OAuth state Clopen manages (registration + tokens), or null. */
+	oauth: string | null;
 	source: McpSource;
 	is_enabled: number;
 	created_at: string;
@@ -139,6 +141,12 @@ export const mcpServerQueries = {
 			JSON.stringify(headers),
 			id
 		);
+	},
+
+	/** Store (or clear with null) the managed OAuth state JSON for a server. */
+	setOAuth(id: number, oauth: string | null): void {
+		const db = getDatabase();
+		db.prepare(`UPDATE mcp_servers SET oauth = ? WHERE id = ?`).run(oauth, id);
 	},
 
 	remove(id: number): void {

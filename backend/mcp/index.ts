@@ -74,7 +74,18 @@ export {
 
 // External catalog + types (used by the WS layer and Settings → MCP)
 export { listRegistryServers, mapRegistryServer } from './external/registry-client';
-export { getEnabledExternalServers } from './external/config';
+export { getEnabledExternalServers, resolveServerRow, remoteNeedsOAuth } from './external/config';
+export { probeServer } from './external/probe';
+export type { McpHealth, McpHealthState } from './external/probe';
+export {
+	startAuthorization,
+	completeAuthorization,
+	getValidAccessToken,
+	refreshExpiringExternalOAuth,
+	hasPendingFlow,
+	clearOAuth,
+	loadOAuth
+} from './external/oauth';
 export type { CatalogServer, CatalogEnvVar, CatalogPage, ResolvedExternalServer } from './external/types';
 
 // ---------------------------------------------------------------------------

@@ -9,9 +9,11 @@
 		type CatalogServer,
 		type InstalledMcpServer,
 		type McpConfigField,
+		type McpHealthState,
 		type McpTransport
 	} from '$frontend/stores/features/mcp-servers.svelte';
 	import { debug } from '$shared/utils/logger';
+	import type { IconName } from '$shared/types/ui/icons';
 
 	interface Props {
 		showHeader?: boolean;
@@ -50,6 +52,14 @@
 	let installTarget = $state<CatalogServer | null>(null);
 	let installing = $state(false);
 	let installError = $state<string | null>(null);
+
+	// A remote catalog entry that declares no credential fields almost always
+	// authenticates via OAuth — surface that so the user knows to finish sign-in
+	// from the Installed list after installing.
+	const installNeedsOAuth = $derived(
+		!!installTarget && installTarget.transport !== 'stdio'
+			&& installTarget.envVars.length === 0 && installTarget.headerVars.length === 0
+	);
 
 	// Configure modal (edit env / headers on an installed server)
 	let configTarget = $state<InstalledMcpServer | null>(null);
@@ -100,8 +110,26 @@
 	});
 
 	onMount(() => {
-		mcpServersStore.refreshInstalled();
+		void (async () => {
+			await mcpServersStore.refreshInstalled();
+			mcpServersStore.checkAllStatuses();
+		})();
 	});
+
+	const statuses = $derived(mcpServersStore.statuses);
+	const checking = $derived(mcpServersStore.checking);
+
+	// Visual mapping for a probed connection state.
+	function statusMeta(state: McpHealthState): { label: string; icon: IconName; class: string } {
+		switch (state) {
+			case 'ok': return { label: 'Connected', icon: 'lucide:circle-check', class: 'text-emerald-600 dark:text-emerald-400' };
+			case 'needs_auth': return { label: 'Needs sign-in', icon: 'lucide:lock', class: 'text-amber-600 dark:text-amber-400' };
+			case 'needs_config': return { label: 'Needs setup', icon: 'lucide:key', class: 'text-amber-600 dark:text-amber-400' };
+			case 'unreachable': return { label: 'Unreachable', icon: 'lucide:wifi-off', class: 'text-red-500 dark:text-red-400' };
+			case 'error': return { label: 'Error', icon: 'lucide:triangle-alert', class: 'text-red-500 dark:text-red-400' };
+			case 'local': return { label: 'Connected', icon: 'lucide:circle-check', class: 'text-emerald-600 dark:text-emerald-400' };
+		}
+	}
 
 	function transportLabel(t: string): string {
 		if (t === 'stdio') return 'local (stdio)';
@@ -112,6 +140,17 @@
 	function commandLine(s: { transport: string; command?: string | null; args?: string[]; url?: string | null }): string {
 		if (s.transport === 'stdio') return `${s.command ?? ''} ${(s.args ?? []).join(' ')}`.trim();
 		return s.url ?? '';
+	}
+
+	async function onAuthenticate(server: InstalledMcpServer) {
+		busyId = server.id;
+		try {
+			await mcpServersStore.authenticate(server.id);
+		} catch (error) {
+			debug.error('settings', 'authenticate MCP failed', error);
+		} finally {
+			busyId = null;
+		}
 	}
 
 	async function onToggle(server: InstalledMcpServer) {
@@ -379,6 +418,53 @@
 								{#if server.source !== 'internal'}
 									<p class="text-[11px] text-slate-400 mt-1 truncate">{commandLine(server)}</p>
 								{/if}
+								{#if server.source !== 'internal'}
+									<div class="flex items-center gap-2 mt-2">
+										{#if !server.enabled}
+											<span class="inline-flex items-center gap-1 text-[11px] font-semibold text-slate-400">
+												<Icon name="lucide:ban" class="w-3.5 h-3.5" />
+												Disabled
+											</span>
+										{:else if checking[server.id]}
+											<span class="inline-flex items-center gap-1.5 text-[11px] text-slate-400">
+												<span class="w-3 h-3 border-2 border-slate-300 border-t-transparent rounded-full animate-spin"></span>
+												Checking…
+											</span>
+										{:else if statuses[server.id]}
+											{@const health = statuses[server.id]}
+											{@const meta = statusMeta(health.state)}
+											<span class="inline-flex items-center gap-1 text-[11px] font-semibold {meta.class}" title={health.message ?? ''}>
+												<Icon name={meta.icon} class="w-3.5 h-3.5" />
+												{meta.label}
+											</span>
+											{#if health.state === 'needs_auth'}
+												<button
+													type="button"
+													disabled={busyId === server.id}
+													onclick={() => onAuthenticate(server)}
+													class="text-[11px] font-semibold text-violet-600 hover:text-violet-700 dark:text-violet-400 disabled:opacity-50"
+												>
+													Authenticate
+												</button>
+											{:else if health.state === 'needs_config'}
+												<button
+													type="button"
+													onclick={() => openConfig(server)}
+													class="text-[11px] font-semibold text-violet-600 hover:text-violet-700 dark:text-violet-400"
+												>
+													Configure
+												</button>
+											{/if}
+											<button
+												type="button"
+												onclick={() => mcpServersStore.checkStatus(server.id)}
+												class="text-[11px] text-slate-400 hover:text-slate-600 dark:hover:text-slate-300"
+											>
+												Re-check
+											</button>
+										{/if}
+									</div>
+								{/if}
 							</div>
 							<div class="flex items-center gap-2 shrink-0">
 								<button
@@ -478,9 +564,6 @@
 								<span class="text-[10px] px-1.5 py-0.5 rounded bg-slate-100 dark:bg-slate-800 text-slate-500">{transportLabel(server.transport)}</span>
 								{#if server.version}
 									<span class="text-[10px] px-1.5 py-0.5 rounded bg-slate-100 dark:bg-slate-800 text-slate-500">v{server.version}</span>
-								{/if}
-								{#if server.envVars.length > 0}
-									<span class="text-[10px] px-1.5 py-0.5 rounded bg-slate-100 dark:bg-slate-800 text-slate-500">{server.envVars.length} config var{server.envVars.length === 1 ? '' : 's'}</span>
 								{/if}
 							</div>
 							{#if server.description}
@@ -607,6 +690,17 @@
 	{#snippet children()}
 		{#if installTarget}
 			<div class="space-y-4 text-sm">
+				{#if installNeedsOAuth}
+					<div class="flex items-start gap-2 p-3 bg-violet-500/5 border border-violet-500/20 rounded-lg text-violet-700 dark:text-violet-300">
+						<Icon name="lucide:lock" class="w-4 h-4 mt-0.5 shrink-0" />
+						<span class="text-xs">
+							This server uses OAuth sign-in. After installing, open it under
+							<span class="font-semibold">Installed</span> and click
+							<span class="font-semibold">Authenticate</span> to connect.
+						</span>
+					</div>
+				{/if}
+
 				{@render configForm()}
 
 				{#if installError}
@@ -633,7 +727,7 @@
 				{/if}
 
 				{#if configTarget.transport !== 'stdio'}
-					<p class="text-[11px] text-slate-400">Uses OAuth (browser sign-in)? Header auth won't apply — leave these blank.</p>
+					<p class="text-[11px] text-slate-400">For OAuth servers, leave these blank and use Authenticate instead — sign-in is managed for you and applied to every engine.</p>
 				{/if}
 			</div>
 		{/if}

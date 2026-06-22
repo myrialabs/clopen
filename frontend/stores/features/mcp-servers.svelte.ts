@@ -67,6 +67,15 @@ export interface CatalogServer {
 	packageHint?: string;
 }
 
+/** Connection health classified by the backend probe. */
+export type McpHealthState = 'ok' | 'needs_auth' | 'needs_config' | 'unreachable' | 'error' | 'local';
+
+export interface McpHealth {
+	state: McpHealthState;
+	toolCount?: number;
+	message?: string;
+}
+
 export interface InstallPayload {
 	slug: string;
 	name: string;
@@ -86,6 +95,10 @@ export interface InstallPayload {
 let installed = $state<InstalledMcpServer[]>([]);
 let installedLoaded = $state(false);
 
+// Per-server connection health (keyed by id). `checking` drives the spinner.
+let statuses = $state<Record<number, McpHealth>>({});
+let checking = $state<Record<number, boolean>>({});
+
 let catalog = $state<CatalogServer[]>([]);
 let catalogCursor = $state<string | null>(null);
 let catalogSearch = $state('');
@@ -103,6 +116,8 @@ let catalogReqId = 0;
 export const mcpServersStore = {
 	get installed() { return installed; },
 	get installedLoaded() { return installedLoaded; },
+	get statuses() { return statuses; },
+	get checking() { return checking; },
 	get catalog() { return catalog; },
 	get catalogCursor() { return catalogCursor; },
 	get catalogSearch() { return catalogSearch; },
@@ -157,12 +172,17 @@ export const mcpServersStore = {
 	async install(payload: InstallPayload): Promise<InstalledMcpServer> {
 		const result = await ws.http('mcp:install', payload);
 		await this.refreshInstalled();
+		// Probe the just-installed server so its status shows immediately.
+		this.checkStatus(result.server.id);
 		return result.server;
 	},
 
 	async toggle(id: number, enabled: boolean): Promise<void> {
 		await ws.http('mcp:toggle', { id, enabled });
 		await this.refreshInstalled();
+		// Probe a freshly-enabled server so its connection status appears without a
+		// manual re-check (disabled servers render a static "Disabled" instead).
+		if (enabled) this.checkStatus(id);
 	},
 
 	async updateConfig(id: number, env: Record<string, string>, headers: Record<string, string>): Promise<void> {
@@ -173,6 +193,57 @@ export const mcpServersStore = {
 	async uninstall(id: number): Promise<void> {
 		await ws.http('mcp:uninstall', { id });
 		await this.refreshInstalled();
+	},
+
+	/** Probe one server's connection health and cache the result. */
+	async checkStatus(id: number): Promise<void> {
+		checking = { ...checking, [id]: true };
+		try {
+			const result = await ws.http('mcp:status', { id });
+			statuses = { ...statuses, [id]: result.status };
+		} catch (error) {
+			debug.error('settings', `Failed to probe MCP server ${id}:`, error);
+			statuses = { ...statuses, [id]: { state: 'error', message: 'Status check failed' } };
+		} finally {
+			checking = { ...checking, [id]: false };
+		}
+	},
+
+	/**
+	 * Start the centralized OAuth sign-in: open the authorization URL in a new
+	 * tab (Clopen runs the whole flow and its stable callback stores the token),
+	 * then poll status until the server reports connected. The resulting token is
+	 * injected into every engine, so one sign-in covers all of them.
+	 */
+	async authenticate(id: number): Promise<void> {
+		checking = { ...checking, [id]: true };
+		try {
+			const { authorizationUrl } = await ws.http('mcp:oauth-start', { id });
+			window.open(authorizationUrl, '_blank', 'noopener');
+		} catch (error) {
+			debug.error('settings', `MCP OAuth start failed for ${id}:`, error);
+			statuses = { ...statuses, [id]: { state: 'error', message: error instanceof Error ? error.message : 'Sign-in failed' } };
+			checking = { ...checking, [id]: false };
+			return;
+		}
+		// Poll for completion (the callback stores the token out-of-band).
+		for (let i = 0; i < 60; i++) {
+			await new Promise(resolve => setTimeout(resolve, 2000));
+			try {
+				const result = await ws.http('mcp:status', { id });
+				if (result.status.state !== 'needs_auth') {
+					statuses = { ...statuses, [id]: result.status };
+					break;
+				}
+			} catch { /* keep polling */ }
+		}
+		checking = { ...checking, [id]: false };
+	},
+
+	/** Probe every enabled, non-internal server (used when the panel opens). */
+	async checkAllStatuses(): Promise<void> {
+		const targets = installed.filter(s => s.enabled && s.source !== 'internal');
+		await Promise.all(targets.map(s => this.checkStatus(s.id)));
 	},
 
 	// ========================================================================
@@ -228,6 +299,8 @@ export const mcpServersStore = {
 	reset() {
 		installed = [];
 		installedLoaded = false;
+		statuses = {};
+		checking = {};
 		catalog = [];
 		catalogCursor = null;
 		catalogSearch = '';

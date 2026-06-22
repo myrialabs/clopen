@@ -1197,6 +1197,13 @@ checklist in `backend/engine/README.md` §9.12. The summary:
    in that helper rather than building a per-engine resolver.
 4. Wire the engine's auto-approval path (runtime callback or static
    per-tool config) so MCP tool calls don't get cancelled.
+5. Add a sibling `getXxxExternalMcpConfig()` in
+   `backend/mcp/external/config.ts` for user-installed registry servers,
+   and **forward `headers`** so the centrally-managed OAuth bearer (and
+   any static API key) reaches the engine. Use the SDK's real header
+   field — Codex uses `http_headers`, **not** `bearer_token`. See
+   [External Servers, OAuth & Connection Status](#external-servers-oauth--connection-status)
+   and `backend/engine/docs/lessons-learned.md` §9.18.
 
 ### File Locations
 
@@ -1211,6 +1218,80 @@ checklist in `backend/engine/README.md` §9.12. The summary:
 | External catalog | `backend/mcp/external/registry-client.ts` | Browse the official MCP registry |
 | Per-engine config (external) | `backend/mcp/external/config.ts` | `getXxxExternalMcpConfig()` (<slug>) |
 | Namespace constants | `backend/mcp/shared/constants.ts` | `clopen-mcp`, clopen-reserved prefix, slugify |
+
+---
+
+## External Servers, OAuth & Connection Status
+
+Everything above describes **internal** custom tools (the `clopen-mcp`
+bridge). **External** servers are the ones a user installs from the official
+registry (Settings → MCP → Browse), stored in the `mcp_servers` table. Unlike
+internal tools, the engine connects to these **directly** — a stdio subprocess
+or a remote third-party URL — so authentication is Clopen's responsibility.
+
+### Centralized OAuth (one sign-in, every engine)
+
+Remote servers that need OAuth (e.g. Notion) are authenticated by **Clopen
+itself**, not by each engine. The earlier per-engine approach failed: only
+OpenCode had a callable sign-in trigger, and its token lived in OpenCode's own
+store, so Codex/Claude/etc. never got it.
+
+Flow (`backend/mcp/external/oauth.ts`):
+
+1. **Discover** — RFC 9728 protected-resource metadata → RFC 8414
+   authorization-server metadata (endpoints + dynamic registration URL).
+2. **Register** — RFC 7591 dynamic client registration (public client, PKCE).
+3. **Authorize** — authorization-code + PKCE (S256). The browser is redirected
+   to Clopen's **stable** callback `GET /api/mcp/oauth/callback` (in
+   `backend/index.ts`) — not an ephemeral per-flow loopback server.
+4. **Store** — access + refresh tokens are saved in the `mcp_servers.oauth`
+   JSON column (migration 042), separate from the user-editable `headers`.
+5. **Inject** — `resolveServerRow()` adds `Authorization: Bearer <token>` to
+   every engine's config. `refreshExpiringExternalOAuth()` runs at chat-stream
+   start (in `stream-manager`) so the synchronous per-engine builders read a
+   fresh token. **A new engine adapter needs no OAuth code** — it just receives
+   a bearer header like any authenticated remote.
+
+WS routes (admin-only): `mcp:oauth-start` (returns the authorization URL; the
+UI opens it and polls status), `mcp:oauth-complete` (manual paste fallback).
+
+### Per-engine config: forward the auth headers
+
+Each engine's external builder in `backend/mcp/external/config.ts` MUST forward
+`headers`, and must use the engine's real header field. Dropping headers causes
+silent 401s; the wrong field name can make the engine reject its whole config.
+
+| Engine | Header field | Notes |
+|--------|-------------|-------|
+| Claude | `headers` | http/sse |
+| OpenCode | `headers` | `oauth` left unset = auto-detect fallback |
+| Copilot | `headers` | — |
+| Qwen | `headers` (+ `httpUrl`) | — |
+| **Codex** | **`http_headers`** | **NOT `bearer_token`** — that's rejected for `streamable_http` and aborts the run. Matches the internal bridge. |
+
+### Required-credential validation
+
+`mcp:install` / `mcp:update-config` reject a save when a registry-declared
+required field (`configSchema[].isRequired`) is left blank — so an API-key
+server can't install into a silently-broken state.
+
+### Connection status probe
+
+`mcp:status` (`backend/mcp/external/probe.ts`) runs an engine-agnostic
+handshake (`initialize` + `tools/list`; stdio servers are spawned) and
+classifies the result:
+
+| State | Meaning | Settings action |
+|-------|---------|-----------------|
+| `ok` | Connected (handshake + tool list OK) | — |
+| `needs_auth` | 401 with a `Bearer` challenge → OAuth | **Authenticate** |
+| `needs_config` | Reachable but a static API key is missing | **Configure** |
+| `unreachable` | No response / network error | Re-check |
+| `error` | Other failure | Re-check |
+| `local` | (internal rows only) | — |
+
+The Settings panel probes on open, after install, and after enabling a server,
+so status never goes stale silently.
 
 ---
 
