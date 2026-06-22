@@ -14,10 +14,20 @@
 import { t } from 'elysia';
 import { createRouter } from '$shared/utils/ws-server';
 import { debug } from '$shared/utils/logger';
-import { mcpServerQueries, type McpServerRow, type McpTransport } from '$backend/database/queries';
+import { mcpServerQueries, type McpConfigField, type McpServerRow, type McpTransport } from '$backend/database/queries';
 import { slugifyRegistryName, externalNamespace, refreshInternalEnabledCache } from '$backend/mcp';
 
 const TRANSPORT_SCHEMA = t.Union([t.Literal('stdio'), t.Literal('http'), t.Literal('sse')]);
+
+// UI field metadata captured from the catalog at install time. Engines never
+// read this — it only lets "Configure" render the same labelled fields as install.
+const CONFIG_FIELD_SCHEMA = t.Object({
+	name: t.String(),
+	kind: t.Union([t.Literal('env'), t.Literal('header')]),
+	description: t.Optional(t.String()),
+	isRequired: t.Boolean(),
+	isSecret: t.Boolean()
+});
 
 const INSTALLED_SERVER_SCHEMA = t.Object({
 	id: t.Number(),
@@ -30,8 +40,12 @@ const INSTALLED_SERVER_SCHEMA = t.Object({
 	transport: TRANSPORT_SCHEMA,
 	command: t.Union([t.String(), t.Null()]),
 	args: t.Array(t.String()),
-	envKeys: t.Array(t.String()),
-	headerKeys: t.Array(t.String()),
+	// Full values are returned (not redacted): the whole MCP surface is
+	// admin-only (see auth/permissions.ts), and the Settings UI shows values so
+	// admins can review and edit what each engine receives.
+	env: t.Record(t.String(), t.String()),
+	headers: t.Record(t.String(), t.String()),
+	configSchema: t.Array(CONFIG_FIELD_SCHEMA),
 	url: t.Union([t.String(), t.Null()]),
 	source: t.String(),
 	enabled: t.Boolean(),
@@ -40,11 +54,13 @@ const INSTALLED_SERVER_SCHEMA = t.Object({
 
 function toDTO(row: McpServerRow) {
 	let args: string[] = [];
-	let envKeys: string[] = [];
-	let headerKeys: string[] = [];
+	let env: Record<string, string> = {};
+	let headers: Record<string, string> = {};
+	let configSchema: McpConfigField[] = [];
 	try { args = JSON.parse(row.args); } catch { /* ignore */ }
-	try { envKeys = Object.keys(JSON.parse(row.env)); } catch { /* ignore */ }
-	try { headerKeys = Object.keys(JSON.parse(row.headers)); } catch { /* ignore */ }
+	try { env = JSON.parse(row.env); } catch { /* ignore */ }
+	try { headers = JSON.parse(row.headers); } catch { /* ignore */ }
+	try { configSchema = JSON.parse(row.config_schema); } catch { /* ignore */ }
 	return {
 		id: row.id,
 		slug: row.slug,
@@ -56,8 +72,9 @@ function toDTO(row: McpServerRow) {
 		transport: row.transport,
 		command: row.command,
 		args,
-		envKeys,
-		headerKeys,
+		env,
+		headers,
+		configSchema,
 		url: row.url,
 		source: row.source,
 		enabled: row.is_enabled === 1,
@@ -97,6 +114,7 @@ export const mcpCrudHandler = createRouter()
 			url: t.Optional(t.String()),
 			env: t.Optional(t.Record(t.String(), t.String())),
 			headers: t.Optional(t.Record(t.String(), t.String())),
+			configSchema: t.Optional(t.Array(CONFIG_FIELD_SCHEMA)),
 			source: t.Optional(t.Union([t.Literal('registry'), t.Literal('custom')]))
 		}),
 		response: t.Object({ server: INSTALLED_SERVER_SCHEMA })
@@ -123,6 +141,7 @@ export const mcpCrudHandler = createRouter()
 			env: data.env ?? {},
 			url: data.url ?? null,
 			headers: data.headers ?? {},
+			configSchema: data.configSchema ?? [],
 			source: data.source ?? 'registry'
 		});
 		debug.log('mcp', `📥 Installed external MCP server: ${slug}`);

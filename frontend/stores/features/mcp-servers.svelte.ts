@@ -11,6 +11,19 @@ import { debug } from '$shared/utils/logger';
 
 export type McpTransport = 'stdio' | 'http' | 'sse';
 
+/**
+ * A configurable field, captured from the catalog at install time so the
+ * "Configure" modal renders the same labelled fields as install. `kind` decides
+ * whether its value lands in `env` (stdio) or `headers` (remote auth).
+ */
+export interface McpConfigField {
+	name: string;
+	kind: 'env' | 'header';
+	description?: string;
+	isRequired: boolean;
+	isSecret: boolean;
+}
+
 export interface InstalledMcpServer {
 	id: number;
 	slug: string;
@@ -22,8 +35,9 @@ export interface InstalledMcpServer {
 	transport: McpTransport;
 	command: string | null;
 	args: string[];
-	envKeys: string[];
-	headerKeys: string[];
+	env: Record<string, string>;
+	headers: Record<string, string>;
+	configSchema: McpConfigField[];
 	url: string | null;
 	source: string;
 	enabled: boolean;
@@ -65,6 +79,7 @@ export interface InstallPayload {
 	url?: string;
 	env?: Record<string, string>;
 	headers?: Record<string, string>;
+	configSchema?: McpConfigField[];
 	source?: 'registry' | 'custom';
 }
 

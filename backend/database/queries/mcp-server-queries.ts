@@ -18,6 +18,21 @@ import { getDatabase } from '../index';
 export type McpTransport = 'stdio' | 'http' | 'sse';
 export type McpSource = 'registry' | 'custom' | 'internal';
 
+/**
+ * A single configurable field, captured from the registry catalog at install
+ * time so the "Configure" UI can render the same labelled fields it showed at
+ * install. Purely UI metadata — engines read the actual values from
+ * `env`/`headers`, never from here. `kind` decides whether the value lands in
+ * the env map (stdio) or the headers map (remote auth).
+ */
+export interface McpConfigField {
+	name: string;
+	kind: 'env' | 'header';
+	description?: string;
+	isRequired: boolean;
+	isSecret: boolean;
+}
+
 /** Raw DB row. */
 export interface McpServerRow {
 	id: number;
@@ -32,6 +47,7 @@ export interface McpServerRow {
 	env: string;
 	url: string | null;
 	headers: string;
+	config_schema: string;
 	source: McpSource;
 	is_enabled: number;
 	created_at: string;
@@ -49,6 +65,7 @@ export interface McpServerInput {
 	env?: Record<string, string>;
 	url?: string | null;
 	headers?: Record<string, string>;
+	configSchema?: McpConfigField[];
 	source?: McpSource;
 }
 
@@ -82,8 +99,8 @@ export const mcpServerQueries = {
 		const db = getDatabase();
 		const result = db.prepare(
 			`INSERT INTO mcp_servers
-				(slug, name, description, registry_name, version, transport, command, args, env, url, headers, source)
-			 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+				(slug, name, description, registry_name, version, transport, command, args, env, url, headers, config_schema, source)
+			 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
 		).run(
 			input.slug,
 			input.name,
@@ -96,6 +113,7 @@ export const mcpServerQueries = {
 			JSON.stringify(input.env ?? {}),
 			input.url ?? null,
 			JSON.stringify(input.headers ?? {}),
+			JSON.stringify(input.configSchema ?? []),
 			input.source ?? 'registry'
 		) as { lastInsertRowid: number | bigint };
 		const id = Number(result.lastInsertRowid);
