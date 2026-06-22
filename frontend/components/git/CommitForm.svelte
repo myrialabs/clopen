@@ -7,7 +7,14 @@
 	import { settings } from '$frontend/stores/features/settings.svelte';
 	import { projectState } from '$frontend/stores/core/projects.svelte';
 	import { showError } from '$frontend/stores/ui/notification.svelte';
-	import { gitDraft, markGitUiDirty } from '$frontend/stores/features/git-workspace.svelte';
+	import {
+		gitDraft,
+		markGitUiDirty,
+		setCommitDraft,
+		applyGeneratedCommitMessage,
+		getGitOps,
+		setGitOp
+	} from '$frontend/stores/features/git-workspace.svelte';
 	import ws from '$frontend/utils/ws';
 	import GitMoreMenu, { type GitMoreAction } from '$frontend/components/git/GitMoreMenu.svelte';
 
@@ -61,9 +68,16 @@
 	// The commit message draft is per-project and lives in the git workspace
 	// store so it survives remounts and is isolated/restored per project.
 	let textareaEl = $state<HTMLTextAreaElement | null>(null);
-	let isGenerating = $state(false);
-	let isGeneratingBranch = $state(false);
-	let isCreatingBranch = $state(false);
+
+	// Busy flags live in the per-project store so a generation started for one
+	// project keeps its spinner (and clears the right project's flag) even after
+	// the user switches projects mid-run.
+	const activeProjectId = $derived(projectState.currentProject?.id ?? '');
+	const ops = $derived(getGitOps(activeProjectId));
+	const isGenerating = $derived(ops.isGenerating);
+	const isGeneratingBranch = $derived(ops.isGeneratingBranch);
+	const isCreatingBranch = $derived(ops.isCreatingBranch);
+
 	let branchNameDraft = $state('');
 	let showBranchDraft = $state(false);
 	let showGenerateDropdown = $state(false);
@@ -93,7 +107,7 @@
 	function handleCommit() {
 		if (!gitDraft.commitMessage.trim() || stagedCount === 0) return;
 		onCommit(gitDraft.commitMessage.trim());
-		gitDraft.commitMessage = '';
+		setCommitDraft(activeProjectId, '');
 		markGitUiDirty();
 		autoResize();
 	}
@@ -118,9 +132,19 @@
 		textareaEl.style.overflowY = scrollHeight > maxHeight ? 'auto' : 'hidden';
 	}
 
+	// Re-fit the textarea height whenever the message changes from outside a
+	// keystroke — restored on a project/tab switch, filled by AI generation, or
+	// cleared after commit — so a multi-line draft doesn't render stuck at one row.
+	$effect(() => {
+		gitDraft.commitMessage;
+		if (textareaEl) autoResize();
+	});
+
 	function handleInput() {
 		autoResize();
-		// Persist the draft per-project (debounced) so it survives refresh.
+		// Mirror the live edit into the per-project store, then persist (debounced)
+		// so it survives refresh and never leaks across a project switch.
+		setCommitDraft(activeProjectId, gitDraft.commitMessage);
 		markGitUiDirty();
 	}
 
@@ -154,7 +178,7 @@
 		const projectId = projectState.currentProject?.id;
 		if (!projectId || stagedCount === 0 || isGenerating) return;
 
-		isGenerating = true;
+		setGitOp(projectId, 'isGenerating', true);
 		try {
 			const { useCustomModel, engine, provider, modelId, format } = settings.commitGenerator;
 			const resolvedEngine = useCustomModel ? engine : settings.selectedEngine;
@@ -169,14 +193,16 @@
 				format,
 				...(extra && { customPrompt: extra })
 			});
-			gitDraft.commitMessage = result.message;
+			// Route the result to the project it was generated for — only touches
+			// the live commit box if that project is still active.
+			applyGeneratedCommitMessage(projectId, result.message);
 			markGitUiDirty();
 			await tick();
 			autoResize();
 		} catch (err) {
 			showError('Generate Failed', err instanceof Error ? err.message : 'Failed to generate commit message');
 		} finally {
-			isGenerating = false;
+			setGitOp(projectId, 'isGenerating', false);
 		}
 	}
 
@@ -184,7 +210,7 @@
 		const projectId = projectState.currentProject?.id;
 		if (!projectId || stagedCount === 0 || isGeneratingBranch || repoBusy) return;
 
-		isGeneratingBranch = true;
+		setGitOp(projectId, 'isGeneratingBranch', true);
 		try {
 			const { useCustomModel, engine, provider, modelId, branchSeparator, branchConfig } = settings.commitGenerator;
 			const resolvedEngine = useCustomModel ? engine : settings.selectedEngine;
@@ -205,14 +231,15 @@
 		} catch (err) {
 			showError('Generate Branch Failed', err instanceof Error ? err.message : 'Failed to generate branch name');
 		} finally {
-			isGeneratingBranch = false;
+			setGitOp(projectId, 'isGeneratingBranch', false);
 		}
 	}
 
 	async function createGeneratedBranch() {
-		if (!onCreateBranch || !branchNameDraft.trim() || isCreatingBranch) return;
+		const projectId = projectState.currentProject?.id;
+		if (!projectId || !onCreateBranch || !branchNameDraft.trim() || isCreatingBranch) return;
 
-		isCreatingBranch = true;
+		setGitOp(projectId, 'isCreatingBranch', true);
 		try {
 			const created = await onCreateBranch(branchNameDraft.trim());
 			if (created !== false) {
@@ -220,7 +247,7 @@
 				showBranchDraft = false;
 			}
 		} finally {
-			isCreatingBranch = false;
+			setGitOp(projectId, 'isCreatingBranch', false);
 		}
 	}
 </script>
@@ -400,7 +427,7 @@
 			{#if onMoreAction}
 				<!-- More git actions -->
 				<GitMoreMenu
-					disabled={isMoreBusy}
+					isBusy={isMoreBusy}
 					{hasRemotes}
 					{selectedRemote}
 					{currentBranch}

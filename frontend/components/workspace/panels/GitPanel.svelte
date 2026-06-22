@@ -20,6 +20,11 @@
 		captureActiveGitUiState,
 		loadGitUiState,
 		markGitUiDirty,
+		getCommitDraft,
+		setCommitDraft,
+		hasCommitDraft,
+		getGitOps,
+		setGitOp,
 		type GitUiState,
 		type GitActiveDiff
 	} from '$frontend/stores/features/git-workspace.svelte';
@@ -56,7 +61,12 @@
 	let isLoading = $state(false);
 	let gitStatus = $state<GitStatus>({ staged: [], unstaged: [], untracked: [], conflicted: [] });
 	let branchInfo = $state<GitBranchInfo | null>(null);
-	let isCommitting = $state(false);
+
+	// Action-bar busy flags are keyed per-project in the workspace store, so an
+	// operation started for one project keeps its spinner (and clears the right
+	// project's flag) even after the user switches projects mid-run.
+	const ops = $derived(getGitOps(projectId));
+	const isCommitting = $derived(ops.isCommitting);
 
 	// Repo is in a transitional state (detached HEAD or an in-progress operation
 	// like rebase/merge/cherry-pick). Branch-targeted actions (push/pull/merge)
@@ -274,8 +284,51 @@
 	let branchCommitFileState = $state<Record<string, BranchCommitFileState>>({});
 
 	// Contributor state
-	let contributors = $state<{ name: string; email: string; count: number }[]>([]);
+	interface ContributorEntry {
+		/** Grouping key: lowercased email when present, else author name. */
+		key: string;
+		name: string;
+		email: string;
+		count: number;
+		/** ISO date of this contributor's most recent commit (for "active X ago"). */
+		lastDate: string;
+	}
+	let contributors = $state<ContributorEntry[]>([]);
+	// Total commits sampled (denominator for each contributor's share %).
+	let contributorTotal = $state(0);
+	// Raw commit sample, kept so a contributor row can expand to its own commits
+	// without another round-trip.
+	let contributorLog = $state<GitCommit[]>([]);
+	let expandedContributors = $state<Set<string>>(new Set());
 	let isContributorsLoading = $state(false);
+
+	// How many of a contributor's commits are rendered. Paginated client-side
+	// from the in-memory sample (same page size as the Branches commit list) so a
+	// prolific author doesn't mount hundreds of rows at once.
+	const CONTRIBUTOR_COMMIT_PAGE_SIZE = 8;
+	let contributorVisible = $state<Record<string, number>>({});
+
+	function toggleContributor(key: string) {
+		const next = new Set(expandedContributors);
+		if (next.has(key)) {
+			next.delete(key);
+		} else {
+			next.add(key);
+			if (!contributorVisible[key]) {
+				contributorVisible = { ...contributorVisible, [key]: CONTRIBUTOR_COMMIT_PAGE_SIZE };
+			}
+		}
+		expandedContributors = next;
+	}
+
+	function loadMoreContributorCommits(key: string) {
+		const current = contributorVisible[key] ?? CONTRIBUTOR_COMMIT_PAGE_SIZE;
+		contributorVisible = { ...contributorVisible, [key]: current + CONTRIBUTOR_COMMIT_PAGE_SIZE };
+	}
+
+	function contributorCommits(key: string): GitCommit[] {
+		return contributorLog.filter(c => (c.authorEmail || c.author).toLowerCase().trim() === key);
+	}
 
 	// Tab system (like Files panel)
 	interface DiffTab {
@@ -772,10 +825,11 @@
 	// ============================
 
 	async function handleCommit(message: string) {
-		if (!projectId) return;
-		isCommitting = true;
+		const pid = projectId;
+		if (!pid) return;
+		setGitOp(pid, 'isCommitting', true);
 		try {
-			await ws.http('git:commit', { projectId, message });
+			await ws.http('git:commit', { projectId: pid, message });
 			await loadAll();
 			if (activeView === 'log') {
 				await loadLog(true);
@@ -784,7 +838,7 @@
 			debug.error('git', 'Commit failed:', err);
 			showError('Commit Failed', err instanceof Error ? err.message : 'Unknown error');
 		} finally {
-			isCommitting = false;
+			setGitOp(pid, 'isCommitting', false);
 		}
 	}
 
@@ -1309,14 +1363,21 @@
 		isContributorsLoading = true;
 		try {
 		const data = await ws.http('git:log', { projectId, limit: 500, skip: 0 });
-			const map = new Map<string, { name: string; email: string; count: number }>();
+			const map = new Map<string, ContributorEntry>();
 			for (const c of data.commits) {
 				// Group by email when available (one person may commit under several
 				// display names) and fall back to the author name otherwise.
 				const key = (c.authorEmail || c.author).toLowerCase().trim();
 				const existing = map.get(key);
-				if (existing) { existing.count++; } else { map.set(key, { name: c.author.trim(), email: c.authorEmail, count: 1 }); }
+				if (existing) {
+					existing.count++;
+					if (c.date > existing.lastDate) existing.lastDate = c.date;
+				} else {
+					map.set(key, { key, name: c.author.trim(), email: c.authorEmail, count: 1, lastDate: c.date });
+				}
 			}
+			contributorLog = data.commits;
+			contributorTotal = data.commits.length;
 			contributors = [...map.values()].sort((a, b) => b.count - a.count);
 		} catch { /* ignore */ }
 		finally { isContributorsLoading = false; }
@@ -1439,18 +1500,19 @@
 	// Remote Operations
 	// ============================
 
-	let isFetching = $state(false);
-	let isPulling = $state(false);
-	let isPushing = $state(false);
-	let isMoreBusy = $state(false);
+	const isFetching = $derived(ops.isFetching);
+	const isPulling = $derived(ops.isPulling);
+	const isPushing = $derived(ops.isPushing);
+	const isMoreBusy = $derived(ops.isMoreBusy);
 
 	async function handleFetch() {
-		if (!projectId || isFetching) return;
-		isFetching = true;
+		const pid = projectId;
+		if (!pid || isFetching) return;
+		setGitOp(pid, 'isFetching', true);
 		try {
 			const prevAhead = branchInfo?.ahead ?? 0;
 			const prevBehind = branchInfo?.behind ?? 0;
-			await ws.http('git:fetch', { projectId, remote: selectedRemote });
+			await ws.http('git:fetch', { projectId: pid, remote: selectedRemote });
 			await loadBranches();
 			const newAhead = branchInfo?.ahead ?? 0;
 			const newBehind = branchInfo?.behind ?? 0;
@@ -1468,17 +1530,18 @@
 			debug.error('git', 'Fetch failed:', err);
 			showError('Fetch Failed', err instanceof Error ? err.message : 'Unknown error');
 		} finally {
-			isFetching = false;
+			setGitOp(pid, 'isFetching', false);
 		}
 	}
 
 	async function handlePull() {
-		if (!projectId || isPulling) return;
+		const pid = projectId;
+		if (!pid || isPulling) return;
 		if (blockedWhileBusy('pull')) return;
-		isPulling = true;
+		setGitOp(pid, 'isPulling', true);
 		try {
 			const prevBehind = branchInfo?.behind ?? 0;
-			const result = await ws.http('git:pull', { projectId, remote: selectedRemote, branch: branchInfo?.current });
+			const result = await ws.http('git:pull', { projectId: pid, remote: selectedRemote, branch: branchInfo?.current });
 			if (!result.success) {
 				if (result.message.includes('conflict')) {
 					await loadAll();
@@ -1499,17 +1562,18 @@
 			debug.error('git', 'Pull failed:', err);
 			showError('Pull Failed', err instanceof Error ? err.message : 'Unknown error');
 		} finally {
-			isPulling = false;
+			setGitOp(pid, 'isPulling', false);
 		}
 	}
 
 	async function handlePush() {
-		if (!projectId || isPushing) return;
+		const pid = projectId;
+		if (!pid || isPushing) return;
 		if (blockedWhileBusy('push')) return;
-		isPushing = true;
+		setGitOp(pid, 'isPushing', true);
 		try {
 			const prevAhead = branchInfo?.ahead ?? 0;
-			const result = await ws.http('git:push', { projectId, remote: selectedRemote, branch: branchInfo?.current });
+			const result = await ws.http('git:push', { projectId: pid, remote: selectedRemote, branch: branchInfo?.current });
 			if (!result.success) {
 				showError('Push Failed', result.message);
 			} else {
@@ -1524,7 +1588,7 @@
 			debug.error('git', 'Push failed:', err);
 			showError('Push Failed', err instanceof Error ? err.message : 'Unknown error');
 		} finally {
-			isPushing = false;
+			setGitOp(pid, 'isPushing', false);
 		}
 	}
 
@@ -1533,12 +1597,13 @@
 	// ============================
 
 	async function runMore(fn: () => Promise<void>) {
-		if (!projectId || isMoreBusy) return;
-		isMoreBusy = true;
+		const pid = projectId;
+		if (!pid || isMoreBusy) return;
+		setGitOp(pid, 'isMoreBusy', true);
 		try {
 			await fn();
 		} finally {
-			isMoreBusy = false;
+			setGitOp(pid, 'isMoreBusy', false);
 		}
 	}
 
@@ -2130,6 +2195,12 @@ ${bodies}`;
 					commits = [];
 					logSkip = 0;
 					selectedCommit = null;
+					expandedContributors = new Set();
+					contributorVisible = {};
+					contributorLog = [];
+					contributorTotal = 0;
+					expandedBranchCommits = new Set();
+					branchCommitFileState = {};
 
 					// Restore this project's view. Persistence of the LEAVING project
 					// is handled by the workspace coordinator (snapshot provider +
@@ -2140,16 +2211,22 @@ ${bodies}`;
 						activeView = restored.activeView;
 						leftPanelWidth = restored.leftPanelWidth;
 						selectedRemote = restored.selectedRemote;
-						gitDraft.commitMessage = restored.commitMessage;
 						pendingSelectedCommitHash = restored.selectedCommitHash;
 						pendingActiveDiff = restored.activeDiff;
 					} else {
 						activeView = 'changes';
 						selectedRemote = 'origin';
-						gitDraft.commitMessage = '';
 						pendingSelectedCommitHash = null;
 						pendingActiveDiff = null;
 					}
+
+					// Seed the per-project commit draft from the server slice only on
+					// first activation this session — afterwards the in-session store is
+					// authoritative, so an in-flight AI generation's result (which
+					// writes straight to that project's draft) is never clobbered by a
+					// stale restore. Mirror the resolved draft into the live commit box.
+					if (!hasCommitDraft(projectId)) setCommitDraft(projectId, restored?.commitMessage ?? '');
+					gitDraft.commitMessage = getCommitDraft(projectId);
 
 					// Once git status is loaded (isRepo known), re-open the restored
 					// diff tab and load the data behind the restored view. We do this
@@ -2172,7 +2249,7 @@ ${bodies}`;
 			activeView,
 			leftPanelWidth,
 			selectedRemote,
-			commitMessage: gitDraft.commitMessage,
+			commitMessage: getCommitDraft(projectId),
 			selectedCommitHash: selectedCommit?.hash ?? null,
 			activeDiff: activeTab
 				? {
@@ -2990,14 +3067,86 @@ ${bodies}`;
 					<div class="flex flex-col items-center justify-center gap-2 py-8 text-slate-500 text-xs"><Icon name="lucide:users" class="w-6 h-6 opacity-30" /><span>No contributors</span></div>
 				{:else}
 					<div class="space-y-0.5">
-						{#each contributors as c, ci (`${c.email}:${ci}`)}
-							<div class="flex items-center gap-2 px-2.5 py-2 rounded-md hover:bg-slate-100 dark:hover:bg-slate-800/60 transition-colors">
-								<span class="w-6 h-6 rounded-full bg-violet-500/10 text-violet-600 flex items-center justify-center text-xs font-bold flex-shrink-0">{c.name.charAt(0).toUpperCase()}</span>
-								<div class="flex-1 min-w-0">
-									<p class="text-sm text-slate-700 dark:text-slate-300 truncate">{c.name}</p>
-									<p class="text-xs text-slate-400 dark:text-slate-500 truncate">{c.email}</p>
+						{#each contributors as c, ci (`${c.key}:${ci}`)}
+							{@const expanded = expandedContributors.has(c.key)}
+							{@const share = contributorTotal > 0 ? Math.round((c.count / contributorTotal) * 100) : 0}
+							{@const lastActive = formatRelativeTime(c.lastDate)}
+							<div>
+								<div
+									class="flex items-center gap-2 px-2.5 py-2 rounded-md hover:bg-slate-100 dark:hover:bg-slate-800/60 transition-colors cursor-pointer"
+									role="button"
+									tabindex="0"
+									onclick={() => toggleContributor(c.key)}
+									onkeydown={(e) => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); toggleContributor(c.key); } }}
+								>
+									<Icon name={expanded ? 'lucide:chevron-down' : 'lucide:chevron-right'} class="w-3 h-3 shrink-0 text-slate-400" />
+									<div class="flex-1 min-w-0">
+										<div class="flex items-center gap-2 min-w-0">
+											<p class="flex-1 text-sm text-slate-700 dark:text-slate-300 truncate">{c.name}</p>
+											<span class="text-3xs text-slate-400 shrink-0 tabular-nums">{c.count} commit{c.count === 1 ? '' : 's'}{lastActive ? ` · ${lastActive}` : ''}</span>
+										</div>
+										<p class="text-xs text-slate-400 dark:text-slate-500 truncate">{c.email}</p>
+										<div class="flex items-center gap-2">
+											<div class="flex-1 h-1 rounded-full bg-slate-200/70 dark:bg-slate-700/60 overflow-hidden">
+												<div class="h-full rounded-full bg-violet-500/70" style="width: {share}%"></div>
+											</div>
+											<span class="text-3xs text-slate-400 shrink-0 tabular-nums">{share}%</span>
+										</div>
+									</div>
 								</div>
-								<span class="text-xs text-slate-400 flex-shrink-0">{c.count}</span>
+								{#if expanded}
+									{@const list = contributorCommits(c.key)}
+									{@const visible = contributorVisible[c.key] ?? CONTRIBUTOR_COMMIT_PAGE_SIZE}
+									<div class="ml-5 mb-1 border-l border-slate-200 dark:border-slate-700 pl-2 space-y-0.5">
+										{#if list.length === 0}
+											<div class="py-1.5 text-xs text-slate-400">No commits in the sampled history</div>
+										{:else}
+											{#each list.slice(0, visible) as commit (commit.hash)}
+												{@const commitExpanded = expandedBranchCommits.has(commit.hash)}
+												{@const filesState = branchCommitFileState[commit.hash]}
+												{@const rel = formatRelativeTime(commit.date)}
+												<div>
+													<div
+														class="flex items-center gap-1.5 w-full px-2 py-1.5 rounded-md hover:bg-slate-100 dark:hover:bg-slate-800/60 transition-colors cursor-pointer"
+														role="button"
+														tabindex="0"
+														onclick={() => toggleBranchCommitExpanded(commit.hash)}
+														onkeydown={(e) => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); toggleBranchCommitExpanded(commit.hash); } }}
+													>
+														<Icon name={commitExpanded ? 'lucide:chevron-down' : 'lucide:chevron-right'} class="w-3 h-3 shrink-0 text-slate-400" />
+														<div class="flex-1 min-w-0 flex flex-col justify-center overflow-hidden">
+															<div class="flex min-w-0 items-center gap-2">
+																<span class="flex-1 min-w-0 text-sm text-slate-700 dark:text-slate-300 leading-tight truncate" title={commit.message}>{commit.message}</span>
+																{#if rel}<span class="text-3xs text-slate-400 shrink-0">{rel}</span>{/if}
+															</div>
+															<div class="flex min-w-0 items-center gap-1.5 mt-0.5">
+																<button type="button" class="font-mono text-xs text-violet-600 dark:text-violet-400 hover:text-violet-800 dark:hover:text-violet-300 bg-transparent border-none cursor-pointer p-0 shrink-0 transition-colors" onclick={(e) => copyCommitHash(commit.hash, e)} title="Copy commit hash">{commit.hashShort}</button>
+															</div>
+														</div>
+													</div>
+													{#if commitExpanded}
+														<div class="ml-5 mb-1 border-l border-slate-200 dark:border-slate-700 pl-2 space-y-0.5">
+															{#if filesState?.isLoading && filesState.files.length === 0}
+																<div class="flex items-center gap-2 py-1.5 text-xs text-slate-400"><div class="w-3 h-3 border border-slate-400 border-t-transparent rounded-full animate-spin"></div><span>Loading files...</span></div>
+															{:else if !filesState || filesState.files.length === 0}
+																<div class="py-1.5 text-xs text-slate-400">No files</div>
+															{:else}
+																{#each filesState.files as file (`${commit.hash}:${file.oldPath}:${file.newPath}`)}
+																	{@const filePath = file.newPath || file.oldPath}
+																	{@const fileParts = splitPath(filePath)}
+																	<button type="button" class="group/file flex items-center gap-2 w-full px-2 py-1.5 rounded-md text-left hover:bg-slate-100 dark:hover:bg-slate-800/60 transition-colors bg-transparent border-none cursor-pointer" onclick={() => viewCommitFileDiff(file, 0, commit.hash)} title={filePath}><Icon name={getFileIcon(fileParts.fileName) as IconName} class="w-4 h-4 shrink-0" /><div class="flex items-baseline gap-1.5 min-w-0 flex-1"><span class="text-sm text-slate-600 dark:text-slate-300 truncate">{fileParts.fileName}</span>{#if fileParts.dirPath}<span class="text-2xs text-slate-400 dark:text-slate-500 truncate min-w-0" dir="rtl">{fileParts.dirPath}</span>{/if}</div><span class="w-4 text-center text-sm font-bold {getGitStatusColor(file.status)} shrink-0">{getGitStatusLabel(file.status)}</span></button>
+																{/each}
+															{/if}
+														</div>
+													{/if}
+												</div>
+											{/each}
+											{#if visible < list.length}
+												<button type="button" class="flex items-center justify-center gap-2 w-full px-2 py-1.5 text-xs rounded-md text-slate-500 hover:text-violet-500 hover:bg-slate-100 dark:hover:bg-slate-800/60 transition-colors bg-transparent border-none cursor-pointer" onclick={() => loadMoreContributorCommits(c.key)}><span>Load more ({list.length - visible})</span></button>
+											{/if}
+										{/if}
+									</div>
+								{/if}
 							</div>
 						{/each}
 					</div>
@@ -3177,15 +3326,15 @@ ${bodies}`;
 							onclick={() => mergeMode = 'default'}
 							disabled={isMoreBusy}
 						>
-							<span class="mt-0.5 flex h-4 w-4 items-center justify-center rounded-full border {mergeMode === 'default' ? 'border-violet-600 bg-violet-600' : 'border-slate-300 dark:border-slate-600'}">
+							<span class="mt-0.5 flex-none flex h-4 w-4 items-center justify-center rounded-full border {mergeMode === 'default' ? 'border-violet-600 bg-violet-600' : 'border-slate-300 dark:border-slate-600'}">
 								{#if mergeMode === 'default'}
-									<span class="h-1.5 w-1.5 rounded-full bg-white"></span>
+									<span class="flex-none h-1.5 w-1.5 rounded-full bg-white"></span>
 								{/if}
 							</span>
 							<span class="min-w-0">
 								<span class="block text-sm font-semibold text-slate-900 dark:text-slate-100">Default</span>
 								<span class="block text-xs text-slate-500 dark:text-slate-400">
-									Runs <code class="font-mono">git merge &lt;branch&gt;</code>. Git may fast-forward when possible, otherwise it creates a merge commit.
+									Runs <code class="font-mono">git merge {mergeBranchName || '<branch>'}</code>. Git may fast-forward when possible, otherwise it creates a merge commit.
 								</span>
 							</span>
 						</button>
@@ -3199,15 +3348,15 @@ ${bodies}`;
 							onclick={() => mergeMode = 'no-ff'}
 							disabled={isMoreBusy}
 						>
-							<span class="mt-0.5 flex h-4 w-4 items-center justify-center rounded-full border {mergeMode === 'no-ff' ? 'border-violet-600 bg-violet-600' : 'border-slate-300 dark:border-slate-600'}">
+							<span class="mt-0.5 flex-none flex h-4 w-4 items-center justify-center rounded-full border {mergeMode === 'no-ff' ? 'border-violet-600 bg-violet-600' : 'border-slate-300 dark:border-slate-600'}">
 								{#if mergeMode === 'no-ff'}
-									<span class="h-1.5 w-1.5 rounded-full bg-white"></span>
+									<span class="flex-none h-1.5 w-1.5 rounded-full bg-white"></span>
 								{/if}
 							</span>
 							<span class="min-w-0">
 								<span class="block text-sm font-semibold text-slate-900 dark:text-slate-100">--no-ff</span>
 								<span class="block text-xs text-slate-500 dark:text-slate-400">
-									Runs <code class="font-mono">git merge --no-ff &lt;branch&gt;</code>. Always creates a merge commit to preserve branch history.
+									Runs <code class="font-mono">git merge --no-ff {mergeBranchName || '<branch>'}</code>. Always creates a merge commit to preserve branch history.
 								</span>
 							</span>
 						</button>

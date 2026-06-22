@@ -25,6 +25,8 @@
 
 	interface Props {
 		disabled?: boolean;
+		/** A "more" action is running — show a spinner and block the menu, like push/pull. */
+		isBusy?: boolean;
 		hasRemotes?: boolean;
 		selectedRemote?: string;
 		currentBranch?: string;
@@ -33,6 +35,7 @@
 
 	const {
 		disabled = false,
+		isBusy = false,
 		hasRemotes = false,
 		selectedRemote = 'origin',
 		currentBranch,
@@ -76,7 +79,7 @@
 		{
 			label: 'Branch',
 			items: [
-				{ id: 'merge-branch', label: 'Merge Branch', command: 'git merge <branch>', icon: 'lucide:git-merge' }
+				{ id: 'merge-branch', label: 'Merge Branch', command: 'git merge', icon: 'lucide:git-merge' }
 			]
 		},
 		{
@@ -110,7 +113,7 @@
 	let menuStyle = $state('');
 
 	function toggle() {
-		if (disabled) return;
+		if (disabled || isBusy) return;
 		if (!isOpen && buttonEl) {
 			const rect = buttonEl.getBoundingClientRect();
 			const menuHeight = 320;
@@ -151,6 +154,21 @@
 		}
 	}
 
+	// The merge target is the current branch (the source branch is picked in the
+	// modal that opens), so resolve its tooltip/hint to the real branch name
+	// instead of a literal `<branch>` placeholder — consistent with the other rows.
+	function tooltipFor(item: MenuItem): string {
+		if (item.id === 'merge-branch') {
+			return `Merge a branch into ${currentBranch || 'the current branch'}`;
+		}
+		return `${item.label} — ${fullCommand(item)}`;
+	}
+
+	function hintFor(item: MenuItem): string | undefined {
+		if (item.id === 'merge-branch') return currentBranch ? `→ ${currentBranch}` : undefined;
+		return item.hint;
+	}
+
 	function handleSelect(item: MenuItem) {
 		if (isItemDisabled(item)) return;
 		isOpen = false;
@@ -165,12 +183,16 @@
 		class="flex items-center justify-center w-8 h-7 bg-white dark:bg-slate-800/80 border border-slate-200 dark:border-slate-700 rounded-md text-slate-500 cursor-pointer transition-all duration-150 hover:bg-violet-500/10 hover:text-violet-600 dark:hover:text-violet-400 disabled:opacity-50 disabled:cursor-not-allowed
 			{isOpen ? 'bg-violet-500/10 text-violet-600 dark:text-violet-400' : ''}"
 		onclick={toggle}
-		{disabled}
+		disabled={disabled || isBusy}
 		aria-haspopup="menu"
 		aria-expanded={isOpen}
-		title="More git actions"
+		title={isBusy ? 'Running git action…' : 'More git actions'}
 	>
-		<Icon name="lucide:ellipsis-vertical" class="w-3.5 h-3.5" />
+		{#if isBusy}
+			<div class="w-3.5 h-3.5 border-2 border-slate-300/30 border-t-slate-500 rounded-full animate-spin"></div>
+		{:else}
+			<Icon name="lucide:ellipsis-vertical" class="w-3.5 h-3.5" />
+		{/if}
 	</button>
 
 	{#if isOpen}
@@ -189,6 +211,7 @@
 				</div>
 				{#each section.items as item (item.id)}
 					{@const itemDisabled = isItemDisabled(item)}
+					{@const hint = hintFor(item)}
 					<button
 						type="button"
 						role="menuitem"
@@ -200,12 +223,12 @@
 									: 'text-slate-700 dark:text-slate-200 hover:bg-violet-500/10 cursor-pointer'}"
 						onclick={() => handleSelect(item)}
 						disabled={itemDisabled}
-						title={itemDisabled ? 'No remote configured' : `${item.label} — ${fullCommand(item)}`}
+						title={itemDisabled ? 'No remote configured' : tooltipFor(item)}
 					>
 						<Icon name={item.icon} class="w-3.5 h-3.5 flex-shrink-0" />
 						<span class="flex-1 text-xs font-medium truncate">{item.label}</span>
-						{#if item.hint}
-							<span class="text-3xs text-slate-400 dark:text-slate-500 font-mono flex-shrink-0">{item.hint}</span>
+						{#if hint}
+							<span class="text-3xs text-slate-400 dark:text-slate-500 font-mono flex-shrink-0">{hint}</span>
 						{/if}
 					</button>
 				{/each}

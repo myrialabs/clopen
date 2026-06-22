@@ -70,8 +70,87 @@ export function defaultGitUiState(): GitUiState {
 // cache is what previously let a cleared draft clobber the saved one).
 const pending = new Map<string, GitUiState>();
 
-// Commit-message draft for the ACTIVE project, shared with CommitForm.
+// Commit-message draft for the ACTIVE project, shared with CommitForm via a
+// direct `bind:value`. It is only a mirror — the per-project source of truth is
+// `commitDrafts` below, so a generation that finishes after the user switched
+// away routes its result to the originating project, not whatever is active now.
 export const gitDraft = $state<{ commitMessage: string }>({ commitMessage: '' });
+
+// Per-project commit-message drafts, keyed by projectId. In-session source of
+// truth: survives project switches and panel remounts, and lets a background
+// AI generation write back to the project it was started for.
+const commitDrafts = $state<Record<string, string>>({});
+
+/** Whether an in-session draft entry exists for a project (vs never seeded). */
+export function hasCommitDraft(projectId: string): boolean {
+	return projectId in commitDrafts;
+}
+
+/** Read a project's commit draft (empty string when none). */
+export function getCommitDraft(projectId: string): string {
+	return commitDrafts[projectId] ?? '';
+}
+
+/** Write a project's commit draft (and mirror it when that project is active). */
+export function setCommitDraft(projectId: string, message: string): void {
+	if (!projectId) return;
+	commitDrafts[projectId] = message;
+	if (getActiveWorkspaceProjectId() === projectId) gitDraft.commitMessage = message;
+}
+
+/**
+ * Apply an AI-generated commit message to the project it was generated for.
+ * Routes to that project's stored draft and only touches the live mirror when
+ * the project is still the active one — so a generation that finishes after a
+ * project switch never leaks into the current project's commit box.
+ */
+export function applyGeneratedCommitMessage(projectId: string, message: string): void {
+	setCommitDraft(projectId, message);
+}
+
+// ============================================================
+// Per-project git operation flags
+// ============================================================
+//
+// Busy state for the action-bar buttons (commit / push / pull / fetch / more /
+// AI generation). Keyed by projectId so an operation started for one project
+// keeps its spinner — and clears the right project's flag — regardless of which
+// project is active when it resolves.
+export interface GitOpFlags {
+	isCommitting: boolean;
+	isPushing: boolean;
+	isPulling: boolean;
+	isFetching: boolean;
+	isMoreBusy: boolean;
+	isGenerating: boolean;
+	isGeneratingBranch: boolean;
+	isCreatingBranch: boolean;
+}
+
+const NO_OPS: GitOpFlags = Object.freeze({
+	isCommitting: false,
+	isPushing: false,
+	isPulling: false,
+	isFetching: false,
+	isMoreBusy: false,
+	isGenerating: false,
+	isGeneratingBranch: false,
+	isCreatingBranch: false
+});
+
+const gitOps = $state<Record<string, GitOpFlags>>({});
+
+/** Read a project's operation flags (all-false sentinel when none). */
+export function getGitOps(projectId: string): GitOpFlags {
+	return gitOps[projectId] ?? NO_OPS;
+}
+
+/** Set a single operation flag for a project. */
+export function setGitOp(projectId: string, key: keyof GitOpFlags, value: boolean): void {
+	if (!projectId) return;
+	const current = gitOps[projectId] ?? NO_OPS;
+	gitOps[projectId] = { ...current, [key]: value };
+}
 
 let snapshotProvider: (() => GitUiState) | null = null;
 
@@ -139,4 +218,6 @@ registerDock({
 
 registerProjectCleanup((projectId) => {
 	pending.delete(projectId);
+	delete commitDrafts[projectId];
+	delete gitOps[projectId];
 });
