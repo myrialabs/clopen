@@ -21,6 +21,7 @@ import type { EngineAccount } from '$backend/database/queries/engine-queries';
 import { getCleanSpawnEnv } from '$backend/utils/index.js';
 import { debug } from '$shared/utils/logger';
 import { parseQwenCredential, resolveQwenBaseUrl } from './credential';
+import { getQwenRuntimeDir } from './session-fork';
 
 export interface QwenEnvResolution {
 	env: Record<string, string>;
@@ -68,6 +69,12 @@ export function getEngineEnv(accountId?: number): QwenEnvResolution | null {
 
 	env['OPENAI_API_KEY'] = credential.apiKey;
 	env['OPENAI_BASE_URL'] = baseUrl;
+	// Isolate Qwen's runtime output (chats/sessions, history, logs, tmp) to
+	// {clopenDir}/engine/qwen/user/ instead of the shared ~/.qwen. Mirrors the path
+	// the fork helper reads from (see ./session-fork.ts). The CLI's global
+	// settings.json stays in ~/.qwen — there is no env override for it — but
+	// Clopen uses paste-token auth so that file is irrelevant here.
+	env['QWEN_RUNTIME_DIR'] = getQwenRuntimeDir();
 	// Strip any inherited Qwen OAuth hints — if the host shell exports them
 	// the bundled CLI prefers the OAuth path even when API-key env vars are
 	// present, surfacing the "OAuth free tier discontinued" error.

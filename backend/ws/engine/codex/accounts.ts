@@ -46,6 +46,7 @@ import {
 	applyAccountAuth,
 	readAuthJson,
 	serializeCodexCredential,
+	getCodexHomeDir,
 } from '../../../engine/adapters/codex/credential';
 import { resolveBinaryWithRefresh } from '../../../utils/cli';
 import { getCleanSpawnEnv } from '../../../utils/env';
@@ -324,6 +325,8 @@ export const codexAccountsHandler = createRouter()
 			// server. (`BROWSER=false` is honoured by most OS open helpers.)
 			const ptyEnv = getCleanSpawnEnv();
 			ptyEnv['BROWSER'] = 'false';
+			// Write auth.json into Clopen's isolated Codex home, not ~/.codex.
+			ptyEnv['CODEX_HOME'] = getCodexHomeDir();
 
 			let pty: ReturnType<typeof spawn>;
 			try {

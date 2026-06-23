@@ -105,14 +105,18 @@ Three key rules that **every** layer upholds:
 >    URL** by adding a sibling `getXxxMcpConfig()` helper in
 >    `backend/mcp/internal/config.ts`. Do **NOT** propose a "new MCP bridge",
 >    "per-engine MCP server", or "per-stream MCP path". See §9.12.
-> 2. **Shared CLI dotfiles are swapped from DB, not isolated.** When a CLI
->    stores its credentials in a known location (e.g. `~/.codex/auth.json`),
->    the multi-account approach is to snapshot that file into the DB on
->    login and write the chosen account's snapshot back on switch. Do
->    **NOT** propose per-account isolated home directories
->    (`CODEX_HOME=/foo/account-1/`); that path complicates session-state
->    sharing, token refresh persistence, and user-level config inheritance.
->    See §9.13.
+> 2. **Engine home dirs are isolated per-engine (Clopen vs. global), but
+>    multi-account stays DB-swap.** Two different axes — don't conflate them:
+>    - **Clopen vs. the user's global CLI usage:** every engine's home/config
+>      is redirected to `{clopenDir}/engine/{engine}/user/` via that engine's env
+>      var (`CLAUDE_CONFIG_DIR`, `CODEX_HOME`, `COPILOT_HOME` via
+>      `baseDirectory`, `QWEN_RUNTIME_DIR`, `XDG_*` for OpenCode) so Clopen
+>      never touches `~/.codex`, `~/.copilot`, … See §9.19.
+>    - **Multiple accounts *within* Clopen:** still the auth-blob swap — one
+>      shared dotfile inside that isolated home, snapshotted to/from the DB on
+>      login/switch. Do **NOT** propose **per-account** home dirs
+>      (`CODEX_HOME=/foo/account-1/`); that splits session-state, breaks
+>      fork-by-copy, and loses token-refresh persistence. See §9.13.
 
 ---
 

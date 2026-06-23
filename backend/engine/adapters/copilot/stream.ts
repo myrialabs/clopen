@@ -18,7 +18,7 @@ import type { EngineOutput, EngineModel } from '$shared/types/unified';
 import type { AIEngine, EngineQueryOptions, StructuredGenerationOptions } from '../../types';
 import { buildJsonPrompt, extractJson } from '../../structured-helpers';
 import { engineQueries } from '$backend/database/queries/engine-queries';
-import { resolveOsPath } from '$backend/utils/paths';
+import { resolveOsPath, getEngineUserConfigDir } from '$backend/utils/paths';
 import { debug } from '$shared/utils/logger';
 import { getCopilotMcpConfig } from '../../../mcp';
 import { handleStreamError, buildSessionError } from './error-handler';
@@ -123,6 +123,10 @@ export class CopilotEngine implements AIEngine {
 		this.client = new CopilotClient({
 			gitHubToken: account.credential,
 			useLoggedInUser: false,
+			// Isolate Copilot state (session-state, session-store.db, logs) to
+			// {clopenDir}/engine/copilot/user/ instead of the shared ~/.copilot. The SDK
+			// forwards this as COPILOT_HOME to the spawned runtime.
+			baseDirectory: getEngineUserConfigDir('copilot'),
 		});
 
 		await this.client.start();

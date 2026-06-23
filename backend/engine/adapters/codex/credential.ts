@@ -19,11 +19,15 @@
 
 import fs from 'node:fs';
 import path from 'node:path';
-import os from 'node:os';
 import { engineQueries, type EngineAccount } from '../../../database/queries/engine-queries';
+import { getEngineUserConfigDir } from '$backend/utils/paths';
 import { debug } from '$shared/utils/logger';
 
-const CODEX_HOME = path.join(os.homedir(), '.codex');
+// Isolate Codex state (auth.json, sessions) to {clopenDir}/engine/codex/user/ instead
+// of the shared ~/.codex so Clopen never mixes with the user's own Codex CLI
+// usage. The same path is forwarded to every spawned `codex` subprocess via the
+// CODEX_HOME env var (see ./stream.ts and ws/engine/codex/accounts.ts).
+const CODEX_HOME = getEngineUserConfigDir('codex');
 const AUTH_JSON_PATH = path.join(CODEX_HOME, 'auth.json');
 const AUTH_JSON_TMP_PATH = path.join(CODEX_HOME, 'auth.json.tmp');
 

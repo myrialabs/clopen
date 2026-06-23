@@ -11,6 +11,22 @@ export function getClopenDir(): string {
 }
 
 /**
+ * Returns the isolated per-engine config/home directory under
+ * `{clopenDir}/engine/{engine}/user/`.
+ *
+ * Every engine's runtime state (credentials, sessions, logs) is redirected
+ * here via that engine's home/config env var (CLAUDE_CONFIG_DIR, CODEX_HOME,
+ * COPILOT_HOME, QWEN_RUNTIME_DIR, XDG_* for OpenCode) so Clopen never mixes
+ * its data with the user's own global CLI usage (~/.codex, ~/.copilot, …).
+ *
+ * Grouped under an `engine/` parent so all AI-engine state sits in one place,
+ * separate from Clopen's other data dirs (snapshots, etc.).
+ */
+export function getEngineUserConfigDir(engine: string): string {
+	return join(getClopenDir(), 'engine', engine, 'user');
+}
+
+/**
  * Resolve a path to an OS-native absolute path.
  * On Windows: resolves relative paths, prepends drive letter, converts to backslashes.
  * On POSIX: returns path as-is (already absolute from OS perspective).

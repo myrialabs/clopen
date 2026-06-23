@@ -136,6 +136,8 @@ bun run check   # Type checking
 
 When running in development mode, Clopen uses `~/.clopen-dev` instead of `~/.clopen`, keeping dev data separate from any production instance.
 
+Each AI engine's config/state (credentials, sessions, logs) is isolated under `~/.clopen/engine/<engine>/user/` rather than the engine's global location (`~/.codex`, `~/.copilot`, `~/.qwen`, the OpenCode XDG dirs), so Clopen never mixes with — or disturbs — your own standalone CLI usage.
+
 See [CONTRIBUTING.md](CONTRIBUTING.md) for guidelines and [DECISIONS.md](DECISIONS.md) for architectural decisions.
 
 ---

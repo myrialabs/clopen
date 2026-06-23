@@ -34,9 +34,21 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import os from 'node:os';
+import { getEngineUserConfigDir } from '$backend/utils/paths';
 import { debug } from '$shared/utils/logger';
 
-const QWEN_PROJECTS_DIR = path.join(os.homedir(), '.qwen', 'projects');
+/**
+ * Qwen's runtime output base, forwarded to the CLI via `QWEN_RUNTIME_DIR`
+ * (see ./environment.ts). The bundled CLI writes chats under
+ * `<runtimeBase>/projects/<sanitized-cwd>/chats/` (Storage.getProjectDir →
+ * getRuntimeBaseDir), so this helper must resolve to the SAME base the env
+ * var sets or the fork would land in a directory the CLI never reads.
+ */
+export function getQwenRuntimeDir(): string {
+	return getEngineUserConfigDir('qwen');
+}
+
+const QWEN_PROJECTS_DIR = path.join(getQwenRuntimeDir(), 'projects');
 
 /**
  * Mirror of `sanitizeCwd` in @qwen-code/sdk's bundled CLI

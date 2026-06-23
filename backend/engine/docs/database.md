@@ -94,16 +94,19 @@ getProvidersWithAccounts(engineType?) // join used by endpoint listing
   see `streamQuery` in `copilot/stream.ts` and §9.9 below.
 
 > **Pattern: auth-blob materialization for shared CLI dotfiles.**
-> Some CLIs (e.g. Codex's `~/.codex/auth.json`) read credentials from a
-> fixed location on disk that **cannot** be redirected per-process without
-> isolating the entire home dir. For those engines, `credential` stores
-> the **whole file content** as a JSON wrapper
+> Some CLIs (e.g. Codex's `auth.json`) read credentials from a fixed
+> filename inside their home dir. That home dir is isolated to
+> `{clopenDir}/engine/codex/user/` (via `CODEX_HOME` — see §9.19), but it is a
+> **single** dir shared by all of the engine's Clopen accounts, so the
+> dotfile inside it still has to be swapped per account. For those engines,
+> `credential` stores the **whole file content** as a JSON wrapper
 > (`{ kind: 'chatgpt', authJson: '...' }`), and the adapter / WS handler
 > writes that blob back to the shared dotfile on `accounts-switch`. After
 > each stream, snapshot the (possibly-refreshed-by-the-CLI) dotfile back
 > into `engine_accounts.credential` so token refreshes survive across
-> account switches. This keeps multi-account support working without
-> isolated `XYZ_HOME` directories — see §9.13 for the rationale.
+> account switches. This keeps multi-account support working **without**
+> per-account `XYZ_HOME` directories — see §9.13 for the rationale, and
+> §9.19 for the Clopen-vs-global home-dir isolation.
 
 ### 3.4 The models.dev catalog (OpenCode-specific)
 
