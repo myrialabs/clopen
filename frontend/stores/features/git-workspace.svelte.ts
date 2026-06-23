@@ -51,6 +51,10 @@ export interface GitUiState {
 	selectedCommitHash: string | null;
 	/** The diff tab open in the active view (re-fetched lazily). */
 	activeDiff: GitActiveDiff | null;
+	/** Height of the resizable nested repos panel in the Branches view. */
+	nestedReposHeight: number;
+	/** Heights of the resizable nested repos panels in the Branches view. */
+	nestedReposHeights?: Record<string, number>;
 }
 
 export function defaultGitUiState(): GitUiState {
@@ -60,7 +64,9 @@ export function defaultGitUiState(): GitUiState {
 		selectedRemote: 'origin',
 		commitMessage: '',
 		selectedCommitHash: null,
-		activeDiff: null
+		activeDiff: null,
+		nestedReposHeight: 473,
+		nestedReposHeights: {}
 	};
 }
 
@@ -140,16 +146,22 @@ const NO_OPS: GitOpFlags = Object.freeze({
 
 const gitOps = $state<Record<string, GitOpFlags>>({});
 
+function getOpKey(projectId: string, repoPath?: string): string {
+	return repoPath ? `${projectId}::${repoPath}` : projectId;
+}
+
 /** Read a project's operation flags (all-false sentinel when none). */
-export function getGitOps(projectId: string): GitOpFlags {
-	return gitOps[projectId] ?? NO_OPS;
+export function getGitOps(projectId: string, repoPath?: string): GitOpFlags {
+	const key = getOpKey(projectId, repoPath);
+	return gitOps[key] ?? NO_OPS;
 }
 
 /** Set a single operation flag for a project. */
-export function setGitOp(projectId: string, key: keyof GitOpFlags, value: boolean): void {
+export function setGitOp(projectId: string, key: keyof GitOpFlags, value: boolean, repoPath?: string): void {
 	if (!projectId) return;
-	const current = gitOps[projectId] ?? NO_OPS;
-	gitOps[projectId] = { ...current, [key]: value };
+	const opKey = getOpKey(projectId, repoPath);
+	const current = gitOps[opKey] ?? NO_OPS;
+	gitOps[opKey] = { ...current, [key]: value };
 }
 
 let snapshotProvider: (() => GitUiState) | null = null;

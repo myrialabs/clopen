@@ -3,10 +3,12 @@
  */
 
 import { t } from 'elysia';
+import path from 'node:path';
 import { createRouter } from '$shared/utils/ws-server';
 import { gitService } from '../../git/git-service';
 import { findRepoForFile } from '../../snapshot/gitignore';
 import { requireProjectAccess } from '../access';
+import { debug } from '$shared/utils/logger';
 
 const DiffHunkLineSchema = t.Object({
 	type: t.Union([t.Literal('add'), t.Literal('delete'), t.Literal('context'), t.Literal('header')]),
@@ -31,6 +33,22 @@ const FileDiffSchema = t.Object({
 	hunks: t.Array(DiffHunkSchema),
 	isBinary: t.Boolean()
 });
+
+/**
+ * Resolve the working directory for a git operation. Defaults to the project
+ * root; when `repoPath` is provided it must already be inside the project.
+ */
+function resolveRepoCwd(projectPath: string, repoPath: string | undefined): string {
+	if (!repoPath) return projectPath;
+	const resolved = path.resolve(repoPath);
+	const projectRoot = path.resolve(projectPath);
+	const sep = path.sep;
+	if (resolved !== projectRoot && !resolved.startsWith(projectRoot + sep)) {
+		debug.warn('git', `Rejected nested repoPath outside project: ${resolved}`);
+		return projectPath;
+	}
+	return resolved;
+}
 
 export const diffHandler = createRouter()
 	.http('git:diff-unstaged', {
@@ -71,10 +89,12 @@ export const diffHandler = createRouter()
 	.http('git:diff-commit', {
 		data: t.Object({
 			projectId: t.String(),
-			commitHash: t.String()
+			commitHash: t.String(),
+			repoPath: t.Optional(t.String())
 		}),
 		response: t.Array(FileDiffSchema)
 	}, async ({ data, conn }) => {
 		const project = requireProjectAccess(conn, data.projectId);
-		return await gitService.getDiffCommit(project.path, data.commitHash);
+		const cwd = resolveRepoCwd(project.path, data.repoPath);
+		return await gitService.getDiffCommit(cwd, data.commitHash);
 	});

@@ -70,6 +70,26 @@ export interface GitBranchInfo {
 	detached?: boolean;
 	/** The in-progress operation, if any (rebase, merge, …) */
 	operation?: GitOperation | null;
+	/** Nested git repos / submodules under this project */
+	nested?: GitNestedRepoInfo[];
+}
+
+/**
+ * A nested git repo discovered under the project root. Used by the Branches
+ * tab to render one collapsible group per sub-repo, and by branch operations
+ * (create / switch / delete) when the target branch lives inside one of these.
+ */
+export interface GitNestedRepoInfo {
+	/** Absolute path to the nested repo on disk */
+	path: string;
+	/** Path relative to the outer project root, e.g. "packages/web" */
+	relPath: string;
+	/** True when registered in the outer repo's `.gitmodules` */
+	isSubmodule: boolean;
+	/** Branches inside this repo (same shape as the outer repo) */
+	info: GitBranchInfo;
+	/** Populated when the nested repo could not be read (e.g. not initialized) */
+	error?: string;
 }
 
 // ============================================

@@ -35,6 +35,8 @@ import {
 	assertSafeGitRevish,
 	assertSafeGitShowRef
 } from './git-spawn-validation';
+import { findNestedRepoPaths, findSubmodulePaths } from '../snapshot/gitignore';
+import path from 'node:path';
 
 export class GitService {
 	/**
@@ -309,6 +311,44 @@ export class GitService {
 			} catch {
 				// Remote tracking branch doesn't exist — show 0
 			}
+		}
+
+		// Discover nested git repos (submodules, gitignored embedded repos,
+		// worktrees) and aggregate their branch info so the Branches tab can
+		// render one collapsible group per sub-repo. Failures in a single
+		// nested repo must not break the outer result — we record the error
+		// on the entry and move on.
+		try {
+			const [nestedPaths, submodulePaths] = await Promise.all([
+				findNestedRepoPaths(cwd),
+				findSubmodulePaths(cwd)
+			]);
+			if (nestedPaths.length > 0) {
+				const nestedResults = await Promise.all(
+					nestedPaths.map(async (repoPath) => {
+						const relPath = path.relative(cwd, repoPath).replace(/\\/g, '/');
+						const isSubmodule = submodulePaths.has(relPath);
+						try {
+							const info = await this.getBranches(repoPath, selectedRemote);
+							return { path: repoPath, relPath, isSubmodule, info };
+						} catch (err) {
+							const message = err instanceof Error ? err.message : String(err);
+							return {
+								path: repoPath,
+								relPath,
+								isSubmodule,
+								info: { current: '', local: [], remote: [], ahead: 0, behind: 0 },
+								error: message
+							};
+						}
+					})
+				);
+				// Stable order for the UI (sorted by relPath).
+				nestedResults.sort((a, b) => a.relPath.localeCompare(b.relPath));
+				branchInfo.nested = nestedResults;
+			}
+		} catch (err) {
+			debug.warn('git', `Failed to enumerate nested repos: ${err instanceof Error ? err.message : String(err)}`);
 		}
 
 		return branchInfo;

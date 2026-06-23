@@ -176,11 +176,11 @@
 	}
 </script>
 
-<div class="relative" use:clickOutside={close}>
+<div class="relative flex-shrink-0" use:clickOutside={close}>
 	<button
 		bind:this={buttonEl}
 		type="button"
-		class="flex items-center justify-center w-8 h-7 bg-white dark:bg-slate-800/80 border border-slate-200 dark:border-slate-700 rounded-md text-slate-500 cursor-pointer transition-all duration-150 hover:bg-violet-500/10 hover:text-violet-600 dark:hover:text-violet-400 disabled:opacity-50 disabled:cursor-not-allowed
+		class="flex items-center justify-center w-8 h-7 bg-white dark:bg-slate-800/80 border border-slate-200 dark:border-slate-700 rounded-md text-slate-500 cursor-pointer transition-all duration-150 hover:bg-violet-500/10 hover:text-violet-600 dark:hover:text-violet-400 disabled:opacity-50 disabled:cursor-not-allowed flex-shrink-0
 			{isOpen ? 'bg-violet-500/10 text-violet-600 dark:text-violet-400' : ''}"
 		onclick={toggle}
 		disabled={disabled || isBusy}
@@ -189,9 +189,9 @@
 		title={isBusy ? 'Running git action…' : 'More git actions'}
 	>
 		{#if isBusy}
-			<div class="w-3.5 h-3.5 border-2 border-slate-300/30 border-t-slate-500 rounded-full animate-spin"></div>
+			<div class="w-3.5 h-3.5 border-2 border-slate-300/30 border-t-slate-500 rounded-full animate-spin flex-shrink-0"></div>
 		{:else}
-			<Icon name="lucide:ellipsis-vertical" class="w-3.5 h-3.5" />
+			<Icon name="lucide:ellipsis-vertical" class="w-3.5 h-3.5 flex-shrink-0" />
 		{/if}
 	</button>
 

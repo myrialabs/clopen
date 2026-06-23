@@ -112,6 +112,20 @@ Rules:
 - Do not include ticket IDs unless they appear in the diff`;
 }
 
+import path from 'node:path';
+
+function resolveRepoCwd(projectPath: string, repoPath: string | undefined): string {
+	if (!repoPath) return projectPath;
+	const resolved = path.resolve(repoPath);
+	const projectRoot = path.resolve(projectPath);
+	const sep = path.sep;
+	if (resolved !== projectRoot && !resolved.startsWith(projectRoot + sep)) {
+		debug.warn('git', `Rejected nested repoPath outside project: ${resolved}`);
+		return projectPath;
+	}
+	return resolved;
+}
+
 export const branchNameHandler = createRouter()
 	.http('git:generate-branch-name', {
 		data: t.Object({
@@ -121,15 +135,17 @@ export const branchNameHandler = createRouter()
 			modelId: t.String(),
 			branchSeparator: t.Optional(t.String()),
 			maxWords: t.Optional(t.Number()),
-			customPrompt: t.Optional(t.String())
+			customPrompt: t.Optional(t.String()),
+			repoPath: t.Optional(t.String())
 		}),
 		response: t.Object({
 			branchName: t.String()
 		})
 	}, async ({ data, conn }) => {
 		const project = requireProjectAccess(conn, data.projectId);
+		const cwd = resolveRepoCwd(project.path, data.repoPath);
 
-		const diffResult = await execGit(['diff', '--cached'], project.path);
+		const diffResult = await execGit(['diff', '--cached'], cwd);
 		const rawDiff = diffResult.stdout;
 
 		if (!rawDiff.trim()) {
@@ -143,7 +159,7 @@ export const branchNameHandler = createRouter()
 			throw new Error(`Engine "${engineType}" does not support structured generation`);
 		}
 
-		const branchResult = await execGit(['branch', '--show-current'], project.path);
+		const branchResult = await execGit(['branch', '--show-current'], cwd);
 		const currentBranch = branchResult.stdout.trim();
 		const prefix = getBranchPrefix(currentBranch);
 		const separator = normalizeBranchSeparator(data.branchSeparator);
@@ -158,7 +174,7 @@ export const branchNameHandler = createRouter()
 			providerSlug: data.providerSlug,
 			modelId: data.modelId,
 			schema: BRANCH_NAME_SCHEMA,
-			projectPath: project.path
+			projectPath: cwd
 		});
 
 		const description = sanitizeBranchDescription(result.description, data.maxWords ?? MAX_BRANCH_DESCRIPTION_WORDS);

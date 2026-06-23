@@ -43,6 +43,19 @@ const COMMIT_MESSAGE_SCHEMA = {
 	},
 	required: ['type', 'scope', 'subject', 'body']
 };
+import path from 'node:path';
+
+function resolveRepoCwd(projectPath: string, repoPath: string | undefined): string {
+	if (!repoPath) return projectPath;
+	const resolved = path.resolve(repoPath);
+	const projectRoot = path.resolve(projectPath);
+	const sep = path.sep;
+	if (resolved !== projectRoot && !resolved.startsWith(projectRoot + sep)) {
+		debug.warn('git', `Rejected nested repoPath outside project: ${resolved}`);
+		return projectPath;
+	}
+	return resolved;
+}
 
 export const commitMessageHandler = createRouter()
 	.http('git:generate-commit-message', {
@@ -52,16 +65,18 @@ export const commitMessageHandler = createRouter()
 			providerSlug: t.String(),
 			modelId: t.String(),
 			format: t.Union([t.Literal('single-line'), t.Literal('multi-line')]),
-			customPrompt: t.Optional(t.String())
+			customPrompt: t.Optional(t.String()),
+			repoPath: t.Optional(t.String())
 		}),
 		response: t.Object({
 			message: t.String()
 		})
 	}, async ({ data, conn }) => {
 		const project = requireProjectAccess(conn, data.projectId);
+		const cwd = resolveRepoCwd(project.path, data.repoPath);
 
 		// Get raw staged diff text
-		const diffResult = await execGit(['diff', '--cached'], project.path);
+		const diffResult = await execGit(['diff', '--cached'], cwd);
 		const rawDiff = diffResult.stdout;
 
 		if (!rawDiff.trim()) {
@@ -102,7 +117,7 @@ ${rawDiff}`;
 			providerSlug: data.providerSlug,
 			modelId: data.modelId,
 			schema: COMMIT_MESSAGE_SCHEMA,
-			projectPath: project.path
+			projectPath: cwd
 		});
 
 		// Format structured output into conventional commit string

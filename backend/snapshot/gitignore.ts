@@ -66,6 +66,57 @@ export async function findNestedRepoPaths(rootPath: string): Promise<string[]> {
 }
 
 /**
+ * Read the outer repo's `.gitmodules` file and return the set of relative
+ * submodule paths. Returns an empty set when the file is missing or unreadable
+ * (e.g. the project isn't a git repo at all, or has no submodules).
+ *
+ * The format is INI-like:
+ *   [submodule "vendor/foo"]
+ *           path = vendor/foo
+ *           url = git@example.com:vendor/foo.git
+ *
+ * The `path =` value is what we return — the directory inside the project root
+ * where the submodule is checked out. If a section omits `path =`, git falls
+ * back to the section name; we mirror that.
+ */
+export async function findSubmodulePaths(rootPath: string): Promise<Set<string>> {
+	const out = new Set<string>();
+	let raw: string;
+	try {
+		raw = await fs.readFile(path.join(rootPath, '.gitmodules'), 'utf8');
+	} catch {
+		return out; // file missing → no submodules
+	}
+
+	// Two-pass parse: collect per-section { name, path? } then resolve.
+	// Single-pass is simpler but needs careful handling of the implicit
+	// section-name fallback; the two-pass version reads more clearly.
+	const sections: Array<{ name: string; path?: string }> = [];
+	let current: { name: string; path?: string } | null = null;
+	for (const line of raw.split(/\r?\n/)) {
+		const trimmed = line.trim();
+		if (!trimmed || trimmed.startsWith('#')) continue;
+
+		const sectionMatch = trimmed.match(/^\[submodule\s+"([^"]+)"\]\s*$/);
+		if (sectionMatch) {
+			if (current) sections.push(current);
+			current = { name: sectionMatch[1] };
+			continue;
+		}
+		if (!current) continue;
+
+		const pathMatch = trimmed.match(/^path\s*=\s*(.+?)\s*$/);
+		if (pathMatch) current.path = pathMatch[1].replace(/\\/g, '/');
+	}
+	if (current) sections.push(current);
+
+	for (const s of sections) {
+		out.add(s.path ?? s.name);
+	}
+	return out;
+}
+
+/**
  * Given a file path relative to the project root, find the deepest nested
  * git repo that contains it. Returns the repo's absolute path and the file
  * path relative to that repo, or `null` if the file lives in the outer repo.
