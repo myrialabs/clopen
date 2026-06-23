@@ -10,17 +10,17 @@
 import { join } from 'path';
 import { engineQueries } from '../../../database/queries';
 import { debug } from '$shared/utils/logger';
-import { getCleanSpawnEnv, getClopenDir } from '../../../utils/index.js';
+import { getCleanSpawnEnv, getEngineUserConfigDir } from '../../../utils/index.js';
 
 let _ready = false;
 let _initPromise: Promise<void> | null = null;
 let _envOverrides: Record<string, string> = {};
 
 /**
- * Returns the isolated Claude config directory under {clopenDir}/claude/user/
+ * Returns the isolated Claude config directory under {clopenDir}/engine/claude/user/
  */
 export function getClaudeUserConfigDir(): string {
-  return join(getClopenDir(), 'claude', 'user');
+  return getEngineUserConfigDir('claude');
 }
 
 /**

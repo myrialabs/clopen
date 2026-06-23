@@ -204,7 +204,16 @@ export class GitService {
 
 	async getDiffCommit(cwd: string, commitHash: string): Promise<GitFileDiff[]> {
 		assertSafeGitRevish(commitHash, 'commit hash');
-		const result = await execGit(['diff', `${commitHash}^`, commitHash], cwd);
+		// Root commits have no parent, so `<hash>^` can't resolve and `git diff`
+		// fails silently (empty stdout) — which previously surfaced as "No files
+		// changed". Detect the parentless case and diff against the empty tree via
+		// `diff-tree --root` so the initial commit's files show up as additions.
+		// Commits with a parent (including merges) keep the original behaviour.
+		const hasParent =
+			(await execGit(['rev-parse', '--verify', '--quiet', `${commitHash}^`], cwd)).exitCode === 0;
+		const result = hasParent
+			? await execGit(['diff', `${commitHash}^`, commitHash], cwd)
+			: await execGit(['diff-tree', '-p', '--root', '--no-commit-id', commitHash], cwd);
 		return parseDiff(result.stdout);
 	}
 

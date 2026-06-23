@@ -271,15 +271,19 @@ surface as.
 the filename, not a directory name:
 
 ```
-~/.codex/sessions/<YYYY>/<MM>/<DD>/rollout-<TIMESTAMP>-<thread_id>.jsonl
+<CODEX_HOME>/sessions/<YYYY>/<MM>/<DD>/rollout-<TIMESTAMP>-<thread_id>.jsonl
 ```
+
+where `<CODEX_HOME>` is Clopen's isolated `{clopenDir}/engine/codex/user/` (§9.19),
+**not** `~/.codex` — the helper reads it via `getCodexHomeDir()`, so it
+tracks the isolated dir automatically.
 
 The fork helper walks the date-tree to find the source by
 `-<thread_id>.jsonl` suffix, copies it into TODAY's `YYYY/MM/DD` dir
 under a new `rollout-<now>-<forkId>.jsonl` filename, and replaces every
 occurrence of the source id (UUIDs don't collide with other content in
 the file). Earlier versions of `codex/session-fork.ts` mistakenly
-assumed a directory layout (`~/.codex/sessions/<thread_id>/`) — the
+assumed a directory layout (`<CODEX_HOME>/sessions/<thread_id>/`) — the
 result was a permanently-broken fork because `sessionStateExists()`
 never matched. If you change the helper, watch for that regression.
 
@@ -289,8 +293,12 @@ project's cwd via the SDK's `sanitizeCwd()`
 (`cwd.replace(/[^a-zA-Z0-9]/g, '-')`, lowercased on win32):
 
 ```
-~/.qwen/projects/<sanitized-cwd>/chats/<sessionId>.jsonl
+<QWEN_RUNTIME_DIR>/projects/<sanitized-cwd>/chats/<sessionId>.jsonl
 ```
+
+where `<QWEN_RUNTIME_DIR>` is Clopen's isolated `{clopenDir}/engine/qwen/user/`
+(§9.19), **not** `~/.qwen` — both the env var and the fork helper
+(`getQwenRuntimeDir()`) resolve to the same base, so they stay in sync.
 
 Every record line carries a `sessionId` field equal to the file's
 basename. The fork helper copies the file to
@@ -444,28 +452,34 @@ What you must NOT do:
 - ❌ A local type alias when the SDK exports the type (Open Code,
   Copilot). Import `McpRemoteConfig` / `MCPHTTPServerConfig` directly.
 
-### 9.13 Auth-blob swap into a shared CLI dotfile (vs. per-account isolated dirs)
+### 9.13 Auth-blob swap into a shared CLI dotfile (vs. **per-account** isolated dirs)
+
+> **Scope:** this section is about multiple accounts *within* Clopen. The
+> orthogonal question — keeping Clopen's whole footprint out of the user's
+> global `~/.codex` / `~/.copilot` — is **§9.19**, and there the answer is
+> the opposite: we DO override the home env var, but with **one dir per
+> engine shared by all accounts**, not one per account.
 
 When a CLI hard-codes its credential location (Codex reads
-`~/.codex/auth.json`; Gemini CLI reads `~/.gemini/oauth_creds.json`;
-etc.), the naïve approach is to give each Clopen account its own
+`<CODEX_HOME>/auth.json`; Gemini CLI reads `~/.gemini/oauth_creds.json`;
+etc.), the naïve approach is to give **each Clopen account** its own
 isolated home directory and override the CLI's home env var
-(`CODEX_HOME`, `GEMINI_HOME`). **Don't.** That approach has bitten us:
+(`CODEX_HOME=/foo/account-1/`, `/foo/account-2/`, …). **Don't.** A
+*per-account* split has bitten us:
 
-- Session/thread state lives in the same dir tree (`~/.codex/sessions/`,
-  `~/.codex/projects/`), so isolating the dir splits session memory,
-  breaks fork-by-copy, and loses the user's `config.toml` overrides.
+- Session/thread state lives in the same dir tree (`<CODEX_HOME>/sessions/`,
+  `<CODEX_HOME>/projects/`), so a per-account split fragments session
+  memory and breaks fork-by-copy across accounts.
 - Token refresh happens in-place in the dotfile — refreshes performed
-  inside an isolated dir do not propagate back to the user's "real"
-  home unless we add a watcher.
-- The CLI's other features (e.g. project trust, `.agents` allowlist)
-  expect the dir to be the user's normal one.
+  under account A's dir don't reach account B.
 
-**Use the shared-location-with-DB-swap pattern instead:**
+Instead, all Clopen accounts for an engine share the **single** isolated
+home from §9.19, and multi-account is handled by swapping the one dotfile
+inside it to/from the DB:
 
 | Step | Behavior |
 |---|---|
-| **Login** | Spawn the CLI's login command (`codex login`, etc.) which writes the user's normal dotfile. On success, **read the dotfile content** and persist it to `engine_accounts.credential` as a JSON wrapper, e.g. `{ kind: 'chatgpt', authJson: '<file content>' }`. |
+| **Login** | Spawn the CLI's login command (`codex login`, etc.) — run with the isolated home env var set (e.g. `CODEX_HOME`) so it writes the dotfile inside `{clopenDir}/engine/{engine}/user/`, not `~`. On success, **read the dotfile content** and persist it to `engine_accounts.credential` as a JSON wrapper, e.g. `{ kind: 'chatgpt', authJson: '<file content>' }`. |
 | **Switch account** | `accounts-switch` handler reads the chosen account's `credential`, parses the wrapper, writes `authJson` **back to the shared dotfile** with an atomic replace (`write to .tmp` + `rename`). |
 | **Stream-start** | Adapter ensures the dotfile reflects the right blob (re-write if drift detected; cheap idempotent op). |
 | **Stream-end** | Read the dotfile back and snapshot it into the active account's `credential` so any token refresh the CLI performed during the turn survives across switches. |
@@ -772,4 +786,91 @@ What you must NOT do:
   injects the bearer into every engine, Codex included.
 
 ---
+
+### 9.19 Per-engine config-dir isolation (`{clopenDir}/engine/{engine}/user/`)
+
+Every engine's CLI/SDK writes runtime state (credentials, session/rollout
+files, logs, caches) to a home dir. Left at the default, that dir is the
+user's **global** one — `~/.codex`, `~/.copilot`, `~/.config/opencode` +
+`~/.local/share/opencode`, `~/.qwen` — so Clopen's activity gets mixed in
+with the user's own standalone CLI usage. We isolate each engine to
+`{clopenDir}/engine/{engine}/user/` (where `clopenDir` is `~/.clopen`, or
+`~/.clopen-dev` in development) via that engine's home env var. The
+`engine/` parent groups all AI-engine state in one place, separate from
+Clopen's other data dirs (`{clopenDir}/snapshots/`, the DB, …). The helper
+is `getEngineUserConfigDir(engine)` in `backend/utils/paths.ts` — one
+source of truth; do not hand-join the path.
+
+| Engine | Lever | Where set |
+|---|---|---|
+| Claude | `CLAUDE_CONFIG_DIR` | `claude/environment.ts` (`getClaudeUserConfigDir()` → helper) |
+| Codex | `CODEX_HOME` | `codex/credential.ts` (`CODEX_HOME` const) **+** the SDK's `env` in `codex/stream.ts` **+** the `codex login` PTY env in `ws/engine/codex/accounts.ts` |
+| Copilot | `baseDirectory` (SDK sets `COPILOT_HOME`) | `copilot/stream.ts` `new CopilotClient({ baseDirectory })` |
+| Qwen | `QWEN_RUNTIME_DIR` | `qwen/environment.ts` **+** `getQwenRuntimeDir()` in `qwen/session-fork.ts` |
+| OpenCode | `XDG_DATA_HOME` / `XDG_CONFIG_HOME` / `XDG_STATE_HOME` / `XDG_CACHE_HOME` | `opencode/server.ts` spawn env |
+
+Sharp edges, each of which silently defeats isolation if missed:
+
+- **Codex SDK drops `process.env` when you pass `env`.** `@openai/codex-sdk`
+  docs: *"When provided, the SDK will not inherit variables from
+  `process.env`."* So you must pass the **full** `getCleanSpawnEnv()` and
+  layer `CODEX_HOME` on top — passing `{ CODEX_HOME }` alone strips `PATH`,
+  `HOME`, etc. and the subprocess fails to launch.
+- **Set `CODEX_HOME` in every spawn site, not just the SDK.** `codex login`
+  runs in a separate PTY (`ws/engine/codex/accounts.ts`); without
+  `CODEX_HOME` there, the OAuth `auth.json` lands in `~/.codex` while the
+  stream reads the isolated dir → "logged in but not authenticated".
+- **Keep the fork helper's base in lockstep with the env var.** Codex's
+  `session-fork.ts` reads `getCodexHomeDir()` and Qwen's reads
+  `getQwenRuntimeDir()` — both resolve to the same isolated base the env
+  var sets. If they drift, `sessionStateExists()` returns false and
+  multi-branch checkpoints break (see §9.10).
+- **Qwen isolation is partial — and that's accepted.** `QWEN_RUNTIME_DIR`
+  relocates runtime output (chats/sessions, history, logs, tmp) but the
+  CLI's global `settings.json` / OAuth creds still resolve to `~/.qwen`
+  (`Storage.getGlobalQwenDir()`, no env override). Harmless here: Clopen
+  uses paste-token auth, so those files are never written by our path.
+- **OpenCode honors all four XDG bases and appends `/opencode` to each.**
+  Setting `XDG_{DATA,CONFIG,STATE,CACHE}_HOME` to the isolated dir lands its
+  state at `{clopenDir}/engine/opencode/user/opencode/…` (the extra
+  `opencode/` segment is the XDG app-name namespace — unavoidable, and there
+  is no single "data dir" env that skips it). Credentials + MCP config are
+  injected via `OPENCODE_CONFIG_CONTENT`, so the isolated data dir starts
+  empty and needs no auth file carried over.
+- **OpenCode reuses a persisted server — guard reuse on the data dir.**
+  `opencode/server.ts` caches the live server's URL in the `settings` table
+  (`opencode.server.url`) and reuses it across reconnects/restarts. A reused
+  server keeps the env (and thus the data dir) it was **spawned** with, so a
+  server left over from before isolation — or from a different isolation path
+  — would silently keep writing to the old location even though the env is
+  now correct. The fix: persist the spawned data dir as
+  `opencode.server.datadir` and **refuse to reuse** when it ≠ the current
+  `getEngineUserConfigDir('opencode')`; respawn instead. This was the actual
+  bug behind "every engine isolated except OpenCode" — the binary respected
+  XDG fine; a stale reused server was the culprit. Symptom to watch for: data
+  still landing in `~/.local/share/opencode` after the env looks right.
+
+**This is orthogonal to multi-account (§9.13).** All of an engine's Clopen
+accounts share this **one** isolated dir; multiple accounts inside it are
+still the auth-blob swap, **not** a dir per account.
+
+**Two different "migration" questions — keep them apart:**
+
+- **From the user's *global* dir (`~/.codex`, …) → no migration.** Forward-only
+  by design: conversations created before isolation keep their session/rollout
+  files in the global dir and lose engine-side resume continuity after the
+  switch (the message history in Clopen's own DB is unaffected and still
+  renders). Credentials are safe — they live in `engine_accounts.credential`
+  and re-materialize into the isolated dir on next use. A clean-cut switch was
+  chosen over copying because the shared-SQLite engines (Copilot's
+  `session-store.db`, OpenCode's monolithic `opencode.db`) interleave Clopen
+  and standalone sessions in one file, with no safe per-session extraction.
+- **Between Clopen's *own* isolated layouts → yes, migrated.** An earlier build
+  used `{clopenDir}/{engine}/user/` (no `engine/` parent). Migration
+  `043_relocate_engine_config_dirs.ts` moves any such dir to the current
+  `{clopenDir}/engine/{engine}/user/`. This is always safe — it only ever
+  touches a path Clopen created, never the user's global home — and idempotent
+  (skips when the new dir already exists; non-fatal on error). It also clears
+  the persisted `opencode.server.{url,datadir}` so a server cached against the
+  pre-move dir is re-spawned into the relocated one.
 

@@ -199,7 +199,11 @@ export const mcpCrudHandler = createRouter()
 		data: t.Object({
 			id: t.Number(),
 			env: t.Optional(t.Record(t.String(), t.String())),
-			headers: t.Optional(t.Record(t.String(), t.String()))
+			headers: t.Optional(t.Record(t.String(), t.String())),
+			// stdio only: repair an incomplete registry command (e.g. a missing
+			// `mcp` subcommand). Ignored for remote servers.
+			command: t.Optional(t.String()),
+			args: t.Optional(t.Array(t.String()))
 		}),
 		response: t.Object({ server: INSTALLED_SERVER_SCHEMA })
 	}, async ({ data }) => {
@@ -216,6 +220,13 @@ export const mcpCrudHandler = createRouter()
 		try { configSchema = JSON.parse(existing.config_schema); } catch { /* ignore */ }
 		assertRequiredConfig(configSchema, env, headers);
 		mcpServerQueries.updateConfig(data.id, env, headers);
+		// Persist an edited command/args for stdio servers (drop blank arg tokens).
+		if (existing.transport === 'stdio' && (data.command !== undefined || data.args !== undefined)) {
+			const command = (data.command ?? existing.command ?? '').trim();
+			if (!command) throw new Error('A stdio MCP server requires a command');
+			const args = (data.args ?? []).map(a => a.trim()).filter(a => a !== '');
+			mcpServerQueries.updateCommand(data.id, command, args);
+		}
 		debug.log('mcp', `🔧 Updated config for external MCP server: ${existing.slug}`);
 		return { server: toDTO(mcpServerQueries.getById(data.id)!) };
 	})

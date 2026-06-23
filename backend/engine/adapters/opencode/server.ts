@@ -17,10 +17,16 @@ import { getOpenCodeMcpConfig } from '../../../mcp';
 import { settingsQueries } from '../../../database/queries';
 import { generateOpenCodeProviderConfig } from './config';
 import { resolveBinaryWithRefresh } from '$backend/utils/cli';
+import { getEngineUserConfigDir } from '$backend/utils/paths';
 import { debug } from '$shared/utils/logger';
 
 const OPENCODE_HOST = '127.0.0.1';
 const DB_KEY = 'opencode.server.url';
+// The isolated data dir the persisted server was spawned with. A reused server
+// inherits the env it was spawned with, so if our target dir has changed (code
+// update that moves the isolation path, or a server left over from before
+// isolation existed) we must NOT reuse it — respawn into the right dir instead.
+const DB_KEY_DATADIR = 'opencode.server.datadir';
 const HEALTH_TIMEOUT = 1500;
 const SERVER_START_TIMEOUT = 30_000; // 30s — generous for slow devices
 
@@ -76,6 +82,7 @@ export async function ensureClient(): Promise<OpencodeClient> {
 		// Do NOT clear initPromise — another caller may have started one
 		debug.log('engine', 'Open Code server disconnected, recovering...');
 		settingsQueries.delete(DB_KEY);
+		settingsQueries.delete(DB_KEY_DATADIR);
 		clearClientState();
 	}
 
@@ -99,12 +106,24 @@ export async function ensureClient(): Promise<OpencodeClient> {
 async function init(): Promise<void> {
 	debug.log('engine', 'Initializing Open Code client...');
 
-	// 1. Try to reuse an existing server persisted in DB
+	// Isolate OpenCode's state (opencode.db, snapshots, logs, config) to
+	// {clopenDir}/engine/opencode/user/ instead of the shared XDG dirs
+	// (~/.local/share/opencode, ~/.config/opencode) so Clopen never mixes with
+	// the user's own OpenCode CLI usage. OpenCode follows the XDG base-dir spec
+	// and appends `/opencode` to each base. Credentials + MCP config are injected
+	// via OPENCODE_CONFIG_CONTENT, so no auth file needs to carry over.
+	const opencodeUserDir = getEngineUserConfigDir('opencode');
+
+	// 1. Try to reuse an existing server persisted in DB — but only if it was
+	// spawned with the SAME isolated data dir we'd use now. A mismatch means the
+	// stored server points at a stale location (pre-isolation, or a moved path);
+	// reusing it would silently keep writing to the wrong dir.
 	const stored = settingsQueries.get(DB_KEY);
+	const storedDataDir = settingsQueries.get(DB_KEY_DATADIR)?.value;
 	if (stored?.value) {
 		debug.log('engine', `Found stored Open Code server: ${stored.value}, checking...`);
 
-		if (await isServerAlive(stored.value)) {
+		if (storedDataDir === opencodeUserDir && await isServerAlive(stored.value)) {
 			const { createOpencodeClient } = await import('@opencode-ai/sdk');
 			client = createOpencodeClient({ baseUrl: stored.value });
 			serverHandle = { url: stored.value, close() {} };
@@ -114,8 +133,13 @@ async function init(): Promise<void> {
 			return;
 		}
 
-		debug.log('engine', 'Stored server not responding, spawning new one...');
+		if (storedDataDir !== opencodeUserDir) {
+			debug.log('engine', `Stored Open Code server data dir mismatch (${storedDataDir ?? 'unknown'} ≠ ${opencodeUserDir}), spawning fresh...`);
+		} else {
+			debug.log('engine', 'Stored server not responding, spawning new one...');
+		}
 		settingsQueries.delete(DB_KEY);
+		settingsQueries.delete(DB_KEY_DATADIR);
 	}
 
 	// 2. Spawn a new server via Bun.spawn with absolute binary path.
@@ -172,7 +196,7 @@ async function init(): Promise<void> {
 		? JSON.stringify(mergedConfig)
 		: '{}';
 
-	debug.log('engine', `Spawning: ${args.join(' ')}`);
+	debug.log('engine', `Spawning: ${args.join(' ')} (data dir: ${opencodeUserDir})`);
 
 	const proc = Bun.spawn(args, {
 		stdout: 'pipe',
@@ -180,6 +204,10 @@ async function init(): Promise<void> {
 		env: {
 			...process.env,
 			...providerConfig.envVars,
+			XDG_DATA_HOME: opencodeUserDir,
+			XDG_CONFIG_HOME: opencodeUserDir,
+			XDG_STATE_HOME: opencodeUserDir,
+			XDG_CACHE_HOME: opencodeUserDir,
 			OPENCODE_CONFIG_CONTENT: configContent,
 		},
 	});
@@ -243,7 +271,8 @@ async function init(): Promise<void> {
 	ready = true;
 
 	settingsQueries.set(DB_KEY, url);
-	debug.log('engine', `Open Code client ready (server: ${url})`);
+	settingsQueries.set(DB_KEY_DATADIR, opencodeUserDir);
+	debug.log('engine', `Open Code client ready (server: ${url}, data dir: ${opencodeUserDir})`);
 }
 
 export function getClient(): OpencodeClient | null {
@@ -285,6 +314,7 @@ export async function disposeOpenCodeClient(forRestart = false): Promise<void> {
 					}
 				}
 				settingsQueries.delete(DB_KEY);
+				settingsQueries.delete(DB_KEY_DATADIR);
 			} catch (error) {
 				debug.error('engine', 'Error stopping Open Code server:', error);
 			}
@@ -292,6 +322,7 @@ export async function disposeOpenCodeClient(forRestart = false): Promise<void> {
 	} else if (forRestart) {
 		// No active handle but forRestart requested — ensure DB is clean
 		settingsQueries.delete(DB_KEY);
+		settingsQueries.delete(DB_KEY_DATADIR);
 	}
 
 	clearClientState();

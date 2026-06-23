@@ -26,6 +26,7 @@ import { extractJson } from '../../structured-helpers';
 import { engineQueries } from '$backend/database/queries/engine-queries';
 import { resolveOsPath } from '$backend/utils/paths';
 import { resolveBinary } from '$backend/utils/cli';
+import { getCleanSpawnEnv } from '$backend/utils/index.js';
 import { getCodexMcpConfig } from '../../../mcp';
 import { CODEX_MODELS } from './models';
 import { debug } from '$shared/utils/logger';
@@ -44,6 +45,7 @@ import {
 	parseCodexCredential,
 	applyAccountAuth,
 	snapshotAuthJsonToActiveAccount,
+	getCodexHomeDir,
 } from './credential';
 import { forkCodexSessionState, sessionStateExists } from './session-fork';
 import path from 'node:path';
@@ -103,9 +105,13 @@ export class CodexEngine implements AIEngine {
 		// `workspace-write` sandbox relies on platform primitives (Seatbelt on
 		// macOS, Landlock on Linux) that are absent on Windows, where the CLI
 		// degrades to read-only — using full-access keeps behaviour consistent.
+		// The SDK does NOT inherit process.env when `env` is provided, so we
+		// pass the full clean spawn env and layer CODEX_HOME on top to redirect
+		// the subprocess's auth.json + sessions into Clopen's isolated dir.
 		this.codex = new Codex({
 			apiKey: credential.kind === 'api_key' ? credential.apiKey : undefined,
 			...(codexBinary ? { codexPathOverride: codexBinary } : {}),
+			env: { ...getCleanSpawnEnv(), CODEX_HOME: getCodexHomeDir() },
 			config: {
 				show_raw_agent_reasoning: true,
 				...(Object.keys(mcpConfig).length > 0 ? { mcp_servers: mcpConfig } : {}),

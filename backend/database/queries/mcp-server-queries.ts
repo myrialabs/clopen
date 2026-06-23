@@ -143,6 +143,20 @@ export const mcpServerQueries = {
 		);
 	},
 
+	/**
+	 * Update a stdio server's command + args. Lets users repair incomplete
+	 * registry metadata (e.g. a CLI that needs a `mcp` subcommand to start) that
+	 * would otherwise leave the server permanently unreachable.
+	 */
+	updateCommand(id: number, command: string, args: string[]): void {
+		const db = getDatabase();
+		db.prepare(`UPDATE mcp_servers SET command = ?, args = ? WHERE id = ?`).run(
+			command,
+			JSON.stringify(args),
+			id
+		);
+	},
+
 	/** Store (or clear with null) the managed OAuth state JSON for a server. */
 	setOAuth(id: number, oauth: string | null): void {
 		const db = getDatabase();

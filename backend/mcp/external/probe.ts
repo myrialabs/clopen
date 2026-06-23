@@ -87,6 +87,31 @@ function classifyUnauthorized(res: Response): McpHealth {
 	return { state: 'needs_config', message: 'A credential (API key / token) is required' };
 }
 
+/** Cap on captured stderr so a chatty subprocess can't balloon memory. */
+const STDERR_CAP = 4000;
+
+/** Drain a subprocess's stderr into a bounded string (best-effort). */
+async function drainStderr(stream: ReadableStream<Uint8Array>): Promise<string> {
+	const reader = stream.getReader();
+	const decoder = new TextDecoder();
+	let text = '';
+	try {
+		while (text.length < STDERR_CAP) {
+			const { done, value } = await reader.read();
+			if (done) break;
+			text += decoder.decode(value, { stream: true });
+		}
+	} catch { /* stream closed/cancelled */ } finally {
+		reader.cancel().catch(() => undefined);
+	}
+	return text;
+}
+
+/** Condense captured stderr into a short, single-line diagnostic. */
+function stderrTail(text: string): string {
+	return text.replace(/\s+/g, ' ').trim().slice(0, 300);
+}
+
 /**
  * Spawn a stdio server and run the same handshake over its stdin/stdout
  * (newline-delimited JSON-RPC) so "local" servers report a real connection
@@ -100,12 +125,17 @@ async function probeStdio(s: ResolvedExternalServer): Promise<McpHealth> {
 		proc = Bun.spawn([s.command, ...s.args], {
 			stdin: 'pipe',
 			stdout: 'pipe',
-			stderr: 'ignore',
+			stderr: 'pipe',
 			env: { ...process.env, ...s.env }
 		});
 	} catch (error) {
 		return { state: 'unreachable', message: error instanceof Error ? error.message : 'Failed to start command' };
 	}
+
+	// Capture stderr concurrently so a process that prints usage/errors and then
+	// exits (e.g. a CLI that needs a `mcp` subcommand to actually start the
+	// server) yields an actionable message instead of a misleading timeout.
+	const stderrPromise = drainStderr(proc.stderr as unknown as ReadableStream<Uint8Array>);
 
 	try {
 		const stdin = proc.stdin as unknown as { write(data: Uint8Array): number; flush?(): Promise<number> | number };
@@ -117,10 +147,30 @@ async function probeStdio(s: ResolvedExternalServer): Promise<McpHealth> {
 		await stdin.flush?.();
 
 		const rpc = await readStdoutForId(stdout, 2, STDIO_PROBE_TIMEOUT_MS);
-		if (!rpc) return { state: 'unreachable', message: `No response within ${STDIO_PROBE_TIMEOUT_MS / 1000}s` };
-		if (Array.isArray(rpc.result?.tools)) return { state: 'ok', toolCount: rpc.result.tools.length };
-		const detail = rpc.error?.message ?? 'Server did not return a tool list';
-		return AUTH_HINT.test(detail) ? { state: 'needs_config', message: detail } : { state: 'error', message: detail };
+		if (rpc) {
+			if (Array.isArray(rpc.result?.tools)) return { state: 'ok', toolCount: rpc.result.tools.length };
+			const detail = rpc.error?.message ?? 'Server did not return a tool list';
+			return AUTH_HINT.test(detail) ? { state: 'needs_config', message: detail } : { state: 'error', message: detail };
+		}
+
+		// No JSON-RPC reply. Distinguish a process that already exited (a real,
+		// reportable error — wrong command, missing subcommand, crash) from one
+		// that's still alive but silent (a genuine timeout).
+		const exitCode = await Promise.race([
+			proc.exited,
+			new Promise<number | null>(resolve => setTimeout(() => resolve(null), 250))
+		]);
+		if (exitCode !== null) {
+			const tail = stderrTail(await Promise.race([
+				stderrPromise,
+				new Promise<string>(resolve => setTimeout(() => resolve(''), 200))
+			]));
+			const detail = tail
+				? `Process exited (code ${exitCode}): ${tail}`
+				: `Process exited (code ${exitCode}) before responding`;
+			return AUTH_HINT.test(detail) ? { state: 'needs_config', message: detail } : { state: 'error', message: detail };
+		}
+		return { state: 'unreachable', message: `No response within ${STDIO_PROBE_TIMEOUT_MS / 1000}s` };
 	} catch (error) {
 		return { state: 'error', message: error instanceof Error ? error.message : 'Probe failed' };
 	} finally {
