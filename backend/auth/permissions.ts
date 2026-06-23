@@ -105,6 +105,7 @@ export const ADMIN_ONLY_ROUTES = new Set([
 	// the whole surface is admin-only, mirroring System Tools and Engines.
 	'mcp:catalog',
 	'mcp:list',
+	'mcp:parse-config',
 	'mcp:install',
 	'mcp:toggle',
 	'mcp:update-config',

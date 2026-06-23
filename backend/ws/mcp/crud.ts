@@ -23,7 +23,8 @@ import {
 	resolveServerRow,
 	startAuthorization,
 	completeAuthorization,
-	getValidAccessToken
+	getValidAccessToken,
+	parseMcpConfig
 } from '$backend/mcp';
 
 const TRANSPORT_SCHEMA = t.Union([t.Literal('stdio'), t.Literal('http'), t.Literal('sse')]);
@@ -181,6 +182,34 @@ export const mcpCrudHandler = createRouter()
 		});
 		debug.log('mcp', `📥 Installed external MCP server: ${slug}`);
 		return { server: toDTO(row) };
+	})
+	.http('mcp:parse-config', {
+		// Normalise a pasted MCP JSON snippet (Claude/Cursor/VS Code/OpenCode/…)
+		// into reviewable servers. Pure transform — nothing is persisted here; the
+		// UI shows the result, the user fills any required secrets, then installs
+		// via `mcp:install` with `source: 'custom'`.
+		data: t.Object({ text: t.String() }),
+		response: t.Object({
+			servers: t.Array(t.Object({
+				name: t.String(),
+				slug: t.String(),
+				transport: TRANSPORT_SCHEMA,
+				command: t.Optional(t.String()),
+				args: t.Array(t.String()),
+				url: t.Optional(t.String()),
+				fields: t.Array(t.Object({
+					name: t.String(),
+					kind: t.Union([t.Literal('env'), t.Literal('header')]),
+					value: t.String(),
+					isPlaceholder: t.Boolean()
+				})),
+				warnings: t.Array(t.String())
+			})),
+			errors: t.Array(t.String())
+		})
+	}, async ({ data }) => {
+		debug.log('path', 'mcp:parse-config');
+		return parseMcpConfig(data.text);
 	})
 	.http('mcp:toggle', {
 		data: t.Object({ id: t.Number(), enabled: t.Boolean() }),

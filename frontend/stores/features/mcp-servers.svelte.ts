@@ -76,6 +76,26 @@ export interface McpHealth {
 	message?: string;
 }
 
+/** One env/header input flattened from pasted JSON (see backend `parse.ts`). */
+export interface ParsedField {
+	name: string;
+	kind: 'env' | 'header';
+	value: string;
+	isPlaceholder: boolean;
+}
+
+/** A server normalised from a pasted MCP JSON snippet, ready for review. */
+export interface ParsedMcpServer {
+	name: string;
+	slug: string;
+	transport: McpTransport;
+	command?: string;
+	args: string[];
+	url?: string;
+	fields: ParsedField[];
+	warnings: string[];
+}
+
 export interface InstallPayload {
 	slug: string;
 	name: string;
@@ -167,6 +187,15 @@ export const mcpServersStore = {
 			installedLoaded = true;
 			return [];
 		}
+	},
+
+	/**
+	 * Normalise a pasted MCP JSON snippet (any host's dialect) into reviewable
+	 * servers. Nothing is persisted — the caller fills any required secrets and
+	 * then calls `install` with `source: 'custom'`.
+	 */
+	async parseConfig(text: string): Promise<{ servers: ParsedMcpServer[]; errors: string[] }> {
+		return ws.http('mcp:parse-config', { text });
 	},
 
 	async install(payload: InstallPayload): Promise<InstalledMcpServer> {

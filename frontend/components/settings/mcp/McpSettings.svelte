@@ -10,7 +10,8 @@
 		type InstalledMcpServer,
 		type McpConfigField,
 		type McpHealthState,
-		type McpTransport
+		type McpTransport,
+		type ParsedMcpServer
 	} from '$frontend/stores/features/mcp-servers.svelte';
 	import { debug } from '$shared/utils/logger';
 	import type { IconName } from '$shared/types/ui/icons';
@@ -74,6 +75,7 @@
 	let cfgCustomHeader = $state<{ key: string; value: string }[]>([]); // user-added headers
 	let cfgCommand = $state(''); // stdio command (Configure only)
 	let cfgArgsText = $state(''); // stdio args, one per line (Configure only)
+	let cfgUrl = $state(''); // remote url (Add manually only)
 
 	// Group by source (env vars vs headers), not by required/optional — the
 	// per-field "*" marks what's required within each group.
@@ -88,6 +90,25 @@
 	// Delete confirmation modal
 	let deleteTarget = $state<InstalledMcpServer | null>(null);
 	let deleting = $state(false);
+
+	// Add manually modal — paste any host's MCP JSON (Claude/Cursor/VS Code/
+	// OpenCode/…) or fill a blank form. Both converge on the shared config form
+	// (cfg* state) for filling required secrets, then install with source 'custom'.
+	let manualOpen = $state(false);
+	let manualMode = $state<'paste' | 'form'>('paste');
+	let pasteText = $state('');
+	let parsing = $state(false);
+	// True once Preview has parsed at least one server — switches the paste view
+	// from the textarea to the detected list / review form (Back returns here).
+	let previewed = $state(false);
+	let parseError = $state<string | null>(null);
+	let parsed = $state<ParsedMcpServer[]>([]);
+	let cfgName = $state(''); // server display name (Add manually only)
+	// Whether the config form is showing (manual mode, or after picking a parsed
+	// server). In paste mode while false, the textarea + detected list show.
+	let manualEditing = $state(false);
+	let manualError = $state<string | null>(null);
+	let manualSaving = $state(false);
 
 	const installed = $derived(mcpServersStore.installed);
 	const catalog = $derived(mcpServersStore.catalog);
@@ -237,6 +258,141 @@
 		cfgCustomHeader = [];
 		cfgCommand = '';
 		cfgArgsText = '';
+		cfgUrl = '';
+	}
+
+	// --- Add manually flow (paste JSON or blank form) ---
+	const TRANSPORTS: McpTransport[] = ['stdio', 'http', 'sse'];
+
+	// One-line summary of a detected server for the preview list.
+	function parsedSummary(s: ParsedMcpServer): string {
+		if (s.transport === 'stdio') return `${s.command ?? ''} ${s.args.join(' ')}`.trim() || '(no command)';
+		return s.url ?? '(no url)';
+	}
+
+	function resetManualForm() {
+		resetConfigDraft();
+		cfgName = '';
+		cfgTransport = 'stdio';
+		manualError = null;
+	}
+
+	function openManual() {
+		manualOpen = true;
+		manualMode = 'paste';
+		pasteText = '';
+		parsed = [];
+		parseError = null;
+		previewed = false;
+		manualEditing = false;
+		resetManualForm();
+	}
+
+	function closeManual() {
+		manualOpen = false;
+		parsed = [];
+		pasteText = '';
+		parseError = null;
+		previewed = false;
+		resetManualForm();
+	}
+
+	function switchManualMode(mode: 'paste' | 'form') {
+		manualMode = mode;
+		manualError = null;
+		previewed = false;
+		if (mode === 'form') {
+			resetManualForm();
+			manualEditing = true;
+		} else {
+			manualEditing = false;
+		}
+	}
+
+	// Return to the JSON textarea from the detected list or the review form.
+	function backToTextarea() {
+		previewed = false;
+		manualEditing = false;
+		resetManualForm();
+	}
+
+	// Return to the detected list from the review form (multi-server pastes only).
+	function backToList() {
+		manualEditing = false;
+		resetManualForm();
+	}
+
+	// Load a parsed (or blank) server into the shared config form. Placeholder
+	// fields become required so the user must supply a real value before install.
+	function editParsed(s: ParsedMcpServer) {
+		manualError = null;
+		cfgName = s.name;
+		cfgTransport = s.transport;
+		cfgCommand = s.command ?? '';
+		cfgArgsText = s.args.join('\n');
+		cfgUrl = s.url ?? '';
+		cfgFields = s.fields.map(f => ({ name: f.name, kind: f.kind, isRequired: f.isPlaceholder, isSecret: true }));
+		cfgDraft = Object.fromEntries(s.fields.map(f => [f.name, f.value]));
+		cfgCustomEnv = [];
+		cfgCustomHeader = [];
+		manualEditing = true;
+	}
+
+	async function runParse() {
+		parsing = true;
+		parseError = null;
+		try {
+			const { servers, errors } = await mcpServersStore.parseConfig(pasteText);
+			parsed = servers;
+			if (servers.length === 0) {
+				parseError = errors[0] ?? 'No MCP server found in that JSON.';
+				return;
+			}
+			previewed = true;
+			// A single server skips the list and goes straight to review.
+			if (servers.length === 1) editParsed(servers[0]);
+			else manualEditing = false;
+		} catch (error) {
+			parseError = error instanceof Error ? error.message : 'Failed to parse';
+		} finally {
+			parsing = false;
+		}
+	}
+
+	async function commitManual() {
+		manualError = null;
+		const name = cfgName.trim();
+		if (!name) { manualError = 'A name is required'; return; }
+		const isStdio = cfgTransport === 'stdio';
+		if (isStdio && !cfgCommand.trim()) { manualError = 'A local (stdio) server requires a command'; return; }
+		if (!isStdio && !cfgUrl.trim()) { manualError = 'A remote server requires a URL'; return; }
+		if (cfgMissingRequired.length > 0) {
+			manualError = `Required: ${cfgMissingRequired.map(m => m.name).join(', ')}`;
+			return;
+		}
+		manualSaving = true;
+		try {
+			const { env, headers } = collectConfig();
+			await mcpServersStore.install({
+				slug: name, // backend slugifies + de-dupes
+				name,
+				transport: cfgTransport,
+				command: isStdio ? cfgCommand.trim() : undefined,
+				args: isStdio ? cfgArgsText.split('\n').map(a => a.trim()).filter(Boolean) : undefined,
+				url: isStdio ? undefined : cfgUrl.trim(),
+				env,
+				headers,
+				configSchema: cfgFields,
+				source: 'custom'
+			});
+			mcpServersStore.hasPendingChanges = true;
+			closeManual();
+			activeTab = 'installed';
+		} catch (error) {
+			manualError = error instanceof Error ? error.message : 'Install failed';
+		} finally {
+			manualSaving = false;
+		}
 	}
 
 	// --- Install flow (modal + confirmation) ---
@@ -402,20 +558,32 @@
 			<div class="flex flex-col items-center gap-2 py-10 text-center">
 				<Icon name="lucide:plug" class="w-8 h-8 text-slate-400" />
 				<p class="text-sm text-slate-500 dark:text-slate-400">No MCP servers installed yet.</p>
-				<Button variant="outline" size="sm" onclick={goBrowse}>Browse the registry</Button>
+				<div class="flex items-center gap-2">
+					<Button variant="outline" size="sm" onclick={goBrowse}>Browse the registry</Button>
+					<Button variant="outline" size="sm" class="gap-1.5" onclick={openManual}>
+						<Icon name="lucide:plus" class="w-4 h-4" />
+						Add manually
+					</Button>
+				</div>
 			</div>
 		{:else}
-			<div class="relative">
-				<svg viewBox="0 0 24 24" fill="none" class="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-slate-400 pointer-events-none" aria-hidden="true">
-					<circle cx="11" cy="11" r="7" stroke="currentColor" stroke-width="2" />
-					<path d="M21 21l-4.35-4.35" stroke="currentColor" stroke-width="2" stroke-linecap="round" />
-				</svg>
-				<input
-					type="text"
-					bind:value={installedFilter}
-					placeholder="Filter installed servers…"
-					class="w-full pl-9 pr-3 py-2 text-sm bg-white dark:bg-slate-800 border border-slate-200 dark:border-slate-700 rounded-lg outline-none focus:ring-2 focus:ring-violet-500/20 focus:border-violet-600 transition-colors text-slate-900 dark:text-slate-100 placeholder-slate-400"
-				/>
+			<div class="flex items-center gap-2">
+				<div class="relative flex-1">
+					<svg viewBox="0 0 24 24" fill="none" class="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-slate-400 pointer-events-none" aria-hidden="true">
+						<circle cx="11" cy="11" r="7" stroke="currentColor" stroke-width="2" />
+						<path d="M21 21l-4.35-4.35" stroke="currentColor" stroke-width="2" stroke-linecap="round" />
+					</svg>
+					<input
+						type="text"
+						bind:value={installedFilter}
+						placeholder="Filter installed servers…"
+						class="w-full pl-9 pr-3 py-2 text-sm bg-white dark:bg-slate-800 border border-slate-200 dark:border-slate-700 rounded-lg outline-none focus:ring-2 focus:ring-violet-500/20 focus:border-violet-600 transition-colors text-slate-900 dark:text-slate-100 placeholder-slate-400"
+					/>
+				</div>
+				<Button variant="outline" size="sm" class="gap-1.5 shrink-0" onclick={openManual}>
+					<Icon name="lucide:plus" class="w-4 h-4" />
+					Add manually
+				</Button>
 			</div>
 			{#if filteredInstalled.length === 0}
 				<p class="text-sm text-slate-500 dark:text-slate-400 text-center py-6">No installed server matches "{installedFilter}".</p>
@@ -727,6 +895,35 @@
 	</div>
 {/snippet}
 
+<!-- Add-manually form: name + transport + url/command, then the shared config
+     form for env/headers/secrets. Used for both pasted servers and blank entries. -->
+{#snippet manualForm()}
+	<div class="space-y-5">
+		<Input label="Name" required type="text" placeholder="e.g. Notion" bind:value={cfgName} />
+		<div class="space-y-1">
+			<p class="block text-sm font-semibold text-slate-700 dark:text-slate-300">Transport</p>
+			<div class="flex gap-1 p-1 bg-slate-100 dark:bg-slate-900 rounded-lg w-max">
+				{#each TRANSPORTS as t (t)}
+					<button
+						type="button"
+						class="px-3.5 py-1.5 text-sm font-semibold rounded-md transition-colors
+							{cfgTransport === t
+							? 'bg-white dark:bg-slate-800 text-slate-900 dark:text-slate-100 shadow-sm'
+							: 'text-slate-500 hover:text-slate-700 dark:hover:text-slate-300'}"
+						onclick={() => (cfgTransport = t)}
+					>
+						{transportLabel(t)}
+					</button>
+				{/each}
+			</div>
+		</div>
+		{#if cfgTransport !== 'stdio'}
+			<Input label="URL" required type="text" placeholder="https://example.com/mcp" bind:value={cfgUrl} />
+		{/if}
+		{@render configForm(true)}
+	</div>
+{/snippet}
+
 <!-- Install modal -->
 <Modal isOpen={installTarget !== null} onClose={closeInstall} title={`Install ${installTarget?.title ?? ''}`} size="md">
 	{#snippet children()}
@@ -793,5 +990,102 @@
 	{#snippet footer()}
 		<Button variant="ghost" onclick={() => (deleteTarget = null)}>Cancel</Button>
 		<Button variant="primary" loading={deleting} class="!bg-red-600 hover:!bg-red-700" onclick={confirmDelete}>Uninstall</Button>
+	{/snippet}
+</Modal>
+
+<!-- Add manually modal: paste any host's MCP JSON, or build one by hand -->
+<Modal isOpen={manualOpen} onClose={closeManual} title="Add MCP server" size="md">
+	{#snippet children()}
+		<div class="space-y-4 text-sm">
+			<!-- Mode toggle -->
+			<div class="flex gap-1 p-1 bg-slate-100 dark:bg-slate-900 rounded-lg w-max">
+				<button
+					type="button"
+					class="px-3.5 py-1.5 text-sm font-semibold rounded-md transition-colors
+						{manualMode === 'paste'
+						? 'bg-white dark:bg-slate-800 text-slate-900 dark:text-slate-100 shadow-sm'
+						: 'text-slate-500 hover:text-slate-700 dark:hover:text-slate-300'}"
+					onclick={() => switchManualMode('paste')}
+				>
+					Paste JSON
+				</button>
+				<button
+					type="button"
+					class="px-3.5 py-1.5 text-sm font-semibold rounded-md transition-colors
+						{manualMode === 'form'
+						? 'bg-white dark:bg-slate-800 text-slate-900 dark:text-slate-100 shadow-sm'
+						: 'text-slate-500 hover:text-slate-700 dark:hover:text-slate-300'}"
+					onclick={() => switchManualMode('form')}
+				>
+					Manual
+				</button>
+			</div>
+
+			{#if manualMode === 'paste' && !previewed}
+				<p class="text-xs text-slate-500 dark:text-slate-400">
+					Paste a config from any tool (Cursor, Antigravity, Claude, etc.) — we'll detect the format.
+				</p>
+				<textarea
+					bind:value={pasteText}
+					rows="8"
+					placeholder={'{\n  "mcpServers": {\n    "notion": {\n      "command": "npx",\n      "args": ["-y", "@notionhq/notion-mcp-server"],\n      "env": { "NOTION_TOKEN": "<your-token>" }\n    }\n  }\n}'}
+					class="w-full px-3 py-2 text-sm font-mono bg-white dark:bg-slate-800 border border-slate-200 dark:border-slate-700 rounded-lg outline-none focus:ring-2 focus:ring-violet-500/20 focus:border-violet-600 transition-colors text-slate-900 dark:text-slate-100 placeholder-slate-400 resize-y"
+				></textarea>
+
+				{#if parseError}
+					<p class="text-xs text-red-500">{parseError}</p>
+				{/if}
+			{:else if manualMode === 'paste' && !manualEditing}
+				<button
+					type="button"
+					class="inline-flex items-center gap-1 text-xs font-semibold text-slate-500 hover:text-slate-700 dark:hover:text-slate-300"
+					onclick={backToTextarea}
+				>
+					<Icon name="lucide:arrow-left" class="w-3.5 h-3.5" />
+					Back
+				</button>
+				<div class="space-y-2">
+					{#each parsed as s (s.name)}
+						<div class="flex items-start gap-3 p-3 bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 rounded-xl">
+							<div class="flex-1 min-w-0">
+								<span class="font-semibold text-slate-900 dark:text-slate-100">{s.name}</span>
+								<span class="ml-2 text-[10px] px-1.5 py-0.5 rounded bg-slate-100 dark:bg-slate-800 text-slate-500">{transportLabel(s.transport)}</span>
+								<p class="text-[11px] text-slate-400 mt-1 truncate font-mono">{parsedSummary(s)}</p>
+								{#each s.warnings as w (w)}
+									<p class="text-[11px] text-amber-600 dark:text-amber-400 mt-1">{w}</p>
+								{/each}
+							</div>
+							<Button variant="outline" size="sm" onclick={() => editParsed(s)}>Configure</Button>
+						</div>
+					{/each}
+				</div>
+			{:else}
+				{#if manualMode === 'paste'}
+					<button
+						type="button"
+						class="inline-flex items-center gap-1 text-xs font-semibold text-slate-500 hover:text-slate-700 dark:hover:text-slate-300"
+						onclick={() => (parsed.length > 1 ? backToList() : backToTextarea())}
+					>
+						<Icon name="lucide:arrow-left" class="w-3.5 h-3.5" />
+						Back
+					</button>
+				{/if}
+				{@render manualForm()}
+				{#if manualError}
+					<p class="text-xs text-red-500">{manualError}</p>
+				{/if}
+			{/if}
+		</div>
+	{/snippet}
+	{#snippet footer()}
+		{#if manualMode === 'paste' && !previewed}
+			<Button variant="ghost" onclick={closeManual}>Cancel</Button>
+			<Button variant="primary" loading={parsing} disabled={!pasteText.trim()} onclick={runParse}>Preview</Button>
+		{:else if manualMode === 'paste' && !manualEditing}
+			<Button variant="ghost" onclick={closeManual}>Cancel</Button>
+		{:else}
+			<Button variant="ghost" onclick={closeManual}>Cancel</Button>
+			<Button variant="primary" loading={manualSaving} onclick={commitManual}>Install</Button>
+		{/if}
 	{/snippet}
 </Modal>

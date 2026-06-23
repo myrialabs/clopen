@@ -87,6 +87,8 @@ export {
 	loadOAuth
 } from './external/oauth';
 export type { CatalogServer, CatalogEnvVar, CatalogPage, ResolvedExternalServer } from './external/types';
+export { parseMcpConfig } from './external/parse';
+export type { ParsedMcpServer, ParsedField, ParseResult } from './external/parse';
 
 // ---------------------------------------------------------------------------
 // Merged config builders (internal `clopen-mcp` + external bare `<slug>`)
