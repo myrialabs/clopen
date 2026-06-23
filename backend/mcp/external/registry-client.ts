@@ -109,7 +109,14 @@ function resolveStdioPackage(pkg: RegistryPackage): { command: string; args: str
 	if (!command || !pkg.identifier) return null;
 
 	const args: string[] = [];
-	for (const a of pkg.runtimeArguments ?? []) args.push(...argTokens(a));
+	const runtimeArgs = pkg.runtimeArguments ?? [];
+	// `npx` prompts before fetching an uncached package; `-y` keeps the
+	// non-interactive spawn (health probe + engine) from stalling on that prompt.
+	// Skip if the registry already supplies a confirm flag.
+	if (/(^|\/)npx$/.test(command) && !runtimeArgs.some(a => a.name === '-y' || a.name === '--yes')) {
+		args.push('-y');
+	}
+	for (const a of runtimeArgs) args.push(...argTokens(a));
 
 	// Package identifier token (with version for npm-style registries).
 	const identifier = pkg.version && pkg.registryType === 'npm'

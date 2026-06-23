@@ -185,8 +185,20 @@ export const mcpServersStore = {
 		if (enabled) this.checkStatus(id);
 	},
 
-	async updateConfig(id: number, env: Record<string, string>, headers: Record<string, string>): Promise<void> {
-		await ws.http('mcp:update-config', { id, env, headers });
+	async updateConfig(
+		id: number,
+		env: Record<string, string>,
+		headers: Record<string, string>,
+		command?: string,
+		args?: string[]
+	): Promise<void> {
+		await ws.http('mcp:update-config', {
+			id,
+			env,
+			headers,
+			...(command !== undefined ? { command } : {}),
+			...(args !== undefined ? { args } : {})
+		});
 		await this.refreshInstalled();
 	},
 

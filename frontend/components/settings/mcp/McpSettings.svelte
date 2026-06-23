@@ -72,6 +72,8 @@
 	let cfgDraft = $state<Record<string, string>>({}); // field name → value
 	let cfgCustomEnv = $state<{ key: string; value: string }[]>([]); // user-added env vars
 	let cfgCustomHeader = $state<{ key: string; value: string }[]>([]); // user-added headers
+	let cfgCommand = $state(''); // stdio command (Configure only)
+	let cfgArgsText = $state(''); // stdio args, one per line (Configure only)
 
 	// Group by source (env vars vs headers), not by required/optional — the
 	// per-field "*" marks what's required within each group.
@@ -233,6 +235,8 @@
 		cfgDraft = {};
 		cfgCustomEnv = [];
 		cfgCustomHeader = [];
+		cfgCommand = '';
+		cfgArgsText = '';
 	}
 
 	// --- Install flow (modal + confirmation) ---
@@ -250,6 +254,10 @@
 		]);
 		cfgCustomEnv = [];
 		cfgCustomHeader = [];
+		// Pre-fill the stdio launch command so users can repair incomplete registry
+		// metadata (e.g. a missing `mcp` subcommand) before the server is installed.
+		cfgCommand = server.command ?? '';
+		cfgArgsText = (server.args ?? []).join('\n');
 	}
 
 	function closeInstall() {
@@ -265,6 +273,11 @@
 			installError = `Required: ${cfgMissingRequired.map(m => m.name).join(', ')}`;
 			return;
 		}
+		const isStdio = server.transport === 'stdio';
+		if (isStdio && !cfgCommand.trim()) {
+			installError = 'A local (stdio) server requires a command';
+			return;
+		}
 		installing = true;
 		installError = null;
 		try {
@@ -276,8 +289,8 @@
 				registryName: server.registryName,
 				version: server.version,
 				transport: server.transport,
-				command: server.command,
-				args: server.args,
+				command: isStdio ? cfgCommand.trim() : server.command,
+				args: isStdio ? cfgArgsText.split('\n').map(a => a.trim()).filter(Boolean) : server.args,
 				url: server.url,
 				env,
 				headers,
@@ -304,6 +317,10 @@
 		cfgDraft = Object.fromEntries(
 			schema.map(f => [f.name, (f.kind === 'header' ? server.headers[f.name] : server.env[f.name]) ?? ''])
 		);
+		// stdio command/args are editable here so users can repair incomplete
+		// registry metadata (e.g. a missing `mcp` subcommand).
+		cfgCommand = server.command ?? '';
+		cfgArgsText = (server.args ?? []).join('\n');
 		// Stored keys NOT declared by the registry are user-added — show them,
 		// pre-filled, in the Custom sections so they're clearly distinct.
 		const knownEnv = new Set(schema.filter(f => f.kind === 'env').map(f => f.name));
@@ -324,9 +341,16 @@
 		savingConfig = true;
 		try {
 			const { env, headers } = collectConfig();
-			await mcpServersStore.updateConfig(server.id, env, headers);
+			const isStdio = server.transport === 'stdio';
+			const command = isStdio ? cfgCommand.trim() : undefined;
+			const args = isStdio ? cfgArgsText.split('\n').map(a => a.trim()).filter(Boolean) : undefined;
+			await mcpServersStore.updateConfig(server.id, env, headers, command, args);
 			mcpServersStore.hasPendingChanges = true;
+			const id = server.id;
 			closeConfig();
+			// Auto re-probe so the new status reflects whatever was edited, without
+			// a manual Re-check.
+			void mcpServersStore.checkStatus(id);
 		} catch (error) {
 			debug.error('settings', 'update MCP config failed', error);
 		} finally {
@@ -647,8 +671,26 @@
 	<Button variant="ghost" size="sm" onclick={onAdd}>{addLabel}</Button>
 {/snippet}
 
-{#snippet configForm()}
+{#snippet configForm(allowCommandEdit: boolean)}
 	<div class="space-y-5">
+		{#if allowCommandEdit && cfgTransport === 'stdio'}
+			<div class="space-y-3">
+				<div class="space-y-1">
+					<Input label="Command" type="text" placeholder="npx" bind:value={cfgCommand} />
+				</div>
+				<div class="space-y-1">
+					<p class="text-xs font-semibold text-slate-400 dark:text-slate-500">Arguments</p>
+					<textarea
+						bind:value={cfgArgsText}
+						rows="3"
+						placeholder={'-y\nxcodebuildmcp\nmcp'}
+						class="w-full px-3 py-2 text-sm font-mono bg-white dark:bg-slate-800 border border-slate-200 dark:border-slate-700 rounded-lg outline-none focus:ring-2 focus:ring-violet-500/20 focus:border-violet-600 transition-colors text-slate-900 dark:text-slate-100 placeholder-slate-400 resize-y"
+					></textarea>
+					<p class="text-[11px] text-slate-400">One argument per line, in order.</p>
+				</div>
+				<div class="border-t border-slate-300 dark:border-slate-600"></div>
+			</div>
+		{/if}
 		{#if showEnvSection}
 			<div class="space-y-5">
 				{#if cfgEnvFields.length > 0}
@@ -701,7 +743,7 @@
 					</div>
 				{/if}
 
-				{@render configForm()}
+				{@render configForm(true)}
 
 				{#if installError}
 					<p class="text-xs text-red-500">{installError}</p>
@@ -711,7 +753,7 @@
 	{/snippet}
 	{#snippet footer()}
 		<Button variant="ghost" onclick={closeInstall}>Cancel</Button>
-		<Button variant="primary" loading={installing} disabled={cfgMissingRequired.length > 0} onclick={confirmInstall}>Install</Button>
+		<Button variant="primary" loading={installing} disabled={cfgMissingRequired.length > 0 || (installTarget?.transport === 'stdio' && !cfgCommand.trim())} onclick={confirmInstall}>Install</Button>
 	{/snippet}
 </Modal>
 
@@ -720,7 +762,7 @@
 	{#snippet children()}
 		{#if configTarget}
 			<div class="space-y-4 text-sm">
-				{@render configForm()}
+				{@render configForm(true)}
 
 				{#if cfgMissingRequired.length > 0}
 					<p class="text-xs text-red-500">Required: {cfgMissingRequired.map(m => m.name).join(', ')}</p>
@@ -734,7 +776,7 @@
 	{/snippet}
 	{#snippet footer()}
 		<Button variant="ghost" onclick={closeConfig}>Cancel</Button>
-		<Button variant="primary" loading={savingConfig} disabled={cfgMissingRequired.length > 0} onclick={saveConfig}>Save</Button>
+		<Button variant="primary" loading={savingConfig} disabled={cfgMissingRequired.length > 0 || (configTarget?.transport === 'stdio' && !cfgCommand.trim())} onclick={saveConfig}>Save</Button>
 	{/snippet}
 </Modal>
 
