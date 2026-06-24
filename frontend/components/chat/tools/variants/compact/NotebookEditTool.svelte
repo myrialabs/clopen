@@ -1,6 +1,6 @@
 <script lang="ts">
 	import type { ToolUseBlock, NotebookEditInput } from '$shared/types/unified';
-	import { FileHeader } from './components';
+	import { ToolRow } from './components';
 
 	const { toolInput }: { toolInput: ToolUseBlock } = $props();
 	const input = $derived(toolInput.input as NotebookEditInput);
@@ -10,11 +10,8 @@
 	const cellId = $derived(input.cellId);
 	const cellType = $derived(input.cellType || 'code');
 	const editMode = $derived(input.editMode || 'replace');
-
-	const badges = $derived([
-		editMode,
-		`${cellType} cell${cellId ? ` #${cellId}` : ''}`,
-	]);
+	const meta = $derived(`${cellType} cell${cellId ? ` #${cellId}` : ''}`);
 </script>
 
-<FileHeader filePath={notebookPath} {fileName} operation="Edit" {badges} />
+<ToolRow icon="lucide:notebook-pen" label="Edited notebook" filePath={notebookPath} {fileName} {meta} />
+

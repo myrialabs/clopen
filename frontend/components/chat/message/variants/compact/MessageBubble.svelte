@@ -1,6 +1,8 @@
 <!--
   Compact Message Bubble
-  No header for most types — user messages show a slim header row.
+  - User: slim rounded card
+  - Agent: inline timeline with bold summary header + ALL items (tools + text) connected
+  - Assistant/Reasoning: plain text
 -->
 
 <script lang="ts">
@@ -9,7 +11,11 @@
 	import type { IconName } from '$shared/types/ui/icons';
 	import Icon from '$frontend/components/common/display/Icon.svelte';
 	import MessageFormatter from '../../../formatters/MessageFormatter.svelte';
+	import Tools from '../../../formatters/Tools.svelte';
+	import TextMessage from '../../../formatters/TextMessage.svelte';
 	import { appState } from '$frontend/stores/core/app.svelte';
+	import { HIDDEN_TOOLS } from '../../../tools/registry';
+	import type { KnownToolName } from '$shared/types/unified';
 
 	const {
 		message,
@@ -39,6 +45,7 @@
 	let scrollContainer: HTMLDivElement | undefined = $state();
 	let isCopied = $state(false);
 	let stickToBottom = $state(true);
+	let isCollapsed = $state(false);
 
 	function handleCopy() {
 		onCopy();
@@ -83,16 +90,71 @@
 		return () => clearInterval(interval);
 	});
 	const thinkingDots = $derived('.'.repeat(thinkingDotCount));
+
+	// ─── Agent message parsing ─────────────────────────────────────────────────
+	type ContentItem = { type: string; id?: string; [key: string]: any };
+
+	/** All content items in original order, skipping hidden tools */
+	const agentItems = $derived.by(() => {
+		if (roleCategory !== 'agent') return [] as ContentItem[];
+		if (message.type !== 'assistant' || !('content' in message)) return [] as ContentItem[];
+		return (message.content as ContentItem[]).filter(item => {
+			if (item.type === 'tool_use') {
+				// Skip tools that are hidden from the stream
+				return !HIDDEN_TOOLS.has(item.name as KnownToolName);
+			}
+			if (item.type === 'text') {
+				return (item.text as string || '').trim().length > 0;
+			}
+			return false;
+		});
+	});
+
+	/** First text block used as summary header */
+	const firstTextItem = $derived(agentItems.find(i => i.type === 'text'));
+	const summaryText = $derived((firstTextItem?.text as string || '').trim());
+	const summaryFirstWord = $derived(summaryText.split(/\s+/)[0] || '');
+	const summaryRest = $derived.by(() => {
+		const spaceIdx = summaryText.indexOf(' ');
+		return spaceIdx >= 0 ? summaryText.slice(spaceIdx) : '';
+	});
+
+	/** All items AFTER the first text block go into the timeline body */
+	const timelineItems = $derived.by(() => {
+		const firstTextIdx = agentItems.findIndex(i => i.type === 'text');
+		// If there's a leading text block, show rest in timeline; otherwise show all
+		return firstTextIdx >= 0 ? agentItems.slice(firstTextIdx + 1) : agentItems;
+	});
+
+	/** Aggregate diff across edit/write tools */
+	const agentDiff = $derived.by(() => {
+		let additions = 0;
+		let deletions = 0;
+		for (const item of agentItems) {
+			if (item.type !== 'tool_use') continue;
+			if (item.name === 'Edit' || item.name === 'Patch') {
+				const inp = item.input || {};
+				if (inp.newString) additions += (inp.newString as string).split('\n').length;
+				if (inp.oldString) deletions += (inp.oldString as string).split('\n').length;
+			}
+			if (item.name === 'Write') {
+				const inp = item.input || {};
+				if (inp.content) additions += (inp.content as string).split('\n').length;
+			}
+		}
+		return { additions, deletions };
+	});
+
+	const hasDiff = $derived(agentDiff.additions > 0 || agentDiff.deletions > 0);
+	const totalItems = $derived(agentItems.length);
 </script>
 
 {#if roleCategory === 'user'}
+	<!-- User message: slim rounded card -->
 	<div class="space-y-1 rounded-sm px-3 py-2 bg-slate-100 dark:bg-slate-700/30">
-		<!-- Slim user header -->
 		<div class="flex items-center gap-2 text-xs text-slate-400 dark:text-slate-500">
 			<span class="shrink-0">{formatTime(messageTimestamp)}</span>
-			<span class="font-medium text-slate-500 dark:text-slate-400 truncate">
-				{senderName || 'You'}
-			</span>
+			<span class="font-medium text-slate-500 dark:text-slate-400 truncate">{senderName || 'You'}</span>
 			<div class="flex items-center gap-1 ml-auto shrink-0">
 				<button
 					type="button"
@@ -124,16 +186,71 @@
 				</button>
 			</div>
 		</div>
-		<!-- Message content -->
 		<div class="text-slate-900 dark:text-slate-100">
 			<MessageFormatter {message} />
 		</div>
 	</div>
+
 {:else if roleCategory === 'compact'}
 	<div class="text-xs text-slate-400 dark:text-slate-500">
 		<span>Context compacted{compactTrigger ? ` (${compactTrigger})` : ''}</span>
 	</div>
+
+{:else if roleCategory === 'agent'}
+	<!-- Agent: inline timeline layout — ONE connected vertical line for everything -->
+	<div class="min-w-0">
+
+		<!-- ── Summary / header row (first text block or fallback) ──────────── -->
+		<button
+			type="button"
+			class="w-full flex items-start gap-1.5 min-w-0 text-left bg-transparent border-none cursor-pointer py-0.5 group/header {summaryFirstWord ? '' : 'hidden'}"
+			onclick={() => isCollapsed = !isCollapsed}
+		>
+			<span class="flex-1 min-w-0 text-[13px] text-slate-800 dark:text-slate-200 font-normal leading-snug">
+				<strong class="font-semibold">{summaryFirstWord}</strong>{summaryRest}
+			</span>
+			{#if hasDiff}
+				<span class="flex items-center gap-1 shrink-0 mt-0.5">
+					{#if agentDiff.additions > 0}
+						<span class="text-[11px] font-semibold text-emerald-500 dark:text-emerald-400">+{agentDiff.additions}</span>
+					{/if}
+					{#if agentDiff.deletions > 0}
+						<span class="text-[11px] font-semibold text-red-500 dark:text-red-400">-{agentDiff.deletions}</span>
+					{/if}
+				</span>
+			{/if}
+			<Icon
+				name={isCollapsed ? 'lucide:chevron-right' : 'lucide:chevron-down'}
+				class="w-3.5 h-3.5 text-slate-400 dark:text-slate-500 shrink-0 mt-0.5 opacity-50 group-hover/header:opacity-100 transition-opacity"
+			/>
+		</button>
+
+		{#if (!isCollapsed || !summaryFirstWord) && timelineItems.length > 0}
+			<div class="relative mt-0.5">
+				{#each timelineItems as item, i (item.id ?? `item-${i}`)}
+					<div class="relative">
+						{#if item.type === 'tool_use'}
+							<!-- Tool item -->
+							<div class="py-[1px]">
+								<Tools toolInput={item as any} />
+							</div>
+						{:else if item.type === 'text'}
+							<!-- Text / bullet block inline in timeline -->
+							<div class="py-[3px] pl-0.5">
+								<div class="text-[12px] text-slate-600 dark:text-slate-300 leading-relaxed prose-compact">
+									<TextMessage content={item.text as string} />
+								</div>
+							</div>
+						{/if}
+					</div>
+				{/each}
+			</div>
+		{/if}
+
+	</div>
+
 {:else}
+	<!-- Assistant / reasoning / system -->
 	<div
 		bind:this={scrollContainer}
 		onscroll={handleScroll}
