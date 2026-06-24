@@ -1,6 +1,7 @@
 <script lang="ts">
 	import type { ToolUseBlock, BashInput } from '$shared/types/unified';
 	import { ToolRow } from './components';
+	import { processAnsiCodes } from '$frontend/utils/terminal-formatter'
 
 	const { toolInput }: { toolInput: ToolUseBlock } = $props();
 	const input = $derived(toolInput.input as BashInput);
@@ -33,15 +34,17 @@
 />
 
 {#if expanded && hasOutput}
-	<div class="pl-[22px] mt-1 mb-1">
-		<div class="rounded border border-slate-200 dark:border-slate-700/60 bg-slate-950 dark:bg-black/40 overflow-hidden">
-			<!-- Terminal header -->
-			<div class="flex items-center gap-1.5 px-2.5 py-1.5 border-b border-slate-700/60">
-				<div class="w-2 h-2 rounded-full bg-blue-500 shrink-0"></div>
-				<code class="text-[10px] font-mono text-slate-300 truncate">{command}</code>
-			</div>
-			<!-- Terminal output -->
-			<pre class="text-[10px] font-mono text-slate-300 dark:text-slate-400 px-2.5 py-2 overflow-x-auto max-h-40 overflow-y-auto whitespace-pre-wrap break-words leading-relaxed">{output.trim()}</pre>
+<div class="pl-[22px] mt-1 mb-1">
+	<div class="rounded border border-slate-200 dark:border-slate-700/60 bg-slate-950 dark:bg-black/40 overflow-hidden">
+		<!-- Terminal header -->
+		<div class="flex items-center gap-1.5 px-2.5 py-1.5 border-b border-slate-700/60">
+			<div class="w-2 h-2 rounded-full bg-blue-500 shrink-0"></div>
+			<code class="text-[10px] font-mono text-slate-200 truncate">{command}</code>
 		</div>
+		<!-- Terminal output -->
+		<!-- eslint-disable-next-line svelte/no-at-html-tags -->
+		<pre
+			class="text-[10px] font-mono text-slate-200 px-2.5 py-2 overflow-x-auto max-h-40 overflow-y-auto whitespace-pre-wrap break-words leading-relaxed">{@html processAnsiCodes(output.trim())}</pre>
 	</div>
+</div>
 {/if}

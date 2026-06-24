@@ -22,14 +22,28 @@
 	});
 
 	const meta = $derived(resultCount);
-	const chips = $derived(searchPath && pathName ? [pathName] : []);
+	const isDirectory = $derived.by(() => {
+		if (!searchPath) return true;
+		const base = searchPath.split(/[/\\]/).pop() || '';
+		return !base.includes('.');
+	});
+
+	let expanded = $state(false)
 </script>
 
 <ToolRow
 	icon="lucide:search"
 	label="Searched for regex"
-	subDetail={pattern}
+	filePath={searchPath}
+	fileName={pathName}
+	{isDirectory}
 	{meta}
-	{chips}
+	expandable={Boolean(pattern)}
+	bind:expanded
 />
 
+{#if expanded && pattern}
+	<div class="pl-[22px] mt-0.5 mb-0.5">
+		<code class="text-[10px] font-mono bg-slate-100 dark:bg-slate-800/80 text-slate-600 dark:text-slate-300 px-2 pt-[3px] pb-[1px] rounded border border-slate-200 dark:border-slate-700/60 block max-w-full truncate leading-none" title={pattern}>{pattern}</code>
+	</div>
+{/if}

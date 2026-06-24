@@ -1,6 +1,7 @@
 <script lang="ts">
 	import Icon from '$frontend/components/common/display/Icon.svelte';
 	import { getFileIcon } from '$frontend/utils/file-icon-mappings';
+	import { getFolderIcon } from '$frontend/utils/folder-icon-mappings';
 	import { requestRevealFile } from '$frontend/stores/core/files.svelte';
 	import { getVisiblePanels, workspaceState } from '$frontend/stores/ui/workspace.svelte';
 	import type { IconName } from '$shared/types/ui/icons';
@@ -19,6 +20,8 @@
 		filePath?: string;
 		/** Override displayed filename */
 		fileName?: string;
+		/** Whether the path points to a directory/folder */
+		isDirectory?: boolean;
 		/** Right-side meta text e.g. "lines 100 to 140" */
 		meta?: string;
 		/** Diff stats shown inline after file pill */
@@ -40,6 +43,7 @@
 		label,
 		filePath = '',
 		fileName,
+		isDirectory = false,
 		meta = '',
 		diff,
 		subDetail = '',
@@ -50,7 +54,11 @@
 	}: Props = $props();
 
 	const displayName = $derived(fileName || (filePath ? filePath.split(/[/\\]/).pop() || filePath : ''));
-	const fileIconName = $derived(displayName ? (getFileIcon(displayName) as IconName) : 'lucide:file');
+	const fileIconName = $derived.by(() => {
+		if (!displayName) return 'lucide:file';
+		if (isDirectory) return getFolderIcon(displayName, false) as IconName;
+		return getFileIcon(displayName) as IconName;
+	});
 	const hasFile = $derived(Boolean(displayName));
 	const hasDiff = $derived(Boolean(diff && (diff.additions || diff.deletions)));
 
@@ -71,14 +79,14 @@
 
 <!-- Main tool row -->
 <div
-	class="flex items-start gap-2 py-[3px] min-w-0 {expandable ? 'cursor-pointer' : ''}"
+	class="flex items-center gap-2 py-[3px] min-w-0 {expandable ? 'cursor-pointer' : ''}"
 	role={expandable ? 'button' : undefined}
 	tabindex={expandable ? 0 : undefined}
 	onclick={handleRowClick}
 	onkeydown={(e) => e.key === 'Enter' && handleRowClick()}
 >
 	<!-- Operation icon — same size as timeline dot area -->
-	<span class="shrink-0 mt-0.5 w-[14px] flex items-center justify-center text-slate-500 dark:text-slate-400">
+	<span class="shrink-0 w-[14px] flex items-center justify-center text-slate-500 dark:text-slate-400">
 		<Icon name={icon} class="w-[13px] h-[13px]" />
 	</span>
 
@@ -91,12 +99,12 @@
 		{#if hasFile}
 			<button
 				type="button"
-				class="inline-flex items-center gap-[5px] px-[4px] py-[2px] rounded border border-transparent hover:border-slate-200 dark:hover:border-slate-700 hover:bg-slate-100 dark:hover:bg-slate-700/60 transition-colors shrink-0 cursor-pointer"
+				class="inline-flex items-center gap-[5px] px-[3px] rounded border border-transparent hover:border-slate-200 dark:hover:border-slate-700 hover:bg-slate-100 dark:hover:bg-slate-700/60 transition-colors shrink-0 cursor-pointer"
 				onclick={handleFileClick}
 				title={filePath}
 			>
-				<Icon name={fileIconName} class="w-[11px] h-[11px] shrink-0 text-red-500 dark:text-red-400" />
-				<span class="font-mono text-[11px] font-medium text-slate-700 dark:text-slate-200 max-w-[180px] truncate leading-none">{displayName}</span>
+				<Icon name={fileIconName} class="w-[11px] h-[11px] shrink-0 {isDirectory ? 'text-amber-500 dark:text-amber-400' : 'text-red-500 dark:text-red-400'}" />
+				<span class="font-mono text-[11px] font-medium text-slate-700 dark:text-slate-200 max-w-[180px] truncate">{displayName}</span>
 			</button>
 		{/if}
 
@@ -117,7 +125,7 @@
 
 		<!-- Right meta -->
 		{#if meta}
-			<span class="text-[10px] text-slate-400 dark:text-slate-500 whitespace-nowrap shrink-0 ml-auto">{meta}</span>
+			<span class="text-[10px] text-slate-400 dark:text-slate-500 whitespace-nowrap shrink-0">{meta}</span>
 		{/if}
 
 		<!-- Expandable chevron -->
@@ -133,6 +141,8 @@
 <!-- Sub-detail code pill (command, pattern, etc.) -->
 {#if subDetail}
 	<div class="pl-[22px] mt-0.5 mb-0.5">
-		<code class="text-[10px] font-mono bg-slate-100 dark:bg-slate-800/80 text-slate-600 dark:text-slate-300 px-2 py-0.5 rounded border border-slate-200 dark:border-slate-700/60 block max-w-full truncate leading-tight" title={subDetail}>{subDetail}</code>
+		<code class="text-[10px] font-mono bg-slate-100 dark:bg-slate-800/80 text-slate-600 dark:text-slate-300 px-2 py-0.5 rounded border border-slate-200 dark:border-slate-700/60 flex items-center max-w-full min-w-0" title={subDetail}>
+			<span class="truncate">{subDetail}</span>
+		</code>
 	</div>
 {/if}
