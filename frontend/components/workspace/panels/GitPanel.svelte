@@ -4415,7 +4415,7 @@ ${bodies}`;
 		<div class="flex-1 flex flex-col min-h-0 overflow-hidden">
 		<!-- Commit form -->
 		<CommitForm
-			stagedCount={gitStatus.staged.length}
+			stagedCount={mainStagedFiles.length}
 			{isCommitting}
 			onCommit={handleCommit}
 			hasRemotes={remotes.length > 0}
