@@ -6,7 +6,7 @@ import { t } from 'elysia';
 import path from 'node:path';
 import { createRouter } from '$shared/utils/ws-server';
 import { gitService } from '../../git/git-service';
-import { findNestedRepoPaths, findRepoForFile } from '../../snapshot/gitignore';
+import { findRepoForFile } from '../../snapshot/gitignore';
 import { requireProjectAccess } from '../access';
 import { debug } from '$shared/utils/logger';
 
@@ -46,20 +46,8 @@ export const stagingHandler = createRouter()
 		response: t.Object({ ok: t.Boolean() })
 	}, async ({ data, conn }) => {
 		const project = requireProjectAccess(conn, data.projectId);
-		if (data.repoPath) {
-			const cwd = resolveRepoCwd(project.path, data.repoPath) ?? project.path;
-			await gitService.stageAll(cwd);
-		} else {
-			await gitService.stageAll(project.path);
-			const nestedRepoPaths = await findNestedRepoPaths(project.path);
-			for (const repoPath of nestedRepoPaths) {
-				try {
-					await gitService.stageAll(repoPath);
-				} catch {
-					// Skip nested repos whose stage fails
-				}
-			}
-		}
+		const cwd = data.repoPath ? (resolveRepoCwd(project.path, data.repoPath) ?? project.path) : project.path;
+		await gitService.stageAll(cwd);
 		return { ok: true };
 	})
 
@@ -86,18 +74,8 @@ export const stagingHandler = createRouter()
 		response: t.Object({ ok: t.Boolean() })
 	}, async ({ data, conn }) => {
 		const project = requireProjectAccess(conn, data.projectId);
-		if (data.repoPath) {
-			const cwd = resolveRepoCwd(project.path, data.repoPath) ?? project.path;
-			await gitService.unstageAll(cwd);
-		} else {
-			await gitService.unstageAll(project.path);
-			const nestedRepoPaths = await findNestedRepoPaths(project.path);
-			for (const repoPath of nestedRepoPaths) {
-				try {
-					await gitService.unstageAll(repoPath);
-				} catch { /* skip */ }
-			}
-		}
+		const cwd = data.repoPath ? (resolveRepoCwd(project.path, data.repoPath) ?? project.path) : project.path;
+		await gitService.unstageAll(cwd);
 		return { ok: true };
 	})
 
@@ -124,17 +102,7 @@ export const stagingHandler = createRouter()
 		response: t.Object({ ok: t.Boolean() })
 	}, async ({ data, conn }) => {
 		const project = requireProjectAccess(conn, data.projectId);
-		if (data.repoPath) {
-			const cwd = resolveRepoCwd(project.path, data.repoPath) ?? project.path;
-			await gitService.discardAll(cwd);
-		} else {
-			await gitService.discardAll(project.path);
-			const nestedRepoPaths = await findNestedRepoPaths(project.path);
-			for (const repoPath of nestedRepoPaths) {
-				try {
-					await gitService.discardAll(repoPath);
-				} catch { /* skip */ }
-			}
-		}
+		const cwd = data.repoPath ? (resolveRepoCwd(project.path, data.repoPath) ?? project.path) : project.path;
+		await gitService.discardAll(cwd);
 		return { ok: true };
 	});

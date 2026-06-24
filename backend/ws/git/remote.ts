@@ -217,7 +217,8 @@ export const remoteHandler = createRouter()
 
 	.http('git:stash-list', {
 		data: t.Object({
-			projectId: t.String()
+			projectId: t.String(),
+			repoPath: t.Optional(t.String())
 		}),
 		response: t.Array(t.Object({
 			index: t.Number(),
@@ -226,26 +227,30 @@ export const remoteHandler = createRouter()
 		}))
 	}, async ({ data, conn }) => {
 		const project = requireProjectAccess(conn, data.projectId);
-		return await gitService.stashList(project.path);
+		const cwd = resolveRepoCwd(project.path, data.repoPath);
+		return await gitService.stashList(cwd);
 	})
 
 	.http('git:stash-save', {
 		data: t.Object({
 			projectId: t.String(),
 			message: t.Optional(t.String()),
-			staged: t.Optional(t.Boolean())
+			staged: t.Optional(t.Boolean()),
+			repoPath: t.Optional(t.String())
 		}),
 		response: t.Object({ ok: t.Boolean() })
 	}, async ({ data, conn }) => {
 		const project = requireProjectAccess(conn, data.projectId);
-		await gitService.stashSave(project.path, data.message, data.staged);
+		const cwd = resolveRepoCwd(project.path, data.repoPath);
+		await gitService.stashSave(cwd, data.message, data.staged);
 		return { ok: true };
 	})
 
 	.http('git:stash-pop', {
 		data: t.Object({
 			projectId: t.String(),
-			index: t.Optional(t.Number())
+			index: t.Optional(t.Number()),
+			repoPath: t.Optional(t.String())
 		}),
 		response: t.Object({
 			success: t.Boolean(),
@@ -254,25 +259,29 @@ export const remoteHandler = createRouter()
 		})
 	}, async ({ data, conn }) => {
 		const project = requireProjectAccess(conn, data.projectId);
-		return await gitService.stashPop(project.path, data.index);
+		const cwd = resolveRepoCwd(project.path, data.repoPath);
+		return await gitService.stashPop(cwd, data.index);
 	})
 
 	.http('git:stash-drop', {
 		data: t.Object({
 			projectId: t.String(),
-			index: t.Optional(t.Number())
+			index: t.Optional(t.Number()),
+			repoPath: t.Optional(t.String())
 		}),
 		response: t.Object({ ok: t.Boolean() })
 	}, async ({ data, conn }) => {
 		const project = requireProjectAccess(conn, data.projectId);
-		await gitService.stashDrop(project.path, data.index);
+		const cwd = resolveRepoCwd(project.path, data.repoPath);
+		await gitService.stashDrop(cwd, data.index);
 		return { ok: true };
 	})
 
 	.http('git:stash-diff', {
 		data: t.Object({
 			projectId: t.String(),
-			index: t.Optional(t.Number())
+			index: t.Optional(t.Number()),
+			repoPath: t.Optional(t.String())
 		}),
 		response: t.Array(t.Object({
 			oldPath: t.String(),
@@ -295,12 +304,14 @@ export const remoteHandler = createRouter()
 		}))
 	}, async ({ data, conn }) => {
 		const project = requireProjectAccess(conn, data.projectId);
-		return await gitService.stashDiff(project.path, data.index);
+		const cwd = resolveRepoCwd(project.path, data.repoPath);
+		return await gitService.stashDiff(cwd, data.index);
 	})
 
 	.http('git:tags', {
 		data: t.Object({
-			projectId: t.String()
+			projectId: t.String(),
+			repoPath: t.Optional(t.String())
 		}),
 		response: t.Array(t.Object({
 			name: t.String(),
@@ -311,7 +322,8 @@ export const remoteHandler = createRouter()
 		}))
 	}, async ({ data, conn }) => {
 		const project = requireProjectAccess(conn, data.projectId);
-		return await gitService.getTags(project.path);
+		const cwd = resolveRepoCwd(project.path, data.repoPath);
+		return await gitService.getTags(cwd);
 	})
 
 	.http('git:create-tag', {
@@ -319,24 +331,28 @@ export const remoteHandler = createRouter()
 			projectId: t.String(),
 			name: t.String({ minLength: 1 }),
 			message: t.Optional(t.String()),
-			commitHash: t.Optional(t.String())
+			commitHash: t.Optional(t.String()),
+			repoPath: t.Optional(t.String())
 		}),
 		response: t.Object({ ok: t.Boolean() })
 	}, async ({ data, conn }) => {
 		const project = requireProjectAccess(conn, data.projectId);
-		await gitService.createTag(project.path, data.name, data.message, data.commitHash);
+		const cwd = resolveRepoCwd(project.path, data.repoPath);
+		await gitService.createTag(cwd, data.name, data.message, data.commitHash);
 		return { ok: true };
 	})
 
 	.http('git:delete-tag', {
 		data: t.Object({
 			projectId: t.String(),
-			name: t.String()
+			name: t.String(),
+			repoPath: t.Optional(t.String())
 		}),
 		response: t.Object({ ok: t.Boolean() })
 	}, async ({ data, conn }) => {
 		const project = requireProjectAccess(conn, data.projectId);
-		await gitService.deleteTag(project.path, data.name);
+		const cwd = resolveRepoCwd(project.path, data.repoPath);
+		await gitService.deleteTag(cwd, data.name);
 		return { ok: true };
 	})
 
@@ -344,7 +360,8 @@ export const remoteHandler = createRouter()
 		data: t.Object({
 			projectId: t.String(),
 			name: t.String(),
-			remote: t.Optional(t.String())
+			remote: t.Optional(t.String()),
+			repoPath: t.Optional(t.String())
 		}),
 		response: t.Object({
 			success: t.Boolean(),
@@ -352,5 +369,6 @@ export const remoteHandler = createRouter()
 		})
 	}, async ({ data, conn }) => {
 		const project = requireProjectAccess(conn, data.projectId);
-		return await gitService.pushTag(project.path, data.name, data.remote);
+		const cwd = resolveRepoCwd(project.path, data.repoPath);
+		return await gitService.pushTag(cwd, data.name, data.remote);
 	});

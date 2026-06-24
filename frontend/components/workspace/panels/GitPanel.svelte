@@ -250,24 +250,34 @@
 	let isInitializing = $state(false);
 
 	// Stash state
-	let stashEntries = $state<GitStashEntry[]>([]);
+	interface StashEntryExtended extends GitStashEntry {
+		repoPath?: string;
+		repoRelPath?: string;
+	}
+	let stashEntries = $state<StashEntryExtended[]>([]);
 	let isStashLoading = $state(false);
 	let showStashSaveForm = $state(false);
 	let stashMessage = $state('');
 	// When true, the create-stash form stashes only the index (`git stash push
 	// --staged`); otherwise it stashes all changes.
 	let stashStagedOnly = $state(false);
+	let stashRepoPath = $state<string | undefined>(undefined);
 	// Inline expanded stash entries → their file list (lazy-loaded), like the
 	// per-commit file list under a branch.
-	let expandedStashes = $state<Set<number>>(new Set());
-	let stashFileState = $state<Record<number, { files: GitFileDiff[]; isLoading: boolean }>>({});
+	let expandedStashes = $state<Set<string>>(new Set());
+	let stashFileState = $state<Record<string, { files: GitFileDiff[]; isLoading: boolean }>>({});
 
 	// Tags state
-	let tags = $state<GitTag[]>([]);
+	interface TagExtended extends GitTag {
+		repoPath?: string;
+		repoRelPath?: string;
+	}
+	let tags = $state<TagExtended[]>([]);
 	let isTagsLoading = $state(false);
 	let showCreateTagForm = $state(false);
 	let newTagName = $state('');
 	let newTagMessage = $state('');
+	let tagRepoPath = $state<string | undefined>(undefined);
 
 	// Inline create branch state
 	let showCreateBranchForm = $state(false);
@@ -289,6 +299,9 @@
 	let mainBranchesHeight = $state<number | undefined>(undefined);
 	let mainChangesHeight = $state<number | undefined>(undefined);
 	let mainLogHeight = $state<number | undefined>(undefined);
+	let mainStashHeight = $state<number | undefined>(undefined);
+	let mainTagsHeight = $state<number | undefined>(undefined);
+	let mainContributorsHeight = $state<number | undefined>(undefined);
 	let nestedReposCollapsed = $state<Record<string, boolean>>({});
 	const MIN_NESTED_REPO_HEIGHT = 250;
 	const MAX_NESTED_REPO_HEIGHT = 500;
@@ -305,6 +318,9 @@
 			mainChangesHeight = undefined;
 			mainBranchesHeight = undefined;
 			mainLogHeight = undefined;
+			mainStashHeight = undefined;
+			mainTagsHeight = undefined;
+			mainContributorsHeight = undefined;
 		}
 	});
 
@@ -449,6 +465,135 @@
 			if (actualMainListEl) {
 				const actualDelta = newSubHeight - startHeight;
 				mainLogHeight = startMainHeight - actualDelta;
+			}
+			nestedReposHeights = { ...nestedReposHeights, [relPath]: newSubHeight };
+		}
+		function onUp() {
+			isNestedRepoResizing = { ...isNestedRepoResizing, [relPath]: false };
+			window.removeEventListener('mousemove', onMove);
+			window.removeEventListener('mouseup', onUp);
+			markGitUiDirty();
+		}
+		window.addEventListener('mousemove', onMove);
+		window.addEventListener('mouseup', onUp);
+	}
+
+	function startNestedStashResize(e: MouseEvent, relPath: string) {
+		e.preventDefault();
+		e.stopPropagation();
+		isNestedRepoResizing = { ...isNestedRepoResizing, [relPath]: true };
+		const startY = e.clientY;
+		const subrepoEl = (e.currentTarget as HTMLElement).parentElement;
+		const startHeight = nestedReposHeights[relPath] ?? (subrepoEl?.offsetHeight ?? 260);
+		const mainListEl = subrepoEl?.previousElementSibling as HTMLElement | null;
+		const hasMainList = mainListEl && (mainListEl.classList.contains('overflow-y-auto') || mainListEl.querySelector('.overflow-y-auto'));
+		const actualMainListEl = mainListEl && mainListEl.classList.contains('overflow-y-auto')
+			? mainListEl
+			: (mainListEl?.querySelector('.overflow-y-auto') as HTMLElement | null);
+		const startMainHeight = actualMainListEl ? actualMainListEl.offsetHeight : 0;
+
+		function onMove(ev: MouseEvent) {
+			const delta = ev.clientY - startY;
+
+			let maxAllowedSubHeight = MAX_NESTED_REPO_HEIGHT;
+			if (actualMainListEl) {
+				maxAllowedSubHeight = Math.min(MAX_NESTED_REPO_HEIGHT, startHeight + startMainHeight - 120);
+			}
+
+			const newSubHeight = Math.min(
+				maxAllowedSubHeight,
+				Math.max(MIN_NESTED_REPO_HEIGHT, startHeight - delta)
+			);
+
+			if (actualMainListEl) {
+				const actualDelta = newSubHeight - startHeight;
+				mainStashHeight = startMainHeight - actualDelta;
+			}
+			nestedReposHeights = { ...nestedReposHeights, [relPath]: newSubHeight };
+		}
+		function onUp() {
+			isNestedRepoResizing = { ...isNestedRepoResizing, [relPath]: false };
+			window.removeEventListener('mousemove', onMove);
+			window.removeEventListener('mouseup', onUp);
+			markGitUiDirty();
+		}
+		window.addEventListener('mousemove', onMove);
+		window.addEventListener('mouseup', onUp);
+	}
+
+	function startNestedTagsResize(e: MouseEvent, relPath: string) {
+		e.preventDefault();
+		e.stopPropagation();
+		isNestedRepoResizing = { ...isNestedRepoResizing, [relPath]: true };
+		const startY = e.clientY;
+		const subrepoEl = (e.currentTarget as HTMLElement).parentElement;
+		const startHeight = nestedReposHeights[relPath] ?? (subrepoEl?.offsetHeight ?? 260);
+		const mainListEl = subrepoEl?.previousElementSibling as HTMLElement | null;
+		const hasMainList = mainListEl && (mainListEl.classList.contains('overflow-y-auto') || mainListEl.querySelector('.overflow-y-auto'));
+		const actualMainListEl = mainListEl && mainListEl.classList.contains('overflow-y-auto')
+			? mainListEl
+			: (mainListEl?.querySelector('.overflow-y-auto') as HTMLElement | null);
+		const startMainHeight = actualMainListEl ? actualMainListEl.offsetHeight : 0;
+
+		function onMove(ev: MouseEvent) {
+			const delta = ev.clientY - startY;
+
+			let maxAllowedSubHeight = MAX_NESTED_REPO_HEIGHT;
+			if (actualMainListEl) {
+				maxAllowedSubHeight = Math.min(MAX_NESTED_REPO_HEIGHT, startHeight + startMainHeight - 120);
+			}
+
+			const newSubHeight = Math.min(
+				maxAllowedSubHeight,
+				Math.max(MIN_NESTED_REPO_HEIGHT, startHeight - delta)
+			);
+
+			if (actualMainListEl) {
+				const actualDelta = newSubHeight - startHeight;
+				mainTagsHeight = startMainHeight - actualDelta;
+			}
+			nestedReposHeights = { ...nestedReposHeights, [relPath]: newSubHeight };
+		}
+		function onUp() {
+			isNestedRepoResizing = { ...isNestedRepoResizing, [relPath]: false };
+			window.removeEventListener('mousemove', onMove);
+			window.removeEventListener('mouseup', onUp);
+			markGitUiDirty();
+		}
+		window.addEventListener('mousemove', onMove);
+		window.addEventListener('mouseup', onUp);
+	}
+
+	function startNestedContributorsResize(e: MouseEvent, relPath: string) {
+		e.preventDefault();
+		e.stopPropagation();
+		isNestedRepoResizing = { ...isNestedRepoResizing, [relPath]: true };
+		const startY = e.clientY;
+		const subrepoEl = (e.currentTarget as HTMLElement).parentElement;
+		const startHeight = nestedReposHeights[relPath] ?? (subrepoEl?.offsetHeight ?? 260);
+		const mainListEl = subrepoEl?.previousElementSibling as HTMLElement | null;
+		const hasMainList = mainListEl && (mainListEl.classList.contains('overflow-y-auto') || mainListEl.querySelector('.overflow-y-auto'));
+		const actualMainListEl = mainListEl && mainListEl.classList.contains('overflow-y-auto')
+			? mainListEl
+			: (mainListEl?.querySelector('.overflow-y-auto') as HTMLElement | null);
+		const startMainHeight = actualMainListEl ? actualMainListEl.offsetHeight : 0;
+
+		function onMove(ev: MouseEvent) {
+			const delta = ev.clientY - startY;
+
+			let maxAllowedSubHeight = MAX_NESTED_REPO_HEIGHT;
+			if (actualMainListEl) {
+				maxAllowedSubHeight = Math.min(MAX_NESTED_REPO_HEIGHT, startHeight + startMainHeight - 120);
+			}
+
+			const newSubHeight = Math.min(
+				maxAllowedSubHeight,
+				Math.max(MIN_NESTED_REPO_HEIGHT, startHeight - delta)
+			);
+
+			if (actualMainListEl) {
+				const actualDelta = newSubHeight - startHeight;
+				mainContributorsHeight = startMainHeight - actualDelta;
 			}
 			nestedReposHeights = { ...nestedReposHeights, [relPath]: newSubHeight };
 		}
@@ -641,6 +786,12 @@
 	let expandedContributors = $state<Set<string>>(new Set());
 	let isContributorsLoading = $state(false);
 
+	// Nested contributors state
+	let nestedContributors = $state<Record<string, ContributorEntry[]>>({});
+	let nestedContributorTotal = $state<Record<string, number>>({});
+	let nestedContributorLog = $state<Record<string, GitCommit[]>>({});
+	let nestedIsContributorsLoading = $state<Record<string, boolean>>({});
+
 	// How many of a contributor's commits are rendered. Paginated client-side
 	// from the in-memory sample (same page size as the Branches commit list) so a
 	// prolific author doesn't mount hundreds of rows at once.
@@ -665,8 +816,11 @@
 		contributorVisible = { ...contributorVisible, [key]: current + CONTRIBUTOR_COMMIT_PAGE_SIZE };
 	}
 
-	function contributorCommits(key: string): GitCommit[] {
-		return contributorLog.filter(c => (c.authorEmail || c.author).toLowerCase().trim() === key);
+	function contributorCommits(key: string, repoPath?: string): GitCommit[] {
+		const log = repoPath && branchInfo?.nested
+			? (nestedContributorLog[branchInfo.nested.find(n => n.path === repoPath)?.relPath ?? ''] || [])
+			: contributorLog;
+		return log.filter(c => (c.authorEmail || c.author).toLowerCase().trim() === key);
 	}
 
 	// Tab system (like Files panel)
@@ -1858,7 +2012,7 @@
 		if (!projectId || isContributorsLoading) return;
 		isContributorsLoading = true;
 		try {
-		const data = await ws.http('git:log', { projectId, limit: 500, skip: 0 });
+			const data = await ws.http('git:log', { projectId, limit: 500, skip: 0 });
 			const map = new Map<string, ContributorEntry>();
 			for (const c of data.commits) {
 				// Group by email when available (one person may commit under several
@@ -1875,6 +2029,34 @@
 			contributorLog = data.commits;
 			contributorTotal = data.commits.length;
 			contributors = [...map.values()].sort((a, b) => b.count - a.count);
+
+			// Load contributors for nested subrepos
+			if (branchInfo?.nested) {
+				for (const nested of branchInfo.nested) {
+					nestedIsContributorsLoading = { ...nestedIsContributorsLoading, [nested.relPath]: true };
+					try {
+						const nestedData = await ws.http('git:log', { projectId, limit: 500, skip: 0, repoPath: nested.path });
+						const nestedMap = new Map<string, ContributorEntry>();
+						for (const c of nestedData.commits) {
+							const key = (c.authorEmail || c.author).toLowerCase().trim();
+							const existing = nestedMap.get(key);
+							if (existing) {
+								existing.count++;
+								if (c.date > existing.lastDate) existing.lastDate = c.date;
+							} else {
+								nestedMap.set(key, { key, name: c.author.trim(), email: c.authorEmail, count: 1, lastDate: c.date });
+							}
+						}
+						nestedContributorLog = { ...nestedContributorLog, [nested.relPath]: nestedData.commits };
+						nestedContributorTotal = { ...nestedContributorTotal, [nested.relPath]: nestedData.commits.length };
+						nestedContributors = { ...nestedContributors, [nested.relPath]: [...nestedMap.values()].sort((a, b) => b.count - a.count) };
+					} catch {
+						// Skip loading contributors for failed nested repos
+					} finally {
+						nestedIsContributorsLoading = { ...nestedIsContributorsLoading, [nested.relPath]: false };
+					}
+				}
+			}
 		} catch { /* ignore */ }
 		finally { isContributorsLoading = false; }
 	}
@@ -2609,7 +2791,15 @@ ${bodies}`;
 			onConfirm: async () => {
 				if (!projectId) return;
 				try {
-					await ws.http('git:abort-merge', { projectId });
+					let targetRepoPath: string | undefined = undefined;
+					const anyConflictFile = conflictFiles[0]?.path || conflictInitialPath;
+					if (anyConflictFile && branchInfo?.nested) {
+						const matchingNested = branchInfo.nested.find(n => anyConflictFile.startsWith(n.relPath + '/'));
+						if (matchingNested) {
+							targetRepoPath = matchingNested.path;
+						}
+					}
+					await ws.http('git:abort-merge', { projectId, repoPath: targetRepoPath });
 					showConflictResolver = false;
 					await loadAll();
 				} catch (err) {
@@ -2634,7 +2824,24 @@ ${bodies}`;
 		if (!projectId) return;
 		isStashLoading = true;
 		try {
-			stashEntries = await ws.http('git:stash-list', { projectId });
+			const mainStashes = await ws.http('git:stash-list', { projectId }) as GitStashEntry[];
+			const allStashes: StashEntryExtended[] = mainStashes.map(s => ({ ...s }));
+
+			if (branchInfo?.nested) {
+				for (const nested of branchInfo.nested) {
+					try {
+						const nestedStashes = await ws.http('git:stash-list', { projectId, repoPath: nested.path }) as GitStashEntry[];
+						allStashes.push(...nestedStashes.map(s => ({
+							...s,
+							repoPath: nested.path,
+							repoRelPath: nested.relPath
+						})));
+					} catch {
+						// Skip loading stash for failed nested repos
+					}
+				}
+			}
+			stashEntries = allStashes;
 		} catch (err) {
 			debug.error('git', 'Failed to load stash list:', err);
 		} finally {
@@ -2648,11 +2855,13 @@ ${bodies}`;
 			await ws.http('git:stash-save', {
 				projectId,
 				message: stashMessage.trim() || undefined,
-				staged: stashStagedOnly
+				staged: stashStagedOnly,
+				repoPath: stashRepoPath
 			});
 			stashMessage = '';
 			showStashSaveForm = false;
 			stashStagedOnly = false;
+			stashRepoPath = undefined;
 			await Promise.all([loadStash(), loadStatus()]);
 		} catch (err) {
 			debug.error('git', 'Stash save failed:', err);
@@ -2666,9 +2875,10 @@ ${bodies}`;
 	 * scope, and focuses the message input so the user can type a description
 	 * and submit.
 	 */
-	function openStashPrompt(scope: 'all' | 'staged' = 'all') {
+	function openStashPrompt(scope: 'all' | 'staged' = 'all', repoPath?: string) {
 		stashMessage = '';
 		stashStagedOnly = scope === 'staged';
+		stashRepoPath = repoPath;
 		showStashSaveForm = true;
 		moreSubTab = 'stash';
 		switchToView('more');
@@ -2684,10 +2894,14 @@ ${bodies}`;
 		});
 	}
 
-	async function handleStashPop(index: number) {
+	function getStashKey(entry: StashEntryExtended): string {
+		return entry.repoPath ? `${entry.repoPath}::${entry.index}` : `${entry.index}`;
+	}
+
+	async function handleStashPop(entry: StashEntryExtended) {
 		if (!projectId) return;
 		try {
-			const result = await ws.http('git:stash-pop', { projectId, index });
+			const result = await ws.http('git:stash-pop', { projectId, index: entry.index, repoPath: entry.repoPath });
 			await Promise.all([loadStash(), loadStatus()]);
 			if (!result.success && result.hasConflicts) {
 				await loadConflicts();
@@ -2708,16 +2922,17 @@ ${bodies}`;
 		}
 	}
 
-	async function handleStashDrop(index: number) {
+	async function handleStashDrop(entry: StashEntryExtended) {
+		const stashName = entry.repoRelPath ? `${entry.repoRelPath} stash@{${entry.index}}` : `stash@{${entry.index}}`;
 		requestConfirm({
 			title: 'Drop Stash',
-			message: `Drop stash@{${index}}? This cannot be undone.`,
+			message: `Drop ${stashName}? This cannot be undone.`,
 			type: 'error',
 			confirmText: 'Drop',
 			onConfirm: async () => {
 				if (!projectId) return;
 				try {
-					await ws.http('git:stash-drop', { projectId, index });
+					await ws.http('git:stash-drop', { projectId, index: entry.index, repoPath: entry.repoPath });
 					await loadStash();
 				} catch (err) {
 					debug.error('git', 'Stash drop failed:', err);
@@ -2750,35 +2965,38 @@ ${bodies}`;
 		return `${Math.floor(diffDays / 365)}y ago`;
 	}
 
-	async function loadStashFiles(index: number) {
+	async function loadStashFiles(entry: StashEntryExtended) {
 		if (!projectId) return;
-		stashFileState = { ...stashFileState, [index]: { files: stashFileState[index]?.files ?? [], isLoading: true } };
+		const key = getStashKey(entry);
+		stashFileState = { ...stashFileState, [key]: { files: stashFileState[key]?.files ?? [], isLoading: true } };
 		try {
-			const diffs = await ws.http('git:stash-diff', { projectId, index });
-			stashFileState = { ...stashFileState, [index]: { files: diffs, isLoading: false } };
+			const diffs = await ws.http('git:stash-diff', { projectId, index: entry.index, repoPath: entry.repoPath });
+			stashFileState = { ...stashFileState, [key]: { files: diffs, isLoading: false } };
 		} catch (err) {
 			debug.error('git', 'Failed to load stash diff:', err);
-			stashFileState = { ...stashFileState, [index]: { files: [], isLoading: false } };
+			stashFileState = { ...stashFileState, [key]: { files: [], isLoading: false } };
 		}
 	}
 
-	function toggleStashExpanded(index: number) {
+	function toggleStashExpanded(entry: StashEntryExtended) {
+		const key = getStashKey(entry);
 		const next = new Set(expandedStashes);
-		if (next.has(index)) {
-			next.delete(index);
+		if (next.has(key)) {
+			next.delete(key);
 		} else {
-			next.add(index);
-			if (!stashFileState[index]?.files.length) void loadStashFiles(index);
+			next.add(key);
+			if (!stashFileState[key]?.files.length) void loadStashFiles(entry);
 		}
 		expandedStashes = next;
 	}
 
 	/** Open a single file from a stash in the diff editor. */
-	function viewStashFileDiff(file: GitFileDiff, index: number) {
+	function viewStashFileDiff(file: GitFileDiff, entry: StashEntryExtended) {
 		const path = file.newPath || file.oldPath;
 		if (!path) return;
 		const fileName = path.split(/[\\/]/).pop() || path;
-		const tabId = `stash:${index}:${path}`;
+		const key = getStashKey(entry);
+		const tabId = `stash:${key}:${path}`;
 		openTabs = [{
 			id: tabId,
 			filePath: path,
@@ -2802,7 +3020,24 @@ ${bodies}`;
 		if (!projectId) return;
 		isTagsLoading = true;
 		try {
-			tags = await ws.http('git:tags', { projectId });
+			const mainTags = await ws.http('git:tags', { projectId }) as GitTag[];
+			const allTags: TagExtended[] = mainTags.map(t => ({ ...t }));
+
+			if (branchInfo?.nested) {
+				for (const nested of branchInfo.nested) {
+					try {
+						const nestedTags = await ws.http('git:tags', { projectId, repoPath: nested.path }) as GitTag[];
+						allTags.push(...nestedTags.map(t => ({
+							...t,
+							repoPath: nested.path,
+							repoRelPath: nested.relPath
+						})));
+					} catch {
+						// Skip loading tags for failed nested repos
+					}
+				}
+			}
+			tags = allTags;
 		} catch (err) {
 			debug.error('git', 'Failed to load tags:', err);
 		} finally {
@@ -2816,11 +3051,13 @@ ${bodies}`;
 			await ws.http('git:create-tag', {
 				projectId,
 				name: newTagName.trim(),
-				message: newTagMessage.trim() || undefined
+				message: newTagMessage.trim() || undefined,
+				repoPath: tagRepoPath
 			});
 			newTagName = '';
 			newTagMessage = '';
 			showCreateTagForm = false;
+			tagRepoPath = undefined;
 			await loadTags();
 		} catch (err) {
 			debug.error('git', 'Create tag failed:', err);
@@ -2828,16 +3065,17 @@ ${bodies}`;
 		}
 	}
 
-	async function handleDeleteTag(name: string) {
+	async function handleDeleteTag(name: string, repoPath?: string) {
+		const label = repoPath ? `tag "${name}" in submodule?` : `tag "${name}"?`;
 		requestConfirm({
 			title: 'Delete Tag',
-			message: `Delete tag "${name}"?`,
+			message: `Delete ${label}`,
 			type: 'error',
 			confirmText: 'Delete',
 			onConfirm: async () => {
 				if (!projectId) return;
 				try {
-					await ws.http('git:delete-tag', { projectId, name });
+					await ws.http('git:delete-tag', { projectId, name, repoPath });
 					await loadTags();
 				} catch (err) {
 					debug.error('git', 'Delete tag failed:', err);
@@ -2847,14 +3085,14 @@ ${bodies}`;
 		});
 	}
 
-	async function handlePushTag(name: string) {
+	async function handlePushTag(name: string, repoPath?: string) {
 		if (!projectId) return;
 		try {
-			const result = await ws.http('git:push-tag', { projectId, name });
+			const result = await ws.http('git:push-tag', { projectId, name, repoPath });
 			if (!result.success) {
 				showError('Push Tag Failed', result.message);
 			} else {
-				showInfo('Tag Pushed', `Tag "${name}" pushed to remote.`);
+				showInfo('Tag Pushed', `Successfully pushed tag "${name}" to remote.`);
 			}
 		} catch (err) {
 			debug.error('git', 'Push tag failed:', err);
@@ -3400,6 +3638,7 @@ ${bodies}`;
 						activeSection={activeTab?.section ?? null}
 						onUnstage={(path) => unstageFile(path)}
 						onUnstageAll={async () => { if (projectId) { try { await ws.http('git:unstage-all', { projectId, repoPath: nested.path }); await loadStatus(); } catch (err) { debug.error('git', 'Failed to unstage all in nested repo:', err); } } }}
+						onStash={() => openStashPrompt('staged', nested.path)}
 						onViewDiff={(file, sec) => viewDiff(file, sec)}
 					/>
 					<ChangesSection
@@ -3638,6 +3877,460 @@ ${bodies}`;
 					onCheckoutCommit={(hash) => checkoutCommit(hash, nested.path)}
 					getRemoteCommitUrl={(hash) => buildRemoteCommitUrl(hash, nested.path)}
 				/>
+			</div>
+		{/if}
+	</div>
+{/snippet}
+
+<!-- Nested repo stash block snippet -->
+{#snippet nestedStashBlock(nested: GitNestedRepoInfo)}
+	{@const nestedStashes = stashEntries.filter(e => e.repoPath === nested.path)}
+	{@const isCollapsed = nestedReposCollapsed[nested.relPath] !== undefined
+		? nestedReposCollapsed[nested.relPath]
+		: true}
+	{@const defaultHeight = (branchInfo?.nested && branchInfo.nested.length === 1) ? 'auto' : '260px'}
+	{@const currentHeight = isCollapsed ? 'auto' : (nestedReposHeights[nested.relPath] ? `${nestedReposHeights[nested.relPath]}px` : defaultHeight)}
+	<div
+		class="relative flex flex-col min-h-0 bg-slate-50 dark:bg-slate-900 select-none border-t border-slate-200/60 dark:border-slate-800/60 {isCollapsed ? 'border-b border-slate-200/50 dark:border-slate-800/50' : ''}"
+		class:flex-none={isCollapsed || currentHeight !== 'auto'}
+		class:flex-auto={!isCollapsed && currentHeight === 'auto'}
+		style="height: {currentHeight}"
+	>
+		{#if !isCollapsed}
+			<!-- Drag handle -->
+			<div
+				class="group absolute top-0 left-0 right-0 h-1.5 -translate-y-1/2 cursor-ns-resize border-none bg-transparent p-0 z-10"
+				role="separator"
+				aria-orientation="horizontal"
+				onmousedown={(e) => startNestedStashResize(e, nested.relPath)}
+				title="Drag to resize nested repo stash"
+			>
+				<span
+					class="absolute left-0 right-0 top-1/2 h-px -translate-y-1/2 bg-slate-200 dark:bg-slate-700 transition-colors duration-150 group-hover:bg-violet-400"
+					style:background-color={isNestedRepoResizing[nested.relPath] ? '#A683FF' : undefined}
+				></span>
+			</div>
+		{/if}
+
+		<div
+			class="flex items-center gap-2 px-2 py-1.5 flex-shrink-0 cursor-pointer hover:bg-slate-100/50 dark:hover:bg-slate-800/30 transition-colors"
+			role="button"
+			tabindex="0"
+			onclick={() => toggleNestedRepoCollapsed(nested.relPath)}
+			onkeydown={(e) => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); toggleNestedRepoCollapsed(nested.relPath); } }}
+		>
+			<Icon name={isCollapsed ? "lucide:chevron-right" : "lucide:chevron-down"} class="w-4 h-4 text-slate-400 shrink-0" />
+			<Icon name="lucide:folder-git-2" class="w-4 h-4 text-slate-400 shrink-0" />
+			<div class="flex-1 min-w-0 flex flex-col justify-center overflow-hidden select-none">
+				<div class="flex items-center gap-2">
+					<span class="text-sm font-medium text-slate-900 dark:text-slate-100 whitespace-nowrap" title={nested.path}>{nested.relPath}</span>
+					{#if nested.isSubmodule}<span class="shrink-0 text-3xs font-medium px-1.5 py-0.5 rounded bg-blue-500/15 text-blue-600 dark:text-blue-400">submodule</span>{/if}
+					{#if nestedStashes.length > 0}<span class="shrink-0 min-w-4 h-4 px-1 rounded-full bg-violet-500/15 text-violet-600 dark:text-violet-400 text-3xs font-semibold flex items-center justify-center">{nestedStashes.length}</span>{/if}
+				</div>
+				{#if nested.error}<span class="text-xs text-red-500 truncate" title={nested.error}>{nested.error}</span>{/if}
+			</div>
+		</div>
+
+		{#if !isCollapsed}
+			<div class="flex-1 min-h-0 flex flex-col px-2 overflow-y-auto">
+				{#if nested.error}
+					<div class="flex flex-col items-center justify-center gap-2 py-6 text-red-500 text-xs">
+						<Icon name="lucide:triangle-alert" class="w-5 h-5 opacity-60" />
+						<span>{nested.error}</span>
+					</div>
+				{:else}
+					<div class="pb-2 pt-1.5">
+						{#if showStashSaveForm && stashRepoPath === nested.path}
+							<div class="p-2.5 bg-slate-50 dark:bg-slate-800/50 border border-slate-200 dark:border-slate-700 rounded-lg space-y-2">
+								<input type="text" data-stash-message-input bind:value={stashMessage} placeholder="Stash message (optional)..." class="w-full px-2.5 py-2 text-sm bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-700 rounded-md text-slate-900 dark:text-slate-100 outline-none focus:border-violet-500/40 focus:ring-1 focus:ring-violet-500/20" onkeydown={(e) => e.key === 'Enter' && handleStashSave()} />
+								<div class="flex gap-1 p-0.5 bg-slate-100 dark:bg-slate-800 rounded-md">
+									<button type="button" class="flex-1 px-2 py-1 text-xs font-medium rounded transition-colors cursor-pointer border-none {!stashStagedOnly ? 'bg-white dark:bg-slate-700 text-slate-900 dark:text-slate-100 shadow-sm' : 'bg-transparent text-slate-500 hover:text-slate-700 dark:hover:text-slate-300'}" onclick={() => stashStagedOnly = false}>All changes</button>
+									<button type="button" class="flex-1 px-2 py-1 text-xs font-medium rounded transition-colors cursor-pointer border-none {stashStagedOnly ? 'bg-white dark:bg-slate-700 text-slate-900 dark:text-slate-100 shadow-sm' : 'bg-transparent text-slate-500 hover:text-slate-700 dark:hover:text-slate-300'}" onclick={() => stashStagedOnly = true}>Staged only</button>
+								</div>
+								<div class="flex gap-1.5">
+									<button type="button" class="flex-1 px-3 py-1.5 text-xs font-medium rounded-md bg-violet-600 text-white hover:bg-violet-700 transition-colors cursor-pointer border-none" onclick={handleStashSave}>Stash Changes</button>
+									<button type="button" class="px-3 py-1.5 text-xs font-medium bg-transparent border border-slate-200 dark:border-slate-700 text-slate-600 dark:text-slate-400 rounded-md hover:bg-slate-100 dark:hover:bg-slate-800 transition-colors cursor-pointer" onclick={() => { showStashSaveForm = false; stashMessage = ''; stashStagedOnly = false; stashRepoPath = undefined; }}>Cancel</button>
+								</div>
+							</div>
+						{:else}
+							<button type="button" class="flex items-center justify-center gap-2 w-full py-2 px-3 border border-dashed border-slate-300 dark:border-slate-600 rounded-lg text-xs text-slate-500 hover:text-violet-600 hover:border-violet-400 transition-colors cursor-pointer bg-transparent" onclick={() => { stashStagedOnly = false; stashRepoPath = nested.path; showStashSaveForm = true; }}><Icon name="lucide:plus" class="w-3.5 h-3.5" /><span>Stash Current Changes</span></button>
+						{/if}
+					</div>
+					{#if nestedStashes.length === 0}
+						<div class="flex flex-col items-center justify-center gap-2 py-6 text-slate-500 text-xs">
+							<Icon name="lucide:archive" class="w-5 h-5 opacity-30" />
+							<span>No stashed changes</span>
+						</div>
+					{:else}
+						<div class="space-y-0.5 pb-2">
+							{#each nestedStashes as entry (getStashKey(entry))}
+								{@const relativeDate = formatRelativeTime(entry.date)}
+								{@const key = getStashKey(entry)}
+								{@const stashExpanded = expandedStashes.has(key)}
+								{@const sFiles = stashFileState[key]}
+								<div>
+									<div
+										class="group relative flex items-center gap-1.5 pl-1.5 pr-2.5 py-1.5 rounded-md hover:bg-slate-100 dark:hover:bg-slate-800/60 transition-colors cursor-pointer"
+										role="button"
+										tabindex="0"
+										onclick={() => toggleStashExpanded(entry)}
+										onkeydown={(e) => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); toggleStashExpanded(entry); } }}
+									>
+										<Icon name={stashExpanded ? 'lucide:chevron-down' : 'lucide:chevron-right'} class="w-3.5 h-3.5 shrink-0 text-slate-400" />
+										<div class="flex-1 min-w-0 pr-2 group-hover:pr-16 flex flex-col justify-center overflow-hidden transition-[padding] duration-150">
+											<p class="text-sm font-medium text-slate-900 dark:text-slate-100 truncate">{entry.message}</p>
+											<p class="text-xs text-slate-400 dark:text-slate-500">
+												<span>stash@&#123;{entry.index}&#125;</span>
+												{#if relativeDate}
+													<span class="mx-1">·</span><span>{relativeDate}</span>
+												{/if}
+											</p>
+										</div>
+										<div class="pointer-events-none absolute inset-y-0 right-0 flex items-center gap-1 pl-1 pr-2 bg-white/20 opacity-0 backdrop-blur-md supports-[backdrop-filter]:bg-white/10 transition-opacity group-hover:opacity-100 dark:bg-slate-900/20 dark:supports-[backdrop-filter]:bg-slate-900/10">
+											<button type="button" class="pointer-events-auto flex items-center justify-center w-7 h-7 rounded-md text-slate-400 hover:bg-emerald-500/10 hover:text-emerald-500 transition-colors bg-transparent border-none cursor-pointer" onclick={(e) => { e.stopPropagation(); handleStashPop(entry); }} title="Pop"><Icon name="lucide:archive-restore" class="w-3.5 h-3.5" /></button>
+											<button type="button" class="pointer-events-auto flex items-center justify-center w-7 h-7 rounded-md text-slate-400 hover:bg-red-500/10 hover:text-red-500 transition-colors bg-transparent border-none cursor-pointer" onclick={(e) => { e.stopPropagation(); handleStashDrop(entry); }} title="Drop"><Icon name="lucide:trash-2" class="w-3.5 h-3.5" /></button>
+										</div>
+									</div>
+									{#if stashExpanded}
+										<div class="ml-5 mt-0.5 mb-1 border-l border-slate-200 dark:border-slate-700 pl-2 space-y-0.5">
+											{#if sFiles?.isLoading && sFiles.files.length === 0}
+												<div class="flex items-center gap-2 py-1.5 text-xs text-slate-400"><div class="w-3 h-3 border border-slate-400 border-t-transparent rounded-full animate-spin"></div><span>Loading files...</span></div>
+											{:else if !sFiles || sFiles.files.length === 0}
+												<div class="py-1.5 text-xs text-slate-400">No files</div>
+											{:else}
+												{#each sFiles.files as file (`${key}:${file.oldPath}:${file.newPath}`)}
+													{@const filePath = file.newPath || file.oldPath}
+													{@const fileParts = splitPath(filePath)}
+													<button type="button" class="flex items-center gap-2 w-full px-2 py-1.5 rounded-md text-left hover:bg-slate-100 dark:hover:bg-slate-800/60 transition-colors bg-transparent border-none cursor-pointer" onclick={() => viewStashFileDiff(file, entry)} title={filePath}><Icon name={getFileIcon(fileParts.fileName) as IconName} class="w-4 h-4 shrink-0" /><div class="flex items-baseline gap-1.5 min-w-0 flex-1"><span class="text-sm text-slate-600 dark:text-slate-300 truncate">{fileParts.fileName}</span>{#if fileParts.dirPath}<span class="text-2xs text-slate-400 dark:text-slate-500 truncate min-w-0" dir="rtl">{fileParts.dirPath}</span>{/if}</div><span class="w-4 text-center text-sm font-bold {getGitStatusColor(file.status)} shrink-0">{getGitStatusLabel(file.status)}</span></button>
+												{/each}
+											{/if}
+										</div>
+									{/if}
+								</div>
+							{/each}
+						</div>
+					{/if}
+				{/if}
+			</div>
+		{/if}
+	</div>
+{/snippet}
+
+<!-- Nested repo tags block snippet -->
+{#snippet nestedTagBlock(nested: GitNestedRepoInfo)}
+	{@const nestedTags = tags.filter(t => t.repoPath === nested.path)}
+	{@const isCollapsed = nestedReposCollapsed[nested.relPath] !== undefined
+		? nestedReposCollapsed[nested.relPath]
+		: true}
+	{@const defaultHeight = (branchInfo?.nested && branchInfo.nested.length === 1) ? 'auto' : '260px'}
+	{@const currentHeight = isCollapsed ? 'auto' : (nestedReposHeights[nested.relPath] ? `${nestedReposHeights[nested.relPath]}px` : defaultHeight)}
+	<div
+		class="relative flex flex-col min-h-0 bg-slate-50 dark:bg-slate-900 select-none border-t border-slate-200/60 dark:border-slate-800/60 {isCollapsed ? 'border-b border-slate-200/50 dark:border-slate-800/50' : ''}"
+		class:flex-none={isCollapsed || currentHeight !== 'auto'}
+		class:flex-auto={!isCollapsed && currentHeight === 'auto'}
+		style="height: {currentHeight}"
+	>
+		{#if !isCollapsed}
+			<!-- Drag handle -->
+			<div
+				class="group absolute top-0 left-0 right-0 h-1.5 -translate-y-1/2 cursor-ns-resize border-none bg-transparent p-0 z-10"
+				role="separator"
+				aria-orientation="horizontal"
+				onmousedown={(e) => startNestedTagsResize(e, nested.relPath)}
+				title="Drag to resize nested repo tags"
+			>
+				<span
+					class="absolute left-0 right-0 top-1/2 h-px -translate-y-1/2 bg-slate-200 dark:bg-slate-700 transition-colors duration-150 group-hover:bg-violet-400"
+					style:background-color={isNestedRepoResizing[nested.relPath] ? '#A683FF' : undefined}
+				></span>
+			</div>
+		{/if}
+
+		<div
+			class="flex items-center gap-2 px-2 py-1.5 flex-shrink-0 cursor-pointer hover:bg-slate-100/50 dark:hover:bg-slate-800/30 transition-colors"
+			role="button"
+			tabindex="0"
+			onclick={() => toggleNestedRepoCollapsed(nested.relPath)}
+			onkeydown={(e) => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); toggleNestedRepoCollapsed(nested.relPath); } }}
+		>
+			<Icon name={isCollapsed ? "lucide:chevron-right" : "lucide:chevron-down"} class="w-4 h-4 text-slate-400 shrink-0" />
+			<Icon name="lucide:folder-git-2" class="w-4 h-4 text-slate-400 shrink-0" />
+			<div class="flex-1 min-w-0 flex flex-col justify-center overflow-hidden select-none">
+				<div class="flex items-center gap-2">
+					<span class="text-sm font-medium text-slate-900 dark:text-slate-100 whitespace-nowrap" title={nested.path}>{nested.relPath}</span>
+					{#if nested.isSubmodule}<span class="shrink-0 text-3xs font-medium px-1.5 py-0.5 rounded bg-blue-500/15 text-blue-600 dark:text-blue-400">submodule</span>{/if}
+					{#if nestedTags.length > 0}<span class="shrink-0 min-w-4 h-4 px-1 rounded-full bg-violet-500/15 text-violet-600 dark:text-violet-400 text-3xs font-semibold flex items-center justify-center">{nestedTags.length}</span>{/if}
+				</div>
+				{#if nested.error}<span class="text-xs text-red-500 truncate" title={nested.error}>{nested.error}</span>{/if}
+			</div>
+		</div>
+
+		{#if !isCollapsed}
+			<div class="flex-1 min-h-0 flex flex-col px-2 overflow-y-auto">
+				{#if nested.error}
+					<div class="flex flex-col items-center justify-center gap-2 py-6 text-red-500 text-xs">
+						<Icon name="lucide:triangle-alert" class="w-5 h-5 opacity-60" />
+						<span>{nested.error}</span>
+					</div>
+				{:else}
+					<div class="pb-2 pt-1.5">
+						{#if showCreateTagForm && tagRepoPath === nested.path}
+							<div class="p-2.5 bg-slate-50 dark:bg-slate-800/50 border border-slate-200 dark:border-slate-700 rounded-lg space-y-2">
+								<input
+									type="text"
+									bind:value={newTagName}
+									placeholder="Tag name (e.g. v1.0.0)..."
+									class="w-full px-2.5 py-2 text-sm bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-700 rounded-md text-slate-900 dark:text-slate-100 outline-none focus:border-violet-500/40 focus:ring-1 focus:ring-violet-500/20"
+									onkeydown={(e) => e.key === 'Enter' && !newTagMessage && handleCreateTag()}
+								/>
+								<input
+									type="text"
+									bind:value={newTagMessage}
+									placeholder="Tag message (optional, makes annotated tag)..."
+									class="w-full px-2.5 py-2 text-sm bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-700 rounded-md text-slate-900 dark:text-slate-100 outline-none focus:border-violet-500/40 focus:ring-1 focus:ring-violet-500/20"
+									onkeydown={(e) => e.key === 'Enter' && handleCreateTag()}
+								/>
+								<div class="flex gap-1.5">
+									<button
+										type="button"
+										class="flex-1 px-3 py-1.5 text-xs font-medium rounded-md transition-colors cursor-pointer border-none
+											{newTagName.trim()
+												? 'bg-violet-600 text-white hover:bg-violet-700'
+												: 'bg-slate-200 dark:bg-slate-700 text-slate-400 dark:text-slate-500 cursor-not-allowed'}"
+										onclick={handleCreateTag}
+										disabled={!newTagName.trim()}
+									>
+										Create Tag
+									</button>
+									<button
+										type="button"
+										class="px-3 py-1.5 text-xs font-medium bg-transparent border border-slate-200 dark:border-slate-700 text-slate-600 dark:text-slate-400 rounded-md hover:bg-slate-100 dark:hover:bg-slate-800 transition-colors cursor-pointer"
+										onclick={() => { showCreateTagForm = false; newTagName = ''; newTagMessage = ''; tagRepoPath = undefined; }}
+									>
+										Cancel
+									</button>
+								</div>
+							</div>
+						{:else}
+							<button
+								type="button"
+								class="flex items-center justify-center gap-2 w-full py-2 px-3 border border-dashed border-slate-300 dark:border-slate-600 rounded-lg text-xs text-slate-500 hover:text-violet-600 hover:border-violet-400 transition-colors cursor-pointer bg-transparent"
+								onclick={() => { tagRepoPath = nested.path; showCreateTagForm = true; }}
+							>
+								<Icon name="lucide:plus" class="w-3.5 h-3.5" />
+								<span>Create New Tag</span>
+							</button>
+						{/if}
+					</div>
+					{#if nestedTags.length === 0}
+						<div class="flex flex-col items-center justify-center gap-2 py-6 text-slate-500 text-xs">
+							<Icon name="lucide:tag" class="w-5 h-5 opacity-30" />
+							<span>No tags</span>
+						</div>
+					{:else}
+						<div class="space-y-1 pb-2">
+							{#each nestedTags as tag (tag.name)}
+								<div class="group flex items-center gap-2 px-2 py-1.5 rounded-md hover:bg-slate-100 dark:hover:bg-slate-800/60 transition-colors">
+									<div class="flex-1 min-w-0">
+										<p class="text-sm font-medium text-slate-900 dark:text-slate-100 truncate">{tag.name}</p>
+										<div class="flex items-center gap-1.5">
+											<button
+												type="button"
+												class="text-xs font-mono text-slate-400 dark:text-slate-500 hover:text-violet-600 dark:hover:text-violet-400 bg-transparent border-none cursor-pointer p-0 shrink-0 transition-colors"
+												onclick={(e) => copyTagHash(tag.hash, e)}
+												title="Copy tag hash"
+											>{tag.hash.slice(0, 7)}</button>
+											{#if tag.message}
+												<span class="text-xs text-slate-400 dark:text-slate-500 truncate">{tag.message}</span>
+											{/if}
+										</div>
+									</div>
+									<div class="flex items-center gap-0.5 shrink-0">
+										<button
+											type="button"
+											class="flex items-center justify-center w-7 h-7 rounded-md text-slate-400 hover:bg-blue-500/10 hover:text-blue-500 transition-colors bg-transparent border-none cursor-pointer"
+											onclick={() => handlePushTag(tag.name, nested.path)}
+											title="Push tag to remote"
+										>
+											<Icon name="lucide:arrow-up-from-line" class="w-3.5 h-3.5" />
+										</button>
+										<button
+											type="button"
+											class="flex items-center justify-center w-7 h-7 rounded-md text-slate-400 hover:bg-red-500/10 hover:text-red-500 transition-colors bg-transparent border-none cursor-pointer"
+											onclick={() => handleDeleteTag(tag.name, nested.path)}
+											title="Delete tag"
+										>
+											<Icon name="lucide:trash-2" class="w-3.5 h-3.5" />
+										</button>
+									</div>
+								</div>
+							{/each}
+						</div>
+					{/if}
+				{/if}
+			</div>
+		{/if}
+	</div>
+{/snippet}
+
+<!-- Nested repo contributors block snippet -->
+{#snippet nestedContributorBlock(nested: GitNestedRepoInfo)}
+	{@const nestedContribs = nestedContributors[nested.relPath] ?? []}
+	{@const nestedTotal = nestedContributorTotal[nested.relPath] ?? 0}
+	{@const nestedLog = nestedContributorLog[nested.relPath] ?? []}
+	{@const isLoadingNested = nestedIsContributorsLoading[nested.relPath] ?? false}
+	{@const isCollapsed = nestedReposCollapsed[nested.relPath] !== undefined
+		? nestedReposCollapsed[nested.relPath]
+		: true}
+	{@const defaultHeight = (branchInfo?.nested && branchInfo.nested.length === 1) ? 'auto' : '260px'}
+	{@const currentHeight = isCollapsed ? 'auto' : (nestedReposHeights[nested.relPath] ? `${nestedReposHeights[nested.relPath]}px` : defaultHeight)}
+	<div
+		class="relative flex flex-col min-h-0 bg-slate-50 dark:bg-slate-900 select-none border-t border-slate-200/60 dark:border-slate-800/60 {isCollapsed ? 'border-b border-slate-200/50 dark:border-slate-800/50' : ''}"
+		class:flex-none={isCollapsed || currentHeight !== 'auto'}
+		class:flex-auto={!isCollapsed && currentHeight === 'auto'}
+		style="height: {currentHeight}"
+	>
+		{#if !isCollapsed}
+			<!-- Drag handle -->
+			<div
+				class="group absolute top-0 left-0 right-0 h-1.5 -translate-y-1/2 cursor-ns-resize border-none bg-transparent p-0 z-10"
+				role="separator"
+				aria-orientation="horizontal"
+				onmousedown={(e) => startNestedContributorsResize(e, nested.relPath)}
+				title="Drag to resize nested repo contributors"
+			>
+				<span
+					class="absolute left-0 right-0 top-1/2 h-px -translate-y-1/2 bg-slate-200 dark:bg-slate-700 transition-colors duration-150 group-hover:bg-violet-400"
+					style:background-color={isNestedRepoResizing[nested.relPath] ? '#A683FF' : undefined}
+				></span>
+			</div>
+		{/if}
+
+		<div
+			class="flex items-center gap-2 px-2 py-1.5 flex-shrink-0 cursor-pointer hover:bg-slate-100/50 dark:hover:bg-slate-800/30 transition-colors"
+			role="button"
+			tabindex="0"
+			onclick={() => toggleNestedRepoCollapsed(nested.relPath)}
+			onkeydown={(e) => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); toggleNestedRepoCollapsed(nested.relPath); } }}
+		>
+			<Icon name={isCollapsed ? "lucide:chevron-right" : "lucide:chevron-down"} class="w-4 h-4 text-slate-400 shrink-0" />
+			<Icon name="lucide:folder-git-2" class="w-4 h-4 text-slate-400 shrink-0" />
+			<div class="flex-1 min-w-0 flex flex-col justify-center overflow-hidden select-none">
+				<div class="flex items-center gap-2">
+					<span class="text-sm font-medium text-slate-900 dark:text-slate-100 whitespace-nowrap" title={nested.path}>{nested.relPath}</span>
+					{#if nested.isSubmodule}<span class="shrink-0 text-3xs font-medium px-1.5 py-0.5 rounded bg-blue-500/15 text-blue-600 dark:text-blue-400">submodule</span>{/if}
+					{#if nestedContribs.length > 0}<span class="shrink-0 min-w-4 h-4 px-1 rounded-full bg-violet-500/15 text-violet-600 dark:text-violet-400 text-3xs font-semibold flex items-center justify-center">{nestedContribs.length}</span>{/if}
+				</div>
+				{#if nested.error}<span class="text-xs text-red-500 truncate" title={nested.error}>{nested.error}</span>{/if}
+			</div>
+		</div>
+
+		{#if !isCollapsed}
+			<div class="flex-1 min-h-0 flex flex-col px-2 overflow-y-auto">
+				{#if nested.error}
+					<div class="flex flex-col items-center justify-center gap-2 py-6 text-red-500 text-xs">
+						<Icon name="lucide:triangle-alert" class="w-5 h-5 opacity-60" />
+						<span>{nested.error}</span>
+					</div>
+				{:else if isLoadingNested}
+					<div class="flex items-center justify-center py-8"><div class="w-5 h-5 border-2 border-slate-200 dark:border-slate-700 border-t-violet-600 rounded-full animate-spin"></div></div>
+				{:else if nestedContribs.length === 0}
+					<div class="flex flex-col items-center justify-center gap-2 py-6 text-slate-500 text-xs">
+						<Icon name="lucide:users" class="w-5 h-5 opacity-30" />
+						<span>No contributors</span>
+					</div>
+				{:else}
+					<div class="space-y-0.5 pb-2 pt-1">
+						{#each nestedContribs as c, ci (`${nested.relPath}:${c.key}:${ci}`)}
+							{@const expanded = expandedContributors.has(`${nested.relPath}:${c.key}`)}
+							{@const share = nestedTotal > 0 ? Math.round((c.count / nestedTotal) * 100) : 0}
+							{@const lastActive = formatRelativeTime(c.lastDate)}
+							<div>
+								<div
+									class="flex items-center gap-2 px-2.5 py-2 rounded-md hover:bg-slate-100 dark:hover:bg-slate-800/60 transition-colors cursor-pointer"
+									role="button"
+									tabindex="0"
+									onclick={() => {
+										const scopedKey = `${nested.relPath}:${c.key}`;
+										const next = new Set(expandedContributors);
+										if (next.has(scopedKey)) { next.delete(scopedKey); } else { next.add(scopedKey); if (!contributorVisible[scopedKey]) { contributorVisible = { ...contributorVisible, [scopedKey]: CONTRIBUTOR_COMMIT_PAGE_SIZE }; } }
+										expandedContributors = next;
+									}}
+									onkeydown={(e) => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); const scopedKey = `${nested.relPath}:${c.key}`; const next = new Set(expandedContributors); if (next.has(scopedKey)) { next.delete(scopedKey); } else { next.add(scopedKey); if (!contributorVisible[scopedKey]) { contributorVisible = { ...contributorVisible, [scopedKey]: CONTRIBUTOR_COMMIT_PAGE_SIZE }; } } expandedContributors = next; } }}
+								>
+									<Icon name={expanded ? 'lucide:chevron-down' : 'lucide:chevron-right'} class="w-3 h-3 shrink-0 text-slate-400" />
+									<div class="flex-1 min-w-0">
+										<div class="flex items-center gap-2 min-w-0">
+											<p class="flex-1 text-sm text-slate-700 dark:text-slate-300 truncate">{c.name}</p>
+											<span class="text-3xs text-slate-400 shrink-0 tabular-nums">{c.count} commit{c.count === 1 ? '' : 's'}{lastActive ? ` · ${lastActive}` : ''}</span>
+										</div>
+										<p class="text-xs text-slate-400 dark:text-slate-500 truncate">{c.email}</p>
+										<div class="flex items-center gap-2">
+											<div class="flex-1 h-1 rounded-full bg-slate-200/70 dark:bg-slate-700/60 overflow-hidden">
+												<div class="h-full rounded-full bg-violet-500/70" style="width: {share}%"></div>
+											</div>
+											<span class="text-3xs text-slate-400 shrink-0 tabular-nums">{share}%</span>
+										</div>
+									</div>
+								</div>
+								{#if expanded}
+									{@const scopedKey = `${nested.relPath}:${c.key}`}
+									{@const list = nestedLog.filter(commit => (commit.authorEmail || commit.author).toLowerCase().trim() === c.key)}
+									{@const visible = contributorVisible[scopedKey] ?? CONTRIBUTOR_COMMIT_PAGE_SIZE}
+									<div class="ml-5 mb-1 border-l border-slate-200 dark:border-slate-700 pl-2 space-y-0.5">
+										{#if list.length === 0}
+											<div class="py-1.5 text-xs text-slate-400">No commits in the sampled history</div>
+										{:else}
+											{#each list.slice(0, visible) as commit (commit.hash)}
+												{@const commitExpanded = expandedBranchCommits.has(commit.hash)}
+												{@const filesState = branchCommitFileState[commit.hash]}
+												{@const rel = formatRelativeTime(commit.date)}
+												<div>
+													<div
+														class="flex items-center gap-1.5 w-full px-2 py-1.5 rounded-md hover:bg-slate-100 dark:hover:bg-slate-800/60 transition-colors cursor-pointer"
+														role="button"
+														tabindex="0"
+														onclick={() => toggleBranchCommitExpanded(commit.hash, nested.path)}
+														onkeydown={(e) => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); toggleBranchCommitExpanded(commit.hash, nested.path); } }}
+													>
+														<Icon name={commitExpanded ? 'lucide:chevron-down' : 'lucide:chevron-right'} class="w-3 h-3 shrink-0 text-slate-400" />
+														<div class="flex-1 min-w-0 flex flex-col justify-center overflow-hidden">
+															<div class="flex min-w-0 items-center gap-2">
+																<span class="flex-1 min-w-0 text-sm text-slate-700 dark:text-slate-300 leading-tight truncate" title={commit.message}>{commit.message}</span>
+																{#if rel}<span class="text-3xs text-slate-400 shrink-0">{rel}</span>{/if}
+															</div>
+															<div class="flex min-w-0 items-center gap-1.5 mt-0.5">
+																<button type="button" class="font-mono text-xs text-violet-600 dark:text-violet-400 hover:text-violet-800 dark:hover:text-violet-300 bg-transparent border-none cursor-pointer p-0 shrink-0 transition-colors" onclick={(e) => copyCommitHash(commit.hash, e)} title="Copy commit hash">{commit.hashShort}</button>
+															</div>
+														</div>
+													</div>
+													{#if commitExpanded}
+														<div class="ml-5 mb-1 border-l border-slate-200 dark:border-slate-700 pl-2 space-y-0.5">
+															{#if filesState?.isLoading && filesState.files.length === 0}
+																<div class="flex items-center gap-2 py-1.5 text-xs text-slate-400"><div class="w-3 h-3 border border-slate-400 border-t-transparent rounded-full animate-spin"></div><span>Loading files...</span></div>
+															{:else if !filesState || filesState.files.length === 0}
+																<div class="py-1.5 text-xs text-slate-400">No files</div>
+															{:else}
+																{#each filesState.files as file (`${commit.hash}:${file.oldPath}:${file.newPath}`)}
+																	{@const filePath = file.newPath || file.oldPath}
+																	{@const fileParts = splitPath(filePath)}
+																	<button type="button" class="group/file flex items-center gap-2 w-full px-2 py-1.5 rounded-md text-left hover:bg-slate-100 dark:hover:bg-slate-800/60 transition-colors bg-transparent border-none cursor-pointer" onclick={() => viewCommitFileDiff(file, 0, commit.hash)} title={filePath}><Icon name={getFileIcon(fileParts.fileName) as IconName} class="w-4 h-4 shrink-0" /><div class="flex items-baseline gap-1.5 min-w-0 flex-1"><span class="text-sm text-slate-600 dark:text-slate-300 truncate">{fileParts.fileName}</span>{#if fileParts.dirPath}<span class="text-2xs text-slate-400 dark:text-slate-500 truncate min-w-0" dir="rtl">{fileParts.dirPath}</span>{/if}</div><span class="w-4 text-center text-sm font-bold {getGitStatusColor(file.status)} shrink-0">{getGitStatusLabel(file.status)}</span></button>
+																{/each}
+															{/if}
+														</div>
+													{/if}
+												</div>
+											{/each}
+											{#if visible < list.length}
+												<button type="button" class="flex items-center justify-center gap-2 w-full px-2 py-1.5 text-xs rounded-md text-slate-500 hover:text-violet-500 hover:bg-slate-100 dark:hover:bg-slate-800/60 transition-colors bg-transparent border-none cursor-pointer" onclick={() => { const sk = `${nested.relPath}:${c.key}`; contributorVisible = { ...contributorVisible, [sk]: (contributorVisible[sk] ?? CONTRIBUTOR_COMMIT_PAGE_SIZE) + CONTRIBUTOR_COMMIT_PAGE_SIZE }; }}><span>Load more ({list.length - visible})</span></button>
+											{/if}
+										{/if}
+									</div>
+								{/if}
+							</div>
+						{/each}
+					</div>
+				{/if}
 			</div>
 		{/if}
 	</div>
@@ -4134,266 +4827,317 @@ ${bodies}`;
 
 			{#if moreSubTab === 'tags'}
 			<!-- Tags -->
-			<div class="flex-1 overflow-y-auto">
-				<!-- Create tag button/form -->
-				<div class="px-2 pb-2">
-				{#if showCreateTagForm}
-					<div class="p-2.5 bg-slate-50 dark:bg-slate-800/50 border border-slate-200 dark:border-slate-700 rounded-lg space-y-2">
-						<input
-							type="text"
-							bind:value={newTagName}
-							placeholder="Tag name (e.g. v1.0.0)..."
-							class="w-full px-2.5 py-2 text-sm bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-700 rounded-md text-slate-900 dark:text-slate-100 outline-none focus:border-violet-500/40 focus:ring-1 focus:ring-violet-500/20"
-							onkeydown={(e) => e.key === 'Enter' && !newTagMessage && handleCreateTag()}
-						/>
-						<input
-							type="text"
-							bind:value={newTagMessage}
-							placeholder="Tag message (optional, makes annotated tag)..."
-							class="w-full px-2.5 py-2 text-sm bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-700 rounded-md text-slate-900 dark:text-slate-100 outline-none focus:border-violet-500/40 focus:ring-1 focus:ring-violet-500/20"
-							onkeydown={(e) => e.key === 'Enter' && handleCreateTag()}
-						/>
-						<div class="flex gap-1.5">
-							<button
-								type="button"
-								class="flex-1 px-3 py-1.5 text-xs font-medium rounded-md transition-colors cursor-pointer border-none
-									{newTagName.trim()
-										? 'bg-violet-600 text-white hover:bg-violet-700'
-										: 'bg-slate-200 dark:bg-slate-700 text-slate-400 dark:text-slate-500 cursor-not-allowed'}"
-								onclick={handleCreateTag}
-								disabled={!newTagName.trim()}
-							>
-								Create Tag
-							</button>
-							<button
-								type="button"
-								class="px-3 py-1.5 text-xs font-medium bg-transparent border border-slate-200 dark:border-slate-700 text-slate-600 dark:text-slate-400 rounded-md hover:bg-slate-100 dark:hover:bg-slate-800 transition-colors cursor-pointer"
-								onclick={() => { showCreateTagForm = false; newTagName = ''; newTagMessage = ''; }}
-							>
-								Cancel
-							</button>
-						</div>
-					</div>
-				{:else}
-					<button
-						type="button"
-						class="flex items-center justify-center gap-2 w-full py-2 px-3 border border-dashed border-slate-300 dark:border-slate-600 rounded-lg text-xs text-slate-500 hover:text-violet-600 hover:border-violet-400 transition-colors cursor-pointer bg-transparent"
-						onclick={() => showCreateTagForm = true}
-					>
-						<Icon name="lucide:plus" class="w-3.5 h-3.5" />
-						<span>Create New Tag</span>
-					</button>
-				{/if}
-			</div>
-
-			{#if isTagsLoading}
-				<div class="flex items-center justify-center py-8">
-					<div class="w-5 h-5 border-2 border-slate-200 dark:border-slate-700 border-t-violet-600 rounded-full animate-spin"></div>
-				</div>
-			{:else if tags.length === 0}
-				<div class="flex flex-col items-center justify-center gap-2 py-8 text-slate-500 text-xs">
-					<Icon name="lucide:tag" class="w-6 h-6 opacity-30" />
-					<span>No tags</span>
-				</div>
-			{:else}
-				<div class="space-y-1 px-1">
-					{#each tags as tag (tag.name)}
-						<div class="group flex items-center gap-2 px-2.5 py-2 rounded-md hover:bg-slate-100 dark:hover:bg-slate-800/60 transition-colors">
-							<div class="flex-1 min-w-0">
-								<p class="text-sm font-medium text-slate-900 dark:text-slate-100 truncate">{tag.name}</p>
-								<div class="flex items-center gap-1.5">
+			<div class="flex-1 flex flex-col min-h-0">
+				<div
+					class="overflow-y-auto px-2"
+					class:flex-none={mainTagsHeight !== undefined}
+					class:flex-auto={mainTagsHeight === undefined}
+					style:height={mainTagsHeight ? `${mainTagsHeight}px` : undefined}
+					style:max-height={mainTagsHeight ? `${mainTagsHeight}px` : undefined}
+				>
+					<!-- Create tag button/form -->
+					<div class="pb-2">
+						{#if showCreateTagForm && !tagRepoPath}
+							<div class="p-2.5 bg-slate-50 dark:bg-slate-800/50 border border-slate-200 dark:border-slate-700 rounded-lg space-y-2">
+								<input
+									type="text"
+									bind:value={newTagName}
+									placeholder="Tag name (e.g. v1.0.0)..."
+									class="w-full px-2.5 py-2 text-sm bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-700 rounded-md text-slate-900 dark:text-slate-100 outline-none focus:border-violet-500/40 focus:ring-1 focus:ring-violet-500/20"
+									onkeydown={(e) => e.key === 'Enter' && !newTagMessage && handleCreateTag()}
+								/>
+								<input
+									type="text"
+									bind:value={newTagMessage}
+									placeholder="Tag message (optional, makes annotated tag)..."
+									class="w-full px-2.5 py-2 text-sm bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-700 rounded-md text-slate-900 dark:text-slate-100 outline-none focus:border-violet-500/40 focus:ring-1 focus:ring-violet-500/20"
+									onkeydown={(e) => e.key === 'Enter' && handleCreateTag()}
+								/>
+								<div class="flex gap-1.5">
 									<button
 										type="button"
-										class="text-xs font-mono text-slate-400 dark:text-slate-500 hover:text-violet-600 dark:hover:text-violet-400 bg-transparent border-none cursor-pointer p-0 shrink-0 transition-colors"
-										onclick={(e) => copyTagHash(tag.hash, e)}
-										title="Copy tag hash"
-									>{tag.hash.slice(0, 7)}</button>
-									{#if tag.message}
-										<span class="text-xs text-slate-400 dark:text-slate-500 truncate">{tag.message}</span>
-									{/if}
+										class="flex-1 px-3 py-1.5 text-xs font-medium rounded-md transition-colors cursor-pointer border-none
+											{newTagName.trim()
+												? 'bg-violet-600 text-white hover:bg-violet-700'
+												: 'bg-slate-200 dark:bg-slate-700 text-slate-400 dark:text-slate-500 cursor-not-allowed'}"
+										onclick={handleCreateTag}
+										disabled={!newTagName.trim()}
+									>
+										Create Tag
+									</button>
+									<button
+										type="button"
+										class="px-3 py-1.5 text-xs font-medium bg-transparent border border-slate-200 dark:border-slate-700 text-slate-600 dark:text-slate-400 rounded-md hover:bg-slate-100 dark:hover:bg-slate-800 transition-colors cursor-pointer"
+										onclick={() => { showCreateTagForm = false; newTagName = ''; newTagMessage = ''; tagRepoPath = undefined; }}
+									>
+										Cancel
+									</button>
 								</div>
 							</div>
-							<div class="flex items-center gap-0.5 shrink-0">
-								<button
-									type="button"
-									class="flex items-center justify-center w-7 h-7 rounded-md text-slate-400 hover:bg-blue-500/10 hover:text-blue-500 transition-colors bg-transparent border-none cursor-pointer"
-									onclick={() => handlePushTag(tag.name)}
-									title="Push tag to remote"
-								>
-									<Icon name="lucide:arrow-up-from-line" class="w-3.5 h-3.5" />
-								</button>
-								<button
-									type="button"
-									class="flex items-center justify-center w-7 h-7 rounded-md text-slate-400 hover:bg-red-500/10 hover:text-red-500 transition-colors bg-transparent border-none cursor-pointer"
-									onclick={() => handleDeleteTag(tag.name)}
-									title="Delete tag"
-								>
-									<Icon name="lucide:trash-2" class="w-3.5 h-3.5" />
-								</button>
-							</div>
+						{:else}
+							<button
+								type="button"
+								class="flex items-center justify-center gap-2 w-full py-2 px-3 border border-dashed border-slate-300 dark:border-slate-600 rounded-lg text-xs text-slate-500 hover:text-violet-600 hover:border-violet-400 transition-colors cursor-pointer bg-transparent"
+								onclick={() => { tagRepoPath = undefined; showCreateTagForm = true; }}
+							>
+								<Icon name="lucide:plus" class="w-3.5 h-3.5" />
+								<span>Create New Tag</span>
+							</button>
+						{/if}
+					</div>
+
+					{#if isTagsLoading}
+						<div class="flex items-center justify-center py-8">
+							<div class="w-5 h-5 border-2 border-slate-200 dark:border-slate-700 border-t-violet-600 rounded-full animate-spin"></div>
 						</div>
-					{/each}
+					{:else}
+						{@const mainTags = tags.filter(t => !t.repoPath)}
+						{#if mainTags.length === 0}
+							<div class="flex flex-col items-center justify-center gap-2 py-8 text-slate-500 text-xs">
+								<Icon name="lucide:tag" class="w-6 h-6 opacity-30" />
+								<span>No tags</span>
+							</div>
+						{:else}
+							<div class="space-y-1 pb-2">
+								{#each mainTags as tag (tag.name)}
+									<div class="group flex items-center gap-2 px-2.5 py-2 rounded-md hover:bg-slate-100 dark:hover:bg-slate-800/60 transition-colors">
+										<div class="flex-1 min-w-0">
+											<p class="text-sm font-medium text-slate-900 dark:text-slate-100 truncate">{tag.name}</p>
+											<div class="flex items-center gap-1.5">
+												<button
+													type="button"
+													class="text-xs font-mono text-slate-400 dark:text-slate-500 hover:text-violet-600 dark:hover:text-violet-400 bg-transparent border-none cursor-pointer p-0 shrink-0 transition-colors"
+													onclick={(e) => copyTagHash(tag.hash, e)}
+													title="Copy tag hash"
+												>{tag.hash.slice(0, 7)}</button>
+												{#if tag.message}
+													<span class="text-xs text-slate-400 dark:text-slate-500 truncate">{tag.message}</span>
+												{/if}
+											</div>
+										</div>
+										<div class="flex items-center gap-0.5 shrink-0">
+											<button
+												type="button"
+												class="flex items-center justify-center w-7 h-7 rounded-md text-slate-400 hover:bg-blue-500/10 hover:text-blue-500 transition-colors bg-transparent border-none cursor-pointer"
+												onclick={() => handlePushTag(tag.name)}
+												title="Push tag to remote"
+											>
+												<Icon name="lucide:arrow-up-from-line" class="w-3.5 h-3.5" />
+											</button>
+											<button
+												type="button"
+												class="flex items-center justify-center w-7 h-7 rounded-md text-slate-400 hover:bg-red-500/10 hover:text-red-500 transition-colors bg-transparent border-none cursor-pointer"
+												onclick={() => handleDeleteTag(tag.name)}
+												title="Delete tag"
+											>
+												<Icon name="lucide:trash-2" class="w-3.5 h-3.5" />
+											</button>
+										</div>
+									</div>
+								{/each}
+							</div>
+						{/if}
+					{/if}
 				</div>
-			{/if}
+				{#if branchInfo?.nested && branchInfo.nested.length > 0}
+					{#each branchInfo.nested as nested (nested.path)}
+						{@render nestedTagBlock(nested)}
+					{/each}
+				{/if}
 			</div>
 			{:else if moreSubTab === 'stash'}
 			<!-- Stash -->
-			<div class="flex-1 overflow-y-auto px-2">
-				<div class="pb-2">
-					{#if showStashSaveForm}
-						<div class="p-2.5 bg-slate-50 dark:bg-slate-800/50 border border-slate-200 dark:border-slate-700 rounded-lg space-y-2">
-							<input type="text" data-stash-message-input bind:value={stashMessage} placeholder="Stash message (optional)..." class="w-full px-2.5 py-2 text-sm bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-700 rounded-md text-slate-900 dark:text-slate-100 outline-none focus:border-violet-500/40 focus:ring-1 focus:ring-violet-500/20" onkeydown={(e) => e.key === 'Enter' && handleStashSave()} />
-							<!-- Scope: stash everything vs. only the staged (index) changes -->
-							<div class="flex gap-1 p-0.5 bg-slate-100 dark:bg-slate-800 rounded-md">
-								<button type="button" class="flex-1 px-2 py-1 text-xs font-medium rounded transition-colors cursor-pointer border-none {!stashStagedOnly ? 'bg-white dark:bg-slate-700 text-slate-900 dark:text-slate-100 shadow-sm' : 'bg-transparent text-slate-500 hover:text-slate-700 dark:hover:text-slate-300'}" onclick={() => stashStagedOnly = false}>All changes</button>
-								<button type="button" class="flex-1 px-2 py-1 text-xs font-medium rounded transition-colors cursor-pointer border-none {stashStagedOnly ? 'bg-white dark:bg-slate-700 text-slate-900 dark:text-slate-100 shadow-sm' : 'bg-transparent text-slate-500 hover:text-slate-700 dark:hover:text-slate-300'}" onclick={() => stashStagedOnly = true}>Staged only</button>
-							</div>
-							<div class="flex gap-1.5"><button type="button" class="flex-1 px-3 py-1.5 text-xs font-medium rounded-md bg-violet-600 text-white hover:bg-violet-700 transition-colors cursor-pointer border-none" onclick={handleStashSave}>Stash Changes</button><button type="button" class="px-3 py-1.5 text-xs font-medium bg-transparent border border-slate-200 dark:border-slate-700 text-slate-600 dark:text-slate-400 rounded-md hover:bg-slate-100 dark:hover:bg-slate-800 transition-colors cursor-pointer" onclick={() => { showStashSaveForm = false; stashMessage = ''; stashStagedOnly = false; }}>Cancel</button></div>
-						</div>
-					{:else}
-						<button type="button" class="flex items-center justify-center gap-2 w-full py-2 px-3 border border-dashed border-slate-300 dark:border-slate-600 rounded-lg text-xs text-slate-500 hover:text-violet-600 hover:border-violet-400 transition-colors cursor-pointer bg-transparent" onclick={() => { stashStagedOnly = false; showStashSaveForm = true; }}><Icon name="lucide:plus" class="w-3.5 h-3.5" /><span>Stash Current Changes</span></button>
-					{/if}
-				</div>
-				{#if isStashLoading}
-					<div class="flex items-center justify-center py-8"><div class="w-5 h-5 border-2 border-slate-200 dark:border-slate-700 border-t-violet-600 rounded-full animate-spin"></div></div>
-				{:else if stashEntries.length === 0}
-					<div class="flex flex-col items-center justify-center gap-2 py-8 text-slate-500 text-xs"><Icon name="lucide:archive" class="w-6 h-6 opacity-30" /><span>No stashed changes</span></div>
-				{:else}
-					<div class="space-y-0.5">
-						{#each stashEntries as entry (entry.index)}
-							{@const relativeDate = formatRelativeTime(entry.date)}
-							{@const stashExpanded = expandedStashes.has(entry.index)}
-							{@const sFiles = stashFileState[entry.index]}
-							<div>
-								<div
-									class="group relative flex items-center gap-1.5 pl-1.5 pr-2.5 py-1.5 rounded-md hover:bg-slate-100 dark:hover:bg-slate-800/60 transition-colors cursor-pointer"
-									role="button"
-									tabindex="0"
-									onclick={() => toggleStashExpanded(entry.index)}
-									onkeydown={(e) => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); toggleStashExpanded(entry.index); } }}
-								>
-									<Icon name={stashExpanded ? 'lucide:chevron-down' : 'lucide:chevron-right'} class="w-3.5 h-3.5 shrink-0 text-slate-400" />
-									<div class="flex-1 min-w-0 pr-2 group-hover:pr-16 flex flex-col justify-center overflow-hidden transition-[padding] duration-150">
-										<p class="text-sm font-medium text-slate-900 dark:text-slate-100 truncate">{entry.message}</p>
-										<p class="text-xs text-slate-400 dark:text-slate-500"><span>stash@&#123;{entry.index}&#125;</span>{#if relativeDate}<span class="mx-1">·</span><span>{relativeDate}</span>{/if}</p>
-									</div>
-									<div class="pointer-events-none absolute inset-y-0 right-0 flex items-center gap-1 pl-1 pr-2 bg-white/20 opacity-0 backdrop-blur-md supports-[backdrop-filter]:bg-white/10 transition-opacity group-hover:opacity-100 dark:bg-slate-900/20 dark:supports-[backdrop-filter]:bg-slate-900/10">
-										<button type="button" class="pointer-events-auto flex items-center justify-center w-7 h-7 rounded-md text-slate-400 hover:bg-emerald-500/10 hover:text-emerald-500 transition-colors bg-transparent border-none cursor-pointer" onclick={(e) => { e.stopPropagation(); handleStashPop(entry.index); }} title="Pop"><Icon name="lucide:archive-restore" class="w-3.5 h-3.5" /></button>
-										<button type="button" class="pointer-events-auto flex items-center justify-center w-7 h-7 rounded-md text-slate-400 hover:bg-red-500/10 hover:text-red-500 transition-colors bg-transparent border-none cursor-pointer" onclick={(e) => { e.stopPropagation(); handleStashDrop(entry.index); }} title="Drop"><Icon name="lucide:trash-2" class="w-3.5 h-3.5" /></button>
-									</div>
+			<div class="flex-1 flex flex-col min-h-0">
+				<div
+					class="overflow-y-auto px-2"
+					class:flex-none={mainStashHeight !== undefined}
+					class:flex-auto={mainStashHeight === undefined}
+					style:height={mainStashHeight ? `${mainStashHeight}px` : undefined}
+					style:max-height={mainStashHeight ? `${mainStashHeight}px` : undefined}
+				>
+					<div class="pb-2">
+						{#if showStashSaveForm && !stashRepoPath}
+							<div class="p-2.5 bg-slate-50 dark:bg-slate-800/50 border border-slate-200 dark:border-slate-700 rounded-lg space-y-2">
+								<input type="text" data-stash-message-input bind:value={stashMessage} placeholder="Stash message (optional)..." class="w-full px-2.5 py-2 text-sm bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-700 rounded-md text-slate-900 dark:text-slate-100 outline-none focus:border-violet-500/40 focus:ring-1 focus:ring-violet-500/20" onkeydown={(e) => e.key === 'Enter' && handleStashSave()} />
+								<!-- Scope: stash everything vs. only the staged (index) changes -->
+								<div class="flex gap-1 p-0.5 bg-slate-100 dark:bg-slate-800 rounded-md">
+									<button type="button" class="flex-1 px-2 py-1 text-xs font-medium rounded transition-colors cursor-pointer border-none {!stashStagedOnly ? 'bg-white dark:bg-slate-700 text-slate-900 dark:text-slate-100 shadow-sm' : 'bg-transparent text-slate-500 hover:text-slate-700 dark:hover:text-slate-300'}" onclick={() => stashStagedOnly = false}>All changes</button>
+									<button type="button" class="flex-1 px-2 py-1 text-xs font-medium rounded transition-colors cursor-pointer border-none {stashStagedOnly ? 'bg-white dark:bg-slate-700 text-slate-900 dark:text-slate-100 shadow-sm' : 'bg-transparent text-slate-500 hover:text-slate-700 dark:hover:text-slate-300'}" onclick={() => stashStagedOnly = true}>Staged only</button>
 								</div>
-								{#if stashExpanded}
-									<div class="ml-5 mt-0.5 mb-1 border-l border-slate-200 dark:border-slate-700 pl-2 space-y-0.5">
-										{#if sFiles?.isLoading && sFiles.files.length === 0}
-											<div class="flex items-center gap-2 py-1.5 text-xs text-slate-400"><div class="w-3 h-3 border border-slate-400 border-t-transparent rounded-full animate-spin"></div><span>Loading files...</span></div>
-										{:else if !sFiles || sFiles.files.length === 0}
-											<div class="py-1.5 text-xs text-slate-400">No files</div>
-										{:else}
-											{#each sFiles.files as file (`${entry.index}:${file.oldPath}:${file.newPath}`)}
-												{@const filePath = file.newPath || file.oldPath}
-												{@const fileParts = splitPath(filePath)}
-												<button type="button" class="flex items-center gap-2 w-full px-2 py-1.5 rounded-md text-left hover:bg-slate-100 dark:hover:bg-slate-800/60 transition-colors bg-transparent border-none cursor-pointer" onclick={() => viewStashFileDiff(file, entry.index)} title={filePath}><Icon name={getFileIcon(fileParts.fileName) as IconName} class="w-4 h-4 shrink-0" /><div class="flex items-baseline gap-1.5 min-w-0 flex-1"><span class="text-sm text-slate-600 dark:text-slate-300 truncate">{fileParts.fileName}</span>{#if fileParts.dirPath}<span class="text-2xs text-slate-400 dark:text-slate-500 truncate min-w-0" dir="rtl">{fileParts.dirPath}</span>{/if}</div><span class="w-4 text-center text-sm font-bold {getGitStatusColor(file.status)} shrink-0">{getGitStatusLabel(file.status)}</span></button>
-											{/each}
+								<div class="flex gap-1.5"><button type="button" class="flex-1 px-3 py-1.5 text-xs font-medium rounded-md bg-violet-600 text-white hover:bg-violet-700 transition-colors cursor-pointer border-none" onclick={handleStashSave}>Stash Changes</button><button type="button" class="px-3 py-1.5 text-xs font-medium bg-transparent border border-slate-200 dark:border-slate-700 text-slate-600 dark:text-slate-400 rounded-md hover:bg-slate-100 dark:hover:bg-slate-800 transition-colors cursor-pointer" onclick={() => { showStashSaveForm = false; stashMessage = ''; stashStagedOnly = false; stashRepoPath = undefined; }}>Cancel</button></div>
+							</div>
+						{:else}
+							<button type="button" class="flex items-center justify-center gap-2 w-full py-2 px-3 border border-dashed border-slate-300 dark:border-slate-600 rounded-lg text-xs text-slate-500 hover:text-violet-600 hover:border-violet-400 transition-colors cursor-pointer bg-transparent" onclick={() => { stashStagedOnly = false; stashRepoPath = undefined; showStashSaveForm = true; }}><Icon name="lucide:plus" class="w-3.5 h-3.5" /><span>Stash Current Changes</span></button>
+						{/if}
+					</div>
+					{#if isStashLoading}
+						<div class="flex items-center justify-center py-8"><div class="w-5 h-5 border-2 border-slate-200 dark:border-slate-700 border-t-violet-600 rounded-full animate-spin"></div></div>
+					{:else}
+						{@const mainStashEntries = stashEntries.filter(e => !e.repoPath)}
+						{#if mainStashEntries.length === 0}
+							<div class="flex flex-col items-center justify-center gap-2 py-8 text-slate-500 text-xs"><Icon name="lucide:archive" class="w-6 h-6 opacity-30" /><span>No stashed changes</span></div>
+						{:else}
+							<div class="space-y-0.5 pb-2">
+								{#each mainStashEntries as entry (getStashKey(entry))}
+									{@const relativeDate = formatRelativeTime(entry.date)}
+									{@const key = getStashKey(entry)}
+									{@const stashExpanded = expandedStashes.has(key)}
+									{@const sFiles = stashFileState[key]}
+									<div>
+										<div
+											class="group relative flex items-center gap-1.5 pl-1.5 pr-2.5 py-1.5 rounded-md hover:bg-slate-100 dark:hover:bg-slate-800/60 transition-colors cursor-pointer"
+											role="button"
+											tabindex="0"
+											onclick={() => toggleStashExpanded(entry)}
+											onkeydown={(e) => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); toggleStashExpanded(entry); } }}
+										>
+											<Icon name={stashExpanded ? 'lucide:chevron-down' : 'lucide:chevron-right'} class="w-3.5 h-3.5 shrink-0 text-slate-400" />
+											<div class="flex-1 min-w-0 pr-2 group-hover:pr-16 flex flex-col justify-center overflow-hidden transition-[padding] duration-150">
+												<p class="text-sm font-medium text-slate-900 dark:text-slate-100 truncate">{entry.message}</p>
+												<p class="text-xs text-slate-400 dark:text-slate-500">
+													<span>stash@&#123;{entry.index}&#125;</span>
+													{#if relativeDate}
+														<span class="mx-1">·</span><span>{relativeDate}</span>
+													{/if}
+												</p>
+											</div>
+											<div class="pointer-events-none absolute inset-y-0 right-0 flex items-center gap-1 pl-1 pr-2 bg-white/20 opacity-0 backdrop-blur-md supports-[backdrop-filter]:bg-white/10 transition-opacity group-hover:opacity-100 dark:bg-slate-900/20 dark:supports-[backdrop-filter]:bg-slate-900/10">
+												<button type="button" class="pointer-events-auto flex items-center justify-center w-7 h-7 rounded-md text-slate-400 hover:bg-emerald-500/10 hover:text-emerald-500 transition-colors bg-transparent border-none cursor-pointer" onclick={(e) => { e.stopPropagation(); handleStashPop(entry); }} title="Pop"><Icon name="lucide:archive-restore" class="w-3.5 h-3.5" /></button>
+												<button type="button" class="pointer-events-auto flex items-center justify-center w-7 h-7 rounded-md text-slate-400 hover:bg-red-500/10 hover:text-red-500 transition-colors bg-transparent border-none cursor-pointer" onclick={(e) => { e.stopPropagation(); handleStashDrop(entry); }} title="Drop"><Icon name="lucide:trash-2" class="w-3.5 h-3.5" /></button>
+											</div>
+										</div>
+										{#if stashExpanded}
+											<div class="ml-5 mt-0.5 mb-1 border-l border-slate-200 dark:border-slate-700 pl-2 space-y-0.5">
+												{#if sFiles?.isLoading && sFiles.files.length === 0}
+													<div class="flex items-center gap-2 py-1.5 text-xs text-slate-400"><div class="w-3 h-3 border border-slate-400 border-t-transparent rounded-full animate-spin"></div><span>Loading files...</span></div>
+												{:else if !sFiles || sFiles.files.length === 0}
+													<div class="py-1.5 text-xs text-slate-400">No files</div>
+												{:else}
+													{#each sFiles.files as file (`${key}:${file.oldPath}:${file.newPath}`)}
+														{@const filePath = file.newPath || file.oldPath}
+														{@const fileParts = splitPath(filePath)}
+														<button type="button" class="flex items-center gap-2 w-full px-2 py-1.5 rounded-md text-left hover:bg-slate-100 dark:hover:bg-slate-800/60 transition-colors bg-transparent border-none cursor-pointer" onclick={() => viewStashFileDiff(file, entry)} title={filePath}><Icon name={getFileIcon(fileParts.fileName) as IconName} class="w-4 h-4 shrink-0" /><div class="flex items-baseline gap-1.5 min-w-0 flex-1"><span class="text-sm text-slate-600 dark:text-slate-300 truncate">{fileParts.fileName}</span>{#if fileParts.dirPath}<span class="text-2xs text-slate-400 dark:text-slate-500 truncate min-w-0" dir="rtl">{fileParts.dirPath}</span>{/if}</div><span class="w-4 text-center text-sm font-bold {getGitStatusColor(file.status)} shrink-0">{getGitStatusLabel(file.status)}</span></button>
+													{/each}
+												{/if}
+											</div>
 										{/if}
 									</div>
-								{/if}
+								{/each}
 							</div>
-						{/each}
-					</div>
+						{/if}
+					{/if}
+				</div>
+				{#if branchInfo?.nested && branchInfo.nested.length > 0}
+					{#each branchInfo.nested as nested (nested.path)}
+						{@render nestedStashBlock(nested)}
+					{/each}
 				{/if}
 			</div>
 			{:else}
 			<!-- Contributors -->
-			<div class="flex-1 overflow-y-auto px-2">
-				{#if isContributorsLoading}
-					<div class="flex items-center justify-center py-8"><div class="w-5 h-5 border-2 border-slate-200 dark:border-slate-700 border-t-violet-600 rounded-full animate-spin"></div></div>
-				{:else if contributors.length === 0}
-					<div class="flex flex-col items-center justify-center gap-2 py-8 text-slate-500 text-xs"><Icon name="lucide:users" class="w-6 h-6 opacity-30" /><span>No contributors</span></div>
-				{:else}
-					<div class="space-y-0.5">
-						{#each contributors as c, ci (`${c.key}:${ci}`)}
-							{@const expanded = expandedContributors.has(c.key)}
-							{@const share = contributorTotal > 0 ? Math.round((c.count / contributorTotal) * 100) : 0}
-							{@const lastActive = formatRelativeTime(c.lastDate)}
-							<div>
-								<div
-									class="flex items-center gap-2 px-2.5 py-2 rounded-md hover:bg-slate-100 dark:hover:bg-slate-800/60 transition-colors cursor-pointer"
-									role="button"
-									tabindex="0"
-									onclick={() => toggleContributor(c.key)}
-									onkeydown={(e) => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); toggleContributor(c.key); } }}
-								>
-									<Icon name={expanded ? 'lucide:chevron-down' : 'lucide:chevron-right'} class="w-3 h-3 shrink-0 text-slate-400" />
-									<div class="flex-1 min-w-0">
-										<div class="flex items-center gap-2 min-w-0">
-											<p class="flex-1 text-sm text-slate-700 dark:text-slate-300 truncate">{c.name}</p>
-											<span class="text-3xs text-slate-400 shrink-0 tabular-nums">{c.count} commit{c.count === 1 ? '' : 's'}{lastActive ? ` · ${lastActive}` : ''}</span>
-										</div>
-										<p class="text-xs text-slate-400 dark:text-slate-500 truncate">{c.email}</p>
-										<div class="flex items-center gap-2">
-											<div class="flex-1 h-1 rounded-full bg-slate-200/70 dark:bg-slate-700/60 overflow-hidden">
-												<div class="h-full rounded-full bg-violet-500/70" style="width: {share}%"></div>
+			<div class="flex-1 flex flex-col min-h-0">
+				<div
+					class="overflow-y-auto px-2"
+					class:flex-none={mainContributorsHeight !== undefined}
+					class:flex-auto={mainContributorsHeight === undefined}
+					style:height={mainContributorsHeight ? `${mainContributorsHeight}px` : undefined}
+					style:max-height={mainContributorsHeight ? `${mainContributorsHeight}px` : undefined}
+				>
+					{#if isContributorsLoading}
+						<div class="flex items-center justify-center py-8"><div class="w-5 h-5 border-2 border-slate-200 dark:border-slate-700 border-t-violet-600 rounded-full animate-spin"></div></div>
+					{:else if contributors.length === 0}
+						<div class="flex flex-col items-center justify-center gap-2 py-8 text-slate-500 text-xs"><Icon name="lucide:users" class="w-6 h-6 opacity-30" /><span>No contributors</span></div>
+					{:else}
+						<div class="space-y-0.5 pb-2">
+							{#each contributors as c, ci (`${c.key}:${ci}`)}
+								{@const expanded = expandedContributors.has(c.key)}
+								{@const share = contributorTotal > 0 ? Math.round((c.count / contributorTotal) * 100) : 0}
+								{@const lastActive = formatRelativeTime(c.lastDate)}
+								<div>
+									<div
+										class="flex items-center gap-2 px-2.5 py-2 rounded-md hover:bg-slate-100 dark:hover:bg-slate-800/60 transition-colors cursor-pointer"
+										role="button"
+										tabindex="0"
+										onclick={() => toggleContributor(c.key)}
+										onkeydown={(e) => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); toggleContributor(c.key); } }}
+									>
+										<Icon name={expanded ? 'lucide:chevron-down' : 'lucide:chevron-right'} class="w-3 h-3 shrink-0 text-slate-400" />
+										<div class="flex-1 min-w-0">
+											<div class="flex items-center gap-2 min-w-0">
+												<p class="flex-1 text-sm text-slate-700 dark:text-slate-300 truncate">{c.name}</p>
+												<span class="text-3xs text-slate-400 shrink-0 tabular-nums">{c.count} commit{c.count === 1 ? '' : 's'}{lastActive ? ` · ${lastActive}` : ''}</span>
 											</div>
-											<span class="text-3xs text-slate-400 shrink-0 tabular-nums">{share}%</span>
+											<p class="text-xs text-slate-400 dark:text-slate-500 truncate">{c.email}</p>
+											<div class="flex items-center gap-2">
+												<div class="flex-1 h-1 rounded-full bg-slate-200/70 dark:bg-slate-700/60 overflow-hidden">
+													<div class="h-full rounded-full bg-violet-500/70" style="width: {share}%"></div>
+												</div>
+												<span class="text-3xs text-slate-400 shrink-0 tabular-nums">{share}%</span>
+											</div>
 										</div>
 									</div>
-								</div>
-								{#if expanded}
-									{@const list = contributorCommits(c.key)}
-									{@const visible = contributorVisible[c.key] ?? CONTRIBUTOR_COMMIT_PAGE_SIZE}
-									<div class="ml-5 mb-1 border-l border-slate-200 dark:border-slate-700 pl-2 space-y-0.5">
-										{#if list.length === 0}
-											<div class="py-1.5 text-xs text-slate-400">No commits in the sampled history</div>
-										{:else}
-											{#each list.slice(0, visible) as commit (commit.hash)}
-												{@const commitExpanded = expandedBranchCommits.has(commit.hash)}
-												{@const filesState = branchCommitFileState[commit.hash]}
-												{@const rel = formatRelativeTime(commit.date)}
-												<div>
-													<div
-														class="flex items-center gap-1.5 w-full px-2 py-1.5 rounded-md hover:bg-slate-100 dark:hover:bg-slate-800/60 transition-colors cursor-pointer"
-														role="button"
-														tabindex="0"
-														onclick={() => toggleBranchCommitExpanded(commit.hash)}
-														onkeydown={(e) => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); toggleBranchCommitExpanded(commit.hash); } }}
-													>
-														<Icon name={commitExpanded ? 'lucide:chevron-down' : 'lucide:chevron-right'} class="w-3 h-3 shrink-0 text-slate-400" />
-														<div class="flex-1 min-w-0 flex flex-col justify-center overflow-hidden">
-															<div class="flex min-w-0 items-center gap-2">
-																<span class="flex-1 min-w-0 text-sm text-slate-700 dark:text-slate-300 leading-tight truncate" title={commit.message}>{commit.message}</span>
-																{#if rel}<span class="text-3xs text-slate-400 shrink-0">{rel}</span>{/if}
-															</div>
-															<div class="flex min-w-0 items-center gap-1.5 mt-0.5">
-																<button type="button" class="font-mono text-xs text-violet-600 dark:text-violet-400 hover:text-violet-800 dark:hover:text-violet-300 bg-transparent border-none cursor-pointer p-0 shrink-0 transition-colors" onclick={(e) => copyCommitHash(commit.hash, e)} title="Copy commit hash">{commit.hashShort}</button>
+									{#if expanded}
+										{@const list = contributorCommits(c.key)}
+										{@const visible = contributorVisible[c.key] ?? CONTRIBUTOR_COMMIT_PAGE_SIZE}
+										<div class="ml-5 mb-1 border-l border-slate-200 dark:border-slate-700 pl-2 space-y-0.5">
+											{#if list.length === 0}
+												<div class="py-1.5 text-xs text-slate-400">No commits in the sampled history</div>
+											{:else}
+												{#each list.slice(0, visible) as commit (commit.hash)}
+													{@const commitExpanded = expandedBranchCommits.has(commit.hash)}
+													{@const filesState = branchCommitFileState[commit.hash]}
+													{@const rel = formatRelativeTime(commit.date)}
+													<div>
+														<div
+															class="flex items-center gap-1.5 w-full px-2 py-1.5 rounded-md hover:bg-slate-100 dark:hover:bg-slate-800/60 transition-colors cursor-pointer"
+															role="button"
+															tabindex="0"
+															onclick={() => toggleBranchCommitExpanded(commit.hash)}
+															onkeydown={(e) => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); toggleBranchCommitExpanded(commit.hash); } }}
+														>
+															<Icon name={commitExpanded ? 'lucide:chevron-down' : 'lucide:chevron-right'} class="w-3 h-3 shrink-0 text-slate-400" />
+															<div class="flex-1 min-w-0 flex flex-col justify-center overflow-hidden">
+																<div class="flex min-w-0 items-center gap-2">
+																	<span class="flex-1 min-w-0 text-sm text-slate-700 dark:text-slate-300 leading-tight truncate" title={commit.message}>{commit.message}</span>
+																	{#if rel}<span class="text-3xs text-slate-400 shrink-0">{rel}</span>{/if}
+																</div>
+																<div class="flex min-w-0 items-center gap-1.5 mt-0.5">
+																	<button type="button" class="font-mono text-xs text-violet-600 dark:text-violet-400 hover:text-violet-800 dark:hover:text-violet-300 bg-transparent border-none cursor-pointer p-0 shrink-0 transition-colors" onclick={(e) => copyCommitHash(commit.hash, e)} title="Copy commit hash">{commit.hashShort}</button>
+																</div>
 															</div>
 														</div>
+														{#if commitExpanded}
+															<div class="ml-5 mb-1 border-l border-slate-200 dark:border-slate-700 pl-2 space-y-0.5">
+																{#if filesState?.isLoading && filesState.files.length === 0}
+																	<div class="flex items-center gap-2 py-1.5 text-xs text-slate-400"><div class="w-3 h-3 border border-slate-400 border-t-transparent rounded-full animate-spin"></div><span>Loading files...</span></div>
+																{:else if !filesState || filesState.files.length === 0}
+																	<div class="py-1.5 text-xs text-slate-400">No files</div>
+																{:else}
+																	{#each filesState.files as file (`${commit.hash}:${file.oldPath}:${file.newPath}`)}
+																		{@const filePath = file.newPath || file.oldPath}
+																		{@const fileParts = splitPath(filePath)}
+																		<button type="button" class="group/file flex items-center gap-2 w-full px-2 py-1.5 rounded-md text-left hover:bg-slate-100 dark:hover:bg-slate-800/60 transition-colors bg-transparent border-none cursor-pointer" onclick={() => viewCommitFileDiff(file, 0, commit.hash)} title={filePath}><Icon name={getFileIcon(fileParts.fileName) as IconName} class="w-4 h-4 shrink-0" /><div class="flex items-baseline gap-1.5 min-w-0 flex-1"><span class="text-sm text-slate-600 dark:text-slate-300 truncate">{fileParts.fileName}</span>{#if fileParts.dirPath}<span class="text-2xs text-slate-400 dark:text-slate-500 truncate min-w-0" dir="rtl">{fileParts.dirPath}</span>{/if}</div><span class="w-4 text-center text-sm font-bold {getGitStatusColor(file.status)} shrink-0">{getGitStatusLabel(file.status)}</span></button>
+																	{/each}
+																{/if}
+															</div>
+														{/if}
 													</div>
-													{#if commitExpanded}
-														<div class="ml-5 mb-1 border-l border-slate-200 dark:border-slate-700 pl-2 space-y-0.5">
-															{#if filesState?.isLoading && filesState.files.length === 0}
-																<div class="flex items-center gap-2 py-1.5 text-xs text-slate-400"><div class="w-3 h-3 border border-slate-400 border-t-transparent rounded-full animate-spin"></div><span>Loading files...</span></div>
-															{:else if !filesState || filesState.files.length === 0}
-																<div class="py-1.5 text-xs text-slate-400">No files</div>
-															{:else}
-																{#each filesState.files as file (`${commit.hash}:${file.oldPath}:${file.newPath}`)}
-																	{@const filePath = file.newPath || file.oldPath}
-																	{@const fileParts = splitPath(filePath)}
-																	<button type="button" class="group/file flex items-center gap-2 w-full px-2 py-1.5 rounded-md text-left hover:bg-slate-100 dark:hover:bg-slate-800/60 transition-colors bg-transparent border-none cursor-pointer" onclick={() => viewCommitFileDiff(file, 0, commit.hash)} title={filePath}><Icon name={getFileIcon(fileParts.fileName) as IconName} class="w-4 h-4 shrink-0" /><div class="flex items-baseline gap-1.5 min-w-0 flex-1"><span class="text-sm text-slate-600 dark:text-slate-300 truncate">{fileParts.fileName}</span>{#if fileParts.dirPath}<span class="text-2xs text-slate-400 dark:text-slate-500 truncate min-w-0" dir="rtl">{fileParts.dirPath}</span>{/if}</div><span class="w-4 text-center text-sm font-bold {getGitStatusColor(file.status)} shrink-0">{getGitStatusLabel(file.status)}</span></button>
-																{/each}
-															{/if}
-														</div>
-													{/if}
-												</div>
-											{/each}
-											{#if visible < list.length}
-												<button type="button" class="flex items-center justify-center gap-2 w-full px-2 py-1.5 text-xs rounded-md text-slate-500 hover:text-violet-500 hover:bg-slate-100 dark:hover:bg-slate-800/60 transition-colors bg-transparent border-none cursor-pointer" onclick={() => loadMoreContributorCommits(c.key)}><span>Load more ({list.length - visible})</span></button>
+												{/each}
+												{#if visible < list.length}
+													<button type="button" class="flex items-center justify-center gap-2 w-full px-2 py-1.5 text-xs rounded-md text-slate-500 hover:text-violet-500 hover:bg-slate-100 dark:hover:bg-slate-800/60 transition-colors bg-transparent border-none cursor-pointer" onclick={() => loadMoreContributorCommits(c.key)}><span>Load more ({list.length - visible})</span></button>
+												{/if}
 											{/if}
-										{/if}
-									</div>
-								{/if}
-							</div>
-						{/each}
-					</div>
+										</div>
+									{/if}
+								</div>
+							{/each}
+						</div>
+					{/if}
+				</div>
+				{#if branchInfo?.nested && branchInfo.nested.length > 0}
+					{#each branchInfo.nested as nested (nested.path)}
+						{@render nestedContributorBlock(nested)}
+					{/each}
 				{/if}
 			</div>
 			{/if}
