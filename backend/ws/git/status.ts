@@ -64,6 +64,26 @@ export const statusHandler = createRouter()
 		// show edits the AI made inside the nested repo.
 		try {
 			const nestedRepoPaths = await findNestedRepoPaths(project.path);
+			const nestedPrefixes = nestedRepoPaths.map(
+				(repoPath) => pathRelative(project.path, repoPath).replace(/\\/g, '/') + '/'
+			);
+
+			// Drop outer-repo entries that fall under a nested repo's prefix.
+			// When the outer repo already tracked files inside what later became
+			// a nested repo (or reports the nested dir itself as a single
+			// untracked entry), it surfaces those paths too — colliding with the
+			// nested aggregation below and producing duplicate file entries. The
+			// nested repo is the source of truth for its own contents, so the
+			// outer view of them is dropped.
+			if (nestedPrefixes.length > 0) {
+				const underNested = (f: { path: string }) =>
+					nestedPrefixes.some((p) => f.path === p || f.path.startsWith(p));
+				status.staged = status.staged.filter((f) => !underNested(f));
+				status.unstaged = status.unstaged.filter((f) => !underNested(f));
+				status.untracked = status.untracked.filter((f) => !underNested(f));
+				status.conflicted = status.conflicted.filter((f) => !underNested(f));
+			}
+
 			for (const repoPath of nestedRepoPaths) {
 				try {
 					const nestedStatus = await gitService.getStatus(repoPath);
