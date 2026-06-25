@@ -1,6 +1,7 @@
 <script lang="ts">
 	import { tick } from 'svelte';
 	import type { ToolUseBlock, AgentInput, SubAgentToolActivity } from '$shared/types/unified';
+	import Icon from '$frontend/components/common/display/Icon.svelte';
 
 	const { toolInput }: { toolInput: ToolUseBlock } = $props();
 	const input = $derived(toolInput.input as AgentInput);
@@ -41,20 +42,26 @@
 	}
 </script>
 
-<div class="space-y-0.5 text-sm">
-	<div class="flex items-center flex-wrap gap-x-1.5 gap-y-0.5">
-		<span class="text-slate-500 dark:text-slate-400 shrink-0">Agent:</span>
-		<span class="text-slate-800 dark:text-slate-200">{description || subagentType}</span>
+<div class="min-w-0">
+	<!-- Header row — matches ToolRow layout -->
+	<div class="flex items-start gap-2 py-[2px] min-w-0">
+		<span class="relative shrink-0 w-[14px] mt-[1px] flex items-center justify-center text-slate-500 dark:text-slate-400 z-10">
+			<span class="absolute inset-0 -m-[3px] rounded bg-slate-50 dark:bg-slate-900"></span>
+			<Icon name="lucide:waypoints" class="relative w-[13px] h-[13px]" />
+		</span>
+		<div class="flex flex-wrap items-center gap-x-1.5 gap-y-0.5 flex-1 min-w-0">
+			<span class="text-[12px] text-slate-500 dark:text-slate-400 whitespace-nowrap shrink-0">Agent</span>
+			<span class="text-[12px] text-slate-700 dark:text-slate-200 min-w-0 break-words">{description || subagentType}</span>
+			<span class="text-[10px] text-slate-400 dark:text-slate-500 whitespace-nowrap">{subagentType}</span>
+			{#if toolUseCount > 0}
+				<span class="text-[10px] text-slate-400 dark:text-slate-500 whitespace-nowrap">· {toolUseCount} tool{toolUseCount === 1 ? '' : 's'}</span>
+			{/if}
+		</div>
 	</div>
-	<div class="flex items-center flex-wrap gap-x-1.5 gap-y-0.5">
-		<span class="text-xs text-slate-400 dark:text-slate-500">{subagentType}</span>
-		{#if toolUseCount > 0}
-			<span class="text-xs text-slate-400 dark:text-slate-500">· {toolUseCount} tool{toolUseCount === 1 ? '' : 's'}</span>
-		{/if}
-	</div>
+	<!-- Sub-activity stream — aligned under the label -->
 	{#if subMessages && subMessages.length > 0}
-		<div bind:this={scrollContainer} onscroll={handleScroll} class="max-h-39 overflow-y-auto">
-			<ul class="space-y-0.5 pl-5 list-disc text-xs text-slate-500 dark:text-slate-400">
+		<div bind:this={scrollContainer} onscroll={handleScroll} class="max-h-39 overflow-y-auto pl-[22px]">
+			<ul class="space-y-0.5 pl-3 list-disc text-xs text-slate-500 dark:text-slate-400">
 				{#each subMessages as activity}
 					{#if activity.type === 'tool_use'}
 						<li>

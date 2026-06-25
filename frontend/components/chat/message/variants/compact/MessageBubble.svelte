@@ -203,7 +203,7 @@
 		<!-- ── Summary / header row (first text block or fallback) ──────────── -->
 		<button
 			type="button"
-			class="w-full flex items-start gap-1.5 min-w-0 text-left bg-transparent border-none cursor-pointer py-0.5 group/header {summaryFirstWord ? '' : 'hidden'}"
+			class="w-full flex items-start gap-1.5 min-w-0 pl-[22px] text-left bg-transparent border-none cursor-pointer py-0.5 group/header {summaryFirstWord ? '' : 'hidden'}"
 			onclick={() => isCollapsed = !isCollapsed}
 		>
 			<span class="flex-1 min-w-0 text-[13px] text-slate-800 dark:text-slate-200 font-normal leading-snug">
@@ -231,12 +231,10 @@
 					<div class="relative">
 						{#if item.type === 'tool_use'}
 							<!-- Tool item -->
-							<div class="py-[1px]">
-								<Tools toolInput={item as any} />
-							</div>
+							<Tools toolInput={item as any} />
 						{:else if item.type === 'text'}
-							<!-- Text / bullet block inline in timeline -->
-							<div class="py-[3px] pl-0.5">
+							<!-- Text / bullet block inline in timeline — aligned with tool content -->
+							<div class="py-[3px] pl-[22px]">
 								<div class="text-[12px] text-slate-600 dark:text-slate-300 leading-relaxed prose-compact">
 									<TextMessage content={item.text as string} />
 								</div>
@@ -257,12 +255,15 @@
 		class="text-slate-900 dark:text-slate-100 {roleCategory === 'system' ? 'max-h-48 overflow-y-auto' : ''}"
 	>
 		{#if roleCategory === 'reasoning'}
-			<div class="text-xs text-slate-400 dark:text-slate-500">
-				{#if isThinkingInProgress}
-					<span>Thinking{thinkingDots}</span>
-				{:else}
-					<span>Thought for a moment</span>
-				{/if}
+			<!-- Reasoning row — same icon, indent, color and font as the tool rows -->
+			<div class="flex items-start gap-2 py-[2px] min-w-0">
+				<span class="relative shrink-0 w-[14px] mt-[1px] flex items-center justify-center text-slate-500 dark:text-slate-400 z-10">
+					<span class="absolute inset-0 -m-[3px] rounded bg-slate-50 dark:bg-slate-900"></span>
+					<Icon name="lucide:sparkles" class="relative w-[13px] h-[13px]" />
+				</span>
+				<span class="text-[12px] text-slate-500 dark:text-slate-400">
+					{#if isThinkingInProgress}Thinking{thinkingDots}{:else}Thought for a moment{/if}
+				</span>
 			</div>
 		{:else}
 			<MessageFormatter {message} />

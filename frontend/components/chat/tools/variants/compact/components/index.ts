@@ -5,3 +5,4 @@ export { default as StatsBadges } from './StatsBadges.svelte';
 export { default as InfoLine } from './InfoLine.svelte';
 export { default as TerminalCommand } from './TerminalCommand.svelte';
 export { default as ToolRow } from './ToolRow.svelte';
+export { projectScope, relativeToProject, withScope } from './scope';

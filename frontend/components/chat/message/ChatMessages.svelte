@@ -71,6 +71,34 @@
 		return addDateSeparators(windowedMessages, vs.isActive ? vs.windowStart : 0);
 	});
 
+	// Whether a message participates in the compact timeline rail (agent / reasoning)
+	function isRailRole(message: any): boolean {
+		if (!message) return false;
+		if (message.type === 'reasoning') return true;
+		if (message.type === 'stream_event') return Boolean(message.reasoning);
+		if (message.type === 'assistant' && Array.isArray(message.content)) {
+			return message.content.some((c: any) => c.type === 'tool_use');
+		}
+		return false;
+	}
+
+	// Per-message rail connection flags (whether to bridge the rail up/down to neighbours)
+	const railFlagsByKey = $derived.by(() => {
+		const items = messagesWithDateSeparators;
+		const map = new Map<string, { up: boolean; down: boolean }>();
+		for (let i = 0; i < items.length; i++) {
+			const it = items[i];
+			if (it.type !== 'message') continue;
+			if (!isRailRole(it.data)) continue;
+			const prev = items[i - 1];
+			const next = items[i + 1];
+			const up = prev?.type === 'message' && isRailRole(prev.data);
+			const down = next?.type === 'message' && isRailRole(next.data);
+			map.set(it.key, { up, down });
+		}
+		return map;
+	});
+
 	// Get last user message ID for undo button logic
 	const lastUserMessageId = $derived.by(() => {
 		const userMessages = filteredMessages.filter(m => m.type === 'user');
@@ -721,8 +749,9 @@
 					{:else if item.type === 'message'}
 						{@const messageId = 'messageId' in item.data ? item.data.messageId : undefined}
 						{@const isLastUser = messageId === lastUserMessageId}
+						{@const rail = railFlagsByKey.get(item.key)}
 						<div class={isCompact ? 'mb-2' : 'mb-2 lg:mb-4'} data-message-id={messageId}>
-							<ChatMessage message={item.data} isLastUserMessage={isLastUser} />
+							<ChatMessage message={item.data} isLastUserMessage={isLastUser} railConnectUp={rail?.up ?? false} railConnectDown={rail?.down ?? false} />
 						</div>
 					{/if}
 				</div>
@@ -734,8 +763,9 @@
 					{:else if item.type === 'message'}
 						{@const messageId = 'messageId' in item.data ? item.data.messageId : undefined}
 						{@const isLastUser = messageId === lastUserMessageId}
+						{@const rail = railFlagsByKey.get(item.key)}
 						<div class={isCompact ? 'mb-2' : 'mb-2 lg:mb-4'} data-message-id={messageId}>
-							<ChatMessage message={item.data} isLastUserMessage={isLastUser} />
+							<ChatMessage message={item.data} isLastUserMessage={isLastUser} railConnectUp={rail?.up ?? false} railConnectDown={rail?.down ?? false} />
 						</div>
 					{/if}
 				</div>

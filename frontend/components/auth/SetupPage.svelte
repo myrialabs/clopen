@@ -677,11 +677,28 @@
 									? 'border-violet-500 bg-violet-500/5'
 									: 'border-slate-200 dark:border-slate-700 hover:border-violet-500/40'}"
 							>
-								<div class="flex flex-col gap-1 rounded bg-slate-50 dark:bg-slate-900 border border-slate-200 dark:border-slate-700 p-1.5 h-10 overflow-hidden">
-									<div class="w-3/4 h-0.5 rounded-full bg-slate-200 dark:bg-slate-700"></div>
-									<div class="w-full h-0.5 rounded-full bg-slate-200 dark:bg-slate-700"></div>
-									<div class="w-2/3 h-0.5 rounded-full bg-slate-200 dark:bg-slate-700"></div>
-									<div class="w-full h-0.5 rounded-full bg-slate-200 dark:bg-slate-700"></div>
+								<div class="relative flex flex-col gap-[3px] rounded bg-slate-50 dark:bg-slate-900 border border-slate-200 dark:border-slate-700 p-1.5 h-10 overflow-hidden">
+									<!-- Bold summary header -->
+									<div class="w-4/5 h-0.5 rounded-full bg-slate-300 dark:bg-slate-600"></div>
+									<!-- Timeline body: vertical rail runs behind the icon nodes -->
+									<div class="relative flex flex-col gap-[3px]">
+										<div class="absolute top-[2px] bottom-[2px] left-[1px] w-[2px] rounded-full bg-slate-300 dark:bg-slate-600"></div>
+										<!-- Edited row -->
+										<div class="relative flex items-center gap-1">
+											<span class="relative z-10 w-1 h-1 rounded-[1px] bg-slate-400 dark:bg-slate-500 shrink-0"></span>
+											<div class="w-2/5 h-0.5 rounded-full bg-slate-200 dark:bg-slate-700"></div>
+										</div>
+										<!-- Wrote row -->
+										<div class="relative flex items-center gap-1">
+											<span class="relative z-10 w-1 h-1 rounded-[1px] bg-slate-400 dark:bg-slate-500 shrink-0"></span>
+											<div class="w-1/5 h-0.5 rounded-full bg-slate-200 dark:bg-slate-700"></div>
+										</div>
+										<!-- Read row -->
+										<div class="relative flex items-center gap-1">
+											<span class="relative z-10 w-1 h-1 rounded-[1px] bg-slate-400 dark:bg-slate-500 shrink-0"></span>
+											<div class="w-1/2 h-0.5 rounded-full bg-slate-200 dark:bg-slate-700"></div>
+										</div>
+									</div>
 								</div>
 								<div class="flex items-center justify-between">
 									<span class="text-xs font-semibold text-slate-900 dark:text-slate-100">Compact</span>
@@ -689,7 +706,7 @@
 										<Icon name="lucide:circle-check" class="w-3.5 h-3.5 text-violet-500" />
 									{/if}
 								</div>
-								<span class="text-2xs text-slate-500 dark:text-slate-400">Dense lines, no borders or cards</span>
+								<span class="text-2xs text-slate-500 dark:text-slate-400">Dense rows linked by a timeline rail</span>
 							</button>
 						</div>
 					</div>

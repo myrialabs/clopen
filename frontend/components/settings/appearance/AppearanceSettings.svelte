@@ -173,11 +173,28 @@
 						: 'border-slate-200 dark:border-slate-700 hover:border-violet-500/40'}"
 					aria-pressed={settings.chatAppearance === 'compact'}
 				>
-					<div class="flex flex-col gap-1.5 rounded-md bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-700 p-2 h-15 overflow-hidden">
-						<div class="w-3/4 h-1 rounded-full bg-slate-200 dark:bg-slate-700"></div>
-						<div class="w-full h-1 rounded-full bg-slate-200 dark:bg-slate-700"></div>
-						<div class="w-2/3 h-1 rounded-full bg-slate-200 dark:bg-slate-700"></div>
-						<div class="w-full h-1 rounded-full bg-slate-200 dark:bg-slate-700"></div>
+					<div class="flex flex-col gap-[5px] rounded-md bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-700 p-2 h-15 overflow-hidden">
+						<!-- Bold summary header -->
+						<div class="w-4/5 h-1 rounded-full bg-slate-300 dark:bg-slate-600"></div>
+						<!-- Timeline body: vertical rail runs behind the icon nodes -->
+						<div class="relative flex flex-col gap-[5px]">
+							<div class="absolute top-[3px] bottom-[3px] left-[2px] w-[3px] rounded-full bg-slate-300 dark:bg-slate-600"></div>
+							<!-- Edited row -->
+							<div class="relative flex items-center gap-1.5">
+								<span class="relative z-10 w-[7px] h-[7px] rounded-[2px] bg-slate-400 dark:bg-slate-500 shrink-0"></span>
+								<div class="w-2/5 h-1 rounded-full bg-slate-200 dark:bg-slate-700"></div>
+							</div>
+							<!-- Wrote row -->
+							<div class="relative flex items-center gap-1.5">
+								<span class="relative z-10 w-[7px] h-[7px] rounded-[2px] bg-slate-400 dark:bg-slate-500 shrink-0"></span>
+								<div class="w-1/5 h-1 rounded-full bg-slate-200 dark:bg-slate-700"></div>
+							</div>
+							<!-- Read row -->
+							<div class="relative flex items-center gap-1.5">
+								<span class="relative z-10 w-[7px] h-[7px] rounded-[2px] bg-slate-400 dark:bg-slate-500 shrink-0"></span>
+								<div class="w-1/2 h-1 rounded-full bg-slate-200 dark:bg-slate-700"></div>
+							</div>
+						</div>
 					</div>
 					<div class="flex items-center justify-between">
 						<span class="text-sm font-semibold text-slate-900 dark:text-slate-100">Compact</span>
@@ -185,7 +202,7 @@
 							<Icon name="lucide:circle-check" class="w-4 h-4 text-violet-500" />
 						{/if}
 					</div>
-					<span class="text-xs text-slate-600 dark:text-slate-500">Dense lines, no borders or cards</span>
+					<span class="text-xs text-slate-600 dark:text-slate-500">Dense rows linked by a timeline rail</span>
 				</button>
 			</div>
 		</div>

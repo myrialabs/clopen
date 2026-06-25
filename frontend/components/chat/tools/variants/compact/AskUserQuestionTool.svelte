@@ -117,6 +117,8 @@
 	}
 </script>
 
+<!-- Opaque background so the timeline rail doesn't clash with the question borders -->
+<div class="bg-slate-50 dark:bg-slate-900">
 {#if isError || isInterrupted}
 	<div class="space-y-1.5">
 		{#each input.questions as question}
@@ -231,3 +233,4 @@
 		</button>
 	</div>
 {/if}
+</div>

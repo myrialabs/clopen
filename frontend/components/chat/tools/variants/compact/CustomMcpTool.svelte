@@ -20,5 +20,5 @@
 	onMount(() => { mcpServersStore.fetchInstalled(); });
 </script>
 
-<ToolRow icon="lucide:plug" {label} subDetail={tool} />
+<ToolRow icon="lucide:plug" {label} inlineCode={tool} />
 

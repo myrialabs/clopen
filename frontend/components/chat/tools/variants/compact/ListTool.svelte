@@ -9,5 +9,5 @@
 	const pathName = $derived(path.split(/[/\\]/).pop() || path);
 </script>
 
-<ToolRow icon="lucide:folder" label="Listed directory" subDetail={path} />
+<ToolRow icon="lucide:folder" label="Listed directory" filePath={path} fileName={pathName} isDirectory />
 

@@ -30,10 +30,14 @@
 
 	const {
 		message,
-		isLastUserMessage = false
+		isLastUserMessage = false,
+		railConnectUp = false,
+		railConnectDown = false
 	}: {
 		message: FrontendMessage;
 		isLastUserMessage?: boolean;
+		railConnectUp?: boolean;
+		railConnectDown?: boolean;
 	} = $props();
 
 	// Modal states
@@ -88,6 +92,13 @@
 
 	// Get sender info
 	const senderName = $derived(message.type === 'user' ? message.sender?.name ?? null : null);
+
+	// Whether this message participates in the compact timeline rail.
+	// Mirrors isRailRole() in ChatMessages so per-message rendering and the
+	// neighbour connection flags stay in sync (excludes empty user+toolResult rows).
+	const isRailMessage = $derived(
+		roleCategory === 'reasoning' || (roleCategory === 'agent' && message.type === 'assistant')
+	);
 
 	// Copy message content to clipboard (content text only, not full JSON)
 	function copyToClipboard() {
@@ -377,12 +388,18 @@
 
 {#if settings.chatAppearance === 'compact'}
 	<div
-		class="group transition-opacity py-1 {shouldBeDimmed ? 'opacity-40 cursor-not-allowed pointer-events-none' : ''}"
+		class="group transition-opacity py-1 relative isolate {shouldBeDimmed ? 'opacity-40 cursor-not-allowed pointer-events-none' : ''}"
 		onclick={handleMessageClick}
 		role="button"
 		tabindex="0"
 		onkeydown={handleBubbleKeydown}
 	>
+		{#if isRailMessage}
+			<!-- Continuous timeline rail — bridges the gap to adjacent rail messages -->
+			<div
+				class="absolute -z-10 w-px bg-slate-200 dark:bg-slate-700/60 left-[7px] {railConnectUp ? 'top-0' : 'top-[14px]'} {railConnectDown ? '-bottom-2' : 'bottom-[10px]'}"
+			></div>
+		{/if}
 		<MessageBubbleCompact
 			{message}
 			{messageTimestamp}
