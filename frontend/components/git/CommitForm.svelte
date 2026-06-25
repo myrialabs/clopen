@@ -288,8 +288,11 @@
 			style="overflow-y: hidden;"
 			onkeydown={handleKeydown}
 			oninput={(e) => {
+				const val = (e.target as HTMLTextAreaElement).value;
 				if (repoPath) {
-					localCommitMessage = (e.target as HTMLTextAreaElement).value;
+					localCommitMessage = val;
+				} else {
+					gitDraft.commitMessage = val;
 				}
 				handleInput();
 			}}
