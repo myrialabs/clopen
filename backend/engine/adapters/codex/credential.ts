@@ -113,6 +113,12 @@ export function getAuthJsonPath(): string {
 }
 
 export function getCodexHomeDir(): string {
+	// The codex CLI refuses to start when CODEX_HOME doesn't exist
+	// ("Error loading configuration: CODEX_HOME points to … but that path does
+	// not exist") — it doesn't create the dir itself. Every spawn site
+	// (login PTY + SDK stream) resolves the path through here, so ensure it
+	// exists on access to cover them all.
+	ensureCodexHome();
 	return CODEX_HOME;
 }
 
