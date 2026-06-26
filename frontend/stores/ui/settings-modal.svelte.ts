@@ -85,7 +85,7 @@ export const settingsSections: SettingsSectionMeta[] = [
 	{
 		id: 'skills',
 		label: 'Skills',
-		icon: 'lucide:sparkles',
+		icon: 'lucide:graduation-cap',
 		description: 'Reusable agent instructions',
 		group: 'extensions',
 		adminOnly: true

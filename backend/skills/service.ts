@@ -181,14 +181,33 @@ export const skillService = {
 	},
 
 	/**
-	 * Install a skill from a marketplace provider: download its SKILL.md (+ any
-	 * bundled resources), validate against the spec, and persist it under a
-	 * de-duped slug with `source: 'marketplace'`.
+	 * Fetch and parse a marketplace skill for review before install — nothing is
+	 * persisted. Powers the install modal's prefilled detail form.
 	 */
-	async install(ref: string): Promise<SkillDTO> {
+	async previewInstall(ref: string): Promise<{ name: string; description: string; license: string | null; body: string }> {
 		const fetched = await fetchMarketplaceSkill(ref);
 		const parsed = parseSkillMd(fetched.skillMd);
-		const displayName = parsed.frontmatter.name || ref.split(/[:/]/).pop() || 'Skill';
+		return {
+			name: parsed.frontmatter.name || ref.split(/[:/]/).pop() || 'Skill',
+			description: parsed.frontmatter.description,
+			license: parsed.frontmatter.license ?? null,
+			body: parsed.body
+		};
+	},
+
+	/**
+	 * Install a skill from a marketplace provider: download its SKILL.md (+ any
+	 * bundled resources), validate against the spec, and persist it under a
+	 * de-duped slug with `source: 'marketplace'`. Optional `override` fields (from
+	 * the install modal) replace the fetched name/description/license/body.
+	 */
+	async install(ref: string, override?: { name?: string; description?: string; license?: string | null; body?: string }): Promise<SkillDTO> {
+		const fetched = await fetchMarketplaceSkill(ref);
+		const parsed = parseSkillMd(fetched.skillMd);
+		if (override?.description !== undefined) parsed.frontmatter.description = override.description.trim();
+		if (override?.license !== undefined) parsed.frontmatter.license = override.license?.trim() || undefined;
+		if (override?.body !== undefined) parsed.body = override.body;
+		const displayName = override?.name?.trim() || parsed.frontmatter.name || ref.split(/[:/]/).pop() || 'Skill';
 		const slug = uniqueSlug(parsed.frontmatter.name || displayName);
 		parsed.frontmatter.name = slug;
 		assertValid(parsed, slug);

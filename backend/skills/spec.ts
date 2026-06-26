@@ -72,24 +72,51 @@ export function parseSkillMd(raw: string): ParsedSkill {
 
 	const fm: SkillFrontmatter = { name: '', description: '', extra: {}, metadata: undefined };
 	const metadata: Record<string, string> = {};
-	let inMetadata = false;
 
-	for (const line of split.fm.split(/\r?\n/)) {
-		if (line.trim() === '' || line.trim().startsWith('#')) continue;
+	const lines = split.fm.split(/\r?\n/);
+	let i = 0;
+	while (i < lines.length) {
+		const line = lines[i];
+		if (line.trim() === '' || line.trim().startsWith('#')) { i++; continue; }
 
 		// Nested `metadata:` block — indented `key: value` entries.
-		if (/^metadata:\s*$/.test(line)) { inMetadata = true; continue; }
-		if (inMetadata && /^\s+\S/.test(line)) {
-			const m = /^\s+([A-Za-z0-9_-]+):\s*(.*)$/.exec(line);
-			if (m) metadata[m[1]] = unquote(m[2]);
+		if (/^metadata:\s*$/.test(line)) {
+			i++;
+			while (i < lines.length && /^\s+\S/.test(lines[i])) {
+				const m = /^\s+([A-Za-z0-9_-]+):\s*(.*)$/.exec(lines[i]);
+				if (m) metadata[m[1]] = unquote(m[2]);
+				i++;
+			}
 			continue;
 		}
-		inMetadata = false;
 
 		const m = /^([A-Za-z0-9_-]+):\s*(.*)$/.exec(line);
-		if (!m) continue;
+		if (!m) { i++; continue; }
 		const key = m[1];
-		const value = unquote(m[2]);
+		let value: string;
+
+		// Block scalar (`|` literal / `>` folded, with optional chomping). The value
+		// lives on the following more-indented lines; both styles are folded to a
+		// single line so the value stays one canonical, serialize-safe string.
+		if (/^[|>][+-]?\s*$/.test(m[2].trim())) {
+			i++;
+			let baseIndent: number | null = null;
+			const collected: string[] = [];
+			while (i < lines.length) {
+				const l = lines[i];
+				if (l.trim() === '') { collected.push(''); i++; continue; }
+				const indent = l.length - l.replace(/^\s+/, '').length;
+				if (indent === 0) break; // dedented back to a top-level key
+				if (baseIndent === null) baseIndent = indent;
+				collected.push(l.slice(baseIndent));
+				i++;
+			}
+			value = collected.join(' ').replace(/\s+/g, ' ').trim();
+		} else {
+			value = unquote(m[2]);
+			i++;
+		}
+
 		switch (key) {
 			case 'name': fm.name = value; break;
 			case 'description': fm.description = value; break;

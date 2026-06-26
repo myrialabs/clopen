@@ -8,7 +8,6 @@
 		skillsStore,
 		type InstalledSkill,
 		type MarketplaceSkill,
-		type SkillProvider,
 		type ParsedSkillPreview
 	} from '$frontend/stores/features/skills.svelte';
 	import { debug } from '$shared/utils/logger';
@@ -54,22 +53,9 @@
 		return installed.filter(s => `${s.name} ${s.slug} ${s.description}`.toLowerCase().includes(q));
 	});
 
-	const PROVIDERS: { id: SkillProvider; label: string }[] = [
-		{ id: 'official', label: 'Official' },
-		{ id: 'community', label: 'Community' }
-	];
-
 	onMount(() => {
 		void skillsStore.refreshInstalled();
 	});
-
-	function sourceBadge(source: string): { label: string; class: string } {
-		switch (source) {
-			case 'marketplace': return { label: 'Marketplace', class: 'bg-violet-500/10 text-violet-600 dark:text-violet-400' };
-			case 'imported': return { label: 'Imported', class: 'bg-slate-100 dark:bg-slate-800 text-slate-500' };
-			default: return { label: 'Custom', class: 'bg-slate-100 dark:bg-slate-800 text-slate-500' };
-		}
-	}
 
 	// --- Editor modal (create / edit) ---
 	let editorOpen = $state(false);
@@ -231,18 +217,65 @@
 		}
 	}
 
-	let installingRef = $state<string | null>(null);
+	// --- Install modal (review marketplace skill before committing) ---
+	let installOpen = $state(false);
+	let installTarget = $state<MarketplaceSkill | null>(null);
+	let inName = $state('');
+	let inDescription = $state('');
+	let inLicense = $state('');
+	let inBody = $state('');
+	let installLoading = $state(false);
+	let installSaving = $state(false);
+	let installError = $state<string | null>(null);
 
-	async function onInstall(skill: MarketplaceSkill) {
-		installingRef = skill.ref;
+	async function openInstall(skill: MarketplaceSkill) {
+		installTarget = skill;
+		inName = skill.name;
+		inDescription = skill.description;
+		inLicense = '';
+		inBody = '';
+		installError = null;
+		installLoading = true;
+		installOpen = true;
 		try {
-			await skillsStore.install(skill.ref);
+			const detail = await skillsStore.marketplaceDetail(skill.ref);
+			inName = detail.name;
+			inDescription = detail.description;
+			inLicense = detail.license ?? '';
+			inBody = detail.body;
+		} catch (error) {
+			installError = error instanceof Error ? error.message : 'Failed to load skill';
+		} finally {
+			installLoading = false;
+		}
+	}
+
+	function closeInstall() {
+		installOpen = false;
+		installTarget = null;
+		installError = null;
+	}
+
+	async function confirmInstall() {
+		if (!installTarget) return;
+		if (!inName.trim()) { installError = 'A name is required'; return; }
+		if (!inDescription.trim()) { installError = 'A description is required'; return; }
+		installSaving = true;
+		installError = null;
+		try {
+			await skillsStore.install(installTarget.ref, {
+				name: inName.trim(),
+				description: inDescription.trim(),
+				license: inLicense.trim() || null,
+				body: inBody
+			});
 			skillsStore.hasPendingChanges = true;
+			closeInstall();
 		} catch (error) {
 			debug.error('settings', 'install skill failed', error);
-			skillsStore.catalogError = error instanceof Error ? error.message : 'Install failed';
+			installError = error instanceof Error ? error.message : 'Install failed';
 		} finally {
-			installingRef = null;
+			installSaving = false;
 		}
 	}
 
@@ -254,6 +287,11 @@
 	function runSearch() {
 		skillsStore.searchCatalog(searchInput.trim());
 	}
+
+	function formatStars(n: number): string {
+		if (n >= 1000) return `${(n / 1000).toFixed(n >= 10000 ? 0 : 1)}k`;
+		return String(n);
+	}
 </script>
 
 <div class="space-y-6">
@@ -263,7 +301,7 @@
 			<div>
 				<h3 class="text-base font-bold text-slate-900 dark:text-slate-100 mb-1.5">Skills</h3>
 				<p class="text-sm text-slate-600 dark:text-slate-500">
-					Reusable instruction sets (SKILL.md) your agents load on demand. Applied to every engine.
+					Reusable SKILL.md instructions, loaded on demand.
 				</p>
 			</div>
 		{:else}
@@ -288,7 +326,7 @@
 					: 'text-slate-500 hover:text-slate-700 dark:hover:text-slate-300'}"
 				onclick={goBrowse}
 			>
-				Browse marketplace
+				Browse
 			</button>
 		</div>
 	</div>
@@ -296,7 +334,7 @@
 	{#if activeTab === 'installed'}
 		{#if installed.length === 0}
 			<div class="flex flex-col items-center gap-2 py-10 text-center">
-				<Icon name="lucide:sparkles" class="w-8 h-8 text-slate-400" />
+				<Icon name="lucide:graduation-cap" class="w-8 h-8 text-slate-400" />
 				<p class="text-sm text-slate-500 dark:text-slate-400">No skills yet.</p>
 				<div class="flex items-center gap-2">
 					<Button variant="primary" size="sm" class="gap-1.5" onclick={openCreate}>
@@ -307,7 +345,7 @@
 						<Icon name="lucide:upload" class="w-4 h-4" />
 						Import
 					</Button>
-					<Button variant="outline" size="sm" onclick={goBrowse}>Browse marketplace</Button>
+					<Button variant="outline" size="sm" onclick={goBrowse}>Browse</Button>
 				</div>
 			</div>
 		{:else}
@@ -338,14 +376,11 @@
 			{:else}
 				<div class="space-y-3">
 					{#each filteredInstalled as skill (skill.id)}
-						{@const badge = sourceBadge(skill.source)}
 						<div class="flex items-start gap-3 p-4 bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 rounded-xl">
-							<Icon name="lucide:sparkles" class="w-5 h-5 mt-0.5 shrink-0 {skill.enabled ? 'text-violet-600' : 'text-slate-400'}" />
+							<Icon name="lucide:graduation-cap" class="w-5 h-5 mt-0.5 shrink-0 {skill.enabled ? 'text-violet-600' : 'text-slate-400'}" />
 							<div class="flex-1 min-w-0">
-								<span class="font-semibold text-slate-900 dark:text-slate-100">{skill.name}</span>
-								<div class="flex items-center gap-1.5 flex-wrap mt-1">
-									<span class="text-[10px] px-1.5 py-0.5 rounded {badge.class}">{badge.label}</span>
-									<span class="text-[10px] px-1.5 py-0.5 rounded bg-slate-100 dark:bg-slate-800 text-slate-500">{skill.slug}</span>
+								<div class="flex items-center gap-2 flex-wrap">
+									<span class="font-semibold text-slate-900 dark:text-slate-100">{skill.name}</span>
 									{#if skill.version}
 										<span class="text-[10px] px-1.5 py-0.5 rounded bg-slate-100 dark:bg-slate-800 text-slate-500">v{skill.version}</span>
 									{/if}
@@ -376,7 +411,7 @@
 								<button
 									type="button"
 									onclick={() => openEdit(skill)}
-									class="p-2 rounded-lg text-slate-400 hover:text-violet-600 hover:bg-violet-500/10 transition-colors"
+									class="flex p-2 rounded-lg text-slate-400 hover:text-violet-600 hover:bg-violet-500/10 transition-colors"
 									aria-label="Edit skill"
 									title="Edit skill"
 								>
@@ -398,26 +433,6 @@
 		{/if}
 	{:else}
 		<!-- Browse marketplace -->
-		<div class="flex items-center justify-between gap-2">
-			<div class="flex gap-1 p-1 bg-slate-100 dark:bg-slate-900 rounded-lg w-max">
-				{#each PROVIDERS as p (p.id)}
-					<button
-						type="button"
-						class="px-3.5 py-1.5 text-sm font-semibold rounded-md transition-colors
-							{skillsStore.catalogProvider === p.id
-							? 'bg-white dark:bg-slate-800 text-slate-900 dark:text-slate-100 shadow-sm'
-							: 'text-slate-500 hover:text-slate-700 dark:hover:text-slate-300'}"
-						onclick={() => skillsStore.setProvider(p.id)}
-					>
-						{p.label}
-					</button>
-				{/each}
-			</div>
-			{#if skillsStore.catalogProvider === 'community'}
-				<span class="text-[11px] text-slate-400">Third-party · review before installing</span>
-			{/if}
-		</div>
-
 		<form class="flex gap-2" onsubmit={(e) => { e.preventDefault(); runSearch(); }}>
 			<div class="relative flex-1">
 				<svg viewBox="0 0 24 24" fill="none" class="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-slate-400 pointer-events-none" aria-hidden="true">
@@ -463,13 +478,18 @@
 				{#each catalog as skill (skill.ref)}
 					{@const alreadyInstalled = installedRefs.has(skill.ref)}
 					<div class="flex items-start gap-3 p-4 bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 rounded-xl">
-						<Icon name="lucide:sparkles" class="w-5 h-5 mt-0.5 shrink-0 text-slate-400" />
+						<Icon name="lucide:graduation-cap" class="w-5 h-5 mt-0.5 shrink-0 text-slate-400" />
 						<div class="flex-1 min-w-0">
-							<div class="flex items-center gap-2">
+							<div class="flex items-center gap-2 flex-wrap">
 								<span class="font-semibold text-slate-900 dark:text-slate-100">{skill.name}</span>
+								{#if skill.verified}
+									<span class="inline-flex items-center gap-0.5 text-[10px] font-semibold px-1.5 py-0.5 rounded bg-emerald-500/10 text-emerald-600 dark:text-emerald-400">
+										<Icon name="lucide:shield-check" class="w-3 h-3" /> Verified
+									</span>
+								{/if}
 								{#if skill.stars != null}
 									<span class="inline-flex items-center gap-0.5 text-[11px] text-slate-400">
-										<Icon name="lucide:star" class="w-3 h-3" />{skill.stars}
+										<Icon name="lucide:star" class="w-3 h-3" />{formatStars(skill.stars)}
 									</span>
 								{/if}
 							</div>
@@ -488,7 +508,7 @@
 									<Icon name="lucide:check" class="w-4 h-4" /> installed
 								</span>
 							{:else}
-								<Button variant="outline" size="sm" loading={installingRef === skill.ref} onclick={() => onInstall(skill)}>Install</Button>
+								<Button variant="outline" size="sm" onclick={() => openInstall(skill)}>Install</Button>
 							{/if}
 						</div>
 					</div>
@@ -543,6 +563,43 @@
 	{/snippet}
 </Modal>
 
+<!-- Install modal (review a marketplace skill before installing) -->
+<Modal isOpen={installOpen} onClose={closeInstall} title="Install skill" size="lg">
+	{#snippet children()}
+		{#if installLoading}
+			<div class="flex items-center justify-center gap-2 py-10 text-sm text-slate-500 dark:text-slate-400">
+				<div class="w-4 h-4 border-2 border-violet-600 border-t-transparent rounded-full animate-spin"></div>
+				Loading skill…
+			</div>
+		{:else}
+			<div class="space-y-4 text-sm">
+				<Input label="Name" required type="text" placeholder="e.g. PDF processing" bind:value={inName} />
+				<div class="space-y-1">
+					<Input label="Description" required type="text" placeholder="What it does and when to use it" bind:value={inDescription} />
+					<p class="text-[11px] text-slate-400">Stated to the agent up front — what the skill does and when to use it (max 1024 chars).</p>
+				</div>
+				<Input label="License (optional)" type="text" placeholder="e.g. Apache-2.0" bind:value={inLicense} />
+				<div class="space-y-1">
+					<p class="block text-sm font-semibold text-slate-700 dark:text-slate-300">Instructions</p>
+					<textarea
+						bind:value={inBody}
+						rows="12"
+						class="w-full px-3 py-2 text-sm font-mono bg-white dark:bg-slate-800 border border-slate-200 dark:border-slate-700 rounded-lg outline-none focus:ring-2 focus:ring-violet-500/20 focus:border-violet-600 transition-colors text-slate-900 dark:text-slate-100 placeholder-slate-400 resize-y"
+					></textarea>
+					<p class="text-[11px] text-slate-400">Review before installing — edits are saved with the skill.</p>
+				</div>
+				{#if installError}
+					<p class="text-xs text-red-500">{installError}</p>
+				{/if}
+			</div>
+		{/if}
+	{/snippet}
+	{#snippet footer()}
+		<Button variant="ghost" onclick={closeInstall}>Cancel</Button>
+		<Button variant="primary" loading={installSaving} disabled={installLoading} onclick={confirmInstall}>Install</Button>
+	{/snippet}
+</Modal>
+
 <!-- Import modal -->
 <Modal isOpen={importOpen} onClose={closeImport} title="Import skill" size="lg">
 	{#snippet children()}
@@ -564,8 +621,16 @@
 
 			{#if importPreview}
 				<div class="p-3 bg-slate-50 dark:bg-slate-900 border border-slate-200 dark:border-slate-800 rounded-lg space-y-1">
-					<p class="font-semibold text-slate-900 dark:text-slate-100">{importPreview.name || '(unnamed)'}</p>
+					<div class="flex items-center gap-2 flex-wrap">
+						<span class="font-semibold text-slate-900 dark:text-slate-100">{importPreview.name || '(unnamed)'}</span>
+						{#if importPreview.license}
+							<span class="text-[10px] px-1.5 py-0.5 rounded bg-slate-100 dark:bg-slate-800 text-slate-500">{importPreview.license}</span>
+						{/if}
+					</div>
 					<p class="text-xs text-slate-500 dark:text-slate-400">{importPreview.description || '(no description)'}</p>
+					{#if importPreview.body.trim()}
+						<pre class="text-[11px] text-slate-500 dark:text-slate-400 whitespace-pre-wrap line-clamp-4 font-mono">{importPreview.body.trim()}</pre>
+					{/if}
 					{#each importPreview.warnings as w (w)}
 						<p class="text-[11px] text-amber-600 dark:text-amber-400">{w}</p>
 					{/each}

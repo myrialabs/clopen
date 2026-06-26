@@ -12,7 +12,6 @@ import ws from '$frontend/utils/ws';
 import { debug } from '$shared/utils/logger';
 
 export type SkillSource = 'custom' | 'imported' | 'marketplace';
-export type SkillProvider = 'official' | 'community';
 
 export interface InstalledSkill {
 	id: number;
@@ -30,11 +29,11 @@ export interface InstalledSkill {
 
 export interface MarketplaceSkill {
 	ref: string;
-	provider: SkillProvider;
 	name: string;
 	slug: string;
 	description: string;
 	stars?: number;
+	verified?: boolean;
 	homepage?: string;
 }
 
@@ -58,7 +57,6 @@ let installed = $state<InstalledSkill[]>([]);
 let installedLoaded = $state(false);
 
 let catalog = $state<MarketplaceSkill[]>([]);
-let catalogProvider = $state<SkillProvider>('official');
 let catalogCursor = $state<string | null>(null);
 let catalogSearch = $state('');
 let catalogLoading = $state(false);
@@ -74,7 +72,6 @@ export const skillsStore = {
 	get installed() { return installed; },
 	get installedLoaded() { return installedLoaded; },
 	get catalog() { return catalog; },
-	get catalogProvider() { return catalogProvider; },
 	get catalogCursor() { return catalogCursor; },
 	get catalogSearch() { return catalogSearch; },
 	get catalogLoading() { return catalogLoading; },
@@ -154,17 +151,15 @@ export const skillsStore = {
 	// Marketplace
 	// ========================================================================
 
-	async install(ref: string): Promise<InstalledSkill> {
-		const result = await ws.http('skills:install', { ref });
-		await this.refreshInstalled();
-		return result.skill;
+	/** Fetch a marketplace skill's details (name/description/license/body) for the install modal. */
+	async marketplaceDetail(ref: string): Promise<{ name: string; description: string; license: string | null; body: string }> {
+		return ws.http('skills:marketplace-detail', { ref });
 	},
 
-	async setProvider(provider: SkillProvider): Promise<void> {
-		if (provider === catalogProvider) return;
-		catalogProvider = provider;
-		catalogCursor = null;
-		await this.loadCatalog(false);
+	async install(ref: string, override?: { name?: string; description?: string; license?: string | null; body?: string }): Promise<InstalledSkill> {
+		const result = await ws.http('skills:install', { ref, ...override });
+		await this.refreshInstalled();
+		return result.skill;
 	},
 
 	async searchCatalog(search: string): Promise<void> {
@@ -191,7 +186,6 @@ export const skillsStore = {
 		catalogError = null;
 		try {
 			const result = await ws.http('skills:catalog', {
-				provider: catalogProvider,
 				search: catalogSearch || undefined,
 				cursor: append ? (catalogCursor ?? undefined) : undefined
 			});
@@ -215,7 +209,6 @@ export const skillsStore = {
 		installed = [];
 		installedLoaded = false;
 		catalog = [];
-		catalogProvider = 'official';
 		catalogCursor = null;
 		catalogSearch = '';
 		catalogLoading = false;

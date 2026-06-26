@@ -522,7 +522,7 @@
 			<div>
 				<h3 class="text-base font-bold text-slate-900 dark:text-slate-100 mb-1.5">MCP Servers</h3>
 				<p class="text-sm text-slate-600 dark:text-slate-500">
-					Built-in tools plus external servers from the official MCP registry.
+					Built-in tools and external MCP servers.
 				</p>
 			</div>
 		{:else}
@@ -548,7 +548,7 @@
 					: 'text-slate-500 hover:text-slate-700 dark:hover:text-slate-300'}"
 				onclick={goBrowse}
 			>
-				Browse registry
+				Browse
 			</button>
 		</div>
 	</div>
@@ -559,7 +559,7 @@
 				<Icon name="lucide:plug" class="w-8 h-8 text-slate-400" />
 				<p class="text-sm text-slate-500 dark:text-slate-400">No MCP servers installed yet.</p>
 				<div class="flex items-center gap-2">
-					<Button variant="outline" size="sm" onclick={goBrowse}>Browse the registry</Button>
+					<Button variant="outline" size="sm" onclick={goBrowse}>Browse</Button>
 					<Button variant="outline" size="sm" class="gap-1.5" onclick={openManual}>
 						<Icon name="lucide:plus" class="w-4 h-4" />
 						Add manually
@@ -675,7 +675,7 @@
 									<button
 										type="button"
 										onclick={() => openConfig(server)}
-										class="p-2 rounded-lg text-slate-400 hover:text-violet-600 hover:bg-violet-500/10 transition-colors"
+										class="flex p-2 rounded-lg text-slate-400 hover:text-violet-600 hover:bg-violet-500/10 transition-colors"
 										aria-label="Configure server"
 										title="Configure credentials"
 									>

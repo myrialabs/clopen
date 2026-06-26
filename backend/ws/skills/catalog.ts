@@ -1,11 +1,10 @@
 /**
  * Skill Marketplace Handlers
  *
- *   - skills:catalog  — browse a provider's skill catalog (paginated, searchable)
- *   - skills:install  — install a skill from a provider into the canonical store
+ *   - skills:catalog  — browse the skill catalog (paginated, searchable)
+ *   - skills:install  — install a skill from the catalog into the canonical store
  *
- * Two providers ship: `official` (Anthropic's curated repo, default) and
- * `community` (a broader third-party registry). See backend/skills/marketplace.ts.
+ * Skills come from the community registry. See backend/skills/marketplace.ts.
  */
 
 import { t } from 'elysia';
@@ -13,15 +12,13 @@ import { createRouter } from '$shared/utils/ws-server';
 import { debug } from '$shared/utils/logger';
 import { listMarketplaceSkills, skillService } from '$backend/skills';
 
-const PROVIDER_SCHEMA = t.Union([t.Literal('official'), t.Literal('community')]);
-
 const MARKETPLACE_SKILL_SCHEMA = t.Object({
 	ref: t.String(),
-	provider: PROVIDER_SCHEMA,
 	name: t.String(),
 	slug: t.String(),
 	description: t.String(),
 	stars: t.Optional(t.Number()),
+	verified: t.Optional(t.Boolean()),
 	homepage: t.Optional(t.String())
 });
 
@@ -42,7 +39,6 @@ const SKILL_SCHEMA = t.Object({
 export const skillCatalogHandler = createRouter()
 	.http('skills:catalog', {
 		data: t.Object({
-			provider: t.Optional(PROVIDER_SCHEMA),
 			search: t.Optional(t.String()),
 			cursor: t.Optional(t.String())
 		}),
@@ -51,14 +47,33 @@ export const skillCatalogHandler = createRouter()
 			nextCursor: t.Union([t.String(), t.Null()])
 		})
 	}, async ({ data }) => {
-		debug.log('path', `skills:catalog ${data.provider ?? 'official'}`);
-		return listMarketplaceSkills(data.provider ?? 'official', data.search ?? '', data.cursor ?? null);
+		debug.log('path', `skills:catalog q="${data.search ?? ''}"`);
+		return listMarketplaceSkills(data.search ?? '', data.cursor ?? null);
+	})
+	.http('skills:marketplace-detail', {
+		data: t.Object({ ref: t.String() }),
+		response: t.Object({
+			name: t.String(),
+			description: t.String(),
+			license: t.Union([t.String(), t.Null()]),
+			body: t.String()
+		})
+	}, async ({ data }) => {
+		debug.log('path', `skills:marketplace-detail ${data.ref}`);
+		return skillService.previewInstall(data.ref);
 	})
 	.http('skills:install', {
-		data: t.Object({ ref: t.String() }),
+		data: t.Object({
+			ref: t.String(),
+			name: t.Optional(t.String()),
+			description: t.Optional(t.String()),
+			license: t.Optional(t.Union([t.String(), t.Null()])),
+			body: t.Optional(t.String())
+		}),
 		response: t.Object({ skill: SKILL_SCHEMA })
 	}, async ({ data }) => {
 		debug.log('path', `skills:install ${data.ref}`);
-		const skill = await skillService.install(data.ref);
+		const { ref, ...override } = data;
+		const skill = await skillService.install(ref, override);
 		return { skill };
 	});
