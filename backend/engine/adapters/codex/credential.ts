@@ -69,6 +69,92 @@ export function serializeCodexCredential(cred: CodexCredential): string {
 	return JSON.stringify(cred);
 }
 
+/**
+ * Identity + freshness extracted from a ChatGPT `auth.json` blob.
+ *
+ * `accountId` (`tokens.account_id`) tells us *which* ChatGPT account a blob
+ * belongs to; `lastRefresh` (epoch ms parsed from `last_refresh`) tells us how
+ * *fresh* its tokens are. Both drive the no-clobber decision below: the Codex
+ * CLI rotates the refresh token in place on every refresh (old token revoked),
+ * so we must never write an older blob over a newer one for the same account —
+ * doing so replays an already-revoked refresh token and bricks the account.
+ */
+interface AuthJsonMeta {
+	accountId: string | null;
+	lastRefresh: number | null;
+}
+
+function parseAuthJsonMeta(authJsonRaw: string): AuthJsonMeta {
+	try {
+		const parsed = JSON.parse(authJsonRaw) as {
+			last_refresh?: unknown;
+			tokens?: { account_id?: unknown } | null;
+		};
+		const accountId = typeof parsed.tokens?.account_id === 'string' ? parsed.tokens.account_id : null;
+		let lastRefresh: number | null = null;
+		if (typeof parsed.last_refresh === 'string') {
+			const ts = Date.parse(parsed.last_refresh);
+			lastRefresh = Number.isNaN(ts) ? null : ts;
+		}
+		return { accountId, lastRefresh };
+	} catch {
+		return { accountId: null, lastRefresh: null };
+	}
+}
+
+/**
+ * Decide whether the desired (DB) blob should overwrite the current on-disk
+ * `auth.json`. The on-disk copy is authoritative for *freshness* because the
+ * CLI refreshes it in place; the DB is authoritative only for *account switch*.
+ *
+ *   - disk empty / identical content → trivial (handled by caller).
+ *   - different `account_id` → account switch → write.
+ *   - same `account_id` → keep the live disk token unless the DB blob is
+ *     strictly newer (e.g. just after a re-login produced a fresher token).
+ *   - identity unknown on either side → fall back to freshness if both
+ *     timestamps are present (keep disk when same-or-newer), else write.
+ */
+function shouldWriteAuthJson(current: string, desired: string): boolean {
+	const cur = parseAuthJsonMeta(current);
+	const des = parseAuthJsonMeta(desired);
+
+	if (cur.accountId && des.accountId) {
+		if (cur.accountId !== des.accountId) return true; // account switch
+		// Same ChatGPT account already on disk — never clobber a fresher live
+		// token; only adopt the DB blob when it is strictly newer.
+		return des.lastRefresh !== null && cur.lastRefresh !== null && des.lastRefresh > cur.lastRefresh;
+	}
+
+	// Identity unknown on at least one side — defer to freshness when we can.
+	if (cur.lastRefresh !== null && des.lastRefresh !== null) {
+		return des.lastRefresh > cur.lastRefresh;
+	}
+	return true;
+}
+
+/**
+ * Locate the account whose stored ChatGPT blob matches the given on-disk
+ * `account_id`, so a token refresh persists back to the *right* account even
+ * when the active account differs from the one currently on disk (per-stream
+ * account override). Falls back to the active account only for legacy blobs
+ * with no `account_id`; returns null when an id is present but matches no
+ * account (avoid cross-contaminating an unrelated row).
+ */
+function findAccountForAuthJson(accountId: string | null): EngineAccount | null {
+	if (!accountId) {
+		return engineQueries.getActiveAccountForEngine('codex');
+	}
+	const provider = engineQueries.getProviderBySlug('codex', 'openai');
+	if (!provider) return null;
+	for (const account of engineQueries.getAccountsByProvider(provider.id)) {
+		const parsed = parseCodexCredential(account.credential);
+		if (parsed?.kind === 'chatgpt' && parseAuthJsonMeta(parsed.authJson).accountId === accountId) {
+			return account;
+		}
+	}
+	return null;
+}
+
 /** True when the model requires a ChatGPT-mode account (e.g. gpt-5.5). */
 export function authModeOf(account: EngineAccount): 'api_key' | 'chatgpt' | null {
 	const parsed = parseCodexCredential(account.credential);
@@ -144,11 +230,14 @@ export function applyAccountAuth(account: EngineAccount): CodexCredential | null
 	}
 
 	if (cred.kind === 'chatgpt') {
-		// Idempotent: skip write if the file already matches (the CLI's own
-		// token-refresh path mutates this same file in place — we don't want
-		// to clobber a fresher token with a stale snapshot).
+		// The CLI rotates its refresh token in place on every refresh, so the
+		// on-disk auth.json is the live, authoritative copy for the active
+		// account. Only write the DB blob when the file is absent, belongs to a
+		// different account (switch), or the DB copy is strictly newer — never
+		// clobber a fresher on-disk token with a stale snapshot (that replays an
+		// already-revoked refresh token and bricks the account).
 		const current = readAuthJson();
-		if (current !== cred.authJson) {
+		if (current === null || (current !== cred.authJson && shouldWriteAuthJson(current, cred.authJson))) {
 			writeAuthJson(cred.authJson);
 			debug.log('engine', `Codex: wrote auth.json from account "${account.name}" (${cred.authJson.length} bytes)`);
 		}
@@ -158,26 +247,38 @@ export function applyAccountAuth(account: EngineAccount): CodexCredential | null
 }
 
 /**
- * Snapshot the current `~/.codex/auth.json` back into the active ChatGPT
- * account's credential row. Called after a stream finishes so any token
- * refresh the CLI performed during the turn survives across account switches.
+ * Snapshot the current on-disk `auth.json` back into the credential row of the
+ * account it belongs to (matched by `tokens.account_id`), so any token refresh
+ * the CLI performed during the turn survives across account switches and restarts.
+ *
+ * Matching by `account_id` — rather than blindly targeting the active account —
+ * keeps a per-stream account override (a turn run under a non-active account)
+ * from writing its refreshed token onto the wrong row.
  *
  * No-op when:
- *   - There's no active Codex account.
- *   - The active account is API-key mode (auth.json wasn't touched).
  *   - The auth.json file doesn't exist.
+ *   - No account matches the on-disk `account_id` (and no legacy fallback).
+ *   - The matched account is API-key mode (auth.json wasn't touched).
  *   - The on-disk content is identical to what we already have stored.
+ *   - The on-disk copy is older than the stored one (never persist a stale read).
  */
 export function snapshotAuthJsonToActiveAccount(): void {
-	const account = engineQueries.getActiveAccountForEngine('codex');
+	const current = readAuthJson();
+	if (current === null) return;
+
+	const curMeta = parseAuthJsonMeta(current);
+	const account = findAccountForAuthJson(curMeta.accountId);
 	if (!account) return;
 
 	const parsed = parseCodexCredential(account.credential);
 	if (!parsed || parsed.kind !== 'chatgpt') return;
-
-	const current = readAuthJson();
-	if (current === null) return;
 	if (current === parsed.authJson) return;
+
+	// Guard against persisting an older read over a newer stored blob.
+	const storedMeta = parseAuthJsonMeta(parsed.authJson);
+	if (curMeta.lastRefresh !== null && storedMeta.lastRefresh !== null && curMeta.lastRefresh < storedMeta.lastRefresh) {
+		return;
+	}
 
 	const updated = serializeCodexCredential({ kind: 'chatgpt', authJson: current });
 	try {
