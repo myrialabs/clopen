@@ -14,3 +14,5 @@ export { auditLogQueries } from './audit-log-queries';
 export { fileAuditLogQueries } from './file-audit-log-queries';
 export { mcpServerQueries } from './mcp-server-queries';
 export type { McpServerRow, McpServerInput, McpTransport, McpSource, McpConfigField } from './mcp-server-queries';
+export { skillQueries } from './skill-queries';
+export type { SkillRow, SkillInput, SkillSource } from './skill-queries';

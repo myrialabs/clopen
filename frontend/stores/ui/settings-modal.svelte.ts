@@ -11,6 +11,7 @@ export type SettingsSection =
 	| 'engines'
 	| 'system-tools'
 	| 'mcp'
+	| 'skills'
 	| 'appearance'
 	| 'notifications'
 	| 'tunnel'
@@ -78,6 +79,14 @@ export const settingsSections: SettingsSectionMeta[] = [
 		label: 'MCP Servers',
 		icon: 'lucide:blocks',
 		description: 'Connect external tools',
+		group: 'extensions',
+		adminOnly: true
+	},
+	{
+		id: 'skills',
+		label: 'Skills',
+		icon: 'lucide:sparkles',
+		description: 'Reusable agent instructions',
 		group: 'extensions',
 		adminOnly: true
 	},

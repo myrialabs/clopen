@@ -21,6 +21,7 @@ import { engineQueries } from '$backend/database/queries/engine-queries';
 import { resolveOsPath, getEngineUserConfigDir } from '$backend/utils/paths';
 import { debug } from '$shared/utils/logger';
 import { getCopilotMcpConfig } from '../../../mcp';
+import { syncSkills } from '$backend/skills';
 import { handleStreamError, buildSessionError } from './error-handler';
 import { fetchCopilotModels } from './models';
 
@@ -192,6 +193,9 @@ export class CopilotEngine implements AIEngine {
 		}
 
 		this.activeController = abortController || new AbortController();
+
+		// Mirror enabled skills into Copilot's native skills dir before the turn.
+		await syncSkills('copilot');
 
 		const resolvedProjectPath = resolveOsPath(projectPath);
 		const state = createStreamConverterState('', modelId);

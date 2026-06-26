@@ -27,6 +27,7 @@ import { resolveOsPath } from '$backend/utils/paths';
 import { setupEnvironmentOnce, getEngineEnv } from './environment';
 import { handleStreamError } from './error-handler';
 import { getEnabledMcpServers, getAllowedMcpTools } from '../../../mcp';
+import { syncSkills } from '$backend/skills';
 import type { AIEngine, EngineQueryOptions } from '../../types';
 import type { EngineModel } from '$shared/types/unified';
 import { CLAUDE_CODE_MODELS } from './models';
@@ -98,6 +99,10 @@ export class ClaudeCodeEngine implements AIEngine {
     const resolvedProjectPath = resolveOsPath(projectPath);
 
     try {
+      // Materialize enabled skills into Claude's native skills dir before the
+      // session starts so the SDK picks them up via settingSources.
+      await syncSkills('claude');
+
       // Get custom MCP servers and allowed tools
       // Pass mcpContext so tool handlers are bound to the correct project
       const mcpServers = getEnabledMcpServers(options.mcpContext);

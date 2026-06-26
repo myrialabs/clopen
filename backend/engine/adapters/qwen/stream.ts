@@ -46,6 +46,7 @@ import { handleStreamError } from './error-handler';
 import { createSdkMessageConverter, toSdkUserMessage, type SdkMessageConverter } from './message-converter';
 import { fetchQwenModels } from './models';
 import { getQwenMcpConfig } from '../../../mcp';
+import { syncSkills } from '$backend/skills';
 import { forkQwenSessionState, sessionStateExists } from './session-fork';
 
 interface PendingAskUserQuestion {
@@ -137,6 +138,8 @@ export class QwenEngine implements AIEngine {
 
 		this.activeController = abortController || new AbortController();
 		const resolvedProjectPath = resolveOsPath(projectPath);
+		// Refresh the synthetic skills preamble in the Qwen memory file.
+		await syncSkills('qwen');
 		const mcpConfig = getQwenMcpConfig();
 
 		// Fork-by-copy on EVERY resume — same semantics as Claude

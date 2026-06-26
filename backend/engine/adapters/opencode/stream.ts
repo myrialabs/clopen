@@ -40,6 +40,7 @@ import {
 	getToolInput,
 } from './message-converter';
 import { ensureClient, getClient, getServerUrl } from './server';
+import { syncSkills } from '$backend/skills';
 import { formatSessionError, handleStreamError } from './error-handler';
 import { buildJsonPrompt, extractJson } from '../../structured-helpers';
 import { debug } from '$shared/utils/logger';
@@ -119,6 +120,9 @@ export class OpenCodeEngine implements AIEngine {
 		this.activeAbortController = abortController || new AbortController();
 		this._isActive = true;
 		this.activeProjectPath = projectPath;
+
+		// Refresh the synthetic skills preamble in OpenCode's config dir.
+		await syncSkills('opencode');
 
 		debug.log('chat', 'Open Code - Stream Query');
 		debug.log('chat', { prompt });

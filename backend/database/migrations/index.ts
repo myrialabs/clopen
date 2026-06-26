@@ -42,6 +42,7 @@ import * as migration040 from './040_create_mcp_servers_table';
 import * as migration041 from './041_add_mcp_config_schema';
 import * as migration042 from './042_add_mcp_oauth';
 import * as migration043 from './043_relocate_engine_config_dirs';
+import * as migration044 from './044_create_skills_table';
 
 // Export all migrations in order
 export const migrations = [
@@ -302,6 +303,12 @@ export const migrations = [
 		description: migration043.description,
 		up: migration043.up,
 		down: migration043.down
+	},
+	{
+		id: '044',
+		description: migration044.description,
+		up: migration044.up,
+		down: migration044.down
 	}
 ];
 

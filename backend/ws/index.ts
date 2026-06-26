@@ -32,6 +32,7 @@ import { engineRouter } from './engine';
 import { systemToolsRouter } from './system-tools';
 import { dbClientRouter } from './db-client';
 import { mcpRouter } from './mcp';
+import { skillsRouter } from './skills';
 
 // ============================================
 // Main App Router - Merge All Module Routers
@@ -77,7 +78,10 @@ export const wsRouter = createRouter()
 	.merge(dbClientRouter)
 
 	// External MCP server management (install from the official registry)
-	.merge(mcpRouter);
+	.merge(mcpRouter)
+
+	// Agent Skills management (create, import, install from a marketplace)
+	.merge(skillsRouter);
 
 // Export API type for frontend type-safe access
 export type WSAPI = typeof wsRouter['$api'];

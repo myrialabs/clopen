@@ -112,7 +112,20 @@ export const ADMIN_ONLY_ROUTES = new Set([
 	'mcp:uninstall',
 	'mcp:status',
 	'mcp:oauth-start',
-	'mcp:oauth-complete'
+	'mcp:oauth-complete',
+	// Agent Skills — creating/importing/installing skills writes to the shared
+	// canonical store and applies to every engine, so the whole surface is
+	// admin-only, mirroring MCP and System Tools.
+	'skills:list',
+	'skills:get',
+	'skills:create',
+	'skills:update',
+	'skills:parse-import',
+	'skills:import',
+	'skills:toggle',
+	'skills:delete',
+	'skills:catalog',
+	'skills:install'
 ]);
 
 /**
