@@ -2,25 +2,29 @@
  * Engine sync — materialize enabled skills into the shape each engine consumes.
  *
  * Skills are an open standard, but engines surface them differently:
- *   - NATIVE (Claude, Copilot): read a real skills directory and do their own
- *     progressive disclosure. We mirror each enabled skill folder there.
- *   - SYNTHETIC (Codex, Qwen, OpenCode): have no skills concept, so we emit a
+ *   - NATIVE (Claude, Qwen, Copilot): read a real skills directory and do their
+ *     own progressive disclosure. We mirror each enabled skill folder there.
+ *     Claude's dir is inside its isolated CLAUDE_CONFIG_DIR; Qwen and Copilot
+ *     resolve theirs from $HOME (`~/.qwen/skills`, `~/.copilot/skills`) with no
+ *     relocation env, so for those we manage the user's real global skills dir —
+ *     touching only the slugs we own, never the user's own skills.
+ *   - SYNTHETIC (Codex, OpenCode): no native skills concept, so we emit a
  *     "skills preamble" — name + description + the absolute path to each skill's
  *     SKILL.md — into a managed, marker-delimited block of the engine's global
- *     instructions file. The engine reads the body on demand with its own file
- *     tool, emulating progressive disclosure.
+ *     instructions file (inside its isolated home). The engine reads the body on
+ *     demand with its own file tool, emulating progressive disclosure.
  *
- * Everything here writes ONLY inside Clopen's isolated per-engine home dirs
- * (never the user's real ~/.codex, ~/.qwen, …) and is wrapped so a sync failure
- * degrades gracefully — a stream never breaks because skills couldn't sync.
+ * Sync is wrapped so a failure degrades gracefully — a stream never breaks
+ * because skills couldn't sync.
  *
- * NOTE: the synthetic target paths follow each engine's documented global-memory
- * convention but are best-effort; if an engine ignores the path, its skills
- * simply don't surface (no error, no data loss) until the mapping is verified
- * against that engine.
+ * NOTE: the synthetic target paths (Codex/OpenCode) follow each engine's
+ * documented global-memory convention but are best-effort; if an engine ignores
+ * the path, its skills simply don't surface (no error, no data loss) until the
+ * mapping is verified against that engine.
  */
 
 import { join } from 'path';
+import { homedir } from 'os';
 import { mkdir, readFile, writeFile, readdir, rm, stat } from 'node:fs/promises';
 import { getEngineUserConfigDir } from '$backend/utils/paths';
 import { skillQueries } from '$backend/database/queries';
@@ -42,25 +46,34 @@ function getEnabledSkills(): EnabledSkill[] {
 	return skillQueries.getEnabled().map(r => ({ slug: r.slug, name: r.name, description: r.description }));
 }
 
-/** Native engines read a real skills directory; this is where we mirror to. */
+/**
+ * Native engines read a real skills directory; this is where we mirror to.
+ *
+ * Claude's skills dir lives under its isolated `CLAUDE_CONFIG_DIR`, so it stays
+ * fully inside Clopen's sandbox. Qwen and Copilot DO support skills natively but
+ * resolve the user-level dir from `$HOME` (`~/.qwen/skills`, `~/.copilot/skills`)
+ * — neither `QWEN_RUNTIME_DIR` nor `COPILOT_HOME` relocates it, and there is no
+ * config-dir override. So for those two we manage the user's real global skills
+ * dir, touching ONLY the slugs we own (see syncNative's prune guard) and never
+ * the user's own skills.
+ */
 function nativeSkillsDir(engine: SkillEngine): string | null {
 	switch (engine) {
 		case 'claude': return join(getEngineUserConfigDir('claude'), 'skills');
-		case 'copilot': return join(getEngineUserConfigDir('copilot'), 'skills');
+		case 'qwen': return join(homedir(), '.qwen', 'skills');
+		case 'copilot': return join(homedir(), '.copilot', 'skills');
 		default: return null;
 	}
 }
 
 /**
- * Synthetic engines have no skills dir — we inject the preamble into the global
- * instructions file each one auto-loads from its (isolated) home.
+ * Synthetic engines have no native skills concept — we inject the preamble into
+ * the global instructions file each one auto-loads from its (isolated) home.
  */
 function syntheticMemoryFile(engine: SkillEngine): string | null {
 	switch (engine) {
 		// Codex loads global guidance from `$CODEX_HOME/AGENTS.md`.
 		case 'codex': return join(getEngineUserConfigDir('codex'), 'AGENTS.md');
-		// Qwen (Gemini-CLI fork) loads context from a `QWEN.md` memory file.
-		case 'qwen': return join(getEngineUserConfigDir('qwen'), 'QWEN.md');
 		// OpenCode reads `AGENTS.md` from its XDG config dir (`$XDG_CONFIG_HOME/opencode`).
 		case 'opencode': return join(getEngineUserConfigDir('opencode'), 'opencode', 'AGENTS.md');
 		default: return null;
