@@ -40,7 +40,7 @@ import { audioRoute } from './http/audio';
 import { browserPreviewServiceManager } from './preview';
 
 // MCP remote server for Open Code custom tools
-import { handleMcpRequest, closeMcpServer, completeAuthorization } from './mcp';
+import { handleMcpRequest, handleExternalMcpRequest, closeMcpServer, completeAuthorization } from './mcp';
 
 // Auth middleware
 import { checkRouteAccess } from './auth/permissions';
@@ -107,6 +107,15 @@ const app = new Elysia()
 		// long-lived endpoint only — every other route keeps the safe default.
 		server?.timeout(request, 0);
 		return handleMcpRequest(request);
+	})
+
+	// Per-server proxy for user-installed (external) MCP servers. Clopen connects
+	// to the upstream third-party server and re-exposes its sanitized tools here,
+	// so engines never connect to it directly — see backend/mcp/external/proxy.ts.
+	// Same long-lived semantics as `/mcp`: disable Bun's idle timeout.
+	.all('/mcp/ext/:slug', async ({ request, params, server }) => {
+		server?.timeout(request, 0);
+		return handleExternalMcpRequest(request, params.slug);
 	})
 
 	// Stable OAuth redirect target for centralized MCP sign-in. The browser is

@@ -656,6 +656,12 @@
 											</button>
 										{/if}
 									</div>
+									{#if statuses[server.id]?.message && statuses[server.id].state !== 'ok' && statuses[server.id].state !== 'local'}
+										{@const health = statuses[server.id]}
+										<p class="text-[11px] mt-1 break-words {health.state === 'needs_auth' || health.state === 'needs_config' ? 'text-amber-600 dark:text-amber-400' : 'text-red-500 dark:text-red-400'}">
+											{health.message}
+										</p>
+									{/if}
 								{/if}
 							</div>
 							<div class="flex items-center gap-2 shrink-0">

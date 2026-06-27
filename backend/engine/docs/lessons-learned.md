@@ -727,63 +727,67 @@ event protocol. Until then, v1 is intentional.
 
 ---
 
-### 9.18 External (registry) MCP servers — pass auth headers; OAuth is centralized
+### 9.18 External (registry) MCP servers — proxied through the bridge
 
 §9.12 covers the **internal** `clopen-mcp` bridge. **External** servers (the
-ones users install from the registry, stored in `mcp_servers`) are different:
-the engine connects **directly** to a third-party URL or stdio command, and
-many require authentication.
+ones users install from the registry, stored in `mcp_servers`) used to be
+connected **directly** by each engine — a third-party URL or stdio command.
+That is no longer true: **external servers are now proxied** through a
+per-server endpoint `GET/POST/DELETE /mcp/ext/<slug>` on the same
+Streamable-HTTP bridge (`backend/mcp/external/proxy.ts`, mounted in
+`backend/index.ts`). Clopen connects to the upstream as an MCP **client** and
+re-exposes its tools; the engine only ever talks to Clopen over loopback.
 
-> **Two distinct token systems — don't conflate them.** The internal bridge
-> uses a process-scoped, in-memory **service token** sent only over loopback
-> (`backend/mcp/internal/service-token.ts`, added in #363 to complete #284) —
-> it intentionally does **not** persist. External servers use **third-party
-> credentials** (OAuth tokens / API keys) that **must** persist across
-> restarts, so they live in the DB (`mcp_servers.oauth` / `mcp_servers.headers`).
-> Both happen to ride the same header fields described below.
+> **Why proxy instead of direct?** Engines connect with the MCP SDK's
+> `Client.listTools()`, which eagerly compiles an Ajv validator for every
+> tool's `outputSchema`. A single unresolvable `$ref` (Stitch ships
+> `#/$defs/ScreenInstance`) makes it throw, the engine CLIs' `discoverTools`
+> swallow the error, and the server advertises **zero** tools while still
+> reporting "connected". That hid every remote server's tools on Qwen and every
+> external server on Copilot. The proxy reads `tools/list` with a **raw**
+> request (no Ajv), **drops `outputSchema`**, and repairs dangling `$ref`s in
+> `inputSchema` — so one bad schema can't take down a whole server.
 
-Two ways a new adapter silently breaks here:
+What this means for a new adapter:
 
-1. **Your `getXxxExternalMcpConfig()` must forward `headers`.** Clopen is the
-   OAuth client for remote servers (`backend/mcp/external/oauth.ts`): it runs
-   discovery + dynamic registration + PKCE, stores tokens in
-   `mcp_servers.oauth`, and `resolveServerRow()` injects
-   `Authorization: Bearer <token>` into each resolved server's `headers`
-   (alongside any static API-key header). **If your builder drops `headers`,
-   the token never reaches the engine and every authenticated server fails
-   with a 401 — invisibly.** Every existing builder forwards them
-   (`getClaude/OpenCode/Copilot/QwenExternalMcpConfig`); mirror that.
+1. **Your `getXxxExternalMcpConfig()` is a one-liner per server.** Emit a
+   Streamable-HTTP remote pointing at `http://localhost:<port>/mcp/ext/<slug>`
+   plus the **service-token** header (`getMcpServiceToken()`), in your SDK's
+   shape. No stdio branch, no `oauth` flags, no third-party header forwarding —
+   the proxy injects the upstream credential itself. Every existing builder is
+   now identical bar the SDK field names
+   (`getClaude/OpenCode/Codex/Copilot/QwenExternalMcpConfig`); mirror that.
 
-2. **Use the engine's real header field — verify it, don't guess.** The field
-   name is per-SDK and a wrong key can make the engine reject its whole
-   config:
-   - OpenCode / Copilot: `headers` (generic map).
-   - Qwen: `headers` alongside `httpUrl`.
-   - **Codex: `http_headers`** (a TOML table) — **not** `bearer_token`.
-     `bearer_token` is rejected for `streamable_http`
-     (`Error loading config.toml: bearer_token is not supported for
-     streamable_http`), which aborts the entire `codex exec` run. This mirrors
-     the internal bridge in `backend/mcp/internal/config.ts`
-     (`getCodexMcpConfig` → `http_headers: { Authorization: 'Bearer …' }`).
-     When in doubt, confirm against the CLI: `codex mcp add --help`.
+2. **Use the engine's real URL/header field** — same per-SDK caveats as the
+   internal bridge (§9.12), because the shape is identical:
+   - OpenCode: `url` (`type:'remote'`); Claude/Copilot: `url` (`type:'http'`).
+   - Qwen: `httpUrl`.
+   - **Codex: `http_headers`** (a TOML table) — **not** `bearer_token`, which is
+     rejected for `streamable_http` and aborts the run.
+   - Copilot: set `tools: ['*']` so the CLI exposes the proxy's tools (its
+     "undefined = all" default is not honoured for dynamically discovered
+     servers).
 
-The token is refreshed at stream start — `stream-manager` calls
-`refreshExpiringExternalOAuth()` before `engine.streamQuery()`, so the
-**synchronous** config builders below it always read a fresh access token.
-Do not add per-adapter OAuth flows or per-engine token stores; the engine just
-receives a bearer header like any other authenticated remote.
+> **Two token systems — don't conflate them.** The bridge (internal AND
+> external endpoints) is authed by a process-scoped, in-memory **service token**
+> sent only over loopback (`backend/mcp/internal/service-token.ts`). The
+> **third-party credential** (OAuth token / API key, persisted in
+> `mcp_servers.oauth` / `mcp_servers.headers`) is used by the **proxy**, on the
+> upstream hop — never by the engine. `resolveServerRow()` injects
+> `Authorization: Bearer <token>` for the proxy client; `stream-manager` calls
+> `refreshExpiringExternalOAuth()` before the stream so that token is fresh.
 
 Connection health is surfaced engine-agnostically by `mcp:status`
-(`backend/mcp/external/probe.ts`) — it classifies `ok / needs_auth (OAuth) /
-needs_config (missing API key) / unreachable / error`, and the Settings panel
-offers **Authenticate** (OAuth) or **Configure** (API key) accordingly. A new
-adapter needs no work here; the probe talks to the server, not the engine.
+(`backend/mcp/external/probe.ts`) — `ok / needs_auth (OAuth) / needs_config
+(missing API key) / unreachable / error`. A new adapter needs no work here.
 
 What you must NOT do:
-- ❌ Drop `headers` from an external remote config (silent 401s).
+- ❌ Point an engine straight at a third-party MCP URL/command — route it
+  through `/mcp/ext/<slug>` so schemas are sanitised and auth is centralized.
+- ❌ Forward `mcp_servers.headers` (third-party creds) from a per-engine
+  builder — that's the proxy's job; the builder only carries the service token.
 - ❌ Use `bearer_token` for Codex remote MCP — use `http_headers`.
-- ❌ Add a per-engine OAuth flow or token store — Clopen centralizes it and
-  injects the bearer into every engine, Codex included.
+- ❌ Add a per-engine OAuth flow or token store — Clopen centralizes it.
 
 ---
 

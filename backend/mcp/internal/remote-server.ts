@@ -1,25 +1,41 @@
 /**
- * Remote MCP HTTP Server for Open Code
+ * Remote MCP HTTP bridge (Streamable HTTP transport, works natively with Bun).
  *
- * Serves custom MCP tools over HTTP (Streamable HTTP transport) so Open Code
- * can connect via `type: 'remote'` config instead of spawning a stdio subprocess.
+ * Mounts TWO kinds of endpoint for every non-Claude engine:
  *
- * Tool handlers execute directly in the main Clopen process — no subprocess,
- * no WebSocket bridge. This is architecturally identical to how Claude Code
- * uses in-process MCP servers via createSdkMcpServer().
+ *   - `/mcp` — the INTERNAL `clopen-mcp` bridge. Serves the custom tools
+ *     defined via `defineServer()`; handlers execute in-process in the main
+ *     Clopen process (no subprocess, no WebSocket bridge), architecturally
+ *     identical to how Claude Code uses `createSdkMcpServer()`.
  *
- * Transport: WebStandardStreamableHTTPServerTransport (works natively with Bun)
+ *   - `/mcp/ext/<slug>` — an EXTERNAL proxy. Clopen connects to a user-installed
+ *     third-party server (`backend/mcp/external/proxy.ts`) and re-exposes its
+ *     sanitized tools here, so engines never connect to it directly.
+ *
+ * Both share the session/transport plumbing below; they differ only in the
+ * server `handleStreamable` builds per session.
  */
 
 import { WebStandardStreamableHTTPServerTransport } from '@modelcontextprotocol/sdk/server/webStandardStreamableHttp.js';
 import { isInitializeRequest } from '@modelcontextprotocol/sdk/types.js';
-import type { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { createRemoteMcpServer } from './servers/helper';
+import { createExternalProxyServer } from '../external/proxy';
 import { debug } from '$shared/utils/logger';
 import { authQueries } from '$backend/database/queries';
 import { hashToken } from '$backend/auth/tokens';
 import { getAuthMode } from '$backend/auth/auth-service';
 import { isMcpServiceToken } from './service-token';
+
+/** Anything we can `.connect(transport)` — both `McpServer` and low-level `Server`. */
+interface ConnectableServer {
+	connect(transport: WebStandardStreamableHTTPServerTransport): Promise<void>;
+}
+
+/** A built server plus optional teardown (external proxies close their upstream client). */
+interface BuiltServer {
+	server: ConnectableServer;
+	close?: () => Promise<void>;
+}
 
 // Lazy imports to avoid circular dependencies at module load time
 let _allServers: Parameters<typeof createRemoteMcpServer>[0] | null = null;
@@ -42,8 +58,20 @@ async function getServerDeps() {
 /** Active transports keyed by MCP session ID */
 const transports = new Map<string, WebStandardStreamableHTTPServerTransport>();
 
-/** Active MCP servers keyed by MCP session ID */
-const servers = new Map<string, McpServer>();
+/**
+ * Per-session teardown for the MCP server bound to it. Internal sessions have
+ * no upstream to release (`() => {}`); external-proxy sessions close their
+ * upstream client (and any stdio subprocess) here.
+ */
+const sessionCleanups = new Map<string, () => Promise<void>>();
+
+/** Forget a session and run its teardown. Idempotent. */
+function disposeSession(sessionId: string): void {
+	transports.delete(sessionId);
+	const cleanup = sessionCleanups.get(sessionId);
+	sessionCleanups.delete(sessionId);
+	cleanup?.().catch(error => debug.warn('mcp', `Error tearing down MCP session ${sessionId}:`, error));
+}
 
 /**
  * Validate authentication token from request headers.
@@ -99,31 +127,38 @@ function isAuthRequired(): boolean {
 	return getAuthMode() !== 'none';
 }
 
+/** JSON-RPC error helper for the bridge endpoints. */
+function jsonRpcError(status: number, code: number, message: string, extraHeaders?: Record<string, string>): Response {
+	return new Response(JSON.stringify({ jsonrpc: '2.0', error: { code, message }, id: null }), {
+		status,
+		headers: { 'Content-Type': 'application/json', ...extraHeaders },
+	});
+}
+
 /**
- * Handle an incoming MCP HTTP request (GET/POST/DELETE).
+ * Shared Streamable-HTTP request core for every bridge endpoint.
  *
- * Mounted at /mcp on the main Elysia server.
  * Follows the Streamable HTTP transport protocol:
- * - POST without session: initialization → create new transport + server
- * - POST with session: route to existing transport
- * - GET with session: SSE stream for server notifications
- * - DELETE with session: close session
+ * - POST without session: initialization → build a fresh server via `makeServer`
+ * - POST/GET/DELETE with session: route to the existing transport
+ *
+ * `makeServer` is the only thing that differs between endpoints: the internal
+ * `/mcp` builds the in-process `clopen-mcp` tool server; `/mcp/ext/<slug>`
+ * builds an external proxy. A `makeServer` rejection (e.g. an upstream that
+ * won't connect) is returned as a JSON-RPC error for THAT endpoint only — it
+ * never affects other servers or sessions.
  */
-export async function handleMcpRequest(request: Request): Promise<Response> {
+async function handleStreamable(
+	request: Request,
+	label: string,
+	makeServer: () => Promise<BuiltServer>
+): Promise<Response> {
 	// Authentication check (skip if authMode is 'none')
 	if (isAuthRequired()) {
 		const auth = validateAuthToken(request);
 		if (!auth) {
-			return new Response(JSON.stringify({
-				jsonrpc: '2.0',
-				error: { code: -32001, message: 'Unauthorized: Valid Bearer token required' },
-				id: null,
-			}), {
-				status: 401,
-				headers: {
-					'Content-Type': 'application/json',
-					'WWW-Authenticate': 'Bearer realm="MCP Server"'
-				},
+			return jsonRpcError(401, -32001, 'Unauthorized: Valid Bearer token required', {
+				'WWW-Authenticate': 'Bearer realm="MCP Server"',
 			});
 		}
 	}
@@ -132,46 +167,41 @@ export async function handleMcpRequest(request: Request): Promise<Response> {
 
 	// Existing session — route to its transport
 	if (sessionId && transports.has(sessionId)) {
-		const transport = transports.get(sessionId)!;
-		return transport.handleRequest(request);
+		return transports.get(sessionId)!.handleRequest(request);
 	}
 
 	// New initialization request — create transport + MCP server
 	if (request.method === 'POST') {
-		// Parse body to check if it's an init request
 		const body = await request.json();
 
 		if (isInitializeRequest(body)) {
-			const { allServers, enabledConfig } = await getServerDeps();
+			let built: BuiltServer;
+			try {
+				built = await makeServer();
+			} catch (error) {
+				const message = error instanceof Error ? error.message : 'Failed to start MCP server';
+				debug.warn('mcp', `🌐 ${label}: server init failed — ${message}`);
+				return jsonRpcError(502, -32000, `MCP server unavailable: ${message}`);
+			}
 
 			const transport = new WebStandardStreamableHTTPServerTransport({
 				sessionIdGenerator: () => crypto.randomUUID(),
 				onsessioninitialized: (sid) => {
 					transports.set(sid, transport);
-					debug.log('mcp', `🌐 Remote MCP session initialized: ${sid}`);
+					if (built.close) sessionCleanups.set(sid, built.close);
+					debug.log('mcp', `🌐 ${label} session initialized: ${sid}`);
 				},
 				onsessionclosed: (sid) => {
-					transports.delete(sid);
-					servers.delete(sid);
-					debug.log('mcp', `🌐 Remote MCP session closed: ${sid}`);
+					disposeSession(sid);
+					debug.log('mcp', `🌐 ${label} session closed: ${sid}`);
 				},
 			});
 
 			transport.onclose = () => {
-				if (transport.sessionId) {
-					transports.delete(transport.sessionId);
-					servers.delete(transport.sessionId);
-				}
+				if (transport.sessionId) disposeSession(transport.sessionId);
 			};
 
-			// Create a fresh MCP server with all enabled tools (in-process handlers)
-			const mcpServer = createRemoteMcpServer(allServers, enabledConfig);
-			await mcpServer.connect(transport);
-
-			// Store server reference for cleanup
-			if (transport.sessionId) {
-				servers.set(transport.sessionId, mcpServer);
-			}
+			await built.server.connect(transport);
 
 			// Handle the initialization request with pre-parsed body
 			return transport.handleRequest(request, { parsedBody: body });
@@ -179,14 +209,27 @@ export async function handleMcpRequest(request: Request): Promise<Response> {
 	}
 
 	// Invalid request
-	return new Response(JSON.stringify({
-		jsonrpc: '2.0',
-		error: { code: -32000, message: 'Bad Request: No valid session ID provided' },
-		id: null,
-	}), {
-		status: 400,
-		headers: { 'Content-Type': 'application/json' },
+	return jsonRpcError(400, -32000, 'Bad Request: No valid session ID provided');
+}
+
+/**
+ * Handle an incoming request to the INTERNAL `clopen-mcp` bridge (`/mcp`).
+ * Serves the in-process custom tools defined via `defineServer()`.
+ */
+export async function handleMcpRequest(request: Request): Promise<Response> {
+	return handleStreamable(request, 'Remote MCP', async () => {
+		const { allServers, enabledConfig } = await getServerDeps();
+		return { server: createRemoteMcpServer(allServers, enabledConfig) };
 	});
+}
+
+/**
+ * Handle an incoming request to an EXTERNAL proxy bridge
+ * (`/mcp/ext/<slug>`). Clopen connects to the upstream third-party server and
+ * re-exposes its (sanitized) tools, so engines never connect to it directly.
+ */
+export async function handleExternalMcpRequest(request: Request, slug: string): Promise<Response> {
+	return handleStreamable(request, `External MCP (${slug})`, () => createExternalProxyServer(slug));
 }
 
 /**
@@ -202,7 +245,12 @@ export async function closeMcpServer(): Promise<void> {
 			debug.error('mcp', `Error closing MCP transport ${sessionId}:`, error);
 		}
 	}
+	// Release any upstream proxy clients (and their stdio subprocesses).
+	for (const [sessionId, cleanup] of sessionCleanups) {
+		try { await cleanup(); }
+		catch (error) { debug.error('mcp', `Error closing upstream for MCP session ${sessionId}:`, error); }
+	}
 	transports.clear();
-	servers.clear();
+	sessionCleanups.clear();
 	debug.log('mcp', '🌐 All remote MCP sessions closed');
 }

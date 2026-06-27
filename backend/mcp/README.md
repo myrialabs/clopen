@@ -9,14 +9,21 @@ disk and in their namespace keys:
 | Managed | By developers (this README) | By users in **Settings → MCP** |
 | Stored | In code (`internal/servers/`) | In the DB (`mcp_servers` table) |
 | Namespace | `clopen-mcp` bridge (non-Claude) / server name (Claude) | one bare `<slug>` per server (no prefix) |
-| Execution | In-process (no subprocess) | Engine connects directly (stdio subprocess or remote HTTP) |
+| Execution | In-process (no subprocess) | Engine connects to Clopen's `/mcp/ext/<slug>` proxy; Clopen connects to the real upstream (stdio subprocess or remote HTTP) |
 
 Both are merged behind the **facade** `backend/mcp/index.ts` — the only module
 the rest of the backend imports from (`getEnabledMcpServers()`,
 `getXxxMcpConfig()`, `resolveOpenCodeToolName()` all return the combined view).
 
 The rest of this document covers the **internal** custom-tool system. External
-servers need no code — see `external/registry-client.ts` and `external/config.ts`.
+servers need no code — see `external/registry-client.ts`, `external/config.ts`,
+and `external/proxy.ts` (the per-server `/mcp/ext/<slug>` proxy bridge).
+
+> **External servers are proxied, not direct.** Engines never connect straight
+> to a third-party MCP server. Clopen connects to it (as an MCP client) and
+> re-exposes its **sanitized** tools through a per-server endpoint on the same
+> Streamable-HTTP bridge the internal tools use. See
+> [External Servers, OAuth & Connection Status](#external-servers-oauth--connection-status).
 
 ---
 
@@ -180,7 +187,10 @@ backend/mcp/
 ├── external/           # User-installed servers from the official registry
 │   ├── types.ts        # CatalogServer / ResolvedExternalServer
 │   ├── registry-client.ts  # Fetch + normalise registry.modelcontextprotocol.io
-│   └── config.ts       # Per-engine builders (bare <slug>) + resolveExternalToolName
+│   ├── proxy.ts        # `/mcp/ext/<slug>` proxy: Clopen ↔ upstream, schema sanitiser
+│   ├── probe.ts        # Connection health probe (Settings → MCP status)
+│   ├── oauth.ts        # Centralized OAuth (discovery + dynamic reg + PKCE)
+│   └── config.ts       # Per-engine builders (bridge URL, bare <slug>) + resolveExternalToolName
 └── README.md           # This file
 ```
 
@@ -1198,10 +1208,12 @@ checklist in `backend/engine/README.md` §9.12. The summary:
 4. Wire the engine's auto-approval path (runtime callback or static
    per-tool config) so MCP tool calls don't get cancelled.
 5. Add a sibling `getXxxExternalMcpConfig()` in
-   `backend/mcp/external/config.ts` for user-installed registry servers,
-   and **forward `headers`** so the centrally-managed OAuth bearer (and
-   any static API key) reaches the engine. Use the SDK's real header
-   field — Codex uses `http_headers`, **not** `bearer_token`. See
+   `backend/mcp/external/config.ts` for user-installed registry servers.
+   Every external server is proxied, so this is now a one-liner per server:
+   emit the bridge URL `http://localhost:<port>/mcp/ext/<slug>` plus the
+   service-token header in the SDK's shape. No stdio branch, no upstream
+   credential handling (the proxy injects it). Codex still uses
+   `http_headers`, **not** `bearer_token`. See
    [External Servers, OAuth & Connection Status](#external-servers-oauth--connection-status)
    and `backend/engine/docs/lessons-learned.md` §9.18.
 
@@ -1211,7 +1223,8 @@ checklist in `backend/engine/README.md` §9.12. The summary:
 |------|----------|---------|
 | Public facade | `backend/mcp/index.ts` | Only public entry; merges internal + external |
 | Tool definitions | `backend/mcp/internal/servers/` | Single source of truth (internal) |
-| Remote MCP server | `backend/mcp/internal/remote-server.ts` | HTTP bridge for every non-Claude engine |
+| Remote MCP server | `backend/mcp/internal/remote-server.ts` | HTTP bridge: internal `/mcp` + external `/mcp/ext/<slug>` |
+| External proxy | `backend/mcp/external/proxy.ts` | Clopen↔upstream MCP client + schema sanitiser |
 | Server factory | `backend/mcp/internal/servers/helper.ts` | `createRemoteMcpServer()` |
 | Per-engine config (internal) | `backend/mcp/internal/config.ts` | `getOpenCodeMcpConfig()`, `getCodexMcpConfig()`, … (clopen-mcp) |
 | Tool name resolver | `backend/mcp/internal/config.ts` | `resolveOpenCodeToolName()` (handles every engine's prefix variant) |
@@ -1225,9 +1238,43 @@ checklist in `backend/engine/README.md` §9.12. The summary:
 
 Everything above describes **internal** custom tools (the `clopen-mcp`
 bridge). **External** servers are the ones a user installs from the official
-registry (Settings → MCP → Browse), stored in the `mcp_servers` table. Unlike
-internal tools, the engine connects to these **directly** — a stdio subprocess
-or a remote third-party URL — so authentication is Clopen's responsibility.
+registry (Settings → MCP → Browse), stored in the `mcp_servers` table.
+
+### Proxied through the bridge (not direct)
+
+Engines do **not** connect to a third-party MCP server directly. Each enabled
+external server gets its own endpoint `GET/POST/DELETE /mcp/ext/<slug>` on the
+same Streamable-HTTP bridge as the internal tools. Clopen connects to the real
+upstream (stdio subprocess or remote URL) as an MCP **client**, and re-exposes
+its tools there. The per-engine builders in `external/config.ts` therefore emit
+the **identical** shape for every server — a loopback bridge URL plus the
+service-token header — regardless of the upstream's real transport.
+
+Why proxy (`external/proxy.ts`):
+
+1. **Schema sanitising.** The MCP SDK's `Client.listTools()` eagerly compiles an
+   Ajv validator for every tool's `outputSchema`. A single unresolvable `$ref`
+   (e.g. Stitch's `#/$defs/ScreenInstance`) makes it throw, and the engine CLIs'
+   `discoverTools` swallow that error and surface **zero** tools — a "connected"
+   server that advertises nothing. Clopen reads `tools/list` with a **raw**
+   JSON-RPC request (no Ajv), **drops `outputSchema`**, and strips dangling
+   `$ref`s from `inputSchema` before re-serving. One bad schema can no longer
+   hide a whole server.
+2. **One credential path.** OAuth bearer / static API key is injected once, on
+   Clopen's upstream hop (`resolveServerRow`). The engine→bridge hop only
+   carries the service token — so a new engine adapter needs no per-transport
+   or per-credential branching.
+3. **Uniform behaviour.** stdio and remote external servers behave identically
+   on every engine (this fixed Qwen advertising no remote tools and Copilot
+   advertising no external tools at all).
+
+Lifecycle: the upstream client (and any stdio subprocess) is created lazily when
+an engine opens a bridge session and torn down when that session closes
+(`internal/remote-server.ts`).
+
+### Authentication is Clopen's responsibility
+
+Because Clopen owns the upstream connection, it also owns auth.
 
 ### Centralized OAuth (one sign-in, every engine)
 
@@ -1255,19 +1302,25 @@ Flow (`backend/mcp/external/oauth.ts`):
 WS routes (admin-only): `mcp:oauth-start` (returns the authorization URL; the
 UI opens it and polls status), `mcp:oauth-complete` (manual paste fallback).
 
-### Per-engine config: forward the auth headers
+### Per-engine config: just the bridge URL + service token
 
-Each engine's external builder in `backend/mcp/external/config.ts` MUST forward
-`headers`, and must use the engine's real header field. Dropping headers causes
-silent 401s; the wrong field name can make the engine reject its whole config.
+Because every external server is proxied, each engine's external builder in
+`backend/mcp/external/config.ts` emits the **same** shape: a loopback bridge URL
+(`http://localhost:<port>/mcp/ext/<slug>`) plus the service-token bearer. The
+upstream's real credential (OAuth/API key) is injected by the proxy, not the
+builder — so there is no per-engine header-field bookkeeping anymore. The only
+remaining per-engine difference is the SDK's config key for the URL/header:
 
-| Engine | Header field | Notes |
-|--------|-------------|-------|
-| Claude | `headers` | http/sse |
-| OpenCode | `headers` | `oauth` left unset = auto-detect fallback |
-| Copilot | `headers` | — |
-| Qwen | `headers` (+ `httpUrl`) | — |
-| **Codex** | **`http_headers`** | **NOT `bearer_token`** — that's rejected for `streamable_http` and aborts the run. Matches the internal bridge. |
+| Engine | URL field | Auth header field | Notes |
+|--------|-----------|-------------------|-------|
+| Claude | `url` (`type:'http'`) | `headers` | — |
+| OpenCode | `url` (`type:'remote'`) | `headers` | — |
+| Copilot | `url` (`type:'http'`) | `headers` | `tools:['*']` so the CLI exposes all proxied tools |
+| Qwen | `httpUrl` | `headers` | — |
+| **Codex** | `url` | **`http_headers`** | **NOT `bearer_token`** — rejected for `streamable_http`. |
+
+A new engine that speaks Streamable-HTTP MCP needs only this one-line builder —
+no stdio branch, no upstream-credential handling.
 
 ### Required-credential validation
 

@@ -1,41 +1,56 @@
 /**
  * External MCP — per-engine config builders.
  *
- * Reads enabled servers from the `mcp_servers` table and emits each engine's
- * native MCP config shape. Every external server occupies its OWN namespace
- * key (its bare `<slug>`; the `clopen` prefix is reserved for internal) — disjoint from the internal `clopen-mcp` bridge — so the
- * two systems never collide. The facade (`backend/mcp/index.ts`) merges these
- * with the internal config before handing them to an adapter.
+ * Every enabled external server is exposed to engines through Clopen's OWN
+ * Streamable-HTTP bridge at `/mcp/ext/<slug>` (see `./proxy.ts`), NOT by
+ * pointing the engine straight at the third-party stdio/HTTP server. Each
+ * server keeps its bare `<slug>` namespace (the `clopen` prefix is reserved
+ * for internal) — disjoint from the internal `clopen-mcp` bridge — so the two
+ * systems never collide.
  *
- * Unlike internal tools, external servers are real MCP servers the engine
- * connects to directly (stdio subprocess or remote HTTP), NOT routed through
- * Clopen's in-process `/mcp` bridge.
+ * Routing through the bridge means every engine receives the IDENTICAL shape:
+ * a loopback remote URL plus the service-token header. The real upstream
+ * transport (stdio/http/sse) and its OAuth/API-key credential are handled once,
+ * inside the proxy — so a new engine adapter needs no per-transport branching,
+ * and engines are shielded from upstream servers whose tool schemas would
+ * otherwise crash their MCP client (see `./proxy.ts`).
+ *
+ * The facade (`backend/mcp/index.ts`) merges these with the internal config
+ * before handing them to an adapter.
  */
 
 import type { McpServerConfig } from '@anthropic-ai/claude-agent-sdk';
-import type { McpLocalConfig, McpRemoteConfig } from '@opencode-ai/sdk';
-import type { MCPServerConfig as CopilotMcpServerConfig } from '@github/copilot-sdk';
+import type { McpRemoteConfig } from '@opencode-ai/sdk';
+import type { MCPHTTPServerConfig as CopilotMcpServerConfig } from '@github/copilot-sdk';
 import type { CLIMcpServerConfig as QwenMcpServerConfig } from '@qwen-code/sdk';
 import { debug } from '$shared/utils/logger';
 import { mcpServerQueries } from '$backend/database/queries';
-import { externalNamespace } from '../shared/constants';
+import { externalNamespace, MCP_TOOL_CALL_TIMEOUT_MS } from '../shared/constants';
+import { getMcpServiceToken } from '../internal/service-token';
+import { SERVER_ENV } from '../../utils/env';
 import type { McpServerRow } from '$backend/database/queries';
 import type { ResolvedExternalServer } from './types';
 
-/** Codex flattens `mcp_servers.<name>.<key>` config to `--config` flags. */
+/**
+ * Codex `mcp_servers.<name>` config, flattened by the SDK to `--config` flags.
+ * Each external server is a Streamable-HTTP remote pointing at our bridge;
+ * `http_headers` carries the service-token bearer (Codex rejects an inline
+ * `bearer_token` for `streamable_http`).
+ */
 type CodexMcpServerConfig = {
-	command?: string;
-	args?: string[];
-	env?: Record<string, string>;
-	url?: string;
-	/**
-	 * Streamable-HTTP auth headers. Codex rejects an inline `bearer_token` for
-	 * streamable_http but accepts an `http_headers` table (the same field the
-	 * internal `clopen-mcp` bridge uses), so the centrally-managed
-	 * `Authorization: Bearer …` and any static API-key headers reach Codex.
-	 */
+	url: string;
 	http_headers?: Record<string, string>;
 };
+
+/** Loopback URL of the per-server external proxy bridge for `slug`. */
+function bridgeUrl(slug: string): string {
+	return `http://localhost:${SERVER_ENV.PORT}/mcp/ext/${slug}`;
+}
+
+/** The service-token bearer header every engine→bridge hop carries. */
+function serviceAuthHeaders(): Record<string, string> {
+	return { Authorization: `Bearer ${getMcpServiceToken()}` };
+}
 
 function parseJson<T>(raw: string, fallback: T): T {
 	try {
@@ -96,124 +111,90 @@ export function remoteNeedsOAuth(s: ResolvedExternalServer): boolean {
 		&& Object.keys(s.headers).length === 0;
 }
 
-/** Qwen OAuth fields for a credential-less remote (dynamic discovery). */
-function remoteAuthQwen(s: ResolvedExternalServer): Partial<QwenMcpServerConfig> {
-	if (!remoteNeedsOAuth(s)) return {};
-	return { oauth: { enabled: true }, authProviderType: 'dynamic_discovery' };
-}
-
 // ---------------------------------------------------------------------------
 // Per-engine builders
+//
+// Every external server, regardless of its real transport, is emitted as a
+// Streamable-HTTP remote pointing at our `/mcp/ext/<slug>` proxy. The only
+// per-engine difference is the SDK's config shape (field names) — the URL,
+// namespace key, and service-token header are identical. The upstream
+// transport + credential live inside the proxy (see ./proxy.ts).
 // ---------------------------------------------------------------------------
 
-/** Claude Agent SDK: stdio / sse / http config keyed by namespace. */
+/** Claude Agent SDK: Streamable-HTTP remote keyed by namespace. */
 export function getClaudeExternalMcpConfig(): Record<string, McpServerConfig> {
 	const out: Record<string, McpServerConfig> = {};
 	for (const s of getEnabledExternalServers()) {
-		if (s.transport === 'stdio' && s.command) {
-			out[s.namespace] = { type: 'stdio', command: s.command, args: s.args, env: s.env };
-		} else if ((s.transport === 'http' || s.transport === 'sse') && s.url) {
-			out[s.namespace] = {
-				type: s.transport,
-				url: s.url,
-				...(Object.keys(s.headers).length > 0 ? { headers: s.headers } : {})
-			};
-		}
+		out[s.namespace] = { type: 'http', url: bridgeUrl(s.slug), headers: serviceAuthHeaders() };
 	}
 	logBuilt('Claude', out);
 	return out;
 }
 
-/** Open Code: `McpLocalConfig` (stdio) / `McpRemoteConfig` (http/sse). */
-export function getOpenCodeExternalMcpConfig(): Record<string, McpLocalConfig | McpRemoteConfig> {
-	const out: Record<string, McpLocalConfig | McpRemoteConfig> = {};
+/** Open Code: `McpRemoteConfig` pointing at the bridge proxy. */
+export function getOpenCodeExternalMcpConfig(): Record<string, McpRemoteConfig> {
+	const out: Record<string, McpRemoteConfig> = {};
 	for (const s of getEnabledExternalServers()) {
-		if (s.transport === 'stdio' && s.command) {
-			out[s.namespace] = {
-				type: 'local',
-				command: [s.command, ...s.args],
-				...(Object.keys(s.env).length > 0 ? { environment: s.env } : {}),
-				enabled: true
-			};
-		} else if ((s.transport === 'http' || s.transport === 'sse') && s.url) {
-			// `oauth` is intentionally left unset: Open Code's default is OAuth
-			// auto-detection (set it to `false` only to opt out). Credential-less
-			// remotes therefore get the authorization handshake for free; the
-			// interactive sign-in is driven separately via the MCP auth flow.
-			out[s.namespace] = {
-				type: 'remote',
-				url: s.url,
-				enabled: true,
-				...(Object.keys(s.headers).length > 0 ? { headers: s.headers } : {})
-			};
-		}
+		out[s.namespace] = {
+			type: 'remote',
+			url: bridgeUrl(s.slug),
+			enabled: true,
+			timeout: MCP_TOOL_CALL_TIMEOUT_MS,
+			headers: serviceAuthHeaders()
+		};
 	}
 	logBuilt('Open Code', out);
 	return out;
 }
 
 /**
- * Codex: `mcp_servers.<name>` accepts a command (stdio) or url. Note: Codex
- * requires per-tool `approval_mode` to auto-approve, but external tool names
- * aren't known at install time (config-only, lazy spawn), so external MCP
- * tool calls may be cancelled in non-interactive `codex exec`. The server is
- * still registered so interactive/known-tool flows work.
+ * Codex: `mcp_servers.<name>.url` pointing at the bridge proxy.
+ *
+ * Note: Codex still requires per-tool `approval_mode` to auto-approve in
+ * non-interactive `codex exec`, and external tool names aren't known when this
+ * synchronous builder runs — so external MCP tool calls may be cancelled there.
+ * The server is registered so interactive/known-tool flows work; this limit is
+ * unchanged by the proxy.
  */
 export function getCodexExternalMcpConfig(): Record<string, CodexMcpServerConfig> {
 	const out: Record<string, CodexMcpServerConfig> = {};
 	for (const s of getEnabledExternalServers()) {
-		if (s.transport === 'stdio' && s.command) {
-			out[s.namespace] = {
-				command: s.command,
-				args: s.args,
-				...(Object.keys(s.env).length > 0 ? { env: s.env } : {})
-			};
-		} else if ((s.transport === 'http' || s.transport === 'sse') && s.url) {
-			// `http_headers` carries the injected OAuth bearer (and any static API
-			// key), matching the internal bridge — so Codex authenticates too.
-			out[s.namespace] = {
-				url: s.url,
-				...(Object.keys(s.headers).length > 0 ? { http_headers: s.headers } : {})
-			};
-		}
+		out[s.namespace] = { url: bridgeUrl(s.slug), http_headers: serviceAuthHeaders() };
 	}
 	logBuilt('Codex', out);
 	return out;
 }
 
-/** Copilot: `MCPStdioServerConfig` (stdio) / `MCPHTTPServerConfig` (http/sse). */
+/** Copilot: `MCPHTTPServerConfig` pointing at the bridge proxy. */
 export function getCopilotExternalMcpConfig(): Record<string, CopilotMcpServerConfig> {
 	const out: Record<string, CopilotMcpServerConfig> = {};
 	for (const s of getEnabledExternalServers()) {
-		if (s.transport === 'stdio' && s.command) {
-			out[s.namespace] = { type: 'local', command: s.command, args: s.args, env: s.env };
-		} else if ((s.transport === 'http' || s.transport === 'sse') && s.url) {
-			// Leaving `oauthClientId` unset makes the Copilot runtime perform
-			// dynamic client registration when the server demands OAuth. The
-			// interactive consent is delegated to us via the `mcp.oauth_required`
-			// event (see the Copilot adapter's MCP auth wiring).
-			out[s.namespace] = {
-				type: s.transport,
-				url: s.url,
-				...(Object.keys(s.headers).length > 0 ? { headers: s.headers } : {})
-			};
-		}
+		// `tools: ['*']` makes the Copilot runtime expose ALL of the proxy's
+		// tools. Leaving it unset relies on the SDK's documented "undefined =
+		// all" default, which the bundled CLI does not honour for dynamically
+		// discovered servers — the tools never reach the model.
+		out[s.namespace] = {
+			type: 'http',
+			url: bridgeUrl(s.slug),
+			tools: ['*'],
+			timeout: MCP_TOOL_CALL_TIMEOUT_MS,
+			headers: serviceAuthHeaders()
+		};
 	}
 	logBuilt('Copilot', out);
 	return out;
 }
 
-/** Qwen Code: `CLIMcpServerConfig` — command (stdio) or url/httpUrl (remote). */
+/** Qwen Code: `CLIMcpServerConfig` Streamable-HTTP (`httpUrl`) at the bridge proxy. */
 export function getQwenExternalMcpConfig(): Record<string, QwenMcpServerConfig> {
 	const out: Record<string, QwenMcpServerConfig> = {};
 	for (const s of getEnabledExternalServers()) {
-		if (s.transport === 'stdio' && s.command) {
-			out[s.namespace] = { command: s.command, args: s.args, env: s.env, trust: true };
-		} else if (s.transport === 'http' && s.url) {
-			out[s.namespace] = { httpUrl: s.url, headers: s.headers, trust: true, ...remoteAuthQwen(s) };
-		} else if (s.transport === 'sse' && s.url) {
-			out[s.namespace] = { url: s.url, headers: s.headers, trust: true, ...remoteAuthQwen(s) };
-		}
+		out[s.namespace] = {
+			httpUrl: bridgeUrl(s.slug),
+			timeout: MCP_TOOL_CALL_TIMEOUT_MS,
+			trust: true,
+			headers: serviceAuthHeaders()
+		};
 	}
 	logBuilt('Qwen', out);
 	return out;

@@ -10,7 +10,8 @@
  *     through the `/mcp` remote bridge (namespace `clopen-mcp`).
  *   - EXTERNAL (`./external`) — servers the user installs from the official
  *     MCP registry, stored in the `mcp_servers` table. Each occupies its own
- *     `<slug>` namespace and is connected to directly by the engine.
+ *     `<slug>` namespace and is proxied through the `/mcp/ext/<slug>` bridge
+ *     (`./external/proxy.ts`) — the engine talks to Clopen, not the upstream.
  *
  * Adapters call `getEnabledMcpServers()` / `getXxxMcpConfig()` /
  * `resolveOpenCodeToolName()` here and receive the COMBINED view. The internal
@@ -57,8 +58,8 @@ export {
 // Internal server implementations + registries
 export * from './internal/servers';
 
-// Remote MCP HTTP bridge (serves internal tools to non-Claude engines)
-export { handleMcpRequest, closeMcpServer } from './internal/remote-server';
+// Remote MCP HTTP bridge (serves internal tools + external proxies to non-Claude engines)
+export { handleMcpRequest, handleExternalMcpRequest, closeMcpServer } from './internal/remote-server';
 
 // Project context service for MCP tool handlers
 export { projectContextService } from './internal/project-context';
