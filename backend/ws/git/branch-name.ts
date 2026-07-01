@@ -148,7 +148,7 @@ export const branchNameHandler = createRouter()
 		const diffResult = await execGit(['diff', '--cached'], cwd);
 		const rawDiff = diffResult.stdout;
 
-		if (!rawDiff.trim()) {
+		if (!rawDiff.trim() && !data.customPrompt) {
 			throw new Error('No staged changes to generate a branch name for');
 		}
 

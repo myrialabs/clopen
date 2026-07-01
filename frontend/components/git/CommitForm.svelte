@@ -5,6 +5,7 @@
 	import Icon from '$frontend/components/common/display/Icon.svelte';
 	import { clickOutside } from '$frontend/utils/click-outside';
 	import { settings } from '$frontend/stores/features/settings.svelte';
+	import { taskClientStore } from '$frontend/stores/features/task-client.svelte';
 	import { projectState } from '$frontend/stores/core/projects.svelte';
 	import { showError } from '$frontend/stores/ui/notification.svelte';
 	import {
@@ -87,6 +88,7 @@
 	let branchNameDraft = $state('');
 	let showBranchDraft = $state(false);
 	let showGenerateDropdown = $state(false);
+	let showBranchSubmenu = $state(false);
 	let generateBtnEl = $state<HTMLButtonElement | null>(null);
 	let generateMenuStyle = $state('');
 
@@ -98,11 +100,17 @@
 			? `right: ${window.innerWidth - rect.right}px; bottom: ${window.innerHeight - rect.top + 6}px;`
 			: `right: ${window.innerWidth - rect.right}px; top: ${rect.bottom + 6}px;`;
 		showGenerateDropdown = true;
+		showBranchSubmenu = settings.commitGenerator.ticketSource === 'trello' && !!taskClientStore.selectedBoardId;
 	}
 
 	function handleGenerateClick() {
 		if (!onCreateBranch) { generateCommitMessage(); return; }
-		showGenerateDropdown ? (showGenerateDropdown = false) : openGenerateMenu();
+		if (showGenerateDropdown) {
+			showGenerateDropdown = false;
+			showBranchSubmenu = false;
+		} else {
+			openGenerateMenu();
+		}
 	}
 
 	function generateBoth() {
@@ -181,11 +189,29 @@
 		return parts.join('\n');
 	}
 
-	function buildBranchExtra(): string {
+	function buildBranchExtra(source?: 'card' | 'diff'): string {
 		const config = settings.commitGenerator.branchConfig;
-		if (!config) return '';
-		const { maxWords, allowedPrefixes, context } = config;
 		const parts: string[] = [];
+
+		const useCard = source === 'card' || (source === undefined && settings.commitGenerator.ticketSource === 'trello' && taskClientStore.activeCardId);
+
+		if (useCard) {
+			const activeCardId = taskClientStore.activeCardId;
+			if (activeCardId) {
+				const activeCard = taskClientStore.cards.find(c => c.id === activeCardId);
+				if (activeCard) {
+					parts.push(`CRITICAL: The branch description MUST be generated directly from this task card title: "${activeCard.name}".`);
+					
+					const ticketLanguage = settings.commitGenerator.ticketLanguage;
+					if (ticketLanguage === 'en') {
+						parts.push('Write/translate the branch description in English.');
+					}
+				}
+			}
+		}
+
+		if (!config) return parts.join('\n');
+		const { maxWords, allowedPrefixes, context } = config;
 		if (maxWords !== 3) parts.push(`Description must be at most ${maxWords} word${maxWords === 1 ? '' : 's'}.`);
 		const prefixes = (allowedPrefixes ?? '').split(',').map(s => s.trim()).filter(Boolean);
 		if (prefixes.length) parts.push(`Prefix must be one of: ${prefixes.join(', ')}.`);
@@ -230,17 +256,43 @@
 		}
 	}
 
-	async function generateBranchName() {
+	async function generateBranchName(source?: 'card' | 'diff') {
 		const projectId = projectState.currentProject?.id;
 		if (!projectId || stagedCount === 0 || isGeneratingBranch || repoBusy) return;
 
 		setGitOp(projectId, 'isGeneratingBranch', true, repoPath);
 		try {
-			const { useCustomModel, engine, provider, modelId, branchSeparator, branchConfig } = settings.commitGenerator;
+			const { useCustomModel, engine, provider, modelId, branchSeparator, branchConfig, ticketSource, ticketPrefix } = settings.commitGenerator;
+			const msgSep = branchConfig?.branchMessageSeparator !== undefined ? branchConfig.branchMessageSeparator : '-';
+
+			// 1. Get the ticket ID/prefix if enabled and active
+			let ticketId = '';
+			if (ticketSource === 'trello') {
+				const activeCardId = taskClientStore.activeCardId;
+				if (activeCardId) {
+					const activeCard = taskClientStore.cards.find(c => c.id === activeCardId);
+					if (activeCard) {
+						if (ticketPrefix === 'id-short' && activeCard.idShort) {
+							ticketId = String(activeCard.idShort);
+						} else if (activeCard.shortLink) {
+							ticketId = activeCard.shortLink;
+						} else {
+							// fallback to parsing shortLink from Trello card URL
+							const match = activeCard.url?.match(/\/c\/([a-zA-Z0-9]+)/);
+							if (match) {
+								ticketId = match[1];
+							}
+						}
+					}
+				}
+			}
+
+			// Fallback to AI generation
 			const resolvedEngine = useCustomModel ? engine : settings.selectedEngine;
 			const resolvedProvider = useCustomModel ? provider : settings.selectedProvider;
 			const resolvedModel = useCustomModel ? modelId : settings.selectedModelId;
-			const extra = buildBranchExtra();
+			const extra = buildBranchExtra(source);
+
 			const result = await ws.http('git:generate-branch-name', {
 				projectId,
 				engine: resolvedEngine,
@@ -251,7 +303,33 @@
 				...(repoPath && { repoPath }),
 				...(extra && { customPrompt: extra })
 			});
-			branchNameDraft = result.branchName;
+
+			let branchName = result.branchName;
+			
+			// Find the separator index that divides the prefix and the description
+			const sepIdx = branchSeparator ? branchName.indexOf(branchSeparator) : -1;
+			let prefix = '';
+			let description = branchName;
+			if (sepIdx !== -1) {
+				prefix = branchName.slice(0, sepIdx + branchSeparator.length);
+				description = branchName.slice(sepIdx + branchSeparator.length);
+			}
+
+			// Format the description with the custom branch message separator (defaulting to '-')
+			let formattedDesc = description.split('-').join(msgSep);
+
+			// 2. Prepends the ticket ID if found
+			if (ticketId) {
+				if (formattedDesc) {
+					formattedDesc = `${ticketId}${msgSep}${formattedDesc}`;
+				} else {
+					formattedDesc = ticketId;
+				}
+			}
+
+			branchName = `${prefix}${formattedDesc}`;
+
+			branchNameDraft = branchName;
 			showBranchDraft = true;
 		} catch (err) {
 			showError('Generate Branch Failed', err instanceof Error ? err.message : 'Failed to generate branch name');
@@ -275,9 +353,320 @@
 			setGitOp(projectId, 'isCreatingBranch', false, repoPath);
 		}
 	}
+
+	let showCardSelector = $state(false);
+	let cardSearchQuery = $state('');
+	let selectedListId = $state<string | null>(null);
+	let listContainerEl = $state<HTMLDivElement | null>(null);
+
+	$effect(() => {
+		if (listContainerEl) {
+			// Trigger on dropdown open, board change, or list change
+			const _open = showCardSelector;
+			const _board = taskClientStore.selectedBoardId;
+			const _list = selectedListId;
+			listContainerEl.scrollTop = 0;
+		}
+	});
+
+	const filteredCards = $derived(
+		taskClientStore.cards.filter(c =>
+			c.idList === selectedListId && (
+				!cardSearchQuery.trim() ||
+				c.name.toLowerCase().includes(cardSearchQuery.toLowerCase()) ||
+				String(c.idShort || '').includes(cardSearchQuery) ||
+				(c.shortLink || '').toLowerCase().includes(cardSearchQuery.toLowerCase())
+			)
+		)
+	);
+
+	const filteredLists = $derived(
+		taskClientStore.lists.filter(l =>
+			!cardSearchQuery.trim() ||
+			l.name.toLowerCase().includes(cardSearchQuery.toLowerCase())
+		)
+	);
+
+	function openCardSelector() {
+		showCardSelector = true;
+		cardSearchQuery = '';
+		if (taskClientStore.activeCardId) {
+			const activeCard = taskClientStore.cards.find(c => c.id === taskClientStore.activeCardId);
+			if (activeCard) {
+				selectedListId = activeCard.idList;
+				return;
+			}
+		}
+		selectedListId = null;
+	}
+
+	const sortedBoards = $derived(
+		taskClientStore.boards.map(board => ({
+			...board,
+			isStarred: taskClientStore.boardStars.some(s => s.idBoard === board.id)
+		})).sort((a, b) => {
+			if (a.isStarred && !b.isStarred) return -1;
+			if (!a.isStarred && b.isStarred) return 1;
+			return a.name.localeCompare(b.name);
+		})
+	);
+
+	const filteredBoards = $derived(
+		sortedBoards.filter(b =>
+			!cardSearchQuery.trim() ||
+			b.name.toLowerCase().includes(cardSearchQuery.toLowerCase())
+		)
+	);
+
+	function selectTrelloCard(cardId: string) {
+		taskClientStore.activeCardId = cardId;
+		showCardSelector = false;
+	}
+
+	function clearActiveCard() {
+		taskClientStore.activeCardId = null;
+	}
 </script>
 
 <div class="px-2 py-2">
+	{#if settings.commitGenerator.ticketSource === 'trello'}
+		{@const activeCard = taskClientStore.cards.find(c => c.id === taskClientStore.activeCardId)}
+		<div class="relative flex items-center mb-2">
+			{#if activeCard}
+				{@const activeTicketLabel = settings.commitGenerator.ticketPrefix === 'id-short' && activeCard.idShort ? `#${activeCard.idShort}` : (activeCard.shortLink || '')}
+				<!-- Linked Card Card -->
+				<div class="flex items-center justify-between w-full gap-3 p-2 rounded-md border border-slate-200 dark:border-slate-800/80 bg-slate-50 dark:bg-slate-900/30 text-xs shadow-sm">
+					<div class="flex items-center gap-2.5 min-w-0">
+						<div class="flex items-center justify-center w-5 h-5 rounded-md bg-violet-500/10 text-violet-500 dark:text-violet-400 shrink-0">
+							<Icon name="lucide:trello" class="w-3.5 h-3.5" />
+						</div>
+						{#if activeTicketLabel}
+							<span class="font-mono text-[10px] font-bold bg-violet-500/10 text-violet-600 dark:text-violet-400 px-1.5 py-0.5 rounded border border-violet-500/20 shrink-0">
+								{activeTicketLabel}
+							</span>
+						{/if}
+						{#if activeCard.url}
+							<a
+								href={activeCard.url}
+								target="_blank"
+								rel="noopener noreferrer"
+								class="truncate font-medium text-slate-700 dark:text-slate-200 hover:text-violet-600 dark:hover:text-violet-400 hover:underline min-w-0"
+							>
+								{activeCard.name}
+							</a>
+						{:else}
+							<span class="truncate font-medium text-slate-700 dark:text-slate-200">{activeCard.name}</span>
+						{/if}
+					</div>
+					<div class="flex items-center gap-2 shrink-0">
+						<button
+							type="button"
+							onclick={openCardSelector}
+							class="text-[10px] font-semibold text-violet-600 dark:text-violet-400 hover:text-violet-700 dark:hover:text-violet-300 hover:underline cursor-pointer border-none bg-transparent"
+						>
+							Change
+						</button>
+						<div class="w-[1px] h-3 bg-slate-200 dark:bg-slate-800"></div>
+						<button
+							type="button"
+							onclick={clearActiveCard}
+							class="p-1 rounded-md text-slate-400 hover:text-slate-600 dark:hover:text-slate-350 hover:bg-slate-100 dark:hover:bg-slate-800 transition-colors cursor-pointer border-none bg-transparent flex items-center justify-center"
+							aria-label="Clear active card"
+						>
+							<Icon name="lucide:x" class="w-3.5 h-3.5" />
+						</button>
+					</div>
+				</div>
+			{:else}
+				<!-- Unlinked Placeholder Card -->
+				<button
+					type="button"
+					onclick={openCardSelector}
+					class="flex items-center gap-2 p-2 w-full rounded-md border border-dashed border-slate-200 dark:border-slate-800 hover:border-violet-500/40 bg-slate-50/50 dark:bg-slate-900/10 hover:bg-violet-500/5 dark:hover:bg-violet-500/5 text-xs text-slate-500 hover:text-violet-600 dark:text-slate-400 dark:hover:text-violet-400 cursor-pointer transition-all duration-200 text-left"
+				>
+					<Icon name="lucide:trello" class="w-3.5 h-3.5 text-slate-400 dark:text-slate-500 shrink-0" />
+					<span class="font-medium">Link Trello card...</span>
+				</button>
+			{/if}
+			
+			<!-- Card Selector Dropdown -->
+			{#if showCardSelector}
+				<!-- Click outside backdrop to close -->
+				<button type="button" class="fixed inset-0 z-40 bg-transparent cursor-default border-none w-full h-full" onclick={() => showCardSelector = false}></button>
+				
+				<div class="absolute top-full mt-1 left-0 z-50 w-72 p-2 rounded-md border border-slate-200 dark:border-slate-800 bg-white dark:bg-slate-950 shadow-2xl flex flex-col gap-1.5 animate-in fade-in slide-in-from-top-2 duration-150">
+					<!-- Search input -->
+					<div class="relative flex items-center px-2.5 py-1.5 bg-slate-50 dark:bg-slate-900 rounded-md border border-slate-200 dark:border-slate-800 focus-within:border-slate-350 dark:focus-within:border-slate-700">
+						<Icon name="lucide:search" class="w-3.5 h-3.5 text-slate-400 mr-2 shrink-0" />
+						<input
+							type="text"
+							bind:value={cardSearchQuery}
+							placeholder={!taskClientStore.selectedBoardId ? "Search boards..." : !selectedListId ? "Search lists..." : "Search cards..."}
+							class="w-full bg-transparent border-none text-xs text-slate-800 dark:text-slate-200 placeholder:text-slate-400 dark:placeholder:text-slate-500 focus:outline-none focus:ring-0 p-0"
+						/>
+					</div>
+					
+					<!-- Cards List -->
+					<div bind:this={listContainerEl} class="flex-grow overflow-y-auto max-h-48 pr-0.5 flex flex-col gap-0.5">
+						{#if !taskClientStore.selectedBoardId}
+							{#if taskClientStore.accounts.length === 0}
+								<div class="text-xs text-slate-500 text-center py-4">
+									No Trello account connected.
+									<div class="text-[10px] text-slate-400 mt-1">Please connect your account in the Task Client.</div>
+								</div>
+							{:else}
+								{#if taskClientStore.loadingBoards}
+									<div class="text-xs text-slate-500 text-center py-4 flex items-center justify-center gap-1.5">
+										<Icon name="lucide:loader" class="w-3.5 h-3.5 animate-spin text-violet-500" />
+										<span>Loading boards...</span>
+									</div>
+								{:else if taskClientStore.boards.length === 0}
+									<div class="text-xs text-slate-500 text-center py-4 px-2">
+										No boards found.
+										<button
+											type="button"
+											onclick={() => taskClientStore.loadBoards()}
+											class="mt-2 w-full px-2 py-1 bg-slate-100 dark:bg-slate-900 hover:bg-slate-200 dark:hover:bg-slate-800 border border-slate-200 dark:border-slate-800 rounded text-slate-700 dark:text-slate-300 font-medium text-[11px] cursor-pointer transition-colors"
+										>
+											Reload Boards
+										</button>
+									</div>
+								{:else if filteredBoards.length === 0}
+									<div class="text-xs text-slate-500 text-center py-4 px-2">No boards match your search.</div>
+								{:else}
+									{@const starred = filteredBoards.filter(b => b.isStarred)}
+									{@const unstarred = filteredBoards.filter(b => !b.isStarred)}
+
+									{#if starred.length > 0}
+										<div class="px-2.5 py-1 text-[10px] font-semibold text-slate-400 dark:text-slate-500 uppercase tracking-wider shrink-0">Starred Boards</div>
+										{#each starred as board}
+											<button
+												type="button"
+												class="w-full flex items-center gap-2.5 px-2.5 py-1.5 rounded-md text-left border-none cursor-pointer text-xs transition-colors hover:bg-slate-50 dark:hover:bg-slate-900 bg-transparent text-slate-700 dark:text-slate-350 hover:text-slate-900 dark:hover:text-slate-100 font-medium"
+												onclick={() => { taskClientStore.selectBoard(board.id); selectedListId = null; cardSearchQuery = ''; }}
+											>
+												<Icon name="lucide:star" class="w-3.5 h-3.5 text-amber-500 fill-amber-500 shrink-0" />
+												<span class="truncate">{board.name}</span>
+											</button>
+										{/each}
+										
+										{#if unstarred.length > 0}
+											<div class="h-[1px] bg-slate-100 dark:bg-slate-900 my-1 shrink-0"></div>
+										{/if}
+									{/if}
+
+									{#if unstarred.length > 0}
+										{#if starred.length > 0}
+											<div class="px-2.5 py-1 text-[10px] font-semibold text-slate-400 dark:text-slate-500 uppercase tracking-wider shrink-0">All Boards</div>
+										{/if}
+										{#each unstarred as board}
+											<button
+												type="button"
+												class="w-full flex items-center gap-2.5 px-2.5 py-1.5 rounded-md text-left border-none cursor-pointer text-xs transition-colors hover:bg-slate-50 dark:hover:bg-slate-900 bg-transparent text-slate-650 dark:text-slate-400 hover:text-slate-900 dark:hover:text-slate-100"
+												onclick={() => { taskClientStore.selectBoard(board.id); selectedListId = null; cardSearchQuery = ''; }}
+											>
+												<Icon name="lucide:trello" class="w-3.5 h-3.5 text-slate-400 dark:text-slate-500 shrink-0" />
+												<span class="truncate font-medium">{board.name}</span>
+											</button>
+										{/each}
+									{/if}
+								{/if}
+							{/if}
+						{:else}
+							<!-- Header with active board name and a Switch Board button -->
+							<div class="flex flex-col border-b border-slate-100 dark:border-slate-900/60 pb-1.5 mb-1.5 shrink-0 gap-1 px-2.5">
+								<div class="flex items-center justify-between">
+									<div class="flex items-center gap-1.5 min-w-0">
+										<Icon name="lucide:trello" class="w-3.5 h-3.5 text-slate-400 dark:text-slate-500 shrink-0" />
+										<div class="flex items-center gap-1 text-[10px] text-slate-400 dark:text-slate-500 font-semibold truncate">
+											<span class="uppercase tracking-wider">Board:</span>
+											<span class="text-slate-700 dark:text-slate-300 font-bold truncate max-w-[130px]">{taskClientStore.selectedBoard?.name ?? 'Loading...'}</span>
+										</div>
+									</div>
+									<button
+										type="button"
+										onclick={() => { taskClientStore.selectBoard(null); selectedListId = null; cardSearchQuery = ''; }}
+										class="text-[10px] text-violet-650 dark:text-violet-400 hover:underline cursor-pointer border-none bg-transparent font-medium shrink-0"
+									>
+										Switch
+									</button>
+								</div>
+
+								{#if selectedListId}
+									{@const activeList = taskClientStore.lists.find(l => l.id === selectedListId)}
+									<div class="flex items-center justify-between border-t border-slate-50 dark:border-slate-900/40 pt-1 mt-0.5">
+										<div class="flex items-center gap-1.5 min-w-0">
+											<Icon name="lucide:list" class="w-3.5 h-3.5 text-slate-400 dark:text-slate-500 shrink-0" />
+											<div class="flex items-center gap-1 text-[10px] text-slate-400 dark:text-slate-500 font-semibold truncate font-semibold truncate">
+												<span class="uppercase tracking-wider">List:</span>
+												<span class="text-slate-700 dark:text-slate-300 font-bold truncate max-w-[140px]">{activeList?.name ?? 'Loading...'}</span>
+											</div>
+										</div>
+										<button
+											type="button"
+											onclick={() => { selectedListId = null; cardSearchQuery = ''; }}
+											class="text-[10px] text-violet-650 dark:text-violet-400 hover:underline cursor-pointer border-none bg-transparent font-medium shrink-0"
+										>
+											Back
+										</button>
+									</div>
+								{/if}
+							</div>
+
+							{#if !selectedListId}
+								{#if taskClientStore.loadingCards}
+									<div class="text-xs text-slate-500 text-center py-4 flex items-center justify-center gap-1.5">
+										<Icon name="lucide:loader" class="w-3.5 h-3.5 animate-spin text-violet-500" />
+										<span>Loading lists...</span>
+									</div>
+								{:else if filteredLists.length === 0}
+									<div class="text-xs text-slate-500 text-center py-4 px-2">No lists match your search.</div>
+								{:else}
+									<div class="px-2.5 py-1 text-[10px] font-semibold text-slate-400 dark:text-slate-500 uppercase tracking-wider shrink-0">Select a List:</div>
+									{#each filteredLists as list}
+										<button
+											type="button"
+											class="w-full flex items-center gap-2.5 px-2.5 py-1.5 rounded-md text-left border-none cursor-pointer text-xs transition-colors hover:bg-slate-50 dark:hover:bg-slate-900 bg-transparent text-slate-600 dark:text-slate-400 hover:text-slate-900 dark:hover:text-slate-100"
+											onclick={() => { selectedListId = list.id; cardSearchQuery = ''; }}
+										>
+											<Icon name="lucide:list" class="w-3.5 h-3.5 text-slate-400 dark:text-slate-500 shrink-0" />
+											<span class="truncate font-medium">{list.name}</span>
+										</button>
+									{/each}
+								{/if}
+							{:else}
+								{#if taskClientStore.loadingCards}
+									<div class="text-xs text-slate-500 text-center py-4 flex items-center justify-center gap-1.5">
+										<Icon name="lucide:loader" class="w-3.5 h-3.5 animate-spin text-violet-500" />
+										<span>Loading cards...</span>
+									</div>
+								{:else if filteredCards.length === 0}
+									<div class="text-xs text-slate-500 text-center py-4">No cards found.</div>
+								{:else}
+									{#each filteredCards as card}
+										{@const isActive = card.id === taskClientStore.activeCardId}
+										{@const ticketLabel = settings.commitGenerator.ticketPrefix === 'id-short' && card.idShort ? `#${card.idShort}` : (card.shortLink || '')}
+										<button
+											type="button"
+											class="w-full flex items-center gap-2.5 px-2.5 py-1.5 rounded-md text-left border-none cursor-pointer text-xs transition-colors bg-transparent text-slate-700 dark:text-slate-350 hover:bg-slate-50 dark:hover:bg-slate-900 hover:text-slate-900 dark:hover:text-slate-100 {isActive ? 'bg-violet-500/5 dark:bg-violet-500/10 text-violet-600 dark:text-violet-400 font-medium' : ''}"
+											onclick={() => selectTrelloCard(card.id)}
+										>
+											{#if ticketLabel}
+												<span class="font-mono text-[9px] font-semibold px-1.5 py-0.5 rounded border shrink-0 text-center {isActive ? 'bg-violet-500/10 dark:bg-violet-500/15 text-violet-600 dark:text-violet-400 border-violet-500/20 dark:border-violet-500/30' : 'bg-slate-50 dark:bg-slate-900 text-slate-500 dark:text-slate-400 border-slate-200/60 dark:border-slate-850'}">
+													{ticketLabel}
+												</span>
+											{/if}
+											<span class="line-clamp-2 leading-tight">{card.name}</span>
+										</button>
+									{/each}
+								{/if}
+							{/if}
+						{/if}
+					</div>
+				</div>
+			{/if}
+		</div>
+	{/if}
 	<div class="flex flex-col gap-1.5">
 			<textarea
 			bind:this={textareaEl}
@@ -355,14 +744,14 @@
 					<span>Commit{stagedCount > 0 ? ` (${stagedCount})` : ''}</span>
 				{/if}
 			</button>
-			<div class="relative h-7 flex-shrink-0" use:clickOutside={() => showGenerateDropdown = false}>
+			<div class="relative h-7 flex-shrink-0" use:clickOutside={() => { showGenerateDropdown = false; showBranchSubmenu = false; }}>
 				<button
 					bind:this={generateBtnEl}
 					type="button"
 					class="flex items-center justify-center w-8 h-7 rounded-md bg-white dark:bg-slate-800/80 border border-slate-200 dark:border-slate-700 text-slate-500 cursor-pointer transition-all duration-150 hover:bg-violet-500/10 hover:text-violet-600 dark:hover:text-violet-400 disabled:opacity-50 disabled:cursor-not-allowed disabled:hover:bg-white dark:disabled:hover:bg-slate-800/80 disabled:hover:text-slate-500 flex-shrink-0
 						{showGenerateDropdown ? 'bg-violet-500/10 text-violet-600 dark:text-violet-400' : ''}"
 					onclick={handleGenerateClick}
-					disabled={stagedCount === 0 || isGenerating || isGeneratingBranch || isCommitting}
+					disabled={(stagedCount === 0 && !(settings.commitGenerator.ticketSource === 'trello' && taskClientStore.selectedBoardId)) || isGenerating || isGeneratingBranch || isCommitting}
 					title={onCreateBranch ? 'AI generation options' : stagedCount > 0 ? 'Generate commit message' : 'Stage changes first'}
 					aria-haspopup="menu"
 					aria-expanded={showGenerateDropdown}
@@ -391,17 +780,63 @@
 							<Icon name="lucide:message-square" class="w-3.5 h-3.5 flex-shrink-0" />
 							<span class="flex-1 text-xs font-medium truncate">Generate commit message</span>
 						</button>
-						<button
-							type="button"
-							role="menuitem"
-							class="flex w-full items-center gap-2.5 px-3 py-1.5 text-left bg-transparent border-none transition-colors
-								{stagedCount === 0 || repoBusy ? 'text-slate-300 dark:text-slate-600 cursor-not-allowed' : 'text-slate-700 dark:text-slate-200 hover:bg-violet-500/10 cursor-pointer'}"
-							onclick={() => { showGenerateDropdown = false; generateBranchName(); }}
-							disabled={stagedCount === 0 || repoBusy}
-						>
-							<Icon name="lucide:git-branch-plus" class="w-3.5 h-3.5 flex-shrink-0" />
-							<span class="flex-1 text-xs font-medium truncate">Generate branch name</span>
-						</button>
+						{#if settings.commitGenerator.ticketSource === 'trello' && taskClientStore.selectedBoardId}
+							<div>
+								<button
+									type="button"
+									role="menuitem"
+									class="flex w-full items-center gap-2.5 px-3 py-1.5 text-left bg-transparent border-none transition-colors
+										{(stagedCount === 0 && !taskClientStore.activeCardId) || repoBusy ? 'text-slate-300 dark:text-slate-600 cursor-not-allowed' : 'text-slate-700 dark:text-slate-200 hover:bg-violet-500/10 cursor-pointer'}"
+									onclick={(e) => {
+										e.preventDefault();
+										e.stopPropagation();
+										showBranchSubmenu = !showBranchSubmenu;
+									}}
+									disabled={(stagedCount === 0 && !taskClientStore.activeCardId) || repoBusy}
+								>
+									<Icon name="lucide:git-branch-plus" class="w-3.5 h-3.5 flex-shrink-0" />
+									<span class="flex-1 text-xs font-medium truncate">Generate branch name</span>
+									<Icon name={showBranchSubmenu ? "lucide:chevron-down" : "lucide:chevron-right"} class="w-3 h-3 text-slate-400 flex-shrink-0 ml-auto" />
+								</button>
+								{#if showBranchSubmenu}
+									<div class="pl-4 py-1 bg-slate-50/50 dark:bg-slate-900/20 border-l border-slate-200 dark:border-slate-700 ml-4 mr-2 my-1 flex flex-col gap-0.5 rounded-r">
+										<button
+											type="button"
+											class="flex w-full items-center gap-2 px-2 py-1 text-left bg-transparent border-none rounded text-[11px] font-medium transition-colors
+												{!taskClientStore.activeCardId || repoBusy ? 'text-slate-300 dark:text-slate-600 cursor-not-allowed' : 'text-slate-600 dark:text-slate-300 hover:bg-violet-500/10 hover:text-violet-600 dark:hover:text-violet-400 cursor-pointer'}"
+											onclick={() => { showGenerateDropdown = false; showBranchSubmenu = false; generateBranchName('card'); }}
+											disabled={!taskClientStore.activeCardId || repoBusy}
+											title={!taskClientStore.activeCardId ? 'Select a card first' : ''}
+										>
+											<Icon name="lucide:file-text" class="w-3 h-3 flex-shrink-0" />
+											<span class="truncate">From card title</span>
+										</button>
+										<button
+											type="button"
+											class="flex w-full items-center gap-2 px-2 py-1 text-left bg-transparent border-none rounded text-[11px] font-medium transition-colors
+												{stagedCount === 0 || repoBusy ? 'text-slate-300 dark:text-slate-600 cursor-not-allowed' : 'text-slate-600 dark:text-slate-300 hover:bg-violet-500/10 hover:text-violet-600 dark:hover:text-violet-400 cursor-pointer'}"
+											onclick={() => { showGenerateDropdown = false; showBranchSubmenu = false; generateBranchName('diff'); }}
+											disabled={stagedCount === 0 || repoBusy}
+										>
+											<Icon name="lucide:file-diff" class="w-3 h-3 flex-shrink-0" />
+											<span class="truncate">From diff</span>
+										</button>
+									</div>
+								{/if}
+							</div>
+						{:else}
+							<button
+								type="button"
+								role="menuitem"
+								class="flex w-full items-center gap-2.5 px-3 py-1.5 text-left bg-transparent border-none transition-colors
+									{stagedCount === 0 || repoBusy ? 'text-slate-300 dark:text-slate-600 cursor-not-allowed' : 'text-slate-700 dark:text-slate-200 hover:bg-violet-500/10 cursor-pointer'}"
+								onclick={() => { showGenerateDropdown = false; generateBranchName(); }}
+								disabled={stagedCount === 0 || repoBusy}
+							>
+								<Icon name="lucide:git-branch-plus" class="w-3.5 h-3.5 flex-shrink-0" />
+								<span class="flex-1 text-xs font-medium truncate">Generate branch name</span>
+							</button>
+						{/if}
 						<div class="my-1 mx-2 border-t border-slate-200 dark:border-slate-700/70"></div>
 						<button
 							type="button"

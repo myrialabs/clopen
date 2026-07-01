@@ -24,6 +24,8 @@
 	import TunnelModal from '$frontend/components/tunnel/TunnelModal.svelte';
 	import DbClientButton from '$frontend/components/db-client/DbClientButton.svelte';
 	import DbClientModal from '$frontend/components/db-client/DbClientModal.svelte';
+	import TaskClientButton from '$frontend/components/task-client/TaskClientButton.svelte';
+	import TaskClientModal from '$frontend/components/task-client/TaskClientModal.svelte';
 	import ProjectUserAvatars from '$frontend/components/common/display/ProjectUserAvatars.svelte';
 	import ws from '$frontend/utils/ws';
 
@@ -34,6 +36,7 @@
 	let searchQuery = $state('');
 	let showTunnelModal = $state(false);
 	let showDbClientModal = $state(false);
+	let showTaskClientModal = $state(false);
 	let hoveredProject = $state<Project | null>(null);
 	let tooltipY = $state(0);
 	let tooltipX = $state(0);
@@ -363,6 +366,7 @@
 				<ViewMenu />
 				<TunnelButton onClick={() => (showTunnelModal = true)} />
 				<DbClientButton onClick={() => (showDbClientModal = true)} />
+		<TaskClientButton onClick={() => (showTaskClientModal = true)} />
 
 				<button
 					type="button"
@@ -522,3 +526,4 @@
 
 <!-- DB Client Modal -->
 <DbClientModal bind:isOpen={showDbClientModal} onClose={() => (showDbClientModal = false)} />
+<TaskClientModal bind:isOpen={showTaskClientModal} onClose={() => (showTaskClientModal = false)} />

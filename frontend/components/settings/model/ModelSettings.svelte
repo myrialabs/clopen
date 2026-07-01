@@ -2,6 +2,7 @@
 	import Icon from '$frontend/components/common/display/Icon.svelte';
 	import Modal from '$frontend/components/common/overlay/Modal.svelte';
 	import { settings, updateSettings } from '$frontend/stores/features/settings.svelte';
+	import { taskClientStore } from '$frontend/stores/features/task-client.svelte';
 	import { modelStore } from '$frontend/stores/features/models.svelte';
 	import { ENGINES } from '$shared/constants/engines';
 	import type { EngineType } from '$shared/types/unified';
@@ -21,15 +22,25 @@
 	let showModelConfig = $state(false);
 	let showCommitConfig = $state(false);
 	let showBranchConfig = $state(false);
+	let showTicketConfig = $state(false);
+	const isTrelloConnected = $derived(taskClientStore.accounts.length > 0);
 
 	let commitConfigDraft = $state<CommitMessageConfig>({ style: 'technical', subjectLength: 72, allowedTypes: '', context: '' });
-	let branchConfigDraft = $state<BranchNameConfig>({ maxWords: 3, allowedPrefixes: '', context: '' });
+	let branchConfigDraft = $state<BranchNameConfig>({ maxWords: 3, allowedPrefixes: '', context: '', branchMessageSeparator: '-' });
+	let ticketPrefixDraft = $state<'short-link' | 'id-short'>('short-link');
+	let ticketLanguageDraft = $state<'auto' | 'en'>('auto');
 
 	$effect(() => {
 		if (showCommitConfig) commitConfigDraft = { ...commitGen.commitConfig };
 	});
 	$effect(() => {
 		if (showBranchConfig) branchConfigDraft = { ...commitGen.branchConfig };
+	});
+	$effect(() => {
+		if (showTicketConfig) {
+			ticketPrefixDraft = commitGen.ticketPrefix || 'short-link';
+			ticketLanguageDraft = commitGen.ticketLanguage || 'auto';
+		}
 	});
 
 	function saveCommitConfig() {
@@ -40,6 +51,17 @@
 	function saveBranchConfig() {
 		updateSettings({ commitGenerator: { ...commitGen, branchConfig: { ...branchConfigDraft } } });
 		showBranchConfig = false;
+	}
+
+	function saveTicketConfig() {
+		updateSettings({
+			commitGenerator: {
+				...commitGen,
+				ticketPrefix: ticketPrefixDraft,
+				ticketLanguage: ticketLanguageDraft
+			}
+		});
+		showTicketConfig = false;
 	}
 
 	const STYLE_OPTIONS = [
@@ -151,6 +173,10 @@
 	function selectBranchSeparator(value: string) {
 		updateSettings({ commitGenerator: { ...commitGen, branchSeparator: value } });
 	}
+
+	function updateTicketSource(value: 'none' | 'trello') {
+		updateSettings({ commitGenerator: { ...commitGen, ticketSource: value } });
+	}
 </script>
 
 <div class="py-1">
@@ -249,6 +275,58 @@
 						</div>
 					</button>
 				{/each}
+			</div>
+		</div>
+
+		<!-- Ticket ID Integration -->
+		<div class="mb-5">
+			<div class="flex items-center justify-between mb-2">
+				<label class="block text-sm font-semibold text-slate-700 dark:text-slate-300">Branch Ticket</label>
+				{#if commitGen.ticketSource && commitGen.ticketSource !== 'none'}
+					<button type="button" onclick={() => showTicketConfig = true} class="flex items-center gap-1 text-xs text-violet-600 dark:text-violet-400 hover:text-violet-700 dark:hover:text-violet-300 transition-colors cursor-pointer">
+						<Icon name="lucide:settings-2" class="w-3 h-3" />
+						Configure
+					</button>
+				{/if}
+			</div>
+			<div class="flex gap-2">
+				<button
+					type="button"
+					class="flex-1 flex items-center gap-2.5 p-3 border-2 rounded-xl text-left cursor-pointer transition-all duration-200
+						{commitGen.ticketSource === 'none' || !commitGen.ticketSource
+						? 'border-violet-600 bg-gradient-to-br from-violet-500/10 to-purple-500/5 dark:from-violet-500/12 dark:to-purple-500/8'
+						: 'border-slate-200 dark:border-slate-800 bg-slate-100/80 dark:bg-slate-800/80 hover:border-violet-500/20 dark:hover:border-violet-500/35'}"
+					onclick={() => updateTicketSource('none')}
+				>
+					<Icon name="lucide:ban" class="w-4 h-4 {commitGen.ticketSource === 'none' || !commitGen.ticketSource ? 'text-violet-600' : 'text-slate-400'}" />
+					<div>
+						<div class="text-sm font-medium text-slate-900 dark:text-slate-100">None</div>
+						<div class="text-xs text-slate-500 dark:text-slate-400">Do not prepend ticket ID</div>
+					</div>
+				</button>
+				
+				<button
+					type="button"
+					disabled={!isTrelloConnected}
+					class="flex-1 flex items-center gap-2.5 p-3 border-2 rounded-xl text-left transition-all duration-200
+						{commitGen.ticketSource === 'trello'
+						? 'border-violet-600 bg-gradient-to-br from-violet-500/10 to-purple-500/5 dark:from-violet-500/12 dark:to-purple-500/8'
+						: 'border-slate-200 dark:border-slate-800 bg-slate-100/80 dark:bg-slate-800/80 hover:border-violet-500/20 dark:hover:border-violet-500/35'}
+						{!isTrelloConnected ? 'opacity-40 cursor-not-allowed hover:border-slate-200 dark:hover:border-slate-800' : 'cursor-pointer'}"
+					onclick={() => updateTicketSource('trello')}
+				>
+					<Icon name="lucide:trello" class="w-4 h-4 {commitGen.ticketSource === 'trello' ? 'text-violet-600' : 'text-slate-400'}" />
+					<div>
+						<div class="text-sm font-medium text-slate-900 dark:text-slate-100">Trello</div>
+						<div class="text-xs text-slate-500 dark:text-slate-400">
+							{#if isTrelloConnected}
+								Use active Trello card ID
+							{:else}
+								Account not connected
+							{/if}
+						</div>
+					</div>
+				</button>
 			</div>
 		</div>
 
@@ -377,6 +455,24 @@
 					{/each}
 				</div>
 			</div>
+
+			<div>
+				<label class="block text-sm font-semibold text-slate-700 dark:text-slate-300 mb-2">Branch message separator</label>
+				<div class="flex gap-2">
+					{#each [
+						{ value: '-', label: 'Dash', desc: '-' },
+						{ value: '_', label: 'Underscore', desc: '_' }
+					] as sepOption}
+						{@const isActive = (branchConfigDraft.branchMessageSeparator ?? '-') === sepOption.value}
+						<button type="button" onclick={() => branchConfigDraft.branchMessageSeparator = sepOption.value}
+							class="flex-1 flex flex-col gap-0.5 p-3 border-2 rounded-xl text-center cursor-pointer transition-all duration-200
+								{isActive ? 'border-violet-600 bg-gradient-to-br from-violet-500/10 to-purple-500/5 dark:from-violet-500/12 dark:to-purple-500/8' : 'border-slate-200 dark:border-slate-800 bg-slate-100/80 dark:bg-slate-800/80 hover:border-violet-500/20'}">
+							<span class="text-sm font-medium text-slate-900 dark:text-slate-100">{sepOption.label}</span>
+							<span class="text-xs text-slate-500 dark:text-slate-400 font-mono">{sepOption.desc}</span>
+						</button>
+					{/each}
+				</div>
+			</div>
 			<div>
 				<label class="block text-sm font-semibold text-slate-700 dark:text-slate-300 mb-1.5">Allowed prefixes <span class="text-slate-400 font-normal">(optional)</span></label>
 				<input type="text" bind:value={branchConfigDraft.allowedPrefixes}
@@ -398,6 +494,64 @@
 			Cancel
 		</button>
 		<button type="button" onclick={saveBranchConfig} class="inline-flex items-center gap-2 px-3 py-2 text-sm font-semibold rounded-lg bg-violet-600 text-white hover:bg-violet-700 transition-colors cursor-pointer">
+			Save
+		</button>
+	{/snippet}
+</Modal>
+
+<Modal isOpen={showTicketConfig} onClose={() => showTicketConfig = false} size="md">
+	{#snippet header()}
+		<div class="flex items-center justify-between px-4 py-3 md:px-6 md:py-4">
+			<h2 class="text-base font-bold text-slate-900 dark:text-slate-100">Configure Branch Ticket</h2>
+			<button type="button" class="p-1.5 rounded-lg text-slate-500 hover:text-slate-900 dark:hover:text-slate-100 hover:bg-violet-500/10 transition-colors cursor-pointer" onclick={() => showTicketConfig = false}>
+				<Icon name="lucide:x" class="w-4 h-4" />
+			</button>
+		</div>
+	{/snippet}
+	{#snippet children()}
+		<div class="space-y-5">
+			<div>
+				<label class="block text-sm font-semibold text-slate-700 dark:text-slate-300 mb-2">ID Format</label>
+				<div class="flex gap-2">
+					{#each [
+						{ value: 'short-link', label: 'Short Link', desc: '7Hk9Xm1' },
+						{ value: 'id-short', label: 'Short ID', desc: '123' }
+					] as opt}
+						{@const isActive = ticketPrefixDraft === opt.value}
+						<button type="button" onclick={() => ticketPrefixDraft = opt.value as any}
+							class="flex-1 flex flex-col gap-0.5 p-3 border-2 rounded-xl text-left cursor-pointer transition-all duration-200
+								{isActive ? 'border-violet-600 bg-gradient-to-br from-violet-500/10 to-purple-500/5 dark:from-violet-500/12 dark:to-purple-500/8' : 'border-slate-200 dark:border-slate-800 bg-slate-100/80 dark:bg-slate-800/80 hover:border-violet-500/20'}">
+							<span class="text-sm font-medium text-slate-900 dark:text-slate-100">{opt.label}</span>
+							<span class="text-xs text-slate-500 dark:text-slate-400 font-mono">({opt.desc})</span>
+						</button>
+					{/each}
+				</div>
+			</div>
+
+			<div>
+				<label class="block text-sm font-semibold text-slate-700 dark:text-slate-300 mb-2">Language</label>
+				<div class="flex gap-2">
+					{#each [
+						{ value: 'auto', label: 'Auto', desc: 'Default' },
+						{ value: 'en', label: 'English', desc: 'English' }
+					] as langOption}
+						{@const isActive = ticketLanguageDraft === langOption.value}
+						<button type="button" onclick={() => ticketLanguageDraft = langOption.value as any}
+							class="flex-1 flex flex-col gap-0.5 p-3 border-2 rounded-xl text-left cursor-pointer transition-all duration-200
+								{isActive ? 'border-violet-600 bg-gradient-to-br from-violet-500/10 to-purple-500/5 dark:from-violet-500/12 dark:to-purple-500/8' : 'border-slate-200 dark:border-slate-800 bg-slate-100/80 dark:bg-slate-800/80 hover:border-violet-500/20'}">
+							<span class="text-sm font-medium text-slate-900 dark:text-slate-100">{langOption.label}</span>
+							<span class="text-xs text-slate-500 dark:text-slate-400">{langOption.desc}</span>
+						</button>
+					{/each}
+				</div>
+			</div>
+		</div>
+	{/snippet}
+	{#snippet footer()}
+		<button type="button" onclick={() => showTicketConfig = false} class="px-3 py-2 text-sm font-medium bg-transparent border border-slate-200 dark:border-slate-700 text-slate-600 dark:text-slate-400 rounded-lg hover:bg-slate-100 dark:hover:bg-slate-800 transition-colors cursor-pointer">
+			Cancel
+		</button>
+		<button type="button" onclick={saveTicketConfig} class="inline-flex items-center gap-2 px-3 py-2 text-sm font-semibold rounded-lg bg-violet-600 text-white hover:bg-violet-700 transition-colors cursor-pointer">
 			Save
 		</button>
 	{/snippet}

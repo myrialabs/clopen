@@ -48,8 +48,11 @@ const defaultSettings: AppSettings = {
 		modelName: 'Haiku 4.5',
 		format: 'single-line',
 		branchSeparator: DEFAULT_BRANCH_SEPARATOR,
+		ticketSource: 'none',
+		ticketPrefix: 'short-link',
+		ticketLanguage: 'auto',
 		commitConfig: { style: 'technical', subjectLength: 72, allowedTypes: '', context: '' },
-		branchConfig: { maxWords: 3, allowedPrefixes: '', context: '' }
+		branchConfig: { maxWords: 3, allowedPrefixes: '', context: '', branchMessageSeparator: '-' }
 	},
 	pinnedModels: []
 };

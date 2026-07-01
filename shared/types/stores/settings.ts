@@ -12,6 +12,7 @@ export interface BranchNameConfig {
 	maxWords: 1 | 2 | 3;
 	allowedPrefixes: string;
 	context: string;
+	branchMessageSeparator?: string;
 }
 
 /** AI commit message generator settings */
@@ -25,6 +26,9 @@ export interface CommitGeneratorSettings {
 	format: CommitMessageFormat;
 	/** Separator between prefix and generated description, e.g. '/', '#', '-'. */
 	branchSeparator: string;
+	ticketLanguage?: 'auto' | 'en';
+	ticketSource?: 'none' | 'trello';
+	ticketPrefix?: 'short-link' | 'id-short';
 	commitConfig: CommitMessageConfig;
 	branchConfig: BranchNameConfig;
 }
