@@ -99,6 +99,7 @@
     "@iconify-json/material-icon-theme": "^1.2.16",
     "@modelcontextprotocol/sdk": "1.29.0",
     "@monaco-editor/loader": "^1.5.0",
+    "@myrialabs/tunnelkit": "^0.0.15",
     "@myrialabs/zipkit": "^0.0.11",
     "@openai/codex-sdk": "0.135.0",
     "@opencode-ai/sdk": "1.15.12",
@@ -127,7 +128,6 @@
     "qrcode": "^1.5.4",
     "sharp": "^0.34.5",
     "ssh2": "^1.17.0",
-    "tunnelkit": "^0.0.13",
     "xz-decompress": "^0.2.3"
   },
   "trustedDependencies": [
