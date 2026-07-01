@@ -5,6 +5,9 @@
   "author": "Myria Labs",
   "license": "MIT",
   "type": "module",
+  "publishConfig": {
+    "access": "public"
+  },
   "bin": {
     "clopen": "./bin/clopen.ts"
   },
@@ -96,6 +99,7 @@
     "@iconify-json/material-icon-theme": "^1.2.16",
     "@modelcontextprotocol/sdk": "1.29.0",
     "@monaco-editor/loader": "^1.5.0",
+    "@myrialabs/zipkit": "^0.0.11",
     "@openai/codex-sdk": "0.135.0",
     "@opencode-ai/sdk": "1.15.12",
     "@qwen-code/sdk": "0.1.7",
@@ -111,7 +115,6 @@
     "bun-pty": "^0.4.2",
     "dompurify": "^3.4.9",
     "elysia": "^1.4.19",
-    "fflate": "^0.8.3",
     "file-type": "^21.0.0",
     "is-text-path": "^3.0.0",
     "marked": "^16.1.1",
