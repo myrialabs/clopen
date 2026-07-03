@@ -4,8 +4,7 @@
 	import Icon from '$frontend/components/common/display/Icon.svelte';
 	import Dialog from '$frontend/components/common/overlay/Dialog.svelte';
 	import ws from '$frontend/utils/ws';
-	import type { Terminal } from '@xterm/xterm';
-	import type { FitAddon } from '@xterm/addon-fit';
+	import type { TerminalViewerHandle } from '@myrialabs/ptykit/client';
 
 	type ToolId = 'git' | 'claude' | 'opencode' | 'copilot' | 'codex' | 'qwen' | 'chrome';
 	type SessionStatus = 'running' | 'success' | 'failed' | 'cancelled';
@@ -80,8 +79,7 @@
 	let commandCopiedTimer: ReturnType<typeof setTimeout> | null = null;
 
 	let termContainer = $state<HTMLDivElement | null>(null);
-	let terminal: Terminal | null = null;
-	let fitAddon: FitAddon | null = null;
+	let viewer: TerminalViewerHandle | null = null;
 	let terminalReady = $state(false);
 	let pendingBuffer = '';
 	const cleanups: Array<() => void> = [];
@@ -136,92 +134,44 @@
 	}
 
 	function writeToTerminal(data: string) {
-		if (terminal) {
-			terminal.write(data);
+		if (viewer) {
+			viewer.write(data);
 		} else {
 			pendingBuffer += data;
 		}
 	}
 
 	async function initTerminal() {
-		if (!browser || !termContainer || terminal) return;
+		if (!browser || !termContainer || viewer) return;
 
-		const [{ Terminal }, { FitAddon }] = await Promise.all([
-			import('@xterm/xterm'),
-			import('@xterm/addon-fit')
-		]);
-
-		await import('@xterm/xterm/css/xterm.css');
-
-		terminal = new Terminal({
-			theme: {
-				background: '#0f172a',
-				foreground: '#e2e8f0',
-				cursor: '#22c55e',
-				black: '#18181b',
-				red: '#ef4444',
-				green: '#22c55e',
-				yellow: '#eab308',
-				blue: '#60a5fa',
-				magenta: '#a855f7',
-				cyan: '#06b6d4',
-				white: '#f4f4f5',
-				brightBlack: '#52525b',
-				brightRed: '#f87171',
-				brightGreen: '#4ade80',
-				brightYellow: '#facc15',
-				brightBlue: '#60a5fa',
-				brightMagenta: '#c084fc',
-				brightCyan: '#22d3ee',
-				brightWhite: '#ffffff'
-			},
+		const { mountViewer } = await import('@myrialabs/ptykit/client');
+		viewer = await mountViewer(termContainer, {
+			// theme, font family, scrollback, convertEol, cursor all default in PtyKit;
+			// only the compact log-panel font size + grid are app-specific.
+			theme: 'dark',
 			fontSize: 11,
-			fontFamily: 'JetBrains Mono, Monaco, "Cascadia Code", Consolas, monospace',
-			lineHeight: 1.1,
-			cursorBlink: false,
-			cursorStyle: 'underline' as const,
-			convertEol: true,
-			scrollback: 5000,
-			disableStdin: true,
-			allowTransparency: false,
 			cols: 120,
 			rows: 18
 		});
-
-		fitAddon = new FitAddon();
-		terminal.loadAddon(fitAddon);
-		terminal.open(termContainer);
-		fitAddon.fit();
 		terminalReady = true;
 
 		if (pendingBuffer) {
-			terminal.write(pendingBuffer);
+			viewer.write(pendingBuffer);
 			pendingBuffer = '';
 		}
 	}
 
 	function disposeTerminal() {
-		if (terminal) {
-			terminal.dispose();
-			terminal = null;
-			fitAddon = null;
+		if (viewer) {
+			viewer.dispose();
+			viewer = null;
 			terminalReady = false;
 		}
 	}
 
 	$effect(() => {
-		if (termContainer && !terminal) {
+		if (termContainer && !viewer) {
 			initTerminal();
-		}
-	});
-
-	$effect(() => {
-		if (terminalReady && fitAddon && termContainer) {
-			const observer = new ResizeObserver(() => {
-				fitAddon?.fit();
-			});
-			observer.observe(termContainer);
-			return () => observer.disconnect();
 		}
 	});
 
@@ -234,10 +184,7 @@
 				exitCode = null;
 				errorMessage = null;
 				pendingBuffer = '';
-				if (terminal) {
-					terminal.clear();
-					terminal.reset();
-				}
+				viewer?.clear();
 			}),
 			ws.on('system-tools:install-stream', (payload) => {
 				if (payload.sessionId !== sessionId) return;
@@ -300,10 +247,7 @@
 		exitCode = null;
 		sessionStatus = 'running';
 		pendingBuffer = '';
-		if (terminal) {
-			terminal.clear();
-			terminal.reset();
-		}
+		viewer?.clear();
 		await tick();
 		try {
 			const res = await ws.http('system-tools:install-start', { tool });
@@ -334,10 +278,7 @@
 		exitCode = null;
 		errorMessage = null;
 		pendingBuffer = '';
-		if (terminal) {
-			terminal.clear();
-			terminal.reset();
-		}
+		viewer?.clear();
 	}
 
 	async function copyToClipboard(text: string) {
