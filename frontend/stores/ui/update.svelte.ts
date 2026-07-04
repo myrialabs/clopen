@@ -30,6 +30,7 @@ interface UpdateState {
 	showRestartModal: boolean;
 	releaseNotes: ReleaseNotes | null;
 	releaseNotesLoading: boolean;
+	releaseNotesError: string | null;
 }
 
 export const updateState = $state<UpdateState>({
@@ -47,7 +48,8 @@ export const updateState = $state<UpdateState>({
 	pendingVersions: null,
 	showRestartModal: false,
 	releaseNotes: null,
-	releaseNotesLoading: false
+	releaseNotesLoading: false,
+	releaseNotesError: null
 });
 
 let checkInterval: ReturnType<typeof setInterval> | null = null;
@@ -122,10 +124,12 @@ export async function runUpdate(): Promise<void> {
 export async function fetchReleaseNotes(): Promise<void> {
 	if (updateState.releaseNotesLoading) return;
 	updateState.releaseNotesLoading = true;
+	updateState.releaseNotesError = null;
 	try {
 		const data = await ws.http('system:get-release-notes', {});
 		updateState.releaseNotes = data as ReleaseNotes;
 	} catch (err) {
+		updateState.releaseNotesError = err instanceof Error ? err.message : 'Failed to load release notes';
 		debug.error('server', 'Failed to fetch release notes:', err);
 	} finally {
 		updateState.releaseNotesLoading = false;

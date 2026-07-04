@@ -4,14 +4,48 @@
 	import { systemSettings, updateSystemSettings } from '$frontend/stores/features/settings.svelte';
 	import { updateState, checkForUpdate, runUpdate, showRestartModal, fetchReleaseNotes } from '$frontend/stores/ui/update.svelte';
 	import Icon from '../../common/display/Icon.svelte';
-	import { configureMarked } from '$frontend/utils/markdown-renderer';
+	import { escapeHtml } from '$frontend/utils/terminal-formatter';
+	import { configureMarked, renderCodeBlock, renderInlineCode, renderTable } from '$frontend/utils/markdown-renderer';
 
 	let showReleaseNotes = $state(false);
 
 	configureMarked();
 
+	// Follow the shared markdown pattern (MarkdownPreview / TextMessage): sanitize at the token
+	// level via a custom renderer rather than post-sanitizing the whole document. Release notes
+	// come from GitHub, so all links open externally.
+	const renderer = new marked.Renderer();
+	renderer.html = (token) => DOMPurify.sanitize(token.text, { USE_PROFILES: { html: true } });
+	renderer.code = (token) => renderCodeBlock(token);
+	renderer.codespan = (token) => renderInlineCode(token);
+	renderer.link = function (token) {
+		const href = escapeHtml(token.href || '');
+		const text = this.parser.parseInline(token.tokens);
+		const titleAttr = token.title ? ` title="${escapeHtml(token.title)}"` : '';
+		return `<a href="${href}" target="_blank" rel="noopener noreferrer"${titleAttr}>${text}</a>`;
+	};
+	renderer.table = function (token) {
+		return renderTable(token, this.parser);
+	};
+
 	const renderedReleaseNotes = $derived(
-		updateState.releaseNotes ? (marked.parse(updateState.releaseNotes.body, { async: false }) as string) : ''
+		updateState.releaseNotes ? (marked.parse(updateState.releaseNotes.body, { renderer }) as string) : ''
+	);
+
+	const releaseDate = $derived(
+		updateState.releaseNotes?.published_at
+			? new Date(updateState.releaseNotes.published_at).toLocaleDateString(undefined, {
+					year: 'numeric',
+					month: 'short',
+					day: 'numeric'
+				})
+			: ''
+	);
+
+	const releaseSubtitle = $derived(
+		updateState.releaseNotes
+			? [updateState.releaseNotes.tag_name, releaseDate].filter(Boolean).join(' · ')
+			: "What's new in the latest version"
 	);
 
 	function toggleAutoUpdate() {
@@ -32,6 +66,10 @@
 			fetchReleaseNotes();
 		}
 	}
+
+	function handleRetryReleaseNotes() {
+		fetchReleaseNotes();
+	}
 </script>
 
 <div class="py-1">
@@ -40,12 +78,12 @@
 
 	<div class="flex flex-col gap-3.5">
 		<!-- Version Info -->
-		<div class="p-4 bg-slate-100/80 dark:bg-slate-800/80 border border-slate-200 dark:border-slate-800 rounded-xl">
-			<div class="flex items-start gap-3.5">
+		<div class="px-4 py-3 bg-slate-100/80 dark:bg-slate-800/80 border border-slate-200 dark:border-slate-800 rounded-xl">
+			<div class="flex items-center gap-3.5">
 				<div class="flex items-center justify-center w-10 h-10 rounded-lg shrink-0 bg-violet-400/15 text-violet-500">
 					<Icon name="lucide:package" class="w-5 h-5" />
 				</div>
-				<div class="flex flex-col gap-1 min-w-0 flex-1">
+				<div class="flex flex-col gap-0.5 min-w-0 flex-1">
 					<div class="text-sm font-semibold text-slate-900 dark:text-slate-100">
 						@myrialabs/clopen
 					</div>
@@ -122,10 +160,11 @@
 		</div>
 
 		<!-- Release Notes -->
-		<div class="p-4 bg-slate-100/80 dark:bg-slate-800/80 border border-slate-200 dark:border-slate-800 rounded-xl">
+		<div class="px-4 py-3 bg-slate-100/80 dark:bg-slate-800/80 border border-slate-200 dark:border-slate-800 rounded-xl">
 			<button
 				type="button"
 				onclick={handleToggleReleaseNotes}
+				aria-expanded={showReleaseNotes}
 				class="flex items-center justify-between w-full text-left cursor-pointer"
 			>
 				<div class="flex items-center gap-3">
@@ -135,7 +174,7 @@
 					<div>
 						<div class="text-sm font-semibold text-slate-900 dark:text-slate-100">Release Notes</div>
 						<div class="text-xs text-slate-600 dark:text-slate-500">
-							{updateState.releaseNotes?.tag_name ? updateState.releaseNotes.tag_name : 'What\'s new in the latest version'}
+							{releaseSubtitle}
 						</div>
 					</div>
 				</div>
@@ -151,7 +190,7 @@
 						</div>
 					{:else if updateState.releaseNotes}
 						<div class="release-notes-content text-xs text-slate-700 dark:text-slate-300 leading-relaxed">
-							{@html DOMPurify.sanitize(renderedReleaseNotes, { USE_PROFILES: { html: true } })}
+							{@html renderedReleaseNotes}
 						</div>
 						<div class="mt-3">
 							<a
@@ -164,8 +203,21 @@
 								View on GitHub
 							</a>
 						</div>
-					{:else}
-						<div class="text-xs text-slate-500">Could not load release notes. Check your internet connection.</div>
+					{:else if updateState.releaseNotesError}
+						<div class="flex items-center justify-between gap-3">
+							<div class="flex items-center gap-2 min-w-0">
+								<Icon name="lucide:circle-alert" class="w-4 h-4 text-red-500 shrink-0" />
+								<span class="text-xs text-red-600 dark:text-red-400 truncate">Could not load release notes. Check your connection.</span>
+							</div>
+							<button
+								type="button"
+								onclick={handleRetryReleaseNotes}
+								class="inline-flex items-center gap-1.5 shrink-0 text-xs font-semibold text-violet-600 dark:text-violet-400 hover:underline cursor-pointer"
+							>
+								<Icon name="lucide:refresh-cw" class="w-3.5 h-3.5" />
+								Retry
+							</button>
+						</div>
 					{/if}
 				</div>
 			{/if}
@@ -264,11 +316,15 @@
 		margin-top: 0.5rem;
 		margin-bottom: 0.5rem;
 	}
+	.release-notes-content :global(.table-responsive) {
+		overflow-x: auto;
+		-webkit-overflow-scrolling: touch;
+		margin-top: 0.5rem;
+		margin-bottom: 0.5rem;
+	}
 	.release-notes-content :global(table) {
 		width: 100%;
 		border-collapse: collapse;
-		margin-top: 0.5rem;
-		margin-bottom: 0.5rem;
 	}
 	.release-notes-content :global(th),
 	.release-notes-content :global(td) {
