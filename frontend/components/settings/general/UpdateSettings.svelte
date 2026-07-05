@@ -1,4 +1,6 @@
 <script lang="ts">
+	import { marked } from 'marked';
+	import DOMPurify from 'dompurify';
 	import { systemSettings, updateSystemSettings } from '$frontend/stores/features/settings.svelte';
 	import { updateState, checkForUpdate, runUpdate, showRestartModal, fetchReleaseNotes } from '$frontend/stores/ui/update.svelte';
 	import Icon from '../../common/display/Icon.svelte';
@@ -220,3 +222,88 @@
 		</div>
 	</div>
 </div>
+
+<style>
+	.release-notes-content :global(h1),
+	.release-notes-content :global(h2),
+	.release-notes-content :global(h3) {
+		font-weight: 600;
+		margin-top: 0.75rem;
+		margin-bottom: 0.375rem;
+		font-size: inherit;
+	}
+	.release-notes-content :global(h1) { font-size: 1rem; }
+	.release-notes-content :global(h2) { font-size: 0.875rem; }
+	.release-notes-content :global(h3) { font-size: 0.8125rem; }
+	.release-notes-content :global(ul),
+	.release-notes-content :global(ol) {
+		padding-left: 1.25rem;
+		margin-top: 0.25rem;
+		margin-bottom: 0.25rem;
+		list-style-position: outside;
+	}
+	.release-notes-content :global(ul) { list-style-type: disc; }
+	.release-notes-content :global(ol) { list-style-type: decimal; }
+	.release-notes-content :global(li) { margin-bottom: 0.125rem; }
+	.release-notes-content :global(p) { margin-top: 0.375rem; margin-bottom: 0.375rem; }
+	.release-notes-content :global(code) {
+		font-size: 0.75rem;
+		padding: 0.125rem 0.25rem;
+		border-radius: 0.25rem;
+		background: rgb(148 163 184 / 0.15);
+	}
+	.release-notes-content :global(pre) {
+		margin-top: 0.5rem;
+		margin-bottom: 0.5rem;
+		padding: 0.75rem;
+		border-radius: 0.5rem;
+		overflow-x: auto;
+		background: rgb(148 163 184 / 0.1);
+	}
+	.release-notes-content :global(pre code) {
+		padding: 0;
+		background: none;
+	}
+	.release-notes-content :global(a) {
+		color: rgb(139 92 246);
+		text-decoration: underline;
+		text-underline-offset: 2px;
+	}
+	.release-notes-content :global(a:hover) {
+		color: rgb(124 58 237);
+	}
+	.release-notes-content :global(blockquote) {
+		border-left: 2px solid rgb(148 163 184 / 0.3);
+		padding-left: 0.75rem;
+		margin-top: 0.5rem;
+		margin-bottom: 0.5rem;
+		color: rgb(100 116 139);
+	}
+	.release-notes-content :global(hr) {
+		margin-top: 0.75rem;
+		margin-bottom: 0.75rem;
+		border-color: rgb(148 163 184 / 0.2);
+	}
+	.release-notes-content :global(img) {
+		max-width: 100%;
+		border-radius: 0.5rem;
+		margin-top: 0.5rem;
+		margin-bottom: 0.5rem;
+	}
+	.release-notes-content :global(.table-responsive) {
+		overflow-x: auto;
+		-webkit-overflow-scrolling: touch;
+		margin-top: 0.5rem;
+		margin-bottom: 0.5rem;
+	}
+	.release-notes-content :global(table) {
+		width: 100%;
+		border-collapse: collapse;
+	}
+	.release-notes-content :global(th),
+	.release-notes-content :global(td) {
+		padding: 0.375rem 0.5rem;
+		border: 1px solid rgb(148 163 184 / 0.2);
+		text-align: left;
+	}
+</style>
