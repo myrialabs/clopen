@@ -100,8 +100,8 @@ export const CLAUDE_CODE_MODELS: EngineModel[] = [
 			type: 'claude-code',
 			provider: 'anthropic',
 			model: {
-				id: 'claude-sonnet-4-6',
-				name: 'Claude Sonnet 4.6',
+				id: 'claude-sonnet-5',
+				name: 'Claude Sonnet 5',
 			},
 			account: {
 				id: 0,
@@ -110,7 +110,7 @@ export const CLAUDE_CODE_MODELS: EngineModel[] = [
 		},
 		limit: {
 			input: 1_000_000,
-			output: 64_000,
+			output: 128_000,
 		},
 		modalities: {
 			input: {
@@ -222,6 +222,49 @@ export const CLAUDE_CODE_MODELS: EngineModel[] = [
 		cost: {
 			input: 5,
 			output: 25,
+		},
+	},
+	{
+		engine: {
+			type: 'claude-code',
+			provider: 'anthropic',
+			model: {
+				id: 'claude-sonnet-4-6',
+				name: 'Claude Sonnet 4.6',
+			},
+			account: {
+				id: 0,
+				name: '',
+			},
+		},
+		limit: {
+			input: 1_000_000,
+			output: 128_000,
+		},
+		modalities: {
+			input: {
+				text: true,
+				image: true,
+				audio: false,
+				video: false,
+				pdf: true,
+			},
+			output: {
+				text: true,
+				image: false,
+				audio: false,
+				video: false,
+				pdf: false,
+			},
+		},
+		capabilities: {
+			reasoning: true,
+			tools: true,
+			structuredOutput: true,
+		},
+		cost: {
+			input: 3,
+			output: 15,
 		},
 	},
 	{

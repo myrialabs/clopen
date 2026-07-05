@@ -92,13 +92,13 @@ export const getAllModels = (): EngineModel[] => [...modelRegistry];
 // Defaults
 //
 // Hardcoded so the shared module has no dependency on the per-adapter model
-// catalogs. The chosen default (`claude-sonnet-4-6`) is the same model that
-// previously lived at `CLAUDE_CODE_MODELS[1]`.
+// catalogs. The chosen default (`claude-sonnet-5`) is the current recommended
+// Sonnet model; claude-sonnet-4-6 moved to legacy.
 // ============================================================================
 
 export const DEFAULT_ENGINE: EngineType = 'claude-code';
-export const DEFAULT_MODEL_ID = 'claude-sonnet-4-6';
-export const DEFAULT_MODEL_NAME = 'Claude Sonnet 4.6';
+export const DEFAULT_MODEL_ID = 'claude-sonnet-5';
+export const DEFAULT_MODEL_NAME = 'Claude Sonnet 5';
 
 // ============================================================================
 // Lookup Helpers
