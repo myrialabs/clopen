@@ -15,8 +15,6 @@
 		variant?: 'chat' | 'preview' | 'compact';
 		// Raw inline HTML handling — see RenderMarkdownOptions. Default 'sanitize'.
 		html?: 'sanitize' | 'escape';
-		// Render a whole-message terminal dump as monospace instead of markdown. Chat-only.
-		terminalFallback?: boolean;
 		// Override the internal file-link action (e.g. resolve relative paths in a file preview).
 		// Defaults to revealing the path in the Files panel when that panel is visible.
 		onFileLink?: (path: string) => void;
@@ -28,12 +26,11 @@
 		content,
 		variant = 'preview',
 		html = 'sanitize',
-		terminalFallback = false,
 		onFileLink,
 		class: className = ''
 	}: Props = $props();
 
-	const rendered = $derived(renderMarkdown(content || '', { html, terminalFallback }));
+	const rendered = $derived(renderMarkdown(content || '', { html }));
 
 	let root: HTMLElement | null = $state(null);
 

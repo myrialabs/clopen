@@ -6,13 +6,7 @@
 
 import { marked, type Token, type Tokens } from 'marked';
 import DOMPurify from 'dompurify';
-import {
-	escapeHtml,
-	hasAnsiCodes,
-	processAnsiCodes,
-	isTerminalOutput,
-	formatTerminalOutput
-} from './terminal-formatter';
+import { escapeHtml, hasAnsiCodes, processAnsiCodes, formatTerminalOutput } from './terminal-formatter';
 
 type InlineParser = { parseInline(tokens: Token[]): string };
 
@@ -127,23 +121,21 @@ export interface RenderMarkdownOptions {
 	// literally (right for chat, where unknown pseudo-tags like <thinking> must stay visible).
 	// Default 'sanitize'.
 	html?: 'sanitize' | 'escape';
-	// When true, a whole message that is a raw terminal dump (ANSI, or shell-like output without
-	// code fences) is rendered as monospace terminal output instead of markdown. Chat-only.
-	// Default false.
-	terminalFallback?: boolean;
 }
 
 // Single entry point for rendering markdown to an HTML string. Links are classified uniformly:
 // external → new tab; '#frag' → [data-md-fragment]; local/relative → [data-md-file]. Consumers
 // wire what a [data-md-file] click does (reveal in Files panel, open in preview, etc.).
 export function renderMarkdown(content: string, options: RenderMarkdownOptions = {}): string {
-	const { html = 'sanitize', terminalFallback = false } = options;
+	const { html = 'sanitize' } = options;
 
 	configureMarked();
 
-	// A whole-message terminal dump is preserved as monospace (alignment, box drawing) rather than
-	// parsed as markdown. Only when explicitly requested and there are no code fences to honor.
-	if (terminalFallback && (hasAnsiCodes(content) || isTerminalOutput(content)) && !content.includes('```')) {
+	// Preserve a genuine terminal dump (ANSI-colored output) as monospace, since markdown would
+	// collapse its alignment. ANSI escape codes never occur in real markdown prose, so this is the
+	// ONLY trigger — markdown is never forced into a raw block by prose syntax like '#' or '>'.
+	// (Fenced content is left to the normal code-block path.)
+	if (hasAnsiCodes(content) && !content.includes('```')) {
 		return formatTerminalOutput(content);
 	}
 

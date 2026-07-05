@@ -4,4 +4,4 @@
 	const { content }: { content: string } = $props();
 </script>
 
-<Markdown variant="chat" html="escape" terminalFallback {content} class="wrap-break-word" />
+<Markdown variant="chat" html="escape" {content} class="wrap-break-word" />
