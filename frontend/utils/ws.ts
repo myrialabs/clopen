@@ -37,6 +37,19 @@ export function onWsReconnect(handler: () => void): () => void {
 	return () => { reconnectHandlers.delete(handler); };
 }
 
+/** Handlers notified whenever the socket connects (`true`) or drops (`false`). */
+const statusHandlers = new Set<(connected: boolean) => void>();
+
+/**
+ * Subscribe to raw connect/disconnect transitions of the app socket. Used to
+ * drive embedded transports (e.g. PtyKit's `hostSocket`) that ride this socket.
+ * Returns an unsubscribe function.
+ */
+export function onWsStatus(handler: (connected: boolean) => void): () => void {
+	statusHandlers.add(handler);
+	return () => { statusHandlers.delete(handler); };
+}
+
 // ============================================================================
 // WebSocket Client
 // ============================================================================
@@ -48,6 +61,14 @@ const ws = new WSClient<WSAPI>(getWebSocketUrl(), {
 	maxReconnectDelay: 30000,
 	onStatusChange: (status, reconnectAttempts) => {
 		setConnectionStatus(status, reconnectAttempts);
+		const connected = status === 'connected';
+		for (const handler of statusHandlers) {
+			try {
+				handler(connected);
+			} catch (err) {
+				debug.error('websocket', 'Status handler error:', err);
+			}
+		}
 	},
 	onReconnect: () => {
 		debug.log('websocket', `Running ${reconnectHandlers.size} reconnect handler(s)`);
