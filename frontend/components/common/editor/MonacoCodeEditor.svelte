@@ -18,8 +18,10 @@
 		language: string;
 		path?: string;
 		readonly?: boolean;
+		disableMouseWheelZoom?: boolean;
 		onChange?: (value: string) => void;
 		onEditorMount?: (editor: editor.IStandaloneCodeEditor) => void;
+		forceSync?: number;
 		options?: editor.IStandaloneEditorConstructionOptions;
 		width?: string;
 		height?: string;
@@ -30,8 +32,10 @@
 		language = 'javascript',
 		path,
 		readonly = false,
+		disableMouseWheelZoom = false,
 		onChange,
 		onEditorMount,
+		forceSync = 0,
 		options = {},
 		width = '100%',
 		height = '100%',
@@ -132,6 +136,7 @@
 		model,
 		theme,
 		readOnly: readonly,
+		mouseWheelZoom: !disableMouseWheelZoom,
 		...options,
 	});
 
@@ -146,6 +151,13 @@
 
 	$effect(() => {
 		if (monacoEditor && monacoEditor.getValue() !== value) {
+			monacoEditor.setValue(value);
+		}
+	});
+
+	$effect(() => {
+		void forceSync;
+		if (monacoEditor) {
 			monacoEditor.setValue(value);
 		}
 	});

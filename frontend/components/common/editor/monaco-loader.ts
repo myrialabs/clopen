@@ -1,10 +1,26 @@
 import loader from '@monaco-editor/loader';
 import type * as Monaco from 'monaco-editor';
 import type { editor as MonacoEditor, Uri } from 'monaco-editor';
-import { dbClientStore } from '$frontend/stores/features/db-client.svelte';
 
 let monacoPromise: Promise<typeof Monaco> | null = null;
 let modelCounter = 0;
+
+/**
+ * Schema data used to power SQL autocomplete. A feature (e.g. the DB client)
+ * registers a source via {@link setSqlCompletionSource}; the editor stays
+ * decoupled from any feature store.
+ */
+export interface SqlCompletionSource {
+	tables: Array<{ name: string; kind: 'table' | 'view' }>;
+	columns: Array<{ name: string; type: string | null }>;
+}
+
+let sqlCompletionSource: (() => SqlCompletionSource) | null = null;
+
+/** Register (or clear, with `null`) the schema source for SQL autocomplete. */
+export function setSqlCompletionSource(source: (() => SqlCompletionSource) | null): void {
+	sqlCompletionSource = source;
+}
 
 export function initMonaco(): Promise<typeof Monaco> {
 	if (!monacoPromise) {
@@ -179,6 +195,31 @@ function configureDiagnostics(monaco: typeof Monaco) {
 
 let sqlProviderDisposable: Monaco.IDisposable | null = null;
 
+const SQL_KEYWORDS = [
+	'SELECT', 'FROM', 'WHERE', 'AND', 'OR', 'NOT', 'LIMIT', 'OFFSET',
+	'ORDER BY', 'GROUP BY', 'HAVING', 'JOIN', 'LEFT JOIN', 'RIGHT JOIN',
+	'INNER JOIN', 'ON', 'AS', 'INSERT INTO', 'VALUES', 'UPDATE', 'SET',
+	'DELETE FROM', 'CREATE TABLE', 'DROP TABLE', 'ALTER TABLE',
+	'IN', 'IS NULL', 'IS NOT NULL', 'LIKE', 'ILIKE', 'EXISTS'
+];
+
+// Keywords after which a table name is expected next.
+const TABLE_CONTEXT_TOKENS = new Set(['FROM', 'JOIN', 'INTO', 'UPDATE', 'TABLE']);
+// Keywords after which column names are the most relevant completion.
+const COLUMN_CONTEXT_TOKENS = new Set(['SELECT', 'WHERE', 'ON', 'AND', 'OR', 'SET', 'BY', 'HAVING']);
+
+type SqlContext = 'table' | 'column' | 'general';
+
+function sqlContextAt(textBeforeCursor: string): SqlContext {
+	const trimmed = textBeforeCursor.replace(/\s+$/, '');
+	// `table.` → complete that table's columns.
+	if (trimmed.endsWith('.')) return 'column';
+	const lastToken = (/([A-Za-z_]+)\s*$/.exec(trimmed)?.[1] ?? '').toUpperCase();
+	if (TABLE_CONTEXT_TOKENS.has(lastToken)) return 'table';
+	if (COLUMN_CONTEXT_TOKENS.has(lastToken)) return 'column';
+	return 'general';
+}
+
 function registerSqlAutocomplete(monaco: typeof Monaco) {
 	if (sqlProviderDisposable) {
 		sqlProviderDisposable.dispose();
@@ -195,62 +236,55 @@ function registerSqlAutocomplete(monaco: typeof Monaco) {
 				endColumn: word.endColumn
 			};
 
+			const textBeforeCursor = model.getValueInRange({
+				startLineNumber: position.lineNumber,
+				startColumn: 1,
+				endLineNumber: position.lineNumber,
+				endColumn: word.startColumn
+			});
+			const context = sqlContextAt(textBeforeCursor);
+
 			const suggestions: Monaco.languages.CompletionItem[] = [];
+			const source = sqlCompletionSource?.() ?? null;
 
-			// 1. SQL Keywords
-			const SQL_KEYWORDS = [
-				'SELECT', 'FROM', 'WHERE', 'AND', 'OR', 'NOT', 'LIMIT', 'OFFSET',
-				'ORDER BY', 'GROUP BY', 'HAVING', 'JOIN', 'LEFT JOIN', 'RIGHT JOIN',
-				'INNER JOIN', 'ON', 'AS', 'INSERT INTO', 'VALUES', 'UPDATE', 'SET',
-				'DELETE FROM', 'CREATE TABLE', 'DROP TABLE', 'ALTER TABLE',
-				'IN', 'IS NULL', 'IS NOT NULL', 'LIKE', 'ILIKE', 'EXISTS'
-			];
-
-			for (const kw of SQL_KEYWORDS) {
-				suggestions.push({
-					label: kw,
-					kind: monaco.languages.CompletionItemKind.Keyword,
-					insertText: kw,
-					range
-				} as Monaco.languages.CompletionItem);
+			// Tables / views — offered as the primary suggestion in FROM/JOIN
+			// contexts, and alongside keywords in the general context.
+			if (source && (context === 'table' || context === 'general')) {
+				for (const table of source.tables) {
+					suggestions.push({
+						label: table.name,
+						kind: table.kind === 'view'
+							? monaco.languages.CompletionItemKind.Interface
+							: monaco.languages.CompletionItemKind.Class,
+						insertText: table.name,
+						detail: table.kind.toUpperCase(),
+						range
+					} as Monaco.languages.CompletionItem);
+				}
 			}
 
-			// 2. Tables and Views from current connection schema
-			const connId = dbClientStore.activeConnectionId;
-			if (connId) {
-				const schemaNodes = dbClientStore.schema[connId] ?? [];
-				for (const node of schemaNodes) {
-					if (node.type === 'table' || node.type === 'view') {
-						suggestions.push({
-							label: node.name,
-							kind: node.type === 'view'
-								? monaco.languages.CompletionItemKind.Interface
-								: monaco.languages.CompletionItemKind.Class,
-							insertText: node.name,
-							detail: node.type.toUpperCase(),
-							range
-						} as Monaco.languages.CompletionItem);
-					}
+			// Columns — in `table.` / SELECT / WHERE / … contexts.
+			if (source && context === 'column') {
+				for (const col of source.columns) {
+					suggestions.push({
+						label: col.name,
+						kind: monaco.languages.CompletionItemKind.Field,
+						insertText: col.name,
+						detail: col.type ? `COLUMN (${col.type})` : 'COLUMN',
+						range
+					} as Monaco.languages.CompletionItem);
 				}
+			}
 
-				// 3. Columns from cached object details belonging to this connection
-				const details = dbClientStore.objectDetails;
-				const columnsSeen = new Set<string>();
-				for (const [key, value] of Object.entries(details)) {
-					if (key.startsWith(`${connId}::`) && value?.columns) {
-						for (const col of value.columns) {
-							if (!columnsSeen.has(col.name)) {
-								columnsSeen.add(col.name);
-								suggestions.push({
-									label: col.name,
-									kind: monaco.languages.CompletionItemKind.Field,
-									insertText: col.name,
-									detail: `COLUMN (${col.type})`,
-									range
-								} as Monaco.languages.CompletionItem);
-							}
-						}
-					}
+			// Keywords — everywhere except immediately after a dot.
+			if (!textBeforeCursor.replace(/\s+$/, '').endsWith('.')) {
+				for (const kw of SQL_KEYWORDS) {
+					suggestions.push({
+						label: kw,
+						kind: monaco.languages.CompletionItemKind.Keyword,
+						insertText: kw,
+						range
+					} as Monaco.languages.CompletionItem);
 				}
 			}
 

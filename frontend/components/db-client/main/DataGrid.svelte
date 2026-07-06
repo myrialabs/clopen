@@ -8,6 +8,7 @@
 	import NullValue from '../shared/NullValue.svelte';
 	import { dbClientStore } from '$frontend/stores/features/db-client.svelte';
 	import { debug } from '$shared/utils/logger';
+	import { buildXlsx, downloadFile, toCsv, toTsv } from './export-utils';
 	import type {
 		DbClientObjectColumn,
 		DbClientObjectDetails,
@@ -552,188 +553,34 @@
 
 	const copySelectedCsv = (): void => {
 		const { columns, rows } = getSelectedRowsData();
-		const csvContent = generateCsvContent(columns, rows);
-		void navigator.clipboard.writeText(csvContent);
+		void navigator.clipboard.writeText(toCsv(columns, rows));
 		showActionMenu = false;
 	};
 
 	const copySelectedXlsx = (): void => {
 		const { columns, rows } = getSelectedRowsData();
-		const tsvContent = generateTsvContent(columns, rows);
-		void navigator.clipboard.writeText(tsvContent);
+		void navigator.clipboard.writeText(toTsv(columns, rows));
 		showActionMenu = false;
 	};
 
 	const exportSelectedXlsx = async (): Promise<void> => {
 		const { columns, rows } = getSelectedRowsData();
-		const { zipSync } = await import('fflate');
-		const xlsxData = generateXlsxData(columns, rows, zipSync);
-		const blob = new Blob([xlsxData as any], { type: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet' });
-		const url = URL.createObjectURL(blob);
-		const a = document.createElement('a');
-		a.href = url;
-		a.download = `${objectName}_selected.xlsx`;
-		document.body.appendChild(a);
-		a.click();
-		document.body.removeChild(a);
-		URL.revokeObjectURL(url);
+		const xlsxData = await buildXlsx(columns, rows);
+		downloadFile(xlsxData, `${objectName}_selected.xlsx`, 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet');
 		showActionMenu = false;
 	};
 
 	const exportSelectedCsv = (): void => {
 		const { columns, rows } = getSelectedRowsData();
-		const csvContent = generateCsvContent(columns, rows);
-		const blob = new Blob([csvContent], { type: 'text/csv;charset=utf-8;' });
-		const url = URL.createObjectURL(blob);
-		const a = document.createElement('a');
-		a.href = url;
-		a.download = `${objectName}_selected.csv`;
-		document.body.appendChild(a);
-		a.click();
-		document.body.removeChild(a);
-		URL.revokeObjectURL(url);
+		downloadFile(toCsv(columns, rows), `${objectName}_selected.csv`, 'text/csv;charset=utf-8;');
 		showActionMenu = false;
-	};
-
-	const generateCsvContent = (columns: string[], rows: unknown[][]): string => {
-		const headers = columns.map(escapeCsvValue).join(',');
-		const body = rows
-			.map((row) => row.map(escapeCsvValue).join(','))
-			.join('\n');
-		return headers + '\n' + body;
-	};
-
-	const generateTsvContent = (columns: string[], rows: unknown[][]): string => {
-		const headers = columns.map(escapeTsvValue).join('\t');
-		const body = rows
-			.map((row) => row.map(escapeTsvValue).join('\t'))
-			.join('\n');
-		return headers + '\n' + body;
-	};
-
-	const escapeCsvValue = (val: unknown): string => {
-		if (val === null || val === undefined) return '';
-		const str = typeof val === 'object' ? JSON.stringify(val) : String(val);
-		if (str.includes(',') || str.includes('"') || str.includes('\n') || str.includes('\r')) {
-			return '"' + str.replace(/"/g, '""') + '"';
-		}
-		return str;
-	};
-
-	const escapeTsvValue = (val: unknown): string => {
-		if (val === null || val === undefined) return '';
-		const str = typeof val === 'object' ? JSON.stringify(val) : String(val);
-		if (str.includes('\t') || str.includes('"') || str.includes('\n') || str.includes('\r')) {
-			return '"' + str.replace(/"/g, '""') + '"';
-		}
-		return str;
-	};
-
-	const escapeXmlValue = (unsafe: string): string => {
-		return unsafe.replace(/[<>&'"]/g, (c) => {
-			switch (c) {
-				case '<': return '&lt;';
-				case '>': return '&gt;';
-				case '&': return '&amp;';
-				case '\'': return '&apos;';
-				case '"': return '&quot;';
-				default: return c;
-			}
-		});
-	};
-
-	const getExcelCellRef = (colIdx: number, rowNum: number): string => {
-		let temp = colIdx;
-		let letter = '';
-		while (temp >= 0) {
-			letter = String.fromCharCode((temp % 26) + 65) + letter;
-			temp = Math.floor(temp / 26) - 1;
-		}
-		return letter + rowNum;
-	};
-
-	const generateXlsxData = (columns: string[], rows: unknown[][], zipSyncFn: any): Uint8Array => {
-		let sheetData = '';
-		
-		// Header row
-		sheetData += '<row r="1">';
-		for (let cIdx = 0; cIdx < columns.length; cIdx++) {
-			const cellRef = getExcelCellRef(cIdx, 1);
-			const val = escapeXmlValue(columns[cIdx]);
-			sheetData += `<c r="${cellRef}" t="inlineStr"><is><t>${val}</t></is></c>`;
-		}
-		sheetData += '</row>';
-
-		// Data rows
-		for (let rIdx = 0; rIdx < rows.length; rIdx++) {
-			const rowNum = rIdx + 2;
-			sheetData += `<row r="${rowNum}">`;
-			const row = rows[rIdx];
-			for (let cIdx = 0; cIdx < columns.length; cIdx++) {
-				const cellRef = getExcelCellRef(cIdx, rowNum);
-				const val = row[cIdx];
-				if (val === null || val === undefined) {
-					continue;
-				}
-				const isNum = typeof val === 'number';
-				const strVal = isNum ? String(val) : escapeXmlValue(typeof val === 'object' ? JSON.stringify(val) : String(val));
-				
-				if (isNum) {
-					sheetData += `<c r="${cellRef}"><v>${strVal}</v></c>`;
-				} else {
-					sheetData += `<c r="${cellRef}" t="inlineStr"><is><t>${strVal}</t></is></c>`;
-				}
-			}
-			sheetData += '</row>';
-		}
-
-		const sheet1Xml = `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
-<worksheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main">
-<sheetData>${sheetData}</sheetData>
-</worksheet>`;
-
-		const workbookXml = `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
-<workbook xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main">
-<sheets>
-<sheet name="Sheet1" sheetId="1" r:id="rId1" xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships"/>
-</sheets>
-</workbook>`;
-
-		const workbookRels = `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
-<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">
-<Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/worksheet" Target="worksheets/sheet1.xml"/>
-</Relationships>`;
-
-		const rels = `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
-<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">
-<Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/officeDocument" Target="xl/workbook.xml"/>
-</Relationships>`;
-
-		const contentTypes = `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
-<Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types">
-<Default Extension="rels" ContentType="application/vnd.openxmlformats-package.relationships+xml"/>
-<Default Extension="xml" ContentType="application/xml"/>
-<Override PartName="/xl/workbook.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet.main+xml"/>
-<Override PartName="/xl/worksheets/sheet1.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.worksheet+xml"/>
-</Types>`;
-
-		const encoder = new TextEncoder();
-		const zipData = {
-			'[Content_Types].xml': encoder.encode(contentTypes),
-			'_rels/.rels': encoder.encode(rels),
-			'xl/workbook.xml': encoder.encode(workbookXml),
-			'xl/_rels/workbook.xml.rels': encoder.encode(workbookRels),
-			'xl/worksheets/sheet1.xml': encoder.encode(sheet1Xml)
-		};
-
-		return zipSyncFn(zipData);
 	};
 </script>
 
 <svelte:window onkeydown={handleWindowKeydown} onmousedown={handleWindowMouseDown} />
 
 <div class="flex flex-col h-full min-h-0">
-	<div class="flex items-center gap-1 px-3 py-2 border-b border-slate-200 dark:border-slate-800 shrink-0 text-sm flex-wrap">
+	<div class="flex items-center gap-1 px-3 py-1.5 border-b border-slate-200 dark:border-slate-800 shrink-0 text-xs flex-wrap">
 		<div class="flex items-center gap-1 flex-wrap">
 			<button
 				type="button"
@@ -1035,14 +882,9 @@
 									class="flex items-center gap-1 hover:text-violet-600 dark:hover:text-violet-400 disabled:hover:text-slate-700"
 									onclick={() => isTabular && toggleSort(col.name)}
 									disabled={!isTabular}
-									title={isTabular ? 'Sort' : ''}
+									title={isTabular ? `Sort · ${col.type ?? ''}`.trim() : (col.type ?? '')}
 								>
-									<div class="flex flex-col items-start">
-										<span>{col.name}</span>
-										{#if col.type}
-											<span class="text-[10px] text-slate-400 font-normal">{col.type}</span>
-										{/if}
-									</div>
+									<span>{col.name}</span>
 									{#if isTabular}
 										<Icon name={sortIcon(col.name)} class="w-3 h-3 {sortColumn === col.name ? 'text-violet-600 dark:text-violet-400' : 'text-slate-400'}" />
 									{/if}
