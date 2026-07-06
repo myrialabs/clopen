@@ -21,7 +21,6 @@
 	import { ensureSqlCompletion } from './sql-completion';
 	import { debug } from '$shared/utils/logger';
 	import type { DbClientSchemaNode } from '$shared/types/db-client';
-	import type { IconName } from '$shared/types/ui/icons';
 
 	interface Props {
 		isOpen: boolean;
@@ -117,11 +116,11 @@
 		}
 	});
 
-	// Data and Structure need a table in scope; bounce back to Overview when we
+	// Table-scoped views need a table in scope; bounce back to Overview when we
 	// step up to the connection (database-list) level while on one of them.
 	// Declared before the recorder so the correction lands before we snapshot.
 	$effect(() => {
-		if (atConnectionScope && activeConnection && (activeView === 'data' || activeView === 'structure')) {
+		if (atConnectionScope && activeConnection && isTableScopedView(activeView)) {
 			dbClientStore.setView(activeConnection.id, 'overview');
 		}
 	});
@@ -562,21 +561,17 @@
 		});
 	}
 
-	const VIEW_DEFS: { id: DbClientView; label: string; icon: IconName }[] = [
-		{ id: 'overview', label: 'Overview', icon: 'lucide:info' },
-		{ id: 'query', label: 'Query', icon: 'lucide:code' },
-		{ id: 'data', label: 'Data', icon: 'lucide:table' },
-		{ id: 'structure', label: 'Structure', icon: 'lucide:layout-list' }
-	];
-
-	// At connection scope (no table context) Data/Structure are hidden.
-	const visibleViews = $derived(
-		atConnectionScope ? VIEW_DEFS.filter((v) => v.id === 'overview' || v.id === 'query') : VIEW_DEFS
-	);
-
 	function pickView(v: DbClientView): void {
 		if (!activeConnection) return;
 		dbClientStore.setView(activeConnection.id, v);
+	}
+
+	function isTableScopedView(v: DbClientView): boolean {
+		return v === 'data' || v === 'structure';
+	}
+
+	function tableDefaultView(): 'data' | 'structure' {
+		return activeView === 'structure' ? 'structure' : 'data';
 	}
 
 	const showSchemaTree = $derived(!!activeConnection && !isFormOpen);
@@ -599,15 +594,6 @@
 		});
 	});
 
-	const activeObjectIcon = $derived<IconName>(
-		activeObject?.type === 'view'
-			? 'lucide:eye'
-			: activeObject?.type === 'collection'
-				? 'lucide:layers'
-				: activeObject?.type === 'key'
-					? 'lucide:key'
-					: 'lucide:table'
-	);
 </script>
 
 <svelte:window on:resize={handleResize} />
@@ -766,12 +752,12 @@
 								<div class="flex items-center shrink-0 bg-white dark:bg-slate-900 rounded-xl border border-slate-200 dark:border-slate-800 p-1 min-w-0">
 									<div class="flex-1 flex items-center overflow-x-auto overflow-y-hidden select-none no-scrollbar min-w-0">
 										{#each scopedTables as tab, idx (`${activeConnection.id}::${tab.database ?? ''}::${tab.schema ?? ''}::${tab.name}`)}
-											{@const isActive = (activeView === 'data' || activeView === 'structure') && activeObject && activeObject.name === tab.name && (activeObject.database ?? null) === (tab.database ?? null)}
+											{@const isActive = isTableScopedView(activeView) && activeObject && activeObject.name === tab.name && (activeObject.database ?? null) === (tab.database ?? null)}
 											<div data-active-tab={isActive ? 'true' : undefined} class="flex items-center h-7 rounded-md shrink-0 transition-colors {isActive ? 'bg-violet-500/10' : 'hover:bg-slate-100 dark:hover:bg-slate-800'}">
 												<button
 													type="button"
 													class="flex-1 min-w-0 flex items-center gap-1.5 px-2.5 h-full text-xs transition-colors cursor-pointer {isActive ? 'text-violet-700 dark:text-violet-300 font-semibold' : 'text-slate-500 dark:text-slate-400 hover:text-slate-700 dark:hover:text-slate-300'}"
-													onclick={() => dbClientStore.openTable(activeConnection.id, tab, activeView === 'structure' ? 'structure' : 'data')}
+													onclick={() => dbClientStore.openTable(activeConnection.id, tab, tableDefaultView())}
 												>
 													<Icon name="lucide:table" class="w-3.5 h-3.5 text-slate-400 shrink-0" />
 													<span class="truncate max-w-[120px]">{tab.name}</span>
@@ -851,12 +837,12 @@
 									<div class="flex items-center gap-1 flex-1 min-w-0 bg-white dark:bg-slate-900 rounded-xl border border-slate-200 dark:border-slate-800 p-1">
 										<div class="flex-1 flex items-center overflow-x-auto overflow-y-hidden select-none no-scrollbar min-w-0">
 											{#each scopedTables as tab, idx (`${activeConnection.id}::${tab.database ?? ''}::${tab.schema ?? ''}::${tab.name}`)}
-												{@const isActive = (activeView === 'data' || activeView === 'structure') && activeObject && activeObject.name === tab.name && (activeObject.database ?? null) === (tab.database ?? null)}
+												{@const isActive = isTableScopedView(activeView) && activeObject && activeObject.name === tab.name && (activeObject.database ?? null) === (tab.database ?? null)}
 												<div data-active-tab={isActive ? 'true' : undefined} class="flex items-center h-7 pl-2.5 pr-1.5 gap-1 rounded-md shrink-0 transition-colors {isActive ? 'bg-violet-500/10' : 'hover:bg-slate-100 dark:hover:bg-slate-800'}">
 													<button
 														type="button"
 														class="flex-1 min-w-0 flex items-center gap-1.5 h-full text-xs transition-colors cursor-pointer font-semibold {isActive ? 'text-violet-700 dark:text-violet-300' : 'text-slate-500 dark:text-slate-400 hover:text-slate-700 dark:hover:text-slate-300'}"
-														onclick={() => dbClientStore.openTable(activeConnection.id, tab, activeView === 'structure' ? 'structure' : 'data')}
+														onclick={() => dbClientStore.openTable(activeConnection.id, tab, tableDefaultView())}
 													>
 														<Icon name="lucide:table" class="w-3.5 h-3.5 text-slate-400 shrink-0" />
 														<span class="truncate max-w-[160px]">{tab.name}</span>
@@ -899,7 +885,7 @@
 							</div>
 						{/if}
 
-						<!-- Sub-header: Data/Structure toggle + breadcrumb (table context only) -->
+						<!-- Sub-header: table-scoped view toggle + breadcrumb (table context only) -->
 						{#if activeObject}
 							<div class="flex items-center justify-between gap-3 px-2 py-1.5 bg-white dark:bg-slate-900 rounded-xl border border-slate-200 dark:border-slate-800 shrink-0 min-w-0">
 								<!-- Data / Structure toggle — same visual language as the Overview/Query Editor tabs -->
