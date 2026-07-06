@@ -42,7 +42,6 @@ interface ActiveStreamInfo {
 	projectId?: string;
 }
 
-const MAX_LINES_TO_PERSIST = 1000; // Limit lines per session
 const MAX_HISTORY_TO_PERSIST = 500; // Limit command history
 
 class TerminalPersistenceManager {
@@ -62,7 +61,10 @@ class TerminalPersistenceManager {
 				projectId: session.projectId,
 				projectPath: session.projectPath,
 				workingDirectory: session.directory,
-				lines: session.lines.slice(-MAX_LINES_TO_PERSIST),
+				// Terminal output is no longer persisted client-side — PtyKit keeps the
+				// scrollback server-side and replays it on (re)attach. Only tab metadata
+				// (name, directory, history) needs persisting.
+				lines: [],
 				commandHistory: session.commandHistory.slice(-MAX_HISTORY_TO_PERSIST),
 				createdAt: session.createdAt,
 				lastUsedAt: session.lastUsedAt,
@@ -225,9 +227,8 @@ class TerminalPersistenceManager {
 			.sort((a, b) => b.lastUsedAt.getTime() - a.lastUsedAt.getTime())
 			.slice(0, 5);
 
-		// Further limit lines for old sessions
+		// Trim command history for old sessions (output is not persisted).
 		recentSessions.forEach(session => {
-			session.lines = session.lines.slice(-500);
 			session.commandHistory = session.commandHistory.slice(-100);
 		});
 

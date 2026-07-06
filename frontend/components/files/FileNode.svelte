@@ -8,6 +8,7 @@
 	import { getGitStatusColor, getGitStatusBadgeLabel, getGitStatusLabel } from '$frontend/utils/git-status';
 	import { onMount } from 'svelte';
 	import { isLocalConnection, isMac, isWindows, isLinux } from '$frontend/utils/platform';
+	import { isExtractableArchive } from '$frontend/utils/archive';
 
 	const {
 		file,
@@ -396,10 +397,10 @@
 					onclick={(e) => { handleAction('zip', e); closeMenu(); }}
 				>
 					<Icon name="lucide:file-archive" class="w-3 h-3" />
-					Compress to ZIP
+					Compress…
 				</button>
 
-				{#if file.type === 'file' && file.name.toLowerCase().endsWith('.zip')}
+				{#if file.type === 'file' && isExtractableArchive(file.name)}
 					<button
 						class="w-full px-3 py-1.5 text-xs text-left text-slate-700 dark:text-slate-300 hover:bg-slate-100 dark:hover:bg-slate-700 flex items-center gap-2"
 						onclick={(e) => { handleAction('extract', e); closeMenu(); }}

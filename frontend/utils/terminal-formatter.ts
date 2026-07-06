@@ -19,8 +19,10 @@ export function isTerminalOutput(text: string): boolean {
 		return true;
 	}
 
-	// 2. Shell prompt at the beginning of a line
-	if (/^[\s]*[$>#%]\s+/m.test(text)) {
+	// 2. Shell prompt at the beginning of a line. Note: '#' is intentionally excluded — it
+	// collides with markdown ATX headings ('# Heading'), which would otherwise misclassify a
+	// whole markdown message as terminal output.
+	if (/^[\s]*[$>%]\s+/m.test(text)) {
 		return true;
 	}
 

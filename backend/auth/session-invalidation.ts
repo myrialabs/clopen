@@ -7,7 +7,7 @@
 
 import { ws } from '$backend/utils/ws';
 import { debug } from '$shared/utils/logger';
-import { ptySessionManager } from '$backend/terminal/pty-session-manager';
+import { ptyKitManager } from '$backend/terminal/ptykit';
 
 /**
  * Invalidate all active WebSocket sessions for a specific user.
@@ -46,23 +46,22 @@ export function invalidateUserSessions(userId: string, projectId?: string): numb
 }
 
 /**
- * Kill PTY terminal sessions owned by a specific user in a project.
- * Prevents orphaned shell processes from continuing to run after
- * project access is revoked, without affecting other users' sessions.
+ * Kill PTY terminal sessions in a project when a user's access is revoked.
+ * Prevents orphaned shell processes from continuing to run. Terminals are
+ * collaborative and project-scoped (PtyKit keys sessions by namespace =
+ * projectId), so revoking access tears down that project's terminals.
  */
 function killUserPtySessionsForProject(userId: string, projectId: string): void {
 	let killedCount = 0;
 
-	for (const session of ptySessionManager.getAllSessions()) {
-		if (session.projectId === projectId && session.userId === userId) {
-			debug.log('auth', `Killing PTY session ${session.sessionId} for user ${userId} (project ${projectId} access revoked)`);
-			ptySessionManager.killSession(session.sessionId, 'SIGKILL');
-			killedCount++;
-		}
+	for (const session of ptyKitManager.list(projectId)) {
+		debug.log('auth', `Killing PTY session ${session.sessionId} (project ${projectId} access revoked for user ${userId})`);
+		ptyKitManager.killSession(session.sessionId, 'SIGKILL');
+		killedCount++;
 	}
 
 	if (killedCount > 0) {
-		debug.log('auth', `Killed ${killedCount} PTY session(s) for user ${userId} in project ${projectId}`);
+		debug.log('auth', `Killed ${killedCount} PTY session(s) in project ${projectId}`);
 	}
 }
 

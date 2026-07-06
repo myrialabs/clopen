@@ -22,7 +22,7 @@ import {
 	duplicateOperation,
 	deleteOperation
 } from '../../files/file-operations';
-import { createZipOperation, extractZipOperation } from '../../files/file-archive';
+import { createArchiveOperation, extractArchiveOperation } from '../../files/file-archive';
 import { stat as fsStat, readdir as fsReaddir, rename as fsRename } from 'node:fs/promises';
 import { requireFilePathAccess, requireSharedFilePathAccess } from './path-access';
 
@@ -127,11 +127,21 @@ export const writeHandler = createRouter()
 	// kept getting dropped by the Vite dev proxy with `write EPIPE` on
 	// sustained binary transfers (any chunk size). See backend/http/files-upload.ts.
 
-	// Zip operation — compress a set of files/directories into a single archive
+	// Compress operation — pack files/directories into an archive (zip/tar/7z)
 	.http('files:zip', {
 		data: t.Object({
 			sourcePaths: t.Array(t.String()),
-			targetPath: t.String()
+			targetPath: t.String(),
+			format: t.Optional(t.Union([
+				t.Literal('zip'),
+				t.Literal('tar'),
+				t.Literal('tar.gz'),
+				t.Literal('tar.zst'),
+				t.Literal('7z')
+			])),
+			method: t.Optional(t.Union([t.Literal('store'), t.Literal('deflate'), t.Literal('zstd')])),
+			level: t.Optional(t.Number()),
+			password: t.Optional(t.String())
 		}),
 		response: t.Object({
 			message: t.String(),
@@ -148,14 +158,20 @@ export const writeHandler = createRouter()
 			resolvedSources.push(await requireFilePathAccess(conn, p));
 		}
 		const resolvedTarget = await requireFilePathAccess(conn, data.targetPath);
-		return await createZipOperation(resolvedSources, resolvedTarget);
+		return await createArchiveOperation(resolvedSources, resolvedTarget, {
+			format: data.format,
+			method: data.method,
+			level: data.level,
+			password: data.password
+		});
 	})
 
-	// Extract operation — extract a zip archive into a target directory
+	// Extract operation — extract any supported archive into a target directory
 	.http('files:extract', {
 		data: t.Object({
 			archivePath: t.String(),
-			targetDir: t.String()
+			targetDir: t.String(),
+			password: t.Optional(t.String())
 		}),
 		response: t.Object({
 			message: t.String(),
@@ -166,7 +182,7 @@ export const writeHandler = createRouter()
 	}, async ({ data, conn }) => {
 		const archivePath = await requireFilePathAccess(conn, data.archivePath);
 		const targetDir = await requireFilePathAccess(conn, data.targetDir);
-		return await extractZipOperation(archivePath, targetDir);
+		return await extractArchiveOperation(archivePath, targetDir, data.password);
 	})
 
 	// Delete operation

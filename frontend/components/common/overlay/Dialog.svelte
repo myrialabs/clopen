@@ -14,6 +14,7 @@
 		message?: string;
 		inputValue?: string;
 		inputPlaceholder?: string;
+		inputType?: 'text' | 'password';
 		confirmText?: string;
 		cancelText?: string;
 		showCancel?: boolean;
@@ -31,6 +32,7 @@
 		message = '',
 		inputValue = $bindable(),
 		inputPlaceholder = 'Enter value...',
+		inputType = 'text',
 		confirmText = 'OK',
 		cancelText = 'Cancel',
 		showCancel = true,
@@ -216,14 +218,26 @@
 						{/if}
 						
 						{#if inputValue !== undefined}
-							<input
-								bind:this={inputElement}
-								bind:value={inputValue}
-								type="text"
-								placeholder={inputPlaceholder}
-								onkeydown={handleKeydown}
-								class="w-full px-4 py-2.5 mt-3 bg-white dark:bg-slate-800 border border-slate-200 dark:border-slate-700 rounded-lg text-slate-900 dark:text-slate-100 placeholder-slate-500 dark:placeholder-slate-400 focus:outline-none focus:ring-2 focus:ring-violet-500/20 {colors.input}"
-							/>
+							{#if inputType === 'password'}
+								<input
+									bind:this={inputElement}
+									bind:value={inputValue}
+									type="password"
+									autocomplete="off"
+									placeholder={inputPlaceholder}
+									onkeydown={handleKeydown}
+									class="w-full px-4 py-2.5 mt-3 bg-white dark:bg-slate-800 border border-slate-200 dark:border-slate-700 rounded-lg text-slate-900 dark:text-slate-100 placeholder-slate-500 dark:placeholder-slate-400 focus:outline-none focus:ring-2 focus:ring-violet-500/20 {colors.input}"
+								/>
+							{:else}
+								<input
+									bind:this={inputElement}
+									bind:value={inputValue}
+									type="text"
+									placeholder={inputPlaceholder}
+									onkeydown={handleKeydown}
+									class="w-full px-4 py-2.5 mt-3 bg-white dark:bg-slate-800 border border-slate-200 dark:border-slate-700 rounded-lg text-slate-900 dark:text-slate-100 placeholder-slate-500 dark:placeholder-slate-400 focus:outline-none focus:ring-2 focus:ring-violet-500/20 {colors.input}"
+								/>
+							{/if}
 						{/if}
 					</div>
 				</div>
