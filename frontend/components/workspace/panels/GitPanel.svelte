@@ -894,6 +894,10 @@
 
 	// Log state
 	let commits = $state<GitCommit[]>([]);
+	// Set when a git-mutating action or an external git:changed event happens
+	// while History isn't the active view, so the next switch to History
+	// re-fetches instead of trusting the (now stale) cached commits.
+	let logStale = false;
 	let nestedCommits = $state<Record<string, GitCommit[]>>({});
 	let isLogLoading = $state(false);
 	let nestedIsLogLoading = $state<Record<string, boolean>>({});
@@ -1129,8 +1133,22 @@
 		}
 	}
 
+	// Reload the log now if History is visible; otherwise just flag it stale
+	// so the tab-switch effect re-fetches on the next visit instead of
+	// trusting the cached `commits` array.
+	async function refreshLogIfVisible() {
+		if (activeView === 'log') {
+			await loadLog(true);
+		} else {
+			logStale = true;
+		}
+	}
+
 	async function refreshAllLogs() {
-		if (activeView !== 'log') return;
+		if (activeView !== 'log') {
+			logStale = true;
+			return;
+		}
 		await loadLog(true);
 		if (branchInfo?.nested) {
 			for (const nested of branchInfo.nested) {
@@ -1456,9 +1474,7 @@
 		try {
 			await ws.http('git:commit', { projectId: pid, message, repoPath });
 			await loadAll();
-			if (activeView === 'log') {
-				await loadLog(true);
-			}
+			await refreshLogIfVisible();
 		} catch (err) {
 			debug.error('git', 'Commit failed:', err);
 			showError('Commit Failed', err instanceof Error ? err.message : 'Unknown error');
@@ -1857,7 +1873,7 @@
 		try {
 			await ws.http('git:switch-branch', { projectId, name });
 			await loadAll();
-			if (activeView === 'log') await loadLog(true);
+			await refreshLogIfVisible();
 		} catch (err) {
 			debug.error('git', 'Failed to switch branch:', err);
 			showError('Switch Branch Failed', err instanceof Error ? err.message : 'Unknown error');
@@ -2433,7 +2449,7 @@
 			try {
 				await ws.http('git:undo-commit', { projectId, mode, repoPath });
 				await loadAll();
-				if (activeView === 'log') await loadLog(true);
+				await refreshLogIfVisible();
 				const detail =
 					mode === 'soft'
 						? 'Changes kept staged.'
@@ -2473,7 +2489,7 @@
 						};
 						await loadBranchCommits(branch.name, true, repoPath);
 					}
-					if (activeView === 'log') await loadLog(true);
+					await refreshLogIfVisible();
 					showInfo(
 						'Commit Undone',
 						'Changes kept staged. Commit message restored to the input — edit and re-commit when ready.'
@@ -2511,7 +2527,7 @@
 					}
 				} else {
 					await loadAll();
-					if (activeView === 'log') await loadLog(true);
+					await refreshLogIfVisible();
 					showInfo('Commit Reverted', 'Created a new commit that undoes the last one.');
 				}
 			} catch (err) {
@@ -2529,7 +2545,7 @@
 					showError('npm version Failed', result.message);
 				} else {
 					await loadAll();
-					if (activeView === 'log') await loadLog(true);
+					await refreshLogIfVisible();
 					showInfo('Version Bumped', `Package is now ${result.version}.`);
 				}
 			} catch (err) {
@@ -3124,6 +3140,7 @@ ${bodies}`;
 					// Heavy data (open diffs, history) is always re-fetched lazily.
 					resetAllViewTabs();
 					commits = [];
+					logStale = false;
 					logSkip = 0;
 					selectedCommit = null;
 					expandedContributors = new Set();
@@ -3205,11 +3222,14 @@ ${bodies}`;
 		};
 	});
 
-	// Load log when switching to log view
+	// Load log when switching to log view. Also re-fetches if a git-mutating
+	// action or an external git:changed event happened while History was
+	// hidden (logStale), so the tab never shows a cached-but-outdated list.
 	$effect(() => {
 		if (activeView === 'log' && isRepo) {
 			untrack(() => {
-				if (commits.length === 0) {
+				if (commits.length === 0 || logStale) {
+					logStale = false;
 					loadLog(true);
 				}
 			});
