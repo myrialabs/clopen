@@ -8,6 +8,7 @@
 	import NullValue from '../shared/NullValue.svelte';
 	import { dbClientStore } from '$frontend/stores/features/db-client.svelte';
 	import { debug } from '$shared/utils/logger';
+	import { buildXlsx, downloadFile, toCsv, toTsv } from './export-utils';
 	import type {
 		DbClientObjectColumn,
 		DbClientObjectDetails,
@@ -84,6 +85,13 @@
 	let cellRowIdx = $state(-1);
 
 	const fkMap = $derived(new Map((details?.foreignKeys ?? []).map((fk) => [fk.column, fk])));
+	const gridColumns = $derived(
+		result && result.columns && result.columns.length > 0
+			? result.columns
+			: details && details.columns
+				? details.columns.map((c) => ({ name: c.name, type: c.type }))
+				: []
+	);
 
 	const cellFk = $derived(cellColumn ? fkMap.get(cellColumn) ?? null : null);
 	const cellNullable = $derived(
@@ -521,12 +529,58 @@
 		if (sortColumn !== col) return 'lucide:chevrons-up-down';
 		return sortDir === 'asc' ? 'lucide:chevron-up' : 'lucide:chevron-down';
 	}
+
+	let showActionMenu = $state(false);
+
+	const getSelectedRowsData = (): { columns: string[]; rows: unknown[][] } => {
+		const currentResult = result;
+		if (!currentResult) return { columns: [], rows: [] };
+		const columns = currentResult.columns.map((c) => c.name);
+		const rows = Array.from(selected).map((idx) => {
+			const row = currentResult.rows[idx];
+			return columns.map((colName) => row[colName]);
+		});
+		return { columns, rows };
+	};
+
+	const copySelectedAll = (): void => {
+		const currentResult = result;
+		if (!currentResult) return;
+		const selectedRows = Array.from(selected).map((idx) => currentResult.rows[idx]);
+		void navigator.clipboard.writeText(JSON.stringify(selectedRows, null, 2));
+		showActionMenu = false;
+	};
+
+	const copySelectedCsv = (): void => {
+		const { columns, rows } = getSelectedRowsData();
+		void navigator.clipboard.writeText(toCsv(columns, rows));
+		showActionMenu = false;
+	};
+
+	const copySelectedXlsx = (): void => {
+		const { columns, rows } = getSelectedRowsData();
+		void navigator.clipboard.writeText(toTsv(columns, rows));
+		showActionMenu = false;
+	};
+
+	const exportSelectedXlsx = async (): Promise<void> => {
+		const { columns, rows } = getSelectedRowsData();
+		const xlsxData = await buildXlsx(columns, rows);
+		downloadFile(xlsxData, `${objectName}_selected.xlsx`, 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet');
+		showActionMenu = false;
+	};
+
+	const exportSelectedCsv = (): void => {
+		const { columns, rows } = getSelectedRowsData();
+		downloadFile(toCsv(columns, rows), `${objectName}_selected.csv`, 'text/csv;charset=utf-8;');
+		showActionMenu = false;
+	};
 </script>
 
 <svelte:window onkeydown={handleWindowKeydown} onmousedown={handleWindowMouseDown} />
 
 <div class="flex flex-col h-full min-h-0">
-	<div class="flex items-center gap-1 px-3 py-2 border-b border-slate-200 dark:border-slate-800 shrink-0 text-sm flex-wrap">
+	<div class="flex items-center gap-1 px-3 py-1.5 border-b border-slate-200 dark:border-slate-800 shrink-0 text-xs flex-wrap">
 		<div class="flex items-center gap-1 flex-wrap">
 			<button
 				type="button"
@@ -579,6 +633,76 @@
 					<span class="sm:hidden text-[10px] font-semibold">{selected.size}</span>
 				{/if}
 			</button>
+			{#if selected.size > 0}
+				<div class="relative inline-block text-left">
+					<button
+						type="button"
+						class="flex items-center gap-1.5 h-7 px-2 rounded-md text-slate-600 dark:text-slate-300 hover:bg-slate-100 dark:hover:bg-slate-800 transition-colors cursor-pointer"
+						onclick={() => (showActionMenu = !showActionMenu)}
+						title="Actions for selected rows"
+						aria-label="Actions for selected rows"
+					>
+						<Icon name="lucide:sliders-horizontal" class="w-3.5 h-3.5" />
+						<span class="hidden sm:inline">Actions</span>
+						<Icon name="lucide:chevron-down" class="w-3 h-3" />
+					</button>
+
+					{#if showActionMenu}
+						<div class="fixed inset-0 z-20" onclick={() => (showActionMenu = false)}></div>
+						<div class="absolute left-0 mt-1 w-48 rounded-md shadow-lg bg-white dark:bg-slate-800 border border-slate-200 dark:border-slate-700 py-1 z-30">
+							<div class="px-3 py-1.5 text-xs font-semibold text-slate-400 dark:text-slate-500 uppercase tracking-wider">
+								Copy to clipboard
+							</div>
+							<button
+								type="button"
+								class="w-full text-left flex items-center gap-2 px-3 py-1.5 text-sm text-slate-700 dark:text-slate-200 hover:bg-slate-100 dark:hover:bg-slate-700 transition-colors cursor-pointer"
+								onclick={copySelectedAll}
+							>
+								<Icon name="lucide:copy" class="w-3.5 h-3.5 text-slate-400" />
+								<span>Copy All (JSON)</span>
+							</button>
+							<button
+								type="button"
+								class="w-full text-left flex items-center gap-2 px-3 py-1.5 text-sm text-slate-700 dark:text-slate-200 hover:bg-slate-100 dark:hover:bg-slate-700 transition-colors cursor-pointer"
+								onclick={copySelectedXlsx}
+							>
+								<Icon name="lucide:file-spreadsheet" class="w-3.5 h-3.5 text-slate-400" />
+								<span>Copy XLSX (TSV)</span>
+							</button>
+							<button
+								type="button"
+								class="w-full text-left flex items-center gap-2 px-3 py-1.5 text-sm text-slate-700 dark:text-slate-200 hover:bg-slate-100 dark:hover:bg-slate-700 transition-colors cursor-pointer"
+								onclick={copySelectedCsv}
+							>
+								<Icon name="lucide:file-text" class="w-3.5 h-3.5 text-slate-400" />
+								<span>Copy CSV</span>
+							</button>
+
+							<div class="border-t border-slate-100 dark:border-slate-700 my-1"></div>
+
+							<div class="px-3 py-1.5 text-xs font-semibold text-slate-400 dark:text-slate-500 uppercase tracking-wider">
+								Export file
+							</div>
+							<button
+								type="button"
+								class="w-full text-left flex items-center gap-2 px-3 py-1.5 text-sm text-slate-700 dark:text-slate-200 hover:bg-slate-100 dark:hover:bg-slate-700 transition-colors cursor-pointer"
+								onclick={exportSelectedXlsx}
+							>
+								<Icon name="lucide:download" class="w-3.5 h-3.5 text-slate-400" />
+								<span>Export XLSX</span>
+							</button>
+							<button
+								type="button"
+								class="w-full text-left flex items-center gap-2 px-3 py-1.5 text-sm text-slate-700 dark:text-slate-200 hover:bg-slate-100 dark:hover:bg-slate-700 transition-colors cursor-pointer"
+								onclick={exportSelectedCsv}
+							>
+								<Icon name="lucide:download" class="w-3.5 h-3.5 text-slate-400" />
+								<span>Export CSV</span>
+							</button>
+						</div>
+					{/if}
+				</div>
+			{/if}
 			{#if pendingChanges.size > 0}
 				<button
 					type="button"
@@ -743,7 +867,7 @@
 	<div class="flex-1 min-h-0 overflow-auto">
 		{#if error}
 			<pre class="p-3 text-sm text-red-600 dark:text-red-400 whitespace-pre-wrap">{error}</pre>
-		{:else if result && (result.rows?.length ?? 0) > 0}
+		{:else if result}
 			<table class="w-full text-sm border-collapse bg-slate-50 dark:bg-slate-800/50">
 				<thead class="sticky top-0 bg-slate-200 dark:bg-slate-800 z-10">
 					<tr>
@@ -751,21 +875,16 @@
 							<Checkbox disabled={!hasPk} checked={selected.size > 0 && selected.size === result.rows.length} onchange={toggleAll} />
 						</th>
 						<th class="px-3 py-1.5 text-left font-semibold text-slate-500 border-b border-slate-200 dark:border-slate-800 w-10">#</th>
-						{#each result.columns as col (col.name)}
+						{#each gridColumns as col (col.name)}
 							<th class="px-3 py-1.5 text-left font-semibold text-slate-700 dark:text-slate-200 border-b border-slate-200 dark:border-slate-800">
 								<button
 									type="button"
 									class="flex items-center gap-1 hover:text-violet-600 dark:hover:text-violet-400 disabled:hover:text-slate-700"
 									onclick={() => isTabular && toggleSort(col.name)}
 									disabled={!isTabular}
-									title={isTabular ? 'Sort' : ''}
+									title={isTabular ? `Sort · ${col.type ?? ''}`.trim() : (col.type ?? '')}
 								>
-									<div class="flex flex-col items-start">
-										<span>{col.name}</span>
-										{#if col.type}
-											<span class="text-[10px] text-slate-400 font-normal">{col.type}</span>
-										{/if}
-									</div>
+									<span>{col.name}</span>
 									{#if isTabular}
 										<Icon name={sortIcon(col.name)} class="w-3 h-3 {sortColumn === col.name ? 'text-violet-600 dark:text-violet-400' : 'text-slate-400'}" />
 									{/if}
@@ -781,7 +900,7 @@
 								<Checkbox disabled={!hasPk} checked={selected.has(i)} onchange={() => toggleSelect(i)} />
 							</td>
 							<td class="px-3 py-1.5 text-slate-400 border-b border-slate-100 dark:border-slate-800">{page * pageSize + i + 1}</td>
-							{#each result.columns as col (col.name)}
+							{#each gridColumns as col (col.name)}
 								{@const isEditing = editing?.rowIdx === i && editing.col === col.name}
 								{@const pendingVal = pendingChanges.get(pkKey(i))?.[col.name]}
 								{@const display = pendingVal !== undefined ? pendingVal : row[col.name]}
@@ -848,11 +967,15 @@
 								</td>
 							{/each}
 						</tr>
+					{:else}
+						<tr>
+							<td colspan={gridColumns.length + 2} class="px-4 py-8 text-center text-sm text-slate-400 dark:text-slate-500 bg-white/50 dark:bg-slate-900/10">
+								No rows.
+							</td>
+						</tr>
 					{/each}
 				</tbody>
 			</table>
-		{:else if result}
-			<div class="p-4 text-sm text-slate-400">No rows.</div>
 		{:else if loading}
 			<div class="p-4 text-sm text-slate-400">Loading…</div>
 		{/if}

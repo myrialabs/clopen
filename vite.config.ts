@@ -47,5 +47,13 @@ export default defineConfig({
 			$frontend: resolve(__dirname, './frontend'),
 			$shared: resolve(__dirname, './shared')
 		}
+	},
+	optimizeDeps: {
+		// The Wasm engine locates its .wasm binary relative to `import.meta.url`.
+		// Pre-bundling rewrites that URL to the `.vite/deps` cache dir, where the
+		// binary doesn't exist — the request 404s to Vite's SPA fallback (index.html)
+		// instead of the wasm file. Excluding it keeps `import.meta.url` pointing at
+		// its real location in node_modules.
+		exclude: ['@myrialabs/zipkit']
 	}
 });

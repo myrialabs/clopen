@@ -20,6 +20,7 @@ import type {
 import type {
 	AlterOperation,
 	DbClientDriverAdapter,
+	DbClientTxContext,
 	IndexDefinition,
 	SchemaOpts,
 	TableDefinition
@@ -150,6 +151,26 @@ export class SqliteAdapter implements DbClientDriverAdapter {
 
 	async explain(q: string): Promise<DbClientQueryResult> {
 		return this.executeRead(`EXPLAIN QUERY PLAN ${q}`);
+	}
+
+	async withTransaction<T>(fn: (tx: DbClientTxContext) => Promise<T>): Promise<T> {
+		const db = this.requireDb();
+		db.exec('BEGIN');
+		try {
+			const out = await fn({
+				executeRead: (q, params) => this.executeRead(q, params ?? []),
+				executeWrite: (q, params) => this.executeWrite(q, params ?? [])
+			});
+			db.exec('COMMIT');
+			return out;
+		} catch (err) {
+			try {
+				db.exec('ROLLBACK');
+			} catch {
+				// Rollback failure is secondary to the error that triggered it.
+			}
+			throw err;
+		}
 	}
 
 	// ── Overview ──────────────────────────────────────────────────────────

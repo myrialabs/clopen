@@ -3,9 +3,11 @@
  */
 
 import { t } from 'elysia';
+import type { DbClientQueryResult } from '$shared/types/db-client';
 import { createRouter } from '$shared/utils/ws-server';
 import { connectionManager } from '../../db-client/connection-manager';
-import { runSafely } from '../../db-client/query-executor';
+import { executeBatch, runSafely } from '../../db-client/query-executor';
+import { splitSqlStatements } from '$shared/utils/db-client/split-sql';
 import { dbClientQueryHistoryQueries } from '../../database/queries';
 import { getDbClientPrincipal, requireDbClientConnectionAccess } from './access';
 import { debug } from '$shared/utils/logger';
@@ -119,6 +121,69 @@ export const queryHandler = createRouter()
 				error: null
 			});
 			return result;
+		} catch (error) {
+			recordHistory({
+				connectionId: data.connectionId,
+				userId,
+				query: data.query,
+				status: 'error',
+				durationMs: null,
+				rowCount: null,
+				error: error instanceof Error ? error.message : String(error)
+			});
+			throw error;
+		}
+	})
+
+	.http('db-client:execute-batch', {
+		data: t.Object({
+			connectionId: t.String({ minLength: 1 }),
+			query: t.String({ minLength: 1 }),
+			params: t.Optional(t.Array(t.Any())),
+			database: t.Optional(t.String()),
+			limit: t.Optional(t.Number())
+		}),
+		response: t.Any()
+	}, async ({ data, conn }) => {
+		const { userId } = getDbClientPrincipal(conn);
+		const connection = requireDbClientConnectionAccess(conn, data.connectionId);
+		const adapter = await connectionManager.get(data.connectionId);
+		// Statement splitting is a SQL concern; Mongo/Redis payloads run whole.
+		const isSql = connection.driver === 'mysql' || connection.driver === 'postgres' || connection.driver === 'sqlite';
+		const split = isSql ? splitSqlStatements(data.query) : [data.query.trim()];
+		const statements = split.length > 0 ? split : [data.query.trim()];
+		try {
+			const batch = await executeBatch({
+				driver: connection.driver,
+				adapter,
+				statements,
+				params: data.params,
+				database: data.database,
+				limit: data.limit
+			});
+			const rowCount = batch.statements.reduce((acc, s) => acc + (s.result?.rowCount ?? 0), 0);
+			const affectedRows = batch.statements.reduce((acc, s) => acc + (s.result?.affectedRows ?? 0), 0);
+			const failed = batch.statements.find((s) => s.status === 'error');
+			recordHistory({
+				connectionId: data.connectionId,
+				userId,
+				query: data.query,
+				status: batch.ok ? 'success' : 'error',
+				durationMs: batch.totalDurationMs,
+				rowCount,
+				error: failed?.error ?? null
+			});
+			// Mirror the last statement that produced rows at the top level (so
+			// existing single-result consumers keep working) with the full
+			// per-statement report attached under `batch`.
+			const reversed = [...batch.statements].reverse();
+			const lastResult = reversed.find((s) => s.result && s.result.rows.length > 0)?.result
+				?? reversed.find((s) => s.result)?.result
+				?? null;
+			const top: DbClientQueryResult = lastResult
+				? { ...lastResult, durationMs: batch.totalDurationMs, batch }
+				: { columns: [], rows: [], rowCount, affectedRows, durationMs: batch.totalDurationMs, driverMeta: {}, batch };
+			return top;
 		} catch (error) {
 			recordHistory({
 				connectionId: data.connectionId,

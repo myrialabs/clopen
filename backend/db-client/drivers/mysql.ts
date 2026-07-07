@@ -18,6 +18,7 @@ import type {
 import type {
 	AlterOperation,
 	DbClientDriverAdapter,
+	DbClientTxContext,
 	IndexDefinition,
 	SchemaOpts,
 	TableDefinition
@@ -155,6 +156,26 @@ export class MysqlAdapter implements DbClientDriverAdapter {
 
 	async explain(q: string, opts?: { database?: string }): Promise<DbClientQueryResult> {
 		return this.executeRead(`EXPLAIN ${q}`, [], opts);
+	}
+
+	async withTransaction<T>(fn: (tx: DbClientTxContext) => Promise<T>, opts?: { database?: string }): Promise<T> {
+		await this.ensureDatabase(opts?.database);
+		const sql = this.requireSql();
+		// Bun.sql reserves one connection for the `begin` block. Note: MySQL
+		// implicitly commits on DDL (CREATE/ALTER/DROP/…), so a batch that
+		// mixes DDL with later failures cannot fully roll back the DDL — a
+		// server limitation, not an app one.
+		return sql.begin(async (tx) => {
+			const run = async (q: string, params: unknown[] = []): Promise<DbClientQueryResult> => {
+				const start = performance.now();
+				const raw = await tx.unsafe(q, params as never);
+				return normalizeBunSqlResult(raw, Math.round(performance.now() - start));
+			};
+			return fn({
+				executeRead: (q, params) => run(q, params ?? []),
+				executeWrite: (q, params) => run(q, params ?? [])
+			});
+		}) as Promise<T>;
 	}
 
 	// ── Overview ──────────────────────────────────────────────────────────

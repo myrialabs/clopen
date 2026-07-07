@@ -51,6 +51,16 @@ export type AlterOperation =
 	| { kind: 'rename-column'; name: string; newName: string }
 	| { kind: 'modify-column'; column: ColumnDefinition };
 
+/**
+ * A connection-bound executor handed to `withTransaction`'s callback. Every
+ * call runs on the same transaction's connection, so a batch of statements
+ * commits or rolls back atomically.
+ */
+export interface DbClientTxContext {
+	executeRead(q: string, params?: unknown[], opts?: { database?: string; limit?: number }): Promise<DbClientQueryResult>;
+	executeWrite(q: string, params?: unknown[], opts?: { database?: string }): Promise<DbClientQueryResult>;
+}
+
 export interface DbClientDriverAdapter {
 	readonly kind: DbDriver;
 
@@ -74,6 +84,15 @@ export interface DbClientDriverAdapter {
 	executeWrite?(q: string, params?: unknown[], opts?: { database?: string }): Promise<DbClientQueryResult>;
 	explain?(q: string, opts?: { database?: string }): Promise<DbClientQueryResult>;
 	cancel?(): Promise<void>;
+
+	/**
+	 * Run `fn` inside a single database transaction on one dedicated
+	 * connection. Implemented only by drivers that can guarantee atomicity
+	 * (a pooled driver must reserve a connection). If `fn` throws, the
+	 * transaction is rolled back and the error re-thrown. Absence of this
+	 * method signals the caller to fall back to non-transactional execution.
+	 */
+	withTransaction?<T>(fn: (tx: DbClientTxContext) => Promise<T>, opts?: { database?: string }): Promise<T>;
 
 	// Structure
 	createDatabase?(name: string): Promise<string>;
