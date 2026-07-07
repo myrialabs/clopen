@@ -21,6 +21,8 @@
 		closable?: boolean;
 		confirmDisabled?: boolean;
 		onConfirm?: (value?: string) => void;
+		extraText?: string;
+		onExtra?: () => void;
 		children?: import('svelte').Snippet;
 	}
 
@@ -39,6 +41,8 @@
 		closable = true,
 		confirmDisabled = false,
 		onConfirm,
+		extraText,
+		onExtra,
 		children
 	}: Props = $props();
 
@@ -132,6 +136,13 @@
 	}
 
 	function handleCancel() {
+		onClose();
+	}
+
+	function handleExtra() {
+		if (onExtra) {
+			onExtra();
+		}
 		onClose();
 	}
 
@@ -251,6 +262,14 @@
 							class="px-6 py-2.5 bg-slate-50 dark:bg-slate-800 border border-slate-200 dark:border-slate-700 text-slate-700 dark:text-slate-300 rounded-lg hover:bg-slate-100 dark:hover:bg-slate-700 transition-all duration-200 font-semibold"
 						>
 							{cancelText}
+						</button>
+					{/if}
+					{#if extraText && onExtra}
+						<button
+							onclick={handleExtra}
+							class="px-6 py-2.5 bg-violet-600 dark:bg-violet-600 hover:bg-violet-700 dark:hover:bg-violet-700 text-white rounded-lg transition-all duration-200 font-semibold"
+						>
+							{extraText}
 						</button>
 					{/if}
 					<button

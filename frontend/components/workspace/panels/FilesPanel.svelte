@@ -137,7 +137,6 @@
 	let activeTabPath = $state<string | null>(null);
 	let wordWrapEnabled = $state(false);
 	let tabsScrollContainer = $state<HTMLDivElement | null>(null);
-	let showCloseAllDropdown = $state(false);
 
 	const activeTab = $derived(openTabs.find(t => t.file.path === activeTabPath) || null);
 	const modifiedFilePaths = $derived(new Set(
@@ -200,6 +199,16 @@
 		passwordResolve = null;
 		resolve?.(value);
 	}
+
+	// "Unsaved Changes" prompt shown when closing all tabs while some are dirty.
+	let closeAllUnsavedDialogOpen = $state(false);
+	let closeAllUnsavedMessage = $state('');
+
+	function closeCloseAllUnsavedDialog() {
+		closeAllUnsavedDialogOpen = false;
+		closeAllUnsavedMessage = '';
+	}
+
 	let dialogTargetFile = $state<FileNode | null>(null);
 	let dialogParentPath = $state<string | null>(null);
 
@@ -637,43 +646,44 @@
 		schedulePanelStateSave();
 	}
 
-	async function closeAllTabs() {
+	function closeAllTabs() {
 		const unsavedTabs = openTabs.filter(t => t.currentContent !== t.savedContent);
 		if (unsavedTabs.length > 0) {
 			const names = unsavedTabs.map(t => `"${t.file.name}"`).join(', ');
-			const confirmed = await showConfirm({
-				title: 'Unsaved Changes',
-				message: `${unsavedTabs.length === 1 ? `${names} has` : `${names} have`} unsaved changes. Discard all changes?`,
-				type: 'warning',
-				confirmText: 'Discard All',
-				cancelText: 'Cancel'
-			});
-			if (!confirmed) return;
+			closeAllUnsavedMessage = `${unsavedTabs.length === 1 ? `${names} has` : `${names} have`} unsaved changes.`;
+			closeAllUnsavedDialogOpen = true;
+			return;
 		}
+		performCloseAllTabs();
+	}
+
+	function performCloseAllTabs() {
 		if (activeTabPath) snapshotActiveTabScroll();
+		// Mirrors closeTab(): discard each tab's unsaved buffer so a later
+		// reopen doesn't resurrect content the user just discarded/saved.
+		for (const tab of openTabs) {
+			clearUnsavedBuffer(projectPath, tab.file.path);
+		}
 		openTabs = [];
 		activeTabPath = null;
 		if (!isTwoColumnMode) viewMode = 'tree';
 		schedulePanelStateSave();
 	}
 
-	function closeSavedTabs() {
-		const hadActiveTab = activeTabPath;
-		if (activeTabPath) {
-			const activeTab = openTabs.find(t => t.file.path === activeTabPath);
-			if (activeTab && activeTab.currentContent === activeTab.savedContent) {
-				snapshotActiveTabScroll();
+	function discardAllAndCloseTabs() {
+		performCloseAllTabs();
+	}
+
+	async function saveAllAndCloseTabs() {
+		const unsavedTabs = openTabs.filter(t => t.currentContent !== t.savedContent);
+		try {
+			for (const tab of unsavedTabs) {
+				await saveFile(tab.file.path, tab.currentContent);
 			}
+			performCloseAllTabs();
+		} catch (err) {
+			showErrorAlert(err instanceof Error ? err.message : 'Failed to save all files', 'Save Failed');
 		}
-		const savedTabs = openTabs.filter(t => t.currentContent !== t.savedContent);
-		openTabs = savedTabs;
-		if (openTabs.length === 0) {
-			activeTabPath = null;
-			if (!isTwoColumnMode) viewMode = 'tree';
-		} else if (hadActiveTab && !openTabs.find(t => t.file.path === activeTabPath)) {
-			activeTabPath = openTabs[0].file.path;
-		}
-		schedulePanelStateSave();
 	}
 
 	async function handleCloseTab(path: string) {
@@ -2364,32 +2374,11 @@
 				<button
 					type="button"
 					class="flex items-center justify-center px-2.5 border-l border-slate-200/50 dark:border-slate-700/50 text-slate-400 hover:text-slate-700 dark:hover:text-slate-300 hover:bg-slate-100 dark:hover:bg-slate-800 transition-colors bg-transparent cursor-pointer h-full"
-					onclick={(e) => { e.stopPropagation(); showCloseAllDropdown = !showCloseAllDropdown; }}
-					title="Close tabs"
+					onclick={(e) => { e.stopPropagation(); closeAllTabs(); }}
+					title="Close all tabs"
 				>
 					<Icon name="lucide:x" class="w-3.5 h-3.5" />
 				</button>
-				{#if showCloseAllDropdown}
-					<div class="fixed inset-0 z-40" onclick={() => showCloseAllDropdown = false}></div>
-					<div class="absolute right-0 top-full mt-1 bg-white dark:bg-slate-800 border border-slate-200 dark:border-slate-700 rounded-lg shadow-xl overflow-hidden min-w-32 z-50 py-1">
-						<button
-							type="button"
-							class="w-full flex items-center gap-2 px-3 py-1.5 text-xs text-left text-slate-700 dark:text-slate-300 hover:bg-slate-100 dark:hover:bg-slate-700 bg-transparent cursor-pointer border-none"
-							onclick={() => { showCloseAllDropdown = false; closeAllTabs(); }}
-						>
-							<Icon name="lucide:x" class="w-3 h-3 flex-shrink-0" />
-							Close All
-						</button>
-						<button
-							type="button"
-							class="w-full flex items-center gap-2 px-3 py-1.5 text-xs text-left text-slate-700 dark:text-slate-300 hover:bg-slate-100 dark:hover:bg-slate-700 bg-transparent cursor-pointer border-none"
-							onclick={() => { showCloseAllDropdown = false; closeSavedTabs(); }}
-						>
-							<Icon name="lucide:check" class="w-3 h-3 flex-shrink-0" />
-							Close Saved
-						</button>
-					</div>
-				{/if}
 			</div>
 		</div>
 	{/if}
@@ -2579,6 +2568,20 @@
 		confirmText="Extract"
 		onConfirm={(value) => resolvePassword(((value ?? passwordDialogValue) || '').trim() || undefined)}
 		onClose={() => resolvePassword(undefined)}
+	/>
+
+	<!-- Unsaved changes prompt shown when closing all tabs -->
+	<Dialog
+		isOpen={closeAllUnsavedDialogOpen}
+		type="warning"
+		title="Unsaved Changes"
+		message={closeAllUnsavedMessage}
+		confirmText="Discard All"
+		cancelText="Cancel"
+		extraText="Save All"
+		onExtra={saveAllAndCloseTabs}
+		onConfirm={discardAllAndCloseTabs}
+		onClose={closeCloseAllUnsavedDialog}
 	/>
 
 	<!-- Alert Component -->
