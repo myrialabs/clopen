@@ -1203,6 +1203,7 @@
 	// Get detected language from filename
 	function getDetectedLanguage(): string {
 		if (!file) return 'plaintext';
+		if (/\.env(\.\w+)?$/i.test(file.name)) return 'env';
 
 		const ext = file.name.split('.').pop()?.toLowerCase();
 		if (!ext) return 'plaintext';
@@ -1559,6 +1560,7 @@
 						{#key themeKey + (isEnvFile ? String(hideEnvValues) + '-' + revealedEnvLines.size : '')}
 						{#if hideEnvValues && isEnvFile}
 							<MonacoCodeEditor
+								bind:this={monacoEditorRef}
 								value={envViewContent}
 								language={getDetectedLanguage()}
 								path={file.path}
