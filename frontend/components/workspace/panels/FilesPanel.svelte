@@ -2581,6 +2581,21 @@
 		onClose={() => resolvePassword(undefined)}
 	/>
 
+	<!-- Alert Component -->
+	<Alert
+		bind:isOpen={showAlert}
+		title={alertTitle}
+		message={alertMessage}
+		type={alertType}
+		onClose={() => { showAlert = false; }}
+	/>
+
+	<!-- Hidden file input used by upload triggers -->
+	<input
+		bind:this={uploadInputRef}
+		type="file"
+		multiple
+		class="hidden"
 		onchange={handleUploadInputChange}
 	/>
 </div>
