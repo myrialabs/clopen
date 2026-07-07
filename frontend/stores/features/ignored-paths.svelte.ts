@@ -14,6 +14,8 @@ export const ignoredPathsState = $state<IgnoredPathsState>({
 let refreshTimer: ReturnType<typeof setTimeout> | null = null;
 let inFlight = false;
 let pendingRefresh = false;
+let unsubscribeFiles: (() => void) | null = null;
+let unsubscribeGit: (() => void) | null = null;
 
 async function fetchIgnoredPaths(projectId: string): Promise<void> {
 	if (inFlight) {
@@ -48,8 +50,23 @@ export function refreshIgnoredPaths(delay = 250): void {
 	}, delay);
 }
 
+/**
+ * Initialize the store: subscribe to change events for auto-refresh.
+ * Mirrors initGitStatus() so the ignored set doesn't go stale after
+ * file-system changes (e.g. `bun install` creating `node_modules`) or
+ * `.gitignore` edits.
+ */
 export function initIgnoredPaths(): void {
 	refreshIgnoredPaths(0);
+	if (unsubscribeFiles || unsubscribeGit) return;
+	unsubscribeFiles = ws.on('files:changed', (payload) => {
+		if (payload.projectId !== projectState.currentProject?.id) return;
+		refreshIgnoredPaths(500);
+	});
+	unsubscribeGit = ws.on('git:changed', (payload) => {
+		if (payload.projectId !== projectState.currentProject?.id) return;
+		refreshIgnoredPaths(150);
+	});
 }
 
 export function isPathIgnored(absolutePath: string): boolean {
