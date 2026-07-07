@@ -33,8 +33,7 @@
 	import { opencodeProvidersStore, type OpenCodeProviderItem, type ModelsDevProviderItem } from '$frontend/stores/features/opencode-providers.svelte';
 	import { modelStore } from '$frontend/stores/features/models.svelte';
 	import { showSuccess } from '$frontend/stores/ui/notification.svelte';
-	import type { Terminal } from '@xterm/xterm';
-	import type { FitAddon } from '@xterm/addon-fit';
+	import type { TerminalViewerHandle } from '@myrialabs/ptykit/client';
 
 	const claudeCodeEngine = ENGINES.find(e => e.type === 'claude-code')!;
 	const openCodeEngine = ENGINES.find(e => e.type === 'opencode')!;
@@ -239,8 +238,7 @@
 	// when debugging the setup-token PTY flow. No UI toggle on purpose.
 	let showClaudeDebug = $state(false);
 	let claudeDebugTermContainer = $state<HTMLDivElement>();
-	let claudeDebugTerminal: Terminal | null = null;
-	let claudeDebugFitAddon: FitAddon | null = null;
+	let claudeDebugTerminal: TerminalViewerHandle | null = null;
 	let claudeDebugTermReady = $state(false);
 	let claudeDebugPhase = $state('');
 	let claudeDebugBufferLen = $state(0);
@@ -251,8 +249,7 @@
 	// when debugging the codex login PTY flow. No UI toggle on purpose.
 	let showCodexDebug = $state(false);
 	let codexDebugTermContainer = $state<HTMLDivElement>();
-	let codexDebugTerminal: Terminal | null = null;
-	let codexDebugFitAddon: FitAddon | null = null;
+	let codexDebugTerminal: TerminalViewerHandle | null = null;
 	let codexDebugTermReady = $state(false);
 	let codexDebugBufferLen = $state(0);
 	let hasCodexDebugData = $state(false);
@@ -260,55 +257,22 @@
 	// Event listener cleanup functions
 	const cleanups: Array<() => void> = [];
 
-	async function initClaudeDebugTerminal() {
-		if (!browser || !claudeDebugTermContainer || claudeDebugTerminal) return;
-
-		const [{ Terminal }, { FitAddon }] = await Promise.all([
-			import('@xterm/xterm'),
-			import('@xterm/addon-fit')
-		]);
-
-		await import('@xterm/xterm/css/xterm.css');
-
-		claudeDebugTerminal = new Terminal({
-			theme: {
-				background: '#0f172a',
-				foreground: '#e2e8f0',
-				cursor: '#22c55e',
-				black: '#18181b',
-				red: '#ef4444',
-				green: '#22c55e',
-				yellow: '#eab308',
-				blue: '#60a5fa',
-				magenta: '#a855f7',
-				cyan: '#06b6d4',
-				white: '#f4f4f5',
-				brightBlack: '#52525b',
-				brightRed: '#f87171',
-				brightGreen: '#4ade80',
-				brightYellow: '#facc15',
-				brightBlue: '#60a5fa',
-				brightMagenta: '#c084fc',
-				brightCyan: '#22d3ee',
-				brightWhite: '#ffffff'
-			},
+	// Shared read-only debug terminal (PtyKit viewer — no PTY/input, just output).
+	async function mountDebugViewer(container: HTMLElement): Promise<TerminalViewerHandle> {
+		const { mountViewer } = await import('@myrialabs/ptykit/client');
+		return mountViewer(container, {
+			// theme, font family, scrollback, convertEol, cursor all default in PtyKit;
+			// only the compact debug-panel font size + grid are app-specific.
+			theme: 'dark',
 			fontSize: 11,
-			fontFamily: 'JetBrains Mono, Monaco, "Cascadia Code", Consolas, monospace',
-			lineHeight: 1.1,
-			cursorBlink: false,
-			cursorStyle: 'underline' as const,
-			convertEol: true,
-			scrollback: 5000,
-			disableStdin: true,
-			allowTransparency: false,
 			cols: 120,
 			rows: 20
 		});
+	}
 
-		claudeDebugFitAddon = new FitAddon();
-		claudeDebugTerminal.loadAddon(claudeDebugFitAddon);
-		claudeDebugTerminal.open(claudeDebugTermContainer);
-		claudeDebugFitAddon.fit();
+	async function initClaudeDebugTerminal() {
+		if (!browser || !claudeDebugTermContainer || claudeDebugTerminal) return;
+		claudeDebugTerminal = await mountDebugViewer(claudeDebugTermContainer);
 		claudeDebugTermReady = true;
 	}
 
@@ -316,60 +280,13 @@
 		if (claudeDebugTerminal) {
 			claudeDebugTerminal.dispose();
 			claudeDebugTerminal = null;
-			claudeDebugFitAddon = null;
 			claudeDebugTermReady = false;
 		}
 	}
 
 	async function initCodexDebugTerminal() {
 		if (!browser || !codexDebugTermContainer || codexDebugTerminal) return;
-
-		const [{ Terminal }, { FitAddon }] = await Promise.all([
-			import('@xterm/xterm'),
-			import('@xterm/addon-fit')
-		]);
-
-		await import('@xterm/xterm/css/xterm.css');
-
-		codexDebugTerminal = new Terminal({
-			theme: {
-				background: '#0f172a',
-				foreground: '#e2e8f0',
-				cursor: '#22c55e',
-				black: '#18181b',
-				red: '#ef4444',
-				green: '#22c55e',
-				yellow: '#eab308',
-				blue: '#60a5fa',
-				magenta: '#a855f7',
-				cyan: '#06b6d4',
-				white: '#f4f4f5',
-				brightBlack: '#52525b',
-				brightRed: '#f87171',
-				brightGreen: '#4ade80',
-				brightYellow: '#facc15',
-				brightBlue: '#60a5fa',
-				brightMagenta: '#c084fc',
-				brightCyan: '#22d3ee',
-				brightWhite: '#ffffff'
-			},
-			fontSize: 11,
-			fontFamily: 'JetBrains Mono, Monaco, "Cascadia Code", Consolas, monospace',
-			lineHeight: 1.1,
-			cursorBlink: false,
-			cursorStyle: 'underline' as const,
-			convertEol: true,
-			scrollback: 5000,
-			disableStdin: true,
-			allowTransparency: false,
-			cols: 120,
-			rows: 20
-		});
-
-		codexDebugFitAddon = new FitAddon();
-		codexDebugTerminal.loadAddon(codexDebugFitAddon);
-		codexDebugTerminal.open(codexDebugTermContainer);
-		codexDebugFitAddon.fit();
+		codexDebugTerminal = await mountDebugViewer(codexDebugTermContainer);
 		codexDebugTermReady = true;
 	}
 
@@ -377,7 +294,6 @@
 		if (codexDebugTerminal) {
 			codexDebugTerminal.dispose();
 			codexDebugTerminal = null;
-			codexDebugFitAddon = null;
 			codexDebugTermReady = false;
 		}
 	}
@@ -477,17 +393,6 @@
 		}
 	});
 
-	// Fit Claude debug terminal on resize
-	$effect(() => {
-		if (claudeDebugTermReady && claudeDebugFitAddon && claudeDebugTermContainer) {
-			const observer = new ResizeObserver(() => {
-				claudeDebugFitAddon?.fit();
-			});
-			observer.observe(claudeDebugTermContainer);
-			return () => observer.disconnect();
-		}
-	});
-
 	// Init Codex debug terminal when container is available
 	$effect(() => {
 		if (codexDebugTermContainer && !codexDebugTerminal && showCodexDebug) {
@@ -495,16 +400,7 @@
 		}
 	});
 
-	// Fit Codex debug terminal on resize
-	$effect(() => {
-		if (codexDebugTermReady && codexDebugFitAddon && codexDebugTermContainer) {
-			const observer = new ResizeObserver(() => {
-				codexDebugFitAddon?.fit();
-			});
-			observer.observe(codexDebugTermContainer);
-			return () => observer.disconnect();
-		}
-	});
+	// (Fit-on-resize is handled by mountViewer's own ResizeObserver.)
 
 	async function refreshClaudeCodeStatus() {
 		isLoadingClaudeCodeStatus = true;
@@ -535,7 +431,6 @@
 		// Clear debug terminal
 		if (claudeDebugTerminal) {
 			claudeDebugTerminal.clear();
-			claudeDebugTerminal.reset();
 		}
 
 		// Fire-and-forget: server will emit 'setup-url' or 'setup-error' back
@@ -810,7 +705,6 @@
 		codexDebugBufferLen = 0;
 		if (codexDebugTerminal) {
 			codexDebugTerminal.clear();
-			codexDebugTerminal.reset();
 		}
 		// The backend generates the canonical setupId — we capture it from
 		// the first inbound event (device-code / stream-data).
@@ -1606,7 +1500,7 @@
 				<button
 					type="button"
 					class="text-xs text-amber-600 hover:text-amber-800 dark:text-amber-400 dark:hover:text-amber-200"
-					onclick={() => { if (claudeDebugTerminal) { claudeDebugTerminal.clear(); claudeDebugTerminal.reset(); } hasClaudeDebugData = false; claudeDebugBufferLen = 0; }}
+					onclick={() => { claudeDebugTerminal?.clear(); hasClaudeDebugData = false; claudeDebugBufferLen = 0; }}
 				>
 					Clear
 				</button>
@@ -2201,7 +2095,7 @@
 				<button
 					type="button"
 					class="text-xs text-amber-600 hover:text-amber-800 dark:text-amber-400 dark:hover:text-amber-200"
-					onclick={() => { if (codexDebugTerminal) { codexDebugTerminal.clear(); codexDebugTerminal.reset(); } hasCodexDebugData = false; codexDebugBufferLen = 0; }}
+					onclick={() => { codexDebugTerminal?.clear(); hasCodexDebugData = false; codexDebugBufferLen = 0; }}
 				>
 					Clear
 				</button>

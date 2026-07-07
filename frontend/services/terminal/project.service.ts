@@ -10,6 +10,7 @@ import type { TerminalSession } from '$shared/types/terminal';
 import { terminalService } from './terminal.service';
 import { debug } from '$shared/utils/logger';
 import { onWsReconnect } from '$frontend/utils/ws';
+import { ptyClient } from './ptykit-client';
 import { registerProjectCleanup } from '$frontend/utils/project-state-cleanup';
 import {
 	setTerminalSnapshotProvider,
@@ -854,19 +855,17 @@ class TerminalProjectManager {
 	 * see the tab list update automatically.
 	 */
 	private setupCollaborativeListeners(): void {
-		import('$frontend/utils/ws').then(({ default: ws }) => {
-			// Listen for terminal tab created by another user
-			ws.on('terminal:tab-created', (data: {
-				sessionId: string;
-				streamId: string;
-				pid: number;
-				currentDirectory: string;
-				cols: number;
-				rows: number;
-			}) => {
-				debug.log('terminal', `📥 Received terminal:tab-created: ${data.sessionId}`);
+		{
+			// PtyKit broadcasts session lifecycle to the room (= projectId); the shared
+			// client surfaces it via onSessionCreated / onSessionClosed. These fire for
+			// our own tabs too and again on reconnect re-attach, so both handlers are
+			// written to be idempotent (dedupe by sessionId).
+			ptyClient.onSessionCreated((data) => {
+				debug.log('terminal', `📥 PtyKit session created: ${data.sessionId}`);
 
 				if (!this.currentProjectId) return;
+				// Only mirror tabs for the project currently in view.
+				if (data.namespace !== this.currentProjectId) return;
 				const context = this.projectContexts.get(this.currentProjectId);
 				if (!context) return;
 
@@ -929,10 +928,11 @@ class TerminalProjectManager {
 			});
 
 			// Listen for terminal tab closed by another user
-			ws.on('terminal:tab-closed', (data: { sessionId: string }) => {
-				debug.log('terminal', `📥 Received terminal:tab-closed: ${data.sessionId}`);
+			ptyClient.onSessionClosed((data) => {
+				debug.log('terminal', `📥 PtyKit session closed: ${data.sessionId}`);
 
 				if (!this.currentProjectId) return;
+				if (data.namespace !== this.currentProjectId) return;
 				const context = this.projectContexts.get(this.currentProjectId);
 				if (!context) return;
 
@@ -961,7 +961,7 @@ class TerminalProjectManager {
 			});
 
 			debug.log('terminal', '✅ Terminal collaborative listeners registered');
-		});
+		}
 
 		// Validate terminal sessions after WebSocket reconnect.
 		// When the server restarts, all PTY sessions die. We need to detect

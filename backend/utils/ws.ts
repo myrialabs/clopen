@@ -1027,6 +1027,20 @@ class WSServer {
 	};
 
 	/**
+	 * Send a pre-serialized message to a single connection by its stable id.
+	 * Resolves the CURRENT wrapper (Elysia recreates wrappers per handler call),
+	 * so it is safe to hold a connection id in a long-lived closure and send later
+	 * — e.g. an embedded PtyKit transport tunneling frames to one viewer. Applies
+	 * the same backpressure guard as room emits. Returns false if the connection is
+	 * gone or backpressured.
+	 */
+	sendToConnectionId(connId: string, message: string | ArrayBuffer): boolean {
+		const conn = this.connections.get(connId);
+		if (!conn) return false;
+		return this.sendToConnection(conn, message);
+	}
+
+	/**
 	 * Get all connections (optionally filtered by project)
 	 */
 	getConnections(projectId?: string): WSConnection[] {

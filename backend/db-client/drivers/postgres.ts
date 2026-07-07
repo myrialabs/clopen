@@ -18,6 +18,7 @@ import type {
 import type {
 	AlterOperation,
 	DbClientDriverAdapter,
+	DbClientTxContext,
 	IndexDefinition,
 	SchemaOpts,
 	TableDefinition
@@ -184,6 +185,25 @@ export class PostgresAdapter implements DbClientDriverAdapter {
 
 	async explain(q: string, opts?: { database?: string }): Promise<DbClientQueryResult> {
 		return this.executeRead(`EXPLAIN ${q}`, [], opts);
+	}
+
+	async withTransaction<T>(fn: (tx: DbClientTxContext) => Promise<T>, opts?: { database?: string }): Promise<T> {
+		await this.ensureDatabase(opts?.database);
+		const sql = this.requireSql();
+		// Bun.sql reserves a single connection for the duration of `begin`, so
+		// every statement below shares one transaction. Postgres wraps DDL in
+		// the transaction too, so a mid-batch failure rolls everything back.
+		return sql.begin(async (tx) => {
+			const run = async (q: string, params: unknown[] = []): Promise<DbClientQueryResult> => {
+				const start = performance.now();
+				const raw = await tx.unsafe(q, params as never);
+				return normalizeBunSqlResult(raw, Math.round(performance.now() - start));
+			};
+			return fn({
+				executeRead: (q, params) => run(q, params ?? []),
+				executeWrite: (q, params) => run(q, params ?? [])
+			});
+		}) as Promise<T>;
 	}
 
 	// ── Overview ──────────────────────────────────────────────────────────

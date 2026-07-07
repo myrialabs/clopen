@@ -4,12 +4,10 @@
  */
 
 import type { TerminalSession, TerminalLine, TerminalCommand } from '$shared/types/terminal';
-import { terminalService, type StreamingResponse } from '$frontend/services/terminal';
+import { terminalService } from '$frontend/services/terminal';
 import { terminalSessionManager } from '$frontend/services/terminal';
 import { addNotification } from '../ui/notification.svelte';
 import { markTerminalDirty } from './terminal-workspace.svelte';
-import ws from '$frontend/utils/ws';
-
 import { debug } from '$shared/utils/logger';
 interface TerminalState {
 	sessions: TerminalSession[];
@@ -310,45 +308,6 @@ export const terminalStore = {
 		markTerminalDirty();
 	},
 
-	// Connect to PTY session (for initial auto-connect)
-	async connectToSession(projectPath?: string, projectId?: string, terminalSize?: { cols: number; rows: number }): Promise<void> {
-		const activeSession = this.activeSession;
-		if (!activeSession) {
-			return;
-		}
-
-		// Cross-project leakage guard. During a project switch the previous
-		// project's XTerm can still be mounted for a moment while the WebSocket
-		// room has ALREADY moved to the new project. Connecting a stale session
-		// here would register the OLD project's terminal in the NEW project's room
-		// — the "terminal not restored until you select the project twice" bug.
-		//
-		// Compare against the WS connection's CURRENT room (ws context), NOT the
-		// passed projectId / projectState: those lag behind the room change during
-		// a switch, so they'd still read the old project and the guard would miss.
-		const roomProjectId = ws.getContext().projectId;
-		if (activeSession.projectId && roomProjectId && activeSession.projectId !== roomProjectId) {
-			debug.log('terminal', `Skip cross-project connect: session=${activeSession.projectId} room=${roomProjectId}`);
-			return;
-		}
-
-		// Connect to PTY session via SSE
-		try {
-			await terminalService.connectToSession(
-				{
-					sessionId: activeSession.id,
-					workingDirectory: activeSession.directory,
-					projectPath,
-					projectId,
-					terminalSize
-				},
-				(data: StreamingResponse) => this.handleStreamingData(activeSession.id, data)
-			);
-		} catch (error) {
-			// Silently handle connection errors
-		}
-	},
-
 	async cancelCommand(): Promise<void> {
 		const activeSession = this.activeSession;
 		if (!activeSession) {
@@ -434,53 +393,6 @@ export const terminalStore = {
 		}
 	},
 
-	// Process buffered output to handle chunked PTY data properly
-	processBufferedOutput(sessionId: string, content: string, type: 'output' | 'error'): void {
-		// Clear any pending flush timer for this session
-		const existingTimer = terminalState.flushTimers.get(sessionId);
-		if (existingTimer) {
-			clearTimeout(existingTimer);
-			terminalState.flushTimers.delete(sessionId);
-		}
-
-		let buffer = terminalState.lineBuffers.get(sessionId) || '';
-		buffer += content;
-
-		// Check if we're in the middle of an ANSI escape sequence
-		const lastEscIndex = buffer.lastIndexOf('\x1b');
-		if (lastEscIndex >= 0 && lastEscIndex > buffer.length - 10) {
-			const remaining = buffer.substring(lastEscIndex);
-			if (!/^(\x1b\[[0-9;]*[a-zA-Z]|\x1b\[\?[0-9]+[lh])/.test(remaining)) {
-				// Incomplete escape sequence - hold briefly, auto-flush after 8ms
-				terminalState.lineBuffers.set(sessionId, buffer);
-				const flushTimer = setTimeout(() => {
-					terminalState.flushTimers.delete(sessionId);
-					const pending = terminalState.lineBuffers.get(sessionId);
-					if (pending && pending.length > 0) {
-						this.addLineToSession(sessionId, {
-							content: pending,
-							type: type,
-							timestamp: new Date()
-						});
-						terminalState.lineBuffers.set(sessionId, '');
-					}
-				}, 8);
-				terminalState.flushTimers.set(sessionId, flushTimer);
-				return;
-			}
-		}
-
-		// Flush immediately - no artificial delay for complete data
-		if (buffer.length > 0) {
-			this.addLineToSession(sessionId, {
-				content: buffer,
-				type: type,
-				timestamp: new Date()
-			});
-			terminalState.lineBuffers.set(sessionId, '');
-		}
-	},
-
 	// Session Content Management
 	addLineToSession(sessionId: string, line: TerminalLine): void {
 		const session = terminalState.sessions.find(s => s.id === sessionId);
@@ -540,83 +452,6 @@ export const terminalStore = {
 				}
 				: session
 		);
-	},
-
-	// Handle streaming data from terminal service
-	handleStreamingData(sessionId: string, data: StreamingResponse): void {
-		switch (data.type) {
-			case 'clear-screen':
-				// Handle clear screen command
-				this.clearSession(sessionId);
-				// Trigger prompt display after clear
-				setTimeout(() => {
-					this.triggerPromptDisplay(sessionId);
-				}, 100);
-				break;
-				
-			case 'output':
-				if (data.content) {
-					// Use line buffering for output to handle chunked PTY data
-					this.processBufferedOutput(sessionId, data.content, 'output');
-				}
-				break;
-
-			case 'error':
-				if (data.content) {
-					// If PTY session is gone, auto-close the tab instead of showing error
-					if (data.content.includes('Session not found') || data.content.includes('PTY not available')) {
-						debug.log('terminal', `🧹 Auto-closing dead terminal tab: ${sessionId}`);
-						this.closeSession(sessionId);
-						return;
-					}
-					// Error messages are usually complete, but still buffer for safety
-					this.processBufferedOutput(sessionId, data.content, 'error');
-				}
-				break;
-
-			case 'directory':
-				if (data.newDirectory) {
-					// Update session directory
-					this.updateSessionDirectory(sessionId, data.newDirectory);
-				}
-				break;
-
-			case 'exit':
-				// Flush any remaining buffer content
-				const remainingBuffer = terminalState.lineBuffers.get(sessionId);
-				if (remainingBuffer && remainingBuffer.length > 0) {
-					this.addLineToSession(sessionId, {
-						content: remainingBuffer,
-						type: 'output',
-						timestamp: new Date()
-					});
-					terminalState.lineBuffers.set(sessionId, '');
-				}
-				
-				// Check if command was cancelled
-				if (data.content?.includes('interrupted')) {
-					terminalState.lastCommandWasCancelled = true;
-				}
-				// Add prompt trigger after command exits
-				this.addLineToSession(sessionId, {
-					content: '',
-					type: 'prompt-trigger',
-					timestamp: new Date()
-				});
-				break;
-
-			case 'complete':
-				// Remove session from executing set
-				terminalState.executingSessionIds.delete(sessionId);
-				terminalState.sessionExecutionStates.set(sessionId, false);
-				// Update global executing state only if it's the active session
-				if (sessionId === terminalState.activeSessionId) {
-					terminalState.isExecuting = false;
-				}
-				// Always trigger prompt display for the completed session
-				this.triggerPromptDisplay(sessionId);
-				break;
-		}
 	},
 
 	// Detect shell type for a session
@@ -756,21 +591,6 @@ export const terminalStore = {
 					: s
 			);
 		}
-	},
-	
-	// Initialize terminal store
-	// Save terminal buffer state for a session
-	saveTerminalBuffer(sessionId: string, buffer: import('$shared/types/terminal').TerminalBuffer): void {
-		const session = terminalState.sessions.find(s => s.id === sessionId);
-		if (session) {
-			session.terminalBuffer = buffer;
-		}
-	},
-	
-	// Get terminal buffer for a session
-	getTerminalBuffer(sessionId: string): import('$shared/types/terminal').TerminalBuffer | undefined {
-		const session = terminalState.sessions.find(s => s.id === sessionId);
-		return session?.terminalBuffer;
 	},
 	
 	initialize(hasActiveProject: boolean, projectPath?: string): void {

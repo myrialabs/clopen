@@ -1,102 +1,165 @@
-import { basename, dirname, isAbsolute, join, relative, sep } from 'node:path';
+import { isAbsolute, join, relative, sep } from 'node:path';
 import { mkdir, readdir, stat, writeFile } from 'node:fs/promises';
-import { zipSync, Unzip, UnzipInflate, UnzipPassThrough } from 'fflate';
+import {
+	zip,
+	tar,
+	tarGz,
+	tarZstd,
+	sevenZip,
+	extractStream,
+	type ZipEntryInput,
+	type TarEntryInput,
+	type SevenZipEntryInput,
+	type ArchiveFormat
+} from '@myrialabs/zipkit';
 
 import { debug } from '$shared/utils/logger';
 import { getMaxFileSize, validateFileSize } from './file-size-limit';
 
-interface ZipTree {
-	[path: string]: Uint8Array | ZipTree;
+/** Container formats Clopen can produce. */
+export type ArchiveKind = 'zip' | 'tar' | 'tar.gz' | 'tar.zst' | '7z';
+
+/** Options for {@link createArchiveOperation}. */
+export interface CreateArchiveOptions {
+	/** Container format (default `'zip'`). */
+	format?: ArchiveKind;
+	/** ZIP compression method (default `'deflate'`). Ignored by tar/7z. */
+	method?: 'store' | 'deflate' | 'zstd';
+	/** Compression level (codec-specific; left to the codec default when omitted). */
+	level?: number;
+	/** Encrypt the archive with WinZip AES-256. ZIP only. */
+	password?: string;
 }
 
-function setInTree(tree: ZipTree, parts: string[], value: Uint8Array | ZipTree): void {
-	if (parts.length === 0) return;
-	if (parts.length === 1) {
-		tree[parts[0]] = value;
-		return;
-	}
-	const head = parts[0];
-	const existing = tree[head];
-	const child: ZipTree = existing && !(existing instanceof Uint8Array)
-		? (existing as ZipTree)
-		: {};
-	tree[head] = child;
-	setInTree(child, parts.slice(1), value);
+interface FlatFile {
+	name: string;
+	data: Uint8Array;
+	mode: number;
 }
 
-async function readPathIntoTree(sourcePath: string, rootName: string, tree: ZipTree): Promise<void> {
+interface FlatDir {
+	name: string;
+	mode: number;
+}
+
+/** Recursively collect files (and empty directories) under `sourcePath`. */
+async function collectEntries(sourcePath: string, rootName: string, files: FlatFile[], emptyDirs: FlatDir[]): Promise<void> {
 	const stats = await stat(sourcePath);
 	if (stats.isFile()) {
 		const data = new Uint8Array(await Bun.file(sourcePath).arrayBuffer());
-		setInTree(tree, rootName.split('/'), data);
+		files.push({ name: rootName, data, mode: stats.mode & 0o777 });
 		return;
 	}
 	if (stats.isDirectory()) {
 		const entries = await readdir(sourcePath);
 		if (entries.length === 0) {
-			setInTree(tree, rootName.split('/'), {} as ZipTree);
+			emptyDirs.push({ name: `${rootName}/`, mode: stats.mode & 0o777 });
 			return;
 		}
 		for (const entry of entries) {
-			await readPathIntoTree(
-				join(sourcePath, entry),
-				`${rootName}/${entry}`,
-				tree
-			);
+			await collectEntries(join(sourcePath, entry), `${rootName}/${entry}`, files, emptyDirs);
 		}
 	}
 }
 
-export async function createZipOperation(sourcePaths: string[], targetZipPath: string): Promise<{ message: string; path: string; size: number; modified: string }> {
+/** Build the archive bytes for the requested container from collected entries. */
+async function buildArchive(
+	format: ArchiveKind,
+	files: FlatFile[],
+	emptyDirs: FlatDir[],
+	opts: CreateArchiveOptions
+): Promise<Uint8Array> {
+	if (opts.password && format !== 'zip') {
+		throw new Error('Password protection is only supported for ZIP archives');
+	}
+
+	if (format === 'zip') {
+		const method = opts.method ?? 'deflate';
+		const entries: ZipEntryInput[] = [
+			...files.map((f) => ({ name: f.name, data: f.data, method, level: opts.level, unixPermissions: f.mode })),
+			...emptyDirs.map((d) => ({ name: d.name, data: new Uint8Array(0), unixPermissions: d.mode }))
+		];
+		return zip(entries, opts.password ? { password: opts.password } : {});
+	}
+
+	if (format === '7z') {
+		// 7z entries are files only; empty directories aren't represented.
+		const entries: SevenZipEntryInput[] = files.map((f) => ({
+			name: f.name,
+			data: f.data,
+			method: opts.method === 'store' ? 'copy' : 'lzma',
+			level: opts.level
+		}));
+		return sevenZip(entries);
+	}
+
+	// tar family
+	const entries: TarEntryInput[] = [
+		...files.map((f) => ({ name: f.name, data: f.data, mode: f.mode })),
+		...emptyDirs.map((d) => ({ name: d.name, type: 'directory' as const, mode: d.mode }))
+	];
+	if (format === 'tar') return tar(entries);
+	if (format === 'tar.gz') return tarGz(entries, opts.level !== undefined ? { level: opts.level } : undefined);
+	return tarZstd(entries, opts.level !== undefined ? { level: opts.level } : undefined);
+}
+
+/**
+ * Compress a set of files/directories into a single archive. Supports ZIP
+ * (store/deflate/zstd, optional AES-256), tar/`.tar.gz`/`.tar.zst`, and 7z.
+ */
+export async function createArchiveOperation(
+	sourcePaths: string[],
+	targetPath: string,
+	opts: CreateArchiveOptions = {}
+): Promise<{ message: string; path: string; size: number; modified: string }> {
 	if (!Array.isArray(sourcePaths) || sourcePaths.length === 0) {
 		throw new Error('At least one source path is required');
 	}
-	if (!targetZipPath) {
-		throw new Error('Target zip path is required');
+	if (!targetPath) {
+		throw new Error('Target archive path is required');
 	}
 
+	const format = opts.format ?? 'zip';
+
 	try {
-		const targetFile = Bun.file(targetZipPath);
+		const targetFile = Bun.file(targetPath);
 		if (await targetFile.exists()) {
 			throw new Error('Target archive already exists');
 		}
 
-		const tree: ZipTree = {};
-
+		const files: FlatFile[] = [];
+		const emptyDirs: FlatDir[] = [];
 		for (const source of sourcePaths) {
-			const name = basename(source);
+			const name = source.split(sep).pop() ?? '';
 			if (!name || name === '.' || name === '..') {
 				throw new Error(`Invalid source path: ${source}`);
 			}
-			await readPathIntoTree(source, name, tree);
+			await collectEntries(source, name, files, emptyDirs);
 		}
 
-		const zipped = zipSync(tree as Record<string, Uint8Array>, { level: 6 });
-		validateFileSize(zipped.byteLength);
-		await Bun.write(targetZipPath, zipped);
-		const stats = await stat(targetZipPath);
+		const archive = await buildArchive(format, files, emptyDirs, opts);
+		validateFileSize(archive.byteLength);
+		await Bun.write(targetPath, archive);
+		const stats = await stat(targetPath);
 
 		return {
 			message: 'Archive created successfully',
-			path: targetZipPath,
+			path: targetPath,
 			size: stats.size,
 			modified: stats.mtime.toISOString()
 		};
 	} catch (error) {
-		debug.error('file', 'Create zip error:', error);
+		debug.error('file', 'Create archive error:', error);
 		if (error instanceof Error) {
-			if (error.message.includes('EPERM')) {
-				throw new Error('Permission denied while creating archive');
-			}
-			if (error.message.includes('ENOSPC')) {
-				throw new Error('Not enough space on disk');
-			}
+			if (error.message.includes('EPERM')) throw new Error('Permission denied while creating archive');
+			if (error.message.includes('ENOSPC')) throw new Error('Not enough space on disk');
 			throw error;
 		}
 		throw new Error('Failed to create archive');
 	}
 }
 
+/** Reject entry paths that are absolute or escape the extraction root. */
 function isSafeEntryPath(entryPath: string, targetRoot: string): boolean {
 	if (!entryPath) return false;
 	if (isAbsolute(entryPath)) return false;
@@ -107,18 +170,54 @@ function isSafeEntryPath(entryPath: string, targetRoot: string): boolean {
 	return rel === '' || (!rel.startsWith('..') && !isAbsolute(rel));
 }
 
-export async function extractZipOperation(archivePath: string, targetDir: string): Promise<{ message: string; path: string; entries: number; modified: string }> {
-	if (!archivePath) {
-		throw new Error('Archive path is required');
+/** Map a filename to a ZipKit container format; `undefined` → auto-detect. */
+function formatFromPath(archivePath: string): ArchiveFormat | undefined {
+	const n = archivePath.toLowerCase();
+	if (n.endsWith('.tar.gz') || n.endsWith('.tgz')) return 'tar.gz';
+	if (n.endsWith('.tar.zst') || n.endsWith('.tzst')) return 'tar.zst';
+	if (n.endsWith('.tar.xz') || n.endsWith('.txz')) return 'tar.xz';
+	if (n.endsWith('.tar.bz2') || n.endsWith('.tbz2')) return 'tar.bz2';
+	if (n.endsWith('.tar')) return 'tar';
+	if (n.endsWith('.zip')) return 'zip';
+	if (n.endsWith('.7z')) return '7z';
+	// Lone-stream / ambiguous extensions: let extractStream sniff the magic bytes.
+	return undefined;
+}
+
+function concatChunks(chunks: Uint8Array[], total: number): Uint8Array {
+	const out = new Uint8Array(total);
+	let pos = 0;
+	for (const chunk of chunks) {
+		out.set(chunk, pos);
+		pos += chunk.length;
 	}
-	if (!targetDir) {
-		throw new Error('Target directory is required');
-	}
+	return out;
+}
+
+async function writeEntry(fullPath: string, chunks: Uint8Array[], total: number): Promise<void> {
+	await mkdir(join(fullPath, '..'), { recursive: true });
+	await writeFile(fullPath, concatChunks(chunks, total));
+}
+
+/**
+ * Extract an archive into `targetDir`. Auto-detects the container (ZIP, tar,
+ * `.tar.gz`/`.tar.zst`, 7z, …) from the filename or magic bytes and streams via
+ * ZipKit's {@link extractStream}, which caps the running total of *actually
+ * decompressed* bytes at the configured file-size limit — so a crafted archive
+ * that forges its uncompressed-size fields still can't blow past the cap. Each
+ * entry is path-checked before it touches disk; symlinks are skipped to avoid
+ * symlink-escape writes.
+ */
+export async function extractArchiveOperation(
+	archivePath: string,
+	targetDir: string,
+	password?: string
+): Promise<{ message: string; path: string; entries: number; modified: string }> {
+	if (!archivePath) throw new Error('Archive path is required');
+	if (!targetDir) throw new Error('Target directory is required');
 
 	const archiveFile = Bun.file(archivePath);
-	if (!(await archiveFile.exists())) {
-		throw new Error('Archive does not exist');
-	}
+	if (!(await archiveFile.exists())) throw new Error('Archive does not exist');
 
 	const limit = getMaxFileSize();
 	const limitMB = Math.floor(limit / (1024 * 1024));
@@ -131,16 +230,18 @@ export async function extractZipOperation(archivePath: string, targetDir: string
 		const targetExists = await Bun.file(targetDir).exists();
 		if (targetExists) {
 			const targetStats = await stat(targetDir);
-			if (!targetStats.isDirectory()) {
-				throw new Error('Target path exists and is not a directory');
-			}
-		} else {
-			await mkdir(targetDir, { recursive: true });
+			if (!targetStats.isDirectory()) throw new Error('Target path exists and is not a directory');
 		}
+		// The target directory is created lazily, only as entries are written, so a
+		// failed extraction — e.g. an encrypted archive before its password is
+		// entered, or an incorrect one — never leaves an empty folder behind.
 
 		const data = new Uint8Array(await archiveFile.arrayBuffer());
-		const entryCount = await extractWithinLimit(data, targetDir, limit, limitMB);
+		const entryCount = await extractWithinLimit(data, archivePath, targetDir, limit, limitMB, password);
 
+		// Ensure the directory exists even for an archive that yielded no file
+		// entries, so the stat below has something to read.
+		await mkdir(targetDir, { recursive: true });
 		const targetStats = await stat(targetDir);
 		return {
 			message: 'Archive extracted successfully',
@@ -149,104 +250,83 @@ export async function extractZipOperation(archivePath: string, targetDir: string
 			modified: targetStats.mtime.toISOString()
 		};
 	} catch (error) {
-		debug.error('file', 'Extract zip error:', error);
+		debug.error('file', 'Extract archive error:', error);
 		if (error instanceof Error) {
-			if (error.message.includes('EPERM')) {
-				throw new Error('Permission denied while extracting archive');
+			// Translate ZipKit's technical encryption errors into a clean message the
+			// UI can detect to prompt for (or re-prompt) a password.
+			if (/encrypted|wrong password|bad password|decrypt/i.test(error.message)) {
+				throw new Error(password ? 'Incorrect password for this archive' : 'This archive is password-protected');
 			}
-			if (error.message.includes('ENOSPC')) {
-				throw new Error('Not enough space on disk');
-			}
+			if (error.message.includes('EPERM')) throw new Error('Permission denied while extracting archive');
+			if (error.message.includes('ENOSPC')) throw new Error('Not enough space on disk');
 			throw error;
 		}
 		throw new Error('Failed to extract archive');
 	}
 }
 
-const STREAM_CHUNK_SIZE = 64 * 1024;
-
-function concatChunks(chunks: Uint8Array[], total: number): Uint8Array {
-	const out = new Uint8Array(total);
-	let pos = 0;
-	for (const chunk of chunks) {
-		out.set(chunk, pos);
-		pos += chunk.length;
-	}
-	return out;
-}
-
-async function writeEntry(fullPath: string, content: Uint8Array): Promise<void> {
-	await mkdir(dirname(fullPath), { recursive: true });
-	await writeFile(fullPath, content);
-}
-
 /**
- * Stream-extract a ZIP, aborting as soon as the running total of *actual*
- * decompressed bytes exceeds the limit. Feeding the compressed data in small
- * chunks bounds how much a single decode step can emit, so a crafted archive
- * cannot allocate more than the limit before being rejected — unlike trusting
- * the uncompressed-size fields in the central directory, which an attacker
- * controls and can forge to defeat a pre-decompression size check.
+ * Stream-extract an archive, translating ZipKit's cap error into Clopen's
+ * user-facing size-limit message. `maxTotalBytes` bounds actual decompressed
+ * output, so a zip bomb (or one that forges its metadata) is rejected before it
+ * can allocate past the limit.
  */
 async function extractWithinLimit(
 	data: Uint8Array,
+	archivePath: string,
 	targetDir: string,
 	limit: number,
-	limitMB: number
+	limitMB: number,
+	password?: string
 ): Promise<number> {
-	let totalBytes = 0;
 	let entryCount = 0;
-	let failure: Error | null = null;
-	const writes: Promise<void>[] = [];
+	let currentPath: string | null = null;
+	let chunks: Uint8Array[] = [];
+	let currentTotal = 0;
 
-	const unzipper = new Unzip((file) => {
-		if (failure) return;
-
-		if (!isSafeEntryPath(file.name, targetDir)) {
-			failure = new Error(`Unsafe path in archive: ${file.name}`);
-			return;
-		}
-
-		const normalized = file.name.replace(/\\/g, '/');
-		const fullPath = join(targetDir, normalized.split('/').join(sep));
-
-		if (normalized.endsWith('/')) {
-			writes.push(mkdir(fullPath, { recursive: true }).then(() => undefined));
-			return;
-		}
-
-		const chunks: Uint8Array[] = [];
-		let fileBytes = 0;
-		file.ondata = (err, chunk, final) => {
-			if (failure) return;
-			if (err) {
-				failure = err;
-				return;
+	try {
+		for await (const { info, chunk, done } of extractStream(data, {
+			maxTotalBytes: limit,
+			format: formatFromPath(archivePath),
+			password
+		})) {
+			if (!isSafeEntryPath(info.name, targetDir)) {
+				throw new Error(`Unsafe path in archive: ${info.name}`);
 			}
-			totalBytes += chunk.length;
-			if (totalBytes > limit) {
-				failure = new Error(`Extracted content exceeds maximum allowed size of ${limitMB}MB`);
-				return;
+			const normalized = info.name.replace(/\\/g, '/');
+			const fullPath = join(targetDir, normalized.split('/').join(sep));
+
+			if (info.type === 'directory') {
+				await mkdir(fullPath, { recursive: true });
+				continue;
 			}
-			chunks.push(chunk);
-			fileBytes += chunk.length;
-			if (final) {
-				writes.push(writeEntry(fullPath, concatChunks(chunks, fileBytes)));
+			// Skip symlinks: recreating them from an untrusted archive risks
+			// symlink-escape writes on later entries.
+			if (info.type === 'symlink') continue;
+
+			if (currentPath !== fullPath) {
+				currentPath = fullPath;
+				chunks = [];
+				currentTotal = 0;
+			}
+			if (chunk.length) {
+				chunks.push(chunk);
+				currentTotal += chunk.length;
+			}
+			if (done) {
+				await writeEntry(fullPath, chunks, currentTotal);
 				entryCount++;
+				currentPath = null;
+				chunks = [];
+				currentTotal = 0;
 			}
-		};
-		file.start();
-	});
-	unzipper.register(UnzipInflate);
-	unzipper.register(UnzipPassThrough);
-
-	for (let offset = 0; offset < data.length && !failure; offset += STREAM_CHUNK_SIZE) {
-		const end = Math.min(offset + STREAM_CHUNK_SIZE, data.length);
-		unzipper.push(data.subarray(offset, end), end >= data.length);
+		}
+	} catch (error) {
+		if (error instanceof Error && /maxTotalBytes|remaining cap/.test(error.message)) {
+			throw new Error(`Extracted content exceeds maximum allowed size of ${limitMB}MB`);
+		}
+		throw error;
 	}
 
-	if (failure) throw failure;
-	await Promise.all(writes);
 	return entryCount;
 }
-

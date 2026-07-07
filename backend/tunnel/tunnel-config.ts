@@ -6,7 +6,7 @@
  */
 
 import { join } from 'path';
-import { TunnelKit, TunnelStore, type ActiveTunnel, type IngressInfo, type TunnelType } from 'tunnelkit';
+import { TunnelKit, TunnelStore, type ActiveTunnel, type IngressInfo, type TunnelType } from '@myrialabs/tunnelkit';
 import { getClopenDir } from '../utils/paths';
 import { debug } from '$shared/utils/logger';
 

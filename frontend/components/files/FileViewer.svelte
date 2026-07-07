@@ -98,6 +98,8 @@
 	let editableContent = $state('');
 	let isSaving = $state(false);
 	let hasChanges = $state(false);
+	let hideEnvValues = $state(true);
+	let revealedEnvLines = $state(new Set<number>());
 
 	// Image editor overlay state. `imageReloadToken` is bumped after an in-place
 	// save so MediaPreview re-fetches the (now changed) file at the same path.
@@ -111,7 +113,30 @@
 	const canSave = $derived(hasChanges && !isSaving && !!file && !!onSave);
 	const saveButtonDisabled = $derived(!canSave);
 
+	const isEnvFile = $derived(!!file && /\.env(\.\w+)?$/i.test(file.name));
+	const envViewContent = $derived.by(() => {
+		if (!isEnvFile || !hideEnvValues) return editableContent;
+		return editableContent.split('\n').map((line, idx) => {
+			const lineNum = idx + 1;
+			if (revealedEnvLines.has(lineNum)) return line;
+			return line.replace(/^([\w.[\]]+\s*=\s*)(.+)$/, (_, key: string, value: string) => {
+				const trimmed = value.trim();
+				if (trimmed.length === 0) return line;
+				return key + '█'.repeat(Math.min(Math.max(trimmed.length, 8), 48));
+			});
+		}).join('\n');
+	});
 	let monacoEditorRef: MonacoEditorComponent | null = $state(null);
+
+	function toggleRevealLine(lineNumber: number) {
+		const newSet = new Set(revealedEnvLines);
+		if (newSet.has(lineNumber)) {
+			newSet.delete(lineNumber);
+		} else {
+			newSet.add(lineNumber);
+		}
+		revealedEnvLines = newSet;
+	}
 
 	// Line highlighting state. `currentDecorations` holds Monaco's decoration IDs
 	// so a later deltaDecorations call can remove them — kept as a plain `let`
@@ -125,6 +150,8 @@
 
 	// Git gutter decorations + HEAD content cache
 	let gutterDecorations: string[] = [];
+	let envDecorations: string[] = [];
+	let envDecoEditor: editor.IStandaloneCodeEditor | null = null;
 	let gutterChanges: GutterChange[] = [];
 	let headContent = $state<string | null>(null);
 	let headContentForPath = '';
@@ -146,6 +173,7 @@
 	// Monaco MouseTargetType.GUTTER_LINE_DECORATIONS — clicks on the colored bar
 	// land in the line-decorations strip (between line-numbers and content).
 	const GUTTER_LINE_DECORATIONS = 4;
+	const GUTTER_GLYPH_MARGIN = 5;
 
 	// Monaco OverviewRulerLane.Right — places the marker in the scrollbar lane.
 	const OVERVIEW_RULER_RIGHT = 4;
@@ -443,6 +471,52 @@
 		}
 		return null;
 	}
+
+	function updateEnvDecorations() {
+		const editor = envDecoEditor;
+		if (!editor) return;
+
+		if (!isEnvFile || !hideEnvValues) {
+			envDecorations = editor.deltaDecorations(envDecorations, []);
+			return;
+		}
+
+		const lines = editableContent.split('\n');
+		const newDecorations: {
+			range: { startLineNumber: number; startColumn: number; endLineNumber: number; endColumn: number };
+			options: { linesDecorationsClassName: string };
+		}[] = [];
+
+		lines.forEach((line, idx) => {
+			if (/^[\w.[\]]+\s*=\s*\S/.test(line)) {
+				const lineNum = idx + 1;
+				newDecorations.push({
+					range: {
+						startLineNumber: lineNum,
+						startColumn: 1,
+						endLineNumber: lineNum,
+						endColumn: 1
+					},
+					options: {
+						linesDecorationsClassName: 'env-gutter-dot'
+					}
+				});
+			}
+		});
+
+		envDecorations = editor.deltaDecorations(envDecorations, newDecorations);
+	}
+
+	$effect(() => {
+		if (envDecoEditor && isEnvFile && hideEnvValues) {
+			void revealedEnvLines;
+			editableContent;
+			updateEnvDecorations();
+		} else if (envDecoEditor) {
+			envDecoEditor.deltaDecorations(envDecorations, []);
+			envDecorations = [];
+		}
+	});
 
 	// Icon SVGs (inline so we can attach them to dynamically-created DOM nodes)
 	const ICON_CHEVRON_UP =
@@ -767,6 +841,7 @@
 			e.preventDefault();
 			if (innerEl) {
 				innerEl.scrollTop += e.deltaY;
+				innerEl.scrollLeft += e.deltaX;
 				// Sync the margin (line numbers) so it scrolls in lockstep
 				// with the body. They live in separate clipped DOM trees
 				// (Monaco splits view-zone content and margin), so a single
@@ -890,10 +965,25 @@
 		gutterClickDispose = () => disposable.dispose();
 	}
 
+	function attachEnvClickHandler(editorInstance: editor.IStandaloneCodeEditor) {
+		editorInstance.onMouseDown((e) => {
+			if (!isEnvFile || !hideEnvValues) return;
+			if (e.target.type !== GUTTER_LINE_DECORATIONS) return;
+			const el = e.target.element as HTMLElement | null;
+			if (!el || !el.classList.contains('env-gutter-dot')) return;
+			const line = e.target.position?.lineNumber;
+			if (!line) return;
+			const contentLine = editableContent.split('\n')[line - 1];
+			if (!contentLine || !/^[\w.[\]]+\s*=\s*\S/.test(contentLine)) return;
+			toggleRevealLine(line);
+		});
+	}
+
 	// Called by MonacoCodeEditor once the editor instance is fully constructed.
 	// Re-runs after every theme remount, so re-attach the scroll listener and
 	// re-apply gutter decorations + pending scroll restore each time.
 	function handleEditorMount(editorInstance: editor.IStandaloneCodeEditor) {
+		envDecoEditor = editorInstance;
 		scrollListenerDispose?.();
 		const disposable = editorInstance.onDidScrollChange((e) => {
 			if (e.scrollTopChanged) {
@@ -924,6 +1014,9 @@
 		}
 
 		attachGutterClickHandler(editorInstance);
+
+		attachEnvClickHandler(editorInstance);
+		updateEnvDecorations();
 
 		// Markdown mode-switch scroll restore takes precedence over the
 		// tab-switch absolute scroll restore.
@@ -1110,6 +1203,7 @@
 	// Get detected language from filename
 	function getDetectedLanguage(): string {
 		if (!file) return 'plaintext';
+		if (/\.env(\.\w+)?$/i.test(file.name)) return 'env';
 
 		const ext = file.name.split('.').pop()?.toLowerCase();
 		if (!ext) return 'plaintext';
@@ -1138,7 +1232,7 @@
 			dart: 'dart', sol: 'solidity',
 			graphql: 'graphql', gql: 'graphql',
 			svelte: 'html', vue: 'html',
-			gitignore: 'plaintext', env: 'plaintext', txt: 'plaintext', log: 'plaintext',
+			gitignore: 'plaintext', env: 'env', txt: 'plaintext', log: 'plaintext',
 			svg: 'xml'
 		};
 
@@ -1272,6 +1366,20 @@
 
 				<!-- Actions for editable files -->
 				{#if file && file.type === 'file' && !isBinary && !isBinaryContent(content) && !isImageFile(file.name) && !isBinaryFile(file.name) && !isPdfFile(file.name) && !isAudioFile(file.name) && !isVideoFile(file.name) && !(isSvgFile(file.name) && svgViewMode === 'visual') && !(isMarkdown && mdViewMode === 'visual')}
+					<!-- Env values toggle -->
+					{#if isEnvFile}
+						<button
+							class="flex p-2 rounded-lg transition-all duration-200
+							{!hideEnvValues ?
+								'text-violet-600 dark:text-violet-400 bg-violet-100 dark:bg-violet-900/50' :
+								'text-slate-600 dark:text-slate-400 hover:text-violet-600 dark:hover:text-violet-400 hover:bg-violet-50 dark:hover:bg-violet-900/30'
+							}"
+							onclick={() => { hideEnvValues = !hideEnvValues; }}
+							title={hideEnvValues ? 'Show values' : 'Hide values'}
+						>
+							<Icon name={hideEnvValues ? 'lucide:eye-off' : 'lucide:eye'} class="w-4 h-4" />
+						</button>
+					{/if}
 					<!-- Word Wrap toggle -->
 					{#if onToggleWordWrap}
 						<button
@@ -1449,24 +1557,43 @@
 				<!-- Code content (always in edit mode) -->
 				<div class="h-full relative bg-slate-50 dark:bg-slate-950">
 					<div class="absolute inset-0">
-						{#key themeKey}
-						<MonacoCodeEditor
-							bind:this={monacoEditorRef}
-							bind:value={editableContent}
-							language={getDetectedLanguage()}
-							path={file.path}
-							readonly={false}
-							onChange={handleContentChange}
-							onEditorMount={handleEditorMount}
-							options={{
-								minimap: { enabled: false },
-								wordWrap: wordWrap ? 'on' : 'off',
-								renderWhitespace: 'none',
-								mouseWheelZoom: false,
-								overviewRulerLanes: 1,
-								overviewRulerBorder: false
-							}}
-						/>
+						{#key themeKey + (isEnvFile ? String(hideEnvValues) + '-' + revealedEnvLines.size : '')}
+						{#if hideEnvValues && isEnvFile}
+							<MonacoCodeEditor
+								bind:this={monacoEditorRef}
+								value={envViewContent}
+								language={getDetectedLanguage()}
+								path={file.path}
+								readonly={true}
+								onEditorMount={handleEditorMount}
+								options={{
+									minimap: { enabled: false },
+									wordWrap: wordWrap ? 'on' : 'off',
+									renderWhitespace: 'none',
+									mouseWheelZoom: false,
+									overviewRulerLanes: 1,
+									overviewRulerBorder: false
+								}}
+							/>
+						{:else}
+							<MonacoCodeEditor
+								bind:this={monacoEditorRef}
+								bind:value={editableContent}
+								language={getDetectedLanguage()}
+								path={file.path}
+								readonly={false}
+								onChange={handleContentChange}
+								onEditorMount={handleEditorMount}
+								options={{
+									minimap: { enabled: false },
+									wordWrap: wordWrap ? 'on' : 'off',
+									renderWhitespace: 'none',
+									mouseWheelZoom: false,
+									overviewRulerLanes: 1,
+									overviewRulerBorder: false
+								}}
+							/>
+						{/if}
 						{/key}
 					</div>
 				</div>
@@ -1559,8 +1686,9 @@
 
 	/* Inline diff peek view — VS Code-like presentation of the HEAD-side hunk.
 	   .git-diff-peek matches the full view-zone width (which can equal the
-	   source scrollWidth); .git-diff-peek-inner is constrained to the visible
-	   viewport so the action buttons remain reachable. */
+	   source scrollWidth); .git-diff-peek-inner scrolls horizontally so long
+	   lines are reachable. The action buttons live in a Monaco overlay widget
+	   outside the peek inner, so they stay accessible regardless of scroll. */
 	:global(.git-diff-peek) {
 		position: relative;
 		width: 100%;
@@ -1584,7 +1712,7 @@
 		border-bottom: 1px solid #d4d4d4;
 		padding-top: 28px;
 		overflow-y: auto;
-		overflow-x: hidden;
+		overflow-x: auto;
 		box-sizing: border-box;
 		pointer-events: auto;
 	}
@@ -1752,25 +1880,29 @@
 	:global(.git-diff-peek-body) {
 		flex: none;
 		min-width: 0;
-		overflow: hidden;
+		overflow: visible;
 		color: #333;
 		-webkit-user-select: text;
 		user-select: text;
 		cursor: text;
 	}
-	:global(.git-diff-peek-body-old) {
+	:global(.git-diff-peek-body-old .git-diff-peek-body-content) {
 		background-color: rgba(239, 68, 68, 0.10);
 	}
-	:global(.git-diff-peek-body-new) {
+	:global(.git-diff-peek-body-new .git-diff-peek-body-content) {
 		background-color: rgba(16, 185, 129, 0.10);
 	}
 	:global(.dark .git-diff-peek-body-old) {
-		background-color: rgba(239, 68, 68, 0.16);
 		color: #e6edf3;
 	}
 	:global(.dark .git-diff-peek-body-new) {
-		background-color: rgba(16, 185, 129, 0.16);
 		color: #e6edf3;
+	}
+	:global(.dark .git-diff-peek-body-old .git-diff-peek-body-content) {
+		background-color: rgba(239, 68, 68, 0.16);
+	}
+	:global(.dark .git-diff-peek-body-new .git-diff-peek-body-content) {
+		background-color: rgba(16, 185, 129, 0.16);
 	}
 
 	/* Modified peek — blue tint on the inner frame to signal that both
@@ -1951,5 +2083,23 @@
 				box-shadow: 0 0 0 1px transparent;
 			}
 		}
+	}
+
+	:global(.env-gutter-dot) {
+		background: #64748b !important;
+		width: 6px !important;
+		height: 6px !important;
+		margin: 5px 0 0 5px !important;
+		border-radius: 9999px !important;
+		cursor: pointer !important;
+	}
+	:global(.env-gutter-dot:hover) {
+		background: #475569 !important;
+	}
+	:global(.monaco-editor.vs-dark .env-gutter-dot) {
+		background: #94a3b8 !important;
+	}
+	:global(.monaco-editor.vs-dark .env-gutter-dot:hover) {
+		background: #cbd5e1 !important;
 	}
 </style>

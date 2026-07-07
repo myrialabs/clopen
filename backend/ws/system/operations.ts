@@ -88,6 +88,29 @@ export const operationsHandler = createRouter()
 		};
 	})
 
+	// Fetch release notes from GitHub
+	.http('system:get-release-notes', {
+		data: t.Object({}),
+		response: t.Object({
+			tag_name: t.String(),
+			body: t.String(),
+			html_url: t.String(),
+			published_at: t.String()
+		})
+	}, async () => {
+		const response = await fetch('https://api.github.com/repos/myrialabs/clopen/releases/latest');
+		if (!response.ok) {
+			throw new Error(`GitHub API returned ${response.status}`);
+		}
+		const data = await response.json() as { tag_name: string; body: string; html_url: string; published_at: string };
+		return {
+			tag_name: data.tag_name,
+			body: data.body || '',
+			html_url: data.html_url,
+			published_at: data.published_at
+		};
+	})
+
 	// Run package update
 	.http('system:run-update', {
 		data: t.Object({}),

@@ -1,13 +1,15 @@
 /**
- * Core Terminal Service (WebSocket Version)
- * Handles terminal operations using WebSocket bi-directional communication
- * Replaces SSE-based streaming with WebSocket events
+ * Terminal Service — PtyKit control surface.
+ *
+ * Rendering + I/O are owned by the `<PtyTerminal>` component (from
+ * @myrialabs/ptykit/svelte), which drives the shared `ptyClient`. This service
+ * is the non-render control surface — close/clear/cancel/resize from the tab bar
+ * and project cleanup — acting on the live session handles registered by each
+ * mounted terminal. It keeps its previous method names so existing callers
+ * (store, project.service) are unchanged.
  */
 
-import type { TerminalLine, TerminalSession, TerminalCommand } from '$shared/types/terminal';
-import { terminalSessionManager, type TerminalSessionState } from './session.service';
-import { backgroundTerminalService } from './background';
-import ws from '$frontend/utils/ws';
+import { ptyClient, getSession, unregisterSession } from './ptykit-client';
 import { debug } from '$shared/utils/logger';
 
 export interface TerminalConnectOptions {
@@ -18,6 +20,7 @@ export interface TerminalConnectOptions {
 	terminalSize?: { cols: number; rows: number };
 }
 
+/** Retained for the terminal store's typing; output now streams via <PtyTerminal>. */
 export interface StreamingResponse {
 	type: 'output' | 'error' | 'directory' | 'exit' | 'complete' | 'clear-screen';
 	content?: string;
@@ -28,224 +31,34 @@ export interface StreamingResponse {
 }
 
 export class TerminalService {
-	private resizeEndpointAvailable: boolean | null = true; // WebSocket always available
-	private activeListeners = new Map<string, Array<() => void>>();
-	private lastOutputSeq = new Map<string, number>();
-	private connectingSessions = new Set<string>();
-
-	private attachSessionListeners(
-		sessionId: string,
-		onData: (data: StreamingResponse) => void
-	): void {
-		const listeners: Array<() => void> = [];
-
-		const unsubReady = ws.on('terminal:ready', (data) => {
-			if (data.sessionId === sessionId) {
-				debug.log('terminal', `✅ PTY session ready: ${sessionId} (PID: ${data.pid})`);
-				terminalSessionManager.updateSession(sessionId, {
-					streamId: data.streamId,
-					processId: data.pid,
-					isExecuting: true
-				});
-			}
-		});
-		listeners.push(unsubReady);
-
-		const unsubOutput = ws.on('terminal:output', (data) => {
-			if (data.sessionId === sessionId) {
-				if (data.seq !== undefined && data.seq !== null) {
-					const lastSeq = this.lastOutputSeq.get(sessionId) || 0;
-					if (data.seq <= lastSeq) return;
-					this.lastOutputSeq.set(sessionId, data.seq);
-				}
-
-				onData({
-					type: 'output',
-					content: data.content,
-					sessionId: data.sessionId,
-					projectId: data.projectId,
-					timestamp: data.timestamp
-				});
-			}
-		});
-		listeners.push(unsubOutput);
-
-		const unsubDirectory = ws.on('terminal:directory', (data) => {
-			if (data.sessionId === sessionId) {
-				terminalSessionManager.updateWorkingDirectory(sessionId, data.newDirectory);
-				onData({
-					type: 'directory',
-					newDirectory: data.newDirectory,
-					sessionId: data.sessionId
-				});
-			}
-		});
-		listeners.push(unsubDirectory);
-
-		const unsubExit = ws.on('terminal:exit', (data) => {
-			if (data.sessionId === sessionId) {
-				debug.log('terminal', `🏁 PTY session exited: ${sessionId} (code: ${data.exitCode})`);
-
-				backgroundTerminalService.endStream(sessionId, true);
-
-				onData({
-					type: 'exit',
-					content: data.exitCode === 0 ? 'success' : 'error',
-					sessionId: data.sessionId
-				});
-
-				this.cleanupListeners(sessionId);
-			}
-		});
-		listeners.push(unsubExit);
-
-		const unsubError = ws.on('terminal:error', (data) => {
-			if (data.sessionId === sessionId) {
-				debug.error('terminal', `❌ PTY error for ${sessionId}:`, data.error);
-				onData({
-					type: 'error',
-					content: data.error,
-					sessionId: data.sessionId
-				});
-			}
-		});
-		listeners.push(unsubError);
-
-		this.activeListeners.set(sessionId, listeners);
-	}
-
-	/**
-	 * Connect to persistent PTY session with streaming output via WebSocket
-	 */
-	async connectToSession(
-		options: TerminalConnectOptions,
-		onData: (data: StreamingResponse) => void
-	): Promise<void> {
-		const { sessionId, workingDirectory, projectPath, projectId, terminalSize } = options;
-
-		if (this.connectingSessions.has(sessionId)) {
-			debug.log('terminal', `⏳ Connection already in progress for: ${sessionId}`);
-			return;
-		}
-
-		if (this.activeListeners.has(sessionId)) {
-			debug.log('terminal', `⏭️ Reusing existing terminal listeners for: ${sessionId}`);
-			return;
-		}
-
-		debug.log('terminal', `🔌 Connecting to PTY session via WebSocket: ${sessionId}`);
-		this.connectingSessions.add(sessionId);
-
-		// Reset sequence tracking for fresh deduplication
-		this.lastOutputSeq.delete(sessionId);
-
-		// Get or create session state
-		const session = terminalSessionManager.getOrCreateSession(
-			sessionId,
-			projectId,
-			projectPath,
-			workingDirectory
-		);
-
-		// Create unique stream ID for this connection
-		const streamId = `${sessionId}-${Date.now()}`;
-		this.attachSessionListeners(sessionId, onData);
-
-		// Always (re)issue create-session even when the PTY is already live on the
-		// server. The handler is idempotent — it reuses the running PTY, clears any
-		// stale listeners, and replays the serialized scrollback. That replay is what
-		// repaints the terminal after a project switch, where the store's session
-		// lines were intentionally reset to []. Skipping it here left the terminal
-		// blank until a browser refresh. Duplicate connects are already prevented by
-		// the connectingSessions / activeListeners guards above and XTerm's
-		// shouldConnectSession check.
-
-		// Create terminal session (now using HTTP pattern)
-		try {
-			const response = await ws.http('terminal:create-session', {
-				sessionId,
-				streamId,
-				workingDirectory: session.workingDirectory,
-				projectPath,
-				cols: terminalSize?.cols || 80,
-				rows: terminalSize?.rows || 24
-			});
-
-			debug.log('terminal', `✅ Terminal session created:`, response);
-
-			// Update session with response data
-			terminalSessionManager.updateSession(sessionId, {
-				streamId: response.streamId,
-				processId: response.pid,
-				isExecuting: true
-			});
-		} catch (error) {
-			debug.error('terminal', `❌ Failed to create terminal session:`, error);
-			// Cleanup listeners on error
-			this.cleanupListeners(sessionId);
-			throw error;
-		} finally {
-			this.connectingSessions.delete(sessionId);
-		}
-	}
-
-	/**
-	 * Send Ctrl+C interrupt signal to a specific session
-	 * Always sends the signal regardless of execution state for utility/accessibility
-	 */
+	/** Send Ctrl+C to the session (interactive interrupt). */
 	async cancelCommand(sessionId: string): Promise<boolean> {
-		const session = terminalSessionManager.getSession(sessionId);
-		if (!session) {
-			return false;
-		}
-
+		const session = getSession(sessionId);
+		if (!session) return false;
 		try {
-			// Step 1: Cancel client-side state (if executing)
-			if (session.isExecuting) {
-				terminalSessionManager.cancelExecution(sessionId);
-			}
-
-			// Step 2: Always send Ctrl+C signal via WebSocket
-			// This is useful as a utility shortcut even when not executing
-			try {
-				const data = await ws.http('terminal:cancel', { sessionId }, 10000);
-				if (data.sessionId === sessionId) {
-					// Clear stream info only if was executing
-					if (session.isExecuting) {
-						backgroundTerminalService.endStream(sessionId, true);
-					}
-					return true;
-				}
-				return false;
-			} catch {
-				return false;
-			}
+			await session.cancel();
+			return true;
 		} catch (error) {
-			debug.error('terminal', 'Error sending Ctrl+C signal:', error);
+			debug.error('terminal', 'Error sending Ctrl+C:', error);
 			return false;
 		}
 	}
 
-	/**
-	 * Clear headless terminal on backend (sync with frontend clear)
-	 */
+	/** Clear the server-side headless scrollback (sync with a frontend clear). */
 	async clearHeadlessTerminal(sessionId: string): Promise<void> {
 		try {
-			await ws.http('terminal:clear', { sessionId });
+			await getSession(sessionId)?.clear();
 		} catch {
-			// Silently handle - non-critical
+			/* non-critical */
 		}
 	}
 
-	/**
-	 * Resize terminal for a specific session
-	 */
+	/** Resize the PTY + headless terminal (the component also fits on its own). */
 	async resizeTerminal(sessionId: string, cols: number, rows: number): Promise<boolean> {
+		const session = getSession(sessionId);
+		if (!session) return false;
 		try {
-			debug.log('terminal', `🔧 Resizing terminal ${sessionId} to ${cols}x${rows}`);
-
-			// Send resize request via WebSocket HTTP
-			await ws.http('terminal:resize', { sessionId, cols, rows });
+			await session.resize(cols, rows);
 			return true;
 		} catch (error) {
 			debug.error('terminal', 'Error resizing terminal:', error);
@@ -253,31 +66,19 @@ export class TerminalService {
 		}
 	}
 
-	/**
-	 * Send input to terminal session
-	 */
+	/** Send raw keystrokes to the PTY. */
 	sendInput(sessionId: string, data: string): void {
-		debug.log('terminal', `⌨️ Sending input to ${sessionId}:`, data);
-		ws.emit('terminal:input', { sessionId, data });
+		getSession(sessionId)?.write(data);
 	}
 
-	/**
-	 * Kill terminal session completely
-	 */
+	/** Kill the server-side session and drop the local handle. */
 	async killSession(sessionId: string): Promise<boolean> {
+		const session = getSession(sessionId);
+		unregisterSession(sessionId);
+		if (!session) return false;
 		try {
-			debug.log('terminal', `💀 Killing terminal session: ${sessionId}`);
-
-			// Cleanup listeners first
-			this.cleanupListeners(sessionId);
-
-			// Send kill request and wait for confirmation
-			try {
-				const data = await ws.http('terminal:kill-session', { sessionId }, 5000);
-				return data.sessionId === sessionId;
-			} catch {
-				return false;
-			}
+			await session.kill();
+			return true;
 		} catch (error) {
 			debug.error('terminal', 'Error killing session:', error);
 			return false;
@@ -285,7 +86,8 @@ export class TerminalService {
 	}
 
 	/**
-	 * Check shell availability
+	 * Shell availability. PtyKit auto-detects the backend/shell server-side; the
+	 * frontend only needs a display label, derived from the browser platform.
 	 */
 	async checkShellAvailability(): Promise<{
 		available: boolean;
@@ -294,57 +96,25 @@ export class TerminalService {
 		isWindows: boolean;
 		shellType: string;
 	}> {
-		try {
-			return await ws.http('terminal:check-shell', {}, 5000);
-		} catch {
-			return {
-				available: false,
-				path: null,
-				platform: 'unknown',
-				isWindows: false,
-				shellType: 'Unknown'
-			};
-		}
+		const isWindows = typeof navigator !== 'undefined' && /Win/i.test(navigator.platform);
+		return {
+			available: true,
+			path: null,
+			platform: isWindows ? 'win32' : 'posix',
+			isWindows,
+			shellType: isWindows ? 'PowerShell' : 'Bash'
+		};
 	}
 
 	/**
-	 * Get missed output for a session (serialized terminal state)
+	 * Missed output. PtyKit replays a serialized scrollback frame automatically on
+	 * (re)attach, so there is nothing to fetch separately.
 	 */
-	async getMissedOutput(
-		sessionId: string,
-		streamId?: string
-	): Promise<{
-		success: boolean;
-		output: string;
-		status: string;
-	}> {
-		try {
-			const data = await ws.http('terminal:missed-output', { sessionId, streamId }, 5000);
-			if (data.sessionId === sessionId) {
-				return {
-					success: true,
-					output: data.output,
-					status: data.status
-				};
-			}
-			return {
-				success: false,
-				output: '',
-				status: 'invalid_session'
-			};
-		} catch {
-			return {
-				success: false,
-				output: '',
-				status: 'timeout'
-			};
-		}
+	async getMissedOutput(): Promise<{ success: boolean; output: string; status: string }> {
+		return { success: true, output: '', status: 'active' };
 	}
 
-	/**
-	 * List active PTY sessions for a project on the backend
-	 * Used after browser refresh to discover existing sessions
-	 */
+	/** List active PTY sessions for a project (namespace), for refresh discovery. */
 	async listProjectSessions(projectId: string): Promise<Array<{
 		sessionId: string;
 		pid: number;
@@ -353,43 +123,24 @@ export class TerminalService {
 		lastActivityAt: string;
 	}>> {
 		try {
-			const data = await ws.http('terminal:list-sessions', { projectId }, 5000);
-			return data.sessions || [];
+			const data = await ptyClient.listSessions(projectId);
+			return data.sessions ?? [];
 		} catch {
 			return [];
 		}
 	}
 
-	/**
-	 * Cleanup listeners for a session
-	 */
+	/** Drop the local handle for a session (does NOT kill the server session). */
 	cleanupListeners(sessionId: string): void {
-		const listeners = this.activeListeners.get(sessionId);
-		if (listeners) {
-			listeners.forEach(unsub => unsub());
-			this.activeListeners.delete(sessionId);
-			this.lastOutputSeq.delete(sessionId);
-			debug.log('terminal', `🧹 Cleaned up listeners for ${sessionId}`);
-		}
-		this.connectingSessions.delete(sessionId);
+		unregisterSession(sessionId);
 	}
 
 	hasActiveListeners(sessionId: string): boolean {
-		return this.activeListeners.has(sessionId) || this.connectingSessions.has(sessionId);
+		return getSession(sessionId) !== undefined;
 	}
 
-	/**
-	 * Cleanup all listeners (call on component unmount)
-	 */
-	cleanup(): void {
-		this.activeListeners.forEach((listeners, sessionId) => {
-			listeners.forEach(unsub => unsub());
-		});
-		this.activeListeners.clear();
-		this.lastOutputSeq.clear();
-		debug.log('terminal', '🧹 Cleaned up all terminal listeners');
-	}
+	/** No-op retained for API compatibility (component owns lifecycle). */
+	cleanup(): void {}
 }
 
-// Export singleton instance
 export const terminalService = new TerminalService();

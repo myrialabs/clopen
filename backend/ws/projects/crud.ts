@@ -17,7 +17,7 @@ import { ws } from '$backend/utils/ws';
 import { snapshotService } from '../../snapshot/snapshot-service';
 import { blobStore } from '../../snapshot/blob-store';
 import { streamManager } from '../../chat/stream-manager';
-import { terminalStreamManager } from '../../terminal/stream-manager';
+import { cleanupProjectSessions } from '../../terminal/ptykit';
 import { broadcastPresence } from '../projects/status';
 import { debug } from '$shared/utils/logger';
 import { requireProjectAccess } from '../access';
@@ -106,9 +106,9 @@ export const crudHandler = createRouter()
 
 		const mode = data.mode ?? 'remove';
 
-		// Clean up terminal streams for this project
-		const cleanedStreams = terminalStreamManager.cleanupProjectStreams(data.id);
-		debug.log('project', `Cleaned up ${cleanedStreams} terminal streams for project ${data.id}`);
+		// Clean up terminal (PTY) sessions for this project
+		const cleanedStreams = cleanupProjectSessions(data.id);
+		debug.log('project', `Cleaned up ${cleanedStreams} terminal sessions for project ${data.id}`);
 
 		if (mode === 'full') {
 			// Full delete: remove sessions with blob cleanup, then the project itself

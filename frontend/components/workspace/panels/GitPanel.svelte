@@ -3562,8 +3562,8 @@ ${bodies}`;
 			<Icon name={isCollapsed ? "lucide:chevron-right" : "lucide:chevron-down"} class="w-4 h-4 text-slate-400 shrink-0" />
 			<Icon name="lucide:folder-git-2" class="w-4 h-4 text-slate-400 shrink-0" />
 			<div class="flex-1 min-w-0 flex flex-col justify-center overflow-hidden select-none">
-				<div class="flex items-center gap-2">
-					<span class="text-sm font-medium text-slate-900 dark:text-slate-100 whitespace-nowrap" title={nested.relPath}>{nested.relPath}</span>
+				<div class="flex items-center gap-2 min-w-0">
+					<span class="text-sm font-medium text-slate-900 dark:text-slate-100 truncate" title={nested.relPath}>{nested.relPath}</span>
 					{#if nested.isSubmodule}<span class="shrink-0 text-3xs font-medium px-1.5 py-0.5 rounded bg-blue-500/15 text-blue-600 dark:text-blue-400">submodule</span>{/if}
 					{#if nestedTotalChanges > 0}<span class="shrink-0 min-w-4 h-4 px-1 rounded-full bg-violet-500/15 text-violet-600 dark:text-violet-400 text-3xs font-semibold flex items-center justify-center">{nestedTotalChanges}</span>{/if}
 				</div>
@@ -3710,8 +3710,8 @@ ${bodies}`;
 			<Icon name={isCollapsed ? "lucide:chevron-right" : "lucide:chevron-down"} class="w-4 h-4 text-slate-400 shrink-0" />
 			<Icon name="lucide:folder-git-2" class="w-4 h-4 text-slate-400 shrink-0" />
 			<div class="flex-1 min-w-0 flex flex-col justify-center overflow-hidden select-none">
-				<div class="flex items-center gap-2">
-					<span class="text-sm font-medium text-slate-900 dark:text-slate-100 whitespace-nowrap" title={nested.path}>{nested.relPath}</span>
+				<div class="flex items-center gap-2 min-w-0">
+					<span class="text-sm font-medium text-slate-900 dark:text-slate-100 truncate" title={nested.path}>{nested.relPath}</span>
 					{#if nested.isSubmodule}<span class="shrink-0 text-3xs font-medium px-1.5 py-0.5 rounded bg-blue-500/15 text-blue-600 dark:text-blue-400">submodule</span>{/if}
 				</div>
 				{#if nested.error}<span class="text-xs text-red-500 truncate" title={nested.error}>{nested.error}</span>{/if}
@@ -3857,8 +3857,8 @@ ${bodies}`;
 			<Icon name={isCollapsed ? "lucide:chevron-right" : "lucide:chevron-down"} class="w-4 h-4 text-slate-400 shrink-0" />
 			<Icon name="lucide:folder-git-2" class="w-4 h-4 text-slate-400 shrink-0" />
 			<div class="flex-1 min-w-0 flex flex-col justify-center overflow-hidden select-none">
-				<div class="flex items-center gap-2">
-					<span class="text-sm font-medium text-slate-900 dark:text-slate-100 whitespace-nowrap" title={nested.path}>{nested.relPath}</span>
+				<div class="flex items-center gap-2 min-w-0">
+					<span class="text-sm font-medium text-slate-900 dark:text-slate-100 truncate" title={nested.path}>{nested.relPath}</span>
 					{#if nested.isSubmodule}<span class="shrink-0 text-3xs font-medium px-1.5 py-0.5 rounded bg-blue-500/15 text-blue-600 dark:text-blue-400">submodule</span>{/if}
 				</div>
 				{#if nested.error}<span class="text-xs text-red-500 truncate" title={nested.error}>{nested.error}</span>{/if}
@@ -3922,8 +3922,8 @@ ${bodies}`;
 			<Icon name={isCollapsed ? "lucide:chevron-right" : "lucide:chevron-down"} class="w-4 h-4 text-slate-400 shrink-0" />
 			<Icon name="lucide:folder-git-2" class="w-4 h-4 text-slate-400 shrink-0" />
 			<div class="flex-1 min-w-0 flex flex-col justify-center overflow-hidden select-none">
-				<div class="flex items-center gap-2">
-					<span class="text-sm font-medium text-slate-900 dark:text-slate-100 whitespace-nowrap" title={nested.path}>{nested.relPath}</span>
+				<div class="flex items-center gap-2 min-w-0">
+					<span class="text-sm font-medium text-slate-900 dark:text-slate-100 truncate" title={nested.path}>{nested.relPath}</span>
 					{#if nested.isSubmodule}<span class="shrink-0 text-3xs font-medium px-1.5 py-0.5 rounded bg-blue-500/15 text-blue-600 dark:text-blue-400">submodule</span>{/if}
 					{#if nestedStashes.length > 0}<span class="shrink-0 min-w-4 h-4 px-1 rounded-full bg-violet-500/15 text-violet-600 dark:text-violet-400 text-3xs font-semibold flex items-center justify-center">{nestedStashes.length}</span>{/if}
 				</div>
@@ -4056,8 +4056,8 @@ ${bodies}`;
 			<Icon name={isCollapsed ? "lucide:chevron-right" : "lucide:chevron-down"} class="w-4 h-4 text-slate-400 shrink-0" />
 			<Icon name="lucide:folder-git-2" class="w-4 h-4 text-slate-400 shrink-0" />
 			<div class="flex-1 min-w-0 flex flex-col justify-center overflow-hidden select-none">
-				<div class="flex items-center gap-2">
-					<span class="text-sm font-medium text-slate-900 dark:text-slate-100 whitespace-nowrap" title={nested.path}>{nested.relPath}</span>
+				<div class="flex items-center gap-2 min-w-0">
+					<span class="text-sm font-medium text-slate-900 dark:text-slate-100 truncate" title={nested.path}>{nested.relPath}</span>
 					{#if nested.isSubmodule}<span class="shrink-0 text-3xs font-medium px-1.5 py-0.5 rounded bg-blue-500/15 text-blue-600 dark:text-blue-400">submodule</span>{/if}
 					{#if nestedTags.length > 0}<span class="shrink-0 min-w-4 h-4 px-1 rounded-full bg-violet-500/15 text-violet-600 dark:text-violet-400 text-3xs font-semibold flex items-center justify-center">{nestedTags.length}</span>{/if}
 				</div>
@@ -4216,8 +4216,8 @@ ${bodies}`;
 			<Icon name={isCollapsed ? "lucide:chevron-right" : "lucide:chevron-down"} class="w-4 h-4 text-slate-400 shrink-0" />
 			<Icon name="lucide:folder-git-2" class="w-4 h-4 text-slate-400 shrink-0" />
 			<div class="flex-1 min-w-0 flex flex-col justify-center overflow-hidden select-none">
-				<div class="flex items-center gap-2">
-					<span class="text-sm font-medium text-slate-900 dark:text-slate-100 whitespace-nowrap" title={nested.path}>{nested.relPath}</span>
+				<div class="flex items-center gap-2 min-w-0">
+					<span class="text-sm font-medium text-slate-900 dark:text-slate-100 truncate" title={nested.path}>{nested.relPath}</span>
 					{#if nested.isSubmodule}<span class="shrink-0 text-3xs font-medium px-1.5 py-0.5 rounded bg-blue-500/15 text-blue-600 dark:text-blue-400">submodule</span>{/if}
 					{#if nestedContribs.length > 0}<span class="shrink-0 min-w-4 h-4 px-1 rounded-full bg-violet-500/15 text-violet-600 dark:text-violet-400 text-3xs font-semibold flex items-center justify-center">{nestedContribs.length}</span>{/if}
 				</div>

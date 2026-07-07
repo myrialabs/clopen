@@ -14,12 +14,15 @@
 		message?: string;
 		inputValue?: string;
 		inputPlaceholder?: string;
+		inputType?: 'text' | 'password';
 		confirmText?: string;
 		cancelText?: string;
 		showCancel?: boolean;
 		closable?: boolean;
 		confirmDisabled?: boolean;
 		onConfirm?: (value?: string) => void;
+		extraText?: string;
+		onExtra?: () => void;
 		children?: import('svelte').Snippet;
 	}
 
@@ -31,12 +34,15 @@
 		message = '',
 		inputValue = $bindable(),
 		inputPlaceholder = 'Enter value...',
+		inputType = 'text',
 		confirmText = 'OK',
 		cancelText = 'Cancel',
 		showCancel = true,
 		closable = true,
 		confirmDisabled = false,
 		onConfirm,
+		extraText,
+		onExtra,
 		children
 	}: Props = $props();
 
@@ -133,6 +139,13 @@
 		onClose();
 	}
 
+	function handleExtra() {
+		if (onExtra) {
+			onExtra();
+		}
+		onClose();
+	}
+
 	// Auto-focus management
 	onMount(() => {
 		if (isOpen) {
@@ -216,14 +229,26 @@
 						{/if}
 						
 						{#if inputValue !== undefined}
-							<input
-								bind:this={inputElement}
-								bind:value={inputValue}
-								type="text"
-								placeholder={inputPlaceholder}
-								onkeydown={handleKeydown}
-								class="w-full px-4 py-2.5 mt-3 bg-white dark:bg-slate-800 border border-slate-200 dark:border-slate-700 rounded-lg text-slate-900 dark:text-slate-100 placeholder-slate-500 dark:placeholder-slate-400 focus:outline-none focus:ring-2 focus:ring-violet-500/20 {colors.input}"
-							/>
+							{#if inputType === 'password'}
+								<input
+									bind:this={inputElement}
+									bind:value={inputValue}
+									type="password"
+									autocomplete="off"
+									placeholder={inputPlaceholder}
+									onkeydown={handleKeydown}
+									class="w-full px-4 py-2.5 mt-3 bg-white dark:bg-slate-800 border border-slate-200 dark:border-slate-700 rounded-lg text-slate-900 dark:text-slate-100 placeholder-slate-500 dark:placeholder-slate-400 focus:outline-none focus:ring-2 focus:ring-violet-500/20 {colors.input}"
+								/>
+							{:else}
+								<input
+									bind:this={inputElement}
+									bind:value={inputValue}
+									type="text"
+									placeholder={inputPlaceholder}
+									onkeydown={handleKeydown}
+									class="w-full px-4 py-2.5 mt-3 bg-white dark:bg-slate-800 border border-slate-200 dark:border-slate-700 rounded-lg text-slate-900 dark:text-slate-100 placeholder-slate-500 dark:placeholder-slate-400 focus:outline-none focus:ring-2 focus:ring-violet-500/20 {colors.input}"
+								/>
+							{/if}
 						{/if}
 					</div>
 				</div>
@@ -237,6 +262,14 @@
 							class="px-6 py-2.5 bg-slate-50 dark:bg-slate-800 border border-slate-200 dark:border-slate-700 text-slate-700 dark:text-slate-300 rounded-lg hover:bg-slate-100 dark:hover:bg-slate-700 transition-all duration-200 font-semibold"
 						>
 							{cancelText}
+						</button>
+					{/if}
+					{#if extraText && onExtra}
+						<button
+							onclick={handleExtra}
+							class="px-6 py-2.5 bg-violet-600 dark:bg-violet-600 hover:bg-violet-700 dark:hover:bg-violet-700 text-white rounded-lg transition-all duration-200 font-semibold"
+						>
+							{extraText}
 						</button>
 					{/if}
 					<button

@@ -1,7 +1,28 @@
 <script lang="ts">
+	import { marked } from 'marked';
+	import DOMPurify from 'dompurify';
 	import { systemSettings, updateSystemSettings } from '$frontend/stores/features/settings.svelte';
-	import { updateState, checkForUpdate, runUpdate, showRestartModal } from '$frontend/stores/ui/update.svelte';
+	import { updateState, checkForUpdate, runUpdate, showRestartModal, fetchReleaseNotes } from '$frontend/stores/ui/update.svelte';
 	import Icon from '../../common/display/Icon.svelte';
+	import Markdown from '../../common/display/Markdown.svelte';
+
+	let showReleaseNotes = $state(false);
+
+	const releaseDate = $derived(
+		updateState.releaseNotes?.published_at
+			? new Date(updateState.releaseNotes.published_at).toLocaleDateString(undefined, {
+					year: 'numeric',
+					month: 'short',
+					day: 'numeric'
+				})
+			: ''
+	);
+
+	const releaseSubtitle = $derived(
+		updateState.releaseNotes
+			? [updateState.releaseNotes.tag_name, releaseDate].filter(Boolean).join(' · ')
+			: "What's new in the latest version"
+	);
 
 	function toggleAutoUpdate() {
 		updateSystemSettings({ autoUpdate: !systemSettings.autoUpdate });
@@ -14,6 +35,17 @@
 	function handleUpdateNow() {
 		runUpdate();
 	}
+
+	function handleToggleReleaseNotes() {
+		showReleaseNotes = !showReleaseNotes;
+		if (showReleaseNotes && !updateState.releaseNotes && !updateState.releaseNotesLoading) {
+			fetchReleaseNotes();
+		}
+	}
+
+	function handleRetryReleaseNotes() {
+		fetchReleaseNotes();
+	}
 </script>
 
 <div class="py-1">
@@ -22,12 +54,12 @@
 
 	<div class="flex flex-col gap-3.5">
 		<!-- Version Info -->
-		<div class="p-4 bg-slate-100/80 dark:bg-slate-800/80 border border-slate-200 dark:border-slate-800 rounded-xl">
-			<div class="flex items-start gap-3.5">
+		<div class="px-4 py-3 bg-slate-100/80 dark:bg-slate-800/80 border border-slate-200 dark:border-slate-800 rounded-xl">
+			<div class="flex items-center gap-3.5">
 				<div class="flex items-center justify-center w-10 h-10 rounded-lg shrink-0 bg-violet-400/15 text-violet-500">
 					<Icon name="lucide:package" class="w-5 h-5" />
 				</div>
-				<div class="flex flex-col gap-1 min-w-0 flex-1">
+				<div class="flex flex-col gap-0.5 min-w-0 flex-1">
 					<div class="text-sm font-semibold text-slate-900 dark:text-slate-100">
 						@myrialabs/clopen
 					</div>
@@ -99,6 +131,68 @@
 					>
 						How to restart
 					</button>
+				</div>
+			{/if}
+		</div>
+
+		<!-- Release Notes -->
+		<div class="px-4 py-3 bg-slate-100/80 dark:bg-slate-800/80 border border-slate-200 dark:border-slate-800 rounded-xl">
+			<button
+				type="button"
+				onclick={handleToggleReleaseNotes}
+				aria-expanded={showReleaseNotes}
+				class="flex items-center justify-between w-full text-left cursor-pointer"
+			>
+				<div class="flex items-center gap-3">
+					<div class="flex items-center justify-center w-10 h-10 rounded-lg shrink-0 bg-amber-400/15 text-amber-500">
+						<Icon name="lucide:book-marked" class="w-5 h-5" />
+					</div>
+					<div>
+						<div class="text-sm font-semibold text-slate-900 dark:text-slate-100">Release Notes</div>
+						<div class="text-xs text-slate-600 dark:text-slate-500">
+							{releaseSubtitle}
+						</div>
+					</div>
+				</div>
+				<Icon name={showReleaseNotes ? 'lucide:chevron-up' : 'lucide:chevron-down'} class="w-4.5 h-4.5 text-slate-500" />
+			</button>
+
+			{#if showReleaseNotes}
+				<div class="mt-3 pt-3 border-t border-slate-200 dark:border-slate-700">
+					{#if updateState.releaseNotesLoading}
+						<div class="flex items-center gap-2 text-xs text-slate-500">
+							<div class="w-3.5 h-3.5 border-2 border-slate-500/30 border-t-slate-500 rounded-full animate-spin"></div>
+							Loading release notes...
+						</div>
+					{:else if updateState.releaseNotes}
+						<Markdown variant="compact" content={updateState.releaseNotes.body} />
+						<div class="mt-3">
+							<a
+								href={updateState.releaseNotes.html_url}
+								target="_blank"
+								rel="noopener noreferrer"
+								class="inline-flex items-center gap-1.5 text-xs font-semibold text-violet-600 dark:text-violet-400 hover:underline"
+							>
+								<Icon name="lucide:external-link" class="w-3.5 h-3.5" />
+								View on GitHub
+							</a>
+						</div>
+					{:else if updateState.releaseNotesError}
+						<div class="flex items-center justify-between gap-3">
+							<div class="flex items-center gap-2 min-w-0">
+								<Icon name="lucide:circle-alert" class="w-4 h-4 text-red-500 shrink-0" />
+								<span class="text-xs text-red-600 dark:text-red-400 truncate">Could not load release notes. Check your connection.</span>
+							</div>
+							<button
+								type="button"
+								onclick={handleRetryReleaseNotes}
+								class="inline-flex items-center gap-1.5 shrink-0 text-xs font-semibold text-violet-600 dark:text-violet-400 hover:underline cursor-pointer"
+							>
+								<Icon name="lucide:refresh-cw" class="w-3.5 h-3.5" />
+								Retry
+							</button>
+						</div>
+					{/if}
 				</div>
 			{/if}
 		</div>

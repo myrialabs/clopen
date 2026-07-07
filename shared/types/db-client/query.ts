@@ -9,6 +9,39 @@ export interface DbClientQueryResult {
 	affectedRows: number | null;
 	durationMs: number;
 	driverMeta: Record<string, unknown>;
+	/**
+	 * Present only for multi-statement (batch) executions. The top-level
+	 * fields mirror the last statement that produced rows (so single-result
+	 * consumers keep working), while `batch` carries the full per-statement
+	 * report.
+	 */
+	batch?: DbClientBatchResult;
+}
+
+export type DbClientQueryClass = 'read' | 'write' | 'ddl' | 'unknown';
+
+export type DbClientStatementStatus = 'success' | 'error' | 'skipped';
+
+/** Outcome of a single statement within a batch execution. */
+export interface DbClientStatementResult {
+	index: number;
+	query: string;
+	queryClass: DbClientQueryClass;
+	status: DbClientStatementStatus;
+	/** The statement's own result set (null for errored / skipped statements). */
+	result: DbClientQueryResult | null;
+	error: string | null;
+	durationMs: number;
+}
+
+/** Aggregate outcome of running a `;`-separated batch of statements. */
+export interface DbClientBatchResult {
+	statements: DbClientStatementResult[];
+	totalDurationMs: number;
+	/** Whether the batch ran inside a real (atomic) transaction. */
+	transaction: boolean;
+	/** True when every statement succeeded. */
+	ok: boolean;
 }
 
 export type DbClientSchemaNodeType =

@@ -99,12 +99,19 @@
 		<!-- Action label -->
 		<span class="text-[12px] text-slate-500 dark:text-slate-400 whitespace-nowrap shrink-0">{label}</span>
 
-		<!-- Inline highlighted code (pattern, command, query) -->
+		<!-- Inline highlighted code (pattern, command, query). A single logical line stays an inline
+		     pill (may wrap visually); a multi-line command becomes a per-line block on its own row. -->
 		{#if inlineCode}
-			<code
-				class="font-mono text-[11px] text-slate-600 dark:text-slate-300 bg-slate-100 dark:bg-slate-800/70 rounded px-1.5 py-[1px] min-w-0 break-all whitespace-pre-wrap leading-snug"
-				title={inlineCode}
-			>{inlineCode}</code>
+			{#if inlineCode.includes('\n')}
+				<pre
+					class="font-mono text-[11px] text-slate-600 dark:text-slate-300 bg-slate-100 dark:bg-slate-800/70 rounded px-2 py-1 basis-full min-w-0 overflow-x-auto whitespace-pre leading-snug"
+					title={inlineCode}>{inlineCode}</pre>
+			{:else}
+				<code
+					class="font-mono text-[11px] text-slate-600 dark:text-slate-300 bg-slate-100 dark:bg-slate-800/70 rounded px-1.5 py-[1px] min-w-0 break-all whitespace-pre-wrap leading-snug"
+					title={inlineCode}
+				>{inlineCode}</code>
+			{/if}
 		{/if}
 
 		<!-- Plain primary detail (title, name, prose value) -->
