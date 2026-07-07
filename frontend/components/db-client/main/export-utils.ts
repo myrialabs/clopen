@@ -50,7 +50,7 @@ function excelCellRef(colIdx: number, rowNum: number): string {
 
 /** Build a minimal (inline-string) XLSX workbook from tabular data. */
 export async function buildXlsx(columns: string[], rows: unknown[][]): Promise<Uint8Array> {
-	const { zipSync } = await import('fflate');
+	const { zip } = await import('@myrialabs/zipkit');
 
 	let sheetData = '<row r="1">';
 	for (let cIdx = 0; cIdx < columns.length; cIdx++) {
@@ -107,13 +107,13 @@ export async function buildXlsx(columns: string[], rows: unknown[][]): Promise<U
 </Types>`;
 
 	const encoder = new TextEncoder();
-	return zipSync({
-		'[Content_Types].xml': encoder.encode(contentTypes),
-		'_rels/.rels': encoder.encode(rels),
-		'xl/workbook.xml': encoder.encode(workbookXml),
-		'xl/_rels/workbook.xml.rels': encoder.encode(workbookRels),
-		'xl/worksheets/sheet1.xml': encoder.encode(sheet1Xml)
-	});
+	return zip([
+		{ name: '[Content_Types].xml', data: encoder.encode(contentTypes) },
+		{ name: '_rels/.rels', data: encoder.encode(rels) },
+		{ name: 'xl/workbook.xml', data: encoder.encode(workbookXml) },
+		{ name: 'xl/_rels/workbook.xml.rels', data: encoder.encode(workbookRels) },
+		{ name: 'xl/worksheets/sheet1.xml', data: encoder.encode(sheet1Xml) }
+	]);
 }
 
 /** Trigger a browser download for text or binary content. */
