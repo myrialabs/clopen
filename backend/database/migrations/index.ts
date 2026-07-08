@@ -43,6 +43,9 @@ import * as migration041 from './041_add_mcp_config_schema';
 import * as migration042 from './042_add_mcp_oauth';
 import * as migration043 from './043_relocate_engine_config_dirs';
 import * as migration044 from './044_create_skills_table';
+import * as migration045 from './045_create_commands_table';
+import * as migration046 from './046_create_subagents_table';
+import * as migration047 from './047_create_instructions_table';
 
 // Export all migrations in order
 export const migrations = [
@@ -309,6 +312,24 @@ export const migrations = [
 		description: migration044.description,
 		up: migration044.up,
 		down: migration044.down
+	},
+	{
+		id: '045',
+		description: migration045.description,
+		up: migration045.up,
+		down: migration045.down
+	},
+	{
+		id: '046',
+		description: migration046.description,
+		up: migration046.up,
+		down: migration046.down
+	},
+	{
+		id: '047',
+		description: migration047.description,
+		up: migration047.up,
+		down: migration047.down
 	}
 ];
 

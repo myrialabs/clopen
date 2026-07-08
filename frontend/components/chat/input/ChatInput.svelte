@@ -15,7 +15,7 @@
 	import { projectState } from '$frontend/stores/core/projects.svelte';
 	import { appState } from '$frontend/stores/core/app.svelte';
 	import { settings } from '$frontend/stores/features/settings.svelte';
-	import { onDestroy, untrack } from 'svelte';
+	import { onDestroy, onMount, untrack } from 'svelte';
 	import { ChatService } from '$frontend/services/chat';
 	import { chatService } from '$frontend/services/chat/chat.service';
 	import { getEngineInfo } from '$shared/constants/engines';
@@ -35,6 +35,8 @@
 	import LoadingIndicator from './components/LoadingIndicator.svelte';
 	import DragDropOverlay from './components/DragDropOverlay.svelte';
 	import EngineModelPicker from './components/EngineModelPicker.svelte';
+	import SlashCommandMenu from './components/SlashCommandMenu.svelte';
+	import { commandsStore, type AvailableCommand } from '$frontend/stores/features/commands.svelte';
 
 	// Composables
 	import { useFileHandling, buildAcceptedMimeTypes } from './composables/use-file-handling.svelte';
@@ -63,6 +65,47 @@
 	const adjustTextareaHeight = () =>
 		textareaResize.adjustTextareaHeight(textareaElement, messageText);
 	const focusTextarea = () => textareaElement?.focus();
+
+	// --- Slash command menu (typing "/" surfaces enabled Custom Commands) ---
+	let slashActiveIndex = $state(0);
+	let slashDismissed = $state(false);
+
+	// Active only when the whole input is a single "/token" (no space yet).
+	const slashQuery = $derived.by(() => {
+		const m = /^\/([A-Za-z0-9-]*)$/.exec(messageText);
+		return m ? m[1].toLowerCase() : null;
+	});
+	const slashMatches = $derived.by(() => {
+		if (slashQuery === null) return [] as AvailableCommand[];
+		const q = slashQuery;
+		return commandsStore.available.filter(c => !q || `${c.slug} ${c.name}`.toLowerCase().includes(q));
+	});
+	// (No isInputDisabled guard: a disabled textarea can't receive the "/" input
+	// that opens the menu, and referencing it here would precede its declaration.)
+	const slashOpen = $derived(
+		slashQuery !== null && !slashDismissed && slashMatches.length > 0
+	);
+
+	onMount(() => {
+		void commandsStore.fetchAvailable();
+	});
+
+	// Reset dismissal + clamp the active index as the slash session changes.
+	$effect(() => {
+		if (slashQuery === null) {
+			slashDismissed = false;
+			slashActiveIndex = 0;
+		} else if (slashActiveIndex >= slashMatches.length) {
+			slashActiveIndex = 0;
+		}
+	});
+
+	function selectSlashCommand(command: AvailableCommand) {
+		setMessageText(`/${command.slug} `);
+		slashDismissed = true;
+		focusTextarea();
+		adjustTextareaHeight();
+	}
 
 	// Chat actions params
 	const chatActionsParams = {
@@ -162,10 +205,40 @@
 		// Sync input text to other collaborators (includes draft save)
 		inputState.emitInputSync(messageText, fileHandling.attachedFiles);
 	};
-	const handleKeyDown = (event: KeyboardEvent) =>
+	const handleKeyDown = (event: KeyboardEvent) => {
+		// Slash menu owns navigation keys while it's open.
+		if (slashOpen) {
+			if (event.key === 'ArrowDown') {
+				event.preventDefault();
+				slashActiveIndex = (slashActiveIndex + 1) % slashMatches.length;
+				return;
+			}
+			if (event.key === 'ArrowUp') {
+				event.preventDefault();
+				slashActiveIndex = (slashActiveIndex - 1 + slashMatches.length) % slashMatches.length;
+				return;
+			}
+			if (event.key === 'Enter' || event.key === 'Tab') {
+				event.preventDefault();
+				selectSlashCommand(slashMatches[slashActiveIndex]);
+				return;
+			}
+			if (event.key === 'Escape') {
+				event.preventDefault();
+				slashDismissed = true;
+				return;
+			}
+		}
 		textareaResize.handleKeyDown(event, textareaElement, messageText);
-	const handleKeyPress = (event: KeyboardEvent) =>
+	};
+	const handleKeyPress = (event: KeyboardEvent) => {
+		// Enter is consumed by the slash menu (selection), never sends the message.
+		if (slashOpen && event.key === 'Enter') {
+			event.preventDefault();
+			return;
+		}
 		chatActions.handleKeyPress(event, messageText, setMessageText);
+	};
 	const handleSendMessage = () => {
 		chatActions.sendMessage(messageText, setMessageText);
 	};
@@ -419,6 +492,16 @@
 			attachedFiles={fileHandling.attachedFiles}
 			onRemove={fileHandling.removeAttachment}
 		/>
+
+		<!-- Slash command autocomplete (typing "/" surfaces Custom Commands) -->
+		{#if slashOpen}
+			<SlashCommandMenu
+				commands={slashMatches}
+				activeIndex={slashActiveIndex}
+				onselect={selectSlashCommand}
+				onhover={(i) => (slashActiveIndex = i)}
+			/>
+		{/if}
 
 		<!-- Main input area with drag and drop support -->
 		<div

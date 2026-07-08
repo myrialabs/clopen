@@ -125,7 +125,34 @@ export const ADMIN_ONLY_ROUTES = new Set([
 	'skills:toggle',
 	'skills:delete',
 	'skills:catalog',
-	'skills:install'
+	'skills:install',
+	// Custom Commands — same shared-store rationale as Skills; admin-only surface.
+	'commands:list',
+	'commands:get',
+	'commands:create',
+	'commands:update',
+	'commands:parse-import',
+	'commands:import',
+	'commands:toggle',
+	'commands:delete',
+	'commands:detect',
+	// Subagents — shared canonical store applied to every engine; admin-only.
+	'subagents:list',
+	'subagents:get',
+	'subagents:create',
+	'subagents:update',
+	'subagents:parse-import',
+	'subagents:import',
+	'subagents:toggle',
+	'subagents:delete',
+	'subagents:detect',
+	// Project Instructions — writes managed regions into engine memory files; admin-only.
+	'instructions:get-global',
+	'instructions:save-global',
+	'instructions:get-project',
+	'instructions:save-project',
+	// AI authoring of artifacts — part of the admin artifact editors.
+	'artifacts:generate'
 ]);
 
 /**

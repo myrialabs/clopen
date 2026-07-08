@@ -1,0 +1,63 @@
+/**
+ * Engine sync for Subagents — a thin adapter over the shared artifact framework.
+ * Enabled subagents are mirrored as `<slug>.md` into each engine's native agents
+ * dir (Claude: `.../agents/`) or listed in a synthetic preamble for engines with
+ * no native subagent concept (best-effort/unverified).
+ *
+ * Never throws — a stream never breaks because subagents couldn't sync.
+ */
+
+import { subagentQueries } from '$backend/database/queries';
+import { debug } from '$shared/utils/logger';
+import { materializeArtifacts, parseDoc, serializeDoc, type ManagedArtifact, type ArtifactEngine } from '$backend/artifacts';
+import { readSubagentMd } from './store';
+
+/**
+ * Shape a subagent document for the engine's native format.
+ *   - OpenCode agents need `mode: subagent` and express `tools` as a map (not the
+ *     Claude comma-list); we emit description + mode + model and drop our
+ *     Claude-shaped `tools`/`name`/`agent-type` keys rather than mistranslate them.
+ *     See https://opencode.ai/docs/agents.
+ *   - Claude reads our document verbatim.
+ */
+function documentForEngine(engine: ArtifactEngine, raw: string): string {
+	if (engine !== 'opencode') return raw;
+	const { frontmatter, body } = parseDoc(raw);
+	const fm: Record<string, string> = { mode: 'subagent' };
+	if (frontmatter.description) fm.description = frontmatter.description;
+	if (frontmatter.model) fm.model = frontmatter.model;
+	return serializeDoc({ frontmatter: fm, body }, ['description', 'mode', 'model']);
+}
+
+function buildSubagentsPreamble(items: ManagedArtifact[]): string {
+	if (items.length === 0) return '';
+	const lines = ['# Available Subagents', '', 'Specialized agent definitions you can delegate matching tasks to:', ''];
+	for (const s of items) lines.push(`- **${s.name}** (${s.slug}) — ${s.description}`);
+	return lines.join('\n');
+}
+
+export async function syncSubagents(engine: ArtifactEngine): Promise<void> {
+	try {
+		const rows = subagentQueries.getEnabled();
+		const enabled: ManagedArtifact[] = [];
+		for (const row of rows) {
+			const raw = await readSubagentMd(row.slug);
+			if (raw == null) continue;
+			enabled.push({ slug: row.slug, name: row.name, description: row.description, document: documentForEngine(engine, raw) });
+		}
+		const managedSlugs = subagentQueries.getAll().map(r => r.slug);
+		await materializeArtifacts('subagent', { engine, scope: 'global' }, {
+			enabled,
+			managedSlugs,
+			buildPreamble: buildSubagentsPreamble
+		});
+		debug.log('subagents', `🤖 Synced ${enabled.length} subagent(s) → ${engine}`);
+	} catch (error) {
+		debug.warn('subagents', `⚠️ Subagent sync for ${engine} failed (continuing without):`, error);
+	}
+}
+
+export async function syncSubagentsAllEngines(): Promise<void> {
+	const engines: ArtifactEngine[] = ['claude', 'codex', 'copilot', 'qwen', 'opencode'];
+	await Promise.all(engines.map(syncSubagents));
+}

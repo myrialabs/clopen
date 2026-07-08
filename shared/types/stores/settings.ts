@@ -29,6 +29,19 @@ export interface CommitGeneratorSettings {
 	branchConfig: BranchNameConfig;
 }
 
+/**
+ * AI authoring model for generating Skills/Commands/Subagents/Instructions from a
+ * purpose sentence. Optional — when absent (or `useCustomModel` false), the
+ * assistant model (selectedEngine/selectedModel) is used.
+ */
+export interface ArtifactGeneratorSettings {
+	useCustomModel: boolean;
+	engine: EngineType;
+	provider: string;
+	modelId: string;
+	modelName: string;
+}
+
 /** Per-user settings (stored per user) */
 export interface AppSettings {
 	selectedEngine: EngineType;
@@ -54,6 +67,8 @@ export interface AppSettings {
 	gitDiffSideBySide: boolean;
 	/** AI commit message generator configuration */
 	commitGenerator: CommitGeneratorSettings;
+	/** AI authoring model for artifact generation (optional; falls back to assistant model) */
+	artifactGenerator?: ArtifactGeneratorSettings;
 	/** Pinned model IDs — shown at top of provider group in model picker */
 	pinnedModels: string[];
 }

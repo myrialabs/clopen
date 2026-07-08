@@ -19,6 +19,9 @@
 	import SystemToolsSettings from './system-tools/SystemToolsSettings.svelte';
 	import McpSettings from './mcp/McpSettings.svelte';
 	import SkillsSettings from './skills/SkillsSettings.svelte';
+	import CommandsSettings from './commands/CommandsSettings.svelte';
+	import SubagentsSettings from './subagents/SubagentsSettings.svelte';
+	import InstructionsSettings from './instructions/InstructionsSettings.svelte';
 	import AppearanceSettings from './appearance/AppearanceSettings.svelte';
 	import AccountSettings from './account/AccountSettings.svelte';
 	import NotificationSettings from './notifications/NotificationSettings.svelte';
@@ -30,6 +33,9 @@
 	import RestartAllEnginesButton from './engines/RestartAllEnginesButton.svelte';
 	import { mcpServersStore } from '$frontend/stores/features/mcp-servers.svelte';
 	import { skillsStore } from '$frontend/stores/features/skills.svelte';
+	import { commandsStore } from '$frontend/stores/features/commands.svelte';
+	import { subagentsStore } from '$frontend/stores/features/subagents.svelte';
+	import { instructionsStore } from '$frontend/stores/features/instructions.svelte';
 
 	// Responsive state
 	let isMobileMenuOpen = $state(false);
@@ -249,6 +255,18 @@
 						<div in:fly={{ x: 20, duration: 200 }}>
 							<SkillsSettings />
 						</div>
+					{:else if activeSection === 'commands' && isAdmin}
+						<div in:fly={{ x: 20, duration: 200 }}>
+							<CommandsSettings />
+						</div>
+					{:else if activeSection === 'subagents' && isAdmin}
+						<div in:fly={{ x: 20, duration: 200 }}>
+							<SubagentsSettings />
+						</div>
+					{:else if activeSection === 'instructions' && isAdmin}
+						<div in:fly={{ x: 20, duration: 200 }}>
+							<InstructionsSettings />
+						</div>
 					{:else if activeSection === 'team' && isAdmin}
 						<div in:fly={{ x: 20, duration: 200 }}>
 							{#if isNoAuth}
@@ -283,13 +301,13 @@
 					{/if}
 				</div>
 
-				<!-- Floating MCP / Skills restart banner (outside scroll area) -->
-				{#if mcpServersStore.hasPendingChanges || skillsStore.hasPendingChanges}
+				<!-- Floating extensions restart banner (outside scroll area) -->
+				{#if mcpServersStore.hasPendingChanges || skillsStore.hasPendingChanges || commandsStore.hasPendingChanges || subagentsStore.hasPendingChanges || instructionsStore.hasPendingChanges}
 					<div class="shrink-0 flex items-center justify-between gap-3 p-3 mx-4 md:mx-5 mb-2 md:mb-3 bg-white/90 dark:bg-slate-950/90 backdrop-blur-sm border-t border-amber-500/20 -mt-1">
 						<p class="text-xs text-slate-600 dark:text-slate-400">
 							Changes apply after engines restart.
 						</p>
-						<RestartAllEnginesButton restartServerStyle onRestarted={() => { mcpServersStore.hasPendingChanges = false; skillsStore.hasPendingChanges = false; }} />
+						<RestartAllEnginesButton restartServerStyle onRestarted={() => { mcpServersStore.hasPendingChanges = false; skillsStore.hasPendingChanges = false; commandsStore.hasPendingChanges = false; subagentsStore.hasPendingChanges = false; instructionsStore.hasPendingChanges = false; }} />
 					</div>
 				{/if}
 			</main>

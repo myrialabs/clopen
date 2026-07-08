@@ -4,6 +4,7 @@
 	import Button from '$frontend/components/common/display/Button.svelte';
 	import Input from '$frontend/components/common/form/Input.svelte';
 	import Modal from '$frontend/components/common/overlay/Modal.svelte';
+	import ArtifactGenerateBar from '$frontend/components/settings/common/ArtifactGenerateBar.svelte';
 	import {
 		skillsStore,
 		type InstalledSkill,
@@ -536,6 +537,15 @@
 <Modal isOpen={editorOpen} onClose={closeEditor} title={editorMode === 'create' ? 'Create skill' : 'Edit skill'} size="lg">
 	{#snippet children()}
 		<div class="space-y-4 text-sm">
+			<ArtifactGenerateBar
+				artifactType="skill"
+				placeholder={'Describe the skill, e.g. "extract tables from PDF files"'}
+				onGenerated={(f) => {
+					if (typeof f.name === 'string') edName = f.name;
+					if (typeof f.description === 'string') edDescription = f.description;
+					if (typeof f.body === 'string') edBody = f.body;
+				}}
+			/>
 			<Input label="Name" required type="text" placeholder="e.g. PDF processing" bind:value={edName} />
 			<div class="space-y-1">
 				<Input label="Description" required type="text" placeholder="What it does and when to use it" bind:value={edDescription} />

@@ -29,6 +29,7 @@ import { resolveBinary } from '$backend/utils/cli';
 import { getCleanSpawnEnv } from '$backend/utils/index.js';
 import { getCodexMcpConfig } from '../../../mcp';
 import { syncSkills } from '$backend/skills';
+import { syncEngineArtifacts } from '$backend/engine/artifact-sync';
 import { CODEX_MODELS } from './models';
 import { debug } from '$shared/utils/logger';
 import { handleStreamError, buildTurnError } from './error-handler';
@@ -141,6 +142,7 @@ export class CodexEngine implements AIEngine {
 
 		// Refresh the synthetic skills preamble in CODEX_HOME before the turn.
 		await syncSkills('codex');
+		await syncEngineArtifacts('codex');
 
 		// Per-stream account override — same shape as Copilot. The SDK takes
 		// the apiKey at construction time, so an account switch requires

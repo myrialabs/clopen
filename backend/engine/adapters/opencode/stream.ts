@@ -41,6 +41,7 @@ import {
 } from './message-converter';
 import { ensureClient, getClient, getServerUrl } from './server';
 import { syncSkills } from '$backend/skills';
+import { syncEngineArtifacts } from '$backend/engine/artifact-sync';
 import { formatSessionError, handleStreamError } from './error-handler';
 import { buildJsonPrompt, extractJson } from '../../structured-helpers';
 import { debug } from '$shared/utils/logger';
@@ -123,6 +124,7 @@ export class OpenCodeEngine implements AIEngine {
 
 		// Refresh the synthetic skills preamble in OpenCode's config dir.
 		await syncSkills('opencode');
+		await syncEngineArtifacts('opencode');
 
 		debug.log('chat', 'Open Code - Stream Query');
 		debug.log('chat', { prompt });

@@ -12,6 +12,9 @@ export type SettingsSection =
 	| 'system-tools'
 	| 'mcp'
 	| 'skills'
+	| 'commands'
+	| 'subagents'
+	| 'instructions'
 	| 'appearance'
 	| 'notifications'
 	| 'tunnel'
@@ -87,6 +90,30 @@ export const settingsSections: SettingsSectionMeta[] = [
 		label: 'Skills',
 		icon: 'lucide:graduation-cap',
 		description: 'Reusable agent instructions',
+		group: 'extensions',
+		adminOnly: true
+	},
+	{
+		id: 'commands',
+		label: 'Commands',
+		icon: 'lucide:terminal',
+		description: 'Custom slash commands',
+		group: 'extensions',
+		adminOnly: true
+	},
+	{
+		id: 'subagents',
+		label: 'Subagents',
+		icon: 'lucide:bot',
+		description: 'Specialized delegated agents',
+		group: 'extensions',
+		adminOnly: true
+	},
+	{
+		id: 'instructions',
+		label: 'Instructions',
+		icon: 'lucide:scroll-text',
+		description: 'Shared instruction block',
 		group: 'extensions',
 		adminOnly: true
 	},
