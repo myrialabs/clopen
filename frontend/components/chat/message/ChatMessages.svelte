@@ -99,9 +99,12 @@
 		return map;
 	});
 
-	// Get last user message ID for undo button logic
+	// Get last user message ID for undo button logic. Excludes synthetic
+	// (engine-generated) user messages — e.g. Codex inline error notices —
+	// which are never something the human actually typed and shouldn't count
+	// as "the last turn" for undo purposes.
 	const lastUserMessageId = $derived.by(() => {
-		const userMessages = filteredMessages.filter(m => m.type === 'user');
+		const userMessages = filteredMessages.filter(m => m.type === 'user' && !(m as any).synthetic);
 		if (userMessages.length === 0) return undefined;
 		const lastUserMsg = userMessages[userMessages.length - 1];
 		return 'messageId' in lastUserMsg ? lastUserMsg.messageId : undefined;

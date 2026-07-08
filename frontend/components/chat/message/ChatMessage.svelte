@@ -86,6 +86,11 @@
 		if (message.type === 'user' && 'content' in message) {
 			const hasToolResult = message.content.some((c) => c.type === 'tool_result');
 			if (hasToolResult) return 'agent';
+			// Engine-generated "user" messages (e.g. Codex inline error notices,
+			// an unconsumed Skill prompt expansion) are never something the human
+			// typed. Render them like a tool/system notice, not a user bubble —
+			// otherwise the UI misattributes them to the user.
+			if ('synthetic' in message && (message as any).synthetic === true) return 'agent';
 		}
 		return message.type;
 	});

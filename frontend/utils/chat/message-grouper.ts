@@ -137,8 +137,14 @@ export function groupMessages(messages: FrontendMessage[]): {
         return;
       }
 
-      // Synthetic user messages after Skill tool
-      if (isSyntheticUserMessage(message) && lastSkillToolUseId) {
+      const toolResults = extractToolResults(message.content);
+
+      // Synthetic user messages after Skill tool (the expanded skill prompt
+      // text, distinct from the tool_result below — must check toolResults
+      // is empty here, otherwise the Skill tool_result itself gets swallowed
+      // by this branch before it reaches the toolResults handling further
+      // down, leaving the Skill tool_use's `result` stuck at null).
+      if (isSyntheticUserMessage(message) && lastSkillToolUseId && toolResults.length === 0) {
         const promptText = extractUserTextContent(message);
         if (promptText) {
           skillPromptMap.set(lastSkillToolUseId, promptText);
@@ -149,7 +155,6 @@ export function groupMessages(messages: FrontendMessage[]): {
 
       lastCompactBoundaryIdx = -1;
 
-      const toolResults = extractToolResults(message.content);
       if (toolResults.length > 0) {
         toolResults.forEach((toolResult) => {
           if (toolResult.toolUseId && toolUseMap.has(toolResult.toolUseId)) {
@@ -160,10 +165,11 @@ export function groupMessages(messages: FrontendMessage[]): {
           }
         });
         // Don't add tool_result messages separately
-      } else {
-        lastSkillToolUseId = null;
-        groups.push(message);
+        return;
       }
+
+      lastSkillToolUseId = null;
+      groups.push(message);
       return;
     }
 
