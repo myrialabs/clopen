@@ -68,9 +68,13 @@ export const commandsStore = {
 	get hasPendingChanges() { return hasPendingChanges; },
 	set hasPendingChanges(v: boolean) { hasPendingChanges = v; },
 
-	async fetchAvailable(): Promise<AvailableCommand[]> {
+	/**
+	 * `profileId`/`projectId` narrow the result to the session's active profile
+	 * (mirrors the engine sync's stream-time filtering), same as `syncCommands`.
+	 */
+	async fetchAvailable(profileId?: number | null, projectId?: string): Promise<AvailableCommand[]> {
 		try {
-			const result = await ws.http('commands:available', {});
+			const result = await ws.http('commands:available', { profileId, projectId });
 			available = result.commands;
 		} catch (error) {
 			debug.error('settings', 'Failed to load available commands:', error);

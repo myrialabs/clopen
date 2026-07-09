@@ -154,7 +154,21 @@
 	</div>
 
 	{#if !loaded}
-		<p class="text-sm text-slate-400">Loading…</p>
+		<div class="space-y-3">
+			{#each [0, 1] as i (i)}
+				<div class="p-4 bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 rounded-xl animate-pulse space-y-3">
+					<div class="space-y-1.5">
+						<div class="h-3.5 w-16 rounded bg-slate-200 dark:bg-slate-800"></div>
+						<div class="h-3 w-56 rounded bg-slate-200 dark:bg-slate-800"></div>
+					</div>
+					<div class="flex flex-wrap gap-1.5">
+						<div class="h-5 w-20 rounded-full bg-slate-200 dark:bg-slate-800"></div>
+						<div class="h-5 w-24 rounded-full bg-slate-200 dark:bg-slate-800"></div>
+					</div>
+					<div class="h-8 w-full rounded-lg bg-slate-200 dark:bg-slate-800"></div>
+				</div>
+			{/each}
+		</div>
 	{:else}
 		<!-- Deny list -->
 		{@render patternEditor('deny', 'Deny', 'Blocked tools. Denied tools never run, even if also allowed.', denyInput, (v: string) => (denyInput = v))}

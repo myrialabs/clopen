@@ -15,7 +15,7 @@
 	import { projectState } from '$frontend/stores/core/projects.svelte';
 	import { appState } from '$frontend/stores/core/app.svelte';
 	import { settings } from '$frontend/stores/features/settings.svelte';
-	import { onDestroy, onMount, untrack } from 'svelte';
+	import { onDestroy, untrack } from 'svelte';
 	import { ChatService } from '$frontend/services/chat';
 	import { chatService } from '$frontend/services/chat/chat.service';
 	import { getEngineInfo } from '$shared/constants/engines';
@@ -86,8 +86,11 @@
 		slashQuery !== null && !slashDismissed && slashMatches.length > 0
 	);
 
-	onMount(() => {
-		void commandsStore.fetchAvailable();
+	// Re-fetch whenever the session's active profile (or its project, for the
+	// project-default fallback) changes, so the "/" picker mirrors exactly what
+	// the profile makes available in the stream (see commandsStore.fetchAvailable).
+	$effect(() => {
+		void commandsStore.fetchAvailable(chatModelState.profileId, projectState.currentProject?.id);
 	});
 
 	// Reset dismissal + clamp the active index as the slash session changes.

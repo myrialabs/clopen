@@ -32,27 +32,32 @@
 	}
 </script>
 
-<div class="p-3 rounded-lg border border-violet-500/20 bg-gradient-to-br from-violet-500/5 to-purple-500/5 space-y-2">
+<div class="p-3 rounded-lg border border-violet-500/20 bg-gradient-to-br from-violet-500/5 to-purple-500/5 space-y-2.5">
 	<div class="flex items-center gap-1.5 text-xs font-semibold text-violet-600 dark:text-violet-400">
 		<Icon name="lucide:sparkles" class="w-3.5 h-3.5" />
 		Generate with AI
 	</div>
-	<div class="flex items-end gap-2">
+	<div class="space-y-1.5">
 		<textarea
-			bind:value={purpose}
-			rows="2"
-			{placeholder}
-			disabled={generating}
-			onkeydown={(e) => { if (e.key === 'Enter' && (e.metaKey || e.ctrlKey)) { e.preventDefault(); run(); } }}
-			class="flex-1 px-3 py-2 text-sm bg-white dark:bg-slate-800 border border-slate-200 dark:border-slate-700 rounded-lg outline-none focus:ring-2 focus:ring-violet-500/20 focus:border-violet-600 transition-colors text-slate-900 dark:text-slate-100 placeholder-slate-400 resize-y disabled:opacity-50"
-		></textarea>
-		<Button variant="primary" size="sm" class="gap-1.5 shrink-0" loading={generating} disabled={!purpose.trim()} onclick={run}>
-			<Icon name="lucide:wand-sparkles" class="w-4 h-4" />
-			Generate
-		</Button>
-	</div>
-	{#if error}
+				bind:value={purpose}
+				rows="2"
+				{placeholder}
+				disabled={generating}
+				onkeydown={(e) => { if (e.key === 'Enter' && (e.metaKey || e.ctrlKey)) { e.preventDefault(); run(); } }}
+				class="w-full px-3 py-2 text-sm bg-white dark:bg-slate-800 border border-slate-200 dark:border-slate-700 rounded-lg outline-none focus:ring-2 focus:ring-violet-500/20 focus:border-violet-600 transition-colors text-slate-900 dark:text-slate-100 placeholder-slate-400 resize-y disabled:opacity-50"
+			></textarea>
+		{#if error}
 		<p class="text-xs text-red-500">{error}</p>
-	{/if}
-	<p class="text-[11px] text-slate-400">Fills the fields below — review before saving. Uses the model set in Settings → Models → Artifacts.</p>
+		{/if}
+		<div class="flex items-start justify-between gap-3">
+			<div class="text-[11px] text-slate-400 leading-relaxed">
+				<p>Fills the fields below — review before saving.</p>
+				<p>Uses the model set in Settings → Models → Artifacts.</p>
+			</div>
+			<Button variant="primary" size="sm" class="gap-1.5 shrink-0" loading={generating} disabled={!purpose.trim()} onclick={run}>
+					<Icon name="lucide:wand-sparkles" class="w-4 h-4" />
+					Generate
+				</Button>
+		</div>
+	</div>
 </div>

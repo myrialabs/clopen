@@ -12,6 +12,7 @@ import { t } from 'elysia';
 import { createRouter } from '$shared/utils/ws-server';
 import { debug } from '$shared/utils/logger';
 import { commandService, detectCommands, syncCommandsAllEngines } from '$backend/commands';
+import { resolveActiveProfileId, artifactFilter } from '$backend/profiles';
 
 const COMMAND_SCHEMA = t.Object({
 	id: t.Number(),
@@ -124,8 +125,12 @@ export const commandCrudHandler = createRouter()
 		return { success: true };
 	})
 	.http('commands:available', {
-		// Non-admin: enabled commands for the chat "/" picker (display fields only).
-		data: t.Object({}),
+		// Non-admin: commands for the chat "/" picker (display fields only),
+		// narrowed by the session's active profile (if any) same as stream sync.
+		data: t.Object({
+			profileId: t.Optional(t.Union([t.Number(), t.Null()])),
+			projectId: t.Optional(t.String())
+		}),
 		response: t.Object({
 			commands: t.Array(t.Object({
 				slug: t.String(),
@@ -134,9 +139,11 @@ export const commandCrudHandler = createRouter()
 				argumentHint: t.Union([t.String(), t.Null()])
 			}))
 		})
-	}, async () => {
+	}, async ({ data }) => {
 		debug.log('path', 'commands:available');
-		return { commands: commandService.available() };
+		const activeProfileId = resolveActiveProfileId(data.profileId ?? null, data.projectId);
+		const filter = artifactFilter(activeProfileId, 'command');
+		return { commands: commandService.available(filter) };
 	})
 	.http('commands:detect', {
 		data: t.Object({ projectPath: t.Optional(t.String()) }),

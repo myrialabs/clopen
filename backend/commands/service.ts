@@ -70,12 +70,19 @@ export const commandService = {
 	},
 
 	/**
-	 * Minimal list of ENABLED commands for the chat "/" picker. Non-admin surface
+	 * Minimal list of commands for the chat "/" picker. Non-admin surface
 	 * (any user can invoke a command), so it exposes only display fields — no
 	 * bodies, no source/disk metadata.
+	 *
+	 * `profileFilter` mirrors {@link syncCommands}'s semantics: when an active
+	 * profile references ≥1 command, the picker shows exactly that set (even if
+	 * a referenced command is globally disabled) instead of the enabled set.
 	 */
-	available(): { slug: string; name: string; description: string; argumentHint: string | null }[] {
-		return commandQueries.getEnabled().map(r => ({
+	available(profileFilter?: Set<string> | null): { slug: string; name: string; description: string; argumentHint: string | null }[] {
+		const rows = profileFilter
+			? commandQueries.getAll().filter(r => profileFilter.has(r.slug))
+			: commandQueries.getEnabled();
+		return rows.map(r => ({
 			slug: r.slug,
 			name: r.name,
 			description: r.description,
