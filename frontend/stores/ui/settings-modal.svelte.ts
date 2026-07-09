@@ -7,7 +7,9 @@ import type { IconName } from '$shared/types/ui/icons';
 import type { EngineType } from '$shared/types/unified';
 
 export type SettingsSection =
-	| 'models'
+	| 'assistant'
+	| 'commit-message'
+	| 'artifacts'
 	| 'engines'
 	| 'system-tools'
 	| 'mcp'
@@ -27,7 +29,7 @@ export type SettingsSection =
 
 /** Sidebar grouping. Sections are rendered under their group header. */
 export type SettingsGroup =
-	| 'assistant'
+	| 'models'
 	| 'extensions'
 	| 'general'
 	| 'account'
@@ -35,7 +37,7 @@ export type SettingsGroup =
 
 /** Ordered group definitions for the settings sidebar. */
 export const settingsGroups: { id: SettingsGroup; label: string }[] = [
-	{ id: 'assistant', label: 'Assistant' },
+	{ id: 'models', label: 'Models' },
 	{ id: 'extensions', label: 'Tools & Extensions' },
 	{ id: 'general', label: 'General' },
 	{ id: 'account', label: 'Account' },
@@ -65,11 +67,25 @@ export interface SettingsSectionMeta {
 
 export const settingsSections: SettingsSectionMeta[] = [
 	{
-		id: 'models',
-		label: 'Models',
+		id: 'assistant',
+		label: 'Assistant',
+		icon: 'lucide:bot',
+		description: 'Chat engine and model',
+		group: 'models'
+	},
+	{
+		id: 'commit-message',
+		label: 'Git',
+		icon: 'lucide:git-branch',
+		description: 'Commits and branches',
+		group: 'models'
+	},
+	{
+		id: 'artifacts',
+		label: 'Artifacts',
 		icon: 'lucide:sparkles',
-		description: 'Chat and commit model',
-		group: 'assistant'
+		description: 'Model for extensions',
+		group: 'models'
 	},
 	{
 		id: 'engines',
@@ -201,12 +217,12 @@ export const settingsSections: SettingsSectionMeta[] = [
 // Create the state using Svelte 5 runes
 export const settingsModalState = $state<SettingsModalState>({
 	isOpen: false,
-	activeSection: 'models',
+	activeSection: 'assistant',
 	engineFocus: null
 });
 
 // Helper functions
-export function openSettingsModal(section: SettingsSection = 'models') {
+export function openSettingsModal(section: SettingsSection = 'assistant') {
 	settingsModalState.isOpen = true;
 	settingsModalState.activeSection = section;
 }

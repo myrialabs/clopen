@@ -2,7 +2,7 @@
  * Artifact AI-generation handler (Settings → Skills/Commands/Subagents/Instructions).
  *
  *   - artifacts:generate — draft an artifact of a given type from a purpose
- *     sentence, using the caller-selected engine/model (the "Authoring" model in
+ *     sentence, using the caller-selected engine/model (the "Artifacts" model in
  *     Settings → Models). Returns loosely-typed fields the editor prefills.
  *
  * Admin-gated (authoring is part of the admin artifact editors). The engine/model

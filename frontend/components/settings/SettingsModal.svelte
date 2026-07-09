@@ -14,7 +14,9 @@
 	import { systemSettings } from '$frontend/stores/features/settings.svelte';
 
 	// Import settings components
-	import ModelSettings from './model/ModelSettings.svelte';
+	import AssistantSettings from './model/AssistantSettings.svelte';
+	import GitSettings from './model/GitSettings.svelte';
+	import ArtifactsSettings from './model/ArtifactsSettings.svelte';
 	import AIEnginesSettings from './engines/AIEnginesSettings.svelte';
 	import SystemToolsSettings from './system-tools/SystemToolsSettings.svelte';
 	import McpSettings from './mcp/McpSettings.svelte';
@@ -222,9 +224,17 @@
 			<!-- Content Area -->
 			<main class="flex-1 flex flex-col min-w-0 overflow-hidden">
 				<div class="flex-1 overflow-y-auto p-4 md:p-5">
-					{#if activeSection === 'models'}
+					{#if activeSection === 'assistant'}
 						<div in:fly={{ x: 20, duration: 200 }}>
-							<ModelSettings />
+							<AssistantSettings />
+						</div>
+					{:else if activeSection === 'commit-message'}
+						<div in:fly={{ x: 20, duration: 200 }}>
+							<GitSettings />
+						</div>
+					{:else if activeSection === 'artifacts'}
+						<div in:fly={{ x: 20, duration: 200 }}>
+							<ArtifactsSettings />
 						</div>
 					{:else if activeSection === 'appearance'}
 						<div in:fly={{ x: 20, duration: 200 }}>

@@ -54,5 +54,5 @@
 	{#if error}
 		<p class="text-xs text-red-500">{error}</p>
 	{/if}
-	<p class="text-[11px] text-slate-400">Fills the fields below — review before saving. Uses the model set in Settings → Models → Authoring.</p>
+	<p class="text-[11px] text-slate-400">Fills the fields below — review before saving. Uses the model set in Settings → Models → Artifacts.</p>
 </div>

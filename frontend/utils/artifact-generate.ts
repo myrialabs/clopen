@@ -1,6 +1,6 @@
 /**
  * Client helper for AI-authoring an artifact from a purpose sentence. Resolves
- * which model to use (the "Authoring" override in Settings → Models, else the
+ * which model to use (the "Artifacts" override in Settings → Models, else the
  * assistant model) and calls the `artifacts:generate` endpoint.
  */
 
