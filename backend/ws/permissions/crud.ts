@@ -19,8 +19,9 @@ import type { PermissionScope } from '$backend/database/queries';
 import type { EngineType } from '$shared/types/unified';
 
 const PERMISSION_SET_SCHEMA = t.Object({
-	scope: t.Union([t.Literal('global'), t.Literal('project')]),
+	scope: t.Union([t.Literal('global'), t.Literal('project'), t.Literal('profile')]),
 	projectId: t.Union([t.String(), t.Null()]),
+	profileId: t.Union([t.Number(), t.Null()]),
 	engine: t.String(),
 	allow: t.Array(t.String()),
 	deny: t.Array(t.String())
@@ -64,6 +65,8 @@ export const permissionsCrudHandler = createRouter()
 		debug.log('path', `permissions:save ${data.engine}/${data.scope}`);
 		const projectId = data.scope === 'project' ? (data.projectId ?? null) : null;
 		if (data.scope === 'project' && !projectId) throw new Error('A project is required for project-scoped permissions');
-		permissionService.save(data.scope as PermissionScope, projectId, data.engine as EngineType, data.allow, data.deny);
+		// This admin endpoint only manages global/project scope. Profile-scoped
+		// permission overlays are edited through the profiles editor (profiles:save-permissions).
+		permissionService.save(data.scope as PermissionScope, projectId, null, data.engine as EngineType, data.allow, data.deny);
 		return { success: true };
 	});

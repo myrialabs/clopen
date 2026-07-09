@@ -33,6 +33,7 @@ export type LogLabel =
 	| 'subagents'
 	| 'instructions'
 	| 'permissions'
+	| 'profiles'
 	| 'notification'
 	| 'rate-limit'
 	

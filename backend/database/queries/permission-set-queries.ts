@@ -14,12 +14,13 @@
 import { getDatabase } from '../index';
 import type { EngineType } from '$shared/types/unified';
 
-export type PermissionScope = 'global' | 'project';
+export type PermissionScope = 'global' | 'project' | 'profile';
 
 interface PermissionSetRow {
 	id: number;
 	scope: PermissionScope;
 	project_id: string | null;
+	profile_id: number | null;
 	engine: EngineType;
 	allow: string;
 	deny: string;
@@ -32,6 +33,7 @@ export interface PermissionSet {
 	id: number;
 	scope: PermissionScope;
 	projectId: string | null;
+	profileId: number | null;
 	engine: EngineType;
 	allow: string[];
 	deny: string[];
@@ -51,6 +53,7 @@ function toSet(row: PermissionSetRow): PermissionSet {
 		id: row.id,
 		scope: row.scope,
 		projectId: row.project_id,
+		profileId: row.profile_id,
 		engine: row.engine,
 		allow: parseList(row.allow),
 		deny: parseList(row.deny)
@@ -82,56 +85,71 @@ export const permissionSetQueries = {
 		return rows.map(toSet);
 	},
 
-	/** The set for one exact (scope, project, engine), or null. */
-	getOne(scope: PermissionScope, projectId: string | null, engine: EngineType): PermissionSet | null {
+	/** Profile-scope sets for one profile (the per-profile allow/deny overlay). */
+	getForProfile(profileId: number): PermissionSet[] {
+		const rows = getDatabase()
+			.prepare(`SELECT * FROM permission_sets WHERE scope = 'profile' AND profile_id = ?`)
+			.all(profileId) as PermissionSetRow[];
+		return rows.map(toSet);
+	},
+
+	/** The set for one exact (scope, project, profile, engine), or null. */
+	getOne(
+		scope: PermissionScope,
+		projectId: string | null,
+		profileId: number | null,
+		engine: EngineType
+	): PermissionSet | null {
 		const row = getDatabase()
 			.prepare(
 				`SELECT * FROM permission_sets
-				 WHERE scope = ? AND COALESCE(project_id, '') = COALESCE(?, '') AND engine = ?`
+				 WHERE scope = ? AND COALESCE(project_id, '') = COALESCE(?, '')
+				   AND COALESCE(profile_id, -1) = COALESCE(?, -1) AND engine = ?`
 			)
-			.get(scope, projectId, engine) as PermissionSetRow | undefined;
+			.get(scope, projectId, profileId, engine) as PermissionSetRow | undefined;
 		return row ? toSet(row) : null;
 	},
 
 	/**
-	 * Upsert the allow/deny lists for one (scope, project, engine). When both
-	 * lists are empty the row is deleted so the table only ever holds real rules
-	 * (keeps resolution cheap and "any restriction?" a simple emptiness check).
+	 * Upsert the allow/deny lists for one (scope, project, profile, engine). When
+	 * both lists are empty the row is deleted so the table only ever holds real
+	 * rules (keeps resolution cheap and "any restriction?" a simple emptiness
+	 * check). `projectId` is only kept for `scope='project'`, `profileId` only for
+	 * `scope='profile'`.
 	 */
 	save(
 		scope: PermissionScope,
 		projectId: string | null,
+		profileId: number | null,
 		engine: EngineType,
 		allow: string[],
 		deny: string[]
 	): void {
 		const db = getDatabase();
 		const normProject = scope === 'project' ? projectId : null;
+		const normProfile = scope === 'profile' ? profileId : null;
+		const where = `scope = ? AND COALESCE(project_id, '') = COALESCE(?, '')
+			 AND COALESCE(profile_id, -1) = COALESCE(?, -1) AND engine = ?`;
 		if (allow.length === 0 && deny.length === 0) {
-			db.prepare(
-				`DELETE FROM permission_sets
-				 WHERE scope = ? AND COALESCE(project_id, '') = COALESCE(?, '') AND engine = ?`
-			).run(scope, normProject, engine);
+			db.prepare(`DELETE FROM permission_sets WHERE ${where}`)
+				.run(scope, normProject, normProfile, engine);
 			return;
 		}
 		// Explicit exists → update/insert rather than ON CONFLICT: the uniqueness
-		// lives in an EXPRESSION index (COALESCE(project_id, '')), which is awkward
-		// to name as an upsert conflict target across SQLite builds.
+		// lives in an EXPRESSION index (COALESCE(...)), which is awkward to name as
+		// an upsert conflict target across SQLite builds.
 		const existing = db
-			.prepare(
-				`SELECT id FROM permission_sets
-				 WHERE scope = ? AND COALESCE(project_id, '') = COALESCE(?, '') AND engine = ?`
-			)
-			.get(scope, normProject, engine) as { id: number } | undefined;
+			.prepare(`SELECT id FROM permission_sets WHERE ${where}`)
+			.get(scope, normProject, normProfile, engine) as { id: number } | undefined;
 		if (existing) {
 			db.prepare(
 				`UPDATE permission_sets SET allow = ?, deny = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?`
 			).run(JSON.stringify(allow), JSON.stringify(deny), existing.id);
 		} else {
 			db.prepare(
-				`INSERT INTO permission_sets (scope, project_id, engine, allow, deny)
-				 VALUES (?, ?, ?, ?, ?)`
-			).run(scope, normProject, engine, JSON.stringify(allow), JSON.stringify(deny));
+				`INSERT INTO permission_sets (scope, project_id, profile_id, engine, allow, deny)
+				 VALUES (?, ?, ?, ?, ?, ?)`
+			).run(scope, normProject, normProfile, engine, JSON.stringify(allow), JSON.stringify(deny));
 		}
 	}
 };

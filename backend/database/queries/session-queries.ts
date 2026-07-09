@@ -86,6 +86,16 @@ export const sessionQueries = {
 		`).run(engine, provider, modelId, modelName, id);
 	},
 
+	/** Persist the active profile for a session (NULL clears it). */
+	updateProfile(id: string, profileId: number | null): void {
+		const db = getDatabase();
+		db.prepare(`
+			UPDATE chat_sessions
+			SET profile_id = ?
+			WHERE id = ?
+		`).run(profileId, id);
+	},
+
 	updateAccountId(id: string, accountId: number | null): void {
 		const db = getDatabase();
 		db.prepare(`

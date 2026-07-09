@@ -107,6 +107,18 @@ export async function materializeArtifacts(
 				await writeFile(join(target, `${item.slug}.md`), item.document, 'utf8');
 			}
 		}
+
+		// A type that is NATIVE for this engine must not ALSO leave a stale synthetic
+		// managed block in the memory file. Engines that USED to be synthetic for a
+		// type before a native dir was added (OpenCode subagents/commands, Codex
+		// commands) still carry an orphaned `CLOPEN:<TYPE>` block in AGENTS.md that
+		// the native sync never touches — so a deleted/renamed artifact would linger
+		// there forever (e.g. a removed subagent still "available"). Strip it here;
+		// writeManagedBlock is a no-op when no such block exists.
+		const staleMemoryFile = resolveArtifact('instruction', ctx).locateEffective(ctx);
+		if (staleMemoryFile) {
+			await writeManagedBlock(staleMemoryFile, '', markersFor(MARKER_ID[type as keyof typeof MARKER_ID]));
+		}
 		return;
 	}
 

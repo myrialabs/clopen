@@ -16,6 +16,7 @@ export type SettingsSection =
 	| 'subagents'
 	| 'instructions'
 	| 'permissions'
+	| 'profiles'
 	| 'appearance'
 	| 'notifications'
 	| 'tunnel'
@@ -123,6 +124,14 @@ export const settingsSections: SettingsSectionMeta[] = [
 		label: 'Permissions',
 		icon: 'lucide:shield-check',
 		description: 'Per-engine tool allow/deny',
+		group: 'extensions',
+		adminOnly: true
+	},
+	{
+		id: 'profiles',
+		label: 'Profiles',
+		icon: 'lucide:layers',
+		description: 'Reusable tool bundles',
 		group: 'extensions',
 		adminOnly: true
 	},

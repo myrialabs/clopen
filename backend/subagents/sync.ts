@@ -10,6 +10,7 @@
 import { subagentQueries } from '$backend/database/queries';
 import { debug } from '$shared/utils/logger';
 import { materializeArtifacts, parseDoc, serializeDoc, type ManagedArtifact, type ArtifactEngine } from '$backend/artifacts';
+import { artifactFilter } from '$backend/profiles';
 import { readSubagentMd } from './store';
 
 /**
@@ -36,9 +37,13 @@ function buildSubagentsPreamble(items: ManagedArtifact[]): string {
 	return lines.join('\n');
 }
 
-export async function syncSubagents(engine: ArtifactEngine): Promise<void> {
+export async function syncSubagents(engine: ArtifactEngine, profileId?: number): Promise<void> {
 	try {
-		const rows = subagentQueries.getEnabled();
+		const filter = artifactFilter(profileId, 'subagent');
+		// A profile activates the subagents it references even if globally disabled;
+		// with no profile filter, only the enabled set applies (unchanged).
+		const rows = (filter ? subagentQueries.getAll() : subagentQueries.getEnabled())
+			.filter(r => !filter || filter.has(r.slug));
 		const enabled: ManagedArtifact[] = [];
 		for (const row of rows) {
 			const raw = await readSubagentMd(row.slug);

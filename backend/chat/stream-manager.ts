@@ -36,6 +36,7 @@ import { getProjectEngine, initializeProjectEngine } from '../engine';
 import { messageQueries, sessionQueries } from '../database/queries';
 import { snapshotService } from '../snapshot/snapshot-service';
 import { projectContextService, refreshExpiringExternalOAuth } from '../mcp';
+import { resolveActiveProfileId } from '../profiles';
 import { browserMcpControl } from '../preview';
 import { extractMessageText } from '../snapshot/helpers';
 import { debug } from '$shared/utils/logger';
@@ -319,6 +320,12 @@ class StreamManager extends EventEmitter {
 				if (request.engine.account.id) {
 					sessionQueries.updateAccount(request.chatSessionId, request.engine.account.id, request.engine.account.name || null);
 				}
+				// Persist the session's explicit profile choice (number or null).
+				// `undefined` (older client that doesn't send one) leaves it untouched
+				// so the session keeps inheriting the project default.
+				if (request.profileId !== undefined) {
+					sessionQueries.updateProfile(request.chatSessionId, request.profileId);
+				}
 			} catch (error) {
 				debug.error('chat', 'Failed to save engine/model to session:', error);
 			}
@@ -530,6 +537,12 @@ class StreamManager extends EventEmitter {
 			let lastAssistantTextContent: string | null = null;
 			const projectId = streamState.projectId || 'default';
 
+			// Resolve the effective Profile once per stream: the session's explicit
+			// choice, else the project's shared default (see backend/profiles). Passed
+			// down via mcpContext so the existing per-engine sync + MCP config path
+			// scopes artifacts/connectors to the profile's bundle — no new sync path.
+			const activeProfileId = resolveActiveProfileId(requestData.profileId, streamState.projectId);
+
 			if ((streamState.status as string) === 'cancelled' || streamState.abortController?.signal.aborted) {
 				debug.log('chat', 'Stream cancelled before engine initialization, skipping query');
 				return;
@@ -625,7 +638,7 @@ class StreamManager extends EventEmitter {
 				abortController: streamState.abortController,
 				...(requestEngine.account.id !== 0 && { accountId: requestEngine.account.id }),
 				...(projectId && chatSessionId && {
-					mcpContext: { projectId, chatSessionId, streamId: streamState.streamId }
+					mcpContext: { projectId, chatSessionId, streamId: streamState.streamId, ...(activeProfileId != null && { profileId: activeProfileId }) }
 				}),
 			});
 

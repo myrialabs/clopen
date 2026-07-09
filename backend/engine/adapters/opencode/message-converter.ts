@@ -104,7 +104,7 @@ type NormalizedToolInput =
  *
  * @see https://opencode.ai/docs/tools
  */
-const TOOL_NAME_MAP: Record<string, string> = {
+export const TOOL_NAME_MAP: Record<string, string> = {
 	// File operations
 	'bash': 'Bash',
 	'view': 'Read',

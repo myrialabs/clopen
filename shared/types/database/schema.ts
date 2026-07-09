@@ -11,6 +11,7 @@ export interface Project {
 	path: string;
 	created_at: string;
 	last_opened_at: string;
+	default_profile_id?: number | null; // Shared per-project default Profile (null = none)
 }
 
 export interface ChatSession {
@@ -28,6 +29,7 @@ export interface ChatSession {
 	model_name?: string; // Display name (e.g., 'Sonnet 4.6', 'GPT-5.2')
 	account_id?: number; // Engine account used for this session
 	account_name?: string; // Display name of the selected account
+	profile_id?: number | null; // Active Profile bundle for this session (null = use project default / none)
 
 	// ── HEAD state (re-derived when HEAD changes: undo/redo/restore/branch) ──
 	head_message_id?: string; // Git-like HEAD pointer to current branch tip

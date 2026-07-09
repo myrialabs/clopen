@@ -48,6 +48,10 @@ import * as migration046 from './046_create_subagents_table';
 import * as migration047 from './047_create_instructions_table';
 import * as migration048 from './048_add_mcp_tool_overrides';
 import * as migration049 from './049_create_permission_sets_table';
+import * as migration050 from './050_create_profiles_tables';
+import * as migration051 from './051_add_profile_to_sessions';
+import * as migration052 from './052_add_default_profile_to_projects';
+import * as migration053 from './053_add_profile_to_permission_sets';
 
 // Export all migrations in order
 export const migrations = [
@@ -344,6 +348,30 @@ export const migrations = [
 		description: migration049.description,
 		up: migration049.up,
 		down: migration049.down
+	},
+	{
+		id: '050',
+		description: migration050.description,
+		up: migration050.up,
+		down: migration050.down
+	},
+	{
+		id: '051',
+		description: migration051.description,
+		up: migration051.up,
+		down: migration051.down
+	},
+	{
+		id: '052',
+		description: migration052.description,
+		up: migration052.up,
+		down: migration052.down
+	},
+	{
+		id: '053',
+		description: migration053.description,
+		up: migration053.up,
+		down: migration053.down
 	}
 ];
 

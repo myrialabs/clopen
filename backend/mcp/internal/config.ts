@@ -129,11 +129,12 @@ function serverEnabled(serverName: string): boolean {
  * propagation — without this, background streams from Project A would
  * resolve to Project B's preview browser when the user switches projects.
  */
-export function getEnabledMcpServers(context?: McpExecutionContext): Record<string, McpServerConfig> {
+export function getEnabledMcpServers(context?: McpExecutionContext, profileFilter?: Set<string>): Record<string, McpServerConfig> {
 	const enabledServers: Record<string, McpServerConfig> = {};
+	const active = new Set(activeInternalServerNames(profileFilter));
 
 	Object.entries(mcpServers).forEach(([serverName, serverConfig]) => {
-		if (serverEnabled(serverName)) {
+		if (active.has(serverName)) {
 			if (context) {
 				// Create context-bound instance: wrap each tool handler so
 				// AsyncLocalStorage context is restored on invocation, then
@@ -303,6 +304,19 @@ export function getEnabledServerNames(): string[] {
 }
 
 /**
+ * Internal server names ACTIVE for a stream. When a Profile is active, its
+ * referenced connector set is the source of truth — a referenced internal server
+ * counts even if globally disabled, and one NOT referenced is excluded (built-in
+ * connectors appear in the profile's Connectors picker, so this is an explicit
+ * choice). Without a profile, every globally-enabled server is active (unchanged).
+ */
+export function activeInternalServerNames(profileFilter?: Set<string>): string[] {
+	return Object.keys(mcpServers).filter(name =>
+		profileFilter ? profileFilter.has(name) : serverEnabled(name)
+	);
+}
+
+/**
  * Get all enabled tool names for a specific server
  */
 export function getEnabledToolsForServer(serverName: string): string[] {
@@ -429,9 +443,10 @@ export function resolveOpenCodeToolName(toolName: string): string | null {
  *
  * This is the Open Code equivalent of Claude Code's in-process MCP servers.
  */
-export function getOpenCodeMcpConfig(): Record<string, McpRemoteConfig> {
-	// Check if any servers are enabled
-	const enabledServers = getEnabledServerNames();
+export function getOpenCodeMcpConfig(profileFilter?: Set<string>): Record<string, McpRemoteConfig> {
+	// Drop the internal bridge entirely when an active profile excludes every
+	// internal connector (else include it; the bridge serves the enabled ones).
+	const enabledServers = activeInternalServerNames(profileFilter);
 	if (enabledServers.length === 0) {
 		return {};
 	}
@@ -489,8 +504,8 @@ type CodexMcpServerConfig = {
  * `--config mcp_servers.clopen-mcp.<dotted-key>=<value>` flags when the SDK
  * invokes the CLI subprocess for each turn.
  */
-export function getCodexMcpConfig(): Record<string, CodexMcpServerConfig> {
-	const enabledServers = getEnabledServerNames();
+export function getCodexMcpConfig(profileFilter?: Set<string>): Record<string, CodexMcpServerConfig> {
+	const enabledServers = activeInternalServerNames(profileFilter);
 	if (enabledServers.length === 0) {
 		return {};
 	}
@@ -539,8 +554,8 @@ export function getCodexMcpConfig(): Record<string, CodexMcpServerConfig> {
  * `resolveOpenCodeToolName()` to recover the canonical
  * `mcp__<server>__<tool>` form.
  */
-export function getCopilotMcpConfig(): Record<string, MCPHTTPServerConfig> {
-	const enabledServers = getEnabledServerNames();
+export function getCopilotMcpConfig(profileFilter?: Set<string>): Record<string, MCPHTTPServerConfig> {
+	const enabledServers = activeInternalServerNames(profileFilter);
 	if (enabledServers.length === 0) {
 		return {};
 	}
@@ -587,8 +602,8 @@ export function getCopilotMcpConfig(): Record<string, MCPHTTPServerConfig> {
  * so the model never sees it. The callback covers MCP tool calls too — no
  * per-tool enumeration needed.
  */
-export function getQwenMcpConfig(): Record<string, QwenMcpServerConfig> {
-	const enabledServers = getEnabledServerNames();
+export function getQwenMcpConfig(profileFilter?: Set<string>): Record<string, QwenMcpServerConfig> {
+	const enabledServers = activeInternalServerNames(profileFilter);
 	if (enabledServers.length === 0) {
 		return {};
 	}

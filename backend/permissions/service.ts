@@ -17,7 +17,7 @@ import { permissionSetQueries, subagentQueries, type PermissionScope } from '$ba
 import { getEnabledExternalServers, listExternalServerTools } from '$backend/mcp';
 import { isBestEffortTarget } from '$backend/artifacts';
 import { debug } from '$shared/utils/logger';
-import { mergePermissions, pickEngineSet, isToolAllowed, hasAnyRestriction, type ResolvedPermissions } from './resolve';
+import { mergeLayers, pickEngineSet, isToolAllowed, hasAnyRestriction, type ResolvedPermissions } from './resolve';
 
 /** Engine keys used by the artifact matrix (config-dir slugs). */
 export type ArtifactEngineKey = 'claude' | 'codex' | 'copilot' | 'qwen' | 'opencode';
@@ -49,21 +49,27 @@ export function excludedBuiltinTools(permissions: ResolvedPermissions, engine: E
 
 /**
  * Effective allow/deny for one engine, merging the global set with the project
- * set (if a project is streaming). Reads the DB; the merge logic itself is pure
- * (see resolve.ts).
+ * set (if a project is streaming) and the active profile's overlay (if a profile
+ * is active). Layers apply least → most specific (global → project → profile);
+ * deny unions across all, the most specific allowlist wins. Reads the DB; the
+ * merge logic itself is pure (see resolve.ts).
  */
-export function resolvePermissionsFromDb(engine: EngineType, projectId?: string): ResolvedPermissions {
+export function resolvePermissionsFromDb(engine: EngineType, projectId?: string, profileId?: number): ResolvedPermissions {
 	const global = pickEngineSet(permissionSetQueries.getGlobal(), engine);
 	const project = projectId
 		? pickEngineSet(permissionSetQueries.getForProject(projectId), engine)
 		: undefined;
-	return mergePermissions(global, project);
+	const profile = profileId != null
+		? pickEngineSet(permissionSetQueries.getForProfile(profileId), engine)
+		: undefined;
+	return mergeLayers([global, project, profile]);
 }
 
-/** One engine's stored rules for the Settings UI (both scopes flattened by caller). */
+/** One engine's stored rules for the Settings UI (scopes flattened by caller). */
 export interface PermissionSetDTO {
 	scope: PermissionScope;
 	projectId: string | null;
+	profileId: number | null;
 	engine: EngineType;
 	allow: string[];
 	deny: string[];
@@ -86,19 +92,36 @@ export interface PermissionInventory {
 }
 
 export const permissionService = {
-	/** All stored permission sets (both scopes) for the admin listing. */
+	/** All stored global/project permission sets for the admin listing. Profile
+	 *  overlays are excluded — they are managed in the profile editor. */
 	list(projectId?: string): PermissionSetDTO[] {
 		const rows = projectId
 			? [...permissionSetQueries.getGlobal(), ...permissionSetQueries.getForProject(projectId)]
 			: permissionSetQueries.getAll();
-		return rows.map(r => ({ scope: r.scope, projectId: r.projectId, engine: r.engine, allow: r.allow, deny: r.deny }));
+		return rows
+			.filter(r => r.scope !== 'profile')
+			.map(r => ({ scope: r.scope, projectId: r.projectId, profileId: r.profileId, engine: r.engine, allow: r.allow, deny: r.deny }));
 	},
 
-	/** Upsert one (scope, project, engine) rule set. Empty lists delete the row. */
-	save(scope: PermissionScope, projectId: string | null, engine: EngineType, allow: string[], deny: string[]): void {
+	/** One profile's per-engine allow/deny overlay, for the profile editor. */
+	listForProfile(profileId: number): PermissionSetDTO[] {
+		return permissionSetQueries.getForProfile(profileId)
+			.map(r => ({ scope: r.scope, projectId: r.projectId, profileId: r.profileId, engine: r.engine, allow: r.allow, deny: r.deny }));
+	},
+
+	/** Upsert one (scope, project, profile, engine) rule set. Empty lists delete the row. */
+	save(
+		scope: PermissionScope,
+		projectId: string | null,
+		profileId: number | null,
+		engine: EngineType,
+		allow: string[],
+		deny: string[]
+	): void {
 		const clean = (list: string[]) => Array.from(new Set(list.map(s => s.trim()).filter(Boolean)));
-		permissionSetQueries.save(scope, projectId, engine, clean(allow), clean(deny));
-		debug.log('permissions', `🔐 Saved permission set: ${engine}/${scope}${projectId ? `/${projectId.slice(0, 8)}` : ''}`);
+		permissionSetQueries.save(scope, projectId, profileId, engine, clean(allow), clean(deny));
+		const suffix = scope === 'project' && projectId ? `/${projectId.slice(0, 8)}` : scope === 'profile' && profileId ? `/p${profileId}` : '';
+		debug.log('permissions', `🔐 Saved permission set: ${engine}/${scope}${suffix}`);
 	},
 
 	/** Tool inventory offered by the UI as allow/deny targets. */

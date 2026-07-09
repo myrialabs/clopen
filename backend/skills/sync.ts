@@ -18,6 +18,7 @@
 import { skillQueries } from '$backend/database/queries';
 import { debug } from '$shared/utils/logger';
 import { materializeArtifacts, type ManagedArtifact, type ArtifactEngine } from '$backend/artifacts';
+import { artifactFilter } from '$backend/profiles';
 import { getSkillMdPath, getSkillDir } from './store';
 import { stat } from 'node:fs/promises';
 
@@ -60,15 +61,30 @@ async function pathExists(path: string): Promise<boolean> {
 /**
  * Sync enabled skills for one engine. Safe to call at every stream start.
  * Never throws: failures are logged and swallowed so streaming is unaffected.
+ *
+ * `profileId` (when a Profile is active for the stream) narrows the enabled set
+ * to the skills the profile references; a profile that references no skill at
+ * all leaves the full enabled set untouched (presence-per-type — see
+ * `backend/profiles`). The eager all-engines re-sync passes no profile, so the
+ * on-disk resting state stays the full enabled set.
  */
-export async function syncSkills(engine: SkillEngine): Promise<void> {
+export async function syncSkills(engine: SkillEngine, profileId?: number): Promise<void> {
 	try {
-		const enabled: ManagedArtifact[] = getEnabledSkills().map(s => ({
-			slug: s.slug,
-			name: s.name,
-			description: s.description,
-			sourceDir: getSkillDir(s.slug)
-		}));
+		const filter = artifactFilter(profileId, 'skill');
+		// A profile is the source of truth for what's active: an item it references
+		// is materialized even if globally disabled, and its enable toggle is
+		// ignored. Without a profile filter, only the enabled set applies (unchanged).
+		const source = filter
+			? skillQueries.getAll().map(r => ({ slug: r.slug, name: r.name, description: r.description }))
+			: getEnabledSkills();
+		const enabled: ManagedArtifact[] = source
+			.filter(s => !filter || filter.has(s.slug))
+			.map(s => ({
+				slug: s.slug,
+				name: s.name,
+				description: s.description,
+				sourceDir: getSkillDir(s.slug)
+			}));
 		const managedSlugs = skillQueries.getAll().map(s => s.slug);
 		await materializeArtifacts('skill', { engine, scope: 'global' }, {
 			enabled,

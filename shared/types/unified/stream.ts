@@ -176,4 +176,11 @@ export interface StreamRequest {
 	prompt: UserMessage;
 	engine: MessageEngine;
 	sender: MessageSender;
+	/**
+	 * Active Profile chosen for this session (bundle of Skills/Commands/Subagents/
+	 * MCP/Permissions). `null` = explicit "no profile"; `undefined` = client didn't
+	 * send one → the stream falls back to the project's default profile. Persisted
+	 * to `chat_sessions.profile_id` like engine/model.
+	 */
+	profileId?: number | null;
 }

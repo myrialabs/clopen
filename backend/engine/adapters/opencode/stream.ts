@@ -39,6 +39,7 @@ import {
 	convertSubtaskToolUseOnly,
 	getToolInput,
 	mapToolName,
+	TOOL_NAME_MAP,
 } from './message-converter';
 import { ensureClient, getClient, getServerUrl } from './server';
 import { syncSkills } from '$backend/skills';
@@ -59,6 +60,35 @@ function isOpenCodeToolBlocked(permissions: ResolvedPermissions, rawTool: string
 	if (names.some(n => matchesAny(permissions.deny, n))) return true;
 	if (permissions.allow.length > 0 && !names.some(n => matchesAny(permissions.allow, n))) return true;
 	return false;
+}
+
+/**
+ * Per-prompt tool disable map (`{ toolId: false }`) enforcing the resolved
+ * permission policy UP FRONT — OpenCode's `permission.asked` event only fires for
+ * a subset of built-in tools (edit/bash/webfetch/…), never for read-only or MCP
+ * tools, so a deny on those would otherwise be silently ignored (this is exactly
+ * why a profile's MCP-tool deny worked on Claude's `canUseTool` but not here).
+ * Passing the blocked tools as disabled removes them from the model's toolset
+ * entirely — the OpenCode analogue of Claude/Qwen `excludeTools`.
+ *
+ * Coverage: every known built-in tool id plus each EXACT `mcp__<ns>__<tool>` deny
+ * (mapped to OpenCode's `<ns>_<tool>` id). Wildcard MCP denies and allowlist-vs-
+ * MCP remain best-effort (the full live MCP tool list isn't known synchronously
+ * here) and still fall back to the bridge / permission.asked path.
+ */
+function buildOpenCodeToolDisableMap(permissions: ResolvedPermissions): Record<string, boolean> {
+	const disable: Record<string, boolean> = {};
+	// Built-in tools: test every OpenCode tool id we know the canonical name for.
+	for (const rawTool of Object.keys(TOOL_NAME_MAP)) {
+		if (isOpenCodeToolBlocked(permissions, rawTool)) disable[rawTool] = false;
+	}
+	// Exact MCP-tool denies → OpenCode's underscore-joined id (`<ns>_<tool>`).
+	for (const pattern of permissions.deny) {
+		if (pattern.endsWith('*')) continue;
+		const m = /^mcp__(.+?)__(.+)$/.exec(pattern);
+		if (m) disable[`${m[1]}_${m[2]}`] = false;
+	}
+	return disable;
 }
 
 // ============================================================================
@@ -137,15 +167,20 @@ export class OpenCodeEngine implements AIEngine {
 		this._isActive = true;
 		this.activeProjectPath = projectPath;
 
+		// Active Profile for this stream — scopes the materialized artifact set.
+		// (OpenCode MCP config lives on the persistent server, not per-stream, so
+		// connector filtering by profile is not applied here — best-effort, like
+		// Codex. Skills/Commands/Subagents + permissions ARE profile-scoped.)
+		const profileId = options.mcpContext?.profileId;
 		// Refresh the synthetic skills preamble in OpenCode's config dir.
-		await syncSkills('opencode');
-		await syncEngineArtifacts('opencode');
+		await syncSkills('opencode', profileId);
+		await syncEngineArtifacts('opencode', profileId);
 
 		// Resolve the permission policy once per stream; the permission event
 		// handler enforces it (OpenCode otherwise auto-approves every tool). Tool
 		// identity is matched in the canonical `mapToolName` form so a rule like
 		// `mcp__server__tool` works across Claude and OpenCode alike.
-		const permissions = resolvePermissionsFromDb('opencode', options.mcpContext?.projectId);
+		const permissions = resolvePermissionsFromDb('opencode', options.mcpContext?.projectId, profileId);
 
 		debug.log('chat', 'Open Code - Stream Query');
 		debug.log('chat', { prompt });
@@ -190,12 +225,16 @@ export class OpenCodeEngine implements AIEngine {
 				signal: this.activeAbortController.signal
 			});
 
-			// 2. Send prompt asynchronously (non-blocking)
+			// 2. Send prompt asynchronously (non-blocking). Disabled tools enforce
+			// the deny policy up front (covers read-only + MCP tools that never fire
+			// a permission event — see buildOpenCodeToolDisableMap).
+			const disabledTools = buildOpenCodeToolDisableMap(permissions);
 			client.session.promptAsync({
 				path: { id: sessionId },
 				body: {
 					parts: promptParts as any,
 					...(providerSlug && modelId ? { model: { providerID: providerSlug, modelID: modelId } } : {}),
+					...(Object.keys(disabledTools).length > 0 ? { tools: disabledTools } : {}),
 				},
 				query: { directory: projectPath },
 			}).catch(error => {

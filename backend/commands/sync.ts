@@ -10,6 +10,7 @@
 import { commandQueries } from '$backend/database/queries';
 import { debug } from '$shared/utils/logger';
 import { materializeArtifacts, parseDoc, type ManagedArtifact, type ArtifactEngine } from '$backend/artifacts';
+import { artifactFilter } from '$backend/profiles';
 import { readCommandMd } from './store';
 
 /**
@@ -29,9 +30,13 @@ function buildCommandsPreamble(items: ManagedArtifact[]): string {
 	return lines.join('\n');
 }
 
-export async function syncCommands(engine: ArtifactEngine): Promise<void> {
+export async function syncCommands(engine: ArtifactEngine, profileId?: number): Promise<void> {
 	try {
-		const rows = commandQueries.getEnabled();
+		const filter = artifactFilter(profileId, 'command');
+		// A profile activates the commands it references even if globally disabled;
+		// with no profile filter, only the enabled set applies (unchanged).
+		const rows = (filter ? commandQueries.getAll() : commandQueries.getEnabled())
+			.filter(r => !filter || filter.has(r.slug));
 		const enabled: ManagedArtifact[] = [];
 		for (const row of rows) {
 			const raw = await readCommandMd(row.slug);

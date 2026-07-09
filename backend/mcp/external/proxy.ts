@@ -37,7 +37,7 @@ import {
 	type Tool
 } from '@modelcontextprotocol/sdk/types.js';
 import { debug } from '$shared/utils/logger';
-import { mcpServerQueries, permissionSetQueries } from '$backend/database/queries';
+import { mcpServerQueries, permissionSetQueries, profileQueries } from '$backend/database/queries';
 import type { EngineType } from '$shared/types/unified';
 import { resolveServerRow } from './config';
 import { parseToolOverrides, isToolExposed } from './tools';
@@ -178,7 +178,12 @@ export interface ExternalProxy {
 export async function createExternalProxyServer(slug: string, engine?: EngineType): Promise<ExternalProxy> {
 	const row = mcpServerQueries.getBySlug(slug);
 	if (!row || row.source === 'internal') throw new Error(`Unknown external MCP server: ${slug}`);
-	if (row.is_enabled !== 1) throw new Error(`External MCP server is disabled: ${slug}`);
+	// A globally-disabled server is still servable when a Profile references it — an
+	// active profile is the source of truth for which connectors run, overriding the
+	// enable toggle (the config builder only emits its bridge URL in that case).
+	if (row.is_enabled !== 1 && !profileQueries.isArtifactReferenced('mcp', slug)) {
+		throw new Error(`External MCP server is disabled: ${slug}`);
+	}
 
 	const resolved = resolveServerRow(row);
 	const overrides = parseToolOverrides(row.tool_overrides);

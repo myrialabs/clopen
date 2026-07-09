@@ -9,6 +9,7 @@
 	import { ENGINES, getModelTags } from '$shared/constants/engines';
 	import type { EngineType, EngineModel } from '$shared/types/unified';
 	import Icon from '$frontend/components/common/display/Icon.svelte';
+	import ProfilePicker from './ProfilePicker.svelte';
 	import { claudeAccountsStore, type ClaudeAccountItem } from '$frontend/stores/features/claude-accounts.svelte';
 	import { copilotAccountsStore, type CopilotAccountItem } from '$frontend/stores/features/copilot-accounts.svelte';
 	import { codexAccountsStore, type CodexAccountItem } from '$frontend/stores/features/codex-accounts.svelte';
@@ -154,6 +155,7 @@
 		if (!showAccountDropdown && accountTriggerButton) {
 			const rect = accountTriggerButton.getBoundingClientRect();
 			accountDropdownStyle = `position: fixed; bottom: ${window.innerHeight - rect.top + 4}px; left: ${rect.left}px; z-index: 9999;`;
+			accountSearchQuery = '';
 		}
 		showAccountDropdown = !showAccountDropdown;
 	}
@@ -355,13 +357,14 @@
 		const sessionModelName = session?.model_name;
 		const sessionAccountId = session?.account_id;
 		const sessionAccountName = session?.account_name;
+		const sessionProfileId = session?.profile_id;
 
 		untrack(() => {
 			if (sessionEngine && sessionModelId) {
 				// Session has persisted engine/model: always restore from session.
 				// This works for both existing sessions (has messages) and sessions
 				// where messages are still loading asynchronously.
-				restoreChatModelFromSession(sessionEngine, sessionProvider || sProvider, sessionModelId, sessionModelName || '', sessionAccountId, sessionAccountName);
+				restoreChatModelFromSession(sessionEngine, sessionProvider || sProvider, sessionModelId, sessionModelName || '', sessionAccountId, sessionAccountName, sessionProfileId);
 			} else if (!started) {
 				// New session (no messages, no persisted engine/model): apply Settings defaults
 				initChatModel(sEngine, sProvider, sModelId, sModelName, sMemory || {});
@@ -464,6 +467,14 @@
 	// Search state
 	let searchQuery = $state('');
 	let collapsedProviders = $state<Set<string>>(new Set());
+	// Account dropdown search (Claude Code / Copilot + OpenCode), mirroring models.
+	let accountSearchQuery = $state('');
+
+	const filteredAccounts = $derived.by(() => {
+		const q = accountSearchQuery.trim().toLowerCase();
+		if (!q) return accountsForEngine;
+		return accountsForEngine.filter(a => a.name.toLowerCase().includes(q));
+	});
 
 	const filteredModels = $derived.by(() => {
 		if (!searchQuery.trim()) return availableModels;
@@ -579,11 +590,11 @@
 
 </script>
 
-<div class="flex items-center gap-1.5 px-4 pt-2 pb-0.5">
+<div class="flex flex-wrap items-center gap-1.5 px-4 pt-2 pb-0.5">
 	<button
 		bind:this={triggerButton}
 		type="button"
-		class="flex items-center gap-1.5 px-2 py-1 text-xs rounded-lg transition-all duration-150
+		class="flex items-center gap-1.5 px-2 py-1 text-xs rounded-lg transition-all duration-150 min-w-0
 			bg-slate-100 dark:bg-slate-800 hover:bg-slate-200 dark:hover:bg-slate-700
 			text-slate-600 dark:text-slate-400 border border-slate-200 dark:border-slate-700
 			disabled:opacity-50 disabled:cursor-not-allowed disabled:hover:bg-slate-100 dark:disabled:hover:bg-slate-800"
@@ -658,6 +669,9 @@
 			<span class="font-medium">{ocRestarting ? 'Restarting...' : 'Restart Server'}</span>
 		</button>
 	{/if}
+
+	<!-- Active-profile picker (per-session; only shown when profiles exist) -->
+	<ProfilePicker />
 </div>
 
 <!-- Account dropdown (Claude Code + Copilot) -->
@@ -669,8 +683,21 @@
 			<Icon name="lucide:user" class="w-3.5 h-3.5" />
 			<span class="text-xs font-medium text-slate-500 dark:text-slate-400 tracking-wide">{accountPickerLabel}</span>
 		</div>
+		{#if accountsForEngine.length > 5}
+			<div class="px-2 py-2 border-b border-slate-200 dark:border-slate-700 flex-shrink-0">
+				<div class="relative">
+					<Icon name="lucide:search" class="absolute left-2 top-1/2 -translate-y-1/2 w-3 h-3 text-slate-400 pointer-events-none" />
+					<input
+						type="text"
+						bind:value={accountSearchQuery}
+						placeholder="Search accounts..."
+						class="w-full pl-6 pr-2 py-1 text-xs bg-slate-50 dark:bg-slate-700/50 border border-slate-200 dark:border-slate-600 rounded-md outline-none focus:ring-1 focus:ring-violet-500/40 focus:border-violet-500 transition-colors text-slate-800 dark:text-slate-200 placeholder-slate-400"
+					/>
+				</div>
+			</div>
+		{/if}
 		<div class="overflow-y-auto py-1">
-			{#each accountsForEngine as account (account.id)}
+			{#each filteredAccounts as account (account.id)}
 				{@const isSelected = chatModelState.accountId === account.id}
 				<button
 					type="button"

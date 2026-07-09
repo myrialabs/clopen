@@ -16,6 +16,12 @@ export interface McpExecutionContext {
 	projectId?: string;
 	chatSessionId?: string;
 	streamId?: string;
+	/**
+	 * Active Profile for this stream (resolved in stream-manager from the
+	 * session's choice or the project default). Scopes the materialized artifact
+	 * set + MCP connectors to the profile's bundle. Undefined = no active profile.
+	 */
+	profileId?: number;
 }
 
 /** Options passed to engine.streamQuery() */

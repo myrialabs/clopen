@@ -46,6 +46,7 @@ import { handleStreamError } from './error-handler';
 import { createSdkMessageConverter, toSdkUserMessage, type SdkMessageConverter } from './message-converter';
 import { fetchQwenModels } from './models';
 import { getQwenMcpConfig } from '../../../mcp';
+import { artifactFilter } from '$backend/profiles';
 import { syncSkills } from '$backend/skills';
 import { syncEngineArtifacts } from '$backend/engine/artifact-sync';
 import { resolvePermissionsFromDb, isToolAllowed, excludedBuiltinTools } from '$backend/permissions';
@@ -140,14 +141,17 @@ export class QwenEngine implements AIEngine {
 
 		this.activeController = abortController || new AbortController();
 		const resolvedProjectPath = resolveOsPath(projectPath);
+		// Active Profile for this stream — scopes artifacts + connectors.
+		const profileId = options.mcpContext?.profileId;
+		const mcpProfileFilter = artifactFilter(profileId, 'mcp') ?? undefined;
 		// Refresh the synthetic skills preamble in the Qwen memory file.
-		await syncSkills('qwen');
-		await syncEngineArtifacts('qwen');
-		const mcpConfig = getQwenMcpConfig();
+		await syncSkills('qwen', profileId);
+		await syncEngineArtifacts('qwen', profileId);
+		const mcpConfig = getQwenMcpConfig(mcpProfileFilter);
 
 		// Resolve the permission policy once per stream; canUseTool enforces it
 		// (Qwen otherwise auto-allows everything). Tool names arrive snake_cased.
-		const permissions = resolvePermissionsFromDb('qwen', options.mcpContext?.projectId);
+		const permissions = resolvePermissionsFromDb('qwen', options.mcpContext?.projectId, profileId);
 
 		// Fork-by-copy on EVERY resume — same semantics as Claude
 		// (`forkSession: true`), OpenCode (`client.session.fork()`),

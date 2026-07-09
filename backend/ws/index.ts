@@ -37,6 +37,7 @@ import { commandsRouter } from './commands';
 import { subagentsRouter } from './subagents';
 import { instructionsRouter } from './instructions';
 import { permissionsRouter } from './permissions';
+import { profilesRouter } from './profiles';
 import { artifactsRouter } from './artifacts';
 
 // ============================================
@@ -93,6 +94,9 @@ export const wsRouter = createRouter()
 	.merge(subagentsRouter)
 	.merge(instructionsRouter)
 	.merge(permissionsRouter)
+
+	// Profiles (reusable artifact bundles activated per-session)
+	.merge(profilesRouter)
 	.merge(artifactsRouter);
 
 // Export API type for frontend type-safe access

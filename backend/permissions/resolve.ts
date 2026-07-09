@@ -63,6 +63,25 @@ export function mergePermissions(
 }
 
 /**
+ * Merge an ordered list of scope layers (least → most specific, e.g.
+ * global → project → profile) into one effective policy.
+ *   - `deny`  unions across every layer (deny always tightens);
+ *   - `allow` uses the MOST specific non-empty allowlist (a more specific scope's
+ *     allowlist replaces a broader one, mirroring {@link mergePermissions}).
+ * `undefined`/absent layers are skipped.
+ */
+export function mergeLayers(layers: (ResolvedPermissions | undefined)[]): ResolvedPermissions {
+	const denySet = new Set<string>();
+	let allow: string[] = [];
+	for (const layer of layers) {
+		if (!layer) continue;
+		for (const d of layer.deny) denySet.add(d);
+		if (layer.allow.length > 0) allow = layer.allow; // most specific non-empty wins
+	}
+	return { allow, deny: Array.from(denySet) };
+}
+
+/**
  * The core decision. Deny wins; then, if an allowlist exists, the tool must match
  * it; otherwise everything not denied is allowed.
  */

@@ -67,6 +67,20 @@ export const projectQueries = {
 		`).run(now, id);
 	},
 
+	/** The project-wide default profile (shared by all collaborators), or null. */
+	getDefaultProfileId(id: string): number | null {
+		const db = getDatabase();
+		const row = db.prepare(`SELECT default_profile_id FROM projects WHERE id = ?`)
+			.get(id) as { default_profile_id: number | null } | undefined;
+		return row?.default_profile_id ?? null;
+	},
+
+	/** Set (or clear, with null) the project-wide default profile. */
+	setDefaultProfileId(id: string, profileId: number | null): void {
+		const db = getDatabase();
+		db.prepare(`UPDATE projects SET default_profile_id = ? WHERE id = ?`).run(profileId, id);
+	},
+
 	deleteProject(id: string): void {
 		const db = getDatabase();
 		db.prepare('DELETE FROM user_projects WHERE project_id = ?').run(id);

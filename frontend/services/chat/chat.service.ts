@@ -513,6 +513,9 @@ class ChatService {
           id: userStore.currentUser?.id || '',
           name: userStore.currentUser?.name || '',
         },
+        // Active Profile for this session (null = use project default). Persisted
+        // to chat_sessions.profile_id server-side like engine/model.
+        profileId: chatModelState.profileId,
       });
 
       // Persist engine/model/account to frontend session state immediately.
@@ -532,6 +535,7 @@ class ChatService {
           model_name: selectedModelName,
           ...(selectedAccountId !== null && { account_id: selectedAccountId }),
           ...(selectedAccountName !== null && { account_name: selectedAccountName }),
+          profile_id: chatModelState.profileId,
         });
       }
 

@@ -162,7 +162,20 @@ export const ADMIN_ONLY_ROUTES = new Set([
 	'permissions:inventory',
 	'permissions:save',
 	// AI authoring of artifacts — part of the admin artifact editors.
-	'artifacts:generate'
+	'artifacts:generate',
+	// Profiles — reusable artifact bundles applied to every collaborator's
+	// sessions; same shared-store rationale as Skills/MCP, admin-only surface.
+	// (profiles:available / profiles:project-default stay non-admin — choosing a
+	// profile for a session is a run choice like the model.)
+	'profiles:list',
+	'profiles:get',
+	'profiles:inventory',
+	'profiles:create',
+	'profiles:update',
+	'profiles:delete',
+	'profiles:get-permissions',
+	'profiles:save-permissions',
+	'profiles:set-project-default'
 ]);
 
 /**

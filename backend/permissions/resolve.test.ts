@@ -4,6 +4,7 @@ import {
 	matchesPattern,
 	matchesAny,
 	mergePermissions,
+	mergeLayers,
 	isToolAllowed,
 	hasAnyRestriction,
 	pickEngineSet,
@@ -92,6 +93,50 @@ describe('mergePermissions', () => {
 	});
 });
 
+describe('mergeLayers', () => {
+	test('deny unions across all layers', () => {
+		const merged = mergeLayers([
+			{ allow: [], deny: ['Bash'] },
+			{ allow: [], deny: ['Write'] },
+			{ allow: [], deny: ['WebFetch'] }
+		]);
+		expect(merged.deny.sort()).toEqual(['Bash', 'WebFetch', 'Write']);
+	});
+
+	test('most specific non-empty allowlist wins', () => {
+		const merged = mergeLayers([
+			{ allow: ['Read'], deny: [] },      // global
+			{ allow: ['Grep'], deny: [] },      // project
+			{ allow: ['Edit'], deny: [] }       // profile (most specific)
+		]);
+		expect(merged.allow).toEqual(['Edit']);
+	});
+
+	test('broader allowlist applies when more specific layers have none', () => {
+		const merged = mergeLayers([
+			{ allow: ['Read'], deny: [] },
+			undefined,
+			{ allow: [], deny: ['Bash'] }
+		]);
+		expect(merged.allow).toEqual(['Read']);
+		expect(merged.deny).toEqual(['Bash']);
+	});
+
+	test('profile layer only adds deny (union), keeps base allow', () => {
+		const merged = mergeLayers([
+			{ allow: ['Read', 'Edit'], deny: ['Bash'] }, // base (global)
+			undefined,                                    // no project
+			{ allow: [], deny: ['WebFetch'] }             // profile overlay
+		]);
+		expect(merged.allow).toEqual(['Read', 'Edit']);
+		expect(merged.deny.sort()).toEqual(['Bash', 'WebFetch']);
+	});
+
+	test('all-undefined yields empty', () => {
+		expect(mergeLayers([undefined, undefined, undefined])).toEqual({ allow: [], deny: [] });
+	});
+});
+
 describe('hasAnyRestriction', () => {
 	test('true when either list is non-empty', () => {
 		expect(hasAnyRestriction({ allow: ['Read'], deny: [] })).toBe(true);
@@ -102,8 +147,8 @@ describe('hasAnyRestriction', () => {
 
 describe('pickEngineSet', () => {
 	const sets: PermissionSet[] = [
-		{ id: 1, scope: 'global', projectId: null, engine: 'claude-code', allow: ['Read'], deny: ['Bash'] },
-		{ id: 2, scope: 'global', projectId: null, engine: 'codex', allow: [], deny: ['shell'] }
+		{ id: 1, scope: 'global', projectId: null, profileId: null, engine: 'claude-code', allow: ['Read'], deny: ['Bash'] },
+		{ id: 2, scope: 'global', projectId: null, profileId: null, engine: 'codex', allow: [], deny: ['shell'] }
 	];
 
 	test('finds the row for the engine', () => {

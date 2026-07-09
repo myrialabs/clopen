@@ -23,6 +23,7 @@ import { engineQueries } from '$backend/database/queries/engine-queries';
 import { resolveOsPath, getEngineUserConfigDir } from '$backend/utils/paths';
 import { debug } from '$shared/utils/logger';
 import { getCopilotMcpConfig } from '../../../mcp';
+import { artifactFilter } from '$backend/profiles';
 import { syncSkills } from '$backend/skills';
 import { syncEngineArtifacts } from '$backend/engine/artifact-sync';
 import { resolvePermissionsFromDb, isToolAllowed, type ResolvedPermissions } from '$backend/permissions';
@@ -225,13 +226,17 @@ export class CopilotEngine implements AIEngine {
 
 		this.activeController = abortController || new AbortController();
 
+		// Active Profile for this stream — scopes artifacts + connectors.
+		const profileId = options.mcpContext?.profileId;
+		const mcpProfileFilter = artifactFilter(profileId, 'mcp') ?? undefined;
+
 		// Mirror enabled skills into Copilot's native skills dir before the turn.
-		await syncSkills('copilot');
-		await syncEngineArtifacts('copilot');
+		await syncSkills('copilot', profileId);
+		await syncEngineArtifacts('copilot', profileId);
 
 		// Resolve the permission policy once per stream; onPermissionRequest below
 		// enforces it (Copilot otherwise approves every tool via approveAll).
-		const permissions = resolvePermissionsFromDb('copilot', options.mcpContext?.projectId);
+		const permissions = resolvePermissionsFromDb('copilot', options.mcpContext?.projectId, profileId);
 
 		const resolvedProjectPath = resolveOsPath(projectPath);
 		const state = createStreamConverterState('', modelId);
@@ -285,7 +290,7 @@ export class CopilotEngine implements AIEngine {
 		this.activeController.signal.addEventListener('abort', onAbort, { once: true });
 
 		try {
-			const mcpConfig = getCopilotMcpConfig();
+			const mcpConfig = getCopilotMcpConfig(mcpProfileFilter);
 
 			const baseConfig: ResumeSessionConfig = {
 				onPermissionRequest: (request, invocation) =>

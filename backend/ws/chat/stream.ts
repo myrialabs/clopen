@@ -215,7 +215,10 @@ export const streamHandler = createRouter()
 			sender: t.Object({
 				id: t.String(),
 				name: t.String()
-			})
+			}),
+			// Active Profile for this session (null = explicit none; absent = use
+			// the project default). Persisted like engine/model.
+			profileId: t.Optional(t.Union([t.Number(), t.Null()]))
 		})
 	}, async ({ data, conn }) => {
 		requireSessionAccess(conn, data.chatSessionId);
@@ -234,7 +237,8 @@ export const streamHandler = createRouter()
 				prompt: data.prompt,
 				chatSessionId: data.chatSessionId,
 				engine: data.engine,
-				sender: data.sender
+				sender: data.sender,
+				profileId: data.profileId
 			});
 
 			debug.log('chat', 'Stream started with ID:', streamId);
@@ -855,6 +859,28 @@ export const streamHandler = createRouter()
 		});
 	})
 
+	// Collaborative profile sync — broadcast + persist the per-session active
+	// profile, mirroring chat:model-sync. Non-admin: choosing a profile is a run
+	// choice like the model, not an admin mutation of the profile itself.
+	.on('chat:profile-sync', {
+		data: t.Object({
+			senderId: t.String(),
+			chatSessionId: t.String(),
+			profileId: t.Union([t.Number(), t.Null()])
+		})
+	}, ({ data, conn }) => {
+		requireSessionAccess(conn, data.chatSessionId);
+		try {
+			sessionQueries.updateProfile(data.chatSessionId, data.profileId);
+		} catch (err) {
+			debug.error('chat', 'Failed to persist profile sync to DB:', err);
+		}
+		ws.emit.chatSession(data.chatSessionId, 'chat:profile-sync', {
+			senderId: data.senderId,
+			profileId: data.profileId
+		});
+	})
+
 	// Event declarations
 	.emit('chat:edit-mode', t.Object({
 		senderId: t.String(),
@@ -888,6 +914,11 @@ export const streamHandler = createRouter()
 		senderId: t.String(),
 		accountId: t.Union([t.Number(), t.Null()]),
 		accountName: t.Union([t.String(), t.Null()])
+	}))
+
+	.emit('chat:profile-sync', t.Object({
+		senderId: t.String(),
+		profileId: t.Union([t.Number(), t.Null()])
 	}))
 
 	.emit('chat:connection', t.Object({

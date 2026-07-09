@@ -458,3 +458,83 @@ adapter/jalur sync yang **sudah ada** — **jangan bikin jalur sync baru**.
   per-proyek (shared) dipakai untuk session baru.
 - Set artefak benar-benar aktif/nonaktif sesuai profile, lewat jalur sync existing.
 - `check` & `lint` lulus; fitur existing tidak regresi.
+
+## ✅ Checkpoint — Prompt 4 SELESAI
+
+Implemented in one pass; `bun run check` + `bun run lint` hijau, 22 unit test `resolve` lolos
+(17 lama + 5 baru `mergeLayers`). Ringkasan:
+
+**Insight desain kunci:** bundle profile TIDAK homogen. **MCP + Permissions** sudah diresolve
+**runtime per-stream** (bridge `?engine=` + hook `canUseTool` baca DB saat stream) → *collision-free
+penuh* per-session. **Skills/Commands/Subagents/Instructions** = disk-materialized ke dir engine
+**yang dibagi semua session** → difilter per profil tapi shared-dir last-write-wins (jujur, best-effort
+untuk concurrent-different-profile; dokumentasi di UI/kode). `locateEffective(ctx)` disiapkan sebagai
+seam tunggal bila nanti mau dir per-profil sejati (Claude/Codex/OpenCode) tanpa rombak caller.
+
+**Data (migrations 050–053):** `profiles` (slug/name/description, TANPA `user_id` — instance-global
+admin-managed) + `profile_items(profile_id, artifact_type, ref=slug)` presence-per-type. `chat_sessions.profile_id`
+(per-session, sejalan engine/model/account 014/015/019). `projects.default_profile_id` (**shared** per-proyek,
+setting project-scoped-shared PERTAMA — bukan `user_projects`). `permission_sets.profile_id` + scope
+`'profile'` (index unik di-rebuild termasuk profile dim).
+
+**Resolusi (`backend/profiles/service.ts`):** `resolveActiveProfileId(session, projectDefault)` di stream-manager;
+`artifactFilter(profileId, type)` → `Set<slug>|null` (null = tipe tak dibatasi = perilaku lama, no-regresi).
+Di-thread via `mcpContext.profileId` → 5 adapter panggil sync + mcp-config-builder ter-filter. **Presence-per-type:**
+tipe yang tak disebut profil = semua enabled; `profile_id` NULL = tanpa profil.
+
+**Permissions overlay:** `mergeLayers([global, project, profile])` — deny union semua lapis, allowlist
+paling spesifik menang. Reuse hook runtime Prompt 3, nol enforcement baru.
+
+**UI:** section `'profiles'` (extensions, adminOnly, `lucide:layers`) + `ProfilesSettings.svelte`
+(pilih artefak via chip + overlay izin per-engine opsional). Store `profiles.svelte.ts`. WS `profiles:*`
+(admin) + `profiles:available`/`project-default` (non-admin). **Picker per-session** `ProfilePicker.svelte`
+di dalam row `EngineModelPicker` (non-admin, `chat:profile-sync` collab + restore cross-device); admin bisa
+"Set as project default" dari picker. Muncul hanya bila ada ≥1 profil (zero chrome jika tak dipakai).
+
+**Cakupan MCP-filter per engine:** Claude/Copilot/Qwen = per-stream config builder (solid). **Codex/OpenCode =
+artefak+izin ter-scope, TAPI connector-filter tidak** (MCP config di construction/persistent-server, bukan
+per-stream) — best-effort, konsisten dgn status MCP non-Claude Prompt 2. Semua engine dapat artefak + izin
+ter-scope.
+
+**Ditunda (bukan bug):**
+1. Dir engine tetap per-engine-global (shared) — profil filter di shared dir; concurrent-different-profile di
+   engine sama bisa saling timpa artefak disk (MCP/izin tetap collision-free karena runtime). Seam `locateEffective`
+   siap untuk isolasi per-profil ke depan.
+2. Connector-filter Codex/OpenCode belum per-stream (lihat cakupan di atas).
+3. Instructions tidak masuk bundle profil (bukan artefak ber-slug enable/disable) — selalu sync penuh.
+
+### Round 2 (setelah user testing)
+- **Profil = override enable-state (bukan intersect).** Artefak yang direferensi profil kini AKTIF walau
+  di-*disable* global (Skills/Commands/Subagents/Connectors); tanpa profil, tetap pakai set enabled (no-regresi).
+  Sync ambil dari `getAll()` (bukan `getEnabled()`) saat filter aktif. Bridge MCP (`proxy.ts`) melewatkan server
+  disabled bila `profileQueries.isArtifactReferenced('mcp', slug)` — gate `is_enabled` di-relax khusus itu.
+  Label "(off)" di editor profil dihapus (menyesatkan karena profil meng-override).
+- **Bug fix — blok sintetis basi pada tipe NATIVE.** Root cause: engine yang DULU sintetis untuk sebuah tipe
+  lalu diberi dir native (OpenCode subagents/commands, Codex commands) meninggalkan blok `CLOPEN:<TYPE>` yatim di
+  AGENTS.md yang sync native tak pernah sentuh → artefak terhapus (mis. subagent "lorem") tetap "tersedia".
+  Fix di `materializeArtifacts`: setelah tulis dir native, STRIP blok sintetis tipe itu dari memory file
+  (`resolveArtifact('instruction', ctx).locateEffective(ctx)`), idempotent. Self-heal saat stream/eager-sync
+  berikutnya; tak menyentuh blok tipe lain (INSTRUCTIONS/SKILLS sintetis yang sah tetap utuh).
+- **UI polish:** subtitle section diringkas ("Reusable tool bundles"). Overlay izin di editor profil kini pakai
+  combobox terkategori (Built-in/MCP/Subagent) + tab per-engine, identik dgn menu Permissions (bukan textarea).
+  Filter list + filter artefak ala Skills. **Set-as-default = pin** (single-select, bisa dicopot) di
+  `ProfilesSettings` (per proyek aktif) DAN di `ProfilePicker`. `ProfilePicker` + **Account Picker** kini punya
+  input search + styling font disamakan dgn Select Model (account search muncul bila >5 akun).
+
+### Round 3 (setelah user testing lanjutan)
+- **Built-in (internal) connectors kini bisa dipilih di profil.** `profileService.inventory().mcp` tak lagi
+  meng-skip `source='internal'`. Filter profil diterapkan juga ke server internal via
+  `activeInternalServerNames(profileFilter)` (Claude in-process per-server; non-Claude drop bridge `clopen-mcp`
+  bila set internal ter-filter kosong). **Konsekuensi (by design):** profil yang mereferensi mcp APAPUN tapi TIDAK
+  menyertakan `browser-automation` akan menonaktifkan tool browser/preview untuk sesi itu — tambahkan
+  `browser-automation` ke profil yang butuh preview.
+- **Bug native-stale block: berlaku semua engine.** Fix `materializeArtifacts` sudah engine-agnostic (Codex
+  commands, OpenCode subagents/commands, Qwen/Copilot skills semua ter-cover). Self-heal saat sync berikutnya.
+- **Profile permissions di OpenCode (deny tool MCP) kini enforce.** Root cause: `permission.asked` OpenCode HANYA
+  fire utk subset builtin (edit/bash/webfetch/…), TAK PERNAH utk read-only/MCP → deny MCP di profil "hilang" (di
+  Claude jalan via `canUseTool`). SDK OpenCode tak punya gate permission utk MCP, TAPI body `promptAsync` menerima
+  `tools: {[id]: boolean}` per-stream → `buildOpenCodeToolDisableMap(permissions)` menonaktifkan builtin ter-blok
+  + exact-MCP-deny (`mcp__ns__tool` → id OpenCode `ns_tool`) di depan (analog `excludeTools` Claude/Qwen).
+  Best-effort tersisa: wildcard-MCP-deny + allowlist-vs-MCP (list tool MCP live tak diketahui sinkron).
+- **Layout Input Chat sempit:** baris picker `flex-wrap` (pill turun baris saat panel/dock kecil), tidak overflow.
+- **Form Create/Edit Profile:** input filter artefak dihapus (permintaan user).

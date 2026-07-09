@@ -98,43 +98,49 @@ export type { ParsedMcpServer, ParsedField, ParseResult } from './external/parse
 // Merged config builders (internal `clopen-mcp` + external bare `<slug>`)
 // ---------------------------------------------------------------------------
 
+// Each builder takes an optional `profileFilter` — the set of connector slugs an
+// active Profile bundles. It restricts the EXTERNAL servers only; Clopen's own
+// internal `clopen-mcp` tools are always present. `undefined` = no active profile
+// (or the profile bundles no connector) → every enabled external server, i.e. the
+// existing behaviour, unchanged.
+
 /** Claude Agent SDK `mcpServers`: in-process internal servers + external stdio/remote. */
-export function getEnabledMcpServers(context?: McpExecutionContext): Record<string, McpServerConfig> {
+export function getEnabledMcpServers(context?: McpExecutionContext, profileFilter?: Set<string>): Record<string, McpServerConfig> {
 	return {
-		...internal.getEnabledMcpServers(context),
-		...external.getClaudeExternalMcpConfig()
+		...internal.getEnabledMcpServers(context, profileFilter),
+		...external.getClaudeExternalMcpConfig(profileFilter)
 	};
 }
 
 /** Open Code MCP config: internal `clopen-mcp` remote bridge + external servers. */
-export function getOpenCodeMcpConfig() {
+export function getOpenCodeMcpConfig(profileFilter?: Set<string>) {
 	return {
-		...internal.getOpenCodeMcpConfig(),
-		...external.getOpenCodeExternalMcpConfig()
+		...internal.getOpenCodeMcpConfig(profileFilter),
+		...external.getOpenCodeExternalMcpConfig(profileFilter)
 	};
 }
 
 /** Codex MCP config. */
-export function getCodexMcpConfig() {
+export function getCodexMcpConfig(profileFilter?: Set<string>) {
 	return {
-		...internal.getCodexMcpConfig(),
-		...external.getCodexExternalMcpConfig()
+		...internal.getCodexMcpConfig(profileFilter),
+		...external.getCodexExternalMcpConfig(profileFilter)
 	};
 }
 
 /** Copilot MCP config. */
-export function getCopilotMcpConfig() {
+export function getCopilotMcpConfig(profileFilter?: Set<string>) {
 	return {
-		...internal.getCopilotMcpConfig(),
-		...external.getCopilotExternalMcpConfig()
+		...internal.getCopilotMcpConfig(profileFilter),
+		...external.getCopilotExternalMcpConfig(profileFilter)
 	};
 }
 
 /** Qwen Code MCP config. */
-export function getQwenMcpConfig() {
+export function getQwenMcpConfig(profileFilter?: Set<string>) {
 	return {
-		...internal.getQwenMcpConfig(),
-		...external.getQwenExternalMcpConfig()
+		...internal.getQwenMcpConfig(profileFilter),
+		...external.getQwenExternalMcpConfig(profileFilter)
 	};
 }
 

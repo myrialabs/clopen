@@ -23,6 +23,7 @@
 	import SubagentsSettings from './subagents/SubagentsSettings.svelte';
 	import InstructionsSettings from './instructions/InstructionsSettings.svelte';
 	import PermissionsSettings from './permissions/PermissionsSettings.svelte';
+	import ProfilesSettings from './profiles/ProfilesSettings.svelte';
 	import AppearanceSettings from './appearance/AppearanceSettings.svelte';
 	import AccountSettings from './account/AccountSettings.svelte';
 	import NotificationSettings from './notifications/NotificationSettings.svelte';
@@ -272,6 +273,10 @@
 					{:else if activeSection === 'permissions' && isAdmin}
 						<div in:fly={{ x: 20, duration: 200 }}>
 							<PermissionsSettings />
+						</div>
+					{:else if activeSection === 'profiles' && isAdmin}
+						<div in:fly={{ x: 20, duration: 200 }}>
+							<ProfilesSettings />
 						</div>
 					{:else if activeSection === 'team' && isAdmin}
 						<div in:fly={{ x: 20, duration: 200 }}>

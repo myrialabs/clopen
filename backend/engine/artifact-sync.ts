@@ -17,12 +17,16 @@ import { syncSubagents } from '$backend/subagents';
 import { syncInstructions } from '$backend/instructions';
 import type { ArtifactEngine } from '$backend/artifacts';
 
-export async function syncEngineArtifacts(engine: ArtifactEngine): Promise<void> {
+export async function syncEngineArtifacts(engine: ArtifactEngine, profileId?: number): Promise<void> {
 	// Sequential, NOT Promise.all: on synthetic engines (Codex/OpenCode) all three
 	// write their own managed block into the SAME memory file (AGENTS.md). Running
 	// them concurrently would race the read-modify-write and drop blocks. Each call
 	// swallows its own errors, so a failure in one doesn't stop the others.
-	await syncCommands(engine);
-	await syncSubagents(engine);
+	//
+	// `profileId` scopes Commands/Subagents to the active Profile's bundle (see
+	// `backend/profiles`). Instructions are NOT profile-bundled — they always sync
+	// their full global set.
+	await syncCommands(engine, profileId);
+	await syncSubagents(engine, profileId);
 	await syncInstructions(engine);
 }
