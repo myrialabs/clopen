@@ -45,6 +45,7 @@
 	// Responsive state
 	let isMobileMenuOpen = $state(false);
 	let windowWidth = $state(typeof window !== 'undefined' ? window.innerWidth : 1024);
+	let searchQuery = $state('');
 
 	const isMobile = $derived(windowWidth < 768);
 	const activeSection = $derived(settingsModalState.activeSection);
@@ -71,6 +72,23 @@
 			}))
 			.filter(g => g.sections.length > 0)
 	);
+
+	// Further filter groups by the sidebar search query, matching against
+	// label and description. Empty groups after filtering are dropped.
+	const filteredGroups = $derived.by(() => {
+		const query = searchQuery.trim().toLowerCase();
+		if (!query) return visibleGroups;
+		return visibleGroups
+			.map(group => ({
+				...group,
+				sections: group.sections.filter(
+					s =>
+						s.label.toLowerCase().includes(query) ||
+						s.description.toLowerCase().includes(query)
+				)
+			}))
+			.filter(g => g.sections.length > 0);
+	});
 
 	// Handle section change
 	function handleSectionChange(section: SettingsSection) {
@@ -173,8 +191,28 @@
 					</header>
 				{/if}
 
+				<div class="p-3 pb-0">
+					<div class="relative">
+						<Icon
+							name="lucide:search"
+							class="absolute left-2.5 top-1/2 -translate-y-1/2 w-4 h-4 text-slate-400 dark:text-slate-500 pointer-events-none"
+						/>
+						<input
+							type="text"
+							placeholder="Search settings"
+							bind:value={searchQuery}
+							class="w-full py-2 pl-8.5 pr-3 bg-slate-100 dark:bg-slate-800/60 border border-transparent rounded-lg text-sm text-slate-900 dark:text-slate-100 placeholder:text-slate-400 dark:placeholder:text-slate-500 outline-none transition-colors duration-150 focus:border-violet-500/40 focus:bg-white dark:focus:bg-slate-900"
+						/>
+					</div>
+				</div>
+
 				<nav class="flex-1 overflow-y-auto p-3">
-					{#each visibleGroups as group (group.id)}
+					{#if filteredGroups.length === 0}
+						<p class="px-3.5 py-3 text-sm text-slate-500 dark:text-slate-500">
+							No settings match "{searchQuery}"
+						</p>
+					{/if}
+					{#each filteredGroups as group (group.id)}
 						<div class="mb-2">
 							<h3 class="px-3.5 pt-3 pb-1.5 text-[11px] font-semibold uppercase tracking-wider text-slate-400 dark:text-slate-500">
 								{group.label}

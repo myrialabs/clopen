@@ -30,17 +30,17 @@ export type SettingsSection =
 /** Sidebar grouping. Sections are rendered under their group header. */
 export type SettingsGroup =
 	| 'models'
-	| 'extensions'
-	| 'general'
-	| 'account'
+	| 'infrastructure'
+	| 'artifacts-access'
+	| 'preferences'
 	| 'administration';
 
 /** Ordered group definitions for the settings sidebar. */
 export const settingsGroups: { id: SettingsGroup; label: string }[] = [
 	{ id: 'models', label: 'Models' },
-	{ id: 'extensions', label: 'Tools & Extensions' },
-	{ id: 'general', label: 'General' },
-	{ id: 'account', label: 'Account' },
+	{ id: 'infrastructure', label: 'Infrastructure' },
+	{ id: 'artifacts-access', label: 'Artifacts & Access' },
+	{ id: 'preferences', label: 'Preferences' },
 	{ id: 'administration', label: 'Administration' }
 ];
 
@@ -92,63 +92,7 @@ export const settingsSections: SettingsSectionMeta[] = [
 		label: 'Engines',
 		icon: 'lucide:circuit-board',
 		description: 'Accounts and providers',
-		group: 'extensions',
-		adminOnly: true
-	},
-	{
-		id: 'mcp',
-		label: 'Connectors',
-		icon: 'lucide:plug',
-		description: 'Connect external tools (MCP)',
-		group: 'extensions',
-		adminOnly: true
-	},
-	{
-		id: 'skills',
-		label: 'Skills',
-		icon: 'lucide:graduation-cap',
-		description: 'Reusable agent instructions',
-		group: 'extensions',
-		adminOnly: true
-	},
-	{
-		id: 'commands',
-		label: 'Commands',
-		icon: 'lucide:terminal',
-		description: 'Custom slash commands',
-		group: 'extensions',
-		adminOnly: true
-	},
-	{
-		id: 'subagents',
-		label: 'Subagents',
-		icon: 'lucide:bot',
-		description: 'Specialized delegated agents',
-		group: 'extensions',
-		adminOnly: true
-	},
-	{
-		id: 'instructions',
-		label: 'Instructions',
-		icon: 'lucide:scroll-text',
-		description: 'Shared instruction block',
-		group: 'extensions',
-		adminOnly: true
-	},
-	{
-		id: 'permissions',
-		label: 'Permissions',
-		icon: 'lucide:shield-check',
-		description: 'Per-engine tool allow/deny',
-		group: 'extensions',
-		adminOnly: true
-	},
-	{
-		id: 'profiles',
-		label: 'Profiles',
-		icon: 'lucide:layers',
-		description: 'Reusable tool bundles',
-		group: 'extensions',
+		group: 'infrastructure',
 		adminOnly: true
 	},
 	{
@@ -156,7 +100,71 @@ export const settingsSections: SettingsSectionMeta[] = [
 		label: 'System Tools',
 		icon: 'lucide:hammer',
 		description: 'Server-side binaries',
-		group: 'extensions',
+		group: 'infrastructure',
+		adminOnly: true
+	},
+	{
+		id: 'tunnel',
+		label: 'Tunnel',
+		icon: 'lucide:globe',
+		description: 'Cloudflare tunnel services',
+		group: 'infrastructure',
+		adminOnly: true
+	},
+	{
+		id: 'mcp',
+		label: 'Connectors',
+		icon: 'lucide:plug',
+		description: 'Connect external tools (MCP)',
+		group: 'artifacts-access',
+		adminOnly: true
+	},
+	{
+		id: 'skills',
+		label: 'Skills',
+		icon: 'lucide:graduation-cap',
+		description: 'Reusable agent instructions',
+		group: 'artifacts-access',
+		adminOnly: true
+	},
+	{
+		id: 'commands',
+		label: 'Commands',
+		icon: 'lucide:terminal',
+		description: 'Custom slash commands',
+		group: 'artifacts-access',
+		adminOnly: true
+	},
+	{
+		id: 'subagents',
+		label: 'Subagents',
+		icon: 'lucide:bot',
+		description: 'Specialized delegated agents',
+		group: 'artifacts-access',
+		adminOnly: true
+	},
+	{
+		id: 'instructions',
+		label: 'Instructions',
+		icon: 'lucide:scroll-text',
+		description: 'Shared instruction block',
+		group: 'artifacts-access',
+		adminOnly: true
+	},
+	{
+		id: 'permissions',
+		label: 'Permissions',
+		icon: 'lucide:shield-check',
+		description: 'Per-engine tool allow/deny',
+		group: 'artifacts-access',
+		adminOnly: true
+	},
+	{
+		id: 'profiles',
+		label: 'Profiles',
+		icon: 'lucide:layers',
+		description: 'Reusable tool bundles',
+		group: 'artifacts-access',
 		adminOnly: true
 	},
 	{
@@ -164,29 +172,21 @@ export const settingsSections: SettingsSectionMeta[] = [
 		label: 'Appearance',
 		icon: 'lucide:palette',
 		description: 'Theme and layout',
-		group: 'general'
+		group: 'preferences'
 	},
 	{
 		id: 'notifications',
 		label: 'Notifications',
 		icon: 'lucide:bell',
 		description: 'Sound and push notifications',
-		group: 'general'
-	},
-	{
-		id: 'tunnel',
-		label: 'Tunnel',
-		icon: 'lucide:globe',
-		description: 'Cloudflare tunnel services',
-		group: 'general',
-		adminOnly: true
+		group: 'preferences'
 	},
 	{
 		id: 'account',
 		label: 'User Profile',
 		icon: 'lucide:user',
 		description: 'Your profile and access',
-		group: 'account'
+		group: 'preferences'
 	},
 	{
 		id: 'team',
