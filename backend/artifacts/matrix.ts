@@ -145,6 +145,31 @@ export function resolveArtifact(type: ArtifactType, ctx: ArtifactContext): Artif
 		};
 	}
 
+	// Permissions: enforcement is a RUNTIME hook (see backend/permissions/); the
+	// matrix only describes the optional on-disk "honesty" file. Only Claude reads
+	// one Clopen can safely manage — an isolated `settings.json` with a managed
+	// `permissions` key (JSON). Other engines are hook-only (Qwen/Copilot) or
+	// have no clean per-tool primitive (Codex/OpenCode) → no file to write; their
+	// rules live purely in the DB and, where a hook exists, are enforced there.
+	if (type === 'permission') {
+		if (engine === 'claude') {
+			return {
+				supported: true,
+				format: 'json',
+				// Managed-KEYS, not whole-file: the isolated `settings.json` is also
+				// Claude's own settings store, so materialization merges the
+				// `permissions` key and preserves everything else.
+				ownership: 'marker-region',
+				exclusive: scope === 'global',
+				locateEffective: (c) =>
+					c.scope === 'project' && c.projectPath
+						? join(c.projectPath, '.claude', 'settings.json')
+						: join(getEngineUserConfigDir('claude'), 'settings.json')
+			};
+		}
+		return unsupported();
+	}
+
 	// MCP has no file representation in this framework (reserved slot).
 	if (type === 'mcp') {
 		return unsupported();
@@ -194,6 +219,10 @@ function unsupported(): ArtifactResolution {
 /** Whether a synthetic (non-native) target is best-effort/unverified for the UI. */
 export function isBestEffortTarget(type: ArtifactType, engine: ArtifactEngine): boolean {
 	if (type === 'instruction') return engine !== 'claude';
+	// Permissions are enforced at a runtime hook on Claude/Qwen/Copilot/OpenCode
+	// (OpenCode resolves the tool via its permission event's callID). Only Codex
+	// has no per-call hook, so it alone is best-effort.
+	if (type === 'permission') return engine === 'codex';
 	return nativeDir(type, { engine, scope: 'global' }) === null;
 }
 

@@ -37,10 +37,13 @@ import {
 	type Tool
 } from '@modelcontextprotocol/sdk/types.js';
 import { debug } from '$shared/utils/logger';
-import { mcpServerQueries } from '$backend/database/queries';
+import { mcpServerQueries, permissionSetQueries } from '$backend/database/queries';
 import type { EngineType } from '$shared/types/unified';
 import { resolveServerRow } from './config';
 import { parseToolOverrides, isToolExposed } from './tools';
+// Import the PURE resolver (no `$backend/mcp` dependency) to avoid an
+// mcp → permissions/service → mcp import cycle.
+import { isToolAllowed, mergePermissions, pickEngineSet } from '$backend/permissions/resolve';
 import type { ResolvedExternalServer } from './types';
 
 /** Cap on how long we wait for an upstream server to complete its handshake. */
@@ -181,6 +184,19 @@ export async function createExternalProxyServer(slug: string, engine?: EngineTyp
 	const overrides = parseToolOverrides(row.tool_overrides);
 	const client = await connectUpstream(resolved);
 
+	// Global tool-permission policy for this engine (Settings → Permissions).
+	// MCP tools carry no permission hook on some engines (e.g. OpenCode only gates
+	// edit/bash/webfetch), so the bridge is the single reliable enforcement point
+	// for MCP deny/allow across every engine — it filters the tool out before the
+	// engine ever sees it. Rules are matched against the canonical engine-facing
+	// name `mcp__<namespace>__<tool>` (the identity the Permissions UI uses).
+	// Global scope only: the bridge has no session/project context.
+	const permissions = engine
+		? mergePermissions(pickEngineSet(permissionSetQueries.getGlobal(), engine), undefined)
+		: null;
+	const permitted = (toolName: string): boolean =>
+		!permissions || isToolAllowed(permissions, `mcp__${resolved.namespace}__${toolName}`);
+
 	const server = new Server(
 		{ name: `clopen-ext-${slug}`, version: '1.0.0' },
 		{ capabilities: { tools: {} } }
@@ -188,7 +204,7 @@ export async function createExternalProxyServer(slug: string, engine?: EngineTyp
 
 	server.setRequestHandler(ListToolsRequestSchema, async () => {
 		const all = (await listAllToolsRaw(client)).map(sanitizeTool);
-		const tools = all.filter(t => isToolExposed(overrides, t.name, engine));
+		const tools = all.filter(t => isToolExposed(overrides, t.name, engine) && permitted(t.name));
 		const hidden = all.length - tools.length;
 		debug.log('mcp', `🔌 Proxy ${slug}${engine ? ` (${engine})` : ''}: serving ${tools.length} tool(s)${hidden > 0 ? `, ${hidden} hidden` : ''}`);
 		return { tools };
@@ -200,6 +216,13 @@ export async function createExternalProxyServer(slug: string, engine?: EngineTyp
 		if (!isToolExposed(overrides, req.params.name, engine)) {
 			return {
 				content: [{ type: 'text' as const, text: `Tool ${req.params.name} is disabled for this engine.` }],
+				isError: true
+			};
+		}
+		// Same guard for a permission-denied tool (Settings → Permissions).
+		if (!permitted(req.params.name)) {
+			return {
+				content: [{ type: 'text' as const, text: `Tool ${req.params.name} is blocked by Clopen permission policy.` }],
 				isError: true
 			};
 		}

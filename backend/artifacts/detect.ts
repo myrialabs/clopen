@@ -85,6 +85,10 @@ export async function detectArtifacts(type: ArtifactType, ctx: ArtifactContext):
 		return [...bySlug.values()];
 	}
 
+	// Detection only applies to the directory-backed formats (Skills' `folder-md`,
+	// Commands'/Subagents' `single-md`). Other formats (`json`/`toml`/preamble)
+	// have no scannable artifact directory — nothing to detect on disk.
+	if (resolution.format !== 'folder-md' && resolution.format !== 'single-md') return [];
 	const format = resolution.format;
 	const effective = await scanDir(resolution.locateEffective(ctx), format, true, false);
 	for (const a of effective) bySlug.set(a.slug, a);

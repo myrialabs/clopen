@@ -156,6 +156,11 @@ export const ADMIN_ONLY_ROUTES = new Set([
 	'instructions:save-global',
 	'instructions:get-project',
 	'instructions:save-project',
+	// Permissions — per-engine tool allow/deny applied to every engine/project;
+	// same shared-store rationale as Skills/MCP, admin-only surface.
+	'permissions:list',
+	'permissions:inventory',
+	'permissions:save',
 	// AI authoring of artifacts — part of the admin artifact editors.
 	'artifacts:generate'
 ]);

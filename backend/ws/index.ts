@@ -36,6 +36,7 @@ import { skillsRouter } from './skills';
 import { commandsRouter } from './commands';
 import { subagentsRouter } from './subagents';
 import { instructionsRouter } from './instructions';
+import { permissionsRouter } from './permissions';
 import { artifactsRouter } from './artifacts';
 
 // ============================================
@@ -91,6 +92,7 @@ export const wsRouter = createRouter()
 	.merge(commandsRouter)
 	.merge(subagentsRouter)
 	.merge(instructionsRouter)
+	.merge(permissionsRouter)
 	.merge(artifactsRouter);
 
 // Export API type for frontend type-safe access

@@ -333,6 +333,62 @@ MCP + Skills + Subagents yang semuanya menghasilkan tool yang butuh izin.
   diterapkan ke config tiap engine via adapter.
 - Tidak menimpa konten user; `check` & `lint` lulus.
 
+## ✅ Checkpoint — Prompt 3 SELESAI (untuk Prompt 4)
+
+Implemented in one pass; `bun run check` + `bun run lint` hijau + 17 unit test `resolve` lolos.
+Ringkasan agar Prompt 4 tahu apa yang sudah ada:
+
+**Temuan kunci yang membentuk desain:** semua engine Clopen **auto-approve semua tool**
+(Claude `bypassPermissions`+`canUseTool`, Codex `danger-full-access`+`approvalPolicy:'never'`,
+Qwen `canUseTool` allow-all, OpenCode `autoApprovePermission`, Copilot `approveAll`). Jadi
+`settings.json permissions.deny` sendirian = **no-op diam-diam** → enforcement HARUS di titik
+runtime yang benar.
+
+**Data (`permission_sets`, migration 049)** — instance-global admin-managed (TANPA `user_id`,
+pola skills/mcp_servers). Satu baris per `scope×project×engine` berisi JSON `allow[]`+`deny[]`.
+Resolusi: `deny = global ∪ project`, `allow = project bila non-kosong else global`, **deny menang**,
+allow kosong = semua kecuali deny. Pattern = nama persis + trailing `*` (arg-scoped `Bash(git:*)`
+ditunda). Logika murni di `backend/permissions/resolve.ts` (unit-tested); DB wrapper + inventory +
+`excludedBuiltinTools` di `service.ts`; on-disk "honesty" (Claude `settings.json` managed-keys) di
+`materialize.ts`.
+
+**Framework** — `ArtifactType` +`'permission'`, `ArtifactFormat` +`'json'|'toml'`. Matrix
+`resolveArtifact('permission')` supported HANYA Claude (isolated `settings.json`). Enforcement nyata
+BUKAN dari file — dari hook runtime.
+
+**Enforcement DUA lapis:**
+1. **Tool MCP → BRIDGE** (`backend/mcp/external/proxy.ts`), untuk **SEMUA engine**. Alasan: OpenCode
+   `permission` config cuma menggerbang edit/bash/webfetch/doom_loop/external_directory — **tak ada
+   event permission untuk tool MCP**. Bridge filter `tools/list` + guard `tools/call` dengan
+   mencocokkan nama kanonik `mcp__<namespace>__<tool>` (namespace = slug) vs deny/allow **global**.
+   Impor resolver MURNI (`permissions/resolve`) untuk hindari siklus mcp→permissions→mcp. Scope
+   global saja (bridge tak punya session/project).
+2. **Tool builtin → hook per-engine**: Claude/Qwen `canUseTool` return deny; Copilot
+   `onPermissionRequest` return `{kind:'reject'}`; OpenCode `permission.asked` (resolve tool via
+   `callID→ToolPart.tool` map → `mapToolName()` kanonik) reply `'reject'`.
+
+**Matriks cakupan (per engine):**
+| Engine   | MCP deny (bridge) | Builtin deny |
+|----------|-------------------|--------------|
+| Claude   | ✓                 | ✓ `canUseTool` (fires semua tool) |
+| Copilot  | ✓                 | ✓ `onPermissionRequest` (fires tiap tool) |
+| Qwen     | ✓                 | ✓ `canUseTool` (write) + `excludeTools` (read; canUseTool skip non-write) |
+| OpenCode | ✓ (diverifikasi user) | ✓ subset yg digerbang (edit/bash/webfetch/…) |
+| Codex    | ✓ *(query-param `?engine=codex` unverified, warisan Prompt 2)* | ✗ SDK `ThreadOptions` tak punya filter tool |
+
+**UI** — section `'permissions'` (grup extensions, adminOnly, `lucide:shield-check`);
+`PermissionsSettings.svelte`: tab per-engine + editor chip allow/deny dengan **combobox kustom**
+(datalist diganti dropdown terkategori Built-in/MCP/Subagent) + satu **info card** ringkas. Store
+`permissions.svelte.ts`. WS `permissions:list|inventory|save` (admin, `backend/ws/permissions/`).
+Inventory = katalog builtin (`shared/constants/engine-tools.ts`) ∪ tool MCP live ∪ allowlist subagent.
+
+**Ditunda (bukan bug):**
+1. **UI project-scope** belum ada picker (backend `permissions:save` + resolusi project-scope siap;
+   store baru pakai global). Session/`projectId` diambil dari `options.mcpContext?.projectId` di hook.
+2. **Deny MCP scope-project** hanya berlaku di Claude (via `canUseTool`); bridge global-only.
+3. **Codex builtin** tak bisa di-enforce (SDK tak punya filter); MCP via bridge saja.
+4. On-disk file cuma Claude `settings.json` (Codex/OpenCode/Qwen/Copilot = hook/bridge saja).
+
 -----
 
 # Prompt 4 — Profiles (bundle reusable + aktivasi per-session)

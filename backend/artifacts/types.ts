@@ -37,8 +37,14 @@ export type ArtifactEngine = 'claude' | 'codex' | 'copilot' | 'qwen' | 'opencode
 
 export const ARTIFACT_ENGINES: ArtifactEngine[] = ['claude', 'codex', 'copilot', 'qwen', 'opencode'];
 
-/** Kinds of artifact the framework can materialize. `'mcp'` is reserved (see file header). */
-export type ArtifactType = 'skill' | 'command' | 'subagent' | 'instruction' | 'mcp';
+/**
+ * Kinds of artifact the framework can materialize. `'mcp'` is reserved (see file
+ * header). `'permission'` describes engine tool allow/deny config: its ENFORCEMENT
+ * is a runtime hook (see `backend/permissions/`), and the matrix entry only
+ * describes the optional on-disk "honesty" file (Claude `settings.json`, Codex
+ * `config.toml`) for engines that read one.
+ */
+export type ArtifactType = 'skill' | 'command' | 'subagent' | 'instruction' | 'mcp' | 'permission';
 
 /** Where an artifact lives: instance-global (per engine) or inside a project repo. */
 export type ArtifactScope = 'global' | 'project';
@@ -48,8 +54,12 @@ export type ArtifactScope = 'global' | 'project';
  *   - `folder-md`     : a folder whose entry file carries frontmatter (Skills).
  *   - `single-md`     : one `.md` file per artifact (Commands, Subagents).
  *   - `preamble-region`: a managed block inside a shared instructions file.
+ *   - `json`          : a JSON config file with Clopen-managed keys (Claude
+ *                       `settings.json` permissions).
+ *   - `toml`          : a TOML config file with a Clopen-managed marker-region
+ *                       (Codex `config.toml`).
  */
-export type ArtifactFormat = 'folder-md' | 'single-md' | 'preamble-region';
+export type ArtifactFormat = 'folder-md' | 'single-md' | 'preamble-region' | 'json' | 'toml';
 
 /**
  * How much of the target file Clopen owns.

@@ -15,8 +15,13 @@ import { resolveArtifact } from './matrix';
 import { markersFor, writeManagedBlock } from './markers';
 import type { ArtifactContext, ArtifactType, ManagedArtifact } from './types';
 
-/** Managed-block marker id per artifact type (uppercased feature name). */
-const MARKER_ID: Record<Exclude<ArtifactType, 'mcp'>, string> = {
+/**
+ * Managed-block marker id per artifact type (uppercased feature name). `'mcp'`
+ * and `'permission'` are excluded: neither routes through this generic
+ * file-materializer (MCP is a config-object path; permissions have their own
+ * runtime-hook enforcement + `backend/permissions/materialize.ts`).
+ */
+const MARKER_ID: Record<Exclude<ArtifactType, 'mcp' | 'permission'>, string> = {
 	skill: 'SKILLS',
 	command: 'COMMANDS',
 	subagent: 'SUBAGENTS',
@@ -105,7 +110,9 @@ export async function materializeArtifacts(
 		return;
 	}
 
-	// preamble-region → managed block inside the engine memory file.
+	// preamble-region → managed block inside the engine memory file. `type` is
+	// always one of the file-materialized kinds here (mcp/permission never route
+	// through this writer), so the MARKER_ID lookup is total in practice.
 	const build = input.buildPreamble ?? ((items) => defaultPreamble(type, items));
-	await writeManagedBlock(target, build(input.enabled), markersFor(MARKER_ID[type]));
+	await writeManagedBlock(target, build(input.enabled), markersFor(MARKER_ID[type as keyof typeof MARKER_ID]));
 }
