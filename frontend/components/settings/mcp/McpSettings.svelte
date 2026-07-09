@@ -4,15 +4,18 @@
 	import Button from '$frontend/components/common/display/Button.svelte';
 	import Input from '$frontend/components/common/form/Input.svelte';
 	import Modal from '$frontend/components/common/overlay/Modal.svelte';
+	import Markdown from '$frontend/components/common/display/Markdown.svelte';
 	import {
 		mcpServersStore,
 		type CatalogServer,
 		type InstalledMcpServer,
 		type McpConfigField,
 		type McpHealthState,
+		type McpToolInfo,
 		type McpTransport,
 		type ParsedMcpServer
 	} from '$frontend/stores/features/mcp-servers.svelte';
+	import { ENGINES } from '$shared/constants/engines';
 	import { debug } from '$shared/utils/logger';
 	import type { IconName } from '$shared/types/ui/icons';
 
@@ -513,6 +516,163 @@
 			savingConfig = false;
 		}
 	}
+
+	// --- Tool control flow (per-tool + per-engine exposure) ---
+
+	// Each draft entry is the editable exposure for one tool: a master `enabled`
+	// plus a per-engine map (keyed by EngineType). Saved wholesale on Save; the
+	// backend prunes no-op entries so the stored column only holds restrictions.
+	type ToolDraft = { enabled: boolean; engines: Record<string, boolean> };
+
+	let toolsTarget = $state<InstalledMcpServer | null>(null);
+	let toolsLoading = $state(false);
+	let toolsError = $state<string | null>(null);
+	let toolsList = $state<McpToolInfo[]>([]);
+	let toolDraft = $state<Record<string, ToolDraft>>({});
+	let toolsSaving = $state(false);
+
+	async function openTools(server: InstalledMcpServer) {
+		toolsTarget = server;
+		toolsList = [];
+		toolDraft = {};
+		toolsError = null;
+		toolsLoading = true;
+		try {
+			const tools = await mcpServersStore.fetchTools(server.id);
+			toolsList = tools;
+			toolDraft = Object.fromEntries(
+				tools.map(t => [t.name, { enabled: t.enabled, engines: { ...t.engines } }])
+			);
+		} catch (error) {
+			toolsError = error instanceof Error ? error.message : 'Failed to load tools';
+		} finally {
+			toolsLoading = false;
+		}
+	}
+
+	function closeTools() {
+		toolsTarget = null;
+		toolsList = [];
+		toolDraft = {};
+		toolsError = null;
+	}
+
+	function toggleToolEnabled(name: string) {
+		const cur = toolDraft[name];
+		if (!cur) return;
+		toolDraft = { ...toolDraft, [name]: { ...cur, enabled: !cur.enabled } };
+	}
+
+	function toggleToolEngine(name: string, engine: string) {
+		const cur = toolDraft[name];
+		if (!cur || !cur.enabled) return;
+		toolDraft = { ...toolDraft, [name]: { ...cur, engines: { ...cur.engines, [engine]: !cur.engines[engine] } } };
+	}
+
+	// Count of tools hidden from at least one engine — drives the header summary.
+	const restrictedCount = $derived(
+		Object.values(toolDraft).filter(d => !d.enabled || Object.values(d.engines).some(on => !on)).length
+	);
+
+	async function saveTools() {
+		const server = toolsTarget;
+		if (!server) return;
+		toolsSaving = true;
+		try {
+			const overrides = Object.fromEntries(
+				Object.entries(toolDraft).map(([name, d]) => [name, { enabled: d.enabled, engines: d.engines }])
+			);
+			await mcpServersStore.setToolOverrides(server.id, overrides);
+			closeTools();
+		} catch (error) {
+			toolsError = error instanceof Error ? error.message : 'Failed to save';
+		} finally {
+			toolsSaving = false;
+		}
+	}
+
+	// --- Inspector flow (test-call a single tool) ---
+	let inspectTool = $state<McpToolInfo | null>(null);
+	let inspectArgs = $state('{}');
+	let inspectShowSchema = $state(false);
+	let inspectRunning = $state(false);
+	let inspectError = $state<string | null>(null);
+	let inspectResult = $state<string | null>(null);
+	let inspectIsError = $state(false);
+
+	// Tool descriptions arrive as one long blob with the source newlines stripped,
+	// so `##` headers and `<example>` blocks run together. Re-introduce structure —
+	// headers onto their own line, `<example>` bodies into fenced code blocks — then
+	// render it through the shared Markdown surface instead of a raw wall of text.
+	function formatToolDescription(raw: string): string {
+		if (!raw) return '';
+		let s = raw
+			// "<example description="X">BODY</example>" → a labelled fenced block.
+			.replace(
+				/<example(?:\s+description="([^"]*)")?\s*>([\s\S]*?)<\/example>/g,
+				(_m, desc: string, body: string) => `\n\n**Example${desc ? ` — ${desc}` : ''}**\n\n\`\`\`\n${body.trim()}\n\`\`\`\n`
+			)
+			// Put markdown headers back on their own line.
+			.replace(/\s*(#{2,6})\s+/g, '\n\n$1 ')
+			// Break inline "- " bullets onto their own lines (example JSON has none).
+			.replace(/\s+-\s+/g, '\n- ')
+			// Collapse the runs of blank lines the substitutions can create.
+			.replace(/\n{3,}/g, '\n\n');
+		return s.trim();
+	}
+
+	const inspectDescription = $derived(inspectTool ? formatToolDescription(inspectTool.description ?? '') : '');
+
+	// Seed the args editor with a `{}` object carrying the schema's declared
+	// property keys, so the user edits values rather than recalling field names.
+	function argsTemplate(schema: unknown): string {
+		const props = (schema as { properties?: Record<string, unknown> } | null)?.properties;
+		if (!props || typeof props !== 'object') return '{}';
+		const seed = Object.fromEntries(Object.keys(props).map(k => [k, '']));
+		return JSON.stringify(seed, null, 2);
+	}
+
+	function openInspector(tool: McpToolInfo) {
+		inspectTool = tool;
+		inspectArgs = argsTemplate(tool.inputSchema);
+		inspectShowSchema = false;
+		inspectError = null;
+		inspectResult = null;
+		inspectIsError = false;
+	}
+
+	function closeInspector() {
+		inspectTool = null;
+		inspectError = null;
+		inspectResult = null;
+	}
+
+	async function runInspect() {
+		const server = toolsTarget;
+		const tool = inspectTool;
+		if (!server || !tool) return;
+		let args: unknown;
+		try {
+			args = inspectArgs.trim() ? JSON.parse(inspectArgs) : {};
+		} catch {
+			inspectError = 'Arguments must be valid JSON.';
+			return;
+		}
+		inspectRunning = true;
+		inspectError = null;
+		inspectResult = null;
+		try {
+			const result = await mcpServersStore.callTool(server.id, tool.name, args);
+			inspectIsError = !!(result as { isError?: boolean } | null)?.isError;
+			inspectResult = JSON.stringify(result, null, 2);
+		} catch (error) {
+			inspectError = error instanceof Error ? error.message : 'Tool call failed';
+		} finally {
+			inspectRunning = false;
+		}
+	}
+
+	const schemaPreview = $derived(inspectTool ? JSON.stringify(inspectTool.inputSchema, null, 2) : '');
 </script>
 
 <div class="space-y-6">
@@ -520,9 +680,9 @@
 	<div class="flex items-start justify-between gap-3">
 		{#if showHeader}
 			<div>
-				<h3 class="text-base font-bold text-slate-900 dark:text-slate-100 mb-1.5">MCP Servers</h3>
+				<h3 class="text-base font-bold text-slate-900 dark:text-slate-100 mb-1.5">Connectors</h3>
 				<p class="text-sm text-slate-600 dark:text-slate-500">
-					Built-in tools and external MCP servers.
+					Built-in tools and external connectors (MCP).
 				</p>
 			</div>
 		{:else}
@@ -557,7 +717,7 @@
 		{#if installed.length === 0}
 			<div class="flex flex-col items-center gap-2 py-10 text-center">
 				<Icon name="lucide:plug" class="w-8 h-8 text-slate-400" />
-				<p class="text-sm text-slate-500 dark:text-slate-400">No MCP servers installed yet.</p>
+				<p class="text-sm text-slate-500 dark:text-slate-400">No connectors installed yet.</p>
 				<div class="flex items-center gap-2">
 					<Button variant="outline" size="sm" onclick={goBrowse}>Browse</Button>
 					<Button variant="outline" size="sm" class="gap-1.5" onclick={openManual}>
@@ -576,7 +736,7 @@
 					<input
 						type="text"
 						bind:value={installedFilter}
-						placeholder="Filter installed servers…"
+						placeholder="Filter connectors…"
 						class="w-full pl-9 pr-3 py-2 text-sm bg-white dark:bg-slate-800 border border-slate-200 dark:border-slate-700 rounded-lg outline-none focus:ring-2 focus:ring-violet-500/20 focus:border-violet-600 transition-colors text-slate-900 dark:text-slate-100 placeholder-slate-400"
 					/>
 				</div>
@@ -602,6 +762,12 @@
 									<span class="text-[10px] px-1.5 py-0.5 rounded bg-slate-100 dark:bg-slate-800 text-slate-500">{transportLabel(server.transport)}</span>
 									{#if server.version}
 										<span class="text-[10px] px-1.5 py-0.5 rounded bg-slate-100 dark:bg-slate-800 text-slate-500">v{server.version}</span>
+									{/if}
+									{#if server.restrictedToolCount > 0}
+										<span class="inline-flex items-center gap-1 text-[10px] px-1.5 py-0.5 rounded bg-amber-500/10 text-amber-600 dark:text-amber-400" title="Tools restricted for one or more engines">
+											<Icon name="lucide:sliders-horizontal" class="w-3 h-3" />
+											{server.restrictedToolCount} restricted
+										</span>
 									{/if}
 								</div>
 								{#if server.description}
@@ -678,6 +844,15 @@
 									<span class="absolute top-0.5 left-0.5 w-5 h-5 bg-white rounded-full transition-transform {server.enabled ? 'translate-x-4' : ''}"></span>
 								</button>
 								{#if server.source !== 'internal'}
+									<button
+										type="button"
+										onclick={() => openTools(server)}
+										class="flex p-2 rounded-lg text-slate-400 hover:text-violet-600 hover:bg-violet-500/10 transition-colors"
+										aria-label="Manage tools"
+										title="Manage tools & inspector"
+									>
+										<Icon name="lucide:sliders-horizontal" class="w-4 h-4" />
+									</button>
 									<button
 										type="button"
 										onclick={() => openConfig(server)}
@@ -984,23 +1159,23 @@
 </Modal>
 
 <!-- Delete confirmation modal -->
-<Modal isOpen={deleteTarget !== null} onClose={() => (deleteTarget = null)} title="Uninstall MCP server" size="sm">
+<Modal isOpen={deleteTarget !== null} onClose={() => (deleteTarget = null)} title="Remove connector" size="sm">
 	{#snippet children()}
 		{#if deleteTarget}
 			<p class="text-sm text-slate-600 dark:text-slate-300">
-				Uninstall <span class="font-semibold text-slate-900 dark:text-slate-100">{deleteTarget.name}</span>?
+				Remove <span class="font-semibold text-slate-900 dark:text-slate-100">{deleteTarget.name}</span>?
 				It will be removed from every engine. This can't be undone.
 			</p>
 		{/if}
 	{/snippet}
 	{#snippet footer()}
 		<Button variant="ghost" onclick={() => (deleteTarget = null)}>Cancel</Button>
-		<Button variant="primary" loading={deleting} class="!bg-red-600 hover:!bg-red-700" onclick={confirmDelete}>Uninstall</Button>
+		<Button variant="primary" loading={deleting} class="!bg-red-600 hover:!bg-red-700" onclick={confirmDelete}>Remove</Button>
 	{/snippet}
 </Modal>
 
 <!-- Add manually modal: paste any host's MCP JSON, or build one by hand -->
-<Modal isOpen={manualOpen} onClose={closeManual} title="Add MCP server" size="md">
+<Modal isOpen={manualOpen} onClose={closeManual} title="Add connector" size="md">
 	{#snippet children()}
 		<div class="space-y-4 text-sm">
 			<!-- Mode toggle -->
@@ -1093,5 +1268,164 @@
 			<Button variant="ghost" onclick={closeManual}>Cancel</Button>
 			<Button variant="primary" loading={manualSaving} onclick={commitManual}>Install</Button>
 		{/if}
+	{/snippet}
+</Modal>
+
+<!-- Tools modal: per-tool + per-engine exposure control for one installed server.
+     The filter is enforced in Clopen's proxy bridge, so disabling a tool for an
+     engine hides it from that engine's next stream regardless of its SDK. -->
+<Modal isOpen={toolsTarget !== null} onClose={closeTools} title={`Tools · ${toolsTarget?.name ?? ''}`} size="lg">
+	{#snippet children()}
+		<div class="space-y-4 text-sm">
+			{#if toolsLoading}
+				<div class="flex items-center justify-center gap-2 py-10 text-slate-400">
+					<span class="w-4 h-4 border-2 border-violet-600 border-t-transparent rounded-full animate-spin"></span>
+					Connecting to server…
+				</div>
+			{:else if toolsError}
+				<div class="flex items-start gap-2 p-3 bg-red-500/5 border border-red-500/20 rounded-lg text-red-600 dark:text-red-400">
+					<Icon name="lucide:triangle-alert" class="w-4 h-4 mt-0.5 shrink-0" />
+					<span class="break-words">{toolsError}</span>
+				</div>
+			{:else if toolsList.length === 0}
+				<p class="text-slate-500 dark:text-slate-400 text-center py-8">This server exposes no tools.</p>
+			{:else}
+				<p class="text-xs text-slate-500 dark:text-slate-400">
+					Toggle a tool off to hide it from every engine, or switch off individual engines to
+					trim the tool surface per engine. {restrictedCount > 0 ? `${restrictedCount} restricted.` : 'All tools exposed.'}
+				</p>
+				<div class="space-y-2.5">
+					{#each toolsList as tool (tool.name)}
+						{@const draft = toolDraft[tool.name]}
+						<div class="p-3 bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 rounded-xl {draft?.enabled ? '' : 'opacity-70'}">
+							<div class="flex items-start gap-3">
+								<div class="flex-1 min-w-0">
+									<div class="flex items-center gap-2">
+										<span class="font-mono text-[13px] font-semibold text-slate-900 dark:text-slate-100 truncate">{tool.name}</span>
+									</div>
+									{#if tool.description}
+										<p class="text-xs text-slate-500 dark:text-slate-400 mt-0.5 line-clamp-2">{tool.description}</p>
+									{/if}
+								</div>
+								<div class="flex items-center gap-2 shrink-0">
+									<button
+										type="button"
+										onclick={() => openInspector(tool)}
+										class="inline-flex items-center gap-1 text-[11px] font-semibold text-violet-600 hover:text-violet-700 dark:text-violet-400"
+										title="Test this tool"
+									>
+										<Icon name="lucide:flask-conical" class="w-3.5 h-3.5" />
+										Inspect
+									</button>
+									<button
+										type="button"
+										role="switch"
+										aria-checked={draft?.enabled ?? true}
+										onclick={() => toggleToolEnabled(tool.name)}
+										class="relative w-10 h-6 rounded-full transition-colors {draft?.enabled ? 'bg-violet-600' : 'bg-slate-300 dark:bg-slate-700'}"
+										aria-label={draft?.enabled ? 'Disable tool' : 'Enable tool'}
+									>
+										<span class="absolute top-0.5 left-0.5 w-5 h-5 bg-white rounded-full transition-transform {draft?.enabled ? 'translate-x-4' : ''}"></span>
+									</button>
+								</div>
+							</div>
+							<!-- Two distinct controls: the switch above is the whole-tool kill
+							     switch; the chips below pick engines only while the tool is on.
+							     A disabled tool is hidden from every engine, full stop — so we
+							     drop the chips entirely rather than grey them out. -->
+							{#if draft?.enabled}
+								<div class="mt-2.5">
+									<p class="text-[11px] font-semibold text-slate-400 dark:text-slate-500 mb-1.5">Exposed to</p>
+									<div class="flex flex-wrap items-center gap-1.5">
+										{#each ENGINES as engine (engine.type)}
+											{@const on = draft.engines[engine.type] ?? true}
+											<button
+												type="button"
+												onclick={() => toggleToolEngine(tool.name, engine.type)}
+												class="inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-[11px] font-semibold border transition-colors
+													{on
+														? 'bg-violet-500/10 border-violet-500/30 text-violet-600 dark:text-violet-400'
+														: 'bg-transparent border-slate-200 dark:border-slate-700 text-slate-400 line-through'}"
+												title={on ? `Exposed to ${engine.name}` : `Hidden from ${engine.name}`}
+											>
+												{#if on}<Icon name="lucide:check" class="w-3 h-3" />{/if}
+												{engine.name}
+											</button>
+										{/each}
+									</div>
+								</div>
+							{:else}
+								<p class="mt-2.5 inline-flex items-center gap-1 text-[11px] font-semibold text-slate-400">
+									<Icon name="lucide:ban" class="w-3 h-3" />
+									Hidden from every engine
+								</p>
+							{/if}
+						</div>
+					{/each}
+				</div>
+			{/if}
+		</div>
+	{/snippet}
+	{#snippet footer()}
+		<Button variant="ghost" onclick={closeTools}>Cancel</Button>
+		<Button variant="primary" loading={toolsSaving} disabled={toolsLoading || !!toolsError || toolsList.length === 0} onclick={saveTools}>Save</Button>
+	{/snippet}
+</Modal>
+
+<!-- Inspector modal: fill JSON arguments, view the input schema, call the tool
+     and see its raw result (including tool-reported errors). -->
+<Modal isOpen={inspectTool !== null} onClose={closeInspector} title={`Inspect · ${inspectTool?.name ?? ''}`} size="lg">
+	{#snippet children()}
+		{#if inspectTool}
+			<div class="space-y-4 text-sm">
+				{#if inspectDescription}
+					<div class="max-h-56 overflow-auto pr-1 border-b border-slate-100 dark:border-slate-800 pb-3">
+						<Markdown content={inspectDescription} variant="compact" html="escape" class="text-xs" />
+					</div>
+				{/if}
+
+				<button
+					type="button"
+					class="inline-flex items-center gap-1 text-xs font-semibold text-slate-500 hover:text-slate-700 dark:hover:text-slate-300"
+					onclick={() => (inspectShowSchema = !inspectShowSchema)}
+				>
+					<Icon name={inspectShowSchema ? 'lucide:chevron-down' : 'lucide:chevron-right'} class="w-3.5 h-3.5" />
+					Input schema
+				</button>
+				{#if inspectShowSchema}
+					<pre class="max-h-48 overflow-auto p-3 text-[11px] font-mono bg-slate-50 dark:bg-slate-950 border border-slate-200 dark:border-slate-800 rounded-lg text-slate-700 dark:text-slate-300">{schemaPreview}</pre>
+				{/if}
+
+				<div class="space-y-1">
+					<p class="text-xs font-semibold text-slate-400 dark:text-slate-500">Arguments (JSON)</p>
+					<textarea
+						bind:value={inspectArgs}
+						rows="6"
+						spellcheck="false"
+						class="w-full px-3 py-2 text-sm font-mono bg-white dark:bg-slate-800 border border-slate-200 dark:border-slate-700 rounded-lg outline-none focus:ring-2 focus:ring-violet-500/20 focus:border-violet-600 transition-colors text-slate-900 dark:text-slate-100 resize-y"
+					></textarea>
+				</div>
+
+				{#if inspectError}
+					<p class="text-xs text-red-500 break-words">{inspectError}</p>
+				{/if}
+
+				{#if inspectResult !== null}
+					<div class="space-y-1">
+						<p class="text-xs font-semibold {inspectIsError ? 'text-red-500' : 'text-emerald-600 dark:text-emerald-400'}">
+							{inspectIsError ? 'Result (tool reported an error)' : 'Result'}
+						</p>
+						<pre class="max-h-64 overflow-auto p-3 text-[11px] font-mono border rounded-lg break-words whitespace-pre-wrap
+							{inspectIsError
+								? 'bg-red-500/5 border-red-500/20 text-red-600 dark:text-red-400'
+								: 'bg-slate-50 dark:bg-slate-950 border-slate-200 dark:border-slate-800 text-slate-700 dark:text-slate-300'}">{inspectResult}</pre>
+					</div>
+				{/if}
+			</div>
+		{/if}
+	{/snippet}
+	{#snippet footer()}
+		<Button variant="ghost" onclick={closeInspector}>Close</Button>
+		<Button variant="primary" loading={inspectRunning} onclick={runInspect}>Run</Button>
 	{/snippet}
 </Modal>

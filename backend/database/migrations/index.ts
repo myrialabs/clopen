@@ -46,6 +46,7 @@ import * as migration044 from './044_create_skills_table';
 import * as migration045 from './045_create_commands_table';
 import * as migration046 from './046_create_subagents_table';
 import * as migration047 from './047_create_instructions_table';
+import * as migration048 from './048_add_mcp_tool_overrides';
 
 // Export all migrations in order
 export const migrations = [
@@ -330,6 +331,12 @@ export const migrations = [
 		description: migration047.description,
 		up: migration047.up,
 		down: migration047.down
+	},
+	{
+		id: '048',
+		description: migration048.description,
+		up: migration048.up,
+		down: migration048.down
 	}
 ];
 

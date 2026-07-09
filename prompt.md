@@ -249,6 +249,61 @@ backend introspeksi tool yang sama, jadi dikerjakan dalam satu paket:
 - Inspector bisa memanggil tool dengan argumen dan menampilkan hasil/erornya.
 - `check` & `lint` lulus; MCP existing tidak regresi.
 
+## ✅ Checkpoint — Prompt 2 SELESAI (untuk Prompt 3/4)
+
+Implemented in one pass; `bun run check` + `bun run lint` hijau. Ringkasan agar prompt
+berikutnya tahu apa yang sudah ada:
+
+**Storage (migration 048)** — kolom JSON `mcp_servers.tool_overrides`, key = **bare tool
+name**: `{ "<tool>": { enabled?, engines?: { "<EngineType>": false } } }`. Absent = exposed
+everywhere, jadi `{}` kosong = default all-on (no regresi untuk server lama). Queries:
+tipe `McpToolOverride`/`McpToolOverrides` + `updateToolOverrides`.
+
+**Override logic (`backend/mcp/external/tools.ts`, murni)** — `parseToolOverrides`,
+`isToolExposed(overrides, tool, engine?)` (dipakai bridge untuk filter/guard),
+`resolveToolExposure` (expand ke 2 kontrol **independen**: `enabled` global + per-engine
+map, supaya pilihan per-engine tak hilang saat master di-off→on), `pruneToolOverrides`
+(hanya simpan restriksi nyata), `MCP_ENGINES`.
+
+**Enforcement = BRIDGE, satu titik untuk SEMUA engine.** Tiap config builder emit
+`/mcp/ext/<slug>?engine=<engine>` (`external/config.ts` `bridgeUrl`). `remote-server.ts` baca
+query `engine` → `createExternalProxyServer(slug, engine)` yang **filter `tools/list` +
+guard `tools/call`** via `isToolExposed`. Karena enforcement di proxy Clopen (bukan config
+SDK tiap engine), berlaku identik walau engine tak punya tool-allowlist di config. Filter
+mengikat saat initialize → berlaku sepanjang session.
+
+**Introspeksi (`external/proxy.ts`)** — `listExternalServerTools(slug)` /
+`callExternalServerTool(slug, tool, args)` reuse jalur connect+kredensial upstream (client
+short-lived, **tanpa syarat `is_enabled`** jadi bisa dikonfigurasi sebelum server di-on-kan).
+
+**WS (admin-only, `backend/ws/mcp/tools.ts`)** — `mcp:tools` (list live + exposure, refresh
+OAuth dulu spt `mcp:status`), `mcp:set-tool-overrides` (persist ter-prune), `mcp:call-tool`
+(inspector; return raw termasuk `isError` supaya error tool ke-render). `mcp:list` DTO nambah
+`restrictedToolCount` untuk badge.
+
+**Frontend** — store: `fetchTools`/`setToolOverrides`/`callTool` + tipe `McpToolInfo`.
+`McpSettings.svelte`: tombol **Tools** (sliders) per server → modal (master switch = kill
+switch; chip per-engine hanya saat enabled = kontrol terpisah) + **Inspector** (schema view +
+JSON args + result). Deskripsi tool (satu blob tanpa newline) di-render via `Markdown.svelte`
+lewat `formatToolDescription` (re-add header + fence `<example>`). Badge "N restricted".
+
+**Rename UI:** section `'mcp'` **"MCP Servers" → "Connectors"** (icon `lucide:blocks` →
+`lucide:plug`), ikut istilah Claude/ChatGPT/Cursor. Section id + route `mcp:*` + kode
+TETAP `mcp`, hanya label user-facing berubah.
+
+**Keputusan/batasan yang sengaja ditunda (BUKAN bug):**
+1. **Codex `?engine=` UNVERIFIED** — Codex terima bridge URL sbg flag `--config
+   mcp_servers.<n>.url=...`; query `?engine=codex` belum diverifikasi end-to-end di stream
+   Codex live (best-effort, sesuai rambu non-Claude). Claude/OpenCode/Qwen/Copilot fetch URL
+   langsung → filter solid.
+2. **JSON column** dipilih (konsisten dgn args/env/headers/oauth) alih-alih tabel relasi
+   `mcp_server_tools`; **filter di bridge via query-param** alih-alih allowlist config
+   per-engine (SDK tak seragam: Copilot/Qwen include-list, Claude tak ada).
+3. Introspeksi connect upstream tiap panggilan (stdio = spawn subprocess tiap kali),
+   konsisten dgn `probe.ts`.
+4. Prompt 3 (Permissions, artifactType `'permission'`) akan mengambil inventaris tool
+   sebagian dari daftar tool MCP ini.
+
 -----
 
 # Prompt 3 — Permissions / allowlist per engine

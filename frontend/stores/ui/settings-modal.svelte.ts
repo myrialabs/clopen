@@ -72,16 +72,16 @@ export const settingsSections: SettingsSectionMeta[] = [
 	{
 		id: 'engines',
 		label: 'Engines',
-		icon: 'lucide:plug',
+		icon: 'lucide:circuit-board',
 		description: 'Accounts and providers',
 		group: 'extensions',
 		adminOnly: true
 	},
 	{
 		id: 'mcp',
-		label: 'MCP Servers',
-		icon: 'lucide:blocks',
-		description: 'Connect external tools',
+		label: 'Connectors',
+		icon: 'lucide:plug',
+		description: 'Connect external tools (MCP)',
 		group: 'extensions',
 		adminOnly: true
 	},

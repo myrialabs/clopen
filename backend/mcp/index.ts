@@ -76,6 +76,9 @@ export {
 // External catalog + types (used by the WS layer and Settings → MCP)
 export { listRegistryServers, mapRegistryServer } from './external/registry-client';
 export { getEnabledExternalServers, resolveServerRow, remoteNeedsOAuth } from './external/config';
+export { listExternalServerTools, callExternalServerTool } from './external/proxy';
+export { parseToolOverrides, resolveToolExposure, pruneToolOverrides, MCP_ENGINES } from './external/tools';
+export type { ToolExposure } from './external/tools';
 export { probeServer } from './external/probe';
 export type { McpHealth, McpHealthState } from './external/probe';
 export {

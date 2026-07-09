@@ -14,9 +14,26 @@
  */
 
 import { getDatabase } from '../index';
+import type { EngineType } from '$shared/types/unified';
 
 export type McpTransport = 'stdio' | 'http' | 'sse';
 export type McpSource = 'registry' | 'custom' | 'internal';
+
+/**
+ * Per-tool exposure override for one upstream MCP tool. Stored in the
+ * `tool_overrides` JSON column, keyed by the tool's bare name.
+ *   - `enabled: false`            → the tool is hidden from EVERY engine.
+ *   - `engines: { codex: false }` → the tool is hidden from that engine only.
+ * An absent field means "default on", so an absent override (or `{}`) exposes
+ * the tool everywhere — matching the pre-column behaviour.
+ */
+export interface McpToolOverride {
+	enabled?: boolean;
+	engines?: Partial<Record<EngineType, boolean>>;
+}
+
+/** Map of bare tool name → its exposure override. */
+export type McpToolOverrides = Record<string, McpToolOverride>;
 
 /**
  * A single configurable field, captured from the registry catalog at install
@@ -50,6 +67,8 @@ export interface McpServerRow {
 	config_schema: string;
 	/** JSON OAuth state Clopen manages (registration + tokens), or null. */
 	oauth: string | null;
+	/** JSON `McpToolOverrides` — per-tool + per-engine exposure control. Defaults to `'{}'`. */
+	tool_overrides: string;
 	source: McpSource;
 	is_enabled: number;
 	created_at: string;
@@ -161,6 +180,12 @@ export const mcpServerQueries = {
 	setOAuth(id: number, oauth: string | null): void {
 		const db = getDatabase();
 		db.prepare(`UPDATE mcp_servers SET oauth = ? WHERE id = ?`).run(oauth, id);
+	},
+
+	/** Persist the per-tool + per-engine exposure overrides for a server. */
+	updateToolOverrides(id: number, overrides: McpToolOverrides): void {
+		const db = getDatabase();
+		db.prepare(`UPDATE mcp_servers SET tool_overrides = ? WHERE id = ?`).run(JSON.stringify(overrides), id);
 	},
 
 	remove(id: number): void {

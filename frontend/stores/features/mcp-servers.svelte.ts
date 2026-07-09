@@ -41,6 +41,8 @@ export interface InstalledMcpServer {
 	url: string | null;
 	source: string;
 	enabled: boolean;
+	/** Count of tools with a stored exposure restriction (drives a badge). */
+	restrictedToolCount: number;
 	createdAt: string;
 }
 
@@ -94,6 +96,27 @@ export interface ParsedMcpServer {
 	url?: string;
 	fields: ParsedField[];
 	warnings: string[];
+}
+
+/**
+ * One tool exposed by an installed server, with its effective per-engine
+ * exposure resolved from the stored overrides (default: on everywhere).
+ */
+export interface McpToolInfo {
+	name: string;
+	description?: string;
+	/** JSON Schema for the tool's arguments (sanitized by the backend proxy). */
+	inputSchema: unknown;
+	/** Global enable — `false` hides the tool from every engine. */
+	enabled: boolean;
+	/** Per-engine exposure, keyed by `EngineType`. */
+	engines: Record<string, boolean>;
+}
+
+/** The per-tool override shape sent back to `mcp:set-tool-overrides`. */
+export interface McpToolOverride {
+	enabled?: boolean;
+	engines?: Record<string, boolean>;
 }
 
 export interface InstallPayload {
@@ -279,6 +302,34 @@ export const mcpServersStore = {
 			} catch { /* keep polling */ }
 		}
 		checking = { ...checking, [id]: false };
+	},
+
+	// ========================================================================
+	// Per-tool control + inspector
+	// ========================================================================
+
+	/**
+	 * List an installed server's live tools with their resolved per-engine
+	 * exposure. Connects to the upstream server, so it can be slow / throw if the
+	 * server is unreachable — callers show their own loading + error state.
+	 */
+	async fetchTools(id: number): Promise<McpToolInfo[]> {
+		const { tools } = await ws.http('mcp:tools', { id });
+		return tools;
+	},
+
+	/** Persist per-tool + per-engine exposure overrides for a server. */
+	async setToolOverrides(id: number, overrides: Record<string, McpToolOverride>): Promise<void> {
+		await ws.http('mcp:set-tool-overrides', { id, overrides });
+		this.hasPendingChanges = true;
+		// Refresh so the "N restricted" badge reflects the new state.
+		await this.refreshInstalled();
+	},
+
+	/** Inspector: invoke one tool with the given arguments and return its raw result. */
+	async callTool(id: number, tool: string, args: unknown): Promise<unknown> {
+		const { result } = await ws.http('mcp:call-tool', { id, tool, args });
+		return result;
 	},
 
 	/** Probe every enabled, non-internal server (used when the panel opens). */

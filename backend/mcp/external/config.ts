@@ -29,6 +29,7 @@ import { externalNamespace, MCP_TOOL_CALL_TIMEOUT_MS } from '../shared/constants
 import { getMcpServiceToken } from '../internal/service-token';
 import { SERVER_ENV } from '../../utils/env';
 import type { McpServerRow } from '$backend/database/queries';
+import type { EngineType } from '$shared/types/unified';
 import type { ResolvedExternalServer } from './types';
 
 /**
@@ -42,9 +43,16 @@ type CodexMcpServerConfig = {
 	http_headers?: Record<string, string>;
 };
 
-/** Loopback URL of the per-server external proxy bridge for `slug`. */
-function bridgeUrl(slug: string): string {
-	return `http://localhost:${SERVER_ENV.PORT}/mcp/ext/${slug}`;
+/**
+ * Loopback URL of the per-server external proxy bridge for `slug`.
+ *
+ * The `engine` query param identifies the caller so the proxy can apply that
+ * engine's per-tool exposure filter (see `./proxy.ts` / `./tools.ts`). Each
+ * engine's config builder passes its own `EngineType`, giving every engine a
+ * distinct bridge session with its own filtered tool list.
+ */
+function bridgeUrl(slug: string, engine: EngineType): string {
+	return `http://localhost:${SERVER_ENV.PORT}/mcp/ext/${slug}?engine=${engine}`;
 }
 
 /** The service-token bearer header every engine→bridge hop carries. */
@@ -125,7 +133,7 @@ export function remoteNeedsOAuth(s: ResolvedExternalServer): boolean {
 export function getClaudeExternalMcpConfig(): Record<string, McpServerConfig> {
 	const out: Record<string, McpServerConfig> = {};
 	for (const s of getEnabledExternalServers()) {
-		out[s.namespace] = { type: 'http', url: bridgeUrl(s.slug), headers: serviceAuthHeaders() };
+		out[s.namespace] = { type: 'http', url: bridgeUrl(s.slug, 'claude-code'), headers: serviceAuthHeaders() };
 	}
 	logBuilt('Claude', out);
 	return out;
@@ -137,7 +145,7 @@ export function getOpenCodeExternalMcpConfig(): Record<string, McpRemoteConfig> 
 	for (const s of getEnabledExternalServers()) {
 		out[s.namespace] = {
 			type: 'remote',
-			url: bridgeUrl(s.slug),
+			url: bridgeUrl(s.slug, 'opencode'),
 			enabled: true,
 			timeout: MCP_TOOL_CALL_TIMEOUT_MS,
 			headers: serviceAuthHeaders()
@@ -159,7 +167,7 @@ export function getOpenCodeExternalMcpConfig(): Record<string, McpRemoteConfig> 
 export function getCodexExternalMcpConfig(): Record<string, CodexMcpServerConfig> {
 	const out: Record<string, CodexMcpServerConfig> = {};
 	for (const s of getEnabledExternalServers()) {
-		out[s.namespace] = { url: bridgeUrl(s.slug), http_headers: serviceAuthHeaders() };
+		out[s.namespace] = { url: bridgeUrl(s.slug, 'codex'), http_headers: serviceAuthHeaders() };
 	}
 	logBuilt('Codex', out);
 	return out;
@@ -175,7 +183,7 @@ export function getCopilotExternalMcpConfig(): Record<string, CopilotMcpServerCo
 		// discovered servers — the tools never reach the model.
 		out[s.namespace] = {
 			type: 'http',
-			url: bridgeUrl(s.slug),
+			url: bridgeUrl(s.slug, 'copilot'),
 			tools: ['*'],
 			timeout: MCP_TOOL_CALL_TIMEOUT_MS,
 			headers: serviceAuthHeaders()
@@ -190,7 +198,7 @@ export function getQwenExternalMcpConfig(): Record<string, QwenMcpServerConfig> 
 	const out: Record<string, QwenMcpServerConfig> = {};
 	for (const s of getEnabledExternalServers()) {
 		out[s.namespace] = {
-			httpUrl: bridgeUrl(s.slug),
+			httpUrl: bridgeUrl(s.slug, 'qwen'),
 			timeout: MCP_TOOL_CALL_TIMEOUT_MS,
 			trust: true,
 			headers: serviceAuthHeaders()

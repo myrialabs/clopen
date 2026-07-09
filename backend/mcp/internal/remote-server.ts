@@ -25,6 +25,7 @@ import { authQueries } from '$backend/database/queries';
 import { hashToken } from '$backend/auth/tokens';
 import { getAuthMode } from '$backend/auth/auth-service';
 import { isMcpServiceToken } from './service-token';
+import type { EngineType } from '$shared/types/unified';
 
 /** Anything we can `.connect(transport)` — both `McpServer` and low-level `Server`. */
 interface ConnectableServer {
@@ -227,9 +228,16 @@ export async function handleMcpRequest(request: Request): Promise<Response> {
  * Handle an incoming request to an EXTERNAL proxy bridge
  * (`/mcp/ext/<slug>`). Clopen connects to the upstream third-party server and
  * re-exposes its (sanitized) tools, so engines never connect to it directly.
+ *
+ * The `?engine=<engine>` query param (set by each engine's config builder in
+ * `backend/mcp/external/config.ts`) tells the proxy which engine is calling so
+ * it can apply that engine's per-tool exposure filter. It is read from the
+ * initialize request only — the resulting proxy (and its filter) stays bound to
+ * that session, so per-engine filtering holds for the whole connection.
  */
 export async function handleExternalMcpRequest(request: Request, slug: string): Promise<Response> {
-	return handleStreamable(request, `External MCP (${slug})`, () => createExternalProxyServer(slug));
+	const engine = (new URL(request.url).searchParams.get('engine') as EngineType | null) ?? undefined;
+	return handleStreamable(request, `External MCP (${slug}${engine ? `, ${engine}` : ''})`, () => createExternalProxyServer(slug, engine));
 }
 
 /**

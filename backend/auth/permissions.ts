@@ -113,6 +113,11 @@ export const ADMIN_ONLY_ROUTES = new Set([
 	'mcp:status',
 	'mcp:oauth-start',
 	'mcp:oauth-complete',
+	// Per-tool control + inspector — introspects/filters an installed server's
+	// tools and can invoke them, so it stays within the admin-only MCP surface.
+	'mcp:tools',
+	'mcp:set-tool-overrides',
+	'mcp:call-tool',
 	// Agent Skills — creating/importing/installing skills writes to the shared
 	// canonical store and applies to every engine, so the whole surface is
 	// admin-only, mirroring MCP and System Tools.
