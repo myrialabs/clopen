@@ -9,18 +9,24 @@
 
 import { commandQueries } from '$backend/database/queries';
 import { debug } from '$shared/utils/logger';
-import { materializeArtifacts, parseDoc, type ManagedArtifact, type ArtifactEngine } from '$backend/artifacts';
+import { materializeArtifacts, parseDoc, serializeDoc, parseEngineMap, artifactEngineToType, type ManagedArtifact, type ArtifactEngine } from '$backend/artifacts';
 import { artifactFilter } from '$backend/profiles';
 import { readCommandMd } from './store';
 
 /**
- * Shape a command document for the engine's native format:
- *   - Codex custom prompts are PLAIN markdown (no frontmatter) — emit the body.
- *   - Claude / OpenCode read frontmatter (`description`, …) — keep it verbatim.
+ * Shape a command document for the engine's native format, injecting that
+ * engine's model override (per-engine; the canonical `.md` carries no model):
+ *   - Codex custom prompts are PLAIN markdown (no frontmatter, no model) — emit the body.
+ *   - Claude / OpenCode read frontmatter — re-serialize with the injected model.
  */
-function documentForEngine(engine: ArtifactEngine, raw: string): string {
-	if (engine === 'codex') return parseDoc(raw).body;
-	return raw;
+function documentForEngine(engine: ArtifactEngine, raw: string, model?: string): string {
+	const { frontmatter, body } = parseDoc(raw);
+	if (engine === 'codex') return body;
+	const fm: Record<string, string> = {};
+	if (frontmatter.description) fm.description = frontmatter.description;
+	if (frontmatter['argument-hint']) fm['argument-hint'] = frontmatter['argument-hint'];
+	if (model) fm.model = model;
+	return serializeDoc({ frontmatter: fm, body }, ['description', 'argument-hint', 'model']);
 }
 
 function buildCommandsPreamble(items: ManagedArtifact[]): string {
@@ -37,11 +43,13 @@ export async function syncCommands(engine: ArtifactEngine, profileId?: number): 
 		// with no profile filter, only the enabled set applies (unchanged).
 		const rows = (filter ? commandQueries.getAll() : commandQueries.getEnabled())
 			.filter(r => !filter || filter.has(r.slug));
+		const engineType = artifactEngineToType(engine);
 		const enabled: ManagedArtifact[] = [];
 		for (const row of rows) {
 			const raw = await readCommandMd(row.slug);
 			if (raw == null) continue; // file missing on disk — skip silently
-			enabled.push({ slug: row.slug, name: row.name, description: row.description, document: documentForEngine(engine, raw) });
+			const model = parseEngineMap(row.model_by_engine)[engineType];
+			enabled.push({ slug: row.slug, name: row.name, description: row.description, document: documentForEngine(engine, raw, model) });
 		}
 		const managedSlugs = commandQueries.getAll().map(r => r.slug);
 		await materializeArtifacts('command', { engine, scope: 'global' }, {

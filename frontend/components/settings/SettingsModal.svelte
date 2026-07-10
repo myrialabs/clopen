@@ -337,7 +337,11 @@
 										<div class="text-sm text-slate-700 dark:text-slate-300">
 											<p class="font-semibold mb-1">Team management is only available in With Login mode</p>
 											<p class="text-slate-600 dark:text-slate-400">
-												The server is currently running in No Login mode, where a single anonymous user has full access. Switch the auth mode to With Login in Settings &rarr; Security to enable user invites, role assignment, and member removal.
+												The server is currently running in No Login mode, where a single anonymous user has full access. Switch the auth mode to With Login in
+												<button type="button" class="text-violet-600 dark:text-violet-400 hover:underline cursor-pointer font-medium" onclick={() => setActiveSection('security')}>
+													Settings &rarr; Security
+												</button>
+												to enable user invites, role assignment, and member removal.
 											</p>
 										</div>
 									</div>

@@ -5,10 +5,13 @@
 	import Input from '$frontend/components/common/form/Input.svelte';
 	import Modal from '$frontend/components/common/overlay/Modal.svelte';
 	import ArtifactGenerateBar from '$frontend/components/settings/common/ArtifactGenerateBar.svelte';
+	import ArtifactModelField from '$frontend/components/settings/common/ArtifactModelField.svelte';
 	import {
 		commandsStore,
 		type InstalledCommand
 	} from '$frontend/stores/features/commands.svelte';
+	import type { EngineValueMap } from '$frontend/stores/features/artifacts';
+	import { setActiveSection } from '$frontend/stores/ui/settings-modal.svelte';
 	import { debug } from '$shared/utils/logger';
 
 	interface Props {
@@ -47,7 +50,7 @@
 	let edName = $state('');
 	let edDescription = $state('');
 	let edArgumentHint = $state('');
-	let edModel = $state('');
+	let edModelByEngine = $state<EngineValueMap>({});
 	let edBody = $state('');
 	let editorError = $state<string | null>(null);
 	let editorSaving = $state(false);
@@ -58,7 +61,7 @@
 		edName = '';
 		edDescription = '';
 		edArgumentHint = '';
-		edModel = '';
+		edModelByEngine = {};
 		edBody = 'Describe the prompt this command runs. Use $ARGUMENTS for user input.\n';
 		editorError = null;
 		editorOpen = true;
@@ -70,7 +73,7 @@
 		edName = command.name;
 		edDescription = command.description;
 		edArgumentHint = command.argumentHint ?? '';
-		edModel = command.model ?? '';
+		edModelByEngine = { ...command.modelByEngine };
 		edBody = '';
 		editorError = null;
 		editorOpen = true;
@@ -96,7 +99,7 @@
 				name: edName.trim(),
 				description: edDescription.trim(),
 				argumentHint: edArgumentHint.trim() || null,
-				model: edModel.trim() || null,
+				modelByEngine: edModelByEngine,
 				body: edBody
 			};
 			if (editorMode === 'create') await commandsStore.create(payload);
@@ -244,8 +247,8 @@
 						<div class="flex-1 min-w-0">
 							<div class="flex items-center gap-2 flex-wrap">
 								<span class="font-semibold text-slate-900 dark:text-slate-100">/{command.slug}</span>
-								{#if command.model}
-									<span class="text-[10px] px-1.5 py-0.5 rounded bg-slate-100 dark:bg-slate-800 text-slate-500">{command.model}</span>
+								{#if Object.values(command.modelByEngine).some(Boolean)}
+									<span class="text-[10px] px-1.5 py-0.5 rounded bg-slate-100 dark:bg-slate-800 text-slate-500">custom model</span>
 								{/if}
 							</div>
 							{#if command.description}
@@ -304,6 +307,7 @@
 			<ArtifactGenerateBar
 				artifactType="command"
 				placeholder={'Describe the command, e.g. "review a PR for security issues"'}
+				onNavigateArtifacts={() => { closeEditor(); setActiveSection('artifacts'); }}
 				onGenerated={(f) => {
 					if (typeof f.name === 'string') edName = f.name;
 					if (typeof f.description === 'string') edDescription = f.description;
@@ -313,10 +317,8 @@
 			/>
 			<Input label="Name" required type="text" placeholder="e.g. Review PR" bind:value={edName} />
 			<Input label="Description" type="text" placeholder="What this command does" bind:value={edDescription} />
-			<div class="grid grid-cols-2 gap-3">
-				<Input label="Argument hint (optional)" type="text" placeholder="e.g. [pr-number]" bind:value={edArgumentHint} />
-				<Input label="Model (optional)" type="text" placeholder="e.g. claude-sonnet-5" bind:value={edModel} />
-			</div>
+			<Input label="Argument hint (optional)" type="text" placeholder="e.g. [pr-number]" bind:value={edArgumentHint} />
+			<ArtifactModelField value={edModelByEngine} onChange={(v) => (edModelByEngine = v)} />
 			<div class="space-y-1">
 				<p class="block text-sm font-semibold text-slate-700 dark:text-slate-300">Prompt</p>
 				<textarea

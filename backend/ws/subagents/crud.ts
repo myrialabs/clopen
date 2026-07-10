@@ -12,14 +12,16 @@ import { createRouter } from '$shared/utils/ws-server';
 import { debug } from '$shared/utils/logger';
 import { subagentService, detectSubagents, syncSubagentsAllEngines } from '$backend/subagents';
 
+/** EngineType → value map (model id / tool list). {} = inherit / all. */
+const ENGINE_MAP_SCHEMA = t.Record(t.String(), t.String());
+
 const SUBAGENT_SCHEMA = t.Object({
 	id: t.Number(),
 	slug: t.String(),
 	name: t.String(),
 	description: t.String(),
-	tools: t.String(),
-	model: t.Union([t.String(), t.Null()]),
-	agentType: t.Union([t.String(), t.Null()]),
+	toolsByEngine: ENGINE_MAP_SCHEMA,
+	modelByEngine: ENGINE_MAP_SCHEMA,
 	source: t.Union([t.Literal('custom'), t.Literal('imported')]),
 	enabled: t.Boolean(),
 	present: t.Boolean(),
@@ -29,9 +31,8 @@ const SUBAGENT_SCHEMA = t.Object({
 const FIELDS_SCHEMA = {
 	name: t.String(),
 	description: t.String(),
-	tools: t.Optional(t.Union([t.String(), t.Null()])),
-	model: t.Optional(t.Union([t.String(), t.Null()])),
-	agentType: t.Optional(t.Union([t.String(), t.Null()])),
+	toolsByEngine: t.Optional(ENGINE_MAP_SCHEMA),
+	modelByEngine: t.Optional(ENGINE_MAP_SCHEMA),
 	body: t.String()
 };
 
@@ -91,9 +92,8 @@ export const subagentCrudHandler = createRouter()
 		response: t.Object({
 			name: t.String(),
 			description: t.String(),
-			tools: t.String(),
-			model: t.Union([t.String(), t.Null()]),
-			agentType: t.Union([t.String(), t.Null()]),
+			toolsByEngine: ENGINE_MAP_SCHEMA,
+			modelByEngine: ENGINE_MAP_SCHEMA,
 			body: t.String()
 		})
 	}, async ({ data }) => {

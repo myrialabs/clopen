@@ -10,6 +10,7 @@
 
 import ws from '$frontend/utils/ws';
 import { debug } from '$shared/utils/logger';
+import type { EngineValueMap } from '$frontend/stores/features/artifacts';
 
 export interface InstalledCommand {
 	id: number;
@@ -17,7 +18,8 @@ export interface InstalledCommand {
 	name: string;
 	description: string;
 	argumentHint: string | null;
-	model: string | null;
+	/** Per-engine model override (EngineType → model id; absent = inherit). */
+	modelByEngine: EngineValueMap;
 	source: 'custom' | 'imported';
 	enabled: boolean;
 	present: boolean;
@@ -49,7 +51,7 @@ export interface CommandPayload {
 	name: string;
 	description: string;
 	argumentHint?: string | null;
-	model?: string | null;
+	modelByEngine?: EngineValueMap;
 	body: string;
 }
 
@@ -120,7 +122,7 @@ export const commandsStore = {
 		return result.command;
 	},
 
-	async parseImport(text: string): Promise<{ name: string; description: string; argumentHint: string | null; model: string | null; body: string }> {
+	async parseImport(text: string): Promise<{ name: string; description: string; argumentHint: string | null; modelByEngine: EngineValueMap; body: string }> {
 		return ws.http('commands:parse-import', { text });
 	},
 

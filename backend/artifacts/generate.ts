@@ -46,11 +46,9 @@ const SCHEMAS: Record<GeneratableType, Record<string, unknown>> = {
 			name: { type: 'string', description: 'Short human name for the subagent' },
 			description: { type: 'string', description: 'What it does and when to delegate to it' },
 			tools: { type: ['string', 'null'], description: 'Comma-separated tool allowlist (e.g. "Read, Grep, Bash"). Null = all tools.' },
-			model: { type: ['string', 'null'], description: 'Model override id, or null.' },
-			agentType: { type: ['string', 'null'], description: 'Agent type slug (e.g. "code-reviewer"), or null.' },
 			body: { type: 'string', description: 'The subagent system prompt (its role and behavior).' }
 		},
-		required: ['name', 'description', 'tools', 'model', 'agentType', 'body']
+		required: ['name', 'description', 'tools', 'body']
 	},
 	instruction: {
 		type: 'object',
@@ -65,7 +63,7 @@ const SCHEMAS: Record<GeneratableType, Record<string, unknown>> = {
 const GUIDANCE: Record<GeneratableType, string> = {
 	skill: 'Author a reusable Agent Skill. The description must state what it does and when to use it. The body is step-by-step Markdown instructions.',
 	command: 'Author a reusable slash-command prompt. The body is the prompt template; put $ARGUMENTS where the user-supplied text should be inserted.',
-	subagent: 'Author a specialized subagent. The description tells the parent agent when to delegate. The body is the subagent system prompt. Only set tools/model/agentType if the purpose implies them; otherwise null.',
+	subagent: 'Author a specialized subagent. The description tells the parent agent when to delegate. The body is the subagent system prompt. Only set tools if the purpose implies a restricted allowlist; otherwise null.',
 	instruction: 'Author a shared instruction block — concise, imperative directives the agent should always follow. No preamble, just the directives.'
 };
 
@@ -92,7 +90,7 @@ Produce a high-quality draft from this purpose:
 ${purpose.trim()}
 """
 
-Write in the same language as the purpose. Be specific and immediately usable.`;
+Always write the draft in English, regardless of the language of the purpose. Be specific and immediately usable.`;
 
 	debug.log('artifacts', `✨ Generating ${type} draft via ${model.engine}/${model.modelId}`);
 

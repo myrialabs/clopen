@@ -17,7 +17,8 @@ export interface CommandRow {
 	name: string;
 	description: string;
 	argument_hint: string | null;
-	model: string | null;
+	/** JSON map of EngineType → model id ({} = inherit everywhere). */
+	model_by_engine: string;
 	source: CommandSource;
 	is_enabled: number;
 	created_at: string;
@@ -28,7 +29,8 @@ export interface CommandInput {
 	name: string;
 	description: string;
 	argumentHint?: string | null;
-	model?: string | null;
+	/** JSON string: EngineType → model id. */
+	modelByEngine?: string;
 	source?: CommandSource;
 }
 
@@ -51,23 +53,23 @@ export const commandQueries = {
 
 	insert(input: CommandInput): CommandRow {
 		const result = getDatabase().prepare(
-			`INSERT INTO commands (slug, name, description, argument_hint, model, source)
+			`INSERT INTO commands (slug, name, description, argument_hint, model_by_engine, source)
 			 VALUES (?, ?, ?, ?, ?, ?)`
 		).run(
 			input.slug,
 			input.name,
 			input.description,
 			input.argumentHint ?? null,
-			input.model ?? null,
+			input.modelByEngine ?? '{}',
 			input.source ?? 'custom'
 		) as { lastInsertRowid: number | bigint };
 		return this.getById(Number(result.lastInsertRowid))!;
 	},
 
-	updateMeta(id: number, name: string, description: string, argumentHint: string | null, model: string | null): void {
+	updateMeta(id: number, name: string, description: string, argumentHint: string | null, modelByEngine: string): void {
 		getDatabase().prepare(
-			`UPDATE commands SET name = ?, description = ?, argument_hint = ?, model = ? WHERE id = ?`
-		).run(name, description, argumentHint, model, id);
+			`UPDATE commands SET name = ?, description = ?, argument_hint = ?, model_by_engine = ? WHERE id = ?`
+		).run(name, description, argumentHint, modelByEngine, id);
 	},
 
 	setEnabled(id: number, enabled: boolean): void {

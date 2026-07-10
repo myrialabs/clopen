@@ -52,6 +52,8 @@ import * as migration050 from './050_create_profiles_tables';
 import * as migration051 from './051_add_profile_to_sessions';
 import * as migration052 from './052_add_default_profile_to_projects';
 import * as migration053 from './053_add_profile_to_permission_sets';
+import * as migration054 from './054_drop_subagent_agent_type';
+import * as migration055 from './055_artifact_model_tools_per_engine';
 
 // Export all migrations in order
 export const migrations = [
@@ -372,6 +374,18 @@ export const migrations = [
 		description: migration053.description,
 		up: migration053.up,
 		down: migration053.down
+	},
+	{
+		id: '054',
+		description: migration054.description,
+		up: migration054.up,
+		down: migration054.down
+	},
+	{
+		id: '055',
+		description: migration055.description,
+		up: migration055.up,
+		down: migration055.down
 	}
 ];
 

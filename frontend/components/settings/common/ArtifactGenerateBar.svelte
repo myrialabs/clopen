@@ -8,9 +8,11 @@
 		placeholder?: string;
 		/** Called with the generated fields (shape depends on artifactType). */
 		onGenerated: (fields: Record<string, unknown>) => void;
+		/** Invoked when the "Settings → Models → Artifacts" link is clicked. */
+		onNavigateArtifacts?: () => void;
 	}
 
-	const { artifactType, placeholder = 'Describe what you want, e.g. "review a PR for security issues"', onGenerated }: Props = $props();
+	const { artifactType, placeholder = 'Describe what you want, e.g. "review a PR for security issues"', onGenerated, onNavigateArtifacts }: Props = $props();
 
 	let purpose = $state('');
 	let generating = $state(false);
@@ -52,10 +54,21 @@
 		<div class="flex items-start justify-between gap-3">
 			<div class="text-[11px] text-slate-400 leading-relaxed">
 				<p>Fills the fields below — review before saving.</p>
-				<p>Uses the model set in Settings → Models → Artifacts.</p>
+				<p>
+					Uses the model set in
+					{#if onNavigateArtifacts}
+						<button type="button" class="text-violet-600 dark:text-violet-400 hover:underline cursor-pointer font-medium" onclick={onNavigateArtifacts}>
+							Settings &rarr; Models &rarr; Artifacts
+						</button>.
+					{:else}
+						Settings &rarr; Models &rarr; Artifacts.
+					{/if}
+				</p>
 			</div>
-			<Button variant="primary" size="sm" class="gap-1.5 shrink-0" loading={generating} disabled={!purpose.trim()} onclick={run}>
-					<Icon name="lucide:wand-sparkles" class="w-4 h-4" />
+			<Button variant="primary" size="sm" class="gap-1.5 shrink-0" loading={generating} disabled={generating || !purpose.trim()} onclick={run}>
+					{#if !generating}
+						<Icon name="lucide:wand-sparkles" class="w-4 h-4" />
+					{/if}
 					Generate
 				</Button>
 		</div>

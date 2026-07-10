@@ -5,10 +5,14 @@
 	import Input from '$frontend/components/common/form/Input.svelte';
 	import Modal from '$frontend/components/common/overlay/Modal.svelte';
 	import ArtifactGenerateBar from '$frontend/components/settings/common/ArtifactGenerateBar.svelte';
+	import ArtifactModelField from '$frontend/components/settings/common/ArtifactModelField.svelte';
+	import ArtifactToolsField from '$frontend/components/settings/common/ArtifactToolsField.svelte';
 	import {
 		subagentsStore,
 		type InstalledSubagent
 	} from '$frontend/stores/features/subagents.svelte';
+	import type { EngineValueMap } from '$frontend/stores/features/artifacts';
+	import { setActiveSection } from '$frontend/stores/ui/settings-modal.svelte';
 	import { debug } from '$shared/utils/logger';
 
 	interface Props {
@@ -47,9 +51,8 @@
 	let editorId = $state<number | null>(null);
 	let edName = $state('');
 	let edDescription = $state('');
-	let edTools = $state('');
-	let edModel = $state('');
-	let edAgentType = $state('');
+	let edToolsByEngine = $state<EngineValueMap>({});
+	let edModelByEngine = $state<EngineValueMap>({});
 	let edBody = $state('');
 	let editorError = $state<string | null>(null);
 	let editorSaving = $state(false);
@@ -59,9 +62,8 @@
 		editorId = null;
 		edName = '';
 		edDescription = '';
-		edTools = '';
-		edModel = '';
-		edAgentType = '';
+		edToolsByEngine = {};
+		edModelByEngine = {};
 		edBody = '# Role\n\nDescribe the subagent\'s role and how it should behave.\n';
 		editorError = null;
 		editorOpen = true;
@@ -72,9 +74,8 @@
 		editorId = subagent.id;
 		edName = subagent.name;
 		edDescription = subagent.description;
-		edTools = subagent.tools;
-		edModel = subagent.model ?? '';
-		edAgentType = subagent.agentType ?? '';
+		edToolsByEngine = { ...subagent.toolsByEngine };
+		edModelByEngine = { ...subagent.modelByEngine };
 		edBody = '';
 		editorError = null;
 		editorOpen = true;
@@ -100,9 +101,8 @@
 			const payload = {
 				name: edName.trim(),
 				description: edDescription.trim(),
-				tools: edTools.trim() || null,
-				model: edModel.trim() || null,
-				agentType: edAgentType.trim() || null,
+				toolsByEngine: edToolsByEngine,
+				modelByEngine: edModelByEngine,
 				body: edBody
 			};
 			if (editorMode === 'create') await subagentsStore.create(payload);
@@ -250,18 +250,15 @@
 						<div class="flex-1 min-w-0">
 							<div class="flex items-center gap-2 flex-wrap">
 								<span class="font-semibold text-slate-900 dark:text-slate-100">{subagent.name}</span>
-								{#if subagent.model}
-									<span class="text-[10px] px-1.5 py-0.5 rounded bg-slate-100 dark:bg-slate-800 text-slate-500">{subagent.model}</span>
+								{#if Object.values(subagent.modelByEngine).some(Boolean)}
+									<span class="text-[10px] px-1.5 py-0.5 rounded bg-slate-100 dark:bg-slate-800 text-slate-500">custom model</span>
 								{/if}
-								{#if subagent.agentType}
-									<span class="text-[10px] px-1.5 py-0.5 rounded bg-violet-500/10 text-violet-600 dark:text-violet-400">{subagent.agentType}</span>
+								{#if Object.values(subagent.toolsByEngine).some(v => v && v.trim())}
+									<span class="text-[10px] px-1.5 py-0.5 rounded bg-slate-100 dark:bg-slate-800 text-slate-500">scoped tools</span>
 								{/if}
 							</div>
 							{#if subagent.description}
 								<p class="text-xs text-slate-500 dark:text-slate-400 mt-1.5 line-clamp-2">{subagent.description}</p>
-							{/if}
-							{#if subagent.tools}
-								<p class="text-[11px] text-slate-400 mt-1 truncate">tools: {subagent.tools}</p>
 							{/if}
 							{#if !subagent.present}
 								<p class="inline-flex items-center gap-1 text-[11px] font-semibold text-amber-600 dark:text-amber-400 mt-1.5">
@@ -315,12 +312,11 @@
 			<ArtifactGenerateBar
 				artifactType="subagent"
 				placeholder={'Describe the subagent, e.g. "reviews diffs for correctness bugs"'}
+				onNavigateArtifacts={() => { closeEditor(); setActiveSection('artifacts'); }}
 				onGenerated={(f) => {
 					if (typeof f.name === 'string') edName = f.name;
 					if (typeof f.description === 'string') edDescription = f.description;
-					if (typeof f.tools === 'string') edTools = f.tools;
-					if (typeof f.model === 'string') edModel = f.model;
-					if (typeof f.agentType === 'string') edAgentType = f.agentType;
+					if (typeof f.tools === 'string' && f.tools.trim()) edToolsByEngine = { ...edToolsByEngine, 'claude-code': f.tools };
 					if (typeof f.body === 'string') edBody = f.body;
 				}}
 			/>
@@ -329,14 +325,8 @@
 				<Input label="Description" required type="text" placeholder="What it does and when to delegate to it" bind:value={edDescription} />
 				<p class="text-[11px] text-slate-400">Stated to the parent agent so it knows when to delegate (max 1024 chars).</p>
 			</div>
-			<div class="grid grid-cols-2 gap-3">
-				<Input label="Model (optional)" type="text" placeholder="e.g. claude-sonnet-5" bind:value={edModel} />
-				<Input label="Agent type (optional)" type="text" placeholder="e.g. code-reviewer" bind:value={edAgentType} />
-			</div>
-			<div class="space-y-1">
-				<Input label="Tool allowlist (optional)" type="text" placeholder="e.g. Read, Grep, Bash" bind:value={edTools} />
-				<p class="text-[11px] text-slate-400">Comma-separated. Leave empty to allow all tools.</p>
-			</div>
+			<ArtifactModelField value={edModelByEngine} onChange={(v) => (edModelByEngine = v)} />
+			<ArtifactToolsField value={edToolsByEngine} onChange={(v) => (edToolsByEngine = v)} />
 			<div class="space-y-1">
 				<p class="block text-sm font-semibold text-slate-700 dark:text-slate-300">System prompt</p>
 				<textarea

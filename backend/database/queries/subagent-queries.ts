@@ -2,10 +2,11 @@
  * Subagent Queries
  *
  * CRUD for user-managed custom Subagents (Settings → Subagents). Subagents are
- * Skills-shaped (a Markdown document with frontmatter) plus three extra fields:
- * a tool allowlist, a model override, and an agent type. The `subagents` table
- * holds metadata + the enable toggle; the document lives on disk under
- * `{clopenDir}/subagents/<slug>.md` (see `backend/subagents/store.ts`).
+ * Skills-shaped (a Markdown document with frontmatter) plus a per-engine tool
+ * allowlist and per-engine model override (stored as JSON maps keyed by
+ * EngineType). The `subagents` table holds metadata + the enable toggle; the
+ * document body lives on disk under `{clopenDir}/subagents/<slug>.md` (see
+ * `backend/subagents/store.ts`).
  */
 
 import { getDatabase } from '../index';
@@ -17,10 +18,10 @@ export interface SubagentRow {
 	slug: string;
 	name: string;
 	description: string;
-	/** Comma-separated tool allowlist (empty/null = all tools). */
-	tools: string | null;
-	model: string | null;
-	agent_type: string | null;
+	/** JSON map of EngineType → comma-separated tool allowlist ({} = all tools). */
+	tools_by_engine: string;
+	/** JSON map of EngineType → model id ({} = inherit everywhere). */
+	model_by_engine: string;
 	source: SubagentSource;
 	is_enabled: number;
 	created_at: string;
@@ -30,9 +31,10 @@ export interface SubagentInput {
 	slug: string;
 	name: string;
 	description: string;
-	tools?: string | null;
-	model?: string | null;
-	agentType?: string | null;
+	/** JSON string: EngineType → comma-separated tool allowlist. */
+	toolsByEngine?: string;
+	/** JSON string: EngineType → model id. */
+	modelByEngine?: string;
 	source?: SubagentSource;
 }
 
@@ -55,15 +57,14 @@ export const subagentQueries = {
 
 	insert(input: SubagentInput): SubagentRow {
 		const result = getDatabase().prepare(
-			`INSERT INTO subagents (slug, name, description, tools, model, agent_type, source)
-			 VALUES (?, ?, ?, ?, ?, ?, ?)`
+			`INSERT INTO subagents (slug, name, description, tools_by_engine, model_by_engine, source)
+			 VALUES (?, ?, ?, ?, ?, ?)`
 		).run(
 			input.slug,
 			input.name,
 			input.description,
-			input.tools ?? null,
-			input.model ?? null,
-			input.agentType ?? null,
+			input.toolsByEngine ?? '{}',
+			input.modelByEngine ?? '{}',
 			input.source ?? 'custom'
 		) as { lastInsertRowid: number | bigint };
 		return this.getById(Number(result.lastInsertRowid))!;
@@ -73,13 +74,12 @@ export const subagentQueries = {
 		id: number,
 		name: string,
 		description: string,
-		tools: string | null,
-		model: string | null,
-		agentType: string | null
+		toolsByEngine: string,
+		modelByEngine: string
 	): void {
 		getDatabase().prepare(
-			`UPDATE subagents SET name = ?, description = ?, tools = ?, model = ?, agent_type = ? WHERE id = ?`
-		).run(name, description, tools, model, agentType, id);
+			`UPDATE subagents SET name = ?, description = ?, tools_by_engine = ?, model_by_engine = ? WHERE id = ?`
+		).run(name, description, toolsByEngine, modelByEngine, id);
 	},
 
 	setEnabled(id: number, enabled: boolean): void {

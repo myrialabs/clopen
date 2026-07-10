@@ -9,25 +9,34 @@
 
 import { subagentQueries } from '$backend/database/queries';
 import { debug } from '$shared/utils/logger';
-import { materializeArtifacts, parseDoc, serializeDoc, type ManagedArtifact, type ArtifactEngine } from '$backend/artifacts';
+import { materializeArtifacts, parseDoc, serializeDoc, parseEngineMap, artifactEngineToType, type ManagedArtifact, type ArtifactEngine } from '$backend/artifacts';
 import { artifactFilter } from '$backend/profiles';
 import { readSubagentMd } from './store';
 
 /**
- * Shape a subagent document for the engine's native format.
+ * Shape a subagent document for the engine's native format, injecting that
+ * engine's own model/tool override (both are per-engine; the canonical `.md`
+ * carries neither).
+ *   - Claude reads a comma-list `tools` and a `model` in frontmatter.
  *   - OpenCode agents need `mode: subagent` and express `tools` as a map (not the
- *     Claude comma-list); we emit description + mode + model and drop our
- *     Claude-shaped `tools`/`name`/`agent-type` keys rather than mistranslate them.
- *     See https://opencode.ai/docs/agents.
- *   - Claude reads our document verbatim.
+ *     Claude comma-list); we emit description + mode + model and drop `tools`
+ *     rather than mistranslate the allowlist. See https://opencode.ai/docs/agents.
+ *   - Other engines fall back to a synthetic preamble that ignores the document.
  */
-function documentForEngine(engine: ArtifactEngine, raw: string): string {
-	if (engine !== 'opencode') return raw;
+function documentForEngine(engine: ArtifactEngine, raw: string, model?: string, tools?: string): string {
 	const { frontmatter, body } = parseDoc(raw);
-	const fm: Record<string, string> = { mode: 'subagent' };
+	if (engine === 'opencode') {
+		const fm: Record<string, string> = { mode: 'subagent' };
+		if (frontmatter.description) fm.description = frontmatter.description;
+		if (model) fm.model = model;
+		return serializeDoc({ frontmatter: fm, body }, ['description', 'mode', 'model']);
+	}
+	// Claude (and the default): re-serialize with the injected model/tools.
+	const fm: Record<string, string> = { name: frontmatter.name };
 	if (frontmatter.description) fm.description = frontmatter.description;
-	if (frontmatter.model) fm.model = frontmatter.model;
-	return serializeDoc({ frontmatter: fm, body }, ['description', 'mode', 'model']);
+	if (tools) fm.tools = tools;
+	if (model) fm.model = model;
+	return serializeDoc({ frontmatter: fm, body }, ['name', 'description', 'tools', 'model']);
 }
 
 function buildSubagentsPreamble(items: ManagedArtifact[]): string {
@@ -44,11 +53,14 @@ export async function syncSubagents(engine: ArtifactEngine, profileId?: number):
 		// with no profile filter, only the enabled set applies (unchanged).
 		const rows = (filter ? subagentQueries.getAll() : subagentQueries.getEnabled())
 			.filter(r => !filter || filter.has(r.slug));
+		const engineType = artifactEngineToType(engine);
 		const enabled: ManagedArtifact[] = [];
 		for (const row of rows) {
 			const raw = await readSubagentMd(row.slug);
 			if (raw == null) continue;
-			enabled.push({ slug: row.slug, name: row.name, description: row.description, document: documentForEngine(engine, raw) });
+			const model = parseEngineMap(row.model_by_engine)[engineType];
+			const tools = parseEngineMap(row.tools_by_engine)[engineType];
+			enabled.push({ slug: row.slug, name: row.name, description: row.description, document: documentForEngine(engine, raw, model, tools) });
 		}
 		const managedSlugs = subagentQueries.getAll().map(r => r.slug);
 		await materializeArtifacts('subagent', { engine, scope: 'global' }, {

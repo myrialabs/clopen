@@ -5,7 +5,7 @@
  */
 
 import { commandQueries, type CommandRow } from '$backend/database/queries';
-import { parseDoc, serializeDoc, uniqueSlug } from '$backend/artifacts';
+import { parseDoc, serializeDoc, uniqueSlug, parseEngineMap, stringifyEngineMap, type EngineMap } from '$backend/artifacts';
 import { debug } from '$shared/utils/logger';
 import {
 	writeCommandMd,
@@ -20,7 +20,8 @@ export interface CommandDTO {
 	name: string;
 	description: string;
 	argumentHint: string | null;
-	model: string | null;
+	/** Per-engine model override (EngineType → model id; absent = inherit). */
+	modelByEngine: EngineMap;
 	source: 'custom' | 'imported';
 	enabled: boolean;
 	/** False when the DB row exists but its `.md` is missing on disk. */
@@ -32,11 +33,11 @@ export interface CommandInputFields {
 	name: string;
 	description: string;
 	argumentHint?: string | null;
-	model?: string | null;
+	modelByEngine?: EngineMap;
 	body: string;
 }
 
-const FRONTMATTER_ORDER = ['description', 'argument-hint', 'model'];
+const FRONTMATTER_ORDER = ['description', 'argument-hint'];
 
 function toDTO(row: CommandRow, present: boolean): CommandDTO {
 	return {
@@ -45,7 +46,7 @@ function toDTO(row: CommandRow, present: boolean): CommandDTO {
 		name: row.name,
 		description: row.description,
 		argumentHint: row.argument_hint,
-		model: row.model,
+		modelByEngine: parseEngineMap(row.model_by_engine),
 		source: row.source,
 		enabled: row.is_enabled === 1,
 		present,
@@ -53,12 +54,19 @@ function toDTO(row: CommandRow, present: boolean): CommandDTO {
 	};
 }
 
-/** Serialize editor fields into a command `.md` document. */
+/** An imported `.md` carries a single Claude-shaped model → map to the claude slot. */
+function singleModelToMap(model: string | undefined): EngineMap {
+	return model?.trim() ? { 'claude-code': model.trim() } : {};
+}
+
+/**
+ * Serialize editor fields into the canonical command `.md` document. Model is
+ * per-engine and injected at sync time, so it is NOT written here.
+ */
 function buildDocument(fields: CommandInputFields): string {
 	const frontmatter: Record<string, string> = {};
 	if (fields.description.trim()) frontmatter.description = fields.description.trim();
 	if (fields.argumentHint?.trim()) frontmatter['argument-hint'] = fields.argumentHint.trim();
-	if (fields.model?.trim()) frontmatter.model = fields.model.trim();
 	return serializeDoc({ frontmatter, body: fields.body }, FRONTMATTER_ORDER);
 }
 
@@ -107,7 +115,7 @@ export const commandService = {
 			name: input.name.trim(),
 			description: input.description.trim(),
 			argumentHint: input.argumentHint?.trim() || null,
-			model: input.model?.trim() || null,
+			modelByEngine: stringifyEngineMap(input.modelByEngine),
 			source: 'custom'
 		});
 		debug.log('commands', `📦 Created command: ${slug}`);
@@ -123,20 +131,20 @@ export const commandService = {
 			input.name.trim(),
 			input.description.trim(),
 			input.argumentHint?.trim() || null,
-			input.model?.trim() || null
+			stringifyEngineMap(input.modelByEngine)
 		);
 		debug.log('commands', `🔧 Updated command: ${row.slug}`);
 		return toDTO(commandQueries.getById(id)!, true);
 	},
 
 	/** Preview a pasted command `.md` (its frontmatter + body) before importing. */
-	parsePreview(raw: string): { name: string; description: string; argumentHint: string | null; model: string | null; body: string } {
+	parsePreview(raw: string): { name: string; description: string; argumentHint: string | null; modelByEngine: EngineMap; body: string } {
 		const parsed = parseDoc(raw);
 		return {
 			name: parsed.frontmatter.name || '',
 			description: parsed.frontmatter.description || '',
 			argumentHint: parsed.frontmatter['argument-hint'] || null,
-			model: parsed.frontmatter.model || null,
+			modelByEngine: singleModelToMap(parsed.frontmatter.model),
 			body: parsed.body
 		};
 	},
@@ -148,7 +156,7 @@ export const commandService = {
 			name: displayName,
 			description: parsed.frontmatter.description || '',
 			argumentHint: parsed.frontmatter['argument-hint'] || null,
-			model: parsed.frontmatter.model || null,
+			modelByEngine: singleModelToMap(parsed.frontmatter.model),
 			body: parsed.body
 		});
 	},

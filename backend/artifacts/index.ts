@@ -28,5 +28,7 @@ export { markersFor, writeManagedBlock, readManagedBlock, stripManagedBlock } fr
 export { parseDoc, serializeDoc } from './frontmatter';
 export type { ParsedDoc } from './frontmatter';
 export { slugify, uniqueSlug, isValidSlug } from './slug';
+export { parseEngineMap, stringifyEngineMap, artifactEngineToType, normalizeToolList } from './engine-map';
+export type { EngineMap } from './engine-map';
 export { generateArtifact } from './generate';
 export type { GeneratableType, GenerateModel } from './generate';

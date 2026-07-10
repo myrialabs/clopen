@@ -14,13 +14,16 @@ import { debug } from '$shared/utils/logger';
 import { commandService, detectCommands, syncCommandsAllEngines } from '$backend/commands';
 import { resolveActiveProfileId, artifactFilter } from '$backend/profiles';
 
+/** EngineType → value map (model id / tool list). {} = inherit / all. */
+const ENGINE_MAP_SCHEMA = t.Record(t.String(), t.String());
+
 const COMMAND_SCHEMA = t.Object({
 	id: t.Number(),
 	slug: t.String(),
 	name: t.String(),
 	description: t.String(),
 	argumentHint: t.Union([t.String(), t.Null()]),
-	model: t.Union([t.String(), t.Null()]),
+	modelByEngine: ENGINE_MAP_SCHEMA,
 	source: t.Union([t.Literal('custom'), t.Literal('imported')]),
 	enabled: t.Boolean(),
 	present: t.Boolean(),
@@ -31,7 +34,7 @@ const FIELDS_SCHEMA = {
 	name: t.String(),
 	description: t.String(),
 	argumentHint: t.Optional(t.Union([t.String(), t.Null()])),
-	model: t.Optional(t.Union([t.String(), t.Null()])),
+	modelByEngine: t.Optional(ENGINE_MAP_SCHEMA),
 	body: t.String()
 };
 
@@ -90,7 +93,7 @@ export const commandCrudHandler = createRouter()
 			name: t.String(),
 			description: t.String(),
 			argumentHint: t.Union([t.String(), t.Null()]),
-			model: t.Union([t.String(), t.Null()]),
+			modelByEngine: ENGINE_MAP_SCHEMA,
 			body: t.String()
 		})
 	}, async ({ data }) => {

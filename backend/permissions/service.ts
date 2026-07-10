@@ -15,7 +15,7 @@ import { ENGINES } from '$shared/constants/engines';
 import { ENGINE_BUILTIN_TOOLS, ENGINE_TOOLS_BEST_EFFORT } from '$shared/constants/engine-tools';
 import { permissionSetQueries, subagentQueries, type PermissionScope } from '$backend/database/queries';
 import { getEnabledExternalServers, listExternalServerTools } from '$backend/mcp';
-import { isBestEffortTarget } from '$backend/artifacts';
+import { isBestEffortTarget, parseEngineMap } from '$backend/artifacts';
 import { debug } from '$shared/utils/logger';
 import { mergeLayers, pickEngineSet, isToolAllowed, hasAnyRestriction, type ResolvedPermissions } from './resolve';
 
@@ -147,12 +147,14 @@ export const permissionService = {
 			}
 		}
 
-		// Subagent allowlists — the tools individual subagents are scoped to.
+		// Subagent allowlists — the tools individual subagents are scoped to
+		// (tools are per-engine now; union every engine's allowlist).
 		const subagentSet = new Set<string>();
 		for (const row of subagentQueries.getAll()) {
-			if (!row.tools) continue;
-			for (const name of row.tools.split(/[\s,]+/).map(t => t.trim()).filter(Boolean)) {
-				subagentSet.add(name);
+			for (const list of Object.values(parseEngineMap(row.tools_by_engine))) {
+				for (const name of list.split(/[\s,]+/).map(t => t.trim()).filter(Boolean)) {
+					subagentSet.add(name);
+				}
 			}
 		}
 

@@ -2,24 +2,25 @@
  * Subagents Store
  *
  * Reactive store for Settings → Subagents. Manages user-defined specialized
- * agent definitions (Skills-shaped + tool allowlist / model override / agent
- * type) and surfaces on-disk detection. Each engine materializes the enabled set
- * at stream start (native agents dir for Claude, a synthetic preamble for the
- * rest).
+ * agent definitions (Skills-shaped + tool allowlist / model override) and
+ * surfaces on-disk detection. Each engine materializes the enabled set at stream
+ * start (native agents dir for Claude, a synthetic preamble for the rest).
  */
 
 import ws from '$frontend/utils/ws';
 import { debug } from '$shared/utils/logger';
 import type { DetectedGroup } from './commands.svelte';
+import type { EngineValueMap } from '$frontend/stores/features/artifacts';
 
 export interface InstalledSubagent {
 	id: number;
 	slug: string;
 	name: string;
 	description: string;
-	tools: string;
-	model: string | null;
-	agentType: string | null;
+	/** Per-engine tool allowlist (EngineType → comma list; absent = all tools). */
+	toolsByEngine: EngineValueMap;
+	/** Per-engine model override (EngineType → model id; absent = inherit). */
+	modelByEngine: EngineValueMap;
 	source: 'custom' | 'imported';
 	enabled: boolean;
 	present: boolean;
@@ -29,9 +30,8 @@ export interface InstalledSubagent {
 export interface SubagentPayload {
 	name: string;
 	description: string;
-	tools?: string | null;
-	model?: string | null;
-	agentType?: string | null;
+	toolsByEngine?: EngineValueMap;
+	modelByEngine?: EngineValueMap;
 	body: string;
 }
 

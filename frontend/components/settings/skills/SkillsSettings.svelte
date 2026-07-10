@@ -11,6 +11,7 @@
 		type MarketplaceSkill,
 		type ParsedSkillPreview
 	} from '$frontend/stores/features/skills.svelte';
+	import { setActiveSection } from '$frontend/stores/ui/settings-modal.svelte';
 	import { debug } from '$shared/utils/logger';
 
 	interface Props {
@@ -540,6 +541,7 @@
 			<ArtifactGenerateBar
 				artifactType="skill"
 				placeholder={'Describe the skill, e.g. "extract tables from PDF files"'}
+				onNavigateArtifacts={() => { closeEditor(); setActiveSection('artifacts'); }}
 				onGenerated={(f) => {
 					if (typeof f.name === 'string') edName = f.name;
 					if (typeof f.description === 'string') edDescription = f.description;
@@ -551,7 +553,6 @@
 				<Input label="Description" required type="text" placeholder="What it does and when to use it" bind:value={edDescription} />
 				<p class="text-[11px] text-slate-400">Stated to the agent up front — describe what the skill does and when to use it (max 1024 chars).</p>
 			</div>
-			<Input label="License (optional)" type="text" placeholder="e.g. Apache-2.0" bind:value={edLicense} />
 			<div class="space-y-1">
 				<p class="block text-sm font-semibold text-slate-700 dark:text-slate-300">Instructions</p>
 				<textarea
@@ -588,7 +589,6 @@
 					<Input label="Description" required type="text" placeholder="What it does and when to use it" bind:value={inDescription} />
 					<p class="text-[11px] text-slate-400">Stated to the agent up front — what the skill does and when to use it (max 1024 chars).</p>
 				</div>
-				<Input label="License (optional)" type="text" placeholder="e.g. Apache-2.0" bind:value={inLicense} />
 				<div class="space-y-1">
 					<p class="block text-sm font-semibold text-slate-700 dark:text-slate-300">Instructions</p>
 					<textarea
