@@ -49,10 +49,7 @@
 	let isTouchDevice = $state(false);
 
 	// Track current branch name reactively
-	let currentBranch = $state('...');
-	$effect(() => {
-		currentBranch = gitPanelRef?.panelActions?.getBranchInfo()?.current || '...';
-	});
+	const currentBranch = $derived(gitPanelRef?.panelActions?.getBranchInfo()?.current || '...');
 
 	// Chat session users (other users in the same chat session, excluding self)
 	const chatSessionUsers = $derived.by(() => {

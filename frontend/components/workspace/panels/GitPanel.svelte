@@ -315,6 +315,7 @@
 	let nestedSavingRemote = $state<Record<string, boolean>>({});
 	let nestedFetchingRemote = $state<Record<string, string | null>>({});
 	let nestedActiveRemotes = $state<Record<string, string>>({});
+	let nestedRemotesList = $state<Record<string, GitRemote[]>>({});
 	const MIN_NESTED_REPO_HEIGHT = 250;
 	const MAX_NESTED_REPO_HEIGHT = 500;
 
@@ -638,6 +639,10 @@
 		nestedBranchesSubTabs = { ...nestedBranchesSubTabs, [relPath]: value };
 		nestedSearchQueries = { ...nestedSearchQueries, [relPath]: '' };
 		nestedRemoteSearchQueries = { ...nestedRemoteSearchQueries, [relPath]: '' };
+		if (value === 'remote' && !nestedRemotesList[relPath]) {
+			const nested = branchInfo?.nested?.find(n => n.relPath === relPath);
+			if (nested) void loadNestedRemotes(nested);
+		}
 	}
 	function toggleNestedCreateForm(relPath: string) {
 		nestedShowCreateForm = { ...nestedShowCreateForm, [relPath]: !nestedShowCreateForm[relPath] };
@@ -691,6 +696,8 @@
 	function getNestedSelectedRemote(nested: GitNestedRepoInfo): string {
 		const subRemotes = nestedRemoteNames(nested);
 		if (subRemotes.length === 0) return 'origin';
+		const active = nestedActiveRemotes[nested.relPath];
+		if (active && subRemotes.includes(active)) return active;
 		if (subRemotes.includes(selectedRemote)) return selectedRemote;
 		return subRemotes[0];
 	}
@@ -785,6 +792,7 @@
 			nestedNewRemoteUrls = { ...nestedNewRemoteUrls, [relPath]: '' };
 			nestedShowAddRemoteForm = { ...nestedShowAddRemoteForm, [relPath]: false };
 			await loadBranches();
+			if (nested) await loadNestedRemotes(nested);
 		} catch (err) {
 			debug.error('git', 'Failed to add remote:', err);
 			showInfo('Add remote failed', (err as Error).message);
@@ -807,7 +815,7 @@
 			nestedEditingRemote = { ...nestedEditingRemote, [relPath]: null };
 			nestedEditRemoteNames = { ...nestedEditRemoteNames, [relPath]: '' };
 			nestedEditRemoteUrls = { ...nestedEditRemoteUrls, [relPath]: '' };
-			await Promise.all([loadBranches()]);
+			await Promise.all([loadBranches(), nested ? loadNestedRemotes(nested) : Promise.resolve()]);
 		} catch (err) {
 			debug.error('git', 'Failed to update remote:', err);
 			showInfo('Update failed', (err as Error).message);
@@ -828,6 +836,7 @@
 					const nested = branchInfo?.nested?.find(n => n.relPath === relPath);
 					await ws.http('git:remove-remote', { projectId, name, repoPath: nested?.path });
 					await loadBranches();
+					if (nested) await loadNestedRemotes(nested);
 				} catch (err) {
 					debug.error('git', 'Failed to remove remote:', err);
 				}
@@ -1169,6 +1178,16 @@
 			}
 		} catch (err) {
 			debug.error('git', 'Failed to load remotes:', err);
+		}
+	}
+
+	async function loadNestedRemotes(nested: GitNestedRepoInfo) {
+		if (!projectId) return;
+		try {
+			const list = await ws.http('git:remotes', { projectId, repoPath: nested.path });
+			nestedRemotesList = { ...nestedRemotesList, [nested.relPath]: list };
+		} catch (err) {
+			debug.error('git', 'Failed to load nested remotes:', err);
 		}
 	}
 
@@ -2207,7 +2226,7 @@
 						: pushedBranchNames;
 					if (pushed.has(oldName)) {
 						const remote = getDefaultRemote(repoPath);
-						await ws.http('git:push', { projectId, branch: newName, repoPath });
+						await ws.http('git:push', { projectId, branch: newName, remote, repoPath });
 						await ws.http('git:delete-remote-branch', { projectId, remote, branch: oldName, repoPath });
 						showInfo('Branch Renamed', `"${oldName}" → "${newName}". Remote updated.`);
 					} else {
@@ -3860,6 +3879,7 @@ ${bodies}`;
 	{@const nestedRemoteQ = nestedRemoteSearchQuery(nested.relPath)}
 	{@const localBranches = filteredNestedLocalBranches(nested)}
 	{@const remoteBranches = filteredNestedRemoteBranches(nested)}
+	{@const nestedRemotes = nestedRemotesList[nested.relPath] ?? []}
 	{@const isCollapsed = nestedReposCollapsed[nested.relPath] !== undefined
 		? nestedReposCollapsed[nested.relPath]
 		: true}
@@ -3976,10 +3996,11 @@ ${bodies}`;
 								<button type="button" class="flex items-center justify-center gap-2 w-full py-2 px-3 border border-dashed border-slate-300 dark:border-slate-600 rounded-lg text-xs text-slate-500 hover:text-violet-600 hover:border-violet-400 transition-colors cursor-pointer bg-transparent" onclick={() => nestedShowAddRemoteForm = { ...nestedShowAddRemoteForm, [nested.relPath]: true }}><Icon name="lucide:plus" class="w-3.5 h-3.5" /><span>Add Remote</span></button>
 							{/if}
 						</div>
-						{#if remoteBranches.length === 0}
-							<div class="flex flex-col items-center justify-center gap-2 py-6 text-slate-500 text-xs"><Icon name="lucide:server-off" class="w-5 h-5 opacity-30" /><span>{nestedRemoteQ ? 'No branches match your search' : 'No remote branches'}</span></div>
+						{#if nestedRemotes.length === 0}
+							<div class="flex flex-col items-center justify-center gap-2 py-6 text-slate-500 text-xs"><Icon name="lucide:server-off" class="w-5 h-5 opacity-30" /><span>No remote connections</span></div>
 						{:else}
-							{#each nestedRemoteNames(nested) as remoteName}
+							{#each nestedRemotes as remote (remote.name)}
+								{@const remoteName = remote.name}
 								{@const rbList = remoteBranches.filter(b => b.name.startsWith(remoteName + '/'))}
 								{@const isActiveRemote = remoteName === getNestedActiveRemote(nested.relPath)}
 								{@const isFetching = nestedFetchingRemote[nested.relPath] === remoteName}

@@ -35,7 +35,6 @@
 		/** Human-readable reason shown in disabled button tooltips */
 		repoBusyReason?: string;
 		/** Absolute path to a nested repo; when set, actions operate inside that repo. */
-		/** Absolute path to a nested repo; when set, actions operate inside that repo. */
 		repoPath?: string;
 		onCreateBranch?: (name: string) => boolean | Promise<boolean>;
 		onPush?: () => void;
