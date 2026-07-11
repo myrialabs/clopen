@@ -1,48 +1,78 @@
 /**
- * Open Code Server & Client Manager
+ * Open Code Server & Client Pool
  *
- * Manages the `opencode serve` child process and provides an OpencodeClient
- * singleton for all engine instances.
+ * Open Code runs as a persistent `opencode serve` child process that bakes its
+ * MCP set and agent registry at boot. A single shared server therefore CANNOT
+ * express a per-session Profile (excluded connectors/subagents leak, and the
+ * registry is served stale). So instead of one server we keep a POOL keyed by a
+ * config SIGNATURE — the Profile's filtered MCP set + inline agent set — and
+ * route each stream to the server matching its Profile. Two sessions on the same
+ * Profile share a server; different Profiles get isolated servers, concurrently.
  *
- * Strategy:
- * 1. Check DB for previously stored server URL → health-check → reuse if alive
- * 2. Otherwise spawn `opencode serve` via Bun.spawn (port 0, OS-assigned) and persist URL
- * 3. On every ensureClient() call, verify the server is still alive.
- *    If it died mid-session, automatically recover through the same flow.
+ * Strategy per key:
+ * 1. Reuse the pooled server if it is still alive.
+ * 2. Otherwise spawn `opencode serve` (port 0) with the key's config content and
+ *    add it to the pool. Profile servers beyond a small cap are LRU-evicted.
+ * 3. Health-check on every access; a dead server is dropped and respawned.
+ *
+ * The DEFAULT key (`*|*`, no Profile constraint) is the server used for model
+ * listing and unprofiled streams. The pool is in-memory only — a Clopen restart
+ * respawns servers (a legacy single-server URL persisted by older builds is
+ * shut down once on first use).
  */
 
+import { join } from 'path';
 import type { OpencodeClient } from '@opencode-ai/sdk';
 import type { Subprocess } from 'bun';
 import { getOpenCodeMcpConfig } from '../../../mcp';
 import { settingsQueries } from '../../../database/queries';
 import { generateOpenCodeProviderConfig } from './config';
+import type { OpenCodeInlineAgent } from '$backend/subagents';
 import { resolveBinaryWithRefresh } from '$backend/utils/cli';
 import { getEngineUserConfigDir } from '$backend/utils/paths';
 import { debug } from '$shared/utils/logger';
 
 const OPENCODE_HOST = '127.0.0.1';
-const DB_KEY = 'opencode.server.url';
-// The isolated data dir the persisted server was spawned with. A reused server
-// inherits the env it was spawned with, so if our target dir has changed (code
-// update that moves the isolation path, or a server left over from before
-// isolation existed) we must NOT reuse it — respawn into the right dir instead.
-const DB_KEY_DATADIR = 'opencode.server.datadir';
+/** Legacy single-server keys persisted by pre-pool builds — cleaned up once. */
+const LEGACY_DB_KEY = 'opencode.server.url';
+const LEGACY_DB_KEY_DATADIR = 'opencode.server.datadir';
 const HEALTH_TIMEOUT = 1500;
 const SERVER_START_TIMEOUT = 30_000; // 30s — generous for slow devices
+/** Config signature for a stream with no Profile constraint. */
+export const DEFAULT_SERVER_KEY = '*|*';
+/** Max concurrently-pooled Profile servers (the default server is never evicted). */
+const MAX_POOL_SERVERS = 4;
 
-let serverProc: Subprocess | null = null;
-let serverHandle: { url: string; close(): void } | null = null;
-let client: OpencodeClient | null = null;
-let initPromise: Promise<void> | null = null;
-let ready = false;
-let ownsProcess = false;
+export interface ServerInstance {
+	key: string;
+	url: string;
+	client: OpencodeClient;
+	proc: Subprocess | null;
+	ownsProcess: boolean;
+	lastUsed: number;
+}
 
-function clearClientState(): void {
-	client = null;
-	ready = false;
-	serverHandle = null;
-	serverProc = null;
-	ownsProcess = false;
+/** What distinguishes one Profile's server from another. */
+export interface ServerConfigSpec {
+	/** Allowed MCP connector slugs (undefined = unconstrained → all enabled). */
+	mcpProfileFilter?: Set<string>;
+	/** Inline agent definitions (undefined/empty = the engine's default set). */
+	inlineAgents?: Record<string, OpenCodeInlineAgent>;
+}
+
+const pool = new Map<string, ServerInstance>();
+const initPromises = new Map<string, Promise<ServerInstance>>();
+let legacyCleaned = false;
+
+/** Short, stable FNV-1a hex hash — folds variable config (e.g. inline agent
+ *  content) into a compact server-key segment so an edit spawns a fresh server. */
+export function hashConfig(s: string): string {
+	let h = 0x811c9dc5;
+	for (let i = 0; i < s.length; i++) {
+		h ^= s.charCodeAt(i);
+		h = Math.imul(h, 0x01000193);
+	}
+	return (h >>> 0).toString(16);
 }
 
 async function isServerAlive(url: string): Promise<boolean> {
@@ -54,109 +84,92 @@ async function isServerAlive(url: string): Promise<boolean> {
 	}
 }
 
-/**
- * Get (or create) the OpenCode client.
- * Concurrency-safe: multiple callers share a single init promise.
- *
- * When the server is already initialized, a lightweight health check runs.
- * If the server died (bun --watch restart, crash, etc.), state is reset and
- * init() is re-invoked — the same DB-check → reuse-or-spawn flow handles
- * recovery automatically.
- *
- * Race-condition guard: after any `await` (health check), we re-check
- * `initPromise` before starting a new init — another caller may have
- * already kicked one off during our async gap.
- */
-export async function ensureClient(): Promise<OpencodeClient> {
-	// Wait for any in-progress init first
-	if (initPromise) {
-		try { await initPromise; } catch { /* handled below */ }
-		if (client && ready) return client;
-	}
-
-	// Fast path: server is up and healthy
-	if (client && ready && serverHandle) {
-		if (await isServerAlive(serverHandle.url)) return client;
-
-		// Server disconnected — purge stale DB entry
-		// Do NOT clear initPromise — another caller may have started one
-		debug.log('engine', 'Open Code server disconnected, recovering...');
-		settingsQueries.delete(DB_KEY);
-		settingsQueries.delete(DB_KEY_DATADIR);
-		clearClientState();
-	}
-
-	// Re-check after async gap — another caller may have started init
-	if (initPromise) {
-		try { await initPromise; } catch { /* handled below */ }
-		if (client && ready) return client;
-	}
-
-	// Start init — no other caller is initializing at this point
-	initPromise = init();
-	try {
-		await initPromise;
-		return client!;
-	} catch (error) {
-		initPromise = null;
-		throw error;
+/** One-time shutdown of a server spawned by an older single-server build. */
+async function cleanupLegacyServer(): Promise<void> {
+	if (legacyCleaned) return;
+	legacyCleaned = true;
+	const stored = settingsQueries.get(LEGACY_DB_KEY)?.value;
+	if (stored) {
+		try {
+			await fetch(`${stored}/shutdown`, { method: 'POST', signal: AbortSignal.timeout(2000) });
+		} catch { /* endpoint may not exist / already dead */ }
+		settingsQueries.delete(LEGACY_DB_KEY);
+		settingsQueries.delete(LEGACY_DB_KEY_DATADIR);
+		debug.log('engine', `Open Code: shut down legacy single-server (${stored})`);
 	}
 }
 
-async function init(): Promise<void> {
-	debug.log('engine', 'Initializing Open Code client...');
+function killInstance(inst: ServerInstance): void {
+	if (inst.ownsProcess && inst.proc) {
+		try { inst.proc.kill(); } catch { /* already gone */ }
+	}
+}
 
-	// Isolate OpenCode's state (opencode.db, snapshots, logs, config) to
-	// {clopenDir}/engine/opencode/user/ instead of the shared XDG dirs
-	// (~/.local/share/opencode, ~/.config/opencode) so Clopen never mixes with
-	// the user's own OpenCode CLI usage. OpenCode follows the XDG base-dir spec
-	// and appends `/opencode` to each base. Credentials + MCP config are injected
-	// via OPENCODE_CONFIG_CONTENT, so no auth file needs to carry over.
-	const opencodeUserDir = getEngineUserConfigDir('opencode');
+/** Evict the least-recently-used PROFILE server when the pool is over cap. */
+function evictIfNeeded(): void {
+	const evictable = [...pool.values()].filter(s => s.key !== DEFAULT_SERVER_KEY);
+	if (evictable.length <= MAX_POOL_SERVERS) return;
+	evictable.sort((a, b) => a.lastUsed - b.lastUsed);
+	for (const victim of evictable.slice(0, evictable.length - MAX_POOL_SERVERS)) {
+		debug.log('engine', `Open Code: evicting idle Profile server (${victim.key}) at ${victim.url}`);
+		killInstance(victim);
+		pool.delete(victim.key);
+	}
+}
 
-	// 1. Try to reuse an existing server persisted in DB — but only if it was
-	// spawned with the SAME isolated data dir we'd use now. A mismatch means the
-	// stored server points at a stale location (pre-isolation, or a moved path);
-	// reusing it would silently keep writing to the wrong dir.
-	const stored = settingsQueries.get(DB_KEY);
-	const storedDataDir = settingsQueries.get(DB_KEY_DATADIR)?.value;
-	if (stored?.value) {
-		debug.log('engine', `Found stored Open Code server: ${stored.value}, checking...`);
+/**
+ * Get (or spawn) the pooled Open Code server for a config signature. The `spec`
+ * is only consulted when a server for `key` must be spawned; callers must pass a
+ * `key` that uniquely captures the spec (see the adapter's signature builder).
+ */
+export async function ensureServer(key: string, spec: ServerConfigSpec): Promise<ServerInstance> {
+	await cleanupLegacyServer();
 
-		if (storedDataDir === opencodeUserDir && await isServerAlive(stored.value)) {
-			const { createOpencodeClient } = await import('@opencode-ai/sdk');
-			client = createOpencodeClient({ baseUrl: stored.value });
-			serverHandle = { url: stored.value, close() {} };
-			ownsProcess = false;
-			ready = true;
-			debug.log('engine', `Reusing existing Open Code server at ${stored.value}`);
-			return;
+	const existing = pool.get(key);
+	if (existing) {
+		if (await isServerAlive(existing.url)) {
+			existing.lastUsed = Date.now();
+			return existing;
 		}
-
-		if (storedDataDir !== opencodeUserDir) {
-			debug.log('engine', `Stored Open Code server data dir mismatch (${storedDataDir ?? 'unknown'} ≠ ${opencodeUserDir}), spawning fresh...`);
-		} else {
-			debug.log('engine', 'Stored server not responding, spawning new one...');
-		}
-		settingsQueries.delete(DB_KEY);
-		settingsQueries.delete(DB_KEY_DATADIR);
+		killInstance(existing);
+		pool.delete(key);
 	}
 
-	// 2. Spawn a new server via Bun.spawn with absolute binary path.
-	// Re-harvest PATH and fall back to known install locations so freshly
-	// installed binaries are picked up without a clopen restart.
+	const inFlight = initPromises.get(key);
+	if (inFlight) return inFlight;
+
+	const p = spawnServer(key, spec)
+		.then(inst => {
+			pool.set(key, inst);
+			evictIfNeeded();
+			return inst;
+		})
+		.finally(() => { initPromises.delete(key); });
+	initPromises.set(key, p);
+	return p;
+}
+
+async function spawnServer(key: string, spec: ServerConfigSpec): Promise<ServerInstance> {
+	debug.log('engine', `Spawning Open Code server for key "${key}"...`);
+
+	// Isolate Open Code state under Clopen's dir (XDG overrides) — never mixes with
+	// the user's own CLI usage. CONFIG is shared across pooled servers (commands +
+	// instructions live there; agents come INLINE via OPENCODE_CONFIG_CONTENT, not
+	// the on-disk agent dir). DATA/STATE/CACHE (incl. opencode.db, sessions,
+	// snapshots) are per-key so concurrent Profile servers never share one SQLite
+	// db. The DEFAULT server keeps the base dir for back-compat with old sessions.
+	const configDir = getEngineUserConfigDir('opencode');
+	const dataDir = key === DEFAULT_SERVER_KEY
+		? configDir
+		: join(configDir, 'pool', Buffer.from(key).toString('base64url'));
+
 	const command = await resolveBinaryWithRefresh('opencode');
 	if (!command) throw new Error('opencode binary not found on PATH');
 	const args = [command, 'serve', `--hostname=${OPENCODE_HOST}`, '--port=0'];
 
-	// Build MCP config — but only inject remote servers whose endpoint is
-	// actually reachable. The opencode binary may initialize MCP connections
-	// synchronously before printing "opencode server listening", so an
-	// unreachable/slow remote endpoint can stall startup. Drop ONLY the
-	// unreachable remote entries; stdio/local servers (no `url`) are independent
-	// of the HTTP bridge and must always survive — they were previously thrown
-	// out together with the bridge when it wasn't reachable yet.
-	const mcpConfig = getOpenCodeMcpConfig();
+	// MCP: only inject remote servers whose endpoint is reachable — an unreachable
+	// remote can stall startup. stdio/local servers (no `url`) always survive.
+	const mcpConfig = getOpenCodeMcpConfig(spec.mcpProfileFilter);
 	if (Object.keys(mcpConfig).length > 0) {
 		const entries = Object.entries(mcpConfig);
 		const reachability = await Promise.all(
@@ -167,36 +180,22 @@ async function init(): Promise<void> {
 		);
 		entries.forEach(([name, config], i) => {
 			if (reachability[i]) {
-				debug.log('engine', `Open Code server: injecting MCP server → ${name}: ${config.type} (${(config as any).url || (config as any).command?.join(' ')})`);
+				debug.log('engine', `Open Code[${key}]: MCP → ${name}: ${config.type} (${(config as any).url || (config as any).command?.join(' ')})`);
 			} else {
-				debug.warn('engine', `Open Code server: MCP endpoint for "${name}" not reachable, skipping it`);
+				debug.warn('engine', `Open Code[${key}]: MCP endpoint for "${name}" not reachable, skipping it`);
 				delete mcpConfig[name];
 			}
 		});
 	}
 
-	// Build provider config from DB (enabled providers + env vars)
 	const providerConfig = generateOpenCodeProviderConfig();
-	if (providerConfig.enabledProviders.length > 0) {
-		debug.log('engine', `Open Code server: enabling ${providerConfig.enabledProviders.length} provider(s): ${providerConfig.enabledProviders.join(', ')}`);
-	}
-	if (Object.keys(providerConfig.envVars).length > 0) {
-		debug.log('engine', `Open Code server: injecting ${Object.keys(providerConfig.envVars).length} env var(s): ${Object.keys(providerConfig.envVars).join(', ')}`);
-	}
 
-	// Merge MCP config + enabled_providers into a single OPENCODE_CONFIG_CONTENT
+	// Merge MCP + providers + inline agents into a single OPENCODE_CONFIG_CONTENT.
 	const mergedConfig: Record<string, unknown> = {};
-	if (Object.keys(mcpConfig).length > 0) {
-		mergedConfig.mcp = mcpConfig;
-	}
-	if (providerConfig.enabledProviders.length > 0) {
-		mergedConfig.enabled_providers = providerConfig.enabledProviders;
-	}
-	const configContent = Object.keys(mergedConfig).length > 0
-		? JSON.stringify(mergedConfig)
-		: '{}';
-
-	debug.log('engine', `Spawning: ${args.join(' ')} (data dir: ${opencodeUserDir})`);
+	if (Object.keys(mcpConfig).length > 0) mergedConfig.mcp = mcpConfig;
+	if (providerConfig.enabledProviders.length > 0) mergedConfig.enabled_providers = providerConfig.enabledProviders;
+	if (spec.inlineAgents && Object.keys(spec.inlineAgents).length > 0) mergedConfig.agent = spec.inlineAgents;
+	const configContent = Object.keys(mergedConfig).length > 0 ? JSON.stringify(mergedConfig) : '{}';
 
 	const proc = Bun.spawn(args, {
 		stdout: 'pipe',
@@ -204,15 +203,15 @@ async function init(): Promise<void> {
 		env: {
 			...process.env,
 			...providerConfig.envVars,
-			XDG_DATA_HOME: opencodeUserDir,
-			XDG_CONFIG_HOME: opencodeUserDir,
-			XDG_STATE_HOME: opencodeUserDir,
-			XDG_CACHE_HOME: opencodeUserDir,
+			XDG_CONFIG_HOME: configDir,
+			XDG_DATA_HOME: dataDir,
+			XDG_STATE_HOME: dataDir,
+			XDG_CACHE_HOME: dataDir,
 			OPENCODE_CONFIG_CONTENT: configContent,
 		},
 	});
 
-	// Parse server URL from stdout — opencode prints "opencode server listening on <url>"
+	// Parse the URL from "opencode server listening on <url>".
 	const url = await new Promise<string>((resolve, reject) => {
 		const timeout = setTimeout(() => {
 			proc.kill();
@@ -220,7 +219,6 @@ async function init(): Promise<void> {
 		}, SERVER_START_TIMEOUT);
 
 		let output = '';
-
 		const readStream = async (stream: ReadableStream<Uint8Array>, label: string) => {
 			const reader = stream.getReader();
 			const decoder = new TextDecoder();
@@ -228,30 +226,20 @@ async function init(): Promise<void> {
 				while (true) {
 					const { done, value } = await reader.read();
 					if (done) break;
-					const chunk = decoder.decode(value, { stream: true });
-					output += chunk;
-
+					output += decoder.decode(value, { stream: true });
 					if (label === 'stdout') {
 						for (const line of output.split('\n')) {
 							if (line.startsWith('opencode server listening')) {
 								const match = line.match(/on\s+(https?:\/\/[^\s]+)/);
-								if (match) {
-									clearTimeout(timeout);
-									resolve(match[1]);
-									return;
-								}
+								if (match) { clearTimeout(timeout); resolve(match[1]); return; }
 							}
 						}
 					}
 				}
-			} catch {
-				// stream closed
-			}
+			} catch { /* stream closed */ }
 		};
-
 		readStream(proc.stdout as ReadableStream<Uint8Array>, 'stdout');
 		readStream(proc.stderr as ReadableStream<Uint8Array>, 'stderr');
-
 		proc.exited.then((code) => {
 			clearTimeout(timeout);
 			let msg = `opencode server exited with code ${code}`;
@@ -260,72 +248,40 @@ async function init(): Promise<void> {
 		});
 	});
 
-	serverProc = proc;
 	const { createOpencodeClient } = await import('@opencode-ai/sdk');
-	client = createOpencodeClient({ baseUrl: url });
-	serverHandle = {
-		url,
-		close() { proc.kill(); },
-	};
-	ownsProcess = true;
-	ready = true;
-
-	settingsQueries.set(DB_KEY, url);
-	settingsQueries.set(DB_KEY_DATADIR, opencodeUserDir);
-	debug.log('engine', `Open Code client ready (server: ${url}, data dir: ${opencodeUserDir})`);
-}
-
-export function getClient(): OpencodeClient | null {
-	return ready ? client : null;
-}
-
-export function getServerUrl(): string | null {
-	return serverHandle?.url ?? null;
+	const client = createOpencodeClient({ baseUrl: url });
+	debug.log('engine', `Open Code server ready (key "${key}", ${url}, data dir: ${dataDir})`);
+	return { key, url, client, proc, ownsProcess: true, lastUsed: Date.now() };
 }
 
 /**
- * Dispose the OpenCode client and stop the server.
- *
- * @param forRestart — When true, always kills the server process (even if
- *   we didn't spawn it) and purges the stored URL so the next init() spawns
- *   a fresh server with updated config. Used by the Restart Server flow.
- *
- *   When false (default), only kills the child process when we spawned it.
- *   Reused servers stay alive so the next session can pick them up.
+ * The DEFAULT (no-Profile) client — used for model listing, one-shot structured
+ * generation, and warm-up. Concurrency-safe via the shared init promise.
  */
-export async function disposeOpenCodeClient(forRestart = false): Promise<void> {
-	if (serverHandle) {
-		if (ownsProcess || forRestart) {
-			try {
-				debug.log('engine', `Stopping Open Code server (${serverHandle.url}, forRestart=${forRestart})...`);
-				if (ownsProcess) {
-					serverHandle.close();
-				} else if (forRestart) {
-					// Server we didn't spawn — kill it by sending a request or just
-					// purging the stored URL. The server process may be external, but
-					// clearing DB ensures we spawn a new one on next init().
-					try {
-						await fetch(`${serverHandle.url}/shutdown`, {
-							method: 'POST',
-							signal: AbortSignal.timeout(2000),
-						});
-					} catch {
-						// shutdown endpoint may not exist — that's fine
-					}
-				}
-				settingsQueries.delete(DB_KEY);
-				settingsQueries.delete(DB_KEY_DATADIR);
-			} catch (error) {
-				debug.error('engine', 'Error stopping Open Code server:', error);
-			}
-		}
-	} else if (forRestart) {
-		// No active handle but forRestart requested — ensure DB is clean
-		settingsQueries.delete(DB_KEY);
-		settingsQueries.delete(DB_KEY_DATADIR);
-	}
+export async function ensureClient(): Promise<OpencodeClient> {
+	return (await ensureServer(DEFAULT_SERVER_KEY, {})).client;
+}
 
-	clearClientState();
-	initPromise = null;
-	debug.log('engine', 'Open Code client disposed');
+/** The DEFAULT server's client, if up (back-compat for callers with no stream context). */
+export function getClient(): OpencodeClient | null {
+	return pool.get(DEFAULT_SERVER_KEY)?.client ?? null;
+}
+
+/** The DEFAULT server's URL, if up. */
+export function getServerUrl(): string | null {
+	return pool.get(DEFAULT_SERVER_KEY)?.url ?? null;
+}
+
+/**
+ * Dispose the whole pool. `forRestart` is accepted for signature compatibility
+ * with the previous single-server API; every pooled server we own is killed
+ * either way (there is no external-server-reuse path anymore).
+ */
+export async function disposeOpenCodeClient(_forRestart = false): Promise<void> {
+	for (const inst of pool.values()) killInstance(inst);
+	pool.clear();
+	initPromises.clear();
+	settingsQueries.delete(LEGACY_DB_KEY);
+	settingsQueries.delete(LEGACY_DB_KEY_DATADIR);
+	debug.log('engine', 'Open Code pool disposed');
 }

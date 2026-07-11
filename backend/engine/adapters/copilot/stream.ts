@@ -25,7 +25,7 @@ import { debug } from '$shared/utils/logger';
 import { getCopilotMcpConfig } from '../../../mcp';
 import { artifactFilter } from '$backend/profiles';
 import { syncSkills } from '$backend/skills';
-import { syncEngineArtifacts } from '$backend/engine/artifact-sync';
+import { syncEngineArtifacts, buildArtifactsPromptContext } from '$backend/engine/artifact-sync';
 import { resolvePermissionsFromDb, isToolAllowed, type ResolvedPermissions } from '$backend/permissions';
 import { handleStreamError, buildSessionError } from './error-handler';
 import { fetchCopilotModels } from './models';
@@ -234,6 +234,15 @@ export class CopilotEngine implements AIEngine {
 		await syncSkills('copilot', profileId);
 		await syncEngineArtifacts('copilot', profileId);
 
+		// Copilot's skills dir (`~/.copilot/skills`) is SHARED across sessions and
+		// read by a PERSISTENT runtime, and its Commands/Subagents ride a synthetic
+		// global block — none can reliably scope to THIS session's Profile. Inject
+		// the profile-scoped Skills/Commands/Subagents preamble into the prompt as
+		// the authoritative per-session signal (synthetic commands/subagents are
+		// stripped from the global file; the native skill mirror still loads the
+		// filtered folders).
+		const artifactsContext = buildArtifactsPromptContext(profileId);
+
 		// Resolve the permission policy once per stream; onPermissionRequest below
 		// enforces it (Copilot otherwise approves every tool via approveAll).
 		const permissions = resolvePermissionsFromDb('copilot', options.mcpContext?.projectId, profileId);
@@ -387,7 +396,10 @@ export class CopilotEngine implements AIEngine {
 			state.sessionId = session.sessionId;
 
 			// Send the prompt — fire-and-forget; events arrive via the queue.
-			const sendPromise = session.send({ prompt: extractPromptText(prompt) }).catch(error => {
+			const promptText = artifactsContext
+				? `${artifactsContext}\n\n${extractPromptText(prompt)}`
+				: extractPromptText(prompt);
+			const sendPromise = session.send({ prompt: promptText }).catch(error => {
 				debug.error('engine', 'Copilot session.send error:', error);
 				pushEvent({
 					type: 'session.error',

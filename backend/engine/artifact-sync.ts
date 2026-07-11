@@ -12,9 +12,10 @@
  * Each underlying sync swallows its own errors, so this never throws.
  */
 
-import { syncCommands } from '$backend/commands';
-import { syncSubagents } from '$backend/subagents';
+import { syncCommands, buildCommandsPromptContext } from '$backend/commands';
+import { syncSubagents, buildSubagentsPromptContext } from '$backend/subagents';
 import { syncInstructions } from '$backend/instructions';
+import { buildSkillsPromptContext } from '$backend/skills';
 import type { ArtifactEngine } from '$backend/artifacts';
 
 export async function syncEngineArtifacts(engine: ArtifactEngine, profileId?: number): Promise<void> {
@@ -29,4 +30,22 @@ export async function syncEngineArtifacts(engine: ArtifactEngine, profileId?: nu
 	await syncCommands(engine, profileId);
 	await syncSubagents(engine, profileId);
 	await syncInstructions(engine);
+}
+
+/**
+ * The combined, profile-scoped Skills + Commands + Subagents preamble that
+ * prompt-scoped engines (OpenCode/Codex/Copilot) inject into each turn's prompt.
+ *
+ * Their runtimes read these artifacts through a channel that is SHARED across
+ * sessions and not reliably re-read per turn (a persistent server/client and/or
+ * a global memory file), so the on-disk/global-file filter can't express a
+ * per-session Profile. Injecting the scoped set into the prompt is the one
+ * channel that is genuinely per-session. Returns '' when nothing applies.
+ */
+export function buildArtifactsPromptContext(profileId?: number): string {
+	return [
+		buildSkillsPromptContext(profileId),
+		buildCommandsPromptContext(profileId),
+		buildSubagentsPromptContext(profileId)
+	].filter(Boolean).join('\n\n');
 }

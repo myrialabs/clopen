@@ -9,7 +9,7 @@
 
 import { subagentQueries } from '$backend/database/queries';
 import { debug } from '$shared/utils/logger';
-import { materializeArtifacts, parseDoc, serializeDoc, parseEngineMap, artifactEngineToType, type ManagedArtifact, type ArtifactEngine } from '$backend/artifacts';
+import { materializeArtifacts, resolveArtifact, isPromptScopedEngine, parseDoc, serializeDoc, parseEngineMap, artifactEngineToType, type ManagedArtifact, type ArtifactEngine } from '$backend/artifacts';
 import { artifactFilter } from '$backend/profiles';
 import { readSubagentMd } from './store';
 
@@ -46,12 +46,76 @@ function buildSubagentsPreamble(items: ManagedArtifact[]): string {
 	return lines.join('\n');
 }
 
+/** The subagents active for a stream, narrowed by the active Profile (metadata only). */
+function resolveEnabledSubagentsMeta(profileId?: number): ManagedArtifact[] {
+	const filter = artifactFilter(profileId, 'subagent');
+	return (filter ? subagentQueries.getAll() : subagentQueries.getEnabled())
+		.filter(r => !filter || filter.has(r.slug))
+		.map(r => ({ slug: r.slug, name: r.name, description: r.description }));
+}
+
+/**
+ * The profile-scoped subagents preamble for PER-SESSION injection into a
+ * prompt-scoped engine's prompt (OpenCode/Codex/Copilot). Returns '' when none
+ * apply. Advisory: it steers which subagents the model delegates to, on top of
+ * whatever the engine's own (possibly stale/shared) agent registry exposes.
+ */
+export function buildSubagentsPromptContext(profileId?: number): string {
+	return buildSubagentsPreamble(resolveEnabledSubagentsMeta(profileId));
+}
+
+/** One inline Open Code agent definition (an `AgentConfig` in its config content). */
+export interface OpenCodeInlineAgent {
+	description?: string;
+	mode: 'subagent';
+	prompt: string;
+	model?: string;
+}
+
+/**
+ * The profile-scoped subagents as INLINE Open Code agent definitions, keyed by
+ * slug. Open Code caches its agent registry from a shared dir at server boot, so
+ * a per-session dir prune can't scope it; instead each per-Profile server is
+ * built with exactly these agents inline (see the server pool). Returns the
+ * enabled set narrowed by the active Profile (a referenced subagent counts even
+ * if globally disabled — same presence-per-type rule as everywhere else).
+ */
+export async function buildOpenCodeInlineAgents(profileId?: number): Promise<Record<string, OpenCodeInlineAgent>> {
+	const filter = artifactFilter(profileId, 'subagent');
+	const rows = (filter ? subagentQueries.getAll() : subagentQueries.getEnabled())
+		.filter(r => !filter || filter.has(r.slug));
+	const out: Record<string, OpenCodeInlineAgent> = {};
+	for (const row of rows) {
+		const raw = await readSubagentMd(row.slug);
+		if (raw == null) continue;
+		const { frontmatter, body } = parseDoc(raw);
+		const model = parseEngineMap(row.model_by_engine).opencode;
+		out[row.slug] = {
+			description: frontmatter.description || row.description,
+			mode: 'subagent',
+			prompt: body,
+			...(model ? { model } : {})
+		};
+	}
+	return out;
+}
+
 export async function syncSubagents(engine: ArtifactEngine, profileId?: number): Promise<void> {
 	try {
+		// Deliver subagents OUT-OF-BAND (not via the shared engine dir/block) when:
+		//   - the target is SYNTHETIC on a prompt-scoped engine (Codex/Copilot) →
+		//     injected into the prompt as a preamble; OR
+		//   - the engine is OpenCode → each per-Profile server is built with the
+		//     agents INLINE in its config (Open Code caches its agent registry from
+		//     the shared dir at boot, so a per-session dir prune can't scope it).
+		// In both cases materialize an EMPTY set so any stale dir/block is stripped.
+		// Claude keeps its native filtered files; Qwen (per-query) keeps its preamble.
+		const synthetic = resolveArtifact('subagent', { engine, scope: 'global' }).format === 'preamble-region';
+		const viaPrompt = (synthetic && isPromptScopedEngine(engine)) || engine === 'opencode';
 		const filter = artifactFilter(profileId, 'subagent');
 		// A profile activates the subagents it references even if globally disabled;
 		// with no profile filter, only the enabled set applies (unchanged).
-		const rows = (filter ? subagentQueries.getAll() : subagentQueries.getEnabled())
+		const rows = viaPrompt ? [] : (filter ? subagentQueries.getAll() : subagentQueries.getEnabled())
 			.filter(r => !filter || filter.has(r.slug));
 		const engineType = artifactEngineToType(engine);
 		const enabled: ManagedArtifact[] = [];

@@ -9,7 +9,7 @@
 
 import { commandQueries } from '$backend/database/queries';
 import { debug } from '$shared/utils/logger';
-import { materializeArtifacts, parseDoc, serializeDoc, parseEngineMap, artifactEngineToType, type ManagedArtifact, type ArtifactEngine } from '$backend/artifacts';
+import { materializeArtifacts, resolveArtifact, isPromptScopedEngine, parseDoc, serializeDoc, parseEngineMap, artifactEngineToType, type ManagedArtifact, type ArtifactEngine } from '$backend/artifacts';
 import { artifactFilter } from '$backend/profiles';
 import { readCommandMd } from './store';
 
@@ -36,12 +36,37 @@ function buildCommandsPreamble(items: ManagedArtifact[]): string {
 	return lines.join('\n');
 }
 
+/** The commands active for a stream, narrowed by the active Profile (metadata only). */
+function resolveEnabledCommandsMeta(profileId?: number): ManagedArtifact[] {
+	const filter = artifactFilter(profileId, 'command');
+	return (filter ? commandQueries.getAll() : commandQueries.getEnabled())
+		.filter(r => !filter || filter.has(r.slug))
+		.map(r => ({ slug: r.slug, name: r.name, description: r.description }));
+}
+
+/**
+ * The profile-scoped commands preamble for PER-SESSION injection into a
+ * prompt-scoped engine's prompt (OpenCode/Codex/Copilot). Returns '' when none
+ * apply. Advisory: it scopes what the model surfaces/uses, on top of whatever the
+ * engine's own (possibly stale/shared) command registry exposes.
+ */
+export function buildCommandsPromptContext(profileId?: number): string {
+	return buildCommandsPreamble(resolveEnabledCommandsMeta(profileId));
+}
+
 export async function syncCommands(engine: ArtifactEngine, profileId?: number): Promise<void> {
 	try {
+		// On a prompt-scoped engine, a SYNTHETIC command target (no native command
+		// dir — Copilot) is delivered per-session via prompt injection instead, so
+		// materialize an empty set to strip any shared global block that would leak
+		// across sessions. NATIVE command engines (Claude/OpenCode/Codex) keep the
+		// filtered files on disk; Qwen (per-query) keeps its synthetic preamble.
+		const synthetic = resolveArtifact('command', { engine, scope: 'global' }).format === 'preamble-region';
+		const viaPrompt = synthetic && isPromptScopedEngine(engine);
 		const filter = artifactFilter(profileId, 'command');
 		// A profile activates the commands it references even if globally disabled;
 		// with no profile filter, only the enabled set applies (unchanged).
-		const rows = (filter ? commandQueries.getAll() : commandQueries.getEnabled())
+		const rows = viaPrompt ? [] : (filter ? commandQueries.getAll() : commandQueries.getEnabled())
 			.filter(r => !filter || filter.has(r.slug));
 		const engineType = artifactEngineToType(engine);
 		const enabled: ManagedArtifact[] = [];

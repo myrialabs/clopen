@@ -41,9 +41,12 @@ import {
 	mapToolName,
 	TOOL_NAME_MAP,
 } from './message-converter';
-import { ensureClient, getClient, getServerUrl } from './server';
+import { ensureClient, ensureServer, hashConfig, getClient, getServerUrl, type ServerInstance } from './server';
 import { syncSkills } from '$backend/skills';
-import { syncEngineArtifacts } from '$backend/engine/artifact-sync';
+import { syncEngineArtifacts, buildArtifactsPromptContext } from '$backend/engine/artifact-sync';
+import { artifactFilter } from '$backend/profiles';
+import { buildOpenCodeInlineAgents } from '$backend/subagents';
+import { getOpenCodeProfileDisabledToolIds } from '$backend/mcp';
 import { resolvePermissionsFromDb, matchesAny, type ResolvedPermissions } from '$backend/permissions';
 import { formatSessionError, handleStreamError } from './error-handler';
 import { buildJsonPrompt, extractJson } from '../../structured-helpers';
@@ -102,6 +105,8 @@ export class OpenCodeEngine implements AIEngine {
 	private activeAbortController: AbortController | null = null;
 	private activeSessionId: string | null = null;
 	private activeProjectPath: string | null = null;
+	/** The pooled per-Profile server this instance's active stream is bound to. */
+	private activeServer: ServerInstance | null = null;
 	/** Pending question requests keyed by tool callID → { requestId, questions } */
 	private pendingQuestions = new Map<string, { requestId: string; questions: Array<{ question: string }> }>();
 
@@ -132,6 +137,7 @@ export class OpenCodeEngine implements AIEngine {
 	async dispose(): Promise<void> {
 		await this.cancel();
 		this.pendingQuestions.clear();
+		this.activeServer = null;
 		this._isInitialized = false;
 		debug.log('engine', 'Open Code engine instance disposed');
 	}
@@ -152,8 +158,6 @@ export class OpenCodeEngine implements AIEngine {
 	 * This ensures no events are missed between sending and subscribing.
 	 */
 	async *streamQuery(options: EngineQueryOptions): AsyncGenerator<EngineOutput, void, unknown> {
-		const client = await ensureClient();
-
 		const {
 			projectPath,
 			prompt,
@@ -167,14 +171,32 @@ export class OpenCodeEngine implements AIEngine {
 		this._isActive = true;
 		this.activeProjectPath = projectPath;
 
-		// Active Profile for this stream — scopes the materialized artifact set.
-		// (OpenCode MCP config lives on the persistent server, not per-stream, so
-		// connector filtering by profile is not applied here — best-effort, like
-		// Codex. Skills/Commands/Subagents + permissions ARE profile-scoped.)
+		// Active Profile for this stream. Skills go into the prompt and commands
+		// into shared dirs; materialize those first, then bind to the per-Profile
+		// server that bakes the rest.
 		const profileId = options.mcpContext?.profileId;
-		// Refresh the synthetic skills preamble in OpenCode's config dir.
 		await syncSkills('opencode', profileId);
 		await syncEngineArtifacts('opencode', profileId);
+
+		// Bind this stream to the pooled server whose baked config matches the
+		// Profile: MCP narrowed to the Profile's connectors (drops excluded EXTERNAL
+		// servers) plus the Profile's subagents INLINE — Open Code caches its agent
+		// registry from a shared dir at boot, so an isolated server is the only way
+		// to scope it. The signature keys the pool: identical scoping reuses one
+		// server, different Profiles get isolated servers, concurrently.
+		const mcpProfileFilter = artifactFilter(profileId, 'mcp') ?? undefined;
+		const subagentFilter = artifactFilter(profileId, 'subagent') ?? undefined;
+		const inlineAgents = await buildOpenCodeInlineAgents(profileId);
+		// Key = filtered MCP set + subagent set + a hash of the agents' CONTENT, so
+		// editing a subagent's prompt/model (same set) also spawns a fresh server
+		// rather than reusing a stale one. `subagentFilter` is subsumed by the
+		// content hash but kept for a readable key.
+		const mcpKey = mcpProfileFilter ? [...mcpProfileFilter].sort().join(',') : '*';
+		const agentKey = subagentFilter ? [...subagentFilter].sort().join(',') : '*';
+		const serverKey = `mcp:${mcpKey}|agents:${agentKey}:${hashConfig(JSON.stringify(inlineAgents))}`;
+		const server = await ensureServer(serverKey, { mcpProfileFilter, inlineAgents });
+		this.activeServer = server;
+		const client = server.client;
 
 		// Resolve the permission policy once per stream; the permission event
 		// handler enforces it (OpenCode otherwise auto-approves every tool). Tool
@@ -187,6 +209,16 @@ export class OpenCodeEngine implements AIEngine {
 
 		try {
 			const promptParts = this.extractPromptParts(prompt);
+
+			// Prompt-scoped engine: the persistent server reads Skills/Commands/
+			// Subagents through shared channels it doesn't reliably re-read per turn,
+			// so advertise the profile-scoped set PER-SESSION by prepending it as a
+			// leading context part each turn (authoritative for synthetic skills;
+			// advisory on top of the native command/agent dirs).
+			const artifactsContext = buildArtifactsPromptContext(profileId);
+			if (artifactsContext) {
+				promptParts.unshift({ type: 'text', text: artifactsContext });
+			}
 
 			// Create or fork a session
 			// When resuming, fork the session to create a new branch
@@ -229,6 +261,15 @@ export class OpenCodeEngine implements AIEngine {
 			// the deny policy up front (covers read-only + MCP tools that never fire
 			// a permission event — see buildOpenCodeToolDisableMap).
 			const disabledTools = buildOpenCodeToolDisableMap(permissions);
+			// Profile connector scoping (INTERNAL): the shared `clopen-mcp` bridge is
+			// all-or-nothing, so disable — for THIS session only (per-prompt `tools`
+			// map → concurrency-safe) — the tools of every internal connector the
+			// active Profile excludes. External connectors are already absent from
+			// this Profile's server (see the pooled server config). No-op when the
+			// profile doesn't constrain connectors.
+			for (const toolId of getOpenCodeProfileDisabledToolIds(mcpProfileFilter)) {
+				disabledTools[toolId] = false;
+			}
 			client.session.promptAsync({
 				path: { id: sessionId },
 				body: {
@@ -780,7 +821,7 @@ export class OpenCodeEngine implements AIEngine {
 		//    This is a courtesy cleanup — local processing is already stopped.
 		//    The server-side session would otherwise keep running (consuming
 		//    LLM API calls and compute resources) until it naturally completes.
-		const client = getClient();
+		const client = this.activeServer?.client ?? getClient();
 		if (client && sessionId) {
 			try {
 				await Promise.race([
@@ -802,7 +843,7 @@ export class OpenCodeEngine implements AIEngine {
 	 * Used by stream-manager for per-project isolation (instead of global cancel).
 	 */
 	async cancelSession(sessionId: string, projectPath?: string): Promise<void> {
-		const client = getClient();
+		const client = this.activeServer?.client ?? getClient();
 		if (!client || !sessionId) return;
 		try {
 			await Promise.race([
@@ -857,7 +898,7 @@ export class OpenCodeEngine implements AIEngine {
 	 * POST /question/{requestID}/reply to send user answers back to the OpenCode server.
 	 */
 	private replyToQuestion(requestId: string, orderedAnswers: string[][]): void {
-		const serverUrl = getServerUrl();
+		const serverUrl = this.activeServer?.url ?? getServerUrl();
 		if (!serverUrl) {
 			debug.warn('engine', 'replyToQuestion: Server URL not available');
 			return;
@@ -887,7 +928,7 @@ export class OpenCodeEngine implements AIEngine {
 	 * Fallback: GET /question to list pending questions, find the matching one, and reply.
 	 */
 	private async fetchAndReplyToQuestion(toolUseId: string, answers: Record<string, string>): Promise<void> {
-		const serverUrl = getServerUrl();
+		const serverUrl = this.activeServer?.url ?? getServerUrl();
 		if (!serverUrl) {
 			debug.warn('engine', 'fetchAndReplyToQuestion: Server URL not available');
 			return;
@@ -930,7 +971,7 @@ export class OpenCodeEngine implements AIEngine {
 	 * the v2 permission.reply method.
 	 */
 	private replyPermission(permissionId: string, sessionId: string, response: 'once' | 'reject'): void {
-		const serverUrl = getServerUrl();
+		const serverUrl = this.activeServer?.url ?? getServerUrl();
 		if (!serverUrl) return;
 		const verb = response === 'reject' ? 'rejected' : 'approved';
 
@@ -945,7 +986,7 @@ export class OpenCodeEngine implements AIEngine {
 				return;
 			}
 			// v2 endpoint not available — try v1
-			const client = getClient();
+			const client = this.activeServer?.client ?? getClient();
 			if (client) {
 				client.postSessionIdPermissionsPermissionId({
 					path: { id: sessionId, permissionID: permissionId },

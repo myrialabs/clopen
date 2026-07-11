@@ -152,3 +152,17 @@ export function getQwenMcpConfig(profileFilter?: Set<string>) {
 export function resolveOpenCodeToolName(toolName: string): string | null {
 	return internal.resolveOpenCodeToolName(toolName) ?? external.resolveExternalToolName(toolName);
 }
+
+/**
+ * Open Code tool ids to DISABLE for INTERNAL connectors excluded by an active
+ * Profile, for the per-prompt `tools` map (per-session → concurrency-safe). All
+ * internal tools ride the single `clopen-mcp` bridge, which is all-or-nothing at
+ * the MCP-config level, so per-connector scoping must happen here. EXTERNAL
+ * connectors are handled at the server level instead — each is its own MCP entry,
+ * dropped from the per-Profile server's config when excluded (see
+ * `getOpenCodeMcpConfig(profileFilter)` in the server pool). `undefined` filter
+ * (profile doesn't constrain connectors) → none.
+ */
+export function getOpenCodeProfileDisabledToolIds(profileFilter?: Set<string>): string[] {
+	return internal.getOpenCodeProfileDisabledInternalToolIds(profileFilter);
+}

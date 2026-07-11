@@ -17,7 +17,7 @@
 
 import { skillQueries } from '$backend/database/queries';
 import { debug } from '$shared/utils/logger';
-import { materializeArtifacts, type ManagedArtifact, type ArtifactEngine } from '$backend/artifacts';
+import { materializeArtifacts, resolveArtifact, isPromptScopedEngine, type ManagedArtifact, type ArtifactEngine } from '$backend/artifacts';
 import { artifactFilter } from '$backend/profiles';
 import { getSkillMdPath, getSkillDir } from './store';
 import { stat } from 'node:fs/promises';
@@ -59,39 +59,77 @@ async function pathExists(path: string): Promise<boolean> {
 }
 
 /**
+ * The skills that apply to a stream, already narrowed by the active Profile.
+ * Shared by the native file materializer ({@link syncSkills}) and the synthetic
+ * per-session prompt injection ({@link buildSkillsPromptContext}) so both see an
+ * identical set.
+ *
+ * A profile is the source of truth for what's active: an item it references is
+ * included even if globally disabled, and its enable toggle is ignored. With no
+ * profile filter, only the globally-enabled set applies (unchanged behaviour).
+ */
+export function resolveEnabledSkills(profileId?: number): ManagedArtifact[] {
+	const filter = artifactFilter(profileId, 'skill');
+	const source = filter
+		? skillQueries.getAll().map(r => ({ slug: r.slug, name: r.name, description: r.description }))
+		: getEnabledSkills();
+	return source
+		.filter(s => !filter || filter.has(s.slug))
+		.map(s => ({
+			slug: s.slug,
+			name: s.name,
+			description: s.description,
+			sourceDir: getSkillDir(s.slug)
+		}));
+}
+
+/**
+ * Whether skills for this engine are delivered per-session via prompt injection
+ * INSTEAD of the shared global memory file — true only for a synthetic (no native
+ * dir) skill target on a prompt-scoped engine. Native skill engines
+ * (Claude/Qwen/Copilot) keep the folder mirror+prune.
+ */
+function skillsViaPromptInjection(engine: SkillEngine): boolean {
+	const synthetic = resolveArtifact('skill', { engine, scope: 'global' }).format === 'preamble-region';
+	return synthetic && isPromptScopedEngine(engine);
+}
+
+/**
+ * The profile-scoped skills preamble for PER-SESSION injection into a synthetic
+ * engine's prompt (OpenCode/Codex). Returns '' when no skill applies. Uses the
+ * exact wording of the old global block, so model behaviour is unchanged apart
+ * from now being correctly scoped to the session's active Profile.
+ */
+export function buildSkillsPromptContext(profileId?: number): string {
+	return buildSkillsPreamble(resolveEnabledSkills(profileId));
+}
+
+/**
  * Sync enabled skills for one engine. Safe to call at every stream start.
  * Never throws: failures are logged and swallowed so streaming is unaffected.
  *
- * `profileId` (when a Profile is active for the stream) narrows the enabled set
- * to the skills the profile references; a profile that references no skill at
- * all leaves the full enabled set untouched (presence-per-type — see
- * `backend/profiles`). The eager all-engines re-sync passes no profile, so the
- * on-disk resting state stays the full enabled set.
+ * NATIVE engines (Claude/Qwen/Copilot) mirror the profile-narrowed skill folders
+ * into the engine's skills dir and prune the rest — a per-query-correct filter.
+ *
+ * SYNTHETIC engines (OpenCode/Codex) do NOT advertise skills through the shared
+ * global memory file here: a single global file can't encode a per-session
+ * profile choice and would leak across concurrent sessions (and their persistent
+ * server may not re-read it). Instead they inject the resolved preamble into each
+ * turn's prompt (see the adapters + {@link buildSkillsPromptContext}). We still
+ * materialize an EMPTY set for them so any legacy `CLOPEN:SKILLS` block left in
+ * AGENTS.md is stripped.
  */
 export async function syncSkills(engine: SkillEngine, profileId?: number): Promise<void> {
 	try {
-		const filter = artifactFilter(profileId, 'skill');
-		// A profile is the source of truth for what's active: an item it references
-		// is materialized even if globally disabled, and its enable toggle is
-		// ignored. Without a profile filter, only the enabled set applies (unchanged).
-		const source = filter
-			? skillQueries.getAll().map(r => ({ slug: r.slug, name: r.name, description: r.description }))
-			: getEnabledSkills();
-		const enabled: ManagedArtifact[] = source
-			.filter(s => !filter || filter.has(s.slug))
-			.map(s => ({
-				slug: s.slug,
-				name: s.name,
-				description: s.description,
-				sourceDir: getSkillDir(s.slug)
-			}));
+		const viaPrompt = skillsViaPromptInjection(engine);
+		const enabled: ManagedArtifact[] = viaPrompt ? [] : resolveEnabledSkills(profileId);
 		const managedSlugs = skillQueries.getAll().map(s => s.slug);
 		await materializeArtifacts('skill', { engine, scope: 'global' }, {
 			enabled,
 			managedSlugs,
 			buildPreamble: buildSkillsPreamble
 		});
-		debug.log('skills', `🧩 Synced ${enabled.length} skill(s) → ${engine}`);
+		debug.log('skills', `🧩 Synced ${enabled.length} skill(s) → ${engine}${viaPrompt ? ' (per-session injection)' : ''}`);
 	} catch (error) {
 		debug.warn('skills', `⚠️ Skill sync for ${engine} failed (continuing without):`, error);
 	}

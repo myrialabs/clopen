@@ -216,6 +216,23 @@ function unsupported(): ArtifactResolution {
 	};
 }
 
+/**
+ * Engines whose runtime reads artifacts through a channel that is SHARED across
+ * sessions and NOT reliably re-read per turn — a persistent server/client
+ * (OpenCode `opencode serve`, Codex/Copilot long-lived clients) and/or a shared
+ * global memory file. For these, an on-disk/global-file filter can't express a
+ * per-session Profile choice (it leaks across concurrent sessions and/or is
+ * served stale), so the adapter ALSO advertises the profile-scoped set
+ * per-session by injecting a preamble into the prompt (see
+ * `buildArtifactsPromptContext`). Claude and Qwen are excluded: each spawns a
+ * fresh per-query CLI over an isolated/pruned dir, so the on-disk filter alone
+ * already scopes correctly.
+ */
+export const PROMPT_SCOPED_ENGINES: readonly ArtifactEngine[] = ['opencode', 'codex', 'copilot'];
+export function isPromptScopedEngine(engine: ArtifactEngine): boolean {
+	return PROMPT_SCOPED_ENGINES.includes(engine);
+}
+
 /** Whether a synthetic (non-native) target is best-effort/unverified for the UI. */
 export function isBestEffortTarget(type: ArtifactType, engine: ArtifactEngine): boolean {
 	if (type === 'instruction') return engine !== 'claude';

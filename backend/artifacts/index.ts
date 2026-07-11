@@ -20,7 +20,7 @@ export type {
 } from './types';
 export { ARTIFACT_ENGINES } from './types';
 
-export { resolveArtifact, isBestEffortTarget, memoryFileName } from './matrix';
+export { resolveArtifact, isBestEffortTarget, isPromptScopedEngine, PROMPT_SCOPED_ENGINES, memoryFileName } from './matrix';
 export { materializeArtifacts } from './sync';
 export type { MaterializeInput } from './sync';
 export { detectArtifacts, adoptArtifact } from './detect';

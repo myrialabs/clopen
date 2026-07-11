@@ -46,6 +46,7 @@
 	let isMobileMenuOpen = $state(false);
 	let windowWidth = $state(typeof window !== 'undefined' ? window.innerWidth : 1024);
 	let searchQuery = $state('');
+	let searchInputRef = $state<HTMLInputElement>();
 
 	const isMobile = $derived(windowWidth < 768);
 	const activeSection = $derived(settingsModalState.activeSection);
@@ -103,6 +104,16 @@
 		const isVisible = visibleSections.some(s => s.id === activeSection);
 		if (!isVisible && visibleSections.length > 0) {
 			setActiveSection(visibleSections[0].id);
+		}
+	});
+
+	// Focus the search input on open. Modal's own generic focus grabs the
+	// first focusable element (the close button) after a 50ms delay, so this
+	// runs slightly later to win the race. Skipped on mobile since the search
+	// field sits off-canvas until the menu is opened.
+	$effect(() => {
+		if (settingsModalState.isOpen && !isMobile) {
+			setTimeout(() => searchInputRef?.focus(), 60);
 		}
 	});
 
@@ -201,6 +212,7 @@
 							type="text"
 							placeholder="Search settings"
 							bind:value={searchQuery}
+							bind:this={searchInputRef}
 							class="w-full py-2 pl-8.5 pr-3 bg-slate-100 dark:bg-slate-800/60 border border-transparent rounded-lg text-sm text-slate-900 dark:text-slate-100 placeholder:text-slate-400 dark:placeholder:text-slate-500 outline-none transition-colors duration-150 focus:border-violet-500/40 focus:bg-white dark:focus:bg-slate-900"
 						/>
 					</div>

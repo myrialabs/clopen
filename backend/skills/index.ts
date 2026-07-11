@@ -17,5 +17,5 @@ export type { SkillDTO, ParsedSkillPreview } from './service';
 export { listMarketplaceSkills, fetchMarketplaceSkill } from './marketplace';
 export type { MarketplaceSkill, MarketplacePage } from './marketplace';
 
-export { syncSkills, syncSkillsAllEngines } from './sync';
+export { syncSkills, syncSkillsAllEngines, buildSkillsPromptContext } from './sync';
 export type { SkillEngine } from './sync';

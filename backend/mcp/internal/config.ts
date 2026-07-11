@@ -329,6 +329,28 @@ export function getEnabledToolsForServer(serverName: string): string[] {
 }
 
 /**
+ * Open Code tool ids (`clopen-mcp_<tool>`) for INTERNAL connectors EXCLUDED by an
+ * active Profile — every globally-enabled internal server whose slug is NOT in the
+ * profile's connector set. Fed to Open Code's per-prompt `tools` disable map so
+ * those tools are removed for THIS session, even though the persistent server was
+ * built with every enabled connector. `undefined` filter (profile doesn't
+ * constrain connectors) → none. All internal tools share the single `clopen-mcp`
+ * bridge namespace, so the id is `clopen-mcp_<tool>` regardless of owning server.
+ */
+export function getOpenCodeProfileDisabledInternalToolIds(profileFilter?: Set<string>): string[] {
+	if (!profileFilter) return [];
+	const ids: string[] = [];
+	for (const [serverName, serverConfig] of Object.entries(mcpServers)) {
+		if (!serverEnabled(serverName)) continue;   // not in the running config anyway
+		if (profileFilter.has(serverName)) continue; // allowed by the profile
+		for (const toolName of serverConfig.tools as readonly string[]) {
+			ids.push(`clopen-mcp_${toolName}`);
+		}
+	}
+	return ids;
+}
+
+/**
  * Get statistics about MCP servers and tools
  */
 export function getMcpStats() {
