@@ -22,6 +22,7 @@ import { userStore } from '$frontend/stores/features/user.svelte';
 import type { UnifiedMessage, AssistantMessage, ReasoningMessage } from '$shared/types/unified';
 import type { StreamingMessage, OptimisticUserMessage, FrontendMessage } from '$frontend/stores/core/sessions.svelte';
 import { debug } from '$shared/utils/logger';
+import { INTERACTIVE_TOOLS, isWaitingForInteractiveInput } from '$shared/utils/interactive-input';
 
 /** Chat service configuration */
 interface ChatServiceOptions {
@@ -32,14 +33,6 @@ interface ChatServiceOptions {
   attachedFiles?: { type: string; data: string; mediaType: string; fileName: string }[];
 }
 import ws from '$frontend/utils/ws';
-
-/**
- * Tools that block the SDK waiting for user interaction.
- * When these tools appear in an assistant message without a result,
- * and the stream is active, the chat status switches to "waiting for input".
- * Extend this list for future interactive tools.
- */
-const INTERACTIVE_TOOLS = new Set(['AskUserQuestion']);
 
 class ChatService {
   private activeProcessId: string | null = null;
@@ -886,27 +879,10 @@ class ChatService {
   detectPendingInteractiveTools(): void {
     if (!appState.isLoading) return;
 
-    // Collect all tool_use IDs that have a matching tool_result
-    const answeredToolIds = new Set<string>();
-    for (const msg of sessionState.messages) {
-      if (msg.type !== 'user' || !('content' in msg)) continue;
-      for (const item of msg.content) {
-        if (item.type === 'tool_result') {
-          answeredToolIds.add(item.toolUseId);
-        }
-      }
-    }
-
-    // Check if any interactive tool is unanswered (skip interrupted blocks)
-    for (const msg of sessionState.messages) {
-      if (msg.type !== 'assistant' || !('content' in msg)) continue;
-      const hasPendingInteractive = msg.content.some(
-        (item) => item.type === 'tool_use' && !item.interrupted && INTERACTIVE_TOOLS.has(item.name) && !answeredToolIds.has(item.id)
-      );
-      if (hasPendingInteractive) {
-        this.setProcessState({ isWaitingInput: true });
-        return;
-      }
+    // Delegate to the shared derivation so this can never disagree with the
+    // backend presence layer (both read the same message-ordering rules).
+    if (isWaitingForInteractiveInput(sessionState.messages)) {
+      this.setProcessState({ isWaitingInput: true });
     }
   }
 

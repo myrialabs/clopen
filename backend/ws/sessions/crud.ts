@@ -404,6 +404,18 @@ export const crudHandler = createRouter()
 		debug.log('session', `[unread] Marked session ${data.sessionId} as UNREAD for user ${userId} in project ${data.projectId}`);
 	})
 
+	// Mark every session in a project as read for the current user
+	.on('sessions:mark-all-read', {
+		data: t.Object({
+			projectId: t.String()
+		})
+	}, async ({ data, conn }) => {
+		const userId = ws.getUserId(conn);
+		requireProjectAccess(conn, data.projectId);
+		sessionQueries.markAllRead(userId, data.projectId);
+		debug.log('session', `[unread] Marked ALL sessions as READ for user ${userId} in project ${data.projectId}`);
+	})
+
 	// Search sessions by message content (deep search)
 	.http('sessions:search', {
 		data: t.Object({

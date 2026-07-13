@@ -508,6 +508,17 @@ export const sessionQueries = {
 	},
 
 	/**
+	 * Mark every unread session in a project as read for a specific user
+	 */
+	markAllRead(userId: string, projectId: string): void {
+		const db = getDatabase();
+		db.prepare(`
+			DELETE FROM user_unread_sessions
+			WHERE user_id = ? AND project_id = ?
+		`).run(userId, projectId);
+	},
+
+	/**
 	 * Get all unread session IDs for a user within a project
 	 * Returns array of { sessionId, projectId }
 	 */

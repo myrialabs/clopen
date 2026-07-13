@@ -10,7 +10,7 @@
 	import Modal from '$frontend/components/common/overlay/Modal.svelte';
 	import Dialog from '$frontend/components/common/overlay/Dialog.svelte';
 	import { presenceState, isSessionWaitingInput } from '$frontend/stores/core/presence.svelte';
-	import { isSessionUnread } from '$frontend/stores/core/app.svelte';
+	import { isSessionUnread, markAllSessionsRead } from '$frontend/stores/core/app.svelte';
 	import { userStore } from '$frontend/stores/features/user.svelte';
 	import { debug } from '$shared/utils/logger';
 	import { modelStore } from '$frontend/stores/features/models.svelte';
@@ -153,6 +153,22 @@
 		}
 		return counts;
 	});
+
+	// Count of sessions showing an unread (blue) indicator — mirrors the dot logic
+	// in the list: unread, not the active session, and not currently streaming.
+	const unreadCount = $derived(
+		sessions.filter(
+			session =>
+				isSessionUnread(session.id) &&
+				session.id !== sessionState.currentSession?.id &&
+				!isSessionStreaming(session.id)
+		).length
+	);
+
+	function handleMarkAllRead() {
+		const projectId = projectState.currentProject?.id;
+		if (projectId) markAllSessionsRead(projectId);
+	}
 
 	const filteredSessions = $derived(
 		sessions
@@ -364,6 +380,17 @@
 		<div class="flex items-center justify-between px-4 py-3 md:px-6 md:py-4">
 			<h2 class="text-base md:text-lg font-bold text-slate-900 dark:text-slate-100">Sessions</h2>
 			<div class="flex items-center gap-2">
+				{#if unreadCount > 0}
+					<button
+						type="button"
+						class="flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg text-xs font-medium text-blue-600 dark:text-blue-400 hover:bg-blue-500/10 transition-colors"
+						onclick={handleMarkAllRead}
+						aria-label="Mark all sessions as read"
+					>
+						<Icon name="lucide:check-check" class="w-3.5 h-3.5" />
+						<span class="hidden sm:inline">Mark all read</span>
+					</button>
+				{/if}
 				{#if filteredSessions.length > 0}
 					<button
 						type="button"
