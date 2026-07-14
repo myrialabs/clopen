@@ -115,6 +115,19 @@ export function getDetailedFileDiffs(
 }
 
 /**
+ * Count only the lines that actually changed between two strings, using the
+ * same LCS-based diff as git — identical (context) lines are excluded. Use this
+ * for +/- badges instead of naively counting every line of each side.
+ */
+export function countLineChanges(
+	oldContent: string,
+	newContent: string
+): { additions: number; deletions: number } {
+	const { insertions, deletions } = calculateLineDiff(oldContent, newContent);
+	return { additions: insertions, deletions };
+}
+
+/**
  * Calculate line-level diff between two file contents
  * Uses simple line-by-line comparison (similar to diff -u)
  */
