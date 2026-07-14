@@ -1,6 +1,5 @@
 <script lang="ts">
-	import { requestRevealFile } from '$frontend/stores/core/files.svelte';
-	import { getVisiblePanels, workspaceState } from '$frontend/stores/ui/workspace.svelte';
+	import { revealFile } from '$frontend/stores/ui/file-peek.svelte';
 
 	interface Props {
 		filePath: string;
@@ -14,8 +13,7 @@
 	const displayFileName = $derived(fileName || filePath.split(/[/\\]/).pop() || filePath);
 
 	function handleClick() {
-		const visiblePanels = getVisiblePanels(workspaceState.layout);
-		if (visiblePanels.includes('files')) requestRevealFile(filePath);
+		revealFile(filePath);
 	}
 </script>
 

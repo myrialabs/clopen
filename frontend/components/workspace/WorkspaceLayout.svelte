@@ -18,6 +18,7 @@
 	import LoadingScreen from '$frontend/components/common/feedback/LoadingScreen.svelte';
 	import ModalProvider from '$frontend/components/workspace/ModalProvider.svelte';
 	import SettingsModal from '$frontend/components/settings/SettingsModal.svelte';
+	import FilePeekModal from '$frontend/components/files/FilePeekModal.svelte';
 	import NotificationToast from '$frontend/components/common/feedback/NotificationToast.svelte';
 
 	// Services
@@ -200,6 +201,9 @@
 
 <!-- Settings Modal -->
 <SettingsModal />
+
+<!-- File peek modal (opened when a file link fires while the Files panel is hidden) -->
+<FilePeekModal />
 
 <!-- Toast Notifications -->
 {#if notificationStore.notifications.length > 0}

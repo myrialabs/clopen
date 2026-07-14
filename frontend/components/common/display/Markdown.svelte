@@ -3,8 +3,7 @@
 	// the data-md-* link clicks via dispatchMarkdownClick, and owns the markdown CSS. Visual scale is
 	// selected with `variant`; consumers pass only their content and a couple of flags.
 	import { renderMarkdown, dispatchMarkdownClick } from '$frontend/utils/markdown-renderer';
-	import { requestRevealFile } from '$frontend/stores/core/files.svelte';
-	import { getVisiblePanels, workspaceState } from '$frontend/stores/ui/workspace.svelte';
+	import { revealFile } from '$frontend/stores/ui/file-peek.svelte';
 	import { initMonaco } from '$frontend/components/common/editor/monaco-loader';
 	import { getThemeName, registerThemes } from '$frontend/components/common/editor/monaco-themes';
 	import { themeStore } from '$frontend/stores/ui/theme.svelte';
@@ -16,7 +15,7 @@
 		// Raw inline HTML handling — see RenderMarkdownOptions. Default 'sanitize'.
 		html?: 'sanitize' | 'escape';
 		// Override the internal file-link action (e.g. resolve relative paths in a file preview).
-		// Defaults to revealing the path in the Files panel when that panel is visible.
+		// Defaults to revealing the path in the Files panel, or a peek modal when it's hidden.
 		onFileLink?: (path: string) => void;
 		// Extra classes for the root element (layout utilities, etc.).
 		class?: string;
@@ -34,13 +33,10 @@
 
 	let root: HTMLElement | null = $state(null);
 
-	// Default file-link action: reveal in the Files panel when it is open.
-	function revealInFilesPanel(path: string) {
-		if (getVisiblePanels(workspaceState.layout).includes('files')) requestRevealFile(path);
-	}
-
 	function handleClick(event: MouseEvent) {
-		dispatchMarkdownClick(event, { onFileLink: onFileLink ?? revealInFilesPanel });
+		// Default file-link action: reveal in the Files panel, or open a peek modal
+		// when that panel isn't part of the current layout.
+		dispatchMarkdownClick(event, { onFileLink: onFileLink ?? revealFile });
 	}
 
 	// Fence language → Monaco language id (aliases Monaco doesn't resolve itself).

@@ -4,8 +4,7 @@
 	import { getGitStatusLabel, getGitStatusColor } from '$frontend/utils/git-status';
 	import type { GitFileChange } from '$shared/types/git';
 	import type { IconName } from '$shared/types/ui/icons';
-	import { requestRevealFile } from '$frontend/stores/core/files.svelte';
-	import { getVisiblePanels, workspaceState } from '$frontend/stores/ui/workspace.svelte';
+	import { revealFile } from '$frontend/stores/ui/file-peek.svelte';
 	import { projectState } from '$frontend/stores/core/projects.svelte';
 
 	interface Props {
@@ -31,14 +30,13 @@
 		return parts.join('/');
 	});
 	const fileIcon = $derived(getFileIcon(fileName) as IconName);
-	const isFilesPanelVisible = $derived(getVisiblePanels(workspaceState.layout).includes('files'));
 
 	function openInFilesPanel(e: MouseEvent) {
 		e.stopPropagation();
 		const basePath = projectState.currentProject?.path;
 		if (!basePath) return;
 		const separator = basePath.includes('\\') ? '\\' : '/';
-		requestRevealFile(`${basePath}${separator}${file.path}`);
+		revealFile(`${basePath}${separator}${file.path}`);
 	}
 </script>
 
@@ -72,12 +70,12 @@
 
 	<!-- Actions - always visible -->
 	<div class="flex items-center gap-0.5 shrink-0">
-		{#if isFilesPanelVisible && statusCode !== 'D'}
+		{#if statusCode !== 'D'}
 			<button
 				type="button"
 				class="flex items-center justify-center w-6 h-6 rounded-md text-slate-400 hover:bg-violet-500/10 hover:text-violet-500 transition-colors bg-transparent border-none cursor-pointer"
 				onclick={openInFilesPanel}
-				title="Open in Files panel"
+				title="Open in Files"
 			>
 				<Icon name="lucide:file-symlink" class="w-3.5 h-3.5" />
 			</button>

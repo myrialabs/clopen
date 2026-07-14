@@ -19,7 +19,7 @@
 	import { computeLineDiff, type GutterChange } from '$frontend/utils/line-diff';
 	import { gitStatusState } from '$frontend/stores/features/git-status.svelte';
 	import { settings } from '$frontend/stores/features/settings.svelte';
-	import { requestRevealFile } from '$frontend/stores/core/files.svelte';
+	import { revealFile } from '$frontend/stores/ui/file-peek.svelte';
 
 	// Interface untuk MonacoCodeEditor component
 	interface MonacoEditorComponent {
@@ -246,7 +246,7 @@
 	function handleMdFileLink(href: string) {
 		const resolved = resolveRelativeFilePath(href);
 		if (!resolved) return;
-		requestRevealFile(resolved);
+		revealFile(resolved);
 	}
 
 	function switchMdMode(next: 'visual' | 'code') {
