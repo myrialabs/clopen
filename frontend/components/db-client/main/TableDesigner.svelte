@@ -88,31 +88,30 @@
 		}
 	}
 
+	function columnParts(c: ColumnInput): string[] {
+		const parts: string[] = [quote(c.name), c.type];
+		if (!c.nullable) parts.push('NOT NULL');
+		if (c.default) parts.push(`DEFAULT ${c.default}`);
+		if (c.unique) parts.push('UNIQUE');
+		if (c.primary) parts.push('PRIMARY KEY');
+		if (c.autoIncrement) {
+			if (driver === 'mysql') parts.push('AUTO_INCREMENT');
+			else if (driver === 'sqlite') parts.push('AUTOINCREMENT');
+		}
+		return parts;
+	}
+
 	const ddlPreview = $derived.by(() => {
 		if (isDocumentDb) return '';
 		const cols = columns.filter((c) => c.name && c.type);
+		if (cols.length === 0) return '';
 		if (isAddColumn) {
-			if (cols.length === 0) return '';
-			const c = cols[0];
-			const parts: string[] = [quote(c.name), c.type];
-			if (!c.nullable) parts.push('NOT NULL');
-			if (c.default) parts.push(`DEFAULT ${c.default}`);
-			if (c.unique) parts.push('UNIQUE');
-			return `ALTER TABLE ${quote(name || '<table>')} ADD COLUMN ${parts.join(' ')};`;
+			return cols
+				.map((c) => `ALTER TABLE ${quote(name || '<table>')} ADD COLUMN ${columnParts(c).join(' ')};`)
+				.join('\n');
 		}
-		if (!name || cols.length === 0) return '';
-		const lines = cols.map((c) => {
-			const parts: string[] = [quote(c.name), c.type];
-			if (!c.nullable) parts.push('NOT NULL');
-			if (c.default) parts.push(`DEFAULT ${c.default}`);
-			if (c.unique) parts.push('UNIQUE');
-			if (c.primary) parts.push('PRIMARY KEY');
-			if (c.autoIncrement) {
-				if (driver === 'mysql') parts.push('AUTO_INCREMENT');
-				else if (driver === 'sqlite') parts.push('AUTOINCREMENT');
-			}
-			return '  ' + parts.join(' ');
-		});
+		if (!name) return '';
+		const lines = cols.map((c) => '  ' + columnParts(c).join(' '));
 		return `CREATE TABLE ${quote(name)} (\n${lines.join(',\n')}\n);`;
 	});
 
@@ -158,80 +157,82 @@
 				<!-- Columns -->
 				<div class="space-y-2">
 					<div class="flex items-center justify-between">
-						<span class="text-sm font-semibold text-slate-700 dark:text-slate-300">
-							{isAddColumn ? 'Column' : 'Columns'}
-						</span>
-						{#if !isAddColumn}
-							<Button variant="ghost" size="sm" onclick={addColumn}>
-								<Icon name="lucide:plus" class="w-3.5 h-3.5 mr-1" /> Add column
-							</Button>
-						{/if}
+						<span class="text-sm font-semibold text-slate-700 dark:text-slate-300">Columns</span>
+						<Button variant="ghost" size="sm" onclick={addColumn}>
+							<Icon name="lucide:plus" class="w-3.5 h-3.5 mr-1" /> Add column
+						</Button>
 					</div>
 
 					<div class="space-y-2">
 						{#each columns as col, i (i)}
-							<div class="flex items-center gap-2 p-3 bg-slate-50 dark:bg-slate-800/50 rounded-lg border border-slate-200 dark:border-slate-700/60">
-								<!-- Name -->
-								<input
-									type="text"
-									placeholder="column_name"
-									class="w-32 shrink-0 px-2.5 py-1.5 text-sm bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-700 rounded-md focus:outline-none focus:border-violet-500"
-									bind:value={col.name}
-								/>
-								<!-- Type -->
-								<div class="relative w-36 shrink-0">
-									<input
-										type="text"
-										list="type-presets-{i}"
-										placeholder="type"
-										class="w-full px-2.5 py-1.5 text-sm bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-700 rounded-md focus:outline-none focus:border-violet-500"
-										bind:value={col.type}
-									/>
-									<datalist id="type-presets-{i}">
-										{#each TYPE_PRESETS[driver] as t (t)}
-											<option value={t}></option>
-										{/each}
-									</datalist>
+							<div class="space-y-3 p-3 bg-slate-50 dark:bg-slate-800/50 rounded-lg border border-slate-200 dark:border-slate-700/60">
+								<div class="flex items-center justify-between gap-2">
+									<span class="text-xs font-semibold uppercase tracking-wider text-slate-400">Column {i + 1}</span>
+									{#if columns.length > 1}
+										<button
+											type="button"
+											class="shrink-0 flex items-center justify-center w-7 h-7 rounded-md text-slate-400 hover:text-red-500 hover:bg-red-500/10 transition-colors"
+											onclick={() => removeColumn(i)}
+											aria-label="Remove column"
+										>
+											<Icon name="lucide:trash-2" class="w-3.5 h-3.5" />
+										</button>
+									{/if}
 								</div>
-								<!-- Default -->
-								<input
-									type="text"
-									placeholder="default"
-									class="w-24 shrink-0 px-2.5 py-1.5 text-sm bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-700 rounded-md focus:outline-none focus:border-violet-500"
-									bind:value={col.default}
-								/>
-								<!-- Flags -->
-								<div class="flex items-center gap-3 ml-1">
-									<label class="flex items-center gap-1.5 text-xs text-slate-500 dark:text-slate-400 cursor-pointer select-none">
-										<Checkbox bind:checked={col.nullable} ariaLabel="Nullable" />
-										<span>NULL</span>
+								<div class="grid grid-cols-2 gap-2">
+									<div>
+										<label for="td-col-name-{i}" class="text-xs font-medium text-slate-700 dark:text-slate-300">Name</label>
+										<input
+											id="td-col-name-{i}"
+											type="text"
+											placeholder="column_name"
+											class="w-full mt-1 px-2 py-1.5 text-sm bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-700 rounded focus:outline-none focus:border-violet-500"
+											bind:value={col.name}
+										/>
+									</div>
+									<div>
+										<label for="td-col-type-{i}" class="text-xs font-medium text-slate-700 dark:text-slate-300">Type</label>
+										<input
+											id="td-col-type-{i}"
+											type="text"
+											list="type-presets-{i}"
+											placeholder="type"
+											class="w-full mt-1 px-2 py-1.5 text-sm bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-700 rounded focus:outline-none focus:border-violet-500"
+											bind:value={col.type}
+										/>
+										<datalist id="type-presets-{i}">
+											{#each TYPE_PRESETS[driver] as t (t)}
+												<option value={t}></option>
+											{/each}
+										</datalist>
+									</div>
+								</div>
+								<div>
+									<label for="td-col-default-{i}" class="text-xs font-medium text-slate-700 dark:text-slate-300">Default</label>
+									<input
+										id="td-col-default-{i}"
+										type="text"
+										placeholder="e.g. NULL, 0, 'text'"
+										class="w-full mt-1 px-2 py-1.5 text-sm bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-700 rounded focus:outline-none focus:border-violet-500"
+										bind:value={col.default}
+									/>
+								</div>
+								<div class="flex flex-wrap gap-3 text-sm">
+									<label class="inline-flex items-center gap-1.5 text-slate-500 dark:text-slate-400 cursor-pointer select-none">
+										<Checkbox bind:checked={col.nullable} ariaLabel="Nullable" /> Nullable
 									</label>
-									<label class="flex items-center gap-1.5 text-xs text-slate-500 dark:text-slate-400 cursor-pointer select-none">
-										<Checkbox bind:checked={col.primary} ariaLabel="Primary key" />
-										<span>PK</span>
+									<label class="inline-flex items-center gap-1.5 text-slate-500 dark:text-slate-400 cursor-pointer select-none">
+										<Checkbox bind:checked={col.primary} ariaLabel="Primary key" /> Primary key
 									</label>
-									<label class="flex items-center gap-1.5 text-xs text-slate-500 dark:text-slate-400 cursor-pointer select-none">
-										<Checkbox bind:checked={col.unique} ariaLabel="Unique" />
-										<span>UQ</span>
+									<label class="inline-flex items-center gap-1.5 text-slate-500 dark:text-slate-400 cursor-pointer select-none">
+										<Checkbox bind:checked={col.unique} ariaLabel="Unique" /> Unique
 									</label>
 									{#if driver === 'mysql' || driver === 'sqlite' || driver === 'postgres'}
-										<label class="flex items-center gap-1.5 text-xs text-slate-500 dark:text-slate-400 cursor-pointer select-none">
-											<Checkbox bind:checked={col.autoIncrement} ariaLabel="Auto-increment" />
-											<span>AI</span>
+										<label class="inline-flex items-center gap-1.5 text-slate-500 dark:text-slate-400 cursor-pointer select-none">
+											<Checkbox bind:checked={col.autoIncrement} ariaLabel="Auto-increment" /> Auto-increment
 										</label>
 									{/if}
 								</div>
-								<div class="flex-1 min-w-0"></div>
-								{#if !isAddColumn}
-									<button
-										type="button"
-										class="shrink-0 flex items-center justify-center w-7 h-7 rounded-md text-slate-400 hover:text-red-500 hover:bg-red-500/10 transition-colors"
-										onclick={() => removeColumn(i)}
-										aria-label="Remove column"
-									>
-										<Icon name="lucide:trash-2" class="w-3.5 h-3.5" />
-									</button>
-								{/if}
 							</div>
 						{:else}
 							<div class="py-3 text-center text-sm text-slate-400">No columns — click "Add column"</div>

@@ -608,7 +608,7 @@
 >
 	{#snippet children()}
 		{#if isMobile}
-			<header class="flex items-center justify-between py-3 px-4 border-b border-slate-200 dark:border-slate-800">
+			<header class="flex items-center justify-between py-3 px-4 bg-slate-100 dark:bg-slate-900/95 border-b border-slate-200 dark:border-slate-800">
 				<button
 					type="button"
 					class="flex items-center justify-center w-9 h-9 bg-transparent border-none rounded-lg text-slate-500 cursor-pointer transition-all duration-150 hover:bg-violet-500/10 hover:text-slate-900 dark:hover:text-slate-100"
@@ -709,15 +709,13 @@
 						<!-- Mobile: two-row layout | Desktop: single row -->
 						{#if isMobile}
 							<!-- Row 1: Navigation + View selector -->
-							<div class="flex items-center gap-2 shrink-0 bg-white dark:bg-slate-900 rounded-xl border border-slate-200 dark:border-slate-800 p-1 min-w-0">
+							<div class="flex items-center gap-2 shrink-0 bg-white dark:bg-slate-900 rounded-xl border border-slate-200 dark:border-slate-800 py-1 px-1.5 min-w-0">
 								<div class="flex items-center gap-0.5 shrink-0">
-									<button type="button" class="flex items-center gap-1.5 px-2 h-7 rounded-md text-slate-500 dark:text-slate-400 hover:bg-slate-100 dark:hover:bg-slate-800 disabled:opacity-40 disabled:cursor-not-allowed transition-colors" onclick={() => activeConnection && dbClientStore.navBack(activeConnection.id)} disabled={!canNavBack} title="Back" aria-label="Back">
+									<button type="button" class="flex items-center justify-center w-7 h-7 rounded-md text-slate-500 dark:text-slate-400 hover:bg-slate-100 dark:hover:bg-slate-800 disabled:opacity-40 disabled:cursor-not-allowed transition-colors" onclick={() => activeConnection && dbClientStore.navBack(activeConnection.id)} disabled={!canNavBack} title="Back" aria-label="Back">
 										<Icon name="lucide:arrow-left" class="w-4 h-4" />
-										<span class="text-xs">Back</span>
 									</button>
-									<button type="button" class="flex items-center gap-1.5 px-2 h-7 rounded-md text-slate-500 dark:text-slate-400 hover:bg-slate-100 dark:hover:bg-slate-800 disabled:opacity-40 disabled:cursor-not-allowed transition-colors" onclick={() => activeConnection && dbClientStore.navForward(activeConnection.id)} disabled={!canNavForward} title="Forward" aria-label="Forward">
+									<button type="button" class="flex items-center justify-center w-7 h-7 rounded-md text-slate-500 dark:text-slate-400 hover:bg-slate-100 dark:hover:bg-slate-800 disabled:opacity-40 disabled:cursor-not-allowed transition-colors" onclick={() => activeConnection && dbClientStore.navForward(activeConnection.id)} disabled={!canNavForward} title="Forward" aria-label="Forward">
 										<Icon name="lucide:arrow-right" class="w-4 h-4" />
-										<span class="text-xs">Forward</span>
 									</button>
 								</div>
 								<div class="w-px h-4 bg-slate-200 dark:bg-slate-800 shrink-0 mx-1"></div>

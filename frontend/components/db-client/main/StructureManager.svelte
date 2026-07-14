@@ -186,9 +186,8 @@
 	}
 
 	async function doAddColumn(payload: { name: string; columns: { name: string; type: string; nullable: boolean; default: string; primary: boolean; unique: boolean; autoIncrement: boolean }[] }): Promise<void> {
-		const c = payload.columns[0];
-		await dbClientStore.alterTable(connectionId, objectName, [{
-			kind: 'add-column',
+		const ops = payload.columns.map((c) => ({
+			kind: 'add-column' as const,
 			column: {
 				name: c.name,
 				type: c.type,
@@ -198,7 +197,8 @@
 				unique: c.unique,
 				autoIncrement: c.autoIncrement
 			}
-		}], { database, schema });
+		}));
+		await dbClientStore.alterTable(connectionId, objectName, ops, { database, schema });
 		dbClientStore.requestSchemaReload();
 		await load();
 	}
@@ -348,7 +348,7 @@
 			{#if isRedisDriver}
 				<section>
 					<h3 class="text-sm font-semibold text-slate-700 dark:text-slate-200 mb-2">Key details</h3>
-					<div class="border border-slate-200 dark:border-slate-800 rounded-lg overflow-hidden">
+					<div class="border border-slate-200 dark:border-slate-800 rounded-lg overflow-x-auto">
 						<dl class="divide-y divide-slate-200 dark:divide-slate-800 bg-slate-50 dark:bg-slate-800/50 text-sm">
 							<div class="flex items-center justify-between gap-4 px-4 py-2.5">
 								<dt class="text-slate-500 dark:text-slate-400">Name</dt>
@@ -369,8 +369,8 @@
 				{#if isMongoDriver}
 					<section>
 						<h3 class="text-sm font-semibold text-slate-700 dark:text-slate-200 mb-2">Sampled fields</h3>
-						<div class="border border-slate-200 dark:border-slate-800 rounded-lg overflow-hidden">
-							<table class="w-full text-sm bg-slate-50 dark:bg-slate-800/50">
+						<div class="border border-slate-200 dark:border-slate-800 rounded-lg overflow-x-auto">
+							<table class="w-full min-w-[560px] text-sm bg-slate-50 dark:bg-slate-800/50">
 								<thead class="bg-slate-200 dark:bg-slate-800">
 									<tr>
 										<th class="px-3 py-2 text-left font-semibold">Field</th>
@@ -412,8 +412,8 @@
 								</button>
 							{/if}
 						</div>
-						<div class="border border-slate-200 dark:border-slate-800 rounded-lg overflow-hidden">
-							<table class="w-full text-sm bg-slate-50 dark:bg-slate-800/50">
+						<div class="border border-slate-200 dark:border-slate-800 rounded-lg overflow-x-auto">
+							<table class="w-full min-w-[560px] text-sm bg-slate-50 dark:bg-slate-800/50">
 								<thead class="bg-slate-200 dark:bg-slate-800">
 									<tr>
 										<th class="px-3 py-2 text-left font-semibold">Name</th>
@@ -493,8 +493,8 @@
 							</button>
 						{/if}
 					</div>
-					<div class="border border-slate-200 dark:border-slate-800 rounded-lg overflow-hidden">
-						<table class="w-full text-sm bg-slate-50 dark:bg-slate-800/50">
+					<div class="border border-slate-200 dark:border-slate-800 rounded-lg overflow-x-auto">
+						<table class="w-full min-w-[560px] text-sm bg-slate-50 dark:bg-slate-800/50">
 							<thead class="bg-slate-200 dark:bg-slate-800">
 								<tr>
 									<th class="px-3 py-2 text-left font-semibold">Name</th>
@@ -545,8 +545,8 @@
 				{#if isSqlDriver}
 					<section>
 						<h3 class="text-sm font-semibold text-slate-700 dark:text-slate-200 mb-2">Relations</h3>
-						<div class="border border-slate-200 dark:border-slate-800 rounded-lg overflow-hidden">
-							<table class="w-full text-sm bg-slate-50 dark:bg-slate-800/50">
+						<div class="border border-slate-200 dark:border-slate-800 rounded-lg overflow-x-auto">
+							<table class="w-full min-w-[560px] text-sm bg-slate-50 dark:bg-slate-800/50">
 								<thead class="bg-slate-200 dark:bg-slate-800">
 									<tr>
 										<th class="px-3 py-2 text-left font-semibold">Column</th>
