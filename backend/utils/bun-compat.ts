@@ -14,7 +14,11 @@
  * reports "not building a snapshot" — always true for a normally-running
  * process, so `bson` skips its snapshot branch and loads cleanly.
  *
- * Import this before any module that (transitively) imports `mongodb`/`bson`.
+ * This file MUST be loaded via Bun's `--preload` / `bunfig.toml preload`, NOT a
+ * plain `import`. Bun does not guarantee that an earlier ESM side-effect import
+ * runs before a later CJS import is evaluated, so `import './bun-compat'` at the
+ * top of an entry still lets `mongodb`/`bson` load (and crash) first. `preload`
+ * is the only mechanism that reliably runs before the entry's import graph.
  */
 
 if (typeof globalThis.Bun !== 'undefined') {

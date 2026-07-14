@@ -8,11 +8,12 @@ if (typeof globalThis.Bun === 'undefined') {
 	process.exit(1);
 }
 
-// MUST be first import — patches Bun's missing node:v8 isBuildingSnapshot before
-// any module (transitively mongodb/bson) loads and crashes at import time.
-import './utils/bun-compat';
+// Note: the node:v8 isBuildingSnapshot shim (backend/utils/bun-compat.ts) is
+// applied via Bun `preload` (bunfig.toml + --preload in bin/clopen.ts), NOT a
+// plain import here — Bun does not guarantee side-effect import order ahead of
+// the transitive mongodb/bson CJS import, so an import would run too late.
 
-// Cleans process.env before any other feature module reads it.
+// MUST be first import — cleans process.env before any other module reads it.
 import { SERVER_ENV } from './utils/env';
 
 import { Elysia } from 'elysia';

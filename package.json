@@ -54,6 +54,7 @@
     "shared",
     "dist",
     "tsconfig.json",
+    "bunfig.toml",
     ".env.example"
   ],
   "engines": {

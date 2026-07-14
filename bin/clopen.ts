@@ -374,6 +374,9 @@ function ensureBuild() {
 }
 
 async function startServer(options: CLIOptions) {
+	// cwd is set to __dirname (package root) below so Bun picks up bunfig.toml,
+	// which preloads the node:v8 isBuildingSnapshot shim before the backend's
+	// import graph — see bunfig.toml and backend/utils/bun-compat.ts.
 	const startScript = join(__dirname, 'scripts/start.ts');
 
 	const env = { ...process.env, ...loadEnvFile(ENV_FILE) };
