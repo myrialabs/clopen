@@ -792,19 +792,26 @@ class BrowserPreviewServiceManager {
 			}
 		};
 
+		// Control events are project-scoped: emit ONLY to the owning project's room
+		// and stamp projectId. Tab IDs (tab-N) repeat across projects, so a broadcast
+		// would let project A's control event mismark a same-numbered tab in project B.
 		browserMcpControl.on('control-start', (data) => {
 			debug.log('preview', '🚀 Forwarding mcp-control-start:', data);
-			emitToActiveProjects('preview:browser-mcp-control-start', {
+			if (!data.projectId) return;
+			ws.emit.project(data.projectId, 'preview:browser-mcp-control-start', {
 				browserTabId: data.browserTabId,
 				chatSessionId: data.chatSessionId,
+				projectId: data.projectId,
 				timestamp: data.timestamp
 			});
 		});
 
 		browserMcpControl.on('control-end', (data) => {
 			debug.log('preview', '🚀 Forwarding mcp-control-end:', data);
-			emitToActiveProjects('preview:browser-mcp-control-end', {
+			if (!data.projectId) return;
+			ws.emit.project(data.projectId, 'preview:browser-mcp-control-end', {
 				browserTabId: data.browserTabId,
+				projectId: data.projectId,
 				timestamp: data.timestamp
 			});
 		});

@@ -36,6 +36,8 @@ export interface McpControlEvent {
 	type: 'mcp:control-start' | 'mcp:control-end';
 	browserTabId: string;
 	chatSessionId?: string;
+	/** Owning project — lets the forwarder target only that project's room. */
+	projectId?: string;
 	timestamp: number;
 }
 
@@ -260,7 +262,7 @@ export class BrowserMcpControl extends EventEmitter {
 		sessionSet.add(browserTabId);
 
 		// Emit control start event to frontend
-		this.emitControlStart(browserTabId, chatSessionId);
+		this.emitControlStart(browserTabId, chatSessionId, projectId);
 
 		debug.log('mcp', `🎮 Session ${chatSessionId.slice(0, 8)} acquired tab: ${browserTabId} (total: ${sessionSet.size} tabs)`);
 		return true;
@@ -291,7 +293,7 @@ export class BrowserMcpControl extends EventEmitter {
 		}
 
 		// Emit control end event to frontend
-		this.emitControlEnd(browserTabId);
+		this.emitControlEnd(browserTabId, ownership.projectId);
 
 		debug.log('mcp', `🎮 Released tab: ${browserTabId} (was owned by session ${ownership.chatSessionId.slice(0, 8)})`);
 	}
@@ -311,8 +313,9 @@ export class BrowserMcpControl extends EventEmitter {
 		debug.log('mcp', `🎮 Releasing ${tabIds.length} tabs for session ${chatSessionId.slice(0, 8)}`);
 
 		for (const tabId of tabIds) {
+			const ownership = this.tabOwnership.get(tabId);
 			this.tabOwnership.delete(tabId);
-			this.emitControlEnd(tabId);
+			this.emitControlEnd(tabId, ownership?.projectId);
 		}
 
 		this.sessionTabs.delete(chatSessionId);
@@ -337,8 +340,8 @@ export class BrowserMcpControl extends EventEmitter {
 	 */
 	forceReleaseAll(): void {
 		// Emit control-end for all controlled tabs
-		for (const [tabId] of this.tabOwnership) {
-			this.emitControlEnd(tabId);
+		for (const [tabId, info] of this.tabOwnership) {
+			this.emitControlEnd(tabId, info.projectId);
 		}
 
 		this.tabOwnership.clear();
@@ -396,11 +399,12 @@ export class BrowserMcpControl extends EventEmitter {
 	// Private Event Emitters
 	// ============================================================================
 
-	private emitControlStart(browserTabId: string, chatSessionId?: string): void {
+	private emitControlStart(browserTabId: string, chatSessionId?: string, projectId?: string): void {
 		const event: McpControlEvent = {
 			type: 'mcp:control-start',
 			browserTabId,
 			chatSessionId,
+			projectId,
 			timestamp: Date.now()
 		};
 
@@ -409,10 +413,11 @@ export class BrowserMcpControl extends EventEmitter {
 		debug.log('mcp', `📢 Emitted mcp:control-start for tab: ${browserTabId}`);
 	}
 
-	private emitControlEnd(browserTabId: string): void {
+	private emitControlEnd(browserTabId: string, projectId?: string): void {
 		const event: McpControlEvent = {
 			type: 'mcp:control-end',
 			browserTabId,
+			projectId,
 			timestamp: Date.now()
 		};
 

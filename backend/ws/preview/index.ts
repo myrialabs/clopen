@@ -125,10 +125,12 @@ export const previewRouter = createRouter()
 	.emit('preview:browser-mcp-control-start', t.Object({
 		browserTabId: t.String(),
 		chatSessionId: t.Optional(t.String()),
+		projectId: t.Optional(t.String()),
 		timestamp: t.Number()
 	}))
 	.emit('preview:browser-mcp-control-end', t.Object({
 		browserTabId: t.String(),
+		projectId: t.Optional(t.String()),
 		timestamp: t.Number()
 	}))
 	.emit('preview:browser-mcp-cursor-position', t.Object({

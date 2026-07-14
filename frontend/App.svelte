@@ -11,6 +11,7 @@
 	import InvitePage from '$frontend/components/auth/InvitePage.svelte';
 	import { backgroundTerminalService } from '$frontend/services/terminal/background';
 	import { initializeMCPPreview } from '$frontend/services/preview';
+	import { initPreviewTabSync } from '$frontend/stores/features/preview-tabs-workspace.svelte';
 	import { globalStreamMonitor } from '$frontend/services/notification/global-stream-monitor';
 	import { tunnelStore } from '$frontend/stores/features/tunnel.svelte';
 	import { startUpdateChecker, stopUpdateChecker } from '$frontend/stores/ui/update.svelte';
@@ -35,6 +36,10 @@
 
 			// Initialize MCP Preview Integration
 			initializeMCPPreview();
+
+			// Register always-on preview tab-lifecycle sync so MCP-opened tabs appear
+			// in real time even when the Preview panel is hidden/unmounted.
+			initPreviewTabSync();
 
 			// Restore tunnel status and listen for realtime updates
 			tunnelStore.checkStatus();

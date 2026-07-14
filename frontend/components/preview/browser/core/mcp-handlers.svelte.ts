@@ -7,8 +7,8 @@
  */
 
 import { debug } from '$shared/utils/logger';
-import { showInfo, showWarning } from '$frontend/stores/ui/notification.svelte';
 import ws from '$frontend/utils/ws';
+import { getMcpControlledBackendIds } from '$frontend/stores/features/preview-tabs-workspace.svelte';
 import type { TabManager } from './tab-manager.svelte';
 
 export interface McpHandlerConfig {
@@ -25,8 +25,10 @@ export interface McpHandlerConfig {
 export function createMcpHandler(config: McpHandlerConfig) {
 	const { tabManager, transformBrowserToDisplayCoordinates, onCursorUpdate, onCursorHide, onLaunchRequest } = config;
 
-	// Set of backend tab IDs (session IDs) currently controlled by MCP
-	let controlledSessionIds = $state(new Set<string>());
+	// Controlled tabs are owned by the always-on dock sync (single source of
+	// truth); read that shared set so the badge/lock stays correct even when this
+	// panel wasn't mounted at the moment control started/ended.
+	const controlledSessionIds = () => getMcpControlledBackendIds();
 
 	/**
 	 * Setup WebSocket event listeners for MCP control events.
@@ -38,16 +40,10 @@ export function createMcpHandler(config: McpHandlerConfig) {
 		debug.log('preview', '🎧 Setting up MCP event listeners...');
 
 		const unsubscribers = [
-			// Listen for MCP control start/end events (per-tab)
-			ws.on('preview:browser-mcp-control-start', (data) => {
-				debug.log('preview', `📥 Received mcp-control-start:`, data);
-				handleControlStart(data);
-			}),
-
-			ws.on('preview:browser-mcp-control-end', (data) => {
-				debug.log('preview', `📥 Received mcp-control-end:`, data);
-				handleControlEnd(data);
-			}),
+			// MCP control start/end (which tabs are controlled + toasts) is handled by
+			// the always-on dock sync, not here — this handler is view-scoped and only
+			// exists while the panel is mounted. Cursor rendering stays here because it
+			// needs the live canvas transform.
 
 			// Listen for MCP cursor events
 			ws.on('preview:browser-mcp-cursor-position', (data) => {
@@ -97,23 +93,24 @@ export function createMcpHandler(config: McpHandlerConfig) {
 	function isCurrentTabMcpControlled(): boolean {
 		const activeTab = tabManager.tabs.find(t => t.id === tabManager.activeTabId);
 		if (!activeTab?.sessionId) return false;
-		return controlledSessionIds.has(activeTab.sessionId);
+		return controlledSessionIds().has(activeTab.sessionId);
 	}
 
 	/**
 	 * Check if a specific frontend tab is MCP controlled (by sessionId)
 	 */
 	function isSessionControlled(sessionId: string): boolean {
-		return controlledSessionIds.has(sessionId);
+		return controlledSessionIds().has(sessionId);
 	}
 
 	/**
 	 * Get set of frontend tab IDs that are MCP controlled
 	 */
 	function getControlledTabIds(): Set<string> {
+		const controlled = controlledSessionIds();
 		const result = new Set<string>();
 		for (const tab of tabManager.tabs) {
-			if (tab.sessionId && controlledSessionIds.has(tab.sessionId)) {
+			if (tab.sessionId && controlled.has(tab.sessionId)) {
 				result.add(tab.id);
 			}
 		}
@@ -122,42 +119,10 @@ export function createMcpHandler(config: McpHandlerConfig) {
 
 	// Private handlers
 
-	function handleControlStart(data: { browserTabId: string; chatSessionId?: string; timestamp: number }) {
-		debug.log('preview', `🎮 MCP control started for tab: ${data.browserTabId}`);
-
-		// Add to controlled set (reassign for Svelte reactivity)
-		controlledSessionIds = new Set([...controlledSessionIds, data.browserTabId]);
-
-		// Show toast only for the first controlled tab
-		if (controlledSessionIds.size === 1) {
-			showWarning('MCP Control Started', 'An MCP agent is now controlling the browser. User input is blocked.', 5000);
-		}
-	}
-
-	function handleControlEnd(data: { browserTabId: string; timestamp: number }) {
-		debug.log('preview', `🎮 MCP control ended for tab: ${data.browserTabId}`);
-
-		// Remove from controlled set (reassign for Svelte reactivity)
-		const newSet = new Set(controlledSessionIds);
-		newSet.delete(data.browserTabId);
-		controlledSessionIds = newSet;
-
-		// Hide cursor if the released tab was the active one
-		const activeTab = tabManager.tabs.find(t => t.id === tabManager.activeTabId);
-		if (activeTab?.sessionId === data.browserTabId && onCursorHide) {
-			onCursorHide();
-		}
-
-		// Show toast when all tabs released
-		if (controlledSessionIds.size === 0) {
-			showInfo('MCP Control Ended', 'MCP agent released control. You can now interact with the browser.', 4000);
-		}
-	}
-
 	function handleCursorPosition(data: { sessionId: string; x: number; y: number; timestamp: number; source: 'mcp' }) {
 		// Only show cursor if this tab is controlled AND user is viewing it
 		const activeTab = tabManager.tabs.find(t => t.id === tabManager.activeTabId);
-		if (activeTab?.sessionId === data.sessionId && controlledSessionIds.has(data.sessionId) && transformBrowserToDisplayCoordinates) {
+		if (activeTab?.sessionId === data.sessionId && controlledSessionIds().has(data.sessionId) && transformBrowserToDisplayCoordinates) {
 			const transformedPosition = transformBrowserToDisplayCoordinates(data.x, data.y);
 			if (transformedPosition && onCursorUpdate) {
 				onCursorUpdate(transformedPosition.x, transformedPosition.y, false);
@@ -168,31 +133,11 @@ export function createMcpHandler(config: McpHandlerConfig) {
 	function handleCursorClick(data: { sessionId: string; x: number; y: number; timestamp: number; source: 'mcp' }) {
 		// Only show cursor click if this tab is controlled AND user is viewing it
 		const activeTab = tabManager.tabs.find(t => t.id === tabManager.activeTabId);
-		if (activeTab?.sessionId === data.sessionId && controlledSessionIds.has(data.sessionId) && transformBrowserToDisplayCoordinates) {
+		if (activeTab?.sessionId === data.sessionId && controlledSessionIds().has(data.sessionId) && transformBrowserToDisplayCoordinates) {
 			const transformedPosition = transformBrowserToDisplayCoordinates(data.x, data.y);
 			if (transformedPosition && onCursorUpdate) {
 				onCursorUpdate(transformedPosition.x, transformedPosition.y, true);
 			}
-		}
-	}
-
-	/**
-	 * Restore MCP control state after session recovery (browser refresh or project switch)
-	 * Called when recovered backend tab was previously MCP-controlled
-	 */
-	function restoreControlState(frontendTabId: string, browserSessionId: string): void {
-		debug.log('preview', `🔄 Restoring MCP control state for tab: ${frontendTabId} (session: ${browserSessionId})`);
-		controlledSessionIds = new Set([...controlledSessionIds, browserSessionId]);
-	}
-
-	/**
-	 * Reset MCP control state (called before project switch recovery)
-	 */
-	function resetControlState(): void {
-		debug.log('preview', `🔄 Resetting MCP control state`);
-		controlledSessionIds = new Set();
-		if (onCursorHide) {
-			onCursorHide();
 		}
 	}
 
@@ -331,9 +276,7 @@ export function createMcpHandler(config: McpHandlerConfig) {
 		isCurrentTabMcpControlled,
 		isSessionControlled,
 		getControlledTabIds,
-		restoreControlState,
-		resetControlState,
-		get controlledSessionIds() { return controlledSessionIds; }
+		get controlledSessionIds() { return controlledSessionIds(); }
 	};
 }
 

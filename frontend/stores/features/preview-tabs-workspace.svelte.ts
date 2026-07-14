@@ -30,7 +30,9 @@ import {
 } from '$frontend/components/preview/browser/core/tab-operations.svelte';
 import { browserCleanup } from '$frontend/components/preview/browser/core/cleanup.svelte';
 import { setInteractionProjectId } from '$frontend/components/preview/browser/core/interactions.svelte';
-import { registerDock } from '$frontend/stores/ui/project-workspace.svelte';
+import { registerDock, getActiveWorkspaceProjectId } from '$frontend/stores/ui/project-workspace.svelte';
+import { showInfo, showWarning } from '$frontend/stores/ui/notification.svelte';
+import ws from '$frontend/utils/ws';
 import { debug } from '$shared/utils/logger';
 import type { DeviceSize, Rotation } from '$frontend/utils/preview-constants';
 
@@ -38,18 +40,26 @@ import type { DeviceSize, Rotation } from '$frontend/utils/preview-constants';
 export const previewTabManager: TabManager = createTabManager();
 
 /**
- * MCP-controlled tabs recovered for the active project. The per-mount
- * mcpHandler restores its control state from this list on every coordinator
- * initialize, so the list persists for the lifetime of the project (cleared in
- * the dock's clear()) and survives a BrowserPreview unmount/remount.
+ * Backend tab IDs currently under MCP control for the ACTIVE project. Single
+ * source of truth for "is this tab MCP-controlled", shared by the always-on
+ * sync below and every BrowserPreview mount (the per-mount mcpHandler reads
+ * this set). Seeded from the backend in load() (recovered tabs) and kept live
+ * by the control-start/end listeners, so the badge/lock survives a
+ * BrowserPreview unmount/remount and updates even while the panel is hidden.
  */
-let recoveredMcpControlledTabs: Array<{ frontendId: string; backendId: string }> = [];
+let mcpControlledBackendIds = $state(new Set<string>());
 
-export function getRecoveredMcpControlledTabs(): ReadonlyArray<{
-	frontendId: string;
-	backendId: string;
-}> {
-	return recoveredMcpControlledTabs;
+export function getMcpControlledBackendIds(): ReadonlySet<string> {
+	return mcpControlledBackendIds;
+}
+
+/** Add/remove a backend tab id from the controlled set (reassign for reactivity). */
+function setMcpControlled(backendTabId: string, controlled: boolean): void {
+	if (controlled === mcpControlledBackendIds.has(backendTabId)) return;
+	const next = new Set(mcpControlledBackendIds);
+	if (controlled) next.add(backendTabId);
+	else next.delete(backendTabId);
+	mcpControlledBackendIds = next;
 }
 
 /**
@@ -96,7 +106,7 @@ function materializeBackendTab(backendTab: ExistingTabInfo): string {
 	browserCleanup.registerSession(backendTab.tabId);
 
 	if (backendTab.isMcpControlled) {
-		recoveredMcpControlledTabs.push({ frontendId, backendId: backendTab.tabId });
+		setMcpControlled(backendTab.tabId, true);
 	}
 
 	return frontendId;
@@ -186,7 +196,7 @@ registerDock({
 		// Wipe the outgoing project's tabs so nothing flashes through the switch.
 		previewTabManager.clearAllTabs();
 		browserCleanup.clearAll();
-		recoveredMcpControlledTabs = [];
+		mcpControlledBackendIds = new Set();
 		restoredSnapshot = null;
 	},
 	snapshot(): TabSnapshotSlot[] {
@@ -223,3 +233,193 @@ registerDock({
 		}
 	}
 });
+
+// ============================================================================
+// Always-on tab-lifecycle sync
+//
+// Tab lifecycle (open/close/switch/viewport) and MCP control events must be
+// applied to the singleton tab-list regardless of whether the Preview panel is
+// mounted. Previously these listeners lived inside BrowserPreview's per-mount
+// coordinator, so a tab MCP opened while the panel was hidden/minimized never
+// materialized until the next project switch (or a full page reload forced the
+// dock's load()). Registering them once here — on the module-level singleton —
+// keeps the tab-list authoritative in real time.
+// ============================================================================
+
+/**
+ * Whether a project-stamped backend event targets the project currently shown
+ * by the singleton tab-list. The singleton only ever holds the active project's
+ * tabs, so an event for a project the user switched away from must be dropped —
+ * that tab stays in its own project and is recovered via load() on switch-back.
+ * Unstamped events (older backend / no projectId) are accepted so we never drop
+ * legitimate events we can't attribute.
+ */
+function isEventForActiveProject(data: { projectId?: string } | null | undefined): boolean {
+	const eventProjectId = data?.projectId;
+	if (!eventProjectId) return true;
+	const activeProjectId = getActiveWorkspaceProjectId();
+	if (!activeProjectId) return true;
+	return eventProjectId === activeProjectId;
+}
+
+let tabSyncInitialized = false;
+
+/**
+ * Register the always-on tab-lifecycle listeners. Idempotent — safe to call
+ * more than once (e.g. HMR); only the first call wires listeners.
+ */
+export function initPreviewTabSync(): void {
+	if (tabSyncInitialized) return;
+	tabSyncInitialized = true;
+
+	debug.log('preview', '🎧 [dock] Registering always-on tab-lifecycle listeners');
+
+	ws.on('preview:browser-tab-opened', (data: any) => {
+		debug.log('preview', '📥 [dock] preview:browser-tab-opened:', data);
+
+		// Drop events for a project the user has switched away from.
+		if (!isEventForActiveProject(data)) {
+			debug.log('preview', `⏭️ [dock] Ignoring tab-opened for inactive project ${data?.projectId}`);
+			return;
+		}
+
+		// Already linked to a frontend tab (by backend sessionId) — nothing to do.
+		const existingTab = previewTabManager.tabs.find((t) => t.sessionId === data.tabId);
+		if (existingTab) {
+			debug.log('preview', `✓ [dock] Backend tab ${data.tabId} already linked, skipping`);
+			return;
+		}
+
+		// A tab the frontend is launching (user typed a URL) is awaiting its
+		// backend session — link this event to it instead of creating a duplicate.
+		const launchingTab = previewTabManager.tabs.find((t) => t.isLaunchingBrowser && !t.sessionId);
+		if (launchingTab) {
+			debug.log('preview', `🔗 [dock] Linking launching tab ${launchingTab.id} → backend ${data.tabId}`);
+			previewTabManager.updateTab(launchingTab.id, {
+				sessionId: data.tabId,
+				sessionInfo: {
+					quality: 'good',
+					url: data.url,
+					deviceSize: data.deviceSize,
+					rotation: data.rotation
+				},
+				url: data.url,
+				title: data.title,
+				deviceSize: data.deviceSize || 'laptop',
+				rotation: data.rotation || 'landscape',
+				isConnected: true,
+				isStreamReady: false,
+				isLoading: false,
+				errorMessage: null
+			});
+			// Session registration is handled by launchBrowserForTab.
+			return;
+		}
+
+		// Backend-initiated tab (e.g. MCP) — create a matching frontend tab.
+		const frontendTabId = previewTabManager.createTab(data.url);
+		previewTabManager.updateTab(frontendTabId, {
+			sessionId: data.tabId,
+			sessionInfo: {
+				quality: 'good',
+				url: data.url,
+				deviceSize: data.deviceSize,
+				rotation: data.rotation
+			},
+			url: data.url,
+			title: data.title,
+			deviceSize: data.deviceSize || 'laptop',
+			rotation: data.rotation || 'landscape',
+			isConnected: true,
+			isStreamReady: false,
+			isLoading: false,
+			errorMessage: null
+		});
+
+		browserCleanup.registerSession(data.tabId);
+
+		if (data.isActive) {
+			previewTabManager.switchTab(frontendTabId);
+		}
+
+		debug.log('preview', `✅ [dock] Frontend tab created: ${frontendTabId} → backend ${data.tabId}`);
+	});
+
+	ws.on('preview:browser-tab-closed', (data: any) => {
+		debug.log('preview', '📥 [dock] preview:browser-tab-closed:', data);
+
+		if (!isEventForActiveProject(data)) return;
+
+		const tab = previewTabManager.tabs.find((t) => t.sessionId === data.tabId);
+		if (!tab) return;
+
+		previewTabManager.closeTab(tab.id);
+		browserCleanup.unregisterSession(data.tabId);
+		setMcpControlled(data.tabId, false);
+
+		// Backend-driven close (e.g. MCP) left zero tabs → reseed an empty one so
+		// the panel doesn't render as a void.
+		if (previewTabManager.getAllTabs().length === 0) {
+			debug.log('preview', '📝 [dock] No tabs after backend close, seeding empty tab');
+			previewTabManager.createTab('');
+		}
+	});
+
+	ws.on('preview:browser-tab-switched', (data: any) => {
+		debug.log('preview', '📥 [dock] preview:browser-tab-switched:', data);
+
+		if (!isEventForActiveProject(data)) return;
+
+		const tab = previewTabManager.tabs.find((t) => t.sessionId === data.newTabId);
+		if (tab) previewTabManager.switchTab(tab.id);
+	});
+
+	ws.on('preview:browser-viewport-changed' as any, (data: any) => {
+		debug.log('preview', '📥 [dock] preview:browser-viewport-changed:', data);
+
+		if (!isEventForActiveProject(data)) return;
+
+		const tab = previewTabManager.tabs.find((t) => t.sessionId === data.tabId);
+		if (tab) {
+			previewTabManager.updateTab(tab.id, {
+				deviceSize: data.deviceSize,
+				rotation: data.rotation
+			});
+		}
+	});
+
+	ws.on('preview:browser-mcp-control-start', (data: any) => {
+		debug.log('preview', '📥 [dock] preview:browser-mcp-control-start:', data);
+
+		if (!isEventForActiveProject(data)) return;
+
+		const wasEmpty = mcpControlledBackendIds.size === 0;
+		setMcpControlled(data.browserTabId, true);
+
+		// Toast only for the first controlled tab of the active project.
+		if (wasEmpty && mcpControlledBackendIds.size === 1) {
+			showWarning(
+				'MCP Control Started',
+				'An MCP agent is now controlling the browser. User input is blocked.',
+				5000
+			);
+		}
+	});
+
+	ws.on('preview:browser-mcp-control-end', (data: any) => {
+		debug.log('preview', '📥 [dock] preview:browser-mcp-control-end:', data);
+
+		if (!isEventForActiveProject(data)) return;
+
+		setMcpControlled(data.browserTabId, false);
+
+		// Toast when all tabs released.
+		if (mcpControlledBackendIds.size === 0) {
+			showInfo(
+				'MCP Control Ended',
+				'MCP agent released control. You can now interact with the browser.',
+				4000
+			);
+		}
+	});
+}
