@@ -25,6 +25,7 @@
 	let activeId = $state<string | null>(null);
 	let rafId = 0;
 	let lockUntil = 0;
+	let bandHeight = $state(0);
 
 	const activeIdx = $derived(
 		activeId ? items.findIndex(i => i.messageId === activeId) : -1
@@ -40,6 +41,37 @@
 	const downTarget = $derived<NavItem | null>(
 		!canGoDown ? null : activeIdx === -1 ? items[0] : items[activeIdx + 1]
 	);
+
+	// --- Windowing: cap visible dots to the available band height ---
+	const PER_DOT = 15; // px per dot row (line + py-1.5 + gap)
+	const CHROME = 68; // px for chevrons + pill/container padding
+	const ELLIPSIS = 18; // px per ellipsis marker
+
+	const capacity = $derived.by(() => {
+		if (bandHeight <= 0) return Number.MAX_SAFE_INTEGER;
+		return Math.max(1, Math.floor((bandHeight - CHROME) / PER_DOT));
+	});
+
+	const isWindowed = $derived(items.length > capacity);
+
+	const windowSize = $derived.by(() => {
+		if (!isWindowed) return items.length;
+		const forDots = bandHeight - CHROME - 2 * ELLIPSIS;
+		return Math.max(1, Math.min(items.length, Math.floor(forDots / PER_DOT)));
+	});
+
+	const windowStart = $derived.by(() => {
+		const total = items.length;
+		if (!isWindowed) return 0;
+		const center = activeIdx === -1 ? total - 1 : activeIdx;
+		const start = center - Math.floor(windowSize / 2);
+		return Math.max(0, Math.min(start, total - windowSize));
+	});
+
+	const visibleItems = $derived(items.slice(windowStart, windowStart + windowSize));
+	const moreAbove = $derived(windowStart);
+	const moreBelow = $derived(items.length - (windowStart + windowSize));
+	const pageStep = $derived(Math.max(1, windowSize - 1));
 
 	function updateActive() {
 		if (!scrollEl || items.length === 0) return;
@@ -137,6 +169,15 @@
 	function goDown() {
 		if (downTarget) jumpTo(downTarget);
 	}
+
+	// Page the window up/down by ~one window when an ellipsis marker is clicked
+	function pageBy(delta: number) {
+		const total = items.length;
+		if (total === 0) return;
+		const center = activeIdx === -1 ? total - 1 : activeIdx;
+		const target = Math.max(0, Math.min(total - 1, center + delta));
+		jumpTo(items[target]);
+	}
 </script>
 
 {#snippet tooltip(item: NavItem)}
@@ -160,6 +201,7 @@
 	<div
 		class="absolute right-3 lg:right-4 top-3 bottom-14 lg:bottom-16 w-8 pointer-events-none z-20 flex flex-col items-center justify-center"
 		aria-hidden="false"
+		bind:clientHeight={bandHeight}
 	>
 		<div
 			class="pointer-events-auto flex flex-col items-center rounded-full py-2 bg-white/30 dark:bg-slate-900/20 backdrop-blur-sm ring-1 ring-slate-200/40 dark:ring-slate-700/40 opacity-40 hover:opacity-100 transition-opacity duration-200"
@@ -184,7 +226,19 @@
 		</div>
 
 		<div class="flex flex-col items-center gap-0.5 py-1.5">
-			{#each items as item, idx (item.messageId)}
+			{#if moreAbove > 0}
+				<button
+					type="button"
+					onclick={() => pageBy(-pageStep)}
+					class="flex items-center justify-center w-6 mb-1 text-slate-400 dark:text-slate-500 hover:text-slate-600 dark:hover:text-slate-300 transition-colors"
+					aria-label="Show {moreAbove} earlier user message{moreAbove === 1 ? '' : 's'}"
+					title="{moreAbove} more above"
+				>
+					<Icon name="lucide:ellipsis-vertical" class="w-3.5 h-3.5" />
+				</button>
+			{/if}
+			{#each visibleItems as item, i (item.messageId)}
+				{@const idx = windowStart + i}
 				{@const active = activeId === item.messageId}
 				<div class="relative">
 					<button
@@ -209,6 +263,17 @@
 					{/if}
 				</div>
 			{/each}
+			{#if moreBelow > 0}
+				<button
+					type="button"
+					onclick={() => pageBy(pageStep)}
+					class="flex items-center justify-center w-6 mt-1 text-slate-400 dark:text-slate-500 hover:text-slate-600 dark:hover:text-slate-300 transition-colors"
+					aria-label="Show {moreBelow} later user message{moreBelow === 1 ? '' : 's'}"
+					title="{moreBelow} more below"
+				>
+					<Icon name="lucide:ellipsis-vertical" class="w-3.5 h-3.5" />
+				</button>
+			{/if}
 		</div>
 
 		<div class="relative">

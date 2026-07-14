@@ -24,6 +24,7 @@
 	import TunnelModal from '$frontend/components/tunnel/TunnelModal.svelte';
 	import DbClientButton from '$frontend/components/db-client/DbClientButton.svelte';
 	import DbClientModal from '$frontend/components/db-client/DbClientModal.svelte';
+	import SettingButton from '$frontend/components/settings/SettingButton.svelte';
 	import ProjectUserAvatars from '$frontend/components/common/display/ProjectUserAvatars.svelte';
 	import ws from '$frontend/utils/ws';
 
@@ -363,15 +364,7 @@
 				<ViewMenu />
 				<TunnelButton onClick={() => (showTunnelModal = true)} />
 				<DbClientButton onClick={() => (showDbClientModal = true)} />
-
-				<button
-					type="button"
-					class="flex items-center gap-2.5 w-full py-2.5 px-3 bg-transparent border-none rounded-lg text-slate-500 text-sm cursor-pointer transition-all duration-150 hover:bg-violet-500/10 hover:text-slate-900 dark:hover:text-slate-100"
-					onclick={() => openSettingsModal()}
-				>
-					<Icon name="lucide:settings" class="w-4 h-4" />
-					<span>Settings</span>
-				</button>
+				<SettingButton onClick={() => openSettingsModal()} />
 			</footer>
 		{:else}
 			<!-- Collapsed State: Icon Buttons -->
@@ -431,15 +424,7 @@
 				<ViewMenu collapsed={true} />
 				<TunnelButton collapsed={true} onClick={() => (showTunnelModal = true)} />
 				<DbClientButton collapsed={true} onClick={() => (showDbClientModal = true)} />
-
-				<button
-					type="button"
-					class="flex items-center justify-center w-9 h-9 bg-transparent border-none rounded-lg text-slate-500 cursor-pointer transition-all duration-150 relative hover:bg-violet-500/10 hover:text-slate-900 dark:hover:text-slate-100"
-					onclick={() => openSettingsModal()}
-					title="Settings"
-				>
-					<Icon name="lucide:settings" class="w-5 h-5" />
-				</button>
+				<SettingButton collapsed={true} onClick={() => openSettingsModal()} />
 			</footer>
 		{/if}
 	</nav>

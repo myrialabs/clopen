@@ -10,6 +10,7 @@
 	import TunnelModal from '$frontend/components/tunnel/TunnelModal.svelte';
 	import DbClientButton from '$frontend/components/db-client/DbClientButton.svelte';
 	import DbClientModal from '$frontend/components/db-client/DbClientModal.svelte';
+	import SettingButton from '$frontend/components/settings/SettingButton.svelte';
 	import type { Project } from '$shared/types/database/schema';
 	import FolderBrowser from '$frontend/components/common/form/FolderBrowser.svelte';
 	import ProjectUserAvatars from '$frontend/components/common/display/ProjectUserAvatars.svelte';
@@ -139,7 +140,7 @@
 	<!-- Project Selector -->
 	<button
 		type="button"
-		class="flex items-center gap-2 px-3 py-2.5 bg-slate-100/80 dark:bg-slate-800/80 border border-slate-200 dark:border-slate-800 rounded-lg text-slate-900 dark:text-slate-100 text-sm font-medium cursor-pointer transition-all duration-150 flex-1 min-w-0 active:bg-violet-500/10"
+		class="flex items-center gap-2 px-3 py-2 bg-slate-100/80 dark:bg-slate-800/50 border border-slate-200 dark:border-slate-800 rounded-lg text-slate-900 dark:text-slate-100 text-sm font-medium cursor-pointer transition-all duration-150 flex-1 min-w-0 active:bg-violet-500/10"
 		onclick={toggleProjectMenu}
 		aria-expanded={showProjectMenu}
 		aria-haspopup="menu"
@@ -156,7 +157,7 @@
 
 	<!-- Action Buttons -->
 	<div
-		class="flex gap-1 bg-slate-100/80 dark:bg-slate-800/50 p-1 border border-slate-200 dark:border-slate-800 rounded-lg"
+		class="flex gap-1 bg-slate-100/80 dark:bg-slate-800/50 px-1 py-0.5 border border-slate-200 dark:border-slate-800 rounded-lg"
 		role="tablist"
 		aria-label="Action Buttons"
 	>
@@ -167,16 +168,7 @@
 		<DbClientButton collapsed={true} onClick={() => (showDbClientModal = true)} mobile={true} />
 
 		<!-- Settings Button -->
-		<button
-			type="button"
-			class="flex items-center justify-center w-9 h-8 bg-transparent border-none rounded-md text-slate-500 cursor-pointer transition-all duration-150 active:bg-violet-500/10"
-			role="tab"
-			onclick={() => openSettingsModal()}
-			aria-label="Settings"
-			title="Settings"
-		>
-			<Icon name="lucide:settings" class="w-5 h-5" />
-		</button>
+		<SettingButton collapsed={true} mobile={true} onClick={() => openSettingsModal()} />
 	</div>
 </header>
 

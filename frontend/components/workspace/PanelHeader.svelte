@@ -160,13 +160,13 @@
 </script>
 
 <header
-	class="flex items-center justify-between shrink-0 {isMobile
+	class="@container flex items-center justify-between shrink-0 {isMobile
 		? 'h-11 pb-2 px-4 bg-white/90 dark:bg-slate-900/98 border-b border-slate-200 dark:border-slate-800'
 		: 'py-1 px-3.5 bg-slate-100 dark:bg-slate-800/80 border-b border-slate-200 dark:border-slate-800'}"
 >
 	<div class="flex items-center text-sm font-medium text-slate-900 dark:text-slate-100">
 		<div
-			class="flex gap-1"
+			class="flex {isMobile ? 'gap-0.5' : 'gap-1'}"
 			role="tablist"
 			aria-label="Switch panel"
 		>
@@ -184,7 +184,7 @@
 			{#each PANEL_OPTIONS as option}
 				<button
 					type="button"
-					class="flex items-center justify-center {isMobile ? 'w-10 h-9' : 'w-7 h-7'} bg-transparent border-none rounded-md cursor-pointer transition-all duration-150
+					class="flex items-center justify-center {isMobile ? 'w-9 h-8' : 'w-7 h-7'} bg-transparent border-none rounded-md cursor-pointer transition-all duration-150
 						{option.id === panelId
 						? 'bg-violet-500/10 dark:bg-violet-500/20 text-violet-600 dark:text-violet-400'
 						: 'text-slate-500 hover:bg-violet-500/10 hover:text-slate-900 dark:hover:text-slate-100'}"
@@ -194,7 +194,7 @@
 					title={option.title}
 					onclick={() => handleSwitch(option.id)}
 				>
-					<Icon name={option.icon} class={isMobile ? 'w-5.5 h-5.5' : 'w-4 h-4'} />
+					<Icon name={option.icon} class={isMobile ? 'w-4.5 h-4.5' : 'w-4 h-4'} />
 				</button>
 			{/each}
 		</div>
@@ -240,7 +240,7 @@
 
 	<div class="flex items-center">
 		<!-- Panel-specific actions -->
-		<div class="flex items-center gap-1.5">
+		<div class="flex items-center {isMobile ? 'gap-0.5' : 'gap-1.5'}">
 			{#if panelId === 'chat'}
 				{#if sessionState.messages.length > 0 || sessionState.hasMessageHistory}
 					<ContextIndicator {isMobile} />
@@ -273,7 +273,7 @@
 				{/if}
 				<button
 					type="button"
-					class="flex items-center justify-center {isMobile ? 'w-9 h-9' : 'w-6 h-6'} bg-transparent border-none rounded-md text-slate-500 cursor-pointer transition-all duration-150 hover:bg-violet-500/10 hover:text-slate-900 dark:hover:text-slate-100"
+					class="flex items-center justify-center {isMobile ? 'w-9 h-8' : 'w-6 h-6'} bg-transparent border-none rounded-md text-slate-500 cursor-pointer transition-all duration-150 hover:bg-violet-500/10 hover:text-slate-900 dark:hover:text-slate-100"
 					onclick={onHistoryOpen}
 					title="Switch Session"
 				>
@@ -282,7 +282,7 @@
 					{#if sessionState.messages.length > 0 || sessionState.hasMessageHistory}
 					<button
 						type="button"
-						class="flex items-center justify-center {isMobile ? 'w-9 h-9' : 'w-6 h-6'} bg-transparent border-none rounded-md text-slate-500 cursor-pointer transition-all duration-150 hover:bg-violet-500/10 hover:text-slate-900 dark:hover:text-slate-100"
+						class="flex items-center justify-center {isMobile ? 'w-9 h-8' : 'w-6 h-6'} bg-transparent border-none rounded-md text-slate-500 cursor-pointer transition-all duration-150 hover:bg-violet-500/10 hover:text-slate-900 dark:hover:text-slate-100"
 						onclick={() => chatPanelRef?.panelActions?.checkpoints()}
 						title="Restore Checkpoint"
 					>
@@ -291,7 +291,7 @@
 				{/if}
 				<button
 					type="button"
-					class="flex items-center justify-center {isMobile ? 'w-9 h-9' : 'w-6 h-6'} bg-transparent border-none rounded-md text-slate-500 cursor-pointer transition-all duration-150 hover:bg-violet-500/10 hover:text-slate-900 dark:hover:text-slate-100"
+					class="flex items-center justify-center {isMobile ? 'w-9 h-8' : 'w-6 h-6'} bg-transparent border-none rounded-md text-slate-500 cursor-pointer transition-all duration-150 hover:bg-violet-500/10 hover:text-slate-900 dark:hover:text-slate-100"
 					onclick={() => chatPanelRef?.panelActions?.newChat()}
 					title="New Chat"
 				>
@@ -303,7 +303,7 @@
 					<div class="flex gap-1 bg-slate-100/80 dark:bg-slate-800/50 rounded-md">
 						<button
 							type="button"
-							class="flex items-center justify-center {isMobile ? 'w-9 h-9' : 'w-6 h-6'} bg-transparent border-none rounded text-slate-500 cursor-pointer transition-all duration-150 hover:bg-violet-500/10 hover:text-slate-900 dark:hover:text-slate-100 disabled:opacity-40 disabled:cursor-not-allowed
+							class="flex items-center justify-center {isMobile ? 'w-9 h-8' : 'w-6 h-6'} bg-transparent border-none rounded text-slate-500 cursor-pointer transition-all duration-150 hover:bg-violet-500/10 hover:text-slate-900 dark:hover:text-slate-100 disabled:opacity-40 disabled:cursor-not-allowed
 								{filesPanelRef?.panelActions?.getViewMode() === 'tree'
 								? 'bg-violet-500/15 dark:bg-violet-500/25 text-violet-600'
 								: ''}"
@@ -314,7 +314,7 @@
 						</button>
 						<button
 							type="button"
-							class="flex items-center justify-center {isMobile ? 'w-9 h-9' : 'w-6 h-6'} bg-transparent border-none rounded text-slate-500 cursor-pointer transition-all duration-150 hover:bg-violet-500/10 hover:text-slate-900 dark:hover:text-slate-100 disabled:opacity-40 disabled:cursor-not-allowed
+							class="flex items-center justify-center {isMobile ? 'w-9 h-8' : 'w-6 h-6'} bg-transparent border-none rounded text-slate-500 cursor-pointer transition-all duration-150 hover:bg-violet-500/10 hover:text-slate-900 dark:hover:text-slate-100 disabled:opacity-40 disabled:cursor-not-allowed
 								{filesPanelRef?.panelActions?.getViewMode() === 'viewer'
 								? 'bg-violet-500/15 dark:bg-violet-500/25 text-violet-600'
 								: ''}"
@@ -329,7 +329,7 @@
 			{:else if panelId === 'terminal'}
 				<button
 					type="button"
-					class="flex items-center justify-center {isMobile ? 'w-9 h-9' : 'w-6 h-6'} bg-transparent border-none rounded-md text-slate-500 cursor-pointer transition-all duration-150 hover:bg-violet-500/10 hover:text-slate-900 dark:hover:text-slate-100"
+					class="flex items-center justify-center {isMobile ? 'w-9 h-8' : 'w-6 h-6'} bg-transparent border-none rounded-md text-slate-500 cursor-pointer transition-all duration-150 hover:bg-violet-500/10 hover:text-slate-900 dark:hover:text-slate-100"
 					onclick={() => terminalPanelRef?.panelActions?.handleClear()}
 					title="Clear Terminal"
 				>
@@ -337,7 +337,7 @@
 				</button>
 				<button
 					type="button"
-					class="flex items-center justify-center {isMobile ? 'w-9 h-9' : 'w-6 h-6'} bg-transparent border-none rounded-md text-slate-500 cursor-pointer transition-all duration-150 hover:bg-red-500/10 hover:text-red-600 dark:hover:text-red-400 disabled:opacity-50 disabled:cursor-not-allowed"
+					class="flex items-center justify-center {isMobile ? 'w-9 h-8' : 'w-6 h-6'} bg-transparent border-none rounded-md text-slate-500 cursor-pointer transition-all duration-150 hover:bg-red-500/10 hover:text-red-600 dark:hover:text-red-400 disabled:opacity-50 disabled:cursor-not-allowed"
 					onclick={() => terminalPanelRef?.panelActions?.handleCancel()}
 					disabled={terminalPanelRef?.panelActions?.isCancelling()}
 					title="{isMobile ? 'Cancel Command (Ctrl+C)' : 'Send Ctrl+C Signal'}"
@@ -389,7 +389,7 @@
 				<div class="relative">
 					<button
 						type="button"
-						class="flex items-center justify-center {isMobile ? 'w-9 h-9' : 'w-6 h-6'} bg-transparent border-none rounded-md transition-all duration-150 {previewPanelRef?.panelActions?.getIsMcpControlled() ? 'text-slate-400 dark:text-slate-600 cursor-not-allowed opacity-50' : 'text-slate-500 cursor-pointer hover:bg-violet-500/10 hover:text-slate-900 dark:hover:text-slate-100'}"
+						class="flex items-center justify-center {isMobile ? 'w-9 h-8' : 'w-6 h-6'} bg-transparent border-none rounded-md transition-all duration-150 {previewPanelRef?.panelActions?.getIsMcpControlled() ? 'text-slate-400 dark:text-slate-600 cursor-not-allowed opacity-50' : 'text-slate-500 cursor-pointer hover:bg-violet-500/10 hover:text-slate-900 dark:hover:text-slate-100'}"
 						onclick={previewPanelRef?.panelActions?.getIsMcpControlled() ? undefined : toggleDeviceDropdown}
 						disabled={previewPanelRef?.panelActions?.getIsMcpControlled()}
 						title={previewPanelRef?.panelActions?.getIsMcpControlled() ? 'Controlled by MCP agent' : `Device: ${deviceLabel}`}
@@ -477,7 +477,7 @@
 					{@const touchMode = previewPanelRef?.panelActions?.getTouchMode()}
 					<button
 						type="button"
-						class="flex items-center justify-center {isMobile ? 'w-9 h-9' : 'w-6 h-6'} bg-transparent border-none rounded-md cursor-pointer transition-all duration-150 hover:bg-violet-500/10
+						class="flex items-center justify-center {isMobile ? 'w-9 h-8' : 'w-6 h-6'} bg-transparent border-none rounded-md cursor-pointer transition-all duration-150 hover:bg-violet-500/10
 							{touchMode === 'cursor' ? 'text-violet-600 dark:text-violet-400' : 'text-slate-500 hover:text-slate-900 dark:hover:text-slate-100'}"
 						onclick={() => {
 							const current = touchMode || 'scroll';
@@ -493,7 +493,7 @@
 				{@const rotation = previewPanelRef?.panelActions?.getRotation()}
 				<button
 					type="button"
-					class="flex items-center justify-center {isMobile ? 'w-9 h-9' : 'w-6 h-6'} bg-transparent border-none rounded-md transition-all duration-150 {previewPanelRef?.panelActions?.getIsMcpControlled() ? 'text-slate-400 dark:text-slate-600 cursor-not-allowed opacity-50' : 'text-slate-500 cursor-pointer hover:bg-violet-500/10 hover:text-slate-900 dark:hover:text-slate-100'}"
+					class="flex items-center justify-center {isMobile ? 'w-9 h-8' : 'w-6 h-6'} bg-transparent border-none rounded-md transition-all duration-150 {previewPanelRef?.panelActions?.getIsMcpControlled() ? 'text-slate-400 dark:text-slate-600 cursor-not-allowed opacity-50' : 'text-slate-500 cursor-pointer hover:bg-violet-500/10 hover:text-slate-900 dark:hover:text-slate-100'}"
 					onclick={previewPanelRef?.panelActions?.getIsMcpControlled() ? undefined : () => previewPanelRef?.panelActions?.toggleRotation()}
 					disabled={previewPanelRef?.panelActions?.getIsMcpControlled()}
 					title={previewPanelRef?.panelActions?.getIsMcpControlled() ? 'Controlled by MCP agent' : `Orientation: ${rotation === 'portrait' ? 'Portrait' : 'Landscape'} — click to toggle`}
@@ -507,7 +507,7 @@
 					<div class="flex gap-1 bg-slate-100/80 dark:bg-slate-800/50 rounded-md">
 						<button
 							type="button"
-							class="flex items-center justify-center {isMobile ? 'w-9 h-9' : 'w-6 h-6'} bg-transparent border-none rounded text-slate-500 cursor-pointer transition-all duration-150 hover:bg-violet-500/10 hover:text-slate-900 dark:hover:text-slate-100
+							class="flex items-center justify-center {isMobile ? 'w-9 h-8' : 'w-6 h-6'} bg-transparent border-none rounded text-slate-500 cursor-pointer transition-all duration-150 hover:bg-violet-500/10 hover:text-slate-900 dark:hover:text-slate-100
 								{gitPanelRef?.panelActions?.getViewMode() === 'list'
 								? 'bg-violet-500/15 dark:bg-violet-500/25 text-violet-600'
 								: ''}"
@@ -518,7 +518,7 @@
 						</button>
 						<button
 							type="button"
-							class="flex items-center justify-center {isMobile ? 'w-9 h-9' : 'w-6 h-6'} bg-transparent border-none rounded text-slate-500 cursor-pointer transition-all duration-150 hover:bg-violet-500/10 hover:text-slate-900 dark:hover:text-slate-100 disabled:opacity-40 disabled:cursor-not-allowed
+							class="flex items-center justify-center {isMobile ? 'w-9 h-8' : 'w-6 h-6'} bg-transparent border-none rounded text-slate-500 cursor-pointer transition-all duration-150 hover:bg-violet-500/10 hover:text-slate-900 dark:hover:text-slate-100 disabled:opacity-40 disabled:cursor-not-allowed
 								{gitPanelRef?.panelActions?.getViewMode() === 'diff'
 								? 'bg-violet-500/15 dark:bg-violet-500/25 text-violet-600'
 								: ''}"
@@ -535,7 +535,7 @@
 				{#if gitPanelRef?.panelActions?.getIsRepo()}
 					<button
 						type="button"
-						class="flex items-center gap-1 {isMobile ? 'h-9 px-2' : 'h-6 px-1.5'} bg-slate-100 dark:bg-slate-800/60 border-none rounded-md text-slate-700 dark:text-slate-300 cursor-pointer transition-all duration-150 hover:bg-violet-500/10 hover:text-violet-600 dark:hover:text-violet-400"
+						class="flex items-center gap-1 {isMobile ? 'h-8 px-2' : 'h-6 px-1.5'} bg-slate-100 dark:bg-slate-800/60 border-none rounded-md text-slate-700 dark:text-slate-300 cursor-pointer transition-all duration-150 hover:bg-violet-500/10 hover:text-violet-600 dark:hover:text-violet-400"
 						onclick={() => gitPanelRef?.panelActions?.openBranches('local')}
 						title="Manage branches"
 					>

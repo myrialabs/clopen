@@ -38,6 +38,21 @@
 		return 'bg-emerald-500';
 	});
 
+	// Stroke variant of the threshold color for the compact ring gauge
+	const ringColor = $derived.by(() => {
+		if (!usage) return 'stroke-slate-400';
+		if (usage.percentage >= 90) return 'stroke-red-500';
+		if (usage.percentage >= 80) return 'stroke-amber-500';
+		if (usage.percentage >= 60) return 'stroke-yellow-500';
+		return 'stroke-emerald-500';
+	});
+
+	// Ring geometry — radius 8 in a 20x20 viewBox
+	const RING_CIRCUMFERENCE = 2 * Math.PI * 8;
+	const ringOffset = $derived(
+		usage ? RING_CIRCUMFERENCE * (1 - Math.min(usage.percentage, 100) / 100) : RING_CIRCUMFERENCE
+	);
+
 	const textColor = $derived.by(() => {
 		if (!usage) return 'text-slate-400';
 		if (usage.percentage >= 90) return 'text-red-500';
@@ -84,20 +99,42 @@
 	<div class="relative" bind:this={containerRef}>
 		<button
 			type="button"
-			class="flex items-center gap-1.5 {isMobile ? 'px-2.5 h-9' : 'px-2 h-6'} bg-transparent border-none rounded-md cursor-pointer transition-all duration-150 hover:bg-violet-500/10 group"
+			class="flex items-center justify-center px-2 @max-[26rem]:px-0 {isMobile ? 'h-8 @max-[26rem]:w-9' : 'h-6 @max-[26rem]:w-7'} bg-transparent border-none rounded-md text-slate-500 cursor-pointer transition-all duration-150 hover:bg-violet-500/10 hover:text-slate-900 dark:hover:text-slate-100 group"
 			onclick={togglePopover}
 			title="Context: {formatTokens(usage.current)} / {formatTokens(usage.max)} ({Math.round(usage.percentage)}%)"
 		>
 			<div class="flex items-center gap-1.5">
-				<div class="{isMobile ? 'w-14' : 'w-12'} h-2 bg-slate-200 dark:bg-slate-700 rounded-full overflow-hidden">
-					<div
-						class="{barColor} h-full transition-all duration-500"
-						style="width: {Math.min(usage.percentage, 100)}%"
-					></div>
+				<!-- Default: linear bar + %. Collapses to a ring-only when the panel/dock is narrow (container query on PanelHeader). -->
+				<div class="flex items-center gap-1.5 @max-[26rem]:hidden">
+					<div class="{isMobile ? 'w-14' : 'w-12'} h-2 bg-slate-200 dark:bg-slate-700 rounded-full overflow-hidden">
+						<div
+							class="{barColor} h-full transition-all duration-500"
+							style="width: {Math.min(usage.percentage, 100)}%"
+						></div>
+					</div>
+					<span class="text-2xs font-medium {textColor} tabular-nums group-hover:text-slate-900 dark:group-hover:text-slate-100 transition-colors">
+						{Math.round(usage.percentage)}%
+					</span>
 				</div>
-				<span class="text-2xs font-medium {textColor} tabular-nums group-hover:text-slate-900 dark:group-hover:text-slate-100 transition-colors">
-					{Math.round(usage.percentage)}%
-				</span>
+
+				<!-- Narrow / dock kecil: ring only -->
+				<svg
+					class="hidden @max-[26rem]:block {isMobile ? 'w-4.5 h-4.5' : 'w-4 h-4'} -rotate-90 shrink-0"
+					viewBox="0 0 20 20"
+					fill="none"
+				>
+					<circle cx="10" cy="10" r="8" stroke-width="2.5" class="stroke-slate-200 dark:stroke-slate-700" />
+					<circle
+						cx="10"
+						cy="10"
+						r="8"
+						stroke-width="2.5"
+						stroke-linecap="round"
+						class="{ringColor} transition-all duration-500"
+						stroke-dasharray={RING_CIRCUMFERENCE}
+						stroke-dashoffset={ringOffset}
+					/>
+				</svg>
 			</div>
 		</button>
 

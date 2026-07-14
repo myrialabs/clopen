@@ -26,7 +26,7 @@
 		aria-label="Public Tunnel"
 		title="Public Tunnel"
 	>
-		<Icon name="lucide:cloud-upload" class="w-5 h-5" />
+		<Icon name="lucide:cloud-upload" class="{mobile ? 'w-4.5 h-4.5' : 'w-5 h-5'}" />
 		{#if hasActiveTunnels}
 			<span
 				class="absolute top-0.5 right-0.5 min-w-4 h-4 px-0.5 rounded-full bg-green-500 text-white text-3xs font-bold flex items-center justify-center border-2 border-slate-50 dark:border-slate-900/95"
