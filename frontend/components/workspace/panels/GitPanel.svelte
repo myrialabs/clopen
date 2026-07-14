@@ -1027,6 +1027,7 @@
 		hashShort: string;
 		message: string;
 		author: string;
+		body: string;
 		files: GitFileDiff[];
 		isLoading: boolean;
 	} | null>(null);
@@ -1465,7 +1466,7 @@
 	async function handleViewCommitDiffs(commit: GitCommit, repoPath?: string) {
 		if (!projectId) return;
 		try {
-			const diffs = await ws.http('git:diff-commit', { projectId, commitHash: commit.hash, repoPath }) as GitFileDiff[];
+			const { files: diffs } = await ws.http('git:diff-commit', { projectId, commitHash: commit.hash, repoPath });
 			if (!diffs || diffs.length === 0) {
 				showInfo('No Changes', 'This commit has no file changes.');
 				return;
@@ -1931,6 +1932,7 @@
 			hashShort: commit.hashShort,
 			message: commit.message,
 			author: commit.author,
+			body: '',
 			files: [],
 			isLoading: true
 		};
@@ -1938,16 +1940,16 @@
 		markGitUiDirty();
 
 		try {
-			const diffs = await ws.http('git:diff-commit', { projectId, commitHash: hash, repoPath });
+			const res = await ws.http('git:diff-commit', { projectId, commitHash: hash, repoPath });
 			if (selectedCommit?.hash !== hash) return;
-			selectedCommit = { ...selectedCommit, files: diffs, isLoading: false };
+			selectedCommit = { ...selectedCommit, files: res.files, body: res.body, isLoading: false };
 
 			// Re-open a previously-open commit-file diff tab for this project, now
 			// that the commit's file list is available (lazy restore).
 			const pend = pendingActiveDiff;
 			if (pend && pend.section === 'commit' && pend.commitHash === hash) {
 				pendingActiveDiff = null;
-				const target = diffs.find(d => (d.newPath || d.oldPath) === pend.filePath);
+				const target = res.files.find(d => (d.newPath || d.oldPath) === pend.filePath);
 				if (target) viewCommitFileDiff(target, pend.scrollTop ?? 0);
 			}
 		} catch (err) {
@@ -2136,7 +2138,7 @@
 		if (current.isLoading) return;
 		branchCommitFileState = { ...branchCommitFileState, [hash]: { ...current, isLoading: true } };
 		try {
-			const files = await ws.http('git:diff-commit', { projectId, commitHash: hash, repoPath });
+			const { files } = await ws.http('git:diff-commit', { projectId, commitHash: hash, repoPath });
 			branchCommitFileState = { ...branchCommitFileState, [hash]: { files, isLoading: false } };
 		} catch { branchCommitFileState = { ...branchCommitFileState, [hash]: { ...current, isLoading: false } }; }
 	}
@@ -4787,6 +4789,7 @@ ${bodies}`;
 				commitHash={selectedCommit.hash}
 				commitHashShort={selectedCommit.hashShort}
 				commitMessage={selectedCommit.message}
+				commitBody={selectedCommit.body}
 				commitAuthor={selectedCommit.author}
 				files={selectedCommit.files}
 				isLoading={selectedCommit.isLoading}

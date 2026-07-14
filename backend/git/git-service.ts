@@ -21,6 +21,7 @@ import type {
 	GitBranchInfo,
 	GitOperation,
 	GitFileDiff,
+	GitCommitDiff,
 	GitLogResult,
 	GitRemote,
 	GitStashEntry,
@@ -204,7 +205,7 @@ export class GitService {
 		return parseDiff(result.stdout);
 	}
 
-	async getDiffCommit(cwd: string, commitHash: string): Promise<GitFileDiff[]> {
+	async getDiffCommit(cwd: string, commitHash: string): Promise<GitCommitDiff> {
 		assertSafeGitRevish(commitHash, 'commit hash');
 		// Root commits have no parent, so `<hash>^` can't resolve and `git diff`
 		// fails silently (empty stdout) — which previously surfaced as "No files
@@ -213,10 +214,24 @@ export class GitService {
 		// Commits with a parent (including merges) keep the original behaviour.
 		const hasParent =
 			(await execGit(['rev-parse', '--verify', '--quiet', `${commitHash}^`], cwd)).exitCode === 0;
-		const result = hasParent
-			? await execGit(['diff', `${commitHash}^`, commitHash], cwd)
-			: await execGit(['diff-tree', '-p', '--root', '--no-commit-id', commitHash], cwd);
-		return parseDiff(result.stdout);
+		// Fetch the full commit message alongside the diff so the detail view can
+		// render the body. `%s\0%b` splits cleanly on NUL since a subject never
+		// contains one; the body is kept verbatim (it may span many lines).
+		const [result, messageResult] = await Promise.all([
+			hasParent
+				? execGit(['diff', `${commitHash}^`, commitHash], cwd)
+				: execGit(['diff-tree', '-p', '--root', '--no-commit-id', commitHash], cwd),
+			execGit(['log', '-1', '--format=%s%x00%b', commitHash], cwd)
+		]);
+
+		const raw = messageResult.stdout;
+		const nulIdx = raw.indexOf('\0');
+		const subject = nulIdx >= 0 ? raw.slice(0, nulIdx) : raw.trim();
+		// Preserve leading whitespace (list/paragraph indentation) but drop the
+		// trailing newline git appends after the body.
+		const body = nulIdx >= 0 ? raw.slice(nulIdx + 1).replace(/\s+$/, '') : '';
+
+		return { files: parseDiff(result.stdout), subject, body };
 	}
 
 	async getDiffBetween(cwd: string, from: string, to: string): Promise<GitFileDiff[]> {

@@ -141,6 +141,12 @@ export interface GitLogResult {
 	hasMore: boolean;
 }
 
+export interface GitCommitDiff {
+	files: GitFileDiff[];
+	subject: string;
+	body: string;
+}
+
 // ============================================
 // Conflict Types
 // ============================================

@@ -92,7 +92,11 @@ export const diffHandler = createRouter()
 			commitHash: t.String(),
 			repoPath: t.Optional(t.String())
 		}),
-		response: t.Array(FileDiffSchema)
+		response: t.Object({
+			files: t.Array(FileDiffSchema),
+			subject: t.String(),
+			body: t.String()
+		})
 	}, async ({ data, conn }) => {
 		const project = requireProjectAccess(conn, data.projectId);
 		const cwd = resolveRepoCwd(project.path, data.repoPath);
