@@ -109,7 +109,6 @@
     "@opencode-ai/sdk": "1.15.12",
     "@qwen-code/sdk": "0.1.7",
     "@sinclair/typebox": "0.34.48",
-    "bson": "7.2.0",
     "bun-pty": "0.4.8",
     "dompurify": "3.4.9",
     "elysia": "1.4.27",
@@ -129,8 +128,5 @@
   "trustedDependencies": [
     "puppeteer",
     "sharp"
-  ],
-  "overrides": {
-    "bson": "7.2.0"
-  }
+  ]
 }

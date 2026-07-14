@@ -8,7 +8,11 @@ if (typeof globalThis.Bun === 'undefined') {
 	process.exit(1);
 }
 
-// MUST be first import — cleans process.env before any other module reads it
+// MUST be first import — patches Bun's missing node:v8 isBuildingSnapshot before
+// any module (transitively mongodb/bson) loads and crashes at import time.
+import './utils/bun-compat';
+
+// Cleans process.env before any other feature module reads it.
 import { SERVER_ENV } from './utils/env';
 
 import { Elysia } from 'elysia';
