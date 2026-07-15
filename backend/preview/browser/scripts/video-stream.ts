@@ -29,6 +29,31 @@ export function videoEncoderScript(config: StreamingConfig['video']) {
 	let videoFrameCount = 0;
 	let audioFrameCount = 0;
 	let lastKeyframeTime = 0;
+	let forceNextKeyframe = false;
+	let motionSeq = 0; // Increments per motion frame — used to detect staleness of deferred top-offs
+	let topOffRetryTimer: any = null;
+
+	// Codec selection: prefer VP9 in quantizer mode (per-frame quality control,
+	// Chrome-Remote-Desktop-style), fall back to VP8 with fixed bitrate.
+	// codecId is embedded in every video packet so the client picks the right decoder.
+	// vp9Allowed comes from the CLIENT (decode capability, negotiated at stream
+	// start) — the headless browser can encode VP9, but the viewer must decode it.
+	let codecId = 0; // 0 = vp8, 1 = vp9
+	let usingQuantizer = false;
+	let vp9Allowed = true;
+
+	// Source-side backpressure threshold: when the DataChannel can't drain
+	// (slow network), skip encoding motion frames instead of queueing them.
+	// Kept SMALL (≈ 2-3 motion frames) on purpose: anything queued here is
+	// display latency. Quality adapts to congestion via the quantizer ladder
+	// (see currentMotionQuantizer) long before frames get skipped, so the
+	// stream degrades to coarser-but-current rather than sharp-but-stale.
+	const MAX_BUFFERED_BYTES = 64 * 1024;
+
+	// Frames larger than this are split into fragments (packet type 2) to stay
+	// well under the SCTP max-message-size (~256KB on common WebRTC stacks).
+	// Mostly hit by near-lossless top-off keyframes of complex pages.
+	const FRAGMENT_SIZE = 64 * 1024;
 
 	// Cursor tracking
 	let lastCursor = 'default';
@@ -93,22 +118,53 @@ export function videoEncoderScript(config: StreamingConfig['video']) {
 		lastCursor = 'default';
 	}
 
-	// Detect supported video codec
-	async function detectVideoCodec() {
-		const codecConfig: VideoEncoderConfig = {
+	// Build encoder config for the currently selected codec mode
+	function buildEncoderConfig(width: number, height: number, bitrate?: number): VideoEncoderConfig {
+		if (usingQuantizer) {
+			// Quantizer mode: no bitrate — quality is controlled per-frame in encode()
+			return {
+				codec: 'vp09.00.10.08',
+				width,
+				height,
+				framerate: config.framerate,
+				bitrateMode: 'quantizer',
+				hardwareAcceleration: config.hardwareAcceleration,
+				latencyMode: config.latencyMode
+			} as VideoEncoderConfig;
+		}
+
+		return {
 			codec: config.codec,
-			width: config.width,
-			height: config.height,
-			bitrate: config.bitrate,
+			width,
+			height,
+			bitrate: bitrate || config.bitrate,
 			framerate: config.framerate,
 			hardwareAcceleration: config.hardwareAcceleration,
 			latencyMode: config.latencyMode
 		};
+	}
 
+	// Detect supported video codec — prefer VP9 quantizer mode, fall back to VP8
+	async function detectVideoCodec() {
+		if (vp9Allowed) {
+			usingQuantizer = true;
+			codecId = 1;
+			const vp9Config = buildEncoderConfig(config.width, config.height);
+			try {
+				const support = await VideoEncoder.isConfigSupported(vp9Config);
+				if (support.supported) {
+					return vp9Config;
+				}
+			} catch (e) {}
+		}
+
+		usingQuantizer = false;
+		codecId = 0;
+		const vp8Config = buildEncoderConfig(config.width, config.height);
 		try {
-			const support = await VideoEncoder.isConfigSupported(codecConfig);
+			const support = await VideoEncoder.isConfigSupported(vp8Config);
 			if (support.supported) {
-				return codecConfig;
+				return vp8Config;
 			}
 		} catch (e) {}
 
@@ -150,17 +206,21 @@ export function videoEncoderScript(config: StreamingConfig['video']) {
 
 		peerConnection.oniceconnectionstatechange = () => {};
 
-		// Create DataChannel for encoded chunks
+		// Create DataChannel for encoded chunks.
+		// Reliable + ordered: VP8/VP9 delta chains require in-order, lossless
+		// delivery — a single lost/reordered chunk corrupts decoding until the
+		// next keyframe (smearing/ghosting). Latency is bounded by source-side
+		// frame dropping instead (see MAX_BUFFERED_BYTES backpressure).
 		dataChannel = peerConnection.createDataChannel('media', {
-			ordered: false, // Allow out-of-order delivery for lower latency
-			maxRetransmits: 0 // No retransmits = lower latency
+			ordered: true
 		});
 
 		dataChannel.binaryType = 'arraybuffer';
 
 		dataChannel.onopen = () => {
-			// Force keyframe when DataChannel opens (previous keyframes may have been lost)
-			lastKeyframeTime = 0;
+			// Force keyframe when DataChannel opens — the decoder on the other
+			// side needs a sync point (keyframes are on-demand only)
+			forceNextKeyframe = true;
 		};
 
 		dataChannel.onclose = () => {};
@@ -191,30 +251,62 @@ export function videoEncoderScript(config: StreamingConfig['video']) {
 	function handleEncodedVideoChunk(chunk: EncodedVideoChunk, metadata: any) {
 		if (!dataChannel || dataChannel.readyState !== 'open') return;
 
-		// Send chunk via DataChannel
-		// Format: [type(1)][timestamp(8)][keyframe(1)][size(4)][data]
 		const isKeyframe = chunk.type === 'key' ? 1 : 0;
 		const timestamp = chunk.timestamp;
 		const data = new Uint8Array(chunk.byteLength);
 		chunk.copyTo(data);
 
-		const packet = new ArrayBuffer(1 + 8 + 1 + 4 + data.byteLength);
-		const view = new DataView(packet);
-		const packetData = new Uint8Array(packet);
-
-		// Type: 0 = video
-		view.setUint8(0, 0);
-		// Timestamp (microseconds)
-		view.setBigUint64(1, BigInt(timestamp), true);
-		// Keyframe flag
-		view.setUint8(9, isKeyframe);
-		// Data size
-		view.setUint32(10, data.byteLength, true);
-		// Copy data
-		packetData.set(data, 14);
-
 		try {
-			dataChannel.send(packet);
+			if (data.byteLength <= FRAGMENT_SIZE) {
+				// Single packet
+				// Format: [type=0(1)][timestamp(8)][keyframe(1)][codec(1)][size(4)][data]
+				const packet = new ArrayBuffer(1 + 8 + 1 + 1 + 4 + data.byteLength);
+				const view = new DataView(packet);
+				const packetData = new Uint8Array(packet);
+
+				// Type: 0 = video
+				view.setUint8(0, 0);
+				// Timestamp (microseconds)
+				view.setBigUint64(1, BigInt(timestamp), true);
+				// Keyframe flag
+				view.setUint8(9, isKeyframe);
+				// Codec: 0 = vp8, 1 = vp9 (lets the client pick the right decoder)
+				view.setUint8(10, codecId);
+				// Data size
+				view.setUint32(11, data.byteLength, true);
+				// Copy data
+				packetData.set(data, 15);
+
+				dataChannel.send(packet);
+			} else {
+				// Large frame (e.g. near-lossless top-off keyframe) — fragment.
+				// The channel is reliable + ordered, so fragments arrive in order
+				// and the client simply reassembles by index.
+				// Format: [type=2(1)][timestamp(8)][keyframe(1)][codec(1)][fragIndex(2)][fragCount(2)][size(4)][data]
+				const fragCount = Math.ceil(data.byteLength / FRAGMENT_SIZE);
+
+				for (let i = 0; i < fragCount; i++) {
+					const start = i * FRAGMENT_SIZE;
+					const fragData = data.subarray(start, Math.min(start + FRAGMENT_SIZE, data.byteLength));
+
+					const packet = new ArrayBuffer(1 + 8 + 1 + 1 + 2 + 2 + 4 + fragData.byteLength);
+					const view = new DataView(packet);
+					const packetData = new Uint8Array(packet);
+
+					// Type: 2 = video fragment
+					view.setUint8(0, 2);
+					view.setBigUint64(1, BigInt(timestamp), true);
+					view.setUint8(9, isKeyframe);
+					view.setUint8(10, codecId);
+					view.setUint16(11, i, true);
+					view.setUint16(13, fragCount, true);
+					view.setUint32(15, fragData.byteLength, true);
+					packetData.set(fragData, 19);
+
+					dataChannel.send(packet);
+				}
+			}
+
 			videoFrameCount++;
 		} catch (e) {}
 	}
@@ -222,6 +314,10 @@ export function videoEncoderScript(config: StreamingConfig['video']) {
 	// Send audio chunk (called from AudioContext interception)
 	function sendAudioChunk(timestamp: number, data: Uint8Array) {
 		if (!dataChannel || dataChannel.readyState !== 'open') return;
+
+		// Backpressure: drop audio when the channel is congested — the client's
+		// playback scheduler handles gaps cleanly, and stale audio is worthless
+		if (dataChannel.bufferedAmount > MAX_BUFFERED_BYTES) return;
 
 		// Format: [type(1)][timestamp(8)][size(4)][data]
 		const packet = new ArrayBuffer(1 + 8 + 4 + data.byteLength);
@@ -243,11 +339,50 @@ export function videoEncoderScript(config: StreamingConfig['video']) {
 		} catch (e) {}
 	}
 
-	// Encode video frame from JPEG data
-	async function encodeFrame(imageData: string) {
+	// Congestion-adaptive motion quantizer: when the DataChannel is backing up
+	// (slow network), spend fewer bits per frame instead of stalling. The
+	// still-page top-off restores full quality once motion stops, so temporary
+	// coarseness during congestion is invisible in the end result.
+	function currentMotionQuantizer(): number {
+		const buffered = dataChannel ? dataChannel.bufferedAmount : 0;
+		if (buffered > MAX_BUFFERED_BYTES / 2) return Math.min(60, config.motionQuantizer + 16);
+		if (buffered > MAX_BUFFERED_BYTES / 4) return Math.min(60, config.motionQuantizer + 8);
+		return config.motionQuantizer;
+	}
+
+	// Encode video frame from image data.
+	// Motion frames arrive as JPEG (CDP screencast); top-off frames arrive as
+	// lossless PNG (Page.captureScreenshot) when the page goes still, and are
+	// encoded near-losslessly so the last motion-degraded frame doesn't stick.
+	async function encodeFrame(imageData: string, isTopOff?: boolean) {
 		if (!videoEncoder || !isCapturing) return;
 
 		try {
+			// Source-side backpressure: if the network can't drain the channel,
+			// skip motion frames BEFORE decoding/encoding. Dropping input frames
+			// is safe (the encoder just references the last encoded frame);
+			// dropping encoded chunks would corrupt the delta chain.
+			if (!isTopOff) {
+				motionSeq++;
+				if (dataChannel && dataChannel.bufferedAmount > MAX_BUFFERED_BYTES) {
+					return;
+				}
+			} else if (dataChannel && dataChannel.bufferedAmount > MAX_BUFFERED_BYTES) {
+				// Channel congested — dumping a large near-lossless frame on it
+				// now would spike latency. Defer briefly; abandon if new motion
+				// arrives (the backend captures a fresh top-off after the next
+				// still period anyway).
+				const seqAtCapture = motionSeq;
+				if (topOffRetryTimer) clearTimeout(topOffRetryTimer);
+				topOffRetryTimer = setTimeout(() => {
+					topOffRetryTimer = null;
+					if (motionSeq === seqAtCapture && isCapturing) {
+						encodeFrame(imageData, true);
+					}
+				}, 250);
+				return;
+			}
+
 			// Direct base64 decode (avoids fetch() + data URL parsing overhead)
 			const binaryStr = atob(imageData);
 			const len = binaryStr.length;
@@ -256,9 +391,9 @@ export function videoEncoderScript(config: StreamingConfig['video']) {
 				bytes[i] = binaryStr.charCodeAt(i);
 			}
 
-			// Decode JPEG via createImageBitmap (avoids per-frame ImageDecoder
+			// Decode via createImageBitmap (avoids per-frame ImageDecoder
 			// constructor/destructor overhead)
-			const blob = new Blob([bytes], { type: 'image/jpeg' });
+			const blob = new Blob([bytes], { type: isTopOff ? 'image/png' : 'image/jpeg' });
 			const bitmap = await createImageBitmap(blob);
 
 			// Get aligned timestamp in microseconds
@@ -270,16 +405,30 @@ export function videoEncoderScript(config: StreamingConfig['video']) {
 				alpha: 'discard'
 			});
 
-			// Check if keyframe needed
+			// Keyframes are on-demand only (stream start, reconnect, reconfigure,
+			// client request) — the channel is reliable so no periodic keyframes
+			// are needed. keyframeInterval > 0 re-enables a periodic timer.
 			const now = Date.now();
-			const needsKeyframe = (now - lastKeyframeTime) > (config.keyframeInterval * 1000);
+			const needsKeyframe = forceNextKeyframe ||
+				(config.keyframeInterval > 0 && (now - lastKeyframeTime) > (config.keyframeInterval * 1000));
 
 			if (needsKeyframe) {
 				lastKeyframeTime = now;
+				forceNextKeyframe = false;
 			}
 
-			// Encode frame
-			videoEncoder.encode(frame, { keyFrame: needsKeyframe });
+			// Encode frame — in quantizer mode, quality is chosen per frame:
+			// cheap during motion (raised further under congestion),
+			// near-lossless for still-page top-off refreshes
+			if (usingQuantizer) {
+				const quantizer = isTopOff ? config.topOffQuantizer : currentMotionQuantizer();
+				videoEncoder.encode(frame, {
+					keyFrame: needsKeyframe,
+					vp9: { quantizer }
+				} as VideoEncoderEncodeOptions);
+			} else {
+				videoEncoder.encode(frame, { keyFrame: needsKeyframe });
+			}
 			videoFrameCount++;
 
 			// Close immediately to prevent memory leaks
@@ -288,17 +437,26 @@ export function videoEncoderScript(config: StreamingConfig['video']) {
 		} catch (error) {}
 	}
 
+	// Force the next encoded frame to be a keyframe (client-driven sync point,
+	// PLI equivalent — used when the client decoder errors or joins mid-stream)
+	function forceKeyframe() {
+		forceNextKeyframe = true;
+	}
+
 	// Start streaming
-	async function startStreaming() {
+	// allowVp9: client decode capability negotiated at stream start
+	async function startStreaming(allowVp9?: boolean) {
 		if (isCapturing) return true;
+
+		vp9Allowed = allowVp9 !== false;
 
 		try {
 			await initPeerConnection();
 			await initVideoEncoder();
 
 			isCapturing = true;
-			// Set to 0 to force first frame as keyframe (required for decoder init)
-			lastKeyframeTime = 0;
+			// Force first frame as keyframe (required for decoder init)
+			forceNextKeyframe = true;
 
 			// Start tracking cursor changes
 			startCursorTracking();
@@ -313,6 +471,12 @@ export function videoEncoderScript(config: StreamingConfig['video']) {
 	// Stop streaming
 	function stopStreaming() {
 		isCapturing = false;
+
+		// Cancel any deferred top-off retry
+		if (topOffRetryTimer) {
+			clearTimeout(topOffRetryTimer);
+			topOffRetryTimer = null;
+		}
 
 		// Stop cursor tracking
 		stopCursorTracking();
@@ -391,7 +555,7 @@ export function videoEncoderScript(config: StreamingConfig['video']) {
 	}
 
 	// Reconfigure video encoder with new dimensions (hot-swap)
-	async function reconfigureEncoder(newWidth: number, newHeight: number) {
+	async function reconfigureEncoder(newWidth: number, newHeight: number, newBitrate?: number) {
 		if (!videoEncoder || !isCapturing) {
 			return false;
 		}
@@ -400,16 +564,8 @@ export function videoEncoderScript(config: StreamingConfig['video']) {
 			// Flush pending frames
 			await videoEncoder.flush();
 
-			// Create new codec config with updated dimensions
-			const newCodecConfig: VideoEncoderConfig = {
-				codec: config.codec,
-				width: newWidth,
-				height: newHeight,
-				bitrate: config.bitrate,
-				framerate: config.framerate,
-				hardwareAcceleration: config.hardwareAcceleration,
-				latencyMode: config.latencyMode
-			};
+			// Create new codec config with updated dimensions (keeps current codec mode)
+			const newCodecConfig = buildEncoderConfig(newWidth, newHeight, newBitrate);
 
 			// Check if new config is supported
 			const support = await VideoEncoder.isConfigSupported(newCodecConfig);
@@ -423,9 +579,12 @@ export function videoEncoderScript(config: StreamingConfig['video']) {
 			// Update config reference
 			config.width = newWidth;
 			config.height = newHeight;
+			if (newBitrate) {
+				config.bitrate = newBitrate;
+			}
 
-			// Reset keyframe timer to force keyframe after reconfigure
-			lastKeyframeTime = 0;
+			// Force keyframe after reconfigure (decoder needs a sync point at the new dimensions)
+			forceNextKeyframe = true;
 
 			return true;
 		} catch (error) {
@@ -445,7 +604,7 @@ export function videoEncoderScript(config: StreamingConfig['video']) {
 				videoFramesEncoded: videoFrameCount,
 				audioFramesEncoded: audioFrameCount,
 				connectionState: peerConnection.connectionState,
-				videoCodec: config.codec,
+				videoCodec: usingQuantizer ? 'vp9' : config.codec,
 				audioCodec: 'opus' as const
 			};
 
@@ -469,6 +628,7 @@ export function videoEncoderScript(config: StreamingConfig['video']) {
 		handleAnswer,
 		addIceCandidate,
 		encodeFrame,
+		forceKeyframe,
 		sendAudioChunk,
 		getStats,
 		reconfigureEncoder,

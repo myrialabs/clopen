@@ -366,7 +366,7 @@ export class BrowserPreviewService extends EventEmitter {
 	// ============================================================================
 	// WebCodecs Streaming Methods (optimized, ~20-40ms, lower bandwidth)
 	// ============================================================================
-	async startWebCodecsStreaming(tabId: string): Promise<boolean> {
+	async startWebCodecsStreaming(tabId: string, allowVp9 = true): Promise<boolean> {
 		const tab = this.getTab(tabId);
 		if (!tab) {
 			return false;
@@ -374,7 +374,8 @@ export class BrowserPreviewService extends EventEmitter {
 		return await this.videoCapture.startStreaming(
 			tabId,
 			tab,
-			() => this.isValidTab(tabId)
+			() => this.isValidTab(tabId),
+			allowVp9
 		);
 	}
 
@@ -383,20 +384,28 @@ export class BrowserPreviewService extends EventEmitter {
 		await this.videoCapture.stopStreaming(tabId, tab ?? undefined);
 	}
 
-	async updateWebCodecsScale(tabId: string, newScale: number): Promise<boolean> {
+	async refreshWebCodecsScreencast(tabId: string): Promise<boolean> {
 		const tab = this.getTab(tabId);
 		if (!tab) {
 			return false;
 		}
-		return await this.videoCapture.updateScale(tabId, tab, newScale);
+		return await this.videoCapture.refreshScreencast(tabId, tab);
 	}
 
-	async updateWebCodecsViewport(tabId: string, width: number, height: number, newScale: number): Promise<boolean> {
+	async requestWebCodecsKeyframe(tabId: string): Promise<boolean> {
 		const tab = this.getTab(tabId);
 		if (!tab) {
 			return false;
 		}
-		return await this.videoCapture.updateViewport(tabId, tab, width, height, newScale);
+		return await this.videoCapture.requestKeyframe(tabId, tab);
+	}
+
+	async updateWebCodecsViewport(tabId: string, width: number, height: number): Promise<boolean> {
+		const tab = this.getTab(tabId);
+		if (!tab) {
+			return false;
+		}
+		return await this.videoCapture.updateViewport(tabId, tab, width, height);
 	}
 
 	async getWebCodecsOffer(tabId: string): Promise<RTCSessionDescriptionInit | null> {

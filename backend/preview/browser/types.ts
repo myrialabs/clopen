@@ -65,7 +65,7 @@ export interface BrowserTab {
 	lastUniqueFrameTime?: number;
 	stableFrameStartTime?: number;
 	lastCursorInfo?: { x: number; y: number; cursor: string };
-	scale?: number; // Frontend canvas scale factor (for bandwidth optimization)
+	scale?: number; // Frontend display fit-scale (CSS-only; does NOT affect capture resolution)
 
 	// Interaction tracking
 	lastInteractionTime?: number;
@@ -207,15 +207,17 @@ export interface BrowserScreenshotFrame {
  */
 export interface StreamingConfig {
 	video: {
-		codec: string;
+		codec: string; // Fallback codec (VP8, fixed-bitrate mode) when VP9 quantizer mode is unsupported
         width: number;
         height: number;
-        framerate: number;
+        framerate: number; // Max encode fps — screencast frames above this rate are dropped at the source
         bitrate: number;
-        keyframeInterval: number;
+        keyframeInterval: number; // Seconds between periodic keyframes; 0 = on-demand only (start/reconnect/client request)
         screenshotQuality: number;
         hardwareAcceleration: 'no-preference' | 'prefer-hardware' | 'prefer-software';
         latencyMode: 'quality' | 'realtime';
+        motionQuantizer: number; // VP9 per-frame quantizer (0-63) while the page is moving — cheap, allowed to be soft
+        topOffQuantizer: number; // VP9 quantizer for still-page refresh frames — near-lossless so text stays crisp
 	};
 	audio: {
 		codec: string
@@ -229,11 +231,19 @@ export interface StreamingConfig {
 /**
  * Default streaming configuration
  *
- * Optimized for visual quality with reduced resource usage:
- * - Software encoding (hardwareAcceleration: 'no-preference')
- * - JPEG quality 65: slightly lower than before but still preserves thin borders/text
- * - VP8 at 1.0Mbps: ~17% reduction from 1.2Mbps, sharp edges preserved by VP8 codec
- * - keyframeInterval 5s: less frequent large keyframes, saves bandwidth on static pages
+ * Chrome-Remote-Desktop-style adaptive quality:
+ * - Preferred: VP9 in quantizer mode — motion frames encoded cheaply
+ *   (motionQuantizer, raised further under congestion), and when the page
+ *   goes still a near-lossless refresh frame is sent (topOffQuantizer) so
+ *   text stays crisp. Idle pages cost ~0 bandwidth (CDP screencast only
+ *   fires on damage).
+ * - Fallback: VP8 at a resolution-scaled bitrate (see computeBitrate).
+ * - Keyframes on demand only (keyframeInterval 0) — the DataChannel is
+ *   reliable, and the client requests a keyframe on decoder errors.
+ * - Encode rate capped at `framerate` — screencast can fire at compositor
+ *   rate (up to 60fps); excess frames are dropped at the source.
+ * - JPEG quality 75 for motion source frames (encoder quantizer controls
+ *   output size, so higher source quality no longer inflates bandwidth)
  * - Opus for audio (efficient and widely supported)
  */
 export const DEFAULT_STREAMING_CONFIG: StreamingConfig = {
@@ -243,10 +253,12 @@ export const DEFAULT_STREAMING_CONFIG: StreamingConfig = {
 		height: 0,
 		framerate: 24,
 		bitrate: 1_000_000,
-		keyframeInterval: 5,
-		screenshotQuality: 65,
+		keyframeInterval: 0,
+		screenshotQuality: 75,
 		hardwareAcceleration: 'no-preference',
-		latencyMode: 'realtime'
+		latencyMode: 'realtime',
+		motionQuantizer: 40,
+		topOffQuantizer: 10
 	},
 	audio: {
 		codec: 'opus',

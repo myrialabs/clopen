@@ -85,6 +85,13 @@ export class BrowserWebCodecsService {
 	// Codec configuration
 	private videoCodecConfig: VideoDecoderConfig | null = null;
 	private audioCodecConfig: AudioDecoderConfig | null = null;
+	private activeCodecId = -1; // Codec of the current decoder (0 = vp8, 1 = vp9)
+	private lastKeyframeRequestTime = 0; // Throttle for requestKeyframe (PLI equivalent)
+
+	// Reassembly of fragmented video frames (packet type 2 — large frames,
+	// e.g. near-lossless top-off keyframes, split to fit SCTP message limits)
+	private fragmentBuffer: Uint8Array[] | null = null;
+	private fragmentTimestamp = 0;
 
 	// Stats tracking
 	private stats: BrowserWebCodecsStreamStats = {
@@ -133,6 +140,12 @@ export class BrowserWebCodecsService {
 	private onError: ((error: Error) => void) | null = null;
 	private onStats: ((stats: BrowserWebCodecsStreamStats) => void) | null = null;
 	private onCursorChange: ((cursor: string) => void) | null = null;
+
+	// Grace period for transient ICE 'disconnected' states. On flaky networks
+	// (mobile, tunnels) ICE regularly drops and recovers by itself within a few
+	// seconds — tearing down immediately caused an endless loading/reconnect loop.
+	private disconnectGraceTimer: ReturnType<typeof setTimeout> | null = null;
+	private static readonly DISCONNECT_GRACE_MS = 5000;
 
 	// Navigation state - when true, DataChannel close is expected and recovery is suppressed
 	private isNavigating = false;
@@ -247,11 +260,21 @@ export class BrowserWebCodecsService {
 			// Setup WebSocket listeners
 			this.setupEventListeners();
 
+			// Detect VP9 decode capability — the encoder prefers VP9 quantizer
+			// mode (adaptive quality) but must fall back to VP8 if we can't decode it
+			let vp9Supported = false;
+			try {
+				const support = await VideoDecoder.isConfigSupported({ codec: 'vp09.00.10.08' });
+				vp9Supported = support.supported === true;
+			} catch {
+				vp9Supported = false;
+			}
+
 			// Request server to start streaming and get offer
 			// Send explicit tabId to ensure backend targets the correct tab
 			// even if user switches tabs during the async negotiation
-			debug.log('webcodecs', `[DIAG] Sending preview:browser-stream-start for session: ${sessionId}`);
-			const response = await ws.http('preview:browser-stream-start', { tabId: sessionId }, 30000);
+			debug.log('webcodecs', `[DIAG] Sending preview:browser-stream-start for session: ${sessionId} (vp9: ${vp9Supported})`);
+			const response = await ws.http('preview:browser-stream-start', { tabId: sessionId, vp9: vp9Supported }, 30000);
 			debug.log('webcodecs', `[DIAG] preview:browser-stream-start response: success=${response.success}, hasOffer=${!!response.offer}, message=${response.message}`);
 
 			if (!response.success) {
@@ -423,6 +446,7 @@ export class BrowserWebCodecsService {
 			this.stats.connectionState = state as RTCPeerConnectionState;
 
 			if (state === 'connected') {
+				this.clearDisconnectGrace();
 				this.isConnected = true;
 				this.stats.isConnected = true;
 				this.startStatsCollection();
@@ -432,6 +456,7 @@ export class BrowserWebCodecsService {
 				}
 			} else if (state === 'failed') {
 				debug.error('webcodecs', 'Connection FAILED');
+				this.clearDisconnectGrace();
 				this.isConnected = false;
 				this.stats.isConnected = false;
 				this.stopStatsCollection();
@@ -442,7 +467,14 @@ export class BrowserWebCodecsService {
 				if (this.onConnectionFailed) {
 					this.onConnectionFailed();
 				}
-			} else if (state === 'disconnected' || state === 'closed') {
+			} else if (state === 'disconnected') {
+				// Transient on flaky networks (mobile/tunnel) — ICE usually
+				// recovers on its own within seconds. Don't tear down yet;
+				// only treat as failure if the grace period expires without
+				// returning to 'connected' (prevents the loading/reconnect loop).
+				this.scheduleDisconnectGrace();
+			} else if (state === 'closed') {
+				this.clearDisconnectGrace();
 				this.isConnected = false;
 				this.stats.isConnected = false;
 				this.stopStatsCollection();
@@ -506,16 +538,17 @@ export class BrowserWebCodecsService {
 
 			if (type === 0) {
 				// Video packet
-				// Format: [type(1)][timestamp(8)][keyframe(1)][size(4)][data]
+				// Format: [type(1)][timestamp(8)][keyframe(1)][codec(1)][size(4)][data]
 				const timestamp = Number(view.getBigUint64(1, true));
 				const isKeyframe = view.getUint8(9) === 1;
-				const size = view.getUint32(10, true);
-				const chunkData = new Uint8Array(data, 14, size);
+				const codecId = view.getUint8(10); // 0 = vp8, 1 = vp9
+				const size = view.getUint32(11, true);
+				const chunkData = new Uint8Array(data, 15, size);
 
 				this.stats.videoBytesReceived += size;
 				this.stats.videoFramesReceived++;
 
-				this.handleVideoChunk(chunkData, timestamp, isKeyframe);
+				this.handleVideoChunk(chunkData, timestamp, isKeyframe, codecId);
 			} else if (type === 1) {
 				// Audio packet
 				// Format: [type(1)][timestamp(8)][size(4)][data]
@@ -527,6 +560,42 @@ export class BrowserWebCodecsService {
 				this.stats.audioFramesReceived++;
 
 				this.handleAudioChunk(chunkData, timestamp);
+			} else if (type === 2) {
+				// Fragmented video packet (large frames, e.g. top-off keyframes)
+				// Format: [type(1)][timestamp(8)][keyframe(1)][codec(1)][fragIndex(2)][fragCount(2)][size(4)][data]
+				const timestamp = Number(view.getBigUint64(1, true));
+				const isKeyframe = view.getUint8(9) === 1;
+				const codecId = view.getUint8(10);
+				const fragIndex = view.getUint16(11, true);
+				const fragCount = view.getUint16(13, true);
+				const size = view.getUint32(15, true);
+				const fragData = new Uint8Array(data, 19, size);
+
+				this.stats.videoBytesReceived += size;
+
+				// New timestamp invalidates any incomplete fragment set.
+				// The channel is reliable + ordered, so this shouldn't happen —
+				// it's a safety net against desync after reconnects.
+				if (!this.fragmentBuffer || this.fragmentTimestamp !== timestamp) {
+					this.fragmentBuffer = [];
+					this.fragmentTimestamp = timestamp;
+				}
+				this.fragmentBuffer[fragIndex] = fragData;
+
+				const received = this.fragmentBuffer.filter(Boolean).length;
+				if (received === fragCount) {
+					const totalSize = this.fragmentBuffer.reduce((sum, f) => sum + f.byteLength, 0);
+					const fullData = new Uint8Array(totalSize);
+					let offset = 0;
+					for (const frag of this.fragmentBuffer) {
+						fullData.set(frag, offset);
+						offset += frag.byteLength;
+					}
+					this.fragmentBuffer = null;
+
+					this.stats.videoFramesReceived++;
+					this.handleVideoChunk(fullData, timestamp, isKeyframe, codecId);
+				}
 			}
 		} catch (error) {
 			debug.error('webcodecs', 'DataChannel message parse error:', error);
@@ -536,14 +605,32 @@ export class BrowserWebCodecsService {
 	/**
 	 * Handle video chunk - decode and render
 	 */
-	private async handleVideoChunk(data: Uint8Array, timestamp: number, isKeyframe: boolean): Promise<void> {
+	private async handleVideoChunk(data: Uint8Array, timestamp: number, isKeyframe: boolean, codecId: number): Promise<void> {
+		// Codec changed mid-stream (e.g. navigation re-injected the encoder
+		// with different codec support) — reinit decoder on the keyframe
+		if (this.videoDecoder && isKeyframe && codecId !== this.activeCodecId) {
+			try {
+				this.videoDecoder.close();
+			} catch {}
+			this.videoDecoder = null;
+		}
+
 		// Initialize decoder on first keyframe
 		if (!this.videoDecoder && isKeyframe) {
-			await this.initVideoDecoder(data);
+			try {
+				await this.initVideoDecoder(codecId);
+			} catch {
+				// Codec unsupported or init failed — chunk is dropped below;
+				// keyframe request throttle prevents a request storm
+			}
 		}
 
 		if (!this.videoDecoder) {
+			// Delta frame without a decoder (joined mid-stream or decoder just
+			// errored) — ask the server for a sync point instead of waiting
+			// for the periodic keyframe interval
 			this.stats.videoFramesDropped++;
+			this.requestKeyframe();
 			return;
 		}
 
@@ -558,6 +645,7 @@ export class BrowserWebCodecsService {
 		} catch (error) {
 			debug.error('webcodecs', 'Video decode error:', error);
 			this.stats.videoFramesDropped++;
+			this.requestKeyframe();
 		}
 	}
 
@@ -590,12 +678,13 @@ export class BrowserWebCodecsService {
 	}
 
 	/**
-	 * Initialize VideoDecoder
+	 * Initialize VideoDecoder for the codec announced in the packet header
 	 */
-	private async initVideoDecoder(firstChunkData: Uint8Array): Promise<void> {
-		// Use VP8 codec
-		const codec = 'vp8';
-		this.stats.videoCodec = 'vp8';
+	private async initVideoDecoder(codecId: number): Promise<void> {
+		// Codec string must match the encoder in the headless browser:
+		// 0 = VP8 (fallback), 1 = VP9 profile 0 (quantizer mode)
+		const codec = codecId === 1 ? 'vp09.00.10.08' : 'vp8';
+		this.stats.videoCodec = codecId === 1 ? 'vp9' : 'vp8';
 
 		this.videoCodecConfig = {
 			codec,
@@ -617,14 +706,69 @@ export class BrowserWebCodecsService {
 					// causing handleVideoChunk's `!this.videoDecoder` check to never fire
 					// → all subsequent frames permanently dropped (stuck frames bug).
 					this.videoDecoder = null;
+					// Ask the server for a fresh sync point right away
+					this.requestKeyframe();
 				}
 			});
 
 			this.videoDecoder.configure(this.videoCodecConfig);
+			this.activeCodecId = codecId;
 			debug.log('webcodecs', 'VideoDecoder initialized:', codec);
 		} catch (error) {
 			debug.error('webcodecs', 'VideoDecoder init error:', error);
 			throw error;
+		}
+	}
+
+	/**
+	 * Start the grace timer for a transient 'disconnected' state.
+	 * If the connection doesn't return to 'connected' before the timer fires,
+	 * treat it as a real failure and trigger recovery.
+	 */
+	private scheduleDisconnectGrace(): void {
+		if (this.disconnectGraceTimer) return;
+
+		debug.warn('webcodecs', `Connection disconnected — ${BrowserWebCodecsService.DISCONNECT_GRACE_MS}ms grace period before recovery`);
+		this.disconnectGraceTimer = setTimeout(() => {
+			this.disconnectGraceTimer = null;
+
+			if (this.isCleaningUp) return;
+			if (this.peerConnection?.connectionState === 'connected') return;
+
+			debug.warn('webcodecs', 'Disconnect grace period expired — treating as connection failure');
+			this.isConnected = false;
+			this.stats.isConnected = false;
+			this.stopStatsCollection();
+			this.stopBandwidthLogging();
+			if (this.onConnectionChange) {
+				this.onConnectionChange(false);
+			}
+			if (this.onConnectionFailed) {
+				this.onConnectionFailed();
+			}
+		}, BrowserWebCodecsService.DISCONNECT_GRACE_MS);
+	}
+
+	private clearDisconnectGrace(): void {
+		if (this.disconnectGraceTimer) {
+			clearTimeout(this.disconnectGraceTimer);
+			this.disconnectGraceTimer = null;
+		}
+	}
+
+	/**
+	 * Request a keyframe from the server (PLI equivalent), throttled to 1/s.
+	 * Used when the decoder errors or delta frames arrive without a decoder —
+	 * much faster recovery than waiting for the periodic keyframe interval.
+	 */
+	private requestKeyframe(): void {
+		const now = Date.now();
+		if (now - this.lastKeyframeRequestTime < 1000) return;
+		this.lastKeyframeRequestTime = now;
+
+		if (this.sessionId) {
+			debug.log('webcodecs', 'Requesting keyframe from server');
+			ws.http('preview:browser-stream-keyframe', { tabId: this.sessionId }).catch(() => {});
 		}
 	}
 
@@ -811,8 +955,16 @@ export class BrowserWebCodecsService {
 				this.firstFrameTimestamp = this.pendingFrame.timestamp;
 			}
 
-			// Render to canvas with optimal settings
-			this.ctx.drawImage(this.pendingFrame, 0, 0, this.canvas.width, this.canvas.height);
+			// Match canvas backing store to the frame's native size and draw 1:1.
+			// Stretching frames to a differently-sized canvas caused blurry output;
+			// display fit-scaling is handled by CSS transform in the container.
+			const frameWidth = this.pendingFrame.displayWidth;
+			const frameHeight = this.pendingFrame.displayHeight;
+			if (this.canvas.width !== frameWidth || this.canvas.height !== frameHeight) {
+				this.canvas.width = frameWidth;
+				this.canvas.height = frameHeight;
+			}
+			this.ctx.drawImage(this.pendingFrame, 0, 0);
 
 			this.lastFrameTime = timestamp;
 		} catch (error) {
@@ -1196,6 +1348,7 @@ export class BrowserWebCodecsService {
 	private async cleanupLocalConnection(): Promise<void> {
 		this.isCleaningUp = true;
 
+		this.clearDisconnectGrace();
 		this.stopStatsCollection();
 		this.stopBandwidthLogging();
 
@@ -1269,6 +1422,8 @@ export class BrowserWebCodecsService {
 		this.lastFrameTime = 0;
 		this.startTime = 0;
 		this.firstFrameTimestamp = 0;
+		this.fragmentBuffer = null;
+		this.fragmentTimestamp = 0;
 
 		this.syncEstablished = false;
 		this.syncRealTimeOrigin = 0;
@@ -1289,6 +1444,7 @@ export class BrowserWebCodecsService {
 	private async cleanup(): Promise<void> {
 		this.isCleaningUp = true;
 
+		this.clearDisconnectGrace();
 		this.stopStatsCollection();
 		this.stopBandwidthLogging();
 
@@ -1397,6 +1553,8 @@ export class BrowserWebCodecsService {
 		this.lastFrameTime = 0;
 		this.startTime = 0;
 		this.firstFrameTimestamp = 0;
+		this.fragmentBuffer = null;
+		this.fragmentTimestamp = 0;
 
 		// Reset AV sync state
 		this.syncEstablished = false;
@@ -1425,6 +1583,7 @@ export class BrowserWebCodecsService {
 	private async cleanupConnection(): Promise<void> {
 		this.isCleaningUp = true;
 
+		this.clearDisconnectGrace();
 		this.stopStatsCollection();
 		this.stopBandwidthLogging();
 
@@ -1495,6 +1654,8 @@ export class BrowserWebCodecsService {
 		this.lastFrameTime = 0;
 		this.startTime = 0;
 		this.firstFrameTimestamp = 0;
+		this.fragmentBuffer = null;
+		this.fragmentTimestamp = 0;
 
 		// Reset AV sync state
 		this.syncEstablished = false;
