@@ -115,6 +115,18 @@ export const engineQueries = {
 		return db.prepare(`SELECT * FROM engine_providers WHERE id = ?`).get(id) as EngineProvider;
 	},
 
+	updateProvider(id: number, data: { name?: string; apiUrl?: string; options?: string }): void {
+		const db = getDatabase();
+		const sets: string[] = [];
+		const vals: (string | number)[] = [];
+		if (data.name !== undefined) { sets.push('name = ?'); vals.push(data.name); }
+		if (data.apiUrl !== undefined) { sets.push('api_url = ?'); vals.push(data.apiUrl); }
+		if (data.options !== undefined) { sets.push('options = ?'); vals.push(data.options); }
+		if (sets.length === 0) return;
+		vals.push(id);
+		db.prepare(`UPDATE engine_providers SET ${sets.join(', ')} WHERE id = ?`).run(...vals);
+	},
+
 	updateProviderOptions(id: number, options: string): void {
 		const db = getDatabase();
 		db.prepare(`UPDATE engine_providers SET options = ? WHERE id = ?`).run(options, id);

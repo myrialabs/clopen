@@ -5,6 +5,7 @@
 	import Dialog from '$frontend/components/common/overlay/Dialog.svelte';
 	import ws from '$frontend/utils/ws';
 	import { isDarkMode } from '$frontend/utils/theme';
+	import { debug } from '$shared/utils/logger';
 	import { setActiveSection, settingsModalState, clearEngineFocus } from '$frontend/stores/ui/settings-modal.svelte';
 	import { ENGINES } from '$shared/constants/engines';
 	import type { EngineType, QwenProviderPresetId } from '$shared/types/unified';
@@ -32,6 +33,7 @@
 	import { qwenPresetsStore } from '$frontend/stores/features/qwen-presets.svelte';
 	import { opencodeProvidersStore, type OpenCodeProviderItem, type ModelsDevProviderItem } from '$frontend/stores/features/opencode-providers.svelte';
 	import { modelStore } from '$frontend/stores/features/models.svelte';
+	import { settings, togglePinnedModel } from '$frontend/stores/features/settings.svelte';
 	import { showSuccess } from '$frontend/stores/ui/notification.svelte';
 	import type { TerminalViewerHandle } from '@myrialabs/ptykit/client';
 
@@ -190,7 +192,7 @@
 	const ocCatalog = $derived(opencodeProvidersStore.catalog);
 
 	// Add provider flow
-	type OCAddStep = 'idle' | 'picking' | 'configuring' | 'saving' | 'success' | 'error';
+	type OCAddStep = 'idle' | 'picking' | 'configuring' | 'custom' | 'saving' | 'success' | 'error';
 	let ocAddStep = $state<OCAddStep>('idle');
 	let ocAddError = $state('');
 	let ocCatalogSearch = $state('');
@@ -199,6 +201,32 @@
 	let ocAddApiKey = $state('');
 	let ocAddOptions = $state<Record<string, string>>({});
 	let ocCatalogRefreshing = $state(false);
+
+	// Custom provider form
+	let ocCustomName = $state('');
+	let ocCustomSlug = $state('');
+	let ocCustomBaseUrl = $state('');
+	let ocCustomApiKey = $state('');
+	let ocCustomModelRows = $state<{ code: string; alias: string; hidden: boolean }[]>([]);
+	let ocCustomContextLimit = $state(128000);
+	let ocCustomOutputLimit = $state(16384);
+	let ocCustomFetching = $state(false);
+	let ocEditingProviderId = $state<number | null>(null);
+
+	// Edit form (reuses custom provider form fields)
+	let ocEditName = $state('');
+	let ocEditBaseUrl = $state('');
+	let ocEditApiKey = $state('');
+	let ocEditModelRows = $state<{ code: string; alias: string; hidden: boolean }[]>([]);
+	let ocEditContextLimit = $state(128000);
+	let ocEditOutputLimit = $state(16384);
+	let ocEditFetching = $state(false);
+	let ocDragIndex = $state<number | null>(null);
+
+	// Derived: split providers
+	const ocCatalogSlugs = $derived(new Set(ocCatalog.map(c => c.id)));
+	const ocCatalogProviders = $derived(ocProviders.filter(p => ocCatalogSlugs.has(p.slug)));
+	const ocCustomProviders = $derived(ocProviders.filter(p => p.apiUrl && !ocCatalogSlugs.has(p.slug)));
 
 	// Provider account management
 	let ocRenamingAccountId = $state<number | null>(null);
@@ -813,6 +841,52 @@
 
 	// ── OpenCode Provider Management ──
 
+	// ── Row-based model helpers ──
+
+	function modelRowsToOptions(rows: { code: string; alias: string; hidden: boolean }[]): string {
+		const modelIds: string[] = [];
+		const modelNames: Record<string, string> = {};
+		const hiddenModels: string[] = [];
+		for (const row of rows) {
+			const code = row.code.trim();
+			if (!code) continue;
+			modelIds.push(code);
+			const alias = row.alias.trim();
+			if (alias) modelNames[code] = alias;
+			if (row.hidden) hiddenModels.push(code);
+		}
+		return JSON.stringify({
+			models: modelIds,
+			modelNames: Object.keys(modelNames).length > 0 ? modelNames : undefined,
+			hiddenModels: hiddenModels.length > 0 ? hiddenModels : undefined,
+			contextLimit: ocCustomContextLimit,
+			outputLimit: ocCustomOutputLimit,
+		});
+	}
+
+	function editModelRowsToOptions(rows: { code: string; alias: string; hidden: boolean }[], ctx?: number, out?: number): string {
+		const modelIds: string[] = [];
+		const modelNames: Record<string, string> = {};
+		const hiddenModels: string[] = [];
+		for (const row of rows) {
+			const code = row.code.trim();
+			if (!code) continue;
+			modelIds.push(code);
+			const alias = row.alias.trim();
+			if (alias) modelNames[code] = alias;
+			if (row.hidden) hiddenModels.push(code);
+		}
+		return JSON.stringify({
+			models: modelIds,
+			modelNames: Object.keys(modelNames).length > 0 ? modelNames : undefined,
+			hiddenModels: hiddenModels.length > 0 ? hiddenModels : undefined,
+			contextLimit: ctx ?? ocEditContextLimit,
+			outputLimit: out ?? ocEditOutputLimit,
+		});
+	}
+
+	// ── Custom Provider CRUD ──
+
 	function startAddProvider() {
 		ocAddStep = 'picking';
 		ocAddError = '';
@@ -821,6 +895,150 @@
 		ocAddAccountName = '';
 		ocAddApiKey = '';
 		ocAddOptions = {};
+		ocCustomName = '';
+		ocCustomSlug = '';
+		ocCustomBaseUrl = '';
+		ocCustomApiKey = '';
+		ocCustomModelRows = [];
+		ocCustomFetching = false;
+	}
+
+	function startCustomProvider() {
+		ocAddStep = 'custom';
+		ocAddError = '';
+		ocCustomName = '';
+		ocCustomSlug = '';
+		ocCustomBaseUrl = '';
+		ocCustomApiKey = '';
+		ocCustomModelRows = [{ code: '', alias: '', hidden: false }];
+		ocCustomFetching = false;
+	}
+
+	function autoGenerateSlug(name: string): string {
+		return name.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-+|-+$/g, '') || 'custom';
+	}
+
+	function addCustomModelRow() {
+		ocCustomModelRows = [...ocCustomModelRows, { code: '', alias: '', hidden: false }];
+	}
+
+	function removeCustomModelRow(index: number) {
+		ocCustomModelRows = ocCustomModelRows.filter((_, i) => i !== index);
+	}
+
+	async function fetchCustomModels() {
+		if (!ocCustomBaseUrl.trim()) return;
+		ocCustomFetching = true;
+		ocAddError = '';
+		try {
+			const baseUrl = ocCustomBaseUrl.trim().replace(/\/+$/, '');
+			const res = await fetch(`${baseUrl}/models`, { signal: AbortSignal.timeout(5000) });
+			if (!res.ok) throw new Error(`HTTP ${res.status}`);
+			const body = await res.json() as { data?: { id: string }[] };
+			const ids = (body.data || []).map(m => m.id);
+			if (ids.length === 0) throw new Error('No models returned');
+			ocCustomModelRows = ids.map(id => ({ code: id, alias: '', hidden: false }));
+		} catch (err: any) {
+			ocAddError = `Failed to fetch models: ${err?.message || 'unknown error'}`;
+		} finally {
+			ocCustomFetching = false;
+		}
+	}
+
+	function isCustomProviderValid(): boolean {
+		return !!ocCustomName.trim() && !!ocCustomSlug.trim() && !!ocCustomBaseUrl.trim() && ocCustomModelRows.some(r => r.code.trim());
+	}
+
+	async function submitCustomProvider() {
+		if (!isCustomProviderValid()) return;
+		ocAddStep = 'saving';
+		ocAddError = '';
+		try {
+			const options = modelRowsToOptions(ocCustomModelRows);
+			await opencodeProvidersStore.addProvider({
+				slug: ocCustomSlug.trim(),
+				name: ocCustomName.trim(),
+				npm: '@ai-sdk/openai-compatible',
+				apiUrl: ocCustomBaseUrl.trim().replace(/\/+$/, ''),
+				options,
+				accountName: ocCustomApiKey.trim() ? `${ocCustomName.trim()} key` : `${ocCustomName.trim()} (no key)`,
+				credential: ocCustomApiKey.trim() || '',
+			});
+			ocAddStep = 'success';
+		} catch (error: any) {
+			ocAddError = error?.message || 'Failed to add custom provider';
+			ocAddStep = 'error';
+		}
+	}
+
+	// ── Edit Custom Provider ──
+
+	function startEditCustomProvider(provider: OpenCodeProviderItem) {
+		ocEditingProviderId = provider.id;
+		ocEditName = provider.name;
+		ocEditBaseUrl = provider.apiUrl || '';
+		ocEditApiKey = '';
+		const opts = JSON.parse(provider.options || '{}') as {
+			models?: string[];
+			modelNames?: Record<string, string>;
+			hiddenModels?: string[];
+			contextLimit?: number;
+			outputLimit?: number;
+		};
+		const hiddenSet = new Set(opts.hiddenModels || []);
+		ocEditModelRows = (opts.models || []).map(id => ({
+			code: id,
+			alias: opts.modelNames?.[id] || '',
+			hidden: hiddenSet.has(id),
+		}));
+		ocEditContextLimit = opts.contextLimit || 128000;
+		ocEditOutputLimit = opts.outputLimit || 16384;
+		if (ocEditModelRows.length === 0 && provider.apiUrl) {
+			fetchEditModels();
+		}
+	}
+
+	function cancelEditCustomProvider() {
+		ocEditingProviderId = null;
+	}
+
+	function addEditModelRow() {
+		ocEditModelRows = [...ocEditModelRows, { code: '', alias: '', hidden: false }];
+	}
+
+	function removeEditModelRow(index: number) {
+		ocEditModelRows = ocEditModelRows.filter((_, i) => i !== index);
+	}
+
+	async function fetchEditModels() {
+		if (!ocEditingProviderId || !ocEditBaseUrl.trim()) return;
+		ocEditFetching = true;
+		try {
+			const result = await ws.http('engine:opencode-provider-fetch-models', {
+				id: ocEditingProviderId,
+			}) as { models: { id: string; name?: string }[] };
+			if (result.models.length === 0) throw new Error('No models returned');
+			ocEditModelRows = result.models.map(m => ({ code: m.id, alias: '', hidden: false }));
+		} catch {
+			// silent — user can type manually
+		} finally {
+			ocEditFetching = false;
+		}
+	}
+
+	async function submitEditCustomProvider() {
+		if (!ocEditingProviderId || !ocEditName.trim() || !ocEditBaseUrl.trim()) return;
+		const options = editModelRowsToOptions(ocEditModelRows);
+		try {
+			await opencodeProvidersStore.updateProvider(ocEditingProviderId, {
+				name: ocEditName.trim(),
+				apiUrl: ocEditBaseUrl.trim().replace(/\/+$/, ''),
+				options,
+			});
+			ocEditingProviderId = null;
+		} catch (error: any) {
+			debug.error('settings', 'Failed to update custom provider:', error);
+		}
 	}
 
 	function selectCatalogProvider(provider: ModelsDevProviderItem) {
@@ -2413,137 +2631,329 @@
 							</div>
 						</div>
 
-						{#each ocProviders as provider (provider.id)}
-							<div class="rounded-lg border border-slate-200 dark:border-slate-700/50 bg-slate-50 dark:bg-slate-800/80 overflow-hidden">
-								<!-- Provider header -->
-								<div class="flex items-center justify-between px-3.5 py-2.5 border-b border-slate-200 dark:border-slate-700/50">
-									<div class="flex items-center gap-2 min-w-0">
-										<span class="text-sm font-semibold text-slate-900 dark:text-slate-100 truncate">{provider.name}</span>
-										<span class="text-2xs text-slate-400 font-mono">{provider.slug}</span>
-										{#if !provider.isEnabled}
-											<span class="px-1.5 py-0.5 text-3xs rounded bg-slate-200 dark:bg-slate-700 text-slate-500 dark:text-slate-400">Disabled</span>
-										{/if}
+						<!-- Catalog Providers (no api_url) -->
+						{#if ocCatalogProviders.length > 0}
+							<div class="flex items-center gap-2 mt-4 mb-2">
+								<h5 class="text-xs font-semibold text-slate-500 dark:text-slate-400 uppercase tracking-wider">Catalog</h5>
+								<div class="flex-1 h-px bg-slate-200 dark:bg-slate-700/50"></div>
+							</div>
+							{#each ocCatalogProviders as provider (provider.id)}
+								<div class="rounded-lg border border-slate-200 dark:border-slate-700/50 bg-slate-50 dark:bg-slate-800/80 overflow-hidden">
+									<div class="flex items-center justify-between px-3.5 py-2.5 border-b border-slate-200 dark:border-slate-700/50">
+										<div class="flex items-center gap-2 min-w-0">
+											<span class="text-sm font-semibold text-slate-900 dark:text-slate-100 truncate">{provider.name}</span>
+											<span class="text-2xs text-slate-400 font-mono">{provider.slug}</span>
+											{#if !provider.isEnabled}
+												<span class="px-1.5 py-0.5 text-3xs rounded bg-slate-200 dark:bg-slate-700 text-slate-500 dark:text-slate-400">Disabled</span>
+											{/if}
+										</div>
+										<div class="flex items-center gap-1">
+											<button type="button" class="flex p-1.5 rounded-md text-slate-400 hover:text-blue-600 hover:bg-blue-50 dark:hover:bg-blue-900/20 transition-colors" onclick={() => startEditCustomProvider(provider)} title="Edit provider">
+												<Icon name="lucide:pencil" class="w-3.5 h-3.5" />
+											</button>
+											<button type="button" class="flex p-1.5 rounded-md text-slate-400 hover:text-red-600 hover:bg-red-50 dark:hover:bg-red-900/20 transition-colors" onclick={() => confirmDeleteOCProvider(provider)} title="Remove provider">
+												<Icon name="lucide:trash-2" class="w-3.5 h-3.5" />
+											</button>
+										</div>
 									</div>
-									<div class="flex items-center gap-1">
-										<button
-											type="button"
-											class="flex p-1.5 rounded-md text-slate-400 hover:text-red-600 hover:bg-red-50 dark:hover:bg-red-900/20 transition-colors"
-											onclick={() => confirmDeleteOCProvider(provider)}
-											title="Remove provider"
-										>
-											<Icon name="lucide:trash-2" class="w-3.5 h-3.5" />
-										</button>
-									</div>
-								</div>
-
-								<!-- Accounts list -->
-								<div class="px-3.5 py-2.5 space-y-2">
-									{#if provider.accounts.length === 0}
-										<p class="text-xs text-slate-500 italic">No accounts</p>
-									{:else}
-										{#each provider.accounts as account (account.id)}
-											<div class="flex items-center justify-between px-3.5 py-2.5 rounded-lg border border-slate-200 dark:border-slate-700/50 bg-slate-50 dark:bg-slate-800/80 {account.isActive ? 'ring-1 ring-violet-500/40' : ''}">
-												<div class="w-full flex items-center gap-2.5 min-w-0">
-													<Icon name="lucide:key" class="w-4 h-4 shrink-0 text-slate-400" />
-													{#if ocRenamingAccountId === account.id}
-														<div class="w-full flex items-center gap-2.5">
-															<input
-																type="text"
-																bind:value={ocRenameValue}
-																class="w-full px-2 py-0.5 text-sm rounded border border-slate-300 dark:border-slate-600 bg-white dark:bg-slate-700 text-slate-900 dark:text-slate-100 focus:outline-none focus:ring-1 focus:ring-violet-500"
-															/>
-															<div class="flex items-center gap-1">
-																<button
-																	type="button"
-																	class="flex p-1.5 rounded-md text-slate-400 hover:text-green-600 hover:bg-green-50 dark:hover:bg-green-900/20 transition-colors"
-																	onclick={submitOCRename}
-																	aria-label="Save"
-																>
-																	<Icon name="lucide:check" class="w-3.5 h-3.5" />
-																</button>
-																<button
-																	type="button"
-																	class="flex p-1.5 rounded-md text-slate-400 hover:text-red-600 hover:bg-red-50 dark:hover:bg-red-900/20 transition-colors"
-																	onclick={cancelOCRename}
-																	aria-label="Cancel"
-																>
-																	<Icon name="lucide:x" class="w-3.5 h-3.5" />
-																</button>
+									<div class="px-3.5 py-2.5 space-y-2">
+										{#if provider.accounts.length === 0}
+											<p class="text-xs text-slate-500 italic">No accounts</p>
+										{:else}
+											{#each provider.accounts as account (account.id)}
+												<div class="flex items-center justify-between px-3.5 py-2.5 rounded-lg border border-slate-200 dark:border-slate-700/50 bg-slate-50 dark:bg-slate-800/80 {account.isActive ? 'ring-1 ring-violet-500/40' : ''}">
+													<div class="w-full flex items-center gap-2.5 min-w-0">
+														<Icon name="lucide:key" class="w-4 h-4 shrink-0 text-slate-400" />
+														{#if ocRenamingAccountId === account.id}
+															<div class="w-full flex items-center gap-2.5">
+																<input type="text" bind:value={ocRenameValue} class="w-full px-2 py-0.5 text-sm rounded border border-slate-300 dark:border-slate-600 bg-white dark:bg-slate-700 text-slate-900 dark:text-slate-100 focus:outline-none focus:ring-1 focus:ring-violet-500" />
+																<div class="flex items-center gap-1">
+																	<button type="button" class="flex p-1.5 rounded-md text-slate-400 hover:text-green-600 hover:bg-green-50 dark:hover:bg-green-900/20 transition-colors" onclick={submitOCRename} aria-label="Save"><Icon name="lucide:check" class="w-3.5 h-3.5" /></button>
+																	<button type="button" class="flex p-1.5 rounded-md text-slate-400 hover:text-red-600 hover:bg-red-50 dark:hover:bg-red-900/20 transition-colors" onclick={cancelOCRename} aria-label="Cancel"><Icon name="lucide:x" class="w-3.5 h-3.5" /></button>
+																</div>
 															</div>
-														</div>
-													{:else}
-														<span class="text-sm font-medium text-slate-900 dark:text-slate-100 truncate">{account.name}</span>
-														{#if account.isActive}
-															<span class="inline-flex items-center px-2 py-0.5 rounded-full text-3xs font-semibold bg-violet-100 dark:bg-violet-900/30 text-violet-700 dark:text-violet-300">Active</span>
+														{:else}
+															<span class="text-sm font-medium text-slate-900 dark:text-slate-100 truncate">{account.name}</span>
+															{#if account.isActive}
+																<span class="inline-flex items-center px-2 py-0.5 rounded-full text-3xs font-semibold bg-violet-100 dark:bg-violet-900/30 text-violet-700 dark:text-violet-300">Active</span>
+															{/if}
 														{/if}
+													</div>
+													{#if ocRenamingAccountId !== account.id}
+														<div class="flex items-center gap-1">
+															{#if !account.isActive}
+																<button type="button" class="flex p-1.5 rounded-md text-slate-400 hover:text-violet-600 hover:bg-violet-50 dark:hover:bg-violet-900/20 transition-colors" onclick={() => switchOCAccount(account.id)} title="Switch to this account"><Icon name="lucide:arrow-right-left" class="w-3.5 h-3.5" /></button>
+															{/if}
+															<button type="button" class="flex p-1.5 rounded-md text-slate-400 hover:text-blue-600 hover:bg-blue-50 dark:hover:bg-blue-900/20 transition-colors" onclick={() => startOCRename(account.id, account.name)} title="Rename"><Icon name="lucide:pencil" class="w-3.5 h-3.5" /></button>
+															<button type="button" class="flex p-1.5 rounded-md text-slate-400 hover:text-red-600 hover:bg-red-50 dark:hover:bg-red-900/20 transition-colors" onclick={() => confirmDeleteOCAccount(account.id, account.name)} title="Delete"><Icon name="lucide:trash-2" class="w-3.5 h-3.5" /></button>
+														</div>
 													{/if}
 												</div>
-
-												{#if ocRenamingAccountId !== account.id}
-													<div class="flex items-center gap-1">
-														{#if !account.isActive}
-															<button
-																type="button"
-																class="flex p-1.5 rounded-md text-slate-400 hover:text-violet-600 hover:bg-violet-50 dark:hover:bg-violet-900/20 transition-colors"
-																onclick={() => switchOCAccount(account.id)}
-																title="Switch to this account"
-															>
-																<Icon name="lucide:arrow-right-left" class="w-3.5 h-3.5" />
-															</button>
-														{/if}
-														<button
-															type="button"
-															class="flex p-1.5 rounded-md text-slate-400 hover:text-blue-600 hover:bg-blue-50 dark:hover:bg-blue-900/20 transition-colors"
-															onclick={() => startOCRename(account.id, account.name)}
-															title="Rename"
-														>
-															<Icon name="lucide:pencil" class="w-3.5 h-3.5" />
-														</button>
-														<button
-															type="button"
-															class="flex p-1.5 rounded-md text-slate-400 hover:text-red-600 hover:bg-red-50 dark:hover:bg-red-900/20 transition-colors"
-															onclick={() => confirmDeleteOCAccount(account.id, account.name)}
-															title="Delete"
-														>
-															<Icon name="lucide:trash-2" class="w-3.5 h-3.5" />
-														</button>
-													</div>
-												{/if}
-											</div>
-										{/each}
-									{/if}
-
-									<!-- Add account inline -->
-									{#if ocAddingAccountForProvider === provider.id}
-										{@const envNames = getProviderEnvNames(provider.slug)}
-										{@const primaryEnv = envNames[0] || 'API Key'}
-										<div class="space-y-2 pt-2 border-t border-slate-200 dark:border-slate-700/50">
-											<input type="text" bind:value={ocNewAccountName} placeholder="Account name (e.g. Personal, Work)" class="w-full px-3 py-1.5 text-xs rounded-lg border border-slate-300 dark:border-slate-600 bg-white dark:bg-slate-800 text-slate-900 dark:text-slate-100 placeholder:text-slate-400 focus:outline-none focus:ring-1 focus:ring-violet-500" />
-											<input type="text" bind:value={ocNewAccountApiKey} placeholder={primaryEnv} class="w-full px-3 py-1.5 text-xs rounded-lg border border-slate-300 dark:border-slate-600 bg-white dark:bg-slate-800 text-slate-900 dark:text-slate-100 placeholder:text-slate-400 focus:outline-none focus:ring-1 focus:ring-violet-500 font-mono" />
-											{#each envNames.slice(1) as envVar (envVar)}
-												<input
-													type="text"
-													value={ocNewAccountOptions[envVar] || ''}
-													oninput={(e) => { ocNewAccountOptions = { ...ocNewAccountOptions, [envVar]: (e.target as HTMLInputElement).value }; }}
-													placeholder={envVar}
-													class="w-full px-3 py-1.5 text-xs rounded-lg border border-slate-300 dark:border-slate-600 bg-white dark:bg-slate-800 text-slate-900 dark:text-slate-100 placeholder:text-slate-400 focus:outline-none focus:ring-1 focus:ring-violet-500 font-mono"
-												/>
 											{/each}
-											<div class="flex gap-2">
-												<button type="button" class="flex-1 flex items-center justify-center gap-1.5 px-3 py-1.5 text-xs font-medium rounded-lg bg-violet-600 text-white hover:bg-violet-700 transition-colors disabled:opacity-50" onclick={submitAddAccount} disabled={!isAddAccountValid()}>
-													<Icon name="lucide:plus" class="w-3 h-3" />Add
-												</button>
-												<button type="button" class="px-3 py-1.5 text-xs font-medium rounded-lg border border-slate-300 dark:border-slate-600 text-slate-600 dark:text-slate-400 hover:bg-slate-100 dark:hover:bg-slate-700 transition-colors" onclick={cancelAddAccount}>Cancel</button>
+										{/if}
+										{#if ocAddingAccountForProvider === provider.id}
+											{@const envNames = getProviderEnvNames(provider.slug)}
+											{@const primaryEnv = envNames[0] || 'API Key'}
+											<div class="space-y-2 pt-2 border-t border-slate-200 dark:border-slate-700/50">
+												<input type="text" bind:value={ocNewAccountName} placeholder="Account name (e.g. Personal, Work)" class="w-full px-3 py-1.5 text-xs rounded-lg border border-slate-300 dark:border-slate-600 bg-white dark:bg-slate-800 text-slate-900 dark:text-slate-100 placeholder:text-slate-400 focus:outline-none focus:ring-1 focus:ring-violet-500" />
+												<input type="text" bind:value={ocNewAccountApiKey} placeholder={primaryEnv} class="w-full px-3 py-1.5 text-xs rounded-lg border border-slate-300 dark:border-slate-600 bg-white dark:bg-slate-800 text-slate-900 dark:text-slate-100 placeholder:text-slate-400 focus:outline-none focus:ring-1 focus:ring-violet-500 font-mono" />
+												{#each envNames.slice(1) as envVar (envVar)}
+													<input type="text" value={ocNewAccountOptions[envVar] || ''} oninput={(e) => { ocNewAccountOptions = { ...ocNewAccountOptions, [envVar]: (e.target as HTMLInputElement).value }; }} placeholder={envVar} class="w-full px-3 py-1.5 text-xs rounded-lg border border-slate-300 dark:border-slate-600 bg-white dark:bg-slate-800 text-slate-900 dark:text-slate-100 placeholder:text-slate-400 focus:outline-none focus:ring-1 focus:ring-violet-500 font-mono" />
+												{/each}
+												<div class="flex gap-2">
+													<button type="button" class="flex-1 flex items-center justify-center gap-1.5 px-3 py-1.5 text-xs font-medium rounded-lg bg-violet-600 text-white hover:bg-violet-700 transition-colors disabled:opacity-50" onclick={submitAddAccount} disabled={!isAddAccountValid()}><Icon name="lucide:plus" class="w-3 h-3" />Add</button>
+													<button type="button" class="px-3 py-1.5 text-xs font-medium rounded-lg border border-slate-300 dark:border-slate-600 text-slate-600 dark:text-slate-400 hover:bg-slate-100 dark:hover:bg-slate-700 transition-colors" onclick={cancelAddAccount}>Cancel</button>
+												</div>
+											</div>
+										{:else}
+											<button type="button" class="flex items-center gap-1.5 text-xs text-slate-500 hover:text-violet-600 dark:hover:text-violet-400 transition-colors mt-1" onclick={() => startAddAccount(provider.id)}>
+												<Icon name="lucide:plus" class="w-3 h-3" />Add account
+											</button>
+										{/if}
+									</div>
+								</div>
+								{#if ocEditingProviderId === provider.id}
+								<div class="rounded-lg border border-violet-200 dark:border-violet-800/50 bg-violet-50/50 dark:bg-violet-900/10 overflow-hidden mb-3 mt-2">
+									<div class="flex items-center gap-2 px-3.5 py-2.5 border-b border-violet-200 dark:border-violet-800/50 text-xs font-medium text-violet-600 dark:text-violet-400">
+										<Icon name="lucide:pencil" class="w-3.5 h-3.5" />
+										Edit Provider — {ocEditName}
+									</div>
+									<div class="px-3.5 py-2.5 space-y-2">
+										<div>
+											<label class="block text-xs font-medium text-slate-700 dark:text-slate-300 mb-1">Name</label>
+											<input type="text" bind:value={ocEditName} placeholder="Provider name" class="w-full px-3 py-2 text-sm rounded-lg border border-slate-300 dark:border-slate-600 bg-white dark:bg-slate-800 text-slate-900 dark:text-slate-100 placeholder:text-slate-400 focus:outline-none focus:ring-2 focus:ring-violet-500/40" />
+										</div>
+										<div>
+											<label class="block text-xs font-medium text-slate-700 dark:text-slate-300 mb-1">Base URL</label>
+											<input type="text" bind:value={ocEditBaseUrl} placeholder="http://localhost:20128/v1" class="w-full px-3 py-2 text-sm rounded-lg border border-slate-300 dark:border-slate-600 bg-white dark:bg-slate-800 text-slate-900 dark:text-slate-100 placeholder:text-slate-400 focus:outline-none focus:ring-2 focus:ring-violet-500/40 font-mono" />
+										</div>
+										<div class="flex gap-3">
+											<div class="flex-1">
+												<label class="block text-xs font-medium text-slate-700 dark:text-slate-300 mb-1">Context Limit</label>
+												<input type="number" bind:value={ocEditContextLimit} placeholder="128000" class="w-full px-3 py-2 text-sm rounded-lg border border-slate-300 dark:border-slate-600 bg-white dark:bg-slate-800 text-slate-900 dark:text-slate-100 placeholder:text-slate-400 focus:outline-none focus:ring-2 focus:ring-violet-500/40 font-mono" />
+											</div>
+											<div class="flex-1">
+												<label class="block text-xs font-medium text-slate-700 dark:text-slate-300 mb-1">Output Limit</label>
+												<input type="number" bind:value={ocEditOutputLimit} placeholder="16384" class="w-full px-3 py-2 text-sm rounded-lg border border-slate-300 dark:border-slate-600 bg-white dark:bg-slate-800 text-slate-900 dark:text-slate-100 placeholder:text-slate-400 focus:outline-none focus:ring-2 focus:ring-violet-500/40 font-mono" />
 											</div>
 										</div>
-									{:else}
-										<button type="button" class="flex items-center gap-1.5 text-xs text-slate-500 hover:text-violet-600 dark:hover:text-violet-400 transition-colors mt-1" onclick={() => startAddAccount(provider.id)}>
-											<Icon name="lucide:plus" class="w-3 h-3" />Add account
-										</button>
-									{/if}
+										<div>
+											<div class="flex items-center justify-between mb-1">
+												<label class="block text-xs font-medium text-slate-700 dark:text-slate-300">Model IDs</label>
+												<div class="flex items-center gap-2">
+													<button type="button" class="flex items-center gap-1 text-3xs text-slate-500 hover:text-violet-600 transition-colors disabled:opacity-50" onclick={fetchEditModels} disabled={ocEditFetching || !ocEditBaseUrl.trim()}>
+														<Icon name={ocEditFetching ? 'lucide:loader' : 'lucide:refresh-cw'} class="w-3 h-3 {ocEditFetching ? 'animate-spin' : ''}" />
+														{ocEditFetching ? 'Fetching...' : 'Fetch from /v1/models'}
+													</button>
+													<button type="button" class="flex items-center gap-1 text-3xs text-violet-600 hover:text-violet-700 transition-colors" onclick={addEditModelRow}>
+														<Icon name="lucide:plus" class="w-3 h-3" />Add row
+													</button>
+												</div>
+											</div>
+											<div class="space-y-1.5 max-h-48 overflow-y-auto p-0.5">
+												{#each ocEditModelRows as row, i (i)}
+													<div
+														draggable="true"
+														class="flex items-center gap-2 {row.hidden ? 'opacity-40' : ''} {ocDragIndex === i ? 'opacity-50' : ''} {ocDragIndex !== null && ocDragIndex !== i ? 'hover:cursor-grab' : ''}"
+														ondragstart={(e) => { ocDragIndex = i; e.dataTransfer!.effectAllowed = 'move'; }}
+														ondragover={(e) => e.preventDefault()}
+														ondrop={(e) => { e.preventDefault(); if (ocDragIndex !== null && ocDragIndex !== i) { const a = [...ocEditModelRows]; const [m] = a.splice(ocDragIndex, 1); a.splice(i, 0, m); ocEditModelRows = a; } ocDragIndex = null; }}
+														ondragend={() => { ocDragIndex = null; }}
+													>
+														<Icon name="lucide:grip-vertical" class="w-3.5 h-3.5 text-slate-400 cursor-grab active:cursor-grabbing shrink-0" />
+														<input type="text" bind:value={row.code} placeholder="model-id" class="flex-[3] px-2.5 py-1.5 text-xs rounded-lg border border-slate-300 dark:border-slate-600 bg-white dark:bg-slate-800 text-slate-900 dark:text-slate-100 placeholder:text-slate-400 focus:outline-none focus:ring-2 focus:ring-violet-500/40 font-mono" />
+														<input type="text" bind:value={row.alias} placeholder="Alias" class="flex-1 px-2.5 py-1.5 text-xs rounded-lg border border-slate-300 dark:border-slate-600 bg-white dark:bg-slate-800 text-slate-900 dark:text-slate-100 placeholder:text-slate-400 focus:outline-none focus:ring-2 focus:ring-violet-500/40" />
+														<button type="button" class="flex p-1 rounded-md text-slate-400 hover:text-amber-600 hover:bg-amber-50 dark:hover:bg-amber-900/20 transition-colors shrink-0" onclick={() => { row.hidden = !row.hidden; }} title={row.hidden ? 'Show' : 'Hide'}>
+															<Icon name={row.hidden ? 'lucide:eye-off' : 'lucide:eye'} class="w-3.5 h-3.5" />
+														</button>
+														<button type="button" class="flex p-1 rounded-md {settings.pinnedModels?.includes(row.code) ? 'text-amber-500 hover:text-amber-600' : 'text-slate-400 hover:text-amber-600'} hover:bg-amber-50 dark:hover:bg-amber-900/20 transition-colors shrink-0" onclick={() => togglePinnedModel(row.code)} title={settings.pinnedModels?.includes(row.code) ? 'Unpin' : 'Pin'}>
+															<Icon name={settings.pinnedModels?.includes(row.code) ? 'lucide:pin-off' : 'lucide:pin'} class="w-3.5 h-3.5" />
+														</button>
+														<button type="button" class="flex p-1 rounded-md text-slate-400 hover:text-red-600 hover:bg-red-50 dark:hover:bg-red-900/20 transition-colors shrink-0" onclick={() => removeEditModelRow(i)}>
+															<Icon name="lucide:x" class="w-3.5 h-3.5" />
+														</button>
+													</div>
+												{/each}
+												{#if ocEditModelRows.length === 0}
+													<p class="text-xs text-slate-400 italic text-center py-2">No models. Click <strong>Add row</strong> or <strong>Fetch</strong>.</p>
+												{/if}
+											</div>
+										</div>
+										<div class="flex gap-2">
+											<button type="button" class="flex-1 flex items-center justify-center gap-2 px-4 py-2 text-sm font-medium rounded-lg bg-violet-600 text-white hover:bg-violet-700 transition-colors disabled:opacity-50" onclick={submitEditCustomProvider}>
+												<Icon name="lucide:check" class="w-4 h-4" />
+												Save Changes
+											</button>
+											<button type="button" class="px-4 py-2 text-sm font-medium rounded-lg border border-slate-300 dark:border-slate-600 text-slate-600 dark:text-slate-400 hover:bg-slate-100 dark:hover:bg-slate-700 transition-colors" onclick={cancelEditCustomProvider}>Cancel</button>
+										</div>
+									</div>
 								</div>
+								{/if}
+							{/each}
+						{/if}
+
+						<!-- Custom Providers (with api_url) -->
+						{#if ocCustomProviders.length > 0}
+							<div class="flex items-center gap-2 mt-4 mb-2">
+								<h5 class="text-xs font-semibold text-slate-500 dark:text-slate-400 uppercase tracking-wider">Custom</h5>
+								<div class="flex-1 h-px bg-slate-200 dark:bg-slate-700/50"></div>
 							</div>
-						{/each}
+							{#each ocCustomProviders as provider (provider.id)}
+								<!-- Custom Provider card -->
+									<div class="rounded-lg border border-slate-200 dark:border-slate-700/50 bg-slate-50 dark:bg-slate-800/80 overflow-hidden">
+										<div class="flex items-center justify-between px-3.5 py-2.5 border-b border-slate-200 dark:border-slate-700/50">
+											<div class="flex items-center gap-2 min-w-0">
+												<span class="text-sm font-semibold text-slate-900 dark:text-slate-100 truncate">{provider.name}</span>
+												<span class="inline-flex items-center px-1.5 py-0.5 rounded text-3xs font-medium bg-amber-100 dark:bg-amber-900/30 text-amber-700 dark:text-amber-300">Custom</span>
+												<span class="text-2xs text-slate-400 font-mono">{provider.slug}</span>
+												{#if !provider.isEnabled}
+													<span class="px-1.5 py-0.5 text-3xs rounded bg-slate-200 dark:bg-slate-700 text-slate-500 dark:text-slate-400">Disabled</span>
+												{/if}
+											</div>
+											<div class="flex items-center gap-1">
+												<button type="button" class="flex p-1.5 rounded-md text-slate-400 hover:text-blue-600 hover:bg-blue-50 dark:hover:bg-blue-900/20 transition-colors" onclick={() => startEditCustomProvider(provider)} title="Edit provider">
+													<Icon name="lucide:pencil" class="w-3.5 h-3.5" />
+												</button>
+												<button type="button" class="flex p-1.5 rounded-md text-slate-400 hover:text-red-600 hover:bg-red-50 dark:hover:bg-red-900/20 transition-colors" onclick={() => confirmDeleteOCProvider(provider)} title="Remove provider">
+													<Icon name="lucide:trash-2" class="w-3.5 h-3.5" />
+												</button>
+											</div>
+										</div>
+										<div class="px-3.5 py-2.5 space-y-2">
+											{#if provider.accounts.length === 0}
+												<p class="text-xs text-slate-500 italic">No accounts</p>
+											{:else}
+												{#each provider.accounts as account (account.id)}
+													<div class="flex items-center justify-between px-3.5 py-2.5 rounded-lg border border-slate-200 dark:border-slate-700/50 bg-slate-50 dark:bg-slate-800/80 {account.isActive ? 'ring-1 ring-violet-500/40' : ''}">
+														<div class="w-full flex items-center gap-2.5 min-w-0">
+															<Icon name="lucide:key" class="w-4 h-4 shrink-0 text-slate-400" />
+															{#if ocRenamingAccountId === account.id}
+																<div class="w-full flex items-center gap-2.5">
+																	<input type="text" bind:value={ocRenameValue} class="w-full px-2 py-0.5 text-sm rounded border border-slate-300 dark:border-slate-600 bg-white dark:bg-slate-700 text-slate-900 dark:text-slate-100 focus:outline-none focus:ring-1 focus:ring-violet-500" />
+																	<div class="flex items-center gap-1">
+																		<button type="button" class="flex p-1.5 rounded-md text-slate-400 hover:text-green-600 hover:bg-green-50 dark:hover:bg-green-900/20 transition-colors" onclick={submitOCRename} aria-label="Save"><Icon name="lucide:check" class="w-3.5 h-3.5" /></button>
+																		<button type="button" class="flex p-1.5 rounded-md text-slate-400 hover:text-red-600 hover:bg-red-50 dark:hover:bg-red-900/20 transition-colors" onclick={cancelOCRename} aria-label="Cancel"><Icon name="lucide:x" class="w-3.5 h-3.5" /></button>
+																	</div>
+																</div>
+															{:else}
+																<span class="text-sm font-medium text-slate-900 dark:text-slate-100 truncate">{account.name}</span>
+																{#if account.isActive}
+																	<span class="inline-flex items-center px-2 py-0.5 rounded-full text-3xs font-semibold bg-violet-100 dark:bg-violet-900/30 text-violet-700 dark:text-violet-300">Active</span>
+																{/if}
+															{/if}
+														</div>
+														{#if ocRenamingAccountId !== account.id}
+															<div class="flex items-center gap-1">
+																{#if !account.isActive}
+																	<button type="button" class="flex p-1.5 rounded-md text-slate-400 hover:text-violet-600 hover:bg-violet-50 dark:hover:bg-violet-900/20 transition-colors" onclick={() => switchOCAccount(account.id)} title="Switch to this account"><Icon name="lucide:arrow-right-left" class="w-3.5 h-3.5" /></button>
+																{/if}
+																<button type="button" class="flex p-1.5 rounded-md text-slate-400 hover:text-blue-600 hover:bg-blue-50 dark:hover:bg-blue-900/20 transition-colors" onclick={() => startOCRename(account.id, account.name)} title="Rename"><Icon name="lucide:pencil" class="w-3.5 h-3.5" /></button>
+																<button type="button" class="flex p-1.5 rounded-md text-slate-400 hover:text-red-600 hover:bg-red-50 dark:hover:bg-red-900/20 transition-colors" onclick={() => confirmDeleteOCAccount(account.id, account.name)} title="Delete"><Icon name="lucide:trash-2" class="w-3.5 h-3.5" /></button>
+															</div>
+														{/if}
+													</div>
+												{/each}
+											{/if}
+											{#if ocAddingAccountForProvider === provider.id}
+												{@const envNames = getProviderEnvNames(provider.slug)}
+												{@const primaryEnv = envNames[0] || 'API Key'}
+												<div class="space-y-2 pt-2 border-t border-slate-200 dark:border-slate-700/50">
+													<input type="text" bind:value={ocNewAccountName} placeholder="Account name (e.g. Personal, Work)" class="w-full px-3 py-1.5 text-xs rounded-lg border border-slate-300 dark:border-slate-600 bg-white dark:bg-slate-800 text-slate-900 dark:text-slate-100 placeholder:text-slate-400 focus:outline-none focus:ring-1 focus:ring-violet-500" />
+													<input type="text" bind:value={ocNewAccountApiKey} placeholder={primaryEnv} class="w-full px-3 py-1.5 text-xs rounded-lg border border-slate-300 dark:border-slate-600 bg-white dark:bg-slate-800 text-slate-900 dark:text-slate-100 placeholder:text-slate-400 focus:outline-none focus:ring-1 focus:ring-violet-500 font-mono" />
+													{#each envNames.slice(1) as envVar (envVar)}
+														<input type="text" value={ocNewAccountOptions[envVar] || ''} oninput={(e) => { ocNewAccountOptions = { ...ocNewAccountOptions, [envVar]: (e.target as HTMLInputElement).value }; }} placeholder={envVar} class="w-full px-3 py-1.5 text-xs rounded-lg border border-slate-300 dark:border-slate-600 bg-white dark:bg-slate-800 text-slate-900 dark:text-slate-100 placeholder:text-slate-400 focus:outline-none focus:ring-1 focus:ring-violet-500 font-mono" />
+													{/each}
+													<div class="flex gap-2">
+														<button type="button" class="flex-1 flex items-center justify-center gap-1.5 px-3 py-1.5 text-xs font-medium rounded-lg bg-violet-600 text-white hover:bg-violet-700 transition-colors disabled:opacity-50" onclick={submitAddAccount} disabled={!isAddAccountValid()}><Icon name="lucide:plus" class="w-3 h-3" />Add</button>
+														<button type="button" class="px-3 py-1.5 text-xs font-medium rounded-lg border border-slate-300 dark:border-slate-600 text-slate-600 dark:text-slate-400 hover:bg-slate-100 dark:hover:bg-slate-700 transition-colors" onclick={cancelAddAccount}>Cancel</button>
+													</div>
+												</div>
+											{:else}
+												<button type="button" class="flex items-center gap-1.5 text-xs text-slate-500 hover:text-violet-600 dark:hover:text-violet-400 transition-colors mt-1" onclick={() => startAddAccount(provider.id)}>
+													<Icon name="lucide:plus" class="w-3 h-3" />Add account
+												</button>
+											{/if}
+										</div>
+									</div>
+									{#if ocEditingProviderId === provider.id}
+									<div class="rounded-lg border border-violet-200 dark:border-violet-800/50 bg-violet-50/50 dark:bg-violet-900/10 overflow-hidden mb-3 mt-2">
+										<div class="flex items-center gap-2 px-3.5 py-2.5 border-b border-violet-200 dark:border-violet-800/50 text-xs font-medium text-violet-600 dark:text-violet-400">
+											<Icon name="lucide:pencil" class="w-3.5 h-3.5" />
+											Edit Provider — {ocEditName}
+										</div>
+										<div class="px-3.5 py-2.5 space-y-2">
+											<div>
+												<label class="block text-xs font-medium text-slate-700 dark:text-slate-300 mb-1">Name</label>
+												<input type="text" bind:value={ocEditName} placeholder="Provider name" class="w-full px-3 py-2 text-sm rounded-lg border border-slate-300 dark:border-slate-600 bg-white dark:bg-slate-800 text-slate-900 dark:text-slate-100 placeholder:text-slate-400 focus:outline-none focus:ring-2 focus:ring-violet-500/40" />
+											</div>
+											<div>
+												<label class="block text-xs font-medium text-slate-700 dark:text-slate-300 mb-1">Base URL</label>
+												<input type="text" bind:value={ocEditBaseUrl} placeholder="http://localhost:20128/v1" class="w-full px-3 py-2 text-sm rounded-lg border border-slate-300 dark:border-slate-600 bg-white dark:bg-slate-800 text-slate-900 dark:text-slate-100 placeholder:text-slate-400 focus:outline-none focus:ring-2 focus:ring-violet-500/40 font-mono" />
+											</div>
+											<div class="flex gap-3">
+												<div class="flex-1">
+													<label class="block text-xs font-medium text-slate-700 dark:text-slate-300 mb-1">Context Limit</label>
+													<input type="number" bind:value={ocEditContextLimit} placeholder="128000" class="w-full px-3 py-2 text-sm rounded-lg border border-slate-300 dark:border-slate-600 bg-white dark:bg-slate-800 text-slate-900 dark:text-slate-100 placeholder:text-slate-400 focus:outline-none focus:ring-2 focus:ring-violet-500/40 font-mono" />
+												</div>
+												<div class="flex-1">
+													<label class="block text-xs font-medium text-slate-700 dark:text-slate-300 mb-1">Output Limit</label>
+													<input type="number" bind:value={ocEditOutputLimit} placeholder="16384" class="w-full px-3 py-2 text-sm rounded-lg border border-slate-300 dark:border-slate-600 bg-white dark:bg-slate-800 text-slate-900 dark:text-slate-100 placeholder:text-slate-400 focus:outline-none focus:ring-2 focus:ring-violet-500/40 font-mono" />
+												</div>
+											</div>
+											<div>
+												<div class="flex items-center justify-between mb-1">
+													<label class="block text-xs font-medium text-slate-700 dark:text-slate-300">Model IDs</label>
+													<div class="flex items-center gap-2">
+														<button type="button" class="flex items-center gap-1 text-3xs text-slate-500 hover:text-violet-600 transition-colors disabled:opacity-50" onclick={fetchEditModels} disabled={ocEditFetching || !ocEditBaseUrl.trim()}>
+															<Icon name={ocEditFetching ? 'lucide:loader' : 'lucide:refresh-cw'} class="w-3 h-3 {ocEditFetching ? 'animate-spin' : ''}" />
+															{ocEditFetching ? 'Fetching...' : 'Fetch from /v1/models'}
+														</button>
+														<button type="button" class="flex items-center gap-1 text-3xs text-violet-600 hover:text-violet-700 transition-colors" onclick={addEditModelRow}>
+															<Icon name="lucide:plus" class="w-3 h-3" />Add row
+														</button>
+													</div>
+												</div>
+												<div class="space-y-1.5 max-h-48 overflow-y-auto p-0.5">
+													{#each ocEditModelRows as row, i (i)}
+														<div
+															draggable="true"
+															class="flex items-center gap-2 {row.hidden ? 'opacity-40' : ''} {ocDragIndex === i ? 'opacity-50' : ''} {ocDragIndex !== null && ocDragIndex !== i ? 'hover:cursor-grab' : ''}"
+															ondragstart={(e) => { ocDragIndex = i; e.dataTransfer!.effectAllowed = 'move'; }}
+															ondragover={(e) => e.preventDefault()}
+															ondrop={(e) => { e.preventDefault(); if (ocDragIndex !== null && ocDragIndex !== i) { const a = [...ocEditModelRows]; const [m] = a.splice(ocDragIndex, 1); a.splice(i, 0, m); ocEditModelRows = a; } ocDragIndex = null; }}
+															ondragend={() => { ocDragIndex = null; }}
+														>
+															<Icon name="lucide:grip-vertical" class="w-3.5 h-3.5 text-slate-400 cursor-grab active:cursor-grabbing shrink-0" />
+															<input type="text" bind:value={row.code} placeholder="model-id" class="flex-[3] px-2.5 py-1.5 text-xs rounded-lg border border-slate-300 dark:border-slate-600 bg-white dark:bg-slate-800 text-slate-900 dark:text-slate-100 placeholder:text-slate-400 focus:outline-none focus:ring-2 focus:ring-violet-500/40 font-mono" />
+															<input type="text" bind:value={row.alias} placeholder="Alias" class="flex-1 px-2.5 py-1.5 text-xs rounded-lg border border-slate-300 dark:border-slate-600 bg-white dark:bg-slate-800 text-slate-900 dark:text-slate-100 placeholder:text-slate-400 focus:outline-none focus:ring-2 focus:ring-violet-500/40" />
+															<button type="button" class="flex p-1 rounded-md text-slate-400 hover:text-amber-600 hover:bg-amber-50 dark:hover:bg-amber-900/20 transition-colors shrink-0" onclick={() => { row.hidden = !row.hidden; }} title={row.hidden ? 'Show' : 'Hide'}>
+																<Icon name={row.hidden ? 'lucide:eye-off' : 'lucide:eye'} class="w-3.5 h-3.5" />
+															</button>
+															<button type="button" class="flex p-1 rounded-md {settings.pinnedModels?.includes(row.code) ? 'text-amber-500 hover:text-amber-600' : 'text-slate-400 hover:text-amber-600'} hover:bg-amber-50 dark:hover:bg-amber-900/20 transition-colors shrink-0" onclick={() => togglePinnedModel(row.code)} title={settings.pinnedModels?.includes(row.code) ? 'Unpin' : 'Pin'}>
+																<Icon name={settings.pinnedModels?.includes(row.code) ? 'lucide:pin-off' : 'lucide:pin'} class="w-3.5 h-3.5" />
+															</button>
+															<button type="button" class="flex p-1 rounded-md text-slate-400 hover:text-red-600 hover:bg-red-50 dark:hover:bg-red-900/20 transition-colors shrink-0" onclick={() => removeEditModelRow(i)}>
+																<Icon name="lucide:x" class="w-3.5 h-3.5" />
+															</button>
+														</div>
+													{/each}
+													{#if ocEditModelRows.length === 0}
+														<p class="text-xs text-slate-400 italic text-center py-2">No models. Click <strong>Add row</strong> or <strong>Fetch</strong>.</p>
+													{/if}
+												</div>
+											</div>
+											<div class="flex gap-2">
+												<button type="button" class="flex-1 flex items-center justify-center gap-2 px-4 py-2 text-sm font-medium rounded-lg bg-violet-600 text-white hover:bg-violet-700 transition-colors disabled:opacity-50" onclick={submitEditCustomProvider}>
+													<Icon name="lucide:check" class="w-4 h-4" />
+													Save Changes
+												</button>
+												<button type="button" class="px-4 py-2 text-sm font-medium rounded-lg border border-slate-300 dark:border-slate-600 text-slate-600 dark:text-slate-400 hover:bg-slate-100 dark:hover:bg-slate-700 transition-colors" onclick={cancelEditCustomProvider}>Cancel</button>
+											</div>
+										</div>
+									</div>
+									{/if}
+								{/each}
+							{/if}
 
 						<!-- Add Provider Flow -->
 						<div class="mt-3">
@@ -2602,6 +3012,18 @@
 										{/if}
 									</div>
 
+									<div class="relative my-2">
+										<div class="absolute inset-0 flex items-center">
+											<div class="w-full border-t border-slate-200 dark:border-slate-700"></div>
+										</div>
+										<div class="relative flex justify-center">
+											<span class="px-2 text-2xs text-slate-400 bg-violet-50/50 dark:bg-violet-900/10">or</span>
+										</div>
+									</div>
+									<button type="button" class="flex items-center justify-center gap-2 w-full px-3 py-2 text-xs font-medium rounded-lg border border-dashed border-slate-300 dark:border-slate-600 text-slate-500 dark:text-slate-400 hover:border-violet-400 hover:text-violet-600 dark:hover:text-violet-400 transition-colors" onclick={startCustomProvider}>
+										<Icon name="lucide:wand" class="w-3.5 h-3.5" />
+										Custom Provider
+									</button>
 									<button type="button" class="w-full px-3 py-1.5 text-xs font-medium rounded-lg border border-slate-300 dark:border-slate-600 text-slate-600 dark:text-slate-400 hover:bg-slate-100 dark:hover:bg-slate-700 transition-colors" onclick={cancelAddProvider}>Cancel</button>
 								</div>
 							{:else if ocAddStep === 'configuring' && ocSelectedCatalogProvider}
@@ -2646,6 +3068,149 @@
 											class="flex-1 flex items-center justify-center gap-2 px-4 py-2 text-sm font-medium rounded-lg bg-violet-600 text-white hover:bg-violet-700 transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
 											onclick={submitAddProvider}
 											disabled={!isAddProviderValid()}
+										>
+											<Icon name="lucide:plus" class="w-4 h-4" />
+											Add Provider
+										</button>
+										<button type="button" class="px-4 py-2 text-sm font-medium rounded-lg border border-slate-300 dark:border-slate-600 text-slate-600 dark:text-slate-400 hover:bg-slate-100 dark:hover:bg-slate-700 transition-colors" onclick={() => { ocAddStep = 'picking'; }}>Back</button>
+									</div>
+								</div>
+							{:else if ocAddStep === 'custom'}
+								<div class="space-y-3 p-4 rounded-lg border border-violet-200 dark:border-violet-800/50 bg-violet-50/50 dark:bg-violet-900/10">
+									<div class="flex items-center gap-2 text-xs font-medium text-violet-600 dark:text-violet-400">
+										<Icon name="lucide:wand" class="w-3.5 h-3.5" />
+										Custom Provider
+									</div>
+									<p class="text-2xs text-slate-500 dark:text-slate-400">Add any OpenAI-compatible API endpoint as a provider.</p>
+
+									<div>
+										<label class="block text-xs font-medium text-slate-700 dark:text-slate-300 mb-1">Name</label>
+										<input
+											type="text"
+											bind:value={ocCustomName}
+											oninput={() => { ocCustomSlug = autoGenerateSlug(ocCustomName); }}
+											placeholder="e.g. My Local LLM"
+											class="w-full px-3 py-2 text-sm rounded-lg border border-slate-300 dark:border-slate-600 bg-white dark:bg-slate-800 text-slate-900 dark:text-slate-100 placeholder:text-slate-400 focus:outline-none focus:ring-2 focus:ring-violet-500/40"
+										/>
+									</div>
+
+									<div>
+										<label class="block text-xs font-medium text-slate-700 dark:text-slate-300 mb-1">Provider ID (slug)</label>
+										<input
+											type="text"
+											bind:value={ocCustomSlug}
+											placeholder="e.g. 9router, my-local-llm"
+											class="w-full px-3 py-2 text-sm rounded-lg border border-slate-300 dark:border-slate-600 bg-white dark:bg-slate-800 text-slate-900 dark:text-slate-100 placeholder:text-slate-400 focus:outline-none focus:ring-2 focus:ring-violet-500/40 font-mono"
+										/>
+									</div>
+
+									<div>
+										<label class="block text-xs font-medium text-slate-700 dark:text-slate-300 mb-1">Base URL</label>
+										<input
+											type="text"
+											bind:value={ocCustomBaseUrl}
+											placeholder="e.g. http://localhost:20128/v1"
+											class="w-full px-3 py-2 text-sm rounded-lg border border-slate-300 dark:border-slate-600 bg-white dark:bg-slate-800 text-slate-900 dark:text-slate-100 placeholder:text-slate-400 focus:outline-none focus:ring-2 focus:ring-violet-500/40 font-mono"
+										/>
+									</div>
+
+									<div>
+										<label class="block text-xs font-medium text-slate-700 dark:text-slate-300 mb-1">API Key <span class="text-slate-400 font-normal">(optional)</span></label>
+										<input
+											type="text"
+											bind:value={ocCustomApiKey}
+											placeholder="API key if required"
+											class="w-full px-3 py-2 text-sm rounded-lg border border-slate-300 dark:border-slate-600 bg-white dark:bg-slate-800 text-slate-900 dark:text-slate-100 placeholder:text-slate-400 focus:outline-none focus:ring-2 focus:ring-violet-500/40 font-mono"
+										/>
+									</div>
+
+									<div class="flex gap-3">
+										<div class="flex-1">
+											<label class="block text-xs font-medium text-slate-700 dark:text-slate-300 mb-1">Context Limit</label>
+											<input
+												type="number"
+												bind:value={ocCustomContextLimit}
+												placeholder="128000"
+												class="w-full px-3 py-2 text-sm rounded-lg border border-slate-300 dark:border-slate-600 bg-white dark:bg-slate-800 text-slate-900 dark:text-slate-100 placeholder:text-slate-400 focus:outline-none focus:ring-2 focus:ring-violet-500/40 font-mono"
+											/>
+										</div>
+										<div class="flex-1">
+											<label class="block text-xs font-medium text-slate-700 dark:text-slate-300 mb-1">Output Limit</label>
+											<input
+												type="number"
+												bind:value={ocCustomOutputLimit}
+												placeholder="16384"
+												class="w-full px-3 py-2 text-sm rounded-lg border border-slate-300 dark:border-slate-600 bg-white dark:bg-slate-800 text-slate-900 dark:text-slate-100 placeholder:text-slate-400 focus:outline-none focus:ring-2 focus:ring-violet-500/40 font-mono"
+											/>
+										</div>
+									</div>
+
+									<div>
+										<div class="flex items-center justify-between mb-1">
+											<label class="block text-xs font-medium text-slate-700 dark:text-slate-300">Model IDs</label>
+											<div class="flex items-center gap-2">
+												<button type="button" class="flex items-center gap-1 text-3xs text-slate-500 hover:text-violet-600 transition-colors disabled:opacity-50" onclick={fetchCustomModels} disabled={ocCustomFetching || !ocCustomBaseUrl.trim()}>
+													<Icon name={ocCustomFetching ? 'lucide:loader' : 'lucide:refresh-cw'} class="w-3 h-3 {ocCustomFetching ? 'animate-spin' : ''}" />
+													{ocCustomFetching ? 'Fetching...' : 'Fetch from /v1/models'}
+												</button>
+												<button type="button" class="flex items-center gap-1 text-3xs text-violet-600 hover:text-violet-700 transition-colors" onclick={addCustomModelRow}>
+													<Icon name="lucide:plus" class="w-3 h-3" />Add row
+												</button>
+											</div>
+										</div>
+											<div class="space-y-1.5 max-h-48 overflow-y-auto p-0.5">
+												{#each ocCustomModelRows as row, i (i)}
+													<div
+														draggable="true"
+														class="flex items-center gap-2 {row.hidden ? 'opacity-40' : ''} {ocDragIndex === i ? 'opacity-50' : ''} {ocDragIndex !== null && ocDragIndex !== i ? 'hover:cursor-grab' : ''}"
+														ondragstart={(e) => { ocDragIndex = i; e.dataTransfer!.effectAllowed = 'move'; }}
+														ondragover={(e) => e.preventDefault()}
+														ondrop={(e) => { e.preventDefault(); if (ocDragIndex !== null && ocDragIndex !== i) { const a = [...ocCustomModelRows]; const [m] = a.splice(ocDragIndex, 1); a.splice(i, 0, m); ocCustomModelRows = a; } ocDragIndex = null; }}
+														ondragend={() => { ocDragIndex = null; }}
+													>
+														<Icon name="lucide:grip-vertical" class="w-3.5 h-3.5 text-slate-400 cursor-grab active:cursor-grabbing shrink-0" />
+														<input
+															type="text"
+															bind:value={row.code}
+															placeholder="model-id"
+															class="flex-[3] px-2.5 py-1.5 text-xs rounded-lg border border-slate-300 dark:border-slate-600 bg-white dark:bg-slate-800 text-slate-900 dark:text-slate-100 placeholder:text-slate-400 focus:outline-none focus:ring-2 focus:ring-violet-500/40 font-mono"
+														/>
+														<input
+															type="text"
+															bind:value={row.alias}
+															placeholder="Alias"
+															class="flex-1 px-2.5 py-1.5 text-xs rounded-lg border border-slate-300 dark:border-slate-600 bg-white dark:bg-slate-800 text-slate-900 dark:text-slate-100 placeholder:text-slate-400 focus:outline-none focus:ring-2 focus:ring-violet-500/40"
+														/>
+														<button type="button" class="flex p-1 rounded-md text-slate-400 hover:text-amber-600 hover:bg-amber-50 dark:hover:bg-amber-900/20 transition-colors shrink-0" onclick={() => { row.hidden = !row.hidden; }} title={row.hidden ? 'Show' : 'Hide'}>
+															<Icon name={row.hidden ? 'lucide:eye-off' : 'lucide:eye'} class="w-3.5 h-3.5" />
+														</button>
+														<button type="button" class="flex p-1 rounded-md {settings.pinnedModels?.includes(row.code) ? 'text-amber-500 hover:text-amber-600' : 'text-slate-400 hover:text-amber-600'} hover:bg-amber-50 dark:hover:bg-amber-900/20 transition-colors shrink-0" onclick={() => togglePinnedModel(row.code)} title={settings.pinnedModels?.includes(row.code) ? 'Unpin' : 'Pin'}>
+															<Icon name={settings.pinnedModels?.includes(row.code) ? 'lucide:pin-off' : 'lucide:pin'} class="w-3.5 h-3.5" />
+														</button>
+														<button type="button" class="flex p-1 rounded-md text-slate-400 hover:text-red-600 hover:bg-red-50 dark:hover:bg-red-900/20 transition-colors shrink-0" onclick={() => removeCustomModelRow(i)}>
+															<Icon name="lucide:x" class="w-3.5 h-3.5" />
+														</button>
+													</div>
+												{/each}
+											{#if ocCustomModelRows.length === 0}
+												<p class="text-xs text-slate-400 italic text-center py-2">No models. Click <strong>Add row</strong> or <strong>Fetch</strong>.</p>
+											{/if}
+										</div>
+									</div>
+
+									{#if ocAddError}
+										<div class="flex items-center gap-2 p-2 rounded bg-red-50 dark:bg-red-900/20 border border-red-200 dark:border-red-800/50">
+											<Icon name="lucide:circle-alert" class="w-4 h-4 shrink-0 text-red-600 dark:text-red-400" />
+											<span class="text-xs text-red-700 dark:text-red-300">{ocAddError}</span>
+										</div>
+									{/if}
+
+									<div class="flex gap-2">
+										<button
+											type="button"
+											class="flex-1 flex items-center justify-center gap-2 px-4 py-2 text-sm font-medium rounded-lg bg-violet-600 text-white hover:bg-violet-700 transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
+											onclick={submitCustomProvider}
+											disabled={!isCustomProviderValid()}
 										>
 											<Icon name="lucide:plus" class="w-4 h-4" />
 											Add Provider

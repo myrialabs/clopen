@@ -133,6 +133,26 @@ export const openCodeProviderHandler = createRouter()
 		return { success: true };
 	})
 
+	.http('engine:opencode-provider-update', {
+		data: t.Object({
+			id: t.Number(),
+			name: t.Optional(t.String()),
+			apiUrl: t.Optional(t.String()),
+			options: t.Optional(t.String()),
+		}),
+		response: t.Object({ success: t.Boolean() })
+	}, async ({ data }) => {
+		if (data.options !== undefined) {
+			try { JSON.parse(data.options); } catch { throw new Error('Invalid JSON for options'); }
+		}
+		engineQueries.updateProvider(data.id, {
+			name: data.name,
+			apiUrl: data.apiUrl,
+			options: data.options,
+		});
+		return { success: true };
+	})
+
 	.http('engine:opencode-provider-toggle', {
 		data: t.Object({ id: t.Number(), enabled: t.Boolean() }),
 		response: t.Object({ success: t.Boolean() })
@@ -248,6 +268,35 @@ export const openCodeProviderHandler = createRouter()
 	}, async () => {
 		const catalog = await fetchAndCacheModelsDevCatalog();
 		return { catalog, cachedAt: new Date().toISOString() };
+	})
+
+	// ═══════════════════════════════════════
+	// Model Discovery
+	// ═══════════════════════════════════════
+
+	.http('engine:opencode-provider-fetch-models', {
+		data: t.Object({ id: t.Number() }),
+		response: t.Object({
+			models: t.Array(t.Object({ id: t.String(), name: t.Optional(t.String()) }))
+		})
+	}, async ({ data }) => {
+		const providers = engineQueries.getProvidersWithAccounts('opencode');
+		const provider = providers.find(p => p.id === data.id);
+		if (!provider) throw new Error('Provider not found');
+		if (!provider.api_url) throw new Error('Provider has no API URL');
+
+		const baseUrl = provider.api_url.replace(/\/+$/, '');
+		const activeAccount = provider.accounts.find(a => a.is_active === 1) || provider.accounts[0];
+		const headers: Record<string, string> = { 'Content-Type': 'application/json' };
+		if (activeAccount?.credential) {
+			headers['Authorization'] = `Bearer ${activeAccount.credential}`;
+		}
+
+		const res = await fetch(`${baseUrl}/models`, { headers, signal: AbortSignal.timeout(5000) });
+		if (!res.ok) throw new Error(`HTTP ${res.status}`);
+		const body = await res.json() as { data?: { id: string; name?: string }[] };
+		const models = (body.data || []).map(m => ({ id: m.id, name: m.name }));
+		return { models };
 	})
 
 	// ═══════════════════════════════════════

@@ -100,6 +100,15 @@ export const opencodeProvidersStore = {
 		await this.refreshProviders();
 	},
 
+	async updateProvider(id: number, data: {
+		name?: string;
+		apiUrl?: string;
+		options?: string;
+	}): Promise<void> {
+		await ws.http('engine:opencode-provider-update', { id, ...data });
+		await this.refreshProviders();
+	},
+
 	async updateProviderOptions(id: number, options: string): Promise<void> {
 		await ws.http('engine:opencode-provider-update-options', { id, options });
 		await this.refreshProviders();
