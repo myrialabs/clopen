@@ -157,7 +157,8 @@ function writeView(connId: string): void {
 				activeView: view.activeView,
 				activeObject: view.activeObject,
 				query: { text: view.query.text },
-				openTables: view.openTables
+				openTables: view.openTables,
+				openedDatabase: state.openedDatabase[connId] ?? null
 			})
 		);
 	} catch (e) {
@@ -199,12 +200,16 @@ function loadView(connId: string): DbClientConnectionView | null {
 	try {
 		const serialized = localStorage.getItem(viewStorageKey(connId));
 		if (!serialized) return null;
-		const parsed = JSON.parse(serialized) as { v?: number };
+		const parsed = JSON.parse(serialized) as { v?: number; openedDatabase?: string | null };
 		// Drop data written by an older, incompatible shape.
 		if (parsed.v !== VIEW_STORAGE_VERSION) return null;
 		
-		const r = parsed as Partial<DbClientConnectionView>;
+		const r = parsed as Partial<DbClientConnectionView> & { openedDatabase?: string | null };
 		const base = emptyView();
+		
+		if (r.openedDatabase !== undefined) {
+			state.openedDatabase = { ...state.openedDatabase, [connId]: r.openedDatabase };
+		}
 		
 		return {
 			activeView: r.activeView ?? base.activeView,
@@ -256,6 +261,7 @@ function applyNavSnapshot(connId: string, snap: DbClientNavSnapshot): void {
 	view.activeObject = snap.object ? { ...snap.object } : null;
 	view.activeView = snap.view;
 	state.navObjectTick++;
+	saveView(connId);
 }
 
 export const dbClientStore = {
@@ -311,6 +317,7 @@ export const dbClientStore = {
 	/** The database currently browsed in the sidebar for a connection (tree drivers). */
 	setOpenedDatabase(connId: string, database: string | null): void {
 		state.openedDatabase = { ...state.openedDatabase, [connId]: database };
+		saveView(connId);
 	},
 
 	// ── Navigation history (back/forward) ────────────────────────────────

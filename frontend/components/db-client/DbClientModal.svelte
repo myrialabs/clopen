@@ -86,13 +86,13 @@
 	let duplicateSource = $state<{ name: string; database?: string } | null>(null);
 
 	const driver = $derived(activeConnection?.driver);
-	const canDropDatabase = $derived(driver === 'mysql' || driver === 'postgres' || driver === 'mongodb');
-	const canRenameDatabase = $derived(driver === 'postgres' || driver === 'mysql');
-	const canEmptyDatabase = $derived(driver === 'mysql' || driver === 'postgres' || driver === 'sqlite' || driver === 'mongodb');
+	const canDropDatabase = $derived(driver === 'mysql' || driver === 'postgres' || driver === 'mongodb' || driver === 'mssql');
+	const canRenameDatabase = $derived(driver === 'postgres' || driver === 'mysql' || driver === 'mssql');
+	const canEmptyDatabase = $derived(driver === 'mysql' || driver === 'postgres' || driver === 'sqlite' || driver === 'mongodb' || driver === 'mssql');
 	const canFlushDatabase = $derived(driver === 'redis');
-	const canResetTable = $derived(driver === 'mysql' || driver === 'postgres' || driver === 'sqlite' || driver === 'mongodb');
-	const canDuplicateTable = $derived(driver === 'mysql' || driver === 'postgres' || driver === 'sqlite' || driver === 'mongodb');
-	const canCopyCreate = $derived(driver === 'mysql' || driver === 'postgres' || driver === 'sqlite');
+	const canResetTable = $derived(driver === 'mysql' || driver === 'postgres' || driver === 'sqlite' || driver === 'mongodb' || driver === 'mssql');
+	const canDuplicateTable = $derived(driver === 'mysql' || driver === 'postgres' || driver === 'sqlite' || driver === 'mongodb' || driver === 'mssql');
+	const canCopyCreate = $derived(driver === 'mysql' || driver === 'postgres' || driver === 'sqlite' || driver === 'mssql');
 
 	// The database currently in scope: the one opened in the sidebar (tree
 	// drivers) or the connection's fixed database. Single source of truth so
@@ -107,7 +107,7 @@
 	// database and none is opened yet). At this level there is no table context,
 	// so the Data/Structure tabs are meaningless.
 	const useDatabaseTree = $derived(
-		!!activeConnection && !activeConnection.database && (driver === 'mysql' || driver === 'postgres' || driver === 'mongodb')
+		!!activeConnection && !activeConnection.database && (driver === 'mysql' || driver === 'postgres' || driver === 'mongodb' || driver === 'mssql')
 	);
 	const atConnectionScope = $derived(
 		useDatabaseTree && !!activeConnection && (dbClientStore.openedDatabase[activeConnection.id] ?? null) === null
