@@ -54,6 +54,7 @@ import * as migration052 from './052_add_default_profile_to_projects';
 import * as migration053 from './053_add_profile_to_permission_sets';
 import * as migration054 from './054_drop_subagent_agent_type';
 import * as migration055 from './055_artifact_model_tools_per_engine';
+import * as migration056 from './056_support_mssql_driver';
 
 // Export all migrations in order
 export const migrations = [
@@ -386,6 +387,12 @@ export const migrations = [
 		description: migration055.description,
 		up: migration055.up,
 		down: migration055.down
+	},
+	{
+		id: '056',
+		description: migration056.description,
+		up: migration056.up,
+		down: migration056.down
 	}
 ];
 

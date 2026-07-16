@@ -239,14 +239,27 @@ export class MysqlAdapter implements DbClientDriverAdapter {
 	async listObjects(database?: string): Promise<DbClientSchemaNode[]> {
 		const target = this.targetDb({ database });
 		if (!target) throw new Error('MySQL: database is required');
-		const rows = (await this.requireSql().unsafe(
+		const tables = (await this.requireSql().unsafe(
 			'SELECT TABLE_NAME, TABLE_TYPE FROM information_schema.tables WHERE TABLE_SCHEMA = ? ORDER BY TABLE_NAME',
 			[target] as never
 		)) as Array<{ TABLE_NAME: string; TABLE_TYPE: string }>;
-		return rows.map((r) => ({
+
+		const routines = (await this.requireSql().unsafe(
+			'SELECT ROUTINE_NAME, ROUTINE_TYPE FROM information_schema.routines WHERE ROUTINE_SCHEMA = ? ORDER BY ROUTINE_NAME',
+			[target] as never
+		)) as Array<{ ROUTINE_NAME: string; ROUTINE_TYPE: string }>;
+
+		const tableNodes = tables.map((r) => ({
 			name: r.TABLE_NAME,
-			type: r.TABLE_TYPE === 'VIEW' ? 'view' as const : 'table' as const
+			type: r.TABLE_TYPE === 'VIEW' ? ('view' as const) : ('table' as const)
 		}));
+
+		const routineNodes = routines.map((r) => ({
+			name: r.ROUTINE_NAME,
+			type: r.ROUTINE_TYPE === 'FUNCTION' ? ('function' as const) : ('procedure' as const)
+		}));
+
+		return [...tableNodes, ...routineNodes];
 	}
 
 	async getObjectDetails(
@@ -257,6 +270,21 @@ export class MysqlAdapter implements DbClientDriverAdapter {
 		const target = this.targetDb({ database });
 		if (!target) throw new Error('MySQL: database is required');
 		const sql = this.requireSql();
+
+		if (_type === 'function' || _type === 'procedure') {
+			const query = _type === 'function'
+				? `SHOW CREATE FUNCTION ${Q(target)}.${Q(name)}`
+				: `SHOW CREATE PROCEDURE ${Q(target)}.${Q(name)}`;
+			
+			const res = (await sql.unsafe(query)) as any[];
+			const field = _type === 'function' ? 'Create Function' : 'Create Procedure';
+			const definition = res[0]?.[field] ?? res[0]?.[field.toUpperCase()] ?? '';
+			return {
+				name,
+				type: _type,
+				ddl: String(definition)
+			};
+		}
 
 		const colRows = (await sql.unsafe(
 			`SELECT COLUMN_NAME, DATA_TYPE, COLUMN_TYPE, IS_NULLABLE, COLUMN_DEFAULT, COLUMN_KEY, EXTRA
@@ -549,6 +577,77 @@ export class MysqlAdapter implements DbClientDriverAdapter {
 			placeholder: () => '?'
 		});
 		return this.executeWrite(sql, params);
+	}
+
+	async getServerLogs(opts?: { database?: string; limit?: number }): Promise<Array<{ at: Date; type: 'executing' | 'result' | 'error'; message: string }>> {
+		const limit = opts?.limit ?? 100;
+		try {
+			await this.ensureDatabase(opts?.database);
+			const sql = this.requireSql();
+			const raw = await sql.unsafe(`
+				SELECT 
+					SQL_TEXT AS query,
+					TIMER_WAIT / 1000000000 AS duration_ms,
+					ROWS_AFFECTED AS affected_rows,
+					ROWS_SENT AS sent_rows
+				FROM performance_schema.events_statements_history
+				WHERE SQL_TEXT IS NOT NULL AND SQL_TEXT NOT LIKE '%performance_schema.events_statements_history%'
+				ORDER BY EVENT_ID DESC
+				LIMIT ${limit}
+			`);
+			const logs: Array<{ at: Date; type: 'executing' | 'result' | 'error'; message: string }> = [];
+			for (const row of raw as any[]) {
+				const queryText = (row.query ?? row.SQL_TEXT ?? '').trim();
+				if (!queryText) continue;
+				const at = new Date();
+				const rowsCount = row.affected_rows ?? row.ROWS_AFFECTED ?? row.sent_rows ?? row.ROWS_SENT ?? 0;
+				const duration = row.duration_ms ?? (row.TIMER_WAIT ? Number(row.TIMER_WAIT) / 1000000000 : 0);
+				
+				logs.push({
+					at: new Date(at.getTime() - 10),
+					type: 'executing',
+					message: `Executing: ${queryText}`
+				});
+				logs.push({
+					at,
+					type: 'result',
+					message: `Result: ${rowsCount} rows retrieved/affected in ${Math.round(duration)}ms`
+				});
+			}
+			return logs;
+		} catch (err) {
+			debug.warn('db-client', 'Failed to get MySQL server logs from performance_schema, trying general_log:', err);
+			try {
+				const sql = this.requireSql();
+				const raw = await sql.unsafe(`
+					SELECT event_time, argument AS query
+					FROM mysql.general_log
+					WHERE argument IS NOT NULL AND argument != '' AND argument NOT LIKE '%mysql.general_log%'
+					ORDER BY event_time DESC
+					LIMIT ${limit}
+				`);
+				const logs: Array<{ at: Date; type: 'executing' | 'result' | 'error'; message: string }> = [];
+				for (const row of raw as any[]) {
+					const queryText = (row.query ?? row.argument ?? '').trim();
+					if (!queryText) continue;
+					const at = row.event_time ? new Date(row.event_time) : new Date();
+					logs.push({
+						at: new Date(at.getTime() - 10),
+						type: 'executing',
+						message: `Executing: ${queryText}`
+					});
+					logs.push({
+						at,
+						type: 'result',
+						message: `Result: Completed`
+					});
+				}
+				return logs;
+			} catch (err2) {
+				debug.warn('db-client', 'Failed fallback MySQL general_log:', err2);
+				return [];
+			}
+		}
 	}
 }
 

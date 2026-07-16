@@ -22,7 +22,8 @@
 		postgres: 'PostgreSQL',
 		sqlite: 'SQLite',
 		mongodb: 'MongoDB',
-		redis: 'Redis'
+		redis: 'Redis',
+		mssql: 'SQL Server'
 	}[connection.driver]);
 
 	const subtitle = $derived.by(() => {

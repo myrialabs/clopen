@@ -84,6 +84,7 @@ export interface DbClientDriverAdapter {
 	executeWrite?(q: string, params?: unknown[], opts?: { database?: string }): Promise<DbClientQueryResult>;
 	explain?(q: string, opts?: { database?: string }): Promise<DbClientQueryResult>;
 	cancel?(): Promise<void>;
+	getServerLogs?(opts?: { database?: string; limit?: number }): Promise<Array<{ at: Date; type: 'executing' | 'result' | 'error'; message: string }>>;
 
 	/**
 	 * Run `fn` inside a single database transaction on one dedicated

@@ -13,7 +13,9 @@
 	import QueryEditor from './main/QueryEditor.svelte';
 	import DataGrid from './main/DataGrid.svelte';
 	import StructureManager from './main/StructureManager.svelte';
+	import QueryLog from './main/QueryLog.svelte';
 	import OverviewPanel from './main/OverviewPanel.svelte';
+	import ErDiagram from './main/ErDiagram.svelte';
 	import TableDesigner from './main/TableDesigner.svelte';
 	import ExportModal from './main/ExportModal.svelte';
 	import ImportModal from './main/ImportModal.svelte';
@@ -21,6 +23,7 @@
 	import { ensureSqlCompletion } from './sql-completion';
 	import { debug } from '$shared/utils/logger';
 	import type { DbClientSchemaNode } from '$shared/types/db-client';
+	import MonacoCodeEditor from '$frontend/components/common/editor/MonacoCodeEditor.svelte';
 
 	interface Props {
 		isOpen: boolean;
@@ -60,6 +63,12 @@
 	let exportOpen = $state(false);
 	let exportPreselect = $state<string[]>([]);
 	let importOpen = $state(false);
+	let createRoutineOpen = $state(false);
+	let createRoutineType = $state<'function' | 'procedure'>('function');
+	let createRoutineQuery = $state('');
+	let createRoutineDb = $state<string | undefined>(undefined);
+	let createRoutineSaving = $state(false);
+	let createRoutineError = $state<string | null>(null);
 
 	let confirmReset = $state(false);
 	let confirmDropDatabase = $state(false);
@@ -156,6 +165,34 @@
 			case 'sqlite': return '"' + name.replace(/"/g, '""') + '"';
 			default: return name;
 		}
+	}
+
+	function getFunctionTemplate(): string {
+		const drv = activeConnection?.driver;
+		if (drv === 'postgres') {
+			return `-- New PostgreSQL Function Template\nCREATE OR REPLACE FUNCTION new_function()\nRETURNS INTEGER AS $$\nBEGIN\n  RETURN 1;\nEND;\n$$ LANGUAGE plpgsql;`;
+		}
+		if (drv === 'mysql') {
+			return `-- New MySQL Function Template\nCREATE FUNCTION new_function()\nRETURNS INT\nDETERMINISTIC\nBEGIN\n  DECLARE res INT;\n  SET res = 1;\n  RETURN res;\nEND`;
+		}
+		if (drv === 'mssql') {
+			return `-- New MSSQL Function Template\nCREATE FUNCTION new_function()\nRETURNS INT\nAS\nBEGIN\n  DECLARE @res INT;\n  SET @res = 1;\n  RETURN @res;\nEND`;
+		}
+		return `CREATE FUNCTION new_function() RETURNS INTEGER AS $$ BEGIN RETURN 1; END $$;`;
+	}
+
+	function getProcedureTemplate(): string {
+		const drv = activeConnection?.driver;
+		if (drv === 'postgres') {
+			return `-- New PostgreSQL Procedure Template\nCREATE OR REPLACE PROCEDURE new_procedure()\nLANGUAGE plpgsql AS $$\nBEGIN\n  -- procedure logic here\nEND;\n$$;`;
+		}
+		if (drv === 'mysql') {
+			return `-- New MySQL Procedure Template\nCREATE PROCEDURE new_procedure()\nBEGIN\n  -- procedure logic here\nEND`;
+		}
+		if (drv === 'mssql') {
+			return `-- New MSSQL Procedure Template\nCREATE PROCEDURE new_procedure\nAS\nBEGIN\n  -- procedure logic here\nEND`;
+		}
+		return `CREATE PROCEDURE new_procedure() BEGIN END;`;
 	}
 
 	function itemsForNode(node: DbClientSchemaNode): ContextMenuItem[] {
@@ -551,6 +588,23 @@
 		}
 	}
 
+	async function doCreateRoutine(): Promise<void> {
+		const conn = activeConnection;
+		if (!conn || !createRoutineQuery.trim()) return;
+		createRoutineSaving = true;
+		createRoutineError = null;
+		try {
+			await dbClientStore.executeWrite(conn.id, createRoutineQuery, { database: createRoutineDb });
+			dbClientStore.requestSchemaReload();
+			createRoutineOpen = false;
+		} catch (e) {
+			createRoutineError = e instanceof Error ? e.message : String(e);
+			debug.error('db-client', `create ${createRoutineType} failed:`, e);
+		} finally {
+			createRoutineSaving = false;
+		}
+	}
+
 	async function ws_createView(connId: string): Promise<void> {
 		const ws = (await import('$frontend/utils/ws')).default;
 		await ws.http('db-client:structure:create-view', {
@@ -567,11 +621,13 @@
 	}
 
 	function isTableScopedView(v: DbClientView): boolean {
-		return v === 'data' || v === 'structure';
+		return v === 'data' || v === 'structure' || v === 'log';
 	}
 
-	function tableDefaultView(): 'data' | 'structure' {
-		return activeView === 'structure' ? 'structure' : 'data';
+	function tableDefaultView(): 'data' | 'structure' | 'log' {
+		if (activeView === 'structure') return 'structure';
+		if (activeView === 'log') return 'log';
+		return 'data';
 	}
 
 	const showSchemaTree = $derived(!!activeConnection && !isFormOpen);
@@ -663,6 +719,28 @@
 									{onScopeMenu}
 									onBackToConnections={backToConnections}
 									onCreateTable={(db) => { createTableDb = db; createTableOpen = true; }}
+									onCreateView={(db) => {
+										createViewDb = db;
+										createViewName = '';
+										createViewQuery = 'CREATE VIEW new_view AS\nSELECT * FROM table_name';
+										createViewOpen = true;
+									}}
+									onCreateFunction={(db) => {
+										createRoutineType = 'function';
+										createRoutineQuery = getFunctionTemplate();
+										createRoutineDb = db;
+										createRoutineError = null;
+										createRoutineSaving = false;
+										createRoutineOpen = true;
+									}}
+									onCreateProcedure={(db) => {
+										createRoutineType = 'procedure';
+										createRoutineQuery = getProcedureTemplate();
+										createRoutineDb = db;
+										createRoutineError = null;
+										createRoutineSaving = false;
+										createRoutineOpen = true;
+									}}
 								/>
 							{/key}
 						</div>
@@ -888,14 +966,28 @@
 							<div class="flex items-center justify-between gap-3 px-2 py-1.5 bg-white dark:bg-slate-900 rounded-xl border border-slate-200 dark:border-slate-800 shrink-0 min-w-0">
 								<!-- Data / Structure toggle — same visual language as the Overview/Query Editor tabs -->
 								<div class="flex items-center gap-1 shrink-0">
-									<button type="button" class="flex items-center gap-1.5 px-2.5 sm:px-3 h-7 rounded-md text-xs font-semibold transition-colors cursor-pointer shrink-0 {activeView === 'data' ? 'bg-violet-500/10 text-violet-700 dark:text-violet-300' : 'text-slate-500 dark:text-slate-400 hover:text-slate-700 hover:bg-slate-100 dark:hover:text-slate-100 dark:hover:bg-slate-800'}" onclick={() => pickView('data')}>
-										<Icon name="lucide:table" class="w-3.5 h-3.5" />
-										<span>Data</span>
-									</button>
+									{#if activeObject.type !== 'function' && activeObject.type !== 'procedure'}
+										<button type="button" class="flex items-center gap-1.5 px-2.5 sm:px-3 h-7 rounded-md text-xs font-semibold transition-colors cursor-pointer shrink-0 {activeView === 'data' ? 'bg-violet-500/10 text-violet-700 dark:text-violet-300' : 'text-slate-500 dark:text-slate-400 hover:text-slate-700 hover:bg-slate-100 dark:hover:text-slate-100 dark:hover:bg-slate-800'}" onclick={() => pickView('data')}>
+											<Icon name="lucide:table" class="w-3.5 h-3.5" />
+											<span>Data</span>
+										</button>
+									{/if}
 									<button type="button" class="flex items-center gap-1.5 px-2.5 sm:px-3 h-7 rounded-md text-xs font-semibold transition-colors cursor-pointer shrink-0 {activeView === 'structure' ? 'bg-violet-500/10 text-violet-700 dark:text-violet-300' : 'text-slate-500 dark:text-slate-400 hover:text-slate-700 hover:bg-slate-100 dark:hover:text-slate-100 dark:hover:bg-slate-800'}" onclick={() => pickView('structure')}>
 										<Icon name="lucide:layout-list" class="w-3.5 h-3.5" />
 										<span>Structure</span>
 									</button>
+									<button type="button" class="flex items-center gap-1.5 px-2.5 sm:px-3 h-7 rounded-md text-xs font-semibold transition-colors cursor-pointer shrink-0 {activeView === 'log' ? 'bg-violet-500/10 text-violet-700 dark:text-violet-300' : 'text-slate-500 dark:text-slate-400 hover:text-slate-700 hover:bg-slate-100 dark:hover:text-slate-100 dark:hover:bg-slate-800'}" onclick={() => pickView('log')}>
+										<Icon name="lucide:terminal" class="w-3.5 h-3.5" />
+										<span>Log</span>
+									</button>
+									{#if activeObject.type !== 'function' && activeObject.type !== 'procedure'}
+										{#if activeConnection.driver === 'mysql' || activeConnection.driver === 'postgres' || activeConnection.driver === 'sqlite' || activeConnection.driver === 'mssql'}
+											<button type="button" class="flex items-center gap-1.5 px-2.5 sm:px-3 h-7 rounded-md text-xs font-semibold transition-colors cursor-pointer shrink-0 {activeView === 'er' ? 'bg-violet-500/10 text-violet-700 dark:text-violet-300' : 'text-slate-500 dark:text-slate-400 hover:text-slate-700 hover:bg-slate-100 dark:hover:text-slate-100 dark:hover:bg-slate-800'}" onclick={() => pickView('er')}>
+												<Icon name="lucide:network" class="w-3.5 h-3.5" />
+												<span>ERD</span>
+											</button>
+										{/if}
+									{/if}
 								</div>
 								<!-- Breadcrumb fills the row; db/schema collapse away on small screens -->
 								<div class="flex items-center justify-end gap-1.5 min-w-0 overflow-hidden text-xs text-slate-500 dark:text-slate-400">
@@ -908,7 +1000,7 @@
 										{/if}
 										<Icon name="lucide:chevron-right" class="w-3 h-3 text-slate-300 dark:text-slate-600 shrink-0" />
 									</div>
-									<Icon name="lucide:table" class="w-3.5 h-3.5 text-slate-400 shrink-0" />
+									<Icon name={activeObject.type === 'function' ? 'lucide:code' : activeObject.type === 'procedure' ? 'lucide:terminal' : 'lucide:table'} class="w-3.5 h-3.5 text-slate-400 shrink-0" />
 									<span class="truncate max-w-[160px] font-semibold text-slate-700 dark:text-slate-200">{activeObject.name}</span>
 								</div>
 							</div>
@@ -965,6 +1057,16 @@
 											</div>
 										</div>
 									</div>
+								{/if}
+							{:else if activeView === 'log'}
+								<QueryLog connectionId={activeConnection.id} />
+							{:else if activeView === 'er'}
+								{#if activeObject}
+									<ErDiagram
+										connectionId={activeConnection.id}
+										database={scopeDb}
+										tableName={activeObject.name}
+									/>
 								{/if}
 							{/if}
 						</div>
@@ -1132,11 +1234,11 @@
 	bind:isOpen={createViewOpen}
 	onClose={() => (createViewOpen = false)}
 	title="Create view"
-	size="md"
+	size="lg"
 >
 	{#snippet children()}
-		<div class="space-y-3">
-			<div>
+		<div class="space-y-3 flex flex-col h-[500px]">
+			<div class="shrink-0">
 				<label for="view-name" class="text-xs font-medium text-slate-700 dark:text-slate-300">View name</label>
 				<input
 					id="view-name"
@@ -1145,19 +1247,56 @@
 					bind:value={createViewName}
 				/>
 			</div>
-			<div>
-				<label for="view-query" class="text-xs font-medium text-slate-700 dark:text-slate-300">Query</label>
-				<textarea
-					id="view-query"
-					rows="6"
-					class="w-full mt-1 px-2 py-1.5 text-sm bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-700 rounded"
-					bind:value={createViewQuery}
-				></textarea>
+			<div class="flex-1 flex flex-col min-h-0">
+				<label class="text-xs font-medium text-slate-700 dark:text-slate-300 mb-1.5">Query</label>
+				<div class="flex-1 min-h-0 border border-slate-200 dark:border-slate-800 rounded-lg overflow-hidden">
+					<MonacoCodeEditor
+						bind:value={createViewQuery}
+						language="sql"
+					/>
+				</div>
 			</div>
 		</div>
 	{/snippet}
 	{#snippet footer()}
 		<Button variant="outline" size="sm" onclick={() => (createViewOpen = false)}>Cancel</Button>
-		<Button variant="primary" size="sm" onclick={async () => { await doCreateView(); createViewOpen = false; }} disabled={!createViewName || !createViewQuery}>Create</Button>
+		<Button variant="primary" size="sm" onclick={async () => { await doCreateView(); createViewOpen = false; }} disabled={!createViewName.trim() || !createViewQuery.trim()}>Create</Button>
 	{/snippet}
 </Modal>
+
+{#if activeConnection}
+	<Modal
+		bind:isOpen={createRoutineOpen}
+		onClose={() => (createRoutineOpen = false)}
+		title={createRoutineType === 'function' ? 'Create function' : 'Create procedure'}
+		size="lg"
+	>
+		{#snippet children()}
+			<div class="space-y-3 flex flex-col h-[500px]">
+				<div class="flex-1 flex flex-col min-h-0">
+					<label class="text-xs font-medium text-slate-700 dark:text-slate-300 mb-1.5">Definition</label>
+					<div class="flex-1 min-h-0 border border-slate-200 dark:border-slate-800 rounded-lg overflow-hidden">
+						<MonacoCodeEditor
+							bind:value={createRoutineQuery}
+							language="sql"
+						/>
+					</div>
+				</div>
+				{#if createRoutineError}
+					<div class="text-xs text-red-600 dark:text-red-400 max-h-24 overflow-y-auto bg-red-500/10 p-2 rounded border border-red-500/20">{createRoutineError}</div>
+				{/if}
+			</div>
+		{/snippet}
+		{#snippet footer()}
+			<Button variant="outline" size="sm" onclick={() => (createRoutineOpen = false)}>Cancel</Button>
+			<Button variant="primary" size="sm" onclick={doCreateRoutine} disabled={!createRoutineQuery.trim() || createRoutineSaving}>
+				{#if createRoutineSaving}
+					<Icon name="lucide:loader" class="w-4 h-4 animate-spin mr-1.5" />
+					Saving...
+				{:else}
+					Create
+				{/if}
+			</Button>
+		{/snippet}
+	</Modal>
+{/if}

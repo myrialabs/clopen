@@ -21,7 +21,8 @@ const driverSchema = t.Union([
 	t.Literal('postgres'),
 	t.Literal('sqlite'),
 	t.Literal('mongodb'),
-	t.Literal('redis')
+	t.Literal('redis'),
+	t.Literal('mssql')
 ]);
 
 const sslModeSchema = t.Union([

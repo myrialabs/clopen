@@ -24,19 +24,51 @@
 		error: string | null;
 	}
 
+	function extractTableName(query: string): string | null {
+		const trimmed = query.trim();
+		if (!trimmed) return null;
+
+		// Match SELECT ... FROM table
+		const selectMatch = /\bFROM\s+([A-Za-z0-9_"`[\].]+)/i.exec(trimmed);
+		if (selectMatch && selectMatch[1]) {
+			return cleanTableName(selectMatch[1]);
+		}
+
+		// Match INSERT INTO table, UPDATE table, DELETE FROM table
+		const dmlMatch = /\b(?:INSERT\s+INTO|UPDATE|DELETE\s+FROM)\s+([A-Za-z0-9_"`[\].]+)/i.exec(trimmed);
+		if (dmlMatch && dmlMatch[1]) {
+			return cleanTableName(dmlMatch[1]);
+		}
+
+		return null;
+	}
+
+	function cleanTableName(raw: string): string {
+		let name = raw.replace(/[[\]"`]/g, '');
+		if (name.includes('.')) {
+			const parts = name.split('.');
+			name = parts[parts.length - 1];
+		}
+		return name;
+	}
+
 	// A multi-statement (batch) execution carries a per-statement report; a
 	// plain execution is shown as a single tab.
 	const batch = $derived(result?.batch ?? null);
 
 	const tabs = $derived<ResultTab[]>(
-		batch && batch.statements.length > 1
-			? batch.statements.map((s: DbClientStatementResult) => ({
-				label: `Statement ${s.index + 1}`,
-				queryClass: s.queryClass,
-				status: s.status,
-				result: s.result,
-				error: s.error
-			}))
+		batch && batch.statements.length > 0
+			? batch.statements.map((s: DbClientStatementResult) => {
+				const tableName = extractTableName(s.query);
+				const defaultLabel = batch.statements.length > 1 ? `Result ${s.index + 1}` : 'Result 1';
+				return {
+					label: tableName ? tableName : defaultLabel,
+					queryClass: s.queryClass,
+					status: s.status,
+					result: s.result,
+					error: s.error
+				};
+			})
 			: result
 				? [{ label: 'Result 1', queryClass: null, status: 'success', result, error: null }]
 				: []
@@ -122,7 +154,7 @@
 
 <div class="flex-1 min-h-0 flex flex-col bg-white dark:bg-slate-900 border-t border-slate-200 dark:border-slate-800">
 	<div class="flex items-center justify-between px-3 py-1.5 border-b border-slate-200 dark:border-slate-800 text-sm shrink-0">
-		<div class="flex items-center gap-3 text-slate-600 dark:text-slate-400">
+		<div class="flex items-center gap-3 text-slate-600 dark:text-slate-400 font-sans">
 			{#if running}
 				<span class="flex items-center gap-1">
 					<Icon name="lucide:loader" class="w-3 h-3 animate-spin" /> running…
@@ -156,7 +188,7 @@
 				</span>
 			{/if}
 		</div>
-		<div class="flex items-center gap-1">
+		<div class="flex items-center gap-1 font-sans">
 			<button
 				type="button"
 				class="px-2 py-0.5 rounded text-slate-500 hover:bg-slate-100 dark:hover:bg-slate-800 disabled:opacity-50"
@@ -183,7 +215,7 @@
 
 	<!-- Result tabs — always shown when there is a result (one tab per statement) -->
 	{#if tabs.length >= 1}
-		<div class="flex items-center gap-0.5 px-2 pt-1.5 border-b border-slate-200 dark:border-slate-800 shrink-0 overflow-x-auto">
+		<div class="flex items-center gap-0.5 px-2 pt-1.5 border-b border-slate-200 dark:border-slate-800 shrink-0 overflow-x-auto select-none bg-slate-50 dark:bg-slate-900 font-sans">
 			{#each tabs as tab, i (i)}
 				<button
 					type="button"
@@ -223,7 +255,7 @@
 			<div class="p-4 text-sm text-slate-400">Not executed — a previous statement failed and the batch was rolled back.</div>
 		{:else if activeResult && activeResult.rows.length > 0}
 			<table class="w-full text-sm border-collapse bg-slate-50 dark:bg-slate-800/50">
-				<thead class="sticky top-0 bg-slate-200 dark:bg-slate-800 z-10">
+				<thead class="sticky top-0 bg-slate-200 dark:bg-slate-800 z-10 font-sans">
 					<tr>
 						<th class="px-2 py-1 text-left font-semibold text-slate-500 border-b border-slate-200 dark:border-slate-800 w-10">#</th>
 						{#each activeResult.columns as col (col.name)}
@@ -240,11 +272,11 @@
 				</thead>
 				<tbody>
 					{#each pagedRows as row, i (i)}
-						<tr class="hover:bg-slate-100 dark:hover:bg-slate-800/60">
-							<td class="px-2 py-1 text-slate-400 border-b border-slate-100 dark:border-slate-800">{page * PAGE_SIZE + i + 1}</td>
+						<tr class="hover:bg-slate-100 dark:hover:bg-slate-800/60 transition-colors duration-100">
+							<td class="px-2.5 py-1.5 text-slate-400 border-b border-slate-200/50 dark:border-slate-800/40 select-none font-mono text-[10px]">{page * PAGE_SIZE + i + 1}</td>
 							{#each activeResult.columns as col (col.name)}
 								<td
-									class="px-2 py-1 border-b border-slate-100 dark:border-slate-800 text-slate-700 dark:text-slate-300 cursor-pointer max-w-[400px] truncate"
+									class="px-2.5 py-1.5 border-b border-slate-200/50 dark:border-slate-800/40 text-slate-700 dark:text-slate-300 cursor-pointer max-w-[400px] truncate hover:bg-slate-200/30 dark:hover:bg-slate-800/50 transition-colors duration-100"
 									title={fmt(row[col.name])}
 									ondblclick={() => copyCell(row[col.name])}
 								>
@@ -266,7 +298,7 @@
 
 	<!-- Pagination — only when the result set exceeds one page -->
 	{#if activeResult && totalRows > PAGE_SIZE}
-		<div class="flex items-center justify-between gap-2 px-3 py-1.5 border-t border-slate-200 dark:border-slate-800 shrink-0 text-xs text-slate-500 dark:text-slate-400">
+		<div class="flex items-center justify-between gap-2 px-3 py-1.5 border-t border-slate-200 dark:border-slate-800 shrink-0 text-xs text-slate-500 dark:text-slate-400 font-sans">
 			<span>
 				Showing {page * PAGE_SIZE + 1}–{Math.min((page + 1) * PAGE_SIZE, totalRows)} of {totalRows}
 			</span>
@@ -292,4 +324,3 @@
 		</div>
 	{/if}
 </div>
-

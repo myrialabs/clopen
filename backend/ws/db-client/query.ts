@@ -85,7 +85,24 @@ export const queryHandler = createRouter()
 				rowCount: result.rowCount ?? null,
 				error: null
 			});
-			return result;
+			const top = {
+				...result,
+				batch: result.batch ?? {
+					statements: [{
+						index: 0,
+						query: data.query,
+						queryClass: 'read' as const,
+						status: 'success' as const,
+						result,
+						error: null,
+						durationMs: result.durationMs
+					}],
+					totalDurationMs: result.durationMs,
+					transaction: false,
+					ok: true
+				}
+			};
+			return top;
 		} catch (error) {
 			recordHistory({
 				connectionId: data.connectionId,
@@ -130,7 +147,24 @@ export const queryHandler = createRouter()
 				rowCount: result.rowCount ?? null,
 				error: null
 			});
-			return result;
+			const top = {
+				...result,
+				batch: result.batch ?? {
+					statements: [{
+						index: 0,
+						query: data.query,
+						queryClass: 'write' as const,
+						status: 'success' as const,
+						result,
+						error: null,
+						durationMs: result.durationMs
+					}],
+					totalDurationMs: result.durationMs,
+					transaction: false,
+					ok: true
+				}
+			};
+			return top;
 		} catch (error) {
 			recordHistory({
 				connectionId: data.connectionId,
@@ -159,7 +193,7 @@ export const queryHandler = createRouter()
 		const connection = requireDbClientConnectionAccess(conn, data.connectionId);
 		const adapter = await connectionManager.get(data.connectionId);
 		// Statement splitting is a SQL concern; Mongo/Redis payloads run whole.
-		const isSql = connection.driver === 'mysql' || connection.driver === 'postgres' || connection.driver === 'sqlite';
+		const isSql = connection.driver === 'mysql' || connection.driver === 'postgres' || connection.driver === 'sqlite' || connection.driver === 'mssql';
 		const split = isSql ? splitSqlStatements(data.query) : [data.query.trim()];
 		const statements = split.length > 0 ? split : [data.query.trim()];
 		try {
@@ -288,4 +322,20 @@ export const queryHandler = createRouter()
 			database: data.database,
 			schema: data.schema
 		});
+	})
+
+	.http('db-client:get-server-logs', {
+		data: t.Object({
+			connectionId: t.String({ minLength: 1 }),
+			database: t.Optional(t.String()),
+			limit: t.Optional(t.Number())
+		}),
+		response: t.Any()
+	}, async ({ data, conn }) => {
+		requireDbClientConnectionAccess(conn, data.connectionId);
+		const adapter = await connectionManager.get(data.connectionId);
+		if (adapter.getServerLogs) {
+			return await adapter.getServerLogs({ database: data.database, limit: data.limit });
+		}
+		return [];
 	});

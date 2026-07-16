@@ -13,6 +13,7 @@ import { PostgresAdapter } from './drivers/postgres';
 import { SqliteAdapter } from './drivers/sqlite';
 import { MongoDbAdapter } from './drivers/mongodb';
 import { RedisAdapter } from './drivers/redis';
+import { MssqlAdapter } from './drivers/mssql';
 import type { DbClientDriverAdapter } from './drivers/types';
 import type {
 	DbClientConnection,
@@ -53,6 +54,7 @@ class ConnectionManager {
 			case 'sqlite': return new SqliteAdapter();
 			case 'mongodb': return new MongoDbAdapter();
 			case 'redis': return new RedisAdapter();
+			case 'mssql': return new MssqlAdapter();
 			default: {
 				const exhaustive: never = driver;
 				throw new Error(`Unsupported driver: ${exhaustive}`);
@@ -225,6 +227,7 @@ function defaultPortFor(driver: DbDriver): number {
 		case 'postgres': return 5432;
 		case 'mongodb': return 27017;
 		case 'redis': return 6379;
+		case 'mssql': return 1433;
 		case 'sqlite': return 0;
 	}
 }

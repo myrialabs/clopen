@@ -4,6 +4,7 @@
 
 import { debug } from '$shared/utils/logger';
 import ws from '$frontend/utils/ws';
+import { dbClientLog } from './db-client-log.svelte';
 import type {
 	DbClientConnection,
 	DbClientConnectionInput,
@@ -15,7 +16,7 @@ import type {
 	DbClientSchemaNodeType
 } from '$shared/types/db-client';
 
-export type DbClientView = 'overview' | 'query' | 'data' | 'structure';
+export type DbClientView = 'overview' | 'query' | 'data' | 'structure' | 'log' | 'er';
 
 /** A single data-grid filter condition, carried with the active object so
  *  foreign-key navigation survives back/forward history. */
@@ -418,7 +419,7 @@ export const dbClientStore = {
 		saveView(connId);
 	},
 
-	openTable(connId: string, obj: DbClientActiveObject, defaultView: 'data' | 'structure' = 'data'): void {
+	openTable(connId: string, obj: DbClientActiveObject, defaultView: 'data' | 'structure' | 'log' = 'data'): void {
 		const view = ensureView(connId);
 		const exists = view.openTables.find(
 			(t) => t.name === obj.name && (t.database ?? null) === (obj.database ?? null)
@@ -443,9 +444,24 @@ export const dbClientStore = {
 		view.openTables = view.openTables.filter((_, i) => i !== index);
 
 		if (isActive) {
-			if (view.openTables.length > 0) {
-				const nextIndex = Math.min(index, view.openTables.length - 1);
-				view.activeObject = view.openTables[nextIndex];
+			const connection = state.connections.find(c => c.id === connId);
+			const defaultDb = connection?.database ?? null;
+			const closedDb = closedTab.database ?? defaultDb;
+			const sameDbTables = view.openTables.filter(t => (t.database ?? defaultDb) === closedDb);
+
+			if (sameDbTables.length > 0) {
+				// Find the tab in sameDbTables that is closest to the closed tab's index
+				let bestTable = sameDbTables[0];
+				let minDiff = Infinity;
+				for (const t of sameDbTables) {
+					const origIdx = view.openTables.indexOf(t);
+					const diff = Math.abs(origIdx - index);
+					if (diff < minDiff) {
+						minDiff = diff;
+						bestTable = t;
+					}
+				}
+				view.activeObject = bestTable;
 			} else {
 				view.activeObject = null;
 				view.activeView = 'overview';
@@ -590,20 +606,63 @@ export const dbClientStore = {
 	// ── Query execution ──────────────────────────────────────────────────
 
 	async executeRead(connId: string, query: string, opts?: { database?: string; limit?: number }): Promise<DbClientQueryResult> {
-		return (await ws.http('db-client:execute-read', {
-			connectionId: connId,
-			query,
-			database: opts?.database,
-			limit: opts?.limit
-		})) as DbClientQueryResult;
+		dbClientLog.append(connId, {
+			at: new Date(),
+			type: 'executing',
+			message: `Executing: ${query}`
+		});
+		try {
+			const res = (await ws.http('db-client:execute-read', {
+				connectionId: connId,
+				query,
+				database: opts?.database,
+				limit: opts?.limit
+			})) as DbClientQueryResult;
+			dbClientLog.append(connId, {
+				at: new Date(),
+				type: 'result',
+				message: `Result: ${res.rowCount} rows retrieved in ${res.durationMs}ms`
+			});
+			return res;
+		} catch (e) {
+			const msg = e instanceof Error ? e.message : String(e);
+			dbClientLog.append(connId, {
+				at: new Date(),
+				type: 'error',
+				message: `Execute fail : ${msg}`
+			});
+			throw e;
+		}
 	},
 
 	async executeWrite(connId: string, query: string, opts?: { database?: string }): Promise<DbClientQueryResult> {
-		return (await ws.http('db-client:execute-write', {
-			connectionId: connId,
-			query,
-			database: opts?.database
-		})) as DbClientQueryResult;
+		dbClientLog.append(connId, {
+			at: new Date(),
+			type: 'executing',
+			message: `Executing: ${query}`
+		});
+		try {
+			const res = (await ws.http('db-client:execute-write', {
+				connectionId: connId,
+				query,
+				database: opts?.database
+			})) as DbClientQueryResult;
+			const affected = res.affectedRows !== null ? `${res.affectedRows} rows affected` : `${res.rowCount} rows affected/retrieved`;
+			dbClientLog.append(connId, {
+				at: new Date(),
+				type: 'result',
+				message: `Result: ${affected} in ${res.durationMs}ms`
+			});
+			return res;
+		} catch (e) {
+			const msg = e instanceof Error ? e.message : String(e);
+			dbClientLog.append(connId, {
+				at: new Date(),
+				type: 'error',
+				message: `Execute fail : ${msg}`
+			});
+			throw e;
+		}
 	},
 
 	/**
@@ -612,16 +671,89 @@ export const dbClientStore = {
 	 * `.batch`.
 	 */
 	async executeBatch(connId: string, query: string, opts?: { database?: string; limit?: number }): Promise<DbClientQueryResult> {
-		return (await ws.http('db-client:execute-batch', {
-			connectionId: connId,
-			query,
-			database: opts?.database,
-			limit: opts?.limit
-		})) as DbClientQueryResult;
+		dbClientLog.append(connId, {
+			at: new Date(),
+			type: 'executing',
+			message: `Executing: ${query}`
+		});
+		try {
+			const res = (await ws.http('db-client:execute-batch', {
+				connectionId: connId,
+				query,
+				database: opts?.database,
+				limit: opts?.limit
+			})) as DbClientQueryResult;
+			if (res.batch) {
+				const duration = res.batch.totalDurationMs;
+				const successes = res.batch.statements.filter(s => s.status === 'success').length;
+				const total = res.batch.statements.length;
+				dbClientLog.append(connId, {
+					at: new Date(),
+					type: 'result',
+					message: `Result: Batch completed (${successes}/${total} statements succeeded) in ${duration}ms`
+				});
+				for (const stmt of res.batch.statements) {
+					const label = `Statement #${stmt.index + 1}: ${stmt.query.slice(0, 100)}${stmt.query.length > 100 ? '...' : ''}`;
+					if (stmt.status === 'success') {
+						const details = stmt.result?.affectedRows !== null 
+							? `${stmt.result?.affectedRows} rows affected` 
+							: `${stmt.result?.rowCount} rows retrieved`;
+						dbClientLog.append(connId, {
+							at: new Date(),
+							type: 'result',
+							message: `↳ ${label} → ${details} in ${stmt.durationMs}ms`
+						});
+					} else if (stmt.status === 'error') {
+						dbClientLog.append(connId, {
+							at: new Date(),
+							type: 'error',
+							message: `↳ ${label} → Execute fail : ${stmt.error}`
+						});
+					}
+				}
+			} else {
+				dbClientLog.append(connId, {
+					at: new Date(),
+					type: 'result',
+					message: `Result: ${res.rowCount} rows retrieved in ${res.durationMs}ms`
+				});
+			}
+			return res;
+		} catch (e) {
+			const msg = e instanceof Error ? e.message : String(e);
+			dbClientLog.append(connId, {
+				at: new Date(),
+				type: 'error',
+				message: `Execute fail : ${msg}`
+			});
+			throw e;
+		}
 	},
 
 	async cancel(connId: string): Promise<void> {
 		await ws.http('db-client:cancel', { connectionId: connId });
+	},
+
+	async getServerLogs(connId: string, opts?: { database?: string; limit?: number }): Promise<Array<{ at: Date; type: 'executing' | 'result' | 'error'; message: string }>> {
+		return (await ws.http('db-client:get-server-logs', {
+			connectionId: connId,
+			database: opts?.database,
+			limit: opts?.limit
+		})) as Array<{ at: Date; type: 'executing' | 'result' | 'error'; message: string }>;
+	},
+
+	async getErSchema(connId: string, opts?: { database?: string; schema?: string }): Promise<{
+		tables: Array<{
+			name: string;
+			columns: Array<{ name: string; type: string; isPrimary: boolean; isUnique: boolean }>;
+			foreignKeys: Array<{ column: string; refTable: string; refColumn: string }>;
+		}>;
+	}> {
+		return (await ws.http('db-client:get-er-schema', {
+			connectionId: connId,
+			database: opts?.database,
+			schema: opts?.schema
+		})) as any;
 	},
 
 	// ── Data CRUD ────────────────────────────────────────────────────────

@@ -116,6 +116,31 @@ export function splitSqlStatements(sql: string): string[] {
 			}
 		}
 
+		if (ch === '\n') {
+			let j = i + 1;
+			let isBlankLine = false;
+			while (j < n) {
+				const c2 = sql[j];
+				if (c2 === ' ' || c2 === '\t' || c2 === '\r') {
+					j++;
+				} else if (c2 === '\n') {
+					isBlankLine = true;
+					break;
+				} else {
+					break;
+				}
+			}
+			if (isBlankLine) {
+				const stmt = current.trim();
+				if (stmt) {
+					statements.push(stmt);
+				}
+				current = '';
+				i = j + 1;
+				continue;
+			}
+		}
+
 		if (ch === ';') {
 			if (current.trim()) statements.push(current.trim());
 			current = '';

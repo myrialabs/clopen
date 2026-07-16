@@ -278,15 +278,29 @@ export class PostgresAdapter implements DbClientDriverAdapter {
 	async listObjects(database?: string, schema?: string): Promise<DbClientSchemaNode[]> {
 		await this.ensureDatabase(database);
 		const target = this.targetSchema({ schema });
-		const rows = (await this.requireSql().unsafe(
+		const tables = (await this.requireSql().unsafe(
 			`SELECT table_name, table_type FROM information_schema.tables
 			 WHERE table_schema = $1 ORDER BY table_name`,
 			[target] as never
 		)) as Array<{ table_name: string; table_type: string }>;
-		return rows.map((r) => ({
+
+		const routines = (await this.requireSql().unsafe(
+			`SELECT routine_name, routine_type FROM information_schema.routines
+			 WHERE routine_schema = $1 ORDER BY routine_name`,
+			[target] as never
+		)) as Array<{ routine_name: string; routine_type: string }>;
+
+		const tableNodes = tables.map((r) => ({
 			name: r.table_name,
-			type: r.table_type === 'VIEW' ? 'view' as const : 'table' as const
+			type: r.table_type === 'VIEW' ? ('view' as const) : ('table' as const)
 		}));
+
+		const routineNodes = routines.map((r) => ({
+			name: r.routine_name,
+			type: r.routine_type === 'FUNCTION' ? ('function' as const) : ('procedure' as const)
+		}));
+
+		return [...tableNodes, ...routineNodes];
 	}
 
 	async getObjectDetails(
@@ -298,6 +312,23 @@ export class PostgresAdapter implements DbClientDriverAdapter {
 		await this.ensureDatabase(database);
 		const target = this.targetSchema({ schema });
 		const sql = this.requireSql();
+
+		if (_type === 'function' || _type === 'procedure') {
+			const routineRows = (await sql.unsafe(
+				`SELECT pg_get_functiondef(p.oid) AS definition
+				 FROM pg_proc p
+				 JOIN pg_namespace n ON p.pronamespace = n.oid
+				 WHERE n.nspname = $1 AND p.proname = $2`,
+				[target, name] as never
+			)) as Array<{ definition: string }>;
+			
+			const definition = routineRows[0]?.definition ?? '';
+			return {
+				name,
+				type: _type,
+				ddl: String(definition)
+			};
+		}
 
 		const colRows = (await sql.unsafe(
 			`SELECT c.column_name, c.data_type, c.udt_name, c.is_nullable, c.column_default,
@@ -615,6 +646,77 @@ export class PostgresAdapter implements DbClientDriverAdapter {
 			placeholder: PG_PLACEHOLDER
 		});
 		return this.executeWrite(sql, params);
+	}
+
+	async getServerLogs(opts?: { database?: string; limit?: number }): Promise<Array<{ at: Date; type: 'executing' | 'result' | 'error'; message: string }>> {
+		const limit = opts?.limit ?? 100;
+		try {
+			await this.ensureDatabase(opts?.database);
+			const sql = this.requireSql();
+			const raw = await sql.unsafe(`
+				SELECT 
+					query,
+					query_start AS execution_time,
+					state
+				FROM pg_stat_activity
+				WHERE query IS NOT NULL AND query != '' AND query NOT LIKE '%pg_stat_activity%'
+				ORDER BY query_start DESC
+				LIMIT ${limit}
+			`);
+			const logs: Array<{ at: Date; type: 'executing' | 'result' | 'error'; message: string }> = [];
+			for (const row of raw as any[]) {
+				const queryText = (row.query ?? '').trim();
+				if (!queryText) continue;
+				const at = row.execution_time ? new Date(row.execution_time) : new Date();
+				
+				logs.push({
+					at: new Date(at.getTime() - 10),
+					type: 'executing',
+					message: `Executing: ${queryText}`
+				});
+				logs.push({
+					at,
+					type: 'result',
+					message: `Result: ${row.state === 'active' ? 'Running' : 'Completed'}`
+				});
+			}
+			return logs;
+		} catch (err) {
+			debug.warn('db-client', 'Failed to get Postgres server logs from pg_stat_activity, trying pg_stat_statements:', err);
+			try {
+				const sql = this.requireSql();
+				const raw = await sql.unsafe(`
+					SELECT 
+						query,
+						total_exec_time AS duration_ms,
+						rows AS affected_rows
+					FROM pg_stat_statements
+					ORDER BY total_exec_time DESC
+					LIMIT ${limit}
+				`);
+				const logs: Array<{ at: Date; type: 'executing' | 'result' | 'error'; message: string }> = [];
+				for (const row of raw as any[]) {
+					const queryText = (row.query ?? '').trim();
+					if (!queryText) continue;
+					const at = new Date();
+					
+					logs.push({
+						at: new Date(at.getTime() - 10),
+						type: 'executing',
+						message: `Executing: ${queryText}`
+					});
+					logs.push({
+						at,
+						type: 'result',
+						message: `Result: ${row.affected_rows ?? 0} rows retrieved/affected in ${Math.round(row.duration_ms ?? 0)}ms`
+					});
+				}
+				return logs;
+			} catch (err2) {
+				debug.warn('db-client', 'Failed fallback Postgres pg_stat_statements:', err2);
+				return [];
+			}
+		}
 	}
 }
 

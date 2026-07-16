@@ -164,7 +164,11 @@ export async function executeBatch(input: ExecuteBatchInput): Promise<DbClientBa
 			}
 			try {
 				const result = queryClass === 'read'
-					? await exec.executeRead(applyAutoLimit(query, limit ?? 500), params, { database })
+					? await exec.executeRead(
+						(driver === 'mysql' || driver === 'postgres' || driver === 'sqlite') ? applyAutoLimit(query, limit ?? 500) : query,
+						params,
+						{ database }
+					  )
 					: await exec.executeWrite(query, params, { database });
 				totalDurationMs += result.durationMs;
 				results.push({ index, query, queryClass, status: 'success', result, error: null, durationMs: result.durationMs });

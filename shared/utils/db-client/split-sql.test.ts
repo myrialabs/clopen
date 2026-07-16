@@ -82,6 +82,13 @@ describe('splitSqlStatements', () => {
 		]);
 	});
 
+	test('splits multiple statements by blank lines when semicolons are omitted', () => {
+		expect(splitSqlStatements('SELECT 1\n\nSELECT 2')).toEqual([
+			'SELECT 1',
+			'SELECT 2'
+		]);
+	});
+
 	test('returns empty array for whitespace / comment only input', () => {
 		expect(splitSqlStatements('   ;  ')).toEqual([]);
 	});

@@ -52,7 +52,9 @@ export type DbClientSchemaNodeType =
 	| 'collection'
 	| 'index'
 	| 'key'
-	| 'column';
+	| 'column'
+	| 'function'
+	| 'procedure';
 
 export interface DbClientSchemaNode {
 	name: string;
@@ -115,5 +117,6 @@ export interface DbClientObjectDetails {
 	mongoFieldStats?: Array<{ field: string; types: string[]; sampleCount: number }>;
 	redisTtlSeconds?: number | null;
 	redisValueType?: string;
+	ddl?: string;
 }
 

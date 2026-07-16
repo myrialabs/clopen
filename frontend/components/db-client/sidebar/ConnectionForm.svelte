@@ -23,6 +23,7 @@
 		postgres: 5432,
 		mongodb: 27017,
 		redis: 6379,
+		mssql: 1433,
 		sqlite: null
 	};
 
@@ -31,7 +32,8 @@
 		postgres: 'PostgreSQL',
 		sqlite: 'SQLite',
 		mongodb: 'MongoDB',
-		redis: 'Redis'
+		redis: 'Redis',
+		mssql: 'SQL Server'
 	};
 
 	const initial = untrack(() => connection);
@@ -102,9 +104,9 @@
 			driver,
 			host: resolvedHost,
 			port: resolvedPort,
-			username: username || undefined,
+			username: username.trim(),
 			password: password || undefined,
-			database: database || undefined,
+			database: database.trim(),
 			ssh
 		};
 	}

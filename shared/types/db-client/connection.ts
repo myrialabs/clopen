@@ -2,7 +2,7 @@
  * db-client — connection types shared between backend and frontend.
  */
 
-export type DbDriver = 'mysql' | 'postgres' | 'sqlite' | 'mongodb' | 'redis';
+export type DbDriver = 'mysql' | 'postgres' | 'sqlite' | 'mongodb' | 'redis' | 'mssql';
 export type DbSslMode = 'disable' | 'require' | 'verify-ca' | 'verify-full';
 export type DbSshAuthMethod = 'password' | 'key';
 
