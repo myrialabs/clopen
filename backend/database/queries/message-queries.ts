@@ -2,6 +2,7 @@ import { getDatabase } from '../index';
 import type { DatabaseMessage } from '$shared/types/database/schema';
 import type { UnifiedMessage } from '$shared/types/unified';
 import { debug } from '$shared/utils/logger';
+import { trimSubAgentForWire } from '$shared/utils/subagent-wire-trim';
 
 /** Parse message JSON from a DB row. */
 function parseMessage(row: DatabaseMessage): UnifiedMessage {
@@ -25,7 +26,10 @@ export const messageQueries = {
 		}
 
 		const path = this.getPathToRoot(session.head_message_id);
-		return path.map(parseMessage);
+		// Trim sub-agent tool noise from the display payload. The DB rows keep the
+		// full data; only what is sent to the frontend is slimmed. See
+		// trimSubAgentForWire for the rationale.
+		return path.map(parseMessage).map(trimSubAgentForWire);
 	},
 
 	/**
@@ -49,6 +53,44 @@ export const messageQueries = {
 		`).get(id) as DatabaseMessage | null;
 
 		return message;
+	},
+
+	/**
+	 * Get the full (untrimmed) sub-agent messages nested under a message's
+	 * tool_use blocks, matched by `parent.toolUseId`.
+	 *
+	 * The wire payload trims sub-agent noise (see trimSubAgentForWire), so the
+	 * frontend's in-memory copy is slimmed. The Debug modal uses this to fetch
+	 * the complete sub-agent data straight from the DB and rebuild the full view.
+	 */
+	getSubAgentMessages(messageId: string): UnifiedMessage[] {
+		const db = getDatabase();
+		const row = db.prepare(`
+			SELECT * FROM messages WHERE id = ?
+		`).get(messageId) as DatabaseMessage | null;
+		if (!row) return [];
+
+		const parent = parseMessage(row);
+		if (parent.type !== 'assistant') return [];
+
+		const toolUseIds = new Set(
+			parent.content
+				.filter(block => block.type === 'tool_use')
+				.map(block => (block as { id: string }).id)
+		);
+		if (toolUseIds.size === 0) return [];
+
+		const rows = db.prepare(`
+			SELECT * FROM messages WHERE session_id = ?
+			ORDER BY created_at ASC
+		`).all(row.session_id) as DatabaseMessage[];
+
+		return rows
+			.map(parseMessage)
+			.filter(msg => {
+				const parentToolUseId = msg.parent?.toolUseId;
+				return parentToolUseId != null && toolUseIds.has(parentToolUseId);
+			});
 	},
 
 	create(messageData: {

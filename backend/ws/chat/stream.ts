@@ -10,8 +10,9 @@
 import { t } from 'elysia';
 import { createRouter } from '$shared/utils/ws-server';
 import { streamManager, type StreamEvent } from '../../chat/stream-manager';
-import type { EngineType } from '$shared/types/unified';
+import type { EngineType, UnifiedMessage } from '$shared/types/unified';
 import { debug } from '$shared/utils/logger';
+import { trimSubAgentForWire } from '$shared/utils/subagent-wire-trim';
 import { ws } from '$backend/utils/ws';
 import { broadcastPresence } from '../projects/status';
 import { sessionQueries, messageQueries } from '../../database/queries';
@@ -280,7 +281,7 @@ export const streamHandler = createRouter()
 						case 'message': {
 							ws.emit.chatSession(chatSessionId, 'chat:message', {
 								processId: event.processId,
-								message: event.data.message,
+								message: trimSubAgentForWire(event.data.message),
 								usage: event.data.usage,
 								timestamp: event.data.timestamp,
 								message_id: event.data.message_id,
@@ -424,7 +425,7 @@ export const streamHandler = createRouter()
 						case 'message': {
 							ws.emit.chatSession(chatSessionId, 'chat:message', {
 								processId: event.processId,
-								message: event.data.message,
+								message: trimSubAgentForWire(event.data.message),
 								usage: event.data.usage,
 								timestamp: event.data.timestamp,
 								message_id: event.data.message_id,
@@ -618,7 +619,14 @@ export const streamHandler = createRouter()
 			streamId: streamState.streamId,
 			status: streamState.status,
 			processId: streamState.processId,
-			messages: streamState.messages,
+			// Trim sub-agent noise from the catch-up buffer too (see trimSubAgentForWire).
+			// Buffer entries wrap the UnifiedMessage under `.message`; leave the rest intact.
+			messages: streamState.messages.map(entry => {
+				const wrapped = entry as { message?: UnifiedMessage };
+				return wrapped?.message
+					? { ...wrapped, message: trimSubAgentForWire(wrapped.message) }
+					: entry;
+			}),
 			currentPartialText: streamState.currentPartialText,
 			currentReasoningText: streamState.currentReasoningText,
 			error: streamState.error,
