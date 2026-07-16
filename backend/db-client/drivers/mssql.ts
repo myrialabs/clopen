@@ -40,6 +40,31 @@ import { debug } from '$shared/utils/logger';
 
 const Q = quoteMssql;
 
+function isBatchSensitive(q: string): boolean {
+	let clean = q.trim();
+	while (true) {
+		if (clean.startsWith('--')) {
+			const idx = clean.indexOf('\n');
+			if (idx === -1) {
+				clean = '';
+				break;
+			}
+			clean = clean.slice(idx + 1).trim();
+		} else if (clean.startsWith('/*')) {
+			const idx = clean.indexOf('*/');
+			if (idx === -1) {
+				clean = '';
+				break;
+			}
+			clean = clean.slice(idx + 2).trim();
+		} else {
+			break;
+		}
+	}
+	const match = clean.match(/^(create|alter)\s+(procedure|proc|function|view|trigger|schema|queue|default|rule|partition)\b/i);
+	return !!match;
+}
+
 export class MssqlAdapter implements DbClientDriverAdapter {
 	readonly kind = 'mssql' as const;
 
@@ -122,15 +147,97 @@ export class MssqlAdapter implements DbClientDriverAdapter {
 	async executeRead(q: string, params: unknown[] = [], opts?: { database?: string; limit?: number }): Promise<DbClientQueryResult> {
 		const pool = this.requirePool();
 		const start = performance.now();
-		const request = pool.request();
+		const needUse = opts?.database && opts.database.toLowerCase() !== this.conn?.database?.toLowerCase();
 
+		if (needUse && isBatchSensitive(q)) {
+			const transaction = new sql.Transaction(pool);
+			await transaction.begin();
+			try {
+				const useRequest = new sql.Request(transaction);
+				await useRequest.query(`USE ${Q(opts!.database as string)}`);
+				
+				const request = new sql.Request(transaction);
+				if (params && params.length > 0) {
+					params.forEach((val, idx) => {
+						request.input(`p${idx}`, val);
+					});
+				}
+				const result = await request.query(q);
+				await transaction.commit();
+				const durationMs = Math.round(performance.now() - start);
+
+				const recordsets = result.recordsets as any[] | undefined;
+				if (recordsets && recordsets.length > 1) {
+					const candidateSplit = q.split(/;|\n\s*\n/).map(s => s.trim()).filter(Boolean);
+					const hasMatchingSplit = candidateSplit.length === recordsets.length;
+					const statements: DbClientStatementResult[] = recordsets.map((recordset: any, idx: number) => {
+						const cols = recordset.length > 0
+							? Object.keys(recordset[0]).map((name) => ({ name, type: null as string | null }))
+							: [];
+						return {
+							index: idx,
+							query: hasMatchingSplit ? candidateSplit[idx] : `Statement ${idx + 1}`,
+							queryClass: 'read' as const,
+							status: 'success' as const,
+							result: {
+								columns: cols,
+								rows: recordset,
+								rowCount: recordset.length,
+								affectedRows: result.rowsAffected ? (result.rowsAffected[idx] ?? null) : null,
+								durationMs: 0,
+								driverMeta: {}
+							},
+							error: null,
+							durationMs: 0
+						};
+					});
+					const batchResult: DbClientBatchResult = {
+						statements,
+						totalDurationMs: durationMs,
+						transaction: false,
+						ok: true
+					};
+					return {
+						columns: statements[0].result?.columns ?? [],
+						rows: recordsets[0] || [],
+						rowCount: recordsets[0]?.length ?? 0,
+						affectedRows: result.rowsAffected ? (result.rowsAffected[0] ?? null) : null,
+						durationMs,
+						driverMeta: {},
+						batch: batchResult
+					};
+				}
+
+				const rows = result.recordset || [];
+				const columns = rows.length > 0
+					? Object.keys(rows[0]).map((name) => ({ name, type: null as string | null }))
+					: [];
+				return {
+					columns,
+					rows,
+					rowCount: rows.length,
+					affectedRows: result.rowsAffected ? result.rowsAffected[0] : null,
+					durationMs,
+					driverMeta: {}
+				};
+			} catch (err) {
+				try {
+					await transaction.rollback();
+				} catch {
+					// Ignore rollback failures to avoid swallowing the original error
+				}
+				throw err;
+			}
+		}
+
+		const request = pool.request();
 		if (params && params.length > 0) {
 			params.forEach((val, idx) => {
 				request.input(`p${idx}`, val);
 			});
 		}
 
-		const finalQuery = opts?.database ? `USE ${Q(opts.database)};\n${q}` : q;
+		const finalQuery = needUse ? `USE ${Q(opts!.database as string)};\n${q}` : q;
 		const result = await request.query(finalQuery);
 		const durationMs = Math.round(performance.now() - start);
 
@@ -209,16 +316,20 @@ export class MssqlAdapter implements DbClientDriverAdapter {
 		try {
 			const txContext: DbClientTxContext = {
 				executeRead: async (q, params, txOpts) => {
+					const db = txOpts?.database || txDb;
+					const needUse = db && db.toLowerCase() !== this.conn?.database?.toLowerCase();
+					if (needUse) {
+						const useRequest = new sql.Request(transaction);
+						await useRequest.query(`USE ${Q(db as string)}`);
+					}
 					const request = new sql.Request(transaction);
 					if (params && params.length > 0) {
 						params.forEach((val, idx) => {
 							request.input(`p${idx}`, val);
 						});
 					}
-					const db = txOpts?.database || txDb;
-					const finalQuery = db ? `USE ${Q(db)};\n${q}` : q;
 					const start = performance.now();
-					const result = await request.query(finalQuery);
+					const result = await request.query(q);
 					const durationMs = Math.round(performance.now() - start);
 					const rows = result.recordset || [];
 					const columns = rows.length > 0
@@ -234,16 +345,20 @@ export class MssqlAdapter implements DbClientDriverAdapter {
 					};
 				},
 				executeWrite: async (q, params, txOpts) => {
+					const db = txOpts?.database || txDb;
+					const needUse = db && db.toLowerCase() !== this.conn?.database?.toLowerCase();
+					if (needUse) {
+						const useRequest = new sql.Request(transaction);
+						await useRequest.query(`USE ${Q(db as string)}`);
+					}
 					const request = new sql.Request(transaction);
 					if (params && params.length > 0) {
 						params.forEach((val, idx) => {
 							request.input(`p${idx}`, val);
 						});
 					}
-					const db = txOpts?.database || txDb;
-					const finalQuery = db ? `USE ${Q(db)};\n${q}` : q;
 					const start = performance.now();
-					const result = await request.query(finalQuery);
+					const result = await request.query(q);
 					const durationMs = Math.round(performance.now() - start);
 					return {
 						columns: [],

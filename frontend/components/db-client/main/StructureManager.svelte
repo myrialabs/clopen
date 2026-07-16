@@ -50,12 +50,28 @@
 	const isRoutine = $derived(activeObject?.type === 'function' || activeObject?.type === 'procedure');
 
 	let ddlEditorText = $state('');
+	let ddlSaving = $state(false);
 
 	$effect(() => {
 		if (ddl) {
 			ddlEditorText = ddl;
 		}
 	});
+
+	async function saveDdl(): Promise<void> {
+		const q = ddlEditorText.trim();
+		if (!q) return;
+		ddlSaving = true;
+		error = null;
+		try {
+			await dbClientStore.executeWrite(connectionId, q, { database });
+			await load();
+		} catch (e) {
+			error = e instanceof Error ? e.message : String(e);
+		} finally {
+			ddlSaving = false;
+		}
+	}
 
 	const isSqlDriver = $derived(driver === 'mysql' || driver === 'postgres' || driver === 'sqlite' || driver === 'mssql');
 	const isMongoDriver = $derived(driver === 'mongodb');
@@ -693,6 +709,19 @@
 					{:else if activeTab === 'ddl' && isSqlDriver && ddl}
 						<section>
 							<div class="flex items-center gap-2 px-3 py-2 bg-slate-50 dark:bg-slate-900/50 border border-slate-200 dark:border-slate-800 border-b-0 rounded-t-lg shrink-0">
+								{#if isRoutine}
+									<button
+										type="button"
+										class="flex items-center gap-1 px-3 py-1 rounded-md bg-violet-600 hover:bg-violet-700 text-white text-xs font-semibold disabled:opacity-50"
+										onclick={saveDdl}
+										disabled={ddlSaving}
+										title="Update (Cmd+Enter)"
+									>
+										<Icon name={ddlSaving ? 'lucide:loader' : 'lucide:play'} class="w-3.5 h-3.5 {ddlSaving ? 'animate-spin' : ''}" />
+										{ddlSaving ? 'Updating...' : 'Update'}
+									</button>
+								{/if}
+
 								<button
 									type="button"
 									class="flex items-center gap-1 px-2.5 py-1 rounded-md text-slate-500 hover:bg-slate-100 dark:hover:bg-slate-800 text-xs"
@@ -710,7 +739,7 @@
 									bind:value={ddlEditorText}
 									language="sql"
 									path={`db-client/ddl/${connectionId}/${objectName}`}
-									readonly={true}
+									readonly={!isRoutine}
 									disableMouseWheelZoom={true}
 								/>
 							</div>
