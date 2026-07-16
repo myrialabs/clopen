@@ -31,7 +31,7 @@
 	import { codexAccountsStore, type CodexAccountItem } from '$frontend/stores/features/codex-accounts.svelte';
 	import { qwenAccountsStore, type QwenAccountItem } from '$frontend/stores/features/qwen-accounts.svelte';
 	import { qwenPresetsStore } from '$frontend/stores/features/qwen-presets.svelte';
-	import { opencodeProvidersStore, type OpenCodeProviderItem, type ModelsDevProviderItem } from '$frontend/stores/features/opencode-providers.svelte';
+	import { opencodeProvidersStore, type OpenCodeProviderItem, type OpenCodeAccountItem, type ModelsDevProviderItem } from '$frontend/stores/features/opencode-providers.svelte';
 	import { modelStore } from '$frontend/stores/features/models.svelte';
 	import { settings, togglePinnedModel } from '$frontend/stores/features/settings.svelte';
 	import { showSuccess } from '$frontend/stores/ui/notification.svelte';
@@ -85,9 +85,10 @@
 	let copilotAddToken = $state('');
 	let copilotAddError = $state('');
 
-	// Copilot rename
+	// Copilot rename / edit (name + optional new token)
 	let copilotRenamingId = $state<number | null>(null);
 	let copilotRenameValue = $state('');
+	let copilotRenameToken = $state('');
 
 	// Copilot delete confirmation
 	let copilotDeleteDialogOpen = $state(false);
@@ -136,6 +137,9 @@
 	// Codex rename / delete / restart
 	let codexRenamingId = $state<number | null>(null);
 	let codexRenameValue = $state('');
+	let codexRenameApiKey = $state('');
+	// When re-authenticating an existing ChatGPT account, the login flow targets it in place.
+	let codexReauthAccountId = $state<number | null>(null);
 	let codexDeleteDialogOpen = $state(false);
 	let codexDeleteTargetId = $state<number | null>(null);
 	let codexRestarting = $state(false);
@@ -163,6 +167,8 @@
 	// Qwen rename / delete
 	let qwenRenamingId = $state<number | null>(null);
 	let qwenRenameValue = $state('');
+	let qwenRenameApiKey = $state('');
+	let qwenRenamePreset = $state<QwenProviderPresetId>('dashscope-intl');
 	let qwenDeleteDialogOpen = $state(false);
 	let qwenDeleteTargetId = $state<number | null>(null);
 
@@ -178,6 +184,8 @@
 	// Rename
 	let claudeCodeRenamingId = $state<number | null>(null);
 	let claudeCodeRenameValue = $state('');
+	// When re-authenticating an existing account, the setup-token flow updates it in place.
+	let claudeCodeReauthAccountId = $state<number | null>(null);
 
 	// Delete confirmation dialog
 	let claudeCodeDeleteDialogOpen = $state(false);
@@ -202,24 +210,23 @@
 	let ocAddOptions = $state<Record<string, string>>({});
 	let ocCatalogRefreshing = $state(false);
 
+	// Model row: per-model context/output limits (null = fall back to defaults).
+	type OcModelRow = { code: string; alias: string; hidden: boolean; context: number | null; output: number | null };
+
 	// Custom provider form
 	let ocCustomName = $state('');
 	let ocCustomSlug = $state('');
 	let ocCustomBaseUrl = $state('');
 	let ocCustomApiKey = $state('');
-	let ocCustomModelRows = $state<{ code: string; alias: string; hidden: boolean }[]>([]);
-	let ocCustomContextLimit = $state(128000);
-	let ocCustomOutputLimit = $state(16384);
+	let ocCustomModelRows = $state<OcModelRow[]>([]);
 	let ocCustomFetching = $state(false);
 	let ocEditingProviderId = $state<number | null>(null);
 
 	// Edit form (reuses custom provider form fields)
 	let ocEditName = $state('');
+	let ocEditSlug = $state('');
 	let ocEditBaseUrl = $state('');
-	let ocEditApiKey = $state('');
-	let ocEditModelRows = $state<{ code: string; alias: string; hidden: boolean }[]>([]);
-	let ocEditContextLimit = $state(128000);
-	let ocEditOutputLimit = $state(16384);
+	let ocEditModelRows = $state<OcModelRow[]>([]);
 	let ocEditFetching = $state(false);
 	let ocDragIndex = $state<number | null>(null);
 
@@ -231,6 +238,17 @@
 	// Provider account management
 	let ocRenamingAccountId = $state<number | null>(null);
 	let ocRenameValue = $state('');
+	// Credential fields shown while editing an account, keyed by the provider's
+	// env-var names (e.g. CLOUDFLARE_ACCOUNT_ID + CLOUDFLARE_API_KEY). All are
+	// optional but must be filled together — blank across the board keeps the
+	// stored secret. Custom providers fall back to a single 'API Key' field.
+	let ocRenameEnvNames = $state<string[]>([]);
+	let ocRenameEnvValues = $state<Record<string, string>>({});
+	// Valid when the credential fields are either all blank or all filled.
+	const ocRenameCredentialComplete = $derived.by(() => {
+		const vals = ocRenameEnvNames.map(n => (ocRenameEnvValues[n] ?? '').trim());
+		return vals.every(v => !v) || vals.every(v => v);
+	});
 	let ocAddingAccountForProvider = $state<number | null>(null);
 	let ocNewAccountName = $state('');
 	let ocNewAccountApiKey = $state('');
@@ -453,6 +471,7 @@
 		claudeCodeSetupError = '';
 		claudeCodeAuthCode = '';
 		claudeCodeAccountName = '';
+		claudeCodeReauthAccountId = null;
 		claudeDebugPhase = '';
 		claudeDebugBufferLen = 0;
 		hasClaudeDebugData = false;
@@ -465,6 +484,14 @@
 		ws.emit('engine:claude-account-setup-start', {});
 	}
 
+	// Re-authenticate an existing account in place: run the setup-token flow but
+	// carry the account id (+ prefill its name) so completion updates it.
+	function startClaudeCodeReauth(account: ClaudeCodeAccountItem) {
+		startClaudeCodeSetup();
+		claudeCodeReauthAccountId = account.id;
+		claudeCodeAccountName = account.name;
+	}
+
 	function submitClaudeCodeAuth() {
 		if (!claudeCodeSetupId || !claudeCodeAuthCode.trim() || !claudeCodeAccountName.trim()) return;
 
@@ -475,7 +502,8 @@
 		ws.emit('engine:claude-account-setup-submit', {
 			setupId: claudeCodeSetupId,
 			code: claudeCodeAuthCode.trim(),
-			name: claudeCodeAccountName.trim()
+			name: claudeCodeAccountName.trim(),
+			...(claudeCodeReauthAccountId != null ? { reauthAccountId: claudeCodeReauthAccountId } : {})
 		});
 	}
 
@@ -493,6 +521,7 @@
 		claudeCodeAuthCode = '';
 		claudeCodeAccountName = '';
 		claudeCodeSetupError = '';
+		claudeCodeReauthAccountId = null;
 	}
 
 	async function switchClaudeCodeAccount(id: number) {
@@ -633,14 +662,19 @@
 	function startCopilotRename(account: CopilotAccountItem) {
 		copilotRenamingId = account.id;
 		copilotRenameValue = account.name;
+		copilotRenameToken = '';
 	}
 
 	async function submitCopilotRename() {
 		if (copilotRenamingId === null || !copilotRenameValue.trim()) return;
+		const id = copilotRenamingId;
 		try {
-			await ws.http('engine:copilot-accounts-rename', { id: copilotRenamingId, name: copilotRenameValue.trim() });
+			await ws.http('engine:copilot-accounts-rename', { id, name: copilotRenameValue.trim() });
+			const token = copilotRenameToken.trim();
+			if (token) await ws.http('engine:copilot-accounts-update-token', { id, token });
 			copilotRenamingId = null;
 			copilotRenameValue = '';
+			copilotRenameToken = '';
 			await copilotAccountsStore.refresh();
 		} catch {
 			// Ignore
@@ -650,6 +684,7 @@
 	function cancelCopilotRename() {
 		copilotRenamingId = null;
 		copilotRenameValue = '';
+		copilotRenameToken = '';
 	}
 
 	async function handleCopilotRestart() {
@@ -689,6 +724,7 @@
 		codexDeviceCode = null;
 		codexUrlCopied = false;
 		codexCodeCopied = false;
+		codexReauthAccountId = null;
 	}
 
 	function proceedCodexMode() {
@@ -740,6 +776,7 @@
 		ws.emit('engine:codex-account-setup-start', {
 			name: codexAddName.trim(),
 			deviceAuth: true,
+			...(codexReauthAccountId != null ? { reauthAccountId: codexReauthAccountId } : {}),
 		});
 	}
 
@@ -756,6 +793,7 @@
 		codexAddError = '';
 		codexUrlCopied = false;
 		codexCodeCopied = false;
+		codexReauthAccountId = null;
 	}
 
 	async function copyCodexVerificationUrl() {
@@ -806,14 +844,20 @@
 	function startCodexRename(account: CodexAccountItem) {
 		codexRenamingId = account.id;
 		codexRenameValue = account.name;
+		codexRenameApiKey = '';
 	}
 
 	async function submitCodexRename() {
 		if (codexRenamingId === null || !codexRenameValue.trim()) return;
+		const id = codexRenamingId;
 		try {
-			await ws.http('engine:codex-accounts-rename', { id: codexRenamingId, name: codexRenameValue.trim() });
+			await ws.http('engine:codex-accounts-rename', { id, name: codexRenameValue.trim() });
+			// api_key accounts may also replace their key; blank keeps the stored one.
+			const apiKey = codexRenameApiKey.trim();
+			if (apiKey) await ws.http('engine:codex-accounts-update-api-key', { id, apiKey });
 			codexRenamingId = null;
 			codexRenameValue = '';
+			codexRenameApiKey = '';
 			await codexAccountsStore.refresh();
 		} catch {
 			// Ignore
@@ -823,6 +867,16 @@
 	function cancelCodexRename() {
 		codexRenamingId = null;
 		codexRenameValue = '';
+		codexRenameApiKey = '';
+	}
+
+	// Re-authenticate an existing ChatGPT account in place by re-running the
+	// device-code login flow, reusing the same add-account UI.
+	function startCodexReauth(account: CodexAccountItem) {
+		codexReauthAccountId = account.id;
+		codexAddName = account.name;
+		codexAddMode = 'chatgpt';
+		startCodexChatGptLogin();
 	}
 
 	async function handleCodexRestart() {
@@ -843,10 +897,11 @@
 
 	// ── Row-based model helpers ──
 
-	function modelRowsToOptions(rows: { code: string; alias: string; hidden: boolean }[]): string {
+	function modelRowsToOptions(rows: OcModelRow[]): string {
 		const modelIds: string[] = [];
 		const modelNames: Record<string, string> = {};
 		const hiddenModels: string[] = [];
+		const modelLimits: Record<string, { context: number; output: number }> = {};
 		for (const row of rows) {
 			const code = row.code.trim();
 			if (!code) continue;
@@ -854,34 +909,16 @@
 			const alias = row.alias.trim();
 			if (alias) modelNames[code] = alias;
 			if (row.hidden) hiddenModels.push(code);
+			// Store a per-model limit only when the user set at least one value.
+			if (row.context || row.output) {
+				modelLimits[code] = { context: row.context || 128000, output: row.output || 16384 };
+			}
 		}
 		return JSON.stringify({
 			models: modelIds,
 			modelNames: Object.keys(modelNames).length > 0 ? modelNames : undefined,
 			hiddenModels: hiddenModels.length > 0 ? hiddenModels : undefined,
-			contextLimit: ocCustomContextLimit,
-			outputLimit: ocCustomOutputLimit,
-		});
-	}
-
-	function editModelRowsToOptions(rows: { code: string; alias: string; hidden: boolean }[], ctx?: number, out?: number): string {
-		const modelIds: string[] = [];
-		const modelNames: Record<string, string> = {};
-		const hiddenModels: string[] = [];
-		for (const row of rows) {
-			const code = row.code.trim();
-			if (!code) continue;
-			modelIds.push(code);
-			const alias = row.alias.trim();
-			if (alias) modelNames[code] = alias;
-			if (row.hidden) hiddenModels.push(code);
-		}
-		return JSON.stringify({
-			models: modelIds,
-			modelNames: Object.keys(modelNames).length > 0 ? modelNames : undefined,
-			hiddenModels: hiddenModels.length > 0 ? hiddenModels : undefined,
-			contextLimit: ctx ?? ocEditContextLimit,
-			outputLimit: out ?? ocEditOutputLimit,
+			modelLimits: Object.keys(modelLimits).length > 0 ? modelLimits : undefined,
 		});
 	}
 
@@ -910,7 +947,7 @@
 		ocCustomSlug = '';
 		ocCustomBaseUrl = '';
 		ocCustomApiKey = '';
-		ocCustomModelRows = [{ code: '', alias: '', hidden: false }];
+		ocCustomModelRows = [{ code: '', alias: '', hidden: false, context: null, output: null }];
 		ocCustomFetching = false;
 	}
 
@@ -919,7 +956,7 @@
 	}
 
 	function addCustomModelRow() {
-		ocCustomModelRows = [...ocCustomModelRows, { code: '', alias: '', hidden: false }];
+		ocCustomModelRows = [...ocCustomModelRows, { code: '', alias: '', hidden: false, context: null, output: null }];
 	}
 
 	function removeCustomModelRow(index: number) {
@@ -937,7 +974,7 @@
 			const body = await res.json() as { data?: { id: string }[] };
 			const ids = (body.data || []).map(m => m.id);
 			if (ids.length === 0) throw new Error('No models returned');
-			ocCustomModelRows = ids.map(id => ({ code: id, alias: '', hidden: false }));
+			ocCustomModelRows = ids.map(id => ({ code: id, alias: '', hidden: false, context: null, output: null }));
 		} catch (err: any) {
 			ocAddError = `Failed to fetch models: ${err?.message || 'unknown error'}`;
 		} finally {
@@ -976,23 +1013,26 @@
 	function startEditCustomProvider(provider: OpenCodeProviderItem) {
 		ocEditingProviderId = provider.id;
 		ocEditName = provider.name;
+		ocEditSlug = provider.slug;
 		ocEditBaseUrl = provider.apiUrl || '';
-		ocEditApiKey = '';
 		const opts = JSON.parse(provider.options || '{}') as {
 			models?: string[];
 			modelNames?: Record<string, string>;
 			hiddenModels?: string[];
+			modelLimits?: Record<string, { context?: number; output?: number }>;
 			contextLimit?: number;
 			outputLimit?: number;
 		};
 		const hiddenSet = new Set(opts.hiddenModels || []);
+		// Seed each row from its per-model limit, falling back to a legacy
+		// provider-level limit (older data) so nothing is silently dropped.
 		ocEditModelRows = (opts.models || []).map(id => ({
 			code: id,
 			alias: opts.modelNames?.[id] || '',
 			hidden: hiddenSet.has(id),
+			context: opts.modelLimits?.[id]?.context ?? opts.contextLimit ?? null,
+			output: opts.modelLimits?.[id]?.output ?? opts.outputLimit ?? null,
 		}));
-		ocEditContextLimit = opts.contextLimit || 128000;
-		ocEditOutputLimit = opts.outputLimit || 16384;
 		if (ocEditModelRows.length === 0 && provider.apiUrl) {
 			fetchEditModels();
 		}
@@ -1003,7 +1043,7 @@
 	}
 
 	function addEditModelRow() {
-		ocEditModelRows = [...ocEditModelRows, { code: '', alias: '', hidden: false }];
+		ocEditModelRows = [...ocEditModelRows, { code: '', alias: '', hidden: false, context: null, output: null }];
 	}
 
 	function removeEditModelRow(index: number) {
@@ -1018,7 +1058,7 @@
 				id: ocEditingProviderId,
 			}) as { models: { id: string; name?: string }[] };
 			if (result.models.length === 0) throw new Error('No models returned');
-			ocEditModelRows = result.models.map(m => ({ code: m.id, alias: '', hidden: false }));
+			ocEditModelRows = result.models.map(m => ({ code: m.id, alias: '', hidden: false, context: null, output: null }));
 		} catch {
 			// silent — user can type manually
 		} finally {
@@ -1027,10 +1067,11 @@
 	}
 
 	async function submitEditCustomProvider() {
-		if (!ocEditingProviderId || !ocEditName.trim() || !ocEditBaseUrl.trim()) return;
-		const options = editModelRowsToOptions(ocEditModelRows);
+		if (!ocEditingProviderId || !ocEditName.trim() || !ocEditSlug.trim() || !ocEditBaseUrl.trim()) return;
+		const options = modelRowsToOptions(ocEditModelRows);
 		try {
 			await opencodeProvidersStore.updateProvider(ocEditingProviderId, {
+				slug: ocEditSlug.trim(),
 				name: ocEditName.trim(),
 				apiUrl: ocEditBaseUrl.trim().replace(/\/+$/, ''),
 				options,
@@ -1156,21 +1197,38 @@
 		await opencodeProvidersStore.switchAccount(accountId);
 	}
 
-	function startOCRename(accountId: number, currentName: string) {
-		ocRenamingAccountId = accountId;
-		ocRenameValue = currentName;
+	function startOCRename(account: OpenCodeAccountItem, provider: OpenCodeProviderItem) {
+		ocRenamingAccountId = account.id;
+		ocRenameValue = account.name;
+		// Catalog providers expose their real env-var names; custom (api_url-only)
+		// providers have none, so present a single generic API key field.
+		const envNames = getProviderEnvNames(provider.slug);
+		ocRenameEnvNames = envNames.length > 0 ? envNames : ['API Key'];
+		ocRenameEnvValues = {};
 	}
 
 	async function submitOCRename() {
-		if (ocRenamingAccountId === null || !ocRenameValue.trim()) return;
-		await opencodeProvidersStore.renameAccount(ocRenamingAccountId, ocRenameValue.trim());
+		if (ocRenamingAccountId === null || !ocRenameValue.trim() || !ocRenameCredentialComplete) return;
+		const accountId = ocRenamingAccountId;
+		await opencodeProvidersStore.renameAccount(accountId, ocRenameValue.trim());
+		// Update credentials only when every field is filled; all-blank keeps the
+		// stored secret. buildAccountCredential returns a raw string for a single
+		// field (custom providers) or a JSON bundle for multi-secret providers.
+		const values = ocRenameEnvNames.map(n => (ocRenameEnvValues[n] ?? '').trim());
+		if (values.length > 0 && values.every(v => v)) {
+			const primary = (ocRenameEnvValues[ocRenameEnvNames[0]] ?? '').trim();
+			const credential = buildAccountCredential(ocRenameEnvNames, primary, ocRenameEnvValues);
+			await opencodeProvidersStore.updateAccountCredential(accountId, credential);
+		}
 		ocRenamingAccountId = null;
 		ocRenameValue = '';
+		ocRenameEnvValues = {};
 	}
 
 	function cancelOCRename() {
 		ocRenamingAccountId = null;
 		ocRenameValue = '';
+		ocRenameEnvValues = {};
 	}
 
 	function confirmDeleteOCProvider(provider: OpenCodeProviderItem) {
@@ -1324,14 +1382,21 @@
 	function startQwenRename(account: QwenAccountItem) {
 		qwenRenamingId = account.id;
 		qwenRenameValue = account.name;
+		qwenRenameApiKey = '';
+		qwenRenamePreset = account.preset;
 	}
 
 	async function submitQwenRename() {
 		if (qwenRenamingId === null || !qwenRenameValue.trim()) return;
+		const id = qwenRenamingId;
 		try {
-			await ws.http('engine:qwen-accounts-rename', { id: qwenRenamingId, name: qwenRenameValue.trim() });
+			await ws.http('engine:qwen-accounts-rename', { id, name: qwenRenameValue.trim() });
+			// Update key/preset in one call — omit apiKey when blank to keep the stored one.
+			const apiKey = qwenRenameApiKey.trim();
+			await ws.http('engine:qwen-accounts-update', { id, preset: qwenRenamePreset, ...(apiKey ? { apiKey } : {}) });
 			qwenRenamingId = null;
 			qwenRenameValue = '';
+			qwenRenameApiKey = '';
 			await qwenAccountsStore.refresh();
 		} catch {
 			// Ignore
@@ -1341,6 +1406,7 @@
 	function cancelQwenRename() {
 		qwenRenamingId = null;
 		qwenRenameValue = '';
+		qwenRenameApiKey = '';
 	}
 
 	async function copyClaudeCodeAuthUrl() {
@@ -1464,7 +1530,7 @@
 							<div class="flex items-center justify-between px-3.5 py-2.5 border-b border-slate-200 dark:border-slate-700/50">
 								<div class="flex items-center gap-2 min-w-0">
 									<span class="text-sm font-semibold text-slate-900 dark:text-slate-100 truncate">Anthropic</span>
-									<span class="text-2xs text-slate-400 font-mono">anthropic</span>
+									<span class="text-2xs text-slate-400">anthropic</span>
 									<span class="inline-flex items-center px-2 py-0.5 rounded-full text-3xs font-semibold bg-violet-100 dark:bg-violet-900/30 text-violet-700 dark:text-violet-300">Built-in</span>
 								</div>
 							</div>
@@ -1526,6 +1592,7 @@
 															<Icon name="lucide:arrow-right-left" class="w-3.5 h-3.5" />
 														</button>
 													{/if}
+													<button type="button" class="flex p-1.5 rounded-md text-slate-400 hover:text-violet-600 hover:bg-violet-50 dark:hover:bg-violet-900/20 transition-colors" onclick={() => startClaudeCodeReauth(account)} title="Re-authenticate"><Icon name="lucide:refresh-cw" class="w-3.5 h-3.5" /></button>
 													<button
 														type="button"
 														class="flex p-1.5 rounded-md text-slate-400 hover:text-blue-600 hover:bg-blue-50 dark:hover:bg-blue-900/20 transition-colors"
@@ -1711,7 +1778,7 @@
 				<div class="flex items-center gap-2">
 					<Icon name="lucide:bug" class="w-4 h-4 text-amber-600" />
 					<span class="text-xs font-semibold text-amber-700 dark:text-amber-300">Claude Debug: Setup-Token PTY</span>
-					<span class="text-3xs font-mono px-1.5 py-0.5 rounded bg-amber-200 dark:bg-amber-800 text-amber-800 dark:text-amber-200">
+					<span class="text-3xs px-1.5 py-0.5 rounded bg-amber-200 dark:bg-amber-800 text-amber-800 dark:text-amber-200">
 						phase={claudeDebugPhase} | buf={claudeDebugBufferLen} | step={claudeCodeSetupStep}
 					</span>
 				</div>
@@ -1782,7 +1849,7 @@
 							<div class="flex items-center justify-between px-3.5 py-2.5 border-b border-slate-200 dark:border-slate-700/50">
 								<div class="flex items-center gap-2 min-w-0">
 									<span class="text-sm font-semibold text-slate-900 dark:text-slate-100 truncate">GitHub</span>
-									<span class="text-2xs text-slate-400 font-mono">github</span>
+									<span class="text-2xs text-slate-400">github</span>
 									<span class="inline-flex items-center px-2 py-0.5 rounded-full text-3xs font-semibold bg-violet-100 dark:bg-violet-900/30 text-violet-700 dark:text-violet-300">Built-in</span>
 								</div>
 							</div>
@@ -1798,11 +1865,10 @@
 												<Icon name="lucide:key" class="w-4 h-4 shrink-0 text-slate-400" />
 												{#if copilotRenamingId === account.id}
 													<div class="w-full flex items-center gap-2.5">
-														<input
-															type="text"
-															bind:value={copilotRenameValue}
-															class="w-full px-2 py-0.5 text-sm rounded border border-slate-300 dark:border-slate-600 bg-white dark:bg-slate-700 text-slate-900 dark:text-slate-100 focus:outline-none focus:ring-1 focus:ring-violet-500"
-														/>
+														<div class="flex-1 flex flex-col gap-1">
+															<input type="text" bind:value={copilotRenameValue} placeholder="Account name" class="w-full px-2 py-0.5 text-sm rounded border border-slate-300 dark:border-slate-600 bg-white dark:bg-slate-700 text-slate-900 dark:text-slate-100 placeholder:text-slate-400 focus:outline-none focus:ring-1 focus:ring-violet-500" />
+															<input type="text" bind:value={copilotRenameToken} placeholder="New token (leave blank to keep)" class="w-full px-2 py-0.5 text-xs rounded border border-slate-300 dark:border-slate-600 bg-white dark:bg-slate-700 text-slate-900 dark:text-slate-100 placeholder:text-slate-400 focus:outline-none focus:ring-1 focus:ring-violet-500" />
+														</div>
 														<div class="flex items-center gap-1">
 															<button
 																type="button"
@@ -1846,7 +1912,7 @@
 														type="button"
 														class="flex p-1.5 rounded-md text-slate-400 hover:text-blue-600 hover:bg-blue-50 dark:hover:bg-blue-900/20 transition-colors"
 														onclick={() => startCopilotRename(account)}
-														title="Rename"
+														title="Edit account (name & key)"
 													>
 														<Icon name="lucide:pencil" class="w-3.5 h-3.5" />
 													</button>
@@ -2031,7 +2097,7 @@
 							<div class="flex items-center justify-between px-3.5 py-2.5 border-b border-slate-200 dark:border-slate-700/50">
 								<div class="flex items-center gap-2 min-w-0">
 									<span class="text-sm font-semibold text-slate-900 dark:text-slate-100 truncate">OpenAI</span>
-									<span class="text-2xs text-slate-400 font-mono">openai</span>
+									<span class="text-2xs text-slate-400">openai</span>
 									<span class="inline-flex items-center px-2 py-0.5 rounded-full text-3xs font-semibold bg-violet-100 dark:bg-violet-900/30 text-violet-700 dark:text-violet-300">Built-in</span>
 								</div>
 							</div>
@@ -2046,11 +2112,12 @@
 												<Icon name={account.authMode === 'chatgpt' ? 'lucide:user-round' : 'lucide:key'} class="w-4 h-4 shrink-0 text-slate-400" />
 												{#if codexRenamingId === account.id}
 													<div class="w-full flex items-center gap-2.5">
-														<input
-															type="text"
-															bind:value={codexRenameValue}
-															class="w-full px-2 py-0.5 text-sm rounded border border-slate-300 dark:border-slate-600 bg-white dark:bg-slate-700 text-slate-900 dark:text-slate-100 focus:outline-none focus:ring-1 focus:ring-violet-500"
-														/>
+														<div class="flex-1 flex flex-col gap-1">
+															<input type="text" bind:value={codexRenameValue} placeholder="Account name" class="w-full px-2 py-0.5 text-sm rounded border border-slate-300 dark:border-slate-600 bg-white dark:bg-slate-700 text-slate-900 dark:text-slate-100 placeholder:text-slate-400 focus:outline-none focus:ring-1 focus:ring-violet-500" />
+															{#if account.authMode !== 'chatgpt'}
+																<input type="text" bind:value={codexRenameApiKey} placeholder="New API key (leave blank to keep)" class="w-full px-2 py-0.5 text-xs rounded border border-slate-300 dark:border-slate-600 bg-white dark:bg-slate-700 text-slate-900 dark:text-slate-100 placeholder:text-slate-400 focus:outline-none focus:ring-1 focus:ring-violet-500" />
+															{/if}
+														</div>
 														<div class="flex items-center gap-1">
 															<button type="button" class="flex p-1.5 rounded-md text-slate-400 hover:text-green-600 hover:bg-green-50 dark:hover:bg-green-900/20" onclick={submitCodexRename} aria-label="Save">
 																<Icon name="lucide:check" class="w-3.5 h-3.5" />
@@ -2078,7 +2145,10 @@
 															<Icon name="lucide:arrow-right-left" class="w-3.5 h-3.5" />
 														</button>
 													{/if}
-													<button type="button" class="flex p-1.5 rounded-md text-slate-400 hover:text-blue-600 hover:bg-blue-50 dark:hover:bg-blue-900/20" onclick={() => startCodexRename(account)} title="Rename">
+													{#if account.authMode === 'chatgpt'}
+														<button type="button" class="flex p-1.5 rounded-md text-slate-400 hover:text-violet-600 hover:bg-violet-50 dark:hover:bg-violet-900/20" onclick={() => startCodexReauth(account)} title="Re-authenticate (ChatGPT)"><Icon name="lucide:refresh-cw" class="w-3.5 h-3.5" /></button>
+													{/if}
+													<button type="button" class="flex p-1.5 rounded-md text-slate-400 hover:text-blue-600 hover:bg-blue-50 dark:hover:bg-blue-900/20" onclick={() => startCodexRename(account)} title="Edit account (name & key)">
 														<Icon name="lucide:pencil" class="w-3.5 h-3.5" />
 													</button>
 													<button type="button" class="flex p-1.5 rounded-md text-slate-400 hover:text-red-600 hover:bg-red-50 dark:hover:bg-red-900/20" onclick={() => confirmDeleteCodexAccount(account.id)} title="Delete account">
@@ -2306,7 +2376,7 @@
 				<div class="flex items-center gap-2">
 					<Icon name="lucide:bug" class="w-4 h-4 text-amber-600" />
 					<span class="text-xs font-semibold text-amber-700 dark:text-amber-300">Codex Debug: Login Stream</span>
-					<span class="text-3xs font-mono px-1.5 py-0.5 rounded bg-amber-200 dark:bg-amber-800 text-amber-800 dark:text-amber-200">
+					<span class="text-3xs px-1.5 py-0.5 rounded bg-amber-200 dark:bg-amber-800 text-amber-800 dark:text-amber-200">
 						buf={codexDebugBufferLen} | step={codexAddStep}
 					</span>
 				</div>
@@ -2361,7 +2431,7 @@
 							<div class="flex items-center justify-between px-3.5 py-2.5 border-b border-slate-200 dark:border-slate-700/50">
 								<div class="flex items-center gap-2 min-w-0">
 									<span class="text-sm font-semibold text-slate-900 dark:text-slate-100 truncate">Qwen</span>
-									<span class="text-2xs text-slate-400 font-mono">qwen</span>
+									<span class="text-2xs text-slate-400">qwen</span>
 									<span class="inline-flex items-center px-2 py-0.5 rounded-full text-3xs font-semibold bg-violet-100 dark:bg-violet-900/30 text-violet-700 dark:text-violet-300">Built-in</span>
 								</div>
 							</div>
@@ -2379,11 +2449,15 @@
 													<Icon name="lucide:key" class="w-4 h-4 shrink-0 text-slate-400" />
 													{#if qwenRenamingId === account.id}
 														<div class="w-full flex items-center gap-2.5">
-															<input
-																type="text"
-																bind:value={qwenRenameValue}
-																class="w-full px-2 py-0.5 text-sm rounded border border-slate-300 dark:border-slate-600 bg-white dark:bg-slate-700 text-slate-900 dark:text-slate-100 focus:outline-none focus:ring-1 focus:ring-violet-500"
-															/>
+															<div class="flex-1 flex flex-col gap-1">
+																<input type="text" bind:value={qwenRenameValue} placeholder="Account name" class="w-full px-2 py-0.5 text-sm rounded border border-slate-300 dark:border-slate-600 bg-white dark:bg-slate-700 text-slate-900 dark:text-slate-100 placeholder:text-slate-400 focus:outline-none focus:ring-1 focus:ring-violet-500" />
+																<select bind:value={qwenRenamePreset} class="w-full px-2 py-0.5 text-xs rounded border border-slate-300 dark:border-slate-600 bg-white dark:bg-slate-700 text-slate-900 dark:text-slate-100 focus:outline-none focus:ring-1 focus:ring-violet-500">
+																	{#each qwenPresetsStore.presets as preset (preset.id)}
+																		<option value={preset.id}>{preset.name}</option>
+																	{/each}
+																</select>
+																<input type="text" bind:value={qwenRenameApiKey} placeholder="New API key (leave blank to keep)" class="w-full px-2 py-0.5 text-xs rounded border border-slate-300 dark:border-slate-600 bg-white dark:bg-slate-700 text-slate-900 dark:text-slate-100 placeholder:text-slate-400 focus:outline-none focus:ring-1 focus:ring-violet-500" />
+															</div>
 															<div class="flex items-center gap-1">
 																<button
 																	type="button"
@@ -2434,7 +2508,7 @@
 															type="button"
 															class="flex p-1.5 rounded-md text-slate-400 hover:text-blue-600 hover:bg-blue-50 dark:hover:bg-blue-900/20 transition-colors"
 															onclick={() => startQwenRename(account)}
-															title="Rename"
+															title="Edit account (name & key)"
 														>
 															<Icon name="lucide:pencil" class="w-3.5 h-3.5" />
 														</button>
@@ -2642,15 +2716,12 @@
 									<div class="flex items-center justify-between px-3.5 py-2.5 border-b border-slate-200 dark:border-slate-700/50">
 										<div class="flex items-center gap-2 min-w-0">
 											<span class="text-sm font-semibold text-slate-900 dark:text-slate-100 truncate">{provider.name}</span>
-											<span class="text-2xs text-slate-400 font-mono">{provider.slug}</span>
+											<span class="text-2xs text-slate-400">{provider.slug}</span>
 											{#if !provider.isEnabled}
 												<span class="px-1.5 py-0.5 text-3xs rounded bg-slate-200 dark:bg-slate-700 text-slate-500 dark:text-slate-400">Disabled</span>
 											{/if}
 										</div>
 										<div class="flex items-center gap-1">
-											<button type="button" class="flex p-1.5 rounded-md text-slate-400 hover:text-blue-600 hover:bg-blue-50 dark:hover:bg-blue-900/20 transition-colors" onclick={() => startEditCustomProvider(provider)} title="Edit provider">
-												<Icon name="lucide:pencil" class="w-3.5 h-3.5" />
-											</button>
 											<button type="button" class="flex p-1.5 rounded-md text-slate-400 hover:text-red-600 hover:bg-red-50 dark:hover:bg-red-900/20 transition-colors" onclick={() => confirmDeleteOCProvider(provider)} title="Remove provider">
 												<Icon name="lucide:trash-2" class="w-3.5 h-3.5" />
 											</button>
@@ -2666,9 +2737,9 @@
 														<Icon name="lucide:key" class="w-4 h-4 shrink-0 text-slate-400" />
 														{#if ocRenamingAccountId === account.id}
 															<div class="w-full flex items-center gap-2.5">
-																<input type="text" bind:value={ocRenameValue} class="w-full px-2 py-0.5 text-sm rounded border border-slate-300 dark:border-slate-600 bg-white dark:bg-slate-700 text-slate-900 dark:text-slate-100 focus:outline-none focus:ring-1 focus:ring-violet-500" />
+																<div class="flex-1 flex flex-col gap-1"><input type="text" bind:value={ocRenameValue} placeholder="Account name" class="w-full px-2 py-0.5 text-sm rounded border border-slate-300 dark:border-slate-600 bg-white dark:bg-slate-700 text-slate-900 dark:text-slate-100 placeholder:text-slate-400 focus:outline-none focus:ring-1 focus:ring-violet-500" />{#each ocRenameEnvNames as envName (envName)}<input type="text" value={ocRenameEnvValues[envName] ?? ''} oninput={(e) => { ocRenameEnvValues = { ...ocRenameEnvValues, [envName]: (e.target as HTMLInputElement).value }; }} placeholder={`${envName} (leave blank to keep)`} class="w-full px-2 py-0.5 text-xs rounded border border-slate-300 dark:border-slate-600 bg-white dark:bg-slate-700 text-slate-900 dark:text-slate-100 placeholder:text-slate-400 focus:outline-none focus:ring-1 focus:ring-violet-500" />{/each}</div>
 																<div class="flex items-center gap-1">
-																	<button type="button" class="flex p-1.5 rounded-md text-slate-400 hover:text-green-600 hover:bg-green-50 dark:hover:bg-green-900/20 transition-colors" onclick={submitOCRename} aria-label="Save"><Icon name="lucide:check" class="w-3.5 h-3.5" /></button>
+																	<button type="button" class="flex p-1.5 rounded-md text-slate-400 hover:text-green-600 hover:bg-green-50 dark:hover:bg-green-900/20 transition-colors disabled:opacity-40 disabled:cursor-not-allowed" onclick={submitOCRename} disabled={!ocRenameValue.trim() || !ocRenameCredentialComplete} aria-label="Save"><Icon name="lucide:check" class="w-3.5 h-3.5" /></button>
 																	<button type="button" class="flex p-1.5 rounded-md text-slate-400 hover:text-red-600 hover:bg-red-50 dark:hover:bg-red-900/20 transition-colors" onclick={cancelOCRename} aria-label="Cancel"><Icon name="lucide:x" class="w-3.5 h-3.5" /></button>
 																</div>
 															</div>
@@ -2684,7 +2755,7 @@
 															{#if !account.isActive}
 																<button type="button" class="flex p-1.5 rounded-md text-slate-400 hover:text-violet-600 hover:bg-violet-50 dark:hover:bg-violet-900/20 transition-colors" onclick={() => switchOCAccount(account.id)} title="Switch to this account"><Icon name="lucide:arrow-right-left" class="w-3.5 h-3.5" /></button>
 															{/if}
-															<button type="button" class="flex p-1.5 rounded-md text-slate-400 hover:text-blue-600 hover:bg-blue-50 dark:hover:bg-blue-900/20 transition-colors" onclick={() => startOCRename(account.id, account.name)} title="Rename"><Icon name="lucide:pencil" class="w-3.5 h-3.5" /></button>
+															<button type="button" class="flex p-1.5 rounded-md text-slate-400 hover:text-blue-600 hover:bg-blue-50 dark:hover:bg-blue-900/20 transition-colors" onclick={() => startOCRename(account, provider)} title="Edit account (name & credentials)"><Icon name="lucide:pencil" class="w-3.5 h-3.5" /></button>
 															<button type="button" class="flex p-1.5 rounded-md text-slate-400 hover:text-red-600 hover:bg-red-50 dark:hover:bg-red-900/20 transition-colors" onclick={() => confirmDeleteOCAccount(account.id, account.name)} title="Delete"><Icon name="lucide:trash-2" class="w-3.5 h-3.5" /></button>
 														</div>
 													{/if}
@@ -2696,9 +2767,9 @@
 											{@const primaryEnv = envNames[0] || 'API Key'}
 											<div class="space-y-2 pt-2 border-t border-slate-200 dark:border-slate-700/50">
 												<input type="text" bind:value={ocNewAccountName} placeholder="Account name (e.g. Personal, Work)" class="w-full px-3 py-1.5 text-xs rounded-lg border border-slate-300 dark:border-slate-600 bg-white dark:bg-slate-800 text-slate-900 dark:text-slate-100 placeholder:text-slate-400 focus:outline-none focus:ring-1 focus:ring-violet-500" />
-												<input type="text" bind:value={ocNewAccountApiKey} placeholder={primaryEnv} class="w-full px-3 py-1.5 text-xs rounded-lg border border-slate-300 dark:border-slate-600 bg-white dark:bg-slate-800 text-slate-900 dark:text-slate-100 placeholder:text-slate-400 focus:outline-none focus:ring-1 focus:ring-violet-500 font-mono" />
+												<input type="text" bind:value={ocNewAccountApiKey} placeholder={primaryEnv} class="w-full px-3 py-1.5 text-xs rounded-lg border border-slate-300 dark:border-slate-600 bg-white dark:bg-slate-800 text-slate-900 dark:text-slate-100 placeholder:text-slate-400 focus:outline-none focus:ring-1 focus:ring-violet-500" />
 												{#each envNames.slice(1) as envVar (envVar)}
-													<input type="text" value={ocNewAccountOptions[envVar] || ''} oninput={(e) => { ocNewAccountOptions = { ...ocNewAccountOptions, [envVar]: (e.target as HTMLInputElement).value }; }} placeholder={envVar} class="w-full px-3 py-1.5 text-xs rounded-lg border border-slate-300 dark:border-slate-600 bg-white dark:bg-slate-800 text-slate-900 dark:text-slate-100 placeholder:text-slate-400 focus:outline-none focus:ring-1 focus:ring-violet-500 font-mono" />
+													<input type="text" value={ocNewAccountOptions[envVar] || ''} oninput={(e) => { ocNewAccountOptions = { ...ocNewAccountOptions, [envVar]: (e.target as HTMLInputElement).value }; }} placeholder={envVar} class="w-full px-3 py-1.5 text-xs rounded-lg border border-slate-300 dark:border-slate-600 bg-white dark:bg-slate-800 text-slate-900 dark:text-slate-100 placeholder:text-slate-400 focus:outline-none focus:ring-1 focus:ring-violet-500" />
 												{/each}
 												<div class="flex gap-2">
 													<button type="button" class="flex-1 flex items-center justify-center gap-1.5 px-3 py-1.5 text-xs font-medium rounded-lg bg-violet-600 text-white hover:bg-violet-700 transition-colors disabled:opacity-50" onclick={submitAddAccount} disabled={!isAddAccountValid()}><Icon name="lucide:plus" class="w-3 h-3" />Add</button>
@@ -2712,83 +2783,6 @@
 										{/if}
 									</div>
 								</div>
-								{#if ocEditingProviderId === provider.id}
-								<div class="rounded-lg border border-violet-200 dark:border-violet-800/50 bg-violet-50/50 dark:bg-violet-900/10 overflow-hidden mb-3 mt-2">
-									<div class="flex items-center gap-2 px-3.5 py-2.5 border-b border-violet-200 dark:border-violet-800/50 text-xs font-medium text-violet-600 dark:text-violet-400">
-										<Icon name="lucide:pencil" class="w-3.5 h-3.5" />
-										Edit Provider — {ocEditName}
-									</div>
-									<div class="px-3.5 py-2.5 space-y-2">
-										<div>
-											<label class="block text-xs font-medium text-slate-700 dark:text-slate-300 mb-1">Name</label>
-											<input type="text" bind:value={ocEditName} placeholder="Provider name" class="w-full px-3 py-2 text-sm rounded-lg border border-slate-300 dark:border-slate-600 bg-white dark:bg-slate-800 text-slate-900 dark:text-slate-100 placeholder:text-slate-400 focus:outline-none focus:ring-2 focus:ring-violet-500/40" />
-										</div>
-										<div>
-											<label class="block text-xs font-medium text-slate-700 dark:text-slate-300 mb-1">Base URL</label>
-											<input type="text" bind:value={ocEditBaseUrl} placeholder="http://localhost:20128/v1" class="w-full px-3 py-2 text-sm rounded-lg border border-slate-300 dark:border-slate-600 bg-white dark:bg-slate-800 text-slate-900 dark:text-slate-100 placeholder:text-slate-400 focus:outline-none focus:ring-2 focus:ring-violet-500/40 font-mono" />
-										</div>
-										<div class="flex gap-3">
-											<div class="flex-1">
-												<label class="block text-xs font-medium text-slate-700 dark:text-slate-300 mb-1">Context Limit</label>
-												<input type="number" bind:value={ocEditContextLimit} placeholder="128000" class="w-full px-3 py-2 text-sm rounded-lg border border-slate-300 dark:border-slate-600 bg-white dark:bg-slate-800 text-slate-900 dark:text-slate-100 placeholder:text-slate-400 focus:outline-none focus:ring-2 focus:ring-violet-500/40 font-mono" />
-											</div>
-											<div class="flex-1">
-												<label class="block text-xs font-medium text-slate-700 dark:text-slate-300 mb-1">Output Limit</label>
-												<input type="number" bind:value={ocEditOutputLimit} placeholder="16384" class="w-full px-3 py-2 text-sm rounded-lg border border-slate-300 dark:border-slate-600 bg-white dark:bg-slate-800 text-slate-900 dark:text-slate-100 placeholder:text-slate-400 focus:outline-none focus:ring-2 focus:ring-violet-500/40 font-mono" />
-											</div>
-										</div>
-										<div>
-											<div class="flex items-center justify-between mb-1">
-												<label class="block text-xs font-medium text-slate-700 dark:text-slate-300">Model IDs</label>
-												<div class="flex items-center gap-2">
-													<button type="button" class="flex items-center gap-1 text-3xs text-slate-500 hover:text-violet-600 transition-colors disabled:opacity-50" onclick={fetchEditModels} disabled={ocEditFetching || !ocEditBaseUrl.trim()}>
-														<Icon name={ocEditFetching ? 'lucide:loader' : 'lucide:refresh-cw'} class="w-3 h-3 {ocEditFetching ? 'animate-spin' : ''}" />
-														{ocEditFetching ? 'Fetching...' : 'Fetch from /v1/models'}
-													</button>
-													<button type="button" class="flex items-center gap-1 text-3xs text-violet-600 hover:text-violet-700 transition-colors" onclick={addEditModelRow}>
-														<Icon name="lucide:plus" class="w-3 h-3" />Add row
-													</button>
-												</div>
-											</div>
-											<div class="space-y-1.5 max-h-48 overflow-y-auto p-0.5">
-												{#each ocEditModelRows as row, i (i)}
-													<div
-														draggable="true"
-														class="flex items-center gap-2 {row.hidden ? 'opacity-40' : ''} {ocDragIndex === i ? 'opacity-50' : ''} {ocDragIndex !== null && ocDragIndex !== i ? 'hover:cursor-grab' : ''}"
-														ondragstart={(e) => { ocDragIndex = i; e.dataTransfer!.effectAllowed = 'move'; }}
-														ondragover={(e) => e.preventDefault()}
-														ondrop={(e) => { e.preventDefault(); if (ocDragIndex !== null && ocDragIndex !== i) { const a = [...ocEditModelRows]; const [m] = a.splice(ocDragIndex, 1); a.splice(i, 0, m); ocEditModelRows = a; } ocDragIndex = null; }}
-														ondragend={() => { ocDragIndex = null; }}
-													>
-														<Icon name="lucide:grip-vertical" class="w-3.5 h-3.5 text-slate-400 cursor-grab active:cursor-grabbing shrink-0" />
-														<input type="text" bind:value={row.code} placeholder="model-id" class="flex-[3] px-2.5 py-1.5 text-xs rounded-lg border border-slate-300 dark:border-slate-600 bg-white dark:bg-slate-800 text-slate-900 dark:text-slate-100 placeholder:text-slate-400 focus:outline-none focus:ring-2 focus:ring-violet-500/40 font-mono" />
-														<input type="text" bind:value={row.alias} placeholder="Alias" class="flex-1 px-2.5 py-1.5 text-xs rounded-lg border border-slate-300 dark:border-slate-600 bg-white dark:bg-slate-800 text-slate-900 dark:text-slate-100 placeholder:text-slate-400 focus:outline-none focus:ring-2 focus:ring-violet-500/40" />
-														<button type="button" class="flex p-1 rounded-md text-slate-400 hover:text-amber-600 hover:bg-amber-50 dark:hover:bg-amber-900/20 transition-colors shrink-0" onclick={() => { row.hidden = !row.hidden; }} title={row.hidden ? 'Show' : 'Hide'}>
-															<Icon name={row.hidden ? 'lucide:eye-off' : 'lucide:eye'} class="w-3.5 h-3.5" />
-														</button>
-														<button type="button" class="flex p-1 rounded-md {settings.pinnedModels?.includes(row.code) ? 'text-amber-500 hover:text-amber-600' : 'text-slate-400 hover:text-amber-600'} hover:bg-amber-50 dark:hover:bg-amber-900/20 transition-colors shrink-0" onclick={() => togglePinnedModel(row.code)} title={settings.pinnedModels?.includes(row.code) ? 'Unpin' : 'Pin'}>
-															<Icon name={settings.pinnedModels?.includes(row.code) ? 'lucide:pin-off' : 'lucide:pin'} class="w-3.5 h-3.5" />
-														</button>
-														<button type="button" class="flex p-1 rounded-md text-slate-400 hover:text-red-600 hover:bg-red-50 dark:hover:bg-red-900/20 transition-colors shrink-0" onclick={() => removeEditModelRow(i)}>
-															<Icon name="lucide:x" class="w-3.5 h-3.5" />
-														</button>
-													</div>
-												{/each}
-												{#if ocEditModelRows.length === 0}
-													<p class="text-xs text-slate-400 italic text-center py-2">No models. Click <strong>Add row</strong> or <strong>Fetch</strong>.</p>
-												{/if}
-											</div>
-										</div>
-										<div class="flex gap-2">
-											<button type="button" class="flex-1 flex items-center justify-center gap-2 px-4 py-2 text-sm font-medium rounded-lg bg-violet-600 text-white hover:bg-violet-700 transition-colors disabled:opacity-50" onclick={submitEditCustomProvider}>
-												<Icon name="lucide:check" class="w-4 h-4" />
-												Save Changes
-											</button>
-											<button type="button" class="px-4 py-2 text-sm font-medium rounded-lg border border-slate-300 dark:border-slate-600 text-slate-600 dark:text-slate-400 hover:bg-slate-100 dark:hover:bg-slate-700 transition-colors" onclick={cancelEditCustomProvider}>Cancel</button>
-										</div>
-									</div>
-								</div>
-								{/if}
 							{/each}
 						{/if}
 
@@ -2805,7 +2799,7 @@
 											<div class="flex items-center gap-2 min-w-0">
 												<span class="text-sm font-semibold text-slate-900 dark:text-slate-100 truncate">{provider.name}</span>
 												<span class="inline-flex items-center px-1.5 py-0.5 rounded text-3xs font-medium bg-amber-100 dark:bg-amber-900/30 text-amber-700 dark:text-amber-300">Custom</span>
-												<span class="text-2xs text-slate-400 font-mono">{provider.slug}</span>
+												<span class="text-2xs text-slate-400">{provider.slug}</span>
 												{#if !provider.isEnabled}
 													<span class="px-1.5 py-0.5 text-3xs rounded bg-slate-200 dark:bg-slate-700 text-slate-500 dark:text-slate-400">Disabled</span>
 												{/if}
@@ -2829,9 +2823,9 @@
 															<Icon name="lucide:key" class="w-4 h-4 shrink-0 text-slate-400" />
 															{#if ocRenamingAccountId === account.id}
 																<div class="w-full flex items-center gap-2.5">
-																	<input type="text" bind:value={ocRenameValue} class="w-full px-2 py-0.5 text-sm rounded border border-slate-300 dark:border-slate-600 bg-white dark:bg-slate-700 text-slate-900 dark:text-slate-100 focus:outline-none focus:ring-1 focus:ring-violet-500" />
+																	<div class="flex-1 flex flex-col gap-1"><input type="text" bind:value={ocRenameValue} placeholder="Account name" class="w-full px-2 py-0.5 text-sm rounded border border-slate-300 dark:border-slate-600 bg-white dark:bg-slate-700 text-slate-900 dark:text-slate-100 placeholder:text-slate-400 focus:outline-none focus:ring-1 focus:ring-violet-500" />{#each ocRenameEnvNames as envName (envName)}<input type="text" value={ocRenameEnvValues[envName] ?? ''} oninput={(e) => { ocRenameEnvValues = { ...ocRenameEnvValues, [envName]: (e.target as HTMLInputElement).value }; }} placeholder={`${envName} (leave blank to keep)`} class="w-full px-2 py-0.5 text-xs rounded border border-slate-300 dark:border-slate-600 bg-white dark:bg-slate-700 text-slate-900 dark:text-slate-100 placeholder:text-slate-400 focus:outline-none focus:ring-1 focus:ring-violet-500" />{/each}</div>
 																	<div class="flex items-center gap-1">
-																		<button type="button" class="flex p-1.5 rounded-md text-slate-400 hover:text-green-600 hover:bg-green-50 dark:hover:bg-green-900/20 transition-colors" onclick={submitOCRename} aria-label="Save"><Icon name="lucide:check" class="w-3.5 h-3.5" /></button>
+																		<button type="button" class="flex p-1.5 rounded-md text-slate-400 hover:text-green-600 hover:bg-green-50 dark:hover:bg-green-900/20 transition-colors disabled:opacity-40 disabled:cursor-not-allowed" onclick={submitOCRename} disabled={!ocRenameValue.trim() || !ocRenameCredentialComplete} aria-label="Save"><Icon name="lucide:check" class="w-3.5 h-3.5" /></button>
 																		<button type="button" class="flex p-1.5 rounded-md text-slate-400 hover:text-red-600 hover:bg-red-50 dark:hover:bg-red-900/20 transition-colors" onclick={cancelOCRename} aria-label="Cancel"><Icon name="lucide:x" class="w-3.5 h-3.5" /></button>
 																	</div>
 																</div>
@@ -2847,7 +2841,7 @@
 																{#if !account.isActive}
 																	<button type="button" class="flex p-1.5 rounded-md text-slate-400 hover:text-violet-600 hover:bg-violet-50 dark:hover:bg-violet-900/20 transition-colors" onclick={() => switchOCAccount(account.id)} title="Switch to this account"><Icon name="lucide:arrow-right-left" class="w-3.5 h-3.5" /></button>
 																{/if}
-																<button type="button" class="flex p-1.5 rounded-md text-slate-400 hover:text-blue-600 hover:bg-blue-50 dark:hover:bg-blue-900/20 transition-colors" onclick={() => startOCRename(account.id, account.name)} title="Rename"><Icon name="lucide:pencil" class="w-3.5 h-3.5" /></button>
+																<button type="button" class="flex p-1.5 rounded-md text-slate-400 hover:text-blue-600 hover:bg-blue-50 dark:hover:bg-blue-900/20 transition-colors" onclick={() => startOCRename(account, provider)} title="Edit account (name & credentials)"><Icon name="lucide:pencil" class="w-3.5 h-3.5" /></button>
 																<button type="button" class="flex p-1.5 rounded-md text-slate-400 hover:text-red-600 hover:bg-red-50 dark:hover:bg-red-900/20 transition-colors" onclick={() => confirmDeleteOCAccount(account.id, account.name)} title="Delete"><Icon name="lucide:trash-2" class="w-3.5 h-3.5" /></button>
 															</div>
 														{/if}
@@ -2859,9 +2853,9 @@
 												{@const primaryEnv = envNames[0] || 'API Key'}
 												<div class="space-y-2 pt-2 border-t border-slate-200 dark:border-slate-700/50">
 													<input type="text" bind:value={ocNewAccountName} placeholder="Account name (e.g. Personal, Work)" class="w-full px-3 py-1.5 text-xs rounded-lg border border-slate-300 dark:border-slate-600 bg-white dark:bg-slate-800 text-slate-900 dark:text-slate-100 placeholder:text-slate-400 focus:outline-none focus:ring-1 focus:ring-violet-500" />
-													<input type="text" bind:value={ocNewAccountApiKey} placeholder={primaryEnv} class="w-full px-3 py-1.5 text-xs rounded-lg border border-slate-300 dark:border-slate-600 bg-white dark:bg-slate-800 text-slate-900 dark:text-slate-100 placeholder:text-slate-400 focus:outline-none focus:ring-1 focus:ring-violet-500 font-mono" />
+													<input type="text" bind:value={ocNewAccountApiKey} placeholder={primaryEnv} class="w-full px-3 py-1.5 text-xs rounded-lg border border-slate-300 dark:border-slate-600 bg-white dark:bg-slate-800 text-slate-900 dark:text-slate-100 placeholder:text-slate-400 focus:outline-none focus:ring-1 focus:ring-violet-500" />
 													{#each envNames.slice(1) as envVar (envVar)}
-														<input type="text" value={ocNewAccountOptions[envVar] || ''} oninput={(e) => { ocNewAccountOptions = { ...ocNewAccountOptions, [envVar]: (e.target as HTMLInputElement).value }; }} placeholder={envVar} class="w-full px-3 py-1.5 text-xs rounded-lg border border-slate-300 dark:border-slate-600 bg-white dark:bg-slate-800 text-slate-900 dark:text-slate-100 placeholder:text-slate-400 focus:outline-none focus:ring-1 focus:ring-violet-500 font-mono" />
+														<input type="text" value={ocNewAccountOptions[envVar] || ''} oninput={(e) => { ocNewAccountOptions = { ...ocNewAccountOptions, [envVar]: (e.target as HTMLInputElement).value }; }} placeholder={envVar} class="w-full px-3 py-1.5 text-xs rounded-lg border border-slate-300 dark:border-slate-600 bg-white dark:bg-slate-800 text-slate-900 dark:text-slate-100 placeholder:text-slate-400 focus:outline-none focus:ring-1 focus:ring-violet-500" />
 													{/each}
 													<div class="flex gap-2">
 														<button type="button" class="flex-1 flex items-center justify-center gap-1.5 px-3 py-1.5 text-xs font-medium rounded-lg bg-violet-600 text-white hover:bg-violet-700 transition-colors disabled:opacity-50" onclick={submitAddAccount} disabled={!isAddAccountValid()}><Icon name="lucide:plus" class="w-3 h-3" />Add</button>
@@ -2875,83 +2869,6 @@
 											{/if}
 										</div>
 									</div>
-									{#if ocEditingProviderId === provider.id}
-									<div class="rounded-lg border border-violet-200 dark:border-violet-800/50 bg-violet-50/50 dark:bg-violet-900/10 overflow-hidden mb-3 mt-2">
-										<div class="flex items-center gap-2 px-3.5 py-2.5 border-b border-violet-200 dark:border-violet-800/50 text-xs font-medium text-violet-600 dark:text-violet-400">
-											<Icon name="lucide:pencil" class="w-3.5 h-3.5" />
-											Edit Provider — {ocEditName}
-										</div>
-										<div class="px-3.5 py-2.5 space-y-2">
-											<div>
-												<label class="block text-xs font-medium text-slate-700 dark:text-slate-300 mb-1">Name</label>
-												<input type="text" bind:value={ocEditName} placeholder="Provider name" class="w-full px-3 py-2 text-sm rounded-lg border border-slate-300 dark:border-slate-600 bg-white dark:bg-slate-800 text-slate-900 dark:text-slate-100 placeholder:text-slate-400 focus:outline-none focus:ring-2 focus:ring-violet-500/40" />
-											</div>
-											<div>
-												<label class="block text-xs font-medium text-slate-700 dark:text-slate-300 mb-1">Base URL</label>
-												<input type="text" bind:value={ocEditBaseUrl} placeholder="http://localhost:20128/v1" class="w-full px-3 py-2 text-sm rounded-lg border border-slate-300 dark:border-slate-600 bg-white dark:bg-slate-800 text-slate-900 dark:text-slate-100 placeholder:text-slate-400 focus:outline-none focus:ring-2 focus:ring-violet-500/40 font-mono" />
-											</div>
-											<div class="flex gap-3">
-												<div class="flex-1">
-													<label class="block text-xs font-medium text-slate-700 dark:text-slate-300 mb-1">Context Limit</label>
-													<input type="number" bind:value={ocEditContextLimit} placeholder="128000" class="w-full px-3 py-2 text-sm rounded-lg border border-slate-300 dark:border-slate-600 bg-white dark:bg-slate-800 text-slate-900 dark:text-slate-100 placeholder:text-slate-400 focus:outline-none focus:ring-2 focus:ring-violet-500/40 font-mono" />
-												</div>
-												<div class="flex-1">
-													<label class="block text-xs font-medium text-slate-700 dark:text-slate-300 mb-1">Output Limit</label>
-													<input type="number" bind:value={ocEditOutputLimit} placeholder="16384" class="w-full px-3 py-2 text-sm rounded-lg border border-slate-300 dark:border-slate-600 bg-white dark:bg-slate-800 text-slate-900 dark:text-slate-100 placeholder:text-slate-400 focus:outline-none focus:ring-2 focus:ring-violet-500/40 font-mono" />
-												</div>
-											</div>
-											<div>
-												<div class="flex items-center justify-between mb-1">
-													<label class="block text-xs font-medium text-slate-700 dark:text-slate-300">Model IDs</label>
-													<div class="flex items-center gap-2">
-														<button type="button" class="flex items-center gap-1 text-3xs text-slate-500 hover:text-violet-600 transition-colors disabled:opacity-50" onclick={fetchEditModels} disabled={ocEditFetching || !ocEditBaseUrl.trim()}>
-															<Icon name={ocEditFetching ? 'lucide:loader' : 'lucide:refresh-cw'} class="w-3 h-3 {ocEditFetching ? 'animate-spin' : ''}" />
-															{ocEditFetching ? 'Fetching...' : 'Fetch from /v1/models'}
-														</button>
-														<button type="button" class="flex items-center gap-1 text-3xs text-violet-600 hover:text-violet-700 transition-colors" onclick={addEditModelRow}>
-															<Icon name="lucide:plus" class="w-3 h-3" />Add row
-														</button>
-													</div>
-												</div>
-												<div class="space-y-1.5 max-h-48 overflow-y-auto p-0.5">
-													{#each ocEditModelRows as row, i (i)}
-														<div
-															draggable="true"
-															class="flex items-center gap-2 {row.hidden ? 'opacity-40' : ''} {ocDragIndex === i ? 'opacity-50' : ''} {ocDragIndex !== null && ocDragIndex !== i ? 'hover:cursor-grab' : ''}"
-															ondragstart={(e) => { ocDragIndex = i; e.dataTransfer!.effectAllowed = 'move'; }}
-															ondragover={(e) => e.preventDefault()}
-															ondrop={(e) => { e.preventDefault(); if (ocDragIndex !== null && ocDragIndex !== i) { const a = [...ocEditModelRows]; const [m] = a.splice(ocDragIndex, 1); a.splice(i, 0, m); ocEditModelRows = a; } ocDragIndex = null; }}
-															ondragend={() => { ocDragIndex = null; }}
-														>
-															<Icon name="lucide:grip-vertical" class="w-3.5 h-3.5 text-slate-400 cursor-grab active:cursor-grabbing shrink-0" />
-															<input type="text" bind:value={row.code} placeholder="model-id" class="flex-[3] px-2.5 py-1.5 text-xs rounded-lg border border-slate-300 dark:border-slate-600 bg-white dark:bg-slate-800 text-slate-900 dark:text-slate-100 placeholder:text-slate-400 focus:outline-none focus:ring-2 focus:ring-violet-500/40 font-mono" />
-															<input type="text" bind:value={row.alias} placeholder="Alias" class="flex-1 px-2.5 py-1.5 text-xs rounded-lg border border-slate-300 dark:border-slate-600 bg-white dark:bg-slate-800 text-slate-900 dark:text-slate-100 placeholder:text-slate-400 focus:outline-none focus:ring-2 focus:ring-violet-500/40" />
-															<button type="button" class="flex p-1 rounded-md text-slate-400 hover:text-amber-600 hover:bg-amber-50 dark:hover:bg-amber-900/20 transition-colors shrink-0" onclick={() => { row.hidden = !row.hidden; }} title={row.hidden ? 'Show' : 'Hide'}>
-																<Icon name={row.hidden ? 'lucide:eye-off' : 'lucide:eye'} class="w-3.5 h-3.5" />
-															</button>
-															<button type="button" class="flex p-1 rounded-md {settings.pinnedModels?.includes(row.code) ? 'text-amber-500 hover:text-amber-600' : 'text-slate-400 hover:text-amber-600'} hover:bg-amber-50 dark:hover:bg-amber-900/20 transition-colors shrink-0" onclick={() => togglePinnedModel(row.code)} title={settings.pinnedModels?.includes(row.code) ? 'Unpin' : 'Pin'}>
-																<Icon name={settings.pinnedModels?.includes(row.code) ? 'lucide:pin-off' : 'lucide:pin'} class="w-3.5 h-3.5" />
-															</button>
-															<button type="button" class="flex p-1 rounded-md text-slate-400 hover:text-red-600 hover:bg-red-50 dark:hover:bg-red-900/20 transition-colors shrink-0" onclick={() => removeEditModelRow(i)}>
-																<Icon name="lucide:x" class="w-3.5 h-3.5" />
-															</button>
-														</div>
-													{/each}
-													{#if ocEditModelRows.length === 0}
-														<p class="text-xs text-slate-400 italic text-center py-2">No models. Click <strong>Add row</strong> or <strong>Fetch</strong>.</p>
-													{/if}
-												</div>
-											</div>
-											<div class="flex gap-2">
-												<button type="button" class="flex-1 flex items-center justify-center gap-2 px-4 py-2 text-sm font-medium rounded-lg bg-violet-600 text-white hover:bg-violet-700 transition-colors disabled:opacity-50" onclick={submitEditCustomProvider}>
-													<Icon name="lucide:check" class="w-4 h-4" />
-													Save Changes
-												</button>
-												<button type="button" class="px-4 py-2 text-sm font-medium rounded-lg border border-slate-300 dark:border-slate-600 text-slate-600 dark:text-slate-400 hover:bg-slate-100 dark:hover:bg-slate-700 transition-colors" onclick={cancelEditCustomProvider}>Cancel</button>
-											</div>
-										</div>
-									</div>
-									{/if}
 								{/each}
 							{/if}
 
@@ -2976,7 +2893,7 @@
 										</div>
 										<button
 											type="button"
-											class="flex items-center gap-1 text-3xs text-slate-500 hover:text-violet-600 transition-colors disabled:opacity-50"
+											class="flex items-center gap-1 text-2xs font-medium px-2 py-1 rounded-md border border-violet-300 dark:border-violet-700/60 text-violet-600 dark:text-violet-400 hover:bg-violet-50 dark:hover:bg-violet-900/20 transition-colors disabled:opacity-50"
 											onclick={handleRefetchCatalog}
 											disabled={ocCatalogRefreshing}
 										>
@@ -3004,7 +2921,7 @@
 												>
 													<div>
 														<span class="text-sm font-medium text-slate-900 dark:text-slate-100">{cp.name}</span>
-														<span class="text-2xs text-slate-400 font-mono ml-2">{cp.id}</span>
+														<span class="text-2xs text-slate-400 ml-2">{cp.id}</span>
 													</div>
 													<Icon name="lucide:chevron-right" class="w-3.5 h-3.5 text-slate-400" />
 												</button>
@@ -3089,7 +3006,7 @@
 											type="text"
 											bind:value={ocCustomName}
 											oninput={() => { ocCustomSlug = autoGenerateSlug(ocCustomName); }}
-											placeholder="e.g. My Local LLM"
+											placeholder="e.g. Ollama (local), 9router"
 											class="w-full px-3 py-2 text-sm rounded-lg border border-slate-300 dark:border-slate-600 bg-white dark:bg-slate-800 text-slate-900 dark:text-slate-100 placeholder:text-slate-400 focus:outline-none focus:ring-2 focus:ring-violet-500/40"
 										/>
 									</div>
@@ -3099,8 +3016,8 @@
 										<input
 											type="text"
 											bind:value={ocCustomSlug}
-											placeholder="e.g. 9router, my-local-llm"
-											class="w-full px-3 py-2 text-sm rounded-lg border border-slate-300 dark:border-slate-600 bg-white dark:bg-slate-800 text-slate-900 dark:text-slate-100 placeholder:text-slate-400 focus:outline-none focus:ring-2 focus:ring-violet-500/40 font-mono"
+											placeholder="e.g. ollama, 9router"
+											class="w-full px-3 py-2 text-sm rounded-lg border border-slate-300 dark:border-slate-600 bg-white dark:bg-slate-800 text-slate-900 dark:text-slate-100 placeholder:text-slate-400 focus:outline-none focus:ring-2 focus:ring-violet-500/40"
 										/>
 									</div>
 
@@ -3109,8 +3026,8 @@
 										<input
 											type="text"
 											bind:value={ocCustomBaseUrl}
-											placeholder="e.g. http://localhost:20128/v1"
-											class="w-full px-3 py-2 text-sm rounded-lg border border-slate-300 dark:border-slate-600 bg-white dark:bg-slate-800 text-slate-900 dark:text-slate-100 placeholder:text-slate-400 focus:outline-none focus:ring-2 focus:ring-violet-500/40 font-mono"
+											placeholder="e.g. http://localhost:11434/v1 (Ollama) · http://localhost:20128/v1 (9router)"
+											class="w-full px-3 py-2 text-sm rounded-lg border border-slate-300 dark:border-slate-600 bg-white dark:bg-slate-800 text-slate-900 dark:text-slate-100 placeholder:text-slate-400 focus:outline-none focus:ring-2 focus:ring-violet-500/40"
 										/>
 									</div>
 
@@ -3119,37 +3036,17 @@
 										<input
 											type="text"
 											bind:value={ocCustomApiKey}
-											placeholder="API key if required"
-											class="w-full px-3 py-2 text-sm rounded-lg border border-slate-300 dark:border-slate-600 bg-white dark:bg-slate-800 text-slate-900 dark:text-slate-100 placeholder:text-slate-400 focus:outline-none focus:ring-2 focus:ring-violet-500/40 font-mono"
+											placeholder="Leave blank for Ollama; sk-… for 9router"
+											class="w-full px-3 py-2 text-sm rounded-lg border border-slate-300 dark:border-slate-600 bg-white dark:bg-slate-800 text-slate-900 dark:text-slate-100 placeholder:text-slate-400 focus:outline-none focus:ring-2 focus:ring-violet-500/40"
 										/>
 									</div>
 
-									<div class="flex gap-3">
-										<div class="flex-1">
-											<label class="block text-xs font-medium text-slate-700 dark:text-slate-300 mb-1">Context Limit</label>
-											<input
-												type="number"
-												bind:value={ocCustomContextLimit}
-												placeholder="128000"
-												class="w-full px-3 py-2 text-sm rounded-lg border border-slate-300 dark:border-slate-600 bg-white dark:bg-slate-800 text-slate-900 dark:text-slate-100 placeholder:text-slate-400 focus:outline-none focus:ring-2 focus:ring-violet-500/40 font-mono"
-											/>
-										</div>
-										<div class="flex-1">
-											<label class="block text-xs font-medium text-slate-700 dark:text-slate-300 mb-1">Output Limit</label>
-											<input
-												type="number"
-												bind:value={ocCustomOutputLimit}
-												placeholder="16384"
-												class="w-full px-3 py-2 text-sm rounded-lg border border-slate-300 dark:border-slate-600 bg-white dark:bg-slate-800 text-slate-900 dark:text-slate-100 placeholder:text-slate-400 focus:outline-none focus:ring-2 focus:ring-violet-500/40 font-mono"
-											/>
-										</div>
-									</div>
 
 									<div>
 										<div class="flex items-center justify-between mb-1">
 											<label class="block text-xs font-medium text-slate-700 dark:text-slate-300">Model IDs</label>
 											<div class="flex items-center gap-2">
-												<button type="button" class="flex items-center gap-1 text-3xs text-slate-500 hover:text-violet-600 transition-colors disabled:opacity-50" onclick={fetchCustomModels} disabled={ocCustomFetching || !ocCustomBaseUrl.trim()}>
+												<button type="button" class="flex items-center gap-1 text-2xs font-medium px-2 py-1 rounded-md border border-violet-300 dark:border-violet-700/60 text-violet-600 dark:text-violet-400 hover:bg-violet-50 dark:hover:bg-violet-900/20 transition-colors disabled:opacity-50" onclick={fetchCustomModels} disabled={ocCustomFetching || !ocCustomBaseUrl.trim()}>
 													<Icon name={ocCustomFetching ? 'lucide:loader' : 'lucide:refresh-cw'} class="w-3 h-3 {ocCustomFetching ? 'animate-spin' : ''}" />
 													{ocCustomFetching ? 'Fetching...' : 'Fetch from /v1/models'}
 												</button>
@@ -3173,7 +3070,7 @@
 															type="text"
 															bind:value={row.code}
 															placeholder="model-id"
-															class="flex-[3] px-2.5 py-1.5 text-xs rounded-lg border border-slate-300 dark:border-slate-600 bg-white dark:bg-slate-800 text-slate-900 dark:text-slate-100 placeholder:text-slate-400 focus:outline-none focus:ring-2 focus:ring-violet-500/40 font-mono"
+															class="flex-[3] px-2.5 py-1.5 text-xs rounded-lg border border-slate-300 dark:border-slate-600 bg-white dark:bg-slate-800 text-slate-900 dark:text-slate-100 placeholder:text-slate-400 focus:outline-none focus:ring-2 focus:ring-violet-500/40"
 														/>
 														<input
 															type="text"
@@ -3181,6 +3078,8 @@
 															placeholder="Alias"
 															class="flex-1 px-2.5 py-1.5 text-xs rounded-lg border border-slate-300 dark:border-slate-600 bg-white dark:bg-slate-800 text-slate-900 dark:text-slate-100 placeholder:text-slate-400 focus:outline-none focus:ring-2 focus:ring-violet-500/40"
 														/>
+															<input type="number" bind:value={row.context} placeholder="ctx" title="Context limit" class="w-20 px-1.5 py-1.5 text-xs rounded-lg border border-slate-300 dark:border-slate-600 bg-white dark:bg-slate-800 text-slate-900 dark:text-slate-100 placeholder:text-slate-400 focus:outline-none focus:ring-2 focus:ring-violet-500/40 shrink-0" />
+															<input type="number" bind:value={row.output} placeholder="out" title="Output limit" class="w-20 px-1.5 py-1.5 text-xs rounded-lg border border-slate-300 dark:border-slate-600 bg-white dark:bg-slate-800 text-slate-900 dark:text-slate-100 placeholder:text-slate-400 focus:outline-none focus:ring-2 focus:ring-violet-500/40 shrink-0" />
 														<button type="button" class="flex p-1 rounded-md text-slate-400 hover:text-amber-600 hover:bg-amber-50 dark:hover:bg-amber-900/20 transition-colors shrink-0" onclick={() => { row.hidden = !row.hidden; }} title={row.hidden ? 'Show' : 'Hide'}>
 															<Icon name={row.hidden ? 'lucide:eye-off' : 'lucide:eye'} class="w-3.5 h-3.5" />
 														</button>
@@ -3252,6 +3151,83 @@
 
 	</div>
 </div>
+
+<!-- Edit Provider modal (shared by catalog + custom providers) -->
+<Dialog isOpen={ocEditingProviderId !== null} onClose={cancelEditCustomProvider} title="Edit Provider">
+	<div class="space-y-3">
+		<div class="flex items-center gap-2 text-sm font-semibold text-violet-600 dark:text-violet-400">
+			<Icon name="lucide:pencil" class="w-4 h-4" />
+			Edit Provider — {ocEditName}
+		</div>
+
+		<div>
+			<label class="block text-xs font-medium text-slate-700 dark:text-slate-300 mb-1">Name</label>
+			<input type="text" bind:value={ocEditName} placeholder="Provider name" class="w-full px-3 py-2 text-sm rounded-lg border border-slate-300 dark:border-slate-600 bg-white dark:bg-slate-800 text-slate-900 dark:text-slate-100 placeholder:text-slate-400 focus:outline-none focus:ring-2 focus:ring-violet-500/40" />
+		</div>
+		<div>
+			<label class="block text-xs font-medium text-slate-700 dark:text-slate-300 mb-1">Provider ID (slug)</label>
+			<input type="text" bind:value={ocEditSlug} placeholder="e.g. ollama, 9router" class="w-full px-3 py-2 text-sm rounded-lg border border-slate-300 dark:border-slate-600 bg-white dark:bg-slate-800 text-slate-900 dark:text-slate-100 placeholder:text-slate-400 focus:outline-none focus:ring-2 focus:ring-violet-500/40" />
+			<p class="text-3xs text-slate-400 mt-1">Changing the slug rewrites this provider's identity — restart the server afterwards.</p>
+		</div>
+		<div>
+			<label class="block text-xs font-medium text-slate-700 dark:text-slate-300 mb-1">Base URL</label>
+			<input type="text" bind:value={ocEditBaseUrl} placeholder="http://localhost:11434/v1 (Ollama) · http://localhost:20128/v1 (9router)" class="w-full px-3 py-2 text-sm rounded-lg border border-slate-300 dark:border-slate-600 bg-white dark:bg-slate-800 text-slate-900 dark:text-slate-100 placeholder:text-slate-400 focus:outline-none focus:ring-2 focus:ring-violet-500/40" />
+		</div>
+
+		<div>
+			<div class="flex items-center justify-between mb-1">
+				<label class="block text-xs font-medium text-slate-700 dark:text-slate-300">Model IDs</label>
+				<div class="flex items-center gap-2">
+					<button type="button" class="flex items-center gap-1 text-2xs font-medium px-2 py-1 rounded-md border border-violet-300 dark:border-violet-700/60 text-violet-600 dark:text-violet-400 hover:bg-violet-50 dark:hover:bg-violet-900/20 transition-colors disabled:opacity-50" onclick={fetchEditModels} disabled={ocEditFetching || !ocEditBaseUrl.trim()}>
+						<Icon name={ocEditFetching ? 'lucide:loader' : 'lucide:refresh-cw'} class="w-3 h-3 {ocEditFetching ? 'animate-spin' : ''}" />
+						{ocEditFetching ? 'Fetching...' : 'Fetch from /v1/models'}
+					</button>
+					<button type="button" class="flex items-center gap-1 text-3xs text-violet-600 hover:text-violet-700 transition-colors" onclick={addEditModelRow}>
+						<Icon name="lucide:plus" class="w-3 h-3" />Add row
+					</button>
+				</div>
+			</div>
+			<div class="space-y-1.5 max-h-48 overflow-y-auto p-0.5">
+				{#each ocEditModelRows as row, i (i)}
+					<div
+						draggable="true"
+						class="flex items-center gap-2 {row.hidden ? 'opacity-40' : ''} {ocDragIndex === i ? 'opacity-50' : ''} {ocDragIndex !== null && ocDragIndex !== i ? 'hover:cursor-grab' : ''}"
+						ondragstart={(e) => { ocDragIndex = i; e.dataTransfer!.effectAllowed = 'move'; }}
+						ondragover={(e) => e.preventDefault()}
+						ondrop={(e) => { e.preventDefault(); if (ocDragIndex !== null && ocDragIndex !== i) { const a = [...ocEditModelRows]; const [m] = a.splice(ocDragIndex, 1); a.splice(i, 0, m); ocEditModelRows = a; } ocDragIndex = null; }}
+						ondragend={() => { ocDragIndex = null; }}
+					>
+						<Icon name="lucide:grip-vertical" class="w-3.5 h-3.5 text-slate-400 cursor-grab active:cursor-grabbing shrink-0" />
+						<input type="text" bind:value={row.code} placeholder="model-id" class="flex-[3] px-2.5 py-1.5 text-xs rounded-lg border border-slate-300 dark:border-slate-600 bg-white dark:bg-slate-800 text-slate-900 dark:text-slate-100 placeholder:text-slate-400 focus:outline-none focus:ring-2 focus:ring-violet-500/40" />
+						<input type="text" bind:value={row.alias} placeholder="Alias" class="flex-1 px-2.5 py-1.5 text-xs rounded-lg border border-slate-300 dark:border-slate-600 bg-white dark:bg-slate-800 text-slate-900 dark:text-slate-100 placeholder:text-slate-400 focus:outline-none focus:ring-2 focus:ring-violet-500/40" />
+						<input type="number" bind:value={row.context} placeholder="ctx" title="Context limit" class="w-20 px-1.5 py-1.5 text-xs rounded-lg border border-slate-300 dark:border-slate-600 bg-white dark:bg-slate-800 text-slate-900 dark:text-slate-100 placeholder:text-slate-400 focus:outline-none focus:ring-2 focus:ring-violet-500/40 shrink-0" />
+						<input type="number" bind:value={row.output} placeholder="out" title="Output limit" class="w-20 px-1.5 py-1.5 text-xs rounded-lg border border-slate-300 dark:border-slate-600 bg-white dark:bg-slate-800 text-slate-900 dark:text-slate-100 placeholder:text-slate-400 focus:outline-none focus:ring-2 focus:ring-violet-500/40 shrink-0" />
+						<button type="button" class="flex p-1 rounded-md text-slate-400 hover:text-amber-600 hover:bg-amber-50 dark:hover:bg-amber-900/20 transition-colors shrink-0" onclick={() => { row.hidden = !row.hidden; }} title={row.hidden ? 'Show' : 'Hide'}>
+							<Icon name={row.hidden ? 'lucide:eye-off' : 'lucide:eye'} class="w-3.5 h-3.5" />
+						</button>
+						<button type="button" class="flex p-1 rounded-md {settings.pinnedModels?.includes(row.code) ? 'text-amber-500 hover:text-amber-600' : 'text-slate-400 hover:text-amber-600'} hover:bg-amber-50 dark:hover:bg-amber-900/20 transition-colors shrink-0" onclick={() => togglePinnedModel(row.code)} title={settings.pinnedModels?.includes(row.code) ? 'Unpin' : 'Pin'}>
+							<Icon name={settings.pinnedModels?.includes(row.code) ? 'lucide:pin-off' : 'lucide:pin'} class="w-3.5 h-3.5" />
+						</button>
+						<button type="button" class="flex p-1 rounded-md text-slate-400 hover:text-red-600 hover:bg-red-50 dark:hover:bg-red-900/20 transition-colors shrink-0" onclick={() => removeEditModelRow(i)}>
+							<Icon name="lucide:x" class="w-3.5 h-3.5" />
+						</button>
+					</div>
+				{/each}
+				{#if ocEditModelRows.length === 0}
+					<p class="text-xs text-slate-400 italic text-center py-2">No models. Click <strong>Add row</strong> or <strong>Fetch</strong>.</p>
+				{/if}
+			</div>
+		</div>
+
+		<div class="flex gap-2 pt-1">
+			<button type="button" class="flex-1 flex items-center justify-center gap-2 px-4 py-2 text-sm font-medium rounded-lg bg-violet-600 text-white hover:bg-violet-700 transition-colors disabled:opacity-50" onclick={submitEditCustomProvider}>
+				<Icon name="lucide:check" class="w-4 h-4" />
+				Save Changes
+			</button>
+			<button type="button" class="px-4 py-2 text-sm font-medium rounded-lg border border-slate-300 dark:border-slate-600 text-slate-600 dark:text-slate-400 hover:bg-slate-100 dark:hover:bg-slate-700 transition-colors" onclick={cancelEditCustomProvider}>Cancel</button>
+		</div>
+	</div>
+</Dialog>
 
 <Dialog
 	bind:isOpen={claudeCodeDeleteDialogOpen}

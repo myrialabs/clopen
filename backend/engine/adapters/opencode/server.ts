@@ -26,7 +26,7 @@ import type { OpencodeClient } from '@opencode-ai/sdk';
 import type { Subprocess } from 'bun';
 import { getOpenCodeMcpConfig } from '../../../mcp';
 import { engineQueries, settingsQueries } from '../../../database/queries';
-import { generateOpenCodeProviderConfig } from './config';
+import { generateOpenCodeProviderConfig, parseCredentialMap } from './config';
 import type { OpenCodeInlineAgent } from '$backend/subagents';
 import { resolveBinaryWithRefresh } from '$backend/utils/cli';
 import { getEngineUserConfigDir } from '$backend/utils/paths';
@@ -205,9 +205,32 @@ async function spawnServer(key: string, spec: ServerConfigSpec): Promise<ServerI
 	for (const provider of opencodeProviders) {
 		if (!provider.api_url) continue;
 
+		// Resolve the active account's credential so we can (a) authenticate the
+		// endpoint and (b) substitute `${VAR}` placeholders in the base URL.
+		// Multi-secret providers (e.g. Cloudflare Workers AI, whose URL embeds
+		// ${CLOUDFLARE_ACCOUNT_ID} and whose bearer is CLOUDFLARE_API_KEY) store
+		// every secret as a JSON bundle; single-key providers store a raw string.
+		const activeAccount = engineQueries.getActiveAccount(provider.id);
+		let baseURL = provider.api_url;
+		let apiKey: string | undefined;
+		if (activeAccount?.credential) {
+			const credMap = parseCredentialMap(activeAccount.credential);
+			if (credMap) {
+				baseURL = baseURL.replace(/\$\{(\w+)\}/g, (_m, name) => credMap[name] ?? '');
+				const keys = Object.keys(credMap);
+				const tokenKey = keys.find(k => /API[_-]?(?:KEY|TOKEN)$/i.test(k)) ?? keys.find(k => /(?:KEY|TOKEN)$/i.test(k));
+				if (tokenKey) apiKey = credMap[tokenKey];
+			} else {
+				apiKey = activeAccount.credential;
+			}
+		}
+
 		const models: Record<string, { name: string; limit: { context: number; output: number } }> = {};
+		// Per-model limits live in `modelLimits`; legacy provider-level
+		// contextLimit/outputLimit remain a fallback for older rows.
 		let defaultContext = 128000;
 		let defaultOutput = 16384;
+		let modelLimits: Record<string, { context?: number; output?: number }> = {};
 		let modelNames: Record<string, string> = {};
 		let hiddenSet = new Set<string>();
 		try {
@@ -215,11 +238,13 @@ async function spawnServer(key: string, spec: ServerConfigSpec): Promise<ServerI
 				models?: string[];
 				modelNames?: Record<string, string>;
 				hiddenModels?: string[];
+				modelLimits?: Record<string, { context?: number; output?: number }>;
 				contextLimit?: number;
 				outputLimit?: number;
 			};
 			if (opts.contextLimit) defaultContext = opts.contextLimit;
 			if (opts.outputLimit) defaultOutput = opts.outputLimit;
+			if (opts.modelLimits) modelLimits = opts.modelLimits;
 			if (opts.modelNames) modelNames = opts.modelNames;
 			if (opts.hiddenModels) hiddenSet = new Set(opts.hiddenModels);
 		} catch {
@@ -227,7 +252,8 @@ async function spawnServer(key: string, spec: ServerConfigSpec): Promise<ServerI
 		}
 
 		const addModel = (id: string) => {
-			models[id] = { name: modelNames[id] || id, limit: { context: defaultContext, output: defaultOutput } };
+			const lim = modelLimits[id];
+			models[id] = { name: modelNames[id] || id, limit: { context: lim?.context || defaultContext, output: lim?.output || defaultOutput } };
 		};
 
 		try {
@@ -244,8 +270,9 @@ async function spawnServer(key: string, spec: ServerConfigSpec): Promise<ServerI
 		// Auto-discover models from /v1/models if none stored in options
 		if (Object.keys(models).length === 0) {
 			try {
-				const baseUrl = provider.api_url.replace(/\/+$/, '');
+				const baseUrl = baseURL.replace(/\/+$/, '');
 				const res = await fetch(`${baseUrl}/models`, {
+					headers: apiKey ? { Authorization: `Bearer ${apiKey}` } : {},
 					signal: AbortSignal.timeout(3000),
 				});
 				if (res.ok) {
@@ -264,7 +291,8 @@ async function spawnServer(key: string, spec: ServerConfigSpec): Promise<ServerI
 			const o = JSON.parse(provider.options || '{}') as { models?: string[] };
 			if (o.models && o.models.length > 0) modelOrder = o.models.filter(id => !hiddenSet.has(id));
 		} catch { /* ignore */ }
-		const providerOptions: Record<string, unknown> = { baseURL: provider.api_url };
+		const providerOptions: Record<string, unknown> = { baseURL };
+		if (apiKey) providerOptions.apiKey = apiKey;
 		if (modelOrder) providerOptions._modelOrder = modelOrder;
 		providerSection[provider.slug] = {
 			npm: provider.npm || '@ai-sdk/openai-compatible',

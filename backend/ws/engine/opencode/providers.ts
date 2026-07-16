@@ -77,7 +77,10 @@ export const openCodeProviderHandler = createRouter()
 			apiUrl: t.Optional(t.String()),
 			options: t.Optional(t.String()),
 			accountName: t.String({ minLength: 1 }),
-			credential: t.String({ minLength: 1 }),
+			// Empty string allowed: custom OpenAI-compatible endpoints (e.g. a
+			// local LLM) often need no API key. The frontend still requires a
+			// credential for catalog providers via its own validation.
+			credential: t.String(),
 		}),
 		response: t.Object({
 			provider: ProviderSchema
@@ -136,6 +139,7 @@ export const openCodeProviderHandler = createRouter()
 	.http('engine:opencode-provider-update', {
 		data: t.Object({
 			id: t.Number(),
+			slug: t.Optional(t.String({ minLength: 1 })),
 			name: t.Optional(t.String()),
 			apiUrl: t.Optional(t.String()),
 			options: t.Optional(t.String()),
@@ -145,7 +149,16 @@ export const openCodeProviderHandler = createRouter()
 		if (data.options !== undefined) {
 			try { JSON.parse(data.options); } catch { throw new Error('Invalid JSON for options'); }
 		}
+		// Changing a provider's slug rewrites its identity in the generated
+		// opencode config — reject collisions so two providers can't share one.
+		if (data.slug !== undefined) {
+			const existing = engineQueries.getProviderBySlug('opencode', data.slug);
+			if (existing && existing.id !== data.id) {
+				throw new Error(`Provider "${data.slug}" already configured`);
+			}
+		}
 		engineQueries.updateProvider(data.id, {
+			slug: data.slug,
 			name: data.name,
 			apiUrl: data.apiUrl,
 			options: data.options,
@@ -218,6 +231,15 @@ export const openCodeProviderHandler = createRouter()
 		response: t.Object({ success: t.Boolean() })
 	}, async ({ data }) => {
 		engineQueries.renameAccount(data.accountId, data.name);
+		return { success: true };
+	})
+
+	.http('engine:opencode-account-update-credential', {
+		// Empty string allowed — a keyless custom endpoint may clear its key.
+		data: t.Object({ accountId: t.Number(), credential: t.String() }),
+		response: t.Object({ success: t.Boolean() })
+	}, async ({ data }) => {
+		engineQueries.updateAccountCredential(data.accountId, data.credential);
 		return { success: true };
 	})
 

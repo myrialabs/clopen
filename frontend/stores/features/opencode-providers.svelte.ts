@@ -101,6 +101,7 @@ export const opencodeProvidersStore = {
 	},
 
 	async updateProvider(id: number, data: {
+		slug?: string;
 		name?: string;
 		apiUrl?: string;
 		options?: string;
@@ -135,6 +136,11 @@ export const opencodeProvidersStore = {
 
 	async renameAccount(accountId: number, name: string): Promise<void> {
 		await ws.http('engine:opencode-account-rename', { accountId, name });
+		await this.refreshProviders();
+	},
+
+	async updateAccountCredential(accountId: number, credential: string): Promise<void> {
+		await ws.http('engine:opencode-account-update-credential', { accountId, credential });
 		await this.refreshProviders();
 	},
 

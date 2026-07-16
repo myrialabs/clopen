@@ -115,10 +115,11 @@ export const engineQueries = {
 		return db.prepare(`SELECT * FROM engine_providers WHERE id = ?`).get(id) as EngineProvider;
 	},
 
-	updateProvider(id: number, data: { name?: string; apiUrl?: string; options?: string }): void {
+	updateProvider(id: number, data: { slug?: string; name?: string; apiUrl?: string; options?: string }): void {
 		const db = getDatabase();
 		const sets: string[] = [];
 		const vals: (string | number)[] = [];
+		if (data.slug !== undefined) { sets.push('slug = ?'); vals.push(data.slug); }
 		if (data.name !== undefined) { sets.push('name = ?'); vals.push(data.name); }
 		if (data.apiUrl !== undefined) { sets.push('api_url = ?'); vals.push(data.apiUrl); }
 		if (data.options !== undefined) { sets.push('options = ?'); vals.push(data.options); }

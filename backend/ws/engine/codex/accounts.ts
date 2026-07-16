@@ -93,6 +93,8 @@ interface CodexLoginProcess {
 	userId: string;
 	accountName: string;
 	deviceAuth: boolean;
+	/** When set, re-authenticate this existing account in place instead of creating a new one. */
+	reauthAccountId: number | null;
 	timer: ReturnType<typeof setTimeout>;
 }
 
@@ -157,7 +159,7 @@ function isLoginSuccess(buffer: string): boolean {
 	return /Successfully logged in/i.test(buffer);
 }
 
-function persistChatGptLoginResult(accountName: string): { ok: true; accountId: number } | { ok: false; error: string } {
+function persistChatGptLoginResult(accountName: string, reauthAccountId?: number | null): { ok: true; accountId: number } | { ok: false; error: string } {
 	const provider = engineQueries.getProviderBySlug('codex', 'openai');
 	if (!provider) return { ok: false, error: 'OpenAI Codex provider not found in DB' };
 
@@ -167,6 +169,17 @@ function persistChatGptLoginResult(accountName: string): { ok: true; accountId: 
 	}
 
 	const credential = serializeCodexCredential({ kind: 'chatgpt', authJson });
+
+	// Re-authentication: replace the existing account's blob in place so its
+	// name and active state survive.
+	if (reauthAccountId != null) {
+		const existing = engineQueries.getAccount(reauthAccountId);
+		if (!existing) return { ok: false, error: 'Account to re-authenticate not found' };
+		engineQueries.updateAccountCredential(reauthAccountId, credential);
+		if (accountName) engineQueries.renameAccount(reauthAccountId, accountName);
+		return { ok: true, accountId: reauthAccountId };
+	}
+
 	const account = engineQueries.createAccount(provider.id, accountName, credential);
 	return { ok: true, accountId: account.id };
 }
@@ -285,6 +298,23 @@ export const codexAccountsHandler = createRouter()
 		return { success: true };
 	})
 
+	// Replace the API key for an api_key-mode account. ChatGPT accounts have no
+	// editable key — they re-authenticate via the login flow instead.
+	.http('engine:codex-accounts-update-api-key', {
+		data: t.Object({ id: t.Number(), apiKey: t.String({ minLength: 1 }) }),
+		response: t.Object({ success: t.Boolean() })
+	}, async ({ data }) => {
+		const account = engineQueries.getAccount(data.id);
+		if (!account) throw new Error('Account not found');
+		if (authModeOf(account) !== 'api_key') {
+			throw new Error('Only API-key accounts can have their key edited; ChatGPT accounts re-authenticate instead');
+		}
+		engineQueries.updateAccountCredential(data.id, serializeCodexCredential({ kind: 'api_key', apiKey: data.apiKey.trim() }));
+		const active = engineQueries.getActiveAccountForEngine('codex');
+		if (active?.id === data.id) await disposeCodexEngines();
+		return { success: true };
+	})
+
 	// ─── ChatGPT browser OAuth flow ───
 	//
 	// Spawn `codex login` in a PTY (the CLI silently no-ops when stdout
@@ -294,7 +324,8 @@ export const codexAccountsHandler = createRouter()
 	.on('engine:codex-account-setup-start', {
 		data: t.Object({
 			name: t.String({ minLength: 1 }),
-			deviceAuth: t.Optional(t.Boolean())
+			deviceAuth: t.Optional(t.Boolean()),
+			reauthAccountId: t.Optional(t.Number())
 		})
 	}, async ({ data, conn }) => {
 		const userId = ws.getUserId(conn);
@@ -363,6 +394,7 @@ export const codexAccountsHandler = createRouter()
 				userId,
 				accountName: data.name.trim(),
 				deviceAuth: !!data.deviceAuth,
+				reauthAccountId: data.reauthAccountId ?? null,
 				timer,
 			};
 			setupProcesses.set(setupId, entry);
@@ -409,7 +441,7 @@ export const codexAccountsHandler = createRouter()
 				if (isLoginSuccess(clean) && !entry.completed) {
 					entry.completed = true;
 					debug.log('engine', `[${setupId}] Codex login success — persisting auth.json`);
-					const result = persistChatGptLoginResult(entry.accountName);
+					const result = persistChatGptLoginResult(entry.accountName, entry.reauthAccountId);
 					if (result.ok) {
 						disposeCodexEngines().finally(() => {
 							ws.emit.user(userId, 'engine:codex-account-setup-complete', {
@@ -438,7 +470,7 @@ export const codexAccountsHandler = createRouter()
 				// in the final chunk right before exit.
 				if (isLoginSuccess(clean)) {
 					entry.completed = true;
-					const result = persistChatGptLoginResult(entry.accountName);
+					const result = persistChatGptLoginResult(entry.accountName, entry.reauthAccountId);
 					if (result.ok) {
 						disposeCodexEngines().finally(() => {
 							ws.emit.user(userId, 'engine:codex-account-setup-complete', {
