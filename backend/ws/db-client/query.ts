@@ -194,7 +194,10 @@ export const queryHandler = createRouter()
 		const adapter = await connectionManager.get(data.connectionId);
 		// Statement splitting is a SQL concern; Mongo/Redis payloads run whole.
 		const isSql = connection.driver === 'mysql' || connection.driver === 'postgres' || connection.driver === 'sqlite' || connection.driver === 'mssql';
-		const split = isSql ? splitSqlStatements(data.query) : [data.query.trim()];
+		// SQL Server separates batch-sensitive DDL by blank lines rather than `;`.
+		const split = isSql
+			? splitSqlStatements(data.query, { splitOnBlankLine: connection.driver === 'mssql' })
+			: [data.query.trim()];
 		const statements = split.length > 0 ? split : [data.query.trim()];
 		try {
 			const batch = await executeBatch({
@@ -335,7 +338,12 @@ export const queryHandler = createRouter()
 		requireDbClientConnectionAccess(conn, data.connectionId);
 		const adapter = await connectionManager.get(data.connectionId);
 		if (adapter.getServerLogs) {
-			return await adapter.getServerLogs({ database: data.database, limit: data.limit });
+			// The limit is spliced into `TOP n` / `LIMIT n`, so it must be a positive
+			// integer — clamp to guard against a fractional or negative value.
+			const limit = data.limit !== undefined
+				? Math.min(1000, Math.max(1, Math.floor(data.limit)))
+				: undefined;
+			return await adapter.getServerLogs({ database: data.database, limit });
 		}
 		return [];
 	});

@@ -76,6 +76,13 @@ export class MssqlAdapter implements DbClientDriverAdapter {
 		const host = tunnelPort ? '127.0.0.1' : (conn.host ?? '127.0.0.1');
 		const port = tunnelPort ?? conn.port ?? 1433;
 
+		const sslMode = conn.sslMode ?? 'disable';
+		const encrypt = sslMode !== 'disable';
+		// Only skip certificate validation for the non-verifying modes. In
+		// `verify-ca`/`verify-full` the user explicitly asked us to validate the
+		// server certificate, so trusting any cert there would be an MITM hole.
+		const trustServerCertificate = sslMode !== 'verify-ca' && sslMode !== 'verify-full';
+
 		const config: sql.config = {
 			server: host,
 			port: port,
@@ -83,8 +90,8 @@ export class MssqlAdapter implements DbClientDriverAdapter {
 			password: conn.password ?? undefined,
 			database: conn.database ?? undefined,
 			options: {
-				encrypt: conn.sslMode && conn.sslMode !== 'disable',
-				trustServerCertificate: true, // typical for local/development configurations
+				encrypt,
+				trustServerCertificate,
 				enableArithAbort: true
 			},
 			pool: {
@@ -144,129 +151,42 @@ export class MssqlAdapter implements DbClientDriverAdapter {
 		}
 	}
 
-	async executeRead(q: string, params: unknown[] = [], opts?: { database?: string; limit?: number }): Promise<DbClientQueryResult> {
-		const pool = this.requirePool();
-		const start = performance.now();
-		const needUse = opts?.database && opts.database.toLowerCase() !== this.conn?.database?.toLowerCase();
-
-		if (needUse && isBatchSensitive(q)) {
-			const transaction = new sql.Transaction(pool);
-			await transaction.begin();
-			try {
-				const useRequest = new sql.Request(transaction);
-				await useRequest.query(`USE ${Q(opts!.database as string)}`);
-				
-				const request = new sql.Request(transaction);
-				if (params && params.length > 0) {
-					params.forEach((val, idx) => {
-						request.input(`p${idx}`, val);
-					});
-				}
-				const result = await request.query(q);
-				await transaction.commit();
-				const durationMs = Math.round(performance.now() - start);
-
-				const recordsets = result.recordsets as any[] | undefined;
-				if (recordsets && recordsets.length > 1) {
-					const candidateSplit = q.split(/;|\n\s*\n/).map(s => s.trim()).filter(Boolean);
-					const hasMatchingSplit = candidateSplit.length === recordsets.length;
-					const statements: DbClientStatementResult[] = recordsets.map((recordset: any, idx: number) => {
-						const cols = recordset.length > 0
-							? Object.keys(recordset[0]).map((name) => ({ name, type: null as string | null }))
-							: [];
-						return {
-							index: idx,
-							query: hasMatchingSplit ? candidateSplit[idx] : `Statement ${idx + 1}`,
-							queryClass: 'read' as const,
-							status: 'success' as const,
-							result: {
-								columns: cols,
-								rows: recordset,
-								rowCount: recordset.length,
-								affectedRows: result.rowsAffected ? (result.rowsAffected[idx] ?? null) : null,
-								durationMs: 0,
-								driverMeta: {}
-							},
-							error: null,
-							durationMs: 0
-						};
-					});
-					const batchResult: DbClientBatchResult = {
-						statements,
-						totalDurationMs: durationMs,
-						transaction: false,
-						ok: true
-					};
-					return {
-						columns: statements[0].result?.columns ?? [],
-						rows: recordsets[0] || [],
-						rowCount: recordsets[0]?.length ?? 0,
-						affectedRows: result.rowsAffected ? (result.rowsAffected[0] ?? null) : null,
-						durationMs,
-						driverMeta: {},
-						batch: batchResult
-					};
-				}
-
-				const rows = result.recordset || [];
-				const columns = rows.length > 0
-					? Object.keys(rows[0]).map((name) => ({ name, type: null as string | null }))
-					: [];
-				return {
-					columns,
-					rows,
-					rowCount: rows.length,
-					affectedRows: result.rowsAffected ? result.rowsAffected[0] : null,
-					durationMs,
-					driverMeta: {}
-				};
-			} catch (err) {
-				try {
-					await transaction.rollback();
-				} catch {
-					// Ignore rollback failures to avoid swallowing the original error
-				}
-				throw err;
-			}
-		}
-
-		const request = pool.request();
+	/** Bind positional params as @p0, @p1, … on an mssql request. */
+	private bindParams(request: sql.Request, params: unknown[]): void {
 		if (params && params.length > 0) {
 			params.forEach((val, idx) => {
 				request.input(`p${idx}`, val);
 			});
 		}
+	}
 
-		const finalQuery = needUse ? `USE ${Q(opts!.database as string)};\n${q}` : q;
-		const result = await request.query(finalQuery);
-		const durationMs = Math.round(performance.now() - start);
+	/** Map a raw mssql result into a DbClientQueryResult, attaching a per-statement
+	 *  `batch` report when the query produced multiple recordsets. */
+	private buildResult(result: sql.IResult<any>, q: string, durationMs: number): DbClientQueryResult {
+		const toColumns = (rows: any[]) => rows.length > 0
+			? Object.keys(rows[0]).map((name) => ({ name, type: null as string | null }))
+			: [];
 
 		const recordsets = result.recordsets as any[] | undefined;
 		if (recordsets && recordsets.length > 1) {
 			const candidateSplit = q.split(/;|\n\s*\n/).map(s => s.trim()).filter(Boolean);
 			const hasMatchingSplit = candidateSplit.length === recordsets.length;
-
-			const statements: DbClientStatementResult[] = recordsets.map((recordset: any, idx: number) => {
-				const cols = recordset.length > 0
-					? Object.keys(recordset[0]).map((name) => ({ name, type: null as string | null }))
-					: [];
-				return {
-					index: idx,
-					query: hasMatchingSplit ? candidateSplit[idx] : `Statement ${idx + 1}`,
-					queryClass: 'read' as const,
-					status: 'success' as const,
-					result: {
-						columns: cols,
-						rows: recordset,
-						rowCount: recordset.length,
-						affectedRows: result.rowsAffected ? (result.rowsAffected[idx] ?? null) : null,
-						durationMs: 0,
-						driverMeta: {}
-					},
-					error: null,
-					durationMs: 0
-				};
-			});
+			const statements: DbClientStatementResult[] = recordsets.map((recordset: any, idx: number) => ({
+				index: idx,
+				query: hasMatchingSplit ? candidateSplit[idx] : `Statement ${idx + 1}`,
+				queryClass: 'read' as const,
+				status: 'success' as const,
+				result: {
+					columns: toColumns(recordset),
+					rows: recordset,
+					rowCount: recordset.length,
+					affectedRows: result.rowsAffected ? (result.rowsAffected[idx] ?? null) : null,
+					durationMs: 0,
+					driverMeta: {}
+				},
+				error: null,
+				durationMs: 0
+			}));
 			const batchResult: DbClientBatchResult = {
 				statements,
 				totalDurationMs: durationMs,
@@ -285,18 +205,51 @@ export class MssqlAdapter implements DbClientDriverAdapter {
 		}
 
 		const rows = result.recordset || [];
-		const columns = rows.length > 0
-			? Object.keys(rows[0]).map((name) => ({ name, type: null as string | null }))
-			: [];
-
 		return {
-			columns,
+			columns: toColumns(rows),
 			rows,
 			rowCount: rows.length,
 			affectedRows: result.rowsAffected ? result.rowsAffected[0] : null,
 			durationMs,
 			driverMeta: {}
 		};
+	}
+
+	async executeRead(q: string, params: unknown[] = [], opts?: { database?: string; limit?: number }): Promise<DbClientQueryResult> {
+		const pool = this.requirePool();
+		const start = performance.now();
+		const needUse = opts?.database && opts.database.toLowerCase() !== this.conn?.database?.toLowerCase();
+
+		if (needUse && isBatchSensitive(q)) {
+			// Batch-sensitive DDL (CREATE PROCEDURE, …) can't share a batch with
+			// `USE`, so run the database switch as a separate request first, wrapped
+			// in a transaction for atomicity.
+			const transaction = new sql.Transaction(pool);
+			await transaction.begin();
+			try {
+				const useRequest = new sql.Request(transaction);
+				await useRequest.query(`USE ${Q(opts!.database as string)}`);
+
+				const request = new sql.Request(transaction);
+				this.bindParams(request, params);
+				const result = await request.query(q);
+				await transaction.commit();
+				return this.buildResult(result, q, Math.round(performance.now() - start));
+			} catch (err) {
+				try {
+					await transaction.rollback();
+				} catch {
+					// Ignore rollback failures to avoid swallowing the original error
+				}
+				throw err;
+			}
+		}
+
+		const request = pool.request();
+		this.bindParams(request, params);
+		const finalQuery = needUse ? `USE ${Q(opts!.database as string)};\n${q}` : q;
+		const result = await request.query(finalQuery);
+		return this.buildResult(result, q, Math.round(performance.now() - start));
 	}
 
 	async executeWrite(q: string, params: unknown[] = [], opts?: { database?: string }): Promise<DbClientQueryResult> {
@@ -323,11 +276,7 @@ export class MssqlAdapter implements DbClientDriverAdapter {
 						await useRequest.query(`USE ${Q(db as string)}`);
 					}
 					const request = new sql.Request(transaction);
-					if (params && params.length > 0) {
-						params.forEach((val, idx) => {
-							request.input(`p${idx}`, val);
-						});
-					}
+					this.bindParams(request, params ?? []);
 					const start = performance.now();
 					const result = await request.query(q);
 					const durationMs = Math.round(performance.now() - start);
@@ -352,11 +301,7 @@ export class MssqlAdapter implements DbClientDriverAdapter {
 						await useRequest.query(`USE ${Q(db as string)}`);
 					}
 					const request = new sql.Request(transaction);
-					if (params && params.length > 0) {
-						params.forEach((val, idx) => {
-							request.input(`p${idx}`, val);
-						});
-					}
+					this.bindParams(request, params ?? []);
 					const start = performance.now();
 					const result = await request.query(q);
 					const durationMs = Math.round(performance.now() - start);
@@ -494,11 +439,14 @@ export class MssqlAdapter implements DbClientDriverAdapter {
 		const dbPrefix = database ? `${Q(database)}.` : '';
 
 		if (_type === 'function' || _type === 'procedure') {
+			// Bind the object name as a parameter so an object name containing a
+			// quote can't break out of the OBJECT_ID string literal.
+			const objectRef = `${dbPrefix}${Q(targetSchema)}.${Q(name)}`;
 			const res = await this.executeRead(`
-				SELECT definition 
-				FROM ${dbPrefix}sys.sql_modules 
-				WHERE object_id = OBJECT_ID(N'${dbPrefix}${Q(targetSchema)}.${Q(name)}')
-			`);
+				SELECT definition
+				FROM ${dbPrefix}sys.sql_modules
+				WHERE object_id = OBJECT_ID(@p0)
+			`, [objectRef]);
 			const definition = res.rows[0]?.definition ?? '';
 			return {
 				name,

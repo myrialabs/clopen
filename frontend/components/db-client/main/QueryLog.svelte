@@ -2,6 +2,7 @@
 	import { dbClientLog } from '$frontend/stores/features/db-client-log.svelte';
 	import { dbClientStore } from '$frontend/stores/features/db-client.svelte';
 	import Icon from '$frontend/components/common/display/Icon.svelte';
+	import { debug } from '$shared/utils/logger';
 	import { tick, onMount } from 'svelte';
 
 	interface Props {
@@ -24,7 +25,7 @@
 					dbClientLog.load(connectionId, logs);
 				}
 			} catch (e) {
-				console.error('Failed to load server logs:', e);
+				debug.error('db-client', 'Failed to load server logs:', e);
 			} finally {
 				loading = false;
 			}

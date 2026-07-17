@@ -28,7 +28,7 @@
         "marked": "16.4.2",
         "monaco-editor": "0.52.2",
         "mongodb": "7.2.0",
-        "mssql": "^12.7.0",
+        "mssql": "12.7.0",
         "nanoid": "5.1.6",
         "puppeteer": "24.38.0",
         "puppeteer-extra": "3.3.6",

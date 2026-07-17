@@ -42,8 +42,11 @@
 	const classification = $derived(classifyQuery(driver, queryText));
 
 	// Only SQL drivers split on `;`; Mongo/Redis payloads are always single.
+	// SQL Server additionally separates batch-sensitive DDL by blank lines.
 	const statements = $derived(
-		SQL_DRIVERS.includes(driver) ? splitSqlStatements(queryText) : [queryText.trim()].filter(Boolean)
+		SQL_DRIVERS.includes(driver)
+			? splitSqlStatements(queryText, { splitOnBlankLine: driver === 'mssql' })
+			: [queryText.trim()].filter(Boolean)
 	);
 	const isMultiStatement = $derived(statements.length > 1);
 	const batchHasDestructive = $derived(
@@ -130,7 +133,7 @@
 		if (!trimmedQuery) return;
 
 		const currentStatements = SQL_DRIVERS.includes(driver)
-			? splitSqlStatements(query)
+			? splitSqlStatements(query, { splitOnBlankLine: driver === 'mssql' })
 			: [trimmedQuery].filter(Boolean);
 
 		const currentIsMulti = currentStatements.length > 1;
