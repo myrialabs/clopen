@@ -445,16 +445,18 @@ export const interactPreviewHandler = createRouter()
 						break;
 
 					case 'scale-update':
-						// Handle scale update from frontend (hot-swap, no reconnection)
+						// Display fit-scale changed on the frontend (CSS-only concern).
+						// Capture stays at native viewport resolution — restart the
+						// screencast as a refresh so a stuck stream recovers (the
+						// frontend also uses this action as its refresh path).
 						if (action.scale && action.scale > 0 && action.scale <= 1) {
 							session.scale = action.scale;
-							debug.log('preview', `📐 Scale updated for tab ${tabId}: ${action.scale}`);
+							debug.log('preview', `📐 Scale updated for tab ${tabId}: ${action.scale} (display-only), refreshing screencast`);
 
-							// Hot-swap resolution without reconnection
-							const updated = await previewService.updateWebCodecsScale(session.id, action.scale);
+							const updated = await previewService.refreshWebCodecsScreencast(session.id);
 							if (!updated) {
-								debug.warn('preview', `⚠️ Hot-swap failed, falling back to restart`);
-								// Fallback: restart if hot-swap fails
+								debug.warn('preview', `⚠️ Screencast refresh failed, falling back to restart`);
+								// Fallback: restart if refresh fails
 								await previewService.stopWebCodecsStreaming(session.id);
 								await previewService.startWebCodecsStreaming(session.id);
 							}
@@ -468,10 +470,10 @@ export const interactPreviewHandler = createRouter()
 							if (action.deviceSize) session.deviceSize = action.deviceSize as any;
 							if (action.rotation) session.rotation = action.rotation as any;
 
-							debug.log('preview', `📱 Viewport updated for tab ${tabId}: ${action.width}x${action.height} (scale: ${action.scale})`);
+							debug.log('preview', `📱 Viewport updated for tab ${tabId}: ${action.width}x${action.height}`);
 
 							// Hot-swap viewport without reconnection
-							const updated = await previewService.updateWebCodecsViewport(session.id, action.width, action.height, action.scale);
+							const updated = await previewService.updateWebCodecsViewport(session.id, action.width, action.height);
 							if (!updated) {
 								debug.warn('preview', `⚠️ Viewport hot-swap failed`);
 							}

@@ -3,11 +3,15 @@
  *
  * Handles WebCodecs-based video streaming with WebRTC DataChannel transport.
  *
- * Video Architecture:
- * 1. CDP captures JPEG frames via Page.screencastFrame
+ * Video Architecture (Chrome-Remote-Desktop-style adaptive quality):
+ * 1. CDP captures JPEG frames via Page.screencastFrame at native viewport resolution
  * 2. Direct CDP Runtime.evaluate sends base64 to page (bypasses Puppeteer IPC)
- * 3. Page decodes JPEG via createImageBitmap, encodes with VP8 VideoEncoder
- * 4. Send encoded chunks via RTCDataChannel
+ * 3. Page decodes via createImageBitmap, encodes with VideoEncoder —
+ *    preferred VP9 quantizer mode (cheap during motion), VP8 bitrate fallback
+ * 4. When the page goes still, a lossless PNG screenshot is pushed through the
+ *    encoder near-losslessly (top-off) so text sharpens after motion stops
+ * 5. Send encoded chunks via reliable ordered RTCDataChannel; latency is
+ *    bounded by source-side frame dropping (bufferedAmount backpressure)
  *
  * Audio Architecture:
  * 1. AudioContext interception (handled by BrowserAudioCapture)
@@ -43,6 +47,7 @@ interface VideoStreamSession {
 	scriptInjected: boolean; // Track if persistent script was injected
 	scriptsPreInjected: boolean; // Track if scripts were pre-injected during tab creation
 	audioOnNewDocumentInjected: boolean; // Track if evaluateOnNewDocument was registered for audio
+	allowVp9: boolean; // Client decode capability (negotiated at stream start)
 	stats: {
 		videoBytesSent: number;
 		audioBytesSent: number;
@@ -52,7 +57,31 @@ interface VideoStreamSession {
 	};
 }
 
+/**
+ * Scale encoder bitrate with capture resolution to keep bits-per-pixel
+ * constant. Capture always runs at native viewport size (display fit-scale
+ * is a CSS-only concern on the frontend), so a fixed bitrate would starve
+ * larger viewports during motion.
+ * 0.045 bpp at 1280×800@24fps ≈ 1.1 Mbps (comparable to the previous fixed 1 Mbps).
+ */
+const BITS_PER_PIXEL = 0.045;
+
+function computeBitrate(width: number, height: number, framerate: number): number {
+	return Math.max(
+		DEFAULT_STREAMING_CONFIG.video.bitrate,
+		Math.round(width * height * framerate * BITS_PER_PIXEL)
+	);
+}
+
 export class BrowserVideoCapture extends EventEmitter {
+	/**
+	 * How long the screencast must be silent (no damage → no frames) before
+	 * the page is considered still and a near-lossless top-off frame is sent.
+	 * Long enough to skip inter-frame gaps of animations, short enough that
+	 * text sharpens almost immediately after scrolling stops.
+	 */
+	private static readonly TOP_OFF_DELAY_MS = 300;
+
 	private sessions = new Map<string, VideoStreamSession>();
 	private preInjectPromises = new Map<string, Promise<boolean>>();
 
@@ -78,15 +107,15 @@ export class BrowserVideoCapture extends EventEmitter {
 			const page = session.page;
 			const viewport = page.viewport()!;
 			const config = DEFAULT_STREAMING_CONFIG;
-			const scale = session.scale || 1;
 
-			const scaledWidth = Math.round(viewport.width * scale);
-			const scaledHeight = Math.round(viewport.height * scale);
-
+			// Capture at native viewport resolution. Capturing below viewport
+			// size (old behavior: viewport × display fit-scale) forced the
+			// client to upscale frames, which made the preview blurry.
 			const videoConfig: StreamingConfig['video'] = {
 				...config.video,
-				width: scaledWidth,
-				height: scaledHeight
+				width: viewport.width,
+				height: viewport.height,
+				bitrate: computeBitrate(viewport.width, viewport.height, config.video.framerate)
 			};
 
 			// Create session tracking
@@ -99,6 +128,7 @@ export class BrowserVideoCapture extends EventEmitter {
 				scriptInjected: true,
 				scriptsPreInjected: false, // Set to true only after injection completes
 				audioOnNewDocumentInjected: false,
+				allowVp9: true,
 				stats: {
 					videoBytesSent: 0,
 					audioBytesSent: 0,
@@ -184,9 +214,10 @@ export class BrowserVideoCapture extends EventEmitter {
 	async startStreaming(
 		sessionId: string,
 		session: BrowserTab,
-		isValidSession: () => boolean
+		isValidSession: () => boolean,
+		allowVp9 = true
 	): Promise<boolean> {
-		debug.log('webcodecs', `Starting streaming for session ${sessionId}`);
+		debug.log('webcodecs', `Starting streaming for session ${sessionId} (client vp9: ${allowVp9})`);
 
 		// Wait for any pending pre-injection to complete
 		const pendingPreInject = this.preInjectPromises.get(sessionId);
@@ -214,10 +245,6 @@ export class BrowserVideoCapture extends EventEmitter {
 			const viewport = page.viewport()!;
 			const config = DEFAULT_STREAMING_CONFIG;
 
-			// Get scale from session (default to 1 if not set)
-			const scale = session.scale || 1;
-			debug.log('webcodecs', `Using scale: ${scale} for session ${sessionId}`);
-
 			// Get or create session tracking
 			let videoSession = this.sessions.get(sessionId);
 			const isRestart = !!videoSession;
@@ -232,6 +259,7 @@ export class BrowserVideoCapture extends EventEmitter {
 					scriptInjected: false,
 					scriptsPreInjected: false,
 					audioOnNewDocumentInjected: false,
+					allowVp9,
 					stats: {
 						videoBytesSent: 0,
 						audioBytesSent: 0,
@@ -241,16 +269,16 @@ export class BrowserVideoCapture extends EventEmitter {
 					}
 				};
 				this.sessions.set(sessionId, videoSession);
+			} else {
+				videoSession.allowVp9 = allowVp9;
 			}
 
-			// Calculate scaled dimensions
-			const scaledWidth = Math.round(viewport.width * scale);
-			const scaledHeight = Math.round(viewport.height * scale);
-
+			// Capture at native viewport resolution (see doPreInject)
 			const videoConfig: StreamingConfig['video'] = {
 				...config.video,
-				width: scaledWidth,
-				height: scaledHeight
+				width: viewport.width,
+				height: viewport.height,
+				bitrate: computeBitrate(viewport.width, viewport.height, config.video.framerate)
 			};
 
 			// Skip script injection if already pre-injected during tab creation
@@ -263,13 +291,13 @@ export class BrowserVideoCapture extends EventEmitter {
 
 			// Single batched call: verify peer + start streaming + init audio
 			// (saves ~60ms of IPC overhead vs 4 separate page.evaluate calls)
-			const initResult = await page.evaluate(async () => {
+			const initResult = await page.evaluate(async (clientAllowsVp9) => {
 				const peer = (window as any).__webCodecsPeer;
 				if (typeof peer?.startStreaming !== 'function') {
 					return { peerExists: false, started: false, audioInitialized: false };
 				}
 
-				const started = await peer.startStreaming();
+				const started = await peer.startStreaming(clientAllowsVp9);
 				if (!started) {
 					return { peerExists: true, started: false, audioInitialized: false };
 				}
@@ -287,7 +315,7 @@ export class BrowserVideoCapture extends EventEmitter {
 				}
 
 				return { peerExists: true, started: true, audioInitialized };
-			});
+			}, allowVp9);
 
 			if (!initResult.peerExists) {
 				debug.error('webcodecs', `Peer script injected but __webCodecsPeer not available`);
@@ -335,12 +363,72 @@ export class BrowserVideoCapture extends EventEmitter {
 		const page = session.page;
 		const viewport = page.viewport()!;
 
-		// Get scale from session (default to 1 if not set)
-		const scale = session.scale || 1;
-
 		const cdp = await page.createCDPSession();
 
 		let cdpFrameCount = 0;
+
+		// Rate-limit encoding to the configured framerate. CDP screencast fires
+		// at compositor rate (up to 60fps) — encoding every frame wastes CPU on
+		// the host and bandwidth on the wire without visible benefit.
+		//
+		// Trailing edge matters: the LAST frame of a burst must always be
+		// encoded. Plain dropping left a stale frame on screen until the
+		// top-off fired (~300ms later), which felt like input lag on every
+		// click/keystroke.
+		const minFrameIntervalMs = Math.floor(1000 / config.video.framerate);
+		let lastEncodeTime = 0;
+		let pendingFrameData: string | null = null;
+		let pendingFrameTimer: ReturnType<typeof setTimeout> | null = null;
+
+		const encodeMotionFrame = (frameData: string) => {
+			lastEncodeTime = Date.now();
+			// Send frame to encoder via direct CDP (bypasses Puppeteer's
+			// ExecutionContext lookup, function serialization, Runtime.callFunctionOn
+			// overhead, and result deserialization). Base64 charset [A-Za-z0-9+/=]
+			// is safe to embed in a JS double-quoted string literal.
+			cdp.send('Runtime.evaluate', {
+				expression: `window.__webCodecsPeer?.encodeFrame("${frameData}")`,
+				awaitPromise: false,
+				returnByValue: false
+			}).catch(() => {});
+		};
+
+		// Static top-off (Chrome-Remote-Desktop-style): screencastFrame only
+		// fires on damage, so when no frame arrives for TOP_OFF_DELAY_MS the
+		// page has gone still. Capture one lossless PNG screenshot and encode
+		// it near-losslessly so the last (motion-degraded) frame doesn't stay
+		// blurry on screen. One frame per still period — idle costs nothing.
+		let topOffTimer: ReturnType<typeof setTimeout> | null = null;
+		let capturingTopOff = false;
+
+		const scheduleTopOff = () => {
+			if (topOffTimer) clearTimeout(topOffTimer);
+			topOffTimer = setTimeout(async () => {
+				topOffTimer = null;
+				const videoSession = this.sessions.get(sessionId);
+				if (!videoSession?.isActive || session.isDestroyed || capturingTopOff) return;
+
+				capturingTopOff = true;
+				const frameCountAtCapture = cdpFrameCount;
+				try {
+					const screenshot = await cdp.send('Page.captureScreenshot', { format: 'png' });
+
+					// Discard if the page moved again while capturing —
+					// new screencast frames already rescheduled the top-off
+					if (cdpFrameCount !== frameCountAtCapture) return;
+
+					cdp.send('Runtime.evaluate', {
+						expression: `window.__webCodecsPeer?.encodeFrame("${screenshot.data}", true)`,
+						awaitPromise: false,
+						returnByValue: false
+					}).catch(() => {});
+				} catch {
+					// Page may be navigating/closing — top-off is best-effort
+				} finally {
+					capturingTopOff = false;
+				}
+			}, BrowserVideoCapture.TOP_OFF_DELAY_MS);
+		};
 
 		cdp.on('Page.screencastFrame', async (event: any) => {
 			cdpFrameCount++;
@@ -359,31 +447,60 @@ export class BrowserVideoCapture extends EventEmitter {
 			// ACK immediately
 			cdp.send('Page.screencastFrameAck', { sessionId: event.sessionId }).catch(() => {});
 
-			// Send frame to encoder via direct CDP (bypasses Puppeteer's
-			// ExecutionContext lookup, function serialization, Runtime.callFunctionOn
-			// overhead, and result deserialization). Base64 charset [A-Za-z0-9+/=]
-			// is safe to embed in a JS double-quoted string literal.
-			cdp.send('Runtime.evaluate', {
-				expression: `window.__webCodecsPeer?.encodeFrame("${event.data}")`,
-				awaitPromise: false,
-				returnByValue: false
-			}).catch(() => {});
+			const now = Date.now();
+			const elapsed = now - lastEncodeTime;
+
+			if (elapsed < minFrameIntervalMs) {
+				// Too soon — hold the LATEST frame and encode it when the slot
+				// opens (trailing edge). Newer frames overwrite the pending one.
+				pendingFrameData = event.data;
+				if (!pendingFrameTimer) {
+					pendingFrameTimer = setTimeout(() => {
+						pendingFrameTimer = null;
+						if (!pendingFrameData) return;
+						const frameData = pendingFrameData;
+						pendingFrameData = null;
+
+						const vs = this.sessions.get(sessionId);
+						if (!vs?.isActive || session.isDestroyed) return;
+
+						encodeMotionFrame(frameData);
+						scheduleTopOff();
+					}, minFrameIntervalMs - elapsed);
+				}
+				scheduleTopOff();
+				return;
+			}
+
+			// This frame supersedes any pending trailing frame
+			pendingFrameData = null;
+
+			encodeMotionFrame(event.data);
+			scheduleTopOff();
 		});
 
-		// Start screencast with scaled dimensions
-		const scaledWidth = Math.round(viewport.width * scale);
-		const scaledHeight = Math.round(viewport.height * scale);
-
+		// Start screencast at native viewport resolution
 		await cdp.send('Page.startScreencast', {
 			format: 'jpeg',
 			quality: config.video.screenshotQuality,
-			maxWidth: scaledWidth,
-			maxHeight: scaledHeight,
+			maxWidth: viewport.width,
+			maxHeight: viewport.height,
 			everyNthFrame: 1
 		});
 
-		debug.log('webcodecs', `CDP screencast started with scaled dimensions: ${scaledWidth}x${scaledHeight} (scale: ${scale})`);
+		debug.log('webcodecs', `CDP screencast started at ${viewport.width}x${viewport.height}`);
 		(session as any).__webCodecsCdp = cdp;
+		(session as any).__webCodecsTopOffCancel = () => {
+			if (topOffTimer) {
+				clearTimeout(topOffTimer);
+				topOffTimer = null;
+			}
+			if (pendingFrameTimer) {
+				clearTimeout(pendingFrameTimer);
+				pendingFrameTimer = null;
+			}
+			pendingFrameData = null;
+		};
 	}
 
 	/**
@@ -488,9 +605,9 @@ export class BrowserVideoCapture extends EventEmitter {
 	}
 
 	/**
-	 * Update viewport and scale without reconnection (hot-swap)
+	 * Update viewport without reconnection (hot-swap)
 	 */
-	async updateViewport(sessionId: string, session: BrowserTab, width: number, height: number, newScale: number): Promise<boolean> {
+	async updateViewport(sessionId: string, session: BrowserTab, width: number, height: number): Promise<boolean> {
 		const videoSession = this.sessions.get(sessionId);
 		if (!videoSession?.isActive || !session.page || session.page.isClosed()) {
 			debug.warn('webcodecs', `Cannot update viewport: session not active`);
@@ -501,21 +618,18 @@ export class BrowserVideoCapture extends EventEmitter {
 			const page = session.page;
 			const config = DEFAULT_STREAMING_CONFIG;
 
-			// Calculate scaled dimensions
-			const scaledWidth = Math.round(width * newScale);
-			const scaledHeight = Math.round(height * newScale);
-
-			debug.log('webcodecs', `🔄 Hot-swapping viewport to ${width}x${height} (scaled: ${scaledWidth}x${scaledHeight}, scale: ${newScale})`);
+			debug.log('webcodecs', `🔄 Hot-swapping viewport to ${width}x${height}`);
 
 			// Step 1: Update viewport via CDP (without page reload)
 			await page.setViewport({ width, height });
 
-			// Step 2: Reconfigure VideoEncoder with scaled dimensions
-			const reconfigured = await page.evaluate((dimensions) => {
+			// Step 2: Reconfigure VideoEncoder with new dimensions and bitrate
+			const bitrate = computeBitrate(width, height, config.video.framerate);
+			const reconfigured = await page.evaluate((params) => {
 				const peer = (window as any).__webCodecsPeer;
 				if (!peer || !peer.reconfigureEncoder) return false;
-				return peer.reconfigureEncoder(dimensions.width, dimensions.height);
-			}, { width: scaledWidth, height: scaledHeight });
+				return peer.reconfigureEncoder(params.width, params.height, params.bitrate);
+			}, { width, height, bitrate });
 
 			if (!reconfigured) {
 				debug.error('webcodecs', `Failed to reconfigure encoder`);
@@ -529,12 +643,12 @@ export class BrowserVideoCapture extends EventEmitter {
 				await cdp.send('Page.startScreencast', {
 					format: 'jpeg',
 					quality: config.video.screenshotQuality,
-					maxWidth: scaledWidth,
-					maxHeight: scaledHeight,
+					maxWidth: width,
+					maxHeight: height,
 					everyNthFrame: 1
 				});
 
-				debug.log('webcodecs', `✅ Viewport hot-swapped successfully to ${width}x${height} (scale: ${newScale})`);
+				debug.log('webcodecs', `✅ Viewport hot-swapped successfully to ${width}x${height}`);
 			}
 
 			return true;
@@ -545,12 +659,15 @@ export class BrowserVideoCapture extends EventEmitter {
 	}
 
 	/**
-	 * Update scale without reconnection (hot-swap)
+	 * Restart the CDP screencast at native viewport resolution.
+	 * Used as a refresh/recovery path when the frontend detects a stuck stream
+	 * (sent as a scale-update action). Display fit-scale no longer affects
+	 * capture resolution, so no encoder reconfiguration is needed.
 	 */
-	async updateScale(sessionId: string, session: BrowserTab, newScale: number): Promise<boolean> {
+	async refreshScreencast(sessionId: string, session: BrowserTab): Promise<boolean> {
 		const videoSession = this.sessions.get(sessionId);
 		if (!videoSession?.isActive || !session.page || session.page.isClosed()) {
-			debug.warn('webcodecs', `Cannot update scale: session not active`);
+			debug.warn('webcodecs', `Cannot refresh screencast: session not active`);
 			return false;
 		}
 
@@ -559,45 +676,59 @@ export class BrowserVideoCapture extends EventEmitter {
 			const viewport = page.viewport()!;
 			const config = DEFAULT_STREAMING_CONFIG;
 
-			// Calculate new scaled dimensions
-			const scaledWidth = Math.round(viewport.width * newScale);
-			const scaledHeight = Math.round(viewport.height * newScale);
-
-			debug.log('webcodecs', `🔄 Hot-swapping resolution to ${scaledWidth}x${scaledHeight} (scale: ${newScale})`);
-
-			// Step 1: Reconfigure VideoEncoder in headless browser
-			const reconfigured = await page.evaluate((dimensions) => {
-				const peer = (window as any).__webCodecsPeer;
-				if (!peer || !peer.reconfigureEncoder) return false;
-				return peer.reconfigureEncoder(dimensions.width, dimensions.height);
-			}, { width: scaledWidth, height: scaledHeight });
-
-			if (!reconfigured) {
-				debug.error('webcodecs', `Failed to reconfigure encoder`);
-				return false;
-			}
-
-			// Step 2: Restart CDP screencast with new dimensions
 			const cdp = (session as any).__webCodecsCdp;
 			if (cdp) {
-				// Stop current screencast
 				await cdp.send('Page.stopScreencast').catch(() => {});
-
-				// Start with new dimensions
 				await cdp.send('Page.startScreencast', {
 					format: 'jpeg',
 					quality: config.video.screenshotQuality,
-					maxWidth: scaledWidth,
-					maxHeight: scaledHeight,
+					maxWidth: viewport.width,
+					maxHeight: viewport.height,
 					everyNthFrame: 1
 				});
 
-				debug.log('webcodecs', `✅ Scale hot-swapped successfully to ${scaledWidth}x${scaledHeight}`);
+				debug.log('webcodecs', `✅ Screencast refreshed at ${viewport.width}x${viewport.height}`);
 			}
 
 			return true;
 		} catch (error) {
-			debug.error('webcodecs', `Failed to update scale:`, error);
+			debug.error('webcodecs', `Failed to refresh screencast:`, error);
+			return false;
+		}
+	}
+
+	/**
+	 * Client-driven keyframe request (PLI equivalent).
+	 * Forces the next encoded frame to be a keyframe AND immediately pushes a
+	 * high-quality screenshot through the encoder — so it works even on still
+	 * pages where no screencast frames are flowing. Called when the frontend
+	 * decoder errors or joins mid-stream and needs a sync point.
+	 */
+	async requestKeyframe(sessionId: string, session: BrowserTab): Promise<boolean> {
+		const videoSession = this.sessions.get(sessionId);
+		if (!videoSession?.isActive || !session.page || session.page.isClosed()) {
+			return false;
+		}
+
+		try {
+			await session.page.evaluate(() => {
+				(window as any).__webCodecsPeer?.forceKeyframe();
+			});
+
+			const cdp = (session as any).__webCodecsCdp;
+			if (cdp) {
+				const screenshot = await cdp.send('Page.captureScreenshot', { format: 'png' });
+				cdp.send('Runtime.evaluate', {
+					expression: `window.__webCodecsPeer?.encodeFrame("${screenshot.data}", true)`,
+					awaitPromise: false,
+					returnByValue: false
+				}).catch(() => {});
+			}
+
+			debug.log('webcodecs', `Keyframe requested for ${sessionId}`);
+			return true;
+		} catch (error) {
+			debug.warn('webcodecs', `Failed to request keyframe:`, error);
 			return false;
 		}
 	}
@@ -617,18 +748,15 @@ export class BrowserVideoCapture extends EventEmitter {
 			const page = session.page;
 			const viewport = page.viewport()!;
 			const config = DEFAULT_STREAMING_CONFIG;
-			const scale = session.scale || 1;
 
 			debug.log('webcodecs', `🔄 Handling navigation for ${sessionId} - re-injecting peer script and restarting screencast`);
 
-			// Calculate scaled dimensions
-			const scaledWidth = Math.round(viewport.width * scale);
-			const scaledHeight = Math.round(viewport.height * scale);
-
+			// Capture at native viewport resolution (see doPreInject)
 			const videoConfig: StreamingConfig['video'] = {
 				...config.video,
-				width: scaledWidth,
-				height: scaledHeight
+				width: viewport.width,
+				height: viewport.height,
+				bitrate: computeBitrate(viewport.width, viewport.height, config.video.framerate)
 			};
 
 			// Re-inject video encoder and audio capture scripts to new page context
@@ -636,13 +764,13 @@ export class BrowserVideoCapture extends EventEmitter {
 			await page.evaluate(audioCaptureScript, config.audio);
 
 			// Single batched call: verify peer + start streaming + init audio
-			const initResult = await page.evaluate(async () => {
+			const initResult = await page.evaluate(async (clientAllowsVp9) => {
 				const peer = (window as any).__webCodecsPeer;
 				if (typeof peer?.startStreaming !== 'function') {
 					return { peerExists: false, started: false, audioInitialized: false };
 				}
 
-				const started = await peer.startStreaming();
+				const started = await peer.startStreaming(clientAllowsVp9);
 				if (!started) {
 					return { peerExists: true, started: false, audioInitialized: false };
 				}
@@ -659,7 +787,7 @@ export class BrowserVideoCapture extends EventEmitter {
 				}
 
 				return { peerExists: true, started: true, audioInitialized };
-			});
+			}, videoSession.allowVp9);
 
 			if (!initResult.peerExists) {
 				debug.error('webcodecs', `Peer script re-injection failed - peer not available`);
@@ -687,12 +815,12 @@ export class BrowserVideoCapture extends EventEmitter {
 				await cdp.send('Page.startScreencast', {
 					format: 'jpeg',
 					quality: config.video.screenshotQuality,
-					maxWidth: scaledWidth,
-					maxHeight: scaledHeight,
+					maxWidth: viewport.width,
+					maxHeight: viewport.height,
 					everyNthFrame: 1
 				});
 
-				debug.log('webcodecs', `✅ Navigation handled - screencast restarted at ${scaledWidth}x${scaledHeight}`);
+				debug.log('webcodecs', `✅ Navigation handled - screencast restarted at ${viewport.width}x${viewport.height}`);
 			}
 
 			// Emit event to notify frontend that streaming is ready
@@ -718,6 +846,10 @@ export class BrowserVideoCapture extends EventEmitter {
 
 		if (session?.page && !session.page.isClosed()) {
 			try {
+				// Cancel any pending top-off capture
+				(session as any).__webCodecsTopOffCancel?.();
+				(session as any).__webCodecsTopOffCancel = null;
+
 				// Stop audio + peer in one IPC round-trip
 				await session.page.evaluate(() => {
 					(window as any).__audioEncoder?.stop();

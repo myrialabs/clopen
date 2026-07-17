@@ -17,7 +17,10 @@ export const streamPreviewHandler = createRouter()
 		'preview:browser-stream-start',
 		{
 			data: t.Object({
-				tabId: t.Optional(t.String())
+				tabId: t.Optional(t.String()),
+				// Client VP9 decode capability — encoder prefers VP9 quantizer
+				// mode but must fall back to VP8 if the viewer can't decode it
+				vp9: t.Optional(t.Boolean())
 			}),
 			response: t.Object({
 				success: t.Boolean(),
@@ -41,7 +44,7 @@ export const streamPreviewHandler = createRouter()
 			}
 
 			// Start WebCodecs streaming
-			const started = await previewService.startWebCodecsStreaming(sessionId);
+			const started = await previewService.startWebCodecsStreaming(sessionId, data.vp9 !== false);
 
 			if (!started) {
 				throw new Error('Failed to start WebCodecs streaming');
@@ -143,6 +146,27 @@ export const streamPreviewHandler = createRouter()
 
 			const { candidate } = data;
 			const success = await previewService.addWebCodecsIceCandidate(tab.id, candidate as RTCIceCandidateInit);
+
+			return { success };
+		}
+	)
+
+	// Client-driven keyframe request (PLI equivalent) — sent when the client
+	// decoder errors or joins mid-stream and needs a sync point
+	.http(
+		'preview:browser-stream-keyframe',
+		{
+			data: t.Object({
+				tabId: t.Optional(t.String())
+			}),
+			response: t.Object({
+				success: t.Boolean()
+			})
+		},
+		async ({ data, conn }) => {
+			const { previewService, tab } = requireBrowserTabAccess(conn, data.tabId);
+
+			const success = await previewService.requestWebCodecsKeyframe(tab.id);
 
 			return { success };
 		}

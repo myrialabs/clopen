@@ -99,7 +99,7 @@ function handleAgentTool(
 }
 
 // Process sub-agent messages into a flat activity list
-function processSubAgentMessages(messages: FrontendMessage[]): SubAgentActivity[] {
+export function processSubAgentMessages(messages: FrontendMessage[]): SubAgentActivity[] {
   const activities: SubAgentActivity[] = [];
   const toolResultMap = new Map<string, ToolResult>();
 
