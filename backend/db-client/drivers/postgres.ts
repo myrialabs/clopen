@@ -284,11 +284,18 @@ export class PostgresAdapter implements DbClientDriverAdapter {
 			[target] as never
 		)) as Array<{ table_name: string; table_type: string }>;
 
+		// Query pg_proc directly (not information_schema.routines) so we can filter
+		// on prokind: keep plain functions ('f') and procedures ('p'), but exclude
+		// aggregates ('a') and window functions ('w') — those (e.g. avg/sum) have no
+		// pg_get_functiondef and would error when their DDL is opened.
 		const routines = (await this.requireSql().unsafe(
-			`SELECT routine_name, routine_type FROM information_schema.routines
-			 WHERE routine_schema = $1 ORDER BY routine_name`,
+			`SELECT p.proname AS routine_name, p.prokind
+			 FROM pg_proc p
+			 JOIN pg_namespace n ON p.pronamespace = n.oid
+			 WHERE n.nspname = $1 AND p.prokind IN ('f', 'p')
+			 ORDER BY p.proname`,
 			[target] as never
-		)) as Array<{ routine_name: string; routine_type: string }>;
+		)) as Array<{ routine_name: string; prokind: string }>;
 
 		const tableNodes = tables.map((r) => ({
 			name: r.table_name,
@@ -296,19 +303,19 @@ export class PostgresAdapter implements DbClientDriverAdapter {
 		}));
 
 		// Overloaded functions (e.g. the `citext` extension) appear once per
-		// signature in information_schema.routines. Collapse to one node per name
-		// since the tree browses and fetches routine details by name alone.
+		// signature. Collapse to one node per name since the tree browses and
+		// fetches routine details by name alone.
 		const seenRoutines = new Set<string>();
 		const routineNodes = routines
 			.filter((r) => {
-				const key = `${r.routine_type}:${r.routine_name}`;
+				const key = `${r.prokind}:${r.routine_name}`;
 				if (seenRoutines.has(key)) return false;
 				seenRoutines.add(key);
 				return true;
 			})
 			.map((r) => ({
 				name: r.routine_name,
-				type: r.routine_type === 'FUNCTION' ? ('function' as const) : ('procedure' as const)
+				type: r.prokind === 'p' ? ('procedure' as const) : ('function' as const)
 			}));
 
 		return [...tableNodes, ...routineNodes];

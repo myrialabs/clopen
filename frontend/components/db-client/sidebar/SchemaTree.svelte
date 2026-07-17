@@ -466,27 +466,28 @@
 			{/if}
 		{:else if !error}
 			<!-- Schema Objects Section -->
-			<div class="flex items-center justify-between px-2.5 py-1.5 text-2xs font-bold text-slate-400 dark:text-slate-500 uppercase tracking-wider select-none border-b border-slate-100 dark:border-slate-800/60 mb-1">
-				<button
-					type="button"
-					class="flex items-center gap-1 hover:text-slate-600 dark:hover:text-slate-350 cursor-pointer select-none font-bold uppercase tracking-wider text-2xs text-slate-400 dark:text-slate-500"
-					onclick={() => isObjectsExpanded = !isObjectsExpanded}
-				>
-					<Icon name={isObjectsExpanded ? 'lucide:chevron-down' : 'lucide:chevron-right'} class="w-3 h-3 text-slate-400" />
-					<span>
-						{#if hasMultipleFolders}
-							Schema Objects
-						{:else if driver === 'mongodb'}
-							Collections ({rawTables.length})
-						{:else if driver === 'redis'}
-							Keys ({rawTables.length})
-						{:else}
-							Tables ({rawTables.length})
-						{/if}
-					</span>
-				</button>
-				<div class="flex items-center gap-1">
-					{#if !hasMultipleFolders}
+			<!-- With multiple folders (tables/views/functions/procedures) the folders
+			     are themselves accordions, so we skip the outer wrapper to avoid an
+			     accordion-in-accordion and render the folders directly. -->
+			{#if !hasMultipleFolders}
+				<div class="flex items-center justify-between px-2.5 py-1.5 text-2xs font-bold text-slate-400 dark:text-slate-500 uppercase tracking-wider select-none border-b border-slate-100 dark:border-slate-800/60 mb-1">
+					<button
+						type="button"
+						class="flex items-center gap-1 hover:text-slate-600 dark:hover:text-slate-350 cursor-pointer select-none font-bold uppercase tracking-wider text-2xs text-slate-400 dark:text-slate-500"
+						onclick={() => isObjectsExpanded = !isObjectsExpanded}
+					>
+						<Icon name={isObjectsExpanded ? 'lucide:chevron-down' : 'lucide:chevron-right'} class="w-3 h-3 text-slate-400" />
+						<span>
+							{#if driver === 'mongodb'}
+								Collections ({rawTables.length})
+							{:else if driver === 'redis'}
+								Keys ({rawTables.length})
+							{:else}
+								Tables ({rawTables.length})
+							{/if}
+						</span>
+					</button>
+					<div class="flex items-center gap-1">
 						<button
 							type="button"
 							class="flex items-center justify-center w-5 h-5 rounded hover:bg-slate-200 dark:hover:bg-slate-800 text-slate-500 hover:text-slate-700 dark:hover:text-slate-300 transition-colors cursor-pointer"
@@ -509,11 +510,11 @@
 								<Icon name="lucide:plus" class="w-3.5 h-3.5" />
 							</button>
 						{/if}
-					{/if}
+					</div>
 				</div>
-			</div>
+			{/if}
 
-			{#if isObjectsExpanded}
+			{#if hasMultipleFolders || isObjectsExpanded}
 				{#if isObjectSearchOpen}
 					<div class="px-2 py-1 mb-1.5 shrink-0">
 						<div class="flex items-center gap-2 px-2.5 py-1 bg-slate-100/80 dark:bg-slate-800/60 rounded-md">
