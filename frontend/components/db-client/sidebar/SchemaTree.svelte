@@ -224,7 +224,8 @@
 		procedures: false
 	});
 
-	// Raw (unfiltered) lists by type
+	// Raw (unfiltered) lists by type. The store dedupes (type, name) pairs so
+	// keyed {#each} blocks below never see duplicate names.
 	const rawTables = $derived(objects.filter((n) => n.type === 'table' || n.type === 'collection'));
 	const rawViews = $derived(objects.filter((n) => n.type === 'view'));
 	const rawFunctions = $derived(objects.filter((n) => n.type === 'function'));

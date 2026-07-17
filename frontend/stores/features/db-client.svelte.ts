@@ -18,6 +18,19 @@ import type {
 
 export type DbClientView = 'overview' | 'query' | 'data' | 'structure' | 'log' | 'er';
 
+/** Drop duplicate (type, name) schema nodes, keeping the first occurrence.
+ *  Guards keyed {#each} consumers against duplicate names (e.g. overloaded
+ *  SQL functions that share one name across signatures). */
+function dedupeSchemaNodes(nodes: DbClientSchemaNode[]): DbClientSchemaNode[] {
+	const seen = new Set<string>();
+	return nodes.filter((n) => {
+		const key = `${n.type}:${n.name}`;
+		if (seen.has(key)) return false;
+		seen.add(key);
+		return true;
+	});
+}
+
 /** A single data-grid filter condition, carried with the active object so
  *  foreign-key navigation survives back/forward history. */
 export interface DbClientDataFilter {
@@ -574,7 +587,7 @@ export const dbClientStore = {
 
 	async listDatabases(connId: string): Promise<DbClientSchemaNode[]> {
 		const result = (await ws.http('db-client:list-databases', { connectionId: connId })) as DbClientSchemaNode[];
-		return result;
+		return dedupeSchemaNodes(result);
 	},
 
 	async listObjects(connId: string, opts?: { database?: string; schema?: string }): Promise<DbClientSchemaNode[]> {
@@ -583,10 +596,14 @@ export const dbClientStore = {
 			database: opts?.database,
 			schema: opts?.schema
 		})) as DbClientSchemaNode[];
+		// Collapse duplicate (type, name) pairs — e.g. overloaded SQL functions
+		// that share one name — so the keyed {#each} blocks rendering this list
+		// (sidebar tree, export picker) never hit a duplicate-key crash.
+		const deduped = dedupeSchemaNodes(result);
 		// Reassign the container (not just the key) so cross-component $derived
 		// consumers re-run even when refreshed externally (e.g. after a drop).
-		state.schema = { ...state.schema, [connId]: result };
-		return result;
+		state.schema = { ...state.schema, [connId]: deduped };
+		return deduped;
 	},
 
 	async refreshSchema(connId: string, opts?: { database?: string; schema?: string }): Promise<DbClientSchemaNode[]> {

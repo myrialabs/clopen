@@ -295,10 +295,21 @@ export class PostgresAdapter implements DbClientDriverAdapter {
 			type: r.table_type === 'VIEW' ? ('view' as const) : ('table' as const)
 		}));
 
-		const routineNodes = routines.map((r) => ({
-			name: r.routine_name,
-			type: r.routine_type === 'FUNCTION' ? ('function' as const) : ('procedure' as const)
-		}));
+		// Overloaded functions (e.g. the `citext` extension) appear once per
+		// signature in information_schema.routines. Collapse to one node per name
+		// since the tree browses and fetches routine details by name alone.
+		const seenRoutines = new Set<string>();
+		const routineNodes = routines
+			.filter((r) => {
+				const key = `${r.routine_type}:${r.routine_name}`;
+				if (seenRoutines.has(key)) return false;
+				seenRoutines.add(key);
+				return true;
+			})
+			.map((r) => ({
+				name: r.routine_name,
+				type: r.routine_type === 'FUNCTION' ? ('function' as const) : ('procedure' as const)
+			}));
 
 		return [...tableNodes, ...routineNodes];
 	}
