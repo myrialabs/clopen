@@ -24,6 +24,7 @@ import type {
 	TableDefinition
 } from './types';
 import { normalizeBunSqlResult } from './bun-sql-helpers';
+import { BUN_SQL_POOL_OPTIONS } from '../pool-config';
 import {
 	assertSafeIdentifier,
 	buildDelete,
@@ -80,7 +81,7 @@ export class PostgresAdapter implements DbClientDriverAdapter {
 	async connect(conn: DbClientConnection, tunnelPort?: number): Promise<void> {
 		const url = this.buildUrl(conn, tunnelPort);
 
-		this.sql = new SQL(url);
+		this.sql = new SQL(url, BUN_SQL_POOL_OPTIONS);
 		await this.sql.connect();
 		this.hasConfiguredDb = !!conn.database;
 		this.homeDb = conn.database || 'postgres';
@@ -105,7 +106,7 @@ export class PostgresAdapter implements DbClientDriverAdapter {
 			if (target === this.defaultDb) return;
 			const newConn = { ...this.conn, database: target };
 			const url = this.buildUrl(newConn, this.tunnelPort);
-			const next = new SQL(url);
+			const next = new SQL(url, BUN_SQL_POOL_OPTIONS);
 			await next.connect();
 			const prevSql = this.sql;
 			this.sql = next;

@@ -6,6 +6,7 @@
 	import RowForm from '../shared/RowForm.svelte';
 	import Checkbox from '../shared/Checkbox.svelte';
 	import NullValue from '../shared/NullValue.svelte';
+	import PanelLoader from '../shared/PanelLoader.svelte';
 	import { dbClientStore } from '$frontend/stores/features/db-client.svelte';
 	import { debug } from '$shared/utils/logger';
 	import { buildXlsx, downloadFile, toCsv, toTsv } from './export-utils';
@@ -996,7 +997,7 @@
 				</tbody>
 			</table>
 		{:else if loading}
-			<div class="p-4 text-sm text-slate-400">Loading…</div>
+			<PanelLoader />
 		{/if}
 	</div>
 </div>

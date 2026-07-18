@@ -14,6 +14,7 @@
 	import TableDesigner from './TableDesigner.svelte';
 	import ColumnEditor from './ColumnEditor.svelte';
 	import IndexForm from './IndexForm.svelte';
+	import PanelLoader from '../shared/PanelLoader.svelte';
 	import MonacoCodeEditor from '$frontend/components/common/editor/MonacoCodeEditor.svelte';
 	import { dbClientStore } from '$frontend/stores/features/db-client.svelte';
 	import { debug } from '$shared/utils/logger';
@@ -432,9 +433,7 @@
 
 	<div class="flex-1 min-h-0 flex flex-col p-4 space-y-5">
 		{#if loading && !details}
-			<div class="min-h-[220px] flex items-center justify-center text-slate-400 dark:text-slate-600">
-				<Icon name="lucide:loader" class="w-5 h-5 animate-spin" />
-			</div>
+			<PanelLoader />
 		{:else}
 			<div class="grid grid-cols-2 md:grid-cols-4 xl:grid-cols-5 gap-3">
 				{#each summaryCards as card (card.label)}

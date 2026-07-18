@@ -24,6 +24,7 @@ import type {
 	TableDefinition
 } from './types';
 import { normalizeBunSqlResult } from './bun-sql-helpers';
+import { BUN_SQL_POOL_OPTIONS } from '../pool-config';
 import {
 	assertSafeIdentifier,
 	buildDelete,
@@ -61,7 +62,7 @@ export class MysqlAdapter implements DbClientDriverAdapter {
 		const db = conn.database ? `/${encodeURIComponent(conn.database)}` : '';
 
 		const url = `mysql://${auth}${host}:${port}${db}`;
-		this.sql = new SQL(url);
+		this.sql = new SQL(url, BUN_SQL_POOL_OPTIONS);
 		await this.sql.connect();
 		this.defaultDb = conn.database || null;
 		this.configuredDb = conn.database || null;

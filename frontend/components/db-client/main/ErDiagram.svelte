@@ -4,6 +4,7 @@
 	import { dbClientStore } from '$frontend/stores/features/db-client.svelte';
 	import { themeStore } from '$frontend/stores/ui/theme.svelte';
 	import Icon from '$frontend/components/common/display/Icon.svelte';
+	import PanelLoader from '../shared/PanelLoader.svelte';
 	import TableNode from './TableNode.svelte';
 
 	interface Props {
@@ -175,10 +176,7 @@
 
 <div class="flex-1 min-h-0 flex flex-col overflow-hidden bg-white dark:bg-slate-900">
 	{#if loading}
-		<div class="flex-1 flex flex-col items-center justify-center gap-2 text-slate-400">
-			<Icon name="lucide:loader" class="w-8 h-8 animate-spin text-violet-600" />
-			<span class="text-sm font-medium">Generating ER Diagram...</span>
-		</div>
+		<PanelLoader />
 	{:else if error}
 		<div class="flex-1 flex flex-col items-center justify-center gap-3 text-red-500 p-6">
 			<Icon name="lucide:circle-alert" class="w-10 h-10" />

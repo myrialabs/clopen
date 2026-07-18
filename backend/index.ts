@@ -25,6 +25,7 @@ import { loggerMiddleware } from './middleware/logger';
 import { initializeDatabase, closeDatabase } from './database';
 import { syncInternalServers } from './mcp';
 import { disposeAllEngines } from './engine';
+import { connectionManager } from './db-client/connection-manager';
 import { refreshProcessPath } from './utils/path-enrich';
 import { debug } from '$shared/utils/logger';
 import { networkInterfaces } from 'os';
@@ -260,6 +261,11 @@ async function gracefulShutdown() {
 	try {
 		// Stop accepting new connections first — release the port ASAP
 		app.stop();
+		// Release DB Client pools up front so remote server sessions are freed
+		// immediately on restart (dev `bun --watch`), before the slower engine
+		// and browser teardown below — otherwise the old process keeps those
+		// sockets open long enough to overlap the new process ("too many clients").
+		await connectionManager.closeAll();
 		// Dispose rate limiter timer
 		authRateLimiter.dispose();
 		// Dispose expired session cleanup timer

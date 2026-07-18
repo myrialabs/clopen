@@ -29,8 +29,11 @@ interface ConnectionEntry {
 	lastUsedAt: number;
 }
 
-const IDLE_MS = 10 * 60 * 1000; // 10 minutes
-const SWEEP_INTERVAL_MS = 60 * 1000; // 1 minute
+// Tear an idle adapter (and its pool) down quickly so a browsed connection
+// doesn't hold server-side sessions after the user walks away. The adapter is
+// reopened transparently on next use.
+const IDLE_MS = 60 * 1000; // 1 minute
+const SWEEP_INTERVAL_MS = 30 * 1000; // 30 seconds
 
 class ConnectionManager {
 	private entries = new Map<string, ConnectionEntry>();

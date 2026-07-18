@@ -36,6 +36,7 @@ import {
 	renderCreateIndex,
 	renderCreateTable
 } from './sql-builders';
+import { POOL_MAX, POOL_IDLE_TIMEOUT_SEC } from '../pool-config';
 
 const Q = quoteMssql;
 
@@ -94,9 +95,9 @@ export class MssqlAdapter implements DbClientDriverAdapter {
 				enableArithAbort: true
 			},
 			pool: {
-				max: 10,
+				max: POOL_MAX,
 				min: 0,
-				idleTimeoutMillis: 30000
+				idleTimeoutMillis: POOL_IDLE_TIMEOUT_SEC * 1000
 			}
 		};
 
