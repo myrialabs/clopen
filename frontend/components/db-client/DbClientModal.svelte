@@ -621,13 +621,7 @@
 	}
 
 	function isTableScopedView(v: DbClientView): boolean {
-		return v === 'data' || v === 'structure' || v === 'log';
-	}
-
-	function tableDefaultView(): 'data' | 'structure' | 'log' {
-		if (activeView === 'structure') return 'structure';
-		if (activeView === 'log') return 'log';
-		return 'data';
+		return v === 'data' || v === 'structure' || v === 'log' || v === 'er';
 	}
 
 	const showSchemaTree = $derived(!!activeConnection && !isFormOpen);
@@ -833,7 +827,7 @@
 												<button
 													type="button"
 													class="flex-1 min-w-0 flex items-center gap-1.5 px-2.5 h-full text-xs transition-colors cursor-pointer {isActive ? 'text-violet-700 dark:text-violet-300 font-semibold' : 'text-slate-500 dark:text-slate-400 hover:text-slate-700 dark:hover:text-slate-300'}"
-													onclick={() => dbClientStore.openTable(activeConnection.id, tab, tableDefaultView())}
+													onclick={() => dbClientStore.openTable(activeConnection.id, tab, 'data', { remember: true })}
 												>
 													<Icon name={tab.type === 'procedure' ? 'lucide:terminal' : tab.type === 'function' ? 'lucide:code' : tab.type === 'view' ? 'lucide:eye' : 'lucide:table'} class="w-3.5 h-3.5 text-slate-400 shrink-0" />
 													<span class="truncate max-w-[120px]">{tab.name}</span>
@@ -918,7 +912,7 @@
 													<button
 														type="button"
 														class="flex-1 min-w-0 flex items-center gap-1.5 h-full text-xs transition-colors cursor-pointer font-semibold {isActive ? 'text-violet-700 dark:text-violet-300' : 'text-slate-500 dark:text-slate-400 hover:text-slate-700 dark:hover:text-slate-300'}"
-														onclick={() => dbClientStore.openTable(activeConnection.id, tab, tableDefaultView())}
+														onclick={() => dbClientStore.openTable(activeConnection.id, tab, 'data', { remember: true })}
 													>
 														<Icon name={tab.type === 'procedure' ? 'lucide:terminal' : tab.type === 'function' ? 'lucide:code' : tab.type === 'view' ? 'lucide:eye' : 'lucide:table'} class="w-3.5 h-3.5 text-slate-400 shrink-0" />
 														<span class="truncate max-w-[160px]">{tab.name}</span>

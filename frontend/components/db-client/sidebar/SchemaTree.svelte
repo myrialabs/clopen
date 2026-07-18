@@ -131,7 +131,8 @@
 					type: node.type,
 					database
 				},
-				isRoutine ? 'structure' : 'data'
+				isRoutine ? 'structure' : 'data',
+				{ remember: true }
 			);
 		}
 	}

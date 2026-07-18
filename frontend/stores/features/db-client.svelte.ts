@@ -18,6 +18,21 @@ import type {
 
 export type DbClientView = 'overview' | 'query' | 'data' | 'structure' | 'log' | 'er';
 
+/** The per-object views, scoped to whichever object is active. */
+const TABLE_VIEWS: DbClientView[] = ['data', 'structure', 'log', 'er'];
+const ROUTINE_VIEWS: DbClientView[] = ['structure', 'log'];
+
+/** Pick the view to show when opening `obj`: keep the user's current view when
+ *  it's valid for this object type (so switching objects remembers the tab),
+ *  else fall back — coercing routine-invalid fallbacks (data/er) to structure. */
+function resolveTableView(current: DbClientView, obj: DbClientActiveObject, fallback: DbClientView): DbClientView {
+	const isRoutine = obj.type === 'function' || obj.type === 'procedure';
+	const allowed = isRoutine ? ROUTINE_VIEWS : TABLE_VIEWS;
+	if (allowed.includes(current)) return current;
+	if (isRoutine && (fallback === 'data' || fallback === 'er')) return 'structure';
+	return fallback;
+}
+
 /** Drop duplicate (type, name) schema nodes, keeping the first occurrence.
  *  Guards keyed {#each} consumers against duplicate names (e.g. overloaded
  *  SQL functions that share one name across signatures). */
@@ -439,7 +454,12 @@ export const dbClientStore = {
 		saveView(connId);
 	},
 
-	openTable(connId: string, obj: DbClientActiveObject, defaultView: 'data' | 'structure' | 'log' = 'data'): void {
+	openTable(
+		connId: string,
+		obj: DbClientActiveObject,
+		defaultView: DbClientView = 'data',
+		opts?: { remember?: boolean }
+	): void {
 		const view = ensureView(connId);
 		const exists = view.openTables.find(
 			(t) => t.name === obj.name && (t.database ?? null) === (obj.database ?? null)
@@ -448,7 +468,11 @@ export const dbClientStore = {
 			view.openTables = [...view.openTables, obj];
 		}
 		view.activeObject = obj;
-		view.activeView = defaultView;
+		// When remembering, keep the current table-scoped view (Data/Structure/Log/
+		// ERD) across object switches; otherwise honor the explicit defaultView.
+		view.activeView = opts?.remember
+			? resolveTableView(view.activeView, obj, defaultView)
+			: defaultView;
 		state.navObjectTick++;
 		saveView(connId);
 	},
