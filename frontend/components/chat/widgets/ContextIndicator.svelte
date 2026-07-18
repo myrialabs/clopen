@@ -99,13 +99,13 @@
 	<div class="relative" bind:this={containerRef}>
 		<button
 			type="button"
-			class="flex items-center justify-center px-2 @max-[26rem]:px-0 {isMobile ? 'h-8 @max-[26rem]:w-9' : 'h-6 @max-[26rem]:w-7'} bg-transparent border-none rounded-md text-slate-500 cursor-pointer transition-all duration-150 hover:bg-violet-500/10 hover:text-slate-900 dark:hover:text-slate-100 group"
+			class="flex items-center justify-center px-2 @max-[32rem]:px-0 {isMobile ? 'h-8 @max-[32rem]:w-9' : 'h-6 @max-[32rem]:w-7'} bg-transparent border-none rounded-md text-slate-500 cursor-pointer transition-all duration-150 hover:bg-violet-500/10 hover:text-slate-900 dark:hover:text-slate-100 group"
 			onclick={togglePopover}
 			title="Context: {formatTokens(usage.current)} / {formatTokens(usage.max)} ({Math.round(usage.percentage)}%)"
 		>
 			<div class="flex items-center gap-1.5">
-				<!-- Default: linear bar + %. Collapses to a ring-only when the panel/dock is narrow (container query on PanelHeader). -->
-				<div class="flex items-center gap-1.5 @max-[26rem]:hidden">
+				<!-- Default: linear bar + %. Collapses to a ring-only when the panel/dock is narrow. -->
+				<div class="flex items-center gap-1.5 @max-[32rem]:hidden">
 					<div class="{isMobile ? 'w-14' : 'w-12'} h-2 bg-slate-200 dark:bg-slate-700 rounded-full overflow-hidden">
 						<div
 							class="{barColor} h-full transition-all duration-500"
@@ -119,7 +119,7 @@
 
 				<!-- Narrow / dock kecil: ring only -->
 				<svg
-					class="hidden @max-[26rem]:block {isMobile ? 'w-4.5 h-4.5' : 'w-4 h-4'} -rotate-90 shrink-0"
+					class="hidden @max-[32rem]:block {isMobile ? 'w-4.5 h-4.5' : 'w-4 h-4'} -rotate-90 shrink-0"
 					viewBox="0 0 20 20"
 					fill="none"
 				>

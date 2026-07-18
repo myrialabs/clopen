@@ -12,6 +12,7 @@ import { copilotEngineRouter } from './copilot';
 import { codexEngineRouter } from './codex';
 import { qwenEngineRouter } from './qwen';
 import { engineRestartRouter } from './restart';
+import { engineUsageRouter } from './usage';
 
 export const engineRouter = createRouter()
 	.merge(claudeCodeEngineRouter)
@@ -19,4 +20,5 @@ export const engineRouter = createRouter()
 	.merge(copilotEngineRouter)
 	.merge(codexEngineRouter)
 	.merge(qwenEngineRouter)
-	.merge(engineRestartRouter);
+	.merge(engineRestartRouter)
+	.merge(engineUsageRouter);

@@ -87,3 +87,21 @@ export interface QwenProviderPreset {
 	defaultBaseUrl: string;
 	docsUrl?: string;
 }
+
+export interface UsageQuota {
+	percentRemaining: number;
+	quotaType: string; // e.g. 'Session', 'Weekly', 'Monthly', or model name/custom limit
+	providerId: string;
+	resetsAt: string | null; // ISO 8601 string
+	resetText?: string;
+}
+
+export interface UsageSnapshot {
+	providerId: string;
+	quotas: UsageQuota[];
+	capturedAt: string; // ISO 8601 string
+	accountEmail?: string | null;
+	accountOrganization?: string | null;
+	accountTier?: string | null;
+}
+

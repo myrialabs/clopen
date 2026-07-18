@@ -23,6 +23,8 @@ export type {
 	EngineInfo,
 	QwenProviderPresetId,
 	QwenProviderPreset,
+	UsageQuota,
+	UsageSnapshot,
 } from './engine';
 
 // ── Tools ────────────────────────────────────────────────────

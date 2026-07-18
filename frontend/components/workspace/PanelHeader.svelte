@@ -21,6 +21,7 @@
 
 	import { DEVICE_VIEWPORTS } from '$frontend/utils/preview-constants';
 	import ContextIndicator from '$frontend/components/chat/widgets/ContextIndicator.svelte';
+	import UsageIndicator from '$frontend/components/chat/widgets/UsageIndicator.svelte';
 
 	interface Props {
 		panelId: PanelId;
@@ -242,6 +243,7 @@
 		<!-- Panel-specific actions -->
 		<div class="flex items-center {isMobile ? 'gap-0.5' : 'gap-1.5'}">
 			{#if panelId === 'chat'}
+				<UsageIndicator {isMobile} />
 				{#if sessionState.messages.length > 0 || sessionState.hasMessageHistory}
 					<ContextIndicator {isMobile} />
 				{/if}
