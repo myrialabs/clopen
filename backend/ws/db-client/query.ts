@@ -325,25 +325,4 @@ export const queryHandler = createRouter()
 			database: data.database,
 			schema: data.schema
 		});
-	})
-
-	.http('db-client:get-server-logs', {
-		data: t.Object({
-			connectionId: t.String({ minLength: 1 }),
-			database: t.Optional(t.String()),
-			limit: t.Optional(t.Number())
-		}),
-		response: t.Any()
-	}, async ({ data, conn }) => {
-		requireDbClientConnectionAccess(conn, data.connectionId);
-		const adapter = await connectionManager.get(data.connectionId);
-		if (adapter.getServerLogs) {
-			// The limit is spliced into `TOP n` / `LIMIT n`, so it must be a positive
-			// integer — clamp to guard against a fractional or negative value.
-			const limit = data.limit !== undefined
-				? Math.min(1000, Math.max(1, Math.floor(data.limit)))
-				: undefined;
-			return await adapter.getServerLogs({ database: data.database, limit });
-		}
-		return [];
 	});

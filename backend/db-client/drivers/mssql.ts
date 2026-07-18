@@ -36,7 +36,6 @@ import {
 	renderCreateIndex,
 	renderCreateTable
 } from './sql-builders';
-import { debug } from '$shared/utils/logger';
 
 const Q = quoteMssql;
 
@@ -815,46 +814,6 @@ export class MssqlAdapter implements DbClientDriverAdapter {
 			placeholder: (i) => `@p${i}`
 		});
 		return this.executeWrite(query, params);
-	}
-
-	async getServerLogs(opts?: { database?: string; limit?: number }): Promise<Array<{ at: Date; type: 'executing' | 'result' | 'error'; message: string }>> {
-		if (!this.pool) return [];
-		const limit = opts?.limit ?? 100;
-		try {
-			const request = this.pool.request();
-			const res = await request.query(`
-				SELECT TOP ${limit}
-					st.text AS [query],
-					qs.last_execution_time AS [execution_time],
-					qs.total_elapsed_time / 1000 AS [duration_ms],
-					qs.last_rows AS [affected_rows]
-				FROM sys.dm_exec_query_stats qs
-				CROSS APPLY sys.dm_exec_sql_text(qs.sql_handle) st
-				WHERE st.text NOT LIKE '%sys.dm_exec_query_stats%'
-				ORDER BY qs.last_execution_time DESC
-			`);
-			const logs: Array<{ at: Date; type: 'executing' | 'result' | 'error'; message: string }> = [];
-			for (const row of res.recordset) {
-				const queryText = (row.query ?? '').trim();
-				if (!queryText) continue;
-				const at = row.execution_time ? new Date(row.execution_time) : new Date();
-				
-				logs.push({
-					at: new Date(at.getTime() - 10),
-					type: 'executing',
-					message: `Executing: ${queryText}`
-				});
-				logs.push({
-					at,
-					type: 'result',
-					message: `Result: ${row.affected_rows ?? 0} rows affected/retrieved in ${row.duration_ms ?? 0}ms`
-				});
-			}
-			return logs;
-		} catch (err) {
-			debug.warn('db-client', 'Failed to get MSSQL server logs:', err);
-			return [];
-		}
 	}
 }
 

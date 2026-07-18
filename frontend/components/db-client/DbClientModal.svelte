@@ -13,7 +13,6 @@
 	import QueryEditor from './main/QueryEditor.svelte';
 	import DataGrid from './main/DataGrid.svelte';
 	import StructureManager from './main/StructureManager.svelte';
-	import QueryLog from './main/QueryLog.svelte';
 	import OverviewPanel from './main/OverviewPanel.svelte';
 	import ErDiagram from './main/ErDiagram.svelte';
 	import TableDesigner from './main/TableDesigner.svelte';
@@ -621,7 +620,7 @@
 	}
 
 	function isTableScopedView(v: DbClientView): boolean {
-		return v === 'data' || v === 'structure' || v === 'log' || v === 'er';
+		return v === 'data' || v === 'structure' || v === 'er';
 	}
 
 	const showSchemaTree = $derived(!!activeConnection && !isFormOpen);
@@ -819,14 +818,14 @@
 							</div>
 							<!-- Row 2: Table tabs + Close All (only when there are open tables) -->
 							{#if view && scopedTables.length > 0}
-								<div class="flex items-center shrink-0 bg-white dark:bg-slate-900 rounded-xl border border-slate-200 dark:border-slate-800 p-1 min-w-0">
+								<div class="flex items-center shrink-0 bg-white dark:bg-slate-900 rounded-xl border border-slate-200 dark:border-slate-800 p-1 pr-1.5 min-w-0">
 									<div class="flex-1 flex items-center overflow-x-auto overflow-y-hidden select-none no-scrollbar min-w-0">
 										{#each scopedTables as tab, idx (`${activeConnection.id}::${tab.database ?? ''}::${tab.schema ?? ''}::${tab.name}`)}
 											{@const isActive = isTableScopedView(activeView) && activeObject && activeObject.name === tab.name && (activeObject.database ?? null) === (tab.database ?? null)}
-											<div data-active-tab={isActive ? 'true' : undefined} class="flex items-center h-7 rounded-md shrink-0 transition-colors {isActive ? 'bg-violet-500/10' : 'hover:bg-slate-100 dark:hover:bg-slate-800'}">
+											<div data-active-tab={isActive ? 'true' : undefined} class="flex items-center h-7 pl-2.5 pr-1.5 gap-1 rounded-md shrink-0 transition-colors {isActive ? 'bg-violet-500/10' : 'hover:bg-slate-100 dark:hover:bg-slate-800'}">
 												<button
 													type="button"
-													class="flex-1 min-w-0 flex items-center gap-1.5 px-2.5 h-full text-xs transition-colors cursor-pointer {isActive ? 'text-violet-700 dark:text-violet-300 font-semibold' : 'text-slate-500 dark:text-slate-400 hover:text-slate-700 dark:hover:text-slate-300'}"
+													class="flex-1 min-w-0 flex items-center gap-1.5 h-full text-xs transition-colors cursor-pointer {isActive ? 'text-violet-700 dark:text-violet-300 font-semibold' : 'text-slate-500 dark:text-slate-400 hover:text-slate-700 dark:hover:text-slate-300'}"
 													onclick={() => dbClientStore.openTable(activeConnection.id, tab, 'data', { remember: true })}
 												>
 													<Icon name={tab.type === 'procedure' ? 'lucide:terminal' : tab.type === 'function' ? 'lucide:code' : tab.type === 'view' ? 'lucide:eye' : 'lucide:table'} class="w-3.5 h-3.5 text-slate-400 shrink-0" />
@@ -957,7 +956,7 @@
 
 						<!-- Sub-header: table-scoped view toggle + breadcrumb (table context only) -->
 						{#if activeObject}
-							<div class="flex items-center justify-between gap-3 px-2 py-1.5 bg-white dark:bg-slate-900 rounded-xl border border-slate-200 dark:border-slate-800 shrink-0 min-w-0">
+							<div class="flex items-center justify-between gap-3 p-1 pr-2.5 bg-white dark:bg-slate-900 rounded-xl border border-slate-200 dark:border-slate-800 shrink-0 min-w-0">
 								<!-- Data / Structure toggle — same visual language as the Overview/Query Editor tabs -->
 								<div class="flex items-center gap-1 shrink-0">
 									{#if activeObject.type !== 'function' && activeObject.type !== 'procedure'}
@@ -969,10 +968,6 @@
 									<button type="button" class="flex items-center gap-1.5 px-2.5 sm:px-3 h-7 rounded-md text-xs font-semibold transition-colors cursor-pointer shrink-0 {activeView === 'structure' ? 'bg-violet-500/10 text-violet-700 dark:text-violet-300' : 'text-slate-500 dark:text-slate-400 hover:text-slate-700 hover:bg-slate-100 dark:hover:text-slate-100 dark:hover:bg-slate-800'}" onclick={() => pickView('structure')}>
 										<Icon name="lucide:layout-list" class="w-3.5 h-3.5" />
 										<span>Structure</span>
-									</button>
-									<button type="button" class="flex items-center gap-1.5 px-2.5 sm:px-3 h-7 rounded-md text-xs font-semibold transition-colors cursor-pointer shrink-0 {activeView === 'log' ? 'bg-violet-500/10 text-violet-700 dark:text-violet-300' : 'text-slate-500 dark:text-slate-400 hover:text-slate-700 hover:bg-slate-100 dark:hover:text-slate-100 dark:hover:bg-slate-800'}" onclick={() => pickView('log')}>
-										<Icon name="lucide:terminal" class="w-3.5 h-3.5" />
-										<span>Log</span>
 									</button>
 									{#if activeObject.type !== 'function' && activeObject.type !== 'procedure'}
 										{#if activeConnection.driver === 'mysql' || activeConnection.driver === 'postgres' || activeConnection.driver === 'sqlite' || activeConnection.driver === 'mssql'}
@@ -1052,8 +1047,6 @@
 										</div>
 									</div>
 								{/if}
-							{:else if activeView === 'log'}
-								<QueryLog connectionId={activeConnection.id} />
 							{:else if activeView === 'er'}
 								{#if activeObject}
 									<ErDiagram
