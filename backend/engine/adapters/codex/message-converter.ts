@@ -254,7 +254,7 @@ export function convertTurnCompleted(event: TurnCompletedEvent, state: CodexStre
 	// Note: the per-turn `usage` aggregate is NOT attached to individual
 	// assistant messages here — they were already saved live during the turn
 	// (with usage:null). The stream-manager backfills usage after the result
-	// event by looking up each saved row's DB id. See README §9.4.
+	// event by looking up each saved row's DB id. See README §10.4.
 
 	const stopLifecycle: StreamLifecycleEvent = {
 		type: 'stream_event',
@@ -439,7 +439,7 @@ function buildToolResultUserMessage(
 		createdAt: new Date().toISOString(),
 		messageId: crypto.randomUUID(),
 		sessionId: state.sessionId,
-		// IMPORTANT: parent.toolUseId stays null (README §9.5 sharp edge).
+		// IMPORTANT: parent.toolUseId stays null (README §10.5 sharp edge).
 		parent: { messageId: null, sessionId: null, toolUseId: null },
 		engine: buildEngine(state.modelId),
 		sender: { id: '', name: '' },
@@ -463,7 +463,7 @@ function buildCommandExecutionPair(item: CommandExecutionItem, state: CodexStrea
 }
 
 function buildFileChangePair(item: FileChangeItem, state: CodexStreamState): EngineOutput[] {
-	// Codex bundles N file changes per item. Per README §9.3 we split into N
+	// Codex bundles N file changes per item. Per README §10.3 we split into N
 	// separate AssistantMessages so each shows up as its own tool block.
 	const out: EngineOutput[] = [];
 	const baseId = item.id;
@@ -557,7 +557,7 @@ function buildWebSearchPair(item: WebSearchItem, state: CodexStreamState): Engin
 	const block = buildToolUseBlock('WebSearch', input as unknown as Record<string, unknown>, item.id);
 	const assistant = createAssistantToolUseMessage(state, block, item.id);
 	// Synthetic tool_result so the frontend grouper attaches a non-null
-	// result at render time (README §9.5). Without it `tool_use.result`
+	// result at render time (README §10.5). Without it `tool_use.result`
 	// stays null forever.
 	const result = buildToolResultUserMessage(
 		item.id,

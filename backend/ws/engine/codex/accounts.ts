@@ -1,7 +1,7 @@
 /**
  * OpenAI Codex Account Management Handlers
  *
- * Codex supports TWO auth modes (per backend/engine/README.md §9.13):
+ * Codex supports TWO auth modes (per backend/engine/README.md §10.13):
  *
  *   1. **API key** — paste-token flow, identical to Copilot's. The `apiKey`
  *      is wrapped as `{kind:"api_key", apiKey}` and stored in

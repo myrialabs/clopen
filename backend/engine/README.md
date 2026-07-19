@@ -19,9 +19,10 @@ map, then jump to the area you need.
 4. [WebSocket routes](./docs/websocket-routes.md) — `engine:*`, `system-tools:*`, `models:list`, `chat:stream`, and the Restart-Server pattern.
 5. [Frontend & chat integration](./docs/frontend-and-chat.md) — Settings → Engines / System Tools, the model picker, the send path, reasoning/attachments/AskUserQuestion.
 6. [System Tools](./docs/system-tools.md) — registering a binary in `install-recipes.ts` + the install runner.
-7. [Adding a new engine](./docs/adding-an-engine.md) — the end-to-end, stage-by-stage checklist.
-8. [Lessons learned](./docs/lessons-learned.md) — §9 pitfalls (tool name/input canonicalisation, fork session, MCP reuse, auth-blob swap, sub-agent routing, OpenCode v1/v2, structured output, …).
-9. [Quick reference](./docs/quick-reference.md) — "I need X → look in file Y" table.
+7. [Artifacts & Access](./docs/artifacts.md) — the extension layer (Skills, Commands, Subagents, Instructions, Permissions, Profiles, MCP), the capability matrix, and the `artifact-sync.ts` seam adapters call at stream start.
+8. [Adding a new engine](./docs/adding-an-engine.md) — the end-to-end, stage-by-stage checklist.
+9. [Lessons learned](./docs/lessons-learned.md) — §10 pitfalls (tool name/input canonicalisation, fork session, MCP reuse, auth-blob swap, sub-agent routing, OpenCode v1/v2, structured output, …).
+10. [Quick reference](./docs/quick-reference.md) — "I need X → look in file Y" table.
 
 ---
 
@@ -104,19 +105,19 @@ Three key rules that **every** layer upholds:
 >    `streamable-http` MCP URL (Codex, future engines) reuses **the same
 >    URL** by adding a sibling `getXxxMcpConfig()` helper in
 >    `backend/mcp/internal/config.ts`. Do **NOT** propose a "new MCP bridge",
->    "per-engine MCP server", or "per-stream MCP path". See §9.12.
+>    "per-engine MCP server", or "per-stream MCP path". See §10.12.
 > 2. **Engine home dirs are isolated per-engine (Clopen vs. global), but
 >    multi-account stays DB-swap.** Two different axes — don't conflate them:
 >    - **Clopen vs. the user's global CLI usage:** every engine's home/config
 >      is redirected to `{clopenDir}/engine/{engine}/user/` via that engine's env
 >      var (`CLAUDE_CONFIG_DIR`, `CODEX_HOME`, `COPILOT_HOME` via
 >      `baseDirectory`, `QWEN_RUNTIME_DIR`, `XDG_*` for OpenCode) so Clopen
->      never touches `~/.codex`, `~/.copilot`, … See §9.19.
+>      never touches `~/.codex`, `~/.copilot`, … See §10.19.
 >    - **Multiple accounts *within* Clopen:** still the auth-blob swap — one
 >      shared dotfile inside that isolated home, snapshotted to/from the DB on
 >      login/switch. Do **NOT** propose **per-account** home dirs
 >      (`CODEX_HOME=/foo/account-1/`); that splits session-state, breaks
->      fork-by-copy, and loses token-refresh persistence. See §9.13.
+>      fork-by-copy, and loses token-refresh persistence. See §10.13.
 
 ---
 

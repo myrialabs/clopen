@@ -170,7 +170,7 @@ Backend `chat:stream` then `streamManager.startStream(...)`, which:
      **no** MCP-tool fallback: the previous engine-agnostic MCP path was
      removed (its carrying cost outweighed the benefit). Do not reintroduce
      it — wire the engine's native hook to `resolveUserAnswer` when it
-     exists. See §9.12 point 3.
+     exists. See §10.12 point 3.
 
 ---
 

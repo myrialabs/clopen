@@ -633,7 +633,7 @@ getCopilotMcpConfig();
 
 When adding a new engine that consumes streamable-HTTP MCP, add a sibling
 `getXxxMcpConfig()` here — do **not** introduce a new HTTP listener or a
-new namespace key. See `backend/engine/README.md` §9.12 for the full
+new namespace key. See `backend/engine/README.md` §10.12 for the full
 checklist (variable naming, type imports, auto-approval surface, etc.).
 
 ### Helper Functions
@@ -1195,7 +1195,7 @@ automatically available to **every** engine:
 ### Adding a New Engine
 
 If your engine's CLI/SDK accepts a streamable-HTTP MCP URL, follow the
-checklist in `backend/engine/README.md` §9.12. The summary:
+checklist in `backend/engine/README.md` §10.12. The summary:
 
 1. Add a sibling `getXxxMcpConfig()` next to the existing helpers in
    `config.ts`. Reuse the `'clopen-mcp'` namespace key. Use the SDK's
@@ -1215,7 +1215,7 @@ checklist in `backend/engine/README.md` §9.12. The summary:
    credential handling (the proxy injects it). Codex still uses
    `http_headers`, **not** `bearer_token`. See
    [External Servers, OAuth & Connection Status](#external-servers-oauth--connection-status)
-   and `backend/engine/docs/lessons-learned.md` §9.18.
+   and `backend/engine/docs/lessons-learned.md` §10.18.
 
 ### File Locations
 

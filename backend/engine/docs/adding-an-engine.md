@@ -1,6 +1,6 @@
 [← Engine adapter guide](../README.md)
 
-## 8. End-to-end checklist for adding a new engine
+## 9. End-to-end checklist for adding a new engine
 
 The steps below are the same pattern used when the **`copilot`**
 (`@github/copilot-sdk`) adapter was added to the repo. Use it as a
@@ -49,17 +49,21 @@ mandatory files; optional files use the canonical names from §2.6.
       pattern).
 - [ ] `credential.ts` / `environment.ts` / `server.ts` / `config.ts` /
       `presets.ts` / `session-fork.ts` (optional; canonical names only).
+- [ ] Artifacts: in `streamQuery`, call `syncSkills(...)` +
+      `syncEngineArtifacts(...)` at stream start, and — for a prompt-scoped
+      engine — prepend `buildArtifactsPromptContext(...)` to the prompt (from
+      `backend/engine/artifact-sync.ts`). Mirror `claude/stream.ts`. See §8.
 - [ ] `backend/engine/index.ts`: import + add a case in
       `createEngine(type)`. If there is a shared subprocess, call
       `disposeXxxClient()` from `disposeAllProjectEngines()`.
 - [ ] MCP config (if the SDK accepts a streamable-HTTP MCP URL):
       - [ ] Internal bridge — add `getXxxMcpConfig()` in
-            `backend/mcp/internal/config.ts` (reuse `clopen-mcp`; see §9.12).
+            `backend/mcp/internal/config.ts` (reuse `clopen-mcp`; see §10.12).
       - [ ] External servers — add `getXxxExternalMcpConfig()` in
             `backend/mcp/external/config.ts` and **forward `headers`** so the
             centralized OAuth bearer reaches the engine. Use the SDK's real
             header field — **Codex uses `http_headers`, not `bearer_token`**.
-            See §9.18 and `backend/mcp/README.md`.
+            See §10.18 and `backend/mcp/README.md`.
 
 ### Stage 3 — Database (if a default provider needs to be seeded)
 

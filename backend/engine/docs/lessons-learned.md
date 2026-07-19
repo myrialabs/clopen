@@ -1,12 +1,12 @@
 [← Engine adapter guide](../README.md)
 
-## 9. Lessons learned — pitfalls when authoring a new adapter
+## 10. Lessons learned — pitfalls when authoring a new adapter
 
 These notes come from building the `copilot` adapter. Each item has been
 gotten wrong at least once — keep this mental checklist in your head when
 writing the next adapter.
 
-### 9.1 Both tool name **and** tool input must be canonicalised
+### 10.1 Both tool name **and** tool input must be canonicalised
 
 `toCanonicalToolName()` only guarantees the tool name does not become
 `Unknown:*`. That is **not enough**: tool UI components (`Bash`, `Read`,
@@ -37,7 +37,7 @@ If only the name mapping is done, the UI still picks the right component
 but the fields are `undefined` → the user sees an empty block. Always
 install **both** layers.
 
-### 9.2 Filter the SDK's "harness tools"
+### 10.2 Filter the SDK's "harness tools"
 
 Some SDKs emit internal tools used for model↔harness coordination that
 **must not** appear in chat (intent reporting, task-completion markers,
@@ -51,7 +51,7 @@ Strategy: filter at the adapter boundary, do not render `Unknown:*`. See
 `convertToolComplete`) — if you only drop one side, the UI either gets an
 orphan result without a tool or an orphan tool without a result.
 
-### 9.3 One `tool_use` per `AssistantMessage`
+### 10.3 One `tool_use` per `AssistantMessage`
 
 The convention used by Claude and OpenCode: each assistant message that
 reaches the frontend has **at most one** `tool_use` block. SDKs like
@@ -75,7 +75,7 @@ const messages = blocks.map((block, idx) => ({
 If violated, the frontend `message-grouper` still works but Compact mode
 and the tool layout do not stitch correctly.
 
-### 9.4 Buffer messages until the usage event arrives
+### 10.4 Buffer messages until the usage event arrives
 
 In many SDKs (Copilot included), `assistant.usage` is a **separate** event
 that arrives **after** `assistant.message` for the same turn iteration.
@@ -110,7 +110,7 @@ The `lastUsage` state is also kept around to build the aggregate
 `ResultEvent` at `session.idle` — that is the **per-stream** usage, not
 per-message.
 
-### 9.5 `tool_use.result: null` is **expected** before render
+### 10.5 `tool_use.result: null` is **expected** before render
 
 When inspecting raw adapter output (e.g. logs or DB rows before render),
 `tool_use` blocks always carry `result: null`. That is **correct**: the
@@ -146,7 +146,7 @@ Only set `parent.toolUseId` when the message is genuinely a child of an
 `parentToolUseId` through `convertToolResultOnly`). For raw
 `tool.execution_complete` events at the top of the loop, leave it null.
 
-### 9.6 Enable the SDK's streaming flag explicitly
+### 10.6 Enable the SDK's streaming flag explicitly
 
 Some SDKs default to emitting only the final message. For delta/partial
 streaming you must set the SDK-specific flag:
@@ -160,7 +160,7 @@ Without the flag, the UI shows text "all at once" — the symptom is
 identical to an adapter that forgot to emit `StreamLifecycleEvent` /
 `TextDeltaEvent`, so check the flag first before debugging the converter.
 
-### 9.7 Pair `start`/`stop` lifecycle for reasoning
+### 10.7 Pair `start`/`stop` lifecycle for reasoning
 
 The frontend stream-manager renders reasoning in a separate bubble
 **only** while `StreamLifecycleEvent { reasoning: true, event: 'start' }`
@@ -169,7 +169,7 @@ begins — the two are mutually exclusive in the UI). See
 `copilot/message-converter.ts::convertReasoningDelta`, which flushes the
 text stream before opening the reasoning stream.
 
-### 9.8 Event-order debug workflow
+### 10.8 Event-order debug workflow
 
 If chat output looks weird, log the raw `SessionEvent` per stream before
 the converter. The canonical Copilot order is:
@@ -191,7 +191,7 @@ wrong. If you see orphan tool_results, the ignored-tools filter is not
 consistent on both sides. If text appears all at once, the SDK streaming
 flag is off.
 
-### 9.9 Per-stream account override when the SDK takes the credential at construction
+### 10.9 Per-stream account override when the SDK takes the credential at construction
 
 Most SDKs accept env vars per-call (Claude) or read them from the
 subprocess environment (OpenCode). The Copilot SDK is different: the
@@ -236,7 +236,7 @@ If you forget the per-stream override path, the chat input appears to
 honour the account picker but the engine actually streams against the
 last initialised credential — silently using the wrong PAT/quota.
 
-### 9.10 Fork session — native API vs. on-disk workaround
+### 10.10 Fork session — native API vs. on-disk workaround
 
 The multi-branch checkpoints feature requires that **every** resume
 spawn a fresh session id, so the engine continues from that point
@@ -274,7 +274,7 @@ the filename, not a directory name:
 <CODEX_HOME>/sessions/<YYYY>/<MM>/<DD>/rollout-<TIMESTAMP>-<thread_id>.jsonl
 ```
 
-where `<CODEX_HOME>` is Clopen's isolated `{clopenDir}/engine/codex/user/` (§9.19),
+where `<CODEX_HOME>` is Clopen's isolated `{clopenDir}/engine/codex/user/` (§10.19),
 **not** `~/.codex` — the helper reads it via `getCodexHomeDir()`, so it
 tracks the isolated dir automatically.
 
@@ -297,7 +297,7 @@ project's cwd via the SDK's `sanitizeCwd()`
 ```
 
 where `<QWEN_RUNTIME_DIR>` is Clopen's isolated `{clopenDir}/engine/qwen/user/`
-(§9.19), **not** `~/.qwen` — both the env var and the fork helper
+(§10.19), **not** `~/.qwen` — both the env var and the fork helper
 (`getQwenRuntimeDir()`) resolve to the same base, so they stay in sync.
 
 Every record line carries a `sessionId` field equal to the file's
@@ -338,7 +338,7 @@ the fork block in `stream.ts`, and pass the SDK flag the same way
 Claude, OpenCode, and Copilot already do. The `// TODO` comment at the
 top of each `session-fork.ts` pins the migration target.
 
-### 9.11 Reset `currentAccountId` in `dispose()`
+### 10.11 Reset `currentAccountId` in `dispose()`
 
 Whenever you track per-init state on the engine (e.g.
 `currentAccountId`, cached models, the SDK client itself), reset every
@@ -358,7 +358,7 @@ async dispose(): Promise<void> {
 }
 ```
 
-### 9.12 Reuse the existing MCP HTTP infrastructure — never build a new bridge
+### 10.12 Reuse the existing MCP HTTP infrastructure — never build a new bridge
 
 `backend/mcp/internal/remote-server.ts` already mounts every server registered via
 `defineServer()` as a **Streamable HTTP MCP** endpoint at
@@ -452,11 +452,11 @@ What you must NOT do:
 - ❌ A local type alias when the SDK exports the type (Open Code,
   Copilot). Import `McpRemoteConfig` / `MCPHTTPServerConfig` directly.
 
-### 9.13 Auth-blob swap into a shared CLI dotfile (vs. **per-account** isolated dirs)
+### 10.13 Auth-blob swap into a shared CLI dotfile (vs. **per-account** isolated dirs)
 
 > **Scope:** this section is about multiple accounts *within* Clopen. The
 > orthogonal question — keeping Clopen's whole footprint out of the user's
-> global `~/.codex` / `~/.copilot` — is **§9.19**, and there the answer is
+> global `~/.codex` / `~/.copilot` — is **§10.19**, and there the answer is
 > the opposite: we DO override the home env var, but with **one dir per
 > engine shared by all accounts**, not one per account.
 
@@ -474,7 +474,7 @@ isolated home directory and override the CLI's home env var
   under account A's dir don't reach account B.
 
 Instead, all Clopen accounts for an engine share the **single** isolated
-home from §9.19, and multi-account is handled by swapping the one dotfile
+home from §10.19, and multi-account is handled by swapping the one dotfile
 inside it to/from the DB:
 
 | Step | Behavior |
@@ -496,7 +496,7 @@ dotfile (Codex's `codex login` does), serialize the login flows with a
 backend-wide mutex so two simultaneous "Add Account" attempts can't
 clobber each other.
 
-### 9.14 Long-lived server engines need a "Restart Server" UX
+### 10.14 Long-lived server engines need a "Restart Server" UX
 
 If your engine boots a process or constructs an SDK client that **caches
 credentials** beyond a single stream (OpenCode's `opencode serve`
@@ -524,16 +524,16 @@ Engines that **do not** need this:
 - Subprocess-per-turn engines (Claude Code's `query()`, Codex's
   `codex exec`) re-read credentials at every turn — there is nothing
   cached to invalidate.
-- Engines using the auth-blob swap pattern (§9.13) — the swap happens
+- Engines using the auth-blob swap pattern (§10.13) — the swap happens
   inside `accounts-switch`, and the next turn's subprocess picks up the
   new dotfile without a restart event.
 
 If you are tempted to add a `*-server-restart` event for an engine that
 spawns a fresh subprocess per turn, you almost certainly want the
-auth-blob swap (§9.13) instead — adding the restart event ships dead
+auth-blob swap (§10.13) instead — adding the restart event ships dead
 code and confuses the UX (button that does nothing observable).
 
-### 9.15 Sub-agent (`Task` / `Agent` tool) routing — name, input, parent id
+### 10.15 Sub-agent (`Task` / `Agent` tool) routing — name, input, parent id
 
 Every engine SDK we support exposes a "dispatch sub-agent" tool. Each
 SDK names it differently (Claude → `Task`, OpenCode → `task`, Copilot →
@@ -556,7 +556,7 @@ const name = block.name === 'Task' ? 'Agent' : block.name;
 ```
 
 Then normalise the SDK's raw input fields into `AgentInput { prompt,
-description, subagentType }` (see §9.1). Field names vary —
+description, subagentType }` (see §10.1). Field names vary —
 `prompt`/`task`/`instruction`, `agent_type`/`subagent_type`/`agent` —
 so the normaliser must accept them all and default `subagentType` to
 `'general-purpose'`.
@@ -565,7 +565,7 @@ so the normaliser must accept them all and default `subagentType` to
 frontend grouper (`message-grouper.ts`) routes messages with
 `parent.toolUseId !== null` into `subAgentMap[parentToolId]` and
 attaches them as `subActivities` on the parent `Agent` tool block.
-Top-level messages must keep `parent.toolUseId = null` (see §9.5);
+Top-level messages must keep `parent.toolUseId = null` (see §10.5);
 sub-agent messages must carry the **parent dispatch tool's** call id.
 Each SDK exposes that linkage differently:
 
@@ -611,7 +611,7 @@ ships, sub-agent tool calls float to the top of the chat. If only step
 missed (in an SDK that does double-emit), sub-agent text appears in
 both places.
 
-### 9.16 `generateStructured` — schema strictness & part-extraction fallback
+### 10.16 `generateStructured` — schema strictness & part-extraction fallback
 
 `generateStructured` powers the AI commit-message generator (and any
 future one-shot JSON callers). Each adapter satisfies the same
@@ -699,7 +699,7 @@ implement structured output, leave the property `undefined` and the WS
 route will surface `Engine "<name>" does not support structured
 generation` cleanly.
 
-### 9.17 OpenCode SDK v1 vs v2 — events come from the binary, not the npm types
+### 10.17 OpenCode SDK v1 vs v2 — events come from the binary, not the npm types
 
 `@opencode-ai/sdk` ships **two** API surfaces: the root entry (`.` →
 `dist/index.js`, the **v1** client the adapter uses today) and a separate
@@ -727,9 +727,9 @@ event protocol. Until then, v1 is intentional.
 
 ---
 
-### 9.18 External (registry) MCP servers — proxied through the bridge
+### 10.18 External (registry) MCP servers — proxied through the bridge
 
-§9.12 covers the **internal** `clopen-mcp` bridge. **External** servers (the
+§10.12 covers the **internal** `clopen-mcp` bridge. **External** servers (the
 ones users install from the registry, stored in `mcp_servers`) used to be
 connected **directly** by each engine — a third-party URL or stdio command.
 That is no longer true: **external servers are now proxied** through a
@@ -759,7 +759,7 @@ What this means for a new adapter:
    (`getClaude/OpenCode/Codex/Copilot/QwenExternalMcpConfig`); mirror that.
 
 2. **Use the engine's real URL/header field** — same per-SDK caveats as the
-   internal bridge (§9.12), because the shape is identical:
+   internal bridge (§10.12), because the shape is identical:
    - OpenCode: `url` (`type:'remote'`); Claude/Copilot: `url` (`type:'http'`).
    - Qwen: `httpUrl`.
    - **Codex: `http_headers`** (a TOML table) — **not** `bearer_token`, which is
@@ -791,7 +791,7 @@ What you must NOT do:
 
 ---
 
-### 9.19 Per-engine config-dir isolation (`{clopenDir}/engine/{engine}/user/`)
+### 10.19 Per-engine config-dir isolation (`{clopenDir}/engine/{engine}/user/`)
 
 Every engine's CLI/SDK writes runtime state (credentials, session/rollout
 files, logs, caches) to a home dir. Left at the default, that dir is the
@@ -828,7 +828,7 @@ Sharp edges, each of which silently defeats isolation if missed:
   `session-fork.ts` reads `getCodexHomeDir()` and Qwen's reads
   `getQwenRuntimeDir()` — both resolve to the same isolated base the env
   var sets. If they drift, `sessionStateExists()` returns false and
-  multi-branch checkpoints break (see §9.10).
+  multi-branch checkpoints break (see §10.10).
 - **Qwen isolation is partial — and that's accepted.** `QWEN_RUNTIME_DIR`
   relocates runtime output (chats/sessions, history, logs, tmp) but the
   CLI's global `settings.json` / OAuth creds still resolve to `~/.qwen`
@@ -854,7 +854,7 @@ Sharp edges, each of which silently defeats isolation if missed:
   XDG fine; a stale reused server was the culprit. Symptom to watch for: data
   still landing in `~/.local/share/opencode` after the env looks right.
 
-**This is orthogonal to multi-account (§9.13).** All of an engine's Clopen
+**This is orthogonal to multi-account (§10.13).** All of an engine's Clopen
 accounts share this **one** isolated dir; multiple accounts inside it are
 still the auth-blob swap, **not** a dir per account.
 

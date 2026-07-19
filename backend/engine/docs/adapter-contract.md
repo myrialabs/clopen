@@ -129,7 +129,7 @@ calling `getEnabledMcpServers(options.mcpContext)`.
 - ❌ **Create per-account isolated home directories** to multiplex two
   accounts into the same CLI's shared dotfile. Snapshot the CLI's auth
   file into `engine_accounts.credential` on login; write the chosen
-  account's snapshot back into the shared location on switch. See §9.13.
+  account's snapshot back into the shared location on switch. See §10.13.
 
 ### 2.6 Standard files in each adapter
 
@@ -157,7 +157,7 @@ Naming rules — strict, even when an SDK's local jargon differs:
 
 | File              | Owns                                                                  |
 |-------------------|-----------------------------------------------------------------------|
-| `credential.ts`   | Parse `engine_accounts.credential` (JSON wrapper or raw key); for shared-CLI engines, materialise the auth-blob into the dotfile and snapshot it back. **Never** name this `auth.ts` — credentials are the unified concept (see §9.13). |
+| `credential.ts`   | Parse `engine_accounts.credential` (JSON wrapper or raw key); for shared-CLI engines, materialise the auth-blob into the dotfile and snapshot it back. **Never** name this `auth.ts` — credentials are the unified concept (see §10.13). |
 | `error-handler.ts`| Export `handleStreamError(error: unknown, ...): void` that swallows abort errors and re-throws everything else as a sanitised `Error`. Required even when the body is short — `OpenCodeEngine` previously inlined ~50 lines into the catch block; that pattern is no longer accepted. |
 | `presets.ts`      | Multi-provider/region picker catalog (Qwen's DashScope/OpenRouter/Fireworks; OpenCode's models.dev cache). Multi-provider engines that lacked a `presets.ts` (OpenCode used to call this `config.ts`) have been migrated. |
 | `config.ts`       | Runtime config builder ONLY — turning DB providers + accounts into env vars / spawn options. Catalog data goes in `presets.ts`. |
@@ -178,6 +178,11 @@ Important conventions:
   use `[]` as the failure sentinel (network, auth, parse error). Do **not**
   return `null` — both `fetchOpenCodeModels` and `fetchQwenModels` return
   `[]` on failure so the picker renders empty rather than a stale catalog.
+- `stream.ts` materialises the user's artifacts at stream start: call
+  `syncSkills(...)` then `syncEngineArtifacts(...)` (and, for prompt-scoped
+  engines, prepend `buildArtifactsPromptContext(...)` to the prompt) from
+  `backend/engine/artifact-sync.ts`. These are shared helpers, **not** files in
+  the per-adapter taxonomy — the adapter only calls them. See §8.3.
 
 ---
 

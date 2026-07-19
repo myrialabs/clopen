@@ -14,7 +14,7 @@
  *
  * MCP: reuses the existing remote MCP HTTP server at `/mcp` via
  * `getQwenMcpConfig()`. Tool handlers run in-process in the Clopen backend
- * (README §9.12).
+ * (README §10.12).
  *
  * AskUserQuestion: Qwen's `canUseTool` callback signature does NOT include
  * the tool_use_id (see `node_modules/@qwen-code/sdk/dist/index.d.ts:406-409`),
@@ -155,7 +155,7 @@ export class QwenEngine implements AIEngine {
 
 		// Fork-by-copy on EVERY resume — same semantics as Claude
 		// (`forkSession: true`), OpenCode (`client.session.fork()`),
-		// Copilot, and Codex (README §9.10): each turn must produce a
+		// Copilot, and Codex (README §10.10): each turn must produce a
 		// brand-new session id so the original branch's history is never
 		// mutated and the multi-branch checkpoint tree stays consistent.
 		// Falls through to a plain resume only when the source chat can't

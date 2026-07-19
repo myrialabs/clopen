@@ -616,7 +616,7 @@ export function getCopilotMcpConfig(profileFilter?: Set<string>): Record<string,
  * a `CLIMcpServerConfig` value that supports the Streamable-HTTP transport via
  * `httpUrl`. We reuse the SAME `/mcp` URL Open Code, Codex and Copilot already
  * consume — no new HTTP server, no per-engine bridge. Tool handlers run
- * in-process in the Clopen backend (README §9.12).
+ * in-process in the Clopen backend (README §10.12).
  *
  * Approval: the Qwen adapter uses `permissionMode: 'default'` with a
  * `canUseTool` callback that auto-allows everything. `AskUserQuestion` is

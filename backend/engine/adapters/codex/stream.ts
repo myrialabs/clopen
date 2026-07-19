@@ -6,7 +6,7 @@
  * instance, the `Thread` lifecycle, and an `AbortController` for cancellation.
  *
  * Auth: dual mode (API key + ChatGPT browser OAuth). See ./auth.ts and
- * backend/engine/README.md §9.13 for the auth-blob swap pattern.
+ * backend/engine/README.md §10.13 for the auth-blob swap pattern.
  *
  * MCP: reuses the existing remote MCP HTTP server at /mcp via
  * getCodexMcpConfig() in backend/mcp/config.ts. No new MCP infrastructure.
@@ -208,7 +208,7 @@ export class CodexEngine implements AIEngine {
 
 			if (resume) {
 				// Fork-by-copy on EVERY resume — same semantics as Copilot
-				// (README §9.10 sharp edge: never gate on options.forkSession).
+				// (README §10.10 sharp edge: never gate on options.forkSession).
 				let resumeId = resume;
 				if (sessionStateExists(resume)) {
 					const forkId = crypto.randomUUID();
@@ -279,7 +279,7 @@ export class CodexEngine implements AIEngine {
 			handleStreamError(error);
 		} finally {
 			// Snapshot the (possibly token-refreshed) auth.json back to DB so
-			// refreshes survive across account switches (README §9.13 step 4).
+			// refreshes survive across account switches (README §10.13 step 4).
 			try {
 				snapshotAuthJsonToActiveAccount();
 			} catch (snapshotErr) {

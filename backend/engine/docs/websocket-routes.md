@@ -104,7 +104,7 @@ change with the credential.
 `query()`), the credential is re-read at every turn and there is nothing
 to "restart". Such engines do not implement `*-server-restart`. The
 appropriate analog for shared-CLI-dotfile engines like Codex is the
-auth-blob swap (§9.13) — performed inside `accounts-switch`, not via a
+auth-blob swap (§10.13) — performed inside `accounts-switch`, not via a
 separate restart event.
 
 ### 4.3 Copilot — `engine:copilot-*`

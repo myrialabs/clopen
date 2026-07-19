@@ -356,7 +356,7 @@ export class CopilotEngine implements AIEngine {
 				includeSubAgentStreamingEvents: false,
 				// Custom MCP tools served from Clopen's in-process remote MCP HTTP
 				// endpoint (`/mcp`). Same `clopen-mcp` namespace and URL Open Code
-				// and Codex consume — see backend/engine/README.md §9.12.
+				// and Codex consume — see backend/engine/README.md §10.12.
 				...(Object.keys(mcpConfig).length > 0 && { mcpServers: mcpConfig }),
 			};
 

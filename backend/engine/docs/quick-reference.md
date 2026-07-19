@@ -1,6 +1,6 @@
 [← Engine adapter guide](../README.md)
 
-## 10. Quick reference table
+## 11. Quick reference table
 
 | Need                                        | File                                                      |
 |---------------------------------------------|-----------------------------------------------------------|
@@ -14,12 +14,16 @@
 | Reasoning stream lifecycle                  | `opencode/stream.ts::flushReasoning`, `copilot/message-converter.ts::convertReasoningDelta` |
 | Cancel-before-RPC ordering                  | `opencode/stream.ts::cancel`, `claude/stream.ts::cancel`, `copilot/stream.ts::cancel`  |
 | Fork session (native vs. on-disk workaround) | `claude/stream.ts` (`forkSession: true`), `opencode/stream.ts` (`client.session.fork`), `copilot/stream.ts` (`client.rpc.sessions.fork`), `codex/session-fork.ts` + `qwen/session-fork.ts` (copy disk state) |
-| Sub-agent (`Task`/`Agent`) routing          | `claude/message-converter.ts` (`parent_tool_use_id`), `opencode/message-converter.ts::convertSubtaskToolUseOnly`, `copilot/message-converter.ts::resolveParentToolUseId` + `agentParentMap` (see §9.15) |
+| Sub-agent (`Task`/`Agent`) routing          | `claude/message-converter.ts` (`parent_tool_use_id`), `opencode/message-converter.ts::convertSubtaskToolUseOnly`, `copilot/message-converter.ts::resolveParentToolUseId` + `agentParentMap` (see §10.15) |
 | AskUserQuestion event + HTTP fallback       | `opencode/stream.ts::resolveUserAnswer`, `claude/stream.ts::canUseTool` |
 | MCP servers exposed over HTTP (single source) | `backend/mcp/internal/remote-server.ts`, `backend/mcp/internal/config.ts::getOpenCodeMcpConfig` (and future `getXxxMcpConfig`) |
-| Auth-blob swap into shared CLI dotfile      | Pattern only (no implementation yet); see §3.3 callout + §9.13 |
+| Materialize an artifact per engine (matrix)  | `backend/artifacts/matrix.ts::resolveArtifact`, generic writer `backend/artifacts/sync.ts`, scanner `backend/artifacts/detect.ts` (see §8.2) |
+| Per-stream artifact sync (Commands/Subagents/Instructions) | `backend/engine/artifact-sync.ts::syncEngineArtifacts` + `buildArtifactsPromptContext` — called from each `stream.ts` after `syncSkills` (see §8.3) |
+| Profile scoping (narrow active artifacts)   | `backend/profiles/service.ts::resolveActiveProfileId` + `artifactFilter` (see §8.4) |
+| Permission enforcement (runtime hook)        | `backend/permissions/service.ts::resolvePermissionsFromDb` + `isToolAllowed` (see §8.4) |
+| Auth-blob swap into shared CLI dotfile      | Pattern only (no implementation yet); see §3.3 callout + §10.13 |
 | Restart-Server pattern (long-lived engines) | `backend/ws/engine/opencode/providers.ts::engine:opencode-server-restart`, `frontend/components/chat/input/components/EngineModelPicker.svelte::restartOCServer`, `AIEnginesSettings.svelte::handleRestartServer`/`forceRestartServer` |
-| `generateStructured` (no tools, JSON)       | `claude/stream.ts::generateStructured` (native `outputFormat`), `codex/stream.ts::generateStructured` (native `outputSchema`), `opencode/stream.ts::generateStructured` + `copilot/stream.ts::generateStructured` + `qwen/stream.ts::generateStructured` (prompt-engineered via `backend/engine/structured-helpers.ts`). See §9.16 for the strict-schema + part-fallback gotchas. |
+| `generateStructured` (no tools, JSON)       | `claude/stream.ts::generateStructured` (native `outputFormat`), `codex/stream.ts::generateStructured` (native `outputSchema`), `opencode/stream.ts::generateStructured` + `copilot/stream.ts::generateStructured` + `qwen/stream.ts::generateStructured` (prompt-engineered via `backend/engine/structured-helpers.ts`). See §10.16 for the strict-schema + part-fallback gotchas. |
 | Error normalisation                         | `claude/error-handler.ts`, `copilot/error-handler.ts`, `opencode/error-handler.ts`, `qwen/error-handler.ts`, `codex/error-handler.ts` |
 | DB provider/account access                  | `backend/database/queries/engine-queries.ts`              |
 | Per-platform install recipe                 | `backend/engine/install-recipes.ts`                       |
