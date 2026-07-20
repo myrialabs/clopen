@@ -10,12 +10,14 @@
 	import { codexAccountsStore } from '$frontend/stores/features/codex-accounts.svelte';
 	import { qwenAccountsStore } from '$frontend/stores/features/qwen-accounts.svelte';
 	import { piAccountsStore } from '$frontend/stores/features/pi-accounts.svelte';
+	import { clineAccountsStore } from '$frontend/stores/features/cline-accounts.svelte';
 	import { opencodeProvidersStore } from '$frontend/stores/features/opencode-providers.svelte';
 	import ClaudeCodePanel from './panels/ClaudeCodePanel.svelte';
 	import CopilotPanel from './panels/CopilotPanel.svelte';
 	import CodexPanel from './panels/CodexPanel.svelte';
 	import QwenPanel from './panels/QwenPanel.svelte';
 	import PiPanel from './panels/PiPanel.svelte';
+	import ClinePanel from './panels/ClinePanel.svelte';
 	import OpenCodePanel from './panels/OpenCodePanel.svelte';
 	import type {
 		ClaudeCodeStatus,
@@ -24,6 +26,7 @@
 		CodexStatus,
 		QwenStatus,
 		PiStatus,
+		ClineStatus,
 	} from './panels/panel-types';
 
 	interface Props {
@@ -66,6 +69,10 @@
 	let piStatus = $state<PiStatus | null>(null);
 	let isLoadingPiStatus = $state(true);
 	const piAccounts = $derived(piAccountsStore.accounts);
+
+	let clineStatus = $state<ClineStatus | null>(null);
+	let isLoadingClineStatus = $state(true);
+	const clineAccounts = $derived(clineAccountsStore.accounts);
 
 	const ocProviders = $derived(opencodeProvidersStore.providers);
 
@@ -145,6 +152,17 @@
 		isLoadingPiStatus = false;
 	}
 
+	async function refreshClineStatus() {
+		isLoadingClineStatus = true;
+		try {
+			clineStatus = await ws.http('engine:cline-status', {});
+			if (clineStatus?.installed) await clineAccountsStore.refresh();
+		} catch {
+			clineStatus = null;
+		}
+		isLoadingClineStatus = false;
+	}
+
 	onMount(async () => {
 		await Promise.all([
 			refreshClaudeCodeStatus(),
@@ -153,6 +171,7 @@
 			refreshCodexStatus(),
 			refreshQwenStatus(),
 			refreshPiStatus(),
+			refreshClineStatus(),
 		]);
 	});
 </script>
@@ -178,7 +197,8 @@
 				eng.type === 'copilot' ? { installed: copilotStatus?.installed ?? null, count: copilotAccounts.length } :
 				eng.type === 'codex' ? { installed: codexStatus?.installed ?? null, count: codexAccounts.length } :
 				eng.type === 'qwen' ? { installed: qwenStatus?.installed ?? null, count: qwenAccounts.length } :
-				{ installed: piStatus?.installed ?? null, count: piAccounts.length }}
+				eng.type === 'pi' ? { installed: piStatus?.installed ?? null, count: piAccounts.length } :
+				{ installed: clineStatus?.installed ?? null, count: clineAccounts.length }}
 			{@const countLabel = `${stat.count} account${stat.count === 1 ? '' : 's'}`}
 			<button
 				type="button"
@@ -222,6 +242,8 @@
 			<QwenPanel status={qwenStatus} isLoading={isLoadingQwenStatus} onRefreshStatus={refreshQwenStatus} />
 		{:else if activeEngine === 'pi'}
 			<PiPanel status={piStatus} isLoading={isLoadingPiStatus} onRefreshStatus={refreshPiStatus} />
+		{:else if activeEngine === 'cline'}
+			<ClinePanel status={clineStatus} isLoading={isLoadingClineStatus} onRefreshStatus={refreshClineStatus} />
 		{:else if activeEngine === 'opencode'}
 			<OpenCodePanel status={openCodeStatus} isLoading={isLoadingOpenCodeStatus} />
 		{/if}

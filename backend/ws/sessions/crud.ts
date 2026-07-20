@@ -32,7 +32,7 @@ const sessionSchema = t.Object({
 	ended_at: t.Optional(t.String()),
 	// Session preferences
 	title: t.Optional(t.String()),
-	engine: t.Optional(t.Union([t.Literal('claude-code'), t.Literal('opencode'), t.Literal('copilot'), t.Literal('codex'), t.Literal('qwen'), t.Literal('pi')])),
+	engine: t.Optional(t.Union([t.Literal('claude-code'), t.Literal('opencode'), t.Literal('copilot'), t.Literal('codex'), t.Literal('qwen'), t.Literal('pi'), t.Literal('cline')])),
 	model_id: t.Optional(t.String()),
 	model_name: t.Optional(t.String()),
 	account_id: t.Optional(t.Number()),
@@ -117,7 +117,7 @@ export const crudHandler = createRouter()
 	.http('sessions:create', {
 		data: t.Object({
 			title: t.Optional(t.String()),
-			engine: t.Optional(t.Union([t.Literal('claude-code'), t.Literal('opencode'), t.Literal('copilot'), t.Literal('codex'), t.Literal('qwen'), t.Literal('pi')]))
+			engine: t.Optional(t.Union([t.Literal('claude-code'), t.Literal('opencode'), t.Literal('copilot'), t.Literal('codex'), t.Literal('qwen'), t.Literal('pi'), t.Literal('cline')]))
 		}),
 		response: sessionSchema
 	}, async ({ data, conn }) => {

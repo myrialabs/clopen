@@ -110,11 +110,11 @@ export const crudHandler = createRouter()
 	// List available models for an engine
 	.http('models:list', {
 		data: t.Object({
-			engine: t.Union([t.Literal('claude-code'), t.Literal('opencode'), t.Literal('copilot'), t.Literal('codex'), t.Literal('qwen'), t.Literal('pi')])
+			engine: t.Union([t.Literal('claude-code'), t.Literal('opencode'), t.Literal('copilot'), t.Literal('codex'), t.Literal('qwen'), t.Literal('pi'), t.Literal('cline')])
 		}),
 		response: t.Array(t.Object({
 			engine: t.Object({
-				type: t.Union([t.Literal('claude-code'), t.Literal('opencode'), t.Literal('copilot'), t.Literal('codex'), t.Literal('qwen'), t.Literal('pi')]),
+				type: t.Union([t.Literal('claude-code'), t.Literal('opencode'), t.Literal('copilot'), t.Literal('codex'), t.Literal('qwen'), t.Literal('pi'), t.Literal('cline')]),
 				provider: t.String(),
 				model: t.Object({ id: t.String(), name: t.String() }),
 				account: t.Object({ id: t.Number(), name: t.String() }),

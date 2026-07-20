@@ -251,6 +251,8 @@ resume.
 | Copilot   | Call `client.rpc.sessions.fork({ sessionId: resume })` on every resume — native (`@experimental`, added in `@github/copilot-sdk` 1.0.0-beta.4). |
 | Codex     | **No native API yet** — fork by copying the rollout JSONL FILE on every resume.              |
 | Qwen Code | **No native API yet** — fork by copying the chat JSONL FILE on every resume.                 |
+| Pi        | `SessionManager.forkFrom()` on the on-disk JSONL tree (in Clopen's isolated sessions dir) — native, on every resume. |
+| Cline     | **No session store at all** (stateless `Agent`) — the adapter reconstructs branch history in memory and forks by copy. See "In-process, session-less SDKs" below. |
 
 > **Sharp edge — fork is NOT gated on `EngineQueryOptions.forkSession`.**
 > The `forkSession` field exists on the type but the stream-manager
@@ -331,6 +333,39 @@ turn 3   user → assistant   sessionId: C   (forked from B)
 
 Every assistant message carries its **own** session id. Reusing the
 same id across turns is the symptom that forking is gated or skipped.
+
+**In-process, session-less SDKs (Cline) — copy-on-branch in memory.**
+Some SDKs expose only a stateless run loop (`@cline/sdk`'s `Agent`) with
+**no** host-owned session store — nothing on disk, nothing keyed by a
+session id. The adapter reconstructs branch history itself, and the fork
+contract is unchanged: **every turn mints a fresh session id and stores its
+resulting transcript under that new id; a resumed turn restores the parent
+id's transcript and NEVER overwrites it.** Because each conversation node
+then owns a unique id, `resume` (= the branch point's `parent.sessionId`,
+derived by the stream-manager) selects exactly one ancestor, so sibling
+forks (A→B→C vs A→B1→C1) stay isolated.
+
+```ts
+// cline/stream.ts — resume path
+const priorMessages = resume ? this.sessions.get(resume) : undefined;
+const sessionId = crypto.randomUUID();               // ALWAYS new — never reuse `resume`
+// … agent.restore(priorMessages) + agent.continue(userMsg), or agent.run() when fresh …
+this.sessions.set(sessionId, [...result.messages]);  // store under the NEW id; do NOT mutate the parent entry
+```
+
+The trap that produced the classic checkpoint bug during Cline bring-up:
+keying the transcript by an id that's **reused** across turns
+(`sessionId = resume ?? uuid`, then `sessions.set(resume, …)`) overwrites
+the one shared entry — so after an undo+continue the forked branch restores
+the **sibling** branch's tail and answers with the wrong history. The tell
+is identical to the on-disk case: **every persisted assistant message shares
+one session id.** Bound the map (FIFO) so a long-lived project engine can't
+grow unbounded — evicting an old entry only degrades a *very* old fork to
+"no context", the same graceful fallback as a cross-restart resume (the
+in-memory map is empty after a restart, so `resume` misses and the turn
+starts fresh). This is the one real limitation of the session-less approach,
+and it's unavoidable: adapters **must not** read the message DB themselves
+(§2.5), so cross-restart branch context can't be rebuilt.
 
 When an SDK eventually adds a native `forkSession` (or equivalent), the
 migration is a one-liner: delete that adapter's `session-fork.ts`, drop
@@ -610,6 +645,53 @@ ships, sub-agent tool calls float to the top of the chat. If only step
 2 ships, the dispatch tool still says `Unknown:task`. If only step 3 is
 missed (in an SDK that does double-emit), sub-agent text appears in
 both places.
+
+**Session-less SDKs with no native sub-agent primitive (Pi, Cline) —
+synthesize the `Agent` tool yourself.** The above assumes the SDK *has* a
+`Task`/`Agent` tool that emits nested messages. A bare run loop
+(`@cline/sdk`'s `Agent`, Pi's `AgentSession`) has none — the "Available
+Subagents" preamble is then informational only and the model has nothing
+to call (the exact symptom reported on Cline: *"it never uses subagents"*).
+Expose a synthetic `Agent` tool (`createTool`) whose description lists the
+enabled subagents; its `execute` spawns a **fresh, bounded sub-agent** with
+the chosen subagent's system prompt + the permission-filtered builtins
+**ONLY** (no AskUserQuestion, no MCP, no nested `Agent` — delegation must
+not recurse), runs the delegated prompt to completion, and returns the
+sub-agent's `outputText` as the tool result. Three things to get right —
+each was a separate round-trip during Cline bring-up:
+
+1. **Actually register the tool.** When subagents are enabled, push the
+   `Agent` tool into the tools list **and** set
+   `toolPolicies.Agent = { autoApprove: true }` (+ include it in the
+   `system_init` tool list). Missing this = the model can't delegate
+   because the tool isn't there. Skip the whole block when no subagents
+   are enabled — there's nothing to dispatch to.
+
+2. **Route sub-activities via a late-bound queue handle.** The dispatch
+   `run()` is constructed *before* the stream's `EventQueue` exists, so
+   hold a `{ queue: null }` box and set `.queue` right after the queue is
+   created. Inside `run()`, subscribe to the sub-agent, convert its
+   events with the same message-converter, stamp
+   `parent.toolUseId = context.toolCallId` (the parent `Agent` block's id)
+   on each message, and push into that queue. The frontend folds them under
+   the `Agent` block as `subActivities` (step 2 above). Miss this and
+   `subActivities` stays empty even though the delegation ran.
+
+3. **Sub-activities are a tool trail — push tool_use only.**
+   `processSubAgentMessages` renders both `tool_use` **and** `text`
+   activities, but the convention (Claude/Pi) is tool-only: the sub-agent's
+   prose is already the `Agent` tool's *result* (`outputText`). Push only
+   assistant messages that contain a `tool_use` block, plus their
+   `tool_result` user messages; drop text-only assistants, reasoning, and
+   every transient event. Miss this and the sub-agent's narration leaks in
+   as `text` sub-activities (the second Cline round-trip).
+
+Because the sub-agent is a **separate instance**, its internal steps never
+enter the main agent's transcript — the parent only ever sees the `Agent`
+call + its returned text. So sub-agent work can't contaminate the parent
+conversation, nor a later checkpoint fork of it (§10.10). See
+`cline/agent-tool.ts` + the dispatch block in `cline/stream.ts` (and the
+Pi equivalents) for the reference implementation.
 
 ### 10.16 `generateStructured` — schema strictness & part-extraction fallback
 

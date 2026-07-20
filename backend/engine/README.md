@@ -1,12 +1,23 @@
 # `backend/engine/` — End-to-End Adapter Guide
 
 This folder is the **boundary** between Clopen and the AI SDKs that drive
-streaming chat. Today there are three adapters: **`claude`**
-(`@anthropic-ai/claude-agent-sdk`), **`opencode`** (`@opencode-ai/sdk`), and
-**`copilot`** (`@github/copilot-sdk`). Every adapter follows the same shape so
-that the rest of the system outside this folder — `stream-manager`, MCP, DB,
-WebSocket, frontend chat, settings UI — stays **agnostic** to the underlying
-SDK.
+streaming chat. The adapters today: **`claude`**
+(`@anthropic-ai/claude-agent-sdk`), **`opencode`** (`@opencode-ai/sdk`),
+**`copilot`** (`@github/copilot-sdk`), **`codex`** (`@openai/codex-sdk`),
+**`qwen`** (`@qwen-code/qwen-code`), **`pi`**
+(`@earendil-works/pi-coding-agent`), and **`cline`** (`@cline/sdk`). Every
+adapter follows the same shape so that the rest of the system outside this
+folder — `stream-manager`, MCP, DB, WebSocket, frontend chat, settings UI —
+stays **agnostic** to the underlying SDK.
+
+> **In-process, session-less SDKs are their own category.** Most adapters
+> wrap a CLI subprocess or an SDK that owns a session store (on disk or via a
+> server). `cline` is different: `@cline/sdk`'s stateless `Agent` holds **no**
+> session store at all, so the adapter reconstructs branch history in memory
+> and synthesizes the sub-agent (`Agent`) tool itself. Both were bug sources
+> during bring-up — read **§10.10** (checkpoint forks) and **§10.15**
+> (sub-agents) in [lessons-learned](./docs/lessons-learned.md) before adding a
+> similar engine.
 
 This guide is split into focused documents — start here for the architecture
 map, then jump to the area you need.

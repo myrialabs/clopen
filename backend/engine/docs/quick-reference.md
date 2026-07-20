@@ -13,8 +13,8 @@
 | Buffer until usage event arrives            | `copilot/message-converter.ts::flushPending` + `captureUsage` |
 | Reasoning stream lifecycle                  | `opencode/stream.ts::flushReasoning`, `copilot/message-converter.ts::convertReasoningDelta` |
 | Cancel-before-RPC ordering                  | `opencode/stream.ts::cancel`, `claude/stream.ts::cancel`, `copilot/stream.ts::cancel`  |
-| Fork session (native vs. on-disk workaround) | `claude/stream.ts` (`forkSession: true`), `opencode/stream.ts` (`client.session.fork`), `copilot/stream.ts` (`client.rpc.sessions.fork`), `codex/session-fork.ts` + `qwen/session-fork.ts` (copy disk state) |
-| Sub-agent (`Task`/`Agent`) routing          | `claude/message-converter.ts` (`parent_tool_use_id`), `opencode/message-converter.ts::convertSubtaskToolUseOnly`, `copilot/message-converter.ts::resolveParentToolUseId` + `agentParentMap` (see §10.15) |
+| Fork session (native vs. on-disk vs. in-memory) | `claude/stream.ts` (`forkSession: true`), `opencode/stream.ts` (`client.session.fork`), `copilot/stream.ts` (`client.rpc.sessions.fork`), `codex/session-fork.ts` + `qwen/session-fork.ts` (copy disk state), `pi/session-fork.ts` (`SessionManager.forkFrom`), `cline/stream.ts` (**session-less** — fresh id per turn + in-memory copy-on-branch; see §10.10) |
+| Sub-agent (`Task`/`Agent`) routing          | `claude/message-converter.ts` (`parent_tool_use_id`), `opencode/message-converter.ts::convertSubtaskToolUseOnly`, `copilot/message-converter.ts::resolveParentToolUseId` + `agentParentMap`; **synthesized** `Agent` tool for bare-loop SDKs in `cline/agent-tool.ts` + `pi/agent-tool.ts` (see §10.15) |
 | AskUserQuestion event + HTTP fallback       | `opencode/stream.ts::resolveUserAnswer`, `claude/stream.ts::canUseTool` |
 | MCP servers exposed over HTTP (single source) | `backend/mcp/internal/remote-server.ts`, `backend/mcp/internal/config.ts::getOpenCodeMcpConfig` (and future `getXxxMcpConfig`) |
 | Materialize an artifact per engine (matrix)  | `backend/artifacts/matrix.ts::resolveArtifact`, generic writer `backend/artifacts/sync.ts`, scanner `backend/artifacts/detect.ts` (see §8.2) |

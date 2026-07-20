@@ -26,6 +26,9 @@ export type {
 	PiAuthMode,
 	PiCredentialField,
 	PiProviderPreset,
+	ClineAuthMode,
+	ClineCredentialField,
+	ClineProviderPreset,
 } from './engine';
 
 // ── Tools ────────────────────────────────────────────────────

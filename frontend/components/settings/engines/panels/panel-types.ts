@@ -49,3 +49,11 @@ export interface PiStatus {
 	accountsCount: number;
 	backendOS: BackendOS;
 }
+
+export interface ClineStatus {
+	installed: boolean;
+	version: string | null;
+	activeAccount: { id: number; name: string } | null;
+	accountsCount: number;
+	backendOS: BackendOS;
+}

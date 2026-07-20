@@ -61,7 +61,7 @@ export interface EngineModel {
 
 // Engine metadata for UI display
 export interface EngineInfo {
-	type: 'claude-code' | 'opencode' | 'copilot' | 'codex' | 'qwen' | 'pi';
+	type: 'claude-code' | 'opencode' | 'copilot' | 'codex' | 'qwen' | 'pi' | 'cline';
 	name: string;
 	description: string;
 	icon: {
@@ -122,6 +122,48 @@ export interface PiProviderPreset {
 	/** API-key credential fields to render (present when `authModes` includes 'api_key'). */
 	fields?: PiCredentialField[];
 	/** Label shown for the OAuth (subscription) option, when applicable. */
+	oauthLabel?: string;
+	/** Where to obtain an API key. */
+	apiKeyUrl?: string;
+}
+
+// ── Cline provider presets (wire format for `engine:cline-presets-list`) ──
+//
+// Cline (`@cline/sdk`) is genuinely multi-provider (Anthropic, OpenAI, Google,
+// Bedrock, Mistral, the Cline account, OpenAI-compatible …). Each provider is
+// either API-key based or OAuth based (the Cline account uses WorkOS OAuth). The
+// preset catalog is exposed to the login picker so the frontend renders the
+// right flow per provider without importing `$backend`. Runtime values live in
+// `backend/engine/adapters/cline/presets.ts`, derived from the SDK catalog +
+// `getProviderConfigFields`.
+
+export type ClineAuthMode = 'api_key' | 'oauth';
+
+/**
+ * One credential input a Cline provider needs, shown up-front in the account
+ * form (OpenCode/Pi-style). `role: 'apiKey'` maps to the provider api key;
+ * `role: 'baseUrl'` maps to a custom base URL; `role: 'field'` maps to an extra
+ * provider-scoped field (AWS region, GCP project id, …).
+ */
+export interface ClineCredentialField {
+	key: string;
+	label: string;
+	secret: boolean;
+	role: 'apiKey' | 'baseUrl' | 'field';
+	placeholder?: string;
+	optional?: boolean;
+}
+
+export interface ClineProviderPreset {
+	/** Provider id as the Cline SDK knows it (e.g. 'anthropic', 'openai', 'cline'). */
+	id: string;
+	/** Human-facing provider name. */
+	name: string;
+	/** Which auth flows this provider supports. */
+	authModes: ClineAuthMode[];
+	/** API-key credential fields to render (present when `authModes` includes 'api_key'). */
+	fields?: ClineCredentialField[];
+	/** Label shown for the OAuth (sign-in) option, when applicable. */
 	oauthLabel?: string;
 	/** Where to obtain an API key. */
 	apiKeyUrl?: string;

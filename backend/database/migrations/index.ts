@@ -56,6 +56,7 @@ import * as migration054 from './054_drop_subagent_agent_type';
 import * as migration055 from './055_artifact_model_tools_per_engine';
 import * as migration056 from './056_support_mssql_driver';
 import * as migration057 from './057_seed_pi_provider';
+import * as migration058 from './058_seed_cline_provider';
 
 // Export all migrations in order
 export const migrations = [
@@ -400,6 +401,12 @@ export const migrations = [
 		description: migration057.description,
 		up: migration057.up,
 		down: migration057.down
+	},
+	{
+		id: '058',
+		description: migration058.description,
+		up: migration058.up,
+		down: migration058.down
 	}
 ];
 

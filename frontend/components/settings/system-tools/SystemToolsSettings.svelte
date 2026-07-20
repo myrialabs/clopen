@@ -1,6 +1,7 @@
 <script lang="ts">
 	import ToolInstallCard from './ToolInstallCard.svelte';
 	import PiInfoCard from './PiInfoCard.svelte';
+	import ClineInfoCard from './ClineInfoCard.svelte';
 
 	interface Props {
 		showHeader?: boolean;
@@ -54,6 +55,8 @@
 			/>
 
 			<PiInfoCard />
+
+			<ClineInfoCard />
 		</div>
 	</section>
 

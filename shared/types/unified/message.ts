@@ -39,7 +39,7 @@ export interface MessageModel {
 
 /** Engine context attached to every message */
 export interface MessageEngine {
-	type: 'claude-code' | 'opencode' | 'copilot' | 'codex' | 'qwen' | 'pi';
+	type: 'claude-code' | 'opencode' | 'copilot' | 'codex' | 'qwen' | 'pi' | 'cline';
 	provider: string;
 	model: MessageModel;
 	account: MessageAccount;
