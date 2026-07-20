@@ -89,6 +89,6 @@ export async function syncCommands(engine: ArtifactEngine, profileId?: number): 
 }
 
 export async function syncCommandsAllEngines(): Promise<void> {
-	const engines: ArtifactEngine[] = ['claude', 'codex', 'copilot', 'qwen', 'opencode'];
+	const engines: ArtifactEngine[] = ['claude', 'codex', 'copilot', 'qwen', 'opencode', 'pi'];
 	await Promise.all(engines.map(syncCommands));
 }

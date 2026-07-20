@@ -33,9 +33,9 @@
  * `'claude'`, not the `EngineType` `'claude-code'`) so they line up with
  * {@link getEngineUserConfigDir} and the original Skills sync.
  */
-export type ArtifactEngine = 'claude' | 'codex' | 'copilot' | 'qwen' | 'opencode';
+export type ArtifactEngine = 'claude' | 'codex' | 'copilot' | 'qwen' | 'opencode' | 'pi';
 
-export const ARTIFACT_ENGINES: ArtifactEngine[] = ['claude', 'codex', 'copilot', 'qwen', 'opencode'];
+export const ARTIFACT_ENGINES: ArtifactEngine[] = ['claude', 'codex', 'copilot', 'qwen', 'opencode', 'pi'];
 
 /**
  * Kinds of artifact the framework can materialize. `'mcp'` is reserved (see file

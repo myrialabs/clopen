@@ -18,4 +18,4 @@ export type StopReason =
 	| 'interrupted';
 
 /** Supported AI engine backends */
-export type EngineType = 'claude-code' | 'opencode' | 'copilot' | 'codex' | 'qwen';
+export type EngineType = 'claude-code' | 'opencode' | 'copilot' | 'codex' | 'qwen' | 'pi';

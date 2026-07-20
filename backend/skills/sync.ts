@@ -137,7 +137,7 @@ export async function syncSkills(engine: SkillEngine, profileId?: number): Promi
 
 /** Re-sync every engine — used after a mutation so changes propagate eagerly. */
 export async function syncSkillsAllEngines(): Promise<void> {
-	const engines: SkillEngine[] = ['claude', 'codex', 'copilot', 'qwen', 'opencode'];
+	const engines: SkillEngine[] = ['claude', 'codex', 'copilot', 'qwen', 'opencode', 'pi'];
 	await Promise.all(engines.map(syncSkills));
 }
 

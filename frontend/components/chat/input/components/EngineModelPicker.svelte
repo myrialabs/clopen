@@ -14,6 +14,7 @@
 	import { copilotAccountsStore, type CopilotAccountItem } from '$frontend/stores/features/copilot-accounts.svelte';
 	import { codexAccountsStore, type CodexAccountItem } from '$frontend/stores/features/codex-accounts.svelte';
 	import { qwenAccountsStore, type QwenAccountItem } from '$frontend/stores/features/qwen-accounts.svelte';
+	import { piAccountsStore, type PiAccountItem } from '$frontend/stores/features/pi-accounts.svelte';
 	import { opencodeProvidersStore, type OpenCodeProviderItem, type OpenCodeAccountItem } from '$frontend/stores/features/opencode-providers.svelte';
 	import ws from '$frontend/utils/ws';
 	import { debug } from '$shared/utils/logger';
@@ -26,7 +27,7 @@
 	// at the store reference resolved by `accountsForEngine`.)
 	// ════════════════════════════════════════════
 
-	type SimpleAccount = ClaudeAccountItem | CopilotAccountItem | CodexAccountItem | QwenAccountItem;
+	type SimpleAccount = ClaudeAccountItem | CopilotAccountItem | CodexAccountItem | QwenAccountItem | PiAccountItem;
 
 	const accountsForEngine = $derived<SimpleAccount[]>(
 		chatModelState.engine === 'claude-code'
@@ -37,7 +38,9 @@
 					? codexAccountsStore.accounts
 					: chatModelState.engine === 'qwen'
 						? qwenAccountsStore.accounts
-						: []
+						: chatModelState.engine === 'pi'
+							? piAccountsStore.accounts
+							: []
 	);
 
 	const currentAccount = $derived(
@@ -55,6 +58,7 @@
 		chatModelState.engine === 'copilot' ? 'Copilot Account'
 			: chatModelState.engine === 'codex' ? 'Codex Account'
 			: chatModelState.engine === 'qwen' ? 'Qwen Code Account'
+			: chatModelState.engine === 'pi' ? 'Pi Account'
 			: 'Claude Account'
 	);
 
@@ -63,6 +67,7 @@
 		|| chatModelState.engine === 'copilot'
 		|| chatModelState.engine === 'codex'
 		|| chatModelState.engine === 'qwen'
+		|| chatModelState.engine === 'pi'
 	);
 	const hasEngineAccounts = $derived(accountsForEngine.length > 0);
 
@@ -77,6 +82,8 @@
 			codexAccountsStore.fetch();
 		} else if (engine === 'qwen') {
 			qwenAccountsStore.fetch();
+		} else if (engine === 'pi') {
+			piAccountsStore.fetch();
 		}
 	});
 
@@ -86,7 +93,7 @@
 		const accounts = accountsForEngine;
 		const currentId = chatModelState.accountId;
 
-		if ((engine === 'claude-code' || engine === 'copilot' || engine === 'codex' || engine === 'qwen') && accounts.length > 0) {
+		if ((engine === 'claude-code' || engine === 'copilot' || engine === 'codex' || engine === 'qwen' || engine === 'pi') && accounts.length > 0) {
 			untrack(() => {
 				// If no account set, or current account not found in list, use active account
 				const hasValidAccount = currentId !== null && accounts.some(a => a.id === currentId);
@@ -193,6 +200,18 @@
 				await modelStore.refreshModels('qwen');
 			} catch (err) {
 				debug.warn('chat', 'Qwen account switch failed:', err);
+			}
+		}
+
+		// Pi is multi-provider — promoting the picked account to DB-active and
+		// refreshing the (union) model catalog keeps the picker in sync.
+		if (chatModelState.engine === 'pi') {
+			try {
+				await ws.http('engine:pi-accounts-switch', { id: account.id });
+				await piAccountsStore.refresh();
+				await modelStore.refreshModels('pi');
+			} catch (err) {
+				debug.warn('chat', 'Pi account switch failed:', err);
 			}
 		}
 
