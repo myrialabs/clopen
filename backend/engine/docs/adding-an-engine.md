@@ -98,13 +98,25 @@ mandatory files; optional files use the canonical names from §2.6.
 
 ### Stage 6 — Settings → Engines
 
-- [ ] Add a panel to `AIEnginesSettings.svelte`: the card appears
-      automatically since `ENGINES` already has the new entry. Implement
-      the setup flow:
-  - Load status via `ws.http('engine:newengine-status', {})`.
-  - Subscribe to server-emit events for login progress.
-  - After save: `newengineStore.refresh()` +
+- [ ] Add `frontend/components/settings/engines/panels/NewEnginePanel.svelte`
+      and wire it into `AIEnginesSettings.svelte`: its selector tile appears
+      automatically (`ENGINES` has the new entry), and the shell renders the
+      panel in the `{#if activeEngine === 'newengine'}` branch. Add the
+      engine's status shape to `panels/panel-types.ts` and a
+      `refreshNewEngineStatus()` in the shell (fetched on mount for the grid,
+      passed to the panel as `onRefreshStatus`). Implement the setup flow in
+      the panel:
+  - Receive `status` + `isLoading` (+ `onRefreshStatus` if it mutates
+    accounts) as props; read the account list from its own store.
+  - Load status via `ws.http('engine:newengine-status', {})` (in the shell).
+  - Subscribe to server-emit events for login progress (in the panel's
+    `onMount`, cleaned up in `onDestroy`).
+  - After save: `newengineStore.refresh()` + `onRefreshStatus()` +
     `modelStore.refreshModels('newengine')`.
+  - If the engine has a browser/device auth flow, factor the auth markup into
+    a `{#snippet}` and render it both in the "Add Account" area and in the
+    account edit form (in-place re-auth), gated on `newengineReauthAccountId`
+    — mirror `ClaudeCodePanel`/`CodexPanel`/`PiPanel`.
 
 ### Stage 7 — Settings → System Tools
 

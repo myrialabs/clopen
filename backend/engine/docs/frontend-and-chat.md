@@ -5,14 +5,32 @@
 ### 5.1 Settings → Engines
 
 Files:
-- `frontend/components/settings/engines/AIEnginesSettings.svelte`
+- `frontend/components/settings/engines/AIEnginesSettings.svelte` — the shell:
+  renders the engine selector grid, fetches every engine's status on mount
+  (for the grid badges), and delegates the active engine's card to a panel.
+- `frontend/components/settings/engines/panels/` — one self-contained panel
+  per engine (`ClaudeCodePanel`, `CopilotPanel`, `CodexPanel`, `QwenPanel`,
+  `PiPanel`, `OpenCodePanel`), each owning its own add/edit/delete flow state,
+  WS listeners, and dialogs. Shared helpers live alongside them:
+  `panel-types.ts` (the per-engine status shapes) and `debug-viewer.ts`
+  (the read-only xterm viewer used by Claude + Codex).
 - Stores: `frontend/stores/features/claude-accounts.svelte.ts`,
   `frontend/stores/features/copilot-accounts.svelte.ts`,
   `frontend/stores/features/opencode-providers.svelte.ts`
 
 Pattern:
-- The component renders one card **per engine** from the `ENGINES` constant
-  in `shared/constants/engines.ts` (icon, name, description).
+- The shell renders one selector tile **per engine** from the `ENGINES`
+  constant in `shared/constants/engines.ts` (icon, name, description) and
+  mounts only the active engine's panel. `status` + `isLoading` are passed
+  down as props; panels that mutate account state also receive an
+  `onRefreshStatus` callback (the shell's per-engine status refresh) so the
+  grid's installed/count badges stay current.
+- **Re-authentication is in-place**: engines with a browser/device auth flow
+  (Claude, Codex, Pi) render that flow *inside the account's edit form*,
+  replacing the name field. A shared `{#snippet}` holds the auth-flow markup
+  and is rendered both at the bottom "Add Account" area (new accounts) and in
+  the edit form (re-auth), gated on `<engine>ReauthAccountId`. Clicking
+  **Cancel** in the auth flow returns to the edit form.
 - For **Claude**: calls `engine:claude-status`. The "Add Account" button
   starts `engine:claude-account-setup-start` and renders an xterm terminal
   for debug + to display the auth URL.

@@ -33,7 +33,7 @@ map, then jump to the area you need.
 │                                                                       │
 │  Settings → Engines           Settings → System Tools  Chat Input     │
 │  ─────────────────────        ──────────────────────  ──────────────  │
-│  AIEnginesSettings.svelte     SystemToolsSettings…    EngineModel…    │
+│  AIEnginesSettings+panels/    SystemToolsSettings…    EngineModel…    │
 │       │                            │                       │          │
 │       ├─ claudeAccountsStore       └─ ws.http(             ├─ model   │
 │       ├─ copilotAccountsStore         'system-tools:…')    │  Store   │

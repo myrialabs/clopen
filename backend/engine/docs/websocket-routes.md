@@ -77,7 +77,7 @@ a `*-server-restart` event; the UI surfaces this to the user as a
 
 1. **Settings → Engines** card — shown whenever the user has just changed
    provider/account state (add / remove / switch). See
-   `AIEnginesSettings.svelte::handleRestartServer` (with the
+   `engines/panels/OpenCodePanel.svelte::handleRestartServer` (with the
    `needsConfirmation` confirm-dialog flow) and
    `forceRestartServer`.
 2. **Chat Input → next to the model/account picker** — shown when the
