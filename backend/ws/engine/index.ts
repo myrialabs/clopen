@@ -13,6 +13,7 @@ import { codexEngineRouter } from './codex';
 import { qwenEngineRouter } from './qwen';
 import { piEngineRouter } from './pi';
 import { clineEngineRouter } from './cline';
+import { cursorEngineRouter } from './cursor';
 import { engineRestartRouter } from './restart';
 
 export const engineRouter = createRouter()
@@ -23,4 +24,5 @@ export const engineRouter = createRouter()
 	.merge(qwenEngineRouter)
 	.merge(piEngineRouter)
 	.merge(clineEngineRouter)
+	.merge(cursorEngineRouter)
 	.merge(engineRestartRouter);

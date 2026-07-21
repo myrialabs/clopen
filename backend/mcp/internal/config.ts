@@ -9,6 +9,7 @@ import { createSdkMcpServer, tool, type McpSdkServerConfigWithInstance, type Mcp
 import type { McpRemoteConfig } from '@opencode-ai/sdk';
 import type { MCPHTTPServerConfig } from '@github/copilot-sdk';
 import type { CLIMcpServerConfig as QwenMcpServerConfig } from '@qwen-code/sdk';
+import type { McpServerConfig as CursorMcpServerConfig } from '@cursor/sdk';
 import type { ServerConfig, ParsedMcpToolName, ServerName } from './types';
 import type { McpExecutionContext } from '../../engine/types';
 import { serverRegistry, serverFactories, serverMetadata } from './servers';
@@ -600,6 +601,37 @@ export function getCopilotMcpConfig(profileFilter?: Set<string>): Record<string,
 			url: `http://localhost:${port}/mcp`,
 			tools,
 			timeout: MCP_TOOL_CALL_TIMEOUT_MS,
+			headers: { Authorization: `Bearer ${getMcpServiceToken()}` },
+		},
+	};
+}
+
+// ============================================================================
+// Cursor MCP Configuration
+// ============================================================================
+
+/**
+ * Get MCP configuration for the Cursor engine.
+ *
+ * The Cursor SDK (`@cursor/sdk`) accepts a `mcpServers` map whose HTTP variant is
+ * `{ type: 'http', url, headers? }`. We reuse the SAME in-process `/mcp` bridge
+ * Open Code, Codex, Copilot and Qwen already consume — no new HTTP server, no
+ * per-engine bridge (README §10.12). The service-token bearer authorises the hop.
+ */
+export function getCursorMcpConfig(profileFilter?: Set<string>): Record<string, CursorMcpServerConfig> {
+	const enabledServers = activeInternalServerNames(profileFilter);
+	if (enabledServers.length === 0) {
+		return {};
+	}
+
+	const port = SERVER_ENV.PORT;
+
+	debug.log('mcp', `📦 Cursor MCP: remote server at http://localhost:${port}/mcp`);
+
+	return {
+		'clopen-mcp': {
+			type: 'http',
+			url: `http://localhost:${port}/mcp`,
 			headers: { Authorization: `Bearer ${getMcpServiceToken()}` },
 		},
 	};

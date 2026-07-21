@@ -100,6 +100,7 @@
     "@anthropic-ai/sdk": "0.100.1",
     "@cline/agents": "0.0.65",
     "@cline/sdk": "0.0.65",
+    "@cursor/sdk": "1.0.24",
     "@dagrejs/dagre": "3.0.0",
     "@earendil-works/pi-agent-core": "0.80.10",
     "@earendil-works/pi-ai": "0.80.10",

@@ -11,6 +11,7 @@
 	import { qwenAccountsStore } from '$frontend/stores/features/qwen-accounts.svelte';
 	import { piAccountsStore } from '$frontend/stores/features/pi-accounts.svelte';
 	import { clineAccountsStore } from '$frontend/stores/features/cline-accounts.svelte';
+	import { cursorAccountsStore } from '$frontend/stores/features/cursor-accounts.svelte';
 	import { opencodeProvidersStore } from '$frontend/stores/features/opencode-providers.svelte';
 	import ClaudeCodePanel from './panels/ClaudeCodePanel.svelte';
 	import CopilotPanel from './panels/CopilotPanel.svelte';
@@ -18,6 +19,7 @@
 	import QwenPanel from './panels/QwenPanel.svelte';
 	import PiPanel from './panels/PiPanel.svelte';
 	import ClinePanel from './panels/ClinePanel.svelte';
+	import CursorPanel from './panels/CursorPanel.svelte';
 	import OpenCodePanel from './panels/OpenCodePanel.svelte';
 	import type {
 		ClaudeCodeStatus,
@@ -27,6 +29,7 @@
 		QwenStatus,
 		PiStatus,
 		ClineStatus,
+		CursorStatus,
 	} from './panels/panel-types';
 
 	interface Props {
@@ -73,6 +76,10 @@
 	let clineStatus = $state<ClineStatus | null>(null);
 	let isLoadingClineStatus = $state(true);
 	const clineAccounts = $derived(clineAccountsStore.accounts);
+
+	let cursorStatus = $state<CursorStatus | null>(null);
+	let isLoadingCursorStatus = $state(true);
+	const cursorAccounts = $derived(cursorAccountsStore.accounts);
 
 	const ocProviders = $derived(opencodeProvidersStore.providers);
 
@@ -163,6 +170,17 @@
 		isLoadingClineStatus = false;
 	}
 
+	async function refreshCursorStatus() {
+		isLoadingCursorStatus = true;
+		try {
+			cursorStatus = await ws.http('engine:cursor-status', {});
+			if (cursorStatus?.installed) await cursorAccountsStore.refresh();
+		} catch {
+			cursorStatus = null;
+		}
+		isLoadingCursorStatus = false;
+	}
+
 	onMount(async () => {
 		await Promise.all([
 			refreshClaudeCodeStatus(),
@@ -172,6 +190,7 @@
 			refreshQwenStatus(),
 			refreshPiStatus(),
 			refreshClineStatus(),
+			refreshCursorStatus(),
 		]);
 	});
 </script>
@@ -198,7 +217,8 @@
 				eng.type === 'codex' ? { installed: codexStatus?.installed ?? null, count: codexAccounts.length } :
 				eng.type === 'qwen' ? { installed: qwenStatus?.installed ?? null, count: qwenAccounts.length } :
 				eng.type === 'pi' ? { installed: piStatus?.installed ?? null, count: piAccounts.length } :
-				{ installed: clineStatus?.installed ?? null, count: clineAccounts.length }}
+				eng.type === 'cline' ? { installed: clineStatus?.installed ?? null, count: clineAccounts.length } :
+				{ installed: cursorStatus?.installed ?? null, count: cursorAccounts.length }}
 			{@const countLabel = `${stat.count} account${stat.count === 1 ? '' : 's'}`}
 			<button
 				type="button"
@@ -244,6 +264,8 @@
 			<PiPanel status={piStatus} isLoading={isLoadingPiStatus} onRefreshStatus={refreshPiStatus} />
 		{:else if activeEngine === 'cline'}
 			<ClinePanel status={clineStatus} isLoading={isLoadingClineStatus} onRefreshStatus={refreshClineStatus} />
+		{:else if activeEngine === 'cursor'}
+			<CursorPanel status={cursorStatus} isLoading={isLoadingCursorStatus} onRefreshStatus={refreshCursorStatus} />
 		{:else if activeEngine === 'opencode'}
 			<OpenCodePanel status={openCodeStatus} isLoading={isLoadingOpenCodeStatus} />
 		{/if}

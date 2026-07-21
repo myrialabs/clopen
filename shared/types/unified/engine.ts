@@ -61,7 +61,7 @@ export interface EngineModel {
 
 // Engine metadata for UI display
 export interface EngineInfo {
-	type: 'claude-code' | 'opencode' | 'copilot' | 'codex' | 'qwen' | 'pi' | 'cline';
+	type: 'claude-code' | 'opencode' | 'copilot' | 'codex' | 'qwen' | 'pi' | 'cline' | 'cursor';
 	name: string;
 	description: string;
 	icon: {

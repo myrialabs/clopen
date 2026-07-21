@@ -16,6 +16,7 @@
 	import { qwenAccountsStore, type QwenAccountItem } from '$frontend/stores/features/qwen-accounts.svelte';
 	import { piAccountsStore, type PiAccountItem } from '$frontend/stores/features/pi-accounts.svelte';
 	import { clineAccountsStore, type ClineAccountItem } from '$frontend/stores/features/cline-accounts.svelte';
+	import { cursorAccountsStore, type CursorAccountItem } from '$frontend/stores/features/cursor-accounts.svelte';
 	import { opencodeProvidersStore, type OpenCodeProviderItem, type OpenCodeAccountItem } from '$frontend/stores/features/opencode-providers.svelte';
 	import ws from '$frontend/utils/ws';
 	import { debug } from '$shared/utils/logger';
@@ -28,7 +29,7 @@
 	// at the store reference resolved by `accountsForEngine`.)
 	// ════════════════════════════════════════════
 
-	type SimpleAccount = ClaudeAccountItem | CopilotAccountItem | CodexAccountItem | QwenAccountItem | PiAccountItem | ClineAccountItem;
+	type SimpleAccount = ClaudeAccountItem | CopilotAccountItem | CodexAccountItem | QwenAccountItem | PiAccountItem | ClineAccountItem | CursorAccountItem;
 
 	const accountsForEngine = $derived<SimpleAccount[]>(
 		chatModelState.engine === 'claude-code'
@@ -43,7 +44,9 @@
 							? piAccountsStore.accounts
 							: chatModelState.engine === 'cline'
 								? clineAccountsStore.accounts
-								: []
+								: chatModelState.engine === 'cursor'
+									? cursorAccountsStore.accounts
+									: []
 	);
 
 	const currentAccount = $derived(
@@ -63,6 +66,7 @@
 			: chatModelState.engine === 'qwen' ? 'Qwen Code Account'
 			: chatModelState.engine === 'pi' ? 'Pi Account'
 			: chatModelState.engine === 'cline' ? 'Cline Account'
+			: chatModelState.engine === 'cursor' ? 'Cursor Account'
 			: 'Claude Account'
 	);
 
@@ -73,6 +77,7 @@
 		|| chatModelState.engine === 'qwen'
 		|| chatModelState.engine === 'pi'
 		|| chatModelState.engine === 'cline'
+		|| chatModelState.engine === 'cursor'
 	);
 	const hasEngineAccounts = $derived(accountsForEngine.length > 0);
 
@@ -91,6 +96,8 @@
 			piAccountsStore.fetch();
 		} else if (engine === 'cline') {
 			clineAccountsStore.fetch();
+		} else if (engine === 'cursor') {
+			cursorAccountsStore.fetch();
 		}
 	});
 
@@ -100,7 +107,7 @@
 		const accounts = accountsForEngine;
 		const currentId = chatModelState.accountId;
 
-		if ((engine === 'claude-code' || engine === 'copilot' || engine === 'codex' || engine === 'qwen' || engine === 'pi' || engine === 'cline') && accounts.length > 0) {
+		if ((engine === 'claude-code' || engine === 'copilot' || engine === 'codex' || engine === 'qwen' || engine === 'pi' || engine === 'cline' || engine === 'cursor') && accounts.length > 0) {
 			untrack(() => {
 				// If no account set, or current account not found in list, use active account
 				const hasValidAccount = currentId !== null && accounts.some(a => a.id === currentId);
@@ -230,6 +237,18 @@
 				await modelStore.refreshModels('cline');
 			} catch (err) {
 				debug.warn('chat', 'Cline account switch failed:', err);
+			}
+		}
+
+		// Cursor models are discovered against the active account's API key, so
+		// promote-to-active + refresh keeps the picker's catalog in sync.
+		if (chatModelState.engine === 'cursor') {
+			try {
+				await ws.http('engine:cursor-accounts-switch', { id: account.id });
+				await cursorAccountsStore.refresh();
+				await modelStore.refreshModels('cursor');
+			} catch (err) {
+				debug.warn('chat', 'Cursor account switch failed:', err);
 			}
 		}
 

@@ -22,6 +22,7 @@ import { CodexEngine } from './adapters/codex';
 import { QwenEngine } from './adapters/qwen';
 import { PiEngine } from './adapters/pi';
 import { ClineEngine } from './adapters/cline';
+import { CursorEngine } from './adapters/cursor';
 import { debug } from '$shared/utils/logger';
 
 // ============================================================================
@@ -44,6 +45,8 @@ function createEngine(type: EngineType): AIEngine {
 			return new PiEngine();
 		case 'cline':
 			return new ClineEngine();
+		case 'cursor':
+			return new CursorEngine();
 		default:
 			throw new Error(`Unknown engine type: ${type}`);
 	}

@@ -136,6 +136,14 @@ export function getCopilotMcpConfig(profileFilter?: Set<string>) {
 	};
 }
 
+/** Cursor MCP config: internal `clopen-mcp` remote bridge + external servers. */
+export function getCursorMcpConfig(profileFilter?: Set<string>) {
+	return {
+		...internal.getCursorMcpConfig(profileFilter),
+		...external.getCursorExternalMcpConfig(profileFilter)
+	};
+}
+
 /** Qwen Code MCP config. */
 export function getQwenMcpConfig(profileFilter?: Set<string>) {
 	return {

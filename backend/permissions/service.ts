@@ -20,7 +20,7 @@ import { debug } from '$shared/utils/logger';
 import { mergeLayers, pickEngineSet, isToolAllowed, hasAnyRestriction, type ResolvedPermissions } from './resolve';
 
 /** Engine keys used by the artifact matrix (config-dir slugs). */
-export type ArtifactEngineKey = 'claude' | 'codex' | 'copilot' | 'qwen' | 'opencode' | 'pi' | 'cline';
+export type ArtifactEngineKey = 'claude' | 'codex' | 'copilot' | 'qwen' | 'opencode' | 'pi' | 'cline' | 'cursor';
 
 const ENGINE_TYPE_TO_ARTIFACT: Record<EngineType, ArtifactEngineKey> = {
 	'claude-code': 'claude',
@@ -29,7 +29,8 @@ const ENGINE_TYPE_TO_ARTIFACT: Record<EngineType, ArtifactEngineKey> = {
 	qwen: 'qwen',
 	opencode: 'opencode',
 	pi: 'pi',
-	cline: 'cline'
+	cline: 'cline',
+	cursor: 'cursor'
 };
 
 export function toArtifactEngine(engine: EngineType): ArtifactEngineKey {
