@@ -17,7 +17,7 @@
 
 	$effect(() => {
 		if (hasResult && filePath && content) {
-			editIndex = addAiChange(filePath, '', content);
+			editIndex = addAiChange(filePath, '', content, toolInput.id);
 		}
 	});
 </script>

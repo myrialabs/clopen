@@ -11,6 +11,7 @@ import type { Project } from '$shared/types/database/schema';
 
 import { debug } from '$shared/utils/logger';
 import { cleanupProjectState } from '$frontend/utils/project-state-cleanup';
+import { clearAllAiChanges } from '$frontend/utils/ai-changes';
 import {
 	activateProjectWorkspace,
 	raiseSwitchBarrier,
@@ -149,6 +150,10 @@ export async function setCurrentProject(project: Project | null) {
 		// Clear edit mode state from previous project (server retains per-project state)
 		const { onProjectLeave, onProjectEnter } = await import('$frontend/stores/ui/edit-mode.svelte');
 		onProjectLeave();
+
+		// Drop AI-change gutter state — the map is keyed by absolute path and would
+		// otherwise accumulate stale entries from every project visited this session.
+		clearAllAiChanges();
 
 		// Clear current session when switching projects
 		await setCurrentSession(null);

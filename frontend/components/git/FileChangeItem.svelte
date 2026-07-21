@@ -32,12 +32,15 @@
 	});
 	const fileIcon = $derived(getFileIcon(fileName) as IconName);
 
-	// AI changes indicator — file.path is relative; build absolute to match aiChangesSet
+	// AI changes indicator — file.path is relative with forward slashes; build the
+	// absolute path with the project's separator (matching git-status.svelte.ts) so
+	// the lookup lands on Windows too.
 	const hasAiChange = $derived(() => {
 		const base = projectState.currentProject?.path;
 		if (!base) return false;
 		const sep = base.includes('\\') ? '\\' : '/';
-		return aiChangesSet.has(`${base}${sep}${file.path}`);
+		const rel = sep === '\\' ? file.path.replace(/\//g, '\\') : file.path;
+		return aiChangesSet.has(`${base}${sep}${rel}`);
 	});
 
 	function openInFilesPanel(e: MouseEvent) {

@@ -4,6 +4,8 @@ export interface AiChange {
 	oldContent: string;
 	newContent: string;
 	timestamp: number;
+	/** Stable identity of the edit (the tool_use id) used to dedupe remounts. */
+	key?: string;
 }
 
 const changes = new Map<string, AiChange[]>();
@@ -57,17 +59,26 @@ export function onGutterViewModeChange(fn: (mode: GutterViewMode) => void): () =
 }
 
 /** Push a change and return its edit index (position in the array). */
-export function addAiChange(filePath: string, oldContent: string, newContent: string): number {
+export function addAiChange(filePath: string, oldContent: string, newContent: string, key?: string): number {
 	const list = changes.get(filePath) ?? [];
 
-	// Dedupe: skip if last entry matches exactly (handles component remounts)
-	const last = list[list.length - 1];
-	if (last && last.oldContent === oldContent && last.newContent === newContent) {
-		return list.length - 1;
+	// Dedupe by stable key (the tool_use id) so a component remount — e.g. the
+	// chat's virtual window mounting/unmounting tool rows on scroll — returns the
+	// existing index instead of appending a duplicate. A last-entry-only compare
+	// misses this whenever the file has more than one AI edit.
+	if (key !== undefined) {
+		const existing = list.findIndex((c) => c.key === key);
+		if (existing >= 0) return existing;
+	} else {
+		// Fallback for keyless callers: skip only if the last entry matches exactly.
+		const last = list[list.length - 1];
+		if (last && last.oldContent === oldContent && last.newContent === newContent) {
+			return list.length - 1;
+		}
 	}
 
 	const editIndex = list.length;
-	list.push({ oldContent, newContent, timestamp: Date.now() });
+	list.push({ oldContent, newContent, timestamp: Date.now(), key });
 	changes.set(filePath, list);
 	for (const fn of aiChangeListeners) fn();
 	notifyAiFilesListeners();

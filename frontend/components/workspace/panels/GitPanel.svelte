@@ -3862,8 +3862,8 @@ ${bodies}`;
 							activeSection={activeTab?.section ?? null}
 							onViewDiff={(file, sec) => viewDiff(file, sec)}
 							onResolve={(path) => openConflictResolver(path)}
-												{aiChangesSet}
-/>
+							{aiChangesSet}
+						/>
 					{/if}
 					<ChangesSection
 						title="Staged Changes"
@@ -3876,8 +3876,8 @@ ${bodies}`;
 						onUnstageAll={async () => { if (projectId) { try { await ws.http('git:unstage-all', { projectId, repoPath: nested.path }); await loadStatus(); } catch (err) { debug.error('git', 'Failed to unstage all in nested repo:', err); } } }}
 						onStash={() => openStashPrompt('staged', nested.path)}
 						onViewDiff={(file, sec) => viewDiff(file, sec)}
-										{aiChangesSet}
-/>
+						{aiChangesSet}
+					/>
 					<ChangesSection
 						title="Changes"
 						icon="lucide:file-pen"
@@ -3890,8 +3890,8 @@ ${bodies}`;
 						onDiscard={(path) => discardFile(path)}
 						onDiscardAll={async () => { if (projectId) { try { await ws.http('git:discard-all', { projectId, repoPath: nested.path }); await loadStatus(); } catch (err) { debug.error('git', 'Failed to discard all in nested repo:', err); } } }}
 						onViewDiff={(file, sec) => viewDiff(file, sec)}
-										{aiChangesSet}
-/>
+						{aiChangesSet}
+					/>
 					{#if nestedTotalChanges === 0 && !isLoading}
 						<div class="flex flex-col items-center justify-center gap-2 py-6 text-slate-500 text-xs">
 							<Icon name="lucide:circle-check" class="w-5 h-5 opacity-30" />
