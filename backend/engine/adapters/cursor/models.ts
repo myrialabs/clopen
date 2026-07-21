@@ -51,6 +51,8 @@ function makeModel(id: string, name: string): EngineModel {
 			model: { id, name },
 			account: { id: 0, name: '' },
 		},
+		// Cursor's models.list() does NOT report a context window; leave 0 so the
+		// UI shows "unknown" (a "?") rather than a fabricated/hardcoded max.
 		limit: { input: 0, output: 0 },
 		modalities: {
 			input: { text: true, image: true, audio: false, video: false, pdf: false },

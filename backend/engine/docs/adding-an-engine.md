@@ -13,6 +13,19 @@ blueprint for the next engine you add.
 - [ ] `shared/types/unified/message.ts`: add `'newengine'` to `MessageEngine.type`.
 - [ ] `shared/constants/engines.ts`: add an entry in `ENGINES[]`
       (`type, name, description, icon.light, icon.dark`).
+- [ ] **Exhaustive `Record<EngineType, …>` maps & unions — forgetting any is a
+      compile error, so `bun run check` after this step catches them all:**
+  - `shared/constants/engine-tools.ts`: add `'newengine'` to
+    `ENGINE_BUILTIN_TOOLS` (its built-in tool names) **and**
+    `ENGINE_TOOLS_BEST_EFFORT` (`true` unless the SDK has a real per-tool
+    permission hook).
+  - `backend/artifacts/types.ts`: add the engine's config-dir slug to
+    `ArtifactEngine` **and** `ARTIFACT_ENGINES` (usually the same as the
+    `EngineType`; `claude-code`→`claude` is the one exception).
+  - `backend/permissions/service.ts`: add the entry to `ENGINE_TYPE_TO_ARTIFACT`
+    (+ `ArtifactEngineKey`).
+  - `backend/ws/sessions/crud.ts`: add the `'newengine'` literal to the two
+    session-engine typebox unions (in addition to the Stage-4 chat/crud ones).
 - [ ] `backend/engine/adapters/newengine/models.ts`: own the catalog. Static
       engines export a `NEWENGINE_MODELS: EngineModel[]` array; dynamic
       engines export a fetcher (`fetchNewengineModels(...)`) consumed by
@@ -57,7 +70,21 @@ mandatory files; optional files use the canonical names from §2.6.
       OR `fetchNewengineModels(...): Promise<EngineModel[]>` (dynamic;
       return `[]` on failure — see §4.5).
 - [ ] `message-converter.ts` (mandatory) → pure functions SDK → `EngineOutput`.
-      Use `toCanonicalToolName()` for tool names.
+      Use `toCanonicalToolName()` for tool names. **Before writing it, capture the
+      SDK's REAL runtime shapes** — a throwaway script that runs one agent and
+      `JSON.stringify`s each stream event, tool arg, and tool result (using the
+      model the user will run). `.d.ts` types routinely mislead on: whether the
+      stream is per-chunk deltas vs snapshots, the actual tool-arg field names,
+      whether a payload lives in the args or the result, tool-name wrapping
+      (`mcp`-style), and result envelopes (`{status,value}` / images). See
+      **§10.20** for the full catalogue of these traps.
+- [ ] **Usage that arrives once per turn:** if the SDK emits a single `usage`
+      event after all messages (Codex, Cursor), assistant rows persist
+      `usage:null` — add the engine to `stream-manager.ts::backfillUsageForStream`'s
+      gate so the turn aggregate is written to every assistant row (see §10.20-I).
+- [ ] **Context window:** set `EngineModel.limit.input` to the model's real max
+      when the catalog provides it; leave `0` when it doesn't — do NOT hard-code a
+      value. The UI renders `0` as "?" via `getContextUsage(...).unknown` (§10.20-J).
 - [ ] `error-handler.ts` (mandatory) → exports `handleStreamError(error,
       ...): void` (and any helper formatters specific to the SDK's error
       payload — see `opencode/error-handler.ts::formatSessionError` for the

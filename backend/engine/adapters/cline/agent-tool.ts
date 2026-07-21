@@ -35,9 +35,9 @@ const AGENT_INPUT_SCHEMA = {
 	properties: {
 		subagentType: { type: 'string', description: 'The slug of the subagent to delegate to.' },
 		prompt: { type: 'string', description: 'The self-contained task for the subagent.' },
-		description: { type: 'string', description: 'A short description of the delegated task.' },
+		description: { type: 'string', description: 'A short (3-5 word) description of the delegated task.' },
 	},
-	required: ['subagentType', 'prompt'],
+	required: ['subagentType', 'prompt', 'description'],
 } as const;
 
 export function createAgentDispatchTool(bindings: AgentDispatchBindings): AgentTool {

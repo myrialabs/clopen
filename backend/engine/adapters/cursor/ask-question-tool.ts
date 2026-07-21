@@ -23,6 +23,13 @@ export interface PendingAsk {
 export interface AskToolBindings {
 	register: (toolCallId: string, entry: PendingAsk) => void;
 	unregister: (toolCallId: string) => void;
+	/**
+	 * Surface the AskUserQuestion tool_use into the stream with the COMPLETE
+	 * questions. Sourced from `execute`'s args (always fully populated) rather
+	 * than the stream's `tool_call` args, which can arrive empty/partial for large
+	 * question sets — the bug behind `questions: []` in the UI.
+	 */
+	emit: (toolCallId: string, questions: AskUserQuestion[]) => void;
 }
 
 /** Format the user's answers in the shared OpenCode/Qwen/Pi/Cline wording. */
@@ -82,6 +89,8 @@ export function createAskUserQuestionTool(bindings: AskToolBindings): SDKCustomT
 					resolve('User did not answer the question.');
 					return;
 				}
+				// Emit the tool_use with the complete questions from THIS call's args.
+				bindings.emit(toolCallId, questions);
 				bindings.register(toolCallId, { questions, resolve });
 			});
 		},

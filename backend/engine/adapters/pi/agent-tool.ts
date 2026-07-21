@@ -31,9 +31,9 @@ export interface AgentDispatchBindings {
 }
 
 const AGENT_PARAMS = Type.Object({
-	subagentType: Type.String(),
-	prompt: Type.String(),
-	description: Type.Optional(Type.String()),
+	subagentType: Type.String({ description: 'The slug of the subagent to delegate to.' }),
+	description: Type.String({ description: 'A short (3-5 word) description of the delegated task.' }),
+	prompt: Type.String({ description: 'The full, self-contained task/instructions for the subagent.' }),
 });
 
 export function createAgentDispatchTool(bindings: AgentDispatchBindings): ToolDefinition {

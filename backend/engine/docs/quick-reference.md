@@ -11,6 +11,13 @@
 | Stateful per-stream converter               | `claude/message-converter.ts::createSdkMessageConverter`  |
 | Split one SDK message → N `EngineOutput`    | `opencode/message-converter.ts::convertAssistantMessages`, `copilot/message-converter.ts::convertAssistantMessage` |
 | Buffer until usage event arrives            | `copilot/message-converter.ts::flushPending` + `captureUsage` |
+| Accumulate per-chunk delta stream → 1 msg   | `cursor/message-converter.ts` (`appendText`/`appendReasoning`/`flushAll` — deltas, not snapshots; see §10.20-A) |
+| Unwrap a wrapper tool (MCP + custom tools)  | `cursor/message-converter.ts::canonicalCursorTool`/`cursorToolInput` (`mcp` wrapper → `mcp__server__tool` / AskUserQuestion; §10.20-C) |
+| Interactive tool args from `execute`, not stream | `cursor/ask-question-tool.ts` (`emit`) + `cursor/message-converter.ts::emitAskUserQuestion` (push queue; §10.20-D) |
+| Sub-agent streamed live via delta taskUpdate | `cursor/stream.ts` (`onDelta` `tool-call-delta.taskUpdate`) + `cursor/message-converter.ts::emitSubagentActivity`/`replaySubagent` (§10.20-E) |
+| Freeze mutable tool args before persist     | `cursor/message-converter.ts::cloneArgs` (`structuredClone`; §10.20-H) |
+| Usage backfill (once-per-turn engines)      | `backend/chat/stream-manager.ts::backfillUsageForStream` (Codex + Cursor; §10.20-I) |
+| Context window unknown → "?" not 100%       | `frontend/utils/context-manager.ts` (`unknown`) + `frontend/components/chat/widgets/ContextIndicator.svelte` (§10.20-J) |
 | Reasoning stream lifecycle                  | `opencode/stream.ts::flushReasoning`, `copilot/message-converter.ts::convertReasoningDelta` |
 | Cancel-before-RPC ordering                  | `opencode/stream.ts::cancel`, `claude/stream.ts::cancel`, `copilot/stream.ts::cancel`  |
 | Fork session (native vs. on-disk vs. in-memory) | `claude/stream.ts` (`forkSession: true`), `opencode/stream.ts` (`client.session.fork`), `copilot/stream.ts` (`client.rpc.sessions.fork`), `codex/session-fork.ts` + `qwen/session-fork.ts` (copy disk state), `pi/session-fork.ts` (`SessionManager.forkFrom`), `cline/stream.ts` (**session-less** — fresh id per turn + in-memory copy-on-branch; see §10.10) |

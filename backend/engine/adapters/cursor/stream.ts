@@ -43,7 +43,19 @@ import { createAskUserQuestionTool, formatAnswers, type PendingAsk } from './ask
 import { createCursorMessageConverter } from './message-converter';
 import { handleStreamError } from './error-handler';
 
-/** Minimal pushable queue bridging Cursor's push callbacks + pull stream → a generator. */
+/** Strip YAML frontmatter from a subagent markdown doc, leaving the instructions. */
+function stripFrontmatter(md: string): string {
+	const match = md.match(/^---\n[\s\S]*?\n---\n?/);
+	return (match ? md.slice(match[0].length) : md).trim();
+}
+
+/**
+ * Minimal pushable queue merging Cursor's pull stream (`run.stream()`) with the
+ * push emissions of the in-process AskUserQuestion custom tool into one ordered
+ * async generator. The ask tool fires from inside the SDK's tool executor (a
+ * separate async flow from the stream loop), so a plain `for await` can't carry
+ * its emission — the queue is the merge point.
+ */
 class EventQueue<T> {
 	private buffer: T[] = [];
 	private wake: (() => void) | null = null;
@@ -68,12 +80,6 @@ class EventQueue<T> {
 			await new Promise<void>((resolve) => { this.wake = resolve; });
 		}
 	}
-}
-
-/** Strip YAML frontmatter from a subagent markdown doc, leaving the instructions. */
-function stripFrontmatter(md: string): string {
-	const match = md.match(/^---\n[\s\S]*?\n---\n?/);
-	return (match ? md.slice(match[0].length) : md).trim();
 }
 
 export class CursorEngine implements AIEngine {
@@ -136,10 +142,19 @@ export class CursorEngine implements AIEngine {
 		await syncSkills('cursor', profileId);
 		await syncEngineArtifacts('cursor', profileId);
 
+		// ── Output queue merging the pull stream with the ask tool's push emissions ──
+		const queue = new EventQueue<EngineOutput>();
+		const converterHolder: { current: ReturnType<typeof createCursorMessageConverter> | null } = { current: null };
+
 		// ── Tools: AskUserQuestion (in-process custom tool) + MCP (native config) ──
 		const askTool: SDKCustomTool = createAskUserQuestionTool({
 			register: (id, entry) => this.pendingAsks.set(id, entry),
 			unregister: (id) => this.pendingAsks.delete(id),
+			// Emit the tool_use with the COMPLETE questions from execute's args.
+			emit: (id, questions) => {
+				const c = converterHolder.current;
+				if (c) for (const out of c.emitAskUserQuestion(id, questions)) queue.push(out);
+			},
 		});
 		const customTools: Record<string, SDKCustomTool> = { AskUserQuestion: askTool };
 		const mcpServers = getCursorMcpConfig(mcpProfileFilter);
@@ -192,6 +207,7 @@ export class CursorEngine implements AIEngine {
 		const sessionId = agent.agentId;
 
 		const converter = createCursorMessageConverter({ engine: engineMeta, sessionId });
+		converterHolder.current = converter;
 
 		// Build the user turn (text + image attachments).
 		const promptText = prompt.content.filter(b => b.type === 'text').map(b => (b.type === 'text' ? b.text : '')).join('\n');
@@ -203,18 +219,24 @@ export class CursorEngine implements AIEngine {
 		}
 		const userMessage: SDKUserMessage = { text, ...(images.length ? { images } : {}) };
 
-		// Bridge Cursor's two output channels into one ordered stream:
-		//   - `onDelta` pushes live token deltas → transient stream_events (chat:partial)
-		//   - `run.stream()` yields complete SDKMessages → persisted messages
-		// Both feed the same converter (whose lifecycle flags close an open partial
-		// stream before a persisted message) and the same queue, so ordering holds.
-		const queue = new EventQueue<EngineOutput>();
+		// Cursor's `run.stream()` yields each text/thinking chunk as its own
+		// SDKMessage; the converter streams every chunk live as a transient
+		// stream_event AND accumulates it, flushing ONE consolidated reasoning /
+		// assistant message per block. The pull stream + the ask tool's push
+		// emissions are merged through the queue.
 		let onAbort: (() => void) | null = null;
 		try {
 			const run = await agent.send(userMessage, {
 				model: { id: modelId },
+				// Sub-agent (Task) steps aren't in `run.stream()` — they ride
+				// `tool-call-delta.taskUpdate` here. Stream each completed sub-agent
+				// tool call live as a child of the Agent block (parent.toolUseId).
 				onDelta: ({ update }) => {
-					for (const out of converter.convertDelta(update)) queue.push(out);
+					const u = update as { type?: string; callId?: string; taskUpdate?: unknown };
+					if (u.type === 'tool-call-delta' && u.taskUpdate && u.callId) {
+						const c = converterHolder.current;
+						if (c) for (const out of c.emitSubagentActivity(u.callId, u.taskUpdate)) queue.push(out);
+					}
 				},
 			});
 			this.activeRun = run;

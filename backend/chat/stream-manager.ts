@@ -811,11 +811,11 @@ class StreamManager extends EventEmitter {
 									});
 								}
 							}
-							// Codex emits usage only once per turn (after all items
-							// streamed live), so saved assistant rows have usage:null.
-							// Backfill the turn's aggregate to every saved assistant
-							// without usage so it survives a refresh.
-							if (successResult.usage && streamState.engine === 'codex') {
+							// Codex and Cursor emit usage only once per turn (after all
+							// items streamed live), so saved assistant rows have
+							// usage:null. Backfill the turn's aggregate to every saved
+							// assistant without usage so it survives a refresh.
+							if (successResult.usage && (streamState.engine === 'codex' || streamState.engine === 'cursor')) {
 								this.backfillUsageForStream(streamState, successResult.usage, requestSender);
 							}
 						} else {

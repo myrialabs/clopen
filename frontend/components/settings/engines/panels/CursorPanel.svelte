@@ -280,7 +280,7 @@
 											<input
 												type="text"
 												bind:value={cursorAddKey}
-												placeholder="API Key (crsr_)"
+												placeholder="key_…"
 												class="w-full px-3 py-2 text-sm rounded-lg border border-slate-300 dark:border-slate-600 bg-white dark:bg-slate-800 text-slate-900 dark:text-slate-100 placeholder:text-slate-400 focus:outline-none focus:ring-2 focus:ring-violet-500/40 focus:border-violet-500"
 											/>
 										</div>

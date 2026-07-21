@@ -23,6 +23,20 @@ export function handleStreamError(error: unknown): void {
 
 	const lower = error.message.toLowerCase();
 
+	// Free-tier / plan gating: the Cursor agent API is Pro-only. A free key is
+	// valid but its agent quota is limited — surface a clear, actionable message
+	// instead of the raw SDK error.
+	if (lower.includes('plan_required') || lower.includes('upgrade to pro') || lower.includes('not available for free users')) {
+		throw new Error('Cursor agent runs require a paid plan. This API key is valid but its account is on the free tier — upgrade to Cursor Pro to use this engine.');
+	}
+
+	// Transient connectivity to Cursor's backend (the SDK's connect-rpc key
+	// exchange). Seen most often with rate-limited / exhausted keys; surface a
+	// clear, retryable message rather than the raw NetworkError.
+	if (lower.includes('socket connection was closed') || lower.includes('api key exchange endpoint') || lower.includes('failed to connect')) {
+		throw new Error('Cursor could not reach its backend (connection closed). This is usually transient or a rate-limited key — retry, and verify your account has agent quota.');
+	}
+
 	if (
 		error.name === 'AuthenticationError'
 		|| lower.includes('unauthorized')

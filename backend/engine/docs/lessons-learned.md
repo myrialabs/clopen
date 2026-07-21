@@ -960,3 +960,108 @@ still the auth-blob swap, **not** a dir per account.
   the persisted `opencode.server.{url,datadir}` so a server cached against the
   pre-move dir is re-spawned into the relocated one.
 
+---
+
+### 10.20 In-process SDK with a delta-stream, wrapped tools & no metadata (Cursor)
+
+The `cursor` adapter (`@cursor/sdk`) surfaced a whole class of gotchas that recur
+for any SDK whose stream is **delta-based**, whose tools are **wrapped/renamed**,
+and whose model catalog is **metadata-poor**. Every point below cost a round-trip
+of "user reports wrong UI → capture the real runtime shape → fix". **The meta-lesson:
+never guess an SDK's runtime shapes from its `.d.ts`; capture them live** (write a
+throwaway script that runs a real agent and `JSON.stringify`s each event/arg/result),
+using the **same model** the user runs — different models stream differently.
+
+**A. `run.stream()` yields per-chunk DELTAS, not snapshots.** Cursor emits a
+separate `assistant`/`thinking` SDKMessage for *each* text chunk. Persisting each
+as its own message produced 121 one-word rows for a "1+1=" reply and pushed the
+user message off-screen. Fix: **accumulate** chunks into ONE `reasoning` + ONE
+`assistant` message per block (buffers + flush at block-switch / tool-call /
+turn-end), while emitting each chunk live as a transient `stream_event` delta.
+Don't double-source: pick either `run.stream()` OR `onDelta`, not both, for the
+same content. (§10.4 is the sibling "buffer for usage" lesson.)
+
+**B. Tool arg field names are NOT what the `.d.ts` implies — and some payloads
+live in the RESULT, not the args.** Cursor `edit` args carry only `{path}`; the
+before/after is in the result's `value.diffString` (parse the unified diff into
+`oldString`/`newString`). `glob`→`{globPattern}`, `write`→`{fileText}` (not
+`content`). Getting these wrong = empty tool inputs in the UI. **Capture real args
+at runtime.** When the payload arrives only at completion, DEFER that tool's
+`tool_use` emission to the terminal event (like `edit`, `create_plan`).
+
+**C. MCP servers AND in-process custom tools may be delivered through ONE wrapper
+tool.** Cursor routes both through a tool literally named `mcp`, args
+`{providerIdentifier, toolName, args}` (`clopen-mcp` for real MCP,
+`custom-user-tools` for `local.customTools`). Unwrap it: `resolveOpenCodeToolName(toolName)`
+→ `mcp__server__tool` (passthrough args) for real MCP, else `toCanonicalToolName(toolName)`
++ normalise for custom (e.g. AskUserQuestion). Without unwrap everything renders
+as `Unknown:mcp`.
+
+**D. Interactive tool (AskUserQuestion) args must come from the tool's `execute`,
+not the stream.** The stream's `tool_call` args can arrive empty/partial for large
+inputs (→ `questions:[]`). The custom-tool `execute` always receives complete
+args, so emit the tool_use FROM `execute` (with the full questions) through a push
+queue that merges with `run.stream()`, and have the converter SKIP the stream's
+copy. `context.toolCallId` === the `tool_call` `call_id`, so `resolveUserAnswer`
+still matches, and the `running` event fires while `execute` blocks (dialog shows
+live, no deadlock). See §10.15 for the parent-routing half.
+
+**E. Sub-agent activity may be nowhere in `run.stream()`.** Cursor runs the
+`task` sub-agent internally: its steps ride `onDelta` `tool-call-delta` events
+whose `taskUpdate` field is the sub-agent's inner InteractionUpdate; the outer
+`callId` === the `task` `call_id` === the Agent tool_use id. Stream each
+`taskUpdate.type==='tool-call-completed'` as a child tool_use+tool_result
+(`parent.toolUseId`), and keep the full transcript in the `task` RESULT
+(`value.conversationSteps[]`) as a FALLBACK. `subagentType` can be an OBJECT
+(`{kind,name}`) — extract the string, or the UI shows "Using [object Object] agent".
+Make the synthesised Agent tool's `description` param **required** (Pi/Cline) so
+the model fills it; and in `AgentTool.svelte`, hide the description line when empty.
+
+**F. Some capabilities emit NO tool event at all.** Cursor's web search / web
+fetch run server-side — no `tool_call` in `run.stream()` or `onDelta`. They simply
+cannot be rendered as tools. Enumerate the SDK's real tool-type set before
+assuming a tool is "missing".
+
+**G. Tool RESULT shapes vary and may hide huge binaries.** Cursor wraps results as
+`{status, value:{content:[{text:{text}}]}}` (top-level) or `{success:{content}}`
+(sub-agent); images arrive as raw `Buffer` bytes. `extractResultText` must unwrap
+`value`/`success`, handle the nested `{text:{text}}` shape, and map images to a
+`[image]` placeholder (else you serialise a 500 KB PNG buffer into the row).
+
+**H. Mutable arg references corrupt persisted snapshots.** Cursor mutates some arg
+objects in place across a tool's lifecycle (notably `update_todos` — statuses flip
+to completed as work proceeds). Persisting a live reference makes a just-created
+todo render as done. **`structuredClone` the args at emit time.** Also map the
+SDK's status enum to the unified one (`inProgress`→`in_progress`, `cancelled`→
+`completed`) — a value mismatch renders in-progress as pending.
+
+**I. Usage that arrives once per turn needs backfill.** Cursor (like Codex) emits
+`usage` once after all messages, so assistant rows persist `usage:null`. Add the
+engine to `stream-manager.ts::backfillUsageForStream`'s gate so the turn's
+aggregate is written to every assistant row (survives refresh).
+
+**J. Don't fabricate a context window.** If `models.list()` reports no max context
+(`limit.input:0`), do NOT hard-code one. `getContextUsage` returns `unknown:true`
+and `ContextIndicator.svelte` shows "?" + an explanation instead of a bogus 100%.
+
+**K. A "plan" tool is a user-facing checkpoint, not internal plumbing.** Cursor's
+`create_plan` proposes a plan for the user to read, then ENDS the turn (approval
+gate, like Claude's ExitPlanMode). Render its `plan` text as a normal assistant
+markdown message, not a tool card; the user replies to continue.
+
+**L. Runtime compatibility is a first-class risk (Bun).** `@cursor/sdk` uses
+`@connectrpc/connect` over a Node transport that works under Bun with a valid
+**paid** key. A free-tier/exhausted key returns `plan_required` (403) and
+rate-limited keys surface as "socket connection closed / API key exchange
+endpoint" NetworkErrors — do NOT misread these as a Bun incompatibility. The SDK's
+fetch transport is gated behind a `globalThis.Deno` check; **faking that global is
+UNSAFE** — 45+ files (`@anthropic-ai/sdk`, `openai`, `elysia`, `mongodb`,
+`@google/genai`) platform-detect on `Deno` and would break. Map `plan_required`
+and socket errors to clear user messages in `error-handler.ts`.
+
+> **Global fixes that came out of this** (apply to ALL engines, not just Cursor):
+> the List tool renders its directory listing with `CodeBlock` (monospace), not
+> `TextMessage` (markdown); `AgentTool.svelte` hides an empty description line;
+> `ContextIndicator.svelte` handles an unknown max context. When an engine's data
+> exposes a UI bug, fix it in the shared component, not the adapter.
+
