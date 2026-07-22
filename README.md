@@ -26,7 +26,7 @@
   <img src="https://clopen.myrialabs.dev/images/workspace.webp" alt="Clopen workspace overview" />
 </p>
 
-All-in-one workspace for AI coding agents — Claude Code, OpenCode, Codex, Copilot, and Qwen Code. Chat, terminal, git, browser preview, database client, and real-time collaboration — plus Skills, Subagents, Commands, and MCP connectors to extend every engine.
+All-in-one workspace for AI coding agents — Claude Code, OpenCode, Codex, Copilot, Qwen Code, Pi, Cline, and Cursor. Chat, terminal, git, browser preview, database client, and real-time collaboration — plus Skills, Subagents, Commands, and MCP connectors to extend every engine.
 
 ---
 
@@ -56,7 +56,7 @@ All-in-one workspace for AI coding agents — Claude Code, OpenCode, Codex, Copi
 
 A complete development environment designed around AI-assisted workflows, built to disappear into the background and just work.
 
-- **Multi-Engine Support** — Switch between Claude Code, OpenCode, Codex, GitHub Copilot, and Qwen Code as your AI engine, per session
+- **Multi-Engine Support** — Switch between Claude Code, OpenCode, Codex, GitHub Copilot, Qwen Code, Pi, Cline, and Cursor as your AI engine, per session
 - **Multi-Account Per Engine** — Manage multiple accounts per engine (personal, work, or team) and switch between them instantly per chat session
 - **Integrated Terminal** — Multi-tab xterm.js terminal with full keyboard control and complete ANSI/VT support, right inside your workspace
 - **Full Git Management** — Stage, commit, branch, push, pull, stash, log, and resolve conflicts, all from a clean UI
@@ -80,7 +80,7 @@ A complete development environment designed around AI-assisted workflows, built 
 ### Prerequisites
 
 - [Bun.js](https://bun.sh/) v1.2.12+
-- At least one supported AI engine — [Claude Code](https://github.com/anthropics/claude-code), [OpenCode](https://opencode.ai), [Codex](https://github.com/openai/codex), [GitHub Copilot CLI](https://github.com/github/copilot-cli), or [Qwen Code](https://github.com/QwenLM/qwen-code). All are installable from **Settings → System Tools** after first launch
+- At least one supported AI engine — [Claude Code](https://github.com/anthropics/claude-code), [OpenCode](https://opencode.ai), [Codex](https://github.com/openai/codex), [GitHub Copilot CLI](https://github.com/github/copilot-cli), or [Qwen Code](https://github.com/QwenLM/qwen-code). All are installable from **Settings → System Tools** after first launch. [Pi](https://github.com/earendil-works/pi), [Cline](https://github.com/cline/cline), and [Cursor](https://cursor.com) are bundled as in-process SDKs and need no separate CLI install — just sign in from **Settings → Engines**
 
 ### Installation
 
@@ -117,7 +117,7 @@ On first launch, a setup wizard guides you through:
 1. **Authentication mode** — Choose between **No Login** (no authentication required, ideal for personal/local use) or **With Login** (login with Personal Access Token, supports team collaboration)
 2. **Admin account** — If With Login mode is selected, create your admin account and save the generated PAT
 3. **System Tools** — Install Git, Chrome, Cloudflared, and any AI engine you don't have yet — straight from the wizard, no terminal needed
-4. **AI Engines** — Check installation status for Claude Code, OpenCode, Codex, Copilot, and Qwen Code, and sign in to the engines you'll use
+4. **AI Engines** — Check installation status for Claude Code, OpenCode, Codex, Copilot, and Qwen Code, and sign in to the engines you'll use. Pi, Cline, and Cursor need no install and are ready to sign in to directly
 5. **Preferences** — Set dark mode, font size, sound notifications, and message layout (Classic cards or Compact lines)
 
 You can change the authentication mode anytime in **Settings → Security → Authentication**.
@@ -164,7 +164,7 @@ See [CONTRIBUTING.md](CONTRIBUTING.md) for guidelines and [DECISIONS.md](DECISIO
 | Styling | Tailwind CSS v4 |
 | Database | SQLite with migrations |
 | Terminal | bun-pty |
-| AI Engines | Claude Code, OpenCode, Codex, Copilot, Qwen Code |
+| AI Engines | Claude Code, OpenCode, Codex, Copilot, Qwen Code, Pi, Cline, Cursor |
 | DB Client | Postgres, MySQL, SQLite, MongoDB, Redis (+ SSH tunnel) |
 
 ---
@@ -202,6 +202,9 @@ MIT License - see [LICENSE](LICENSE) for details.
 - [Codex](https://github.com/openai/codex) by OpenAI
 - [GitHub Copilot CLI](https://github.com/github/copilot-cli) by GitHub
 - [Qwen Code](https://github.com/QwenLM/qwen-code) by Alibaba Qwen
+- [Pi](https://github.com/earendil-works/pi) by Earendil Works
+- [Cline](https://github.com/cline/cline) by Cline Bot Inc.
+- [Cursor](https://cursor.com) by Anysphere
 - [Bun](https://bun.sh/) runtime
 - [Svelte](https://svelte.dev/) framework
 
