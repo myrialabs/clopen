@@ -2,6 +2,7 @@
 	import ToolInstallCard from './ToolInstallCard.svelte';
 	import PiInfoCard from './PiInfoCard.svelte';
 	import ClineInfoCard from './ClineInfoCard.svelte';
+	import CursorInfoCard from './CursorInfoCard.svelte';
 
 	interface Props {
 		showHeader?: boolean;
@@ -57,6 +58,8 @@
 			<PiInfoCard />
 
 			<ClineInfoCard />
+
+			<CursorInfoCard />
 		</div>
 	</section>
 
