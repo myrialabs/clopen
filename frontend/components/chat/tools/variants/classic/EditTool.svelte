@@ -1,7 +1,6 @@
 <script lang="ts">
 	import type { ToolUseBlock, EditInput } from '$shared/types/unified';
 	import { FileHeader, DiffBlock } from './components';
-	import { addAiChange } from '$frontend/utils/ai-changes';
 
 	const { toolInput }: { toolInput: ToolUseBlock } = $props();
 	const input = $derived(toolInput.input as EditInput);
@@ -13,22 +12,13 @@
 	const replaceAll = $derived(input.replaceAll || false);
 
 	const badges = $derived(replaceAll ? [{ text: 'Replace All', color: 'bg-slate-100 dark:bg-slate-900 text-slate-700 dark:text-slate-300' }] : []);
-
-	const hasResult = $derived(!!toolInput.result && !toolInput.result.isError);
-	let editIndex = $state<number | null>(null);
-
-	$effect(() => {
-		if (hasResult && filePath) {
-			editIndex = addAiChange(filePath, oldString, newString, toolInput.id);
-		}
-	});
 </script>
 
 <FileHeader
 	{filePath}
 	{fileName}
 	{badges}
-	{editIndex}
+	editKey={toolInput.id}
 	iconColor="text-emerald-600 dark:text-emerald-400"
 />
 

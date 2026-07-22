@@ -6,7 +6,10 @@ import {
 	clearAllAiChanges,
 	getFilesWithAiChanges,
 	requestAiScrollReveal,
-	consumeAiScrollReveal
+	consumeAiScrollReveal,
+	latestPresentChangeIndex,
+	setAiChanges,
+	type AiChange
 } from './ai-changes';
 
 const FILE = '/proj/src/foo.ts';
@@ -62,6 +65,57 @@ describe('file set tracking', () => {
 		addAiChange('/proj/src/bar.ts', '', 'x', 'id-2');
 		clearAllAiChanges();
 		expect(getFilesWithAiChanges()).toEqual([]);
+	});
+});
+
+describe('setAiChanges', () => {
+	test('rebuilds the store grouped per file, in order', () => {
+		setAiChanges([
+			{ filePath: FILE, oldContent: 'a', newContent: 'b', key: 'e1' },
+			{ filePath: '/proj/src/bar.ts', oldContent: '', newContent: 'x', key: 'e2' },
+			{ filePath: FILE, oldContent: 'b', newContent: 'c', key: 'e3' }
+		]);
+		expect(getAiChanges(FILE).map((c) => c.key)).toEqual(['e1', 'e3']);
+		expect(getAiChanges('/proj/src/bar.ts').map((c) => c.key)).toEqual(['e2']);
+	});
+
+	test('dedupes by key within a file', () => {
+		setAiChanges([
+			{ filePath: FILE, oldContent: 'a', newContent: 'b', key: 'e1' },
+			{ filePath: FILE, oldContent: 'a', newContent: 'b', key: 'e1' }
+		]);
+		expect(getAiChanges(FILE)).toHaveLength(1);
+	});
+
+	test('fully replaces prior state', () => {
+		setAiChanges([{ filePath: FILE, oldContent: 'a', newContent: 'b', key: 'e1' }]);
+		setAiChanges([{ filePath: '/proj/src/bar.ts', oldContent: '', newContent: 'x', key: 'e2' }]);
+		expect(getAiChanges(FILE)).toEqual([]);
+		expect(getFilesWithAiChanges()).toEqual(['/proj/src/bar.ts']);
+	});
+});
+
+describe('latestPresentChangeIndex', () => {
+	const mk = (newContent: string): AiChange => ({ oldContent: '', newContent, timestamp: 0 });
+
+	test('returns the last index when every edit is present in the content', () => {
+		const list = [mk('alpha'), mk('beta'), mk('gamma')];
+		expect(latestPresentChangeIndex(list, 'alpha beta gamma')).toBe(2);
+	});
+
+	test('skips trailing edits whose content is absent (post-restore)', () => {
+		// Edits A-B-C-D-E; file was restored to C, so D/E no longer appear.
+		const list = [mk('A'), mk('B'), mk('C'), mk('D'), mk('E')];
+		expect(latestPresentChangeIndex(list, 'A B C')).toBe(2);
+	});
+
+	test('returns -1 for an empty list', () => {
+		expect(latestPresentChangeIndex([], 'anything')).toBe(-1);
+	});
+
+	test('falls back to the last index when nothing matches', () => {
+		const list = [mk('x'), mk('y')];
+		expect(latestPresentChangeIndex(list, 'no match here')).toBe(1);
 	});
 });
 

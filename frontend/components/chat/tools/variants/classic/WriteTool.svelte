@@ -2,7 +2,6 @@
 	import type { ToolUseBlock, WriteInput } from '$shared/types/unified';
 	import { FileHeader, DiffBlock } from './components';
 	import TextMessage from '../../../formatters/TextMessage.svelte';
-	import { addAiChange } from '$frontend/utils/ai-changes';
 
 	const { toolInput }: { toolInput: ToolUseBlock } = $props();
 	const input = $derived(toolInput.input as WriteInput);
@@ -10,21 +9,12 @@
 	const filePath = $derived(input.filePath || '');
 	const fileName = $derived(filePath.split(/[/\\]/).pop() || filePath || 'unknown');
 	const content = $derived(input.content || '');
-
-	const hasResult = $derived(!!toolInput.result && !toolInput.result.isError);
-	let editIndex = $state<number | null>(null);
-
-	$effect(() => {
-		if (hasResult && filePath && content) {
-			editIndex = addAiChange(filePath, '', content, toolInput.id);
-		}
-	});
 </script>
 
 <FileHeader
 	{filePath}
 	{fileName}
-	{editIndex}
+	editKey={toolInput.id}
 	iconColor="text-violet-600 dark:text-violet-400"
 />
 

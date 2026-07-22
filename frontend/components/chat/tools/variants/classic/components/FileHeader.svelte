@@ -2,12 +2,14 @@
 	import Icon from '$frontend/components/common/display/Icon.svelte';
 	import { getFileIcon } from '$frontend/utils/file-icon-mappings';
 	import { revealFile } from '$frontend/stores/ui/file-peek.svelte';
-	import { requestAiScrollReveal } from '$frontend/utils/ai-changes';
+	import { requestAiScrollReveal, getAiChanges } from '$frontend/utils/ai-changes';
 
 	function handleClick() {
 		revealFile(filePath);
-		if (editIndex !== undefined && editIndex !== null) {
-			requestAiScrollReveal(filePath, editIndex);
+		// Resolve this edit's position in the (message-derived) store at click time.
+		if (editKey) {
+			const idx = getAiChanges(filePath).findIndex((c) => c.key === editKey);
+			if (idx >= 0) requestAiScrollReveal(filePath, idx);
 		}
 	}
 
@@ -17,10 +19,10 @@
 		iconColor?: string;
 		badges?: Array<{ text: string; color: string }>;
 		box?: boolean;
-		editIndex?: number | null;
+		editKey?: string | null;
 	}
 
-	const { filePath, fileName, iconColor, badges = [], box = true, editIndex = null }: Props = $props();
+	const { filePath, fileName, iconColor, badges = [], box = true, editKey = null }: Props = $props();
 
 	const displayFileName = $derived(fileName || filePath.split(/[/\\]/).pop() || filePath);
 </script>

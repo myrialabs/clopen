@@ -10,7 +10,6 @@ import { projectState } from '$frontend/stores/core/projects.svelte';
 import ws from '$frontend/utils/ws';
 import { debug } from '$shared/utils/logger';
 import type { GitFileChange, GitStatus } from '$shared/types/git';
-import { getFilesWithAiChanges, clearAiChange } from '$frontend/utils/ai-changes';
 
 interface GitStatusState {
 	/** Absolute path -> single-letter status code (M/A/D/R/?/U/T/C). */
@@ -105,25 +104,6 @@ async function fetchStatus(projectId: string, projectPath: string): Promise<void
 		const built = buildStatusMaps(status, projectPath);
 		gitStatusState.map = built.map;
 		gitStatusState.folderMap = built.folderMap;
-
-		// Clear AI changes for files that are no longer unstaged/untracked (staged or committed)
-		const unstagedPaths = new Set<string>();
-		const sep = projectPath.includes('\\') ? '\\' : '/';
-		const collectUnstaged = (entries: GitFileChange[]) => {
-			for (const change of entries) {
-				const rel = sep === '\\' ? change.path.replace(/\//g, '\\') : change.path;
-				unstagedPaths.add(`${projectPath}${sep}${rel}`);
-			}
-		};
-		collectUnstaged(status.unstaged);
-		collectUnstaged(status.untracked);
-
-		const aiFiles = getFilesWithAiChanges();
-		for (const path of aiFiles) {
-			if (!unstagedPaths.has(path)) {
-				clearAiChange(path);
-			}
-		}
 	} catch (err) {
 		debug.error('git', 'Failed to fetch git status:', err);
 	} finally {

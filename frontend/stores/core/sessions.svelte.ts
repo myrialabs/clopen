@@ -14,6 +14,8 @@ import { projectState } from './projects.svelte';
 import { setupEditModeListener, restoreEditMode } from '$frontend/stores/ui/edit-mode.svelte';
 import { markSessionUnread, markSessionRead, clearSessionState, syncGlobalStateFromSession, appState } from '$frontend/stores/core/app.svelte';
 import { debug } from '$shared/utils/logger';
+import { setAiChanges } from '$frontend/utils/ai-changes';
+import { extractAiEdits } from '$frontend/utils/chat/ai-edits-from-messages';
 
 /**
  * Frontend-only streaming message for assistant text or reasoning.
@@ -135,6 +137,7 @@ export async function setCurrentSession(session: ChatSession | null, skipLoadMes
 	} else {
 		// Clear messages when no session
 		sessionState.messages = [];
+		syncAiChangesFromMessages();
 		debug.log('session', 'Session cleared');
 	}
 }
@@ -203,6 +206,7 @@ export function removeSession(sessionId: string) {
 	if (sessionState.currentSession?.id === sessionId) {
 		sessionState.currentSession = null;
 		sessionState.messages = [];
+		syncAiChangesFromMessages();
 	}
 }
 
@@ -226,6 +230,24 @@ export async function endSession(sessionId: string) {
 // MESSAGE MANAGEMENT
 // ========================================
 
+// Signature of the last synced edit set — skip rebuilds when nothing relevant
+// changed (e.g. streaming text deltas that add no completed AI edit).
+let lastAiEditSignature = '';
+
+/**
+ * Re-derive the AI-change store from the messages currently in view. Called
+ * whenever the message set changes (session/checkpoint/history/project switch,
+ * clear) and reactively from ChatMessages for live streaming edits, so the AI
+ * indicators always reflect exactly what the user is looking at.
+ */
+export function syncAiChangesFromMessages() {
+	const entries = extractAiEdits(sessionState.messages);
+	const signature = entries.map((e) => e.key).join('|');
+	if (signature === lastAiEditSignature) return;
+	lastAiEditSignature = signature;
+	setAiChanges(entries);
+}
+
 export function addMessage(message: UnifiedMessage): void {
 	sessionState.messages.push(message);
 }
@@ -237,6 +259,7 @@ export function updateMessages(messages: FrontendMessage[]) {
 export function clearMessages() {
 	sessionState.messages = [];
 	sessionState.hasMessageHistory = false;
+	syncAiChangesFromMessages();
 }
 
 export async function loadMessagesForSession(sessionId: string) {
@@ -262,6 +285,10 @@ export async function loadMessagesForSession(sessionId: string) {
 		debug.error('session', 'Error loading messages:', error);
 		sessionState.messages = [];
 		sessionState.hasMessageHistory = false;
+	} finally {
+		// Re-derive AI-change indicators for whatever is now loaded (incl. after a
+		// checkpoint restore, which truncates messages to the checkpoint).
+		syncAiChangesFromMessages();
 	}
 }
 

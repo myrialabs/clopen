@@ -12,6 +12,9 @@
 	import { isImageFile, isSvgFile, isPdfFile, isAudioFile, isVideoFile, isBinaryFile, isBinaryContent, isPreviewableFile, isEditableImageFile } from '$frontend/utils/file-type';
 	import { formatFileSize } from '$frontend/utils/format';
 	import { onMount, untrack } from 'svelte';
+	import { scale } from 'svelte/transition';
+	import { cubicOut } from 'svelte/easing';
+	import { clickOutside } from '$frontend/utils/click-outside';
 	import type { IconName } from '$shared/types/ui/icons';
 	import type { editor } from 'monaco-editor';
 	import { debug } from '$shared/utils/logger';
@@ -20,7 +23,7 @@
 	import { gitStatusState } from '$frontend/stores/features/git-status.svelte';
 	import { settings } from '$frontend/stores/features/settings.svelte';
 	import { revealFile } from '$frontend/stores/ui/file-peek.svelte';
-	import { getAiChanges, clearAiChange, onAiChange, onAiScrollReveal, consumeAiScrollReveal, getGutterViewMode, setGutterViewMode, onGutterViewModeChange } from '$frontend/utils/ai-changes';
+	import { getAiChanges, onAiChange, onAiScrollReveal, consumeAiScrollReveal, getGutterViewMode, setGutterViewMode, onGutterViewModeChange, latestPresentChangeIndex } from '$frontend/utils/ai-changes';
 	import type { GutterViewMode } from '$frontend/utils/ai-changes';
 
 	// Interface untuk MonacoCodeEditor component
@@ -160,6 +163,16 @@
 	let activeRevealEditIdx = $state<number | null>(null);
 	let lastRevealEditIdx = $state<number | null>(null);
 	let hasAiChanges = $state(false);
+	let aiChangeCount = $state(0);
+	// Index of the newest AI edit whose content is still present in the file. After
+	// a checkpoint restore, edits made after that checkpoint no longer map onto the
+	// on-disk content, so "Latest AI change" resolves to the last one that does.
+	let latestPresentEditIdx = $state(-1);
+	// True while the user has chosen "Latest AI change". Unlike a frozen edit index,
+	// this re-resolves to the newest present edit whenever the file/checkpoint
+	// changes, so the menu selection sticks across checkpoint switches.
+	let aiLatestMode = $state(false);
+	let aiMenuOpen = $state(false);
 	let gutterMode = $state<GutterViewMode>(getGutterViewMode());
 	let headContent = $state<string | null>(null);
 	let headContentForPath = '';
@@ -371,6 +384,7 @@
 			headContentForPath = '';
 			activeRevealEditIdx = null;
 			lastRevealEditIdx = null;
+			aiLatestMode = false;
 			setGutterViewMode('git');
 			closeDiffPeek();
 			return;
@@ -380,6 +394,7 @@
 		headContent = null;
 		activeRevealEditIdx = null;
 		lastRevealEditIdx = null;
+		aiLatestMode = false;
 		setGutterViewMode('git');
 		closeDiffPeek();
 
@@ -427,8 +442,12 @@
 				if (activeRevealEditIdx === null && lastRevealEditIdx === null) {
 					const allChanges = getAiChanges(file?.path || '');
 					if (allChanges.length > 0) {
-						activeRevealEditIdx = allChanges.length - 1;
-						lastRevealEditIdx = allChanges.length - 1;
+						// Default to the latest present edit and mark "Latest" mode so
+						// the selection follows checkpoint switches.
+						const latest = latestPresentChangeIndex(allChanges, editableContent);
+						activeRevealEditIdx = latest;
+						lastRevealEditIdx = latest;
+						aiLatestMode = true;
 					}
 				}
 			});
@@ -460,11 +479,21 @@
 		if (!path) {
 			aiChangeDecorations = editor.deltaDecorations(aiChangeDecorations, []);
 			hasAiChanges = false;
+			aiChangeCount = 0;
+			latestPresentEditIdx = -1;
 			return;
 		}
 
 		const allChanges = getAiChanges(path);
 		hasAiChanges = allChanges.length > 0;
+		aiChangeCount = allChanges.length;
+		latestPresentEditIdx = latestPresentChangeIndex(allChanges, editableContent);
+
+		// In "Latest" mode, follow the newest present edit as the checkpoint/content
+		// shifts instead of staying pinned to a now-stale index.
+		if (aiLatestMode && latestPresentEditIdx >= 0) {
+			activeRevealEditIdx = latestPresentEditIdx;
+		}
 
 		// Capture scroll-reveal edit index first so we can filter by it on this pass
 		const revealEditIdx = consumeAiScrollReveal(path);
@@ -472,6 +501,7 @@
 			activeRevealEditIdx = revealEditIdx;
 			lastRevealEditIdx = revealEditIdx;
 			setGutterViewMode('ai');
+			aiLatestMode = false; // an explicit edit reveal overrides "Latest"
 		}
 
 		if (forceClear || gutterMode === 'git') {
@@ -1280,12 +1310,10 @@
 		// User edits invalidate the captured HEAD-side hunk in the peek; close it
 		if (activeDiffZone) closeDiffPeek();
 		scheduleGutterUpdate();
-		// Clear AI change highlights when user starts editing
-		if (file?.path) {
-			clearAiChange(file.path);
-			const editor = monacoEditorRef?.getEditor();
-			if (editor) aiChangeDecorations = editor.deltaDecorations(aiChangeDecorations, []);
-		}
+		// Re-apply AI decorations against the new content. The store is derived from
+		// the conversation, so editing never destroys it — hunks whose text no longer
+		// appears simply drop out and reappear if the user reverts.
+		applyAiChangeDecorations();
 	}
 
 	export function getEditorScrollTop(): number {
@@ -1295,6 +1323,7 @@
 	export function resetRevealFilter() {
 		activeRevealEditIdx = null;
 		lastRevealEditIdx = null;
+		aiLatestMode = false;
 		setGutterViewMode('git');
 		closeDiffPeek();
 	}
@@ -1548,16 +1577,16 @@
 			<div class="flex items-center gap-1.5 sm:gap-1 flex-shrink-0">
 				<!-- SVG view mode toggle -->
 				{#if file && file.type === 'file' && isSvgFile(file.name)}
-					<div class="flex bg-slate-100 dark:bg-slate-800 rounded-lg overflow-hidden mr-1">
+					<div class="flex items-center gap-0.5 p-0.5 rounded-lg bg-slate-100 dark:bg-slate-800/60">
 						<button
-							class="flex px-2 py-1.5 text-xs font-medium transition-colors {svgViewMode === 'visual' ? 'bg-violet-600 text-white' : 'text-slate-600 dark:text-slate-400 hover:bg-slate-200 dark:hover:bg-slate-700'}"
+							class="flex items-center px-2 py-1 rounded-md text-xs font-semibold transition-all duration-200 {svgViewMode === 'visual' ? 'text-violet-700 dark:text-violet-300 bg-violet-100 dark:bg-violet-900/60 shadow-sm' : 'text-slate-500 dark:text-slate-400 hover:text-slate-700 dark:hover:text-slate-200'}"
 							onclick={() => { svgViewMode = 'visual'; }}
 							title="Visual preview"
 						>
 							<Icon name="lucide:eye" class="w-3.5 h-3.5" />
 						</button>
 						<button
-							class="flex px-2 py-1.5 text-xs font-medium transition-colors {svgViewMode === 'code' ? 'bg-violet-600 text-white' : 'text-slate-600 dark:text-slate-400 hover:bg-slate-200 dark:hover:bg-slate-700'}"
+							class="flex items-center px-2 py-1 rounded-md text-xs font-semibold transition-all duration-200 {svgViewMode === 'code' ? 'text-violet-700 dark:text-violet-300 bg-violet-100 dark:bg-violet-900/60 shadow-sm' : 'text-slate-500 dark:text-slate-400 hover:text-slate-700 dark:hover:text-slate-200'}"
 							onclick={() => { svgViewMode = 'code'; }}
 							title="Code view"
 						>
@@ -1568,16 +1597,16 @@
 
 				<!-- Markdown view mode toggle -->
 				{#if isMarkdown}
-					<div class="flex bg-slate-100 dark:bg-slate-800 rounded-lg overflow-hidden mr-1">
+					<div class="flex items-center gap-0.5 p-0.5 rounded-lg bg-slate-100 dark:bg-slate-800/60">
 						<button
-							class="flex px-2 py-1.5 text-xs font-medium transition-colors {mdViewMode === 'visual' ? 'bg-violet-600 text-white' : 'text-slate-600 dark:text-slate-400 hover:bg-slate-200 dark:hover:bg-slate-700'}"
+							class="flex items-center px-2 py-1 rounded-md text-xs font-semibold transition-all duration-200 {mdViewMode === 'visual' ? 'text-violet-700 dark:text-violet-300 bg-violet-100 dark:bg-violet-900/60 shadow-sm' : 'text-slate-500 dark:text-slate-400 hover:text-slate-700 dark:hover:text-slate-200'}"
 							onclick={() => switchMdMode('visual')}
 							title="Rendered markdown preview"
 						>
 							<Icon name="lucide:book-open" class="w-3.5 h-3.5" />
 						</button>
 						<button
-							class="flex px-2 py-1.5 text-xs font-medium transition-colors {mdViewMode === 'code' ? 'bg-violet-600 text-white' : 'text-slate-600 dark:text-slate-400 hover:bg-slate-200 dark:hover:bg-slate-700'}"
+							class="flex items-center px-2 py-1 rounded-md text-xs font-semibold transition-all duration-200 {mdViewMode === 'code' ? 'text-violet-700 dark:text-violet-300 bg-violet-100 dark:bg-violet-900/60 shadow-sm' : 'text-slate-500 dark:text-slate-400 hover:text-slate-700 dark:hover:text-slate-200'}"
 							onclick={() => switchMdMode('code')}
 							title="Source view"
 						>
@@ -1618,6 +1647,92 @@
 							<Icon name={hideEnvValues ? 'lucide:eye-off' : 'lucide:eye'} class="w-4 h-4" />
 						</button>
 					{/if}
+					<!-- Gutter view mode: segmented AI | Git. The AI pill doubles as a
+					     dropdown (All AI changes / Latest AI change) when the file has
+					     more than one AI edit. -->
+					{#if hasAiChanges}
+						<div
+							class="relative flex items-center gap-0.5 p-0.5 rounded-lg bg-slate-100 dark:bg-slate-800/60"
+							role="group"
+							aria-label="Gutter view mode"
+							use:clickOutside={() => (aiMenuOpen = false)}
+						>
+							<button
+								class="flex items-center gap-1 px-2 py-1 rounded-md text-xs font-semibold transition-all duration-200 {gutterMode === 'ai' ?
+									'text-violet-700 dark:text-violet-300 bg-violet-100 dark:bg-violet-900/60 shadow-sm' :
+									'text-slate-500 dark:text-slate-400 hover:text-slate-700 dark:hover:text-slate-200'
+								}"
+								onclick={() => {
+									setGutterViewMode('ai');
+									if (aiChangeCount >= 1) aiMenuOpen = !aiMenuOpen;
+								}}
+								aria-pressed={gutterMode === 'ai'}
+								aria-haspopup={aiChangeCount >= 1 ? 'menu' : undefined}
+								aria-expanded={aiChangeCount >= 1 ? aiMenuOpen : undefined}
+								title="Show AI changes"
+							>
+								<Icon name="lucide:sparkles" class="w-3.5 h-3.5" />
+								{#if aiChangeCount >= 1}
+									<Icon name="lucide:chevron-down" class="w-3 h-3 opacity-70" />
+								{/if}
+							</button>
+							<button
+								class="flex items-center gap-1 px-2 py-1 rounded-md text-xs font-semibold transition-all duration-200 {gutterMode === 'git' ?
+									'text-sky-700 dark:text-sky-300 bg-sky-100 dark:bg-sky-900/60 shadow-sm' :
+									'text-slate-500 dark:text-slate-400 hover:text-slate-700 dark:hover:text-slate-200'
+								}"
+								onclick={() => {
+									setGutterViewMode('git');
+									aiMenuOpen = false;
+								}}
+								aria-pressed={gutterMode === 'git'}
+								title="Show Git changes"
+							>
+								<Icon name="lucide:git-branch" class="w-3.5 h-3.5" />
+							</button>
+
+							{#if aiMenuOpen && aiChangeCount >= 1}
+								<div
+									class="absolute top-full left-0 mt-1 w-44 py-1 bg-white dark:bg-slate-800 border border-violet-500/20 rounded-lg shadow-2xl shadow-slate-900/20 dark:shadow-black/40 z-50 overflow-hidden"
+									role="menu"
+									transition:scale={{ duration: 150, easing: cubicOut, start: 0.95, opacity: 0 }}
+								>
+									<button
+										class="flex items-center gap-2 w-full px-3 py-1.5 text-xs text-left text-slate-700 dark:text-slate-200 hover:bg-violet-500/10 transition-colors"
+										role="menuitemradio"
+										aria-checked={activeRevealEditIdx === null}
+										onclick={() => {
+											setGutterViewMode('ai');
+											aiLatestMode = false;
+											activeRevealEditIdx = null;
+											applyAiChangeDecorations();
+											refreshActiveDiffPeek();
+											aiMenuOpen = false;
+										}}
+									>
+										<Icon name="lucide:check" class="w-3.5 h-3.5 text-violet-600 dark:text-violet-400 {activeRevealEditIdx === null ? '' : 'opacity-0'}" />
+										<span>All AI changes</span>
+									</button>
+									<button
+										class="flex items-center gap-2 w-full px-3 py-1.5 text-xs text-left text-slate-700 dark:text-slate-200 hover:bg-violet-500/10 transition-colors"
+										role="menuitemradio"
+										aria-checked={aiLatestMode}
+										onclick={() => {
+											setGutterViewMode('ai');
+											aiLatestMode = true;
+											activeRevealEditIdx = latestPresentChangeIndex(getAiChanges(file?.path || ''), editableContent);
+											applyAiChangeDecorations();
+											refreshActiveDiffPeek();
+											aiMenuOpen = false;
+										}}
+									>
+										<Icon name="lucide:check" class="w-3.5 h-3.5 text-violet-600 dark:text-violet-400 {aiLatestMode ? '' : 'opacity-0'}" />
+										<span>Latest AI change</span>
+									</button>
+								</div>
+							{/if}
+						</div>
+					{/if}
 					<!-- Word Wrap toggle -->
 					{#if onToggleWordWrap}
 						<button
@@ -1631,50 +1746,6 @@
 						>
 							<Icon name="lucide:wrap-text" class="w-4 h-4" />
 						</button>
-					{/if}
-					<!-- Gutter view mode toggle: AI changes vs Git changes -->
-					{#if hasAiChanges}
-						<button
-							class="flex p-2 rounded-lg transition-all duration-200 {gutterMode === 'ai' ?
-								'text-violet-600 dark:text-violet-400 bg-violet-100 dark:bg-violet-900/50' :
-								'text-sky-600 dark:text-sky-400 bg-sky-100 dark:bg-sky-900/50'
-							}"
-							onclick={() => setGutterViewMode(gutterMode === 'ai' ? 'git' : 'ai')}
-							title={gutterMode === 'ai' ? 'Showing AI changes — click for Git changes' : 'Showing Git changes — click for AI changes'}
-						>
-							<Icon name={gutterMode === 'ai' ? 'lucide:sparkles' : 'lucide:git-branch'} class="w-4 h-4" />
-						</button>
-					{/if}
-
-					{#if gutterMode === 'ai' && lastRevealEditIdx !== null}
-						{#if activeRevealEditIdx !== null}
-							<button
-								class="flex items-center justify-center gap-1.5 h-8 px-2.5 text-xs font-semibold rounded-lg text-amber-700 bg-amber-50 dark:text-amber-300 dark:bg-amber-950/40 border border-amber-200/60 dark:border-amber-900/40 hover:bg-amber-100 dark:hover:bg-amber-950/60 transition-all duration-200"
-								onclick={() => {
-									activeRevealEditIdx = null;
-									applyAiChangeDecorations();
-									refreshActiveDiffPeek();
-								}}
-								title="Clear filter — show all AI edits"
-							>
-								<Icon name="lucide:filter" class="w-3.5 h-3.5" />
-								<span>Filtered</span>
-								<Icon name="lucide:x" class="w-3 h-3" />
-							</button>
-						{:else}
-							<button
-								class="flex items-center justify-center gap-1.5 h-8 px-2.5 text-xs font-semibold rounded-lg text-slate-600 hover:text-slate-800 dark:text-slate-400 dark:hover:text-slate-200 bg-slate-50 hover:bg-slate-100 dark:bg-slate-800/40 dark:hover:bg-slate-800/80 border border-slate-200 dark:border-slate-700 transition-all duration-200"
-								onclick={() => {
-									activeRevealEditIdx = lastRevealEditIdx;
-									applyAiChangeDecorations();
-									refreshActiveDiffPeek();
-								}}
-								title="Filter by last clicked AI edit"
-							>
-								<Icon name="lucide:filter" class="w-3.5 h-3.5" />
-								<span>Filter</span>
-							</button>
-						{/if}
 					{/if}
 					<!-- Save button -->
 					<button
@@ -1703,14 +1774,6 @@
 							<Icon name="lucide:copy" class="w-4 h-4" />
 						</button>
 					{/if}
-
-					<button
-						class="flex p-2 text-slate-600 dark:text-slate-400 hover:text-violet-600 dark:hover:text-violet-400 hover:bg-violet-50 dark:hover:bg-violet-900/30 rounded-lg transition-all duration-200"
-						onclick={downloadFile}
-						title="Download file"
-					>
-						<Icon name="lucide:download" class="w-4 h-4" />
-					</button>
 				{:else if file && file.type === 'file'}
 					<!-- Edit button for raster images the editor can round-trip -->
 					{#if canEditImage}
@@ -1722,14 +1785,6 @@
 							<Icon name="lucide:pencil" class="w-3.5 h-3.5" /> Edit
 						</button>
 					{/if}
-					<!-- Non-editable file actions -->
-					<button
-						class="flex p-2 text-slate-600 dark:text-slate-400 hover:text-violet-600 dark:hover:text-violet-400 hover:bg-violet-50 dark:hover:bg-violet-900/30 rounded-lg transition-all duration-200"
-						onclick={downloadFile}
-						title="Download file"
-					>
-						<Icon name="lucide:download" class="w-4 h-4" />
-					</button>
 				{/if}
 			</div>
 		</div>

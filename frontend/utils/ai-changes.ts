@@ -8,6 +8,14 @@ export interface AiChange {
 	key?: string;
 }
 
+/** A single AI edit extracted from the conversation, keyed by tool_use id. */
+export interface AiEditEntry {
+	filePath: string;
+	oldContent: string;
+	newContent: string;
+	key: string;
+}
+
 const changes = new Map<string, AiChange[]>();
 let aiChangeListeners: Array<() => void> = [];
 
@@ -89,6 +97,29 @@ export function getAiChanges(filePath: string): AiChange[] {
 	return changes.get(filePath) ?? [];
 }
 
+/**
+ * Replace the entire store with edits derived from the current conversation.
+ * Grouped per file in conversation order and deduped by key. This is the single
+ * source of truth now that edits are derived from `sessionState.messages` rather
+ * than pushed ad-hoc from chat tool rows.
+ */
+export function setAiChanges(entries: AiEditEntry[]) {
+	changes.clear();
+	for (const entry of entries) {
+		const list = changes.get(entry.filePath) ?? [];
+		if (list.some((c) => c.key === entry.key)) continue;
+		list.push({
+			oldContent: entry.oldContent,
+			newContent: entry.newContent,
+			timestamp: Date.now(),
+			key: entry.key
+		});
+		changes.set(entry.filePath, list);
+	}
+	for (const fn of aiChangeListeners) fn();
+	notifyAiFilesListeners();
+}
+
 export function clearAiChange(filePath: string) {
 	changes.delete(filePath);
 	notifyAiFilesListeners();
@@ -128,6 +159,20 @@ export function consumeAiScrollReveal(filePath: string): number {
 		return idx;
 	}
 	return -1;
+}
+
+/**
+ * Index of the newest change whose newContent still appears in `content`. After a
+ * checkpoint restore the on-disk file reverts, so edits made after that checkpoint
+ * no longer map onto the content — this resolves "latest" to the last one that
+ * still does. Returns `list.length - 1` when nothing matches (so a non-empty list
+ * still yields a usable index), or -1 for an empty list.
+ */
+export function latestPresentChangeIndex(list: AiChange[], content: string): number {
+	for (let i = list.length - 1; i >= 0; i--) {
+		if (content.indexOf(list[i].newContent) >= 0) return i;
+	}
+	return list.length - 1;
 }
 
 export function getFilesWithAiChanges(): string[] {

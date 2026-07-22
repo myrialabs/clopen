@@ -3,7 +3,7 @@
 	import { getFileIcon } from '$frontend/utils/file-icon-mappings';
 	import { getFolderIcon } from '$frontend/utils/folder-icon-mappings';
 	import { revealFile } from '$frontend/stores/ui/file-peek.svelte';
-	import { requestAiScrollReveal } from '$frontend/utils/ai-changes';
+	import { requestAiScrollReveal, getAiChanges } from '$frontend/utils/ai-changes';
 	import type { IconName } from '$shared/types/ui/icons';
 
 	interface DiffStat {
@@ -38,8 +38,8 @@
 		expanded?: boolean;
 		/** Called when header row is clicked (for expandable rows) */
 		onclick?: () => void;
-		/** AI edit index for scroll-reveal targeting */
-		editIndex?: number | null;
+		/** tool_use id of the AI edit, for scroll-reveal targeting */
+		editKey?: string | null;
 	}
 
 	let {
@@ -56,7 +56,7 @@
 		expandable = false,
 		expanded = $bindable(false),
 		onclick,
-		editIndex = null,
+		editKey = null,
 	}: Props = $props();
 
 	const displayName = $derived(fileName || (filePath ? filePath.split(/[/\\]/).pop() || filePath : ''));
@@ -72,8 +72,9 @@
 		e.stopPropagation();
 		if (!filePath) return;
 		revealFile(filePath);
-		if (editIndex !== null) {
-			requestAiScrollReveal(filePath, editIndex);
+		if (editKey) {
+			const idx = getAiChanges(filePath).findIndex((c) => c.key === editKey);
+			if (idx >= 0) requestAiScrollReveal(filePath, idx);
 		}
 	}
 

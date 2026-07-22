@@ -1220,6 +1220,9 @@
 			case 'extract':
 				if (file.type === 'file') await extractZip(file);
 				break;
+			case 'download':
+				if (file.type === 'file') await downloadFileNode(file);
+				break;
 			case 'reveal-in-file-manager':
 				try {
 					await ws.http('files:reveal-in-file-manager', { path: file.path });
@@ -1227,6 +1230,28 @@
 					showErrorAlert(err instanceof Error ? err.message : 'Failed to open file manager');
 				}
 				break;
+		}
+	}
+
+	// Download a file from the sidebar context menu. Fetches the on-disk bytes
+	// (base64) over WS and saves them client-side, preserving the original format.
+	async function downloadFileNode(file: FileNode) {
+		try {
+			const response = await ws.http('files:read-content', { path: file.path });
+			const binaryString = atob(response.content);
+			const bytes = new Uint8Array(binaryString.length);
+			for (let i = 0; i < binaryString.length; i++) {
+				bytes[i] = binaryString.charCodeAt(i);
+			}
+			const blob = new Blob([bytes], { type: response.contentType || 'application/octet-stream' });
+			const url = URL.createObjectURL(blob);
+			const a = document.createElement('a');
+			a.href = url;
+			a.download = file.name;
+			a.click();
+			URL.revokeObjectURL(url);
+		} catch (err) {
+			showErrorAlert(err instanceof Error ? err.message : 'Failed to download file');
 		}
 	}
 
