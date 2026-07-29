@@ -11,8 +11,8 @@
  */
 
 import { t } from 'elysia';
-import { Cursor } from '@cursor/sdk';
 import { createRouter } from '$shared/utils/ws-server';
+import { loadEngineSdk } from '$backend/engine/sdk-loader';
 import { engineQueries } from '../../../database/queries';
 import { disposeAllProjectEnginesByType } from '../../../engine';
 import { serializeCursorCredential } from '../../../engine/adapters/cursor/credential';
@@ -35,6 +35,7 @@ async function disposeCursorEngines(): Promise<void> {
  */
 async function validateApiKey(apiKey: string): Promise<void> {
 	try {
+		const { Cursor } = await loadEngineSdk<typeof import('@cursor/sdk')>('cursor', '@cursor/sdk');
 		await Cursor.me({ apiKey });
 	} catch (error) {
 		const status = (error as { status?: number })?.status;

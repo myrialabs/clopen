@@ -5,14 +5,15 @@
  * to avoid duplication and make it easier to add new servers.
  */
 
-import { createSdkMcpServer, tool, type McpSdkServerConfigWithInstance, type McpServerConfig } from "@anthropic-ai/claude-agent-sdk";
+import type { McpServerConfig } from "@anthropic-ai/claude-agent-sdk";
 import type { McpRemoteConfig } from '@opencode-ai/sdk';
 import type { MCPHTTPServerConfig } from '@github/copilot-sdk';
 import type { CLIMcpServerConfig as QwenMcpServerConfig } from '@qwen-code/sdk';
 import type { McpServerConfig as CursorMcpServerConfig } from '@cursor/sdk';
 import type { ServerConfig, ParsedMcpToolName, ServerName } from './types';
 import type { McpExecutionContext } from '../../engine/types';
-import { serverRegistry, serverFactories, serverMetadata } from './servers';
+import { serverMetadata } from './servers';
+import { loadEngineSdk } from '$backend/engine/sdk-loader';
 import { projectContextService } from './project-context';
 import { mcpServerQueries } from '$backend/database/queries';
 import { debug } from '$shared/utils/logger';
@@ -56,30 +57,14 @@ export const mcpServersConfig: Record<ServerName, ServerConfig> = {
 };
 
 /**
- * Helper to merge user config with server instances from registry
- */
-function createServerConfig<T extends Record<ServerName, ServerConfig>>(
-	config: T
-): { [K in keyof T]: T[K] & { instance: McpSdkServerConfigWithInstance } } {
-	const result = {} as any;
-
-	for (const [serverName, serverConfig] of Object.entries(config)) {
-		result[serverName] = {
-			...serverConfig,
-			instance: serverRegistry[serverName as ServerName]
-		};
-	}
-
-	return result;
-}
-
-/**
- * MCP Servers Configuration with instances
+ * MCP Servers Configuration
  *
- * This is the final configuration used throughout the application.
- * Automatically merges user config with server instances.
+ * The final configuration used throughout the application. SDK-shaped
+ * in-process server instances (Claude Code) are built on demand in
+ * `getEnabledMcpServers`; every other path works off server names + the raw
+ * tool defs held in `serverMetadata`.
  */
-export const mcpServers: Record<string, ServerConfig & { instance: McpSdkServerConfigWithInstance }> = createServerConfig(mcpServersConfig);
+export const mcpServers: Record<string, ServerConfig> = mcpServersConfig;
 
 // ============================================================================
 // Runtime enabled state (DB-backed)
@@ -130,50 +115,56 @@ function serverEnabled(serverName: string): boolean {
  * propagation — without this, background streams from Project A would
  * resolve to Project B's preview browser when the user switches projects.
  */
-export function getEnabledMcpServers(context?: McpExecutionContext, profileFilter?: Set<string>): Record<string, McpServerConfig> {
+export async function getEnabledMcpServers(context?: McpExecutionContext, profileFilter?: Set<string>): Promise<Record<string, McpServerConfig>> {
 	const enabledServers: Record<string, McpServerConfig> = {};
 	const active = new Set(activeInternalServerNames(profileFilter));
+	const activeNames = Object.keys(mcpServers).filter(name => active.has(name));
 
-	Object.entries(mcpServers).forEach(([serverName, serverConfig]) => {
-		if (active.has(serverName)) {
-			if (context) {
-				// Create context-bound instance: wrap each tool handler so
-				// AsyncLocalStorage context is restored on invocation, then
-				// short-circuit if the owning stream's AbortSignal has fired
-				// — handler never runs, no half-completed browser ops.
-				const meta = serverMetadata[serverName as ServerName];
-				const sdkTools = (serverConfig.tools as readonly string[]).map(toolName => {
-					const def = meta.toolDefs[toolName];
-					const boundHandler = async (args: any) => {
-						return projectContextService.runWithContextAsync(context, async () => {
-							const signal = projectContextService.getCurrentSignal();
-							if (signal?.aborted) {
-								return abortedToolResult(toolName);
-							}
-							const result = await def.handler(args);
-							result.content = validateMcpOutput(result.content, toolName);
-							return result;
-						});
-					};
-					return tool(toolName, def.description, def.schema, boundHandler as any);
-				});
-				enabledServers[serverName] = createSdkMcpServer({
-					name: meta.name,
-					version: '1.0.0',
-					tools: sdkTools
-				});
-			} else {
-				const factory = serverFactories[serverName as ServerName];
-				enabledServers[serverName] = factory ? factory() : serverConfig.instance;
-			}
-			debug.log('mcp', `✓ Enabled MCP server: ${serverName}${context ? ' (context-bound)' : ''}`);
-		} else {
-			debug.log('mcp', `✗ Disabled MCP server: ${serverName}`);
-		}
-	});
+	// Nothing to build → don't load the Claude Agent SDK at all.
+	if (activeNames.length === 0) {
+		debug.log('mcp', 'Total enabled MCP servers: 0');
+		return enabledServers;
+	}
+
+	// This is the Claude in-process path ONLY (other engines consume the remote
+	// HTTP bridge via createRemoteMcpServer, which uses @modelcontextprotocol/sdk
+	// directly). Load the Claude Agent SDK's `createSdkMcpServer`/`tool` lazily so
+	// it is never required unless the Claude engine actually streams.
+	const { createSdkMcpServer, tool } = await loadEngineSdk<typeof import('@anthropic-ai/claude-agent-sdk')>(
+		'claude-code', '@anthropic-ai/claude-agent-sdk'
+	);
+
+	for (const serverName of activeNames) {
+		const serverConfig = mcpServers[serverName];
+		const meta = serverMetadata[serverName as ServerName];
+		const sdkTools = (serverConfig.tools as readonly string[]).map(toolName => {
+			const def = meta.toolDefs[toolName];
+			// With context: wrap each handler so AsyncLocalStorage context is
+			// restored on invocation, then short-circuit if the owning stream's
+			// AbortSignal has fired — handler never runs, no half-completed
+			// browser ops. Without context: the raw handler (unchanged behavior).
+			const handler = context
+				? async (args: any) => projectContextService.runWithContextAsync(context, async () => {
+					const signal = projectContextService.getCurrentSignal();
+					if (signal?.aborted) {
+						return abortedToolResult(toolName);
+					}
+					const result = await def.handler(args);
+					result.content = validateMcpOutput(result.content, toolName);
+					return result;
+				})
+				: def.handler;
+			return tool(toolName, def.description, def.schema, handler as any);
+		});
+		enabledServers[serverName] = createSdkMcpServer({
+			name: meta.name,
+			version: '1.0.0',
+			tools: sdkTools
+		});
+		debug.log('mcp', `✓ Enabled MCP server: ${serverName}${context ? ' (context-bound)' : ''}`);
+	}
 
 	debug.log('mcp', `Total enabled MCP servers: ${Object.keys(enabledServers).length}`);
-
 	return enabledServers;
 }
 

@@ -33,12 +33,13 @@
 | `generateStructured` (no tools, JSON)       | `claude/stream.ts::generateStructured` (native `outputFormat`), `codex/stream.ts::generateStructured` (native `outputSchema`), `opencode/stream.ts::generateStructured` + `copilot/stream.ts::generateStructured` + `qwen/stream.ts::generateStructured` (prompt-engineered via `backend/engine/structured-helpers.ts`). See §10.16 for the strict-schema + part-fallback gotchas. |
 | Error normalisation                         | `claude/error-handler.ts`, `copilot/error-handler.ts`, `opencode/error-handler.ts`, `qwen/error-handler.ts`, `codex/error-handler.ts` |
 | DB provider/account access                  | `backend/database/queries/engine-queries.ts`              |
-| Per-platform install recipe                 | `backend/engine/install-recipes.ts`                       |
+| Host-tool + engine-SDK install recipes      | `backend/engine/install-recipes.ts`                       |
+| On-demand engine-SDK loader (managed dir)   | `backend/engine/sdk-loader.ts` (`getStackEnginesDir`, `loadEngineSdk`) |
 | Streaming install logs                      | `backend/engine/install-runner.ts`                        |
 | Frontend account/provider stores            | `frontend/stores/features/{claude-accounts,copilot-accounts,opencode-providers}.svelte.ts` |
 | Frontend chat-model state                   | `frontend/stores/ui/chat-model.svelte.ts`                 |
 | Settings UI (Engines)                       | `frontend/components/settings/engines/AIEnginesSettings.svelte` (shell + grid) + `engines/panels/*Panel.svelte` (one per engine) |
-| Settings UI (System Tools)                  | `frontend/components/settings/system-tools/{SystemToolsSettings,ToolInstallCard}.svelte` |
+| Settings UI (Stack; id stays `system-tools`) | `frontend/components/settings/system-tools/{SystemToolsSettings,ToolInstallCard}.svelte` |
 | Chat picker (engine + model + account)      | `frontend/components/chat/input/components/EngineModelPicker.svelte` |
 | Chat send → backend                         | `frontend/services/chat/chat.service.ts` (`ws.emit('chat:stream', …)`), `backend/ws/chat/stream.ts` |
 | Stream-manager (`EngineOutput` routing)     | `backend/chat/stream-manager.ts`                          |

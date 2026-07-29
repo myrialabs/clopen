@@ -3,6 +3,7 @@
 	import { modelStore } from '$frontend/stores/features/models.svelte';
 	import { authStore } from '$frontend/stores/features/auth.svelte';
 	import { setActiveSection } from '$frontend/stores/ui/settings-modal.svelte';
+	import { pickDefaultModel } from '$shared/constants/engines';
 	import type { EngineType } from '$shared/types/unified';
 	import EngineModelPicker from './EngineModelPicker.svelte';
 	import Icon from '$frontend/components/common/display/Icon.svelte';
@@ -17,7 +18,7 @@
 
 		modelStore.fetchModels(engineType).then(models => {
 			const target = (remembered && models.find(m => m.engine.model.id === remembered.id))
-				|| models[0];
+				|| pickDefaultModel(models);
 			if (target) {
 				updateSettings({
 					selectedProvider: target.engine.provider,
@@ -42,6 +43,19 @@
 			engineModelMemory: { ...memory, [settings.selectedEngine]: { provider, id: modelId, name: model?.engine.model.name || modelId } }
 		});
 	}
+
+	// The default engine (OpenCode) has a dynamic catalog with no fixed model id.
+	// Once its models load, auto-select the most capable one (most badges) so a
+	// first-time user starts with a valid, feature-rich selection.
+	$effect(() => {
+		if (settings.selectedEngine === 'opencode' && !settings.selectedModelId) {
+			const models = modelStore.getByEngine('opencode');
+			const target = pickDefaultModel(models);
+			if (target) {
+				handleAssistantModelChange(target.engine.model.id);
+			}
+		}
+	});
 </script>
 
 <div class="py-1">

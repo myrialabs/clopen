@@ -47,7 +47,7 @@ Thanks for considering a contribution. This guide covers the development environ
   - [GitHub Copilot CLI](https://github.com/github/copilot-cli) by GitHub
   - [Qwen Code](https://github.com/QwenLM/qwen-code) by Alibaba Qwen
 
-Engines can be installed manually or via **Settings → System Tools** after first launch.
+Engines install on demand via **Settings → Stack** after first launch (into a clopen-managed directory, not your global setup).
 
 Clopen is a Bun-only project — Node.js and Deno are not supported. Use `bun` for all package management and scripts.
 

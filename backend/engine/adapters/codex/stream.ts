@@ -19,7 +19,8 @@
  * `backend/ws/chat/stream.ts` to it — same pattern as Claude/OpenCode.
  */
 
-import { Codex, type Thread, type ThreadOptions, type Input as CodexInput } from '@openai/codex-sdk';
+import type { Codex, Thread, ThreadOptions, Input as CodexInput } from '@openai/codex-sdk';
+import { loadEngineSdk } from '$backend/engine/sdk-loader';
 import type { EngineOutput, EngineModel } from '$shared/types/unified';
 import type { AIEngine, EngineQueryOptions, StructuredGenerationOptions } from '../../types';
 import { extractJson } from '../../structured-helpers';
@@ -119,6 +120,7 @@ export class CodexEngine implements AIEngine {
 		// The SDK does NOT inherit process.env when `env` is provided, so we
 		// pass the full clean spawn env and layer CODEX_HOME on top to redirect
 		// the subprocess's auth.json + sessions into Clopen's isolated dir.
+		const { Codex } = await loadEngineSdk<typeof import('@openai/codex-sdk')>('codex', '@openai/codex-sdk');
 		this.codex = new Codex({
 			apiKey: credential.kind === 'api_key' ? credential.apiKey : undefined,
 			...(codexBinary ? { codexPathOverride: codexBinary } : {}),

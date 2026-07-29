@@ -63,17 +63,22 @@ modelStore                 // models[], fetchModels(engine), refreshModels(engin
                            // getByEngine(engine), getById(modelId)
 ```
 
-### 5.2 Settings → System Tools
+### 5.2 Settings → Stack
+
+The panel is displayed as **Stack** (its internal section id / WS route stays
+`system-tools`).
 
 Files:
 - `frontend/components/settings/system-tools/SystemToolsSettings.svelte`
 - `frontend/components/settings/system-tools/ToolInstallCard.svelte`
 
-`SystemToolsSettings` renders one `ToolInstallCard` per tool (`git`,
-`claude`, `opencode`, `chrome`, `cloudflared`). `ToolInstallCard`:
+`SystemToolsSettings` renders one `ToolInstallCard` per tool — host tools
+(`git`, `chrome`, `cloudflared`) plus every engine SDK (`claude`, `opencode`,
+`copilot`, `codex`, `qwen`, `pi`, `cline`, `cursor`). `ToolInstallCard`:
 
 1. Calls `system-tools:status` on mount.
-2. Renders: status (installed/version/source), an "Install" button if
+2. Renders: status (installed/version/source; engines also carry
+   `requiredVersion` + `needsUpdate`), an "Install" button if
    `recipe.autoInstallable`, otherwise a "Manual install" dialog.
 3. While installing: `system-tools:install-start` → subscribe to
    `system-tools:install-stream` (per-line) → render in xterm + show
@@ -81,7 +86,15 @@ Files:
 4. The session survives navigation: if `activeSession` exists on refresh,
    re-attach to the same session id.
 
-To add a new tool (e.g. `goose`):
+Engine cards differ from host-tool cards:
+- The SDK installs on demand into `~/.clopen/stack/engines` (managed dir), not
+  the machine's PATH; there is no manual command to run.
+- The **"Check for Updates"** button is hidden — engine versions are pinned in
+  `package.json` and move in lockstep with clopen, so there is no upstream to
+  check. When the installed version ≠ the pinned version, the card shows
+  **"Update required"** and an `Update → <version>` button instead.
+
+To add a new **host** tool (e.g. `goose`):
 1. Add the literal to `ToolId` (`backend/engine/install-recipes.ts`).
 2. Add `resolveGooseRecipe()` + a case in `resolveRecipe()`.
 3. Add the literal to `TOOL_UNION` (`backend/ws/system-tools/status.ts`
@@ -90,6 +103,9 @@ To add a new tool (e.g. `goose`):
    in `SystemToolsSettings.svelte`.
 5. (Optional) expose detection in the `engine:<name>-status` handler so
    Settings → Engines can show an "Installed" badge.
+
+For a new **engine SDK**, you declare the pinned package instead of a resolver —
+see [system-tools](./system-tools.md) §7.7.
 
 ---
 

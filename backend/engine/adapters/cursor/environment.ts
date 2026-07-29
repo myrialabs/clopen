@@ -13,8 +13,9 @@
  */
 
 import { join } from 'node:path';
-import { JsonlLocalAgentStore } from '@cursor/sdk';
+import type { JsonlLocalAgentStore } from '@cursor/sdk';
 import { getEngineUserConfigDir } from '$backend/utils/paths';
+import { loadEngineSdk } from '$backend/engine/sdk-loader';
 
 /** Root dir holding every project's isolated Cursor agent store. */
 export function getCursorStoreRoot(): string {
@@ -27,6 +28,7 @@ function getCursorStoreDir(projectPath: string): string {
 }
 
 /** A per-project `JsonlLocalAgentStore` for a stream (create + resume + fork). */
-export function getCursorStore(projectPath: string): JsonlLocalAgentStore {
+export async function getCursorStore(projectPath: string): Promise<JsonlLocalAgentStore> {
+	const { JsonlLocalAgentStore } = await loadEngineSdk<typeof import('@cursor/sdk')>('cursor', '@cursor/sdk');
 	return new JsonlLocalAgentStore(getCursorStoreDir(projectPath));
 }

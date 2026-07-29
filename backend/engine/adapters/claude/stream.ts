@@ -13,7 +13,7 @@
  * When v2 SDKSessionOptions gains these, migrate streamQuery() to v2.
  */
 
-import { query } from '@anthropic-ai/claude-agent-sdk';
+import { loadEngineSdk } from '$backend/engine/sdk-loader';
 import type {
 	Options,
 	Query,
@@ -123,7 +123,7 @@ export class ClaudeCodeEngine implements AIEngine {
 
       // Get custom MCP servers and allowed tools
       // Pass mcpContext so tool handlers are bound to the correct project
-      const mcpServers = getEnabledMcpServers(options.mcpContext, mcpProfileFilter);
+      const mcpServers = await getEnabledMcpServers(options.mcpContext, mcpProfileFilter);
       const allowedMcpTools = getAllowedMcpTools();
 
       debug.log('mcp', '📦 Loading custom MCP servers...');
@@ -199,6 +199,7 @@ export class ClaudeCodeEngine implements AIEngine {
         yield sdkPrompt;
       })();
 
+      const { query } = await loadEngineSdk<typeof import('@anthropic-ai/claude-agent-sdk')>('claude-code', '@anthropic-ai/claude-agent-sdk');
       const queryInstance = query({
         prompt: promptIterable,
         options: sdkOptions,
@@ -348,6 +349,7 @@ export class ClaudeCodeEngine implements AIEngine {
     };
 
     // Use plain string prompt — simpler and faster than AsyncIterable
+    const { query } = await loadEngineSdk<typeof import('@anthropic-ai/claude-agent-sdk')>('claude-code', '@anthropic-ai/claude-agent-sdk');
     const queryInstance = query({
       prompt,
       options: sdkOptions

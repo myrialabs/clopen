@@ -19,10 +19,10 @@
  * mutation (mirrors Pi's DB-backed credential contract).
  */
 
-import { getProviderAuthHandler, formatProviderOAuthApiKey } from '@cline/sdk';
 import type { OAuthCredentials, ProviderSettings } from '@cline/sdk';
 import { engineQueries, type EngineAccount } from '$backend/database/queries/engine-queries';
 import { debug } from '$shared/utils/logger';
+import { loadEngineSdk } from '$backend/engine/sdk-loader';
 
 export type ClineAuthMethod = 'api_key' | 'oauth';
 
@@ -125,6 +125,7 @@ export async function resolveClineAuth(account: EngineAccount): Promise<Resolved
 	}
 
 	// OAuth: refresh if near-expiry, then format the access token as an api key.
+	const { getProviderAuthHandler, formatProviderOAuthApiKey } = await loadEngineSdk<typeof import('@cline/sdk')>('cline', '@cline/sdk');
 	let creds = parsed.oauth as OAuthCredentials;
 	const handler = getProviderAuthHandler(parsed.provider);
 	const nearExpiry = typeof creds.expires === 'number' && creds.expires <= Date.now() + OAUTH_REFRESH_BUFFER_MS;

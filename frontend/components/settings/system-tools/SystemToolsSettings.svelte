@@ -1,8 +1,5 @@
 <script lang="ts">
 	import ToolInstallCard from './ToolInstallCard.svelte';
-	import PiInfoCard from './PiInfoCard.svelte';
-	import ClineInfoCard from './ClineInfoCard.svelte';
-	import CursorInfoCard from './CursorInfoCard.svelte';
 
 	interface Props {
 		showHeader?: boolean;
@@ -14,7 +11,7 @@
 <div class="space-y-6">
 	{#if showHeader}
 		<div>
-			<h3 class="text-base font-bold text-slate-900 dark:text-slate-100 mb-1.5">System Tools</h3>
+			<h3 class="text-base font-bold text-slate-900 dark:text-slate-100 mb-1.5">Stack</h3>
 			<p class="text-sm text-slate-600 dark:text-slate-500">
 				Install binaries clopen depends on, directly on the server.
 			</p>
@@ -55,11 +52,23 @@
 				description="Used by clopen to run the Qwen Code engine."
 			/>
 
-			<PiInfoCard />
+			<ToolInstallCard
+					tool="pi"
+					title="Pi"
+					description="Used by clopen to run the Pi engine."
+				/>
 
-			<ClineInfoCard />
+				<ToolInstallCard
+					tool="cline"
+					title="Cline"
+					description="Used by clopen to run the Cline engine."
+				/>
 
-			<CursorInfoCard />
+				<ToolInstallCard
+					tool="cursor"
+					title="Cursor"
+					description="Used by clopen to run the Cursor engine."
+				/>
 		</div>
 	</section>
 

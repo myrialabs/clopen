@@ -17,8 +17,8 @@
  */
 
 import { t } from 'elysia';
-import { getProviderAuthHandler, isOAuthProvider } from '@cline/sdk';
 import type { OAuthLoginCallbacks, OAuthPrompt, OAuthCredentials } from '@cline/sdk';
+import { loadEngineSdk } from '$backend/engine/sdk-loader';
 import { createRouter } from '$shared/utils/ws-server';
 import { ws } from '$backend/utils/ws';
 import { engineQueries } from '../../../database/queries';
@@ -124,7 +124,7 @@ export const clineAccountsHandler = createRouter()
 		const providerRow = getClineProvider();
 		if (!providerRow) throw new Error('Cline provider not found in database');
 
-		const fieldDefs = getClineProviderFields(data.provider);
+		const fieldDefs = await getClineProviderFields(data.provider);
 		const keyField = fieldDefs.find(f => f.role === 'apiKey');
 		const baseUrlField = fieldDefs.find(f => f.role === 'baseUrl');
 		const extraFields = fieldDefs.filter(f => f.role === 'field');
@@ -206,6 +206,7 @@ export const clineAccountsHandler = createRouter()
 		const userId = ws.getUserId(conn);
 		const loginId = crypto.randomUUID();
 
+		const { getProviderAuthHandler, isOAuthProvider } = await loadEngineSdk<typeof import('@cline/sdk')>('cline', '@cline/sdk');
 		const handler = getProviderAuthHandler(data.provider);
 		if (!handler || !isOAuthProvider(data.provider)) {
 			ws.emit.user(userId, 'engine:cline-account-login-error', { loginId, message: `Provider "${data.provider}" does not support OAuth sign-in.` });

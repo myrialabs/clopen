@@ -6,7 +6,7 @@
 	import { appState } from '$frontend/stores/core/app.svelte';
 	import { userStore } from '$frontend/stores/features/user.svelte';
 	import { chatModelState, initChatModel, restoreChatModelFromSession } from '$frontend/stores/ui/chat-model.svelte';
-	import { ENGINES, getModelTags } from '$shared/constants/engines';
+	import { ENGINES, getModelTags, pickDefaultModel } from '$shared/constants/engines';
 	import type { EngineType, EngineModel } from '$shared/types/unified';
 	import Icon from '$frontend/components/common/display/Icon.svelte';
 	import ProfilePicker from './ProfilePicker.svelte';
@@ -452,7 +452,7 @@
 				const remembered = memory[engine];
 				const target =
 					(remembered && models.find(m => m.engine.model.id === remembered.id)) ||
-					models[0];
+					pickDefaultModel(models);
 				if (target) {
 					chatModelState.provider = target.engine.provider;
 					chatModelState.modelId = target.engine.model.id;
@@ -623,7 +623,7 @@
 		const models = modelStore.getByEngine(engineType);
 		const target =
 			(remembered && models.find(m => m.engine.model.id === remembered.id)) ||
-			models[0];
+			pickDefaultModel(models);
 
 		if (target) {
 			chatModelState.provider = target.engine.provider;

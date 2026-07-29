@@ -1,7 +1,16 @@
 <script lang="ts">
 	import Icon from '$frontend/components/common/display/Icon.svelte';
-	
+	import { openSettingsModal } from '$frontend/stores/ui/settings-modal.svelte';
+
 	const { errorText }: { errorText: string } = $props();
+
+	// Engine-setup errors embed a "Settings → Stack" / "Settings → Engines"
+	// phrase; surface a one-click button that opens the matching settings section.
+	const setupAction = $derived.by(() => {
+		if (errorText.includes('Settings → Stack')) return { label: 'Open Stack', section: 'system-tools' as const };
+		if (errorText.includes('Settings → Engines')) return { label: 'Open Engines', section: 'engines' as const };
+		return null;
+	});
 	
 	// Categorize error types and provide suggestions
 	function getErrorInfo(text: string): { type: string; suggestion: string } {
@@ -51,6 +60,16 @@
 				<div class="mt-3 text-xs text-red-500 dark:text-red-400 bg-red-100 dark:bg-red-900/30 p-2 rounded border-l-2 border-red-400">
 					{errorInfo.suggestion}
 				</div>
+			{/if}
+			{#if setupAction}
+				<button
+					type="button"
+					class="mt-3 inline-flex items-center gap-1.5 px-3 py-1.5 text-xs font-medium rounded-lg bg-red-600 text-white hover:bg-red-700 transition-colors"
+					onclick={() => openSettingsModal(setupAction.section)}
+				>
+					<Icon name="lucide:arrow-right" class="w-3.5 h-3.5" />
+					{setupAction.label}
+				</button>
 			{/if}
 		</div>
 	</div>

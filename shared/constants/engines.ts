@@ -123,9 +123,12 @@ export const getAllModels = (): EngineModel[] => [...modelRegistry];
 // Sonnet model; claude-sonnet-4-6 moved to legacy.
 // ============================================================================
 
-export const DEFAULT_ENGINE: EngineType = 'claude-code';
-export const DEFAULT_MODEL_ID = 'claude-sonnet-5';
-export const DEFAULT_MODEL_NAME = 'Claude Sonnet 5';
+export const DEFAULT_ENGINE: EngineType = 'opencode';
+// OpenCode's catalog is dynamic (free, no-account providers), so there is no
+// fixed default model id — the first available OpenCode model is selected at
+// runtime once its SDK is installed (see AssistantSettings + the model picker).
+export const DEFAULT_MODEL_ID = '';
+export const DEFAULT_MODEL_NAME = '';
 
 // ============================================================================
 // Lookup Helpers
@@ -148,4 +151,23 @@ export function getModelTags(model: EngineModel): string[] {
 	if (model.modalities.input.audio) tags.push('Audio');
 	if (model.modalities.input.video) tags.push('Video');
 	return tags;
+}
+
+/**
+ * Pick the best default model from a list: the most capable one, measured by
+ * how many capability/modality badges it exposes (see getModelTags). Ties keep
+ * the earlier model, preserving the provider's original ordering. Returns
+ * undefined for an empty list.
+ */
+export function pickDefaultModel(models: EngineModel[]): EngineModel | undefined {
+	let best: EngineModel | undefined;
+	let bestCount = -1;
+	for (const model of models) {
+		const count = getModelTags(model).length;
+		if (count > bestCount) {
+			best = model;
+			bestCount = count;
+		}
+	}
+	return best;
 }

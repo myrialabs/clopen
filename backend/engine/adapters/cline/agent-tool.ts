@@ -10,8 +10,8 @@
  * main UI (it runs inside the tool), but the delegation actually happens.
  */
 
-import { createTool } from '@cline/sdk';
 import type { AgentTool, AgentToolContext } from '@cline/sdk';
+import { loadEngineSdk } from '$backend/engine/sdk-loader';
 
 export interface SubagentInfo {
 	slug: string;
@@ -40,7 +40,8 @@ const AGENT_INPUT_SCHEMA = {
 	required: ['subagentType', 'prompt', 'description'],
 } as const;
 
-export function createAgentDispatchTool(bindings: AgentDispatchBindings): AgentTool {
+export async function createAgentDispatchTool(bindings: AgentDispatchBindings): Promise<AgentTool> {
+	const { createTool } = await loadEngineSdk<typeof import('@cline/sdk')>('cline', '@cline/sdk');
 	const catalog = bindings.subagents.map(s => `- ${s.slug}: ${s.name} — ${s.description}`).join('\n');
 	return createTool({
 		name: 'Agent',

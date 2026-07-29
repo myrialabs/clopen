@@ -16,9 +16,9 @@
  * + `toCanonicalToolName()` render them identically to the other engines.
  */
 
-import { createTool } from '@cline/sdk';
 import type { AgentTool, AgentToolContext } from '@cline/sdk';
 import type { McpExecutionContext } from '../../types';
+import { loadEngineSdk } from '$backend/engine/sdk-loader';
 import {
 	getEnabledServerNames,
 	isToolEnabled,
@@ -59,6 +59,7 @@ export async function buildClineMcpTools(
 	context: McpExecutionContext | undefined,
 	profileFilter: Set<string> | undefined,
 ): Promise<AgentTool[]> {
+	const { createTool } = await loadEngineSdk<typeof import('@cline/sdk')>('cline', '@cline/sdk');
 	const tools: AgentTool[] = [];
 
 	// ── Internal servers (in-process handlers) ──

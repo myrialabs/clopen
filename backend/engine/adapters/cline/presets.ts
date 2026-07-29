@@ -12,9 +12,9 @@
  * importing `$backend`.
  */
 
-import { Llms, getProviderConfigFields, isOAuthProvider } from '@cline/sdk';
 import type { ClineAuthMode, ClineCredentialField, ClineProviderPreset } from '$shared/types/unified';
 import { debug } from '$shared/utils/logger';
+import { loadEngineSdk } from '$backend/engine/sdk-loader';
 
 export type { ClineAuthMode, ClineCredentialField, ClineProviderPreset };
 
@@ -64,7 +64,8 @@ const SECRET_FIELDS = new Set(['apiKey', 'sapClientSecret']);
  * Map a provider's `getProviderConfigFields` shape into the wire
  * `ClineCredentialField[]` the account form renders.
  */
-export function getClineProviderFields(providerId: string): ClineCredentialField[] {
+export async function getClineProviderFields(providerId: string): Promise<ClineCredentialField[]> {
+	const { getProviderConfigFields } = await loadEngineSdk<typeof import('@cline/sdk')>('cline', '@cline/sdk');
 	const config = getProviderConfigFields(providerId);
 	const out: ClineCredentialField[] = [];
 	for (const [key, req] of Object.entries(config.fields ?? {})) {
@@ -97,11 +98,12 @@ let presetsCache: ClineProviderPreset[] | null = null;
 export async function getClineProviderPresets(): Promise<ClineProviderPreset[]> {
 	if (presetsCache) return presetsCache;
 	try {
+		const { Llms, getProviderConfigFields, isOAuthProvider } = await loadEngineSdk<typeof import('@cline/sdk')>('cline', '@cline/sdk');
 		const presets: ClineProviderPreset[] = [];
 		for (const provider of await Llms.getAllProviders()) {
 			const config = getProviderConfigFields(provider.id);
 			const oauth = isOAuthProvider(provider.id) || config.authMethod === 'oauth';
-			const fields = getClineProviderFields(provider.id);
+			const fields = await getClineProviderFields(provider.id);
 			const hasApiKey = config.authMethod === 'api-key' || config.authMethod === 'local' || fields.some(f => f.role === 'apiKey');
 
 			const authModes: ClineAuthMode[] = [];

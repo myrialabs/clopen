@@ -52,7 +52,14 @@ System for adding custom tools to AI engines with type-safe TypeScript definitio
 
 **Features:**
 - Single source of truth — define tools once, use in every engine
-- In-process execution for Claude Code via `createSdkMcpServer`
+- **Decoupled from the Claude Agent SDK.** `internal/` holds only
+  engine-agnostic raw tool defs (built on `@modelcontextprotocol/sdk`). The
+  Claude-SDK-shaped in-process servers are built **lazily** — only on the Claude
+  path — inside `getEnabledMcpServers()` (now `async`), which lazy-loads
+  `createSdkMcpServer`/`tool` from `@anthropic-ai/claude-agent-sdk` via
+  `loadEngineSdk`. Non-Claude engines never touch the Claude SDK; they already
+  use the remote HTTP bridge (`createRemoteMcpServer`).
+- In-process execution for Claude Code via `createSdkMcpServer` (loaded on demand)
 - Remote HTTP MCP server (Streamable HTTP) for Open Code, Codex, and
   Copilot via `createRemoteMcpServer` mounted at `/mcp`
 - All engines execute handlers in-process (no subprocess, no bridge)
@@ -238,7 +245,8 @@ servers/browser-automation/
    └─> User config merged with registry automatically
         ↓
 4. Claude Agent SDK (stream.ts)
-   └─> Uses getEnabledMcpServers()
+   └─> Uses await getEnabledMcpServers() — builds Claude-SDK servers lazily
+       from the raw defs (lazy-loads @anthropic-ai/claude-agent-sdk)
         ↓
 5. Claude uses the tool (in-process handler execution)
         ↓
@@ -272,8 +280,11 @@ servers/browser-automation/
 
 **`defineServer`**
 Helper function to define MCP server with automatic metadata extraction.
-Stores both Claude SDK server instance AND raw tool definitions (`toolDefs`)
-for reuse by both engines.
+Stores **engine-agnostic** raw tool definitions (`toolDefs`, built on
+`@modelcontextprotocol/sdk`) — no Claude SDK dependency. The Claude-SDK-shaped
+in-process server is constructed lazily from these defs on the Claude path only
+(`getEnabledMcpServers()`); the remote HTTP bridge (`createRemoteMcpServer`)
+builds its `McpServer` from the same defs for every other engine.
 
 **`buildServerRegistries`**
 Function to build server registries from server array.
@@ -529,13 +540,18 @@ const weatherServer = serverRegistry["weather-service"];
 ### Main Functions
 
 #### `getEnabledMcpServers()`
-Returns all enabled MCP servers for use with Claude SDK.
+Returns all enabled MCP servers as Claude-SDK-shaped in-process servers. This
+is the **only** path that touches the Claude Agent SDK: it is `async` and
+lazy-loads `createSdkMcpServer`/`tool` from `@anthropic-ai/claude-agent-sdk`
+(via `loadEngineSdk`) only when called — so non-Claude engines never pull the
+Claude SDK in. Every other engine consumes the raw tool defs through the remote
+HTTP bridge instead.
 
 ```typescript
 import { getEnabledMcpServers } from '$backend/mcp';
 
-const servers = getEnabledMcpServers();
-// Returns: Record<string, McpServerConfig>
+const servers = await getEnabledMcpServers();
+// Returns: Promise<Record<string, McpServerConfig>>
 ```
 
 #### `getAllowedMcpTools()`
@@ -1127,7 +1143,9 @@ export default defineServer({
 **Problem:** TypeScript errors in custom tool.
 
 **Solutions:**
-1. Install dependencies: `bun install zod @anthropic-ai/claude-agent-sdk`
+1. Install dependencies: `bun install` (internal tools depend only on `zod`
+   + `@modelcontextprotocol/sdk` — NOT the Claude Agent SDK, which is loaded on
+   demand elsewhere)
 2. Verify you're importing `defineServer` from `../helper`
 3. Check that server name matches between `defineServer` and `config.ts`
 4. Verify tool names in `config.ts` match tool keys in `defineServer`

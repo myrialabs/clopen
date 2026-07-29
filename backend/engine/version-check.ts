@@ -12,12 +12,11 @@ type VersionSource =
 	| { type: 'github-release'; repo: string }
 	| { type: 'chrome-for-testing' };
 
-const SOURCES: Record<ToolId, VersionSource> = {
-	claude:   { type: 'npm',               pkg:     '@anthropic-ai/claude-code' },
-	opencode: { type: 'npm',               pkg:     'opencode-ai' },
-	copilot:  { type: 'npm',               pkg:     '@github/copilot' },
-	codex:    { type: 'npm',               pkg:     '@openai/codex' },
-	qwen:     { type: 'npm',               pkg:     '@qwen-code/qwen-code' },
+// Engines are intentionally absent: their SDK versions are pinned in
+// package.json (the single source of truth) and move in lockstep with clopen
+// releases, so we do not nag users to drift off the tested version. Only host
+// tools (git, chrome) self-update independently.
+const SOURCES: Partial<Record<ToolId, VersionSource>> = {
 	git:      { type: 'homebrew-formula',  formula: 'git' },
 	chrome:   { type: 'chrome-for-testing' },
 };
@@ -118,6 +117,7 @@ export async function checkToolUpdate(
 	installedVersion: string | null
 ): Promise<UpdateCheckResult> {
 	const source = SOURCES[tool];
+	if (!source) return { latestVersion: null, hasUpdate: null };
 
 	let latestVersion: string | null;
 	switch (source.type) {

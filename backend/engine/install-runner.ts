@@ -18,6 +18,8 @@
  */
 
 import { freemem, totalmem } from 'node:os';
+import { existsSync, mkdirSync, writeFileSync } from 'node:fs';
+import { join } from 'node:path';
 import { debug } from '$shared/utils/logger';
 import { ws } from '$backend/utils/ws';
 import { getCleanSpawnEnv } from '$backend/utils/env';
@@ -28,6 +30,24 @@ import { resolveRecipe } from './install-recipes';
 
 const RING_BUFFER_LINES = 10_000;
 const RETENTION_MS = 5 * 60 * 1000;
+
+/**
+ * Ensure a recipe's working directory exists as a minimal bun project before
+ * `bun add` runs there. Engine recipes install into the clopen-managed stack
+ * dir (`~/.clopen/stack/engines`); a package.json must exist so `bun add`
+ * treats it as a project root instead of walking up to some parent.
+ */
+function ensureRecipeCwd(recipe: Recipe): void {
+	if (!recipe.cwd) return;
+	mkdirSync(recipe.cwd, { recursive: true });
+	const pkgJsonPath = join(recipe.cwd, 'package.json');
+	if (!existsSync(pkgJsonPath)) {
+		writeFileSync(
+			pkgJsonPath,
+			JSON.stringify({ name: 'clopen-stack-engines', private: true, version: '0.0.0' }, null, 2) + '\n'
+		);
+	}
+}
 
 export type SessionStatus = 'running' | 'success' | 'failed' | 'cancelled';
 
@@ -257,14 +277,19 @@ async function runInstall(session: Session, env: Record<string, string>): Promis
 		? [recipe.shell.program, ...recipe.shell.args, ...recipe.command!]
 		: recipe.command!;
 
-	debug.log('path', `[install:${session.id}] Spawning: ${spawnArgs.join(' ')}`);
+	// Engine recipes install into a clopen-managed directory (recipe.cwd);
+	// make sure it exists as a minimal bun project before `bun add` runs.
+	ensureRecipeCwd(recipe);
+
+	debug.log('path', `[install:${session.id}] Spawning: ${spawnArgs.join(' ')}${recipe.cwd ? ` (cwd: ${recipe.cwd})` : ''}`);
 
 	try {
 		proc = Bun.spawn(spawnArgs, {
 			stdout: 'pipe',
 			stderr: 'pipe',
 			stdin: 'ignore',
-			env
+			env,
+			...(recipe.cwd ? { cwd: recipe.cwd } : {})
 		});
 	} catch (err) {
 		emitStream(session, 'stderr', `spawn failed: ${err instanceof Error ? err.message : String(err)}\n`);

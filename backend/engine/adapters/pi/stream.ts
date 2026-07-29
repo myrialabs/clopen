@@ -19,15 +19,12 @@
  *      answer path.
  */
 
-import {
-	createAgentSession,
-	DefaultResourceLoader,
-	SessionManager,
-	SettingsManager,
-	type AgentSession,
-	type ExtensionAPI,
-	type ToolDefinition,
+import type {
+	AgentSession,
+	ExtensionAPI,
+	ToolDefinition,
 } from '@earendil-works/pi-coding-agent';
+import { loadEngineSdk } from '$backend/engine/sdk-loader';
 import type { AgentToolResult } from '@earendil-works/pi-agent-core';
 import type { ImageContent } from '@earendil-works/pi-ai';
 import type { EngineOutput, EngineModel, MessageEngine } from '$shared/types/unified';
@@ -120,6 +117,9 @@ export class PiEngine implements AIEngine {
 	async *streamQuery(options: EngineQueryOptions): AsyncGenerator<EngineOutput, void, unknown> {
 		const { projectPath, prompt, resume, providerSlug, modelId, abortController, accountId } = options;
 		debug.log('chat', 'Pi - Stream Query', { providerSlug, modelId, resume });
+
+		const { createAgentSession, DefaultResourceLoader, SessionManager, SettingsManager } =
+			await loadEngineSdk<typeof import('@earendil-works/pi-coding-agent')>('pi', '@earendil-works/pi-coding-agent');
 
 		// ── Resolve account + credential + runtime + model ──
 		// Pi is multi-provider: prefer the account matching the model's provider,
@@ -385,6 +385,9 @@ export class PiEngine implements AIEngine {
 	 */
 	async generateStructured<T = unknown>(options: StructuredGenerationOptions): Promise<T> {
 		const { prompt, providerSlug, modelId, schema, projectPath, accountId } = options;
+
+		const { createAgentSession, SessionManager, SettingsManager } =
+			await loadEngineSdk<typeof import('@earendil-works/pi-coding-agent')>('pi', '@earendil-works/pi-coding-agent');
 
 		const account = getPiAccountForProvider(providerSlug)
 			?? (accountId != null ? engineQueries.getAccount(accountId) : null);

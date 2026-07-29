@@ -43,6 +43,18 @@ blueprint for the next engine you add.
 Refer to §2.6 for the full file taxonomy. Every adapter ships these five
 mandatory files; optional files use the canonical names from §2.6.
 
+> **Lazy-load the SDK — never bundle it.** The engine's SDK package is NOT a
+> runtime dependency; it lives in `package.json` `devDependencies` (pinned
+> exact) and is installed on demand into `~/.clopen/stack/engines`. In the
+> adapter, reference the SDK's types only via `import type` (erased at runtime)
+> and resolve the real module at point of use with
+> `loadEngineSdk<typeof import('<pkg>')>('newengine', '<pkg>')` from
+> `backend/engine/sdk-loader.ts`. The loader throws `EngineNotReadyError`
+> (`not-installed` / `needs-update`) when the SDK is absent or version-mismatched,
+> and the stream-manager surfaces that message in the chat error surface —
+> nudging the user to install/update the engine in Settings → Stack. Mirror
+> `copilot/stream.ts` / `codex/stream.ts` for the pattern.
+
 - [ ] Create `backend/engine/adapters/newengine/`
 - [ ] `index.ts` (mandatory) → `export { NewEngineEngine } from './stream';`
       (+ `disposeXxxClient` if there is a subprocess).
@@ -160,17 +172,27 @@ mandatory files; optional files use the canonical names from §2.6.
     account edit form (in-place re-auth), gated on `newengineReauthAccountId`
     — mirror `ClaudeCodePanel`/`CodexPanel`/`PiPanel`.
 
-### Stage 7 — Settings → System Tools
+### Stage 7 — Settings → Stack
 
+Engine SDKs are installed **on demand** into the clopen-managed stack dir
+(`~/.clopen/stack/engines`), not onto the machine's PATH — so you don't write a
+per-platform recipe. You only declare the pinned package(s); `resolveEngineRecipe()`
+handles the install. (The panel is displayed as "Stack"; its WS route/id stays
+`system-tools`.)
+
+- [ ] `package.json`: add the engine's SDK package(s) to `devDependencies` at an
+      **exact** pinned version — this is the single source of truth for the
+      version clopen installs on demand.
 - [ ] `backend/engine/install-recipes.ts`:
   - Add `'newengine'` to `ToolId`.
-  - Write `resolveNewEngineRecipe()` (winget/brew/curl pipe — whatever the
-    SDK needs to install its CLI).
-  - Add a case in `resolveRecipe()`.
+  - Add its package(s) to `ENGINE_PACKAGES` (first entry = the SDK clopen
+    imports and detects install-state from; any extras pin a transitive CLI the
+    SDK would otherwise float, e.g. Copilot's `@github/copilot`).
+  - No resolver needed — `resolveEngineRecipe()` picks it up.
 - [ ] `backend/ws/system-tools/status.ts` & `install.ts`: add
       `'newengine'` to `TOOL_UNION`.
 - [ ] `frontend/components/settings/system-tools/SystemToolsSettings.svelte`:
-      `<ToolInstallCard tool="newengine" title="NewEngine CLI" description="..." />`.
+      `<ToolInstallCard tool="newengine" title="NewEngine" description="..." />`.
 
 ### Stage 8 — Chat input
 
@@ -202,7 +224,8 @@ bun run check && bun run lint
 
 Then the minimum UI scenarios that must pass:
 
-- [ ] Settings → System Tools → Install NewEngine CLI → exit 0.
+- [ ] Settings → Stack → Install NewEngine → exit 0 (SDK lands in
+      `~/.clopen/stack/engines`, status shows the pinned version).
 - [ ] Settings → Engines → NewEngine → Add Account → status `Installed,
       Active account: <name>`.
 - [ ] Chat input → pick NewEngine + model → send a message → assistant

@@ -75,7 +75,15 @@
 
 			for (const contentItem of message.content) {
 				if (contentItem.type === 'text') {
-					elements.push({ type: 'text', content: (contentItem as any).text });
+					const text = (contentItem as any).text as string;
+					// Engine-setup errors ("... Open Settings → Stack / Engines ...")
+					// route through ErrorMessage so they render as an actionable card
+					// with a one-click button; everything else stays plain text.
+					if (typeof text === 'string' && (text.includes('Settings → Stack') || text.includes('Settings → Engines'))) {
+						elements.push({ type: 'error', content: text.replace(/^\*\*Error:\*\*\s*/, '') });
+					} else {
+						elements.push({ type: 'text', content: text });
+					}
 				} else if (contentItem.type === 'tool_use') {
 					elements.push({ type: 'tool_use', content: contentItem });
 				}

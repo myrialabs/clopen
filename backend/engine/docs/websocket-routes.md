@@ -130,14 +130,15 @@ because `CopilotClient` takes the PAT at construction time. Account
 add / remove / switch flips a `needsRestart` flag in the UI that surfaces
 a "Restart Server" button in both Settings → Engines and Chat Input.
 
-### 4.4 System Tools — `system-tools:*`
+### 4.4 Stack — `system-tools:*`
 
-`backend/ws/system-tools/`:
+Surfaced in Settings as the **Stack** panel; the WS route id stays
+`system-tools`. `backend/ws/system-tools/`:
 
 | Event                              | Purpose                                     |
 |------------------------------------|---------------------------------------------|
 | `system-tools:status`              | Detect a single tool: `{ status, recipe, activeSession }` |
-| `system-tools:status-all`          | Hardcoded list `['git','claude','opencode','chrome','cloudflared']` |
+| `system-tools:status-all`          | Hardcoded list `['git','claude','opencode','copilot','codex','qwen','pi','cline','cursor','chrome']` (host tools + on-demand engine SDKs) |
 | `system-tools:install-start`       | Spawn the recipe via `install-runner`       |
 | `system-tools:install-cancel`      |                                             |
 | `system-tools:install-session`     | Snapshot session (for re-attach)            |

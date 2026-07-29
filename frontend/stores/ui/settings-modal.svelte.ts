@@ -97,9 +97,9 @@ export const settingsSections: SettingsSectionMeta[] = [
 	},
 	{
 		id: 'system-tools',
-		label: 'System Tools',
+		label: 'Stack',
 		icon: 'lucide:hammer',
-		description: 'Server-side binaries',
+		description: 'Engines, runtimes & tools',
 		group: 'infrastructure',
 		adminOnly: true
 	},

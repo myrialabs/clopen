@@ -14,9 +14,9 @@
  * tool result carries the formatted answers.
  */
 
-import { createTool } from '@cline/sdk';
 import type { AgentTool, AgentToolContext } from '@cline/sdk';
 import type { AskUserQuestion } from '$shared/types/unified';
+import { loadEngineSdk } from '$backend/engine/sdk-loader';
 
 export interface PendingAsk {
 	questions: AskUserQuestion[];
@@ -72,7 +72,8 @@ const ASK_INPUT_SCHEMA = {
 	required: ['questions'],
 } as const;
 
-export function createAskUserQuestionTool(bindings: AskToolBindings): AgentTool {
+export async function createAskUserQuestionTool(bindings: AskToolBindings): Promise<AgentTool> {
+	const { createTool } = await loadEngineSdk<typeof import('@cline/sdk')>('cline', '@cline/sdk');
 	return createTool({
 		name: 'AskUserQuestion',
 		description:

@@ -277,13 +277,13 @@
 				<Icon name="lucide:loader" class="w-6 h-6 animate-spin text-slate-400" />
 			</div>
 		{:else if claudeCodeStatus && !claudeCodeStatus.installed}
-			<!-- Redirect to System Tools -->
+			<!-- Redirect to Stack -->
 			<div class="flex items-start gap-3 p-4 rounded-lg bg-violet-50 dark:bg-violet-900/10 border border-violet-200 dark:border-violet-800/50">
 				<Icon name="lucide:hammer" class="w-5 h-5 shrink-0 mt-0.5 text-violet-600 dark:text-violet-400" />
 				<div class="flex-1 space-y-2">
 					<div>
 						<p class="text-sm font-semibold text-slate-900 dark:text-slate-100">Claude Code is not installed</p>
-						<p class="text-xs text-slate-600 dark:text-slate-400">Install it from the System Tools section. You can return here once it's installed to connect accounts.</p>
+						<p class="text-xs text-slate-600 dark:text-slate-400">Install it from the Stack section. You can return here once it's installed to connect accounts.</p>
 					</div>
 					<button
 						type="button"
@@ -291,7 +291,7 @@
 						onclick={openSystemToolsSection}
 					>
 						<Icon name="lucide:arrow-right" class="w-3.5 h-3.5" />
-						Open System Tools
+						Open Stack
 					</button>
 				</div>
 			</div>

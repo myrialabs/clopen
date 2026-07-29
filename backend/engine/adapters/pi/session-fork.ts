@@ -13,7 +13,8 @@
  */
 
 import { join } from 'node:path';
-import { SessionManager } from '@earendil-works/pi-coding-agent';
+import type { SessionManager } from '@earendil-works/pi-coding-agent';
+import { loadEngineSdk } from '$backend/engine/sdk-loader';
 import { getPiSessionsDir } from './environment';
 import { debug } from '$shared/utils/logger';
 
@@ -27,6 +28,7 @@ export function getPiSessionDir(projectPath: string): string {
  * session, fork from it (new id, source untouched); otherwise start fresh.
  */
 export async function resolvePiSessionManager(projectPath: string, resume?: string): Promise<SessionManager> {
+	const { SessionManager } = await loadEngineSdk<typeof import('@earendil-works/pi-coding-agent')>('pi', '@earendil-works/pi-coding-agent');
 	const sessionDir = getPiSessionDir(projectPath);
 	if (resume) {
 		try {

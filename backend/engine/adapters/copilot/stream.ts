@@ -6,8 +6,8 @@
  * isolated by the per-project engine registry in backend/engine/index.ts.
  */
 
-import { CopilotClient, approveAll } from '@github/copilot-sdk';
 import type {
+	CopilotClient,
 	CopilotSession,
 	SessionConfig,
 	ResumeSessionConfig,
@@ -16,6 +16,7 @@ import type {
 	PermissionRequest,
 	PermissionRequestResult,
 } from '@github/copilot-sdk';
+import { loadEngineSdk } from '$backend/engine/sdk-loader';
 import type { EngineOutput, EngineModel } from '$shared/types/unified';
 import type { AIEngine, EngineQueryOptions, StructuredGenerationOptions } from '../../types';
 import { buildJsonPrompt, extractJson } from '../../structured-helpers';
@@ -152,6 +153,8 @@ export class CopilotEngine implements AIEngine {
 		if (!account) {
 			throw new Error('Copilot is not configured. Add a Personal Access Token in Settings → Engines → Copilot.');
 		}
+
+		const { CopilotClient } = await loadEngineSdk<typeof import('@github/copilot-sdk')>('copilot', '@github/copilot-sdk');
 
 		this.client = new CopilotClient({
 			gitHubToken: account.credential,
@@ -297,6 +300,8 @@ export class CopilotEngine implements AIEngine {
 			pushEvent(null);
 		};
 		this.activeController.signal.addEventListener('abort', onAbort, { once: true });
+
+		const { approveAll } = await loadEngineSdk<typeof import('@github/copilot-sdk')>('copilot', '@github/copilot-sdk');
 
 		try {
 			const mcpConfig = getCopilotMcpConfig(mcpProfileFilter);
@@ -621,6 +626,8 @@ export class CopilotEngine implements AIEngine {
 		if (!this.client) {
 			throw new Error('Copilot client unavailable.');
 		}
+
+		const { approveAll } = await loadEngineSdk<typeof import('@github/copilot-sdk')>('copilot', '@github/copilot-sdk');
 
 		const controller = abortController || new AbortController();
 		const resolvedProjectPath = resolveOsPath(projectPath);

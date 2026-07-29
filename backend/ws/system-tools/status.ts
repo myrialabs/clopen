@@ -21,6 +21,9 @@ const TOOL_UNION = t.Union([
 	t.Literal('copilot'),
 	t.Literal('codex'),
 	t.Literal('qwen'),
+	t.Literal('pi'),
+	t.Literal('cline'),
+	t.Literal('cursor'),
 	t.Literal('chrome'),
 ]);
 
@@ -47,7 +50,9 @@ const STATUS_SCHEMA = t.Object({
 	tool: TOOL_UNION,
 	installed: t.Boolean(),
 	version: t.Union([t.String(), t.Null()]),
-	source: t.Union([t.String(), t.Null()])
+	source: t.Union([t.String(), t.Null()]),
+	requiredVersion: t.Optional(t.Union([t.String(), t.Null()])),
+	needsUpdate: t.Optional(t.Boolean())
 });
 
 const ACTIVE_SESSION_SCHEMA = t.Union([
@@ -126,7 +131,7 @@ export const systemToolsStatusHandler = createRouter()
 		})
 	}, async () => {
 		debug.log('path', 'system-tools:status-all');
-		const ids = ['git', 'claude', 'opencode', 'copilot', 'codex', 'qwen', 'chrome'] as const;
+		const ids = ['git', 'claude', 'opencode', 'copilot', 'codex', 'qwen', 'pi', 'cline', 'cursor', 'chrome'] as const;
 		const tools = await Promise.all(ids.map(async (id) => {
 			const [status, recipe] = await Promise.all([
 				getToolStatus(id),

@@ -3,7 +3,7 @@
 	import { ENGINES, getModelTags } from '$shared/constants/engines';
 	import type { EngineType, EngineModel } from '$shared/types/unified';
 	import { formatProvider, formatTokens } from '$frontend/utils/format';
-	import { focusEngineSection } from '$frontend/stores/ui/settings-modal.svelte';
+	import { focusEngineSection, openSettingsModal } from '$frontend/stores/ui/settings-modal.svelte';
 	import { authStore } from '$frontend/stores/features/auth.svelte';
 
 	interface Props {
@@ -15,16 +15,25 @@
 
 	const { engine, model, onEngineChange, onModelChange }: Props = $props();
 
+	// The engine whose catalog/readiness is shown. Selecting an engine only
+	// PREVIEWS it (fetches its models); the choice is committed via onEngineChange
+	// ONLY once the engine is ready, so picking a not-ready engine (not installed
+	// or not signed in) never replaces your currently selected model.
+	// Seed from the prop, then re-sync via the $effect below (intentional).
+	// svelte-ignore state_referenced_locally
+	let displayEngine = $state(engine);
+	$effect(() => { displayEngine = engine; });
+
 	let searchQuery = $state('');
 	let collapsedProviders = $state<Set<string>>(new Set());
 
-	const engineMeta = $derived(ENGINES.find(e => e.type === engine));
-	const engineError = $derived(modelStore.getError(engine));
+	const engineMeta = $derived(ENGINES.find(e => e.type === displayEngine));
+	const engineError = $derived(modelStore.getError(displayEngine));
 	const isAdmin = $derived(authStore.isAdmin);
 
 	// Models for the selected engine, filtered by search
 	const filteredModels = $derived.by(() => {
-		const models = modelStore.getByEngine(engine);
+		const models = modelStore.getByEngine(displayEngine);
 		if (!searchQuery.trim()) return models;
 		const q = searchQuery.toLowerCase();
 		return models.filter(m =>
@@ -45,9 +54,9 @@
 		return groups;
 	});
 
-	// Fetch models when engine changes
+	// Fetch models when the previewed engine changes
 	$effect(() => {
-		modelStore.fetchModels(engine);
+		modelStore.fetchModels(displayEngine);
 	});
 
 	// Sync accordion state when search or models change
@@ -82,10 +91,15 @@
 
 	async function handleEngineChange(engineType: EngineType) {
 		searchQuery = '';
-		onEngineChange(engineType);
+		displayEngine = engineType;
 
 		await modelStore.fetchModels(engineType);
 
+		// Not ready (not installed / not signed in) → keep it a preview only; do
+		// NOT commit, so the previously selected model stays active.
+		if (modelStore.getError(engineType)) return;
+
+		onEngineChange(engineType);
 		syncAccordionState();
 	}
 
@@ -96,7 +110,7 @@
 	<label class="block text-sm font-semibold text-slate-700 dark:text-slate-300 mb-2">Engine</label>
 	<div class="grid grid-cols-2 sm:grid-cols-3 gap-2.5">
 		{#each ENGINES as eng (eng.type)}
-			{@const isActive = engine === eng.type}
+			{@const isActive = displayEngine === eng.type}
 			<button
 				type="button"
 				class="flex items-center gap-2.5 p-3 overflow-hidden border-2 rounded-xl text-left cursor-pointer transition-all duration-200
@@ -131,7 +145,7 @@
 		<label class="text-sm font-semibold text-slate-700 dark:text-slate-300">Model</label>
 	</div>
 	<p class="text-sm text-slate-600 dark:text-slate-500 mb-3">
-		Select the model for the {ENGINES.find(e => e.type === engine)?.name || 'selected'} engine
+		Select the model for the {engineMeta?.name || 'selected'} engine
 	</p>
 
 	<!-- Search -->
@@ -187,13 +201,23 @@
 							{engineError}
 						</p>
 						{#if isAdmin}
-							<button
-								type="button"
-								class="mt-2.5 inline-flex items-center gap-1.5 px-3 py-1.5 text-xs font-semibold rounded-md bg-amber-600 hover:bg-amber-700 text-white cursor-pointer transition-colors"
-								onclick={() => focusEngineSection(engine)}
-							>
-								Configure {engineMeta?.name ?? 'engine'}
-							</button>
+							{#if engineError && engineError.includes('Settings → Stack')}
+								<button
+									type="button"
+									class="mt-2.5 inline-flex items-center gap-1.5 px-3 py-1.5 text-xs font-semibold rounded-md bg-amber-600 hover:bg-amber-700 text-white cursor-pointer transition-colors"
+									onclick={() => openSettingsModal('system-tools')}
+								>
+									Open Stack
+								</button>
+							{:else}
+								<button
+									type="button"
+									class="mt-2.5 inline-flex items-center gap-1.5 px-3 py-1.5 text-xs font-semibold rounded-md bg-amber-600 hover:bg-amber-700 text-white cursor-pointer transition-colors"
+									onclick={() => focusEngineSection(engine)}
+								>
+									Configure {engineMeta?.name ?? 'engine'}
+								</button>
+							{/if}
 						{/if}
 					</div>
 				</div>

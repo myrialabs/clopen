@@ -21,11 +21,11 @@
  * the running server via `restore()` of the prior transcript.
  */
 
-import { Agent, createBuiltinTools, getClineDefaultSystemPrompt } from '@cline/sdk';
-import type { AgentTool, ToolPolicy } from '@cline/sdk';
+import type { Agent, AgentTool, ToolPolicy } from '@cline/sdk';
 import type { AgentMessage, AgentMessagePart, AgentRunResult } from '@cline/agents';
 import type { EngineOutput, EngineModel, MessageEngine } from '$shared/types/unified';
 import type { AIEngine, EngineQueryOptions, StructuredGenerationOptions } from '../../types';
+import { loadEngineSdk } from '$backend/engine/sdk-loader';
 import { resolveOsPath } from '$backend/utils/paths';
 import { debug } from '$shared/utils/logger';
 import { engineQueries } from '$backend/database/queries/engine-queries';
@@ -50,7 +50,7 @@ const CLINE_BUILTIN_TOOLS = ['read_files', 'search_codebase', 'run_commands', 'f
 /** Max per-turn transcripts kept in memory before FIFO eviction (branch history). */
 const MAX_TRACKED_SESSIONS = 500;
 
-type ClineAgent = InstanceType<typeof Agent>;
+type ClineAgent = Agent;
 
 /** Strip YAML frontmatter from a subagent markdown doc, leaving the instructions. */
 function stripFrontmatter(md: string): string {
@@ -120,7 +120,8 @@ export class ClineEngine implements AIEngine {
 		return fetchClineModels();
 	}
 
-	private buildSystemPrompt(cwd: string, providerId: string, profileId?: number): string {
+	private async buildSystemPrompt(cwd: string, providerId: string, profileId?: number): Promise<string> {
+		const { getClineDefaultSystemPrompt } = await loadEngineSdk<typeof import('@cline/sdk')>('cline', '@cline/sdk');
 		let base: string;
 		try {
 			base = getClineDefaultSystemPrompt({ cwd, workspaceRoot: cwd, providerId, platform: process.platform });
@@ -161,12 +162,13 @@ export class ClineEngine implements AIEngine {
 		const queueHolder: { queue: EventQueue<EngineOutput> | null } = { queue: null };
 
 		// ── Tools: builtins + AskUserQuestion + MCP bridge ──
+		const { Agent, createBuiltinTools, getClineDefaultSystemPrompt } = await loadEngineSdk<typeof import('@cline/sdk')>('cline', '@cline/sdk');
 		const builtinTools = createBuiltinTools({
 			cwd: resolvedProjectPath,
 			enableAskQuestion: false,
 			enableSubmitAndExit: false,
 		});
-		const askTool = createAskUserQuestionTool({
+		const askTool = await createAskUserQuestionTool({
 			register: (id, entry) => this.pendingAsks.set(id, entry),
 			unregister: (id) => this.pendingAsks.delete(id),
 		});
@@ -186,7 +188,7 @@ export class ClineEngine implements AIEngine {
 		// system prompt and returns its final text. ──
 		const subagents: SubagentInfo[] = subagentQueries.getEnabled().map(s => ({ slug: s.slug, name: s.name, description: s.description }));
 		if (subagents.length > 0) {
-			const agentTool = createAgentDispatchTool({
+			const agentTool = await createAgentDispatchTool({
 				subagents,
 				run: async (subagent, subPrompt, toolCallId, signal) => {
 					const md = (await readSubagentMd(subagent.slug)) ?? '';
@@ -264,7 +266,7 @@ export class ClineEngine implements AIEngine {
 		const priorMessages = resume ? this.sessions.get(resume) : undefined;
 		const sessionId = crypto.randomUUID();
 
-		const systemPrompt = this.buildSystemPrompt(resolvedProjectPath, provider, profileId);
+		const systemPrompt = await this.buildSystemPrompt(resolvedProjectPath, provider, profileId);
 		const agent = new Agent({
 			providerId: provider,
 			modelId,
@@ -396,6 +398,7 @@ export class ClineEngine implements AIEngine {
 		const provider = parseClineCredential(account.credential)?.provider ?? providerSlug;
 		const auth = await resolveClineAuth(account);
 
+		const { Agent } = await loadEngineSdk<typeof import('@cline/sdk')>('cline', '@cline/sdk');
 		const agent = new Agent({
 			providerId: provider,
 			modelId,

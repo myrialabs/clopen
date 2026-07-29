@@ -21,11 +21,11 @@
  * to Cursor's native `agents` config.
  */
 
-import { Agent, Cursor } from '@cursor/sdk';
 import type { SDKAgent, Run, SDKUserMessage, SDKImage, AgentDefinition, SDKCustomTool } from '@cursor/sdk';
 import type { EngineOutput, EngineModel, MessageEngine } from '$shared/types/unified';
 import type { AIEngine, EngineQueryOptions, StructuredGenerationOptions } from '../../types';
 import { resolveOsPath } from '$backend/utils/paths';
+import { loadEngineSdk } from '$backend/engine/sdk-loader';
 import { debug } from '$shared/utils/logger';
 import { engineQueries } from '$backend/database/queries/engine-queries';
 import { syncSkills } from '$backend/skills';
@@ -160,7 +160,8 @@ export class CursorEngine implements AIEngine {
 		const mcpServers = getCursorMcpConfig(mcpProfileFilter);
 		const agents = await this.buildAgents();
 
-		const store = getCursorStore(projectPath);
+		const { Agent } = await loadEngineSdk<typeof import('@cursor/sdk')>('cursor', '@cursor/sdk');
+		const store = await getCursorStore(projectPath);
 		const engineMeta: MessageEngine = {
 			type: 'cursor',
 			provider: 'cursor',
@@ -324,10 +325,11 @@ export class CursorEngine implements AIEngine {
 		if (!account) throw new Error('Cursor is not configured.');
 		const apiKey = resolveCursorApiKey(account);
 
+		const { Agent } = await loadEngineSdk<typeof import('@cursor/sdk')>('cursor', '@cursor/sdk');
 		const agent = await Agent.create({
 			apiKey,
 			model: { id: modelId },
-			local: { cwd: resolveOsPath(projectPath), store: getCursorStore(projectPath) },
+			local: { cwd: resolveOsPath(projectPath), store: await getCursorStore(projectPath) },
 		});
 		try {
 			const run = await agent.send(buildJsonPrompt(prompt, schema));

@@ -26,7 +26,7 @@ const createDefaultPresetVisibility = (): Record<string, boolean> => {
 // Default per-user settings
 const defaultSettings: AppSettings = {
 	selectedEngine: DEFAULT_ENGINE,
-	selectedProvider: 'anthropic',
+	selectedProvider: '',
 	selectedModelId: DEFAULT_MODEL_ID,
 	selectedModelName: DEFAULT_MODEL_NAME,
 	engineModelMemory: { 'claude-code': { provider: 'anthropic', id: DEFAULT_MODEL_ID, name: DEFAULT_MODEL_NAME } },

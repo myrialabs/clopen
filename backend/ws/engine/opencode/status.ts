@@ -8,7 +8,7 @@ import { t } from 'elysia';
 import { createRouter } from '$shared/utils/ws-server';
 import { debug } from '$shared/utils/logger';
 import { getBackendOS } from '../../../utils/os';
-import { getStatus } from '../../../utils/cli';
+import { readEngineSdkVersion } from '$backend/engine/sdk-loader';
 
 export const openCodeStatusHandler = createRouter()
 	.http('engine:opencode-status', {
@@ -21,11 +21,11 @@ export const openCodeStatusHandler = createRouter()
 	}, async () => {
 		debug.log('engine', 'Checking Open Code status...');
 
-		const { installed, version } = await getStatus('opencode');
+		const sdkVersion = readEngineSdkVersion('@opencode-ai/sdk');
 
 		return {
-			installed,
-			version,
+			installed: sdkVersion !== null,
+			version: sdkVersion,
 			backendOS: getBackendOS()
 		};
 	});

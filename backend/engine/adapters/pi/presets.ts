@@ -13,8 +13,9 @@
  * `$backend`.
  */
 
-import { ModelRuntime } from '@earendil-works/pi-coding-agent';
+import type { ModelRuntime } from '@earendil-works/pi-coding-agent';
 import type { CredentialStore } from '@earendil-works/pi-ai';
+import { loadEngineSdk } from '$backend/engine/sdk-loader';
 import type { PiAuthMode, PiCredentialField, PiProviderPreset } from '$shared/types/unified';
 import { getPiModelsPath, getPiModelsStorePath } from './environment';
 import { debug } from '$shared/utils/logger';
@@ -62,6 +63,7 @@ export function getPiProviderFields(providerId: string): PiCredentialField[] {
  * `~/.pi/agent/auth.json` — the DB store is the sole credential source.
  */
 export async function createPiRuntime(credentials?: CredentialStore): Promise<ModelRuntime> {
+	const { ModelRuntime } = await loadEngineSdk<typeof import('@earendil-works/pi-coding-agent')>('pi', '@earendil-works/pi-coding-agent');
 	return ModelRuntime.create({
 		...(credentials ? { credentials } : {}),
 		modelsPath: getPiModelsPath(),

@@ -9,8 +9,9 @@
 
 import { t } from 'elysia';
 import { createRouter } from '$shared/utils/ws-server';
-import { settingsQueries } from '../../database/queries';
+import { settingsQueries, engineQueries } from '../../database/queries';
 import { initializeEngine } from '../../engine';
+import { checkEngineSetup } from '../../engine/engine-setup';
 import { registerModels } from '$shared/constants/engines';
 import type { EngineType } from '$shared/types/unified';
 
@@ -134,6 +135,14 @@ export const crudHandler = createRouter()
 		}))
 	}, async ({ data }) => {
 		const engineType: EngineType = data.engine;
+
+		// Gate on engine readiness: don't surface a catalog for an engine whose
+		// SDK isn't installed / is out of date (→ Stack), or that requires an
+		// account and has none (→ Engines). Mirrors the chat pre-stream gate so
+		// the model picker reflects the same install/sign-in state as chat.
+		const activeAccount = engineQueries.getActiveAccountForEngine(engineType);
+		const setupIssue = checkEngineSetup(engineType, activeAccount?.id ?? 0);
+		if (setupIssue) throw new Error(setupIssue.message);
 
 		// Uniform path for every engine. Each adapter's getAvailableModels()
 		// owns the catalog logic (static array or dynamic fetch); this handler

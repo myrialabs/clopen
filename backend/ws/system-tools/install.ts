@@ -26,6 +26,9 @@ const TOOL_UNION = t.Union([
 	t.Literal('copilot'),
 	t.Literal('codex'),
 	t.Literal('qwen'),
+	t.Literal('pi'),
+	t.Literal('cline'),
+	t.Literal('cursor'),
 	t.Literal('chrome'),
 ]);
 

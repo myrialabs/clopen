@@ -2,7 +2,7 @@
 	import { onMount } from 'svelte';
 	import ws from '$frontend/utils/ws';
 	import { isDarkMode } from '$frontend/utils/theme';
-	import { settingsModalState, clearEngineFocus } from '$frontend/stores/ui/settings-modal.svelte';
+	import { settingsModalState, clearEngineFocus, setActiveSection } from '$frontend/stores/ui/settings-modal.svelte';
 	import { ENGINES } from '$shared/constants/engines';
 	import type { EngineType } from '$shared/types/unified';
 	import { claudeAccountsStore } from '$frontend/stores/features/claude-accounts.svelte';
@@ -35,8 +35,14 @@
 	interface Props {
 		showHeader?: boolean;
 		compact?: boolean;
+		/**
+		 * Override for the "Open Stack" action shown when an engine isn't installed.
+		 * In the Settings modal this defaults to routing to the Stack section; the
+		 * setup Wizard passes a callback that returns to its Stack step instead.
+		 */
+		onOpenStack?: () => void;
 	}
-	const { showHeader = true, compact = false }: Props = $props();
+	const { showHeader = true, compact = false, onOpenStack }: Props = $props();
 
 	let activeEngine = $state<EngineType>(settingsModalState.engineFocus ?? 'claude-code');
 
@@ -82,6 +88,18 @@
 	const cursorAccounts = $derived(cursorAccountsStore.accounts);
 
 	const ocProviders = $derived(opencodeProvidersStore.providers);
+
+	// Status of the currently-selected engine, for the not-installed notice below.
+	const activeStatus = $derived(
+		activeEngine === 'claude-code' ? claudeCodeStatus :
+		activeEngine === 'opencode' ? openCodeStatus :
+		activeEngine === 'copilot' ? copilotStatus :
+		activeEngine === 'codex' ? codexStatus :
+		activeEngine === 'qwen' ? qwenStatus :
+		activeEngine === 'pi' ? piStatus :
+		activeEngine === 'cline' ? clineStatus :
+		cursorStatus
+	);
 
 	async function refreshClaudeCodeStatus() {
 		isLoadingClaudeCodeStatus = true;
@@ -252,7 +270,25 @@
 
 	<!-- Active engine pane -->
 	<div class="space-y-6">
-		{#if activeEngine === 'claude-code'}
+		{#if activeStatus && activeStatus.installed === false}
+			<div class="flex items-start gap-3 p-4 rounded-lg border border-amber-300/60 dark:border-amber-500/30 bg-amber-50 dark:bg-amber-500/10">
+				<svg viewBox="0 0 24 24" fill="none" class="w-5 h-5 text-amber-600 dark:text-amber-400 flex-shrink-0 mt-0.5" aria-hidden="true">
+					<path d="M12 9v4M12 17h.01M10.29 3.86L1.82 18a2 2 0 001.71 3h16.94a2 2 0 001.71-3L13.71 3.86a2 2 0 00-3.42 0z" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" />
+				</svg>
+				<div class="flex-1 min-w-0">
+					<p class="text-sm text-amber-900 dark:text-amber-100">
+						Engine "{activeEngine}" is not installed. Open Settings → Stack to install it before using this engine.
+					</p>
+					<button
+						type="button"
+						class="mt-2.5 inline-flex items-center gap-1.5 px-3 py-1.5 text-xs font-semibold rounded-md bg-amber-600 hover:bg-amber-700 text-white cursor-pointer transition-colors"
+						onclick={() => (onOpenStack ? onOpenStack() : setActiveSection('system-tools'))}
+					>
+						Open Stack
+					</button>
+				</div>
+			</div>
+		{:else if activeEngine === 'claude-code'}
 			<ClaudeCodePanel status={claudeCodeStatus} isLoading={isLoadingClaudeCodeStatus} />
 		{:else if activeEngine === 'copilot'}
 			<CopilotPanel status={copilotStatus} isLoading={isLoadingCopilotStatus} onRefreshStatus={refreshCopilotStatus} />

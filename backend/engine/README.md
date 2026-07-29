@@ -11,6 +11,22 @@ adapter follows the same shape so that the rest of the system outside this
 folder — `stream-manager`, MCP, DB, WebSocket, frontend chat, settings UI —
 stays **agnostic** to the underlying SDK.
 
+> **Engine SDKs are NOT bundled — they install on demand.** None of the SDK
+> packages above ship in the clopen global install (they moved to
+> `devDependencies` in `package.json`, which is the single source of truth for
+> each engine's exact pinned version). At runtime clopen installs them on
+> demand into a clopen-managed directory — `~/.clopen/stack/engines`
+> (`getStackEnginesDir()`) — and every adapter **lazy-loads** its SDK via
+> `loadEngineSdk(engine, pkg)` from [`sdk-loader.ts`](./sdk-loader.ts) (keep
+> all type references on `import type` so they erase at runtime). The loader
+> refuses to load an SDK whose installed version ≠ the pinned version, throwing
+> `EngineNotReadyError` (`reason: 'not-installed' | 'needs-update'`) — the
+> engine must first be installed/updated in **Settings → Stack**. This is
+> what fixed `bun add -g @myrialabs/clopen` aborting mid-install (it used to
+> drag 200–300 MB of native CLI binaries). Future Stack work (runtimes,
+> services, per-project versioning) is specced in
+> [`docs/stack-roadmap.md`](../../docs/stack-roadmap.md).
+
 > **In-process, session-less SDKs are their own category.** Most adapters
 > wrap a CLI subprocess or an SDK that owns a session store (on disk or via a
 > server). `cline` is different: `@cline/sdk`'s stateless `Agent` holds **no**
@@ -39,8 +55,8 @@ map, then jump to the area you need.
 2. [Adapter contract](./docs/adapter-contract.md) — the `AIEngine` interface, `EngineOutput`, `EngineQueryOptions`, the standard adapter file taxonomy, and what an adapter must NOT do.
 3. [Database](./docs/database.md) — `engine_providers` + `engine_accounts`, `engineQueries`, and how each adapter reads credentials.
 4. [WebSocket routes](./docs/websocket-routes.md) — `engine:*`, `system-tools:*`, `models:list`, `chat:stream`, and the Restart-Server pattern.
-5. [Frontend & chat integration](./docs/frontend-and-chat.md) — Settings → Engines / System Tools, the model picker, the send path, reasoning/attachments/AskUserQuestion.
-6. [System Tools](./docs/system-tools.md) — registering a binary in `install-recipes.ts` + the install runner.
+5. [Frontend & chat integration](./docs/frontend-and-chat.md) — Settings → Engines / Stack, the model picker, the send path, reasoning/attachments/AskUserQuestion.
+6. [Stack](./docs/system-tools.md) — registering a host tool or on-demand engine SDK in `install-recipes.ts` + the install runner.
 7. [Artifacts & Access](./docs/artifacts.md) — the extension layer (Skills, Commands, Subagents, Instructions, Permissions, Profiles, MCP), the capability matrix, and the `artifact-sync.ts` seam adapters call at stream start.
 8. [Adding a new engine](./docs/adding-an-engine.md) — the end-to-end, stage-by-stage checklist.
 9. [Lessons learned](./docs/lessons-learned.md) — §10 pitfalls (tool name/input canonicalisation, fork session, MCP reuse, auth-blob swap, sub-agent routing, OpenCode v1/v2, structured output, …).
@@ -53,7 +69,7 @@ map, then jump to the area you need.
 ```
 ┌──────────────────── FRONTEND (Svelte 5 + runes) ─────────────────────┐
 │                                                                       │
-│  Settings → Engines           Settings → System Tools  Chat Input     │
+│  Settings → Engines           Settings → Stack         Chat Input     │
 │  ─────────────────────        ──────────────────────  ──────────────  │
 │  AIEnginesSettings+panels/    SystemToolsSettings…    EngineModel…    │
 │       │                            │                       │          │
@@ -82,7 +98,8 @@ map, then jump to the area you need.
 │  │  ──────────────────                                              │ │
 │  │  index.ts                  registry: getEngine / getProjectEngine│ │
 │  │  types.ts                  contract: AIEngine                    │ │
-│  │  install-recipes.ts        per-platform install commands         │ │
+│  │  sdk-loader.ts             on-demand loader (~/.clopen/stack/…)   │ │
+│  │  install-recipes.ts        host-tool + engine-SDK install recipes│ │
 │  │  install-runner.ts         spawns recipe, streams logs over WS   │ │
 │  │  adapters/<name>/                                                │ │
 │  │    index.ts                public surface (re-exports only)      │ │

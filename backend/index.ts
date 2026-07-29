@@ -23,6 +23,7 @@ import { loggerMiddleware } from './middleware/logger';
 
 // Database initialization
 import { initializeDatabase, closeDatabase } from './database';
+import { ensureDefaultEngineInstalled } from './engine/bootstrap-default-engine';
 import { syncInternalServers } from './mcp';
 import { disposeAllEngines } from './engine';
 import { connectionManager } from './db-client/connection-manager';
@@ -215,6 +216,10 @@ async function startServer() {
 		// Start expired session cleanup now that the database is ready
 		sessionCleanupScheduler.start();
 		uploadTempCleanup.start();
+		// Fresh installs: auto-install OpenCode (free, no account) in the
+		// background so first-time users have a working engine without any manual
+		// setup. Non-blocking; no-ops once any engine is already installed.
+		void ensureDefaultEngineInstalled();
 	} catch (error) {
 		debug.warn('database', '⚠️ Database initialization failed:', error);
 	}

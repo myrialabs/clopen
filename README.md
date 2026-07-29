@@ -69,7 +69,7 @@ A complete development environment designed around AI-assisted workflows, built 
 - **Connectors (MCP)** — Browse a searchable catalog of Model Context Protocol servers, connect with OAuth or custom env/headers, and sync every connector across all your AI engines
 - **Skills, Commands & Subagents** — Build reusable Skills, slash Commands, delegated Subagents, shared Instructions, and tool Permissions or Profiles once, synced automatically across every engine
 - **Flexible Authentication** — No Login or With Login mode with admin/member roles, invite links, rate-limited login, and CLI token recovery
-- **System Tools Installer** — Install Git, Claude Code, OpenCode, Codex, Copilot, Qwen Code, Chrome, and Cloudflared (for Public Tunnel) from a one-click admin panel
+- **Stack** — Install AI engines, Git, Chrome, and Cloudflared (for Public Tunnel) from a one-click admin panel. Engines install on demand into a clopen-managed directory (`~/.clopen/stack/engines`) — isolated from your global setup, no PATH pollution
 - **Background Processing** — Chat, terminal, and other processes continue running even when you close the browser — come back later and pick up where you left off
 - **Works on Any Device** — Fully responsive across desktop, laptop, tablet, and mobile. Open your workspace from any device and continue exactly where you left off
 
@@ -80,7 +80,7 @@ A complete development environment designed around AI-assisted workflows, built 
 ### Prerequisites
 
 - [Bun.js](https://bun.sh/) v1.2.12+
-- At least one supported AI engine — [Claude Code](https://github.com/anthropics/claude-code), [OpenCode](https://opencode.ai), [Codex](https://github.com/openai/codex), [GitHub Copilot CLI](https://github.com/github/copilot-cli), or [Qwen Code](https://github.com/QwenLM/qwen-code). All are installable from **Settings → System Tools** after first launch. [Pi](https://github.com/earendil-works/pi), [Cline](https://github.com/cline/cline), and [Cursor](https://cursor.com) are bundled as in-process SDKs and need no separate CLI install — just sign in from **Settings → Engines**
+- At least one supported AI engine — [Claude Code](https://github.com/anthropics/claude-code), [OpenCode](https://opencode.ai), [Codex](https://github.com/openai/codex), [GitHub Copilot CLI](https://github.com/github/copilot-cli), [Qwen Code](https://github.com/QwenLM/qwen-code), [Pi](https://github.com/earendil-works/pi), [Cline](https://github.com/cline/cline), or [Cursor](https://cursor.com). All install on demand from **Settings → Stack** after first launch (nothing is bundled into the clopen install), then sign in from **Settings → Engines**
 
 ### Installation
 
@@ -116,7 +116,7 @@ On first launch, a setup wizard guides you through:
 
 1. **Authentication mode** — Choose between **No Login** (no authentication required, ideal for personal/local use) or **With Login** (login with Personal Access Token, supports team collaboration)
 2. **Admin account** — If With Login mode is selected, create your admin account and save the generated PAT
-3. **System Tools** — Install Git, Chrome, Cloudflared, and any AI engine you don't have yet — straight from the wizard, no terminal needed
+3. **Stack** — Install Git, Chrome, Cloudflared, and any AI engine you don't have yet — straight from the wizard, no terminal needed
 4. **AI Engines** — Check installation status for Claude Code, OpenCode, Codex, Copilot, and Qwen Code, and sign in to the engines you'll use. Pi, Cline, and Cursor need no install and are ready to sign in to directly
 5. **Preferences** — Set dark mode, font size, sound notifications, and message layout (Classic cards or Compact lines)
 

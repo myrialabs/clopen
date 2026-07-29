@@ -6,7 +6,7 @@
 	import ws from '$frontend/utils/ws';
 	import type { TerminalViewerHandle } from '@myrialabs/ptykit/client';
 
-	type ToolId = 'git' | 'claude' | 'opencode' | 'copilot' | 'codex' | 'qwen' | 'chrome';
+	type ToolId = 'git' | 'claude' | 'opencode' | 'copilot' | 'codex' | 'qwen' | 'pi' | 'cline' | 'cursor' | 'chrome';
 	type SessionStatus = 'running' | 'success' | 'failed' | 'cancelled';
 
 	interface ManualInstruction {
@@ -35,6 +35,8 @@
 		installed: boolean;
 		version: string | null;
 		source: string | null;
+		requiredVersion?: string | null;
+		needsUpdate?: boolean;
 	}
 
 	interface ActiveSession {
@@ -56,6 +58,13 @@
 	}
 
 	const { tool, title, description }: Props = $props();
+
+	// Engines are pinned to the version clopen was built and tested against
+	// (single source of truth in package.json), so they are not independently
+	// updatable — hide the update-check affordance for them. Only host tools
+	// (git, chrome) self-update.
+	const PINNED_ENGINE_TOOLS = new Set<ToolId>(['claude', 'opencode', 'copilot', 'codex', 'qwen', 'pi', 'cline', 'cursor']);
+	const isPinnedEngine = $derived(PINNED_ENGINE_TOOLS.has(tool));
 
 	let status = $state<ToolStatusDTO | null>(null);
 	let recipe = $state<RecipeDTO | null>(null);
@@ -305,6 +314,11 @@
 				<Icon name="lucide:loader" class="w-3 h-3 animate-spin" />
 				Checking...
 			</span>
+		{:else if status?.installed && status.needsUpdate}
+			<span class="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full text-xs font-medium bg-amber-100 dark:bg-amber-900/30 text-amber-700 dark:text-amber-400">
+				<span class="w-1.5 h-1.5 rounded-full bg-amber-500"></span>
+				Update required
+			</span>
 		{:else if status?.installed}
 			<span class="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full text-xs font-medium bg-green-100 dark:bg-green-900/30 text-green-700 dark:text-green-400">
 				<span class="w-1.5 h-1.5 rounded-full bg-green-500"></span>
@@ -329,6 +343,12 @@
 					<Icon name="lucide:tag" class="w-4 h-4 text-slate-400" />
 					<span>Version: <span class="font-mono font-medium text-slate-900 dark:text-slate-100">{status.version || 'Unknown'}</span></span>
 				</div>
+				{#if status.needsUpdate && status.requiredVersion}
+					<div class="flex items-center gap-2 text-xs text-amber-700 dark:text-amber-400">
+						<Icon name="lucide:circle-alert" class="w-3.5 h-3.5 shrink-0" />
+						<span>Update to <span class="font-mono font-medium">{status.requiredVersion}</span> required before this engine can be used.</span>
+					</div>
+				{/if}
 				{#if status.source}
 					<div class="flex items-center gap-2 text-xs text-slate-500 dark:text-slate-400">
 						<Icon name="lucide:folder" class="w-3.5 h-3.5 shrink-0" />
@@ -400,7 +420,17 @@
 						Cancel
 					</button>
 				{:else if status.installed}
-					{#if recipe?.autoInstallable}
+					{#if status.needsUpdate && recipe?.autoInstallable}
+						<button
+							type="button"
+							class="inline-flex items-center gap-2 px-4 py-2 text-sm font-medium rounded-lg border border-transparent bg-amber-600 text-white hover:bg-amber-700 transition-colors"
+							onclick={requestUpdate}
+						>
+							<Icon name="lucide:upload" class="w-4 h-4" />
+							Update{status.requiredVersion ? ` → ${status.requiredVersion}` : ''}
+						</button>
+					{/if}
+					{#if recipe?.autoInstallable && !isPinnedEngine}
 						{#if updateCheckState === 'idle'}
 							<button
 								type="button"

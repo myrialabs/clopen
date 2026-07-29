@@ -11,15 +11,17 @@
  * the picker renders empty rather than a stale list).
  */
 
-import { Llms } from '@cline/sdk';
+import type { Llms } from '@cline/sdk';
 import type { EngineModel } from '$shared/types/unified';
 import { debug } from '$shared/utils/logger';
+import { loadEngineSdk } from '$backend/engine/sdk-loader';
 import { getClineAccounts, parseClineCredential } from './credential';
 
 type CatalogModel = Awaited<ReturnType<typeof Llms.getModelsForProvider>>[string];
 
 export async function fetchClineModels(): Promise<EngineModel[]> {
 	try {
+		const { Llms } = await loadEngineSdk<typeof import('@cline/sdk')>('cline', '@cline/sdk');
 		// Distinct providers that have at least one stored account.
 		const providers = new Set<string>();
 		for (const account of getClineAccounts()) {

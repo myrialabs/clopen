@@ -97,7 +97,7 @@
 	const stepLabels: Record<WizardStep, { label: string; icon: IconName }> = {
 		'auth-mode': { label: 'Login', icon: 'lucide:shield' },
 		'admin-account': { label: 'Account', icon: 'lucide:user-plus' },
-		'system-tools': { label: 'System Tools', icon: 'lucide:hammer' },
+		'system-tools': { label: 'Stack', icon: 'lucide:hammer' },
 		'engines': { label: 'Engines', icon: 'lucide:plug' },
 		'preferences': { label: 'Preferences', icon: 'lucide:palette' }
 	};
@@ -449,11 +449,11 @@
 					{/if}
 				</div>
 
-			<!-- ════════ Step 3: System Tools ════════ -->
+			<!-- ════════ Step 3: Stack ════════ -->
 			{:else if currentStep === 'system-tools'}
 				<div class="space-y-4">
 					<div class="text-center">
-						<h2 class="text-base font-semibold text-slate-900 dark:text-slate-100 mb-1">System Tools</h2>
+						<h2 class="text-base font-semibold text-slate-900 dark:text-slate-100 mb-1">Stack</h2>
 						<p class="text-sm text-slate-500 dark:text-slate-400">
 							Install binaries clopen depends on, directly on the server.
 						</p>
@@ -489,7 +489,7 @@
 						</p>
 					</div>
 
-					<AIEnginesSettings showHeader={false} compact />
+					<AIEnginesSettings showHeader={false} compact onOpenStack={goToPrevStep} />
 
 					<div class="flex gap-2">
 						<button

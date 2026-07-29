@@ -16,9 +16,9 @@
  * unavailable (empty or errored). Only a missing account/key returns `[]`.
  */
 
-import { Cursor } from '@cursor/sdk';
 import type { EngineModel } from '$shared/types/unified';
 import { debug } from '$shared/utils/logger';
+import { loadEngineSdk } from '$backend/engine/sdk-loader';
 import { getActiveCursorAccount, parseCursorCredential } from './credential';
 
 /** Known Cursor model ids used when `Cursor.models.list()` is unavailable. */
@@ -31,6 +31,7 @@ export async function fetchCursorModels(): Promise<EngineModel[]> {
 	if (!apiKey) return [];
 
 	try {
+		const { Cursor } = await loadEngineSdk<typeof import('@cursor/sdk')>('cursor', '@cursor/sdk');
 		const models = await Cursor.models.list({ apiKey });
 		if (models.length) {
 			debug.log('engine', `Cursor getAvailableModels: ${models.length} models`);

@@ -1065,3 +1065,44 @@ and socket errors to clear user messages in `error-handler.ts`.
 > `ContextIndicator.svelte` handles an unknown max context. When an engine's data
 > exposes a UI bug, fix it in the shared component, not the adapter.
 
+---
+
+### 10.21 The SDK is not bundled — lazy-load it and never top-level-import it
+
+Engine SDKs are **not** runtime dependencies. They live in `package.json`
+`devDependencies` (pinned exact — the single source of truth) and are installed
+**on demand** into the clopen-managed dir `~/.clopen/stack/engines`
+(`getStackEnginesDir()`), never the user's global bun store or their project.
+This is what fixed `bun add -g @myrialabs/clopen` aborting on Windows: bundling
+the SDKs dragged 200–300 MB of native CLI binaries into the global install, and
+one failed tarball extraction killed the whole thing.
+
+Consequences for an adapter:
+
+- **Reference SDK types only via `import type`.** A plain `import { Foo } from
+  '<pkg>'` forces Bun to resolve the package at module-load time — which throws
+  for every user who hasn't installed that engine yet, crashing the backend on
+  boot. `import type` is erased at runtime, so it's safe. Resolve the real module
+  at point of use with
+  `loadEngineSdk<typeof import('<pkg>')>('newengine', '<pkg>')` from
+  `backend/engine/sdk-loader.ts` (which does `Bun.resolveSync(pkg, stackDir)` +
+  dynamic import, cached).
+
+- **Loading is version-guarded.** `loadEngineSdk` refuses an SDK whose installed
+  version ≠ the pinned version, throwing `EngineNotReadyError`
+  (`reason: 'not-installed' | 'needs-update'`). The stream-manager surfaces that
+  message in the chat error surface, telling the user to install/update the
+  engine in Settings → Stack. Don't catch-and-swallow it — the readable message
+  is the UX.
+
+- **Detection reads the stack dir, not PATH.** `readEngineSdkVersion(pkg)` (used
+  by both `getToolStatus` in the Stack panel and every engine picker
+  `status.ts`) checks the SDK's version inside `~/.clopen/stack/engines` — there
+  is no CLI-on-PATH probe for engines anymore. `ToolStatus` also carries
+  `requiredVersion` + `needsUpdate` so the UI can show "Update required".
+
+The same lazy-load applies to the one non-adapter consumer of the Claude SDK:
+`backend/mcp/index.ts::getEnabledMcpServers()` is `async` and lazy-loads
+`@anthropic-ai/claude-agent-sdk` only on the Claude path (see
+`backend/mcp/README.md`).
+
