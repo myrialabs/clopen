@@ -102,7 +102,7 @@
 				<div class="flex-1 min-w-0">
 					<div class="text-sm font-semibold text-slate-900 dark:text-slate-100">No Login</div>
 					<div class="text-xs text-slate-600 dark:text-slate-500">
-						No authentication required. Anyone with access to this URL can use Clopen.
+						Best if you're just using Clopen on your own computer. It opens straight to the app with no sign-in — but anyone who can reach the address can use it, so keep it to your own machine or home network.
 					</div>
 				</div>
 				{#if currentMode === 'none'}
@@ -135,7 +135,7 @@
 				<div class="flex-1 min-w-0">
 					<div class="text-sm font-semibold text-slate-900 dark:text-slate-100">With Login</div>
 					<div class="text-xs text-slate-600 dark:text-slate-500">
-						Authenticate with a Personal Access Token. Supports multiple users and invite links.
+						Best if you want to reach Clopen from anywhere — a public server, a shared machine, or the same setup used by more than one person. A sign-in keeps it private, and you can invite others to join.
 					</div>
 				</div>
 				{#if currentMode === 'required'}

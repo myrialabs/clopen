@@ -1,5 +1,7 @@
 <script lang="ts">
 	import { untrack } from 'svelte';
+	import { scale } from 'svelte/transition';
+	import { cubicOut } from 'svelte/easing';
 	import { settings, togglePinnedModel } from '$frontend/stores/features/settings.svelte';
 	import { modelStore } from '$frontend/stores/features/models.svelte';
 	import { sessionState } from '$frontend/stores/core/sessions.svelte';
@@ -10,6 +12,8 @@
 	import type { EngineType, EngineModel } from '$shared/types/unified';
 	import Icon from '$frontend/components/common/display/Icon.svelte';
 	import ProfilePicker from './ProfilePicker.svelte';
+	import { openSettingsModal, focusEngineSection } from '$frontend/stores/ui/settings-modal.svelte';
+	import { authStore } from '$frontend/stores/features/auth.svelte';
 	import { claudeAccountsStore, type ClaudeAccountItem } from '$frontend/stores/features/claude-accounts.svelte';
 	import { copilotAccountsStore, type CopilotAccountItem } from '$frontend/stores/features/copilot-accounts.svelte';
 	import { codexAccountsStore, type CodexAccountItem } from '$frontend/stores/features/codex-accounts.svelte';
@@ -367,6 +371,11 @@
 	// Read from local chat model state (isolated from Settings)
 	const currentEngine = $derived(ENGINES.find(e => e.type === chatModelState.engine));
 	const currentModel = $derived(modelStore.getById(chatModelState.modelId));
+
+	// Readiness error for the active engine (e.g. not installed / not signed in),
+	// surfaced by models:list. Drives the not-installed → Open Stack notice below.
+	const engineError = $derived(modelStore.getError(chatModelState.engine));
+	const isAdmin = $derived(authStore.isAdmin);
 	const availableModels = $derived.by(() => {
 		const all = modelStore.getByEngine(chatModelState.engine);
 		// Codex auth-mode filter (plan §6 + README §6.2): hide ChatGPT-only
@@ -644,6 +653,20 @@
 		closeDropdown();
 	}
 
+	// Not-ready shortcuts from the model dropdown: install via Settings → Stack,
+	// or configure the engine's account. Both close the dropdown first so the
+	// Settings modal isn't hidden behind it.
+	function openStack() {
+		closeDropdown();
+		openSettingsModal('system-tools');
+	}
+
+	function configureEngine(engineType: EngineType) {
+		closeDropdown();
+		openSettingsModal('engines');
+		focusEngineSection(engineType);
+	}
+
 </script>
 
 <div class="flex flex-wrap items-center gap-1.5 px-4 pt-2 pb-0.5">
@@ -661,8 +684,8 @@
 			<div class="flex dark:hidden items-center justify-center w-3.5 h-3.5 [&>svg]:w-full [&>svg]:h-full">{@html currentEngine.icon.light}</div>
 			<div class="hidden dark:flex items-center justify-center w-3.5 h-3.5 [&>svg]:w-full [&>svg]:h-full">{@html currentEngine.icon.dark}</div>
 		{/if}
-		<span class="font-medium">{triggerLabel}</span>
-		<Icon name="lucide:chevron-down" class="w-3 h-3" />
+		<span class="font-medium max-w-40 truncate">{triggerLabel}</span>
+		<Icon name="lucide:chevron-down" class="w-3 h-3 flex-shrink-0" />
 	</button>
 
 	<!-- Account picker (Claude Code + Copilot — both use one-account-per-engine) -->
@@ -734,7 +757,11 @@
 {#if showAccountDropdown}
 	<div class="fixed inset-0" style="z-index: 9998;" onclick={closeAccountDropdown}></div>
 
-	<div style={accountDropdownStyle} class="bg-white dark:bg-slate-800 border border-slate-200 dark:border-slate-700 rounded-lg shadow-xl overflow-hidden min-w-48 max-h-64 flex flex-col">
+	<div
+		style={accountDropdownStyle}
+		class="origin-bottom-left bg-white dark:bg-slate-800 border border-slate-200 dark:border-slate-700 rounded-lg shadow-xl overflow-hidden min-w-48 max-w-[calc(100vw-1.5rem)] max-h-64 flex flex-col"
+		transition:scale={{ duration: 130, easing: cubicOut, start: 0.95, opacity: 0 }}
+	>
 		<div class="flex gap-1.5 px-3 py-2 border-b border-slate-200 dark:border-slate-700 flex-shrink-0">
 			<Icon name="lucide:user" class="w-3.5 h-3.5" />
 			<span class="text-xs font-medium text-slate-500 dark:text-slate-400 tracking-wide">{accountPickerLabel}</span>
@@ -784,7 +811,11 @@
 {#if showOCAccountDropdown && ocMatchingProvider}
 	<div class="fixed inset-0" style="z-index: 9998;" onclick={closeOCAccountDropdown}></div>
 
-	<div style={ocAccountDropdownStyle} class="bg-white dark:bg-slate-800 border border-slate-200 dark:border-slate-700 rounded-lg shadow-xl overflow-hidden min-w-48 max-h-64 flex flex-col">
+	<div
+		style={ocAccountDropdownStyle}
+		class="origin-bottom-left bg-white dark:bg-slate-800 border border-slate-200 dark:border-slate-700 rounded-lg shadow-xl overflow-hidden min-w-48 max-w-[calc(100vw-1.5rem)] max-h-64 flex flex-col"
+		transition:scale={{ duration: 130, easing: cubicOut, start: 0.95, opacity: 0 }}
+	>
 		<div class="flex gap-1.5 px-3 py-2 border-b border-slate-200 dark:border-slate-700 flex-shrink-0">
 			<Icon name="lucide:key" class="w-3.5 h-3.5" />
 			<span class="text-xs font-medium text-slate-500 dark:text-slate-400 tracking-wide">{ocMatchingProvider.name} Account</span>
@@ -821,10 +852,14 @@
 {#if showDropdown}
 	<div class="fixed inset-0" style="z-index: 9998;" onclick={closeDropdown}></div>
 
-	<div style={dropdownStyle} class="bg-white dark:bg-slate-800 border border-slate-200 dark:border-slate-700 rounded-lg shadow-xl overflow-hidden min-w-64 max-h-96 flex flex-col">
+	<div
+		style={dropdownStyle}
+		class="origin-bottom-left bg-white dark:bg-slate-800 border border-slate-200 dark:border-slate-700 rounded-lg shadow-xl overflow-hidden w-80 max-w-[calc(100vw-1.5rem)] max-h-96 flex flex-col"
+		transition:scale={{ duration: 130, easing: cubicOut, start: 0.95, opacity: 0 }}
+	>
 
 		<!-- Engine tabs -->
-		<div class="flex border-b border-slate-200 dark:border-slate-700 flex-shrink-0">
+		<div class="flex border-b border-slate-200 dark:border-slate-700 flex-shrink-0 overflow-x-auto [scrollbar-width:none] [-ms-overflow-style:none] [&::-webkit-scrollbar]:hidden">
 			{#each ENGINES as engine (engine.type)}
 				{@const isActive = chatModelState.engine === engine.type}
 				{@const isDisabled = engineLocked && engine.type !== lockedEngine}
@@ -841,13 +876,13 @@
 					disabled={isDisabled}
 					title={engine.name}
 				>
-					<div class="flex dark:hidden items-center justify-center w-3.5 h-3.5 [&>svg]:w-full [&>svg]:h-full">{@html engine.icon.light}</div>
-					<div class="hidden dark:flex items-center justify-center w-3.5 h-3.5 [&>svg]:w-full [&>svg]:h-full">{@html engine.icon.dark}</div>
+					<div class="flex dark:hidden items-center justify-center w-3.5 h-3.5 flex-shrink-0 [&>svg]:w-full [&>svg]:h-full">{@html engine.icon.light}</div>
+					<div class="hidden dark:flex items-center justify-center w-3.5 h-3.5 flex-shrink-0 [&>svg]:w-full [&>svg]:h-full">{@html engine.icon.dark}</div>
 					{#if isActive}
-						<span>{engine.name}</span>
+						<span class="truncate max-w-28">{engine.name}</span>
 					{/if}
 					{#if isDisabled}
-						<Icon name="lucide:lock" class="w-3 h-3" />
+						<Icon name="lucide:lock" class="w-3 h-3 flex-shrink-0" />
 					{/if}
 				</button>
 			{/each}
@@ -884,9 +919,41 @@
 					<span>Loading models...</span>
 				</div>
 			{:else if filteredModels.length === 0}
-				<div class="px-3 py-4 text-xs text-slate-500 text-center">
-					{searchQuery ? 'No models matching your search.' : 'No models available.'}
-				</div>
+				{#if searchQuery}
+					<div class="px-3 py-4 text-xs text-slate-500 text-center">
+						No models matching your search.
+					</div>
+				{:else if engineError}
+					<div class="m-2 flex items-start gap-2.5 p-3 rounded-lg border border-amber-300/60 dark:border-amber-500/30 bg-amber-50 dark:bg-amber-500/10">
+						<Icon name="lucide:triangle-alert" class="w-4 h-4 text-amber-600 dark:text-amber-400 flex-shrink-0 mt-0.5" />
+						<div class="flex-1 min-w-0">
+							<p class="text-xs text-amber-900 dark:text-amber-100">{engineError}</p>
+							{#if isAdmin}
+								{#if engineError.includes('Settings → Stack')}
+									<button
+										type="button"
+										class="mt-2 inline-flex items-center gap-1.5 px-2.5 py-1 text-2xs font-semibold rounded-md bg-amber-600 hover:bg-amber-700 text-white cursor-pointer transition-colors"
+										onclick={openStack}
+									>
+										Open Stack
+									</button>
+								{:else}
+									<button
+										type="button"
+										class="mt-2 inline-flex items-center gap-1.5 px-2.5 py-1 text-2xs font-semibold rounded-md bg-amber-600 hover:bg-amber-700 text-white cursor-pointer transition-colors"
+										onclick={() => configureEngine(chatModelState.engine)}
+									>
+										Configure {currentEngine?.name ?? 'engine'}
+									</button>
+								{/if}
+							{/if}
+						</div>
+					</div>
+				{:else}
+					<div class="px-3 py-4 text-xs text-slate-500 text-center">
+						No models available.
+					</div>
+				{/if}
 			{:else}
 				{#each [...groupedModels.entries()] as [provider, providerModels] (provider)}
 					{@const isCollapsed = collapsedProviders.has(provider)}
@@ -910,10 +977,10 @@
 							aria-hidden="true">
 							<path d="M9 18l6-6-6-6" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" />
 						</svg>
-						<span class="text-2xs font-semibold text-slate-500 dark:text-slate-400 uppercase tracking-wide">
+						<span class="text-2xs font-semibold text-slate-500 dark:text-slate-400 uppercase tracking-wide truncate min-w-0">
 							{formatProvider(provider)}
 						</span>
-						<span class="text-4xs text-slate-400 dark:text-slate-500">
+						<span class="text-4xs text-slate-400 dark:text-slate-500 flex-shrink-0">
 							{providerModels.length}
 						</span>
 						{#if hasSelectedModel}
@@ -943,10 +1010,10 @@
 
 								<!-- Model info -->
 								<div class="flex-1 min-w-0">
-									<div class="flex items-center gap-2">
-										<span class="font-medium text-xs">{model.engine.model.name}</span>
+									<div class="flex items-center gap-2 min-w-0">
+										<span class="font-medium text-xs truncate">{model.engine.model.name}</span>
 										{#if model.limit.input}
-											<span class="text-3xs text-slate-400 dark:text-slate-500">{formatTokens(model.limit.input)}</span>
+											<span class="text-3xs text-slate-400 dark:text-slate-500 flex-shrink-0">{formatTokens(model.limit.input)}</span>
 										{/if}
 										{#if (pinnedModelIds || []).includes(model.engine.model.id)}
 											<Icon name="lucide:pin" class="w-3 h-3 text-amber-500 flex-shrink-0" />

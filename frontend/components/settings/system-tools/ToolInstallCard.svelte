@@ -4,6 +4,7 @@
 	import Icon from '$frontend/components/common/display/Icon.svelte';
 	import Dialog from '$frontend/components/common/overlay/Dialog.svelte';
 	import ws from '$frontend/utils/ws';
+	import { getToolIcon } from '$shared/constants/tool-icons';
 	import type { TerminalViewerHandle } from '@myrialabs/ptykit/client';
 
 	type ToolId = 'git' | 'claude' | 'opencode' | 'copilot' | 'codex' | 'qwen' | 'pi' | 'cline' | 'cursor' | 'chrome';
@@ -59,6 +60,10 @@
 
 	const { tool, title, description }: Props = $props();
 
+	// Brand icon for this tool, resolved from the shared SSOT (engine icons reuse
+	// the ENGINES registry; Git/Chrome come from tool-icons.ts).
+	const icon = $derived(getToolIcon(tool));
+
 	// Engines are pinned to the version clopen was built and tested against
 	// (single source of truth in package.json), so they are not independently
 	// updatable — hide the update-check affordance for them. Only host tools
@@ -69,6 +74,10 @@
 	let status = $state<ToolStatusDTO | null>(null);
 	let recipe = $state<RecipeDTO | null>(null);
 	let isLoading = $state(true);
+
+	// Collapsed by default so the Stack list stays compact with many tools;
+	// expands to reveal version, actions, and live install output.
+	let expanded = $state(false);
 
 	let sessionId = $state<string | null>(null);
 	let sessionStatus = $state<SessionStatus | null>(null);
@@ -135,6 +144,7 @@
 	}
 
 	function attachSession(session: ActiveSession) {
+		expanded = true;
 		sessionId = session.sessionId;
 		sessionStatus = session.status;
 		exitCode = session.exitCode;
@@ -188,6 +198,7 @@
 		cleanups.push(
 			ws.on('system-tools:install-started', (payload) => {
 				if (payload.tool !== tool) return;
+				expanded = true;
 				sessionId = payload.sessionId;
 				sessionStatus = 'running';
 				exitCode = null;
@@ -252,6 +263,7 @@
 
 	async function doInstall() {
 		if (!recipe?.autoInstallable) return;
+		expanded = true;
 		errorMessage = null;
 		exitCode = null;
 		sessionStatus = 'running';
@@ -303,36 +315,56 @@
 </script>
 
 <div class="rounded-xl border border-slate-200 dark:border-slate-700/50 bg-white dark:bg-slate-800/50 overflow-hidden">
-	<div class="flex items-center justify-between px-5 py-4 border-b border-slate-200 dark:border-slate-700/50">
-		<div>
-			<h3 class="font-semibold text-slate-900 dark:text-slate-100">{title}</h3>
-			<p class="text-xs text-slate-500 dark:text-slate-400">{description}</p>
+	<button
+		type="button"
+		class="w-full flex items-center justify-between gap-3 px-4 py-3 text-left transition-colors hover:bg-slate-50 dark:hover:bg-slate-800/80"
+		onclick={() => (expanded = !expanded)}
+		aria-expanded={expanded}
+	>
+		<div class="flex items-center gap-3 min-w-0">
+			{#if icon}
+				{#if icon.light === icon.dark}
+					<!-- Single-tone / full-colour mark (e.g. Git, Chrome): one copy avoids duplicate SVG ids. -->
+					<div class="shrink-0 flex items-center justify-center w-5 h-5 [&>svg]:w-full [&>svg]:h-full">{@html icon.light}</div>
+				{:else}
+					<div class="shrink-0 flex dark:hidden items-center justify-center w-5 h-5 [&>svg]:w-full [&>svg]:h-full">{@html icon.light}</div>
+					<div class="shrink-0 hidden dark:flex items-center justify-center w-5 h-5 [&>svg]:w-full [&>svg]:h-full">{@html icon.dark}</div>
+				{/if}
+			{/if}
+			<div class="min-w-0">
+				<h3 class="font-semibold text-slate-900 dark:text-slate-100 truncate">{title}</h3>
+				<p class="text-xs text-slate-500 dark:text-slate-400 truncate">{description}</p>
+			</div>
 		</div>
 
-		{#if isLoading}
-			<span class="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full text-xs font-medium bg-slate-100 dark:bg-slate-700 text-slate-500 dark:text-slate-400">
-				<Icon name="lucide:loader" class="w-3 h-3 animate-spin" />
-				Checking...
-			</span>
-		{:else if status?.installed && status.needsUpdate}
-			<span class="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full text-xs font-medium bg-amber-100 dark:bg-amber-900/30 text-amber-700 dark:text-amber-400">
-				<span class="w-1.5 h-1.5 rounded-full bg-amber-500"></span>
-				Update required
-			</span>
-		{:else if status?.installed}
-			<span class="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full text-xs font-medium bg-green-100 dark:bg-green-900/30 text-green-700 dark:text-green-400">
-				<span class="w-1.5 h-1.5 rounded-full bg-green-500"></span>
-				Installed
-			</span>
-		{:else}
-			<span class="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full text-xs font-medium bg-red-100 dark:bg-red-900/30 text-red-700 dark:text-red-400">
-				<span class="w-1.5 h-1.5 rounded-full bg-red-500"></span>
-				Not Installed
-			</span>
-		{/if}
-	</div>
+		<div class="flex items-center gap-2 shrink-0">
+			{#if isLoading}
+				<span class="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full text-xs font-medium bg-slate-100 dark:bg-slate-700 text-slate-500 dark:text-slate-400">
+					<Icon name="lucide:loader" class="w-3 h-3 animate-spin" />
+					Checking...
+				</span>
+			{:else if status?.installed && status.needsUpdate}
+				<span class="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full text-xs font-medium bg-amber-100 dark:bg-amber-900/30 text-amber-700 dark:text-amber-400">
+					<span class="w-1.5 h-1.5 rounded-full bg-amber-500"></span>
+					Update required
+				</span>
+			{:else if status?.installed}
+				<span class="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full text-xs font-medium bg-green-100 dark:bg-green-900/30 text-green-700 dark:text-green-400">
+					<span class="w-1.5 h-1.5 rounded-full bg-green-500"></span>
+					Installed
+				</span>
+			{:else}
+				<span class="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full text-xs font-medium bg-red-100 dark:bg-red-900/30 text-red-700 dark:text-red-400">
+					<span class="w-1.5 h-1.5 rounded-full bg-red-500"></span>
+					Not Installed
+				</span>
+			{/if}
+			<Icon name="lucide:chevron-down" class="w-4 h-4 text-slate-400 transition-transform {expanded ? 'rotate-180' : ''}" />
+		</div>
+	</button>
 
-	<div class="px-5 py-4 space-y-3">
+	{#if expanded}
+	<div class="px-4 py-4 space-y-3 border-t border-slate-200 dark:border-slate-700/50">
 		{#if isLoading}
 			<div class="flex items-center justify-center py-6">
 				<Icon name="lucide:loader" class="w-5 h-5 animate-spin text-slate-400" />
@@ -578,6 +610,7 @@
 			{/if}
 		{/if}
 	</div>
+	{/if}
 </div>
 
 <Dialog

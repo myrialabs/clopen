@@ -19,19 +19,19 @@
 	{/if}
 
 	<!-- Engines -->
-	<section class="space-y-3">
+	<section class="space-y-2.5">
 		<h4 class="text-xs font-semibold uppercase tracking-wider text-slate-500 dark:text-slate-400">Engines</h4>
-		<div class="space-y-3">
-			<ToolInstallCard
-				tool="claude"
-				title="Claude Code"
-				description="Used by clopen to run the Claude Code engine."
-			/>
-
+		<div class="space-y-2">
 			<ToolInstallCard
 				tool="opencode"
 				title="OpenCode"
 				description="Used by clopen to run the OpenCode engine."
+			/>
+
+			<ToolInstallCard
+				tool="claude"
+				title="Claude Code"
+				description="Used by clopen to run the Claude Code engine."
 			/>
 
 			<ToolInstallCard
@@ -53,29 +53,29 @@
 			/>
 
 			<ToolInstallCard
-					tool="pi"
-					title="Pi"
-					description="Used by clopen to run the Pi engine."
-				/>
+				tool="pi"
+				title="Pi"
+				description="Used by clopen to run the Pi engine."
+			/>
 
-				<ToolInstallCard
-					tool="cline"
-					title="Cline"
-					description="Used by clopen to run the Cline engine."
-				/>
+			<ToolInstallCard
+				tool="cline"
+				title="Cline"
+				description="Used by clopen to run the Cline engine."
+			/>
 
-				<ToolInstallCard
-					tool="cursor"
-					title="Cursor"
-					description="Used by clopen to run the Cursor engine."
-				/>
+			<ToolInstallCard
+				tool="cursor"
+				title="Cursor"
+				description="Used by clopen to run the Cursor engine."
+			/>
 		</div>
 	</section>
 
 	<!-- Utilities -->
-	<section class="space-y-3">
+	<section class="space-y-2.5">
 		<h4 class="text-xs font-semibold uppercase tracking-wider text-slate-500 dark:text-slate-400">Utilities</h4>
-		<div class="space-y-3">
+		<div class="space-y-2">
 			<ToolInstallCard
 				tool="git"
 				title="Git"

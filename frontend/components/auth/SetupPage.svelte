@@ -300,7 +300,7 @@
 								<div class="flex-1 min-w-0">
 									<div class="text-sm font-semibold text-slate-900 dark:text-slate-100">No Login</div>
 									<div class="text-xs text-slate-500 dark:text-slate-400 mt-0.5">
-										No authentication required. Anyone with access to this URL can use Clopen. Ideal for personal or local use.
+										Best if you're just using Clopen on your own computer. It opens straight to the app with no sign-in — but anyone who can reach the address can use it, so keep it to your own machine or home network.
 									</div>
 								</div>
 								{#if selectedAuthMode === 'none'}
@@ -328,7 +328,7 @@
 								<div class="flex-1 min-w-0">
 									<div class="text-sm font-semibold text-slate-900 dark:text-slate-100">With Login</div>
 									<div class="text-xs text-slate-500 dark:text-slate-400 mt-0.5">
-										Authenticate with a Personal Access Token. Supports multiple users and invite links.
+										Best if you want to reach Clopen from anywhere — a public server, a shared machine, or the same setup used by more than one person. A sign-in keeps it private, and you can invite others to join.
 									</div>
 								</div>
 								{#if selectedAuthMode === 'required'}
@@ -392,7 +392,7 @@
 							<p class="text-sm text-red-500">{adminError}</p>
 						{/if}
 
-						<div class="flex gap-2">
+						<div class="flex gap-2 sticky bottom-0 z-10 pt-3 pb-3 bg-white dark:bg-slate-950 border-t border-slate-200/70 dark:border-slate-800/70">
 							<button
 								onclick={goToPrevStep}
 								class="px-4 py-2 rounded-lg border border-slate-300 dark:border-slate-700 text-slate-600 dark:text-slate-400 text-sm font-medium hover:bg-slate-50 dark:hover:bg-slate-800 transition-colors"
@@ -463,7 +463,7 @@
 						<SystemToolsSettings showHeader={false} />
 					</div>
 
-					<div class="flex gap-2">
+					<div class="flex gap-2 sticky bottom-0 z-10 pt-3 pb-3 bg-white dark:bg-slate-950 border-t border-slate-200/70 dark:border-slate-800/70">
 						<button
 							onclick={goToPrevStep}
 							class="px-4 py-2 rounded-lg border border-slate-300 dark:border-slate-700 text-slate-600 dark:text-slate-400 text-sm font-medium hover:bg-slate-50 dark:hover:bg-slate-800 transition-colors"
@@ -491,7 +491,7 @@
 
 					<AIEnginesSettings showHeader={false} compact onOpenStack={goToPrevStep} />
 
-					<div class="flex gap-2">
+					<div class="flex gap-2 sticky bottom-0 z-10 pt-3 pb-3 bg-white dark:bg-slate-950 border-t border-slate-200/70 dark:border-slate-800/70">
 						<button
 							onclick={goToPrevStep}
 							class="px-4 py-2 rounded-lg border border-slate-300 dark:border-slate-700 text-slate-600 dark:text-slate-400 text-sm font-medium hover:bg-slate-50 dark:hover:bg-slate-800 transition-colors"
@@ -711,7 +711,7 @@
 						</div>
 					</div>
 
-					<div class="flex gap-2">
+					<div class="flex gap-2 sticky bottom-0 z-10 pt-3 pb-3 bg-white dark:bg-slate-950 border-t border-slate-200/70 dark:border-slate-800/70">
 						<button
 							onclick={goToPrevStep}
 							class="px-4 py-2 rounded-lg border border-slate-300 dark:border-slate-700 text-slate-600 dark:text-slate-400 text-sm font-medium hover:bg-slate-50 dark:hover:bg-slate-800 transition-colors"
