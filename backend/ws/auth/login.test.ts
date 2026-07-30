@@ -150,7 +150,7 @@ describe('Session creation audit logging', () => {
 		});
 
 		// Verify createAdmin was called
-		expect(mockCreateAdmin).toHaveBeenCalledWith('Admin User');
+		expect(mockCreateAdmin).toHaveBeenCalledWith('Admin User', expect.anything());
 
 		// Verify logEvent was called with correct parameters
 		expect(mockLogEvent).toHaveBeenCalledTimes(1);
@@ -226,7 +226,7 @@ describe('Session creation audit logging', () => {
 		});
 
 		// Verify createUserFromInvite was called
-		expect(mockCreateUserFromInvite).toHaveBeenCalledWith('invite-token-123', 'New User');
+		expect(mockCreateUserFromInvite).toHaveBeenCalledWith('invite-token-123', 'New User', expect.anything());
 
 		// Verify logEvent was called with correct parameters
 		expect(mockLogEvent).toHaveBeenCalledTimes(1);

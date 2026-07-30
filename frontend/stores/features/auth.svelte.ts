@@ -13,7 +13,7 @@ import type { AuthMode } from '$shared/types/stores/settings';
 
 const SESSION_TOKEN_KEY = 'clopen-session-token';
 
-export type AuthState = 'loading' | 'setup' | 'login' | 'invite' | 'ready';
+export type AuthState = 'loading' | 'setup' | 'login' | 'invite' | 'device' | 'ready';
 
 export interface AuthUser {
 	id: string;
@@ -84,7 +84,7 @@ export const authStore = {
 			// If we have a stored token, try to authenticate
 			if (storedToken) {
 				try {
-					const result = await ws.http('auth:login', { token: storedToken });
+					const result = await ws.http('auth:login', { token: storedToken, userAgent: navigator.userAgent });
 					currentUser = result.user;
 					sessionToken = result.sessionToken;
 					// Update stored token (may have been refreshed)
@@ -118,6 +118,12 @@ export const authStore = {
 			const hash = window.location.hash;
 			if (hash.startsWith('#invite/')) {
 				authState = 'invite';
+				return;
+			}
+
+			// Check if a device-pairing code is in URL hash (Remote Access "Add a device")
+			if (hash.startsWith('#device/')) {
+				authState = 'device';
 				return;
 			}
 
@@ -173,7 +179,7 @@ export const authStore = {
 	 * Setup — create first admin account (with-auth mode).
 	 */
 	async setup(name: string) {
-		const result = await ws.http('auth:setup', { name });
+		const result = await ws.http('auth:setup', { name, userAgent: navigator.userAgent });
 		currentUser = result.user;
 		sessionToken = result.sessionToken;
 		personalAccessToken = result.personalAccessToken;
@@ -247,7 +253,7 @@ export const authStore = {
 	 * Login with a Personal Access Token (PAT).
 	 */
 	async login(token: string) {
-		const result = await ws.http('auth:login', { token });
+		const result = await ws.http('auth:login', { token, userAgent: navigator.userAgent });
 		currentUser = result.user;
 		sessionToken = result.sessionToken;
 		localStorage.setItem(SESSION_TOKEN_KEY, result.sessionToken);
@@ -270,7 +276,7 @@ export const authStore = {
 	 * Accept invite — create account from invite token.
 	 */
 	async acceptInvite(inviteToken: string, name: string) {
-		const result = await ws.http('auth:accept-invite', { inviteToken, name });
+		const result = await ws.http('auth:accept-invite', { inviteToken, name, userAgent: navigator.userAgent });
 		currentUser = result.user;
 		sessionToken = result.sessionToken;
 		personalAccessToken = result.personalAccessToken;
@@ -287,6 +293,32 @@ export const authStore = {
 	completeInvite() {
 		personalAccessToken = null;
 		authState = 'ready';
+	},
+
+	/**
+	 * Claim a device-pairing code — signs this device in as the code's owner.
+	 * Used by the DeviceClaimPage after reading the code from the URL hash.
+	 */
+	async claimDeviceCode(deviceCode: string) {
+		const result = await ws.http('auth:claim-device-code', { deviceCode, userAgent: navigator.userAgent });
+		currentUser = result.user;
+		sessionToken = result.sessionToken;
+		localStorage.setItem(SESSION_TOKEN_KEY, result.sessionToken);
+		ws.setSessionToken(result.sessionToken);
+		// Clear the device hash from the URL so a refresh doesn't re-claim.
+		window.location.hash = '';
+
+		// Respect a pending onboarding wizard, mirroring login().
+		const status = await ws.http('auth:status', {});
+		authMode = status.authMode;
+		if (!status.onboardingComplete) {
+			authState = 'setup';
+			debug.log('auth', `Device signed in, onboarding pending: ${result.user.name}`);
+			return;
+		}
+
+		authState = 'ready';
+		debug.log('auth', `Device signed in: ${result.user.name} (${result.user.role})`);
 	},
 
 	/**

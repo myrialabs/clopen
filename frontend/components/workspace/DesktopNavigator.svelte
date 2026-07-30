@@ -20,9 +20,9 @@
 	import FolderBrowser from '$frontend/components/common/form/FolderBrowser.svelte';
 	import Dialog from '$frontend/components/common/overlay/Dialog.svelte';
 	import ViewMenu from '$frontend/components/workspace/ViewMenu.svelte';
-	import TunnelButton from '$frontend/components/tunnel/TunnelButton.svelte';
+	import ToolsMenu from '$frontend/components/workspace/ToolsMenu.svelte';
 	import TunnelModal from '$frontend/components/tunnel/TunnelModal.svelte';
-	import DbClientButton from '$frontend/components/db-client/DbClientButton.svelte';
+	import RemoteAccessPanel from '$frontend/components/remote-access/RemoteAccessPanel.svelte';
 	import DbClientModal from '$frontend/components/db-client/DbClientModal.svelte';
 	import SettingButton from '$frontend/components/settings/SettingButton.svelte';
 	import ProjectUserAvatars from '$frontend/components/common/display/ProjectUserAvatars.svelte';
@@ -34,6 +34,7 @@
 	let projectToDelete = $state<Project | null>(null);
 	let searchQuery = $state('');
 	let showTunnelModal = $state(false);
+	let showRemoteAccessModal = $state(false);
 	let showDbClientModal = $state(false);
 	let hoveredProject = $state<Project | null>(null);
 	let tooltipY = $state(0);
@@ -361,10 +362,13 @@
 
 			<!-- Footer Actions -->
 			<footer class="flex flex-col p-3 border-t border-slate-200 dark:border-slate-800" in:fade={{ duration: 150 }}>
-				<ViewMenu />
-				<TunnelButton onClick={() => (showTunnelModal = true)} />
-				<DbClientButton onClick={() => (showDbClientModal = true)} />
+				<ToolsMenu
+					onRemoteAccess={() => (showRemoteAccessModal = true)}
+					onPublicTunnel={() => (showTunnelModal = true)}
+					onDbClient={() => (showDbClientModal = true)}
+				/>
 				<SettingButton onClick={() => openSettingsModal()} />
+				<ViewMenu />
 			</footer>
 		{:else}
 			<!-- Collapsed State: Icon Buttons -->
@@ -421,10 +425,14 @@
 			</div>
 
 			<footer class="flex flex-col gap-2 py-3 px-2 border-t border-slate-200 dark:border-slate-800">
-				<ViewMenu collapsed={true} />
-				<TunnelButton collapsed={true} onClick={() => (showTunnelModal = true)} />
-				<DbClientButton collapsed={true} onClick={() => (showDbClientModal = true)} />
+				<ToolsMenu
+					collapsed={true}
+					onRemoteAccess={() => (showRemoteAccessModal = true)}
+					onPublicTunnel={() => (showTunnelModal = true)}
+					onDbClient={() => (showDbClientModal = true)}
+				/>
 				<SettingButton collapsed={true} onClick={() => openSettingsModal()} />
+				<ViewMenu collapsed={true} />
 			</footer>
 		{/if}
 	</nav>
@@ -501,6 +509,9 @@
 		</div>
 	{/snippet}
 </Dialog>
+
+<!-- Remote Access Modal -->
+<RemoteAccessPanel bind:isOpen={showRemoteAccessModal} onClose={() => (showRemoteAccessModal = false)} />
 
 <!-- Tunnel Modal -->
 <TunnelModal bind:isOpen={showTunnelModal} onClose={() => (showTunnelModal = false)} />

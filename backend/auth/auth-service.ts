@@ -6,12 +6,15 @@
 
 import { authQueries, projectQueries, settingsQueries } from '$backend/database/queries';
 import type { Project } from '$shared/types/database/schema';
-import { generateSessionToken, generatePAT, generateInviteToken, hashToken, getTokenType } from './tokens';
+import { generateSessionToken, generatePAT, generateInviteToken, generateDeviceCode, hashToken, getTokenType } from './tokens';
 import { generateColorFromString, getInitials } from '$backend/utils/user-helpers';
 import { debug } from '$shared/utils/logger';
 
 /** Default session lifetime in days */
 const DEFAULT_SESSION_DAYS = 30;
+
+/** How long a device-pairing code stays claimable before it expires (minutes). */
+const DEVICE_CODE_TTL_MINUTES = 5;
 
 export interface AuthUser {
 	id: string;
@@ -43,7 +46,16 @@ function toAuthUser(dbUser: { id: string; name: string; color: string; avatar: s
 	};
 }
 
-function createSessionForUser(userId: string, sessionDays?: number): { sessionToken: string; expiresAt: string; tokenHash: string } {
+/** Optional device metadata captured when a session is created (UA client-sent, IP server-side). */
+export interface SessionMeta {
+	userAgent?: string;
+	ipAddress?: string;
+}
+
+/** How a session was created — surfaced in the admin "Connected devices" view. */
+export type SessionSource = 'setup' | 'invite' | 'device-link' | 'login' | 'pat' | 'no-auth';
+
+function createSessionForUser(userId: string, source: SessionSource, meta?: SessionMeta, sessionDays?: number): { sessionToken: string; expiresAt: string; tokenHash: string } {
 	const days = sessionDays ?? DEFAULT_SESSION_DAYS;
 	const sessionToken = generateSessionToken();
 	const tokenHash = hashToken(sessionToken);
@@ -56,7 +68,10 @@ function createSessionForUser(userId: string, sessionDays?: number): { sessionTo
 		token_hash: tokenHash,
 		expires_at: expiresAt,
 		created_at: now,
-		last_active_at: now
+		last_active_at: now,
+		user_agent: meta?.userAgent?.slice(0, 512) ?? null,
+		ip_address: meta?.ipAddress ?? null,
+		source
 	});
 
 	return { sessionToken, expiresAt, tokenHash };
@@ -114,7 +129,7 @@ export function createOrGetNoAuthAdmin(): AuthResult {
 	const existingUsers = authQueries.getAllUsers();
 	const existingAdmin = existingUsers.find(u => u.role === 'admin');
 	if (existingAdmin) {
-		const { sessionToken, expiresAt } = createSessionForUser(existingAdmin.id);
+		const { sessionToken, expiresAt } = createSessionForUser(existingAdmin.id, 'no-auth');
 		debug.log('auth', `No-auth mode: reusing existing admin: ${existingAdmin.name} (${existingAdmin.id})`);
 		return {
 			user: toAuthUser(existingAdmin),
@@ -138,7 +153,7 @@ export function createOrGetNoAuthAdmin(): AuthResult {
 		created_at: now
 	});
 
-	const { sessionToken, expiresAt } = createSessionForUser(userId);
+	const { sessionToken, expiresAt } = createSessionForUser(userId, 'no-auth');
 
 	debug.log('auth', `No-auth mode: created default admin: ${defaultName} (${userId})`);
 
@@ -153,7 +168,7 @@ export function createOrGetNoAuthAdmin(): AuthResult {
  * Create the first admin user (setup flow)
  * Only works when no users exist.
  */
-export function createAdmin(name: string): SetupResult {
+export function createAdmin(name: string, meta?: SessionMeta): SetupResult {
 	if (!needsSetup()) {
 		throw new Error('Setup already completed. Admin account exists.');
 	}
@@ -178,7 +193,7 @@ export function createAdmin(name: string): SetupResult {
 		created_at: now
 	});
 
-	const { sessionToken, expiresAt } = createSessionForUser(userId);
+	const { sessionToken, expiresAt } = createSessionForUser(userId, 'setup', meta);
 
 	debug.log('auth', `Admin account created: ${trimmedName} (${userId})`);
 
@@ -193,7 +208,7 @@ export function createAdmin(name: string): SetupResult {
 /**
  * Create a user from an invite token
  */
-export function createUserFromInvite(rawInviteToken: string, name: string): SetupResult {
+export function createUserFromInvite(rawInviteToken: string, name: string, meta?: SessionMeta): SetupResult {
 	const trimmedName = name.trim();
 	if (trimmedName.length === 0) {
 		throw new Error('Name cannot be empty');
@@ -237,7 +252,22 @@ export function createUserFromInvite(rawInviteToken: string, name: string): Setu
 	// Increment invite use count
 	authQueries.incrementUseCount(invite.id);
 
-	const { sessionToken, expiresAt } = createSessionForUser(userId);
+	// Apply any projects the admin pre-selected when creating the invite, so the
+	// new member has access the moment they join (no separate assignment trip).
+	if (invite.project_ids) {
+		try {
+			const projectIds: string[] = JSON.parse(invite.project_ids);
+			for (const projectId of projectIds) {
+				if (projectQueries.getById(projectId) && !projectQueries.userHasProject(userId, projectId)) {
+					projectQueries.addUserProject(userId, projectId);
+				}
+			}
+		} catch (err) {
+			debug.warn('auth', 'Failed to apply invite project pre-assignment:', err);
+		}
+	}
+
+	const { sessionToken, expiresAt } = createSessionForUser(userId, 'invite', meta);
 
 	debug.log('auth', `User created from invite: ${trimmedName} (${userId}), role: ${role}`);
 
@@ -252,7 +282,7 @@ export function createUserFromInvite(rawInviteToken: string, name: string): Setu
 /**
  * Login with a token (PAT or session token)
  */
-export function loginWithToken(token: string): AuthResult & { tokenHash: string } {
+export function loginWithToken(token: string, meta?: SessionMeta): AuthResult & { tokenHash: string } {
 	const tokenType = getTokenType(token);
 	const tokenHash = hashToken(token);
 
@@ -263,7 +293,7 @@ export function loginWithToken(token: string): AuthResult & { tokenHash: string 
 			throw new Error('Invalid access token');
 		}
 
-		const session = createSessionForUser(user.id);
+		const session = createSessionForUser(user.id, 'pat', meta);
 		debug.log('auth', `PAT login: ${user.name} (${user.id})`);
 
 		return {
@@ -358,7 +388,7 @@ export function removeUser(userId: string): void {
  */
 export function createInvite(
 	createdBy: string,
-	options: { label?: string; maxUses?: number; expiresInMinutes?: number }
+	options: { label?: string; maxUses?: number; expiresInMinutes?: number; projectIds?: string[] }
 ): { inviteToken: string; invite: ReturnType<typeof authQueries.getInviteByTokenHash> } {
 	const rawToken = generateInviteToken();
 	const tokenHash = hashToken(rawToken);
@@ -367,6 +397,9 @@ export function createInvite(
 	const expiresAt = options.expiresInMinutes
 		? new Date(Date.now() + options.expiresInMinutes * 60 * 1000).toISOString()
 		: null;
+
+	// Keep only project ids that actually exist so a stale pick can't wedge the join.
+	const validProjectIds = (options.projectIds ?? []).filter((id) => projectQueries.getById(id));
 
 	const invite = authQueries.createInvite({
 		id: `invite-${crypto.randomUUID()}`,
@@ -377,7 +410,8 @@ export function createInvite(
 		max_uses: options.maxUses ?? 1,
 		use_count: 0,
 		expires_at: expiresAt,
-		created_at: now
+		created_at: now,
+		project_ids: validProjectIds.length ? JSON.stringify(validProjectIds) : null
 	});
 
 	debug.log('auth', `Invite created by ${createdBy}: ${invite.id}`);
@@ -439,6 +473,101 @@ export function regeneratePAT(userId: string): string {
 	debug.log('auth', `PAT regenerated for user: ${userId}`);
 
 	return pat;
+}
+
+/**
+ * Create a one-time device-pairing code for the given user. The code is a
+ * random `clp_dev_*` token; only its hash is stored. Embed the raw code in a
+ * Remote Access share link so another device can claim it and sign in as this
+ * user without transferring a persistent credential.
+ */
+export function createDeviceCode(userId: string, label?: string): { deviceCode: string; expiresAt: string } {
+	const user = authQueries.getUserById(userId);
+	if (!user) {
+		throw new Error('User not found');
+	}
+
+	const rawCode = generateDeviceCode();
+	const codeHash = hashToken(rawCode);
+	const now = new Date().toISOString();
+	const expiresAt = new Date(Date.now() + DEVICE_CODE_TTL_MINUTES * 60 * 1000).toISOString();
+
+	authQueries.createDeviceCode({
+		id: `device-${crypto.randomUUID()}`,
+		code_hash: codeHash,
+		user_id: userId,
+		label: label?.trim() || null,
+		expires_at: expiresAt,
+		claimed_at: null,
+		created_at: now
+	});
+
+	debug.log('auth', `Device code created for user: ${user.name} (${userId})`);
+
+	return { deviceCode: rawCode, expiresAt };
+}
+
+/**
+ * Claim a device-pairing code — single-use. Validates the code is unexpired and
+ * unclaimed, burns it, and issues a fresh auth session for the owning user.
+ */
+export function claimDeviceCode(rawCode: string, meta?: SessionMeta): AuthResult & { tokenHash: string } {
+	if (getTokenType(rawCode) !== 'device') {
+		throw new Error('Invalid device code');
+	}
+
+	const codeHash = hashToken(rawCode);
+	const record = authQueries.getDeviceCodeByHash(codeHash);
+
+	if (!record) {
+		throw new Error('Invalid device code');
+	}
+
+	if (record.claimed_at) {
+		throw new Error('This device code has already been used');
+	}
+
+	if (new Date(record.expires_at) < new Date()) {
+		authQueries.deleteDeviceCode(record.id);
+		throw new Error('This device code has expired');
+	}
+
+	// Burn the code atomically — if another claim won the race, changes === 0.
+	const claimed = authQueries.markDeviceCodeClaimed(record.id, new Date().toISOString());
+	if (claimed === 0) {
+		throw new Error('This device code has already been used');
+	}
+
+	const user = authQueries.getUserById(record.user_id);
+	if (!user) {
+		authQueries.deleteDeviceCode(record.id);
+		throw new Error('Invalid device code');
+	}
+
+	const session = createSessionForUser(user.id, 'device-link', meta);
+	debug.log('auth', `Device code claimed: ${user.name} (${user.id})`);
+
+	return {
+		user: toAuthUser(user),
+		sessionToken: session.sessionToken,
+		expiresAt: session.expiresAt,
+		tokenHash: session.tokenHash
+	};
+}
+
+/**
+ * Revoke an unclaimed device code (owner-scoped). Used when a new link replaces
+ * an old one so the previous QR/code stops working immediately.
+ */
+export function revokeDeviceCode(userId: string, rawCode: string): boolean {
+	const hash = hashToken(rawCode);
+	const record = authQueries.getDeviceCodeByHash(hash);
+	if (!record || record.user_id !== userId) {
+		return false;
+	}
+	authQueries.deleteDeviceCode(record.id);
+	debug.log('auth', `Device code revoked (user ${userId})`);
+	return true;
 }
 
 /**
@@ -528,12 +657,135 @@ export function unassignProjectFromUser(userId: string, projectId: string): bool
 }
 
 /**
+ * List a user's active auth sessions (devices). `current` marks the session
+ * matching the given token hash so the caller can flag "this device".
+ */
+export interface AuthSessionInfo {
+	id: string;
+	createdAt: string;
+	lastActiveAt: string;
+	expiresAt: string;
+	current: boolean;
+	/** True when a live WS connection is currently bound to this session. */
+	online: boolean;
+	userAgent: string | null;
+	ipAddress: string | null;
+	source: string | null;
+}
+
+/** Admin "Connected devices" row — a session enriched with its owning user. */
+export interface AdminSessionInfo extends AuthSessionInfo {
+	userId: string;
+	userName: string;
+	userColor: string;
+	userRole: 'admin' | 'member';
+}
+
+export function listUserSessions(userId: string, currentTokenHash?: string, onlineHashes?: Set<string>): AuthSessionInfo[] {
+	return authQueries.getSessionsByUserId(userId).map((s) => ({
+		id: s.id,
+		createdAt: s.created_at,
+		lastActiveAt: s.last_active_at,
+		expiresAt: s.expires_at,
+		current: currentTokenHash !== undefined && s.token_hash === currentTokenHash,
+		online: onlineHashes?.has(s.token_hash) ?? false,
+		userAgent: s.user_agent,
+		ipAddress: s.ip_address,
+		source: s.source
+	}));
+}
+
+/**
+ * List every session across all users (admin view), enriched with the owning
+ * user's identity and whether the device is currently online.
+ */
+export function listAllSessions(currentTokenHash?: string, onlineHashes?: Set<string>): AdminSessionInfo[] {
+	return authQueries.getAllSessions().map((s) => {
+		const user = authQueries.getUserById(s.user_id);
+		return {
+			id: s.id,
+			createdAt: s.created_at,
+			lastActiveAt: s.last_active_at,
+			expiresAt: s.expires_at,
+			current: currentTokenHash !== undefined && s.token_hash === currentTokenHash,
+			online: onlineHashes?.has(s.token_hash) ?? false,
+			userAgent: s.user_agent,
+			ipAddress: s.ip_address,
+			source: s.source,
+			userId: s.user_id,
+			userName: user?.name ?? 'Unknown',
+			userColor: user?.color ?? '#888888',
+			userRole: user?.role ?? 'member'
+		};
+	});
+}
+
+/**
+ * Revoke one of a user's own sessions by id. Scoped to the owner so a member
+ * can only sign out their own devices. Returns the deleted session's token hash
+ * so the caller can kick any live WS connection bound to it.
+ */
+export function revokeUserSession(userId: string, sessionId: string): { success: boolean; tokenHash?: string } {
+	const session = authQueries.getSessionById(sessionId);
+	if (!session || session.user_id !== userId) {
+		return { success: false };
+	}
+	authQueries.deleteSession(sessionId);
+	debug.log('auth', `Session revoked: ${sessionId} (user ${userId})`);
+	return { success: true, tokenHash: session.token_hash };
+}
+
+/**
+ * Revoke any session by id (admin-only). Unlike revokeUserSession this is not
+ * owner-scoped — an admin can sign out any connected device. Returns the token
+ * hash so the caller can kick the live WS connection immediately.
+ */
+export function revokeAnySession(sessionId: string): { success: boolean; tokenHash?: string } {
+	const session = authQueries.getSessionById(sessionId);
+	if (!session) {
+		return { success: false };
+	}
+	authQueries.deleteSession(sessionId);
+	debug.log('auth', `Session revoked by admin: ${sessionId} (user ${session.user_id})`);
+	return { success: true, tokenHash: session.token_hash };
+}
+
+/**
+ * Remote Access sidebar indicator: the number of *other* devices currently
+ * online. "Active" means a live WS connection is bound to the session right now
+ * — not merely a session row in the DB — so this mirrors Public Tunnel's live
+ * connection count and the "Connected devices" list. A member sees their own
+ * online devices; an admin sees the whole team's. The viewer's current device
+ * is always excluded so the badge reads "N remote devices connected".
+ */
+export function getRemoteAccessSummary(
+	userId: string,
+	isAdmin: boolean,
+	onlineHashes: Set<string>,
+	currentTokenHash?: string
+): { activeConnections: number } {
+	const sessions = isAdmin ? authQueries.getAllSessions() : authQueries.getSessionsByUserId(userId);
+	let activeConnections = 0;
+	for (const s of sessions) {
+		if (!onlineHashes.has(s.token_hash)) continue;
+		if (currentTokenHash && s.token_hash === currentTokenHash) continue;
+		activeConnections++;
+	}
+	return { activeConnections };
+}
+
+/**
  * Cleanup expired sessions
  */
 export function cleanupExpiredSessions(): number {
 	const count = authQueries.deleteExpiredSessions();
 	if (count > 0) {
 		debug.log('auth', `Cleaned up ${count} expired sessions`);
+	}
+	// Also sweep expired / already-claimed device codes.
+	const staleCodes = authQueries.deleteStaleDeviceCodes();
+	if (staleCodes > 0) {
+		debug.log('auth', `Cleaned up ${staleCodes} stale device code(s)`);
 	}
 	return count;
 }

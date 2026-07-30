@@ -343,7 +343,7 @@
 							{#if isNoAuth}
 								<div class="py-1">
 									<h3 class="text-base font-bold text-slate-900 dark:text-slate-100 mb-1.5">Team</h3>
-									<p class="text-sm text-slate-600 dark:text-slate-500 mb-5">Manage team members and invites</p>
+									<p class="text-sm text-slate-600 dark:text-slate-500 mb-5">Manage team members</p>
 									<div class="flex items-start gap-3 p-4 bg-amber-500/5 dark:bg-amber-500/10 border border-amber-500/20 rounded-xl">
 										<Icon name="lucide:info" class="w-5 h-5 text-amber-600 dark:text-amber-400 flex-shrink-0 mt-0.5" />
 										<div class="text-sm text-slate-700 dark:text-slate-300">
@@ -359,9 +359,9 @@
 									</div>
 								</div>
 							{:else}
-								<TeamSettings />
+								<InviteManagement />
 								<div class="mt-6">
-									<InviteManagement />
+									<TeamSettings />
 								</div>
 							{/if}
 						</div>

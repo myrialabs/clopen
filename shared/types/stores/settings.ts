@@ -90,4 +90,11 @@ export interface SystemSettings {
 	sessionLifetimeDays: number;
 	/** Maximum file size (megabytes) for write, upload, zip, and extract operations. Default: 500. */
 	maxFileSizeMB: number;
+	/**
+	 * Public base URL Remote Access share links are built against (e.g.
+	 * https://clopen.example.com). Set for VPS/reverse-proxy deployments where the
+	 * app is already reachable on a domain; when empty, Remote Access falls back to
+	 * the current origin or a Cloudflare quick tunnel. Default: '' (unset).
+	 */
+	publicBaseUrl?: string;
 }

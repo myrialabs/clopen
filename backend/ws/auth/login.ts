@@ -32,7 +32,8 @@ export const loginHandler = createRouter()
 	// Setup — create first admin (only works when no users exist)
 	.http('auth:setup', {
 		data: t.Object({
-			name: t.String({ minLength: 1 })
+			name: t.String({ minLength: 1 }),
+			userAgent: t.Optional(t.String())
 		}),
 		response: t.Object({
 			user: authUserSchema,
@@ -41,7 +42,7 @@ export const loginHandler = createRouter()
 			expiresAt: t.String()
 		})
 	}, async ({ data, conn }) => {
-		const result = createAdmin(data.name);
+		const result = createAdmin(data.name, { userAgent: data.userAgent, ipAddress: clientIpFromConnection(conn) });
 
 		// Save authMode to system settings
 		const currentSettings = settingsQueries.get('system:settings');
@@ -138,7 +139,8 @@ export const loginHandler = createRouter()
 	// Login with token (PAT or session token)
 	.http('auth:login', {
 		data: t.Object({
-			token: t.String({ minLength: 1 })
+			token: t.String({ minLength: 1 }),
+			userAgent: t.Optional(t.String())
 		}),
 		response: t.Object({
 			user: authUserSchema,
@@ -161,7 +163,7 @@ export const loginHandler = createRouter()
 		}
 
 		try {
-			const result = loginWithToken(data.token);
+			const result = loginWithToken(data.token, { userAgent: data.userAgent, ipAddress: clientIpFromConnection(conn) });
 
 			// Success — clear any rate limit record for this IP
 			if (isRateLimited) {
@@ -196,7 +198,8 @@ export const loginHandler = createRouter()
 	.http('auth:accept-invite', {
 		data: t.Object({
 			inviteToken: t.String({ minLength: 1 }),
-			name: t.String({ minLength: 1 })
+			name: t.String({ minLength: 1 }),
+			userAgent: t.Optional(t.String())
 		}),
 		response: t.Object({
 			user: authUserSchema,
@@ -214,7 +217,7 @@ export const loginHandler = createRouter()
 		}
 
 		try {
-			const result = createUserFromInvite(data.inviteToken, data.name);
+			const result = createUserFromInvite(data.inviteToken, data.name, { userAgent: data.userAgent, ipAddress: clientIpFromConnection(conn) });
 
 			authRateLimiter.recordSuccess(ip);
 
@@ -232,6 +235,9 @@ export const loginHandler = createRouter()
 
 			// Notify admin sessions so their User Management list refreshes.
 			ws.emit.global('auth:users-changed', { type: 'added', userId: result.user.id });
+			// A member just joined via an invite — close the admin's invite QR and
+			// refresh the invite/device lists (mirrors device-claimed).
+			ws.emit.global('remote-access:changed', { kind: 'invite-claimed' });
 
 			return result;
 		} catch (err) {

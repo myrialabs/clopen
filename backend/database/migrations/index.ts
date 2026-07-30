@@ -58,6 +58,10 @@ import * as migration056 from './056_support_mssql_driver';
 import * as migration057 from './057_seed_pi_provider';
 import * as migration058 from './058_seed_cline_provider';
 import * as migration059 from './059_seed_cursor_provider';
+import * as migration060 from './060_create_device_codes_table';
+import * as migration061 from './061_add_session_device_metadata';
+import * as migration062 from './062_add_session_source';
+import * as migration063 from './063_add_invite_project_ids';
 
 // Export all migrations in order
 export const migrations = [
@@ -414,6 +418,30 @@ export const migrations = [
 		description: migration059.description,
 		up: migration059.up,
 		down: migration059.down
+	},
+	{
+		id: '060',
+		description: migration060.description,
+		up: migration060.up,
+		down: migration060.down
+	},
+	{
+		id: '061',
+		description: migration061.description,
+		up: migration061.up,
+		down: migration061.down
+	},
+	{
+		id: '062',
+		description: migration062.description,
+		up: migration062.up,
+		down: migration062.down
+	},
+	{
+		id: '063',
+		description: migration063.description,
+		up: migration063.up,
+		down: migration063.down
 	}
 ];
 

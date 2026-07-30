@@ -52,6 +52,20 @@ const tunnelState = $state<TunnelState>({
 	loadingStates: {}
 });
 
+/**
+ * The local port the browser is currently reaching Clopen on. A quick tunnel
+ * pointing at this port is the "Remote Access" self-tunnel (it exposes Clopen
+ * itself), so both the Remote Access panel and Public Tunnel list can recognize
+ * and label it — and stopping it in one place reflects in the other, since both
+ * read this same store.
+ */
+function getAppPort(): number {
+	if (typeof window === 'undefined') return 0;
+	const p = window.location.port;
+	if (p) return Number(p);
+	return window.location.protocol === 'https:' ? 443 : 80;
+}
+
 function setLoading(key: string): void {
 	tunnelState.loadingStates[key] = {
 		isLoading: true,
@@ -100,6 +114,22 @@ export const tunnelStore = {
 
 	getTunnel(port: number) {
 		return tunnelState.tunnels.find((t) => t.port === port && t.type === 'quick') ?? null;
+	},
+
+	/** The local port the browser reaches Clopen on (target of the Remote Access self-tunnel). */
+	get appPort() {
+		return getAppPort();
+	},
+
+	/** True when this tunnel exposes Clopen itself (i.e. it was created by Remote Access). */
+	isSelfTunnel(port: number, type: string): boolean {
+		return type === 'quick' && port === getAppPort();
+	},
+
+	/** The active Remote Access self-tunnel, if any. */
+	get selfTunnel() {
+		const port = getAppPort();
+		return tunnelState.tunnels.find((t) => t.type === 'quick' && t.port === port) ?? null;
 	},
 
 	// --- Quick tunnel ---

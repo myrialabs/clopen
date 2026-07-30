@@ -6,9 +6,9 @@
 	import { presenceState, getProjectStatusColor } from '$frontend/stores/core/presence.svelte';
 	import { openSettingsModal } from '$frontend/stores/ui/settings-modal.svelte';
 	import { addNotification } from '$frontend/stores/ui/notification.svelte';
-	import TunnelButton from '$frontend/components/tunnel/TunnelButton.svelte';
+	import ToolsMenu from '$frontend/components/workspace/ToolsMenu.svelte';
 	import TunnelModal from '$frontend/components/tunnel/TunnelModal.svelte';
-	import DbClientButton from '$frontend/components/db-client/DbClientButton.svelte';
+	import RemoteAccessPanel from '$frontend/components/remote-access/RemoteAccessPanel.svelte';
 	import DbClientModal from '$frontend/components/db-client/DbClientModal.svelte';
 	import SettingButton from '$frontend/components/settings/SettingButton.svelte';
 	import type { Project } from '$shared/types/database/schema';
@@ -20,6 +20,7 @@
 
 	// Modal states
 	let showTunnelModal = $state(false);
+	let showRemoteAccessModal = $state(false);
 	let showDbClientModal = $state(false);
 
 	// Project dropdown state
@@ -161,11 +162,14 @@
 		role="tablist"
 		aria-label="Action Buttons"
 	>
-		<!-- Tunnel Button -->
-		<TunnelButton collapsed={true} onClick={() => (showTunnelModal = true)} mobile={true} />
-
-		<!-- DB Client Button -->
-		<DbClientButton collapsed={true} onClick={() => (showDbClientModal = true)} mobile={true} />
+		<!-- Tools (Remote Access, Public Tunnel, DB Client) -->
+		<ToolsMenu
+			collapsed={true}
+			mobile={true}
+			onRemoteAccess={() => (showRemoteAccessModal = true)}
+			onPublicTunnel={() => (showTunnelModal = true)}
+			onDbClient={() => (showDbClientModal = true)}
+		/>
 
 		<!-- Settings Button -->
 		<SettingButton collapsed={true} mobile={true} onClick={() => openSettingsModal()} />
@@ -391,6 +395,8 @@
 </Dialog>
 
 <!-- Tunnel Modal -->
+<RemoteAccessPanel bind:isOpen={showRemoteAccessModal} onClose={() => (showRemoteAccessModal = false)} />
+
 <TunnelModal bind:isOpen={showTunnelModal} onClose={() => (showTunnelModal = false)} />
 
 <!-- DB Client Modal -->

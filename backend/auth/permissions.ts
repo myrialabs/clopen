@@ -16,6 +16,7 @@ export const PUBLIC_ROUTES = new Set([
 	'auth:auto-login-no-auth',
 	'auth:accept-invite',
 	'auth:validate-invite',
+	'auth:claim-device-code',
 	'ws:set-context'
 ]);
 
@@ -26,6 +27,8 @@ export const ADMIN_ONLY_ROUTES = new Set([
 	'auth:create-invite',
 	'auth:list-invites',
 	'auth:revoke-invite',
+	'auth:list-all-sessions',
+	'auth:revoke-any-session',
 	'auth:list-users',
 	'auth:remove-user',
 	'auth:list-user-projects',

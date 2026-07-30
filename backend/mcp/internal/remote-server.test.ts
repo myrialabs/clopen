@@ -70,7 +70,10 @@ beforeAll(async () => {
 		token_hash: hashToken(sessionToken),
 		expires_at: new Date(Date.now() + 24 * 60 * 60 * 1000).toISOString(),
 		created_at: new Date().toISOString(),
-		last_active_at: new Date().toISOString()
+		last_active_at: new Date().toISOString(),
+		user_agent: null,
+		ip_address: null,
+		source: null
 	});
 });
 
