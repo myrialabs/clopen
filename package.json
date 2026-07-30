@@ -118,7 +118,7 @@
     "@iconify-json/material-icon-theme": "1.2.55",
     "@modelcontextprotocol/sdk": "1.29.0",
     "@monaco-editor/loader": "1.7.0",
-    "@myrialabs/ptykit": "0.0.5",
+    "@myrialabs/ptykit": "0.0.6",
     "@myrialabs/tunnelkit": "0.0.15",
     "@myrialabs/zipkit": "0.0.11",
     "@sinclair/typebox": "0.34.48",
