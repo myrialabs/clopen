@@ -62,7 +62,8 @@ const defaultSystemSettings: SystemSettings = {
 	autoUpdate: false,
 	sessionLifetimeDays: 30,
 	maxFileSizeMB: 500,
-	publicBaseUrl: ''
+	publicBaseUrl: '',
+	lastSeenReleaseNotesVersion: ''
 };
 
 // Create and export reactive settings state directly (starts with defaults)

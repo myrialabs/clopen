@@ -5,6 +5,7 @@
 	import ConnectionBanner from '$frontend/components/common/feedback/ConnectionBanner.svelte';
 	import UpdateBanner from '$frontend/components/common/feedback/UpdateBanner.svelte';
 	import RestartRequiredDialog from '$frontend/components/common/feedback/RestartRequiredDialog.svelte';
+	import WhatsNewDialog from '$frontend/components/common/feedback/WhatsNewDialog.svelte';
 	import LoadingScreen from '$frontend/components/common/feedback/LoadingScreen.svelte';
 	import SetupPage from '$frontend/components/auth/SetupPage.svelte';
 	import LoginPage from '$frontend/components/auth/LoginPage.svelte';
@@ -101,4 +102,5 @@
 	</div>
 
 	<RestartRequiredDialog />
+	<WhatsNewDialog />
 {/if}

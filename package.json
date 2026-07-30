@@ -1,6 +1,6 @@
 {
   "name": "@myrialabs/clopen",
-  "version": "0.4.17",
+  "version": "0.4.15",
   "description": "All-in-one web workspace for AI coding agents — Claude Code, OpenCode, Codex, Copilot, Qwen Code, Pi, Cline, and Cursor — with chat, terminal, git, browser preview, database client, checkpoints, and real-time collaboration",
   "author": "Myria Labs",
   "license": "MIT",

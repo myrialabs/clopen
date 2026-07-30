@@ -97,4 +97,6 @@ export interface SystemSettings {
 	 * the current origin or a Cloudflare quick tunnel. Default: '' (unset).
 	 */
 	publicBaseUrl?: string;
+	/** Latest version the "What's New" preview dialog has been dismissed for. Default: '' (never dismissed). */
+	lastSeenReleaseNotesVersion?: string;
 }

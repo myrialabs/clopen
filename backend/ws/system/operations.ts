@@ -21,8 +21,8 @@ import { resetEnvironment } from '$backend/engine/adapters/claude/environment';
 /** In-memory flag: set after successful update, cleared on server restart */
 let pendingUpdate: { fromVersion: string; toVersion: string } | null = null;
 
-/** Read current version from package.json */
-function getCurrentVersion(): string {
+/** Read current version from package.json on disk (reflects the latest install, not necessarily what's loaded in memory) */
+function readVersionFromDisk(): string {
 	try {
 		const packagePath = join(import.meta.dir, '..', '..', '..', 'package.json');
 		const pkg = JSON.parse(readFileSync(packagePath, 'utf-8'));
@@ -31,6 +31,15 @@ function getCurrentVersion(): string {
 		return '0.0.0';
 	}
 }
+
+/**
+ * Version actually loaded into this running process, captured once at module load.
+ * If a `clopen update` CLI run (a separate process) updates package.json on disk
+ * while this server keeps running, readVersionFromDisk() will report the new
+ * version immediately even though this process is still executing the old code —
+ * runningVersion lets us detect that drift and keep flagging "restart required".
+ */
+const runningVersion = readVersionFromDisk();
 
 /** Fetch latest version from npm registry */
 async function fetchLatestVersion(): Promise<string> {
@@ -71,16 +80,23 @@ export const operationsHandler = createRouter()
 			}))
 		})
 	}, async () => {
-		const currentVersion = getCurrentVersion();
-		debug.log('server', `Checking for updates... current version: ${currentVersion}`);
+		debug.log('server', `Checking for updates... running version: ${runningVersion}`);
+
+		// If a `clopen update` CLI run (separate process) already updated package.json
+		// on disk while this server kept running, the disk version won't match what's
+		// actually loaded in memory. Treat that drift as an implicit pending restart.
+		const diskVersion = readVersionFromDisk();
+		if (pendingUpdate === null && diskVersion !== runningVersion) {
+			pendingUpdate = { fromVersion: runningVersion, toVersion: diskVersion };
+		}
 
 		const latestVersion = await fetchLatestVersion();
-		const updateAvailable = isNewerVersion(currentVersion, latestVersion);
+		const updateAvailable = isNewerVersion(runningVersion, latestVersion);
 
 		debug.log('server', `Latest version: ${latestVersion}, update available: ${updateAvailable}`);
 
 		return {
-			currentVersion,
+			currentVersion: runningVersion,
 			latestVersion,
 			updateAvailable,
 			pendingRestart: pendingUpdate !== null,
@@ -88,27 +104,27 @@ export const operationsHandler = createRouter()
 		};
 	})
 
-	// Fetch release notes from GitHub
+	// Fetch the last few releases (changelog) from GitHub
 	.http('system:get-release-notes', {
 		data: t.Object({}),
-		response: t.Object({
+		response: t.Array(t.Object({
 			tag_name: t.String(),
 			body: t.String(),
 			html_url: t.String(),
 			published_at: t.String()
-		})
+		}))
 	}, async () => {
-		const response = await fetch('https://api.github.com/repos/myrialabs/clopen/releases/latest');
+		const response = await fetch('https://api.github.com/repos/myrialabs/clopen/releases?per_page=3');
 		if (!response.ok) {
 			throw new Error(`GitHub API returned ${response.status}`);
 		}
-		const data = await response.json() as { tag_name: string; body: string; html_url: string; published_at: string };
-		return {
-			tag_name: data.tag_name,
-			body: data.body || '',
-			html_url: data.html_url,
-			published_at: data.published_at
-		};
+		const data = await response.json() as Array<{ tag_name: string; body: string; html_url: string; published_at: string }>;
+		return data.map(release => ({
+			tag_name: release.tag_name,
+			body: release.body || '',
+			html_url: release.html_url,
+			published_at: release.published_at
+		}));
 	})
 
 	// Run package update
@@ -139,7 +155,7 @@ export const operationsHandler = createRouter()
 			throw new Error(`Update failed (exit code ${exitCode}): ${output}`);
 		}
 
-		const fromVersion = getCurrentVersion();
+		const fromVersion = runningVersion;
 
 		// Re-fetch to confirm new version
 		const newVersion = await fetchLatestVersion();
