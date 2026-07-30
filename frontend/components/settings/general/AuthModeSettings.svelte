@@ -222,6 +222,9 @@
 						<Icon name="lucide:triangle-alert" class="w-3.5 h-3.5 shrink-0" />
 						<span>Copy this token now. It won't be shown again.</span>
 					</div>
+					<div class="mt-2 text-xs text-amber-600 dark:text-amber-400">
+						Lost it later? Run <code class="font-mono bg-amber-100 dark:bg-amber-900/50 px-1 py-0.5 rounded">clopen reset-pat</code> in your terminal to generate a new one.
+					</div>
 				</div>
 			</div>
 		</div>
