@@ -2,6 +2,13 @@ import { getDatabase } from '../index';
 import type { ChatSession, Branch, DatabaseMessage } from '$shared/types/database/schema';
 import { loadMessage } from '$shared/utils/message-formatter';
 import { extractMessageText } from '../../snapshot/helpers';
+import { debug } from '$shared/utils/logger';
+
+/** ChatSession plus an optional FTS snippet, set only for message-content matches. */
+export interface SessionSearchResult extends ChatSession {
+	/** Snippet with char(1)/char(2) markers wrapping the matched text. */
+	matchSnippet?: string;
+}
 
 export const sessionQueries = {
 	getAll(): ChatSession[] {
@@ -233,20 +240,116 @@ export const sessionQueries = {
 	},
 
 	/**
-	 * Search sessions by message content.
-	 * Returns session IDs that have matching messages.
+	 * Search sessions by message content within a single project, via the
+	 * messages_fts index (fast index lookup, not a raw LIKE table scan).
+	 * Returns one result per matching session with a highlighted snippet
+	 * showing where the match occurred, ordered by relevance. Backs the
+	 * History/Sessions modal's deep search.
 	 */
-	searchByMessageContent(projectId: string, query: string, limit: number = 20): string[] {
+	searchByMessageContent(projectId: string, query: string, limit: number = 20): { sessionId: string; snippet: string }[] {
 		const db = getDatabase();
-		const rows = db.prepare(`
-			SELECT DISTINCT m.session_id
-			FROM messages m
-			INNER JOIN chat_sessions cs ON cs.id = m.session_id
-			WHERE cs.project_id = ?
-			  AND m.data LIKE ?
+		const ftsQuery = this.buildFtsQuery(query);
+		if (!ftsQuery) return [];
+
+		try {
+			const rows = db.prepare(`
+				SELECT fts.session_id AS session_id,
+				       snippet(messages_fts, 3, char(1), char(2), '…', 12) AS snippet
+				FROM messages_fts fts
+				WHERE fts.project_id = ? AND fts.text MATCH ?
+				ORDER BY rank
+				LIMIT ?
+			`).all(projectId, ftsQuery, limit * 3) as { session_id: string; snippet: string }[];
+
+			// Keep only the best (first, since ordered by rank) match per session.
+			const seen = new Set<string>();
+			const results: { sessionId: string; snippet: string }[] = [];
+			for (const row of rows) {
+				if (seen.has(row.session_id)) continue;
+				seen.add(row.session_id);
+				results.push({ sessionId: row.session_id, snippet: row.snippet });
+				if (results.length >= limit) break;
+			}
+			return results;
+		} catch (err) {
+			debug.warn('database', 'FTS content search failed for project scope:', err);
+			return [];
+		}
+	},
+
+	/**
+	 * Turn free-typed text into a safe FTS5 MATCH query: strip everything but
+	 * letters/digits per word and treat each as a quoted prefix term (implicit
+	 * AND between terms). Avoids FTS5 syntax injection from raw user input and
+	 * gives "type as you go" prefix matching.
+	 */
+	buildFtsQuery(raw: string): string | null {
+		const terms = raw
+			.split(/\s+/)
+			.map(t => t.replace(/[^\p{L}\p{N}]/gu, ''))
+			.filter(t => t.length > 0);
+		if (terms.length === 0) return null;
+		return terms.map(t => `"${t}"*`).join(' ');
+	},
+
+	/**
+	 * Search sessions across every project the user has access to.
+	 * Two passes, merged: cheap metadata match (title/head_title/head_summary)
+	 * plus an FTS5 index lookup over message content — the latter also returns
+	 * a highlighted snippet (wrapped in ... markers) showing where
+	 * the match occurred. Backs the global Command Palette session search.
+	 */
+	searchGlobal(userId: string, query: string, limit: number = 20): SessionSearchResult[] {
+		const db = getDatabase();
+		const trimmed = query.trim();
+		if (!trimmed) return [];
+
+		const results = new Map<string, SessionSearchResult>();
+
+		// Pass 1: metadata match — cheap, exact substring, no snippet needed.
+		const like = `%${trimmed}%`;
+		const metaRows = db.prepare(`
+			SELECT * FROM chat_sessions cs
+			WHERE cs.project_id IN (SELECT project_id FROM user_projects WHERE user_id = ?)
+			  AND (cs.title LIKE ? OR cs.head_title LIKE ? OR cs.head_summary LIKE ?)
+			ORDER BY COALESCE(cs.last_message_at, cs.started_at) DESC
 			LIMIT ?
-		`).all(projectId, `%${query}%`, limit) as { session_id: string }[];
-		return rows.map(r => r.session_id);
+		`).all(userId, like, like, like, limit) as ChatSession[];
+		for (const row of metaRows) {
+			results.set(row.id, row);
+		}
+
+		// Pass 2: message content match via FTS5 — fast index lookup with snippet.
+		const ftsQuery = this.buildFtsQuery(trimmed);
+		if (ftsQuery) {
+			try {
+				const contentRows = db.prepare(`
+					SELECT cs.*, snippet(messages_fts, 3, char(1), char(2), '…', 12) AS match_snippet
+					FROM messages_fts fts
+					INNER JOIN chat_sessions cs ON cs.id = fts.session_id
+					WHERE fts.project_id IN (SELECT project_id FROM user_projects WHERE user_id = ?)
+					  AND fts.text MATCH ?
+					ORDER BY rank
+					LIMIT ?
+				`).all(userId, ftsQuery, limit * 2) as (ChatSession & { match_snippet: string })[];
+
+				for (const row of contentRows) {
+					if (results.has(row.id)) continue;
+					const { match_snippet, ...session } = row;
+					results.set(row.id, { ...session, matchSnippet: match_snippet });
+				}
+			} catch (err) {
+				debug.warn('database', 'FTS content search failed, falling back to metadata-only results:', err);
+			}
+		}
+
+		return Array.from(results.values())
+			.sort((a, b) => {
+				const aTime = a.last_message_at || a.started_at;
+				const bTime = b.last_message_at || b.started_at;
+				return new Date(bTime).getTime() - new Date(aTime).getTime();
+			})
+			.slice(0, limit);
 	},
 
 	end(id: string): void {
@@ -286,6 +389,7 @@ export const sessionQueries = {
 		db.prepare('DELETE FROM message_snapshots WHERE session_id = ?').run(id);
 		db.prepare('DELETE FROM session_relationships WHERE parent_session_id = ? OR child_session_id = ?').run(id, id);
 		db.prepare('DELETE FROM messages WHERE session_id = ?').run(id);
+		db.prepare('DELETE FROM messages_fts WHERE session_id = ?').run(id);
 		db.prepare('DELETE FROM user_unread_sessions WHERE session_id = ?').run(id);
 		// Clear current_session_id references in user_projects
 		db.prepare('UPDATE user_projects SET current_session_id = NULL WHERE current_session_id = ?').run(id);
@@ -313,6 +417,7 @@ export const sessionQueries = {
 			   OR child_session_id IN (SELECT id FROM chat_sessions WHERE project_id = ?)
 		`).run(projectId, projectId);
 		db.prepare('DELETE FROM messages WHERE session_id IN (SELECT id FROM chat_sessions WHERE project_id = ?)').run(projectId);
+		db.prepare('DELETE FROM messages_fts WHERE project_id = ?').run(projectId);
 		db.prepare('DELETE FROM user_unread_sessions WHERE project_id = ?').run(projectId);
 		// Clear current_session_id references in user_projects for this project
 		db.prepare('UPDATE user_projects SET current_session_id = NULL WHERE project_id = ?').run(projectId);

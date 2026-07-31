@@ -9,6 +9,37 @@ function parseMessage(row: DatabaseMessage): UnifiedMessage {
 	return JSON.parse(row.data) as UnifiedMessage;
 }
 
+/**
+ * Extract combined plain text from a message for the messages_fts index.
+ * Kept local (not imported from snapshot/helpers.ts) to avoid a circular
+ * import — helpers.ts imports messageQueries from this module's barrel.
+ */
+function extractSearchableText(msg: UnifiedMessage): string {
+	if (msg.type === 'reasoning') return msg.text;
+	if (msg.type === 'compact_boundary') return '';
+	return msg.content
+		.filter((block): block is { type: 'text'; text: string } => block.type === 'text' && !!block.text)
+		.map(block => block.text)
+		.join('\n');
+}
+
+/** Keep the messages_fts mirror in sync with a message's current text content. */
+function syncMessageFts(id: string, sessionId: string, msg: UnifiedMessage): void {
+	const db = getDatabase();
+	db.prepare('DELETE FROM messages_fts WHERE message_id = ?').run(id);
+
+	const text = extractSearchableText(msg).trim();
+	if (!text) return;
+
+	const session = db.prepare('SELECT project_id FROM chat_sessions WHERE id = ?').get(sessionId) as { project_id: string } | null;
+	if (!session) return;
+
+	db.prepare(`
+		INSERT INTO messages_fts (message_id, session_id, project_id, text)
+		VALUES (?, ?, ?, ?)
+	`).run(id, sessionId, session.project_id, text);
+}
+
 export const messageQueries = {
 	/**
 	 * Get visible messages for a session (git-like: from HEAD to root)
@@ -131,6 +162,8 @@ export const messageQueries = {
 			parentMessageId
 		);
 
+		syncMessageFts(id, messageData.session_id, msg);
+
 		return {
 			id,
 			session_id: messageData.session_id,
@@ -145,19 +178,30 @@ export const messageQueries = {
 	delete(id: string): void {
 		const db = getDatabase();
 		db.prepare('DELETE FROM messages WHERE id = ?').run(id);
+		db.prepare('DELETE FROM messages_fts WHERE message_id = ?').run(id);
 	},
 
 	deleteBySessionId(sessionId: string): void {
 		const db = getDatabase();
 		db.prepare('DELETE FROM messages WHERE session_id = ?').run(sessionId);
+		db.prepare('DELETE FROM messages_fts WHERE session_id = ?').run(sessionId);
 	},
 
 	deleteAfterTimestamp(sessionId: string, timestamp: string): void {
 		const db = getDatabase();
+		const ids = db.prepare(`
+			SELECT id FROM messages WHERE session_id = ? AND created_at >= ?
+		`).all(sessionId, timestamp) as { id: string }[];
+
 		db.prepare(`
 			DELETE FROM messages
 			WHERE session_id = ? AND created_at >= ?
 		`).run(sessionId, timestamp);
+
+		if (ids.length > 0) {
+			const placeholders = ids.map(() => '?').join(',');
+			db.prepare(`DELETE FROM messages_fts WHERE message_id IN (${placeholders})`).run(...ids.map(r => r.id));
+		}
 	},
 
 	/**

@@ -50,6 +50,12 @@ const sessionSchema = t.Object({
 	last_message_at: t.Optional(t.String()),
 });
 
+/** sessionSchema plus a highlighted match snippet — global (cross-project) search only. */
+const sessionSearchResultSchema = t.Object({
+	...sessionSchema.properties,
+	matchSnippet: t.Optional(t.String())
+});
+
 /** Convert ChatSession DB row → response (null → undefined for Elysia optional fields) */
 function serializeSession(session: ChatSession) {
 	return {
@@ -416,16 +422,35 @@ export const crudHandler = createRouter()
 		debug.log('session', `[unread] Marked ALL sessions as READ for user ${userId} in project ${data.projectId}`);
 	})
 
-	// Search sessions by message content (deep search)
+	// Search sessions by message content within the current project (deep search)
 	.http('sessions:search', {
 		data: t.Object({
 			query: t.String({ minLength: 1 })
 		}),
 		response: t.Object({
-			sessionIds: t.Array(t.String())
+			results: t.Array(t.Object({
+				sessionId: t.String(),
+				snippet: t.String()
+			}))
 		})
 	}, async ({ data, conn }) => {
 		const { projectId } = requireCurrentProjectAccess(conn);
-		const sessionIds = sessionQueries.searchByMessageContent(projectId, data.query);
-		return { sessionIds };
+		const results = sessionQueries.searchByMessageContent(projectId, data.query);
+		return { results };
+	})
+
+	// Search sessions across every project the user has access to (Command Palette)
+	.http('sessions:search-global', {
+		data: t.Object({
+			query: t.String({ minLength: 1 })
+		}),
+		response: t.Object({
+			sessions: t.Array(sessionSearchResultSchema)
+		})
+	}, async ({ data, conn }) => {
+		const userId = ws.getUserId(conn);
+		const results = sessionQueries.searchGlobal(userId, data.query);
+		return {
+			sessions: results.map(r => ({ ...serializeSession(r), matchSnippet: r.matchSnippet }))
+		};
 	});

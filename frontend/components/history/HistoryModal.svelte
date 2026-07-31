@@ -14,6 +14,7 @@
 	import { userStore } from '$frontend/stores/features/user.svelte';
 	import { debug } from '$shared/utils/logger';
 	import { modelStore } from '$frontend/stores/features/models.svelte';
+	import { parseSnippet } from '$frontend/utils/fts-snippet';
 
 	interface Props {
 		isOpen: boolean;
@@ -101,11 +102,12 @@
 
 	// Search state
 	let searchQuery = $state('');
-	let deepSearchResults = $state<Set<string> | null>(null);
+	/** sessionId -> highlighted snippet, from the message-content (deep) search. */
+	let deepSearchResults = $state<Map<string, string> | null>(null);
 	let deepSearching = $state(false);
 	let searchDebounceTimer: ReturnType<typeof setTimeout> | undefined;
 
-	// Deep search: query backend for message-level search
+	// Deep search: query backend for message-level search (FTS5-backed, fast)
 	function triggerDeepSearch(query: string) {
 		clearTimeout(searchDebounceTimer);
 		if (!query.trim()) {
@@ -117,14 +119,14 @@
 		searchDebounceTimer = setTimeout(async () => {
 			try {
 				const result = await ws.http('sessions:search', { query: query.trim() });
-				deepSearchResults = new Set(result.sessionIds);
+				deepSearchResults = new Map(result.results.map(r => [r.sessionId, r.snippet]));
 			} catch (err) {
 				debug.error('session', 'Deep search failed:', err);
 				deepSearchResults = null;
 			} finally {
 				deepSearching = false;
 			}
-		}, 300);
+		}, 150);
 	}
 
 	// Trigger deep search when query changes
@@ -521,6 +523,7 @@
 					{@const modelName = getSessionModel(session)}
 					{@const title = session.title || session.head_title || 'New Conversation'}
 					{@const summary = session.head_summary || 'No messages yet'}
+					{@const deepSnippet = deepSearchResults?.get(session.id)}
 					{@const userCount = session.user_count ?? 0}
 					<div
 						class="flex items-center gap-2 w-full p-3 bg-transparent border border-slate-200 dark:border-slate-700 rounded-lg text-slate-900 dark:text-slate-100 text-sm text-left transition-all duration-150
@@ -594,6 +597,12 @@
 										Processing...
 									</p>
 								{/if}
+							{:else if deepSnippet}
+								<p class="text-xs text-slate-400 dark:text-slate-500 truncate mt-0.5">
+									{#each parseSnippet(deepSnippet) as part}
+										{#if part.hl}<mark class="bg-transparent text-violet-600 dark:text-violet-400 font-semibold">{part.text}</mark>{:else}{part.text}{/if}
+									{/each}
+								</p>
 							{:else}
 								<p class="text-xs text-slate-400 dark:text-slate-500 truncate mt-0.5">
 									{summary}

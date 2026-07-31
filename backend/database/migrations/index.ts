@@ -62,6 +62,7 @@ import * as migration060 from './060_create_device_codes_table';
 import * as migration061 from './061_add_session_device_metadata';
 import * as migration062 from './062_add_session_source';
 import * as migration063 from './063_add_invite_project_ids';
+import * as migration064 from './064_create_messages_fts';
 
 // Export all migrations in order
 export const migrations = [
@@ -442,6 +443,12 @@ export const migrations = [
 		description: migration063.description,
 		up: migration063.up,
 		down: migration063.down
+	},
+	{
+		id: '064',
+		description: migration064.description,
+		up: migration064.up,
+		down: migration064.down
 	}
 ];
 

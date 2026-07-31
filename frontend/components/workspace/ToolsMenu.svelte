@@ -87,11 +87,11 @@
 				: 'w-9 h-9 rounded-lg hover:bg-violet-500/10 hover:text-slate-900 dark:hover:text-slate-100'}
 				{isOpen ? 'bg-violet-500/10 text-slate-900 dark:text-slate-100' : ''}"
 			onclick={toggleMenu}
-			aria-label="Tools"
+			aria-label="More Tools"
 			aria-expanded={isOpen}
-			title="Tools"
+			title="More Tools"
 		>
-			<Icon name="lucide:ellipsis" class="{mobile ? 'w-4.5 h-4.5' : 'w-5 h-5'}" />
+			<Icon name="lucide:wrench" class="{mobile ? 'w-4.5 h-4.5' : 'w-5 h-5'}" />
 			{#if hasActivity}
 				<span
 					class="absolute top-0.5 right-0.5 w-2 h-2 rounded-full bg-green-500 border-2 border-slate-50 dark:border-slate-900/95"
@@ -105,18 +105,18 @@
 			class="flex items-center gap-2.5 w-full py-2.5 px-3 bg-transparent border-none rounded-lg text-slate-500 text-sm cursor-pointer transition-all duration-150 hover:bg-violet-500/10 hover:text-slate-900 dark:hover:text-slate-100
 				{isOpen ? 'bg-violet-500/10 text-slate-900 dark:text-slate-100' : ''}"
 			onclick={toggleMenu}
-			aria-label="Tools"
+			aria-label="More Tools"
 			aria-expanded={isOpen}
 		>
 			<div class="relative">
-				<Icon name="lucide:ellipsis" class="w-4 h-4" />
+				<Icon name="lucide:wrench" class="w-4 h-4" />
 				{#if hasActivity}
 					<span
 						class="absolute -top-1 -right-1 w-2 h-2 bg-green-500 rounded-full border-2 border-slate-50 dark:border-slate-900/95"
 					></span>
 				{/if}
 			</div>
-			<span class="flex-1 text-left">Tools</span>
+			<span class="flex-1 text-left">More Tools</span>
 		</button>
 	{/if}
 
@@ -127,7 +127,7 @@
 		>
 			<div class="py-1.5">
 				<div class="px-3 py-1.5 text-xs font-semibold text-slate-600 dark:text-slate-500 uppercase tracking-wider">
-					Tools
+					More Tools
 				</div>
 				{#each items as item (item.label)}
 					<button

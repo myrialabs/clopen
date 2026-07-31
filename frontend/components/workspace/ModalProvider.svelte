@@ -1,11 +1,14 @@
 <script lang="ts">
 	import Alert from '$frontend/components/common/feedback/Alert.svelte';
 	import Dialog from '$frontend/components/common/overlay/Dialog.svelte';
+	import CommandPalette from '$frontend/components/common/overlay/CommandPalette.svelte';
 	import { dialogStore, closeAlert, closeConfirm } from '$frontend/stores/ui/dialog.svelte';
 
 	const alertState = $derived(dialogStore.alert);
 	const confirmState = $derived(dialogStore.confirm);
 </script>
+
+<CommandPalette />
 
 <Alert
 	isOpen={alertState.isOpen}
