@@ -139,6 +139,7 @@
     "qrcode": "1.5.4",
     "sharp": "0.34.5",
     "ssh2": "1.17.0",
+    "systeminformation": "5.33.1",
     "typebox": "1.1.38"
   },
   "trustedDependencies": [

@@ -25,6 +25,7 @@ export type SettingsSection =
 	| 'account'
 	| 'team'
 	| 'security'
+	| 'device'
 	| 'system';
 
 /** Sidebar grouping. Sections are rendered under their group header. */
@@ -207,6 +208,14 @@ export const settingsSections: SettingsSectionMeta[] = [
 		label: 'Security',
 		icon: 'lucide:shield',
 		description: 'Login and access control',
+		group: 'administration',
+		adminOnly: true
+	},
+	{
+		id: 'device',
+		label: 'Device',
+		icon: 'lucide:server',
+		description: 'Server hardware and status',
 		group: 'administration',
 		adminOnly: true
 	},

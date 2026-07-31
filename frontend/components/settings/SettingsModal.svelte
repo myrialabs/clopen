@@ -33,6 +33,7 @@
 	import InviteManagement from './admin/InviteManagement.svelte';
 	import SecuritySettings from './security/SecuritySettings.svelte';
 	import SystemSettings from './system/SystemSettings.svelte';
+	import AboutDeviceSettings from './system/AboutDeviceSettings.svelte';
 	import TunnelSettings from './tunnel/TunnelSettings.svelte';
 	import RestartAllEnginesButton from './engines/RestartAllEnginesButton.svelte';
 	import { mcpServersStore } from '$frontend/stores/features/mcp-servers.svelte';
@@ -368,6 +369,10 @@
 					{:else if activeSection === 'security' && isAdmin}
 						<div in:fly={{ x: 20, duration: 200 }}>
 							<SecuritySettings />
+						</div>
+					{:else if activeSection === 'device' && isAdmin}
+						<div in:fly={{ x: 20, duration: 200 }}>
+							<AboutDeviceSettings />
 						</div>
 					{:else if activeSection === 'system' && isAdmin}
 						<div in:fly={{ x: 20, duration: 200 }}>
