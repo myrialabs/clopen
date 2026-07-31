@@ -76,11 +76,15 @@
 			for (const contentItem of message.content) {
 				if (contentItem.type === 'text') {
 					const text = (contentItem as any).text as string;
-					// Engine-setup errors ("... Open Settings → Stack / Engines ...")
-					// route through ErrorMessage so they render as an actionable card
-					// with a one-click button; everything else stays plain text.
-					if (typeof text === 'string' && (text.includes('Settings → Stack') || text.includes('Settings → Engines'))) {
-						elements.push({ type: 'error', content: text.replace(/^\*\*Error:\*\*\s*/, '') });
+					// Engine-setup errors route through ErrorMessage so they render
+					// as an actionable card with a one-click button. These are only
+					// ever surfaced as a synthetic assistant message prefixed with
+					// "**Error:**" (see stream-manager). Requiring that prefix keeps
+					// plain assistant prose that merely *mentions* "Settings → Stack /
+					// Engines" from being misdetected as an error — it stays text.
+					const isSyntheticError = typeof text === 'string' && /^\s*\*\*Error:\*\*/.test(text);
+					if (isSyntheticError && (text.includes('Settings → Stack') || text.includes('Settings → Engines'))) {
+						elements.push({ type: 'error', content: text.replace(/^\s*\*\*Error:\*\*\s*/, '') });
 					} else {
 						elements.push({ type: 'text', content: text });
 					}
