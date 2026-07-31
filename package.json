@@ -138,7 +138,8 @@
     "puppeteer-extra-plugin-stealth": "2.11.2",
     "qrcode": "1.5.4",
     "sharp": "0.34.5",
-    "ssh2": "1.17.0"
+    "ssh2": "1.17.0",
+    "typebox": "1.1.38"
   },
   "trustedDependencies": [
     "puppeteer",
