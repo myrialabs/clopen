@@ -29,6 +29,7 @@ import { engineQueries, settingsQueries } from '../../../database/queries';
 import { generateOpenCodeProviderConfig, parseCredentialMap } from './config';
 import type { OpenCodeInlineAgent } from '$backend/subagents';
 import { resolveBinaryWithRefresh } from '$backend/utils/cli';
+import { loadEngineSdk } from '$backend/engine/sdk-loader';
 import { getEngineUserConfigDir } from '$backend/utils/paths';
 import { debug } from '$shared/utils/logger';
 
@@ -356,7 +357,7 @@ async function spawnServer(key: string, spec: ServerConfigSpec): Promise<ServerI
 		});
 	});
 
-	const { createOpencodeClient } = await import('@opencode-ai/sdk');
+	const { createOpencodeClient } = await loadEngineSdk<typeof import('@opencode-ai/sdk')>('opencode', '@opencode-ai/sdk');
 	const client = createOpencodeClient({ baseUrl: url });
 	debug.log('engine', `Open Code server ready (key "${key}", ${url}, data dir: ${dataDir})`);
 	return { key, url, client, proc, ownsProcess: true, lastUsed: Date.now() };

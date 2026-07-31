@@ -27,15 +27,15 @@
  * id has been recorded yet (race on which lands first).
  */
 
-import {
-	query,
-	type Query,
-	type QueryOptions,
-	type SDKMessage,
-	type SDKUserMessage,
-	type PermissionResult,
-	type ToolInput,
+import type {
+	Query,
+	QueryOptions,
+	SDKMessage,
+	SDKUserMessage,
+	PermissionResult,
+	ToolInput,
 } from '@qwen-code/sdk';
+import { loadEngineSdk } from '$backend/engine/sdk-loader';
 import type { EngineOutput, EngineModel } from '$shared/types/unified';
 import type { AIEngine, EngineQueryOptions, StructuredGenerationOptions } from '../../types';
 import { buildJsonPrompt, extractJson } from '../../structured-helpers';
@@ -306,6 +306,7 @@ export class QwenEngine implements AIEngine {
 				yield sdkPrompt;
 			})();
 
+			const { query } = await loadEngineSdk<typeof import('@qwen-code/sdk')>('qwen', '@qwen-code/sdk');
 			const queryInstance = query({ prompt: promptIterable, options: sdkOptions });
 			this.activeQuery = queryInstance;
 
@@ -422,6 +423,7 @@ export class QwenEngine implements AIEngine {
 			yield sdkPrompt;
 		})();
 
+		const { query } = await loadEngineSdk<typeof import('@qwen-code/sdk')>('qwen', '@qwen-code/sdk');
 		const queryInstance = query({ prompt: promptIterable, options: sdkOptions });
 
 		let resultText = '';
