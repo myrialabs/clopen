@@ -8,6 +8,7 @@ import { t } from 'elysia';
 import { createRouter } from '$shared/utils/ws-server';
 import { execGit } from '../../git/git-executor';
 import { initializeEngine } from '../../engine';
+import { resolveGenerationTarget } from '../../engine/resolve-model';
 import type { EngineType } from '$shared/types/unified';
 import type { GeneratedCommitMessage } from '$shared/types/git';
 import { debug } from '$shared/utils/logger';
@@ -62,7 +63,8 @@ export const commitMessageHandler = createRouter()
 		data: t.Object({
 			projectId: t.String(),
 			engine: t.String(),
-			providerSlug: t.String(),
+			/** Hint only — the provider is re-derived from the engine catalog. */
+			providerSlug: t.Optional(t.String()),
 			modelId: t.String(),
 			format: t.Union([t.Literal('single-line'), t.Literal('multi-line')]),
 			customPrompt: t.Optional(t.String()),
@@ -110,14 +112,18 @@ ${rawDiff}`;
 			? `${defaultPrompt}\n\nAdditional constraints:\n${extra}`
 			: defaultPrompt;
 
-		debug.log('git', `Generating commit message via ${engineType}/${data.modelId}`);
+		// The caller's providerSlug/account can be stale (see resolve-model.ts).
+		const target = await resolveGenerationTarget(engine, data.modelId, data.providerSlug);
+
+		debug.log('git', `Generating commit message via ${engineType}/${target.providerSlug}/${target.modelId}`);
 
 		const result = await engine.generateStructured<GeneratedCommitMessage>({
 			prompt,
-			providerSlug: data.providerSlug,
-			modelId: data.modelId,
+			providerSlug: target.providerSlug,
+			modelId: target.modelId,
 			schema: COMMIT_MESSAGE_SCHEMA,
-			projectPath: cwd
+			projectPath: cwd,
+			...(target.accountId != null && { accountId: target.accountId })
 		});
 
 		// Format structured output into conventional commit string

@@ -19,6 +19,11 @@ export interface CommitGeneratorSettings {
 	/** When false, uses the chat model (selectedEngine/selectedModel). When true, uses custom engine/model below. */
 	useCustomModel: boolean;
 	engine: EngineType;
+	/**
+	 * Provider of `modelId`. Write it with `modelFieldsOf()` so it can never lag
+	 * behind a model change — the backend re-derives it anyway
+	 * (`backend/engine/resolve-model.ts`), but a stale value here is misleading.
+	 */
 	provider: string;
 	modelId: string;
 	modelName: string;
@@ -37,6 +42,7 @@ export interface CommitGeneratorSettings {
 export interface ArtifactGeneratorSettings {
 	useCustomModel: boolean;
 	engine: EngineType;
+	/** See `CommitGeneratorSettings.provider` — write via `modelFieldsOf()`. */
 	provider: string;
 	modelId: string;
 	modelName: string;

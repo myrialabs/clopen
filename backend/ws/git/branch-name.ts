@@ -8,6 +8,7 @@ import { t } from 'elysia';
 import { createRouter } from '$shared/utils/ws-server';
 import { execGit } from '../../git/git-executor';
 import { initializeEngine } from '../../engine';
+import { resolveGenerationTarget } from '../../engine/resolve-model';
 import type { EngineType } from '$shared/types/unified';
 import type { GeneratedBranchName } from '$shared/types/git';
 import {
@@ -131,7 +132,8 @@ export const branchNameHandler = createRouter()
 		data: t.Object({
 			projectId: t.String(),
 			engine: t.String(),
-			providerSlug: t.String(),
+			/** Hint only — the provider is re-derived from the engine catalog. */
+			providerSlug: t.Optional(t.String()),
 			modelId: t.String(),
 			branchSeparator: t.Optional(t.String()),
 			maxWords: t.Optional(t.Number()),
@@ -167,14 +169,18 @@ export const branchNameHandler = createRouter()
 		const extra = data.customPrompt?.trim();
 		const prompt = `${instructions}${extra ? `\n\nAdditional constraints:\n${extra}` : ''}\n\nGit diff:\n${rawDiff}`;
 
-		debug.log('git', `Generating branch name via ${engineType}/${data.modelId}`);
+		// The caller's providerSlug/account can be stale (see resolve-model.ts).
+		const target = await resolveGenerationTarget(engine, data.modelId, data.providerSlug);
+
+		debug.log('git', `Generating branch name via ${engineType}/${target.providerSlug}/${target.modelId}`);
 
 		const result = await engine.generateStructured<GeneratedBranchName>({
 			prompt,
-			providerSlug: data.providerSlug,
-			modelId: data.modelId,
+			providerSlug: target.providerSlug,
+			modelId: target.modelId,
 			schema: BRANCH_NAME_SCHEMA,
-			projectPath: cwd
+			projectPath: cwd,
+			...(target.accountId != null && { accountId: target.accountId })
 		});
 
 		const description = sanitizeBranchDescription(result.description, data.maxWords ?? MAX_BRANCH_DESCRIPTION_WORDS);

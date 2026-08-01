@@ -757,10 +757,32 @@ OpenCode adapter:
   Filter out `ignored`/`synthetic` parts so the SDK's own scratch text
   doesn't leak into the JSON parser. Log the part-type breakdown in the
   error message so the next failure is diagnosable.
-- **Extract JSON tolerantly.** `extractJson()` tries, in order: a
-  ` ```json ` fenced block, the first balanced `{ … }`, then the raw
-  trimmed text. Models routinely ignore the "no markdown fences"
+- **Extract JSON tolerantly.** `extractJson()` tries, in order: every
+  ` ```json ` fenced block, every top-level balanced `{ … }`, a greedy
+  first-brace-to-last-brace slice, then the raw trimmed text — parsing
+  each one twice, the second time with control characters inside string
+  literals escaped. Models routinely ignore the "no markdown fences"
   instruction; the parser should not.
+
+  Two failure modes justify the balanced scan and the repair pass, and
+  both are covered by `structured-helpers.test.ts`:
+
+  - **Trailing commentary.** A model that emits the object and then adds
+    "Let me know if you want changes!" produces JSC's
+    `Unable to parse JSON string` (its message for *valid JSON followed
+    by anything*), and the old first-`{`-to-last-`}` slice broke too
+    whenever that commentary contained a brace. Brace counting must be
+    string-aware or a `}` inside a value closes the object early.
+  - **Raw newlines in string values.** JSON forbids a literal newline
+    inside a string, but any field holding Markdown (an artifact body, a
+    commit body) attracts them — which is why artifact generation broke
+    on models that git commit generation, with its short single-line
+    fields, never tripped.
+
+  A truncated response still throws rather than half-parsing: a draft
+  missing half its body is worse than a clear failure. The error preview
+  shows both ends of the text so truncation and trailing prose are
+  distinguishable from the log alone.
 
 The native engines (Claude, Codex) skip these — Claude exposes
 `structured_output` on the `result` message and Codex's
@@ -774,6 +796,30 @@ hands its `signal` to whatever the SDK exposes (Codex
 { signal }`, Copilot `session.abort()`, Qwen `QueryOptions.abortController`).
 The contract is the same as `streamQuery`: aborting cancels the in-flight
 request, not just the await.
+
+**3. Never trust a caller-supplied `providerSlug`.** The adapters split
+again on whether they read it at all: Claude, Codex, Qwen, Copilot, and
+Cursor key off `modelId` alone, while OpenCode passes it as
+`model.providerID` and Pi/Cline resolve their account by it. A client
+that persists engine/provider/model as separate fields and updates only
+some of them therefore fails on exactly three engines and silently
+"works" on the other five — which is how a `commitGenerator.provider`
+stuck at its `'anthropic'` seed surfaced as `OpenCode returned empty
+response` while Claude Code was fine.
+
+The engine catalog is the only source of truth for which provider (and
+account) a model belongs to, so every `generateStructured` call site
+routes through `resolveGenerationTarget(engine, modelId, providerHint)`
+in `backend/engine/resolve-model.ts` first. It reads the registry
+(filled by `models:list`, fetching the catalog only on a miss), returns
+the catalog's provider, and throws a "pick it again in Settings →
+Models" error when the model belongs to no provider the engine offers.
+It also forwards the model's `accountId` when the catalog carries a real
+one — today every adapter reports `account.id: 0` (account is a separate
+per-chat dimension, and these routes have no account picker), so engines
+keep falling back to their active account. New engines are covered
+without touching a call site; do not reintroduce `providerSlug:
+data.providerSlug`.
 
 **Engine-not-implemented errors.** `backend/ws/git/commit-message.ts`
 guards on `engine.generateStructured` — if you add an engine that can't

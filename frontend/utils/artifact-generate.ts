@@ -7,6 +7,7 @@
 import ws from '$frontend/utils/ws';
 import { settings } from '$frontend/stores/features/settings.svelte';
 import { projectState } from '$frontend/stores/core/projects.svelte';
+import { resolveGenerationModel } from '$frontend/utils/model-override';
 
 export type GeneratableArtifactType = 'skill' | 'command' | 'subagent' | 'instruction';
 
@@ -15,11 +16,7 @@ export async function generateArtifactDraft(
 	artifactType: GeneratableArtifactType,
 	purpose: string
 ): Promise<Record<string, unknown>> {
-	const gen = settings.artifactGenerator;
-	const useCustom = !!gen?.useCustomModel;
-	const engine = useCustom ? gen!.engine : settings.selectedEngine;
-	const providerSlug = useCustom ? gen!.provider : settings.selectedProvider;
-	const modelId = useCustom ? gen!.modelId : settings.selectedModelId;
+	const { engine, providerSlug, modelId } = resolveGenerationModel(settings.artifactGenerator);
 
 	if (!modelId) throw new Error('No model configured. Pick one in Settings → Models.');
 
