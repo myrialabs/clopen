@@ -9,11 +9,14 @@
 		closeCommandPalette,
 		toggleCommandPalette
 	} from '$frontend/stores/ui/command-palette.svelte';
-	import { projectState, searchProjects, setCurrentProject } from '$frontend/stores/core/projects.svelte';
+	import { projectState, setCurrentProject } from '$frontend/stores/core/projects.svelte';
 	import { setCurrentSession } from '$frontend/stores/core/sessions.svelte';
 	import { authStore } from '$frontend/stores/features/auth.svelte';
 	import { openSettingsModal, settingsSections } from '$frontend/stores/ui/settings-modal.svelte';
 	import { getCommandActions } from '$frontend/config/command-registry';
+	import { revealFile } from '$frontend/stores/ui/file-peek.svelte';
+	import { bestFuzzyScore } from '$frontend/utils/fuzzy';
+	import { usageBoost, recordCommandUsage } from '$frontend/stores/ui/command-usage.svelte';
 	import ws from '$frontend/utils/ws';
 	import { debug } from '$shared/utils/logger';
 	import { parseSnippet } from '$frontend/utils/fts-snippet';
@@ -23,7 +26,14 @@
 	/** ChatSession plus a highlighted match snippet — set only for content matches. */
 	type SessionSearchResult = ChatSession & { matchSnippet?: string };
 
-	type ResultKind = 'project' | 'action' | 'setting' | 'session';
+	type ResultKind = 'project' | 'action' | 'setting' | 'session' | 'file';
+
+	/** A file name match within the current project (from `files:search-files`). */
+	interface FileHit {
+		name: string;
+		path: string;
+		relativePath: string;
+	}
 
 	/** One icon+text chip in a PaletteItem's meta row (e.g. project, last active, message count). */
 	interface PaletteItemMeta {
@@ -67,6 +77,9 @@
 	let sessionResults = $state<SessionSearchResult[]>([]);
 	let sessionsLoading = $state(false);
 	let searchDebounceTimer: ReturnType<typeof setTimeout> | undefined;
+	let fileResults = $state<FileHit[]>([]);
+	let filesLoading = $state(false);
+	let fileDebounceTimer: ReturnType<typeof setTimeout> | undefined;
 
 	const modifierLabel = isMac() ? '⌘' : 'Ctrl+';
 
@@ -76,9 +89,16 @@
 			query = '';
 			selectedIndex = 0;
 			sessionResults = [];
+			fileResults = [];
 			queueMicrotask(() => inputEl?.focus());
 		}
 	});
+
+	// `@` prefix scopes the palette to file results only; otherwise everything is
+	// searched together and ranked. `effectiveQuery` strips the prefix so the
+	// remaining categories still match naturally.
+	const fileOnly = $derived(query.trimStart().startsWith('@'));
+	const effectiveQuery = $derived((fileOnly ? query.trimStart().slice(1) : query).trim());
 
 	function triggerSessionSearch(q: string) {
 		clearTimeout(searchDebounceTimer);
@@ -102,40 +122,88 @@
 	}
 
 	$effect(() => {
-		if (commandPaletteState.isOpen) triggerSessionSearch(query);
+		if (commandPaletteState.isOpen) triggerSessionSearch(fileOnly ? '' : effectiveQuery);
 	});
 
+	function triggerFileSearch(q: string) {
+		clearTimeout(fileDebounceTimer);
+		const project = projectState.currentProject;
+		if (!project || q.trim().length < 2) {
+			fileResults = [];
+			filesLoading = false;
+			return;
+		}
+		filesLoading = true;
+		fileDebounceTimer = setTimeout(async () => {
+			try {
+				const hits = await ws.http('files:search-files', {
+					project_path: project.path,
+					query: q.trim()
+				});
+				fileResults = hits.slice(0, 8);
+			} catch (err) {
+				debug.error('file', 'Palette file search failed:', err);
+				fileResults = [];
+			} finally {
+				filesLoading = false;
+			}
+		}, 150);
+	}
+
+	$effect(() => {
+		if (commandPaletteState.isOpen) triggerFileSearch(effectiveQuery);
+	});
+
+	// Empty-state cap for actions — with layout presets and theme commands the
+	// registry is long, so when nothing is typed we surface the most-used few
+	// (usage-ranked) instead of dumping the whole list.
+	const EMPTY_ACTION_LIMIT = 8;
+
 	const matchedProjects = $derived.by(() => {
-		const trimmed = query.trim();
-		const base = trimmed
-			? searchProjects(trimmed)
-			: projectState.recentProjects.length
+		if (fileOnly) return [];
+		const q = effectiveQuery;
+		if (!q) {
+			const base = projectState.recentProjects.length
 				? projectState.recentProjects
 				: projectState.projects;
-		return base.slice(0, 6);
+			return base.slice(0, 6);
+		}
+		return projectState.projects
+			.map((p) => ({ p, match: bestFuzzyScore(q, [p.name, p.path]) }))
+			.filter((x) => x.match > 0)
+			.map((x) => ({ p: x.p, score: x.match + usageBoost(`project-${x.p.id}`) }))
+			.sort((a, b) => b.score - a.score)
+			.slice(0, 6)
+			.map((x) => x.p);
 	});
 
 	const matchedActions = $derived.by(() => {
-		const trimmed = query.trim().toLowerCase();
+		if (fileOnly) return [];
 		const all = getCommandActions();
-		if (!trimmed) return all;
-		return all.filter(
-			(a) =>
-				a.label.toLowerCase().includes(trimmed) ||
-				a.description.toLowerCase().includes(trimmed) ||
-				(a.keywords ?? []).some((k) => k.includes(trimmed))
-		);
+		const q = effectiveQuery;
+		if (!q) {
+			return [...all]
+				.sort((a, b) => usageBoost(`action-${b.id}`) - usageBoost(`action-${a.id}`))
+				.slice(0, EMPTY_ACTION_LIMIT);
+		}
+		return all
+			.map((a) => ({ a, match: bestFuzzyScore(q, [a.label, a.description, ...(a.keywords ?? [])]) }))
+			.filter((x) => x.match > 0)
+			.map((x) => ({ a: x.a, score: x.match + usageBoost(`action-${x.a.id}`) }))
+			.sort((x, y) => y.score - x.score)
+			.map((x) => x.a);
 	});
 
 	const matchedSettings = $derived.by(() => {
-		const trimmed = query.trim().toLowerCase();
-		if (!trimmed) return [];
+		if (fileOnly) return [];
+		const q = effectiveQuery;
+		if (!q) return [];
 		const visible = settingsSections.filter((s) => !s.adminOnly || authStore.isAdmin);
-		return visible.filter(
-			(s) =>
-				s.label.toLowerCase().includes(trimmed) ||
-				s.description.toLowerCase().includes(trimmed)
-		);
+		return visible
+			.map((s) => ({ s, match: bestFuzzyScore(q, [s.label, s.description]) }))
+			.filter((x) => x.match > 0)
+			.sort((x, y) => y.match - x.match)
+			.map((x) => x.s);
 	});
 
 	async function selectProject(project: Project) {
@@ -150,6 +218,11 @@
 			await setCurrentProject(project);
 		}
 		await setCurrentSession(session);
+	}
+
+	function selectFile(file: FileHit) {
+		closeCommandPalette();
+		revealFile(file.path);
 	}
 
 	// Flat, ordered list — drives both keyboard navigation and grouping below.
@@ -189,6 +262,17 @@
 			});
 		}
 
+		for (const file of fileResults) {
+			list.push({
+				kind: 'file',
+				id: `file-${file.path}`,
+				label: file.name,
+				description: file.relativePath,
+				icon: 'lucide:file',
+				run: () => selectFile(file)
+			});
+		}
+
 		for (const session of sessionResults) {
 			const project = projectState.projects.find((p) => p.id === session.project_id);
 			const lastActive = session.last_message_at || session.ended_at || session.started_at;
@@ -220,6 +304,7 @@
 			{ label: 'Projects', items: indexedItems.filter((i) => i.kind === 'project') },
 			{ label: 'Actions', items: indexedItems.filter((i) => i.kind === 'action') },
 			{ label: 'Settings', items: indexedItems.filter((i) => i.kind === 'setting') },
+			{ label: 'Files', items: indexedItems.filter((i) => i.kind === 'file') },
 			{ label: 'Sessions', items: indexedItems.filter((i) => i.kind === 'session') }
 		];
 		return all.filter((g) => g.items.length > 0);
@@ -231,6 +316,8 @@
 	});
 
 	async function activate(item: PaletteItem) {
+		// Track usage so frequent/recent entries rank higher next time.
+		recordCommandUsage(item.id);
 		await item.run();
 		if (item.kind === 'action' || item.kind === 'setting') {
 			closeCommandPalette();
@@ -357,10 +444,10 @@
 					bind:this={inputEl}
 					bind:value={query}
 					type="text"
-					placeholder="Search projects, actions, settings, sessions..."
+					placeholder="Search projects, files, actions, settings, sessions..."
 					class="flex-1 bg-transparent border-none outline-none text-slate-900 dark:text-slate-100 text-sm placeholder:text-slate-400 dark:placeholder:text-slate-500"
 				/>
-				{#if sessionsLoading}
+				{#if sessionsLoading || filesLoading}
 					<div class="w-3.5 h-3.5 border-2 border-slate-300 border-t-violet-500 rounded-full animate-spin shrink-0"></div>
 				{/if}
 				<kbd class="text-3xs font-mono text-slate-400 dark:text-slate-500 border border-slate-200 dark:border-slate-700 rounded px-1.5 py-0.5 shrink-0">Esc</kbd>
