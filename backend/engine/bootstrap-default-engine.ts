@@ -27,16 +27,29 @@ const ENGINE_SDK_PACKAGES = [
 	'@cursor/sdk',
 ];
 
-let bootstrapStarted = false;
+/**
+ * Tracks an in-flight install so concurrent callers share one run — but only
+ * while it's running. A permanent "already started" latch would wrongly skip a
+ * legitimate reinstall after "Clear All Data" wipes ~/.clopen/stack/engines on
+ * the live process; gating on the in-flight promise instead lets a later call
+ * re-evaluate `isEngineSdkInstalled` once the previous run has settled.
+ */
+let inFlight: Promise<void> | null = null;
 
 /**
  * Install OpenCode on a fresh machine (no engine SDK present). Idempotent and
- * safe to call at every startup; it no-ops once any engine exists.
+ * safe to call at every startup and after a data wipe; it no-ops once any engine
+ * exists, and de-dupes concurrent calls via the in-flight promise.
  */
-export async function ensureDefaultEngineInstalled(): Promise<void> {
-	if (bootstrapStarted) return;
-	bootstrapStarted = true;
+export function ensureDefaultEngineInstalled(): Promise<void> {
+	if (inFlight) return inFlight;
+	inFlight = runDefaultEngineInstall().finally(() => {
+		inFlight = null;
+	});
+	return inFlight;
+}
 
+async function runDefaultEngineInstall(): Promise<void> {
 	if (ENGINE_SDK_PACKAGES.some(isEngineSdkInstalled)) return;
 
 	const recipe = await resolveRecipe('opencode');

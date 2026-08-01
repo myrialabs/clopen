@@ -23,8 +23,7 @@ import { loggerMiddleware } from './middleware/logger';
 
 // Database initialization
 import { initializeDatabase, closeDatabase } from './database';
-import { ensureDefaultEngineInstalled } from './engine/bootstrap-default-engine';
-import { syncInternalServers } from './mcp';
+import { bootstrapAfterDbInit } from './bootstrap';
 import { disposeAllEngines } from './engine';
 import { connectionManager } from './db-client/connection-manager';
 import { refreshProcessPath } from './utils/path-enrich';
@@ -235,16 +234,14 @@ async function startServer() {
 	try {
 		await initializeDatabase();
 		debug.log('database', '✅ Database initialized successfully');
-		// Mirror code-defined internal MCP servers into the DB so Settings → MCP
-		// can list and toggle them. Idempotent; preserves the user's toggles.
-		syncInternalServers();
+		// Re-establish code-defined built-ins that live outside migrations/seeders
+		// (internal MCP servers like Browser Automation + the default engine).
+		// Shared with the clear-data handler so a DB wipe on the live process
+		// restores them without a restart.
+		bootstrapAfterDbInit();
 		// Start expired session cleanup now that the database is ready
 		sessionCleanupScheduler.start();
 		uploadTempCleanup.start();
-		// Fresh installs: auto-install OpenCode (free, no account) in the
-		// background so first-time users have a working engine without any manual
-		// setup. Non-blocking; no-ops once any engine is already installed.
-		void ensureDefaultEngineInstalled();
 	} catch (error) {
 		debug.warn('database', '⚠️ Database initialization failed:', error);
 	}

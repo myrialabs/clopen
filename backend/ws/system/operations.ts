@@ -17,6 +17,7 @@ import { debug } from '$shared/utils/logger';
 import { ws } from '$backend/utils/ws';
 import { getClopenDir } from '$backend/utils/index';
 import { resetEnvironment } from '$backend/engine/adapters/claude/environment';
+import { bootstrapAfterDbInit } from '$backend/bootstrap';
 
 /** In-memory flag: set after successful update, cleared on server restart */
 let pendingUpdate: { fromVersion: string; toVersion: string } | null = null;
@@ -197,6 +198,12 @@ export const operationsHandler = createRouter()
 
 		// Reinitialize database from scratch (creates dir, db, migrations, seeders)
 		await initializeDatabase();
+
+		// Re-establish code-defined built-ins that migrations/seeders don't cover
+		// (internal MCP servers like Browser Automation + the default engine).
+		// The process stays alive across clear-data, so without this they'd vanish
+		// until the next restart.
+		bootstrapAfterDbInit();
 
 		debug.log('server', 'All data cleared successfully');
 
