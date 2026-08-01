@@ -7,6 +7,12 @@
  *
  * Audio is encoded with AudioEncoder (Opus codec) and sent via DataChannel
  * to the WebCodecs peer connection.
+ *
+ * The tap is a side-chain: the page's own signal path stays untouched and a
+ * parallel branch feeds the encoder through a muted sink. `ScriptProcessor`
+ * (the only option before AudioWorklet) had to sit *inside* the signal path
+ * and re-emit what it received, which both ran the mixdown on the page's main
+ * thread and added a buffer of latency to everything the page played.
  */
 
 import type { StreamingConfig } from '../types';
@@ -75,76 +81,195 @@ export function audioCaptureScript(config: StreamingConfig['audio']) {
 		}
 	}
 
-	// Create capture nodes for an AudioContext
-	function setupCaptureForContext(ctx: AudioContext) {
-		if (captureNodes.has(ctx)) return captureNodes.get(ctx);
+	/**
+	 * Encode one interleaved-by-channel block.
+	 * `left`/`right` are separate planes; AudioData wants them concatenated
+	 * for the planar format.
+	 */
+	function encodeBlock(left: Float32Array, right: Float32Array, sampleRate: number) {
+		if (!isCapturing || !audioEncoder || audioEncoder.state !== 'configured') return;
+
+		// Skip digital silence — most pages are silent most of the time, and an
+		// Opus frame of silence still costs an encode, a packet and a decode.
+		let hasAudio = false;
+		for (let i = 0; i < left.length; i += 64) {
+			if (Math.abs(left[i]) > 0.0001 || Math.abs(right[i]) > 0.0001) {
+				hasAudio = true;
+				break;
+			}
+		}
+		if (!hasAudio) return;
 
 		try {
-			// Create a script processor to capture audio
-			const processor = ctx.createScriptProcessor(config.bufferSize, config.numberOfChannels, config.numberOfChannels);
+			const planar = new Float32Array(left.length * config.numberOfChannels);
+			planar.set(left, 0);
+			if (config.numberOfChannels > 1) {
+				planar.set(right, left.length);
+			}
+
+			// Use performance.now() directly (same as video) for proper AV sync
+			const audioData = new AudioData({
+				format: 'f32-planar',
+				sampleRate,
+				numberOfFrames: left.length,
+				numberOfChannels: config.numberOfChannels,
+				timestamp: performance.now() * 1000, // microseconds
+				data: planar
+			});
+
+			audioEncoder.encode(audioData);
+			audioData.close();
+
+			sampleCount += left.length;
+		} catch (error) {
+			// Silent fail to not interrupt audio
+		}
+	}
+
+	/**
+	 * AudioWorklet tap. Runs on the audio rendering thread, so the page's main
+	 * thread (which is also running the video encoder) never sees it.
+	 */
+	const workletSource = `
+		class ClopenTapProcessor extends AudioWorkletProcessor {
+			constructor(options) {
+				super();
+				this.blockSize = (options.processorOptions && options.processorOptions.blockSize) || 2048;
+				this.left = new Float32Array(this.blockSize);
+				this.right = new Float32Array(this.blockSize);
+				this.filled = 0;
+			}
+			process(inputs) {
+				const input = inputs[0];
+				if (!input || input.length === 0) return true;
+				const l = input[0];
+				const r = input.length > 1 ? input[1] : input[0];
+				if (!l) return true;
+				for (let i = 0; i < l.length; i++) {
+					this.left[this.filled] = l[i];
+					this.right[this.filled] = r[i];
+					this.filled++;
+					if (this.filled === this.blockSize) {
+						this.port.postMessage(
+							{ left: this.left, right: this.right },
+							[this.left.buffer, this.right.buffer]
+						);
+						this.left = new Float32Array(this.blockSize);
+						this.right = new Float32Array(this.blockSize);
+						this.filled = 0;
+					}
+				}
+				return true;
+			}
+		}
+		registerProcessor('clopen-tap', ClopenTapProcessor);
+	`;
+
+	let workletModuleUrl: string | null = null;
+
+	function getWorkletUrl(): string | null {
+		if (workletModuleUrl) return workletModuleUrl;
+		try {
+			workletModuleUrl = URL.createObjectURL(new Blob([workletSource], { type: 'text/javascript' }));
+			return workletModuleUrl;
+		} catch (e) {
+			return null;
+		}
+	}
+
+	/**
+	 * Attach a capture tap to a context.
+	 *
+	 * Returns the node the page's audio should be routed *into*. The tap itself
+	 * terminates in a muted gain node so it never contributes to what the page
+	 * plays — the audible path is a separate direct connection.
+	 */
+	function setupCaptureForContext(ctx: AudioContext, destination: AudioNode) {
+		if (captureNodes.has(ctx)) return captureNodes.get(ctx);
+
+		let sink: GainNode;
+		try {
+			// Muted terminator: nodes only pull audio while connected to a
+			// destination, but this branch must stay inaudible.
+			sink = ctx.createGain();
+			sink.gain.value = 0;
+			sink.connect(destination);
+		} catch (e) {
+			return null;
+		}
+
+		const captureInfo: { input: AudioNode | null; sink: GainNode } = { input: null, sink };
+		captureNodes.set(ctx, captureInfo);
+
+		const url = getWorkletUrl();
+		if (url && ctx.audioWorklet) {
+			ctx.audioWorklet
+				.addModule(url)
+				.then(() => {
+					const node = new AudioWorkletNode(ctx, 'clopen-tap', {
+						numberOfInputs: 1,
+						numberOfOutputs: 1,
+						outputChannelCount: [config.numberOfChannels],
+						processorOptions: { blockSize: config.bufferSize }
+					});
+					node.port.onmessage = (event) => {
+						encodeBlock(event.data.left, event.data.right, ctx.sampleRate);
+					};
+					node.connect(sink);
+					captureInfo.input = node;
+				})
+				.catch(() => {
+					// Blob worklets are blocked by strict CSP on some pages —
+					// fall back to the legacy tap rather than losing audio.
+					captureInfo.input = createScriptProcessorTap(ctx, sink);
+				});
+		} else {
+			captureInfo.input = createScriptProcessorTap(ctx, sink);
+		}
+
+		return captureInfo;
+	}
+
+	/**
+	 * Run `connect` once the tap node exists. Bounded: if the worklet module
+	 * never loads and the fallback also failed, give up instead of polling for
+	 * the lifetime of the page.
+	 */
+	function whenTapReady(
+		captureInfo: { input: AudioNode | null },
+		connect: (input: AudioNode) => void,
+		attempt = 0
+	) {
+		if (captureInfo.input) {
+			try {
+				connect(captureInfo.input);
+			} catch (e) {}
+			return;
+		}
+		if (attempt >= 40) return; // ~2s
+		setTimeout(() => whenTapReady(captureInfo, connect, attempt + 1), 50);
+	}
+
+	function createScriptProcessorTap(ctx: AudioContext, sink: GainNode): AudioNode | null {
+		try {
+			const processor = ctx.createScriptProcessor(
+				config.bufferSize,
+				config.numberOfChannels,
+				config.numberOfChannels
+			);
 
 			processor.onaudioprocess = (event: AudioProcessingEvent) => {
-				if (!isCapturing || !audioEncoder || audioEncoder.state !== 'configured') {
-					// Pass through audio unchanged
-					for (let ch = 0; ch < event.outputBuffer.numberOfChannels; ch++) {
-						const input = event.inputBuffer.getChannelData(ch);
-						const output = event.outputBuffer.getChannelData(ch);
-						output.set(input);
-					}
-					return;
-				}
-
-				try {
-					const left = event.inputBuffer.getChannelData(0);
-					const right = event.inputBuffer.numberOfChannels > 1
-						? event.inputBuffer.getChannelData(1)
-						: left;
-
-					// Pass through to output
-					event.outputBuffer.getChannelData(0).set(left);
-					if (event.outputBuffer.numberOfChannels > 1) {
-						event.outputBuffer.getChannelData(1).set(right);
-					}
-
-					// Check if there's any audio (not silence)
-					let hasAudio = false;
-					for (let i = 0; i < left.length; i += 64) {
-						if (Math.abs(left[i]) > 0.0001 || Math.abs(right[i]) > 0.0001) {
-							hasAudio = true;
-							break;
-						}
-					}
-
-					if (!hasAudio) return;
-
-					// Use performance.now() directly (same as video) for proper AV sync
-					// Both video and audio now use the same timestamp origin
-					const timestamp = performance.now() * 1000; // microseconds
-
-					// Create AudioData with planar format
-					const audioData = new AudioData({
-						format: 'f32-planar',
-						sampleRate: ctx.sampleRate,
-						numberOfFrames: left.length,
-						numberOfChannels: config.numberOfChannels,
-						timestamp: timestamp,
-						data: new Float32Array([...left, ...right])
-					});
-
-					audioEncoder!.encode(audioData);
-					audioData.close();
-
-					sampleCount += left.length;
-				} catch (error) {
-					// Silent fail to not interrupt audio
-				}
+				if (!isCapturing) return;
+				const left = event.inputBuffer.getChannelData(0);
+				const right =
+					event.inputBuffer.numberOfChannels > 1 ? event.inputBuffer.getChannelData(1) : left;
+				// Copy: the event buffers are reused by the audio thread.
+				encodeBlock(new Float32Array(left), new Float32Array(right), ctx.sampleRate);
 			};
 
-			const captureInfo = { processor };
-			captureNodes.set(ctx, captureInfo);
-
-			return captureInfo;
-		} catch (error) {
+			processor.connect(sink);
+			return processor;
+		} catch (e) {
 			return null;
 		}
 	}
@@ -154,13 +279,14 @@ export function audioCaptureScript(config: StreamingConfig['audio']) {
 		interceptedContexts.add(ctx);
 
 		// Resume AudioContext immediately — in headless Chrome without a user gesture,
-		// AudioContext starts in 'suspended' state and onaudioprocess never fires.
+		// AudioContext starts in 'suspended' state and rendering never runs.
 		if (ctx.state === 'suspended') {
 			ctx.resume().catch(() => {});
 		}
 
 		// Store original destination
 		const originalDestination = ctx.destination;
+		(ctx as any).__originalDestination = originalDestination;
 
 		// Create a capture gain node that sits before the destination
 		let captureGain: GainNode | null = null;
@@ -168,20 +294,22 @@ export function audioCaptureScript(config: StreamingConfig['audio']) {
 			captureGain = ctx.createGain();
 			captureGain.gain.value = 1.0;
 
-			// Setup capture processor connected to this gain
-			const captureInfo = setupCaptureForContext(ctx);
-			if (captureInfo) {
-				captureGain.connect(captureInfo.processor);
-				captureInfo.processor.connect(originalDestination);
-			}
+			// Audible path — unchanged, full gain, no added latency.
 			captureGain.connect(originalDestination);
+
+			// Side-chain tap for the encoder.
+			const captureInfo = setupCaptureForContext(ctx, originalDestination);
+			if (captureInfo) {
+				// The tap node may appear asynchronously (worklet module load).
+				const gain = captureGain;
+				whenTapReady(captureInfo, (input) => gain.connect(input));
+			}
 		} catch (e) {
 			return;
 		}
 
 		// Store references
 		(ctx as any).__captureDestination = captureGain;
-		(ctx as any).__originalDestination = originalDestination;
 
 		// Override the destination getter to return our capture node
 		try {
@@ -221,8 +349,8 @@ export function audioCaptureScript(config: StreamingConfig['audio']) {
 
 		try {
 			// We need an AudioContext to capture from media element
-			const OriginalAudioContext = (window as any).__OriginalAudioContext || window.AudioContext;
-			const ctx = new OriginalAudioContext();
+			const OriginalCtor = (window as any).__OriginalAudioContext || window.AudioContext;
+			const ctx = new OriginalCtor();
 
 			// Resume context immediately — headless Chrome requires explicit resume
 			if (ctx.state === 'suspended') {
@@ -232,13 +360,12 @@ export function audioCaptureScript(config: StreamingConfig['audio']) {
 			// Create media element source
 			const source = ctx.createMediaElementSource(element);
 
-			// Create capture chain
-			const captureInfo = setupCaptureForContext(ctx);
+			// Audible path first so playback never depends on the tap.
+			source.connect(ctx.destination);
+
+			const captureInfo = setupCaptureForContext(ctx, ctx.destination);
 			if (captureInfo) {
-				source.connect(captureInfo.processor);
-				captureInfo.processor.connect(ctx.destination);
-			} else {
-				source.connect(ctx.destination);
+				whenTapReady(captureInfo, (input) => source.connect(input));
 			}
 
 			mediaElementSources.set(element, { ctx, source });

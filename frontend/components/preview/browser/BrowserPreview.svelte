@@ -11,7 +11,7 @@
 	import type { DeviceSize, Rotation } from '$frontend/utils/preview-constants';
 	import { debug } from '$shared/utils/logger';
 	import { createBrowserCoordinator } from './core/coordinator.svelte';
-	import { sendScaleUpdate } from './core/interactions.svelte';
+	import { sendDisplayUpdate } from './core/interactions.svelte';
 	import { projectState } from '$frontend/stores/core/projects.svelte';
 	import { appState } from '$frontend/stores/core/app.svelte';
 
@@ -282,13 +282,16 @@
 		}
 	});
 
-	// Watch scale changes and send to backend
+	// Watch scale changes and send to backend.
+	// Capture resolution follows the displayed size, so a resize needs the new
+	// metrics — but not a capture restart, which is what sendScaleUpdate does
+	// and is reserved for recovering a stuck stream.
 	let lastSentScale = 1;
 	$effect(() => {
 		const currentScale = previewDimensions?.scale || 1;
 		if (currentScale !== lastSentScale && sessionId && isStreamReady) {
 			debug.log('preview', `📐 Scale changed to ${currentScale}, sending to backend`);
-			sendScaleUpdate(currentScale);
+			sendDisplayUpdate(currentScale);
 			lastSentScale = currentScale;
 		}
 	});

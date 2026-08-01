@@ -30,6 +30,7 @@ export interface InteractionAction {
 	delay?: number;
 	steps?: number;
 	scale?: number;
+	dpr?: number;
 	width?: number;
 	height?: number;
 	deviceSize?: string;
@@ -38,6 +39,30 @@ export interface InteractionAction {
 
 // Store current projectId for interactions
 let currentProjectId = '';
+
+/**
+ * Last known CSS fit-scale of the preview.
+ *
+ * Capture resolution is derived from `scale × devicePixelRatio`, so the
+ * streaming service needs this value at handshake time — before any resize
+ * event would have carried it. Kept here because this module is already the
+ * single place that reports scale changes to the backend.
+ */
+let currentDisplayScale = 1;
+
+export function setDisplayScale(scale: number): void {
+	if (scale > 0 && scale <= 1) {
+		currentDisplayScale = scale;
+	}
+}
+
+export function getDisplayScale(): number {
+	return currentDisplayScale;
+}
+
+function currentDpr(): number {
+	return typeof window !== 'undefined' ? window.devicePixelRatio || 1 : 1;
+}
 
 /**
  * Set current project ID for interactions
@@ -61,20 +86,43 @@ export function sendInteraction(action: InteractionAction): void {
 }
 
 /**
- * Send scale update to active tab
+ * Send scale update to active tab.
+ *
+ * Doubles as the stream-recovery path (the frontend re-sends the current scale
+ * when it detects a stuck stream), so it carries the display metrics too —
+ * capture resolution is derived from `scale × devicePixelRatio`.
  */
 export function sendScaleUpdate(scale: number): void {
+	setDisplayScale(scale);
 	try {
 		ws.emit('preview:browser-interact', {
 			action: {
 				type: 'scale-update',
-				scale
+				scale,
+				dpr: currentDpr()
 			}
 		});
-		debug.log('preview', `📐 Sent scale update: ${scale}`);
+		debug.log('preview', `📐 Sent scale update: ${scale} @${currentDpr()}x`);
 	} catch (error) {
 		debug.error('preview', 'Error sending scale update:', error);
 	}
+}
+
+/**
+ * Report display metrics without disturbing the stream.
+ *
+ * A resize only needs the capture resolution recomputed; `sendScaleUpdate`
+ * additionally restarts capture, which is right for recovery but wasteful on
+ * every drag frame of a panel resize.
+ */
+export function sendDisplayUpdate(scale: number): void {
+	setDisplayScale(scale);
+	ws.http('preview:browser-stream-display', {
+		scale,
+		dpr: currentDpr()
+	}).catch(() => {
+		// Best-effort: the next scale-update or reconnect carries it anyway
+	});
 }
 
 /**
@@ -91,6 +139,8 @@ export async function updateViewport(
 	// Use getViewportDimensions for consistent viewport calculation
 	const { width, height } = getViewportDimensions(deviceSize, rotation);
 
+	setDisplayScale(scale);
+
 	try {
 		ws.emit('preview:browser-interact', {
 			action: {
@@ -98,6 +148,7 @@ export async function updateViewport(
 				width,
 				height,
 				scale,
+				dpr: currentDpr(),
 				deviceSize,
 				rotation
 			}

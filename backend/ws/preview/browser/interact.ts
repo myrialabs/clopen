@@ -56,6 +56,7 @@ export const interactPreviewHandler = createRouter()
 				shiftKey: t.Optional(t.Boolean()),
 				clearFirst: t.Optional(t.Boolean()),
 				scale: t.Optional(t.Number()),
+				dpr: t.Optional(t.Number()),
 				width: t.Optional(t.Number()),
 				height: t.Optional(t.Number()),
 				deviceSize: t.Optional(t.String()),
@@ -445,13 +446,16 @@ export const interactPreviewHandler = createRouter()
 						break;
 
 					case 'scale-update':
-						// Display fit-scale changed on the frontend (CSS-only concern).
-						// Capture stays at native viewport resolution — restart the
-						// screencast as a refresh so a stuck stream recovers (the
-						// frontend also uses this action as its refresh path).
+						// Recovery path: the frontend sends this when the stream
+						// looks stuck. It also carries the current display
+						// metrics, which capture resolution is derived from.
 						if (action.scale && action.scale > 0 && action.scale <= 1) {
 							session.scale = action.scale;
-							debug.log('preview', `📐 Scale updated for tab ${tabId}: ${action.scale} (display-only), refreshing screencast`);
+							previewService.applyWebCodecsDisplayMetrics(session.id, {
+								scale: action.scale,
+								dpr: action.dpr
+							});
+							debug.log('preview', `📐 Scale updated for tab ${tabId}: ${action.scale}, refreshing capture`);
 
 							const updated = await previewService.refreshWebCodecsScreencast(session.id);
 							if (!updated) {
@@ -471,6 +475,14 @@ export const interactPreviewHandler = createRouter()
 							if (action.rotation) session.rotation = action.rotation as any;
 
 							debug.log('preview', `📱 Viewport updated for tab ${tabId}: ${action.width}x${action.height}`);
+
+							// The emulated viewport changed, so the derived
+							// capture size has to be recomputed from the new
+							// dimensions before the hot-swap.
+							previewService.applyWebCodecsDisplayMetrics(session.id, {
+								scale: action.scale,
+								dpr: action.dpr
+							});
 
 							// Hot-swap viewport without reconnection
 							const updated = await previewService.updateWebCodecsViewport(session.id, action.width, action.height);

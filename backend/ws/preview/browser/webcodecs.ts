@@ -18,9 +18,29 @@ export const streamPreviewHandler = createRouter()
 		{
 			data: t.Object({
 				tabId: t.Optional(t.String()),
-				// Client VP9 decode capability — encoder prefers VP9 quantizer
-				// mode but must fall back to VP8 if the viewer can't decode it
-				vp9: t.Optional(t.Boolean())
+				// Legacy VP9-only capability flag — superseded by `codecs`,
+				// kept so an older client can still negotiate.
+				vp9: t.Optional(t.Boolean()),
+				// Full viewer decode capability. Which codecs the viewer can
+				// decode *in hardware* decides the encoder choice: software VP9
+				// decode is the main reason phones and low-end laptops drop
+				// frames no server-side tuning can recover.
+				codecs: t.Optional(
+					t.Object({
+						vp8: t.Boolean(),
+						vp9: t.Boolean(),
+						avc: t.Boolean(),
+						hardware: t.Array(t.String())
+					})
+				),
+				// Viewer display metrics — capture resolution is derived from
+				// these so we never encode pixels the screen cannot show.
+				display: t.Optional(
+					t.Object({
+						scale: t.Optional(t.Number()),
+						dpr: t.Optional(t.Number())
+					})
+				)
 			}),
 			response: t.Object({
 				success: t.Boolean(),
@@ -43,8 +63,20 @@ export const streamPreviewHandler = createRouter()
 				throw new Error('Preview session not found or invalid');
 			}
 
+			const codecSupport = data.codecs
+				? {
+						vp8: data.codecs.vp8,
+						vp9: data.codecs.vp9,
+						avc: data.codecs.avc,
+						hardware: data.codecs.hardware as ('vp8' | 'vp9' | 'avc')[]
+					}
+				: { vp8: true, vp9: data.vp9 !== false, avc: false, hardware: [] };
+
 			// Start WebCodecs streaming
-			const started = await previewService.startWebCodecsStreaming(sessionId, data.vp9 !== false);
+			const started = await previewService.startWebCodecsStreaming(sessionId, {
+				codecSupport,
+				display: data.display
+			});
 
 			if (!started) {
 				throw new Error('Failed to start WebCodecs streaming');
@@ -167,6 +199,87 @@ export const streamPreviewHandler = createRouter()
 			const { previewService, tab } = requireBrowserTabAccess(conn, data.tabId);
 
 			const success = await previewService.requestWebCodecsKeyframe(tab.id);
+
+			return { success };
+		}
+	)
+
+	// Viewer decoder health, reported periodically while connected.
+	//
+	// Backpressure used to be network-only: the source watched its own send
+	// buffer and nothing else. A viewer that cannot decode fast enough stutters
+	// identically with an empty buffer, so its decode queue has to travel back
+	// to the source for the adaptation loop to be closed.
+	.http(
+		'preview:browser-stream-feedback',
+		{
+			data: t.Object({
+				tabId: t.Optional(t.String()),
+				decodeQueueSize: t.Number(),
+				decodeLatencyMs: t.Number(),
+				dropRatio: t.Number()
+			}),
+			response: t.Object({
+				success: t.Boolean()
+			})
+		},
+		async ({ data, conn }) => {
+			const { previewService, tab } = requireBrowserTabAccess(conn, data.tabId);
+
+			previewService.applyWebCodecsClientFeedback(tab.id, {
+				decodeQueueSize: data.decodeQueueSize,
+				decodeLatencyMs: data.decodeLatencyMs,
+				dropRatio: data.dropRatio
+			});
+
+			return { success: true };
+		}
+	)
+
+	// Viewer display metrics changed (panel resize, device swap, moved to a
+	// different-density screen). Capture resolution follows this.
+	.http(
+		'preview:browser-stream-display',
+		{
+			data: t.Object({
+				tabId: t.Optional(t.String()),
+				scale: t.Optional(t.Number()),
+				dpr: t.Optional(t.Number())
+			}),
+			response: t.Object({
+				success: t.Boolean()
+			})
+		},
+		async ({ data, conn }) => {
+			const { previewService, tab } = requireBrowserTabAccess(conn, data.tabId);
+
+			const success = previewService.applyWebCodecsDisplayMetrics(tab.id, {
+				scale: data.scale,
+				dpr: data.dpr
+			});
+
+			return { success };
+		}
+	)
+
+	// Suspend/resume capture when the preview leaves or re-enters view.
+	// An unwatched preview otherwise keeps a headless renderer and an encoder
+	// busy indefinitely — the dominant idle cost on a shared host.
+	.http(
+		'preview:browser-stream-visibility',
+		{
+			data: t.Object({
+				tabId: t.Optional(t.String()),
+				visible: t.Boolean()
+			}),
+			response: t.Object({
+				success: t.Boolean()
+			})
+		},
+		async ({ data, conn }) => {
+			const { previewService, tab } = requireBrowserTabAccess(conn, data.tabId);
+
+			const success = await previewService.setWebCodecsPaused(tab.id, !data.visible);
 
 			return { success };
 		}

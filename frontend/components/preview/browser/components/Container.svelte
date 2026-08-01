@@ -13,7 +13,7 @@
 		type Rotation
 	} from '$frontend/utils/preview-constants';
 	import { debug } from '$shared/utils/logger';
-	import { sendScaleUpdate } from '../core/interactions.svelte';
+	import { sendScaleUpdate, setDisplayScale } from '../core/interactions.svelte';
 
 	let {
 		projectId = '', // REQUIRED for project isolation (read-only from parent)
@@ -178,6 +178,10 @@
 		const scaleX = availableWidth > 0 ? Math.min(1, availableWidth / totalWidth) : 1;
 		const scaleY = availableHeight > 0 ? Math.min(1, availableHeight / totalHeight) : 1;
 		const scale = Math.min(scaleX, scaleY);
+
+		// Publish immediately — the streaming handshake reads this to pick a
+		// capture resolution, and it runs before any scale-change event fires.
+		setDisplayScale(scale);
 
 		previewDimensions = {
 			// Outer wrapper = full scaled footprint (body + stand accessory)

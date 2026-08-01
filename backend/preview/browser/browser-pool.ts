@@ -15,6 +15,7 @@
  * - Direct launch() ensures puppeteer-extra wraps ALL page creation correctly.
  */
 
+import { existsSync } from 'fs';
 import type { Browser, BrowserContext, Page } from 'puppeteer';
 import { debug } from '$shared/utils/logger';
 import puppeteer from 'puppeteer-extra';
@@ -45,15 +46,88 @@ const DEFAULT_CONFIG: PoolConfig = {
 };
 
 /**
- * Chrome launch arguments for stealth (matches test-cf.ts exactly)
+ * Chrome launch arguments.
+ *
+ * Three groups, kept separate because they answer different questions:
+ * stealth (Cloudflare bypass — matches test-cf.ts), capture (what the preview
+ * pipeline needs from the renderer), and host adaptation (what a headless VPS
+ * needs that a desktop doesn't).
  */
-const CHROME_ARGS = [
-	'--no-sandbox',
-	'--disable-blink-features=AutomationControlled',
-	'--window-size=1366,768',
-	'--autoplay-policy=no-user-gesture-required',
-	'--disable-features=AudioServiceOutOfProcess,WebRtcHideLocalIpsWithMdns'
-];
+function buildChromeArgs(): string[] {
+	// Chrome only honours the last `--disable-features`, so every entry has to
+	// live in one combined flag.
+	const disabledFeatures = [
+		'AudioServiceOutOfProcess',
+		'WebRtcHideLocalIpsWithMdns',
+		// Occlusion detection throttles renderers Chrome thinks nobody is
+		// looking at — which is every headless tab, including the one we are
+		// actively streaming.
+		'CalculateNativeWinOcclusion'
+	];
+
+	const args = [
+		'--no-sandbox',
+		'--disable-blink-features=AutomationControlled',
+		'--window-size=1366,768',
+		'--autoplay-policy=no-user-gesture-required',
+
+		// In-page capture (getDisplayMedia({preferCurrentTab})) — lets the
+		// encoder read compositor frames directly instead of round-tripping
+		// JPEG through CDP. Without this the call would wait on a picker that
+		// can never be answered in headless.
+		'--auto-accept-this-tab-capture',
+
+		// A headless tab is never "visible" or "focused", and Chrome
+		// aggressively de-prioritises renderers in that state — timers get
+		// clamped and compositing stalls, which reads as a frozen preview.
+		'--disable-background-timer-throttling',
+		'--disable-backgrounding-occluded-windows',
+		'--disable-renderer-backgrounding',
+
+		// Containers and small VPS instances often ship a 64MB /dev/shm;
+		// exceeding it crashes the renderer mid-stream.
+		'--disable-dev-shm-usage',
+
+		'--no-first-run',
+		'--no-default-browser-check',
+		'--disable-hang-monitor',
+		'--metrics-recording-only',
+		'--force-color-profile=srgb'
+	];
+
+	if (shouldDisableGpu()) {
+		// Without a real GPU, Chrome falls back to SwiftShader — a software
+		// GL implementation whose setup and per-frame cost exceed plain CPU
+		// rasterisation for the 2D content a preview shows.
+		args.push('--disable-gpu', '--disable-software-rasterizer');
+	}
+
+	args.push(`--disable-features=${disabledFeatures.join(',')}`);
+
+	return args;
+}
+
+/**
+ * Whether this host benefits from skipping GPU compositing entirely.
+ *
+ * `auto` only disables it on Linux hosts with no render node, i.e. headless
+ * servers — a Linux desktop keeps its GPU so WebGL previews still work.
+ */
+function shouldDisableGpu(): boolean {
+	const override = (process.env.CLOPEN_PREVIEW_GPU || '').trim().toLowerCase();
+	if (override === 'off') return true;
+	if (override === 'on') return false;
+
+	if (process.platform !== 'linux') return false;
+
+	try {
+		return !existsSync('/dev/dri');
+	} catch {
+		return true;
+	}
+}
+
+const CHROME_ARGS = buildChromeArgs();
 
 class BrowserPool {
 	private browser: Browser | null = null;

@@ -4,14 +4,18 @@
  * Handles WebCodecs-based video streaming with WebRTC DataChannel transport.
  *
  * Video Architecture (Chrome-Remote-Desktop-style adaptive quality):
- * 1. CDP captures JPEG frames via Page.screencastFrame at native viewport resolution
- * 2. Direct CDP Runtime.evaluate sends base64 to page (bypasses Puppeteer IPC)
- * 3. Page decodes via createImageBitmap, encodes with VideoEncoder —
- *    preferred VP9 quantizer mode (cheap during motion), VP8 bitrate fallback
- * 4. When the page goes still, a lossless PNG screenshot is pushed through the
- *    encoder near-losslessly (top-off) so text sharpens after motion stops
- * 5. Send encoded chunks via reliable ordered RTCDataChannel; latency is
- *    bounded by source-side frame dropping (bufferedAmount backpressure)
+ * 1. Frames are captured at the resolution the viewer can actually display
+ *    (fit-scale × devicePixelRatio, capped by the host's pixel budget)
+ * 2. Capture runs either in-page (getDisplayMedia → VideoFrame, no round-trip)
+ *    or via CDP screencast, which is ack-gated so Chrome never rasters a frame
+ *    we would discard
+ * 3. The page encodes with VideoEncoder — VP9 quantizer mode, H.264 when the
+ *    viewer has hardware for it, VP8 as the universal floor
+ * 4. When the page goes still, one near-lossless refresh frame is sent so text
+ *    sharpens after motion stops
+ * 5. Encoded chunks travel over a reliable ordered RTCDataChannel; latency is
+ *    bounded by source-side frame dropping, driven by three independent
+ *    signals: network buffer, encoder queue, and the viewer's decode queue
  *
  * Audio Architecture:
  * 1. AudioContext interception (handled by BrowserAudioCapture)
@@ -20,34 +24,86 @@
  *
  * Client:
  * - Receives video + audio chunks via DataChannel
- * - Decodes with VideoDecoder + AudioDecoder
+ * - Decodes with VideoDecoder (off the main thread when the browser allows it)
  * - Renders video to canvas, plays audio with proper scheduling
- *
- * Benefits vs Canvas + WebRTC:
- * - Lower bandwidth (500-800 Kbps vs 1 Mbps)
- * - More control over codec selection
- * - Skip canvas rendering overhead
- * - DataChannel = lower latency than video track
  */
 
 import { EventEmitter } from 'events';
-import type { Page } from 'puppeteer';
-import type { BrowserTab, StreamingConfig } from './types';
-import { DEFAULT_STREAMING_CONFIG } from './types';
+import type { CDPSession, Page } from 'puppeteer';
+import type {
+	BrowserTab,
+	ClientCodecSupport,
+	ClientDisplayMetrics,
+	ClientStreamFeedback,
+	StreamingConfig
+} from './types';
+import { DEFAULT_STREAMING_CONFIG, resolveCodecCandidates } from './types';
 import { videoEncoderScript } from './scripts/video-stream';
 import { audioCaptureScript } from './scripts/audio-stream';
+import {
+	computeBitrate,
+	computeCaptureSize,
+	getHostCaptureProfile,
+	type CaptureProfile,
+	type CaptureSize
+} from './capture-profile';
 import { debug } from '$shared/utils/logger';
+
+/**
+ * Encoder health reported back from the page every couple of seconds.
+ * This is the CPU half of the backpressure story — `bufferedAmount` only ever
+ * described the network.
+ */
+interface EncoderStats {
+	captureMode: 'push' | 'native';
+	codec: string;
+	/** Mean main-thread cost per frame in the page: image decode + encode. */
+	avgFrameCostMs: number;
+	/** Peak encoder queue depth over the window, not an instantaneous sample. */
+	encodeQueueMax: number;
+	bufferedAmount: number;
+	framesAttempted: number;
+	framesSkippedEncoder: number;
+	framesSkippedNetwork: number;
+	/** Frames per second actually delivered to the viewer over the window. */
+	measuredFps: number;
+	width: number;
+	height: number;
+}
 
 interface VideoStreamSession {
 	sessionId: string;
 	isActive: boolean;
+	paused: boolean;
 	clientConnected: boolean;
 	headlessReady: boolean;
 	pendingCandidates: RTCIceCandidateInit[];
 	scriptInjected: boolean; // Track if persistent script was injected
 	scriptsPreInjected: boolean; // Track if scripts were pre-injected during tab creation
 	audioOnNewDocumentInjected: boolean; // Track if evaluateOnNewDocument was registered for audio
-	allowVp9: boolean; // Client decode capability (negotiated at stream start)
+	codecSupport: ClientCodecSupport; // Client decode capability (negotiated at stream start)
+	display: ClientDisplayMetrics; // Viewer fit-scale + pixel density
+	profile: CaptureProfile;
+	capture: CaptureSize;
+	/** Extra resolution derate applied when the fps floor isn't enough. */
+	pixelDerate: number;
+	targetFramerate: number;
+	captureMode: 'push' | 'native';
+	/** Consecutive healthy adaptation windows — gates recovery upward. */
+	healthyWindows: number;
+	/**
+	 * Consecutive saturated windows. Degrading on a single report made the
+	 * ladder a one-way ratchet: any momentary spike stepped the framerate down,
+	 * and because a degrade resets the recovery counter, one spike every few
+	 * seconds was enough to walk the stream to its floor and pin it there.
+	 */
+	saturatedWindows: number;
+	/**
+	 * The tab this session streams. Kept here so adaptation triggered from the
+	 * page (encoder stats arrive through an exposed binding, with no tab in
+	 * hand) can still reach the page to change capture geometry.
+	 */
+	tab?: BrowserTab;
 	stats: {
 		videoBytesSent: number;
 		audioBytesSent: number;
@@ -58,19 +114,329 @@ interface VideoStreamSession {
 }
 
 /**
- * Scale encoder bitrate with capture resolution to keep bits-per-pixel
- * constant. Capture always runs at native viewport size (display fit-scale
- * is a CSS-only concern on the frontend), so a fixed bitrate would starve
- * larger viewports during motion.
- * 0.045 bpp at 1280×800@24fps ≈ 1.1 Mbps (comparable to the previous fixed 1 Mbps).
+ * Framerate ladder. Discrete so the stream settles instead of oscillating;
+ * clamped per session to the host profile's [minFramerate, maxFramerate].
  */
-const BITS_PER_PIXEL = 0.045;
+const FRAMERATE_LADDER = [6, 8, 10, 12, 15, 18, 20, 24, 30];
 
-function computeBitrate(width: number, height: number, framerate: number): number {
-	return Math.max(
-		DEFAULT_STREAMING_CONFIG.video.bitrate,
-		Math.round(width * height * framerate * BITS_PER_PIXEL)
-	);
+/**
+ * Resolution derates applied only after the framerate floor is reached. Going
+ * coarser beats going slower — a sharp slideshow reads worse than a soft but
+ * fluid stream — so this is the last resort, not the first.
+ */
+const PIXEL_DERATE_LADDER = [1, 0.85, 0.7, 0.55];
+
+const DEFAULT_CODEC_SUPPORT: ClientCodecSupport = {
+	vp8: true,
+	vp9: true,
+	avc: false,
+	hardware: []
+};
+
+/**
+ * CDP screencast feeder with ack-gated flow control.
+ *
+ * `Page.screencastFrame` fires at the compositor rate (up to 60fps) and Chrome
+ * withholds the next frame until the current one is acked. Acking immediately
+ * and discarding surplus frames downstream — the previous design — meant the
+ * renderer still rastered, JPEG-encoded and base64'd every one of them, and
+ * the process still parsed them, before we threw half away. Holding the ack
+ * for one frame interval moves that throttle to the only place it actually
+ * saves work: before the frame is produced.
+ */
+class ScreencastFeeder {
+	private ackTimer: ReturnType<typeof setTimeout> | null = null;
+	private topOffTimer: ReturnType<typeof setTimeout> | null = null;
+	private peerObjectId: string | null = null;
+	private acquiringPeer = false;
+	private capturingTopOff = false;
+	private frameSeq = 0;
+	private destroyed = false;
+	private running = false;
+	private lastDispatchAt = 0;
+	private lastAckAt = 0;
+	private pendingAckId: number | null = null;
+
+	constructor(
+		private readonly cdp: CDPSession,
+		private readonly label: string,
+		private readonly getSession: () => VideoStreamSession | undefined,
+		private readonly getTab: () => BrowserTab | undefined,
+		private readonly onInvalidSession: () => void,
+		private readonly isValidSession: () => boolean
+	) {
+		this.cdp.on('Page.screencastFrame', (event: any) => this.handleFrame(event));
+	}
+
+	/** Milliseconds a frame is held before acking — i.e. the source frame budget. */
+	private get frameIntervalMs(): number {
+		const fps = this.getSession()?.targetFramerate || DEFAULT_STREAMING_CONFIG.video.framerate;
+		return Math.max(16, Math.round(1000 / fps));
+	}
+
+	async start(width: number, height: number, quality: number): Promise<void> {
+		if (this.destroyed) return;
+
+		// Acquire the encoder handle before the first frame so no frame is
+		// wasted waiting for it.
+		await this.acquirePeerHandle();
+
+		await this.cdp.send('Page.startScreencast', {
+			format: 'jpeg',
+			quality,
+			maxWidth: width,
+			maxHeight: height,
+			everyNthFrame: 1
+		});
+
+		this.running = true;
+		debug.log('webcodecs', `CDP screencast started for ${this.label} at ${width}x${height} (q${quality})`);
+	}
+
+	async restart(width: number, height: number, quality: number): Promise<void> {
+		if (this.destroyed) return;
+		this.clearTimers();
+		await this.cdp.send('Page.stopScreencast').catch(() => {});
+		this.running = false;
+		await this.start(width, height, quality);
+	}
+
+	async pause(): Promise<void> {
+		if (!this.running) return;
+		this.clearTimers();
+		this.running = false;
+		await this.cdp.send('Page.stopScreencast').catch(() => {});
+	}
+
+	/** Invalidate the cached page handle — the execution context is gone. */
+	invalidatePeerHandle(): void {
+		this.peerObjectId = null;
+	}
+
+	private async acquirePeerHandle(): Promise<void> {
+		if (this.destroyed || this.acquiringPeer || this.peerObjectId) return;
+		this.acquiringPeer = true;
+		try {
+			const result: any = await this.cdp.send('Runtime.evaluate', {
+				expression: 'window.__webCodecsPeer',
+				returnByValue: false,
+				silent: true
+			});
+			this.peerObjectId = result?.result?.objectId ?? null;
+		} catch {
+			this.peerObjectId = null;
+		} finally {
+			this.acquiringPeer = false;
+		}
+	}
+
+	/**
+	 * Hand a frame to the page encoder.
+	 *
+	 * The payload travels as a `callFunctionOn` **argument**, not interpolated
+	 * into a `Runtime.evaluate` expression. Interpolation made V8 parse and
+	 * compile a fresh source string containing the whole base64 frame on every
+	 * single frame — hundreds of kilobytes of compilation per frame, for a
+	 * call that never changes.
+	 */
+	private dispatch(data: string, isTopOff: boolean, mimeType: string): void {
+		if (this.destroyed) return;
+
+		if (!this.peerObjectId) {
+			void this.acquirePeerHandle();
+			return;
+		}
+
+		this.cdp
+			.send('Runtime.callFunctionOn', {
+				objectId: this.peerObjectId,
+				functionDeclaration: 'function(d,t,m){this.encodeFrame(d,t,m)}',
+				arguments: [{ value: data }, { value: isTopOff }, { value: mimeType }],
+				returnByValue: false,
+				awaitPromise: false,
+				silent: true
+			} as any)
+			.catch(() => {
+				// Stale handle (navigation) — the next frame re-acquires it.
+				this.peerObjectId = null;
+			});
+	}
+
+	private ack(cdpSessionId: number): void {
+		this.cdp.send('Page.screencastFrameAck', { sessionId: cdpSessionId }).catch(() => {});
+	}
+
+	private handleFrame(event: any): void {
+		this.frameSeq++;
+
+		// Every frame must be acknowledged exactly once — Chrome counts frames
+		// in flight and stops producing once that count sticks. If a previous
+		// ack is still held, release it now rather than replacing it.
+		this.flushPendingAck();
+
+		const session = this.getSession();
+		const tab = this.getTab();
+
+		// Ack immediately when we're not consuming — never leave the screencast
+		// waiting on an ack that will not come, or it stalls permanently.
+		if (this.destroyed || !session?.isActive || session.paused || tab?.isDestroyed) {
+			this.ack(event.sessionId);
+			return;
+		}
+
+		if (!this.isValidSession()) {
+			this.ack(event.sessionId);
+			this.onInvalidSession();
+			return;
+		}
+
+		// Native capture drives the encoder itself; the screencast should
+		// already be stopped, but ack defensively so nothing wedges.
+		if (session.captureMode === 'native') {
+			this.ack(event.sessionId);
+			return;
+		}
+
+		const now = Date.now();
+		const interval = this.frameIntervalMs;
+
+		try {
+			// Belt-and-braces rate limit against a source that isn't honouring
+			// ack flow control. The margin is loose on purpose: under working
+			// flow control frames already arrive one interval apart, and
+			// dropping one costs a *whole* extra interval (the next frame is
+			// only produced after our ack), which reads as judder.
+			if (this.lastDispatchAt > 0 && now - this.lastDispatchAt < interval * 0.6) {
+				return;
+			}
+
+			this.lastDispatchAt = now;
+			this.dispatch(event.data, false, 'image/jpeg');
+			this.scheduleTopOff();
+		} finally {
+			// Self-calibrating hold. The period the viewer actually sees is
+			// `hold + however long the source takes to produce and deliver the
+			// next frame`, so holding a full interval on top of that undershoots
+			// the target framerate — measurably, and visibly as stutter. Measure
+			// the pipeline (last ack → this frame) and hold only the remainder.
+			const pipelineMs = this.lastAckAt > 0 ? Math.max(0, now - this.lastAckAt) : 0;
+			const hold = Math.max(0, interval - pipelineMs);
+
+			this.pendingAckId = event.sessionId;
+			this.ackTimer = setTimeout(() => {
+				this.ackTimer = null;
+				this.sendPendingAck();
+			}, hold);
+		}
+	}
+
+	private flushPendingAck(): void {
+		if (!this.ackTimer) return;
+		clearTimeout(this.ackTimer);
+		this.ackTimer = null;
+		this.sendPendingAck();
+	}
+
+	private sendPendingAck(): void {
+		if (this.pendingAckId === null) return;
+		const id = this.pendingAckId;
+		this.pendingAckId = null;
+		this.lastAckAt = Date.now();
+		this.ack(id);
+	}
+
+	/**
+	 * Static top-off: screencastFrame only fires on damage, so when no frame
+	 * arrives for TOP_OFF_DELAY_MS the page has gone still. Capture one
+	 * high-quality screenshot and encode it near-losslessly so the last
+	 * (motion-degraded) frame doesn't stay soft on screen. One frame per still
+	 * period — idle costs nothing.
+	 */
+	scheduleTopOff(): void {
+		if (this.destroyed) return;
+		if (this.topOffTimer) clearTimeout(this.topOffTimer);
+
+		// The delay has to clear the gap between two motion frames, or a slow
+		// stream looks "still" between every frame and pays for a screenshot
+		// plus a near-lossless keyframe in the middle of actual motion.
+		const delay = Math.max(BrowserVideoCapture.TOP_OFF_DELAY_MS, this.frameIntervalMs * 2);
+
+		this.topOffTimer = setTimeout(async () => {
+			this.topOffTimer = null;
+
+			const session = this.getSession();
+			const tab = this.getTab();
+			if (!session?.isActive || session.paused || tab?.isDestroyed || this.capturingTopOff) return;
+			if (session.captureMode === 'native') return; // handled in-page from the retained frame
+
+			this.capturingTopOff = true;
+			const seqAtCapture = this.frameSeq;
+
+			try {
+				const profile = session.profile;
+				const viewport = tab?.page?.viewport();
+				const params: Record<string, unknown> = {
+					format: profile.topOffFormat,
+					captureBeyondViewport: false,
+					optimizeForSpeed: true
+				};
+
+				if (profile.topOffFormat === 'jpeg') {
+					params.quality = profile.topOffQuality;
+				}
+
+				// The refresh frame must arrive at the encoder's geometry, so
+				// it is captured through the same scale as the screencast.
+				if (viewport && session.capture.scale < 0.999) {
+					params.clip = {
+						x: 0,
+						y: 0,
+						width: viewport.width,
+						height: viewport.height,
+						scale: session.capture.scale
+					};
+				}
+
+				const screenshot: any = await this.cdp.send('Page.captureScreenshot', params as any);
+
+				// Discard if the page moved again while capturing — new
+				// screencast frames already rescheduled the top-off.
+				if (this.frameSeq !== seqAtCapture || this.destroyed) return;
+
+				this.dispatch(
+					screenshot.data,
+					true,
+					profile.topOffFormat === 'jpeg' ? 'image/jpeg' : 'image/png'
+				);
+			} catch {
+				// Page may be navigating/closing — top-off is best-effort
+			} finally {
+				this.capturingTopOff = false;
+			}
+		}, delay);
+	}
+
+	private clearTimers(): void {
+		// Release the held frame before dropping the timer. The screencast is
+		// about to be stopped either way, but leaving Chrome's in-flight count
+		// non-zero would wedge the next start.
+		this.flushPendingAck();
+		this.lastDispatchAt = 0;
+		this.lastAckAt = 0;
+
+		if (this.topOffTimer) {
+			clearTimeout(this.topOffTimer);
+			this.topOffTimer = null;
+		}
+	}
+
+	async destroy(): Promise<void> {
+		this.destroyed = true;
+		this.running = false;
+		this.clearTimers();
+		await this.cdp.send('Page.stopScreencast').catch(() => {});
+		await this.cdp.detach().catch(() => {});
+	}
 }
 
 export class BrowserVideoCapture extends EventEmitter {
@@ -80,14 +446,106 @@ export class BrowserVideoCapture extends EventEmitter {
 	 * Long enough to skip inter-frame gaps of animations, short enough that
 	 * text sharpens almost immediately after scrolling stops.
 	 */
-	private static readonly TOP_OFF_DELAY_MS = 300;
+	static readonly TOP_OFF_DELAY_MS = 300;
+
+	/** Debounce for viewer resize storms before touching the encoder. */
+	private static readonly DISPLAY_METRICS_DEBOUNCE_MS = 250;
 
 	private sessions = new Map<string, VideoStreamSession>();
+	private feeders = new Map<string, ScreencastFeeder>();
 	private preInjectPromises = new Map<string, Promise<boolean>>();
+	private displayMetricsTimers = new Map<string, ReturnType<typeof setTimeout>>();
 
 	constructor() {
 		super();
 	}
+
+	// ------------------------------------------------------------------
+	// Session configuration
+	// ------------------------------------------------------------------
+
+	/**
+	 * Build the per-session video config: capture geometry from the viewer's
+	 * display metrics, quality ceilings from the host profile, and the codec
+	 * order from the viewer's decode capabilities.
+	 */
+	private buildVideoConfig(
+		videoSession: VideoStreamSession,
+		viewport: { width: number; height: number }
+	): StreamingConfig['video'] {
+		const profile = videoSession.profile;
+
+		const derated = {
+			...profile,
+			maxPixels: Math.round(profile.maxPixels * videoSession.pixelDerate)
+		};
+
+		videoSession.capture = computeCaptureSize(
+			viewport.width,
+			viewport.height,
+			videoSession.display.scale,
+			videoSession.display.dpr,
+			derated
+		);
+
+		const { width, height } = videoSession.capture;
+
+		return {
+			...DEFAULT_STREAMING_CONFIG.video,
+			width,
+			height,
+			framerate: videoSession.targetFramerate,
+			minFramerate: profile.minFramerate,
+			bitrate: computeBitrate(width, height, videoSession.targetFramerate),
+			screenshotQuality: profile.screenshotQuality,
+			motionQuantizer: profile.motionQuantizer,
+			topOffQuantizer: profile.topOffQuantizer,
+			codecCandidates: resolveCodecCandidates(videoSession.codecSupport),
+			nativeCapture: isNativeCaptureEnabled()
+		};
+	}
+
+	private buildAudioConfig(videoSession: VideoStreamSession): StreamingConfig['audio'] {
+		return {
+			...DEFAULT_STREAMING_CONFIG.audio,
+			bitrate: videoSession.profile.audioBitrate
+		};
+	}
+
+	private createSessionState(sessionId: string): VideoStreamSession {
+		const profile = getHostCaptureProfile();
+		return {
+			sessionId,
+			isActive: false,
+			paused: false,
+			clientConnected: false,
+			headlessReady: false,
+			pendingCandidates: [],
+			scriptInjected: false,
+			scriptsPreInjected: false,
+			audioOnNewDocumentInjected: false,
+			codecSupport: { ...DEFAULT_CODEC_SUPPORT },
+			display: {},
+			profile,
+			capture: { width: 0, height: 0, scale: 1 },
+			pixelDerate: 1,
+			targetFramerate: profile.maxFramerate,
+			captureMode: 'push',
+			healthyWindows: 0,
+			saturatedWindows: 0,
+			stats: {
+				videoBytesSent: 0,
+				audioBytesSent: 0,
+				videoFramesEncoded: 0,
+				audioFramesEncoded: 0,
+				connectionState: 'new'
+			}
+		};
+	}
+
+	// ------------------------------------------------------------------
+	// Script injection
+	// ------------------------------------------------------------------
 
 	/**
 	 * Pre-inject WebCodecs scripts during tab creation.
@@ -106,40 +564,12 @@ export class BrowserVideoCapture extends EventEmitter {
 		try {
 			const page = session.page;
 			const viewport = page.viewport()!;
-			const config = DEFAULT_STREAMING_CONFIG;
 
-			// Capture at native viewport resolution. Capturing below viewport
-			// size (old behavior: viewport × display fit-scale) forced the
-			// client to upscale frames, which made the preview blurry.
-			const videoConfig: StreamingConfig['video'] = {
-				...config.video,
-				width: viewport.width,
-				height: viewport.height,
-				bitrate: computeBitrate(viewport.width, viewport.height, config.video.framerate)
-			};
-
-			// Create session tracking
-			const videoSession: VideoStreamSession = {
-				sessionId,
-				isActive: false,
-				clientConnected: false,
-				headlessReady: false,
-				pendingCandidates: [],
-				scriptInjected: true,
-				scriptsPreInjected: false, // Set to true only after injection completes
-				audioOnNewDocumentInjected: false,
-				allowVp9: true,
-				stats: {
-					videoBytesSent: 0,
-					audioBytesSent: 0,
-					videoFramesEncoded: 0,
-					audioFramesEncoded: 0,
-					connectionState: 'new'
-				}
-			};
+			const videoSession = this.createSessionState(sessionId);
+			videoSession.scriptInjected = true;
 			this.sessions.set(sessionId, videoSession);
 
-			await this.injectScripts(sessionId, page, videoConfig, config);
+			await this.injectScripts(sessionId, page, this.buildVideoConfig(videoSession, viewport), this.buildAudioConfig(videoSession));
 
 			// Mark as pre-injected only after successful completion
 			videoSession.scriptsPreInjected = true;
@@ -163,7 +593,7 @@ export class BrowserVideoCapture extends EventEmitter {
 		sessionId: string,
 		page: Page,
 		videoConfig: StreamingConfig['video'],
-		config: StreamingConfig
+		audioConfig: StreamingConfig['audio']
 	): Promise<void> {
 		// Check if bindings exist
 		const bindingsExist = await page.evaluate(() => {
@@ -180,9 +610,17 @@ export class BrowserVideoCapture extends EventEmitter {
 
 			await page.exposeFunction('__sendConnectionState', (state: string) => {
 				const activeSession = Array.from(this.sessions.values()).find(s => s.isActive);
-				if (activeSession) {
-					activeSession.stats.connectionState = state;
-					this.emit('connection-state', { sessionId: activeSession.sessionId, state });
+				if (!activeSession) return;
+
+				activeSession.stats.connectionState = state;
+				this.emit('connection-state', { sessionId: activeSession.sessionId, state });
+
+				// Capture sources only produce frames on damage, so a viewer
+				// that connects to an already-still page would otherwise wait
+				// for the first mouse move to see anything. Push one refresh
+				// frame as soon as the peer is up.
+				if (state === 'connected' && activeSession.tab) {
+					void this.requestKeyframe(activeSession.sessionId, activeSession.tab);
 				}
 			});
 
@@ -192,6 +630,13 @@ export class BrowserVideoCapture extends EventEmitter {
 					this.emit('cursor-change', { sessionId: activeSession.sessionId, cursor });
 				}
 			});
+
+			await page.exposeFunction('__sendEncoderStats', (stats: EncoderStats) => {
+				const activeSession = Array.from(this.sessions.values()).find(s => s.isActive);
+				if (activeSession) {
+					this.applyEncoderStats(activeSession.sessionId, stats);
+				}
+			});
 		}
 
 		// Register audio capture as a startup script — runs before page scripts on every new document load.
@@ -199,14 +644,18 @@ export class BrowserVideoCapture extends EventEmitter {
 		// The idempotency guard in audioCaptureScript prevents double-injection.
 		const session = this.sessions.get(sessionId);
 		if (session && !session.audioOnNewDocumentInjected) {
-			await page.evaluateOnNewDocument(audioCaptureScript, config.audio);
+			await page.evaluateOnNewDocument(audioCaptureScript, audioConfig);
 			session.audioOnNewDocumentInjected = true;
 		}
 
 		// Inject video encoder + audio capture scripts into the current page context
 		await page.evaluate(videoEncoderScript, videoConfig);
-		await page.evaluate(audioCaptureScript, config.audio);
+		await page.evaluate(audioCaptureScript, audioConfig);
 	}
+
+	// ------------------------------------------------------------------
+	// Stream lifecycle
+	// ------------------------------------------------------------------
 
 	/**
 	 * Start video streaming for a session
@@ -215,9 +664,12 @@ export class BrowserVideoCapture extends EventEmitter {
 		sessionId: string,
 		session: BrowserTab,
 		isValidSession: () => boolean,
-		allowVp9 = true
+		options?: {
+			codecSupport?: ClientCodecSupport;
+			display?: ClientDisplayMetrics;
+		}
 	): Promise<boolean> {
-		debug.log('webcodecs', `Starting streaming for session ${sessionId} (client vp9: ${allowVp9})`);
+		debug.log('webcodecs', `Starting streaming for session ${sessionId}`);
 
 		// Wait for any pending pre-injection to complete
 		const pendingPreInject = this.preInjectPromises.get(sessionId);
@@ -243,47 +695,32 @@ export class BrowserVideoCapture extends EventEmitter {
 		try {
 			const page = session.page;
 			const viewport = page.viewport()!;
-			const config = DEFAULT_STREAMING_CONFIG;
 
 			// Get or create session tracking
 			let videoSession = this.sessions.get(sessionId);
-			const isRestart = !!videoSession;
-
 			if (!videoSession) {
-				videoSession = {
-					sessionId,
-					isActive: false,
-					clientConnected: false,
-					headlessReady: false,
-					pendingCandidates: [],
-					scriptInjected: false,
-					scriptsPreInjected: false,
-					audioOnNewDocumentInjected: false,
-					allowVp9,
-					stats: {
-						videoBytesSent: 0,
-						audioBytesSent: 0,
-						videoFramesEncoded: 0,
-						audioFramesEncoded: 0,
-						connectionState: 'new'
-					}
-				};
+				videoSession = this.createSessionState(sessionId);
 				this.sessions.set(sessionId, videoSession);
-			} else {
-				videoSession.allowVp9 = allowVp9;
 			}
 
-			// Capture at native viewport resolution (see doPreInject)
-			const videoConfig: StreamingConfig['video'] = {
-				...config.video,
-				width: viewport.width,
-				height: viewport.height,
-				bitrate: computeBitrate(viewport.width, viewport.height, config.video.framerate)
-			};
+			videoSession.tab = session;
 
-			// Skip script injection if already pre-injected during tab creation
-			if (!videoSession.scriptsPreInjected) {
-				await this.injectScripts(sessionId, page, videoConfig, config);
+			// Viewer capabilities/metrics always come from the newest handshake
+			if (options?.codecSupport) videoSession.codecSupport = options.codecSupport;
+			if (options?.display) videoSession.display = { ...videoSession.display, ...options.display };
+			videoSession.paused = false;
+			videoSession.captureMode = 'push';
+			videoSession.healthyWindows = 0;
+
+			const videoConfig = this.buildVideoConfig(videoSession, viewport);
+			const audioConfig = this.buildAudioConfig(videoSession);
+
+			// The pre-injected script was configured before the viewer's codec
+			// support and display metrics were known, so re-inject whenever the
+			// handshake carried either.
+			const mustReinject = !videoSession.scriptsPreInjected || !!options?.codecSupport || !!options?.display;
+			if (mustReinject) {
+				await this.injectScripts(sessionId, page, videoConfig, audioConfig);
 				videoSession.scriptInjected = true;
 			} else {
 				debug.log('webcodecs', `Scripts already pre-injected for ${sessionId}, skipping injection`);
@@ -291,13 +728,13 @@ export class BrowserVideoCapture extends EventEmitter {
 
 			// Single batched call: verify peer + start streaming + init audio
 			// (saves ~60ms of IPC overhead vs 4 separate page.evaluate calls)
-			const initResult = await page.evaluate(async (clientAllowsVp9) => {
+			const initResult = await page.evaluate(async () => {
 				const peer = (window as any).__webCodecsPeer;
 				if (typeof peer?.startStreaming !== 'function') {
 					return { peerExists: false, started: false, audioInitialized: false };
 				}
 
-				const started = await peer.startStreaming(clientAllowsVp9);
+				const started = await peer.startStreaming();
 				if (!started) {
 					return { peerExists: true, started: false, audioInitialized: false };
 				}
@@ -315,7 +752,7 @@ export class BrowserVideoCapture extends EventEmitter {
 				}
 
 				return { peerExists: true, started: true, audioInitialized };
-			}, allowVp9);
+			});
 
 			if (!initResult.peerExists) {
 				debug.error('webcodecs', `Peer script injected but __webCodecsPeer not available`);
@@ -339,169 +776,429 @@ export class BrowserVideoCapture extends EventEmitter {
 
 			videoSession.headlessReady = true;
 
-			// Setup CDP screencast to feed frames to encoder
-			await this.setupFrameFeeder(sessionId, session, config, isValidSession);
+			await this.setupCapture(sessionId, session, isValidSession);
 
-			debug.log('webcodecs', `Streaming started for ${sessionId}`);
+			debug.log(
+				'webcodecs',
+				`Streaming started for ${sessionId} — ${videoSession.capture.width}x${videoSession.capture.height} ` +
+					`@${videoSession.targetFramerate}fps (${videoSession.captureMode}, ${videoSession.profile.tier})`
+			);
 			return true;
 		} catch (error) {
 			debug.error('webcodecs', `Failed to start streaming:`, error);
+			await this.destroyFeeder(sessionId);
 			this.sessions.delete(sessionId);
 			throw error;
 		}
 	}
 
 	/**
-	 * Setup CDP screencast to feed JPEG frames to VideoEncoder
+	 * Bring up a capture source for the session.
+	 *
+	 * In-page capture is tried first: it hands compositor frames straight to
+	 * the encoder, skipping a JPEG encode, a base64 hop through this process,
+	 * and a JPEG decode. It needs a secure context, so any page served over
+	 * plain http falls back to the CDP screencast — which is why the fallback
+	 * is a first-class path and not an error case.
+	 */
+	private async setupCapture(
+		sessionId: string,
+		session: BrowserTab,
+		isValidSession: () => boolean
+	): Promise<void> {
+		const videoSession = this.sessions.get(sessionId);
+		if (!videoSession) return;
+
+		if (await this.tryStartNativeCapture(sessionId, session)) {
+			videoSession.captureMode = 'native';
+			// Native capture drives the encoder itself — a leftover screencast
+			// from a previous page would fight it for the same encoder.
+			await this.destroyFeeder(sessionId);
+			debug.log('webcodecs', `Native in-page capture active for ${sessionId}`);
+			return;
+		}
+
+		videoSession.captureMode = 'push';
+		await this.setupFrameFeeder(sessionId, session, isValidSession);
+	}
+
+	private async tryStartNativeCapture(sessionId: string, session: BrowserTab): Promise<boolean> {
+		if (!isNativeCaptureEnabled()) return false;
+		if (!session.page || session.page.isClosed()) return false;
+
+		try {
+			// getDisplayMedia requires transient user activation, which only
+			// CDP's `userGesture` flag can grant to an automated page.
+			const cdp = await session.page.createCDPSession();
+			try {
+				const result: any = await cdp.send('Runtime.evaluate', {
+					expression: 'window.__webCodecsPeer && window.__webCodecsPeer.startNativeCapture()',
+					awaitPromise: true,
+					returnByValue: true,
+					userGesture: true,
+					silent: true,
+					timeout: 4000
+				} as any);
+
+				return result?.result?.value === true;
+			} finally {
+				await cdp.detach().catch(() => {});
+			}
+		} catch (error) {
+			debug.log('webcodecs', `Native capture unavailable for ${sessionId}, using screencast`);
+			return false;
+		}
+	}
+
+	/**
+	 * Setup CDP screencast to feed frames to VideoEncoder
 	 */
 	private async setupFrameFeeder(
 		sessionId: string,
 		session: BrowserTab,
-		config: StreamingConfig,
 		isValidSession: () => boolean
 	): Promise<void> {
-		const page = session.page;
-		const viewport = page.viewport()!;
+		const videoSession = this.sessions.get(sessionId);
+		if (!videoSession) return;
 
-		const cdp = await page.createCDPSession();
+		await this.destroyFeeder(sessionId);
 
-		let cdpFrameCount = 0;
+		const cdp = await session.page.createCDPSession();
+		const feeder = new ScreencastFeeder(
+			cdp,
+			sessionId,
+			() => this.sessions.get(sessionId),
+			() => session,
+			() => {
+				void this.stopStreaming(sessionId);
+			},
+			isValidSession
+		);
 
-		// Rate-limit encoding to the configured framerate. CDP screencast fires
-		// at compositor rate (up to 60fps) — encoding every frame wastes CPU on
-		// the host and bandwidth on the wire without visible benefit.
-		//
-		// Trailing edge matters: the LAST frame of a burst must always be
-		// encoded. Plain dropping left a stale frame on screen until the
-		// top-off fired (~300ms later), which felt like input lag on every
-		// click/keystroke.
-		const minFrameIntervalMs = Math.floor(1000 / config.video.framerate);
-		let lastEncodeTime = 0;
-		let pendingFrameData: string | null = null;
-		let pendingFrameTimer: ReturnType<typeof setTimeout> | null = null;
+		this.feeders.set(sessionId, feeder);
 
-		const encodeMotionFrame = (frameData: string) => {
-			lastEncodeTime = Date.now();
-			// Send frame to encoder via direct CDP (bypasses Puppeteer's
-			// ExecutionContext lookup, function serialization, Runtime.callFunctionOn
-			// overhead, and result deserialization). Base64 charset [A-Za-z0-9+/=]
-			// is safe to embed in a JS double-quoted string literal.
-			cdp.send('Runtime.evaluate', {
-				expression: `window.__webCodecsPeer?.encodeFrame("${frameData}")`,
-				awaitPromise: false,
-				returnByValue: false
-			}).catch(() => {});
-		};
-
-		// Static top-off (Chrome-Remote-Desktop-style): screencastFrame only
-		// fires on damage, so when no frame arrives for TOP_OFF_DELAY_MS the
-		// page has gone still. Capture one lossless PNG screenshot and encode
-		// it near-losslessly so the last (motion-degraded) frame doesn't stay
-		// blurry on screen. One frame per still period — idle costs nothing.
-		let topOffTimer: ReturnType<typeof setTimeout> | null = null;
-		let capturingTopOff = false;
-
-		const scheduleTopOff = () => {
-			if (topOffTimer) clearTimeout(topOffTimer);
-			topOffTimer = setTimeout(async () => {
-				topOffTimer = null;
-				const videoSession = this.sessions.get(sessionId);
-				if (!videoSession?.isActive || session.isDestroyed || capturingTopOff) return;
-
-				capturingTopOff = true;
-				const frameCountAtCapture = cdpFrameCount;
-				try {
-					const screenshot = await cdp.send('Page.captureScreenshot', { format: 'png' });
-
-					// Discard if the page moved again while capturing —
-					// new screencast frames already rescheduled the top-off
-					if (cdpFrameCount !== frameCountAtCapture) return;
-
-					cdp.send('Runtime.evaluate', {
-						expression: `window.__webCodecsPeer?.encodeFrame("${screenshot.data}", true)`,
-						awaitPromise: false,
-						returnByValue: false
-					}).catch(() => {});
-				} catch {
-					// Page may be navigating/closing — top-off is best-effort
-				} finally {
-					capturingTopOff = false;
-				}
-			}, BrowserVideoCapture.TOP_OFF_DELAY_MS);
-		};
-
-		cdp.on('Page.screencastFrame', async (event: any) => {
-			cdpFrameCount++;
-
-			const videoSession = this.sessions.get(sessionId);
-			if (!videoSession?.isActive || session.isDestroyed) {
-				cdp.send('Page.screencastFrameAck', { sessionId: event.sessionId }).catch(() => {});
-				return;
-			}
-
-			if (!isValidSession()) {
-				this.stopStreaming(sessionId);
-				return;
-			}
-
-			// ACK immediately
-			cdp.send('Page.screencastFrameAck', { sessionId: event.sessionId }).catch(() => {});
-
-			const now = Date.now();
-			const elapsed = now - lastEncodeTime;
-
-			if (elapsed < minFrameIntervalMs) {
-				// Too soon — hold the LATEST frame and encode it when the slot
-				// opens (trailing edge). Newer frames overwrite the pending one.
-				pendingFrameData = event.data;
-				if (!pendingFrameTimer) {
-					pendingFrameTimer = setTimeout(() => {
-						pendingFrameTimer = null;
-						if (!pendingFrameData) return;
-						const frameData = pendingFrameData;
-						pendingFrameData = null;
-
-						const vs = this.sessions.get(sessionId);
-						if (!vs?.isActive || session.isDestroyed) return;
-
-						encodeMotionFrame(frameData);
-						scheduleTopOff();
-					}, minFrameIntervalMs - elapsed);
-				}
-				scheduleTopOff();
-				return;
-			}
-
-			// This frame supersedes any pending trailing frame
-			pendingFrameData = null;
-
-			encodeMotionFrame(event.data);
-			scheduleTopOff();
-		});
-
-		// Start screencast at native viewport resolution
-		await cdp.send('Page.startScreencast', {
-			format: 'jpeg',
-			quality: config.video.screenshotQuality,
-			maxWidth: viewport.width,
-			maxHeight: viewport.height,
-			everyNthFrame: 1
-		});
-
-		debug.log('webcodecs', `CDP screencast started at ${viewport.width}x${viewport.height}`);
-		(session as any).__webCodecsCdp = cdp;
-		(session as any).__webCodecsTopOffCancel = () => {
-			if (topOffTimer) {
-				clearTimeout(topOffTimer);
-				topOffTimer = null;
-			}
-			if (pendingFrameTimer) {
-				clearTimeout(pendingFrameTimer);
-				pendingFrameTimer = null;
-			}
-			pendingFrameData = null;
-		};
+		await feeder.start(
+			videoSession.capture.width,
+			videoSession.capture.height,
+			videoSession.profile.screenshotQuality
+		);
 	}
+
+	private async destroyFeeder(sessionId: string): Promise<void> {
+		const feeder = this.feeders.get(sessionId);
+		if (!feeder) return;
+		this.feeders.delete(sessionId);
+		await feeder.destroy();
+	}
+
+	// ------------------------------------------------------------------
+	// Adaptive quality
+	// ------------------------------------------------------------------
+
+	private framerateLadder(profile: CaptureProfile): number[] {
+		const ladder = FRAMERATE_LADDER.filter(
+			(fps) => fps >= profile.minFramerate && fps <= profile.maxFramerate
+		);
+		return ladder.length > 0 ? ladder : [profile.maxFramerate];
+	}
+
+	/**
+	 * Fold one health report into the quality ladder.
+	 *
+	 * Framerate moves first and resolution only after the fps floor is reached,
+	 * because a soft-but-fluid stream reads far better than a sharp slideshow.
+	 * Recovery requires several consecutive healthy windows so a single quiet
+	 * moment doesn't push the stream straight back into saturation.
+	 */
+	private adaptQuality(sessionId: string, degrade: boolean): void {
+		const videoSession = this.sessions.get(sessionId);
+		if (!videoSession?.isActive) return;
+
+		const session = videoSession.tab;
+
+		const ladder = this.framerateLadder(videoSession.profile);
+		const fpsIndex = Math.max(0, ladder.indexOf(videoSession.targetFramerate));
+		const derateIndex = Math.max(0, PIXEL_DERATE_LADDER.indexOf(videoSession.pixelDerate));
+
+		let nextFps = videoSession.targetFramerate;
+		let nextDerate = videoSession.pixelDerate;
+
+		if (degrade) {
+			videoSession.healthyWindows = 0;
+			videoSession.saturatedWindows++;
+			// Only act on sustained pressure. A single window can be saturated
+			// by one heavy repaint, and reacting to that is what turned the
+			// ladder into a one-way ratchet.
+			if (videoSession.saturatedWindows < 2) return;
+			videoSession.saturatedWindows = 0;
+
+			if (fpsIndex > 0) {
+				nextFps = ladder[fpsIndex - 1];
+			} else if (derateIndex < PIXEL_DERATE_LADDER.length - 1) {
+				nextDerate = PIXEL_DERATE_LADDER[derateIndex + 1];
+			} else {
+				return; // already at the floor
+			}
+		} else {
+			videoSession.saturatedWindows = 0;
+			videoSession.healthyWindows++;
+			if (videoSession.healthyWindows < 2) return;
+			videoSession.healthyWindows = 0;
+
+			// Recover framerate before resolution. Stutter is what the eye
+			// objects to first, so smoothness is bought back before sharpness.
+			if (fpsIndex < ladder.length - 1) {
+				nextFps = ladder[fpsIndex + 1];
+			} else if (derateIndex > 0) {
+				nextDerate = PIXEL_DERATE_LADDER[derateIndex - 1];
+			} else {
+				return; // already at the ceiling
+			}
+		}
+
+		if (nextFps === videoSession.targetFramerate && nextDerate === videoSession.pixelDerate) return;
+
+		const fpsChanged = nextFps !== videoSession.targetFramerate;
+		const derateChanged = nextDerate !== videoSession.pixelDerate;
+
+		videoSession.targetFramerate = nextFps;
+		videoSession.pixelDerate = nextDerate;
+
+		debug.log(
+			'webcodecs',
+			`Quality ${degrade ? '↓' : '↑'} for ${sessionId}: ${nextFps}fps, derate ${nextDerate}`
+		);
+
+		if (fpsChanged) {
+			void this.pushTargetFramerate(sessionId, session, nextFps);
+		}
+		if (derateChanged && session) {
+			void this.applyCaptureGeometry(sessionId, session);
+		}
+	}
+
+	private async pushTargetFramerate(
+		sessionId: string,
+		session: BrowserTab | undefined,
+		fps: number
+	): Promise<void> {
+		if (!session?.page || session.page.isClosed()) return;
+		try {
+			await session.page.evaluate((value: number) => {
+				(window as any).__webCodecsPeer?.setTargetFramerate(value);
+			}, fps);
+		} catch {
+			// Page may be navigating — the next start/navigation re-applies it
+		}
+	}
+
+	/**
+	 * Recompute the capture geometry and push it through the whole chain:
+	 * the page encoder, and the screencast (or the capture track in native
+	 * mode, which `reconfigureEncoder` handles in-page).
+	 */
+	private async applyCaptureGeometry(sessionId: string, session: BrowserTab): Promise<boolean> {
+		const videoSession = this.sessions.get(sessionId);
+		if (!videoSession?.isActive || !session.page || session.page.isClosed()) return false;
+
+		const viewport = session.page.viewport();
+		if (!viewport) return false;
+
+		const previous = videoSession.capture;
+		const videoConfig = this.buildVideoConfig(videoSession, viewport);
+		const next = videoSession.capture;
+
+		// Ignore sub-3% changes — reconfiguring costs a keyframe, and a resize
+		// drag would otherwise fire dozens of them. Roll the recomputed value
+		// back so the recorded geometry keeps matching the live encoder (the
+		// top-off clip scale is read from it).
+		if (
+			previous.width > 0 &&
+			Math.abs(next.width - previous.width) / previous.width < 0.03 &&
+			Math.abs(next.height - previous.height) / previous.height < 0.03
+		) {
+			videoSession.capture = previous;
+			return true;
+		}
+
+		try {
+			const reconfigured = await session.page.evaluate(
+				(params: { width: number; height: number; bitrate: number }) => {
+					const peer = (window as any).__webCodecsPeer;
+					if (!peer?.reconfigureEncoder) return false;
+					return peer.reconfigureEncoder(params.width, params.height, params.bitrate);
+				},
+				{ width: next.width, height: next.height, bitrate: videoConfig.bitrate }
+			);
+
+			if (!reconfigured) {
+				debug.warn('webcodecs', `Encoder reconfigure rejected for ${sessionId}`);
+			}
+
+			const feeder = this.feeders.get(sessionId);
+			if (feeder && videoSession.captureMode === 'push') {
+				await feeder.restart(next.width, next.height, videoSession.profile.screenshotQuality);
+			}
+
+			debug.log(
+				'webcodecs',
+				`Capture geometry for ${sessionId}: ${next.width}x${next.height} ` +
+					`(viewport ${viewport.width}x${viewport.height}, scale ${next.scale.toFixed(2)})`
+			);
+			return true;
+		} catch (error) {
+			debug.warn('webcodecs', `Failed to apply capture geometry:`, error);
+			return false;
+		}
+	}
+
+	/**
+	 * Encoder health from the page. Saturation here means this host cannot
+	 * produce frames fast enough, which no amount of network headroom fixes.
+	 */
+	private applyEncoderStats(sessionId: string, stats: EncoderStats): void {
+		const videoSession = this.sessions.get(sessionId);
+		if (!videoSession?.isActive) return;
+
+		videoSession.captureMode = stats.captureMode || videoSession.captureMode;
+
+		// In-page capture can end on its own — the captured surface goes away
+		// on some navigations — and the page has no way to start a screencast.
+		// Detecting the drop here is what keeps the preview from freezing on
+		// its last frame.
+		if (
+			videoSession.captureMode === 'push' &&
+			!videoSession.paused &&
+			!this.feeders.has(sessionId) &&
+			videoSession.tab
+		) {
+			debug.warn('webcodecs', `Native capture ended for ${sessionId}, falling back to screencast`);
+			const tab = videoSession.tab;
+			void this.setupFrameFeeder(sessionId, tab, () => !tab.isDestroyed);
+		}
+
+		const frameBudgetMs = 1000 / Math.max(1, videoSession.targetFramerate);
+		const skipRatio =
+			stats.framesAttempted > 0 ? stats.framesSkippedEncoder / stats.framesAttempted : 0;
+
+		// Encoding is only one stage of the frame's journey; once it eats most
+		// of the budget on its own there is nothing left for capture, decode
+		// and paint, and the stream visibly stutters.
+		//
+		// All three signals are deliberately generous. A ratio rather than a
+		// raw count, a window peak rather than a spot sample, and a threshold
+		// above the queue depth that healthy asynchronous encoding produces
+		// anyway — anything tighter reports saturation on an idle host.
+		const encoderSaturated =
+			stats.avgFrameCostMs > frameBudgetMs * 0.8 ||
+			stats.encodeQueueMax >= 4 ||
+			skipRatio > 0.4;
+
+		debug.log(
+			'webcodecs',
+			`enc ${sessionId}: ${stats.codec}/${stats.captureMode} ${stats.width}x${stats.height} ` +
+				`${(stats.measuredFps ?? 0).toFixed(1)}/${videoSession.targetFramerate}fps ` +
+				`derate=${videoSession.pixelDerate} | ` +
+				`cost=${stats.avgFrameCostMs.toFixed(1)}ms/${frameBudgetMs.toFixed(0)}ms ` +
+				`qMax=${stats.encodeQueueMax} skip=${(skipRatio * 100).toFixed(0)}%` +
+				`${encoderSaturated ? ' SATURATED' : ''}`
+		);
+
+		this.adaptQuality(sessionId, encoderSaturated);
+	}
+
+	/**
+	 * Viewer-side health. A phone that cannot decode fast enough shows exactly
+	 * the same stutter with an empty network buffer and an idle encoder, so the
+	 * decode queue has to close the loop back to the source.
+	 */
+	applyClientFeedback(sessionId: string, feedback: ClientStreamFeedback): void {
+		const videoSession = this.sessions.get(sessionId);
+		if (!videoSession?.isActive) return;
+
+		// Thresholds sit well clear of healthy operation for the same reason as
+		// the encoder ones: decodeQueueSize is a spot sample and dropRatio has
+		// window-boundary skew, so tight limits fire on a stream that is fine.
+		const decoderSaturated =
+			feedback.decodeQueueSize >= 4 ||
+			feedback.dropRatio > 0.4 ||
+			feedback.decodeLatencyMs > 300;
+
+		this.adaptQuality(sessionId, decoderSaturated);
+	}
+
+	/**
+	 * Viewer display metrics changed (panel resize, device change, zoom, or a
+	 * move to a different-density screen). Debounced because a resize drag
+	 * emits a continuous stream of these.
+	 */
+	applyDisplayMetrics(sessionId: string, session: BrowserTab, metrics: ClientDisplayMetrics): void {
+		const videoSession = this.sessions.get(sessionId);
+		if (!videoSession) return;
+
+		videoSession.display = { ...videoSession.display, ...metrics };
+
+		const existing = this.displayMetricsTimers.get(sessionId);
+		if (existing) clearTimeout(existing);
+
+		this.displayMetricsTimers.set(
+			sessionId,
+			setTimeout(() => {
+				this.displayMetricsTimers.delete(sessionId);
+				void this.applyCaptureGeometry(sessionId, session);
+			}, BrowserVideoCapture.DISPLAY_METRICS_DEBOUNCE_MS)
+		);
+	}
+
+	/**
+	 * Pause capture while the viewer can't see it (panel collapsed, browser tab
+	 * hidden). An unwatched preview otherwise keeps a headless renderer and an
+	 * encoder busy for nothing — the dominant idle cost on a shared VPS.
+	 */
+	async setPaused(sessionId: string, session: BrowserTab, paused: boolean): Promise<boolean> {
+		const videoSession = this.sessions.get(sessionId);
+		if (!videoSession?.isActive) return false;
+		if (videoSession.paused === paused) return true;
+
+		videoSession.paused = paused;
+		debug.log('webcodecs', `${paused ? '⏸️ Paused' : '▶️ Resumed'} capture for ${sessionId}`);
+
+		const feeder = this.feeders.get(sessionId);
+
+		if (paused) {
+			if (videoSession.captureMode === 'native') {
+				await session.page
+					?.evaluate(() => {
+						(window as any).__webCodecsPeer?.stopNativeCapture();
+					})
+					.catch(() => {});
+				videoSession.captureMode = 'push';
+			}
+			await feeder?.pause();
+			return true;
+		}
+
+		// Resuming: rebuild whichever source is available — pausing tears the
+		// native track down, so this re-probes rather than assuming the feeder
+		// is still the right source — then force a sync point so the viewer
+		// isn't left staring at the pre-pause frame.
+		if (feeder) {
+			await feeder.restart(
+				videoSession.capture.width,
+				videoSession.capture.height,
+				videoSession.profile.screenshotQuality
+			);
+		} else {
+			await this.setupCapture(sessionId, session, () => !session.isDestroyed);
+		}
+
+		await this.requestKeyframe(sessionId, session);
+		return true;
+	}
+
+	// ------------------------------------------------------------------
+	// Signaling
+	// ------------------------------------------------------------------
 
 	/**
 	 * Create offer from headless browser
@@ -604,6 +1301,10 @@ export class BrowserVideoCapture extends EventEmitter {
 		}
 	}
 
+	// ------------------------------------------------------------------
+	// Viewport / refresh / recovery
+	// ------------------------------------------------------------------
+
 	/**
 	 * Update viewport without reconnection (hot-swap)
 	 */
@@ -615,43 +1316,17 @@ export class BrowserVideoCapture extends EventEmitter {
 		}
 
 		try {
-			const page = session.page;
-			const config = DEFAULT_STREAMING_CONFIG;
-
 			debug.log('webcodecs', `🔄 Hot-swapping viewport to ${width}x${height}`);
 
-			// Step 1: Update viewport via CDP (without page reload)
-			await page.setViewport({ width, height });
+			// The emulated viewport is what the page lays out against; capture
+			// resolution is derived from it and the viewer's display metrics.
+			await session.page.setViewport({ width, height });
 
-			// Step 2: Reconfigure VideoEncoder with new dimensions and bitrate
-			const bitrate = computeBitrate(width, height, config.video.framerate);
-			const reconfigured = await page.evaluate((params) => {
-				const peer = (window as any).__webCodecsPeer;
-				if (!peer || !peer.reconfigureEncoder) return false;
-				return peer.reconfigureEncoder(params.width, params.height, params.bitrate);
-			}, { width, height, bitrate });
+			// Force a recompute even if the derived size happens to land close
+			// to the previous one — the page content changed shape.
+			videoSession.capture = { width: 0, height: 0, scale: 1 };
 
-			if (!reconfigured) {
-				debug.error('webcodecs', `Failed to reconfigure encoder`);
-				return false;
-			}
-
-			// Step 3: Restart CDP screencast with new dimensions
-			const cdp = (session as any).__webCodecsCdp;
-			if (cdp) {
-				await cdp.send('Page.stopScreencast').catch(() => {});
-				await cdp.send('Page.startScreencast', {
-					format: 'jpeg',
-					quality: config.video.screenshotQuality,
-					maxWidth: width,
-					maxHeight: height,
-					everyNthFrame: 1
-				});
-
-				debug.log('webcodecs', `✅ Viewport hot-swapped successfully to ${width}x${height}`);
-			}
-
-			return true;
+			return await this.applyCaptureGeometry(sessionId, session);
 		} catch (error) {
 			debug.error('webcodecs', `Failed to update viewport:`, error);
 			return false;
@@ -659,10 +1334,8 @@ export class BrowserVideoCapture extends EventEmitter {
 	}
 
 	/**
-	 * Restart the CDP screencast at native viewport resolution.
-	 * Used as a refresh/recovery path when the frontend detects a stuck stream
-	 * (sent as a scale-update action). Display fit-scale no longer affects
-	 * capture resolution, so no encoder reconfiguration is needed.
+	 * Restart capture at the current geometry.
+	 * Used as a refresh/recovery path when the frontend detects a stuck stream.
 	 */
 	async refreshScreencast(sessionId: string, session: BrowserTab): Promise<boolean> {
 		const videoSession = this.sessions.get(sessionId);
@@ -672,24 +1345,17 @@ export class BrowserVideoCapture extends EventEmitter {
 		}
 
 		try {
-			const page = session.page;
-			const viewport = page.viewport()!;
-			const config = DEFAULT_STREAMING_CONFIG;
-
-			const cdp = (session as any).__webCodecsCdp;
-			if (cdp) {
-				await cdp.send('Page.stopScreencast').catch(() => {});
-				await cdp.send('Page.startScreencast', {
-					format: 'jpeg',
-					quality: config.video.screenshotQuality,
-					maxWidth: viewport.width,
-					maxHeight: viewport.height,
-					everyNthFrame: 1
-				});
-
-				debug.log('webcodecs', `✅ Screencast refreshed at ${viewport.width}x${viewport.height}`);
+			const feeder = this.feeders.get(sessionId);
+			if (feeder) {
+				feeder.invalidatePeerHandle();
+				await feeder.restart(
+					videoSession.capture.width,
+					videoSession.capture.height,
+					videoSession.profile.screenshotQuality
+				);
 			}
 
+			await this.requestKeyframe(sessionId, session);
 			return true;
 		} catch (error) {
 			debug.error('webcodecs', `Failed to refresh screencast:`, error);
@@ -700,9 +1366,9 @@ export class BrowserVideoCapture extends EventEmitter {
 	/**
 	 * Client-driven keyframe request (PLI equivalent).
 	 * Forces the next encoded frame to be a keyframe AND immediately pushes a
-	 * high-quality screenshot through the encoder — so it works even on still
-	 * pages where no screencast frames are flowing. Called when the frontend
-	 * decoder errors or joins mid-stream and needs a sync point.
+	 * high-quality frame through the encoder — so it works even on still pages
+	 * where no capture frames are flowing. Called when the frontend decoder
+	 * errors or joins mid-stream and needs a sync point.
 	 */
 	async requestKeyframe(sessionId: string, session: BrowserTab): Promise<boolean> {
 		const videoSession = this.sessions.get(sessionId);
@@ -711,18 +1377,14 @@ export class BrowserVideoCapture extends EventEmitter {
 		}
 
 		try {
+			// In native mode `forceKeyframe` re-encodes the retained compositor
+			// frame in-page, so no screenshot is needed at all.
 			await session.page.evaluate(() => {
 				(window as any).__webCodecsPeer?.forceKeyframe();
 			});
 
-			const cdp = (session as any).__webCodecsCdp;
-			if (cdp) {
-				const screenshot = await cdp.send('Page.captureScreenshot', { format: 'png' });
-				cdp.send('Runtime.evaluate', {
-					expression: `window.__webCodecsPeer?.encodeFrame("${screenshot.data}", true)`,
-					awaitPromise: false,
-					returnByValue: false
-				}).catch(() => {});
+			if (videoSession.captureMode === 'push') {
+				this.feeders.get(sessionId)?.scheduleTopOff();
 			}
 
 			debug.log('webcodecs', `Keyframe requested for ${sessionId}`);
@@ -734,7 +1396,7 @@ export class BrowserVideoCapture extends EventEmitter {
 	}
 
 	/**
-	 * Handle navigation - re-inject peer script and restart CDP screencast
+	 * Handle navigation - re-inject peer script and restart capture
 	 * Called after page navigation to restore video streaming without full reconnection
 	 */
 	async handleNavigation(sessionId: string, session: BrowserTab): Promise<boolean> {
@@ -747,30 +1409,24 @@ export class BrowserVideoCapture extends EventEmitter {
 		try {
 			const page = session.page;
 			const viewport = page.viewport()!;
-			const config = DEFAULT_STREAMING_CONFIG;
 
-			debug.log('webcodecs', `🔄 Handling navigation for ${sessionId} - re-injecting peer script and restarting screencast`);
+			debug.log('webcodecs', `🔄 Handling navigation for ${sessionId} - re-injecting peer script and restarting capture`);
 
-			// Capture at native viewport resolution (see doPreInject)
-			const videoConfig: StreamingConfig['video'] = {
-				...config.video,
-				width: viewport.width,
-				height: viewport.height,
-				bitrate: computeBitrate(viewport.width, viewport.height, config.video.framerate)
-			};
+			const videoConfig = this.buildVideoConfig(videoSession, viewport);
+			const audioConfig = this.buildAudioConfig(videoSession);
 
 			// Re-inject video encoder and audio capture scripts to new page context
 			await page.evaluate(videoEncoderScript, videoConfig);
-			await page.evaluate(audioCaptureScript, config.audio);
+			await page.evaluate(audioCaptureScript, audioConfig);
 
 			// Single batched call: verify peer + start streaming + init audio
-			const initResult = await page.evaluate(async (clientAllowsVp9) => {
+			const initResult = await page.evaluate(async () => {
 				const peer = (window as any).__webCodecsPeer;
 				if (typeof peer?.startStreaming !== 'function') {
 					return { peerExists: false, started: false, audioInitialized: false };
 				}
 
-				const started = await peer.startStreaming(clientAllowsVp9);
+				const started = await peer.startStreaming();
 				if (!started) {
 					return { peerExists: true, started: false, audioInitialized: false };
 				}
@@ -787,7 +1443,7 @@ export class BrowserVideoCapture extends EventEmitter {
 				}
 
 				return { peerExists: true, started: true, audioInitialized };
-			}, videoSession.allowVp9);
+			});
 
 			if (!initResult.peerExists) {
 				debug.error('webcodecs', `Peer script re-injection failed - peer not available`);
@@ -805,23 +1461,9 @@ export class BrowserVideoCapture extends EventEmitter {
 				debug.warn('webcodecs', 'Audio not available after navigation, continuing with video only');
 			}
 
-			// Restart CDP screencast
-			const cdp = (session as any).__webCodecsCdp;
-			if (cdp) {
-				// Stop current screencast
-				await cdp.send('Page.stopScreencast').catch(() => {});
-
-				// Start with current dimensions
-				await cdp.send('Page.startScreencast', {
-					format: 'jpeg',
-					quality: config.video.screenshotQuality,
-					maxWidth: viewport.width,
-					maxHeight: viewport.height,
-					everyNthFrame: 1
-				});
-
-				debug.log('webcodecs', `✅ Navigation handled - screencast restarted at ${viewport.width}x${viewport.height}`);
-			}
+			// The old page's encoder handle died with its execution context.
+			videoSession.captureMode = 'push';
+			await this.setupCapture(sessionId, session, () => !session.isDestroyed);
 
 			// Emit event to notify frontend that streaming is ready
 			this.emit('navigation-streaming-ready', { sessionId });
@@ -844,25 +1486,21 @@ export class BrowserVideoCapture extends EventEmitter {
 
 		videoSession.isActive = false;
 
+		const metricsTimer = this.displayMetricsTimers.get(sessionId);
+		if (metricsTimer) {
+			clearTimeout(metricsTimer);
+			this.displayMetricsTimers.delete(sessionId);
+		}
+
+		await this.destroyFeeder(sessionId);
+
 		if (session?.page && !session.page.isClosed()) {
 			try {
-				// Cancel any pending top-off capture
-				(session as any).__webCodecsTopOffCancel?.();
-				(session as any).__webCodecsTopOffCancel = null;
-
 				// Stop audio + peer in one IPC round-trip
 				await session.page.evaluate(() => {
 					(window as any).__audioEncoder?.stop();
 					(window as any).__webCodecsPeer?.stopStreaming();
 				}).catch(() => {});
-
-				// Stop CDP screencast
-				const cdp = (session as any).__webCodecsCdp;
-				if (cdp) {
-					await cdp.send('Page.stopScreencast').catch(() => {});
-					await cdp.detach().catch(() => {});
-					(session as any).__webCodecsCdp = null;
-				}
 			} catch (error) {
 				debug.warn('webcodecs', `Error during cleanup: ${error}`);
 			}
@@ -912,4 +1550,13 @@ export class BrowserVideoCapture extends EventEmitter {
 
 		this.sessions.clear();
 	}
+}
+
+/**
+ * In-page capture is on by default and self-disables wherever it can't work
+ * (insecure origin, missing API). The kill switch exists for hosts where the
+ * probe itself is undesirable.
+ */
+function isNativeCaptureEnabled(): boolean {
+	return (process.env.CLOPEN_PREVIEW_NATIVE_CAPTURE || '').trim().toLowerCase() !== 'off';
 }

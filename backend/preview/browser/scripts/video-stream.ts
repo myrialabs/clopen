@@ -6,9 +6,23 @@
  * 2. Initialize VideoEncoder for encoding frames
  * 3. Handle WebRTC signaling (offer/answer/ICE)
  * 4. Send encoded video chunks via DataChannel
+ *
+ * Two capture modes feed the encoder:
+ *
+ * - **native** — `getDisplayMedia({preferCurrentTab})` + MediaStreamTrackProcessor.
+ *   Compositor frames arrive as VideoFrame objects and go straight into the
+ *   encoder. No JPEG encode, no base64, no CDP round-trip; the still-page
+ *   refresh re-encodes the retained last frame, which is pristine.
+ *   Requires a secure context, so it is probed and silently skipped otherwise.
+ *
+ * - **push** — the backend feeds base64 JPEG frames from `Page.screencastFrame`
+ *   into `encodeFrame()`. Universal fallback; the still-page refresh comes from
+ *   a high-quality screenshot pushed by the backend.
+ *
+ * Both modes share one encoder, one adaptive quality ladder and one wire format.
  */
 
-import type { StreamingConfig } from '../types';
+import type { StreamingConfig, VideoCodecCandidate } from '../types';
 
 /**
  * Generate video encoder script that runs in the browser
@@ -33,14 +47,57 @@ export function videoEncoderScript(config: StreamingConfig['video']) {
 	let motionSeq = 0; // Increments per motion frame — used to detect staleness of deferred top-offs
 	let topOffRetryTimer: any = null;
 
-	// Codec selection: prefer VP9 in quantizer mode (per-frame quality control,
-	// Chrome-Remote-Desktop-style), fall back to VP8 with fixed bitrate.
-	// codecId is embedded in every video packet so the client picks the right decoder.
-	// vp9Allowed comes from the CLIENT (decode capability, negotiated at stream
-	// start) — the headless browser can encode VP9, but the viewer must decode it.
-	let codecId = 0; // 0 = vp8, 1 = vp9
+	// Active codec. `codecId` is embedded in every video packet so the client
+	// picks the matching decoder; `activeCodec` also decides whether quality is
+	// controlled per frame (quantizer mode) or by the configured bitrate.
+	let activeCodec: VideoCodecCandidate = config.codecCandidates?.[config.codecCandidates.length - 1] || {
+		codec: 'vp8',
+		name: 'vp8',
+		id: 0
+	};
+	let codecId = activeCodec.id;
 	let usingQuantizer = false;
-	let vp9Allowed = true;
+
+	// Encoder geometry. Kept in sync with whatever the capture source actually
+	// produces — Chrome's screencast rounds `maxWidth/maxHeight` to preserve
+	// aspect ratio, and tab-capture constraints are advisory, so the incoming
+	// frame size is the authority rather than what we asked for.
+	let encoderWidth = config.width;
+	let encoderHeight = config.height;
+	let currentBitrate = config.bitrate;
+	let reconfiguring = false;
+
+	// Adaptive framerate. The backend owns the ladder (it also sees the
+	// viewer's decode queue) and pushes the target down here so native capture
+	// can ask the compositor for fewer frames instead of discarding them.
+	let targetFramerate = config.framerate;
+
+	// Capture mode + retained frame for still-page refreshes in native mode.
+	let captureMode: 'push' | 'native' = 'push';
+	let nativeStream: MediaStream | null = null;
+	let nativeTrack: MediaStreamTrack | null = null;
+	let nativeReader: any = null;
+	let lastNativeFrame: VideoFrame | null = null;
+	let nativeIdleTimer: any = null;
+	let lastNativeEncodeTime = 0;
+
+	// Encoder cost tracking, reported back to the backend so the framerate
+	// ladder reacts to CPU saturation and not just to network congestion.
+	//
+	// The cost that matters is the whole frame path on this thread — image
+	// decode plus the encode call — not the encode call alone, which merely
+	// enqueues and always measures near zero. And the queue is tracked as a
+	// window maximum: sampling it once every couple of seconds says nothing
+	// about whether the encoder is actually falling behind.
+	let frameCostSamples = 0;
+	let frameCostTotalMs = 0;
+	let framesAttempted = 0;
+	let framesSkippedEncoder = 0;
+	let framesSkippedNetwork = 0;
+	let framesEncodedWindow = 0;
+	let encodeQueueMax = 0;
+	let statsWindowStart = 0;
+	let statsReportTimer: any = null;
 
 	// Source-side backpressure threshold: when the DataChannel can't drain
 	// (slow network), skip encoding motion frames instead of queueing them.
@@ -50,10 +107,25 @@ export function videoEncoderScript(config: StreamingConfig['video']) {
 	// stream degrades to coarser-but-current rather than sharp-but-stale.
 	const MAX_BUFFERED_BYTES = 64 * 1024;
 
+	// Same idea for CPU: anything sitting in the encoder queue is latency the
+	// viewer will see. Encoding is asynchronous, so a depth of one or two is
+	// normal even on a fast host — the threshold has to sit above that or the
+	// pipeline throws away frames it could comfortably have encoded.
+	const MAX_ENCODE_QUEUE = 3;
+
 	// Frames larger than this are split into fragments (packet type 2) to stay
 	// well under the SCTP max-message-size (~256KB on common WebRTC stacks).
 	// Mostly hit by near-lossless top-off keyframes of complex pages.
 	const FRAGMENT_SIZE = 64 * 1024;
+
+	// Frame sizes within this many pixels of the encoder are treated as the
+	// same geometry and snapped, rather than triggering a reconfiguration.
+	const SIZE_SNAP_TOLERANCE = 8;
+
+	// How long the native capture track must be quiet before the retained
+	// frame is re-encoded near-losslessly. Mirrors the backend's screencast
+	// top-off delay so both modes sharpen at the same moment.
+	const NATIVE_TOP_OFF_DELAY_MS = 300;
 
 	// Cursor tracking
 	let lastCursor = 'default';
@@ -118,55 +190,57 @@ export function videoEncoderScript(config: StreamingConfig['video']) {
 		lastCursor = 'default';
 	}
 
-	// Build encoder config for the currently selected codec mode
-	function buildEncoderConfig(width: number, height: number, bitrate?: number): VideoEncoderConfig {
-		if (usingQuantizer) {
-			// Quantizer mode: no bitrate — quality is controlled per-frame in encode()
-			return {
-				codec: 'vp09.00.10.08',
-				width,
-				height,
-				framerate: config.framerate,
-				bitrateMode: 'quantizer',
-				hardwareAcceleration: config.hardwareAcceleration,
-				latencyMode: config.latencyMode
-			} as VideoEncoderConfig;
-		}
-
-		return {
-			codec: config.codec,
+	// Build encoder config for a codec candidate at the current geometry
+	function buildEncoderConfig(candidate: VideoCodecCandidate, width: number, height: number, bitrate: number): VideoEncoderConfig {
+		const base: any = {
+			codec: candidate.codec,
 			width,
 			height,
-			bitrate: bitrate || config.bitrate,
-			framerate: config.framerate,
+			framerate: targetFramerate,
 			hardwareAcceleration: config.hardwareAcceleration,
 			latencyMode: config.latencyMode
 		};
+
+		if (candidate.annexb) {
+			// Raw chunks travel without a `description`, so the stream has to
+			// be self-describing. AVCC (Chrome's default) would be undecodable.
+			base.avc = { format: 'annexb' };
+		}
+
+		if (candidate.quantizerKey) {
+			// Quantizer mode: no bitrate — quality is chosen per frame in encode()
+			base.bitrateMode = 'quantizer';
+		} else {
+			base.bitrate = bitrate;
+			base.bitrateMode = 'variable';
+		}
+
+		return base as VideoEncoderConfig;
 	}
 
-	// Detect supported video codec — prefer VP9 quantizer mode, fall back to VP8
-	async function detectVideoCodec() {
-		if (vp9Allowed) {
-			usingQuantizer = true;
-			codecId = 1;
-			const vp9Config = buildEncoderConfig(config.width, config.height);
+	/**
+	 * Pick the first codec candidate this browser can actually encode.
+	 * The list arrives pre-ordered by the backend from the viewer's decode
+	 * capabilities, so the first supported entry is also the best for the pair.
+	 */
+	async function detectVideoCodec(width: number, height: number, bitrate: number) {
+		const candidates: VideoCodecCandidate[] =
+			config.codecCandidates && config.codecCandidates.length > 0
+				? config.codecCandidates
+				: [{ codec: config.codec || 'vp8', name: 'vp8', id: 0 } as VideoCodecCandidate];
+
+		for (const candidate of candidates) {
+			const encoderConfig = buildEncoderConfig(candidate, width, height, bitrate);
 			try {
-				const support = await VideoEncoder.isConfigSupported(vp9Config);
+				const support = await VideoEncoder.isConfigSupported(encoderConfig);
 				if (support.supported) {
-					return vp9Config;
+					activeCodec = candidate;
+					codecId = candidate.id;
+					usingQuantizer = !!candidate.quantizerKey;
+					return encoderConfig;
 				}
 			} catch (e) {}
 		}
-
-		usingQuantizer = false;
-		codecId = 0;
-		const vp8Config = buildEncoderConfig(config.width, config.height);
-		try {
-			const support = await VideoEncoder.isConfigSupported(vp8Config);
-			if (support.supported) {
-				return vp8Config;
-			}
-		} catch (e) {}
 
 		return null;
 	}
@@ -207,10 +281,10 @@ export function videoEncoderScript(config: StreamingConfig['video']) {
 		peerConnection.oniceconnectionstatechange = () => {};
 
 		// Create DataChannel for encoded chunks.
-		// Reliable + ordered: VP8/VP9 delta chains require in-order, lossless
-		// delivery — a single lost/reordered chunk corrupts decoding until the
-		// next keyframe (smearing/ghosting). Latency is bounded by source-side
-		// frame dropping instead (see MAX_BUFFERED_BYTES backpressure).
+		// Reliable + ordered: VP8/VP9/H.264 delta chains require in-order,
+		// lossless delivery — a single lost/reordered chunk corrupts decoding
+		// until the next keyframe (smearing/ghosting). Latency is bounded by
+		// source-side frame dropping instead (see MAX_BUFFERED_BYTES).
 		dataChannel = peerConnection.createDataChannel('media', {
 			ordered: true
 		});
@@ -232,7 +306,7 @@ export function videoEncoderScript(config: StreamingConfig['video']) {
 
 	// Initialize VideoEncoder
 	async function initVideoEncoder() {
-		const codecConfig = await detectVideoCodec();
+		const codecConfig = await detectVideoCodec(encoderWidth, encoderHeight, currentBitrate);
 		if (!codecConfig) {
 			throw new Error('No supported video codec');
 		}
@@ -245,6 +319,79 @@ export function videoEncoderScript(config: StreamingConfig['video']) {
 		});
 
 		await videoEncoder.configure(codecConfig);
+	}
+
+	/**
+	 * Keep the encoder's geometry aligned with the frames actually arriving.
+	 *
+	 * The capture source is authoritative: CDP rounds screencast dimensions to
+	 * preserve aspect ratio and tab-capture honours constraints only
+	 * approximately, so asking for 648×406 can yield 648×405. Encoding a frame
+	 * whose size differs from the configuration throws, which would stall the
+	 * stream — reconfiguring on mismatch makes every rounding difference
+	 * self-healing instead.
+	 */
+	async function ensureEncoderSize(width: number, height: number, tolerant = false): Promise<boolean> {
+		if (!videoEncoder || width <= 0 || height <= 0) return false;
+		if (width === encoderWidth && height === encoderHeight) return true;
+
+		// A difference of a pixel or two is rounding, not a geometry change:
+		// the screencast fits the viewport inside maxWidth/maxHeight while
+		// preserving aspect ratio, and the still-page screenshot is clipped by
+		// a single scalar, so the two can land a pixel apart on the same page.
+		// Reconfiguring on that reset the encoder — and forced a keyframe plus
+		// a client canvas resize — every time motion started or stopped.
+		// Callers that pass `tolerant` snap the source instead (see snapSource).
+		if (
+			tolerant &&
+			Math.abs(width - encoderWidth) <= SIZE_SNAP_TOLERANCE &&
+			Math.abs(height - encoderHeight) <= SIZE_SNAP_TOLERANCE
+		) {
+			return true;
+		}
+
+		if (reconfiguring) return false;
+
+		reconfiguring = true;
+		try {
+			encoderWidth = width;
+			encoderHeight = height;
+			currentBitrate = Math.max(400_000, Math.round(width * height * targetFramerate * 0.045));
+
+			const encoderConfig = buildEncoderConfig(activeCodec, width, height, currentBitrate);
+			videoEncoder.configure(encoderConfig);
+			forceNextKeyframe = true;
+			return true;
+		} catch (e) {
+			return false;
+		} finally {
+			reconfiguring = false;
+		}
+	}
+
+	// Scratch surface used to snap an off-by-a-few-pixels source onto the
+	// encoder's exact geometry. Only the still-page refresh normally needs it,
+	// so this runs about once per still period, not per frame.
+	let snapCanvas: OffscreenCanvas | null = null;
+	let snapCtx: OffscreenCanvasRenderingContext2D | null = null;
+
+	function snapSource(bitmap: ImageBitmap): CanvasImageSource {
+		if (bitmap.width === encoderWidth && bitmap.height === encoderHeight) {
+			return bitmap as unknown as CanvasImageSource;
+		}
+
+		try {
+			if (!snapCanvas || snapCanvas.width !== encoderWidth || snapCanvas.height !== encoderHeight) {
+				snapCanvas = new OffscreenCanvas(encoderWidth, encoderHeight);
+				snapCtx = snapCanvas.getContext('2d', { alpha: false }) as OffscreenCanvasRenderingContext2D | null;
+			}
+			if (!snapCtx) return bitmap as unknown as CanvasImageSource;
+
+			snapCtx.drawImage(bitmap, 0, 0, encoderWidth, encoderHeight);
+			return snapCanvas as unknown as CanvasImageSource;
+		} catch (e) {
+			return bitmap as unknown as CanvasImageSource;
+		}
 	}
 
 	// Handle encoded video chunk
@@ -270,7 +417,7 @@ export function videoEncoderScript(config: StreamingConfig['video']) {
 				view.setBigUint64(1, BigInt(timestamp), true);
 				// Keyframe flag
 				view.setUint8(9, isKeyframe);
-				// Codec: 0 = vp8, 1 = vp9 (lets the client pick the right decoder)
+				// Codec: 0 = vp8, 1 = vp9, 2 = avc (lets the client pick the right decoder)
 				view.setUint8(10, codecId);
 				// Data size
 				view.setUint32(11, data.byteLength, true);
@@ -350,23 +497,112 @@ export function videoEncoderScript(config: StreamingConfig['video']) {
 		return config.motionQuantizer;
 	}
 
-	// Encode video frame from image data.
+	/**
+	 * Whether a motion frame should be skipped before any decode/encode work.
+	 *
+	 * Two independent limits, both of which mean "the viewer is already behind":
+	 * the network can't drain the channel, or this host can't encode fast
+	 * enough. Dropping input frames is safe — the encoder simply references the
+	 * last encoded frame — whereas dropping encoded chunks would corrupt the
+	 * delta chain.
+	 */
+	function shouldSkipMotionFrame(): boolean {
+		framesAttempted++;
+
+		if (dataChannel && dataChannel.bufferedAmount > MAX_BUFFERED_BYTES) {
+			framesSkippedNetwork++;
+			return true;
+		}
+		if (videoEncoder) {
+			if (videoEncoder.encodeQueueSize > encodeQueueMax) {
+				encodeQueueMax = videoEncoder.encodeQueueSize;
+			}
+			if (videoEncoder.encodeQueueSize >= MAX_ENCODE_QUEUE) {
+				framesSkippedEncoder++;
+				return true;
+			}
+		}
+		return false;
+	}
+
+	/**
+	 * Encode a VideoFrame with the right quality for its kind.
+	 *
+	 * In quantizer mode quality is per frame: coarse during motion (raised
+	 * further under congestion), near-lossless for the still-page refresh. In
+	 * fixed-bitrate mode (H.264, VP8) the same effect is achieved by briefly
+	 * raising the target bitrate around the refresh keyframe, since there is no
+	 * per-frame quality knob.
+	 */
+	function encodeVideoFrame(frame: VideoFrame, isTopOff: boolean) {
+		if (!videoEncoder) return;
+
+		const now = Date.now();
+		const needsKeyframe =
+			forceNextKeyframe ||
+			(isTopOff && !usingQuantizer) ||
+			(config.keyframeInterval > 0 && now - lastKeyframeTime > config.keyframeInterval * 1000);
+
+		if (needsKeyframe) {
+			lastKeyframeTime = now;
+			forceNextKeyframe = false;
+		}
+
+		if (usingQuantizer && activeCodec.quantizerKey) {
+			const quantizer = isTopOff ? config.topOffQuantizer : currentMotionQuantizer();
+			const options: any = { keyFrame: needsKeyframe };
+			options[activeCodec.quantizerKey] = { quantizer };
+			videoEncoder.encode(frame, options as VideoEncoderEncodeOptions);
+		} else {
+			// Fixed-bitrate codec. The still-page refresh is a plain keyframe:
+			// VBR already spends far more on keyframes than on deltas, and
+			// reconfiguring the encoder to bump the bitrate around it resets
+			// the codec twice per still period — on a page with any recurring
+			// damage (a blinking caret is enough) that is a reset storm.
+			videoEncoder.encode(frame, { keyFrame: needsKeyframe || isTopOff });
+		}
+
+		videoFrameCount++;
+		if (!isTopOff) framesEncodedWindow++;
+	}
+
+	/**
+	 * Decode base64 into bytes.
+	 *
+	 * `Uint8Array.fromBase64` is a single native pass; the manual loop it
+	 * replaces ran `charCodeAt` per byte, which at full-viewport resolution was
+	 * millions of calls per second on the page's main thread.
+	 */
+	function base64ToBytes(input: string): Uint8Array<ArrayBuffer> {
+		const fromBase64 = (Uint8Array as any).fromBase64;
+		if (typeof fromBase64 === 'function') {
+			try {
+				return fromBase64.call(Uint8Array, input) as Uint8Array<ArrayBuffer>;
+			} catch (e) {}
+		}
+
+		const binaryStr = atob(input);
+		const len = binaryStr.length;
+		const bytes = new Uint8Array(len);
+		for (let i = 0; i < len; i++) {
+			bytes[i] = binaryStr.charCodeAt(i);
+		}
+		return bytes;
+	}
+
+	// Encode video frame from image data (push mode).
 	// Motion frames arrive as JPEG (CDP screencast); top-off frames arrive as
-	// lossless PNG (Page.captureScreenshot) when the page goes still, and are
-	// encoded near-losslessly so the last motion-degraded frame doesn't stick.
-	async function encodeFrame(imageData: string, isTopOff?: boolean) {
+	// a high-quality screenshot when the page goes still, and are encoded
+	// near-losslessly so the last motion-degraded frame doesn't stick.
+	async function encodeFrame(imageData: string, isTopOff?: boolean, mimeType?: string) {
 		if (!videoEncoder || !isCapturing) return;
+		// Native capture owns the encoder — a stray pushed frame would fight it.
+		if (captureMode === 'native' && !isTopOff) return;
 
 		try {
-			// Source-side backpressure: if the network can't drain the channel,
-			// skip motion frames BEFORE decoding/encoding. Dropping input frames
-			// is safe (the encoder just references the last encoded frame);
-			// dropping encoded chunks would corrupt the delta chain.
 			if (!isTopOff) {
 				motionSeq++;
-				if (dataChannel && dataChannel.bufferedAmount > MAX_BUFFERED_BYTES) {
-					return;
-				}
+				if (shouldSkipMotionFrame()) return;
 			} else if (dataChannel && dataChannel.bufferedAmount > MAX_BUFFERED_BYTES) {
 				// Channel congested — dumping a large near-lossless frame on it
 				// now would spike latency. Defer briefly; abandon if new motion
@@ -377,78 +613,324 @@ export function videoEncoderScript(config: StreamingConfig['video']) {
 				topOffRetryTimer = setTimeout(() => {
 					topOffRetryTimer = null;
 					if (motionSeq === seqAtCapture && isCapturing) {
-						encodeFrame(imageData, true);
+						encodeFrame(imageData, true, mimeType);
 					}
 				}, 250);
 				return;
 			}
 
-			// Direct base64 decode (avoids fetch() + data URL parsing overhead)
-			const binaryStr = atob(imageData);
-			const len = binaryStr.length;
-			const bytes = new Uint8Array(len);
-			for (let i = 0; i < len; i++) {
-				bytes[i] = binaryStr.charCodeAt(i);
-			}
+			const costStart = performance.now();
+			const bytes = base64ToBytes(imageData);
 
 			// Decode via createImageBitmap (avoids per-frame ImageDecoder
 			// constructor/destructor overhead)
-			const blob = new Blob([bytes], { type: isTopOff ? 'image/png' : 'image/jpeg' });
+			const blob = new Blob([bytes], { type: mimeType || (isTopOff ? 'image/png' : 'image/jpeg') });
 			const bitmap = await createImageBitmap(blob);
+
+			if (!videoEncoder || !isCapturing) {
+				bitmap.close();
+				return;
+			}
+
+			// The source is authoritative for geometry (see ensureEncoderSize),
+			// but only for real changes — small rounding differences are
+			// snapped onto the current geometry instead.
+			if (!(await ensureEncoderSize(bitmap.width, bitmap.height, true))) {
+				bitmap.close();
+				return;
+			}
 
 			// Get aligned timestamp in microseconds
 			const timestamp = performance.now() * 1000;
 
-			// Create VideoFrame from ImageBitmap
-			const frame = new VideoFrame(bitmap, {
+			const frame = new VideoFrame(snapSource(bitmap), {
 				timestamp,
 				alpha: 'discard'
 			});
 
-			// Keyframes are on-demand only (stream start, reconnect, reconfigure,
-			// client request) — the channel is reliable so no periodic keyframes
-			// are needed. keyframeInterval > 0 re-enables a periodic timer.
-			const now = Date.now();
-			const needsKeyframe = forceNextKeyframe ||
-				(config.keyframeInterval > 0 && (now - lastKeyframeTime) > (config.keyframeInterval * 1000));
-
-			if (needsKeyframe) {
-				lastKeyframeTime = now;
-				forceNextKeyframe = false;
-			}
-
-			// Encode frame — in quantizer mode, quality is chosen per frame:
-			// cheap during motion (raised further under congestion),
-			// near-lossless for still-page top-off refreshes
-			if (usingQuantizer) {
-				const quantizer = isTopOff ? config.topOffQuantizer : currentMotionQuantizer();
-				videoEncoder.encode(frame, {
-					keyFrame: needsKeyframe,
-					vp9: { quantizer }
-				} as VideoEncoderEncodeOptions);
-			} else {
-				videoEncoder.encode(frame, { keyFrame: needsKeyframe });
-			}
-			videoFrameCount++;
+			encodeVideoFrame(frame, !!isTopOff);
 
 			// Close immediately to prevent memory leaks
 			frame.close();
 			bitmap.close();
+
+			if (!isTopOff) {
+				frameCostTotalMs += performance.now() - costStart;
+				frameCostSamples++;
+			}
 		} catch (error) {}
+	}
+
+	// ------------------------------------------------------------------
+	// Native capture (getDisplayMedia + MediaStreamTrackProcessor)
+	// ------------------------------------------------------------------
+
+	function retainNativeFrame(frame: VideoFrame) {
+		if (lastNativeFrame) {
+			try {
+				lastNativeFrame.close();
+			} catch (e) {}
+		}
+		try {
+			lastNativeFrame = frame.clone();
+		} catch (e) {
+			lastNativeFrame = null;
+		}
+	}
+
+	/**
+	 * Still-page refresh for native capture.
+	 *
+	 * The retained frame came straight from the compositor, so re-encoding it
+	 * near-losslessly is genuinely lossless relative to the source — no
+	 * screenshot, no JPEG round-trip, no CDP traffic. Push mode can't do this:
+	 * its retained frame would already carry JPEG artifacts.
+	 */
+	function scheduleNativeTopOff() {
+		if (nativeIdleTimer) clearTimeout(nativeIdleTimer);
+		nativeIdleTimer = setTimeout(() => {
+			nativeIdleTimer = null;
+			if (!isCapturing || !lastNativeFrame || !videoEncoder) return;
+			if (dataChannel && dataChannel.bufferedAmount > MAX_BUFFERED_BYTES) {
+				scheduleNativeTopOff();
+				return;
+			}
+			try {
+				encodeVideoFrame(lastNativeFrame, true);
+			} catch (e) {}
+		}, NATIVE_TOP_OFF_DELAY_MS);
+	}
+
+	async function readNativeFrames() {
+		if (!nativeReader) return;
+
+		while (isCapturing && nativeReader) {
+			let result: any;
+			try {
+				result = await nativeReader.read();
+			} catch (e) {
+				break;
+			}
+
+			if (result.done) break;
+
+			const frame: VideoFrame = result.value;
+			try {
+				// Secondary rate limit. The track is already constrained to
+				// `targetFramerate`, so this only exists for a source that
+				// ignores the constraint.
+				//
+				// The tolerance is essential: with the track delivering at
+				// exactly the target, frame-to-frame jitter puts gaps a hair
+				// under a full interval, and a threshold of one full interval
+				// then rejects roughly every second frame — halving the frame
+				// rate the viewer sees while every other counter still reads
+				// perfectly healthy.
+				const now = performance.now();
+				const minInterval = 1000 / Math.max(1, targetFramerate);
+				if (now - lastNativeEncodeTime < minInterval * 0.75) {
+					continue;
+				}
+
+				if (shouldSkipMotionFrame()) continue;
+
+				if (!(await ensureEncoderSize(frame.displayWidth, frame.displayHeight))) continue;
+
+				const costStart = performance.now();
+				lastNativeEncodeTime = now;
+				motionSeq++;
+				encodeVideoFrame(frame, false);
+				retainNativeFrame(frame);
+				scheduleNativeTopOff();
+
+				frameCostTotalMs += performance.now() - costStart;
+				frameCostSamples++;
+			} catch (e) {
+			} finally {
+				try {
+					frame.close();
+				} catch (e) {}
+			}
+		}
+	}
+
+	/**
+	 * Probe in-page capture. Returns false (quietly) whenever it isn't
+	 * available so the backend falls back to the CDP screencast path:
+	 * insecure origin, missing API, denied permission, or no frame in time.
+	 */
+	async function startNativeCapture(): Promise<boolean> {
+		if (!config.nativeCapture) return false;
+		if (captureMode === 'native') return true;
+		if (!isCapturing) return false;
+
+		try {
+			// getDisplayMedia is gated on a secure context, and the preview
+			// navigates to arbitrary URLs — plain-http targets simply use the
+			// fallback path.
+			if (!window.isSecureContext) return false;
+			if (!navigator.mediaDevices || typeof navigator.mediaDevices.getDisplayMedia !== 'function') return false;
+			if (typeof (window as any).MediaStreamTrackProcessor !== 'function') return false;
+
+			const withTimeout = <T,>(promise: Promise<T>, ms: number): Promise<T | null> =>
+				Promise.race([promise, new Promise<null>((resolve) => setTimeout(() => resolve(null), ms))]);
+
+			const stream = await withTimeout(
+				navigator.mediaDevices.getDisplayMedia({
+					video: {
+						frameRate: { max: Math.max(1, targetFramerate) },
+						width: { max: encoderWidth },
+						height: { max: encoderHeight }
+					},
+					audio: false,
+					// Chrome-only hints: capture this tab without a picker.
+					preferCurrentTab: true,
+					selfBrowserSurface: 'include',
+					surfaceSwitching: 'exclude',
+					systemAudio: 'exclude'
+				} as any),
+				2000
+			);
+
+			if (!stream) return false;
+
+			const track = stream.getVideoTracks()[0];
+			if (!track) {
+				stream.getTracks().forEach((t) => t.stop());
+				return false;
+			}
+
+			const processor = new (window as any).MediaStreamTrackProcessor({ track });
+			nativeStream = stream;
+			nativeTrack = track;
+			nativeReader = processor.readable.getReader();
+			captureMode = 'native';
+			forceNextKeyframe = true;
+
+			track.addEventListener('ended', () => {
+				// The surface went away (navigation, tab teardown) — drop back
+				// to push mode rather than freezing on the last frame.
+				stopNativeCapture();
+			});
+
+			readNativeFrames();
+			return true;
+		} catch (e) {
+			stopNativeCapture();
+			return false;
+		}
+	}
+
+	function stopNativeCapture() {
+		captureMode = 'push';
+
+		if (nativeIdleTimer) {
+			clearTimeout(nativeIdleTimer);
+			nativeIdleTimer = null;
+		}
+
+		if (nativeReader) {
+			try {
+				nativeReader.cancel();
+			} catch (e) {}
+			nativeReader = null;
+		}
+
+		if (nativeTrack) {
+			try {
+				nativeTrack.stop();
+			} catch (e) {}
+			nativeTrack = null;
+		}
+
+		if (nativeStream) {
+			try {
+				nativeStream.getTracks().forEach((t) => t.stop());
+			} catch (e) {}
+			nativeStream = null;
+		}
+
+		if (lastNativeFrame) {
+			try {
+				lastNativeFrame.close();
+			} catch (e) {}
+			lastNativeFrame = null;
+		}
+	}
+
+	// ------------------------------------------------------------------
+	// Adaptive controls driven by the backend
+	// ------------------------------------------------------------------
+
+	/**
+	 * Apply a new framerate target. In native mode this is pushed down to the
+	 * capture track so the compositor stops producing frames we would discard;
+	 * in push mode the backend enforces it by withholding the screencast ack.
+	 */
+	function setTargetFramerate(fps: number) {
+		const next = Math.max(1, Math.min(60, Math.round(fps)));
+		if (next === targetFramerate) return;
+		targetFramerate = next;
+
+		if (nativeTrack) {
+			try {
+				nativeTrack.applyConstraints({ frameRate: { max: next } } as MediaTrackConstraints).catch(() => {});
+			} catch (e) {}
+		}
+	}
+
+	function reportEncoderStats() {
+		const send = (window as any).__sendEncoderStats;
+		if (typeof send !== 'function') return;
+
+		const now = performance.now();
+		const windowMs = statsWindowStart > 0 ? now - statsWindowStart : 0;
+		statsWindowStart = now;
+
+		try {
+			send({
+				captureMode,
+				codec: activeCodec.name,
+				avgFrameCostMs: frameCostSamples > 0 ? frameCostTotalMs / frameCostSamples : 0,
+				encodeQueueMax,
+				bufferedAmount: dataChannel ? dataChannel.bufferedAmount : 0,
+				framesAttempted,
+				framesSkippedEncoder,
+				framesSkippedNetwork,
+				// Frames per second the viewer actually receives. Every other
+				// counter can read healthy while this quietly sits at half the
+				// target, so it is the one number worth trusting.
+				measuredFps: windowMs > 0 ? (framesEncodedWindow * 1000) / windowMs : 0,
+				width: encoderWidth,
+				height: encoderHeight
+			});
+		} catch (e) {}
+
+		frameCostSamples = 0;
+		frameCostTotalMs = 0;
+		framesAttempted = 0;
+		framesSkippedEncoder = 0;
+		framesSkippedNetwork = 0;
+		framesEncodedWindow = 0;
+		encodeQueueMax = 0;
 	}
 
 	// Force the next encoded frame to be a keyframe (client-driven sync point,
 	// PLI equivalent — used when the client decoder errors or joins mid-stream)
 	function forceKeyframe() {
 		forceNextKeyframe = true;
+		// On a still page nothing new will be encoded, so nudge the retained
+		// frame out immediately when we have one.
+		if (captureMode === 'native' && lastNativeFrame && videoEncoder) {
+			try {
+				encodeVideoFrame(lastNativeFrame, true);
+			} catch (e) {}
+		}
 	}
 
 	// Start streaming
-	// allowVp9: client decode capability negotiated at stream start
-	async function startStreaming(allowVp9?: boolean) {
+	async function startStreaming() {
 		if (isCapturing) return true;
-
-		vp9Allowed = allowVp9 !== false;
 
 		try {
 			await initPeerConnection();
@@ -460,6 +942,9 @@ export function videoEncoderScript(config: StreamingConfig['video']) {
 
 			// Start tracking cursor changes
 			startCursorTracking();
+
+			if (statsReportTimer) clearInterval(statsReportTimer);
+			statsReportTimer = setInterval(reportEncoderStats, 2000);
 
 			return true;
 		} catch (error) {
@@ -477,6 +962,13 @@ export function videoEncoderScript(config: StreamingConfig['video']) {
 			clearTimeout(topOffRetryTimer);
 			topOffRetryTimer = null;
 		}
+
+		if (statsReportTimer) {
+			clearInterval(statsReportTimer);
+			statsReportTimer = null;
+		}
+
+		stopNativeCapture();
 
 		// Stop cursor tracking
 		stopCursorTracking();
@@ -564,23 +1056,33 @@ export function videoEncoderScript(config: StreamingConfig['video']) {
 			// Flush pending frames
 			await videoEncoder.flush();
 
-			// Create new codec config with updated dimensions (keeps current codec mode)
-			const newCodecConfig = buildEncoderConfig(newWidth, newHeight, newBitrate);
+			currentBitrate = newBitrate || currentBitrate;
+			const newCodecConfig = buildEncoderConfig(activeCodec, newWidth, newHeight, currentBitrate);
 
-			// Check if new config is supported
 			const support = await VideoEncoder.isConfigSupported(newCodecConfig);
 			if (!support.supported) {
 				return false;
 			}
 
-			// Reconfigure encoder with new dimensions
-			await videoEncoder.configure(newCodecConfig);
+			videoEncoder.configure(newCodecConfig);
 
-			// Update config reference
+			encoderWidth = newWidth;
+			encoderHeight = newHeight;
 			config.width = newWidth;
 			config.height = newHeight;
-			if (newBitrate) {
-				config.bitrate = newBitrate;
+
+			// Native capture has to be told separately — its frame size comes
+			// from track constraints, not from the encoder.
+			if (nativeTrack) {
+				try {
+					nativeTrack
+						.applyConstraints({
+							width: { max: newWidth },
+							height: { max: newHeight },
+							frameRate: { max: targetFramerate }
+						} as MediaTrackConstraints)
+						.catch(() => {});
+				} catch (e) {}
 			}
 
 			// Force keyframe after reconfigure (decoder needs a sync point at the new dimensions)
@@ -604,8 +1106,9 @@ export function videoEncoderScript(config: StreamingConfig['video']) {
 				videoFramesEncoded: videoFrameCount,
 				audioFramesEncoded: audioFrameCount,
 				connectionState: peerConnection.connectionState,
-				videoCodec: usingQuantizer ? 'vp9' : config.codec,
-				audioCodec: 'opus' as const
+				videoCodec: activeCodec.name,
+				audioCodec: 'opus' as const,
+				captureMode
 			};
 
 			stats.forEach(report => {
@@ -632,6 +1135,10 @@ export function videoEncoderScript(config: StreamingConfig['video']) {
 		sendAudioChunk,
 		getStats,
 		reconfigureEncoder,
+		startNativeCapture,
+		stopNativeCapture,
+		setTargetFramerate,
+		getCaptureMode: () => captureMode,
 		isActive: () => isCapturing
 	};
 }

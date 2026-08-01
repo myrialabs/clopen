@@ -65,7 +65,7 @@ export interface BrowserTab {
 	lastUniqueFrameTime?: number;
 	stableFrameStartTime?: number;
 	lastCursorInfo?: { x: number; y: number; cursor: string };
-	scale?: number; // Frontend display fit-scale (CSS-only; does NOT affect capture resolution)
+	scale?: number; // Frontend display fit-scale — with the viewer's devicePixelRatio, this sets capture resolution
 
 	// Interaction tracking
 	lastInteractionTime?: number;
@@ -198,6 +198,83 @@ export interface BrowserScreenshotFrame {
 }
 
 /**
+ * Wire codec identifiers.
+ *
+ * Every video packet carries one of these so the viewer can configure the
+ * matching decoder without a side-channel. Values are part of the wire format —
+ * append only, never renumber.
+ */
+export const VIDEO_CODEC_ID = {
+	vp8: 0,
+	vp9: 1,
+	avc: 2
+} as const;
+
+export type VideoCodecName = keyof typeof VIDEO_CODEC_ID;
+
+/**
+ * A candidate the in-page encoder may use, in preference order.
+ *
+ * `quantizerKey` selects per-frame quality control (Chrome-Remote-Desktop
+ * style): cheap frames during motion, near-lossless when the page goes still.
+ * Candidates without it fall back to fixed-bitrate mode, where the still-page
+ * refresh is a forced keyframe at a temporarily raised bitrate instead.
+ */
+export interface VideoCodecCandidate {
+	/** WebCodecs codec string, identical on encoder and decoder. */
+	codec: string;
+	name: VideoCodecName;
+	id: number;
+	quantizerKey?: 'vp9';
+	/**
+	 * H.264 must be emitted as Annex-B: we ship raw chunk bytes with no
+	 * `description`, so an AVCC-formatted stream would be undecodable.
+	 */
+	annexb?: boolean;
+}
+
+/**
+ * Client decode capabilities, negotiated at stream start.
+ *
+ * The headless browser can encode far more than a given viewer can decode —
+ * an iPhone or a low-end Android has hardware H.264 but only software VP9,
+ * which is exactly the case where software decoding wrecks the frame rate.
+ */
+export interface ClientCodecSupport {
+	vp8: boolean;
+	vp9: boolean;
+	avc: boolean;
+	/** Codecs the viewer reports a hardware decoder for. */
+	hardware: VideoCodecName[];
+}
+
+/**
+ * Viewer display metrics — drives capture resolution (see computeCaptureSize).
+ */
+export interface ClientDisplayMetrics {
+	/** CSS fit-scale applied to the preview (0-1). */
+	scale?: number;
+	/** Viewer screen density. */
+	dpr?: number;
+}
+
+/**
+ * Runtime feedback from the viewer's decoder.
+ *
+ * Backpressure used to be network-only (`bufferedAmount`). A viewer that
+ * cannot decode fast enough shows the same symptom — growing latency and
+ * stutter — with an empty network buffer, so the decode queue has to travel
+ * back to the source as well.
+ */
+export interface ClientStreamFeedback {
+	decodeQueueSize: number;
+	/** Mean decode-to-render latency over the reporting window (ms). */
+	decodeLatencyMs: number;
+	/** Frames dropped before render, as a fraction of frames received. */
+	dropRatio: number;
+}
+
+/**
  * Unified Streaming Configuration
  *
  * Central configuration for WebCodecs streaming (video + audio).
@@ -207,17 +284,26 @@ export interface BrowserScreenshotFrame {
  */
 export interface StreamingConfig {
 	video: {
-		codec: string; // Fallback codec (VP8, fixed-bitrate mode) when VP9 quantizer mode is unsupported
+		codec: string; // Fallback codec (VP8, fixed-bitrate mode) when nothing better is negotiated
         width: number;
         height: number;
-        framerate: number; // Max encode fps — screencast frames above this rate are dropped at the source
+        framerate: number; // Target encode fps — the screencast is throttled to this at the source
+        minFramerate: number; // Floor of the adaptive framerate ladder
         bitrate: number;
         keyframeInterval: number; // Seconds between periodic keyframes; 0 = on-demand only (start/reconnect/client request)
         screenshotQuality: number;
         hardwareAcceleration: 'no-preference' | 'prefer-hardware' | 'prefer-software';
         latencyMode: 'quality' | 'realtime';
-        motionQuantizer: number; // VP9 per-frame quantizer (0-63) while the page is moving — cheap, allowed to be soft
-        topOffQuantizer: number; // VP9 quantizer for still-page refresh frames — near-lossless so text stays crisp
+        motionQuantizer: number; // Per-frame quantizer (0-63) while the page is moving — cheap, allowed to be soft
+        topOffQuantizer: number; // Quantizer for still-page refresh frames — near-lossless so text stays crisp
+        /** Ordered encoder candidates resolved from the viewer's capabilities. */
+        codecCandidates: VideoCodecCandidate[];
+        /**
+         * Attempt in-page capture (getDisplayMedia + MediaStreamTrackProcessor)
+         * before falling back to the CDP screencast push path. Removes a JPEG
+         * encode/decode round-trip and the base64 CDP hop per frame.
+         */
+        nativeCapture: boolean;
 	};
 	audio: {
 		codec: string
@@ -237,13 +323,17 @@ export interface StreamingConfig {
  *   goes still a near-lossless refresh frame is sent (topOffQuantizer) so
  *   text stays crisp. Idle pages cost ~0 bandwidth (CDP screencast only
  *   fires on damage).
+ * - H.264 when the viewer has a hardware decoder for it but not for VP9
+ *   (phones, tablets, low-end laptops) — fixed-bitrate mode with a bitrate
+ *   bump on the still-page refresh.
  * - Fallback: VP8 at a resolution-scaled bitrate (see computeBitrate).
  * - Keyframes on demand only (keyframeInterval 0) — the DataChannel is
  *   reliable, and the client requests a keyframe on decoder errors.
- * - Encode rate capped at `framerate` — screencast can fire at compositor
- *   rate (up to 60fps); excess frames are dropped at the source.
- * - JPEG quality 75 for motion source frames (encoder quantizer controls
- *   output size, so higher source quality no longer inflates bandwidth)
+ * - Encode rate capped at `framerate`, enforced at the source by withholding
+ *   the screencast ack so Chrome never rasters frames we would discard.
+ * - Resolution, framerate and quantizers are overridden per session from the
+ *   host capture profile and the viewer's display metrics; the values here
+ *   are only the shape and the fallback for non-streaming call sites.
  * - Opus for audio (efficient and widely supported)
  */
 export const DEFAULT_STREAMING_CONFIG: StreamingConfig = {
@@ -252,22 +342,75 @@ export const DEFAULT_STREAMING_CONFIG: StreamingConfig = {
 		width: 0,
 		height: 0,
 		framerate: 24,
+		minFramerate: 8,
 		bitrate: 1_000_000,
 		keyframeInterval: 0,
 		screenshotQuality: 75,
 		hardwareAcceleration: 'no-preference',
 		latencyMode: 'realtime',
 		motionQuantizer: 40,
-		topOffQuantizer: 10
+		topOffQuantizer: 10,
+		codecCandidates: [],
+		nativeCapture: false
 	},
 	audio: {
 		codec: 'opus',
 		sampleRate: 48_000,
-		bitrate: 128_000,
+		bitrate: 96_000,
 		numberOfChannels: 2,
 		bufferSize: 4096
 	}
 };
+
+/**
+ * Build the ordered encoder candidate list for a viewer.
+ *
+ * **VP9 wins whenever the viewer can decode it at all**, including in software.
+ * Only VP9 supports per-frame quantizer control, and that is what the whole
+ * quality model rests on: coarse frames while the page moves, a near-lossless
+ * refresh the moment it stops. A fixed-bitrate codec has no equivalent — it has
+ * to be run at a bitrate high enough for motion (wasteful) or low enough for
+ * bandwidth (blocky), and its still-page refresh is just a keyframe.
+ *
+ * H.264 is therefore reserved for viewers that cannot decode VP9 at all —
+ * typically Safari and iOS, which is also where hardware H.264 is guaranteed.
+ * Preferring it merely because the viewer *also* has hardware H.264 trades a
+ * working quality model for a decode saving the viewer usually doesn't need;
+ * viewers that genuinely can't keep up are handled by the decode-feedback
+ * ladder instead, which lowers framerate and resolution without changing codec.
+ *
+ * VP8 is the universal floor and is always appended last.
+ */
+export function resolveCodecCandidates(support: ClientCodecSupport): VideoCodecCandidate[] {
+	const vp9: VideoCodecCandidate = {
+		codec: 'vp09.00.10.08',
+		name: 'vp9',
+		id: VIDEO_CODEC_ID.vp9,
+		quantizerKey: 'vp9'
+	};
+	// Constrained Baseline @ 5.1 — a level ceiling, not a request, so one
+	// string covers every viewport we capture and both ends stay in sync
+	// without negotiating dimensions first.
+	const avc: VideoCodecCandidate = {
+		codec: 'avc1.42E033',
+		name: 'avc',
+		id: VIDEO_CODEC_ID.avc,
+		annexb: true
+	};
+	const vp8: VideoCodecCandidate = {
+		codec: 'vp8',
+		name: 'vp8',
+		id: VIDEO_CODEC_ID.vp8
+	};
+
+	const candidates: VideoCodecCandidate[] = [];
+
+	if (support.vp9) candidates.push(vp9);
+	if (support.avc) candidates.push(avc);
+	if (support.vp8 !== false) candidates.push(vp8);
+
+	return candidates.length > 0 ? candidates : [vp8];
+}
 
 /**
  * Native UI Dialog Types

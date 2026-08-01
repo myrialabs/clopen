@@ -20,7 +20,10 @@ import type {
 	BrowserDialogResponse,
 	BrowserSelectResponse,
 	BrowserContextMenuResponse,
-	BrowserContextMenuInfo
+	BrowserContextMenuInfo,
+	ClientCodecSupport,
+	ClientDisplayMetrics,
+	ClientStreamFeedback
 } from './types';
 
 /**
@@ -366,7 +369,10 @@ export class BrowserPreviewService extends EventEmitter {
 	// ============================================================================
 	// WebCodecs Streaming Methods (optimized, ~20-40ms, lower bandwidth)
 	// ============================================================================
-	async startWebCodecsStreaming(tabId: string, allowVp9 = true): Promise<boolean> {
+	async startWebCodecsStreaming(
+		tabId: string,
+		options?: { codecSupport?: ClientCodecSupport; display?: ClientDisplayMetrics }
+	): Promise<boolean> {
 		const tab = this.getTab(tabId);
 		if (!tab) {
 			return false;
@@ -375,8 +381,36 @@ export class BrowserPreviewService extends EventEmitter {
 			tabId,
 			tab,
 			() => this.isValidTab(tabId),
-			allowVp9
+			options
 		);
+	}
+
+	/**
+	 * Viewer display metrics (fit-scale + pixel density) — drives capture
+	 * resolution so we never encode more pixels than the viewer can show.
+	 */
+	applyWebCodecsDisplayMetrics(tabId: string, metrics: ClientDisplayMetrics): boolean {
+		const tab = this.getTab(tabId);
+		if (!tab) {
+			return false;
+		}
+		this.videoCapture.applyDisplayMetrics(tabId, tab, metrics);
+		return true;
+	}
+
+	/** Viewer decoder health — closes the adaptation loop back to the source. */
+	applyWebCodecsClientFeedback(tabId: string, feedback: ClientStreamFeedback): boolean {
+		this.videoCapture.applyClientFeedback(tabId, feedback);
+		return true;
+	}
+
+	/** Suspend capture while nobody is looking at the preview. */
+	async setWebCodecsPaused(tabId: string, paused: boolean): Promise<boolean> {
+		const tab = this.getTab(tabId);
+		if (!tab) {
+			return false;
+		}
+		return await this.videoCapture.setPaused(tabId, tab, paused);
 	}
 
 	async stopWebCodecsStreaming(tabId: string): Promise<void> {
