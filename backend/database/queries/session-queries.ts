@@ -93,6 +93,16 @@ export const sessionQueries = {
 		`).run(engine, provider, modelId, modelName, id);
 	},
 
+	/** Persist the reasoning/thinking level for a session (NULL clears → engine default). */
+	updateReasoning(id: string, reasoningEffort: string | null): void {
+		const db = getDatabase();
+		db.prepare(`
+			UPDATE chat_sessions
+			SET reasoning_effort = ?
+			WHERE id = ?
+		`).run(reasoningEffort, id);
+	},
+
 	/** Persist the active profile for a session (NULL clears it). */
 	updateProfile(id: string, profileId: number | null): void {
 		const db = getDatabase();

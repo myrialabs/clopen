@@ -19,7 +19,7 @@
  * `backend/ws/chat/stream.ts` to it — same pattern as Claude/OpenCode.
  */
 
-import type { Codex, Thread, ThreadOptions, Input as CodexInput } from '@openai/codex-sdk';
+import type { Codex, Thread, ThreadOptions, Input as CodexInput, ModelReasoningEffort } from '@openai/codex-sdk';
 import { loadEngineSdk } from '$backend/engine/sdk-loader';
 import type { EngineOutput, EngineModel } from '$shared/types/unified';
 import type { AIEngine, EngineQueryOptions, StructuredGenerationOptions } from '../../types';
@@ -151,7 +151,14 @@ export class CodexEngine implements AIEngine {
 	}
 
 	async *streamQuery(options: EngineQueryOptions): AsyncGenerator<EngineOutput, void, unknown> {
-		const { projectPath, prompt, resume, modelId, abortController, accountId } = options;
+		const { projectPath, prompt, resume, modelId, reasoningEffort, abortController, accountId } = options;
+
+		// Codex's reasoning knob (`minimal | low | medium | high | xhigh`); default
+		// medium when unset or an unsupported token slips through.
+		const codexEfforts = new Set<string>(['minimal', 'low', 'medium', 'high', 'xhigh']);
+		const modelReasoningEffort: ModelReasoningEffort = reasoningEffort && codexEfforts.has(reasoningEffort)
+			? reasoningEffort as ModelReasoningEffort
+			: 'medium';
 
 		// Active Profile for this stream — scopes the materialized artifact set AND
 		// (below) the MCP connector set baked into the Codex client.
@@ -200,7 +207,7 @@ export class CodexEngine implements AIEngine {
 			skipGitRepoCheck: true,
 			sandboxMode: 'danger-full-access',
 			approvalPolicy: 'never',
-			modelReasoningEffort: 'medium',
+			modelReasoningEffort,
 			webSearchMode: 'cached',
 			webSearchEnabled: true,
 		};

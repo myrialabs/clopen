@@ -509,6 +509,9 @@ class ChatService {
         // Active Profile for this session (null = use project default). Persisted
         // to chat_sessions.profile_id server-side like engine/model.
         profileId: chatModelState.profileId,
+        // Reasoning/thinking level (native per engine; null = engine default).
+        // Persisted to chat_sessions.reasoning_effort server-side.
+        reasoningEffort: chatModelState.reasoningEffort,
       });
 
       // Persist engine/model/account to frontend session state immediately.
@@ -529,6 +532,7 @@ class ChatService {
           ...(selectedAccountId !== null && { account_id: selectedAccountId }),
           ...(selectedAccountName !== null && { account_name: selectedAccountName }),
           profile_id: chatModelState.profileId,
+          reasoning_effort: chatModelState.reasoningEffort,
         });
       }
 

@@ -19,6 +19,7 @@ import type {
 	Query,
 	PermissionMode,
 	PermissionResult,
+	EffortLevel,
 } from '@anthropic-ai/claude-agent-sdk';
 import type { EngineOutput } from '$shared/types/unified';
 import type { StructuredGenerationOptions } from '../../types';
@@ -89,10 +90,22 @@ export class ClaudeCodeEngine implements AIEngine {
       resume,
       maxTurns = undefined,
       modelId,
+      reasoningEffort,
       includePartialMessages = false,
       abortController,
       accountId
     } = options;
+
+    // Map the chosen reasoning level to Claude's knobs: `off` disables thinking
+    // entirely, `auto`/unset keeps adaptive thinking (Claude decides how much),
+    // and an explicit effort level pairs adaptive thinking with `effort`.
+    const claudeEffort = new Set<string>(['low', 'medium', 'high', 'xhigh', 'max']);
+    const thinkingConfig: Options['thinking'] = reasoningEffort === 'off'
+      ? { type: 'disabled' }
+      : { type: 'adaptive', display: 'summarized' };
+    const effortOption = reasoningEffort && claudeEffort.has(reasoningEffort)
+      ? { effort: reasoningEffort as EffortLevel }
+      : {};
 
     debug.log('chat', "Claude Code - Stream Query");
     debug.log('chat', { prompt });
@@ -142,10 +155,11 @@ export class ClaudeCodeEngine implements AIEngine {
         systemPrompt: { type: "preset", preset: "claude_code" },
         settingSources: ["user", "project", "local"],
         forkSession: true,
-        // Explicit adaptive thinking with summarized display so Opus 4.6+ emits
-        // visible thinking_delta events; without this the SDK can default to
-        // 'omitted' and reasoning blocks arrive empty.
-        thinking: { type: 'adaptive', display: 'summarized' },
+        // Reasoning level → thinking/effort (see thinkingConfig above). Adaptive
+        // thinking with summarized display keeps Opus 4.6+ emitting visible
+        // thinking_delta events; 'off' disables it, an explicit level adds effort.
+        thinking: thinkingConfig,
+        ...effortOption,
         // Custom permission handler: blocks on AskUserQuestion until user answers,
         // auto-allows everything else. Works alongside bypassPermissions.
         canUseTool: async (_toolName, input, canUseToolOptions) => {

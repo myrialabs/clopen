@@ -177,6 +177,12 @@ export interface StreamRequest {
 	engine: MessageEngine;
 	sender: MessageSender;
 	/**
+	 * Reasoning/thinking level token chosen for this session (native per engine).
+	 * `null`/absent → the engine's own default applies. Persisted to
+	 * `chat_sessions.reasoning_effort` like engine/model.
+	 */
+	reasoningEffort?: string | null;
+	/**
 	 * Active Profile chosen for this session (bundle of Skills/Commands/Subagents/
 	 * MCP/Permissions). `null` = explicit "no profile"; `undefined` = client didn't
 	 * send one → the stream falls back to the project's default profile. Persisted

@@ -10,9 +10,23 @@
  * listed here — deprecated/retired models are dropped.
  */
 
-import type { EngineModel } from '$shared/types/unified';
+import type { EngineModel, ReasoningControl } from '$shared/types/unified';
+import { toReasoningOptions } from '$shared/constants/engines';
 
-export const CLAUDE_CODE_MODELS: EngineModel[] = [
+/**
+ * Claude's reasoning knob is the Agent SDK `effort` option plus `thinking`.
+ * `off` disables thinking; `auto` is adaptive thinking (Claude decides — the
+ * historical default); the rest are the SDK's native `EffortLevel` values
+ * (`low | medium | high | xhigh | max`, silently downgraded on models that
+ * don't support the higher tiers). Uniform across the catalog; the stream
+ * adapter translates the chosen token.
+ */
+const CLAUDE_REASONING_CONTROL: ReasoningControl = {
+	levels: toReasoningOptions(['off', 'auto', 'low', 'medium', 'high', 'xhigh', 'max']),
+	default: 'auto',
+};
+
+const CLAUDE_CODE_MODELS_BASE: EngineModel[] = [
 	{
 		engine: {
 			type: 'claude-code',
@@ -444,3 +458,8 @@ export const CLAUDE_CODE_MODELS: EngineModel[] = [
 		},
 	},
 ];
+
+export const CLAUDE_CODE_MODELS: EngineModel[] = CLAUDE_CODE_MODELS_BASE.map((model) => ({
+	...model,
+	capabilities: { ...model.capabilities, reasoningControl: CLAUDE_REASONING_CONTROL },
+}));

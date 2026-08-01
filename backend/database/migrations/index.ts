@@ -63,6 +63,7 @@ import * as migration061 from './061_add_session_device_metadata';
 import * as migration062 from './062_add_session_source';
 import * as migration063 from './063_add_invite_project_ids';
 import * as migration064 from './064_create_messages_fts';
+import * as migration065 from './065_add_session_reasoning_effort';
 
 // Export all migrations in order
 export const migrations = [
@@ -449,6 +450,12 @@ export const migrations = [
 		description: migration064.description,
 		up: migration064.up,
 		down: migration064.down
+	},
+	{
+		id: '065',
+		description: migration065.description,
+		up: migration065.up,
+		down: migration065.down
 	}
 ];
 

@@ -43,6 +43,12 @@ export interface MessageEngine {
 	provider: string;
 	model: MessageModel;
 	account: MessageAccount;
+	/**
+	 * Reasoning/thinking level applied to this turn (native per engine — see
+	 * `EngineModel.capabilities.reasoningControl`). Present only when the
+	 * engine/model exposes a reasoning knob; absent for engines/models without one.
+	 */
+	reasoningEffort?: string | null;
 }
 
 /** Common fields present on every message */

@@ -26,7 +26,8 @@ import type {
 } from '@earendil-works/pi-coding-agent';
 import { loadEngineSdk } from '$backend/engine/sdk-loader';
 import type { AgentToolResult } from '@earendil-works/pi-agent-core';
-import type { ImageContent } from '@earendil-works/pi-ai';
+import type { ImageContent, ModelThinkingLevel } from '@earendil-works/pi-ai';
+import { clampThinkingLevel } from '@earendil-works/pi-ai';
 import type { EngineOutput, EngineModel, MessageEngine } from '$shared/types/unified';
 import type { AIEngine, EngineQueryOptions, StructuredGenerationOptions } from '../../types';
 import { resolveOsPath } from '$backend/utils/paths';
@@ -115,7 +116,7 @@ export class PiEngine implements AIEngine {
 	}
 
 	async *streamQuery(options: EngineQueryOptions): AsyncGenerator<EngineOutput, void, unknown> {
-		const { projectPath, prompt, resume, providerSlug, modelId, abortController, accountId } = options;
+		const { projectPath, prompt, resume, providerSlug, modelId, reasoningEffort, abortController, accountId } = options;
 		debug.log('chat', 'Pi - Stream Query', { providerSlug, modelId, resume });
 
 		const { createAgentSession, DefaultResourceLoader, SessionManager, SettingsManager } =
@@ -260,7 +261,9 @@ export class PiEngine implements AIEngine {
 			agentDir,
 			model,
 			modelRuntime: runtime,
-			thinkingLevel: model.reasoning ? 'medium' : 'off',
+			thinkingLevel: reasoningEffort
+				? clampThinkingLevel(model, reasoningEffort as ModelThinkingLevel)
+				: (model.reasoning ? 'medium' : 'off'),
 			resourceLoader,
 			tools: toolAllowlist,
 			customTools,

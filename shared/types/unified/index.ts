@@ -21,6 +21,8 @@ export type {
 export type {
 	EngineModel,
 	EngineInfo,
+	ReasoningOption,
+	ReasoningControl,
 	QwenProviderPresetId,
 	QwenProviderPreset,
 	PiAuthMode,

@@ -16,7 +16,9 @@
  * unavailable (empty or errored). Only a missing account/key returns `[]`.
  */
 
-import type { EngineModel } from '$shared/types/unified';
+import type { ModelListItem, ModelParameterDefinition } from '@cursor/sdk';
+import type { EngineModel, ReasoningControl } from '$shared/types/unified';
+import { reasoningLevelLabel } from '$shared/constants/engines';
 import { debug } from '$shared/utils/logger';
 import { loadEngineSdk } from '$backend/engine/sdk-loader';
 import { getActiveCursorAccount, parseCursorCredential } from './credential';
@@ -35,7 +37,7 @@ export async function fetchCursorModels(): Promise<EngineModel[]> {
 		const models = await Cursor.models.list({ apiKey });
 		if (models.length) {
 			debug.log('engine', `Cursor getAvailableModels: ${models.length} models`);
-			return models.map(m => makeModel(m.id, m.displayName || m.id));
+			return models.map(m => makeModel(m.id, m.displayName || m.id, m));
 		}
 		debug.warn('engine', 'Cursor models.list returned empty — using fallback catalog');
 	} catch (error) {
@@ -44,7 +46,28 @@ export async function fetchCursorModels(): Promise<EngineModel[]> {
 	return CURSOR_FALLBACK_MODEL_IDS.map(id => makeModel(id, id));
 }
 
-function makeModel(id: string, name: string): EngineModel {
+/**
+ * Cursor exposes reasoning as a per-model `ModelParameterDefinition` (a
+ * dropdown of values) selected via `ModelSelection.params`. We surface it as a
+ * reasoning control when a model advertises a parameter whose id looks like a
+ * reasoning/thinking/effort toggle. The option `value` encodes the parameter id
+ * as `"<paramId>::<value>"` so the stream adapter can rebuild the params entry
+ * without re-fetching the catalog. Best-effort — absent when no such parameter.
+ */
+function buildCursorReasoningControl(item?: ModelListItem): ReasoningControl | undefined {
+	const params = item?.parameters;
+	if (!params?.length) return undefined;
+	const param: ModelParameterDefinition | undefined = params.find(p => /reason|think|effort/i.test(p.id));
+	if (!param || !param.values?.length) return undefined;
+	const levels = param.values.map(v => ({
+		value: `${param.id}::${v.value}`,
+		label: v.displayName ?? reasoningLevelLabel(v.value),
+	}));
+	return { levels, default: levels[0].value };
+}
+
+function makeModel(id: string, name: string, item?: ModelListItem): EngineModel {
+	const reasoningControl = buildCursorReasoningControl(item);
 	return {
 		engine: {
 			type: 'cursor',
@@ -63,6 +86,7 @@ function makeModel(id: string, name: string): EngineModel {
 			reasoning: true,
 			tools: true,
 			structuredOutput: false,
+			...(reasoningControl && { reasoningControl }),
 		},
 		cost: { input: 0, output: 0 },
 	};

@@ -11,6 +11,33 @@ import type { MessageEngine } from './message';
 // Re-export EngineType from common (canonical source)
 export type { EngineType } from './common';
 
+/**
+ * One selectable reasoning/thinking level for a model.
+ *
+ * `value` is the opaque wire token handed back to the engine adapter (usually a
+ * native SDK level like `'medium'` or `'high'`; for Cursor it encodes the
+ * model-parameter id as `"<paramId>::<value>"` so the adapter can rebuild a
+ * `ModelSelection.params` entry). `label` is the human-facing text.
+ */
+export interface ReasoningOption {
+	value: string;
+	label: string;
+}
+
+/**
+ * Per-model reasoning/thinking-effort control. Present ONLY on models whose
+ * engine exposes a runtime knob (Claude `effort`/`thinking`, Codex
+ * `modelReasoningEffort`, Pi `thinkingLevel`, Copilot `reasoningEffort`, Cursor
+ * model params). Absent → the UI hides the selector and the engine's own
+ * default applies. Levels are native per engine (no cross-engine normalization).
+ */
+export interface ReasoningControl {
+	/** Selectable levels, ordered low → high. */
+	levels: ReasoningOption[];
+	/** The value applied when the user hasn't chosen one (mirrors the engine default). */
+	default: string;
+}
+
 // Engine model definition
 export interface EngineModel {
 	engine: MessageEngine;
@@ -41,6 +68,12 @@ export interface EngineModel {
 		reasoning: boolean;
 		tools: boolean;
 		structuredOutput: boolean;
+		/**
+		 * Runtime reasoning-effort control for this model, when the engine exposes
+		 * one. Undefined → no selector (engine default applies). See
+		 * {@link ReasoningControl}.
+		 */
+		reasoningControl?: ReasoningControl;
 		/**
 		 * Auth modes the model is compatible with. Models that require a
 		 * ChatGPT (OAuth) login are flagged `'chatgpt'`; models that only

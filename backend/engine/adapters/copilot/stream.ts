@@ -211,7 +211,16 @@ export class CopilotEngine implements AIEngine {
 	}
 
 	async *streamQuery(options: EngineQueryOptions): AsyncGenerator<EngineOutput, void, unknown> {
-		const { projectPath, prompt, resume, modelId, abortController, accountId } = options;
+		const { projectPath, prompt, resume, modelId, reasoningEffort, abortController, accountId } = options;
+
+		// Copilot's `reasoningEffort` accepts low | medium | high | xhigh; only
+		// applied for models that support it (unsupported tokens are dropped so
+		// the SDK falls back to the model default).
+		const copilotEfforts = new Set<string>(['low', 'medium', 'high', 'xhigh']);
+		const reasoningOption: Pick<ResumeSessionConfig, 'reasoningEffort'> | Record<string, never> =
+			reasoningEffort && copilotEfforts.has(reasoningEffort)
+				? { reasoningEffort: reasoningEffort as ResumeSessionConfig['reasoningEffort'] }
+				: {};
 
 		// Per-stream account override: the Copilot SDK takes the GitHub token at
 		// construction time, so an account switch requires recreating the client.
@@ -346,6 +355,7 @@ export class CopilotEngine implements AIEngine {
 					});
 				},
 				model: modelId,
+				...reasoningOption,
 				workingDirectory: resolvedProjectPath,
 				onEvent: handler,
 				// Emit assistant.message_delta / assistant.reasoning_delta events

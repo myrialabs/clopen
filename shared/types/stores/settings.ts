@@ -71,6 +71,12 @@ export interface AppSettings {
 	artifactGenerator?: ArtifactGeneratorSettings;
 	/** Pinned model IDs — shown at top of provider group in model picker */
 	pinnedModels: string[];
+	/**
+	 * Per-model reasoning/thinking level defaults, keyed by model id. Stores the
+	 * native level token (e.g. 'high'). Seeds new sessions and remembers the last
+	 * level chosen per model. Absent key → use the engine/model default.
+	 */
+	reasoningDefaults: Record<string, string>;
 }
 
 /** Authentication mode */

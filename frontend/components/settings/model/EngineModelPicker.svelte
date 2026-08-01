@@ -5,6 +5,7 @@
 	import { formatProvider, formatTokens } from '$frontend/utils/format';
 	import { focusEngineSection, openSettingsModal } from '$frontend/stores/ui/settings-modal.svelte';
 	import { authStore } from '$frontend/stores/features/auth.svelte';
+	import { settings, setReasoningDefault } from '$frontend/stores/features/settings.svelte';
 
 	interface Props {
 		engine: EngineType;
@@ -260,6 +261,7 @@
 						<div class="flex flex-col bg-white/40 dark:bg-slate-800/20">
 							{#each providerModels as mdl (mdl.engine.model.id)}
 								{@const isSelected = model === mdl.engine.model.id}
+								{@const reasoningControl = mdl.capabilities.reasoningControl}
 								<button
 									type="button"
 									class="flex items-start gap-3 px-3 py-2.5 text-left cursor-pointer transition-all duration-150
@@ -290,6 +292,36 @@
 									{/if}
 									</div>
 								</button>
+
+								<!-- Reasoning effort for this model, nested directly under its row (whether
+									or not the model is selected) so it can never read as a global setting. -->
+								{#if reasoningControl && reasoningControl.levels.length > 0}
+									{@const reasoningDefault = settings.reasoningDefaults[mdl.engine.model.id] ?? reasoningControl.default ?? null}
+									<div class="pl-10 pr-3 pb-3
+										{isSelected ? 'bg-violet-500/10 dark:bg-violet-500/12' : ''}">
+										<div>
+											<div class="text-2xs font-semibold uppercase tracking-wide
+												{isSelected ? 'text-violet-700/80 dark:text-violet-300/80' : 'text-slate-400 dark:text-slate-500'} mb-1.5">
+												Reasoning effort
+											</div>
+											<div class="flex flex-wrap gap-1.5">
+												{#each reasoningControl.levels as level (level.value)}
+													{@const isLevelSelected = reasoningDefault === level.value}
+													<button
+														type="button"
+														class="px-2.5 py-1 text-xs font-medium rounded-md border transition-all duration-150 cursor-pointer
+															{isLevelSelected
+																? 'border-violet-600 bg-violet-600 text-white'
+																: 'border-slate-200 dark:border-slate-700 bg-white/70 dark:bg-slate-800/50 text-slate-600 dark:text-slate-400 hover:border-violet-500/40'}"
+														onclick={() => setReasoningDefault(mdl.engine.model.id, level.value)}
+													>
+														{level.label}
+													</button>
+												{/each}
+											</div>
+										</div>
+									</div>
+								{/if}
 							{/each}
 						</div>
 					{/if}

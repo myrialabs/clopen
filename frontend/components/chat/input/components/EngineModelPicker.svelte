@@ -2,13 +2,13 @@
 	import { untrack } from 'svelte';
 	import { scale } from 'svelte/transition';
 	import { cubicOut } from 'svelte/easing';
-	import { settings, togglePinnedModel } from '$frontend/stores/features/settings.svelte';
+	import { settings, togglePinnedModel, setReasoningDefault } from '$frontend/stores/features/settings.svelte';
 	import { modelStore } from '$frontend/stores/features/models.svelte';
 	import { sessionState } from '$frontend/stores/core/sessions.svelte';
 	import { appState } from '$frontend/stores/core/app.svelte';
 	import { userStore } from '$frontend/stores/features/user.svelte';
 	import { chatModelState, initChatModel, restoreChatModelFromSession } from '$frontend/stores/ui/chat-model.svelte';
-	import { ENGINES, getModelTags, pickDefaultModel } from '$shared/constants/engines';
+	import { ENGINES, getModelTags, pickDefaultModel, reasoningLevelLabel } from '$shared/constants/engines';
 	import type { EngineType, EngineModel } from '$shared/types/unified';
 	import Icon from '$frontend/components/common/display/Icon.svelte';
 	import ProfilePicker from './ProfilePicker.svelte';
@@ -372,6 +372,39 @@
 	const currentEngine = $derived(ENGINES.find(e => e.type === chatModelState.engine));
 	const currentModel = $derived(modelStore.getById(chatModelState.modelId));
 
+	// ── Reasoning / thinking level (only when the selected model exposes one) ──
+	const currentReasoningControl = $derived(currentModel?.capabilities.reasoningControl ?? null);
+	const currentReasoningValue = $derived(
+		chatModelState.reasoningEffort
+		?? settings.reasoningDefaults[chatModelState.modelId]
+		?? currentReasoningControl?.default
+		?? null
+	);
+	const currentReasoningLabel = $derived(
+		currentReasoningValue
+			? (currentReasoningControl?.levels.find(l => l.value === currentReasoningValue)?.label ?? reasoningLevelLabel(currentReasoningValue))
+			: ''
+	);
+
+	// Keep chatModelState.reasoningEffort holding the EFFECTIVE level so it's sent
+	// with the turn (and surfaces in the Raw Message). Reasoning-capable model →
+	// per-model default (Settings) or the model's own default; a value invalid for
+	// the current model is re-seeded. No knob → cleared to null.
+	$effect(() => {
+		const control = currentReasoningControl;
+		const modelId = chatModelState.modelId;
+		const defaults = settings.reasoningDefaults;
+		untrack(() => {
+			const current = chatModelState.reasoningEffort;
+			if (!control) {
+				if (current != null) chatModelState.reasoningEffort = null;
+				return;
+			}
+			const valid = control.levels.some(l => l.value === current);
+			if (!valid) chatModelState.reasoningEffort = defaults[modelId] ?? control.default;
+		});
+	});
+
 	// Readiness error for the active engine (e.g. not installed / not signed in),
 	// surfaced by models:list. Drives the not-installed → Open Stack notice below.
 	const engineError = $derived(modelStore.getError(chatModelState.engine));
@@ -423,20 +456,24 @@
 		const sessionAccountId = session?.account_id;
 		const sessionAccountName = session?.account_name;
 		const sessionProfileId = session?.profile_id;
+		const sessionReasoning = session?.reasoning_effort;
 
 		untrack(() => {
+			// Read per-model reasoning defaults untracked: editing a default (here or
+			// via the pill) must not re-trigger this init and clobber the live choice.
+			const reasoningDefaults = settings.reasoningDefaults;
 			if (sessionEngine && sessionModelId) {
 				// Session has persisted engine/model: always restore from session.
 				// This works for both existing sessions (has messages) and sessions
 				// where messages are still loading asynchronously.
-				restoreChatModelFromSession(sessionEngine, sessionProvider || sProvider, sessionModelId, sessionModelName || '', sessionAccountId, sessionAccountName, sessionProfileId);
+				restoreChatModelFromSession(sessionEngine, sessionProvider || sProvider, sessionModelId, sessionModelName || '', sessionAccountId, sessionAccountName, sessionProfileId, sessionReasoning ?? null);
 			} else if (!started) {
 				// New session (no messages, no persisted engine/model): apply Settings defaults
-				initChatModel(sEngine, sProvider, sModelId, sModelName, sMemory || {});
+				initChatModel(sEngine, sProvider, sModelId, sModelName, sMemory || {}, reasoningDefaults[sModelId] ?? null);
 			} else {
 				// Existing session without engine/model (pre-migration or not yet set):
 				// fall back to Settings defaults
-				initChatModel(sEngine, sProvider, sModelId, sModelName, sMemory || {});
+				initChatModel(sEngine, sProvider, sModelId, sModelName, sMemory || {}, reasoningDefaults[sModelId] ?? null);
 			}
 		});
 	});
@@ -467,6 +504,7 @@
 					chatModelState.modelId = target.engine.model.id;
 					chatModelState.modelName = target.engine.model.name;
 					chatModelState.engineModelMemory = { ...memory, [engine]: { provider: target.engine.provider, id: target.engine.model.id, name: target.engine.model.name } };
+					chatModelState.reasoningEffort = settings.reasoningDefaults[target.engine.model.id] ?? null;
 				}
 			});
 		}
@@ -614,6 +652,52 @@
 		searchQuery = '';
 	}
 
+	// ── Reasoning-level dropdown ──
+	let showReasoningDropdown = $state(false);
+	let reasoningTriggerButton = $state<HTMLButtonElement>();
+	let reasoningDropdownStyle = $state('');
+
+	function toggleReasoningDropdown() {
+		if (!showReasoningDropdown && reasoningTriggerButton) {
+			const rect = reasoningTriggerButton.getBoundingClientRect();
+			reasoningDropdownStyle = `position: fixed; bottom: ${window.innerHeight - rect.top + 4}px; left: ${rect.left}px; z-index: 9999;`;
+		}
+		showReasoningDropdown = !showReasoningDropdown;
+	}
+
+	function closeReasoningDropdown() {
+		showReasoningDropdown = false;
+	}
+
+	function selectReasoning(value: string) {
+		chatModelState.reasoningEffort = value;
+		// Remember per-model + surface as the Settings → Models default.
+		setReasoningDefault(chatModelState.modelId, value);
+		// Sync to collaborators in the same chat session.
+		const chatSessionId = sessionState.currentSession?.id;
+		const senderId = userStore.currentUser?.id;
+		if (chatSessionId && senderId) {
+			ws.emit('chat:reasoning-sync', { senderId, chatSessionId, reasoningEffort: value });
+		}
+		closeReasoningDropdown();
+	}
+
+	// Listen for remote reasoning-level changes from other users
+	$effect(() => {
+		const unsub = ws.on('chat:reasoning-sync', (data: { senderId: string; reasoningEffort: string | null }) => {
+			if (data.senderId === userStore.currentUser?.id) return;
+			debug.log('chat', 'Remote reasoning sync:', data);
+			chatModelState.reasoningEffort = data.reasoningEffort;
+			if (sessionState.currentSession) {
+				sessionState.currentSession = {
+					...sessionState.currentSession,
+					reasoning_effort: data.reasoningEffort,
+				};
+			}
+		});
+		return unsub;
+	});
+
 	async function selectEngine(engineType: EngineType) {
 		if (engineLocked) return;
 
@@ -639,6 +723,7 @@
 			chatModelState.modelId = target.engine.model.id;
 			chatModelState.modelName = target.engine.model.name;
 			chatModelState.engineModelMemory = { ...memory, [engineType]: { provider: target.engine.provider, id: target.engine.model.id, name: target.engine.model.name } };
+			chatModelState.reasoningEffort = settings.reasoningDefaults[target.engine.model.id] ?? null;
 		}
 	}
 
@@ -650,6 +735,8 @@
 			...chatModelState.engineModelMemory,
 			[chatModelState.engine]: { provider: model.engine.provider, id: model.engine.model.id, name: model.engine.model.name }
 		};
+		// Restore the per-model reasoning default (null → engine/model default).
+		chatModelState.reasoningEffort = settings.reasoningDefaults[model.engine.model.id] ?? null;
 		closeDropdown();
 	}
 
@@ -749,6 +836,25 @@
 		</button>
 	{/if}
 
+	<!-- Reasoning / thinking level (only when the selected model exposes one) -->
+	{#if currentReasoningControl && currentReasoningControl.levels.length > 0}
+		<button
+			bind:this={reasoningTriggerButton}
+			type="button"
+			class="flex items-center gap-1.5 px-2 py-1 text-xs rounded-lg transition-all duration-150
+				bg-slate-100 dark:bg-slate-800 hover:bg-slate-200 dark:hover:bg-slate-700
+				text-slate-600 dark:text-slate-400 border border-slate-200 dark:border-slate-700
+				disabled:opacity-50 disabled:cursor-not-allowed disabled:hover:bg-slate-100 dark:disabled:hover:bg-slate-800"
+			onclick={toggleReasoningDropdown}
+			disabled={appState.isLoading}
+			title="Reasoning effort"
+		>
+			<Icon name="lucide:brain" class="w-3.5 h-3.5" />
+			<span class="font-medium max-w-24 truncate">{currentReasoningLabel || 'Reasoning'}</span>
+			<Icon name="lucide:chevron-down" class="w-3 h-3" />
+		</button>
+	{/if}
+
 	<!-- Active-profile picker (per-session; only shown when profiles exist) -->
 	<ProfilePicker />
 </div>
@@ -842,6 +948,43 @@
 					<div class="flex items-center gap-2 min-w-0 flex-1">
 						<span class="font-medium text-xs truncate">{account.name}</span>
 					</div>
+				</button>
+			{/each}
+		</div>
+	</div>
+{/if}
+
+<!-- Reasoning-level dropdown -->
+{#if showReasoningDropdown && currentReasoningControl}
+	<div class="fixed inset-0" style="z-index: 9998;" onclick={closeReasoningDropdown}></div>
+
+	<div
+		style={reasoningDropdownStyle}
+		class="origin-bottom-left bg-white dark:bg-slate-800 border border-slate-200 dark:border-slate-700 rounded-lg shadow-xl overflow-hidden min-w-40 max-w-[calc(100vw-1.5rem)] max-h-64 flex flex-col"
+		transition:scale={{ duration: 130, easing: cubicOut, start: 0.95, opacity: 0 }}
+	>
+		<div class="flex gap-1.5 px-3 py-2 border-b border-slate-200 dark:border-slate-700 flex-shrink-0">
+			<Icon name="lucide:brain" class="w-3.5 h-3.5" />
+			<span class="text-xs font-medium text-slate-500 dark:text-slate-400 tracking-wide">Reasoning effort</span>
+		</div>
+		<div class="overflow-y-auto py-1">
+			{#each currentReasoningControl.levels as level (level.value)}
+				{@const isSelected = currentReasoningValue === level.value}
+				<button
+					type="button"
+					class="flex items-center gap-2.5 w-full px-3 py-2 text-left transition-all duration-150
+						{isSelected
+							? 'bg-violet-50 dark:bg-violet-900/20 text-violet-600 dark:text-violet-400'
+							: 'text-slate-700 dark:text-slate-300 hover:bg-slate-50 dark:hover:bg-slate-700/50'}"
+					onclick={() => selectReasoning(level.value)}
+				>
+					<div class="flex-shrink-0 w-3.5 h-3.5 rounded-full border-2 flex items-center justify-center
+						{isSelected ? 'border-violet-600' : 'border-slate-300 dark:border-slate-600'}">
+						{#if isSelected}
+							<div class="w-1.5 h-1.5 rounded-full bg-violet-600"></div>
+						{/if}
+					</div>
+					<span class="font-medium text-xs truncate">{level.label}</span>
 				</button>
 			{/each}
 		</div>

@@ -55,6 +55,8 @@ export interface StreamState {
 	processId: string;
 	engine: EngineType;
 	accountId?: number;
+	/** Reasoning/thinking level token for this run (native per engine; undefined = engine default). */
+	reasoningEffort?: string;
 	status: 'active' | 'completed' | 'error' | 'cancelled';
 	startedAt: Date;
 	completedAt?: Date;
@@ -124,6 +126,8 @@ interface RequestEngineContext {
 	accountId: number;
 	accountName: string;
 	modelName: string;
+	/** Reasoning/thinking level for this turn (native per engine; undefined = no knob). */
+	reasoningEffort?: string;
 }
 
 /**
@@ -148,6 +152,9 @@ function enrichMessageEngine(
 				id: ctx.accountId || message.engine.account.id,
 				name: ctx.accountName || message.engine.account.name,
 			},
+			// Surface the turn's reasoning level (when the engine exposes one) so it's
+			// visible in the Raw Message view. Omitted when there's no knob.
+			...(ctx.reasoningEffort !== undefined && { reasoningEffort: ctx.reasoningEffort }),
 		},
 	};
 }
@@ -298,6 +305,7 @@ class StreamManager extends EventEmitter {
 			processId,
 			engine: request.engine.type,
 			accountId: request.engine.account?.id || undefined,
+			reasoningEffort: request.reasoningEffort ?? undefined,
 			status: 'active',
 			startedAt: new Date(),
 			messages: [],
@@ -326,6 +334,11 @@ class StreamManager extends EventEmitter {
 				// so the session keeps inheriting the project default.
 				if (request.profileId !== undefined) {
 					sessionQueries.updateProfile(request.chatSessionId, request.profileId);
+				}
+				// Persist the reasoning/thinking level (string or null). `undefined`
+				// (client didn't send one) leaves the stored value untouched.
+				if (request.reasoningEffort !== undefined) {
+					sessionQueries.updateReasoning(request.chatSessionId, request.reasoningEffort);
 				}
 			} catch (error) {
 				debug.error('chat', 'Failed to save engine/model to session:', error);
@@ -456,6 +469,7 @@ class StreamManager extends EventEmitter {
 				accountId: requestEngine.account.id,
 				accountName: requestEngine.account.name,
 				modelName: requestEngine.model.name,
+				reasoningEffort: streamState.reasoningEffort,
 			};
 
 			const projectPathExists = projectPath ? await this.existsSync(projectPath) : false;
@@ -642,6 +656,7 @@ class StreamManager extends EventEmitter {
 				resume: resumeSessionId,
 				providerSlug: requestEngine.provider,
 				modelId: requestEngine.model.id,
+				...(streamState.reasoningEffort && { reasoningEffort: streamState.reasoningEffort }),
 				includePartialMessages: true,
 				abortController: streamState.abortController,
 				...(requestEngine.account.id !== 0 && { accountId: requestEngine.account.id }),

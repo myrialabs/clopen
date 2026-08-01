@@ -21,7 +21,7 @@
  * to Cursor's native `agents` config.
  */
 
-import type { SDKAgent, Run, SDKUserMessage, SDKImage, AgentDefinition, SDKCustomTool } from '@cursor/sdk';
+import type { SDKAgent, Run, SDKUserMessage, SDKImage, AgentDefinition, SDKCustomTool, ModelSelection } from '@cursor/sdk';
 import type { EngineOutput, EngineModel, MessageEngine } from '$shared/types/unified';
 import type { AIEngine, EngineQueryOptions, StructuredGenerationOptions } from '../../types';
 import { resolveOsPath } from '$backend/utils/paths';
@@ -82,6 +82,21 @@ class EventQueue<T> {
 	}
 }
 
+/**
+ * Build a Cursor `ModelSelection` from the base model id and the chosen
+ * reasoning token. The token encodes the model-parameter id as
+ * `"<paramId>::<value>"` (see cursor/models.ts). A plain id (no `::`) or an
+ * empty token yields the bare model with no params.
+ */
+function buildCursorModelSelection(modelId: string, reasoningEffort?: string): ModelSelection {
+	if (!reasoningEffort || !reasoningEffort.includes('::')) return { id: modelId };
+	const sep = reasoningEffort.indexOf('::');
+	const paramId = reasoningEffort.slice(0, sep);
+	const value = reasoningEffort.slice(sep + 2);
+	if (!paramId || !value) return { id: modelId };
+	return { id: modelId, params: [{ id: paramId, value }] };
+}
+
 export class CursorEngine implements AIEngine {
 	readonly name = 'cursor' as const;
 	private _isInitialized = false;
@@ -123,8 +138,13 @@ export class CursorEngine implements AIEngine {
 	}
 
 	async *streamQuery(options: EngineQueryOptions): AsyncGenerator<EngineOutput, void, unknown> {
-		const { projectPath, prompt, resume, modelId, abortController, accountId } = options;
+		const { projectPath, prompt, resume, modelId, reasoningEffort, abortController, accountId } = options;
 		debug.log('chat', 'Cursor - Stream Query', { modelId, resume });
+
+		// Cursor selects reasoning via a per-model parameter. The catalog encodes
+		// the chosen level as `"<paramId>::<value>"` (see cursor/models.ts); rebuild
+		// the `ModelSelection.params` entry here. Absent/malformed → base model.
+		const modelSelection = buildCursorModelSelection(modelId, reasoningEffort);
 
 		// ── Resolve account + API key ──
 		const account = (accountId != null ? engineQueries.getAccount(accountId) : null) ?? getActiveCursorAccount();
@@ -228,7 +248,7 @@ export class CursorEngine implements AIEngine {
 		let onAbort: (() => void) | null = null;
 		try {
 			const run = await agent.send(userMessage, {
-				model: { id: modelId },
+				model: modelSelection,
 				// Sub-agent (Task) steps aren't in `run.stream()` — they ride
 				// `tool-call-delta.taskUpdate` here. Stream each completed sub-agent
 				// tool call live as a child of the Agent block (parent.toolUseId).

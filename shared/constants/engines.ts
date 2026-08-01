@@ -119,6 +119,29 @@ export const getModelsByEngine = (engine: EngineType): EngineModel[] => {
 	return modelRegistry.filter(model => model.engine.type === engine);
 };
 
+/** Display labels for the native reasoning/thinking level tokens across engines. */
+const REASONING_LEVEL_LABELS: Record<string, string> = {
+	off: 'Off',
+	auto: 'Auto',
+	adaptive: 'Auto',
+	minimal: 'Minimal',
+	low: 'Low',
+	medium: 'Medium',
+	high: 'High',
+	xhigh: 'X-High',
+	max: 'Max',
+};
+
+/** Human label for a reasoning level token (falls back to capitalizing the token). */
+export function reasoningLevelLabel(value: string): string {
+	return REASONING_LEVEL_LABELS[value] ?? value.charAt(0).toUpperCase() + value.slice(1);
+}
+
+/** Build ordered `{ value, label }` reasoning options from native level tokens. */
+export function toReasoningOptions(values: readonly string[]): { value: string; label: string }[] {
+	return values.map((value) => ({ value, label: reasoningLevelLabel(value) }));
+}
+
 /** Get human-readable tags for a model (capabilities + input modalities) */
 export function getModelTags(model: EngineModel): string[] {
 	const tags: string[] = [];
