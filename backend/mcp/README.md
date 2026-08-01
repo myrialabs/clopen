@@ -233,6 +233,15 @@ servers/browser-automation/
 
 ### Data Flow
 
+> **Where the DB rows come from.** Code-defined internal servers are mirrored
+> into `mcp_servers` by `syncInternalServers()` (`internal/config.ts`), which is
+> called from `backend/bootstrap.ts::bootstrapAfterDbInit()` — shared by server
+> startup **and** the "Clear All Data" handler. Clear-data wipes `~/.clopen` and
+> re-runs only migrations + seeders on the live process, so a built-in synced
+> from code (Browser Automation, …) would otherwise disappear from Settings →
+> MCP until the next restart. Anything else established from code after
+> `initializeDatabase()` belongs in that same function.
+
 **Claude Code (in-process):**
 ```
 1. Server Definition (servers/weather/index.ts)

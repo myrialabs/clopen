@@ -11,7 +11,7 @@ export type SettingsSection =
 	| 'commit-message'
 	| 'artifacts'
 	| 'engines'
-	| 'system-tools'
+	| 'stack'
 	| 'mcp'
 	| 'skills'
 	| 'commands'
@@ -103,7 +103,7 @@ export const settingsSections: SettingsSectionMeta[] = [
 		adminOnly: true
 	},
 	{
-		id: 'system-tools',
+		id: 'stack',
 		label: 'Stack',
 		icon: 'lucide:hammer',
 		description: 'Engines, runtimes & tools',

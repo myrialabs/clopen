@@ -130,7 +130,7 @@
 		updateCheckState = 'idle';
 		latestVersion = null;
 		try {
-			const res = await ws.http('system-tools:status', { tool });
+			const res = await ws.http('stack:status', { tool });
 			status = res.status;
 			recipe = res.recipe;
 			if (res.activeSession && res.activeSession.status === 'running' && !sessionId) {
@@ -196,7 +196,7 @@
 
 	onMount(() => {
 		cleanups.push(
-			ws.on('system-tools:install-started', (payload) => {
+			ws.on('stack:install-started', (payload) => {
 				if (payload.tool !== tool) return;
 				expanded = true;
 				sessionId = payload.sessionId;
@@ -206,11 +206,11 @@
 				pendingBuffer = '';
 				viewer?.clear();
 			}),
-			ws.on('system-tools:install-stream', (payload) => {
+			ws.on('stack:install-stream', (payload) => {
 				if (payload.sessionId !== sessionId) return;
 				writeToTerminal(payload.line + '\r\n');
 			}),
-			ws.on('system-tools:install-finished', (payload) => {
+			ws.on('stack:install-finished', (payload) => {
 				if (payload.sessionId !== sessionId) return;
 				sessionStatus = payload.status;
 				exitCode = payload.exitCode;
@@ -244,7 +244,7 @@
 		if (!status?.installed) return;
 		updateCheckState = 'checking';
 		try {
-			const res = await ws.http('system-tools:check-update', {
+			const res = await ws.http('stack:check-update', {
 				tool,
 				installedVersion: status.version
 			});
@@ -271,7 +271,7 @@
 		viewer?.clear();
 		await tick();
 		try {
-			const res = await ws.http('system-tools:install-start', { tool });
+			const res = await ws.http('stack:install-start', { tool });
 			sessionId = res.sessionId;
 		} catch (err: unknown) {
 			errorMessage = err instanceof Error ? err.message : 'Failed to start install';
@@ -287,7 +287,7 @@
 	async function doCancel() {
 		if (!sessionId) return;
 		try {
-			await ws.http('system-tools:install-cancel', { sessionId });
+			await ws.http('stack:install-cancel', { sessionId });
 		} catch {
 			// Ignore — status will update via stream event
 		}

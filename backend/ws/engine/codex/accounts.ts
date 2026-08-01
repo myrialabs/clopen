@@ -341,7 +341,7 @@ export const codexAccountsHandler = createRouter()
 		if (!codexCmd) {
 			ws.emit.user(userId, 'engine:codex-account-setup-error', {
 				setupId,
-				message: 'Codex CLI not found on PATH. Install it via Settings → System Tools.'
+				message: 'Codex CLI not found on PATH. Install it via Settings → Stack.'
 			});
 			return;
 		}

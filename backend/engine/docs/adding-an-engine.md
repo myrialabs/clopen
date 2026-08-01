@@ -11,8 +11,12 @@ blueprint for the next engine you add.
 - [ ] `shared/types/unified/common.ts`: add `'newengine'` to `EngineType`.
 - [ ] `shared/types/unified/engine.ts`: add `'newengine'` to `EngineInfo.type`.
 - [ ] `shared/types/unified/message.ts`: add `'newengine'` to `MessageEngine.type`.
+- [ ] `shared/constants/tool-icons.ts`: add the brand SVG to `TOOL_ICONS`
+      (`{ light, dark }`). This is the single source of truth — Settings →
+      Engines, Settings → Stack, the wizard, and the chat picker all read it.
 - [ ] `shared/constants/engines.ts`: add an entry in `ENGINES[]`
-      (`type, name, description, icon.light, icon.dark`).
+      (`type, name, description, icon: TOOL_ICONS['newengine']`). The array's
+      order is the display order everywhere.
 - [ ] **Exhaustive `Record<EngineType, …>` maps & unions — forgetting any is a
       compile error, so `bun run check` after this step catches them all:**
   - `shared/constants/engine-tools.ts`: add `'newengine'` to
@@ -31,6 +35,13 @@ blueprint for the next engine you add.
       engines export a fetcher (`fetchNewengineModels(...)`) consumed by
       `getAvailableModels()`. Don't add anything to `shared/constants/engines.ts`
       for the catalog itself — the frontend loads it via `models:list`.
+- [ ] (Optional) **Reasoning control.** If the SDK exposes a reasoning /
+      thinking / effort knob, attach `capabilities.reasoningControl`
+      (`{ levels, default }`) to each model that supports it — build the labels
+      with `toReasoningOptions([...])` from `$shared/constants/engines`, and
+      read the level list off the SDK payload when it reports one (Copilot, Pi,
+      Cursor) rather than hardcoding. Omit the field entirely when there is no
+      knob; the picker then hides the control. See §2.4a.
 - [ ] (Optional) `backend/engine/adapters/newengine/presets.ts` if the
       engine needs provider/region/BYOK presets exposed to the UI.
       Mirror `qwen/presets.ts`: keep runtime values in the adapter,
@@ -47,7 +58,10 @@ mandatory files; optional files use the canonical names from §2.6.
 > runtime dependency; it lives in `package.json` `devDependencies` (pinned
 > exact) and is installed on demand into `~/.clopen/stack/engines`. In the
 > adapter, reference the SDK's types only via `import type` (erased at runtime)
-> and resolve the real module at point of use with
+> — **every** file, not just `stream.ts`; a value import left in a helper
+> (`server.ts`, `models.ts`, `credential.ts`) resolves from the repo's own
+> `node_modules` in dev and only breaks for end users — and resolve the real
+> module at point of use with
 > `loadEngineSdk<typeof import('<pkg>')>('newengine', '<pkg>')` from
 > `backend/engine/sdk-loader.ts`. The loader throws `EngineNotReadyError`
 > (`not-installed` / `needs-update`) when the SDK is absent or version-mismatched,
@@ -94,6 +108,10 @@ mandatory files; optional files use the canonical names from §2.6.
       event after all messages (Codex, Cursor), assistant rows persist
       `usage:null` — add the engine to `stream-manager.ts::backfillUsageForStream`'s
       gate so the turn aggregate is written to every assistant row (see §10.20-I).
+- [ ] **Reasoning effort (if the SDK has a knob):** read `options.reasoningEffort`
+      in `streamQuery` and map it onto the SDK's own option. Treat it as
+      untrusted — clamp/ignore an unknown token and fall back to the engine
+      default rather than forwarding it. See §2.4a for the per-engine table.
 - [ ] **Context window:** set `EngineModel.limit.input` to the model's real max
       when the catalog provides it; leave `0` when it doesn't — do NOT hard-code a
       value. The UI renders `0` as "?" via `getContextUsage(...).unknown` (§10.20-J).
@@ -101,6 +119,12 @@ mandatory files; optional files use the canonical names from §2.6.
       ...): void` (and any helper formatters specific to the SDK's error
       payload — see `opencode/error-handler.ts::formatSessionError` for the
       pattern).
+- [ ] `generateStructured` (optional but expected — it powers AI commit
+      messages, branch names, and artifact authoring). Native-schema SDKs pass
+      the schema through; the rest use `buildJsonPrompt` + `extractJson` from
+      `backend/engine/structured-helpers.ts` on a tool-less one-shot run.
+      Leave the method `undefined` if the SDK genuinely can't do it — the WS
+      handlers guard on its presence. See §10.16.
 - [ ] `credential.ts` / `environment.ts` / `server.ts` / `config.ts` /
       `presets.ts` / `session-fork.ts` (optional; canonical names only).
 - [ ] Artifacts: in `streamQuery`, call `syncSkills(...)` +
@@ -177,8 +201,7 @@ mandatory files; optional files use the canonical names from §2.6.
 Engine SDKs are installed **on demand** into the clopen-managed stack dir
 (`~/.clopen/stack/engines`), not onto the machine's PATH — so you don't write a
 per-platform recipe. You only declare the pinned package(s); `resolveEngineRecipe()`
-handles the install. (The panel is displayed as "Stack"; its WS route/id stays
-`system-tools`.)
+handles the install.
 
 - [ ] `package.json`: add the engine's SDK package(s) to `devDependencies` at an
       **exact** pinned version — this is the single source of truth for the
@@ -189,9 +212,9 @@ handles the install. (The panel is displayed as "Stack"; its WS route/id stays
     imports and detects install-state from; any extras pin a transitive CLI the
     SDK would otherwise float, e.g. Copilot's `@github/copilot`).
   - No resolver needed — `resolveEngineRecipe()` picks it up.
-- [ ] `backend/ws/system-tools/status.ts` & `install.ts`: add
+- [ ] `backend/ws/stack/status.ts` & `install.ts`: add
       `'newengine'` to `TOOL_UNION`.
-- [ ] `frontend/components/settings/system-tools/SystemToolsSettings.svelte`:
+- [ ] `frontend/components/settings/stack/StackSettings.svelte`:
       `<ToolInstallCard tool="newengine" title="NewEngine" description="..." />`.
 
 ### Stage 8 — Chat input
@@ -210,7 +233,15 @@ heavier — copy the OpenCode block.
 
 Other auto wiring:
 - [ ] The engine tab appears automatically in `EngineModelPicker` from
-      `ENGINES`.
+      `ENGINES`, and its position in the shared `ENGINES` order is the order
+      used by every grid, tab strip, and picker (Stack card list included).
+- [ ] The reasoning-level pill appears automatically for any model whose
+      catalog entry carries `capabilities.reasoningControl` — no frontend
+      change, and no engine name in the component.
+- [ ] The engine's brand icon comes from the single `TOOL_ICONS` registry in
+      `shared/constants/tool-icons.ts`, which both `ENGINES` and the Stack
+      cards reference. Add the SVG **there only** — never inline it a second
+      time.
 - [ ] Verify: select engine → model list appears → send message → stream
       runs.
 
@@ -232,6 +263,14 @@ Then the minimum UI scenarios that must pass:
       replies → cancel mid-stream → idle → send again → resume works.
 - [ ] AskUserQuestion (if the SDK supports it) → appears in UI → submit
       answer → stream continues.
+- [ ] Reasoning effort (if the engine has a knob) → the pill appears for
+      models that advertise one and is **absent** for models that don't →
+      pick a level → the Raw Message view shows `engine.reasoningEffort` →
+      the level survives a refresh (persisted on the session row).
+- [ ] `generateStructured` on a **non-Claude** engine: Git → generate commit
+      message, and Artifacts → generate from a purpose. These are the two
+      paths that break on a stale `providerSlug` and on JSON with trailing
+      prose / raw newlines — Claude Code passing proves nothing (§10.16).
 - [ ] Restart Clopen → state survives (account, provider, last-used model
       in chat).
 

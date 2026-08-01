@@ -695,10 +695,12 @@ Pi equivalents) for the reference implementation.
 
 ### 10.16 `generateStructured` — schema strictness & part-extraction fallback
 
-`generateStructured` powers the AI commit-message generator (and any
-future one-shot JSON callers). Each adapter satisfies the same
-`StructuredGenerationOptions → Promise<T>` contract, but the SDKs split
-sharply on whether they accept a schema natively:
+`generateStructured` powers three one-shot JSON callers: the AI
+commit-message generator, the branch-name generator, and artifact
+authoring (Skills/Commands/Subagents/Instructions from a purpose). Each
+adapter satisfies the same `StructuredGenerationOptions → Promise<T>`
+contract, but the SDKs split sharply on whether they accept a schema
+natively:
 
 | Engine       | Strategy        | Mechanism                                                    |
 |--------------|-----------------|--------------------------------------------------------------|
@@ -707,6 +709,13 @@ sharply on whether they accept a schema natively:
 | OpenCode     | Prompt          | `client.session.prompt({ tools: {}, … })`, parse text/reasoning parts |
 | Copilot      | Prompt          | `createSession({ availableTools: [], streaming: false })` + `sendAndWait` |
 | Qwen         | Prompt          | `query({ coreTools: [], maxSessionTurns: 1 })`, read `SDKResultMessageSuccess.result` |
+| Pi           | Prompt          | tool-less in-memory `createAgentSession`, parse final assistant text |
+| Cline        | Prompt          | tool-less `Agent`, parse final assistant text                |
+| Cursor       | Prompt          | `Agent.send(buildJsonPrompt(...))` → `run.wait().result` (local agents always carry the built-in tools, so the prompt is the only lever) |
+
+**Test on a prompt-engineered engine.** Three of the four bugs in this
+section only reproduce off the native path. Claude Code is the worst
+possible smoke test for `generateStructured`.
 
 **Two cross-cutting gotchas you will hit.**
 
@@ -1134,6 +1143,17 @@ Consequences for an adapter:
   `backend/engine/sdk-loader.ts` (which does `Bun.resolveSync(pkg, stackDir)` +
   dynamic import, cached).
 
+- **Audit *every* file in the adapter, not just `stream.ts`.** This is the one
+  rule that reliably survives the conversion and then gets violated again,
+  because a leftover value import is **invisible in development**: the repo's
+  own `node_modules` has the devDependency, so `import { query } from
+  '@qwen-code/sdk'` resolves fine locally and only fails for end users, whose
+  stack dir is the only copy. Two shipped adapters had exactly this — Qwen's
+  `stream.ts` (`query`) and OpenCode's `server.ts`
+  (`createOpencodeClient`) — both converted after the fact. A plain
+  `await import('<pkg>')` is the same bug: it resolves from the process's own
+  paths, not the stack dir. `loadEngineSdk` is the only correct seam.
+
 - **Loading is version-guarded.** `loadEngineSdk` refuses an SDK whose installed
   version ≠ the pinned version, throwing `EngineNotReadyError`
   (`reason: 'not-installed' | 'needs-update'`). The stream-manager surfaces that
@@ -1151,4 +1171,57 @@ The same lazy-load applies to the one non-adapter consumer of the Claude SDK:
 `backend/mcp/index.ts::getEnabledMcpServers()` is `async` and lazy-loads
 `@anthropic-ai/claude-agent-sdk` only on the Claude path (see
 `backend/mcp/README.md`).
+
+### 10.22 Reasoning effort — keep it native, keep it capability-driven
+
+Five of the eight engines expose a reasoning/thinking knob and **no two
+call it the same thing**: Claude has `thinking` *and* `effort`, Codex has
+`modelReasoningEffort`, Copilot has `SessionConfig.reasoningEffort`, Pi
+has `thinkingLevel`, and Cursor has no dedicated field at all — it's one
+entry in a generic `ModelSelection.params[]`. Their vocabularies don't
+line up either (`minimal` exists only on Codex; `max`/`xhigh` only on
+some Claude models; Pi's set is per-model).
+
+The obvious design — normalize everything to `low | medium | high` —
+loses information in both directions: it can't express `off`, and it
+either hides levels a model does support or offers levels it doesn't.
+So the token stays **native and opaque** end to end. `EngineQueryOptions.
+reasoningEffort` is a `string` that only the adapter which produced it
+(in its `models.ts`) knows how to read (in its `stream.ts`); the
+stream-manager, the WS layer, the session row, and the frontend all just
+carry it.
+
+Three consequences worth internalizing:
+
+**The model advertises, the UI obeys.** `EngineModel.capabilities.
+reasoningControl` (`{ levels, default }`) is the entire contract. The
+picker renders a pill when it's present and nothing when it's absent —
+which is how Qwen, OpenCode, and Cline stay knob-less without a single
+engine name appearing in the frontend. Prefer deriving the level list
+from the SDK's own payload (Copilot's `supportedReasoningEfforts`, Pi's
+`getSupportedThinkingLevels`, Cursor's `ModelParameterDefinition`) over
+hardcoding; only static catalogs (Claude, Codex) spell it out.
+
+**Clamp on the way in.** The token reaching `streamQuery` may be stale —
+persisted on a session whose model has since changed, or restored from a
+`reasoningDefaults` entry written by an older catalog. Every adapter
+validates against its own set and falls back to the engine default
+instead of forwarding garbage to the SDK (`clampThinkingLevel` for Pi, a
+literal `Set` for Claude/Codex/Copilot, a `::`-shape check for Cursor).
+
+**Encode structure in the value, not in new fields.** Cursor needs a
+parameter *id* alongside the level, so its tokens are
+`"<paramId>::<value>"` and `buildCursorModelSelection` splits them back
+apart. That keeps `EngineQueryOptions` at one string no matter how
+baroque the next SDK's knob turns out to be. Resist adding a second
+field for the sixth engine.
+
+The frontend keeps `chatModelState.reasoningEffort` at the **effective**
+level rather than "only what the user explicitly picked" — an `$effect`
+re-seeds it on every model change from `settings.reasoningDefaults[modelId]`
+→ `reasoningControl.default`, and nulls it for knob-less models. That
+costs one effect and buys two things: the value sent with the turn always
+matches what actually ran (so `MessageEngine.reasoningEffort` in the Raw
+view is truthful), and a level valid for the previous model can never
+leak into a request for the next one.
 

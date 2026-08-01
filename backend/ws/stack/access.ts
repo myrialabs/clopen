@@ -1,5 +1,5 @@
 /**
- * System Tools access guards.
+ * Stack access guards.
  *
  * Install sessions are global (one runner per backend) but each session has
  * an owning user. Handlers must isolate sessions across users so admin A

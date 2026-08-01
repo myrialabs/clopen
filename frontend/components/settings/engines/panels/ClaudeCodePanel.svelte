@@ -242,8 +242,8 @@
 		}
 	}
 
-	function openSystemToolsSection() {
-		setActiveSection('system-tools');
+	function openStackSection() {
+		setActiveSection('stack');
 	}
 
 	async function copyClaudeCodeAuthUrl() {
@@ -288,7 +288,7 @@
 					<button
 						type="button"
 						class="inline-flex items-center gap-2 px-3 py-1.5 text-xs font-medium rounded-lg bg-violet-600 text-white hover:bg-violet-700 transition-colors"
-						onclick={openSystemToolsSection}
+						onclick={openStackSection}
 					>
 						<Icon name="lucide:arrow-right" class="w-3.5 h-3.5" />
 						Open Stack

@@ -745,7 +745,7 @@
 	// Settings modal isn't hidden behind it.
 	function openStack() {
 		closeDropdown();
-		openSettingsModal('system-tools');
+		openSettingsModal('stack');
 	}
 
 	function configureEngine(engineType: EngineType) {

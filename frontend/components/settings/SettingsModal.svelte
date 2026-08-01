@@ -18,7 +18,7 @@
 	import GitSettings from './model/GitSettings.svelte';
 	import ArtifactsSettings from './model/ArtifactsSettings.svelte';
 	import AIEnginesSettings from './engines/AIEnginesSettings.svelte';
-	import SystemToolsSettings from './system-tools/SystemToolsSettings.svelte';
+	import StackSettings from './stack/StackSettings.svelte';
 	import McpSettings from './mcp/McpSettings.svelte';
 	import SkillsSettings from './skills/SkillsSettings.svelte';
 	import CommandsSettings from './commands/CommandsSettings.svelte';
@@ -307,9 +307,9 @@
 						<div in:fly={{ x: 20, duration: 200 }}>
 							<AIEnginesSettings />
 						</div>
-					{:else if activeSection === 'system-tools' && isAdmin}
+					{:else if activeSection === 'stack' && isAdmin}
 						<div in:fly={{ x: 20, duration: 200 }}>
-							<SystemToolsSettings />
+							<StackSettings />
 						</div>
 					{:else if activeSection === 'mcp' && isAdmin}
 						<div in:fly={{ x: 20, duration: 200 }}>

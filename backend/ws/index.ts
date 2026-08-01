@@ -29,7 +29,7 @@ import { systemRouter } from './system';
 import { tunnelRouter } from './tunnel';
 import { gitRouter } from './git';
 import { engineRouter } from './engine';
-import { systemToolsRouter } from './system-tools';
+import { stackRouter } from './stack';
 import { dbClientRouter } from './db-client';
 import { mcpRouter } from './mcp';
 import { skillsRouter } from './skills';
@@ -77,8 +77,8 @@ export const wsRouter = createRouter()
 	// AI Engine Management
 	.merge(engineRouter)
 
-	// System Tools (install Git, Claude Code, OpenCode, Chrome binaries)
-	.merge(systemToolsRouter)
+	// Stack (install Git, Claude Code, OpenCode, Chrome binaries)
+	.merge(stackRouter)
 
 	// DB Client (global database management)
 	.merge(dbClientRouter)

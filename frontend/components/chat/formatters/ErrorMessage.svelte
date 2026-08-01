@@ -7,7 +7,7 @@
 	// Engine-setup errors embed a "Settings → Stack" / "Settings → Engines"
 	// phrase; surface a one-click button that opens the matching settings section.
 	const setupAction = $derived.by(() => {
-		if (errorText.includes('Settings → Stack')) return { label: 'Open Stack', section: 'system-tools' as const };
+		if (errorText.includes('Settings → Stack')) return { label: 'Open Stack', section: 'stack' as const };
 		if (errorText.includes('Settings → Engines')) return { label: 'Open Engines', section: 'engines' as const };
 		return null;
 	});

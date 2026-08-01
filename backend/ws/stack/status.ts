@@ -87,8 +87,8 @@ function toRecipeDTO(tool: ToolId, recipe: Awaited<ReturnType<typeof resolveReci
 	};
 }
 
-export const systemToolsStatusHandler = createRouter()
-	.http('system-tools:check-update', {
+export const stackStatusHandler = createRouter()
+	.http('stack:check-update', {
 		data: t.Object({
 			tool: TOOL_UNION,
 			installedVersion: t.Union([t.String(), t.Null()])
@@ -98,10 +98,10 @@ export const systemToolsStatusHandler = createRouter()
 			hasUpdate: t.Union([t.Boolean(), t.Null()])
 		})
 	}, async ({ data }) => {
-		debug.log('path', `system-tools:check-update for ${data.tool}`);
+		debug.log('path', `stack:check-update for ${data.tool}`);
 		return checkToolUpdate(data.tool, data.installedVersion);
 	})
-	.http('system-tools:status', {
+	.http('stack:status', {
 		data: t.Object({ tool: TOOL_UNION }),
 		response: t.Object({
 			status: STATUS_SCHEMA,
@@ -109,7 +109,7 @@ export const systemToolsStatusHandler = createRouter()
 			activeSession: ACTIVE_SESSION_SCHEMA
 		})
 	}, async ({ data }) => {
-		debug.log('path', `system-tools:status for ${data.tool}`);
+		debug.log('path', `stack:status for ${data.tool}`);
 		const [status, recipe] = await Promise.all([
 			getToolStatus(data.tool),
 			resolveRecipe(data.tool)
@@ -120,7 +120,7 @@ export const systemToolsStatusHandler = createRouter()
 			activeSession: getActiveSessionForTool(data.tool)
 		};
 	})
-	.http('system-tools:status-all', {
+	.http('stack:status-all', {
 		data: t.Object({}),
 		response: t.Object({
 			tools: t.Array(t.Object({
@@ -130,7 +130,7 @@ export const systemToolsStatusHandler = createRouter()
 			}))
 		})
 	}, async () => {
-		debug.log('path', 'system-tools:status-all');
+		debug.log('path', 'stack:status-all');
 		const ids = ['git', 'claude', 'opencode', 'copilot', 'codex', 'qwen', 'pi', 'cline', 'cursor', 'chrome'] as const;
 		const tools = await Promise.all(ids.map(async (id) => {
 			const [status, recipe] = await Promise.all([

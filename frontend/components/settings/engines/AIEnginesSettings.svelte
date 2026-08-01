@@ -282,7 +282,7 @@
 					<button
 						type="button"
 						class="mt-2.5 inline-flex items-center gap-1.5 px-3 py-1.5 text-xs font-semibold rounded-md bg-amber-600 hover:bg-amber-700 text-white cursor-pointer transition-colors"
-						onclick={() => (onOpenStack ? onOpenStack() : setActiveSection('system-tools'))}
+						onclick={() => (onOpenStack ? onOpenStack() : setActiveSection('stack'))}
 					>
 						Open Stack
 					</button>

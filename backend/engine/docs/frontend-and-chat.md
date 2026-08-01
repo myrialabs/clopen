@@ -65,26 +65,29 @@ modelStore                 // models[], fetchModels(engine), refreshModels(engin
 
 ### 5.2 Settings → Stack
 
-The panel is displayed as **Stack** (its internal section id / WS route stays
-`system-tools`).
-
 Files:
-- `frontend/components/settings/system-tools/SystemToolsSettings.svelte`
-- `frontend/components/settings/system-tools/ToolInstallCard.svelte`
+- `frontend/components/settings/stack/StackSettings.svelte`
+- `frontend/components/settings/stack/ToolInstallCard.svelte`
 
-`SystemToolsSettings` renders one `ToolInstallCard` per tool — host tools
+`StackSettings` renders one `ToolInstallCard` per tool — host tools
 (`git`, `chrome`, `cloudflared`) plus every engine SDK (`claude`, `opencode`,
 `copilot`, `codex`, `qwen`, `pi`, `cline`, `cursor`). `ToolInstallCard`:
 
-1. Calls `system-tools:status` on mount.
+1. Calls `stack:status` on mount.
 2. Renders: status (installed/version/source; engines also carry
    `requiredVersion` + `needsUpdate`), an "Install" button if
    `recipe.autoInstallable`, otherwise a "Manual install" dialog.
-3. While installing: `system-tools:install-start` → subscribe to
-   `system-tools:install-stream` (per-line) → render in xterm + show
-   exit status from `system-tools:install-finished`.
+3. While installing: `stack:install-start` → subscribe to
+   `stack:install-stream` (per-line) → render in xterm + show
+   exit status from `stack:install-finished`.
 4. The session survives navigation: if `activeSession` exists on refresh,
    re-attach to the same session id.
+
+Cards are **collapsible** — a compact status row by default, expanding to
+version + actions + live install output, and auto-expanding while an install
+runs (the list stays scannable as engines are added). The header's brand icon
+comes from `TOOL_ICONS` (`shared/constants/tool-icons.ts`), the same registry
+`ENGINES` reads — no SVG is defined twice.
 
 Engine cards differ from host-tool cards:
 - The SDK installs on demand into `~/.clopen/stack/engines` (managed dir), not
@@ -97,15 +100,35 @@ Engine cards differ from host-tool cards:
 To add a new **host** tool (e.g. `goose`):
 1. Add the literal to `ToolId` (`backend/engine/install-recipes.ts`).
 2. Add `resolveGooseRecipe()` + a case in `resolveRecipe()`.
-3. Add the literal to `TOOL_UNION` (`backend/ws/system-tools/status.ts`
+3. Add the literal to `TOOL_UNION` (`backend/ws/stack/status.ts`
    and `install.ts`).
 4. Add `<ToolInstallCard tool="goose" title="Goose" description="…" />`
-   in `SystemToolsSettings.svelte`.
+   in `StackSettings.svelte`.
 5. (Optional) expose detection in the `engine:<name>-status` handler so
    Settings → Engines can show an "Installed" badge.
 
 For a new **engine SDK**, you declare the pinned package instead of a resolver —
-see [system-tools](./system-tools.md) §7.7.
+see [stack](./stack.md) §7.7.
+
+### 5.3 Settings → Models
+
+`frontend/components/settings/model/EngineModelPicker.svelte` is the shared
+catalog browser mounted by `AssistantSettings`, `GitSettings`, and
+`ArtifactsSettings` (it is a different component from the chat-input picker of
+the same name — see §6.2).
+
+Per-model reasoning defaults are edited here: each model row that carries a
+`reasoningControl` (§2.4a) gets a nested row of level buttons, rendered
+**whether or not the model is selected** so it can't read as a global setting.
+Clicking one calls `setReasoningDefault(modelId, level)` →
+`settings.reasoningDefaults` (`null` deletes the key → back to the model's own
+default). The chat pill writes the same map, so a level chosen in either place
+is remembered in both.
+
+The two generator overrides (`commitGenerator`, `artifactGenerator`) persist
+`engine` + `provider` + `modelId` + `modelName` as separate fields. `GitSettings`
+and `ArtifactsSettings` write them through `modelFieldsOf(...)` (§6.1) — never
+one at a time.
 
 ---
 
@@ -118,12 +141,29 @@ see [system-tools](./system-tools.md) §7.7.
 ```ts
 { engine, provider, modelId, modelName,
   engineModelMemory: { [engine]: { provider, id, name } },
-  accountId, accountName }
+  accountId, accountName,
+  profileId,          // null = use the project default
+  reasoningEffort }   // native level token; null = engine/model default
 ```
 
 This store is **local to the active session**: settings under Settings →
 Engines only seed the initial defaults via `initChatModel(...)`. Switching
 engine/model in chat input does **not** affect Settings.
+
+`reasoningEffort` is the one field that is deliberately kept at its
+**effective** value rather than "only what the user picked": an `$effect` in
+the picker re-seeds it whenever the model changes (per-model default from
+Settings → the model's own `reasoningControl.default`) and clears it to `null`
+for models with no knob. That way the value sent with the turn — and stamped
+onto the message for the Raw view — always matches what actually ran, and a
+level left over from a different model can never leak into the next request.
+
+> **Engine/provider/model move together.** They are three fields describing one
+> choice; anything that writes one must write all three. Use `modelFieldsOf(...)`
+> from `frontend/utils/model-override.ts` for the Settings-persisted
+> generator configs (Git, Artifacts) instead of assigning them individually —
+> a stale `provider` is invisible on five engines and fatal on three (see
+> §10.16 point 3).
 
 ### 6.2 EngineModelPicker (in chat input)
 
@@ -146,6 +186,18 @@ engine/model in chat input does **not** affect Settings.
   resolves the model's provider via `ocMatchingProvider`, then writes the
   chosen account into `chatModelState.accountId` and triggers a server
   restart.
+- **Reasoning-level pill** — rendered next to the model trigger **only** when
+  `currentModel.capabilities.reasoningControl` exists (§2.4a). Options come
+  straight from `reasoningControl.levels`; no engine is named anywhere in the
+  component. Picking a level does three things: sets
+  `chatModelState.reasoningEffort`, saves it as that model's default via
+  `setReasoningDefault(modelId, value)`, and broadcasts
+  `chat:reasoning-sync` to the session room.
+- **Not-installed notice** — when `models:list` reports a readiness error for
+  the active engine (`modelStore.getError(engine)`, typically
+  `EngineNotReadyError`), the picker renders the same actionable notice as
+  Settings, with an **Open Stack** button and a Configure-engine fallback.
+  Both are admin-gated.
 
 ### 6.3 Send path → backend
 
@@ -163,13 +215,17 @@ ws.emit('chat:stream', {
     model:   { id: chatModelState.modelId, name: chatModelState.modelName },
     account: { id: chatModelState.accountId ?? 0, name: chatModelState.accountName ?? '' },
   },
-  sender: { id, name }
+  sender: { id, name },
+  profileId: chatModelState.profileId,
+  reasoningEffort: chatModelState.reasoningEffort,
 });
 ```
 
 Backend `chat:stream` then `streamManager.startStream(...)`, which:
 - Resolves `getProjectEngine(projectId, engine.type)`
-- Calls `engine.streamQuery({ projectPath, prompt, providerSlug: engine.provider, modelId: engine.model.id, accountId: engine.account.id !== 0 ? engine.account.id : undefined, mcpContext })`
+- Persists engine/model/account + `profile_id` + `reasoning_effort` onto the
+  `chat_sessions` row so a refresh or a late joiner restores the same setup
+- Calls `engine.streamQuery({ projectPath, prompt, providerSlug: engine.provider, modelId: engine.model.id, reasoningEffort, accountId: engine.account.id !== 0 ? engine.account.id : undefined, mcpContext })`
 - Yields `EngineOutput` → emits `chat:message` / `chat:partial` /
   `chat:notification` to the session room.
 
@@ -180,10 +236,17 @@ Backend `chat:stream` then `streamManager.startStream(...)`, which:
 
 ### 6.4 Reasoning, attachments, AskUserQuestion
 
-- **Reasoning**: an adapter must emit
+- **Reasoning (output)**: an adapter must emit
   `StreamLifecycleEvent { reasoning: true }` to mark start/stop of the
   thinking block, then `TextDeltaEvent { reasoning: true }` for each delta.
   The frontend renders these in a separate bubble.
+- **Reasoning effort (input)**: the level the user picked rides the request as
+  `EngineQueryOptions.reasoningEffort` and is mapped to the SDK's own knob by
+  the adapter (§2.4a). Three places hold a value, in precedence order:
+  `chatModelState.reasoningEffort` (this session) → `settings.reasoningDefaults[modelId]`
+  (per-model, Settings → Models) → `reasoningControl.default` (the model's own).
+  Nothing in the frontend branches on engine type — a model without a
+  `reasoningControl` simply has no pill.
 - **Attachments**: `UserMessage.content` carries `text | image | document`
   blocks. The adapter maps these to the SDK's format — Claude uses native
   content blocks, OpenCode uses `extractPromptParts()` to

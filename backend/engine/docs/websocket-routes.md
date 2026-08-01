@@ -10,7 +10,7 @@ in `backend/ws/index.ts`. Four groups are relevant for engines:
 | `engine:claude-*`               | `backend/ws/engine/claude/`         | Status + Claude account CRUD               |
 | `engine:opencode-*`             | `backend/ws/engine/opencode/`       | Status + provider/account CRUD + restart   |
 | `engine:copilot-*`              | `backend/ws/engine/copilot/`        | Status + Copilot account CRUD              |
-| `system-tools:*`                | `backend/ws/system-tools/`          | Detect/install binaries                    |
+| `stack:*`                       | `backend/ws/stack/`                 | Detect/install binaries                    |
 | `models:list`, `chat:stream`    | `backend/ws/settings/crud.ts`, `backend/ws/chat/stream.ts` | Model fetch + stream start |
 
 ### 4.1 Claude — `engine:claude-*`
@@ -130,21 +130,20 @@ because `CopilotClient` takes the PAT at construction time. Account
 add / remove / switch flips a `needsRestart` flag in the UI that surfaces
 a "Restart Server" button in both Settings → Engines and Chat Input.
 
-### 4.4 Stack — `system-tools:*`
+### 4.4 Stack — `stack:*`
 
-Surfaced in Settings as the **Stack** panel; the WS route id stays
-`system-tools`. `backend/ws/system-tools/`:
+Surfaced in Settings as the **Stack** panel. `backend/ws/stack/`:
 
 | Event                              | Purpose                                     |
 |------------------------------------|---------------------------------------------|
-| `system-tools:status`              | Detect a single tool: `{ status, recipe, activeSession }` |
-| `system-tools:status-all`          | Hardcoded list `['git','claude','opencode','copilot','codex','qwen','pi','cline','cursor','chrome']` (host tools + on-demand engine SDKs) |
-| `system-tools:install-start`       | Spawn the recipe via `install-runner`       |
-| `system-tools:install-cancel`      |                                             |
-| `system-tools:install-session`     | Snapshot session (for re-attach)            |
-| `system-tools:install-started` (emit)  | Session begun                           |
-| `system-tools:install-stream` (emit)   | Per-line stdout/stderr                  |
-| `system-tools:install-finished` (emit) | exit code + final status                |
+| `stack:status`              | Detect a single tool: `{ status, recipe, activeSession }` |
+| `stack:status-all`          | Hardcoded list `['git','claude','opencode','copilot','codex','qwen','pi','cline','cursor','chrome']` (host tools + on-demand engine SDKs) |
+| `stack:install-start`       | Spawn the recipe via `install-runner`       |
+| `stack:install-cancel`      |                                             |
+| `stack:install-session`     | Snapshot session (for re-attach)            |
+| `stack:install-started` (emit)  | Session begun                           |
+| `stack:install-stream` (emit)   | Per-line stdout/stderr                  |
+| `stack:install-finished` (emit) | exit code + final status                |
 
 ### 4.5 `models:list` (in `backend/ws/settings/crud.ts`)
 
@@ -180,11 +179,22 @@ Each engine owns its model catalog in `backend/engine/adapters/<engine>/models.t
 | `copilot`     | dynamic      | `client.listModels()` via `fetchCopilotModels`      |
 | `opencode`    | dynamic      | `client.config.providers()` via `fetchOpenCodeModels`|
 | `qwen`        | dynamic      | OpenAI-compatible `/models` via `fetchQwenModels`   |
+| `pi`          | dynamic      | pi-ai runtime catalog via `fetchPiModels`           |
+| `cline`       | dynamic      | `Llms.getModelsForProvider()` per stored account, via `fetchClineModels` |
+| `cursor`      | dynamic      | `Cursor.models.list()` via `fetchCursorModels` (falls back to `CURSOR_FALLBACK_MODEL_IDS`) |
 
 Failure-mode contract (dynamic engines): return `EngineModel[]` and use
 `[]` as the failure sentinel — never `null` (see §2.6). The picker then
 renders an empty list rather than a stale cached catalog. `fetchOpenCodeModels`
 and `fetchQwenModels` already follow this; new dynamic fetchers must too.
+
+`models.ts` is also where a model advertises its reasoning knob
+(`capabilities.reasoningControl` — §2.4a). Dynamic catalogs derive the level
+list from the SDK payload (Copilot's `supportedReasoningEfforts`, Pi's
+`getSupportedThinkingLevels`, Cursor's model parameters); static catalogs
+attach a shared constant. Because the registry is what `resolveGenerationTarget`
+reads, `registerModels(...)` here is also what keeps one-shot
+`generateStructured` calls from having to re-fetch a catalog.
 
 ### 4.6 Engine-specific config (presets — multi-provider / multi-region)
 
@@ -227,15 +237,44 @@ types flow through `$shared`.
   projectPath: string,
   prompt: UserMessage,
   engine: { type, provider, model: { id, name }, account: { id, name } },
-  sender: { id, name }
+  sender: { id, name },
+  profileId?: number | null,        // null = explicit none; absent = project default
+  reasoningEffort?: string | null   // native level token; null/absent = engine default
 }
 ```
 
 The handler calls `streamManager.startStream(...)`, which then:
 1. Resolves `getProjectEngine(projectId, engine.type)`
-2. Calls `engine.streamQuery({ projectPath, prompt, providerSlug, modelId, accountId, mcpContext, ... })`
-3. Iterates over `EngineOutput` and emits each one to the chat session room
+2. Persists the per-session choices that outlive the turn — engine, model,
+   account, `profile_id`, `reasoning_effort` — onto the `chat_sessions` row
+   (`sessionQueries.updateReasoning`, migration `065`). `undefined` leaves the
+   stored value untouched; `null` clears it.
+3. Calls `engine.streamQuery({ projectPath, prompt, providerSlug, modelId, reasoningEffort, accountId, mcpContext, ... })`
+4. Iterates over `EngineOutput` and emits each one to the chat session room
    via `ws.emit.chatSession(...)`.
+
+The turn's reasoning level is also stamped onto `MessageEngine.reasoningEffort`
+by `enrichMessageEngine`, so it shows up in the Raw Message view. It is omitted
+(not `null`) when the engine exposes no knob.
+
+#### Collaborative per-session sync events
+
+Choosing a model, account, profile, or reasoning level is a **run choice**, not
+an admin mutation — so each one has a matching broadcast-and-persist event that
+any session member may send. They are structurally identical; copy the nearest
+one when adding a fifth.
+
+| Event                  | Persists to                        |
+|------------------------|------------------------------------|
+| `chat:model-sync`      | `chat_sessions` engine/model/account |
+| `chat:profile-sync`    | `chat_sessions.profile_id`         |
+| `chat:reasoning-sync`  | `chat_sessions.reasoning_effort`   |
+
+Each handler calls `requireSessionAccess(conn, chatSessionId)`, writes through
+`sessionQueries`, then re-emits to the room via `ws.emit.chatSession(...)`.
+Every one of these must be declared in **both** the `.on(...)` block and the
+`.emit(...)` schema block at the bottom of `backend/ws/chat/stream.ts` — an
+event that is only `.on`'d is received but never broadcast.
 
 ---
 

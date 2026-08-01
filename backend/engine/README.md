@@ -4,7 +4,7 @@ This folder is the **boundary** between Clopen and the AI SDKs that drive
 streaming chat. The adapters today: **`claude`**
 (`@anthropic-ai/claude-agent-sdk`), **`opencode`** (`@opencode-ai/sdk`),
 **`copilot`** (`@github/copilot-sdk`), **`codex`** (`@openai/codex-sdk`),
-**`qwen`** (`@qwen-code/qwen-code`), **`pi`**
+**`qwen`** (`@qwen-code/sdk`), **`pi`**
 (`@earendil-works/pi-coding-agent`), **`cline`** (`@cline/sdk`), and
 **`cursor`** (`@cursor/sdk`). Every
 adapter follows the same shape so that the rest of the system outside this
@@ -54,9 +54,9 @@ map, then jump to the area you need.
 1. [Architecture map](#1-architecture-map) — the layers and the two design pitfalls to read before proposing new infrastructure (below).
 2. [Adapter contract](./docs/adapter-contract.md) — the `AIEngine` interface, `EngineOutput`, `EngineQueryOptions`, the standard adapter file taxonomy, and what an adapter must NOT do.
 3. [Database](./docs/database.md) — `engine_providers` + `engine_accounts`, `engineQueries`, and how each adapter reads credentials.
-4. [WebSocket routes](./docs/websocket-routes.md) — `engine:*`, `system-tools:*`, `models:list`, `chat:stream`, and the Restart-Server pattern.
-5. [Frontend & chat integration](./docs/frontend-and-chat.md) — Settings → Engines / Stack, the model picker, the send path, reasoning/attachments/AskUserQuestion.
-6. [Stack](./docs/system-tools.md) — registering a host tool or on-demand engine SDK in `install-recipes.ts` + the install runner.
+4. [WebSocket routes](./docs/websocket-routes.md) — `engine:*`, `stack:*`, `models:list`, `chat:stream`, and the Restart-Server pattern.
+5. [Frontend & chat integration](./docs/frontend-and-chat.md) — Settings → Engines / Stack, the model picker, the send path, reasoning effort/attachments/AskUserQuestion.
+6. [Stack](./docs/stack.md) — registering a host tool or on-demand engine SDK in `install-recipes.ts` + the install runner.
 7. [Artifacts & Access](./docs/artifacts.md) — the extension layer (Skills, Commands, Subagents, Instructions, Permissions, Profiles, MCP), the capability matrix, and the `artifact-sync.ts` seam adapters call at stream start.
 8. [Adding a new engine](./docs/adding-an-engine.md) — the end-to-end, stage-by-stage checklist.
 9. [Lessons learned](./docs/lessons-learned.md) — §10 pitfalls (tool name/input canonicalisation, fork session, MCP reuse, auth-blob swap, sub-agent routing, OpenCode v1/v2, structured output, …).
@@ -71,15 +71,15 @@ map, then jump to the area you need.
 │                                                                       │
 │  Settings → Engines           Settings → Stack         Chat Input     │
 │  ─────────────────────        ──────────────────────  ──────────────  │
-│  AIEnginesSettings+panels/    SystemToolsSettings…    EngineModel…    │
+│  AIEnginesSettings+panels/    StackSettings…    EngineModel…    │
 │       │                            │                       │          │
 │       ├─ claudeAccountsStore       └─ ws.http(             ├─ model   │
-│       ├─ copilotAccountsStore         'system-tools:…')    │  Store   │
+│       ├─ copilotAccountsStore         'stack:…')    │  Store   │
 │       ├─ opencodeProvidersStore                            └─ chat    │
 │       └─ modelStore                                          ModelState│
 │       │            │             │             │             │        │
 │       ▼            ▼             ▼             ▼             ▼        │
-│  ws.http('engine:*')   ws.http('system-tools:*')   ws.emit('chat:…')  │
+│  ws.http('engine:*')   ws.http('stack:*')   ws.emit('chat:…')  │
 └──────────────────────────────┬────────────────────────────────────────┘
                                │ WebSocket (ws-server router)
 ┌──────────────────────────────▼────────────────────────────────────────┐
@@ -89,7 +89,7 @@ map, then jump to the area you need.
 │    status.ts, accounts.ts         status.ts, providers.ts             │
 │  backend/ws/engine/copilot/                                           │
 │    status.ts, accounts.ts                                             │
-│  backend/ws/system-tools/         backend/ws/chat/stream.ts           │
+│  backend/ws/stack/         backend/ws/chat/stream.ts           │
 │    status.ts, install.ts          backend/ws/settings/crud.ts         │
 │           │                                  │                        │
 │           ▼                                  ▼                        │
@@ -101,6 +101,9 @@ map, then jump to the area you need.
 │  │  sdk-loader.ts             on-demand loader (~/.clopen/stack/…)   │ │
 │  │  install-recipes.ts        host-tool + engine-SDK install recipes│ │
 │  │  install-runner.ts         spawns recipe, streams logs over WS   │ │
+│  │  bootstrap-default-engine  fresh install → auto-install OpenCode │ │
+│  │  resolve-model.ts          catalog-verified provider/model/acct  │ │
+│  │  structured-helpers.ts     prompt + tolerant JSON extraction     │ │
 │  │  adapters/<name>/                                                │ │
 │  │    index.ts                public surface (re-exports only)      │ │
 │  │    stream.ts               class implements AIEngine             │ │

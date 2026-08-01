@@ -3,7 +3,7 @@
  *
  * Reports SDK availability + active account state. Codex differs from
  * Copilot in that the SDK does NOT bundle a CLI internally — the CLI must
- * be installed on PATH (System Tools → Codex CLI). `installed` reflects
+ * be installed on PATH (Stack → Codex CLI). `installed` reflects
  * whether the `codex` binary resolves on the host's PATH.
  */
 

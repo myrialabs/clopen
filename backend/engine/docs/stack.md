@@ -4,8 +4,9 @@
 
 `install-recipes.ts` is a **declarative** registry of install commands.
 `install-runner.ts` is what actually runs them. The Settings panel that
-surfaces these is displayed as **Stack** (its internal WS route/section id is
-still `system-tools`).
+surfaces these is **Stack** — the name is consistent all the way down: the WS
+namespace is `stack:*` (`backend/ws/stack/`), the settings section id is
+`stack`, and the UI lives in `frontend/components/settings/stack/`.
 
 Two kinds of `ToolId` live here:
 
@@ -95,8 +96,8 @@ additionally carry `requiredVersion` + `needsUpdate`):
    pinned static-curl if needed, prepends its dir to PATH).
 4. `Bun.spawn(spawnArgs, { stdout: 'pipe', stderr: 'pipe', stdin: 'ignore', env })`.
 5. Streams stdout/stderr per-line into a ring buffer (10k lines) + emits
-   `system-tools:install-stream` to the user room.
-6. On exit: emits `system-tools:install-finished` + retains the session
+   `stack:install-stream` to the user room.
+6. On exit: emits `stack:install-finished` + retains the session
    for 5 minutes for re-attach.
 
 Exit-code hints (`explainFailure(137|143, cancelled)`) explain SIGKILL OOM
@@ -110,7 +111,7 @@ or SIGTERM with actual total/free memory readings.
 3. Add a case in `resolveRecipe(tool)`.
 4. Add the literal to `TOOL_UNION` (`status.ts`, `install.ts`).
 5. Add `<ToolInstallCard tool="goose" ... />` in
-   `SystemToolsSettings.svelte`.
+   `StackSettings.svelte`.
 6. (Optional) detect in `engine:<engine>-status` so Settings → Engines
    knows the binary is installed.
 
@@ -127,12 +128,40 @@ Engine SDKs don't need a hand-written resolver. When you add an engine
 3. `resolveEngineRecipe(tool)` handles the rest automatically (installs into the
    stack dir at the pinned version).
 4. Add the literal to `TOOL_UNION` (`status.ts`, `install.ts`).
-5. Add `<ToolInstallCard tool="newengine" ... />` in `SystemToolsSettings.svelte`.
+5. Add `<ToolInstallCard tool="newengine" ... />` in `StackSettings.svelte`.
 
 There is no "Check for Updates" for engines — their versions move in lockstep
 with clopen releases, so `version-check.ts` has no update source for them. The
 Stack card instead shows **Update required** whenever the installed version ≠
 the pinned version, driven by `ToolStatus.needsUpdate`.
+
+### 7.8 Default-engine bootstrap (fresh install)
+
+Since no SDK ships in the package, a brand-new install has **zero** working
+engines — a dead-end first run. `backend/engine/bootstrap-default-engine.ts`
+closes that gap: `ensureDefaultEngineInstalled()` runs the `opencode` recipe in
+the background (OpenCode is the one free, no-account engine) and no-ops the
+moment **any** engine SDK is present, so it never fights a user who
+deliberately removed it. Failures are non-fatal — everything stays installable
+from Settings → Stack.
+
+Two details that were bugs before they were rules:
+
+- **Gate on the in-flight promise, not an "already started" latch.** A permanent
+  boolean would correctly de-dupe concurrent callers but then wrongly skip a
+  *legitimate* reinstall later in the same process. Holding the promise and
+  clearing it in `.finally()` de-dupes while it runs and lets the next caller
+  re-evaluate `isEngineSdkInstalled` once it settles.
+- **It is not startup-only.** The call lives in
+  `backend/bootstrap.ts::bootstrapAfterDbInit()`, shared by `startServer()` and
+  the **Clear All Data** handler (`backend/ws/system/operations.ts`). Clear-data
+  wipes `~/.clopen` — including the stack dir — and re-runs only migrations +
+  seeders on the *same live process*, so anything established outside that
+  pipeline silently vanishes until the next restart. `bootstrapAfterDbInit()` is
+  where code-synced built-ins are re-established (today: internal MCP servers +
+  the default engine). **Add any future startup-synced built-in there**, not in
+  `startServer()` — but keep long-lived schedulers out of it, since they'd
+  double-run when invoked on the live process.
 
 ---
 

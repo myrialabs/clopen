@@ -3,10 +3,10 @@
 	import Icon from '$frontend/components/common/display/Icon.svelte';
 	import ws from '$frontend/utils/ws';
 
-	// Cline ships as an in-process SDK (@cline/sdk), not a CLI — there is nothing
-	// to install, update, or check. This card is READ-ONLY: it surfaces the bundled
-	// version so System Tools stays the single place engine runtimes are reported,
-	// without any install/refresh/update actions.
+	// Pi ships as an in-process SDK (@earendil-works/pi-coding-agent), not a CLI —
+	// there is nothing to install, update, or check. This card is READ-ONLY: it
+	// surfaces the bundled version so Stack stays the single place engine
+	// runtimes are reported, without any install/refresh/update actions.
 
 	let installed = $state(false);
 	let version = $state<string | null>(null);
@@ -14,7 +14,7 @@
 
 	onMount(async () => {
 		try {
-			const res = await ws.http('engine:cline-status', {});
+			const res = await ws.http('engine:pi-status', {});
 			installed = res.installed;
 			version = res.version;
 		} catch {
@@ -27,7 +27,7 @@
 <div class="rounded-xl border border-slate-200 dark:border-slate-700/50 bg-white dark:bg-slate-800/50 overflow-hidden">
 	<div class="flex items-center justify-between px-5 py-4 border-b border-slate-200 dark:border-slate-700/50">
 		<div>
-			<h3 class="font-semibold text-slate-900 dark:text-slate-100">Cline</h3>
+			<h3 class="font-semibold text-slate-900 dark:text-slate-100">Pi</h3>
 			<p class="text-xs text-slate-500 dark:text-slate-400">Bundled in-process SDK — no CLI to install</p>
 		</div>
 
@@ -61,10 +61,10 @@
 			</div>
 			<div class="flex items-center gap-2 text-xs text-slate-500 dark:text-slate-400">
 				<Icon name="lucide:package" class="w-3.5 h-3.5 shrink-0" />
-				<span class="font-mono truncate">@cline/sdk</span>
+				<span class="font-mono truncate">@earendil-works/pi-coding-agent</span>
 			</div>
 			<p class="text-xs text-slate-500 dark:text-slate-400">
-				Cline runs in-process as a library dependency, so there is nothing to install or update here — its version tracks Clopen's bundled package.
+				Pi runs in-process as a library dependency, so there is nothing to install or update here — its version tracks Clopen's bundled package.
 			</p>
 		{/if}
 	</div>

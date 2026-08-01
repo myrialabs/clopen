@@ -118,7 +118,7 @@ function emitStream(session: Session, stream: 'stdout' | 'stderr', chunk: string
 	session.pending[stream] = parts.pop() ?? '';
 	for (const line of parts) {
 		pushLine(session.buffer, line);
-		ws.emit.user(session.startedBy, 'system-tools:install-stream', {
+		ws.emit.user(session.startedBy, 'stack:install-stream', {
 			sessionId: session.id,
 			tool: session.tool,
 			type: stream,
@@ -132,7 +132,7 @@ function flushPending(session: Session): void {
 		const remaining = session.pending[stream];
 		if (remaining) {
 			pushLine(session.buffer, remaining);
-			ws.emit.user(session.startedBy, 'system-tools:install-stream', {
+			ws.emit.user(session.startedBy, 'stack:install-stream', {
 				sessionId: session.id,
 				tool: session.tool,
 				type: stream,
@@ -191,7 +191,7 @@ function finalizeSession(session: Session, preferredStatus: SessionStatus, exitC
 
 	debug.log('path', `[install:${session.id}] Finished status=${session.status} exit=${exitCode}`);
 
-	ws.emit.user(session.startedBy, 'system-tools:install-finished', {
+	ws.emit.user(session.startedBy, 'stack:install-finished', {
 		sessionId: session.id,
 		tool: session.tool,
 		status: session.status,
@@ -349,7 +349,7 @@ export async function startInstall(tool: ToolId, userId: string): Promise<Sessio
 	emitStream(session, 'stdout', banner + '\n');
 
 	// Broadcast the session-started event so clients that subscribe mid-run can attach.
-	ws.emit.user(userId, 'system-tools:install-started', {
+	ws.emit.user(userId, 'stack:install-started', {
 		sessionId: id,
 		tool,
 		displayCommand: recipe.displayCommand ?? '',

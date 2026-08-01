@@ -5,7 +5,7 @@
 	import { settings, updateSettings, applyFontSize } from '$frontend/stores/features/settings.svelte';
 	import { opencodeProvidersStore } from '$frontend/stores/features/opencode-providers.svelte';
 	import Icon from '$frontend/components/common/display/Icon.svelte';
-	import SystemToolsSettings from '$frontend/components/settings/system-tools/SystemToolsSettings.svelte';
+	import StackSettings from '$frontend/components/settings/stack/StackSettings.svelte';
 	import AIEnginesSettings from '$frontend/components/settings/engines/AIEnginesSettings.svelte';
 	import ws from '$frontend/utils/ws';
 	import type { AuthMode } from '$shared/types/stores/settings';
@@ -17,8 +17,8 @@
 	});
 
 	// ─── Wizard state ───
-	type WizardStep = 'auth-mode' | 'admin-account' | 'system-tools' | 'engines' | 'preferences';
-	const ALL_STEPS: WizardStep[] = ['auth-mode', 'admin-account', 'system-tools', 'engines', 'preferences'];
+	type WizardStep = 'auth-mode' | 'admin-account' | 'stack' | 'engines' | 'preferences';
+	const ALL_STEPS: WizardStep[] = ['auth-mode', 'admin-account', 'stack', 'engines', 'preferences'];
 
 	let currentStep = $state<WizardStep>('auth-mode');
 	let completedSteps = $state<Set<WizardStep>>(new Set());
@@ -97,7 +97,7 @@
 	const stepLabels: Record<WizardStep, { label: string; icon: IconName }> = {
 		'auth-mode': { label: 'Login', icon: 'lucide:shield' },
 		'admin-account': { label: 'Account', icon: 'lucide:user-plus' },
-		'system-tools': { label: 'Stack', icon: 'lucide:hammer' },
+		'stack': { label: 'Stack', icon: 'lucide:hammer' },
 		'engines': { label: 'Engines', icon: 'lucide:plug' },
 		'preferences': { label: 'Preferences', icon: 'lucide:palette' }
 	};
@@ -118,7 +118,7 @@
 					completedSteps.add('auth-mode');
 					completedSteps.add('admin-account');
 					completedSteps = new Set(completedSteps);
-					currentStep = 'system-tools';
+					currentStep = 'stack';
 				} else {
 					goToNextStep();
 				}
@@ -131,17 +131,17 @@
 					completedSteps.add('auth-mode');
 					completedSteps.add('admin-account');
 					completedSteps = new Set(completedSteps);
-					currentStep = 'system-tools';
+					currentStep = 'stack';
 				} else if (selectedAuthMode === 'required' && previousMode !== 'required') {
 					// no-auth → with-auth: update mode, regenerate PAT, go to admin-account
 					await authStore.switchToWithAuth();
 					goToNextStep();
 				} else if (selectedAuthMode === 'none') {
-					// Same mode (none) — skip admin-account, go to system-tools
+					// Same mode (none) — skip admin-account, go to stack
 					completedSteps.add('auth-mode');
 					completedSteps.add('admin-account');
 					completedSteps = new Set(completedSteps);
-					currentStep = 'system-tools';
+					currentStep = 'stack';
 				} else {
 					// Same mode (required) — advance to admin-account
 					goToNextStep();
@@ -450,7 +450,7 @@
 				</div>
 
 			<!-- ════════ Step 3: Stack ════════ -->
-			{:else if currentStep === 'system-tools'}
+			{:else if currentStep === 'stack'}
 				<div class="space-y-4">
 					<div class="text-center">
 						<h2 class="text-base font-semibold text-slate-900 dark:text-slate-100 mb-1">Stack</h2>
@@ -460,7 +460,7 @@
 					</div>
 
 					<div class="text-left">
-						<SystemToolsSettings showHeader={false} />
+						<StackSettings showHeader={false} />
 					</div>
 
 					<div class="flex gap-2 sticky bottom-0 z-10 pt-3 pb-3 bg-white dark:bg-slate-950 border-t border-slate-200/70 dark:border-slate-800/70">

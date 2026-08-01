@@ -26,7 +26,7 @@ export interface AIEngine {
 }
 ```
 
-Three invariants:
+Four invariants:
 
 1. **`streamQuery` is the only streaming output path.** It is an
    `AsyncGenerator<EngineOutput>`. The adapter translates SDK events into
@@ -40,6 +40,14 @@ Three invariants:
    callers **must** share a single init promise. See:
    - `claude/environment.ts::setupEnvironmentOnce`
    - `opencode/server.ts::ensureClient`
+4. **`generateStructured` callers resolve their target first.** The
+   `providerSlug` a client hands to a one-shot JSON call is a *hint*, not
+   truth — every call site pipes it through
+   `resolveGenerationTarget(engine, modelId, providerHint)`
+   (`backend/engine/resolve-model.ts`) and uses what comes back. The engine's
+   own catalog is the only source of truth for which provider (and account) a
+   model belongs to. Skipping this "works" on the five engines that ignore the
+   slug and fails on OpenCode, Pi, and Cline. See §10.16 point 3.
 
 ### 2.2 `index.ts` — registry & lifecycle
 
@@ -98,7 +106,8 @@ interface EngineQueryOptions {
   forkSession?: boolean;
   maxTurns?: number;
   providerSlug: string;         // 'anthropic', 'openai', etc — required for opencode
-  modelId: string;              // 'claude-opus-4-7', 'gpt-5', etc
+  modelId: string;              // 'claude-opus-5', 'gpt-5', etc
+  reasoningEffort?: string;     // native reasoning/thinking level for this turn
   includePartialMessages?: boolean;
   abortController?: AbortController;
   accountId?: number;           // override credential for a single stream
@@ -109,6 +118,61 @@ interface EngineQueryOptions {
 `mcpContext` is bound into the MCP handler so a tool call from project A
 **cannot** write into project B. Always forward it: see `claude/stream.ts`
 calling `getEnabledMcpServers(options.mcpContext)`.
+
+`reasoningEffort` is an **opaque, native-per-engine token** — there is no
+cross-engine normalization. The adapter that produced the level in
+`models.ts` is the one that consumes it in `stream.ts`; every other layer
+(stream-manager, WS, frontend) just carries the string. `undefined` means
+"no explicit choice" → the engine's own default applies. See §2.4a.
+
+### 2.4a Reasoning effort — `EngineModel.capabilities.reasoningControl`
+
+A model may advertise a reasoning/thinking control from its `models.ts`:
+
+```ts
+interface ReasoningControl {
+  levels: { value: string; label: string }[];  // ordered low → high
+  default: string;                             // mirrors the engine default
+}
+```
+
+Rules:
+
+- **Capability-driven, not hardcoded.** The picker renders a level selector
+  **only** when the selected model carries `capabilities.reasoningControl`.
+  Omit the field and the UI hides the control entirely — that is how Qwen,
+  OpenCode, and Cline stay knob-less without a single `if (engine === …)`
+  anywhere in the frontend.
+- **Levels are the SDK's own vocabulary.** Don't invent a shared
+  `low|medium|high` scale. Use `toReasoningOptions([...])` from
+  `$shared/constants/engines` to attach labels; `reasoningLevelLabel()` maps the
+  known tokens (`off`, `auto`/`adaptive`, `minimal` … `max`) and capitalizes
+  anything it doesn't recognise.
+- **Derive from the catalog when the SDK reports it.** Copilot reads
+  `supportedReasoningEfforts` / `defaultReasoningEffort` off `ModelInfo`, Pi
+  reads `getSupportedThinkingLevels(model)`, Cursor reads the model's
+  `ModelParameterDefinition`. Only static catalogs (Claude, Codex) hardcode
+  the list.
+- **The adapter clamps.** `streamQuery` must treat the incoming token as
+  untrusted — an unknown/stale value falls back to the engine default rather
+  than being forwarded to the SDK.
+
+Where each engine's knob lives:
+
+| Engine        | SDK knob                                | Levels                                     |
+|---------------|-----------------------------------------|--------------------------------------------|
+| `claude-code` | `thinking` + `effort` on `query()`      | `off, auto, low, medium, high, xhigh, max` (static; `off` → `thinking: { type: 'disabled' }`, `auto` → adaptive with no `effort`) |
+| `codex`       | `modelReasoningEffort` (thread option)  | `minimal, low, medium, high, xhigh` (static; reasoning-capable models only) |
+| `copilot`     | `SessionConfig.reasoningEffort`         | from `ModelInfo.supportedReasoningEfforts` (dynamic) |
+| `pi`          | agent `thinkingLevel`                   | from `getSupportedThinkingLevels(model)` (dynamic; `clampThinkingLevel` on apply) |
+| `cursor`      | `ModelSelection.params[]`               | from the model's reasoning-ish `ModelParameterDefinition` (dynamic) |
+| `qwen`, `opencode`, `cline` | — (none exposed)          | no `reasoningControl` → selector hidden    |
+
+Cursor is the one engine whose token is **not** a bare level: it encodes the
+model-parameter id as `"<paramId>::<value>"` so `stream.ts` can rebuild a
+`ModelSelection.params` entry without re-fetching the catalog. If a future SDK
+needs more than a level name, follow that shape rather than adding a new field
+to `EngineQueryOptions`.
 
 ### 2.5 What an adapter **MUST NOT** do
 
