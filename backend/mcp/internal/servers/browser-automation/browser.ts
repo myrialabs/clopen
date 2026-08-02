@@ -94,10 +94,16 @@ export async function getActiveTabSession(projectId?: string) {
 /**
  * List all open tabs in the browser preview.
  * Shows MCP control status so AI can avoid conflicts.
+ *
+ * NOTE: every tool handler is invoked as `handler(args)` with an object, even
+ * when the tool declares no schema (`args` is then `{}`). A positional
+ * `projectId: string` parameter here would receive that object, sail past the
+ * falsy check in `getService()`, and mint a brand-new empty service keyed by it
+ * — which is why this tool used to report "no tabs" no matter what was open.
  */
-export async function listTabsHandler(projectId?: string) {
+export async function listTabsHandler(args: { projectId?: string } = {}) {
 	try {
-		const previewService = getPreviewService(projectId);
+		const previewService = getPreviewService(args.projectId);
 		const tabs = previewService.getAllTabs();
 		const chatSessionId = projectContextService.getCurrentChatSessionId();
 
@@ -119,7 +125,11 @@ export async function listTabsHandler(projectId?: string) {
 					: ' (MCP: another session)';
 			}
 
-			return `${index + 1}. ${tab.isActive ? '* ' : '  '}[${tab.id}] ${tab.title || 'Untitled'}${status}\n   URL: ${tab.url || '(empty)'}`;
+			return [
+				`${index + 1}. ${tab.isActive ? '* ' : '  '}[${tab.id}] ${tab.title || 'Untitled'}${status}`,
+				`   URL: ${tab.url || '(empty)'}`,
+				`   Viewport: ${tab.deviceSize} (${tab.rotation})${tab.isLoading ? ' — loading' : ''}`
+			].join('\n');
 		}).join('\n\n');
 
 		return {

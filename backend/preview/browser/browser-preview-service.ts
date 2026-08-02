@@ -7,6 +7,7 @@ import { BrowserNavigationTracker } from './browser-navigation-tracker.js';
 import { BrowserVideoCapture } from './browser-video-capture.js';
 import { BrowserDialogHandler } from './browser-dialog-handler.js';
 import { BrowserNativeUIHandler } from './browser-native-ui-handler.js';
+import { BrowserHostBridge, type HostResponse } from './browser-host-bridge.js';
 import { browserMcpControl } from './browser-mcp-control.js';
 import { ws } from '$backend/utils/ws';
 import { debug } from '$shared/utils/logger';
@@ -21,6 +22,8 @@ import type {
 	BrowserSelectResponse,
 	BrowserContextMenuResponse,
 	BrowserContextMenuInfo,
+	BrowserHistoryState,
+	BrowserTabMeta,
 	ClientCodecSupport,
 	ClientDisplayMetrics,
 	ClientStreamFeedback
@@ -47,6 +50,7 @@ export class BrowserPreviewService extends EventEmitter {
 	private videoCapture: BrowserVideoCapture;
 	private dialogHandler: BrowserDialogHandler;
 	private nativeUIHandler: BrowserNativeUIHandler;
+	private hostBridge: BrowserHostBridge;
 
 	// Store context menu info for later action execution
 	private contextMenus = new Map<string, BrowserContextMenuInfo>();
@@ -71,6 +75,7 @@ export class BrowserPreviewService extends EventEmitter {
 		this.videoCapture = new BrowserVideoCapture();
 		this.dialogHandler = new BrowserDialogHandler();
 		this.nativeUIHandler = new BrowserNativeUIHandler();
+		this.hostBridge = new BrowserHostBridge();
 
 		// Forward events from handlers to main service
 		this.setupEventForwarding();
@@ -104,6 +109,10 @@ export class BrowserPreviewService extends EventEmitter {
 			// After navigation completes, restart video streaming for the tab
 			// This re-injects the peer script and restarts CDP screencast
 			const { sessionId } = data;
+
+			// Title/favicon/history changed with the document — push the new
+			// values so the tab strip and Back/Forward buttons stay truthful.
+			void this.refreshTabMeta(sessionId);
 			if (this.videoCapture.isStreaming(sessionId)) {
 				const tab = this.getTab(sessionId);
 				if (tab) {
@@ -129,6 +138,9 @@ export class BrowserPreviewService extends EventEmitter {
 		// No streaming restart needed — page context is unchanged
 		this.navigationTracker.on('navigation-spa', (data) => {
 			this.emit('preview:browser-navigation-spa', data);
+			// pushState/replaceState mutate history without a document swap, so
+			// the Back/Forward affordances still have to be recomputed.
+			void this.refreshTabMeta(data.sessionId);
 		});
 
 		// Forward new window events
@@ -172,8 +184,22 @@ export class BrowserPreviewService extends EventEmitter {
 		this.dialogHandler.on('dialog', (data) => {
 			this.emit('preview:browser-dialog', data);
 		});
+		this.dialogHandler.on('dialog-closed', (data) => {
+			this.emit('preview:browser-dialog-closed', data);
+		});
 		this.dialogHandler.on('print', (data) => {
 			this.emit('preview:browser-print', data);
+		});
+
+		// Forward host bridge events (capability requests + relayed downloads)
+		this.hostBridge.on('request', (data) => {
+			this.emit('preview:browser-host-request', data);
+		});
+		this.hostBridge.on('download', (data) => {
+			this.emit('preview:browser-download', data);
+		});
+		this.hostBridge.on('request-settled', (data) => {
+			this.emit('preview:browser-host-request-settled', data);
 		});
 
 		// Forward native UI events
@@ -188,6 +214,15 @@ export class BrowserPreviewService extends EventEmitter {
 		});
 		this.nativeUIHandler.on('copy-image-to-clipboard', (data) => {
 			this.emit('preview:browser-copy-image-to-clipboard', data);
+		});
+		this.nativeUIHandler.on('open-url-host-browser', (data) => {
+			this.emit('preview:browser-open-url-host', data);
+		});
+		this.nativeUIHandler.on('print-page', (data) => {
+			this.emit('preview:browser-print', { sessionId: this.getActiveTab()?.id ?? '', ...data });
+		});
+		this.nativeUIHandler.on('open-inspector', (data) => {
+			this.emit('preview:browser-open-inspector', data);
 		});
 	}
 
@@ -215,9 +250,14 @@ export class BrowserPreviewService extends EventEmitter {
 	async createTab(url?: string, deviceSize: DeviceSize = 'laptop', rotation?: Rotation): Promise<BrowserTab> {
 		// Use device-appropriate default rotation if not specified
 		const actualRotation = rotation || ((deviceSize === 'desktop' || deviceSize === 'laptop') ? 'landscape' : 'portrait');
-		// Pre-navigation setup callback for dialog bindings
-		const preNavigationSetup = async (page: Page) => {
-			// Note: We'll setup dialog bindings using tabId after tab is created
+
+		// Dialog interception and the capability shims both have to be in place
+		// before the first navigation: a page can call alert() or getUserMedia()
+		// from its very first inline script, and anything installed afterwards
+		// would miss it.
+		const preNavigationSetup = async (page: Page, tabId: string) => {
+			await this.dialogHandler.setupDialogHandling(tabId, page);
+			await this.hostBridge.setup(tabId, page);
 		};
 
 		// Create tab
@@ -236,6 +276,9 @@ export class BrowserPreviewService extends EventEmitter {
 		// Fire-and-forget: failure here is non-fatal, startStreaming() will retry injection
 		this.videoCapture.preInjectScripts(tab.id, tab).catch(() => {});
 
+		await this.captureHistoryBase(tab.id);
+		void this.refreshTabMeta(tab.id);
+
 		return tab;
 	}
 
@@ -243,12 +286,155 @@ export class BrowserPreviewService extends EventEmitter {
 	 * Navigate tab to a new URL
 	 */
 	async navigateTab(tabId: string, url: string): Promise<string> {
+		const wasBlank = this.getTab(tabId)?.url === 'about:blank';
+
 		const actualUrl = await this.tabManager.navigateTab(tabId, url);
 
 		// Mark navigation for frame deduplication
 		this.markNavigation(tabId, url);
 
+		// Chrome replaces a new tab's blank entry rather than stacking on top of
+		// it, so Back stays disabled after the first real navigation. Re-baselining
+		// here reproduces that instead of offering "back to about:blank".
+		if (wasBlank) {
+			await this.captureHistoryBase(tabId);
+		}
+
+		void this.refreshTabMeta(tabId);
+
 		return actualUrl;
+	}
+
+	// ============================================================================
+	// Navigation History (Back / Forward)
+	// ============================================================================
+
+	/**
+	 * Read the tab's history, clamped to the entries it actually owns.
+	 *
+	 * CDP reports every entry including the `about:blank` the tab was born on.
+	 * Offering that as a Back target would let the user reverse out of their page
+	 * into a blank one — Chrome replaces that entry instead, so we hide anything
+	 * before the index the tab settled on after its first navigation.
+	 */
+	async getHistoryState(tabId: string): Promise<BrowserHistoryState | null> {
+		const tab = this.getTab(tabId);
+		if (!tab) return null;
+
+		const history = await this.navigationTracker.getNavigationHistory(tabId, tab.page);
+		if (!history) return null;
+
+		const base = Math.min(tab.historyBaseIndex ?? 0, history.currentIndex);
+		const entries = history.entries.slice(base);
+		const currentIndex = history.currentIndex - base;
+
+		return {
+			entries,
+			currentIndex,
+			canGoBack: currentIndex > 0,
+			canGoForward: currentIndex < entries.length - 1
+		};
+	}
+
+	/**
+	 * Move the tab by `delta` steps through its history.
+	 * Returns false when the move would leave the tab's own range.
+	 */
+	async goHistory(tabId: string, delta: number): Promise<boolean> {
+		const tab = this.getTab(tabId);
+		if (!tab || delta === 0) return false;
+
+		const state = await this.getHistoryState(tabId);
+		if (!state) return false;
+
+		const targetIndex = state.currentIndex + delta;
+		const target = state.entries[targetIndex];
+		if (!target) return false;
+
+		const moved = await this.navigationTracker.navigateToHistoryEntry(tabId, tab.page, target.id);
+		if (moved) {
+			this.markNavigation(tabId, target.url);
+			// The entry is committed asynchronously; let the navigation settle
+			// before reading title/favicon back off the page.
+			setTimeout(() => void this.refreshTabMeta(tabId), 250);
+		}
+		return moved;
+	}
+
+	/**
+	 * Record where a freshly created tab's own history begins.
+	 */
+	private async captureHistoryBase(tabId: string): Promise<void> {
+		const tab = this.getTab(tabId);
+		if (!tab) return;
+
+		const history = await this.navigationTracker.getNavigationHistory(tabId, tab.page);
+		if (history) {
+			tab.historyBaseIndex = history.currentIndex;
+		}
+	}
+
+	/**
+	 * Re-read the page's own title, favicon and history state, then push them to
+	 * the frontend. Called after every navigation — these are the three things
+	 * the toolbar and tab strip cannot derive from the URL alone.
+	 */
+	async refreshTabMeta(tabId: string): Promise<void> {
+		const tab = this.getTab(tabId);
+		if (!tab) return;
+
+		try {
+			const [pageTitle, favicon] = await Promise.all([
+				tab.page.title().catch(() => ''),
+				this.readFavicon(tab.page)
+			]);
+
+			if (pageTitle && pageTitle.trim()) {
+				tab.title = pageTitle.trim();
+			}
+			if (favicon) {
+				tab.favicon = favicon;
+			}
+
+			const history = await this.getHistoryState(tabId);
+			tab.canGoBack = history?.canGoBack ?? false;
+			tab.canGoForward = history?.canGoForward ?? false;
+
+			const meta: BrowserTabMeta = {
+				tabId,
+				url: tab.url,
+				title: tab.title,
+				favicon: tab.favicon,
+				canGoBack: tab.canGoBack,
+				canGoForward: tab.canGoForward,
+				timestamp: Date.now()
+			};
+
+			this.emit('preview:browser-tab-meta', meta);
+		} catch (error) {
+			debug.warn('preview', `⚠️ Failed to refresh tab meta for ${tabId}:`, error);
+		}
+	}
+
+	/**
+	 * Resolve the page's favicon to an absolute URL, falling back to the
+	 * origin's /favicon.ico the way a browser does.
+	 */
+	private async readFavicon(page: Page): Promise<string | undefined> {
+		try {
+			return await page.evaluate(() => {
+				const link = document.querySelector<HTMLLinkElement>(
+					'link[rel~="icon"], link[rel="shortcut icon"], link[rel="apple-touch-icon"]'
+				);
+				if (link?.href) return link.href;
+				if (location.origin && location.origin !== 'null') {
+					return `${location.origin}/favicon.ico`;
+				}
+				return undefined;
+			});
+		} catch {
+			return undefined;
+		}
 	}
 
 	/**
@@ -271,6 +457,9 @@ export class BrowserPreviewService extends EventEmitter {
 
 		// Clear dialogs for this tab
 		this.dialogHandler.clearSessionDialogs(tabId);
+
+		// Settle anything the page left waiting on the viewer, drop its scratch dir
+		await this.hostBridge.teardown(tabId);
 
 		// Close the tab (this will cleanup context, page, etc.)
 		const result = await this.tabManager.closeTab(tabId);
@@ -371,7 +560,7 @@ export class BrowserPreviewService extends EventEmitter {
 	// ============================================================================
 	async startWebCodecsStreaming(
 		tabId: string,
-		options?: { codecSupport?: ClientCodecSupport; display?: ClientDisplayMetrics }
+		options: { viewerId: string; codecSupport?: ClientCodecSupport; display?: ClientDisplayMetrics }
 	): Promise<boolean> {
 		const tab = this.getTab(tabId);
 		if (!tab) {
@@ -389,32 +578,42 @@ export class BrowserPreviewService extends EventEmitter {
 	 * Viewer display metrics (fit-scale + pixel density) — drives capture
 	 * resolution so we never encode more pixels than the viewer can show.
 	 */
-	applyWebCodecsDisplayMetrics(tabId: string, metrics: ClientDisplayMetrics): boolean {
+	applyWebCodecsDisplayMetrics(tabId: string, viewerId: string, metrics: ClientDisplayMetrics): boolean {
 		const tab = this.getTab(tabId);
 		if (!tab) {
 			return false;
 		}
-		this.videoCapture.applyDisplayMetrics(tabId, tab, metrics);
+		this.videoCapture.applyDisplayMetrics(tabId, tab, viewerId, metrics);
 		return true;
 	}
 
 	/** Viewer decoder health — closes the adaptation loop back to the source. */
-	applyWebCodecsClientFeedback(tabId: string, feedback: ClientStreamFeedback): boolean {
-		this.videoCapture.applyClientFeedback(tabId, feedback);
+	applyWebCodecsClientFeedback(tabId: string, viewerId: string, feedback: ClientStreamFeedback): boolean {
+		this.videoCapture.applyClientFeedback(tabId, viewerId, feedback);
 		return true;
 	}
 
-	/** Suspend capture while nobody is looking at the preview. */
-	async setWebCodecsPaused(tabId: string, paused: boolean): Promise<boolean> {
+	/** Suspend capture once every viewer has the preview off screen. */
+	async setWebCodecsPaused(tabId: string, viewerId: string, paused: boolean): Promise<boolean> {
 		const tab = this.getTab(tabId);
 		if (!tab) {
 			return false;
 		}
-		return await this.videoCapture.setPaused(tabId, tab, paused);
+		return await this.videoCapture.setViewerVisibility(tabId, tab, viewerId, !paused);
 	}
 
-	async stopWebCodecsStreaming(tabId: string): Promise<void> {
+	/**
+	 * One viewer left. The capture only stops when the last one does — a second
+	 * device closing its panel must not blank the first.
+	 */
+	async stopWebCodecsStreaming(tabId: string, viewerId?: string): Promise<void> {
 		const tab = this.getTab(tabId);
+
+		if (viewerId) {
+			await this.videoCapture.detachViewer(tabId, tab ?? undefined, viewerId);
+			return;
+		}
+
 		await this.videoCapture.stopStreaming(tabId, tab ?? undefined);
 	}
 
@@ -442,28 +641,36 @@ export class BrowserPreviewService extends EventEmitter {
 		return await this.videoCapture.updateViewport(tabId, tab, width, height);
 	}
 
-	async getWebCodecsOffer(tabId: string): Promise<RTCSessionDescriptionInit | null> {
+	async getWebCodecsOffer(tabId: string, viewerId: string): Promise<RTCSessionDescriptionInit | null> {
 		const tab = this.getTab(tabId);
 		if (!tab) {
 			return null;
 		}
-		return await this.videoCapture.createOffer(tabId, tab);
+		return await this.videoCapture.createOffer(tabId, tab, viewerId);
 	}
 
-	async handleWebCodecsAnswer(tabId: string, answer: RTCSessionDescriptionInit): Promise<boolean> {
+	async handleWebCodecsAnswer(
+		tabId: string,
+		viewerId: string,
+		answer: RTCSessionDescriptionInit
+	): Promise<boolean> {
 		const tab = this.getTab(tabId);
 		if (!tab) {
 			return false;
 		}
-		return await this.videoCapture.handleAnswer(tabId, tab, answer);
+		return await this.videoCapture.handleAnswer(tabId, tab, viewerId, answer);
 	}
 
-	async addWebCodecsIceCandidate(tabId: string, candidate: RTCIceCandidateInit): Promise<boolean> {
+	async addWebCodecsIceCandidate(
+		tabId: string,
+		viewerId: string,
+		candidate: RTCIceCandidateInit
+	): Promise<boolean> {
 		const tab = this.getTab(tabId);
 		if (!tab) {
 			return false;
 		}
-		return await this.videoCapture.addIceCandidate(tabId, tab, candidate);
+		return await this.videoCapture.addIceCandidate(tabId, tab, viewerId, candidate);
 	}
 
 	isWebCodecsActive(tabId: string): boolean {
@@ -583,7 +790,13 @@ export class BrowserPreviewService extends EventEmitter {
 		const tab = this.getTab(tabId);
 		if (!tab) return null;
 
-		const menuInfo = await this.nativeUIHandler.checkForContextMenu(tabId, tab.page, x, y);
+		// Back/Forward are page-level, so their availability comes from the tab's
+		// history rather than from the element under the cursor.
+		const history = await this.getHistoryState(tabId);
+		const menuInfo = await this.nativeUIHandler.checkForContextMenu(tabId, tab.page, x, y, {
+			canGoBack: history?.canGoBack ?? false,
+			canGoForward: history?.canGoForward ?? false
+		});
 		if (menuInfo) {
 			// Store menu info for later action execution
 			this.contextMenus.set(menuInfo.menuId, menuInfo);
@@ -609,11 +822,60 @@ export class BrowserPreviewService extends EventEmitter {
 	}
 
 	// ============================================================================
+	// Host Bridge Methods
+	// ============================================================================
+
+	/**
+	 * Deliver the viewer's answer to a pending capability request.
+	 */
+	respondToHostRequest(requestId: string, response: HostResponse): boolean {
+		return this.hostBridge.respond(requestId, response);
+	}
+
+	/**
+	 * Push a streamed host event into a tab's page — speech recognition results
+	 * keep arriving long after the request that started them was answered.
+	 */
+	async dispatchHostEvent(tabId: string, kind: string, payload: unknown): Promise<void> {
+		const tab = this.getTab(tabId);
+		if (!tab) return;
+		await this.hostBridge.dispatchEvent(tab.page, tabId, kind, payload);
+	}
+
+	// ============================================================================
+	// Native Picker Methods (colour / date inputs)
+	// ============================================================================
+
+	/**
+	 * Chrome draws colour and date pickers in the browser process, so they never
+	 * reach the screencast. Detecting the input lets the viewer render the
+	 * equivalent control over the canvas instead.
+	 */
+	async checkForNativePicker(tabId: string, x: number, y: number) {
+		const tab = this.getTab(tabId);
+		if (!tab) return null;
+
+		const info = await this.nativeUIHandler.checkForNativePicker(tabId, tab.page, x, y);
+		if (info) {
+			this.emit('preview:browser-native-picker', info);
+		}
+		return info;
+	}
+
+	async handleNativePickerResponse(tabId: string, pickerId: string, value: string): Promise<boolean> {
+		const tab = this.getTab(tabId);
+		if (!tab) return false;
+		return await this.nativeUIHandler.handleNativePickerResponse(tab.page, pickerId, value);
+	}
+
+	// ============================================================================
 	// Cleanup Methods
 	// ============================================================================
 	async cleanup() {
 		// Clear all cursor tracking
 		this.interactionHandler.clearAllSessionCursors();
+		// Release host-bridge scratch dirs and unblock any parked page promises
+		await this.hostBridge.cleanup();
 		// Cleanup tabs (this will also cleanup all contexts/pages/browser pool)
 		await this.tabManager.cleanup();
 	}
@@ -641,6 +903,7 @@ export class BrowserPreviewService extends EventEmitter {
 		this.videoCapture.removeAllListeners();
 		this.dialogHandler.removeAllListeners();
 		this.nativeUIHandler.removeAllListeners();
+		this.hostBridge.removeAllListeners();
 	}
 }
 
@@ -661,8 +924,12 @@ class BrowserPreviewServiceManager {
 	 * Get or create a BrowserPreviewService for a project
 	 */
 	getService(projectId: string): BrowserPreviewService {
-		if (!projectId) {
-			throw new Error('projectId is required and cannot be empty');
+		// Typed as string, but this is reached from MCP tool handlers whose
+		// arguments are untyped at runtime. A non-string key silently mints an
+		// empty service (and leaks its WS forwarding listeners), so reject it
+		// loudly rather than returning a service with no tabs.
+		if (typeof projectId !== 'string' || !projectId) {
+			throw new Error(`projectId must be a non-empty string, received: ${typeof projectId}`);
 		}
 
 		// Register singleton MCP control forwarding once (idempotent).
@@ -688,10 +955,15 @@ class BrowserPreviewServiceManager {
 	private setupWebSocketForwarding(service: BrowserPreviewService, projectId: string): void {
 		debug.log('preview', `🔌 Setting up WebSocket forwarding for project: ${projectId}...`);
 
-		// Forward WebCodecs events
+		// Forward WebCodecs events.
+		//
+		// The room is the whole project, so several viewers of the same tab all
+		// receive these. `viewerId` is what lets each of them recognise the half
+		// of the handshake that is theirs.
 		service.on('preview:browser-webcodecs-ice-candidate', (data) => {
 			ws.emit.project(projectId, 'preview:browser-stream-ice', {
 				sessionId: data.sessionId,
+				viewerId: data.viewerId,
 				candidate: data.candidate,
 				from: data.from
 			});
@@ -744,6 +1016,26 @@ class BrowserPreviewServiceManager {
 			ws.emit.project(projectId, 'preview:browser-viewport-changed', { ...data, projectId });
 		});
 
+		// Forward live tab metadata (title, favicon, back/forward availability)
+		service.on('preview:browser-tab-meta', (data) => {
+			ws.emit.project(projectId, 'preview:browser-tab-meta', { ...data, projectId });
+		});
+
+		// Forward host-capability requests (geolocation, camera, clipboard, …)
+		// and relayed downloads — both are answered by the viewer's own browser.
+		service.on('preview:browser-host-request', (data) => {
+			ws.emit.project(projectId, 'preview:browser-host-request', data);
+		});
+
+		// Answered (or expired) — every viewer that was shown this prompt drops it.
+		service.on('preview:browser-host-request-settled', (data) => {
+			ws.emit.project(projectId, 'preview:browser-host-request-settled', data);
+		});
+
+		service.on('preview:browser-download', (data) => {
+			ws.emit.project(projectId, 'preview:browser-download', data);
+		});
+
 		// Forward console events
 		service.on('preview:browser-console-message', (data) => {
 			ws.emit.project(projectId, 'preview:browser-console-message', data);
@@ -771,11 +1063,21 @@ class BrowserPreviewServiceManager {
 			ws.emit.project(projectId, 'preview:browser-dialog', data);
 		});
 
+		// A dialog belongs to the page, not to whoever answered it: every viewer
+		// was shown the same prompt, so all of them are told it is settled.
+		service.on('preview:browser-dialog-closed', (data) => {
+			ws.emit.project(projectId, 'preview:browser-dialog-closed', data);
+		});
+
 		service.on('preview:browser-print', (data) => {
 			ws.emit.project(projectId, 'preview:browser-print', data);
 		});
 
 		// Forward native UI events
+		service.on('preview:browser-native-picker', (data) => {
+			ws.emit.project(projectId, 'preview:browser-native-picker', data);
+		});
+
 		service.on('preview:browser-select', (data) => {
 			ws.emit.project(projectId, 'preview:browser-select', data);
 		});
@@ -794,6 +1096,14 @@ class BrowserPreviewServiceManager {
 
 		service.on('preview:browser-download-image', (data) => {
 			ws.emit.project(projectId, 'preview:browser-download-image', data);
+		});
+
+		service.on('preview:browser-open-url-host', (data) => {
+			ws.emit.project(projectId, 'preview:browser-open-url-host', data);
+		});
+
+		service.on('preview:browser-open-inspector', (data) => {
+			ws.emit.project(projectId, 'preview:browser-open-inspector', data);
 		});
 
 		service.on('preview:browser-copy-image-to-clipboard', (data) => {

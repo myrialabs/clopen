@@ -5,15 +5,15 @@
 
 import { debug } from '$shared/utils/logger';
 import type { DeviceSize, Rotation } from '$frontend/utils/preview-constants';
-
-// Console message type (temporary placeholder)
-type ConsoleMessage = any;
+import type { BrowserConsoleMessage } from '$frontend/utils/native-ui';
 
 // Tab interface
 export interface PreviewTab {
 	id: string;
 	url: string;
 	title: string;
+	/** Absolute favicon URL reported by the page, once it has one. */
+	favicon?: string;
 	sessionId: string | null;
 	sessionInfo: any;
 	isConnected: boolean;
@@ -21,9 +21,12 @@ export interface PreviewTab {
 	isLoading: boolean;
 	isLaunchingBrowser: boolean;
 	isNavigating: boolean; // True when navigating within same session (e.g., clicking a link)
+	/** Whether this tab's history has anywhere to go — drives the toolbar arrows. */
+	canGoBack: boolean;
+	canGoForward: boolean;
 	deviceSize: DeviceSize;
 	rotation: Rotation;
-	consoleLogs: ConsoleMessage[];
+	consoleLogs: BrowserConsoleMessage[];
 	canvasAPI: any;
 	previewDimensions: any;
 	lastFrameData: any;
@@ -76,6 +79,8 @@ export function createTabManager() {
 			isLoading: false,
 			isLaunchingBrowser: false,
 			isNavigating: false,
+			canGoBack: false,
+			canGoForward: false,
 			deviceSize,
 			rotation,
 			consoleLogs: [],
@@ -128,6 +133,26 @@ export function createTabManager() {
 		}
 
 		return { removedTab, newActiveTab };
+	}
+
+	/**
+	 * Move a tab so it sits where `targetTabId` currently is.
+	 *
+	 * Order is user-visible state — it is what the snapshot persists and what the
+	 * strip renders — so reordering has to mutate the list itself rather than
+	 * being a view-only sort.
+	 */
+	function reorderTab(tabId: string, targetTabId: string): void {
+		if (tabId === targetTabId) return;
+
+		const from = tabs.findIndex((tab) => tab.id === tabId);
+		const to = tabs.findIndex((tab) => tab.id === targetTabId);
+		if (from === -1 || to === -1) return;
+
+		const next = [...tabs];
+		const [moved] = next.splice(from, 1);
+		next.splice(to, 0, moved);
+		tabs = next;
 	}
 
 	/**
@@ -197,6 +222,7 @@ export function createTabManager() {
 		createTab,
 		switchTab,
 		closeTab,
+		reorderTab,
 		updateTab,
 		updateActiveTab,
 		getTab,

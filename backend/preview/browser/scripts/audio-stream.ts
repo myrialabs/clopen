@@ -45,6 +45,64 @@ export function audioCaptureScript(config: StreamingConfig['audio']) {
 	const interceptedContexts = new WeakSet();
 	const captureNodes = new Map();
 
+	// ── Cross-frame delivery ────────────────────────────────────────────────
+	//
+	// The DataChannel lives on `__webCodecsPeer`, which only exists in the top
+	// frame. This script runs in every frame (it is injected on new document),
+	// so audio produced inside an iframe — embedded players, ad frames, anything
+	// on a CDN origin — encoded fine and was then dropped for want of a channel.
+	// Same-origin frames can reach the peer directly; cross-origin ones hand the
+	// encoded chunk to the top frame over postMessage.
+	const RELAY_KEY = '__clopenAudioChunk';
+	const isTopFrame = window === window.top;
+
+	/** The peer, if this frame can legally reach it. */
+	function resolvePeer(): any | null {
+		const local = (window as any).__webCodecsPeer;
+		if (local) return local;
+
+		try {
+			// Throws for cross-origin parents, which is the signal to relay.
+			const top = (window.top as any)?.__webCodecsPeer;
+			return top ?? null;
+		} catch {
+			return null;
+		}
+	}
+
+	function deliverChunk(timestamp: number, data: Uint8Array) {
+		const peer = resolvePeer();
+		if (peer) {
+			if (!peer.isActive()) return;
+			peer.sendAudioChunk(timestamp, data);
+			return;
+		}
+
+		if (isTopFrame) return;
+
+		try {
+			// Copy into a fresh buffer: the encoder's view may be reused, and the
+			// transfer would neuter it out from under the next chunk.
+			const copy = new Uint8Array(data);
+			window.top?.postMessage({ [RELAY_KEY]: { timestamp, data: copy } }, '*', [copy.buffer]);
+		} catch {
+			// Frame is detached or the post was refused — drop the chunk; audio
+			// gaps are handled by the client's playback scheduler.
+		}
+	}
+
+	// Top frame: accept chunks relayed up from cross-origin children.
+	if (isTopFrame) {
+		window.addEventListener('message', (event: MessageEvent) => {
+			const relayed = (event.data as Record<string, any> | null)?.[RELAY_KEY];
+			if (!relayed) return;
+
+			const peer = (window as any).__webCodecsPeer;
+			if (!peer || !peer.isActive()) return;
+			peer.sendAudioChunk(relayed.timestamp, new Uint8Array(relayed.data));
+		});
+	}
+
 	// Initialize audio encoder
 	async function initAudioEncoder() {
 		if (audioEncoder && audioEncoder.state === 'configured') {
@@ -54,17 +112,12 @@ export function audioCaptureScript(config: StreamingConfig['audio']) {
 		try {
 			audioEncoder = new AudioEncoder({
 				output: (chunk: EncodedAudioChunk) => {
-					// Send audio chunk directly via __webCodecsPeer DataChannel
-					const peer = (window as any).__webCodecsPeer;
-					if (!peer || !peer.isActive()) {
-						return;
-					}
-
 					const data = new Uint8Array(chunk.byteLength);
 					chunk.copyTo(data);
 
-					// Send via the same DataChannel used for video
-					peer.sendAudioChunk(chunk.timestamp, data);
+					// Reaches the DataChannel directly in the top frame, or via the
+					// relay when this encoder is running inside an iframe.
+					deliverChunk(chunk.timestamp, data);
 				},
 				error: (e: Error) => {}
 			});

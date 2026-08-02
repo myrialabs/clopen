@@ -4,17 +4,57 @@ import type { DeviceSize, Rotation } from '$shared/constants/preview.js';
 // Re-export types from preview config
 export type { DeviceSize, Rotation };
 
+/**
+ * A console argument rendered for display.
+ *
+ * `jsonValue()` cannot represent most of what a page logs — DOM nodes, class
+ * instances, functions and anything circular all throw — so values are
+ * flattened in the page to a shape the console panel can render and expand
+ * without holding a live handle to the object.
+ */
+export interface BrowserConsoleValue {
+	type:
+		| 'string'
+		| 'number'
+		| 'boolean'
+		| 'null'
+		| 'undefined'
+		| 'bigint'
+		| 'symbol'
+		| 'function'
+		| 'array'
+		| 'object'
+		| 'error'
+		| 'node'
+		| 'date'
+		| 'regexp'
+		| 'map'
+		| 'set';
+	/** Single-line rendering, e.g. `Array(3)` or `<div class="row">`. */
+	preview: string;
+	/** Expandable children, present for arrays/objects/maps/sets. */
+	entries?: Array<{ key: string; value: BrowserConsoleValue }>;
+	/** True when `entries` was cut short by the size cap. */
+	truncated?: boolean;
+}
+
 export interface BrowserConsoleMessage {
 	id: string;
-	type: 'log' | 'info' | 'warn' | 'error' | 'debug' | 'trace' | 'clear';
+	type: 'log' | 'info' | 'warn' | 'error' | 'debug' | 'trace' | 'clear' | 'input' | 'result';
 	text: string;
 	args?: unknown[];
+	/** Structured rendering of `args`, used by the console panel. */
+	values?: BrowserConsoleValue[];
 	location?: {
 		url: string;
 		lineNumber: number;
 		columnNumber: number;
 	};
 	stackTrace?: string;
+	/** Network status for messages raised from a failed response. */
+	status?: number;
+	/** Repeat counter for identical consecutive messages, as in DevTools. */
+	count?: number;
 	timestamp: number;
 }
 
@@ -56,6 +96,12 @@ export interface BrowserTab {
 	isLoading: boolean;
 	canGoBack: boolean;
 	canGoForward: boolean;
+	/**
+	 * CDP history index the tab started at, captured after its first real
+	 * navigation. Back is only offered beyond this point so a fresh tab behaves
+	 * like a real browser — you cannot walk back into its initial about:blank.
+	 */
+	historyBaseIndex?: number;
 	lastNavigationTime?: number;
 	currentUrl?: string;
 
@@ -109,15 +155,52 @@ export interface TabNavigatedEvent {
 	timestamp: number;
 }
 
+/**
+ * Live tab metadata pushed after every navigation.
+ *
+ * Bundles the three things the toolbar needs and cannot derive from the URL:
+ * the page's own title, its favicon, and whether Back/Forward are available.
+ */
+export interface BrowserTabMeta {
+	tabId: string;
+	url: string;
+	title: string;
+	favicon?: string;
+	canGoBack: boolean;
+	canGoForward: boolean;
+	timestamp: number;
+}
+
+/** A single entry in a tab's CDP navigation history. */
+export interface BrowserHistoryEntry {
+	id: number;
+	url: string;
+	title: string;
+}
+
+export interface BrowserHistoryState {
+	entries: BrowserHistoryEntry[];
+	currentIndex: number;
+	canGoBack: boolean;
+	canGoForward: boolean;
+}
+
 export interface BrowserTabInfo {
 	id: string;
 	url: string;
 	title: string;
+	/**
+	 * Carried through recovery so a page refresh restores the tab strip as it
+	 * looked, instead of falling back to the placeholder until the next reload.
+	 */
+	favicon?: string;
 	quality: 'perfect' | 'good';
 	isStreaming: boolean;
 	deviceSize: DeviceSize;
 	rotation: Rotation;
 	isActive: boolean;
+	canGoBack: boolean;
+	canGoForward: boolean;
 }
 
 export interface BrowserAutonomousAction {
@@ -451,6 +534,33 @@ export interface BrowserSelectOption {
 	text: string;
 	selected: boolean;
 	disabled?: boolean;
+	/** `<optgroup>` label this option belongs to, if any. */
+	group?: string;
+	groupDisabled?: boolean;
+}
+
+/**
+ * An input whose picker Chrome draws outside the page.
+ *
+ * Colour swatches and the date/time family open browser-process popups that the
+ * screencast cannot see, so the viewer renders the equivalent native control
+ * over the canvas and writes the result back.
+ */
+export interface BrowserNativePickerInfo {
+	tabId: string;
+	pickerId: string;
+	inputType: 'color' | 'date' | 'datetime-local' | 'month' | 'time' | 'week';
+	value: string;
+	min?: string;
+	max?: string;
+	step?: string;
+	boundingBox: {
+		x: number;
+		y: number;
+		width: number;
+		height: number;
+	};
+	timestamp: number;
 }
 
 export interface BrowserSelectInfo {
@@ -488,22 +598,32 @@ export interface BrowserContextMenuItem {
 	submenu?: BrowserContextMenuItem[];
 }
 
+export interface BrowserContextMenuElementInfo {
+	tagName: string;
+	isLink: boolean;
+	isImage: boolean;
+	isInput: boolean;
+	/** Inputs plus contenteditable regions — everything the edit commands apply to. */
+	isEditable: boolean;
+	isTextSelected: boolean;
+	/** Truncated selection, used only to label the "Search for…" item. */
+	selectedText?: string;
+	linkUrl?: string;
+	linkText?: string;
+	imageUrl?: string;
+	mediaUrl?: string;
+	mediaType?: string;
+	inputType?: string;
+	pageUrl?: string;
+}
+
 export interface BrowserContextMenuInfo {
 	tabId: string;
 	menuId: string;
 	x: number; // Click coordinates
 	y: number;
 	items: BrowserContextMenuItem[];
-	elementInfo: {
-		tagName: string;
-		isLink: boolean;
-		isImage: boolean;
-		isInput: boolean;
-		isTextSelected: boolean;
-		linkUrl?: string;
-		imageUrl?: string;
-		inputType?: string;
-	};
+	elementInfo: BrowserContextMenuElementInfo;
 	timestamp: number;
 }
 

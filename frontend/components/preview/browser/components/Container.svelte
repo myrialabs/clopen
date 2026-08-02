@@ -421,12 +421,7 @@
 						transition: none;
 					"
 				>
-					<DeviceFrame
-						deviceSize={deviceSize as DeviceSize}
-						rotation={rotation as Rotation}
-						canvasWidth={previewDimensions.canvasWidth}
-						canvasHeight={previewDimensions.canvasHeight}
-					>
+					<DeviceFrame deviceSize={deviceSize as DeviceSize} rotation={rotation as Rotation}>
 						<Canvas
 							projectId={projectId}
 							bind:sessionId

@@ -1,6 +1,6 @@
 import { EventEmitter } from 'events';
 import type { Page, Dialog } from 'puppeteer';
-import type { BrowserTab, BrowserDialogEvent, BrowserDialogResponse, BrowserPrintEvent } from './types';
+import type { BrowserDialogResponse } from './types';
 import { debug } from '$shared/utils/logger';
 import { nanoid } from 'nanoid';
 
@@ -12,9 +12,20 @@ import { nanoid } from 'nanoid';
  *
  * Also intercepts window.print() calls and emits print events.
  */
+/**
+ * How long a dialog waits for the viewer before it is dismissed on its own.
+ *
+ * A JS dialog blocks the renderer, so an unanswered one freezes the page —
+ * including the video stream. That is the correct behaviour while someone is
+ * looking at the prompt, and a hang once nobody is (panel closed, browser tab
+ * gone), which is what this bound exists for.
+ */
+const DIALOG_RESPONSE_TIMEOUT_MS = 120_000;
+
 export class BrowserDialogHandler extends EventEmitter {
-	// Store pending dialogs waiting for response
-	private pendingDialogs = new Map<string, Dialog>();
+	// Store pending dialogs waiting for response, tagged with the tab that raised
+	// them so closing one tab cannot dismiss another tab's prompt.
+	private pendingDialogs = new Map<string, { sessionId: string; dialog: Dialog; timeout: NodeJS.Timeout }>();
 
 	constructor() {
 		super();
@@ -39,7 +50,7 @@ export class BrowserDialogHandler extends EventEmitter {
 	/**
 	 * Setup dialog event listeners - can be called AFTER navigation
 	 */
-	async setupDialogHandling(sessionId: string, page: Page, session: BrowserTab) {
+	async setupDialogHandling(sessionId: string, page: Page) {
 		debug.log('preview', `🎭 Setting up dialog event listeners for session: ${sessionId}`);
 
 		// Intercept Puppeteer dialog events
@@ -61,8 +72,18 @@ export class BrowserDialogHandler extends EventEmitter {
 
 		debug.log('preview', `🎭 Dialog detected - Type: ${dialogType}, Session: ${sessionId}`);
 
-		// Store pending dialog for later response
-		this.pendingDialogs.set(dialogId, dialog);
+		// Store pending dialog for later response, with a deadline so an
+		// unattended page cannot stay blocked indefinitely.
+		const timeout = setTimeout(() => {
+			this.pendingDialogs.delete(dialogId);
+			debug.warn('preview', `⏱️ Dialog ${dialogId} unanswered, auto-dismissing`);
+			// beforeunload is the one dialog where dismissing is the safe default
+			// in both directions: it cancels the navigation rather than losing work.
+			dialog.dismiss().catch(() => {});
+			this.emit('dialog-closed', { sessionId, dialogId, timestamp: Date.now() });
+		}, DIALOG_RESPONSE_TIMEOUT_MS);
+
+		this.pendingDialogs.set(dialogId, { sessionId, dialog, timeout });
 
 		// Emit dialog event to frontend (sessionId will be converted to tabId by previewService)
 		const dialogEvent: any = {
@@ -87,12 +108,15 @@ export class BrowserDialogHandler extends EventEmitter {
 
 		debug.log('preview', `🔍 Responding to dialog - dialogId: ${dialogId}, accept: ${accept}, pending dialogs: ${this.pendingDialogs.size}`);
 
-		const dialog = this.pendingDialogs.get(dialogId);
-		if (!dialog) {
+		const entry = this.pendingDialogs.get(dialogId);
+		if (!entry) {
 			debug.warn('preview', `⚠️ Dialog not found in pendingDialogs: ${dialogId}`);
 			debug.warn('preview', `   Available dialog IDs: ${Array.from(this.pendingDialogs.keys()).join(', ') || '(none)'}`);
 			return false;
 		}
+
+		const { dialog } = entry;
+		clearTimeout(entry.timeout);
 
 		debug.log('preview', `✅ Dialog found in pendingDialogs - Type: ${dialog.type()}, Message: "${dialog.message()}"`);
 
@@ -118,10 +142,15 @@ export class BrowserDialogHandler extends EventEmitter {
 			// Remove from pending dialogs
 			this.pendingDialogs.delete(dialogId);
 			debug.log('preview', `🗑️ Removed dialog from pendingDialogs - remaining: ${this.pendingDialogs.size}`);
+			// The page has one dialog and it is now answered, but every viewer of
+			// this tab was shown a copy of it. Telling them all it is settled is
+			// what stops the other devices holding a prompt that no longer exists.
+			this.emit('dialog-closed', { sessionId: entry.sessionId, dialogId, timestamp: Date.now() });
 			return true;
 		} catch (error) {
 			debug.error('preview', `💥 Error responding to dialog ${dialogId}:`, error);
 			this.pendingDialogs.delete(dialogId);
+			this.emit('dialog-closed', { sessionId: entry.sessionId, dialogId, timestamp: Date.now() });
 			return false;
 		}
 	}
@@ -181,15 +210,14 @@ export class BrowserDialogHandler extends EventEmitter {
 	 * Clear pending dialogs for a session
 	 */
 	clearSessionDialogs(sessionId: string) {
-		// Find and dismiss all dialogs for this session
 		const dialogsToRemove: string[] = [];
 
-		for (const [dialogId, dialog] of this.pendingDialogs.entries()) {
-			// Check if dialog belongs to this session (we store sessionId in the dialogId via Map)
-			// Since we don't have direct sessionId mapping, we'll clear all pending dialogs
-			// This is safe as each session has its own page instance
+		for (const [dialogId, entry] of this.pendingDialogs.entries()) {
+			if (entry.sessionId !== sessionId) continue;
+
+			clearTimeout(entry.timeout);
 			try {
-				dialog.dismiss().catch(() => {});
+				entry.dialog.dismiss().catch(() => {});
 			} catch (error) {
 				// Dialog might already be closed
 			}
@@ -208,9 +236,10 @@ export class BrowserDialogHandler extends EventEmitter {
 	clearAllDialogs() {
 		const count = this.pendingDialogs.size;
 
-		for (const [dialogId, dialog] of this.pendingDialogs.entries()) {
+		for (const entry of this.pendingDialogs.values()) {
+			clearTimeout(entry.timeout);
 			try {
-				dialog.dismiss().catch(() => {});
+				entry.dialog.dismiss().catch(() => {});
 			} catch (error) {
 				// Dialog might already be closed
 			}

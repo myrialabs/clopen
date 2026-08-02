@@ -93,6 +93,12 @@ function materializeBackendTab(backendTab: ExistingTabInfo): string {
 		},
 		url: backendTab.url,
 		title: backendTab.title || getTabTitle(backendTab.url),
+		// Recovered from the live backend tab, so a page refresh restores the tab
+		// strip as it was instead of dropping to the placeholder until the user
+		// reloads the page itself.
+		favicon: backendTab.favicon,
+		canGoBack: backendTab.canGoBack ?? false,
+		canGoForward: backendTab.canGoForward ?? false,
 		deviceSize: backendTab.deviceSize as DeviceSize,
 		rotation: backendTab.rotation as Rotation,
 		isConnected: true,
@@ -372,6 +378,23 @@ export function initPreviewTabSync(): void {
 
 		const tab = previewTabManager.tabs.find((t) => t.sessionId === data.newTabId);
 		if (tab) previewTabManager.switchTab(tab.id);
+	});
+
+	// Live tab metadata: the page's own title and favicon, plus whether
+	// Back/Forward can go anywhere. Registered here rather than in the panel so
+	// the dock's tab strip stays current even while the panel is unmounted.
+	ws.on('preview:browser-tab-meta' as any, (data: any) => {
+		if (!isEventForActiveProject(data)) return;
+
+		const tab = previewTabManager.tabs.find((t) => t.sessionId === data.tabId);
+		if (!tab) return;
+
+		previewTabManager.updateTab(tab.id, {
+			title: data.title || getTabTitle(data.url),
+			favicon: data.favicon,
+			canGoBack: data.canGoBack,
+			canGoForward: data.canGoForward
+		});
 	});
 
 	ws.on('preview:browser-viewport-changed' as any, (data: any) => {

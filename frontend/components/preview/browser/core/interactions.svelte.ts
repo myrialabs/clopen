@@ -14,10 +14,15 @@ export interface InteractionAction {
 		| 'click'
 		| 'doubleclick'
 		| 'rightclick'
+		| 'mousedown'
+		| 'mouseup'
 		| 'mousemove'
 		| 'scroll'
+		| 'stop'
+		| 'paste'
 		| 'type'
 		| 'key'
+		| 'keynav'
 		| 'checkselectoptions'
 		| 'scale-update'
 		| 'viewport-update';
@@ -25,8 +30,13 @@ export interface InteractionAction {
 	y?: number;
 	deltaX?: number;
 	deltaY?: number;
+	button?: 'left' | 'right';
 	text?: string;
 	key?: string;
+	ctrlKey?: boolean;
+	metaKey?: boolean;
+	altKey?: boolean;
+	shiftKey?: boolean;
 	delay?: number;
 	steps?: number;
 	scale?: number;
@@ -35,6 +45,18 @@ export interface InteractionAction {
 	height?: number;
 	deviceSize?: string;
 	rotation?: string;
+}
+
+/**
+ * Whether a point in the page accepts text, and what kind of text.
+ *
+ * Drives the on-screen keyboard on touch devices: the viewer asks about the
+ * point under the finger as the tap begins, then raises the keyboard inside the
+ * `touchend` handler — the only moment iOS will honour a programmatic focus.
+ */
+export interface RemoteFocusState {
+	editable: boolean;
+	inputType?: string;
 }
 
 // Store current projectId for interactions
@@ -86,6 +108,54 @@ export function sendInteraction(action: InteractionAction): void {
 }
 
 /**
+ * Read the preview's current text selection, optionally cutting it.
+ *
+ * Used by the Ctrl+C / Ctrl+X bridge: the keystroke cannot simply be forwarded,
+ * because it would land on the headless browser's own clipboard rather than the
+ * user's.
+ */
+export async function readPageSelection(cut = false): Promise<string> {
+	try {
+		const result = await ws.http('preview:browser-selection', { cut }, 5000);
+		return result.text;
+	} catch {
+		return '';
+	}
+}
+
+/**
+ * Ask the page what sits at a point, before anything is dispatched there.
+ *
+ * The keyboard decision cannot be made from focus state, which only settles
+ * once the tap has been handled — so it always described the *previous* tap.
+ * The element under the finger is knowable at `touchstart`, which is early
+ * enough to have the answer in hand by `touchend`.
+ *
+ * Best-effort: a failure (mid-navigation, tab gone) reads as "not editable" so
+ * the viewer leaves the keyboard alone rather than raising it over nothing.
+ */
+export async function probeHitTest(x: number, y: number): Promise<RemoteFocusState> {
+	try {
+		return await ws.http('preview:browser-hit-test', { x, y }, 3000);
+	} catch {
+		return { editable: false };
+	}
+}
+
+/**
+ * Walk the active tab's history.
+ */
+export async function goHistory(direction: 'back' | 'forward', tabId?: string): Promise<boolean> {
+	try {
+		const result = await ws.http('preview:browser-tab-history-go', { direction, tabId }, 15000);
+		return result.moved;
+	} catch (error) {
+		debug.error('preview', `Error navigating ${direction}:`, error);
+		return false;
+	}
+}
+
+/**
  * Send scale update to active tab.
  *
  * Doubles as the stream-recovery path (the frontend re-sends the current scale
@@ -106,23 +176,6 @@ export function sendScaleUpdate(scale: number): void {
 	} catch (error) {
 		debug.error('preview', 'Error sending scale update:', error);
 	}
-}
-
-/**
- * Report display metrics without disturbing the stream.
- *
- * A resize only needs the capture resolution recomputed; `sendScaleUpdate`
- * additionally restarts capture, which is right for recovery but wasteful on
- * every drag frame of a panel resize.
- */
-export function sendDisplayUpdate(scale: number): void {
-	setDisplayScale(scale);
-	ws.http('preview:browser-stream-display', {
-		scale,
-		dpr: currentDpr()
-	}).catch(() => {
-		// Best-effort: the next scale-update or reconnect carries it anyway
-	});
 }
 
 /**

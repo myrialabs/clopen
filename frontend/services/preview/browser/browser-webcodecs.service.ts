@@ -31,6 +31,14 @@ const CODEC_NAMES: Record<number, 'vp8' | 'vp9' | 'avc'> = {
 	2: 'avc'
 };
 
+/** `randomUUID` needs a secure context, which a LAN preview over http is not. */
+function createViewerId(): string {
+	if (typeof crypto !== 'undefined' && typeof crypto.randomUUID === 'function') {
+		return crypto.randomUUID();
+	}
+	return `viewer-${Math.random().toString(36).slice(2)}${Date.now().toString(36)}`;
+}
+
 export interface ClientCodecSupportPayload {
 	vp8: boolean;
 	vp9: boolean;
@@ -231,6 +239,32 @@ export class BrowserWebCodecsService {
 
 	// User gesture listener for AudioContext resume (needed after page refresh)
 	private userGestureHandler: (() => void) | null = null;
+
+	/**
+	 * Identifies this viewer to the backend for its whole lifetime.
+	 *
+	 * A tab can be watched from more than one place at a time — the same project
+	 * open on a laptop and a phone, or two split panels showing the same
+	 * preview. Signalling used to be addressed by tab alone, so every viewer saw
+	 * every other viewer's ICE candidates and connection states, and each new
+	 * handshake replaced the last one's connection. Per-instance rather than
+	 * per-connection: it survives reconnects, so the backend can recognise a
+	 * recovering viewer as the same one rather than a second audience member.
+	 */
+	private readonly viewerId: string = createViewerId();
+
+	/**
+	 * Remote ICE candidates that arrived before this side could take them.
+	 *
+	 * The source starts gathering the moment it creates its offer, which is
+	 * *inside* the stream-start request — so its host candidates are usually on
+	 * the wire before that request has even returned, let alone before there is
+	 * a local peer with a remote description to attach them to. Dropping them
+	 * left the connection with nothing to try on a fast local network, which is
+	 * the "Loading preview…" that only clears after a reload or two.
+	 */
+	private pendingRemoteCandidates: RTCIceCandidateInit[] = [];
+	private hasRemoteDescription = false;
 
 	constructor(projectId: string) {
 		if (!projectId) {
@@ -501,6 +535,8 @@ export class BrowserWebCodecsService {
 
 		this.isCleaningUp = false;
 		this.stats.firstFrameRendered = false;
+		this.pendingRemoteCandidates = [];
+		this.hasRemoteDescription = false;
 
 		this.sessionId = sessionId;
 		this.canvas = canvas;
@@ -538,6 +574,7 @@ export class BrowserWebCodecsService {
 				'preview:browser-stream-start',
 				{
 					tabId: sessionId,
+					viewerId: this.viewerId,
 					vp9: codecs.vp9,
 					codecs,
 					display: this.currentDisplayMetrics()
@@ -573,7 +610,7 @@ export class BrowserWebCodecsService {
 						await new Promise(resolve => setTimeout(resolve, offerRetryDelay * attempt));
 					}
 					debug.log('webcodecs', `[DIAG] stream-offer attempt ${attempt + 1}/${offerMaxRetries}`);
-					const offerResponse = await ws.http('preview:browser-stream-offer', { tabId: sessionId }, 10000);
+					const offerResponse = await ws.http('preview:browser-stream-offer', { tabId: sessionId, viewerId: this.viewerId }, 10000);
 					if (offerResponse.offer) {
 						offer = offerResponse.offer;
 						break;
@@ -695,14 +732,14 @@ export class BrowserWebCodecsService {
 					sdpMLineIndex: event.candidate.sdpMLineIndex
 				};
 
-				ws.http('preview:browser-stream-ice', { candidate: candidateInit, tabId: this.sessionId }).catch((error) => {
+				ws.http('preview:browser-stream-ice', { candidate: candidateInit, tabId: this.sessionId, viewerId: this.viewerId }).catch((error) => {
 					debug.warn('webcodecs', 'Failed to send ICE candidate:', error);
 				});
 
 				// Also send loopback version for VPN compatibility (same-machine peers)
 				const loopback = this.createLoopbackCandidate(candidateInit);
 				if (loopback) {
-					ws.http('preview:browser-stream-ice', { candidate: loopback, tabId: this.sessionId }).catch(() => {});
+					ws.http('preview:browser-stream-ice', { candidate: loopback, tabId: this.sessionId, viewerId: this.viewerId }).catch(() => {});
 				}
 			}
 		};
@@ -781,7 +818,18 @@ export class BrowserWebCodecsService {
 		}
 
 		await this.peerConnection.setRemoteDescription(new RTCSessionDescription(offer));
+		this.hasRemoteDescription = true;
 		debug.log('webcodecs', 'Remote description set');
+
+		// Everything that arrived while there was nowhere to put it.
+		const buffered = this.pendingRemoteCandidates;
+		this.pendingRemoteCandidates = [];
+		if (buffered.length > 0) {
+			debug.log('webcodecs', `Applying ${buffered.length} buffered ICE candidate(s)`);
+			for (const candidate of buffered) {
+				await this.addIceCandidate(candidate);
+			}
+		}
 
 		const answer = await this.peerConnection.createAnswer();
 		await this.peerConnection.setLocalDescription(answer);
@@ -793,7 +841,8 @@ export class BrowserWebCodecsService {
 					type: answer.type,
 					sdp: answer.sdp
 				},
-				tabId: this.sessionId
+				tabId: this.sessionId,
+				viewerId: this.viewerId
 			});
 		}
 	}
@@ -1359,14 +1408,18 @@ export class BrowserWebCodecsService {
 	 * Setup WebSocket event listeners
 	 */
 	private setupEventListeners(): void {
+		// Both of these are broadcast to everyone in the project, so the tab
+		// alone is not a precise enough address: another device watching the same
+		// tab has its own peer, and feeding it that peer's candidates produces a
+		// connection that never completes on either side.
 		const cleanupIce = ws.on('preview:browser-stream-ice', async (data) => {
-			if (data.sessionId === this.sessionId && data.from === 'headless') {
+			if (data.sessionId === this.sessionId && data.viewerId === this.viewerId && data.from === 'headless') {
 				await this.addIceCandidate(data.candidate);
 			}
 		});
 
 		const cleanupState = ws.on('preview:browser-stream-state', (data) => {
-			if (data.sessionId === this.sessionId) {
+			if (data.sessionId === this.sessionId && data.viewerId === this.viewerId) {
 				debug.log('webcodecs', `Server connection state: ${data.state}`);
 			}
 		});
@@ -1467,7 +1520,12 @@ export class BrowserWebCodecsService {
 	 * Add ICE candidate (+ loopback variant for VPN compatibility)
 	 */
 	private async addIceCandidate(candidate: RTCIceCandidateInit): Promise<void> {
-		if (!this.peerConnection) return;
+		// Held rather than dropped: a candidate is only addable once the answer
+		// side has a remote description, and these routinely arrive first.
+		if (!this.peerConnection || !this.hasRemoteDescription) {
+			this.pendingRemoteCandidates.push(candidate);
+			return;
+		}
 
 		try {
 			await this.peerConnection.addIceCandidate(new RTCIceCandidate(candidate));
@@ -1548,6 +1606,7 @@ export class BrowserWebCodecsService {
 
 		ws.http('preview:browser-stream-feedback', {
 			tabId: this.sessionId,
+			viewerId: this.viewerId,
 			decodeQueueSize: this.lastFeedback.decodeQueueSize,
 			decodeLatencyMs: this.lastFeedback.decodeLatencyMs,
 			dropRatio: this.lastFeedback.dropRatio
@@ -1591,6 +1650,7 @@ export class BrowserWebCodecsService {
 		debug.log('webcodecs', `Viewer ${visible ? 'visible' : 'hidden'} — ${visible ? 'resuming' : 'suspending'} capture`);
 		ws.http('preview:browser-stream-visibility', {
 			tabId: this.sessionId,
+			viewerId: this.viewerId,
 			visible
 		}).catch(() => {});
 	}
@@ -1605,6 +1665,7 @@ export class BrowserWebCodecsService {
 		const metrics = this.currentDisplayMetrics();
 		ws.http('preview:browser-stream-display', {
 			tabId: this.sessionId,
+			viewerId: this.viewerId,
 			scale: metrics.scale,
 			dpr: metrics.dpr
 		}).catch(() => {});
@@ -1703,6 +1764,8 @@ export class BrowserWebCodecsService {
 		this.isCleaningUp = false;
 		this.stats.firstFrameRendered = false;
 		this.isNavigating = false;
+		this.pendingRemoteCandidates = [];
+		this.hasRemoteDescription = false;
 
 		this.sessionId = sessionId;
 		this.canvas = canvas;
@@ -1729,7 +1792,7 @@ export class BrowserWebCodecsService {
 			await this.createPeerConnection();
 
 			// Get offer from backend's existing peer (don't start new streaming)
-			const offerResponse = await ws.http('preview:browser-stream-offer', { tabId: sessionId }, 10000);
+			const offerResponse = await ws.http('preview:browser-stream-offer', { tabId: sessionId, viewerId: this.viewerId }, 10000);
 			if (offerResponse.offer) {
 				await this.handleOffer({
 					type: offerResponse.offer.type as RTCSdpType,
@@ -1884,7 +1947,7 @@ export class BrowserWebCodecsService {
 
 		// Notify server with explicit tabId (fire-and-forget for speed during rapid switching)
 		if (this.sessionId) {
-			ws.http('preview:browser-stream-stop', { tabId: this.sessionId }).catch(() => {});
+			ws.http('preview:browser-stream-stop', { tabId: this.sessionId, viewerId: this.viewerId }).catch(() => {});
 		}
 
 		// Drop the worker's decoder state too, or the next stream would resume

@@ -1,22 +1,9 @@
 import { debug } from '$shared/utils/logger';
 import ws from '$frontend/utils/ws';
-
-export interface ConsoleMessage {
-	id: string;
-	type: 'log' | 'info' | 'warn' | 'error' | 'debug' | 'trace' | 'clear';
-	text: string;
-	args?: unknown[];
-	location?: {
-		url: string;
-		lineNumber: number;
-		columnNumber: number;
-	};
-	stackTrace?: string;
-	timestamp: number;
-}
+import type { BrowserConsoleMessage } from '$frontend/utils/native-ui';
 
 export class BrowserConsoleService {
-	async getConsoleLogs(sessionId: string): Promise<ConsoleMessage[]> {
+	async getConsoleLogs(sessionId: string): Promise<BrowserConsoleMessage[]> {
 		try {
 			const result = await ws.http('preview:browser-console-get', {}, 5000);
 			return result.logs || [];

@@ -146,6 +146,19 @@ export const nativeUIPreviewHandler = createRouter()
 		timestamp: t.Number()
 	}))
 
+	/**
+	 * The page's dialog has been answered — by whoever got there first.
+	 *
+	 * A dialog belongs to the page, not to a viewer, but each viewer was shown
+	 * its own copy of the prompt. Without this the other devices keep an overlay
+	 * for a dialog that no longer exists, and answering it again does nothing.
+	 */
+	.emit('preview:browser-dialog-closed', t.Object({
+		sessionId: t.String(),
+		dialogId: t.String(),
+		timestamp: t.Number()
+	}))
+
 	.emit('preview:browser-print', t.Object({
 		sessionId: t.String(),
 		timestamp: t.Number()
@@ -194,10 +207,16 @@ export const nativeUIPreviewHandler = createRouter()
 			isLink: t.Boolean(),
 			isImage: t.Boolean(),
 			isInput: t.Boolean(),
+			isEditable: t.Boolean(),
 			isTextSelected: t.Boolean(),
+			selectedText: t.Optional(t.String()),
 			linkUrl: t.Optional(t.String()),
+			linkText: t.Optional(t.String()),
 			imageUrl: t.Optional(t.String()),
-			inputType: t.Optional(t.String())
+			mediaUrl: t.Optional(t.String()),
+			mediaType: t.Optional(t.String()),
+			inputType: t.Optional(t.String()),
+			pageUrl: t.Optional(t.String())
 		}),
 		timestamp: t.Number()
 	}))
@@ -208,6 +227,17 @@ export const nativeUIPreviewHandler = createRouter()
 
 	.emit('preview:browser-open-url-new-tab', t.Object({
 		url: t.String()
+	}))
+
+	// "Open in Your Browser" — leaves the preview entirely and hands the URL to
+	// the viewer's own browser.
+	.emit('preview:browser-open-url-host', t.Object({
+		url: t.String()
+	}))
+
+	// "Inspect" — asks the viewer to reveal the console panel.
+	.emit('preview:browser-open-inspector', t.Object({
+		timestamp: t.Number()
 	}))
 
 	.emit('preview:browser-download-image', t.Object({

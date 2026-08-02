@@ -11,6 +11,13 @@ import { t } from 'elysia';
 import { ws } from '$backend/utils/ws';
 import { requireBrowserTabAccess } from '../access';
 
+/**
+ * Viewer/tab pairs that already have a disconnect cleanup registered.
+ * Keyed by project + tab + viewer; the entry is dropped when the cleanup runs,
+ * so a reconnecting viewer registers again.
+ */
+const registeredViewerCleanups = new Set<string>();
+
 export const streamPreviewHandler = createRouter()
 	// Start streaming
 	.http(
@@ -18,6 +25,10 @@ export const streamPreviewHandler = createRouter()
 		{
 			data: t.Object({
 				tabId: t.Optional(t.String()),
+				// Identifies this viewer for the whole session. A tab can be
+				// watched from several devices (and several panels) at once, so
+				// every signalling message has to say which peer it belongs to.
+				viewerId: t.String(),
 				// Legacy VP9-only capability flag — superseded by `codecs`,
 				// kept so an older client can still negotiate.
 				vp9: t.Optional(t.Boolean()),
@@ -54,7 +65,7 @@ export const streamPreviewHandler = createRouter()
 			})
 		},
 		async ({ data, conn }) => {
-			const { previewService, tab } = requireBrowserTabAccess(conn, data.tabId);
+			const { previewService, projectId, tab } = requireBrowserTabAccess(conn, data.tabId);
 
 			const sessionId = tab.id;
 
@@ -74,6 +85,7 @@ export const streamPreviewHandler = createRouter()
 
 			// Start WebCodecs streaming
 			const started = await previewService.startWebCodecsStreaming(sessionId, {
+				viewerId: data.viewerId,
 				codecSupport,
 				display: data.display
 			});
@@ -82,8 +94,25 @@ export const streamPreviewHandler = createRouter()
 				throw new Error('Failed to start WebCodecs streaming');
 			}
 
+			// A viewer that goes away without a stop — the tab is closed, the
+			// laptop sleeps, the tunnel drops — must not keep the capture alive
+			// for an audience of nobody.
+			//
+			// Registered once per viewer and tab: switching tabs back and forth
+			// re-runs this handler, and a fresh closure each time would pile up
+			// on a connection that can live for hours.
+			const viewerId = data.viewerId;
+			const cleanupKey = `${projectId}:${sessionId}:${viewerId}`;
+			if (!registeredViewerCleanups.has(cleanupKey)) {
+				registeredViewerCleanups.add(cleanupKey);
+				ws.addCleanup(conn, () => {
+					registeredViewerCleanups.delete(cleanupKey);
+					void previewService.stopWebCodecsStreaming(sessionId, viewerId);
+				});
+			}
+
 			// Get offer from headless browser
-			const offer = await previewService.getWebCodecsOffer(sessionId);
+			const offer = await previewService.getWebCodecsOffer(sessionId, data.viewerId);
 
 			return {
 				success: true,
@@ -103,7 +132,8 @@ export const streamPreviewHandler = createRouter()
 		'preview:browser-stream-offer',
 		{
 			data: t.Object({
-				tabId: t.Optional(t.String())
+				tabId: t.Optional(t.String()),
+				viewerId: t.String()
 			}),
 			response: t.Object({
 				success: t.Boolean(),
@@ -118,7 +148,7 @@ export const streamPreviewHandler = createRouter()
 		async ({ data, conn }) => {
 			const { previewService, tab } = requireBrowserTabAccess(conn, data.tabId);
 
-			const offer = await previewService.getWebCodecsOffer(tab.id);
+			const offer = await previewService.getWebCodecsOffer(tab.id, data.viewerId);
 
 			return {
 				success: !!offer,
@@ -141,7 +171,8 @@ export const streamPreviewHandler = createRouter()
 					type: t.String(),
 					sdp: t.Optional(t.String())
 				}),
-				tabId: t.Optional(t.String())
+				tabId: t.Optional(t.String()),
+				viewerId: t.String()
 			}),
 			response: t.Object({
 				success: t.Boolean()
@@ -151,7 +182,11 @@ export const streamPreviewHandler = createRouter()
 			const { previewService, tab } = requireBrowserTabAccess(conn, data.tabId);
 
 			const { answer } = data;
-			const success = await previewService.handleWebCodecsAnswer(tab.id, answer as RTCSessionDescriptionInit);
+			const success = await previewService.handleWebCodecsAnswer(
+				tab.id,
+				data.viewerId,
+				answer as RTCSessionDescriptionInit
+			);
 
 			return { success };
 		}
@@ -167,7 +202,8 @@ export const streamPreviewHandler = createRouter()
 					sdpMid: t.Optional(t.Union([t.String(), t.Null()])),
 					sdpMLineIndex: t.Optional(t.Union([t.Number(), t.Null()]))
 				}),
-				tabId: t.Optional(t.String())
+				tabId: t.Optional(t.String()),
+				viewerId: t.String()
 			}),
 			response: t.Object({
 				success: t.Boolean()
@@ -177,7 +213,11 @@ export const streamPreviewHandler = createRouter()
 			const { previewService, tab } = requireBrowserTabAccess(conn, data.tabId);
 
 			const { candidate } = data;
-			const success = await previewService.addWebCodecsIceCandidate(tab.id, candidate as RTCIceCandidateInit);
+			const success = await previewService.addWebCodecsIceCandidate(
+				tab.id,
+				data.viewerId,
+				candidate as RTCIceCandidateInit
+			);
 
 			return { success };
 		}
@@ -215,6 +255,7 @@ export const streamPreviewHandler = createRouter()
 		{
 			data: t.Object({
 				tabId: t.Optional(t.String()),
+				viewerId: t.String(),
 				decodeQueueSize: t.Number(),
 				decodeLatencyMs: t.Number(),
 				dropRatio: t.Number()
@@ -226,7 +267,7 @@ export const streamPreviewHandler = createRouter()
 		async ({ data, conn }) => {
 			const { previewService, tab } = requireBrowserTabAccess(conn, data.tabId);
 
-			previewService.applyWebCodecsClientFeedback(tab.id, {
+			previewService.applyWebCodecsClientFeedback(tab.id, data.viewerId, {
 				decodeQueueSize: data.decodeQueueSize,
 				decodeLatencyMs: data.decodeLatencyMs,
 				dropRatio: data.dropRatio
@@ -243,6 +284,7 @@ export const streamPreviewHandler = createRouter()
 		{
 			data: t.Object({
 				tabId: t.Optional(t.String()),
+				viewerId: t.String(),
 				scale: t.Optional(t.Number()),
 				dpr: t.Optional(t.Number())
 			}),
@@ -253,7 +295,7 @@ export const streamPreviewHandler = createRouter()
 		async ({ data, conn }) => {
 			const { previewService, tab } = requireBrowserTabAccess(conn, data.tabId);
 
-			const success = previewService.applyWebCodecsDisplayMetrics(tab.id, {
+			const success = previewService.applyWebCodecsDisplayMetrics(tab.id, data.viewerId, {
 				scale: data.scale,
 				dpr: data.dpr
 			});
@@ -270,6 +312,7 @@ export const streamPreviewHandler = createRouter()
 		{
 			data: t.Object({
 				tabId: t.Optional(t.String()),
+				viewerId: t.String(),
 				visible: t.Boolean()
 			}),
 			response: t.Object({
@@ -279,18 +322,20 @@ export const streamPreviewHandler = createRouter()
 		async ({ data, conn }) => {
 			const { previewService, tab } = requireBrowserTabAccess(conn, data.tabId);
 
-			const success = await previewService.setWebCodecsPaused(tab.id, !data.visible);
+			const success = await previewService.setWebCodecsPaused(tab.id, data.viewerId, !data.visible);
 
 			return { success };
 		}
 	)
 
-	// Stop streaming
+	// Stop streaming for one viewer. The capture itself only stops when the
+	// last viewer detaches.
 	.http(
 		'preview:browser-stream-stop',
 		{
 			data: t.Object({
-				tabId: t.Optional(t.String())
+				tabId: t.Optional(t.String()),
+				viewerId: t.String()
 			}),
 			response: t.Object({
 				success: t.Boolean()
@@ -299,17 +344,20 @@ export const streamPreviewHandler = createRouter()
 		async ({ data, conn }) => {
 			const { previewService, tab } = requireBrowserTabAccess(conn, data.tabId);
 
-			await previewService.stopWebCodecsStreaming(tab.id);
+			await previewService.stopWebCodecsStreaming(tab.id, data.viewerId);
 
 			return { success: true };
 		}
 	)
 
-	// Server → Client: ICE candidate from headless browser
+	// Server → Client: ICE candidate from headless browser.
+	// Broadcast to the project room, so `viewerId` is what tells each viewer
+	// which candidates belong to its own peer.
 	.emit(
 		'preview:browser-stream-ice',
 		t.Object({
 			sessionId: t.String(), // Internal session ID (kept for routing)
+			viewerId: t.String(),
 			candidate: t.Object({
 				candidate: t.Optional(t.String()),
 				sdpMid: t.Optional(t.Union([t.String(), t.Null()])),
@@ -324,6 +372,7 @@ export const streamPreviewHandler = createRouter()
 		'preview:browser-stream-state',
 		t.Object({
 			sessionId: t.String(), // Internal session ID (kept for routing)
+			viewerId: t.String(),
 			state: t.String()
 		})
 	)
@@ -370,40 +419,5 @@ export const streamPreviewHandler = createRouter()
 		})
 	);
 
-// Setup event forwarding from preview service to WebSocket
-// This needs to be done per-project service instance
-// We'll set up a helper function that the service manager can call
-
-/**
- * Setup event forwarding for a preview service instance
- * Should be called when a new service is created
- */
-export function setupEventForwarding(previewService: any, projectId: string) {
-	previewService.on('webcodecs-ice-candidate', (data: { sessionId: string; candidate: RTCIceCandidateInit; from: string }) => {
-		ws.emit.project(projectId, 'preview:browser-stream-ice', {
-			sessionId: data.sessionId,
-			candidate: data.candidate,
-			from: data.from
-		});
-	});
-
-	previewService.on('webcodecs-connection-state', (data: { sessionId: string; state: string }) => {
-		ws.emit.project(projectId, 'preview:browser-stream-state', data);
-	});
-
-	previewService.on('cursor-change', (data: { sessionId: string; cursor: string }) => {
-		ws.emit.project(projectId, 'preview:browser-cursor-change', data);
-	});
-
-	// Forward navigation events
-	previewService.on('preview:browser-navigation-loading', (data: { sessionId: string; type: string; url: string; timestamp: number }) => {
-		ws.emit.project(projectId, 'preview:browser-navigation-loading', data);
-	});
-
-	previewService.on('preview:browser-navigation', (data: { sessionId: string; type: string; url: string; timestamp: number }) => {
-		ws.emit.project(projectId, 'preview:browser-navigation', data);
-	});
-}
-
-// Note: Event forwarding is now set up per-project in BrowserPreviewService constructor
-// via the setupProjectEventForwarding method
+// Event forwarding lives in BrowserPreviewServiceManager, which owns the
+// per-project service instances and can name the project each event belongs to.

@@ -15,11 +15,15 @@
  * - webcodecs.ts: WebCodecs streaming handlers
  * - native-ui.ts: Native UI handlers (dialogs, print, select, context menu)
  * - mcp.ts: MCP tab coordination response handlers
+ * - host.ts: Viewer-answered capabilities (geolocation, camera, clipboard, files)
  *
  * Available endpoints:
  * - preview:browser-tab-open - Open new browser tab (with optional URL)
  * - preview:browser-tab-close - Close browser tab
  * - preview:browser-tab-navigate - Navigate tab to new URL
+ * - preview:browser-tab-history-go - Walk the tab's history (back/forward)
+ * - preview:browser-tab-history - Read the tab's history entries
+ * - preview:browser-host-response - Answer a host-capability request
  * - preview:browser-interact - Execute mouse/keyboard interactions
  * - preview:browser-tab-info - Get tab information
  * - preview:browser-tab-stats - Get streaming statistics
@@ -47,6 +51,7 @@ import { cleanupPreviewHandler } from './browser/cleanup';
 import { streamPreviewHandler } from './browser/webcodecs';
 import { nativeUIPreviewHandler } from './browser/native-ui';
 import { mcpPreviewHandler } from './browser/mcp';
+import { hostPreviewHandler } from './browser/host';
 
 export const previewRouter = createRouter()
 	.merge(tabPreviewHandler)
@@ -58,6 +63,7 @@ export const previewRouter = createRouter()
 	.merge(streamPreviewHandler)
 	.merge(nativeUIPreviewHandler)
 	.merge(mcpPreviewHandler)
+	.merge(hostPreviewHandler)
 	// Server-emitted events (for type safety)
 	.emit('preview:browser-tab-opened', t.Object({
 		// projectId lets the frontend reject events that belong to a project it has
@@ -99,16 +105,23 @@ export const previewRouter = createRouter()
 				t.Literal('error'),
 				t.Literal('debug'),
 				t.Literal('trace'),
-				t.Literal('clear')
+				t.Literal('clear'),
+				t.Literal('input'),
+				t.Literal('result')
 			]),
 			text: t.String(),
 			args: t.Optional(t.Array(t.Any())),
+			// Recursive by nature (objects contain objects), which TypeBox cannot
+			// express inline; the shape is pinned by BrowserConsoleValue instead.
+			values: t.Optional(t.Array(t.Any())),
 			location: t.Optional(t.Object({
 				url: t.String(),
 				lineNumber: t.Number(),
 				columnNumber: t.Number()
 			})),
 			stackTrace: t.Optional(t.String()),
+			status: t.Optional(t.Number()),
+			count: t.Optional(t.Number()),
 			timestamp: t.Number()
 		})
 	}))
@@ -159,5 +172,45 @@ export const previewRouter = createRouter()
 		rotation: t.String(),
 		width: t.Number(),
 		height: t.Number(),
+		timestamp: t.Number()
+	}))
+	// Live tab metadata: the page's own title and favicon plus whether
+	// Back/Forward have anywhere to go. None of it can be derived from the URL.
+	.emit('preview:browser-tab-meta', t.Object({
+		projectId: t.String(),
+		tabId: t.String(),
+		url: t.String(),
+		title: t.String(),
+		favicon: t.Optional(t.String()),
+		canGoBack: t.Boolean(),
+		canGoForward: t.Boolean(),
+		timestamp: t.Number()
+	}))
+	// A capability the headless browser cannot satisfy on its own — answered by
+	// the viewer's browser and returned via preview:browser-host-response.
+	.emit('preview:browser-host-request', t.Object({
+		tabId: t.String(),
+		requestId: t.String(),
+		kind: t.String(),
+		payload: t.Any(),
+		timestamp: t.Number()
+	}))
+	// The request has been answered, timed out, or lost its tab. Prompted
+	// capabilities raise a prompt on every viewer of the tab, and only the first
+	// answer counts — this is what takes the rest of them down.
+	.emit('preview:browser-host-request-settled', t.Object({
+		tabId: t.String(),
+		requestId: t.String()
+	}))
+	// A file the page downloaded, relayed so it lands on the viewer's machine.
+	.emit('preview:browser-download', t.Object({
+		tabId: t.String(),
+		downloadId: t.String(),
+		filename: t.String(),
+		url: t.String(),
+		state: t.Union([t.Literal('started'), t.Literal('completed'), t.Literal('failed')]),
+		data: t.Optional(t.String()),
+		totalBytes: t.Optional(t.Number()),
+		error: t.Optional(t.String()),
 		timestamp: t.Number()
 	}));

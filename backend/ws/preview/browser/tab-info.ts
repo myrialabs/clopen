@@ -20,11 +20,14 @@ export const tabInfoPreviewHandler = createRouter()
 			tabId: t.String(),
 			url: t.String(),
 			title: t.String(),
+			favicon: t.Optional(t.String()),
 			quality: t.String(),
 			isStreaming: t.Boolean(),
 			deviceSize: t.String(),
 			rotation: t.String(),
-			isActive: t.Boolean()
+			isActive: t.Boolean(),
+			canGoBack: t.Boolean(),
+			canGoForward: t.Boolean()
 		})
 	}, async ({ data, conn }) => {
 		const { tabId } = data;
@@ -52,11 +55,14 @@ export const tabInfoPreviewHandler = createRouter()
 				tabId: t.String(),
 				url: t.String(),
 				title: t.String(),
+				favicon: t.Optional(t.String()),
 				quality: t.String(),
 				isStreaming: t.Boolean(),
 				deviceSize: t.String(),
 				rotation: t.String(),
 				isActive: t.Boolean(),
+				canGoBack: t.Boolean(),
+				canGoForward: t.Boolean(),
 				isMcpControlled: t.Boolean()
 			})),
 			activeTabId: t.Union([t.String(), t.Null()]),
@@ -77,11 +83,14 @@ export const tabInfoPreviewHandler = createRouter()
 				tabId: tab.id,
 				url: tab.url,
 				title: tab.title,
+				favicon: tab.favicon,
 				quality: tab.quality,
 				isStreaming: tab.isStreaming,
 				deviceSize: tab.deviceSize,
 				rotation: tab.rotation,
 				isActive: tab.isActive,
+				canGoBack: tab.canGoBack,
+				canGoForward: tab.canGoForward,
 				isMcpControlled: browserMcpControl.isTabControlled(tab.id, projectId)
 			})),
 			activeTabId: activeTab?.id || null,

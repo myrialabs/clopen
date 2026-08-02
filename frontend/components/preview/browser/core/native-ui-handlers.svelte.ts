@@ -5,7 +5,14 @@
 
 import { debug } from '$shared/utils/logger';
 import ws from '$frontend/utils/ws';
-import type { BrowserDialogEvent, BrowserPrintEvent, BrowserSelectInfo, BrowserContextMenuInfo } from '$frontend/utils/native-ui';
+import type {
+	BrowserConsoleMessage,
+	BrowserDialogEvent,
+	BrowserPrintEvent,
+	BrowserSelectInfo,
+	BrowserContextMenuInfo,
+	BrowserNativePickerInfo
+} from '$frontend/utils/native-ui';
 import type { TabManager } from './tab-manager.svelte';
 
 export interface NativeUIHandlerConfig {
@@ -13,8 +20,14 @@ export interface NativeUIHandlerConfig {
 	transformBrowserToDisplayCoordinates?: (x: number, y: number) => { x: number, y: number } | null;
 	onSelectOpen?: (selectInfo: BrowserSelectInfo) => void;
 	onContextMenuOpen?: (menuInfo: BrowserContextMenuInfo) => void;
+	onNativePickerOpen?: (picker: BrowserNativePickerInfo) => void;
+	onDialogOpen?: (dialog: BrowserDialogEvent) => void;
+	/** A dialog is settled — answered here, answered elsewhere, or expired. */
+	onDialogClose?: (closed?: { sessionId: string; dialogId: string }) => void;
 	onCopyToClipboard?: (text: string) => void;
 	onOpenUrlNewTab?: (url: string) => void;
+	onOpenUrlInHostBrowser?: (url: string) => void;
+	onOpenInspector?: () => void;
 	onDownloadImage?: (base64: string, type: string, filename: string) => void;
 	onCopyImageToClipboard?: (base64: string, type: string) => void;
 }
@@ -28,8 +41,13 @@ export function createNativeUIHandler(config: NativeUIHandlerConfig) {
 		transformBrowserToDisplayCoordinates,
 		onSelectOpen,
 		onContextMenuOpen,
+		onNativePickerOpen,
+		onDialogOpen,
+		onDialogClose,
 		onCopyToClipboard,
 		onOpenUrlNewTab,
+		onOpenUrlInHostBrowser,
+		onOpenInspector,
 		onDownloadImage,
 		onCopyImageToClipboard
 	} = config;
@@ -42,11 +60,21 @@ export function createNativeUIHandler(config: NativeUIHandlerConfig) {
 	function setupEventListeners(): () => void {
 		const unsubscribers = [
 			ws.on('preview:browser-dialog', handleDialogEvent),
+			ws.on('preview:browser-dialog-closed', handleDialogClosed),
 			ws.on('preview:browser-print', handlePrintEvent),
 			ws.on('preview:browser-select', handleSelectEvent),
 			ws.on('preview:browser-context-menu', handleContextMenuEvent),
+			ws.on('preview:browser-native-picker' as any, handleNativePickerEvent),
 			ws.on('preview:browser-copy-to-clipboard', handleCopyToClipboard),
 			ws.on('preview:browser-open-url-new-tab', handleOpenUrlNewTab),
+			ws.on('preview:browser-open-url-host' as any, (data: { url: string }) => {
+				onOpenUrlInHostBrowser?.(data.url);
+			}),
+			ws.on('preview:browser-open-inspector' as any, () => {
+				onOpenInspector?.();
+			}),
+			ws.on('preview:browser-console-message' as any, handleConsoleMessage),
+			ws.on('preview:browser-console-clear' as any, handleConsoleClear),
 			ws.on('preview:browser-download-image', handleDownloadImage),
 			ws.on('preview:browser-copy-image-to-clipboard', handleCopyImageToClipboard)
 		];
@@ -57,54 +85,76 @@ export function createNativeUIHandler(config: NativeUIHandlerConfig) {
 	}
 
 	/**
-	 * Handle dialog events (alert, confirm, prompt)
+	 * Surface alert/confirm/prompt for the viewer to answer.
+	 *
+	 * Deliberately not `window.alert` and friends: those block Clopen's own main
+	 * thread, which stalls the WebCodecs decoder and freezes the preview behind
+	 * the dialog. The overlay renders the same choice without stopping the app.
 	 */
-	async function handleDialogEvent(data: BrowserDialogEvent) {
+	function handleDialogEvent(data: BrowserDialogEvent) {
 		debug.log('preview', `🎭 Dialog event received: ${data.type} - ${data.message} (dialogId: ${data.dialogId})`);
 
-		let response: boolean | null = null;
-		let promptText: string | undefined = undefined;
+		// Handed over with its owning tab attached. A dialog raised by a background
+		// tab is held until the user goes back to it rather than being answered on
+		// their behalf — and never shown over a different tab's page.
+		onDialogOpen?.(data);
+	}
 
-		// Show native browser dialog based on type
-		switch (data.type) {
-			case 'alert':
-				window.alert(data.message);
-				response = true; // Alert always accepts
-				break;
+	/**
+	 * The page's dialog is gone.
+	 *
+	 * A dialog belongs to the page, so answering it on one device answers it for
+	 * everyone — the other viewers were only ever holding a copy of the prompt,
+	 * and this is what takes theirs down. Also covers the backend's own
+	 * auto-dismiss, which no viewer initiated at all.
+	 */
+	function handleDialogClosed(data: { sessionId: string; dialogId: string }) {
+		onDialogClose?.({ sessionId: data.sessionId, dialogId: data.dialogId });
+	}
 
-			case 'confirm':
-				response = window.confirm(data.message);
-				break;
+	/**
+	 * Answer the dialog the viewer just resolved.
+	 */
+	function respondToDialog(dialog: BrowserDialogEvent, accept: boolean, promptText?: string) {
+		debug.log('preview', `📤 Dialog response - dialogId: ${dialog.dialogId}, accept: ${accept}`);
 
-			case 'prompt':
-				const result = window.prompt(data.message, data.defaultValue || '');
-				if (result !== null) {
-					response = true;
-					promptText = result;
-				} else {
-					response = false;
-				}
-				break;
+		ws.emit('preview:browser-dialog-input', {
+			dialogId: dialog.dialogId,
+			accept,
+			promptText
+		});
 
-			case 'beforeunload':
-				response = window.confirm(data.message);
-				break;
-		}
+		// Locally too, so the overlay goes on the click rather than on the
+		// round-trip; the broadcast covers every other viewer.
+		onDialogClose?.({ sessionId: dialog.sessionId, dialogId: dialog.dialogId });
+	}
 
-		// Send response back to backend
-		if (response !== null) {
-			debug.log('preview', `📤 Sending dialog response - dialogId: ${data.dialogId}, accept: ${response}${promptText ? `, promptText: "${promptText}"` : ''}`);
+	/**
+	 * Append a console message to its own tab, so switching tabs shows that
+	 * tab's history rather than a merged stream.
+	 */
+	function handleConsoleMessage(data: { sessionId: string; message: BrowserConsoleMessage }) {
+		const tab = tabManager.tabs.find((entry) => entry.sessionId === data.sessionId);
+		if (!tab) return;
 
-			ws.emit('preview:browser-dialog-input', {
-				dialogId: data.dialogId,
-				accept: response,
-				promptText
-			});
+		const existing = tab.consoleLogs ?? [];
 
-			debug.log('preview', `✅ Dialog response sent successfully`);
-		} else {
-			debug.warn('preview', `⚠️ No response to send for dialog: ${data.dialogId}`);
-		}
+		// The backend collapses repeats by mutating the last message and
+		// re-emitting it, so a matching id is an update, not a new line.
+		const index = existing.findIndex((entry) => entry.id === data.message.id);
+		const next =
+			index >= 0
+				? existing.map((entry, i) => (i === index ? data.message : entry))
+				: [...existing, data.message];
+
+		// Mirrors the backend's own ring buffer; without a cap a long-running page
+		// grows this array without bound.
+		tabManager.updateTab(tab.id, { consoleLogs: next.length > 1000 ? next.slice(-500) : next });
+	}
+
+	function handleConsoleClear(data: { sessionId: string }) {
+		const tab = tabManager.tabs.find((entry) => entry.sessionId === data.sessionId);
+		if (tab) tabManager.updateTab(tab.id, { consoleLogs: [] });
 	}
 
 	/**
@@ -228,6 +278,44 @@ export function createNativeUIHandler(config: NativeUIHandlerConfig) {
 		if (onContextMenuOpen) {
 			onContextMenuOpen(transformedMenuInfo);
 		}
+	}
+
+	/**
+	 * Position a colour/date picker over the input that opened it.
+	 */
+	function handleNativePickerEvent(data: BrowserNativePickerInfo) {
+		const activeTab = tabManager.activeTab;
+		if (!activeTab || activeTab.sessionId !== data.sessionId) return;
+
+		if (!transformBrowserToDisplayCoordinates) return;
+
+		const topLeft = transformBrowserToDisplayCoordinates(data.boundingBox.x, data.boundingBox.y);
+		const bottomRight = transformBrowserToDisplayCoordinates(
+			data.boundingBox.x + data.boundingBox.width,
+			data.boundingBox.y + data.boundingBox.height
+		);
+		if (!topLeft || !bottomRight) return;
+
+		onNativePickerOpen?.({
+			...data,
+			boundingBox: {
+				x: topLeft.x,
+				y: topLeft.y,
+				width: bottomRight.x - topLeft.x,
+				height: bottomRight.y - topLeft.y
+			}
+		});
+	}
+
+	/**
+	 * Write a picked colour or date back into the page.
+	 */
+	function respondNativePicker(picker: BrowserNativePickerInfo, value: string) {
+		ws.emit('preview:browser-native-picker-input', {
+			tabId: picker.sessionId,
+			pickerId: picker.pickerId,
+			value
+		});
 	}
 
 	/**
@@ -369,11 +457,14 @@ export function createNativeUIHandler(config: NativeUIHandlerConfig) {
 	return {
 		setupEventListeners,
 		handleDialogEvent,
+		respondToDialog,
 		handlePrintEvent,
 		handleSelectEvent,
 		respondSelectOption,
 		handleContextMenuEvent,
 		respondContextMenuItem,
+		handleNativePickerEvent,
+		respondNativePicker,
 		handleCopyToClipboard,
 		handleOpenUrlNewTab,
 		handleDownloadImage,

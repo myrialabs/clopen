@@ -39,11 +39,14 @@ export interface ExistingTabInfo {
 	tabId: string;
 	url: string;
 	title: string;
+	favicon?: string;
 	quality: string;
 	isStreaming: boolean;
 	deviceSize: string;
 	rotation: string;
 	isActive: boolean;
+	canGoBack?: boolean;
+	canGoForward?: boolean;
 	isMcpControlled?: boolean;
 }
 

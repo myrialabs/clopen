@@ -19,7 +19,12 @@ import {
 import { browserCleanup } from './cleanup.svelte';
 import { sendInteraction, updateViewport, setInteractionProjectId } from './interactions.svelte';
 import { previewTabManager } from '$frontend/stores/features/preview-tabs-workspace.svelte';
-import type { BrowserSelectInfo, BrowserContextMenuInfo } from '$frontend/utils/native-ui';
+import type {
+	BrowserSelectInfo,
+	BrowserContextMenuInfo,
+	BrowserDialogEvent,
+	BrowserNativePickerInfo
+} from '$frontend/utils/native-ui';
 
 export interface BrowserCoordinatorConfig {
 	// Project ID getter (REQUIRED for project isolation)
@@ -35,6 +40,12 @@ export interface BrowserCoordinatorConfig {
 	// UI state callbacks
 	onSelectOpen?: (selectInfo: BrowserSelectInfo) => void;
 	onContextMenuOpen?: (menuInfo: BrowserContextMenuInfo) => void;
+	onNativePickerOpen?: (picker: BrowserNativePickerInfo) => void;
+	onDialogOpen?: (dialog: BrowserDialogEvent) => void;
+	/** A dialog is settled — answered here, answered elsewhere, or expired. */
+	onDialogClose?: (closed?: { sessionId: string; dialogId: string }) => void;
+	onOpenInspector?: () => void;
+	onOpenUrlInHostBrowser?: (url: string) => void;
 	onVirtualCursorUpdate?: (x: number, y: number, clicking?: boolean) => void;
 	onVirtualCursorHide?: () => void;
 	onMcpCursorUpdate?: (x: number, y: number, clicking?: boolean) => void;
@@ -57,6 +68,11 @@ export function createBrowserCoordinator(config: BrowserCoordinatorConfig) {
 		onErrorChange,
 		onSelectOpen,
 		onContextMenuOpen,
+		onNativePickerOpen,
+		onDialogOpen,
+		onDialogClose,
+		onOpenInspector,
+		onOpenUrlInHostBrowser,
 		onVirtualCursorUpdate,
 		onVirtualCursorHide,
 		onMcpCursorUpdate,
@@ -114,6 +130,11 @@ export function createBrowserCoordinator(config: BrowserCoordinatorConfig) {
 		transformBrowserToDisplayCoordinates,
 		onSelectOpen,
 		onContextMenuOpen,
+		onNativePickerOpen,
+		onDialogOpen,
+		onDialogClose,
+		onOpenInspector,
+		onOpenUrlInHostBrowser,
 		onOpenUrlNewTab: (url) => {
 			createNewTab(url);
 		}
@@ -149,6 +170,16 @@ export function createBrowserCoordinator(config: BrowserCoordinatorConfig) {
 		const tab = tabManager.getTab(tabId);
 		if (!tab || !tabUrl) {
 			debug.error('preview', `❌ Tab not found or no URL: ${tabId}`);
+			return;
+		}
+
+		// A new tab reaches here twice: `createNewTab` schedules a launch, and
+		// setting the URL also trips BrowserPreview's URL watcher. Both used to
+		// run, opening two backend tabs for one link — one of which the dock could
+		// not attach to the frontend tab, so it rendered blank and took its twin
+		// down with it when closed.
+		if (tab.isLaunchingBrowser || tab.sessionId) {
+			debug.log('preview', `⏭️ Launch skipped for ${tabId} — already ${tab.sessionId ? 'attached' : 'launching'}`);
 			return;
 		}
 

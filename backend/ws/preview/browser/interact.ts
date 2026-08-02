@@ -10,7 +10,8 @@ import { ws } from '$backend/utils/ws';
 import type { KeyInput } from 'puppeteer';
 import { debug } from '$shared/utils/logger';
 import { sleep } from '$shared/utils/async';
-import { requireBrowserPreviewAccess } from '../access';
+import { requireBrowserPreviewAccess, requireBrowserTabAccess } from '../access';
+import { resolveFrameTarget } from '$backend/preview/browser/frame-targeting';
 
 // Throttle cursor detection evaluate calls per session (100ms = ~10/sec is plenty)
 const lastCursorEvalTime = new Map<string, number>();
@@ -153,6 +154,15 @@ export const interactPreviewHandler = createRouter()
 								break;
 							}
 
+							// Colour and date inputs open pickers Chrome draws in the
+							// browser process, which never reach the screencast — the
+							// viewer renders the equivalent control instead.
+							const pickerInfo = await previewService.checkForNativePicker(session.id, action.x!, action.y!);
+							if (pickerInfo) {
+								debug.log('preview', `🎨 Native picker input detected at (${action.x}, ${action.y})`);
+								break;
+							}
+
 							// Perform the click - this does down + up atomically
 							await session.page.mouse.click(action.x!, action.y!);
 						} catch (error) {
@@ -283,8 +293,65 @@ export const interactPreviewHandler = createRouter()
 						}
 						break;
 
+					case 'paste':
+						// Insert into whatever holds focus, in whichever frame that
+						// is. Synthesising Ctrl+V would paste the *headless* browser's
+						// clipboard, which is not the one the user copied into.
+						if (typeof action.text === 'string') {
+							for (const frame of session.page.frames()) {
+								try {
+									const inserted = await frame.evaluate((text: string) => {
+										const active = document.activeElement as HTMLElement | null;
+										if (!active) return false;
+
+										const isField = active.tagName === 'INPUT' || active.tagName === 'TEXTAREA';
+										if (!isField && !active.isContentEditable) return false;
+
+										if (isField) {
+											const field = active as HTMLInputElement | HTMLTextAreaElement;
+											const start = field.selectionStart ?? field.value.length;
+											const end = field.selectionEnd ?? field.value.length;
+											field.value = field.value.slice(0, start) + text + field.value.slice(end);
+											const caret = start + text.length;
+											field.setSelectionRange(caret, caret);
+										} else {
+											document.execCommand('insertText', false, text);
+										}
+
+										active.dispatchEvent(new Event('input', { bubbles: true }));
+										active.dispatchEvent(new Event('change', { bubbles: true }));
+										return true;
+									}, action.text);
+									if (inserted) break;
+								} catch {
+									// Frame detached mid-paste; try the next one.
+								}
+							}
+						}
+						break;
+
+					case 'stop':
+						// `window.stop()` is what the browser's own Stop button calls:
+						// it halts the current load and every pending subresource,
+						// leaving whatever has already rendered on screen.
+						try {
+							await session.page.evaluate(() => window.stop());
+						} catch {
+							// Mid-navigation the context can already be gone — the load
+							// it would have stopped is over either way.
+						}
+						break;
+
 					case 'scroll':
 						try {
+							// CDP dispatches a wheel at the *current* pointer position,
+							// so a scroll that arrives without one first lands wherever
+							// the last click left the cursor — scrolling the wrong
+							// container and stranding hover state there. Touch scrolling
+							// has no pointer of its own, hence the explicit move.
+							if (action.x !== undefined && action.y !== undefined) {
+								await session.page.mouse.move(action.x, action.y, { steps: 1 });
+							}
 							await session.page.mouse.wheel({ deltaX: action.deltaX || 0, deltaY: action.deltaY || 0 });
 						} catch (error) {
 							if (error instanceof Error && isNavigationError(error)) {
@@ -447,22 +514,24 @@ export const interactPreviewHandler = createRouter()
 
 					case 'scale-update':
 						// Recovery path: the frontend sends this when the stream
-						// looks stuck. It also carries the current display
-						// metrics, which capture resolution is derived from.
+						// looks stuck.
+						//
+						// It no longer carries display metrics. Those are tracked
+						// per viewer — a tab can be watched from several devices
+						// with different screens — and reach the source through
+						// `preview:browser-stream-display`, which says which
+						// viewer they describe. An interaction cannot.
 						if (action.scale && action.scale > 0 && action.scale <= 1) {
 							session.scale = action.scale;
-							previewService.applyWebCodecsDisplayMetrics(session.id, {
-								scale: action.scale,
-								dpr: action.dpr
-							});
 							debug.log('preview', `📐 Scale updated for tab ${tabId}: ${action.scale}, refreshing capture`);
 
 							const updated = await previewService.refreshWebCodecsScreencast(session.id);
 							if (!updated) {
-								debug.warn('preview', `⚠️ Screencast refresh failed, falling back to restart`);
-								// Fallback: restart if refresh fails
-								await previewService.stopWebCodecsStreaming(session.id);
-								await previewService.startWebCodecsStreaming(session.id);
+								// Restarting from here would tear the capture down for
+								// every viewer of this tab and rebuild it with none.
+								// The viewer that noticed the stall owns its own
+								// recovery and will re-handshake.
+								debug.warn('preview', `⚠️ Screencast refresh failed for tab ${tabId}, leaving recovery to the viewer`);
 							}
 						}
 						break;
@@ -476,13 +545,9 @@ export const interactPreviewHandler = createRouter()
 
 							debug.log('preview', `📱 Viewport updated for tab ${tabId}: ${action.width}x${action.height}`);
 
-							// The emulated viewport changed, so the derived
-							// capture size has to be recomputed from the new
-							// dimensions before the hot-swap.
-							previewService.applyWebCodecsDisplayMetrics(session.id, {
-								scale: action.scale,
-								dpr: action.dpr
-							});
+							// The hot-swap recomputes capture geometry from the new
+							// viewport and the viewers' own display metrics, which
+							// each of them reports separately.
 
 							// Hot-swap viewport without reconnection
 							const updated = await previewService.updateWebCodecsViewport(session.id, action.width, action.height);
@@ -529,6 +594,123 @@ export const interactPreviewHandler = createRouter()
 			});
 		}
 	})
+
+	/**
+	 * Read (and optionally cut) the page's current text selection.
+	 *
+	 * Ctrl+C inside the preview cannot be forwarded as a keystroke: that would
+	 * fill the *headless* browser's clipboard, which nothing the user can paste
+	 * into ever reads. The text is returned instead so the viewer can put it on
+	 * their own clipboard.
+	 */
+	.http('preview:browser-selection', {
+		data: t.Object({
+			cut: t.Optional(t.Boolean())
+		}),
+		response: t.Object({
+			text: t.String()
+		})
+	}, async ({ data, conn }) => {
+		const { tab } = requireBrowserTabAccess(conn);
+
+		// Selections inside an iframe are invisible to the top document, so every
+		// frame is asked until one reports a selection.
+		for (const frame of tab.page.frames()) {
+			try {
+				const text = await frame.evaluate((remove: boolean) => {
+					const selected = window.getSelection()?.toString() ?? '';
+					if (selected && remove) document.execCommand('delete');
+					return selected;
+				}, !!data.cut);
+				if (text) return { text };
+			} catch {
+				// Detached or cross-origin mid-navigation; keep looking.
+			}
+		}
+
+		return { text: '' };
+	})
+
+	/**
+	 * Report whether the element at a point accepts text.
+	 *
+	 * This is what decides the on-screen keyboard, and it is a *hit test* rather
+	 * than a focus read for a reason. Focus is only settled once the tap has been
+	 * dispatched and the page has run its handlers, so asking for it right after
+	 * a tap answered for the *previous* tap: the first tap on a field reported
+	 * "not editable" and only the second one raised the keyboard, while a tap on
+	 * empty space after typing still reported the old field and popped the
+	 * keyboard back up. The element under the finger is known before any of that
+	 * happens, so the viewer can ask on `touchstart` and act on `touchend` —
+	 * which is also the only moment iOS will honour a programmatic focus.
+	 */
+	.http('preview:browser-hit-test', {
+		data: t.Object({
+			x: t.Number(),
+			y: t.Number()
+		}),
+		response: t.Object({
+			editable: t.Boolean(),
+			inputType: t.Optional(t.String())
+		})
+	}, async ({ data, conn }) => {
+		const { tab } = requireBrowserTabAccess(conn);
+
+		try {
+			// Fields inside an iframe are invisible to the top document, where
+			// `elementFromPoint` returns the <iframe> element itself.
+			const target = await resolveFrameTarget(tab.page, data.x, data.y);
+
+			return await target.frame.evaluate(
+				(point: { x: number; y: number }) => {
+					const el = document.elementFromPoint(point.x, point.y) as HTMLElement | null;
+					if (!el) return { editable: false };
+
+					// A field is often wrapped — the tap lands on a label, an icon or
+					// the padded box around the input rather than the input itself.
+					const field = el.closest(
+						'input, textarea, [contenteditable=""], [contenteditable="true"]'
+					) as HTMLInputElement | HTMLTextAreaElement | HTMLElement | null;
+					if (!field) return { editable: false };
+
+					if (field.isContentEditable) return { editable: true, inputType: 'contenteditable' };
+
+					const tag = field.tagName;
+					if (tag === 'TEXTAREA') return { editable: true, inputType: 'textarea' };
+
+					const type = ((field as HTMLInputElement).type || 'text').toLowerCase();
+					const nonText = [
+						'checkbox',
+						'radio',
+						'button',
+						'submit',
+						'reset',
+						'file',
+						'image',
+						'range',
+						'color',
+						'date',
+						'datetime-local',
+						'month',
+						'time',
+						'week'
+					];
+					if (nonText.includes(type)) return { editable: false };
+					if ((field as HTMLInputElement).readOnly || (field as HTMLInputElement).disabled) {
+						return { editable: false };
+					}
+
+					return { editable: true, inputType: type };
+				},
+				{ x: target.x, y: target.y }
+			);
+		} catch {
+			// Detached or mid-navigation — treat as "no field" so the viewer leaves
+			// the keyboard alone rather than raising it over nothing.
+			return { editable: false };
+		}
+	})
+
 
 	// Server → Client Events (independent declarations)
 	.emit('preview:browser-interacted', t.Object({

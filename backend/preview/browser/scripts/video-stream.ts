@@ -36,8 +36,26 @@ export function videoEncoderScript(config: StreamingConfig['video']) {
 		(window as any).__webCodecsPeer = null;
 	}
 
-	let peerConnection: RTCPeerConnection | null = null;
-	let dataChannel: RTCDataChannel | null = null;
+	/**
+	 * One peer per viewer, all fed by a single encoder.
+	 *
+	 * A tab can legitimately be watched from several places at once — the same
+	 * project open on a laptop and a phone through Remote Access, or the preview
+	 * shown in two split panels. With a single connection each new viewer's
+	 * handshake tore down the previous one's channel, whose health check then
+	 * reconnected and tore down the newcomer's: the tab flickered between them
+	 * and at least one side sat on "Loading preview…" forever.
+	 *
+	 * Encoding once and fanning the chunks out is what keeps that affordable —
+	 * a second encoder would double the most expensive stage of the pipeline.
+	 */
+	interface ViewerPeer {
+		id: string;
+		pc: RTCPeerConnection;
+		dc: RTCDataChannel | null;
+	}
+
+	const viewers = new Map<string, ViewerPeer>();
 	let videoEncoder: VideoEncoder | null = null;
 	let isCapturing = false;
 	let videoFrameCount = 0;
@@ -245,63 +263,145 @@ export function videoEncoderScript(config: StreamingConfig['video']) {
 		return null;
 	}
 
-	// Initialize RTCPeerConnection
-	async function initPeerConnection() {
-		if (peerConnection) {
-			peerConnection.close();
-		}
+	/** Channels that can be written to right now. */
+	function openChannels(): RTCDataChannel[] {
+		const channels: RTCDataChannel[] = [];
+		viewers.forEach((viewer) => {
+			if (viewer.dc && viewer.dc.readyState === 'open') channels.push(viewer.dc);
+		});
+		return channels;
+	}
 
-		peerConnection = new RTCPeerConnection({ iceServers });
+	function hasOpenChannel(): boolean {
+		let open = false;
+		viewers.forEach((viewer) => {
+			if (viewer.dc && viewer.dc.readyState === 'open') open = true;
+		});
+		return open;
+	}
+
+	/**
+	 * Congestion of the *worst* viewer.
+	 *
+	 * Every backpressure decision below is about whether to produce the next
+	 * frame at all, and a frame is produced once for everyone. Pacing to the
+	 * slowest link is therefore the only coherent answer: the encoded stream is
+	 * a delta chain, so chunks cannot be dropped for one viewer and kept for
+	 * another without corrupting that viewer's picture until the next keyframe.
+	 */
+	function peakBufferedAmount(): number {
+		let peak = 0;
+		viewers.forEach((viewer) => {
+			if (viewer.dc && viewer.dc.readyState === 'open' && viewer.dc.bufferedAmount > peak) {
+				peak = viewer.dc.bufferedAmount;
+			}
+		});
+		return peak;
+	}
+
+	function broadcast(packet: ArrayBuffer) {
+		const channels = openChannels();
+		for (let i = 0; i < channels.length; i++) {
+			try {
+				channels[i].send(packet);
+			} catch (e) {
+				// One stalled viewer must not cost the others their frame.
+			}
+		}
+	}
+
+	function closePeer(viewerId: string) {
+		const viewer = viewers.get(viewerId);
+		if (!viewer) return false;
+
+		viewers.delete(viewerId);
+		try {
+			viewer.dc?.close();
+		} catch (e) {}
+		try {
+			viewer.pc.close();
+		} catch (e) {}
+		return true;
+	}
+
+	// Create a peer connection for one viewer
+	function createViewerPeer(viewerId: string): ViewerPeer {
+		closePeer(viewerId);
+
+		const pc = new RTCPeerConnection({ iceServers });
+		const viewer: ViewerPeer = { id: viewerId, pc, dc: null };
+		viewers.set(viewerId, viewer);
 
 		// Handle ICE candidates
-		peerConnection.onicecandidate = (event) => {
+		pc.onicecandidate = (event) => {
 			if (event.candidate && (window as any).__sendIceCandidate) {
 				const candidateInit = {
 					candidate: event.candidate.candidate,
 					sdpMid: event.candidate.sdpMid,
 					sdpMLineIndex: event.candidate.sdpMLineIndex
 				};
-				(window as any).__sendIceCandidate(candidateInit);
+				// The viewer is named explicitly: several handshakes can be in
+				// flight at once, and a candidate that reaches the wrong one is
+				// simply dropped there — which is a connection that never completes.
+				(window as any).__sendIceCandidate(viewerId, candidateInit);
 
 				// Also send loopback version for VPN compatibility (same-machine peers)
 				const loopback = createLoopbackCandidate(candidateInit);
 				if (loopback) {
-					(window as any).__sendIceCandidate(loopback);
+					(window as any).__sendIceCandidate(viewerId, loopback);
 				}
 			}
 		};
 
 		// Handle connection state
-		peerConnection.onconnectionstatechange = () => {
-			if ((window as any).__sendConnectionState && peerConnection) {
-				(window as any).__sendConnectionState(peerConnection.connectionState);
+		pc.onconnectionstatechange = () => {
+			const state = pc.connectionState;
+			if ((window as any).__sendConnectionState) {
+				(window as any).__sendConnectionState(viewerId, state);
+			}
+			// A viewer that closed its tab or lost the network leaves a peer
+			// behind that would otherwise keep pacing the encoder forever.
+			if (state === 'closed' || state === 'failed') {
+				if (viewers.get(viewerId) === viewer) closePeer(viewerId);
 			}
 		};
 
-		peerConnection.oniceconnectionstatechange = () => {};
+		pc.oniceconnectionstatechange = () => {};
 
 		// Create DataChannel for encoded chunks.
 		// Reliable + ordered: VP8/VP9/H.264 delta chains require in-order,
 		// lossless delivery — a single lost/reordered chunk corrupts decoding
 		// until the next keyframe (smearing/ghosting). Latency is bounded by
 		// source-side frame dropping instead (see MAX_BUFFERED_BYTES).
-		dataChannel = peerConnection.createDataChannel('media', {
+		const dc = pc.createDataChannel('media', {
 			ordered: true
 		});
 
-		dataChannel.binaryType = 'arraybuffer';
+		dc.binaryType = 'arraybuffer';
 
-		dataChannel.onopen = () => {
-			// Force keyframe when DataChannel opens — the decoder on the other
-			// side needs a sync point (keyframes are on-demand only)
+		dc.onopen = () => {
+			// Force keyframe when a DataChannel opens — the decoder on the other
+			// side needs a sync point (keyframes are on-demand only). A viewer
+			// joining an established stream needs one just as much as the first.
 			forceNextKeyframe = true;
+
+			// And produce a frame to carry it. The source pushes a refresh frame
+			// when the *peer* reports connected, which is typically a moment before
+			// this channel exists — that frame was encoded and then dropped for
+			// want of anywhere to send it. On a page that is not moving, nothing
+			// else would ever be encoded, and the viewer sits on "Loading
+			// preview…" over a perfectly healthy connection.
+			forceKeyframe();
+			(window as any).__requestRefreshFrame?.(viewerId);
 		};
 
-		dataChannel.onclose = () => {};
+		dc.onclose = () => {};
 
-		dataChannel.onerror = (error) => {};
+		dc.onerror = (error) => {};
 
-		return peerConnection;
+		viewer.dc = dc;
+
+		return viewer;
 	}
 
 	// Initialize VideoEncoder
@@ -396,7 +496,7 @@ export function videoEncoderScript(config: StreamingConfig['video']) {
 
 	// Handle encoded video chunk
 	function handleEncodedVideoChunk(chunk: EncodedVideoChunk, metadata: any) {
-		if (!dataChannel || dataChannel.readyState !== 'open') return;
+		if (!hasOpenChannel()) return;
 
 		const isKeyframe = chunk.type === 'key' ? 1 : 0;
 		const timestamp = chunk.timestamp;
@@ -424,7 +524,7 @@ export function videoEncoderScript(config: StreamingConfig['video']) {
 				// Copy data
 				packetData.set(data, 15);
 
-				dataChannel.send(packet);
+				broadcast(packet);
 			} else {
 				// Large frame (e.g. near-lossless top-off keyframe) — fragment.
 				// The channel is reliable + ordered, so fragments arrive in order
@@ -450,7 +550,7 @@ export function videoEncoderScript(config: StreamingConfig['video']) {
 					view.setUint32(15, fragData.byteLength, true);
 					packetData.set(fragData, 19);
 
-					dataChannel.send(packet);
+					broadcast(packet);
 				}
 			}
 
@@ -460,11 +560,11 @@ export function videoEncoderScript(config: StreamingConfig['video']) {
 
 	// Send audio chunk (called from AudioContext interception)
 	function sendAudioChunk(timestamp: number, data: Uint8Array) {
-		if (!dataChannel || dataChannel.readyState !== 'open') return;
+		if (!hasOpenChannel()) return;
 
 		// Backpressure: drop audio when the channel is congested — the client's
 		// playback scheduler handles gaps cleanly, and stale audio is worthless
-		if (dataChannel.bufferedAmount > MAX_BUFFERED_BYTES) return;
+		if (peakBufferedAmount() > MAX_BUFFERED_BYTES) return;
 
 		// Format: [type(1)][timestamp(8)][size(4)][data]
 		const packet = new ArrayBuffer(1 + 8 + 4 + data.byteLength);
@@ -481,7 +581,7 @@ export function videoEncoderScript(config: StreamingConfig['video']) {
 		packetData.set(data, 13);
 
 		try {
-			dataChannel.send(packet);
+			broadcast(packet);
 			audioFrameCount++;
 		} catch (e) {}
 	}
@@ -491,7 +591,7 @@ export function videoEncoderScript(config: StreamingConfig['video']) {
 	// still-page top-off restores full quality once motion stops, so temporary
 	// coarseness during congestion is invisible in the end result.
 	function currentMotionQuantizer(): number {
-		const buffered = dataChannel ? dataChannel.bufferedAmount : 0;
+		const buffered = peakBufferedAmount();
 		if (buffered > MAX_BUFFERED_BYTES / 2) return Math.min(60, config.motionQuantizer + 16);
 		if (buffered > MAX_BUFFERED_BYTES / 4) return Math.min(60, config.motionQuantizer + 8);
 		return config.motionQuantizer;
@@ -509,7 +609,7 @@ export function videoEncoderScript(config: StreamingConfig['video']) {
 	function shouldSkipMotionFrame(): boolean {
 		framesAttempted++;
 
-		if (dataChannel && dataChannel.bufferedAmount > MAX_BUFFERED_BYTES) {
+		if (peakBufferedAmount() > MAX_BUFFERED_BYTES) {
 			framesSkippedNetwork++;
 			return true;
 		}
@@ -603,7 +703,7 @@ export function videoEncoderScript(config: StreamingConfig['video']) {
 			if (!isTopOff) {
 				motionSeq++;
 				if (shouldSkipMotionFrame()) return;
-			} else if (dataChannel && dataChannel.bufferedAmount > MAX_BUFFERED_BYTES) {
+			} else if (peakBufferedAmount() > MAX_BUFFERED_BYTES) {
 				// Channel congested — dumping a large near-lossless frame on it
 				// now would spike latency. Defer briefly; abandon if new motion
 				// arrives (the backend captures a fresh top-off after the next
@@ -691,7 +791,7 @@ export function videoEncoderScript(config: StreamingConfig['video']) {
 		nativeIdleTimer = setTimeout(() => {
 			nativeIdleTimer = null;
 			if (!isCapturing || !lastNativeFrame || !videoEncoder) return;
-			if (dataChannel && dataChannel.bufferedAmount > MAX_BUFFERED_BYTES) {
+			if (peakBufferedAmount() > MAX_BUFFERED_BYTES) {
 				scheduleNativeTopOff();
 				return;
 			}
@@ -769,14 +869,24 @@ export function videoEncoderScript(config: StreamingConfig['video']) {
 			// navigates to arbitrary URLs — plain-http targets simply use the
 			// fallback path.
 			if (!window.isSecureContext) return false;
-			if (!navigator.mediaDevices || typeof navigator.mediaDevices.getDisplayMedia !== 'function') return false;
+			// Use the pre-shim implementation the host bridge stashed for us. The
+			// public `getDisplayMedia` is relayed to the viewer's browser, so
+			// calling it here would prompt them for a capture source on every page.
+			const captureTab =
+				((window as any).__clopenNativeGetDisplayMedia as
+					| ((options: unknown) => Promise<MediaStream>)
+					| undefined) ??
+				(navigator.mediaDevices && typeof navigator.mediaDevices.getDisplayMedia === 'function'
+					? navigator.mediaDevices.getDisplayMedia.bind(navigator.mediaDevices)
+					: undefined);
+			if (!captureTab) return false;
 			if (typeof (window as any).MediaStreamTrackProcessor !== 'function') return false;
 
 			const withTimeout = <T,>(promise: Promise<T>, ms: number): Promise<T | null> =>
 				Promise.race([promise, new Promise<null>((resolve) => setTimeout(() => resolve(null), ms))]);
 
 			const stream = await withTimeout(
-				navigator.mediaDevices.getDisplayMedia({
+				captureTab({
 					video: {
 						frameRate: { max: Math.max(1, targetFramerate) },
 						width: { max: encoderWidth },
@@ -893,7 +1003,7 @@ export function videoEncoderScript(config: StreamingConfig['video']) {
 				codec: activeCodec.name,
 				avgFrameCostMs: frameCostSamples > 0 ? frameCostTotalMs / frameCostSamples : 0,
 				encodeQueueMax,
-				bufferedAmount: dataChannel ? dataChannel.bufferedAmount : 0,
+				bufferedAmount: peakBufferedAmount(),
 				framesAttempted,
 				framesSkippedEncoder,
 				framesSkippedNetwork,
@@ -933,7 +1043,6 @@ export function videoEncoderScript(config: StreamingConfig['video']) {
 		if (isCapturing) return true;
 
 		try {
-			await initPeerConnection();
 			await initVideoEncoder();
 
 			isCapturing = true;
@@ -981,42 +1090,41 @@ export function videoEncoderScript(config: StreamingConfig['video']) {
 			videoEncoder = null;
 		}
 
-		if (dataChannel) {
-			dataChannel.close();
-			dataChannel = null;
-		}
-
-		if (peerConnection) {
-			peerConnection.close();
-			peerConnection = null;
-		}
+		viewers.forEach((viewer) => {
+			try {
+				viewer.dc?.close();
+			} catch (e) {}
+			try {
+				viewer.pc.close();
+			} catch (e) {}
+		});
+		viewers.clear();
 	}
 
-	// Create and send offer
-	async function createOffer() {
-		if (!peerConnection) {
-			await initPeerConnection();
-		}
-
+	// Create and send an offer for one viewer
+	async function createOffer(viewerId: string) {
 		try {
-			const offer = await peerConnection!.createOffer();
-			await peerConnection!.setLocalDescription(offer);
+			const viewer = createViewerPeer(viewerId);
+			const offer = await viewer.pc.createOffer();
+			await viewer.pc.setLocalDescription(offer);
 
 			return {
 				type: offer.type,
 				sdp: offer.sdp
 			};
 		} catch (error) {
+			closePeer(viewerId);
 			return null;
 		}
 	}
 
-	// Handle answer from client
-	async function handleAnswer(answer: RTCSessionDescriptionInit) {
-		if (!peerConnection) return false;
+	// Handle answer from a viewer
+	async function handleAnswer(viewerId: string, answer: RTCSessionDescriptionInit) {
+		const viewer = viewers.get(viewerId);
+		if (!viewer) return false;
 
 		try {
-			await peerConnection.setRemoteDescription(new RTCSessionDescription(answer));
+			await viewer.pc.setRemoteDescription(new RTCSessionDescription(answer));
 			return true;
 		} catch (error) {
 			return false;
@@ -1024,11 +1132,12 @@ export function videoEncoderScript(config: StreamingConfig['video']) {
 	}
 
 	// Add ICE candidate (+ loopback variant for VPN compatibility)
-	async function addIceCandidate(candidate: RTCIceCandidateInit) {
-		if (!peerConnection) return false;
+	async function addIceCandidate(viewerId: string, candidate: RTCIceCandidateInit) {
+		const viewer = viewers.get(viewerId);
+		if (!viewer) return false;
 
 		try {
-			await peerConnection.addIceCandidate(new RTCIceCandidate(candidate));
+			await viewer.pc.addIceCandidate(new RTCIceCandidate(candidate));
 		} catch (error) {
 			return false;
 		}
@@ -1037,7 +1146,7 @@ export function videoEncoderScript(config: StreamingConfig['video']) {
 		const loopback = createLoopbackCandidate(candidate);
 		if (loopback) {
 			try {
-				await peerConnection.addIceCandidate(new RTCIceCandidate(loopback as RTCIceCandidateInit));
+				await viewer.pc.addIceCandidate(new RTCIceCandidate(loopback as RTCIceCandidateInit));
 			} catch {
 				// Expected to fail if loopback is not applicable
 			}
@@ -1094,28 +1203,36 @@ export function videoEncoderScript(config: StreamingConfig['video']) {
 		}
 	}
 
-	// Get stats
+	// Get stats. Bytes are summed across viewers — that is what actually left
+	// the host — while the connection state reports the healthiest peer, since
+	// one viewer reconnecting doesn't mean the stream is down.
 	async function getStats() {
-		if (!peerConnection) return null;
+		const peers = Array.from(viewers.values());
+		if (peers.length === 0) return null;
 
 		try {
-			const stats = await peerConnection.getStats();
 			const result = {
 				videoBytesSent: 0,
 				audioBytesSent: 0,
 				videoFramesEncoded: videoFrameCount,
 				audioFramesEncoded: audioFrameCount,
-				connectionState: peerConnection.connectionState,
+				connectionState: peers.some((viewer) => viewer.pc.connectionState === 'connected')
+					? 'connected'
+					: peers[0].pc.connectionState,
 				videoCodec: activeCodec.name,
 				audioCodec: 'opus' as const,
-				captureMode
+				captureMode,
+				viewerCount: peers.length
 			};
 
-			stats.forEach(report => {
-				if (report.type === 'data-channel') {
-					result.videoBytesSent = (report as any).bytesSent || 0;
-				}
-			});
+			for (const viewer of peers) {
+				const stats = await viewer.pc.getStats();
+				stats.forEach((report) => {
+					if (report.type === 'data-channel') {
+						result.videoBytesSent += (report as any).bytesSent || 0;
+					}
+				});
+			}
 
 			return result;
 		} catch (error) {
@@ -1130,6 +1247,8 @@ export function videoEncoderScript(config: StreamingConfig['video']) {
 		createOffer,
 		handleAnswer,
 		addIceCandidate,
+		closePeer,
+		viewerCount: () => viewers.size,
 		encodeFrame,
 		forceKeyframe,
 		sendAudioChunk,

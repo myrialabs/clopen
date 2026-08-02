@@ -106,6 +106,49 @@ export const tabPreviewHandler = createRouter()
 		};
 	})
 
+	// Walk the tab's history (Back / Forward)
+	.http('preview:browser-tab-history-go', {
+		data: t.Object({
+			direction: t.Union([t.Literal('back'), t.Literal('forward')]),
+			tabId: t.Optional(t.String())
+		}),
+		response: t.Object({
+			moved: t.Boolean(),
+			tabId: t.String()
+		})
+	}, async ({ data, conn }) => {
+		const { projectId, previewService, tab } = requireBrowserTabAccess(conn, data.tabId);
+
+		debug.log('preview', `↩️ History ${data.direction} for tab ${tab.id} (project: ${projectId})`);
+
+		const moved = await previewService.goHistory(tab.id, data.direction === 'back' ? -1 : 1);
+
+		return { moved, tabId: tab.id };
+	})
+
+	// Read the tab's history list — backs the long-press dropdown on Back
+	.http('preview:browser-tab-history', {
+		data: t.Object({
+			tabId: t.Optional(t.String())
+		}),
+		response: t.Object({
+			entries: t.Array(t.Object({
+				id: t.Number(),
+				url: t.String(),
+				title: t.String()
+			})),
+			currentIndex: t.Number(),
+			canGoBack: t.Boolean(),
+			canGoForward: t.Boolean()
+		})
+	}, async ({ data, conn }) => {
+		const { previewService, tab } = requireBrowserTabAccess(conn, data.tabId);
+
+		const state = await previewService.getHistoryState(tab.id);
+
+		return state ?? { entries: [], currentIndex: 0, canGoBack: false, canGoForward: false };
+	})
+
 	// Close browser tab
 	.http('preview:browser-tab-close', {
 		data: t.Object({
