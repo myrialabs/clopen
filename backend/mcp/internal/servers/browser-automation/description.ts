@@ -45,6 +45,7 @@ const OUTRO = `NOTES
 - Coordinates are in the page's own viewport (CSS pixels), the same space a screenshot is captured in.
 - Selectors are searched in every frame, so an element inside an iframe is addressed the same way as one in the main document.
 - A tab opened, switched to or closed mid-batch becomes the target for the actions that follow it.
+- You never have to open a tab first. On an empty browser the first action that needs a tab gets a blank one opened for it, and the report says so — \`navigate\` alone is a fine way to start.
 - The user can interrupt at any time; the batch stops and the report says how far it got.`;
 
 function renderReference(): string {

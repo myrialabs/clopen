@@ -5,12 +5,16 @@
  * calls `ctx.invalidateTab()` — without it a batch like
  * `[open_tab, navigate, screenshot]` would open a tab and then keep driving the
  * old one.
+ *
+ * Everything here except `set_viewport` is `needsTab: false`: these are the
+ * actions an empty browser has to be able to run, so they must not be gated on
+ * a tab already existing.
  */
 
 import { z } from 'zod';
 import { browserMcpControl } from '$backend/preview';
 import { debug } from '$shared/utils/logger';
-import type { ActionDef } from './types';
+import type { ActionDef, TablessActionContext } from './types';
 import { commonFields } from './shared';
 
 const DEVICE_SIZES = ['desktop', 'laptop', 'tablet', 'mobile'] as const;
@@ -27,7 +31,8 @@ export const listTabs: ActionDef = {
 	doc: `list_tabs {} — every open tab with its id, URL, viewport and who controls it.
   Use the id, not the position, with switch_tab/close_tab.`,
 	schema: z.object({ type: z.literal('list_tabs'), ...commonFields }),
-	run: async (_args, ctx) => {
+	needsTab: false,
+	run: async (_args, ctx: TablessActionContext) => {
 		const tabs = ctx.service.getAllTabs();
 		if (tabs.length === 0) return { summary: 'no tabs open' };
 
@@ -58,7 +63,8 @@ export const openTab: ActionDef = {
 		rotation: z.enum(ROTATIONS).optional().describe('Orientation. Omit for the device default.'),
 		...commonFields
 	}),
-	run: async (args, ctx) => {
+	needsTab: false,
+	run: async (args, ctx: TablessActionContext) => {
 		const deviceSize = args.deviceSize || 'laptop';
 		const rotation = args.rotation || defaultRotation(deviceSize);
 
@@ -80,7 +86,8 @@ export const switchTab: ActionDef = {
 		tabId: z.string().min(1).describe('Tab id from list_tabs.'),
 		...commonFields
 	}),
-	run: async (args, ctx) => {
+	needsTab: false,
+	run: async (args, ctx: TablessActionContext) => {
 		if (!ctx.service.switchTab(args.tabId)) throw new Error(`Tab '${args.tabId}' not found`);
 
 		const tab = ctx.service.getTab(args.tabId);
@@ -108,8 +115,12 @@ export const closeTab: ActionDef = {
 		tabId: z.string().optional().describe('Tab id from list_tabs. Omit to close the current tab.'),
 		...commonFields
 	}),
-	run: async (args, ctx) => {
-		const tabId = args.tabId || ctx.tab.id;
+	// Closing is the one thing an empty browser cannot do — and opening a tab
+	// just to close it would be a strange way to find that out.
+	needsTab: false,
+	run: async (args, ctx: TablessActionContext) => {
+		const tabId = args.tabId || ctx.tab?.id;
+		if (!tabId) throw new Error('No open tab to close');
 		const result = await ctx.service.closeTab(tabId);
 		if (!result.success) throw new Error(`Tab '${tabId}' not found`);
 

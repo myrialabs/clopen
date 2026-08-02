@@ -17,12 +17,12 @@
  *   the agent then plans on top of a state that does not exist.
  */
 
-import type { BrowserAutonomousAction } from '$backend/preview/browser/types';
+import type { BrowserAutonomousAction, BrowserTab } from '$backend/preview/browser/types';
 import { projectContextService } from '$backend/mcp/internal/project-context';
 import { debug } from '$shared/utils/logger';
 import { ACTIONS_BY_TYPE } from './actions';
-import type { ActionContext, ActionImage } from './actions/types';
-import { getActiveTabSession, getPreviewService } from './context';
+import type { ActionContext, ActionImage, TablessActionContext } from './actions/types';
+import { getActiveTabSession, getPreviewService, peekSessionTab } from './context';
 
 interface ActionArgs {
 	type: string;
@@ -54,6 +54,8 @@ export interface RunReport {
 	failed: boolean;
 	tabId?: string;
 	url?: string;
+	/** Set when the batch had to open a tab because the browser had none. */
+	openedTabId?: string;
 }
 
 /** Consecutive input gestures form one native run; control actions stand alone. */
@@ -79,19 +81,37 @@ export async function runActions(args: RunArgs): Promise<RunReport> {
 	const signal = projectContextService.getCurrentSignal();
 	const service = getPreviewService(args.projectId);
 	const projectId = service.getProjectId();
+	const chatSessionId = projectContextService.getCurrentChatSessionId() ?? '';
 
 	const report: RunReport = { steps: [], images: [], skipped: 0, aborted: false, failed: false };
 
 	let tabStale = true;
-	let tab: Awaited<ReturnType<typeof getActiveTabSession>>['tab'] | null = null;
+	let tab: BrowserTab | null = null;
 
+	/** The tab to act on — opened on the spot if the browser has none. */
 	const resolveTab = async () => {
 		if (!tabStale && tab) return tab;
 		const resolved = await getActiveTabSession(args.projectId);
+		if (resolved.opened) report.openedTabId = resolved.tab.id;
 		tab = resolved.tab;
 		tabStale = false;
 		return tab;
 	};
+
+	/** Where the batch stands, without opening anything or taking control. */
+	const peekTab = () => (!tabStale && tab ? tab : peekSessionTab(service, chatSessionId));
+
+	// `needsTab: false` actions declare their context as TablessActionContext,
+	// so the null this can carry never reaches one that dereferences it.
+	const makeContext = (target: BrowserTab | null): ActionContext =>
+		({
+			service,
+			tab: target,
+			projectId,
+			chatSessionId,
+			signal,
+			invalidateTab: () => (tabStale = true)
+		} satisfies TablessActionContext as ActionContext);
 
 	const groups = groupActions(args.actions);
 	let stopped = false;
@@ -104,7 +124,7 @@ export async function runActions(args: RunArgs): Promise<RunReport> {
 	for (const group of groups) {
 		if (stopped || signal?.aborted) break;
 
-		const deps: RunDeps = { args, service, projectId, signal, resolveTab, markTabStale: () => (tabStale = true) };
+		const deps: RunDeps = { args, service, signal, resolveTab, peekTab, makeContext };
 		const before = report.steps.length;
 
 		consumed += group.kind === 'input'
@@ -127,12 +147,14 @@ export async function runActions(args: RunArgs): Promise<RunReport> {
 
 	// Report where the batch left the browser: the next call's plan depends on
 	// it, and it is the cheapest way to notice a navigation nobody asked for.
+	// Peeked, not resolved: a batch that closed its last tab should say so, not
+	// get a fresh one opened just to have something to report.
 	try {
-		// Through the resolver, not the cached handle: a tab opened or closed
-		// mid-batch means the cached one is no longer where the agent is.
-		const current = await resolveTab();
-		report.tabId = current.id;
-		report.url = current.page.url();
+		const current = peekTab();
+		if (current) {
+			report.tabId = current.id;
+			report.url = current.page.url();
+		}
 	} catch {
 		// No tab left (closed by the batch, or none was ever open).
 	}
@@ -143,10 +165,10 @@ export async function runActions(args: RunArgs): Promise<RunReport> {
 interface RunDeps {
 	args: RunArgs;
 	service: ReturnType<typeof getPreviewService>;
-	projectId: string;
 	signal?: AbortSignal;
-	resolveTab: () => Promise<NonNullable<Awaited<ReturnType<typeof getActiveTabSession>>['tab']>>;
-	markTabStale: () => void;
+	resolveTab: () => Promise<BrowserTab>;
+	peekTab: () => BrowserTab | null;
+	makeContext: (target: BrowserTab | null) => ActionContext;
 }
 
 /** Run one control action. Returns how many actions were consumed. */
@@ -158,17 +180,11 @@ async function runControl(item: { index: number; args: ActionArgs }, deps: RunDe
 	}
 
 	try {
-		const tab = await deps.resolveTab();
-		const ctx: ActionContext = {
-			service: deps.service,
-			tab,
-			projectId: deps.projectId,
-			chatSessionId: projectContextService.getCurrentChatSessionId() ?? '',
-			signal: deps.signal,
-			invalidateTab: deps.markTabStale
-		};
+		// The tab actions run on an empty browser — they are how it stops being
+		// empty. Everything else gets a tab opened for it first.
+		const tab = def.needsTab === false ? deps.peekTab() : await deps.resolveTab();
 
-		const output = await def.run(item.args, ctx);
+		const output = await def.run(item.args, deps.makeContext(tab));
 		report.steps.push({ index: item.index, type: def.type, ok: true, summary: output.summary, detail: output.detail });
 		if (output.images?.length) report.images.push(...output.images);
 	} catch (error) {
@@ -196,14 +212,7 @@ async function runInputGroup(items: Array<{ index: number; args: ActionArgs }>, 
 		return 1;
 	}
 
-	const ctx: ActionContext = {
-		service: deps.service,
-		tab,
-		projectId: deps.projectId,
-		chatSessionId: projectContextService.getCurrentChatSessionId() ?? '',
-		signal: deps.signal,
-		invalidateTab: deps.markTabStale
-	};
+	const ctx = deps.makeContext(tab);
 
 	// Translation can fail on its own (a path outside the project, a missing
 	// field). Those actions never reach the engine, so they are reported here

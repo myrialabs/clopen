@@ -26,6 +26,13 @@ export interface ActionContext {
 	invalidateTab(): void;
 }
 
+/**
+ * What a `needsTab: false` action gets: the same context, minus the guarantee
+ * that a tab exists. `tab` is whatever the batch was last pointed at, or null
+ * when the project has nothing open.
+ */
+export type TablessActionContext = Omit<ActionContext, 'tab'> & { tab: BrowserTab | null };
+
 export interface ActionImage {
 	data: string;
 	mimeType: string;
@@ -56,6 +63,15 @@ export interface ActionDef {
 	doc: string;
 	/** Zod object whose `type` field is the discriminator. */
 	schema: z.ZodObject<any>;
+	/**
+	 * `false` for the actions that have to work on an empty browser — the ones
+	 * that open or enumerate tabs. Everything else gets a tab opened for it
+	 * before it runs, so a batch never has to start with `open_tab`.
+	 *
+	 * Such an action must declare its context as `TablessActionContext`: that is
+	 * what stops it from reading a `tab` that may be null.
+	 */
+	needsTab?: boolean;
 	/** `input` actions: translate to the native gesture primitive. */
 	toInput?: (args: any, ctx: ActionContext) => BrowserAutonomousAction | Promise<BrowserAutonomousAction>;
 	/** `control` actions: run directly. */

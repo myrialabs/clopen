@@ -23,6 +23,12 @@ export function formatReport(report: RunReport): {
 
 	const lines: string[] = [header.join(' · ')];
 
+	// Say it plainly: the agent asked for one thing and got a tab it never
+	// requested, and the blank page is why a screenshot may look empty.
+	if (report.openedTabId) {
+		lines.push(`No tab was open, so ${report.openedTabId} was opened (about:blank) for this batch.`);
+	}
+
 	for (const step of report.steps) {
 		const label = `[${step.index + 1}] ${step.type}`;
 		lines.push(step.ok ? `${label} ok${step.summary ? ` → ${step.summary}` : ''}` : `${label} FAILED → ${step.error}`);

@@ -46,37 +46,55 @@ export function getChatSessionId(): string {
 }
 
 /**
- * The tab this call should act on, with MCP control acquired for it.
+ * Which tab the batch is pointed at right now, or null when nothing is open.
  *
  * A chat session accumulates tabs (open/switch add to its set), and the most
  * recently used one is the target — not the frontend's active tab, which the
  * user may have changed while the agent was working.
+ *
+ * Takes no control and opens nothing, so it is safe for actions that only want
+ * to know where things stand.
  */
-export async function getActiveTabSession(projectId?: string): Promise<{ tab: BrowserTab; service: BrowserPreviewService }> {
-	const service = getPreviewService(projectId);
-	const resolvedProjectId = service.getProjectId();
-	const chatSessionId = getChatSessionId();
-
+export function peekSessionTab(service: BrowserPreviewService, chatSessionId: string): BrowserTab | null {
 	const sessionTabs = browserMcpControl.getSessionTabs(chatSessionId);
 	if (sessionTabs.length > 0) {
 		const lastTabId = sessionTabs[sessionTabs.length - 1];
 		const controlledTab = service.getTab(lastTabId);
-		if (controlledTab) {
-			debug.log('mcp', `🎮 Using session-controlled tab: ${controlledTab.id}`);
-			return { tab: controlledTab, service };
+		if (controlledTab) return controlledTab;
+	}
+
+	return service.getActiveTab();
+}
+
+/**
+ * The tab this call should act on, with MCP control acquired for it.
+ *
+ * Opens one when the project has none. Failing instead was a dead end: a fresh
+ * browser has no tab, so the first call failed no matter what it asked for, and
+ * the only way out was for someone to open a tab by hand in the UI.
+ */
+export async function getActiveTabSession(
+	projectId?: string
+): Promise<{ tab: BrowserTab; service: BrowserPreviewService; opened: boolean }> {
+	const service = getPreviewService(projectId);
+	const resolvedProjectId = service.getProjectId();
+	const chatSessionId = getChatSessionId();
+
+	const existing = peekSessionTab(service, chatSessionId);
+	if (existing) {
+		const acquired = browserMcpControl.acquireControl(existing.id, chatSessionId, resolvedProjectId);
+		if (!acquired) {
+			const owner = browserMcpControl.getTabOwner(existing.id);
+			throw new Error(`Tab '${existing.id}' is controlled by another chat session (${owner?.slice(0, 8)}...). Use a different tab.`);
 		}
+
+		debug.log('mcp', `🎮 Using tab: ${existing.id}`);
+		return { tab: existing, service, opened: false };
 	}
 
-	const tab = service.getActiveTab();
-	if (!tab) {
-		throw new Error("No open tab. Start with an `open_tab` action.");
-	}
+	debug.log('mcp', `📑 No tab open for project ${resolvedProjectId} — opening a blank one`);
+	const tab = await service.createTab(undefined, 'laptop', 'landscape');
+	browserMcpControl.acquireControl(tab.id, chatSessionId, resolvedProjectId);
 
-	const acquired = browserMcpControl.acquireControl(tab.id, chatSessionId, resolvedProjectId);
-	if (!acquired) {
-		const owner = browserMcpControl.getTabOwner(tab.id);
-		throw new Error(`Tab '${tab.id}' is controlled by another chat session (${owner?.slice(0, 8)}...). Use a different tab.`);
-	}
-
-	return { tab, service };
+	return { tab, service, opened: true };
 }
