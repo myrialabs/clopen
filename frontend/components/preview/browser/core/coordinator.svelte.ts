@@ -48,7 +48,8 @@ export interface BrowserCoordinatorConfig {
 	onOpenUrlInHostBrowser?: (url: string) => void;
 	onVirtualCursorUpdate?: (x: number, y: number, clicking?: boolean) => void;
 	onVirtualCursorHide?: () => void;
-	onMcpCursorUpdate?: (x: number, y: number, clicking?: boolean) => void;
+	/** Page coordinates, not screen ones — the panel projects them itself. */
+	onMcpCursorUpdate?: (x: number, y: number, clicking?: boolean, pressed?: boolean) => void;
 	onMcpCursorHide?: () => void;
 
 	// Coordinate transformation
@@ -143,10 +144,9 @@ export function createBrowserCoordinator(config: BrowserCoordinatorConfig) {
 	// Create MCP handler
 	const mcpHandler = createMcpHandler({
 		tabManager,
-		transformBrowserToDisplayCoordinates,
-		onCursorUpdate: (x, y, clicking) => {
+		onCursorUpdate: (x, y, clicking, pressed) => {
 			if (onMcpCursorUpdate) {
-				onMcpCursorUpdate(x, y, clicking);
+				onMcpCursorUpdate(x, y, clicking, pressed);
 			}
 		},
 		onCursorHide: () => {

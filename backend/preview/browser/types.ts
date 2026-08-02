@@ -203,46 +203,143 @@ export interface BrowserTabInfo {
 	canGoForward: boolean;
 }
 
-export interface BrowserAutonomousAction {
-	/**
-	 * Action types (minimal, native-only, no DOM):
-	 * - 'click': Mouse click at coordinates (x, y)
-	 * - 'type': Keyboard input - type text OR press single key
-	 * - 'move': Move mouse to coordinates (x, y)
-	 * - 'scroll': Scroll by delta amount, optionally at target area (x, y)
-	 * - 'wait': Wait for specified delay
-	 * - 'extract_data': Extract data from DOM element using CSS selector
-	 *
-	 * All interactions use native browser input (no DOM manipulation except extract_data)
-	 */
-	type: 'click' | 'type' | 'move' | 'scroll' | 'wait' | 'extract_data';
+/** A point in page (emulated viewport) coordinates. */
+export interface BrowserPoint {
+	x: number;
+	y: number;
+}
 
-	// Coordinates for click/move, or target area for scroll
+/**
+ * Where an action should land. Either explicit page coordinates or an element
+ * to resolve — resolution scrolls the element into view and aims at its centre,
+ * so the agent never has to guess a pixel it cannot see.
+ */
+export interface BrowserActionTarget {
 	x?: number;
 	y?: number;
+	/** CSS selector, resolved across every frame including iframes. */
+	selector?: string;
+	/** Visible text to match when no selector is given. */
+	text?: string;
+	/** Nth match when the query is ambiguous (0-based, default 0). */
+	nth?: number;
+}
+
+export type BrowserAutonomousActionType =
+	| 'click'
+	| 'type'
+	| 'move'
+	| 'scroll'
+	| 'wait'
+	| 'extract_data'
+	| 'drag'
+	| 'press'
+	| 'long_press'
+	| 'tap'
+	| 'swipe'
+	| 'pinch'
+	| 'select_option'
+	| 'upload'
+	| 'paste'
+	| 'focus'
+	| 'clear';
+
+/**
+ * One primitive input gesture, executed against a tab's page.
+ *
+ * Everything here drives native browser input (CDP mouse / keyboard / touch).
+ * The only DOM-level actions are the ones that cannot be expressed as input at
+ * all: `extract_data`, `select_option`, `upload` and element resolution.
+ */
+export interface BrowserAutonomousAction {
+	type: BrowserAutonomousActionType;
+
+	// Coordinates for click/move/tap, or target area for scroll
+	x?: number;
+	y?: number;
+
+	/** Element-or-coordinate target. Takes precedence over bare x/y. */
+	target?: BrowserActionTarget;
 
 	// For scroll action - scroll delta amounts
 	deltaX?: number;
 	deltaY?: number;
 
-	// For click action
-	click?: 'left' | 'right' | 'middle'; // Mouse button (default: 'left')
+	/** Mouse button (default: 'left'). */
+	button?: 'left' | 'right' | 'middle';
+	/** 1 = single, 2 = double, 3 = triple. */
+	clickCount?: number;
 
 	// For type action - either text OR key, not both
 	text?: string; // Type a string of text
 	key?: string; // Press a single key (Enter, Tab, Escape, ArrowUp, etc.)
+	/** Chord for `press`, e.g. "Control+Shift+K". */
+	keys?: string;
 	clearFirst?: boolean; // Clear existing input before typing (default: true for MCP, false for user)
 
 	// For extract_data action
 	selector?: string; // Element identifier - tool automatically tries all selector patterns and attributes
+	/** Read a specific attribute instead of auto-detecting one. */
+	attribute?: string;
+	/** Return every match rather than the first. */
+	all?: boolean;
+
+	// Drag / swipe endpoints
+	from?: BrowserActionTarget;
+	to?: BrowserActionTarget;
+	/**
+	 * 'pointer' drives mousedown → move → mouseup, which is what JS drag
+	 * implementations (sliders, canvases, sortable lists) listen for.
+	 * 'native' goes through CDP drag interception, needed for HTML5
+	 * `draggable="true"` sources, which ignore plain mouse events.
+	 * Omit to pick automatically from the source element.
+	 */
+	mode?: 'pointer' | 'native';
+
+	// For select_option
+	value?: string;
+	label?: string;
+	index?: number;
+
+	// For upload — absolute paths, resolved and access-checked by the caller
+	files?: string[];
+
+	// For pinch
+	center?: BrowserPoint;
+	scale?: number;
 
 	// Timing options
 	delay?: number;
 	steps?: number; // For mouse movement interpolation
+	/** How long to hold (long_press, drag pause before moving). */
+	holdMs?: number;
+	/** How long to linger after moving (hover dwell, tooltip reveal). */
+	dwellMs?: number;
+	/** Gesture duration for swipe/pinch. */
+	durationMs?: number;
 
 	// Behavior options
 	humanLike?: boolean; // Simulate human-like movement/typing
 	smooth?: boolean; // For smooth scrolling
+	/** Skip scrolling a resolved element into view before acting on it. */
+	noScroll?: boolean;
+}
+
+/**
+ * Per-action outcome, returned in order so a batch can be reported honestly —
+ * including which actions never ran.
+ */
+export interface BrowserActionResult {
+	action: BrowserAutonomousActionType;
+	ok: boolean;
+	/** Human-readable one-liner, e.g. `click (640, 300)`. */
+	detail?: string;
+	error?: string;
+	/** Payload for actions that read something back. */
+	data?: unknown;
+	selector?: string;
+	attribute?: string;
+	timestamp: number;
 }
 
 export interface BrowserNavigationEvent {

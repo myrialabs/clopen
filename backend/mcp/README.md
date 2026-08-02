@@ -187,10 +187,14 @@ backend/mcp/
 │       │   ├── index.ts
 │       │   └── get-temperature.ts
 │       └── browser-automation/  # Example: Browser automation service
-│           ├── index.ts
-│           ├── actions.ts
-│           ├── browser.ts
-│           └── inspection.ts
+│           ├── index.ts        # One tool (`actions`), assembled from the registry
+│           ├── schema.ts       # Discriminated union over every action
+│           ├── description.ts  # Tool docs, generated from the registry
+│           ├── runner.ts       # Batch execution: grouping, retargeting, reporting
+│           ├── context.ts      # Project / chat-session / tab resolution
+│           ├── format.ts       # Run report → MCP content blocks
+│           ├── paths.ts        # Project-scoped file paths (screenshot, upload)
+│           └── actions/        # One module per group; index.ts is the registry
 ├── external/           # User-installed servers from the official registry
 │   ├── types.ts        # CatalogServer / ResolvedExternalServer
 │   ├── registry-client.ts  # Fetch + normalise registry.modelcontextprotocol.io
@@ -220,15 +224,23 @@ servers/
     └── utils.ts    # Shared utilities
 ```
 
-Example structure from `browser-automation`:
+`browser-automation` goes one step further: it exposes a **single** tool whose
+first argument is an array of actions, so an agent batches a whole interaction
+into one call instead of paying a round trip per click. Its actions live in a
+registry, and the tool's schema, its documentation and the runner's dispatch
+table are all derived from that one list — adding an action is one file plus one
+registry line, and the three cannot drift apart.
+
 ```
 servers/browser-automation/
-├── index.ts         # Main server definition with all tools
-├── session.ts       # Session management handlers
-├── navigation.ts    # Navigation handlers
-├── actions.ts       # Browser action handlers
-├── inspection.ts    # Page inspection handlers
-└── ...             # Other organized handler files
+├── index.ts         # defineServer, one tool
+├── schema.ts        # z.discriminatedUnion over every action's schema
+├── description.ts   # Prose + a reference generated from each action's `doc`
+├── runner.ts        # Runs the batch, reports per action
+└── actions/
+    ├── index.ts     # THE registry
+    ├── tabs.ts · navigation.ts · input.ts · inspect.ts · console.ts
+    └── dom-analyze.ts  # Large browser-side program, kept on its own
 ```
 
 ### Data Flow

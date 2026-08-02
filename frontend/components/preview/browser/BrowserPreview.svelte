@@ -18,7 +18,7 @@
 	} from '$frontend/utils/native-ui';
 	import { fly } from 'svelte/transition';
 	import { cubicOut } from 'svelte/easing';
-	import { onMount, onDestroy } from 'svelte';
+	import { onMount, onDestroy, untrack } from 'svelte';
 	import type { DeviceSize, Rotation } from '$frontend/utils/preview-constants';
 	import { debug } from '$shared/utils/logger';
 	import { createBrowserCoordinator } from './core/coordinator.svelte';
@@ -116,9 +116,22 @@
 	let virtualCursor = $state<{x: number, y: number, visible: boolean, clicking?: boolean}>({
 		x: 0, y: 0, visible: false, clicking: false
 	});
-	let mcpVirtualCursor = $state<{x: number, y: number, visible: boolean, clicking?: boolean}>({
-		x: 0, y: 0, visible: false, clicking: false
+	/**
+	 * The agent's cursor, in *page* coordinates.
+	 *
+	 * Kept separately from what is drawn because the projection to screen
+	 * coordinates can fail — before the canvas has painted a frame there is no
+	 * painted rect to map against. Projecting on arrival meant those events
+	 * were dropped for good; keeping the page position lets the effect below
+	 * re-project it as soon as the canvas can answer.
+	 */
+	let mcpCursorPage = $state<{x: number, y: number, visible: boolean, clicking?: boolean, pressed?: boolean}>({
+		x: 0, y: 0, visible: false, clicking: false, pressed: false
 	});
+	let mcpVirtualCursor = $state<{x: number, y: number, visible: boolean, clicking?: boolean, pressed?: boolean}>({
+		x: 0, y: 0, visible: false, clicking: false, pressed: false
+	});
+	let mcpClickResetTimer: ReturnType<typeof setTimeout> | null = null;
 
 	// Native UI state
 	let currentSelectInfo = $state<BrowserSelectInfo | null>(null);
@@ -197,16 +210,17 @@
 		onVirtualCursorHide: () => {
 			virtualCursor = { ...virtualCursor, visible: false };
 		},
-		onMcpCursorUpdate: (x, y, clicking) => {
-			mcpVirtualCursor = { x, y, visible: true, clicking: clicking || false };
+		onMcpCursorUpdate: (x, y, clicking, pressed) => {
+			mcpCursorPage = { x, y, visible: true, clicking: clicking || false, pressed: pressed || false };
 			if (clicking) {
-				setTimeout(() => {
-					mcpVirtualCursor = { ...mcpVirtualCursor, clicking: false };
+				if (mcpClickResetTimer) clearTimeout(mcpClickResetTimer);
+				mcpClickResetTimer = setTimeout(() => {
+					mcpCursorPage = { ...mcpCursorPage, clicking: false };
 				}, 300);
 			}
 		},
 		onMcpCursorHide: () => {
-			mcpVirtualCursor = { ...mcpVirtualCursor, visible: false };
+			mcpCursorPage = { ...mcpCursorPage, visible: false };
 		},
 		transformBrowserToDisplayCoordinates: (browserX, browserY) => {
 			return transformBrowserToDisplayCoordinates(browserX, browserY);
@@ -794,7 +808,7 @@
 		const tab = activeTab;
 		if (tab && tab.sessionId) {
 			// Hide the AI cursor instantly if the human explicitly interacts
-			mcpVirtualCursor = { ...mcpVirtualCursor, visible: false };	
+			mcpCursorPage = { ...mcpCursorPage, visible: false };
 			coordinator.sendInteraction(action);
 		}
 	}
@@ -842,8 +856,49 @@
 	$effect(() => {
 		void activeTabId; // track activeTabId changes
 		if (!isCurrentTabMcpControlled()) {
-			mcpVirtualCursor = { x: 0, y: 0, visible: false, clicking: false };
+			mcpCursorPage = { x: 0, y: 0, visible: false, clicking: false, pressed: false };
 		}
+	});
+
+	/**
+	 * Project the agent's cursor from page coordinates onto the screen.
+	 *
+	 * Re-runs on canvas geometry changes as well as on cursor movement, so a
+	 * position that arrived before the canvas had painted — when the projection
+	 * has nothing to map against — lands as soon as it can, instead of being
+	 * silently dropped the way it was when conversion happened on arrival.
+	 */
+	$effect(() => {
+		const page = mcpCursorPage;
+		// Geometry dependencies: any of these moves where a page point lands.
+		void previewDimensions;
+		void canvasAPI;
+		void deviceSize;
+		void rotation;
+
+		// Read what is currently drawn without depending on it — this effect
+		// writes that same state, and a self-dependency would re-run it for its
+		// own writes.
+		const drawn = untrack(() => mcpVirtualCursor);
+
+		if (!page.visible) {
+			if (drawn.visible) mcpVirtualCursor = { ...drawn, visible: false };
+			return;
+		}
+
+		const projected = transformBrowserToDisplayCoordinates(page.x, page.y);
+		if (!projected) {
+			debug.log('preview', `🖱️ [mcp-cursor] canvas cannot project (${page.x}, ${page.y}) yet — retrying when it is ready`);
+			return;
+		}
+
+		mcpVirtualCursor = {
+			x: projected.x,
+			y: projected.y,
+			visible: true,
+			clicking: page.clicking,
+			pressed: page.pressed
+		};
 	});
 
 	// Stream message handling

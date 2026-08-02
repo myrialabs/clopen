@@ -2,7 +2,7 @@ import { EventEmitter } from 'events';
 import type { Page } from 'puppeteer-core';
 import { BrowserTabManager } from './browser-tab-manager.js';
 import { BrowserConsoleManager } from './browser-console-manager.js';
-import { BrowserInteractionHandler } from './browser-interaction-handler.js';
+import { BrowserInteractionHandler, type AutonomousRunOutcome } from './browser-interaction-handler.js';
 import { BrowserNavigationTracker } from './browser-navigation-tracker.js';
 import { BrowserVideoCapture } from './browser-video-capture.js';
 import { BrowserDialogHandler } from './browser-dialog-handler.js';
@@ -90,13 +90,11 @@ export class BrowserPreviewService extends EventEmitter {
 			this.emit('preview:browser-console-clear', data);
 		});
 
-		// Forward interaction events (MCP cursor)
-		this.interactionHandler.on('cursor-position', (data) => {
-			this.emit('preview:browser-mcp-cursor-position', data);
-		});
-		this.interactionHandler.on('cursor-click', (data) => {
-			this.emit('preview:browser-mcp-cursor-click', data);
-		});
+		// Cursor position/click are NOT forwarded here. They are published on the
+		// browserMcpControl singleton, which setupMcpControlForwarding() relays
+		// with the `source` stamp the client contract requires. Forwarding them
+		// from here as well delivered every cursor update twice, once without
+		// that field.
 		this.interactionHandler.on('test-completed', (data) => {
 			this.emit('preview:browser-mcp-test-completed', data);
 		});
@@ -729,33 +727,27 @@ export class BrowserPreviewService extends EventEmitter {
 	// ============================================================================
 	// Interaction & Autonomous Actions Methods
 	// ============================================================================
-	async performAutonomousActions(tabId: string, actions: BrowserAutonomousAction[], abortSignal?: AbortSignal) {
+	/**
+	 * Run a batch of input gestures.
+	 *
+	 * Returns per-action outcomes plus whether the run was cut short, so the
+	 * caller can report "3 of 7 ran" instead of claiming a success the user
+	 * interrupted.
+	 */
+	async performAutonomousActions(
+		tabId: string,
+		actions: BrowserAutonomousAction[],
+		abortSignal?: AbortSignal
+	): Promise<AutonomousRunOutcome> {
 		const tab = this.getTab(tabId);
 		if (!tab) throw new Error('Tab not found or invalid');
 
-		const results = await this.interactionHandler.performAutonomousActions(
+		return this.interactionHandler.performAutonomousActions(
 			tabId,
 			tab,
 			actions,
 			() => this.isValidTab(tabId) && !(abortSignal?.aborted ?? false)
 		);
-
-		return results;
-	}
-
-	/**
-	 * Perform autonomous actions using tab object directly
-	 * More efficient when tab is already available
-	 */
-	async performAutonomousActionsWithTab(tab: BrowserTab, actions: BrowserAutonomousAction[], abortSignal?: AbortSignal) {
-		const results = await this.interactionHandler.performAutonomousActions(
-			tab.id,
-			tab,
-			actions,
-			() => this.isValidTab(tab.id) && !(abortSignal?.aborted ?? false)
-		);
-
-		return results;
 	}
 
 	// ============================================================================
@@ -1045,15 +1037,8 @@ class BrowserPreviewServiceManager {
 			ws.emit.project(projectId, 'preview:browser-console-clear', data);
 		});
 
-		// Forward MCP events
-		service.on('preview:browser-mcp-cursor-position', (data) => {
-			ws.emit.project(projectId, 'preview:browser-mcp-cursor-position', data);
-		});
-
-		service.on('preview:browser-mcp-cursor-click', (data) => {
-			ws.emit.project(projectId, 'preview:browser-mcp-cursor-click', data);
-		});
-
+		// Forward MCP events. Cursor position/click come from the singleton
+		// instead (setupMcpControlForwarding) — see setupEventForwarding().
 		service.on('preview:browser-mcp-test-completed', (data) => {
 			ws.emit.project(projectId, 'preview:browser-mcp-test-completed', data);
 		});
@@ -1174,6 +1159,7 @@ class BrowserPreviewServiceManager {
 				sessionId: data.tabId,
 				x: data.x,
 				y: data.y,
+				pressed: data.pressed ?? false,
 				timestamp: data.timestamp,
 				source: 'mcp'
 			});
@@ -1184,6 +1170,7 @@ class BrowserPreviewServiceManager {
 				sessionId: data.tabId,
 				x: data.x,
 				y: data.y,
+				button: data.button ?? 'left',
 				timestamp: data.timestamp,
 				source: 'mcp'
 			});

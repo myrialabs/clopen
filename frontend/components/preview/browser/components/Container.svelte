@@ -34,7 +34,7 @@
 			y: 0,
 			visible: false
 		}),
-		mcpVirtualCursor = $bindable<{ x: number; y: number; visible: boolean; clicking?: boolean }>({
+		mcpVirtualCursor = $bindable<{ x: number; y: number; visible: boolean; clicking?: boolean; pressed?: boolean }>({
 			x: 0,
 			y: 0,
 			visible: false
@@ -525,17 +525,17 @@
 
 	<!-- Virtual Cursor - User -->
 	{#if !isMcpControlled}
-		<VirtualCursor cursor={virtualCursor} />
+		<VirtualCursor cursor={virtualCursor} variant="user" />
 	{/if}
 
 	<!-- Touch Cursor - shown in cursor simulation mode -->
 	{#if touchMode === 'cursor' && touchCursorPos.visible}
-		<VirtualCursor cursor={touchCursorPos} />
+		<VirtualCursor cursor={touchCursorPos} variant="user" />
 	{/if}
 
-	<!-- MCP Virtual Cursor -->
+	<!-- Agent cursor. Amber, and always on top of the user's own. -->
 	{#if mcpVirtualCursor.visible}
-		<VirtualCursor cursor={mcpVirtualCursor} />
+		<VirtualCursor cursor={mcpVirtualCursor} variant="mcp" />
 	{/if}
 </div>
 

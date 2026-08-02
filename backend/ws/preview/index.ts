@@ -150,6 +150,9 @@ export const previewRouter = createRouter()
 		sessionId: t.String(),
 		x: t.Number(),
 		y: t.Number(),
+		// Button held down: the overlay renders a grab, which is the only
+		// on-screen difference between the agent moving and the agent dragging.
+		pressed: t.Optional(t.Boolean()),
 		timestamp: t.Number(),
 		source: t.Literal('mcp')
 	}))
@@ -157,6 +160,7 @@ export const previewRouter = createRouter()
 		sessionId: t.String(),
 		x: t.Number(),
 		y: t.Number(),
+		button: t.Optional(t.String()),
 		timestamp: t.Number(),
 		source: t.Literal('mcp')
 	}))

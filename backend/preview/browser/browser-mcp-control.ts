@@ -45,6 +45,8 @@ export interface McpCursorEvent {
 	tabId: string;
 	x: number;
 	y: number;
+	/** Mouse button held down — the difference between a move and a drag. */
+	pressed?: boolean;
 	timestamp: number;
 	source: 'mcp';
 }
@@ -53,6 +55,7 @@ export interface McpClickEvent {
 	tabId: string;
 	x: number;
 	y: number;
+	button?: 'left' | 'right' | 'middle';
 	timestamp: number;
 	source: 'mcp';
 }
@@ -357,11 +360,12 @@ export class BrowserMcpControl extends EventEmitter {
 	/**
 	 * Emit cursor position event with MCP source
 	 */
-	emitCursorPosition(tabId: string, x: number, y: number): void {
+	emitCursorPosition(tabId: string, x: number, y: number, pressed = false): void {
 		const event: McpCursorEvent = {
 			tabId,
 			x,
 			y,
+			pressed,
 			timestamp: Date.now(),
 			source: 'mcp'
 		};
@@ -372,11 +376,12 @@ export class BrowserMcpControl extends EventEmitter {
 	/**
 	 * Emit cursor click event with MCP source
 	 */
-	emitCursorClick(tabId: string, x: number, y: number): void {
+	emitCursorClick(tabId: string, x: number, y: number, button: 'left' | 'right' | 'middle' = 'left'): void {
 		const event: McpClickEvent = {
 			tabId,
 			x,
 			y,
+			button,
 			timestamp: Date.now(),
 			source: 'mcp'
 		};

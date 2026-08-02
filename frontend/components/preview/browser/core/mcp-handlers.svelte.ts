@@ -13,8 +13,15 @@ import type { TabManager } from './tab-manager.svelte';
 
 export interface McpHandlerConfig {
 	tabManager: TabManager;
-	transformBrowserToDisplayCoordinates?: (x: number, y: number) => { x: number, y: number } | null;
-	onCursorUpdate?: (x: number, y: number, clicking?: boolean) => void;
+	/**
+	 * Cursor updates are handed up in *page* coordinates, not screen ones.
+	 *
+	 * Converting here meant dropping the event whenever the canvas had not
+	 * painted yet (no bitmap, no painted rect, no conversion) — and a dropped
+	 * cursor event never comes back. The panel keeps the page position and
+	 * re-projects it whenever the canvas geometry changes instead.
+	 */
+	onCursorUpdate?: (x: number, y: number, clicking?: boolean, pressed?: boolean) => void;
 	onCursorHide?: () => void;
 	onLaunchRequest?: (url: string, deviceSize: string, rotation: string, sessionId?: string) => void;
 }
@@ -23,7 +30,7 @@ export interface McpHandlerConfig {
  * Create MCP event handler
  */
 export function createMcpHandler(config: McpHandlerConfig) {
-	const { tabManager, transformBrowserToDisplayCoordinates, onCursorUpdate, onCursorHide, onLaunchRequest } = config;
+	const { tabManager, onCursorUpdate, onCursorHide, onLaunchRequest } = config;
 
 	// Controlled tabs are owned by the always-on dock sync (single source of
 	// truth); read that shared set so the badge/lock stays correct even when this
@@ -119,26 +126,40 @@ export function createMcpHandler(config: McpHandlerConfig) {
 
 	// Private handlers
 
-	function handleCursorPosition(data: { sessionId: string; x: number; y: number; timestamp: number; source: 'mcp' }) {
-		// Only show cursor if this tab is controlled AND user is viewing it
+	/**
+	 * Hand an agent cursor event up to the panel.
+	 *
+	 * The only gate is "is this the tab on screen" — there is nothing to draw
+	 * on otherwise. It deliberately does *not* also require the tab to be in
+	 * the controlled set: these events are only ever emitted by an agent, and
+	 * control-start is a separate message that can arrive after the first
+	 * gesture, so gating on it can hide the cursor for an entire run.
+	 */
+	function applyCursor(
+		data: { sessionId: string; x: number; y: number; pressed?: boolean },
+		clicking: boolean
+	) {
 		const activeTab = tabManager.tabs.find(t => t.id === tabManager.activeTabId);
-		if (activeTab?.sessionId === data.sessionId && controlledSessionIds().has(data.sessionId) && transformBrowserToDisplayCoordinates) {
-			const transformedPosition = transformBrowserToDisplayCoordinates(data.x, data.y);
-			if (transformedPosition && onCursorUpdate) {
-				onCursorUpdate(transformedPosition.x, transformedPosition.y, false);
-			}
+
+		if (!activeTab?.sessionId) {
+			debug.log('preview', `🖱️ [mcp-cursor] dropped: no session on the active tab (event for ${data.sessionId})`);
+			return;
 		}
+
+		if (activeTab.sessionId !== data.sessionId) {
+			debug.log('preview', `🖱️ [mcp-cursor] dropped: event for ${data.sessionId}, viewing ${activeTab.sessionId}`);
+			return;
+		}
+
+		onCursorUpdate?.(data.x, data.y, clicking, data.pressed);
+	}
+
+	function handleCursorPosition(data: { sessionId: string; x: number; y: number; pressed?: boolean; timestamp: number; source: 'mcp' }) {
+		applyCursor(data, false);
 	}
 
 	function handleCursorClick(data: { sessionId: string; x: number; y: number; timestamp: number; source: 'mcp' }) {
-		// Only show cursor click if this tab is controlled AND user is viewing it
-		const activeTab = tabManager.tabs.find(t => t.id === tabManager.activeTabId);
-		if (activeTab?.sessionId === data.sessionId && controlledSessionIds().has(data.sessionId) && transformBrowserToDisplayCoordinates) {
-			const transformedPosition = transformBrowserToDisplayCoordinates(data.x, data.y);
-			if (transformedPosition && onCursorUpdate) {
-				onCursorUpdate(transformedPosition.x, transformedPosition.y, true);
-			}
-		}
+		applyCursor(data, true);
 	}
 
 	function handleTestCompleted(_data: { sessionId: string; timestamp: number; source: 'mcp' }) {

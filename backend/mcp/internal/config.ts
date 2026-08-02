@@ -33,26 +33,9 @@ import { getMcpServiceToken } from './service-token';
 export const mcpServersConfig: Record<ServerName, ServerConfig> = {
 	"browser-automation": {
 		enabled: true,
-		tools: [
-			// Tab Management
-			"list_tabs",
-			"switch_tab",
-			"open_new_tab",
-			"close_tab",
-
-			// Navigation
-			"navigate",
-
-			// Browser Actions
-			"actions",
-
-			// Page Inspection
-			"analyze_dom",
-			"take_screenshot",
-			"get_console_logs",
-			"clear_console_logs",
-			"execute_console",
-		]
+		// One tool. Every browser capability is an action inside `actions`, so a
+		// whole interaction is one call and the agent decides what to batch.
+		tools: ["actions"]
 	}
 };
 
