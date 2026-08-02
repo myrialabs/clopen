@@ -429,44 +429,38 @@
 	{/if}
 
 	<!-- Address bar row -->
-	<div class="flex items-center gap-1 px-2 py-1.5">
+	<div class="flex items-center gap-2 px-2 py-1.5">
 		<!-- Navigation cluster -->
 		<div class="flex shrink-0 items-center gap-0.5">
 			<button
 				type="button"
 				onclick={() => onBack()}
 				disabled={!canGoBack || isMcpControlled}
-				class="flex items-center justify-center rounded-md text-slate-500 transition-colors hover:bg-slate-100 hover:text-slate-800 disabled:cursor-not-allowed disabled:opacity-35 disabled:hover:bg-transparent dark:hover:bg-slate-800 dark:hover:text-slate-100 {isMobile
-					? 'h-9 w-9'
-					: 'h-7 w-7'}"
+				class="flex items-center justify-center rounded-md text-slate-500 transition-colors hover:bg-slate-100 hover:text-slate-800 disabled:cursor-not-allowed disabled:opacity-35 disabled:hover:bg-transparent dark:hover:bg-slate-800 dark:hover:text-slate-100 h-7 w-7"
 				title="Back"
 				aria-label="Back"
 			>
-				<Icon name="lucide:arrow-left" class={isMobile ? 'h-5 w-5' : 'h-4 w-4'} />
+				<Icon name="lucide:arrow-left" class="h-4 w-4" />
 			</button>
 			<button
 				type="button"
 				onclick={() => onForward()}
 				disabled={!canGoForward || isMcpControlled}
-				class="flex items-center justify-center rounded-md text-slate-500 transition-colors hover:bg-slate-100 hover:text-slate-800 disabled:cursor-not-allowed disabled:opacity-35 disabled:hover:bg-transparent dark:hover:bg-slate-800 dark:hover:text-slate-100 {isMobile
-					? 'h-9 w-9'
-					: 'h-7 w-7'}"
+				class="flex items-center justify-center rounded-md text-slate-500 transition-colors hover:bg-slate-100 hover:text-slate-800 disabled:cursor-not-allowed disabled:opacity-35 disabled:hover:bg-transparent dark:hover:bg-slate-800 dark:hover:text-slate-100 h-7 w-7"
 				title="Forward"
 				aria-label="Forward"
 			>
-				<Icon name="lucide:arrow-right" class={isMobile ? 'h-5 w-5' : 'h-4 w-4'} />
+				<Icon name="lucide:arrow-right" class="h-4 w-4" />
 			</button>
 			<button
 				type="button"
 				onclick={() => (isBusy ? onStop() : onRefresh())}
 				disabled={isMcpControlled || !url}
-				class="flex items-center justify-center rounded-md text-slate-500 transition-colors hover:bg-slate-100 hover:text-slate-800 disabled:cursor-not-allowed disabled:opacity-35 disabled:hover:bg-transparent dark:hover:bg-slate-800 dark:hover:text-slate-100 {isMobile
-					? 'h-9 w-9'
-					: 'h-7 w-7'}"
+				class="flex items-center justify-center rounded-md text-slate-500 transition-colors hover:bg-slate-100 hover:text-slate-800 disabled:cursor-not-allowed disabled:opacity-35 disabled:hover:bg-transparent dark:hover:bg-slate-800 dark:hover:text-slate-100 h-7 w-7"
 				title={isBusy ? 'Stop loading' : 'Reload'}
 				aria-label={isBusy ? 'Stop loading' : 'Reload'}
 			>
-				<Icon name={isBusy ? 'lucide:x' : 'lucide:refresh-cw'} class={isMobile ? 'h-5 w-5' : 'h-4 w-4'} />
+				<Icon name={isBusy ? 'lucide:x' : 'lucide:refresh-cw'} class="h-4 w-4" />
 			</button>
 		</div>
 
@@ -509,7 +503,7 @@
 					type="button"
 					onclick={() => onGoClick()}
 					disabled={isMcpControlled}
-					class="shrink-0 rounded-full bg-violet-500 px-2.5 py-0.5 text-[11px] font-medium text-white transition-colors hover:bg-violet-600 disabled:opacity-50"
+					class="shrink-0 rounded-full bg-violet-500 px-2.5 py-0.5 text-2xs font-medium text-white transition-colors hover:bg-violet-600 disabled:opacity-50"
 					title="Go"
 				>
 					Go
@@ -524,13 +518,11 @@
 					type="button"
 					onclick={() => onToggleKeyboard()}
 					disabled={!url}
-					class="flex items-center justify-center rounded-md text-slate-500 transition-colors hover:bg-slate-100 hover:text-slate-800 disabled:opacity-35 dark:hover:bg-slate-800 dark:hover:text-slate-100 {isMobile
-						? 'h-9 w-9'
-						: 'h-7 w-7'}"
+					class="flex items-center justify-center rounded-md text-slate-500 transition-colors hover:bg-slate-100 hover:text-slate-800 disabled:opacity-35 dark:hover:bg-slate-800 dark:hover:text-slate-100 h-7 w-7"
 					title="Show keyboard"
 					aria-label="Show keyboard"
 				>
-					<Icon name="lucide:keyboard" class={isMobile ? 'h-5 w-5' : 'h-4 w-4'} />
+					<Icon name="lucide:keyboard" class="h-4 w-4" />
 				</button>
 			{/if}
 
@@ -539,17 +531,15 @@
 				onclick={() => onToggleConsole()}
 				class="relative flex items-center justify-center rounded-md transition-colors {isConsoleOpen
 					? 'bg-violet-500/10 text-violet-600 dark:text-violet-400'
-					: 'text-slate-500 hover:bg-slate-100 hover:text-slate-800 dark:hover:bg-slate-800 dark:hover:text-slate-100'} {isMobile
-					? 'h-9 w-9'
-					: 'h-7 w-7'}"
+					: 'text-slate-500 hover:bg-slate-100 hover:text-slate-800 dark:hover:bg-slate-800 dark:hover:text-slate-100'} h-7 w-7"
 				title="Toggle console"
 				aria-label="Toggle console"
 				aria-pressed={isConsoleOpen}
 			>
-				<Icon name="lucide:terminal" class={isMobile ? 'h-5 w-5' : 'h-4 w-4'} />
+				<Icon name="lucide:terminal" class="h-4 w-4" />
 				{#if consoleIssueCount > 0 && !isConsoleOpen}
 					<span
-						class="absolute -right-0.5 -top-0.5 flex h-3.5 min-w-3.5 items-center justify-center rounded-full bg-red-500 px-1 text-[9px] font-semibold leading-none text-white"
+						class="absolute -right-0.5 -top-0.5 flex h-3.5 min-w-3.5 items-center justify-center rounded-full bg-red-500 px-1 text-5xs font-semibold leading-none text-white"
 					>
 						{consoleIssueCount > 99 ? '99+' : consoleIssueCount}
 					</span>
@@ -560,13 +550,11 @@
 				<button
 					type="button"
 					onclick={() => handleOpenInExternalBrowser()}
-					class="flex items-center justify-center rounded-md text-slate-500 transition-colors hover:bg-slate-100 hover:text-slate-800 dark:hover:bg-slate-800 dark:hover:text-slate-100 {isMobile
-						? 'h-9 w-9'
-						: 'h-7 w-7'}"
+					class="flex items-center justify-center rounded-md text-slate-500 transition-colors hover:bg-slate-100 hover:text-slate-800 dark:hover:bg-slate-800 dark:hover:text-slate-100 h-7 w-7"
 					title="Open in your browser"
 					aria-label="Open in your browser"
 				>
-					<Icon name="lucide:external-link" class={isMobile ? 'h-5 w-5' : 'h-4 w-4'} />
+					<Icon name="lucide:external-link" class="h-4 w-4" />
 				</button>
 			{/if}
 		</div>

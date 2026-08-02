@@ -65,6 +65,15 @@ export function createMcpHandler(config: McpHandlerConfig) {
 				handleTestCompleted(data);
 			}),
 
+			// The precise end-of-control signal: the tab is handed back the moment
+			// the owning chat session releases it, which is when the pointer stops
+			// meaning anything. `chat:complete` below is the backstop for a stream
+			// that ends without ever reaching the release path.
+			ws.on('preview:browser-mcp-control-end', (data) => {
+				const activeTab = tabManager.tabs.find(t => t.id === tabManager.activeTabId);
+				if (activeTab?.sessionId === data.browserTabId) onCursorHide?.();
+			}),
+
 			// Hide cursor when the entire Claude request finishes or is stopped
 			ws.on('chat:complete', () => {
 				if (onCursorHide) onCursorHide();

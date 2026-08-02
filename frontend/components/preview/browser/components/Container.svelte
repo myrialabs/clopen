@@ -34,11 +34,22 @@
 			y: 0,
 			visible: false
 		}),
-		mcpVirtualCursor = $bindable<{ x: number; y: number; visible: boolean; clicking?: boolean; pressed?: boolean }>({
-			x: 0,
-			y: 0,
-			visible: false
-		}),
+		/**
+		 * The agent's pointer, in *page* coordinates.
+		 *
+		 * Projected here rather than by the panel because everything the
+		 * projection needs — the canvas, the fit scale, the container's own
+		 * origin — lives at this level. Handing the panel screen coordinates to
+		 * pass back down meant the conversion ran before the canvas had painted
+		 * and the position was dropped for good.
+		 */
+		mcpCursorPage = { x: 0, y: 0, visible: false } as {
+			x: number;
+			y: number;
+			visible: boolean;
+			clicking?: boolean;
+			pressed?: boolean;
+		},
 		lastFrameData = $bindable<any>(null), // Add lastFrameData prop
 
 		// MCP Control State
@@ -60,6 +71,52 @@
 
 	let previewContainer = $state<HTMLDivElement | undefined>();
 	let touchCursorPos = $state<{ x: number; y: number; visible: boolean; clicking?: boolean }>({ x: 0, y: 0, visible: false });
+
+	type OverlayCursor = { x: number; y: number; visible: boolean; clicking?: boolean; pressed?: boolean };
+
+	const HIDDEN_CURSOR: OverlayCursor = { x: 0, y: 0, visible: false };
+
+	/**
+	 * Viewport → container-local.
+	 *
+	 * The canvas answers in viewport coordinates because `getBoundingClientRect`
+	 * is the only thing that knows where the frame ended up. The cursors are
+	 * drawn as absolutely-positioned children of this container, so its own
+	 * origin has to come back off again — see VirtualCursor for why they are no
+	 * longer `position: fixed`.
+	 */
+	function toLocalCursor(cursor: Partial<OverlayCursor> | null | undefined): OverlayCursor {
+		if (!cursor?.visible) return HIDDEN_CURSOR;
+		const rect = previewContainer?.getBoundingClientRect();
+		if (!rect) return HIDDEN_CURSOR;
+		return {
+			...cursor,
+			visible: true,
+			x: (cursor.x ?? 0) - rect.left,
+			y: (cursor.y ?? 0) - rect.top
+		};
+	}
+
+	/** The agent's pointer, page coordinates → where to draw it. */
+	const mcpCursor = $derived.by((): OverlayCursor => {
+		const page = mcpCursorPage;
+		// Geometry dependencies: any of these moves where a page point lands, so
+		// a cursor that arrived before the canvas could answer is re-projected
+		// the moment it can.
+		void previewDimensions;
+		void deviceSize;
+		void rotation;
+
+		if (!page?.visible) return HIDDEN_CURSOR;
+
+		const screen = canvasAPI?.pageToScreen?.(page.x, page.y);
+		if (!screen) return HIDDEN_CURSOR;
+
+		return toLocalCursor({ ...page, ...screen });
+	});
+
+	const localVirtualCursor = $derived(toLocalCursor(virtualCursor));
+	const localTouchCursor = $derived(toLocalCursor(touchCursorPos));
 
 	// Solid loading overlay: shown during initial load states
 	// Skip when lastFrameData exists (tab was previously loaded - snapshot handles display)
@@ -524,18 +581,18 @@
 	{/if}
 
 	<!-- Virtual Cursor - User -->
-	{#if !isMcpControlled}
-		<VirtualCursor cursor={virtualCursor} variant="user" />
+	{#if !isMcpControlled && localVirtualCursor.visible}
+		<VirtualCursor cursor={localVirtualCursor} variant="user" />
 	{/if}
 
 	<!-- Touch Cursor - shown in cursor simulation mode -->
-	{#if touchMode === 'cursor' && touchCursorPos.visible}
-		<VirtualCursor cursor={touchCursorPos} variant="user" />
+	{#if touchMode === 'cursor' && localTouchCursor.visible}
+		<VirtualCursor cursor={localTouchCursor} variant="user" />
 	{/if}
 
-	<!-- Agent cursor. Amber, and always on top of the user's own. -->
-	{#if mcpVirtualCursor.visible}
-		<VirtualCursor cursor={mcpVirtualCursor} variant="mcp" />
+	<!-- Agent cursor. Amber, labelled, and always on top of the user's own. -->
+	{#if mcpCursor.visible}
+		<VirtualCursor cursor={mcpCursor} variant="mcp" label="Agent" />
 	{/if}
 </div>
 

@@ -8,11 +8,16 @@
  * of them fails outright and the preview stops behaving like a browser the
  * moment a page asks for anything real.
  *
- * Also stands in for the Fullscreen API. Real fullscreen resizes the renderer to
- * the browser *window*, which throws away the emulated viewport the preview is
- * built on — the page comes back zoomed, off-centre and letterboxed, with no way
- * out because the exit affordance lives in browser chrome that does not exist
- * here. A CSS-based fullscreen keeps the viewport intact and stays exitable.
+ * Also stands in for the Fullscreen API. Real fullscreen collapses the surface
+ * Chrome composites to the browser *window* and leaves it there, so the preview
+ * comes back cropped and zoomed with no way out — the exit affordance lives in
+ * browser chrome that does not exist here. A CSS-based fullscreen leaves the
+ * captured surface alone and stays exitable, and
+ * the requests Chrome makes on the page's behalf — the button on its own media
+ * controls, which is C++ and never touches these patches — are caught after the
+ * fact and converted. Picture-in-Picture, which has no such equivalent, is
+ * reported as unavailable instead of dropping the video into a window nobody can
+ * see.
  *
  * Runs in **every** frame. Cross-origin frames have no binding of their own, so
  * they relay through the top frame over `postMessage`, keyed by the same
@@ -645,31 +650,79 @@ export function hostBridgeScript(bindingName: string) {
 	}
 
 	// ── Fullscreen ──────────────────────────────────────────────────────────
-	// Chrome's real fullscreen resizes the renderer to the browser window, which
-	// discards the emulated viewport the whole preview pipeline is built on: the
-	// captured frame comes back zoomed, off-centre and letterboxed, and survives
-	// a reload because the renderer stays in that state. A CSS fullscreen gives
-	// the page what it asked for without touching the viewport.
+	// Chrome's real fullscreen resizes the surface it composites down to the
+	// browser window, and leaves it there once the fullscreen ends. The page goes
+	// on being laid out against the emulated viewport the whole time, so what the
+	// preview captures is that layout seen through a window-sized hole: zoomed,
+	// cropped at the right and the bottom, and stuck that way until a reload,
+	// because nothing in the page ever noticed. A CSS fullscreen gives the page
+	// what it asked for and leaves the surface alone.
+	//
+	// Which means *every* spelling has to be covered, not just the standard one.
+	// A single unpatched entry point — `video.webkitEnterFullscreen()`, which
+	// media players still reach for — hands the renderer straight to Chrome, and
+	// that is exactly the cropped state that then survives the exit.
 	{
 		const STYLE_ID = '__clopen-fullscreen-style';
+		const MAX_Z = 2147483647;
+		/** How long the exit hint stays up before fading, as in Chrome itself. */
+		const EXIT_HINT_MS = 3200;
+		/** What counts as "the user is still there" and brings the hint back. */
+		const ACTIVITY_EVENTS = ['mousemove', 'touchstart', 'keydown'];
+
 		let fullscreenElement: Element | null = null;
+		let exitButton: HTMLElement | null = null;
+		let hideHintTimer: ReturnType<typeof setTimeout> | undefined;
+
+		// Captured before the patches further down shadow them. Every replacement
+		// below is installed as an *own* property of `document`, while the real
+		// `fullscreenElement` and `exitFullscreen` live on `Document.prototype` — so
+		// the originals stay reachable, and reading them is the only way to tell an
+		// actual browser fullscreen from the one this shim fakes.
+		const readNativeElement = ((): (() => Element | null) => {
+			for (const key of ['fullscreenElement', 'webkitFullscreenElement']) {
+				const descriptor = Object.getOwnPropertyDescriptor(Document.prototype, key);
+				if (descriptor?.get) return descriptor.get.bind(document) as () => Element | null;
+			}
+			return () => null;
+		})();
+
+		const nativeExit = ((): (() => unknown) | null => {
+			const target = document as Document & { webkitExitFullscreen?: () => unknown };
+			const fn = target.exitFullscreen || target.webkitExitFullscreen;
+			return typeof fn === 'function' ? fn.bind(document) : null;
+		})();
 
 		const ensureStyle = () => {
 			if (document.getElementById(STYLE_ID)) return;
 			const style = document.createElement('style');
 			style.id = STYLE_ID;
+			// `100%` of the fixed containing block, not `100vw`/`100vh`: viewport
+			// units include the scrollbar gutter, so the element overhung the
+			// visible area by however wide that is.
+			//
+			// The black background is scoped to replaced content, which is the only
+			// thing `object-fit: contain` letterboxes and therefore the only place
+			// bars need filling. Applied to everything, it repainted a fullscreened
+			// container black over whatever background the page had given it.
 			style.textContent = `
 				[data-clopen-fullscreen] {
 					position: fixed !important;
 					inset: 0 !important;
-					width: 100vw !important;
-					height: 100vh !important;
-					max-width: 100vw !important;
-					max-height: 100vh !important;
+					width: 100% !important;
+					height: 100% !important;
+					max-width: none !important;
+					max-height: none !important;
+					min-width: 0 !important;
+					min-height: 0 !important;
 					margin: 0 !important;
-					z-index: 2147483647 !important;
-					background: #000;
-					object-fit: contain;
+					z-index: ${MAX_Z} !important;
+				}
+				video[data-clopen-fullscreen],
+				img[data-clopen-fullscreen],
+				canvas[data-clopen-fullscreen] {
+					object-fit: contain !important;
+					background: #000 !important;
 				}
 				html.clopen-fullscreen-active, body.clopen-fullscreen-active {
 					overflow: hidden !important;
@@ -678,68 +731,218 @@ export function hostBridgeScript(bindingName: string) {
 			(document.head || document.documentElement).appendChild(style);
 		};
 
-		const notify = () => {
-			const event = new Event('fullscreenchange', { bubbles: true });
-			document.dispatchEvent(event);
-			document.dispatchEvent(new Event('webkitfullscreenchange', { bubbles: true }));
+		/**
+		 * Bring the hint back and start its countdown again.
+		 *
+		 * It stays clickable while faded — the fade is there so the corner of a
+		 * video is not permanently covered, not to withdraw the way out. A phone
+		 * has no pointer to move, so a tap has to land on something.
+		 */
+		const revealExitButton = () => {
+			if (!exitButton) return;
+			exitButton.style.opacity = '1';
+			clearTimeout(hideHintTimer);
+			hideHintTimer = setTimeout(() => {
+				if (exitButton) exitButton.style.opacity = '0.12';
+			}, EXIT_HINT_MS);
+		};
+
+		/**
+		 * The exit affordance.
+		 *
+		 * Rendered inside the page on purpose: it is then part of the captured
+		 * frame and answers a normal click or tap, so it works on a phone and on
+		 * a second viewer's screen. Anything app-side would need a channel of its
+		 * own and would still miss the pages that swallow Escape.
+		 *
+		 * It fades the way Chrome's own "Press Esc to exit full screen" notice
+		 * does and returns on the next sign of life. A badge pinned over the
+		 * corner of a video for the whole of playback is not what full screen
+		 * looks like anywhere else.
+		 */
+		const showExitButton = () => {
+			if (exitButton) {
+				revealExitButton();
+				return;
+			}
+
+			const button = document.createElement('button');
+			button.type = 'button';
+			button.setAttribute('data-clopen-fullscreen-ui', '');
+			button.textContent = 'Exit full screen (Esc)';
+			button.style.cssText = [
+				'position:fixed',
+				'top:12px',
+				'right:12px',
+				`z-index:${MAX_Z}`,
+				'margin:0',
+				'padding:6px 12px',
+				'border:0',
+				'border-radius:9999px',
+				'font:500 12px/1.4 system-ui,-apple-system,Segoe UI,sans-serif',
+				'color:#fff',
+				'background:rgba(15,23,42,0.82)',
+				'box-shadow:0 2px 10px rgba(0,0,0,0.45)',
+				'cursor:pointer',
+				'opacity:1',
+				'transition:opacity 220ms ease'
+			].join(';');
+			button.addEventListener('click', (event) => {
+				event.preventDefault();
+				event.stopPropagation();
+				void exit();
+			});
+			(document.body || document.documentElement).appendChild(button);
+			exitButton = button;
+
+			// Capture phase: a player that swallows pointer events over its own
+			// surface would otherwise keep the hint from ever coming back.
+			for (const type of ACTIVITY_EVENTS) {
+				document.addEventListener(type, revealExitButton, true);
+			}
+			revealExitButton();
+		};
+
+		const removeChrome = () => {
+			clearTimeout(hideHintTimer);
+			hideHintTimer = undefined;
+			for (const type of ACTIVITY_EVENTS) {
+				document.removeEventListener(type, revealExitButton, true);
+			}
+			exitButton?.remove();
+			exitButton = null;
+		};
+
+		/**
+		 * Chrome fires this *on the element*; listeners on `document` only see it
+		 * because it bubbles. Dispatching it on `document` alone therefore never
+		 * reached a player that listens on its own container — which left the page
+		 * convinced it was still fullscreen after the exit, laying out its content
+		 * for a viewport it no longer had.
+		 */
+		const notify = (target: EventTarget | null) => {
+			const on = target && (target as Node).isConnected ? target : document;
+			for (const type of ['fullscreenchange', 'webkitfullscreenchange', 'mozfullscreenchange']) {
+				on.dispatchEvent(new Event(type, { bubbles: true, composed: true }));
+			}
+		};
+
+		const clearMarks = (element: Element | null) => {
+			if (!element) return;
+			element.removeAttribute('data-clopen-fullscreen');
 		};
 
 		const enter = (element: Element) => {
 			ensureStyle();
-			if (fullscreenElement && fullscreenElement !== element) {
-				fullscreenElement.removeAttribute('data-clopen-fullscreen');
-			}
+			if (fullscreenElement && fullscreenElement !== element) clearMarks(fullscreenElement);
+
 			fullscreenElement = element;
-			element.setAttribute('data-clopen-fullscreen', '');
+			// The root and the body already fill the viewport; pinning them as
+			// fixed boxes only breaks their own layout.
+			if (element !== document.documentElement && element !== document.body) {
+				element.setAttribute('data-clopen-fullscreen', '');
+			}
 			document.documentElement.classList.add('clopen-fullscreen-active');
 			document.body?.classList.add('clopen-fullscreen-active');
-			notify();
+			showExitButton();
+			notify(element);
 			return Promise.resolve();
 		};
 
 		const exit = () => {
-			if (!fullscreenElement) return Promise.resolve();
-			fullscreenElement.removeAttribute('data-clopen-fullscreen');
+			const previous = fullscreenElement;
+			if (!previous) return Promise.resolve();
+
+			clearMarks(previous);
 			fullscreenElement = null;
 			document.documentElement.classList.remove('clopen-fullscreen-active');
 			document.body?.classList.remove('clopen-fullscreen-active');
-			notify();
+			removeChrome();
+			notify(previous);
 			return Promise.resolve();
 		};
 
-		define(Element.prototype, 'requestFullscreen', nativeLike(function requestFullscreen(this: Element) {
-			return enter(this);
-		} as never, 'requestFullscreen'));
-		define(Element.prototype, 'webkitRequestFullscreen', nativeLike(function webkitRequestFullscreen(this: Element) {
-			return enter(this);
-		} as never, 'webkitRequestFullscreen'));
-		define(Element.prototype, 'webkitRequestFullScreen', nativeLike(function webkitRequestFullScreen(this: Element) {
-			return enter(this);
-		} as never, 'webkitRequestFullScreen'));
+		/**
+		 * Read the current element, dropping it if the page has since replaced it.
+		 *
+		 * A re-render (any framework will do) can detach the node that went
+		 * fullscreen. Reporting a detached element keeps the page in fullscreen
+		 * mode forever with nothing on screen to leave it by — so the read itself
+		 * is where that state gets cleaned up.
+		 */
+		const currentElement = (): Element | null => {
+			if (fullscreenElement && !fullscreenElement.isConnected) void exit();
+			return fullscreenElement;
+		};
 
-		define(document, 'exitFullscreen', nativeLike(function exitFullscreen() {
-			return exit();
-		} as never, 'exitFullscreen'));
-		define(document, 'webkitExitFullscreen', nativeLike(function webkitExitFullscreen() {
-			return exit();
-		} as never, 'webkitExitFullscreen'));
+		// A fresh function per name: `nativeLike` stamps `fn.name`, so one shared
+		// implementation would end up reporting whichever alias was installed last.
+		const enterFrom = (name: string) =>
+			nativeLike(function (this: Element) {
+				return enter(this);
+			} as never, name);
+
+		for (const key of [
+			'requestFullscreen',
+			'webkitRequestFullscreen',
+			'webkitRequestFullScreen',
+			'mozRequestFullScreen',
+			'msRequestFullscreen'
+		]) {
+			define(Element.prototype, key, enterFrom(key));
+		}
+
+		// Media players reach for these before the standard API when they think
+		// they are on iOS. In Chrome they are real, and they are real *browser*
+		// fullscreen — the one path that wrecks the emulated viewport.
+		if (typeof HTMLVideoElement !== 'undefined') {
+			define(HTMLVideoElement.prototype, 'webkitEnterFullscreen', enterFrom('webkitEnterFullscreen'));
+			define(HTMLVideoElement.prototype, 'webkitEnterFullScreen', enterFrom('webkitEnterFullScreen'));
+			define(HTMLVideoElement.prototype, 'webkitExitFullscreen', nativeLike(function webkitExitFullscreen() {
+				return exit();
+			} as never, 'webkitExitFullscreen'));
+			try {
+				Object.defineProperty(HTMLVideoElement.prototype, 'webkitSupportsFullscreen', {
+					configurable: true,
+					get: () => true
+				});
+				Object.defineProperty(HTMLVideoElement.prototype, 'webkitDisplayingFullscreen', {
+					configurable: true,
+					get(this: Element) {
+						return currentElement() === this;
+					}
+				});
+			} catch {
+				// Already non-configurable in this engine.
+			}
+		}
+
+		for (const key of ['exitFullscreen', 'webkitExitFullscreen', 'webkitCancelFullScreen', 'mozCancelFullScreen', 'msExitFullscreen']) {
+			define(document, key, nativeLike(function exitFullscreen() {
+				return exit();
+			} as never, key));
+		}
 
 		try {
-			for (const key of ['fullscreenElement', 'webkitFullscreenElement']) {
+			for (const key of ['fullscreenElement', 'webkitFullscreenElement', 'mozFullScreenElement', 'msFullscreenElement']) {
 				Object.defineProperty(document, key, {
 					configurable: true,
-					get: () => fullscreenElement
+					get: () => currentElement()
 				});
 			}
-			for (const key of ['fullscreenEnabled', 'webkitFullscreenEnabled']) {
+			for (const key of ['fullscreenEnabled', 'webkitFullscreenEnabled', 'mozFullScreenEnabled', 'msFullscreenEnabled']) {
 				Object.defineProperty(document, key, { configurable: true, get: () => true });
+			}
+			for (const key of ['webkitIsFullScreen', 'mozFullScreen']) {
+				Object.defineProperty(document, key, { configurable: true, get: () => currentElement() !== null });
 			}
 		} catch {
 			// Already non-configurable in this engine.
 		}
 
-		// Escape is how every browser leaves fullscreen, and it is the only exit
-		// the page itself can offer once browser chrome is out of the picture.
+		// Escape is how every browser leaves fullscreen. It stays, but it is no
+		// longer the only way out — a preview is often driven from a phone, where
+		// there is no Escape key to press.
 		document.addEventListener(
 			'keydown',
 			(event: KeyboardEvent) => {
@@ -751,15 +954,190 @@ export function hostBridgeScript(bindingName: string) {
 			true
 		);
 
+		// ── Fullscreen that never went through JavaScript ────────────────────
+		//
+		// The fullscreen button on a `<video controls>` bar is not scripted. Chrome
+		// draws those controls itself and its button asks for fullscreen from C++,
+		// so every patch above is stepped over and the surface collapses after all
+		// — the zoomed, cropped, unexitable frame this whole block exists to avoid.
+		// Double-clicking a video takes the same route.
+		//
+		// Nothing inside the page can stop that from happening. It can, however, be
+		// seen the instant it does, and undone: leave Chrome's fullscreen and replay
+		// the request as the CSS one, which is indistinguishable to the person who
+		// pressed the button.
+		//
+		// The round trip is hidden from the page. Left visible it reads as fullscreen
+		// starting and immediately ending, which is precisely how a player decides
+		// the user backed out — and it would then tear down its own fullscreen
+		// layout underneath us.
+		let unwinding = false;
+		let unwindTimer: ReturnType<typeof setTimeout> | undefined;
+
+		const finishUnwind = () => {
+			unwinding = false;
+			clearTimeout(unwindTimer);
+			unwindTimer = undefined;
+		};
+
+		const onNativeFullscreenChange = (event: Event) => {
+			// Synthetic events are this shim's own, and they are the ones the page
+			// is meant to hear.
+			if (!event.isTrusted) return;
+
+			const native = readNativeElement();
+
+			if (unwinding) {
+				event.stopImmediatePropagation();
+				// Chrome fires the prefixed alias alongside the standard event, so
+				// the pair has to clear before the guard drops — a same-task reset
+				// would let the second one through as a spurious exit.
+				if (!native) setTimeout(finishUnwind, 0);
+				return;
+			}
+
+			// A trusted exit with nothing left in fullscreen is Chrome tidying up
+			// after itself; there is nothing to convert.
+			if (!native) return;
+
+			event.stopImmediatePropagation();
+			unwinding = true;
+
+			/**
+			 * Have the host re-assert the emulated viewport.
+			 *
+			 * Unconditionally, because the page cannot tell whether it is needed.
+			 * What Chrome's fullscreen strands is the surface it composites — the
+			 * frames the capture is cut from collapse to the window and stay there
+			 * after the exit. The layout viewport is untouched throughout, so
+			 * `innerWidth` and everything measurable from here reports business as
+			 * usual while the preview is quietly cropped.
+			 */
+			let restoreSent = false;
+			const restoreHost = () => {
+				if (restoreSent) return;
+				restoreSent = true;
+				void call('viewport-restore').catch(() => {
+					// No bridge in this frame and no top frame to relay through; the
+					// CSS fullscreen still stands regardless.
+				});
+			};
+
+			// A promise that never settles, or a browser that fires no closing
+			// event, must not wedge every later toggle — or skip the restore.
+			unwindTimer = setTimeout(() => {
+				finishUnwind();
+				restoreHost();
+			}, 2000);
+
+			try {
+				const result = nativeExit?.() as Promise<void> | undefined;
+				if (result && typeof result.then === 'function') {
+					// One frame after the exit resolves: the renderer resizes back
+					// asynchronously, and measuring before it has would report the
+					// fullscreen geometry and ask for a restore that is not needed.
+					result.then(
+						() => requestAnimationFrame(restoreHost),
+						() => {
+							finishUnwind();
+							restoreHost();
+						}
+					);
+				} else {
+					requestAnimationFrame(restoreHost);
+				}
+			} catch {
+				finishUnwind();
+				restoreHost();
+			}
+
+			// The same element twice means the built-in button was pressed while
+			// this shim already had it full screen — which, to whoever pressed it,
+			// is the request to come back out.
+			if (fullscreenElement === native) void exit();
+			else void enter(native);
+		};
+
+		for (const type of ['fullscreenchange', 'webkitfullscreenchange']) {
+			document.addEventListener(type, onNativeFullscreenChange, true);
+		}
+
 		// A video going fullscreen usually also asks to lock orientation, which
 		// would throw here and abort the page's own handler.
 		const orientation = (screen as unknown as { orientation?: Record<string, unknown> }).orientation;
-		if (orientation && typeof orientation.lock !== 'function') {
+		if (orientation) {
 			define(orientation, 'lock', nativeLike(function lock() {
 				return Promise.resolve();
 			} as never, 'lock'));
-			define(orientation, 'unlock', nativeLike(function unlock() {} as never, 'unlock'));
+			if (typeof orientation.unlock !== 'function') {
+				define(orientation, 'unlock', nativeLike(function unlock() {} as never, 'unlock'));
+			}
 		}
+	}
+
+	// ── Picture-in-Picture ──────────────────────────────────────────────────
+	// The fullscreen problem again, minus any way to answer it: Picture-in-Picture
+	// moves the video into an operating-system window, and a headless renderer has
+	// no windows. The video leaves the page and is simply never seen again. The
+	// button that sends it there is Chrome's own, so it cannot be intercepted on
+	// the way out either.
+	//
+	// So the preview presents itself as a browser where the feature is unavailable
+	// — a state the web already knows how to handle. The built-in button drops out
+	// of the controls, feature detection reports it off, and a scripted request is
+	// refused the way a policy-blocked one is.
+	{
+		const withhold = (event: Event) => {
+			const video = event.target as HTMLVideoElement | null;
+			if (!video || typeof HTMLVideoElement === 'undefined') return;
+			if (video instanceof HTMLVideoElement && !video.disablePictureInPicture) {
+				video.disablePictureInPicture = true;
+			}
+		};
+
+		// Media events do not bubble, but a capture listener still sees them on the
+		// way down to the target — which catches every video, including ones added
+		// later, without watching the whole document for them.
+		for (const type of ['loadstart', 'loadedmetadata', 'play']) {
+			document.addEventListener(type, withhold, true);
+		}
+
+		try {
+			Object.defineProperty(document, 'pictureInPictureEnabled', {
+				configurable: true,
+				get: () => false
+			});
+		} catch {
+			// Already non-configurable in this engine.
+		}
+
+		if (typeof HTMLVideoElement !== 'undefined') {
+			define(
+				HTMLVideoElement.prototype,
+				'requestPictureInPicture',
+				nativeLike(function requestPictureInPicture() {
+					return Promise.reject(
+						namedError('SecurityError', 'Picture-in-Picture is not available in this preview')
+					);
+				} as never, 'requestPictureInPicture')
+			);
+		}
+
+		// Whatever still slips through — a Chrome build with different controls, a
+		// route added later — must not take the video off screen for good.
+		document.addEventListener(
+			'enterpictureinpicture',
+			() => {
+				const exitPip = (document as Document & { exitPictureInPicture?: () => Promise<void> })
+					.exitPictureInPicture;
+				try {
+					void exitPip?.call(document).catch(() => {});
+				} catch {
+					// Nothing else to try; the video is out of reach either way.
+				}
+			},
+			true
+		);
 	}
 
 	// ── Clipboard ───────────────────────────────────────────────────────────

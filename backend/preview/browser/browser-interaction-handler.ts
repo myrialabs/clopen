@@ -189,11 +189,151 @@ export class BrowserInteractionHandler extends EventEmitter {
 		opts: { steps?: number; pressed?: boolean; totalMs?: number } = {}
 	) {
 		const from = this.getCurrentMousePosition(sessionId);
+
+		// Already there. Animating anyway would still cost the full duration, and
+		// a batch that works one control repeatedly pays that on every action.
+		// Never skipped while the button is held: a drag needs its real moves.
+		if (!opts.pressed && Math.abs(from.x - to.x) < 2 && Math.abs(from.y - to.y) < 2) {
+			await page.mouse.move(to.x, to.y);
+			this.publishCursor(sessionId, to.x, to.y);
+			return;
+		}
+
 		await this.mcpMouseMove(page, from.x, from.y, to.x, to.y, opts.steps ?? 8, {
 			pressed: opts.pressed,
 			totalMs: opts.totalMs
 		});
 		this.publishCursor(sessionId, to.x, to.y, opts.pressed);
+	}
+
+	/**
+	 * Walk the *overlay* pointer to a point, dispatching no real input.
+	 *
+	 * Half the actions never touch the mouse — keyboard chords, `focus`,
+	 * `select_option`, touch gestures, reads — which left them with nothing on
+	 * screen: the page changed and no cursor explained why. Driving the real
+	 * pointer there instead would be worse than silent, because hovering is an
+	 * input the agent never asked for: it opens menus, arms tooltips, and for a
+	 * read it can change the very value being read.
+	 */
+	private async glideOverlay(sessionId: string, to: { x: number; y: number }, steps = 6) {
+		const from = this.getCurrentMousePosition(sessionId);
+
+		if (Math.abs(from.x - to.x) < 2 && Math.abs(from.y - to.y) < 2) {
+			this.publishCursor(sessionId, to.x, to.y);
+			return;
+		}
+
+		for (let i = 1; i <= steps; i++) {
+			// Same ease-out as the real glide, so the two read as one pointer.
+			const t = 1 - Math.pow(1 - i / steps, 3);
+			this.publishCursor(
+				sessionId,
+				Math.round(from.x + (to.x - from.x) * t),
+				Math.round(from.y + (to.y - from.y) * t)
+			);
+			await sleep(16);
+		}
+
+		this.publishCursor(sessionId, to.x, to.y);
+	}
+
+	/**
+	 * Point the overlay at whatever an action is about to act on.
+	 *
+	 * Resolution failure is swallowed: this is telemetry, and the action itself
+	 * is about to resolve the same target and report the real error.
+	 */
+	private async showTarget(
+		sessionId: string,
+		page: Page,
+		action: BrowserAutonomousAction,
+		target: BrowserActionTarget | undefined,
+		opts: { pulse?: boolean } = {}
+	) {
+		if (!target) return;
+
+		try {
+			const point = await resolveTarget(page, target, { scrollIntoView: !action.noScroll });
+			await this.glideOverlay(sessionId, point);
+			if (opts.pulse) this.publishClick(sessionId, point.x, point.y);
+		} catch {
+			// Nothing to point at — the action's own resolve will say why.
+		}
+	}
+
+	/**
+	 * The same, for an element the action has already resolved. Preferred where
+	 * a handle is at hand: re-resolving the target would sweep every frame a
+	 * second time purely to draw a cursor.
+	 */
+	private async showHandle(
+		sessionId: string,
+		handle: ElementHandle<Element>,
+		opts: { pulse?: boolean } = {}
+	) {
+		const box = await handle.boundingBox().catch(() => null);
+		if (!box) return;
+
+		const point = {
+			x: Math.round(box.x + box.width / 2),
+			y: Math.round(box.y + box.height / 2)
+		};
+
+		await this.glideOverlay(sessionId, point);
+		if (opts.pulse) this.publishClick(sessionId, point.x, point.y);
+	}
+
+	/**
+	 * Where the keyboard is aimed, in page coordinates.
+	 *
+	 * Keystrokes carry no coordinates, so the focused field is the only honest
+	 * answer to "where is this going" — and without it typing is the one gesture
+	 * that changes the page with the pointer parked somewhere unrelated.
+	 */
+	private async focusedPoint(page: Page): Promise<{ x: number; y: number } | null> {
+		try {
+			return await page.evaluate(() => {
+				let element: Element | null = document.activeElement;
+
+				// A shadow root keeps its own activeElement; the outer document only
+				// names the host, whose box is the whole component rather than the
+				// field inside it.
+				while (element && (element as HTMLElement).shadowRoot?.activeElement) {
+					element = (element as HTMLElement).shadowRoot!.activeElement;
+				}
+
+				if (!element || element === document.body || element === document.documentElement) return null;
+
+				const rect = element.getBoundingClientRect();
+				if (rect.width === 0 || rect.height === 0) return null;
+				// Scrolled out of sight — pointing off-viewport would draw the cursor
+				// outside the frame entirely.
+				if (rect.bottom < 0 || rect.right < 0 || rect.top > innerHeight || rect.left > innerWidth) return null;
+
+				return {
+					x: Math.round(rect.left + rect.width / 2),
+					y: Math.round(rect.top + rect.height / 2)
+				};
+			});
+		} catch {
+			return null;
+		}
+	}
+
+	/** Point the overlay at the focused field, for gestures that are pure keyboard. */
+	private async showFocused(sessionId: string, page: Page, opts: { pulse?: boolean } = {}) {
+		const point = await this.focusedPoint(page);
+		if (!point) {
+			// Nothing focused: keep the pointer asserted where it is, so the run
+			// never goes dark mid-batch.
+			const parked = this.getCurrentMousePosition(sessionId);
+			this.publishCursor(sessionId, parked.x, parked.y);
+			return;
+		}
+
+		await this.glideOverlay(sessionId, point);
+		if (opts.pulse) this.publishClick(sessionId, point.x, point.y);
 	}
 
 	/** "Control+Shift+K" → modifiers to hold plus the key to press. */
@@ -247,6 +387,13 @@ export class BrowserInteractionHandler extends EventEmitter {
 		// Store session ID on page for cursor tracking
 		(page as any).__sessionId = sessionId;
 
+		// Show the pointer before the first gesture, parked where the last batch
+		// left it. Otherwise the only cursor events in a run are the ones a glide
+		// emits, so a batch that opens with a keystroke or a scroll moves the page
+		// with nothing on screen to attribute it to.
+		const parked = this.getCurrentMousePosition(sessionId);
+		this.publishCursor(sessionId, parked.x, parked.y);
+
 		for (let i = 0; i < actions.length; i++) {
 			// Check if session is still valid before each action
 			if (!isValidSession()) {
@@ -294,7 +441,10 @@ export class BrowserInteractionHandler extends EventEmitter {
 		// Emit test completed event to hide virtual cursor
 		this.emit('test-completed', {
 			sessionId: session.id,
-			timestamp: Date.now()
+			timestamp: Date.now(),
+			// Part of the wire contract for this event; without it the payload
+			// fails the shape the client is typed against.
+			source: 'mcp'
 		});
 
 		return { results, aborted: false };
@@ -315,6 +465,11 @@ export class BrowserInteractionHandler extends EventEmitter {
 		if (action.type === 'extract_data') {
 			const identifier = action.selector ?? action.target?.selector;
 			if (!identifier) throw new Error('extract_data needs a selector');
+
+			// Overlay only, and no pulse: a read is not a click, and driving the
+			// real pointer over the element could fire the hover handlers that
+			// change what is about to be read.
+			await this.showTarget(sessionId, session.page, action, { selector: identifier });
 
 			const extracted = await this.extractData(session.page, identifier, action.attribute, action.all);
 			if (extracted.error) throw new Error(extracted.error);
@@ -341,6 +496,11 @@ export class BrowserInteractionHandler extends EventEmitter {
 		switch (action.type) {
 			case 'wait': {
 				const ms = action.delay ?? 1000;
+				// A wait has nowhere to point, but it is often the longest step in a
+				// batch — re-asserting the parked pointer keeps the overlay alive
+				// rather than letting the run appear to have stopped.
+				const parked = this.getCurrentMousePosition(sessionId);
+				this.publishCursor(sessionId, parked.x, parked.y);
 				await sleep(ms);
 				return `waited ${ms}ms`;
 			}
@@ -443,6 +603,11 @@ export class BrowserInteractionHandler extends EventEmitter {
 					await this.glideTo(sessionId, page, point, { steps: 4 });
 					await sleep(50);
 					described = point.described;
+				} else {
+					// A page scroll applies wherever the pointer already is, so that
+					// is what the overlay should be showing while the page moves.
+					const parked = this.getCurrentMousePosition(sessionId);
+					this.publishCursor(sessionId, parked.x, parked.y);
 				}
 
 				const deltaX = action.deltaX ?? 0;
@@ -470,6 +635,10 @@ export class BrowserInteractionHandler extends EventEmitter {
 					this.publishClick(sessionId, point.x, point.y);
 					await page.mouse.click(point.x, point.y);
 					await sleep(40);
+				} else {
+					// No target: the text goes wherever focus already is, so point at
+					// that instead of leaving the pointer stranded elsewhere.
+					await this.showFocused(sessionId, page, { pulse: true });
 				}
 
 				const shouldClear = action.clearFirst !== false;
@@ -499,6 +668,8 @@ export class BrowserInteractionHandler extends EventEmitter {
 				const { modifiers, key } = this.parseChord(chord);
 				if (!key) throw new Error(`press could not find a key in "${chord}"`);
 
+				await this.showFocused(sessionId, page, { pulse: true });
+
 				for (const modifier of modifiers) await page.keyboard.down(modifier);
 				try {
 					await page.keyboard.press(key as KeyInput);
@@ -513,6 +684,8 @@ export class BrowserInteractionHandler extends EventEmitter {
 
 			case 'paste': {
 				if (typeof action.text !== 'string') throw new Error('paste needs `text`');
+
+				await this.showFocused(sessionId, page, { pulse: true });
 
 				// Insert through CDP rather than synthesising Ctrl+V: the headless
 				// browser's clipboard is not the agent's, and insertText raises the
@@ -534,6 +707,7 @@ export class BrowserInteractionHandler extends EventEmitter {
 				const handle = await resolveHandle(page, target, { scrollIntoView: !action.noScroll });
 				if (!handle) throw new Error('focus found no visible element');
 				try {
+					await this.showHandle(sessionId, handle, { pulse: true });
 					await handle.evaluate((el) => (el as HTMLElement).focus());
 				} finally {
 					await handle.dispose().catch(() => {});
@@ -547,8 +721,11 @@ export class BrowserInteractionHandler extends EventEmitter {
 				if (target) {
 					const point = await this.pointFor(page, action, target);
 					await this.glideTo(sessionId, page, point, { steps: 6 });
+					this.publishClick(sessionId, point.x, point.y);
 					await page.mouse.click(point.x, point.y);
 					await sleep(40);
+				} else {
+					await this.showFocused(sessionId, page, { pulse: true });
 				}
 
 				await page.keyboard.down('Control');
@@ -567,6 +744,10 @@ export class BrowserInteractionHandler extends EventEmitter {
 				if (!handle) throw new Error('select_option found no visible <select>');
 
 				try {
+					// The <select> is driven through the DOM because its popup is
+					// browser-owned, so the pointer is the only sign anything happened.
+					await this.showHandle(sessionId, handle, { pulse: true });
+
 					const chosen = await handle.evaluate(
 						(el, value, label, index) => {
 							const select = el as HTMLSelectElement;
@@ -611,6 +792,7 @@ export class BrowserInteractionHandler extends EventEmitter {
 				if (!handle) throw new Error('upload found no visible file input');
 
 				try {
+					await this.showHandle(sessionId, handle, { pulse: true });
 					await (handle as ElementHandle<HTMLInputElement>).uploadFile(...action.files);
 					return `uploaded ${action.files.length} file(s)`;
 				} finally {
@@ -620,6 +802,10 @@ export class BrowserInteractionHandler extends EventEmitter {
 
 			case 'tap': {
 				const point = await this.pointFor(page, action);
+				// Overlay only — a real mouse move before a touch gesture would add
+				// a hover the agent never asked for, on exactly the mobile layouts
+				// where hover and touch take different code paths.
+				await this.glideOverlay(sessionId, point);
 				await this.withTouch(page, async (client) => {
 					await client.send('Input.dispatchTouchEvent', {
 						type: 'touchStart',
@@ -643,6 +829,10 @@ export class BrowserInteractionHandler extends EventEmitter {
 				const to = await resolveTarget(page, toTarget, { scrollIntoView: !action.noScroll });
 				const steps = action.steps ?? 12;
 				const totalMs = action.durationMs ?? 300;
+
+				// Walk to where the finger lands first, or the pointer teleports and
+				// the swipe reads as having started from nowhere.
+				await this.glideOverlay(sessionId, from);
 
 				await this.withTouch(page, async (client) => {
 					await client.send('Input.dispatchTouchEvent', {
@@ -679,6 +869,8 @@ export class BrowserInteractionHandler extends EventEmitter {
 				const startSpread = 60;
 				const endSpread = Math.max(10, startSpread * scale);
 
+				await this.glideOverlay(sessionId, centre);
+
 				await this.withTouch(page, async (client) => {
 					const points = (spread: number) => [
 						{ x: Math.round(centre.x - spread), y: Math.round(centre.y), id: 1 },
@@ -686,6 +878,10 @@ export class BrowserInteractionHandler extends EventEmitter {
 					];
 
 					await client.send('Input.dispatchTouchEvent', { type: 'touchStart', touchPoints: points(startSpread) });
+					// Two fingers, one overlay pointer: held at the centre for the
+					// duration, which at least says where the gesture is anchored.
+					this.publishCursor(sessionId, centre.x, centre.y, true);
+
 					for (let s = 1; s <= steps; s++) {
 						const spread = startSpread + (endSpread - startSpread) * (s / steps);
 						await client.send('Input.dispatchTouchEvent', { type: 'touchMove', touchPoints: points(spread) });
@@ -693,6 +889,7 @@ export class BrowserInteractionHandler extends EventEmitter {
 					}
 					await client.send('Input.dispatchTouchEvent', { type: 'touchEnd', touchPoints: [] });
 				});
+				this.publishCursor(sessionId, centre.x, centre.y, false);
 
 				return `pinch ×${scale} at (${Math.round(centre.x)}, ${Math.round(centre.y)})`;
 			}

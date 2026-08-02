@@ -10,6 +10,7 @@ import { BrowserNativeUIHandler } from './browser-native-ui-handler.js';
 import { BrowserHostBridge, type HostResponse } from './browser-host-bridge.js';
 import { browserMcpControl } from './browser-mcp-control.js';
 import { ws } from '$backend/utils/ws';
+import { getViewportDimensions } from '$shared/constants/preview.js';
 import { debug } from '$shared/utils/logger';
 import type {
 	BrowserTab,
@@ -191,6 +192,13 @@ export class BrowserPreviewService extends EventEmitter {
 
 		// Forward host bridge events (capability requests + relayed downloads)
 		this.hostBridge.on('request', (data) => {
+			// Not every bridge request is a question for the viewer. Restoring the
+			// emulated viewport is the host's own business, and raising a prompt for
+			// it would put an unanswerable dialog on every screen watching the tab.
+			if (data.kind === 'viewport-restore') {
+				void this.restoreEmulatedViewport(data.tabId, data.requestId);
+				return;
+			}
 			this.emit('preview:browser-host-request', data);
 		});
 		this.hostBridge.on('download', (data) => {
@@ -629,6 +637,46 @@ export class BrowserPreviewService extends EventEmitter {
 			return false;
 		}
 		return await this.videoCapture.requestKeyframe(tabId, tab);
+	}
+
+	/**
+	 * Re-assert the emulated viewport after the renderer was resized behind the
+	 * emulation's back.
+	 *
+	 * Chrome's own fullscreen — the button on its built-in media controls, which
+	 * no injected script can intercept — resizes the surface the renderer
+	 * composites to the browser window, and leaves it there once the fullscreen
+	 * ends. The page is still laid out against the emulated viewport, so what
+	 * comes back is that layout seen through a window-sized hole: zoomed, cropped
+	 * at the right and the bottom, and stranded that way until a reload.
+	 *
+	 * Nothing in the page reflects it — `innerWidth` and the visual viewport both
+	 * read correctly the entire time — so there is nothing to test before acting.
+	 * Re-sending the identical metrics override is what puts the surface back, and
+	 * it only happens on a fullscreen the page did not ask for, which is rare
+	 * enough that the restart it costs is not worth trying to avoid.
+	 */
+	private async restoreEmulatedViewport(tabId: string, requestId: string): Promise<void> {
+		try {
+			const tab = this.getTab(tabId);
+			if (tab) {
+				const { width, height } = getViewportDimensions(tab.deviceSize, tab.rotation);
+
+				// The capture path re-sends the override and recomputes the screencast
+				// geometry with it. With no stream running there is no geometry to
+				// recompute and the override is all that is needed.
+				const restored = await this.videoCapture.updateViewport(tabId, tab, width, height);
+				if (!restored) await tab.page.setViewport({ width, height });
+
+				debug.log('preview', `🖥️ Restored emulated viewport for tab ${tabId}: ${width}x${height}`);
+			}
+		} catch (error) {
+			debug.warn('preview', `⚠️ Could not restore the emulated viewport for tab ${tabId}:`, error);
+		} finally {
+			// The page holds a promise on this. Nothing awaits it, but an unsettled
+			// request sits in the pending map until it times out.
+			this.hostBridge.respond(requestId, { ok: true });
+		}
 	}
 
 	async updateWebCodecsViewport(tabId: string, width: number, height: number): Promise<boolean> {

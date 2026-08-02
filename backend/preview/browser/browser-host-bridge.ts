@@ -38,7 +38,11 @@ export type HostRequestKind =
 	| 'notification-show'
 	| 'speech-start'
 	| 'speech-stop'
-	| 'file-pick';
+	| 'file-pick'
+	// Not a capability and never shown to anyone: the page reporting that Chrome
+	// resized the renderer behind the emulation's back, so the host can put the
+	// viewport it captures from back the way it was. Answered by the service.
+	| 'viewport-restore';
 
 export interface HostRequestEvent {
 	tabId: string;
@@ -105,7 +109,10 @@ const REQUEST_TIMEOUT_MS: Record<HostRequestKind, number> = {
 	// Only the handshake is timed; results stream back as events afterwards.
 	'speech-start': 120_000,
 	'speech-stop': 5_000,
-	'file-pick': 300_000
+	'file-pick': 300_000,
+	// Nobody is asked anything — this is the host talking to itself, and the page
+	// is blocked on it while a screencast restarts.
+	'viewport-restore': 15_000
 };
 
 /**

@@ -119,16 +119,11 @@
 	/**
 	 * The agent's cursor, in *page* coordinates.
 	 *
-	 * Kept separately from what is drawn because the projection to screen
-	 * coordinates can fail — before the canvas has painted a frame there is no
-	 * painted rect to map against. Projecting on arrival meant those events
-	 * were dropped for good; keeping the page position lets the effect below
-	 * re-project it as soon as the canvas can answer.
+	 * Kept in page space all the way down to the Container, which owns the
+	 * projection. Converting on arrival meant the event was dropped whenever the
+	 * canvas had not painted yet — and a dropped cursor event never comes back.
 	 */
 	let mcpCursorPage = $state<{x: number, y: number, visible: boolean, clicking?: boolean, pressed?: boolean}>({
-		x: 0, y: 0, visible: false, clicking: false, pressed: false
-	});
-	let mcpVirtualCursor = $state<{x: number, y: number, visible: boolean, clicking?: boolean, pressed?: boolean}>({
 		x: 0, y: 0, visible: false, clicking: false, pressed: false
 	});
 	let mcpClickResetTimer: ReturnType<typeof setTimeout> | null = null;
@@ -852,53 +847,24 @@
 		return mcpHandler.isCurrentTabMcpControlled();
 	}
 
-	// Hide MCP virtual cursor when switching to a non-MCP-controlled tab
-	$effect(() => {
-		void activeTabId; // track activeTabId changes
-		if (!isCurrentTabMcpControlled()) {
-			mcpCursorPage = { x: 0, y: 0, visible: false, clicking: false, pressed: false };
-		}
-	});
-
 	/**
-	 * Project the agent's cursor from page coordinates onto the screen.
+	 * Drop the agent's cursor when the panel starts showing a different tab.
 	 *
-	 * Re-runs on canvas geometry changes as well as on cursor movement, so a
-	 * position that arrived before the canvas had painted — when the projection
-	 * has nothing to map against — lands as soon as it can, instead of being
-	 * silently dropped the way it was when conversion happened on arrival.
+	 * Keyed on the tab alone, deliberately. Gating this on "is the tab still in
+	 * the controlled set" instead re-ran it on *every* tab mutation — a console
+	 * line, a title push, a stream flag — and control-start arrives as its own
+	 * message, which can land after the first gestures. So the opening moves of
+	 * a run were cleared before they were ever drawn, which is the one stretch
+	 * where seeing the pointer matters most.
 	 */
+	let lastCursorTabId: string | null = null;
 	$effect(() => {
-		const page = mcpCursorPage;
-		// Geometry dependencies: any of these moves where a page point lands.
-		void previewDimensions;
-		void canvasAPI;
-		void deviceSize;
-		void rotation;
-
-		// Read what is currently drawn without depending on it — this effect
-		// writes that same state, and a self-dependency would re-run it for its
-		// own writes.
-		const drawn = untrack(() => mcpVirtualCursor);
-
-		if (!page.visible) {
-			if (drawn.visible) mcpVirtualCursor = { ...drawn, visible: false };
-			return;
-		}
-
-		const projected = transformBrowserToDisplayCoordinates(page.x, page.y);
-		if (!projected) {
-			debug.log('preview', `🖱️ [mcp-cursor] canvas cannot project (${page.x}, ${page.y}) yet — retrying when it is ready`);
-			return;
-		}
-
-		mcpVirtualCursor = {
-			x: projected.x,
-			y: projected.y,
-			visible: true,
-			clicking: page.clicking,
-			pressed: page.pressed
-		};
+		const tabId = activeTabId;
+		if (tabId === lastCursorTabId) return;
+		lastCursorTabId = tabId;
+		untrack(() => {
+			mcpCursorPage = { x: 0, y: 0, visible: false, clicking: false, pressed: false };
+		});
 	});
 
 	// Stream message handling
@@ -999,7 +965,7 @@
 				bind:isStreamReady
 				bind:errorMessage
 				bind:virtualCursor
-				bind:mcpVirtualCursor
+				{mcpCursorPage}
 				bind:canvasAPI
 				bind:previewDimensions
 				bind:lastFrameData={currentTabLastFrameData}

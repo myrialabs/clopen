@@ -2,6 +2,13 @@
 	/**
 	 * Overlay pointer.
 	 *
+	 * Positioned **absolutely inside the preview container**, not fixed. Fixed
+	 * only agrees with viewport coordinates while nothing up the tree establishes
+	 * a containing block — a single `transform`, `filter` or `backdrop-filter` on
+	 * an ancestor panel silently re-bases it, which lands the cursor a whole panel
+	 * offset away and outside the panel's `overflow: hidden` box. Anchoring to the
+	 * container the frame is painted in cannot drift that way.
+	 *
 	 * `variant` is what tells the two apart on screen: the agent's cursor stays
 	 * amber, the local one is sky blue. Drawn in the same colour, there was no
 	 * way to tell whether the browser was moving on its own.
@@ -16,7 +23,10 @@
 			visible: false,
 			clicking: false
 		}),
-		variant = 'user' as 'user' | 'mcp'
+		variant = 'user' as 'user' | 'mcp',
+		/** Caption trailing the pointer. Only the agent gets one, so an unattended
+		 *  run reads as "something else is driving this", not as a stray cursor. */
+		label = ''
 	} = $props();
 
 	const palette = $derived(
@@ -30,7 +40,7 @@
 
 {#if cursor.visible}
 	<div
-		class="fixed pointer-events-none z-50 transition-all duration-100 ease-out"
+		class="absolute pointer-events-none z-50 transition-all duration-100 ease-out"
 		style="left: {cursor.x}px; top: {cursor.y}px; margin-left: -4.167px; margin-top: -2.5px;"
 	>
 		<!-- Cursor body with fixed size -->
@@ -57,6 +67,14 @@
 				opacity="0.7"
 			/>
 		</svg>
+
+		{#if label}
+			<span
+				class="absolute left-4 top-4 whitespace-nowrap rounded-full bg-amber-500 px-1.5 py-px text-[10px] font-semibold leading-4 text-slate-900 shadow-md"
+			>
+				{label}
+			</span>
+		{/if}
 
 		<!-- Click ripple effect - only show when clicking -->
 		{#if cursor.clicking}
