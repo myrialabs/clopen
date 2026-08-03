@@ -3,7 +3,7 @@
  */
 
 import { z } from 'zod';
-import { ALL_ACTIONS } from './actions';
+import { ALL_ACTIONS } from './actions/index';
 
 const members = ALL_ACTIONS.map((action) => action.schema) as unknown as [
 	z.ZodObject<any>,

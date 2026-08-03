@@ -7,7 +7,7 @@
  * is why it can never document an action that no longer exists.
  */
 
-import { ACTION_GROUPS } from './actions';
+import { ACTION_GROUPS } from './actions/index';
 
 const PREAMBLE = `Drive the built-in preview browser: tabs, navigation, input, and reading the page.
 

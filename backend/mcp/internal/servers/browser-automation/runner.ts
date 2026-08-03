@@ -20,7 +20,7 @@
 import type { BrowserAutonomousAction, BrowserTab } from '$backend/preview/browser/types';
 import { projectContextService } from '$backend/mcp/internal/project-context';
 import { debug } from '$shared/utils/logger';
-import { ACTIONS_BY_TYPE } from './actions';
+import { ACTIONS_BY_TYPE } from './actions/index';
 import type { ActionContext, ActionImage, TablessActionContext } from './actions/types';
 import { getActiveTabSession, getPreviewService, peekSessionTab } from './context';
 import { browserMcpControl } from '$backend/preview';
