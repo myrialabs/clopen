@@ -13,6 +13,7 @@ import { commonFields } from './shared';
 export const navigate: ActionDef = {
 	type: 'navigate',
 	kind: 'control',
+	activity: 'Navigating',
 	doc: `navigate {url} — load a URL in the current tab.
   Following a link you already have the href for is cheaper and far more reliable than clicking it. Session state (cookies, storage) is kept.`,
 	schema: z.object({
@@ -33,6 +34,7 @@ export const navigate: ActionDef = {
 export const goBack: ActionDef = {
 	type: 'go_back',
 	kind: 'control',
+	activity: 'Going back',
 	doc: `go_back {steps?} — walk back through the tab's history.`,
 	schema: z.object({
 		type: z.literal('go_back'),
@@ -50,6 +52,7 @@ export const goBack: ActionDef = {
 export const goForward: ActionDef = {
 	type: 'go_forward',
 	kind: 'control',
+	activity: 'Going forward',
 	doc: `go_forward {steps?} — walk forward through the tab's history.`,
 	schema: z.object({
 		type: z.literal('go_forward'),
@@ -67,6 +70,7 @@ export const goForward: ActionDef = {
 export const reload: ActionDef = {
 	type: 'reload',
 	kind: 'control',
+	activity: 'Reloading',
 	doc: `reload {hard?} — reload the page. hard bypasses the cache.`,
 	schema: z.object({
 		type: z.literal('reload'),
@@ -87,6 +91,7 @@ export const reload: ActionDef = {
 export const waitFor: ActionDef = {
 	type: 'wait_for',
 	kind: 'control',
+	activity: 'Waiting for the page',
 	doc: `wait_for {selector|text|urlContains|state, timeout?} — wait for the page to catch up.
   Returns the moment the condition holds, so it costs only what it has to.
   state: visible (default, with selector/text) · hidden · navigation · networkIdle.

@@ -15,6 +15,7 @@ import { resolveWritePath } from '../paths';
 export const find: ActionDef = {
 	type: 'find',
 	kind: 'control',
+	activity: 'Looking for an element',
 	doc: `find {selector?, text?, role?, limit?} — locate elements and get their positions.
   Returns tag, text, a reusable selector and a centre point for each match, iframes included.
   This is the cheap alternative to a screenshot: to click something you can name, find it and click by selector — no image, no vision, no coordinate guessing.`,
@@ -60,6 +61,7 @@ export const find: ActionDef = {
 export const analyzeDom: ActionDef = {
 	type: 'analyze_dom',
 	kind: 'control',
+	activity: 'Reading the page',
 	doc: `analyze_dom {include?} — the page as text: links, headings, content, forms, metadata.
   The primary tool for reading and exploring. Far cheaper than a screenshot and it sees the whole document, not just the part currently on screen — scrolling to "see more" is never necessary.
   include: navigation | structure | content | forms | summary. Omit for all.
@@ -91,6 +93,7 @@ export const analyzeDom: ActionDef = {
 export const screenshot: ActionDef = {
 	type: 'screenshot',
 	kind: 'control',
+	activity: 'Taking a screenshot',
 	doc: `screenshot {fullPage?, selector?, format?, quality?, saveTo?, return?} — capture the page.
   Needed for what the DOM cannot express: canvases, charts, iframes, captchas, and any visual check of layout or styling.
   saveTo writes a file under the project directory; with return:"file" the image is not sent back at all, which is what makes "capture twenty pages" affordable.

@@ -48,6 +48,10 @@ export interface ExistingTabInfo {
 	canGoBack?: boolean;
 	canGoForward?: boolean;
 	isMcpControlled?: boolean;
+	/** The controlled tab the agent is acting on right now. */
+	isMcpFocused?: boolean;
+	/** What the agent is doing on it, for the caption beside its cursor. */
+	mcpActivity?: string;
 }
 
 export interface ExistingTabsResult {

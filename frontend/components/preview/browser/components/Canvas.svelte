@@ -36,7 +36,7 @@
 		onRequestScreencastRefresh = $bindable<() => void>(() => {}), // Called when stream is stuck
 		touchMode = $bindable<'scroll' | 'cursor'>('scroll'),
 		touchTarget = undefined as HTMLElement | undefined, // Container element for touch events
-		onTouchCursorUpdate = $bindable<(pos: { x: number; y: number; visible: boolean; clicking?: boolean }) => void>(() => {})
+		onTouchCursorUpdate = $bindable<(pos: { x: number; y: number; visible: boolean; clicking?: boolean; pressed?: boolean }) => void>(() => {})
 	} = $props();
 
 	/**
@@ -88,21 +88,57 @@
 	let screencastRefreshCount = 0; // Track retry count for stuck detection
 	let navigationJustCompleted = false; // Track if navigation just completed (for fast refresh)
 
+	// Watchdog bookkeeping — see WATCHDOG_* above. Plain locals: nothing renders
+	// from them, and making them reactive would re-run effects once a second.
+	let blankSince = 0;
+	let watchdogRound = 0;
+
 	// Canvas snapshot storage for instant tab switching
 	// Stores a clone of the canvas per sessionId so switching back shows content immediately
 	const canvasSnapshots = new Map<string, HTMLCanvasElement>();
 	const MAX_SNAPSHOTS = 10;
 	let hasRestoredSnapshot = false; // Prevents canvas clear/reset during streaming start
 
-	// Recovery is only triggered by ACTUAL failures, not timeouts
-	// - ICE connection failed
-	// - WebCodecs connection closed unexpectedly
-	// - Explicit errors
+	// Recovery is triggered by ACTUAL failures — ICE failed, the WebCodecs
+	// connection closed unexpectedly, an explicit error — and, as a last resort,
+	// by the watchdog below when none of those fired but there is still no
+	// picture. This bounds how many attempts one *round* makes before backing
+	// off; the watchdog opens the next round.
 	const MAX_CONSECUTIVE_FAILURES = 2;
 	const HEALTH_CHECK_INTERVAL = 2000; // Check every 2 seconds for connection health
 	const FRAME_CHECK_INTERVAL = 100; // Fallback poll for first frame (primary path is onFirstFrame callback)
 	const STUCK_STREAM_TIMEOUT = 3000; // Fallback: Request screencast refresh after 3 seconds of connected but no frame
 	const NAVIGATION_FAST_REFRESH_DELAY = 300; // Fast refresh after navigation: 300ms
+
+	/**
+	 * Last-resort watchdog: how long a session may show nothing before this
+	 * component starts the whole handshake again, and how much longer it waits
+	 * on each further attempt.
+	 *
+	 * Everything above only recovers from a failure it was told about — an ICE
+	 * `failed`, a DataChannel close, a stream that connected and then produced
+	 * no frame. Three ways to end up with no picture and no recovery at all were
+	 * left over, and all three ended in a permanent "Loading preview…":
+	 *
+	 * - `startStreaming()` exhausting its retries. Nothing re-runs it: the
+	 *   streaming effect's dependencies have not changed, so it never fires again.
+	 * - A peer that never reaches `connected`. The stuck-stream ladder is gated
+	 *   on `isConnected`, and ICE can sit in `checking` indefinitely without ever
+	 *   declaring `failed` — much likelier over a Remote Access link than on the
+	 *   host, which is exactly where it was seen to hang forever.
+	 * - `attemptRecovery()` giving up after two tries and stopping the stream for
+	 *   good.
+	 *
+	 * This is deliberately outside all of that: it looks only at whether a frame
+	 * has ever arrived, so it cannot be defeated by a wrong diagnosis. The delay
+	 * grows a little per round to stay out of the way of a link that is merely
+	 * slow, and is capped — a viewer that is looking at a spinner must never be
+	 * left waiting minutes for the next attempt.
+	 */
+	const WATCHDOG_TICK_MS = 1000;
+	const WATCHDOG_FIRST_ESCALATION_MS = 8000;
+	const WATCHDOG_ESCALATION_STEP_MS = 3000;
+	const WATCHDOG_MAX_WAIT_MS = 15000;
 
 	// Sync isStreamReady with hasReceivedFirstFrame for parent component
 	$effect(() => {
@@ -157,6 +193,10 @@
 				lastStartRequestId = null; // Allow new start request for new session
 			}
 			lastTrackedSessionId = currentSessionId;
+			// A new tab starts its own patience: carrying the previous one's
+			// stopwatch over would fire the watchdog on its very first tick.
+			blankSince = 0;
+			watchdogRound = 0;
 		}
 	});
 
@@ -534,6 +574,52 @@
 	let trackpadTwoFingerLastCenterX = 0;
 	let trackpadTwoFingerLastCenterY = 0;
 	let trackpadTwoFingerTotalDist = 0;
+	/**
+	 * A two-finger gesture has happened and not every finger is off the glass.
+	 *
+	 * Fingers never leave together. Whichever one lifts first used to be read as
+	 * the end of the two-finger gesture and the *start* of a single-finger tap,
+	 * so ending a two-finger scroll fired a click wherever the cursor happened
+	 * to be — and the two-finger tap that should have opened a context menu was
+	 * consumed by that same transition before it could be recognised. The
+	 * gesture is now decided the moment the count drops below two, and nothing
+	 * else is read from the remaining fingers until the glass is clear.
+	 */
+	let trackpadGestureSettled = false;
+
+	/**
+	 * Double-tap-and-drag, the trackpad idiom for "press and hold while moving".
+	 *
+	 * Long-press was the only way to start a drag, which costs 600ms before
+	 * anything happens and is unusable for selecting text. A second tap that
+	 * lands quickly and then moves means the same thing and starts immediately;
+	 * one that lands and lifts again is just a double-click.
+	 */
+	let trackpadLastTapAt = 0;
+	let trackpadDoubleTapArmed = false;
+	/** Longest gap between the two taps that still reads as one gesture. */
+	const DOUBLE_TAP_WINDOW_MS = 320;
+
+	/** Show the touch cursor at its current spot, optionally mid-gesture. */
+	function publishTouchCursor(state: { clicking?: boolean; pressed?: boolean } = {}) {
+		if (!canvasElement) return;
+		const pos = canvasToScreen(trackpadCursorX, trackpadCursorY);
+		onTouchCursorUpdate({ x: pos.x, y: pos.y, visible: true, ...state });
+	}
+
+	/**
+	 * Flash the click ripple, then settle back.
+	 *
+	 * A tap on a trackpad surface lands somewhere the finger is not, so without
+	 * a mark on the cursor there is nothing to confirm the tap registered —
+	 * the same reason the agent's pointer draws one.
+	 */
+	function pulseTouchCursor(pressed = false) {
+		publishTouchCursor({ clicking: true, pressed });
+		setTimeout(() => {
+			if (touchMode === 'cursor') publishTouchCursor({ pressed });
+		}, 220);
+	}
 
 	function handleCanvasMouseDown(event: MouseEvent, canvas: HTMLCanvasElement) {
 		if (!sessionId) return;
@@ -1016,8 +1102,12 @@
 		consecutiveFailures++;
 		debug.log('webcodecs', `Recovery attempt ${consecutiveFailures}/${MAX_CONSECUTIVE_FAILURES} for session ${sessionId}`);
 
+		// A burst of failures is a bad moment, not a verdict: back off and let the
+		// watchdog re-arm this counter and try again. Returning here used to be
+		// terminal — the stream stopped and nothing ever restarted it, which is
+		// one of the ways a preview ended up on "Loading preview…" for good.
 		if (consecutiveFailures > MAX_CONSECUTIVE_FAILURES) {
-			debug.error('webcodecs', 'Max recovery attempts reached, giving up');
+			debug.warn('webcodecs', 'Recovery attempts exhausted for now, backing off to the watchdog');
 			isRecovering = false;
 			await stopStreaming();
 			return;
@@ -1097,6 +1187,79 @@
 			isStartingStream = false;
 		}
 	}
+
+	/**
+	 * One watchdog tick. Sees only "is there a picture yet"; see WATCHDOG_* above
+	 * for why it deliberately knows nothing about *why* there isn't one.
+	 */
+	async function watchdogTick() {
+		if (!sessionId || !sessionInfo || !canvasElement) return;
+
+		if (hasReceivedFirstFrame) {
+			blankSince = 0;
+			watchdogRound = 0;
+			return;
+		}
+
+		// Something is already on its way to a frame — starting a second attempt
+		// on top of it is how two streams end up fighting over one canvas. Only
+		// these two, and deliberately not `isNavigating`/`isReconnecting`: those
+		// are set by the page and can stay true indefinitely, which would hand
+		// the stuck state a way to switch the watchdog off.
+		if (isStartingStream || isRecovering) {
+			blankSince = 0;
+			return;
+		}
+
+		const now = Date.now();
+		if (blankSince === 0) {
+			blankSince = now;
+			return;
+		}
+
+		const patience = Math.min(
+			WATCHDOG_FIRST_ESCALATION_MS + watchdogRound * WATCHDOG_ESCALATION_STEP_MS,
+			WATCHDOG_MAX_WAIT_MS
+		);
+		if (now - blankSince < patience) return;
+
+		blankSince = now;
+		watchdogRound++;
+		// A fresh round gets a fresh allowance, so `attemptRecovery` can never be
+		// permanently spent — that is the whole point of the back-off above.
+		consecutiveFailures = 0;
+		connectionFailed = false;
+
+		const stats = webCodecsService?.getStats();
+
+		// Connected, decoding nothing: the source half is the broken one, and
+		// restarting its capture is both cheaper and likelier to work than
+		// re-negotiating a connection that is demonstrably fine.
+		if (isWebCodecsActive && stats?.isConnected) {
+			debug.warn('webcodecs', `Watchdog: connected but blank for ${patience}ms, refreshing capture (round ${watchdogRound})`);
+			onRequestScreencastRefresh();
+			return;
+		}
+
+		debug.warn(
+			'webcodecs',
+			`Watchdog: no frame after ${patience}ms (connection=${stats?.connectionState ?? 'none'}), re-handshaking (round ${watchdogRound})`
+		);
+		await attemptRecovery();
+	}
+
+	// Runs for as long as a tab has a session, independently of whether a stream
+	// was ever successfully started — a failed start is one of the cases this
+	// exists to catch.
+	$effect(() => {
+		if (!sessionId || !sessionInfo) return;
+
+		const timer = setInterval(() => {
+			void watchdogTick();
+		}, WATCHDOG_TICK_MS);
+
+		return () => clearInterval(timer);
+	});
 
 	// Stop WebCodecs streaming
 	async function stopStreaming() {
@@ -1414,8 +1577,10 @@
 				isMouseDown = false;
 				dragStarted = false;
 				touchLongPressed = false;
+				publishTouchCursor();
 			}
 			trackpadTwoFingerActive = true;
+			trackpadGestureSettled = false;
 			trackpadTwoFingerStartTime = Date.now();
 			trackpadTwoFingerTotalDist = 0;
 			const t1 = event.touches[0];
@@ -1425,7 +1590,10 @@
 			return;
 		}
 
-		if (trackpadTwoFingerActive) return; // Ignore until two-finger gesture fully ends
+		// Ignore anything that arrives before the glass is clear: a finger put
+		// back down while the tail of a two-finger gesture is still lifting is
+		// part of that gesture, not the start of a tap.
+		if (trackpadTwoFingerActive || trackpadGestureSettled) return;
 
 		// Single finger
 		const touch = event.touches[0];
@@ -1437,6 +1605,7 @@
 		mouseDownTime = Date.now();
 		dragStarted = false;
 		touchLongPressed = false;
+		trackpadDoubleTapArmed = mouseDownTime - trackpadLastTapAt < DOUBLE_TAP_WINDOW_MS;
 
 		// The tap lands at the virtual cursor, not the finger — probe there.
 		beginKeyboardProbe({ x: Math.round(trackpadCursorX), y: Math.round(trackpadCursorY) });
@@ -1453,6 +1622,9 @@
 				dragStarted = true;
 				cancelKeyboardProbe();
 				sendInteraction({ type: 'mousedown', x: Math.round(trackpadCursorX), y: Math.round(trackpadCursorY), button: 'left' });
+				// Held, not tapped: the cursor shows the button down for as long
+				// as the drag lasts, the way the agent's does.
+				publishTouchCursor({ pressed: true });
 			}
 		}, 600);
 	}
@@ -1486,7 +1658,7 @@
 			return;
 		}
 
-		if (event.touches.length !== 1 || !isMouseDown || trackpadTwoFingerActive) return;
+		if (event.touches.length !== 1 || !isMouseDown || trackpadTwoFingerActive || trackpadGestureSettled) return;
 
 		const touch = event.touches[0];
 		const deltaClientX = touch.clientX - trackpadLastClientX;
@@ -1507,6 +1679,15 @@
 			// Moving the cursor is not a tap; the probed point is no longer where
 			// the gesture will land.
 			cancelKeyboardProbe();
+
+			// The second tap of a double-tap moved: that is a drag, and it starts
+			// from where the cursor already is rather than waiting out a press.
+			if (trackpadDoubleTapArmed && !dragStarted) {
+				trackpadDoubleTapArmed = false;
+				touchLongPressed = true;
+				dragStarted = true;
+				sendInteraction({ type: 'mousedown', x: Math.round(trackpadCursorX), y: Math.round(trackpadCursorY), button: 'left' });
+			}
 		}
 
 		// Convert screen delta → page delta and move cursor
@@ -1517,35 +1698,40 @@
 		// Send mousemove so the browser sees hover state changes
 		sendInteraction({ type: 'mousemove', x: Math.round(trackpadCursorX), y: Math.round(trackpadCursorY) });
 
-		// Update virtual cursor display
-		const pos = canvasToScreen(trackpadCursorX, trackpadCursorY);
-		onTouchCursorUpdate({ x: pos.x, y: pos.y, visible: true });
+		// Update virtual cursor display — held while a long-press drag is running.
+		publishTouchCursor({ pressed: dragStarted });
 	}
 
 	function handleTrackpadTouchEnd(event: TouchEvent) {
 		if (longPressTimer) { clearTimeout(longPressTimer); longPressTimer = null; }
 
 		const remainingTouches = event.touches.length;
+		// The OS took the gesture away — it was never completed, so nothing it
+		// might have meant should be dispatched.
+		const cancelled = event.type === 'touchcancel';
 
 		if (trackpadTwoFingerActive) {
-			if (remainingTouches === 0) {
-				// All fingers lifted: check for two-finger tap → right click
-				const duration = Date.now() - trackpadTwoFingerStartTime;
-				if (duration < 300 && trackpadTwoFingerTotalDist < 20) {
-					sendInteraction({ type: 'rightclick', x: Math.round(trackpadCursorX), y: Math.round(trackpadCursorY) });
-				}
-				trackpadTwoFingerActive = false;
-			} else if (remainingTouches === 1) {
-				// One finger remains: transition back to single-finger tracking
-				const touch = event.touches[0];
-				trackpadLastClientX = touch.clientX;
-				trackpadLastClientY = touch.clientY;
-				trackpadTouchStartClientX = touch.clientX;
-				trackpadTouchStartClientY = touch.clientY;
-				isMouseDown = true;
-				mouseDownTime = Date.now();
-				trackpadTwoFingerActive = false;
+			// Decided here, on the *first* lift, because that is the last moment
+			// the gesture is still recognisable — a two-finger tap only ever
+			// reaches this branch, never the all-fingers-up one.
+			const duration = Date.now() - trackpadTwoFingerStartTime;
+			if (!cancelled && duration < 400 && trackpadTwoFingerTotalDist < 24) {
+				sendInteraction({ type: 'rightclick', x: Math.round(trackpadCursorX), y: Math.round(trackpadCursorY) });
+				pulseTouchCursor();
 			}
+
+			trackpadTwoFingerActive = false;
+			// Whatever is still touching belongs to the gesture just finished.
+			trackpadGestureSettled = remainingTouches > 0;
+			isMouseDown = false;
+			dragStarted = false;
+			touchLongPressed = false;
+			return;
+		}
+
+		if (trackpadGestureSettled) {
+			// Tail of a two-finger gesture. Clear once the glass is.
+			if (remainingTouches === 0) trackpadGestureSettled = false;
 			return;
 		}
 
@@ -1553,6 +1739,7 @@
 
 		if (touchLongPressed && dragStarted) {
 			sendInteraction({ type: 'mouseup', x: Math.round(trackpadCursorX), y: Math.round(trackpadCursorY), button: 'left' });
+			pulseTouchCursor();
 		} else {
 			// Tap: short + minimal movement → left click at cursor position
 			const duration = Date.now() - mouseDownTime;
@@ -1560,18 +1747,31 @@
 				Math.pow(trackpadLastClientX - trackpadTouchStartClientX, 2) +
 				Math.pow(trackpadLastClientY - trackpadTouchStartClientY, 2)
 			);
-			if (duration < 250 && moveDist < 10) {
+			if (!cancelled && duration < 250 && moveDist < 10) {
 				const anchor = { x: Math.round(trackpadCursorX), y: Math.round(trackpadCursorY) };
-				sendInteraction({ type: 'click', x: anchor.x, y: anchor.y });
+				// A second tap that never moved is a double-click, not two clicks:
+				// sending a bare click again would not select a word or open what
+				// a double-click opens.
+				sendInteraction({
+					type: trackpadDoubleTapArmed ? 'doubleclick' : 'click',
+					x: anchor.x,
+					y: anchor.y
+				});
 				settleKeyboard(anchor);
+				pulseTouchCursor();
+				// A completed double-click closes the sequence; a third tap in a
+				// row should start over rather than count as another pair.
+				trackpadLastTapAt = trackpadDoubleTapArmed ? 0 : Date.now();
 			} else {
 				cancelKeyboardProbe();
+				publishTouchCursor();
 			}
 		}
 
 		isMouseDown = false;
 		dragStarted = false;
 		touchLongPressed = false;
+		trackpadDoubleTapArmed = false;
 	}
 
 	// ── Touch event handlers (dispatch to scroll or trackpad mode) ────────────

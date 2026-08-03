@@ -54,6 +54,30 @@
 
 		// MCP Control State
 		isMcpControlled = $bindable(false),
+		/**
+		 * Whether the agent is acting on *this* tab right now, as opposed to
+		 * merely holding it. Only the tab being worked on pulses — with several
+		 * locked at once, a border that pulses on all of them says nothing.
+		 */
+		isMcpFocused = false,
+		/**
+		 * What the agent is doing right now, from the backend. Empty while it
+		 * holds the tab without acting, which reads as a bare "Agent".
+		 */
+		mcpActivity = '' as string,
+
+		/**
+		 * The page has something full screen.
+		 *
+		 * The only way out. The shim used to draw a hint inside the page as well,
+		 * which meant two buttons saying the same thing over one frame — and the
+		 * in-page one was the weaker of the two: a node the page can destroy on a
+		 * re-render, and never drawn at all for a fullscreen Chrome granted from
+		 * its own C++. This control lives outside the page, so nothing in the
+		 * page can take it away.
+		 */
+		isPageFullscreen = false,
+		onExitFullscreen = (() => {}) as () => void,
 
 		// Canvas API
 		canvasAPI = $bindable<any>(null),
@@ -70,7 +94,7 @@
 	} = $props();
 
 	let previewContainer = $state<HTMLDivElement | undefined>();
-	let touchCursorPos = $state<{ x: number; y: number; visible: boolean; clicking?: boolean }>({ x: 0, y: 0, visible: false });
+	let touchCursorPos = $state<{ x: number; y: number; visible: boolean; clicking?: boolean; pressed?: boolean }>({ x: 0, y: 0, visible: false });
 
 	type OverlayCursor = { x: number; y: number; visible: boolean; clicking?: boolean; pressed?: boolean };
 
@@ -97,7 +121,17 @@
 		};
 	}
 
-	/** The agent's pointer, page coordinates → where to draw it. */
+	/**
+	 * The agent's pointer, page coordinates → where to draw it.
+	 *
+	 * Drawn for as long as the agent *holds* the tab, not only while cursor
+	 * events are arriving. Those two are not the same thing, and the difference
+	 * is most of a run: a batch of `type` actions against named selectors, a
+	 * `navigate`, a `screenshot`, a long `wait_for` — none of them necessarily
+	 * moves a pointer, so a lock could be taken and worked with for a minute
+	 * while the preview showed a page changing by itself with nothing on it to
+	 * say why. The lock is the honest signal, so the lock is what decides.
+	 */
 	const mcpCursor = $derived.by((): OverlayCursor => {
 		const page = mcpCursorPage;
 		// Geometry dependencies: any of these moves where a page point lands, so
@@ -106,13 +140,35 @@
 		void previewDimensions;
 		void deviceSize;
 		void rotation;
+		// Readiness dependencies. `pageToScreen` refuses to answer until the
+		// canvas has a bitmap, which is exactly the window an agent starts
+		// working in — it opens a tab and moves immediately, while the first
+		// frame is still in flight. Those early positions were projected to
+		// nothing and, because a parked pointer sends no further updates, the
+		// cursor stayed invisible for the rest of the run. Depending on the
+		// signals that mark the canvas ready re-runs the projection once it can
+		// actually succeed.
+		void isStreamReady;
+		void lastFrameData;
+		void sessionId;
 
-		if (!page?.visible) return HIDDEN_CURSOR;
+		// Read unconditionally: `!page.visible && !controlled` would short-circuit
+		// past it whenever a position is known, and the derived would then not
+		// re-run when the lock is released.
+		const controlled = isMcpControlled;
+		if (!page?.visible && !controlled) return HIDDEN_CURSOR;
 
-		const screen = canvasAPI?.pageToScreen?.(page.x, page.y);
+		// No gesture has placed it yet: park it in the middle of the page rather
+		// than at the origin, which reads as a pointer that got lost in the
+		// corner. The first real event moves it, and it glides there.
+		const size = canvasAPI?.getPageSize?.();
+		const x = page?.visible ? page.x : (size?.width ?? 0) / 2;
+		const y = page?.visible ? page.y : (size?.height ?? 0) / 2;
+
+		const screen = canvasAPI?.pageToScreen?.(x, y);
 		if (!screen) return HIDDEN_CURSOR;
 
-		return toLocalCursor({ ...page, ...screen });
+		return toLocalCursor({ ...page, visible: true, ...screen });
 	});
 
 	const localVirtualCursor = $derived(toLocalCursor(virtualCursor));
@@ -177,8 +233,8 @@
 		}
 	});
 
-	function handleTouchCursorUpdate(pos: { x: number; y: number; visible: boolean; clicking?: boolean }) {
-		touchCursorPos = { x: pos.x, y: pos.y, visible: pos.visible, clicking: pos.clicking };
+	function handleTouchCursorUpdate(pos: { x: number; y: number; visible: boolean; clicking?: boolean; pressed?: boolean }) {
+		touchCursorPos = { x: pos.x, y: pos.y, visible: pos.visible, clicking: pos.clicking, pressed: pos.pressed };
 	}
 
 	onDestroy(() => {
@@ -461,8 +517,10 @@
 	{:else if url}
 		<!-- Scaled container for proper viewport simulation -->
 		<div
-			class="relative flex-shrink-0 {isMcpControlled ? 'ring-2 ring-amber-500 ring-offset-2 ring-offset-slate-900 rounded-xl' : ''}"
-			class:mcp-control-border={isMcpControlled}
+			class="relative flex-shrink-0 {isMcpControlled
+				? `ring-2 ring-offset-2 ring-offset-slate-900 rounded-xl ${isMcpFocused ? 'ring-amber-500' : 'ring-amber-500/40'}`
+				: ''}"
+			class:mcp-control-border={isMcpControlled && isMcpFocused}
 			style="width: {previewDimensions.width}; height: {previewDimensions.height};"
 			in:scale={{ duration: 250, easing: cubicOut, start: 0.95 }}
 			out:scale={{ duration: 200, easing: cubicOut, start: 0.95 }}
@@ -546,6 +604,40 @@
 				</div>
 			{/if}
 
+			<!--
+				App-side way out of a page full screen. Anchored to the screen rect
+				so it sits inside the device frame, above everything the page can
+				draw, and clickable even while an agent holds the tab — being stuck
+				full screen is not something the user should have to wait out.
+			-->
+			{#if isPageFullscreen}
+				<!--
+					Laid out as a right-aligned row over the screen rect rather than
+					offset by hand: the button's own width is not knowable here, and
+					a percentage in `left` would resolve against the frame, not the
+					button. The row ignores pointer events so only the button itself
+					takes them.
+				-->
+				<div
+					class="pointer-events-none absolute z-30 flex justify-end p-3"
+					style="
+						left: {previewDimensions.screenOffsetLeft};
+						top: {previewDimensions.screenOffsetTop};
+						width: {previewDimensions.screenWidth};
+					"
+				>
+					<button
+						type="button"
+						onclick={onExitFullscreen}
+						class="pointer-events-auto flex items-center gap-1.5 rounded-full bg-slate-900/85 px-3 py-1.5 text-xs font-medium text-white shadow-lg backdrop-blur-sm transition-colors hover:bg-slate-900"
+						title="Exit full screen"
+					>
+						<Icon name="lucide:minimize-2" class="h-3.5 w-3.5" />
+						<span>Exit full screen</span>
+					</button>
+				</div>
+			{/if}
+
 			<!-- MCP Control Overlay - blocks user interaction (screen only) -->
 			{#if isMcpControlled && isStreamReady}
 				<div
@@ -587,12 +679,23 @@
 
 	<!-- Touch Cursor - shown in cursor simulation mode -->
 	{#if touchMode === 'cursor' && localTouchCursor.visible}
-		<VirtualCursor cursor={localTouchCursor} variant="user" />
+		<VirtualCursor cursor={localTouchCursor} variant="touch" />
 	{/if}
 
-	<!-- Agent cursor. Amber, labelled, and always on top of the user's own. -->
+	<!--
+		Agent cursor. Amber, labelled, and always on top of the user's own.
+
+		The caption names what the agent is doing when the backend has told us —
+		"Agent · Typing". A bare "Agent" was accurate and useless: it is on screen
+		for whole minutes now, and for that long the interesting question is not
+		who is driving but what they are about to do to the page.
+	-->
 	{#if mcpCursor.visible}
-		<VirtualCursor cursor={mcpCursor} variant="mcp" label="Agent" />
+		<VirtualCursor
+			cursor={mcpCursor}
+			variant="mcp"
+			label={mcpActivity ? `Agent · ${mcpActivity}` : 'Agent'}
+		/>
 	{/if}
 </div>
 

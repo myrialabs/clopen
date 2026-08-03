@@ -49,8 +49,67 @@ export const previewTabManager: TabManager = createTabManager();
  */
 let mcpControlledBackendIds = $state(new Set<string>());
 
+/**
+ * The one controlled tab the agent is acting on right now, if any.
+ *
+ * A lock only says "hands off". Once an agent is working across several tabs
+ * that leaves every one of them looking identical, and the user cannot tell
+ * where to look — they can still browse freely, they just had no way of
+ * knowing which tab was live. Seeded from the backend in load() and kept
+ * current by the focus listener below.
+ */
+let mcpFocusedBackendId = $state<string | null>(null);
+
 export function getMcpControlledBackendIds(): ReadonlySet<string> {
 	return mcpControlledBackendIds;
+}
+
+export function getMcpFocusedBackendId(): string | null {
+	return mcpFocusedBackendId;
+}
+
+/**
+ * What the agent is doing on each controlled tab, in a few words.
+ *
+ * Held next to the control set rather than in the panel, and for the same
+ * reason: the run carries on while the preview is closed, so the caption has to
+ * be right the moment the user looks — not from the next action onwards.
+ */
+let mcpActivityByBackendId = $state<Record<string, string>>({});
+
+export function getMcpActivity(backendTabId: string | null): string | null {
+	return backendTabId ? (mcpActivityByBackendId[backendTabId] ?? null) : null;
+}
+
+function setMcpActivity(backendTabId: string, label: string | null): void {
+	if ((mcpActivityByBackendId[backendTabId] ?? null) === label) return;
+
+	const next = { ...mcpActivityByBackendId };
+	if (label === null) delete next[backendTabId];
+	else next[backendTabId] = label;
+	mcpActivityByBackendId = next;
+}
+
+/**
+ * Backend tab ids whose page is showing something full screen.
+ *
+ * Held here, not in the panel, for the same reason as the lock state: the
+ * event can land while the preview is hidden, and the way out of a full screen
+ * has to be on screen the moment the user looks — not only if they happened to
+ * be watching when it started.
+ */
+let fullscreenBackendIds = $state(new Set<string>());
+
+export function isBackendTabFullscreen(backendTabId: string | null): boolean {
+	return !!backendTabId && fullscreenBackendIds.has(backendTabId);
+}
+
+function setBackendTabFullscreen(backendTabId: string, active: boolean): void {
+	if (active === fullscreenBackendIds.has(backendTabId)) return;
+	const next = new Set(fullscreenBackendIds);
+	if (active) next.add(backendTabId);
+	else next.delete(backendTabId);
+	fullscreenBackendIds = next;
 }
 
 /** Add/remove a backend tab id from the controlled set (reassign for reactivity). */
@@ -113,6 +172,10 @@ function materializeBackendTab(backendTab: ExistingTabInfo): string {
 
 	if (backendTab.isMcpControlled) {
 		setMcpControlled(backendTab.tabId, true);
+		setMcpActivity(backendTab.tabId, backendTab.mcpActivity ?? null);
+	}
+	if (backendTab.isMcpFocused) {
+		mcpFocusedBackendId = backendTab.tabId;
 	}
 
 	return frontendId;
@@ -203,6 +266,9 @@ registerDock({
 		previewTabManager.clearAllTabs();
 		browserCleanup.clearAll();
 		mcpControlledBackendIds = new Set();
+		mcpFocusedBackendId = null;
+		mcpActivityByBackendId = {};
+		fullscreenBackendIds = new Set();
 		restoredSnapshot = null;
 	},
 	snapshot(): TabSnapshotSlot[] {
@@ -362,6 +428,9 @@ export function initPreviewTabSync(): void {
 		previewTabManager.closeTab(tab.id);
 		browserCleanup.unregisterSession(data.tabId);
 		setMcpControlled(data.tabId, false);
+		setMcpActivity(data.tabId, null);
+		setBackendTabFullscreen(data.tabId, false);
+		if (mcpFocusedBackendId === data.tabId) mcpFocusedBackendId = null;
 
 		// Backend-driven close (e.g. MCP) left zero tabs → reseed an empty one so
 		// the panel doesn't render as a void.
@@ -435,6 +504,8 @@ export function initPreviewTabSync(): void {
 		if (!isEventForActiveProject(data)) return;
 
 		setMcpControlled(data.browserTabId, false);
+		setMcpActivity(data.browserTabId, null);
+		if (mcpFocusedBackendId === data.browserTabId) mcpFocusedBackendId = null;
 
 		// Toast when all tabs released.
 		if (mcpControlledBackendIds.size === 0) {
@@ -444,5 +515,25 @@ export function initPreviewTabSync(): void {
 				4000
 			);
 		}
+	});
+
+	// Which locked tab the agent is working on right now. Registered here rather
+	// than in the panel so the tab strip stays truthful even while the preview is
+	// hidden — the marker has to be right the moment the user looks at it.
+	ws.on('preview:browser-mcp-control-focus' as any, (data: any) => {
+		if (!isEventForActiveProject(data)) return;
+		mcpFocusedBackendId = data.browserTabId ?? null;
+	});
+
+	// The caption for the agent's cursor. Unstamped by project on purpose — see
+	// the cursor forwarding in browser-preview-service; `sessionId` is a backend
+	// tab id, and only tabs this project actually holds are ever read from here.
+	ws.on('preview:browser-mcp-activity' as any, (data: any) => {
+		setMcpActivity(data.sessionId, data.label ?? null);
+	});
+
+	ws.on('preview:browser-fullscreen-state' as any, (data: any) => {
+		if (!isEventForActiveProject(data)) return;
+		setBackendTabFullscreen(data.tabId, !!data.active);
 	});
 }

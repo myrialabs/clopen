@@ -540,8 +540,22 @@ export const interactPreviewHandler = createRouter()
 						// Handle viewport change (device/rotation) without reconnection
 						if (action.width && action.height && action.scale && action.scale > 0 && action.scale <= 1) {
 							session.scale = action.scale;
-							if (action.deviceSize) session.deviceSize = action.deviceSize as any;
-							if (action.rotation) session.rotation = action.rotation as any;
+
+							// Routed through the service rather than assigned here.
+							// Writing the fields directly left every *other* viewer of
+							// this tab out of the loop: their picture resized, because
+							// capture geometry follows the page, but their device
+							// selector and the mockup drawn around the canvas both read
+							// the tab's metadata — which nothing told them had changed.
+							// So a phone switched to Tablet from a laptop went on
+							// drawing a laptop frame around a tablet-shaped picture.
+							if (action.deviceSize || action.rotation) {
+								await previewService.setViewport(
+									session.id,
+									(action.deviceSize as any) ?? session.deviceSize,
+									(action.rotation as any) ?? session.rotation
+								);
+							}
 
 							debug.log('preview', `📱 Viewport updated for tab ${tabId}: ${action.width}x${action.height}`);
 

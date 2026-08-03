@@ -23,6 +23,7 @@ import { debug } from '$shared/utils/logger';
 import { ACTIONS_BY_TYPE } from './actions';
 import type { ActionContext, ActionImage, TablessActionContext } from './actions/types';
 import { getActiveTabSession, getPreviewService, peekSessionTab } from './context';
+import { browserMcpControl } from '$backend/preview';
 
 interface ActionArgs {
 	type: string;
@@ -179,10 +180,24 @@ async function runControl(item: { index: number; args: ActionArgs }, deps: RunDe
 		return 1;
 	}
 
+	// Remembered rather than re-read in the `finally`: `close_tab` and
+	// `switch_tab` change what the current tab is, and the caption has to be
+	// taken off the tab it was put on.
+	let labelled: string | null = null;
+
 	try {
 		// The tab actions run on an empty browser — they are how it stops being
 		// empty. Everything else gets a tab opened for it first.
 		const tab = def.needsTab === false ? deps.peekTab() : await deps.resolveTab();
+
+		// Say what is about to happen while it happens. Input gestures label
+		// themselves from inside the engine (see ActionDef.activity); a control
+		// action has no gesture, and is often the longest step in a batch — a
+		// 30-second `wait_for` with a silent cursor on it reads as a hang.
+		if (tab && def.activity) {
+			labelled = tab.id;
+			browserMcpControl.emitActivity(tab.id, def.activity);
+		}
 
 		const output = await def.run(item.args, deps.makeContext(tab));
 		report.steps.push({ index: item.index, type: def.type, ok: true, summary: output.summary, detail: output.detail });
@@ -191,6 +206,11 @@ async function runControl(item: { index: number; args: ActionArgs }, deps: RunDe
 		const message = error instanceof Error ? error.message : 'Unknown error';
 		debug.warn('mcp', `browser action ${item.args.type} failed: ${message}`);
 		report.steps.push({ index: item.index, type: item.args.type, ok: false, error: message });
+	} finally {
+		// Back to a bare "Agent". The pointer stays for as long as the tab is
+		// held; only the caption is tied to a single action, and one left over
+		// from the last step describes a page that has already moved on.
+		if (labelled) browserMcpControl.emitActivity(labelled, null);
 	}
 
 	return 1;

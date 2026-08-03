@@ -146,6 +146,14 @@ export const previewRouter = createRouter()
 		projectId: t.Optional(t.String()),
 		timestamp: t.Number()
 	}))
+	// Which controlled tab the agent is acting on right now. A lock says the
+	// user must not touch a tab; this says where the agent actually is, so
+	// several locked tabs stop being indistinguishable. Null = none.
+	.emit('preview:browser-mcp-control-focus', t.Object({
+		browserTabId: t.Union([t.String(), t.Null()]),
+		projectId: t.String(),
+		timestamp: t.Number()
+	}))
 	.emit('preview:browser-mcp-cursor-position', t.Object({
 		sessionId: t.String(),
 		x: t.Number(),
@@ -168,6 +176,20 @@ export const previewRouter = createRouter()
 		sessionId: t.String(),
 		timestamp: t.Number(),
 		source: t.Literal('mcp')
+	}))
+	// What the agent is doing on a tab, in a few words, for the caption beside
+	// its cursor. Null means it still holds the tab but is between actions.
+	.emit('preview:browser-mcp-activity', t.Object({
+		sessionId: t.String(),
+		label: t.Union([t.String(), t.Null()]),
+		timestamp: t.Number()
+	}))
+	// The page put something full screen (or left it). The viewer's exit control
+	// is drawn from this, and is the only one there is — the page draws none.
+	.emit('preview:browser-fullscreen-state', t.Object({
+		projectId: t.String(),
+		tabId: t.String(),
+		active: t.Boolean()
 	}))
 	.emit('preview:browser-viewport-changed', t.Object({
 		projectId: t.String(),

@@ -37,6 +37,14 @@
 		tabs = [] as any[],
 		activeTabId = null as string | null,
 		mcpControlledTabIds = new Set<string>(),
+		/**
+		 * The controlled tab the agent is acting on right now.
+		 *
+		 * Distinct from being locked: an agent working across several tabs locks
+		 * all of them, and the user — free to look wherever they like — otherwise
+		 * has no way to tell which one is live.
+		 */
+		mcpFocusedTabId = null as string | null,
 
 		// Callbacks
 		onGoClick = () => {},
@@ -297,6 +305,7 @@
 			{#each tabs as tab (tab.id)}
 				{@const isActive = tab.id === activeTabId}
 				{@const isControlled = mcpControlledTabIds.has(tab.id)}
+				{@const isAgentHere = isControlled && tab.id === mcpFocusedTabId}
 				<button
 					type="button"
 					data-tab-id={tab.id}
@@ -333,7 +342,8 @@
 						? 'text-violet-600 dark:text-violet-400'
 						: 'text-slate-500 dark:text-slate-400 hover:text-slate-700 dark:hover:text-slate-300'}
 						{draggingTabId === tab.id ? 'opacity-40' : ''}
-						{dragOverTabId === tab.id ? 'bg-violet-500/10' : ''}"
+						{dragOverTabId === tab.id ? 'bg-violet-500/10' : ''}
+						{isAgentHere ? 'bg-amber-500/10' : ''}"
 					onclick={() => onSwitchTab(tab.id)}
 					onauxclick={(event) => {
 						// Middle-click closes, as in every browser.
@@ -370,8 +380,24 @@
 					<span class="truncate max-w-28">{tab.title || 'New Tab'}</span>
 
 					{#if isControlled}
-						<span title="Controlled by an AI agent" class="flex">
-							<Icon name="lucide:lock" class="h-3 w-3 shrink-0 text-amber-500" />
+						<!--
+							Two states, not one. The static lock means "an agent holds
+							this tab"; the pulse means "an agent is working in it right
+							now". Told apart, the strip answers the question the lock
+							alone could not — which tab to actually watch.
+						-->
+						<span
+							title={isAgentHere
+								? 'An AI agent is working in this tab'
+								: 'Held by an AI agent'}
+							class="flex"
+						>
+							<Icon
+								name="lucide:lock"
+								class="h-3 w-3 shrink-0 {isAgentHere
+									? 'animate-pulse text-amber-500'
+									: 'text-amber-500/60'}"
+							/>
 						</span>
 					{:else}
 						<span
@@ -396,6 +422,11 @@
 
 					{#if isActive}
 						<span class="absolute inset-x-0 bottom-0 h-px bg-violet-600 dark:bg-violet-400"></span>
+					{:else if isAgentHere}
+						<!-- The agent's tab is findable without being the one on screen:
+						     the point is that the user can look elsewhere and still know
+						     where the work is happening. -->
+						<span class="absolute inset-x-0 bottom-0 h-px animate-pulse bg-amber-500"></span>
 					{/if}
 				</button>
 			{/each}

@@ -342,9 +342,14 @@ export const streamPreviewHandler = createRouter()
 			})
 		},
 		async ({ data, conn }) => {
-			const { previewService, tab } = requireBrowserTabAccess(conn, data.tabId);
+			const { previewService, projectId, tab } = requireBrowserTabAccess(conn, data.tabId);
 
 			await previewService.stopWebCodecsStreaming(tab.id, data.viewerId);
+
+			// The disconnect cleanup for this pair has nothing left to do.
+			// Dropping the key lets a later re-handshake register a fresh one
+			// instead of relying on a closure whose stop has already run.
+			registeredViewerCleanups.delete(`${projectId}:${tab.id}:${data.viewerId}`);
 
 			return { success: true };
 		}

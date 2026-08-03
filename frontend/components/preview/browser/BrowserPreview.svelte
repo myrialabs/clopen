@@ -26,6 +26,11 @@
 	import { previewHostBridge } from '$frontend/services/preview/browser/host-bridge.service';
 	import { browserConsoleService } from '$frontend/services/preview/browser/browser-console.service';
 	import { addNotification } from '$frontend/stores/ui/notification.svelte';
+	import {
+		getMcpActivity,
+		isBackendTabFullscreen
+	} from '$frontend/stores/features/preview-tabs-workspace.svelte';
+	import ws from '$frontend/utils/ws';
 	import { projectState } from '$frontend/stores/core/projects.svelte';
 	import { appState } from '$frontend/stores/core/app.svelte';
 
@@ -122,6 +127,12 @@
 	 * Kept in page space all the way down to the Container, which owns the
 	 * projection. Converting on arrival meant the event was dropped whenever the
 	 * canvas had not painted yet — and a dropped cursor event never comes back.
+	 *
+	 * `visible` says only "a gesture has placed this", never "draw it": whether
+	 * the pointer is on screen follows from the agent holding the tab, which the
+	 * Container reads directly. Half the actions in a batch carry no
+	 * coordinates, so anything that gated drawing on an incoming event spent
+	 * most of a run showing nothing.
 	 */
 	let mcpCursorPage = $state<{x: number, y: number, visible: boolean, clicking?: boolean, pressed?: boolean}>({
 		x: 0, y: 0, visible: false, clicking: false, pressed: false
@@ -802,8 +813,6 @@
 	function handleCanvasInteraction(action: any) {
 		const tab = activeTab;
 		if (tab && tab.sessionId) {
-			// Hide the AI cursor instantly if the human explicitly interacts
-			mcpCursorPage = { ...mcpCursorPage, visible: false };
 			coordinator.sendInteraction(action);
 		}
 	}
@@ -848,7 +857,26 @@
 	}
 
 	/**
-	 * Drop the agent's cursor when the panel starts showing a different tab.
+	 * Leave a page full screen from outside the page.
+	 *
+	 * The only way out, now that the shim no longer draws one of its own inside
+	 * the page. It is also the one that works in the case the in-page hint never
+	 * could: a fullscreen Chrome granted from its own C++ that the shim never
+	 * saw, which used to leave the preview zoomed and cropped with nothing to
+	 * press.
+	 */
+	async function exitPageFullscreen() {
+		const tab = activeTab;
+		if (!tab?.sessionId) return;
+		try {
+			await ws.http('preview:browser-exit-fullscreen', { tabId: tab.sessionId }, 10000);
+		} catch (error) {
+			debug.warn('preview', 'Failed to exit page full screen:', error);
+		}
+	}
+
+	/**
+	 * Re-point the agent's cursor at whichever tab the panel is now showing.
 	 *
 	 * Keyed on the tab alone, deliberately. Gating this on "is the tab still in
 	 * the controlled set" instead re-ran it on *every* tab mutation — a console
@@ -856,14 +884,23 @@
 	 * message, which can land after the first gestures. So the opening moves of
 	 * a run were cleared before they were ever drawn, which is the one stretch
 	 * where seeing the pointer matters most.
+	 *
+	 * It restores rather than only clears. An agent that has stopped moving
+	 * sends nothing further, so a switch away and back used to lose the pointer
+	 * for the rest of the run — the tab was still being driven, it just looked
+	 * like it wasn't.
 	 */
 	let lastCursorTabId: string | null = null;
 	$effect(() => {
 		const tabId = activeTabId;
 		if (tabId === lastCursorTabId) return;
 		lastCursorTabId = tabId;
+
+		const restored = mcpHandler.getCursorFor(tabManager.getTab(tabId ?? '')?.sessionId ?? null);
 		untrack(() => {
-			mcpCursorPage = { x: 0, y: 0, visible: false, clicking: false, pressed: false };
+			mcpCursorPage = restored
+				? { x: restored.x, y: restored.y, visible: true, clicking: false, pressed: restored.pressed }
+				: { x: 0, y: 0, visible: false, clicking: false, pressed: false };
 		});
 	});
 
@@ -923,6 +960,7 @@
 			{tabs}
 			{activeTabId}
 			mcpControlledTabIds={mcpHandler.getControlledTabIds()}
+			mcpFocusedTabId={mcpHandler.getFocusedTabId()}
 			onGoClick={handleGoClick}
 			onRefresh={refreshPreview}
 			onStop={stopLoading}
@@ -971,6 +1009,10 @@
 				bind:lastFrameData={currentTabLastFrameData}
 				bind:touchMode
 				isMcpControlled={isCurrentTabMcpControlled()}
+				isMcpFocused={mcpHandler.isCurrentTabMcpFocused()}
+				mcpActivity={getMcpActivity(sessionId) ?? ''}
+				isPageFullscreen={isBackendTabFullscreen(sessionId)}
+				onExitFullscreen={exitPageFullscreen}
 				onInteraction={handleCanvasInteraction}
 				onRetry={handleGoClick}
 			/>

@@ -243,6 +243,22 @@ class StreamManager extends EventEmitter {
 		super();
 		// Increase max listeners for high concurrency
 		this.setMaxListeners(1000);
+
+		// MCP browser locks are scoped to a chat session, and every release path
+		// runs from this class. Teaching the lock manager how to check liveness
+		// closes the gap those paths can't: a tool call that lands after its
+		// stream ended used to be able to take a lock nothing would release.
+		browserMcpControl.setSessionLivenessProbe((chatSessionId) =>
+			this.isChatSessionStreaming(chatSessionId)
+		);
+	}
+
+	/** Whether any stream for this chat session is still running. */
+	private isChatSessionStreaming(chatSessionId: string): boolean {
+		for (const stream of this.activeStreams.values()) {
+			if (stream.chatSessionId === chatSessionId && stream.status === 'active') return true;
+		}
+		return false;
 	}
 
 	/**
@@ -1302,6 +1318,27 @@ class StreamManager extends EventEmitter {
 			}
 		}
 
+		// Abort first, then release the browser locks, and only then ask the
+		// engine to stop.
+		//
+		// The order matters and used to be the other way round. `engine.cancel()`
+		// is awaited for up to five seconds, and a browser-automation batch that
+		// was mid-flight kept resolving its target tab throughout — re-acquiring
+		// control of a tab moments after (or before) it was handed back, under a
+		// chat session whose release had already run. That is the interrupt that
+		// left the tab locked with nobody to unlock it. Aborting up front makes
+		// the batch stop between actions, and releasing before the wait means
+		// anything that slips through is refused rather than orphaned.
+		if (!streamState.abortController?.signal.aborted) {
+			streamState.abortController?.abort();
+		}
+
+		// Auto-release all MCP-controlled tabs for this chat session
+		if (streamState.chatSessionId) {
+			browserMcpControl.releaseSession(streamState.chatSessionId);
+			debug.log('mcp', `✅ Auto-released MCP tabs for session ${streamState.chatSessionId.slice(0, 8)} on stream cancellation`);
+		}
+
 		// Cancel the per-project engine with a bounded timeout.
 		// engine.cancel() stops the SDK process (Claude Code: close() kills subprocess,
 		// OpenCode: aborts controller + HTTP abort to server). If cancel() hangs
@@ -1320,14 +1357,6 @@ class StreamManager extends EventEmitter {
 			debug.error('chat', 'Error cancelling engine (non-fatal):', error);
 		}
 
-		// Abort the stream-manager's controller as a fallback.
-		// engine.cancel() already aborts the same controller, so this is
-		// typically a no-op but ensures cleanup if the engine timed out
-		// or wasn't active.
-		if (!streamState.abortController?.signal.aborted) {
-			streamState.abortController?.abort();
-		}
-
 		this.emitStreamEvent(streamState, 'cancelled', {
 			processId: streamState.processId,
 			timestamp: streamState.completedAt.toISOString()
@@ -1335,11 +1364,10 @@ class StreamManager extends EventEmitter {
 
 		this.emitStreamLifecycle(streamState, 'cancelled', reason);
 
-		// Auto-release all MCP-controlled tabs for this chat session
-		if (streamState.chatSessionId) {
-			browserMcpControl.releaseSession(streamState.chatSessionId);
-			debug.log('mcp', `✅ Auto-released MCP tabs for session ${streamState.chatSessionId.slice(0, 8)} on stream cancellation`);
-		}
+		// Sweep again after the engine has actually stopped: a tool call still
+		// in flight during the wait above may have taken a lock that its own
+		// release path will never reach.
+		browserMcpControl.releaseOrphans();
 
 		return true;
 	}

@@ -9,6 +9,7 @@ import { commonFields } from './shared';
 export const consoleLogs: ActionDef = {
 	type: 'console_logs',
 	kind: 'control',
+	activity: 'Reading the console',
 	doc: `console_logs {limit?, level?} — the page's console output, oldest first.
   Where to look when an action "worked" but the page did not react: the error is usually here and invisible on screen.`,
 	schema: z.object({
@@ -37,6 +38,7 @@ export const consoleLogs: ActionDef = {
 export const clearConsole: ActionDef = {
 	type: 'clear_console',
 	kind: 'control',
+	activity: 'Clearing the console',
 	doc: `clear_console {} — drop stored console output.
   Put this before the step you are debugging so what follows is only that step's output.`,
 	schema: z.object({ type: z.literal('clear_console'), ...commonFields }),
@@ -49,6 +51,7 @@ export const clearConsole: ActionDef = {
 export const evaluate: ActionDef = {
 	type: 'eval',
 	kind: 'control',
+	activity: 'Running a script',
 	doc: `eval {expression} — run JavaScript in the page and return the result.
   For state that is not in the DOM: computed styles, localStorage, framework internals, window globals. The result must be JSON-serialisable.`,
 	schema: z.object({

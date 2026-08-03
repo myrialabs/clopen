@@ -84,6 +84,12 @@ export async function getActiveTabSession(
 	if (existing) {
 		const acquired = browserMcpControl.acquireControl(existing.id, chatSessionId, resolvedProjectId);
 		if (!acquired) {
+			// Two very different refusals. Saying "another session" for both sent
+			// an agent looking for a tab conflict that does not exist, when what
+			// actually happened is that its own run was interrupted.
+			if (!browserMcpControl.isSessionLive(chatSessionId)) {
+				throw new Error('This chat session is no longer running — the browser was released when it stopped.');
+			}
 			const owner = browserMcpControl.getTabOwner(existing.id);
 			throw new Error(`Tab '${existing.id}' is controlled by another chat session (${owner?.slice(0, 8)}...). Use a different tab.`);
 		}

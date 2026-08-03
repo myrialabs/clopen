@@ -462,8 +462,29 @@ export interface ClientStreamFeedback {
  *
  * Single source of truth for all codec settings.
  */
+/**
+ * What the in-page peer reports about itself.
+ *
+ * The backend's session record and the page's encoder are two independent
+ * state machines — a navigation, a self-reload or a failed re-injection moves
+ * one without the other — and every "Loading preview…" that never resolved
+ * traced back to trusting the backend's copy. This is the page's own answer,
+ * read at every handshake so a mismatch is repaired instead of inherited.
+ */
+export interface PeerHealth {
+	/** Injection id. A mismatch means this peer belongs to a different document. */
+	epoch: string;
+	capturing: boolean;
+	encoderReady: boolean;
+	captureMode: 'push' | 'native';
+	/** Viewer ids with a live peer here — the ground truth for the viewer table. */
+	viewers: string[];
+}
+
 export interface StreamingConfig {
 	video: {
+		/** Stamped onto the injected peer so the backend can recognise its own. */
+		epoch: string;
 		codec: string; // Fallback codec (VP8, fixed-bitrate mode) when nothing better is negotiated
         width: number;
         height: number;
@@ -518,6 +539,7 @@ export interface StreamingConfig {
  */
 export const DEFAULT_STREAMING_CONFIG: StreamingConfig = {
 	video: {
+		epoch: '',
 		codec: 'vp8',
 		width: 0,
 		height: 0,

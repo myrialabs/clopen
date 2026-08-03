@@ -58,6 +58,19 @@ export function videoEncoderScript(config: StreamingConfig['video']) {
 	const viewers = new Map<string, ViewerPeer>();
 	let videoEncoder: VideoEncoder | null = null;
 	let isCapturing = false;
+
+	/**
+	 * Which injection this object came from.
+	 *
+	 * The backend stamps every injection with an id and keeps the last one it
+	 * issued. Anything else — a peer left over from a document the page has
+	 * since navigated away from, or one injected by a different backend session
+	 * — reads as a mismatch, and the backend rebuilds rather than talking to an
+	 * object whose encoder and viewers belong to a page that no longer exists.
+	 * That mismatch is invisible from the outside: `window.__webCodecsPeer` is
+	 * present and every method answers, they just answer for the wrong page.
+	 */
+	const epoch = config.epoch || '';
 	let videoFrameCount = 0;
 	let audioFrameCount = 0;
 	let lastKeyframeTime = 0;
@@ -1240,8 +1253,27 @@ export function videoEncoderScript(config: StreamingConfig['video']) {
 		}
 	}
 
+	/**
+	 * Everything the backend needs to decide "is this page actually streaming?".
+	 *
+	 * Cheap on purpose — it is read on every handshake. `viewers` is the list
+	 * of peers that genuinely exist here, which is the only way the backend can
+	 * tell its own viewer table from wishful thinking: an entry it holds that
+	 * this page has never heard of is a viewer that will never receive a frame.
+	 */
+	function health() {
+		return {
+			epoch,
+			capturing: isCapturing,
+			encoderReady: !!videoEncoder,
+			captureMode,
+			viewers: Array.from(viewers.keys())
+		};
+	}
+
 	// Expose API
 	(window as any).__webCodecsPeer = {
+		health,
 		startStreaming,
 		stopStreaming,
 		createOffer,

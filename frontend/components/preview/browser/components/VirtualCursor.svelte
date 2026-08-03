@@ -9,12 +9,17 @@
 	 * offset away and outside the panel's `overflow: hidden` box. Anchoring to the
 	 * container the frame is painted in cannot drift that way.
 	 *
-	 * `variant` is what tells the two apart on screen: the agent's cursor stays
-	 * amber, the local one is sky blue. Drawn in the same colour, there was no
-	 * way to tell whether the browser was moving on its own.
+	 * `variant` is what tells them apart on screen: the agent's cursor stays
+	 * amber, the local one is sky blue, and the touch trackpad's is white.
+	 * Drawn in the same colour, there was no way to tell whether the browser
+	 * was moving on its own.
+	 *
+	 * White for touch because that pointer is the one the finger is steering:
+	 * it has to read against a page of any colour, and the blue was too close
+	 * to the links and controls it spends its time hovering.
 	 *
 	 * `pressed` renders the button as held — the only visible difference
-	 * between the agent moving and the agent dragging.
+	 * between moving and dragging.
 	 */
 	let {
 		cursor = $bindable<{ x: number; y: number; visible: boolean; clicking?: boolean; pressed?: boolean }>({
@@ -23,17 +28,23 @@
 			visible: false,
 			clicking: false
 		}),
-		variant = 'user' as 'user' | 'mcp',
+		variant = 'user' as 'user' | 'mcp' | 'touch',
 		/** Caption trailing the pointer. Only the agent gets one, so an unattended
 		 *  run reads as "something else is driving this", not as a stray cursor. */
 		label = ''
 	} = $props();
 
-	const palette = $derived(
-		variant === 'mcp'
-			? { idle: '#FFD700', active: '#FFA500', highlight: '#FFF59D', activeHighlight: '#FFE5B4', ring: 'border-orange-500' }
-			: { idle: '#38BDF8', active: '#0284C7', highlight: '#BAE6FD', activeHighlight: '#E0F2FE', ring: 'border-sky-500' }
-	);
+	const palette = $derived.by(() => {
+		if (variant === 'mcp') {
+			return { idle: '#FFD700', active: '#FFA500', highlight: '#FFF59D', activeHighlight: '#FFE5B4', ring: 'border-orange-500' };
+		}
+		if (variant === 'touch') {
+			// The dark outline is what keeps a white pointer visible on a white
+			// page; the "active" shade only dims it, so a press still reads.
+			return { idle: '#FFFFFF', active: '#D4D4D8', highlight: '#F4F4F5', activeHighlight: '#E4E4E7', ring: 'border-white' };
+		}
+		return { idle: '#38BDF8', active: '#0284C7', highlight: '#BAE6FD', activeHighlight: '#E0F2FE', ring: 'border-sky-500' };
+	});
 
 	const engaged = $derived(!!cursor.clicking || !!cursor.pressed);
 </script>

@@ -56,6 +56,9 @@ export class BrowserPreviewService extends EventEmitter {
 	// Store context menu info for later action execution
 	private contextMenus = new Map<string, BrowserContextMenuInfo>();
 
+	/** Tabs whose page is showing something full screen — see applyFullscreenState. */
+	private fullscreenTabs = new Set<string>();
+
 	// Project ID for isolation (REQUIRED)
 	private projectId: string;
 
@@ -105,6 +108,13 @@ export class BrowserPreviewService extends EventEmitter {
 		this.navigationTracker.on('navigation', async (data) => {
 			this.emit('preview:browser-navigation', data);
 
+			// A new document cannot still be full screen: the element that was
+			// went with the old one. Left set, the viewer would keep offering an
+			// exit for a state that no longer exists.
+			if (this.fullscreenTabs.delete(data.sessionId)) {
+				this.emit('preview:browser-fullscreen-state', { tabId: data.sessionId, active: false });
+			}
+
 			// After navigation completes, restart video streaming for the tab
 			// This re-injects the peer script and restarts CDP screencast
 			const { sessionId } = data;
@@ -115,14 +125,21 @@ export class BrowserPreviewService extends EventEmitter {
 			if (this.videoCapture.isStreaming(sessionId)) {
 				const tab = this.getTab(sessionId);
 				if (tab) {
-					// Restart streaming immediately — page is already navigated
+					// Restart streaming immediately — page is already navigated.
+					// A failure here is logged rather than swallowed: it used to
+					// leave the session marked active over a page that could no
+					// longer encode, and the only visible symptom was a preview
+					// stuck loading. handleNavigation now clears `isActive` on
+					// failure so the next handshake rebuilds from scratch.
 					try {
 						const success = await this.videoCapture.handleNavigation(sessionId, tab);
 						if (success) {
 							this.emit('preview:browser-navigation-streaming-ready', { sessionId });
+						} else {
+							debug.warn('preview', `Streaming restore failed after navigation on ${sessionId}`);
 						}
 					} catch (error) {
-						// Silently fail - frontend will request refresh if needed
+						debug.warn('preview', `Streaming restore threw after navigation on ${sessionId}:`, error);
 					}
 				}
 			}
@@ -152,6 +169,15 @@ export class BrowserPreviewService extends EventEmitter {
 			this.emit('preview:browser-tab-opened', data);
 		});
 		this.tabManager.on('preview:browser-tab-closed', (data) => {
+			// Hooked to the event rather than to closeTab(): the tab manager
+			// closes tabs on its own too (browser disconnect, pool teardown, a
+			// window the page closed), and those paths never pass through the
+			// service. The page is gone either way, and with it the bindings and
+			// on-new-document scripts this bookkeeping describes.
+			if (data?.tabId) {
+				this.videoCapture.disposeTab(data.tabId);
+				this.fullscreenTabs.delete(data.tabId);
+			}
 			this.emit('preview:browser-tab-closed', data);
 		});
 		this.tabManager.on('preview:browser-tab-switched', (data) => {
@@ -197,6 +223,10 @@ export class BrowserPreviewService extends EventEmitter {
 			// it would put an unanswerable dialog on every screen watching the tab.
 			if (data.kind === 'viewport-restore') {
 				void this.restoreEmulatedViewport(data.tabId, data.requestId);
+				return;
+			}
+			if (data.kind === 'fullscreen-state') {
+				this.applyFullscreenState(data.tabId, data.requestId, data.payload);
 				return;
 			}
 			this.emit('preview:browser-host-request', data);
@@ -679,6 +709,68 @@ export class BrowserPreviewService extends EventEmitter {
 		}
 	}
 
+	/**
+	 * Record that a tab's page went full screen (or left it) and tell viewers.
+	 *
+	 * The state matters to the viewer because the way out cannot live only in
+	 * the page: the hint the shim draws is a DOM node the page is free to
+	 * destroy, and a fullscreen Chrome granted from its own C++ leaves no hint
+	 * at all. Knowing lets the viewer render an exit control of its own, which
+	 * nothing in the page can reach.
+	 */
+	private applyFullscreenState(tabId: string, requestId: string, payload: unknown): void {
+		const active = !!(payload as { active?: boolean } | null)?.active;
+
+		if (active) this.fullscreenTabs.add(tabId);
+		else this.fullscreenTabs.delete(tabId);
+
+		debug.log('preview', `🖥️ Tab ${tabId} full screen: ${active}`);
+		this.emit('preview:browser-fullscreen-state', { tabId, active });
+		this.hostBridge.respond(requestId, { ok: true });
+	}
+
+	/** Whether a tab's page currently has something full screen. */
+	isPageFullscreen(tabId: string): boolean {
+		return this.fullscreenTabs.has(tabId);
+	}
+
+	/**
+	 * Force a tab out of full screen, from outside the page.
+	 *
+	 * Every frame is asked, not just the main one: a video in an embed goes
+	 * full screen inside its own document, and that frame is the only one that
+	 * holds the state. The emulated viewport is re-asserted afterwards because
+	 * a fullscreen Chrome granted itself collapses the composited surface and
+	 * leaves it collapsed — the zoomed, cropped preview that looked like the
+	 * fullscreen had never ended.
+	 */
+	async exitPageFullscreen(tabId: string): Promise<boolean> {
+		const tab = this.getTab(tabId);
+		if (!tab?.page || tab.page.isClosed()) return false;
+
+		await Promise.all(
+			tab.page.frames().map((frame) =>
+				frame
+					.evaluate(() => {
+						(window as any).__clopenFullscreen?.forceExit();
+					})
+					.catch(() => {
+						// Detached or navigating — nothing of ours is left in it.
+					})
+			)
+		);
+
+		this.fullscreenTabs.delete(tabId);
+		this.emit('preview:browser-fullscreen-state', { tabId, active: false });
+
+		const { width, height } = getViewportDimensions(tab.deviceSize, tab.rotation);
+		const restored = await this.videoCapture.updateViewport(tabId, tab, width, height);
+		if (!restored) await tab.page.setViewport({ width, height }).catch(() => {});
+
+		debug.log('preview', `🖥️ Forced tab ${tabId} out of full screen`);
+		return true;
+	}
+
 	async updateWebCodecsViewport(tabId: string, width: number, height: number): Promise<boolean> {
 		const tab = this.getTab(tabId);
 		if (!tab) {
@@ -1056,6 +1148,10 @@ class BrowserPreviewServiceManager {
 			ws.emit.project(projectId, 'preview:browser-viewport-changed', { ...data, projectId });
 		});
 
+		service.on('preview:browser-fullscreen-state', (data) => {
+			ws.emit.project(projectId, 'preview:browser-fullscreen-state', { ...data, projectId });
+		});
+
 		// Forward live tab metadata (title, favicon, back/forward availability)
 		service.on('preview:browser-tab-meta', (data) => {
 			ws.emit.project(projectId, 'preview:browser-tab-meta', { ...data, projectId });
@@ -1202,26 +1298,68 @@ class BrowserPreviewServiceManager {
 			});
 		});
 
+		browserMcpControl.on('control-focus', (data) => {
+			ws.emit.project(data.projectId, 'preview:browser-mcp-control-focus', {
+				browserTabId: data.browserTabId,
+				projectId: data.projectId,
+				timestamp: data.timestamp
+			});
+		});
+
+		// Cursor events go to the owning project when it is known. Tab ids repeat
+		// across projects, so a broadcast could draw the agent's pointer over a
+		// same-numbered tab somewhere the agent has never been. The broadcast is
+		// kept only for the case where ownership can't be resolved.
 		browserMcpControl.on('cursor-position', (data) => {
-			emitToActiveProjects('preview:browser-mcp-cursor-position', {
+			const payload = {
 				sessionId: data.tabId,
 				x: data.x,
 				y: data.y,
 				pressed: data.pressed ?? false,
 				timestamp: data.timestamp,
-				source: 'mcp'
-			});
+				source: 'mcp' as const
+			};
+
+			if (data.projectId) {
+				ws.emit.project(data.projectId, 'preview:browser-mcp-cursor-position', payload);
+				return;
+			}
+			emitToActiveProjects('preview:browser-mcp-cursor-position', payload);
 		});
 
 		browserMcpControl.on('cursor-click', (data) => {
-			emitToActiveProjects('preview:browser-mcp-cursor-click', {
+			const payload = {
 				sessionId: data.tabId,
 				x: data.x,
 				y: data.y,
 				button: data.button ?? 'left',
 				timestamp: data.timestamp,
-				source: 'mcp'
-			});
+				source: 'mcp' as const
+			};
+
+			if (data.projectId) {
+				ws.emit.project(data.projectId, 'preview:browser-mcp-cursor-click', payload);
+				return;
+			}
+			emitToActiveProjects('preview:browser-mcp-cursor-click', payload);
+		});
+
+		// What the agent is doing, for the caption beside its cursor. Same
+		// project-scoping rule as the cursor itself, and the same fallback: an
+		// event nobody can attribute is better broadcast than dropped, since the
+		// alternative is a pointer left describing an action that has finished.
+		browserMcpControl.on('activity', (data) => {
+			const payload = {
+				sessionId: data.tabId,
+				label: data.label,
+				timestamp: data.timestamp
+			};
+
+			if (data.projectId) {
+				ws.emit.project(data.projectId, 'preview:browser-mcp-activity', payload);
+				return;
+			}
+			emitToActiveProjects('preview:browser-mcp-activity', payload);
 		});
 
 		browserMcpControl.on('test-completed', (data) => {

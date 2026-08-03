@@ -10,12 +10,33 @@
 import { t } from 'elysia';
 import { createRouter } from '$shared/utils/ws-server';
 import { debug } from '$shared/utils/logger';
-import { requireBrowserPreviewAccess } from '../access';
+import { requireBrowserPreviewAccess, requireBrowserTabAccess } from '../access';
 
 // Event forwarding is now handled automatically by BrowserPreviewServiceManager
 // when service instances are created, ensuring proper project isolation.
 
 export const nativeUIPreviewHandler = createRouter()
+	/**
+	 * Take the page out of full screen on the viewer's behalf.
+	 *
+	 * The page draws its own exit hint, but it is a DOM node the page is free
+	 * to destroy — and a fullscreen Chrome granted from its own C++ leaves no
+	 * hint at all, just a collapsed capture surface that reads as a preview
+	 * stuck full screen. This route is the way out that the page cannot lose.
+	 */
+	.http('preview:browser-exit-fullscreen', {
+		data: t.Object({
+			tabId: t.Optional(t.String())
+		}),
+		response: t.Object({
+			success: t.Boolean()
+		})
+	}, async ({ data, conn }) => {
+		const { previewService, tab } = requireBrowserTabAccess(conn, data.tabId);
+		const success = await previewService.exitPageFullscreen(tab.id);
+		return { success };
+	})
+
 	// Action: Client responds to a dialog (alert, confirm, prompt)
 	.on('preview:browser-dialog-input', {
 		data: t.Object({

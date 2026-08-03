@@ -42,7 +42,11 @@ export type HostRequestKind =
 	// Not a capability and never shown to anyone: the page reporting that Chrome
 	// resized the renderer behind the emulation's back, so the host can put the
 	// viewport it captures from back the way it was. Answered by the service.
-	| 'viewport-restore';
+	| 'viewport-restore'
+	// Also not a capability: the page telling the host it is (or is no longer)
+	// showing something full screen, so the viewer can offer a way out that the
+	// page cannot lose. Answered by the service.
+	| 'fullscreen-state';
 
 export interface HostRequestEvent {
 	tabId: string;
@@ -112,7 +116,9 @@ const REQUEST_TIMEOUT_MS: Record<HostRequestKind, number> = {
 	'file-pick': 300_000,
 	// Nobody is asked anything — this is the host talking to itself, and the page
 	// is blocked on it while a screencast restarts.
-	'viewport-restore': 15_000
+	'viewport-restore': 15_000,
+	// A one-way notification; the page does not wait on the answer.
+	'fullscreen-state': 5_000
 };
 
 /**

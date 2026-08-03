@@ -8,7 +8,10 @@
 
 import { debug } from '$shared/utils/logger';
 import ws from '$frontend/utils/ws';
-import { getMcpControlledBackendIds } from '$frontend/stores/features/preview-tabs-workspace.svelte';
+import {
+	getMcpControlledBackendIds,
+	getMcpFocusedBackendId
+} from '$frontend/stores/features/preview-tabs-workspace.svelte';
 import type { TabManager } from './tab-manager.svelte';
 
 export interface McpHandlerConfig {
@@ -65,22 +68,22 @@ export function createMcpHandler(config: McpHandlerConfig) {
 				handleTestCompleted(data);
 			}),
 
-			// The precise end-of-control signal: the tab is handed back the moment
-			// the owning chat session releases it, which is when the pointer stops
-			// meaning anything. `chat:complete` below is the backstop for a stream
-			// that ends without ever reaching the release path.
+			// The end-of-control signal, and now the only one: the tab is handed
+			// back the moment the owning chat session releases it, which is when
+			// the pointer stops meaning anything.
+			//
+			// `chat:complete`/`chat:cancelled` used to hide the pointer here too,
+			// as a backstop. They are worse than redundant now that the pointer is
+			// drawn from the lock itself: a stream ends by releasing its tabs, so
+			// the backstop only ever fired *before* the release it was covering
+			// for — and took the pointer off a tab the agent still held. A release
+			// that genuinely never happens leaves the tab locked as well, which is
+			// the orphan sweep's job on the backend, not something to paper over
+			// by drawing a lock that is real as though it were not.
 			ws.on('preview:browser-mcp-control-end', (data) => {
+				forgetCursor(data.browserTabId);
 				const activeTab = tabManager.tabs.find(t => t.id === tabManager.activeTabId);
 				if (activeTab?.sessionId === data.browserTabId) onCursorHide?.();
-			}),
-
-			// Hide cursor when the entire Claude request finishes or is stopped
-			ws.on('chat:complete', () => {
-				if (onCursorHide) onCursorHide();
-			}),
-
-			ws.on('chat:cancelled', () => {
-				if (onCursorHide) onCursorHide();
 			})
 		];
 
@@ -133,7 +136,43 @@ export function createMcpHandler(config: McpHandlerConfig) {
 		return result;
 	}
 
+	/** The frontend tab the agent is acting on right now, if it is on screen. */
+	function getFocusedTabId(): string | null {
+		const focused = getMcpFocusedBackendId();
+		if (!focused) return null;
+		return tabManager.tabs.find((tab) => tab.sessionId === focused)?.id ?? null;
+	}
+
+	/** Whether the panel is currently showing the tab the agent is working on. */
+	function isCurrentTabMcpFocused(): boolean {
+		const activeTab = tabManager.tabs.find((t) => t.id === tabManager.activeTabId);
+		return !!activeTab?.sessionId && activeTab.sessionId === getMcpFocusedBackendId();
+	}
+
 	// Private handlers
+
+	/**
+	 * Where the agent's pointer was last seen on each tab.
+	 *
+	 * An agent that has finished moving sends nothing more, so a pointer parked
+	 * on a tab the user was not watching had no way to reappear when they
+	 * switched to it — the panel cleared its cursor on every tab change and
+	 * nothing would ever redraw it. Remembering the last position is what makes
+	 * "look at whichever tab you like" work with the agent still holding one.
+	 */
+	const lastCursorBySession = new Map<string, { x: number; y: number; pressed: boolean }>();
+
+	/**
+	 * The agent's last known pointer on a tab, for restoring after a switch.
+	 *
+	 * Gated on the tab still being controlled: a release that happened while
+	 * this panel was unmounted never reached `forgetCursor`, and drawing a
+	 * pointer for an agent that has already left is worse than drawing none.
+	 */
+	function getCursorFor(sessionId: string | null): { x: number; y: number; pressed: boolean } | null {
+		if (!sessionId || !controlledSessionIds().has(sessionId)) return null;
+		return lastCursorBySession.get(sessionId) ?? null;
+	}
 
 	/**
 	 * Hand an agent cursor event up to the panel.
@@ -148,19 +187,32 @@ export function createMcpHandler(config: McpHandlerConfig) {
 		data: { sessionId: string; x: number; y: number; pressed?: boolean },
 		clicking: boolean
 	) {
+		// Recorded before the gate: the position matters even — especially —
+		// while the user is looking somewhere else.
+		lastCursorBySession.set(data.sessionId, {
+			x: data.x,
+			y: data.y,
+			pressed: !!data.pressed
+		});
+
 		const activeTab = tabManager.tabs.find(t => t.id === tabManager.activeTabId);
 
 		if (!activeTab?.sessionId) {
-			debug.log('preview', `🖱️ [mcp-cursor] dropped: no session on the active tab (event for ${data.sessionId})`);
+			debug.log('preview', `🖱️ [mcp-cursor] deferred: no session on the active tab (event for ${data.sessionId})`);
 			return;
 		}
 
 		if (activeTab.sessionId !== data.sessionId) {
-			debug.log('preview', `🖱️ [mcp-cursor] dropped: event for ${data.sessionId}, viewing ${activeTab.sessionId}`);
+			debug.log('preview', `🖱️ [mcp-cursor] deferred: event for ${data.sessionId}, viewing ${activeTab.sessionId}`);
 			return;
 		}
 
 		onCursorUpdate?.(data.x, data.y, clicking, data.pressed);
+	}
+
+	/** Forget a tab's pointer once the agent has handed the tab back. */
+	function forgetCursor(sessionId: string): void {
+		lastCursorBySession.delete(sessionId);
 	}
 
 	function handleCursorPosition(data: { sessionId: string; x: number; y: number; pressed?: boolean; timestamp: number; source: 'mcp' }) {
@@ -304,8 +356,11 @@ export function createMcpHandler(config: McpHandlerConfig) {
 	return {
 		setupEventListeners,
 		isCurrentTabMcpControlled,
+		isCurrentTabMcpFocused,
 		isSessionControlled,
 		getControlledTabIds,
+		getFocusedTabId,
+		getCursorFor,
 		get controlledSessionIds() { return controlledSessionIds(); }
 	};
 }

@@ -35,6 +35,7 @@ import type {
 	ClientCodecSupport,
 	ClientDisplayMetrics,
 	ClientStreamFeedback,
+	PeerHealth,
 	StreamingConfig
 } from './types';
 import { DEFAULT_STREAMING_CONFIG, resolveCodecCandidates } from './types';
@@ -117,6 +118,39 @@ interface StreamViewer {
 	visible: boolean;
 	/** Latest decoder verdict — the ladder follows the worst viewer. */
 	decoderSaturated: boolean;
+	/**
+	 * When this viewer last handshook. A viewer that never reaches `connected`
+	 * has to expire: entries only ever left this table on an explicit stop, a
+	 * `closed`/`failed` state or a socket teardown, so a handshake that simply
+	 * never completed — a host browser refreshed hard, a laptop closed
+	 * mid-negotiation — stayed forever and made the session look watched.
+	 */
+	attachedAt: number;
+}
+
+/**
+ * Per-tab injection bookkeeping.
+ *
+ * Deliberately *not* on the stream session: `stopStreaming` deletes that
+ * record, so every stop/start cycle — i.e. every switch away from a preview
+ * tab and back — believed it had never injected anything. Puppeteer's
+ * `exposeFunction` then threw ("already exists") and the whole handshake
+ * failed, while `evaluateOnNewDocument` happily registered another copy of
+ * the audio tap that nothing ever removed. This lives as long as the tab.
+ */
+interface TabInjectionState {
+	/** Signalling bindings installed on the page (survive navigation). */
+	bindingsExposed: boolean;
+	/** Identifier of the registered on-new-document audio script, if any. */
+	audioScriptId: string | null;
+	/** Id stamped on the most recent peer injection — compared to PeerHealth. */
+	epoch: string;
+	/**
+	 * Codec order the injected encoder was built with. The page decides its
+	 * codec once, at injection, so a viewer arriving with different decode
+	 * capabilities needs a rebuild rather than a reconfigure.
+	 */
+	codecSignature: string;
 }
 
 interface VideoStreamSession {
@@ -127,7 +161,14 @@ interface VideoStreamSession {
 	viewers: Map<string, StreamViewer>;
 	scriptInjected: boolean; // Track if persistent script was injected
 	scriptsPreInjected: boolean; // Track if scripts were pre-injected during tab creation
-	audioOnNewDocumentInjected: boolean; // Track if evaluateOnNewDocument was registered for audio
+	/**
+	 * When the page last reported frames reaching its encoder. A connected
+	 * viewer while this stands still is watching a stream that has stopped
+	 * producing — which looks identical, from the client, to a slow page.
+	 */
+	lastEncodedAt: number;
+	/** Guards the watchdog against re-entering while a repair is in flight. */
+	repairing: boolean;
 	/** Codecs every viewer can decode — one encoder serves them all. */
 	codecSupport: ClientCodecSupport;
 	/** Display metrics of the most demanding viewer. */
@@ -196,8 +237,12 @@ const DEFAULT_CODEC_SUPPORT: ClientCodecSupport = {
  * saves work: before the frame is produced.
  */
 class ScreencastFeeder {
+	/** Attempts to re-deliver a still-page refresh frame before giving up. */
+	private static readonly MAX_TOP_OFF_RETRIES = 3;
+
 	private ackTimer: ReturnType<typeof setTimeout> | null = null;
 	private topOffTimer: ReturnType<typeof setTimeout> | null = null;
+	private topOffRetries = 0;
 	private peerObjectId: string | null = null;
 	private acquiringPeer = false;
 	private capturingTopOff = false;
@@ -290,12 +335,12 @@ class ScreencastFeeder {
 	 * single frame — hundreds of kilobytes of compilation per frame, for a
 	 * call that never changes.
 	 */
-	private dispatch(data: string, isTopOff: boolean, mimeType: string): void {
-		if (this.destroyed) return;
+	private dispatch(data: string, isTopOff: boolean, mimeType: string): boolean {
+		if (this.destroyed) return false;
 
 		if (!this.peerObjectId) {
 			void this.acquirePeerHandle();
-			return;
+			return false;
 		}
 
 		this.cdp
@@ -311,6 +356,8 @@ class ScreencastFeeder {
 				// Stale handle (navigation) — the next frame re-acquires it.
 				this.peerObjectId = null;
 			});
+
+		return true;
 	}
 
 	private ack(cdpSessionId: number): void {
@@ -362,7 +409,7 @@ class ScreencastFeeder {
 			}
 
 			this.lastDispatchAt = now;
-			this.dispatch(event.data, false, 'image/jpeg');
+			if (this.dispatch(event.data, false, 'image/jpeg')) this.topOffRetries = 0;
 			this.scheduleTopOff();
 		} finally {
 			// Self-calibrating hold. The period the viewer actually sees is
@@ -454,11 +501,26 @@ class ScreencastFeeder {
 				// screencast frames already rescheduled the top-off.
 				if (this.frameSeq !== seqAtCapture || this.destroyed) return;
 
-				this.dispatch(
+				const sent = this.dispatch(
 					screenshot.data,
 					true,
 					profile.topOffFormat === 'jpeg' ? 'image/jpeg' : 'image/png'
 				);
+
+				// A dropped top-off used to be the end of the line. The encoder
+				// handle goes stale on every navigation and re-injection, and the
+				// screencast only fires on damage — so on a page that is not
+				// moving (a preview the user has just come back to) the one frame
+				// that would have cleared "Loading preview…" was lost and nothing
+				// would ever produce another. Retry while the handle is being
+				// re-acquired, then give up rather than spin.
+				if (!sent && this.topOffRetries < ScreencastFeeder.MAX_TOP_OFF_RETRIES) {
+					this.topOffRetries++;
+					this.capturingTopOff = false;
+					this.scheduleTopOff();
+					return;
+				}
+				this.topOffRetries = 0;
 			} catch {
 				// Page may be navigating/closing — top-off is best-effort
 			} finally {
@@ -474,6 +536,7 @@ class ScreencastFeeder {
 		this.flushPendingAck();
 		this.lastDispatchAt = 0;
 		this.lastAckAt = 0;
+		this.topOffRetries = 0;
 
 		if (this.topOffTimer) {
 			clearTimeout(this.topOffTimer);
@@ -509,13 +572,54 @@ export class BrowserVideoCapture extends EventEmitter {
 	 */
 	private static readonly CLIENT_ADAPT_INTERVAL_MS = 1500;
 
+	/**
+	 * How long a viewer may sit in the table without ever connecting.
+	 * Generous — a slow network can take seconds to finish ICE — but finite,
+	 * which is the point: a viewer that never completes must not keep the
+	 * session looking watched forever.
+	 */
+	private static readonly VIEWER_HANDSHAKE_TTL_MS = 45_000;
+
+	/**
+	 * Silence tolerated from a connected viewer's stream before the watchdog
+	 * repairs it. Two encoder-stat windows plus slack — long enough that a
+	 * genuinely idle page (which still tops off) never trips it.
+	 */
+	private static readonly STREAM_STALL_MS = 6_000;
+
 	private sessions = new Map<string, VideoStreamSession>();
 	private feeders = new Map<string, ScreencastFeeder>();
 	private preInjectPromises = new Map<string, Promise<boolean>>();
 	private displayMetricsTimers = new Map<string, ReturnType<typeof setTimeout>>();
+	/** Injection bookkeeping, per tab — outlives the stream session. */
+	private tabInjection = new Map<string, TabInjectionState>();
+	private epochCounter = 0;
+	private watchdogTimer: ReturnType<typeof setInterval> | null = null;
 
 	constructor() {
 		super();
+	}
+
+	/** Injection bookkeeping for a tab, created on first use. */
+	private injectionState(sessionId: string): TabInjectionState {
+		let state = this.tabInjection.get(sessionId);
+		if (!state) {
+			state = { bindingsExposed: false, audioScriptId: null, epoch: '', codecSignature: '' };
+			this.tabInjection.set(sessionId, state);
+		}
+		return state;
+	}
+
+	private nextEpoch(sessionId: string): string {
+		return `${sessionId}:${++this.epochCounter}:${Date.now().toString(36)}`;
+	}
+
+	/**
+	 * Forget everything remembered about a tab. Called when the tab is closed —
+	 * its page is gone, so the bindings and on-new-document scripts go with it.
+	 */
+	disposeTab(sessionId: string): void {
+		this.tabInjection.delete(sessionId);
 	}
 
 	// ------------------------------------------------------------------
@@ -550,6 +654,7 @@ export class BrowserVideoCapture extends EventEmitter {
 
 		return {
 			...DEFAULT_STREAMING_CONFIG.video,
+			epoch: this.injectionState(videoSession.sessionId).epoch,
 			width,
 			height,
 			framerate: videoSession.targetFramerate,
@@ -622,7 +727,8 @@ export class BrowserVideoCapture extends EventEmitter {
 			viewers: new Map(),
 			scriptInjected: false,
 			scriptsPreInjected: false,
-			audioOnNewDocumentInjected: false,
+			lastEncodedAt: 0,
+			repairing: false,
 			codecSupport: { ...DEFAULT_CODEC_SUPPORT },
 			display: {},
 			profile,
@@ -669,7 +775,7 @@ export class BrowserVideoCapture extends EventEmitter {
 			videoSession.scriptInjected = true;
 			this.sessions.set(sessionId, videoSession);
 
-			await this.injectScripts(sessionId, page, this.buildVideoConfig(videoSession, viewport), this.buildAudioConfig(videoSession));
+			await this.injectScripts(sessionId, page, videoSession, viewport);
 
 			// Mark as pre-injected only after successful completion
 			videoSession.scriptsPreInjected = true;
@@ -687,85 +793,299 @@ export class BrowserVideoCapture extends EventEmitter {
 	}
 
 	/**
-	 * Inject signaling bindings + encoder scripts into page
+	 * Expose the signalling bindings, once per tab.
+	 *
+	 * Every one of these is bound to the tab whose page it was injected into.
+	 * They used to resolve their session by picking the first active one in
+	 * the whole project, which is correct only while exactly one tab streams:
+	 * with several open, one page's ICE candidates, connection states, cursor
+	 * and encoder stats were all attributed to a different tab.
+	 *
+	 * Whether they are already installed is remembered here rather than probed
+	 * from the page. `typeof window.__sendIceCandidate === 'function'` describes
+	 * the *current document*, and Puppeteer re-installs bindings on each new
+	 * one — so mid-navigation the probe says "absent" while Puppeteer's own
+	 * registry says "present", and `exposeFunction` throws. That threw out of
+	 * the whole handshake, and every client retry hit the same window: the
+	 * preview sat on "Loading preview…" until something else moved the page.
+	 */
+	private async exposeBindings(sessionId: string, page: Page): Promise<void> {
+		const state = this.injectionState(sessionId);
+		if (state.bindingsExposed) return;
+
+		/** Already-registered is success, not failure — see above. */
+		const expose = async (name: string, fn: (...args: any[]) => void) => {
+			try {
+				await page.exposeFunction(name, fn);
+			} catch (error) {
+				const message = error instanceof Error ? error.message : String(error);
+				if (!message.includes('already exists')) throw error;
+			}
+		};
+
+		await expose('__sendIceCandidate', (viewerId: string, candidate: RTCIceCandidateInit) => {
+			this.emit('ice-candidate', { sessionId, viewerId, candidate, from: 'headless' });
+		});
+
+		await expose('__sendConnectionState', (viewerId: string, state: string) => {
+			const videoSession = this.sessions.get(sessionId);
+			if (!videoSession) return;
+
+			videoSession.stats.connectionState = state;
+			this.emit('connection-state', { sessionId, viewerId, state });
+
+			const viewer = videoSession.viewers.get(viewerId);
+			if (viewer && state === 'connected') viewer.connected = true;
+
+			// Capture sources only produce frames on damage, so a viewer
+			// that connects to an already-still page would otherwise wait
+			// for the first mouse move to see anything. Push one refresh
+			// frame as soon as the peer is up.
+			if (state === 'connected' && videoSession.tab) {
+				videoSession.lastEncodedAt = Date.now();
+				void this.requestKeyframe(sessionId, videoSession.tab);
+			}
+
+			if (state === 'closed' || state === 'failed') {
+				videoSession.viewers.delete(viewerId);
+			}
+		});
+
+		// A channel that has just opened has no frame to show yet on a still
+		// page — see the matching comment in video-stream.ts.
+		await expose('__requestRefreshFrame', (viewerId: string) => {
+			const videoSession = this.sessions.get(sessionId);
+			if (!videoSession?.tab) return;
+			debug.log('webcodecs', `Refresh frame requested by viewer ${viewerId} on ${sessionId}`);
+			void this.requestKeyframe(sessionId, videoSession.tab);
+		});
+
+		await expose('__sendCursorChange', (cursor: string) => {
+			this.emit('cursor-change', { sessionId, cursor });
+		});
+
+		await expose('__sendEncoderStats', (stats: EncoderStats) => {
+			this.applyEncoderStats(sessionId, stats);
+		});
+
+		state.bindingsExposed = true;
+	}
+
+	/**
+	 * Inject signalling bindings + encoder scripts into the page.
+	 *
+	 * Mints a fresh epoch for the peer object it creates, so a later health
+	 * check can tell this injection apart from one left behind by a document
+	 * the page has since navigated away from.
 	 */
 	private async injectScripts(
 		sessionId: string,
 		page: Page,
-		videoConfig: StreamingConfig['video'],
-		audioConfig: StreamingConfig['audio']
+		videoSession: VideoStreamSession,
+		viewport: { width: number; height: number }
 	): Promise<void> {
-		// Check if bindings exist
-		const bindingsExist = await page.evaluate(() => {
-			return typeof (window as any).__sendIceCandidate === 'function';
-		});
+		await this.exposeBindings(sessionId, page);
 
-		// Expose signaling functions (persists across navigations).
+		const state = this.injectionState(sessionId);
+		const audioConfig = this.buildAudioConfig(videoSession);
+
+		// Register audio capture as a startup script — runs before page scripts on
+		// every new document load. Critical for SPAs that create AudioContext
+		// during initialization (before page.evaluate runs).
 		//
-		// Every one of these is bound to the tab whose page it was injected into.
-		// They used to resolve their session by picking the first active one in
-		// the whole project, which is correct only while exactly one tab streams:
-		// with several open, one page's ICE candidates, connection states, cursor
-		// and encoder stats were all attributed to a different tab. The viewer
-		// filters those by tab, so its candidates were silently discarded and the
-		// connection never completed — and because the first refresh frame is
-		// pushed from the `connected` state, a still page also never produced a
-		// first frame. That is the "Loading preview…" that never resolves.
-		if (!bindingsExist) {
-			await page.exposeFunction('__sendIceCandidate', (viewerId: string, candidate: RTCIceCandidateInit) => {
-				this.emit('ice-candidate', { sessionId, viewerId, candidate, from: 'headless' });
-			});
-
-			await page.exposeFunction('__sendConnectionState', (viewerId: string, state: string) => {
-				const videoSession = this.sessions.get(sessionId);
-				if (!videoSession) return;
-
-				videoSession.stats.connectionState = state;
-				this.emit('connection-state', { sessionId, viewerId, state });
-
-				// Capture sources only produce frames on damage, so a viewer
-				// that connects to an already-still page would otherwise wait
-				// for the first mouse move to see anything. Push one refresh
-				// frame as soon as the peer is up.
-				if (state === 'connected' && videoSession.tab) {
-					void this.requestKeyframe(sessionId, videoSession.tab);
-				}
-
-				if (state === 'closed' || state === 'failed') {
-					videoSession.viewers.delete(viewerId);
-				}
-			});
-
-			// A channel that has just opened has no frame to show yet on a still
-			// page — see the matching comment in video-stream.ts.
-			await page.exposeFunction('__requestRefreshFrame', (viewerId: string) => {
-				const videoSession = this.sessions.get(sessionId);
-				if (!videoSession?.tab) return;
-				debug.log('webcodecs', `Refresh frame requested by viewer ${viewerId} on ${sessionId}`);
-				void this.requestKeyframe(sessionId, videoSession.tab);
-			});
-
-			await page.exposeFunction('__sendCursorChange', (cursor: string) => {
-				this.emit('cursor-change', { sessionId, cursor });
-			});
-
-			await page.exposeFunction('__sendEncoderStats', (stats: EncoderStats) => {
-				this.applyEncoderStats(sessionId, stats);
-			});
+		// Registered exactly once for the tab. This used to be tracked on the
+		// stream session, which `stopStreaming` deletes, so every switch away
+		// from a preview tab and back added another copy that nothing removed —
+		// after enough switches each page load ran a stack of them, and the only
+		// cure was restarting the server.
+		if (!state.audioScriptId) {
+			const registered = await page.evaluateOnNewDocument(audioCaptureScript, audioConfig);
+			state.audioScriptId = (registered as { identifier?: string })?.identifier ?? 'registered';
 		}
 
-		// Register audio capture as a startup script — runs before page scripts on every new document load.
-		// Critical for SPAs that create AudioContext during initialization (before page.evaluate runs).
-		// The idempotency guard in audioCaptureScript prevents double-injection.
-		const session = this.sessions.get(sessionId);
-		if (session && !session.audioOnNewDocumentInjected) {
-			await page.evaluateOnNewDocument(audioCaptureScript, audioConfig);
-			session.audioOnNewDocumentInjected = true;
-		}
+		state.epoch = this.nextEpoch(sessionId);
 
 		// Inject video encoder + audio capture scripts into the current page context
+		const videoConfig = this.buildVideoConfig(videoSession, viewport);
+		state.codecSignature = this.codecSignature(videoSession);
+
 		await page.evaluate(videoEncoderScript, videoConfig);
 		await injectAudioCaptureIntoAllFrames(page, audioConfig);
+	}
+
+	/** Which encoder candidates the current viewer set implies. */
+	private codecSignature(videoSession: VideoStreamSession): string {
+		return resolveCodecCandidates(videoSession.codecSupport)
+			.map((candidate) => candidate.name)
+			.join(',');
+	}
+
+	// ------------------------------------------------------------------
+	// Liveness
+	// ------------------------------------------------------------------
+
+	/** What the page says about its own peer, or null when it has none. */
+	private async readPeerHealth(page: Page): Promise<PeerHealth | null> {
+		if (page.isClosed()) return null;
+		try {
+			return await page.evaluate(() => {
+				const peer = (window as any).__webCodecsPeer;
+				return typeof peer?.health === 'function' ? peer.health() : null;
+			});
+		} catch {
+			// Execution context torn down mid-navigation — treat as "no peer",
+			// which is exactly what it will be a moment from now.
+			return null;
+		}
+	}
+
+	/**
+	 * Bring the page's capture in line with what the backend believes.
+	 *
+	 * This replaces the old fork in `startStreaming`, which chose between a
+	 * clean restart and a bare attach purely on how many *other* viewers were
+	 * registered. That choice was made from the backend's own record, and the
+	 * record is exactly the thing that goes stale: with another viewer present
+	 * the attach path never re-injected the peer script, so a page whose peer
+	 * had died with a navigation stayed dead, `createOffer` returned null
+	 * forever, and every client retry took the same doomed branch. Reloading
+	 * the page was the only way out, because that re-injected by another route.
+	 *
+	 * Asking the page instead makes both cases converge: cheap when it is
+	 * healthy (one evaluate), correct when it is not.
+	 */
+	private async ensureLive(
+		sessionId: string,
+		session: BrowserTab,
+		isValidSession: () => boolean,
+		options: { force?: boolean } = {}
+	): Promise<boolean> {
+		const videoSession = this.sessions.get(sessionId);
+		if (!videoSession) return false;
+		if (!session.page || session.page.isClosed()) return false;
+
+		const page = session.page;
+		const viewport = page.viewport()!;
+		videoSession.tab = session;
+
+		const health = options.force ? null : await this.readPeerHealth(page);
+		const injection = this.injectionState(sessionId);
+
+		// A peer from a different injection answers every call and encodes into
+		// a page that is no longer on screen — indistinguishable from a healthy
+		// one without the epoch.
+		const epochMismatch = !health || !health.epoch || health.epoch !== injection.epoch;
+		const codecChanged = injection.codecSignature !== this.codecSignature(videoSession);
+		const needsInjection = epochMismatch || codecChanged;
+
+		if (needsInjection) {
+			const reason = options.force
+				? 'forced'
+				: !health
+					? 'no peer in page'
+					: epochMismatch
+						? 'epoch mismatch'
+						: 'codec set changed';
+			debug.log('webcodecs', `Rebuilding peer for ${sessionId} (${reason})`);
+			await this.injectScripts(sessionId, page, videoSession, viewport);
+			videoSession.scriptInjected = true;
+			// The old page's encoder handle died with its execution context.
+			this.feeders.get(sessionId)?.invalidatePeerHandle();
+		}
+
+		if (needsInjection || !health?.capturing) {
+			const started = await this.startPageCapture(page);
+			if (!started) {
+				debug.error('webcodecs', `Page refused to start capturing for ${sessionId}`);
+				return false;
+			}
+			videoSession.isActive = true;
+			videoSession.headlessReady = true;
+			videoSession.paused = false;
+			videoSession.captureMode = 'push';
+			videoSession.healthyWindows = 0;
+			await this.setupCapture(sessionId, session, isValidSession);
+		} else {
+			// Healthy: keep the backend's view of the page honest anyway, since
+			// the page may have switched capture source on its own.
+			videoSession.isActive = true;
+			videoSession.headlessReady = true;
+			videoSession.captureMode = health.captureMode;
+			this.reconcileViewers(videoSession, health);
+		}
+
+		videoSession.lastEncodedAt = Date.now();
+		this.ensureWatchdog();
+		return true;
+	}
+
+	/**
+	 * Start (or confirm) the page-side encoder and audio tap in one round-trip.
+	 */
+	private async startPageCapture(page: Page): Promise<boolean> {
+		const initResult = await page.evaluate(async () => {
+			const peer = (window as any).__webCodecsPeer;
+			if (typeof peer?.startStreaming !== 'function') {
+				return { peerExists: false, started: false, audioInitialized: false };
+			}
+
+			const started = await peer.startStreaming();
+			if (!started) {
+				return { peerExists: true, started: false, audioInitialized: false };
+			}
+
+			// Initialize audio encoder if available
+			let audioInitialized = false;
+			const encoder = (window as any).__audioEncoder;
+			if (typeof encoder?.init === 'function') {
+				try {
+					const initiated = await encoder.init();
+					if (initiated) {
+						audioInitialized = !!encoder.start();
+					}
+				} catch {}
+			}
+
+			return { peerExists: true, started: true, audioInitialized };
+		});
+
+		if (!initResult.peerExists || !initResult.started) return false;
+
+		if (!initResult.audioInitialized) {
+			debug.warn('webcodecs', 'Audio not available, continuing with video only');
+		}
+
+		return true;
+	}
+
+	/**
+	 * Drop viewers the page has never heard of and handshakes that never
+	 * completed. Without this a viewer that vanished mid-negotiation — a host
+	 * browser refreshed, a laptop closed — stayed in the table forever, and the
+	 * session went on looking watched by an audience of nobody.
+	 */
+	private reconcileViewers(videoSession: VideoStreamSession, health: PeerHealth): void {
+		const livePeers = new Set(health.viewers);
+		const now = Date.now();
+		let dropped = 0;
+
+		for (const [viewerId, viewer] of videoSession.viewers) {
+			if (livePeers.has(viewerId)) continue;
+			// Still negotiating — its peer is created by createOffer, which may
+			// not have run yet.
+			if (now - viewer.attachedAt < BrowserVideoCapture.VIEWER_HANDSHAKE_TTL_MS) continue;
+
+			videoSession.viewers.delete(viewerId);
+			dropped++;
+		}
+
+		if (dropped > 0) {
+			debug.log(
+				'webcodecs',
+				`Dropped ${dropped} stale viewer(s) from ${videoSession.sessionId}, ${videoSession.viewers.size} left`
+			);
+			this.refreshViewerConfig(videoSession);
+		}
 	}
 
 	// ------------------------------------------------------------------
@@ -792,7 +1112,8 @@ export class BrowserVideoCapture extends EventEmitter {
 			connected: false,
 			pendingCandidates: [],
 			visible: true,
-			decoderSaturated: false
+			decoderSaturated: false,
+			attachedAt: Date.now()
 		};
 
 		if (options.codecSupport) viewer.codecSupport = options.codecSupport;
@@ -802,40 +1123,12 @@ export class BrowserVideoCapture extends EventEmitter {
 		viewer.connected = false;
 		viewer.pendingCandidates = [];
 		viewer.visible = true;
+		viewer.attachedAt = Date.now();
 
 		videoSession.viewers.set(viewer.id, viewer);
 		this.refreshViewerConfig(videoSession);
 
 		return viewer;
-	}
-
-	/**
-	 * Add a viewer to a stream that is already running.
-	 *
-	 * Nothing about the capture is disturbed — the existing viewers keep their
-	 * channels. Only the shared geometry is re-derived, in case the newcomer has
-	 * a sharper screen than anyone already watching.
-	 */
-	private async attachViewer(
-		sessionId: string,
-		session: BrowserTab,
-		options: {
-			viewerId: string;
-			codecSupport?: ClientCodecSupport;
-			display?: ClientDisplayMetrics;
-		}
-	): Promise<boolean> {
-		const videoSession = this.sessions.get(sessionId);
-		if (!videoSession?.isActive) return false;
-
-		this.registerViewer(videoSession, options);
-		videoSession.tab = session;
-
-		// The stream may have been paused because everyone watching had it off
-		// screen; someone is watching again.
-		await this.setPaused(sessionId, session, false);
-		await this.applyCaptureGeometry(sessionId, session);
-		return true;
 	}
 
 	/**
@@ -878,7 +1171,14 @@ export class BrowserVideoCapture extends EventEmitter {
 	// ------------------------------------------------------------------
 
 	/**
-	 * Start video streaming for a session
+	 * Attach a viewer to a tab's stream, bringing the stream up if it isn't.
+	 *
+	 * One path for both cases. The old code chose between "restart everything"
+	 * and "just attach" from its own viewer count, which meant a stale entry
+	 * could route a perfectly ordinary reconnect into the attach branch and
+	 * leave a dead page untouched. Here the page decides (see `ensureLive`),
+	 * and the difference between a first viewer and a fifth is only how much
+	 * work that check turns out to imply.
 	 */
 	async startStreaming(
 		sessionId: string,
@@ -900,37 +1200,12 @@ export class BrowserVideoCapture extends EventEmitter {
 			await pendingPreInject.catch(() => {});
 		}
 
-		// A viewer re-handshaking (its own recovery path) gets a clean restart
-		// only when it is the sole viewer — that is the case the recovery logic
-		// was written for. Tearing the capture down because a *second* viewer
-		// arrived is what made two devices fight over one tab: each new
-		// handshake killed the other side's channel, whose health check
-		// reconnected and killed this one straight back.
-		const existingSession = this.sessions.get(sessionId);
-		if (existingSession?.isActive) {
-			const others = Array.from(existingSession.viewers.keys()).filter((id) => id !== viewerId);
-			if (others.length === 0) {
-				debug.log('webcodecs', `Session ${sessionId} already active for its only viewer, restarting clean`);
-				await this.stopStreaming(sessionId, session);
-			} else {
-				debug.log(
-					'webcodecs',
-					`Session ${sessionId} already streaming to ${others.length} other viewer(s), attaching ${viewerId}`
-				);
-				return this.attachViewer(sessionId, session, options);
-			}
-		}
-
 		if (!session.page || session.page.isClosed()) {
 			debug.error('webcodecs', `Cannot start: page is closed`);
 			return false;
 		}
 
 		try {
-			const page = session.page;
-			const viewport = page.viewport()!;
-
-			// Get or create session tracking
 			let videoSession = this.sessions.get(sessionId);
 			if (!videoSession) {
 				videoSession = this.createSessionState(sessionId);
@@ -939,80 +1214,28 @@ export class BrowserVideoCapture extends EventEmitter {
 
 			videoSession.tab = session;
 			this.registerViewer(videoSession, options);
-			videoSession.paused = false;
-			videoSession.captureMode = 'push';
-			videoSession.healthyWindows = 0;
 
-			const videoConfig = this.buildVideoConfig(videoSession, viewport);
-			const audioConfig = this.buildAudioConfig(videoSession);
+			// The pre-injected peer was built before any viewer's capabilities
+			// were known; `ensureLive` re-injects if this one needs a different
+			// codec set, and reuses it otherwise. Display metrics never need a
+			// rebuild — `applyCaptureGeometry` reconfigures the live encoder.
+			const live = await this.ensureLive(sessionId, session, isValidSession);
 
-			// The pre-injected script was configured before the viewer's codec
-			// support and display metrics were known, so re-inject whenever the
-			// handshake carried either.
-			const mustReinject = !videoSession.scriptsPreInjected || !!options?.codecSupport || !!options?.display;
-			if (mustReinject) {
-				await this.injectScripts(sessionId, page, videoConfig, audioConfig);
-				videoSession.scriptInjected = true;
-			} else {
-				debug.log('webcodecs', `Scripts already pre-injected for ${sessionId}, skipping injection`);
-			}
-
-			// Single batched call: verify peer + start streaming + init audio
-			// (saves ~60ms of IPC overhead vs 4 separate page.evaluate calls)
-			const initResult = await page.evaluate(async () => {
-				const peer = (window as any).__webCodecsPeer;
-				if (typeof peer?.startStreaming !== 'function') {
-					return { peerExists: false, started: false, audioInitialized: false };
-				}
-
-				const started = await peer.startStreaming();
-				if (!started) {
-					return { peerExists: true, started: false, audioInitialized: false };
-				}
-
-				// Initialize audio encoder if available
-				let audioInitialized = false;
-				const encoder = (window as any).__audioEncoder;
-				if (typeof encoder?.init === 'function') {
-					try {
-						const initiated = await encoder.init();
-						if (initiated) {
-							audioInitialized = !!encoder.start();
-						}
-					} catch {}
-				}
-
-				return { peerExists: true, started: true, audioInitialized };
-			});
-
-			if (!initResult.peerExists) {
-				debug.error('webcodecs', `Peer script injected but __webCodecsPeer not available`);
-				this.sessions.delete(sessionId);
+			if (!live) {
+				debug.error('webcodecs', `Failed to bring up capture for ${sessionId}`);
 				return false;
 			}
 
-			if (!initResult.started) {
-				debug.error('webcodecs', `startStreaming returned false`);
-				this.sessions.delete(sessionId);
-				return false;
-			}
-
-			videoSession.isActive = true;
-
-			if (initResult.audioInitialized) {
-				debug.log('webcodecs', 'Audio encoder initialized and started');
-			} else {
-				debug.warn('webcodecs', 'Audio not available, continuing with video only');
-			}
-
-			videoSession.headlessReady = true;
-
-			await this.setupCapture(sessionId, session, isValidSession);
+			// Someone is watching again — the stream may have been paused because
+			// everyone who had it open put it off screen.
+			await this.setPaused(sessionId, session, false);
+			await this.applyCaptureGeometry(sessionId, session);
 
 			debug.log(
 				'webcodecs',
-				`Streaming started for ${sessionId} — ${videoSession.capture.width}x${videoSession.capture.height} ` +
-					`@${videoSession.targetFramerate}fps (${videoSession.captureMode}, ${videoSession.profile.tier})`
+				`Streaming ready for ${sessionId} — ${videoSession.capture.width}x${videoSession.capture.height} ` +
+					`@${videoSession.targetFramerate}fps (${videoSession.captureMode}, ${videoSession.profile.tier}, ` +
+					`${videoSession.viewers.size} viewer(s))`
 			);
 			return true;
 		} catch (error) {
@@ -1284,6 +1507,107 @@ export class BrowserVideoCapture extends EventEmitter {
 	}
 
 	/**
+	 * Watch every live session for a stream that has stopped producing.
+	 *
+	 * On a timer rather than driven by encoder stats, because the failures that
+	 * matter are the ones where the page stops reporting altogether — a peer
+	 * that died with a navigation sends nothing, so anything event-driven would
+	 * wait forever for a signal that is never coming. Runs only while sessions
+	 * exist, and does nothing at all unless one has actually gone quiet.
+	 */
+	private ensureWatchdog(): void {
+		if (this.watchdogTimer || this.sessions.size === 0) return;
+
+		this.watchdogTimer = setInterval(() => {
+			if (this.sessions.size === 0) {
+				clearInterval(this.watchdogTimer!);
+				this.watchdogTimer = null;
+				return;
+			}
+
+			for (const videoSession of [...this.sessions.values()]) {
+				if (!videoSession.isActive) continue;
+				if (this.reapStaleViewers(videoSession)) continue;
+				this.checkForStall(videoSession);
+			}
+		}, BrowserVideoCapture.STREAM_STALL_MS);
+
+		// Nothing here should hold the process open on its own.
+		this.watchdogTimer.unref?.();
+	}
+
+	/**
+	 * Drop viewers that handshook and never connected, and tear the capture
+	 * down if that leaves nobody watching. Returns whether the session ended.
+	 *
+	 * The page-informed pass in `reconcileViewers` only runs when someone
+	 * handshakes, which is precisely what a tab nobody is watching any more
+	 * never gets — so without this a viewer that vanished mid-negotiation kept
+	 * a headless renderer and an encoder busy for an audience of nobody.
+	 */
+	private reapStaleViewers(videoSession: VideoStreamSession): boolean {
+		const now = Date.now();
+		let dropped = 0;
+
+		for (const [viewerId, viewer] of videoSession.viewers) {
+			if (viewer.connected) continue;
+			if (now - viewer.attachedAt < BrowserVideoCapture.VIEWER_HANDSHAKE_TTL_MS) continue;
+
+			videoSession.viewers.delete(viewerId);
+			dropped++;
+		}
+
+		if (dropped === 0) return false;
+
+		debug.log(
+			'webcodecs',
+			`Reaped ${dropped} viewer(s) that never connected on ${videoSession.sessionId}, ` +
+				`${videoSession.viewers.size} left`
+		);
+
+		if (videoSession.viewers.size > 0) {
+			this.refreshViewerConfig(videoSession);
+			return false;
+		}
+
+		void this.stopStreaming(videoSession.sessionId, videoSession.tab);
+		return true;
+	}
+
+	/**
+	 * Repair a stream that has stopped producing while someone is watching it.
+	 *
+	 * Recovery used to live entirely in the viewer: it noticed no first frame,
+	 * asked for a screencast refresh, then re-handshook. That only works while
+	 * the *client's* view of the problem is right — and the failures that stuck
+	 * were the ones where the client did everything correctly and the source
+	 * was the broken half. Repairing from here closes that gap, and costs
+	 * nothing on a healthy stream because even an idle page still tops off.
+	 */
+	private checkForStall(videoSession: VideoStreamSession): void {
+		if (videoSession.paused || videoSession.repairing || !videoSession.tab) return;
+		if (videoSession.viewers.size === 0) return;
+		if (!Array.from(videoSession.viewers.values()).some((viewer) => viewer.connected)) return;
+
+		const silentFor = Date.now() - videoSession.lastEncodedAt;
+		if (videoSession.lastEncodedAt === 0 || silentFor < BrowserVideoCapture.STREAM_STALL_MS) return;
+
+		const { sessionId, tab } = videoSession;
+		debug.warn('webcodecs', `Stream for ${sessionId} produced nothing for ${silentFor}ms — repairing`);
+
+		videoSession.repairing = true;
+		void this.ensureLive(sessionId, tab, () => !tab.isDestroyed)
+			.then((live) => {
+				if (live) return this.requestKeyframe(sessionId, tab);
+			})
+			.catch((error) => debug.warn('webcodecs', `Stall repair failed for ${sessionId}:`, error))
+			.finally(() => {
+				videoSession.repairing = false;
+				videoSession.lastEncodedAt = Date.now();
+			});
+	}
+
+	/**
 	 * Encoder health from the page. Saturation here means this host cannot
 	 * produce frames fast enough, which no amount of network headroom fixes.
 	 */
@@ -1292,6 +1616,11 @@ export class BrowserVideoCapture extends EventEmitter {
 		if (!videoSession?.isActive) return;
 
 		videoSession.captureMode = stats.captureMode || videoSession.captureMode;
+
+		// Frames reaching the encoder is the one signal that means the pipeline
+		// is genuinely alive end to end. The counter is per-window, so any
+		// non-zero report is proof of life for this window.
+		if (stats.framesAttempted > 0) videoSession.lastEncodedAt = Date.now();
 
 		// In-page capture can end on its own — the captured surface goes away
 		// on some navigations — and the page has no way to start a screencast.
@@ -1421,8 +1750,14 @@ export class BrowserVideoCapture extends EventEmitter {
 		visible: boolean
 	): Promise<boolean> {
 		const videoSession = this.sessions.get(sessionId);
-		const viewer = videoSession?.viewers.get(viewerId);
-		if (!videoSession || !viewer) return false;
+		if (!videoSession) return false;
+
+		// Registered on demand rather than refused. A viewer whose peer failed
+		// while it was suspended loses its entry, and coming back is exactly
+		// when it needs one: refusing left the tab paused with `isActive` true
+		// and nobody in the table, and nothing else ever re-evaluated that.
+		const viewer =
+			videoSession.viewers.get(viewerId) ?? this.registerViewer(videoSession, { viewerId });
 
 		viewer.visible = visible;
 		return this.setPaused(sessionId, session, this.allViewersHidden(videoSession));
@@ -1697,8 +2032,14 @@ export class BrowserVideoCapture extends EventEmitter {
 	}
 
 	/**
-	 * Handle navigation - re-inject peer script and restart capture
-	 * Called after page navigation to restore video streaming without full reconnection
+	 * Re-establish capture after the page swapped documents.
+	 *
+	 * The peer object lived in the old execution context, so it is gone; only
+	 * the exposed bindings survive. `ensureLive` already knows how to notice
+	 * that and rebuild, and routing through it means a navigation and a stalled
+	 * stream heal by the same code — a failure here no longer leaves the
+	 * session marked active with a dead page behind it, which is the state that
+	 * used to be unrecoverable without reloading by hand.
 	 */
 	async handleNavigation(sessionId: string, session: BrowserTab): Promise<boolean> {
 		const videoSession = this.sessions.get(sessionId);
@@ -1707,70 +2048,27 @@ export class BrowserVideoCapture extends EventEmitter {
 			return false;
 		}
 
+		debug.log('webcodecs', `🔄 Handling navigation for ${sessionId} — rebuilding page capture`);
+
 		try {
-			const page = session.page;
-			const viewport = page.viewport()!;
-
-			debug.log('webcodecs', `🔄 Handling navigation for ${sessionId} - re-injecting peer script and restarting capture`);
-
-			const videoConfig = this.buildVideoConfig(videoSession, viewport);
-			const audioConfig = this.buildAudioConfig(videoSession);
-
-			// Re-inject video encoder and audio capture scripts to new page context
-			await page.evaluate(videoEncoderScript, videoConfig);
-			await injectAudioCaptureIntoAllFrames(page, audioConfig);
-
-			// Single batched call: verify peer + start streaming + init audio
-			const initResult = await page.evaluate(async () => {
-				const peer = (window as any).__webCodecsPeer;
-				if (typeof peer?.startStreaming !== 'function') {
-					return { peerExists: false, started: false, audioInitialized: false };
-				}
-
-				const started = await peer.startStreaming();
-				if (!started) {
-					return { peerExists: true, started: false, audioInitialized: false };
-				}
-
-				let audioInitialized = false;
-				const encoder = (window as any).__audioEncoder;
-				if (typeof encoder?.init === 'function') {
-					try {
-						const initiated = await encoder.init();
-						if (initiated) {
-							audioInitialized = !!encoder.start();
-						}
-					} catch {}
-				}
-
-				return { peerExists: true, started: true, audioInitialized };
+			const live = await this.ensureLive(sessionId, session, () => !session.isDestroyed, {
+				force: true
 			});
 
-			if (!initResult.peerExists) {
-				debug.error('webcodecs', `Peer script re-injection failed - peer not available`);
+			if (!live) {
+				// Leave the session marked inactive so the next handshake starts
+				// from scratch instead of attaching to a page that cannot encode.
+				videoSession.isActive = false;
+				debug.error('webcodecs', `Failed to restore streaming after navigation for ${sessionId}`);
 				return false;
 			}
-
-			if (!initResult.started) {
-				debug.error('webcodecs', `Failed to start streaming on new page`);
-				return false;
-			}
-
-			if (initResult.audioInitialized) {
-				debug.log('webcodecs', 'Audio re-initialized after navigation');
-			} else {
-				debug.warn('webcodecs', 'Audio not available after navigation, continuing with video only');
-			}
-
-			// The old page's encoder handle died with its execution context.
-			videoSession.captureMode = 'push';
-			await this.setupCapture(sessionId, session, () => !session.isDestroyed);
 
 			// Emit event to notify frontend that streaming is ready
 			this.emit('navigation-streaming-ready', { sessionId });
 
 			return true;
 		} catch (error) {
+			videoSession.isActive = false;
 			debug.error('webcodecs', `Failed to handle navigation:`, error);
 			return false;
 		}
@@ -1846,10 +2144,16 @@ export class BrowserVideoCapture extends EventEmitter {
 	async cleanup(): Promise<void> {
 		debug.log('webcodecs', 'Cleaning up all sessions');
 
+		if (this.watchdogTimer) {
+			clearInterval(this.watchdogTimer);
+			this.watchdogTimer = null;
+		}
+
 		const sessionIds = Array.from(this.sessions.keys());
 		await Promise.all(sessionIds.map((id) => this.stopStreaming(id)));
 
 		this.sessions.clear();
+		this.tabInjection.clear();
 	}
 }
 

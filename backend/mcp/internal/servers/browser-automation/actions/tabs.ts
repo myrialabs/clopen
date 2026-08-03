@@ -28,6 +28,7 @@ function defaultRotation(deviceSize: string): 'portrait' | 'landscape' {
 export const listTabs: ActionDef = {
 	type: 'list_tabs',
 	kind: 'control',
+	activity: 'Checking tabs',
 	doc: `list_tabs {} — every open tab with its id, URL, viewport and who controls it.
   Use the id, not the position, with switch_tab/close_tab.`,
 	schema: z.object({ type: z.literal('list_tabs'), ...commonFields }),
@@ -53,6 +54,7 @@ export const listTabs: ActionDef = {
 export const openTab: ActionDef = {
 	type: 'open_tab',
 	kind: 'control',
+	activity: 'Opening a tab',
 	doc: `open_tab {url?, deviceSize?, rotation?} — open a tab and make it the target.
   deviceSize: desktop 1920×1080 · laptop 1440×900 (default) · tablet 834×1194 · mobile 402×874.
   rotation defaults to landscape for desktop/laptop, portrait for tablet/mobile.`,
@@ -80,6 +82,7 @@ export const openTab: ActionDef = {
 export const switchTab: ActionDef = {
 	type: 'switch_tab',
 	kind: 'control',
+	activity: 'Switching tab',
 	doc: `switch_tab {tabId} — make another tab the target of following actions.`,
 	schema: z.object({
 		type: z.literal('switch_tab'),
@@ -94,6 +97,9 @@ export const switchTab: ActionDef = {
 		if (tab) {
 			const acquired = browserMcpControl.acquireControl(tab.id, ctx.chatSessionId, ctx.projectId);
 			if (!acquired) {
+				if (!browserMcpControl.isSessionLive(ctx.chatSessionId)) {
+					throw new Error('This chat session is no longer running — the browser was released when it stopped.');
+				}
 				const owner = browserMcpControl.getTabOwner(tab.id);
 				throw new Error(`Tab '${args.tabId}' is controlled by another chat session (${owner?.slice(0, 8)}...)`);
 			}
@@ -109,6 +115,7 @@ export const switchTab: ActionDef = {
 export const closeTab: ActionDef = {
 	type: 'close_tab',
 	kind: 'control',
+	activity: 'Closing a tab',
 	doc: `close_tab {tabId?} — close a tab (default: the current one).`,
 	schema: z.object({
 		type: z.literal('close_tab'),
@@ -135,6 +142,7 @@ export const closeTab: ActionDef = {
 export const setViewport: ActionDef = {
 	type: 'set_viewport',
 	kind: 'control',
+	activity: 'Changing the viewport',
 	doc: `set_viewport {deviceSize?, rotation?} — resize the current tab.
   Changing this re-runs the page's media queries, so it is how responsive layouts get tested.`,
 	schema: z.object({

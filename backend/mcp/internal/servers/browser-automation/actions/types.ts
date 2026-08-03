@@ -72,6 +72,16 @@ export interface ActionDef {
 	 * what stops it from reading a `tab` that may be null.
 	 */
 	needsTab?: boolean;
+	/**
+	 * Two or three words for the caption beside the agent's cursor while this
+	 * runs — "Navigating", "Taking a screenshot".
+	 *
+	 * Only `control` actions carry one. An `input` action's caption is written by
+	 * the interaction handler from the gesture itself, which is the only place
+	 * that knows whether a `type` is text or a keystroke, or a `click` is a right
+	 * click — and the runner has already coalesced the group by then anyway.
+	 */
+	activity?: string;
 	/** `input` actions: translate to the native gesture primitive. */
 	toInput?: (args: any, ctx: ActionContext) => BrowserAutonomousAction | Promise<BrowserAutonomousAction>;
 	/** `control` actions: run directly. */

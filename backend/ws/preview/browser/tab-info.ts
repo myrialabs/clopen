@@ -63,7 +63,16 @@ export const tabInfoPreviewHandler = createRouter()
 				isActive: t.Boolean(),
 				canGoBack: t.Boolean(),
 				canGoForward: t.Boolean(),
-				isMcpControlled: t.Boolean()
+				isMcpControlled: t.Boolean(),
+				/** The tab this project's agent is acting on right now. */
+				isMcpFocused: t.Boolean(),
+				/**
+				 * What the agent is doing on this tab, for the caption beside its
+				 * cursor. Recovered with the lock: a run holds a tab for minutes,
+				 * so a panel opened in the middle of one must not have to wait for
+				 * the next action before it can say anything.
+				 */
+				mcpActivity: t.Optional(t.String())
 			})),
 			activeTabId: t.Union([t.String(), t.Null()]),
 			count: t.Number()
@@ -73,8 +82,15 @@ export const tabInfoPreviewHandler = createRouter()
 			? requireBrowserPreviewAccessFor(conn, data.projectId)
 			: requireBrowserPreviewAccess(conn);
 
+		// This is where the frontend rebuilds its lock state from scratch — a
+		// project switch, a page reload — so it is the natural point to collect
+		// locks whose chat session died without reaching a release path. Without
+		// it, a stuck lock would survive every reload until the server restarted.
+		browserMcpControl.releaseOrphans();
+
 		const allTabsInfo = previewService.getAllTabsInfo();
 		const activeTab = previewService.getActiveTab();
+		const focusedTabId = browserMcpControl.getFocusedTab(projectId);
 
 		debug.log('preview', `📋 Listing ${allTabsInfo.length} active browser tabs for session recovery (project: ${projectId})`);
 
@@ -91,7 +107,9 @@ export const tabInfoPreviewHandler = createRouter()
 				isActive: tab.isActive,
 				canGoBack: tab.canGoBack,
 				canGoForward: tab.canGoForward,
-				isMcpControlled: browserMcpControl.isTabControlled(tab.id, projectId)
+				isMcpControlled: browserMcpControl.isTabControlled(tab.id, projectId),
+				isMcpFocused: tab.id === focusedTabId,
+				mcpActivity: browserMcpControl.getActivity(tab.id) ?? undefined
 			})),
 			activeTabId: activeTab?.id || null,
 			count: allTabsInfo.length

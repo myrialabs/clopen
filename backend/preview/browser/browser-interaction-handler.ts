@@ -78,6 +78,56 @@ export class BrowserInteractionHandler extends EventEmitter {
 		browserMcpControl.emitCursorClick(sessionId, x, y, button);
 	}
 
+	/**
+	 * A few words for the caption beside the agent's pointer.
+	 *
+	 * Written from the watcher's side of the screen, not the agent's: it answers
+	 * "what is happening to my page right now", so it names the gesture rather
+	 * than the action type, and never carries a selector or the text being typed
+	 * — a password would end up on screen, and the caption has room for about
+	 * three words before it stops being a caption.
+	 */
+	private describeActivity(action: BrowserAutonomousAction): string {
+		switch (action.type) {
+			case 'click':
+				return action.button === 'right' ? 'Opening a menu' : 'Clicking';
+			case 'long_press':
+				return 'Holding';
+			case 'move':
+				return 'Moving';
+			case 'drag':
+				return 'Dragging';
+			case 'scroll':
+				return 'Scrolling';
+			case 'type':
+				return action.text !== undefined ? 'Typing' : 'Pressing a key';
+			case 'press':
+				return `Pressing ${action.keys || action.key}`;
+			case 'paste':
+				return 'Pasting';
+			case 'focus':
+				return 'Selecting a field';
+			case 'clear':
+				return 'Clearing a field';
+			case 'select_option':
+				return 'Choosing an option';
+			case 'upload':
+				return 'Attaching a file';
+			case 'tap':
+				return 'Tapping';
+			case 'swipe':
+				return 'Swiping';
+			case 'pinch':
+				return 'Zooming';
+			case 'extract_data':
+				return 'Reading the page';
+			case 'wait':
+				return 'Waiting';
+			default:
+				return 'Working';
+		}
+	}
+
 	// MCP-optimized mouse movement with smooth curves and ease-out easing
 	private async mcpMouseMove(
 		page: Page,
@@ -382,6 +432,25 @@ export class BrowserInteractionHandler extends EventEmitter {
 		isValidSession: () => boolean
 	): Promise<AutonomousRunOutcome> {
 		const results: BrowserActionResult[] = [];
+
+		try {
+			return await this.runBatch(sessionId, session, actions, isValidSession, results);
+		} finally {
+			// The agent keeps the tab between batches, so the pointer stays — but
+			// it is no longer doing the last thing it said it was, and a caption
+			// left reading "Typing" over a page nothing is typing into is worse
+			// than no caption at all.
+			browserMcpControl.emitActivity(sessionId, null);
+		}
+	}
+
+	private async runBatch(
+		sessionId: string,
+		session: BrowserTab,
+		actions: BrowserAutonomousAction[],
+		isValidSession: () => boolean,
+		results: BrowserActionResult[]
+	): Promise<AutonomousRunOutcome> {
 		const page = session.page;
 
 		// Store session ID on page for cursor tracking
@@ -402,6 +471,7 @@ export class BrowserInteractionHandler extends EventEmitter {
 			}
 
 			const action = actions[i];
+			browserMcpControl.emitActivity(sessionId, this.describeActivity(action));
 
 			try {
 				const outcome = await this.runAction(sessionId, session, action);

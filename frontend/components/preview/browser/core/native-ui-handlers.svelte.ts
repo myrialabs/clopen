@@ -53,6 +53,40 @@ export function createNativeUIHandler(config: NativeUIHandlerConfig) {
 	} = config;
 
 	/**
+	 * Longest we keep re-attempting to place a page-anchored overlay before
+	 * giving up. Comfortably past a first frame; short enough that a genuinely
+	 * dead tab does not keep a timer alive.
+	 */
+	const PLACEMENT_RETRY_MS = 2000;
+
+	/**
+	 * Run `place` once the canvas can answer where a page point is on screen.
+	 *
+	 * These overlays are anchored to an element inside the page, so they cannot
+	 * be drawn until the canvas has a bitmap to measure against — and the moment
+	 * they arrive is often exactly when it does not: the page opened a select on
+	 * load, or the panel has just switched tabs. Dropping the event there was
+	 * silent and final. The page believes its dropdown is open and waits for an
+	 * answer that can no longer come, so the control simply stops responding.
+	 *
+	 * Retrying per frame turns that into a delay of a frame or two instead.
+	 */
+	function placeWhenReady(place: () => boolean, label: string): void {
+		if (place()) return;
+
+		const deadline = Date.now() + PLACEMENT_RETRY_MS;
+		const attempt = () => {
+			if (place()) return;
+			if (Date.now() >= deadline) {
+				debug.warn('preview', `${label} skipped — canvas never became measurable`);
+				return;
+			}
+			requestAnimationFrame(attempt);
+		};
+		requestAnimationFrame(attempt);
+	}
+
+	/**
 	 * Setup WebSocket event listeners for native UI events.
 	 * Returns a teardown that removes every listener — the coordinator calls it
 	 * on unmount so listeners don't accumulate across BrowserPreview re-mounts.
@@ -188,36 +222,33 @@ export function createNativeUIHandler(config: NativeUIHandlerConfig) {
 			return;
 		}
 
-		// Transform coordinates from browser (Puppeteer) to display coordinates
-		// The transformation function will handle cases where canvas is not ready (returns null)
-		const topLeft = transformBrowserToDisplayCoordinates(data.boundingBox.x, data.boundingBox.y);
-		const bottomRight = transformBrowserToDisplayCoordinates(
-			data.boundingBox.x + data.boundingBox.width,
-			data.boundingBox.y + data.boundingBox.height
-		);
+		// Transform coordinates from browser (Puppeteer) to display coordinates.
+		// Retried rather than dropped — see placeWhenReady.
+		placeWhenReady(() => {
+			const topLeft = transformBrowserToDisplayCoordinates(data.boundingBox.x, data.boundingBox.y);
+			const bottomRight = transformBrowserToDisplayCoordinates(
+				data.boundingBox.x + data.boundingBox.width,
+				data.boundingBox.y + data.boundingBox.height
+			);
+			if (!topLeft || !bottomRight) return false;
 
-		if (!topLeft || !bottomRight) {
-			debug.warn('preview', `Select dropdown skipped - coordinate transformation failed (${data.boundingBox.x}, ${data.boundingBox.y})`);
-			return;
-		}
+			// Create transformed select info with display coordinates
+			const transformedSelectInfo: BrowserSelectInfo = {
+				...data,
+				boundingBox: {
+					x: topLeft.x,
+					y: topLeft.y,
+					width: bottomRight.x - topLeft.x,
+					height: bottomRight.y - topLeft.y
+				}
+			};
 
-		// Create transformed select info with display coordinates
-		const transformedSelectInfo: BrowserSelectInfo = {
-			...data,
-			boundingBox: {
-				x: topLeft.x,
-				y: topLeft.y,
-				width: bottomRight.x - topLeft.x,
-				height: bottomRight.y - topLeft.y
-			}
-		};
+			debug.log('preview', `📋 Transformed select position: (${transformedSelectInfo.boundingBox.x}, ${transformedSelectInfo.boundingBox.y})`);
 
-		debug.log('preview', `📋 Transformed select position: (${transformedSelectInfo.boundingBox.x}, ${transformedSelectInfo.boundingBox.y})`);
-
-		// Show select dropdown overlay
-		if (onSelectOpen) {
-			onSelectOpen(transformedSelectInfo);
-		}
+			// Show select dropdown overlay
+			onSelectOpen?.(transformedSelectInfo);
+			return true;
+		}, 'Select dropdown');
 	}
 
 	/**
@@ -256,28 +287,25 @@ export function createNativeUIHandler(config: NativeUIHandlerConfig) {
 			return;
 		}
 
-		// Transform coordinates from browser (Puppeteer) to display coordinates
-		// The transformation function will handle cases where canvas is not ready (returns null)
-		const position = transformBrowserToDisplayCoordinates(data.x, data.y);
+		// Transform coordinates from browser (Puppeteer) to display coordinates.
+		// Retried rather than dropped — see placeWhenReady.
+		placeWhenReady(() => {
+			const position = transformBrowserToDisplayCoordinates(data.x, data.y);
+			if (!position) return false;
 
-		if (!position) {
-			debug.warn('preview', `Context menu skipped - coordinate transformation failed (${data.x}, ${data.y})`);
-			return;
-		}
+			// Create transformed context menu info with display coordinates
+			const transformedMenuInfo: BrowserContextMenuInfo = {
+				...data,
+				x: position.x,
+				y: position.y
+			};
 
-		// Create transformed context menu info with display coordinates
-		const transformedMenuInfo: BrowserContextMenuInfo = {
-			...data,
-			x: position.x,
-			y: position.y
-		};
+			debug.log('preview', `📜 Transformed context menu position: (${transformedMenuInfo.x}, ${transformedMenuInfo.y})`);
 
-		debug.log('preview', `📜 Transformed context menu position: (${transformedMenuInfo.x}, ${transformedMenuInfo.y})`);
-
-		// Show context menu overlay
-		if (onContextMenuOpen) {
-			onContextMenuOpen(transformedMenuInfo);
-		}
+			// Show context menu overlay
+			onContextMenuOpen?.(transformedMenuInfo);
+			return true;
+		}, 'Context menu');
 	}
 
 	/**
@@ -289,22 +317,25 @@ export function createNativeUIHandler(config: NativeUIHandlerConfig) {
 
 		if (!transformBrowserToDisplayCoordinates) return;
 
-		const topLeft = transformBrowserToDisplayCoordinates(data.boundingBox.x, data.boundingBox.y);
-		const bottomRight = transformBrowserToDisplayCoordinates(
-			data.boundingBox.x + data.boundingBox.width,
-			data.boundingBox.y + data.boundingBox.height
-		);
-		if (!topLeft || !bottomRight) return;
+		placeWhenReady(() => {
+			const topLeft = transformBrowserToDisplayCoordinates(data.boundingBox.x, data.boundingBox.y);
+			const bottomRight = transformBrowserToDisplayCoordinates(
+				data.boundingBox.x + data.boundingBox.width,
+				data.boundingBox.y + data.boundingBox.height
+			);
+			if (!topLeft || !bottomRight) return false;
 
-		onNativePickerOpen?.({
-			...data,
-			boundingBox: {
-				x: topLeft.x,
-				y: topLeft.y,
-				width: bottomRight.x - topLeft.x,
-				height: bottomRight.y - topLeft.y
-			}
-		});
+			onNativePickerOpen?.({
+				...data,
+				boundingBox: {
+					x: topLeft.x,
+					y: topLeft.y,
+					width: bottomRight.x - topLeft.x,
+					height: bottomRight.y - topLeft.y
+				}
+			});
+			return true;
+		}, 'Native picker');
 	}
 
 	/**

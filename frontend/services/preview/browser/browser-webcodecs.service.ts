@@ -32,11 +32,52 @@ const CODEC_NAMES: Record<number, 'vp8' | 'vp9' | 'avc'> = {
 };
 
 /** `randomUUID` needs a secure context, which a LAN preview over http is not. */
-function createViewerId(): string {
+function randomId(): string {
 	if (typeof crypto !== 'undefined' && typeof crypto.randomUUID === 'function') {
 		return crypto.randomUUID();
 	}
 	return `viewer-${Math.random().toString(36).slice(2)}${Date.now().toString(36)}`;
+}
+
+const VIEWER_ID_STORAGE_KEY = 'clopen.preview.viewerId';
+
+/** Viewer ids currently held by a live service in this document. */
+const activeViewerIds = new Set<string>();
+
+/**
+ * A durable identity for "this browser tab, watching previews".
+ *
+ * Minting a fresh id per service instance made every panel re-mount, project
+ * switch and page refresh look like a brand-new audience member arriving while
+ * the previous one was still registered — the source saw two viewers where
+ * there was one person, and the entry left behind kept the tab looking watched
+ * long after nobody was. Keyed in `sessionStorage`, so a refresh is recognised
+ * as the same viewer returning and its peer is replaced rather than added to.
+ * The suffix only comes into play when two panels genuinely watch at once.
+ */
+function acquireViewerId(): string {
+	let base: string;
+
+	try {
+		const stored = sessionStorage.getItem(VIEWER_ID_STORAGE_KEY);
+		base = stored ?? randomId();
+		if (!stored) sessionStorage.setItem(VIEWER_ID_STORAGE_KEY, base);
+	} catch {
+		// Private mode / storage disabled — fall back to a per-instance id.
+		base = randomId();
+	}
+
+	if (!activeViewerIds.has(base)) {
+		activeViewerIds.add(base);
+		return base;
+	}
+
+	for (let suffix = 2; ; suffix++) {
+		const candidate = `${base}-${suffix}`;
+		if (activeViewerIds.has(candidate)) continue;
+		activeViewerIds.add(candidate);
+		return candidate;
+	}
 }
 
 export interface ClientCodecSupportPayload {
@@ -251,7 +292,7 @@ export class BrowserWebCodecsService {
 	 * per-connection: it survives reconnects, so the backend can recognise a
 	 * recovering viewer as the same one rather than a second audience member.
 	 */
-	private readonly viewerId: string = createViewerId();
+	private readonly viewerId: string = acquireViewerId();
 
 	/**
 	 * Remote ICE candidates that arrived before this side could take them.
@@ -2266,6 +2307,12 @@ export class BrowserWebCodecsService {
 	 */
 	destroy(): void {
 		this.cleanup();
+
+		// Release the identity so a later service in this document can reuse it
+		// instead of being pushed onto a suffix — otherwise a panel that
+		// mounts and unmounts a few times walks the id upward and the source
+		// sees a stranger every time.
+		activeViewerIds.delete(this.viewerId);
 
 		this.terminateVideoWorker();
 

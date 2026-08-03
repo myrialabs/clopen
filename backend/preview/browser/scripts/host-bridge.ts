@@ -665,14 +665,8 @@ export function hostBridgeScript(bindingName: string) {
 	{
 		const STYLE_ID = '__clopen-fullscreen-style';
 		const MAX_Z = 2147483647;
-		/** How long the exit hint stays up before fading, as in Chrome itself. */
-		const EXIT_HINT_MS = 3200;
-		/** What counts as "the user is still there" and brings the hint back. */
-		const ACTIVITY_EVENTS = ['mousemove', 'touchstart', 'keydown'];
 
 		let fullscreenElement: Element | null = null;
-		let exitButton: HTMLElement | null = null;
-		let hideHintTimer: ReturnType<typeof setTimeout> | undefined;
 
 		// Captured before the patches further down shadow them. Every replacement
 		// below is installed as an *own* property of `document`, while the real
@@ -731,87 +725,14 @@ export function hostBridgeScript(bindingName: string) {
 			(document.head || document.documentElement).appendChild(style);
 		};
 
-		/**
-		 * Bring the hint back and start its countdown again.
-		 *
-		 * It stays clickable while faded — the fade is there so the corner of a
-		 * video is not permanently covered, not to withdraw the way out. A phone
-		 * has no pointer to move, so a tap has to land on something.
-		 */
-		const revealExitButton = () => {
-			if (!exitButton) return;
-			exitButton.style.opacity = '1';
-			clearTimeout(hideHintTimer);
-			hideHintTimer = setTimeout(() => {
-				if (exitButton) exitButton.style.opacity = '0.12';
-			}, EXIT_HINT_MS);
-		};
-
-		/**
-		 * The exit affordance.
-		 *
-		 * Rendered inside the page on purpose: it is then part of the captured
-		 * frame and answers a normal click or tap, so it works on a phone and on
-		 * a second viewer's screen. Anything app-side would need a channel of its
-		 * own and would still miss the pages that swallow Escape.
-		 *
-		 * It fades the way Chrome's own "Press Esc to exit full screen" notice
-		 * does and returns on the next sign of life. A badge pinned over the
-		 * corner of a video for the whole of playback is not what full screen
-		 * looks like anywhere else.
-		 */
-		const showExitButton = () => {
-			if (exitButton) {
-				revealExitButton();
-				return;
-			}
-
-			const button = document.createElement('button');
-			button.type = 'button';
-			button.setAttribute('data-clopen-fullscreen-ui', '');
-			button.textContent = 'Exit full screen (Esc)';
-			button.style.cssText = [
-				'position:fixed',
-				'top:12px',
-				'right:12px',
-				`z-index:${MAX_Z}`,
-				'margin:0',
-				'padding:6px 12px',
-				'border:0',
-				'border-radius:9999px',
-				'font:500 12px/1.4 system-ui,-apple-system,Segoe UI,sans-serif',
-				'color:#fff',
-				'background:rgba(15,23,42,0.82)',
-				'box-shadow:0 2px 10px rgba(0,0,0,0.45)',
-				'cursor:pointer',
-				'opacity:1',
-				'transition:opacity 220ms ease'
-			].join(';');
-			button.addEventListener('click', (event) => {
-				event.preventDefault();
-				event.stopPropagation();
-				void exit();
-			});
-			(document.body || document.documentElement).appendChild(button);
-			exitButton = button;
-
-			// Capture phase: a player that swallows pointer events over its own
-			// surface would otherwise keep the hint from ever coming back.
-			for (const type of ACTIVITY_EVENTS) {
-				document.addEventListener(type, revealExitButton, true);
-			}
-			revealExitButton();
-		};
-
-		const removeChrome = () => {
-			clearTimeout(hideHintTimer);
-			hideHintTimer = undefined;
-			for (const type of ACTIVITY_EVENTS) {
-				document.removeEventListener(type, revealExitButton, true);
-			}
-			exitButton?.remove();
-			exitButton = null;
-		};
+		// No in-page exit affordance is drawn any more. There used to be an
+		// "Exit full screen (Esc)" badge here, which put two buttons saying the
+		// same thing over the same frame — the page's, painted into the captured
+		// picture, and the app's, drawn over it. Only one can be the way out, and
+		// the app-side control is the one that survives a page re-render, reaches
+		// every viewer, and still works when Chrome granted a fullscreen from its
+		// own C++ that this shim never saw. All the page draws now is the style
+		// rule that fakes the fullscreen in the first place.
 
 		/**
 		 * Chrome fires this *on the element*; listeners on `document` only see it
@@ -832,10 +753,25 @@ export function hostBridgeScript(bindingName: string) {
 			element.removeAttribute('data-clopen-fullscreen');
 		};
 
+		/**
+		 * Tell the host whether this page is showing something full screen.
+		 *
+		 * The in-page exit affordance is drawn by the page, which means the page
+		 * can lose it — a re-render that empties the body, a stacking context
+		 * that buries it, a fullscreen Chrome granted from C++ that this shim
+		 * never saw. The viewer needs its own way out, and it can only offer one
+		 * if it knows. Fire-and-forget: a frame with no route to the host still
+		 * has a working CSS fullscreen, it just cannot be rescued from outside.
+		 */
+		const reportState = (active: boolean) => {
+			void call('fullscreen-state', { active }).catch(() => {});
+		};
+
 		const enter = (element: Element) => {
 			ensureStyle();
 			if (fullscreenElement && fullscreenElement !== element) clearMarks(fullscreenElement);
 
+			const wasActive = fullscreenElement !== null;
 			fullscreenElement = element;
 			// The root and the body already fill the viewport; pinning them as
 			// fixed boxes only breaks their own layout.
@@ -844,8 +780,8 @@ export function hostBridgeScript(bindingName: string) {
 			}
 			document.documentElement.classList.add('clopen-fullscreen-active');
 			document.body?.classList.add('clopen-fullscreen-active');
-			showExitButton();
 			notify(element);
+			if (!wasActive) reportState(true);
 			return Promise.resolve();
 		};
 
@@ -857,9 +793,45 @@ export function hostBridgeScript(bindingName: string) {
 			fullscreenElement = null;
 			document.documentElement.classList.remove('clopen-fullscreen-active');
 			document.body?.classList.remove('clopen-fullscreen-active');
-			removeChrome();
 			notify(previous);
+			reportState(false);
 			return Promise.resolve();
+		};
+
+		/**
+		 * Leave full screen no matter how the page got there.
+		 *
+		 * `exit()` alone is not enough as a rescue: it returns immediately when
+		 * this shim holds no element, which is exactly the case that strands the
+		 * preview — Chrome granted a fullscreen from its own C++ (a `<video>`
+		 * control bar, a double-click) and the conversion did not take, so the
+		 * composited surface is collapsed with nothing in the page marked. This
+		 * clears every trace unconditionally: the shim's state, any stray marks
+		 * left by a document that changed underneath it, the scroll lock, and
+		 * Chrome's own fullscreen.
+		 */
+		const forceExit = () => {
+			void exit();
+
+			for (const marked of Array.from(document.querySelectorAll('[data-clopen-fullscreen]'))) {
+				marked.removeAttribute('data-clopen-fullscreen');
+			}
+			document.documentElement.classList.remove('clopen-fullscreen-active');
+			document.body?.classList.remove('clopen-fullscreen-active');
+
+			try {
+				if (readNativeElement()) nativeExit?.();
+			} catch {
+				// Already leaving, or never was.
+			}
+
+			reportState(false);
+		};
+
+		// The viewer's own escape hatch, reachable from the host in every frame.
+		scope.__clopenFullscreen = {
+			active: () => fullscreenElement !== null || readNativeElement() !== null,
+			forceExit
 		};
 
 		/**
