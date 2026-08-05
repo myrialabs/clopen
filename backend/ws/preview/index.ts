@@ -146,11 +146,14 @@ export const previewRouter = createRouter()
 		projectId: t.Optional(t.String()),
 		timestamp: t.Number()
 	}))
-	// Which controlled tab the agent is acting on right now. A lock says the
-	// user must not touch a tab; this says where the agent actually is, so
-	// several locked tabs stop being indistinguishable. Null = none.
+	// Whether an agent is acting on this tab right now. A lock says the user
+	// must not touch a tab; this says where the agent actually is, so several
+	// locked tabs stop being indistinguishable. Stated per tab, and retracted
+	// with `focused: false`, because a project can have two runs going at once
+	// and each has its own tab to point at.
 	.emit('preview:browser-mcp-control-focus', t.Object({
-		browserTabId: t.Union([t.String(), t.Null()]),
+		browserTabId: t.String(),
+		focused: t.Boolean(),
 		projectId: t.String(),
 		timestamp: t.Number()
 	}))
@@ -169,11 +172,6 @@ export const previewRouter = createRouter()
 		x: t.Number(),
 		y: t.Number(),
 		button: t.Optional(t.String()),
-		timestamp: t.Number(),
-		source: t.Literal('mcp')
-	}))
-	.emit('preview:browser-mcp-test-completed', t.Object({
-		sessionId: t.String(),
 		timestamp: t.Number(),
 		source: t.Literal('mcp')
 	}))

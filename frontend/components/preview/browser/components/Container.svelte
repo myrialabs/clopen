@@ -28,6 +28,15 @@
 		sessionInfo = $bindable<any>(null),
 		isConnected = $bindable(false),
 		isStreamReady = $bindable(false), // True when first frame received from WebCodecs
+		/**
+		 * Whether the canvas currently has a picture on it.
+		 *
+		 * Distinct from `isStreamReady`, which tracks the *stream* and drops to
+		 * false on every mid-session restart even though the last frame is still
+		 * painted and still correct. This one only goes false when there is
+		 * genuinely nothing to look at.
+		 */
+		hasPaintedContent = $bindable(false),
 		errorMessage = $bindable<string | null>(null),
 		virtualCursor = $bindable<{ x: number; y: number; visible: boolean; clicking?: boolean }>({
 			x: 0,
@@ -35,22 +44,19 @@
 			visible: false
 		}),
 		/**
-		 * The agent's pointer, in *page* coordinates.
+		 * The agent's pointer on the tab being shown, in *page* coordinates, or
+		 * null when no agent has moved on it.
 		 *
 		 * Projected here rather than by the panel because everything the
 		 * projection needs — the canvas, the fit scale, the container's own
 		 * origin — lives at this level. Handing the panel screen coordinates to
 		 * pass back down meant the conversion ran before the canvas had painted
 		 * and the position was dropped for good.
+		 *
+		 * Position only. Whether the pointer is *drawn* is decided by the lock —
+		 * see `mcpCursor` below.
 		 */
-		mcpCursorPage = { x: 0, y: 0, visible: false } as {
-			x: number;
-			y: number;
-			visible: boolean;
-			clicking?: boolean;
-			pressed?: boolean;
-		},
-		lastFrameData = $bindable<any>(null), // Add lastFrameData prop
+		mcpCursorPage = null as { x: number; y: number; clicking?: boolean; pressed?: boolean } | null,
 
 		// MCP Control State
 		isMcpControlled = $bindable(false),
@@ -101,89 +107,235 @@
 	const HIDDEN_CURSOR: OverlayCursor = { x: 0, y: 0, visible: false };
 
 	/**
-	 * Viewport → container-local.
+	 * Where the frame is painted, in this container's own coordinates.
 	 *
-	 * The canvas answers in viewport coordinates because `getBoundingClientRect`
-	 * is the only thing that knows where the frame ended up. The cursors are
-	 * drawn as absolutely-positioned children of this container, so its own
-	 * origin has to come back off again — see VirtualCursor for why they are no
-	 * longer `position: fixed`.
+	 * Measured from the DOM, but held as state, and that distinction is the
+	 * whole point. Everything that positions an overlay used to call
+	 * `getBoundingClientRect` from inside a `$derived` — and a rect is not a
+	 * signal, so the derived only re-ran when something *else* it happened to
+	 * read changed. Measure at a moment when the canvas has no geometry (mid
+	 * tab-switch, panel still laying out, first frame not yet decoded) and the
+	 * answer is "cannot place this", cached, with nothing to invalidate it. The
+	 * pointer then stayed gone until some unrelated dependency moved, which is
+	 * why it came back sometimes and, after a switch or a reload, usually not
+	 * at all.
+	 *
+	 * Written by `measureFrame()` below, and only when the numbers actually
+	 * change, so this never feeds its own observers.
+	 */
+	let frameGeom = $state<{ left: number; top: number; width: number; height: number } | null>(null);
+
+	/** This container's own origin in the viewport, measured alongside the above. */
+	let containerOrigin = $state<{ left: number; top: number } | null>(null);
+
+	/**
+	 * Viewport → container-local, for overlays that already know where they go
+	 * on screen (the user's own cursor, the touch cursor).
+	 *
+	 * Reads the measured origin rather than calling `getBoundingClientRect`
+	 * here, for the same reason `frameGeom` exists: a rect read inside a
+	 * `$derived` is a value the derived can never be told has changed.
 	 */
 	function toLocalCursor(cursor: Partial<OverlayCursor> | null | undefined): OverlayCursor {
-		if (!cursor?.visible) return HIDDEN_CURSOR;
-		const rect = previewContainer?.getBoundingClientRect();
-		if (!rect) return HIDDEN_CURSOR;
+		if (!cursor?.visible || !containerOrigin) return HIDDEN_CURSOR;
 		return {
 			...cursor,
 			visible: true,
-			x: (cursor.x ?? 0) - rect.left,
-			y: (cursor.y ?? 0) - rect.top
+			x: (cursor.x ?? 0) - containerOrigin.left,
+			y: (cursor.y ?? 0) - containerOrigin.top
 		};
 	}
 
 	/**
 	 * The agent's pointer, page coordinates → where to draw it.
 	 *
-	 * Drawn for as long as the agent *holds* the tab, not only while cursor
+	 * Drawn for as long as the agent is *on* this tab, not only while cursor
 	 * events are arriving. Those two are not the same thing, and the difference
 	 * is most of a run: a batch of `type` actions against named selectors, a
 	 * `navigate`, a `screenshot`, a long `wait_for` — none of them necessarily
-	 * moves a pointer, so a lock could be taken and worked with for a minute
-	 * while the preview showed a page changing by itself with nothing on it to
-	 * say why. The lock is the honest signal, so the lock is what decides.
+	 * moves a pointer, so a tab could be worked on for a minute while the
+	 * preview showed a page changing by itself with nothing on it to say why.
 	 */
 	const mcpCursor = $derived.by((): OverlayCursor => {
-		const page = mcpCursorPage;
-		// Geometry dependencies: any of these moves where a page point lands, so
-		// a cursor that arrived before the canvas could answer is re-projected
-		// the moment it can.
-		void previewDimensions;
-		void deviceSize;
-		void rotation;
-		// Readiness dependencies. `pageToScreen` refuses to answer until the
-		// canvas has a bitmap, which is exactly the window an agent starts
-		// working in — it opens a tab and moves immediately, while the first
-		// frame is still in flight. Those early positions were projected to
-		// nothing and, because a parked pointer sends no further updates, the
-		// cursor stayed invisible for the rest of the run. Depending on the
-		// signals that mark the canvas ready re-runs the projection once it can
-		// actually succeed.
-		void isStreamReady;
-		void lastFrameData;
-		void sessionId;
+		// The lock decides, and nothing else does. An action is only
+		// interruptible between steps, so pressing stop mid-gesture leaves a
+		// tail of pointer updates still arriving for a tab that has already
+		// been handed back; if a position could put the pointer on screen, the
+		// agent would appear to keep working after being told to stop. It also
+		// has to be *this* tab the agent is on: a session holds several tabs at
+		// once, and drawing a pointer on the ones it is merely holding left a
+		// cursor parked in the middle of a page nothing was happening to.
+		if (!isMcpFocused) return HIDDEN_CURSOR;
+		if (!frameGeom) return HIDDEN_CURSOR;
 
-		// Read unconditionally: `!page.visible && !controlled` would short-circuit
-		// past it whenever a position is known, and the derived would then not
-		// re-run when the lock is released.
-		const controlled = isMcpControlled;
-		if (!page?.visible && !controlled) return HIDDEN_CURSOR;
+		// Held but never moved — park it mid-page rather than in the corner,
+		// which reads as a pointer that got lost. The first real event moves it.
+		const x = mcpCursorPage?.x ?? pageSize.width / 2;
+		const y = mcpCursorPage?.y ?? pageSize.height / 2;
 
-		// No gesture has placed it yet: park it in the middle of the page rather
-		// than at the origin, which reads as a pointer that got lost in the
-		// corner. The first real event moves it, and it glides there.
-		const size = canvasAPI?.getPageSize?.();
-		const x = page?.visible ? page.x : (size?.width ?? 0) / 2;
-		const y = page?.visible ? page.y : (size?.height ?? 0) / 2;
-
-		const screen = canvasAPI?.pageToScreen?.(x, y);
-		if (!screen) return HIDDEN_CURSOR;
-
-		return toLocalCursor({ ...page, visible: true, ...screen });
+		return {
+			x: frameGeom.left + x * (frameGeom.width / pageSize.width),
+			y: frameGeom.top + y * (frameGeom.height / pageSize.height),
+			visible: true,
+			clicking: mcpCursorPage?.clicking,
+			pressed: mcpCursorPage?.pressed
+		};
 	});
+
+	/**
+	 * The agent is working, but on a tab this viewer is not looking at.
+	 *
+	 * Worth saying out loud. Without it, a locked-but-not-focused tab shows a
+	 * blocked overlay and an amber ring with no explanation of where the agent
+	 * actually went — and the previous answer, drawing a motionless pointer in
+	 * the middle of the page, was worse: it looked like the agent had frozen.
+	 */
+	const showAgentElsewhereHint = $derived(isMcpControlled && !isMcpFocused);
 
 	const localVirtualCursor = $derived(toLocalCursor(virtualCursor));
 	const localTouchCursor = $derived(toLocalCursor(touchCursorPos));
 
-	// Solid loading overlay: shown during initial load states
-	// Skip when lastFrameData exists (tab was previously loaded - snapshot handles display)
-	const showSolidOverlay = $derived(
-		isLaunchingBrowser || !sessionInfo || (!isStreamReady && !isNavigating && !isReconnecting && !lastFrameData)
+	/**
+	 * The page's own coordinate space — the emulated viewport, in CSS pixels.
+	 * Same derivation as the canvas uses; the backend dispatches page points in
+	 * these units.
+	 */
+	const pageSize = $derived(
+		getViewportDimensions(deviceSize as DeviceSize, rotation as Rotation)
 	);
 
-	// Diagnostic: log whenever showSolidOverlay changes
+	/**
+	 * Re-measure where the frame is painted.
+	 *
+	 * Cheap, idempotent, and safe to call from anywhere — it writes only when
+	 * the numbers moved, so it cannot loop through the observers that call it.
+	 * Sub-pixel jitter is ignored for the same reason.
+	 */
+	function measureFrame(): void {
+		const rect = canvasAPI?.getPaintedRect?.();
+		const container = previewContainer?.getBoundingClientRect();
+
+		if (container) {
+			const origin = containerOrigin;
+			if (
+				!origin ||
+				Math.abs(origin.left - container.left) >= 0.5 ||
+				Math.abs(origin.top - container.top) >= 0.5
+			) {
+				containerOrigin = { left: container.left, top: container.top };
+			}
+		} else if (containerOrigin !== null) {
+			containerOrigin = null;
+		}
+
+		if (!rect || !container || rect.width === 0 || rect.height === 0) {
+			if (frameGeom !== null) frameGeom = null;
+			return;
+		}
+
+		const next = {
+			left: rect.left - container.left,
+			top: rect.top - container.top,
+			width: rect.width,
+			height: rect.height
+		};
+
+		const current = frameGeom;
+		if (
+			current &&
+			Math.abs(current.left - next.left) < 0.5 &&
+			Math.abs(current.top - next.top) < 0.5 &&
+			Math.abs(current.width - next.width) < 0.5 &&
+			Math.abs(current.height - next.height) < 0.5
+		) {
+			return;
+		}
+
+		frameGeom = next;
+	}
+
+	/** Measure after the browser has laid out, not during the change that caused it. */
+	let measureFrameHandle: number | undefined;
+	function scheduleMeasureFrame(): void {
+		if (typeof requestAnimationFrame !== 'function') {
+			measureFrame();
+			return;
+		}
+		if (measureFrameHandle !== undefined) return;
+		measureFrameHandle = requestAnimationFrame(() => {
+			measureFrameHandle = undefined;
+			measureFrame();
+		});
+	}
+
+	/**
+	 * Everything that can move the painted rect without resizing anything.
+	 *
+	 * A tab switch, a device change, a first frame, a new scale: none of these
+	 * necessarily change the canvas element's box, so no ResizeObserver fires,
+	 * yet where a page point lands changes anyway.
+	 */
 	$effect(() => {
-		debug.log('preview', `[DIAG] showSolidOverlay=${showSolidOverlay} (isLaunchingBrowser=${isLaunchingBrowser}, sessionInfo=${!!sessionInfo}, isStreamReady=${isStreamReady}, isNavigating=${isNavigating}, isReconnecting=${isReconnecting}, lastFrameData=${!!lastFrameData})`);
+		void sessionId;
+		void deviceSize;
+		void rotation;
+		void previewDimensions;
+		void isStreamReady;
+		void hasPaintedContent;
+		void canvasAPI;
+		scheduleMeasureFrame();
 	});
+
+	/** Element geometry: the canvas box itself, and the container it sits in. */
+	$effect(() => {
+		if (typeof ResizeObserver === 'undefined') return;
+
+		const canvasElement = canvasAPI?.getCanvasElement?.();
+		const observer = new ResizeObserver(() => scheduleMeasureFrame());
+
+		if (canvasElement) observer.observe(canvasElement);
+		if (previewContainer) observer.observe(previewContainer);
+
+		scheduleMeasureFrame();
+		return () => observer.disconnect();
+	});
+
+	/**
+	 * Scrolling and window resizes move the rect without touching any observed
+	 * box. `scroll` is captured because the pane that scrolls is an ancestor,
+	 * and scroll events do not bubble.
+	 */
+	$effect(() => {
+		if (typeof window === 'undefined') return;
+
+		const onChange = () => scheduleMeasureFrame();
+		window.addEventListener('resize', onChange);
+		window.addEventListener('scroll', onChange, { capture: true, passive: true });
+
+		return () => {
+			window.removeEventListener('resize', onChange);
+			window.removeEventListener('scroll', onChange, { capture: true });
+		};
+	});
+
+	onDestroy(() => {
+		if (measureFrameHandle !== undefined && typeof cancelAnimationFrame === 'function') {
+			cancelAnimationFrame(measureFrameHandle);
+		}
+	});
+
+	/**
+	 * Cover the frame with something opaque.
+	 *
+	 * Keyed on whether the canvas has a picture, never on whether the *stream*
+	 * is up. Those came apart constantly: `isStreamReady` is reset by every
+	 * mid-session restart — a recovery, a watchdog round, a screencast refresh —
+	 * and each one dropped a white panel over a canvas that was still showing a
+	 * perfectly good frame, for as long as the handshake took. The guard meant
+	 * to prevent that keyed on `lastFrameData`, whose writer no longer exists,
+	 * so it was never true and never prevented anything.
+	 */
+	const showSolidOverlay = $derived(isLaunchingBrowser || !sessionInfo || !hasPaintedContent);
 
 	// Navigation overlay state with debounce to prevent flickering during state transitions
 	let showNavigationOverlay = $state(false);
@@ -493,28 +645,7 @@
 	bind:this={previewContainer}
 	class="flex-1 relative overflow-hidden p-0.5 flex items-center justify-center min-h-0"
 >
-	{#if errorMessage && !isLaunchingBrowser && !isLoading}
-		<!-- Error State - Outside viewport container like empty state -->
-		<!-- Only show error if NOT in any loading state (loading states have priority) -->
-		<div
-			class="text-center text-slate-500 absolute"
-			in:scale={{ duration: 250, easing: cubicOut, start: 0.95 }}
-			out:scale={{ duration: 200, easing: cubicOut, start: 0.95 }}
-		>
-			<Icon name="lucide:circle-alert" class="w-16 h-16 mx-auto mb-4 text-red-500 opacity-80" />
-			<p class="text-lg font-medium mb-2 text-slate-700 dark:text-slate-300">Failed to Load Page</p>
-			<p class="text-sm mb-4 text-slate-600 dark:text-slate-400 max-w-md">
-				{errorMessage}
-			</p>
-			<button
-				onclick={handleRetryClick}
-				class="px-5 py-2.5 bg-violet-600 hover:bg-violet-700 text-white text-sm font-medium rounded-lg transition-colors duration-200 inline-flex items-center gap-2"
-			>
-				<Icon name="lucide:refresh-cw" class="w-4 h-4" />
-				<span>Try Again</span>
-			</button>
-		</div>
-	{:else if url}
+	{#if url}
 		<!-- Scaled container for proper viewport simulation -->
 		<div
 			class="relative flex-shrink-0 {isMcpControlled
@@ -544,9 +675,9 @@
 							bind:deviceSize
 							bind:rotation
 							bind:canvasAPI
-							bind:lastFrameData
 							bind:isConnected
 							bind:isStreamReady
+							bind:hasPaintedContent
 							bind:isNavigating
 							bind:isReconnecting
 							bind:touchMode
@@ -639,7 +770,7 @@
 			{/if}
 
 			<!-- MCP Control Overlay - blocks user interaction (screen only) -->
-			{#if isMcpControlled && isStreamReady}
+			{#if isMcpControlled && hasPaintedContent}
 				<div
 					class="absolute z-20 pointer-events-auto cursor-not-allowed"
 					role="presentation"
@@ -672,6 +803,36 @@
 		</div>
 	{/if}
 
+	<!--
+		Navigation failure. A sibling of the device frame, not nested inside it —
+		it used to be anchored to the tiny screen rect, sitting *under* the MCP
+		control-blocking overlay (same z-level, later in the DOM), which made
+		"Try Again" unclickable while an agent held the tab. This also used to
+		unmount DeviceFrame/Canvas entirely on error, tearing down the WebCodecs
+		stream — "Try Again" now just re-navigates the same live session instead
+		of forcing the whole panel through a fresh reconnect.
+	-->
+	{#if errorMessage && !isLaunchingBrowser && !isLoading}
+		<div
+			class="text-center text-slate-500 absolute z-40"
+			in:scale={{ duration: 250, easing: cubicOut, start: 0.95 }}
+			out:scale={{ duration: 200, easing: cubicOut, start: 0.95 }}
+		>
+			<Icon name="lucide:circle-alert" class="w-16 h-16 mx-auto mb-4 text-red-500 opacity-80" />
+			<p class="text-lg font-medium mb-2 text-slate-700 dark:text-slate-300">Failed to Load Page</p>
+			<p class="text-sm mb-4 text-slate-600 dark:text-slate-400 max-w-md">
+				{errorMessage}
+			</p>
+			<button
+				onclick={handleRetryClick}
+				class="px-5 py-2.5 bg-violet-600 hover:bg-violet-700 text-white text-sm font-medium rounded-lg transition-colors duration-200 inline-flex items-center gap-2"
+			>
+				<Icon name="lucide:refresh-cw" class="w-4 h-4" />
+				<span>Try Again</span>
+			</button>
+		</div>
+	{/if}
+
 	<!-- Virtual Cursor - User -->
 	{#if !isMcpControlled && localVirtualCursor.visible}
 		<VirtualCursor cursor={localVirtualCursor} variant="user" />
@@ -691,11 +852,26 @@
 		who is driving but what they are about to do to the page.
 	-->
 	{#if mcpCursor.visible}
-		<VirtualCursor
-			cursor={mcpCursor}
-			variant="mcp"
-			label={mcpActivity ? `Agent · ${mcpActivity}` : 'Agent'}
-		/>
+		<VirtualCursor cursor={mcpCursor} variant="mcp" activity={mcpActivity} />
+	{/if}
+
+	<!--
+		This tab is locked, but the agent is somewhere else. Says so, rather than
+		leaving a blocked page with an amber ring and no explanation.
+	-->
+	{#if showAgentElsewhereHint}
+		<div
+			class="pointer-events-none absolute top-3 left-1/2 z-40 -translate-x-1/2"
+			in:scale={{ duration: 200, easing: cubicOut, start: 0.95 }}
+			out:scale={{ duration: 150, easing: cubicOut, start: 0.95 }}
+		>
+			<span
+				class="flex items-center gap-1.5 whitespace-nowrap rounded-full bg-slate-900/85 px-3 py-1.5 text-xs font-medium text-amber-200 shadow-lg backdrop-blur-sm"
+			>
+				<Icon name="lucide:external-link" class="h-3.5 w-3.5" />
+				<span>Agent is working on another tab</span>
+			</span>
+		</div>
 	{/if}
 </div>
 

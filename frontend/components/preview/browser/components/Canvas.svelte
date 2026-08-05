@@ -1,3 +1,19 @@
+<script module lang="ts">
+	/**
+	 * Last known picture per backend tab, so switching back shows something
+	 * immediately instead of a blank panel and a fresh handshake.
+	 *
+	 * Module-level, not per component. This canvas unmounts whenever the tab on
+	 * screen has no session yet — a blank "New Tab" is enough — and taking the
+	 * snapshots down with it meant a detour through an empty tab cost every
+	 * other tab its picture, and cost the panel a full reconnect to get it
+	 * back. Keyed by session id, so an entry can only ever be redrawn for the
+	 * session it came from.
+	 */
+	const canvasSnapshots = new Map<string, HTMLCanvasElement>();
+	const MAX_SNAPSHOTS = 10;
+</script>
+
 <script lang="ts">
 	import { onDestroy } from 'svelte';
 	import { getViewportDimensions, type DeviceSize, type Rotation } from '$frontend/utils/preview-constants';
@@ -21,10 +37,19 @@
 		rotation = $bindable<Rotation>('portrait'),
 		currentCursor = $bindable('default'),
 		canvasAPI = $bindable<any>(null),
-		lastFrameData = $bindable<any>(null),
 		isConnected = $bindable(false),
 		latencyMs = $bindable<number>(0),
 		isStreamReady = $bindable(false), // Exposed: true when first frame received
+		/**
+		 * Whether the canvas has a picture on it right now.
+		 *
+		 * Deliberately not the same as `isStreamReady`. A mid-session restart —
+		 * recovery, a watchdog round, a screencast refresh — takes the stream
+		 * down and back up while the last decoded frame is still painted and
+		 * still shows the right page. Callers that darken the panel want to know
+		 * about the picture, not the socket.
+		 */
+		hasPaintedContent = $bindable(false),
 		isNavigating = $bindable(false), // Track if page is navigating (from parent)
 		isReconnecting = $bindable(false), // Track if reconnecting after navigation (prevents loading overlay)
 
@@ -93,10 +118,6 @@
 	let blankSince = 0;
 	let watchdogRound = 0;
 
-	// Canvas snapshot storage for instant tab switching
-	// Stores a clone of the canvas per sessionId so switching back shows content immediately
-	const canvasSnapshots = new Map<string, HTMLCanvasElement>();
-	const MAX_SNAPSHOTS = 10;
 	let hasRestoredSnapshot = false; // Prevents canvas clear/reset during streaming start
 
 	// Recovery is triggered by ACTUAL failures — ICE failed, the WebCodecs
@@ -143,6 +164,18 @@
 	// Sync isStreamReady with hasReceivedFirstFrame for parent component
 	$effect(() => {
 		isStreamReady = hasReceivedFirstFrame;
+	});
+
+	/**
+	 * Is there a picture on the canvas?
+	 *
+	 * True once a frame has been decoded, and stays true while a restored
+	 * snapshot is standing in for one. Only `clearCanvas()` takes it back to
+	 * false, which is the one moment the canvas genuinely has nothing to show.
+	 */
+	let hasPainted = $state(false);
+	$effect(() => {
+		hasPaintedContent = hasPainted;
 	});
 
 	// Watch projectId changes and recreate WebCodecs service
@@ -690,6 +723,23 @@
 				return;
 			}
 
+			// Assigning width/height wipes the backing store, so keep a copy of
+			// whatever is on screen and stretch it back over the new size. It is
+			// the wrong aspect ratio for a moment, which is a far better answer
+			// than a blank panel: a device or rotation change would otherwise
+			// flash grey for the whole length of the restart it triggers.
+			let carried: HTMLCanvasElement | null = null;
+			if (hasPainted && canvasElement.width > 0 && canvasElement.height > 0) {
+				try {
+					carried = document.createElement('canvas');
+					carried.width = canvasElement.width;
+					carried.height = canvasElement.height;
+					carried.getContext('2d')?.drawImage(canvasElement, 0, 0);
+				} catch {
+					carried = null;
+				}
+			}
+
 			canvasElement.width = canvasWidth;
 			canvasElement.height = canvasHeight;
 			canvasElement.style.width = '100%';
@@ -706,13 +756,17 @@
 				willReadFrequently: false // We won't read pixels back
 			});
 
-			// Fill with neutral gray (works for both light/dark mode)
-			// This matches the loading overlay background roughly
 			if (ctx) {
 				ctx.imageSmoothingEnabled = true;
 				ctx.imageSmoothingQuality = 'medium';
-				ctx.fillStyle = '#f1f5f9'; // slate-100 - neutral light color
-				ctx.fillRect(0, 0, canvasElement.width, canvasElement.height);
+				if (carried) {
+					ctx.drawImage(carried, 0, 0, canvasWidth, canvasHeight);
+				} else {
+					// Neutral gray, works for both light/dark mode and matches the
+					// loading overlay that is covering this anyway.
+					ctx.fillStyle = '#f1f5f9'; // slate-100
+					ctx.fillRect(0, 0, canvasElement.width, canvasElement.height);
+				}
 			}
 		}
 	}
@@ -831,6 +885,7 @@
 				// Setup first frame handler - fires immediately when first frame decoded
 				// This eliminates the 500ms polling delay for hiding the loading overlay
 				webCodecsService.setFirstFrameHandler(() => {
+					hasPainted = true;
 					if (!hasReceivedFirstFrame) {
 						debug.log('webcodecs', 'First frame callback - immediately updating UI');
 						hasReceivedFirstFrame = true;
@@ -941,8 +996,14 @@
 		}
 	}
 
-	// Clear canvas to prevent showing stale frames
-	// Use light neutral color that works with loading overlay
+	/**
+	 * Wipe the canvas back to blank.
+	 *
+	 * Only for a genuine change of subject — a different session whose picture
+	 * we do not have. Never for a restart of the *same* session: the frame
+	 * already painted still shows that page correctly, and throwing it away
+	 * meant every recovery flashed a white panel for the length of a handshake.
+	 */
 	function clearCanvas() {
 		if (canvasElement) {
 			const ctx = canvasElement.getContext('2d');
@@ -951,6 +1012,7 @@
 				ctx.fillRect(0, 0, canvasElement.width, canvasElement.height);
 			}
 		}
+		hasPainted = false;
 	}
 
 	// EVENT-DRIVEN health check - no timeout-based recovery
@@ -988,6 +1050,7 @@
 			// Check if we received the first frame
 			if (stats && stats.firstFrameRendered) {
 				debug.log('webcodecs', `First frame rendered after ${elapsed}ms`);
+				hasPainted = true;
 				hasReceivedFirstFrame = true;
 				lastFrameTime = now;
 				consecutiveFailures = 0;
@@ -1261,7 +1324,17 @@
 		return () => clearInterval(timer);
 	});
 
-	// Stop WebCodecs streaming
+	/**
+	 * Stop streaming.
+	 *
+	 * Leaves the canvas alone. Whatever is painted is the last frame of the
+	 * session being stopped, and every caller either goes straight on to
+	 * restart that same session — a recovery, a watchdog round — or is about to
+	 * hand the canvas to a different one, which the switch path handles by
+	 * restoring that session's snapshot or clearing explicitly. Wiping here as
+	 * well is what put a white panel over a perfectly good picture for the
+	 * length of every reconnect.
+	 */
 	async function stopStreaming() {
 		stopHealthCheck(); // Stop health monitoring
 		if (webCodecsService) {
@@ -1274,12 +1347,6 @@
 			lastStartRequestId = null; // Clear to allow new requests
 			// Note: Don't reset hasReceivedFirstFrame here - let startStreaming do it
 			// This prevents flashing when switching tabs
-			// Clear canvas to prevent stale frames, BUT keep last frame during navigation or snapshot restore
-			if (!isNavigating && !hasRestoredSnapshot) {
-				clearCanvas();
-			} else {
-				debug.log('webcodecs', `Skipping canvas clear - navigation: ${isNavigating}, snapshot: ${hasRestoredSnapshot}`);
-			}
 		}
 	}
 
@@ -1322,7 +1389,7 @@
 			if (needsStreaming) {
 				if (activeStreamingSessionId !== sessionId) {
 					// SNAPSHOT: Save current canvas before switching to new session
-					if (activeStreamingSessionId && hasReceivedFirstFrame && canvasElement.width > 0) {
+					if (activeStreamingSessionId && hasPaintedContent && canvasElement.width > 0) {
 						try {
 							const clone = document.createElement('canvas');
 							clone.width = canvasElement.width;
@@ -1352,7 +1419,11 @@
 							if (ctx) {
 								ctx.drawImage(existingSnapshot, 0, 0, canvasElement.width, canvasElement.height);
 								hasRestoredSnapshot = true;
-								// Don't reset hasReceivedFirstFrame - snapshot is visible
+								// There is a picture again, even though this session's
+								// stream has not produced a frame yet — that is exactly
+								// the distinction `hasPainted` exists to carry.
+								hasPainted = true;
+								hasReceivedFirstFrame = false;
 								debug.log('webcodecs', `📸 Restored canvas snapshot for session ${sessionId}`);
 							}
 						} catch (e) {
@@ -1362,6 +1433,8 @@
 							hasReceivedFirstFrame = false;
 						}
 					} else {
+						// Nothing to show for this session: this is the one place the
+						// canvas genuinely has to go blank.
 						hasRestoredSnapshot = false;
 						clearCanvas();
 						hasReceivedFirstFrame = false; // Reset to show loading overlay
@@ -2188,7 +2261,6 @@
 			 * point the user actually clicked.
 			 */
 			pageToScreen: (x: number, y: number) => pageToScreen(x, y),
-			getPageSize: () => ({ width: pageSize.width, height: pageSize.height }),
 			/**
 			 * Report new display metrics without restarting capture.
 			 *
@@ -2216,7 +2288,10 @@
 
 	onDestroy(() => {
 		stopHealthCheck(); // Stop health monitoring
-		canvasSnapshots.clear(); // Free snapshot memory
+		// Snapshots deliberately survive: this component unmounts whenever the
+		// tab on screen has no session, and dropping every tab's picture for a
+		// detour through a blank tab is what made coming back cost a reconnect
+		// and a white panel. They are freed on project change instead.
 		if (longPressTimer) {
 			clearTimeout(longPressTimer);
 			longPressTimer = null;

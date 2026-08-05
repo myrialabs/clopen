@@ -152,10 +152,14 @@ export function createNativeUIHandler(config: NativeUIHandlerConfig) {
 	function respondToDialog(dialog: BrowserDialogEvent, accept: boolean, promptText?: string) {
 		debug.log('preview', `📤 Dialog response - dialogId: ${dialog.dialogId}, accept: ${accept}`);
 
+		// The dialog's own tab, not the project's active one: the dialog carries
+		// where it came from, and with several viewers the active tab may well be
+		// somewhere else by now.
 		ws.emit('preview:browser-dialog-input', {
 			dialogId: dialog.dialogId,
 			accept,
-			promptText
+			promptText,
+			tabId: dialog.sessionId
 		});
 
 		// Locally too, so the overlay goes on the click rather than on the

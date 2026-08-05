@@ -42,7 +42,9 @@ export const nativeUIPreviewHandler = createRouter()
 		data: t.Object({
 			dialogId: t.String({ minLength: 1 }),
 			accept: t.Boolean(),
-			promptText: t.Optional(t.String())
+			promptText: t.Optional(t.String()),
+			/** The tab whose dialog this is — see `tabId` on browser-interact. */
+			tabId: t.Optional(t.String())
 		})
 	}, async ({ data, conn }) => {
 		try {
@@ -51,14 +53,13 @@ export const nativeUIPreviewHandler = createRouter()
 
 			debug.log('preview', `📬 Dialog response received from frontend - dialogId: ${dialogId}, accept: ${accept}${promptText ? `, promptText: "${promptText}"` : ''} (project: ${projectId})`);
 
-			// Get active tab
-			const tab = previewService.getActiveTab();
+			const tab = data.tabId ? previewService.getTab(data.tabId) : previewService.getActiveTab();
 			if (!tab) {
-				debug.error('preview', `❌ No active tab for dialog input (project: ${projectId})`);
+				debug.error('preview', `❌ No tab for dialog input (project: ${projectId}, requested: ${data.tabId ?? 'active'})`);
 				return;
 			}
 
-			debug.log('preview', `✅ Active tab found: ${tab.id}`);
+			debug.log('preview', `✅ Dialog target tab: ${tab.id}`);
 
 			// Send response to dialog handler
 			const result = await previewService.respondToDialog({
@@ -80,14 +81,17 @@ export const nativeUIPreviewHandler = createRouter()
 
 	// Action: Client triggers print (in response to print event or manually)
 	.on('preview:browser-print-input', {
-		data: t.Object({})
-	}, async ({ conn }) => {
+		data: t.Object({
+			/** The tab being printed — see `tabId` on browser-interact. */
+			tabId: t.Optional(t.String())
+		})
+	}, async ({ data, conn }) => {
 		try {
 			const { projectId, previewService } = requireBrowserPreviewAccess(conn);
 
-			const tab = previewService.getActiveTab();
+			const tab = data.tabId ? previewService.getTab(data.tabId) : previewService.getActiveTab();
 			if (!tab) {
-				debug.error('preview', `No active tab for print input (project: ${projectId})`);
+				debug.error('preview', `No tab for print input (project: ${projectId}, requested: ${data.tabId ?? 'active'})`);
 				return;
 			}
 

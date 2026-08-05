@@ -42,15 +42,20 @@ export interface McpControlEvent {
 }
 
 /**
- * Which of a project's locked tabs the agent is working on right now.
+ * Whether an agent is acting on this tab right now.
  *
  * A session accumulates tabs, and a lock says only "hands off". With several
  * locked at once that leaves the user unable to tell where the agent actually
  * is — they can watch any tab freely, but not know which one to watch.
- * `browserTabId` is null when the project has no focused tab any more.
+ *
+ * Stated per tab rather than as "the project's focused tab" because two runs
+ * can be going at once in one project, and each has a tab of its own to point
+ * at. `focused: false` retracts an earlier mark, so a viewer never has to infer
+ * that one tab losing focus means some other tab gained it.
  */
 export interface McpFocusEvent {
-	browserTabId: string | null;
+	browserTabId: string;
+	focused: boolean;
 	projectId: string;
 	chatSessionId?: string;
 	timestamp: number;
@@ -110,11 +115,32 @@ export class BrowserMcpControl extends EventEmitter {
 	/** Chat session → set of tab IDs it controls */
 	private sessionTabs = new Map<string, Set<string>>();
 
-	/** Project → the tab its controlling agent is pointed at right now. */
+	/**
+	 * Chat session → the tab that session's agent is pointed at right now.
+	 *
+	 * Keyed by session rather than by project because a project can have more
+	 * than one run going at once, and a single per-project marker made those two
+	 * agents fight over it — the pointer flickered between their tabs and named
+	 * neither. A tab can only be held by one session (`acquireControl` refuses
+	 * the second), so "is this tab focused" still has exactly one answer, and no
+	 * viewer has to know which chat is open to get it.
+	 */
 	private focusedTabs = new Map<string, string>();
 
 	/** Tab → what the agent is doing on it, for the cursor's caption. */
 	private tabActivity = new Map<string, string>();
+
+	/**
+	 * Tab → the project it was last owned by, kept after the lock is gone.
+	 *
+	 * Ownership is the only place a tab's project was recorded, so anything
+	 * emitted after a release — the tail of a batch that was mid-action when the
+	 * user pressed stop — had no project to address and fell back to a broadcast
+	 * across every open project. On a shared server that draws one project's
+	 * agent onto another project's preview. Remembering the last owner means an
+	 * event can always be addressed, and the broadcast path could be deleted.
+	 */
+	private lastProjectByTab = new Map<string, string>();
 
 	/**
 	 * Whether the stream that owns a lock is still running.
@@ -200,7 +226,10 @@ export class BrowserMcpControl extends EventEmitter {
 	 */
 	private handleTabDestroyed(tabId: string): void {
 		const ownership = this.tabOwnership.get(tabId);
-		if (!ownership) return;
+		if (!ownership) {
+			this.forgetTab(tabId);
+			return;
+		}
 
 		// Validate project to prevent cross-project collisions
 		const serviceProjectId = this.previewService?.getProjectId();
@@ -208,6 +237,7 @@ export class BrowserMcpControl extends EventEmitter {
 
 		debug.warn('mcp', `⚠️ Controlled tab ${tabId} was destroyed - auto-releasing from session ${ownership.chatSessionId}`);
 		this.releaseTab(tabId);
+		this.forgetTab(tabId);
 	}
 
 	/**
@@ -349,6 +379,15 @@ export class BrowserMcpControl extends EventEmitter {
 			return false;
 		}
 
+		// Harvest locks whose owner stopped streaming before reading ownership
+		// below. A lock left behind by an interrupt is indistinguishable here
+		// from a live one held by someone else, so without this the next run
+		// would be refused with "controlled by another chat session" — for a
+		// session that no longer exists — and nothing short of a restart would
+		// clear it. The other two sweep points only run on a release or a tab
+		// list, neither of which a fresh run is guaranteed to reach first.
+		this.releaseOrphans();
+
 		// Check existing ownership
 		const existingOwner = this.tabOwnership.get(browserTabId);
 
@@ -370,6 +409,7 @@ export class BrowserMcpControl extends EventEmitter {
 			projectId,
 			acquiredAt: now
 		});
+		this.lastProjectByTab.set(browserTabId, projectId);
 
 		// Add to session's tab set
 		let sessionSet = this.sessionTabs.get(chatSessionId);
@@ -392,52 +432,69 @@ export class BrowserMcpControl extends EventEmitter {
 	// ============================================================================
 
 	/**
-	 * Mark the tab the agent is acting on. Idempotent and quiet when unchanged —
-	 * it is called on every action, and only a change is worth telling the UI.
+	 * Mark the tab this session's agent is acting on. Idempotent and quiet when
+	 * unchanged — it is called on every action, and only a change is worth
+	 * telling the UI.
 	 */
 	focusTab(browserTabId: string, chatSessionId: string, projectId: string): void {
-		if (this.focusedTabs.get(projectId) === browserTabId) return;
+		if (this.focusedTabs.get(chatSessionId) === browserTabId) return;
 
-		this.focusedTabs.set(projectId, browserTabId);
-		this.emitFocus(browserTabId, projectId, chatSessionId);
-	}
+		const previous = this.focusedTabs.get(chatSessionId);
+		this.focusedTabs.set(chatSessionId, browserTabId);
 
-	/** The tab a project's agent is currently pointed at, if any. */
-	getFocusedTab(projectId: string): string | null {
-		return this.focusedTabs.get(projectId) ?? null;
+		// The tab it moved off is no longer focused, and the viewer watching
+		// *that* tab needs to hear so — otherwise its pointer stays drawn on a
+		// tab the agent has left. Only announced while the session still holds
+		// it; a release emits its own end.
+		if (previous && this.tabOwnership.has(previous)) {
+			this.emitFocus(previous, false, projectId, chatSessionId);
+		}
+		this.emitFocus(browserTabId, true, projectId, chatSessionId);
 	}
 
 	/**
-	 * Re-derive a project's focus after ownership changed.
+	 * Whether an agent is acting on this tab right now.
 	 *
-	 * Falls back to another tab the *same* session still holds, so a batch that
-	 * closed the tab it was working on lands the marker where the work went
-	 * rather than nowhere — and never onto a tab a different session owns,
-	 * which would point the user at the wrong agent. Emits nothing when the
-	 * focused tab is still held, so releasing several tabs at once produces one
-	 * update rather than a burst.
+	 * A tab is held by at most one session, so this needs no session argument
+	 * and no project argument: there is only ever one answer, which is what
+	 * lets a viewer decide whether to draw the pointer without knowing which
+	 * chat is open in front of it.
 	 */
-	private refreshFocus(projectId: string | undefined): void {
-		if (!projectId) return;
+	isTabFocused(browserTabId: string): boolean {
+		const owner = this.tabOwnership.get(browserTabId);
+		if (!owner) return false;
+		return this.focusedTabs.get(owner.chatSessionId) === browserTabId;
+	}
 
-		const focused = this.focusedTabs.get(projectId);
+	/**
+	 * Re-derive a session's focus after ownership changed.
+	 *
+	 * Falls back to another tab the same session still holds, so a batch that
+	 * closed the tab it was working on lands the marker where the work went
+	 * rather than nowhere. Emits nothing when the focused tab is still held, so
+	 * releasing several tabs at once produces one update rather than a burst.
+	 */
+	private refreshFocus(chatSessionId: string | undefined, projectId: string | undefined): void {
+		if (!chatSessionId) return;
+
+		const focused = this.focusedTabs.get(chatSessionId);
 		if (!focused) return;
 
-		const owner = this.tabOwnership.get(focused);
-		if (owner && owner.projectId === projectId) return; // Still held — nothing to say.
+		if (this.tabOwnership.has(focused)) return; // Still held — nothing to say.
 
 		const successor = [...this.tabOwnership.entries()]
 			.reverse()
-			.find(([, info]) => info.projectId === projectId);
+			.find(([, info]) => info.chatSessionId === chatSessionId);
+
+		this.emitFocus(focused, false, projectId, chatSessionId);
 
 		if (successor) {
-			this.focusedTabs.set(projectId, successor[0]);
-			this.emitFocus(successor[0], projectId, successor[1].chatSessionId);
+			this.focusedTabs.set(chatSessionId, successor[0]);
+			this.emitFocus(successor[0], true, successor[1].projectId, chatSessionId);
 			return;
 		}
 
-		this.focusedTabs.delete(projectId);
-		this.emitFocus(null, projectId);
+		this.focusedTabs.delete(chatSessionId);
 	}
 
 	// ============================================================================
@@ -470,7 +527,7 @@ export class BrowserMcpControl extends EventEmitter {
 
 		// Emit control end event to frontend
 		this.emitControlEnd(browserTabId, ownership.projectId);
-		this.refreshFocus(ownership.projectId);
+		this.refreshFocus(ownership.chatSessionId, ownership.projectId);
 
 		debug.log('mcp', `🎮 Released tab: ${browserTabId} (was owned by session ${ownership.chatSessionId.slice(0, 8)})`);
 	}
@@ -487,18 +544,18 @@ export class BrowserMcpControl extends EventEmitter {
 		if (tabIds.length > 0) {
 			debug.log('mcp', `🎮 Releasing ${tabIds.length} tabs for session ${chatSessionId.slice(0, 8)}`);
 
-			const projects = new Set<string>();
+			let projectId: string | undefined;
 			for (const tabId of tabIds) {
 				const ownership = this.tabOwnership.get(tabId);
 				this.tabOwnership.delete(tabId);
 				this.emitActivity(tabId, null, ownership?.projectId);
 				this.emitControlEnd(tabId, ownership?.projectId);
-				if (ownership?.projectId) projects.add(ownership.projectId);
+				projectId ??= ownership?.projectId;
 			}
 
 			// After every deletion, so the successor search sees the final state
 			// rather than tabs that are about to go too.
-			for (const projectId of projects) this.refreshFocus(projectId);
+			this.refreshFocus(chatSessionId, projectId);
 
 			debug.log('mcp', `🎮 Session ${chatSessionId.slice(0, 8)} fully released`);
 		}
@@ -524,20 +581,21 @@ export class BrowserMcpControl extends EventEmitter {
 	 * Force release all control (for cleanup)
 	 */
 	forceReleaseAll(): void {
+		for (const tabId of this.focusedTabs.values()) {
+			this.emitFocus(tabId, false, this.tabOwnership.get(tabId)?.projectId);
+		}
+
 		// Emit control-end for all controlled tabs
 		for (const [tabId, info] of this.tabOwnership) {
 			this.emitActivity(tabId, null, info.projectId);
 			this.emitControlEnd(tabId, info.projectId);
 		}
 
-		for (const projectId of this.focusedTabs.keys()) {
-			this.emitFocus(null, projectId);
-		}
-
 		this.tabOwnership.clear();
 		this.sessionTabs.clear();
 		this.focusedTabs.clear();
 		this.tabActivity.clear();
+		this.lastProjectByTab.clear();
 
 		debug.log('mcp', '🧹 Force released all MCP control');
 	}
@@ -547,12 +605,22 @@ export class BrowserMcpControl extends EventEmitter {
 	// ============================================================================
 
 	/**
-	 * Emit cursor position event with MCP source
+	 * Emit cursor position event with MCP source.
+	 *
+	 * Silent once the tab has been handed back. An action is only interruptible
+	 * between steps, so pressing stop mid-glide leaves a few hundred
+	 * milliseconds of pointer updates still to come for a tab nobody controls
+	 * any more — and a viewer that drew them would show the agent moving after
+	 * it had been told to stop. Dropping them here means the wire agrees with
+	 * the lock, rather than relying on every viewer to ignore them.
 	 */
 	emitCursorPosition(tabId: string, x: number, y: number, pressed = false): void {
+		const ownership = this.tabOwnership.get(tabId);
+		if (!ownership) return;
+
 		const event: McpCursorEvent = {
 			tabId,
-			projectId: this.tabOwnership.get(tabId)?.projectId,
+			projectId: ownership.projectId,
 			x,
 			y,
 			pressed,
@@ -564,12 +632,16 @@ export class BrowserMcpControl extends EventEmitter {
 	}
 
 	/**
-	 * Emit cursor click event with MCP source
+	 * Emit cursor click event with MCP source. Silent after release — see
+	 * `emitCursorPosition`.
 	 */
 	emitCursorClick(tabId: string, x: number, y: number, button: 'left' | 'right' | 'middle' = 'left'): void {
+		const ownership = this.tabOwnership.get(tabId);
+		if (!ownership) return;
+
 		const event: McpClickEvent = {
 			tabId,
-			projectId: this.tabOwnership.get(tabId)?.projectId,
+			projectId: ownership.projectId,
 			x,
 			y,
 			button,
@@ -597,7 +669,7 @@ export class BrowserMcpControl extends EventEmitter {
 			tabId,
 			// Explicit on release, where ownership has already been dropped and
 			// there is nothing left to look the project up in.
-			projectId: projectId ?? this.tabOwnership.get(tabId)?.projectId,
+			projectId: projectId ?? this.tabOwnership.get(tabId)?.projectId ?? this.lastProjectByTab.get(tabId),
 			label,
 			timestamp: Date.now()
 		};
@@ -610,15 +682,10 @@ export class BrowserMcpControl extends EventEmitter {
 		return this.tabActivity.get(tabId) ?? null;
 	}
 
-	/**
-	 * Emit test completed event (hide virtual cursor)
-	 */
-	emitTestCompleted(tabId: string): void {
-		this.emit('test-completed', {
-			tabId,
-			timestamp: Date.now(),
-			source: 'mcp'
-		});
+	/** Forget everything remembered about a tab that no longer exists. */
+	forgetTab(browserTabId: string): void {
+		this.lastProjectByTab.delete(browserTabId);
+		this.tabActivity.delete(browserTabId);
 	}
 
 	// ============================================================================
@@ -652,17 +719,26 @@ export class BrowserMcpControl extends EventEmitter {
 		debug.log('mcp', `📢 Emitted mcp:control-end for tab: ${browserTabId}`);
 	}
 
-	private emitFocus(browserTabId: string | null, projectId: string, chatSessionId?: string): void {
+	private emitFocus(
+		browserTabId: string,
+		focused: boolean,
+		projectId: string | undefined,
+		chatSessionId?: string
+	): void {
+		const owningProject = projectId ?? this.lastProjectByTab.get(browserTabId);
+		if (!owningProject) return;
+
 		const event: McpFocusEvent = {
 			browserTabId,
-			projectId,
+			focused,
+			projectId: owningProject,
 			chatSessionId,
 			timestamp: Date.now()
 		};
 
 		this.emit('control-focus', event);
 
-		debug.log('mcp', `📢 Emitted mcp:control-focus for ${projectId}: ${browserTabId ?? 'none'}`);
+		debug.log('mcp', `📢 Emitted mcp:control-focus ${focused ? 'on' : 'off'} for ${browserTabId}`);
 	}
 }
 

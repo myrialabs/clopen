@@ -63,6 +63,17 @@ export const interactPreviewHandler = createRouter()
 				deviceSize: t.Optional(t.String()),
 				rotation: t.Optional(t.String())
 			}),
+			/**
+			 * The tab the viewer is looking at.
+			 *
+			 * Input used to be applied to whatever the project's "active tab"
+			 * happened to be, which is a single value shared by everyone in the
+			 * project. With two people watching, one of them switching tabs
+			 * silently redirected the other's clicks onto the tab they had just
+			 * moved to. Optional only so an older client keeps working; the
+			 * panel always sends it.
+			 */
+			tabId: t.Optional(t.String())
 		})
 	}, async ({ data, conn }) => {
 		const { userId, projectId, previewService } = requireBrowserPreviewAccess(conn);
@@ -70,12 +81,13 @@ export const interactPreviewHandler = createRouter()
 		try {
 			const { action } = data;
 
-			// Get active tab (mirip MCP pattern)
-			const tab = previewService.getActiveTab();
+			const tab = data.tabId ? previewService.getTab(data.tabId) : previewService.getActiveTab();
 			if (!tab) {
-				debug.error('preview', `❌ NO ACTIVE TAB for project ${projectId} - Available tabs: ${previewService.getTabCount()}`);
+				debug.error('preview', `❌ NO TAB for project ${projectId} (requested: ${data.tabId ?? 'active'}) - Available tabs: ${previewService.getTabCount()}`);
 				ws.emit.user(userId, 'preview:browser-error', {
-					message: 'No active tab. Please open or switch to a tab first.'
+					message: data.tabId
+						? 'That tab is no longer open.'
+						: 'No active tab. Please open or switch to a tab first.'
 				});
 				return;
 			}
@@ -619,13 +631,15 @@ export const interactPreviewHandler = createRouter()
 	 */
 	.http('preview:browser-selection', {
 		data: t.Object({
-			cut: t.Optional(t.Boolean())
+			cut: t.Optional(t.Boolean()),
+			/** The tab the viewer is on — see `tabId` on browser-interact. */
+			tabId: t.Optional(t.String())
 		}),
 		response: t.Object({
 			text: t.String()
 		})
 	}, async ({ data, conn }) => {
-		const { tab } = requireBrowserTabAccess(conn);
+		const { tab } = requireBrowserTabAccess(conn, data.tabId);
 
 		// Selections inside an iframe are invisible to the top document, so every
 		// frame is asked until one reports a selection.
@@ -661,14 +675,16 @@ export const interactPreviewHandler = createRouter()
 	.http('preview:browser-hit-test', {
 		data: t.Object({
 			x: t.Number(),
-			y: t.Number()
+			y: t.Number(),
+			/** The tab the viewer is on — see `tabId` on browser-interact. */
+			tabId: t.Optional(t.String())
 		}),
 		response: t.Object({
 			editable: t.Boolean(),
 			inputType: t.Optional(t.String())
 		})
 	}, async ({ data, conn }) => {
-		const { tab } = requireBrowserTabAccess(conn);
+		const { tab } = requireBrowserTabAccess(conn, data.tabId);
 
 		try {
 			// Fields inside an iframe are invisible to the top document, where

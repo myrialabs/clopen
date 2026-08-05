@@ -18,16 +18,17 @@
 	} from '$frontend/utils/native-ui';
 	import { fly } from 'svelte/transition';
 	import { cubicOut } from 'svelte/easing';
-	import { onMount, onDestroy, untrack } from 'svelte';
+	import { onMount, onDestroy } from 'svelte';
 	import type { DeviceSize, Rotation } from '$frontend/utils/preview-constants';
 	import { debug } from '$shared/utils/logger';
 	import { createBrowserCoordinator } from './core/coordinator.svelte';
-	import { setDisplayScale, goHistory } from './core/interactions.svelte';
+	import { setDisplayScale, goHistory, setInteractionTabId } from './core/interactions.svelte';
 	import { previewHostBridge } from '$frontend/services/preview/browser/host-bridge.service';
 	import { browserConsoleService } from '$frontend/services/preview/browser/browser-console.service';
 	import { addNotification } from '$frontend/stores/ui/notification.svelte';
 	import {
 		getMcpActivity,
+		getMcpCursor,
 		isBackendTabFullscreen
 	} from '$frontend/stores/features/preview-tabs-workspace.svelte';
 	import ws from '$frontend/utils/ws';
@@ -122,22 +123,18 @@
 		x: 0, y: 0, visible: false, clicking: false
 	});
 	/**
-	 * The agent's cursor, in *page* coordinates.
+	 * The agent's pointer on the tab being shown, in *page* coordinates.
 	 *
-	 * Kept in page space all the way down to the Container, which owns the
-	 * projection. Converting on arrival meant the event was dropped whenever the
-	 * canvas had not painted yet — and a dropped cursor event never comes back.
+	 * Read from the dock store rather than accumulated here: the store records
+	 * every controlled tab's pointer whether or not this panel is mounted or
+	 * happens to be showing it, so switching to the tab an agent is working on
+	 * picks up its live position immediately. Kept in page space all the way
+	 * down to the Container, which owns the projection.
 	 *
-	 * `visible` says only "a gesture has placed this", never "draw it": whether
-	 * the pointer is on screen follows from the agent holding the tab, which the
-	 * Container reads directly. Half the actions in a batch carry no
-	 * coordinates, so anything that gated drawing on an incoming event spent
-	 * most of a run showing nothing.
+	 * Position only — never visibility. Whether the pointer is drawn follows
+	 * from the lock, which the Container reads directly.
 	 */
-	let mcpCursorPage = $state<{x: number, y: number, visible: boolean, clicking?: boolean, pressed?: boolean}>({
-		x: 0, y: 0, visible: false, clicking: false, pressed: false
-	});
-	let mcpClickResetTimer: ReturnType<typeof setTimeout> | null = null;
+	const mcpCursorPage = $derived(getMcpCursor(sessionId));
 
 	// Native UI state
 	let currentSelectInfo = $state<BrowserSelectInfo | null>(null);
@@ -146,7 +143,8 @@
 
 	// Canvas and preview state
 	let canvasAPI = $state<any>(null);
-	let currentTabLastFrameData = $state<any>(null);
+	/** Whether the canvas has a picture on it — see Canvas's own prop. */
+	let hasPaintedContent = $state(false);
 	let toolbarRef = $state<any>(null);
 
 	// Flag to prevent URL watcher from double-launching during MCP session creation
@@ -158,6 +156,7 @@
 	// Create browser coordinator with projectId
 	const coordinator = createBrowserCoordinator({
 		projectId: () => projectId, // Pass projectId as getter function
+		canvasAPI: () => canvasAPI,
 		onUrlChange: (newUrl) => {
 			url = newUrl;
 		},
@@ -215,18 +214,6 @@
 		},
 		onVirtualCursorHide: () => {
 			virtualCursor = { ...virtualCursor, visible: false };
-		},
-		onMcpCursorUpdate: (x, y, clicking, pressed) => {
-			mcpCursorPage = { x, y, visible: true, clicking: clicking || false, pressed: pressed || false };
-			if (clicking) {
-				if (mcpClickResetTimer) clearTimeout(mcpClickResetTimer);
-				mcpClickResetTimer = setTimeout(() => {
-					mcpCursorPage = { ...mcpCursorPage, clicking: false };
-				}, 300);
-			}
-		},
-		onMcpCursorHide: () => {
-			mcpCursorPage = { ...mcpCursorPage, visible: false };
 		},
 		transformBrowserToDisplayCoordinates: (browserX, browserY) => {
 			return transformBrowserToDisplayCoordinates(browserX, browserY);
@@ -419,16 +406,14 @@
 			consoleLogs = tab.consoleLogs;
 			canGoBack = tab.canGoBack;
 			canGoForward = tab.canGoForward;
-			// Only ever adopted, never cleared. There is a single Canvas instance
-			// behind every tab, and it publishes its API once on mount — so
-			// overwriting this with a tab that has no copy stored yet left the
-			// panel with no canvas API at all, and nothing to re-publish it.
-			// Everything that maps page coordinates to the screen goes through it,
-			// which is why select popups and pickers stopped appearing after a
-			// tab switch ("coordinate transformation failed").
-			if (tab.canvasAPI) canvasAPI = tab.canvasAPI;
+			// `canvasAPI` is deliberately not adopted from the tab. There is one
+			// Canvas behind every tab and it publishes its API once per mount, so
+			// a per-tab copy could only ever be the same object — or, once that
+			// Canvas had unmounted and remounted, a stale one whose element is
+			// gone. Adopting that stale copy left every page→screen projection
+			// answering "no geometry" for good: no agent cursor, no select popup,
+			// no picker, until the panel was rebuilt.
 			previewDimensions = tab.previewDimensions || { scale: 1 };
-			currentTabLastFrameData = tab.lastFrameData;
 
 			// Setup canvas after tab switch
 			if (canvasAPI && canvasAPI.setupCanvas) {
@@ -490,24 +475,12 @@
 		}
 	});
 
-	// Store canvasAPI and previewDimensions in active tab
+	// Store previewDimensions in active tab. (canvasAPI is not stored: see the
+	// note where the tab state is adopted.)
 	$effect(() => {
 		if (activeTabId && activeTab) {
-			const updates: any = {};
-			let needsUpdate = false;
-
-			if (canvasAPI && activeTab.canvasAPI !== canvasAPI) {
-				updates.canvasAPI = canvasAPI;
-				needsUpdate = true;
-			}
-
 			if (previewDimensions && JSON.stringify(activeTab.previewDimensions) !== JSON.stringify(previewDimensions)) {
-				updates.previewDimensions = previewDimensions;
-				needsUpdate = true;
-			}
-
-			if (needsUpdate) {
-				tabManager.updateTab(activeTabId, updates);
+				tabManager.updateTab(activeTabId, { previewDimensions });
 			}
 		}
 	});
@@ -541,9 +514,24 @@
 		}
 	});
 
+	/**
+	 * Whether `candidate` already carries an explicit scheme Puppeteer can
+	 * navigate to as-is.
+	 *
+	 * A blank tab's URL is literally the string "about:blank" — checking only
+	 * for http(s)/file left it unrecognised, so it got "http://" prepended
+	 * into "http://about:blank", which CDP correctly refuses as an invalid
+	 * URL. This isn't a generic `scheme:` sniff on purpose: that would also
+	 * match "localhost:3000", which needs the prefix, not to be mistaken for
+	 * a `localhost:` scheme.
+	 */
+	function hasUrlScheme(candidate: string): boolean {
+		return /^(https?|file|about|data|blob|chrome|chrome-error|view-source|mailto):/i.test(candidate);
+	}
+
 	// Initialize URL input
 	$effect(() => {
-		if (url && !url.startsWith('http://') && !url.startsWith('https://') && !url.startsWith('file://')) {
+		if (url && !hasUrlScheme(url)) {
 			url = 'http://' + url;
 		}
 		if (url && !urlInput) {
@@ -556,7 +544,7 @@
 		if (!urlInput.trim()) return;
 
 		let processedUrl = urlInput.trim();
-		if (!processedUrl.startsWith('http://') && !processedUrl.startsWith('https://') && !processedUrl.startsWith('file://')) {
+		if (!hasUrlScheme(processedUrl)) {
 			processedUrl = 'http://' + processedUrl;
 		}
 
@@ -731,51 +719,6 @@
 		}
 	}
 
-	/**
-	 * Browser-style shortcuts, scoped to the panel so they never shadow Clopen's
-	 * own bindings while the user is working elsewhere.
-	 */
-	function handlePanelKeydown(event: KeyboardEvent) {
-		const mod = event.metaKey || event.ctrlKey;
-
-		if (mod && event.key.toLowerCase() === 'l') {
-			event.preventDefault();
-			toolbarRef?.focusAddressBar();
-			return;
-		}
-		if (mod && event.key.toLowerCase() === 'r') {
-			event.preventDefault();
-			refreshPreview();
-			return;
-		}
-		if (mod && event.key.toLowerCase() === 't') {
-			event.preventDefault();
-			coordinator.createNewTab();
-			return;
-		}
-		if (mod && event.key.toLowerCase() === 'w') {
-			if (!activeTabId) return;
-			event.preventDefault();
-			coordinator.closeTab(activeTabId);
-			return;
-		}
-		if (event.altKey && event.key === 'ArrowLeft') {
-			event.preventDefault();
-			void navigateHistory('back');
-			return;
-		}
-		if (event.altKey && event.key === 'ArrowRight') {
-			event.preventDefault();
-			void navigateHistory('forward');
-			return;
-		}
-		// Chrome's own console shortcut, minus the DevTools it cannot open.
-		if (mod && event.shiftKey && event.key.toLowerCase() === 'j') {
-			event.preventDefault();
-			isConsoleOpen = !isConsoleOpen;
-		}
-	}
-
 	// ── Close all tabs ────────────────────────────────────────────────────────
 
 	let showCloseAllConfirm = $state(false);
@@ -876,33 +819,23 @@
 	}
 
 	/**
-	 * Re-point the agent's cursor at whichever tab the panel is now showing.
+	 * Tell the interaction layer which tab this viewer is on.
 	 *
-	 * Keyed on the tab alone, deliberately. Gating this on "is the tab still in
-	 * the controlled set" instead re-ran it on *every* tab mutation — a console
-	 * line, a title push, a stream flag — and control-start arrives as its own
-	 * message, which can land after the first gestures. So the opening moves of
-	 * a run were cleared before they were ever drawn, which is the one stretch
-	 * where seeing the pointer matters most.
-	 *
-	 * It restores rather than only clears. An agent that has stopped moving
-	 * sends nothing further, so a switch away and back used to lose the pointer
-	 * for the rest of the run — the tab was still being driven, it just looked
-	 * like it wasn't.
+	 * Every gesture carries it, so input lands on the tab the person is looking
+	 * at rather than on whatever the project last called "active" — which, with
+	 * two people in one project, is whatever the other one clicked most
+	 * recently.
 	 */
-	let lastCursorTabId: string | null = null;
 	$effect(() => {
-		const tabId = activeTabId;
-		if (tabId === lastCursorTabId) return;
-		lastCursorTabId = tabId;
-
-		const restored = mcpHandler.getCursorFor(tabManager.getTab(tabId ?? '')?.sessionId ?? null);
-		untrack(() => {
-			mcpCursorPage = restored
-				? { x: restored.x, y: restored.y, visible: true, clicking: false, pressed: restored.pressed }
-				: { x: 0, y: 0, visible: false, clicking: false, pressed: false };
-		});
+		setInteractionTabId(sessionId);
 	});
+
+	// Nothing to re-point on a tab switch: `mcpCursorPage` is derived from the
+	// store, keyed by the shown tab's backend id, so it already answers for
+	// whichever tab is on screen. The effect that used to live here copied one
+	// position across at switch time and then let the panel's own copy drift —
+	// which is what made switching onto a tab an agent was driving show a
+	// pointer that clicked but never moved.
 
 	// Stream message handling
 	$effect(() => {
@@ -929,11 +862,9 @@
 </script>
 
 {#if isOpen && mode === 'split'}
-	<!-- svelte-ignore a11y_no_static_element_interactions -->
 	<div
 		bind:this={panelElement}
 		class="h-full flex flex-col theme-transition bg-slate-50 dark:bg-slate-900 dot-pattern"
-		onkeydown={handlePanelKeydown}
 		in:fly={{ x: 300, duration: 300, easing: cubicOut }}
 		out:fly={{ x: 300, duration: 250, easing: cubicOut }}
 	>
@@ -960,7 +891,7 @@
 			{tabs}
 			{activeTabId}
 			mcpControlledTabIds={mcpHandler.getControlledTabIds()}
-			mcpFocusedTabId={mcpHandler.getFocusedTabId()}
+			mcpFocusedTabIds={mcpHandler.getFocusedTabIds()}
 			onGoClick={handleGoClick}
 			onRefresh={refreshPreview}
 			onStop={stopLoading}
@@ -1001,12 +932,12 @@
 				bind:sessionInfo
 				bind:isConnected
 				bind:isStreamReady
+				bind:hasPaintedContent
 				bind:errorMessage
 				bind:virtualCursor
 				{mcpCursorPage}
 				bind:canvasAPI
 				bind:previewDimensions
-				bind:lastFrameData={currentTabLastFrameData}
 				bind:touchMode
 				isMcpControlled={isCurrentTabMcpControlled()}
 				isMcpFocused={mcpHandler.isCurrentTabMcpFocused()}

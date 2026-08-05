@@ -196,6 +196,20 @@ export class BrowserInteractionHandler extends EventEmitter {
 		this.sessionCursorPositions.set(sessionId, position);
 	}
 
+	/**
+	 * Where the agent's pointer stands on a tab, if it has ever moved there.
+	 *
+	 * Read when a viewer builds its state from scratch — a page reload, a
+	 * project switch, a colleague opening the panel halfway through a run. The
+	 * pointer only sends updates while it is moving, so without this a viewer
+	 * that joins between two actions has a lock, a caption, and no idea where
+	 * on the page any of it is happening.
+	 */
+	public getCursorPosition(sessionId: string): { x: number; y: number } | null {
+		const stored = this.sessionCursorPositions.get(sessionId);
+		return stored ? { ...stored } : null;
+	}
+
 	// Clear cursor position for session (when session ends)
 	public clearSessionCursor(sessionId: string) {
 		this.sessionCursorPositions.delete(sessionId);
@@ -286,30 +300,6 @@ export class BrowserInteractionHandler extends EventEmitter {
 		}
 
 		this.publishCursor(sessionId, to.x, to.y);
-	}
-
-	/**
-	 * Point the overlay at whatever an action is about to act on.
-	 *
-	 * Resolution failure is swallowed: this is telemetry, and the action itself
-	 * is about to resolve the same target and report the real error.
-	 */
-	private async showTarget(
-		sessionId: string,
-		page: Page,
-		action: BrowserAutonomousAction,
-		target: BrowserActionTarget | undefined,
-		opts: { pulse?: boolean } = {}
-	) {
-		if (!target) return;
-
-		try {
-			const point = await resolveTarget(page, target, { scrollIntoView: !action.noScroll });
-			await this.glideOverlay(sessionId, point);
-			if (opts.pulse) this.publishClick(sessionId, point.x, point.y);
-		} catch {
-			// Nothing to point at — the action's own resolve will say why.
-		}
 	}
 
 	/**
@@ -508,15 +498,12 @@ export class BrowserInteractionHandler extends EventEmitter {
 			}
 		}
 
-		// Emit test completed event to hide virtual cursor
-		this.emit('test-completed', {
-			sessionId: session.id,
-			timestamp: Date.now(),
-			// Part of the wire contract for this event; without it the payload
-			// fails the shape the client is typed against.
-			source: 'mcp'
-		});
-
+		// Nothing is announced at the end of a batch. The agent still holds the
+		// tab between batches, so "this batch finished" says nothing about
+		// whether the pointer belongs on screen — that follows from the lock,
+		// and only from the lock. The event that used to be emitted here fired
+		// per tool call, so anything wired to it took the pointer away in the
+		// middle of a run that was still going.
 		return { results, aborted: false };
 	}
 
@@ -536,11 +523,11 @@ export class BrowserInteractionHandler extends EventEmitter {
 			const identifier = action.selector ?? action.target?.selector;
 			if (!identifier) throw new Error('extract_data needs a selector');
 
-			// Overlay only, and no pulse: a read is not a click, and driving the
-			// real pointer over the element could fire the hover handlers that
-			// change what is about to be read.
-			await this.showTarget(sessionId, session.page, action, { selector: identifier });
-
+			// No pointer movement at all: a person reading something on screen
+			// does not walk their mouse over to it first, they just look — the
+			// caption already says "Reading the page", which is the only signal
+			// this needs. Moving the overlay here would also risk firing hover
+			// handlers that change what is about to be read.
 			const extracted = await this.extractData(session.page, identifier, action.attribute, action.all);
 			if (extracted.error) throw new Error(extracted.error);
 

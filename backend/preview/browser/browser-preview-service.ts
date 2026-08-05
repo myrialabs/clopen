@@ -99,10 +99,6 @@ export class BrowserPreviewService extends EventEmitter {
 		// with the `source` stamp the client contract requires. Forwarding them
 		// from here as well delivered every cursor update twice, once without
 		// that field.
-		this.interactionHandler.on('test-completed', (data) => {
-			this.emit('preview:browser-mcp-test-completed', data);
-		});
-
 		// Forward navigation events and handle video streaming restart
 		// Only full navigations (framenavigated) need streaming restart
 		this.navigationTracker.on('navigation', async (data) => {
@@ -507,10 +503,29 @@ export class BrowserPreviewService extends EventEmitter {
 	}
 
 	/**
-	 * Switch to a specific tab
+	 * Make a tab the project's active one.
+	 *
+	 * "Active" is a single value shared by everyone in the project, so this is
+	 * for the agent (`switch_tab`, `open_tab`) and for tab creation — decisions
+	 * that genuinely belong to the project. A viewer merely looking at a tab
+	 * must use `noteTabViewed` instead: with two people watching, letting the
+	 * act of looking reassign this made each of them move the other's target.
 	 */
 	switchTab(tabId: string): boolean {
 		return this.tabManager.setActiveTab(tabId);
+	}
+
+	/**
+	 * Note that some viewer is now watching this tab.
+	 *
+	 * Keeps the tab out of the idle-cleanup sweep without touching who the
+	 * project considers active. Returns false if the tab is gone, which is how
+	 * a viewer learns its tab strip is stale.
+	 */
+	noteTabViewed(tabId: string): boolean {
+		if (!this.tabManager.getTab(tabId)) return false;
+		this.tabManager.markTabActivity(tabId);
+		return true;
 	}
 
 	/**
@@ -874,6 +889,11 @@ export class BrowserPreviewService extends EventEmitter {
 	 * caller can report "3 of 7 ran" instead of claiming a success the user
 	 * interrupted.
 	 */
+	/** Where the agent's pointer stands on a tab, for a viewer building state. */
+	getMcpCursorPosition(tabId: string): { x: number; y: number } | null {
+		return this.interactionHandler.getCursorPosition(tabId);
+	}
+
 	async performAutonomousActions(
 		tabId: string,
 		actions: BrowserAutonomousAction[],
@@ -1181,12 +1201,6 @@ class BrowserPreviewServiceManager {
 			ws.emit.project(projectId, 'preview:browser-console-clear', data);
 		});
 
-		// Forward MCP events. Cursor position/click come from the singleton
-		// instead (setupMcpControlForwarding) — see setupEventForwarding().
-		service.on('preview:browser-mcp-test-completed', (data) => {
-			ws.emit.project(projectId, 'preview:browser-mcp-test-completed', data);
-		});
-
 		// Forward dialog events
 		service.on('preview:browser-dialog', (data) => {
 			ws.emit.project(projectId, 'preview:browser-dialog', data);
@@ -1257,22 +1271,18 @@ class BrowserPreviewServiceManager {
 	 *
 	 * Registered exactly once for the whole manager. The emitter is a singleton
 	 * shared across all projects, so attaching these listeners per-project would
-	 * accumulate them without bound (MaxListenersExceededWarning). MCP control
-	 * events are not project-scoped at the source, so we broadcast them to every
-	 * currently-active project; the frontend filters by tab/session.
+	 * accumulate them without bound (MaxListenersExceededWarning).
+	 *
+	 * Every event here is addressed to exactly one project room. Tab ids repeat
+	 * across projects (`tab-1` exists in all of them), so an unaddressed event
+	 * has no safe destination: broadcasting it draws one project's agent onto a
+	 * same-numbered tab in another project, which on a shared server means onto
+	 * a colleague's screen. `browserMcpControl` remembers a tab's last owning
+	 * project precisely so this never has to guess.
 	 */
 	private setupMcpControlForwarding(): void {
 		if (this.mcpForwardingSetup) return;
 		this.mcpForwardingSetup = true;
-
-		const emitToActiveProjects = <K extends Parameters<typeof ws.emit.project>[1]>(
-			event: K,
-			payload: Parameters<typeof ws.emit.project<K>>[2]
-		) => {
-			for (const projectId of this.services.keys()) {
-				ws.emit.project(projectId, event, payload);
-			}
-		};
 
 		// Control events are project-scoped: emit ONLY to the owning project's room
 		// and stamp projectId. Tab IDs (tab-N) repeat across projects, so a broadcast
@@ -1301,72 +1311,43 @@ class BrowserPreviewServiceManager {
 		browserMcpControl.on('control-focus', (data) => {
 			ws.emit.project(data.projectId, 'preview:browser-mcp-control-focus', {
 				browserTabId: data.browserTabId,
+				focused: data.focused,
 				projectId: data.projectId,
 				timestamp: data.timestamp
 			});
 		});
 
-		// Cursor events go to the owning project when it is known. Tab ids repeat
-		// across projects, so a broadcast could draw the agent's pointer over a
-		// same-numbered tab somewhere the agent has never been. The broadcast is
-		// kept only for the case where ownership can't be resolved.
 		browserMcpControl.on('cursor-position', (data) => {
-			const payload = {
+			if (!data.projectId) return;
+			ws.emit.project(data.projectId, 'preview:browser-mcp-cursor-position', {
 				sessionId: data.tabId,
 				x: data.x,
 				y: data.y,
 				pressed: data.pressed ?? false,
 				timestamp: data.timestamp,
 				source: 'mcp' as const
-			};
-
-			if (data.projectId) {
-				ws.emit.project(data.projectId, 'preview:browser-mcp-cursor-position', payload);
-				return;
-			}
-			emitToActiveProjects('preview:browser-mcp-cursor-position', payload);
+			});
 		});
 
 		browserMcpControl.on('cursor-click', (data) => {
-			const payload = {
+			if (!data.projectId) return;
+			ws.emit.project(data.projectId, 'preview:browser-mcp-cursor-click', {
 				sessionId: data.tabId,
 				x: data.x,
 				y: data.y,
 				button: data.button ?? 'left',
 				timestamp: data.timestamp,
 				source: 'mcp' as const
-			};
-
-			if (data.projectId) {
-				ws.emit.project(data.projectId, 'preview:browser-mcp-cursor-click', payload);
-				return;
-			}
-			emitToActiveProjects('preview:browser-mcp-cursor-click', payload);
+			});
 		});
 
-		// What the agent is doing, for the caption beside its cursor. Same
-		// project-scoping rule as the cursor itself, and the same fallback: an
-		// event nobody can attribute is better broadcast than dropped, since the
-		// alternative is a pointer left describing an action that has finished.
+		// What the agent is doing, for the caption beside its cursor.
 		browserMcpControl.on('activity', (data) => {
-			const payload = {
+			if (!data.projectId) return;
+			ws.emit.project(data.projectId, 'preview:browser-mcp-activity', {
 				sessionId: data.tabId,
 				label: data.label,
 				timestamp: data.timestamp
-			};
-
-			if (data.projectId) {
-				ws.emit.project(data.projectId, 'preview:browser-mcp-activity', payload);
-				return;
-			}
-			emitToActiveProjects('preview:browser-mcp-activity', payload);
-		});
-
-		browserMcpControl.on('test-completed', (data) => {
-			emitToActiveProjects('preview:browser-mcp-test-completed', {
-				sessionId: data.tabId,
-				timestamp: data.timestamp,
-				source: 'mcp'
 			});
 		});
 	}

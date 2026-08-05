@@ -30,6 +30,9 @@ export interface BrowserCoordinatorConfig {
 	// Project ID getter (REQUIRED for project isolation)
 	projectId: () => string;
 
+	/** The one live canvas API, or null before Canvas mounts. */
+	canvasAPI?: () => any | null;
+
 	// Callbacks from parent component
 	onUrlChange?: (url: string) => void;
 	onUrlInputChange?: (urlInput: string) => void;
@@ -48,9 +51,6 @@ export interface BrowserCoordinatorConfig {
 	onOpenUrlInHostBrowser?: (url: string) => void;
 	onVirtualCursorUpdate?: (x: number, y: number, clicking?: boolean) => void;
 	onVirtualCursorHide?: () => void;
-	/** Page coordinates, not screen ones — the panel projects them itself. */
-	onMcpCursorUpdate?: (x: number, y: number, clicking?: boolean, pressed?: boolean) => void;
-	onMcpCursorHide?: () => void;
 
 	// Coordinate transformation
 	transformBrowserToDisplayCoordinates?: (x: number, y: number) => { x: number, y: number } | null;
@@ -62,6 +62,7 @@ export interface BrowserCoordinatorConfig {
 export function createBrowserCoordinator(config: BrowserCoordinatorConfig) {
 	const {
 		projectId: getProjectId,
+		canvasAPI: getCanvasAPI,
 		onUrlChange,
 		onUrlInputChange,
 		onSessionChange,
@@ -76,8 +77,6 @@ export function createBrowserCoordinator(config: BrowserCoordinatorConfig) {
 		onOpenUrlInHostBrowser,
 		onVirtualCursorUpdate,
 		onVirtualCursorHide,
-		onMcpCursorUpdate,
-		onMcpCursorHide,
 		transformBrowserToDisplayCoordinates
 	} = config;
 
@@ -105,6 +104,7 @@ export function createBrowserCoordinator(config: BrowserCoordinatorConfig) {
 	// Create stream handler
 	const streamHandler = createStreamMessageHandler({
 		tabManager,
+		getCanvasAPI,
 		onNavigationUpdate: (tabId, url) => {
 			// Only notify parent if this is the active tab
 			if (tabId === tabManager.activeTabId) {
@@ -115,11 +115,6 @@ export function createBrowserCoordinator(config: BrowserCoordinatorConfig) {
 		onCursorUpdate: (x, y, clicking) => {
 			if (onVirtualCursorUpdate) {
 				onVirtualCursorUpdate(x, y, clicking);
-			}
-		},
-		onTestCompleted: () => {
-			if (onVirtualCursorHide) {
-				onVirtualCursorHide();
 			}
 		},
 		transformBrowserToDisplayCoordinates
@@ -144,16 +139,6 @@ export function createBrowserCoordinator(config: BrowserCoordinatorConfig) {
 	// Create MCP handler
 	const mcpHandler = createMcpHandler({
 		tabManager,
-		onCursorUpdate: (x, y, clicking, pressed) => {
-			if (onMcpCursorUpdate) {
-				onMcpCursorUpdate(x, y, clicking, pressed);
-			}
-		},
-		onCursorHide: () => {
-			if (onMcpCursorHide) {
-				onMcpCursorHide();
-			}
-		},
 		onLaunchRequest: (url, deviceSize, rotation, sessionId) => {
 			handleMcpLaunchRequest(url, deviceSize, rotation, sessionId);
 		}
@@ -203,7 +188,6 @@ export function createBrowserCoordinator(config: BrowserCoordinatorConfig) {
 					sessionId: result.sessionId,
 					sessionInfo: result.sessionInfo,
 					url: actualUrl,
-					lastFrameData: null,
 					errorMessage: null
 				});
 

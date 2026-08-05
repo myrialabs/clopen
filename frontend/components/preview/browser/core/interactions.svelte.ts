@@ -96,12 +96,26 @@ export function setInteractionProjectId(projectId: string): void {
 }
 
 /**
- * Send interaction to active tab
+ * The backend tab this viewer is looking at.
+ *
+ * Sent with every interaction. Without it the backend applied input to the
+ * project's "active tab" — one value shared by everyone in the project — so
+ * with two people watching, one switching tabs silently redirected the other's
+ * clicks onto the tab they had just moved to.
+ */
+let currentTabId: string | null = null;
+
+export function setInteractionTabId(tabId: string | null): void {
+	currentTabId = tabId;
+}
+
+/**
+ * Send interaction to the tab this viewer is watching
  */
 export function sendInteraction(action: InteractionAction): void {
 	try {
 		// Include projectId for project isolation
-		ws.emit('preview:browser-interact', { action });
+		ws.emit('preview:browser-interact', { action, tabId: currentTabId ?? undefined });
 	} catch (error) {
 		debug.error('preview', 'Error sending interaction:', error);
 	}
@@ -116,7 +130,11 @@ export function sendInteraction(action: InteractionAction): void {
  */
 export async function readPageSelection(cut = false): Promise<string> {
 	try {
-		const result = await ws.http('preview:browser-selection', { cut }, 5000);
+		const result = await ws.http(
+			'preview:browser-selection',
+			{ cut, tabId: currentTabId ?? undefined },
+			5000
+		);
 		return result.text;
 	} catch {
 		return '';
@@ -136,7 +154,7 @@ export async function readPageSelection(cut = false): Promise<string> {
  */
 export async function probeHitTest(x: number, y: number): Promise<RemoteFocusState> {
 	try {
-		return await ws.http('preview:browser-hit-test', { x, y }, 3000);
+		return await ws.http('preview:browser-hit-test', { x, y, tabId: currentTabId ?? undefined }, 3000);
 	} catch {
 		return { editable: false };
 	}
@@ -166,6 +184,7 @@ export function sendScaleUpdate(scale: number): void {
 	setDisplayScale(scale);
 	try {
 		ws.emit('preview:browser-interact', {
+			tabId: currentTabId ?? undefined,
 			action: {
 				type: 'scale-update',
 				scale,
@@ -196,6 +215,7 @@ export async function updateViewport(
 
 	try {
 		ws.emit('preview:browser-interact', {
+			tabId: currentTabId ?? undefined,
 			action: {
 				type: 'viewport-update',
 				width,

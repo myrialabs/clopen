@@ -11,24 +11,24 @@ import { requireBrowserTabAccess } from '../access';
 export const consolePreviewHandler = createRouter()
 	// Get console logs
 	.http('preview:browser-console-get', {
-		data: t.Object({}),
+		data: t.Object({ tabId: t.Optional(t.String()) }),
 		response: t.Object({
 			logs: t.Any()
 		})
-	}, async ({ conn }) => {
-		const { previewService, tab } = requireBrowserTabAccess(conn);
+	}, async ({ data, conn }) => {
+		const { previewService, tab } = requireBrowserTabAccess(conn, data.tabId);
 		const consoleLogs = previewService.getConsoleLogs(tab.id);
 		return { logs: consoleLogs };
 	})
 
 	// Clear console logs
 	.http('preview:browser-console-clear', {
-		data: t.Object({}),
+		data: t.Object({ tabId: t.Optional(t.String()) }),
 		response: t.Object({
 			message: t.String()
 		})
-	}, async ({ conn }) => {
-		const { previewService, tab } = requireBrowserTabAccess(conn);
+	}, async ({ data, conn }) => {
+		const { previewService, tab } = requireBrowserTabAccess(conn, data.tabId);
 
 		const success = previewService.clearConsoleLogs(tab.id);
 
@@ -42,13 +42,14 @@ export const consolePreviewHandler = createRouter()
 	// Execute console command
 	.http('preview:browser-console-execute', {
 		data: t.Object({
-			command: t.String({ minLength: 1 })
+			command: t.String({ minLength: 1 }),
+			tabId: t.Optional(t.String())
 		}),
 		response: t.Object({
 			result: t.Any()
 		})
 	}, async ({ data, conn }) => {
-		const { previewService, tab } = requireBrowserTabAccess(conn);
+		const { previewService, tab } = requireBrowserTabAccess(conn, data.tabId);
 
 		const result = await previewService.executeConsoleCommand(tab.id, data.command);
 		return { result };
@@ -57,14 +58,15 @@ export const consolePreviewHandler = createRouter()
 	// Toggle console logging
 	.http('preview:browser-console-toggle', {
 		data: t.Object({
-			enabled: t.Boolean()
+			enabled: t.Boolean(),
+			tabId: t.Optional(t.String())
 		}),
 		response: t.Object({
 			enabled: t.Boolean(),
 			message: t.String()
 		})
 	}, async ({ data, conn }) => {
-		const { previewService, tab } = requireBrowserTabAccess(conn);
+		const { previewService, tab } = requireBrowserTabAccess(conn, data.tabId);
 
 		const success = previewService.toggleConsoleLogging(tab.id, data.enabled);
 

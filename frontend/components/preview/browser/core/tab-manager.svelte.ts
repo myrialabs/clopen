@@ -27,9 +27,7 @@ export interface PreviewTab {
 	deviceSize: DeviceSize;
 	rotation: Rotation;
 	consoleLogs: BrowserConsoleMessage[];
-	canvasAPI: any;
 	previewDimensions: any;
-	lastFrameData: any;
 	errorMessage: string | null;
 }
 
@@ -84,9 +82,7 @@ export function createTabManager() {
 			deviceSize,
 			rotation,
 			consoleLogs: [],
-			canvasAPI: null,
 			previewDimensions: { scale: 1 },
-			lastFrameData: null,
 			errorMessage: null
 		};
 

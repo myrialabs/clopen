@@ -48,7 +48,7 @@
 	 * Below this the bottom dock is the only sensible layout, so the control is
 	 * hidden rather than offered and then fought with.
 	 */
-	const SIDE_DOCK_THRESHOLD = 900;
+	const SIDE_DOCK_THRESHOLD = 550;
 	const canSideDock = $derived(!isMobile && panelWidth >= SIDE_DOCK_THRESHOLD);
 
 	// Falling below the threshold (panel resized, window shrunk) has to pull the
@@ -283,8 +283,8 @@
 	{#if !isMobile}
 		<div
 			class="shrink-0 bg-transparent transition-colors hover:bg-violet-500/30 {dock === 'right'
-				? 'absolute inset-y-0 left-0 w-1.5 cursor-ew-resize'
-				: 'h-1.5 cursor-ns-resize'}"
+				? 'absolute inset-y-0 -left-1 w-1.5 cursor-ew-resize'
+				: 'absolute -top-1 w-full h-1.5 cursor-ns-resize'}"
 			role="separator"
 			aria-label="Resize console"
 			aria-orientation={dock === 'right' ? 'vertical' : 'horizontal'}

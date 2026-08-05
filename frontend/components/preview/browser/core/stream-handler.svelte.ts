@@ -9,9 +9,18 @@ import { getTabTitle } from './tab-manager.svelte';
 
 export interface StreamMessageHandlerConfig {
 	tabManager: TabManager;
+	/**
+	 * The one live canvas, or null before it mounts.
+	 *
+	 * There is a single Canvas behind every tab, so this is asked for rather
+	 * than read off a tab. Copies used to be filed per tab, which meant a tab
+	 * could hand back an API belonging to a Canvas that had since been
+	 * unmounted — its element gone, every call through it silently answering
+	 * "no geometry" for the rest of the session.
+	 */
+	getCanvasAPI?: () => any | null;
 	onNavigationUpdate?: (tabId: string, url: string) => void;
 	onCursorUpdate?: (x: number, y: number, clicking?: boolean) => void;
-	onTestCompleted?: () => void;
 	transformBrowserToDisplayCoordinates?: (x: number, y: number) => { x: number, y: number } | null;
 }
 
@@ -19,7 +28,7 @@ export interface StreamMessageHandlerConfig {
  * Create stream message handler
  */
 export function createStreamMessageHandler(config: StreamMessageHandlerConfig) {
-	const { tabManager, onNavigationUpdate, onCursorUpdate, onTestCompleted, transformBrowserToDisplayCoordinates } = config;
+	const { tabManager, getCanvasAPI, onNavigationUpdate, onCursorUpdate, transformBrowserToDisplayCoordinates } = config;
 
 	/**
 	 * Handle stream messages for a specific tab
@@ -42,7 +51,7 @@ export function createStreamMessageHandler(config: StreamMessageHandlerConfig) {
 				break;
 
 			case 'screencast-frame':
-				handleScreencastFrame(targetTabId, message.data);
+				handleScreencastFrame(targetTabId);
 				break;
 
 			case 'cursor-position':
@@ -51,10 +60,6 @@ export function createStreamMessageHandler(config: StreamMessageHandlerConfig) {
 
 			case 'cursor-click':
 				handleCursorClick(targetTabId, message.data);
-				break;
-
-			case 'test-completed':
-				handleTestCompleted(targetTabId);
 				break;
 
 			case 'console-message':
@@ -114,25 +119,20 @@ export function createStreamMessageHandler(config: StreamMessageHandlerConfig) {
 		});
 
 		// Setup canvas if this is the active tab
-		if (tabId === tabManager.activeTabId && tab.canvasAPI) {
-			tab.canvasAPI.setupCanvas();
+		if (tabId === tabManager.activeTabId) {
+			getCanvasAPI?.()?.setupCanvas?.();
 		}
 	}
 
-	function handleScreencastFrame(tabId: string, data: any) {
+	function handleScreencastFrame(tabId: string) {
+		// Frames arrive over the WebCodecs data channel, not as stream messages —
+		// nothing has emitted this type since. The one thing it still does is
+		// resolve a pending navigation, which the canvas also does on its first
+		// decoded frame; keeping it costs nothing if a frame ever comes this way.
 		const tab = tabManager.getTab(tabId);
-		const updates: any = { lastFrameData: data };
-
-		// If tab is navigating, complete navigation when new frame is received
 		if (tab?.isNavigating) {
-			updates.isNavigating = false;
 			debug.log('preview', `✅ Navigation frame received for tab: ${tabId}, completing progress`);
-		}
-
-		tabManager.updateTab(tabId, updates);
-
-		if (tabId === tabManager.activeTabId) {
-			debug.log('preview', `🎬 Screencast frame received for active tab: ${tabId}`);
+			tabManager.updateTab(tabId, { isNavigating: false });
 		}
 	}
 
@@ -151,12 +151,6 @@ export function createStreamMessageHandler(config: StreamMessageHandlerConfig) {
 			if (transformedPosition && onCursorUpdate) {
 				onCursorUpdate(transformedPosition.x, transformedPosition.y, true);
 			}
-		}
-	}
-
-	function handleTestCompleted(tabId: string) {
-		if (tabId === tabManager.activeTabId && onTestCompleted) {
-			onTestCompleted();
 		}
 	}
 
@@ -250,8 +244,12 @@ export function createStreamMessageHandler(config: StreamMessageHandlerConfig) {
 			debug.log('preview', `🔄 SPA navigation for tab ${tabId}: ${tab.url} → ${data.url}`);
 
 			// Freeze canvas briefly to avoid showing white flash during SPA transition
-			// The last rendered frame is held while the DOM settles
-			tab.canvasAPI?.freezeForSpaNavigation?.();
+			// The last rendered frame is held while the DOM settles. Only for the
+			// tab on screen: the canvas is showing that one, so freezing it for a
+			// background tab would hold a picture of something else.
+			if (tabId === tabManager.activeTabId) {
+				getCanvasAPI?.()?.freezeForSpaNavigation?.();
+			}
 
 			// SPA navigation: update URL/title and reset any loading states.
 			// A preceding navigation-loading event may have set isLoading=true

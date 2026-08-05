@@ -38,13 +38,14 @@
 		activeTabId = null as string | null,
 		mcpControlledTabIds = new Set<string>(),
 		/**
-		 * The controlled tab the agent is acting on right now.
+		 * Controlled tabs an agent is acting on right now.
 		 *
 		 * Distinct from being locked: an agent working across several tabs locks
 		 * all of them, and the user — free to look wherever they like — otherwise
-		 * has no way to tell which one is live.
+		 * has no way to tell which one is live. A set rather than one id, since a
+		 * project can have two runs going, each on a tab of its own.
 		 */
-		mcpFocusedTabId = null as string | null,
+		mcpFocusedTabIds = new Set<string>(),
 
 		// Callbacks
 		onGoClick = () => {},
@@ -305,7 +306,7 @@
 			{#each tabs as tab (tab.id)}
 				{@const isActive = tab.id === activeTabId}
 				{@const isControlled = mcpControlledTabIds.has(tab.id)}
-				{@const isAgentHere = isControlled && tab.id === mcpFocusedTabId}
+				{@const isAgentHere = isControlled && mcpFocusedTabIds.has(tab.id)}
 				<button
 					type="button"
 					data-tab-id={tab.id}

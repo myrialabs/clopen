@@ -64,7 +64,7 @@ export const tabInfoPreviewHandler = createRouter()
 				canGoBack: t.Boolean(),
 				canGoForward: t.Boolean(),
 				isMcpControlled: t.Boolean(),
-				/** The tab this project's agent is acting on right now. */
+				/** Whether an agent is acting on this tab right now. */
 				isMcpFocused: t.Boolean(),
 				/**
 				 * What the agent is doing on this tab, for the caption beside its
@@ -72,7 +72,20 @@ export const tabInfoPreviewHandler = createRouter()
 				 * so a panel opened in the middle of one must not have to wait for
 				 * the next action before it can say anything.
 				 */
-				mcpActivity: t.Optional(t.String())
+				mcpActivity: t.Optional(t.String()),
+				/**
+				 * Where the agent's pointer stands, in page coordinates.
+				 *
+				 * Same reasoning as `mcpActivity`, and the same failure without
+				 * it: the pointer only emits while it is moving, so a viewer
+				 * arriving between two actions — a reload, a project switch, a
+				 * colleague opening the panel mid-run — had a lock and a caption
+				 * but no idea where on the page any of it was happening.
+				 */
+				mcpCursor: t.Optional(t.Object({
+					x: t.Number(),
+					y: t.Number()
+				}))
 			})),
 			activeTabId: t.Union([t.String(), t.Null()]),
 			count: t.Number()
@@ -90,7 +103,6 @@ export const tabInfoPreviewHandler = createRouter()
 
 		const allTabsInfo = previewService.getAllTabsInfo();
 		const activeTab = previewService.getActiveTab();
-		const focusedTabId = browserMcpControl.getFocusedTab(projectId);
 
 		debug.log('preview', `📋 Listing ${allTabsInfo.length} active browser tabs for session recovery (project: ${projectId})`);
 
@@ -108,15 +120,25 @@ export const tabInfoPreviewHandler = createRouter()
 				canGoBack: tab.canGoBack,
 				canGoForward: tab.canGoForward,
 				isMcpControlled: browserMcpControl.isTabControlled(tab.id, projectId),
-				isMcpFocused: tab.id === focusedTabId,
-				mcpActivity: browserMcpControl.getActivity(tab.id) ?? undefined
+				isMcpFocused: browserMcpControl.isTabFocused(tab.id),
+				mcpActivity: browserMcpControl.getActivity(tab.id) ?? undefined,
+				mcpCursor: previewService.getMcpCursorPosition(tab.id) ?? undefined
 			})),
 			activeTabId: activeTab?.id || null,
 			count: allTabsInfo.length
 		};
 	})
 
-	// Switch to a specific tab (for session recovery)
+	/**
+	 * "I am now looking at this tab."
+	 *
+	 * Deliberately does *not* make the tab the project's active one. Streaming
+	 * is attached per (tab, viewer) already, so nothing here needs a shared
+	 * notion of "the" tab — and making it shared is what let two people in one
+	 * project fight: whoever clicked a tab last moved everyone else's target,
+	 * including where their clicks landed. The agent still sets the active tab,
+	 * because for the agent it means something.
+	 */
 	.http('preview:browser-tab-switch', {
 		data: t.Object({
 			tabId: t.String(),
@@ -134,16 +156,15 @@ export const tabInfoPreviewHandler = createRouter()
 			? requireBrowserPreviewAccessFor(conn, data.projectId)
 			: requireBrowserPreviewAccess(conn);
 
-		const success = previewService.switchTab(tabId);
-		if (!success) {
+		if (!previewService.noteTabViewed(tabId)) {
 			throw new Error(`Failed to switch to tab: ${tabId}`);
 		}
 
-		debug.log('preview', `🔄 Switched to tab: ${tabId} (project: ${projectId})`);
+		debug.log('preview', `👁️ Viewer is now watching tab: ${tabId} (project: ${projectId})`);
 
 		return {
 			success: true,
 			tabId,
-			message: `Switched to tab ${tabId}`
+			message: `Now viewing tab ${tabId}`
 		};
 	});
