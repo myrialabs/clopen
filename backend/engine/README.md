@@ -46,6 +46,17 @@ stays **agnostic** to the underlying SDK.
 > capture the SDK's real runtime shapes with a throwaway script rather than
 > trusting its `.d.ts`.
 
+> **Background parent tools are a streaming category of their own.** `Agent`
+> receives nested activity from the SDK stream, while Claude's `Workflow`
+> writes agent transcripts to JSONL files outside that stream. Both must obey
+> the same UI contract: emit the parent first, stamp every child with the
+> parent's `toolUseId` before it crosses the adapter boundary, and never expose
+> a child on the root timeline even temporarily. File-backed activity must use
+> filesystem change events rather than interval polling. Read **§10.15** in
+> [lessons-learned](./docs/lessons-learned.md) and **§6.5** in
+> [frontend-and-chat](./docs/frontend-and-chat.md) before adding another
+> background or nested tool.
+
 This guide is split into focused documents — start here for the architecture
 map, then jump to the area you need.
 
@@ -135,6 +146,13 @@ Three key rules that **every** layer upholds:
 - **`AIEngine`** (in `types.ts`) is the only class the stream-manager calls.
   New methods are not added ad-hoc — they are added to the interface first,
   then implemented in **every** adapter.
+
+For parent tools (`Agent`, `Workflow`, or a future equivalent), message
+placement is also part of the contract: root messages carry
+`parent.toolUseId = null`; every nested message carries the parent tool call id
+from its first emission. The frontend must not render at root and relocate
+later. See [adapter contract §2.3](./docs/adapter-contract.md) for the complete
+invariants.
 
 > ⚠️ **Before you propose new infrastructure, read this.**
 > Two design pitfalls have repeatedly tripped people adding new adapters.

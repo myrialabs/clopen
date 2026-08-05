@@ -269,5 +269,36 @@ Backend `chat:stream` then `streamManager.startStream(...)`, which:
      it — wire the engine's native hook to `resolveUserAnswer` when it
      exists. See §10.12 point 3.
 
----
+### 6.5 Parent tools and root-placeholder isolation
 
+`Agent`, `Workflow`, and future background/delegation tools use
+`parent.toolUseId` as their placement contract:
+
+- The parent assistant message contains the canonical parent `tool_use` block.
+- Every child assistant/user message carries that block's id in
+  `message.parent.toolUseId` from its first WebSocket emission.
+- `groupMessages()` removes those child rows from the root timeline and stores
+  them in `subAgentMap[parentToolUseId]`.
+- `processToolMessage()` converts the collected child messages into the
+  parent's `subActivities`.
+
+The live message handler must preserve that contract before Svelte renders a
+frame. In `chat.service.ts::handleMessageEvent`, only a root assistant
+(`!message.parent?.toolUseId`) may replace the root non-reasoning
+`stream_event` placeholder. A parent-tagged assistant is appended intact so
+the grouper consumes it immediately. Do not insert a child at root with the
+intention of moving it later; transitions and reactive passes make that move
+visible as flicker.
+
+Current transient `stream_event` messages do not carry parent metadata.
+Adapters must therefore suppress child text/reasoning deltas and emit
+finalized parent-tagged messages, unless the unified stream protocol is first
+extended to make placeholders parent-aware end to end.
+
+For a file-backed producer such as Claude Workflow, the adapter watches the
+transcript source and pushes complete parent-tagged messages through the same
+engine output stream. The frontend should not know whether activity came from
+an SDK event or a filesystem event; grouping behavior must be identical to
+Agent/Task.
+
+---

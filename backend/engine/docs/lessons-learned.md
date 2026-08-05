@@ -568,7 +568,7 @@ spawns a fresh subprocess per turn, you almost certainly want the
 auth-blob swap (§10.13) instead — adding the restart event ships dead
 code and confuses the UX (button that does nothing observable).
 
-### 10.15 Sub-agent (`Task` / `Agent` tool) routing — name, input, parent id
+### 10.15 Parent-tool activity (`Task` / `Agent` / `Workflow`) — route before render
 
 Every engine SDK we support exposes a "dispatch sub-agent" tool. Each
 SDK names it differently (Claude → `Task`, OpenCode → `task`, Copilot →
@@ -692,6 +692,54 @@ call + its returned text. So sub-agent work can't contaminate the parent
 conversation, nor a later checkpoint fork of it (§10.10). See
 `cline/agent-tool.ts` + the dispatch block in `cline/stream.ts` (and the
 Pi equivalents) for the reference implementation.
+
+**File-backed background tools (`Workflow`) need a push bridge, not a timer.**
+Claude's `Workflow` differs from `Task`: the SDK stream contains the Workflow
+tool call and launch result, but child agents append their conversations to
+`agent-*.jsonl` files under the reported transcript directory. Waiting for the
+next SDK heartbeat batches unrelated records together; polling every N
+milliseconds merely hides that defect and adds guessed latency.
+
+The reference implementation is
+`claude/workflow-transcript.ts` + the merge queue in `claude/stream.ts`:
+
+1. Observe the complete `Workflow` tool call and launch result, then register
+   the transcript directory against that exact tool call id.
+2. Watch the transcript and run-status directories with filesystem change
+   events. A file create/append wakes the producer immediately.
+3. Read only complete newline-delimited records after each file's saved byte
+   offset. Coalesced filesystem notifications are harmless because the file,
+   not the notification count, is the source of truth.
+4. Convert visible child messages and stamp the Workflow id onto
+   `parent.toolUseId` before pushing them into the merged `EventQueue`.
+5. Preserve each transcript record's timestamp. Assigning `new Date()` while
+   draining makes a batch look simultaneous and destroys useful ordering.
+6. Continue watching after the main SDK iterator ends. The background process
+   can still be writing; close only after the run status is terminal, perform
+   a final drain, and dispose every watcher in `finally`.
+
+Do not display a Workflow as *running* from a partial `tool_use` start event.
+At that point its JSON input/script is incomplete and execution has not begun.
+The valid empty-`subActivities` state starts when the complete parent tool call
+is emitted; subsequent filesystem events populate it.
+
+**Frontend invariant: a child may never claim a root placeholder.**
+`chat.service.ts::handleMessageEvent` replaces a transient text placeholder
+only for assistant messages whose `parent.toolUseId` is null. A child assistant
+must be pushed intact so `message-grouper.ts` folds it into the parent's
+`subActivities` in the same reactive pass. If the handler replaces a root
+placeholder indiscriminately, every nested tool flashes at root and then
+appears to move under its parent even though the database relation was correct
+from the beginning.
+
+Regression checks for any new parent tool should prove all of the following:
+
+- the parent is emitted before children and initially accepts an empty activity list;
+- every child has the correct parent id on its first emitted shape;
+- source notifications wake the side-channel producer without a timer;
+- repeated/coalesced notifications do not duplicate records;
+- SDK completion does not truncate a still-running background producer;
+- no parent-tagged assistant replaces a root streaming placeholder.
 
 ### 10.16 `generateStructured` — schema strictness & part-extraction fallback
 
@@ -1224,4 +1272,3 @@ costs one effect and buys two things: the value sent with the turn always
 matches what actually ran (so `MessageEngine.reasoningEffort` in the Raw
 view is truthful), and a level valid for the previous model can never
 leak into a request for the next one.
-

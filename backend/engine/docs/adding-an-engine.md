@@ -92,6 +92,14 @@ mandatory files; optional files use the canonical names from §2.6.
       (`cline/agent-tool.ts`), register it + `toolPolicies.Agent`, route the
       sub-agent's messages into the stream tagged with `parent.toolUseId`, and
       push **tool_use only** as sub-activities — see §10.15.
+- [ ] **Parent/background tools (native or synthetic).** Emit the canonical
+      parent before its children and stamp the parent tool call id onto every
+      child before yielding it. Suppress child partial deltas when they lack a
+      parent id. If activity arrives through a side channel, bridge its native
+      notifications into the stream with an event queue—never timer polling—
+      retain offsets/timestamps, continue through terminal run status, and
+      clean up listeners in `finally`. Verify that a child can never replace a
+      root frontend placeholder. See §10.15 and frontend-and-chat §6.5.
 - [ ] `models.ts` (mandatory) → static `NEWENGINE_MODELS: EngineModel[]`
       OR `fetchNewengineModels(...): Promise<EngineModel[]>` (dynamic;
       return `[]` on failure — see §4.5).
@@ -275,4 +283,3 @@ Then the minimum UI scenarios that must pass:
       in chat).
 
 ---
-

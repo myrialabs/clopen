@@ -59,8 +59,8 @@ function processToolUse(
     return handleBackgroundBash(block, toolUseMap, backgroundBashMap);
   }
 
-  // Special handling for Agent tool — embed sub-agent activities
-  if (block.name === 'Agent' && block.id && subAgentMap.has(block.id)) {
+  // Parent tools embed messages emitted by their child agents/workers.
+  if ((block.name === 'Agent' || block.name === 'Workflow') && block.id && subAgentMap.has(block.id)) {
     return handleAgentTool(block, toolUseMap, subAgentMap);
   }
 

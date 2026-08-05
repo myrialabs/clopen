@@ -96,6 +96,35 @@ type EngineOutput =
 > `shared/types/unified/stream.ts` first, teach `stream-manager` how to
 > route it, and only then emit it from the adapter.
 
+#### Parent-tool activity contract (`Agent` / `Workflow`)
+
+Nested activity is still ordinary `AssistantMessage` / `UserMessage` output;
+its placement is determined by `message.parent.toolUseId`.
+
+The following invariants are mandatory:
+
+1. Emit the parent tool message before any child activity.
+2. Set every child message's `parent.toolUseId` to the parent tool call id
+   before yielding it. Never emit a root-shaped child and patch it later.
+3. Keep top-level tool results at `parent.toolUseId = null`; the id of the tool
+   they answer belongs on the inner `tool_result.toolUseId`.
+4. Do not forward nested text/reasoning `stream_event` deltas unless the
+   protocol can carry their parent id. Suppress them and emit the finalized
+   parent-tagged message instead.
+5. When activity comes from a side channel, merge it with the SDK stream using
+   a push queue. Use the source's native notification mechanism (for example
+   filesystem change events for JSONL transcripts), not interval polling.
+6. Preserve source timestamps and byte/file offsets so events retain their
+   actual order and are emitted exactly once.
+7. Keep the merged stream open until the parent run reports a terminal status,
+   then perform one final drain and release watchers/listeners on success,
+   cancellation, and error.
+
+The frontend groups parent-tagged messages directly into `subActivities`.
+They must never claim a root `stream_event` placeholder; doing so produces a
+visible root-to-child jump even though the persisted DB relation is correct.
+See §10.15 and frontend-and-chat §6.5.
+
 ### 2.4 `EngineQueryOptions`
 
 ```ts
@@ -249,4 +278,3 @@ Important conventions:
   the per-adapter taxonomy — the adapter only calls them. See §8.3.
 
 ---
-

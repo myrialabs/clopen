@@ -61,7 +61,7 @@ export function groupMessages(messages: FrontendMessage[]): {
 } {
   const groups: ProcessedMessage[] = [];
   const toolUseMap = new Map<string, ToolGroup>();
-  const agentToolUseIds = new Set<string>();
+  const activityParentToolUseIds = new Set<string>();
   const subAgentMap = new Map<string, FrontendMessage[]>();
   const skillToolUseIds = new Set<string>();
   const skillPromptMap = new Map<string, string>();
@@ -80,7 +80,7 @@ export function groupMessages(messages: FrontendMessage[]): {
     // Intercept ALL sub-agent messages (any parentToolUseId !== null)
     const parentToolId = getParentToolUseId(message);
     if (parentToolId) {
-      if (agentToolUseIds.has(parentToolId)) {
+      if (activityParentToolUseIds.has(parentToolId)) {
         if (!subAgentMap.has(parentToolId)) {
           subAgentMap.set(parentToolId, []);
         }
@@ -110,8 +110,8 @@ export function groupMessages(messages: FrontendMessage[]): {
               toolUseMessage: message,
               toolResultMessage: null
             });
-            if (toolUse.name === 'Agent') {
-              agentToolUseIds.add(toolUse.id);
+            if (toolUse.name === 'Agent' || toolUse.name === 'Workflow') {
+              activityParentToolUseIds.add(toolUse.id);
             }
             if (toolUse.name === 'Skill') {
               skillToolUseIds.add(toolUse.id);

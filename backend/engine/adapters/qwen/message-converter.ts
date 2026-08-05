@@ -199,6 +199,7 @@ const QWEN_TOOL_NAME_MAP: Record<string, string> = {
 	'task': 'Agent',
 	'dispatch_agent': 'Agent',
 	'task_stop': 'TaskStop',
+	'send_message': 'SendMessage',
 	// Question / harness
 	'ask_user_question': 'AskUserQuestion',
 	'skill': 'Skill',
@@ -207,21 +208,17 @@ const QWEN_TOOL_NAME_MAP: Record<string, string> = {
 	'cron_create': 'CronCreate',
 	'cron_list': 'CronList',
 	'cron_delete': 'CronDelete',
-	// `send_message` is the Qwen-specific channel the parent uses to push a
-	// follow-up prompt into a backgrounded sub-agent. There's no canonical
-	// equivalent — keep its raw name so the UI renders it as Unknown:* rather
-	// than silently swallowing the call.
 };
 
-function canonicaliseToolName(rawName: string): string {
+export function canonicaliseToolName(rawName: string): string {
+	const mapped = QWEN_TOOL_NAME_MAP[rawName];
+	if (mapped) return mapped;
+
 	// MCP tools come through as `clopen-mcp_<tool>` or `clopen-mcp-<tool>` —
 	// route through the shared resolver so they collapse to the canonical
 	// `mcp__<server>__<tool>` form (README §10.12).
 	const resolved = resolveOpenCodeToolName(rawName);
 	if (resolved) return resolved;
-
-	const mapped = QWEN_TOOL_NAME_MAP[rawName];
-	if (mapped) return mapped;
 	// Already canonical (PascalCase) — let toCanonicalToolName decide.
 	return rawName;
 }
