@@ -24,7 +24,7 @@ export function handleStreamError(error: unknown): void {
 	}
 
 	if (error.message.includes('ENOENT') || error.message.includes('spawn codex')) {
-		throw new Error('Codex CLI not found. Install it via Settings → System Tools (or run `bun add -g @openai/codex`).');
+		throw new Error('Codex CLI not found. Install it via Settings → Stack (or run `bun add -g @openai/codex`).');
 	}
 
 	if (error.message.includes('OPENAI_API_KEY') || error.message.includes('not authenticated')) {

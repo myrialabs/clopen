@@ -1,12 +1,12 @@
 [← Engine adapter guide](../README.md)
 
-## 9. Lessons learned — pitfalls when authoring a new adapter
+## 10. Lessons learned — pitfalls when authoring a new adapter
 
 These notes come from building the `copilot` adapter. Each item has been
 gotten wrong at least once — keep this mental checklist in your head when
 writing the next adapter.
 
-### 9.1 Both tool name **and** tool input must be canonicalised
+### 10.1 Both tool name **and** tool input must be canonicalised
 
 `toCanonicalToolName()` only guarantees the tool name does not become
 `Unknown:*`. That is **not enough**: tool UI components (`Bash`, `Read`,
@@ -37,7 +37,7 @@ If only the name mapping is done, the UI still picks the right component
 but the fields are `undefined` → the user sees an empty block. Always
 install **both** layers.
 
-### 9.2 Filter the SDK's "harness tools"
+### 10.2 Filter the SDK's "harness tools"
 
 Some SDKs emit internal tools used for model↔harness coordination that
 **must not** appear in chat (intent reporting, task-completion markers,
@@ -51,7 +51,7 @@ Strategy: filter at the adapter boundary, do not render `Unknown:*`. See
 `convertToolComplete`) — if you only drop one side, the UI either gets an
 orphan result without a tool or an orphan tool without a result.
 
-### 9.3 One `tool_use` per `AssistantMessage`
+### 10.3 One `tool_use` per `AssistantMessage`
 
 The convention used by Claude and OpenCode: each assistant message that
 reaches the frontend has **at most one** `tool_use` block. SDKs like
@@ -75,7 +75,7 @@ const messages = blocks.map((block, idx) => ({
 If violated, the frontend `message-grouper` still works but Compact mode
 and the tool layout do not stitch correctly.
 
-### 9.4 Buffer messages until the usage event arrives
+### 10.4 Buffer messages until the usage event arrives
 
 In many SDKs (Copilot included), `assistant.usage` is a **separate** event
 that arrives **after** `assistant.message` for the same turn iteration.
@@ -110,7 +110,7 @@ The `lastUsage` state is also kept around to build the aggregate
 `ResultEvent` at `session.idle` — that is the **per-stream** usage, not
 per-message.
 
-### 9.5 `tool_use.result: null` is **expected** before render
+### 10.5 `tool_use.result: null` is **expected** before render
 
 When inspecting raw adapter output (e.g. logs or DB rows before render),
 `tool_use` blocks always carry `result: null`. That is **correct**: the
@@ -146,7 +146,7 @@ Only set `parent.toolUseId` when the message is genuinely a child of an
 `parentToolUseId` through `convertToolResultOnly`). For raw
 `tool.execution_complete` events at the top of the loop, leave it null.
 
-### 9.6 Enable the SDK's streaming flag explicitly
+### 10.6 Enable the SDK's streaming flag explicitly
 
 Some SDKs default to emitting only the final message. For delta/partial
 streaming you must set the SDK-specific flag:
@@ -160,7 +160,7 @@ Without the flag, the UI shows text "all at once" — the symptom is
 identical to an adapter that forgot to emit `StreamLifecycleEvent` /
 `TextDeltaEvent`, so check the flag first before debugging the converter.
 
-### 9.7 Pair `start`/`stop` lifecycle for reasoning
+### 10.7 Pair `start`/`stop` lifecycle for reasoning
 
 The frontend stream-manager renders reasoning in a separate bubble
 **only** while `StreamLifecycleEvent { reasoning: true, event: 'start' }`
@@ -169,7 +169,7 @@ begins — the two are mutually exclusive in the UI). See
 `copilot/message-converter.ts::convertReasoningDelta`, which flushes the
 text stream before opening the reasoning stream.
 
-### 9.8 Event-order debug workflow
+### 10.8 Event-order debug workflow
 
 If chat output looks weird, log the raw `SessionEvent` per stream before
 the converter. The canonical Copilot order is:
@@ -191,7 +191,7 @@ wrong. If you see orphan tool_results, the ignored-tools filter is not
 consistent on both sides. If text appears all at once, the SDK streaming
 flag is off.
 
-### 9.9 Per-stream account override when the SDK takes the credential at construction
+### 10.9 Per-stream account override when the SDK takes the credential at construction
 
 Most SDKs accept env vars per-call (Claude) or read them from the
 subprocess environment (OpenCode). The Copilot SDK is different: the
@@ -236,7 +236,7 @@ If you forget the per-stream override path, the chat input appears to
 honour the account picker but the engine actually streams against the
 last initialised credential — silently using the wrong PAT/quota.
 
-### 9.10 Fork session — native API vs. on-disk workaround
+### 10.10 Fork session — native API vs. on-disk workaround
 
 The multi-branch checkpoints feature requires that **every** resume
 spawn a fresh session id, so the engine continues from that point
@@ -251,6 +251,8 @@ resume.
 | Copilot   | Call `client.rpc.sessions.fork({ sessionId: resume })` on every resume — native (`@experimental`, added in `@github/copilot-sdk` 1.0.0-beta.4). |
 | Codex     | **No native API yet** — fork by copying the rollout JSONL FILE on every resume.              |
 | Qwen Code | **No native API yet** — fork by copying the chat JSONL FILE on every resume.                 |
+| Pi        | `SessionManager.forkFrom()` on the on-disk JSONL tree (in Clopen's isolated sessions dir) — native, on every resume. |
+| Cline     | **No session store at all** (stateless `Agent`) — the adapter reconstructs branch history in memory and forks by copy. See "In-process, session-less SDKs" below. |
 
 > **Sharp edge — fork is NOT gated on `EngineQueryOptions.forkSession`.**
 > The `forkSession` field exists on the type but the stream-manager
@@ -274,7 +276,7 @@ the filename, not a directory name:
 <CODEX_HOME>/sessions/<YYYY>/<MM>/<DD>/rollout-<TIMESTAMP>-<thread_id>.jsonl
 ```
 
-where `<CODEX_HOME>` is Clopen's isolated `{clopenDir}/engine/codex/user/` (§9.19),
+where `<CODEX_HOME>` is Clopen's isolated `{clopenDir}/engine/codex/user/` (§10.19),
 **not** `~/.codex` — the helper reads it via `getCodexHomeDir()`, so it
 tracks the isolated dir automatically.
 
@@ -297,7 +299,7 @@ project's cwd via the SDK's `sanitizeCwd()`
 ```
 
 where `<QWEN_RUNTIME_DIR>` is Clopen's isolated `{clopenDir}/engine/qwen/user/`
-(§9.19), **not** `~/.qwen` — both the env var and the fork helper
+(§10.19), **not** `~/.qwen` — both the env var and the fork helper
 (`getQwenRuntimeDir()`) resolve to the same base, so they stay in sync.
 
 Every record line carries a `sessionId` field equal to the file's
@@ -332,13 +334,46 @@ turn 3   user → assistant   sessionId: C   (forked from B)
 Every assistant message carries its **own** session id. Reusing the
 same id across turns is the symptom that forking is gated or skipped.
 
+**In-process, session-less SDKs (Cline) — copy-on-branch in memory.**
+Some SDKs expose only a stateless run loop (`@cline/sdk`'s `Agent`) with
+**no** host-owned session store — nothing on disk, nothing keyed by a
+session id. The adapter reconstructs branch history itself, and the fork
+contract is unchanged: **every turn mints a fresh session id and stores its
+resulting transcript under that new id; a resumed turn restores the parent
+id's transcript and NEVER overwrites it.** Because each conversation node
+then owns a unique id, `resume` (= the branch point's `parent.sessionId`,
+derived by the stream-manager) selects exactly one ancestor, so sibling
+forks (A→B→C vs A→B1→C1) stay isolated.
+
+```ts
+// cline/stream.ts — resume path
+const priorMessages = resume ? this.sessions.get(resume) : undefined;
+const sessionId = crypto.randomUUID();               // ALWAYS new — never reuse `resume`
+// … agent.restore(priorMessages) + agent.continue(userMsg), or agent.run() when fresh …
+this.sessions.set(sessionId, [...result.messages]);  // store under the NEW id; do NOT mutate the parent entry
+```
+
+The trap that produced the classic checkpoint bug during Cline bring-up:
+keying the transcript by an id that's **reused** across turns
+(`sessionId = resume ?? uuid`, then `sessions.set(resume, …)`) overwrites
+the one shared entry — so after an undo+continue the forked branch restores
+the **sibling** branch's tail and answers with the wrong history. The tell
+is identical to the on-disk case: **every persisted assistant message shares
+one session id.** Bound the map (FIFO) so a long-lived project engine can't
+grow unbounded — evicting an old entry only degrades a *very* old fork to
+"no context", the same graceful fallback as a cross-restart resume (the
+in-memory map is empty after a restart, so `resume` misses and the turn
+starts fresh). This is the one real limitation of the session-less approach,
+and it's unavoidable: adapters **must not** read the message DB themselves
+(§2.5), so cross-restart branch context can't be rebuilt.
+
 When an SDK eventually adds a native `forkSession` (or equivalent), the
 migration is a one-liner: delete that adapter's `session-fork.ts`, drop
 the fork block in `stream.ts`, and pass the SDK flag the same way
 Claude, OpenCode, and Copilot already do. The `// TODO` comment at the
 top of each `session-fork.ts` pins the migration target.
 
-### 9.11 Reset `currentAccountId` in `dispose()`
+### 10.11 Reset `currentAccountId` in `dispose()`
 
 Whenever you track per-init state on the engine (e.g.
 `currentAccountId`, cached models, the SDK client itself), reset every
@@ -358,7 +393,7 @@ async dispose(): Promise<void> {
 }
 ```
 
-### 9.12 Reuse the existing MCP HTTP infrastructure — never build a new bridge
+### 10.12 Reuse the existing MCP HTTP infrastructure — never build a new bridge
 
 `backend/mcp/internal/remote-server.ts` already mounts every server registered via
 `defineServer()` as a **Streamable HTTP MCP** endpoint at
@@ -452,11 +487,11 @@ What you must NOT do:
 - ❌ A local type alias when the SDK exports the type (Open Code,
   Copilot). Import `McpRemoteConfig` / `MCPHTTPServerConfig` directly.
 
-### 9.13 Auth-blob swap into a shared CLI dotfile (vs. **per-account** isolated dirs)
+### 10.13 Auth-blob swap into a shared CLI dotfile (vs. **per-account** isolated dirs)
 
 > **Scope:** this section is about multiple accounts *within* Clopen. The
 > orthogonal question — keeping Clopen's whole footprint out of the user's
-> global `~/.codex` / `~/.copilot` — is **§9.19**, and there the answer is
+> global `~/.codex` / `~/.copilot` — is **§10.19**, and there the answer is
 > the opposite: we DO override the home env var, but with **one dir per
 > engine shared by all accounts**, not one per account.
 
@@ -474,7 +509,7 @@ isolated home directory and override the CLI's home env var
   under account A's dir don't reach account B.
 
 Instead, all Clopen accounts for an engine share the **single** isolated
-home from §9.19, and multi-account is handled by swapping the one dotfile
+home from §10.19, and multi-account is handled by swapping the one dotfile
 inside it to/from the DB:
 
 | Step | Behavior |
@@ -496,7 +531,7 @@ dotfile (Codex's `codex login` does), serialize the login flows with a
 backend-wide mutex so two simultaneous "Add Account" attempts can't
 clobber each other.
 
-### 9.14 Long-lived server engines need a "Restart Server" UX
+### 10.14 Long-lived server engines need a "Restart Server" UX
 
 If your engine boots a process or constructs an SDK client that **caches
 credentials** beyond a single stream (OpenCode's `opencode serve`
@@ -524,16 +559,16 @@ Engines that **do not** need this:
 - Subprocess-per-turn engines (Claude Code's `query()`, Codex's
   `codex exec`) re-read credentials at every turn — there is nothing
   cached to invalidate.
-- Engines using the auth-blob swap pattern (§9.13) — the swap happens
+- Engines using the auth-blob swap pattern (§10.13) — the swap happens
   inside `accounts-switch`, and the next turn's subprocess picks up the
   new dotfile without a restart event.
 
 If you are tempted to add a `*-server-restart` event for an engine that
 spawns a fresh subprocess per turn, you almost certainly want the
-auth-blob swap (§9.13) instead — adding the restart event ships dead
+auth-blob swap (§10.13) instead — adding the restart event ships dead
 code and confuses the UX (button that does nothing observable).
 
-### 9.15 Sub-agent (`Task` / `Agent` tool) routing — name, input, parent id
+### 10.15 Parent-tool activity (`Task` / `Agent` / `Workflow`) — route before render
 
 Every engine SDK we support exposes a "dispatch sub-agent" tool. Each
 SDK names it differently (Claude → `Task`, OpenCode → `task`, Copilot →
@@ -556,7 +591,7 @@ const name = block.name === 'Task' ? 'Agent' : block.name;
 ```
 
 Then normalise the SDK's raw input fields into `AgentInput { prompt,
-description, subagentType }` (see §9.1). Field names vary —
+description, subagentType }` (see §10.1). Field names vary —
 `prompt`/`task`/`instruction`, `agent_type`/`subagent_type`/`agent` —
 so the normaliser must accept them all and default `subagentType` to
 `'general-purpose'`.
@@ -565,7 +600,7 @@ so the normaliser must accept them all and default `subagentType` to
 frontend grouper (`message-grouper.ts`) routes messages with
 `parent.toolUseId !== null` into `subAgentMap[parentToolId]` and
 attaches them as `subActivities` on the parent `Agent` tool block.
-Top-level messages must keep `parent.toolUseId = null` (see §9.5);
+Top-level messages must keep `parent.toolUseId = null` (see §10.5);
 sub-agent messages must carry the **parent dispatch tool's** call id.
 Each SDK exposes that linkage differently:
 
@@ -611,12 +646,109 @@ ships, sub-agent tool calls float to the top of the chat. If only step
 missed (in an SDK that does double-emit), sub-agent text appears in
 both places.
 
-### 9.16 `generateStructured` — schema strictness & part-extraction fallback
+**Session-less SDKs with no native sub-agent primitive (Pi, Cline) —
+synthesize the `Agent` tool yourself.** The above assumes the SDK *has* a
+`Task`/`Agent` tool that emits nested messages. A bare run loop
+(`@cline/sdk`'s `Agent`, Pi's `AgentSession`) has none — the "Available
+Subagents" preamble is then informational only and the model has nothing
+to call (the exact symptom reported on Cline: *"it never uses subagents"*).
+Expose a synthetic `Agent` tool (`createTool`) whose description lists the
+enabled subagents; its `execute` spawns a **fresh, bounded sub-agent** with
+the chosen subagent's system prompt + the permission-filtered builtins
+**ONLY** (no AskUserQuestion, no MCP, no nested `Agent` — delegation must
+not recurse), runs the delegated prompt to completion, and returns the
+sub-agent's `outputText` as the tool result. Three things to get right —
+each was a separate round-trip during Cline bring-up:
 
-`generateStructured` powers the AI commit-message generator (and any
-future one-shot JSON callers). Each adapter satisfies the same
-`StructuredGenerationOptions → Promise<T>` contract, but the SDKs split
-sharply on whether they accept a schema natively:
+1. **Actually register the tool.** When subagents are enabled, push the
+   `Agent` tool into the tools list **and** set
+   `toolPolicies.Agent = { autoApprove: true }` (+ include it in the
+   `system_init` tool list). Missing this = the model can't delegate
+   because the tool isn't there. Skip the whole block when no subagents
+   are enabled — there's nothing to dispatch to.
+
+2. **Route sub-activities via a late-bound queue handle.** The dispatch
+   `run()` is constructed *before* the stream's `EventQueue` exists, so
+   hold a `{ queue: null }` box and set `.queue` right after the queue is
+   created. Inside `run()`, subscribe to the sub-agent, convert its
+   events with the same message-converter, stamp
+   `parent.toolUseId = context.toolCallId` (the parent `Agent` block's id)
+   on each message, and push into that queue. The frontend folds them under
+   the `Agent` block as `subActivities` (step 2 above). Miss this and
+   `subActivities` stays empty even though the delegation ran.
+
+3. **Sub-activities are a tool trail — push tool_use only.**
+   `processSubAgentMessages` renders both `tool_use` **and** `text`
+   activities, but the convention (Claude/Pi) is tool-only: the sub-agent's
+   prose is already the `Agent` tool's *result* (`outputText`). Push only
+   assistant messages that contain a `tool_use` block, plus their
+   `tool_result` user messages; drop text-only assistants, reasoning, and
+   every transient event. Miss this and the sub-agent's narration leaks in
+   as `text` sub-activities (the second Cline round-trip).
+
+Because the sub-agent is a **separate instance**, its internal steps never
+enter the main agent's transcript — the parent only ever sees the `Agent`
+call + its returned text. So sub-agent work can't contaminate the parent
+conversation, nor a later checkpoint fork of it (§10.10). See
+`cline/agent-tool.ts` + the dispatch block in `cline/stream.ts` (and the
+Pi equivalents) for the reference implementation.
+
+**File-backed background tools (`Workflow`) need a push bridge, not a timer.**
+Claude's `Workflow` differs from `Task`: the SDK stream contains the Workflow
+tool call and launch result, but child agents append their conversations to
+`agent-*.jsonl` files under the reported transcript directory. Waiting for the
+next SDK heartbeat batches unrelated records together; polling every N
+milliseconds merely hides that defect and adds guessed latency.
+
+The reference implementation is
+`claude/workflow-transcript.ts` + the merge queue in `claude/stream.ts`:
+
+1. Observe the complete `Workflow` tool call and launch result, then register
+   the transcript directory against that exact tool call id.
+2. Watch the transcript and run-status directories with filesystem change
+   events. A file create/append wakes the producer immediately.
+3. Read only complete newline-delimited records after each file's saved byte
+   offset. Coalesced filesystem notifications are harmless because the file,
+   not the notification count, is the source of truth.
+4. Convert visible child messages and stamp the Workflow id onto
+   `parent.toolUseId` before pushing them into the merged `EventQueue`.
+5. Preserve each transcript record's timestamp. Assigning `new Date()` while
+   draining makes a batch look simultaneous and destroys useful ordering.
+6. Continue watching after the main SDK iterator ends. The background process
+   can still be writing; close only after the run status is terminal, perform
+   a final drain, and dispose every watcher in `finally`.
+
+Do not display a Workflow as *running* from a partial `tool_use` start event.
+At that point its JSON input/script is incomplete and execution has not begun.
+The valid empty-`subActivities` state starts when the complete parent tool call
+is emitted; subsequent filesystem events populate it.
+
+**Frontend invariant: a child may never claim a root placeholder.**
+`chat.service.ts::handleMessageEvent` replaces a transient text placeholder
+only for assistant messages whose `parent.toolUseId` is null. A child assistant
+must be pushed intact so `message-grouper.ts` folds it into the parent's
+`subActivities` in the same reactive pass. If the handler replaces a root
+placeholder indiscriminately, every nested tool flashes at root and then
+appears to move under its parent even though the database relation was correct
+from the beginning.
+
+Regression checks for any new parent tool should prove all of the following:
+
+- the parent is emitted before children and initially accepts an empty activity list;
+- every child has the correct parent id on its first emitted shape;
+- source notifications wake the side-channel producer without a timer;
+- repeated/coalesced notifications do not duplicate records;
+- SDK completion does not truncate a still-running background producer;
+- no parent-tagged assistant replaces a root streaming placeholder.
+
+### 10.16 `generateStructured` — schema strictness & part-extraction fallback
+
+`generateStructured` powers three one-shot JSON callers: the AI
+commit-message generator, the branch-name generator, and artifact
+authoring (Skills/Commands/Subagents/Instructions from a purpose). Each
+adapter satisfies the same `StructuredGenerationOptions → Promise<T>`
+contract, but the SDKs split sharply on whether they accept a schema
+natively:
 
 | Engine       | Strategy        | Mechanism                                                    |
 |--------------|-----------------|--------------------------------------------------------------|
@@ -625,6 +757,13 @@ sharply on whether they accept a schema natively:
 | OpenCode     | Prompt          | `client.session.prompt({ tools: {}, … })`, parse text/reasoning parts |
 | Copilot      | Prompt          | `createSession({ availableTools: [], streaming: false })` + `sendAndWait` |
 | Qwen         | Prompt          | `query({ coreTools: [], maxSessionTurns: 1 })`, read `SDKResultMessageSuccess.result` |
+| Pi           | Prompt          | tool-less in-memory `createAgentSession`, parse final assistant text |
+| Cline        | Prompt          | tool-less `Agent`, parse final assistant text                |
+| Cursor       | Prompt          | `Agent.send(buildJsonPrompt(...))` → `run.wait().result` (local agents always carry the built-in tools, so the prompt is the only lever) |
+
+**Test on a prompt-engineered engine.** Three of the four bugs in this
+section only reproduce off the native path. Claude Code is the worst
+possible smoke test for `generateStructured`.
 
 **Two cross-cutting gotchas you will hit.**
 
@@ -675,10 +814,32 @@ OpenCode adapter:
   Filter out `ignored`/`synthetic` parts so the SDK's own scratch text
   doesn't leak into the JSON parser. Log the part-type breakdown in the
   error message so the next failure is diagnosable.
-- **Extract JSON tolerantly.** `extractJson()` tries, in order: a
-  ` ```json ` fenced block, the first balanced `{ … }`, then the raw
-  trimmed text. Models routinely ignore the "no markdown fences"
+- **Extract JSON tolerantly.** `extractJson()` tries, in order: every
+  ` ```json ` fenced block, every top-level balanced `{ … }`, a greedy
+  first-brace-to-last-brace slice, then the raw trimmed text — parsing
+  each one twice, the second time with control characters inside string
+  literals escaped. Models routinely ignore the "no markdown fences"
   instruction; the parser should not.
+
+  Two failure modes justify the balanced scan and the repair pass, and
+  both are covered by `structured-helpers.test.ts`:
+
+  - **Trailing commentary.** A model that emits the object and then adds
+    "Let me know if you want changes!" produces JSC's
+    `Unable to parse JSON string` (its message for *valid JSON followed
+    by anything*), and the old first-`{`-to-last-`}` slice broke too
+    whenever that commentary contained a brace. Brace counting must be
+    string-aware or a `}` inside a value closes the object early.
+  - **Raw newlines in string values.** JSON forbids a literal newline
+    inside a string, but any field holding Markdown (an artifact body, a
+    commit body) attracts them — which is why artifact generation broke
+    on models that git commit generation, with its short single-line
+    fields, never tripped.
+
+  A truncated response still throws rather than half-parsing: a draft
+  missing half its body is worse than a clear failure. The error preview
+  shows both ends of the text so truncation and trailing prose are
+  distinguishable from the log alone.
 
 The native engines (Claude, Codex) skip these — Claude exposes
 `structured_output` on the `result` message and Codex's
@@ -693,13 +854,37 @@ hands its `signal` to whatever the SDK exposes (Codex
 The contract is the same as `streamQuery`: aborting cancels the in-flight
 request, not just the await.
 
+**3. Never trust a caller-supplied `providerSlug`.** The adapters split
+again on whether they read it at all: Claude, Codex, Qwen, Copilot, and
+Cursor key off `modelId` alone, while OpenCode passes it as
+`model.providerID` and Pi/Cline resolve their account by it. A client
+that persists engine/provider/model as separate fields and updates only
+some of them therefore fails on exactly three engines and silently
+"works" on the other five — which is how a `commitGenerator.provider`
+stuck at its `'anthropic'` seed surfaced as `OpenCode returned empty
+response` while Claude Code was fine.
+
+The engine catalog is the only source of truth for which provider (and
+account) a model belongs to, so every `generateStructured` call site
+routes through `resolveGenerationTarget(engine, modelId, providerHint)`
+in `backend/engine/resolve-model.ts` first. It reads the registry
+(filled by `models:list`, fetching the catalog only on a miss), returns
+the catalog's provider, and throws a "pick it again in Settings →
+Models" error when the model belongs to no provider the engine offers.
+It also forwards the model's `accountId` when the catalog carries a real
+one — today every adapter reports `account.id: 0` (account is a separate
+per-chat dimension, and these routes have no account picker), so engines
+keep falling back to their active account. New engines are covered
+without touching a call site; do not reintroduce `providerSlug:
+data.providerSlug`.
+
 **Engine-not-implemented errors.** `backend/ws/git/commit-message.ts`
 guards on `engine.generateStructured` — if you add an engine that can't
 implement structured output, leave the property `undefined` and the WS
 route will surface `Engine "<name>" does not support structured
 generation` cleanly.
 
-### 9.17 OpenCode SDK v1 vs v2 — events come from the binary, not the npm types
+### 10.17 OpenCode SDK v1 vs v2 — events come from the binary, not the npm types
 
 `@opencode-ai/sdk` ships **two** API surfaces: the root entry (`.` →
 `dist/index.js`, the **v1** client the adapter uses today) and a separate
@@ -727,9 +912,9 @@ event protocol. Until then, v1 is intentional.
 
 ---
 
-### 9.18 External (registry) MCP servers — proxied through the bridge
+### 10.18 External (registry) MCP servers — proxied through the bridge
 
-§9.12 covers the **internal** `clopen-mcp` bridge. **External** servers (the
+§10.12 covers the **internal** `clopen-mcp` bridge. **External** servers (the
 ones users install from the registry, stored in `mcp_servers`) used to be
 connected **directly** by each engine — a third-party URL or stdio command.
 That is no longer true: **external servers are now proxied** through a
@@ -759,7 +944,7 @@ What this means for a new adapter:
    (`getClaude/OpenCode/Codex/Copilot/QwenExternalMcpConfig`); mirror that.
 
 2. **Use the engine's real URL/header field** — same per-SDK caveats as the
-   internal bridge (§9.12), because the shape is identical:
+   internal bridge (§10.12), because the shape is identical:
    - OpenCode: `url` (`type:'remote'`); Claude/Copilot: `url` (`type:'http'`).
    - Qwen: `httpUrl`.
    - **Codex: `http_headers`** (a TOML table) — **not** `bearer_token`, which is
@@ -791,7 +976,7 @@ What you must NOT do:
 
 ---
 
-### 9.19 Per-engine config-dir isolation (`{clopenDir}/engine/{engine}/user/`)
+### 10.19 Per-engine config-dir isolation (`{clopenDir}/engine/{engine}/user/`)
 
 Every engine's CLI/SDK writes runtime state (credentials, session/rollout
 files, logs, caches) to a home dir. Left at the default, that dir is the
@@ -828,7 +1013,7 @@ Sharp edges, each of which silently defeats isolation if missed:
   `session-fork.ts` reads `getCodexHomeDir()` and Qwen's reads
   `getQwenRuntimeDir()` — both resolve to the same isolated base the env
   var sets. If they drift, `sessionStateExists()` returns false and
-  multi-branch checkpoints break (see §9.10).
+  multi-branch checkpoints break (see §10.10).
 - **Qwen isolation is partial — and that's accepted.** `QWEN_RUNTIME_DIR`
   relocates runtime output (chats/sessions, history, logs, tmp) but the
   CLI's global `settings.json` / OAuth creds still resolve to `~/.qwen`
@@ -854,7 +1039,7 @@ Sharp edges, each of which silently defeats isolation if missed:
   XDG fine; a stale reused server was the culprit. Symptom to watch for: data
   still landing in `~/.local/share/opencode` after the env looks right.
 
-**This is orthogonal to multi-account (§9.13).** All of an engine's Clopen
+**This is orthogonal to multi-account (§10.13).** All of an engine's Clopen
 accounts share this **one** isolated dir; multiple accounts inside it are
 still the auth-blob swap, **not** a dir per account.
 
@@ -878,3 +1063,212 @@ still the auth-blob swap, **not** a dir per account.
   the persisted `opencode.server.{url,datadir}` so a server cached against the
   pre-move dir is re-spawned into the relocated one.
 
+---
+
+### 10.20 In-process SDK with a delta-stream, wrapped tools & no metadata (Cursor)
+
+The `cursor` adapter (`@cursor/sdk`) surfaced a whole class of gotchas that recur
+for any SDK whose stream is **delta-based**, whose tools are **wrapped/renamed**,
+and whose model catalog is **metadata-poor**. Every point below cost a round-trip
+of "user reports wrong UI → capture the real runtime shape → fix". **The meta-lesson:
+never guess an SDK's runtime shapes from its `.d.ts`; capture them live** (write a
+throwaway script that runs a real agent and `JSON.stringify`s each event/arg/result),
+using the **same model** the user runs — different models stream differently.
+
+**A. `run.stream()` yields per-chunk DELTAS, not snapshots.** Cursor emits a
+separate `assistant`/`thinking` SDKMessage for *each* text chunk. Persisting each
+as its own message produced 121 one-word rows for a "1+1=" reply and pushed the
+user message off-screen. Fix: **accumulate** chunks into ONE `reasoning` + ONE
+`assistant` message per block (buffers + flush at block-switch / tool-call /
+turn-end), while emitting each chunk live as a transient `stream_event` delta.
+Don't double-source: pick either `run.stream()` OR `onDelta`, not both, for the
+same content. (§10.4 is the sibling "buffer for usage" lesson.)
+
+**B. Tool arg field names are NOT what the `.d.ts` implies — and some payloads
+live in the RESULT, not the args.** Cursor `edit` args carry only `{path}`; the
+before/after is in the result's `value.diffString` (parse the unified diff into
+`oldString`/`newString`). `glob`→`{globPattern}`, `write`→`{fileText}` (not
+`content`). Getting these wrong = empty tool inputs in the UI. **Capture real args
+at runtime.** When the payload arrives only at completion, DEFER that tool's
+`tool_use` emission to the terminal event (like `edit`, `create_plan`).
+
+**C. MCP servers AND in-process custom tools may be delivered through ONE wrapper
+tool.** Cursor routes both through a tool literally named `mcp`, args
+`{providerIdentifier, toolName, args}` (`clopen-mcp` for real MCP,
+`custom-user-tools` for `local.customTools`). Unwrap it: `resolveOpenCodeToolName(toolName)`
+→ `mcp__server__tool` (passthrough args) for real MCP, else `toCanonicalToolName(toolName)`
++ normalise for custom (e.g. AskUserQuestion). Without unwrap everything renders
+as `Unknown:mcp`.
+
+**D. Interactive tool (AskUserQuestion) args must come from the tool's `execute`,
+not the stream.** The stream's `tool_call` args can arrive empty/partial for large
+inputs (→ `questions:[]`). The custom-tool `execute` always receives complete
+args, so emit the tool_use FROM `execute` (with the full questions) through a push
+queue that merges with `run.stream()`, and have the converter SKIP the stream's
+copy. `context.toolCallId` === the `tool_call` `call_id`, so `resolveUserAnswer`
+still matches, and the `running` event fires while `execute` blocks (dialog shows
+live, no deadlock). See §10.15 for the parent-routing half.
+
+**E. Sub-agent activity may be nowhere in `run.stream()`.** Cursor runs the
+`task` sub-agent internally: its steps ride `onDelta` `tool-call-delta` events
+whose `taskUpdate` field is the sub-agent's inner InteractionUpdate; the outer
+`callId` === the `task` `call_id` === the Agent tool_use id. Stream each
+`taskUpdate.type==='tool-call-completed'` as a child tool_use+tool_result
+(`parent.toolUseId`), and keep the full transcript in the `task` RESULT
+(`value.conversationSteps[]`) as a FALLBACK. `subagentType` can be an OBJECT
+(`{kind,name}`) — extract the string, or the UI shows "Using [object Object] agent".
+Make the synthesised Agent tool's `description` param **required** (Pi/Cline) so
+the model fills it; and in `AgentTool.svelte`, hide the description line when empty.
+
+**F. Some capabilities emit NO tool event at all.** Cursor's web search / web
+fetch run server-side — no `tool_call` in `run.stream()` or `onDelta`. They simply
+cannot be rendered as tools. Enumerate the SDK's real tool-type set before
+assuming a tool is "missing".
+
+**G. Tool RESULT shapes vary and may hide huge binaries.** Cursor wraps results as
+`{status, value:{content:[{text:{text}}]}}` (top-level) or `{success:{content}}`
+(sub-agent); images arrive as raw `Buffer` bytes. `extractResultText` must unwrap
+`value`/`success`, handle the nested `{text:{text}}` shape, and map images to a
+`[image]` placeholder (else you serialise a 500 KB PNG buffer into the row).
+
+**H. Mutable arg references corrupt persisted snapshots.** Cursor mutates some arg
+objects in place across a tool's lifecycle (notably `update_todos` — statuses flip
+to completed as work proceeds). Persisting a live reference makes a just-created
+todo render as done. **`structuredClone` the args at emit time.** Also map the
+SDK's status enum to the unified one (`inProgress`→`in_progress`, `cancelled`→
+`completed`) — a value mismatch renders in-progress as pending.
+
+**I. Usage that arrives once per turn needs backfill.** Cursor (like Codex) emits
+`usage` once after all messages, so assistant rows persist `usage:null`. Add the
+engine to `stream-manager.ts::backfillUsageForStream`'s gate so the turn's
+aggregate is written to every assistant row (survives refresh).
+
+**J. Don't fabricate a context window.** If `models.list()` reports no max context
+(`limit.input:0`), do NOT hard-code one. `getContextUsage` returns `unknown:true`
+and `ContextIndicator.svelte` shows "?" + an explanation instead of a bogus 100%.
+
+**K. A "plan" tool is a user-facing checkpoint, not internal plumbing.** Cursor's
+`create_plan` proposes a plan for the user to read, then ENDS the turn (approval
+gate, like Claude's ExitPlanMode). Render its `plan` text as a normal assistant
+markdown message, not a tool card; the user replies to continue.
+
+**L. Runtime compatibility is a first-class risk (Bun).** `@cursor/sdk` uses
+`@connectrpc/connect` over a Node transport that works under Bun with a valid
+**paid** key. A free-tier/exhausted key returns `plan_required` (403) and
+rate-limited keys surface as "socket connection closed / API key exchange
+endpoint" NetworkErrors — do NOT misread these as a Bun incompatibility. The SDK's
+fetch transport is gated behind a `globalThis.Deno` check; **faking that global is
+UNSAFE** — 45+ files (`@anthropic-ai/sdk`, `openai`, `elysia`, `mongodb`,
+`@google/genai`) platform-detect on `Deno` and would break. Map `plan_required`
+and socket errors to clear user messages in `error-handler.ts`.
+
+> **Global fixes that came out of this** (apply to ALL engines, not just Cursor):
+> the List tool renders its directory listing with `CodeBlock` (monospace), not
+> `TextMessage` (markdown); `AgentTool.svelte` hides an empty description line;
+> `ContextIndicator.svelte` handles an unknown max context. When an engine's data
+> exposes a UI bug, fix it in the shared component, not the adapter.
+
+---
+
+### 10.21 The SDK is not bundled — lazy-load it and never top-level-import it
+
+Engine SDKs are **not** runtime dependencies. They live in `package.json`
+`devDependencies` (pinned exact — the single source of truth) and are installed
+**on demand** into the clopen-managed dir `~/.clopen/stack/engines`
+(`getStackEnginesDir()`), never the user's global bun store or their project.
+This is what fixed `bun add -g @myrialabs/clopen` aborting on Windows: bundling
+the SDKs dragged 200–300 MB of native CLI binaries into the global install, and
+one failed tarball extraction killed the whole thing.
+
+Consequences for an adapter:
+
+- **Reference SDK types only via `import type`.** A plain `import { Foo } from
+  '<pkg>'` forces Bun to resolve the package at module-load time — which throws
+  for every user who hasn't installed that engine yet, crashing the backend on
+  boot. `import type` is erased at runtime, so it's safe. Resolve the real module
+  at point of use with
+  `loadEngineSdk<typeof import('<pkg>')>('newengine', '<pkg>')` from
+  `backend/engine/sdk-loader.ts` (which does `Bun.resolveSync(pkg, stackDir)` +
+  dynamic import, cached).
+
+- **Audit *every* file in the adapter, not just `stream.ts`.** This is the one
+  rule that reliably survives the conversion and then gets violated again,
+  because a leftover value import is **invisible in development**: the repo's
+  own `node_modules` has the devDependency, so `import { query } from
+  '@qwen-code/sdk'` resolves fine locally and only fails for end users, whose
+  stack dir is the only copy. Two shipped adapters had exactly this — Qwen's
+  `stream.ts` (`query`) and OpenCode's `server.ts`
+  (`createOpencodeClient`) — both converted after the fact. A plain
+  `await import('<pkg>')` is the same bug: it resolves from the process's own
+  paths, not the stack dir. `loadEngineSdk` is the only correct seam.
+
+- **Loading is version-guarded.** `loadEngineSdk` refuses an SDK whose installed
+  version ≠ the pinned version, throwing `EngineNotReadyError`
+  (`reason: 'not-installed' | 'needs-update'`). The stream-manager surfaces that
+  message in the chat error surface, telling the user to install/update the
+  engine in Settings → Stack. Don't catch-and-swallow it — the readable message
+  is the UX.
+
+- **Detection reads the stack dir, not PATH.** `readEngineSdkVersion(pkg)` (used
+  by both `getToolStatus` in the Stack panel and every engine picker
+  `status.ts`) checks the SDK's version inside `~/.clopen/stack/engines` — there
+  is no CLI-on-PATH probe for engines anymore. `ToolStatus` also carries
+  `requiredVersion` + `needsUpdate` so the UI can show "Update required".
+
+The same lazy-load applies to the one non-adapter consumer of the Claude SDK:
+`backend/mcp/index.ts::getEnabledMcpServers()` is `async` and lazy-loads
+`@anthropic-ai/claude-agent-sdk` only on the Claude path (see
+`backend/mcp/README.md`).
+
+### 10.22 Reasoning effort — keep it native, keep it capability-driven
+
+Five of the eight engines expose a reasoning/thinking knob and **no two
+call it the same thing**: Claude has `thinking` *and* `effort`, Codex has
+`modelReasoningEffort`, Copilot has `SessionConfig.reasoningEffort`, Pi
+has `thinkingLevel`, and Cursor has no dedicated field at all — it's one
+entry in a generic `ModelSelection.params[]`. Their vocabularies don't
+line up either (`minimal` exists only on Codex; `max`/`xhigh` only on
+some Claude models; Pi's set is per-model).
+
+The obvious design — normalize everything to `low | medium | high` —
+loses information in both directions: it can't express `off`, and it
+either hides levels a model does support or offers levels it doesn't.
+So the token stays **native and opaque** end to end. `EngineQueryOptions.
+reasoningEffort` is a `string` that only the adapter which produced it
+(in its `models.ts`) knows how to read (in its `stream.ts`); the
+stream-manager, the WS layer, the session row, and the frontend all just
+carry it.
+
+Three consequences worth internalizing:
+
+**The model advertises, the UI obeys.** `EngineModel.capabilities.
+reasoningControl` (`{ levels, default }`) is the entire contract. The
+picker renders a pill when it's present and nothing when it's absent —
+which is how Qwen, OpenCode, and Cline stay knob-less without a single
+engine name appearing in the frontend. Prefer deriving the level list
+from the SDK's own payload (Copilot's `supportedReasoningEfforts`, Pi's
+`getSupportedThinkingLevels`, Cursor's `ModelParameterDefinition`) over
+hardcoding; only static catalogs (Claude, Codex) spell it out.
+
+**Clamp on the way in.** The token reaching `streamQuery` may be stale —
+persisted on a session whose model has since changed, or restored from a
+`reasoningDefaults` entry written by an older catalog. Every adapter
+validates against its own set and falls back to the engine default
+instead of forwarding garbage to the SDK (`clampThinkingLevel` for Pi, a
+literal `Set` for Claude/Codex/Copilot, a `::`-shape check for Cursor).
+
+**Encode structure in the value, not in new fields.** Cursor needs a
+parameter *id* alongside the level, so its tokens are
+`"<paramId>::<value>"` and `buildCursorModelSelection` splits them back
+apart. That keeps `EngineQueryOptions` at one string no matter how
+baroque the next SDK's knob turns out to be. Resist adding a second
+field for the sixth engine.
+
+The frontend keeps `chatModelState.reasoningEffort` at the **effective**
+level rather than "only what the user explicitly picked" — an `$effect`
+re-seeds it on every model change from `settings.reasoningDefaults[modelId]`
+→ `reasoningControl.default`, and nulls it for knob-less models. That
+costs one effect and buys two things: the value sent with the turn always
+matches what actually ran (so `MessageEngine.reasoningEffort` in the Raw
+view is truthful), and a level valid for the previous model can never
+leak into a request for the next one.

@@ -77,7 +77,10 @@ export const openCodeProviderHandler = createRouter()
 			apiUrl: t.Optional(t.String()),
 			options: t.Optional(t.String()),
 			accountName: t.String({ minLength: 1 }),
-			credential: t.String({ minLength: 1 }),
+			// Empty string allowed: custom OpenAI-compatible endpoints (e.g. a
+			// local LLM) often need no API key. The frontend still requires a
+			// credential for catalog providers via its own validation.
+			credential: t.String(),
 		}),
 		response: t.Object({
 			provider: ProviderSchema
@@ -130,6 +133,36 @@ export const openCodeProviderHandler = createRouter()
 	}, async ({ data }) => {
 		engineQueries.deleteProvider(data.id);
 		debug.log('engine', `OpenCode provider removed: ${data.id}`);
+		return { success: true };
+	})
+
+	.http('engine:opencode-provider-update', {
+		data: t.Object({
+			id: t.Number(),
+			slug: t.Optional(t.String({ minLength: 1 })),
+			name: t.Optional(t.String()),
+			apiUrl: t.Optional(t.String()),
+			options: t.Optional(t.String()),
+		}),
+		response: t.Object({ success: t.Boolean() })
+	}, async ({ data }) => {
+		if (data.options !== undefined) {
+			try { JSON.parse(data.options); } catch { throw new Error('Invalid JSON for options'); }
+		}
+		// Changing a provider's slug rewrites its identity in the generated
+		// opencode config — reject collisions so two providers can't share one.
+		if (data.slug !== undefined) {
+			const existing = engineQueries.getProviderBySlug('opencode', data.slug);
+			if (existing && existing.id !== data.id) {
+				throw new Error(`Provider "${data.slug}" already configured`);
+			}
+		}
+		engineQueries.updateProvider(data.id, {
+			slug: data.slug,
+			name: data.name,
+			apiUrl: data.apiUrl,
+			options: data.options,
+		});
 		return { success: true };
 	})
 
@@ -201,6 +234,15 @@ export const openCodeProviderHandler = createRouter()
 		return { success: true };
 	})
 
+	.http('engine:opencode-account-update-credential', {
+		// Empty string allowed — a keyless custom endpoint may clear its key.
+		data: t.Object({ accountId: t.Number(), credential: t.String() }),
+		response: t.Object({ success: t.Boolean() })
+	}, async ({ data }) => {
+		engineQueries.updateAccountCredential(data.accountId, data.credential);
+		return { success: true };
+	})
+
 	// ═══════════════════════════════════════
 	// Models.dev Catalog
 	// ═══════════════════════════════════════
@@ -248,6 +290,35 @@ export const openCodeProviderHandler = createRouter()
 	}, async () => {
 		const catalog = await fetchAndCacheModelsDevCatalog();
 		return { catalog, cachedAt: new Date().toISOString() };
+	})
+
+	// ═══════════════════════════════════════
+	// Model Discovery
+	// ═══════════════════════════════════════
+
+	.http('engine:opencode-provider-fetch-models', {
+		data: t.Object({ id: t.Number() }),
+		response: t.Object({
+			models: t.Array(t.Object({ id: t.String(), name: t.Optional(t.String()) }))
+		})
+	}, async ({ data }) => {
+		const providers = engineQueries.getProvidersWithAccounts('opencode');
+		const provider = providers.find(p => p.id === data.id);
+		if (!provider) throw new Error('Provider not found');
+		if (!provider.api_url) throw new Error('Provider has no API URL');
+
+		const baseUrl = provider.api_url.replace(/\/+$/, '');
+		const activeAccount = provider.accounts.find(a => a.is_active === 1) || provider.accounts[0];
+		const headers: Record<string, string> = { 'Content-Type': 'application/json' };
+		if (activeAccount?.credential) {
+			headers['Authorization'] = `Bearer ${activeAccount.credential}`;
+		}
+
+		const res = await fetch(`${baseUrl}/models`, { headers, signal: AbortSignal.timeout(5000) });
+		if (!res.ok) throw new Error(`HTTP ${res.status}`);
+		const body = await res.json() as { data?: { id: string; name?: string }[] };
+		const models = (body.data || []).map(m => ({ id: m.id, name: m.name }));
+		return { models };
 	})
 
 	// ═══════════════════════════════════════

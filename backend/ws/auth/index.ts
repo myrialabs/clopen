@@ -4,12 +4,14 @@ import { statusHandler } from './status';
 import { loginHandler } from './login';
 import { inviteHandler } from './invites';
 import { usersHandler } from './users';
+import { deviceHandler } from './device';
 
 export const authRouter = createRouter()
 	.merge(statusHandler)
 	.merge(loginHandler)
 	.merge(inviteHandler)
 	.merge(usersHandler)
+	.merge(deviceHandler)
 	// Declare auth:error event (emitted by auth gate in WSRouter)
 	.emit('auth:error', t.Object({
 		error: t.String(),
@@ -36,4 +38,10 @@ export const authRouter = createRouter()
 	.emit('auth:users-changed', t.Object({
 		type: t.Union([t.Literal('added'), t.Literal('removed')]),
 		userId: t.String()
+	}))
+	// Declare remote-access:changed event (emitted to a user when their Remote
+	// Access shares/devices change — device code created/claimed/revoked, session
+	// revoked — so the sidebar count and panel lists refresh in realtime).
+	.emit('remote-access:changed', t.Object({
+		kind: t.String()
 	}));

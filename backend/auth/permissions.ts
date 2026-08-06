@@ -16,6 +16,7 @@ export const PUBLIC_ROUTES = new Set([
 	'auth:auto-login-no-auth',
 	'auth:accept-invite',
 	'auth:validate-invite',
+	'auth:claim-device-code',
 	'ws:set-context'
 ]);
 
@@ -26,6 +27,8 @@ export const ADMIN_ONLY_ROUTES = new Set([
 	'auth:create-invite',
 	'auth:list-invites',
 	'auth:revoke-invite',
+	'auth:list-all-sessions',
+	'auth:revoke-any-session',
 	'auth:list-users',
 	'auth:remove-user',
 	'auth:list-user-projects',
@@ -40,12 +43,12 @@ export const ADMIN_ONLY_ROUTES = new Set([
 	'settings:update-batch',
 	'system:run-update',
 	'system:clear-data',
-	// System Tools — binary installation is an admin-only operation.
-	'system-tools:status',
-	'system-tools:status-all',
-	'system-tools:install-start',
-	'system-tools:install-cancel',
-	'system-tools:install-session',
+	// Stack — binary installation is an admin-only operation.
+	'stack:status',
+	'stack:status-all',
+	'stack:install-start',
+	'stack:install-cancel',
+	'stack:install-session',
 	// Engine — account/provider mutations are global system credentials and
 	// must only be changed by admins. Read-only routes (status, *-list) stay
 	// open so any authenticated user can see what is configured.
@@ -71,10 +74,26 @@ export const ADMIN_ONLY_ROUTES = new Set([
 	'engine:qwen-accounts-switch',
 	'engine:qwen-accounts-delete',
 	'engine:qwen-accounts-rename',
+	'engine:pi-accounts-save',
+	'engine:pi-accounts-switch',
+	'engine:pi-accounts-delete',
+	'engine:pi-accounts-rename',
+	'engine:pi-account-login-start',
+	'engine:pi-account-login-submit',
+	'engine:pi-account-login-cancel',
+	'engine:cline-accounts-save',
+	'engine:cline-accounts-switch',
+	'engine:cline-accounts-delete',
+	'engine:cline-accounts-rename',
+	'engine:cline-account-login-start',
+	'engine:cline-account-login-submit',
+	'engine:cline-account-login-cancel',
 	'engine:opencode-provider-add',
 	'engine:opencode-provider-remove',
 	'engine:opencode-provider-toggle',
+	'engine:opencode-provider-update',
 	'engine:opencode-provider-update-options',
+	'engine:opencode-provider-fetch-models',
 	'engine:opencode-account-add',
 	'engine:opencode-account-switch',
 	'engine:opencode-account-delete',
@@ -102,7 +121,7 @@ export const ADMIN_ONLY_ROUTES = new Set([
 	'tunnel:local:stop',
 	// External MCP — installing/removing servers from the official registry is a
 	// global, system-wide operation (it applies to every engine and project), so
-	// the whole surface is admin-only, mirroring System Tools and Engines.
+	// the whole surface is admin-only, mirroring Stack and Engines.
 	'mcp:catalog',
 	'mcp:list',
 	'mcp:parse-config',
@@ -120,7 +139,7 @@ export const ADMIN_ONLY_ROUTES = new Set([
 	'mcp:call-tool',
 	// Agent Skills — creating/importing/installing skills writes to the shared
 	// canonical store and applies to every engine, so the whole surface is
-	// admin-only, mirroring MCP and System Tools.
+	// admin-only, mirroring MCP and Stack.
 	'skills:list',
 	'skills:get',
 	'skills:create',

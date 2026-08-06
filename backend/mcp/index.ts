@@ -105,9 +105,9 @@ export type { ParsedMcpServer, ParsedField, ParseResult } from './external/parse
 // existing behaviour, unchanged.
 
 /** Claude Agent SDK `mcpServers`: in-process internal servers + external stdio/remote. */
-export function getEnabledMcpServers(context?: McpExecutionContext, profileFilter?: Set<string>): Record<string, McpServerConfig> {
+export async function getEnabledMcpServers(context?: McpExecutionContext, profileFilter?: Set<string>): Promise<Record<string, McpServerConfig>> {
 	return {
-		...internal.getEnabledMcpServers(context, profileFilter),
+		...(await internal.getEnabledMcpServers(context, profileFilter)),
 		...external.getClaudeExternalMcpConfig(profileFilter)
 	};
 }
@@ -133,6 +133,14 @@ export function getCopilotMcpConfig(profileFilter?: Set<string>) {
 	return {
 		...internal.getCopilotMcpConfig(profileFilter),
 		...external.getCopilotExternalMcpConfig(profileFilter)
+	};
+}
+
+/** Cursor MCP config: internal `clopen-mcp` remote bridge + external servers. */
+export function getCursorMcpConfig(profileFilter?: Set<string>) {
+	return {
+		...internal.getCursorMcpConfig(profileFilter),
+		...external.getCursorExternalMcpConfig(profileFilter)
 	};
 }
 

@@ -1,5 +1,7 @@
 <script lang="ts">
 	import { untrack } from 'svelte';
+	import { scale } from 'svelte/transition';
+	import { cubicOut } from 'svelte/easing';
 	import Icon from '$frontend/components/common/display/Icon.svelte';
 	import { projectState } from '$frontend/stores/core/projects.svelte';
 	import { sessionState } from '$frontend/stores/core/sessions.svelte';
@@ -124,7 +126,11 @@
 
 	{#if open}
 		<div class="fixed inset-0" style="z-index: 9998;" onclick={close}></div>
-		<div style={dropdownStyle} class="bg-white dark:bg-slate-800 border border-slate-200 dark:border-slate-700 rounded-lg shadow-xl overflow-hidden w-64 max-h-80 flex flex-col">
+		<div
+			style={dropdownStyle}
+			class="origin-bottom-left bg-white dark:bg-slate-800 border border-slate-200 dark:border-slate-700 rounded-lg shadow-xl overflow-hidden w-64 max-w-[calc(100vw-1.5rem)] max-h-80 flex flex-col"
+			transition:scale={{ duration: 130, easing: cubicOut, start: 0.95, opacity: 0 }}
+		>
 			<!-- Search (matches the model dropdown) -->
 			<div class="px-2 py-2 border-b border-slate-200 dark:border-slate-700 flex-shrink-0">
 				<div class="relative">

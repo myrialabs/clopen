@@ -9,8 +9,9 @@
 
 import { t } from 'elysia';
 import { createRouter } from '$shared/utils/ws-server';
-import { settingsQueries } from '../../database/queries';
+import { settingsQueries, engineQueries } from '../../database/queries';
 import { initializeEngine } from '../../engine';
+import { checkEngineSetup } from '../../engine/engine-setup';
 import { registerModels } from '$shared/constants/engines';
 import type { EngineType } from '$shared/types/unified';
 
@@ -110,11 +111,11 @@ export const crudHandler = createRouter()
 	// List available models for an engine
 	.http('models:list', {
 		data: t.Object({
-			engine: t.Union([t.Literal('claude-code'), t.Literal('opencode'), t.Literal('copilot'), t.Literal('codex'), t.Literal('qwen')])
+			engine: t.Union([t.Literal('claude-code'), t.Literal('opencode'), t.Literal('copilot'), t.Literal('codex'), t.Literal('qwen'), t.Literal('pi'), t.Literal('cline'), t.Literal('cursor')])
 		}),
 		response: t.Array(t.Object({
 			engine: t.Object({
-				type: t.Union([t.Literal('claude-code'), t.Literal('opencode'), t.Literal('copilot'), t.Literal('codex'), t.Literal('qwen')]),
+				type: t.Union([t.Literal('claude-code'), t.Literal('opencode'), t.Literal('copilot'), t.Literal('codex'), t.Literal('qwen'), t.Literal('pi'), t.Literal('cline'), t.Literal('cursor')]),
 				provider: t.String(),
 				model: t.Object({ id: t.String(), name: t.String() }),
 				account: t.Object({ id: t.Number(), name: t.String() }),
@@ -134,6 +135,14 @@ export const crudHandler = createRouter()
 		}))
 	}, async ({ data }) => {
 		const engineType: EngineType = data.engine;
+
+		// Gate on engine readiness: don't surface a catalog for an engine whose
+		// SDK isn't installed / is out of date (→ Stack), or that requires an
+		// account and has none (→ Engines). Mirrors the chat pre-stream gate so
+		// the model picker reflects the same install/sign-in state as chat.
+		const activeAccount = engineQueries.getActiveAccountForEngine(engineType);
+		const setupIssue = checkEngineSetup(engineType, activeAccount?.id ?? 0);
+		if (setupIssue) throw new Error(setupIssue.message);
 
 		// Uniform path for every engine. Each adapter's getAvailableModels()
 		// owns the catalog logic (static array or dynamic fetch); this handler

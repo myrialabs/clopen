@@ -10,8 +10,9 @@
 import { t } from 'elysia';
 import { createRouter } from '$shared/utils/ws-server';
 import { streamManager, type StreamEvent } from '../../chat/stream-manager';
-import type { EngineType } from '$shared/types/unified';
+import type { EngineType, UnifiedMessage } from '$shared/types/unified';
 import { debug } from '$shared/utils/logger';
+import { trimSubAgentForWire } from '$shared/utils/subagent-wire-trim';
 import { ws } from '$backend/utils/ws';
 import { broadcastPresence } from '../projects/status';
 import { sessionQueries, messageQueries } from '../../database/queries';
@@ -201,7 +202,7 @@ export const streamHandler = createRouter()
 			projectPath: t.String(),
 			prompt: t.Any(), // UserMessage object
 			engine: t.Object({
-				type: t.Union([t.Literal('claude-code'), t.Literal('opencode'), t.Literal('copilot'), t.Literal('codex'), t.Literal('qwen')]),
+				type: t.Union([t.Literal('claude-code'), t.Literal('opencode'), t.Literal('copilot'), t.Literal('codex'), t.Literal('qwen'), t.Literal('pi'), t.Literal('cline'), t.Literal('cursor')]),
 				provider: t.String(),
 				model: t.Object({
 					id: t.String(),
@@ -218,7 +219,10 @@ export const streamHandler = createRouter()
 			}),
 			// Active Profile for this session (null = explicit none; absent = use
 			// the project default). Persisted like engine/model.
-			profileId: t.Optional(t.Union([t.Number(), t.Null()]))
+			profileId: t.Optional(t.Union([t.Number(), t.Null()])),
+			// Reasoning/thinking level for this session (native per engine; null/
+			// absent = engine default). Persisted like engine/model.
+			reasoningEffort: t.Optional(t.Union([t.String(), t.Null()]))
 		})
 	}, async ({ data, conn }) => {
 		requireSessionAccess(conn, data.chatSessionId);
@@ -238,7 +242,8 @@ export const streamHandler = createRouter()
 				chatSessionId: data.chatSessionId,
 				engine: data.engine,
 				sender: data.sender,
-				profileId: data.profileId
+				profileId: data.profileId,
+				reasoningEffort: data.reasoningEffort
 			});
 
 			debug.log('chat', 'Stream started with ID:', streamId);
@@ -280,7 +285,7 @@ export const streamHandler = createRouter()
 						case 'message': {
 							ws.emit.chatSession(chatSessionId, 'chat:message', {
 								processId: event.processId,
-								message: event.data.message,
+								message: trimSubAgentForWire(event.data.message),
 								usage: event.data.usage,
 								timestamp: event.data.timestamp,
 								message_id: event.data.message_id,
@@ -424,7 +429,7 @@ export const streamHandler = createRouter()
 						case 'message': {
 							ws.emit.chatSession(chatSessionId, 'chat:message', {
 								processId: event.processId,
-								message: event.data.message,
+								message: trimSubAgentForWire(event.data.message),
 								usage: event.data.usage,
 								timestamp: event.data.timestamp,
 								message_id: event.data.message_id,
@@ -618,7 +623,14 @@ export const streamHandler = createRouter()
 			streamId: streamState.streamId,
 			status: streamState.status,
 			processId: streamState.processId,
-			messages: streamState.messages,
+			// Trim sub-agent noise from the catch-up buffer too (see trimSubAgentForWire).
+			// Buffer entries wrap the UnifiedMessage under `.message`; leave the rest intact.
+			messages: streamState.messages.map(entry => {
+				const wrapped = entry as { message?: UnifiedMessage };
+				return wrapped?.message
+					? { ...wrapped, message: trimSubAgentForWire(wrapped.message) }
+					: entry;
+			}),
 			currentPartialText: streamState.currentPartialText,
 			currentReasoningText: streamState.currentReasoningText,
 			error: streamState.error,
@@ -859,6 +871,33 @@ export const streamHandler = createRouter()
 		});
 	})
 
+	// Collaborative reasoning-effort sync — broadcast + persist the per-session
+	// reasoning/thinking level, mirroring chat:model-sync. Choosing a level is a
+	// per-run choice like the model/account.
+	.on('chat:reasoning-sync', {
+		data: t.Object({
+			senderId: t.String(),
+			chatSessionId: t.String(),
+			reasoningEffort: t.Union([t.String(), t.Null()])
+		})
+	}, ({ data, conn }) => {
+		requireSessionAccess(conn, data.chatSessionId);
+		const chatSessionId = data.chatSessionId;
+
+		// Persist to the session record so refreshes and late joiners get it.
+		try {
+			sessionQueries.updateReasoning(chatSessionId, data.reasoningEffort);
+		} catch (err) {
+			debug.error('chat', 'Failed to persist reasoning sync to DB:', err);
+		}
+
+		// Broadcast to all users in the same chat session
+		ws.emit.chatSession(chatSessionId, 'chat:reasoning-sync', {
+			senderId: data.senderId,
+			reasoningEffort: data.reasoningEffort
+		});
+	})
+
 	// Collaborative profile sync — broadcast + persist the per-session active
 	// profile, mirroring chat:model-sync. Non-admin: choosing a profile is a run
 	// choice like the model, not an admin mutation of the profile itself.
@@ -919,6 +958,11 @@ export const streamHandler = createRouter()
 	.emit('chat:profile-sync', t.Object({
 		senderId: t.String(),
 		profileId: t.Union([t.Number(), t.Null()])
+	}))
+
+	.emit('chat:reasoning-sync', t.Object({
+		senderId: t.String(),
+		reasoningEffort: t.Union([t.String(), t.Null()])
 	}))
 
 	.emit('chat:connection', t.Object({

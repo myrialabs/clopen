@@ -29,6 +29,7 @@
 	import { initializeNotifications, notificationStore } from '$frontend/stores/ui/notification.svelte';
 	import { applyServerSettings, loadSystemSettings } from '$frontend/stores/features/settings.svelte';
 	import { applyTodoPanelState } from '$frontend/stores/ui/todo-panel.svelte';
+	import { applyCommandUsage } from '$frontend/stores/ui/command-usage.svelte';
 	import { presenceState, initPresence } from '$frontend/stores/core/presence.svelte';
 	import { updateTitleBadge } from '$frontend/services/title.service';
 	import ws from '$frontend/utils/ws';
@@ -86,6 +87,7 @@
 				unreadSessions: any;
 				todoPanelState: any;
 				projectOrder: string[] | null;
+				commandUsage: any;
 			} | null = null;
 			try {
 				serverState = await ws.http('user:restore-state', {});
@@ -100,6 +102,7 @@
 				applyServerSettings(serverState.settings);
 			}
 			applyTodoPanelState(serverState?.todoPanelState);
+			applyCommandUsage(serverState?.commandUsage);
 			restoreLastView(serverState?.lastView);
 			restoreUnreadSessions(serverState?.unreadSessions);
 			restoreProjectOrder(serverState?.projectOrder);

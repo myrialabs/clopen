@@ -6,7 +6,7 @@
  * instance, the `Thread` lifecycle, and an `AbortController` for cancellation.
  *
  * Auth: dual mode (API key + ChatGPT browser OAuth). See ./auth.ts and
- * backend/engine/README.md §9.13 for the auth-blob swap pattern.
+ * backend/engine/README.md §10.13 for the auth-blob swap pattern.
  *
  * MCP: reuses the existing remote MCP HTTP server at /mcp via
  * getCodexMcpConfig() in backend/mcp/config.ts. No new MCP infrastructure.
@@ -19,7 +19,8 @@
  * `backend/ws/chat/stream.ts` to it — same pattern as Claude/OpenCode.
  */
 
-import { Codex, type Thread, type ThreadOptions, type Input as CodexInput } from '@openai/codex-sdk';
+import type { Codex, Thread, ThreadOptions, Input as CodexInput, ModelReasoningEffort } from '@openai/codex-sdk';
+import { loadEngineSdk } from '$backend/engine/sdk-loader';
 import type { EngineOutput, EngineModel } from '$shared/types/unified';
 import type { AIEngine, EngineQueryOptions, StructuredGenerationOptions } from '../../types';
 import { extractJson } from '../../structured-helpers';
@@ -119,6 +120,7 @@ export class CodexEngine implements AIEngine {
 		// The SDK does NOT inherit process.env when `env` is provided, so we
 		// pass the full clean spawn env and layer CODEX_HOME on top to redirect
 		// the subprocess's auth.json + sessions into Clopen's isolated dir.
+		const { Codex } = await loadEngineSdk<typeof import('@openai/codex-sdk')>('codex', '@openai/codex-sdk');
 		this.codex = new Codex({
 			apiKey: credential.kind === 'api_key' ? credential.apiKey : undefined,
 			...(codexBinary ? { codexPathOverride: codexBinary } : {}),
@@ -149,7 +151,14 @@ export class CodexEngine implements AIEngine {
 	}
 
 	async *streamQuery(options: EngineQueryOptions): AsyncGenerator<EngineOutput, void, unknown> {
-		const { projectPath, prompt, resume, modelId, abortController, accountId } = options;
+		const { projectPath, prompt, resume, modelId, reasoningEffort, abortController, accountId } = options;
+
+		// Codex's reasoning knob (`minimal | low | medium | high | xhigh`); default
+		// medium when unset or an unsupported token slips through.
+		const codexEfforts = new Set<string>(['minimal', 'low', 'medium', 'high', 'xhigh']);
+		const modelReasoningEffort: ModelReasoningEffort = reasoningEffort && codexEfforts.has(reasoningEffort)
+			? reasoningEffort as ModelReasoningEffort
+			: 'medium';
 
 		// Active Profile for this stream — scopes the materialized artifact set AND
 		// (below) the MCP connector set baked into the Codex client.
@@ -198,7 +207,7 @@ export class CodexEngine implements AIEngine {
 			skipGitRepoCheck: true,
 			sandboxMode: 'danger-full-access',
 			approvalPolicy: 'never',
-			modelReasoningEffort: 'medium',
+			modelReasoningEffort,
 			webSearchMode: 'cached',
 			webSearchEnabled: true,
 		};
@@ -208,7 +217,7 @@ export class CodexEngine implements AIEngine {
 
 			if (resume) {
 				// Fork-by-copy on EVERY resume — same semantics as Copilot
-				// (README §9.10 sharp edge: never gate on options.forkSession).
+				// (README §10.10 sharp edge: never gate on options.forkSession).
 				let resumeId = resume;
 				if (sessionStateExists(resume)) {
 					const forkId = crypto.randomUUID();
@@ -279,7 +288,7 @@ export class CodexEngine implements AIEngine {
 			handleStreamError(error);
 		} finally {
 			// Snapshot the (possibly token-refreshed) auth.json back to DB so
-			// refreshes survive across account switches (README §9.13 step 4).
+			// refreshes survive across account switches (README §10.13 step 4).
 			try {
 				snapshotAuthJsonToActiveAccount();
 			} catch (snapshotErr) {

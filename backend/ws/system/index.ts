@@ -10,9 +10,11 @@
 import { createRouter } from '$shared/utils/ws-server';
 import { t } from 'elysia';
 import { operationsHandler } from './operations';
+import { deviceInfoHandler } from './device-info';
 
 export const systemRouter = createRouter()
 	.merge(operationsHandler)
+	.merge(deviceInfoHandler)
 	// Declare system:update-completed event (broadcast after successful package update)
 	.emit('system:update-completed', t.Object({
 		fromVersion: t.String(),

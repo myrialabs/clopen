@@ -6,9 +6,9 @@
 	import { presenceState, getProjectStatusColor } from '$frontend/stores/core/presence.svelte';
 	import { openSettingsModal } from '$frontend/stores/ui/settings-modal.svelte';
 	import { addNotification } from '$frontend/stores/ui/notification.svelte';
-	import TunnelButton from '$frontend/components/tunnel/TunnelButton.svelte';
+	import ToolsMenu from '$frontend/components/workspace/ToolsMenu.svelte';
 	import TunnelModal from '$frontend/components/tunnel/TunnelModal.svelte';
-	import DbClientButton from '$frontend/components/db-client/DbClientButton.svelte';
+	import RemoteAccessPanel from '$frontend/components/remote-access/RemoteAccessPanel.svelte';
 	import DbClientModal from '$frontend/components/db-client/DbClientModal.svelte';
 	import SettingButton from '$frontend/components/settings/SettingButton.svelte';
 	import type { Project } from '$shared/types/database/schema';
@@ -17,14 +17,21 @@
 	import { authStore } from '$frontend/stores/features/auth.svelte';
 	import ws from '$frontend/utils/ws';
 	import { debug } from '$shared/utils/logger';
-
-	// Modal states
-	let showTunnelModal = $state(false);
-	let showDbClientModal = $state(false);
+	import {
+		quickPanelsState,
+		openNewProjectDialog,
+		closeNewProjectDialog,
+		openRemoteAccessDialog,
+		closeRemoteAccessDialog,
+		openTunnelDialog,
+		closeTunnelDialog,
+		openDbClientDialog,
+		closeDbClientDialog
+	} from '$frontend/stores/ui/quick-panels.svelte';
+	import { openCommandPalette } from '$frontend/stores/ui/command-palette.svelte';
 
 	// Project dropdown state
 	let showProjectMenu = $state(false);
-	let showFolderBrowser = $state(false);
 	let showDeleteDialog = $state(false);
 	let projectToDelete = $state<Project | null>(null);
 	let searchQuery = $state('');
@@ -58,11 +65,7 @@
 
 	function openAddProject() {
 		showProjectMenu = false;
-		showFolderBrowser = true;
-	}
-
-	function closeFolderBrowser() {
-		showFolderBrowser = false;
+		openNewProjectDialog();
 	}
 
 	function closeProjectMenu() {
@@ -108,7 +111,7 @@
 
 	async function createProjectFromFolder(folderPath: string, folderName: string) {
 		try {
-			showFolderBrowser = false;
+			closeNewProjectDialog();
 
 			const projects = await ws.http('projects:list', {});
 
@@ -161,11 +164,25 @@
 		role="tablist"
 		aria-label="Action Buttons"
 	>
-		<!-- Tunnel Button -->
-		<TunnelButton collapsed={true} onClick={() => (showTunnelModal = true)} mobile={true} />
+		<!-- Tools (Remote Access, Public Tunnel, DB Client) -->
+		<ToolsMenu
+			collapsed={true}
+			mobile={true}
+			onRemoteAccess={openRemoteAccessDialog}
+			onPublicTunnel={openTunnelDialog}
+			onDbClient={openDbClientDialog}
+		/>
 
-		<!-- DB Client Button -->
-		<DbClientButton collapsed={true} onClick={() => (showDbClientModal = true)} mobile={true} />
+		<!-- Quick Search Button -->
+		<button
+			type="button"
+			class="flex items-center justify-center w-9 h-8 bg-transparent border-none rounded-md text-slate-500 cursor-pointer transition-all duration-150 active:bg-violet-500/10"
+			onclick={openCommandPalette}
+			aria-label="Quick search"
+			title="Quick search"
+		>
+			<Icon name="lucide:search" class="w-4.5 h-4.5" />
+		</button>
 
 		<!-- Settings Button -->
 		<SettingButton collapsed={true} mobile={true} onClick={() => openSettingsModal()} />
@@ -331,8 +348,8 @@
 
 <!-- Folder Browser -->
 <FolderBrowser
-	bind:isOpen={showFolderBrowser}
-	onClose={closeFolderBrowser}
+	bind:isOpen={quickPanelsState.newProjectOpen}
+	onClose={closeNewProjectDialog}
 	onSelect={createProjectFromFolder}
 />
 
@@ -391,7 +408,9 @@
 </Dialog>
 
 <!-- Tunnel Modal -->
-<TunnelModal bind:isOpen={showTunnelModal} onClose={() => (showTunnelModal = false)} />
+<RemoteAccessPanel bind:isOpen={quickPanelsState.remoteAccessOpen} onClose={closeRemoteAccessDialog} />
+
+<TunnelModal bind:isOpen={quickPanelsState.tunnelOpen} onClose={closeTunnelDialog} />
 
 <!-- DB Client Modal -->
-<DbClientModal bind:isOpen={showDbClientModal} onClose={() => (showDbClientModal = false)} />
+<DbClientModal bind:isOpen={quickPanelsState.dbClientOpen} onClose={closeDbClientDialog} />

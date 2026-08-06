@@ -31,7 +31,7 @@
 	);
 
 	const barColor = $derived.by(() => {
-		if (!usage) return 'bg-slate-400';
+		if (!usage || usage.unknown) return 'bg-slate-400';
 		if (usage.percentage >= 90) return 'bg-red-500';
 		if (usage.percentage >= 80) return 'bg-amber-500';
 		if (usage.percentage >= 60) return 'bg-yellow-500';
@@ -40,7 +40,7 @@
 
 	// Stroke variant of the threshold color for the compact ring gauge
 	const ringColor = $derived.by(() => {
-		if (!usage) return 'stroke-slate-400';
+		if (!usage || usage.unknown) return 'stroke-slate-400';
 		if (usage.percentage >= 90) return 'stroke-red-500';
 		if (usage.percentage >= 80) return 'stroke-amber-500';
 		if (usage.percentage >= 60) return 'stroke-yellow-500';
@@ -50,11 +50,11 @@
 	// Ring geometry — radius 8 in a 20x20 viewBox
 	const RING_CIRCUMFERENCE = 2 * Math.PI * 8;
 	const ringOffset = $derived(
-		usage ? RING_CIRCUMFERENCE * (1 - Math.min(usage.percentage, 100) / 100) : RING_CIRCUMFERENCE
+		usage && !usage.unknown ? RING_CIRCUMFERENCE * (1 - Math.min(usage.percentage, 100) / 100) : RING_CIRCUMFERENCE
 	);
 
 	const textColor = $derived.by(() => {
-		if (!usage) return 'text-slate-400';
+		if (!usage || usage.unknown) return 'text-slate-400';
 		if (usage.percentage >= 90) return 'text-red-500';
 		if (usage.percentage >= 80) return 'text-amber-500';
 		if (usage.percentage >= 60) return 'text-yellow-500';
@@ -101,7 +101,7 @@
 			type="button"
 			class="flex items-center justify-center px-2 @max-[26rem]:px-0 {isMobile ? 'h-8 @max-[26rem]:w-9' : 'h-6 @max-[26rem]:w-7'} bg-transparent border-none rounded-md text-slate-500 cursor-pointer transition-all duration-150 hover:bg-violet-500/10 hover:text-slate-900 dark:hover:text-slate-100 group"
 			onclick={togglePopover}
-			title="Context: {formatTokens(usage.current)} / {formatTokens(usage.max)} ({Math.round(usage.percentage)}%)"
+			title={usage.unknown ? `Context: ${formatTokens(usage.current)} used / max unknown for this model` : `Context: ${formatTokens(usage.current)} / ${formatTokens(usage.max)} (${Math.round(usage.percentage)}%)`}
 		>
 			<div class="flex items-center gap-1.5">
 				<!-- Default: linear bar + %. Collapses to a ring-only when the panel/dock is narrow (container query on PanelHeader). -->
@@ -109,11 +109,11 @@
 					<div class="{isMobile ? 'w-14' : 'w-12'} h-2 bg-slate-200 dark:bg-slate-700 rounded-full overflow-hidden">
 						<div
 							class="{barColor} h-full transition-all duration-500"
-							style="width: {Math.min(usage.percentage, 100)}%"
+							style="width: {usage.unknown ? 0 : Math.min(usage.percentage, 100)}%"
 						></div>
 					</div>
 					<span class="text-2xs font-medium {textColor} tabular-nums group-hover:text-slate-900 dark:group-hover:text-slate-100 transition-colors">
-						{Math.round(usage.percentage)}%
+						{usage.unknown ? '?' : `${Math.round(usage.percentage)}%`}
 					</span>
 				</div>
 
@@ -147,19 +147,31 @@
 					<span class="text-xs font-semibold text-slate-900 dark:text-slate-100">Context Window</span>
 				</div>
 
-				<!-- Progress bar (larger) -->
-				<div class="mb-3">
-					<div class="w-full h-2.5 bg-slate-200 dark:bg-slate-700 rounded-full overflow-hidden">
-						<div
-							class="{barColor} h-full transition-all duration-500"
-							style="width: {Math.min(usage.percentage, 100)}%"
-						></div>
+				<!-- Progress bar (larger) — or an "unknown" note when the model has no max -->
+				{#if usage.unknown}
+					<div class="mb-3">
+						<div class="flex justify-between items-center">
+							<span class="text-2xs text-slate-500">{formatTokens(usage.current)} used</span>
+							<span class="text-2xs text-slate-500">max: <span class="font-semibold text-slate-400">?</span></span>
+						</div>
+						<p class="text-2xs text-slate-400 dark:text-slate-500 mt-1.5 leading-snug">
+							This model doesn't report a maximum context window, so usage can't be shown as a percentage.
+						</p>
 					</div>
-					<div class="flex justify-between mt-1.5">
-						<span class="text-2xs text-slate-500">{formatTokens(usage.current)} used</span>
-						<span class="text-2xs text-slate-500">{formatTokens(usage.max)} max</span>
+				{:else}
+					<div class="mb-3">
+						<div class="w-full h-2.5 bg-slate-200 dark:bg-slate-700 rounded-full overflow-hidden">
+							<div
+								class="{barColor} h-full transition-all duration-500"
+								style="width: {Math.min(usage.percentage, 100)}%"
+							></div>
+						</div>
+						<div class="flex justify-between mt-1.5">
+							<span class="text-2xs text-slate-500">{formatTokens(usage.current)} used</span>
+							<span class="text-2xs text-slate-500">{formatTokens(usage.max)} max</span>
+						</div>
 					</div>
-				</div>
+				{/if}
 
 				<!-- Token breakdown -->
 				{#if lastUsage}
@@ -203,15 +215,17 @@
 					</div>
 				{/if}
 
-				<!-- Remaining -->
-				<div class="border-t border-slate-200 dark:border-slate-700 pt-2.5 mt-2.5">
-					<div class="flex justify-between items-center">
-						<span class="text-2xs font-medium text-slate-600 dark:text-slate-400">Remaining</span>
-						<span class="text-2xs font-mono font-semibold {textColor}">
-							{formatTokens(Math.max(0, usage.max - usage.current))} tokens
-						</span>
+				<!-- Remaining (only when the max is known) -->
+				{#if !usage.unknown}
+					<div class="border-t border-slate-200 dark:border-slate-700 pt-2.5 mt-2.5">
+						<div class="flex justify-between items-center">
+							<span class="text-2xs font-medium text-slate-600 dark:text-slate-400">Remaining</span>
+							<span class="text-2xs font-mono font-semibold {textColor}">
+								{formatTokens(Math.max(0, usage.max - usage.current))} tokens
+							</span>
+						</div>
 					</div>
-				</div>
+				{/if}
 			</div>
 		{/if}
 	</div>

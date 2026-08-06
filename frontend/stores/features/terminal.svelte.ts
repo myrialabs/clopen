@@ -133,6 +133,25 @@ export const terminalStore = {
 		return sessionId;
 	},
 
+	/**
+	 * Move a session so it sits where `targetSessionId` currently is.
+	 *
+	 * Tab order is user-arranged state, so the reorder mutates the session list
+	 * itself rather than being a render-time sort.
+	 */
+	reorderSession(sessionId: string, targetSessionId: string): void {
+		if (sessionId === targetSessionId) return;
+
+		const from = terminalState.sessions.findIndex((session) => session.id === sessionId);
+		const to = terminalState.sessions.findIndex((session) => session.id === targetSessionId);
+		if (from === -1 || to === -1) return;
+
+		const next = [...terminalState.sessions];
+		const [moved] = next.splice(from, 1);
+		next.splice(to, 0, moved);
+		terminalState.sessions = next;
+	},
+
 	switchToSession(sessionId: string): void {
 		// Check for duplicates before switching
 		const uniqueIds = new Set<string>();

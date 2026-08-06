@@ -11,6 +11,33 @@ import type { MessageEngine } from './message';
 // Re-export EngineType from common (canonical source)
 export type { EngineType } from './common';
 
+/**
+ * One selectable reasoning/thinking level for a model.
+ *
+ * `value` is the opaque wire token handed back to the engine adapter (usually a
+ * native SDK level like `'medium'` or `'high'`; for Cursor it encodes the
+ * model-parameter id as `"<paramId>::<value>"` so the adapter can rebuild a
+ * `ModelSelection.params` entry). `label` is the human-facing text.
+ */
+export interface ReasoningOption {
+	value: string;
+	label: string;
+}
+
+/**
+ * Per-model reasoning/thinking-effort control. Present ONLY on models whose
+ * engine exposes a runtime knob (Claude `effort`/`thinking`, Codex
+ * `modelReasoningEffort`, Pi `thinkingLevel`, Copilot `reasoningEffort`, Cursor
+ * model params). Absent → the UI hides the selector and the engine's own
+ * default applies. Levels are native per engine (no cross-engine normalization).
+ */
+export interface ReasoningControl {
+	/** Selectable levels, ordered low → high. */
+	levels: ReasoningOption[];
+	/** The value applied when the user hasn't chosen one (mirrors the engine default). */
+	default: string;
+}
+
 // Engine model definition
 export interface EngineModel {
 	engine: MessageEngine;
@@ -42,6 +69,12 @@ export interface EngineModel {
 		tools: boolean;
 		structuredOutput: boolean;
 		/**
+		 * Runtime reasoning-effort control for this model, when the engine exposes
+		 * one. Undefined → no selector (engine default applies). See
+		 * {@link ReasoningControl}.
+		 */
+		reasoningControl?: ReasoningControl;
+		/**
 		 * Auth modes the model is compatible with. Models that require a
 		 * ChatGPT (OAuth) login are flagged `'chatgpt'`; models that only
 		 * accept API keys are flagged `'api_key'`. Models compatible with
@@ -61,7 +94,7 @@ export interface EngineModel {
 
 // Engine metadata for UI display
 export interface EngineInfo {
-	type: 'claude-code' | 'opencode' | 'copilot' | 'codex' | 'qwen';
+	type: 'claude-code' | 'opencode' | 'copilot' | 'codex' | 'qwen' | 'pi' | 'cline' | 'cursor';
 	name: string;
 	description: string;
 	icon: {
@@ -86,4 +119,85 @@ export interface QwenProviderPreset {
 	name: string;
 	defaultBaseUrl: string;
 	docsUrl?: string;
+}
+
+// ── Pi provider presets (wire format for `engine:pi-presets-list`) ──
+//
+// Pi is genuinely multi-provider (Anthropic, OpenAI, Google, OpenRouter, xAI …).
+// Each provider supports API-key auth, OAuth (subscription) auth, or both. The
+// preset catalog is exposed to the login picker so the frontend can render the
+// right flow per provider without importing `$backend`. Runtime values live in
+// `backend/engine/adapters/pi/presets.ts`.
+
+export type PiAuthMode = 'api_key' | 'oauth';
+
+/**
+ * One credential input a provider needs, shown up-front in the account form
+ * (OpenCode-style). `role: 'key'` maps to the pi-ai `ApiKeyCredential.key`;
+ * `role: 'env'` maps to `credential.env[key]` (provider-scoped config such as
+ * `CLOUDFLARE_ACCOUNT_ID`).
+ */
+export interface PiCredentialField {
+	key: string;
+	label: string;
+	secret: boolean;
+	role: 'key' | 'env';
+	placeholder?: string;
+}
+
+export interface PiProviderPreset {
+	/** Provider id as pi-ai knows it (e.g. 'anthropic', 'openai', 'google'). */
+	id: string;
+	/** Human-facing provider name. */
+	name: string;
+	/** Which auth flows this provider supports. */
+	authModes: PiAuthMode[];
+	/** API-key credential fields to render (present when `authModes` includes 'api_key'). */
+	fields?: PiCredentialField[];
+	/** Label shown for the OAuth (subscription) option, when applicable. */
+	oauthLabel?: string;
+	/** Where to obtain an API key. */
+	apiKeyUrl?: string;
+}
+
+// ── Cline provider presets (wire format for `engine:cline-presets-list`) ──
+//
+// Cline (`@cline/sdk`) is genuinely multi-provider (Anthropic, OpenAI, Google,
+// Bedrock, Mistral, the Cline account, OpenAI-compatible …). Each provider is
+// either API-key based or OAuth based (the Cline account uses WorkOS OAuth). The
+// preset catalog is exposed to the login picker so the frontend renders the
+// right flow per provider without importing `$backend`. Runtime values live in
+// `backend/engine/adapters/cline/presets.ts`, derived from the SDK catalog +
+// `getProviderConfigFields`.
+
+export type ClineAuthMode = 'api_key' | 'oauth';
+
+/**
+ * One credential input a Cline provider needs, shown up-front in the account
+ * form (OpenCode/Pi-style). `role: 'apiKey'` maps to the provider api key;
+ * `role: 'baseUrl'` maps to a custom base URL; `role: 'field'` maps to an extra
+ * provider-scoped field (AWS region, GCP project id, …).
+ */
+export interface ClineCredentialField {
+	key: string;
+	label: string;
+	secret: boolean;
+	role: 'apiKey' | 'baseUrl' | 'field';
+	placeholder?: string;
+	optional?: boolean;
+}
+
+export interface ClineProviderPreset {
+	/** Provider id as the Cline SDK knows it (e.g. 'anthropic', 'openai', 'cline'). */
+	id: string;
+	/** Human-facing provider name. */
+	name: string;
+	/** Which auth flows this provider supports. */
+	authModes: ClineAuthMode[];
+	/** API-key credential fields to render (present when `authModes` includes 'api_key'). */
+	fields?: ClineCredentialField[];
+	/** Label shown for the OAuth (sign-in) option, when applicable. */
+	oauthLabel?: string;
+	/** Where to obtain an API key. */
+	apiKeyUrl?: string;
 }

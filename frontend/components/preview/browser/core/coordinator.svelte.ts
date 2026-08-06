@@ -19,11 +19,19 @@ import {
 import { browserCleanup } from './cleanup.svelte';
 import { sendInteraction, updateViewport, setInteractionProjectId } from './interactions.svelte';
 import { previewTabManager } from '$frontend/stores/features/preview-tabs-workspace.svelte';
-import type { BrowserSelectInfo, BrowserContextMenuInfo } from '$frontend/utils/native-ui';
+import type {
+	BrowserSelectInfo,
+	BrowserContextMenuInfo,
+	BrowserDialogEvent,
+	BrowserNativePickerInfo
+} from '$frontend/utils/native-ui';
 
 export interface BrowserCoordinatorConfig {
 	// Project ID getter (REQUIRED for project isolation)
 	projectId: () => string;
+
+	/** The one live canvas API, or null before Canvas mounts. */
+	canvasAPI?: () => any | null;
 
 	// Callbacks from parent component
 	onUrlChange?: (url: string) => void;
@@ -35,10 +43,14 @@ export interface BrowserCoordinatorConfig {
 	// UI state callbacks
 	onSelectOpen?: (selectInfo: BrowserSelectInfo) => void;
 	onContextMenuOpen?: (menuInfo: BrowserContextMenuInfo) => void;
+	onNativePickerOpen?: (picker: BrowserNativePickerInfo) => void;
+	onDialogOpen?: (dialog: BrowserDialogEvent) => void;
+	/** A dialog is settled — answered here, answered elsewhere, or expired. */
+	onDialogClose?: (closed?: { sessionId: string; dialogId: string }) => void;
+	onOpenInspector?: () => void;
+	onOpenUrlInHostBrowser?: (url: string) => void;
 	onVirtualCursorUpdate?: (x: number, y: number, clicking?: boolean) => void;
 	onVirtualCursorHide?: () => void;
-	onMcpCursorUpdate?: (x: number, y: number, clicking?: boolean) => void;
-	onMcpCursorHide?: () => void;
 
 	// Coordinate transformation
 	transformBrowserToDisplayCoordinates?: (x: number, y: number) => { x: number, y: number } | null;
@@ -50,6 +62,7 @@ export interface BrowserCoordinatorConfig {
 export function createBrowserCoordinator(config: BrowserCoordinatorConfig) {
 	const {
 		projectId: getProjectId,
+		canvasAPI: getCanvasAPI,
 		onUrlChange,
 		onUrlInputChange,
 		onSessionChange,
@@ -57,10 +70,13 @@ export function createBrowserCoordinator(config: BrowserCoordinatorConfig) {
 		onErrorChange,
 		onSelectOpen,
 		onContextMenuOpen,
+		onNativePickerOpen,
+		onDialogOpen,
+		onDialogClose,
+		onOpenInspector,
+		onOpenUrlInHostBrowser,
 		onVirtualCursorUpdate,
 		onVirtualCursorHide,
-		onMcpCursorUpdate,
-		onMcpCursorHide,
 		transformBrowserToDisplayCoordinates
 	} = config;
 
@@ -88,6 +104,7 @@ export function createBrowserCoordinator(config: BrowserCoordinatorConfig) {
 	// Create stream handler
 	const streamHandler = createStreamMessageHandler({
 		tabManager,
+		getCanvasAPI,
 		onNavigationUpdate: (tabId, url) => {
 			// Only notify parent if this is the active tab
 			if (tabId === tabManager.activeTabId) {
@@ -100,11 +117,6 @@ export function createBrowserCoordinator(config: BrowserCoordinatorConfig) {
 				onVirtualCursorUpdate(x, y, clicking);
 			}
 		},
-		onTestCompleted: () => {
-			if (onVirtualCursorHide) {
-				onVirtualCursorHide();
-			}
-		},
 		transformBrowserToDisplayCoordinates
 	});
 
@@ -114,6 +126,11 @@ export function createBrowserCoordinator(config: BrowserCoordinatorConfig) {
 		transformBrowserToDisplayCoordinates,
 		onSelectOpen,
 		onContextMenuOpen,
+		onNativePickerOpen,
+		onDialogOpen,
+		onDialogClose,
+		onOpenInspector,
+		onOpenUrlInHostBrowser,
 		onOpenUrlNewTab: (url) => {
 			createNewTab(url);
 		}
@@ -122,17 +139,6 @@ export function createBrowserCoordinator(config: BrowserCoordinatorConfig) {
 	// Create MCP handler
 	const mcpHandler = createMcpHandler({
 		tabManager,
-		transformBrowserToDisplayCoordinates,
-		onCursorUpdate: (x, y, clicking) => {
-			if (onMcpCursorUpdate) {
-				onMcpCursorUpdate(x, y, clicking);
-			}
-		},
-		onCursorHide: () => {
-			if (onMcpCursorHide) {
-				onMcpCursorHide();
-			}
-		},
 		onLaunchRequest: (url, deviceSize, rotation, sessionId) => {
 			handleMcpLaunchRequest(url, deviceSize, rotation, sessionId);
 		}
@@ -149,6 +155,16 @@ export function createBrowserCoordinator(config: BrowserCoordinatorConfig) {
 		const tab = tabManager.getTab(tabId);
 		if (!tab || !tabUrl) {
 			debug.error('preview', `❌ Tab not found or no URL: ${tabId}`);
+			return;
+		}
+
+		// A new tab reaches here twice: `createNewTab` schedules a launch, and
+		// setting the URL also trips BrowserPreview's URL watcher. Both used to
+		// run, opening two backend tabs for one link — one of which the dock could
+		// not attach to the frontend tab, so it rendered blank and took its twin
+		// down with it when closed.
+		if (tab.isLaunchingBrowser || tab.sessionId) {
+			debug.log('preview', `⏭️ Launch skipped for ${tabId} — already ${tab.sessionId ? 'attached' : 'launching'}`);
 			return;
 		}
 
@@ -172,7 +188,6 @@ export function createBrowserCoordinator(config: BrowserCoordinatorConfig) {
 					sessionId: result.sessionId,
 					sessionInfo: result.sessionInfo,
 					url: actualUrl,
-					lastFrameData: null,
 					errorMessage: null
 				});
 

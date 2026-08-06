@@ -11,6 +11,7 @@
  */
 
 import { initializeEngine } from '$backend/engine';
+import { resolveGenerationTarget } from '$backend/engine/resolve-model';
 import { getClopenDir } from '$backend/utils/paths';
 import type { EngineType } from '$shared/types/unified';
 import { debug } from '$shared/utils/logger';
@@ -69,7 +70,8 @@ const GUIDANCE: Record<GeneratableType, string> = {
 
 export interface GenerateModel {
 	engine: EngineType;
-	providerSlug: string;
+	/** Hint only — the provider is re-derived from the engine catalog. */
+	providerSlug?: string;
 	modelId: string;
 	/** Optional cwd for the engine process; defaults to the Clopen data dir. */
 	projectPath?: string;
@@ -92,14 +94,18 @@ ${purpose.trim()}
 
 Always write the draft in English, regardless of the language of the purpose. Be specific and immediately usable.`;
 
-	debug.log('artifacts', `✨ Generating ${type} draft via ${model.engine}/${model.modelId}`);
+	// The caller's providerSlug/account can be stale (see resolve-model.ts).
+	const target = await resolveGenerationTarget(engine, model.modelId, model.providerSlug);
+	const accountId = model.accountId ?? target.accountId;
+
+	debug.log('artifacts', `✨ Generating ${type} draft via ${model.engine}/${target.providerSlug}/${target.modelId}`);
 
 	return engine.generateStructured<Record<string, unknown>>({
 		prompt,
-		providerSlug: model.providerSlug,
-		modelId: model.modelId,
+		providerSlug: target.providerSlug,
+		modelId: target.modelId,
 		schema: SCHEMAS[type],
 		projectPath: model.projectPath || getClopenDir(),
-		accountId: model.accountId
+		...(accountId != null && { accountId })
 	});
 }

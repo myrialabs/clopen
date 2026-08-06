@@ -91,12 +91,12 @@ getProvidersWithAccounts(engineType?) // join used by endpoint listing
   and constructs a fresh `CopilotClient({ gitHubToken: account.credential })`.
   The Copilot SDK takes the token at **client construction time**, so a
   per-stream account switch requires `dispose()` + `initialize(newId)` —
-  see `streamQuery` in `copilot/stream.ts` and §9.9 below.
+  see `streamQuery` in `copilot/stream.ts` and §10.9 below.
 
 > **Pattern: auth-blob materialization for shared CLI dotfiles.**
 > Some CLIs (e.g. Codex's `auth.json`) read credentials from a fixed
 > filename inside their home dir. That home dir is isolated to
-> `{clopenDir}/engine/codex/user/` (via `CODEX_HOME` — see §9.19), but it is a
+> `{clopenDir}/engine/codex/user/` (via `CODEX_HOME` — see §10.19), but it is a
 > **single** dir shared by all of the engine's Clopen accounts, so the
 > dotfile inside it still has to be swapped per account. For those engines,
 > `credential` stores the **whole file content** as a JSON wrapper
@@ -105,8 +105,8 @@ getProvidersWithAccounts(engineType?) // join used by endpoint listing
 > each stream, snapshot the (possibly-refreshed-by-the-CLI) dotfile back
 > into `engine_accounts.credential` so token refreshes survive across
 > account switches. This keeps multi-account support working **without**
-> per-account `XYZ_HOME` directories — see §9.13 for the rationale, and
-> §9.19 for the Clopen-vs-global home-dir isolation.
+> per-account `XYZ_HOME` directories — see §10.13 for the rationale, and
+> §10.19 for the Clopen-vs-global home-dir isolation.
 
 ### 3.4 The models.dev catalog (OpenCode-specific)
 

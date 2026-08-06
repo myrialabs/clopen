@@ -1,7 +1,7 @@
 <script lang="ts">
 	import type { ToolUseBlock, ListInput } from '$shared/types/unified';
 	import { InfoLine } from './components';
-	import TextMessage from '../../../formatters/TextMessage.svelte';
+	import CodeBlock from './components/CodeBlock.svelte';
 
 	const { toolInput }: { toolInput: ToolUseBlock } = $props();
 	const input = $derived(toolInput.input as ListInput);
@@ -32,7 +32,7 @@
 </div>
 
 {#if result?.content}
-	<div class="mt-4 bg-white dark:bg-slate-800 rounded-md border border-slate-200/60 dark:border-slate-700/60 p-3">
-		<TextMessage content={typeof result.content === 'string' ? result.content : JSON.stringify(result.content)} />
+	<div class="mt-4">
+		<CodeBlock code={typeof result.content === 'string' ? result.content : JSON.stringify(result.content)} type="neutral" label="Contents" />
 	</div>
 {/if}

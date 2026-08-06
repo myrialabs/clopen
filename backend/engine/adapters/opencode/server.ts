@@ -25,10 +25,11 @@ import { join } from 'path';
 import type { OpencodeClient } from '@opencode-ai/sdk';
 import type { Subprocess } from 'bun';
 import { getOpenCodeMcpConfig } from '../../../mcp';
-import { settingsQueries } from '../../../database/queries';
-import { generateOpenCodeProviderConfig } from './config';
+import { engineQueries, settingsQueries } from '../../../database/queries';
+import { generateOpenCodeProviderConfig, parseCredentialMap } from './config';
 import type { OpenCodeInlineAgent } from '$backend/subagents';
 import { resolveBinaryWithRefresh } from '$backend/utils/cli';
+import { loadEngineSdk } from '$backend/engine/sdk-loader';
 import { getEngineUserConfigDir } from '$backend/utils/paths';
 import { debug } from '$shared/utils/logger';
 
@@ -195,6 +196,114 @@ async function spawnServer(key: string, spec: ServerConfigSpec): Promise<ServerI
 	if (Object.keys(mcpConfig).length > 0) mergedConfig.mcp = mcpConfig;
 	if (providerConfig.enabledProviders.length > 0) mergedConfig.enabled_providers = providerConfig.enabledProviders;
 	if (spec.inlineAgents && Object.keys(spec.inlineAgents).length > 0) mergedConfig.agent = spec.inlineAgents;
+
+	// Inject provider definitions for custom OpenAI-compatible providers
+	// (those with api_url set). Unlike models.dev catalog providers, custom
+	// providers need their npm + baseURL passed explicitly so the opencode
+	// server can discover models from their /v1/models endpoint.
+	const providerSection: Record<string, unknown> = {};
+	const opencodeProviders = engineQueries.getEnabledProviders('opencode');
+	for (const provider of opencodeProviders) {
+		if (!provider.api_url) continue;
+
+		// Resolve the active account's credential so we can (a) authenticate the
+		// endpoint and (b) substitute `${VAR}` placeholders in the base URL.
+		// Multi-secret providers (e.g. Cloudflare Workers AI, whose URL embeds
+		// ${CLOUDFLARE_ACCOUNT_ID} and whose bearer is CLOUDFLARE_API_KEY) store
+		// every secret as a JSON bundle; single-key providers store a raw string.
+		const activeAccount = engineQueries.getActiveAccount(provider.id);
+		let baseURL = provider.api_url;
+		let apiKey: string | undefined;
+		if (activeAccount?.credential) {
+			const credMap = parseCredentialMap(activeAccount.credential);
+			if (credMap) {
+				baseURL = baseURL.replace(/\$\{(\w+)\}/g, (_m, name) => credMap[name] ?? '');
+				const keys = Object.keys(credMap);
+				const tokenKey = keys.find(k => /API[_-]?(?:KEY|TOKEN)$/i.test(k)) ?? keys.find(k => /(?:KEY|TOKEN)$/i.test(k));
+				if (tokenKey) apiKey = credMap[tokenKey];
+			} else {
+				apiKey = activeAccount.credential;
+			}
+		}
+
+		const models: Record<string, { name: string; limit: { context: number; output: number } }> = {};
+		// Per-model limits live in `modelLimits`; legacy provider-level
+		// contextLimit/outputLimit remain a fallback for older rows.
+		let defaultContext = 128000;
+		let defaultOutput = 16384;
+		let modelLimits: Record<string, { context?: number; output?: number }> = {};
+		let modelNames: Record<string, string> = {};
+		let hiddenSet = new Set<string>();
+		try {
+			const opts = JSON.parse(provider.options || '{}') as {
+				models?: string[];
+				modelNames?: Record<string, string>;
+				hiddenModels?: string[];
+				modelLimits?: Record<string, { context?: number; output?: number }>;
+				contextLimit?: number;
+				outputLimit?: number;
+			};
+			if (opts.contextLimit) defaultContext = opts.contextLimit;
+			if (opts.outputLimit) defaultOutput = opts.outputLimit;
+			if (opts.modelLimits) modelLimits = opts.modelLimits;
+			if (opts.modelNames) modelNames = opts.modelNames;
+			if (opts.hiddenModels) hiddenSet = new Set(opts.hiddenModels);
+		} catch {
+			// malformed options — proceed to auto-discover
+		}
+
+		const addModel = (id: string) => {
+			const lim = modelLimits[id];
+			models[id] = { name: modelNames[id] || id, limit: { context: lim?.context || defaultContext, output: lim?.output || defaultOutput } };
+		};
+
+		try {
+			const opts = JSON.parse(provider.options || '{}') as { models?: string[] };
+			if (opts.models && opts.models.length > 0) {
+				for (const id of opts.models) {
+					if (!hiddenSet.has(id)) addModel(id);
+				}
+			}
+		} catch {
+			// malformed options — proceed to auto-discover
+		}
+
+		// Auto-discover models from /v1/models if none stored in options
+		if (Object.keys(models).length === 0) {
+			try {
+				const baseUrl = baseURL.replace(/\/+$/, '');
+				const res = await fetch(`${baseUrl}/models`, {
+					headers: apiKey ? { Authorization: `Bearer ${apiKey}` } : {},
+					signal: AbortSignal.timeout(3000),
+				});
+				if (res.ok) {
+					const body = await res.json() as { data?: { id: string }[] };
+					for (const m of body.data ?? []) {
+						addModel(m.id);
+					}
+				}
+			} catch {
+				// Provider may not be running — models will be empty.
+			}
+		}
+
+		let modelOrder: string[] | undefined;
+		try {
+			const o = JSON.parse(provider.options || '{}') as { models?: string[] };
+			if (o.models && o.models.length > 0) modelOrder = o.models.filter(id => !hiddenSet.has(id));
+		} catch { /* ignore */ }
+		const providerOptions: Record<string, unknown> = { baseURL };
+		if (apiKey) providerOptions.apiKey = apiKey;
+		if (modelOrder) providerOptions._modelOrder = modelOrder;
+		providerSection[provider.slug] = {
+			npm: provider.npm || '@ai-sdk/openai-compatible',
+			name: provider.name,
+			options: providerOptions,
+			models: models,
+		};
+	}
+	if (Object.keys(providerSection).length > 0) mergedConfig.provider = providerSection;
+
 	const configContent = Object.keys(mergedConfig).length > 0 ? JSON.stringify(mergedConfig) : '{}';
 
 	const proc = Bun.spawn(args, {
@@ -248,7 +357,7 @@ async function spawnServer(key: string, spec: ServerConfigSpec): Promise<ServerI
 		});
 	});
 
-	const { createOpencodeClient } = await import('@opencode-ai/sdk');
+	const { createOpencodeClient } = await loadEngineSdk<typeof import('@opencode-ai/sdk')>('opencode', '@opencode-ai/sdk');
 	const client = createOpencodeClient({ baseUrl: url });
 	debug.log('engine', `Open Code server ready (key "${key}", ${url}, data dir: ${dataDir})`);
 	return { key, url, client, proc, ownsProcess: true, lastUsed: Date.now() };

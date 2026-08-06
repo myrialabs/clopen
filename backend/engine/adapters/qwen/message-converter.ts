@@ -199,6 +199,7 @@ const QWEN_TOOL_NAME_MAP: Record<string, string> = {
 	'task': 'Agent',
 	'dispatch_agent': 'Agent',
 	'task_stop': 'TaskStop',
+	'send_message': 'SendMessage',
 	// Question / harness
 	'ask_user_question': 'AskUserQuestion',
 	'skill': 'Skill',
@@ -207,21 +208,17 @@ const QWEN_TOOL_NAME_MAP: Record<string, string> = {
 	'cron_create': 'CronCreate',
 	'cron_list': 'CronList',
 	'cron_delete': 'CronDelete',
-	// `send_message` is the Qwen-specific channel the parent uses to push a
-	// follow-up prompt into a backgrounded sub-agent. There's no canonical
-	// equivalent — keep its raw name so the UI renders it as Unknown:* rather
-	// than silently swallowing the call.
 };
 
-function canonicaliseToolName(rawName: string): string {
-	// MCP tools come through as `clopen-mcp_<tool>` or `clopen-mcp-<tool>` —
-	// route through the shared resolver so they collapse to the canonical
-	// `mcp__<server>__<tool>` form (README §9.12).
-	const resolved = resolveOpenCodeToolName(rawName);
-	if (resolved) return resolved;
-
+export function canonicaliseToolName(rawName: string): string {
 	const mapped = QWEN_TOOL_NAME_MAP[rawName];
 	if (mapped) return mapped;
+
+	// MCP tools come through as `clopen-mcp_<tool>` or `clopen-mcp-<tool>` —
+	// route through the shared resolver so they collapse to the canonical
+	// `mcp__<server>__<tool>` form (README §10.12).
+	const resolved = resolveOpenCodeToolName(rawName);
+	if (resolved) return resolved;
 	// Already canonical (PascalCase) — let toCanonicalToolName decide.
 	return rawName;
 }
@@ -632,7 +629,7 @@ export function convertAssistantMessage(msg: SDKAssistantMessage, state: QwenCon
 		};
 		outputs.push(assistant);
 	} else {
-		// One tool_use per AssistantMessage (README §9.3).
+		// One tool_use per AssistantMessage (README §10.3).
 		blocks.forEach((block, idx) => {
 			const assistant: AssistantMessage = {
 				type: 'assistant',
@@ -708,7 +705,7 @@ export function convertUserMessage(msg: SDKUserMessage, state: QwenConverterStat
 		messageId: msg.uuid || crypto.randomUUID(),
 		sessionId: msg.session_id,
 		// Top-level tool_result UserMessage MUST keep parent.toolUseId = null
-		// (README §9.5). Sub-agent messages are an explicit exception.
+		// (README §10.5). Sub-agent messages are an explicit exception.
 		parent: { messageId: null, sessionId: null, toolUseId: msg.parent_tool_use_id || null },
 		engine: buildEngine(state.modelId),
 		sender: { id: '', name: '' },
@@ -751,7 +748,7 @@ export function convertStreamEvent(msg: SDKPartialAssistantMessage, state: QwenC
 	// message scoped to the sub-agent (which carries `parent_tool_use_id` and
 	// is routed into the parent Agent block's subActivities by the frontend
 	// grouper). Without this drop, the deltas leak into the main turn's text
-	// bubble. See README §9.15 fix #3.
+	// bubble. See README §10.15 fix #3.
 	if (msg.parent_tool_use_id) return outputs;
 
 	switch (event.type) {
@@ -905,7 +902,7 @@ function convertTaskNotification(msg: SDKSystemMessage, state: QwenConverterStat
 /**
  * Finalize any AskUserQuestion / Agent calls that are still open when the
  * SDK ends the query. Without this, the UI would leave Agent blocks spinning
- * forever (Qwen forks have no completion notification — README §9.15) and
+ * forever (Qwen forks have no completion notification — README §10.15) and
  * AUQ blocks would stay pending if the user closed the dialog without
  * answering.
  */

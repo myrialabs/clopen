@@ -18,7 +18,7 @@
 	import GitSettings from './model/GitSettings.svelte';
 	import ArtifactsSettings from './model/ArtifactsSettings.svelte';
 	import AIEnginesSettings from './engines/AIEnginesSettings.svelte';
-	import SystemToolsSettings from './system-tools/SystemToolsSettings.svelte';
+	import StackSettings from './stack/StackSettings.svelte';
 	import McpSettings from './mcp/McpSettings.svelte';
 	import SkillsSettings from './skills/SkillsSettings.svelte';
 	import CommandsSettings from './commands/CommandsSettings.svelte';
@@ -33,6 +33,7 @@
 	import InviteManagement from './admin/InviteManagement.svelte';
 	import SecuritySettings from './security/SecuritySettings.svelte';
 	import SystemSettings from './system/SystemSettings.svelte';
+	import AboutDeviceSettings from './system/AboutDeviceSettings.svelte';
 	import TunnelSettings from './tunnel/TunnelSettings.svelte';
 	import RestartAllEnginesButton from './engines/RestartAllEnginesButton.svelte';
 	import { mcpServersStore } from '$frontend/stores/features/mcp-servers.svelte';
@@ -306,9 +307,9 @@
 						<div in:fly={{ x: 20, duration: 200 }}>
 							<AIEnginesSettings />
 						</div>
-					{:else if activeSection === 'system-tools' && isAdmin}
+					{:else if activeSection === 'stack' && isAdmin}
 						<div in:fly={{ x: 20, duration: 200 }}>
-							<SystemToolsSettings />
+							<StackSettings />
 						</div>
 					{:else if activeSection === 'mcp' && isAdmin}
 						<div in:fly={{ x: 20, duration: 200 }}>
@@ -343,7 +344,7 @@
 							{#if isNoAuth}
 								<div class="py-1">
 									<h3 class="text-base font-bold text-slate-900 dark:text-slate-100 mb-1.5">Team</h3>
-									<p class="text-sm text-slate-600 dark:text-slate-500 mb-5">Manage team members and invites</p>
+									<p class="text-sm text-slate-600 dark:text-slate-500 mb-5">Manage team members</p>
 									<div class="flex items-start gap-3 p-4 bg-amber-500/5 dark:bg-amber-500/10 border border-amber-500/20 rounded-xl">
 										<Icon name="lucide:info" class="w-5 h-5 text-amber-600 dark:text-amber-400 flex-shrink-0 mt-0.5" />
 										<div class="text-sm text-slate-700 dark:text-slate-300">
@@ -359,15 +360,19 @@
 									</div>
 								</div>
 							{:else}
-								<TeamSettings />
+								<InviteManagement />
 								<div class="mt-6">
-									<InviteManagement />
+									<TeamSettings />
 								</div>
 							{/if}
 						</div>
 					{:else if activeSection === 'security' && isAdmin}
 						<div in:fly={{ x: 20, duration: 200 }}>
 							<SecuritySettings />
+						</div>
+					{:else if activeSection === 'device' && isAdmin}
+						<div in:fly={{ x: 20, duration: 200 }}>
+							<AboutDeviceSettings />
 						</div>
 					{:else if activeSection === 'system' && isAdmin}
 						<div in:fly={{ x: 20, duration: 200 }}>

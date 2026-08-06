@@ -26,7 +26,7 @@ const createDefaultPresetVisibility = (): Record<string, boolean> => {
 // Default per-user settings
 const defaultSettings: AppSettings = {
 	selectedEngine: DEFAULT_ENGINE,
-	selectedProvider: 'anthropic',
+	selectedProvider: '',
 	selectedModelId: DEFAULT_MODEL_ID,
 	selectedModelName: DEFAULT_MODEL_NAME,
 	engineModelMemory: { 'claude-code': { provider: 'anthropic', id: DEFAULT_MODEL_ID, name: DEFAULT_MODEL_NAME } },
@@ -51,7 +51,8 @@ const defaultSettings: AppSettings = {
 		commitConfig: { style: 'technical', subjectLength: 72, allowedTypes: '', context: '' },
 		branchConfig: { maxWords: 3, allowedPrefixes: '', context: '' }
 	},
-	pinnedModels: []
+	pinnedModels: [],
+	reasoningDefaults: {}
 };
 
 // Default system settings
@@ -61,7 +62,9 @@ const defaultSystemSettings: SystemSettings = {
 	allowedBasePaths: [],
 	autoUpdate: false,
 	sessionLifetimeDays: 30,
-	maxFileSizeMB: 500
+	maxFileSizeMB: 500,
+	publicBaseUrl: '',
+	lastSeenReleaseNotesVersion: ''
 };
 
 // Create and export reactive settings state directly (starts with defaults)
@@ -155,6 +158,22 @@ export function togglePinnedModel(modelId: string) {
 	} else {
 		updateSettings({ pinnedModels: pinned.filter(id => id !== modelId) });
 	}
+}
+
+/**
+ * Persist the per-model reasoning/thinking default (Settings → Models + the
+ * chat picker share this map). Passing `null` clears the model's entry so it
+ * falls back to the engine/model default.
+ */
+export function setReasoningDefault(modelId: string, level: string | null): void {
+	if (!modelId) return;
+	const next = { ...settings.reasoningDefaults };
+	if (level === null) {
+		delete next[modelId];
+	} else {
+		next[modelId] = level;
+	}
+	updateSettings({ reasoningDefaults: next });
 }
 
 export function exportSettings(): string {

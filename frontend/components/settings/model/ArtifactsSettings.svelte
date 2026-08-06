@@ -3,6 +3,7 @@
 	import { modelStore } from '$frontend/stores/features/models.svelte';
 	import { ENGINES } from '$shared/constants/engines';
 	import type { EngineType } from '$shared/types/unified';
+	import { modelFieldsOf } from '$frontend/utils/model-override';
 	import EngineModelPicker from './EngineModelPicker.svelte';
 
 	// Model used to generate Skills, Commands, Subagents, and Instructions from a purpose.
@@ -29,31 +30,22 @@
 	}
 
 	function handleArtifactsEngineChange(engineType: EngineType) {
-		const base = baseArtifactGen();
 		const models = modelStore.getByEngine(engineType);
-		const defaultModel = models[0];
 		updateSettings({
-			artifactGenerator: {
-				...base,
-				engine: engineType,
-				modelId: defaultModel?.engine.model.id || '',
-				modelName: defaultModel?.engine.model.name || ''
-			}
+			artifactGenerator: { ...baseArtifactGen(), engine: engineType, ...modelFieldsOf(models[0]) }
 		});
 		modelStore.fetchModels(engineType).then(fetched => {
 			if (fetched.length > 0) {
 				updateSettings({
-					artifactGenerator: { ...baseArtifactGen(), engine: engineType, modelId: fetched[0].engine.model.id, modelName: fetched[0].engine.model.name }
+					artifactGenerator: { ...baseArtifactGen(), engine: engineType, ...modelFieldsOf(fetched[0]) }
 				});
 			}
 		});
 	}
 
 	function handleArtifactsModelChange(modelId: string) {
-		const base = baseArtifactGen();
-		const model = modelStore.getById(modelId);
 		updateSettings({
-			artifactGenerator: { ...base, modelId, modelName: model?.engine.model.name || modelId }
+			artifactGenerator: { ...baseArtifactGen(), ...modelFieldsOf(modelStore.getById(modelId), modelId) }
 		});
 	}
 </script>

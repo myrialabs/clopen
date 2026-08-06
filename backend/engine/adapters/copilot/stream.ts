@@ -6,8 +6,8 @@
  * isolated by the per-project engine registry in backend/engine/index.ts.
  */
 
-import { CopilotClient, approveAll } from '@github/copilot-sdk';
 import type {
+	CopilotClient,
 	CopilotSession,
 	SessionConfig,
 	ResumeSessionConfig,
@@ -16,6 +16,7 @@ import type {
 	PermissionRequest,
 	PermissionRequestResult,
 } from '@github/copilot-sdk';
+import { loadEngineSdk } from '$backend/engine/sdk-loader';
 import type { EngineOutput, EngineModel } from '$shared/types/unified';
 import type { AIEngine, EngineQueryOptions, StructuredGenerationOptions } from '../../types';
 import { buildJsonPrompt, extractJson } from '../../structured-helpers';
@@ -153,6 +154,8 @@ export class CopilotEngine implements AIEngine {
 			throw new Error('Copilot is not configured. Add a Personal Access Token in Settings → Engines → Copilot.');
 		}
 
+		const { CopilotClient } = await loadEngineSdk<typeof import('@github/copilot-sdk')>('copilot', '@github/copilot-sdk');
+
 		this.client = new CopilotClient({
 			gitHubToken: account.credential,
 			useLoggedInUser: false,
@@ -208,7 +211,16 @@ export class CopilotEngine implements AIEngine {
 	}
 
 	async *streamQuery(options: EngineQueryOptions): AsyncGenerator<EngineOutput, void, unknown> {
-		const { projectPath, prompt, resume, modelId, abortController, accountId } = options;
+		const { projectPath, prompt, resume, modelId, reasoningEffort, abortController, accountId } = options;
+
+		// Copilot's `reasoningEffort` accepts low | medium | high | xhigh; only
+		// applied for models that support it (unsupported tokens are dropped so
+		// the SDK falls back to the model default).
+		const copilotEfforts = new Set<string>(['low', 'medium', 'high', 'xhigh']);
+		const reasoningOption: Pick<ResumeSessionConfig, 'reasoningEffort'> | Record<string, never> =
+			reasoningEffort && copilotEfforts.has(reasoningEffort)
+				? { reasoningEffort: reasoningEffort as ResumeSessionConfig['reasoningEffort'] }
+				: {};
 
 		// Per-stream account override: the Copilot SDK takes the GitHub token at
 		// construction time, so an account switch requires recreating the client.
@@ -298,6 +310,8 @@ export class CopilotEngine implements AIEngine {
 		};
 		this.activeController.signal.addEventListener('abort', onAbort, { once: true });
 
+		const { approveAll } = await loadEngineSdk<typeof import('@github/copilot-sdk')>('copilot', '@github/copilot-sdk');
+
 		try {
 			const mcpConfig = getCopilotMcpConfig(mcpProfileFilter);
 
@@ -341,6 +355,7 @@ export class CopilotEngine implements AIEngine {
 					});
 				},
 				model: modelId,
+				...reasoningOption,
 				workingDirectory: resolvedProjectPath,
 				onEvent: handler,
 				// Emit assistant.message_delta / assistant.reasoning_delta events
@@ -356,7 +371,7 @@ export class CopilotEngine implements AIEngine {
 				includeSubAgentStreamingEvents: false,
 				// Custom MCP tools served from Clopen's in-process remote MCP HTTP
 				// endpoint (`/mcp`). Same `clopen-mcp` namespace and URL Open Code
-				// and Codex consume — see backend/engine/README.md §9.12.
+				// and Codex consume — see backend/engine/README.md §10.12.
 				...(Object.keys(mcpConfig).length > 0 && { mcpServers: mcpConfig }),
 			};
 
@@ -621,6 +636,8 @@ export class CopilotEngine implements AIEngine {
 		if (!this.client) {
 			throw new Error('Copilot client unavailable.');
 		}
+
+		const { approveAll } = await loadEngineSdk<typeof import('@github/copilot-sdk')>('copilot', '@github/copilot-sdk');
 
 		const controller = abortController || new AbortController();
 		const resolvedProjectPath = resolveOsPath(projectPath);

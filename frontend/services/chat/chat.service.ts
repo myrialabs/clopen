@@ -509,6 +509,9 @@ class ChatService {
         // Active Profile for this session (null = use project default). Persisted
         // to chat_sessions.profile_id server-side like engine/model.
         profileId: chatModelState.profileId,
+        // Reasoning/thinking level (native per engine; null = engine default).
+        // Persisted to chat_sessions.reasoning_effort server-side.
+        reasoningEffort: chatModelState.reasoningEffort,
       });
 
       // Persist engine/model/account to frontend session state immediately.
@@ -529,6 +532,7 @@ class ChatService {
           ...(selectedAccountId !== null && { account_id: selectedAccountId }),
           ...(selectedAccountName !== null && { account_name: selectedAccountName }),
           profile_id: chatModelState.profileId,
+          reasoning_effort: chatModelState.reasoningEffort,
         });
       }
 
@@ -665,7 +669,12 @@ class ChatService {
     // If this is an assistant message, replace the matching non-reasoning
     // stream_event placeholder (leave any reasoning placeholder alone —
     // it will be replaced by its own ReasoningMessage).
-    if (message.type === 'assistant') {
+    // Only root assistant messages may claim the root text placeholder.
+    // Agent/Workflow child messages already carry parent.toolUseId and must be
+    // pushed intact so the grouper embeds them directly into subActivities.
+    // Replacing a root placeholder with a child briefly renders that child at
+    // the root before the next reactive grouping pass relocates it.
+    if (message.type === 'assistant' && !message.parent?.toolUseId) {
       for (let i = sessionState.messages.length - 1; i >= 0; i--) {
         const msg = sessionState.messages[i];
         if (msg.type === 'stream_event' && !(msg as StreamingMessage).reasoning) {

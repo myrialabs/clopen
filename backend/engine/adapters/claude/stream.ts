@@ -13,16 +13,18 @@
  * When v2 SDKSessionOptions gains these, migrate streamQuery() to v2.
  */
 
-import { query } from '@anthropic-ai/claude-agent-sdk';
+import { loadEngineSdk } from '$backend/engine/sdk-loader';
 import type {
 	Options,
 	Query,
 	PermissionMode,
 	PermissionResult,
+	EffortLevel,
 } from '@anthropic-ai/claude-agent-sdk';
 import type { EngineOutput } from '$shared/types/unified';
 import type { StructuredGenerationOptions } from '../../types';
 import { createSdkMessageConverter, toSdkUserMessage } from './message-converter';
+import { WorkflowTranscriptTailer } from './workflow-transcript';
 import { resolveOsPath } from '$backend/utils/paths';
 import { setupEnvironmentOnce, getEngineEnv } from './environment';
 import { handleStreamError } from './error-handler';
@@ -42,6 +44,33 @@ interface PendingUserAnswer {
   resolve: (result: PermissionResult) => void;
   removeAbortListener: () => void;
   input: Record<string, unknown>;
+}
+
+/** Merge the SDK stream with Workflow transcript polling without blocking either producer. */
+class EventQueue<T> {
+  private buffer: T[] = [];
+  private wake: (() => void) | null = null;
+  private done = false;
+  private error: unknown = null;
+
+  push(value: T): void { this.buffer.push(value); this.signal(); }
+  close(): void { this.done = true; this.signal(); }
+  fail(error: unknown): void { this.error = error; this.done = true; this.signal(); }
+
+  private signal(): void {
+    const wake = this.wake;
+    this.wake = null;
+    wake?.();
+  }
+
+  async *drain(): AsyncGenerator<T, void, unknown> {
+    while (true) {
+      while (this.buffer.length) yield this.buffer.shift() as T;
+      if (this.error) throw this.error;
+      if (this.done) return;
+      await new Promise<void>(resolve => { this.wake = resolve; });
+    }
+  }
 }
 
 export class ClaudeCodeEngine implements AIEngine {
@@ -89,10 +118,22 @@ export class ClaudeCodeEngine implements AIEngine {
       resume,
       maxTurns = undefined,
       modelId,
+      reasoningEffort,
       includePartialMessages = false,
       abortController,
       accountId
     } = options;
+
+    // Map the chosen reasoning level to Claude's knobs: `off` disables thinking
+    // entirely, `auto`/unset keeps adaptive thinking (Claude decides how much),
+    // and an explicit effort level pairs adaptive thinking with `effort`.
+    const claudeEffort = new Set<string>(['low', 'medium', 'high', 'xhigh', 'max']);
+    const thinkingConfig: Options['thinking'] = reasoningEffort === 'off'
+      ? { type: 'disabled' }
+      : { type: 'adaptive', display: 'summarized' };
+    const effortOption = reasoningEffort && claudeEffort.has(reasoningEffort)
+      ? { effort: reasoningEffort as EffortLevel }
+      : {};
 
     debug.log('chat', "Claude Code - Stream Query");
     debug.log('chat', { prompt });
@@ -123,7 +164,7 @@ export class ClaudeCodeEngine implements AIEngine {
 
       // Get custom MCP servers and allowed tools
       // Pass mcpContext so tool handlers are bound to the correct project
-      const mcpServers = getEnabledMcpServers(options.mcpContext, mcpProfileFilter);
+      const mcpServers = await getEnabledMcpServers(options.mcpContext, mcpProfileFilter);
       const allowedMcpTools = getAllowedMcpTools();
 
       debug.log('mcp', '📦 Loading custom MCP servers...');
@@ -142,10 +183,11 @@ export class ClaudeCodeEngine implements AIEngine {
         systemPrompt: { type: "preset", preset: "claude_code" },
         settingSources: ["user", "project", "local"],
         forkSession: true,
-        // Explicit adaptive thinking with summarized display so Opus 4.6+ emits
-        // visible thinking_delta events; without this the SDK can default to
-        // 'omitted' and reasoning blocks arrive empty.
-        thinking: { type: 'adaptive', display: 'summarized' },
+        // Reasoning level → thinking/effort (see thinkingConfig above). Adaptive
+        // thinking with summarized display keeps Opus 4.6+ emitting visible
+        // thinking_delta events; 'off' disables it, an explicit level adds effort.
+        thinking: thinkingConfig,
+        ...effortOption,
         // Custom permission handler: blocks on AskUserQuestion until user answers,
         // auto-allows everything else. Works alongside bypassPermissions.
         canUseTool: async (_toolName, input, canUseToolOptions) => {
@@ -188,6 +230,7 @@ export class ClaudeCodeEngine implements AIEngine {
         ...(resume && { resume }),
         ...(maxTurns && { maxTurns }),
         ...(includePartialMessages && { includePartialMessages }),
+        forwardSubagentText: true,
         abortController: this.activeController,
         ...(Object.keys(mcpServers).length > 0 && { mcpServers }),
         ...(allowedMcpTools.length > 0 && { allowedTools: allowedMcpTools })
@@ -199,6 +242,7 @@ export class ClaudeCodeEngine implements AIEngine {
         yield sdkPrompt;
       })();
 
+      const { query } = await loadEngineSdk<typeof import('@anthropic-ai/claude-agent-sdk')>('claude-code', '@anthropic-ai/claude-agent-sdk');
       const queryInstance = query({
         prompt: promptIterable,
         options: sdkOptions,
@@ -209,9 +253,45 @@ export class ClaudeCodeEngine implements AIEngine {
       // Per-query stateful converter so block-stop reasoning tracking persists
       // across the stream of SDK messages.
       const convertSdkMessage = createSdkMessageConverter();
-      for await (const sdkMessage of queryInstance) {
-        // Convert SDK message → EngineOutput (may yield 0-N events per SDK message)
-        yield* convertSdkMessage(sdkMessage);
+      const workflowTranscripts = new WorkflowTranscriptTailer();
+      const events = new EventQueue<EngineOutput>();
+      let sdkStreamDone = false;
+
+      const sdkProducer = (async () => {
+        try {
+          for await (const sdkMessage of queryInstance) {
+            // Register Workflow launches after queueing the corresponding parent
+            // and tool result, preserving their ordering ahead of child records.
+            for (const output of convertSdkMessage(sdkMessage)) events.push(output);
+            workflowTranscripts.observe(sdkMessage);
+          }
+        } finally {
+          sdkStreamDone = true;
+          workflowTranscripts.wake();
+        }
+      })();
+
+      const transcriptProducer = (async () => {
+        while (true) {
+          const observedVersion = workflowTranscripts.changeVersion;
+          for (const output of await workflowTranscripts.drain()) events.push(output);
+
+          if (this.activeController?.signal.aborted) break;
+          if (sdkStreamDone && !await workflowTranscripts.hasActiveWorkflows()) break;
+          await workflowTranscripts.waitForChange(observedVersion, this.activeController!.signal);
+        }
+        // The terminal status event is authoritative; drain once more for writes
+        // already queued by the filesystem before closing the merged stream.
+        for (const output of await workflowTranscripts.drain()) events.push(output);
+      })();
+
+      const producers = Promise.all([sdkProducer, transcriptProducer]);
+      void producers.then(() => events.close(), error => events.fail(error));
+      try {
+        yield* events.drain();
+        await producers;
+      } finally {
+        workflowTranscripts.dispose();
       }
 
     } catch (error) {
@@ -348,6 +428,7 @@ export class ClaudeCodeEngine implements AIEngine {
     };
 
     // Use plain string prompt — simpler and faster than AsyncIterable
+    const { query } = await loadEngineSdk<typeof import('@anthropic-ai/claude-agent-sdk')>('claude-code', '@anthropic-ai/claude-agent-sdk');
     const queryInstance = query({
       prompt,
       options: sdkOptions

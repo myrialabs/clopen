@@ -1,19 +1,26 @@
 <script lang="ts">
 	import { untrack } from 'svelte';
-	import { settings, togglePinnedModel } from '$frontend/stores/features/settings.svelte';
+	import { scale } from 'svelte/transition';
+	import { cubicOut } from 'svelte/easing';
+	import { settings, togglePinnedModel, setReasoningDefault } from '$frontend/stores/features/settings.svelte';
 	import { modelStore } from '$frontend/stores/features/models.svelte';
 	import { sessionState } from '$frontend/stores/core/sessions.svelte';
 	import { appState } from '$frontend/stores/core/app.svelte';
 	import { userStore } from '$frontend/stores/features/user.svelte';
 	import { chatModelState, initChatModel, restoreChatModelFromSession } from '$frontend/stores/ui/chat-model.svelte';
-	import { ENGINES, getModelTags } from '$shared/constants/engines';
+	import { ENGINES, getModelTags, pickDefaultModel, reasoningLevelLabel } from '$shared/constants/engines';
 	import type { EngineType, EngineModel } from '$shared/types/unified';
 	import Icon from '$frontend/components/common/display/Icon.svelte';
 	import ProfilePicker from './ProfilePicker.svelte';
+	import { openSettingsModal, focusEngineSection } from '$frontend/stores/ui/settings-modal.svelte';
+	import { authStore } from '$frontend/stores/features/auth.svelte';
 	import { claudeAccountsStore, type ClaudeAccountItem } from '$frontend/stores/features/claude-accounts.svelte';
 	import { copilotAccountsStore, type CopilotAccountItem } from '$frontend/stores/features/copilot-accounts.svelte';
 	import { codexAccountsStore, type CodexAccountItem } from '$frontend/stores/features/codex-accounts.svelte';
 	import { qwenAccountsStore, type QwenAccountItem } from '$frontend/stores/features/qwen-accounts.svelte';
+	import { piAccountsStore, type PiAccountItem } from '$frontend/stores/features/pi-accounts.svelte';
+	import { clineAccountsStore, type ClineAccountItem } from '$frontend/stores/features/cline-accounts.svelte';
+	import { cursorAccountsStore, type CursorAccountItem } from '$frontend/stores/features/cursor-accounts.svelte';
 	import { opencodeProvidersStore, type OpenCodeProviderItem, type OpenCodeAccountItem } from '$frontend/stores/features/opencode-providers.svelte';
 	import ws from '$frontend/utils/ws';
 	import { debug } from '$shared/utils/logger';
@@ -26,7 +33,7 @@
 	// at the store reference resolved by `accountsForEngine`.)
 	// ════════════════════════════════════════════
 
-	type SimpleAccount = ClaudeAccountItem | CopilotAccountItem | CodexAccountItem | QwenAccountItem;
+	type SimpleAccount = ClaudeAccountItem | CopilotAccountItem | CodexAccountItem | QwenAccountItem | PiAccountItem | ClineAccountItem | CursorAccountItem;
 
 	const accountsForEngine = $derived<SimpleAccount[]>(
 		chatModelState.engine === 'claude-code'
@@ -37,7 +44,13 @@
 					? codexAccountsStore.accounts
 					: chatModelState.engine === 'qwen'
 						? qwenAccountsStore.accounts
-						: []
+						: chatModelState.engine === 'pi'
+							? piAccountsStore.accounts
+							: chatModelState.engine === 'cline'
+								? clineAccountsStore.accounts
+								: chatModelState.engine === 'cursor'
+									? cursorAccountsStore.accounts
+									: []
 	);
 
 	const currentAccount = $derived(
@@ -55,6 +68,9 @@
 		chatModelState.engine === 'copilot' ? 'Copilot Account'
 			: chatModelState.engine === 'codex' ? 'Codex Account'
 			: chatModelState.engine === 'qwen' ? 'Qwen Code Account'
+			: chatModelState.engine === 'pi' ? 'Pi Account'
+			: chatModelState.engine === 'cline' ? 'Cline Account'
+			: chatModelState.engine === 'cursor' ? 'Cursor Account'
 			: 'Claude Account'
 	);
 
@@ -63,6 +79,9 @@
 		|| chatModelState.engine === 'copilot'
 		|| chatModelState.engine === 'codex'
 		|| chatModelState.engine === 'qwen'
+		|| chatModelState.engine === 'pi'
+		|| chatModelState.engine === 'cline'
+		|| chatModelState.engine === 'cursor'
 	);
 	const hasEngineAccounts = $derived(accountsForEngine.length > 0);
 
@@ -77,6 +96,12 @@
 			codexAccountsStore.fetch();
 		} else if (engine === 'qwen') {
 			qwenAccountsStore.fetch();
+		} else if (engine === 'pi') {
+			piAccountsStore.fetch();
+		} else if (engine === 'cline') {
+			clineAccountsStore.fetch();
+		} else if (engine === 'cursor') {
+			cursorAccountsStore.fetch();
 		}
 	});
 
@@ -86,7 +111,7 @@
 		const accounts = accountsForEngine;
 		const currentId = chatModelState.accountId;
 
-		if ((engine === 'claude-code' || engine === 'copilot' || engine === 'codex' || engine === 'qwen') && accounts.length > 0) {
+		if ((engine === 'claude-code' || engine === 'copilot' || engine === 'codex' || engine === 'qwen' || engine === 'pi' || engine === 'cline' || engine === 'cursor') && accounts.length > 0) {
 			untrack(() => {
 				// If no account set, or current account not found in list, use active account
 				const hasValidAccount = currentId !== null && accounts.some(a => a.id === currentId);
@@ -193,6 +218,41 @@
 				await modelStore.refreshModels('qwen');
 			} catch (err) {
 				debug.warn('chat', 'Qwen account switch failed:', err);
+			}
+		}
+
+		// Pi is multi-provider — promoting the picked account to DB-active and
+		// refreshing the (union) model catalog keeps the picker in sync.
+		if (chatModelState.engine === 'pi') {
+			try {
+				await ws.http('engine:pi-accounts-switch', { id: account.id });
+				await piAccountsStore.refresh();
+				await modelStore.refreshModels('pi');
+			} catch (err) {
+				debug.warn('chat', 'Pi account switch failed:', err);
+			}
+		}
+
+		// Cline is multi-provider — same promote-to-active + refresh as Pi.
+		if (chatModelState.engine === 'cline') {
+			try {
+				await ws.http('engine:cline-accounts-switch', { id: account.id });
+				await clineAccountsStore.refresh();
+				await modelStore.refreshModels('cline');
+			} catch (err) {
+				debug.warn('chat', 'Cline account switch failed:', err);
+			}
+		}
+
+		// Cursor models are discovered against the active account's API key, so
+		// promote-to-active + refresh keeps the picker's catalog in sync.
+		if (chatModelState.engine === 'cursor') {
+			try {
+				await ws.http('engine:cursor-accounts-switch', { id: account.id });
+				await cursorAccountsStore.refresh();
+				await modelStore.refreshModels('cursor');
+			} catch (err) {
+				debug.warn('chat', 'Cursor account switch failed:', err);
 			}
 		}
 
@@ -311,6 +371,44 @@
 	// Read from local chat model state (isolated from Settings)
 	const currentEngine = $derived(ENGINES.find(e => e.type === chatModelState.engine));
 	const currentModel = $derived(modelStore.getById(chatModelState.modelId));
+
+	// ── Reasoning / thinking level (only when the selected model exposes one) ──
+	const currentReasoningControl = $derived(currentModel?.capabilities.reasoningControl ?? null);
+	const currentReasoningValue = $derived(
+		chatModelState.reasoningEffort
+		?? settings.reasoningDefaults[chatModelState.modelId]
+		?? currentReasoningControl?.default
+		?? null
+	);
+	const currentReasoningLabel = $derived(
+		currentReasoningValue
+			? (currentReasoningControl?.levels.find(l => l.value === currentReasoningValue)?.label ?? reasoningLevelLabel(currentReasoningValue))
+			: ''
+	);
+
+	// Keep chatModelState.reasoningEffort holding the EFFECTIVE level so it's sent
+	// with the turn (and surfaces in the Raw Message). Reasoning-capable model →
+	// per-model default (Settings) or the model's own default; a value invalid for
+	// the current model is re-seeded. No knob → cleared to null.
+	$effect(() => {
+		const control = currentReasoningControl;
+		const modelId = chatModelState.modelId;
+		const defaults = settings.reasoningDefaults;
+		untrack(() => {
+			const current = chatModelState.reasoningEffort;
+			if (!control) {
+				if (current != null) chatModelState.reasoningEffort = null;
+				return;
+			}
+			const valid = control.levels.some(l => l.value === current);
+			if (!valid) chatModelState.reasoningEffort = defaults[modelId] ?? control.default;
+		});
+	});
+
+	// Readiness error for the active engine (e.g. not installed / not signed in),
+	// surfaced by models:list. Drives the not-installed → Open Stack notice below.
+	const engineError = $derived(modelStore.getError(chatModelState.engine));
+	const isAdmin = $derived(authStore.isAdmin);
 	const availableModels = $derived.by(() => {
 		const all = modelStore.getByEngine(chatModelState.engine);
 		// Codex auth-mode filter (plan §6 + README §6.2): hide ChatGPT-only
@@ -358,20 +456,24 @@
 		const sessionAccountId = session?.account_id;
 		const sessionAccountName = session?.account_name;
 		const sessionProfileId = session?.profile_id;
+		const sessionReasoning = session?.reasoning_effort;
 
 		untrack(() => {
+			// Read per-model reasoning defaults untracked: editing a default (here or
+			// via the pill) must not re-trigger this init and clobber the live choice.
+			const reasoningDefaults = settings.reasoningDefaults;
 			if (sessionEngine && sessionModelId) {
 				// Session has persisted engine/model: always restore from session.
 				// This works for both existing sessions (has messages) and sessions
 				// where messages are still loading asynchronously.
-				restoreChatModelFromSession(sessionEngine, sessionProvider || sProvider, sessionModelId, sessionModelName || '', sessionAccountId, sessionAccountName, sessionProfileId);
+				restoreChatModelFromSession(sessionEngine, sessionProvider || sProvider, sessionModelId, sessionModelName || '', sessionAccountId, sessionAccountName, sessionProfileId, sessionReasoning ?? null);
 			} else if (!started) {
 				// New session (no messages, no persisted engine/model): apply Settings defaults
-				initChatModel(sEngine, sProvider, sModelId, sModelName, sMemory || {});
+				initChatModel(sEngine, sProvider, sModelId, sModelName, sMemory || {}, reasoningDefaults[sModelId] ?? null);
 			} else {
 				// Existing session without engine/model (pre-migration or not yet set):
 				// fall back to Settings defaults
-				initChatModel(sEngine, sProvider, sModelId, sModelName, sMemory || {});
+				initChatModel(sEngine, sProvider, sModelId, sModelName, sMemory || {}, reasoningDefaults[sModelId] ?? null);
 			}
 		});
 	});
@@ -396,12 +498,13 @@
 				const remembered = memory[engine];
 				const target =
 					(remembered && models.find(m => m.engine.model.id === remembered.id)) ||
-					models[0];
+					pickDefaultModel(models);
 				if (target) {
 					chatModelState.provider = target.engine.provider;
 					chatModelState.modelId = target.engine.model.id;
 					chatModelState.modelName = target.engine.model.name;
 					chatModelState.engineModelMemory = { ...memory, [engine]: { provider: target.engine.provider, id: target.engine.model.id, name: target.engine.model.name } };
+					chatModelState.reasoningEffort = settings.reasoningDefaults[target.engine.model.id] ?? null;
 				}
 			});
 		}
@@ -549,6 +652,52 @@
 		searchQuery = '';
 	}
 
+	// ── Reasoning-level dropdown ──
+	let showReasoningDropdown = $state(false);
+	let reasoningTriggerButton = $state<HTMLButtonElement>();
+	let reasoningDropdownStyle = $state('');
+
+	function toggleReasoningDropdown() {
+		if (!showReasoningDropdown && reasoningTriggerButton) {
+			const rect = reasoningTriggerButton.getBoundingClientRect();
+			reasoningDropdownStyle = `position: fixed; bottom: ${window.innerHeight - rect.top + 4}px; left: ${rect.left}px; z-index: 9999;`;
+		}
+		showReasoningDropdown = !showReasoningDropdown;
+	}
+
+	function closeReasoningDropdown() {
+		showReasoningDropdown = false;
+	}
+
+	function selectReasoning(value: string) {
+		chatModelState.reasoningEffort = value;
+		// Remember per-model + surface as the Settings → Models default.
+		setReasoningDefault(chatModelState.modelId, value);
+		// Sync to collaborators in the same chat session.
+		const chatSessionId = sessionState.currentSession?.id;
+		const senderId = userStore.currentUser?.id;
+		if (chatSessionId && senderId) {
+			ws.emit('chat:reasoning-sync', { senderId, chatSessionId, reasoningEffort: value });
+		}
+		closeReasoningDropdown();
+	}
+
+	// Listen for remote reasoning-level changes from other users
+	$effect(() => {
+		const unsub = ws.on('chat:reasoning-sync', (data: { senderId: string; reasoningEffort: string | null }) => {
+			if (data.senderId === userStore.currentUser?.id) return;
+			debug.log('chat', 'Remote reasoning sync:', data);
+			chatModelState.reasoningEffort = data.reasoningEffort;
+			if (sessionState.currentSession) {
+				sessionState.currentSession = {
+					...sessionState.currentSession,
+					reasoning_effort: data.reasoningEffort,
+				};
+			}
+		});
+		return unsub;
+	});
+
 	async function selectEngine(engineType: EngineType) {
 		if (engineLocked) return;
 
@@ -567,13 +716,14 @@
 		const models = modelStore.getByEngine(engineType);
 		const target =
 			(remembered && models.find(m => m.engine.model.id === remembered.id)) ||
-			models[0];
+			pickDefaultModel(models);
 
 		if (target) {
 			chatModelState.provider = target.engine.provider;
 			chatModelState.modelId = target.engine.model.id;
 			chatModelState.modelName = target.engine.model.name;
 			chatModelState.engineModelMemory = { ...memory, [engineType]: { provider: target.engine.provider, id: target.engine.model.id, name: target.engine.model.name } };
+			chatModelState.reasoningEffort = settings.reasoningDefaults[target.engine.model.id] ?? null;
 		}
 	}
 
@@ -585,7 +735,23 @@
 			...chatModelState.engineModelMemory,
 			[chatModelState.engine]: { provider: model.engine.provider, id: model.engine.model.id, name: model.engine.model.name }
 		};
+		// Restore the per-model reasoning default (null → engine/model default).
+		chatModelState.reasoningEffort = settings.reasoningDefaults[model.engine.model.id] ?? null;
 		closeDropdown();
+	}
+
+	// Not-ready shortcuts from the model dropdown: install via Settings → Stack,
+	// or configure the engine's account. Both close the dropdown first so the
+	// Settings modal isn't hidden behind it.
+	function openStack() {
+		closeDropdown();
+		openSettingsModal('stack');
+	}
+
+	function configureEngine(engineType: EngineType) {
+		closeDropdown();
+		openSettingsModal('engines');
+		focusEngineSection(engineType);
 	}
 
 </script>
@@ -605,8 +771,8 @@
 			<div class="flex dark:hidden items-center justify-center w-3.5 h-3.5 [&>svg]:w-full [&>svg]:h-full">{@html currentEngine.icon.light}</div>
 			<div class="hidden dark:flex items-center justify-center w-3.5 h-3.5 [&>svg]:w-full [&>svg]:h-full">{@html currentEngine.icon.dark}</div>
 		{/if}
-		<span class="font-medium">{triggerLabel}</span>
-		<Icon name="lucide:chevron-down" class="w-3 h-3" />
+		<span class="font-medium max-w-40 truncate">{triggerLabel}</span>
+		<Icon name="lucide:chevron-down" class="w-3 h-3 flex-shrink-0" />
 	</button>
 
 	<!-- Account picker (Claude Code + Copilot — both use one-account-per-engine) -->
@@ -670,6 +836,25 @@
 		</button>
 	{/if}
 
+	<!-- Reasoning / thinking level (only when the selected model exposes one) -->
+	{#if currentReasoningControl && currentReasoningControl.levels.length > 0}
+		<button
+			bind:this={reasoningTriggerButton}
+			type="button"
+			class="flex items-center gap-1.5 px-2 py-1 text-xs rounded-lg transition-all duration-150
+				bg-slate-100 dark:bg-slate-800 hover:bg-slate-200 dark:hover:bg-slate-700
+				text-slate-600 dark:text-slate-400 border border-slate-200 dark:border-slate-700
+				disabled:opacity-50 disabled:cursor-not-allowed disabled:hover:bg-slate-100 dark:disabled:hover:bg-slate-800"
+			onclick={toggleReasoningDropdown}
+			disabled={appState.isLoading}
+			title="Reasoning effort"
+		>
+			<Icon name="lucide:brain" class="w-3.5 h-3.5" />
+			<span class="font-medium max-w-24 truncate">{currentReasoningLabel || 'Reasoning'}</span>
+			<Icon name="lucide:chevron-down" class="w-3 h-3" />
+		</button>
+	{/if}
+
 	<!-- Active-profile picker (per-session; only shown when profiles exist) -->
 	<ProfilePicker />
 </div>
@@ -678,7 +863,11 @@
 {#if showAccountDropdown}
 	<div class="fixed inset-0" style="z-index: 9998;" onclick={closeAccountDropdown}></div>
 
-	<div style={accountDropdownStyle} class="bg-white dark:bg-slate-800 border border-slate-200 dark:border-slate-700 rounded-lg shadow-xl overflow-hidden min-w-48 max-h-64 flex flex-col">
+	<div
+		style={accountDropdownStyle}
+		class="origin-bottom-left bg-white dark:bg-slate-800 border border-slate-200 dark:border-slate-700 rounded-lg shadow-xl overflow-hidden min-w-48 max-w-[calc(100vw-1.5rem)] max-h-64 flex flex-col"
+		transition:scale={{ duration: 130, easing: cubicOut, start: 0.95, opacity: 0 }}
+	>
 		<div class="flex gap-1.5 px-3 py-2 border-b border-slate-200 dark:border-slate-700 flex-shrink-0">
 			<Icon name="lucide:user" class="w-3.5 h-3.5" />
 			<span class="text-xs font-medium text-slate-500 dark:text-slate-400 tracking-wide">{accountPickerLabel}</span>
@@ -728,7 +917,11 @@
 {#if showOCAccountDropdown && ocMatchingProvider}
 	<div class="fixed inset-0" style="z-index: 9998;" onclick={closeOCAccountDropdown}></div>
 
-	<div style={ocAccountDropdownStyle} class="bg-white dark:bg-slate-800 border border-slate-200 dark:border-slate-700 rounded-lg shadow-xl overflow-hidden min-w-48 max-h-64 flex flex-col">
+	<div
+		style={ocAccountDropdownStyle}
+		class="origin-bottom-left bg-white dark:bg-slate-800 border border-slate-200 dark:border-slate-700 rounded-lg shadow-xl overflow-hidden min-w-48 max-w-[calc(100vw-1.5rem)] max-h-64 flex flex-col"
+		transition:scale={{ duration: 130, easing: cubicOut, start: 0.95, opacity: 0 }}
+	>
 		<div class="flex gap-1.5 px-3 py-2 border-b border-slate-200 dark:border-slate-700 flex-shrink-0">
 			<Icon name="lucide:key" class="w-3.5 h-3.5" />
 			<span class="text-xs font-medium text-slate-500 dark:text-slate-400 tracking-wide">{ocMatchingProvider.name} Account</span>
@@ -761,14 +954,55 @@
 	</div>
 {/if}
 
+<!-- Reasoning-level dropdown -->
+{#if showReasoningDropdown && currentReasoningControl}
+	<div class="fixed inset-0" style="z-index: 9998;" onclick={closeReasoningDropdown}></div>
+
+	<div
+		style={reasoningDropdownStyle}
+		class="origin-bottom-left bg-white dark:bg-slate-800 border border-slate-200 dark:border-slate-700 rounded-lg shadow-xl overflow-hidden min-w-40 max-w-[calc(100vw-1.5rem)] max-h-64 flex flex-col"
+		transition:scale={{ duration: 130, easing: cubicOut, start: 0.95, opacity: 0 }}
+	>
+		<div class="flex gap-1.5 px-3 py-2 border-b border-slate-200 dark:border-slate-700 flex-shrink-0">
+			<Icon name="lucide:brain" class="w-3.5 h-3.5" />
+			<span class="text-xs font-medium text-slate-500 dark:text-slate-400 tracking-wide">Reasoning effort</span>
+		</div>
+		<div class="overflow-y-auto py-1">
+			{#each currentReasoningControl.levels as level (level.value)}
+				{@const isSelected = currentReasoningValue === level.value}
+				<button
+					type="button"
+					class="flex items-center gap-2.5 w-full px-3 py-2 text-left transition-all duration-150
+						{isSelected
+							? 'bg-violet-50 dark:bg-violet-900/20 text-violet-600 dark:text-violet-400'
+							: 'text-slate-700 dark:text-slate-300 hover:bg-slate-50 dark:hover:bg-slate-700/50'}"
+					onclick={() => selectReasoning(level.value)}
+				>
+					<div class="flex-shrink-0 w-3.5 h-3.5 rounded-full border-2 flex items-center justify-center
+						{isSelected ? 'border-violet-600' : 'border-slate-300 dark:border-slate-600'}">
+						{#if isSelected}
+							<div class="w-1.5 h-1.5 rounded-full bg-violet-600"></div>
+						{/if}
+					</div>
+					<span class="font-medium text-xs truncate">{level.label}</span>
+				</button>
+			{/each}
+		</div>
+	</div>
+{/if}
+
 <!-- Model dropdown rendered as fixed portal to escape overflow-hidden parent -->
 {#if showDropdown}
 	<div class="fixed inset-0" style="z-index: 9998;" onclick={closeDropdown}></div>
 
-	<div style={dropdownStyle} class="bg-white dark:bg-slate-800 border border-slate-200 dark:border-slate-700 rounded-lg shadow-xl overflow-hidden min-w-64 max-h-96 flex flex-col">
+	<div
+		style={dropdownStyle}
+		class="origin-bottom-left bg-white dark:bg-slate-800 border border-slate-200 dark:border-slate-700 rounded-lg shadow-xl overflow-hidden w-80 max-w-[calc(100vw-1.5rem)] max-h-96 flex flex-col"
+		transition:scale={{ duration: 130, easing: cubicOut, start: 0.95, opacity: 0 }}
+	>
 
 		<!-- Engine tabs -->
-		<div class="flex border-b border-slate-200 dark:border-slate-700 flex-shrink-0">
+		<div class="flex border-b border-slate-200 dark:border-slate-700 flex-shrink-0 overflow-x-auto [scrollbar-width:none] [-ms-overflow-style:none] [&::-webkit-scrollbar]:hidden">
 			{#each ENGINES as engine (engine.type)}
 				{@const isActive = chatModelState.engine === engine.type}
 				{@const isDisabled = engineLocked && engine.type !== lockedEngine}
@@ -785,13 +1019,13 @@
 					disabled={isDisabled}
 					title={engine.name}
 				>
-					<div class="flex dark:hidden items-center justify-center w-3.5 h-3.5 [&>svg]:w-full [&>svg]:h-full">{@html engine.icon.light}</div>
-					<div class="hidden dark:flex items-center justify-center w-3.5 h-3.5 [&>svg]:w-full [&>svg]:h-full">{@html engine.icon.dark}</div>
+					<div class="flex dark:hidden items-center justify-center w-3.5 h-3.5 flex-shrink-0 [&>svg]:w-full [&>svg]:h-full">{@html engine.icon.light}</div>
+					<div class="hidden dark:flex items-center justify-center w-3.5 h-3.5 flex-shrink-0 [&>svg]:w-full [&>svg]:h-full">{@html engine.icon.dark}</div>
 					{#if isActive}
-						<span>{engine.name}</span>
+						<span class="truncate max-w-28">{engine.name}</span>
 					{/if}
 					{#if isDisabled}
-						<Icon name="lucide:lock" class="w-3 h-3" />
+						<Icon name="lucide:lock" class="w-3 h-3 flex-shrink-0" />
 					{/if}
 				</button>
 			{/each}
@@ -828,9 +1062,41 @@
 					<span>Loading models...</span>
 				</div>
 			{:else if filteredModels.length === 0}
-				<div class="px-3 py-4 text-xs text-slate-500 text-center">
-					{searchQuery ? 'No models matching your search.' : 'No models available.'}
-				</div>
+				{#if searchQuery}
+					<div class="px-3 py-4 text-xs text-slate-500 text-center">
+						No models matching your search.
+					</div>
+				{:else if engineError}
+					<div class="m-2 flex items-start gap-2.5 p-3 rounded-lg border border-amber-300/60 dark:border-amber-500/30 bg-amber-50 dark:bg-amber-500/10">
+						<Icon name="lucide:triangle-alert" class="w-4 h-4 text-amber-600 dark:text-amber-400 flex-shrink-0 mt-0.5" />
+						<div class="flex-1 min-w-0">
+							<p class="text-xs text-amber-900 dark:text-amber-100">{engineError}</p>
+							{#if isAdmin}
+								{#if engineError.includes('Settings → Stack')}
+									<button
+										type="button"
+										class="mt-2 inline-flex items-center gap-1.5 px-2.5 py-1 text-2xs font-semibold rounded-md bg-amber-600 hover:bg-amber-700 text-white cursor-pointer transition-colors"
+										onclick={openStack}
+									>
+										Open Stack
+									</button>
+								{:else}
+									<button
+										type="button"
+										class="mt-2 inline-flex items-center gap-1.5 px-2.5 py-1 text-2xs font-semibold rounded-md bg-amber-600 hover:bg-amber-700 text-white cursor-pointer transition-colors"
+										onclick={() => configureEngine(chatModelState.engine)}
+									>
+										Configure {currentEngine?.name ?? 'engine'}
+									</button>
+								{/if}
+							{/if}
+						</div>
+					</div>
+				{:else}
+					<div class="px-3 py-4 text-xs text-slate-500 text-center">
+						No models available.
+					</div>
+				{/if}
 			{:else}
 				{#each [...groupedModels.entries()] as [provider, providerModels] (provider)}
 					{@const isCollapsed = collapsedProviders.has(provider)}
@@ -854,10 +1120,10 @@
 							aria-hidden="true">
 							<path d="M9 18l6-6-6-6" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" />
 						</svg>
-						<span class="text-2xs font-semibold text-slate-500 dark:text-slate-400 uppercase tracking-wide">
+						<span class="text-2xs font-semibold text-slate-500 dark:text-slate-400 uppercase tracking-wide truncate min-w-0">
 							{formatProvider(provider)}
 						</span>
-						<span class="text-4xs text-slate-400 dark:text-slate-500">
+						<span class="text-4xs text-slate-400 dark:text-slate-500 flex-shrink-0">
 							{providerModels.length}
 						</span>
 						{#if hasSelectedModel}
@@ -887,10 +1153,10 @@
 
 								<!-- Model info -->
 								<div class="flex-1 min-w-0">
-									<div class="flex items-center gap-2">
-										<span class="font-medium text-xs">{model.engine.model.name}</span>
+									<div class="flex items-center gap-2 min-w-0">
+										<span class="font-medium text-xs truncate">{model.engine.model.name}</span>
 										{#if model.limit.input}
-											<span class="text-3xs text-slate-400 dark:text-slate-500">{formatTokens(model.limit.input)}</span>
+											<span class="text-3xs text-slate-400 dark:text-slate-500 flex-shrink-0">{formatTokens(model.limit.input)}</span>
 										{/if}
 										{#if (pinnedModelIds || []).includes(model.engine.model.id)}
 											<Icon name="lucide:pin" class="w-3 h-3 text-amber-500 flex-shrink-0" />

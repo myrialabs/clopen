@@ -30,6 +30,7 @@ export interface ChatSession {
 	account_id?: number; // Engine account used for this session
 	account_name?: string; // Display name of the selected account
 	profile_id?: number | null; // Active Profile bundle for this session (null = use project default / none)
+	reasoning_effort?: string | null; // Reasoning/thinking level token (native per engine; null = engine default)
 
 	// ── HEAD state (re-derived when HEAD changes: undo/redo/restore/branch) ──
 	head_message_id?: string; // Git-like HEAD pointer to current branch tip

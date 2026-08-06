@@ -23,6 +23,7 @@ import type { McpServerConfig } from '@anthropic-ai/claude-agent-sdk';
 import type { McpRemoteConfig } from '@opencode-ai/sdk';
 import type { MCPHTTPServerConfig as CopilotMcpServerConfig } from '@github/copilot-sdk';
 import type { CLIMcpServerConfig as QwenMcpServerConfig } from '@qwen-code/sdk';
+import type { McpServerConfig as CursorMcpServerConfig } from '@cursor/sdk';
 import { debug } from '$shared/utils/logger';
 import { mcpServerQueries } from '$backend/database/queries';
 import { externalNamespace, MCP_TOOL_CALL_TIMEOUT_MS } from '../shared/constants';
@@ -208,6 +209,16 @@ export function getCopilotExternalMcpConfig(profileFilter?: Set<string>): Record
 }
 
 /** Qwen Code: `CLIMcpServerConfig` Streamable-HTTP (`httpUrl`) at the bridge proxy. */
+/** Cursor: `McpServerConfig` (http variant) pointing at the bridge proxy. */
+export function getCursorExternalMcpConfig(profileFilter?: Set<string>): Record<string, CursorMcpServerConfig> {
+	const out: Record<string, CursorMcpServerConfig> = {};
+	for (const s of getEnabledExternalServers(profileFilter)) {
+		out[s.namespace] = { type: 'http', url: bridgeUrl(s.slug, 'cursor'), headers: serviceAuthHeaders() };
+	}
+	logBuilt('Cursor', out);
+	return out;
+}
+
 export function getQwenExternalMcpConfig(profileFilter?: Set<string>): Record<string, QwenMcpServerConfig> {
 	const out: Record<string, QwenMcpServerConfig> = {};
 	for (const s of getEnabledExternalServers(profileFilter)) {

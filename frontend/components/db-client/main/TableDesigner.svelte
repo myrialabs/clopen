@@ -52,6 +52,7 @@
 		mysql:    ['INT', 'BIGINT', 'VARCHAR(255)', 'TEXT', 'DATETIME', 'TIMESTAMP', 'BOOLEAN', 'FLOAT', 'DOUBLE', 'JSON'],
 		postgres: ['INTEGER', 'BIGINT', 'TEXT', 'VARCHAR(255)', 'BOOLEAN', 'TIMESTAMP', 'JSONB', 'UUID', 'REAL', 'BYTEA'],
 		sqlite:   ['INTEGER', 'TEXT', 'REAL', 'BLOB', 'NUMERIC'],
+		mssql:    ['INT', 'BIGINT', 'VARCHAR(255)', 'NVARCHAR(MAX)', 'DATETIME2', 'BIT', 'DECIMAL(18,2)', 'VARBINARY(MAX)'],
 		mongodb:  [],
 		redis:    []
 	};
@@ -84,6 +85,7 @@
 	function quote(n: string): string {
 		switch (driver) {
 			case 'mysql': return '`' + n.replace(/`/g, '``') + '`';
+			case 'mssql': return '[' + n.replace(/\]/g, ']]') + ']';
 			default: return '"' + n.replace(/"/g, '""') + '"';
 		}
 	}
@@ -97,6 +99,7 @@
 		if (c.autoIncrement) {
 			if (driver === 'mysql') parts.push('AUTO_INCREMENT');
 			else if (driver === 'sqlite') parts.push('AUTOINCREMENT');
+			else if (driver === 'mssql') parts.push('IDENTITY(1,1)');
 		}
 		return parts;
 	}

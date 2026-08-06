@@ -275,10 +275,15 @@ export function convertUserMessage(msg: SDKUserMessage): UserMessage {
 export interface StreamConverterState {
 	/** index → true when the block is a thinking block */
 	reasoningBlocks: Map<number, boolean>;
+	/** Workflow background task id → originating Workflow tool_use id. */
+	workflowParents: Map<string, string>;
 }
 
 export function createStreamConverterState(): StreamConverterState {
-	return { reasoningBlocks: new Map() };
+	return {
+		reasoningBlocks: new Map(),
+		workflowParents: new Map(),
+	};
 }
 
 /** Convert SDKPartialAssistantMessage (stream_event) → TextDeltaEvent | StreamLifecycleEvent */
@@ -411,6 +416,24 @@ function convertTaskNotification(
 	};
 }
 
+function workflowActivityMessage(
+	msg: { session_id: string; uuid?: string },
+	parentToolUseId: string,
+	text: string,
+): AssistantMessage {
+	return {
+		type: 'assistant',
+		createdAt: new Date().toISOString(),
+		messageId: msg.uuid || crypto.randomUUID(),
+		sessionId: msg.session_id,
+		parent: { messageId: null, sessionId: null, toolUseId: parentToolUseId },
+		engine: { type: 'claude-code', provider: 'anthropic', model: { id: '', name: '' }, account: { id: 0, name: '' } },
+		content: [{ type: 'text', text }],
+		stopReason: null,
+		usage: null,
+	};
+}
+
 /** Convert SDKCompactBoundaryMessage → CompactBoundaryMessage */
 export function convertCompactBoundary(msg: SDKCompactBoundaryMessage): CompactBoundaryMessage {
 	return {
@@ -507,12 +530,25 @@ function* dispatchSdkMessage(msg: SDKMessage, state: StreamConverterState): Gene
 				yield convertSystemInit(msg as SDKSystemMessage);
 			} else if (subtype === 'compact_boundary') {
 				yield convertCompactBoundary(msg as SDKCompactBoundaryMessage);
+			} else if (subtype === 'task_started') {
+				const task = msg as unknown as { session_id: string; uuid?: string; task_id: string; tool_use_id?: string; task_type?: string; workflow_name?: string; description?: string };
+				if (task.task_type === 'local_workflow' && task.tool_use_id) {
+					state.workflowParents.set(task.task_id, task.tool_use_id);
+					const detail = `Workflow ${task.workflow_name || task.description || task.task_id} started.`;
+					yield workflowActivityMessage(task, task.tool_use_id, detail);
+				}
 			} else if (subtype === 'task_notification') {
-				const note = convertTaskNotification(msg as unknown as Parameters<typeof convertTaskNotification>[0]);
+				const task = msg as unknown as { session_id: string; uuid?: string; task_id: string; tool_use_id?: string; status: string; summary?: string };
+				const parent = task.tool_use_id || state.workflowParents.get(task.task_id);
+				if (parent && state.workflowParents.has(task.task_id)) {
+					yield workflowActivityMessage(task, parent, `Workflow ${task.status}.`);
+					state.workflowParents.delete(task.task_id);
+				}
+				const note = convertTaskNotification(task);
 				if (note) yield note;
 			}
-			// task_started / task_progress / task_updated: background-task
-			// progress noise — intentionally not surfaced (no tasks panel).
+			// task_progress is a repeated heartbeat; real child activity is replayed
+			// from Workflow-owned transcripts. task_updated has no tool_use_id.
 			break;
 		}
 

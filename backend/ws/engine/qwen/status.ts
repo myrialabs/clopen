@@ -10,16 +10,7 @@ import { createRouter } from '$shared/utils/ws-server';
 import { engineQueries } from '../../../database/queries';
 import { debug } from '$shared/utils/logger';
 import { getBackendOS } from '../../../utils/os';
-
-function readSdkVersion(): string | null {
-	try {
-		const path = require.resolve('@qwen-code/sdk/package.json');
-		const pkg = require(path) as { version?: string };
-		return pkg.version ?? null;
-	} catch {
-		return null;
-	}
-}
+import { readEngineSdkVersion } from '$backend/engine/sdk-loader';
 
 export const qwenStatusHandler = createRouter()
 	.http('engine:qwen-status', {
@@ -44,9 +35,11 @@ export const qwenStatusHandler = createRouter()
 		const accounts = provider ? engineQueries.getAccountsByProvider(provider.id) : [];
 		const activeAccount = engineQueries.getActiveAccountForEngine('qwen');
 
+		const sdkVersion = readEngineSdkVersion('@qwen-code/sdk');
+
 		return {
-			installed: true,
-			version: readSdkVersion(),
+			installed: sdkVersion !== null,
+			version: sdkVersion,
 			activeAccount: activeAccount ? { id: activeAccount.id, name: activeAccount.name } : null,
 			accountsCount: accounts.length,
 			backendOS: getBackendOS()

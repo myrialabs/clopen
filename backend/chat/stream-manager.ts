@@ -9,6 +9,7 @@
  */
 
 import { EventEmitter } from 'events';
+import { checkEngineSetup } from '../engine/engine-setup';
 import type {
 	EngineOutput,
 	UnifiedMessage,
@@ -54,6 +55,8 @@ export interface StreamState {
 	processId: string;
 	engine: EngineType;
 	accountId?: number;
+	/** Reasoning/thinking level token for this run (native per engine; undefined = engine default). */
+	reasoningEffort?: string;
 	status: 'active' | 'completed' | 'error' | 'cancelled';
 	startedAt: Date;
 	completedAt?: Date;
@@ -123,6 +126,8 @@ interface RequestEngineContext {
 	accountId: number;
 	accountName: string;
 	modelName: string;
+	/** Reasoning/thinking level for this turn (native per engine; undefined = no knob). */
+	reasoningEffort?: string;
 }
 
 /**
@@ -147,6 +152,9 @@ function enrichMessageEngine(
 				id: ctx.accountId || message.engine.account.id,
 				name: ctx.accountName || message.engine.account.name,
 			},
+			// Surface the turn's reasoning level (when the engine exposes one) so it's
+			// visible in the Raw Message view. Omitted when there's no knob.
+			...(ctx.reasoningEffort !== undefined && { reasoningEffort: ctx.reasoningEffort }),
 		},
 	};
 }
@@ -235,6 +243,22 @@ class StreamManager extends EventEmitter {
 		super();
 		// Increase max listeners for high concurrency
 		this.setMaxListeners(1000);
+
+		// MCP browser locks are scoped to a chat session, and every release path
+		// runs from this class. Teaching the lock manager how to check liveness
+		// closes the gap those paths can't: a tool call that lands after its
+		// stream ended used to be able to take a lock nothing would release.
+		browserMcpControl.setSessionLivenessProbe((chatSessionId) =>
+			this.isChatSessionStreaming(chatSessionId)
+		);
+	}
+
+	/** Whether any stream for this chat session is still running. */
+	private isChatSessionStreaming(chatSessionId: string): boolean {
+		for (const stream of this.activeStreams.values()) {
+			if (stream.chatSessionId === chatSessionId && stream.status === 'active') return true;
+		}
+		return false;
 	}
 
 	/**
@@ -297,6 +321,7 @@ class StreamManager extends EventEmitter {
 			processId,
 			engine: request.engine.type,
 			accountId: request.engine.account?.id || undefined,
+			reasoningEffort: request.reasoningEffort ?? undefined,
 			status: 'active',
 			startedAt: new Date(),
 			messages: [],
@@ -325,6 +350,11 @@ class StreamManager extends EventEmitter {
 				// so the session keeps inheriting the project default.
 				if (request.profileId !== undefined) {
 					sessionQueries.updateProfile(request.chatSessionId, request.profileId);
+				}
+				// Persist the reasoning/thinking level (string or null). `undefined`
+				// (client didn't send one) leaves the stored value untouched.
+				if (request.reasoningEffort !== undefined) {
+					sessionQueries.updateReasoning(request.chatSessionId, request.reasoningEffort);
 				}
 			} catch (error) {
 				debug.error('chat', 'Failed to save engine/model to session:', error);
@@ -455,6 +485,7 @@ class StreamManager extends EventEmitter {
 				accountId: requestEngine.account.id,
 				accountName: requestEngine.account.name,
 				modelName: requestEngine.model.name,
+				reasoningEffort: streamState.reasoningEffort,
 			};
 
 			const projectPathExists = projectPath ? await this.existsSync(projectPath) : false;
@@ -627,6 +658,13 @@ class StreamManager extends EventEmitter {
 				debug.warn('chat', 'MCP OAuth refresh failed:', error)
 			);
 
+			// Refuse to stream an engine that isn't ready and point the user at the
+			// exact fix (Stack to install/update, Engines to sign in). Thrown here
+			// so the processStream catch surfaces it as a chat error, which the
+			// ErrorMessage renderer turns into a one-click action.
+			const setupIssue = checkEngineSetup(requestEngine.type, requestEngine.account.id);
+			if (setupIssue) throw new Error(setupIssue.message);
+
 			// Stream EngineOutput events through the engine adapter
 			const streamIterable = engine.streamQuery({
 				projectPath,
@@ -634,6 +672,7 @@ class StreamManager extends EventEmitter {
 				resume: resumeSessionId,
 				providerSlug: requestEngine.provider,
 				modelId: requestEngine.model.id,
+				...(streamState.reasoningEffort && { reasoningEffort: streamState.reasoningEffort }),
 				includePartialMessages: true,
 				abortController: streamState.abortController,
 				...(requestEngine.account.id !== 0 && { accountId: requestEngine.account.id }),
@@ -811,11 +850,11 @@ class StreamManager extends EventEmitter {
 									});
 								}
 							}
-							// Codex emits usage only once per turn (after all items
-							// streamed live), so saved assistant rows have usage:null.
-							// Backfill the turn's aggregate to every saved assistant
-							// without usage so it survives a refresh.
-							if (successResult.usage && streamState.engine === 'codex') {
+							// Codex and Cursor emit usage only once per turn (after all
+							// items streamed live), so saved assistant rows have
+							// usage:null. Backfill the turn's aggregate to every saved
+							// assistant without usage so it survives a refresh.
+							if (successResult.usage && (streamState.engine === 'codex' || streamState.engine === 'cursor')) {
 								this.backfillUsageForStream(streamState, successResult.usage, requestSender);
 							}
 						} else {
@@ -1279,6 +1318,27 @@ class StreamManager extends EventEmitter {
 			}
 		}
 
+		// Abort first, then release the browser locks, and only then ask the
+		// engine to stop.
+		//
+		// The order matters and used to be the other way round. `engine.cancel()`
+		// is awaited for up to five seconds, and a browser-automation batch that
+		// was mid-flight kept resolving its target tab throughout — re-acquiring
+		// control of a tab moments after (or before) it was handed back, under a
+		// chat session whose release had already run. That is the interrupt that
+		// left the tab locked with nobody to unlock it. Aborting up front makes
+		// the batch stop between actions, and releasing before the wait means
+		// anything that slips through is refused rather than orphaned.
+		if (!streamState.abortController?.signal.aborted) {
+			streamState.abortController?.abort();
+		}
+
+		// Auto-release all MCP-controlled tabs for this chat session
+		if (streamState.chatSessionId) {
+			browserMcpControl.releaseSession(streamState.chatSessionId);
+			debug.log('mcp', `✅ Auto-released MCP tabs for session ${streamState.chatSessionId.slice(0, 8)} on stream cancellation`);
+		}
+
 		// Cancel the per-project engine with a bounded timeout.
 		// engine.cancel() stops the SDK process (Claude Code: close() kills subprocess,
 		// OpenCode: aborts controller + HTTP abort to server). If cancel() hangs
@@ -1297,14 +1357,6 @@ class StreamManager extends EventEmitter {
 			debug.error('chat', 'Error cancelling engine (non-fatal):', error);
 		}
 
-		// Abort the stream-manager's controller as a fallback.
-		// engine.cancel() already aborts the same controller, so this is
-		// typically a no-op but ensures cleanup if the engine timed out
-		// or wasn't active.
-		if (!streamState.abortController?.signal.aborted) {
-			streamState.abortController?.abort();
-		}
-
 		this.emitStreamEvent(streamState, 'cancelled', {
 			processId: streamState.processId,
 			timestamp: streamState.completedAt.toISOString()
@@ -1312,11 +1364,10 @@ class StreamManager extends EventEmitter {
 
 		this.emitStreamLifecycle(streamState, 'cancelled', reason);
 
-		// Auto-release all MCP-controlled tabs for this chat session
-		if (streamState.chatSessionId) {
-			browserMcpControl.releaseSession(streamState.chatSessionId);
-			debug.log('mcp', `✅ Auto-released MCP tabs for session ${streamState.chatSessionId.slice(0, 8)} on stream cancellation`);
-		}
+		// Sweep again after the engine has actually stopped: a tool call still
+		// in flight during the wait above may have taken a lock that its own
+		// release path will never reach.
+		browserMcpControl.releaseOrphans();
 
 		return true;
 	}

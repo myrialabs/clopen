@@ -90,7 +90,32 @@ interface SetupProcess {
 	disposed: boolean;
 	phase: SetupPhase;
 	accountName: string;
+	/** When set, re-authenticate this existing account in place instead of creating a new one. */
+	reauthAccountId: number | null;
 	urlEmitted: boolean;
+}
+
+/**
+ * Persist a freshly captured OAuth token — either updating an existing account
+ * in place (re-authentication) or creating a new one. Always resets the Claude
+ * environment so the next stream reads the new credential.
+ */
+function persistClaudeAccount(entry: SetupProcess, token: string): { ok: true; accountId: number } | { ok: false; error: string } {
+	const provider = engineQueries.getProviderBySlug('claude-code', 'anthropic');
+	if (!provider) return { ok: false, error: 'Anthropic provider not found in DB' };
+
+	if (entry.reauthAccountId != null) {
+		const existing = engineQueries.getAccount(entry.reauthAccountId);
+		if (!existing) return { ok: false, error: 'Account to re-authenticate not found' };
+		engineQueries.updateAccountCredential(entry.reauthAccountId, token);
+		if (entry.accountName) engineQueries.renameAccount(entry.reauthAccountId, entry.accountName);
+		resetEnvironment();
+		return { ok: true, accountId: entry.reauthAccountId };
+	}
+
+	const account = engineQueries.createAccount(provider.id, entry.accountName, token);
+	resetEnvironment();
+	return { ok: true, accountId: account.id };
 }
 
 const setupProcesses = new Map<string, SetupProcess>();
@@ -226,6 +251,7 @@ export const accountsHandler = createRouter()
 			disposed: false,
 			phase: 'waiting-url',
 			accountName: '',
+			reauthAccountId: null,
 			urlEmitted: false
 		};
 		setupProcesses.set(setupId, entry);
@@ -262,21 +288,19 @@ export const accountsHandler = createRouter()
 					entry.phase = 'done';
 					debug.log('engine', `[${setupId}] Token captured`);
 
-					const provider = engineQueries.getProviderBySlug('claude-code', 'anthropic');
-					if (!provider) {
+					const result = persistClaudeAccount(entry, token);
+					if (!result.ok) {
 						ws.emit.user(userId, 'engine:claude-account-setup-error', {
 							setupId,
-							message: 'Anthropic provider not found in DB'
+							message: result.error
 						});
 						cleanupSetup(setupId);
 						return;
 					}
-					const account = engineQueries.createAccount(provider.id, entry.accountName, token);
-					resetEnvironment();
 
 					ws.emit.user(userId, 'engine:claude-account-setup-complete', {
 						setupId,
-						accountId: account.id
+						accountId: result.accountId
 					});
 
 					cleanupSetup(setupId);
@@ -316,20 +340,18 @@ export const accountsHandler = createRouter()
 				const token = extractOAuthToken(clean);
 				if (token) {
 					debug.log('engine', `[${setupId}] Token found in final buffer`);
-					const provider = engineQueries.getProviderBySlug('claude-code', 'anthropic');
-					if (!provider) {
+					const result = persistClaudeAccount(entry, token);
+					if (!result.ok) {
 						ws.emit.user(userId, 'engine:claude-account-setup-error', {
 							setupId,
-							message: 'Anthropic provider not found in DB'
+							message: result.error
 						});
 						cleanupSetup(setupId);
 						return;
 					}
-					const account = engineQueries.createAccount(provider.id, entry.accountName, token);
-					resetEnvironment();
 					ws.emit.user(userId, 'engine:claude-account-setup-complete', {
 						setupId,
-						accountId: account.id
+						accountId: result.accountId
 					});
 				} else {
 					// Try to extract a meaningful error message
@@ -350,7 +372,8 @@ export const accountsHandler = createRouter()
 		data: t.Object({
 			setupId: t.String(),
 			code: t.String(),
-			name: t.String({ minLength: 1 })
+			name: t.String({ minLength: 1 }),
+			reauthAccountId: t.Optional(t.Number())
 		})
 	}, async ({ data, conn }) => {
 		const userId = ws.getUserId(conn);
@@ -371,6 +394,7 @@ export const accountsHandler = createRouter()
 		entry.buffer = '';
 		entry.phase = 'waiting-token';
 		entry.accountName = data.name;
+		entry.reauthAccountId = data.reauthAccountId ?? null;
 
 		// Write auth code to PTY, then press Enter after a short delay
 		// The delay ensures the PTY input buffer has processed the code before receiving Enter

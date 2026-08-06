@@ -2,10 +2,42 @@ import { getDatabase } from '../index';
 import type { DatabaseMessage } from '$shared/types/database/schema';
 import type { UnifiedMessage } from '$shared/types/unified';
 import { debug } from '$shared/utils/logger';
+import { trimSubAgentForWire } from '$shared/utils/subagent-wire-trim';
 
 /** Parse message JSON from a DB row. */
 function parseMessage(row: DatabaseMessage): UnifiedMessage {
 	return JSON.parse(row.data) as UnifiedMessage;
+}
+
+/**
+ * Extract combined plain text from a message for the messages_fts index.
+ * Kept local (not imported from snapshot/helpers.ts) to avoid a circular
+ * import — helpers.ts imports messageQueries from this module's barrel.
+ */
+function extractSearchableText(msg: UnifiedMessage): string {
+	if (msg.type === 'reasoning') return msg.text;
+	if (msg.type === 'compact_boundary') return '';
+	return msg.content
+		.filter((block): block is { type: 'text'; text: string } => block.type === 'text' && !!block.text)
+		.map(block => block.text)
+		.join('\n');
+}
+
+/** Keep the messages_fts mirror in sync with a message's current text content. */
+function syncMessageFts(id: string, sessionId: string, msg: UnifiedMessage): void {
+	const db = getDatabase();
+	db.prepare('DELETE FROM messages_fts WHERE message_id = ?').run(id);
+
+	const text = extractSearchableText(msg).trim();
+	if (!text) return;
+
+	const session = db.prepare('SELECT project_id FROM chat_sessions WHERE id = ?').get(sessionId) as { project_id: string } | null;
+	if (!session) return;
+
+	db.prepare(`
+		INSERT INTO messages_fts (message_id, session_id, project_id, text)
+		VALUES (?, ?, ?, ?)
+	`).run(id, sessionId, session.project_id, text);
 }
 
 export const messageQueries = {
@@ -25,7 +57,10 @@ export const messageQueries = {
 		}
 
 		const path = this.getPathToRoot(session.head_message_id);
-		return path.map(parseMessage);
+		// Trim sub-agent tool noise from the display payload. The DB rows keep the
+		// full data; only what is sent to the frontend is slimmed. See
+		// trimSubAgentForWire for the rationale.
+		return path.map(parseMessage).map(trimSubAgentForWire);
 	},
 
 	/**
@@ -49,6 +84,44 @@ export const messageQueries = {
 		`).get(id) as DatabaseMessage | null;
 
 		return message;
+	},
+
+	/**
+	 * Get the full (untrimmed) sub-agent messages nested under a message's
+	 * tool_use blocks, matched by `parent.toolUseId`.
+	 *
+	 * The wire payload trims sub-agent noise (see trimSubAgentForWire), so the
+	 * frontend's in-memory copy is slimmed. The Debug modal uses this to fetch
+	 * the complete sub-agent data straight from the DB and rebuild the full view.
+	 */
+	getSubAgentMessages(messageId: string): UnifiedMessage[] {
+		const db = getDatabase();
+		const row = db.prepare(`
+			SELECT * FROM messages WHERE id = ?
+		`).get(messageId) as DatabaseMessage | null;
+		if (!row) return [];
+
+		const parent = parseMessage(row);
+		if (parent.type !== 'assistant') return [];
+
+		const toolUseIds = new Set(
+			parent.content
+				.filter(block => block.type === 'tool_use')
+				.map(block => (block as { id: string }).id)
+		);
+		if (toolUseIds.size === 0) return [];
+
+		const rows = db.prepare(`
+			SELECT * FROM messages WHERE session_id = ?
+			ORDER BY created_at ASC
+		`).all(row.session_id) as DatabaseMessage[];
+
+		return rows
+			.map(parseMessage)
+			.filter(msg => {
+				const parentToolUseId = msg.parent?.toolUseId;
+				return parentToolUseId != null && toolUseIds.has(parentToolUseId);
+			});
 	},
 
 	create(messageData: {
@@ -89,6 +162,8 @@ export const messageQueries = {
 			parentMessageId
 		);
 
+		syncMessageFts(id, messageData.session_id, msg);
+
 		return {
 			id,
 			session_id: messageData.session_id,
@@ -103,19 +178,30 @@ export const messageQueries = {
 	delete(id: string): void {
 		const db = getDatabase();
 		db.prepare('DELETE FROM messages WHERE id = ?').run(id);
+		db.prepare('DELETE FROM messages_fts WHERE message_id = ?').run(id);
 	},
 
 	deleteBySessionId(sessionId: string): void {
 		const db = getDatabase();
 		db.prepare('DELETE FROM messages WHERE session_id = ?').run(sessionId);
+		db.prepare('DELETE FROM messages_fts WHERE session_id = ?').run(sessionId);
 	},
 
 	deleteAfterTimestamp(sessionId: string, timestamp: string): void {
 		const db = getDatabase();
+		const ids = db.prepare(`
+			SELECT id FROM messages WHERE session_id = ? AND created_at >= ?
+		`).all(sessionId, timestamp) as { id: string }[];
+
 		db.prepare(`
 			DELETE FROM messages
 			WHERE session_id = ? AND created_at >= ?
 		`).run(sessionId, timestamp);
+
+		if (ids.length > 0) {
+			const placeholders = ids.map(() => '?').join(',');
+			db.prepare(`DELETE FROM messages_fts WHERE message_id IN (${placeholders})`).run(...ids.map(r => r.id));
+		}
 	},
 
 	/**

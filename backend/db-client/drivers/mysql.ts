@@ -24,6 +24,7 @@ import type {
 	TableDefinition
 } from './types';
 import { normalizeBunSqlResult } from './bun-sql-helpers';
+import { BUN_SQL_POOL_OPTIONS } from '../pool-config';
 import {
 	assertSafeIdentifier,
 	buildDelete,
@@ -61,7 +62,7 @@ export class MysqlAdapter implements DbClientDriverAdapter {
 		const db = conn.database ? `/${encodeURIComponent(conn.database)}` : '';
 
 		const url = `mysql://${auth}${host}:${port}${db}`;
-		this.sql = new SQL(url);
+		this.sql = new SQL(url, BUN_SQL_POOL_OPTIONS);
 		await this.sql.connect();
 		this.defaultDb = conn.database || null;
 		this.configuredDb = conn.database || null;
@@ -239,14 +240,27 @@ export class MysqlAdapter implements DbClientDriverAdapter {
 	async listObjects(database?: string): Promise<DbClientSchemaNode[]> {
 		const target = this.targetDb({ database });
 		if (!target) throw new Error('MySQL: database is required');
-		const rows = (await this.requireSql().unsafe(
+		const tables = (await this.requireSql().unsafe(
 			'SELECT TABLE_NAME, TABLE_TYPE FROM information_schema.tables WHERE TABLE_SCHEMA = ? ORDER BY TABLE_NAME',
 			[target] as never
 		)) as Array<{ TABLE_NAME: string; TABLE_TYPE: string }>;
-		return rows.map((r) => ({
+
+		const routines = (await this.requireSql().unsafe(
+			'SELECT ROUTINE_NAME, ROUTINE_TYPE FROM information_schema.routines WHERE ROUTINE_SCHEMA = ? ORDER BY ROUTINE_NAME',
+			[target] as never
+		)) as Array<{ ROUTINE_NAME: string; ROUTINE_TYPE: string }>;
+
+		const tableNodes = tables.map((r) => ({
 			name: r.TABLE_NAME,
-			type: r.TABLE_TYPE === 'VIEW' ? 'view' as const : 'table' as const
+			type: r.TABLE_TYPE === 'VIEW' ? ('view' as const) : ('table' as const)
 		}));
+
+		const routineNodes = routines.map((r) => ({
+			name: r.ROUTINE_NAME,
+			type: r.ROUTINE_TYPE === 'FUNCTION' ? ('function' as const) : ('procedure' as const)
+		}));
+
+		return [...tableNodes, ...routineNodes];
 	}
 
 	async getObjectDetails(
@@ -257,6 +271,21 @@ export class MysqlAdapter implements DbClientDriverAdapter {
 		const target = this.targetDb({ database });
 		if (!target) throw new Error('MySQL: database is required');
 		const sql = this.requireSql();
+
+		if (_type === 'function' || _type === 'procedure') {
+			const query = _type === 'function'
+				? `SHOW CREATE FUNCTION ${Q(target)}.${Q(name)}`
+				: `SHOW CREATE PROCEDURE ${Q(target)}.${Q(name)}`;
+			
+			const res = (await sql.unsafe(query)) as any[];
+			const field = _type === 'function' ? 'Create Function' : 'Create Procedure';
+			const definition = res[0]?.[field] ?? res[0]?.[field.toUpperCase()] ?? '';
+			return {
+				name,
+				type: _type,
+				ddl: String(definition)
+			};
+		}
 
 		const colRows = (await sql.unsafe(
 			`SELECT COLUMN_NAME, DATA_TYPE, COLUMN_TYPE, IS_NULLABLE, COLUMN_DEFAULT, COLUMN_KEY, EXTRA

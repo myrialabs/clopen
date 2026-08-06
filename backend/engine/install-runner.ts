@@ -18,6 +18,8 @@
  */
 
 import { freemem, totalmem } from 'node:os';
+import { existsSync, mkdirSync, writeFileSync } from 'node:fs';
+import { join } from 'node:path';
 import { debug } from '$shared/utils/logger';
 import { ws } from '$backend/utils/ws';
 import { getCleanSpawnEnv } from '$backend/utils/env';
@@ -28,6 +30,24 @@ import { resolveRecipe } from './install-recipes';
 
 const RING_BUFFER_LINES = 10_000;
 const RETENTION_MS = 5 * 60 * 1000;
+
+/**
+ * Ensure a recipe's working directory exists as a minimal bun project before
+ * `bun add` runs there. Engine recipes install into the clopen-managed stack
+ * dir (`~/.clopen/stack/engines`); a package.json must exist so `bun add`
+ * treats it as a project root instead of walking up to some parent.
+ */
+function ensureRecipeCwd(recipe: Recipe): void {
+	if (!recipe.cwd) return;
+	mkdirSync(recipe.cwd, { recursive: true });
+	const pkgJsonPath = join(recipe.cwd, 'package.json');
+	if (!existsSync(pkgJsonPath)) {
+		writeFileSync(
+			pkgJsonPath,
+			JSON.stringify({ name: 'clopen-stack-engines', private: true, version: '0.0.0' }, null, 2) + '\n'
+		);
+	}
+}
 
 export type SessionStatus = 'running' | 'success' | 'failed' | 'cancelled';
 
@@ -98,7 +118,7 @@ function emitStream(session: Session, stream: 'stdout' | 'stderr', chunk: string
 	session.pending[stream] = parts.pop() ?? '';
 	for (const line of parts) {
 		pushLine(session.buffer, line);
-		ws.emit.user(session.startedBy, 'system-tools:install-stream', {
+		ws.emit.user(session.startedBy, 'stack:install-stream', {
 			sessionId: session.id,
 			tool: session.tool,
 			type: stream,
@@ -112,7 +132,7 @@ function flushPending(session: Session): void {
 		const remaining = session.pending[stream];
 		if (remaining) {
 			pushLine(session.buffer, remaining);
-			ws.emit.user(session.startedBy, 'system-tools:install-stream', {
+			ws.emit.user(session.startedBy, 'stack:install-stream', {
 				sessionId: session.id,
 				tool: session.tool,
 				type: stream,
@@ -171,7 +191,7 @@ function finalizeSession(session: Session, preferredStatus: SessionStatus, exitC
 
 	debug.log('path', `[install:${session.id}] Finished status=${session.status} exit=${exitCode}`);
 
-	ws.emit.user(session.startedBy, 'system-tools:install-finished', {
+	ws.emit.user(session.startedBy, 'stack:install-finished', {
 		sessionId: session.id,
 		tool: session.tool,
 		status: session.status,
@@ -257,14 +277,19 @@ async function runInstall(session: Session, env: Record<string, string>): Promis
 		? [recipe.shell.program, ...recipe.shell.args, ...recipe.command!]
 		: recipe.command!;
 
-	debug.log('path', `[install:${session.id}] Spawning: ${spawnArgs.join(' ')}`);
+	// Engine recipes install into a clopen-managed directory (recipe.cwd);
+	// make sure it exists as a minimal bun project before `bun add` runs.
+	ensureRecipeCwd(recipe);
+
+	debug.log('path', `[install:${session.id}] Spawning: ${spawnArgs.join(' ')}${recipe.cwd ? ` (cwd: ${recipe.cwd})` : ''}`);
 
 	try {
 		proc = Bun.spawn(spawnArgs, {
 			stdout: 'pipe',
 			stderr: 'pipe',
 			stdin: 'ignore',
-			env
+			env,
+			...(recipe.cwd ? { cwd: recipe.cwd } : {})
 		});
 	} catch (err) {
 		emitStream(session, 'stderr', `spawn failed: ${err instanceof Error ? err.message : String(err)}\n`);
@@ -324,7 +349,7 @@ export async function startInstall(tool: ToolId, userId: string): Promise<Sessio
 	emitStream(session, 'stdout', banner + '\n');
 
 	// Broadcast the session-started event so clients that subscribe mid-run can attach.
-	ws.emit.user(userId, 'system-tools:install-started', {
+	ws.emit.user(userId, 'stack:install-started', {
 		sessionId: id,
 		tool,
 		displayCommand: recipe.displayCommand ?? '',

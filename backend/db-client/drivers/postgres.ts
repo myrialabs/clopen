@@ -24,6 +24,7 @@ import type {
 	TableDefinition
 } from './types';
 import { normalizeBunSqlResult } from './bun-sql-helpers';
+import { BUN_SQL_POOL_OPTIONS } from '../pool-config';
 import {
 	assertSafeIdentifier,
 	buildDelete,
@@ -80,7 +81,7 @@ export class PostgresAdapter implements DbClientDriverAdapter {
 	async connect(conn: DbClientConnection, tunnelPort?: number): Promise<void> {
 		const url = this.buildUrl(conn, tunnelPort);
 
-		this.sql = new SQL(url);
+		this.sql = new SQL(url, BUN_SQL_POOL_OPTIONS);
 		await this.sql.connect();
 		this.hasConfiguredDb = !!conn.database;
 		this.homeDb = conn.database || 'postgres';
@@ -105,7 +106,7 @@ export class PostgresAdapter implements DbClientDriverAdapter {
 			if (target === this.defaultDb) return;
 			const newConn = { ...this.conn, database: target };
 			const url = this.buildUrl(newConn, this.tunnelPort);
-			const next = new SQL(url);
+			const next = new SQL(url, BUN_SQL_POOL_OPTIONS);
 			await next.connect();
 			const prevSql = this.sql;
 			this.sql = next;
@@ -278,15 +279,47 @@ export class PostgresAdapter implements DbClientDriverAdapter {
 	async listObjects(database?: string, schema?: string): Promise<DbClientSchemaNode[]> {
 		await this.ensureDatabase(database);
 		const target = this.targetSchema({ schema });
-		const rows = (await this.requireSql().unsafe(
+		const tables = (await this.requireSql().unsafe(
 			`SELECT table_name, table_type FROM information_schema.tables
 			 WHERE table_schema = $1 ORDER BY table_name`,
 			[target] as never
 		)) as Array<{ table_name: string; table_type: string }>;
-		return rows.map((r) => ({
+
+		// Query pg_proc directly (not information_schema.routines) so we can filter
+		// on prokind: keep plain functions ('f') and procedures ('p'), but exclude
+		// aggregates ('a') and window functions ('w') — those (e.g. avg/sum) have no
+		// pg_get_functiondef and would error when their DDL is opened.
+		const routines = (await this.requireSql().unsafe(
+			`SELECT p.proname AS routine_name, p.prokind
+			 FROM pg_proc p
+			 JOIN pg_namespace n ON p.pronamespace = n.oid
+			 WHERE n.nspname = $1 AND p.prokind IN ('f', 'p')
+			 ORDER BY p.proname`,
+			[target] as never
+		)) as Array<{ routine_name: string; prokind: string }>;
+
+		const tableNodes = tables.map((r) => ({
 			name: r.table_name,
-			type: r.table_type === 'VIEW' ? 'view' as const : 'table' as const
+			type: r.table_type === 'VIEW' ? ('view' as const) : ('table' as const)
 		}));
+
+		// Overloaded functions (e.g. the `citext` extension) appear once per
+		// signature. Collapse to one node per name since the tree browses and
+		// fetches routine details by name alone.
+		const seenRoutines = new Set<string>();
+		const routineNodes = routines
+			.filter((r) => {
+				const key = `${r.prokind}:${r.routine_name}`;
+				if (seenRoutines.has(key)) return false;
+				seenRoutines.add(key);
+				return true;
+			})
+			.map((r) => ({
+				name: r.routine_name,
+				type: r.prokind === 'p' ? ('procedure' as const) : ('function' as const)
+			}));
+
+		return [...tableNodes, ...routineNodes];
 	}
 
 	async getObjectDetails(
@@ -298,6 +331,23 @@ export class PostgresAdapter implements DbClientDriverAdapter {
 		await this.ensureDatabase(database);
 		const target = this.targetSchema({ schema });
 		const sql = this.requireSql();
+
+		if (_type === 'function' || _type === 'procedure') {
+			const routineRows = (await sql.unsafe(
+				`SELECT pg_get_functiondef(p.oid) AS definition
+				 FROM pg_proc p
+				 JOIN pg_namespace n ON p.pronamespace = n.oid
+				 WHERE n.nspname = $1 AND p.proname = $2`,
+				[target, name] as never
+			)) as Array<{ definition: string }>;
+			
+			const definition = routineRows[0]?.definition ?? '';
+			return {
+				name,
+				type: _type,
+				ddl: String(definition)
+			};
+		}
 
 		const colRows = (await sql.unsafe(
 			`SELECT c.column_name, c.data_type, c.udt_name, c.is_nullable, c.column_default,

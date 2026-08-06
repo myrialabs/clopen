@@ -3,8 +3,8 @@
  * Tracks npm package update availability and auto-update state
  */
 
-import ws from '$frontend/utils/ws';
-import { systemSettings } from '$frontend/stores/features/settings.svelte';
+import ws, { onWsReconnect } from '$frontend/utils/ws';
+import { systemSettings, updateSystemSettings } from '$frontend/stores/features/settings.svelte';
 import { debug } from '$shared/utils/logger';
 
 interface ReleaseNotes {
@@ -28,9 +28,10 @@ interface UpdateState {
 	pendingRestart: boolean;
 	pendingVersions: { from: string; to: string } | null;
 	showRestartModal: boolean;
-	releaseNotes: ReleaseNotes | null;
+	releaseNotes: ReleaseNotes[] | null;
 	releaseNotesLoading: boolean;
 	releaseNotesError: string | null;
+	showWhatsNewModal: boolean;
 }
 
 export const updateState = $state<UpdateState>({
@@ -49,7 +50,8 @@ export const updateState = $state<UpdateState>({
 	showRestartModal: false,
 	releaseNotes: null,
 	releaseNotesLoading: false,
-	releaseNotesError: null
+	releaseNotesError: null,
+	showWhatsNewModal: false
 });
 
 let checkInterval: ReturnType<typeof setInterval> | null = null;
@@ -75,12 +77,23 @@ export async function checkForUpdate(): Promise<void> {
 			updateState.updateSuccess = true;
 			updateState.latestVersion = result.pendingUpdate.toVersion;
 			updateState.showRestartModal = true;
+			fetchReleaseNotes();
 		}
 
 		// Auto-update if enabled and update is available (skip if already pending restart)
 		if (result.updateAvailable && systemSettings.autoUpdate && !result.pendingRestart) {
 			debug.log('server', 'Auto-update enabled, starting update...');
 			await runUpdate();
+		} else if (
+			result.updateAvailable &&
+			!result.pendingRestart &&
+			systemSettings.lastSeenReleaseNotesVersion !== result.latestVersion
+		) {
+			// Manual-update users get a "what's new" preview before they decide to update.
+			// Auto-update users skip this (the update is about to happen anyway) and instead
+			// see the changelog folded into the post-update restart dialog.
+			await fetchReleaseNotes();
+			updateState.showWhatsNewModal = true;
 		}
 	} catch (err) {
 		updateState.error = err instanceof Error ? err.message : 'Failed to check for updates';
@@ -109,6 +122,7 @@ export async function runUpdate(): Promise<void> {
 		updateState.pendingVersions = { from: updateState.currentVersion, to: result.newVersion };
 		updateState.latestVersion = result.newVersion;
 		updateState.showRestartModal = true;
+		fetchReleaseNotes();
 
 		debug.log('server', 'Update completed successfully');
 	} catch (err) {
@@ -120,20 +134,32 @@ export async function runUpdate(): Promise<void> {
 	}
 }
 
-/** Fetch latest release notes from GitHub */
+/** Fetch the last few release notes (changelog) from GitHub */
 export async function fetchReleaseNotes(): Promise<void> {
-	if (updateState.releaseNotesLoading) return;
+	if (updateState.releaseNotesLoading || updateState.releaseNotes) return;
 	updateState.releaseNotesLoading = true;
 	updateState.releaseNotesError = null;
 	try {
 		const data = await ws.http('system:get-release-notes', {});
-		updateState.releaseNotes = data as ReleaseNotes;
+		updateState.releaseNotes = data as ReleaseNotes[];
 	} catch (err) {
 		updateState.releaseNotesError = err instanceof Error ? err.message : 'Failed to load release notes';
 		debug.error('server', 'Failed to fetch release notes:', err);
 	} finally {
 		updateState.releaseNotesLoading = false;
 	}
+}
+
+/** Force-refresh release notes (used by the retry button, ignores the cache guard) */
+export async function refetchReleaseNotes(): Promise<void> {
+	updateState.releaseNotes = null;
+	await fetchReleaseNotes();
+}
+
+/** Dismiss the "what's new" preview dialog, remembering this version so it won't repeat */
+export function dismissWhatsNew(): void {
+	updateState.showWhatsNewModal = false;
+	updateSystemSettings({ lastSeenReleaseNotesVersion: updateState.latestVersion });
 }
 
 /** Dismiss the update banner (not allowed when restart is pending) */
@@ -162,6 +188,27 @@ ws.on('system:update-completed', (payload) => {
 	updateState.latestVersion = payload.toVersion;
 	updateState.showRestartModal = true;
 	updateState.dismissed = false;
+	fetchReleaseNotes();
+});
+
+// After a WS reconnect (e.g. the server process was restarted to apply an update),
+// verify the server is still running the version this tab last observed. A mismatch
+// means the reconnect happened against new code — the loaded JS/CSS bundle is stale,
+// so reload instead of leaving the user on an old frontend talking to a new backend.
+// Version numbers only change on a real update (not on `bun --watch` dev restarts),
+// so this won't fire on every backend hot-reload during development.
+onWsReconnect(() => {
+	if (!updateState.currentVersion) return;
+	ws.http('system:check-update', {})
+		.then(result => {
+			if (result.currentVersion !== updateState.currentVersion) {
+				debug.log('server', `Server version changed after reconnect (${updateState.currentVersion} -> ${result.currentVersion}), reloading`);
+				window.location.reload();
+			}
+		})
+		.catch(err => {
+			debug.error('server', 'Version check after reconnect failed:', err);
+		});
 });
 
 /** Start periodic update checks (every 30 minutes) */

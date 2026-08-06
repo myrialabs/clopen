@@ -23,8 +23,9 @@ import { loggerMiddleware } from './middleware/logger';
 
 // Database initialization
 import { initializeDatabase, closeDatabase } from './database';
-import { syncInternalServers } from './mcp';
+import { bootstrapAfterDbInit } from './bootstrap';
 import { disposeAllEngines } from './engine';
+import { connectionManager } from './db-client/connection-manager';
 import { refreshProcessPath } from './utils/path-enrich';
 import { debug } from '$shared/utils/logger';
 import { networkInterfaces } from 'os';
@@ -48,18 +49,43 @@ import { browserPreviewServiceManager } from './preview';
 import { handleMcpRequest, handleExternalMcpRequest, closeMcpServer, completeAuthorization } from './mcp';
 
 // Auth middleware
-import { checkRouteAccess } from './auth/permissions';
+import { checkRouteAccess, PUBLIC_ROUTES } from './auth/permissions';
+import { getAuthMode } from './auth/auth-service';
+import { authQueries } from './database/queries';
 import { authRateLimiter } from './auth';
 import { sessionCleanupScheduler } from './auth/session-cleanup';
 import { uploadTempCleanup } from './http/upload-temp-cleanup';
 import { ws as wsServer } from './utils/ws';
 import { messageRateLimiter } from './ws/message-rate-limiter';
 
+/** How often (ms) the auth gate re-confirms a connection's session against the DB. */
+const SESSION_REVALIDATE_MS = 15_000;
+
 // Register auth gate on WebSocket router — blocks unauthenticated/unauthorized access
 wsRouter.setAuthMiddleware(async (conn, action) => {
 	const isAuth = wsServer.isAuthenticated(conn);
 	const role = wsServer.getRole(conn);
-	return checkRouteAccess(action, isAuth, role);
+	const result = checkRouteAccess(action, isAuth, role);
+	if (!result.allowed) return result;
+
+	// Defense-in-depth: an authenticated connection trusts the in-memory auth set
+	// at login. If its session was revoked/expired/deleted afterwards (sign-out
+	// from another device, admin removal, expiry), the live socket would otherwise
+	// keep full access until it reconnects. Periodically re-confirm the session
+	// still exists in the DB and kick the connection the moment it doesn't.
+	if (isAuth && getAuthMode() === 'required' && !PUBLIC_ROUTES.has(action)) {
+		if (wsServer.dueForSessionCheck(conn, SESSION_REVALIDATE_MS)) {
+			const hash = wsServer.getSessionTokenHash(conn);
+			const session = hash ? authQueries.getSessionByTokenHash(hash) : null;
+			const valid = !!session && new Date(session.expires_at) >= new Date();
+			if (!valid) {
+				wsServer.invalidateConnection(conn, 'Your session has ended');
+				return { allowed: false, error: 'Session ended' };
+			}
+		}
+	}
+
+	return result;
 });
 
 // Register message rate limiter on WebSocket router — prevents DoS via message spam
@@ -208,9 +234,11 @@ async function startServer() {
 	try {
 		await initializeDatabase();
 		debug.log('database', '✅ Database initialized successfully');
-		// Mirror code-defined internal MCP servers into the DB so Settings → MCP
-		// can list and toggle them. Idempotent; preserves the user's toggles.
-		syncInternalServers();
+		// Re-establish code-defined built-ins that live outside migrations/seeders
+		// (internal MCP servers like Browser Automation + the default engine).
+		// Shared with the clear-data handler so a DB wipe on the live process
+		// restores them without a restart.
+		bootstrapAfterDbInit();
 		// Start expired session cleanup now that the database is ready
 		sessionCleanupScheduler.start();
 		uploadTempCleanup.start();
@@ -260,6 +288,11 @@ async function gracefulShutdown() {
 	try {
 		// Stop accepting new connections first — release the port ASAP
 		app.stop();
+		// Release DB Client pools up front so remote server sessions are freed
+		// immediately on restart (dev `bun --watch`), before the slower engine
+		// and browser teardown below — otherwise the old process keeps those
+		// sockets open long enough to overlap the new process ("too many clients").
+		await connectionManager.closeAll();
 		// Dispose rate limiter timer
 		authRateLimiter.dispose();
 		// Dispose expired session cleanup timer

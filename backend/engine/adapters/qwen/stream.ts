@@ -14,7 +14,7 @@
  *
  * MCP: reuses the existing remote MCP HTTP server at `/mcp` via
  * `getQwenMcpConfig()`. Tool handlers run in-process in the Clopen backend
- * (README §9.12).
+ * (README §10.12).
  *
  * AskUserQuestion: Qwen's `canUseTool` callback signature does NOT include
  * the tool_use_id (see `node_modules/@qwen-code/sdk/dist/index.d.ts:406-409`),
@@ -27,15 +27,15 @@
  * id has been recorded yet (race on which lands first).
  */
 
-import {
-	query,
-	type Query,
-	type QueryOptions,
-	type SDKMessage,
-	type SDKUserMessage,
-	type PermissionResult,
-	type ToolInput,
+import type {
+	Query,
+	QueryOptions,
+	SDKMessage,
+	SDKUserMessage,
+	PermissionResult,
+	ToolInput,
 } from '@qwen-code/sdk';
+import { loadEngineSdk } from '$backend/engine/sdk-loader';
 import type { EngineOutput, EngineModel } from '$shared/types/unified';
 import type { AIEngine, EngineQueryOptions, StructuredGenerationOptions } from '../../types';
 import { buildJsonPrompt, extractJson } from '../../structured-helpers';
@@ -155,7 +155,7 @@ export class QwenEngine implements AIEngine {
 
 		// Fork-by-copy on EVERY resume — same semantics as Claude
 		// (`forkSession: true`), OpenCode (`client.session.fork()`),
-		// Copilot, and Codex (README §9.10): each turn must produce a
+		// Copilot, and Codex (README §10.10): each turn must produce a
 		// brand-new session id so the original branch's history is never
 		// mutated and the multi-branch checkpoint tree stays consistent.
 		// Falls through to a plain resume only when the source chat can't
@@ -306,6 +306,7 @@ export class QwenEngine implements AIEngine {
 				yield sdkPrompt;
 			})();
 
+			const { query } = await loadEngineSdk<typeof import('@qwen-code/sdk')>('qwen', '@qwen-code/sdk');
 			const queryInstance = query({ prompt: promptIterable, options: sdkOptions });
 			this.activeQuery = queryInstance;
 
@@ -422,6 +423,7 @@ export class QwenEngine implements AIEngine {
 			yield sdkPrompt;
 		})();
 
+		const { query } = await loadEngineSdk<typeof import('@qwen-code/sdk')>('qwen', '@qwen-code/sdk');
 		const queryInstance = query({ prompt: promptIterable, options: sdkOptions });
 
 		let resultText = '';

@@ -139,6 +139,11 @@ const COPILOT_TOOL_NAME_MAP: Record<string, string> = {
 	// asynchronously; events from the sub-agent arrive with `agentId` set and
 	// must thread back to this tool's call id via parent.toolUseId).
 	'task': 'Agent',
+	'write_agent': 'SendMessage',
+	'list_agents': 'ListAgents',
+	'read_agent': 'ReadAgent',
+	'send_inbox': 'SendInbox',
+	'context_board': 'ContextBoard',
 
 	// User interaction
 	'ask_user': 'AskUserQuestion',
@@ -177,7 +182,7 @@ export function isIgnoredCopilotTool(rawName: string, mcpServerName?: string): b
 }
 
 /** Map a raw Copilot tool name (with optional MCP server) to a canonical UI name. */
-function mapCopilotToolName(rawName: string, mcpServerName?: string): string {
+export function mapCopilotToolName(rawName: string, mcpServerName?: string): string {
 	if (mcpServerName) {
 		// Tools served via our remote MCP HTTP endpoint (`clopen-mcp`) come
 		// back as `{ name: '<bare-tool>', mcpServerName: 'clopen-mcp' }`. Resolve
@@ -406,6 +411,14 @@ function normalizeAgentInput(raw: RawToolArgs): AgentInput {
 	};
 }
 
+function normalizeCoordinationInput(raw: RawToolArgs): Record<string, unknown> {
+	const result: Record<string, unknown> = {};
+	for (const [key, value] of Object.entries(raw)) {
+		result[key.replace(/_([a-z])/g, (_, char: string) => char.toUpperCase())] = value;
+	}
+	return result;
+}
+
 /**
  * Normalize raw Copilot tool arguments → canonical input shape. Unknown/MCP
  * tools fall through with their args unchanged.
@@ -426,6 +439,12 @@ function normalizeCopilotToolInput(canonical: string, raw: RawToolArgs): Record<
 		case 'TodoWrite': return normalizeTodoWriteInput(raw) as unknown as Record<string, unknown>;
 		case 'ToolSearch': return normalizeToolSearchInput(raw) as unknown as Record<string, unknown>;
 		case 'Agent': return normalizeAgentInput(raw) as unknown as Record<string, unknown>;
+		case 'SendMessage':
+		case 'ListAgents':
+		case 'ReadAgent':
+		case 'SendInbox':
+		case 'ContextBoard':
+			return normalizeCoordinationInput(raw);
 		default: return raw;
 	}
 }

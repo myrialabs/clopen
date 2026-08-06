@@ -22,8 +22,17 @@ export async function fetchOpenCodeModels(client: OpencodeClient): Promise<Engin
 
 		for (const provider of providers) {
 			const providerModels: Record<string, Model> = provider.models ?? {};
+			const modelOrder = (provider.options._modelOrder as string[]) ?? [];
 
-			for (const [, model] of Object.entries(providerModels)) {
+			const entries = modelOrder.length > 0
+				? [...Object.entries(providerModels)].sort((a, b) => {
+					const ai = modelOrder.indexOf(a[0]);
+					const bi = modelOrder.indexOf(b[0]);
+					return (ai === -1 ? 999 : ai) - (bi === -1 ? 999 : bi);
+				})
+				: Object.entries(providerModels);
+
+			for (const [, model] of entries) {
 				models.push({
 					engine: {
 						type: 'opencode',

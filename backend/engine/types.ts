@@ -35,6 +35,12 @@ export interface EngineQueryOptions {
 	providerSlug: string;
 	/** Model ID (e.g. 'claude-opus-4-6', 'gpt-5'). */
 	modelId: string;
+	/**
+	 * Reasoning/thinking level token chosen for this turn (native per engine —
+	 * see `EngineModel.capabilities.reasoningControl`). Undefined → the engine's
+	 * own default applies. Each adapter clamps/maps it to its SDK's knob.
+	 */
+	reasoningEffort?: string;
 	includePartialMessages?: boolean;
 	abortController?: AbortController;
 	accountId?: number;

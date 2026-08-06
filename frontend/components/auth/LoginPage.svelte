@@ -124,6 +124,9 @@
 			<p class="text-xs text-slate-400 dark:text-slate-500">
 				Don't have a token? Ask your admin for an invite link.
 			</p>
+			<p class="text-xs text-slate-400 dark:text-slate-500">
+				Admin lost your token? Run <code class="font-mono bg-slate-100 dark:bg-slate-800 px-1 py-0.5 rounded">clopen reset-pat</code> in your terminal to generate a new one.
+			</p>
 		</div>
 	</div>
 </div>

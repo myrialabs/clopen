@@ -15,7 +15,8 @@
 		postgres: 'lucide:database',
 		sqlite: 'lucide:database',
 		mongodb: 'lucide:database',
-		redis: 'lucide:server'
+		redis: 'lucide:server',
+		mssql: 'lucide:database'
 	};
 
 	const COLORS: Record<DbDriver, string> = {
@@ -23,7 +24,8 @@
 		postgres: 'text-slate-500 dark:text-slate-400',
 		sqlite: 'text-slate-500 dark:text-slate-400',
 		mongodb: 'text-slate-500 dark:text-slate-400',
-		redis: 'text-slate-500 dark:text-slate-400'
+		redis: 'text-slate-500 dark:text-slate-400',
+		mssql: 'text-slate-500 dark:text-slate-400'
 	};
 </script>
 

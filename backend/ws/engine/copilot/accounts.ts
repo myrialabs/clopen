@@ -111,6 +111,18 @@ export const copilotAccountsHandler = createRouter()
 		return { success: true };
 	})
 
+	// Replace the stored PAT for an account. When the edited account is the
+	// active one, drop engine instances so the next stream picks up the token.
+	.http('engine:copilot-accounts-update-token', {
+		data: t.Object({ id: t.Number(), token: t.String({ minLength: 1 }) }),
+		response: t.Object({ success: t.Boolean() })
+	}, async ({ data }) => {
+		engineQueries.updateAccountCredential(data.id, data.token.trim());
+		const active = engineQueries.getActiveAccountForEngine('copilot');
+		if (active?.id === data.id) await disposeCopilotEngines();
+		return { success: true };
+	})
+
 	// Restart all Copilot engine instances. Use after changing the active token
 	// so subsequent models:list / chat calls re-initialise with fresh credentials.
 	.http('engine:copilot-restart', {

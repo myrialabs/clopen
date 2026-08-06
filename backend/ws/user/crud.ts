@@ -111,7 +111,8 @@ export const crudHandler = createRouter()
 			settings: t.Union([t.Any(), t.Null()]),
 			unreadSessions: t.Union([t.Any(), t.Null()]),
 			todoPanelState: t.Union([t.Any(), t.Null()]),
-			projectOrder: t.Union([t.Array(t.String()), t.Null()])
+			projectOrder: t.Union([t.Array(t.String()), t.Null()]),
+			commandUsage: t.Union([t.Any(), t.Null()])
 		})
 	}, async ({ conn }) => {
 		const userId = ws.getUserId(conn);
@@ -122,6 +123,7 @@ export const crudHandler = createRouter()
 		const unreadSessions = getUserState(userId, 'unreadSessions');
 		const todoPanelState = getUserState(userId, 'todoPanelState');
 		const projectOrder = getUserState(userId, 'projectOrder');
+		const commandUsage = getUserState(userId, 'commandUsage');
 
 		debug.log('user', `Restored state for ${userId}:`, {
 			currentProjectId,
@@ -137,7 +139,8 @@ export const crudHandler = createRouter()
 			settings: userSettings ?? null,
 			unreadSessions: unreadSessions ?? null,
 			todoPanelState: todoPanelState ?? null,
-			projectOrder: Array.isArray(projectOrder) ? projectOrder : null
+			projectOrder: Array.isArray(projectOrder) ? projectOrder : null,
+			commandUsage: commandUsage ?? null
 		};
 	})
 
@@ -154,7 +157,7 @@ export const crudHandler = createRouter()
 		const userId = ws.getUserId(conn);
 
 		// Validate allowed keys to prevent arbitrary data storage
-		const allowedKeys = ['currentProjectId', 'lastView', 'settings', 'unreadSessions', 'todoPanelState', 'projectOrder'];
+		const allowedKeys = ['currentProjectId', 'lastView', 'settings', 'unreadSessions', 'todoPanelState', 'projectOrder', 'commandUsage'];
 		if (!allowedKeys.includes(data.key)) {
 			throw new Error(`Invalid state key: ${data.key}. Allowed: ${allowedKeys.join(', ')}`);
 		}

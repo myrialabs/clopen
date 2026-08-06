@@ -8,7 +8,7 @@
  *     `~/.codex/auth.json` and refreshes it in-place.
  *
  * Multi-account ChatGPT support uses the **auth-blob swap** pattern (see
- * backend/engine/README.md §9.13): we snapshot `~/.codex/auth.json` content
+ * backend/engine/README.md §10.13): we snapshot `~/.codex/auth.json` content
  * into `engine_accounts.credential` after login, and write the active
  * account's snapshot back to the shared file on switch / stream-start.
  *

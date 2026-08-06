@@ -6,6 +6,7 @@
 	import RowForm from '../shared/RowForm.svelte';
 	import Checkbox from '../shared/Checkbox.svelte';
 	import NullValue from '../shared/NullValue.svelte';
+	import PanelLoader from '../shared/PanelLoader.svelte';
 	import { dbClientStore } from '$frontend/stores/features/db-client.svelte';
 	import { debug } from '$shared/utils/logger';
 	import { buildXlsx, downloadFile, toCsv, toTsv } from './export-utils';
@@ -154,12 +155,15 @@
 			case 'mysql': return '`' + name.replace(/`/g, '``') + '`';
 			case 'postgres':
 			case 'sqlite': return '"' + name.replace(/"/g, '""') + '"';
+			case 'mssql': return '[' + name.replace(/\]/g, ']]') + ']';
 			default: return name;
 		}
 	}
 
 	function placeholder(idx: number): string {
-		return driver === 'postgres' ? `$${idx + 1}` : '?';
+		if (driver === 'postgres') return `$${idx + 1}`;
+		if (driver === 'mssql') return `@p${idx}`;
+		return '?';
 	}
 
 	function escapeLike(value: string): string {
@@ -212,6 +216,22 @@
 		}
 		const qualified = schema ? `${quoteIdent(schema)}.${quoteIdent(objectName)}` : quoteIdent(objectName);
 		const where = buildWhereClause();
+		if (driver === 'mssql') {
+			const offset = page * pageSize;
+			if (offset === 0 && !sortColumn) {
+				return {
+					sql: `SELECT TOP ${pageSize} * FROM ${qualified}${where.sql}`,
+					params: where.params
+				};
+			}
+			const orderBy = sortColumn && sortDir
+				? ` ORDER BY ${quoteIdent(sortColumn)} ${sortDir.toUpperCase()}`
+				: ' ORDER BY (SELECT NULL)';
+			return {
+				sql: `SELECT * FROM ${qualified}${where.sql}${orderBy} OFFSET ${offset} ROWS FETCH NEXT ${pageSize} ROWS ONLY`,
+				params: where.params
+			};
+		}
 		const orderBy = sortColumn && sortDir
 			? ` ORDER BY ${quoteIdent(sortColumn)} ${sortDir.toUpperCase()}`
 			: '';
@@ -977,7 +997,7 @@
 				</tbody>
 			</table>
 		{:else if loading}
-			<div class="p-4 text-sm text-slate-400">Loading…</div>
+			<PanelLoader />
 		{/if}
 	</div>
 </div>

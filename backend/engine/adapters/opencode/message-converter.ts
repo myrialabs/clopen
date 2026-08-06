@@ -661,6 +661,38 @@ export function convertAssistantMessages(
 }
 
 /**
+ * Convert text parts that have not yet been finalized.
+ *
+ * OpenCode can append a tool part to the same assistant message while the
+ * preceding text is still represented by a live stream placeholder. Flushing
+ * that text before emitting the tool preserves the source part order. Tracking
+ * part IDs prevents the normal message/session finalizer from emitting it a
+ * second time later.
+ */
+export function convertPendingTextParts(
+	ocMessage: OCMessage,
+	ocParts: Part[],
+	sessionId: string,
+	emittedTextPartIds: Set<string>,
+): EngineOutput[] {
+	const pendingTextParts = ocParts.filter(part =>
+		part.type === 'text' && !emittedTextPartIds.has(part.id)
+	);
+
+	for (const part of pendingTextParts) {
+		emittedTextPartIds.add(part.id);
+	}
+
+	const visibleTextParts = pendingTextParts.filter(part =>
+		part.type === 'text' && Boolean(part.text)
+	);
+
+	return visibleTextParts.length > 0
+		? convertAssistantMessages(ocMessage, visibleTextParts, sessionId)
+		: [];
+}
+
+/**
  * Convert Open Code result/completion → ResultEvent
  */
 export function convertResultMessage(

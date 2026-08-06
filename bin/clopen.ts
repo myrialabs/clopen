@@ -282,7 +282,7 @@ async function runUpdate() {
 	}
 
 	console.log(`✓ Updated to v${latestVersion}`);
-	console.log('\n  Restart clopen to apply the update.');
+	console.log(`\n  Update installed. Restart Clopen however you normally run it to apply v${latestVersion}.`);
 }
 
 async function recoverAdminToken() {

@@ -8,6 +8,7 @@
 	import type { CommitMessageFormat } from '$shared/types/git';
 	import type { CommitMessageConfig, BranchNameConfig } from '$shared/types/stores/settings';
 	import type { IconName } from '$shared/types/ui/icons';
+	import { modelFieldsOf } from '$frontend/utils/model-override';
 	import EngineModelPicker from './EngineModelPicker.svelte';
 
 	let showModelConfig = $state(false);
@@ -70,29 +71,22 @@
 
 	function handleCommitEngineChange(engineType: EngineType) {
 		const models = modelStore.getByEngine(engineType);
-		const defaultModel = models[0];
 		updateSettings({
-			commitGenerator: {
-				...commitGen,
-				engine: engineType,
-				modelId: defaultModel?.engine.model.id || '',
-				modelName: defaultModel?.engine.model.name || ''
-			}
+			commitGenerator: { ...commitGen, engine: engineType, ...modelFieldsOf(models[0]) }
 		});
 
 		modelStore.fetchModels(engineType).then(fetched => {
 			if (fetched.length > 0) {
 				updateSettings({
-					commitGenerator: { ...settings.commitGenerator, modelId: fetched[0].engine.model.id, modelName: fetched[0].engine.model.name }
+					commitGenerator: { ...settings.commitGenerator, ...modelFieldsOf(fetched[0]) }
 				});
 			}
 		});
 	}
 
 	function handleCommitModelChange(modelId: string) {
-		const model = modelStore.getById(modelId);
 		updateSettings({
-			commitGenerator: { ...commitGen, modelId, modelName: model?.engine.model.name || modelId }
+			commitGenerator: { ...commitGen, ...modelFieldsOf(modelStore.getById(modelId), modelId) }
 		});
 	}
 

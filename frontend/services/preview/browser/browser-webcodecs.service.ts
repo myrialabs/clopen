@@ -16,6 +16,95 @@
 
 import ws from '$frontend/utils/ws';
 import { debug } from '$shared/utils/logger';
+import { getDisplayScale } from '$frontend/components/preview/browser/core/interactions.svelte';
+
+/** Wire codec ids — must match VIDEO_CODEC_ID in backend/preview/browser/types.ts. */
+const CODEC_STRINGS: Record<number, string> = {
+	0: 'vp8',
+	1: 'vp09.00.10.08',
+	2: 'avc1.42E033'
+};
+
+const CODEC_NAMES: Record<number, 'vp8' | 'vp9' | 'avc'> = {
+	0: 'vp8',
+	1: 'vp9',
+	2: 'avc'
+};
+
+/** `randomUUID` needs a secure context, which a LAN preview over http is not. */
+function randomId(): string {
+	if (typeof crypto !== 'undefined' && typeof crypto.randomUUID === 'function') {
+		return crypto.randomUUID();
+	}
+	return `viewer-${Math.random().toString(36).slice(2)}${Date.now().toString(36)}`;
+}
+
+const VIEWER_ID_STORAGE_KEY = 'clopen.preview.viewerId';
+
+/** Viewer ids currently held by a live service in this document. */
+const activeViewerIds = new Set<string>();
+
+/**
+ * A durable identity for "this browser tab, watching previews".
+ *
+ * Minting a fresh id per service instance made every panel re-mount, project
+ * switch and page refresh look like a brand-new audience member arriving while
+ * the previous one was still registered — the source saw two viewers where
+ * there was one person, and the entry left behind kept the tab looking watched
+ * long after nobody was. Keyed in `sessionStorage`, so a refresh is recognised
+ * as the same viewer returning and its peer is replaced rather than added to.
+ * The suffix only comes into play when two panels genuinely watch at once.
+ */
+function acquireViewerId(): string {
+	let base: string;
+
+	try {
+		const stored = sessionStorage.getItem(VIEWER_ID_STORAGE_KEY);
+		base = stored ?? randomId();
+		if (!stored) sessionStorage.setItem(VIEWER_ID_STORAGE_KEY, base);
+	} catch {
+		// Private mode / storage disabled — fall back to a per-instance id.
+		base = randomId();
+	}
+
+	if (!activeViewerIds.has(base)) {
+		activeViewerIds.add(base);
+		return base;
+	}
+
+	for (let suffix = 2; ; suffix++) {
+		const candidate = `${base}-${suffix}`;
+		if (activeViewerIds.has(candidate)) continue;
+		activeViewerIds.add(candidate);
+		return candidate;
+	}
+}
+
+export interface ClientCodecSupportPayload {
+	vp8: boolean;
+	vp9: boolean;
+	avc: boolean;
+	/** Codecs this device reports a hardware decoder for. */
+	hardware: string[];
+}
+
+/**
+ * A decoded frame, from either the decode worker or the inline decoder.
+ * `ImageBitmap` carries no timestamp or display size, so both travel alongside.
+ */
+interface RenderableFrame {
+	image: VideoFrame | ImageBitmap;
+	timestamp: number;
+	width: number;
+	height: number;
+}
+
+function closeRenderable(frame: RenderableFrame | null): void {
+	if (!frame) return;
+	try {
+		frame.image.close();
+	} catch {}
+}
 
 export interface BrowserWebCodecsStreamStats {
 	isConnected: boolean;
@@ -57,7 +146,7 @@ export class BrowserWebCodecsService {
 	private isCleaningUp = false;
 
 	// Frame rendering optimization with timestamp-based scheduling
-	private pendingFrame: VideoFrame | null = null;
+	private pendingFrame: RenderableFrame | null = null;
 	private isRenderingFrame = false;
 	private renderFrameId: number | null = null;
 	private lastFrameTime = 0;
@@ -85,6 +174,38 @@ export class BrowserWebCodecsService {
 	// Codec configuration
 	private videoCodecConfig: VideoDecoderConfig | null = null;
 	private audioCodecConfig: AudioDecoderConfig | null = null;
+	private activeCodecId = -1; // Codec of the current decoder (0 = vp8, 1 = vp9)
+	private lastKeyframeRequestTime = 0; // Throttle for requestKeyframe (PLI equivalent)
+
+	// Reassembly of fragmented video frames (packet type 2 — large frames,
+	// e.g. near-lossless top-off keyframes, split to fit SCTP message limits).
+	// Only used by the inline fallback path; the worker reassembles its own.
+	private fragmentBuffer: Uint8Array[] | null = null;
+	private fragmentTimestamp = 0;
+
+	// Off-thread decode. Packet parsing and VideoDecoder run in a worker so the
+	// main thread only paints — on a low-end device, software decode competing
+	// with Svelte reactivity on one thread is what makes the preview stutter.
+	// Null whenever the worker is unavailable; the inline decoder then runs.
+	private videoWorker: Worker | null = null;
+	private workerFailed = false;
+	private workerProducedFrame = false;
+	private workerWatchdog: ReturnType<typeof setTimeout> | null = null;
+
+	// Viewer decode health, fed back to the source so it can lower framerate or
+	// resolution. Without this the source only ever sees network congestion.
+	private feedbackIntervalId: ReturnType<typeof setInterval> | null = null;
+	private lastFeedback = { decodeQueueSize: 0, decodeLatencyMs: 0, dropRatio: 0 };
+	private framesReceivedWindow = 0;
+	private framesDroppedWindow = 0;
+
+	// Capture is suspended while the preview is off-screen or the browser tab
+	// is hidden — an unwatched preview otherwise pins a headless renderer.
+	private visibilityHandler: (() => void) | null = null;
+	private visibilitySuspendTimer: ReturnType<typeof setTimeout> | null = null;
+	private isViewerVisible = true;
+	/** How long the tab must stay hidden before capture is torn down. */
+	private static readonly VISIBILITY_SUSPEND_DELAY_MS = 10_000;
 
 	// Stats tracking
 	private stats: BrowserWebCodecsStreamStats = {
@@ -134,6 +255,12 @@ export class BrowserWebCodecsService {
 	private onStats: ((stats: BrowserWebCodecsStreamStats) => void) | null = null;
 	private onCursorChange: ((cursor: string) => void) | null = null;
 
+	// Grace period for transient ICE 'disconnected' states. On flaky networks
+	// (mobile, tunnels) ICE regularly drops and recovers by itself within a few
+	// seconds — tearing down immediately caused an endless loading/reconnect loop.
+	private disconnectGraceTimer: ReturnType<typeof setTimeout> | null = null;
+	private static readonly DISCONNECT_GRACE_MS = 5000;
+
 	// Navigation state - when true, DataChannel close is expected and recovery is suppressed
 	private isNavigating = false;
 	private navigationCleanupFn: (() => void) | null = null;
@@ -153,6 +280,32 @@ export class BrowserWebCodecsService {
 
 	// User gesture listener for AudioContext resume (needed after page refresh)
 	private userGestureHandler: (() => void) | null = null;
+
+	/**
+	 * Identifies this viewer to the backend for its whole lifetime.
+	 *
+	 * A tab can be watched from more than one place at a time — the same project
+	 * open on a laptop and a phone, or two split panels showing the same
+	 * preview. Signalling used to be addressed by tab alone, so every viewer saw
+	 * every other viewer's ICE candidates and connection states, and each new
+	 * handshake replaced the last one's connection. Per-instance rather than
+	 * per-connection: it survives reconnects, so the backend can recognise a
+	 * recovering viewer as the same one rather than a second audience member.
+	 */
+	private readonly viewerId: string = acquireViewerId();
+
+	/**
+	 * Remote ICE candidates that arrived before this side could take them.
+	 *
+	 * The source starts gathering the moment it creates its offer, which is
+	 * *inside* the stream-start request — so its host candidates are usually on
+	 * the wire before that request has even returned, let alone before there is
+	 * a local peer with a remote description to attach them to. Dropping them
+	 * left the connection with nothing to try on a fast local network, which is
+	 * the "Loading preview…" that only clears after a reload or two.
+	 */
+	private pendingRemoteCandidates: RTCIceCandidateInit[] = [];
+	private hasRemoteDescription = false;
 
 	constructor(projectId: string) {
 		if (!projectId) {
@@ -177,6 +330,32 @@ export class BrowserWebCodecsService {
 		};
 		document.addEventListener('click', this.userGestureHandler, { once: false });
 		document.addEventListener('keydown', this.userGestureHandler, { once: false });
+
+		// Backgrounding the browser tab should stop the capture entirely, not
+		// just stop painting: the headless renderer and encoder on the host
+		// keep running otherwise, which is pure waste on a shared machine.
+		//
+		// Suspending is deferred, though. Tearing capture down means rebuilding
+		// it on return — re-probing the capture source and waiting for a fresh
+		// keyframe — so doing it for a two-second glance at another tab costs
+		// the user a visible stall to save nothing.
+		this.visibilityHandler = () => {
+			if (document.hidden) {
+				if (this.visibilitySuspendTimer) return;
+				this.visibilitySuspendTimer = setTimeout(() => {
+					this.visibilitySuspendTimer = null;
+					if (document.hidden) this.setViewerVisible(false);
+				}, BrowserWebCodecsService.VISIBILITY_SUSPEND_DELAY_MS);
+				return;
+			}
+
+			if (this.visibilitySuspendTimer) {
+				clearTimeout(this.visibilitySuspendTimer);
+				this.visibilitySuspendTimer = null;
+			}
+			this.setViewerVisible(true);
+		};
+		document.addEventListener('visibilitychange', this.visibilityHandler);
 	}
 
 	/**
@@ -188,6 +367,176 @@ export class BrowserWebCodecsService {
 			typeof AudioDecoder !== 'undefined' &&
 			typeof RTCPeerConnection !== 'undefined'
 		);
+	}
+
+	/**
+	 * Probe which codecs this viewer can decode, and which of those it decodes
+	 * in hardware.
+	 *
+	 * The hardware answer is the important one. A phone or a low-end laptop
+	 * decodes H.264 on dedicated silicon but VP9 on the CPU, so sending it VP9
+	 * costs frames no matter how well-tuned the source is. `prefer-hardware` is
+	 * a hint rather than a guarantee, but Chrome and Safari both reject the
+	 * probe when no hardware path exists, which is exactly the signal we want.
+	 */
+	private async detectCodecSupport(): Promise<ClientCodecSupportPayload> {
+		const support: ClientCodecSupportPayload = {
+			vp8: false,
+			vp9: false,
+			avc: false,
+			hardware: []
+		};
+
+		for (const [id, codec] of Object.entries(CODEC_STRINGS)) {
+			const name = CODEC_NAMES[Number(id)];
+
+			try {
+				const generic = await VideoDecoder.isConfigSupported({ codec, optimizeForLatency: true });
+				support[name] = generic.supported === true;
+			} catch {
+				support[name] = false;
+			}
+
+			if (!support[name]) continue;
+
+			try {
+				const hw = await VideoDecoder.isConfigSupported({
+					codec,
+					optimizeForLatency: true,
+					hardwareAcceleration: 'prefer-hardware'
+				});
+				if (hw.supported === true) support.hardware.push(name);
+			} catch {
+				// No hardware path — leave it out of the list.
+			}
+		}
+
+		debug.log(
+			'webcodecs',
+			`Decode support: vp8=${support.vp8} vp9=${support.vp9} avc=${support.avc}, hw=[${support.hardware.join(',')}]`
+		);
+
+		return support;
+	}
+
+	/**
+	 * Spin up the decode worker. Returns false when workers, module workers or
+	 * WebCodecs-in-worker aren't available, in which case the inline decoder
+	 * takes over transparently.
+	 */
+	private initVideoWorker(): boolean {
+		if (this.videoWorker) return true;
+		if (this.workerFailed) return false;
+		if (typeof Worker === 'undefined') return false;
+
+		try {
+			const worker = new Worker(new URL('./preview-video.worker.ts', import.meta.url), {
+				type: 'module'
+			});
+
+			worker.onmessage = (event: MessageEvent) => this.handleWorkerMessage(event.data);
+			worker.onerror = () => this.disableVideoWorker('worker error');
+
+			worker.postMessage({ t: 'init', preferHardware: true });
+			this.videoWorker = worker;
+			this.workerProducedFrame = false;
+			return true;
+		} catch (error) {
+			debug.warn('webcodecs', 'Decode worker unavailable:', error);
+			this.workerFailed = true;
+			return false;
+		}
+	}
+
+	private terminateVideoWorker(): void {
+		this.clearWorkerWatchdog();
+		if (!this.videoWorker) return;
+		try {
+			this.videoWorker.postMessage({ t: 'close' });
+			this.videoWorker.terminate();
+		} catch {}
+		this.videoWorker = null;
+	}
+
+	/**
+	 * Stop using the worker and decode on the main thread instead.
+	 *
+	 * The worker path can fail without raising anything: a browser that doesn't
+	 * expose WebCodecs to workers happily accepts packets and decodes nothing.
+	 * Falling back explicitly is what keeps the preview working there instead
+	 * of leaving a permanently blank canvas.
+	 */
+	private disableVideoWorker(reason: string): void {
+		if (!this.videoWorker && this.workerFailed) return;
+		debug.warn('webcodecs', `Decode worker disabled (${reason}) — decoding on the main thread`);
+		this.workerFailed = true;
+		this.terminateVideoWorker();
+		// The inline decoder starts from nothing and needs a sync point.
+		this.requestKeyframe();
+	}
+
+	/**
+	 * Watch the first handful of packets: if none of them produce a frame, the
+	 * worker is decoding into the void and we switch back to inline decode.
+	 */
+	private armWorkerWatchdog(): void {
+		if (this.workerWatchdog || this.workerProducedFrame || !this.videoWorker) return;
+
+		this.workerWatchdog = setTimeout(() => {
+			this.workerWatchdog = null;
+			if (!this.workerProducedFrame && this.videoWorker) {
+				this.disableVideoWorker('no frames decoded');
+			}
+		}, 4000);
+	}
+
+	private clearWorkerWatchdog(): void {
+		if (this.workerWatchdog) {
+			clearTimeout(this.workerWatchdog);
+			this.workerWatchdog = null;
+		}
+	}
+
+	private handleWorkerMessage(message: any): void {
+		switch (message?.t) {
+			case 'ready':
+				if (message.ok === false) {
+					this.disableVideoWorker('WebCodecs unavailable in worker');
+				}
+				break;
+
+			case 'frame':
+				this.workerProducedFrame = true;
+				this.clearWorkerWatchdog();
+				this.handleDecodedVideoFrame({
+					image: message.frame,
+					timestamp: message.timestamp,
+					width: message.width,
+					height: message.height
+				});
+				break;
+
+			case 'keyframe-request':
+				this.requestKeyframe();
+				break;
+
+			case 'codec':
+				this.stats.videoCodec = CODEC_NAMES[message.codecId] ?? 'unknown';
+				this.activeCodecId = message.codecId;
+				break;
+
+			case 'stats':
+				this.lastFeedback = {
+					decodeQueueSize: message.decodeQueueSize,
+					decodeLatencyMs: message.decodeLatencyMs,
+					dropRatio:
+						message.framesReceived > 0
+							? Math.max(0, (message.framesReceived - message.framesDecoded) / message.framesReceived)
+							: 0
+				};
+				this.sendFeedback();
+				break;
+		}
 	}
 
 	/**
@@ -227,6 +576,8 @@ export class BrowserWebCodecsService {
 
 		this.isCleaningUp = false;
 		this.stats.firstFrameRendered = false;
+		this.pendingRemoteCandidates = [];
+		this.hasRemoteDescription = false;
 
 		this.sessionId = sessionId;
 		this.canvas = canvas;
@@ -247,11 +598,30 @@ export class BrowserWebCodecsService {
 			// Setup WebSocket listeners
 			this.setupEventListeners();
 
+			// Decode off the main thread when the browser allows it
+			this.initVideoWorker();
+
+			const codecs = await this.detectCodecSupport();
+
 			// Request server to start streaming and get offer
 			// Send explicit tabId to ensure backend targets the correct tab
-			// even if user switches tabs during the async negotiation
+			// even if user switches tabs during the async negotiation.
+			// The display metrics decide capture resolution — sending them with
+			// the handshake means the very first frame already arrives at the
+			// size this screen can show, instead of a full-viewport frame that
+			// gets downscaled away.
 			debug.log('webcodecs', `[DIAG] Sending preview:browser-stream-start for session: ${sessionId}`);
-			const response = await ws.http('preview:browser-stream-start', { tabId: sessionId }, 30000);
+			const response = await ws.http(
+				'preview:browser-stream-start',
+				{
+					tabId: sessionId,
+					viewerId: this.viewerId,
+					vp9: codecs.vp9,
+					codecs,
+					display: this.currentDisplayMetrics()
+				},
+				30000
+			);
 			debug.log('webcodecs', `[DIAG] preview:browser-stream-start response: success=${response.success}, hasOffer=${!!response.offer}, message=${response.message}`);
 
 			if (!response.success) {
@@ -281,7 +651,7 @@ export class BrowserWebCodecsService {
 						await new Promise(resolve => setTimeout(resolve, offerRetryDelay * attempt));
 					}
 					debug.log('webcodecs', `[DIAG] stream-offer attempt ${attempt + 1}/${offerMaxRetries}`);
-					const offerResponse = await ws.http('preview:browser-stream-offer', { tabId: sessionId }, 10000);
+					const offerResponse = await ws.http('preview:browser-stream-offer', { tabId: sessionId, viewerId: this.viewerId }, 10000);
 					if (offerResponse.offer) {
 						offer = offerResponse.offer;
 						break;
@@ -403,14 +773,14 @@ export class BrowserWebCodecsService {
 					sdpMLineIndex: event.candidate.sdpMLineIndex
 				};
 
-				ws.http('preview:browser-stream-ice', { candidate: candidateInit, tabId: this.sessionId }).catch((error) => {
+				ws.http('preview:browser-stream-ice', { candidate: candidateInit, tabId: this.sessionId, viewerId: this.viewerId }).catch((error) => {
 					debug.warn('webcodecs', 'Failed to send ICE candidate:', error);
 				});
 
 				// Also send loopback version for VPN compatibility (same-machine peers)
 				const loopback = this.createLoopbackCandidate(candidateInit);
 				if (loopback) {
-					ws.http('preview:browser-stream-ice', { candidate: loopback, tabId: this.sessionId }).catch(() => {});
+					ws.http('preview:browser-stream-ice', { candidate: loopback, tabId: this.sessionId, viewerId: this.viewerId }).catch(() => {});
 				}
 			}
 		};
@@ -423,18 +793,22 @@ export class BrowserWebCodecsService {
 			this.stats.connectionState = state as RTCPeerConnectionState;
 
 			if (state === 'connected') {
+				this.clearDisconnectGrace();
 				this.isConnected = true;
 				this.stats.isConnected = true;
 				this.startStatsCollection();
+				this.startFeedbackLoop();
 				// this.startBandwidthLogging();
 				if (this.onConnectionChange) {
 					this.onConnectionChange(true);
 				}
 			} else if (state === 'failed') {
 				debug.error('webcodecs', 'Connection FAILED');
+				this.clearDisconnectGrace();
 				this.isConnected = false;
 				this.stats.isConnected = false;
 				this.stopStatsCollection();
+				this.stopFeedbackLoop();
 				this.stopBandwidthLogging();
 				if (this.onConnectionChange) {
 					this.onConnectionChange(false);
@@ -442,10 +816,18 @@ export class BrowserWebCodecsService {
 				if (this.onConnectionFailed) {
 					this.onConnectionFailed();
 				}
-			} else if (state === 'disconnected' || state === 'closed') {
+			} else if (state === 'disconnected') {
+				// Transient on flaky networks (mobile/tunnel) — ICE usually
+				// recovers on its own within seconds. Don't tear down yet;
+				// only treat as failure if the grace period expires without
+				// returning to 'connected' (prevents the loading/reconnect loop).
+				this.scheduleDisconnectGrace();
+			} else if (state === 'closed') {
+				this.clearDisconnectGrace();
 				this.isConnected = false;
 				this.stats.isConnected = false;
 				this.stopStatsCollection();
+				this.stopFeedbackLoop();
 				this.stopBandwidthLogging();
 				if (this.onConnectionChange) {
 					this.onConnectionChange(false);
@@ -477,7 +859,18 @@ export class BrowserWebCodecsService {
 		}
 
 		await this.peerConnection.setRemoteDescription(new RTCSessionDescription(offer));
+		this.hasRemoteDescription = true;
 		debug.log('webcodecs', 'Remote description set');
+
+		// Everything that arrived while there was nowhere to put it.
+		const buffered = this.pendingRemoteCandidates;
+		this.pendingRemoteCandidates = [];
+		if (buffered.length > 0) {
+			debug.log('webcodecs', `Applying ${buffered.length} buffered ICE candidate(s)`);
+			for (const candidate of buffered) {
+				await this.addIceCandidate(candidate);
+			}
+		}
 
 		const answer = await this.peerConnection.createAnswer();
 		await this.peerConnection.setLocalDescription(answer);
@@ -489,7 +882,8 @@ export class BrowserWebCodecsService {
 					type: answer.type,
 					sdp: answer.sdp
 				},
-				tabId: this.sessionId
+				tabId: this.sessionId,
+				viewerId: this.viewerId
 			});
 		}
 	}
@@ -502,20 +896,35 @@ export class BrowserWebCodecsService {
 			const view = new DataView(data);
 
 			// Parse packet header
-			const type = view.getUint8(0); // 0 = video, 1 = audio
+			const type = view.getUint8(0); // 0 = video, 1 = audio, 2 = video fragment
+
+			// Video goes straight to the decode worker as a transfer — no copy,
+			// and the main thread never touches the bitstream. Audio stays here
+			// because AudioContext isn't available inside a worker.
+			if ((type === 0 || type === 2) && this.videoWorker) {
+				const size = type === 0 ? view.getUint32(11, true) : view.getUint32(15, true);
+				this.stats.videoBytesReceived += size;
+				if (type === 0) this.stats.videoFramesReceived++;
+				this.framesReceivedWindow++;
+				this.armWorkerWatchdog();
+				this.videoWorker.postMessage({ t: 'packet', buffer: data }, [data]);
+				return;
+			}
 
 			if (type === 0) {
 				// Video packet
-				// Format: [type(1)][timestamp(8)][keyframe(1)][size(4)][data]
+				// Format: [type(1)][timestamp(8)][keyframe(1)][codec(1)][size(4)][data]
 				const timestamp = Number(view.getBigUint64(1, true));
 				const isKeyframe = view.getUint8(9) === 1;
-				const size = view.getUint32(10, true);
-				const chunkData = new Uint8Array(data, 14, size);
+				const codecId = view.getUint8(10); // 0 = vp8, 1 = vp9
+				const size = view.getUint32(11, true);
+				const chunkData = new Uint8Array(data, 15, size);
 
 				this.stats.videoBytesReceived += size;
 				this.stats.videoFramesReceived++;
+				this.framesReceivedWindow++;
 
-				this.handleVideoChunk(chunkData, timestamp, isKeyframe);
+				this.handleVideoChunk(chunkData, timestamp, isKeyframe, codecId);
 			} else if (type === 1) {
 				// Audio packet
 				// Format: [type(1)][timestamp(8)][size(4)][data]
@@ -527,6 +936,43 @@ export class BrowserWebCodecsService {
 				this.stats.audioFramesReceived++;
 
 				this.handleAudioChunk(chunkData, timestamp);
+			} else if (type === 2) {
+				// Fragmented video packet (large frames, e.g. top-off keyframes)
+				// Format: [type(1)][timestamp(8)][keyframe(1)][codec(1)][fragIndex(2)][fragCount(2)][size(4)][data]
+				const timestamp = Number(view.getBigUint64(1, true));
+				const isKeyframe = view.getUint8(9) === 1;
+				const codecId = view.getUint8(10);
+				const fragIndex = view.getUint16(11, true);
+				const fragCount = view.getUint16(13, true);
+				const size = view.getUint32(15, true);
+				const fragData = new Uint8Array(data, 19, size);
+
+				this.stats.videoBytesReceived += size;
+
+				// New timestamp invalidates any incomplete fragment set.
+				// The channel is reliable + ordered, so this shouldn't happen —
+				// it's a safety net against desync after reconnects.
+				if (!this.fragmentBuffer || this.fragmentTimestamp !== timestamp) {
+					this.fragmentBuffer = [];
+					this.fragmentTimestamp = timestamp;
+				}
+				this.fragmentBuffer[fragIndex] = fragData;
+
+				const received = this.fragmentBuffer.filter(Boolean).length;
+				if (received === fragCount) {
+					const totalSize = this.fragmentBuffer.reduce((sum, f) => sum + f.byteLength, 0);
+					const fullData = new Uint8Array(totalSize);
+					let offset = 0;
+					for (const frag of this.fragmentBuffer) {
+						fullData.set(frag, offset);
+						offset += frag.byteLength;
+					}
+					this.fragmentBuffer = null;
+
+					this.stats.videoFramesReceived++;
+					this.framesReceivedWindow++;
+					this.handleVideoChunk(fullData, timestamp, isKeyframe, codecId);
+				}
 			}
 		} catch (error) {
 			debug.error('webcodecs', 'DataChannel message parse error:', error);
@@ -536,14 +982,32 @@ export class BrowserWebCodecsService {
 	/**
 	 * Handle video chunk - decode and render
 	 */
-	private async handleVideoChunk(data: Uint8Array, timestamp: number, isKeyframe: boolean): Promise<void> {
+	private async handleVideoChunk(data: Uint8Array, timestamp: number, isKeyframe: boolean, codecId: number): Promise<void> {
+		// Codec changed mid-stream (e.g. navigation re-injected the encoder
+		// with different codec support) — reinit decoder on the keyframe
+		if (this.videoDecoder && isKeyframe && codecId !== this.activeCodecId) {
+			try {
+				this.videoDecoder.close();
+			} catch {}
+			this.videoDecoder = null;
+		}
+
 		// Initialize decoder on first keyframe
 		if (!this.videoDecoder && isKeyframe) {
-			await this.initVideoDecoder(data);
+			try {
+				await this.initVideoDecoder(codecId);
+			} catch {
+				// Codec unsupported or init failed — chunk is dropped below;
+				// keyframe request throttle prevents a request storm
+			}
 		}
 
 		if (!this.videoDecoder) {
+			// Delta frame without a decoder (joined mid-stream or decoder just
+			// errored) — ask the server for a sync point instead of waiting
+			// for the periodic keyframe interval
 			this.stats.videoFramesDropped++;
+			this.requestKeyframe();
 			return;
 		}
 
@@ -558,6 +1022,7 @@ export class BrowserWebCodecsService {
 		} catch (error) {
 			debug.error('webcodecs', 'Video decode error:', error);
 			this.stats.videoFramesDropped++;
+			this.requestKeyframe();
 		}
 	}
 
@@ -590,26 +1055,39 @@ export class BrowserWebCodecsService {
 	}
 
 	/**
-	 * Initialize VideoDecoder
+	 * Initialize VideoDecoder for the codec announced in the packet header
 	 */
-	private async initVideoDecoder(firstChunkData: Uint8Array): Promise<void> {
-		// Use VP8 codec
-		const codec = 'vp8';
-		this.stats.videoCodec = 'vp8';
+	private async initVideoDecoder(codecId: number): Promise<void> {
+		// Codec string must match the encoder in the headless browser
+		const codec = CODEC_STRINGS[codecId] ?? 'vp8';
+		this.stats.videoCodec = CODEC_NAMES[codecId] ?? 'vp8';
 
 		this.videoCodecConfig = {
 			codec,
-			optimizeForLatency: true
+			optimizeForLatency: true,
+			hardwareAcceleration: 'prefer-hardware'
 		};
 
 		try {
-			const support = await VideoDecoder.isConfigSupported(this.videoCodecConfig);
+			let support = await VideoDecoder.isConfigSupported(this.videoCodecConfig);
+			if (!support.supported) {
+				// Hardware is a preference, not a requirement — retry without it
+				// before declaring the codec unusable.
+				this.videoCodecConfig = { codec, optimizeForLatency: true };
+				support = await VideoDecoder.isConfigSupported(this.videoCodecConfig);
+			}
 			if (!support.supported) {
 				throw new Error(`Video codec ${codec} not supported`);
 			}
 
 			this.videoDecoder = new VideoDecoder({
-				output: (frame) => this.handleDecodedVideoFrame(frame),
+				output: (frame) =>
+					this.handleDecodedVideoFrame({
+						image: frame,
+						timestamp: frame.timestamp,
+						width: frame.displayWidth,
+						height: frame.displayHeight
+					}),
 				error: (e) => {
 					debug.error('webcodecs', 'VideoDecoder error:', e);
 					// Null out so next keyframe triggers reinitialization.
@@ -617,14 +1095,70 @@ export class BrowserWebCodecsService {
 					// causing handleVideoChunk's `!this.videoDecoder` check to never fire
 					// → all subsequent frames permanently dropped (stuck frames bug).
 					this.videoDecoder = null;
+					// Ask the server for a fresh sync point right away
+					this.requestKeyframe();
 				}
 			});
 
 			this.videoDecoder.configure(this.videoCodecConfig);
+			this.activeCodecId = codecId;
 			debug.log('webcodecs', 'VideoDecoder initialized:', codec);
 		} catch (error) {
 			debug.error('webcodecs', 'VideoDecoder init error:', error);
 			throw error;
+		}
+	}
+
+	/**
+	 * Start the grace timer for a transient 'disconnected' state.
+	 * If the connection doesn't return to 'connected' before the timer fires,
+	 * treat it as a real failure and trigger recovery.
+	 */
+	private scheduleDisconnectGrace(): void {
+		if (this.disconnectGraceTimer) return;
+
+		debug.warn('webcodecs', `Connection disconnected — ${BrowserWebCodecsService.DISCONNECT_GRACE_MS}ms grace period before recovery`);
+		this.disconnectGraceTimer = setTimeout(() => {
+			this.disconnectGraceTimer = null;
+
+			if (this.isCleaningUp) return;
+			if (this.peerConnection?.connectionState === 'connected') return;
+
+			debug.warn('webcodecs', 'Disconnect grace period expired — treating as connection failure');
+			this.isConnected = false;
+			this.stats.isConnected = false;
+			this.stopStatsCollection();
+			this.stopFeedbackLoop();
+			this.stopBandwidthLogging();
+			if (this.onConnectionChange) {
+				this.onConnectionChange(false);
+			}
+			if (this.onConnectionFailed) {
+				this.onConnectionFailed();
+			}
+		}, BrowserWebCodecsService.DISCONNECT_GRACE_MS);
+	}
+
+	private clearDisconnectGrace(): void {
+		if (this.disconnectGraceTimer) {
+			clearTimeout(this.disconnectGraceTimer);
+			this.disconnectGraceTimer = null;
+		}
+	}
+
+	/**
+	 * Request a keyframe from the server (PLI equivalent), throttled to 1/s.
+	 * Used when the decoder errors or delta frames arrive without a decoder —
+	 * much faster recovery than waiting for the periodic keyframe interval.
+	 */
+	private requestKeyframe(): void {
+		const now = Date.now();
+		if (now - this.lastKeyframeRequestTime < 1000) return;
+		this.lastKeyframeRequestTime = now;
+
+		if (this.sessionId) {
+			debug.log('webcodecs', 'Requesting keyframe from server');
+			ws.http('preview:browser-stream-keyframe', { tabId: this.sessionId }).catch(() => {});
 		}
 	}
 
@@ -689,16 +1223,16 @@ export class BrowserWebCodecsService {
 	/**
 	 * Handle decoded video frame - render to canvas with timestamp-based optimization
 	 */
-	private handleDecodedVideoFrame(frame: VideoFrame): void {
+	private handleDecodedVideoFrame(frame: RenderableFrame): void {
 		if (this.isCleaningUp || !this.canvas || !this.ctx) {
-			frame.close();
+			closeRenderable(frame);
 			return;
 		}
 
 		// During SPA navigation freeze, skip rendering to hold the last frame
 		// This prevents brief white flashes during SPA page transitions
 		if (this.spaFreezeUntil > 0 && Date.now() < this.spaFreezeUntil) {
-			frame.close();
+			closeRenderable(frame);
 			return;
 		}
 		// Auto-reset freeze after it expires
@@ -709,8 +1243,8 @@ export class BrowserWebCodecsService {
 		try {
 			// Update stats
 			this.stats.videoFramesDecoded++;
-			this.stats.frameWidth = frame.displayWidth;
-			this.stats.frameHeight = frame.displayHeight;
+			this.stats.frameWidth = frame.width;
+			this.stats.frameHeight = frame.height;
 
 			// Establish AV sync reference on first video frame
 			if (!this.syncEstablished) {
@@ -749,8 +1283,9 @@ export class BrowserWebCodecsService {
 
 			// Drop old pending frame if exists (frame skipping for performance)
 			if (this.pendingFrame) {
-				this.pendingFrame.close();
+				closeRenderable(this.pendingFrame);
 				this.stats.videoFramesDropped++;
+				this.framesDroppedWindow++;
 			}
 
 			// Store frame for next render cycle
@@ -762,7 +1297,7 @@ export class BrowserWebCodecsService {
 			}
 		} catch (error) {
 			debug.error('webcodecs', 'Video frame handle error:', error);
-			frame.close();
+			closeRenderable(frame);
 		}
 	}
 
@@ -788,7 +1323,7 @@ export class BrowserWebCodecsService {
 
 		if (!this.pendingFrame || this.isCleaningUp || !this.canvas || !this.ctx) {
 			if (this.pendingFrame) {
-				this.pendingFrame.close();
+				closeRenderable(this.pendingFrame);
 				this.pendingFrame = null;
 			}
 			return;
@@ -811,15 +1346,23 @@ export class BrowserWebCodecsService {
 				this.firstFrameTimestamp = this.pendingFrame.timestamp;
 			}
 
-			// Render to canvas with optimal settings
-			this.ctx.drawImage(this.pendingFrame, 0, 0, this.canvas.width, this.canvas.height);
+			// Match canvas backing store to the frame's native size and draw 1:1.
+			// Stretching frames to a differently-sized canvas caused blurry output;
+			// display fit-scaling is handled by CSS transform in the container.
+			const frameWidth = this.pendingFrame.width;
+			const frameHeight = this.pendingFrame.height;
+			if (this.canvas.width !== frameWidth || this.canvas.height !== frameHeight) {
+				this.canvas.width = frameWidth;
+				this.canvas.height = frameHeight;
+			}
+			this.ctx.drawImage(this.pendingFrame.image as CanvasImageSource, 0, 0);
 
 			this.lastFrameTime = timestamp;
 		} catch (error) {
 			debug.error('webcodecs', 'Video frame render error:', error);
 		} finally {
 			// Close frame immediately to free memory
-			this.pendingFrame.close();
+			closeRenderable(this.pendingFrame);
 			this.pendingFrame = null;
 		}
 	}
@@ -906,14 +1449,18 @@ export class BrowserWebCodecsService {
 	 * Setup WebSocket event listeners
 	 */
 	private setupEventListeners(): void {
+		// Both of these are broadcast to everyone in the project, so the tab
+		// alone is not a precise enough address: another device watching the same
+		// tab has its own peer, and feeding it that peer's candidates produces a
+		// connection that never completes on either side.
 		const cleanupIce = ws.on('preview:browser-stream-ice', async (data) => {
-			if (data.sessionId === this.sessionId && data.from === 'headless') {
+			if (data.sessionId === this.sessionId && data.viewerId === this.viewerId && data.from === 'headless') {
 				await this.addIceCandidate(data.candidate);
 			}
 		});
 
 		const cleanupState = ws.on('preview:browser-stream-state', (data) => {
-			if (data.sessionId === this.sessionId) {
+			if (data.sessionId === this.sessionId && data.viewerId === this.viewerId) {
 				debug.log('webcodecs', `Server connection state: ${data.state}`);
 			}
 		});
@@ -1014,7 +1561,12 @@ export class BrowserWebCodecsService {
 	 * Add ICE candidate (+ loopback variant for VPN compatibility)
 	 */
 	private async addIceCandidate(candidate: RTCIceCandidateInit): Promise<void> {
-		if (!this.peerConnection) return;
+		// Held rather than dropped: a candidate is only addable once the answer
+		// side has a remote description, and these routinely arrive first.
+		if (!this.peerConnection || !this.hasRemoteDescription) {
+			this.pendingRemoteCandidates.push(candidate);
+			return;
+		}
 
 		try {
 			await this.peerConnection.addIceCandidate(new RTCIceCandidate(candidate));
@@ -1052,6 +1604,112 @@ export class BrowserWebCodecsService {
 			clearInterval(this.statsIntervalId);
 			this.statsIntervalId = null;
 		}
+	}
+
+	/**
+	 * Current viewer display metrics.
+	 *
+	 * The product of these two numbers is how many physical screen pixels each
+	 * emulated viewport pixel occupies — which is exactly the resolution worth
+	 * capturing. Above it is invisible work; below it is upscaling blur.
+	 */
+	private currentDisplayMetrics(): { scale: number; dpr: number } {
+		return {
+			scale: getDisplayScale(),
+			dpr: typeof window !== 'undefined' ? window.devicePixelRatio || 1 : 1
+		};
+	}
+
+	/**
+	 * Report decoder health upstream so the source can back off.
+	 *
+	 * Stutter caused by a viewer that can't decode fast enough looks identical
+	 * from the outside to network congestion, but needs the opposite response:
+	 * fewer or smaller frames rather than a smaller send buffer. The source can
+	 * only tell them apart if we say which one it is.
+	 */
+	private sendFeedback(): void {
+		if (!this.sessionId || !this.isConnected) return;
+
+		// The inline decode path has no queue telemetry of its own, so derive
+		// the drop ratio from what the renderer had to throw away.
+		if (!this.videoWorker) {
+			const received = this.framesReceivedWindow;
+			this.lastFeedback = {
+				decodeQueueSize: this.videoDecoder?.decodeQueueSize ?? 0,
+				decodeLatencyMs: 0,
+				dropRatio: received > 0 ? Math.min(1, this.framesDroppedWindow / received) : 0
+			};
+		}
+
+		this.framesReceivedWindow = 0;
+		this.framesDroppedWindow = 0;
+
+		ws.http('preview:browser-stream-feedback', {
+			tabId: this.sessionId,
+			viewerId: this.viewerId,
+			decodeQueueSize: this.lastFeedback.decodeQueueSize,
+			decodeLatencyMs: this.lastFeedback.decodeLatencyMs,
+			dropRatio: this.lastFeedback.dropRatio
+		}).catch(() => {});
+	}
+
+	private startFeedbackLoop(): void {
+		if (this.feedbackIntervalId) return;
+
+		this.feedbackIntervalId = setInterval(() => {
+			// The worker owns the decode counters, so ask it to drain them; it
+			// answers with a 'stats' message which triggers the actual send.
+			if (this.videoWorker) {
+				this.videoWorker.postMessage({ t: 'stats' });
+			} else {
+				this.sendFeedback();
+			}
+		}, 2000);
+	}
+
+	private stopFeedbackLoop(): void {
+		if (this.feedbackIntervalId) {
+			clearInterval(this.feedbackIntervalId);
+			this.feedbackIntervalId = null;
+		}
+	}
+
+	/**
+	 * Tell the source whether anyone is actually looking.
+	 *
+	 * Capture is suspended entirely while hidden, not just rendering — the
+	 * expensive half of an unwatched preview (renderer + encoder) runs on the
+	 * host, where it competes with every other session.
+	 */
+	setViewerVisible(visible: boolean): void {
+		if (this.isViewerVisible === visible) return;
+		this.isViewerVisible = visible;
+
+		if (!this.sessionId) return;
+
+		debug.log('webcodecs', `Viewer ${visible ? 'visible' : 'hidden'} — ${visible ? 'resuming' : 'suspending'} capture`);
+		ws.http('preview:browser-stream-visibility', {
+			tabId: this.sessionId,
+			viewerId: this.viewerId,
+			visible
+		}).catch(() => {});
+	}
+
+	/**
+	 * Push new display metrics to the source (panel resize, device change, or
+	 * a move to a screen with a different pixel density).
+	 */
+	sendDisplayMetrics(): void {
+		if (!this.sessionId || !this.isConnected) return;
+
+		const metrics = this.currentDisplayMetrics();
+		ws.http('preview:browser-stream-display', {
+			tabId: this.sessionId,
+			viewerId: this.viewerId,
+			scale: metrics.scale,
+			dpr: metrics.dpr
+		}).catch(() => {});
 	}
 
 	/**
@@ -1147,6 +1805,8 @@ export class BrowserWebCodecsService {
 		this.isCleaningUp = false;
 		this.stats.firstFrameRendered = false;
 		this.isNavigating = false;
+		this.pendingRemoteCandidates = [];
+		this.hasRemoteDescription = false;
 
 		this.sessionId = sessionId;
 		this.canvas = canvas;
@@ -1165,11 +1825,15 @@ export class BrowserWebCodecsService {
 			// Setup WebSocket listeners
 			this.setupEventListeners();
 
+			// The worker survives reconnects; recreate it only if a previous
+			// failure tore it down.
+			this.initVideoWorker();
+
 			// Create peer connection
 			await this.createPeerConnection();
 
 			// Get offer from backend's existing peer (don't start new streaming)
-			const offerResponse = await ws.http('preview:browser-stream-offer', { tabId: sessionId }, 10000);
+			const offerResponse = await ws.http('preview:browser-stream-offer', { tabId: sessionId, viewerId: this.viewerId }, 10000);
 			if (offerResponse.offer) {
 				await this.handleOffer({
 					type: offerResponse.offer.type as RTCSdpType,
@@ -1196,7 +1860,9 @@ export class BrowserWebCodecsService {
 	private async cleanupLocalConnection(): Promise<void> {
 		this.isCleaningUp = true;
 
+		this.clearDisconnectGrace();
 		this.stopStatsCollection();
+		this.stopFeedbackLoop();
 		this.stopBandwidthLogging();
 
 		// Cancel pending frame render
@@ -1207,7 +1873,7 @@ export class BrowserWebCodecsService {
 
 		// Close pending frame
 		if (this.pendingFrame) {
-			this.pendingFrame.close();
+			closeRenderable(this.pendingFrame);
 			this.pendingFrame = null;
 		}
 
@@ -1218,6 +1884,10 @@ export class BrowserWebCodecsService {
 			debug.warn('webcodecs', 'Error in ws cleanup:', e);
 		}
 		this.wsCleanupFunctions = [];
+
+		// Drop the worker's decoder state too, or the next stream would
+		// resume decoding against a stale delta chain.
+		this.videoWorker?.postMessage({ t: 'reset' });
 
 		// Close decoders immediately (reset + close, no flush).
 		// Flushing processes all queued frames which is slow and can fire
@@ -1269,6 +1939,8 @@ export class BrowserWebCodecsService {
 		this.lastFrameTime = 0;
 		this.startTime = 0;
 		this.firstFrameTimestamp = 0;
+		this.fragmentBuffer = null;
+		this.fragmentTimestamp = 0;
 
 		this.syncEstablished = false;
 		this.syncRealTimeOrigin = 0;
@@ -1289,7 +1961,9 @@ export class BrowserWebCodecsService {
 	private async cleanup(): Promise<void> {
 		this.isCleaningUp = true;
 
+		this.clearDisconnectGrace();
 		this.stopStatsCollection();
+		this.stopFeedbackLoop();
 		this.stopBandwidthLogging();
 
 		// Cancel pending frame render
@@ -1300,7 +1974,7 @@ export class BrowserWebCodecsService {
 
 		// Close pending frame
 		if (this.pendingFrame) {
-			this.pendingFrame.close();
+			closeRenderable(this.pendingFrame);
 			this.pendingFrame = null;
 		}
 
@@ -1314,8 +1988,12 @@ export class BrowserWebCodecsService {
 
 		// Notify server with explicit tabId (fire-and-forget for speed during rapid switching)
 		if (this.sessionId) {
-			ws.http('preview:browser-stream-stop', { tabId: this.sessionId }).catch(() => {});
+			ws.http('preview:browser-stream-stop', { tabId: this.sessionId, viewerId: this.viewerId }).catch(() => {});
 		}
+
+		// Drop the worker's decoder state too, or the next stream would resume
+		// decoding against a stale delta chain.
+		this.videoWorker?.postMessage({ t: 'reset' });
 
 		// Close decoders immediately (reset + close, no flush for speed)
 		if (this.videoDecoder) {
@@ -1397,6 +2075,8 @@ export class BrowserWebCodecsService {
 		this.lastFrameTime = 0;
 		this.startTime = 0;
 		this.firstFrameTimestamp = 0;
+		this.fragmentBuffer = null;
+		this.fragmentTimestamp = 0;
 
 		// Reset AV sync state
 		this.syncEstablished = false;
@@ -1425,7 +2105,9 @@ export class BrowserWebCodecsService {
 	private async cleanupConnection(): Promise<void> {
 		this.isCleaningUp = true;
 
+		this.clearDisconnectGrace();
 		this.stopStatsCollection();
+		this.stopFeedbackLoop();
 		this.stopBandwidthLogging();
 
 		// Cancel pending frame render
@@ -1436,7 +2118,7 @@ export class BrowserWebCodecsService {
 
 		// Close pending frame
 		if (this.pendingFrame) {
-			this.pendingFrame.close();
+			closeRenderable(this.pendingFrame);
 			this.pendingFrame = null;
 		}
 
@@ -1495,6 +2177,8 @@ export class BrowserWebCodecsService {
 		this.lastFrameTime = 0;
 		this.startTime = 0;
 		this.firstFrameTimestamp = 0;
+		this.fragmentBuffer = null;
+		this.fragmentTimestamp = 0;
 
 		// Reset AV sync state
 		this.syncEstablished = false;
@@ -1549,7 +2233,7 @@ export class BrowserWebCodecsService {
 			this.renderFrameId = null;
 		}
 		if (this.pendingFrame) {
-			this.pendingFrame.close();
+			closeRenderable(this.pendingFrame);
 			this.pendingFrame = null;
 		}
 	}
@@ -1624,6 +2308,14 @@ export class BrowserWebCodecsService {
 	destroy(): void {
 		this.cleanup();
 
+		// Release the identity so a later service in this document can reuse it
+		// instead of being pushed onto a suffix — otherwise a panel that
+		// mounts and unmounts a few times walks the id upward and the source
+		// sees a stranger every time.
+		activeViewerIds.delete(this.viewerId);
+
+		this.terminateVideoWorker();
+
 		// Close AudioContext only on full destroy (not reused after this)
 		if (this.audioContext && this.audioContext.state !== 'closed') {
 			this.audioContext.close().catch(() => {});
@@ -1643,6 +2335,16 @@ export class BrowserWebCodecsService {
 			document.removeEventListener('click', this.userGestureHandler);
 			document.removeEventListener('keydown', this.userGestureHandler);
 			this.userGestureHandler = null;
+		}
+
+		if (this.visibilitySuspendTimer) {
+			clearTimeout(this.visibilitySuspendTimer);
+			this.visibilitySuspendTimer = null;
+		}
+
+		if (this.visibilityHandler) {
+			document.removeEventListener('visibilitychange', this.visibilityHandler);
+			this.visibilityHandler = null;
 		}
 	}
 }

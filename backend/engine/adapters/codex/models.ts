@@ -9,9 +9,20 @@
  * generation.
  */
 
-import type { EngineModel } from '$shared/types/unified';
+import type { EngineModel, ReasoningControl } from '$shared/types/unified';
+import { toReasoningOptions } from '$shared/constants/engines';
 
-export const CODEX_MODELS: EngineModel[] = [
+/**
+ * Codex's reasoning knob is the SDK `modelReasoningEffort` thread option
+ * (`minimal | low | medium | high | xhigh`). `medium` is the historical
+ * default. Attached only to reasoning-capable models below.
+ */
+const CODEX_REASONING_CONTROL: ReasoningControl = {
+	levels: toReasoningOptions(['minimal', 'low', 'medium', 'high', 'xhigh']),
+	default: 'medium',
+};
+
+const CODEX_MODELS_BASE: EngineModel[] = [
 	{
 		engine: {
 			type: 'codex',
@@ -103,3 +114,9 @@ export const CODEX_MODELS: EngineModel[] = [
 		cost: { input: 0, output: 0 },
 	},
 ];
+
+export const CODEX_MODELS: EngineModel[] = CODEX_MODELS_BASE.map((model) =>
+	model.capabilities.reasoning
+		? { ...model, capabilities: { ...model.capabilities, reasoningControl: CODEX_REASONING_CONTROL } }
+		: model,
+);

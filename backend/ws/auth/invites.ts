@@ -9,7 +9,8 @@ export const inviteHandler = createRouter()
 		data: t.Object({
 			label: t.Optional(t.String()),
 			maxUses: t.Optional(t.Number({ minimum: 0 })),
-			expiresInMinutes: t.Optional(t.Number({ minimum: 1 }))
+			expiresInMinutes: t.Optional(t.Number({ minimum: 1 })),
+			projectIds: t.Optional(t.Array(t.String()))
 		}),
 		response: t.Object({
 			inviteToken: t.String(),
@@ -20,7 +21,8 @@ export const inviteHandler = createRouter()
 				max_uses: t.Number(),
 				use_count: t.Number(),
 				expires_at: t.Union([t.String(), t.Null()]),
-				created_at: t.String()
+				created_at: t.String(),
+				project_ids: t.Union([t.String(), t.Null()])
 			})
 		})
 	}, async ({ data, conn }) => {
@@ -28,8 +30,12 @@ export const inviteHandler = createRouter()
 		const result = createInvite(userId, {
 			label: data.label,
 			maxUses: data.maxUses,
-			expiresInMinutes: data.expiresInMinutes
+			expiresInMinutes: data.expiresInMinutes,
+			projectIds: data.projectIds
 		});
+
+		// Broadcast so every admin's invite list (Team) stays in sync.
+		ws.emit.global('remote-access:changed', { kind: 'invite-created' });
 
 		return {
 			inviteToken: result.inviteToken,
@@ -40,7 +46,8 @@ export const inviteHandler = createRouter()
 				max_uses: result.invite!.max_uses,
 				use_count: result.invite!.use_count,
 				expires_at: result.invite!.expires_at,
-				created_at: result.invite!.created_at
+				created_at: result.invite!.created_at,
+				project_ids: result.invite!.project_ids
 			}
 		};
 	})
@@ -55,7 +62,8 @@ export const inviteHandler = createRouter()
 			max_uses: t.Number(),
 			use_count: t.Number(),
 			expires_at: t.Union([t.String(), t.Null()]),
-			created_at: t.String()
+			created_at: t.String(),
+			project_ids: t.Union([t.String(), t.Null()])
 		}))
 	}, async () => {
 		const invites = listInvites();
@@ -66,7 +74,8 @@ export const inviteHandler = createRouter()
 			max_uses: inv.max_uses,
 			use_count: inv.use_count,
 			expires_at: inv.expires_at,
-			created_at: inv.created_at
+			created_at: inv.created_at,
+			project_ids: inv.project_ids
 		}));
 	})
 
@@ -80,5 +89,6 @@ export const inviteHandler = createRouter()
 		})
 	}, async ({ data }) => {
 		revokeInvite(data.id);
+		ws.emit.global('remote-access:changed', { kind: 'invite-revoked' });
 		return { success: true };
 	});

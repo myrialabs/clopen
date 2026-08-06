@@ -39,12 +39,21 @@ export interface ExistingTabInfo {
 	tabId: string;
 	url: string;
 	title: string;
+	favicon?: string;
 	quality: string;
 	isStreaming: boolean;
 	deviceSize: string;
 	rotation: string;
 	isActive: boolean;
+	canGoBack?: boolean;
+	canGoForward?: boolean;
 	isMcpControlled?: boolean;
+	/** Whether an agent is acting on this tab right now. */
+	isMcpFocused?: boolean;
+	/** What the agent is doing on it, for the caption beside its cursor. */
+	mcpActivity?: string;
+	/** Where the agent's pointer stands on it, in page coordinates. */
+	mcpCursor?: { x: number; y: number };
 }
 
 export interface ExistingTabsResult {
@@ -222,7 +231,13 @@ export async function getExistingTabs(projectId: string): Promise<ExistingTabsRe
 }
 
 /**
- * Switch to a specific tab on backend
+ * Tell the backend this viewer is now watching a tab.
+ *
+ * Does not change which tab the project considers active — that is one value
+ * shared by everyone in the project, and letting the act of looking reassign it
+ * meant two people watching the same project moved each other's target, right
+ * down to where their clicks landed. Streaming is attached per (tab, viewer)
+ * already, so nothing here needs a shared answer.
  */
 export async function switchToBackendTab(tabId: string, projectId: string): Promise<boolean> {
 	if (!projectId) {
@@ -231,14 +246,13 @@ export async function switchToBackendTab(tabId: string, projectId: string): Prom
 	}
 
 	try {
-		debug.log('preview', `🔄 Switching to backend tab: ${tabId} (project: ${projectId})`);
+		debug.log('preview', `👁️ Now viewing backend tab: ${tabId} (project: ${projectId})`);
 
 		await ws.http('preview:browser-tab-switch', { tabId, projectId }, 5000);
 
-		debug.log('preview', `✅ Switched to backend tab: ${tabId}`);
 		return true;
 	} catch (error) {
-		debug.error('preview', `❌ Error switching to backend tab:`, error);
+		debug.error('preview', `❌ Error marking viewed backend tab:`, error);
 		return false;
 	}
 }

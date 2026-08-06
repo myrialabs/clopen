@@ -25,6 +25,7 @@ import type {
 import { fetchOpenCodeModels } from './models';
 import {
 	convertAssistantMessages,
+	convertPendingTextParts,
 	convertResultMessage,
 	convertSystemInitMessage,
 	convertStreamStart,
@@ -291,6 +292,7 @@ export class OpenCodeEngine implements AIEngine {
 			let streamingText = '';
 			const emittedToolParts = new Set<string>(); // Tool parts already emitted as tool_use
 			const completedToolParts = new Set<string>(); // Tool parts whose tool_result was emitted
+			const emittedTextParts = new Set<string>(); // Text parts finalized before a tool boundary
 			// callID/partId → raw tool name, so a `permission.asked` event (which
 			// carries only a callID) can be resolved to the tool being permitted.
 			const callIdToTool = new Map<string, string>();
@@ -318,6 +320,25 @@ export class OpenCodeEngine implements AIEngine {
 				reasoningText = '';
 			};
 
+			/** Finalize text accumulated before an eagerly emitted tool/subtask. */
+			const flushPendingText = function* (msgId: string, msg: OCMessage) {
+				const parts = messageParts.get(msgId) || [];
+				for (const output of convertPendingTextParts(msg, parts, sessionId, emittedTextParts)) {
+					yield output;
+				}
+			};
+
+			/** Parts that still need to be emitted by the message/session finalizer. */
+			const getRemainingParts = (msgId: string): Part[] => {
+				return (messageParts.get(msgId) || []).filter(part => {
+					if (part.type === 'text') return !emittedTextParts.has(part.id);
+					if (part.type === 'tool') return !emittedToolParts.has(part.id);
+					if (part.type === 'subtask') return !emittedToolParts.has(part.id);
+					if (part.type === 'reasoning') return false;
+					return true;
+				});
+			};
+
 			/**
 			 * Finalize and yield an assistant message by ID
 			 * Emits stop stream event, the assembled message, and restarts stream for next message
@@ -334,14 +355,7 @@ export class OpenCodeEngine implements AIEngine {
 				// Stop current stream
 				yield convertStreamStop(sessionId);
 
-				const parts = messageParts.get(msgId) || [];
-				// Filter out tool parts, subtask parts, and reasoning parts already emitted
-				const remainingParts = parts.filter(p => {
-					if (p.type === 'tool') return !emittedToolParts.has(p.id);
-					if (p.type === 'subtask') return !emittedToolParts.has(p.id);
-					if (p.type === 'reasoning') return false; // Already emitted as reasoning message
-					return true;
-				});
+				const remainingParts = getRemainingParts(msgId);
 
 				if (remainingParts.length > 0) {
 					const splitMessages = convertAssistantMessages(msg, remainingParts, sessionId);
@@ -485,6 +499,10 @@ export class OpenCodeEngine implements AIEngine {
 										}
 
 										yield convertStreamStop(sessionId);
+										// OpenCode keeps text + tool parts in one assistant message.
+										// Materialize the visible text placeholder before the tool
+										// can replace it in the frontend.
+										yield* flushPendingText(msgId, msg);
 										yield convertToolUseOnly(toolPart, msg, sessionId);
 
 										// If already completed on first sight, emit result immediately too
@@ -544,6 +562,7 @@ export class OpenCodeEngine implements AIEngine {
 										yield* flushReasoning(msg);
 									}
 									yield convertStreamStop(sessionId);
+									yield* flushPendingText(msgId, msg);
 									yield convertSubtaskToolUseOnly(subtaskPart, msg, sessionId);
 									yield convertStreamStart(sessionId);
 									streamingText = '';
@@ -609,14 +628,7 @@ export class OpenCodeEngine implements AIEngine {
 								}
 								yield convertStreamStop(sessionId);
 								if (msg) {
-									const parts = messageParts.get(currentAssistantId) || [];
-									// Filter out tool parts and reasoning parts already emitted
-									const remainingParts = parts.filter(p => {
-										if (p.type === 'tool') return !emittedToolParts.has(p.id);
-										if (p.type === 'subtask') return !emittedToolParts.has(p.id);
-										if (p.type === 'reasoning') return false;
-										return true;
-									});
+									const remainingParts = getRemainingParts(currentAssistantId);
 									if (remainingParts.length > 0) {
 										const splitMsgs1 = convertAssistantMessages(msg, remainingParts, sessionId);
 										for (const m of splitMsgs1) {
@@ -654,13 +666,7 @@ export class OpenCodeEngine implements AIEngine {
 									}
 									yield convertStreamStop(sessionId);
 									if (msg) {
-										const parts = messageParts.get(currentAssistantId) || [];
-										const remainingParts = parts.filter(p => {
-											if (p.type === 'tool') return !emittedToolParts.has(p.id);
-											if (p.type === 'subtask') return !emittedToolParts.has(p.id);
-											if (p.type === 'reasoning') return false;
-											return true;
-										});
+										const remainingParts = getRemainingParts(currentAssistantId);
 										if (remainingParts.length > 0) {
 											const splitMsgs2 = convertAssistantMessages(msg, remainingParts, sessionId);
 											for (const m of splitMsgs2) {

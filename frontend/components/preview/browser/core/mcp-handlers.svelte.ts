@@ -8,14 +8,14 @@
 
 import { debug } from '$shared/utils/logger';
 import ws from '$frontend/utils/ws';
-import { getMcpControlledBackendIds } from '$frontend/stores/features/preview-tabs-workspace.svelte';
+import {
+	getMcpControlledBackendIds,
+	isBackendTabMcpFocused
+} from '$frontend/stores/features/preview-tabs-workspace.svelte';
 import type { TabManager } from './tab-manager.svelte';
 
 export interface McpHandlerConfig {
 	tabManager: TabManager;
-	transformBrowserToDisplayCoordinates?: (x: number, y: number) => { x: number, y: number } | null;
-	onCursorUpdate?: (x: number, y: number, clicking?: boolean) => void;
-	onCursorHide?: () => void;
 	onLaunchRequest?: (url: string, deviceSize: string, rotation: string, sessionId?: string) => void;
 }
 
@@ -23,7 +23,7 @@ export interface McpHandlerConfig {
  * Create MCP event handler
  */
 export function createMcpHandler(config: McpHandlerConfig) {
-	const { tabManager, transformBrowserToDisplayCoordinates, onCursorUpdate, onCursorHide, onLaunchRequest } = config;
+	const { tabManager, onLaunchRequest } = config;
 
 	// Controlled tabs are owned by the always-on dock sync (single source of
 	// truth); read that shared set so the badge/lock stays correct even when this
@@ -39,34 +39,16 @@ export function createMcpHandler(config: McpHandlerConfig) {
 	function setupEventListeners(): () => void {
 		debug.log('preview', '🎧 Setting up MCP event listeners...');
 
-		const unsubscribers = [
-			// MCP control start/end (which tabs are controlled + toasts) is handled by
-			// the always-on dock sync, not here — this handler is view-scoped and only
-			// exists while the panel is mounted. Cursor rendering stays here because it
-			// needs the live canvas transform.
-
-			// Listen for MCP cursor events
-			ws.on('preview:browser-mcp-cursor-position', (data) => {
-				handleCursorPosition(data);
-			}),
-
-			ws.on('preview:browser-mcp-cursor-click', (data) => {
-				handleCursorClick(data);
-			}),
-
-			ws.on('preview:browser-mcp-test-completed', (data) => {
-				handleTestCompleted(data);
-			}),
-
-			// Hide cursor when the entire Claude request finishes or is stopped
-			ws.on('chat:complete', () => {
-				if (onCursorHide) onCursorHide();
-			}),
-
-			ws.on('chat:cancelled', () => {
-				if (onCursorHide) onCursorHide();
-			})
-		];
+		// Nothing about the agent's pointer is handled here any more.
+		//
+		// Lock, focus, caption and position all live in the always-on dock sync,
+		// which keeps them per backend tab whether or not this panel is mounted
+		// and whichever tab it happens to be showing. This handler used to own
+		// the cursor and dropped every event for a tab that was not on screen —
+		// so switching to the tab an agent was working on showed a pointer stuck
+		// wherever the one restore-on-switch had put it, while the agent carried
+		// on moving somewhere the panel had thrown away.
+		const unsubscribers: Array<() => void> = [];
 
 		// MCP Tab Management - Request/Response handlers
 		setupTabManagementListeners();
@@ -117,34 +99,22 @@ export function createMcpHandler(config: McpHandlerConfig) {
 		return result;
 	}
 
+	/** Frontend tab ids an agent is acting on right now. */
+	function getFocusedTabIds(): Set<string> {
+		const result = new Set<string>();
+		for (const tab of tabManager.tabs) {
+			if (tab.sessionId && isBackendTabMcpFocused(tab.sessionId)) result.add(tab.id);
+		}
+		return result;
+	}
+
+	/** Whether the panel is currently showing a tab an agent is working on. */
+	function isCurrentTabMcpFocused(): boolean {
+		const activeTab = tabManager.tabs.find((t) => t.id === tabManager.activeTabId);
+		return isBackendTabMcpFocused(activeTab?.sessionId ?? null);
+	}
+
 	// Private handlers
-
-	function handleCursorPosition(data: { sessionId: string; x: number; y: number; timestamp: number; source: 'mcp' }) {
-		// Only show cursor if this tab is controlled AND user is viewing it
-		const activeTab = tabManager.tabs.find(t => t.id === tabManager.activeTabId);
-		if (activeTab?.sessionId === data.sessionId && controlledSessionIds().has(data.sessionId) && transformBrowserToDisplayCoordinates) {
-			const transformedPosition = transformBrowserToDisplayCoordinates(data.x, data.y);
-			if (transformedPosition && onCursorUpdate) {
-				onCursorUpdate(transformedPosition.x, transformedPosition.y, false);
-			}
-		}
-	}
-
-	function handleCursorClick(data: { sessionId: string; x: number; y: number; timestamp: number; source: 'mcp' }) {
-		// Only show cursor click if this tab is controlled AND user is viewing it
-		const activeTab = tabManager.tabs.find(t => t.id === tabManager.activeTabId);
-		if (activeTab?.sessionId === data.sessionId && controlledSessionIds().has(data.sessionId) && transformBrowserToDisplayCoordinates) {
-			const transformedPosition = transformBrowserToDisplayCoordinates(data.x, data.y);
-			if (transformedPosition && onCursorUpdate) {
-				onCursorUpdate(transformedPosition.x, transformedPosition.y, true);
-			}
-		}
-	}
-
-	function handleTestCompleted(_data: { sessionId: string; timestamp: number; source: 'mcp' }) {
-		// Cursor is hidden via chat:complete / chat:cancelled listeners instead,
-		// because test-completed fires per-tool-call, not at end of full request.
-	}
 
 	function handleTabsListRequest(data: { requestId: string }) {
 		const tabList = tabManager.tabs.map(tab => ({
@@ -274,8 +244,10 @@ export function createMcpHandler(config: McpHandlerConfig) {
 	return {
 		setupEventListeners,
 		isCurrentTabMcpControlled,
+		isCurrentTabMcpFocused,
 		isSessionControlled,
 		getControlledTabIds,
+		getFocusedTabIds,
 		get controlledSessionIds() { return controlledSessionIds(); }
 	};
 }

@@ -11,7 +11,7 @@ export type SettingsSection =
 	| 'commit-message'
 	| 'artifacts'
 	| 'engines'
-	| 'system-tools'
+	| 'stack'
 	| 'mcp'
 	| 'skills'
 	| 'commands'
@@ -25,6 +25,7 @@ export type SettingsSection =
 	| 'account'
 	| 'team'
 	| 'security'
+	| 'device'
 	| 'system';
 
 /** Sidebar grouping. Sections are rendered under their group header. */
@@ -53,6 +54,12 @@ interface SettingsModalState {
 	 * "Go to Engines" CTA); AIEnginesSettings consumes and clears it.
 	 */
 	engineFocus: EngineType | null;
+	/**
+	 * User whose project-access modal should auto-open when Team is shown. Set by
+	 * the "new member joined" nudge and the invite flow; UserManagement consumes
+	 * and clears it.
+	 */
+	teamFocusUserId: string | null;
 }
 
 // Settings sections metadata
@@ -96,10 +103,10 @@ export const settingsSections: SettingsSectionMeta[] = [
 		adminOnly: true
 	},
 	{
-		id: 'system-tools',
-		label: 'System Tools',
+		id: 'stack',
+		label: 'Stack',
 		icon: 'lucide:hammer',
-		description: 'Server-side binaries',
+		description: 'Engines, runtimes & tools',
 		group: 'infrastructure',
 		adminOnly: true
 	},
@@ -192,7 +199,7 @@ export const settingsSections: SettingsSectionMeta[] = [
 		id: 'team',
 		label: 'Team',
 		icon: 'lucide:users',
-		description: 'Users and invites',
+		description: 'Members, invites, and devices',
 		group: 'administration',
 		adminOnly: true
 	},
@@ -201,6 +208,14 @@ export const settingsSections: SettingsSectionMeta[] = [
 		label: 'Security',
 		icon: 'lucide:shield',
 		description: 'Login and access control',
+		group: 'administration',
+		adminOnly: true
+	},
+	{
+		id: 'device',
+		label: 'Device',
+		icon: 'lucide:server',
+		description: 'Server hardware and status',
 		group: 'administration',
 		adminOnly: true
 	},
@@ -218,7 +233,8 @@ export const settingsSections: SettingsSectionMeta[] = [
 export const settingsModalState = $state<SettingsModalState>({
 	isOpen: false,
 	activeSection: 'assistant',
-	engineFocus: null
+	engineFocus: null,
+	teamFocusUserId: null
 });
 
 // Helper functions
@@ -248,4 +264,20 @@ export function focusEngineSection(engine: EngineType) {
 /** Called by AIEnginesSettings after consuming the focus request. */
 export function clearEngineFocus() {
 	settingsModalState.engineFocus = null;
+}
+
+/**
+ * Open the Team section and request a specific member's project-access modal —
+ * used by the "new member joined" nudge and the invite flow so the admin lands
+ * exactly where they can grant access.
+ */
+export function openTeamForUser(userId: string) {
+	settingsModalState.isOpen = true;
+	settingsModalState.activeSection = 'team';
+	settingsModalState.teamFocusUserId = userId;
+}
+
+/** Called by UserManagement after consuming the focus request. */
+export function clearTeamFocus() {
+	settingsModalState.teamFocusUserId = null;
 }

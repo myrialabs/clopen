@@ -43,6 +43,7 @@ export type LogLabel =
 	| 'settings'
 	| 'engine'
 	| 'tunnel'
+	| 'remote-access'
 	| 'db-client'
 	
 	// User

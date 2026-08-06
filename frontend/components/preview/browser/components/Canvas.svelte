@@ -1,8 +1,33 @@
+<script module lang="ts">
+	/**
+	 * Last known picture per backend tab, so switching back shows something
+	 * immediately instead of a blank panel and a fresh handshake.
+	 *
+	 * Module-level, not per component. This canvas unmounts whenever the tab on
+	 * screen has no session yet — a blank "New Tab" is enough — and taking the
+	 * snapshots down with it meant a detour through an empty tab cost every
+	 * other tab its picture, and cost the panel a full reconnect to get it
+	 * back. Keyed by session id, so an entry can only ever be redrawn for the
+	 * session it came from.
+	 */
+	const canvasSnapshots = new Map<string, HTMLCanvasElement>();
+	const MAX_SNAPSHOTS = 10;
+</script>
+
 <script lang="ts">
 	import { onDestroy } from 'svelte';
 	import { getViewportDimensions, type DeviceSize, type Rotation } from '$frontend/utils/preview-constants';
 	import { BrowserWebCodecsService, type BrowserWebCodecsStreamStats } from '$frontend/services/preview/browser/browser-webcodecs.service';
+	import { probeHitTest, readPageSelection, type RemoteFocusState } from '../core/interactions.svelte';
 	import { debug } from '$shared/utils/logger';
+
+	/**
+	 * Touch capability, resolved once. Only touch devices get the hidden keyboard
+	 * field — on a desktop it would steal focus from the canvas and break the
+	 * physical keyboard path.
+	 */
+	const isTouchDevice =
+		typeof window !== 'undefined' && ('ontouchstart' in window || navigator.maxTouchPoints > 0);
 
 	let {
 		projectId = '', // REQUIRED for project isolation (read-only from parent)
@@ -12,10 +37,19 @@
 		rotation = $bindable<Rotation>('portrait'),
 		currentCursor = $bindable('default'),
 		canvasAPI = $bindable<any>(null),
-		lastFrameData = $bindable<any>(null),
 		isConnected = $bindable(false),
 		latencyMs = $bindable<number>(0),
 		isStreamReady = $bindable(false), // Exposed: true when first frame received
+		/**
+		 * Whether the canvas has a picture on it right now.
+		 *
+		 * Deliberately not the same as `isStreamReady`. A mid-session restart —
+		 * recovery, a watchdog round, a screencast refresh — takes the stream
+		 * down and back up while the last decoded frame is still painted and
+		 * still shows the right page. Callers that darken the panel want to know
+		 * about the picture, not the socket.
+		 */
+		hasPaintedContent = $bindable(false),
 		isNavigating = $bindable(false), // Track if page is navigating (from parent)
 		isReconnecting = $bindable(false), // Track if reconnecting after navigation (prevents loading overlay)
 
@@ -27,8 +61,28 @@
 		onRequestScreencastRefresh = $bindable<() => void>(() => {}), // Called when stream is stuck
 		touchMode = $bindable<'scroll' | 'cursor'>('scroll'),
 		touchTarget = undefined as HTMLElement | undefined, // Container element for touch events
-		onTouchCursorUpdate = $bindable<(pos: { x: number; y: number; visible: boolean; clicking?: boolean }) => void>(() => {})
+		onTouchCursorUpdate = $bindable<(pos: { x: number; y: number; visible: boolean; clicking?: boolean; pressed?: boolean }) => void>(() => {})
 	} = $props();
+
+	/**
+	 * The page's own coordinate space — the emulated viewport, in CSS pixels.
+	 *
+	 * Deliberately *not* derived from the canvas bitmap. The renderer sizes the
+	 * backing store to whatever resolution the stream is currently captured at,
+	 * and that resolution is adaptive: it follows fit-scale × devicePixelRatio and
+	 * is clamped by the host's pixel budget. Mapping through the bitmap therefore
+	 * produced coordinates scaled by `capture ÷ viewport` — exact whenever that
+	 * ratio happened to be 1 (a Retina screen at half fit, which is why it looked
+	 * accurate most of the time) and off by a few percent, growing toward the
+	 * bottom-right, whenever it wasn't. The backend dispatches these as CSS
+	 * pixels, so CSS pixels is what this has to produce.
+	 */
+	const pageSize = $derived(
+		getViewportDimensions(
+			(deviceSize || sessionInfo?.deviceSize || 'laptop') as DeviceSize,
+			(rotation || sessionInfo?.rotation || 'landscape') as Rotation
+		)
+	);
 
 	// WebCodecs service instance
 	let webCodecsService: BrowserWebCodecsService | null = null;
@@ -59,25 +113,69 @@
 	let screencastRefreshCount = 0; // Track retry count for stuck detection
 	let navigationJustCompleted = false; // Track if navigation just completed (for fast refresh)
 
-	// Canvas snapshot storage for instant tab switching
-	// Stores a clone of the canvas per sessionId so switching back shows content immediately
-	const canvasSnapshots = new Map<string, HTMLCanvasElement>();
-	const MAX_SNAPSHOTS = 10;
+	// Watchdog bookkeeping — see WATCHDOG_* above. Plain locals: nothing renders
+	// from them, and making them reactive would re-run effects once a second.
+	let blankSince = 0;
+	let watchdogRound = 0;
+
 	let hasRestoredSnapshot = false; // Prevents canvas clear/reset during streaming start
 
-	// Recovery is only triggered by ACTUAL failures, not timeouts
-	// - ICE connection failed
-	// - WebCodecs connection closed unexpectedly
-	// - Explicit errors
+	// Recovery is triggered by ACTUAL failures — ICE failed, the WebCodecs
+	// connection closed unexpectedly, an explicit error — and, as a last resort,
+	// by the watchdog below when none of those fired but there is still no
+	// picture. This bounds how many attempts one *round* makes before backing
+	// off; the watchdog opens the next round.
 	const MAX_CONSECUTIVE_FAILURES = 2;
 	const HEALTH_CHECK_INTERVAL = 2000; // Check every 2 seconds for connection health
 	const FRAME_CHECK_INTERVAL = 100; // Fallback poll for first frame (primary path is onFirstFrame callback)
 	const STUCK_STREAM_TIMEOUT = 3000; // Fallback: Request screencast refresh after 3 seconds of connected but no frame
 	const NAVIGATION_FAST_REFRESH_DELAY = 300; // Fast refresh after navigation: 300ms
 
+	/**
+	 * Last-resort watchdog: how long a session may show nothing before this
+	 * component starts the whole handshake again, and how much longer it waits
+	 * on each further attempt.
+	 *
+	 * Everything above only recovers from a failure it was told about — an ICE
+	 * `failed`, a DataChannel close, a stream that connected and then produced
+	 * no frame. Three ways to end up with no picture and no recovery at all were
+	 * left over, and all three ended in a permanent "Loading preview…":
+	 *
+	 * - `startStreaming()` exhausting its retries. Nothing re-runs it: the
+	 *   streaming effect's dependencies have not changed, so it never fires again.
+	 * - A peer that never reaches `connected`. The stuck-stream ladder is gated
+	 *   on `isConnected`, and ICE can sit in `checking` indefinitely without ever
+	 *   declaring `failed` — much likelier over a Remote Access link than on the
+	 *   host, which is exactly where it was seen to hang forever.
+	 * - `attemptRecovery()` giving up after two tries and stopping the stream for
+	 *   good.
+	 *
+	 * This is deliberately outside all of that: it looks only at whether a frame
+	 * has ever arrived, so it cannot be defeated by a wrong diagnosis. The delay
+	 * grows a little per round to stay out of the way of a link that is merely
+	 * slow, and is capped — a viewer that is looking at a spinner must never be
+	 * left waiting minutes for the next attempt.
+	 */
+	const WATCHDOG_TICK_MS = 1000;
+	const WATCHDOG_FIRST_ESCALATION_MS = 8000;
+	const WATCHDOG_ESCALATION_STEP_MS = 3000;
+	const WATCHDOG_MAX_WAIT_MS = 15000;
+
 	// Sync isStreamReady with hasReceivedFirstFrame for parent component
 	$effect(() => {
 		isStreamReady = hasReceivedFirstFrame;
+	});
+
+	/**
+	 * Is there a picture on the canvas?
+	 *
+	 * True once a frame has been decoded, and stays true while a restored
+	 * snapshot is standing in for one. Only `clearCanvas()` takes it back to
+	 * false, which is the one moment the canvas genuinely has nothing to show.
+	 */
+	let hasPainted = $state(false);
+	$effect(() => {
+		hasPaintedContent = hasPainted;
 	});
 
 	// Watch projectId changes and recreate WebCodecs service
@@ -128,6 +226,10 @@
 				lastStartRequestId = null; // Allow new start request for new session
 			}
 			lastTrackedSessionId = currentSessionId;
+			// A new tab starts its own patience: carrying the previous one's
+			// stopwatch over would fire the watchdog on its very first tick.
+			blankSince = 0;
+			watchdogRound = 0;
 		}
 	});
 
@@ -200,33 +302,138 @@
 		onInteraction(action);
 	}
 
+	/**
+	 * Map a viewport point onto the page's own coordinate space.
+	 *
+	 * `getBoundingClientRect()` already accounts for the fit-scale transform the
+	 * device frame applies, so the ratio between the bitmap size and the rendered
+	 * box is the whole conversion.
+	 *
+	 * `inside` matters because touch gestures are bound to the *panel*, not the
+	 * canvas — the trackpad mode needs the whole panel as a surface. A tap on the
+	 * bezel or the dot-pattern backdrop therefore lands here with coordinates
+	 * outside the page, and forwarding those unclamped is what made taps register
+	 * in the wrong place.
+	 */
+	/**
+	 * Where the frame is actually painted inside the canvas element.
+	 *
+	 * The canvas is `object-contain`, so whenever the element's box and the
+	 * bitmap disagree on aspect ratio the image is letterboxed and centred inside
+	 * it. Mapping against the element box then reports every point offset by
+	 * however wide those bars are — which is what put clicks up-and-left of the
+	 * pointer after a rotation change, and the virtual cursor down-and-right on
+	 * mobile. The painted rect is the only correct frame of reference.
+	 */
+	function paintedRect(canvas: HTMLCanvasElement): DOMRect | null {
+		const rect = canvas.getBoundingClientRect();
+		if (rect.width === 0 || rect.height === 0 || canvas.width === 0 || canvas.height === 0) {
+			return null;
+		}
+
+		const boxAspect = rect.width / rect.height;
+		const bitmapAspect = canvas.width / canvas.height;
+
+		if (Math.abs(boxAspect - bitmapAspect) < 0.0001) return rect;
+
+		if (bitmapAspect > boxAspect) {
+			// Limited by width — bars above and below.
+			const height = rect.width / bitmapAspect;
+			return new DOMRect(rect.left, rect.top + (rect.height - height) / 2, rect.width, height);
+		}
+
+		// Limited by height — bars left and right.
+		const width = rect.height * bitmapAspect;
+		return new DOMRect(rect.left + (rect.width - width) / 2, rect.top, width, rect.height);
+	}
+
+	function toPageCoordinates(
+		clientX: number,
+		clientY: number,
+		canvas: HTMLCanvasElement
+	): { x: number; y: number; inside: boolean } {
+		const rect = paintedRect(canvas);
+		if (!rect) return { x: 0, y: 0, inside: false };
+
+		// Painted box → page, never bitmap → page. See `pageSize`.
+		const scaleX = pageSize.width / rect.width;
+		const scaleY = pageSize.height / rect.height;
+
+		const rawX = (clientX - rect.left) * scaleX;
+		const rawY = (clientY - rect.top) * scaleY;
+
+		const inside =
+			clientX >= rect.left && clientX <= rect.right && clientY >= rect.top && clientY <= rect.bottom;
+
+		return {
+			// Clamped so a gesture that drifts off the edge mid-drag keeps
+			// tracking against the nearest page pixel instead of jumping.
+			x: Math.round(Math.max(0, Math.min(pageSize.width, rawX))),
+			y: Math.round(Math.max(0, Math.min(pageSize.height, rawY))),
+			inside
+		};
+	}
+
+	/**
+	 * How many page pixels one CSS pixel of the panel covers.
+	 *
+	 * Gesture deltas (touch scroll, trackpad travel) need the same conversion as
+	 * points do, or a scroll moves the page by a different distance than the
+	 * finger travelled.
+	 */
+	function pageScale(canvas: HTMLCanvasElement): number {
+		const rect = paintedRect(canvas);
+		if (!rect || rect.width === 0) return 1;
+		return pageSize.width / rect.width;
+	}
+
 	// Utility function to convert canvas display coordinates to browser coordinates
 	function getCanvasCoordinates(event: MouseEvent | TouchEvent, canvas: HTMLCanvasElement): { x: number, y: number } {
-		const rect = canvas.getBoundingClientRect();
-		const scaleX = canvas.width / rect.width;
-		const scaleY = canvas.height / rect.height;
-
 		let clientX: number, clientY: number;
 
 		if (event instanceof MouseEvent) {
 			clientX = event.clientX;
 			clientY = event.clientY;
 		} else {
-			// Touch event - use first touch
 			const touch = event.touches[0] || event.changedTouches[0];
 			clientX = touch.clientX;
 			clientY = touch.clientY;
 		}
 
-		const x = (clientX - rect.left) * scaleX;
-		const y = (clientY - rect.top) * scaleY;
-
-		return {
-			x: Math.round(x),
-			y: Math.round(y)
-		};
+		const { x, y } = toPageCoordinates(clientX, clientY, canvas);
+		return { x, y };
 	}
 
+	/**
+	 * Follow one finger for the length of a gesture.
+	 *
+	 * `touches[0]` is not stable: a second finger touching down can reorder the
+	 * list, and the tracked point jumps to the new finger mid-scroll. Matching on
+	 * `identifier` pins the gesture to the finger that started it.
+	 */
+	function findTouch(event: TouchEvent, identifier: number | null): Touch | null {
+		if (identifier === null) return event.touches[0] ?? event.changedTouches[0] ?? null;
+
+		for (const list of [event.touches, event.changedTouches]) {
+			for (let i = 0; i < list.length; i += 1) {
+				if (list[i].identifier === identifier) return list[i];
+			}
+		}
+		return null;
+	}
+
+
+	/**
+	 * How far the pointer must travel, in page pixels, before a press counts as a
+	 * drag rather than a click.
+	 *
+	 * Nothing is dispatched until it is crossed — the press has to stay a
+	 * candidate click, because that path is what detects selects and pickers. So
+	 * the distance is also how much of a text selection is missing before it
+	 * starts: at 10px that was the first character or so. 4px matches what
+	 * browsers themselves use to start a drag.
+	 */
+	const DRAG_THRESHOLD_PX = 4;
 
 	function handleCanvasMouseMove(event: MouseEvent, canvas: HTMLCanvasElement) {
 		if (!sessionId) return;
@@ -241,7 +448,7 @@
 			);
 
 			// Start drag when distance exceeds threshold
-			if (dragDistance > 10) {
+			if (dragDistance > DRAG_THRESHOLD_PX) {
 				// Send mousedown on first drag detection
 				if (!dragStarted) {
 					sendInteraction({
@@ -289,6 +496,47 @@
 		sendInteraction({ type: 'scroll', deltaX: event.deltaX, deltaY: event.deltaY });
 	}
 
+	/**
+	 * Bridge the clipboard shortcuts between the page and the user's own machine.
+	 *
+	 * Forwarding Ctrl+C as a keystroke fills the *headless* browser's clipboard,
+	 * which nothing outside the preview can read — and Ctrl+V would paste from
+	 * that same invisible clipboard rather than the user's. Both directions have
+	 * to be carried explicitly.
+	 */
+	async function handleClipboardShortcut(event: KeyboardEvent): Promise<boolean> {
+		const mod = event.metaKey || event.ctrlKey;
+		if (!mod || event.altKey) return false;
+
+		const key = event.key.toLowerCase();
+
+		if (key === 'c' || key === 'x') {
+			const text = await readPageSelection(key === 'x');
+			if (text) {
+				try {
+					await navigator.clipboard.writeText(text);
+				} catch (error) {
+					debug.warn('preview', 'Could not write the preview selection to the clipboard:', error);
+				}
+			}
+			return true;
+		}
+
+		if (key === 'v') {
+			try {
+				// A keydown counts as a user gesture, which is what Chrome requires
+				// before it will hand over clipboard contents.
+				const text = await navigator.clipboard.readText();
+				if (text) sendInteraction({ type: 'paste', text });
+			} catch (error) {
+				debug.warn('preview', 'Could not read the clipboard for paste:', error);
+			}
+			return true;
+		}
+
+		return false;
+	}
+
 	function handleCanvasKeydown(event: KeyboardEvent) {
 		if (!sessionId) return;
 
@@ -296,6 +544,15 @@
 		// This prevents Ctrl+A, Ctrl+C, arrow keys, etc. from affecting the parent
 		event.preventDefault();
 		event.stopPropagation();
+
+		// Copy/cut/paste are handled here rather than forwarded as keystrokes.
+		if (event.metaKey || event.ctrlKey) {
+			const key = event.key.toLowerCase();
+			if (key === 'c' || key === 'x' || key === 'v') {
+				void handleClipboardShortcut(event);
+				return;
+			}
+		}
 
 		const isNavigationKey = ['ArrowUp', 'ArrowDown', 'ArrowLeft', 'ArrowRight', 'Tab', 'Enter', 'Escape'].includes(event.key);
 		const isModifierKey = event.ctrlKey || event.metaKey || event.altKey || event.shiftKey;
@@ -335,6 +592,8 @@
 	let longPressTimer: ReturnType<typeof setTimeout> | null = null;
 	let touchLongPressed = false;
 	let lastTouchCoords: { x: number; y: number } | null = null;
+	/** Identifier of the finger that owns the current gesture. */
+	let activeTouchId: number | null = null;
 
 	// Trackpad cursor state (cursor/trackpad mode - persists between touch gestures)
 	let trackpadCursorX = 0;
@@ -348,6 +607,52 @@
 	let trackpadTwoFingerLastCenterX = 0;
 	let trackpadTwoFingerLastCenterY = 0;
 	let trackpadTwoFingerTotalDist = 0;
+	/**
+	 * A two-finger gesture has happened and not every finger is off the glass.
+	 *
+	 * Fingers never leave together. Whichever one lifts first used to be read as
+	 * the end of the two-finger gesture and the *start* of a single-finger tap,
+	 * so ending a two-finger scroll fired a click wherever the cursor happened
+	 * to be — and the two-finger tap that should have opened a context menu was
+	 * consumed by that same transition before it could be recognised. The
+	 * gesture is now decided the moment the count drops below two, and nothing
+	 * else is read from the remaining fingers until the glass is clear.
+	 */
+	let trackpadGestureSettled = false;
+
+	/**
+	 * Double-tap-and-drag, the trackpad idiom for "press and hold while moving".
+	 *
+	 * Long-press was the only way to start a drag, which costs 600ms before
+	 * anything happens and is unusable for selecting text. A second tap that
+	 * lands quickly and then moves means the same thing and starts immediately;
+	 * one that lands and lifts again is just a double-click.
+	 */
+	let trackpadLastTapAt = 0;
+	let trackpadDoubleTapArmed = false;
+	/** Longest gap between the two taps that still reads as one gesture. */
+	const DOUBLE_TAP_WINDOW_MS = 320;
+
+	/** Show the touch cursor at its current spot, optionally mid-gesture. */
+	function publishTouchCursor(state: { clicking?: boolean; pressed?: boolean } = {}) {
+		if (!canvasElement) return;
+		const pos = canvasToScreen(trackpadCursorX, trackpadCursorY);
+		onTouchCursorUpdate({ x: pos.x, y: pos.y, visible: true, ...state });
+	}
+
+	/**
+	 * Flash the click ripple, then settle back.
+	 *
+	 * A tap on a trackpad surface lands somewhere the finger is not, so without
+	 * a mark on the cursor there is nothing to confirm the tap registered —
+	 * the same reason the agent's pointer draws one.
+	 */
+	function pulseTouchCursor(pressed = false) {
+		publishTouchCursor({ clicking: true, pressed });
+		setTimeout(() => {
+			if (touchMode === 'cursor') publishTouchCursor({ pressed });
+		}, 220);
+	}
 
 	function handleCanvasMouseDown(event: MouseEvent, canvas: HTMLCanvasElement) {
 		if (!sessionId) return;
@@ -418,6 +723,23 @@
 				return;
 			}
 
+			// Assigning width/height wipes the backing store, so keep a copy of
+			// whatever is on screen and stretch it back over the new size. It is
+			// the wrong aspect ratio for a moment, which is a far better answer
+			// than a blank panel: a device or rotation change would otherwise
+			// flash grey for the whole length of the restart it triggers.
+			let carried: HTMLCanvasElement | null = null;
+			if (hasPainted && canvasElement.width > 0 && canvasElement.height > 0) {
+				try {
+					carried = document.createElement('canvas');
+					carried.width = canvasElement.width;
+					carried.height = canvasElement.height;
+					carried.getContext('2d')?.drawImage(canvasElement, 0, 0);
+				} catch {
+					carried = null;
+				}
+			}
+
 			canvasElement.width = canvasWidth;
 			canvasElement.height = canvasHeight;
 			canvasElement.style.width = '100%';
@@ -434,13 +756,17 @@
 				willReadFrequently: false // We won't read pixels back
 			});
 
-			// Fill with neutral gray (works for both light/dark mode)
-			// This matches the loading overlay background roughly
 			if (ctx) {
 				ctx.imageSmoothingEnabled = true;
 				ctx.imageSmoothingQuality = 'medium';
-				ctx.fillStyle = '#f1f5f9'; // slate-100 - neutral light color
-				ctx.fillRect(0, 0, canvasElement.width, canvasElement.height);
+				if (carried) {
+					ctx.drawImage(carried, 0, 0, canvasWidth, canvasHeight);
+				} else {
+					// Neutral gray, works for both light/dark mode and matches the
+					// loading overlay that is covering this anyway.
+					ctx.fillStyle = '#f1f5f9'; // slate-100
+					ctx.fillRect(0, 0, canvasElement.width, canvasElement.height);
+				}
 			}
 		}
 	}
@@ -559,6 +885,7 @@
 				// Setup first frame handler - fires immediately when first frame decoded
 				// This eliminates the 500ms polling delay for hiding the loading overlay
 				webCodecsService.setFirstFrameHandler(() => {
+					hasPainted = true;
 					if (!hasReceivedFirstFrame) {
 						debug.log('webcodecs', 'First frame callback - immediately updating UI');
 						hasReceivedFirstFrame = true;
@@ -669,8 +996,14 @@
 		}
 	}
 
-	// Clear canvas to prevent showing stale frames
-	// Use light neutral color that works with loading overlay
+	/**
+	 * Wipe the canvas back to blank.
+	 *
+	 * Only for a genuine change of subject — a different session whose picture
+	 * we do not have. Never for a restart of the *same* session: the frame
+	 * already painted still shows that page correctly, and throwing it away
+	 * meant every recovery flashed a white panel for the length of a handshake.
+	 */
 	function clearCanvas() {
 		if (canvasElement) {
 			const ctx = canvasElement.getContext('2d');
@@ -679,6 +1012,7 @@
 				ctx.fillRect(0, 0, canvasElement.width, canvasElement.height);
 			}
 		}
+		hasPainted = false;
 	}
 
 	// EVENT-DRIVEN health check - no timeout-based recovery
@@ -716,6 +1050,7 @@
 			// Check if we received the first frame
 			if (stats && stats.firstFrameRendered) {
 				debug.log('webcodecs', `First frame rendered after ${elapsed}ms`);
+				hasPainted = true;
 				hasReceivedFirstFrame = true;
 				lastFrameTime = now;
 				consecutiveFailures = 0;
@@ -830,8 +1165,12 @@
 		consecutiveFailures++;
 		debug.log('webcodecs', `Recovery attempt ${consecutiveFailures}/${MAX_CONSECUTIVE_FAILURES} for session ${sessionId}`);
 
+		// A burst of failures is a bad moment, not a verdict: back off and let the
+		// watchdog re-arm this counter and try again. Returning here used to be
+		// terminal — the stream stopped and nothing ever restarted it, which is
+		// one of the ways a preview ended up on "Loading preview…" for good.
 		if (consecutiveFailures > MAX_CONSECUTIVE_FAILURES) {
-			debug.error('webcodecs', 'Max recovery attempts reached, giving up');
+			debug.warn('webcodecs', 'Recovery attempts exhausted for now, backing off to the watchdog');
 			isRecovering = false;
 			await stopStreaming();
 			return;
@@ -912,7 +1251,90 @@
 		}
 	}
 
-	// Stop WebCodecs streaming
+	/**
+	 * One watchdog tick. Sees only "is there a picture yet"; see WATCHDOG_* above
+	 * for why it deliberately knows nothing about *why* there isn't one.
+	 */
+	async function watchdogTick() {
+		if (!sessionId || !sessionInfo || !canvasElement) return;
+
+		if (hasReceivedFirstFrame) {
+			blankSince = 0;
+			watchdogRound = 0;
+			return;
+		}
+
+		// Something is already on its way to a frame — starting a second attempt
+		// on top of it is how two streams end up fighting over one canvas. Only
+		// these two, and deliberately not `isNavigating`/`isReconnecting`: those
+		// are set by the page and can stay true indefinitely, which would hand
+		// the stuck state a way to switch the watchdog off.
+		if (isStartingStream || isRecovering) {
+			blankSince = 0;
+			return;
+		}
+
+		const now = Date.now();
+		if (blankSince === 0) {
+			blankSince = now;
+			return;
+		}
+
+		const patience = Math.min(
+			WATCHDOG_FIRST_ESCALATION_MS + watchdogRound * WATCHDOG_ESCALATION_STEP_MS,
+			WATCHDOG_MAX_WAIT_MS
+		);
+		if (now - blankSince < patience) return;
+
+		blankSince = now;
+		watchdogRound++;
+		// A fresh round gets a fresh allowance, so `attemptRecovery` can never be
+		// permanently spent — that is the whole point of the back-off above.
+		consecutiveFailures = 0;
+		connectionFailed = false;
+
+		const stats = webCodecsService?.getStats();
+
+		// Connected, decoding nothing: the source half is the broken one, and
+		// restarting its capture is both cheaper and likelier to work than
+		// re-negotiating a connection that is demonstrably fine.
+		if (isWebCodecsActive && stats?.isConnected) {
+			debug.warn('webcodecs', `Watchdog: connected but blank for ${patience}ms, refreshing capture (round ${watchdogRound})`);
+			onRequestScreencastRefresh();
+			return;
+		}
+
+		debug.warn(
+			'webcodecs',
+			`Watchdog: no frame after ${patience}ms (connection=${stats?.connectionState ?? 'none'}), re-handshaking (round ${watchdogRound})`
+		);
+		await attemptRecovery();
+	}
+
+	// Runs for as long as a tab has a session, independently of whether a stream
+	// was ever successfully started — a failed start is one of the cases this
+	// exists to catch.
+	$effect(() => {
+		if (!sessionId || !sessionInfo) return;
+
+		const timer = setInterval(() => {
+			void watchdogTick();
+		}, WATCHDOG_TICK_MS);
+
+		return () => clearInterval(timer);
+	});
+
+	/**
+	 * Stop streaming.
+	 *
+	 * Leaves the canvas alone. Whatever is painted is the last frame of the
+	 * session being stopped, and every caller either goes straight on to
+	 * restart that same session — a recovery, a watchdog round — or is about to
+	 * hand the canvas to a different one, which the switch path handles by
+	 * restoring that session's snapshot or clearing explicitly. Wiping here as
+	 * well is what put a white panel over a perfectly good picture for the
+	 * length of every reconnect.
+	 */
 	async function stopStreaming() {
 		stopHealthCheck(); // Stop health monitoring
 		if (webCodecsService) {
@@ -925,12 +1347,6 @@
 			lastStartRequestId = null; // Clear to allow new requests
 			// Note: Don't reset hasReceivedFirstFrame here - let startStreaming do it
 			// This prevents flashing when switching tabs
-			// Clear canvas to prevent stale frames, BUT keep last frame during navigation or snapshot restore
-			if (!isNavigating && !hasRestoredSnapshot) {
-				clearCanvas();
-			} else {
-				debug.log('webcodecs', `Skipping canvas clear - navigation: ${isNavigating}, snapshot: ${hasRestoredSnapshot}`);
-			}
 		}
 	}
 
@@ -973,7 +1389,7 @@
 			if (needsStreaming) {
 				if (activeStreamingSessionId !== sessionId) {
 					// SNAPSHOT: Save current canvas before switching to new session
-					if (activeStreamingSessionId && hasReceivedFirstFrame && canvasElement.width > 0) {
+					if (activeStreamingSessionId && hasPaintedContent && canvasElement.width > 0) {
 						try {
 							const clone = document.createElement('canvas');
 							clone.width = canvasElement.width;
@@ -1003,7 +1419,11 @@
 							if (ctx) {
 								ctx.drawImage(existingSnapshot, 0, 0, canvasElement.width, canvasElement.height);
 								hasRestoredSnapshot = true;
-								// Don't reset hasReceivedFirstFrame - snapshot is visible
+								// There is a picture again, even though this session's
+								// stream has not produced a frame yet — that is exactly
+								// the distinction `hasPainted` exists to carry.
+								hasPainted = true;
+								hasReceivedFirstFrame = false;
 								debug.log('webcodecs', `📸 Restored canvas snapshot for session ${sessionId}`);
 							}
 						} catch (e) {
@@ -1013,6 +1433,8 @@
 							hasReceivedFirstFrame = false;
 						}
 					} else {
+						// Nothing to show for this session: this is the one place the
+						// canvas genuinely has to go blank.
 						hasRestoredSnapshot = false;
 						clearCanvas();
 						hasReceivedFirstFrame = false; // Reset to show loading overlay
@@ -1079,9 +1501,13 @@
 			let lastMoveTime = 0;
 			const handleMouseMove = (e: MouseEvent) => {
 				const now = Date.now();
+				// The move that begins a drag is never throttled: it is the one that
+				// dispatches the deferred mousedown, so delaying it by up to a frame
+				// delays the whole selection with it.
+				const startsDrag = isMouseDown && !dragStarted;
 				// 32ms = ~30fps — enough for smooth hover/drag while keeping CDP pipeline clear
 				// for clicks and keypresses (halving the rate halves CDP queue pressure)
-				if (now - lastMoveTime >= 32) {
+				if (startsDrag || now - lastMoveTime >= 32) {
 					lastMoveTime = now;
 					handleCanvasMouseMove(e, canvas);
 				}
@@ -1145,31 +1571,61 @@
 		touchTarget.addEventListener('touchstart', touchStartHandler, { passive: false });
 		touchTarget.addEventListener('touchmove', touchMoveHandler, { passive: false });
 		touchTarget.addEventListener('touchend', touchEndHandler, { passive: false });
+		// The OS can take a gesture away mid-flight (a system edge swipe, an
+		// incoming call). Without this the tracked finger is never released and
+		// the next touch reads as a continuation of the interrupted one.
+		touchTarget.addEventListener('touchcancel', touchEndHandler, { passive: false });
 
 		return () => {
 			touchTarget.removeEventListener('touchstart', touchStartHandler);
 			touchTarget.removeEventListener('touchmove', touchMoveHandler);
 			touchTarget.removeEventListener('touchend', touchEndHandler);
+			touchTarget.removeEventListener('touchcancel', touchEndHandler);
 		};
 	});
 
-	// Convert canvas coordinates to viewport (screen) coordinates for VirtualCursor display
-	function canvasToScreen(cx: number, cy: number): { x: number; y: number } {
-		if (!canvasElement) return { x: 0, y: 0 };
-		const rect = canvasElement.getBoundingClientRect();
+	/**
+	 * Page → screen. Null when the canvas has no geometry yet (mid-mount, panel
+	 * collapsed), which callers must treat as "cannot place this" — an overlay
+	 * that falls back to the origin lands in the corner of the window, nowhere
+	 * near the element it belongs to.
+	 */
+	function pageToScreen(cx: number, cy: number): { x: number; y: number } | null {
+		if (!canvasElement) return null;
+		// Painted rect, not element box — see paintedRect(). Using the box put the
+		// virtual cursor off by the letterbox bars.
+		const rect = paintedRect(canvasElement);
+		if (!rect) return null;
 		return {
-			x: rect.left + cx * (rect.width / canvasElement.width),
-			y: rect.top + cy * (rect.height / canvasElement.height)
+			x: rect.left + cx * (rect.width / pageSize.width),
+			y: rect.top + cy * (rect.height / pageSize.height)
 		};
 	}
+
+	// Convert page coordinates to viewport (screen) coordinates for VirtualCursor display
+	function canvasToScreen(cx: number, cy: number): { x: number; y: number } {
+		return pageToScreen(cx, cy) ?? { x: 0, y: 0 };
+	}
+
+	// Keep the virtual cursor inside the page when the viewport changes.
+	// Rotating to portrait or switching to a phone shrinks the page under the
+	// cursor, which would otherwise be left pointing past its edge.
+	$effect(() => {
+		void deviceSize;
+		void rotation;
+		if (!canvasElement) return;
+
+		trackpadCursorX = Math.max(0, Math.min(pageSize.width, trackpadCursorX));
+		trackpadCursorY = Math.max(0, Math.min(pageSize.height, trackpadCursorY));
+	});
 
 	// Show / hide cursor when touchMode changes
 	$effect(() => {
 		if (touchMode === 'cursor') {
-			// Init cursor at canvas center on first activation
+			// Init cursor at page centre on first activation
 			if (canvasElement && trackpadCursorX === 0 && trackpadCursorY === 0) {
-				trackpadCursorX = canvasElement.width / 2;
-				trackpadCursorY = canvasElement.height / 2;
+				trackpadCursorX = pageSize.width / 2;
+				trackpadCursorY = pageSize.height / 2;
 			}
 			if (canvasElement) {
 				const pos = canvasToScreen(trackpadCursorX, trackpadCursorY);
@@ -1194,8 +1650,10 @@
 				isMouseDown = false;
 				dragStarted = false;
 				touchLongPressed = false;
+				publishTouchCursor();
 			}
 			trackpadTwoFingerActive = true;
+			trackpadGestureSettled = false;
 			trackpadTwoFingerStartTime = Date.now();
 			trackpadTwoFingerTotalDist = 0;
 			const t1 = event.touches[0];
@@ -1205,7 +1663,10 @@
 			return;
 		}
 
-		if (trackpadTwoFingerActive) return; // Ignore until two-finger gesture fully ends
+		// Ignore anything that arrives before the glass is clear: a finger put
+		// back down while the tail of a two-finger gesture is still lifting is
+		// part of that gesture, not the start of a tap.
+		if (trackpadTwoFingerActive || trackpadGestureSettled) return;
 
 		// Single finger
 		const touch = event.touches[0];
@@ -1217,6 +1678,10 @@
 		mouseDownTime = Date.now();
 		dragStarted = false;
 		touchLongPressed = false;
+		trackpadDoubleTapArmed = mouseDownTime - trackpadLastTapAt < DOUBLE_TAP_WINDOW_MS;
+
+		// The tap lands at the virtual cursor, not the finger — probe there.
+		beginKeyboardProbe({ x: Math.round(trackpadCursorX), y: Math.round(trackpadCursorY) });
 
 		// Long-press (600ms without movement) → drag mode
 		longPressTimer = setTimeout(() => {
@@ -1228,7 +1693,11 @@
 			if (dist < 8) {
 				touchLongPressed = true;
 				dragStarted = true;
+				cancelKeyboardProbe();
 				sendInteraction({ type: 'mousedown', x: Math.round(trackpadCursorX), y: Math.round(trackpadCursorY), button: 'left' });
+				// Held, not tapped: the cursor shows the button down for as long
+				// as the drag lasts, the way the agent's does.
+				publishTouchCursor({ pressed: true });
 			}
 		}, 600);
 	}
@@ -1248,14 +1717,21 @@
 			trackpadTwoFingerLastCenterY = centerY;
 			trackpadTwoFingerTotalDist += Math.sqrt(deltaX * deltaX + deltaY * deltaY);
 			if (Math.abs(deltaX) > 0.3 || Math.abs(deltaY) > 0.3) {
-				const rect = canvasElement.getBoundingClientRect();
-				const scale = canvasElement.width / rect.width;
-				sendInteraction({ type: 'scroll', deltaX: deltaX * scale * 2, deltaY: deltaY * scale * 2 });
+				const scale = pageScale(canvasElement);
+				// Scroll at the virtual cursor, so two-finger scrolling affects
+				// whichever container the cursor is hovering.
+				sendInteraction({
+					type: 'scroll',
+					deltaX: deltaX * scale * 2,
+					deltaY: deltaY * scale * 2,
+					x: Math.round(trackpadCursorX),
+					y: Math.round(trackpadCursorY)
+				});
 			}
 			return;
 		}
 
-		if (event.touches.length !== 1 || !isMouseDown || trackpadTwoFingerActive) return;
+		if (event.touches.length !== 1 || !isMouseDown || trackpadTwoFingerActive || trackpadGestureSettled) return;
 
 		const touch = event.touches[0];
 		const deltaClientX = touch.clientX - trackpadLastClientX;
@@ -1268,49 +1744,67 @@
 			Math.pow(touch.clientX - trackpadTouchStartClientX, 2) +
 			Math.pow(touch.clientY - trackpadTouchStartClientY, 2)
 		);
-		if (totalDist > 8 && longPressTimer) {
-			clearTimeout(longPressTimer);
-			longPressTimer = null;
+		if (totalDist > 8) {
+			if (longPressTimer) {
+				clearTimeout(longPressTimer);
+				longPressTimer = null;
+			}
+			// Moving the cursor is not a tap; the probed point is no longer where
+			// the gesture will land.
+			cancelKeyboardProbe();
+
+			// The second tap of a double-tap moved: that is a drag, and it starts
+			// from where the cursor already is rather than waiting out a press.
+			if (trackpadDoubleTapArmed && !dragStarted) {
+				trackpadDoubleTapArmed = false;
+				touchLongPressed = true;
+				dragStarted = true;
+				sendInteraction({ type: 'mousedown', x: Math.round(trackpadCursorX), y: Math.round(trackpadCursorY), button: 'left' });
+			}
 		}
 
-		// Convert screen delta → canvas delta and move cursor
-		const rect = canvasElement.getBoundingClientRect();
-		const scale = canvasElement.width / rect.width;
-		trackpadCursorX = Math.max(0, Math.min(canvasElement.width, trackpadCursorX + deltaClientX * scale));
-		trackpadCursorY = Math.max(0, Math.min(canvasElement.height, trackpadCursorY + deltaClientY * scale));
+		// Convert screen delta → page delta and move cursor
+		const scale = pageScale(canvasElement);
+		trackpadCursorX = Math.max(0, Math.min(pageSize.width, trackpadCursorX + deltaClientX * scale));
+		trackpadCursorY = Math.max(0, Math.min(pageSize.height, trackpadCursorY + deltaClientY * scale));
 
 		// Send mousemove so the browser sees hover state changes
 		sendInteraction({ type: 'mousemove', x: Math.round(trackpadCursorX), y: Math.round(trackpadCursorY) });
 
-		// Update virtual cursor display
-		const pos = canvasToScreen(trackpadCursorX, trackpadCursorY);
-		onTouchCursorUpdate({ x: pos.x, y: pos.y, visible: true });
+		// Update virtual cursor display — held while a long-press drag is running.
+		publishTouchCursor({ pressed: dragStarted });
 	}
 
 	function handleTrackpadTouchEnd(event: TouchEvent) {
 		if (longPressTimer) { clearTimeout(longPressTimer); longPressTimer = null; }
 
 		const remainingTouches = event.touches.length;
+		// The OS took the gesture away — it was never completed, so nothing it
+		// might have meant should be dispatched.
+		const cancelled = event.type === 'touchcancel';
 
 		if (trackpadTwoFingerActive) {
-			if (remainingTouches === 0) {
-				// All fingers lifted: check for two-finger tap → right click
-				const duration = Date.now() - trackpadTwoFingerStartTime;
-				if (duration < 300 && trackpadTwoFingerTotalDist < 20) {
-					sendInteraction({ type: 'rightclick', x: Math.round(trackpadCursorX), y: Math.round(trackpadCursorY) });
-				}
-				trackpadTwoFingerActive = false;
-			} else if (remainingTouches === 1) {
-				// One finger remains: transition back to single-finger tracking
-				const touch = event.touches[0];
-				trackpadLastClientX = touch.clientX;
-				trackpadLastClientY = touch.clientY;
-				trackpadTouchStartClientX = touch.clientX;
-				trackpadTouchStartClientY = touch.clientY;
-				isMouseDown = true;
-				mouseDownTime = Date.now();
-				trackpadTwoFingerActive = false;
+			// Decided here, on the *first* lift, because that is the last moment
+			// the gesture is still recognisable — a two-finger tap only ever
+			// reaches this branch, never the all-fingers-up one.
+			const duration = Date.now() - trackpadTwoFingerStartTime;
+			if (!cancelled && duration < 400 && trackpadTwoFingerTotalDist < 24) {
+				sendInteraction({ type: 'rightclick', x: Math.round(trackpadCursorX), y: Math.round(trackpadCursorY) });
+				pulseTouchCursor();
 			}
+
+			trackpadTwoFingerActive = false;
+			// Whatever is still touching belongs to the gesture just finished.
+			trackpadGestureSettled = remainingTouches > 0;
+			isMouseDown = false;
+			dragStarted = false;
+			touchLongPressed = false;
+			return;
+		}
+
+		if (trackpadGestureSettled) {
+			// Tail of a two-finger gesture. Clear once the glass is.
+			if (remainingTouches === 0) trackpadGestureSettled = false;
 			return;
 		}
 
@@ -1318,6 +1812,7 @@
 
 		if (touchLongPressed && dragStarted) {
 			sendInteraction({ type: 'mouseup', x: Math.round(trackpadCursorX), y: Math.round(trackpadCursorY), button: 'left' });
+			pulseTouchCursor();
 		} else {
 			// Tap: short + minimal movement → left click at cursor position
 			const duration = Date.now() - mouseDownTime;
@@ -1325,14 +1820,31 @@
 				Math.pow(trackpadLastClientX - trackpadTouchStartClientX, 2) +
 				Math.pow(trackpadLastClientY - trackpadTouchStartClientY, 2)
 			);
-			if (duration < 250 && moveDist < 10) {
-				sendInteraction({ type: 'click', x: Math.round(trackpadCursorX), y: Math.round(trackpadCursorY) });
+			if (!cancelled && duration < 250 && moveDist < 10) {
+				const anchor = { x: Math.round(trackpadCursorX), y: Math.round(trackpadCursorY) };
+				// A second tap that never moved is a double-click, not two clicks:
+				// sending a bare click again would not select a word or open what
+				// a double-click opens.
+				sendInteraction({
+					type: trackpadDoubleTapArmed ? 'doubleclick' : 'click',
+					x: anchor.x,
+					y: anchor.y
+				});
+				settleKeyboard(anchor);
+				pulseTouchCursor();
+				// A completed double-click closes the sequence; a third tap in a
+				// row should start over rather than count as another pair.
+				trackpadLastTapAt = trackpadDoubleTapArmed ? 0 : Date.now();
+			} else {
+				cancelKeyboardProbe();
+				publishTouchCursor();
 			}
 		}
 
 		isMouseDown = false;
 		dragStarted = false;
 		touchLongPressed = false;
+		trackpadDoubleTapArmed = false;
 	}
 
 	// ── Touch event handlers (dispatch to scroll or trackpad mode) ────────────
@@ -1340,17 +1852,31 @@
 	// Touch event handlers
 	function handleTouchStart(event: TouchEvent, canvas: HTMLCanvasElement) {
 		if (!sessionId || event.touches.length === 0) return;
-		event.preventDefault();
 
 		if (touchMode === 'cursor') {
+			// Trackpad mode treats the whole panel as a surface, so a touch that
+			// starts on the bezel is legitimate.
+			event.preventDefault();
 			handleTrackpadTouchStart(event);
 			return;
 		}
 
-		// ── Scroll mode ──────────────────────────────────────────────────────────
+		// ── Direct-touch mode ───────────────────────────────────────────────────
 		if (event.touches.length > 1) return;
 
-		const coords = getCanvasCoordinates(event, canvas);
+		const touch = event.touches[0];
+		const coords = toPageCoordinates(touch.clientX, touch.clientY, canvas);
+
+		// Gestures that begin off the page belong to the panel, not the page —
+		// forwarding them is what made scrolling register a pointer somewhere else.
+		if (!coords.inside) {
+			activeTouchId = null;
+			return;
+		}
+
+		event.preventDefault();
+
+		activeTouchId = touch.identifier;
 		isMouseDown = true;
 		mouseDownTime = Date.now();
 		dragStartPos = { x: coords.x, y: coords.y };
@@ -1359,7 +1885,12 @@
 		touchLongPressed = false;
 		lastTouchCoords = { x: coords.x, y: coords.y };
 
-		// Long-press detection: after 500ms without significant movement → drag mode
+		// Ask what is under the finger now, while the tap is still happening.
+		beginKeyboardProbe({ x: coords.x, y: coords.y });
+
+		// Long-press opens the context menu, as it does in every mobile browser.
+		// Mouse-style press-and-drag lives in the trackpad mode instead — here the
+		// same gesture is how the page is scrolled, so it cannot mean both.
 		longPressTimer = setTimeout(() => {
 			if (!isMouseDown || !dragStartPos) return;
 			const dist = dragCurrentPos
@@ -1370,44 +1901,58 @@
 				: 0;
 			if (dist < 10) {
 				touchLongPressed = true;
-				dragStarted = true;
-				sendInteraction({ type: 'mousedown', x: dragStartPos.x, y: dragStartPos.y, button: 'left' });
+				cancelKeyboardProbe();
+				sendInteraction({ type: 'rightclick', x: dragStartPos.x, y: dragStartPos.y });
+				// A short buzz confirms the menu is coming, matching the platform.
+				navigator.vibrate?.(10);
 			}
 		}, 500);
 	}
 
 	function handleTouchMove(event: TouchEvent, canvas: HTMLCanvasElement) {
 		if (!sessionId || event.touches.length === 0) return;
-		event.preventDefault();
 
 		if (touchMode === 'cursor') {
+			event.preventDefault();
 			handleTrackpadTouchMove(event);
 			return;
 		}
 
-		// ── Scroll mode ──────────────────────────────────────────────────────────
+		// ── Direct-touch mode ───────────────────────────────────────────────────
 		if (!isMouseDown || !dragStartPos) return;
 
-		const coords = getCanvasCoordinates(event, canvas);
+		const touch = findTouch(event, activeTouchId);
+		if (!touch) return;
+
+		event.preventDefault();
+
+		const coords = toPageCoordinates(touch.clientX, touch.clientY, canvas);
 		dragCurrentPos = { x: coords.x, y: coords.y };
 
 		const dist = Math.sqrt(
 			Math.pow(coords.x - dragStartPos.x, 2) + Math.pow(coords.y - dragStartPos.y, 2)
 		);
 
-		if (dist > 10 && longPressTimer) {
-			clearTimeout(longPressTimer);
-			longPressTimer = null;
+		if (dist > 10) {
+			if (longPressTimer) {
+				clearTimeout(longPressTimer);
+				longPressTimer = null;
+			}
+			// The gesture is a scroll now. Scrolling in a mobile browser leaves the
+			// keyboard exactly as it was, so the pending answer must not act.
+			cancelKeyboardProbe();
 		}
 
 		if (touchLongPressed) {
-			isDragging = true;
-			sendInteraction({ type: 'mousemove', x: coords.x, y: coords.y });
+			// The context menu owns this gesture now; further movement must not
+			// scroll the page out from under it.
 		} else {
 			if (lastTouchCoords) {
 				const deltaX = lastTouchCoords.x - coords.x;
 				const deltaY = lastTouchCoords.y - coords.y;
-				sendInteraction({ type: 'scroll', deltaX, deltaY });
+				// Coordinates travel with the wheel: CDP dispatches it at the
+				// pointer, and a touch scroll has no pointer of its own to place.
+				sendInteraction({ type: 'scroll', deltaX, deltaY, x: coords.x, y: coords.y });
 			}
 			lastTouchCoords = { x: coords.x, y: coords.y };
 		}
@@ -1415,21 +1960,22 @@
 
 	function handleTouchEnd(event: TouchEvent, canvas: HTMLCanvasElement) {
 		if (!sessionId) return;
-		event.preventDefault();
 
 		if (touchMode === 'cursor') {
+			event.preventDefault();
 			handleTrackpadTouchEnd(event);
 			return;
 		}
 
-		// ── Scroll mode ──────────────────────────────────────────────────────────
+		// ── Direct-touch mode ───────────────────────────────────────────────────
 		if (!isMouseDown) return;
+
+		event.preventDefault();
 
 		if (longPressTimer) { clearTimeout(longPressTimer); longPressTimer = null; }
 
-		if (touchLongPressed && dragStarted) {
-			const endPos = dragCurrentPos || dragStartPos;
-			if (endPos) sendInteraction({ type: 'mouseup', x: endPos.x, y: endPos.y, button: 'left' });
+		if (touchLongPressed) {
+			// Already handled as a context-menu open on the press itself.
 		} else if (!isDragging && dragStartPos) {
 			const touchDuration = Date.now() - mouseDownTime;
 			const dist = dragCurrentPos
@@ -1439,7 +1985,11 @@
 					)
 				: 0;
 			if (touchDuration < 300 && dist < 15) {
-				sendInteraction({ type: 'click', x: dragStartPos.x, y: dragStartPos.y });
+				const anchor = { x: dragStartPos.x, y: dragStartPos.y };
+				sendInteraction({ type: 'click', x: anchor.x, y: anchor.y });
+				settleKeyboard(anchor);
+			} else {
+				cancelKeyboardProbe();
 			}
 		}
 
@@ -1450,6 +2000,223 @@
 		dragStarted = false;
 		touchLongPressed = false;
 		lastTouchCoords = null;
+		activeTouchId = null;
+	}
+
+	// ── On-screen keyboard bridge (touch devices) ─────────────────────────────
+	//
+	// A `<canvas>` can hold DOM focus but will never raise a mobile keyboard —
+	// only a real editable element does. So a hidden field sits over the canvas,
+	// takes the keyboard, and its text is forwarded to the page as keystrokes.
+	//
+	// Text is diffed rather than intercepted per key: Android IMEs (GBoard,
+	// autocorrect, swipe input) do not emit meaningful `keydown` events, and
+	// preventing the default on `beforeinput` breaks composition outright.
+
+	let keyboardInput = $state<HTMLTextAreaElement | undefined>();
+	let keyboardValue = '';
+	let isKeyboardActive = $state(false);
+	let keyboardConfirmToken = 0;
+	let keyboardInputMode = $state<'text' | 'email' | 'tel' | 'url' | 'decimal' | 'search'>('text');
+
+	/**
+	 * Where the keyboard proxy sits, in page coordinates.
+	 *
+	 * It follows the tap rather than covering the canvas: a full-size focused
+	 * field makes the browser scroll toward it and resize the visual viewport,
+	 * which is what produced the white flashes and the empty band above the
+	 * preview. A 1px target at the point already being touched has nowhere to
+	 * scroll to.
+	 */
+	let keyboardAnchor = $state({ x: 0, y: 0 });
+
+	/**
+	 * Focus the hidden field.
+	 *
+	 * Must run synchronously inside the touch handler wherever possible: iOS only
+	 * raises the keyboard for a programmatic focus that happens while the user
+	 * gesture is still active, and an `await` in between forfeits that.
+	 */
+	function captureKeyboard(anchor?: { x: number; y: number }) {
+		if (!keyboardInput || !isTouchDevice) return;
+
+		if (anchor) keyboardAnchor = anchor;
+		keyboardValue = '';
+		keyboardInput.value = '';
+		keyboardInput.focus({ preventScroll: true });
+		isKeyboardActive = true;
+	}
+
+	/**
+	 * The hit test for the gesture currently under way.
+	 *
+	 * Started on `touchstart` so its answer is usually in hand by `touchend` —
+	 * the tap is the slow part, not the round-trip. A stale answer from an
+	 * earlier gesture must never act on the newest one, hence the token.
+	 */
+	let pendingHitTest: {
+		token: number;
+		result: RemoteFocusState | null;
+		promise: Promise<RemoteFocusState>;
+	} | null = null;
+
+	function beginKeyboardProbe(anchor: { x: number; y: number }) {
+		if (!isTouchDevice) return;
+
+		keyboardConfirmToken += 1;
+		const token = keyboardConfirmToken;
+
+		const entry: { token: number; result: RemoteFocusState | null; promise: Promise<RemoteFocusState> } = {
+			token,
+			result: null,
+			promise: probeHitTest(anchor.x, anchor.y).then((state) => {
+				if (keyboardConfirmToken === token) entry.result = state;
+				return state;
+			})
+		};
+
+		pendingHitTest = entry;
+	}
+
+	/**
+	 * Abandon the gesture's keyboard decision — it turned into a scroll or a
+	 * long-press, neither of which should disturb an open keyboard.
+	 */
+	function cancelKeyboardProbe() {
+		keyboardConfirmToken += 1;
+		pendingHitTest = null;
+	}
+
+	/**
+	 * Phone keyboards specialise by input type — a numeric pad for `tel`, an
+	 * `@` key for `email`. The proxy is what the OS actually sees, so the type
+	 * has to be carried across to it or every field gets a plain alphabetic one.
+	 */
+	function inputModeFor(inputType?: string): 'text' | 'email' | 'tel' | 'url' | 'decimal' | 'search' {
+		switch (inputType) {
+			case 'email':
+				return 'email';
+			case 'tel':
+				return 'tel';
+			case 'url':
+				return 'url';
+			case 'number':
+				return 'decimal';
+			case 'search':
+				return 'search';
+			default:
+				return 'text';
+		}
+	}
+
+	function applyKeyboardTarget(state: RemoteFocusState, anchor: { x: number; y: number }) {
+		if (state.editable) {
+			keyboardInputMode = inputModeFor(state.inputType);
+			captureKeyboard(anchor);
+		} else if (isKeyboardActive) {
+			releaseKeyboard();
+		}
+	}
+
+	/**
+	 * Settle the keyboard for the tap that just finished.
+	 *
+	 * The fast path is synchronous, which is the whole point of probing early.
+	 * When the answer is still in flight — a slow link, a busy page — it is
+	 * applied on arrival instead: Android raises the keyboard from that just
+	 * fine, and on iOS the toolbar's keyboard button covers the gap.
+	 */
+	function settleKeyboard(anchor: { x: number; y: number }) {
+		if (!isTouchDevice) return;
+
+		const entry = pendingHitTest;
+		if (entry && entry.token === keyboardConfirmToken && entry.result) {
+			applyKeyboardTarget(entry.result, anchor);
+			return;
+		}
+
+		const token = entry?.token ?? ++keyboardConfirmToken;
+		const answer = entry?.promise ?? probeHitTest(anchor.x, anchor.y);
+		void answer.then((state) => {
+			if (token !== keyboardConfirmToken) return;
+			applyKeyboardTarget(state, anchor);
+		});
+	}
+
+	function releaseKeyboard() {
+		isKeyboardActive = false;
+		keyboardValue = '';
+		if (keyboardInput) {
+			keyboardInput.value = '';
+			keyboardInput.blur();
+		}
+	}
+
+	/**
+	 * Turn the hidden field's new contents into keystrokes for the page.
+	 *
+	 * Only the common-prefix delta is sent, so an IME that rewrites the tail of
+	 * a word replaces exactly that tail.
+	 */
+	function handleKeyboardInput() {
+		if (!keyboardInput || !sessionId) return;
+
+		const next = keyboardInput.value;
+		const previous = keyboardValue;
+		if (next === previous) return;
+
+		let shared = 0;
+		while (shared < next.length && shared < previous.length && next[shared] === previous[shared]) {
+			shared += 1;
+		}
+
+		const deletions = previous.length - shared;
+		for (let i = 0; i < deletions; i += 1) {
+			sendInteraction({ type: 'key', key: 'Backspace' });
+		}
+
+		const inserted = next.slice(shared);
+		if (inserted) {
+			sendInteraction({ type: 'type', text: inserted, delay: 0 });
+		}
+
+		keyboardValue = next;
+
+		// The mirror only exists to diff against; letting it grow unbounded would
+		// keep an ever-longer string in a field the user cannot see.
+		if (next.length > 512) {
+			keyboardValue = '';
+			keyboardInput.value = '';
+		}
+	}
+
+	function handleKeyboardKeydown(event: KeyboardEvent) {
+		if (!sessionId) return;
+
+		if (event.key === 'Enter') {
+			event.preventDefault();
+			sendInteraction({ type: 'keynav', key: 'Enter' });
+			keyboardValue = '';
+			if (keyboardInput) keyboardInput.value = '';
+			return;
+		}
+
+		// Backspace at the start of the mirror has nothing to delete locally, so
+		// `input` never fires — forward it directly.
+		if (event.key === 'Backspace' && keyboardValue.length === 0) {
+			event.preventDefault();
+			sendInteraction({ type: 'key', key: 'Backspace' });
+			return;
+		}
+
+		if (['ArrowUp', 'ArrowDown', 'ArrowLeft', 'ArrowRight', 'Tab', 'Escape'].includes(event.key)) {
+			event.preventDefault();
+			sendInteraction({
+				type: 'keynav',
+				key: event.key,
+				shiftKey: event.shiftKey
+			});
+		}
 	}
 
 	function getCanvasElement() {
@@ -1485,6 +2252,23 @@
 			updateCanvasCursor,
 			setupCanvas,
 			getCanvasElement,
+			/** Where the frame is actually painted — overlays anchor to this. */
+			getPaintedRect: () => (canvasElement ? paintedRect(canvasElement) : null),
+			/**
+			 * Page → screen, the inverse of what pointer events go through.
+			 * Shared so overlays the page positions itself (select popups, context
+			 * menus, native pickers, the agent's cursor) cannot drift away from the
+			 * point the user actually clicked.
+			 */
+			pageToScreen: (x: number, y: number) => pageToScreen(x, y),
+			/**
+			 * Report new display metrics without restarting capture.
+			 *
+			 * Goes through the streaming service rather than straight to the
+			 * socket: the source tracks these per viewer now, and only the
+			 * service knows which viewer this is.
+			 */
+			sendDisplayMetrics: () => webCodecsService?.sendDisplayMetrics(),
 			// Streaming control
 			startStreaming,
 			stopStreaming,
@@ -1493,13 +2277,21 @@
 			getLatency: () => latencyMs,
 			// Navigation handling
 			notifyNavigationComplete,
-			freezeForSpaNavigation: () => webCodecsService?.freezeForSpaNavigation()
+			freezeForSpaNavigation: () => webCodecsService?.freezeForSpaNavigation(),
+			// On-screen keyboard control, for the toolbar's explicit toggle
+			supportsKeyboardToggle: () => isTouchDevice,
+			isKeyboardActive: () => isKeyboardActive,
+			openKeyboard: () => captureKeyboard(),
+			closeKeyboard: releaseKeyboard
 		};
 	});
 
 	onDestroy(() => {
 		stopHealthCheck(); // Stop health monitoring
-		canvasSnapshots.clear(); // Free snapshot memory
+		// Snapshots deliberately survive: this component unmounts whenever the
+		// tab on screen has no session, and dropping every tab's picture for a
+		// detour through a blank tab is what made coming back cost a reconnect
+		// and a white panel. They are freed on project change instead.
 		if (longPressTimer) {
 			clearTimeout(longPressTimer);
 			longPressTimer = null;
@@ -1521,3 +2313,26 @@
 	tabindex="0"
 	style="cursor: default;"
 ></canvas>
+
+{#if isTouchDevice}
+	<!--
+		Keyboard proxy. Invisible and non-interactive, but a genuine editable
+		element — the only thing a mobile browser will raise its keyboard for.
+		16px font size is not cosmetic: iOS Safari auto-zooms the page whenever a
+		focused field is smaller than that.
+	-->
+	<textarea
+		bind:this={keyboardInput}
+		oninput={handleKeyboardInput}
+		onkeydown={handleKeyboardKeydown}
+		onblur={() => (isKeyboardActive = false)}
+		class="pointer-events-none absolute h-px w-px resize-none overflow-hidden border-0 bg-transparent p-0 opacity-0 outline-none"
+		style="left: {keyboardAnchor.x}px; top: {keyboardAnchor.y}px; font-size: 16px;"
+		aria-hidden="true"
+		tabindex="-1"
+		inputmode={keyboardInputMode}
+		autocomplete="off"
+		autocapitalize="sentences"
+		spellcheck="false"
+	></textarea>
+{/if}

@@ -13,7 +13,7 @@ export interface DetectedCommandGroup {
 
 /** Detect commands across all engines for the given scope. */
 export async function detectCommands(projectPath?: string): Promise<DetectedCommandGroup[]> {
-	const engines: ArtifactEngine[] = ['claude', 'codex', 'copilot', 'qwen', 'opencode'];
+	const engines: ArtifactEngine[] = ['claude', 'codex', 'copilot', 'qwen', 'opencode', 'pi'];
 	const scope = projectPath ? 'project' : 'global';
 	const groups = await Promise.all(
 		engines.map(async engine => ({

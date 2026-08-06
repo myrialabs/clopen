@@ -1,3 +1,12 @@
+<script module lang="ts">
+	type StructureTab = 'columns' | 'indexes' | 'relations' | 'ddl';
+
+	// Remembered across object switches (and remounts) so moving between tables
+	// keeps the last tab the user picked instead of snapping back to Columns.
+	// Only updated on explicit user clicks — not by the routine DDL auto-select.
+	let lastStructureTab: StructureTab = 'columns';
+</script>
+
 <script lang="ts">
 	import Icon from '$frontend/components/common/display/Icon.svelte';
 	import Dialog from '$frontend/components/common/overlay/Dialog.svelte';
@@ -5,12 +14,15 @@
 	import TableDesigner from './TableDesigner.svelte';
 	import ColumnEditor from './ColumnEditor.svelte';
 	import IndexForm from './IndexForm.svelte';
+	import PanelLoader from '../shared/PanelLoader.svelte';
+	import MonacoCodeEditor from '$frontend/components/common/editor/MonacoCodeEditor.svelte';
 	import { dbClientStore } from '$frontend/stores/features/db-client.svelte';
 	import { debug } from '$shared/utils/logger';
 	import type {
 		DbClientObjectColumn,
 		DbClientObjectDetails,
 		DbClientObjectForeignKey,
+		DbClientSchemaNodeType,
 		DbDriver
 	} from '$shared/types/db-client';
 	import type { IconName } from '$shared/types/ui/icons';
@@ -40,12 +52,69 @@
 	let editColumnOpen = $state(false);
 	let editingColumn = $state<DbClientObjectColumn | null>(null);
 
-	const isSqlDriver = $derived(driver === 'mysql' || driver === 'postgres' || driver === 'sqlite');
+	let ddl = $state<string | null>(null);
+	let copied = $state(false);
+	let activeTab = $state<StructureTab>(lastStructureTab);
+
+	/** User picked a tab — activate it and remember it for the next object. */
+	function selectTab(tab: StructureTab): void {
+		activeTab = tab;
+		lastStructureTab = tab;
+	}
+
+	/** Restore `lastStructureTab` if it's available for the current object,
+	 *  otherwise fall back to Columns. `ddl` must already be resolved. */
+	function restoreStructureTab(): StructureTab {
+		const available: StructureTab[] = ['columns', 'indexes'];
+		if (isSqlDriver) available.push('relations');
+		if (isSqlDriver && ddl) available.push('ddl');
+		return available.includes(lastStructureTab) ? lastStructureTab : 'columns';
+	}
+
+	const activeObject = $derived(dbClientStore.views[connectionId]?.activeObject);
+	const isRoutine = $derived(activeObject?.type === 'function' || activeObject?.type === 'procedure');
+
+	let ddlEditorText = $state('');
+	let ddlSaving = $state(false);
+
+	$effect(() => {
+		if (ddl) {
+			ddlEditorText = ddl;
+		}
+	});
+
+	async function saveDdl(): Promise<void> {
+		const q = ddlEditorText.trim();
+		if (!q) return;
+		ddlSaving = true;
+		error = null;
+		try {
+			await dbClientStore.executeWrite(connectionId, q, { database });
+			await load();
+		} catch (e) {
+			error = e instanceof Error ? e.message : String(e);
+		} finally {
+			ddlSaving = false;
+		}
+	}
+
+	const isSqlDriver = $derived(driver === 'mysql' || driver === 'postgres' || driver === 'sqlite' || driver === 'mssql');
 	const isMongoDriver = $derived(driver === 'mongodb');
 	const isRedisDriver = $derived(driver === 'redis');
 	const canEditColumns = $derived(isSqlDriver);
 	const canAddIndex = $derived(isSqlDriver || isMongoDriver);
-	const canTruncate = $derived(!isRedisDriver);
+	const canTruncate = $derived(!isRedisDriver && !isRoutine);
+
+	async function copyDdl(): Promise<void> {
+		if (!ddl) return;
+		try {
+			await navigator.clipboard.writeText(ddl);
+			copied = true;
+			setTimeout(() => { copied = false; }, 2000);
+		} catch (e) {
+			debug.warn('db-client', 'failed to copy DDL:', e);
+		}
+	}
 
 	const columns = $derived(details?.columns ?? []);
 	const indexes = $derived(details?.indexes ?? []);
@@ -65,6 +134,17 @@
 	);
 
 	const summaryCards = $derived.by<Array<{ label: string; value: string; icon: IconName }>>(() => {
+		if (isRoutine) {
+			return [
+				{ label: 'Routine Name', value: objectName, icon: 'lucide:file-code' },
+				{
+					label: 'Routine Type',
+					value: activeObject?.type === 'function' ? 'Function' : 'Stored Procedure',
+					icon: activeObject?.type === 'function' ? 'lucide:code' : 'lucide:terminal'
+				}
+			];
+		}
+
 		if (isRedisDriver) {
 			return [
 				{ label: 'Type', value: details?.redisValueType ?? '-', icon: 'lucide:key-round' },
@@ -94,15 +174,16 @@
 		return cards;
 	});
 
-	function objectDetailsType(): 'table' | 'collection' | 'key' {
+	function objectDetailsType(): DbClientSchemaNodeType {
 		if (isMongoDriver) return 'collection';
 		if (isRedisDriver) return 'key';
-		return 'table';
+		return activeObject?.type ?? 'table';
 	}
 
 	async function load(): Promise<void> {
 		loading = true;
 		error = null;
+		ddl = null;
 		try {
 			details = await dbClientStore.getObjectDetails(connectionId, {
 				name: objectName,
@@ -110,6 +191,20 @@
 				database,
 				schema
 			});
+			if (isRoutine) {
+				// Routines only expose DDL — force it without touching the remembered
+				// tab, so returning to a table restores the user's last table tab.
+				ddl = details.ddl ?? '';
+				activeTab = 'ddl';
+			} else if (isSqlDriver) {
+				ddl = await dbClientStore.getCreateStatement(connectionId, objectName, 'table', {
+					database,
+					schema
+				});
+				activeTab = restoreStructureTab();
+			} else {
+				activeTab = restoreStructureTab();
+			}
 		} catch (e) {
 			error = e instanceof Error ? e.message : String(e);
 			debug.error('db-client', 'structure load failed:', e);
@@ -151,7 +246,14 @@
 
 	async function doDrop(): Promise<void> {
 		try {
-			await dbClientStore.dropTable(connectionId, objectName, { database, schema });
+			if (isRoutine) {
+				const q = activeObject?.type === 'function'
+					? `DROP FUNCTION ${objectName}`
+					: `DROP PROCEDURE ${objectName}`;
+				await dbClientStore.executeWrite(connectionId, q, { database });
+			} else {
+				await dbClientStore.dropTable(connectionId, objectName, { database, schema });
+			}
 			// Clear the now-gone object and refresh the sidebar so the dropped
 			// table disappears from the navigation list immediately.
 			dbClientStore.setActiveObject(connectionId, null);
@@ -280,7 +382,7 @@
 	}
 </script>
 
-<div class="flex flex-col h-full min-h-0 overflow-y-auto">
+<div class="flex flex-col h-full min-h-0">
 	<div class="flex items-center gap-1 px-3 py-1.5 border-b border-slate-200 dark:border-slate-800 shrink-0 text-xs">
 		<button
 			type="button"
@@ -291,13 +393,15 @@
 		>
 			<Icon name={loading ? 'lucide:loader' : 'lucide:refresh-cw'} class="w-3.5 h-3.5 {loading ? 'animate-spin' : ''}" /> Refresh
 		</button>
-		<button
-			type="button"
-			class="flex items-center gap-1.5 h-7 px-2 rounded-md text-slate-600 dark:text-slate-300 hover:bg-slate-100 dark:hover:bg-slate-800 transition-colors"
-			onclick={() => { renameValue = objectName; renameOpen = true; }}
-		>
-			<Icon name="lucide:pencil" class="w-3.5 h-3.5" /> Rename
-		</button>
+		{#if !isRoutine}
+			<button
+				type="button"
+				class="flex items-center gap-1.5 h-7 px-2 rounded-md text-slate-600 dark:text-slate-300 hover:bg-slate-100 dark:hover:bg-slate-800 transition-colors"
+				onclick={() => { renameValue = objectName; renameOpen = true; }}
+			>
+				<Icon name="lucide:pencil" class="w-3.5 h-3.5" /> Rename
+			</button>
+		{/if}
 		<div class="flex-1"></div>
 		{#if canTruncate}
 			<button
@@ -327,11 +431,9 @@
 		<div class="px-4 py-2 text-xs text-red-600 dark:text-red-400">{error}</div>
 	{/if}
 
-	<div class="flex-1 p-4 space-y-5">
+	<div class="flex-1 min-h-0 flex flex-col p-4 space-y-5">
 		{#if loading && !details}
-			<div class="min-h-[220px] flex items-center justify-center text-slate-400 dark:text-slate-600">
-				<Icon name="lucide:loader" class="w-5 h-5 animate-spin" />
-			</div>
+			<PanelLoader />
 		{:else}
 			<div class="grid grid-cols-2 md:grid-cols-4 xl:grid-cols-5 gap-3">
 				{#each summaryCards as card (card.label)}
@@ -366,232 +468,310 @@
 					</div>
 				</section>
 			{:else}
-				{#if isMongoDriver}
-					<section>
-						<h3 class="text-sm font-semibold text-slate-700 dark:text-slate-200 mb-2">Sampled fields</h3>
-						<div class="border border-slate-200 dark:border-slate-800 rounded-lg overflow-x-auto">
-							<table class="w-full min-w-[560px] text-sm bg-slate-50 dark:bg-slate-800/50">
-								<thead class="bg-slate-200 dark:bg-slate-800">
-									<tr>
-										<th class="px-3 py-2 text-left font-semibold">Field</th>
-										<th class="px-3 py-2 text-left font-semibold">Types</th>
-										<th class="px-3 py-2 text-left font-semibold w-32">Samples</th>
-									</tr>
-								</thead>
-								<tbody>
-									{#each mongoFields as field (field.field)}
-										<tr class="border-t border-slate-100 dark:border-slate-800">
-											<td class="px-3 py-2 font-medium text-slate-800 dark:text-slate-200">{field.field}</td>
-											<td class="px-3 py-2">
-												<div class="flex flex-wrap gap-1">
-													{#each field.types as type (type)}
-														<span class="px-1.5 py-0.5 rounded text-[11px] font-medium bg-slate-200 dark:bg-slate-700 text-slate-700 dark:text-slate-200">{type}</span>
-													{/each}
-												</div>
-											</td>
-											<td class="px-3 py-2 text-slate-500 dark:text-slate-400">{num(field.sampleCount)}</td>
+				<div class="flex items-center gap-1 border-b border-slate-200 dark:border-slate-800 pb-px text-sm">
+					{#if isSqlDriver && ddl}
+						<button
+							type="button"
+							class="px-3.5 py-1.5 font-medium border-b-2 transition-all {activeTab === 'ddl' ? 'border-violet-500 text-violet-600 dark:text-violet-400' : 'border-transparent text-slate-500 dark:text-slate-400 hover:text-slate-700 dark:hover:text-slate-200'}"
+							onclick={() => selectTab('ddl')}
+						>
+							DDL
+						</button>
+					{/if}
+					{#if !isRoutine}
+						<button
+							type="button"
+							class="px-3.5 py-1.5 font-medium border-b-2 transition-all {activeTab === 'columns' ? 'border-violet-500 text-violet-600 dark:text-violet-400' : 'border-transparent text-slate-500 dark:text-slate-400 hover:text-slate-700 dark:hover:text-slate-200'}"
+							onclick={() => selectTab('columns')}
+						>
+							{isMongoDriver ? 'Fields' : 'Columns'}
+						</button>
+						<button
+							type="button"
+							class="px-3.5 py-1.5 font-medium border-b-2 transition-all {activeTab === 'indexes' ? 'border-violet-500 text-violet-600 dark:text-violet-400' : 'border-transparent text-slate-500 dark:text-slate-400 hover:text-slate-700 dark:hover:text-slate-200'}"
+							onclick={() => selectTab('indexes')}
+						>
+							Indexes
+						</button>
+						{#if isSqlDriver}
+							<button
+								type="button"
+								class="px-3.5 py-1.5 font-medium border-b-2 transition-all {activeTab === 'relations' ? 'border-violet-500 text-violet-600 dark:text-violet-400' : 'border-transparent text-slate-500 dark:text-slate-400 hover:text-slate-700 dark:hover:text-slate-200'}"
+								onclick={() => selectTab('relations')}
+							>
+								Relations
+							</button>
+						{/if}
+					{/if}
+				</div>
+
+				<div class="flex-1 min-h-0 overflow-y-auto">
+					{#if activeTab === 'columns'}
+						{#if isMongoDriver}
+							<section>
+								<div class="border border-slate-200 dark:border-slate-800 rounded-lg overflow-auto">
+									<table class="w-full min-w-[560px] text-sm bg-slate-50 dark:bg-slate-800/50">
+										<thead class="bg-slate-200 dark:bg-slate-800">
+											<tr>
+												<th class="px-3 py-2 text-left font-semibold">Field</th>
+												<th class="px-3 py-2 text-left font-semibold">Types</th>
+												<th class="px-3 py-2 text-left font-semibold w-32">Samples</th>
+											</tr>
+										</thead>
+										<tbody>
+											{#each mongoFields as field (field.field)}
+												<tr class="border-t border-slate-100 dark:border-slate-800">
+													<td class="px-3 py-2 font-medium text-slate-800 dark:text-slate-200">{field.field}</td>
+													<td class="px-3 py-2">
+														<div class="flex flex-wrap gap-1">
+															{#each field.types as type (type)}
+																<span class="px-1.5 py-0.5 rounded text-[11px] font-medium bg-slate-200 dark:bg-slate-700 text-slate-700 dark:text-slate-200">{type}</span>
+															{/each}
+														</div>
+													</td>
+													<td class="px-3 py-2 text-slate-500 dark:text-slate-400">{num(field.sampleCount)}</td>
+												</tr>
+											{:else}
+												<tr><td class="p-3 text-slate-400 text-center" colspan="3">No sampled fields</td></tr>
+											{/each}
+										</tbody>
+									</table>
+								</div>
+							</section>
+						{:else}
+							<section>
+								<div class="flex items-center justify-between h-6 gap-3 mb-2 shrink-0">
+									<h3 class="text-sm font-semibold text-slate-700 dark:text-slate-200">Columns</h3>
+									{#if canEditColumns}
+										<button
+											type="button"
+											class="flex items-center gap-1 text-xs px-2 py-1 rounded-md bg-violet-500/10 text-violet-600 hover:bg-violet-500/20"
+											onclick={() => (addColumnOpen = true)}
+										>
+											<Icon name="lucide:plus" class="w-3 h-3" /> Add column
+										</button>
+									{/if}
+								</div>
+								<div class="border border-slate-200 dark:border-slate-800 rounded-lg overflow-auto">
+									<table class="w-full min-w-[560px] text-sm bg-slate-50 dark:bg-slate-800/50">
+										<thead class="bg-slate-200 dark:bg-slate-800">
+											<tr>
+												<th class="px-3 py-2 text-left font-semibold">Name</th>
+												<th class="px-3 py-2 text-left font-semibold">Type</th>
+												<th class="px-3 py-2 text-left font-semibold">Null</th>
+												<th class="px-3 py-2 text-left font-semibold">Default</th>
+												<th class="px-3 py-2 text-left font-semibold">Key</th>
+												<th class="px-3 py-2 w-20"></th>
+											</tr>
+										</thead>
+										<tbody>
+											{#each columns as col (col.name)}
+												<tr class="border-t border-slate-100 dark:border-slate-800">
+													<td class="px-3 py-2 font-medium text-slate-800 dark:text-slate-200">{col.name}</td>
+													<td class="px-3 py-2">
+														<code class="px-1.5 py-0.5 rounded bg-slate-200 dark:bg-slate-700 text-slate-700 dark:text-slate-200 text-xs">{col.type}</code>
+													</td>
+													<td class="px-3 py-2">
+														<span class="px-1.5 py-0.5 rounded text-[11px] font-medium {col.nullable ? 'bg-slate-200 dark:bg-slate-700 text-slate-600 dark:text-slate-300' : 'bg-amber-500/10 text-amber-700 dark:text-amber-300'}">{col.nullable ? 'YES' : 'NO'}</span>
+													</td>
+													<td class="px-3 py-2 text-slate-500 dark:text-slate-400">
+														{#if col.default === null || col.default === ''}
+															<span class="text-slate-400">NULL</span>
+														{:else}
+															<code class="text-xs">{col.default}</code>
+														{/if}
+													</td>
+													<td class="px-3 py-2">
+														<div class="flex flex-wrap gap-1">
+															{#if col.isPrimary}<span class="px-1.5 py-0.5 rounded text-[11px] font-semibold bg-violet-500/10 text-violet-700 dark:text-violet-300">PK</span>{/if}
+															{#if col.isUnique}<span class="px-1.5 py-0.5 rounded text-[11px] font-semibold bg-emerald-500/10 text-emerald-700 dark:text-emerald-300">UQ</span>{/if}
+															{#if !col.isPrimary && !col.isUnique}<span class="text-slate-400 text-xs">-</span>{/if}
+														</div>
+													</td>
+													<td class="px-3 py-2">
+														<div class="flex items-center gap-0.5">
+															<button
+																type="button"
+																class="text-slate-500 hover:text-violet-600 hover:bg-violet-500/10 rounded p-1"
+																onclick={() => openEditColumn(col)}
+																aria-label="Edit column"
+																title="Edit"
+															>
+																<Icon name="lucide:pencil" class="w-3.5 h-3.5" />
+															</button>
+															<button
+																type="button"
+																class="text-red-500 hover:bg-red-500/10 rounded p-1"
+																onclick={() => (dropColumn = col.name)}
+																aria-label="Drop column"
+																title="Drop"
+															>
+																<Icon name="lucide:trash-2" class="w-3.5 h-3.5" />
+															</button>
+														</div>
+													</td>
+												</tr>
+											{:else}
+												<tr><td class="p-3 text-slate-400 text-center" colspan="6">No columns</td></tr>
+											{/each}
+										</tbody>
+									</table>
+								</div>
+							</section>
+						{/if}
+					{:else if activeTab === 'indexes'}
+						<section>
+							<div class="flex items-center justify-between h-6 gap-3 mb-2 shrink-0">
+								<h3 class="text-sm font-semibold text-slate-700 dark:text-slate-200">Indexes</h3>
+								{#if canAddIndex && indexFormColumns.length > 0}
+									<button
+										type="button"
+										class="flex items-center gap-1 text-xs px-2 py-1 rounded-md bg-violet-500/10 text-violet-600 hover:bg-violet-500/20"
+										onclick={() => (addIndexOpen = true)}
+									>
+										<Icon name="lucide:plus" class="w-3 h-3" /> Add index
+									</button>
+								{/if}
+							</div>
+							<div class="border border-slate-200 dark:border-slate-800 rounded-lg overflow-auto">
+								<table class="w-full min-w-[560px] text-sm bg-slate-50 dark:bg-slate-800/50">
+									<thead class="bg-slate-200 dark:bg-slate-800">
+										<tr>
+											<th class="px-3 py-2 text-left font-semibold">Name</th>
+											<th class="px-3 py-2 text-left font-semibold">Columns</th>
+											<th class="px-3 py-2 text-left font-semibold">Flags</th>
+											<th class="px-3 py-2 w-10"></th>
 										</tr>
-									{:else}
-										<tr><td class="p-3 text-slate-400 text-center" colspan="3">No sampled fields</td></tr>
-									{/each}
-								</tbody>
-							</table>
-						</div>
-					</section>
-				{:else}
-					<section>
-						<div class="flex items-center justify-between gap-3 mb-2">
-							<h3 class="text-sm font-semibold text-slate-700 dark:text-slate-200">Columns</h3>
-							{#if canEditColumns}
-								<button
-									type="button"
-									class="flex items-center gap-1 text-xs px-2 py-1 rounded-md bg-violet-500/10 text-violet-600 hover:bg-violet-500/20"
-									onclick={() => (addColumnOpen = true)}
-								>
-									<Icon name="lucide:plus" class="w-3 h-3" /> Add column
-								</button>
-							{/if}
-						</div>
-						<div class="border border-slate-200 dark:border-slate-800 rounded-lg overflow-x-auto">
-							<table class="w-full min-w-[560px] text-sm bg-slate-50 dark:bg-slate-800/50">
-								<thead class="bg-slate-200 dark:bg-slate-800">
-									<tr>
-										<th class="px-3 py-2 text-left font-semibold">Name</th>
-										<th class="px-3 py-2 text-left font-semibold">Type</th>
-										<th class="px-3 py-2 text-left font-semibold">Null</th>
-										<th class="px-3 py-2 text-left font-semibold">Default</th>
-										<th class="px-3 py-2 text-left font-semibold">Key</th>
-										<th class="px-3 py-2 w-20"></th>
-									</tr>
-								</thead>
-								<tbody>
-									{#each columns as col (col.name)}
-										<tr class="border-t border-slate-100 dark:border-slate-800">
-											<td class="px-3 py-2 font-medium text-slate-800 dark:text-slate-200">{col.name}</td>
-											<td class="px-3 py-2">
-												<code class="px-1.5 py-0.5 rounded bg-slate-200 dark:bg-slate-700 text-slate-700 dark:text-slate-200 text-xs">{col.type}</code>
-											</td>
-											<td class="px-3 py-2">
-												<span class="px-1.5 py-0.5 rounded text-[11px] font-medium {col.nullable ? 'bg-slate-200 dark:bg-slate-700 text-slate-600 dark:text-slate-300' : 'bg-amber-500/10 text-amber-700 dark:text-amber-300'}">{col.nullable ? 'YES' : 'NO'}</span>
-											</td>
-											<td class="px-3 py-2 text-slate-500 dark:text-slate-400">
-												{#if col.default === null || col.default === ''}
-													<span class="text-slate-400">NULL</span>
-												{:else}
-													<code class="text-xs">{col.default}</code>
-												{/if}
-											</td>
-											<td class="px-3 py-2">
-												<div class="flex flex-wrap gap-1">
-													{#if col.isPrimary}<span class="px-1.5 py-0.5 rounded text-[11px] font-semibold bg-violet-500/10 text-violet-700 dark:text-violet-300">PK</span>{/if}
-													{#if col.isUnique}<span class="px-1.5 py-0.5 rounded text-[11px] font-semibold bg-emerald-500/10 text-emerald-700 dark:text-emerald-300">UQ</span>{/if}
-													{#if !col.isPrimary && !col.isUnique}<span class="text-slate-400 text-xs">-</span>{/if}
-												</div>
-											</td>
-											<td class="px-3 py-2">
-												<div class="flex items-center gap-0.5">
-													<button
-														type="button"
-														class="text-slate-500 hover:text-violet-600 hover:bg-violet-500/10 rounded p-1"
-														onclick={() => openEditColumn(col)}
-														aria-label="Edit column"
-														title="Edit"
-													>
-														<Icon name="lucide:pencil" class="w-3.5 h-3.5" />
-													</button>
+									</thead>
+									<tbody>
+										{#each indexes as ix (ix.name)}
+											<tr class="border-t border-slate-100 dark:border-slate-800">
+												<td class="px-3 py-2 font-medium text-slate-800 dark:text-slate-200">{ix.name}</td>
+												<td class="px-3 py-2">
+													<div class="flex flex-wrap gap-1">
+														{#each ix.columns as col (col)}
+															<span class="px-1.5 py-0.5 rounded text-[11px] font-medium bg-slate-200 dark:bg-slate-700 text-slate-700 dark:text-slate-200">{col}</span>
+														{:else}
+															<span class="text-slate-400 text-xs">-</span>
+														{/each}
+													</div>
+												</td>
+												<td class="px-3 py-2">
+													<div class="flex flex-wrap gap-1">
+														{#if ix.unique}<span class="px-1.5 py-0.5 rounded text-[11px] font-semibold bg-emerald-500/10 text-emerald-700 dark:text-emerald-300">UNIQUE</span>{/if}
+														{#if ix.type}<span class="px-1.5 py-0.5 rounded text-[11px] font-medium bg-slate-200 dark:bg-slate-700 text-slate-700 dark:text-slate-200">{ix.type}</span>{/if}
+														{#if !ix.unique && !ix.type}<span class="text-slate-400 text-xs">-</span>{/if}
+													</div>
+												</td>
+												<td class="px-3 py-2">
 													<button
 														type="button"
 														class="text-red-500 hover:bg-red-500/10 rounded p-1"
-														onclick={() => (dropColumn = col.name)}
-														aria-label="Drop column"
-														title="Drop"
+														onclick={() => (dropIndex = ix.name)}
+														aria-label="Drop index"
 													>
 														<Icon name="lucide:trash-2" class="w-3.5 h-3.5" />
 													</button>
-												</div>
-											</td>
+												</td>
+											</tr>
+										{:else}
+											<tr><td class="p-3 text-slate-400 text-center" colspan="4">No indexes</td></tr>
+										{/each}
+									</tbody>
+								</table>
+							</div>
+						</section>
+					{:else if activeTab === 'relations' && isSqlDriver}
+						<section>
+							<div class="flex items-center justify-between h-6 gap-3 mb-2 shrink-0">
+								<h3 class="text-sm font-semibold text-slate-700 dark:text-slate-200">Relations</h3>
+							</div>
+							<div class="border border-slate-200 dark:border-slate-800 rounded-lg overflow-auto">
+								<table class="w-full min-w-[560px] text-sm bg-slate-50 dark:bg-slate-800/50">
+									<thead class="bg-slate-200 dark:bg-slate-800">
+										<tr>
+											<th class="px-3 py-2 text-left font-semibold">Column</th>
+											<th class="px-3 py-2 text-left font-semibold">References</th>
+											<th class="px-3 py-2 text-left font-semibold w-24">Open</th>
 										</tr>
-									{:else}
-										<tr><td class="p-3 text-slate-400 text-center" colspan="6">No columns</td></tr>
-									{/each}
-								</tbody>
-							</table>
-						</div>
-					</section>
-				{/if}
+									</thead>
+									<tbody>
+										{#each foreignKeys as fk (fk.column + fk.refTable + fk.refColumn)}
+											<tr class="border-t border-slate-100 dark:border-slate-800">
+												<td class="px-3 py-2 font-medium text-slate-800 dark:text-slate-200">{fk.column}</td>
+												<td class="px-3 py-2 text-slate-500 dark:text-slate-400">
+													<span class="text-slate-700 dark:text-slate-200">{fk.refTable}</span>.{fk.refColumn}
+												</td>
+												<td class="px-3 py-2">
+													<div class="flex items-center gap-1">
+														<button
+															type="button"
+															class="flex items-center justify-center w-7 h-7 rounded-md text-slate-500 dark:text-slate-400 hover:text-violet-700 hover:bg-violet-500/10 dark:hover:text-violet-300 transition-colors"
+															onclick={() => openReferencedTable(fk, 'data')}
+															title="Open data"
+															aria-label="Open data"
+														>
+															<Icon name="lucide:table" class="w-3.5 h-3.5" />
+														</button>
+														<button
+															type="button"
+															class="flex items-center justify-center w-7 h-7 rounded-md text-slate-500 dark:text-slate-400 hover:text-violet-700 hover:bg-violet-500/10 dark:hover:text-violet-300 transition-colors"
+															onclick={() => openReferencedTable(fk, 'structure')}
+															title="Open structure"
+															aria-label="Open structure"
+														>
+															<Icon name="lucide:layout-list" class="w-3.5 h-3.5" />
+														</button>
+													</div>
+												</td>
+											</tr>
+										{:else}
+											<tr><td class="p-3 text-slate-400 text-center" colspan="3">No outgoing foreign keys</td></tr>
+										{/each}
+									</tbody>
+								</table>
+							</div>
+						</section>
 
-				<section>
-					<div class="flex items-center justify-between gap-3 mb-2">
-						<h3 class="text-sm font-semibold text-slate-700 dark:text-slate-200">Indexes</h3>
-						{#if canAddIndex && indexFormColumns.length > 0}
-							<button
-								type="button"
-								class="flex items-center gap-1 text-xs px-2 py-1 rounded-md bg-violet-500/10 text-violet-600 hover:bg-violet-500/20"
-								onclick={() => (addIndexOpen = true)}
-							>
-								<Icon name="lucide:plus" class="w-3 h-3" /> Add index
-							</button>
-						{/if}
-					</div>
-					<div class="border border-slate-200 dark:border-slate-800 rounded-lg overflow-x-auto">
-						<table class="w-full min-w-[560px] text-sm bg-slate-50 dark:bg-slate-800/50">
-							<thead class="bg-slate-200 dark:bg-slate-800">
-								<tr>
-									<th class="px-3 py-2 text-left font-semibold">Name</th>
-									<th class="px-3 py-2 text-left font-semibold">Columns</th>
-									<th class="px-3 py-2 text-left font-semibold">Flags</th>
-									<th class="px-3 py-2 w-10"></th>
-								</tr>
-							</thead>
-							<tbody>
-								{#each indexes as ix (ix.name)}
-									<tr class="border-t border-slate-100 dark:border-slate-800">
-										<td class="px-3 py-2 font-medium text-slate-800 dark:text-slate-200">{ix.name}</td>
-										<td class="px-3 py-2">
-											<div class="flex flex-wrap gap-1">
-												{#each ix.columns as col (col)}
-													<span class="px-1.5 py-0.5 rounded text-[11px] font-medium bg-slate-200 dark:bg-slate-700 text-slate-700 dark:text-slate-200">{col}</span>
-												{:else}
-													<span class="text-slate-400 text-xs">-</span>
-												{/each}
-											</div>
-										</td>
-										<td class="px-3 py-2">
-											<div class="flex flex-wrap gap-1">
-												{#if ix.unique}<span class="px-1.5 py-0.5 rounded text-[11px] font-semibold bg-emerald-500/10 text-emerald-700 dark:text-emerald-300">UNIQUE</span>{/if}
-												{#if ix.type}<span class="px-1.5 py-0.5 rounded text-[11px] font-medium bg-slate-200 dark:bg-slate-700 text-slate-700 dark:text-slate-200">{ix.type}</span>{/if}
-												{#if !ix.unique && !ix.type}<span class="text-slate-400 text-xs">-</span>{/if}
-											</div>
-										</td>
-										<td class="px-3 py-2">
-											<button
-												type="button"
-												class="text-red-500 hover:bg-red-500/10 rounded p-1"
-												onclick={() => (dropIndex = ix.name)}
-												aria-label="Drop index"
-											>
-												<Icon name="lucide:trash-2" class="w-3.5 h-3.5" />
-											</button>
-										</td>
-									</tr>
-								{:else}
-									<tr><td class="p-3 text-slate-400 text-center" colspan="4">No indexes</td></tr>
-								{/each}
-							</tbody>
-						</table>
-					</div>
-				</section>
+					{:else if activeTab === 'ddl' && isSqlDriver && ddl}
+						<section class="h-full flex flex-col min-h-0">
+							<div class="flex items-center gap-2 px-3 py-2 bg-slate-50 dark:bg-slate-900/50 border border-slate-200 dark:border-slate-800 border-b-0 rounded-t-lg shrink-0">
+								{#if isRoutine}
+									<button
+										type="button"
+										class="flex items-center gap-1 px-3 py-1 rounded-md bg-violet-600 hover:bg-violet-700 text-white text-xs font-semibold disabled:opacity-50"
+										onclick={saveDdl}
+										disabled={ddlSaving}
+										title="Update (Cmd+Enter)"
+									>
+										<Icon name={ddlSaving ? 'lucide:loader' : 'lucide:play'} class="w-3.5 h-3.5 {ddlSaving ? 'animate-spin' : ''}" />
+										{ddlSaving ? 'Updating...' : 'Update'}
+									</button>
+								{/if}
 
-				{#if isSqlDriver}
-					<section>
-						<h3 class="text-sm font-semibold text-slate-700 dark:text-slate-200 mb-2">Relations</h3>
-						<div class="border border-slate-200 dark:border-slate-800 rounded-lg overflow-x-auto">
-							<table class="w-full min-w-[560px] text-sm bg-slate-50 dark:bg-slate-800/50">
-								<thead class="bg-slate-200 dark:bg-slate-800">
-									<tr>
-										<th class="px-3 py-2 text-left font-semibold">Column</th>
-										<th class="px-3 py-2 text-left font-semibold">References</th>
-										<th class="px-3 py-2 text-left font-semibold w-24">Open</th>
-									</tr>
-								</thead>
-								<tbody>
-									{#each foreignKeys as fk (fk.column + fk.refTable + fk.refColumn)}
-										<tr class="border-t border-slate-100 dark:border-slate-800">
-											<td class="px-3 py-2 font-medium text-slate-800 dark:text-slate-200">{fk.column}</td>
-											<td class="px-3 py-2 text-slate-500 dark:text-slate-400">
-												<span class="text-slate-700 dark:text-slate-200">{fk.refTable}</span>.{fk.refColumn}
-											</td>
-											<td class="px-3 py-2">
-												<div class="flex items-center gap-1">
-													<button
-														type="button"
-														class="flex items-center justify-center w-7 h-7 rounded-md text-slate-500 dark:text-slate-400 hover:text-violet-700 hover:bg-violet-500/10 dark:hover:text-violet-300 transition-colors"
-														onclick={() => openReferencedTable(fk, 'data')}
-														title="Open data"
-														aria-label="Open data"
-													>
-														<Icon name="lucide:table" class="w-3.5 h-3.5" />
-													</button>
-													<button
-														type="button"
-														class="flex items-center justify-center w-7 h-7 rounded-md text-slate-500 dark:text-slate-400 hover:text-violet-700 hover:bg-violet-500/10 dark:hover:text-violet-300 transition-colors"
-														onclick={() => openReferencedTable(fk, 'structure')}
-														title="Open structure"
-														aria-label="Open structure"
-													>
-														<Icon name="lucide:layout-list" class="w-3.5 h-3.5" />
-													</button>
-												</div>
-											</td>
-										</tr>
-									{:else}
-										<tr><td class="p-3 text-slate-400 text-center" colspan="3">No outgoing foreign keys</td></tr>
-									{/each}
-								</tbody>
-							</table>
-						</div>
-					</section>
-				{/if}
+								<span class="text-xs text-slate-400 dark:text-slate-500 uppercase tracking-wider font-semibold">DDL</span>
+								<div class="flex-1"></div>
+								<button
+									type="button"
+									class="flex items-center gap-1 px-2.5 py-1 rounded-md text-slate-500 hover:bg-slate-100 dark:hover:bg-slate-800 text-xs"
+									onclick={copyDdl}
+									title="Copy"
+								>
+									<Icon name={copied ? 'lucide:check' : 'lucide:copy'} class="w-3.5 h-3.5" />
+									{copied ? 'Copied' : 'Copy'}
+								</button>
+							</div>
+							<div class="flex-1 min-h-[16rem] border border-slate-200 dark:border-slate-800 rounded-b-lg overflow-hidden bg-slate-900 dark:bg-slate-950">
+								<MonacoCodeEditor
+									bind:value={ddlEditorText}
+									language="sql"
+									readonly={!isRoutine}
+									disableMouseWheelZoom={true}
+								/>
+							</div>
+						</section>
+					{/if}
+				</div>
 			{/if}
 		{/if}
 	</div>
