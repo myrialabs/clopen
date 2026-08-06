@@ -1,6 +1,6 @@
 <script lang="ts">
 	import { revealFile } from '$frontend/stores/ui/file-peek.svelte';
-	import { requestAiScrollReveal, getAiChanges } from '$frontend/utils/ai-changes';
+	import { requestAiScrollReveal } from '$frontend/utils/ai-changes';
 
 	interface Props {
 		filePath: string;
@@ -16,10 +16,7 @@
 
 	function handleClick() {
 		revealFile(filePath);
-		if (editKey) {
-			const idx = getAiChanges(filePath).findIndex((c) => c.key === editKey);
-			if (idx >= 0) requestAiScrollReveal(filePath, idx);
-		}
+		if (editKey) requestAiScrollReveal(filePath, editKey);
 	}
 </script>
 

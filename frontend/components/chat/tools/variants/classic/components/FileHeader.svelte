@@ -2,15 +2,13 @@
 	import Icon from '$frontend/components/common/display/Icon.svelte';
 	import { getFileIcon } from '$frontend/utils/file-icon-mappings';
 	import { revealFile } from '$frontend/stores/ui/file-peek.svelte';
-	import { requestAiScrollReveal, getAiChanges } from '$frontend/utils/ai-changes';
+	import { requestAiScrollReveal } from '$frontend/utils/ai-changes';
 
 	function handleClick() {
 		revealFile(filePath);
-		// Resolve this edit's position in the (message-derived) store at click time.
-		if (editKey) {
-			const idx = getAiChanges(filePath).findIndex((c) => c.key === editKey);
-			if (idx >= 0) requestAiScrollReveal(filePath, idx);
-		}
+		// Focus this specific edit in the viewer ("Selected AI change") so the user
+		// sees what *this* tool call did, not just the file's current state.
+		if (editKey) requestAiScrollReveal(filePath, editKey);
 	}
 
 	interface Props {

@@ -7,12 +7,29 @@ import {
 	getFilesWithAiChanges,
 	requestAiScrollReveal,
 	consumeAiScrollReveal,
-	latestPresentChangeIndex,
+	latestTurnIndex,
 	setAiChanges,
-	type AiChange
+	type AiChange,
+	type AiEditEntry
 } from './ai-changes';
 
 const FILE = '/proj/src/foo.ts';
+
+const entry = (
+	filePath: string,
+	oldContent: string,
+	newContent: string,
+	key: string,
+	turnIndex = 0
+): AiEditEntry => ({
+	filePath,
+	oldContent,
+	newContent,
+	key,
+	turnIndex,
+	checkpointMessageId: `m${turnIndex}`,
+	wholeFile: oldContent === ''
+});
 
 beforeEach(() => {
 	clearAllAiChanges();
@@ -71,64 +88,71 @@ describe('file set tracking', () => {
 describe('setAiChanges', () => {
 	test('rebuilds the store grouped per file, in order', () => {
 		setAiChanges([
-			{ filePath: FILE, oldContent: 'a', newContent: 'b', key: 'e1' },
-			{ filePath: '/proj/src/bar.ts', oldContent: '', newContent: 'x', key: 'e2' },
-			{ filePath: FILE, oldContent: 'b', newContent: 'c', key: 'e3' }
+			entry(FILE, 'a', 'b', 'e1'),
+			entry('/proj/src/bar.ts', '', 'x', 'e2'),
+			entry(FILE, 'b', 'c', 'e3')
 		]);
 		expect(getAiChanges(FILE).map((c) => c.key)).toEqual(['e1', 'e3']);
 		expect(getAiChanges('/proj/src/bar.ts').map((c) => c.key)).toEqual(['e2']);
 	});
 
 	test('dedupes by key within a file', () => {
-		setAiChanges([
-			{ filePath: FILE, oldContent: 'a', newContent: 'b', key: 'e1' },
-			{ filePath: FILE, oldContent: 'a', newContent: 'b', key: 'e1' }
-		]);
+		setAiChanges([entry(FILE, 'a', 'b', 'e1'), entry(FILE, 'a', 'b', 'e1')]);
 		expect(getAiChanges(FILE)).toHaveLength(1);
 	});
 
 	test('fully replaces prior state', () => {
-		setAiChanges([{ filePath: FILE, oldContent: 'a', newContent: 'b', key: 'e1' }]);
-		setAiChanges([{ filePath: '/proj/src/bar.ts', oldContent: '', newContent: 'x', key: 'e2' }]);
+		setAiChanges([entry(FILE, 'a', 'b', 'e1')]);
+		setAiChanges([entry('/proj/src/bar.ts', '', 'x', 'e2')]);
 		expect(getAiChanges(FILE)).toEqual([]);
 		expect(getFilesWithAiChanges()).toEqual(['/proj/src/bar.ts']);
 	});
+
+	test('carries turn grouping and whole-file marking through to the store', () => {
+		setAiChanges([entry(FILE, 'a', 'b', 'e1', 2), entry(FILE, '', 'whole', 'e2', 2)]);
+		const list = getAiChanges(FILE);
+		expect(list.map((c) => c.turnIndex)).toEqual([2, 2]);
+		expect(list.map((c) => c.checkpointMessageId)).toEqual(['m2', 'm2']);
+		expect(list.map((c) => c.wholeFile)).toEqual([false, true]);
+	});
 });
 
-describe('latestPresentChangeIndex', () => {
-	const mk = (newContent: string): AiChange => ({ oldContent: '', newContent, timestamp: 0 });
-
-	test('returns the last index when every edit is present in the content', () => {
-		const list = [mk('alpha'), mk('beta'), mk('gamma')];
-		expect(latestPresentChangeIndex(list, 'alpha beta gamma')).toBe(2);
+describe('latestTurnIndex', () => {
+	const mk = (turnIndex: number): AiChange => ({
+		oldContent: '',
+		newContent: '',
+		timestamp: 0,
+		turnIndex,
+		checkpointMessageId: null,
+		wholeFile: false
 	});
 
-	test('skips trailing edits whose content is absent (post-restore)', () => {
-		// Edits A-B-C-D-E; file was restored to C, so D/E no longer appear.
-		const list = [mk('A'), mk('B'), mk('C'), mk('D'), mk('E')];
-		expect(latestPresentChangeIndex(list, 'A B C')).toBe(2);
+	test('returns the highest turn index in the list', () => {
+		expect(latestTurnIndex([mk(0), mk(1), mk(1), mk(2)])).toBe(2);
+	});
+
+	test('groups every edit of the last turn, not just the final one', () => {
+		// Three edits in turn 1 — "Latest AI turn" must cover all of them.
+		const list = [mk(0), mk(1), mk(1), mk(1)];
+		const latest = latestTurnIndex(list);
+		expect(list.filter((c) => c.turnIndex === latest)).toHaveLength(3);
 	});
 
 	test('returns -1 for an empty list', () => {
-		expect(latestPresentChangeIndex([], 'anything')).toBe(-1);
-	});
-
-	test('falls back to the last index when nothing matches', () => {
-		const list = [mk('x'), mk('y')];
-		expect(latestPresentChangeIndex(list, 'no match here')).toBe(1);
+		expect(latestTurnIndex([])).toBe(-1);
 	});
 });
 
 describe('scroll-reveal signal', () => {
-	test('consume returns the edit index when the path matches, then clears it', () => {
-		requestAiScrollReveal(FILE, 3);
-		expect(consumeAiScrollReveal(FILE)).toBe(3);
+	test('consume returns the edit key when the path matches, then clears it', () => {
+		requestAiScrollReveal(FILE, 'e3');
+		expect(consumeAiScrollReveal(FILE)).toBe('e3');
 		// Second consume finds nothing pending.
-		expect(consumeAiScrollReveal(FILE)).toBe(-1);
+		expect(consumeAiScrollReveal(FILE)).toBeNull();
 	});
 
-	test('consume returns -1 when the path does not match the pending reveal', () => {
-		requestAiScrollReveal(FILE, 3);
-		expect(consumeAiScrollReveal('/proj/src/other.ts')).toBe(-1);
+	test('consume returns null when the path does not match the pending reveal', () => {
+		requestAiScrollReveal(FILE, 'e3');
+		expect(consumeAiScrollReveal('/proj/src/other.ts')).toBeNull();
 	});
 });

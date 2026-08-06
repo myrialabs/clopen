@@ -11,7 +11,7 @@
 	import { getFolderIcon } from '$frontend/utils/folder-icon-mappings';
 	import { isImageFile, isSvgFile, isPdfFile, isAudioFile, isVideoFile, isBinaryFile, isBinaryContent, isPreviewableFile, isEditableImageFile } from '$frontend/utils/file-type';
 	import { formatFileSize } from '$frontend/utils/format';
-	import { onMount, untrack } from 'svelte';
+	import { onMount } from 'svelte';
 	import { scale } from 'svelte/transition';
 	import { cubicOut } from 'svelte/easing';
 	import { clickOutside } from '$frontend/utils/click-outside';
@@ -23,8 +23,8 @@
 	import { gitStatusState } from '$frontend/stores/features/git-status.svelte';
 	import { settings } from '$frontend/stores/features/settings.svelte';
 	import { revealFile } from '$frontend/stores/ui/file-peek.svelte';
-	import { getAiChanges, onAiChange, onAiScrollReveal, consumeAiScrollReveal, getGutterViewMode, setGutterViewMode, onGutterViewModeChange, latestPresentChangeIndex } from '$frontend/utils/ai-changes';
-	import type { GutterViewMode } from '$frontend/utils/ai-changes';
+	import { getAiChanges, onAiChange, onAiScrollReveal, consumeAiScrollReveal, getGutterViewMode, setGutterViewMode, onGutterViewModeChange, latestTurnIndex } from '$frontend/utils/ai-changes';
+	import type { GutterViewMode, AiChange } from '$frontend/utils/ai-changes';
 
 	// Interface untuk MonacoCodeEditor component
 	interface MonacoEditorComponent {
@@ -61,6 +61,14 @@
 		projectId?: string;
 		editorScrollTop?: number;
 		onEditorScroll?: (scrollTop: number) => void;
+		/**
+		 * When set, the header renders a close button at the end of the action bar.
+		 * Used by the file-peek modal so the viewer's own header is the *only*
+		 * header — the modal no longer stacks a second one above it.
+		 */
+		onClose?: () => void;
+		/** id applied to the header's filename, so a host modal can label itself by it. */
+		titleId?: string;
 	}
 
 	const {
@@ -81,7 +89,9 @@
 		projectPath = '',
 		projectId = '',
 		editorScrollTop = 0,
-		onEditorScroll
+		onEditorScroll,
+		onClose,
+		titleId
 	}: Props = $props();
 
 	// Relative path for display
@@ -160,18 +170,47 @@
 	let envDecoEditor: editor.IStandaloneCodeEditor | null = null;
 	let gutterChanges: GutterChange[] = [];
 	let aiGutterChanges: GutterChange[] = [];
-	let activeRevealEditIdx = $state<number | null>(null);
-	let lastRevealEditIdx = $state<number | null>(null);
+	/**
+	 * Which AI edits the gutter paints:
+	 * - 'all'      → every edit in the loaded conversation
+	 * - 'turn'     → every edit from the most recent turn ("Latest AI turn"). Not
+	 *                the last tool call — one turn often edits a file repeatedly,
+	 *                and showing only the final call hides the rest of the work.
+	 * - 'selected' → only `aiSelectedKey`, the edit whose tool row was clicked
+	 * The mode is re-resolved on every pass, so it keeps pointing at the right
+	 * edits as the conversation grows or a checkpoint restore truncates it.
+	 */
+	let aiFilter = $state<'all' | 'turn' | 'selected'>('turn');
+	/** tool_use id of the edit focused from chat; kept so the user can switch back to it. */
+	let aiSelectedKey = $state<string | null>(null);
+	/** True when the selected edit's text is no longer anywhere in the file. */
+	let aiSelectedMissing = $state(false);
+	/** 1-based position of the selected edit among the file's edits (0 = none). */
+	let aiSelectedOrdinal = $state(0);
+	/**
+	 * A reveal request that has been taken off the store but not yet scrolled to.
+	 * The request must be claimed the moment we see it because it flips the view to
+	 * AI mode — but the pass that sees it is often a *clearing* pass (the view was
+	 * still in git mode), so it parks here until a pass that actually paints can
+	 * scroll to it. Dropping it there is what made a chat file click land on the
+	 * file with no diff shown.
+	 */
+	let pendingAiRevealKey: string | null = null;
 	let hasAiChanges = $state(false);
 	let aiChangeCount = $state(0);
-	// Index of the newest AI edit whose content is still present in the file. After
-	// a checkpoint restore, edits made after that checkpoint no longer map onto the
-	// on-disk content, so "Latest AI change" resolves to the last one that does.
-	let latestPresentEditIdx = $state(-1);
-	// True while the user has chosen "Latest AI change". Unlike a frozen edit index,
-	// this re-resolves to the newest present edit whenever the file/checkpoint
-	// changes, so the menu selection sticks across checkpoint switches.
-	let aiLatestMode = $state(false);
+	/** Edit indices whose "before" text is known — only those hunks can be discarded. */
+	let aiDiscardableEdits = new Set<number>();
+	/**
+	 * Content of a Write-edited file as it stood immediately before the Write,
+	 * keyed by tool_use id. The Write tool records no "before" text, so this is
+	 * fetched from the turn's checkpoint snapshot (and then replayed forward past
+	 * any earlier edits in the same turn). Without it a Write can only be painted
+	 * as "the whole file is new", and has nothing to discard back to.
+	 */
+	const aiWriteBases = new Map<string, string>();
+	/** Write keys whose base is unavailable — don't ask the server twice. */
+	const aiWriteBaseMisses = new Set<string>();
+	const aiWriteBasePending = new Set<string>();
 	let aiMenuOpen = $state(false);
 	let gutterMode = $state<GutterViewMode>(getGutterViewMode());
 	let headContent = $state<string | null>(null);
@@ -382,9 +421,7 @@
 		if (!path || !projectId) {
 			headContent = null;
 			headContentForPath = '';
-			activeRevealEditIdx = null;
-			lastRevealEditIdx = null;
-			aiLatestMode = false;
+			resetAiFilter();
 			setGutterViewMode('git');
 			closeDiffPeek();
 			return;
@@ -392,9 +429,7 @@
 		if (path === headContentForPath) return;
 		headContentForPath = path;
 		headContent = null;
-		activeRevealEditIdx = null;
-		lastRevealEditIdx = null;
-		aiLatestMode = false;
+		resetAiFilter();
 		setGutterViewMode('git');
 		closeDiffPeek();
 
@@ -438,19 +473,6 @@
 		const editor = monacoEditorRef?.getEditor();
 		if (!editor) return;
 		if (mode === 'ai') {
-			untrack(() => {
-				if (activeRevealEditIdx === null && lastRevealEditIdx === null) {
-					const allChanges = getAiChanges(file?.path || '');
-					if (allChanges.length > 0) {
-						// Default to the latest present edit and mark "Latest" mode so
-						// the selection follows checkpoint switches.
-						const latest = latestPresentChangeIndex(allChanges, editableContent);
-						activeRevealEditIdx = latest;
-						lastRevealEditIdx = latest;
-						aiLatestMode = true;
-					}
-				}
-			});
 			applyAiChangeDecorations();  // re-apply AI gutter
 			updateGutterDecorations(true); // clear git gutter
 		} else {
@@ -470,6 +492,147 @@
 		return unsub;
 	});
 
+	const selectedEditLabel = $derived(
+		aiSelectedOrdinal > 0 && aiChangeCount > 1 ? ` · ${aiSelectedOrdinal} of ${aiChangeCount}` : ''
+	);
+
+	function selectAiFilter(next: 'all' | 'turn' | 'selected') {
+		if (next === 'selected' && !aiSelectedKey) return;
+		setGutterViewMode('ai');
+		aiFilter = next;
+		aiMenuOpen = false;
+		applyAiChangeDecorations();
+		// Move an open peek onto the new scope's first hunk (or close it if the new
+		// scope has none) so the peek never outlives the changes it describes.
+		refreshActiveDiffPeek();
+	}
+
+	/** Reset the AI view to its default (latest turn, nothing pinned). */
+	function resetAiFilter() {
+		aiFilter = 'turn';
+		aiSelectedKey = null;
+		aiSelectedMissing = false;
+		aiSelectedOrdinal = 0;
+		pendingAiRevealKey = null;
+		aiWriteBases.clear();
+		aiWriteBaseMisses.clear();
+		aiWriteBasePending.clear();
+	}
+
+	/** Does this edit belong to the current view mode? */
+	function isEditInFilter(list: AiChange[], editIdx: number, latestTurn: number): boolean {
+		if (aiFilter === 'selected') {
+			return aiSelectedKey !== null && list[editIdx].key === aiSelectedKey;
+		}
+		if (aiFilter === 'turn') return list[editIdx].turnIndex === latestTurn;
+		return true;
+	}
+
+	/**
+	 * Content of the file immediately before `editIdx` ran, or null when unknown.
+	 * Edits carry their own "before" text; Writes don't, so they lean on the
+	 * checkpoint snapshot fetched by `ensureWriteBase`.
+	 */
+	function aiBaseContent(list: AiChange[], editIdx: number): string | null {
+		const change = list[editIdx];
+		if (!change.wholeFile) return change.oldContent;
+		return change.key ? aiWriteBases.get(change.key) ?? null : null;
+	}
+
+	/**
+	 * Walk the file's earlier edits from the same turn onto `preTurnContent`.
+	 * Snapshots are captured once per turn, so when a turn touched this file more
+	 * than once the snapshot alone lands us at the start of the turn, not at the
+	 * moment just before the Write we care about.
+	 */
+	function replayTurnEdits(list: AiChange[], targetIdx: number, preTurnContent: string): string {
+		const turn = list[targetIdx].turnIndex;
+		let content = preTurnContent;
+		for (let i = 0; i < targetIdx; i++) {
+			const earlier = list[i];
+			if (earlier.turnIndex !== turn) continue;
+			if (earlier.wholeFile) {
+				content = earlier.newContent;
+				continue;
+			}
+			const at = content.indexOf(earlier.oldContent);
+			if (at < 0) continue;
+			content =
+				content.slice(0, at) + earlier.newContent + content.slice(at + earlier.oldContent.length);
+		}
+		return content;
+	}
+
+	/** Fetch (once) the pre-write content backing a Write edit's diff and discard. */
+	function ensureWriteBase(list: AiChange[], editIdx: number, path: string) {
+		const change = list[editIdx];
+		const key = change.key;
+		if (!change.wholeFile || !key) return;
+		if (aiWriteBases.has(key) || aiWriteBaseMisses.has(key) || aiWriteBasePending.has(key)) return;
+		if (!change.checkpointMessageId) {
+			aiWriteBaseMisses.add(key);
+			return;
+		}
+
+		aiWriteBasePending.add(key);
+		ws.http('snapshot:read-file-before-checkpoint', {
+			messageId: change.checkpointMessageId,
+			filePath: path
+		})
+			.then((res) => {
+				aiWriteBasePending.delete(key);
+				if (res.content === null) {
+					aiWriteBaseMisses.add(key);
+					return;
+				}
+				aiWriteBases.set(key, replayTurnEdits(list, editIdx, res.content));
+				if (file?.path === path) applyAiChangeDecorations();
+			})
+			.catch(() => {
+				aiWriteBasePending.delete(key);
+				aiWriteBaseMisses.add(key);
+			});
+	}
+
+	/**
+	 * Place an edit's hunks onto the file as it stands now. Fast path: the edit's
+	 * text is still present verbatim, so every hunk shifts by the same offset.
+	 * Otherwise a later edit rewrote part of it — fall back to anchoring each hunk
+	 * on its own text, so the surviving parts of the edit still show up instead of
+	 * the whole edit silently vanishing.
+	 */
+	function anchorHunks(
+		hunks: GutterChange[],
+		editedText: string,
+		content: string
+	): GutterChange[] {
+		const at = content.indexOf(editedText);
+		if (at >= 0) {
+			const offset = content.substring(0, at).split('\n').length - 1;
+			return hunks.map((c) => ({
+				...c,
+				startLine: c.startLine + offset,
+				endLine: c.endLine + offset
+			}));
+		}
+
+		const anchored: GutterChange[] = [];
+		for (const hunk of hunks) {
+			// A pure deletion has no surviving text to search for.
+			if (hunk.newLines.length === 0) continue;
+			const text = hunk.newLines.join('\n');
+			const idx = content.indexOf(text);
+			if (idx < 0) continue;
+			const startLine = content.substring(0, idx).split('\n').length;
+			anchored.push({
+				...hunk,
+				startLine,
+				endLine: startLine + hunk.newLines.length - 1
+			});
+		}
+		return anchored;
+	}
+
 	// AI change decorations — highlight lines modified by AI (Write/Edit tools)
 	function applyAiChangeDecorations(forceClear = false) {
 		const editor = monacoEditorRef?.getEditor();
@@ -480,73 +643,80 @@
 			aiChangeDecorations = editor.deltaDecorations(aiChangeDecorations, []);
 			hasAiChanges = false;
 			aiChangeCount = 0;
-			latestPresentEditIdx = -1;
+			aiSelectedMissing = false;
 			return;
 		}
 
 		const allChanges = getAiChanges(path);
 		hasAiChanges = allChanges.length > 0;
 		aiChangeCount = allChanges.length;
-		latestPresentEditIdx = latestPresentChangeIndex(allChanges, editableContent);
 
-		// In "Latest" mode, follow the newest present edit as the checkpoint/content
-		// shifts instead of staying pinned to a now-stale index.
-		if (aiLatestMode && latestPresentEditIdx >= 0) {
-			activeRevealEditIdx = latestPresentEditIdx;
-		}
-
-		// Capture scroll-reveal edit index first so we can filter by it on this pass
-		const revealEditIdx = consumeAiScrollReveal(path);
-		if (revealEditIdx >= 0) {
-			activeRevealEditIdx = revealEditIdx;
-			lastRevealEditIdx = revealEditIdx;
+		// A click on a chat tool row pins that exact edit — it's the only way to see
+		// what one tool call did to a file that later edits have moved on from.
+		const revealKey = consumeAiScrollReveal(path);
+		if (revealKey !== null) {
+			aiSelectedKey = revealKey;
+			aiFilter = 'selected';
+			pendingAiRevealKey = revealKey;
 			setGutterViewMode('ai');
-			aiLatestMode = false; // an explicit edit reveal overrides "Latest"
 		}
+
+		// The pinned edit may be gone after a checkpoint restore truncated the
+		// conversation — fall back rather than showing an empty gutter forever.
+		if (aiFilter === 'selected' && !allChanges.some((c) => c.key === aiSelectedKey)) {
+			aiSelectedKey = null;
+			aiFilter = 'turn';
+		}
+		aiSelectedOrdinal = aiSelectedKey
+			? allChanges.findIndex((c) => c.key === aiSelectedKey) + 1
+			: 0;
 
 		if (forceClear || gutterMode === 'git') {
 			aiChangeDecorations = editor.deltaDecorations(aiChangeDecorations, []);
 			aiGutterChanges = [];
+			aiSelectedMissing = false;
 			return;
 		}
 
 		if (allChanges.length === 0) {
 			aiChangeDecorations = editor.deltaDecorations(aiChangeDecorations, []);
+			aiSelectedMissing = false;
 			return;
 		}
 
 		const merged: Array<GutterChange & { _editIdx: number; _timestamp: number }> = [];
+		const latestTurn = latestTurnIndex(allChanges);
+		const discardable = new Set<number>();
 
 		for (let editIdx = 0; editIdx < allChanges.length; editIdx++) {
-			if (activeRevealEditIdx !== null && editIdx !== activeRevealEditIdx) continue;
+			if (!isEditInFilter(allChanges, editIdx, latestTurn)) continue;
 
 			const change = allChanges[editIdx];
-			const rawChanges = change.oldContent
-				? computeLineDiff(change.oldContent, change.newContent)
-				: computeLineDiff('', change.newContent);
+			ensureWriteBase(allChanges, editIdx, path);
+			const base = aiBaseContent(allChanges, editIdx);
 
 			let local: GutterChange[];
-			if (!change.oldContent) {
-				local = rawChanges;
+			if (base === null) {
+				// A Write whose "before" text we couldn't recover — all we can honestly
+				// say is that the AI produced this content, so mark it whole and leave
+				// Discard off (there is nothing to revert to).
+				local = computeLineDiff('', change.newContent);
 			} else {
-				const idx = editableContent.indexOf(change.newContent);
-				if (idx >= 0) {
-					const beforeContent = editableContent.substring(0, idx);
-					const startLine = beforeContent.split('\n').length;
-					local = rawChanges.map((c) => ({
-						...c,
-						startLine: c.startLine + startLine - 1,
-						endLine: c.endLine + startLine - 1
-					}));
-				} else {
-					local = [];
-				}
+				discardable.add(editIdx);
+				local = anchorHunks(
+					computeLineDiff(base, change.newContent),
+					change.newContent,
+					editableContent
+				);
 			}
 
 			for (const gc of local) {
 				merged.push({ ...gc, _editIdx: editIdx, _timestamp: change.timestamp });
 			}
 		}
+
+		aiDiscardableEdits = discardable;
+		aiSelectedMissing = aiFilter === 'selected' && merged.length === 0;
 
 		const newDecorations = merged.map((entry) => {
 			const { _editIdx, _timestamp, ...change } = entry;
@@ -579,18 +749,60 @@
 		}));
 		aiChangeDecorations = editor.deltaDecorations(aiChangeDecorations, newDecorations);
 
-		// Scroll-reveal: focus on the first line of the specific edit the user clicked
-		if (revealEditIdx >= 0 && aiGutterChanges.length > 0) {
-			const targetChange = aiGutterChanges.find((g) => g.editIndex === revealEditIdx)
-				?? aiGutterChanges[0];
-			requestAnimationFrame(() => {
-				editor.revealLineInCenter(targetChange.startLine);
-				editor.setPosition({ lineNumber: targetChange.startLine, column: 1 });
-				editor.focus();
-				showDiffPeek(targetChange, true);
-			});
+		// Scroll-reveal: focus the specific edit the user clicked in chat.
+		if (pendingAiRevealKey !== null) {
+			pendingAiRevealKey = null;
+			if (aiGutterChanges.length > 0) {
+				const targetChange = aiGutterChanges[0];
+				requestAnimationFrame(() => {
+					editor.revealLineInCenter(targetChange.startLine);
+					editor.setPosition({ lineNumber: targetChange.startLine, column: 1 });
+					editor.focus();
+					showDiffPeek(targetChange, true);
+				});
+			} else if (aiSelectedMissing) {
+				// Nothing to anchor — show what the tool call recorded instead, so the
+				// click still answers "what did this tool do to this file?".
+				requestAnimationFrame(() => showRecordedAiPeek());
+			}
 		}
+	}
 
+	/**
+	 * Peek the selected edit's recorded before/after when its text is no longer in
+	 * the file (a later edit rewrote it, or a checkpoint restore rolled it back).
+	 * Read-only: there is no live region to navigate to or discard.
+	 */
+	function showRecordedAiPeek() {
+		const path = file?.path || '';
+		if (!path || !aiSelectedKey) return;
+		const list = getAiChanges(path);
+		const editIdx = list.findIndex((c) => c.key === aiSelectedKey);
+		if (editIdx < 0) return;
+
+		const change = list[editIdx];
+		const base = aiBaseContent(list, editIdx) ?? '';
+		const oldLines = base ? base.split('\n') : [];
+		const newLines = change.newContent.split('\n');
+
+		// Anchored at the top and numbered from 1: the recorded text no longer maps
+		// onto the file, so borrowing the file's line numbers would be a lie.
+		monacoEditorRef?.getEditor()?.revealLine(1);
+		showDiffPeek(
+			{
+				type: oldLines.length > 0 ? 'modified' : 'added',
+				startLine: 1,
+				endLine: 1,
+				oldStartLine: oldLines.length > 0 ? 1 : 0,
+				oldEndLine: oldLines.length,
+				oldLines,
+				newLines,
+				editIndex: editIdx,
+				timestamp: change.timestamp
+			},
+			true,
+			{ recorded: true }
+		);
 	}
 
 	// Register callback for AI change notifications (fires when a new change arrives)
@@ -769,6 +981,29 @@
 		});
 	}
 
+	/**
+	 * Rows rendered per side before the peek truncates. A whole-file Write hunk can
+	 * carry thousands of lines and every row is a DOM node built synchronously —
+	 * the overflow is announced rather than silently dropped.
+	 */
+	const PEEK_MAX_ROWS = 400;
+
+	function appendPeekRows(target: HTMLElement, lines: string[], side: 'old' | 'new') {
+		const shown = Math.min(lines.length, PEEK_MAX_ROWS);
+		for (let i = 0; i < shown; i++) {
+			const row = document.createElement('div');
+			row.className = `git-diff-peek-row git-diff-peek-row-${side}`;
+			row.textContent = lines[i].length > 0 ? lines[i] : '\u00A0';
+			target.appendChild(row);
+		}
+		if (lines.length > shown) {
+			const more = document.createElement('div');
+			more.className = `git-diff-peek-row git-diff-peek-row-${side}`;
+			more.textContent = `… ${lines.length - shown} more lines`;
+			target.appendChild(more);
+		}
+	}
+
 	function buildPeekDom(change: GutterChange, isAi = false): HTMLElement {
 		const root = document.createElement('div');
 		root.className = `git-diff-peek git-diff-peek-${change.type}`;
@@ -786,12 +1021,7 @@
 			const bodyContent = document.createElement('div');
 			bodyContent.className = 'git-diff-peek-body-content';
 			body.appendChild(bodyContent);
-			change.oldLines.forEach((line) => {
-				const row = document.createElement('div');
-				row.className = 'git-diff-peek-row git-diff-peek-row-old';
-				row.textContent = line.length > 0 ? line : '\u00A0';
-				bodyContent.appendChild(row);
-			});
+			appendPeekRows(bodyContent, change.oldLines, 'old');
 			inner.appendChild(body);
 		}
 
@@ -802,12 +1032,7 @@
 			const bodyContent = document.createElement('div');
 			bodyContent.className = 'git-diff-peek-body-content';
 			body.appendChild(bodyContent);
-			change.newLines.forEach((line) => {
-				const row = document.createElement('div');
-				row.className = 'git-diff-peek-row git-diff-peek-row-new';
-				row.textContent = line.length > 0 ? line : '\u00A0';
-				bodyContent.appendChild(row);
-			});
+			appendPeekRows(bodyContent, change.newLines, 'new');
 			inner.appendChild(body);
 		}
 
@@ -828,32 +1053,41 @@
 		const margin = document.createElement('div');
 		margin.className = 'git-diff-peek-margin';
 
+		// Row counts must match buildPeekDom exactly — the margin and the body live
+		// in separate scroll containers kept in lockstep by row index.
+		const appendNumbers = (count: number, firstLine: number, side: 'old' | 'new') => {
+			const shown = Math.min(count, PEEK_MAX_ROWS);
+			for (let idx = 0; idx < shown; idx++) {
+				const row = document.createElement('div');
+				row.className = `git-diff-peek-margin-row git-diff-peek-margin-row-${side}`;
+				row.textContent = String(firstLine + idx);
+				margin.appendChild(row);
+			}
+			if (count > shown) {
+				const row = document.createElement('div');
+				row.className = `git-diff-peek-margin-row git-diff-peek-margin-row-${side}`;
+				row.textContent = '⋯';
+				margin.appendChild(row);
+			}
+		};
+
 		// Old line numbers (HEAD) — rendered for deletions and modifications
-		change.oldLines.forEach((_, idx) => {
-			const row = document.createElement('div');
-			row.className = 'git-diff-peek-margin-row git-diff-peek-margin-row-old';
-			row.textContent = String(change.oldStartLine + idx);
-			margin.appendChild(row);
-		});
+		appendNumbers(change.oldLines.length, change.oldStartLine, 'old');
 
 		// New line numbers (current) — rendered for additions and modifications.
 		// For pure additions oldStartLine is 0, so we use startLine (1-based).
-		if (change.newLines.length > 0) {
-			change.newLines.forEach((_, idx) => {
-				const row = document.createElement('div');
-				row.className = 'git-diff-peek-margin-row git-diff-peek-margin-row-new';
-				row.textContent = String(change.startLine + idx);
-				margin.appendChild(row);
-			});
-		}
+		appendNumbers(change.newLines.length, change.startLine, 'new');
 
 		return margin;
 	}
 
-	// Discard (revert) a single hunk back to its HEAD content. Uses Monaco's
-	// executeEdits so the change is undoable (Ctrl+Z) and propagates through
-	// onDidChangeModelContent → bind:value → handleContentChange, which closes
-	// the peek and refreshes the gutter automatically.
+	// Discard (revert) a single hunk back to the content it replaced — HEAD for a
+	// git hunk, the AI edit's own "before" text for an AI hunk (both arrive here as
+	// `change.oldLines`). Uses Monaco's executeEdits so the change is undoable
+	// (Ctrl+Z) and propagates through onDidChangeModelContent → bind:value →
+	// handleContentChange, which closes the peek and refreshes the gutter
+	// automatically. Like the git flow, this only edits the buffer — the user still
+	// saves to write it to disk.
 	function discardHunk(change: GutterChange) {
 		const editorInstance = monacoEditorRef?.getEditor();
 		if (!editorInstance) return;
@@ -918,7 +1152,8 @@
 		change: GutterChange,
 		index: number,
 		total: number,
-		isAi = false
+		isAi = false,
+		recorded = false
 	): HTMLElement {
 		const root = document.createElement('div');
 		root.className = `git-diff-peek-overlay-header git-diff-peek-overlay-header-${change.type}`;
@@ -926,7 +1161,9 @@
 		const title = document.createElement('span');
 		title.className = 'git-diff-peek-overlay-title';
 		const fileName = file?.name ?? '';
-		title.textContent = `${fileName} · ${index} of ${total}`;
+		title.textContent = recorded
+			? `${fileName} · recorded change (no longer in the file)`
+			: `${fileName} · ${index} of ${total}`;
 		root.appendChild(title);
 
 		const actions = document.createElement('div');
@@ -938,7 +1175,7 @@
 		prevBtn.title = 'Previous change';
 		prevBtn.setAttribute('aria-label', 'Previous change');
 		prevBtn.innerHTML = ICON_CHEVRON_UP;
-		prevBtn.disabled = total <= 1;
+		prevBtn.disabled = total <= 1 || recorded;
 		attachPeekButton(prevBtn, () => navigatePeek(-1));
 		actions.appendChild(prevBtn);
 
@@ -948,15 +1185,23 @@
 		nextBtn.title = 'Next change';
 		nextBtn.setAttribute('aria-label', 'Next change');
 		nextBtn.innerHTML = ICON_CHEVRON_DOWN;
-		nextBtn.disabled = total <= 1;
+		nextBtn.disabled = total <= 1 || recorded;
 		attachPeekButton(nextBtn, () => navigatePeek(1));
 		actions.appendChild(nextBtn);
 
-		if (!isAi) {
+		// Discard reverts the hunk to whatever it replaced: HEAD for a git hunk, the
+		// AI edit's own "before" text for an AI hunk. A recorded peek has no live
+		// lines to act on, and a Write with no recovered base has nothing to revert to.
+		const canDiscard = recorded
+			? false
+			: !isAi || (change.editIndex !== undefined && aiDiscardableEdits.has(change.editIndex));
+		if (canDiscard) {
 			const discardBtn = document.createElement('button');
 			discardBtn.className = 'git-diff-peek-discard-btn';
 			discardBtn.type = 'button';
-			discardBtn.title = 'Discard this change (revert to HEAD)';
+			discardBtn.title = isAi
+				? 'Discard this change (revert to the content before this AI edit)'
+				: 'Discard this change (revert to HEAD)';
 			discardBtn.setAttribute('aria-label', 'Discard this change');
 			discardBtn.innerHTML = `${ICON_DISCARD}<span>Discard</span>`;
 			attachPeekButton(discardBtn, () => discardHunk(change));
@@ -1014,19 +1259,20 @@
 		domNode.style.transform = `translateX(${scrollLeft}px)`;
 	}
 
-	function showDiffPeek(change: GutterChange, isAi = false) {
+	function showDiffPeek(change: GutterChange, isAi = false, opts?: { recorded?: boolean }) {
 		const editorInstance = monacoEditorRef?.getEditor();
 		if (!editorInstance) return;
 
 		closeDiffPeek();
 
+		const recorded = opts?.recorded === true;
 		const changes = getActiveChanges(isAi);
 		const foundIdx = changes.findIndex(c => c.startLine === change.startLine && c.type === change.type);
-		const index = foundIdx >= 0 ? foundIdx + 1 : 1;
-		const total = changes.length;
+		const index = recorded || foundIdx < 0 ? 1 : foundIdx + 1;
+		const total = recorded ? 1 : changes.length;
 		const domNode = buildPeekDom(change, isAi);
 		const marginDomNode = buildPeekMargin(change);
-		const overlayHeader = buildPeekOverlayHeader(change, index, total, isAi);
+		const overlayHeader = buildPeekOverlayHeader(change, index, total, isAi, recorded);
 		applyPeekSizing(editorInstance, domNode);
 		applyPeekScroll(domNode, editorInstance.getScrollLeft());
 
@@ -1321,9 +1567,7 @@
 	}
 
 	export function resetRevealFilter() {
-		activeRevealEditIdx = null;
-		lastRevealEditIdx = null;
-		aiLatestMode = false;
+		resetAiFilter();
 		setGutterViewMode('git');
 		closeDiffPeek();
 	}
@@ -1565,7 +1809,7 @@
 			<div class="flex items-center gap-2 sm:gap-3 min-w-0 flex-1">
 				<Icon name={getDisplayIcon(file.name, file.type === 'directory')} class="w-7 h-7" />
 				<div class="min-w-0 flex-1">
-					<h3 class="text-xs sm:text-sm font-bold text-slate-900 dark:text-slate-100 truncate">
+					<h3 id={titleId} class="text-xs sm:text-sm font-bold text-slate-900 dark:text-slate-100 truncate">
 						{file.name}
 					</h3>
 					<p class="text-xs text-slate-600 dark:text-slate-400 truncate mt-0.5">
@@ -1648,8 +1892,8 @@
 						</button>
 					{/if}
 					<!-- Gutter view mode: segmented AI | Git. The AI pill doubles as a
-					     dropdown (All AI changes / Latest AI change) when the file has
-					     more than one AI edit. -->
+					     dropdown scoping which edits the gutter paints (all / latest
+					     turn / the one edit clicked in chat). -->
 					{#if hasAiChanges}
 						<div
 							class="relative flex items-center gap-0.5 p-0.5 rounded-lg bg-slate-100 dark:bg-slate-800/60"
@@ -1693,42 +1937,39 @@
 
 							{#if aiMenuOpen && aiChangeCount >= 1}
 								<div
-									class="absolute top-full left-0 mt-1 w-44 py-1 bg-white dark:bg-slate-800 border border-violet-500/20 rounded-lg shadow-2xl shadow-slate-900/20 dark:shadow-black/40 z-50 overflow-hidden"
+									class="absolute top-full left-0 mt-1 w-52 py-1 bg-white dark:bg-slate-800 border border-violet-500/20 rounded-lg shadow-2xl shadow-slate-900/20 dark:shadow-black/40 z-50 overflow-hidden"
 									role="menu"
 									transition:scale={{ duration: 150, easing: cubicOut, start: 0.95, opacity: 0 }}
 								>
 									<button
 										class="flex items-center gap-2 w-full px-3 py-1.5 text-xs text-left text-slate-700 dark:text-slate-200 hover:bg-violet-500/10 transition-colors"
 										role="menuitemradio"
-										aria-checked={activeRevealEditIdx === null}
-										onclick={() => {
-											setGutterViewMode('ai');
-											aiLatestMode = false;
-											activeRevealEditIdx = null;
-											applyAiChangeDecorations();
-											refreshActiveDiffPeek();
-											aiMenuOpen = false;
-										}}
+										aria-checked={aiFilter === 'all'}
+										onclick={() => selectAiFilter('all')}
 									>
-										<Icon name="lucide:check" class="w-3.5 h-3.5 text-violet-600 dark:text-violet-400 {activeRevealEditIdx === null ? '' : 'opacity-0'}" />
+										<Icon name="lucide:check" class="w-3.5 h-3.5 text-violet-600 dark:text-violet-400 {aiFilter === 'all' ? '' : 'opacity-0'}" />
 										<span>All AI changes</span>
 									</button>
 									<button
 										class="flex items-center gap-2 w-full px-3 py-1.5 text-xs text-left text-slate-700 dark:text-slate-200 hover:bg-violet-500/10 transition-colors"
 										role="menuitemradio"
-										aria-checked={aiLatestMode}
-										onclick={() => {
-											setGutterViewMode('ai');
-											aiLatestMode = true;
-											activeRevealEditIdx = latestPresentChangeIndex(getAiChanges(file?.path || ''), editableContent);
-											applyAiChangeDecorations();
-											refreshActiveDiffPeek();
-											aiMenuOpen = false;
-										}}
+										aria-checked={aiFilter === 'turn'}
+										onclick={() => selectAiFilter('turn')}
 									>
-										<Icon name="lucide:check" class="w-3.5 h-3.5 text-violet-600 dark:text-violet-400 {aiLatestMode ? '' : 'opacity-0'}" />
-										<span>Latest AI change</span>
+										<Icon name="lucide:check" class="w-3.5 h-3.5 text-violet-600 dark:text-violet-400 {aiFilter === 'turn' ? '' : 'opacity-0'}" />
+										<span>Latest AI turn</span>
 									</button>
+									{#if aiSelectedKey}
+										<button
+											class="flex items-center gap-2 w-full px-3 py-1.5 text-xs text-left text-slate-700 dark:text-slate-200 hover:bg-violet-500/10 transition-colors"
+											role="menuitemradio"
+											aria-checked={aiFilter === 'selected'}
+											onclick={() => selectAiFilter('selected')}
+										>
+											<Icon name="lucide:check" class="w-3.5 h-3.5 text-violet-600 dark:text-violet-400 {aiFilter === 'selected' ? '' : 'opacity-0'}" />
+											<span class="min-w-0 truncate">Selected AI change{selectedEditLabel}</span>
+										</button>
+									{/if}
 								</div>
 							{/if}
 						</div>
@@ -1786,8 +2027,41 @@
 						</button>
 					{/if}
 				{/if}
+
+				<!-- Close, when the viewer is hosted in a modal that has no chrome of
+				     its own. Sits outside the editable/preview branches so every file
+				     type keeps a way out. -->
+				{#if onClose}
+					<button
+						type="button"
+						class="flex p-2 text-slate-500 dark:text-slate-400 hover:text-slate-700 dark:hover:text-slate-200 hover:bg-slate-100 dark:hover:bg-slate-800 rounded-lg transition-all duration-200"
+						onclick={onClose}
+						title="Close (Esc)"
+						aria-label="Close"
+					>
+						<Icon name="lucide:x" class="w-4 h-4" />
+					</button>
+				{/if}
 			</div>
 		</div>
+		{/if}
+
+		<!-- The pinned edit exists in the conversation but not in the file any more.
+		     Say so rather than showing an empty gutter that reads as "no changes". -->
+		{#if gutterMode === 'ai' && aiFilter === 'selected' && aiSelectedMissing}
+			<div class="flex-shrink-0 flex items-center gap-2 px-4 py-1.5 text-2xs bg-amber-50 dark:bg-amber-900/20 border-b border-amber-200 dark:border-amber-900/40 text-amber-800 dark:text-amber-300">
+				<Icon name="lucide:info" class="w-3.5 h-3.5 shrink-0" />
+				<span class="min-w-0 truncate">
+					This change is no longer in the file — a later edit replaced it, or a checkpoint was restored.
+				</span>
+				<button
+					type="button"
+					class="ml-auto shrink-0 px-2 py-0.5 rounded-md font-medium bg-amber-100 dark:bg-amber-900/40 hover:bg-amber-200 dark:hover:bg-amber-900/70 transition-colors"
+					onclick={showRecordedAiPeek}
+				>
+					View recorded diff
+				</button>
+			</div>
 		{/if}
 
 		<!-- Content -->

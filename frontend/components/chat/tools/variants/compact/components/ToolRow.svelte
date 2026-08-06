@@ -3,7 +3,7 @@
 	import { getFileIcon } from '$frontend/utils/file-icon-mappings';
 	import { getFolderIcon } from '$frontend/utils/folder-icon-mappings';
 	import { revealFile } from '$frontend/stores/ui/file-peek.svelte';
-	import { requestAiScrollReveal, getAiChanges } from '$frontend/utils/ai-changes';
+	import { requestAiScrollReveal } from '$frontend/utils/ai-changes';
 	import type { IconName } from '$shared/types/ui/icons';
 
 	interface DiffStat {
@@ -72,10 +72,7 @@
 		e.stopPropagation();
 		if (!filePath) return;
 		revealFile(filePath);
-		if (editKey) {
-			const idx = getAiChanges(filePath).findIndex((c) => c.key === editKey);
-			if (idx >= 0) requestAiScrollReveal(filePath, idx);
-		}
+		if (editKey) requestAiScrollReveal(filePath, editKey);
 	}
 
 	function handleRowClick() {
