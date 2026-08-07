@@ -3639,20 +3639,16 @@ ${bodies}`;
 	{@const commitState = branchCommitState[branchKey]}
 	{@const branchRelativeDate = formatRelativeTime(branch.lastCommitDate)}
 	{@const nestedPushed = nestedPushedBranchNames(nested)}
-	{@const curPush = !nestedPushed.has(branch.name) || branch.ahead > 0}
-	{@const curPull = branch.behind > 0}
-	{@const curActionCount = (curPush ? 1 : 0) + (curPull ? 1 : 0) + 1}
-	{@const curPadding = curActionCount === 1 ? 'group-hover:pr-9' : curActionCount === 2 ? 'group-hover:pr-16' : 'group-hover:pr-24'}
 	<div>
 		<div
-			class="group relative flex items-center gap-1.5 pl-1.5 pr-2.5 py-1.5 rounded-md transition-colors border cursor-pointer select-none {branch.isCurrent ? 'bg-violet-500/10 border-violet-500/20 text-violet-700 dark:text-violet-300' : 'border-transparent hover:bg-slate-100 dark:hover:bg-slate-800/60 text-slate-700 dark:text-slate-300'}"
+			class="group flex items-center gap-1.5 pl-1.5 pr-2.5 py-1.5 rounded-md transition-colors border cursor-pointer select-none {branch.isCurrent ? 'bg-violet-500/10 border-violet-500/20 text-violet-700 dark:text-violet-300' : 'border-transparent hover:bg-slate-100 dark:hover:bg-slate-800/60 text-slate-700 dark:text-slate-300'}"
 			role="button"
 			tabindex="0"
 			onclick={() => toggleBranchExpanded(branch.name, nested.path)}
 			onkeydown={(e) => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); toggleBranchExpanded(branch.name, nested.path); } }}
 		>
 			<Icon name={isExpanded ? 'lucide:chevron-down' : 'lucide:chevron-right'} class="w-3.5 h-3.5 shrink-0 {branch.isCurrent ? 'text-violet-500' : 'text-slate-400'}" />
-			<div class="flex-1 min-w-0 flex flex-col justify-center overflow-hidden pr-2 {!branch.isCurrent ? (nestedPushed.has(branch.name) ? 'group-hover:pr-32' : 'group-hover:pr-40') : curPadding} transition-[padding] duration-150">
+			<div class="flex-1 min-w-0 flex flex-col justify-center overflow-hidden">
 				<div class="flex min-w-0 items-center gap-2">
 					<span class="flex-1 min-w-0 text-sm text-slate-900 dark:text-slate-100 leading-tight truncate" title={branch.name}>{branch.name}</span>
 					{#if upstreamName}<span class="text-3xs text-slate-400 shrink-0">{upstreamName}</span>{/if}
@@ -3665,31 +3661,31 @@ ${bodies}`;
 				</div>
 			</div>
 			{#if !branch.isCurrent}
-			<div class="pointer-events-none absolute inset-y-0 right-0 flex items-center gap-1 pl-1 pr-2 bg-white/20 opacity-0 backdrop-blur-md supports-[backdrop-filter]:bg-white/10 transition-opacity group-hover:opacity-100 dark:bg-slate-900/20 dark:supports-[backdrop-filter]:bg-slate-900/10">
-				<button type="button" class="pointer-events-auto flex items-center justify-center w-7 h-7 rounded-md text-slate-400 hover:bg-violet-500/10 hover:text-violet-500 transition-colors bg-transparent border-none cursor-pointer" onclick={(e) => { e.stopPropagation(); handleSwitchNestedBranch(nested, branch.name); }} title="Switch to this branch"><Icon name="lucide:arrow-right" class="w-3.5 h-3.5" /></button>
+			<div class="flex items-center gap-1 shrink-0">
+				<button type="button" class="flex items-center justify-center w-6 h-6 rounded-md text-slate-400 hover:bg-violet-500/10 hover:text-violet-500 transition-colors bg-transparent border-none cursor-pointer" onclick={(e) => { e.stopPropagation(); handleSwitchNestedBranch(nested, branch.name); }} title="Switch to this branch"><Icon name="lucide:arrow-right" class="w-3.5 h-3.5" /></button>
 				{#if !nestedPushed.has(branch.name)}
 					{#if pushingBranch === branch.name}
-						<div class="pointer-events-auto flex items-center justify-center w-7 h-7 rounded-md text-emerald-500"><Icon name="lucide:loader-circle" class="w-3.5 h-3.5 animate-spin" /></div>
+						<div class="flex items-center justify-center w-6 h-6 rounded-md text-emerald-500"><Icon name="lucide:loader-circle" class="w-3.5 h-3.5 animate-spin" /></div>
 					{:else}
-						<button type="button" class="pointer-events-auto flex items-center justify-center w-7 h-7 rounded-md text-slate-400 hover:bg-emerald-500/10 hover:text-emerald-500 transition-colors bg-transparent border-none cursor-pointer" onclick={(e) => { e.stopPropagation(); handlePushBranch(branch.name, nested.path); }} title="Push branch to remote"><Icon name="lucide:upload" class="w-3.5 h-3.5" /></button>
+						<button type="button" class="flex items-center justify-center w-6 h-6 rounded-md text-slate-400 hover:bg-emerald-500/10 hover:text-emerald-500 transition-colors bg-transparent border-none cursor-pointer" onclick={(e) => { e.stopPropagation(); handlePushBranch(branch.name, nested.path); }} title="Push branch to remote"><Icon name="lucide:upload" class="w-3.5 h-3.5" /></button>
 					{/if}
 				{/if}
-				<button type="button" class="pointer-events-auto flex items-center justify-center w-7 h-7 rounded-md text-slate-400 hover:bg-blue-500/10 hover:text-blue-500 transition-colors bg-transparent border-none cursor-pointer" onclick={(e) => { e.stopPropagation(); mergeNestedBranch(branch.name, nested.path); }} title="Merge into current branch"><Icon name="lucide:git-merge" class="w-3.5 h-3.5" /></button>
-			<button type="button" class="pointer-events-auto flex items-center justify-center w-7 h-7 rounded-md text-slate-400 hover:bg-red-500/10 hover:text-red-500 transition-colors bg-transparent border-none cursor-pointer" onclick={(e) => { e.stopPropagation(); handleDeleteNestedBranch(nested, branch.name); }} title="Delete branch"><Icon name="lucide:trash-2" class="w-3.5 h-3.5" /></button>
+				<button type="button" class="flex items-center justify-center w-6 h-6 rounded-md text-slate-400 hover:bg-blue-500/10 hover:text-blue-500 transition-colors bg-transparent border-none cursor-pointer" onclick={(e) => { e.stopPropagation(); mergeNestedBranch(branch.name, nested.path); }} title="Merge into current branch"><Icon name="lucide:git-merge" class="w-3.5 h-3.5" /></button>
+				<button type="button" class="flex items-center justify-center w-6 h-6 rounded-md text-slate-400 hover:bg-red-500/10 hover:text-red-500 transition-colors bg-transparent border-none cursor-pointer" onclick={(e) => { e.stopPropagation(); handleDeleteNestedBranch(nested, branch.name); }} title="Delete branch"><Icon name="lucide:trash-2" class="w-3.5 h-3.5" /></button>
 			</div>
 			{:else}
-			<div class="pointer-events-none absolute inset-y-0 right-0 flex items-center gap-1 pl-1 pr-2 bg-white/20 opacity-0 backdrop-blur-md supports-[backdrop-filter]:bg-white/10 transition-opacity group-hover:opacity-100 dark:bg-slate-900/20 dark:supports-[backdrop-filter]:bg-slate-900/10">
+			<div class="flex items-center gap-1 shrink-0">
 				{#if !nestedPushed.has(branch.name) || branch.ahead > 0}
 					{#if pushingBranch === branch.name}
-						<div class="pointer-events-auto flex items-center justify-center w-7 h-7 rounded-md text-emerald-500"><Icon name="lucide:loader-circle" class="w-3.5 h-3.5 animate-spin" /></div>
+						<div class="flex items-center justify-center w-6 h-6 rounded-md text-emerald-500"><Icon name="lucide:loader-circle" class="w-3.5 h-3.5 animate-spin" /></div>
 					{:else}
-						<button type="button" class="pointer-events-auto flex items-center justify-center w-7 h-7 rounded-md text-slate-400 hover:bg-emerald-500/10 hover:text-emerald-500 transition-colors bg-transparent border-none cursor-pointer" onclick={(e) => { e.stopPropagation(); handlePushBranch(branch.name, nested.path); }} title="Push{branch.ahead > 0 ? ` (${branch.ahead} ahead)` : ` ${branch.name} to remote`}"><Icon name="lucide:upload" class="w-3.5 h-3.5" /></button>
+						<button type="button" class="flex items-center justify-center w-6 h-6 rounded-md text-slate-400 hover:bg-emerald-500/10 hover:text-emerald-500 transition-colors bg-transparent border-none cursor-pointer" onclick={(e) => { e.stopPropagation(); handlePushBranch(branch.name, nested.path); }} title="Push{branch.ahead > 0 ? ` (${branch.ahead} ahead)` : ` ${branch.name} to remote`}"><Icon name="lucide:upload" class="w-3.5 h-3.5" /></button>
 					{/if}
 				{/if}
 				{#if branch.behind > 0}
-					<button type="button" class="pointer-events-auto flex items-center justify-center w-7 h-7 rounded-md text-slate-400 hover:bg-blue-500/10 hover:text-blue-500 transition-colors bg-transparent border-none cursor-pointer" onclick={(e) => { e.stopPropagation(); handlePull(nested.path, getNestedSelectedRemote(nested)); }} title="Pull ({branch.behind} behind)"><Icon name="lucide:download" class="w-3.5 h-3.5" /></button>
+					<button type="button" class="flex items-center justify-center w-6 h-6 rounded-md text-slate-400 hover:bg-blue-500/10 hover:text-blue-500 transition-colors bg-transparent border-none cursor-pointer" onclick={(e) => { e.stopPropagation(); handlePull(nested.path, getNestedSelectedRemote(nested)); }} title="Pull ({branch.behind} behind)"><Icon name="lucide:download" class="w-3.5 h-3.5" /></button>
 				{/if}
-				<button type="button" class="pointer-events-auto flex items-center justify-center w-7 h-7 rounded-md text-slate-400 hover:bg-orange-500/10 hover:text-orange-500 transition-colors bg-transparent border-none cursor-pointer" onclick={(e) => { e.stopPropagation(); renameBranch(branch.name, nested.path); }} title="Rename branch"><Icon name="lucide:pen-line" class="w-3.5 h-3.5" /></button>
+				<button type="button" class="flex items-center justify-center w-6 h-6 rounded-md text-slate-400 hover:bg-orange-500/10 hover:text-orange-500 transition-colors bg-transparent border-none cursor-pointer" onclick={(e) => { e.stopPropagation(); renameBranch(branch.name, nested.path); }} title="Rename branch"><Icon name="lucide:pen-line" class="w-3.5 h-3.5" /></button>
 			</div>
 			{/if}
 		</div>
@@ -3705,38 +3701,37 @@ ${bodies}`;
 						{@const filesState = branchCommitFileState[commit.hash]}
 						{@const commitRelativeDate = formatRelativeTime(commit.date)}
 						{@const showHeadPush = branch.isCurrent && i === 0 && (!nestedPushed.has(branch.name) || (nested.info.ahead ?? 0) > 0)}
-						{@const headActionCount = !branch.isCurrent ? 2 : (i === 0 ? (showHeadPush || pushingBranch === branch.name ? 3 : 2) : 1)}
 						<div>
 							<div
-								class="group/commit relative flex items-center gap-1.5 w-full px-2 py-1.5 rounded-md hover:bg-slate-100 dark:hover:bg-slate-800/60 transition-colors cursor-pointer"
+								class="group/commit flex items-center gap-1.5 w-full px-2 py-1.5 rounded-md hover:bg-slate-100 dark:hover:bg-slate-800/60 transition-colors cursor-pointer"
 								role="button"
 								tabindex="0"
 								onclick={() => toggleBranchCommitExpanded(commit.hash, nested.path)}
 								onkeydown={(e) => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); toggleBranchCommitExpanded(commit.hash, nested.path); } }}
 							>
 								<Icon name={commitExpanded ? 'lucide:chevron-down' : 'lucide:chevron-right'} class="w-3 h-3 shrink-0 text-slate-400" />
-								<div class="flex-1 min-w-0 flex flex-col justify-center overflow-hidden pr-2 {headActionCount === 1 ? 'group-hover/commit:pr-9' : headActionCount === 2 ? 'group-hover/commit:pr-16' : 'group-hover/commit:pr-24'} transition-[padding] duration-150">
+								<div class="flex-1 min-w-0 flex flex-col justify-center overflow-hidden">
 									<div class="flex min-w-0 items-center gap-2">
 										<span class="flex-1 min-w-0 text-sm text-slate-700 dark:text-slate-300 leading-tight truncate" title={commit.message}>{commit.message}</span>
-										{#if commitRelativeDate}<span class="text-3xs text-slate-400 shrink-0">{commitRelativeDate}</span>{/if}
 									</div>
 									<div class="flex min-w-0 items-center gap-1.5 mt-0.5">
 										<button type="button" class="font-mono text-xs text-violet-600 dark:text-violet-400 hover:text-violet-800 dark:hover:text-violet-300 bg-transparent border-none cursor-pointer p-0 shrink-0 transition-colors" onclick={(e) => copyCommitHash(commit.hash, e)} title="Copy commit hash">{commit.hashShort}</button>
+										{#if commitRelativeDate}<span class="text-3xs text-slate-400 shrink-0 whitespace-nowrap">{commitRelativeDate}</span>{/if}
 										{#if commit.author}<span class="flex-1 min-w-0 text-xs text-slate-500 truncate">{commit.author}</span>{/if}
 									</div>
 								</div>
-								<div class="absolute right-1.5 top-1/2 -translate-y-1/2 flex items-center gap-0.5 shrink-0 opacity-0 group-hover/commit:opacity-100">
-									<button type="button" class="flex items-center justify-center w-7 h-7 rounded-md text-slate-400 hover:text-violet-500 hover:bg-violet-500/10 transition-colors bg-transparent border-none cursor-pointer" onclick={(e) => { e.stopPropagation(); handleViewCommitDiffs(commit, nested.path); }} title="View all file diffs in this commit"><Icon name="lucide:file-diff" class="w-4 h-4" /></button>
+								<div class="flex items-center gap-1 shrink-0">
+									<button type="button" class="flex items-center justify-center w-6 h-6 rounded-md text-slate-400 hover:text-violet-500 hover:bg-violet-500/10 transition-colors bg-transparent border-none cursor-pointer" onclick={(e) => { e.stopPropagation(); handleViewCommitDiffs(commit, nested.path); }} title="View all file diffs in this commit"><Icon name="lucide:file-diff" class="w-3.5 h-3.5" /></button>
 									{#if !branch.isCurrent}
-										<button type="button" class="flex items-center justify-center w-7 h-7 rounded-md text-slate-400 hover:text-emerald-500 hover:bg-emerald-500/10 transition-colors bg-transparent border-none cursor-pointer" onclick={(e) => { e.stopPropagation(); handleCherryPick(commit.hash, nested.path); }} title="Cherry-pick this commit onto {nested.info.current}"><Icon name="lucide:git-fork" class="w-4 h-4" /></button>
+										<button type="button" class="flex items-center justify-center w-6 h-6 rounded-md text-slate-400 hover:text-emerald-500 hover:bg-emerald-500/10 transition-colors bg-transparent border-none cursor-pointer" onclick={(e) => { e.stopPropagation(); handleCherryPick(commit.hash, nested.path); }} title="Cherry-pick this commit onto {nested.info.current}"><Icon name="lucide:git-fork" class="w-3.5 h-3.5" /></button>
 									{:else if i === 0}
 										{#if pushingBranch === branch.name}
-											<div class="flex items-center justify-center w-7 h-7 text-slate-400"><Icon name="lucide:loader-circle" class="w-4 h-4 animate-spin" /></div>
+											<div class="flex items-center justify-center w-6 h-6 text-slate-400"><Icon name="lucide:loader-circle" class="w-3.5 h-3.5 animate-spin" /></div>
 										{:else if showHeadPush}
 											{@const isDiverged = nestedPushed.has(branch.name) && (nested.info.ahead ?? 0) > 0 && (nested.info.behind ?? 0) > 0}
-											<button type="button" class="flex items-center justify-center w-7 h-7 rounded-md text-slate-400 hover:bg-emerald-500/10 hover:text-emerald-500 transition-colors bg-transparent border-none cursor-pointer" onclick={(e) => { e.stopPropagation(); handlePushFromBranchList(branch, nested.path); }} title={isDiverged ? `Force push ${branch.name} (diverged: ${nested.info.ahead} ahead, ${nested.info.behind} behind)` : `Push ${branch.name} to remote`}><Icon name="lucide:upload" class="w-4 h-4 {isDiverged ? 'text-amber-500' : ''}" /></button>
+											<button type="button" class="flex items-center justify-center w-6 h-6 rounded-md text-slate-400 hover:bg-emerald-500/10 hover:text-emerald-500 transition-colors bg-transparent border-none cursor-pointer" onclick={(e) => { e.stopPropagation(); handlePushFromBranchList(branch, nested.path); }} title={isDiverged ? `Force push ${branch.name} (diverged: ${nested.info.ahead} ahead, ${nested.info.behind} behind)` : `Push ${branch.name} to remote`}><Icon name="lucide:upload" class="w-3.5 h-3.5 {isDiverged ? 'text-amber-500' : ''}" /></button>
 										{/if}
-										<button type="button" class="flex items-center justify-center w-7 h-7 rounded-md text-slate-400 hover:text-amber-500 hover:bg-amber-500/10 transition-colors bg-transparent border-none cursor-pointer" onclick={(e) => { e.stopPropagation(); handleUndoHeadCommit(commit, branch, nested.path); }} title="Undo this commit (keep changes staged){nestedPushed.has(branch.name) && branch.ahead === 0 ? ' · force push needed after' : ''}"><Icon name="lucide:undo-2" class="w-4 h-4" /></button>
+										<button type="button" class="flex items-center justify-center w-6 h-6 rounded-md text-slate-400 hover:text-amber-500 hover:bg-amber-500/10 transition-colors bg-transparent border-none cursor-pointer" onclick={(e) => { e.stopPropagation(); handleUndoHeadCommit(commit, branch, nested.path); }} title="Undo this commit (keep changes staged){nestedPushed.has(branch.name) && branch.ahead === 0 ? ' · force push needed after' : ''}"><Icon name="lucide:undo-2" class="w-3.5 h-3.5" /></button>
 									{/if}
 								</div>
 							</div>
@@ -4048,24 +4043,24 @@ ${bodies}`;
 											</div>
 										</div>
 									{:else}
-										<div class="group relative flex items-center gap-1.5 pl-1.5 pr-2.5 py-1.5 rounded-md border transition-colors select-none {isActiveRemote ? 'bg-violet-500/10 border-violet-500/20' : 'border-transparent hover:bg-slate-100 dark:hover:bg-slate-800/60'}">
+										<div class="group flex items-center gap-1.5 pl-1.5 pr-2.5 py-1.5 rounded-md border transition-colors select-none {isActiveRemote ? 'bg-violet-500/10 border-violet-500/20' : 'border-transparent hover:bg-slate-100 dark:hover:bg-slate-800/60'}">
 											<Icon name="lucide:server" class="w-4 h-4 shrink-0 text-slate-400" />
-											<div class="flex-1 min-w-0 flex flex-col justify-center overflow-hidden pr-2 {isActiveRemote ? 'group-hover:pr-24' : 'group-hover:pr-32'} transition-[padding] duration-150">
+											<div class="flex-1 min-w-0 flex flex-col justify-center overflow-hidden">
 												<div class="flex min-w-0 items-center gap-2">
 													<span class="min-w-0 text-sm font-medium text-slate-900 dark:text-slate-100 leading-tight truncate">{remoteName}</span>
 													{#if isActiveRemote}<span class="shrink-0 text-3xs font-medium px-1.5 py-0.5 rounded bg-violet-500/15 text-violet-600 dark:text-violet-400">Active</span>{/if}
 												</div>
 											</div>
 											{#if isFetching}
-												<div class="flex items-center justify-center w-7 h-7 text-slate-500 shrink-0"><Icon name="lucide:loader-circle" class="w-3.5 h-3.5 animate-spin" /></div>
+												<div class="flex items-center justify-center w-6 h-6 text-slate-500 shrink-0"><Icon name="lucide:loader-circle" class="w-3.5 h-3.5 animate-spin" /></div>
 											{:else}
-												<div class="pointer-events-none absolute inset-y-0 right-0 flex items-center gap-1 pl-1 pr-2 bg-white/20 opacity-0 backdrop-blur-md supports-[backdrop-filter]:bg-white/10 transition-opacity group-hover:opacity-100 dark:bg-slate-900/20 dark:supports-[backdrop-filter]:bg-slate-900/10">
+												<div class="flex items-center gap-1 shrink-0">
 													{#if !isActiveRemote}
-														<button type="button" class="pointer-events-auto flex items-center justify-center w-7 h-7 rounded-md text-slate-400 hover:bg-violet-500/10 hover:text-violet-500 transition-colors bg-transparent border-none cursor-pointer" onclick={(e) => { e.stopPropagation(); setNestedActiveRemote(remoteName, nested.relPath); }} title="Set as active remote"><Icon name="lucide:star" class="w-3.5 h-3.5" /></button>
+														<button type="button" class="flex items-center justify-center w-6 h-6 rounded-md text-slate-400 hover:bg-violet-500/10 hover:text-violet-500 transition-colors bg-transparent border-none cursor-pointer" onclick={(e) => { e.stopPropagation(); setNestedActiveRemote(remoteName, nested.relPath); }} title="Set as active remote"><Icon name="lucide:star" class="w-3.5 h-3.5" /></button>
 													{/if}
-													<button type="button" class="pointer-events-auto flex items-center justify-center w-7 h-7 rounded-md text-slate-400 hover:bg-violet-500/10 hover:text-violet-500 transition-colors bg-transparent border-none cursor-pointer" onclick={(e) => { e.stopPropagation(); nestedEditingRemote = { ...nestedEditingRemote, [nested.relPath]: remoteName }; nestedEditRemoteNames = { ...nestedEditRemoteNames, [nested.relPath]: remoteName }; }} title="Edit remote"><Icon name="lucide:pencil" class="w-3.5 h-3.5" /></button>
-													<button type="button" class="pointer-events-auto flex items-center justify-center w-7 h-7 rounded-md text-slate-400 hover:bg-blue-500/10 hover:text-blue-500 transition-colors bg-transparent border-none cursor-pointer" onclick={(e) => { e.stopPropagation(); void handleNestedFetchRemote(remoteName, nested.relPath); }} title="Fetch"><Icon name="lucide:refresh-cw" class="w-3.5 h-3.5" /></button>
-													<button type="button" class="pointer-events-auto flex items-center justify-center w-7 h-7 rounded-md text-slate-400 hover:bg-red-500/10 hover:text-red-500 transition-colors bg-transparent border-none cursor-pointer" onclick={(e) => { e.stopPropagation(); handleNestedRemoveRemote(remoteName, nested.relPath); }} title="Disconnect"><Icon name="lucide:unlink" class="w-3.5 h-3.5" /></button>
+													<button type="button" class="flex items-center justify-center w-6 h-6 rounded-md text-slate-400 hover:bg-violet-500/10 hover:text-violet-500 transition-colors bg-transparent border-none cursor-pointer" onclick={(e) => { e.stopPropagation(); nestedEditingRemote = { ...nestedEditingRemote, [nested.relPath]: remoteName }; nestedEditRemoteNames = { ...nestedEditRemoteNames, [nested.relPath]: remoteName }; }} title="Edit remote"><Icon name="lucide:pencil" class="w-3.5 h-3.5" /></button>
+													<button type="button" class="flex items-center justify-center w-6 h-6 rounded-md text-slate-400 hover:bg-blue-500/10 hover:text-blue-500 transition-colors bg-transparent border-none cursor-pointer" onclick={(e) => { e.stopPropagation(); void handleNestedFetchRemote(remoteName, nested.relPath); }} title="Fetch"><Icon name="lucide:refresh-cw" class="w-3.5 h-3.5" /></button>
+													<button type="button" class="flex items-center justify-center w-6 h-6 rounded-md text-slate-400 hover:bg-red-500/10 hover:text-red-500 transition-colors bg-transparent border-none cursor-pointer" onclick={(e) => { e.stopPropagation(); handleNestedRemoveRemote(remoteName, nested.relPath); }} title="Disconnect"><Icon name="lucide:unlink" class="w-3.5 h-3.5" /></button>
 												</div>
 											{/if}
 										</div>
@@ -4076,18 +4071,18 @@ ${bodies}`;
 												{@const branchRelativeDate = formatRelativeTime(branch.lastCommitDate)}
 												{@const shortName = branch.name.substring(remoteName.length + 1)}
 												{@const isDeleting = deletingRemoteBranch === nestedRemoteBranchKey(remoteName, shortName, nested.path)}
-												<div class="group/rb relative flex items-center gap-1.5 px-2 py-1.5 rounded-md hover:bg-slate-100 dark:hover:bg-slate-800/60 transition-colors">
-													<div class="flex-1 min-w-0 flex flex-col justify-center overflow-hidden pr-2 group-hover/rb:pr-20 transition-[padding] duration-150">
+												<div class="group/rb flex items-center gap-1.5 px-2 py-1.5 rounded-md hover:bg-slate-100 dark:hover:bg-slate-800/60 transition-colors">
+													<div class="flex-1 min-w-0 flex flex-col justify-center overflow-hidden">
 														<span class="text-sm text-slate-700 dark:text-slate-300 whitespace-nowrap leading-tight truncate" title={branch.name}>{shortName}</span>
 														{#if branchRelativeDate}<span class="text-xs text-slate-500 leading-tight">{branchRelativeDate}</span>{/if}
 													</div>
 													{#if isDeleting}
-														<div class="flex items-center justify-center w-7 h-7 text-slate-400 shrink-0"><Icon name="lucide:loader-circle" class="w-3.5 h-3.5 animate-spin" /></div>
+														<div class="flex items-center justify-center w-6 h-6 text-slate-400 shrink-0"><Icon name="lucide:loader-circle" class="w-3.5 h-3.5 animate-spin" /></div>
 													{:else}
-														<div class="pointer-events-none absolute inset-y-0 right-0 flex items-center gap-1 pl-1 pr-2 bg-white/20 opacity-0 backdrop-blur-md supports-[backdrop-filter]:bg-white/10 transition-opacity group-hover/rb:opacity-100 dark:bg-slate-900/20 dark:supports-[backdrop-filter]:bg-slate-900/10">
-															<button type="button" class="pointer-events-auto flex items-center justify-center w-7 h-7 rounded-md text-slate-400 hover:bg-violet-500/10 hover:text-violet-500 transition-colors bg-transparent border-none cursor-pointer" onclick={(e) => { e.stopPropagation(); checkoutRemoteBranch(branch.name, nested.path); }} title="Checkout locally"><Icon name="lucide:arrow-right" class="w-3.5 h-3.5" /></button>
-															<button type="button" class="pointer-events-auto flex items-center justify-center w-7 h-7 rounded-md text-slate-400 hover:bg-blue-500/10 hover:text-blue-500 transition-colors bg-transparent border-none cursor-pointer" onclick={(e) => { e.stopPropagation(); copyToClipboard(branch.name); }} title="Copy branch name"><Icon name="lucide:copy" class="w-3.5 h-3.5" /></button>
-															<button type="button" class="pointer-events-auto flex items-center justify-center w-7 h-7 rounded-md text-slate-400 hover:bg-red-500/10 hover:text-red-500 transition-colors bg-transparent border-none cursor-pointer" onclick={(e) => { e.stopPropagation(); handleDeleteRemoteBranch(remoteName, shortName, nested.path); }} title="Delete branch"><Icon name="lucide:trash-2" class="w-3.5 h-3.5" /></button>
+														<div class="flex items-center gap-1 shrink-0">
+															<button type="button" class="flex items-center justify-center w-6 h-6 rounded-md text-slate-400 hover:bg-violet-500/10 hover:text-violet-500 transition-colors bg-transparent border-none cursor-pointer" onclick={(e) => { e.stopPropagation(); checkoutRemoteBranch(branch.name, nested.path); }} title="Checkout locally"><Icon name="lucide:arrow-right" class="w-3.5 h-3.5" /></button>
+															<button type="button" class="flex items-center justify-center w-6 h-6 rounded-md text-slate-400 hover:bg-blue-500/10 hover:text-blue-500 transition-colors bg-transparent border-none cursor-pointer" onclick={(e) => { e.stopPropagation(); copyToClipboard(branch.name); }} title="Copy branch name"><Icon name="lucide:copy" class="w-3.5 h-3.5" /></button>
+															<button type="button" class="flex items-center justify-center w-6 h-6 rounded-md text-slate-400 hover:bg-red-500/10 hover:text-red-500 transition-colors bg-transparent border-none cursor-pointer" onclick={(e) => { e.stopPropagation(); handleDeleteRemoteBranch(remoteName, shortName, nested.path); }} title="Delete branch"><Icon name="lucide:trash-2" class="w-3.5 h-3.5" /></button>
 														</div>
 													{/if}
 												</div>
@@ -4257,14 +4252,14 @@ ${bodies}`;
 								{@const sFiles = stashFileState[key]}
 								<div>
 									<div
-										class="group relative flex items-center gap-1.5 pl-1.5 pr-2.5 py-1.5 rounded-md hover:bg-slate-100 dark:hover:bg-slate-800/60 transition-colors cursor-pointer"
+										class="group flex items-center gap-1.5 pl-1.5 pr-2.5 py-1.5 rounded-md hover:bg-slate-100 dark:hover:bg-slate-800/60 transition-colors cursor-pointer"
 										role="button"
 										tabindex="0"
 										onclick={() => toggleStashExpanded(entry)}
 										onkeydown={(e) => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); toggleStashExpanded(entry); } }}
 									>
 										<Icon name={stashExpanded ? 'lucide:chevron-down' : 'lucide:chevron-right'} class="w-3.5 h-3.5 shrink-0 text-slate-400" />
-										<div class="flex-1 min-w-0 pr-2 group-hover:pr-16 flex flex-col justify-center overflow-hidden transition-[padding] duration-150">
+										<div class="flex-1 min-w-0 flex flex-col justify-center overflow-hidden">
 											<p class="text-sm font-medium text-slate-900 dark:text-slate-100 truncate">{entry.message}</p>
 											<p class="text-xs text-slate-400 dark:text-slate-500">
 												<span>stash@&#123;{entry.index}&#125;</span>
@@ -4273,9 +4268,9 @@ ${bodies}`;
 												{/if}
 											</p>
 										</div>
-										<div class="pointer-events-none absolute inset-y-0 right-0 flex items-center gap-1 pl-1 pr-2 bg-white/20 opacity-0 backdrop-blur-md supports-[backdrop-filter]:bg-white/10 transition-opacity group-hover:opacity-100 dark:bg-slate-900/20 dark:supports-[backdrop-filter]:bg-slate-900/10">
-											<button type="button" class="pointer-events-auto flex items-center justify-center w-7 h-7 rounded-md text-slate-400 hover:bg-emerald-500/10 hover:text-emerald-500 transition-colors bg-transparent border-none cursor-pointer" onclick={(e) => { e.stopPropagation(); handleStashPop(entry); }} title="Pop"><Icon name="lucide:archive-restore" class="w-3.5 h-3.5" /></button>
-											<button type="button" class="pointer-events-auto flex items-center justify-center w-7 h-7 rounded-md text-slate-400 hover:bg-red-500/10 hover:text-red-500 transition-colors bg-transparent border-none cursor-pointer" onclick={(e) => { e.stopPropagation(); handleStashDrop(entry); }} title="Drop"><Icon name="lucide:trash-2" class="w-3.5 h-3.5" /></button>
+										<div class="flex items-center gap-1 shrink-0">
+											<button type="button" class="flex items-center justify-center w-6 h-6 rounded-md text-slate-400 hover:bg-emerald-500/10 hover:text-emerald-500 transition-colors bg-transparent border-none cursor-pointer" onclick={(e) => { e.stopPropagation(); handleStashPop(entry); }} title="Pop"><Icon name="lucide:archive-restore" class="w-3.5 h-3.5" /></button>
+											<button type="button" class="flex items-center justify-center w-6 h-6 rounded-md text-slate-400 hover:bg-red-500/10 hover:text-red-500 transition-colors bg-transparent border-none cursor-pointer" onclick={(e) => { e.stopPropagation(); handleStashDrop(entry); }} title="Drop"><Icon name="lucide:trash-2" class="w-3.5 h-3.5" /></button>
 										</div>
 									</div>
 									{#if stashExpanded}
@@ -4417,25 +4412,27 @@ ${bodies}`;
 					{:else}
 						<div class="space-y-1 pb-2">
 							{#each nestedTags as tag (tag.name)}
+								{@const tagRelativeDate = formatRelativeTime(tag.date)}
 								<div class="group flex items-center gap-2 px-2 py-1.5 rounded-md hover:bg-slate-100 dark:hover:bg-slate-800/60 transition-colors">
 									<div class="flex-1 min-w-0">
 										<p class="text-sm font-medium text-slate-900 dark:text-slate-100 truncate">{tag.name}</p>
-										<div class="flex items-center gap-1.5">
+										<div class="flex min-w-0 items-center gap-1.5">
 											<button
 												type="button"
 												class="text-xs font-mono text-slate-400 dark:text-slate-500 hover:text-violet-600 dark:hover:text-violet-400 bg-transparent border-none cursor-pointer p-0 shrink-0 transition-colors"
 												onclick={(e) => copyTagHash(tag.hash, e)}
 												title="Copy tag hash"
 											>{tag.hash.slice(0, 7)}</button>
+											{#if tagRelativeDate}<span class="text-xs text-slate-400 dark:text-slate-500 shrink-0 whitespace-nowrap">{tagRelativeDate}</span>{/if}
 											{#if tag.message}
-												<span class="text-xs text-slate-400 dark:text-slate-500 truncate">{tag.message}</span>
+												<span class="flex-1 min-w-0 text-xs text-slate-400 dark:text-slate-500 truncate">{tag.message}</span>
 											{/if}
 										</div>
 									</div>
-									<div class="flex items-center gap-0.5 shrink-0">
+									<div class="flex items-center gap-1 shrink-0">
 										<button
 											type="button"
-											class="flex items-center justify-center w-7 h-7 rounded-md text-slate-400 hover:bg-blue-500/10 hover:text-blue-500 transition-colors bg-transparent border-none cursor-pointer"
+											class="flex items-center justify-center w-6 h-6 rounded-md text-slate-400 hover:bg-blue-500/10 hover:text-blue-500 transition-colors bg-transparent border-none cursor-pointer"
 											onclick={() => handlePushTag(tag.name, nested.path)}
 											title="Push tag to remote"
 										>
@@ -4443,7 +4440,7 @@ ${bodies}`;
 										</button>
 										<button
 											type="button"
-											class="flex items-center justify-center w-7 h-7 rounded-md text-slate-400 hover:bg-red-500/10 hover:text-red-500 transition-colors bg-transparent border-none cursor-pointer"
+											class="flex items-center justify-center w-6 h-6 rounded-md text-slate-400 hover:bg-red-500/10 hover:text-red-500 transition-colors bg-transparent border-none cursor-pointer"
 											onclick={() => handleDeleteTag(tag.name, nested.path)}
 											title="Delete tag"
 										>
@@ -4584,10 +4581,10 @@ ${bodies}`;
 														<div class="flex-1 min-w-0 flex flex-col justify-center overflow-hidden">
 															<div class="flex min-w-0 items-center gap-2">
 																<span class="flex-1 min-w-0 text-sm text-slate-700 dark:text-slate-300 leading-tight truncate" title={commit.message}>{commit.message}</span>
-																{#if rel}<span class="text-3xs text-slate-400 shrink-0">{rel}</span>{/if}
 															</div>
 															<div class="flex min-w-0 items-center gap-1.5 mt-0.5">
 																<button type="button" class="font-mono text-xs text-violet-600 dark:text-violet-400 hover:text-violet-800 dark:hover:text-violet-300 bg-transparent border-none cursor-pointer p-0 shrink-0 transition-colors" onclick={(e) => copyCommitHash(commit.hash, e)} title="Copy commit hash">{commit.hashShort}</button>
+																{#if rel}<span class="text-3xs text-slate-400 shrink-0 whitespace-nowrap">{rel}</span>{/if}
 															</div>
 														</div>
 													</div>
@@ -4887,20 +4884,16 @@ ${bodies}`;
 									{@const isExpanded = expandedBranches.has(branch.name)}
 									{@const commitState = branchCommitState[branch.name]}
 									{@const branchRelativeDate = formatRelativeTime(branch.lastCommitDate)}
-									{@const curPush = !pushedBranchNames.has(branch.name) || branch.ahead > 0}
-									{@const curPull = branch.behind > 0}
-									{@const curActionCount = (curPush ? 1 : 0) + (curPull ? 1 : 0) + 1}
-									{@const curPadding = curActionCount === 1 ? 'group-hover:pr-9' : curActionCount === 2 ? 'group-hover:pr-16' : 'group-hover:pr-24'}
 									<div>
 										<div
-											class="group relative flex items-center gap-1.5 pl-1.5 pr-2.5 py-1.5 rounded-md transition-colors border cursor-pointer select-none {branch.isCurrent ? 'bg-violet-500/10 border-violet-500/20 text-violet-700 dark:text-violet-300' : 'border-transparent hover:bg-slate-100 dark:hover:bg-slate-800/60 text-slate-700 dark:text-slate-300'}"
+											class="group flex items-center gap-1.5 pl-1.5 pr-2.5 py-1.5 rounded-md transition-colors border cursor-pointer select-none {branch.isCurrent ? 'bg-violet-500/10 border-violet-500/20 text-violet-700 dark:text-violet-300' : 'border-transparent hover:bg-slate-100 dark:hover:bg-slate-800/60 text-slate-700 dark:text-slate-300'}"
 											role="button"
 											tabindex="0"
 											onclick={() => toggleBranchExpanded(branch.name)}
 											onkeydown={(e) => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); toggleBranchExpanded(branch.name); } }}
 										>
 											<Icon name={isExpanded ? 'lucide:chevron-down' : 'lucide:chevron-right'} class="w-3.5 h-3.5 shrink-0 {branch.isCurrent ? 'text-violet-500' : 'text-slate-400'}" />
-											<div class="flex-1 min-w-0 flex flex-col justify-center overflow-hidden pr-2 {!branch.isCurrent ? (pushedBranchNames.has(branch.name) ? 'group-hover:pr-24' : 'group-hover:pr-32') : curPadding} transition-[padding] duration-150">
+											<div class="flex-1 min-w-0 flex flex-col justify-center overflow-hidden">
 												<div class="flex min-w-0 items-center gap-2">
 													<span class="flex-1 min-w-0 text-sm text-slate-900 dark:text-slate-100 leading-tight truncate" title={branch.name}>{branch.name}</span>
 													{#if upstreamName}<span class="text-3xs text-slate-400 shrink-0">{upstreamName}</span>{/if}
@@ -4913,31 +4906,31 @@ ${bodies}`;
 												</div>
 											</div>
 											{#if !branch.isCurrent}
-											<div class="pointer-events-none absolute inset-y-0 right-0 flex items-center gap-1 pl-1 pr-2 bg-white/20 opacity-0 backdrop-blur-md supports-[backdrop-filter]:bg-white/10 transition-opacity group-hover:opacity-100 dark:bg-slate-900/20 dark:supports-[backdrop-filter]:bg-slate-900/10">
-												<button type="button" class="pointer-events-auto flex items-center justify-center w-7 h-7 rounded-md text-slate-400 hover:bg-violet-500/10 hover:text-violet-500 transition-colors bg-transparent border-none cursor-pointer" onclick={(e) => { e.stopPropagation(); switchBranch(branch.name); }} title="Switch to this branch"><Icon name="lucide:arrow-right" class="w-3.5 h-3.5" /></button>
+											<div class="flex items-center gap-1 shrink-0">
+												<button type="button" class="flex items-center justify-center w-6 h-6 rounded-md text-slate-400 hover:bg-violet-500/10 hover:text-violet-500 transition-colors bg-transparent border-none cursor-pointer" onclick={(e) => { e.stopPropagation(); switchBranch(branch.name); }} title="Switch to this branch"><Icon name="lucide:arrow-right" class="w-3.5 h-3.5" /></button>
 												{#if !pushedBranchNames.has(branch.name)}
 													{#if pushingBranch === branch.name}
-														<div class="pointer-events-auto flex items-center justify-center w-7 h-7 rounded-md text-emerald-500"><Icon name="lucide:loader-circle" class="w-3.5 h-3.5 animate-spin" /></div>
+														<div class="flex items-center justify-center w-6 h-6 rounded-md text-emerald-500"><Icon name="lucide:loader-circle" class="w-3.5 h-3.5 animate-spin" /></div>
 													{:else}
-														<button type="button" class="pointer-events-auto flex items-center justify-center w-7 h-7 rounded-md text-slate-400 hover:bg-emerald-500/10 hover:text-emerald-500 transition-colors bg-transparent border-none cursor-pointer" onclick={(e) => { e.stopPropagation(); handlePushBranch(branch.name); }} title="Push branch to remote"><Icon name="lucide:upload" class="w-3.5 h-3.5" /></button>
+														<button type="button" class="flex items-center justify-center w-6 h-6 rounded-md text-slate-400 hover:bg-emerald-500/10 hover:text-emerald-500 transition-colors bg-transparent border-none cursor-pointer" onclick={(e) => { e.stopPropagation(); handlePushBranch(branch.name); }} title="Push branch to remote"><Icon name="lucide:upload" class="w-3.5 h-3.5" /></button>
 													{/if}
 												{/if}
-												<button type="button" class="pointer-events-auto flex items-center justify-center w-7 h-7 rounded-md text-slate-400 hover:bg-blue-500/10 hover:text-blue-500 transition-colors bg-transparent border-none cursor-pointer" onclick={(e) => { e.stopPropagation(); mergeBranch(branch.name); }} title="Merge into current branch"><Icon name="lucide:git-merge" class="w-3.5 h-3.5" /></button>
-												<button type="button" class="pointer-events-auto flex items-center justify-center w-7 h-7 rounded-md text-slate-400 hover:bg-red-500/10 hover:text-red-500 transition-colors bg-transparent border-none cursor-pointer" onclick={(e) => { e.stopPropagation(); deleteBranch(branch.name); }} title="Delete branch"><Icon name="lucide:trash-2" class="w-3.5 h-3.5" /></button>
+												<button type="button" class="flex items-center justify-center w-6 h-6 rounded-md text-slate-400 hover:bg-blue-500/10 hover:text-blue-500 transition-colors bg-transparent border-none cursor-pointer" onclick={(e) => { e.stopPropagation(); mergeBranch(branch.name); }} title="Merge into current branch"><Icon name="lucide:git-merge" class="w-3.5 h-3.5" /></button>
+												<button type="button" class="flex items-center justify-center w-6 h-6 rounded-md text-slate-400 hover:bg-red-500/10 hover:text-red-500 transition-colors bg-transparent border-none cursor-pointer" onclick={(e) => { e.stopPropagation(); deleteBranch(branch.name); }} title="Delete branch"><Icon name="lucide:trash-2" class="w-3.5 h-3.5" /></button>
 										</div>
 										{:else}
-										<div class="pointer-events-none absolute inset-y-0 right-0 flex items-center gap-1 pl-1 pr-2 bg-white/20 opacity-0 backdrop-blur-md supports-[backdrop-filter]:bg-white/10 transition-opacity group-hover:opacity-100 dark:bg-slate-900/20 dark:supports-[backdrop-filter]:bg-slate-900/10">
+										<div class="flex items-center gap-1 shrink-0">
 											{#if !pushedBranchNames.has(branch.name) || branch.ahead > 0}
 												{#if pushingBranch === branch.name}
-													<div class="pointer-events-auto flex items-center justify-center w-7 h-7 rounded-md text-emerald-500"><Icon name="lucide:loader-circle" class="w-3.5 h-3.5 animate-spin" /></div>
+													<div class="flex items-center justify-center w-6 h-6 rounded-md text-emerald-500"><Icon name="lucide:loader-circle" class="w-3.5 h-3.5 animate-spin" /></div>
 												{:else}
-													<button type="button" class="pointer-events-auto flex items-center justify-center w-7 h-7 rounded-md text-slate-400 hover:bg-emerald-500/10 hover:text-emerald-500 transition-colors bg-transparent border-none cursor-pointer" onclick={(e) => { e.stopPropagation(); handlePushBranch(branch.name); }} title="Push{branch.ahead > 0 ? ` (${branch.ahead} ahead)` : ` ${branch.name} to remote`}"><Icon name="lucide:upload" class="w-3.5 h-3.5" /></button>
+													<button type="button" class="flex items-center justify-center w-6 h-6 rounded-md text-slate-400 hover:bg-emerald-500/10 hover:text-emerald-500 transition-colors bg-transparent border-none cursor-pointer" onclick={(e) => { e.stopPropagation(); handlePushBranch(branch.name); }} title="Push{branch.ahead > 0 ? ` (${branch.ahead} ahead)` : ` ${branch.name} to remote`}"><Icon name="lucide:upload" class="w-3.5 h-3.5" /></button>
 												{/if}
 											{/if}
 											{#if branch.behind > 0}
-												<button type="button" class="pointer-events-auto flex items-center justify-center w-7 h-7 rounded-md text-slate-400 hover:bg-blue-500/10 hover:text-blue-500 transition-colors bg-transparent border-none cursor-pointer" onclick={(e) => { e.stopPropagation(); handlePull(); }} title="Pull ({branch.behind} behind)"><Icon name="lucide:download" class="w-3.5 h-3.5" /></button>
+												<button type="button" class="flex items-center justify-center w-6 h-6 rounded-md text-slate-400 hover:bg-blue-500/10 hover:text-blue-500 transition-colors bg-transparent border-none cursor-pointer" onclick={(e) => { e.stopPropagation(); handlePull(); }} title="Pull ({branch.behind} behind)"><Icon name="lucide:download" class="w-3.5 h-3.5" /></button>
 											{/if}
-											<button type="button" class="pointer-events-auto flex items-center justify-center w-7 h-7 rounded-md text-slate-400 hover:bg-orange-500/10 hover:text-orange-500 transition-colors bg-transparent border-none cursor-pointer" onclick={(e) => { e.stopPropagation(); renameBranch(branch.name); }} title="Rename branch"><Icon name="lucide:pen-line" class="w-3.5 h-3.5" /></button>
+											<button type="button" class="flex items-center justify-center w-6 h-6 rounded-md text-slate-400 hover:bg-orange-500/10 hover:text-orange-500 transition-colors bg-transparent border-none cursor-pointer" onclick={(e) => { e.stopPropagation(); renameBranch(branch.name); }} title="Rename branch"><Icon name="lucide:pen-line" class="w-3.5 h-3.5" /></button>
 										</div>
 										{/if}
 										</div>
@@ -4953,38 +4946,37 @@ ${bodies}`;
 												{@const filesState = branchCommitFileState[commit.hash]}
 												{@const commitRelativeDate = formatRelativeTime(commit.date)}
 												{@const showHeadPush = branch.isCurrent && i === 0 && (!pushedBranchNames.has(branch.name) || (branchInfo?.ahead ?? 0) > 0)}
-												{@const headActionCount = !branch.isCurrent ? 2 : (i === 0 ? (showHeadPush || pushingBranch === branch.name ? 3 : 2) : 1)}
 												<div>
 														<div
-															class="group/commit relative flex items-center gap-1.5 w-full px-2 py-1.5 rounded-md hover:bg-slate-100 dark:hover:bg-slate-800/60 transition-colors cursor-pointer"
+															class="group/commit flex items-center gap-1.5 w-full px-2 py-1.5 rounded-md hover:bg-slate-100 dark:hover:bg-slate-800/60 transition-colors cursor-pointer"
 															role="button"
 															tabindex="0"
 															onclick={() => toggleBranchCommitExpanded(commit.hash)}
 															onkeydown={(e) => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); toggleBranchCommitExpanded(commit.hash); } }}
 														>
 															<Icon name={commitExpanded ? 'lucide:chevron-down' : 'lucide:chevron-right'} class="w-3 h-3 shrink-0 text-slate-400" />
-															<div class="flex-1 min-w-0 flex flex-col justify-center overflow-hidden pr-2 {headActionCount === 1 ? 'group-hover/commit:pr-9' : headActionCount === 2 ? 'group-hover/commit:pr-16' : 'group-hover/commit:pr-24'} transition-[padding] duration-150">
+															<div class="flex-1 min-w-0 flex flex-col justify-center overflow-hidden">
 																<div class="flex min-w-0 items-center gap-2">
 																	<span class="flex-1 min-w-0 text-sm text-slate-700 dark:text-slate-300 leading-tight truncate" title={commit.message}>{commit.message}</span>
-																	{#if commitRelativeDate}<span class="text-3xs text-slate-400 shrink-0">{commitRelativeDate}</span>{/if}
 																</div>
 																<div class="flex min-w-0 items-center gap-1.5 mt-0.5">
 																	<button type="button" class="font-mono text-xs text-violet-600 dark:text-violet-400 hover:text-violet-800 dark:hover:text-violet-300 bg-transparent border-none cursor-pointer p-0 shrink-0 transition-colors" onclick={(e) => copyCommitHash(commit.hash, e)} title="Copy commit hash">{commit.hashShort}</button>
+																	{#if commitRelativeDate}<span class="text-3xs text-slate-400 shrink-0 whitespace-nowrap">{commitRelativeDate}</span>{/if}
 																	{#if commit.author}<span class="flex-1 min-w-0 text-xs text-slate-500 truncate">{commit.author}</span>{/if}
 																</div>
 															</div>
-														<div class="absolute right-1.5 top-1/2 -translate-y-1/2 flex items-center gap-0.5 shrink-0 opacity-0 group-hover/commit:opacity-100">
-															<button type="button" class="flex items-center justify-center w-7 h-7 rounded-md text-slate-400 hover:text-violet-500 hover:bg-violet-500/10 transition-colors bg-transparent border-none cursor-pointer" onclick={(e) => { e.stopPropagation(); handleViewCommitDiffs(commit); }} title="View all file diffs in this commit"><Icon name="lucide:file-diff" class="w-4 h-4" /></button>
+														<div class="flex items-center gap-1 shrink-0">
+															<button type="button" class="flex items-center justify-center w-6 h-6 rounded-md text-slate-400 hover:text-violet-500 hover:bg-violet-500/10 transition-colors bg-transparent border-none cursor-pointer" onclick={(e) => { e.stopPropagation(); handleViewCommitDiffs(commit); }} title="View all file diffs in this commit"><Icon name="lucide:file-diff" class="w-3.5 h-3.5" /></button>
 															{#if !branch.isCurrent}
-																<button type="button" class="flex items-center justify-center w-7 h-7 rounded-md text-slate-400 hover:text-emerald-500 hover:bg-emerald-500/10 transition-colors bg-transparent border-none cursor-pointer" onclick={(e) => { e.stopPropagation(); handleCherryPick(commit.hash); }} title="Cherry-pick this commit onto {branchInfo?.current}"><Icon name="lucide:git-fork" class="w-4 h-4" /></button>
+																<button type="button" class="flex items-center justify-center w-6 h-6 rounded-md text-slate-400 hover:text-emerald-500 hover:bg-emerald-500/10 transition-colors bg-transparent border-none cursor-pointer" onclick={(e) => { e.stopPropagation(); handleCherryPick(commit.hash); }} title="Cherry-pick this commit onto {branchInfo?.current}"><Icon name="lucide:git-fork" class="w-3.5 h-3.5" /></button>
 															{:else if i === 0}
 																{#if pushingBranch === branch.name}
-																	<div class="flex items-center justify-center w-7 h-7 text-slate-400"><Icon name="lucide:loader-circle" class="w-4 h-4 animate-spin" /></div>
+																	<div class="flex items-center justify-center w-6 h-6 text-slate-400"><Icon name="lucide:loader-circle" class="w-3.5 h-3.5 animate-spin" /></div>
 																{:else if showHeadPush}
 																	{@const isDiverged = pushedBranchNames.has(branch.name) && (branchInfo?.ahead ?? 0) > 0 && (branchInfo?.behind ?? 0) > 0}
-																	<button type="button" class="flex items-center justify-center w-7 h-7 rounded-md text-slate-400 hover:bg-emerald-500/10 hover:text-emerald-500 transition-colors bg-transparent border-none cursor-pointer" onclick={(e) => { e.stopPropagation(); handlePushFromBranchList(branch); }} title={isDiverged ? `Force push ${branch.name} to ${selectedRemote} (diverged: ${branchInfo?.ahead} ahead, ${branchInfo?.behind} behind)` : `Push ${branch.name} to remote`}><Icon name="lucide:upload" class="w-4 h-4 {isDiverged ? 'text-amber-500' : ''}" /></button>
+																	<button type="button" class="flex items-center justify-center w-6 h-6 rounded-md text-slate-400 hover:bg-emerald-500/10 hover:text-emerald-500 transition-colors bg-transparent border-none cursor-pointer" onclick={(e) => { e.stopPropagation(); handlePushFromBranchList(branch); }} title={isDiverged ? `Force push ${branch.name} to ${selectedRemote} (diverged: ${branchInfo?.ahead} ahead, ${branchInfo?.behind} behind)` : `Push ${branch.name} to remote`}><Icon name="lucide:upload" class="w-3.5 h-3.5 {isDiverged ? 'text-amber-500' : ''}" /></button>
 																{/if}
-																<button type="button" class="flex items-center justify-center w-7 h-7 rounded-md text-slate-400 hover:text-amber-500 hover:bg-amber-500/10 transition-colors bg-transparent border-none cursor-pointer" onclick={(e) => { e.stopPropagation(); handleUndoHeadCommit(commit, branch); }} title="Undo this commit (keep changes staged){pushedBranchNames.has(branch.name) && branch.ahead === 0 ? ' · force push needed after' : ''}"><Icon name="lucide:undo-2" class="w-4 h-4" /></button>
+																<button type="button" class="flex items-center justify-center w-6 h-6 rounded-md text-slate-400 hover:text-amber-500 hover:bg-amber-500/10 transition-colors bg-transparent border-none cursor-pointer" onclick={(e) => { e.stopPropagation(); handleUndoHeadCommit(commit, branch); }} title="Undo this commit (keep changes staged){pushedBranchNames.has(branch.name) && branch.ahead === 0 ? ' · force push needed after' : ''}"><Icon name="lucide:undo-2" class="w-3.5 h-3.5" /></button>
 															{/if}
 														</div>
 															</div>
@@ -5060,9 +5052,9 @@ ${bodies}`;
 											</div>
 										</div>
 									{:else}
-										<div class="group relative flex items-center gap-1.5 pl-1.5 pr-2.5 py-1.5 rounded-md border transition-colors select-none {isActiveRemote ? 'bg-violet-500/10 border-violet-500/20' : 'border-transparent hover:bg-slate-100 dark:hover:bg-slate-800/60'}">
+										<div class="group flex items-center gap-1.5 pl-1.5 pr-2.5 py-1.5 rounded-md border transition-colors select-none {isActiveRemote ? 'bg-violet-500/10 border-violet-500/20' : 'border-transparent hover:bg-slate-100 dark:hover:bg-slate-800/60'}">
 											<Icon name="lucide:server" class="w-4 h-4 shrink-0 text-slate-400" />
-											<div class="flex-1 min-w-0 flex flex-col justify-center overflow-hidden pr-2 {isActiveRemote ? 'group-hover:pr-24' : 'group-hover:pr-32'} transition-[padding] duration-150">
+											<div class="flex-1 min-w-0 flex flex-col justify-center overflow-hidden">
 												<div class="flex min-w-0 items-center gap-2">
 													<span class="min-w-0 text-sm font-medium text-slate-900 dark:text-slate-100 leading-tight truncate">{remote.name}</span>
 													{#if isActiveRemote}<span class="shrink-0 text-3xs font-medium px-1.5 py-0.5 rounded bg-violet-500/15 text-violet-600 dark:text-violet-400">Active</span>{/if}
@@ -5070,15 +5062,15 @@ ${bodies}`;
 												{#if remote.fetchUrl || remote.pushUrl}<span class="text-xs text-slate-500 leading-tight truncate" title={remote.fetchUrl || remote.pushUrl}>{remote.fetchUrl || remote.pushUrl}</span>{/if}
 											</div>
 											{#if fetchingRemote === remote.name}
-												<div class="flex items-center justify-center w-7 h-7 text-slate-500 shrink-0"><Icon name="lucide:loader-circle" class="w-3.5 h-3.5 animate-spin" /></div>
+												<div class="flex items-center justify-center w-6 h-6 text-slate-500 shrink-0"><Icon name="lucide:loader-circle" class="w-3.5 h-3.5 animate-spin" /></div>
 											{:else}
-												<div class="pointer-events-none absolute inset-y-0 right-0 flex items-center gap-1 pl-1 pr-2 bg-white/20 opacity-0 backdrop-blur-md supports-[backdrop-filter]:bg-white/10 transition-opacity group-hover:opacity-100 dark:bg-slate-900/20 dark:supports-[backdrop-filter]:bg-slate-900/10">
+												<div class="flex items-center gap-1 shrink-0">
 													{#if !isActiveRemote}
-														<button type="button" class="pointer-events-auto flex items-center justify-center w-7 h-7 rounded-md text-slate-400 hover:bg-violet-500/10 hover:text-violet-500 transition-colors bg-transparent border-none cursor-pointer" onclick={(e) => { e.stopPropagation(); setActiveRemote(remote.name); }} title="Set as active remote"><Icon name="lucide:star" class="w-3.5 h-3.5" /></button>
+														<button type="button" class="flex items-center justify-center w-6 h-6 rounded-md text-slate-400 hover:bg-violet-500/10 hover:text-violet-500 transition-colors bg-transparent border-none cursor-pointer" onclick={(e) => { e.stopPropagation(); setActiveRemote(remote.name); }} title="Set as active remote"><Icon name="lucide:star" class="w-3.5 h-3.5" /></button>
 													{/if}
-													<button type="button" class="pointer-events-auto flex items-center justify-center w-7 h-7 rounded-md text-slate-400 hover:bg-violet-500/10 hover:text-violet-500 transition-colors bg-transparent border-none cursor-pointer" onclick={(e) => { e.stopPropagation(); editingRemote = remote.name; editRemoteName = remote.name; editRemoteUrl = remote.fetchUrl || remote.pushUrl || ''; }} title="Edit remote"><Icon name="lucide:pencil" class="w-3.5 h-3.5" /></button>
-													<button type="button" class="pointer-events-auto flex items-center justify-center w-7 h-7 rounded-md text-slate-400 hover:bg-blue-500/10 hover:text-blue-500 transition-colors bg-transparent border-none cursor-pointer" onclick={(e) => { e.stopPropagation(); handleFetchRemote(remote.name); }} title="Fetch"><Icon name="lucide:refresh-cw" class="w-3.5 h-3.5" /></button>
-													<button type="button" class="pointer-events-auto flex items-center justify-center w-7 h-7 rounded-md text-slate-400 hover:bg-red-500/10 hover:text-red-500 transition-colors bg-transparent border-none cursor-pointer" onclick={(e) => { e.stopPropagation(); handleRemoveRemote(remote.name); }} title="Disconnect"><Icon name="lucide:unlink" class="w-3.5 h-3.5" /></button>
+													<button type="button" class="flex items-center justify-center w-6 h-6 rounded-md text-slate-400 hover:bg-violet-500/10 hover:text-violet-500 transition-colors bg-transparent border-none cursor-pointer" onclick={(e) => { e.stopPropagation(); editingRemote = remote.name; editRemoteName = remote.name; editRemoteUrl = remote.fetchUrl || remote.pushUrl || ''; }} title="Edit remote"><Icon name="lucide:pencil" class="w-3.5 h-3.5" /></button>
+													<button type="button" class="flex items-center justify-center w-6 h-6 rounded-md text-slate-400 hover:bg-blue-500/10 hover:text-blue-500 transition-colors bg-transparent border-none cursor-pointer" onclick={(e) => { e.stopPropagation(); handleFetchRemote(remote.name); }} title="Fetch"><Icon name="lucide:refresh-cw" class="w-3.5 h-3.5" /></button>
+													<button type="button" class="flex items-center justify-center w-6 h-6 rounded-md text-slate-400 hover:bg-red-500/10 hover:text-red-500 transition-colors bg-transparent border-none cursor-pointer" onclick={(e) => { e.stopPropagation(); handleRemoveRemote(remote.name); }} title="Disconnect"><Icon name="lucide:unlink" class="w-3.5 h-3.5" /></button>
 												</div>
 											{/if}
 										</div>
@@ -5089,18 +5081,18 @@ ${bodies}`;
 												{@const branchRelativeDate = formatRelativeTime(branch.lastCommitDate)}
 												{@const shortName = branch.name.substring(remote.name.length + 1)}
 												{@const isDeleting = deletingRemoteBranch === `${remote.name}/${shortName}`}
-												<div class="group/rb relative flex items-center gap-1.5 px-2 py-1.5 rounded-md hover:bg-slate-100 dark:hover:bg-slate-800/60 transition-colors select-none">
-													<div class="flex-1 min-w-0 flex flex-col justify-center overflow-hidden pr-2 group-hover/rb:pr-20 transition-[padding] duration-150">
+												<div class="group/rb flex items-center gap-1.5 px-2 py-1.5 rounded-md hover:bg-slate-100 dark:hover:bg-slate-800/60 transition-colors select-none">
+													<div class="flex-1 min-w-0 flex flex-col justify-center overflow-hidden">
 														<span class="text-sm text-slate-700 dark:text-slate-300 leading-tight truncate" title={branch.name}>{shortName}</span>
 														{#if branchRelativeDate}<span class="text-xs text-slate-500 leading-tight">{branchRelativeDate}</span>{/if}
 													</div>
 													{#if isDeleting}
-														<div class="flex items-center justify-center w-7 h-7 text-slate-400 shrink-0"><Icon name="lucide:loader-circle" class="w-3.5 h-3.5 animate-spin" /></div>
+														<div class="flex items-center justify-center w-6 h-6 text-slate-400 shrink-0"><Icon name="lucide:loader-circle" class="w-3.5 h-3.5 animate-spin" /></div>
 													{:else}
-														<div class="pointer-events-none absolute inset-y-0 right-0 flex items-center gap-1 pl-1 pr-2 bg-white/20 opacity-0 backdrop-blur-md supports-[backdrop-filter]:bg-white/10 transition-opacity group-hover/rb:opacity-100 dark:bg-slate-900/20 dark:supports-[backdrop-filter]:bg-slate-900/10">
-															<button type="button" class="pointer-events-auto flex items-center justify-center w-7 h-7 rounded-md text-slate-400 hover:bg-violet-500/10 hover:text-violet-500 transition-colors bg-transparent border-none cursor-pointer" onclick={(e) => { e.stopPropagation(); checkoutRemoteBranch(branch.name); }} title="Checkout locally"><Icon name="lucide:arrow-right" class="w-3.5 h-3.5" /></button>
-															<button type="button" class="pointer-events-auto flex items-center justify-center w-7 h-7 rounded-md text-slate-400 hover:bg-blue-500/10 hover:text-blue-500 transition-colors bg-transparent border-none cursor-pointer" onclick={(e) => { e.stopPropagation(); copyToClipboard(branch.name); }} title="Copy branch name"><Icon name="lucide:copy" class="w-3.5 h-3.5" /></button>
-															<button type="button" class="pointer-events-auto flex items-center justify-center w-7 h-7 rounded-md text-slate-400 hover:bg-red-500/10 hover:text-red-500 transition-colors bg-transparent border-none cursor-pointer" onclick={(e) => { e.stopPropagation(); handleDeleteRemoteBranch(remote.name, shortName); }} title="Delete branch"><Icon name="lucide:trash-2" class="w-3.5 h-3.5" /></button>
+														<div class="flex items-center gap-1 shrink-0">
+															<button type="button" class="flex items-center justify-center w-6 h-6 rounded-md text-slate-400 hover:bg-violet-500/10 hover:text-violet-500 transition-colors bg-transparent border-none cursor-pointer" onclick={(e) => { e.stopPropagation(); checkoutRemoteBranch(branch.name); }} title="Checkout locally"><Icon name="lucide:arrow-right" class="w-3.5 h-3.5" /></button>
+															<button type="button" class="flex items-center justify-center w-6 h-6 rounded-md text-slate-400 hover:bg-blue-500/10 hover:text-blue-500 transition-colors bg-transparent border-none cursor-pointer" onclick={(e) => { e.stopPropagation(); copyToClipboard(branch.name); }} title="Copy branch name"><Icon name="lucide:copy" class="w-3.5 h-3.5" /></button>
+															<button type="button" class="flex items-center justify-center w-6 h-6 rounded-md text-slate-400 hover:bg-red-500/10 hover:text-red-500 transition-colors bg-transparent border-none cursor-pointer" onclick={(e) => { e.stopPropagation(); handleDeleteRemoteBranch(remote.name, shortName); }} title="Delete branch"><Icon name="lucide:trash-2" class="w-3.5 h-3.5" /></button>
 														</div>
 													{/if}
 												</div>
@@ -5209,25 +5201,27 @@ ${bodies}`;
 						{:else}
 							<div class="space-y-1 pb-2">
 								{#each mainTags as tag (tag.name)}
+									{@const tagRelativeDate = formatRelativeTime(tag.date)}
 									<div class="group flex items-center gap-2 px-2.5 py-2 rounded-md hover:bg-slate-100 dark:hover:bg-slate-800/60 transition-colors">
 										<div class="flex-1 min-w-0">
 											<p class="text-sm font-medium text-slate-900 dark:text-slate-100 truncate">{tag.name}</p>
-											<div class="flex items-center gap-1.5">
+											<div class="flex min-w-0 items-center gap-1.5">
 												<button
 													type="button"
 													class="text-xs font-mono text-slate-400 dark:text-slate-500 hover:text-violet-600 dark:hover:text-violet-400 bg-transparent border-none cursor-pointer p-0 shrink-0 transition-colors"
 													onclick={(e) => copyTagHash(tag.hash, e)}
 													title="Copy tag hash"
 												>{tag.hash.slice(0, 7)}</button>
+												{#if tagRelativeDate}<span class="text-xs text-slate-400 dark:text-slate-500 shrink-0 whitespace-nowrap">{tagRelativeDate}</span>{/if}
 												{#if tag.message}
-													<span class="text-xs text-slate-400 dark:text-slate-500 truncate">{tag.message}</span>
+													<span class="flex-1 min-w-0 text-xs text-slate-400 dark:text-slate-500 truncate">{tag.message}</span>
 												{/if}
 											</div>
 										</div>
-										<div class="flex items-center gap-0.5 shrink-0">
+										<div class="flex items-center gap-1 shrink-0">
 											<button
 												type="button"
-												class="flex items-center justify-center w-7 h-7 rounded-md text-slate-400 hover:bg-blue-500/10 hover:text-blue-500 transition-colors bg-transparent border-none cursor-pointer"
+												class="flex items-center justify-center w-6 h-6 rounded-md text-slate-400 hover:bg-blue-500/10 hover:text-blue-500 transition-colors bg-transparent border-none cursor-pointer"
 												onclick={() => handlePushTag(tag.name)}
 												title="Push tag to remote"
 											>
@@ -5235,7 +5229,7 @@ ${bodies}`;
 											</button>
 											<button
 												type="button"
-												class="flex items-center justify-center w-7 h-7 rounded-md text-slate-400 hover:bg-red-500/10 hover:text-red-500 transition-colors bg-transparent border-none cursor-pointer"
+												class="flex items-center justify-center w-6 h-6 rounded-md text-slate-400 hover:bg-red-500/10 hover:text-red-500 transition-colors bg-transparent border-none cursor-pointer"
 												onclick={() => handleDeleteTag(tag.name)}
 												title="Delete tag"
 											>
@@ -5294,14 +5288,14 @@ ${bodies}`;
 									{@const sFiles = stashFileState[key]}
 									<div>
 										<div
-											class="group relative flex items-center gap-1.5 pl-1.5 pr-2.5 py-1.5 rounded-md hover:bg-slate-100 dark:hover:bg-slate-800/60 transition-colors cursor-pointer"
+											class="group flex items-center gap-1.5 pl-1.5 pr-2.5 py-1.5 rounded-md hover:bg-slate-100 dark:hover:bg-slate-800/60 transition-colors cursor-pointer"
 											role="button"
 											tabindex="0"
 											onclick={() => toggleStashExpanded(entry)}
 											onkeydown={(e) => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); toggleStashExpanded(entry); } }}
 										>
 											<Icon name={stashExpanded ? 'lucide:chevron-down' : 'lucide:chevron-right'} class="w-3.5 h-3.5 shrink-0 text-slate-400" />
-											<div class="flex-1 min-w-0 pr-2 group-hover:pr-16 flex flex-col justify-center overflow-hidden transition-[padding] duration-150">
+											<div class="flex-1 min-w-0 flex flex-col justify-center overflow-hidden">
 												<p class="text-sm font-medium text-slate-900 dark:text-slate-100 truncate">{entry.message}</p>
 												<p class="text-xs text-slate-400 dark:text-slate-500">
 													<span>stash@&#123;{entry.index}&#125;</span>
@@ -5310,9 +5304,9 @@ ${bodies}`;
 													{/if}
 												</p>
 											</div>
-											<div class="pointer-events-none absolute inset-y-0 right-0 flex items-center gap-1 pl-1 pr-2 bg-white/20 opacity-0 backdrop-blur-md supports-[backdrop-filter]:bg-white/10 transition-opacity group-hover:opacity-100 dark:bg-slate-900/20 dark:supports-[backdrop-filter]:bg-slate-900/10">
-												<button type="button" class="pointer-events-auto flex items-center justify-center w-7 h-7 rounded-md text-slate-400 hover:bg-emerald-500/10 hover:text-emerald-500 transition-colors bg-transparent border-none cursor-pointer" onclick={(e) => { e.stopPropagation(); handleStashPop(entry); }} title="Pop"><Icon name="lucide:archive-restore" class="w-3.5 h-3.5" /></button>
-												<button type="button" class="pointer-events-auto flex items-center justify-center w-7 h-7 rounded-md text-slate-400 hover:bg-red-500/10 hover:text-red-500 transition-colors bg-transparent border-none cursor-pointer" onclick={(e) => { e.stopPropagation(); handleStashDrop(entry); }} title="Drop"><Icon name="lucide:trash-2" class="w-3.5 h-3.5" /></button>
+											<div class="flex items-center gap-1 shrink-0">
+												<button type="button" class="flex items-center justify-center w-6 h-6 rounded-md text-slate-400 hover:bg-emerald-500/10 hover:text-emerald-500 transition-colors bg-transparent border-none cursor-pointer" onclick={(e) => { e.stopPropagation(); handleStashPop(entry); }} title="Pop"><Icon name="lucide:archive-restore" class="w-3.5 h-3.5" /></button>
+												<button type="button" class="flex items-center justify-center w-6 h-6 rounded-md text-slate-400 hover:bg-red-500/10 hover:text-red-500 transition-colors bg-transparent border-none cursor-pointer" onclick={(e) => { e.stopPropagation(); handleStashDrop(entry); }} title="Drop"><Icon name="lucide:trash-2" class="w-3.5 h-3.5" /></button>
 											</div>
 										</div>
 										{#if stashExpanded}
@@ -5408,10 +5402,10 @@ ${bodies}`;
 															<div class="flex-1 min-w-0 flex flex-col justify-center overflow-hidden">
 																<div class="flex min-w-0 items-center gap-2">
 																	<span class="flex-1 min-w-0 text-sm text-slate-700 dark:text-slate-300 leading-tight truncate" title={commit.message}>{commit.message}</span>
-																	{#if rel}<span class="text-3xs text-slate-400 shrink-0">{rel}</span>{/if}
 																</div>
 																<div class="flex min-w-0 items-center gap-1.5 mt-0.5">
 																	<button type="button" class="font-mono text-xs text-violet-600 dark:text-violet-400 hover:text-violet-800 dark:hover:text-violet-300 bg-transparent border-none cursor-pointer p-0 shrink-0 transition-colors" onclick={(e) => copyCommitHash(commit.hash, e)} title="Copy commit hash">{commit.hashShort}</button>
+																	{#if rel}<span class="text-3xs text-slate-400 shrink-0 whitespace-nowrap">{rel}</span>{/if}
 																</div>
 															</div>
 														</div>

@@ -283,7 +283,7 @@
 				{@const graph = graphRows[idx]}
 				{@const graphWidth = (graph ? graph.maxCol + 1 : 1) * LANE_WIDTH + GRAPH_PAD * 2}
 				<div
-					class="group relative flex items-stretch w-full text-left cursor-pointer transition-colors
+					class="group flex items-stretch w-full text-left cursor-pointer transition-colors
 						{effectiveActiveHash === commit.hash
 							? 'bg-violet-500/10 dark:bg-violet-500/15 text-slate-900 dark:text-slate-100'
 							: 'hover:bg-slate-50 dark:hover:bg-slate-800/40'}"
@@ -370,16 +370,13 @@
 					{/if}
 
 					<!-- Commit info (3-line layout) -->
-					<div class="flex-1 min-w-0 px-1.5 py-0.5 pr-2 group-hover:pr-10 group-focus-within:pr-10 flex flex-col justify-center overflow-hidden transition-[padding] duration-150">
-						<!-- Line 1: Message + Date -->
-						<div class="flex min-w-0 items-center gap-2">
-							<p class="flex-1 min-w-0 text-sm text-slate-900 dark:text-slate-100 leading-tight truncate" title={commit.message}>
-								{commit.message}
-							</p>
-							<span class="text-3xs text-slate-400 shrink-0 transition-opacity group-hover:opacity-0 group-focus-within:opacity-0">{formatDate(commit.date)}</span>
-						</div>
+					<div class="flex-1 min-w-0 px-1.5 py-0.5 flex flex-col justify-center overflow-hidden">
+						<!-- Line 1: Message -->
+						<p class="text-sm text-slate-900 dark:text-slate-100 leading-tight truncate" title={commit.message}>
+							{commit.message}
+						</p>
 
-						<!-- Line 2: Hash + Author -->
+						<!-- Line 2: Hash + Date + Author -->
 						<div class="flex min-w-0 items-center gap-1.5 mt-px">
 							<button
 								type="button"
@@ -389,6 +386,7 @@
 							>
 								{commit.hashShort}
 							</button>
+							<span class="text-3xs text-slate-400 shrink-0 whitespace-nowrap">{formatDate(commit.date)}</span>
 							<span class="flex-1 min-w-0 text-xs text-slate-500 truncate">{commit.author}</span>
 						</div>
 
@@ -404,10 +402,10 @@
 							</div>
 						{/if}
 					</div>
-					<div class="pointer-events-none absolute inset-y-0 right-0 flex items-center gap-1 pl-1 pr-2 bg-white/20 opacity-0 backdrop-blur-md supports-[backdrop-filter]:bg-white/10 transition-opacity group-hover:opacity-100 group-focus-within:opacity-100 dark:bg-slate-900/20 dark:supports-[backdrop-filter]:bg-slate-900/10">
+					<div class="flex items-center gap-1 pr-2 shrink-0">
 						<button
 							type="button"
-							class="pointer-events-auto flex items-center justify-center w-6 h-6 rounded-md text-slate-500 transition-all hover:bg-violet-500/10 hover:text-violet-600 dark:text-slate-400 dark:hover:text-violet-400"
+							class="flex items-center justify-center w-6 h-6 rounded-md text-slate-500 transition-all hover:bg-violet-500/10 hover:text-violet-600 dark:text-slate-400 dark:hover:text-violet-400"
 							onclick={(e) => handleCheckoutCommit(commit.hash, e)}
 							title={`Checkout commit ${commit.hashShort}`}
 							aria-label={`Checkout commit ${commit.hashShort}`}
@@ -416,7 +414,7 @@
 						</button>
 						<button
 							type="button"
-							class="pointer-events-auto flex items-center justify-center w-6 h-6 rounded-md text-slate-500 transition-all hover:bg-violet-500/10 hover:text-violet-600 disabled:opacity-40 disabled:cursor-not-allowed dark:text-slate-400 dark:hover:text-violet-400"
+							class="flex items-center justify-center w-6 h-6 rounded-md text-slate-500 transition-all hover:bg-violet-500/10 hover:text-violet-600 disabled:opacity-40 disabled:cursor-not-allowed dark:text-slate-400 dark:hover:text-violet-400"
 							onclick={(e) => openCommitOnRemote(commit.hash, e)}
 							disabled={!getRemoteCommitUrl?.(commit.hash)}
 							title={`Open commit ${commit.hashShort} on remote`}
