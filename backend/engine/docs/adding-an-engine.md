@@ -250,6 +250,14 @@ Other auto wiring:
       `shared/constants/tool-icons.ts`, which both `ENGINES` and the Stack
       cards reference. Add the SVG **there only** — never inline it a second
       time.
+- [ ] **Declare what the adapter really forwards** in
+      `backend/chat/engine-handoff.ts::attachmentSupport` (`ADAPTER_IMAGE` /
+      `ADAPTER_DOCUMENT`). These are `Record<EngineType, boolean>`, so a new
+      engine won't type-check until both are filled in — deliberately. Answer
+      from the adapter's own prompt-building code, **not** from
+      `models.ts`: the catalog says what the *model* accepts, this table says
+      what the *adapter* actually sends, and they routinely disagree. Getting
+      it wrong makes a cross-engine switch silently lose the user's images.
 - [ ] Verify: select engine → model list appears → send message → stream
       runs.
 
@@ -279,6 +287,13 @@ Then the minimum UI scenarios that must pass:
       message, and Artifacts → generate from a purpose. These are the two
       paths that break on a stale `providerSlug` and on JSON with trailing
       prose / raw newlines — Claude Code passing proves nothing (§10.16).
+- [ ] **Cross-engine handoff, both directions.** Run a few turns on another
+      engine (include a tool call and an image), switch to NewEngine, then ask
+      something that can only be answered from the earlier turns — it must
+      answer without asking the user to repeat themselves. Then switch back
+      and confirm the same. The `chat` debug log prints one
+      `Engine handoff <from> → <to>` line per switch with the turn count and
+      what was cleared or omitted (§10.23).
 - [ ] Restart Clopen → state survives (account, provider, last-used model
       in chat).
 

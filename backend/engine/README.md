@@ -70,7 +70,7 @@ map, then jump to the area you need.
 6. [Stack](./docs/stack.md) — registering a host tool or on-demand engine SDK in `install-recipes.ts` + the install runner.
 7. [Artifacts & Access](./docs/artifacts.md) — the extension layer (Skills, Commands, Subagents, Instructions, Permissions, Profiles, MCP), the capability matrix, and the `artifact-sync.ts` seam adapters call at stream start.
 8. [Adding a new engine](./docs/adding-an-engine.md) — the end-to-end, stage-by-stage checklist.
-9. [Lessons learned](./docs/lessons-learned.md) — §10 pitfalls (tool name/input canonicalisation, fork session, MCP reuse, auth-blob swap, sub-agent routing, OpenCode v1/v2, structured output, …).
+9. [Lessons learned](./docs/lessons-learned.md) — §10 pitfalls (tool name/input canonicalisation, fork session, MCP reuse, auth-blob swap, sub-agent routing, OpenCode v1/v2, structured output, cross-engine handoff, …).
 10. [Quick reference](./docs/quick-reference.md) — "I need X → look in file Y" table.
 
 ---
@@ -132,6 +132,9 @@ map, then jump to the area you need.
 │  backend/database/queries/        backend/chat/stream-manager.ts      │
 │    engine-queries.ts                routes EngineOutput → DB + WS     │
 │      engine_providers + engine_accounts                               │
+│                                   backend/chat/engine-handoff.ts      │
+│                                     replays the branch when the       │
+│                                     session changes engine            │
 └───────────────────────────────────────────────────────────────────────┘
 ```
 
@@ -178,6 +181,18 @@ invariants.
 >      login/switch. Do **NOT** propose **per-account** home dirs
 >      (`CODEX_HOME=/foo/account-1/`); that splits session-state, breaks
 >      fork-by-copy, and loses token-refresh persistence. See §10.13.
+> 3. **A session may change engine mid-conversation.** Never assume one
+>    session ↔ one engine. `chat_sessions.engine` names the *currently
+>    selected* engine, so anything reasoning about "which engine produced
+>    this?" must read `engine.type` **per message** — resume-target
+>    derivation and checkpoint restore both do. An SDK session id is only
+>    meaningful to the engine that minted it; handing one to another engine
+>    fails differently on every adapter (silent fresh start on Codex,
+>    Copilot, Pi and Cline; an unknown-session error on OpenCode and Claude).
+>    Carrying the conversation across is already solved by
+>    `backend/chat/engine-handoff.ts` — do **NOT** propose a new adapter
+>    method, a portable session format, or per-engine history injection.
+>    See §10.23.
 
 ---
 

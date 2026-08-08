@@ -39,6 +39,10 @@
 | Reasoning-effort levels a model offers      | `EngineModel.capabilities.reasoningControl` built in `<engine>/models.ts` via `toReasoningOptions` (`shared/constants/engines.ts`); §2.4a |
 | Apply the chosen reasoning level to the SDK | `claude/stream.ts` (`thinking` + `effort`), `codex/stream.ts` (`modelReasoningEffort`), `copilot/stream.ts` (`reasoningEffort`), `pi/stream.ts` (`thinkingLevel` + `clampThinkingLevel`), `cursor/stream.ts::buildCursorModelSelection` (`params[]`); §10.22 |
 | Per-session reasoning persistence + collab sync | `chat_sessions.reasoning_effort` (migration `065`), `sessionQueries.updateReasoning`, `chat:reasoning-sync` in `backend/ws/chat/stream.ts` |
+| Switch engine mid-session (carry the conversation) | `backend/chat/engine-handoff.ts::buildEngineHandoff` + `resolveBranchEngine`, wired in `backend/chat/stream-manager.ts` (suppress `resume`, prepend to the engine prompt only); frontend-and-chat §6.2a |
+| Is this SDK session id mine? (engine-aware resume) | `resolveBranchEngine` (backend, authoritative) + the `engine.type` guard in `frontend/services/chat/chat.service.ts`; also `backend/ws/snapshot/restore.ts` when restoring into another engine's region |
+| Which attachments actually survive to an engine | adapter table in `backend/chat/engine-handoff.ts::attachmentSupport` (what the adapter forwards) × `EngineModel.modalities.input` (what the model accepts) — the two disagree |
+| Collab sync of engine/model/account/profile   | `chat:model-sync` / `chat:account-sync` / `chat:profile-sync` in `backend/ws/chat/stream.ts`; local picks must ALSO mirror onto `sessionState.currentSession` (frontend-and-chat §6.2) |
 | Error normalisation                         | `claude/error-handler.ts`, `copilot/error-handler.ts`, `opencode/error-handler.ts`, `qwen/error-handler.ts`, `codex/error-handler.ts` |
 | DB provider/account access                  | `backend/database/queries/engine-queries.ts`              |
 | Host-tool + engine-SDK install recipes      | `backend/engine/install-recipes.ts`                       |

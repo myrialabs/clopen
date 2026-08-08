@@ -1272,3 +1272,74 @@ costs one effect and buys two things: the value sent with the turn always
 matches what actually ran (so `MessageEngine.reasoningEffort` in the Raw
 view is truthful), and a level valid for the previous model can never
 leak into a request for the next one.
+
+---
+
+### 10.23 Switching engine mid-session — replay the branch, and distrust "obvious" boundaries
+
+Continuity is delegated to each engine's native session store, and those
+ids are not portable: a Claude session id, a Codex rollout file, an
+OpenCode server session, Cline's in-memory transcript. So a chat that
+changes engine has nothing for the new engine to resume. Clopen's DB is
+the only engine-agnostic record of the conversation, which makes
+**replaying the branch as prompt content** the only mechanism that works
+for all eight adapters. It lives in `backend/chat/engine-handoff.ts` and
+needs no adapter, `AIEngine` or migration change.
+
+**Gate `resume` on the engine that produced the branch, not on the
+session.** `chat_sessions.engine` names the *currently selected* engine
+(`chat:model-sync` persists it the moment anyone picks one), which in a
+switched session is precisely the wrong answer. Walk back to the most
+recent **non-user** message and read its `engine.type`; user messages
+carry the sender's choice, not the producer's. Feeding a foreign id to an
+adapter degrades inconsistently — Codex, Copilot, Pi and Cline catch it
+and start fresh (silent amnesia), while OpenCode falls back to the raw id
+against a server that never had it, and Claude passes it straight to the
+SDK with no existence check.
+
+**Two boundary assumptions failed here; both looked obvious.**
+
+1. *"Replay from the last `compact_boundary` — that's what the engine
+   itself was holding."* Only the **Claude** adapter ever emits one.
+   OpenCode explicitly drops compaction events (`message-converter.ts`,
+   "Skip: … compaction") and Pi disables compaction outright
+   (`compaction: { enabled: false }`). On 7 of 8 engines the rule
+   silently becomes "replay everything from message one" — the unbounded
+   case it was supposed to prevent.
+2. *"No boundary means it all fit in the source engine's window."* Not
+   so. Context editing is explicitly designed around the client keeping
+   full history while the server edits it, so a client-side transcript
+   that is much larger than the engine's live context is the normal
+   case, not an exotic one.
+
+The window is therefore an **estimated token budget**, which every engine
+has, rather than a marker only one engine emits.
+
+**Copy a measured default instead of inventing a heuristic.** The rule is
+one sentence — replay verbatim; past the trigger, tool results older than
+the last N tool uses become a placeholder and tool *inputs* are always
+kept — and both numbers are the shipped defaults of Anthropic's
+[`clear_tool_uses_20250919`](https://platform.claude.com/docs/en/build-with-claude/context-editing)
+(trigger 100k input tokens, keep 3 tool uses, `clear_tool_inputs: false`).
+Tool results are the right thing to drop first because they are
+re-derivable — the new engine is in the same project directory and can
+read the file again — and because clearing them is *measured* to help:
++29% on agentic benchmarks, 84% token reduction on long tool-heavy runs.
+Resist adding a fallback ladder on top; a ladder is how a rule becomes
+unpredictable.
+
+**Two invariants that are easy to miss:**
+
+- The turn's own user message is already saved and *is* the branch head
+  when the handoff runs. Without `excludeMessageId` the transcript ends
+  with a verbatim copy of the message the engine is about to answer.
+- Attachments need **two** gates: `EngineModel.modalities.input` (what
+  the model accepts) and an adapter table (what the adapter forwards).
+  They disagree — Codex, Cursor, Pi and Cline have no document path at
+  all. Copilot forwarded text only until its `blob` attachment support
+  was wired up, silently dropping every image despite `models.ts`
+  advertising `image: !!supports?.vision`.
+
+Finally: the handoff is prepended to the **engine prompt only**. The
+persisted `UserMessage` stays clean, so the transcript never reaches the
+DB or the timeline, and the user sees nothing but a changed engine.

@@ -37,6 +37,12 @@ import { fetchCopilotModels } from './models';
 // it from the SessionConfig field so we don't drift from the SDK.
 type UserInputResponse = Awaited<ReturnType<NonNullable<SessionConfig['onUserInputRequest']>>>;
 
+// `MessageOptions` is likewise not re-exported from the SDK root, so derive the
+// attachment element type from `session.send`'s options overload.
+type MessageAttachment = NonNullable<Parameters<CopilotSession['send']>[0] extends string
+	? never
+	: NonNullable<Extract<Parameters<CopilotSession['send']>[0], { prompt: string }>['attachments']>>[number];
+
 /**
  * Map a Copilot permission request to the token the permission policy matches on.
  * MCP / custom tools carry a `toolName`; everything else is matched by its
@@ -414,7 +420,11 @@ export class CopilotEngine implements AIEngine {
 			const promptText = artifactsContext
 				? `${artifactsContext}\n\n${extractPromptText(prompt)}`
 				: extractPromptText(prompt);
-			const sendPromise = session.send({ prompt: promptText }).catch(error => {
+			const promptAttachments = extractPromptAttachments(prompt);
+			const sendPromise = session.send({
+				prompt: promptText,
+				...(promptAttachments.length > 0 && { attachments: promptAttachments }),
+			}).catch(error => {
 				debug.error('engine', 'Copilot session.send error:', error);
 				pushEvent({
 					type: 'session.error',
@@ -705,4 +715,30 @@ function extractPromptText(prompt: EngineQueryOptions['prompt']): string {
 		}
 	}
 	return parts.join('\n').trim();
+}
+
+/**
+ * Image / document blocks → Copilot `blob` attachments.
+ *
+ * The SDK takes raw base64 in `data` plus a `mimeType` (see its README, "Image
+ * Support"), which lines up 1:1 with our unified blocks — no temp files needed,
+ * unlike the Codex path. Before this existed the adapter forwarded text only,
+ * so every attachment the user added was silently dropped even though
+ * `models.ts` advertises `image: !!supports?.vision`.
+ */
+function extractPromptAttachments(prompt: EngineQueryOptions['prompt']): MessageAttachment[] {
+	const attachments: MessageAttachment[] = [];
+	for (const block of prompt.content) {
+		if (block.type === 'image') {
+			attachments.push({ type: 'blob', data: block.data, mimeType: block.mediaType });
+		} else if (block.type === 'document') {
+			attachments.push({
+				type: 'blob',
+				data: block.data,
+				mimeType: block.mediaType,
+				...(block.title ? { displayName: block.title } : {}),
+			});
+		}
+	}
+	return attachments;
 }

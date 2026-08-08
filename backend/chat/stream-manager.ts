@@ -40,6 +40,7 @@ import { projectContextService, refreshExpiringExternalOAuth } from '../mcp';
 import { resolveActiveProfileId } from '../profiles';
 import { browserMcpControl } from '../preview';
 import { extractMessageText } from '../snapshot/helpers';
+import { buildEngineHandoff, resolveBranchEngine, withHandoff } from './engine-handoff';
 import { debug } from '$shared/utils/logger';
 import { DEFAULT_MODEL_ID, DEFAULT_MODEL_NAME } from '$shared/constants/engines';
 
@@ -492,14 +493,26 @@ class StreamManager extends EventEmitter {
 			if (!projectPath) throw new Error('Project path is required. Please select a valid project directory.');
 			if (!projectPathExists) throw new Error(`Project path does not exist: ${projectPath}. Please select a valid project directory.`);
 
+			// Which engine produced the trailing part of this branch. When it differs
+			// from the engine the user just picked, the branch's SDK session id
+			// belongs to a foreign store and MUST NOT be used as a resume target —
+			// the conversation is carried over as prompt content instead (see
+			// buildEngineHandoff below). Null means a fresh branch: nothing to hand
+			// over, nothing to resume.
+			const branchEngine = chatSessionId ? resolveBranchEngine(chatSessionId) : null;
+			const engineSwitched = branchEngine !== null && branchEngine !== requestEngine.type;
+
 			// Get resume session ID (branch-aware).
 			// Primary: use parentSessionId carried by the UserMessage — set by the
 			// frontend from the last assistant/reasoning sessionId in the current branch.
 			// Fallback: walk the HEAD chain in the DB (handles messages sent from
 			// older clients or tool-result user messages that lack parentSessionId).
 			let resumeSessionId: string | undefined = undefined;
-			if (chatSessionId) {
-				// Primary source: parent.sessionId on the raw prompt
+			if (chatSessionId && !engineSwitched) {
+				// Primary source: parent.sessionId on the raw prompt.
+				// Note this is client-supplied and engine-blind, which is why the
+				// engineSwitched guard above is authoritative — an older client will
+				// happily send the previous engine's id.
 				const promptParentSessionId = rawPrompt?.parent?.sessionId;
 				if (promptParentSessionId && promptParentSessionId !== chatSessionId) {
 					resumeSessionId = promptParentSessionId;
@@ -586,9 +599,42 @@ class StreamManager extends EventEmitter {
 				return;
 			}
 
-			// Detect orphaned user messages and prepend context (claude-code only)
+			// ── Cross-engine handoff ──
+			// The user switched engine mid-conversation, so the new engine has no
+			// native session to resume. Replay the branch as prompt content. This
+			// is prepended to the ENGINE prompt only — `userMessage` (already saved
+			// above) stays clean, so the transcript never reaches the timeline.
 			let enginePrompt = userMessage;
-			if (requestEngine.type === 'claude-code' && chatSessionId) {
+			if (engineSwitched && chatSessionId) {
+				try {
+					const handoff = buildEngineHandoff(
+						chatSessionId,
+						requestEngine.type,
+						requestEngine.model.id || '',
+						branchEngine,
+						userMessageId
+					);
+					if (handoff) {
+						enginePrompt = withHandoff(userMessage, handoff.blocks);
+						const { turns, clearedToolResults, droppedAttachments, estimatedTokens } = handoff.stats;
+						debug.log(
+							'chat',
+							`Engine handoff ${branchEngine} → ${requestEngine.type}: ${turns} turn(s), ~${estimatedTokens} tokens` +
+							(clearedToolResults ? `, ${clearedToolResults} tool result(s) cleared` : '') +
+							(droppedAttachments ? `, ${droppedAttachments} attachment(s) omitted (unsupported by target)` : '')
+						);
+					}
+				} catch (error) {
+					// A failed handoff must not block the turn — the engine simply
+					// starts without carried context.
+					debug.error('chat', 'Engine handoff failed, continuing without carried context:', error);
+				}
+			}
+
+			// Detect orphaned user messages and prepend context (claude-code only).
+			// Same idea as the handoff above but for the in-engine case: messages the
+			// engine's own session never saw because an earlier turn was cancelled.
+			if (!engineSwitched && requestEngine.type === 'claude-code' && chatSessionId) {
 				try {
 					const head = sessionQueries.getHead(chatSessionId);
 					if (head) {

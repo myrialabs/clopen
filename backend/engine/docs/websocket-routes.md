@@ -276,5 +276,18 @@ Every one of these must be declared in **both** the `.on(...)` block and the
 `.emit(...)` schema block at the bottom of `backend/ws/chat/stream.ts` — an
 event that is only `.on`'d is received but never broadcast.
 
+Two consequences worth internalising:
+
+- **These persist at *selection* time, not on send.** `chat:model-sync` writes
+  `updateEngineModel` the moment anyone picks an engine, which is why
+  `chat_sessions.engine` is a trustworthy "currently selected engine" — and
+  equally why it is the *wrong* source for "which engine produced this
+  message" (read `engine.type` per message instead; see §10.23).
+- **The sender ignores its own echo**, so a local pick never comes back through
+  the listener. Whatever the remote listener does to
+  `sessionState.currentSession`, the local path must do too, or the init
+  `$effect` restores the pre-pick values the next time that object is replaced.
+  See frontend-and-chat §6.2.
+
 ---
 

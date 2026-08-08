@@ -361,12 +361,10 @@
 		sessionState.messages.some(m => m.type === 'user') || sessionState.hasMessageHistory
 	);
 
-	// Engine lock: once chat starts, the engine is locked for this session.
-	const lockedEngine = $derived<EngineType | null>(
-		hasStartedChat ? chatModelState.engine : null
-	);
-
-	const engineLocked = $derived(lockedEngine !== null);
+	// The engine is switchable at any point in a session. When it changes
+	// mid-conversation the backend replays the branch to the new engine as
+	// prompt content (backend/chat/engine-handoff.ts), so there is nothing to
+	// lock — the new engine picks up with the full conversation behind it.
 
 	// Read from local chat model state (isolated from Settings)
 	const currentEngine = $derived(ENGINES.find(e => e.type === chatModelState.engine));
@@ -698,9 +696,29 @@
 		return unsub;
 	});
 
-	async function selectEngine(engineType: EngineType) {
-		if (engineLocked) return;
+	/**
+	 * Mirror a local engine/model pick onto `sessionState.currentSession`.
+	 *
+	 * The remote `chat:model-sync` listener already does this (see its comment:
+	 * "so init $effect won't overwrite on re-render") but the LOCAL path never
+	 * did, because the sender ignores its own broadcast echo. That left
+	 * `currentSession.engine/model_id` stale after every local pick, so the next
+	 * time anything replaced the session object — a reasoning/account/profile
+	 * sync from a collaborator, a session list refresh — the init $effect read
+	 * the stale values back and silently reverted the user's choice.
+	 */
+	function mirrorSelectionToSession(engine: EngineType, provider: string, modelId: string, modelName: string) {
+		if (!sessionState.currentSession) return;
+		sessionState.currentSession = {
+			...sessionState.currentSession,
+			engine,
+			provider,
+			model_id: modelId,
+			model_name: modelName
+		};
+	}
 
+	async function selectEngine(engineType: EngineType) {
 		// Switch engine immediately so the active tab updates before model fetch
 		chatModelState.engine = engineType;
 		searchQuery = '';
@@ -724,6 +742,7 @@
 			chatModelState.modelName = target.engine.model.name;
 			chatModelState.engineModelMemory = { ...memory, [engineType]: { provider: target.engine.provider, id: target.engine.model.id, name: target.engine.model.name } };
 			chatModelState.reasoningEffort = settings.reasoningDefaults[target.engine.model.id] ?? null;
+			mirrorSelectionToSession(engineType, target.engine.provider, target.engine.model.id, target.engine.model.name);
 		}
 	}
 
@@ -737,6 +756,7 @@
 		};
 		// Restore the per-model reasoning default (null → engine/model default).
 		chatModelState.reasoningEffort = settings.reasoningDefaults[model.engine.model.id] ?? null;
+		mirrorSelectionToSession(chatModelState.engine, model.engine.provider, model.engine.model.id, model.engine.model.name);
 		closeDropdown();
 	}
 
@@ -1005,18 +1025,14 @@
 		<div class="flex border-b border-slate-200 dark:border-slate-700 flex-shrink-0 overflow-x-auto [scrollbar-width:none] [-ms-overflow-style:none] [&::-webkit-scrollbar]:hidden">
 			{#each ENGINES as engine (engine.type)}
 				{@const isActive = chatModelState.engine === engine.type}
-				{@const isDisabled = engineLocked && engine.type !== lockedEngine}
 				<button
 					type="button"
 					class="flex items-center justify-center gap-1.5 px-2 py-2 text-xs font-medium transition-all duration-150 whitespace-nowrap
 						{isActive ? 'flex-1' : 'flex-shrink-0'}
 						{isActive
 							? 'bg-violet-50 dark:bg-violet-900/20 text-violet-600 dark:text-violet-400 border-b-2 border-violet-600'
-							: isDisabled
-								? 'text-slate-300 dark:text-slate-600 cursor-not-allowed'
-								: 'text-slate-600 dark:text-slate-400 hover:bg-slate-50 dark:hover:bg-slate-700/50'}"
-					onclick={() => !isDisabled && selectEngine(engine.type)}
-					disabled={isDisabled}
+							: 'text-slate-600 dark:text-slate-400 hover:bg-slate-50 dark:hover:bg-slate-700/50'}"
+					onclick={() => selectEngine(engine.type)}
 					title={engine.name}
 				>
 					<div class="flex dark:hidden items-center justify-center w-3.5 h-3.5 flex-shrink-0 [&>svg]:w-full [&>svg]:h-full">{@html engine.icon.light}</div>
@@ -1024,22 +1040,9 @@
 					{#if isActive}
 						<span class="truncate max-w-28">{engine.name}</span>
 					{/if}
-					{#if isDisabled}
-						<Icon name="lucide:lock" class="w-3 h-3 flex-shrink-0" />
-					{/if}
 				</button>
 			{/each}
 		</div>
-
-		<!-- Engine locked notice -->
-		{#if engineLocked}
-			<div class="px-3 py-1.5 bg-amber-50 dark:bg-amber-900/10 border-b border-slate-200 dark:border-slate-700 flex-shrink-0">
-				<div class="flex items-center gap-1.5 text-3xs text-amber-600 dark:text-amber-400">
-					<Icon name="lucide:info" class="w-3 h-3 flex-shrink-0" />
-					<span>Engine is locked for this session. You can still switch models.</span>
-				</div>
-			</div>
-		{/if}
 
 		<!-- Search -->
 		<div class="px-2 py-2 border-b border-slate-200 dark:border-slate-700 flex-shrink-0">

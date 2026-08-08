@@ -198,6 +198,70 @@ level left over from a different model can never leak into the next request.
   `EngineNotReadyError`), the picker renders the same actionable notice as
   Settings, with an **Open Stack** button and a Configure-engine fallback.
   Both are admin-gated.
+- **No engine lock.** The engine is switchable at any point in a session; only
+  an in-flight stream disables the trigger. Mid-session switches are handled by
+  the cross-engine handoff (§6.2a). `ProfilePicker` is likewise unlocked — the
+  backend resolves the effective profile per stream.
+
+> **Local picks must mirror onto `sessionState.currentSession`.** The init
+> `$effect` restores engine/model/account/profile from the session object, and
+> it re-runs whenever that object is replaced — which any collaborator's
+> `chat:*-sync` broadcast does. The remote `chat:model-sync` listener already
+> mirrors ("so init $effect won't overwrite on re-render"); the local path must
+> too, because the sender ignores its own broadcast echo. Miss this and a
+> user's pick silently reverts a moment later. `selectEngine`, `selectModel`
+> and `ProfilePicker.select` all call through this mirror.
+
+### 6.2a Cross-engine handoff
+
+Switching engine mid-conversation is supported. The mechanism lives entirely in
+`backend/chat/engine-handoff.ts` — **no adapter, `AIEngine` or migration
+change**.
+
+Continuity is normally delegated to each engine's native session store, and
+those ids are not portable (a Claude session id, a Codex rollout file, an
+OpenCode server session, Cline's in-memory transcript). So when the branch's
+trailing engine differs from the requested one, `stream-manager`:
+
+1. **Suppresses `resume`.** `resolveBranchEngine(chatSessionId)` walks back to
+   the most recent **non-user** message and reads its `engine.type` (user
+   messages carry the *sender's* choice, which is exactly what must not be
+   trusted). Falls back to `chat_sessions.engine`, which is reliable because
+   `chat:model-sync` persists it at *selection* time, not on send.
+2. **Replays the branch as prompt content** via `buildEngineHandoff(...)`,
+   prepended to the **engine prompt only**. The persisted `UserMessage` is
+   untouched, so the transcript never reaches the DB or the timeline.
+
+**The rule — one rule, no fallback ladder.** Replay verbatim; when the replay
+exceeds the trigger, tool results older than the last N tool uses become a
+placeholder and tool *inputs* are always kept. Both numbers are the shipped
+defaults of Anthropic's [`clear_tool_uses_20250919`](https://platform.claude.com/docs/en/build-with-claude/context-editing)
+context-editing strategy (trigger 100k input tokens, keep 3 tool uses,
+`clear_tool_inputs: false`). Mirroring a measured default beats inventing a
+heuristic — context editing alone reports +29% on agentic benchmarks and an 84%
+token reduction on long tool-heavy runs.
+
+> ⚠️ **Do NOT key the replay window on `compact_boundary`.** It looks like the
+> natural boundary and it is not: only the **Claude** adapter ever emits one.
+> OpenCode drops compaction events (`message-converter.ts`, "Skip: … compaction")
+> and Pi disables compaction outright (`compaction: { enabled: false }`). A
+> boundary-based window silently degenerates to "replay everything from message
+> one" on 7 of 8 engines — precisely the unbounded case it was meant to prevent.
+
+Two further invariants the builder upholds:
+
+- **Exclude the turn's own user message.** It is already saved and *is* the
+  branch head by the time the handoff runs, so without `excludeMessageId` the
+  transcript ends with a copy of the message the engine is about to answer.
+- **Attachments pass two independent gates** — `modalities.input.image` / `.pdf`
+  (what the *model* accepts) **and** an adapter table (what the adapter actually
+  forwards). They genuinely differ: Codex, Cursor, Pi and Cline have no document
+  path at all, so a PDF handed to them vanishes whatever the catalog claims.
+  Unsupported attachments degrade to the same placeholder as cleared tool
+  results.
+
+After the handoff turn the new engine has minted its own session id, so every
+subsequent turn resumes natively — the cost is paid once per switch.
 
 ### 6.3 Send path → backend
 

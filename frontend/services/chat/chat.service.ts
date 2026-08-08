@@ -435,15 +435,28 @@ class ChatService {
       }
       const messageContent = contentBlocks.length > 0 ? contentBlocks : [{ type: 'text', text: userMessage }];
 
+      // Capture selected engine/model/account before sending
+      const selectedEngine = chatModelState.engine;
+      const selectedProvider = chatModelState.provider;
+      const selectedModelId = chatModelState.modelId;
+      const selectedModelName = chatModelState.modelName;
+
       // Determine the SDK session ID for the current branch HEAD.
       // After non-linear operations (edit/undo/restore), sessionState.messages
       // reflects the correct branch — find the last assistant/reasoning message
       // whose sessionId differs from the clopen session ID.
+      //
+      // Only messages produced by the SELECTED engine qualify: session ids are
+      // native to whichever engine minted them, so after an engine switch the
+      // previous engine's id would name a session the new engine's store has
+      // never heard of. The backend re-checks this (it must, for older clients),
+      // but sending a foreign id here would also make the request misleading.
       const currentSessionId = sessionState.currentSession.id;
       let parentSessionId: string | null = null;
       for (let i = sessionState.messages.length - 1; i >= 0; i--) {
         const m = sessionState.messages[i];
         if ((m.type === 'assistant' || m.type === 'reasoning') && 'sessionId' in m) {
+          if ((m as any).engine?.type && (m as any).engine.type !== selectedEngine) break;
           const sid = (m as any).sessionId as string;
           if (sid && sid !== currentSessionId) {
             parentSessionId = sid;
@@ -451,12 +464,6 @@ class ChatService {
           }
         }
       }
-
-      // Capture selected engine/model/account before sending
-      const selectedEngine = chatModelState.engine;
-      const selectedProvider = chatModelState.provider;
-      const selectedModelId = chatModelState.modelId;
-      const selectedModelName = chatModelState.modelName;
 
       // Create UserMessage format for prompt
       const userMsgId = crypto.randomUUID();

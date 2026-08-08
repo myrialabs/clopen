@@ -3,6 +3,7 @@
 	import { scale } from 'svelte/transition';
 	import { cubicOut } from 'svelte/easing';
 	import Icon from '$frontend/components/common/display/Icon.svelte';
+	import { appState } from '$frontend/stores/core/app.svelte';
 	import { projectState } from '$frontend/stores/core/projects.svelte';
 	import { sessionState } from '$frontend/stores/core/sessions.svelte';
 	import { userStore } from '$frontend/stores/features/user.svelte';
@@ -17,14 +18,11 @@
 	const isAdmin = $derived(authStore.isAdmin);
 	let projectDefaultId = $state<number | null>(null);
 
-	// Once the session has any activity, the active profile is locked for the rest
-	// of the session — mirrors the engine lock in EngineModelPicker. Switching
-	// profiles mid-session can route to a different server, so we pin it after the
-	// first message and keep it locked (not just while loading).
-	const hasStartedChat = $derived(
-		sessionState.messages.some(m => m.type === 'user') || sessionState.hasMessageHistory
-	);
-
+	// The profile is switchable at any point in a session. The backend resolves
+	// the effective profile per stream (`resolveActiveProfileId`, called at
+	// stream start), so a mid-session change simply scopes the next turn's
+	// artifacts and MCP servers — there is no engine state to invalidate and
+	// nothing to carry over. Only an in-flight stream blocks the picker.
 	let open = $state(false);
 	let searchQuery = $state('');
 	let triggerButton = $state<HTMLButtonElement | null>(null);
@@ -85,6 +83,13 @@
 
 	function select(profileId: number | null) {
 		chatModelState.profileId = profileId;
+		// Mirror onto the session object for the same reason the remote listener
+		// above does: the init $effect in EngineModelPicker restores profile_id
+		// from `currentSession`, so leaving it stale reverts this pick the next
+		// time anything replaces that object.
+		if (sessionState.currentSession) {
+			sessionState.currentSession = { ...sessionState.currentSession, profile_id: profileId };
+		}
 		const chatSessionId = sessionState.currentSession?.id;
 		if (chatSessionId) {
 			ws.emit('chat:profile-sync', {
@@ -116,12 +121,12 @@
 			text-slate-600 dark:text-slate-400 border border-slate-200 dark:border-slate-700
 			disabled:opacity-50 disabled:cursor-not-allowed disabled:hover:bg-slate-100 dark:disabled:hover:bg-slate-800"
 		onclick={toggle}
-		disabled={hasStartedChat}
-		title={hasStartedChat ? 'Profile is locked for this session' : 'Active profile for this session'}
+		disabled={appState.isLoading}
+		title="Active profile for this session"
 	>
 		<Icon name="lucide:layers" class="w-3.5 h-3.5" />
 		<span class="font-medium max-w-32 truncate">{triggerLabel}</span>
-		<Icon name={hasStartedChat ? 'lucide:lock' : 'lucide:chevron-down'} class="w-3 h-3" />
+		<Icon name="lucide:chevron-down" class="w-3 h-3" />
 	</button>
 
 	{#if open}
