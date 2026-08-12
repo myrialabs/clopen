@@ -18,6 +18,8 @@ export type SettingsSection =
 	| 'subagents'
 	| 'instructions'
 	| 'permissions'
+	| 'memory'
+	| 'memory-graph'
 	| 'profiles'
 	| 'appearance'
 	| 'notifications'
@@ -95,6 +97,14 @@ export const settingsSections: SettingsSectionMeta[] = [
 		group: 'models'
 	},
 	{
+		id: 'memory',
+		label: 'Memory',
+		icon: 'lucide:brain',
+		description: 'Model for long-term memory',
+		group: 'models',
+		adminOnly: true
+	},
+	{
 		id: 'engines',
 		label: 'Engines',
 		icon: 'lucide:circuit-board',
@@ -107,6 +117,14 @@ export const settingsSections: SettingsSectionMeta[] = [
 		label: 'Stack',
 		icon: 'lucide:hammer',
 		description: 'Engines, runtimes & tools',
+		group: 'infrastructure',
+		adminOnly: true
+	},
+	{
+		id: 'memory-graph',
+		label: 'Memory',
+		icon: 'lucide:brain',
+		description: 'What gets remembered',
 		group: 'infrastructure',
 		adminOnly: true
 	},

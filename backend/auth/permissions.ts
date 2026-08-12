@@ -137,6 +137,27 @@ export const ADMIN_ONLY_ROUTES = new Set([
 	'mcp:tools',
 	'mcp:set-tool-overrides',
 	'mcp:call-tool',
+	// Memory Graph — the graph is instance-global and is injected into every
+	// future turn on every engine, so editing it changes what every agent is told.
+	// Mutations only: the read surface (memory:graph / :node / :search / :stats /
+	// :config) stays open so any member can see what the project has learned.
+	'memory:save-node',
+	'memory:archive-node',
+	'memory:restore-nodes',
+	'memory:save-config',
+	// Writing a memory by hand. `draft-node` is gated too even though it stores
+	// nothing: it spends a model call, and a member who cannot save the result has
+	// no reason to be able to generate one.
+	'memory:draft-node',
+	'memory:create-node',
+	// Hard deletes. `delete-nodes` is reached only from the forgotten list, but
+	// `purge` empties a project — or the entire instance — in one call, which is
+	// the most destructive action the memory surface has.
+	'memory:delete-nodes',
+	'memory:purge',
+	// Re-running failed extractions costs model calls, so it is an admin action —
+	// reading the queue's status is not.
+	'memory:retry-failed',
 	// Agent Skills — creating/importing/installing skills writes to the shared
 	// canonical store and applies to every engine, so the whole surface is
 	// admin-only, mirroring MCP and Stack.

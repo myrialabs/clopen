@@ -24,5 +24,7 @@ export { instructionQueries } from './instruction-queries';
 export type { InstructionRow, InstructionScope } from './instruction-queries';
 export { permissionSetQueries } from './permission-set-queries';
 export type { PermissionSet, PermissionScope } from './permission-set-queries';
+export { graphQueries, deriveDigest, entityKeyFor, DIGEST_VERSION } from './graph-queries';
+export { memoryQueueQueries, type QueuedExtraction } from './memory-queue-queries';
 export { profileQueries, PROFILE_ITEM_TYPES } from './profile-queries';
 export type { ProfileRow, ProfileItemRow, ProfileInput, ProfileItemInput, ProfileItemType } from './profile-queries';

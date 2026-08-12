@@ -4,6 +4,7 @@
 	import WorkspaceLayout from '$frontend/components/workspace/WorkspaceLayout.svelte';
 	import ConnectionBanner from '$frontend/components/common/feedback/ConnectionBanner.svelte';
 	import UpdateBanner from '$frontend/components/common/feedback/UpdateBanner.svelte';
+	import MemorySetupBanner from '$frontend/components/common/feedback/MemorySetupBanner.svelte';
 	import RestartRequiredDialog from '$frontend/components/common/feedback/RestartRequiredDialog.svelte';
 	import WhatsNewDialog from '$frontend/components/common/feedback/WhatsNewDialog.svelte';
 	import LoadingScreen from '$frontend/components/common/feedback/LoadingScreen.svelte';
@@ -91,6 +92,7 @@
 	<div class="flex flex-col h-dvh w-screen overflow-hidden">
 		<ConnectionBanner />
 		<UpdateBanner />
+		<MemorySetupBanner />
 
 		<div class="flex-1 min-h-0">
 			<WorkspaceLayout>

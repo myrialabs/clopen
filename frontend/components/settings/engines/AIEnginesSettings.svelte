@@ -3,7 +3,7 @@
 	import ws from '$frontend/utils/ws';
 	import { isDarkMode } from '$frontend/utils/theme';
 	import { settingsModalState, clearEngineFocus, setActiveSection } from '$frontend/stores/ui/settings-modal.svelte';
-	import { ENGINES } from '$shared/constants/engines';
+	import { DEFAULT_ENGINE, ENGINES } from '$shared/constants/engines';
 	import type { EngineType } from '$shared/types/unified';
 	import { claudeAccountsStore } from '$frontend/stores/features/claude-accounts.svelte';
 	import { copilotAccountsStore } from '$frontend/stores/features/copilot-accounts.svelte';
@@ -44,7 +44,11 @@
 	}
 	const { showHeader = true, compact = false, onOpenStack }: Props = $props();
 
-	let activeEngine = $state<EngineType>(settingsModalState.engineFocus ?? 'claude-code');
+	// Opens on the DEFAULT engine, not a hardcoded one. It is the engine a fresh
+	// install actually gets, the first card in `ENGINES`, and the one every other
+	// default points at — landing on a different panel made Clopen look like it
+	// shipped with Claude Code and left the user to discover otherwise.
+	let activeEngine = $state<EngineType>(settingsModalState.engineFocus ?? DEFAULT_ENGINE);
 
 	// Consume engineFocus deep-link requests (set when other settings pages
 	// route the user here, e.g. EngineModelPicker's "Go to Engines" button).

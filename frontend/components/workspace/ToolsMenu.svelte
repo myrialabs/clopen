@@ -14,9 +14,10 @@
 		onRemoteAccess: () => void;
 		onPublicTunnel: () => void;
 		onDbClient: () => void;
+		onMemory: () => void;
 	}
 
-	const { collapsed = false, mobile = false, onRemoteAccess, onPublicTunnel, onDbClient }: Props = $props();
+	const { collapsed = false, mobile = false, onRemoteAccess, onPublicTunnel, onDbClient, onMemory }: Props = $props();
 
 	let isOpen = $state(false);
 
@@ -59,6 +60,15 @@
 			onClick: onDbClient,
 			count: dbCount,
 			accent: 'text-emerald-600 dark:text-emerald-400'
+		},
+		{
+			label: 'Memory',
+			description: 'What this workspace has learned',
+			icon: 'lucide:brain',
+			onClick: onMemory,
+			// No live count: memory is not a connection you open, it just accrues.
+			count: 0,
+			accent: 'text-violet-600 dark:text-violet-400'
 		}
 	]);
 

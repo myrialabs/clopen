@@ -86,9 +86,18 @@ mock.module('../index', () => ({
 	getDatabase: () => mockDb
 }));
 
+// Every method, not just the one this file asserts on. `mock.module` replaces the
+// module for the WHOLE test process, so a partial stub here leaves any file that
+// runs afterwards with a `debug` missing `log`/`warn`/etc — which fails as
+// "debug.log is not a function" inside unrelated code, a long way from this line.
 mock.module('$shared/utils/logger', () => ({
 	debug: {
-		error: mockDebugError
+		log: () => {},
+		info: () => {},
+		warn: () => {},
+		error: mockDebugError,
+		debug: () => {},
+		trace: () => {}
 	}
 }));
 

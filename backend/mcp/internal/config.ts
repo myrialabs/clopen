@@ -36,6 +36,12 @@ export const mcpServersConfig: Record<ServerName, ServerConfig> = {
 		// One tool. Every browser capability is an action inside `actions`, so a
 		// whole interaction is one call and the agent decides what to batch.
 		tools: ["actions"]
+	},
+	"memory-graph": {
+		enabled: true,
+		// Same shape: every graph capability is an operation inside `memory`, so
+		// recalling a memory and then walking its neighbours is a single call.
+		tools: ["memory"]
 	}
 };
 

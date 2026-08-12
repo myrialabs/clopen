@@ -11,6 +11,7 @@
  */
 
 import browserAutomation from './browser-automation/index';
+import memoryGraph from './memory-graph/index';
 import { buildServerRegistries } from './helper';
 
 // Re-export types and remote server factory
@@ -25,6 +26,7 @@ export { createRemoteMcpServer } from './helper';
  */
 export const allServers = [
 	browserAutomation,
+	memoryGraph,
 	// Add more servers here...
 ] as const;
 

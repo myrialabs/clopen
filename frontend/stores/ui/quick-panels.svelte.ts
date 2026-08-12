@@ -11,13 +11,15 @@ interface QuickPanelsState {
 	remoteAccessOpen: boolean;
 	tunnelOpen: boolean;
 	dbClientOpen: boolean;
+	memoryOpen: boolean;
 }
 
 export const quickPanelsState = $state<QuickPanelsState>({
 	newProjectOpen: false,
 	remoteAccessOpen: false,
 	tunnelOpen: false,
-	dbClientOpen: false
+	dbClientOpen: false,
+	memoryOpen: false
 });
 
 export function openNewProjectDialog() {
@@ -50,4 +52,12 @@ export function openDbClientDialog() {
 
 export function closeDbClientDialog() {
 	quickPanelsState.dbClientOpen = false;
+}
+
+export function openMemoryDialog() {
+	quickPanelsState.memoryOpen = true;
+}
+
+export function closeMemoryDialog() {
+	quickPanelsState.memoryOpen = false;
 }

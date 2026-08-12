@@ -869,7 +869,7 @@
 			disabled={appState.isLoading}
 			title="Reasoning effort"
 		>
-			<Icon name="lucide:brain" class="w-3.5 h-3.5" />
+			<Icon name="lucide:gauge" class="w-3.5 h-3.5" />
 			<span class="font-medium max-w-24 truncate">{currentReasoningLabel || 'Reasoning'}</span>
 			<Icon name="lucide:chevron-down" class="w-3 h-3" />
 		</button>
@@ -984,7 +984,7 @@
 		transition:scale={{ duration: 130, easing: cubicOut, start: 0.95, opacity: 0 }}
 	>
 		<div class="flex gap-1.5 px-3 py-2 border-b border-slate-200 dark:border-slate-700 flex-shrink-0">
-			<Icon name="lucide:brain" class="w-3.5 h-3.5" />
+			<Icon name="lucide:gauge" class="w-3.5 h-3.5" />
 			<span class="text-xs font-medium text-slate-500 dark:text-slate-400 tracking-wide">Reasoning effort</span>
 		</div>
 		<div class="overflow-y-auto py-1">

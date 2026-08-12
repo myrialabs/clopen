@@ -32,6 +32,7 @@ export type LogLabel =
 	| 'commands'
 	| 'subagents'
 	| 'instructions'
+	| 'memory'
 	| 'permissions'
 	| 'profiles'
 	| 'notification'

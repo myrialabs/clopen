@@ -782,6 +782,28 @@ function snapshotLayoutSlice(): LayoutSlice {
 	};
 }
 
+/**
+ * Replace panel ids that no longer exist with empty slots.
+ *
+ * Saved layouts outlive the panel list. A panel that has since been removed (or
+ * moved out of the dock, as Memory was — it is a global modal now) would
+ * otherwise restore as a slot that renders nothing, which reads as a broken
+ * layout rather than a retired panel. Emptied slots are collapsed away by
+ * `cleanupEmptyNodes` so the remaining panels expand to fill the space.
+ */
+function sanitizePanelIds(node: SplitNode): SplitNode {
+	if (node.type === 'panel') {
+		return node.panelId && node.panelId in defaultPanels ? node : createPanel(null);
+	}
+	return {
+		...node,
+		children: [sanitizePanelIds(node.children[0]), sanitizePanelIds(node.children[1])] as [
+			SplitNode,
+			SplitNode
+		]
+	};
+}
+
 /** Apply a restored layout slice (or fall back to defaults when absent). */
 function applyLayoutSlice(slice: LayoutSlice | undefined): void {
 	if (!slice || !slice.layout) {
@@ -805,10 +827,15 @@ function applyLayoutSlice(slice: LayoutSlice | undefined): void {
 		}
 	}
 
-	workspaceState.layout = slice.layout;
-	workspaceState.activePresetId = slice.activePresetId;
+	// Drop retired panel ids, then collapse the slots they leave behind. Falls back
+	// to the default preset if that empties the layout entirely.
+	const sanitized = cleanupEmptyNodes(sanitizePanelIds(slice.layout));
+
+	workspaceState.layout = sanitized ?? deepClone(defaultPreset.layout);
+	workspaceState.activePresetId = sanitized ? slice.activePresetId : defaultPreset.id;
 	workspaceState.panels = panels;
-	workspaceState.activeMobilePanel = slice.activeMobilePanel ?? 'chat';
+	const mobilePanel = slice.activeMobilePanel;
+	workspaceState.activeMobilePanel = mobilePanel && mobilePanel in defaultPanels ? mobilePanel : 'chat';
 }
 
 /**
