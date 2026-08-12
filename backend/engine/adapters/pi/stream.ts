@@ -27,7 +27,6 @@ import type {
 import { loadEngineSdk } from '$backend/engine/sdk-loader';
 import type { AgentToolResult } from '@earendil-works/pi-agent-core';
 import type { ImageContent, ModelThinkingLevel } from '@earendil-works/pi-ai';
-import { clampThinkingLevel } from '@earendil-works/pi-ai';
 import type { EngineOutput, EngineModel, MessageEngine } from '$shared/types/unified';
 import type { AIEngine, EngineQueryOptions, StructuredGenerationOptions } from '../../types';
 import { resolveOsPath } from '$backend/utils/paths';
@@ -121,6 +120,8 @@ export class PiEngine implements AIEngine {
 
 		const { createAgentSession, DefaultResourceLoader, SessionManager, SettingsManager } =
 			await loadEngineSdk<typeof import('@earendil-works/pi-coding-agent')>('pi', '@earendil-works/pi-coding-agent');
+		const { clampThinkingLevel } =
+			await loadEngineSdk<typeof import('@earendil-works/pi-ai')>('pi', '@earendil-works/pi-ai');
 
 		// ── Resolve account + credential + runtime + model ──
 		// Pi is multi-provider: prefer the account matching the model's provider,

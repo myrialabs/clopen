@@ -13,12 +13,23 @@
  */
 
 import type { Api, Model } from '@earendil-works/pi-ai';
-import { getSupportedThinkingLevels, clampThinkingLevel } from '@earendil-works/pi-ai';
 import type { EngineModel, ReasoningControl } from '$shared/types/unified';
 import { toReasoningOptions } from '$shared/constants/engines';
 import { debug } from '$shared/utils/logger';
+import { loadEngineSdk } from '$backend/engine/sdk-loader';
 import { DbCredentialStore, getPiAccounts } from './credential';
 import { createPiRuntime } from './presets';
+
+/**
+ * The pi-ai thinking-level helpers, loaded on demand. They live in the engine's
+ * SDK (installed into the managed stack dir), so they are threaded through as a
+ * parameter rather than imported at module scope — a value import here would
+ * fail to resolve on any install where Pi has not been installed yet.
+ */
+type ThinkingHelpers = Pick<
+	typeof import('@earendil-works/pi-ai'),
+	'getSupportedThinkingLevels' | 'clampThinkingLevel'
+>;
 
 export async function fetchPiModels(): Promise<EngineModel[]> {
 	try {
@@ -26,7 +37,8 @@ export async function fetchPiModels(): Promise<EngineModel[]> {
 		const store = new DbCredentialStore(accounts);
 		const runtime = await createPiRuntime(store);
 		const available = await runtime.getAvailable();
-		const mapped = available.map(mapPiModel);
+		const thinking = await loadEngineSdk<typeof import('@earendil-works/pi-ai')>('pi', '@earendil-works/pi-ai');
+		const mapped = available.map(model => mapPiModel(model, thinking));
 		debug.log('engine', `Pi getAvailableModels: ${mapped.length} models across ${accounts.length} account(s)`);
 		return mapped;
 	} catch (error) {
@@ -40,19 +52,19 @@ export async function fetchPiModels(): Promise<EngineModel[]> {
  * the supported levels per model (`getSupportedThinkingLevels`), so the control
  * is fully model-driven. Skipped when a model only supports `off` (no reasoning).
  */
-function buildPiReasoningControl(model: Model<Api>): ReasoningControl | undefined {
-	const levels = getSupportedThinkingLevels(model);
+function buildPiReasoningControl(model: Model<Api>, thinking: ThinkingHelpers): ReasoningControl | undefined {
+	const levels = thinking.getSupportedThinkingLevels(model);
 	if (levels.length <= 1) return undefined;
-	const fallback = model.reasoning ? clampThinkingLevel(model, 'medium') : 'off';
+	const fallback = model.reasoning ? thinking.clampThinkingLevel(model, 'medium') : 'off';
 	return {
 		levels: toReasoningOptions(levels),
 		default: fallback,
 	};
 }
 
-function mapPiModel(model: Model<Api>): EngineModel {
+function mapPiModel(model: Model<Api>, thinking: ThinkingHelpers): EngineModel {
 	const image = model.input.includes('image');
-	const reasoningControl = buildPiReasoningControl(model);
+	const reasoningControl = buildPiReasoningControl(model, thinking);
 	return {
 		engine: {
 			type: 'pi',

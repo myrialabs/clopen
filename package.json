@@ -145,7 +145,8 @@
     "sigma": "3.0.3",
     "ssh2": "1.17.0",
     "systeminformation": "5.33.1",
-    "typebox": "1.1.38"
+    "typebox": "1.1.38",
+    "zod": "4.3.6"
   },
   "trustedDependencies": [
     "puppeteer",

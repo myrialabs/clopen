@@ -17,7 +17,7 @@ import type { EngineType } from '$shared/types/unified';
 import { readEngineSdkVersion, getRequiredSdkVersion } from './sdk-loader';
 
 /** Primary SDK package clopen imports for each engine. */
-const ENGINE_SDK: Record<EngineType, string> = {
+export const ENGINE_SDK: Record<EngineType, string> = {
 	'claude-code': '@anthropic-ai/claude-agent-sdk',
 	opencode: '@opencode-ai/sdk',
 	copilot: '@github/copilot-sdk',
