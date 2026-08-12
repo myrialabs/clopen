@@ -62,7 +62,8 @@ async function resolve(): Promise<MemoryModelConfig | null> {
 	let catalog = getModelsByEngine(engineType);
 	if (catalog.length === 0) {
 		try {
-			catalog = await getEngine(engineType).getAvailableModels();
+			const engine = await getEngine(engineType);
+			catalog = await engine.getAvailableModels();
 			registerModels(engineType, catalog);
 		} catch (error) {
 			debug.warn('memory', `Could not load the ${engineType} catalog to pick a memory model`, error);

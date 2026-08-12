@@ -1,6 +1,6 @@
 <script lang="ts">
-	import { formatUserDisplayName } from '$shared/utils/anonymous-user';
-	import type { AnonymousUser } from '$shared/utils/anonymous-user';
+	import { formatUserDisplayName } from '$frontend/utils/anonymous-user';
+	import type { AnonymousUser } from '$frontend/utils/anonymous-user';
 	
 	interface Props {
 		user: { userId: string; userName: string };

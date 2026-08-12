@@ -87,8 +87,11 @@ export interface ToolStatus {
  * any extras pin a transitive CLI the SDK would otherwise float (e.g. copilot).
  * Versions are read from package.json (the single source of truth), so an
  * on-demand install always matches the exact version clopen was tested against.
+ * Every package listed here must therefore be declared in package.json —
+ * `install-recipes.test.ts` enforces that, since an undeclared one would
+ * silently install as `@latest`.
  */
-const ENGINE_PACKAGES: Partial<Record<ToolId, string[]>> = {
+export const ENGINE_PACKAGES: Partial<Record<ToolId, string[]>> = {
 	claude: ['@anthropic-ai/claude-agent-sdk'],
 	opencode: ['@opencode-ai/sdk'],
 	copilot: ['@github/copilot-sdk', '@github/copilot'],

@@ -33,7 +33,7 @@ import type {
 } from '$shared/types/unified';
 import type { EngineType } from '$shared/types/unified';
 import type { DatabaseMessage } from '$shared/types/database/schema';
-import { getProjectEngine, initializeProjectEngine } from '../engine';
+import { findProjectEngine, initializeProjectEngine } from '../engine';
 import { messageQueries, projectQueries, sessionQueries } from '../database/queries';
 import { snapshotService } from '../snapshot/snapshot-service';
 import { snapshotQueries } from '../database/queries/snapshot-queries';
@@ -1391,11 +1391,12 @@ class StreamManager extends EventEmitter {
 			return false;
 		}
 
-		// Get the engine for this project
+		// The stream is live, so its engine already exists. Look it up rather than
+		// creating one — a fresh instance holds no pending question to answer.
 		const pid = streamState.projectId || 'default';
-		const engine = getProjectEngine(pid, streamState.engine);
+		const engine = findProjectEngine(pid, streamState.engine);
 
-		if (!engine.resolveUserAnswer) {
+		if (!engine?.resolveUserAnswer) {
 			debug.warn('chat', 'resolveUserAnswer: Engine does not support resolveUserAnswer');
 			return false;
 		}
@@ -1529,8 +1530,8 @@ class StreamManager extends EventEmitter {
 		// events and update presence — preventing infinite loader on the frontend.
 		const projectId = streamState.projectId || 'default';
 		try {
-			const engine = getProjectEngine(projectId, streamState.engine);
-			if (engine.isActive) {
+			const engine = findProjectEngine(projectId, streamState.engine);
+			if (engine?.isActive) {
 				await Promise.race([
 					engine.cancel(),
 					new Promise<void>(resolve => setTimeout(resolve, 5000))
