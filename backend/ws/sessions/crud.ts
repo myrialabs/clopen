@@ -19,6 +19,8 @@ import { ws } from '$backend/utils/ws';
 import { streamManager } from '../../chat/stream-manager';
 import { snapshotService } from '../../snapshot/snapshot-service';
 import { blobStore } from '../../snapshot/blob-store';
+import { cancelEpisodicIngest } from '../../memory/extract';
+import { forgetSessionContext } from '../../memory/context';
 import { broadcastPresence } from '../projects/status';
 import { debug } from '$shared/utils/logger';
 import { requireCurrentProjectAccess, requireProjectAccess, requireSessionAccess } from '../access';
@@ -254,6 +256,12 @@ export const crudHandler = createRouter()
 		// Clear in-memory snapshot baseline
 		snapshotService.clearSessionBaseline(data.id);
 
+		// Drop any memory extraction parked for this session. It reads the message
+		// chain, which is about to be deleted, and its injection bookkeeping is now
+		// about a session that no longer exists.
+		cancelEpisodicIngest(data.id);
+		forgetSessionContext(data.id);
+
 		// Delete session and all related DB data (messages, snapshots, branches, relationships, unread)
 		sessionQueries.delete(data.id);
 
@@ -329,6 +337,8 @@ export const crudHandler = createRouter()
 		// Clear in-memory snapshot baselines for all sessions
 		for (const s of sessions) {
 			snapshotService.clearSessionBaseline(s.id);
+			cancelEpisodicIngest(s.id);
+			forgetSessionContext(s.id);
 		}
 
 		// Delete all sessions and related DB data (messages, snapshots, branches, relationships, unread)

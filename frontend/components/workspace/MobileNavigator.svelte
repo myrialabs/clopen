@@ -10,6 +10,7 @@
 	import TunnelModal from '$frontend/components/tunnel/TunnelModal.svelte';
 	import RemoteAccessPanel from '$frontend/components/remote-access/RemoteAccessPanel.svelte';
 	import DbClientModal from '$frontend/components/db-client/DbClientModal.svelte';
+	import MemoryModal from '$frontend/components/memory/MemoryModal.svelte';
 	import SettingButton from '$frontend/components/settings/SettingButton.svelte';
 	import type { Project } from '$shared/types/database/schema';
 	import FolderBrowser from '$frontend/components/common/form/FolderBrowser.svelte';
@@ -26,7 +27,9 @@
 		openTunnelDialog,
 		closeTunnelDialog,
 		openDbClientDialog,
-		closeDbClientDialog
+		closeDbClientDialog,
+		openMemoryDialog,
+		closeMemoryDialog
 	} from '$frontend/stores/ui/quick-panels.svelte';
 	import { openCommandPalette } from '$frontend/stores/ui/command-palette.svelte';
 
@@ -171,6 +174,7 @@
 			onRemoteAccess={openRemoteAccessDialog}
 			onPublicTunnel={openTunnelDialog}
 			onDbClient={openDbClientDialog}
+					onMemory={openMemoryDialog}
 		/>
 
 		<!-- Quick Search Button -->
@@ -414,3 +418,4 @@
 
 <!-- DB Client Modal -->
 <DbClientModal bind:isOpen={quickPanelsState.dbClientOpen} onClose={closeDbClientDialog} />
+<MemoryModal bind:isOpen={quickPanelsState.memoryOpen} onClose={closeMemoryDialog} />

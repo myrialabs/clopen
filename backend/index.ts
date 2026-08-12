@@ -57,6 +57,8 @@ import { sessionCleanupScheduler } from './auth/session-cleanup';
 import { uploadTempCleanup } from './http/upload-temp-cleanup';
 import { ws as wsServer } from './utils/ws';
 import { messageRateLimiter } from './ws/message-rate-limiter';
+import { flushEpisodicIngest, stopExtractionRunner } from './memory/extract';
+import { stopMemoryMaintenance } from './memory/maintenance';
 
 /** How often (ms) the auth gate re-confirms a connection's session against the DB. */
 const SESSION_REVALIDATE_MS = 15_000;
@@ -303,6 +305,13 @@ async function gracefulShutdown() {
 		await closeMcpServer();
 		// Cleanup browser preview sessions
 		await browserPreviewServiceManager.cleanup();
+		// Write out any memory extraction still in flight or held back by a live
+		// stream. Bounded, because each entry is a model call with no timeout of its
+		// own — and the queue is a table, so whatever is left is picked up on the next
+		// start rather than lost.
+		stopMemoryMaintenance();
+		stopExtractionRunner();
+		await flushEpisodicIngest();
 		// Dispose all AI engines
 		await disposeAllEngines();
 		// Close database connection

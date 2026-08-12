@@ -34,12 +34,15 @@ import type {
 import type { EngineType } from '$shared/types/unified';
 import type { DatabaseMessage } from '$shared/types/database/schema';
 import { getProjectEngine, initializeProjectEngine } from '../engine';
-import { messageQueries, sessionQueries } from '../database/queries';
+import { messageQueries, projectQueries, sessionQueries } from '../database/queries';
 import { snapshotService } from '../snapshot/snapshot-service';
+import { snapshotQueries } from '../database/queries/snapshot-queries';
 import { projectContextService, refreshExpiringExternalOAuth } from '../mcp';
 import { resolveActiveProfileId } from '../profiles';
 import { browserMcpControl } from '../preview';
 import { extractMessageText } from '../snapshot/helpers';
+import { deferEpisodicIngest, ingestTurn } from '../memory/extract';
+import { buildMemoryContext, withMemoryContext } from '../memory/context';
 import { buildEngineHandoff, resolveBranchEngine, withHandoff } from './engine-handoff';
 import { debug } from '$shared/utils/logger';
 import { DEFAULT_MODEL_ID, DEFAULT_MODEL_NAME } from '$shared/constants/engines';
@@ -137,6 +140,66 @@ interface RequestEngineContext {
  * model name). The adapter supplies type/provider/model.id; stream-manager
  * is the single source of truth for the rest.
  */
+/** One file's hash pair inside a snapshot's `session_changes` map. */
+interface SnapshotChange {
+	oldHash?: string;
+	newHash?: string;
+}
+
+/**
+ * Parsed `session_changes`, which is stored as a JSON string. Returns an empty
+ * map when the column is absent or unparseable — a snapshot with no recorded
+ * changes simply gives the Memory Graph nothing to ingest.
+ */
+function parseSessionChanges(raw: string | null | undefined): Record<string, SnapshotChange> {
+	if (!raw) return {};
+	try {
+		const parsed = JSON.parse(raw) as Record<string, SnapshotChange>;
+		return parsed && typeof parsed === 'object' ? parsed : {};
+	} catch {
+		return {};
+	}
+}
+
+/**
+ * What actually changed on disk during THIS turn.
+ *
+ * `session_changes` is cumulative: it records every file that differs from the
+ * SESSION's baseline, so it only ever grows as a session runs. Handing it to the
+ * Memory Graph as "files changed this turn" was wrong in three ways at once — the
+ * extraction prompt described a hundred files as belonging to one turn, the
+ * sixty-file cap re-ingested whatever sorted first while genuinely new files fell
+ * off the end, and every file in the session was re-upserted every turn, which
+ * flattened the reinforcement signal it was supposed to produce.
+ *
+ * Differencing against the parent snapshot recovers the real delta: a path is in
+ * it when its content hash differs from what the previous checkpoint recorded.
+ */
+function diffSnapshotAgainstParent(snapshot: {
+	session_changes?: unknown;
+	parent_snapshot_id?: string | null;
+}): { changed: string[]; deleted: string[] } {
+	const current = parseSessionChanges(snapshot?.session_changes as string | null | undefined);
+	const parentId = snapshot?.parent_snapshot_id ?? null;
+	const parent = parentId
+		? parseSessionChanges(snapshotQueries.getById(parentId)?.session_changes as string | null | undefined)
+		: {};
+
+	const changed: string[] = [];
+	const deleted: string[] = [];
+
+	for (const [path, entry] of Object.entries(current)) {
+		const before = parent[path];
+		// Unchanged since the previous checkpoint — it belongs to an earlier turn.
+		if (before && before.newHash === entry.newHash) continue;
+		// An empty `newHash` is how the snapshot service records a deletion.
+		if (!entry.newHash) deleted.push(path);
+		else changed.push(path);
+	}
+
+	return { changed, deleted };
+}
+
 function enrichMessageEngine(
 	message: UnifiedMessage,
 	ctx: RequestEngineContext,
@@ -592,6 +655,11 @@ class StreamManager extends EventEmitter {
 				return;
 			}
 
+			// Push back any memory summary parked for this session. Extraction talks to
+			// the same engine this stream is about to use, and on a shared-process
+			// engine that request would queue against the user's reply.
+			if (chatSessionId) deferEpisodicIngest(chatSessionId);
+
 			const engine = await initializeProjectEngine(projectId, requestEngine.type);
 
 			if ((streamState.status as string) === 'cancelled' || streamState.abortController?.signal.aborted) {
@@ -629,6 +697,45 @@ class StreamManager extends EventEmitter {
 					// starts without carried context.
 					debug.error('chat', 'Engine handoff failed, continuing without carried context:', error);
 				}
+			}
+
+			// ── Memory Graph injection ──
+			// Relevant memories from earlier sessions, retrieved from the user's own
+			// words. Done here rather than per adapter so every engine behaves the
+			// same, and prepended to the ENGINE prompt only — like the handoff above,
+			// `userMessage` stays clean so this never reaches the timeline.
+			try {
+				// The files this session has been working in are seeds too. A turn whose
+				// text carries no retrievable signal — "continue", "fix it" — still has a
+				// working set, and that is often the only thing pointing at the memory
+				// that matters.
+				const anchorPaths = chatSessionId
+					? Object.keys(
+							parseSessionChanges(
+								snapshotQueries.getLatestBySessionId(chatSessionId)?.session_changes as string | undefined
+							)
+						).slice(-40)
+					: [];
+
+				const memory = buildMemoryContext({
+					query: extractMessageText(userMessage),
+					projectId: projectId ?? null,
+					sessionId: chatSessionId ?? null,
+					anchorPaths,
+					// So a memory learned in another repository can say which one. Without
+					// the name, a travelling insight reads as a claim about the project in
+					// front of the agent — which is worse than not surfacing it at all.
+					projectNames: new Map(projectQueries.getAll().map(project => [project.id, project.name]))
+				});
+				if (memory) {
+					enginePrompt = withMemoryContext(enginePrompt, memory.text);
+					debug.log(
+						'memory',
+						`Injected ${memory.text.length} chars of memory context (${memory.nodeIds.length} memories):\n${memory.text}`
+					);
+				}
+			} catch (error) {
+				debug.warn('memory', 'Memory injection failed, continuing without it:', error);
 			}
 
 			// Detect orphaned user messages and prepend context (claude-code only).
@@ -1188,13 +1295,43 @@ class StreamManager extends EventEmitter {
 			}
 		} finally {
 			const { projectPath, projectId, chatSessionId } = requestData;
-			if (projectPath && projectId && chatSessionId && userMessageId) {
-				snapshotService.captureSnapshot(projectPath, projectId, chatSessionId, userMessageId)
-					.then(() => {
-						debug.log('chat', `Stream-end snapshot captured for message: ${userMessageId}`);
+			// Captured into a const: `userMessageId` is reassigned during the stream,
+			// so its narrowing does not survive into the async callback below.
+			const snapshotMessageId = userMessageId;
+			if (projectPath && projectId && chatSessionId && snapshotMessageId) {
+				// The Memory Graph is fed from the SNAPSHOT rather than from tool calls.
+				// The snapshot is a gitignore-aware disk diff, so it also catches files
+				// rewritten through Bash, a codemod or a formatter — none of which appear
+				// as an Edit/Write tool call. Passing the snapshot straight in leaves the
+				// `snapshot:captured` broadcast payload (a WS schema) untouched.
+				//
+				// Ingestion is attached with `finally`, NOT with `then`, and that is the
+				// difference between losing a conversation and losing a file list. A
+				// snapshot can fail for reasons the transcript has no stake in — a
+				// permission error, a path that vanished mid-turn, a repository that grew
+				// past a limit — and hanging the only write path in the feature off its
+				// success meant one of those quietly cost the turn's memories entirely.
+				// The code can be re-read next turn; the conversation happened once.
+				snapshotService.captureSnapshot(projectPath, projectId, chatSessionId, snapshotMessageId)
+					.then(snapshot => {
+						debug.log('chat', `Stream-end snapshot captured for message: ${snapshotMessageId}`);
 						this.emit('snapshot:captured', { projectId, chatSessionId });
+						return snapshot ? diffSnapshotAgainstParent(snapshot) : null;
 					})
-					.catch(err => debug.error('chat', 'Failed to capture stream-end snapshot:', err));
+					.catch(err => {
+						debug.error('chat', 'Failed to capture stream-end snapshot:', err);
+						return null;
+					})
+					.then(delta => {
+						void ingestTurn({
+							projectId,
+							projectPath,
+							sessionId: chatSessionId,
+							userMessageId: snapshotMessageId,
+							changedPaths: delta?.changed ?? [],
+							deletedPaths: delta?.deleted ?? []
+						});
+					});
 			}
 		}
 	}

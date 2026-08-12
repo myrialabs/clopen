@@ -39,6 +39,7 @@ import { instructionsRouter } from './instructions';
 import { permissionsRouter } from './permissions';
 import { profilesRouter } from './profiles';
 import { artifactsRouter } from './artifacts';
+import { memoryRouter } from './memory';
 
 // ============================================
 // Main App Router - Merge All Module Routers
@@ -97,7 +98,10 @@ export const wsRouter = createRouter()
 
 	// Profiles (reusable artifact bundles activated per-session)
 	.merge(profilesRouter)
-	.merge(artifactsRouter);
+	.merge(artifactsRouter)
+
+	// Memory Graph (unified episodic + structural memory, shared by every engine)
+	.merge(memoryRouter);
 
 // Export API type for frontend type-safe access
 export type WSAPI = typeof wsRouter['$api'];

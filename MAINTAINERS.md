@@ -30,6 +30,7 @@ Internal guide for Clopen core maintainers. External contributors should follow 
 - [Reference](#reference)
   - [`Co-authored-by` Trailer Format](#co-authored-by-trailer-format)
   - [Release Process](#release-process)
+  - [Publishing the Memory Graph Embedding Artifact](#publishing-the-memory-graph-embedding-artifact)
   - [Questions](#questions)
 
 ---
@@ -656,6 +657,80 @@ Rules:
 ### Release Process
 
 To be documented when the release flow stabilizes.
+
+### Publishing the Memory Graph Embedding Artifact
+
+Memory's semantic recall runs on a local embedding table — four files, ~44 MB, hosted as a **GitHub release asset**, not shipped in the repository and not published to npm. They are weights, not code: bundling them would add 44 MB to every install whether or not memory is enabled, and publishing to npm would mean publishing a package this repository is itself the source of.
+
+Clopen downloads them on demand into `~/.clopen/stack/embedding/<version>/`. Until they land, **recall is off** — recording continues, and the indexer backfills vectors when the artifact arrives, so nothing recorded during setup is lost.
+
+Where things live:
+
+| Path | Role | In git? |
+| --- | --- | --- |
+| `packages/clopen-embedding/model/` | Build output, staged for upload | No — gitignored |
+| `packages/clopen-embedding/checksums.json` | Emitted by the build script | No — gitignored |
+| `backend/memory/embedding/paths.ts` | `EMBEDDING_VERSION` + pinned checksums | **Yes** |
+| GitHub release `embedding-v<version>` | What users download | n/a |
+
+#### Publishing a version whose checksums are already pinned
+
+If `paths.ts` already carries real checksums for the current `EMBEDDING_VERSION`, the artifact was built and just needs uploading. Verify the local files still match the pins before you publish — a mismatch means the release will fail verification on every user's machine:
+
+```bash
+cd packages/clopen-embedding/model
+shasum -a 256 model.bin tokenizer.json tokenizer_config.json manifest.json
+# Compare against EMBEDDING_ASSETS in backend/memory/embedding/paths.ts
+```
+
+Then:
+
+```bash
+gh release create embedding-v0.0.1 \
+  packages/clopen-embedding/model/model.bin \
+  packages/clopen-embedding/model/tokenizer.json \
+  packages/clopen-embedding/model/tokenizer_config.json \
+  packages/clopen-embedding/model/manifest.json \
+  --repo myrialabs/clopen \
+  --title "Memory Graph embedding artifact v0.0.1" \
+  --notes "Pruned int8 Model2Vec table (potion-multilingual-128M, MIT). Downloaded on demand by the Memory Graph; not an npm package."
+```
+
+Three things break the download silently if changed:
+
+- **The tag** must be exactly `embedding-v<EMBEDDING_VERSION>`.
+- **The asset filenames** must stay as they are — `assetUrl()` builds the URL from the filename.
+- **The release must be public.** `install.ts` fetches unauthenticated; a draft or private release gives every user a 404 that retries forever.
+
+#### Shipping a NEW model version
+
+Rebuilding is a coordinated change: the checksums in `paths.ts` and the files on the release must move together, in that order, or users get a verification failure they cannot fix.
+
+1. **Build.** `--install` also drops it into the local stack so you can try it before anyone else does:
+
+   ```bash
+   bun scripts/build-embedding-artifact.ts --install
+   ```
+
+   The script prints an `EMBEDDING_ASSETS` block and writes `checksums.json`.
+
+2. **Bump `EMBEDDING_VERSION`** in `backend/memory/embedding/paths.ts`. Always bump — the install directory is version-keyed, so reusing a version means existing users keep the old files forever and never see the new ones.
+
+3. **Paste the new `EMBEDDING_ASSETS` block** into the same file, in the same commit as the bump. A version bumped without its checksums makes `hasPinnedChecksums()` false and the installer refuses to download — which fails safe, but leaves recall off for everyone until it is corrected.
+
+4. **Verify locally before publishing.** Delete the installed copy and let the app fetch it, which is the only way to exercise the real download path:
+
+   ```bash
+   rm -rf ~/.clopen/stack/embedding/<new-version>
+   ```
+
+   Restart, then check Settings → Memory reports the model as ready. Note that a machine which has ever run `--install` will pass a "is it ready" check without proving the release works.
+
+5. **Publish the release** with the new tag, using the command above.
+
+6. **Merge the version bump only once the release is live.** In the other order, every user who updates between the two lands on a build whose pinned checksums point at a tag that does not exist yet.
+
+If a published artifact turns out to be wrong, do **not** replace the assets on an existing tag — clients cache by version directory and checksum-verify, so a swapped file reads as corruption. Cut a new version instead.
 
 ### Questions
 

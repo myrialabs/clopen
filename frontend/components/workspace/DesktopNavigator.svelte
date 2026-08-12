@@ -25,6 +25,7 @@
 	import TunnelModal from '$frontend/components/tunnel/TunnelModal.svelte';
 	import RemoteAccessPanel from '$frontend/components/remote-access/RemoteAccessPanel.svelte';
 	import DbClientModal from '$frontend/components/db-client/DbClientModal.svelte';
+	import MemoryModal from '$frontend/components/memory/MemoryModal.svelte';
 	import SettingButton from '$frontend/components/settings/SettingButton.svelte';
 	import ProjectUserAvatars from '$frontend/components/common/display/ProjectUserAvatars.svelte';
 	import ws from '$frontend/utils/ws';
@@ -37,7 +38,9 @@
 		openTunnelDialog,
 		closeTunnelDialog,
 		openDbClientDialog,
-		closeDbClientDialog
+		closeDbClientDialog,
+		openMemoryDialog,
+		closeMemoryDialog
 	} from '$frontend/stores/ui/quick-panels.svelte';
 
 	// State
@@ -385,6 +388,7 @@
 					onRemoteAccess={openRemoteAccessDialog}
 					onPublicTunnel={openTunnelDialog}
 					onDbClient={openDbClientDialog}
+					onMemory={openMemoryDialog}
 				/>
 				<QuickSearchButton />
 				<SettingButton onClick={() => openSettingsModal()} />
@@ -451,6 +455,7 @@
 					onRemoteAccess={openRemoteAccessDialog}
 					onPublicTunnel={openTunnelDialog}
 					onDbClient={openDbClientDialog}
+					onMemory={openMemoryDialog}
 				/>
 				<QuickSearchButton collapsed={true} />
 				<SettingButton collapsed={true} onClick={() => openSettingsModal()} />
@@ -540,3 +545,4 @@
 
 <!-- DB Client Modal -->
 <DbClientModal bind:isOpen={quickPanelsState.dbClientOpen} onClose={closeDbClientDialog} />
+<MemoryModal bind:isOpen={quickPanelsState.memoryOpen} onClose={closeMemoryDialog} />
