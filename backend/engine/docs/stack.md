@@ -130,6 +130,16 @@ Engine SDKs don't need a hand-written resolver. When you add an engine
 4. Add the literal to `TOOL_UNION` (`status.ts`, `install.ts`).
 5. Add `<ToolInstallCard tool="newengine" ... />` in `StackSettings.svelte`.
 
+Step 2 fails silently if you only do half of it. A package listed in
+`ENGINE_PACKAGES` but absent from `package.json` makes `getRequiredSdkVersion`
+return `null`; `engineInstallArgs` then drops the `@version` and the user
+installs **`@latest`** — and because `loadEngineSdk` only enforces a version
+match when a required version exists, that engine also loses its "Update
+required" state. `install-recipes.test.ts` fails on an undeclared package, on a
+floated range instead of an exact version, and on `ENGINE_SDK`
+(`engine-setup.ts`) naming a different package than the recipe installs — that
+last one would make readiness lie rather than fail.
+
 There is no "Check for Updates" for engines — their versions move in lockstep
 with clopen releases, so `version-check.ts` has no update source for them. The
 Stack card instead shows **Update required** whenever the installed version ≠

@@ -286,7 +286,8 @@ ws.emit('chat:stream', {
 ```
 
 Backend `chat:stream` then `streamManager.startStream(...)`, which:
-- Resolves `getProjectEngine(projectId, engine.type)`
+- Awaits `initializeProjectEngine(projectId, engine.type)` — that engine's
+  adapter loads on first use, and a failure to load stays with it (§10.24)
 - Persists engine/model/account + `profile_id` + `reasoning_effort` onto the
   `chat_sessions` row so a refresh or a late joiner restores the same setup
 - Calls `engine.streamQuery({ projectPath, prompt, providerSlug: engine.provider, modelId: engine.model.id, reasoningEffort, accountId: engine.account.id !== 0 ? engine.account.id : undefined, mcpContext })`

@@ -244,7 +244,8 @@ types flow through `$shared`.
 ```
 
 The handler calls `streamManager.startStream(...)`, which then:
-1. Resolves `getProjectEngine(projectId, engine.type)`
+1. Awaits `initializeProjectEngine(projectId, engine.type)`, which loads that
+   engine's adapter on first use (§10.24) — no other engine is touched
 2. Persists the per-session choices that outlive the turn — engine, model,
    account, `profile_id`, `reasoning_effort` — onto the `chat_sessions` row
    (`sessionQueries.updateReasoning`, migration `065`). `undefined` leaves the

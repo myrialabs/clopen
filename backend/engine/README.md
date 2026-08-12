@@ -27,6 +27,21 @@ stays **agnostic** to the underlying SDK.
 > services, per-project versioning) is specced in
 > [`docs/stack-roadmap.md`](../../docs/stack-roadmap.md).
 
+> **Adapters load on first use, and that rule is now mechanical.** The registry
+> reaches every adapter through `ENGINE_LOADERS` (dynamic `import()`), never a
+> static import, so an engine that fails to load takes only itself down — it
+> used to take the whole backend down at boot, for users who had never touched
+> that engine. The "`import type` only" rule above had been written down since
+> the SDKs were unbundled and was still violated three times (Qwen, OpenCode,
+> Pi), because a value import resolves fine in the repo **and** on any machine
+> whose shared global bun store happens to carry the package. So it is enforced
+> now rather than documented: ESLint rejects value imports of `devDependencies`
+> in shipped code (list derived from `package.json`, so a new engine is covered
+> the moment you add it), and three tests fail on the things types cannot
+> see — an unresolvable shipped import, an adapter reachable from boot, and a
+> loader wired to the wrong engine class. Read **§10.21** and **§10.24** in
+> [lessons-learned](./docs/lessons-learned.md) before touching either.
+
 > **In-process, session-less SDKs are their own category.** Most adapters
 > wrap a CLI subprocess or an SDK that owns a session store (on disk or via a
 > server). `cline` is different: `@cline/sdk`'s stateless `Agent` holds **no**
@@ -107,7 +122,10 @@ map, then jump to the area you need.
 │  ┌──────────────────────────────────────────────────────────────────┐ │
 │  │  backend/engine/         ← THE LAYER THIS README DOCUMENTS       │ │
 │  │  ──────────────────                                              │ │
-│  │  index.ts                  registry: getEngine / getProjectEngine│ │
+│  │  index.ts                  registry: ENGINE_LOADERS (lazy) +    │ │
+│  │                            getEngine / getProjectEngine (async) │ │
+│  │                            findProjectEngine (sync, no create)  │ │
+│  │  engine-setup.ts           pre-stream readiness → Open Stack    │ │
 │  │  types.ts                  contract: AIEngine                    │ │
 │  │  sdk-loader.ts             on-demand loader (~/.clopen/stack/…)   │ │
 │  │  install-recipes.ts        host-tool + engine-SDK install recipes│ │
@@ -193,6 +211,16 @@ invariants.
 >    `backend/chat/engine-handoff.ts` — do **NOT** propose a new adapter
 >    method, a portable session format, or per-engine history injection.
 >    See §10.23.
+> 4. **Boot must not know about any adapter.** Adding a static
+>    `import { XEngine } from './adapters/x'` — to the registry or to anything
+>    the boot path reaches — re-couples every user's startup to every engine.
+>    There is exactly one place that decides what an unusable engine means to
+>    the user (`checkEngineSetup`, surfaced as a chat error with an **Open
+>    Stack** button); do **NOT** propose a second one, and do **NOT** wrap the
+>    adapter `import()` in a catch that returns a placeholder engine. A broken
+>    engine must fail loudly on the engine the user asked for. Translating a
+>    module-load failure into an install prompt is worse than the raw message:
+>    it sends people reinstalling for a bug no reinstall can fix. See §10.24.
 
 ---
 

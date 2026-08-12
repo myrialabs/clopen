@@ -28,6 +28,14 @@ blueprint for the next engine you add.
     `EngineType`; `claude-code`→`claude` is the one exception).
   - `backend/permissions/service.ts`: add the entry to `ENGINE_TYPE_TO_ARTIFACT`
     (+ `ArtifactEngineKey`).
+  - `backend/engine/engine-setup.ts`: add the engine's **primary** SDK package
+    to `ENGINE_SDK` — the package `checkEngineSetup` probes to decide
+    installed / needs-update / ready. It must be the same package as the first
+    entry of `ENGINE_PACKAGES` (Stage 7); the compiler only forces the key to
+    exist, so `install-recipes.test.ts` cross-checks the value. Point them at
+    different packages and readiness starts lying rather than failing.
+  - `backend/engine/index.ts`: add the engine's loader to `ENGINE_LOADERS`
+    (Stage 2) — a dynamic import, never a static one.
   - `backend/ws/sessions/crud.ts`: add the `'newengine'` literal to the two
     session-engine typebox unions (in addition to the Stage-4 chat/crud ones).
 - [ ] `backend/engine/adapters/newengine/models.ts`: own the catalog. Static
@@ -139,9 +147,19 @@ mandatory files; optional files use the canonical names from §2.6.
       `syncEngineArtifacts(...)` at stream start, and — for a prompt-scoped
       engine — prepend `buildArtifactsPromptContext(...)` to the prompt (from
       `backend/engine/artifact-sync.ts`). Mirror `claude/stream.ts`. See §8.
-- [ ] `backend/engine/index.ts`: import + add a case in
-      `createEngine(type)`. If there is a shared subprocess, call
-      `disposeXxxClient()` from `disposeAllProjectEngines()`.
+- [ ] `backend/engine/index.ts`: add one entry to `ENGINE_LOADERS` —
+      `newengine: async () => new (await import('./adapters/newengine')).NewEngineEngine(),`
+      — and **do not add a static import**. The registry loads adapters on
+      first use precisely so a broken engine cannot take down the other seven
+      at boot; a top-level `import { NewEngineEngine } from './adapters/newengine'`
+      silently restores that coupling. `backend/engine/index.test.ts` fails if
+      any adapter becomes reachable from boot, and also checks that each key
+      loads *its own* adapter — mapping a loader to the wrong class
+      type-checks cleanly, so nothing but that test catches it. See §10.24.
+      If there is a shared subprocess, call `disposeXxxClient()` from
+      `disposeAllProjectEngines()`, importing it from the helper module
+      (`adapters/newengine/server`) rather than the adapter barrel, so
+      shutdown does not drag the engine class into the boot graph.
 - [ ] MCP config (if the SDK accepts a streamable-HTTP MCP URL):
       - [ ] Internal bridge — add `getXxxMcpConfig()` in
             `backend/mcp/internal/config.ts` (reuse `clopen-mcp`; see §10.12).
@@ -213,7 +231,10 @@ handles the install.
 
 - [ ] `package.json`: add the engine's SDK package(s) to `devDependencies` at an
       **exact** pinned version — this is the single source of truth for the
-      version clopen installs on demand.
+      version clopen installs on demand. A package listed in `ENGINE_PACKAGES`
+      but missing here does not error: `getRequiredSdkVersion` returns `null`,
+      the recipe drops the `@version`, and the user silently installs `@latest`.
+      `install-recipes.test.ts` fails on both that and on a floated range.
 - [ ] `backend/engine/install-recipes.ts`:
   - Add `'newengine'` to `ToolId`.
   - Add its package(s) to `ENGINE_PACKAGES` (first entry = the SDK clopen

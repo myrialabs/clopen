@@ -51,19 +51,36 @@ Four invariants:
 
 ### 2.2 `index.ts` — registry & lifecycle
 
-Two instance tiers:
+Adapters are reached only through `ENGINE_LOADERS`, a total
+`Record<EngineType, () => Promise<AIEngine>>` of dynamic imports. Nothing in
+the registry statically imports an adapter, so boot loads no engine and a
+broken one cannot take the others down (§10.24). Creation is therefore
+**async**, and the cache holds the in-flight promise so concurrent callers
+share one instance instead of racing to build two.
 
-| Tier               | Factory                       | Used for                                  |
-|--------------------|-------------------------------|-------------------------------------------|
-| Global singleton   | `getEngine(type)`             | Non-streaming ops: `models:list`, settings|
-| Per-project        | `getProjectEngine(projectId, type)` | Streaming chat — isolated per-project|
+| Accessor                             | Kind  | Used for                                      |
+|--------------------------------------|-------|-----------------------------------------------|
+| `getEngine(type)`                    | async | Global singleton — `models:list`, settings    |
+| `getProjectEngine(projectId, type)`  | async | Streaming chat — isolated per-project         |
+| `findProjectEngine(projectId, type)` | sync  | An engine that must already exist — cancel, answer routing |
+
+`findProjectEngine` returns `undefined` rather than creating one: cancelling a
+stream or routing an `AskUserQuestion` answer acts on a stream that is already
+running, and a fresh instance would have nothing to cancel and no pending
+question. Reach for it whenever "not there" is a real answer.
+
+A load failure is **not** caught here. It reaches the user through the single
+readiness surface (`checkEngineSetup` → chat error carrying an **Open Stack**
+button); a second handler would let a broken engine look like a working one.
 
 Cleanup:
 - `disposeProjectEngines(projectId)` when a project closes.
 - `disposeAllEngines()` at server shutdown — also calls
   `disposeOpenCodeClient()`. Pattern: when an adapter owns a shared
-  subprocess, expose `disposeXxxClient()` from `adapters/<name>/index.ts`
-  and call it from `disposeAllProjectEngines()` in `index.ts`.
+  subprocess, expose `disposeXxxClient()` from the adapter's **helper module**
+  (`adapters/<name>/server.ts`) and import it from there in `index.ts` —
+  importing it through the adapter barrel would pull the engine class into the
+  boot graph and undo the lazy loading.
 
 ### 2.3 `EngineOutput` — the event contract
 

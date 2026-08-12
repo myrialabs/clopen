@@ -1184,9 +1184,10 @@ Consequences for an adapter:
 
 - **Reference SDK types only via `import type`.** A plain `import { Foo } from
   '<pkg>'` forces Bun to resolve the package at module-load time — which throws
-  for every user who hasn't installed that engine yet, crashing the backend on
-  boot. `import type` is erased at runtime, so it's safe. Resolve the real module
-  at point of use with
+  for every user who hasn't installed that engine yet. (It used to crash the
+  whole backend at boot; since the registry loads adapters lazily it now fails
+  only that engine — see §10.24.) `import type` is erased at runtime, so it's
+  safe. Resolve the real module at point of use with
   `loadEngineSdk<typeof import('<pkg>')>('newengine', '<pkg>')` from
   `backend/engine/sdk-loader.ts` (which does `Bun.resolveSync(pkg, stackDir)` +
   dynamic import, cached).
@@ -1196,11 +1197,36 @@ Consequences for an adapter:
   because a leftover value import is **invisible in development**: the repo's
   own `node_modules` has the devDependency, so `import { query } from
   '@qwen-code/sdk'` resolves fine locally and only fails for end users, whose
-  stack dir is the only copy. Two shipped adapters had exactly this — Qwen's
-  `stream.ts` (`query`) and OpenCode's `server.ts`
-  (`createOpencodeClient`) — both converted after the fact. A plain
+  stack dir is the only copy. Three shipped adapters had exactly this — Qwen's
+  `stream.ts` (`query`), OpenCode's `server.ts` (`createOpencodeClient`), and
+  Pi's `models.ts` + `stream.ts` (`clampThinkingLevel`,
+  `getSupportedThinkingLevels`) — all converted after the fact. A plain
   `await import('<pkg>')` is the same bug: it resolves from the process's own
   paths, not the stack dir. `loadEngineSdk` is the only correct seam.
+
+- **It does not even fail consistently for end users — that is why it kept
+  shipping.** A global install resolves a bare specifier by walking up to
+  `~/.bun/install/global/node_modules`, which is **shared by every globally
+  installed package**. So whether the missing SDK crashes depends on what else
+  happens to live in that store: the Pi break was reported as "only on some
+  devices, mostly fresh installs", and reinstalling bun "fixed" it because that
+  rewrites the ambient store rather than the code. Treat "it works on my
+  machine / it works after a reinstall" as *no evidence at all* here. Worse,
+  when the package does happen to be there, the engine silently runs a version
+  clopen never pinned or tested — the version guard only applies to the stack
+  dir path.
+
+- **The rule is now enforced, because writing it down three times did not
+  work.** `bun run lint` rejects value imports of any `devDependency` from
+  shipped runtime code (`bin/`, `backend/`, `shared/`, `scripts/start.ts`), with
+  the restricted list derived from `package.json` so a newly added engine SDK is
+  covered without touching the config. ESLint cannot see `await import(…)`,
+  so `backend/shipped-runtime-imports.test.ts` walks the shipped module graph
+  with `Bun.Transpiler.scanImports` — the same transpiler that runs the code, so
+  type-only imports are erased exactly as at runtime — and fails on any
+  specifier an end user could not resolve, including an undeclared package or
+  one reaching into files `package.json` `files` does not ship. Both run in CI
+  before `npm publish` (`needs: ci`).
 
 - **Loading is version-guarded.** `loadEngineSdk` refuses an SDK whose installed
   version ≠ the pinned version, throwing `EngineNotReadyError`
@@ -1343,3 +1369,65 @@ unpredictable.
 Finally: the handoff is prepended to the **engine prompt only**. The
 persisted `UserMessage` stays clean, so the transcript never reaches the
 DB or the timeline, and the user sees nothing but a changed engine.
+
+### 10.24 One adapter must not be able to break every engine
+
+The registry used to import all eight adapters statically. That made every
+user's startup depend on every adapter loading cleanly — so when Pi's
+`stream.ts` carried a value import of `@earendil-works/pi-ai` (§10.21), the
+symptom was not "Pi is unavailable". It was:
+
+```
+Clopen v0.4.26
+error: Cannot find module '@earendil-works/pi-ai' from
+  '/home/rust/.bun/install/global/node_modules/@myrialabs/clopen/backend/engine/adapters/pi/stream.ts'
+```
+
+The process died at boot. Someone who only ever used Claude lost the entire
+app to an engine they had never selected, with no UI to tell them why.
+
+`ENGINE_LOADERS` in `backend/engine/index.ts` is now the only reference to an
+adapter module, and every entry is a dynamic `import()`. Being a total
+`Record<EngineType, …>`, a new engine will not type-check until its loader is
+registered — the exhaustiveness the old `switch` needed a runtime `default`
+branch to approximate.
+
+Four things that were deliberate, and would each be easy to "improve" back
+into a bug:
+
+- **The failed load is not caught.** There is exactly one place that decides
+  what an unusable engine means to the user — `checkEngineSetup`, whose message
+  embeds "Settings → Stack" and renders as a one-click **Open Stack** button
+  (`frontend/components/chat/formatters/ErrorMessage.svelte`). A second
+  handler here would let a broken engine masquerade as a working one. And
+  translating a module-load failure into an install prompt is worse than
+  showing the raw error: it sends people reinstalling for a bug no reinstall
+  can fix, which is exactly how §10.21 stayed alive for three releases.
+
+- **The cache holds a promise, not an instance.** Creation is async now, so
+  two concurrent callers racing to build two engines for one project would
+  split the abort controller — a cancel that cancels nothing. A failed load is
+  evicted rather than cached, so a user can install the engine in Settings →
+  Stack and retry without restarting the server.
+
+- **`findProjectEngine` exists so lookups cannot create.** Cancelling a stream
+  and routing an `AskUserQuestion` answer both act on a stream that is already
+  running, so the engine must already exist. The old code called
+  `getProjectEngine` and silently built a fresh instance when it did not —
+  an engine with nothing to cancel and no pending question. Reach for
+  `findProjectEngine` whenever "not there" is a real answer.
+
+- **`disposeOpenCodeClient` is imported from `adapters/opencode/server`, not
+  the barrel.** Shutdown must release that module's process-wide client
+  singleton, but importing it through `adapters/opencode` would drag
+  `OpenCodeEngine` into the boot graph and undo the whole change. Both paths
+  resolve to the same module instance (ESM caches by resolved path), so the
+  singleton is not duplicated.
+
+`backend/engine/index.test.ts` is what keeps this true. It walks the eager
+import closure of `backend/index.ts` — following static imports only, the way
+the runtime evaluates them — and fails if any adapter's engine class is
+reachable, so smuggling the import into some other boot-path file is caught
+too. It also asserts each key loads *its own* adapter: mapping `cursor` to
+`ClineEngine` type-checks with zero errors and would route a user's chat
+through the wrong SDK, and nothing but that check catches it.

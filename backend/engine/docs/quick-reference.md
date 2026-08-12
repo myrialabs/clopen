@@ -47,6 +47,12 @@
 | DB provider/account access                  | `backend/database/queries/engine-queries.ts`              |
 | Host-tool + engine-SDK install recipes      | `backend/engine/install-recipes.ts`                       |
 | On-demand engine-SDK loader (managed dir)   | `backend/engine/sdk-loader.ts` (`getStackEnginesDir`, `loadEngineSdk`) |
+| Register a new engine with the registry     | `backend/engine/index.ts::ENGINE_LOADERS` — one dynamic `import()` per engine, never a static one (§10.24) |
+| Engine instance that must already exist     | `backend/engine/index.ts::findProjectEngine` (sync, `undefined` when absent; cancel + answer routing) |
+| Pre-stream readiness → "Open Stack" button  | `backend/engine/engine-setup.ts::checkEngineSetup` (probes `ENGINE_SDK`) + `frontend/components/chat/formatters/ErrorMessage.svelte` |
+| Guard: no devDependency reaches shipped code | `eslint.config.js` (restricted list derived from `package.json`) + `backend/shipped-runtime-imports.test.ts` (catches the `await import()` ESLint cannot see) |
+| Guard: boot loads no adapter; loaders wired right | `backend/engine/index.test.ts` |
+| Guard: every engine SDK declared + pinned exact | `backend/engine/install-recipes.test.ts` (also cross-checks `ENGINE_SDK` against `ENGINE_PACKAGES`) |
 | Streaming install logs                      | `backend/engine/install-runner.ts`                        |
 | Fresh-install default engine (auto OpenCode)| `backend/engine/bootstrap-default-engine.ts::ensureDefaultEngineInstalled`, called from `backend/bootstrap.ts::bootstrapAfterDbInit` (startup **and** Clear All Data); §7.8 |
 | Engine + host-tool brand icons (SSOT)       | `shared/constants/tool-icons.ts::TOOL_ICONS` (referenced by `ENGINES` and the Stack cards) |
