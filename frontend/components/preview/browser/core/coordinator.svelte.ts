@@ -87,8 +87,7 @@ export function createBrowserCoordinator(config: BrowserCoordinatorConfig) {
 
 	// WS listener teardown handles, removed on cleanup(). The handlers operate on
 	// the shared singleton, so a per-mount registration that is never torn down
-	// accumulates across re-mounts — surfacing as duplicate event handling and
-	// duplicate "MCP Control Started" toasts.
+	// accumulates across re-mounts — surfacing as duplicate event handling.
 	const disposers: Array<() => void> = [];
 	let disposed = false;
 

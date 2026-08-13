@@ -31,7 +31,6 @@ import {
 import { browserCleanup } from '$frontend/components/preview/browser/core/cleanup.svelte';
 import { setInteractionProjectId } from '$frontend/components/preview/browser/core/interactions.svelte';
 import { registerDock, getActiveWorkspaceProjectId } from '$frontend/stores/ui/project-workspace.svelte';
-import { showInfo, showWarning } from '$frontend/stores/ui/notification.svelte';
 import ws, { onWsReconnect } from '$frontend/utils/ws';
 import { debug } from '$shared/utils/logger';
 import type { DeviceSize, Rotation } from '$frontend/utils/preview-constants';
@@ -647,17 +646,9 @@ export function initPreviewTabSync(): void {
 
 		if (!isEventForActiveProject(data)) return;
 
-		const wasEmpty = mcpControlledBackendIds.size === 0;
+		// No toast: the lock is already visible where it matters — the tab badge,
+		// the agent cursor and the blocked-input state on the preview itself.
 		setMcpControlled(data.browserTabId, true);
-
-		// Toast only for the first controlled tab of the active project.
-		if (wasEmpty && mcpControlledBackendIds.size === 1) {
-			showWarning(
-				'MCP Control Started',
-				'An MCP agent is now controlling the browser. User input is blocked.',
-				5000
-			);
-		}
 	});
 
 	ws.on('preview:browser-mcp-control-end', (data: any) => {
@@ -671,15 +662,6 @@ export function initPreviewTabSync(): void {
 		// The remembered position stays. It decides nothing on its own — the
 		// lock does — and keeping it means the next run picks up where this one
 		// left off instead of starting from the middle of the page.
-
-		// Toast when all tabs released.
-		if (mcpControlledBackendIds.size === 0) {
-			showInfo(
-				'MCP Control Ended',
-				'MCP agent released control. You can now interact with the browser.',
-				4000
-			);
-		}
 	});
 
 	// Which locked tab an agent is working on right now. Registered here rather

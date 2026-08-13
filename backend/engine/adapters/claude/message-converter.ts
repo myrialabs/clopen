@@ -38,7 +38,6 @@ import type {
 	ErrorResultEvent,
 	SystemInitEvent,
 	RateLimitEvent,
-	NotificationEvent,
 	TokenUsage,
 	StopReason,
 } from '$shared/types/unified';
@@ -395,27 +394,6 @@ export function convertSystemInit(msg: SDKSystemMessage): SystemInitEvent {
 	};
 }
 
-/**
- * Convert SDKTaskNotificationMessage (terminal background-task event) →
- * NotificationEvent. Fires when a backgrounded Agent/teammate finishes
- * abnormally (failed | stopped). Successful completion is intentionally
- * not surfaced — the result already lands in the conversation, and a
- * success toast is just noise. The non-terminal task_started /
- * task_progress / task_updated messages are also not surfaced.
- */
-function convertTaskNotification(
-	msg: { session_id: string; status: string; summary?: string; task_id: string },
-): NotificationEvent | null {
-	if (msg.status === 'completed') return null;
-	return {
-		type: 'notification',
-		sessionId: msg.session_id,
-		level: 'warning',
-		title: `Background task ${msg.status}`,
-		message: msg.summary || `Task ${msg.task_id} ${msg.status}`,
-	};
-}
-
 function workflowActivityMessage(
 	msg: { session_id: string; uuid?: string },
 	parentToolUseId: string,
@@ -538,14 +516,17 @@ function* dispatchSdkMessage(msg: SDKMessage, state: StreamConverterState): Gene
 					yield workflowActivityMessage(task, task.tool_use_id, detail);
 				}
 			} else if (subtype === 'task_notification') {
+				// Only workflow tasks surface anything, and only inline in the
+				// conversation. Backgrounded Agent/Bash tasks stay silent: their
+				// outcome already lands in the transcript, so a terminal toast
+				// ("Background task failed") is pure noise — a backgrounded
+				// `grep` with no match is a non-zero exit, not a problem.
 				const task = msg as unknown as { session_id: string; uuid?: string; task_id: string; tool_use_id?: string; status: string; summary?: string };
 				const parent = task.tool_use_id || state.workflowParents.get(task.task_id);
 				if (parent && state.workflowParents.has(task.task_id)) {
 					yield workflowActivityMessage(task, parent, `Workflow ${task.status}.`);
 					state.workflowParents.delete(task.task_id);
 				}
-				const note = convertTaskNotification(task);
-				if (note) yield note;
 			}
 			// task_progress is a repeated heartbeat; real child activity is replayed
 			// from Workflow-owned transcripts. task_updated has no tool_use_id.
