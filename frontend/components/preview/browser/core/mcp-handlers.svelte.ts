@@ -33,8 +33,8 @@ export function createMcpHandler(config: McpHandlerConfig) {
 	/**
 	 * Setup WebSocket event listeners for MCP control events.
 	 * Returns a teardown that removes every listener. Without it, each
-	 * BrowserPreview re-mount would leave a live handler behind — surfacing as
-	 * duplicate "MCP Control Started" toasts (one per stale handler).
+	 * BrowserPreview re-mount would leave a live handler behind — every MCP
+	 * control event then handled once per stale handler.
 	 */
 	function setupEventListeners(): () => void {
 		debug.log('preview', '🎧 Setting up MCP event listeners...');
