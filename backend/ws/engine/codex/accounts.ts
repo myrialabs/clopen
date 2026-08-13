@@ -52,19 +52,10 @@ import { resolveBinaryWithRefresh } from '../../../utils/cli';
 import { getCleanSpawnEnv } from '../../../utils/env';
 import { debug } from '$shared/utils/logger';
 import { requireSetupSessionAccess } from '../access';
-
-// ─────────────────────────────────────────────────────────────────────────────
-// ANSI helpers — Codex emits coloured output and cursor moves; we strip them
-// before pattern-matching but stream the raw bytes (with ANSI) to the UI's
-// xterm.js so the user sees the CLI exactly as it would render in a real
-// terminal.
-// ─────────────────────────────────────────────────────────────────────────────
-
-function stripAnsi(str: string): string {
-	return str
-		.replace(/\x1B\[\d+;\d+[Hf]/g, '\n')
-		.replace(/\x1B(?:[@-Z\\-_]|\[[0-?]*[ -/]*[@-~])/g, '');
-}
+// Codex emits coloured output and cursor moves; we strip them before
+// pattern-matching but stream the raw bytes (with ANSI) to the UI's xterm.js so
+// the user sees the CLI exactly as it would render in a real terminal.
+import { stripAnsi } from '../pty-output';
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Engine cleanup helper — called after any account mutation that might affect
