@@ -23,25 +23,17 @@ import { resolveBinaryWithRefresh } from '../../../utils/cli';
 import { debug } from '$shared/utils/logger';
 import { getCleanSpawnEnv } from '../../../utils/env';
 import { requireSetupSessionAccess } from '../access';
+import { stripAnsi, extractHttpsUrl } from '../pty-output';
 
 // ── Helpers ──
-
-function stripAnsi(str: string): string {
-	// Replace cursor positioning sequences (CSI row;colH/f) with newline
-	// so line structure is preserved after stripping
-	return str
-		.replace(/\x1B\[\d+;\d+[Hf]/g, '\n')
-		.replace(/\x1B(?:[@-Z\\-_]|\[[0-?]*[ -/]*[@-~])/g, '');
-}
 
 // Extracts the first https:// URL from PTY output.
 // Known formats (may change across Claude Code versions):
 //   - https://claude.ai/oauth/authorize?...
 //   - https://claude.com/cai/oauth/authorize?...
-function extractAuthUrl(clean: string): string | null {
-	const match = clean.match(/https:\/\/\S+/);
-	return match ? match[0] : null;
-}
+// The CLI prints it as an OSC 8 hyperlink, so stripAnsi must drop the escape
+// payload or the URL arrives duplicated.
+const extractAuthUrl = extractHttpsUrl;
 
 function extractOAuthToken(clean: string): string | null {
 	const tokenPrefix = 'sk-ant-oat01-';
