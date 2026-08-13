@@ -13,7 +13,7 @@
  * stay usable on.
  */
 
-import ws from '$frontend/utils/ws';
+import ws, { onWsReconnect } from '$frontend/utils/ws';
 import { debug } from '$shared/utils/logger';
 import type {
 	MemoryQueueStatus,
@@ -126,6 +126,17 @@ let filter = $state<MemoryFilter>({
 /** What the extraction queue is doing — see MemoryQueueStatus. */
 let status = $state<MemoryQueueStatus | null>(null);
 
+/**
+ * Which graph fetch is the current one.
+ *
+ * Refreshes overlap routinely — a filter change while a `memory:changed` refetch
+ * is still in flight — and nothing about a WebSocket request guarantees the
+ * replies come back in the order they were sent. Without this, a slower earlier
+ * response lands last and wins, so the view settles on a result nobody asked for
+ * and stays there until something triggers yet another refresh.
+ */
+let refreshSeq = 0;
+
 /** The forgotten list: archived and superseded memories, and what is selected. */
 let forgotten = $state<GraphNode[]>([]);
 let forgottenTotal = $state(0);
@@ -185,20 +196,28 @@ export const memoryGraphStore = {
 	},
 
 	async refresh(): Promise<void> {
+		const seq = ++refreshSeq;
 		loading = true;
 		try {
-			view = (await ws.http('memory:graph', {
+			const next = (await ws.http('memory:graph', {
 				...(filter.projectIds !== null && { projectIds: filter.projectIds }),
 				kinds: filter.kinds,
 				...(filter.subkinds.length > 0 && { subkinds: filter.subkinds }),
 				...(filter.sources.length > 0 && { sources: filter.sources }),
 				includeArchived: filter.includeArchived
 			})) as GraphView;
+			// A newer fetch has already been issued, so this answer describes a filter
+			// or a moment the user has moved on from. Dropping it is the whole point.
+			if (seq !== refreshSeq) return;
+			view = next;
 		} catch (error) {
+			if (seq !== refreshSeq) return;
 			debug.error('settings', 'Failed to load memory graph:', error);
 			view = EMPTY_VIEW;
 		} finally {
-			loading = false;
+			// Still loading, as far as the user is concerned — the request that
+			// overtook this one has not answered yet.
+			if (seq === refreshSeq) loading = false;
 		}
 	},
 
@@ -462,10 +481,23 @@ export const memoryGraphStore = {
 			void this.refreshStatus();
 		});
 
+		// `memory:changed` is a doorbell, and a doorbell rung while nobody is home
+		// is simply not heard: the events emitted during a dropped connection are
+		// gone, not queued. A socket can drop for a server restart, a sleeping
+		// laptop or a tunnel hiccup while this view sits open the whole time, so
+		// without a refetch on the way back the graph is silently stale with no
+		// event left to correct it.
+		const offReconnect = onWsReconnect(() => {
+			void this.refresh();
+			void this.refreshStats();
+			void this.refreshStatus();
+		});
+
 		return () => {
 			if (timer) clearTimeout(timer);
 			off();
 			offStatus();
+			offReconnect();
 		};
 	}
 };

@@ -47,7 +47,6 @@
 	let canvas = $state<ReturnType<typeof MemoryGraphCanvas> | null>(null);
 	let searchInput = $state('');
 	let searchDebounce: ReturnType<typeof setTimeout> | null = null;
-	let loaded = false;
 
 	/** Which secondary panel is open over the graph, if any. */
 	let panel = $state<'none' | 'filters' | 'forgotten'>('none');
@@ -137,11 +136,18 @@
 		requestAnimationFrame(() => canvas?.resize());
 	});
 
-	// Load on first open, not on mount: the modal mounts with the navigator and
-	// would otherwise fetch the whole graph for every user who never opens it.
+	// Load on EVERY open, but never on mount: the modal mounts with the navigator,
+	// so fetching there would pull the whole graph for every user who never opens
+	// it.
+	//
+	// "Every open" rather than "the first one" is the load-bearing part. The live
+	// subscription below only exists while the modal is open, so everything a
+	// conversation recorded while it was closed was missed — and a one-shot loader
+	// meant reopening redrew that stale snapshot. Reloading the browser was the
+	// only way to see the graph as it actually stood, which is precisely the bug
+	// the live refresh was meant to have fixed.
 	$effect(() => {
-		if (!isOpen || loaded) return;
-		loaded = true;
+		if (!isOpen) return;
 		void memoryGraphStore.refresh();
 		void memoryGraphStore.refreshStats();
 		void memoryGraphStore.refreshStatus();

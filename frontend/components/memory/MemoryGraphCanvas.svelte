@@ -327,8 +327,51 @@
 		return `${hex}${value}`;
 	}
 
+	/**
+	 * A fingerprint of everything the canvas actually DRAWS.
+	 *
+	 * It used to be the node count, the edge count and the list of ids — which
+	 * silently declared a view unchanged whenever the same nodes came back wearing
+	 * different attributes. Renaming a memory, reinforcing one into a different
+	 * community, or trading one edge for another all left the counts and the ids
+	 * intact, so the guard below returned early and nothing was repainted at all.
+	 * The graph was correct in the store and stale on screen until the browser was
+	 * reloaded.
+	 *
+	 * Every field that feeds a colour, a size or a caption is folded in, and
+	 * nothing else: `weight` and `rel` are absent because no drawn property is
+	 * derived from them, and including them would buy repaints that change no
+	 * pixels.
+	 *
+	 * Hashed rather than concatenated. The ids alone were already a string joined
+	 * from up to three thousand entries; adding labels to that would build a few
+	 * hundred kilobytes on every refetch to then throw it away.
+	 */
 	function signatureOf(current: GraphView): string {
-		return `${current.nodes.length}:${current.edges.length}:${current.nodes.map(n => n.id).join(',')}`;
+		let hash = 2166136261;
+		const feed = (value: string | number): void => {
+			const text = typeof value === 'number' ? value.toString(36) : value;
+			for (let i = 0; i < text.length; i++) {
+				hash ^= text.charCodeAt(i);
+				hash = Math.imul(hash, 16777619);
+			}
+			// A field separator, so ("ab","c") and ("a","bc") cannot collide.
+			hash ^= 0x1f;
+			hash = Math.imul(hash, 16777619);
+		};
+
+		for (const node of current.nodes) {
+			feed(node.id);
+			feed(node.label);
+			feed(node.kind);
+			feed(node.community);
+			feed(node.degree);
+		}
+		for (const edge of current.edges) {
+			feed(edge.source);
+			feed(edge.target);
+		}
+		return `${current.nodes.length}:${current.edges.length}:${(hash >>> 0).toString(36)}`;
 	}
 
 	/** FNV-1a — cheap, well-distributed, and short enough to read. */
@@ -739,6 +782,12 @@
 	 * have all along. This used to flatten every edge to a single slate — undoing
 	 * `syncEdges` a line after it ran, so the community hues survived exactly
 	 * until the first live update and then vanished for the rest of the session.
+	 *
+	 * LABELS are written here too, for the same reason sizes are: they are data,
+	 * not decoration. Editing a memory's title left the old text attached to its
+	 * node for the rest of the session, so the hover pill went on naming something
+	 * the user had already renamed — the one place in this feature where an edit
+	 * appeared not to have been saved.
 	 */
 	function repaint(current: GraphView): void {
 		indexView(current);
@@ -747,6 +796,7 @@
 			if (!graph.hasNode(node.id)) continue;
 			graph.setNodeAttribute(node.id, 'color', nodeColor(node));
 			graph.setNodeAttribute(node.id, 'size', nodeSize(node));
+			graph.setNodeAttribute(node.id, 'label', truncate(node.label));
 		}
 		graph.forEachEdge((edge, _attributes, source, target) => {
 			graph!.setEdgeAttribute(edge, 'color', edgeColor(source, target));
@@ -887,11 +937,16 @@
 
 	// Rebuild ONLY when the dataset actually changed. Without the signature guard,
 	// any store write (a refetch returning identical data) would restart the layout.
+	// "Changed" means anything the canvas draws, attributes included — see
+	// `signatureOf`, where reading too little of the data was itself a stale-view
+	// bug rather than merely a missed optimisation.
 	//
 	// And when it HAS changed, prefer the incremental path. Memory is written while
 	// the modal is open — that is the whole point of the live refresh — so a full
 	// rebuild would reset the camera and re-run a 400-iteration layout every time a
 	// conversation recorded something, which reads as the view fighting the user.
+	// An attribute-only change lands on the cheapest branch of all: no node churn
+	// means no re-heat, so a rename repaints without moving anything.
 	$effect(() => {
 		const current = view;
 		if (!sigma) return;
