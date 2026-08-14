@@ -125,6 +125,14 @@ Engine SDKs don't need a hand-written resolver. When you add an engine
    clopen imports and detects install-state from; extras pin a transitive CLI
    the SDK would otherwise float). Add the same packages to `package.json`
    `devDependencies` at an exact version — that is the single source of truth.
+   **Read the SDK's `peerDependencies` too.** A peer the SDK ships no copy of
+   resolves at `@latest` inside the stack dir unless it is listed here, leaving
+   clopen type-checked against one version and running another —
+   `@anthropic-ai/claude-agent-sdk` has `@anthropic-ai/sdk`,
+   `@modelcontextprotocol/sdk` and `zod` listed for exactly that reason (see
+   [lessons-learned](./lessons-learned.md) §10.25). A package the SDK depends
+   on *directly* needs no entry: its own range governs, and bun nests a copy
+   when two engines disagree.
 3. `resolveEngineRecipe(tool)` handles the rest automatically (installs into the
    stack dir at the pinned version).
 4. Add the literal to `TOOL_UNION` (`status.ts`, `install.ts`).

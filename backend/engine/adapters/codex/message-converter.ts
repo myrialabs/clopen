@@ -627,6 +627,11 @@ function buildErrorUserMessage(item: ErrorItem, state: CodexStreamState): UserMe
  * `cacheReadInputTokens`. Subtract here, otherwise the frontend's context
  * window indicator (which sums input + cacheCreate + cacheRead) would
  * double-count the cached prefix and appear to fill up far too quickly.
+ *
+ * `cache_write_input_tokens` (added in SDK 0.147) is the slice of that same
+ * prompt written INTO the cache this turn, so it is subtracted for the same
+ * reason and reported as `cacheCreationInputTokens`. The three parts still sum
+ * back to `input_tokens`, which is what the indicator expects.
  */
 function mapUsage(raw: Usage | null): TokenUsage {
 	if (!raw) {
@@ -634,10 +639,11 @@ function mapUsage(raw: Usage | null): TokenUsage {
 	}
 	const totalInput = raw.input_tokens ?? 0;
 	const cached = raw.cached_input_tokens ?? 0;
+	const cacheWrite = raw.cache_write_input_tokens ?? 0;
 	return {
-		inputTokens: Math.max(0, totalInput - cached),
+		inputTokens: Math.max(0, totalInput - cached - cacheWrite),
 		outputTokens: (raw.output_tokens ?? 0) + (raw.reasoning_output_tokens ?? 0),
-		cacheCreationInputTokens: 0,
+		cacheCreationInputTokens: cacheWrite,
 		cacheReadInputTokens: cached,
 	};
 }

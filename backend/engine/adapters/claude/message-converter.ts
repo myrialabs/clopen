@@ -18,6 +18,8 @@ import type {
 	SDKSystemMessage,
 	SDKCompactBoundaryMessage,
 	SDKRateLimitEvent,
+	SDKModelRefusalFallbackMessage,
+	SDKModelRefusalNoFallbackMessage,
 } from '@anthropic-ai/claude-agent-sdk';
 // Infer block/usage types from the agent SDK so we stay in sync with whichever
 // @anthropic-ai/sdk version claude-agent-sdk bundles internally.
@@ -38,6 +40,7 @@ import type {
 	ErrorResultEvent,
 	SystemInitEvent,
 	RateLimitEvent,
+	NotificationEvent,
 	TokenUsage,
 	StopReason,
 } from '$shared/types/unified';
@@ -426,6 +429,50 @@ export function convertCompactBoundary(msg: SDKCompactBoundaryMessage): CompactB
 	};
 }
 
+/**
+ * Convert a model-refusal banner → NotificationEvent.
+ *
+ * Both subtypes arrived in @anthropic-ai/claude-agent-sdk 0.3.229 and were
+ * previously dropped by the `default` arm, which is the worst outcome for the
+ * two cases users actually notice: a turn answered by a *different* model than
+ * the one they picked, and a turn that produced nothing at all. Neither is an
+ * error the stream should abort on, so they surface as toasts.
+ *
+ * NOT handled: `retracted_message_uuids`, the fallback's list of already-
+ * delivered messages the CLI has retracted. Honouring it means deleting
+ * persisted messages by id across adapter → stream-manager → WS → UI, so the
+ * refused partial currently stays in the transcript above the fallback answer.
+ * See docs/lessons-learned.md §10.25.
+ */
+function convertModelRefusalFallback(msg: SDKModelRefusalFallbackMessage): NotificationEvent {
+	// 'local' means only this response came from the fallback (a subagent or a
+	// side question); 'session' means the session's model itself was swapped.
+	const scope = msg.scope ?? 'session';
+	const swapped = scope === 'session'
+		? `The session model is now ${msg.fallback_model}.`
+		: `Only this response came from ${msg.fallback_model}; the session model is unchanged.`;
+	return {
+		type: 'notification',
+		sessionId: msg.session_id,
+		level: 'warning',
+		title: 'Model refused — answered by a fallback',
+		message: `${msg.original_model} declined this request${msg.api_refusal_category ? ` (${msg.api_refusal_category})` : ''}. ${swapped}`,
+	};
+}
+
+/** Convert SDKModelRefusalNoFallbackMessage → NotificationEvent (no retry ran). */
+function convertModelRefusalNoFallback(msg: SDKModelRefusalNoFallbackMessage): NotificationEvent {
+	return {
+		type: 'notification',
+		sessionId: msg.session_id,
+		level: 'error',
+		title: 'Model refused this request',
+		// `content` is the CLI's own human-readable banner; explanation is
+		// unstable prose meant for display only.
+		message: msg.api_refusal_explanation || msg.content,
+	};
+}
+
 /** Convert SDKRateLimitEvent → RateLimitEvent (returns null for non-actionable 'allowed' status) */
 export function convertRateLimit(msg: SDKRateLimitEvent): RateLimitEvent | null {
 	const info = msg.rate_limit_info;
@@ -508,6 +555,10 @@ function* dispatchSdkMessage(msg: SDKMessage, state: StreamConverterState): Gene
 				yield convertSystemInit(msg as SDKSystemMessage);
 			} else if (subtype === 'compact_boundary') {
 				yield convertCompactBoundary(msg as SDKCompactBoundaryMessage);
+			} else if (subtype === 'model_refusal_fallback') {
+				yield convertModelRefusalFallback(msg as SDKModelRefusalFallbackMessage);
+			} else if (subtype === 'model_refusal_no_fallback') {
+				yield convertModelRefusalNoFallback(msg as SDKModelRefusalNoFallbackMessage);
 			} else if (subtype === 'task_started') {
 				const task = msg as unknown as { session_id: string; uuid?: string; task_id: string; tool_use_id?: string; task_type?: string; workflow_name?: string; description?: string };
 				if (task.task_type === 'local_workflow' && task.tool_use_id) {

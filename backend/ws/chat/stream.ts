@@ -1022,6 +1022,7 @@ export const streamHandler = createRouter()
 			t.Literal('seven_day_opus'),
 			t.Literal('seven_day_sonnet'),
 			t.Literal('overage'),
+			t.Literal('seven_day_overage_included'),
 			t.Null()
 		]),
 		timestamp: t.String(),
