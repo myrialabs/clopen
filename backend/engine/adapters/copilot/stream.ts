@@ -543,6 +543,30 @@ export class CopilotEngine implements AIEngine {
 						finished = true;
 						break;
 
+					case 'session_limits_exhausted.requested': {
+						// Added in @github/copilot-sdk 1.0.9. The model request is
+						// BLOCKED until a client answers this over `rpc.ui` — an
+						// unhandled one hangs the turn with no output at all.
+						//
+						// The available actions are `add` / `set` / `unset` / `cancel`,
+						// i.e. three of them raise (or remove) the user's AI-credit
+						// ceiling. Clopen never spends on someone's behalf, so it
+						// cancels the blocked request and reports the numbers; raising
+						// the limit stays a deliberate act in GitHub's own settings.
+						const { requestId, usedAiCredits, maxAiCredits } = event.data;
+						void session.rpc.ui
+							.handlePendingSessionLimitsExhausted({ requestId, response: { action: 'cancel' } })
+							.catch((error: unknown) => debug.warn('engine', 'Copilot session-limit cancel failed:', error));
+						yield {
+							type: 'notification',
+							sessionId: state.sessionId,
+							level: 'error',
+							title: 'Copilot AI credit limit reached',
+							message: `This session used ${usedAiCredits} of ${maxAiCredits} AI credits, so the request was cancelled. Raise the limit in your GitHub Copilot settings to continue.`,
+						};
+						break;
+					}
+
 					case 'session.error':
 						throw buildSessionError(event.data);
 

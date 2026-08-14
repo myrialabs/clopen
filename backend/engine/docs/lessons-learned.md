@@ -248,7 +248,7 @@ resume.
 |-----------|----------------------------------------------------------------------------------------------|
 | Claude    | Pass `forkSession: true` in the SDK options on every call — native.                          |
 | OpenCode  | Call `client.session.fork({ path: { id: resume } })` on every resume — native.               |
-| Copilot   | Call `client.rpc.sessions.fork({ sessionId: resume })` on every resume — native (`@experimental`, added in `@github/copilot-sdk` 1.0.0-beta.4). |
+| Copilot   | Call `client.rpc.sessions.fork({ sessionId: resume })` on every resume — native (added in `@github/copilot-sdk` 1.0.0-beta.4; still marked `@experimental` in 1.0.9, so keep the fallback-to-plain-resume path). |
 | Codex     | **No native API yet** — fork by copying the rollout JSONL FILE on every resume.              |
 | Qwen Code | **No native API yet** — fork by copying the chat JSONL FILE on every resume.                 |
 | Pi        | `SessionManager.forkFrom()` on the on-disk JSONL tree (in Clopen's isolated sessions dir) — native, on every resume. |
@@ -1431,3 +1431,55 @@ reachable, so smuggling the import into some other boot-path file is caught
 too. It also asserts each key loads *its own* adapter: mapping `cursor` to
 `ClineEngine` type-checks with zero errors and would route a user's chat
 through the wrong SDK, and nothing but that check catches it.
+
+---
+
+### 10.25 Upgrading engine SDKs — the type-checker only sees half of it
+
+The August 2026 pass moved all eleven engine packages to current (Claude
+0.3.158 → 0.3.229, Copilot beta.9 → 1.0.9 + CLI 1.0.55 → 1.0.79, Codex 0.135 →
+0.147, OpenCode 1.15.12 → 1.18.18, Pi 0.80.10 → 0.84.1, Cline 0.0.65 → 0.0.74,
+Cursor 1.0.24 → 1.0.27, Qwen 0.1.7 → 0.1.8). `bun run check` reported exactly
+two errors — and neither of them was one of the three real problems. What the
+type-checker cannot see is where the work is:
+
+- **A new *blocking* event is a hang, not a type error.** Copilot 1.0.9 added
+  `session_limits_exhausted.requested`: the model request stops until a client
+  answers it over `session.rpc.ui.handlePendingSessionLimitsExhausted`. An
+  unhandled `case` compiles perfectly and the turn simply never produces
+  output. Before shipping an upgrade, diff the event union for anything named
+  `*.requested` / `*.asked` / `*_request` and check whether it has a paired
+  `.completed` — that pairing is the tell for "someone must answer this".
+  Clopen answers `cancel` and surfaces a notification: three of the four
+  actions raise the user's AI-credit ceiling, and no auto-approval policy
+  covers spending someone's money.
+
+- **A new *informational* message type is silent data loss.** Claude's
+  `SDKMessage` grew eight members; two of them (`model_refusal_fallback`,
+  `model_refusal_no_fallback`) are precisely the cases a user notices — the
+  answer came from a model they did not pick, or no answer came at all — and
+  the converter's `default` arm swallowed both. Adapters end their dispatch
+  with a catch-all by design, so every SDK bump must diff the union rather than
+  trust a clean compile.
+
+- **Peer dependencies float even when the SDK is pinned.**
+  `@anthropic-ai/claude-agent-sdk` ships no dependencies: `@anthropic-ai/sdk`,
+  `@modelcontextprotocol/sdk` and `zod` are peers. `ENGINE_PACKAGES` listed
+  only the SDK, so `bun add` resolved all three at `@latest` inside
+  `~/.clopen/stack/engines` — a real install carried `@anthropic-ai/sdk`
+  0.115.0 while clopen type-checked against its pinned 0.100.1. Same class as
+  the typebox float (#362). The peers are pinned explicitly now. When adding an
+  engine, read its `peerDependencies`, not just its `dependencies`.
+
+**Known gap, deliberately not closed:** `SDKModelRefusalFallbackMessage`
+carries `retracted_message_uuids` — messages the CLI has *withdrawn* after
+delivering them. Clopen's `messageId` for Claude is the SDK uuid, so honouring
+it is feasible, but it needs a retraction event threaded through
+adapter → stream-manager → WS → frontend removal. Until then the refused
+partial stays in the transcript above the fallback answer, and the toast is
+what explains it.
+
+The mechanical part of an upgrade is cheap; budget the time for the union
+diffs. `/tmp`-installing the old and new versions side by side and diffing the
+`type: "…"` literals in each SDK's event declarations found every item above in
+minutes.

@@ -91,6 +91,12 @@ interface RolloutTokenInfo {
 	last_token_usage?: {
 		input_tokens?: number;
 		cached_input_tokens?: number;
+		/**
+		 * Added by the CLI that ships with @openai/codex-sdk 0.147. Rollout files
+		 * written by an older CLI (a thread started before the update) omit it, so
+		 * it stays optional here and defaults to 0.
+		 */
+		cache_write_input_tokens?: number;
 		output_tokens?: number;
 		reasoning_output_tokens?: number;
 	};
@@ -139,6 +145,7 @@ export function readLastTokenUsageFromRollout(threadId: string): Usage | null {
 	return {
 		input_tokens: last.input_tokens ?? 0,
 		cached_input_tokens: last.cached_input_tokens ?? 0,
+		cache_write_input_tokens: last.cache_write_input_tokens ?? 0,
 		output_tokens: last.output_tokens ?? 0,
 		reasoning_output_tokens: last.reasoning_output_tokens ?? 0,
 	};

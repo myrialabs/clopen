@@ -84,7 +84,19 @@ export interface ToolStatus {
 /**
  * Engine → the npm package(s) clopen must install to run that engine on demand.
  * The FIRST entry is the SDK clopen imports (used for install-state detection);
- * any extras pin a transitive CLI the SDK would otherwise float (e.g. copilot).
+ * any extras pin something the SDK would otherwise float — a transitive CLI
+ * (copilot), a sibling package (pi, cline), or an unmet PEER dependency.
+ *
+ * Peers are the subtle case. `@anthropic-ai/claude-agent-sdk` declares
+ * `@anthropic-ai/sdk`, `@modelcontextprotocol/sdk` and `zod` as peers and ships
+ * no copy of its own, so installing the SDK alone lets bun resolve all three at
+ * `@latest` inside the stack dir — clopen would then type-check against the
+ * versions in its own package.json while the adapter loads different ones at
+ * runtime (observed: pinned `@anthropic-ai/sdk` 0.100.1 vs 0.115.0 installed).
+ * Listing them here holds them to the same pin. Engines whose SDK depends on
+ * these packages directly (copilot, cursor, qwen) need no entry: their own
+ * range governs, and bun nests a separate copy when it disagrees.
+ *
  * Versions are read from package.json (the single source of truth), so an
  * on-demand install always matches the exact version clopen was tested against.
  * Every package listed here must therefore be declared in package.json —
@@ -92,7 +104,12 @@ export interface ToolStatus {
  * silently install as `@latest`.
  */
 export const ENGINE_PACKAGES: Partial<Record<ToolId, string[]>> = {
-	claude: ['@anthropic-ai/claude-agent-sdk'],
+	claude: [
+		'@anthropic-ai/claude-agent-sdk',
+		'@anthropic-ai/sdk',
+		'@modelcontextprotocol/sdk',
+		'zod'
+	],
 	opencode: ['@opencode-ai/sdk'],
 	copilot: ['@github/copilot-sdk', '@github/copilot'],
 	codex: ['@openai/codex-sdk'],

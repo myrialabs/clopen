@@ -23,8 +23,13 @@ stays **agnostic** to the underlying SDK.
 > `EngineNotReadyError` (`reason: 'not-installed' | 'needs-update'`) — the
 > engine must first be installed/updated in **Settings → Stack**. This is
 > what fixed `bun add -g @myrialabs/clopen` aborting mid-install (it used to
-> drag 200–300 MB of native CLI binaries). Future Stack work (runtimes,
-> services, per-project versioning) is specced in
+> drag 200–300 MB of native CLI binaries). The pin covers an SDK's unbundled
+> **peer** dependencies too (`ENGINE_PACKAGES` in
+> [`install-recipes.ts`](./install-recipes.ts)) — without that they resolve at
+> `@latest` in the stack dir and clopen runs a version it never type-checked
+> against; read **§10.25** in [lessons-learned](./docs/lessons-learned.md)
+> before bumping any SDK. Future Stack work (runtimes, services, per-project
+> versioning) is specced in
 > [`docs/stack-roadmap.md`](../../docs/stack-roadmap.md).
 
 > **Adapters load on first use, and that rule is now mechanical.** The registry
@@ -85,7 +90,7 @@ map, then jump to the area you need.
 6. [Stack](./docs/stack.md) — registering a host tool or on-demand engine SDK in `install-recipes.ts` + the install runner.
 7. [Artifacts & Access](./docs/artifacts.md) — the extension layer (Skills, Commands, Subagents, Instructions, Permissions, Profiles, MCP), the capability matrix, and the `artifact-sync.ts` seam adapters call at stream start.
 8. [Adding a new engine](./docs/adding-an-engine.md) — the end-to-end, stage-by-stage checklist.
-9. [Lessons learned](./docs/lessons-learned.md) — §10 pitfalls (tool name/input canonicalisation, fork session, MCP reuse, auth-blob swap, sub-agent routing, OpenCode v1/v2, structured output, cross-engine handoff, …).
+9. [Lessons learned](./docs/lessons-learned.md) — §10 pitfalls (tool name/input canonicalisation, fork session, MCP reuse, auth-blob swap, sub-agent routing, OpenCode v1/v2, structured output, cross-engine handoff, SDK upgrades, …).
 10. [Quick reference](./docs/quick-reference.md) — "I need X → look in file Y" table.
 
 ---
