@@ -1462,6 +1462,22 @@ type-checker cannot see is where the work is:
   with a catch-all by design, so every SDK bump must diff the union rather than
   trust a clean compile.
 
+- **A static model catalog goes stale on the same clock, and the CLI knows the
+  answer.** The Codex bump moved the whole lineup: `gpt-5.6-sol/terra/luna`
+  appeared, `gpt-5.3-codex` and the `gpt-5.4` pair left, `gpt-5.5` stopped being
+  ChatGPT-only, the context window went 200k → 272k, `minimal` stopped being a
+  valid effort and `max`/`ultra` became one. None of that surfaces as a type
+  error — a wrong slug fails at runtime, inside the CLI, as somebody's chat.
+  Do not transcribe the docs: the shipped binary embeds its own preset table
+  (`strings <codex-binary>`, search `"models": [`) with slug, `display_name`,
+  `context_window`, `default_reasoning_level`, `supported_reasoning_levels`,
+  `visibility` and `priority`. That is what the client actually accepts, and
+  `backend/engine/adapters/codex/models.ts` mirrors it field for field. Treat
+  the public docs as the second source, not the first — and remember the CLI
+  also fetches account-entitled models from the server, so absence from the
+  embedded table is not proof of removal (that is why `gpt-5.3-codex-spark`
+  stayed).
+
 - **Peer dependencies float even when the SDK is pinned.**
   `@anthropic-ai/claude-agent-sdk` ships no dependencies: `@anthropic-ai/sdk`,
   `@modelcontextprotocol/sdk` and `zod` are peers. `ENGINE_PACKAGES` listed
@@ -1478,6 +1494,15 @@ it is feasible, but it needs a retraction event threaded through
 adapter → stream-manager → WS → frontend removal. Until then the refused
 partial stays in the transcript above the fallback answer, and the toast is
 what explains it.
+
+A second gap worth naming: the SDK's own types can lag the CLI it drives.
+`ModelReasoningEffort` still stops at `xhigh` in codex-sdk 0.147 while the CLI
+enum runs to `max` and `ultra`, and the SDK never validates — it interpolates
+the string into `--config model_reasoning_effort="…"`. Reading the transport,
+not just the type, is what made GPT-5.6's top levels reachable. Cast at the SDK
+boundary and gate the value in one place (`resolveCodexEffort`), never by a
+second copy of the allow-list next to the call site — that copy is exactly what
+had gone stale.
 
 The mechanical part of an upgrade is cheap; budget the time for the union
 diffs. `/tmp`-installing the old and new versions side by side and diffing the
