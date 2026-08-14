@@ -130,6 +130,7 @@ const REASONING_LEVEL_LABELS: Record<string, string> = {
 	high: 'High',
 	xhigh: 'X-High',
 	max: 'Max',
+	ultra: 'Ultra',
 };
 
 /** Human label for a reasoning level token (falls back to capitalizing the token). */
