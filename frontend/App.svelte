@@ -22,6 +22,7 @@
 	import ws from '$frontend/utils/ws';
 	import { showNotificationWithActions } from '$frontend/stores/ui/notification.svelte';
 	import { openTeamForUser } from '$frontend/stores/ui/settings-modal.svelte';
+	import { debug } from '$shared/utils/logger';
 
 	let servicesInitialized = false;
 
@@ -77,6 +78,13 @@
 	});
 </script>
 
+<!--
+	Last-resort boundary. Nested boundaries (e.g. per tool renderer) handle the
+	failures they can describe; this one only exists so that an unforeseen render
+	error degrades to a recoverable screen instead of an empty page the user
+	cannot navigate away from.
+-->
+<svelte:boundary onerror={(error) => debug.error('workspace', 'Unhandled render error:', error)}>
 {#if authStore.authState === 'loading'}
 	<LoadingScreen isVisible={true} progress={30} loadingText="Connecting..." />
 {:else if authStore.authState === 'setup'}
@@ -106,3 +114,22 @@
 	<RestartRequiredDialog />
 	<WhatsNewDialog />
 {/if}
+
+{#snippet failed(error)}
+	<div class="flex flex-col items-center justify-center gap-3 h-dvh w-screen p-6 text-center bg-slate-50 dark:bg-slate-900">
+		<h1 class="text-lg font-semibold text-slate-700 dark:text-slate-200">Something went wrong</h1>
+		<p class="max-w-md text-sm text-slate-500 dark:text-slate-400">
+			Clopen hit an unexpected error while rendering. Reloading usually recovers your session.
+		</p>
+		<p class="max-w-md font-mono text-xs break-words text-slate-400 dark:text-slate-500">
+			{error instanceof Error ? error.message : String(error)}
+		</p>
+		<button
+			class="px-4 py-1.5 text-sm font-medium rounded-md bg-blue-600 hover:bg-blue-700 text-white transition-colors"
+			onclick={() => location.reload()}
+		>
+			Reload
+		</button>
+	</div>
+{/snippet}
+</svelte:boundary>
