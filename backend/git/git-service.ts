@@ -3,7 +3,7 @@
  * High-level git operations built on top of executor and parser
  */
 
-import { execGit, isGitRepo, getGitRoot } from './git-executor';
+import { execGit, isGitRepo, getGitRoot, type GitExecResult } from './git-executor';
 import { resolveBinary } from '../utils/cli';
 import { getCleanSpawnEnv } from '../utils/env';
 import {
@@ -67,6 +67,32 @@ export class GitService {
 		if (result.exitCode !== 0) {
 			throw new Error(`git init failed: ${result.stderr}`);
 		}
+	}
+
+	// ============================================
+	// Revision probes
+	// ============================================
+
+	/**
+	 * True when the repo has at least one commit.
+	 *
+	 * A freshly `git init`ed repo has an unborn HEAD: every HEAD-relative revision
+	 * (`HEAD`, `HEAD~1`, `HEAD^`) fails to resolve, and git reports it as a raw
+	 * `fatal: ambiguous argument` / `bad revision`. Callers probe this so they can
+	 * answer with an actionable message — or skip the operation entirely — instead
+	 * of leaking that fatal into a toast.
+	 */
+	private async hasCommits(cwd: string): Promise<boolean> {
+		return (await execGit(['rev-parse', '--verify', '--quiet', 'HEAD'], cwd)).exitCode === 0;
+	}
+
+	/**
+	 * True when `ref` has a parent commit — false for a root (parentless) commit,
+	 * where `<ref>^` / `<ref>~1` cannot resolve even though `<ref>` itself does.
+	 */
+	private async hasParent(cwd: string, ref = 'HEAD'): Promise<boolean> {
+		assertSafeGitRevish(ref, 'parent probe ref');
+		return (await execGit(['rev-parse', '--verify', '--quiet', `${ref}^`], cwd)).exitCode === 0;
 	}
 
 	// ============================================
@@ -175,6 +201,11 @@ export class GitService {
 		}
 		const result = await execGit(args, cwd);
 		if (result.exitCode !== 0) {
+			// Unborn HEAD — git says "You have nothing to amend", which reads like a
+			// failure rather than "commit normally instead".
+			if (!(await this.hasCommits(cwd))) {
+				throw new Error('There is no commit to amend yet — create the first commit instead.');
+			}
 			throw new Error(`git commit --amend failed: ${result.stderr}`);
 		}
 		const hashResult = await execGit(['rev-parse', 'HEAD'], cwd);
@@ -212,8 +243,7 @@ export class GitService {
 		// changed". Detect the parentless case and diff against the empty tree via
 		// `diff-tree --root` so the initial commit's files show up as additions.
 		// Commits with a parent (including merges) keep the original behaviour.
-		const hasParent =
-			(await execGit(['rev-parse', '--verify', '--quiet', `${commitHash}^`], cwd)).exitCode === 0;
+		const hasParent = await this.hasParent(cwd, commitHash);
 		// Fetch the full commit message alongside the diff so the detail view can
 		// render the body. `%s\0%b` splits cleanly on NUL since a subject never
 		// contains one; the body is kept verbatim (it may span many lines).
@@ -460,6 +490,11 @@ export class GitService {
 
 		const result = await execGit(args, cwd);
 		if (result.exitCode !== 0) {
+			// A repo with no commits yet isn't an error — `git log` just has nothing
+			// to walk. Report it as an empty history so the UI shows its empty state.
+			if (!(await this.hasCommits(cwd))) {
+				return { commits: [], total: 0, hasMore: false };
+			}
 			throw new Error(`git log failed: ${result.stderr}`);
 		}
 
@@ -510,6 +545,24 @@ export class GitService {
 		};
 	}
 
+	/**
+	 * Shape a `git push` outcome. On an unborn HEAD git only reports
+	 * `src refspec <branch> does not match any`, which reads like a broken remote
+	 * rather than "there is nothing here to push yet".
+	 */
+	private async describePushResult(
+		cwd: string,
+		result: GitExecResult
+	): Promise<{ success: boolean; message: string }> {
+		if (result.exitCode === 0) {
+			return { success: true, message: result.stderr || result.stdout };
+		}
+		if (!(await this.hasCommits(cwd))) {
+			return { success: false, message: 'This branch has no commits yet, so there is nothing to push.' };
+		}
+		return { success: false, message: result.stderr };
+	}
+
 	async push(cwd: string, remote = 'origin', branch?: string, force = false): Promise<{ success: boolean; message: string }> {
 		assertSafeGitRemoteName(remote);
 		const args = ['push', remote];
@@ -520,11 +573,7 @@ export class GitService {
 		if (force) args.push('--force-with-lease');
 		// Set upstream if needed
 		args.push('-u');
-		const result = await execGit(args, cwd, 60000);
-		return {
-			success: result.exitCode === 0,
-			message: result.exitCode === 0 ? (result.stderr || result.stdout) : result.stderr
-		};
+		return this.describePushResult(cwd, await execGit(args, cwd, 60000));
 	}
 
 	/**
@@ -554,11 +603,7 @@ export class GitService {
 			else if (mode === 'force') args.push('--force');
 			args.push('-u');
 		}
-		const result = await execGit(args, cwd, 60000);
-		return {
-			success: result.exitCode === 0,
-			message: result.exitCode === 0 ? (result.stderr || result.stdout) : result.stderr
-		};
+		return this.describePushResult(cwd, await execGit(args, cwd, 60000));
 	}
 
 	/** Fetch every configured remote and prune deleted remote-tracking refs. */
@@ -636,6 +681,10 @@ export class GitService {
 				throw new Error(
 					'Stashing staged changes only requires Git 2.35 or newer. Please update Git to use this option.'
 				);
+			}
+			// Stashing needs a commit to record the base state against.
+			if (!(await this.hasCommits(cwd))) {
+				throw new Error('Stashing requires at least one commit — create the first commit first.');
 			}
 			throw new Error(`git stash failed: ${result.stderr}`);
 		}
@@ -868,12 +917,55 @@ export class GitService {
 	 *  - `soft`  keeps the changes staged
 	 *  - `mixed` keeps the changes in the working tree (unstaged)
 	 *  - `hard`  discards the changes entirely (destructive)
+	 *
+	 * The root commit has no `HEAD~1` to reset onto, so undoing it means deleting
+	 * the branch ref itself: `update-ref -d HEAD` returns the repo to the unborn
+	 * state while leaving the index intact — which is exactly `--soft`. `--mixed`
+	 * and `--hard` then unwind the index (and working tree) from there.
 	 */
 	async undoLastCommit(cwd: string, mode: 'soft' | 'mixed' | 'hard'): Promise<void> {
-		const flag = mode === 'soft' ? '--soft' : mode === 'hard' ? '--hard' : '--mixed';
-		const result = await execGit(['reset', flag, 'HEAD~1'], cwd);
-		if (result.exitCode !== 0) {
-			throw new Error(`git reset ${flag} failed: ${result.stderr}`);
+		if (!(await this.hasCommits(cwd))) {
+			throw new Error('This repository has no commits yet, so there is nothing to undo.');
+		}
+
+		if (await this.hasParent(cwd)) {
+			const flag = mode === 'soft' ? '--soft' : mode === 'hard' ? '--hard' : '--mixed';
+			const result = await execGit(['reset', flag, 'HEAD~1'], cwd);
+			if (result.exitCode !== 0) {
+				throw new Error(`git reset ${flag} failed: ${result.stderr}`);
+			}
+			return;
+		}
+
+		// Root commit. `--hard` must discard the working tree while HEAD still
+		// resolves — once the ref is gone there is no commit left to reset onto.
+		if (mode === 'hard') {
+			const discard = await execGit(['reset', '--hard', 'HEAD'], cwd);
+			if (discard.exitCode !== 0) {
+				throw new Error(`git reset --hard failed: ${discard.stderr}`);
+			}
+		}
+
+		const removeRef = await execGit(['update-ref', '-d', 'HEAD'], cwd);
+		if (removeRef.exitCode !== 0) {
+			throw new Error(`git update-ref -d HEAD failed: ${removeRef.stderr}`);
+		}
+
+		if (mode === 'mixed') {
+			// Drop the index so the commit's files come back as untracked changes.
+			const unstage = await execGit(['reset'], cwd);
+			if (unstage.exitCode !== 0) {
+				throw new Error(`git reset failed: ${unstage.stderr}`);
+			}
+		} else if (mode === 'hard') {
+			// Delete exactly what the commit tracked — unrelated untracked files
+			// survive, matching `reset --hard HEAD~1` on a non-root commit. The
+			// `:/` pathspec covers the whole work tree even when cwd is a subdir,
+			// and `--ignore-unmatch` keeps an empty root commit from erroring.
+			const clearIndex = await execGit(['rm', '-rf', '--quiet', '--ignore-unmatch', '--', ':/'], cwd);
+			if (clearIndex.exitCode !== 0) {
+				throw new Error(`git rm failed: ${clearIndex.stderr}`);
+			}
 		}
 	}
 
@@ -881,6 +973,10 @@ export class GitService {
 	async revertCommit(cwd: string, ref = 'HEAD'): Promise<{ success: boolean; message: string }> {
 		assertSafeGitRevish(ref, 'revert ref');
 		const result = await execGit(['revert', '--no-edit', ref], cwd);
+		if (result.exitCode !== 0 && !(await this.hasCommits(cwd))) {
+			// Unborn HEAD — git only reports `bad revision 'HEAD'`.
+			return { success: false, message: 'This repository has no commits yet, so there is nothing to revert.' };
+		}
 		return {
 			success: result.exitCode === 0,
 			message: result.exitCode === 0 ? (result.stdout || result.stderr) : result.stderr
