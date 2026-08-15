@@ -2,6 +2,7 @@
 	import type { FileNode } from '$shared/types/filesystem';
 	import LoadingSpinner from '../common/feedback/LoadingSpinner.svelte';
 	import MonacoCodeEditor from '../common/editor/MonacoCodeEditor.svelte';
+	import { initMonaco } from '../common/editor/monaco-loader';
 	import MediaPreview from '../common/media/MediaPreview.svelte';
 	import MarkdownPreview from '../common/media/MarkdownPreview.svelte';
 	import ImageEditor from './ImageEditor.svelte';
@@ -595,6 +596,23 @@
 	}
 
 	/**
+	 * Move a hunk from snippet coordinates onto the file's own line numbering.
+	 * An AI edit is diffed against its own "before" text, so *both* sides come
+	 * back numbered from 1 — the old side has to travel with the new one, or the
+	 * peek labels every replaced block "1, 2, 3…" no matter where it sits in the
+	 * file. 0 is the "no old side" sentinel (pure addition) and stays 0.
+	 */
+	function shiftHunk(hunk: GutterChange, offset: number): GutterChange {
+		return {
+			...hunk,
+			startLine: hunk.startLine + offset,
+			endLine: hunk.endLine + offset,
+			oldStartLine: hunk.oldStartLine > 0 ? hunk.oldStartLine + offset : 0,
+			oldEndLine: hunk.oldEndLine > 0 ? hunk.oldEndLine + offset : 0
+		};
+	}
+
+	/**
 	 * Place an edit's hunks onto the file as it stands now. Fast path: the edit's
 	 * text is still present verbatim, so every hunk shifts by the same offset.
 	 * Otherwise a later edit rewrote part of it — fall back to anchoring each hunk
@@ -609,11 +627,7 @@
 		const at = content.indexOf(editedText);
 		if (at >= 0) {
 			const offset = content.substring(0, at).split('\n').length - 1;
-			return hunks.map((c) => ({
-				...c,
-				startLine: c.startLine + offset,
-				endLine: c.endLine + offset
-			}));
+			return hunks.map((c) => shiftHunk(c, offset));
 		}
 
 		const anchored: GutterChange[] = [];
@@ -624,11 +638,7 @@
 			const idx = content.indexOf(text);
 			if (idx < 0) continue;
 			const startLine = content.substring(0, idx).split('\n').length;
-			anchored.push({
-				...hunk,
-				startLine,
-				endLine: startLine + hunk.newLines.length - 1
-			});
+			anchored.push(shiftHunk(hunk, startLine - hunk.startLine));
 		}
 		return anchored;
 	}
@@ -990,11 +1000,13 @@
 
 	function appendPeekRows(target: HTMLElement, lines: string[], side: 'old' | 'new') {
 		const shown = Math.min(lines.length, PEEK_MAX_ROWS);
+		const rows: HTMLElement[] = [];
 		for (let i = 0; i < shown; i++) {
 			const row = document.createElement('div');
 			row.className = `git-diff-peek-row git-diff-peek-row-${side}`;
 			row.textContent = lines[i].length > 0 ? lines[i] : '\u00A0';
 			target.appendChild(row);
+			rows.push(row);
 		}
 		if (lines.length > shown) {
 			const more = document.createElement('div');
@@ -1002,6 +1014,39 @@
 			more.textContent = `… ${lines.length - shown} more lines`;
 			target.appendChild(more);
 		}
+		colorizePeekRows(rows, lines.slice(0, shown));
+	}
+
+	/**
+	 * Tokenize the peek's rows with the editor's own colorizer so a hunk is
+	 * syntax-highlighted exactly like the code above and below it — same theme,
+	 * same `.mtk*` classes, no second palette to keep in sync. Rows are rendered
+	 * as plain text first and upgraded here, so a language with no tokenizer (or
+	 * a failed load) keeps the readable fallback.
+	 */
+	function colorizePeekRows(rows: HTMLElement[], lines: string[]) {
+		if (rows.length === 0) return;
+		const model = monacoEditorRef?.getEditor()?.getModel();
+		const languageId = model?.getLanguageId();
+		if (!model || !languageId || languageId === 'plaintext') return;
+		const tabSize = model.getOptions().tabSize;
+
+		void initMonaco()
+			.then((monaco) => monaco.editor.colorize(lines.join('\n'), languageId, { tabSize }))
+			.then((html) => {
+				// The peek can be closed or replaced while the tokenizer loads.
+				if (!rows[0].isConnected) return;
+				// colorize() emits one chunk per line, separated by <br/>.
+				const chunks = html.split('<br/>');
+				for (let i = 0; i < rows.length; i++) {
+					const chunk = chunks[i];
+					if (chunk === undefined) break;
+					rows[i].innerHTML = chunk.length > 0 ? chunk : '&nbsp;';
+				}
+			})
+			.catch(() => {
+				/* keep the plain-text rows — the hunk stays readable */
+			});
 	}
 
 	function buildPeekDom(change: GutterChange, isAi = false): HTMLElement {
@@ -1238,19 +1283,89 @@
 		showDiffPeek(next, activeDiffZone.isAi);
 	}
 
-	function applyPeekSizing(editorInstance: editor.IStandaloneCodeEditor, domNode: HTMLElement) {
+	/**
+	 * The editor is the single source of truth for the peek's typography. Monaco
+	 * writes its resolved font info as inline styles on `.view-lines`, and the
+	 * same values drive the line-number column — so reading them back puts the
+	 * peek on the editor's exact grid, mouse-wheel zoom included (zoom never
+	 * touches the settings store). Recomputing the metrics here instead is what
+	 * broke the alignment: round(round(size * 0.9) * 1.5) is a pixel taller than
+	 * the editor's round(size * 0.9 * 1.5) at some sizes, and that pixel compounds
+	 * per row until the line numbers label the wrong lines.
+	 */
+	function readEditorFont(editorInstance: editor.IStandaloneCodeEditor) {
+		const viewLines = editorInstance.getDomNode()?.querySelector<HTMLElement>('.view-lines');
+		if (viewLines) {
+			const style = getComputedStyle(viewLines);
+			const fontSize = parseFloat(style.fontSize);
+			const lineHeight = parseFloat(style.lineHeight);
+			if (fontSize > 0 && lineHeight > 0) {
+				return {
+					fontFamily: style.fontFamily,
+					fontSize,
+					lineHeight,
+					letterSpacing: style.letterSpacing === 'normal' ? '' : style.letterSpacing
+				};
+			}
+		}
+		// Editor not laid out yet — mirror MonacoCodeEditor's construction options.
+		return {
+			fontFamily: '',
+			fontSize: Math.round(settings.fontSize * 0.9),
+			lineHeight: Math.round(settings.fontSize * 0.9 * 1.5),
+			letterSpacing: ''
+		};
+	}
+
+	/** Height of the overlay header; the peek's two columns reserve it as padding. */
+	const PEEK_HEADER_PX = 28;
+
+	function applyPeekSizing(editorInstance: editor.IStandaloneCodeEditor, nodes: HTMLElement[]) {
 		const layoutInfo = editorInstance.getLayoutInfo();
-		// Constrain peek width to the visible content viewport so the action
-		// buttons stay reachable when the source has long lines.
-		const fontSize = Math.round(settings.fontSize * 0.9);
-		const lineHeight = Math.round(fontSize * 1.5);
+		const font = readEditorFont(editorInstance);
 		// Match the editor's tab width so leading tabs in the peek body align
 		// 1:1 with the editor's content above/below.
 		const tabSize = editorInstance.getModel()?.getOptions().tabSize ?? 2;
-		domNode.style.setProperty('--peek-viewport-width', `${layoutInfo.contentWidth}px`);
-		domNode.style.setProperty('--peek-font-size', `${fontSize}px`);
-		domNode.style.setProperty('--peek-line-height', `${lineHeight}px`);
-		domNode.style.setProperty('--peek-tab-size', String(tabSize));
+		// Monaco right-aligns each line number at lineNumbersLeft + lineNumbersWidth
+		// while the margin view zone spans the whole gutter (contentLeft), so this
+		// padding lands the peek's numbers on the editor's own right edge.
+		const numbersPadRight = Math.max(
+			0,
+			layoutInfo.contentLeft - (layoutInfo.lineNumbersLeft + layoutInfo.lineNumbersWidth)
+		);
+		for (const node of nodes) {
+			// Constrain peek width to the visible content viewport so the action
+			// buttons stay reachable when the source has long lines.
+			node.style.setProperty('--peek-viewport-width', `${layoutInfo.contentWidth}px`);
+			// An empty value drops the property, which falls back to the CSS default.
+			node.style.setProperty('--peek-font-family', font.fontFamily);
+			node.style.setProperty('--peek-font-size', `${font.fontSize}px`);
+			node.style.setProperty('--peek-line-height', `${font.lineHeight}px`);
+			node.style.setProperty('--peek-letter-spacing', font.letterSpacing);
+			node.style.setProperty('--peek-tab-size', String(tabSize));
+			node.style.setProperty('--peek-numbers-pad-right', `${numbersPadRight}px`);
+			node.style.setProperty('--peek-header-height', `${PEEK_HEADER_PX}px`);
+		}
+	}
+
+	/**
+	 * Can `el` still absorb this wheel delta, or is it against the end already?
+	 * Sub-pixel scroll positions (zoom, fractional line heights) never land
+	 * exactly on the maximum, so the ends are compared with a 1px tolerance —
+	 * without it the last pixel of slack would keep eating gestures that belong
+	 * to the editor.
+	 */
+	function canScrollBy(el: HTMLElement, deltaX: number, deltaY: number): boolean {
+		const EDGE_TOLERANCE = 1;
+		const maxTop = el.scrollHeight - el.clientHeight;
+		const maxLeft = el.scrollWidth - el.clientWidth;
+		const canVertical =
+			(deltaY < 0 && el.scrollTop > EDGE_TOLERANCE) ||
+			(deltaY > 0 && el.scrollTop < maxTop - EDGE_TOLERANCE);
+		const canHorizontal =
+			(deltaX < 0 && el.scrollLeft > EDGE_TOLERANCE) ||
+			(deltaX > 0 && el.scrollLeft < maxLeft - EDGE_TOLERANCE);
+		return canVertical || canHorizontal;
 	}
 
 	function applyPeekScroll(domNode: HTMLElement, scrollLeft: number) {
@@ -1273,7 +1388,7 @@
 		const domNode = buildPeekDom(change, isAi);
 		const marginDomNode = buildPeekMargin(change);
 		const overlayHeader = buildPeekOverlayHeader(change, index, total, isAi, recorded);
-		applyPeekSizing(editorInstance, domNode);
+		applyPeekSizing(editorInstance, [domNode, marginDomNode]);
 		applyPeekScroll(domNode, editorInstance.getScrollLeft());
 
 		// Monaco attaches mouse/pointer listeners on its view container in
@@ -1307,6 +1422,21 @@
 		// own scroll programmatically so the body scrolls under the cursor
 		// instead of the editor below.
 		const innerEl = domNode.querySelector<HTMLElement>('.git-diff-peek-inner');
+		// One continuous wheel stream — a trackpad glide plus the momentum tail the
+		// OS keeps sending after the fingers lift, or a wheel spun without letting
+		// up — fires far faster than a person can decide to scroll again, so a gap
+		// this size is what separates two inputs. Nothing here is a delay: the
+		// stream is only used to tell "still the same push" from "pushed again".
+		const STREAM_GAP_MS = 60;
+		let lastWheelAt = 0;
+		/**
+		 * Did this stream actually move the peek? If it did, running into the end
+		 * stops it dead for the rest of the stream — momentum included — so the
+		 * editor never lurches out from under someone who was only reading the hunk.
+		 * If it didn't (nothing to scroll, or the input arrived already at the end),
+		 * the wheel chains to Monaco right away. There is no timer either way.
+		 */
+		let scrolledInStream = false;
 		const wheelHandler = (e: WheelEvent) => {
 			const target = e.target as Node | null;
 			if (!target) return;
@@ -1316,17 +1446,28 @@
 				!overlayHeader.contains(target)
 			)
 				return;
+			if (!innerEl) return;
+
+			if (e.timeStamp - lastWheelAt >= STREAM_GAP_MS) scrolledInStream = false;
+			lastWheelAt = e.timeStamp;
+
+			if (!canScrollBy(innerEl, e.deltaX, e.deltaY)) {
+				if (!scrolledInStream) return;
+				e.stopPropagation();
+				e.preventDefault();
+				return;
+			}
+
+			scrolledInStream = true;
 			e.stopPropagation();
 			e.preventDefault();
-			if (innerEl) {
-				innerEl.scrollTop += e.deltaY;
-				innerEl.scrollLeft += e.deltaX;
-				// Sync the margin (line numbers) so it scrolls in lockstep
-				// with the body. They live in separate clipped DOM trees
-				// (Monaco splits view-zone content and margin), so a single
-				// overflow container can't span both.
-				marginDomNode.scrollTop = innerEl.scrollTop;
-			}
+			innerEl.scrollTop += e.deltaY;
+			innerEl.scrollLeft += e.deltaX;
+			// Sync the margin (line numbers) so it scrolls in lockstep
+			// with the body. They live in separate clipped DOM trees
+			// (Monaco splits view-zone content and margin), so a single
+			// overflow container can't span both.
+			marginDomNode.scrollTop = innerEl.scrollTop;
 		};
 		document.addEventListener('wheel', wheelHandler, { capture: true, passive: false });
 
@@ -1338,9 +1479,9 @@
 		};
 
 		const afterLineNumber = Math.max(0, change.startLine - 1);
-		const fontSize = Math.round(settings.fontSize * 0.9);
-		const editorLineHeight = Math.round(fontSize * 1.5);
-		const HEADER_PX = 28;
+		// Same row height the peek renders with, so the zone reserves exactly the
+		// space its rows occupy instead of a rounded-up guess.
+		const editorLineHeight = readEditorFont(editorInstance).lineHeight;
 		// Cap each section independently at 40% of the editor viewport so a
 		// massive hunk on one side doesn't bury the other side or the editor.
 		// Each body is scrollable (overflow:auto) so long hunks are still
@@ -1351,7 +1492,7 @@
 		const oldPx = Math.min(change.oldLines.length * editorLineHeight, sectionMaxPx);
 		const newPx = Math.min(change.newLines.length * editorLineHeight, sectionMaxPx);
 		const contentPx = (oldPx + newPx) || editorLineHeight;
-		const heightInPx = HEADER_PX + contentPx + 6;
+		const heightInPx = Math.ceil(PEEK_HEADER_PX + contentPx + 6);
 
 		const widgetId = `git-diff-peek-overlay-${change.startLine}-${Date.now()}`;
 		const overlayWidget: editor.IOverlayWidget = {
@@ -1394,7 +1535,7 @@
 			if (e.scrollLeftChanged) applyPeekScroll(domNode, e.scrollLeft);
 		});
 		const layoutDisposable = editorInstance.onDidLayoutChange(() => {
-			applyPeekSizing(editorInstance, domNode);
+			applyPeekSizing(editorInstance, [domNode, marginDomNode]);
 		});
 
 		activeDiffZone = {
@@ -2355,20 +2496,31 @@
 		flex-direction: column;
 		width: var(--peek-viewport-width, 100%);
 		height: 100%;
-		font-family: 'SF Mono', Monaco, Inconsolata, 'Roboto Mono', Consolas, 'Courier New',
-			monospace;
+		/* Typography comes from the editor itself (see applyPeekSizing) — the
+		   literals are only a pre-layout fallback. */
+		font-family: var(
+			--peek-font-family,
+			'SF Mono',
+			Monaco,
+			Inconsolata,
+			'Roboto Mono',
+			Consolas,
+			'Courier New',
+			monospace
+		);
 		font-size: var(--peek-font-size, 12px);
-		background-color: #ffffff;
+		letter-spacing: var(--peek-letter-spacing, normal);
+		background-color: var(--vscode-editor-background, #ffffff);
 		border-top: 1px solid #d4d4d4;
 		border-bottom: 1px solid #d4d4d4;
-		padding-top: 28px;
+		padding-top: var(--peek-header-height, 28px);
 		overflow-y: auto;
 		overflow-x: auto;
 		box-sizing: border-box;
 		pointer-events: auto;
 	}
 	:global(.dark .git-diff-peek-inner) {
-		background-color: #0d1117;
+		background-color: var(--vscode-editor-background, #0d1117);
 		border-top-color: #30363d;
 		border-bottom-color: #30363d;
 	}
@@ -2532,7 +2684,8 @@
 		flex: none;
 		min-width: 0;
 		overflow: visible;
-		color: #333;
+		/* Base colour for untokenized text; syntax spans paint over it. */
+		color: var(--vscode-editor-foreground, #333);
 		-webkit-user-select: text;
 		user-select: text;
 		cursor: text;
@@ -2543,11 +2696,9 @@
 	:global(.git-diff-peek-body-new .git-diff-peek-body-content) {
 		background-color: rgba(16, 185, 129, 0.10);
 	}
-	:global(.dark .git-diff-peek-body-old) {
-		color: #e6edf3;
-	}
+	:global(.dark .git-diff-peek-body-old),
 	:global(.dark .git-diff-peek-body-new) {
-		color: #e6edf3;
+		color: var(--vscode-editor-foreground, #e6edf3);
 	}
 	:global(.dark .git-diff-peek-body-old .git-diff-peek-body-content) {
 		background-color: rgba(239, 68, 68, 0.16);
@@ -2614,17 +2765,28 @@
 		flex-direction: column;
 		width: 100%;
 		height: 100%;
-		font-family: 'SF Mono', Monaco, Inconsolata, 'Roboto Mono', Consolas, 'Courier New',
-			monospace;
+		font-family: var(
+			--peek-font-family,
+			'SF Mono',
+			Monaco,
+			Inconsolata,
+			'Roboto Mono',
+			Consolas,
+			'Courier New',
+			monospace
+		);
 		font-size: var(--peek-font-size, 12px);
-		color: rgba(0, 0, 0, 0.4);
+		letter-spacing: var(--peek-letter-spacing, normal);
+		/* Same digits and the same colour Monaco paints its own gutter with. */
+		font-variant-numeric: tabular-nums;
+		color: var(--vscode-editorLineNumber-foreground, rgba(0, 0, 0, 0.4));
 		user-select: none;
 		overflow: hidden;
 		box-sizing: border-box;
 		pointer-events: auto;
 		border-top: 1px solid #d4d4d4;
 		border-bottom: 1px solid #d4d4d4;
-		padding-top: 28px;
+		padding-top: var(--peek-header-height, 28px);
 	}
 	:global(.git-diff-peek-margin-row-old) {
 		background-color: rgba(239, 68, 68, 0.10);
@@ -2639,16 +2801,20 @@
 		background-color: rgba(16, 185, 129, 0.16);
 	}
 	:global(.dark .git-diff-peek-margin) {
-		color: rgba(255, 255, 255, 0.35);
+		color: var(--vscode-editorLineNumber-foreground, rgba(255, 255, 255, 0.35));
 		border-top-color: #30363d;
 		border-bottom-color: #30363d;
 	}
 
+	/* padding-right lands the digits on the same right edge as the editor's own
+	   line-number column (see applyPeekSizing), so the peek's numbers sit in a
+	   straight line with the ones above and below it. */
 	:global(.git-diff-peek-margin-row) {
 		flex-shrink: 0;
+		box-sizing: border-box;
 		line-height: var(--peek-line-height, 18px);
 		min-height: var(--peek-line-height, 18px);
-		padding-right: 10px;
+		padding-right: var(--peek-numbers-pad-right, 10px);
 		text-align: right;
 	}
 
