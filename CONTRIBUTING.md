@@ -20,9 +20,10 @@ Thanks for considering a contribution. This guide covers the development environ
   - [Formatting](#formatting)
   - [Tests](#tests)
 - [Submitting Changes](#submitting-changes)
+  - [Delivering a Change](#delivering-a-change)
   - [Branch Naming](#branch-naming)
   - [Commit Messages](#commit-messages)
-  - [Pre-commit Checklist](#pre-commit-checklist)
+  - [Before You Push](#before-you-push)
   - [Pull Request Format](#pull-request-format)
   - [Comments on Existing PRs](#comments-on-existing-prs)
 - [After You Submit](#after-you-submit)
@@ -46,6 +47,9 @@ Thanks for considering a contribution. This guide covers the development environ
   - [Codex](https://github.com/openai/codex) by OpenAI
   - [GitHub Copilot CLI](https://github.com/github/copilot-cli) by GitHub
   - [Qwen Code](https://github.com/QwenLM/qwen-code) by Alibaba Qwen
+  - [Pi](https://github.com/earendil-works/pi) by Earendil Works
+  - [Cline](https://github.com/cline/cline) by Cline Bot Inc.
+  - [Cursor](https://cursor.com) by Anysphere
 
 Engines install on demand via **Settings → Stack** after first launch (into a clopen-managed directory, not your global setup).
 
@@ -78,7 +82,15 @@ git push origin main   # optional: also sync your fork's main on GitHub
 
 ### Development Data Directory
 
-When running `bun run dev`, Clopen stores data in `~/.clopen-dev` instead of `~/.clopen`. This keeps development data separate from any production instance — especially important since Clopen can be used to develop itself.
+Clopen resolves its data directory once at startup, from `NODE_ENV`:
+
+| Context | Directory |
+|---------|-----------|
+| `bun run dev` | `~/.clopen-dev` |
+| `bun run test` | `~/.clopen-test` |
+| Installed release | `~/.clopen` |
+
+`CLOPEN_DATA_DIR` overrides all three. The separation matters because Clopen is often used to develop itself — neither the dev server nor the test suite can reach the database of a running production instance. Don't reintroduce a code path that reads `NODE_ENV` to pick a directory; use `SERVER_ENV.DATA_DIR` (`backend/utils/env.ts`), which is resolved a single time so a dependency mutating `process.env` mid-run can't move state out from under the server.
 
 ---
 
@@ -94,14 +106,14 @@ git checkout main && git pull upstream main
 git checkout -b feature/your-feature
 
 # 3. Develop & verify locally
-bun run check && bun run lint && bun run build
+bun run check && bun run lint && bun run test && bun run build
 
-# 4. Commit
-git commit -m "feat(scope): description"
+# 4. Commit — one commit, subject and body (see Delivering a Change)
+git commit
 
 # 5. Sync with upstream main again (resolve conflicts locally, not in the GitHub UI)
 git fetch upstream && git merge upstream/main
-bun run check && bun run lint && bun run build   # re-verify after merge
+bun run check && bun run lint && bun run test && bun run build   # re-verify after merge
 
 # 6. Push & open PR
 git push origin feature/your-feature
@@ -160,17 +172,29 @@ Skip tests for changes that are inherently observable (UI tweaks, log strings, d
 For security fixes, tests are expected — at minimum a case that fails before the patch and passes after. Cover the boundary explicitly (the exact value that should be rejected) and at least one happy path.
 
 ```bash
-bun test path/to/file.test.ts   # single file
-bun test                        # full suite
+bun test path/to/file.test.ts   # single file, while iterating
+bun run test                    # full suite — what CI runs
 ```
 
-Tests must pass before opening the PR.
+Use `bun run test` for the full suite, not bare `bun test`. The script adds `--isolate`, which is what keeps one test's global state out of the next one's.
+
+CI runs the full suite on every PR, so it must pass whether or not your change touched a test file.
 
 ---
 
 ## Submitting Changes
 
 All written content on the repository — branch names, commit messages, PR titles, PR descriptions, and PR comments — must be in **English**, regardless of the language you and the maintainers use elsewhere. This keeps the contribution trail readable across the project's audience.
+
+### Delivering a Change
+
+Once the work is done and verified, it is delivered as **one commit on one branch**. Decide all three pieces before you push:
+
+1. **Branch name** — `<type>/<description>`, per [Branch Naming](#branch-naming).
+2. **One commit** — subject *and* body, per [Commit Messages](#commit-messages). Squash your local work-in-progress into it rather than pushing a trail of "wip" and "fix typo" commits.
+3. **PR description** — filled in from the template in [Pull Request Format](#pull-request-format), ready to paste when you open the PR. If the work extends a PR that's already open, post it as a comment following [Comments on Existing PRs](#comments-on-existing-prs) instead.
+
+One commit is the delivery shape, not a rule against history. After the branch is pushed, address review feedback in **new commits on top** — don't amend or force-push a branch a maintainer is reading, since that detaches their review threads. The squash-merge collapses the follow-ups when the PR lands.
 
 ### Branch Naming
 
@@ -196,47 +220,85 @@ Examples: `feature/database-management`, `fix/websocket-connection`, `docs/maint
 
 ### Commit Messages
 
-Format: `<type>(<scope>): <subject>` — imperative mood, lowercase, no period, max 72 characters.
+Format: `<type>(<scope>): <subject>` — imperative mood, lowercase, no period.
 
 | Type | Use |
 |------|-----|
 | `feat` | New feature |
 | `fix` | Bug fix |
 | `docs` | Documentation |
-| `chore` | Refactor, build, perf, dependencies |
-| `release` | Version release |
+| `refactor` | Restructuring with no behavior change |
+| `perf` | Performance work |
+| `chore` | Build, dependencies, tooling, miscellaneous |
 
-Examples:
+The scope is the area the change lands in — `chat`, `terminal`, `engine`, `preview`, `settings`. Omit it when the change is genuinely repo-wide; don't invent one to fill the slot.
 
 ```
 feat(chat): add message export
 fix(terminal): resolve memory leak
+refactor(engine): install engine SDKs on demand into a managed Stack dir
 docs(maintainers): document pr reshape workflow
 chore: update dependencies
 ```
 
-Keep the subject focused on **why** the change exists, not what files moved. If the change needs a longer explanation, put it in the PR description, not the commit body — repo convention is subject-only.
+Version-bump commits are the one exception: maintainers commit those as a bare version number (`0.4.28`), no type or scope. Contributors never write one.
 
-### Pre-commit Checklist
+**Length.** Aim for 72 characters and treat ~80 as the hard ceiling. Squash-merge appends ` (#NNN)` to the PR title, so a subject at the ceiling lands near 88 on `main` — that's the trade the repo already makes for subjects that stay specific. Trim by cutting words, not by going vague: `fix(settings): isolate test data dir` beats `fix(settings): fix settings bug` at any length.
 
-Before pushing each commit:
+Keep the subject focused on **why** the change exists, not what files moved.
 
-- [ ] `bun run check` passes
-- [ ] `bun run lint` passes
-- [ ] `bun run build` works
-- [ ] `bun test` passes if any test file was added or modified
+#### Commit Body
+
+Every non-trivial commit carries a body. Leave it off only when the subject is the whole story — a dependency bump, a version release, a one-line typo fix.
+
+Separate it from the subject with a blank line and wrap at 72 columns. Write prose paragraphs, not bullets, covering three things in order:
+
+1. **What was broken or missing** — the symptom as a user or reviewer would hit it.
+2. **Why it happened** — the root cause, named precisely enough that someone could find it again.
+3. **What the change does about it** — the mechanism, not a file list.
+
+Describe the code, not your work on it: *"Undo used a bare `HEAD~1`, which cannot resolve on a root commit"*, not *"I rewrote the undo function"*. Skip anything the diff already says plainly. When a change spans several areas, give each its own paragraph behind a short label (`Watcher:`, `Switching:`, `Loaders:`).
+
+```
+fix(git): support undoing the root commit and guard empty repos
+
+Undo used a bare `HEAD~1`, which cannot resolve on a root commit or an
+unborn HEAD, so the Git panel surfaced git's raw "fatal: ambiguous
+argument" instead of doing the undo. Undoing the root commit now deletes
+the branch ref; the same probes translate the unborn-HEAD failures in
+revert, amend, stash, push, and log.
+```
+
+The body and the PR description overlap by design. The body is the durable record on `main` — it's what someone reads years later while bisecting. The PR description adds the review-time layer on top: test plan, screenshots, follow-ups, anything that stops mattering once the PR is merged.
+
+Recent commits on `main` are the reference. Run `git log` and read the last few before writing yours.
+
+### Before You Push
+
+CI (`.github/workflows/ci.yml`) runs these four on every PR, in this order. Run them locally first — a red PR costs a round trip:
+
+```bash
+bun run check   # type check
+bun run lint    # eslint
+bun run test    # full suite, --isolate
+bun run build   # must produce dist/
+```
+
+Then check what CI can't:
+
 - [ ] New non-trivial logic has a `*.test.ts` (see [Tests](#tests))
-- [ ] Commit message follows the format above
+- [ ] Commit message follows the format above, with a body unless the subject is the whole story
 - [ ] No `console.*` (use the `debug` module)
-- [ ] No sensitive data (tokens, credentials, internal URLs)
+- [ ] No sensitive data (tokens, credentials, internal URLs) — including in test fixtures, where a real local path is a leak
+- [ ] Nothing outside the change's scope crept into the diff
 
-If a pre-commit hook fails, fix the underlying issue rather than skipping with `--no-verify`. Hooks exist for the same reasons CI does.
+The repo ships no git hooks, so nothing stops you from pushing a failing commit; CI is the only gate and it runs after you've already asked for review. If you do have local hooks and one fails, fix the underlying issue rather than skipping with `--no-verify`.
 
 ### Pull Request Format
 
 #### Title
 
-Same format as commit messages: `<type>(<scope>): <subject>` (lowercase, imperative, no period, ≤72 chars). GitHub uses this as the squash-commit subject on `main`.
+Same format and length as the commit subject: `<type>(<scope>): <subject>`, lowercase, imperative, no period. Make it identical to your commit subject — GitHub uses the PR title, not the commit, as the squash subject on `main`, and appends ` (#NNN)` to it.
 
 #### Description Template
 
@@ -334,11 +396,13 @@ If you disagree with feedback, push back with a concrete scenario, file/line ref
 ### Commands
 
 ```bash
-bun run dev          # Dev server
+bun run dev          # Dev server (data in ~/.clopen-dev)
 bun run check        # Type check
 bun run lint         # Lint
 bun run lint:fix     # Auto-fix lint
-bun run build        # Build
+bun run test         # Full test suite (data in ~/.clopen-test)
+bun run build        # Build to dist/
+bun run start        # Serve a built dist/
 ```
 
 ### Troubleshooting
@@ -350,8 +414,10 @@ rm -rf node_modules && bun install
 # Lint errors
 bun run lint:fix
 
-# Git conflicts
-git fetch upstream && git rebase upstream/main
+# Conflicts with upstream — merge, don't rebase: rebasing rewrites the
+# commit hashes a reviewer is already reading, and landing it needs a
+# force-push, which detaches their review threads.
+git fetch upstream && git merge upstream/main
 ```
 
 ### Resources
