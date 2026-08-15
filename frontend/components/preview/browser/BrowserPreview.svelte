@@ -34,6 +34,7 @@
 	import ws from '$frontend/utils/ws';
 	import { projectState } from '$frontend/stores/core/projects.svelte';
 	import { appState } from '$frontend/stores/core/app.svelte';
+	import { isPanelLoading } from '$frontend/stores/ui/project-workspace.svelte';
 
 	let {
 		url = $bindable(''),
@@ -337,16 +338,17 @@
 
 	// Watch for project changes and reload sessions.
 	//
-	// Bail while a workspace switch is in flight: the singleton tabManager is
+	// Bail while the preview dock is still hydrating: the singleton tabManager is
 	// mid clear/restore/load during that window and adopting it now would race
 	// with the dock — observed as a spurious "New Tab" or duplicated/cross-
-	// project tabs once load() completes. Once the barrier drops, isSwitching
-	// flips and the effect re-runs against the authoritative state.
+	// project tabs once load() completes. Keying this on the dock's own loading
+	// state rather than the switch barrier matters: the barrier now drops as soon
+	// as the workspace is structurally correct, well before load() has finished.
 	let previousProjectId = '';
 	let initialRecoveryDone = false;
 	$effect(() => {
 		const currentProjectId = projectId;
-		if (appState.isSwitching) return;
+		if (appState.isSwitching || isPanelLoading('preview')) return;
 
 		// Initial recovery - trigger when projectId first becomes available after mount
 		if (!initialRecoveryDone && currentProjectId && previousProjectId === '') {

@@ -92,6 +92,7 @@
 		initIgnoredPaths,
 		refreshIgnoredPaths
 	} from '$frontend/stores/features/ignored-paths.svelte';
+	import { beginPanelLoad } from '$frontend/stores/ui/project-workspace.svelte';
 
 	// Props
 	interface Props {
@@ -392,10 +393,15 @@
 		const savedTreeScrollTop = treeScrollContainer
 			? treeScrollContainer.scrollTop
 			: pendingTreeScrollRestore ?? treeScrollTop;
+		const requestPath = projectPath;
 
-		if (!preserveState) {
-			isLoading = true;
-		}
+		// `preserveState` is about scroll/expansion, NOT about the loading flag —
+		// conflating the two is what made a project switch render the tree's empty
+		// state ("No files in project") while the tree was still being fetched, since
+		// a switch that restored panel state always passed preserveState=true. The
+		// flag is always set; the template only shows the spinner when there is
+		// nothing to show yet, so a background refresh still never blanks the tree.
+		isLoading = true;
 		error = '';
 
 		try {
@@ -407,6 +413,11 @@
 			}
 
 			const data = await ws.http('files:list-tree', requestData);
+
+			// The project may have changed while this was in flight — dropping the
+			// response is the only way to stop the previous project's tree from
+			// landing in the new project's panel.
+			if (requestPath !== projectPath) return;
 
 			const convertToFileNode = (apiFile: unknown): FileNode => {
 				if (typeof apiFile !== 'object' || apiFile === null) {
@@ -449,10 +460,11 @@
 				});
 			}
 		} catch (err) {
+			if (requestPath !== projectPath) return;
 			error = err instanceof Error ? err.message : 'Failed to load files';
 			projectFiles = [];
 		} finally {
-			isLoading = false;
+			if (requestPath === projectPath) isLoading = false;
 		}
 	}
 
@@ -1990,6 +2002,12 @@
 			activeTabPath = null;
 			expandedFolders = new Set();
 			viewMode = 'tree';
+			// Drop the outgoing project's tree. It used to survive here and stay on
+			// screen until the new tree arrived, which only looked right because the
+			// switch barrier hid it; now that panels reveal before their data lands,
+			// leaving it would show the wrong project's files.
+			projectFiles = [];
+			error = '';
 			// Drop the clipboard: it holds FileNode references from the previous
 			// project, which would be dangling/invalid pointers in the new one.
 			clipboard = null;
@@ -2007,40 +2025,50 @@
 	});
 
 	async function restoreAndLoad(targetProjectId: string, targetProjectPath: string) {
-		// Try in-memory snapshot first (instant for same-session mobile/desktop switch)
-		const inMem = projectFileStates.get(targetProjectPath);
-		let restored = false;
-
-		if (inMem) {
-			applyPersistedState(inMem, targetProjectPath);
-			restored = true;
-		}
-
-		// Always fetch DB state too — it may be newer (cross-device, refresh)
+		// Hold the Files panel's skeleton for the WHOLE restore, not just the tree
+		// fetch: the panel state round-trip happens first, and without this the
+		// panel would show an empty tree for its duration.
+		const releasePanel = beginPanelLoad('files');
 		try {
-			const result = await ws.http('files:get-panel-state', { projectId: targetProjectId });
-			if (projectId !== targetProjectId) return; // race: project changed mid-fetch
-			if (result?.state) {
-				try {
-					const parsed: PersistedPanelState = JSON.parse(result.state);
-					applyPersistedState(parsed, targetProjectPath);
-					restored = true;
-				} catch (err) {
-					debug.error('file', 'Failed to parse panel state JSON:', err);
-				}
+			// Try in-memory snapshot first (instant for same-session mobile/desktop switch)
+			const inMem = projectFileStates.get(targetProjectPath);
+			let restored = false;
+
+			if (inMem) {
+				applyPersistedState(inMem, targetProjectPath);
+				restored = true;
 			}
-		} catch (err) {
-			debug.error('file', 'Failed to fetch panel state:', err);
+
+			// Always fetch DB state too — it may be newer (cross-device, refresh)
+			try {
+				const result = await ws.http('files:get-panel-state', { projectId: targetProjectId });
+				if (projectId !== targetProjectId) return; // race: project changed mid-fetch
+				if (result?.state) {
+					try {
+						const parsed: PersistedPanelState = JSON.parse(result.state);
+						applyPersistedState(parsed, targetProjectPath);
+						restored = true;
+					} catch (err) {
+						debug.error('file', 'Failed to parse panel state JSON:', err);
+					}
+				}
+			} catch (err) {
+				debug.error('file', 'Failed to fetch panel state:', err);
+			}
+
+			if (projectId !== targetProjectId) return;
+
+			// Mark as loaded BEFORE loadProjectFiles so any post-load saves are kept
+			panelStateLoaded = true;
+
+			await loadProjectFiles(restored);
+
+			// After tree load, hydrate tab content for any restored tabs that
+			// don't yet have content (their loadTabContent was triggered in
+			// applyPersistedState but may still be in flight)
+		} finally {
+			releasePanel();
 		}
-
-		// Mark as loaded BEFORE loadProjectFiles so any post-load saves are kept
-		panelStateLoaded = true;
-
-		await loadProjectFiles(restored);
-
-		// After tree load, hydrate tab content for any restored tabs that
-		// don't yet have content (their loadTabContent was triggered in
-		// applyPersistedState but may still be in flight)
 	}
 
 	function applyPersistedState(state: PersistedPanelState, basePath: string) {
@@ -2114,6 +2142,7 @@
 
 		const unsubChanges = ws.on('files:changed', (payload) => {
 			if (payload.projectId !== projectId) return;
+			if (payload.changes.length === 0) return;
 
 			// Accumulate changes from all events before debounce fires
 			accumulatedChanges.push(...payload.changes);
@@ -2128,6 +2157,14 @@
 			}, 500);
 		});
 
+		// The watcher was rebuilt and may have missed events; no path is known to
+		// have changed, so re-read the tree in place (scroll and expansion kept)
+		// rather than reconciling a phantom change list.
+		const unsubResync = ws.on('files:resync', (payload) => {
+			if (payload.projectId !== projectId) return;
+			void loadProjectFiles(true);
+		});
+
 		const unsubWatching = ws.on('files:watching', (payload) => {
 			if (payload.projectId !== projectId) return;
 			isWatching = payload.watching;
@@ -2140,6 +2177,7 @@
 
 		return () => {
 			unsubChanges();
+			unsubResync();
 			unsubWatching();
 			unsubError();
 			if (watchDebounceTimer) clearTimeout(watchDebounceTimer);

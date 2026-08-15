@@ -29,6 +29,7 @@
 		type GitUiState,
 		type GitActiveDiff
 	} from '$frontend/stores/features/git-workspace.svelte';
+	import { beginPanelLoad } from '$frontend/stores/ui/project-workspace.svelte';
 	import { detectLanguageFromFilename } from '$frontend/components/common/editor/monaco-languages';
 	import type { IconName } from '$shared/types/ui/icons';
 	import type {
@@ -60,6 +61,11 @@
 
 	// Git state
 	let isRepo = $state(false);
+	// Whether `git:status` has answered for the CURRENT project. `isRepo` alone
+	// can't distinguish "not a repo" from "not asked yet", so the panel used to
+	// flash "Not a git repository" on every switch — and, coming from a repo,
+	// keep showing the previous project's repo UI until the answer arrived.
+	let statusLoaded = $state(false);
 	let isLoading = $state(false);
 	let gitStatus = $state<GitStatus>({ staged: [], unstaged: [], untracked: [], conflicted: [] });
 	let aiChangesSet = $state(new Set<string>());
@@ -1119,8 +1125,18 @@
 	// Data Loading
 	// ============================
 
-	async function loadAll() {
+	/**
+	 * Load everything the panel needs for the active project.
+	 *
+	 * `registerPanelLoad` is set for a project switch so the panel shows the
+	 * shared loading overlay for the whole fetch — the panel is revealed before
+	 * its data arrives, and without it the user would read the empty state
+	 * ("Not a git repository") as the answer. Background refreshes pass false:
+	 * they must never blank a panel that already has data on screen.
+	 */
+	async function loadAll(registerPanelLoad = false) {
 		if (!hasActiveProject || !projectId) return;
+		const releasePanel = registerPanelLoad ? beginPanelLoad('git') : null;
 		isLoading = true;
 		try {
 			// Stash + tags are loaded here too (not just lazily on their view) so the
@@ -1131,14 +1147,20 @@
 			debug.error('git', 'Failed to load git data:', err);
 		} finally {
 			isLoading = false;
+			releasePanel?.();
 		}
 	}
 
 	async function loadStatus() {
 		if (!projectId) return;
+		const requestProjectId = projectId;
 		try {
 			const data = await ws.http('git:status', { projectId });
+			// Drop a response that outlived its project — otherwise the previous
+			// project's changes render under the new project's header.
+			if (requestProjectId !== projectId) return;
 			isRepo = data.isRepo;
+			statusLoaded = true;
 			if (data.isRepo) {
 				gitStatus = {
 					staged: data.staged,
@@ -1146,9 +1168,14 @@
 					untracked: data.untracked,
 					conflicted: data.conflicted
 				};
+			} else {
+				gitStatus = { staged: [], unstaged: [], untracked: [], conflicted: [] };
 			}
 		} catch (err) {
 			debug.error('git', 'Failed to load status:', err);
+			// Still mark it answered: leaving it false would pin the panel on
+			// "Loading..." with no way out short of switching projects.
+			if (requestProjectId === projectId) statusLoaded = true;
 		}
 	}
 
@@ -1703,14 +1730,17 @@
 			return;
 		}
 
+		// Refresh in place: this runs on every file/git change event, so tearing the
+		// tab down would make the open diff flicker on unrelated edits.
+		const scrollTop = tab.scrollTop ?? 0;
 		if (stagedFile) {
-			await viewDiff(stagedFile, 'staged');
+			await viewDiff(stagedFile, 'staged', scrollTop, true);
 		} else if (unstagedFile) {
-			await viewDiff(unstagedFile, 'unstaged');
+			await viewDiff(unstagedFile, 'unstaged', scrollTop, true);
 		} else if (untrackedFile) {
-			await viewDiff(untrackedFile, 'unstaged');
+			await viewDiff(untrackedFile, 'unstaged', scrollTop, true);
 		} else if (conflictedFile) {
-			await viewDiff(conflictedFile, 'conflicted');
+			await viewDiff(conflictedFile, 'conflicted', scrollTop, true);
 		}
 	}
 
@@ -1754,26 +1784,46 @@
 		return isPreviewableFile(fileName) || isBinaryFile(fileName);
 	}
 
-	async function viewDiff(file: GitFileChange, section: string, restoreScrollTop = 0) {
+	/**
+	 * Open a file's diff in the Changes view.
+	 *
+	 * `silent` re-fetches the diff for the tab that is ALREADY open, leaving it on
+	 * screen while the new content is fetched and swapping it in only if it
+	 * actually differs. Background refreshes (a file-watch event, a git state
+	 * change) use it; without it every refresh tore the tab down and rebuilt it as
+	 * an empty spinner, so the editor visibly reloaded and lost its scroll
+	 * position — several times a minute on a busy working tree.
+	 */
+	async function viewDiff(
+		file: GitFileChange,
+		section: string,
+		restoreScrollTop = 0,
+		silent = false
+	) {
 		if (!projectId) return;
+		const requestProjectId = projectId;
 		const tabId = `${section}:${file.path}`;
 		const fileName = file.path.split(/[\\/]/).pop() || file.path;
 		const status = section === 'staged' ? file.indexStatus : file.workingStatus;
+		const existing = openTabs.find((t) => t.id === tabId);
+		const keepInPlace = silent && existing !== undefined && !existing.isLoading;
 
-		// Changes view: always replace with single tab
-		openTabs = [{
-			id: tabId,
-			filePath: file.path,
-			fileName,
-			section,
-			diff: null,
-			diffs: [],
-			isLoading: true,
-			status,
-			scrollTop: restoreScrollTop
-		}];
-		activeTabId = tabId;
-		if (!isTwoColumnMode) viewMode = 'diff';
+		if (!keepInPlace) {
+			// Changes view: always replace with single tab
+			openTabs = [{
+				id: tabId,
+				filePath: file.path,
+				fileName,
+				section,
+				diff: null,
+				diffs: [],
+				isLoading: true,
+				status,
+				scrollTop: restoreScrollTop
+			}];
+			activeTabId = tabId;
+			if (!isTwoColumnMode) viewMode = 'diff';
+		}
 
 		try {
 			let diffResult: GitFileDiff | null = null;
@@ -1906,17 +1956,35 @@
 				}
 			}
 
+			if (requestProjectId !== projectId) return;
+
+			// An unchanged diff must not be reassigned: DiffViewer re-renders (and
+			// resets its scroll) on identity change, so a silent refresh that found
+			// nothing new has to be a genuine no-op.
+			if (keepInPlace && sameDiff(existing?.diff ?? null, diffResult)) return;
+
 			openTabs = openTabs.map(t =>
-				t.id === tabId ? { ...t, diff: diffResult, isLoading: false } : t
+				t.id === tabId ? { ...t, diff: diffResult, status, isLoading: false } : t
 			);
 		} catch (err) {
 			debug.error('git', 'Failed to load diff:', err);
+			if (requestProjectId !== projectId) return;
+			// A failed background refresh keeps whatever is on screen rather than
+			// blanking a diff the user is reading.
+			if (keepInPlace) return;
 			openTabs = openTabs.map(t =>
 				t.id === tabId ? { ...t, diff: null, isLoading: false } : t
 			);
 		}
 		// Remember the open diff tab per-project (server-persisted).
 		markGitUiDirty();
+	}
+
+	/** Structural equality for two diffs, used to skip no-op editor updates. */
+	function sameDiff(a: GitFileDiff | null, b: GitFileDiff | null): boolean {
+		if (a === b) return true;
+		if (!a || !b) return false;
+		return JSON.stringify(a) === JSON.stringify(b);
 	}
 
 	async function viewCommitDiff(hash: string, repoPath?: string) {
@@ -3326,6 +3394,14 @@ ${bodies}`;
 
 					// Heavy data (open diffs, history) is always re-fetched lazily.
 					resetAllViewTabs();
+					// Drop the outgoing project's git state. `isRepo`/`gitStatus` used
+					// to persist across the switch, which the barrier hid; now that the
+					// panel is revealed before its data lands, stale changes from the
+					// previous project would be visible (and stageable).
+					statusLoaded = false;
+					isRepo = false;
+					gitStatus = { staged: [], unstaged: [], untracked: [], conflicted: [] };
+					branchInfo = null;
 					commits = [];
 					logStale = false;
 					logSkip = 0;
@@ -3370,7 +3446,7 @@ ${bodies}`;
 					// explicitly rather than leaning solely on the reactive view
 					// effects, which can miss the isRepo flip during a busy switch and
 					// leave History stuck on "No commits yet".
-					loadAll().then(() => {
+					loadAll(true).then(() => {
 						if (!isRepo) return;
 						reopenPendingChangesDiff();
 						if (activeView === 'log' && commits.length === 0) loadLog(true);
@@ -3472,19 +3548,44 @@ ${bodies}`;
 
 	// Debounce timer for file/git change events
 	let changeDebounce: ReturnType<typeof setTimeout> | null = null;
+	// Whether the pending refresh must also re-read the slow, rarely-changing
+	// data (stash/tags/contributors/log) — set by `git:changed` only.
+	let pendingFullRefresh = false;
 
-	// Shared refresh logic for both file changes and git state changes
-	function scheduleGitRefresh() {
+	/**
+	 * Shared, debounced refresh for both file changes and git state changes.
+	 *
+	 * Everything funnels through one timer on purpose: `git:changed` used to fire
+	 * six unbounded loads of its own on top of this one, so a burst of git
+	 * activity spawned dozens of overlapping git processes — which is exactly when
+	 * the panel felt slowest.
+	 */
+	function scheduleGitRefresh(full = false) {
+		pendingFullRefresh ||= full;
 		if (changeDebounce) clearTimeout(changeDebounce);
 		changeDebounce = setTimeout(async () => {
 			changeDebounce = null;
+			const isFull = pendingFullRefresh;
+			pendingFullRefresh = false;
+
 			// Refresh git status and branches (branch switch also modifies working tree)
 			const prevBranch = branchInfo?.current;
 			await Promise.all([loadStatus(), loadBranches()]);
 
-			// If branch changed, also refresh remotes
-			if (branchInfo?.current !== prevBranch) {
+			// A branch switch can change the remote set; so can an out-of-band git
+			// operation. Either way, re-read it at most once.
+			if (isFull || branchInfo?.current !== prevBranch) {
 				loadRemotes();
+			}
+
+			if (isFull) {
+				// Keep the Stash/Tags badge counts live when git changes out-of-band
+				// (e.g. `git stash` / `git tag` run from the terminal).
+				loadStash();
+				loadTags();
+				loadContributors();
+				// Refresh log if it was already loaded (History tab was visited)
+				if (commits.length > 0) refreshAllLogs();
 			}
 
 			// Refresh the active diff tab if currently viewing one. The file may
@@ -3502,11 +3603,22 @@ ${bodies}`;
 
 		const unsub = ws.on('files:changed', (payload: any) => {
 			if (payload.projectId !== projectId || !isRepo) return;
+			// An empty change list carries no information; refreshing on it just
+			// churns git and the open diff for nothing.
+			if (payload.changes.length === 0) return;
+			scheduleGitRefresh();
+		});
+
+		// The watcher was rebuilt and may have missed events. Reconcile status, but
+		// as a plain refresh — nothing is known to have changed.
+		const unsubResync = ws.on('files:resync', (payload: any) => {
+			if (payload.projectId !== projectId || !isRepo) return;
 			scheduleGitRefresh();
 		});
 
 		return () => {
 			unsub();
+			unsubResync();
 			if (changeDebounce) {
 				clearTimeout(changeDebounce);
 				changeDebounce = null;
@@ -3520,19 +3632,9 @@ ${bodies}`;
 
 		const unsub = ws.on('git:changed', (payload: any) => {
 			if (payload.projectId !== projectId || !isRepo) return;
-			scheduleGitRefresh();
-			// Refresh branches and remotes in case of branch switch/create/delete
-			loadBranches();
-			loadRemotes();
-			// Keep the Stash/Tags badge counts live when git changes out-of-band
-			// (e.g. `git stash` / `git tag` run from the terminal).
-			loadStash();
-			loadTags();
-			loadContributors();
-			// Refresh log if it was already loaded (History tab was visited)
-			if (commits.length > 0) {
-				refreshAllLogs();
-			}
+			// Full refresh: index/HEAD/refs moved, so branches, remotes, stash, tags,
+			// contributors and the log can all be stale.
+			scheduleGitRefresh(true);
 		});
 
 		return () => unsub();
@@ -5475,7 +5577,7 @@ ${bodies}`;
 			<Icon name="lucide:git-branch" class="w-10 h-10 opacity-30" />
 			<span>No project selected</span>
 		</div>
-	{:else if isLoading && !isRepo}
+	{:else if !statusLoaded}
 		<div class="flex-1 flex flex-col items-center justify-center gap-3 text-slate-600 dark:text-slate-500 text-sm">
 			<div class="w-6 h-6 border-2 border-slate-200 dark:border-slate-800 border-t-violet-600 rounded-full animate-spin"></div>
 			<span>Loading...</span>

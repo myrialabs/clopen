@@ -395,6 +395,7 @@ async function reconcileTabs(projectId: string): Promise<void> {
 
 registerDock({
 	id: 'preview-tabs',
+	panelId: 'preview',
 	clear() {
 		// Wipe the outgoing project's tabs so nothing flashes through the switch.
 		previewTabManager.clearAllTabs();
@@ -433,9 +434,10 @@ registerDock({
 		await reconcileTabs(projectId);
 
 		// Authoritative seeding: when neither snapshot nor backend produced any
-		// tabs, drop a single empty tab inside the switch barrier. This is the ONLY
-		// place the panel seeds itself on a project switch — the component never
-		// adds "New Tab" speculatively, so the count matches MCP/backend exactly.
+		// tabs, drop a single empty tab while the panel still shows its loading
+		// skeleton. This is the ONLY place the panel seeds itself on a project
+		// switch — the component never adds "New Tab" speculatively, so the count
+		// matches MCP/backend exactly.
 		if (previewTabManager.getAllTabs().length === 0) {
 			debug.log('preview', '📝 [dock load] Seeding empty tab for empty project');
 			previewTabManager.createTab('');

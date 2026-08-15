@@ -146,6 +146,15 @@ export const watchHandler = createRouter()
 		timestamp: t.Number()
 	}))
 
+	// Emitted when the watcher was rebuilt after a fault and may have missed
+	// events. Consumers should re-fetch their own data, but must NOT treat this
+	// as "these files changed" — no path is known to have changed, so live views
+	// (an open diff, an editor tab) must be reconciled in place, not rebuilt.
+	.emit('files:resync', t.Object({
+		projectId: t.String(),
+		timestamp: t.Number()
+	}))
+
 	// Emitted on watcher errors
 	.emit('files:watch-error', t.Object({
 		projectId: t.String(),
