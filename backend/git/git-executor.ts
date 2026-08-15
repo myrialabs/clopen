@@ -35,6 +35,14 @@ export async function execGit(
 			...getCleanSpawnEnv(),
 			// Prevent git from prompting for credentials
 			GIT_TERMINAL_PROMPT: '0',
+			// Read-only commands must stay read-only. Without this, `git status`
+			// opportunistically rewrites `.git/index` to refresh cached stat data —
+			// which trips our own `.git` watcher, which emits `git:changed`, which
+			// makes the client re-run `git status`. That feedback loop refreshed the
+			// Git panel (and reloaded the open diff) every few seconds with nothing
+			// actually changing. Commands that genuinely need the index lock (commit,
+			// add, checkout) still take it; only the optional refresh is suppressed.
+			GIT_OPTIONAL_LOCKS: '0',
 			// Use English output for consistent parsing
 			LANG: 'en_US.UTF-8',
 			LC_ALL: 'en_US.UTF-8'

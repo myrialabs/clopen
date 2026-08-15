@@ -30,6 +30,7 @@ let inFlight = false;
 let pendingRefresh = false;
 let unsubscribeFiles: (() => void) | null = null;
 let unsubscribeGit: (() => void) | null = null;
+let unsubscribeResync: (() => void) | null = null;
 let lastProjectId = '';
 
 /**
@@ -147,11 +148,18 @@ export function initGitStatus(): void {
 	if (unsubscribeFiles || unsubscribeGit) return;
 	unsubscribeFiles = ws.on('files:changed', (payload) => {
 		if (payload.projectId !== projectState.currentProject?.id) return;
+		// An empty change list says nothing changed — refreshing on it would spawn
+		// a git process for no reason.
+		if (payload.changes.length === 0) return;
 		refreshGitStatus(500);
 	});
 	unsubscribeGit = ws.on('git:changed', (payload) => {
 		if (payload.projectId !== projectState.currentProject?.id) return;
 		refreshGitStatus(150);
+	});
+	unsubscribeResync = ws.on('files:resync', (payload) => {
+		if (payload.projectId !== projectState.currentProject?.id) return;
+		refreshGitStatus(500);
 	});
 }
 

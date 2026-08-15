@@ -7,10 +7,29 @@
  * - Debounced events to prevent spam
  * - Automatic cleanup on unwatch
  * - Cross-platform support (Windows/Unix)
+ *
+ * Watching strategy, per platform:
+ *
+ * macOS and Windows get a single `{ recursive: true }` watch on the project
+ * root. Both back it with one OS-level handle (FSEvents / ReadDirectoryChangesW)
+ * that covers the whole subtree, so recursion is essentially free and pruning
+ * would buy nothing.
+ *
+ * Linux cannot do that. There, recursion is emulated with inotify and costs one
+ * kernel watch per directory, with no way to exclude any of them. A project
+ * containing `node_modules` blows past `fs.inotify.max_user_watches`; the
+ * watcher faults with ENOSPC, gets rebuilt, and faults again — an endless
+ * restart loop that pegged the CPU and, because each restart announced itself as
+ * a file change, made clients reload every few seconds with nothing actually
+ * changing. So on Linux we walk the tree ourselves and never watch an ignored
+ * directory, which removes the overwhelming majority of the watch descriptors.
  */
 
+/** Whether the platform's recursive `fs.watch` is a single cheap OS handle. */
+const USE_NATIVE_RECURSIVE_WATCH = process.platform !== 'linux';
+
 import { watch, type FSWatcher, existsSync } from 'node:fs';
-import { stat } from 'node:fs/promises';
+import { stat, readdir } from 'node:fs/promises';
 import { join, relative, normalize, sep } from 'node:path';
 import { ws } from '$backend/utils/ws';
 import { debug } from '$shared/utils/logger';
@@ -20,6 +39,21 @@ import type { FileChange } from '$shared/types/filesystem';
  * Debounce configuration
  */
 const DEBOUNCE_MS = 300; // Debounce file change events
+
+/**
+ * Hard ceiling on directory watches per project (Linux manual recursion only).
+ * Even with ignored directories pruned, a pathological tree (generated code, a
+ * huge monorepo) could still exhaust `max_user_watches`. Stop adding watches
+ * past this point and tell the client its view may go stale, rather than
+ * faulting into the restart loop this whole design exists to prevent.
+ */
+const MAX_WATCHED_DIRS = 4000;
+
+/** Restart backoff after a watcher fault: 1s, 2s, 4s, 8s, then give up. */
+const RESTART_DELAYS_MS = [1000, 2000, 4000, 8000];
+
+/** How long a rebuilt watcher must survive before its fault count is forgiven. */
+const FAULT_FORGIVENESS_MS = 60_000;
 
 /**
  * Directories to ignore when watching
@@ -64,12 +98,18 @@ const GIT_DEBOUNCE_MS = 500;
  * Watcher instance for a project
  */
 interface ProjectWatcher {
-	watcher: FSWatcher;
 	projectPath: string;
 	projectId: string;
 	debounceTimer: ReturnType<typeof setTimeout> | null;
 	pendingChanges: Map<string, FileChange>;
-	subWatchers: Map<string, FSWatcher>;
+	/** Absolute directory path -> its (non-recursive) watcher. Includes the root. */
+	dirWatchers: Map<string, FSWatcher>;
+	/** Set once MAX_WATCHED_DIRS was hit, so the warning is emitted only once. */
+	truncated: boolean;
+	/** Consecutive watcher faults; reset after a clean restart. */
+	faults: number;
+	/** Flipped by stopWatching so in-flight async tree walks bail out. */
+	closed: boolean;
 	gitWatcher: FSWatcher | null;
 	gitRefsWatcher: FSWatcher | null;
 	gitDebounceTimer: ReturnType<typeof setTimeout> | null;
@@ -172,7 +212,7 @@ class FileWatcherManager {
 	 * near-simultaneous viewers (e.g. two devices) could each build a watcher and
 	 * leak one.
 	 */
-	async startWatching(projectId: string, projectPath: string): Promise<boolean> {
+	async startWatching(projectId: string, projectPath: string, faults = 0): Promise<boolean> {
 		// Already watching this project
 		if (this.watchers.has(projectId)) {
 			debug.log('file', `Already watching project: ${projectId}`);
@@ -182,7 +222,7 @@ class FileWatcherManager {
 		const inflight = this.starting.get(projectId);
 		if (inflight) return inflight;
 
-		const startPromise = this.doStartWatching(projectId, projectPath);
+		const startPromise = this.doStartWatching(projectId, projectPath, faults);
 		this.starting.set(projectId, startPromise);
 		try {
 			return await startPromise;
@@ -191,7 +231,11 @@ class FileWatcherManager {
 		}
 	}
 
-	private async doStartWatching(projectId: string, projectPath: string): Promise<boolean> {
+	private async doStartWatching(
+		projectId: string,
+		projectPath: string,
+		faults = 0
+	): Promise<boolean> {
 		try {
 			// Normalize path
 			const normalizedPath = normalize(projectPath);
@@ -203,47 +247,167 @@ class FileWatcherManager {
 				return false;
 			}
 
-			// Create main watcher for project root
-			const watcher = watch(normalizedPath, { recursive: true }, (eventType, filename) => {
-				if (filename) {
-					this.handleFileChange(projectId, normalizedPath, filename, eventType);
-				}
-			});
-
-			// Handle watcher errors. fs.watch can fault (and on some platforms go
-			// silently deaf) under heavy churn or after sleep/wake — recover by
-			// rebuilding the watcher instead of leaving the project stuck stale.
-			watcher.on('error', (error) => {
-				debug.error('file', `Watcher error for project ${projectId}:`, error);
-				ws.emit.project(projectId, 'files:watch-error', {
-					projectId,
-					error: error.message || 'File watcher error'
-				});
-				this.scheduleRestart(projectId);
-			});
-
-			// Store watcher instance
 			const projectWatcher: ProjectWatcher = {
-				watcher,
 				projectPath: normalizedPath,
 				projectId,
 				debounceTimer: null,
 				pendingChanges: new Map(),
-				subWatchers: new Map(),
+				dirWatchers: new Map(),
+				truncated: false,
+				faults,
+				closed: false,
 				gitWatcher: null,
 				gitRefsWatcher: null,
 				gitDebounceTimer: null
 			};
 			this.watchers.set(projectId, projectWatcher);
 
+			// Watch the root synchronously so events are never missed while the
+			// (async) subtree walk is still in progress.
+			if (!this.watchDir(projectWatcher, normalizedPath)) {
+				this.watchers.delete(projectId);
+				return false;
+			}
+
 			// Start git state watcher (for external git operations)
 			this.startGitWatcher(projectId, normalizedPath);
+
+			// On Linux the root watch only covers the root itself. Walk the tree in
+			// the background so every non-ignored directory gets its own watch;
+			// elsewhere the root's recursive handle already covers everything.
+			if (!USE_NATIVE_RECURSIVE_WATCH) {
+				void this.watchSubtree(projectWatcher, normalizedPath);
+			}
+
+			// Forgive earlier faults once a rebuild has held steady, so an isolated
+			// hiccup much later still gets the full retry budget instead of
+			// inheriting an exhausted one.
+			if (faults > 0) {
+				setTimeout(() => {
+					if (this.watchers.get(projectId) === projectWatcher) projectWatcher.faults = 0;
+				}, FAULT_FORGIVENESS_MS);
+			}
 
 			debug.log('file', `Started watching project: ${projectId} at ${normalizedPath}`);
 			return true;
 		} catch (error) {
 			debug.error('file', `Failed to start watching project ${projectId}:`, error);
 			return false;
+		}
+	}
+
+	/**
+	 * Attach a non-recursive watcher to a single directory.
+	 * Returns false when the directory could not be watched (gone, permission
+	 * denied, or the per-project ceiling was reached).
+	 */
+	private watchDir(pw: ProjectWatcher, dir: string): boolean {
+		if (pw.closed || pw.dirWatchers.has(dir)) return true;
+
+		if (pw.dirWatchers.size >= MAX_WATCHED_DIRS) {
+			if (!pw.truncated) {
+				pw.truncated = true;
+				debug.warn(
+					'file',
+					`Watch ceiling (${MAX_WATCHED_DIRS} dirs) reached for project ${pw.projectId}; deeper directories will not report changes`
+				);
+				ws.emit.project(pw.projectId, 'files:watch-error', {
+					projectId: pw.projectId,
+					error: `Project is too large to watch entirely (${MAX_WATCHED_DIRS}+ directories). Changes in deeply nested folders may not appear automatically.`
+				});
+			}
+			return false;
+		}
+
+		try {
+			// The root watch is recursive where that's a single OS handle; every
+			// other watch (and every Linux watch) covers exactly one directory.
+			// Either way `filename` arrives relative to `dir`, so the change handler
+			// resolves it the same way.
+			const recursive = USE_NATIVE_RECURSIVE_WATCH && dir === pw.projectPath;
+			const watcher = watch(dir, { recursive }, (eventType, filename) => {
+				if (filename) this.handleFileChange(pw.projectId, dir, filename, eventType);
+			});
+
+			// fs.watch can fault (and on some platforms go silently deaf) under heavy
+			// churn or after sleep/wake. A fault on a nested directory only costs us
+			// that subtree, so drop it quietly; a fault on the root means the project
+			// is unwatched and warrants a full rebuild.
+			watcher.on('error', (error) => {
+				if (dir === pw.projectPath) {
+					debug.error('file', `Watcher error for project ${pw.projectId}:`, error);
+					ws.emit.project(pw.projectId, 'files:watch-error', {
+						projectId: pw.projectId,
+						error: error.message || 'File watcher error'
+					});
+					this.scheduleRestart(pw.projectId);
+				} else {
+					debug.warn('file', `Dropping faulted watcher for ${dir}:`, error);
+					this.unwatchDir(pw, dir);
+				}
+			});
+
+			pw.dirWatchers.set(dir, watcher);
+			return true;
+		} catch (error) {
+			// ENOENT/EACCES on a nested directory is normal (it may have vanished
+			// between readdir and watch); only the root failing is fatal.
+			if (dir === pw.projectPath) {
+				debug.error('file', `Failed to watch project root ${dir}:`, error);
+				return false;
+			}
+			debug.log('file', `Skipped unwatchable directory ${dir}`);
+			return false;
+		}
+	}
+
+	/**
+	 * Close the watcher for `dir` and every directory beneath it.
+	 * Called when a directory is deleted or renamed away.
+	 */
+	private unwatchDir(pw: ProjectWatcher, dir: string): void {
+		const prefix = dir.endsWith(sep) ? dir : dir + sep;
+		for (const [watched, watcher] of pw.dirWatchers) {
+			if (watched !== dir && !watched.startsWith(prefix)) continue;
+			try {
+				watcher.close();
+			} catch {
+				// Already closed — nothing to do.
+			}
+			pw.dirWatchers.delete(watched);
+		}
+	}
+
+	/**
+	 * Recursively attach watchers to every non-ignored directory under `dir`.
+	 * Ignored directories (node_modules, .git, build output, …) are never
+	 * descended into — that pruning is what keeps the watch count survivable.
+	 */
+	private async watchSubtree(pw: ProjectWatcher, dir: string): Promise<void> {
+		if (pw.closed) return;
+
+		let entries;
+		try {
+			entries = await readdir(dir, { withFileTypes: true });
+		} catch {
+			return; // Directory vanished or is unreadable — nothing to watch.
+		}
+
+		for (const entry of entries) {
+			if (pw.closed) return;
+			if (!entry.isDirectory()) continue;
+
+			const childPath = join(dir, entry.name);
+			const relativePath = relative(pw.projectPath, childPath).replace(/\\/g, '/');
+			if (this.shouldIgnore(relativePath)) continue;
+
+			if (!this.watchDir(pw, childPath)) {
+				// Ceiling reached — stop descending entirely rather than watching an
+				// arbitrary subset that depends on directory ordering.
+				if (pw.truncated) return;
+				continue;
+			}
+			await this.watchSubtree(pw, childPath);
 		}
 	}
 
@@ -258,13 +422,18 @@ class FileWatcherManager {
 		}
 
 		try {
-			// Close main watcher
-			projectWatcher.watcher.close();
+			// Stop any in-flight subtree walk from re-adding watchers behind us.
+			projectWatcher.closed = true;
 
-			// Close all sub-watchers
-			for (const subWatcher of projectWatcher.subWatchers.values()) {
-				subWatcher.close();
+			// Close every directory watcher (the root included)
+			for (const dirWatcher of projectWatcher.dirWatchers.values()) {
+				try {
+					dirWatcher.close();
+				} catch {
+					// Already closed — nothing to do.
+				}
 			}
+			projectWatcher.dirWatchers.clear();
 
 			// Close git watchers
 			projectWatcher.gitWatcher?.close();
@@ -315,44 +484,60 @@ class FileWatcherManager {
 	}
 
 	/**
-	 * Handle file change event
+	 * Handle a change reported by the watcher on `dir`.
+	 * `filename` is relative to `dir`, not to the project root.
 	 */
 	private async handleFileChange(
 		projectId: string,
-		projectPath: string,
+		dir: string,
 		filename: string,
 		eventType: string
 	): Promise<void> {
 		const projectWatcher = this.watchers.get(projectId);
-		if (!projectWatcher) return;
+		if (!projectWatcher || projectWatcher.closed) return;
 
-		// Normalize filename to use forward slashes for consistency
-		const normalizedFilename = filename.replace(/\\/g, '/');
+		// Build full path, then derive the project-relative path — the ignore rules
+		// are defined against the project root, and `filename` is only relative to
+		// the directory that reported it.
+		const fullPath = join(dir, filename);
+		const relativePath = relative(projectWatcher.projectPath, fullPath).replace(/\\/g, '/');
 
-		// Check if should be ignored
-		if (this.shouldIgnore(normalizedFilename)) {
+		// Paths outside the project (possible on some platforms for rename events)
+		// and ignored paths never reach clients.
+		if (relativePath.startsWith('..') || this.shouldIgnore(relativePath)) {
 			return;
 		}
 
-		// Build full path
-		const fullPath = join(projectPath, filename);
-
 		// Determine change type
 		let changeType: 'created' | 'modified' | 'deleted';
+		let isDirectory = false;
 		if (eventType === 'change') {
 			changeType = 'modified';
 		} else {
 			// 'rename' event — check if file exists to distinguish create from delete
 			try {
-				await stat(fullPath);
+				const entryStat = await stat(fullPath);
+				isDirectory = entryStat.isDirectory();
 				changeType = 'created';
 			} catch {
 				changeType = 'deleted';
 			}
 		}
 
+		// Where recursion is emulated, keep the watch set in step with the tree: a
+		// new directory needs its own watcher, and a removed one must release its
+		// descendants' watchers so they can't leak.
+		if (!USE_NATIVE_RECURSIVE_WATCH) {
+			if (isDirectory && changeType === 'created') {
+				if (this.watchDir(projectWatcher, fullPath)) {
+					void this.watchSubtree(projectWatcher, fullPath);
+				}
+			} else if (changeType === 'deleted' && projectWatcher.dirWatchers.has(fullPath)) {
+				this.unwatchDir(projectWatcher, fullPath);
+			}
+		}
+
 		// Track dirty file for snapshot system
-		const relativePath = relative(projectPath, fullPath).replace(/\\/g, '/');
 		this.trackDirtyFile(projectId, relativePath);
 
 		// Create file change object
@@ -447,10 +632,14 @@ class FileWatcherManager {
 				// Silently ignore git watcher errors
 			});
 
-			// Watch .git/refs/ for branch/tag create/delete
+			// Watch .git/refs/ for branch/tag create/delete. Lock files are git's
+			// own write-in-progress scratch space: every ref update produces a
+			// `<ref>.lock` create AND delete, so forwarding them doubled the churn
+			// and fired a refresh before the ref itself had landed.
 			const refsDir = join(gitDir, 'refs');
 			if (existsSync(refsDir)) {
-				projectWatcher.gitRefsWatcher = watch(refsDir, { recursive: true }, (_eventType, _filename) => {
+				projectWatcher.gitRefsWatcher = watch(refsDir, { recursive: true }, (_eventType, filename) => {
+					if (filename && filename.replace(/\\/g, '/').endsWith('.lock')) return;
 					this.emitGitChanged(projectId);
 				});
 				projectWatcher.gitRefsWatcher.on('error', () => {
@@ -486,13 +675,37 @@ class FileWatcherManager {
 	}
 
 	/**
-	 * Schedule a debounced rebuild of a project's watcher after a fault.
-	 * Guarded so overlapping error events don't spawn multiple restarts.
+	 * Schedule a rebuild of a project's watcher after a fault, backing off on
+	 * each consecutive failure and giving up once the backoff is exhausted.
+	 *
+	 * The backoff matters: a fault whose cause is structural (the platform watch
+	 * limit, a permission change) reproduces immediately on restart. A fixed 1s
+	 * retry turned that into an endless rebuild loop that pegged the CPU and,
+	 * because each restart announced itself as a file change, made every client
+	 * reload its editor every second.
 	 */
 	private scheduleRestart(projectId: string): void {
 		if (this.restarting.has(projectId)) return;
 		// Only restart if someone is still viewing the project.
 		if (!this.viewers.get(projectId)?.size) return;
+
+		const current = this.watchers.get(projectId);
+		if (!current) return;
+
+		const attempt = current.faults;
+		const delay = RESTART_DELAYS_MS[attempt];
+		if (delay === undefined) {
+			debug.error(
+				'file',
+				`Watcher for project ${projectId} faulted ${attempt} times; giving up on automatic restart`
+			);
+			ws.emit.project(projectId, 'files:watch-error', {
+				projectId,
+				error: 'File watching stopped after repeated failures. Refresh to retry.'
+			});
+			return;
+		}
+
 		this.restarting.add(projectId);
 
 		setTimeout(async () => {
@@ -502,18 +715,23 @@ class FileWatcherManager {
 			const projectPath = this.watchers.get(projectId)?.projectPath;
 			if (!projectPath) return;
 
-			debug.warn('file', `Restarting faulted watcher for project ${projectId}`);
+			debug.warn(
+				'file',
+				`Restarting faulted watcher for project ${projectId} (attempt ${attempt + 1})`
+			);
 			this.stopWatching(projectId);
-			await this.startWatching(projectId, projectPath);
+			const ok = await this.startWatching(projectId, projectPath, attempt + 1);
+			if (!ok) return;
 
-			// A faulted watcher may have dropped events while down — nudge clients
-			// to reconcile so nothing stays stale.
-			ws.emit.project(projectId, 'files:changed', {
+			// A faulted watcher may have dropped events while down. Ask clients to
+			// reconcile — deliberately NOT via `files:changed`, which means "these
+			// specific paths changed" and made consumers tear down and rebuild live
+			// views (the open diff editor) on every restart.
+			ws.emit.project(projectId, 'files:resync', {
 				projectId,
-				changes: [],
 				timestamp: Date.now()
 			});
-		}, 1000);
+		}, delay);
 	}
 
 	/**
