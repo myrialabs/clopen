@@ -53,6 +53,8 @@ const mockCreateUserFromInvite = mock((inviteToken: string, name: string) => ({
 
 const mockNeedsSetup = mock(() => true);
 const mockGetAuthMode = mock(() => 'none');
+const mockMarkOnboardingPending = mock(() => {});
+const mockWriteSystemSettings = mock((patch: Record<string, unknown>) => patch);
 
 // Mock settings
 let mockSettings: any = { value: JSON.stringify({ authMode: 'required' }) };
@@ -83,12 +85,17 @@ mock.module('$backend/database/queries', () => ({
 	}
 }));
 
+mock.module('$backend/settings/system-settings', () => ({
+	getAuthMode: mockGetAuthMode,
+	writeSystemSettings: mockWriteSystemSettings
+}));
+
 mock.module('$backend/auth/auth-service', () => ({
 	createAdmin: mockCreateAdmin,
 	createOrGetNoAuthAdmin: mockCreateOrGetNoAuthAdmin,
 	createUserFromInvite: mockCreateUserFromInvite,
 	needsSetup: mockNeedsSetup,
-	getAuthMode: mockGetAuthMode,
+	markOnboardingPending: mockMarkOnboardingPending,
 	loginWithToken: mock(() => ({})),
 	logout: mock(() => {}),
 	logoutAllSessions: mock(() => 0),

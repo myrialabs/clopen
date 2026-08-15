@@ -13,7 +13,8 @@ import { randomUUID } from 'node:crypto';
 
 import { handleMcpRequest } from './remote-server';
 import { getMcpServiceToken } from './service-token';
-import { authQueries, settingsQueries } from '../../database/queries';
+import { authQueries } from '../../database/queries';
+import { writeSystemSettings } from '../../settings/system-settings';
 import { generatePAT, generateSessionToken, hashToken } from '../../auth/tokens';
 import { initializeDatabase, closeDatabase, getDatabase } from '../../database';
 
@@ -22,7 +23,11 @@ let sessionToken: string;
 let patToken: string;
 
 function setAuthMode(mode: 'none' | 'required'): void {
-	settingsQueries.set('system:settings', JSON.stringify({ authMode: mode }));
+	// Merge rather than replace: the system settings blob holds unrelated state
+	// (the onboarding marker, admin limits) and a test must never be able to drop
+	// it — the data directory is isolated under NODE_ENV=test, but the habit is
+	// what keeps it isolated if that ever changes.
+	writeSystemSettings({ authMode: mode });
 }
 
 function sessionCount(userId: string): number {
@@ -80,7 +85,7 @@ beforeAll(async () => {
 afterAll(() => {
 	authQueries.deleteSessionsByUserId(testUserId);
 	authQueries.deleteUser(testUserId);
-	settingsQueries.set('system:settings', JSON.stringify({ authMode: 'required' }));
+	setAuthMode('required');
 	closeDatabase();
 });
 

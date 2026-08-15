@@ -1,6 +1,7 @@
 import { t } from 'elysia';
 import { createRouter } from '$shared/utils/ws-server';
-import { needsSetup, getUserById, getAuthMode, isOnboardingComplete } from '$backend/auth/auth-service';
+import { needsSetup, getUserById, isOnboardingComplete, markOnboardingComplete } from '$backend/auth/auth-service';
+import { getAuthMode } from '$backend/settings/system-settings';
 import { ws } from '$backend/utils/ws';
 
 export const statusHandler = createRouter()
@@ -22,6 +23,10 @@ export const statusHandler = createRouter()
 		})
 	}, async ({ conn }) => {
 		const setup = needsSetup();
+		// Deliberately NOT wrapped in a try/catch: if onboarding state cannot be
+		// read, this request must fail so the client keeps its current screen.
+		// Reporting "not onboarded" on a read error is what used to drop working
+		// installs into the setup wizard.
 		const onboardingDone = isOnboardingComplete();
 		const authMode = getAuthMode();
 		const authenticated = ws.isAuthenticated(conn);
@@ -38,4 +43,22 @@ export const statusHandler = createRouter()
 		}
 
 		return { needsSetup: setup, onboardingComplete: onboardingDone, authenticated, authMode, user };
+	})
+
+	// Mark the setup wizard as finished.
+	//
+	// The server owns this marker rather than letting the client write the raw
+	// settings key: the wizard may only be dismissed once persistence is
+	// confirmed, otherwise a failed write drops the user straight back into it on
+	// the next refresh — silently, because the old client-side write was
+	// fire-and-forget. The response echoes the stored state so the client can
+	// verify instead of assume.
+	.http('auth:complete-onboarding', {
+		data: t.Object({}),
+		response: t.Object({
+			onboardingComplete: t.Boolean()
+		})
+	}, async () => {
+		markOnboardingComplete();
+		return { onboardingComplete: isOnboardingComplete() };
 	});

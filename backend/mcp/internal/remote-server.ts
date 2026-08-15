@@ -23,7 +23,7 @@ import { createExternalProxyServer } from '../external/proxy';
 import { debug } from '$shared/utils/logger';
 import { authQueries } from '$backend/database/queries';
 import { hashToken } from '$backend/auth/tokens';
-import { getAuthMode } from '$backend/auth/auth-service';
+import { getAuthMode } from '$backend/settings/system-settings';
 import { isMcpServiceToken } from './service-token';
 import type { EngineType } from '$shared/types/unified';
 

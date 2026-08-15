@@ -81,16 +81,29 @@
 		}
 	}
 
+	let finishError = $state('');
+	let finishLoading = $state(false);
+
 	async function finishWizard() {
+		finishError = '';
+		finishLoading = true;
 		try {
-			const status = await ws.http('engine:opencode-status', {}).catch(() => null);
-			if (status?.installed) {
-				await opencodeProvidersStore.restartServer(true);
+			try {
+				const status = await ws.http('engine:opencode-status', {}).catch(() => null);
+				if (status?.installed) {
+					await opencodeProvidersStore.restartServer(true);
+				}
+			} catch {
+				// Ignore — best effort restart
 			}
-		} catch {
-			// Ignore — best effort restart
+			// Only leaves the wizard once the server confirms setup is recorded;
+			// otherwise the next refresh would land right back here.
+			await authStore.completeSetup();
+		} catch (err) {
+			finishError = err instanceof Error ? err.message : 'Setup could not be saved';
+		} finally {
+			finishLoading = false;
 		}
-		authStore.completeSetup();
 	}
 
 	// ─── Step Labels ───
@@ -711,6 +724,10 @@
 						</div>
 					</div>
 
+					{#if finishError}
+						<p class="text-sm text-red-500 text-left">{finishError}</p>
+					{/if}
+
 					<div class="flex gap-2 sticky bottom-0 z-10 pt-3 pb-3 bg-white dark:bg-slate-950 border-t border-slate-200/70 dark:border-slate-800/70">
 						<button
 							onclick={goToPrevStep}
@@ -720,9 +737,10 @@
 						</button>
 						<button
 							onclick={finishWizard}
-							class="flex-1 py-2.5 px-4 rounded-lg bg-violet-600 hover:bg-violet-700 text-white text-sm font-medium transition-colors"
+							disabled={finishLoading}
+							class="flex-1 py-2.5 px-4 rounded-lg bg-violet-600 hover:bg-violet-700 text-white text-sm font-medium transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
 						>
-							Finish Setup
+							{finishLoading ? 'Saving...' : 'Finish Setup'}
 						</button>
 					</div>
 				</div>

@@ -16,12 +16,41 @@
 
 import { readFileSync } from 'fs';
 import { join } from 'path';
+import { homedir } from 'os';
 
 // ── Server configuration (read once at import time) ─────────────────
 const isDev = process.env.NODE_ENV !== 'production';
 
+/**
+ * Resolve the Clopen data directory — the single decision point for where ALL
+ * persisted state lives (app.db, engine homes, stack, snapshots, tunnel…).
+ *
+ * Resolved once, at import time, for two reasons:
+ *
+ * 1. `NODE_ENV` is not stable at runtime. Any dependency that assigns to
+ *    `process.env.NODE_ENV` mid-process would otherwise silently move the data
+ *    directory out from under a running server.
+ * 2. The test runner sets `NODE_ENV=test`, which used to fall through to the
+ *    production directory — so `bun test` opened the developer's real
+ *    `~/.clopen/app.db` and rewrote live rows (that is what kept resetting the
+ *    onboarding flag and system settings). Tests get their own directory here,
+ *    once, so no individual test has to remember to isolate itself.
+ *
+ * `CLOPEN_DATA_DIR` overrides everything, for deployments that keep state
+ * outside the home directory.
+ */
+function resolveDataDir(): string {
+	const override = process.env.CLOPEN_DATA_DIR?.trim();
+	if (override) return override;
+	if (process.env.NODE_ENV === 'test') return join(homedir(), '.clopen-test');
+	if (process.env.NODE_ENV === 'development') return join(homedir(), '.clopen-dev');
+	return join(homedir(), '.clopen');
+}
+
 export const SERVER_ENV = {
 	NODE_ENV: (process.env.NODE_ENV || 'development') as string,
+	/** Absolute path to the Clopen data directory — see `resolveDataDir()`. */
+	DATA_DIR: resolveDataDir(),
 	/** Backend port — dev: CLOPEN_PORT_BACKEND (default 9161), prod: CLOPEN_PORT (default 9141) */
 	PORT: isDev
 		? (process.env.CLOPEN_PORT_BACKEND ? parseInt(process.env.CLOPEN_PORT_BACKEND) : 9161)
