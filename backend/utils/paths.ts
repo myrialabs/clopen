@@ -1,13 +1,19 @@
 import { join, resolve } from 'path';
-import { homedir } from 'os';
+import { SERVER_ENV } from './env';
 
 /**
  * Returns the Clopen data directory.
  * - development: ~/.clopen-dev
- * - everything else (production, undefined): ~/.clopen
+ * - test:        ~/.clopen-test  (never the real one — see resolveDataDir)
+ * - production:  ~/.clopen
+ * - `CLOPEN_DATA_DIR` overrides all of the above.
+ *
+ * The value is resolved once at import time in `SERVER_ENV.DATA_DIR`; this is
+ * only a named accessor for it, so every caller sees the same directory for the
+ * lifetime of the process.
  */
 export function getClopenDir(): string {
-	return join(homedir(), process.env.NODE_ENV === 'development' ? '.clopen-dev' : '.clopen');
+	return SERVER_ENV.DATA_DIR;
 }
 
 /**

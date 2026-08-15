@@ -10,6 +10,7 @@
 import { t } from 'elysia';
 import { createRouter } from '$shared/utils/ws-server';
 import { settingsQueries, engineQueries } from '../../database/queries';
+import { SYSTEM_SETTINGS_KEY, writeSystemSettings } from '../../settings/system-settings';
 import { initializeEngine } from '../../engine';
 import { checkEngineSetup } from '../../engine/engine-setup';
 import { registerModels } from '$shared/constants/engines';
@@ -49,6 +50,13 @@ export const crudHandler = createRouter()
 			throw new Error('Key and value are required');
 		}
 
+		if (key === SYSTEM_SETTINGS_KEY) {
+			// The system blob is never replaced wholesale — a caller sending a
+			// partial copy would silently drop every field it does not know about
+			// (that is how the onboarding marker used to disappear). Merge instead.
+			throw new Error(`Use settings:update-system to change ${SYSTEM_SETTINGS_KEY}`);
+		}
+
 		settingsQueries.set(key, value);
 		const setting = settingsQueries.get(key);
 
@@ -56,34 +64,18 @@ export const crudHandler = createRouter()
 	})
 
 	// Merge-update system settings (admin only).
-	// Reads the current `system:settings` blob, merges the provided patch, and
-	// writes it back atomically. Sending only the changed keys prevents a partial
-	// update from clobbering sibling fields (e.g. onboardingComplete) when a
-	// client's in-memory copy of the settings is stale.
+	// Sending only the changed keys prevents a partial update from clobbering
+	// sibling fields (e.g. the onboarding marker) when a client's in-memory copy
+	// of the settings is stale. The merge itself lives in the system-settings
+	// module, which is the only writer of that row.
 	.http('settings:update-system', {
 		data: t.Object({
 			patch: t.Record(t.String(), t.Any())
 		}),
 		response: t.Any()
 	}, async ({ data }) => {
-		const KEY = 'system:settings';
-		const existing = settingsQueries.get(KEY);
-
-		let current: Record<string, unknown> = {};
-		if (existing?.value) {
-			try {
-				current = typeof existing.value === 'string'
-					? JSON.parse(existing.value)
-					: (existing.value as Record<string, unknown>);
-			} catch {
-				current = {};
-			}
-		}
-
-		const merged = { ...current, ...data.patch };
-		settingsQueries.set(KEY, JSON.stringify(merged));
-
-		return settingsQueries.get(KEY);
+		writeSystemSettings(data.patch);
+		return settingsQueries.get(SYSTEM_SETTINGS_KEY);
 	})
 
 	// Batch update multiple settings

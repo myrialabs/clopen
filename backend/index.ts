@@ -50,7 +50,7 @@ import { handleMcpRequest, handleExternalMcpRequest, closeMcpServer, completeAut
 
 // Auth middleware
 import { checkRouteAccess, PUBLIC_ROUTES } from './auth/permissions';
-import { getAuthMode } from './auth/auth-service';
+import { getAuthMode } from './settings/system-settings';
 import { authQueries } from './database/queries';
 import { authRateLimiter } from './auth';
 import { sessionCleanupScheduler } from './auth/session-cleanup';
@@ -232,10 +232,15 @@ async function startServer() {
 		debug.warn('path', '⚠️ Initial PATH enrichment failed:', error);
 	}
 
-	// Initialize database first before accepting connections
+	// Initialize database first before accepting connections.
+	//
+	// A failure here is fatal on purpose. Serving requests without a database
+	// means every settings read fails, and callers that fall back to defaults
+	// report a configured instance as unconfigured — an empty project list, an
+	// unfinished setup wizard. Refusing to start is both louder and safer.
 	try {
 		await initializeDatabase();
-		debug.log('database', '✅ Database initialized successfully');
+		debug.log('database', `✅ Database initialized successfully (data dir: ${SERVER_ENV.DATA_DIR})`);
 		// Re-establish code-defined built-ins that live outside migrations/seeders
 		// (internal MCP servers like Browser Automation + the default engine).
 		// Shared with the clear-data handler so a DB wipe on the live process
@@ -245,7 +250,9 @@ async function startServer() {
 		sessionCleanupScheduler.start();
 		uploadTempCleanup.start();
 	} catch (error) {
-		debug.warn('database', '⚠️ Database initialization failed:', error);
+		console.error('❌ Database initialization failed — refusing to start:', error);
+		console.error(`   Data directory: ${SERVER_ENV.DATA_DIR}`);
+		process.exit(1);
 	}
 
 	// Start listening after database is ready

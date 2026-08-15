@@ -92,7 +92,17 @@ export type AuthMode = 'none' | 'required';
 export interface SystemSettings {
 	/** Authentication mode: 'none' = single user no login, 'required' = multi-user with login. Default: 'required'. */
 	authMode: AuthMode;
-	/** Whether the initial setup wizard has been completed. Default: false. */
+	/**
+	 * Setup wizard state — the authoritative marker.
+	 * 'pending' is only written by a fresh install that entered the wizard; an
+	 * install with users and no marker at all is treated (and recorded) as
+	 * complete. Read server-side via `auth:status`, never decided by the client.
+	 */
+	onboarding?: 'pending' | 'complete';
+	/**
+	 * Legacy boolean mirror of `onboarding`, still written so an older build
+	 * downgraded onto the same database keeps recognising a completed setup.
+	 */
 	onboardingComplete: boolean;
 	/** Restrict folder browser to only these base paths. Empty = no restriction. */
 	allowedBasePaths: string[];

@@ -4,7 +4,8 @@
  * Core authentication logic: user creation, session management, invite handling.
  */
 
-import { authQueries, projectQueries, settingsQueries } from '$backend/database/queries';
+import { authQueries, projectQueries } from '$backend/database/queries';
+import { readSystemSettings, writeSystemSettings } from '$backend/settings/system-settings';
 import type { Project } from '$shared/types/database/schema';
 import { generateSessionToken, generatePAT, generateInviteToken, generateDeviceCode, hashToken, getTokenType } from './tokens';
 import { generateColorFromString, getInitials } from '$backend/utils/user-helpers';
@@ -85,38 +86,57 @@ export function needsSetup(): boolean {
 }
 
 /**
- * Get parsed system settings from DB (cached per call).
+ * Onboarding (setup wizard) state.
+ *
+ * `pending` is only ever reported when we positively know the wizard is
+ * unfinished — a fresh install, or a run that recorded the marker and has not
+ * completed yet. Everything else resolves to `complete`, because sending a
+ * working instance back through the wizard is destructive: it re-asks for the
+ * auth mode and lets the user overwrite live settings.
+ *
+ * `getOnboardingState()` deliberately does NOT catch read failures. A database
+ * error must surface to the caller instead of being reported as "never
+ * onboarded" — that silent downgrade is what used to drop users into the wizard
+ * at random.
  */
-function getSystemSettingsParsed(): Record<string, unknown> {
-	try {
-		const setting = settingsQueries.get('system:settings');
-		if (setting?.value) {
-			return typeof setting.value === 'string' ? JSON.parse(setting.value) : setting.value;
-		}
-	} catch {
-		// Settings may not exist yet
+export type OnboardingState = 'pending' | 'complete';
+
+export function getOnboardingState(): OnboardingState {
+	const stored = readSystemSettings();
+
+	// `onboarding` is the current marker; `onboardingComplete` is the legacy
+	// boolean, still read (and written) so a downgrade keeps working.
+	if (stored.onboarding === 'complete' || stored.onboardingComplete === true) return 'complete';
+	if (stored.onboarding === 'pending') return 'pending';
+
+	// No marker at all. An install that already has users has, by definition,
+	// been through setup — the wizard is what created them. Record that so a
+	// single missing key can never flap the whole instance back to setup.
+	if (!needsSetup()) {
+		markOnboardingComplete();
+		debug.log('auth', 'Onboarding marker missing but users exist — recorded as complete');
+		return 'complete';
 	}
-	return {};
+
+	return 'pending';
 }
 
-/**
- * Get the current auth mode from system settings.
- * Returns 'required' by default (before setup is complete).
- */
-export function getAuthMode(): 'none' | 'required' {
-	const parsed = getSystemSettingsParsed();
-	if (parsed.authMode === 'none' || parsed.authMode === 'required') {
-		return parsed.authMode as 'none' | 'required';
-	}
-	return 'required';
-}
-
-/**
- * Check if the initial onboarding wizard has been completed.
- */
+/** True when the setup wizard has been completed. */
 export function isOnboardingComplete(): boolean {
-	const parsed = getSystemSettingsParsed();
-	return parsed.onboardingComplete === true;
+	return getOnboardingState() === 'complete';
+}
+
+/**
+ * Record that a fresh install has entered the wizard, so a refresh mid-setup
+ * resumes it instead of being mistaken for a completed install.
+ */
+export function markOnboardingPending(): void {
+	writeSystemSettings({ onboarding: 'pending', onboardingComplete: false });
+}
+
+/** Record that the wizard finished. Writes both the current and legacy markers. */
+export function markOnboardingComplete(): void {
+	writeSystemSettings({ onboarding: 'complete', onboardingComplete: true });
 }
 
 /**

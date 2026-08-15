@@ -5,7 +5,7 @@
  * Used by the auth gate in WSRouter.handleMessage().
  */
 
-import { getAuthMode } from './auth-service';
+import { getAuthMode } from '$backend/settings/system-settings';
 
 /** Routes that can be accessed WITHOUT authentication */
 export const PUBLIC_ROUTES = new Set([

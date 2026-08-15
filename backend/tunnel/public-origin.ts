@@ -16,7 +16,7 @@
 
 import { tunnelKit, portFromService } from './tunnel-config';
 import { SERVER_ENV } from '../utils/env';
-import { settingsQueries } from '$backend/database/queries';
+import { readSystemSetting } from '$backend/settings/system-settings';
 import { debug } from '$shared/utils/logger';
 
 export type PublicOriginSource = 'configured' | 'domain' | 'tunnel';
@@ -50,18 +50,10 @@ function normalizeOrigin(url: string): string {
 
 /** Read the admin-configured public base URL from system settings, if any. */
 function getConfiguredPublicBaseUrl(): string | null {
-	try {
-		const setting = settingsQueries.get('system:settings');
-		if (!setting?.value) return null;
-		const parsed = typeof setting.value === 'string' ? JSON.parse(setting.value) : setting.value;
-		const url = parsed?.publicBaseUrl;
-		if (typeof url === 'string' && url.trim()) {
-			return normalizeOrigin(url.trim());
-		}
-	} catch {
-		// Settings may not exist yet.
-	}
-	return null;
+	return readSystemSetting((settings) => {
+		const url = settings.publicBaseUrl;
+		return typeof url === 'string' && url.trim() ? normalizeOrigin(url.trim()) : undefined;
+	}, null);
 }
 
 /** Find an already-running quick tunnel pointing at the given local port. */
