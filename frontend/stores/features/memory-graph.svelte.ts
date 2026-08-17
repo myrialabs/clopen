@@ -20,6 +20,7 @@ import type {
 	MemoryDraft,
 	GraphNode,
 	GraphNodeKind,
+	GraphRegion,
 	GraphScope,
 	GraphSource,
 	GraphView,
@@ -100,13 +101,131 @@ export const EPISODIC_SUBKINDS = [
 
 export const STRUCTURAL_SUBKINDS = ['file', 'symbol', 'module', 'dependency'] as const;
 
-const EMPTY_VIEW: GraphView = { nodes: [], edges: [], totalNodes: 0, truncated: false };
+const EMPTY_VIEW: GraphView = {
+	level: 'flat',
+	nodes: [],
+	edges: [],
+	bins: [],
+	binEdges: [],
+	region: null,
+	totalNodes: 0,
+	truncated: false
+};
+
+/**
+ * A fingerprint of everything the canvas actually DRAWS.
+ *
+ * It lives here rather than in the canvas because it belongs to a FETCH, not to
+ * a render: computed once when a response lands, it used to be recomputed inside
+ * a reactive effect — hashing every label of every node again on any store write
+ * that happened to invalidate the effect.
+ *
+ * Every field that feeds a colour, a size or a caption is folded in, and nothing
+ * else: `weight` and `rel` are absent because no drawn property is derived from
+ * them, and including them would buy repaints that change no pixels. Positions
+ * are absent too, but for a different reason — they move a node without changing
+ * what it IS, so they are watched separately by `layoutSignatureOf` and applied
+ * without a rebuild.
+ *
+ * Hashed rather than concatenated: the ids alone are a string joined from up to
+ * three thousand entries, and adding labels would build a few hundred kilobytes
+ * on every refetch to then throw it away.
+ */
+function signatureOf(view: GraphView): string {
+	let hash = 2166136261;
+	const feed = (value: string | number): void => {
+		const text = typeof value === 'number' ? value.toString(36) : value;
+		for (let i = 0; i < text.length; i++) {
+			hash ^= text.charCodeAt(i);
+			hash = Math.imul(hash, 16777619);
+		}
+		// A field separator, so ("ab","c") and ("a","bc") cannot collide.
+		hash ^= 0x1f;
+		hash = Math.imul(hash, 16777619);
+	};
+
+	for (const node of view.nodes) {
+		feed(node.id);
+		feed(node.label);
+		feed(node.kind);
+		feed(node.community);
+		feed(node.degree);
+	}
+	for (const edge of view.edges) {
+		feed(edge.source);
+		feed(edge.target);
+	}
+	for (const bin of view.bins) {
+		feed(bin.id);
+		feed(bin.label);
+		feed(bin.members);
+		feed(bin.community);
+	}
+	for (const edge of view.binEdges) {
+		feed(edge.source);
+		feed(edge.target);
+	}
+	return `${view.level}:${view.nodes.length}:${view.edges.length}:${view.bins.length}:${(hash >>> 0).toString(36)}`;
+}
+
+/**
+ * A fingerprint of WHERE things are, kept apart from what they are.
+ *
+ * The two change on different schedules and want different responses. A changed
+ * node set has to rebuild the graph; a changed arrangement must not, because a
+ * rebuild resets the camera and replays the entrance — and the arrangement
+ * changes on its own, seconds after any memory is recorded, when the background
+ * layout pass lands.
+ *
+ * Without this the canvas never saw those positions at all: the structural
+ * signature was identical, so a graph the client had laid out for itself stayed
+ * on screen until the modal was closed and reopened.
+ */
+function layoutSignatureOf(view: GraphView): string {
+	let hash = 2166136261;
+	const feed = (value: number): void => {
+		// Rounded, so a position that moved a fraction of a pixel does not read as
+		// news. The layout pass re-settles slightly on every run.
+		const text = Math.round(value).toString(36);
+		for (let i = 0; i < text.length; i++) {
+			hash ^= text.charCodeAt(i);
+			hash = Math.imul(hash, 16777619);
+		}
+		hash ^= 0x1f;
+		hash = Math.imul(hash, 16777619);
+	};
+
+	let placed = 0;
+	for (const node of view.nodes) {
+		if (node.x === undefined || node.y === undefined) continue;
+		placed++;
+		feed(node.x);
+		feed(node.y);
+	}
+	for (const bin of view.bins) {
+		feed(bin.x);
+		feed(bin.y);
+	}
+	return `${placed}:${(hash >>> 0).toString(36)}`;
+}
 
 /** Forgotten memories fetched per page. The list is a review queue, not a feed. */
 const FORGOTTEN_PAGE = 200;
 
 let view = $state<GraphView>(EMPTY_VIEW);
+let viewSignature = $state(signatureOf(EMPTY_VIEW));
+let layoutSignature = $state(layoutSignatureOf(EMPTY_VIEW));
 let loading = $state(false);
+
+/**
+ * The part of the layout being looked at closely, when a crowded mark was opened.
+ *
+ * NAVIGATION, not filtering, which is why it does not live in `filter`: a filter
+ * narrows what exists, this chooses what to look at closely. Changing a filter
+ * clears it, because the rectangle was read off an arrangement the new filter
+ * may not produce.
+ */
+let region = $state<GraphRegion | null>(null);
 let stats = $state<MemoryStats | null>(null);
 let selected = $state<NodeDetail | null>(null);
 let selectedLoading = $state(false);
@@ -152,6 +271,11 @@ let hoveredId = $state<string | null>(null);
 
 export const memoryGraphStore = {
 	get view() { return view; },
+	/** Changes exactly when the drawn graph changes; see `signatureOf`. */
+	get viewSignature() { return viewSignature; },
+	/** Changes when the persisted arrangement moves; see `layoutSignatureOf`. */
+	get layoutSignature() { return layoutSignature; },
+	get region() { return region; },
 	get loading() { return loading; },
 	get stats() { return stats; },
 	get selected() { return selected; },
@@ -192,6 +316,30 @@ export const memoryGraphStore = {
 
 	setFilter(patch: Partial<MemoryFilter>): void {
 		filter = { ...filter, ...patch };
+		// The rectangle was read off an arrangement this filter may not produce, so
+		// keeping it would zoom the new graph to a patch of the old one's plane.
+		region = null;
+		void this.refresh();
+	},
+
+	/**
+	 * Zoom into one crowded mark, drawing the memories it stands for.
+	 *
+	 * REPLACES rather than accumulates. Holding several unrelated rectangles at
+	 * once has no coherent picture to draw and would make "back" undo them one at
+	 * a time — a history nobody asked to build. One region, and the whole graph is
+	 * always one step away.
+	 */
+	focusRegion(next: GraphRegion): void {
+		region = next;
+		void this.refresh();
+	},
+
+	/** Back to the whole graph. */
+	clearRegion(): void {
+		if (!region) return;
+		region = null;
+		selected = null;
 		void this.refresh();
 	},
 
@@ -204,16 +352,25 @@ export const memoryGraphStore = {
 				kinds: filter.kinds,
 				...(filter.subkinds.length > 0 && { subkinds: filter.subkinds }),
 				...(filter.sources.length > 0 && { sources: filter.sources }),
+				...(region !== null && { region }),
 				includeArchived: filter.includeArchived
 			})) as GraphView;
 			// A newer fetch has already been issued, so this answer describes a filter
 			// or a moment the user has moved on from. Dropping it is the whole point.
 			if (seq !== refreshSeq) return;
 			view = next;
+			viewSignature = signatureOf(next);
+			layoutSignature = layoutSignatureOf(next);
+			// The server decides the resolution — a graph can fall back to the flat
+			// view while its arrangement is still being computed — so what it
+			// answered with is the truth about what is drawn, not what was asked.
+			region = next.region;
 		} catch (error) {
 			if (seq !== refreshSeq) return;
 			debug.error('settings', 'Failed to load memory graph:', error);
 			view = EMPTY_VIEW;
+			viewSignature = signatureOf(EMPTY_VIEW);
+			layoutSignature = layoutSignatureOf(EMPTY_VIEW);
 		} finally {
 			// Still loading, as far as the user is concerned — the request that
 			// overtook this one has not answered yet.

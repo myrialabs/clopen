@@ -20,6 +20,7 @@ import { notifyMemoryReadiness } from './notify';
 import { resetGraphEmptiness } from './context';
 import { reconcileVectorIndex } from './indexer';
 import { startMemoryMaintenance } from './maintenance';
+import { resetGraphLayoutState, scheduleGraphLayout } from './layout';
 import { ensureMemoryModel } from './model';
 import { startExtractionRunner } from './extract';
 
@@ -41,6 +42,14 @@ export function bootstrapMemoryGraph(): void {
 	// cache is still holding describes rows that no longer exist.
 	vectorCache.reset();
 	resetGraphEmptiness();
+
+	// Same reason as the caches above: "Clear All Data" wipes the database under a
+	// live process, so what the last pass laid out describes rows that no longer
+	// exist. Scheduling one here is also what places an EXISTING graph the first
+	// time the upgrade runs — until it lands the view falls back to the flat
+	// listing it always used, so nothing is missing meanwhile.
+	resetGraphLayoutState();
+	scheduleGraphLayout();
 
 	// Duplicate collapse and retention are pure SQL and are worth running whether
 	// or not the artifact ever lands, so maintenance starts independently of the
