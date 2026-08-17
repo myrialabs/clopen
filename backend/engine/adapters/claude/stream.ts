@@ -20,6 +20,8 @@ import type {
 	PermissionMode,
 	PermissionResult,
 	EffortLevel,
+	HookInput,
+	HookJSONOutput,
 } from '@anthropic-ai/claude-agent-sdk';
 import type { EngineOutput } from '$shared/types/unified';
 import type { StructuredGenerationOptions } from '../../types';
@@ -32,7 +34,7 @@ import { getEnabledMcpServers, getAllowedMcpTools } from '../../../mcp';
 import { syncSkills } from '$backend/skills';
 import { syncEngineArtifacts } from '$backend/engine/artifact-sync';
 import { artifactFilter } from '$backend/profiles';
-import { resolvePermissionsFromDb, isToolAllowed, syncPermissions } from '$backend/permissions';
+import { resolvePermissionsFromDb, isToolAllowed, hasAnyRestriction, syncPermissions } from '$backend/permissions';
 import type { AIEngine, EngineQueryOptions } from '../../types';
 import type { EngineModel } from '$shared/types/unified';
 import { CLAUDE_CODE_MODELS } from './models';
@@ -139,6 +141,9 @@ export class ClaudeCodeEngine implements AIEngine {
     debug.log('chat', { prompt });
 
     this.activeController = abortController || new AbortController();
+    // Held locally: cancel() nulls the field, and the checks below still need to
+    // know whether this stream ended because the user cancelled it.
+    const streamController = this.activeController;
 
     const resolvedProjectPath = resolveOsPath(projectPath);
 
@@ -153,14 +158,22 @@ export class ClaudeCodeEngine implements AIEngine {
       await syncSkills('claude', profileId);
       // Commands, Subagents, and global Instructions share the same trigger.
       await syncEngineArtifacts('claude', profileId);
-      // Write the resolved allow/deny into the isolated settings.json (honesty
-      // layer — the runtime hook below is the authoritative enforcement).
+      // Mirror the resolved allow/deny into the isolated settings.json so the
+      // rules are visible to anyone inspecting the config. Deny rules there do
+      // bite even under bypassPermissions, but an allowlist has no on-disk
+      // equivalent — the PreToolUse hook below is the authoritative enforcement.
       await syncPermissions('claude');
 
-      // Resolve the effective permission policy once per stream; the canUseTool
-      // hook consults it to actually block denied tools (Clopen otherwise
-      // auto-allows everything, so this hook is where deny gets its teeth).
+      // Resolve the effective permission policy once per stream. Enforcement
+      // lives in the PreToolUse hook, NOT in canUseTool: under
+      // permissionMode 'bypassPermissions' the CLI auto-approves a tool call
+      // before the permission callback is consulted (the SDK says so itself via
+      // the CLAUDE_SDK_CAN_USE_TOOL_SHADOWED warning), so a callback-side check
+      // would be a no-op. A PreToolUse hook sees every call regardless of mode.
       const permissions = resolvePermissionsFromDb('claude-code', options.mcpContext?.projectId, profileId);
+      // Registering the hook costs one control round-trip per tool call, so only
+      // pay it when there is actually a rule to enforce.
+      const enforcePermissions = hasAnyRestriction(permissions);
 
       // Get custom MCP servers and allowed tools
       // Pass mcpContext so tool handlers are bound to the correct project
@@ -170,6 +183,25 @@ export class ClaudeCodeEngine implements AIEngine {
       debug.log('mcp', '📦 Loading custom MCP servers...');
       debug.log('mcp', `Enabled servers: ${Object.keys(mcpServers).length}`);
       debug.log('mcp', `Allowed tools: ${allowedMcpTools.length}`);
+
+      // AskUserQuestion safety net. The CLI still routes that tool through
+      // canUseTool even under bypassPermissions, but the SDK explicitly
+      // documents the callback as shadowed in that mode — so we rely on
+      // behaviour upstream has not promised. If a future SDK stops routing it,
+      // the question would never reach the user and the failure would be
+      // silent; comparing what the model asked against what the callback parked
+      // turns that into a log line instead of a frozen chat.
+      const questionsAsked = new Set<string>();
+      const questionsParked = new Set<string>();
+      const observeAskUserQuestion = (sdkMessage: unknown): void => {
+        const message = sdkMessage as { type?: string; message?: { content?: unknown } };
+        if (message.type !== 'assistant' || !Array.isArray(message.message?.content)) return;
+        for (const block of message.message.content as Array<{ type?: string; name?: string; id?: string }>) {
+          if (block.type === 'tool_use' && block.name === 'AskUserQuestion' && block.id) {
+            questionsAsked.add(block.id);
+          }
+        }
+      };
 
       // SDK uses cwd from options — no process.chdir() needed.
       // Environment is passed via env option — no process.env mutation.
@@ -188,11 +220,17 @@ export class ClaudeCodeEngine implements AIEngine {
         // thinking_delta events; 'off' disables it, an explicit level adds effort.
         thinking: thinkingConfig,
         ...effortOption,
-        // Custom permission handler: blocks on AskUserQuestion until user answers,
-        // auto-allows everything else. Works alongside bypassPermissions.
+        // Tool gating that must survive every permission mode lives in the
+        // PreToolUse hook below. This callback is kept for one job only: park
+        // the SDK on AskUserQuestion until the user answers. It waits without a
+        // deadline on purpose — a hook would be bounded by its `timeout`
+        // (default 600000 ms, and values above 2^31-1 ms overflow setTimeout and
+        // fire immediately), while a parked promise simply waits until the user
+        // answers or the stream is cancelled.
         canUseTool: async (_toolName, input, canUseToolOptions) => {
           if (_toolName === 'AskUserQuestion') {
             debug.log('engine', `AskUserQuestion detected (toolUseID: ${canUseToolOptions.toolUseID}), waiting for user input...`);
+            questionsParked.add(canUseToolOptions.toolUseID);
             return new Promise<PermissionResult>((resolve) => {
               // Handle abort (stream cancelled while waiting)
               if (canUseToolOptions.signal.aborted) {
@@ -217,15 +255,35 @@ export class ClaudeCodeEngine implements AIEngine {
               });
             });
           }
-          // Enforce the resolved permission policy: deny blocks the tool, an
-          // allowlist (when set) blocks anything not on it. Everything else is
-          // auto-allowed as before.
-          if (!isToolAllowed(permissions, _toolName)) {
-            debug.log('permissions', `⛔ Blocked tool "${_toolName}" (Clopen permission policy)`);
-            return { behavior: 'deny' as const, message: `Blocked by Clopen permission policy: ${_toolName}` };
-          }
           return { behavior: 'allow' as const, updatedInput: input };
         },
+        // Enforce the resolved permission policy: deny blocks the tool, an
+        // allowlist (when set) blocks anything not on it. Returning an empty
+        // result leaves the decision alone, so unrestricted tools fall through
+        // to the mode's own auto-approve without an extra round-trip.
+        ...(enforcePermissions && {
+          hooks: {
+            PreToolUse: [{
+              hooks: [async (hookInput: HookInput): Promise<HookJSONOutput> => {
+                if (hookInput.hook_event_name !== 'PreToolUse') return {};
+                // AskUserQuestion is Clopen's own interaction channel, not a
+                // capability the policy is about — it was exempt while the check
+                // lived in canUseTool (that branch returned first), so an
+                // allowlist must not start silencing questions now.
+                if (hookInput.tool_name === 'AskUserQuestion') return {};
+                if (isToolAllowed(permissions, hookInput.tool_name)) return {};
+                debug.log('permissions', `⛔ Blocked tool "${hookInput.tool_name}" (Clopen permission policy)`);
+                return {
+                  hookSpecificOutput: {
+                    hookEventName: 'PreToolUse',
+                    permissionDecision: 'deny',
+                    permissionDecisionReason: `Blocked by Clopen permission policy: ${hookInput.tool_name}`
+                  }
+                };
+              }]
+            }]
+          }
+        }),
         ...(modelId && { model: modelId }),
         ...(resume && { resume }),
         ...(maxTurns && { maxTurns }),
@@ -260,6 +318,7 @@ export class ClaudeCodeEngine implements AIEngine {
       const sdkProducer = (async () => {
         try {
           for await (const sdkMessage of queryInstance) {
+            observeAskUserQuestion(sdkMessage);
             // Register Workflow launches after queueing the corresponding parent
             // and tool result, preserving their ordering ahead of child records.
             for (const output of convertSdkMessage(sdkMessage)) events.push(output);
@@ -292,6 +351,13 @@ export class ClaudeCodeEngine implements AIEngine {
         await producers;
       } finally {
         workflowTranscripts.dispose();
+        // A cancelled stream legitimately leaves questions unparked.
+        if (!streamController.signal.aborted) {
+          const unrouted = [...questionsAsked].filter(id => !questionsParked.has(id));
+          if (unrouted.length > 0) {
+            debug.error('engine', `AskUserQuestion never reached canUseTool (${unrouted.length}: ${unrouted.join(', ')}). The SDK likely stopped routing that tool through the permission callback under bypassPermissions — interactive questions are now unanswerable and must move to a PreToolUse hook.`);
+          }
+        }
       }
 
     } catch (error) {
