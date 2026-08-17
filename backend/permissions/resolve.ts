@@ -2,11 +2,13 @@
  * Permission resolution — the pure decision logic behind Settings → Permissions.
  *
  * A permission set is a pair of tool-pattern lists (`allow` + `deny`) stored per
- * `(scope, project, engine)`. This module answers one question at the engine's
- * auto-approve hook: *is this tool allowed to run?* The stored sets are enforced
- * at runtime (each engine consults {@link isToolAllowed} in the hook it already
- * uses to auto-approve tools — see the adapters), which is why enforcement is
- * real even though every engine otherwise auto-approves.
+ * `(scope, project, engine)`. This module answers one question: *is this tool
+ * allowed to run?* The stored sets are enforced at runtime — each engine calls
+ * {@link isToolAllowed} from whichever surface it has that fires for every tool
+ * call (see the adapters) — which is why enforcement is real even though every
+ * engine otherwise auto-approves. Claude uses a `PreToolUse` hook rather than
+ * its permission callback: `bypassPermissions` auto-approves a call before the
+ * callback is consulted, so a check there would never run.
  *
  * Resolution across the two scopes (documented in migration 049):
  *   - deny  = global.deny ∪ project.deny        (deny always adds restriction)

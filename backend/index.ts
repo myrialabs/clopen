@@ -27,6 +27,7 @@ import { bootstrapAfterDbInit } from './bootstrap';
 import { disposeAllEngines } from './engine';
 import { connectionManager } from './db-client/connection-manager';
 import { refreshProcessPath } from './utils/path-enrich';
+import { installProcessWarningFilter } from './utils/process-warnings';
 import { debug } from '$shared/utils/logger';
 import { networkInterfaces } from 'os';
 import { resolve } from 'node:path';
@@ -380,6 +381,10 @@ globalThis.addEventListener('unhandledrejection', (event: PromiseRejectionEvent)
 	event.preventDefault();
 	reportUnhandledRejection(event.reason);
 });
+
+// Owns every `process.emitWarning` line in the server log (see the module for
+// why registering a listener means we must re-print what we keep).
+installProcessWarningFilter();
 
 process.on('uncaughtException', (error) => {
 	try {

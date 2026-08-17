@@ -29,7 +29,7 @@
 | Materialize an artifact per engine (matrix)  | `backend/artifacts/matrix.ts::resolveArtifact`, generic writer `backend/artifacts/sync.ts`, scanner `backend/artifacts/detect.ts` (see §8.2) |
 | Per-stream artifact sync (Commands/Subagents/Instructions) | `backend/engine/artifact-sync.ts::syncEngineArtifacts` + `buildArtifactsPromptContext` — called from each `stream.ts` after `syncSkills` (see §8.3) |
 | Profile scoping (narrow active artifacts)   | `backend/profiles/service.ts::resolveActiveProfileId` + `artifactFilter` (see §8.4) |
-| Permission enforcement (runtime hook)        | `backend/permissions/service.ts::resolvePermissionsFromDb` + `isToolAllowed` (see §8.4) |
+| Permission enforcement (runtime check)       | `backend/permissions/service.ts::resolvePermissionsFromDb` + `isToolAllowed` (see §8.4); Claude wires it into a `PreToolUse` hook in `claude/stream.ts` |
 | Auth-blob swap into shared CLI dotfile      | Pattern only (no implementation yet); see §3.3 callout + §10.13 |
 | Restart-Server pattern (long-lived engines) | `backend/ws/engine/opencode/providers.ts::engine:opencode-server-restart`, `frontend/components/chat/input/components/EngineModelPicker.svelte::restartOCServer`, `engines/panels/OpenCodePanel.svelte::handleRestartServer`/`forceRestartServer` |
 | `generateStructured` (no tools, JSON)       | `claude/stream.ts::generateStructured` (native `outputFormat`), `codex/stream.ts::generateStructured` (native `outputSchema`); `opencode` / `copilot` / `qwen` / `pi` / `cline` / `cursor` are prompt-engineered via `backend/engine/structured-helpers.ts` (`buildJsonPrompt` + `extractJson`). See §10.16 for the strict-schema + part-fallback gotchas. |
