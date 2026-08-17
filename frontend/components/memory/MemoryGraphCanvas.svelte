@@ -10,19 +10,34 @@
 	 * and resetting the camera. Everything a reducer touches therefore lives in a
 	 * plain variable. The rule to keep: a reducer must never read a rune.
 	 *
+	 * ── Why it no longer computes a layout ────────────────────────────────────
+	 * It used to run ForceAtlas2 on every open — several hundred iterations to
+	 * arrive at the same arrangement it arrived at last time, thrown away when the
+	 * modal closed. That was the bulk of what made opening the modal stutter: the
+	 * open animation is two hundred milliseconds of this thread, and the build plus
+	 * the first layout batches landed inside it.
+	 *
+	 * Positions now arrive with the data, computed once in the background (see
+	 * `backend/memory/layout.ts`). The simulation still exists here, but only for
+	 * nodes that have no position yet — memories written since the last pass — and
+	 * it is a short settle of a handful of arrivals rather than a solve of
+	 * everything.
+	 *
+	 * ── Two resolutions ───────────────────────────────────────────────────────
+	 * Past a render budget the server merges memories that share a cell of the
+	 * layout grid into one mark, so what is drawn stays bounded however much
+	 * memory accumulates — but only where the dots would have overlapped anyway,
+	 * and a cell holding one memory still arrives as that memory. Both shapes are
+	 * normalised into `DrawNode` here, because everything below this — sizing,
+	 * colouring, emphasis, hover — is the same work either way.
+	 *
 	 * ── Why it looks the way it does ──────────────────────────────────────────
 	 * Quiet at rest, informative on contact. Small nodes and hairline edges, so the
 	 * structure is carried by the arrangement rather than by the ink; unfocused
 	 * nodes dim but stay visible rather than vanishing; and NOTHING is labelled
-	 * until it is pointed at.
-	 *
-	 * That last one used to be a matter of degree — labels were thinned by size and
-	 * by a grid, which still left full sentences drawn over each other wherever the
-	 * graph was busy, and reading them as a layer of noise on top of the shape. They
-	 * are now off entirely (`renderLabels: false`) and only the hover pill remains.
-	 * Sigma draws that from `renderHighlightedNodes`, which is independent of the
-	 * label layer, so turning labels off costs nothing on contact. Nodes still carry
-	 * a `label` attribute because the hover renderer reads it.
+	 * until it is pointed at, at either resolution. Captions were tried for the
+	 * merged marks on the theory that a crowd needs naming, and they reproduced the
+	 * same overlapping text layer over a picture whose entire value is its shape.
 	 */
 	import { onDestroy, onMount } from 'svelte';
 	import Sigma from 'sigma';
@@ -30,8 +45,9 @@
 	import Icon from '$frontend/components/common/display/Icon.svelte';
 	import { memoryGraphStore } from '$frontend/stores/features/memory-graph.svelte';
 	import { themeStore } from '$frontend/stores/ui/theme.svelte';
+	import { debug } from '$shared/utils/logger';
 	import type { IconName } from '$shared/types/ui/icons';
-	import type { GraphView, GraphViewNode } from '$shared/types/memory';
+	import type { GraphView } from '$shared/types/memory';
 
 	interface Props {
 		/** Currently inspected node — highlighted and always labelled. */
@@ -54,6 +70,37 @@
 
 	const { selectedId, highlightIds = [], bottomInset = 0, onSelect }: Props = $props();
 
+	/**
+	 * One shape for both resolutions.
+	 *
+	 * A bin and a memory differ in what they MEAN, which is why the wire format
+	 * keeps them apart, but they are drawn by the same code — so they are unified
+	 * once, here, instead of every sizing and colouring function branching.
+	 */
+	interface DrawNode {
+		id: string;
+		label: string;
+		community: number;
+		/** Connections for a memory, members for a bin; both drive size. */
+		magnitude: number;
+		kind: 'episodic' | 'structural' | 'bin';
+		/** From the persisted arrangement. Absent means "not placed yet". */
+		x?: number;
+		y?: number;
+	}
+
+	interface DrawEdge {
+		source: string;
+		target: string;
+		weight: number;
+	}
+
+	interface Scene {
+		level: 'flat' | 'binned';
+		nodes: DrawNode[];
+		edges: DrawEdge[];
+	}
+
 	let container: HTMLDivElement | null = null;
 	let sigma: Sigma | null = null;
 	let graph: Graph | null = null;
@@ -66,7 +113,20 @@
 	let isDark = false;
 	let workerNodeIds: string[] = [];
 	let renderedSignature = '';
+	/** The arrangement currently drawn, tracked apart from the structure. */
+	let renderedLayout = '';
 	let framed = false;
+
+	/**
+	 * The drawn id lists, cached rather than re-derived per frame.
+	 *
+	 * The emphasis animation repaints on every frame and has to tell sigma WHICH
+	 * elements to reprocess — see `repaintDrawn`. Asking graphology for them each
+	 * time allocated two arrays of up to three thousand strings per frame for a
+	 * list that only changes when the graph does.
+	 */
+	let drawnNodeIds: string[] = [];
+	let drawnEdgeIds: string[] = [];
 
 	/** Where the layout wants each node, as opposed to where it is drawn now. */
 	const targets = new Map<string, { x: number; y: number }>();
@@ -100,6 +160,44 @@
 	const nodeEmphasis = new Map<string, number>();
 
 	/**
+	 * The entrance, 0 to 1 — nodes growing in, then the edges drawing between them.
+	 *
+	 * ── Why it animates SIZE and not position ────────────────────────────────
+	 * The obvious entrance is the one this view used to have by accident: nodes
+	 * drifting from a seed to where they belong. Two things rule it out now.
+	 *
+	 * Sigma renders with `autoRescale`, which normalises positions to their
+	 * bounding box before drawing — so a uniform move toward the final layout is
+	 * partly cancelled by the rescale, and a non-uniform one makes the whole graph
+	 * breathe as its extent changes underneath the animation. And `x`/`y` are the
+	 * attributes sigma treats as layout-impacting, so every frame of a positional
+	 * animation forces it to reprocess the scene: rebuild the extent, the
+	 * normalization and the program indexation for every element. That is the
+	 * expensive shape this whole change exists to stop paying.
+	 *
+	 * `size` is neither. It is not in sigma's layout-impacting set, so the frames
+	 * go through the same partial repaint that hovering already uses — the cost is
+	 * one reducer pass over what is drawn, which is bounded by the render budget
+	 * by construction. And a graph assembling itself out of nothing reads as the
+	 * data arriving, which is what is actually happening.
+	 */
+	let reveal = 1;
+	let revealFrames = 0;
+
+	/**
+	 * Frames the entrance runs for — roughly 600 ms, and deliberately counted in
+	 * FRAMES rather than milliseconds. A machine that cannot keep 60 fps here is
+	 * exactly the one where a wall-clock animation would skip most of itself and
+	 * arrive as a flash; counting frames lets it play out slightly slower instead
+	 * of not playing at all.
+	 */
+	const REVEAL_FRAMES = 36;
+	/** Of the whole entrance, how much is spent staggering rather than growing. */
+	const REVEAL_STAGGER = 0.55;
+	/** Where in the entrance the edges start drawing in behind the nodes. */
+	const EDGE_REVEAL_START = 0.35;
+
+	/**
 	 * Longest label the hover pill will show; the full text lives in the inspector.
 	 *
 	 * Roomier than it was, because this is no longer drawn on the canvas at rest —
@@ -108,11 +206,9 @@
 	 */
 	const LABEL_MAX = 60;
 
-	/**
-	 * Lobe palettes, per theme. A single palette for both was the earlier mistake:
-	 * hues that read on dark slate turn muddy on white, and the greys used for
-	 * structural nodes disappeared entirely.
-	 */
+	/** Clear air between two marks, so they read as separate rather than tangent. */
+	const MARK_GAP = 3;
+
 	/**
 	 * A community's colour, generated rather than picked from a list.
 	 *
@@ -167,13 +263,14 @@
 	 * lighter body reads as vivid without going neon.
 	 */
 	function communityColor(community: number, dark: boolean): string {
-		const hue = Math.round((community * GOLDEN_ANGLE) % 360);
+		// A community index is never negative in practice, but a modulo of one would
+		// be — and a negative hue silently parses to black.
+		const index = Math.abs(community);
+		const hue = Math.round((index * GOLDEN_ANGLE) % 360);
 		// Two alternating lightness bands, so that even if two hues ever landed
 		// close together they would still separate by brightness.
-		const band = community % 2;
-		return dark
-			? hslToHex(hue, 72, band ? 58 : 66)
-			: hslToHex(hue, 78, band ? 44 : 52);
+		const band = index % 2;
+		return dark ? hslToHex(hue, 72, band ? 58 : 66) : hslToHex(hue, 78, band ? 44 : 52);
 	}
 
 	/**
@@ -212,11 +309,58 @@
 
 	const view = $derived(memoryGraphStore.view);
 
+	/**
+	 * Flatten whichever resolution arrived into one drawable set.
+	 *
+	 * Kept a plain function rather than a `$derived` because the build effect is
+	 * the only caller and it is keyed on the store's signature — deriving it would
+	 * add a second reactive path to the same data with no second reader.
+	 */
+	function sceneOf(current: GraphView): Scene {
+		// Both arrays, always, and in that order. A binned view is not an
+		// alternative to a flat one — it IS the flat one everywhere the grid did not
+		// have to merge, so the memories and the crowded marks are drawn together as
+		// one picture rather than the client choosing between two.
+		const nodes: DrawNode[] = current.nodes.map(node => ({
+			id: node.id,
+			label: node.label,
+			community: node.community,
+			magnitude: node.degree,
+			kind: node.kind,
+			...(node.x !== undefined && { x: node.x }),
+			...(node.y !== undefined && { y: node.y })
+		}));
+
+		for (const bin of current.bins) {
+			nodes.push({
+				id: bin.id,
+				label: bin.label,
+				community: bin.community,
+				magnitude: bin.members,
+				kind: 'bin',
+				x: bin.x,
+				y: bin.y
+			});
+		}
+
+		const edges: DrawEdge[] = current.edges.map(edge => ({
+			source: edge.source,
+			target: edge.target,
+			weight: edge.weight
+		}));
+
+		for (const edge of current.binEdges) {
+			edges.push({ source: edge.source, target: edge.target, weight: edge.weight });
+		}
+
+		return { level: current.level, nodes, edges };
+	}
+
 	function truncate(label: string): string {
 		return label.length > LABEL_MAX ? `${label.slice(0, LABEL_MAX - 1)}…` : label;
 	}
 
-	function nodeColor(node: GraphViewNode): string {
+	function nodeColor(node: DrawNode): string {
 		// Structural nodes stay neutral on purpose. They are scaffolding — the files
 		// and symbols memories hang off — and giving them community hues too would
 		// make the coloured lobes read as one undifferentiated field.
@@ -224,18 +368,55 @@
 		return communityColor(node.community, isDark);
 	}
 
-	/** Lookup and scale for node/edge styling, rebuilt whenever the view is. */
-	let nodeById = new Map<string, GraphViewNode>();
-	let degreeScale = 1;
+	/** Lookup and scales for node/edge styling, rebuilt whenever the scene is. */
+	let nodeById = new Map<string, DrawNode>();
+	let magnitudeScale = 1;
+	/** Whether anything in the current scene stands for more than one memory. */
+	let hasBins = false;
+
+	/**
+	 * How much a merged mark is shrunk so the map's ink fits its canvas.
+	 *
+	 * Relaxation can only separate marks that CAN be separated. Measured on a
+	 * crowded map, pushing apart 241 large marks in a 600×400 canvas
+	 * never converges — not because the solver is weak but because the circles do
+	 * not fit, and a solver asked to fit them just oscillates. One scale factor
+	 * over every mark keeps the RATIOS, which is what carries meaning here, and
+	 * gives the relaxation a problem with an answer.
+	 */
+	let binScale = 1;
+
+	/** Fraction of the canvas the marks may cover before they are scaled down. */
+	const MAX_INK_COVERAGE = 0.2;
 
 	/** Refresh what the styling functions read. Call before building a graph. */
-	function indexView(current: GraphView): void {
-		nodeById = new Map(current.nodes.map(node => [node.id, node]));
-		degreeScale = scaleDegree(current.nodes);
+	function indexScene(scene: Scene): void {
+		nodeById = new Map(scene.nodes.map(node => [node.id, node]));
+		magnitudeScale = scaleMagnitude(scene.nodes);
+		hasBins = scene.nodes.some(node => node.kind === 'bin');
+		binScale = hasBins ? inkScaleFor(scene) : 1;
+	}
+
+	/** One factor for every mark, from the room they would otherwise need. */
+	function inkScaleFor(scene: Scene): number {
+		if (!sigma) return 1;
+		const { width, height } = sigma.getDimensions();
+		const room = width * height * MAX_INK_COVERAGE;
+		if (!Number.isFinite(room) || room <= 0) return 1;
+
+		// Computed against the UNSCALED sizes, so the factor is derived from the
+		// scene rather than from the last factor applied to it.
+		const ink = scene.nodes.reduce((total, node) => {
+			if (node.kind !== 'bin') return total;
+			const radius = baseBinSize(node) + MARK_GAP;
+			return total + Math.PI * radius * radius;
+		}, 0);
+
+		return ink > room ? Math.sqrt(room / ink) : 1;
 	}
 
 	/**
-	 * The degree that counts as "fully connected" for sizing purposes.
+	 * The magnitude that counts as "fully connected" for sizing purposes.
 	 *
 	 * Normalising against the true maximum let one outlier flatten the whole view:
 	 * a single hub with a hundred edges pushes every ordinary node's share below
@@ -245,9 +426,9 @@
 	 * range, which is the correct reading — past a point, more connected is more
 	 * connected and the exact count stops mattering.
 	 */
-	function scaleDegree(nodes: GraphViewNode[]): number {
+	function scaleMagnitude(nodes: DrawNode[]): number {
 		if (nodes.length === 0) return 1;
-		const sorted = nodes.map(node => node.degree).sort((a, b) => a - b);
+		const sorted = nodes.map(node => node.magnitude).sort((a, b) => a - b);
 		const index = Math.min(sorted.length - 1, Math.floor(sorted.length * 0.95));
 		return Math.max(1, sorted[index]);
 	}
@@ -267,12 +448,29 @@
 	 * leaf already sat near 6px and a degree-5 node near 9px — most of the graph was
 	 * large, and "large" therefore meant nothing. At 0.85 the floor stays populated
 	 * and only genuine hubs climb, which is what makes the skeleton visible.
+	 *
+	 * A merged mark is sized on a different scale entirely, because it stands in
+	 * for a crowd rather than for one memory, and how big that crowd is is the one
+	 * fact a
+	 * merged mark exists to convey.
 	 */
-	function nodeSize(node: GraphViewNode): number {
+	function nodeSize(node: DrawNode): number {
+		// Scaled HERE rather than after the fact, so a repaint — a theme flip, a
+		// live update — recomputes the same size the layout was spread for. Applied
+		// as a post-multiplier it would have been silently undone by the first
+		// repaint, and the marks would drift back into each other.
+		if (node.kind === 'bin') return Math.max(3, baseBinSize(node) * binScale);
+
+		const share = magnitudeScale <= 1 ? 0 : Math.min(1, node.magnitude / magnitudeScale);
 		const min = node.kind === 'structural' ? 1.5 : 2;
 		const max = node.kind === 'structural' ? 6 : 9;
-		const share = degreeScale <= 1 ? 0 : Math.min(1, node.degree / degreeScale);
 		return min + (max - min) * Math.pow(share, 0.85);
+	}
+
+	/** A mark's size before the ink scale — the size its membership asks for. */
+	function baseBinSize(node: DrawNode): number {
+		const share = magnitudeScale <= 1 ? 0 : Math.min(1, node.magnitude / magnitudeScale);
+		return 8 + 22 * Math.pow(share, 0.6);
 	}
 
 	/**
@@ -314,9 +512,15 @@
 	 * information at all despite being computed.
 	 */
 	function edgeSize(sourceId: string, targetId: string): number {
-		const degree = Math.max(nodeById.get(sourceId)?.degree ?? 1, nodeById.get(targetId)?.degree ?? 1);
-		const share = degreeScale <= 1 ? 0 : Math.min(1, degree / degreeScale);
-		return 0.25 + 0.95 * Math.pow(share, 0.7);
+		const magnitude = Math.max(
+			nodeById.get(sourceId)?.magnitude ?? 1,
+			nodeById.get(targetId)?.magnitude ?? 1
+		);
+		const share = magnitudeScale <= 1 ? 0 : Math.min(1, magnitude / magnitudeScale);
+		const width = 0.25 + 0.95 * Math.pow(share, 0.7);
+		// A line into a crowded mark stands for many, so it can afford to be seen.
+		const merged = nodeById.get(sourceId)?.kind === 'bin' || nodeById.get(targetId)?.kind === 'bin';
+		return merged ? width * 2.2 : width;
 	}
 
 	/** Hex with an alpha channel — the only transparent form sigma's parser reads. */
@@ -325,53 +529,6 @@
 			.toString(16)
 			.padStart(2, '0');
 		return `${hex}${value}`;
-	}
-
-	/**
-	 * A fingerprint of everything the canvas actually DRAWS.
-	 *
-	 * It used to be the node count, the edge count and the list of ids — which
-	 * silently declared a view unchanged whenever the same nodes came back wearing
-	 * different attributes. Renaming a memory, reinforcing one into a different
-	 * community, or trading one edge for another all left the counts and the ids
-	 * intact, so the guard below returned early and nothing was repainted at all.
-	 * The graph was correct in the store and stale on screen until the browser was
-	 * reloaded.
-	 *
-	 * Every field that feeds a colour, a size or a caption is folded in, and
-	 * nothing else: `weight` and `rel` are absent because no drawn property is
-	 * derived from them, and including them would buy repaints that change no
-	 * pixels.
-	 *
-	 * Hashed rather than concatenated. The ids alone were already a string joined
-	 * from up to three thousand entries; adding labels to that would build a few
-	 * hundred kilobytes on every refetch to then throw it away.
-	 */
-	function signatureOf(current: GraphView): string {
-		let hash = 2166136261;
-		const feed = (value: string | number): void => {
-			const text = typeof value === 'number' ? value.toString(36) : value;
-			for (let i = 0; i < text.length; i++) {
-				hash ^= text.charCodeAt(i);
-				hash = Math.imul(hash, 16777619);
-			}
-			// A field separator, so ("ab","c") and ("a","bc") cannot collide.
-			hash ^= 0x1f;
-			hash = Math.imul(hash, 16777619);
-		};
-
-		for (const node of current.nodes) {
-			feed(node.id);
-			feed(node.label);
-			feed(node.kind);
-			feed(node.community);
-			feed(node.degree);
-		}
-		for (const edge of current.edges) {
-			feed(edge.source);
-			feed(edge.target);
-		}
-		return `${current.nodes.length}:${current.edges.length}:${(hash >>> 0).toString(36)}`;
 	}
 
 	/** FNV-1a — cheap, well-distributed, and short enough to read. */
@@ -385,144 +542,89 @@
 	}
 
 	/**
-	 * Where a node starts before the layout has an opinion.
+	 * Where a node starts when the server has no position for it.
 	 *
-	 * This has now been wrong twice, in opposite directions, and the reason is
-	 * worth stating because it explains what the seed is actually for.
+	 * This used to mirror the backend's community-region seeding — the same spiral,
+	 * the same sizing, reimplemented here. Two copies of an arrangement is one too
+	 * many: they drifted apart, and the shape a node was given here was one the
+	 * background pass would immediately overrule anyway.
 	 *
-	 * FIRST it was a ring: every node placed on a circle by index. Deterministic,
-	 * which was the real requirement — reloading a graph should settle into a
-	 * familiar shape — but a ring is a very strong prior, and ForceAtlas2 never
-	 * escapes it. Every node starts equidistant from the centre and gravity pulls
-	 * inward uniformly, so every graph converged on the same disc regardless of its
-	 * edges. The view was circular because it had been told to be.
-	 *
-	 * THEN it was a hash scatter: deterministic and shapeless, which fixed the
-	 * circle. But shapeless is not neutral either. Starting from noise, a force
-	 * layout has to discover the community structure from scratch, and in a few
-	 * hundred iterations over a graph this sparse it does not finish — it stops
-	 * somewhere partway, which is the hairball. The giveaway was that toggling a
-	 * filter repeatedly gradually improved the layout: each toggle re-heated from
-	 * where it left off, so the iterations accumulated and the structure slowly
-	 * emerged. The layout was never wrong, only unfinished.
-	 *
-	 * NOW the seed carries the answer the layout was searching for. Louvain
-	 * communities are already computed server-side for the colouring, so each
-	 * community is given its own region and nodes start scattered within it. The
-	 * forces then refine a layout that is already structured instead of
-	 * constructing one from noise, so the first frame the user sees is grouped.
-	 *
-	 * And the regions are SIZED BY MEMBERSHIP, not laid out uniformly, which is the
-	 * third correction. A spiral of equal regions is still a disc, and it gave a
-	 * forty-node community exactly as much room as a three-node one — both of which
-	 * survived into the finished render as "always round" and "the big lobes are
-	 * always the crowded ones". See `seedRing`.
-	 *
-	 * It stays fully deterministic: community index, community size and node id all
-	 * are.
+	 * So the client no longer has an opinion about the macro arrangement. A node
+	 * with no position gets dropped near the middle of whatever IS drawn, and
+	 * either the short local settle or the next background pass puts it where it
+	 * belongs — and in practice it almost never runs, because the server derives a
+	 * position for an arrival from whatever it connects to before sending it (see
+	 * `placeArrivals`).
 	 */
-	function seedPosition(
-		node: { id: string; community: number },
-		communitySizes: Map<number, number>
-	): { x: number; y: number } {
+	function seedPosition(node: DrawNode, centre: { x: number; y: number; spread: number }): { x: number; y: number } {
 		const hash = hashOf(node.id);
 		const jitterX = ((hash % 65536) / 65536 - 0.5) * 2;
 		const jitterY = (((hash >>> 16) % 65536) / 65536 - 0.5) * 2;
 
-		// A single community carries no positional information, so fall back to a
-		// plain scatter rather than piling everything on one point.
-		if (communitySizes.size <= 1) {
-			return { x: jitterX * 300, y: jitterY * 300 };
-		}
-
-		const order = seedRing(communitySizes);
-		const region = order.get(node.community);
-		if (!region) return { x: jitterX * 300, y: jitterY * 300 };
-
 		return {
-			x: region.x + jitterX * region.radius,
-			y: region.y + jitterY * region.radius
+			x: centre.x + jitterX * centre.spread,
+			y: centre.y + jitterY * centre.spread
 		};
 	}
 
 	/**
-	 * Where each community's region sits, and how big it is.
+	 * The middle of what is already placed, and how far it reaches.
 	 *
-	 * The earlier version put every community on one golden-angle spiral at
-	 * `120·√(index+1)`, which is a disc by construction and gave a forty-node
-	 * community exactly as much room as a three-node one. Both of those show up in
-	 * the finished render: the silhouette was always round, and the large lobes were
-	 * always the crowded ones.
-	 *
-	 * Now the radius of a region scales with √(members) — area proportional to
-	 * size — and the regions are laid out largest-first on a spiral whose step
-	 * accounts for the radii already placed. The result is a seed whose SHAPE
-	 * follows the data, which matters because the forces refine the seed rather
-	 * than replacing it: a graph with one dominant group and three small ones now
-	 * starts, and therefore ends, looking like that.
-	 *
-	 * Fully deterministic — the ordering is by size then community index, both of
-	 * which are stable for a given dataset, so reloading settles into the same pose.
+	 * Derived from the nodes the server DID place, so an arrival lands inside the
+	 * picture rather than at an origin the arrangement may be nowhere near — the
+	 * layout is no longer centred on (0, 0) now that components are packed.
 	 */
-	function seedRing(communitySizes: Map<number, number>): Map<number, { x: number; y: number; radius: number }> {
-		const ordered = [...communitySizes.entries()].sort((a, b) => b[1] - a[1] || a[0] - b[0]);
-
-		/** Pixels of region radius per √member. Tuned against real graphs. */
-		const SCALE = 26;
-		/** Empty space between regions, as a fraction of the radius. */
-		const GAP = 0.5;
-
-		const regions = new Map<number, { x: number; y: number; radius: number }>();
-		let placedRadius = 0;
-
-		ordered.forEach(([community, size], index) => {
-			const radius = Math.max(40, SCALE * Math.sqrt(size));
-			// The largest community takes the centre; the rest spiral outward at the
-			// golden angle, which spaces them evenly without ever putting two adjacent.
-			const angle = index * GOLDEN_ANGLE * (Math.PI / 180);
-			const distance = index === 0 ? 0 : placedRadius + radius * (1 + GAP);
-			regions.set(community, {
-				x: Math.cos(angle) * distance,
-				y: Math.sin(angle) * distance,
-				radius
-			});
-			// Grow the ring by a fraction of what was just placed, so successive
-			// regions climb outward instead of stacking on one circle.
-			placedRadius += radius * 0.55;
-		});
-
-		return regions;
-	}
-
-	/** How many nodes each community holds, in the current view. */
-	function communitySizesOf(current: GraphView): Map<number, number> {
-		const sizes = new Map<number, number>();
-		for (const node of current.nodes) {
-			sizes.set(node.community, (sizes.get(node.community) ?? 0) + 1);
+	function drawnCentre(scene: Scene): { x: number; y: number; spread: number } {
+		let sumX = 0;
+		let sumY = 0;
+		let count = 0;
+		for (const node of scene.nodes) {
+			if (node.x === undefined || node.y === undefined) continue;
+			sumX += node.x;
+			sumY += node.y;
+			count++;
 		}
-		return sizes;
+		if (count === 0) return { x: 0, y: 0, spread: 300 };
+
+		const x = sumX / count;
+		const y = sumY / count;
+
+		let furthest = 0;
+		for (const node of scene.nodes) {
+			if (node.x === undefined || node.y === undefined) continue;
+			furthest = Math.max(furthest, Math.hypot(node.x - x, node.y - y));
+		}
+		// A fraction of the reach, so an unplaced node lands in the picture rather
+		// than out on its rim where it would read as a component of its own.
+		return { x, y, spread: Math.max(40, furthest * 0.25) };
 	}
 
-	function buildGraph(current: GraphView): void {
+	function buildGraph(scene: Scene): void {
 		if (!sigma) return;
 
 		graph = new Graph({ type: 'undirected', multi: false });
 
-		indexView(current);
-		const communitySizes = communitySizesOf(current);
-		current.nodes.forEach(node => {
-			const seed = seedPosition(node, communitySizes);
-			graph!.addNode(node.id, {
+		indexScene(scene);
+		const centre = drawnCentre(scene);
+		let unplaced = 0;
+
+		for (const node of scene.nodes) {
+			const placed = node.x !== undefined && node.y !== undefined;
+			if (!placed) unplaced++;
+			const seed = placed ? { x: node.x as number, y: node.y as number } : seedPosition(node, centre);
+			graph.addNode(node.id, {
 				x: seed.x,
 				y: seed.y,
 				size: nodeSize(node),
 				label: truncate(node.label),
 				color: nodeColor(node),
-				kind: node.kind
+				kind: node.kind,
+				// Overwritten by `assignRevealDelays` once every position is known.
+				delay: 0
 			});
-		});
+		}
 
-		for (const edge of current.edges) {
+		for (const edge of scene.edges) {
 			if (!graph.hasNode(edge.source) || !graph.hasNode(edge.target)) continue;
 			if (edge.source === edge.target) continue;
 			if (graph.hasEdge(edge.source, edge.target)) continue;
@@ -532,14 +634,229 @@
 			});
 		}
 
+		// A merged mark is drawn far larger than the dots it replaced, so it spills
+		// over its neighbours — the centroid says where its memories are, not how
+		// much room the mark standing for them needs.
+		if (hasBins) spreadMarks(graph);
+
+		assignRevealDelays(graph);
+
+		// BEFORE `setGraph`, which renders synchronously. Armed afterwards, that
+		// render would draw the finished graph for one frame and the entrance would
+		// begin by shrinking it away again.
+		//
+		// A fresh picture gets an entrance; incremental updates deliberately do not.
+		// Replaying it every time a conversation records a memory would make the
+		// graph flinch at somebody who is reading it.
+		startReveal();
+
 		sigma.setGraph(graph);
+		cacheDrawnIds();
 		framed = false;
-		startLayout(current);
+
+		// The simulation here is a COLD FALLBACK and nothing more: it runs only when
+		// the server has placed nothing at all — a fresh install, or the first fetch
+		// after the arrangement was dropped.
+		//
+		// It must never run otherwise, and that is not an optimisation. This worker
+		// lays out the WHOLE scene with a single global gravity, which is exactly
+		// the isotropic pull that puts every disconnected component at one radius —
+		// the circle the backend arrangement exists to avoid. Running it because a
+		// handful of newly recorded memories had no position yet threw away the
+		// packed arrangement for all of them and drew a disc again.
+		if (unplaced < scene.nodes.length) {
+			stopLayout();
+			framed = true;
+			sigma.getCamera().animatedReset({ duration: 300 });
+			return;
+		}
+
+		startLayout(scene);
 	}
 
-	function startLayout(current: GraphView, options?: { iterations?: number }): void {
+	/**
+	 * Push overlapping marks apart, without losing where they came from.
+	 *
+	 * A merged mark is placed at the centroid of the memories it stands for, which
+	 * answers "where are they" and says nothing about how much room the mark needs
+	 * — and it is drawn far larger than the dots it replaced, because the size of
+	 * the crowd is the point. In a dense middle those marks spill over each other
+	 * and over the individual memories around them.
+	 *
+	 * Relaxation rather than a fresh layout: the centroids carry real information
+	 * about which lobes sit near which, and re-solving would throw that away to
+	 * fix a spacing problem. This only separates what collides and leaves
+	 * everything else where the arrangement put it.
+	 *
+	 * ── Units, which are the whole difficulty ────────────────────────────────
+	 * Sizes are SCREEN pixels and positions are graph space, and sigma rescales
+	 * one into the other at render time — so "these two circles overlap" cannot be
+	 * tested without knowing the mapping. It is recovered here from the extent of
+	 * the marks against the container: the graph is fitted to the viewport, so one
+	 * pixel is `span / viewport` in graph units.
+	 */
+	function spreadMarks(target: Graph): void {
+		const order = target.order;
+		if (!sigma || order < 2) return;
+
+		const { width, height } = sigma.getDimensions();
+		const viewport = Math.min(width, height);
+		if (!Number.isFinite(viewport) || viewport <= 0) return;
+
+		const ids = target.nodes();
+		const xs = new Float64Array(order);
+		const ys = new Float64Array(order);
+		const radii = new Float64Array(order);
+
+		let minX = Infinity;
+		let maxX = -Infinity;
+		let minY = Infinity;
+		let maxY = -Infinity;
+		for (let i = 0; i < order; i++) {
+			const attributes = target.getNodeAttributes(ids[i]) as { x: number; y: number; size: number };
+			xs[i] = attributes.x;
+			ys[i] = attributes.y;
+			minX = Math.min(minX, xs[i]);
+			maxX = Math.max(maxX, xs[i]);
+			minY = Math.min(minY, ys[i]);
+			maxY = Math.max(maxY, ys[i]);
+		}
+
+		const span = Math.max(maxX - minX, maxY - minY);
+		if (!Number.isFinite(span) || span <= 0) return;
+		const perPixel = span / viewport;
+
+		for (let i = 0; i < order; i++) {
+			const size = target.getNodeAttribute(ids[i], 'size') as number;
+			radii[i] = (size + MARK_GAP) * perPixel;
+		}
+
+		// Enough to resolve a crowded ring, few enough to stay imperceptible. The
+		// pass is O(n²) and `n` is the community count, which the server caps —
+		// measured at 28 ms for 241 marks, and it exits early the moment nothing
+		// collides (8 passes for the ~100-lobe case this was reported on).
+		const PASSES = 240;
+		for (let pass = 0; pass < PASSES; pass++) {
+			// Over-relaxed at first and settling toward an exact correction. Pushing
+			// by exactly half the overlap converges very slowly in a crowd, because
+			// every separation nudges both marks into their other neighbours;
+			// overshooting early clears the crowd faster, and easing off stops it
+			// oscillating once the arrangement is nearly right. Measured, the fixed
+			// exact push left more overlaps after 900 passes than this does after 240.
+			const relax = 1.4 - 0.4 * (pass / PASSES);
+			let collided = false;
+
+			for (let i = 0; i < order; i++) {
+				for (let j = i + 1; j < order; j++) {
+					const minimum = radii[i] + radii[j];
+					let dx = xs[j] - xs[i];
+					let dy = ys[j] - ys[i];
+
+					// Compared squared first: the square root is the expensive part and
+					// most pairs in a spread-out map are nowhere near touching.
+					const squared = dx * dx + dy * dy;
+					if (squared >= minimum * minimum) continue;
+					let distance = Math.sqrt(squared);
+
+					// Exactly coincident — two lobes whose members averaged to the same
+					// point. Deterministic from the ids, so a reload separates them the
+					// same way rather than picking a new direction each time.
+					if (distance < 1e-9) {
+						const angle = (hashOf(ids[i] + ids[j]) % 3600) / 3600 * Math.PI * 2;
+						dx = Math.cos(angle);
+						dy = Math.sin(angle);
+						distance = 1;
+					}
+
+					const push = (relax * (minimum - distance)) / 2 / distance;
+					xs[i] -= dx * push;
+					ys[i] -= dy * push;
+					xs[j] += dx * push;
+					ys[j] += dy * push;
+					collided = true;
+				}
+			}
+
+			if (!collided) break;
+		}
+
+		for (let i = 0; i < order; i++) {
+			target.setNodeAttribute(ids[i], 'x', xs[i]);
+			target.setNodeAttribute(ids[i], 'y', ys[i]);
+		}
+	}
+
+	/**
+	 * Give every node the moment it should appear, as a node attribute.
+	 *
+	 * Radial from the centre of the arrangement, so the graph opens outward rather
+	 * than all at once — which is both nicer to watch and more informative, since
+	 * what emerges first is the dense middle the layout put there.
+	 *
+	 * Stored on the node instead of recomputed per frame because it never changes:
+	 * the reducer runs for every element on every frame of the entrance, and a
+	 * square root in there is a square root sixty times a second times the render
+	 * budget. `repaint` never touches it — its update hints name only the three
+	 * attributes it does write — so it survives a theme flip and a live update.
+	 */
+	function assignRevealDelays(target: Graph): void {
+		const order = target.order;
+		if (order === 0) return;
+
+		let sumX = 0;
+		let sumY = 0;
+		target.forEachNode((_id, attributes) => {
+			sumX += attributes.x as number;
+			sumY += attributes.y as number;
+		});
+		const centreX = sumX / order;
+		const centreY = sumY / order;
+
+		let furthest = 0;
+		const distances = new Map<string, number>();
+		target.forEachNode((id, attributes) => {
+			const dx = (attributes.x as number) - centreX;
+			const dy = (attributes.y as number) - centreY;
+			const distance = Math.sqrt(dx * dx + dy * dy);
+			distances.set(id, distance);
+			if (distance > furthest) furthest = distance;
+		});
+
+		target.updateEachNodeAttributes(
+			(id, attributes) => ({
+				...attributes,
+				delay: furthest > 0 ? ((distances.get(id) ?? 0) / furthest) * REVEAL_STAGGER : 0
+			}),
+			{ attributes: ['delay'] }
+		);
+	}
+
+	/** How far into its own growth a node is, given the entrance's progress. */
+	function revealOf(delay: number): number {
+		if (reveal >= 1) return 1;
+		const span = Math.max(0.001, 1 - REVEAL_STAGGER);
+		const progress = Math.min(1, Math.max(0, (reveal - delay) / span));
+		// Ease-out cubic: quick to appear, gentle to settle. A linear grow reads as
+		// mechanical at this duration.
+		return 1 - Math.pow(1 - progress, 3);
+	}
+
+	/** Play the entrance from the beginning. */
+	function startReveal(): void {
+		reveal = 0;
+		revealFrames = 0;
+		startAnimation();
+	}
+
+	/** Remember what is drawn, so per-frame repaints do not re-derive it. */
+	function cacheDrawnIds(): void {
+		drawnNodeIds = graph ? graph.nodes() : [];
+		drawnEdgeIds = graph ? graph.edges() : [];
+	}
+
+	function startLayout(scene: Scene, options?: { iterations?: number }): void {
 		stopLayout();
-		if (current.nodes.length === 0) return;
+		if (scene.nodes.length === 0) return;
 
 		worker = new Worker(new URL('$frontend/services/memory/graph-layout.worker.ts', import.meta.url), {
 			type: 'module'
@@ -559,23 +876,7 @@
 				return;
 			}
 			if (message.type === 'positions') {
-				if (!graph) return;
-
-				const tween = graph.order <= MAX_TWEENED_NODES;
-				for (let i = 0; i < workerNodeIds.length; i++) {
-					const id = workerNodeIds[i];
-					if (!graph.hasNode(id)) continue;
-					const x = message.coords[i * 2];
-					const y = message.coords[i * 2 + 1];
-
-					if (tween) {
-						targets.set(id, { x, y });
-					} else {
-						graph.setNodeAttribute(id, 'x', x);
-						graph.setNodeAttribute(id, 'y', y);
-					}
-				}
-				if (tween) startTween();
+				applyPositions(message.coords);
 				return;
 			}
 			if (message.type === 'done') {
@@ -587,33 +888,77 @@
 					framed = true;
 					sigma?.getCamera().animatedReset({ duration: 300 });
 				}
+				// Positions have stopped moving, so rebuild the indices the tween was
+				// allowed to skip — hit detection reads them.
+				sigma?.refresh();
 			}
 		};
 
-		indexView(current);
-		const communitySizes = communitySizesOf(current);
+		indexScene(scene);
+		const centre = drawnCentre(scene);
 
-		// Seeded from the community structure, the layout is refining rather than
-		// discovering, so these buy convergence instead of merely progress.
+		// Refining what the server already arranged rather than discovering it, so
+		// these buy convergence instead of merely progress.
 		const iterations =
 			options?.iterations ??
-			(current.nodes.length > 1200 ? 260 : current.nodes.length > 400 ? 500 : 900);
+			(scene.nodes.length > 1200 ? 260 : scene.nodes.length > 400 ? 500 : 900);
 
 		worker.postMessage({
 			type: 'start',
-			nodes: current.nodes.map(node => {
+			nodes: scene.nodes.map(node => {
 				// Positions already on screen are kept, so a graph that gains a few
 				// nodes re-heats from where it is instead of being thrown back to its
 				// seed and re-settling into a different pose.
 				const existing = graph?.hasNode(node.id)
 					? (graph.getNodeAttributes(node.id) as { x: number; y: number })
 					: null;
-				const seed = existing ?? seedPosition(node, communitySizes);
-				return { id: node.id, x: seed.x, y: seed.y, degree: node.degree };
+				const seed = existing ?? seedPosition(node, centre);
+				return { id: node.id, x: seed.x, y: seed.y, degree: node.magnitude };
 			}),
-			edges: current.edges.map(edge => ({ source: edge.source, target: edge.target, weight: edge.weight })),
+			edges: scene.edges.map(edge => ({
+				source: edge.source,
+				target: edge.target,
+				weight: edge.weight
+			})),
 			iterations
 		});
+	}
+
+	/**
+	 * Fold a batch of worker positions into the drawn graph.
+	 *
+	 * Written as ONE `updateEachNodeAttributes` rather than two
+	 * `setNodeAttribute` calls per node, and the difference is not stylistic: sigma
+	 * subscribes to graphology's per-attribute events, so the old form fired two
+	 * events per node per batch and sigma answered each one by re-running its node
+	 * reducer and marking the whole scene for reprocessing. At a thousand nodes
+	 * that is two thousand reducer invocations to move a thousand dots. The bulk
+	 * form emits a single event carrying which attributes changed.
+	 */
+	function applyPositions(coords: Float32Array): void {
+		if (!graph) return;
+
+		const tween = graph.order <= MAX_TWEENED_NODES;
+		const incoming = new Map<string, { x: number; y: number }>();
+		for (let i = 0; i < workerNodeIds.length; i++) {
+			const id = workerNodeIds[i];
+			if (!graph.hasNode(id)) continue;
+			incoming.set(id, { x: coords[i * 2], y: coords[i * 2 + 1] });
+		}
+
+		if (tween) {
+			for (const [id, position] of incoming) targets.set(id, position);
+			startTween();
+			return;
+		}
+
+		graph.updateEachNodeAttributes(
+			(id, attributes) => {
+				const position = incoming.get(id);
+				return position ? { ...attributes, x: position.x, y: position.y } : attributes;
+			},
+			{ attributes: ['x', 'y'] }
+		);
 	}
 
 	/**
@@ -632,28 +977,33 @@
 			if (!graph || !sigma) return;
 
 			let moving = false;
-			for (const [id, target] of targets) {
-				if (!graph.hasNode(id)) continue;
-				const x = graph.getNodeAttribute(id, 'x') as number;
-				const y = graph.getNodeAttribute(id, 'y') as number;
-				const dx = target.x - x;
-				const dy = target.y - y;
+			graph.updateEachNodeAttributes(
+				(id, attributes) => {
+					const target = targets.get(id);
+					if (!target) return attributes;
 
-				// Snap once the remaining distance stops being visible, so the loop
-				// terminates instead of chasing an asymptote forever.
-				if (Math.abs(dx) < 0.05 && Math.abs(dy) < 0.05) {
-					graph.setNodeAttribute(id, 'x', target.x);
-					graph.setNodeAttribute(id, 'y', target.y);
-					continue;
-				}
+					const x = attributes.x as number;
+					const y = attributes.y as number;
+					const dx = target.x - x;
+					const dy = target.y - y;
 
-				graph.setNodeAttribute(id, 'x', x + dx * TWEEN_EASE);
-				graph.setNodeAttribute(id, 'y', y + dy * TWEEN_EASE);
-				moving = true;
-			}
+					// Snap once the remaining distance stops being visible, so the loop
+					// terminates instead of chasing an asymptote forever.
+					if (Math.abs(dx) < 0.05 && Math.abs(dy) < 0.05) {
+						return { ...attributes, x: target.x, y: target.y };
+					}
 
-			sigma.refresh({ skipIndexation: true });
+					moving = true;
+					return { ...attributes, x: x + dx * TWEEN_EASE, y: y + dy * TWEEN_EASE };
+				},
+				{ attributes: ['x', 'y'] }
+			);
+
 			if (moving) tweenFrame = requestAnimationFrame(step);
+			// The final frame leaves the indices stale — positions moved with
+			// indexation skipped — so hit detection is restored once, at the end,
+			// rather than rebuilt on every frame of the animation.
+			else sigma.refresh();
 		};
 
 		tweenFrame = requestAnimationFrame(step);
@@ -666,10 +1016,37 @@
 	}
 
 	/**
-	 * Ease `emphasis` and every node's own emphasis toward their targets, so
-	 * focusing and unfocusing are transitions rather than switches.
+	 * Redraw what is already on screen, without touching the graph.
+	 *
+	 * This is what the emphasis animation runs on every frame, and it is where the
+	 * single most expensive mistake in this component lived: it used to call
+	 * `sigma.refresh({ skipIndexation: true })`. That flag only applies to a
+	 * PARTIAL refresh — with no `partialGraph`, sigma takes the full path, which
+	 * clears every node and edge index and rebuilds them from scratch. Hovering a
+	 * node therefore re-indexed the entire graph sixty times a second, and the flag
+	 * that was supposed to prevent exactly that was being ignored because the call
+	 * never named what it wanted refreshed.
 	 */
-	function startEmphasisTween(): void {
+	function repaintDrawn(): void {
+		if (!sigma) return;
+		guardRepaint(() =>
+			sigma!.refresh({
+				partialGraph: { nodes: drawnNodeIds, edges: drawnEdgeIds },
+				skipIndexation: true
+			})
+		);
+	}
+
+	/**
+	 * The one animation loop: the entrance, and the emphasis that follows focus.
+	 *
+	 * Deliberately ONE. Both animate numbers the reducers read and both finish by
+	 * repainting everything drawn, so as two `requestAnimationFrame` loops they
+	 * would each repaint the same scene in the same frame — twice the cost for one
+	 * picture, and worst of all exactly while the graph is opening, which is when
+	 * both are most likely to be running.
+	 */
+	function startAnimation(): void {
 		if (emphasisFrame !== null) return;
 
 		const step = (): void => {
@@ -677,6 +1054,12 @@
 			if (!sigma) return;
 
 			let moving = false;
+
+			if (reveal < 1) {
+				revealFrames++;
+				reveal = Math.min(1, revealFrames / REVEAL_FRAMES);
+				moving = true;
+			}
 
 			const delta = emphasisTarget - emphasis;
 			if (Math.abs(delta) > 0.005) {
@@ -706,7 +1089,7 @@
 				moving = true;
 			}
 
-			sigma.refresh({ skipIndexation: true });
+			repaintDrawn();
 			if (moving) emphasisFrame = requestAnimationFrame(step);
 		};
 
@@ -738,7 +1121,6 @@
 		return `#${channel(r1, r2)}${channel(g1, g2)}${channel(b1, b2)}${alpha}`;
 	}
 
-	/** Point the emphasis animation at a new focus and start it running. */
 	/**
 	 * What the view is currently emphasising.
 	 *
@@ -756,11 +1138,21 @@
 		const anchor = anchorId();
 		emphasisTarget = anchor || highlight.size > 0 ? 1 : 0;
 		if (anchor && !nodeEmphasis.has(anchor)) nodeEmphasis.set(anchor, 0);
-		startEmphasisTween();
+		startAnimation();
 	}
 
 	function stopLayout(): void {
 		stopTween();
+		stopLayoutWorker();
+	}
+
+	/**
+	 * Stop the cold-fallback simulation, WITHOUT discarding the tween.
+	 *
+	 * Kept separate from `stopLayout` because the two answer different questions:
+	 * one abandons the simulation, the other abandons where it was going too.
+	 */
+	function stopLayoutWorker(): void {
 		if (!worker) return;
 		worker.postMessage({ type: 'stop' });
 		worker.terminate();
@@ -773,36 +1165,73 @@
 	 * after an incremental update, never a rebuild. Positions are not touched.
 	 *
 	 * SIZES are recomputed, not just colours, because both scales are normalised
-	 * against the view (see `scaleDegree`). A memory arriving with three edges
+	 * against the view (see `scaleMagnitude`). A memory arriving with three edges
 	 * changes what "well connected" means for everything already drawn, and
 	 * leaving the old sizes in place meant the graph slowly drifted out of
 	 * agreement with its own data between full rebuilds.
-	 *
-	 * And edges are painted from `edgeColor`, which is what they were meant to
-	 * have all along. This used to flatten every edge to a single slate — undoing
-	 * `syncEdges` a line after it ran, so the community hues survived exactly
-	 * until the first live update and then vanished for the rest of the session.
 	 *
 	 * LABELS are written here too, for the same reason sizes are: they are data,
 	 * not decoration. Editing a memory's title left the old text attached to its
 	 * node for the rest of the session, so the hover pill went on naming something
 	 * the user had already renamed — the one place in this feature where an edit
 	 * appeared not to have been saved.
+	 *
+	 * Both loops are BULK updates. Written as per-attribute setters they emitted
+	 * three events per node and two per edge, each of which sigma answered by
+	 * re-running a reducer — around twenty thousand of them for a graph this size,
+	 * to change colours that a single pass could have carried.
 	 */
-	function repaint(current: GraphView): void {
-		indexView(current);
+	function repaint(scene: Scene): void {
+		indexScene(scene);
 		if (!graph || !sigma) return;
-		for (const node of current.nodes) {
-			if (!graph.hasNode(node.id)) continue;
-			graph.setNodeAttribute(node.id, 'color', nodeColor(node));
-			graph.setNodeAttribute(node.id, 'size', nodeSize(node));
-			graph.setNodeAttribute(node.id, 'label', truncate(node.label));
-		}
-		graph.forEachEdge((edge, _attributes, source, target) => {
-			graph!.setEdgeAttribute(edge, 'color', edgeColor(source, target));
-			graph!.setEdgeAttribute(edge, 'size', edgeSize(source, target));
+
+		// Guarded because of what a renderer invariant COSTS here, not because one
+		// is expected. Sigma raises `can't be repaint` from inside the graphology
+		// event this write emits — it fills its program index only on the frame
+		// after a structural change — and a throw during render in Svelte 5 has no
+		// boundary above it: it propagates out of the component tree and takes the
+		// whole workspace down. A repaint is a frame; it is never worth a session.
+		guardRepaint(() => {
+			graph!.updateEachNodeAttributes(
+				(id, attributes) => {
+					const node = nodeById.get(id);
+					if (!node) return attributes;
+					return {
+						...attributes,
+						color: nodeColor(node),
+						size: nodeSize(node),
+						label: truncate(node.label)
+					};
+				},
+				{ attributes: ['color', 'size', 'label'] }
+			);
+
+			graph!.updateEachEdgeAttributes(
+				(id, attributes, source, target) => ({
+					...attributes,
+					color: edgeColor(source, target),
+					size: edgeSize(source, target)
+				}),
+				{ attributes: ['color', 'size'] }
+			);
 		});
-		sigma.refresh({ skipIndexation: true });
+	}
+
+	/**
+	 * Run a repaint, and turn any renderer invariant it trips into a dropped frame.
+	 *
+	 * Every failure this can catch has the same remedy — sigma's view of the graph
+	 * is behind the graph, and a full refresh rebuilds it — so the recovery is not
+	 * a guess. What it buys is that the NEXT call shape nobody anticipated costs a
+	 * frame instead of the workspace.
+	 */
+	function guardRepaint(paint: () => void): void {
+		try {
+			paint();
+		} catch (error) {
+			debug.warn('memory', 'Memory graph repaint fell back to a full refresh', error);
+			sigma?.refresh();
+		}
 	}
 
 	onMount(() => {
@@ -815,9 +1244,12 @@
 			defaultEdgeType: 'line',
 			minCameraRatio: 0.05,
 			maxCameraRatio: 12,
-			// No labels at rest — only the hover pill below. Thinning them by size and
-			// by grid cell was the earlier compromise and it still left text stacked
-			// over itself wherever the graph was busy.
+			// No captions at rest, at EITHER resolution. Thinning them by size and by
+			// grid cell was the earlier compromise and it still left text stacked over
+			// itself wherever the graph was busy; drawing them only for the merged
+			// marks looked reasonable in principle and, tried, produced the same
+			// overlapping layer over a picture whose whole value is its shape. The
+			// hover pill names one thing at a time, which is what naming is for here.
 			renderLabels: false,
 			/**
 			 * Sigma clamps every edge up to this, and it defaults to 1.7px — which is
@@ -858,7 +1290,16 @@
 				const result = { ...data } as Record<string, unknown>;
 				const colors = palette();
 				const anchor = anchorId();
-				const isAdjacent = !!anchor && !!graph && graph.hasNode(anchor) && graph.areNeighbors(anchor, id);
+				// `id` is checked as well as `anchor`, because sigma can render one
+				// frame against a graph this component has already replaced — and
+				// `areNeighbors` THROWS on an unknown key. See the edge reducer below,
+				// where exactly that took the whole view down.
+				const isAdjacent =
+					!!anchor &&
+					!!graph &&
+					graph.hasNode(anchor) &&
+					graph.hasNode(id) &&
+					graph.areNeighbors(anchor, id);
 				const isHit = highlight.has(id);
 				const own = nodeEmphasis.get(id) ?? 0;
 
@@ -866,12 +1307,19 @@
 				// shrinks while the node being entered grows. The multiplier is larger
 				// than it was because the nodes are smaller: 0.7 on a 22px hub was
 				// obvious, 0.7 on a 2px leaf was not a gesture anyone could see.
+				let size = data.size as number;
 				if (own > 0) {
-					result.size = (data.size as number) * (1 + 1.2 * own);
+					size *= 1 + 1.2 * own;
 					result.zIndex = 2;
 				} else if (isHit) {
 					result.zIndex = 1;
 				}
+
+				// The entrance multiplies whatever the emphasis decided, so a node
+				// hovered mid-entrance grows from where it has got to rather than
+				// snapping to full size and shrinking back.
+				if (reveal < 1) size *= revealOf((data.delay as number) ?? 0);
+				result.size = size;
 
 				const recedes = (anchor && !isAdjacent && id !== anchor) || (!anchor && highlight.size > 0 && !isHit);
 				if (recedes) result.color = mix(data.color as string, colors.dim, emphasis);
@@ -880,20 +1328,45 @@
 
 			edgeReducer: (id, data) => {
 				const result = { ...data } as Record<string, unknown>;
-				if (!graph || emphasis <= 0.001) return result;
+				if (!graph) return result;
+
+				// Edges draw in behind the nodes they connect, by receding from the
+				// colour everything else recedes to rather than by thinning — sigma
+				// clamps thin edges up to `minEdgeThickness`, so animating the width
+				// toward zero would have stopped being visible almost immediately.
+				if (reveal < 1) {
+					const progress = Math.min(
+						1,
+						Math.max(0, (reveal - EDGE_REVEAL_START) / (1 - EDGE_REVEAL_START))
+					);
+					result.color = mix(data.color as string, palette().dim, 1 - progress);
+					if (progress <= 0.001) return result;
+				}
+
+				if (emphasis <= 0.001) return result;
+
+				// `extremities` throws rather than returning null, and sigma can call
+				// this for an edge belonging to a graph this component has already
+				// swapped out — any `setSetting` refreshes synchronously against
+				// whichever graph sigma still holds, while this closure has moved on.
+				// Svelte 5 has no boundary here, so that throw took the entire
+				// workspace down rather than dropping a frame.
+				if (!graph.hasEdge(id)) return result;
 
 				const colors = palette();
 				const [source, target] = graph.extremities(id);
 				const anchor = anchorId();
 
+				const base = result.color as string;
+
 				if (anchor) {
 					if (source === anchor || target === anchor) {
-						result.color = mix(data.color as string, colors.edgeFocus, emphasis);
+						result.color = mix(base, colors.edgeFocus, emphasis);
 						result.size = (data.size as number) + 0.8 * emphasis;
 					} else {
 						// Kept, not hidden — the surrounding structure is context, and
 						// blanking it made the canvas feel broken.
-						result.color = mix(data.color as string, colors.dim, emphasis);
+						result.color = mix(base, colors.dim, emphasis);
 					}
 					return result;
 				}
@@ -907,7 +1380,7 @@
 				// makes it a link out into everything that was just excluded, and lighting
 				// those would redraw the neighbourhood the search asked to filter away.
 				if (highlight.size > 0 && !(highlight.has(source) && highlight.has(target))) {
-					result.color = mix(data.color as string, colors.dim, emphasis);
+					result.color = mix(base, colors.dim, emphasis);
 				}
 				return result;
 			}
@@ -935,155 +1408,27 @@
 		graph = null;
 	});
 
-	// Rebuild ONLY when the dataset actually changed. Without the signature guard,
-	// any store write (a refetch returning identical data) would restart the layout.
-	// "Changed" means anything the canvas draws, attributes included — see
-	// `signatureOf`, where reading too little of the data was itself a stale-view
-	// bug rather than merely a missed optimisation.
+	// Rebuild ONLY when the dataset actually changed. The signature is computed by
+	// the store when a response lands (see `signatureOf` there) rather than here:
+	// it describes a FETCH, and hashing every label again inside a reactive effect
+	// meant paying for it on any store write that happened to invalidate this.
 	//
 	// And when it HAS changed, prefer the incremental path. Memory is written while
 	// the modal is open — that is the whole point of the live refresh — so a full
-	// rebuild would reset the camera and re-run a 400-iteration layout every time a
-	// conversation recorded something, which reads as the view fighting the user.
-	// An attribute-only change lands on the cheapest branch of all: no node churn
-	// means no re-heat, so a rename repaints without moving anything.
+	// rebuild would reset the camera every time a conversation recorded something,
+	// which reads as the view fighting the user. An attribute-only change lands on
+	// the cheapest branch of all: no node churn means no re-heat, so a rename
+	// repaints without moving anything.
 	$effect(() => {
-		const current = view;
+		const signature = memoryGraphStore.viewSignature;
+		const layout = memoryGraphStore.layoutSignature;
 		if (!sigma) return;
+		if (signature === renderedSignature && layout === renderedLayout) return;
 
-		const signature = signatureOf(current);
-		if (signature === renderedSignature) return;
-
-		const incremental = graph !== null && renderedSignature !== '' && applyIncremental(current);
 		renderedSignature = signature;
-		if (!incremental) buildGraph(current);
+		renderedLayout = layout;
+		buildGraph(sceneOf(view));
 	});
-
-	// Theme changes repaint in place; they must never rebuild or re-layout.
-	$effect(() => {
-		const dark = themeStore.isDark;
-		if (dark === isDark) return;
-		isDark = dark;
-		repaint(view);
-	});
-
-	// Selection/search only update the plain mirrors and ask for a repaint.
-	$effect(() => {
-		focusId = selectedId;
-		highlight = new Set(highlightIds);
-		setAnchor();
-	});
-
-	// Hovering a search result hovers its node. Reading the store HERE is safe —
-	// it is the reducers that must never touch a rune, and this is an effect.
-	$effect(() => {
-		setHovered(memoryGraphStore.hoveredId);
-	});
-
-	// The drawable area changed, so sigma's idea of its own size is stale and every
-	// camera operation would be computed against the wrong rectangle.
-	$effect(() => {
-		void bottomInset;
-		sigma?.resize();
-	});
-
-	/**
-	 * Fold a changed dataset into the graph already on screen.
-	 *
-	 * Returns false when the change is too large to be worth patching, in which
-	 * case the caller falls back to a full rebuild. The threshold exists because
-	 * beyond a certain churn the incremental path costs more than it saves and the
-	 * layout would be re-heated so hard that positions become meaningless anyway —
-	 * switching projects, for instance, shares almost nothing with what was drawn.
-	 *
-	 * The camera is deliberately NOT touched. Somebody is looking at this.
-	 */
-	function applyIncremental(current: GraphView): boolean {
-		if (!graph || !sigma) return false;
-
-		const incoming = new Set(current.nodes.map(node => node.id));
-		const existing = new Set(graph.nodes());
-
-		const added = current.nodes.filter(node => !existing.has(node.id));
-		const removed = [...existing].filter(id => !incoming.has(id));
-
-		// More than a third of the view turning over is a different graph, not an
-		// update to this one.
-		const churn = added.length + removed.length;
-		if (existing.size > 0 && churn > Math.max(30, existing.size * 0.34)) return false;
-		if (churn === 0) {
-			// Only edges or attributes moved — repaint without disturbing anything.
-			syncEdges(current);
-			repaint(current);
-			return true;
-		}
-
-		for (const id of removed) {
-			if (graph.hasNode(id)) graph.dropNode(id);
-			targets.delete(id);
-		}
-
-		indexView(current);
-		const communitySizes = communitySizesOf(current);
-		for (const node of added) {
-			// New nodes enter near the centroid of what they connect to, so an
-			// arriving memory appears next to its subject rather than flying in from
-			// a corner of the seed field.
-			const anchors = current.edges
-				.filter(edge => edge.source === node.id || edge.target === node.id)
-				.map(edge => (edge.source === node.id ? edge.target : edge.source))
-				.filter(id => graph!.hasNode(id))
-				.map(id => graph!.getNodeAttributes(id) as { x: number; y: number });
-
-			const seed = anchors.length
-				? {
-						x: anchors.reduce((sum, a) => sum + a.x, 0) / anchors.length,
-						y: anchors.reduce((sum, a) => sum + a.y, 0) / anchors.length
-					}
-				: seedPosition(node, communitySizes);
-
-			graph.addNode(node.id, {
-				x: seed.x,
-				y: seed.y,
-				size: nodeSize(node),
-				label: truncate(node.label),
-				color: nodeColor(node),
-				kind: node.kind
-			});
-		}
-
-		syncEdges(current);
-		repaint(current);
-		// Re-heat briefly rather than re-solving: enough for the new nodes to find a
-		// place, not enough to rearrange the graph the user is reading. Safe to do
-		// with the same settings as a cold run now that the layout is a single phase —
-		// what is on screen is already at equilibrium for them, so this nudges the
-		// arrivals into place instead of restarting anything. Somebody is looking at
-		// this.
-		startLayout(current, { iterations: 90 });
-		return true;
-	}
-
-	/** Bring the drawn edge set in line with the data, in place. */
-	function syncEdges(current: GraphView): void {
-		if (!graph) return;
-
-		const wanted = new Set<string>();
-		for (const edge of current.edges) {
-			if (!graph.hasNode(edge.source) || !graph.hasNode(edge.target)) continue;
-			if (edge.source === edge.target) continue;
-			if (!graph.hasEdge(edge.source, edge.target)) {
-				graph.addUndirectedEdge(edge.source, edge.target, {
-				size: edgeSize(edge.source, edge.target),
-				color: edgeColor(edge.source, edge.target)
-			});
-			}
-			wanted.add(graph.edge(edge.source, edge.target) as string);
-		}
-		for (const key of graph.edges()) {
-			if (!wanted.has(key)) graph.dropEdge(key);
-		}
-	}
 
 	/**
 	 * Hover a node from outside the canvas — driven by the search results list, so
@@ -1114,10 +1459,22 @@
 		{ label: 'Fit', icon: 'lucide:maximize', action: () => resetView() }
 	];
 
-	/** Re-measure after the surrounding layout changes (the inspector sliding in). */
+	/**
+	 * Re-measure after the surrounding layout changes (the inspector sliding in).
+	 *
+	 * The refresh is a FULL one, because a changed container changes the
+	 * normalization every position is drawn through — but it only happens when the
+	 * container really did change size. This used to refresh unconditionally, and
+	 * with the divider drag calling it on every pointer move that was a complete
+	 * re-index of the graph per mouse event.
+	 */
 	export function resize(): void {
-		sigma?.resize();
-		sigma?.refresh({ skipIndexation: true });
+		if (!sigma) return;
+		const before = sigma.getDimensions();
+		sigma.resize();
+		const after = sigma.getDimensions();
+		if (before.width === after.width && before.height === after.height) return;
+		sigma.refresh();
 	}
 
 	export function zoomIn(): void {

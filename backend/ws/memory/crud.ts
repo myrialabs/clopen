@@ -24,8 +24,9 @@ import { createRouter, type WSConnection } from '$shared/utils/ws-server';
 import { ws } from '$backend/utils/ws';
 import { projectContextService } from '$backend/mcp/internal/project-context';
 import { debug } from '$shared/utils/logger';
-import { graphQueries } from '$backend/database/queries/graph-queries';
+import { graphQueries, graphLayoutQueries } from '$backend/database/queries/graph-queries';
 import { buildGraphView, buildNodeDetail } from '$backend/memory/view';
+import { resetGraphLayoutState } from '$backend/memory/layout';
 import { markConsulted, retrieve } from '$backend/memory/retrieval';
 import { scheduleVectorIndexing } from '$backend/memory/indexer';
 import { getMemoryConfig, setMemoryConfig } from '$backend/memory/config';
@@ -176,9 +177,20 @@ export const memoryCrudHandler = createRouter()
 			sources: t.Optional(t.Array(SOURCE)),
 			includeArchived: t.Optional(t.Boolean()),
 			includeSuperseded: t.Optional(t.Boolean()),
+			// The rectangle of the layout to zoom into, when a mark was opened.
+			// Absent asks for the whole graph at whatever resolution fits.
+			region: t.Optional(
+				t.Object({
+					minX: t.Number(),
+					maxX: t.Number(),
+					minY: t.Number(),
+					maxY: t.Number()
+				})
+			),
 			limit: t.Optional(t.Number())
 		}),
 		response: t.Object({
+			level: t.String(),
 			nodes: t.Array(t.Object({
 				id: t.String(),
 				kind: t.String(),
@@ -190,7 +202,9 @@ export const memoryCrudHandler = createRouter()
 				weight: t.Number(),
 				pinned: t.Boolean(),
 				community: t.Number(),
-				createdAt: t.String()
+				createdAt: t.String(),
+				x: t.Optional(t.Number()),
+				y: t.Optional(t.Number())
 			})),
 			edges: t.Array(t.Object({
 				id: t.Number(),
@@ -199,6 +213,34 @@ export const memoryCrudHandler = createRouter()
 				rel: t.String(),
 				weight: t.Number()
 			})),
+			bins: t.Array(t.Object({
+				id: t.String(),
+				members: t.Number(),
+				label: t.String(),
+				community: t.Number(),
+				x: t.Number(),
+				y: t.Number(),
+				region: t.Object({
+					minX: t.Number(),
+					maxX: t.Number(),
+					minY: t.Number(),
+					maxY: t.Number()
+				})
+			})),
+			binEdges: t.Array(t.Object({
+				source: t.String(),
+				target: t.String(),
+				weight: t.Number()
+			})),
+			region: t.Union([
+				t.Object({
+					minX: t.Number(),
+					maxX: t.Number(),
+					minY: t.Number(),
+					maxY: t.Number()
+				}),
+				t.Null()
+			]),
 			totalNodes: t.Number(),
 			truncated: t.Boolean()
 		})
@@ -212,6 +254,7 @@ export const memoryCrudHandler = createRouter()
 			sources: data.sources as GraphSource[] | undefined,
 			includeArchived: data.includeArchived,
 			includeSuperseded: data.includeSuperseded,
+			region: data.region,
 			limit: data.limit
 		});
 	})
@@ -597,6 +640,11 @@ export const memoryCrudHandler = createRouter()
 		// may now be looking at an empty graph.
 		vectorCache.reset();
 		resetGraphEmptiness();
+		// The arrangement describes nodes that are gone. Dropping the orphans now
+		// rather than waiting for the next pass is what stops the overview counting
+		// lobes whose members no longer exist.
+		graphLayoutQueries.pruneOrphans();
+		resetGraphLayoutState();
 		notifyGraphChanged('purged', data.projectIds?.[0] ?? null);
 		debug.log('memory', `Purged ${result.nodes} node(s) and ${result.edges} edge(s)`);
 		return result;

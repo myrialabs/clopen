@@ -35,7 +35,7 @@
 		EPISODIC_SUBKINDS,
 		STRUCTURAL_SUBKINDS
 	} from '$frontend/stores/features/memory-graph.svelte';
-	import type { GraphNodeKind, GraphSource } from '$shared/types/memory';
+	import type { GraphNodeKind, GraphRegion, GraphSource } from '$shared/types/memory';
 
 	interface Props {
 		isOpen: boolean;
@@ -47,6 +47,22 @@
 	let canvas = $state<ReturnType<typeof MemoryGraphCanvas> | null>(null);
 	let searchInput = $state('');
 	let searchDebounce: ReturnType<typeof setTimeout> | null = null;
+
+	/**
+	 * Whether the graph is allowed to mount yet.
+	 *
+	 * The modal's opening animation is two hundred milliseconds of the main
+	 * thread, and building a graph is the single most expensive thing this app
+	 * mounts. Doing both in the same flush is what made opening Memory stutter
+	 * once there was a lot of it: the store keeps the last view, so every open
+	 * after the first found data already there and built the whole canvas inside
+	 * the first frame of the animation.
+	 *
+	 * The fetch still starts immediately — the network is not the main thread.
+	 * Only the drawing waits.
+	 */
+	let canvasReady = $state(false);
+	let readyFallback: ReturnType<typeof setTimeout> | null = null;
 
 	/** Which secondary panel is open over the graph, if any. */
 	let panel = $state<'none' | 'filters' | 'forgotten'>('none');
@@ -89,7 +105,19 @@
 	const stats = $derived(memoryGraphStore.stats);
 	const selected = $derived(memoryGraphStore.selected);
 	const hits = $derived(memoryGraphStore.searchHits);
+	/**
+	 * Hits always highlight, at either resolution. A memory that survived the grid
+	 * as its own mark lights up exactly as it always did; one that was merged into
+	 * a crowd simply has no mark of its own to light, and the results list is where
+	 * it is reached from. That degrades quietly, which the community grouping did
+	 * not — there every hit was invisible.
+	 */
 	const highlightIds = $derived(hits.map(hit => hit.node.id));
+	const region = $derived(memoryGraphStore.region);
+	/** Marks on the canvas: memories drawn individually, plus the merged ones. */
+	const drawnCount = $derived(view.nodes.length + view.bins.length);
+	/** How many memories the merged marks stand for, for the header's tooltip. */
+	const mergedCount = $derived(view.bins.reduce((sum, bin) => sum + bin.members, 0));
 	const kinds = $derived(memoryGraphStore.filter.kinds);
 	const filter = $derived(memoryGraphStore.filter);
 	const forgotten = $derived(memoryGraphStore.forgotten);
@@ -133,7 +161,7 @@
 		void selected;
 		void sidebarWidth;
 		// After the DOM has actually reflowed, not before.
-		requestAnimationFrame(() => canvas?.resize());
+		scheduleResize();
 	});
 
 	// Load on EVERY open, but never on mount: the modal mounts with the navigator,
@@ -156,6 +184,42 @@
 		void memoryGraphStore.fetchConfig();
 	});
 
+	// Closing has to put the gate back, because the modal is never unmounted — it
+	// lives in the navigator — so without this the second open would mount the
+	// canvas immediately again, which is precisely the case this exists for.
+	$effect(() => {
+		if (isOpen) return;
+		canvasReady = false;
+		if (readyFallback) {
+			clearTimeout(readyFallback);
+			readyFallback = null;
+		}
+	});
+
+	/**
+	 * The animation is over; the graph may have the thread.
+	 *
+	 * The timer is a safety net, not a duplicate: `introend` does not fire if the
+	 * transition is skipped — a browser that honours reduced motion, or a modal
+	 * reopened mid-outro — and a canvas that never mounts is a worse bug than one
+	 * that mounts a beat early.
+	 */
+	function handleOpened(): void {
+		if (readyFallback) {
+			clearTimeout(readyFallback);
+			readyFallback = null;
+		}
+		canvasReady = true;
+	}
+
+	$effect(() => {
+		if (!isOpen || canvasReady || readyFallback) return;
+		readyFallback = setTimeout(() => {
+			readyFallback = null;
+			canvasReady = true;
+		}, 320);
+	});
+
 	// Follow the graph while it is open. Memory is written by conversations
 	// happening in other tabs and by background consolidation, so a view that only
 	// loaded once was stale within a turn — and the only way to see the new state
@@ -172,6 +236,12 @@
 		void memoryGraphStore.refreshForgotten();
 	});
 
+	/** `bin:12:34` — a crowd of memories rather than one of them. */
+	function binRegionOf(nodeId: string): GraphRegion | null {
+		if (!nodeId.startsWith('bin:')) return null;
+		return view.bins.find(bin => bin.id === nodeId)?.region ?? null;
+	}
+
 	function visit(nodeId: string | null): void {
 		if (!nodeId) {
 			history = [];
@@ -179,6 +249,22 @@
 			void memoryGraphStore.select(null);
 			return;
 		}
+
+		// A merged mark has nothing to inspect — it stands for several memories
+		// rather than being one — so choosing it zooms into the patch of the map it
+		// covers.
+		const binRegion = binRegionOf(nodeId);
+		if (binRegion) {
+			history = [];
+			historyIndex = -1;
+			// The inspector is showing a memory from wherever the user was before.
+			// Leaving it open next to a patch that does not contain it is the kind of
+			// stale panel that makes a view feel like it lost track of itself.
+			void memoryGraphStore.select(null);
+			memoryGraphStore.focusRegion(binRegion);
+			return;
+		}
+
 		if (nodeId === selectedId) return;
 
 		// Truncate the forward entries: navigating somewhere new from the middle of
@@ -368,11 +454,26 @@
 		(event.currentTarget as HTMLElement).setPointerCapture(event.pointerId);
 	}
 
+	/**
+	 * Pointer moves arrive far faster than frames, and a resize is the one canvas
+	 * operation that has to rebuild sigma's indices. Coalescing to one per frame
+	 * is what keeps dragging the divider smooth on a large graph.
+	 */
+	let resizeFrame: number | null = null;
+
+	function scheduleResize(): void {
+		if (resizeFrame !== null) return;
+		resizeFrame = requestAnimationFrame(() => {
+			resizeFrame = null;
+			canvas?.resize();
+		});
+	}
+
 	function onDrag(event: PointerEvent): void {
 		if (!dragging || !body) return;
 		const rect = body.getBoundingClientRect();
 		sidebarWidth = Math.max(260, Math.min(rect.width - 320, rect.right - event.clientX));
-		canvas?.resize();
+		scheduleResize();
 	}
 
 	function endDrag(event: PointerEvent): void {
@@ -385,6 +486,7 @@
 <Modal
 	bind:isOpen
 	{onClose}
+	onOpened={handleOpened}
 	bare
 	mobileFullscreen
 	ariaLabelledBy="memory-title"
@@ -526,16 +628,22 @@
 					matters precisely when the graph is too large to draw. Now it carries an
 					icon, a unit and a title that explains the gap.
 				-->
-				{#if view.nodes.length > 0}
+				{#if drawnCount > 0}
 					<span
 						class="hidden sm:inline-flex items-center gap-1 px-1.5 py-1 rounded-md
 						       text-[10px] text-slate-500 dark:text-slate-400 bg-slate-100/70 dark:bg-slate-800/70"
-						title={view.truncated
-							? `Showing the ${view.nodes.length} most reinforced of ${view.totalNodes} matching memories. Narrow the filter to see the rest.`
-							: `${view.nodes.length} memories and code entities`}
+						title={view.level === 'binned'
+							? `${view.totalNodes} memories and code entities, all of them in the picture. ${mergedCount} sit close enough together to share ${view.bins.length} marks — click one to zoom in.`
+							: view.truncated
+								? `Showing the ${view.nodes.length} most reinforced of ${view.totalNodes} matching memories. Narrow the filter to see the rest.`
+								: `${view.nodes.length} memories and code entities`}
 					>
 						<Icon name="lucide:circle-dot" class="w-3 h-3 opacity-70" />
-						{view.nodes.length}{view.truncated ? ` / ${view.totalNodes}` : ''}
+						{#if view.level === 'binned'}
+							{view.totalNodes}
+						{:else}
+							{view.nodes.length}{view.truncated ? ` / ${view.totalNodes}` : ''}
+						{/if}
 					</span>
 				{/if}
 				{#if stats && !stats.embedding.ready}
@@ -580,9 +688,10 @@
 
 		<div bind:this={body} bind:clientHeight={bodyHeight} class="flex-1 min-h-0 flex relative">
 			<div class="flex-1 min-w-0 flex flex-col relative">
-				{#if memoryGraphStore.loading && view.nodes.length === 0}
+				{#if !canvasReady || (memoryGraphStore.loading && drawnCount === 0)}
+					<!-- Held back until the modal has finished opening; see `canvasReady`. -->
 					<div class="flex-1 flex items-center justify-center"><LoadingSpinner /></div>
-				{:else if view.nodes.length === 0}
+				{:else if drawnCount === 0}
 					<div class="flex-1 flex flex-col items-center justify-center gap-2 text-slate-400 px-6 text-center">
 						<Icon name="lucide:brain" class="w-10 h-10 opacity-25" />
 						<span class="text-sm font-medium">No memories yet</span>
@@ -599,6 +708,34 @@
 						bottomInset={canvasBottomInset}
 						onSelect={visit}
 					/>
+				{/if}
+
+				{#if canvasReady && region}
+					<button
+						onclick={() => memoryGraphStore.clearRegion()}
+						class="absolute bottom-3 left-1/2 -translate-x-1/2 flex items-center gap-1.5 px-2.5 py-1
+						       rounded-full border border-slate-200 dark:border-slate-800
+						       bg-white/90 dark:bg-slate-900/90 text-[10px] text-slate-500 dark:text-slate-400
+						       hover:text-slate-800 dark:hover:text-slate-100 shadow-sm backdrop-blur-sm
+						       whitespace-nowrap"
+					>
+						<Icon name="lucide:arrow-left" class="w-3 h-3" />
+						Back to everything
+					</button>
+				{:else if canvasReady && view.level === 'binned'}
+					<!--
+						Said once, quietly, at the bottom of the canvas rather than as a
+						banner. The whole graph is already on screen — this only explains
+						the larger marks, which are the one thing that is not literal.
+					-->
+					<div
+						class="absolute bottom-3 left-1/2 -translate-x-1/2 px-2.5 py-1 rounded-full
+						       border border-slate-200 dark:border-slate-800 bg-white/90 dark:bg-slate-900/90
+						       text-[10px] text-slate-500 dark:text-slate-400 shadow-sm backdrop-blur-sm
+						       pointer-events-none whitespace-nowrap"
+					>
+						{view.bins.length} crowded spots · click one to zoom in
+					</div>
 				{/if}
 
 

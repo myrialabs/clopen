@@ -381,6 +381,15 @@ export interface GraphViewNode {
 	/** Louvain community index — the "lobe" a node belongs to. */
 	community: number;
 	createdAt: string;
+	/**
+	 * Where the persisted layout put this node, when it has been laid out.
+	 *
+	 * Absent means "no position yet" — a memory written since the last layout
+	 * pass — and the client seeds those from their neighbours rather than
+	 * re-solving the whole graph. See `backend/memory/layout.ts`.
+	 */
+	x?: number;
+	y?: number;
 }
 
 export interface GraphViewEdge {
@@ -391,9 +400,70 @@ export interface GraphViewEdge {
 	weight: number;
 }
 
+/** A rectangle in layout space — what a zoomed-in view is scoped to. */
+export interface GraphRegion {
+	minX: number;
+	maxX: number;
+	minY: number;
+	maxY: number;
+}
+
+/**
+ * Several memories that fell in one cell of the layout grid, drawn as one mark.
+ *
+ * This is what keeps the view's cost bounded without taking anything out of the
+ * picture, and the distinction from the alternative matters. Grouping by
+ * COMMUNITY replaces the picture — you see lobes instead of memories, and
+ * reaching a memory means opening one. Grouping by POSITION keeps the picture:
+ * marks merge only where their dots would have overlapped anyway, so the
+ * silhouette, the lobes and the colours are the ones the full graph would have
+ * drawn. Below the render budget nothing merges at all and every memory is its
+ * own mark, exactly as before.
+ *
+ * A bin is not a memory — it has no body, no scope and nothing to inspect —
+ * which is why it travels in its own array rather than as a node wearing a fake
+ * subkind.
+ */
+export interface GraphViewBin {
+	/** `bin:<cellX>:<cellY>` — namespaced so it cannot collide with a node id. */
+	id: string;
+	/** How many memories it stands for; drives its size. */
+	members: number;
+	/** The most reinforced member's summary, for the hover pill. */
+	label: string;
+	/** Community of that same member, so the mark keeps its lobe's colour. */
+	community: number;
+	/** Centroid of its members — not the cell's centre, which would grid the map. */
+	x: number;
+	y: number;
+	/** The cell itself, so opening the mark asks for exactly this rectangle. */
+	region: GraphRegion;
+}
+
+/** A connection between two bins, weighted by the edges that cross between them. */
+export interface GraphViewBinEdge {
+	source: string;
+	target: string;
+	weight: number;
+}
+
 export interface GraphView {
+	/**
+	 * `flat` when every matching memory is drawn individually — the ordinary case,
+	 * and the only one below the render budget. `binned` when some marks stand for
+	 * more than one memory.
+	 *
+	 * Both populate `nodes`: a cell holding a single memory returns that memory,
+	 * not a bin of one. So the two are not alternatives to each other — a binned
+	 * view is a full-fidelity view everywhere it can afford to be.
+	 */
+	level: 'flat' | 'binned';
 	nodes: GraphViewNode[];
 	edges: GraphViewEdge[];
+	bins: GraphViewBin[];
+	binEdges: GraphViewBinEdge[];
+	/** The rectangle this view was scoped to, when the caller zoomed into one. */
+	region: GraphRegion | null;
 	/** Total nodes matching the filter before any display cap was applied. */
 	totalNodes: number;
 	/** True when `totalNodes` exceeded the cap and the view was trimmed. */

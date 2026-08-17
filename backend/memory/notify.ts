@@ -20,6 +20,7 @@
  */
 
 import { ws } from '$backend/utils/ws';
+import { scheduleGraphLayout } from './layout';
 import { debug } from '$shared/utils/logger';
 
 /**
@@ -44,20 +45,45 @@ let statusTimer: ReturnType<typeof setTimeout> | null = null;
 export function notifyGraphChanged(reason: string, projectId: string | null = null): void {
 	pendingReason = reason;
 	pendingProjectId = projectId;
+
+	// The arrangement is derived from the graph, so anything that changes one
+	// changes the other. Hanging it off this call rather than off each write path
+	// keeps a single answer to "the graph moved" — and the pass debounces far
+	// longer than the broadcast does, because a position that settles four
+	// seconds late costs nothing while a view that updates four seconds late is
+	// the bug this notification exists to fix.
+	scheduleGraphLayout();
+
 	if (timer) return;
 
 	timer = setTimeout(() => {
 		timer = null;
-		try {
-			ws.emit.global('memory:changed', { reason: pendingReason, projectId: pendingProjectId });
-		} catch (error) {
-			// A view that misses a refresh is a stale view, not a broken one, and this
-			// is called from write paths that must never fail for a UI concern.
-			debug.warn('memory', 'Failed to broadcast memory change', error);
-		}
+		broadcastGraphChanged(pendingReason, pendingProjectId);
 	}, COALESCE_MS);
 	// Housekeeping — never a reason to hold the process open at shutdown.
 	timer.unref?.();
+}
+
+/**
+ * Ring the doorbell without asking for a new arrangement.
+ *
+ * The layout pass calls this when it has written new positions. It must NOT go
+ * through `notifyGraphChanged`, which schedules a layout — a pass announcing its
+ * own result would ask for another one, and while that next pass would find
+ * nothing to do and return early, a job that re-queues itself every time it
+ * succeeds is a shape worth not having.
+ *
+ * Uncoalesced, because a pass is already debounced by seconds and produces at
+ * most one of these.
+ */
+export function broadcastGraphChanged(reason: string, projectId: string | null = null): void {
+	try {
+		ws.emit.global('memory:changed', { reason, projectId });
+	} catch (error) {
+		// A view that misses a refresh is a stale view, not a broken one, and this
+		// is called from write paths that must never fail for a UI concern.
+		debug.warn('memory', 'Failed to broadcast memory change', error);
+	}
 }
 
 /**

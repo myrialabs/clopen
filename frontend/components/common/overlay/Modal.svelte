@@ -7,6 +7,17 @@
 	interface Props {
 		isOpen: boolean;
 		onClose: () => void;
+		/**
+		 * Called once the opening transition has finished.
+		 *
+		 * For a modal whose contents are expensive to build — a graph, a database
+		 * client — this is the difference between an animation and a freeze. The
+		 * open is two hundred milliseconds of the main thread; anything heavy that
+		 * mounts in the same flush competes with it directly, and the user sees the
+		 * modal jump into place rather than scale into it. Defer the expensive part
+		 * to this and the two stop fighting.
+		 */
+		onOpened?: () => void;
 		title?: string;
 		size?: 'sm' | 'md' | 'lg' | 'xl' | 'full';
 		closable?: boolean;
@@ -23,6 +34,7 @@
 	let {
 		isOpen = $bindable(),
 		onClose,
+		onOpened,
 		title,
 		size = 'md',
 		closable = true,
@@ -123,6 +135,7 @@
 			tabindex="-1"
 			in:scale={{ duration: 200, easing: cubicOut, start: 0.95 }}
 			out:scale={{ duration: 150, easing: cubicOut, start: 0.95 }}
+			onintroend={() => onOpened?.()}
 		>
 			{#if bare}
 				{#if children}

@@ -269,57 +269,89 @@ export interface GraphListFilter {
  * Kept in one place because the three drifting apart is how a node ends up
  * counted but not shown, or shown in the graph after being forgotten.
  */
-function appendProjectFilter(filter: GraphListFilter, where: string[], params: unknown[]): void {
+/**
+ * An id set as ONE bound parameter instead of one placeholder per id.
+ *
+ * The graph view hands these queries up to three thousand ids at a time, and
+ * `IN (?, ?, … ×3000)` builds a different SQL string for every distinct length —
+ * so the statement cache never hits and SQLite recompiles the query on each
+ * call. `edgesWithin` was the worst of them, repeating the set twice for six
+ * thousand bound parameters. `json_each` takes the whole set as a single JSON
+ * argument, which makes the SQL text constant and the statement cacheable.
+ */
+const ID_SET = '(SELECT value FROM json_each(?))';
+
+const idSet = (ids: string[]): string => JSON.stringify(ids);
+
+function appendProjectFilter(
+	filter: GraphListFilter,
+	where: string[],
+	params: unknown[],
+	as: string = ''
+): void {
 	if (filter.projectIds !== undefined) {
 		// Nothing selected is "global only", not "everything": the user has narrowed
 		// away every repository, and what remains is what was never a repository's.
-		if (filter.projectIds.length === 0) where.push(`project_id IS NULL`);
+		if (filter.projectIds.length === 0) where.push(`${as}project_id IS NULL`);
 		else {
-			where.push(`(project_id IN (${filter.projectIds.map(() => '?').join(',')}) OR project_id IS NULL)`);
+			where.push(
+				`(${as}project_id IN (${filter.projectIds.map(() => '?').join(',')}) OR ${as}project_id IS NULL)`
+			);
 			params.push(...filter.projectIds);
 		}
 		return;
 	}
 	if (filter.projectId === undefined) return;
 	if (filter.projectId === null) {
-		where.push(`project_id IS NULL`);
+		where.push(`${as}project_id IS NULL`);
 		return;
 	}
 	// A project view also shows the global memories that apply to it —
 	// conventions and preferences are part of that project's context.
-	where.push(`(project_id = ? OR project_id IS NULL)`);
+	where.push(`(${as}project_id = ? OR ${as}project_id IS NULL)`);
 	params.push(filter.projectId);
 }
 
-function buildNodeFilter(filter: GraphListFilter): { where: string[]; params: unknown[] } {
+/**
+ * The graph view's WHERE clause, optionally qualified by a table alias.
+ *
+ * The alias exists for the queries that join `graph_nodes` to itself through an
+ * edge — the cluster-adjacency rollup has to apply the SAME narrowing to both
+ * ends of every edge, and unqualified column names are ambiguous there. Callers
+ * pass `'n.'`; everything else keeps the bare form it always had.
+ */
+function buildNodeFilter(
+	filter: GraphListFilter,
+	as: string = ''
+): { where: string[]; params: unknown[] } {
 	const where: string[] = [];
 	const params: unknown[] = [];
 
-	appendProjectFilter(filter, where, params);
+	appendProjectFilter(filter, where, params, as);
 	if (filter.kinds?.length) {
-		where.push(`kind IN (${filter.kinds.map(() => '?').join(',')})`);
+		where.push(`${as}kind IN (${filter.kinds.map(() => '?').join(',')})`);
 		params.push(...filter.kinds);
 	}
 	if (filter.subkinds?.length) {
-		where.push(`subkind IN (${filter.subkinds.map(() => '?').join(',')})`);
+		where.push(`${as}subkind IN (${filter.subkinds.map(() => '?').join(',')})`);
 		params.push(...filter.subkinds);
 	}
 	if (filter.scopes?.length) {
-		where.push(`scope IN (${filter.scopes.map(() => '?').join(',')})`);
+		where.push(`${as}scope IN (${filter.scopes.map(() => '?').join(',')})`);
 		params.push(...filter.scopes);
 	}
 	if (filter.sources?.length) {
-		where.push(`source IN (${filter.sources.map(() => '?').join(',')})`);
+		where.push(`${as}source IN (${filter.sources.map(() => '?').join(',')})`);
 		params.push(...filter.sources);
 	}
 
-	if (filter.archivedOnly) where.push(`archived_at IS NOT NULL`);
-	else if (!filter.includeArchived) where.push(`archived_at IS NULL`);
+	if (filter.archivedOnly) where.push(`${as}archived_at IS NOT NULL`);
+	else if (!filter.includeArchived) where.push(`${as}archived_at IS NULL`);
 
 	// The graph view shows current beliefs. Superseded ones stay reachable by
 	// walking a `supersedes` edge from the node that replaced them, which is where
 	// that history belongs.
-	if (!filter.includeSuperseded) where.push(`superseded_by IS NULL`);
+	if (!filter.includeSuperseded) where.push(`${as}superseded_by IS NULL`);
 
 	return { where, params };
 }
@@ -437,10 +469,9 @@ export const graphQueries = {
 
 	getByIds(ids: string[]): GraphNode[] {
 		if (ids.length === 0) return [];
-		const placeholders = ids.map(() => '?').join(',');
 		const rows = getDatabase()
-			.prepare(`SELECT * FROM graph_nodes WHERE id IN (${placeholders})`)
-			.all(...ids) as GraphNodeRow[];
+			.prepare(`SELECT * FROM graph_nodes WHERE id IN ${ID_SET}`)
+			.all(idSet(ids)) as GraphNodeRow[];
 		return rows.map(toNode);
 	},
 
@@ -767,11 +798,13 @@ export const graphQueries = {
 		if (nodeIds.length === 0) return byNode;
 		const rows = getDatabase()
 			.prepare(
-				`SELECT node_id, name FROM graph_node_entities WHERE node_id IN (${nodeIds.map(() => '?').join(',')})`
+				`SELECT node_id, name FROM graph_node_entities WHERE node_id IN ${ID_SET}`
 			)
-			.all(...nodeIds) as { node_id: string; name: string }[];
+			.all(idSet(nodeIds)) as { node_id: string; name: string }[];
 		for (const row of rows) {
-			byNode.set(row.node_id, [...(byNode.get(row.node_id) ?? []), row.name]);
+			const names = byNode.get(row.node_id);
+			if (names) names.push(row.name);
+			else byNode.set(row.node_id, [row.name]);
 		}
 		return byNode;
 	},
@@ -813,7 +846,7 @@ export const graphQueries = {
 		/** Links each memory draws per group, toward the heaviest members. */
 		const LINKS_PER_MEMBER = 4;
 
-		const placeholders = nodeIds.map(() => '?').join(',');
+		const set = idSet(nodeIds);
 		const edges: { srcId: string; dstId: string; weight: number; via: 'subject' | 'project' }[] = [];
 		const seen = new Set<string>();
 
@@ -837,12 +870,21 @@ export const graphQueries = {
 				`SELECT e.entity_key AS groupKey, e.node_id AS nodeId
 				 FROM graph_node_entities e
 				 INNER JOIN graph_nodes n ON n.id = e.node_id
-				 WHERE e.node_id IN (${placeholders})
+				 WHERE e.node_id IN ${ID_SET}
 				 ORDER BY e.entity_key, n.weight DESC, n.updated_at DESC`
 			)
-			.all(...nodeIds) as { groupKey: string; nodeId: string }[];
+			.all(set) as { groupKey: string; nodeId: string }[];
+		// Appended, not rebuilt. Spreading the existing array on every row made this
+		// quadratic in the size of a group — invisible for the subject groups, which
+		// are capped at two dozen, and the dominant cost of the whole call for the
+		// project groups, which routinely run to hundreds before the size check
+		// below discards them.
 		const bySubject = new Map<string, string[]>();
-		for (const row of rows) bySubject.set(row.groupKey, [...(bySubject.get(row.groupKey) ?? []), row.nodeId]);
+		for (const row of rows) {
+			const members = bySubject.get(row.groupKey);
+			if (members) members.push(row.nodeId);
+			else bySubject.set(row.groupKey, [row.nodeId]);
+		}
 		// `members` is heaviest-first, so linking forward attaches the tail of a
 		// subject to its most reinforced memories rather than to whichever happened
 		// to be written first.
@@ -861,12 +903,16 @@ export const graphQueries = {
 		const projectRows = getDatabase()
 			.prepare(
 				`SELECT project_id AS groupKey, id AS nodeId FROM graph_nodes
-				 WHERE id IN (${placeholders}) AND project_id IS NOT NULL AND kind = 'episodic'
+				 WHERE id IN ${ID_SET} AND project_id IS NOT NULL AND kind = 'episodic'
 				 ORDER BY project_id, weight DESC, updated_at DESC`
 			)
-			.all(...nodeIds) as { groupKey: string; nodeId: string }[];
+			.all(set) as { groupKey: string; nodeId: string }[];
 		const byProject = new Map<string, string[]>();
-		for (const row of projectRows) byProject.set(row.groupKey, [...(byProject.get(row.groupKey) ?? []), row.nodeId]);
+		for (const row of projectRows) {
+			const members = byProject.get(row.groupKey);
+			if (members) members.push(row.nodeId);
+			else byProject.set(row.groupKey, [row.nodeId]);
+		}
 		for (const members of byProject.values()) connect(members, 0.4, 'project');
 
 		return edges;
@@ -1250,14 +1296,30 @@ export const graphQueries = {
 	/** Every edge with both ends inside the given set — the induced subgraph. */
 	edgesWithin(nodeIds: string[]): GraphEdge[] {
 		if (nodeIds.length === 0) return [];
-		const placeholders = nodeIds.map(() => '?').join(',');
+
+		/**
+		 * Driven from the index, with the second end checked in JS.
+		 *
+		 * `WHERE src_id IN (…) AND dst_id IN (…)` reads naturally and is 200× slower,
+		 * measured: SQLite scans `graph_edges` and tests each row against a set of up
+		 * to three thousand values twice over, using neither of the indexes on the
+		 * columns being tested. 220 ms for 1,789 edges. Joining the id set to
+		 * `idx_graph_edges_src` turns it into one seek per id — 1 ms for the same
+		 * data — and the surviving rows are few enough that filtering the far end
+		 * against a `Set` here costs nothing.
+		 *
+		 * The placeholder form this replaced was no better; the cost was never the
+		 * binding, it was the plan.
+		 */
+		const wanted = new Set(nodeIds);
 		const rows = getDatabase()
 			.prepare(
-				`SELECT * FROM graph_edges
-				 WHERE src_id IN (${placeholders}) AND dst_id IN (${placeholders})`
+				`SELECT e.* FROM json_each(?) ids
+				 INNER JOIN graph_edges e ON e.src_id = ids.value`
 			)
-			.all(...nodeIds, ...nodeIds) as GraphEdgeRow[];
-		return rows.map(toEdge);
+			.all(idSet(nodeIds)) as GraphEdgeRow[];
+
+		return rows.filter(row => wanted.has(row.dst_id)).map(toEdge);
 	},
 
 	/**
@@ -1348,6 +1410,36 @@ export const graphQueries = {
 		const rows = getDatabase()
 			.prepare(
 				`SELECT * FROM graph_nodes ${clause}
+				 ORDER BY pinned DESC, weight DESC, updated_at DESC
+				 LIMIT ?`
+			)
+			.all(...params) as GraphNodeRow[];
+		return rows.map(toNode);
+	},
+
+	/**
+	 * The same listing, narrowed to a rectangle of the persisted layout.
+	 *
+	 * This is what opening a bin reads, and it is why the view can be complete
+	 * without being unbounded: zooming into part of the map costs that part. The
+	 * bounds come from the layout's own coordinate space, which the client already
+	 * holds — every mark it drew carries the cell it stands for.
+	 */
+	listInRegion(
+		filter: GraphListFilter & { limit?: number },
+		region: { minX: number; maxX: number; minY: number; maxY: number }
+	): GraphNode[] {
+		const { where, params } = buildNodeFilter(filter);
+		where.push(
+			`id IN (SELECT node_id FROM graph_layout
+			        WHERE x >= ? AND x <= ? AND y >= ? AND y <= ?)`
+		);
+		params.push(region.minX, region.maxX, region.minY, region.maxY);
+		params.push(filter.limit ?? 2000);
+
+		const rows = getDatabase()
+			.prepare(
+				`SELECT * FROM graph_nodes WHERE ${where.join(' AND ')}
 				 ORDER BY pinned DESC, weight DESC, updated_at DESC
 				 LIMIT ?`
 			)
@@ -1760,5 +1852,298 @@ export const graphQueries = {
 			changes?: number;
 		};
 		return Number(result.changes ?? 0);
+	}
+};
+
+/** One node's place in the persisted arrangement. */
+export interface GraphLayoutRow {
+	nodeId: string;
+	community: number;
+	x: number;
+	y: number;
+	/**
+	 * 1 when the force simulation computed this position, 0 when it is a guess
+	 * from the community's neighbourhood. See migration 067 for why the two must
+	 * stay distinguishable.
+	 */
+	placed: number;
+}
+
+/** How many nodes match a filter, and the rectangle their layout occupies. */
+export interface GraphLayoutExtent {
+	total: number;
+	/** Matching nodes with no position yet — counted, but outside the bounds. */
+	unplaced: number;
+	minX: number;
+	maxX: number;
+	minY: number;
+	maxY: number;
+}
+
+/** The grid a binned view is rolled up to, in layout coordinates. */
+export interface GraphBinGrid {
+	originX: number;
+	originY: number;
+	cellWidth: number;
+	cellHeight: number;
+}
+
+/** One occupied cell: how many it holds, where they average, and which speaks for it. */
+export interface GraphBinRow {
+	cellX: number;
+	cellY: number;
+	members: number;
+	x: number;
+	y: number;
+	/** The most reinforced member — the mark itself when `members` is 1. */
+	id: string;
+	label: string;
+	community: number;
+}
+
+export interface GraphBinEdgeRow {
+	srcX: number;
+	srcY: number;
+	dstX: number;
+	dstY: number;
+	weight: number;
+}
+
+/**
+ * Reading and writing the persisted arrangement (see migration 067).
+ *
+ * Kept apart from `graphQueries` because it answers a different question:
+ * `graphQueries` is about what is remembered, this is about how it is drawn.
+ * Every row here is derived and disposable — deleting the table costs one
+ * background pass and no memory.
+ */
+export const graphLayoutQueries = {
+	/** Positions and communities for a set of nodes. */
+	read(nodeIds: string[]): Map<string, GraphLayoutRow> {
+		const result = new Map<string, GraphLayoutRow>();
+		if (nodeIds.length === 0) return result;
+		const rows = getDatabase()
+			.prepare(
+				`SELECT node_id AS nodeId, community, x, y, placed FROM graph_layout
+				 WHERE node_id IN ${ID_SET}`
+			)
+			.all(idSet(nodeIds)) as GraphLayoutRow[];
+		for (const row of rows) result.set(row.nodeId, row);
+		return result;
+	},
+
+	/** Replace the arrangement for the nodes given, in one transaction. */
+	writeMany(rows: GraphLayoutRow[]): number {
+		if (rows.length === 0) return 0;
+		return graphQueries.transaction(() => {
+			const statement = getDatabase().prepare(
+				`INSERT INTO graph_layout (node_id, community, x, y, placed, updated_at)
+				 VALUES (?, ?, ?, ?, ?, CURRENT_TIMESTAMP)
+				 ON CONFLICT(node_id) DO UPDATE SET
+				   community = excluded.community, x = excluded.x, y = excluded.y,
+				   placed = excluded.placed, updated_at = CURRENT_TIMESTAMP`
+			);
+			for (const row of rows) {
+				statement.run(row.nodeId, row.community, row.x, row.y, row.placed);
+			}
+			return rows.length;
+		});
+	},
+
+	/**
+	 * Live nodes in the order the view itself ranks them, for the layout pass.
+	 *
+	 * Capped, because a force layout over an unbounded set is unbounded work. What
+	 * survives the cap is what the view would have shown anyway — pinned, then
+	 * most reinforced, then most recent — so anything left unplaced is also the
+	 * least likely to be looked at.
+	 */
+	liveNodeIds(limit: number): string[] {
+		const rows = getDatabase()
+			.prepare(
+				// `id` is the tiebreak, and it is load-bearing rather than tidy. Most
+				// live nodes share a weight and a timestamp, so without it SQLite is
+				// free to return ties in any order — and this order decides the order
+				// the layout graph is built in, which ForceAtlas2 is sensitive to. The
+				// same store laid out to a different map on every pass.
+				`SELECT id FROM graph_nodes
+				 WHERE archived_at IS NULL AND superseded_by IS NULL
+				 ORDER BY pinned DESC, weight DESC, updated_at DESC, id ASC
+				 LIMIT ?`
+			)
+			.all(limit) as { id: string }[];
+		return rows.map(row => row.id);
+	},
+
+	/** Whether any live node is still waiting to be placed. */
+	hasUnplaced(): boolean {
+		const row = getDatabase()
+			.prepare(
+				`SELECT 1 AS present FROM graph_nodes n
+				 LEFT JOIN graph_layout l ON l.node_id = n.id
+				 WHERE n.archived_at IS NULL AND n.superseded_by IS NULL AND l.node_id IS NULL
+				 LIMIT 1`
+			)
+			.get() as { present: number } | null;
+		return row !== null && row !== undefined;
+	},
+
+	/** Rows whose node no longer exists. Foreign keys are not always enforced. */
+	pruneOrphans(): number {
+		const result = getDatabase()
+			.prepare(`DELETE FROM graph_layout WHERE node_id NOT IN (SELECT id FROM graph_nodes)`)
+			.run() as { changes?: number };
+		return Number(result.changes ?? 0);
+	},
+
+	/** Drop the whole arrangement — used when the graph is purged. */
+	clear(): void {
+		getDatabase().prepare(`DELETE FROM graph_layout`).run();
+	},
+
+	/**
+	 * How many nodes match, and the rectangle their arrangement occupies.
+	 *
+	 * One pass answering both, because the two are always wanted together: the
+	 * count decides whether the view has to bin at all, and the extent is what the
+	 * grid is laid over. `MIN`/`MAX` skip NULLs, so a node still waiting to be
+	 * placed is counted without dragging the bounds toward the origin.
+	 */
+	extent(filter: GraphListFilter): GraphLayoutExtent {
+		const { where, params } = buildNodeFilter(filter, 'n.');
+		const clause = where.length ? `WHERE ${where.join(' AND ')}` : '';
+
+		const row = getDatabase()
+			.prepare(
+				`SELECT COUNT(*) AS total,
+				        SUM(CASE WHEN l.node_id IS NULL THEN 1 ELSE 0 END) AS unplaced,
+				        MIN(l.x) AS minX, MAX(l.x) AS maxX,
+				        MIN(l.y) AS minY, MAX(l.y) AS maxY
+				 FROM graph_nodes n
+				 LEFT JOIN graph_layout l ON l.node_id = n.id
+				 ${clause}`
+			)
+			.get(...params) as {
+			total: number;
+			unplaced: number | null;
+			minX: number | null;
+			maxX: number | null;
+			minY: number | null;
+			maxY: number | null;
+		};
+
+		return {
+			total: row.total ?? 0,
+			unplaced: row.unplaced ?? 0,
+			minX: row.minX ?? 0,
+			maxX: row.maxX ?? 0,
+			minY: row.minY ?? 0,
+			maxY: row.maxY ?? 0
+		};
+	},
+
+	/**
+	 * One row per occupied cell of the grid: its size, its centroid, and its most
+	 * reinforced member.
+	 *
+	 * The count of rows is bounded by the grid, not by the store — that is the
+	 * whole point. A cell holding one memory comes back with `members = 1` and
+	 * that memory's id, so the caller can return the memory ITSELF rather than a
+	 * bin standing for it; below the render budget that is every cell, and the
+	 * view is bit-for-bit the flat one.
+	 *
+	 * `CAST(... AS INTEGER)` truncates toward zero, which would fold the cells on
+	 * either side of the origin into one — the grid is therefore anchored at the
+	 * arrangement's minimum, so every offset it sees is positive.
+	 */
+	binnedNodes(filter: GraphListFilter, grid: GraphBinGrid): GraphBinRow[] {
+		const { where, params } = buildNodeFilter(filter, 'n.');
+		const clause = where.length ? `WHERE ${where.join(' AND ')}` : '';
+
+		return getDatabase()
+			.prepare(
+				`SELECT cellX, cellY, members, cx AS x, cy AS y, id, label, community
+				 FROM (
+				   SELECT cellX, cellY, id, label, community,
+				          COUNT(*) OVER (PARTITION BY cellX, cellY) AS members,
+				          AVG(x) OVER (PARTITION BY cellX, cellY) AS cx,
+				          AVG(y) OVER (PARTITION BY cellX, cellY) AS cy,
+				          ROW_NUMBER() OVER (
+				            PARTITION BY cellX, cellY
+				            ORDER BY pinned DESC, weight DESC, updated_at DESC
+				          ) AS rn
+				   FROM (
+				     SELECT CAST((l.x - ?) / ? AS INTEGER) AS cellX,
+				            CAST((l.y - ?) / ? AS INTEGER) AS cellY,
+				            l.x AS x, l.y AS y, l.community AS community,
+				            n.id AS id, n.label AS label,
+				            n.pinned AS pinned, n.weight AS weight, n.updated_at AS updated_at
+				     FROM graph_nodes n
+				     INNER JOIN graph_layout l ON l.node_id = n.id
+				     ${clause}
+				   )
+				 )
+				 WHERE rn = 1`
+			)
+			.all(
+				grid.originX,
+				grid.cellWidth,
+				grid.originY,
+				grid.cellHeight,
+				...params
+			) as GraphBinRow[];
+	},
+
+	/**
+	 * Edges rolled up to the same grid, so the binned picture keeps its structure.
+	 *
+	 * Stored edges only. The derived ones (see `derivedEdges`) exist to hold a
+	 * subject's memories together, and the layout pass already consumed them —
+	 * their effect is in the POSITIONS, which is where it belongs at this
+	 * resolution. Recomputing them here would mean handing this query the id of
+	 * every matching node, which is the unbounded thing the grid exists to avoid.
+	 *
+	 * Edges inside a single cell are dropped: both ends are the same mark.
+	 */
+	binnedEdges(filter: GraphListFilter, grid: GraphBinGrid, limit: number): GraphBinEdgeRow[] {
+		const src = buildNodeFilter(filter, 'na.');
+		const dst = buildNodeFilter(filter, 'nb.');
+		const conditions = [...src.where, ...dst.where];
+		const clause = conditions.length ? `WHERE ${conditions.join(' AND ')}` : '';
+
+		return getDatabase()
+			.prepare(
+				`SELECT srcX, srcY, dstX, dstY, SUM(weight) AS weight
+				 FROM (
+				   SELECT CAST((la.x - ?) / ? AS INTEGER) AS srcX,
+				          CAST((la.y - ?) / ? AS INTEGER) AS srcY,
+				          CAST((lb.x - ?) / ? AS INTEGER) AS dstX,
+				          CAST((lb.y - ?) / ? AS INTEGER) AS dstY,
+				          e.weight AS weight
+				   FROM graph_edges e
+				   INNER JOIN graph_layout la ON la.node_id = e.src_id
+				   INNER JOIN graph_layout lb ON lb.node_id = e.dst_id
+				   INNER JOIN graph_nodes na ON na.id = e.src_id
+				   INNER JOIN graph_nodes nb ON nb.id = e.dst_id
+				   ${clause}
+				 )
+				 WHERE NOT (srcX = dstX AND srcY = dstY)
+				 GROUP BY 1, 2, 3, 4
+				 ORDER BY weight DESC
+				 LIMIT ?`
+			)
+			.all(
+				grid.originX,
+				grid.cellWidth,
+				grid.originY,
+				grid.cellHeight,
+				grid.originX,
+				grid.cellWidth,
+				grid.originY,
+				grid.cellHeight,
+				...src.params,
+				...dst.params,
+				limit
+			) as GraphBinEdgeRow[];
 	}
 };
