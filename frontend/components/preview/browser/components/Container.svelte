@@ -876,8 +876,12 @@
 </div>
 
 <style>
-	/* MCP Control Border Animation */
+	/* MCP Control Border Animation.
+	   The resting glow is declared on the class so "the agent is driving this
+	   browser" stays visible when the pulse is dropped (reduced motion) — the
+	   keyframes only add the breathing on top of it. */
 	.mcp-control-border {
+		box-shadow: 0 0 0 2px rgba(245, 158, 11, 0.5), 0 0 20px rgba(245, 158, 11, 0.3);
 		animation: mcp-border-pulse 2s ease-in-out infinite;
 	}
 
