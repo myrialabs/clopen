@@ -18,8 +18,6 @@
  */
 
 import { freemem, totalmem } from 'node:os';
-import { existsSync, mkdirSync, writeFileSync } from 'node:fs';
-import { join } from 'node:path';
 import { debug } from '$shared/utils/logger';
 import { ws } from '$backend/utils/ws';
 import { getCleanSpawnEnv } from '$backend/utils/env';
@@ -27,26 +25,21 @@ import { refreshProcessPath } from '$backend/utils/path-enrich';
 import { ensureCurlAvailable } from '$backend/utils/static-curl';
 import type { Recipe, ToolId } from './install-recipes';
 import { resolveRecipe } from './install-recipes';
+import { ensureStackProject } from './stack-project';
+import { invalidateEngineCliCache } from './engine-cli';
 
 const RING_BUFFER_LINES = 10_000;
 const RETENTION_MS = 5 * 60 * 1000;
 
 /**
- * Ensure a recipe's working directory exists as a minimal bun project before
- * `bun add` runs there. Engine recipes install into the clopen-managed stack
- * dir (`~/.clopen/stack/engines`); a package.json must exist so `bun add`
- * treats it as a project root instead of walking up to some parent.
+ * Ensure a recipe's working directory is ready before `bun add` runs there.
+ * Engine recipes install into the clopen-managed stack dir
+ * (`~/.clopen/stack/engines`), whose package.json both roots the install and
+ * carries the `trustedDependencies` that let engine CLI postinstalls run.
  */
 function ensureRecipeCwd(recipe: Recipe): void {
 	if (!recipe.cwd) return;
-	mkdirSync(recipe.cwd, { recursive: true });
-	const pkgJsonPath = join(recipe.cwd, 'package.json');
-	if (!existsSync(pkgJsonPath)) {
-		writeFileSync(
-			pkgJsonPath,
-			JSON.stringify({ name: 'clopen-stack-engines', private: true, version: '0.0.0' }, null, 2) + '\n'
-		);
-	}
+	ensureStackProject(recipe.cwd);
 }
 
 export type SessionStatus = 'running' | 'success' | 'failed' | 'cancelled';
@@ -74,6 +67,8 @@ interface Session {
 
 const sessions = new Map<string, Session>();
 const activeByTool = new Map<ToolId, string>();
+/** Run promise per session, so callers can await an install they didn't start. */
+const runs = new Map<string, Promise<void>>();
 
 function newRingBuffer(): RingBuffer {
 	return { lines: [], total: 0 };
@@ -91,6 +86,7 @@ function scheduleRetention(session: Session): void {
 	if (session.retentionTimer) clearTimeout(session.retentionTimer);
 	session.retentionTimer = setTimeout(() => {
 		sessions.delete(session.id);
+		runs.delete(session.id);
 		if (activeByTool.get(session.tool) === session.id) {
 			activeByTool.delete(session.tool);
 		}
@@ -188,6 +184,11 @@ function finalizeSession(session: Session, preferredStatus: SessionStatus, exitC
 	session.exitCode = exitCode;
 	session.endedAt = Date.now();
 	session.proc = null;
+
+	// An install can replace the binary a previous resolution cached (a user's
+	// own older copy on PATH, or a stub swapped for the real thing at the same
+	// path), so the next lookup must probe again rather than trust the cache.
+	invalidateEngineCliCache(session.tool);
 
 	debug.log('path', `[install:${session.id}] Finished status=${session.status} exit=${exitCode}`);
 
@@ -307,6 +308,14 @@ async function runInstall(session: Session, env: Record<string, string>): Promis
 	finalizeSession(session, exitCode === 0 ? 'success' : 'failed', exitCode);
 }
 
+/**
+ * Owner id for installs clopen starts itself (startup repair), rather than a
+ * user clicking Install. Sessions carry an owner so one admin cannot drive
+ * another's install; system-owned sessions are readable by any admin instead
+ * (see `requireInstallSessionAccess`) so the repair is visible and cancellable.
+ */
+export const SYSTEM_INSTALL_USER = 'system';
+
 export async function startInstall(tool: ToolId, userId: string): Promise<Session> {
 	await refreshProcessPath();
 
@@ -356,13 +365,22 @@ export async function startInstall(tool: ToolId, userId: string): Promise<Sessio
 		startedAt: session.startedAt
 	});
 
-	runInstall(session, env).catch((err) => {
+	runs.set(id, runInstall(session, env).catch((err) => {
 		debug.error('path', `[install:${id}] runner crash:`, err);
 		emitStream(session, 'stderr', `runner crash: ${err instanceof Error ? err.message : String(err)}\n`);
 		finalizeSession(session, 'failed', -1);
-	});
+	}));
 
 	return session;
+}
+
+/**
+ * Resolve once the install has finished (success, failure or cancellation).
+ * Resolves immediately for an unknown or already-collected session, so callers
+ * can await without racing session retention.
+ */
+export function awaitInstall(sessionId: string): Promise<void> {
+	return runs.get(sessionId) ?? Promise.resolve();
 }
 
 export function cancelInstall(sessionId: string): boolean {

@@ -20,6 +20,7 @@ import { getClopenDir } from '$backend/utils/paths';
 import { resolveBinary, resolveBinaryWithRefresh } from '$backend/utils/cli';
 import { resolveStaticCurlAsset } from '$backend/utils/static-curl';
 import { getStackEnginesDir, readEngineSdkVersion, getRequiredSdkVersion } from './sdk-loader';
+import { engineCliInstallArg, getEngineCliSpec, getRequiredEngineCliSpec, resolveEngineCli } from './engine-cli';
 
 export type ToolId = 'git' | 'claude' | 'opencode' | 'copilot' | 'codex' | 'qwen' | 'pi' | 'cline' | 'cursor' | 'chrome';
 
@@ -123,13 +124,23 @@ function isEngineTool(tool: ToolId): boolean {
 	return tool in ENGINE_PACKAGES;
 }
 
-/** `bun add` arg vector for an engine: each package pinned to its package.json version. */
-function engineInstallArgs(tool: ToolId): string[] {
+/**
+ * `bun add` arg vector for an engine: each package pinned to its package.json
+ * version, plus the engine's CLI package when it needs one (see engine-cli.ts).
+ * The CLI is pinned through its SDK's version instead of a package.json entry
+ * of its own — it is a platform binary, not something to put in devDependencies.
+ */
+export function engineInstallArgs(tool: ToolId): string[] {
 	const packages = ENGINE_PACKAGES[tool] ?? [];
-	return packages.map(name => {
+	const args = packages.map(name => {
 		const v = getRequiredSdkVersion(name);
 		return v ? `${name}@${v}` : name;
 	});
+
+	const cli = getEngineCliSpec(tool);
+	const cliArg = cli ? engineCliInstallArg(cli) : null;
+	if (cliArg) args.push(cliArg);
+	return args;
 }
 
 
@@ -269,14 +280,38 @@ export async function getToolStatus(tool: ToolId): Promise<ToolStatus> {
 
 	if (isEngineTool(tool)) {
 		// Engines are detected by the presence of their SDK in the clopen-managed
-		// stack dir (installed on demand there), NOT by a CLI binary on PATH — the
-		// SDK is what the engine adapter actually needs.
+		// stack dir (installed on demand there) — that is what the adapter loads.
 		const sdkPkg = ENGINE_PACKAGES[tool]![0];
-		const version = readEngineSdkVersion(sdkPkg);
+		const sdkVersion = readEngineSdkVersion(sdkPkg);
 		const requiredVersion = getRequiredSdkVersion(sdkPkg);
-		if (!version) return { tool, installed: false, version: null, source: null, requiredVersion, needsUpdate: false };
-		const needsUpdate = requiredVersion !== null && version !== requiredVersion;
-		return { tool, installed: true, version, source: getStackEnginesDir(), requiredVersion, needsUpdate };
+		if (!sdkVersion) return { tool, installed: false, version: null, source: null, requiredVersion, needsUpdate: false };
+		const sdkNeedsUpdate = requiredVersion !== null && sdkVersion !== requiredVersion;
+
+		// Only a CLI the engine cannot run without gates its install state; a CLI
+		// the SDK bundles and locates itself arrives with the engine anyway.
+		const cliSpec = getRequiredEngineCliSpec(tool);
+		if (!cliSpec) {
+			return { tool, installed: true, version: sdkVersion, source: getStackEnginesDir(), requiredVersion, needsUpdate: sdkNeedsUpdate };
+		}
+
+		// Engines that cannot run without an external CLI (Open Code) count as
+		// installed only when a runnable binary exists. Reporting the SDK alone is
+		// what let Stack show "installed" for an engine nothing could spawn.
+		const cli = await resolveEngineCli(tool);
+		if (!cli) return { tool, installed: false, version: null, source: null, requiredVersion, needsUpdate: false };
+
+		// The CLI is the artifact that actually runs, so it decides the reported
+		// version — a user's own older copy on PATH surfaces as "needs update"
+		// instead of hiding behind the pinned SDK version.
+		const cliNeedsUpdate = requiredVersion !== null && cli.version !== null && cli.version !== requiredVersion;
+		return {
+			tool,
+			installed: true,
+			version: cli.version ?? sdkVersion,
+			source: cli.path,
+			requiredVersion,
+			needsUpdate: sdkNeedsUpdate || cliNeedsUpdate
+		};
 	}
 
 	const resolved = await resolveBinaryWithRefresh(tool);
@@ -421,8 +456,9 @@ function attachCurlRequirement(base: Recipe, toolLabel: string): boolean {
  * Engine install recipe — installs the exact engine SDK package(s) declared in
  * package.json (the single source of truth) into the clopen-managed stack dir
  * (`~/.clopen/stack/engines`), NOT the user's global bun store. Installing the
- * SDK also pulls whatever CLI binary the SDK bundles. Versions are pinned,
- * never floated to `latest`.
+ * SDK also pulls whatever CLI binary the SDK bundles, plus — for engines whose
+ * SDK bundles none (Open Code) — the separate package that carries the CLI.
+ * Versions are pinned, never floated to `latest`.
  */
 function resolveEngineRecipe(tool: ToolId): Recipe {
 	const args = engineInstallArgs(tool);

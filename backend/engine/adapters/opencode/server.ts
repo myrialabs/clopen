@@ -28,7 +28,7 @@ import { getOpenCodeMcpConfig } from '../../../mcp';
 import { engineQueries, settingsQueries } from '../../../database/queries';
 import { generateOpenCodeProviderConfig, parseCredentialMap } from './config';
 import type { OpenCodeInlineAgent } from '$backend/subagents';
-import { resolveBinaryWithRefresh } from '$backend/utils/cli';
+import { resolveEngineCli } from '$backend/engine/engine-cli';
 import { loadEngineSdk } from '$backend/engine/sdk-loader';
 import { getEngineUserConfigDir } from '$backend/utils/paths';
 import { debug } from '$shared/utils/logger';
@@ -164,9 +164,18 @@ async function spawnServer(key: string, spec: ServerConfigSpec): Promise<ServerI
 		? configDir
 		: join(configDir, 'pool', Buffer.from(key).toString('base64url'));
 
-	const command = await resolveBinaryWithRefresh('opencode');
-	if (!command) throw new Error('opencode binary not found on PATH');
-	const args = [command, 'serve', `--hostname=${OPENCODE_HOST}`, '--port=0'];
+	// The CLI lives in clopen's managed stack dir (or, failing that, on the
+	// user's PATH); `resolveEngineCli` is the same lookup Settings → Stack
+	// reports, so an engine shown as installed is always one we can spawn.
+	// The literal "Settings → Stack" routes the chat/model-picker error to the
+	// one place that fixes it.
+	const cli = await resolveEngineCli('opencode');
+	if (!cli) {
+		throw new Error(
+			'Open Code is missing its CLI. Open Settings → Stack to install it before using this engine.'
+		);
+	}
+	const args = [cli.path, 'serve', `--hostname=${OPENCODE_HOST}`, '--port=0'];
 
 	// MCP: only inject remote servers whose endpoint is reachable — an unreachable
 	// remote can stall startup. stdio/local servers (no `url`) always survive.

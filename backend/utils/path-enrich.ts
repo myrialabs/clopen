@@ -84,6 +84,8 @@ function windowsKnownDirs(): string[] {
 		join(home, '.bun', 'bin'),
 		join(home, '.deno', 'bin'),
 		join(home, '.cargo', 'bin'),
+		// install-script target (Open Code), the Windows twin of the posix entry
+		join(home, '.opencode', 'bin'),
 		join(home, 'scoop', 'shims'),
 		join(localAppData, 'Microsoft', 'WinGet', 'Links'),
 		join(localAppData, 'Programs', 'Git', 'cmd'),

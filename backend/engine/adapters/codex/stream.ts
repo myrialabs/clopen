@@ -26,7 +26,7 @@ import type { AIEngine, EngineQueryOptions, StructuredGenerationOptions } from '
 import { extractJson } from '../../structured-helpers';
 import { engineQueries } from '$backend/database/queries/engine-queries';
 import { resolveOsPath } from '$backend/utils/paths';
-import { resolveBinary } from '$backend/utils/cli';
+import { resolveEngineCli } from '$backend/engine/engine-cli';
 import { getCleanSpawnEnv } from '$backend/utils/index.js';
 import { getCodexMcpConfig } from '../../../mcp';
 import { artifactFilter } from '$backend/profiles';
@@ -104,7 +104,10 @@ export class CodexEngine implements AIEngine {
 		// option is passed directly; no filesystem mutation.
 		applyAccountAuth(account);
 
-		const codexBinary = resolveBinary('codex');
+		// Prefer the binary clopen manages (vendored in the SDK's platform package
+		// inside the stack dir) over an older copy on the user's PATH — the SDK
+		// would otherwise be pinned while the process it spawns drifts.
+		const codexCli = await resolveEngineCli('codex');
 		const mcpConfig = getCodexMcpConfig(mcpProfileFilter);
 
 		// Codex SDK takes config at construction. We pass `show_raw_agent_reasoning`
@@ -123,7 +126,7 @@ export class CodexEngine implements AIEngine {
 		const { Codex } = await loadEngineSdk<typeof import('@openai/codex-sdk')>('codex', '@openai/codex-sdk');
 		this.codex = new Codex({
 			apiKey: credential.kind === 'api_key' ? credential.apiKey : undefined,
-			...(codexBinary ? { codexPathOverride: codexBinary } : {}),
+			...(codexCli ? { codexPathOverride: codexCli.path } : {}),
 			env: { ...getCleanSpawnEnv(), CODEX_HOME: getCodexHomeDir() },
 			config: {
 				show_raw_agent_reasoning: true,

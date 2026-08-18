@@ -15,15 +15,24 @@
  * `readEngineSdkVersion` compounds it: `loadEngineSdk` only enforces a version
  * match when a required version exists, so an unpinned package also loses the
  * "needs update" check that would otherwise surface the drift in Settings → Stack.
+ *
+ * Engine CLIs (engine-cli.ts) are pinned one step removed — through their SDK's
+ * version, since a platform binary has no business in devDependencies — and
+ * they only work if bun is allowed to run their postinstall. Both of those are
+ * silent failures too: an unpinned CLI floats to @latest, and an untrusted one
+ * installs a stub that fails at the first spawn.
  */
 
 import { describe, expect, test } from 'bun:test';
-import { readFileSync } from 'node:fs';
+import { mkdtempSync, readFileSync, writeFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import type { EngineType } from '$shared/types/unified';
-import { ENGINE_PACKAGES, type ToolId } from './install-recipes';
-import { ENGINE_SDK } from './engine-setup';
+import { ENGINE_PACKAGES, engineInstallArgs, type ToolId } from './install-recipes';
+import { ENGINE_SDK, TOOL_FOR_ENGINE } from './engine-setup';
 import { getRequiredSdkVersion } from './sdk-loader';
+import { ENGINE_CLI, engineCliTrustedPackages, getRequiredCliVersion } from './engine-cli';
+import { ensureStackProject } from './stack-project';
 
 const pkg = JSON.parse(
 	readFileSync(join(import.meta.dir, '..', '..', 'package.json'), 'utf8')
@@ -71,7 +80,7 @@ describe('on-demand engine SDKs', () => {
 		// would probe a package nobody installs — reporting an installed engine as
 		// missing, or worse, waving through one that cannot load. TypeScript only
 		// forces the keys to exist; the values have to be checked.
-		const TOOL_FOR_ENGINE: Record<EngineType, ToolId> = {
+		const expectedToolForEngine: Record<EngineType, ToolId> = {
 			'claude-code': 'claude',
 			opencode: 'opencode',
 			copilot: 'copilot',
@@ -82,7 +91,11 @@ describe('on-demand engine SDKs', () => {
 			cursor: 'cursor',
 		};
 
-		const drift = Object.entries(TOOL_FOR_ENGINE).flatMap(([engine, tool]) => {
+		// The mapping ships in engine-setup (readiness and status both resolve a
+		// tool id through it); this independent copy is what detects a silent edit.
+		expect(TOOL_FOR_ENGINE).toEqual(expectedToolForEngine);
+
+		const drift = Object.entries(expectedToolForEngine).flatMap(([engine, tool]) => {
 			const probed = ENGINE_SDK[engine as EngineType];
 			const installed = ENGINE_PACKAGES[tool]?.[0];
 			if (installed === undefined) return [`${engine}: no install recipe for tool "${tool}"`];
@@ -100,6 +113,87 @@ describe('on-demand engine SDKs', () => {
 		// silently floated again.
 		for (const { name } of enginePackages) {
 			expect(getRequiredSdkVersion(name)).toBe(declared[name]!);
+		}
+	});
+});
+
+describe('on-demand engine CLIs', () => {
+	const cliEntries = Object.entries(ENGINE_CLI).map(([tool, spec]) => ({ tool: tool as ToolId, spec }));
+
+	test('the registry is non-empty', () => {
+		// Open Code is the one engine that needs a CLI; an emptied registry would
+		// make every check below vacuous and re-open the bug it exists to prevent.
+		expect(cliEntries.length).toBeGreaterThan(0);
+	});
+
+	test('every CLI is pinned through a declared, exact SDK version', () => {
+		// A CLI is not in package.json (it is a platform binary weighing hundreds
+		// of megabytes), so its version rides on the SDK it ships with or is
+		// released in lockstep with. If that source is missing or floated, a
+		// separately-installed CLI lands at @latest against a pinned SDK.
+		const unpinned = cliEntries
+			.filter(({ spec }) => !/^\d+\.\d+\.\d+/.test(declared[spec.versionSource] ?? ''))
+			.map(({ tool, spec }) => `${tool}: pins via "${spec.versionSource}" (${declared[spec.versionSource]})`);
+
+		expect(unpinned).toEqual([]);
+
+		for (const { spec } of cliEntries) {
+			expect(getRequiredCliVersion(spec)).toBe(declared[spec.versionSource]!);
+		}
+	});
+
+	test('the installer installs a separate CLI alongside the SDK', () => {
+		// Installing the SDK alone is exactly the half-install that reported
+		// "installed" in Settings → Stack and then failed at the first spawn.
+		// CLIs bundled with their SDK need no extra package and must not add one.
+		for (const { tool, spec } of cliEntries) {
+			const args = engineInstallArgs(tool);
+			if (spec.installPackage) {
+				expect(args).toContain(`${spec.installPackage}@${declared[spec.versionSource]}`);
+			} else {
+				expect(args).toEqual(ENGINE_PACKAGES[tool]!.map(name => `${name}@${declared[name]}`));
+			}
+		}
+	});
+
+	test('only an engine-blocking CLI gates the install state', () => {
+		// `required` decides whether a missing binary makes Settings → Stack report
+		// the engine as not installed. Marking a bundled CLI required would flip a
+		// working engine to "not installed" the moment our own path guess drifts
+		// from the SDK's; leaving Open Code's optional would restore the original
+		// bug, where an unspawnable engine reported itself ready.
+		const required = cliEntries.filter(({ spec }) => spec.required).map(({ tool }) => tool);
+		expect(required).toEqual(['opencode']);
+	});
+
+	test('the managed dir trusts every CLI postinstall', () => {
+		// bun blocks postinstall scripts for untrusted packages, and these CLIs
+		// ship a stub whose postinstall copies the real binary into place.
+		const dir = mkdtempSync(join(tmpdir(), 'clopen-stack-'));
+		ensureStackProject(dir);
+
+		const created = JSON.parse(readFileSync(join(dir, 'package.json'), 'utf8')) as { trustedDependencies?: string[] };
+		expect(created.trustedDependencies).toEqual(engineCliTrustedPackages().sort());
+	});
+
+	test('an older managed dir is upgraded in place', () => {
+		// Machines bootstrapped by earlier builds already have a package.json
+		// without the field; merging (not just creating) is what repairs them.
+		const dir = mkdtempSync(join(tmpdir(), 'clopen-stack-'));
+		writeFileSync(
+			join(dir, 'package.json'),
+			JSON.stringify({ name: 'clopen-stack-engines', private: true, version: '0.0.0', dependencies: { '@opencode-ai/sdk': '1.18.18' } })
+		);
+
+		ensureStackProject(dir);
+
+		const merged = JSON.parse(readFileSync(join(dir, 'package.json'), 'utf8')) as {
+			dependencies?: Record<string, string>;
+			trustedDependencies?: string[];
+		};
+		expect(merged.dependencies).toEqual({ '@opencode-ai/sdk': '1.18.18' });
+		for (const pkg of engineCliTrustedPackages()) {
+			expect(merged.trustedDependencies).toContain(pkg);
 		}
 	});
 });
