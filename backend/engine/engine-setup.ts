@@ -7,14 +7,21 @@
  *   - required account not set up        → Settings → Engines (sign in)
  *
  * SDK readiness is checked first, so a not-installed engine is fixed before an
- * account is asked for. The message text embeds the literal "Settings → Stack" /
- * "Settings → Engines" phrases; the chat error renderer
+ * account is asked for. Engines that also need an external CLI binary (Open
+ * Code) are only ready once that binary resolves too — the SDK alone cannot run
+ * them, and waving them through would send the user off to sign in for an engine
+ * that fails at spawn.
+ *
+ * The message text embeds the literal "Settings → Stack" / "Settings → Engines"
+ * phrases; the chat error renderer
  * (`frontend/components/chat/formatters/ErrorMessage.svelte`) turns those into
  * clickable buttons that open the matching settings section.
  */
 
 import type { EngineType } from '$shared/types/unified';
 import { readEngineSdkVersion, getRequiredSdkVersion } from './sdk-loader';
+import { getRequiredEngineCliSpec, resolveEngineCli } from './engine-cli';
+import type { ToolId } from './install-recipes';
 
 /** Primary SDK package clopen imports for each engine. */
 export const ENGINE_SDK: Record<EngineType, string> = {
@@ -26,6 +33,22 @@ export const ENGINE_SDK: Record<EngineType, string> = {
 	pi: '@earendil-works/pi-coding-agent',
 	cline: '@cline/sdk',
 	cursor: '@cursor/sdk',
+};
+
+/**
+ * Engine identity in the Stack's id space. The two namespaces exist because
+ * Stack also manages non-engine tools (git, chrome) and spells Claude Code
+ * "claude"; `install-recipes.test.ts` guards this mapping against drift.
+ */
+export const TOOL_FOR_ENGINE: Record<EngineType, ToolId> = {
+	'claude-code': 'claude',
+	opencode: 'opencode',
+	copilot: 'copilot',
+	codex: 'codex',
+	qwen: 'qwen',
+	pi: 'pi',
+	cline: 'cline',
+	cursor: 'cursor',
 };
 
 /**
@@ -43,7 +66,7 @@ export interface EngineSetupIssue {
  * Returns null when the engine is ready to stream, or an actionable issue.
  * @param accountId the resolved account id for this request (0 = none selected).
  */
-export function checkEngineSetup(engine: EngineType, accountId: number): EngineSetupIssue | null {
+export async function checkEngineSetup(engine: EngineType, accountId: number): Promise<EngineSetupIssue | null> {
 	const sdkPkg = ENGINE_SDK[engine];
 	const installed = readEngineSdkVersion(sdkPkg);
 	const required = getRequiredSdkVersion(sdkPkg);
@@ -62,6 +85,20 @@ export function checkEngineSetup(engine: EngineType, accountId: number): EngineS
 				`Open Settings → Stack to update it before using this engine.`
 		};
 	}
+
+	// A CLI the engine cannot run without is installed by the same Stack action
+	// as the SDK, so a missing one is the same fix for the user: install the
+	// engine. CLIs the SDK bundles and locates itself are not checked here.
+	const tool = TOOL_FOR_ENGINE[engine];
+	if (getRequiredEngineCliSpec(tool) && !(await resolveEngineCli(tool))) {
+		return {
+			reason: 'not-installed',
+			message:
+				`Engine "${engine}" is missing its CLI. ` +
+				`Open Settings → Stack to install it before using this engine.`
+		};
+	}
+
 	if (!ENGINES_WITHOUT_ACCOUNT.has(engine) && accountId === 0) {
 		return {
 			reason: 'needs-account',

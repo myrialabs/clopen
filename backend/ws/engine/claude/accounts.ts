@@ -19,7 +19,7 @@ import { createRouter } from '$shared/utils/ws-server';
 import { ws } from '$backend/utils/ws';
 import { engineQueries } from '../../../database/queries';
 import { resetEnvironment, getClaudeUserConfigDir } from '../../../engine/adapters/claude/environment';
-import { resolveBinaryWithRefresh } from '../../../utils/cli';
+import { resolveEngineCli } from '$backend/engine/engine-cli';
 import { debug } from '$shared/utils/logger';
 import { getCleanSpawnEnv } from '../../../utils/env';
 import { requireSetupSessionAccess } from '../access';
@@ -209,11 +209,16 @@ export const accountsHandler = createRouter()
 		ptyEnv['CLAUDE_CONFIG_DIR'] = getClaudeUserConfigDir();
 		ptyEnv['BROWSER'] = 'false';
 
-		const claudeCmd = await resolveBinaryWithRefresh('claude');
-		if (!claudeCmd) throw new Error('claude binary not found on PATH');
+		// The CLI ships inside the Claude Agent SDK's platform package in the
+		// managed stack dir, so sign-in must not demand a global install the way
+		// it used to — `resolveEngineCli` prefers that copy and falls back to PATH.
+		const claudeCli = await resolveEngineCli('claude');
+		if (!claudeCli) {
+			throw new Error('Claude Code CLI not found. Open Settings → Stack to install the engine.');
+		}
 		let pty: ReturnType<typeof spawn>;
 		try {
-			pty = spawn(claudeCmd, ['setup-token'], {
+			pty = spawn(claudeCli.path, ['setup-token'], {
 				name: 'xterm-256color',
 				cols: 1000,
 				rows: 30,

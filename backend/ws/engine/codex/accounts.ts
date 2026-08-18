@@ -48,7 +48,7 @@ import {
 	serializeCodexCredential,
 	getCodexHomeDir,
 } from '../../../engine/adapters/codex/credential';
-import { resolveBinaryWithRefresh } from '../../../utils/cli';
+import { resolveEngineCli } from '$backend/engine/engine-cli';
 import { getCleanSpawnEnv } from '../../../utils/env';
 import { debug } from '$shared/utils/logger';
 import { requireSetupSessionAccess } from '../access';
@@ -328,11 +328,14 @@ export const codexAccountsHandler = createRouter()
 		const existing = userSetups.get(userId);
 		if (existing) cleanupSetup(existing);
 
-		const codexCmd = await resolveBinaryWithRefresh('codex');
-		if (!codexCmd) {
+		// The CLI is vendored inside the Codex SDK's platform package in the
+		// managed stack dir; resolving through `resolveEngineCli` means sign-in
+		// works off a Stack install instead of demanding a global one.
+		const codexCli = await resolveEngineCli('codex');
+		if (!codexCli) {
 			ws.emit.user(userId, 'engine:codex-account-setup-error', {
 				setupId,
-				message: 'Codex CLI not found on PATH. Install it via Settings → Stack.'
+				message: 'Codex CLI not found. Install the engine via Settings → Stack.'
 			});
 			return;
 		}
@@ -352,7 +355,7 @@ export const codexAccountsHandler = createRouter()
 
 			let pty: ReturnType<typeof spawn>;
 			try {
-				pty = spawn(codexCmd, args, {
+				pty = spawn(codexCli.path, args, {
 					name: 'xterm-256color',
 					cols: 1000,
 					rows: 30,

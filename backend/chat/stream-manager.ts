@@ -815,7 +815,7 @@ class StreamManager extends EventEmitter {
 			// exact fix (Stack to install/update, Engines to sign in). Thrown here
 			// so the processStream catch surfaces it as a chat error, which the
 			// ErrorMessage renderer turns into a one-click action.
-			const setupIssue = checkEngineSetup(requestEngine.type, requestEngine.account.id);
+			const setupIssue = await checkEngineSetup(requestEngine.type, requestEngine.account.id);
 			if (setupIssue) throw new Error(setupIssue.message);
 
 			// Stream EngineOutput events through the engine adapter

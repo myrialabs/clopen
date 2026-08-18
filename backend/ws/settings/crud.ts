@@ -133,7 +133,7 @@ export const crudHandler = createRouter()
 		// account and has none (→ Engines). Mirrors the chat pre-stream gate so
 		// the model picker reflects the same install/sign-in state as chat.
 		const activeAccount = engineQueries.getActiveAccountForEngine(engineType);
-		const setupIssue = checkEngineSetup(engineType, activeAccount?.id ?? 0);
+		const setupIssue = await checkEngineSetup(engineType, activeAccount?.id ?? 0);
 		if (setupIssue) throw new Error(setupIssue.message);
 
 		// Uniform path for every engine. Each adapter's getAvailableModels()
