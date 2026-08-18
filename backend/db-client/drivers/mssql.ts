@@ -126,6 +126,18 @@ export class MssqlAdapter implements DbClientDriverAdapter {
 		return this.pool;
 	}
 
+	/**
+	 * The database a statement should run in.
+	 *
+	 * Most DDL here is three-part qualified and so needs no context, but the
+	 * statements that cannot be (`sp_rename`, `CREATE VIEW`) must name one —
+	 * falling back to the connection's configured database rather than trusting
+	 * whichever database the pooled connection was last left in.
+	 */
+	private scopeDb(opts?: SchemaOpts): string | undefined {
+		return opts?.database || this.conn?.database || undefined;
+	}
+
 	async health(): Promise<DbClientHealth> {
 		if (!this.pool) return notConnected();
 		const start = performance.now();
@@ -218,9 +230,14 @@ export class MssqlAdapter implements DbClientDriverAdapter {
 	async executeRead(q: string, params: unknown[] = [], opts?: { database?: string; limit?: number }): Promise<DbClientQueryResult> {
 		const pool = this.requirePool();
 		const start = performance.now();
-		const needUse = opts?.database && opts.database.toLowerCase() !== this.conn?.database?.toLowerCase();
+		// Always switch when a database is named — never skip because it matches
+		// the connection's configured one. `USE` is per-connection session state
+		// and the driver hands pooled connections back without resetting it, so a
+		// connection an earlier request left on another database would otherwise
+		// silently serve this one.
+		const database = opts?.database;
 
-		if (needUse && isBatchSensitive(q)) {
+		if (database && isBatchSensitive(q)) {
 			// Batch-sensitive DDL (CREATE PROCEDURE, …) can't share a batch with
 			// `USE`, so run the database switch as a separate request first, wrapped
 			// in a transaction for atomicity.
@@ -228,7 +245,7 @@ export class MssqlAdapter implements DbClientDriverAdapter {
 			await transaction.begin();
 			try {
 				const useRequest = new sql.Request(transaction);
-				await useRequest.query(`USE ${Q(opts!.database as string)}`);
+				await useRequest.query(`USE ${Q(database)}`);
 
 				const request = new sql.Request(transaction);
 				this.bindParams(request, params);
@@ -247,7 +264,7 @@ export class MssqlAdapter implements DbClientDriverAdapter {
 
 		const request = pool.request();
 		this.bindParams(request, params);
-		const finalQuery = needUse ? `USE ${Q(opts!.database as string)};\n${q}` : q;
+		const finalQuery = database ? `USE ${Q(database)};\n${q}` : q;
 		const result = await request.query(finalQuery);
 		return this.buildResult(result, q, Math.round(performance.now() - start));
 	}
@@ -265,15 +282,19 @@ export class MssqlAdapter implements DbClientDriverAdapter {
 		await transaction.begin();
 
 		const txDb = opts?.database;
+		// The transaction owns one connection for its whole lifetime, so the
+		// database it was switched to holds until we switch it again — track it
+		// and skip the redundant `USE` on every statement of a batch.
+		let txCurrentDb: string | null = null;
 
 		try {
 			const txContext: DbClientTxContext = {
 				executeRead: async (q, params, txOpts) => {
 					const db = txOpts?.database || txDb;
-					const needUse = db && db.toLowerCase() !== this.conn?.database?.toLowerCase();
-					if (needUse) {
+					if (db && db !== txCurrentDb) {
 						const useRequest = new sql.Request(transaction);
-						await useRequest.query(`USE ${Q(db as string)}`);
+						await useRequest.query(`USE ${Q(db)}`);
+						txCurrentDb = db;
 					}
 					const request = new sql.Request(transaction);
 					this.bindParams(request, params ?? []);
@@ -295,10 +316,10 @@ export class MssqlAdapter implements DbClientDriverAdapter {
 				},
 				executeWrite: async (q, params, txOpts) => {
 					const db = txOpts?.database || txDb;
-					const needUse = db && db.toLowerCase() !== this.conn?.database?.toLowerCase();
-					if (needUse) {
+					if (db && db !== txCurrentDb) {
 						const useRequest = new sql.Request(transaction);
-						await useRequest.query(`USE ${Q(db as string)}`);
+						await useRequest.query(`USE ${Q(db)}`);
+						txCurrentDb = db;
 					}
 					const request = new sql.Request(transaction);
 					this.bindParams(request, params ?? []);
@@ -347,15 +368,18 @@ export class MssqlAdapter implements DbClientDriverAdapter {
 		`, [db]);
 		const sizeBytes = Number(sizeRes.rows[0]?.size_bytes ?? 0);
 
-		// Tables and views count
+		// Tables and views count. `sys.tables`/`sys.views` are per-database
+		// catalogs, so these have to run against the database being reported on —
+		// otherwise the panel shows the counts of whatever database the pooled
+		// connection happened to sit on (usually `master`).
 		const tablesRes = await this.executeRead(`
 			SELECT COUNT(*) AS tables_count
 			FROM sys.tables
-		`);
+		`, [], { database: db });
 		const viewsRes = await this.executeRead(`
 			SELECT COUNT(*) AS views_count
 			FROM sys.views
-		`);
+		`, [], { database: db });
 
 		return {
 			serverVersion: health.serverVersion,
@@ -561,17 +585,20 @@ export class MssqlAdapter implements DbClientDriverAdapter {
 
 	// ── Structure ─────────────────────────────────────────────────────────
 
+	// Database-level DDL runs from `master`: SQL Server refuses to drop or rename
+	// a database the connection is sitting in, and a pooled connection may well
+	// be sitting in the one being changed.
 	async createDatabase(name: string): Promise<string> {
 		assertSafeIdentifier(name);
 		const ddl = `CREATE DATABASE ${Q(name)}`;
-		await this.executeWrite(ddl);
+		await this.executeWrite(ddl, [], { database: 'master' });
 		return ddl;
 	}
 
 	async dropDatabase(name: string): Promise<string> {
 		assertSafeIdentifier(name);
 		const ddl = `DROP DATABASE ${Q(name)}`;
-		await this.executeWrite(ddl);
+		await this.executeWrite(ddl, [], { database: 'master' });
 		return ddl;
 	}
 
@@ -579,7 +606,7 @@ export class MssqlAdapter implements DbClientDriverAdapter {
 		assertSafeIdentifier(name);
 		assertSafeIdentifier(newName);
 		const ddl = `ALTER DATABASE ${Q(name)} MODIFY NAME = ${Q(newName)}`;
-		await this.executeWrite(ddl);
+		await this.executeWrite(ddl, [], { database: 'master' });
 		return ddl;
 	}
 
@@ -616,7 +643,7 @@ export class MssqlAdapter implements DbClientDriverAdapter {
 		}
 
 		const fullQuery = ddls.join(';\n');
-		await this.executeWrite(fullQuery);
+		await this.executeWrite(fullQuery, [], { database: this.scopeDb(opts) });
 		return fullQuery;
 	}
 
@@ -652,6 +679,9 @@ export class MssqlAdapter implements DbClientDriverAdapter {
 				case 'rename-column':
 					assertSafeIdentifier(op.name);
 					assertSafeIdentifier(op.newName);
+					// sp_rename cannot cross databases — it resolves its argument in
+					// the connection's current database, which is why this batch is
+					// sent with the target database attached below.
 					const objectPath = `${schema}.${name}.${op.name}`;
 					ddls.push(`EXEC sp_rename '${objectPath}', '${op.newName}', 'COLUMN'`);
 					break;
@@ -666,7 +696,7 @@ export class MssqlAdapter implements DbClientDriverAdapter {
 		}
 
 		const fullQuery = ddls.join(';\n');
-		await this.executeWrite(fullQuery);
+		await this.executeWrite(fullQuery, [], { database: this.scopeDb(opts) });
 		return fullQuery;
 	}
 
@@ -694,8 +724,10 @@ export class MssqlAdapter implements DbClientDriverAdapter {
 		assertSafeIdentifier(newName);
 		const schema = opts?.schema || 'dbo';
 		const objectPath = `${schema}.${name}`;
+		// sp_rename takes a two-part name and resolves it in the current database,
+		// so the target database has to be selected for the statement.
 		const ddl = `EXEC sp_rename '${objectPath}', '${newName}'`;
-		await this.executeWrite(ddl);
+		await this.executeWrite(ddl, [], { database: this.scopeDb(opts) });
 		return ddl;
 	}
 
@@ -753,9 +785,12 @@ export class MssqlAdapter implements DbClientDriverAdapter {
 
 	async createView(name: string, query: string, opts?: SchemaOpts): Promise<string> {
 		assertSafeIdentifier(name);
-		const fqt = qualified(Q, [opts?.database, opts?.schema || 'dbo', name]);
+		// T-SQL rejects a database prefix on CREATE VIEW, and the statement must be
+		// alone in its batch — name it two-part and let the batch-sensitive path
+		// select the database in a separate request.
+		const fqt = qualified(Q, [opts?.schema || 'dbo', name]);
 		const ddl = `CREATE VIEW ${fqt} AS ${query}`;
-		await this.executeWrite(ddl);
+		await this.executeWrite(ddl, [], { database: this.scopeDb(opts) });
 		return ddl;
 	}
 
