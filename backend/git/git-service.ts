@@ -36,7 +36,7 @@ import {
 	assertSafeGitRevish,
 	assertSafeGitShowRef
 } from './git-spawn-validation';
-import { findNestedRepoPaths, findSubmodulePaths } from '../snapshot/gitignore';
+import { findNestedRepoPaths, findSubmodulePaths } from './nested-repos';
 import path from 'node:path';
 
 export class GitService {

@@ -13,14 +13,30 @@ export interface GitExecResult {
 	exitCode: number;
 }
 
+export interface GitExecOptions {
+	/** Milliseconds before the process is killed. */
+	timeout?: number;
+	/** Piped to the command's stdin (e.g. `check-ignore --stdin` path lists). */
+	stdin?: string;
+	/**
+	 * Exit codes that are a normal answer rather than a failure, so they are
+	 * not logged as one — `check-ignore` exits 1 to say "nothing matched".
+	 */
+	okExitCodes?: number[];
+}
+
 /**
- * Execute a git command in the given working directory
+ * Execute a git command in the given working directory.
+ * The third argument accepts a timeout in ms (legacy form) or an options object.
  */
 export async function execGit(
 	args: string[],
 	cwd: string,
-	timeout = 30000
+	timeoutOrOptions: number | GitExecOptions = 30000
 ): Promise<GitExecResult> {
+	const options: GitExecOptions =
+		typeof timeoutOrOptions === 'number' ? { timeout: timeoutOrOptions } : timeoutOrOptions;
+	const { timeout = 30000, stdin, okExitCodes = [] } = options;
 	debug.log('git', `Executing: git ${args.join(' ')} in ${cwd}`);
 
 	const gitPath = resolveBinary('git');
@@ -29,6 +45,9 @@ export async function execGit(
 	const safeCwd = cwd.replace(/\\/g, '/');
 	const proc = Bun.spawn([gitPath, '-c', `safe.directory=${safeCwd}`, ...args], {
 		cwd,
+		// Commands that read a path list (`check-ignore --stdin`) get it here —
+		// far safer than argv, which has a length limit and quoting pitfalls.
+		stdin: stdin === undefined ? 'ignore' : new TextEncoder().encode(stdin),
 		stdout: 'pipe',
 		stderr: 'pipe',
 		env: {
@@ -63,7 +82,7 @@ export async function execGit(
 		const exitCode = await proc.exited;
 		clearTimeout(timeoutId);
 
-		if (exitCode !== 0) {
+		if (exitCode !== 0 && !okExitCodes.includes(exitCode)) {
 			debug.warn('git', `Command failed (exit ${exitCode}): git ${args.join(' ')}\n${stderr}`);
 		}
 

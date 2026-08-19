@@ -6,7 +6,7 @@ import { t } from 'elysia';
 import path from 'node:path';
 import { createRouter } from '$shared/utils/ws-server';
 import { gitService } from '../../git/git-service';
-import { findRepoForFile } from '../../snapshot/gitignore';
+import { findRepoForFile } from '../../git/nested-repos';
 import { requireProjectAccess } from '../access';
 import { debug } from '$shared/utils/logger';
 
