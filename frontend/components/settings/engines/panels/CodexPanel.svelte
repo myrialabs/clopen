@@ -53,7 +53,7 @@
 	let codexUrlCopied = $state(false);
 	let codexCodeCopied = $state(false);
 
-	// Codex rename / delete / restart
+	// Codex rename / delete
 	let codexRenamingId = $state<number | null>(null);
 	let codexRenameValue = $state('');
 	let codexRenameApiKey = $state('');
@@ -61,7 +61,6 @@
 	let codexReauthAccountId = $state<number | null>(null);
 	let codexDeleteDialogOpen = $state(false);
 	let codexDeleteTargetId = $state<number | null>(null);
-	let codexRestarting = $state(false);
 
 	// Debug stream (xterm.js) — Codex
 	// `showCodexDebug` is intentionally hardcoded — flip to `true` in source
@@ -307,20 +306,6 @@
 		startCodexChatGptLogin();
 	}
 
-	async function handleCodexRestart() {
-		codexRestarting = true;
-		try {
-			await ws.http('engine:codex-restart', {});
-			await modelStore.refreshModels('codex');
-			await refreshCodexStatus();
-			showSuccess('Codex Restarted', 'Codex engine restarted. Models refreshed.');
-		} catch {
-			// Ignore
-		} finally {
-			codexRestarting = false;
-		}
-	}
-
 	function openStackSection() {
 		setActiveSection('stack');
 	}
@@ -338,21 +323,6 @@
 				<h3 class="font-semibold text-slate-900 dark:text-slate-100">{codexEngine.name}</h3>
 				<p class="text-xs text-slate-500 dark:text-slate-400">{codexEngine.description}</p>
 			</div>
-		</div>
-		<div class="flex items-center gap-2">
-			{#if codexStatus?.installed && codexStatus?.activeAccount}
-				<button
-					type="button"
-					class="flex items-center gap-1.5 px-3 py-1.5 text-xs font-medium rounded-lg transition-colors
-						text-amber-600 dark:text-amber-400 bg-amber-50 dark:bg-amber-900/20 border border-amber-200 dark:border-amber-700/50
-						hover:bg-amber-100 dark:hover:bg-amber-900/30 disabled:opacity-50 disabled:cursor-not-allowed"
-					onclick={handleCodexRestart}
-					disabled={codexRestarting}
-				>
-					<Icon name={codexRestarting ? 'lucide:loader' : 'lucide:rotate-cw'} class="w-3.5 h-3.5 {codexRestarting ? 'animate-spin' : ''}" />
-					{codexRestarting ? 'Restarting...' : 'Restart Server'}
-				</button>
-			{/if}
 		</div>
 	</div>
 

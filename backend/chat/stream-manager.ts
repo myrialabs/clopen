@@ -33,7 +33,7 @@ import type {
 } from '$shared/types/unified';
 import type { EngineType } from '$shared/types/unified';
 import type { DatabaseMessage } from '$shared/types/database/schema';
-import { findProjectEngine, initializeProjectEngine } from '../engine';
+import { initializeProjectEngine, type AIEngine } from '../engine';
 import { messageQueries, projectQueries, sessionQueries } from '../database/queries';
 import { snapshotService } from '../snapshot/snapshot-service';
 import { snapshotQueries } from '../database/queries/snapshot-queries';
@@ -71,6 +71,17 @@ export interface StreamState {
 	error?: string;
 	abortController?: AbortController;
 	streamPromise?: Promise<void>;
+	/**
+	 * The engine instance actually running this stream.
+	 *
+	 * Pinned rather than looked up by (projectId, engineType), because the cache
+	 * behind that lookup is now replaced whenever engine config changes. Looking
+	 * it up again would hand back the REPLACEMENT: an instance with no query to
+	 * cancel and no pending question to answer, so Stop would do nothing and an
+	 * AskUserQuestion answer would go nowhere — and only for users unlucky enough
+	 * to have changed a setting while a chat was running.
+	 */
+	engineInstance?: AIEngine;
 	sdkSessionId?: string;
 	preStreamSessionId?: string | null;
 	hasCompactBoundary?: boolean;
@@ -661,6 +672,7 @@ class StreamManager extends EventEmitter {
 			if (chatSessionId) deferEpisodicIngest(chatSessionId);
 
 			const engine = await initializeProjectEngine(projectId, requestEngine.type);
+			streamState.engineInstance = engine;
 
 			if ((streamState.status as string) === 'cancelled' || streamState.abortController?.signal.aborted) {
 				debug.log('chat', 'Stream cancelled during engine initialization, skipping query');
@@ -1391,10 +1403,10 @@ class StreamManager extends EventEmitter {
 			return false;
 		}
 
-		// The stream is live, so its engine already exists. Look it up rather than
-		// creating one — a fresh instance holds no pending question to answer.
-		const pid = streamState.projectId || 'default';
-		const engine = findProjectEngine(pid, streamState.engine);
+		// The stream is live, so it is holding the engine that owns the pending
+		// question. Use that one — a replacement instance holds no question to
+		// answer, and a fresh one would not even be the same process.
+		const engine = streamState.engineInstance;
 
 		if (!engine?.resolveUserAnswer) {
 			debug.warn('chat', 'resolveUserAnswer: Engine does not support resolveUserAnswer');
@@ -1528,9 +1540,8 @@ class StreamManager extends EventEmitter {
 		// OpenCode: aborts controller + HTTP abort to server). If cancel() hangs
 		// (e.g. unresponsive SDK), the timeout ensures we always proceed to emit
 		// events and update presence — preventing infinite loader on the frontend.
-		const projectId = streamState.projectId || 'default';
 		try {
-			const engine = findProjectEngine(projectId, streamState.engine);
+			const engine = streamState.engineInstance;
 			if (engine?.isActive) {
 				await Promise.race([
 					engine.cancel(),

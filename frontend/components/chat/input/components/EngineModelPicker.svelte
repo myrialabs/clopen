@@ -328,28 +328,14 @@
 		showOCAccountDropdown = false;
 	}
 
-	let ocNeedsRestart = $state(false);
-	let ocRestarting = $state(false);
-
 	async function selectOCAccount(account: OpenCodeAccountItem) {
+		// The switch is all there is to do: the backend notices the account change
+		// and has the next turn talk to a server built with the new credential,
+		// while any turn already running finishes on the old one.
 		await opencodeProvidersStore.switchAccount(account.id);
 		chatModelState.accountId = account.id;
 		chatModelState.accountName = account.name;
-		ocNeedsRestart = true;
 		closeOCAccountDropdown();
-	}
-
-	async function restartOCServer() {
-		ocRestarting = true;
-		try {
-			await opencodeProvidersStore.restartServer(true);
-			await modelStore.refreshModels('opencode');
-			ocNeedsRestart = false;
-		} catch {
-			// Ignore
-		} finally {
-			ocRestarting = false;
-		}
 	}
 
 	// ════════════════════════════════════════════
@@ -837,22 +823,6 @@
 			<Icon name="lucide:key" class="w-3.5 h-3.5" />
 			<span class="font-medium max-w-24 truncate">{currentOCAccount?.name || 'Account'}</span>
 			<Icon name="lucide:chevron-down" class="w-3 h-3" />
-		</button>
-	{/if}
-
-	<!-- OpenCode restart notification after account switch -->
-	{#if ocNeedsRestart}
-		<button
-			type="button"
-			class="flex items-center gap-1.5 px-2 py-1 text-xs rounded-lg transition-all duration-150
-				bg-amber-50 dark:bg-amber-900/20 text-amber-600 dark:text-amber-400
-				border border-amber-200 dark:border-amber-700/50
-				hover:bg-amber-100 dark:hover:bg-amber-900/30 disabled:opacity-50 disabled:cursor-not-allowed"
-			onclick={restartOCServer}
-			disabled={ocRestarting}
-		>
-			<Icon name={ocRestarting ? 'lucide:loader' : 'lucide:rotate-cw'} class="w-3.5 h-3.5 {ocRestarting ? 'animate-spin' : ''}" />
-			<span class="font-medium">{ocRestarting ? 'Restarting...' : 'Restart Server'}</span>
 		</button>
 	{/if}
 

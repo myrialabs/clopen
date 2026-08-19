@@ -121,14 +121,4 @@ export const copilotAccountsHandler = createRouter()
 		const active = engineQueries.getActiveAccountForEngine('copilot');
 		if (active?.id === data.id) await disposeCopilotEngines();
 		return { success: true };
-	})
-
-	// Restart all Copilot engine instances. Use after changing the active token
-	// so subsequent models:list / chat calls re-initialise with fresh credentials.
-	.http('engine:copilot-restart', {
-		data: t.Object({}),
-		response: t.Object({ success: t.Boolean() })
-	}, async () => {
-		await disposeCopilotEngines();
-		return { success: true };
 	});

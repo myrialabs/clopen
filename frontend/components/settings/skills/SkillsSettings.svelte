@@ -117,7 +117,6 @@
 			};
 			if (editorMode === 'create') await skillsStore.create(payload);
 			else if (editorId != null) await skillsStore.update(editorId, payload);
-			skillsStore.hasPendingChanges = true;
 			closeEditor();
 			activeTab = 'installed';
 		} catch (error) {
@@ -165,7 +164,6 @@
 		importError = null;
 		try {
 			await skillsStore.import(importText);
-			skillsStore.hasPendingChanges = true;
 			closeImport();
 			activeTab = 'installed';
 		} catch (error) {
@@ -197,7 +195,6 @@
 		deleting = true;
 		try {
 			await skillsStore.remove(deleteTarget.id);
-			skillsStore.hasPendingChanges = true;
 			deleteTarget = null;
 		} catch (error) {
 			debug.error('settings', 'delete skill failed', error);
@@ -211,7 +208,6 @@
 		busyId = skill.id;
 		try {
 			await skillsStore.toggle(skill.id, !skill.enabled);
-			skillsStore.hasPendingChanges = true;
 		} catch (error) {
 			debug.error('settings', 'toggle skill failed', error);
 		} finally {
@@ -271,7 +267,6 @@
 				license: inLicense.trim() || null,
 				body: inBody
 			});
-			skillsStore.hasPendingChanges = true;
 			closeInstall();
 		} catch (error) {
 			debug.error('settings', 'install skill failed', error);

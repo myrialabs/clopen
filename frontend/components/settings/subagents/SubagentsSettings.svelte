@@ -107,7 +107,6 @@
 			};
 			if (editorMode === 'create') await subagentsStore.create(payload);
 			else if (editorId != null) await subagentsStore.update(editorId, payload);
-			subagentsStore.hasPendingChanges = true;
 			closeEditor();
 		} catch (error) {
 			editorError = error instanceof Error ? error.message : 'Save failed';
@@ -138,7 +137,6 @@
 		importError = null;
 		try {
 			await subagentsStore.import(importText);
-			subagentsStore.hasPendingChanges = true;
 			closeImport();
 		} catch (error) {
 			importError = error instanceof Error ? error.message : 'Import failed';
@@ -166,7 +164,6 @@
 		deleting = true;
 		try {
 			await subagentsStore.remove(deleteTarget.id);
-			subagentsStore.hasPendingChanges = true;
 			deleteTarget = null;
 		} catch (error) {
 			debug.error('settings', 'delete subagent failed', error);
@@ -179,7 +176,6 @@
 		busyId = subagent.id;
 		try {
 			await subagentsStore.toggle(subagent.id, !subagent.enabled);
-			subagentsStore.hasPendingChanges = true;
 		} catch (error) {
 			debug.error('settings', 'toggle subagent failed', error);
 		} finally {

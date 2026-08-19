@@ -20,12 +20,9 @@ export interface InstructionData {
 }
 
 let global = $state<InstructionData | null>(null);
-let hasPendingChanges = $state(false);
 
 export const instructionsStore = {
 	get global() { return global; },
-	get hasPendingChanges() { return hasPendingChanges; },
-	set hasPendingChanges(v: boolean) { hasPendingChanges = v; },
 
 	async fetchGlobal(): Promise<InstructionData | null> {
 		try {
@@ -41,7 +38,6 @@ export const instructionsStore = {
 	async saveGlobal(content: string, enabled: boolean): Promise<void> {
 		const result = await ws.http('instructions:save-global', { content, enabled });
 		global = result.instruction;
-		hasPendingChanges = true;
 	},
 
 	async fetchProject(projectId: string): Promise<InstructionData | null> {
@@ -56,7 +52,6 @@ export const instructionsStore = {
 
 	async saveProject(projectId: string, content: string, enabled: boolean): Promise<InstructionData> {
 		const result = await ws.http('instructions:save-project', { projectId, content, enabled });
-		hasPendingChanges = true;
 		return result.instruction;
 	},
 

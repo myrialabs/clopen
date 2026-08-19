@@ -3,11 +3,9 @@
 	import { authStore } from '$frontend/stores/features/auth.svelte';
 	import { themeStore, toggleDarkMode, initializeTheme } from '$frontend/stores/ui/theme.svelte';
 	import { settings, updateSettings, applyFontSize } from '$frontend/stores/features/settings.svelte';
-	import { opencodeProvidersStore } from '$frontend/stores/features/opencode-providers.svelte';
 	import Icon from '$frontend/components/common/display/Icon.svelte';
 	import StackSettings from '$frontend/components/settings/stack/StackSettings.svelte';
 	import AIEnginesSettings from '$frontend/components/settings/engines/AIEnginesSettings.svelte';
-	import ws from '$frontend/utils/ws';
 	import type { AuthMode } from '$shared/types/stores/settings';
 	import type { IconName } from '$shared/types/ui/icons';
 
@@ -88,14 +86,8 @@
 		finishError = '';
 		finishLoading = true;
 		try {
-			try {
-				const status = await ws.http('engine:opencode-status', {}).catch(() => null);
-				if (status?.installed) {
-					await opencodeProvidersStore.restartServer(true);
-				}
-			} catch {
-				// Ignore — best effort restart
-			}
+			// Nothing to prime here: whatever the wizard configured is already the
+			// current config, and the backend brings engines up against it on its own.
 			// Only leaves the wizard once the server confirms setup is recorded;
 			// otherwise the next refresh would land right back here.
 			await authStore.completeSetup();

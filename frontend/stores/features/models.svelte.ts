@@ -113,3 +113,28 @@ export const modelStore = {
 		errors = new Map();
 	}
 };
+
+/**
+ * Keep the catalog in step with engine config, without anyone asking.
+ *
+ * Adding a provider or switching an account changes which models exist, and the
+ * backend applies that on its own now — so the only thing left for the client to
+ * do is stop showing the old answer. This used to ride on the "Restart Server"
+ * button's success path, which meant the picker was only correct for users who
+ * pressed it.
+ *
+ * Refetches only what has already been fetched: an engine nobody has opened yet
+ * has no stale list to correct, and pulling its catalog here would spend a
+ * round-trip per engine on every settings edit.
+ */
+ws.on('engine:config-changed', () => {
+	const engines = [...fetchedEngines];
+	if (engines.length === 0) return;
+	debug.log('settings', `Engine config changed — refreshing models for ${engines.join(', ')}`);
+	for (const engine of engines) {
+		void modelStore.refreshModels(engine).catch(() => {
+			// A refresh that fails leaves the previous list in place and records the
+			// error through the normal path; nothing extra to do here.
+		});
+	}
+});

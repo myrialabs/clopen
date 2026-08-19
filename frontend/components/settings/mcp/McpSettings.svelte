@@ -183,7 +183,6 @@
 		busyId = server.id;
 		try {
 			await mcpServersStore.toggle(server.id, !server.enabled);
-			mcpServersStore.hasPendingChanges = true;
 		} catch (error) {
 			debug.error('settings', 'toggle MCP failed', error);
 		} finally {
@@ -196,7 +195,6 @@
 		deleting = true;
 		try {
 			await mcpServersStore.uninstall(deleteTarget.id);
-			mcpServersStore.hasPendingChanges = true;
 			deleteTarget = null;
 		} catch (error) {
 			debug.error('settings', 'uninstall MCP failed', error);
@@ -388,7 +386,6 @@
 				configSchema: cfgFields,
 				source: 'custom'
 			});
-			mcpServersStore.hasPendingChanges = true;
 			closeManual();
 			activeTab = 'installed';
 		} catch (error) {
@@ -456,7 +453,6 @@
 				configSchema: cfgFields,
 				source: 'registry'
 			});
-			mcpServersStore.hasPendingChanges = true;
 			closeInstall();
 		} catch (error) {
 			installError = error instanceof Error ? error.message : 'Install failed';
@@ -504,7 +500,6 @@
 			const command = isStdio ? cfgCommand.trim() : undefined;
 			const args = isStdio ? cfgArgsText.split('\n').map(a => a.trim()).filter(Boolean) : undefined;
 			await mcpServersStore.updateConfig(server.id, env, headers, command, args);
-			mcpServersStore.hasPendingChanges = true;
 			const id = server.id;
 			closeConfig();
 			// Auto re-probe so the new status reflects whatever was edited, without
