@@ -81,13 +81,25 @@ export interface AIEngine {
 	 */
 	streamQuery(options: EngineQueryOptions): AsyncGenerator<EngineOutput, void, unknown>;
 
-	/** Cancel the active query */
-	cancel(): Promise<void>;
+	/**
+	 * Cancel ONE run — the stream whose AbortController is `owner`.
+	 *
+	 * One engine instance is shared by every chat session of a project, so it can
+	 * be streaming several chats at once. `owner` is the controller that stream
+	 * passed to `streamQuery`, and the same object `StreamState.abortController`
+	 * holds — the handle both sides already agree on. Adapters must stop that run
+	 * alone and leave the others streaming.
+	 *
+	 * The parameter is deliberately required: there is no "cancel whatever you
+	 * are doing" for callers. Stopping every run is `dispose()`'s job, and only
+	 * shutdown and engine retirement get to ask for it.
+	 */
+	cancel(owner: AbortController): Promise<void>;
 
-	/** Interrupt the active query (soft stop) */
-	interrupt(): Promise<void>;
+	/** Interrupt one run (soft stop). Targeted like `cancel`. */
+	interrupt(owner: AbortController): Promise<void>;
 
-	/** Check if a query is currently active */
+	/** True while at least ONE run is in flight — not just the most recent one. */
 	readonly isActive: boolean;
 
 	/** Return the list of models this engine supports */

@@ -66,6 +66,22 @@ stays **agnostic** to the underlying SDK.
 > capture the SDK's real runtime shapes with a throwaway script rather than
 > trusting its `.d.ts`.
 
+> **One instance, many streams.** `getProjectEngine` hands the same adapter
+> instance to every chat session of a project, and Clopen lets those sessions
+> stream at the same time. So per-stream state — abort controller, SDK query or
+> session, session id, pooled server, parked questions — belongs to a **run**,
+> held in the adapter's `EngineRuns` registry
+> ([`adapters/run-registry.ts`](./adapters/run-registry.ts)), never in an
+> instance field. `cancel(owner)` and `interrupt(owner)` take the run to stop
+> and the parameter is required; stopping everything is `dispose()`'s job.
+> Storing a stream's handles on the instance is not a style question — it made
+> Stop in one chat abort another chat of the same project, made `isActive`
+> report idle while a stream was still running (so engine retirement disposed it
+> mid-answer), and leaked a pooled OpenCode server hold per overwritten stream.
+> Read **§10.26** in [lessons-learned](./docs/lessons-learned.md) and invariant 2
+> in [adapter-contract](./docs/adapter-contract.md) before adding state to an
+> adapter class.
+
 > **Background parent tools are a streaming category of their own.** `Agent`
 > receives nested activity from the SDK stream, while Claude's `Workflow`
 > writes agent transcripts to JSONL files outside that stream. Both must obey

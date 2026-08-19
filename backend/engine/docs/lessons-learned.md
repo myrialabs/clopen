@@ -1508,3 +1508,73 @@ The mechanical part of an upgrade is cheap; budget the time for the union
 diffs. `/tmp`-installing the old and new versions side by side and diffing the
 `type: "…"` literals in each SDK's event declarations found every item above in
 minutes.
+
+---
+
+### 10.26 One engine instance, many chats — per-stream state cannot live on it
+
+A user with two chats streaming in one project pressed **Stop** in one of them.
+Both stopped.
+
+`getProjectEngine(projectId, type)` returns one instance per project, and the
+adapters read that as "one stream at a time". Every one of the eight kept the
+running stream's handles in instance fields:
+
+```ts
+private activeController: AbortController | null = null;
+private activeQuery: Query | null = null;          // opencode: activeSessionId,
+                                                   // activeServer, activeHolder
+```
+
+Clopen's stream-manager has always allowed concurrent streams — one per
+`(project, chat session)`, not one per project. So the second chat to start
+overwrote the first chat's handles, and `cancel()` operated on whatever was in
+the fields:
+
+- **Stop hit the wrong chat.** With chats A and B streaming, cancelling A ran
+  `client.session.abort(activeSessionId)` — B's id. Both died. Before a
+  frontend fix that made Stop target the *viewed* session, the mis-target on
+  each side cancelled out and the bug read as "Stop needs two presses".
+- **`isActive` lied.** The first stream's `finally` nulled the shared fields,
+  so the instance reported idle while the second was still running. Engine
+  retirement (§10.14's successor: evict now, dispose once idle) took that at
+  face value and disposed the engine mid-answer — the exact bug retirement was
+  built to prevent.
+- **Resources leaked.** OpenCode's `activeHolder` is the pool hold that keeps a
+  per-Profile server from being reaped. The second stream overwrote it, so the
+  first stream's hold was never released and that server was pinned forever.
+- **Replies went to the wrong server.** Two chats on different Profiles sit on
+  different pooled servers; permission and question replies read
+  `this.activeServer`, so one chat's approval was POSTed into the other's
+  server and its own tool call sat waiting.
+
+The fix is structural, not a guard: per-stream state moved into an
+`EngineRuns<XxxRun>` registry ([`adapters/run-registry.ts`](../adapters/run-registry.ts))
+keyed by the AbortController the caller passed to `streamQuery` — the same
+object `StreamState.abortController` holds, so the stream-manager and the
+adapter already agree on it without minting an id. `isActive` counts runs, the
+stream's `finally` retires only its own, and each adapter implements teardown
+once in `stopRuns(targets)`.
+
+Three details worth keeping:
+
+- **`cancel(owner)` takes a required parameter.** An optional one invites
+  `cancel()` at a call site that has a specific stream in mind, which is the
+  original bug with a nicer signature. Stopping every run is `dispose()`'s job.
+- **An owner that has already finished cancels nothing.** The tempting fallback
+  — "not found, so stop what's left" — reproduces the bug exactly: the runs that
+  are left belong to other chats. This is the case `run-registry.test.ts` pins.
+- **Release shared resources after the RPC, not before.** OpenCode's hold is
+  handed back only once `session.abort()` has returned; releasing first can let
+  the server be reaped out from under that very call.
+
+One boundary this does **not** cover: `isActive` counts streaming runs, so a
+`generateStructured` call in flight still reads as idle. Those run on the global
+singleton tier (`initializeEngine`), not the per-project one, so they are a
+separate problem — but if a future engine routes one-shot generation through a
+project engine, it has to register a run like everything else.
+
+What made this survive so long is that the contract doc *taught* it: invariant 2
+used to read "Streaming state lives on the instance … automatically isolated
+per-project". It was true about projects and silently wrong about chat sessions.
+When an invariant is scoped, write down what it does **not** cover.

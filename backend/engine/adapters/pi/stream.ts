@@ -39,6 +39,7 @@ import { syncEngineArtifacts } from '$backend/engine/artifact-sync';
 import { artifactFilter } from '$backend/profiles';
 import { resolvePermissionsFromDb, isToolAllowed } from '$backend/permissions';
 import { buildJsonPrompt, extractJson } from '../../structured-helpers';
+import { EngineRuns } from '../run-registry';
 import { DbCredentialStore, getPiAccountForProvider, parsePiCredential } from './credential';
 import { createPiRuntime } from './presets';
 import { getPiAgentDir } from './environment';
@@ -88,15 +89,27 @@ class EventQueue<T> {
 	}
 }
 
+/**
+ * One stream in flight on this instance. This engine instance is shared by every
+ * chat session of a project, so the Pi session belongs here, not in an instance
+ * field — a field would hold only the most recently started stream, and
+ * cancelling any chat would then abort another chat's session.
+ */
+interface PiRun {
+	/** Identity of the run — the controller the caller passed to streamQuery. */
+	controller: AbortController;
+	session: AgentSession | null;
+}
+
 export class PiEngine implements AIEngine {
 	readonly name = 'pi' as const;
 	private _isInitialized = false;
-	private activeController: AbortController | null = null;
-	private activeSession: AgentSession | null = null;
-	private pendingAsks = new Map<string, PendingAsk>();
+	private runs = new EngineRuns<PiRun>();
+	/** Parked AskUserQuestion callbacks → the run that asked. */
+	private pendingAsks = new Map<string, PendingAsk & { owner: PiRun }>();
 
 	get isInitialized(): boolean { return this._isInitialized; }
-	get isActive(): boolean { return this.activeController !== null; }
+	get isActive(): boolean { return this.runs.isActive; }
 
 	async initialize(): Promise<void> {
 		if (this._isInitialized) return;
@@ -105,7 +118,8 @@ export class PiEngine implements AIEngine {
 	}
 
 	async dispose(): Promise<void> {
-		await this.cancel();
+		// Shutdown/retirement: every run on this instance goes.
+		await this.stopRuns(this.runs.all());
 		this.pendingAsks.clear();
 		this._isInitialized = false;
 	}
@@ -139,7 +153,9 @@ export class PiEngine implements AIEngine {
 			throw new Error(`Pi could not resolve model "${modelId}" for provider "${provider}".`);
 		}
 
-		this.activeController = abortController || new AbortController();
+		const controller = abortController || new AbortController();
+		const run: PiRun = { controller, session: null };
+		this.runs.add(run);
 		const resolvedProjectPath = resolveOsPath(projectPath);
 		const agentDir = getPiAgentDir();
 
@@ -168,7 +184,7 @@ export class PiEngine implements AIEngine {
 		// ── Tools: builtins (permission-filtered) + AskUserQuestion + MCP bridge + subagents ──
 		const allowedBuiltins = PI_BUILTIN_TOOLS.filter((name) => isToolAllowed(permissions, name));
 		const askTool = createAskUserQuestionTool({
-			register: (id, entry) => this.pendingAsks.set(id, entry),
+			register: (id, entry) => this.pendingAsks.set(id, { ...entry, owner: run }),
 			unregister: (id) => this.pendingAsks.delete(id),
 		});
 		const mcpTools = await buildPiMcpTools(options.mcpContext, mcpProfileFilter);
@@ -272,7 +288,7 @@ export class PiEngine implements AIEngine {
 			sessionManager,
 			settingsManager: SettingsManager.inMemory({ retry: PI_RETRY }),
 		});
-		this.activeSession = session;
+		run.session = session;
 
 		const engineMeta: MessageEngine = {
 			type: 'pi',
@@ -295,7 +311,7 @@ export class PiEngine implements AIEngine {
 
 		// Abort wiring: cancelling the stream aborts the Pi session.
 		const onAbort = () => { void session.abort(); };
-		this.activeController.signal.addEventListener('abort', onAbort, { once: true });
+		controller.signal.addEventListener('abort', onAbort, { once: true });
 
 		// Prompt text + image attachments.
 		const promptText = prompt.content.filter((b) => b.type === 'text').map((b) => b.text).join('\n');
@@ -340,30 +356,53 @@ export class PiEngine implements AIEngine {
 		} catch (error) {
 			handleStreamError(error);
 		} finally {
-			this.activeController?.signal.removeEventListener('abort', onAbort);
+			controller.signal.removeEventListener('abort', onAbort);
 			unsubscribe();
 			try { session.dispose(); } catch { /* already disposed */ }
-			this.activeSession = null;
-			this.activeController = null;
-			this.pendingAsks.clear();
+			// Retire THIS run only — another chat session of the same project may
+			// still be streaming on this instance.
+			this.forgetRun(run);
 		}
 	}
 
-	async cancel(): Promise<void> {
-		if (this.activeController && !this.activeController.signal.aborted) {
-			this.activeController.abort();
+	/** Drop a finished run and the asks only it could answer. */
+	private forgetRun(run: PiRun): void {
+		this.runs.remove(run);
+		for (const [id, pending] of this.pendingAsks) {
+			if (pending.owner === run) this.pendingAsks.delete(id);
 		}
-		if (this.activeSession) {
-			try { await this.activeSession.abort(); } catch { /* may already be idle */ }
-		}
-		this.pendingAsks.clear();
-		this.activeSession = null;
-		this.activeController = null;
+		run.session = null;
 	}
 
-	async interrupt(): Promise<void> {
-		if (this.activeSession) {
-			try { await this.activeSession.abort(); } catch { /* ignore */ }
+	/**
+	 * Cancel the run whose AbortController is `owner`, and only that run.
+	 */
+	async cancel(owner: AbortController): Promise<void> {
+		await this.stopRuns(this.runs.select(owner));
+	}
+
+	/**
+	 * Tear down the given runs. `cancel` passes the one run it was asked to
+	 * stop; `dispose` passes them all. Nothing else may reach this.
+	 */
+	private async stopRuns(targets: PiRun[]): Promise<void> {
+		for (const run of targets) {
+			if (!run.controller.signal.aborted) run.controller.abort();
+			const session = run.session;
+			// Drop only this run's parked asks; another run's are still live.
+			this.forgetRun(run);
+			if (session) {
+				try { await session.abort(); } catch { /* may already be idle */ }
+			}
+		}
+	}
+
+	async interrupt(owner: AbortController): Promise<void> {
+		const targets = this.runs.select(owner);
+		for (const run of targets) {
+			if (run.session) {
+				try { await run.session.abort(); } catch { /* ignore */ }
+			}
 		}
 	}
 

@@ -3,9 +3,10 @@
  *
  * Wraps `@qwen-code/sdk` into the AIEngine interface. The SDK manages a
  * `qwen` subprocess per `query()` call (CLI is bundled with the SDK from
- * v0.1.1+). We only own the per-project `Query` lifecycle, an
- * `AbortController`, and the single-slot `pendingAskUserQuestion` for the
- * blocking AskUserQuestion flow.
+ * v0.1.1+). We own the `Query` lifecycle, an `AbortController` and the
+ * `pendingAskUserQuestion` slot of the blocking AskUserQuestion flow — all of
+ * it per RUN, since one instance serves every chat session of a project and
+ * several of them can be streaming at the same time.
  *
  * Auth: paste-token only. `engine_accounts.credential` stores the
  * OpenAI-compatible API key; the active account is read on every stream
@@ -46,6 +47,7 @@ import { handleStreamError } from './error-handler';
 import { createSdkMessageConverter, toSdkUserMessage, type SdkMessageConverter } from './message-converter';
 import { fetchQwenModels } from './models';
 import { getQwenMcpConfig } from '../../../mcp';
+import { EngineRuns } from '../run-registry';
 import { artifactFilter } from '$backend/profiles';
 import { syncSkills } from '$backend/skills';
 import { syncEngineArtifacts } from '$backend/engine/artifact-sync';
@@ -65,29 +67,40 @@ interface PendingAskUserQuestion {
 	toolUseId: string | null;
 }
 
+/**
+ * One stream in flight on this instance. All of it used to be instance fields,
+ * which only held the most recently started stream — so a second chat in the
+ * same project silently took over the first one's query, converter and parked
+ * question, and cancelling either one tore down the wrong stream.
+ */
+interface QwenRun {
+	/** Identity of the run — the controller the caller passed to streamQuery. */
+	controller: AbortController;
+	query: Query | null;
+	/**
+	 * Live converter for this run — used by `resolveUserAnswer` to push the
+	 * user's answers into the converter state so the eventual AUQ tool_result
+	 * can be rewritten with the actual answers (the Qwen SDK's `canUseTool` →
+	 * AUQ tool execution path drops `answers` on the floor; see the comment
+	 * block at the top of `message-converter.ts` and the analysis in
+	 * `qwen/stream.ts::canUseTool` for AskUserQuestion).
+	 */
+	converter: SdkMessageConverter | null;
+	pendingAskUserQuestion: PendingAskUserQuestion | null;
+}
+
 export class QwenEngine implements AIEngine {
 	readonly name = 'qwen' as const;
 
 	private _isInitialized = false;
-	private activeController: AbortController | null = null;
-	private activeQuery: Query | null = null;
-	private pendingAskUserQuestion: PendingAskUserQuestion | null = null;
-	/**
-	 * Live converter for the current stream — used by `resolveUserAnswer` to
-	 * push the user's answers into the converter state so the eventual AUQ
-	 * tool_result can be rewritten with the actual answers (the Qwen SDK's
-	 * `canUseTool` → AUQ tool execution path drops `answers` on the floor; see
-	 * the comment block at the top of `message-converter.ts` and the analysis
-	 * in `qwen/stream.ts::canUseTool` for AskUserQuestion).
-	 */
-	private activeConverter: SdkMessageConverter | null = null;
+	private runs = new EngineRuns<QwenRun>();
 
 	get isInitialized(): boolean {
 		return this._isInitialized;
 	}
 
 	get isActive(): boolean {
-		return this.activeController !== null;
+		return this.runs.isActive;
 	}
 
 	async initialize(): Promise<void> {
@@ -97,8 +110,8 @@ export class QwenEngine implements AIEngine {
 	}
 
 	async dispose(): Promise<void> {
-		await this.cancel();
-		this.pendingAskUserQuestion = null;
+		// Shutdown/retirement: every run on this instance goes.
+		await this.stopRuns(this.runs.all());
 		this._isInitialized = false;
 	}
 
@@ -139,7 +152,9 @@ export class QwenEngine implements AIEngine {
 		}
 		const { env } = resolution;
 
-		this.activeController = abortController || new AbortController();
+		const controller = abortController || new AbortController();
+		const run: QwenRun = { controller, query: null, converter: null, pendingAskUserQuestion: null };
+		this.runs.add(run);
 		const resolvedProjectPath = resolveOsPath(projectPath);
 		// Active Profile for this stream — scopes artifacts + connectors.
 		const profileId = options.mcpContext?.profileId;
@@ -194,7 +209,7 @@ export class QwenEngine implements AIEngine {
 				// "Qwen OAuth free tier was discontinued" even though we've
 				// supplied OPENAI_API_KEY / OPENAI_BASE_URL.
 				authType: 'openai',
-				abortController: this.activeController,
+				abortController: controller,
 				includePartialMessages,
 				stderr: (msg: string) => {
 					const trimmed = msg.replace(/\s+$/, '');
@@ -273,11 +288,11 @@ export class QwenEngine implements AIEngine {
 								// Claude (see claude/stream.ts cancel()). Resolving
 								// would prompt the SDK to write the result to a
 								// subprocess that's about to die.
-								this.pendingAskUserQuestion = null;
+								run.pendingAskUserQuestion = null;
 							};
 							ctx.signal.addEventListener('abort', onAbort, { once: true });
 
-							this.pendingAskUserQuestion = {
+							run.pendingAskUserQuestion = {
 								resolve: (result) => {
 									ctx.signal.removeEventListener('abort', onAbort);
 									resolve(result);
@@ -308,7 +323,7 @@ export class QwenEngine implements AIEngine {
 
 			const { query } = await loadEngineSdk<typeof import('@qwen-code/sdk')>('qwen', '@qwen-code/sdk');
 			const queryInstance = query({ prompt: promptIterable, options: sdkOptions });
-			this.activeQuery = queryInstance;
+			run.query = queryInstance;
 
 			const converter = createSdkMessageConverter(modelId, {
 				onAskUserQuestionEmitted: (toolUseId: string) => {
@@ -317,55 +332,68 @@ export class QwenEngine implements AIEngine {
 					// the pending slot here unblocks `resolveUserAnswer` even
 					// when the frontend gets the toolUseId before our slot was
 					// populated (rare but possible if the SDK queues events).
-					if (this.pendingAskUserQuestion && this.pendingAskUserQuestion.toolUseId === null) {
-						this.pendingAskUserQuestion.toolUseId = toolUseId;
+					if (run.pendingAskUserQuestion && run.pendingAskUserQuestion.toolUseId === null) {
+						run.pendingAskUserQuestion.toolUseId = toolUseId;
 					}
 				},
 			});
-			this.activeConverter = converter;
+			run.converter = converter;
 			for await (const sdkMessage of queryInstance) {
 				yield* converter.convert(sdkMessage);
 			}
 		} catch (error) {
 			handleStreamError(error, stderrLines.join('\n'));
 		} finally {
-			this.activeController = null;
-			this.activeQuery = null;
-			this.activeConverter = null;
+			// Retire THIS run only — another chat session of the same project may
+			// still be streaming on this instance.
+			this.runs.remove(run);
 		}
 	}
 
-	async cancel(): Promise<void> {
-		// Drop the pending AskUserQuestion handler — same pattern as Claude
-		// (don't resolve, just abandon, otherwise the SDK tries to write to
-		// a subprocess that's about to die).
-		if (this.pendingAskUserQuestion) {
-			this.pendingAskUserQuestion.removeAbortListener();
-			this.pendingAskUserQuestion = null;
-		}
+	/**
+	 * Cancel the run whose AbortController is `owner`, and only that run.
+	 */
+	async cancel(owner: AbortController): Promise<void> {
+		await this.stopRuns(this.runs.select(owner));
+	}
 
-		if (this.activeQuery && typeof this.activeQuery.close === 'function') {
-			try {
-				await this.activeQuery.close();
-			} catch {
-				/* subprocess may already be dead */
+	/**
+	 * Tear down the given runs. `cancel` passes the one run it was asked to
+	 * stop; `dispose` passes them all. Nothing else may reach this.
+	 */
+	private async stopRuns(targets: QwenRun[]): Promise<void> {
+		for (const run of targets) {
+			// Drop this run's pending AskUserQuestion handler — same pattern as
+			// Claude (don't resolve, just abandon, otherwise the SDK tries to write
+			// to a subprocess that's about to die). Another run's parked question
+			// is left alone; its subprocess is still alive and still waiting.
+			if (run.pendingAskUserQuestion) {
+				run.pendingAskUserQuestion.removeAbortListener();
+				run.pendingAskUserQuestion = null;
 			}
-		}
 
-		if (this.activeController && !this.activeController.signal.aborted) {
-			this.activeController.abort();
+			if (run.query && typeof run.query.close === 'function') {
+				try {
+					await run.query.close();
+				} catch {
+					/* subprocess may already be dead */
+				}
+			}
+
+			if (!run.controller.signal.aborted) run.controller.abort();
+			this.runs.remove(run);
 		}
-		this.activeController = null;
-		this.activeQuery = null;
-		this.activeConverter = null;
 	}
 
-	async interrupt(): Promise<void> {
-		if (this.activeQuery && typeof this.activeQuery.interrupt === 'function') {
-			try {
-				await this.activeQuery.interrupt();
-			} catch {
-				/* fall through to cancel */
+	async interrupt(owner: AbortController): Promise<void> {
+		const targets = this.runs.select(owner);
+		for (const run of targets) {
+			if (run.query && typeof run.query.interrupt === 'function') {
+				try {
+					await run.query.interrupt();
+				} catch {
+					/* fall through to cancel */
+				}
 			}
 		}
 	}
@@ -453,8 +481,13 @@ export class QwenEngine implements AIEngine {
 	}
 
 	resolveUserAnswer(toolUseId: string, answers: Record<string, string>): boolean {
-		const pending = this.pendingAskUserQuestion;
-		if (!pending) {
+		// Find the run that parked this question: the one that already recorded
+		// this toolUseId, else the one still waiting for its id to arrive.
+		const running = this.runs.all();
+		const run = running.find(r => r.pendingAskUserQuestion?.toolUseId === toolUseId)
+			?? running.find(r => r.pendingAskUserQuestion && r.pendingAskUserQuestion.toolUseId === null);
+		const pending = run?.pendingAskUserQuestion ?? null;
+		if (!run || !pending) {
 			debug.warn('engine', 'Qwen resolveUserAnswer: no pending question');
 			return false;
 		}
@@ -474,13 +507,13 @@ export class QwenEngine implements AIEngine {
 		// tool_result body is `"User has provided the following answers:\n\n"`
 		// (empty). The converter intercepts that tool_result and replaces its
 		// content with the proper formatted answers we just stored.
-		this.activeConverter?.recordUserAnswer(toolUseId, answers);
+		run.converter?.recordUserAnswer(toolUseId, answers);
 
 		pending.resolve({
 			behavior: 'allow',
 			updatedInput: { ...pending.input, answers },
 		});
-		this.pendingAskUserQuestion = null;
+		run.pendingAskUserQuestion = null;
 		return true;
 	}
 }

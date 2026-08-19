@@ -19,7 +19,9 @@
 | Usage backfill (once-per-turn engines)      | `backend/chat/stream-manager.ts::backfillUsageForStream` (Codex + Cursor; §10.20-I) |
 | Context window unknown → "?" not 100%       | `frontend/utils/context-manager.ts` (`unknown`) + `frontend/components/chat/widgets/ContextIndicator.svelte` (§10.20-J) |
 | Reasoning stream lifecycle                  | `opencode/stream.ts::flushReasoning`, `copilot/message-converter.ts::convertReasoningDelta` |
-| Cancel-before-RPC ordering                  | `opencode/stream.ts::cancel`, `claude/stream.ts::cancel`, `copilot/stream.ts::cancel`  |
+| Per-stream state on a shared instance       | `adapters/run-registry.ts::EngineRuns` (+ each adapter's `XxxRun`; §10.26) |
+| Cancel exactly one chat's stream            | `adapters/run-registry.ts::select` → `stream.ts::stopRuns`; stream-manager passes `streamState.abortController` |
+| Cancel-before-RPC ordering                  | `opencode/stream.ts::stopRuns`, `claude/stream.ts::stopRuns`, `copilot/stream.ts::stopRuns`  |
 | Fork session (native vs. on-disk vs. in-memory) | `claude/stream.ts` (`forkSession: true`), `opencode/stream.ts` (`client.session.fork`), `copilot/stream.ts` (`client.rpc.sessions.fork`), `codex/session-fork.ts` + `qwen/session-fork.ts` (copy disk state), `pi/session-fork.ts` (`SessionManager.forkFrom`), `cline/stream.ts` (**session-less** — fresh id per turn + in-memory copy-on-branch; see §10.10) |
 | Sub-agent (`Task`/`Agent`) routing          | `claude/message-converter.ts` (`parent_tool_use_id`), `opencode/message-converter.ts::convertSubtaskToolUseOnly`, `copilot/message-converter.ts::resolveParentToolUseId` + `agentParentMap`; **synthesized** `Agent` tool for bare-loop SDKs in `cline/agent-tool.ts` + `pi/agent-tool.ts` (see §10.15) |
 | File-backed Workflow activity (event-driven) | `claude/workflow-transcript.ts` (filesystem watchers, byte offsets, terminal status) + `claude/stream.ts::EventQueue` merge; no interval polling (§10.15) |

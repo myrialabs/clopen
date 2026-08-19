@@ -299,6 +299,33 @@ Backend `chat:stream` then `streamManager.startStream(...)`, which:
 > (`claude`, `copilot`) read this and override their per-stream credential
 > accordingly.
 
+### 6.3a Stop path → backend
+
+Stop is `chatService.cancelRequest()` → `ws.emit('chat:cancel', { chatSessionId })`
+→ `streamManager.cancelStream(streamId)` → `engine.cancel(streamState.abortController)`.
+
+Every hop names a session or a run explicitly, because both halves once
+resolved it from ambient state and both stopped the wrong chat:
+
+- **The target is the session on screen** — `sessionState.currentSession`,
+  nothing else. The service used to prefer a `currentSessionId` remembered from
+  the last message this client *sent*, which is a different session the moment
+  two chats stream at once.
+- **Stream bookkeeping is per session.** `processId`, `streamCompleted`, the
+  cancelled-processId set and the cancel safety timer live in a
+  `Map<sessionId, …>` inside `chat.service.ts`. Stream events carry no
+  `chatSessionId` — they are routed by chat-session room and a client is joined
+  to exactly the room it is viewing, so the viewed session is the authoritative
+  owner of every incoming event.
+- **The backend cancels one run**, identified by `StreamState.abortController`.
+  See invariant 2 in [adapter-contract](./adapter-contract.md) and §10.26 in
+  [lessons-learned](./lessons-learned.md).
+
+Catchup (`ChatInput.svelte::catchupActiveStream` → `chatService.reconnectToStream`)
+is keyed by `projectId:sessionId` for the same reason: a project-only key made an
+intra-project session switch skip catchup, so the session switched to never
+re-attached to its own live stream.
+
 ### 6.4 Reasoning, attachments, AskUserQuestion
 
 - **Reasoning (output)**: an adapter must emit

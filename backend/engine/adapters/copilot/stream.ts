@@ -24,6 +24,7 @@ import { engineQueries } from '$backend/database/queries/engine-queries';
 import { resolveOsPath, getEngineUserConfigDir } from '$backend/utils/paths';
 import { debug } from '$shared/utils/logger';
 import { getCopilotMcpConfig } from '../../../mcp';
+import { EngineRuns } from '../run-registry';
 import { artifactFilter } from '$backend/profiles';
 import { syncSkills } from '$backend/skills';
 import { syncEngineArtifacts, buildArtifactsPromptContext } from '$backend/engine/artifact-sync';
@@ -107,13 +108,30 @@ interface PendingCopilotUserAnswer {
 	choices?: string[];
 }
 
+/**
+ * One stream in flight on this instance.
+ */
+interface CopilotRun {
+	/** Identity of the run — the controller the caller passed to streamQuery. */
+	controller: AbortController;
+	session: CopilotSession | null;
+	/** Correlates `onUserInputRequest` with the toolCallId seen on the event stream. */
+	pendingAskUserToolCallId: string | null;
+}
+
 export class CopilotEngine implements AIEngine {
 	readonly name = 'copilot' as const;
 
 	private _isInitialized = false;
 	private client: CopilotClient | null = null;
-	private activeSession: CopilotSession | null = null;
-	private activeController: AbortController | null = null;
+	/**
+	 * Every stream in flight, keyed by the AbortController its caller passed to
+	 * streamQuery. One instance serves all chat sessions of a project, so the
+	 * Copilot session of a stream belongs to the run — a field would hold only
+	 * the most recent one and cancelling any chat would abort another chat's
+	 * session.
+	 */
+	private runs = new EngineRuns<CopilotRun>();
 	private modelsCache: ModelInfo[] | null = null;
 	/**
 	 * Account ID currently baked into `this.client`. The Copilot SDK takes the
@@ -132,20 +150,20 @@ export class CopilotEngine implements AIEngine {
 	 *     NOT the toolCallId (see `node_modules/@github/copilot-sdk/dist/client.js::handleUserInputRequest`)
 	 *
 	 * To correlate the two we capture the most recent `toolCallId` from
-	 * those events into `pendingAskUserToolCallId`, then read it inside
-	 * the callback. Only one `ask_user` can be outstanding per session at
-	 * a time (the SDK blocks the agent's turn until the callback returns),
-	 * so a single-slot variable is sufficient.
+	 * those events into the run's `pendingAskUserToolCallId`, then read it
+	 * inside the callback. Only one `ask_user` can be outstanding per session
+	 * at a time (the SDK blocks the agent's turn until the callback returns),
+	 * so a single slot PER RUN is sufficient — but it cannot be a single slot
+	 * per instance, which two concurrent chats of a project would share.
 	 */
-	private pendingUserAnswers = new Map<string, PendingCopilotUserAnswer>();
-	private pendingAskUserToolCallId: string | null = null;
+	private pendingUserAnswers = new Map<string, PendingCopilotUserAnswer & { owner: CopilotRun }>();
 
 	get isInitialized(): boolean {
 		return this._isInitialized;
 	}
 
 	get isActive(): boolean {
-		return this.activeController !== null;
+		return this.runs.isActive;
 	}
 
 	async initialize(accountId?: number): Promise<void> {
@@ -178,7 +196,7 @@ export class CopilotEngine implements AIEngine {
 	}
 
 	async dispose(): Promise<void> {
-		await this.cancel();
+		await this.stopRuns(this.runs.all());
 
 		if (this.client) {
 			try {
@@ -242,7 +260,9 @@ export class CopilotEngine implements AIEngine {
 			throw new Error('Copilot client unavailable.');
 		}
 
-		this.activeController = abortController || new AbortController();
+		const controller = abortController || new AbortController();
+		const run: CopilotRun = { controller, session: null, pendingAskUserToolCallId: null };
+		this.runs.add(run);
 
 		// Active Profile for this stream — scopes artifacts + connectors.
 		const profileId = options.mcpContext?.profileId;
@@ -299,13 +319,13 @@ export class CopilotEngine implements AIEngine {
 			if (event.type === 'assistant.message' && event.data.toolRequests) {
 				for (const req of event.data.toolRequests) {
 					if (req.name === 'ask_user') {
-						this.pendingAskUserToolCallId = req.toolCallId;
+						run.pendingAskUserToolCallId = req.toolCallId;
 					}
 				}
 			} else if (event.type === 'tool.execution_start' && event.data.toolName === 'ask_user') {
-				this.pendingAskUserToolCallId = event.data.toolCallId;
+				run.pendingAskUserToolCallId = event.data.toolCallId;
 			} else if (event.type === 'user_input.requested' && event.data.toolCallId) {
-				this.pendingAskUserToolCallId = event.data.toolCallId;
+				run.pendingAskUserToolCallId = event.data.toolCallId;
 			}
 			pushEvent(event);
 		};
@@ -314,7 +334,7 @@ export class CopilotEngine implements AIEngine {
 			finished = true;
 			pushEvent(null);
 		};
-		this.activeController.signal.addEventListener('abort', onAbort, { once: true });
+		controller.signal.addEventListener('abort', onAbort, { once: true });
 
 		const { approveAll } = await loadEngineSdk<typeof import('@github/copilot-sdk')>('copilot', '@github/copilot-sdk');
 
@@ -343,8 +363,8 @@ export class CopilotEngine implements AIEngine {
 					// to a synthetic id so `cancel()` can still release the
 					// Promise — but log loudly because the chat UI's answer
 					// submission won't reach this entry.
-					const captured = this.pendingAskUserToolCallId;
-					this.pendingAskUserToolCallId = null;
+					const captured = run.pendingAskUserToolCallId;
+					run.pendingAskUserToolCallId = null;
 					const toolCallId = captured ?? `copilot-ask-user-${crypto.randomUUID()}`;
 
 					if (captured) {
@@ -357,6 +377,7 @@ export class CopilotEngine implements AIEngine {
 						this.pendingUserAnswers.set(toolCallId, {
 							resolve,
 							choices: request.choices,
+							owner: run,
 						});
 					});
 				},
@@ -413,7 +434,7 @@ export class CopilotEngine implements AIEngine {
 				session = await this.client.createSession({ ...baseConfig } as SessionConfig);
 			}
 
-			this.activeSession = session;
+			run.session = session;
 			state.sessionId = session.sessionId;
 
 			// Send the prompt — fire-and-forget; events arrive via the queue.
@@ -440,7 +461,7 @@ export class CopilotEngine implements AIEngine {
 
 			// Drain the event queue.
 			while (!finished) {
-				if (this.activeController.signal.aborted) break;
+				if (controller.signal.aborted) break;
 
 				const event: SessionEvent | null = queue.length > 0
 					? queue.shift()!
@@ -448,7 +469,7 @@ export class CopilotEngine implements AIEngine {
 						waiter = resolve;
 					});
 
-				if (!event || this.activeController.signal.aborted) break;
+				if (!event || controller.signal.aborted) break;
 
 				// Resolve the parent Agent (`task`) tool call id for events
 				// originating inside a sub-agent. Null for the root agent and
@@ -582,54 +603,77 @@ export class CopilotEngine implements AIEngine {
 		} catch (error) {
 			handleStreamError(error);
 		} finally {
-			this.activeController.signal.removeEventListener('abort', onAbort);
+			controller.signal.removeEventListener('abort', onAbort);
 
-			if (this.activeSession) {
+			if (run.session) {
 				try {
-					await this.activeSession.disconnect();
+					await run.session.disconnect();
 				} catch (error) {
 					debug.warn('engine', 'Copilot session.disconnect failed (non-fatal):', error);
 				}
 			}
-			this.activeSession = null;
-			this.activeController = null;
+			// Retire THIS run only — another chat session of the same project may
+			// still be streaming on this instance.
+			this.forgetRun(run);
 		}
 	}
 
-	async cancel(): Promise<void> {
-		// 1. Release any parked `onUserInputRequest` callbacks with an empty
-		// answer so the SDK isn't left blocked on a Promise that will never
-		// resolve. Empty `answer` + `wasFreeform: false` is the SDK-safe way
-		// to unblock without injecting fake user input.
-		for (const [, pending] of this.pendingUserAnswers) {
-			pending.resolve({ answer: '', wasFreeform: false });
+	/** Drop a finished run and the questions only it could answer. */
+	private forgetRun(run: CopilotRun): void {
+		this.runs.remove(run);
+		for (const [toolCallId, pending] of this.pendingUserAnswers) {
+			if (pending.owner === run) this.pendingUserAnswers.delete(toolCallId);
 		}
-		this.pendingUserAnswers.clear();
-		this.pendingAskUserToolCallId = null;
+		run.session = null;
+		run.pendingAskUserToolCallId = null;
+	}
 
-		// 2. Abort the local stream first so the loop exits even if RPC hangs.
-		const session = this.activeSession;
-		if (this.activeController && !this.activeController.signal.aborted) {
-			this.activeController.abort();
-		}
-		this.activeController = null;
+	/**
+	 * Cancel the run whose AbortController is `owner`, and only that run.
+	 */
+	async cancel(owner: AbortController): Promise<void> {
+		await this.stopRuns(this.runs.select(owner));
+	}
 
-		// 3. Tell the Copilot server to stop processing (with timeout).
-		if (session) {
-			try {
-				await Promise.race([
-					session.abort(),
-					new Promise<void>(resolve => setTimeout(resolve, ABORT_TIMEOUT_MS)),
-				]);
-				debug.log('engine', 'Copilot session aborted:', session.sessionId);
-			} catch (error) {
-				debug.warn('engine', 'Copilot session.abort failed (non-fatal):', error);
+	/**
+	 * Tear down the given runs. `cancel` passes the one run it was asked to
+	 * stop; `dispose` passes them all. Nothing else may reach this.
+	 */
+	private async stopRuns(targets: CopilotRun[]): Promise<void> {
+		for (const run of targets) {
+			// 1. Release THIS run's parked `onUserInputRequest` callbacks with an
+			// empty answer so the SDK isn't left blocked on a Promise that will
+			// never resolve. Empty `answer` + `wasFreeform: false` is the SDK-safe
+			// way to unblock without injecting fake user input. Another run's
+			// parked callback stays — its session is still live.
+			for (const [toolCallId, pending] of this.pendingUserAnswers) {
+				if (pending.owner !== run) continue;
+				pending.resolve({ answer: '', wasFreeform: false });
+				this.pendingUserAnswers.delete(toolCallId);
+			}
+
+			// 2. Abort the local stream first so the loop exits even if RPC hangs.
+			const session = run.session;
+			if (!run.controller.signal.aborted) run.controller.abort();
+			this.forgetRun(run);
+
+			// 3. Tell the Copilot server to stop processing (with timeout).
+			if (session) {
+				try {
+					await Promise.race([
+						session.abort(),
+						new Promise<void>(resolve => setTimeout(resolve, ABORT_TIMEOUT_MS)),
+					]);
+					debug.log('engine', 'Copilot session aborted:', session.sessionId);
+				} catch (error) {
+					debug.warn('engine', 'Copilot session.abort failed (non-fatal):', error);
+				}
 			}
 		}
 	}
 
-	async interrupt(): Promise<void> {
-		await this.cancel();
+	async interrupt(owner: AbortController): Promise<void> {
+		await this.stopRuns(this.runs.select(owner));
 	}
 
 	/**

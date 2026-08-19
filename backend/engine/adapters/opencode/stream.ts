@@ -51,6 +51,7 @@ import { getOpenCodeProfileDisabledToolIds } from '$backend/mcp';
 import { resolvePermissionsFromDb, matchesAny, type ResolvedPermissions } from '$backend/permissions';
 import { formatSessionError, handleStreamError } from './error-handler';
 import { buildJsonPrompt, extractJson } from '../../structured-helpers';
+import { EngineRuns } from '../run-registry';
 import { debug } from '$shared/utils/logger';
 
 /**
@@ -99,26 +100,49 @@ function buildOpenCodeToolDisableMap(permissions: ResolvedPermissions): Record<s
 // OpenCode Engine (per-project instance)
 // ============================================================================
 
+/**
+ * One stream in flight on this instance. Everything here used to be an instance
+ * field, which only worked while a project never had two chats streaming at once.
+ */
+interface OpenCodeRun {
+	/** Identity of the run — the controller the caller passed to streamQuery. */
+	controller: AbortController;
+	projectPath: string;
+	/** The pooled per-Profile server this run is bound to. */
+	server: ServerInstance | null;
+	/** The pool hold taken for this run, released when it ends. */
+	holder: { key: string; holderId: string } | null;
+	sessionId: string | null;
+}
+
+interface PendingQuestion {
+	requestId: string;
+	questions: Array<{ question: string }>;
+	/** The run that asked — its server is where the answer has to be posted. */
+	run: OpenCodeRun;
+}
+
 export class OpenCodeEngine implements AIEngine {
 	readonly name = 'opencode' as const;
 	private _isInitialized = false;
-	private _isActive = false;
-	private activeAbortController: AbortController | null = null;
-	private activeSessionId: string | null = null;
-	private activeProjectPath: string | null = null;
-	/** The pooled per-Profile server this instance's active stream is bound to. */
-	private activeServer: ServerInstance | null = null;
-	/** The pool hold taken for the running stream, released when it ends. */
-	private activeHolder: { key: string; holderId: string } | null = null;
-	/** Pending question requests keyed by tool callID → { requestId, questions } */
-	private pendingQuestions = new Map<string, { requestId: string; questions: Array<{ question: string }> }>();
+	/**
+	 * Every stream running on this instance, keyed by the AbortController its
+	 * caller passed to streamQuery. This instance is shared by all chat sessions
+	 * of a project, so anything a single stream owns — its session id, its pooled
+	 * server, its pool hold — belongs here and not in an instance field. A field
+	 * would hold only the most recent stream, and cancelling any chat would then
+	 * abort another chat's session and leak the hold of the one it overwrote.
+	 */
+	private runs = new EngineRuns<OpenCodeRun>();
+	/** Pending question requests keyed by tool callID → the asking run's reply target. */
+	private pendingQuestions = new Map<string, PendingQuestion>();
 
 	get isInitialized(): boolean {
 		return this._isInitialized;
 	}
 
 	get isActive(): boolean {
-		return this._isActive;
+		return this.runs.isActive;
 	}
 
 	/**
@@ -138,15 +162,11 @@ export class OpenCodeEngine implements AIEngine {
 	 * Does NOT dispose the shared client — that's handled by disposeOpenCodeClient().
 	 */
 	async dispose(): Promise<void> {
-		await this.cancel();
+		// Shutdown/retirement: every run on this instance goes, and each releases
+		// its own hold. An instance retired mid-stream still owes the pool those holds;
+		// without them the servers it was using would never become reapable.
+		await this.stopRuns(this.runs.all());
 		this.pendingQuestions.clear();
-		// An instance retired mid-stream still owes the pool its hold; without this
-		// the server it was using would never become reapable.
-		if (this.activeHolder) {
-			releaseServer(this.activeHolder.key, this.activeHolder.holderId);
-			this.activeHolder = null;
-		}
-		this.activeServer = null;
 		this._isInitialized = false;
 		debug.log('engine', 'Open Code engine instance disposed');
 	}
@@ -176,9 +196,15 @@ export class OpenCodeEngine implements AIEngine {
 			abortController
 		} = options;
 
-		this.activeAbortController = abortController || new AbortController();
-		this._isActive = true;
-		this.activeProjectPath = projectPath;
+		const controller = abortController || new AbortController();
+		const run: OpenCodeRun = {
+			controller,
+			projectPath,
+			server: null,
+			holder: null,
+			sessionId: null,
+		};
+		this.runs.add(run);
 
 		// Active Profile for this stream. Skills go into the prompt and commands
 		// into shared dirs; materialize those first, then bind to the per-Profile
@@ -203,8 +229,8 @@ export class OpenCodeEngine implements AIEngine {
 		// stream id is what makes that safe: a held server is never reaped.
 		const holderId = options.mcpContext?.streamId;
 		const server = await acquireServer({ mcpProfileFilter, subagentFilter, inlineAgents }, holderId);
-		this.activeServer = server;
-		this.activeHolder = holderId ? { key: server.key, holderId } : null;
+		run.server = server;
+		run.holder = holderId ? { key: server.key, holderId } : null;
 		const client = server.client;
 
 		// Resolve the permission policy once per stream; the permission event
@@ -255,7 +281,7 @@ export class OpenCodeEngine implements AIEngine {
 				sessionId = sessionResult.data?.id || crypto.randomUUID();
 			}
 
-			this.activeSessionId = sessionId;
+			run.sessionId = sessionId;
 
 			yield convertSystemInitMessage(sessionId, modelId);
 			yield convertStreamStart(sessionId);
@@ -263,7 +289,7 @@ export class OpenCodeEngine implements AIEngine {
 			// 1. Subscribe to event stream FIRST (before sending prompt)
 			const eventResult = await client.event.subscribe({
 				query: { directory: projectPath },
-				signal: this.activeAbortController.signal
+				signal: controller.signal
 			});
 
 			// 2. Send prompt asynchronously (non-blocking). Disabled tools enforce
@@ -385,7 +411,7 @@ export class OpenCodeEngine implements AIEngine {
 
 			if (eventResult?.stream) {
 				for await (const event of eventResult.stream) {
-					if (this.activeAbortController?.signal.aborted) break;
+					if (controller.signal.aborted) break;
 
 					const evt = event as { type: string; properties: Record<string, unknown> };
 					debug.log('engine', `[OC] event: ${evt.type}`);
@@ -760,6 +786,7 @@ export class OpenCodeEngine implements AIEngine {
 								this.pendingQuestions.set(props.tool.callID, {
 									requestId: props.id,
 									questions: props.questions,
+									run,
 								});
 								debug.log('engine', `[OC] question.asked: stored question ${props.id} for callID ${props.tool.callID}`);
 							}
@@ -785,7 +812,7 @@ export class OpenCodeEngine implements AIEngine {
 							if (blocked) {
 								debug.log('permissions', `⛔ Blocked tool "${rawTool}" (Clopen permission policy)`);
 							}
-							this.replyPermission(props.id, props.sessionID, blocked ? 'reject' : 'once');
+							this.replyPermission(run, props.id, props.sessionID, blocked ? 'reject' : 'once');
 							break;
 						}
 
@@ -804,45 +831,65 @@ export class OpenCodeEngine implements AIEngine {
 		} catch (error) {
 			handleStreamError(error);
 		} finally {
-			this._isActive = false;
-			this.activeAbortController = null;
-			this.activeSessionId = null;
-			this.activeProjectPath = null;
-			this.pendingQuestions.clear();
-			// Hand the server back. Until this runs the server is pinned, which is
-			// exactly what keeps a settings change from cutting this turn short.
-			if (this.activeHolder) {
-				releaseServer(this.activeHolder.key, this.activeHolder.holderId);
-				this.activeHolder = null;
-			}
+			// Retire THIS run only — a concurrent stream of another chat session in
+			// the same project is still using the instance.
+			this.forgetRun(run);
 		}
 	}
 
-	async cancel(): Promise<void> {
-		// Capture refs before clearing — needed for server-side abort below
-		const sessionId = this.activeSessionId;
-		const projectPath = this.activeProjectPath;
+	/**
+	 * Drop a finished run: unregister it, discard the questions only it could
+	 * answer, and hand its pooled server back. Until the hold is released the
+	 * server is pinned, which is exactly what keeps a settings change from
+	 * cutting that turn short.
+	 */
+	private forgetRun(run: OpenCodeRun): void {
+		this.runs.remove(run);
+		for (const [callId, pending] of this.pendingQuestions) {
+			if (pending.run === run) this.pendingQuestions.delete(callId);
+		}
+		if (run.holder) {
+			releaseServer(run.holder.key, run.holder.holderId);
+			run.holder = null;
+		}
+	}
 
+	/**
+	 * Cancel one run — the one whose AbortController is `owner` — or every run
+	 * when no owner is given (dispose/shutdown).
+	 *
+	 * Targeting matters here: an untargeted abort would tear down whichever
+	 * session id and hold this instance had on hand, which is another chat's as
+	 * soon as two sessions of the project stream at once.
+	 */
+	async cancel(owner: AbortController): Promise<void> {
+		await this.stopRuns(this.runs.select(owner));
+	}
+
+	/**
+	 * Tear down the given runs. `cancel` passes the one run it was asked to
+	 * stop; `dispose` passes them all. Nothing else may reach this.
+	 */
+	private async stopRuns(targets: OpenCodeRun[]): Promise<void> {
 		// 1. FIRST: Abort local stream processing immediately.
 		//    This breaks the SSE event stream and causes the for-await loop
 		//    in processStream() to throw AbortError, stopping all local processing.
 		//    Must happen BEFORE the HTTP call because client.session.abort() can
 		//    hang indefinitely if the OpenCode server is busy/unresponsive.
-		if (this.activeAbortController) {
-			this.activeAbortController.abort();
-			this.activeAbortController = null;
+		for (const run of targets) {
+			if (!run.controller.signal.aborted) run.controller.abort();
 		}
-		this._isActive = false;
-		this.activeSessionId = null;
-		this.activeProjectPath = null;
-		this.pendingQuestions.clear();
 
 		// 2. THEN: Tell the OpenCode server to stop processing (with timeout).
 		//    This is a courtesy cleanup — local processing is already stopped.
 		//    The server-side session would otherwise keep running (consuming
 		//    LLM API calls and compute resources) until it naturally completes.
-		const client = this.activeServer?.client ?? getClient();
-		if (client && sessionId) {
+		//    The pool hold is still held here on purpose — handing the server back
+		//    first could let it be reaped out from under this very call.
+		for (const run of targets) {
+			const client = run.server?.client ?? getClient();
+			const { sessionId, projectPath } = run;
+			if (!client || !sessionId) continue;
 			try {
 				await Promise.race([
 					client.session.abort({
@@ -856,32 +903,15 @@ export class OpenCodeEngine implements AIEngine {
 				debug.warn('engine', 'Failed to abort Open Code session (non-fatal):', error);
 			}
 		}
+
+		// 3. Retire the runs. Each hands its own pooled server back; a run that
+		//    never got as far as binding one simply has nothing to release.
+		for (const run of targets) this.forgetRun(run);
 	}
 
-	/**
-	 * Cancel a specific session on the OpenCode server.
-	 * Used by stream-manager for per-project isolation (instead of global cancel).
-	 */
-	async cancelSession(sessionId: string, projectPath?: string): Promise<void> {
-		const client = this.activeServer?.client ?? getClient();
-		if (!client || !sessionId) return;
-		try {
-			await Promise.race([
-				client.session.abort({
-					path: { id: sessionId },
-					...(projectPath && { query: { directory: projectPath } }),
-				}),
-				new Promise<void>(resolve => setTimeout(resolve, 5000))
-			]);
-			debug.log('engine', 'Open Code session aborted (per-stream):', sessionId);
-		} catch (error) {
-			debug.warn('engine', 'Failed to abort Open Code session (non-fatal):', error);
-		}
-	}
-
-	async interrupt(): Promise<void> {
+	async interrupt(owner: AbortController): Promise<void> {
 		// Open Code SDK doesn't have a separate interrupt — use cancel
-		await this.cancel();
+		await this.stopRuns(this.runs.select(owner));
 	}
 
 	/**
@@ -903,7 +933,7 @@ export class OpenCodeEngine implements AIEngine {
 				const answer = answers[q.question];
 				return answer ? [answer] : [];
 			});
-			this.replyToQuestion(pending.requestId, orderedAnswers);
+			this.replyToQuestion(pending.run, pending.requestId, orderedAnswers);
 			this.pendingQuestions.delete(toolUseId);
 			return true;
 		}
@@ -917,14 +947,18 @@ export class OpenCodeEngine implements AIEngine {
 	/**
 	 * POST /question/{requestID}/reply to send user answers back to the OpenCode server.
 	 */
-	private replyToQuestion(requestId: string, orderedAnswers: string[][]): void {
-		const serverUrl = this.activeServer?.url ?? getServerUrl();
+	private replyToQuestion(run: OpenCodeRun | null, requestId: string, orderedAnswers: string[][]): void {
+		const serverUrl = run?.server?.url ?? getServerUrl();
 		if (!serverUrl) {
 			debug.warn('engine', 'replyToQuestion: Server URL not available');
 			return;
 		}
 
-		const dirParam = this.activeProjectPath ? `?directory=${encodeURIComponent(this.activeProjectPath)}` : '';
+		// The answer must go back to the server that asked. Concurrent streams of
+		// one project can sit on different pooled servers (different Profiles), so
+		// a shared "current server" would post this reply into the wrong one and
+		// leave the asking session waiting forever.
+		const dirParam = run?.projectPath ? `?directory=${encodeURIComponent(run.projectPath)}` : '';
 		const url = `${serverUrl}/question/${requestId}/reply${dirParam}`;
 		debug.log('engine', `Replying to question ${requestId}:`, orderedAnswers);
 
@@ -948,14 +982,18 @@ export class OpenCodeEngine implements AIEngine {
 	 * Fallback: GET /question to list pending questions, find the matching one, and reply.
 	 */
 	private async fetchAndReplyToQuestion(toolUseId: string, answers: Record<string, string>): Promise<void> {
-		const serverUrl = this.activeServer?.url ?? getServerUrl();
+		// No stored question means no known run — fall back to the single
+		// still-running one when there is exactly one, else the shared client.
+		const running = this.runs.all();
+		const run = running.length === 1 ? running[0] : null;
+		const serverUrl = run?.server?.url ?? getServerUrl();
 		if (!serverUrl) {
 			debug.warn('engine', 'fetchAndReplyToQuestion: Server URL not available');
 			return;
 		}
 
 		try {
-			const dirParam = this.activeProjectPath ? `?directory=${encodeURIComponent(this.activeProjectPath)}` : '';
+			const dirParam = run?.projectPath ? `?directory=${encodeURIComponent(run.projectPath)}` : '';
 			const res = await fetch(`${serverUrl}/question${dirParam}`);
 			if (!res.ok) {
 				debug.error('engine', `Failed to list pending questions: ${res.status}`);
@@ -978,7 +1016,7 @@ export class OpenCodeEngine implements AIEngine {
 				const answer = answers[q.question];
 				return answer ? [answer] : [];
 			});
-			this.replyToQuestion(matching.id, orderedAnswers);
+			this.replyToQuestion(run, matching.id, orderedAnswers);
 		} catch (error) {
 			debug.error('engine', 'Failed to fetch and reply to question:', error);
 		}
@@ -990,8 +1028,8 @@ export class OpenCodeEngine implements AIEngine {
 	 * by the permission policy. Uses direct HTTP since the v1 client may not have
 	 * the v2 permission.reply method.
 	 */
-	private replyPermission(permissionId: string, sessionId: string, response: 'once' | 'reject'): void {
-		const serverUrl = this.activeServer?.url ?? getServerUrl();
+	private replyPermission(run: OpenCodeRun, permissionId: string, sessionId: string, response: 'once' | 'reject'): void {
+		const serverUrl = run.server?.url ?? getServerUrl();
 		if (!serverUrl) return;
 		const verb = response === 'reject' ? 'rejected' : 'approved';
 
@@ -1006,12 +1044,12 @@ export class OpenCodeEngine implements AIEngine {
 				return;
 			}
 			// v2 endpoint not available — try v1
-			const client = this.activeServer?.client ?? getClient();
+			const client = run.server?.client ?? getClient();
 			if (client) {
 				client.postSessionIdPermissionsPermissionId({
 					path: { id: sessionId, permissionID: permissionId },
 					body: { response },
-					...(this.activeProjectPath && { query: { directory: this.activeProjectPath } }),
+					...(run.projectPath && { query: { directory: run.projectPath } }),
 				}).then(() => {
 					debug.log('engine', `[OC] ${verb} permission ${permissionId} (v1)`);
 				}).catch(err => {

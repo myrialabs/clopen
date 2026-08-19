@@ -34,6 +34,7 @@ import { syncEngineArtifacts, buildArtifactsPromptContext } from '$backend/engin
 import { artifactFilter } from '$backend/profiles';
 import { resolvePermissionsFromDb, isToolAllowed } from '$backend/permissions';
 import { buildJsonPrompt, extractJson } from '../../structured-helpers';
+import { EngineRuns } from '../run-registry';
 import { subagentQueries } from '$backend/database/queries';
 import { readSubagentMd } from '$backend/subagents/store';
 import { getClineAccountForProvider, parseClineCredential, resolveClineAuth } from './credential';
@@ -85,12 +86,24 @@ class EventQueue<T> {
 	}
 }
 
+/**
+ * One stream in flight on this instance. This engine instance is shared by every
+ * chat session of a project, so the agent belongs here, not in an instance field
+ * — a field would hold only the most recently started stream, and cancelling any
+ * chat would then abort another chat's agent.
+ */
+interface ClineRun {
+	/** Identity of the run — the controller the caller passed to streamQuery. */
+	controller: AbortController;
+	agent: ClineAgent | null;
+}
+
 export class ClineEngine implements AIEngine {
 	readonly name = 'cline' as const;
 	private _isInitialized = false;
-	private activeController: AbortController | null = null;
-	private activeAgent: ClineAgent | null = null;
-	private pendingAsks = new Map<string, PendingAsk>();
+	private runs = new EngineRuns<ClineRun>();
+	/** Parked AskUserQuestion callbacks → the run that asked. */
+	private pendingAsks = new Map<string, PendingAsk & { owner: ClineRun }>();
 	/**
 	 * In-memory transcript keyed by the SDK session id EMITTED for each turn.
 	 * Every turn stores its resulting transcript under a fresh id and never
@@ -101,7 +114,7 @@ export class ClineEngine implements AIEngine {
 	private sessions = new Map<string, AgentMessage[]>();
 
 	get isInitialized(): boolean { return this._isInitialized; }
-	get isActive(): boolean { return this.activeController !== null; }
+	get isActive(): boolean { return this.runs.isActive; }
 
 	async initialize(): Promise<void> {
 		if (this._isInitialized) return;
@@ -110,7 +123,7 @@ export class ClineEngine implements AIEngine {
 	}
 
 	async dispose(): Promise<void> {
-		await this.cancel();
+		await this.stopRuns(this.runs.all());
 		this.pendingAsks.clear();
 		this.sessions.clear();
 		this._isInitialized = false;
@@ -145,7 +158,9 @@ export class ClineEngine implements AIEngine {
 		const provider = parseClineCredential(account.credential)?.provider ?? providerSlug;
 		const auth = await resolveClineAuth(account);
 
-		this.activeController = abortController || new AbortController();
+		const controller = abortController || new AbortController();
+		const run: ClineRun = { controller, agent: null };
+		this.runs.add(run);
 		const resolvedProjectPath = resolveOsPath(projectPath);
 
 		// ── Active Profile scoping + artifact materialization ──
@@ -169,7 +184,7 @@ export class ClineEngine implements AIEngine {
 			enableSubmitAndExit: false,
 		});
 		const askTool = await createAskUserQuestionTool({
-			register: (id, entry) => this.pendingAsks.set(id, entry),
+			register: (id, entry) => this.pendingAsks.set(id, { ...entry, owner: run }),
 			unregister: (id) => this.pendingAsks.delete(id),
 		});
 		const mcpTools = await buildClineMcpTools(options.mcpContext, mcpProfileFilter);
@@ -278,7 +293,7 @@ export class ClineEngine implements AIEngine {
 			toolPolicies,
 			maxIterations: options.maxTurns ?? 100,
 		});
-		this.activeAgent = agent;
+		run.agent = agent;
 		if (priorMessages?.length) agent.restore(priorMessages);
 
 		const engineMeta: MessageEngine = {
@@ -300,7 +315,7 @@ export class ClineEngine implements AIEngine {
 
 		// Abort wiring: cancelling the stream aborts the Cline run.
 		const onAbort = () => { agent.abort('Cancelled'); };
-		this.activeController.signal.addEventListener('abort', onAbort, { once: true });
+		controller.signal.addEventListener('abort', onAbort, { once: true });
 
 		// Build the user turn (text + image attachments).
 		const promptText = prompt.content.filter(b => b.type === 'text').map(b => (b.type === 'text' ? b.text : '')).join('\n');
@@ -348,29 +363,52 @@ export class ClineEngine implements AIEngine {
 		} catch (error) {
 			handleStreamError(error);
 		} finally {
-			this.activeController?.signal.removeEventListener('abort', onAbort);
+			controller.signal.removeEventListener('abort', onAbort);
 			unsubscribe();
-			this.activeAgent = null;
-			this.activeController = null;
-			this.pendingAsks.clear();
+			// Retire THIS run only — another chat session of the same project may
+			// still be streaming on this instance.
+			this.forgetRun(run);
 		}
 	}
 
-	async cancel(): Promise<void> {
-		if (this.activeController && !this.activeController.signal.aborted) {
-			this.activeController.abort();
+	/** Drop a finished run and the asks only it could answer. */
+	private forgetRun(run: ClineRun): void {
+		this.runs.remove(run);
+		for (const [id, pending] of this.pendingAsks) {
+			if (pending.owner === run) this.pendingAsks.delete(id);
 		}
-		if (this.activeAgent) {
-			try { this.activeAgent.abort('Cancelled'); } catch { /* may already be idle */ }
-		}
-		this.pendingAsks.clear();
-		this.activeAgent = null;
-		this.activeController = null;
+		run.agent = null;
 	}
 
-	async interrupt(): Promise<void> {
-		if (this.activeAgent) {
-			try { this.activeAgent.abort('Interrupted'); } catch { /* ignore */ }
+	/**
+	 * Cancel the run whose AbortController is `owner`, and only that run.
+	 */
+	async cancel(owner: AbortController): Promise<void> {
+		await this.stopRuns(this.runs.select(owner));
+	}
+
+	/**
+	 * Tear down the given runs. `cancel` passes the one run it was asked to
+	 * stop; `dispose` passes them all. Nothing else may reach this.
+	 */
+	private async stopRuns(targets: ClineRun[]): Promise<void> {
+		for (const run of targets) {
+			if (!run.controller.signal.aborted) run.controller.abort();
+			const agent = run.agent;
+			// Drop only this run's parked asks; another run's are still live.
+			this.forgetRun(run);
+			if (agent) {
+				try { agent.abort('Cancelled'); } catch { /* may already be idle */ }
+			}
+		}
+	}
+
+	async interrupt(owner: AbortController): Promise<void> {
+		const targets = this.runs.select(owner);
+		for (const run of targets) {
+			if (run.agent) {
+				try { run.agent.abort('Interrupted'); } catch { /* ignore */ }
+			}
 		}
 	}
 
