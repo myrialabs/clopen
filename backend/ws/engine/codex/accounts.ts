@@ -504,18 +504,6 @@ export const codexAccountsHandler = createRouter()
 		cleanupSetup(data.setupId);
 	})
 
-	// Restart all Codex engine instances. Use after changing the active
-	// account so subsequent models:list / chat calls re-initialise with the
-	// right credential. (The auth-blob swap on accounts-switch already
-	// handles the on-disk file; this just drops cached engine instances.)
-	.http('engine:codex-restart', {
-		data: t.Object({}),
-		response: t.Object({ success: t.Boolean() })
-	}, async () => {
-		await disposeCodexEngines();
-		return { success: true };
-	})
-
 	// ─── Server → client events ───
 
 	.emit('engine:codex-account-setup-url', t.Object({

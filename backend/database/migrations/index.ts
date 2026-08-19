@@ -66,6 +66,7 @@ import * as migration064 from './064_create_messages_fts';
 import * as migration065 from './065_add_session_reasoning_effort';
 import * as migration066 from './066_create_memory_graph';
 import * as migration067 from './067_add_memory_graph_layout';
+import * as migration068 from './068_create_engine_config_revision';
 
 // Export all migrations in order
 export const migrations = [
@@ -470,6 +471,12 @@ export const migrations = [
 		description: migration067.description,
 		up: migration067.up,
 		down: migration067.down
+	},
+	{
+		id: '068',
+		description: migration068.description,
+		up: migration068.up,
+		down: migration068.down
 	}
 ];
 

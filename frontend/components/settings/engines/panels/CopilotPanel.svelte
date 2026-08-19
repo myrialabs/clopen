@@ -40,9 +40,6 @@
 	let copilotDeleteDialogOpen = $state(false);
 	let copilotDeleteTargetId = $state<number | null>(null);
 
-	// Copilot restart/refresh
-	let copilotRestarting = $state(false);
-
 	function startCopilotAdd() {
 		copilotAddStep = 'editing';
 		copilotAddName = '';
@@ -129,19 +126,6 @@
 		copilotRenameToken = '';
 	}
 
-	async function handleCopilotRestart() {
-		copilotRestarting = true;
-		try {
-			await ws.http('engine:copilot-restart', {});
-			await modelStore.refreshModels('copilot');
-			await refreshCopilotStatus();
-			showSuccess('Server Restarted', 'Copilot server restarted successfully. Models refreshed.');
-		} catch {
-			// Ignore — errors surface via existing notification flow when models load
-		} finally {
-			copilotRestarting = false;
-		}
-	}
 </script>
 
 <!-- Copilot Card -->
@@ -156,21 +140,6 @@
 				<h3 class="font-semibold text-slate-900 dark:text-slate-100">{copilotEngine.name}</h3>
 				<p class="text-xs text-slate-500 dark:text-slate-400">{copilotEngine.description}</p>
 			</div>
-		</div>
-		<div class="flex items-center gap-2">
-			{#if copilotStatus?.activeAccount}
-				<button
-					type="button"
-					class="flex items-center gap-1.5 px-3 py-1.5 text-xs font-medium rounded-lg transition-colors
-						text-amber-600 dark:text-amber-400 bg-amber-50 dark:bg-amber-900/20 border border-amber-200 dark:border-amber-700/50
-						hover:bg-amber-100 dark:hover:bg-amber-900/30 disabled:opacity-50 disabled:cursor-not-allowed"
-					onclick={handleCopilotRestart}
-					disabled={copilotRestarting}
-				>
-					<Icon name={copilotRestarting ? 'lucide:loader' : 'lucide:rotate-cw'} class="w-3.5 h-3.5 {copilotRestarting ? 'animate-spin' : ''}" />
-					{copilotRestarting ? 'Restarting...' : 'Restart Server'}
-				</button>
-			{/if}
 		</div>
 	</div>
 

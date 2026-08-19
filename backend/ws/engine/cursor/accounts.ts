@@ -150,14 +150,4 @@ export const cursorAccountsHandler = createRouter()
 		const active = engineQueries.getActiveAccountForEngine('cursor');
 		if (active?.id === data.id) await disposeCursorEngines();
 		return { success: true };
-	})
-
-	// Restart all Cursor engine instances so subsequent models:list / chat calls
-	// re-initialise with fresh credentials.
-	.http('engine:cursor-restart', {
-		data: t.Object({}),
-		response: t.Object({ success: t.Boolean() })
-	}, async () => {
-		await disposeCursorEngines();
-		return { success: true };
 	});

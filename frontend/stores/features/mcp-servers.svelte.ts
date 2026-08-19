@@ -150,8 +150,6 @@ let catalogLoading = $state(false);
 let catalogLoadingFresh = $state(false);
 let catalogError = $state<string | null>(null);
 
-let hasPendingChanges = $state(false);
-
 // Monotonic id used to discard superseded/cancelled catalog requests. A
 // response is only applied when its id still matches the latest request.
 let catalogReqId = 0;
@@ -167,8 +165,6 @@ export const mcpServersStore = {
 	get catalogLoading() { return catalogLoading; },
 	get catalogLoadingFresh() { return catalogLoadingFresh; },
 	get catalogError() { return catalogError; },
-	get hasPendingChanges() { return hasPendingChanges; },
-	set hasPendingChanges(v: boolean) { hasPendingChanges = v; },
 
 	/** Set of registry names already installed (for "Installed" badges in Browse). */
 	get installedRegistryNames(): Set<string> {
@@ -321,7 +317,6 @@ export const mcpServersStore = {
 	/** Persist per-tool + per-engine exposure overrides for a server. */
 	async setToolOverrides(id: number, overrides: Record<string, McpToolOverride>): Promise<void> {
 		await ws.http('mcp:set-tool-overrides', { id, overrides });
-		this.hasPendingChanges = true;
 		// Refresh so the "N restricted" badge reflects the new state.
 		await this.refreshInstalled();
 	},

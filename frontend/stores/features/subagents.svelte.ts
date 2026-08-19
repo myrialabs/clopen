@@ -38,14 +38,11 @@ export interface SubagentPayload {
 let installed = $state<InstalledSubagent[]>([]);
 let installedLoaded = $state(false);
 let detected = $state<DetectedGroup[]>([]);
-let hasPendingChanges = $state(false);
 
 export const subagentsStore = {
 	get installed() { return installed; },
 	get installedLoaded() { return installedLoaded; },
 	get detected() { return detected; },
-	get hasPendingChanges() { return hasPendingChanges; },
-	set hasPendingChanges(v: boolean) { hasPendingChanges = v; },
 
 	async fetchInstalled(): Promise<InstalledSubagent[]> {
 		if (installedLoaded) return installed;

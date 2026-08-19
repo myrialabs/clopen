@@ -133,6 +133,84 @@ export async function disposeEngine(type: EngineType): Promise<void> {
 	}
 }
 
+// ============================================================================
+// Retirement — replacing an engine without killing what it is doing
+// ============================================================================
+
+/**
+ * Engines removed from a cache but still mid-stream, awaiting a quiet moment.
+ *
+ * Disposing an engine tears down its SDK process and aborts whatever query it is
+ * running. That is right at shutdown and wrong everywhere else: switching a
+ * Copilot account or editing a connector used to call `dispose()` immediately,
+ * which killed any chat that happened to be streaming at that moment — silently,
+ * from the user's point of view, since nothing in the UI connects "I changed a
+ * setting" to "that answer stopped halfway".
+ *
+ * Retiring instead evicts the instance from the cache so the next stream builds a
+ * fresh one, and disposes the old one once it goes idle. New work gets the new
+ * config; work already in flight finishes under the config it started with.
+ */
+const retired = new Set<AIEngine>();
+/** How often retired instances are re-checked for idleness. */
+const RETIRE_POLL_MS = 2000;
+let retireTimer: ReturnType<typeof setInterval> | null = null;
+
+function disposeWhenIdle(engine: AIEngine, label: string): void {
+	if (!engine.isActive) {
+		void engine.dispose().catch(error => debug.error('engine', `Error disposing ${label}:`, error));
+		debug.log('engine', `Engine disposed: ${label}`);
+		return;
+	}
+
+	retired.add(engine);
+	debug.log('engine', `Engine retired while busy, will dispose when idle: ${label}`);
+	if (retireTimer) return;
+
+	retireTimer = setInterval(() => {
+		for (const candidate of [...retired]) {
+			if (candidate.isActive) continue;
+			retired.delete(candidate);
+			void candidate.dispose().catch(error => debug.error('engine', 'Error disposing retired engine:', error));
+			debug.log('engine', `Retired engine disposed after going idle: ${candidate.name}`);
+		}
+		if (retired.size === 0 && retireTimer) {
+			clearInterval(retireTimer);
+			retireTimer = null;
+		}
+	}, RETIRE_POLL_MS);
+	retireTimer.unref?.();
+}
+
+/**
+ * Evict every instance of an engine type — global and per-project — so the next
+ * stream rebuilds it, without interrupting any stream currently using one.
+ *
+ * This is what account switches, credential edits and config changes call.
+ */
+export function retireEnginesByType(type: EngineType): void {
+	const slot = engines.get(type);
+	if (slot) {
+		engines.delete(type);
+		if (slot.instance) disposeWhenIdle(slot.instance, `global ${type}`);
+	}
+
+	for (const [projectId, projectMap] of projectEngines) {
+		const projectSlot = projectMap.get(type);
+		if (!projectSlot) continue;
+		projectMap.delete(type);
+		if (projectSlot.instance) disposeWhenIdle(projectSlot.instance, `${type} for project ${projectId.slice(0, 8)}`);
+		if (projectMap.size === 0) projectEngines.delete(projectId);
+	}
+}
+
+/** Evict every engine of every type, letting in-flight streams finish. */
+export function retireAllEngines(): void {
+	for (const type of new Set<EngineType>([...engines.keys(), ...[...projectEngines.values()].flatMap(m => [...m.keys()])])) {
+		retireEnginesByType(type);
+	}
+}
+
 /**
  * Dispose all global engines (used on server shutdown).
  */
@@ -241,26 +319,12 @@ export async function disposeProjectEngines(projectId: string): Promise<void> {
  * Dispose all instances of a given engine type across all projects, plus the
  * global singleton. Call when an account/credential change requires every
  * client to re-initialise (e.g. Copilot account switch).
+ *
+ * Retires rather than tears down — see `retireEnginesByType`. Kept async so the
+ * many `await`ing call sites read unchanged.
  */
 export async function disposeAllProjectEnginesByType(type: EngineType): Promise<void> {
-	for (const [projectId, engines] of projectEngines) {
-		const slot = engines.get(type);
-		if (slot) {
-			engines.delete(type);
-			try {
-				if (slot.instance) await slot.instance.dispose();
-				debug.log('engine', `Project engine disposed: ${type} for project ${projectId.slice(0, 8)}`);
-			} catch (error) {
-				debug.error('engine', `Error disposing project engine ${type} for ${projectId.slice(0, 8)}:`, error);
-			}
-		}
-		if (engines.size === 0) {
-			projectEngines.delete(projectId);
-		}
-	}
-
-	// Also drop the global singleton so the next non-streaming op rebuilds it.
-	await disposeEngine(type);
+	retireEnginesByType(type);
 }
 
 /**

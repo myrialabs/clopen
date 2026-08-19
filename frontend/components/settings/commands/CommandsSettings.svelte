@@ -104,7 +104,6 @@
 			};
 			if (editorMode === 'create') await commandsStore.create(payload);
 			else if (editorId != null) await commandsStore.update(editorId, payload);
-			commandsStore.hasPendingChanges = true;
 			closeEditor();
 		} catch (error) {
 			editorError = error instanceof Error ? error.message : 'Save failed';
@@ -135,7 +134,6 @@
 		importError = null;
 		try {
 			await commandsStore.import(importText);
-			commandsStore.hasPendingChanges = true;
 			closeImport();
 		} catch (error) {
 			importError = error instanceof Error ? error.message : 'Import failed';
@@ -163,7 +161,6 @@
 		deleting = true;
 		try {
 			await commandsStore.remove(deleteTarget.id);
-			commandsStore.hasPendingChanges = true;
 			deleteTarget = null;
 		} catch (error) {
 			debug.error('settings', 'delete command failed', error);
@@ -176,7 +173,6 @@
 		busyId = command.id;
 		try {
 			await commandsStore.toggle(command.id, !command.enabled);
-			commandsStore.hasPendingChanges = true;
 		} catch (error) {
 			debug.error('settings', 'toggle command failed', error);
 		} finally {

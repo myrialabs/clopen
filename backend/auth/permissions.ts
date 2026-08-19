@@ -64,12 +64,10 @@ export const ADMIN_ONLY_ROUTES = new Set([
 	'engine:codex-accounts-rename',
 	'engine:codex-account-setup-start',
 	'engine:codex-account-setup-cancel',
-	'engine:codex-restart',
 	'engine:copilot-accounts-add',
 	'engine:copilot-accounts-switch',
 	'engine:copilot-accounts-delete',
 	'engine:copilot-accounts-rename',
-	'engine:copilot-restart',
 	'engine:qwen-accounts-add',
 	'engine:qwen-accounts-switch',
 	'engine:qwen-accounts-delete',
@@ -98,9 +96,7 @@ export const ADMIN_ONLY_ROUTES = new Set([
 	'engine:opencode-account-switch',
 	'engine:opencode-account-delete',
 	'engine:opencode-account-rename',
-	'engine:opencode-server-restart',
 	'engine:opencode-models-dev-fetch',
-	'engine:restart-all',
 	// Tunnel — remote/local management mutates global Cloudflare credentials,
 	// cloudflared auth, and ingress rules. Quick Tunnel is ephemeral and stays
 	// open. Read-only routes (status, *-list, ingress, auth-status) stay open so

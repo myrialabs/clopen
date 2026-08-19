@@ -7,9 +7,7 @@
 	import { setActiveSection } from '$frontend/stores/ui/settings-modal.svelte';
 	import { ENGINES } from '$shared/constants/engines';
 	import { opencodeProvidersStore, type OpenCodeProviderItem, type OpenCodeAccountItem, type ModelsDevProviderItem } from '$frontend/stores/features/opencode-providers.svelte';
-	import { modelStore } from '$frontend/stores/features/models.svelte';
 	import { settings, togglePinnedModel } from '$frontend/stores/features/settings.svelte';
-	import { showSuccess } from '$frontend/stores/ui/notification.svelte';
 	import AccountEditForm from '../AccountEditForm.svelte';
 	import AccountField from '../AccountField.svelte';
 	import type { OpenCodeStatus } from './panel-types';
@@ -90,9 +88,6 @@
 	let ocDeleteTargetName = $state('');
 
 	// Server restart
-	let ocRestarting = $state(false);
-	let ocRestartConfirmOpen = $state(false);
-	let ocRestartActiveChats = $state(0);
 
 	// Filtered catalog (exclude already-configured providers)
 	const ocFilteredCatalog = $derived.by(() => {
@@ -467,41 +462,6 @@
 		}
 	}
 
-	// Server restart
-	async function handleRestartServer() {
-		ocRestarting = true;
-		try {
-			const result = await opencodeProvidersStore.restartServer(false);
-			if (result.needsConfirmation) {
-				ocRestartActiveChats = result.activeChats || 0;
-				ocRestartConfirmOpen = true;
-				return;
-			}
-			if (result.success) {
-				await modelStore.refreshModels('opencode');
-				showSuccess('Server Restarted', 'OpenCode server restarted successfully. Models refreshed.');
-			}
-		} catch {
-			// Ignore
-		} finally {
-			ocRestarting = false;
-		}
-	}
-
-	async function forceRestartServer() {
-		ocRestarting = true;
-		ocRestartConfirmOpen = false;
-		try {
-			await opencodeProvidersStore.restartServer(true);
-			await modelStore.refreshModels('opencode');
-			showSuccess('Server Restarted', 'OpenCode server force-restarted. Models refreshed.');
-		} catch {
-			// Ignore
-		} finally {
-			ocRestarting = false;
-		}
-	}
-
 	function openStackSection() {
 		setActiveSection('stack');
 	}
@@ -520,19 +480,6 @@
 				<p class="text-xs text-slate-500 dark:text-slate-400">{openCodeEngine.description}</p>
 			</div>
 		</div>
-		{#if openCodeStatus?.installed}
-			<button
-				type="button"
-				class="flex items-center gap-1.5 px-3 py-1.5 text-xs font-medium rounded-lg transition-colors
-					text-amber-600 dark:text-amber-400 bg-amber-50 dark:bg-amber-900/20 border border-amber-200 dark:border-amber-700/50
-					hover:bg-amber-100 dark:hover:bg-amber-900/30 disabled:opacity-50 disabled:cursor-not-allowed"
-				onclick={handleRestartServer}
-				disabled={ocRestarting}
-			>
-				<Icon name={ocRestarting ? 'lucide:loader' : 'lucide:rotate-cw'} class="w-3.5 h-3.5 {ocRestarting ? 'animate-spin' : ''}" />
-				{ocRestarting ? 'Restarting...' : 'Restart Server'}
-			</button>
-		{/if}
 	</div>
 
 	<!-- Card Body -->
@@ -1110,15 +1057,4 @@
 	confirmText="Delete"
 	cancelText="Cancel"
 	onConfirm={executeOCDelete}
-/>
-
-<Dialog
-	bind:isOpen={ocRestartConfirmOpen}
-	onClose={() => { ocRestartConfirmOpen = false; }}
-	type="warning"
-	title="Active Chats Detected"
-	message="There {ocRestartActiveChats === 1 ? 'is' : 'are'} {ocRestartActiveChats} active chat{ocRestartActiveChats !== 1 ? 's' : ''} using the OpenCode engine. Restarting the server will force-stop all of them. Continue?"
-	confirmText="Force Restart"
-	cancelText="Cancel"
-	onConfirm={forceRestartServer}
 />

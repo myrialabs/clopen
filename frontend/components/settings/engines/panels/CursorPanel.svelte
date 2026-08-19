@@ -40,9 +40,6 @@
 	let cursorDeleteDialogOpen = $state(false);
 	let cursorDeleteTargetId = $state<number | null>(null);
 
-	// Cursor restart/refresh
-	let cursorRestarting = $state(false);
-
 	function startCursorAdd() {
 		cursorAddStep = 'editing';
 		cursorAddName = '';
@@ -131,19 +128,6 @@
 		cursorRenameKey = '';
 	}
 
-	async function handleCursorRestart() {
-		cursorRestarting = true;
-		try {
-			await ws.http('engine:cursor-restart', {});
-			await modelStore.refreshModels('cursor');
-			await refreshCursorStatus();
-			showSuccess('Server Restarted', 'Cursor engine restarted successfully. Models refreshed.');
-		} catch {
-			// Ignore — errors surface via existing notification flow when models load
-		} finally {
-			cursorRestarting = false;
-		}
-	}
 </script>
 
 <!-- Cursor Card -->
@@ -158,21 +142,6 @@
 				<h3 class="font-semibold text-slate-900 dark:text-slate-100">{cursorEngine.name}</h3>
 				<p class="text-xs text-slate-500 dark:text-slate-400">{cursorEngine.description}</p>
 			</div>
-		</div>
-		<div class="flex items-center gap-2">
-			{#if cursorStatus?.activeAccount}
-				<button
-					type="button"
-					class="flex items-center gap-1.5 px-3 py-1.5 text-xs font-medium rounded-lg transition-colors
-						text-amber-600 dark:text-amber-400 bg-amber-50 dark:bg-amber-900/20 border border-amber-200 dark:border-amber-700/50
-						hover:bg-amber-100 dark:hover:bg-amber-900/30 disabled:opacity-50 disabled:cursor-not-allowed"
-					onclick={handleCursorRestart}
-					disabled={cursorRestarting}
-				>
-					<Icon name={cursorRestarting ? 'lucide:loader' : 'lucide:rotate-cw'} class="w-3.5 h-3.5 {cursorRestarting ? 'animate-spin' : ''}" />
-					{cursorRestarting ? 'Restarting...' : 'Restart Server'}
-				</button>
-			{/if}
 		</div>
 	</div>
 

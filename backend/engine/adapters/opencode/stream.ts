@@ -42,7 +42,7 @@ import {
 	mapToolName,
 	TOOL_NAME_MAP,
 } from './message-converter';
-import { ensureClient, ensureServer, hashConfig, getClient, getServerUrl, type ServerInstance } from './server';
+import { ensureClient, acquireServer, releaseServer, getClient, getServerUrl, type ServerInstance } from './server';
 import { syncSkills } from '$backend/skills';
 import { syncEngineArtifacts, buildArtifactsPromptContext } from '$backend/engine/artifact-sync';
 import { artifactFilter } from '$backend/profiles';
@@ -108,6 +108,8 @@ export class OpenCodeEngine implements AIEngine {
 	private activeProjectPath: string | null = null;
 	/** The pooled per-Profile server this instance's active stream is bound to. */
 	private activeServer: ServerInstance | null = null;
+	/** The pool hold taken for the running stream, released when it ends. */
+	private activeHolder: { key: string; holderId: string } | null = null;
 	/** Pending question requests keyed by tool callID → { requestId, questions } */
 	private pendingQuestions = new Map<string, { requestId: string; questions: Array<{ question: string }> }>();
 
@@ -138,6 +140,12 @@ export class OpenCodeEngine implements AIEngine {
 	async dispose(): Promise<void> {
 		await this.cancel();
 		this.pendingQuestions.clear();
+		// An instance retired mid-stream still owes the pool its hold; without this
+		// the server it was using would never become reapable.
+		if (this.activeHolder) {
+			releaseServer(this.activeHolder.key, this.activeHolder.holderId);
+			this.activeHolder = null;
+		}
 		this.activeServer = null;
 		this._isInitialized = false;
 		debug.log('engine', 'Open Code engine instance disposed');
@@ -188,15 +196,15 @@ export class OpenCodeEngine implements AIEngine {
 		const mcpProfileFilter = artifactFilter(profileId, 'mcp') ?? undefined;
 		const subagentFilter = artifactFilter(profileId, 'subagent') ?? undefined;
 		const inlineAgents = await buildOpenCodeInlineAgents(profileId);
-		// Key = filtered MCP set + subagent set + a hash of the agents' CONTENT, so
-		// editing a subagent's prompt/model (same set) also spawns a fresh server
-		// rather than reusing a stale one. `subagentFilter` is subsumed by the
-		// content hash but kept for a readable key.
-		const mcpKey = mcpProfileFilter ? [...mcpProfileFilter].sort().join(',') : '*';
-		const agentKey = subagentFilter ? [...subagentFilter].sort().join(',') : '*';
-		const serverKey = `mcp:${mcpKey}|agents:${agentKey}:${hashConfig(JSON.stringify(inlineAgents))}`;
-		const server = await ensureServer(serverKey, { mcpProfileFilter, inlineAgents });
+		// The pool derives the key from the config it is about to spawn with, so a
+		// changed connector set, provider, credential or subagent prompt routes this
+		// stream to a server built from it — while any server still serving another
+		// stream keeps running until that stream is done. Holding the server by
+		// stream id is what makes that safe: a held server is never reaped.
+		const holderId = options.mcpContext?.streamId;
+		const server = await acquireServer({ mcpProfileFilter, subagentFilter, inlineAgents }, holderId);
 		this.activeServer = server;
+		this.activeHolder = holderId ? { key: server.key, holderId } : null;
 		const client = server.client;
 
 		// Resolve the permission policy once per stream; the permission event
@@ -801,6 +809,12 @@ export class OpenCodeEngine implements AIEngine {
 			this.activeSessionId = null;
 			this.activeProjectPath = null;
 			this.pendingQuestions.clear();
+			// Hand the server back. Until this runs the server is pinned, which is
+			// exactly what keeps a settings change from cutting this turn short.
+			if (this.activeHolder) {
+				releaseServer(this.activeHolder.key, this.activeHolder.holderId);
+				this.activeHolder = null;
+			}
 		}
 	}
 

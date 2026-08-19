@@ -24,6 +24,8 @@ import { loggerMiddleware } from './middleware/logger';
 // Database initialization
 import { initializeDatabase, closeDatabase } from './database';
 import { bootstrapAfterDbInit } from './bootstrap';
+import { startEngineConfigWatcher } from './engine/config-revision';
+import { startEngineHotReload } from './engine/hot-reload';
 import { disposeAllEngines } from './engine';
 import { connectionManager } from './db-client/connection-manager';
 import { refreshProcessPath } from './utils/path-enrich';
@@ -250,6 +252,11 @@ async function startServer() {
 		// Start expired session cleanup now that the database is ready
 		sessionCleanupScheduler.start();
 		uploadTempCleanup.start();
+		// Watch for engine-affecting config edits and apply them on their own.
+		// Long-lived, so it belongs here rather than in bootstrapAfterDbInit(),
+		// which also runs on the live process during "Clear All Data".
+		startEngineHotReload();
+		startEngineConfigWatcher();
 	} catch (error) {
 		console.error('❌ Database initialization failed — refusing to start:', error);
 		console.error(`   Data directory: ${SERVER_ENV.DATA_DIR}`);

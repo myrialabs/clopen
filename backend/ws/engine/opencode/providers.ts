@@ -11,9 +11,6 @@ import {
 	fetchAndCacheModelsDevCatalog,
 	getCachedModelsDevCatalog,
 } from '../../../engine/adapters/opencode/presets';
-import { disposeOpenCodeClient } from '../../../engine/adapters/opencode/server';
-import { disposeEngine } from '../../../engine';
-import { streamManager } from '../../../chat';
 import { debug } from '$shared/utils/logger';
 
 // Shared typebox schemas
@@ -319,53 +316,4 @@ export const openCodeProviderHandler = createRouter()
 		const body = await res.json() as { data?: { id: string; name?: string }[] };
 		const models = (body.data || []).map(m => ({ id: m.id, name: m.name }));
 		return { models };
-	})
-
-	// ═══════════════════════════════════════
-	// Server Restart
-	// ═══════════════════════════════════════
-
-	.http('engine:opencode-server-restart', {
-		data: t.Object({
-			force: t.Optional(t.Boolean()),
-		}),
-		response: t.Object({
-			success: t.Boolean(),
-			activeChats: t.Optional(t.Number()),
-			needsConfirmation: t.Optional(t.Boolean()),
-		})
-	}, async ({ data }) => {
-		// Check for active opencode streams
-		const activeStreams = streamManager.getActiveStreams()
-			.filter(s => s.engine === 'opencode');
-
-		if (activeStreams.length > 0 && !data.force) {
-			return {
-				success: false,
-				activeChats: activeStreams.length,
-				needsConfirmation: true,
-			};
-		}
-
-		// Force: abort all active opencode streams first
-		if (activeStreams.length > 0) {
-			debug.log('engine', `Force-aborting ${activeStreams.length} active OpenCode streams before restart`);
-			for (const stream of activeStreams) {
-				try {
-					await streamManager.cancelStream(stream.streamId);
-				} catch (error) {
-					debug.warn('engine', `Failed to abort stream ${stream.streamId}:`, error);
-				}
-			}
-		}
-
-		// Dispose global opencode engine + shared client/server.
-		// forRestart=true ensures the server is killed even if we didn't
-		// spawn it, and the stored URL is purged so next init() spawns fresh.
-		await disposeEngine('opencode');
-		await disposeOpenCodeClient(true);
-
-		debug.log('engine', 'OpenCode server disposed. Will re-initialize on next use.');
-
-		return { success: true };
 	});

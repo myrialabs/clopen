@@ -183,14 +183,6 @@ export const opencodeProvidersStore = {
 	},
 
 	// ========================================================================
-	// Server Restart
-	// ========================================================================
-
-	async restartServer(force = false): Promise<{ success: boolean; activeChats?: number; needsConfirmation?: boolean }> {
-		return ws.http('engine:opencode-server-restart', { force });
-	},
-
-	// ========================================================================
 	// Reset
 	// ========================================================================
 
