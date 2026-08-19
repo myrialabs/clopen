@@ -271,18 +271,22 @@
 
 	// Sync appState.isLoading from presence data (single source of truth for all users)
 	// Also fetch partial text and reconnect to stream for late-joining users / refresh
-	let lastCatchupProjectId: string | undefined;
+	// Keyed by project + session: two sessions of the same project can stream at
+	// once, so a project-only key made an intra-project session switch skip
+	// catchup entirely — the switched-to session never re-attached to its live
+	// stream and its output stopped updating.
+	let lastCatchupKey: string | undefined;
 	let lastPresenceProjectId: string | undefined;
 
 	// Reset catchup tracking on WS reconnect so catchupActiveStream re-runs.
 	// When WS briefly disconnects, the server-side cleanup removes the stream
 	// EventEmitter subscription. Without resetting, catchup won't fire again
-	// (guarded by lastCatchupProjectId) and the stream subscription is never
+	// (guarded by lastCatchupKey) and the stream subscription is never
 	// re-established — causing stream output to silently stop in the UI.
 	onWsReconnect(() => {
-		if (lastCatchupProjectId) {
+		if (lastCatchupKey) {
 			debug.log('chat', 'WS reconnected — resetting stream catchup tracking');
-			lastCatchupProjectId = undefined;
+			lastCatchupKey = undefined;
 		}
 	});
 
@@ -302,6 +306,7 @@
 			lastPresenceProjectId = projectId;
 		}
 
+		const catchupKey = sessionId ? `${projectId}:${sessionId}` : undefined;
 		const status = presenceState.statuses.get(projectId);
 		// Check if the active stream is for the CURRENT session (not just any session in the project)
 		const hasActiveForSession = status?.streams?.some(
@@ -314,28 +319,29 @@
 			appState.isLoading = true;
 
 			// Catch up on active stream's partial text for late-joining users
-			// Only do this once per project switch to avoid repeated fetches
+			// Only do this once per project+session switch to avoid repeated fetches
 			// Only attempt if session is available (may not be on initial load)
-			if (projectId !== lastCatchupProjectId && sessionId) {
-				lastCatchupProjectId = projectId;
+			if (catchupKey && catchupKey !== lastCatchupKey) {
+				lastCatchupKey = catchupKey;
 				catchupActiveStream(status);
 			}
-		} else if (hasActiveForSession && appState.isLoading && sessionId && projectId !== lastCatchupProjectId) {
-			// Session became available after loading was already set (e.g. page refresh)
-			// The first run set isLoading=true but couldn't catch up because session wasn't loaded yet
-			lastCatchupProjectId = projectId;
+		} else if (hasActiveForSession && appState.isLoading && catchupKey && catchupKey !== lastCatchupKey) {
+			// Session became available after loading was already set (e.g. page refresh),
+			// or the user switched to another session of this project that is still
+			// streaming — either way this session must re-attach to its live stream.
+			lastCatchupKey = catchupKey;
 			catchupActiveStream(status);
 		} else if (!hasActiveForSession && appState.isLoading && !appState.isCancelling) {
 			// Only clear loading if not in the middle of a cancel operation
 			appState.isLoading = false;
-			lastCatchupProjectId = undefined;
+			lastCatchupKey = undefined;
 		} else if (!hasActiveForSession && !appState.isLoading) {
 			// No active streams for this session — clear cancelling state and reset catchup tracking.
 			// This is the authoritative signal that the cancel is fully complete (presence confirmed).
 			if (appState.isCancelling) {
 				appState.isCancelling = false;
 			}
-			lastCatchupProjectId = undefined;
+			lastCatchupKey = undefined;
 		}
 	});
 

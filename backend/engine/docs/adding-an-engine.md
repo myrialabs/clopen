@@ -298,6 +298,14 @@ Then the minimum UI scenarios that must pass:
       Active account: <name>`.
 - [ ] Chat input → pick NewEngine + model → send a message → assistant
       replies → cancel mid-stream → idle → send again → resume works.
+- [ ] **Two chats of the SAME project streaming at once.** Start one, start a
+      second, switch back to the first and Stop it: only that one stops, the
+      other keeps streaming and keeps rendering. Then Stop the second. One
+      instance serves both, so per-stream state on the adapter class shows up
+      here and nowhere else (§10.26).
+- [ ] With those two chats still streaming, change the engine's account or
+      config in Settings. Neither chat may be cut short — retirement waits for
+      `isActive`, which must count every run and not just the newest one.
 - [ ] AskUserQuestion (if the SDK supports it) → appears in UI → submit
       answer → stream continues.
 - [ ] Reasoning effort (if the engine has a knob) → the pill appears for

@@ -35,6 +35,7 @@ import { getCursorMcpConfig } from '../../../mcp';
 import { subagentQueries } from '$backend/database/queries';
 import { readSubagentMd } from '$backend/subagents/store';
 import { buildJsonPrompt, extractJson } from '../../structured-helpers';
+import { EngineRuns } from '../run-registry';
 import { getActiveCursorAccount, resolveCursorApiKey } from './credential';
 import { getCursorStore } from './environment';
 import { forkCursorAgent } from './session-fork';
@@ -97,16 +98,28 @@ function buildCursorModelSelection(modelId: string, reasoningEffort?: string): M
 	return { id: modelId, params: [{ id: paramId, value }] };
 }
 
+/**
+ * One stream in flight on this instance. This engine instance is shared by every
+ * chat session of a project, so the run and agent belong here, not in instance
+ * fields — those would hold only the most recently started stream, and
+ * cancelling any chat would then cancel another chat's Cursor run.
+ */
+interface CursorRunState {
+	/** Identity of the run — the controller the caller passed to streamQuery. */
+	controller: AbortController;
+	run: Run | null;
+	agent: SDKAgent | null;
+}
+
 export class CursorEngine implements AIEngine {
 	readonly name = 'cursor' as const;
 	private _isInitialized = false;
-	private activeController: AbortController | null = null;
-	private activeRun: Run | null = null;
-	private activeAgent: SDKAgent | null = null;
-	private pendingAsks = new Map<string, PendingAsk>();
+	private runs = new EngineRuns<CursorRunState>();
+	/** Parked AskUserQuestion callbacks → the run that asked. */
+	private pendingAsks = new Map<string, PendingAsk & { owner: CursorRunState }>();
 
 	get isInitialized(): boolean { return this._isInitialized; }
-	get isActive(): boolean { return this.activeController !== null; }
+	get isActive(): boolean { return this.runs.isActive; }
 
 	async initialize(): Promise<void> {
 		if (this._isInitialized) return;
@@ -115,7 +128,7 @@ export class CursorEngine implements AIEngine {
 	}
 
 	async dispose(): Promise<void> {
-		await this.cancel();
+		await this.stopRuns(this.runs.all());
 		this.pendingAsks.clear();
 		this._isInitialized = false;
 	}
@@ -153,7 +166,9 @@ export class CursorEngine implements AIEngine {
 		}
 		const apiKey = resolveCursorApiKey(account);
 
-		this.activeController = abortController || new AbortController();
+		const controller = abortController || new AbortController();
+		const runState: CursorRunState = { controller, run: null, agent: null };
+		this.runs.add(runState);
 		const resolvedProjectPath = resolveOsPath(projectPath);
 
 		// ── Active Profile scoping + artifact materialization ──
@@ -168,7 +183,7 @@ export class CursorEngine implements AIEngine {
 
 		// ── Tools: AskUserQuestion (in-process custom tool) + MCP (native config) ──
 		const askTool: SDKCustomTool = createAskUserQuestionTool({
-			register: (id, entry) => this.pendingAsks.set(id, entry),
+			register: (id, entry) => this.pendingAsks.set(id, { ...entry, owner: runState }),
 			unregister: (id) => this.pendingAsks.delete(id),
 			// Emit the tool_use with the COMPLETE questions from execute's args.
 			emit: (id, questions) => {
@@ -220,11 +235,11 @@ export class CursorEngine implements AIEngine {
 					...(agents ? { agents } : {}),
 				});
 		} catch (error) {
-			this.activeController = null;
+			this.runs.remove(runState);
 			handleStreamError(error);
 			return;
 		}
-		this.activeAgent = agent;
+		runState.agent = agent;
 		const sessionId = agent.agentId;
 
 		const converter = createCursorMessageConverter({ engine: engineMeta, sessionId });
@@ -260,11 +275,11 @@ export class CursorEngine implements AIEngine {
 					}
 				},
 			});
-			this.activeRun = run;
+			runState.run = run;
 
 			// Abort wiring: cancelling the stream cancels the Cursor run.
 			onAbort = () => { run.cancel().catch(() => { /* already terminal */ }); };
-			this.activeController.signal.addEventListener('abort', onAbort, { once: true });
+			controller.signal.addEventListener('abort', onAbort, { once: true });
 
 			// Drive the pull stream + result in the background, funnelling into the queue.
 			const settle = (async () => {
@@ -287,38 +302,63 @@ export class CursorEngine implements AIEngine {
 		} catch (error) {
 			handleStreamError(error);
 		} finally {
-			if (onAbort) this.activeController?.signal.removeEventListener('abort', onAbort);
+			if (onAbort) controller.signal.removeEventListener('abort', onAbort);
 			try { agent.close(); } catch { /* fire-and-forget */ }
-			this.activeRun = null;
-			this.activeAgent = null;
-			this.activeController = null;
-			this.pendingAsks.clear();
+			// Retire THIS run only — another chat session of the same project may
+			// still be streaming on this instance.
+			this.forgetRun(runState);
 		}
 	}
 
-	async cancel(): Promise<void> {
-		// Release any parked AskUserQuestion callbacks so a blocked run can settle.
-		for (const [, pending] of this.pendingAsks) {
-			pending.resolve('User did not answer the question.');
+	/** Drop a finished run and the asks only it could answer. */
+	private forgetRun(runState: CursorRunState): void {
+		this.runs.remove(runState);
+		for (const [id, pending] of this.pendingAsks) {
+			if (pending.owner === runState) this.pendingAsks.delete(id);
 		}
-		this.pendingAsks.clear();
-
-		// Abort the local controller first (cuts the for-await loop), then RPC.
-		if (this.activeController && !this.activeController.signal.aborted) {
-			this.activeController.abort();
-		}
-		this.activeController = null;
-
-		if (this.activeRun) {
-			try { await this.activeRun.cancel(); } catch { /* may already be terminal */ }
-		}
-		this.activeRun = null;
-		this.activeAgent = null;
+		runState.run = null;
+		runState.agent = null;
 	}
 
-	async interrupt(): Promise<void> {
-		if (this.activeRun) {
-			try { await this.activeRun.cancel(); } catch { /* ignore */ }
+	/**
+	 * Cancel the run whose AbortController is `owner`, and only that run.
+	 */
+	async cancel(owner: AbortController): Promise<void> {
+		await this.stopRuns(this.runs.select(owner));
+	}
+
+	/**
+	 * Tear down the given runs. `cancel` passes the one run it was asked to
+	 * stop; `dispose` passes them all. Nothing else may reach this.
+	 */
+	private async stopRuns(targets: CursorRunState[]): Promise<void> {
+		for (const runState of targets) {
+			// Release the parked AskUserQuestion callbacks of THIS run so it can
+			// settle. Another run's parked ask is left alone — it is still live and
+			// still waiting for a real answer.
+			for (const [id, pending] of this.pendingAsks) {
+				if (pending.owner !== runState) continue;
+				pending.resolve('User did not answer the question.');
+				this.pendingAsks.delete(id);
+			}
+
+			// Abort the local controller first (cuts the for-await loop), then RPC.
+			if (!runState.controller.signal.aborted) runState.controller.abort();
+
+			const run = runState.run;
+			this.forgetRun(runState);
+			if (run) {
+				try { await run.cancel(); } catch { /* may already be terminal */ }
+			}
+		}
+	}
+
+	async interrupt(owner: AbortController): Promise<void> {
+		const targets = this.runs.select(owner);
+		for (const runState of targets) {
+			if (runState.run) {
+				try { await runState.run.cancel(); } catch { /* ignore */ }
+			}
 		}
 	}
 

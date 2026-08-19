@@ -36,6 +36,7 @@ import { syncEngineArtifacts } from '$backend/engine/artifact-sync';
 import { artifactFilter } from '$backend/profiles';
 import { resolvePermissionsFromDb, isToolAllowed, hasAnyRestriction, syncPermissions } from '$backend/permissions';
 import type { AIEngine, EngineQueryOptions } from '../../types';
+import { EngineRuns } from '../run-registry';
 import type { EngineModel } from '$shared/types/unified';
 import { CLAUDE_CODE_MODELS } from './models';
 
@@ -46,6 +47,20 @@ interface PendingUserAnswer {
   resolve: (result: PermissionResult) => void;
   removeAbortListener: () => void;
   input: Record<string, unknown>;
+  /** The run that asked — cancelling one run must not abandon another's questions. */
+  run: ClaudeRun;
+}
+
+/**
+ * One stream in flight on this instance. This engine instance is shared by every
+ * chat session of a project, so the SDK query has to be held per run: a single
+ * field holds only the most recently started stream, and cancelling any chat
+ * would then close another chat's query.
+ */
+interface ClaudeRun {
+  /** Identity of the run — the controller the caller passed to streamQuery. */
+  controller: AbortController;
+  query: Query | null;
 }
 
 /** Merge the SDK stream with Workflow transcript polling without blocking either producer. */
@@ -78,8 +93,7 @@ class EventQueue<T> {
 export class ClaudeCodeEngine implements AIEngine {
   readonly name = 'claude-code' as const;
   private _isInitialized = false;
-  private activeController: AbortController | null = null;
-  private activeQuery: Query | null = null;
+  private runs = new EngineRuns<ClaudeRun>();
   private pendingUserAnswers = new Map<string, PendingUserAnswer>();
 
   get isInitialized(): boolean {
@@ -87,7 +101,7 @@ export class ClaudeCodeEngine implements AIEngine {
   }
 
   get isActive(): boolean {
-    return this.activeController !== null;
+    return this.runs.isActive;
   }
 
   async initialize(): Promise<void> {
@@ -101,7 +115,8 @@ export class ClaudeCodeEngine implements AIEngine {
   }
 
   async dispose(): Promise<void> {
-    await this.cancel();
+    // Shutdown/retirement: every run on this instance goes.
+    await this.stopRuns(this.runs.all());
     this.pendingUserAnswers.clear();
     this._isInitialized = false;
   }
@@ -140,10 +155,9 @@ export class ClaudeCodeEngine implements AIEngine {
     debug.log('chat', "Claude Code - Stream Query");
     debug.log('chat', { prompt });
 
-    this.activeController = abortController || new AbortController();
-    // Held locally: cancel() nulls the field, and the checks below still need to
-    // know whether this stream ended because the user cancelled it.
-    const streamController = this.activeController;
+    const streamController = abortController || new AbortController();
+    const run: ClaudeRun = { controller: streamController, query: null };
+    this.runs.add(run);
 
     const resolvedProjectPath = resolveOsPath(projectPath);
 
@@ -244,6 +258,7 @@ export class ClaudeCodeEngine implements AIEngine {
               canUseToolOptions.signal.addEventListener('abort', onAbort, { once: true });
 
               this.pendingUserAnswers.set(canUseToolOptions.toolUseID, {
+                run,
                 resolve: (result: PermissionResult) => {
                   canUseToolOptions.signal.removeEventListener('abort', onAbort);
                   resolve(result);
@@ -289,7 +304,7 @@ export class ClaudeCodeEngine implements AIEngine {
         ...(maxTurns && { maxTurns }),
         ...(includePartialMessages && { includePartialMessages }),
         forwardSubagentText: true,
-        abortController: this.activeController,
+        abortController: streamController,
         ...(Object.keys(mcpServers).length > 0 && { mcpServers }),
         ...(allowedMcpTools.length > 0 && { allowedTools: allowedMcpTools })
       };
@@ -306,7 +321,7 @@ export class ClaudeCodeEngine implements AIEngine {
         options: sdkOptions,
       });
 
-      this.activeQuery = queryInstance;
+      run.query = queryInstance;
 
       // Per-query stateful converter so block-stop reasoning tracking persists
       // across the stream of SDK messages.
@@ -335,9 +350,9 @@ export class ClaudeCodeEngine implements AIEngine {
           const observedVersion = workflowTranscripts.changeVersion;
           for (const output of await workflowTranscripts.drain()) events.push(output);
 
-          if (this.activeController?.signal.aborted) break;
+          if (streamController.signal.aborted) break;
           if (sdkStreamDone && !await workflowTranscripts.hasActiveWorkflows()) break;
-          await workflowTranscripts.waitForChange(observedVersion, this.activeController!.signal);
+          await workflowTranscripts.waitForChange(observedVersion, streamController.signal);
         }
         // The terminal status event is authoritative; drain once more for writes
         // already queued by the filesystem before closing the merged stream.
@@ -363,62 +378,87 @@ export class ClaudeCodeEngine implements AIEngine {
     } catch (error) {
       handleStreamError(error);
     } finally {
-      this.activeController = null;
-      this.activeQuery = null;
+      // Retire THIS run only — a concurrent stream of another chat session in
+      // the same project is still using the instance.
+      this.forgetRun(run);
     }
   }
 
   /**
-   * Cancel active query
+   * Drop a finished run and the questions only it could have answered.
    */
-  async cancel(): Promise<void> {
-    // Remove abort listeners from pending AskUserQuestion promises WITHOUT
-    // resolving them. Resolving causes the SDK to call handleControlRequest →
-    // write() to send the permission result to the subprocess. If close() has
-    // already killed the subprocess, this write throws "Operation aborted" as
-    // an unhandled error, crashing the server. By removing listeners and not
-    // resolving, the promises are safely abandoned when close() terminates the
-    // process and the async generator completes.
-    for (const [, pending] of this.pendingUserAnswers) {
-      pending.removeAbortListener();
+  private forgetRun(run: ClaudeRun): void {
+    this.runs.remove(run);
+    for (const [toolUseId, pending] of this.pendingUserAnswers) {
+      if (pending.run === run) this.pendingUserAnswers.delete(toolUseId);
     }
-    this.pendingUserAnswers.clear();
+    run.query = null;
+  }
 
-    // Use close() to forcefully terminate the query process and clean up
-    // all resources (docs: "Forcefully ends the query and cleans up all
-    // resources"). Unlike interrupt() which can hang indefinitely when the
-    // subprocess is unresponsive, close() is synchronous and guaranteed to
-    // complete — making cancel deterministic.
-    if (this.activeQuery && typeof this.activeQuery.close === 'function') {
-      try {
-        this.activeQuery.close();
-      } catch {
-        // Ignore close errors — process may already be dead
+  /**
+   * Cancel the run whose AbortController is `owner`, and only that run.
+   */
+  async cancel(owner: AbortController): Promise<void> {
+    await this.stopRuns(this.runs.select(owner));
+  }
+
+  /**
+   * Tear down the given runs. `cancel` passes the one run it was asked to
+   * stop; `dispose` passes them all. Nothing else may reach this.
+   */
+  private async stopRuns(targets: ClaudeRun[]): Promise<void> {
+    for (const run of targets) {
+      // Remove abort listeners from this run's pending AskUserQuestion promises
+      // WITHOUT resolving them. Resolving causes the SDK to call
+      // handleControlRequest → write() to send the permission result to the
+      // subprocess. If close() has already killed the subprocess, this write
+      // throws "Operation aborted" as an unhandled error, crashing the server.
+      // By removing listeners and not resolving, the promises are safely
+      // abandoned when close() terminates the process and the async generator
+      // completes. Questions parked by OTHER runs stay put — their subprocess
+      // is still alive and still waiting for an answer.
+      for (const [, pending] of this.pendingUserAnswers) {
+        if (pending.run === run) pending.removeAbortListener();
+      }
+
+      // Use close() to forcefully terminate the query process and clean up
+      // all resources (docs: "Forcefully ends the query and cleans up all
+      // resources"). Unlike interrupt() which can hang indefinitely when the
+      // subprocess is unresponsive, close() is synchronous and guaranteed to
+      // complete — making cancel deterministic.
+      if (run.query && typeof run.query.close === 'function') {
+        try {
+          run.query.close();
+        } catch {
+          // Ignore close errors — process may already be dead
+        }
+      }
+
+      if (!run.controller.signal.aborted) run.controller.abort();
+      this.forgetRun(run);
+    }
+  }
+
+  /**
+   * Interrupt a run (soft stop). Targeted like `cancel`.
+   */
+  async interrupt(owner: AbortController): Promise<void> {
+    const targets = this.runs.select(owner);
+    for (const run of targets) {
+      if (run.query && typeof run.query.interrupt === 'function') {
+        await run.query.interrupt();
       }
     }
-
-    if (this.activeController && !this.activeController.signal.aborted) {
-      this.activeController.abort();
-    }
-    this.activeController = null;
-    this.activeQuery = null;
   }
 
   /**
-   * Interrupt the active query
+   * Change permission mode for one run's query.
    */
-  async interrupt(): Promise<void> {
-    if (this.activeQuery && typeof this.activeQuery.interrupt === 'function') {
-      await this.activeQuery.interrupt();
-    }
-  }
-
-  /**
-   * Change permission mode for active query
-   */
-  async setPermissionMode(mode: PermissionMode): Promise<void> {
-    if (this.activeQuery && typeof this.activeQuery.setPermissionMode === 'function') {
-      await this.activeQuery.setPermissionMode(mode);
+  async setPermissionMode(mode: PermissionMode, owner: AbortController): Promise<void> {
+    for (const run of this.runs.select(owner)) {
+      if (run.query && typeof run.query.setPermissionMode === 'function') {
+        await run.query.setPermissionMode(mode);
+      }
     }
   }
 

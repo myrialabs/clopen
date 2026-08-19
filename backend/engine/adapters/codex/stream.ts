@@ -29,6 +29,7 @@ import { resolveOsPath } from '$backend/utils/paths';
 import { resolveEngineCli } from '$backend/engine/engine-cli';
 import { getCleanSpawnEnv } from '$backend/utils/index.js';
 import { getCodexMcpConfig } from '../../../mcp';
+import { EngineRuns } from '../run-registry';
 import { artifactFilter } from '$backend/profiles';
 import { syncSkills } from '$backend/skills';
 import { syncEngineArtifacts, buildArtifactsPromptContext } from '$backend/engine/artifact-sync';
@@ -56,13 +57,26 @@ import path from 'node:path';
 import os from 'node:os';
 import fs from 'node:fs';
 
+/** One stream in flight on this instance. */
+interface CodexRun {
+	/** Identity of the run — the controller the caller passed to streamQuery. */
+	controller: AbortController;
+	thread: Thread | null;
+}
+
 export class CodexEngine implements AIEngine {
 	readonly name = 'codex' as const;
 
 	private _isInitialized = false;
 	private codex: Codex | null = null;
-	private activeThread: Thread | null = null;
-	private activeController: AbortController | null = null;
+	/**
+	 * Every stream in flight, keyed by the AbortController its caller passed to
+	 * streamQuery. One instance serves all chat sessions of a project, so the
+	 * thread and controller of a stream belong to the run, not the instance — a
+	 * field would hold only the most recent one and cancelling any chat would
+	 * abort another chat's turn.
+	 */
+	private runs = new EngineRuns<CodexRun>();
 	/** Account ID currently baked into `this.codex`. Same trade-off as Copilot. */
 	private currentAccountId: number | null = null;
 	/**
@@ -78,7 +92,7 @@ export class CodexEngine implements AIEngine {
 	}
 
 	get isActive(): boolean {
-		return this.activeController !== null;
+		return this.runs.isActive;
 	}
 
 	async initialize(accountId?: number, mcpProfileFilter?: Set<string>): Promise<void> {
@@ -140,7 +154,7 @@ export class CodexEngine implements AIEngine {
 	}
 
 	async dispose(): Promise<void> {
-		await this.cancel();
+		await this.stopRuns(this.runs.all());
 		this.codex = null;
 		this.currentAccountId = null;
 		this.currentMcpFilterKey = null;
@@ -197,7 +211,9 @@ export class CodexEngine implements AIEngine {
 			applyAccountAuth(activeAccount);
 		}
 
-		this.activeController = abortController || new AbortController();
+		const controller = abortController || new AbortController();
+		const run: CodexRun = { controller, thread: null };
+		this.runs.add(run);
 
 		const resolvedProjectPath = resolveOsPath(projectPath);
 		const state = createCodexState('', modelId);
@@ -237,7 +253,7 @@ export class CodexEngine implements AIEngine {
 				thread = this.codex.startThread(threadOptions);
 			}
 
-			this.activeThread = thread;
+			run.thread = thread;
 
 			// Prompt-scoped engine: advertise the profile-scoped Skills/Commands/
 			// Subagents PER-SESSION via the prompt (not the shared global AGENTS.md /
@@ -245,11 +261,11 @@ export class CodexEngine implements AIEngine {
 			const artifactsContext = buildArtifactsPromptContext(profileId);
 			const input = await buildCodexInput(prompt, artifactsContext || undefined);
 			const { events } = await thread.runStreamed(input, {
-				signal: this.activeController.signal,
+				signal: controller.signal,
 			});
 
 			for await (const event of events) {
-				if (this.activeController.signal.aborted) break;
+				if (controller.signal.aborted) break;
 
 				switch (event.type) {
 					case 'thread.started':
@@ -284,7 +300,7 @@ export class CodexEngine implements AIEngine {
 				}
 			}
 
-			yield buildResultEvent(state, this.activeController.signal.aborted);
+			yield buildResultEvent(state, controller.signal.aborted);
 		} catch (error) {
 			handleStreamError(error);
 		} finally {
@@ -295,23 +311,34 @@ export class CodexEngine implements AIEngine {
 			} catch (snapshotErr) {
 				debug.warn('engine', 'Codex: post-stream auth.json snapshot failed (non-fatal):', snapshotErr);
 			}
-			this.activeThread = null;
-			this.activeController = null;
+			// Retire THIS run only — another chat session of the same project may
+			// still be streaming on this instance.
+			this.runs.remove(run);
 		}
 	}
 
-	async cancel(): Promise<void> {
+	/**
+	 * Cancel the run whose AbortController is `owner`, and only that run.
+	 */
+	async cancel(owner: AbortController): Promise<void> {
+		await this.stopRuns(this.runs.select(owner));
+	}
+
+	/**
+	 * Tear down the given runs. `cancel` passes the one run it was asked to
+	 * stop; `dispose` passes them all. Nothing else may reach this.
+	 */
+	private async stopRuns(targets: CodexRun[]): Promise<void> {
 		// Abort the local controller so the for-await loop exits even if the
 		// SDK's signal propagation hangs.
-		if (this.activeController && !this.activeController.signal.aborted) {
-			this.activeController.abort();
+		for (const run of targets) {
+			if (!run.controller.signal.aborted) run.controller.abort();
+			this.runs.remove(run);
 		}
-		this.activeController = null;
-		this.activeThread = null;
 	}
 
-	async interrupt(): Promise<void> {
-		await this.cancel();
+	async interrupt(owner: AbortController): Promise<void> {
+		await this.stopRuns(this.runs.select(owner));
 	}
 
 	/**

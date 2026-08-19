@@ -1535,16 +1535,21 @@ class StreamManager extends EventEmitter {
 			debug.log('mcp', `✅ Auto-released MCP tabs for session ${streamState.chatSessionId.slice(0, 8)} on stream cancellation`);
 		}
 
-		// Cancel the per-project engine with a bounded timeout.
-		// engine.cancel() stops the SDK process (Claude Code: close() kills subprocess,
+		// Stop this stream's run on the engine, with a bounded timeout.
+		// engine.cancel() stops the SDK work (Claude Code: close() kills subprocess,
 		// OpenCode: aborts controller + HTTP abort to server). If cancel() hangs
 		// (e.g. unresponsive SDK), the timeout ensures we always proceed to emit
 		// events and update presence — preventing infinite loader on the frontend.
+		//
+		// The abortController identifies WHICH run to stop. One engine instance is
+		// shared by every chat session of a project, so an untargeted cancel stops
+		// whichever run the instance happened to have on hand — cancelling one chat
+		// would kill another chat of the same project mid-answer.
 		try {
 			const engine = streamState.engineInstance;
-			if (engine?.isActive) {
+			if (engine && streamState.abortController) {
 				await Promise.race([
-					engine.cancel(),
+					engine.cancel(streamState.abortController),
 					new Promise<void>(resolve => setTimeout(resolve, 5000))
 				]);
 			}

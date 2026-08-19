@@ -8,10 +8,16 @@
  *   Used for non-streaming operations like models:list, settings, etc.
  *
  * - Per-project instances (getProjectEngine / initializeProjectEngine):
- *   Used by stream-manager for chat streaming.
- *   Each project gets its own engine instance so abort controllers,
- *   active queries, and session IDs are fully isolated.
- *   Cancelling Project A's stream never affects Project B.
+ *   Used by stream-manager for chat streaming. Cancelling Project A's stream
+ *   never affects Project B.
+ *
+ *   Per project, NOT per chat session: every chat session of a project shares
+ *   one instance, and several of them stream at once. Isolation between those
+ *   streams is the adapter's job, not this cache's — each keeps its per-stream
+ *   state in an `EngineRuns` registry (backend/engine/adapters/run-registry.ts)
+ *   and `cancel(owner)` stops exactly the run it was handed. Adding per-stream
+ *   state to an adapter INSTANCE reintroduces "Stop this chat" stopping a
+ *   different one.
  *
  * Adapters are loaded on first use, never at boot. This registry used to import
  * all eight statically, which coupled every user's startup to every adapter: one
@@ -238,8 +244,10 @@ const projectEngines = new Map<string, Map<EngineType, EngineSlot>>();
 
 /**
  * Get (or create) an engine instance scoped to a specific project.
- * Each project gets its own engine with independent state (abort controllers,
- * active queries, session IDs), ensuring complete stream isolation.
+ *
+ * Scoped per project, so one project's streams never reach another's. Within a
+ * project the instance is SHARED by every chat session — see the note at the
+ * top of this file for what that means for adapters.
  */
 export async function getProjectEngine(projectId: string, type: EngineType): Promise<AIEngine> {
 	let engines = projectEngines.get(projectId);

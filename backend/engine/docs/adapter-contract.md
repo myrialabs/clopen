@@ -12,8 +12,8 @@ export interface AIEngine {
 
   initialize(accountId?: number): Promise<void>;  // lazy; idempotent
   dispose(): Promise<void>;           // called per-project & on shutdown
-  cancel(): Promise<void>;            // hard cancel
-  interrupt(): Promise<void>;         // soft stop
+  cancel(owner: AbortController): Promise<void>;     // hard cancel, ONE run
+  interrupt(owner: AbortController): Promise<void>;  // soft stop, ONE run
 
   streamQuery(options: EngineQueryOptions):
     AsyncGenerator<EngineOutput, void, unknown>;
@@ -31,10 +31,35 @@ Four invariants:
 1. **`streamQuery` is the only streaming output path.** It is an
    `AsyncGenerator<EngineOutput>`. The adapter translates SDK events into
    `EngineOutput` — that is all.
-2. **Streaming state lives on the instance.** Because `getProjectEngine`
-   returns one instance per `(projectId, engineType)`, the abort controller,
-   active query, `pendingUserAnswers`, and session ID are automatically
-   isolated per-project.
+2. **Streaming state lives on the RUN, never on the instance.**
+   `getProjectEngine` returns one instance per `(projectId, engineType)`, so an
+   instance is isolated from other *projects* — and shared by every chat session
+   *within* one project. Several of them stream at the same time. An
+   `activeController` / `activeQuery` / `activeSessionId` field therefore holds
+   whichever chat started last, and the earlier one silently loses its handles.
+   That is not theoretical: it is how `cancel()` came to abort a different chat
+   than the one the user stopped, how a finished stream made `isActive` report
+   idle while another was still running (letting engine retirement dispose it
+   mid-answer), and how OpenCode leaked a pooled-server hold per overwritten
+   stream.
+
+   So every adapter keeps a `private runs = new EngineRuns<XxxRun>()`
+   ([`adapters/run-registry.ts`](../adapters/run-registry.ts)) and puts each
+   stream's controller, SDK handle, session id, server binding and parked
+   questions in its own `XxxRun`. The registry keys runs by the AbortController
+   the caller passed to `streamQuery` — the same object
+   `StreamState.abortController` holds, so no id has to be minted or kept in
+   sync. `isActive` is `this.runs.isActive` (any run, not the latest one), the
+   stream's `finally` retires only its own run, and anything keyed by tool id
+   (`pendingUserAnswers`, `pendingAsks`, `pendingQuestions`) records which run
+   parked it so a cancel drops that run's entries alone.
+
+   `cancel(owner)` and `interrupt(owner)` take the run to stop, and the
+   parameter is required on purpose — there is no "cancel whatever you are
+   doing" for callers outside the adapter. Adapters implement the teardown once
+   in a private `stopRuns(targets)`, called with `this.runs.select(owner)` from
+   `cancel` and with `this.runs.all()` from `dispose()`. Stopping everything is
+   `dispose()`'s job; only shutdown and engine retirement get to ask for it.
 3. **Init is lazy & concurrency-safe.** The first `streamQuery` /
    `getAvailableModels` call triggers `initialize()`. Multiple parallel
    callers **must** share a single init promise. See:
@@ -61,7 +86,7 @@ share one instance instead of racing to build two.
 | Accessor                             | Kind  | Used for                                      |
 |--------------------------------------|-------|-----------------------------------------------|
 | `getEngine(type)`                    | async | Global singleton — `models:list`, settings    |
-| `getProjectEngine(projectId, type)`  | async | Streaming chat — isolated per-project         |
+| `getProjectEngine(projectId, type)`  | async | Streaming chat — one instance per project, shared by its chat sessions |
 | `findProjectEngine(projectId, type)` | sync  | An engine that must already exist — cancel, answer routing |
 
 `findProjectEngine` returns `undefined` rather than creating one: cancelling a
@@ -280,10 +305,16 @@ Important conventions:
 - Tool names **must** be canonicalised via `toCanonicalToolName(...)`
   (`shared/types/unified/tool.ts`) so the frontend renders the same UI for
   tools that have different names across SDKs.
+- `cancel()` targeting: act **only** on `this.runs.select(owner)`. Never fall
+  back to "the runs that are left" when the owner is gone — the caller named a
+  stream that already ended, and the runs that are left belong to other chats
+  (see invariant 2 and `adapters/run-registry.test.ts`).
 - `cancel()` ordering: **abort the local controller first**, **then** RPC
   to the SDK/server. RPCs can hang; the local abort cuts the `for await`
-  loop deterministically. See `OpenCodeEngine.cancel`,
-  `ClaudeCodeEngine.cancel`, `CopilotEngine.cancel`.
+  loop deterministically. Release shared resources (OpenCode's pool hold)
+  **after** the RPC, or the server can be reaped mid-call. See
+  `OpenCodeEngine.stopRuns`, `ClaudeCodeEngine.stopRuns`,
+  `CopilotEngine.stopRuns`.
 - Dynamic-catalog fetchers in `models.ts` MUST return `EngineModel[]` and
   use `[]` as the failure sentinel (network, auth, parse error). Do **not**
   return `null` — both `fetchOpenCodeModels` and `fetchQwenModels` return
