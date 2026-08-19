@@ -313,10 +313,22 @@ resolved it from ambient state and both stopped the wrong chat:
   two chats stream at once.
 - **Stream bookkeeping is per session.** `processId`, `streamCompleted`, the
   cancelled-processId set and the cancel safety timer live in a
-  `Map<sessionId, …>` inside `chat.service.ts`. Stream events carry no
-  `chatSessionId` — they are routed by chat-session room and a client is joined
-  to exactly the room it is viewing, so the viewed session is the authoritative
-  owner of every incoming event.
+  `Map<sessionId, …>` inside `chat.service.ts`.
+- **Every stream event carries its own `chatSessionId`** — `chat:connection`,
+  `chat:message`, `chat:partial`, `chat:complete`, `chat:error`,
+  `chat:cancelled` — and `chat.service.ts::ownerOf` credits it to that session.
+  Room membership looks like it would do the job (a client joins the room of the
+  session it views) but it does not: a switch points `currentSession` at the new
+  chat immediately, while the leave/join and the transcript reload are still in
+  flight. Attributing by "whatever is on screen" put the chat being left's
+  pending question onto the chat being opened, which then showed
+  "Waiting for your input..." while it was still working.
+- **`sessionState.messagesSessionId` says whose transcript is loaded.**
+  `sessionState.messages` holds one session's messages, and `currentSession`
+  moves a round trip before they arrive. Anything that writes to the transcript
+  or derives from it — event handlers, `catchupActiveStream`,
+  `detectPendingInteractiveTools`, the cancel-time `finalizeStreamEvents` —
+  checks this marker, not `currentSession`.
 - **The backend cancels one run**, identified by `StreamState.abortController`.
   See invariant 2 in [adapter-contract](./adapter-contract.md) and §10.26 in
   [lessons-learned](./lessons-learned.md).

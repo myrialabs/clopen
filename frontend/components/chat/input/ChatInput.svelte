@@ -306,7 +306,13 @@
 			lastPresenceProjectId = projectId;
 		}
 
-		const catchupKey = sessionId ? `${projectId}:${sessionId}` : undefined;
+		// Catchup reads and writes this session's transcript, so it may only run
+		// once that transcript is the one loaded — `currentSession` moves on
+		// switch, `messagesSessionId` a round trip later. Leaving the key
+		// undefined until then means the attempt is not marked as done, so this
+		// effect retries the moment the messages land.
+		const transcriptReady = !!sessionId && sessionState.messagesSessionId === sessionId;
+		const catchupKey = transcriptReady ? `${projectId}:${sessionId}` : undefined;
 		const status = presenceState.statuses.get(projectId);
 		// Check if the active stream is for the CURRENT session (not just any session in the project)
 		const hasActiveForSession = status?.streams?.some(
@@ -350,18 +356,27 @@
 	 * for late-joining users (browser refresh, project switch, long absence)
 	 */
 	async function catchupActiveStream(status: any) {
-		if (!status?.streams?.length || !sessionState.currentSession?.id) return;
+		// Pin the session this catchup is for. Everything below runs after an
+		// await, and `sessionState.messages` always holds whichever session is on
+		// screen *now* — so a catchup that resolves after the user switched away
+		// would inject one chat's partial text into another's transcript and read
+		// that transcript to decide whether to show "Waiting for your input".
+		const chatSessionId = sessionState.currentSession?.id;
+		if (!status?.streams?.length || !chatSessionId) return;
+		// `messagesSessionId` — not `currentSession` — is what says the transcript
+		// on screen is this session's; the switch moves one a round trip before
+		// the other.
+		const holdsThisSession = () => sessionState.messagesSessionId === chatSessionId;
 
 		// Find the active stream for the current session
 		const activeStream = status.streams.find(
-			(s: any) => s.status === 'active' && s.chatSessionId === sessionState.currentSession?.id
+			(s: any) => s.status === 'active' && s.chatSessionId === chatSessionId
 		);
 		if (!activeStream) return;
 
 		try {
-			const streamState = await ws.http('chat:stream-state', {
-				chatSessionId: sessionState.currentSession.id
-			});
+			const streamState = await ws.http('chat:stream-state', { chatSessionId });
+			if (!holdsThisSession()) return;
 
 			if (streamState && streamState.status === 'active' && streamState.processId) {
 				// ── Inject reasoning stream_event (if available) ──
@@ -420,13 +435,10 @@
 				}
 
 				// Reconnect to live stream events so future partials/messages/complete flow in
-				chatService.reconnectToStream(
-					sessionState.currentSession.id,
-					streamState.processId
-				);
+				chatService.reconnectToStream(chatSessionId, streamState.processId);
 
 				// Detect if an interactive tool (e.g. AskUserQuestion) is pending in existing messages
-				chatService.detectPendingInteractiveTools();
+				chatService.detectPendingInteractiveTools(chatSessionId);
 
 				debug.log('chat', 'Caught up with active stream:', {
 					processId: streamState.processId,

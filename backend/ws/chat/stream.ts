@@ -253,6 +253,7 @@ export const streamHandler = createRouter()
 			const stream = streamManager.getStream(streamId);
 			if (stream) {
 				ws.emit.chatSession(data.chatSessionId, 'chat:connection', {
+					chatSessionId: data.chatSessionId,
 					processId: stream.processId,
 					timestamp: stream.startedAt.toISOString(),
 					seq: 1
@@ -273,6 +274,7 @@ export const streamHandler = createRouter()
 					switch (event.type) {
 						case 'connection':
 							ws.emit.chatSession(chatSessionId, 'chat:connection', {
+								chatSessionId,
 								processId: event.data.processId,
 								timestamp: event.data.timestamp,
 								seq: event.seq
@@ -284,6 +286,7 @@ export const streamHandler = createRouter()
 
 						case 'message': {
 							ws.emit.chatSession(chatSessionId, 'chat:message', {
+								chatSessionId,
 								processId: event.processId,
 								message: trimSubAgentForWire(event.data.message),
 								usage: event.data.usage,
@@ -302,6 +305,7 @@ export const streamHandler = createRouter()
 
 						case 'partial':
 							ws.emit.chatSession(chatSessionId, 'chat:partial', {
+								chatSessionId,
 								processId: event.processId,
 								eventType: event.data.eventType as any,
 								partialText: event.data.partialText || '',
@@ -336,6 +340,7 @@ export const streamHandler = createRouter()
 
 						case 'complete':
 							ws.emit.chatSession(chatSessionId, 'chat:complete', {
+								chatSessionId,
 								processId: event.processId,
 								timestamp: event.data.timestamp,
 								seq: event.seq
@@ -347,6 +352,7 @@ export const streamHandler = createRouter()
 
 						case 'error':
 							ws.emit.chatSession(chatSessionId, 'chat:error', {
+								chatSessionId,
 								processId: event.processId,
 								error: event.data.error,
 								timestamp: event.data.timestamp,
@@ -358,6 +364,7 @@ export const streamHandler = createRouter()
 
 						case 'cancelled':
 							ws.emit.chatSession(chatSessionId, 'chat:error', {
+								chatSessionId,
 								processId: event.processId,
 								error: 'Stream cancelled',
 								timestamp: event.data.timestamp,
@@ -387,6 +394,7 @@ export const streamHandler = createRouter()
 			debug.error('chat', 'WS chat:stream error:', errorMessage);
 
 			ws.emit.chatSession(data.chatSessionId, 'chat:error', {
+				chatSessionId: data.chatSessionId,
 				processId: crypto.randomUUID(),
 				error: errorMessage,
 				timestamp: new Date().toISOString()
@@ -420,6 +428,7 @@ export const streamHandler = createRouter()
 					switch (event.type) {
 						case 'connection':
 							ws.emit.chatSession(chatSessionId, 'chat:connection', {
+								chatSessionId,
 								processId: event.data.processId,
 								timestamp: event.data.timestamp,
 								seq: event.seq
@@ -428,6 +437,7 @@ export const streamHandler = createRouter()
 
 						case 'message': {
 							ws.emit.chatSession(chatSessionId, 'chat:message', {
+								chatSessionId,
 								processId: event.processId,
 								message: trimSubAgentForWire(event.data.message),
 								usage: event.data.usage,
@@ -446,6 +456,7 @@ export const streamHandler = createRouter()
 
 						case 'partial':
 							ws.emit.chatSession(chatSessionId, 'chat:partial', {
+								chatSessionId,
 								processId: event.processId,
 								eventType: event.data.eventType as any,
 								partialText: event.data.partialText || '',
@@ -480,6 +491,7 @@ export const streamHandler = createRouter()
 
 						case 'complete':
 							ws.emit.chatSession(chatSessionId, 'chat:complete', {
+								chatSessionId,
 								processId: event.processId,
 								timestamp: event.data.timestamp,
 								seq: event.seq
@@ -490,6 +502,7 @@ export const streamHandler = createRouter()
 
 						case 'error':
 							ws.emit.chatSession(chatSessionId, 'chat:error', {
+								chatSessionId,
 								processId: event.processId,
 								error: event.data.error,
 								timestamp: event.data.timestamp,
@@ -501,6 +514,7 @@ export const streamHandler = createRouter()
 
 						case 'cancelled':
 							ws.emit.chatSession(chatSessionId, 'chat:error', {
+								chatSessionId,
 								processId: event.processId,
 								error: 'Stream cancelled',
 								timestamp: event.data.timestamp,
@@ -523,6 +537,7 @@ export const streamHandler = createRouter()
 
 			// Send current state snapshot to chat session room so frontend can catch up
 			ws.emit.chatSession(chatSessionId, 'chat:connection', {
+				chatSessionId,
 				processId: streamState.processId,
 				timestamp: streamState.startedAt.toISOString(),
 				seq: streamState.eventSeq
@@ -657,6 +672,7 @@ export const streamHandler = createRouter()
 				// Stream not found - could already be completed/cleaned up
 				// Send cancellation to chat session room so frontend stops loading
 				ws.emit.chatSession(chatSessionId, 'chat:cancelled', {
+					chatSessionId,
 					status: 'cancelled',
 					processId: ''
 				});
@@ -669,6 +685,7 @@ export const streamHandler = createRouter()
 			await streamManager.cancelStream(streamState.streamId);
 			// Always send cancelled to chat session room to clear UI
 			ws.emit.chatSession(chatSessionId, 'chat:cancelled', {
+				chatSessionId,
 				status: 'cancelled',
 				processId: streamState.processId
 			});
@@ -679,6 +696,7 @@ export const streamHandler = createRouter()
 		} catch (error) {
 			const errorMessage = error instanceof Error ? error.message : 'Unknown error';
 			ws.emit.chatSession(chatSessionId, 'chat:error', {
+				chatSessionId,
 				processId: '',
 				error: errorMessage,
 				timestamp: new Date().toISOString()
@@ -966,12 +984,14 @@ export const streamHandler = createRouter()
 	}))
 
 	.emit('chat:connection', t.Object({
+		chatSessionId: t.String(),
 		processId: t.String(),
 		timestamp: t.String(),
 		seq: t.Optional(t.Number())
 	}))
 
 	.emit('chat:message', t.Object({
+		chatSessionId: t.String(),
 		processId: t.String(),
 		message: t.Any(), // SDKMessage
 		usage: t.Optional(t.Any()),
@@ -985,6 +1005,7 @@ export const streamHandler = createRouter()
 	}))
 
 	.emit('chat:partial', t.Object({
+		chatSessionId: t.String(),
 		processId: t.String(),
 		eventType: t.Union([
 			t.Literal('start'),
@@ -1030,12 +1051,14 @@ export const streamHandler = createRouter()
 	}))
 
 	.emit('chat:complete', t.Object({
+		chatSessionId: t.String(),
 		processId: t.String(),
 		timestamp: t.String(),
 		seq: t.Optional(t.Number())
 	}))
 
 	.emit('chat:error', t.Object({
+		chatSessionId: t.String(),
 		processId: t.String(),
 		error: t.String(),
 		timestamp: t.String(),
@@ -1043,6 +1066,7 @@ export const streamHandler = createRouter()
 	}))
 
 	.emit('chat:cancelled', t.Object({
+		chatSessionId: t.String(),
 		status: t.Literal('cancelled'),
 		processId: t.Optional(t.String()),
 		seq: t.Optional(t.Number())

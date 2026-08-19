@@ -2,7 +2,7 @@
 	import type { ToolUseBlock, AskUserQuestionInput } from '$shared/types/unified';
 	import Icon from '$frontend/components/common/display/Icon.svelte';
 	import ws from '$frontend/utils/ws';
-	import { currentSessionId } from '$frontend/stores/core/sessions.svelte';
+	import { renderedSessionId, sessionState } from '$frontend/stores/core/sessions.svelte';
 	import { appState, updateSessionProcessState } from '$frontend/stores/core/app.svelte';
 	import { debug } from '$shared/utils/logger';
 
@@ -127,13 +127,15 @@
 			}
 			debug.log('chat', 'Submitting AskUserQuestion answers:', answers);
 			ws.emit('chat:ask-user-answer', {
-				chatSessionId: currentSessionId(),
+				chatSessionId: renderedSessionId(),
 				toolUseId: toolInput.id,
 				answers
 			});
-			const sessId = currentSessionId();
+			const sessId = renderedSessionId();
 			if (sessId) updateSessionProcessState(sessId, { isWaitingInput: false });
-			appState.isWaitingInput = false;
+			// Only mirror to the global flag when this transcript is also the one
+			// the rest of the UI is pointed at.
+			if (sessId === sessionState.currentSession?.id) appState.isWaitingInput = false;
 			hasSubmitted = true;
 		} catch (error) {
 			debug.error('chat', 'Failed to submit answers:', error);
