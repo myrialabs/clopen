@@ -5,7 +5,7 @@
 import { t } from 'elysia';
 import { createRouter } from '$shared/utils/ws-server';
 import { gitService } from '../../git/git-service';
-import { findNestedRepoPaths } from '../../snapshot/gitignore';
+import { findNestedRepoPaths } from '../../git/nested-repos';
 import { requireProjectAccess } from '../access';
 import { relative as pathRelative } from 'path';
 
