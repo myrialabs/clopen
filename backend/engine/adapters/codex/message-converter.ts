@@ -77,7 +77,7 @@ import type {
 } from '@openai/codex-sdk';
 import { resolveOpenCodeToolName } from '../../../mcp';
 import { readLastTokenUsageFromRollout } from './usage-rollout';
-import { readApplyPatchesFromRollout, findMatchingPatch } from './patch-rollout';
+import { readFileChangeSetsFromRollout, findMatchingFileChangeSet } from './patch-rollout';
 
 // ============================================================================
 // Engine Identity
@@ -469,29 +469,35 @@ function buildFileChangePair(item: FileChangeItem, state: CodexStreamState): Eng
 	const baseId = item.id;
 	const isFailed = item.status === 'failed';
 
-	// SDK doesn't carry diff content on FileUpdateChange — pull it from the
-	// rollout JSONL's apply_patch envelope so Edit blocks render real before/
-	// after text. Falls back to empty strings if the rollout isn't readable.
-	const updatePaths = item.changes.filter(c => c.kind === 'update').map(c => c.path);
-	const matchedPatch = updatePaths.length > 0
-		? findMatchingPatch(readApplyPatchesFromRollout(state.sessionId), updatePaths)
-		: null;
+	// SDK doesn't carry file content on FileUpdateChange — pull it from the
+	// rollout JSONL's `patch_apply_end` event so Edit blocks render the real
+	// before/after text and Write blocks the real file body. Falls back to
+	// empty strings if the rollout isn't readable.
+	const changedPaths = item.changes.map(change => change.path);
+	const matchedChangeSet = findMatchingFileChangeSet(
+		readFileChangeSetsFromRollout(state.sessionId),
+		changedPaths,
+	);
 
 	item.changes.forEach((change, idx) => {
 		const toolId = `${baseId}:${idx}`;
 		let toolName: string;
 		let input: Record<string, unknown>;
 
+		const recovered = matchedChangeSet?.get(change.path);
+
 		if (change.kind === 'add') {
 			toolName = 'Write';
-			input = { filePath: change.path, content: '' } satisfies WriteInput as unknown as Record<string, unknown>;
-		} else if (change.kind === 'update') {
-			toolName = 'Edit';
-			const diff = matchedPatch?.get(change.path);
 			input = {
 				filePath: change.path,
-				oldString: diff?.oldString ?? '',
-				newString: diff?.newString ?? '',
+				content: recovered?.content ?? '',
+			} satisfies WriteInput as unknown as Record<string, unknown>;
+		} else if (change.kind === 'update') {
+			toolName = 'Edit';
+			input = {
+				filePath: change.path,
+				oldString: recovered?.oldString ?? '',
+				newString: recovered?.newString ?? '',
 			} satisfies EditInput as unknown as Record<string, unknown>;
 		} else {
 			// delete → no canonical UI; map to Bash `rm <path>` so the user
