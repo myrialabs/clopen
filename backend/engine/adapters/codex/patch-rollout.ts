@@ -1,169 +1,180 @@
 /**
- * Codex rollout-file apply_patch extraction (workaround).
+ * Codex rollout-file file-change extraction (workaround).
  *
  * The Codex SDK's typed `FileChangeItem` event only exposes `path` + `kind`
- * for each change — it does NOT carry the actual old/new file contents that
- * the model produced. So when we map an `update` change to a unified `Edit`
- * tool block in `message-converter.ts`, the `oldString` and `newString`
- * fields would always be empty.
+ * for each change — it does NOT carry the actual file contents the model
+ * produced. So when we map an `update` change to a unified `Edit` tool block
+ * and an `add` change to a `Write` block in `message-converter.ts`, the
+ * `oldString` / `newString` / `content` fields would always be empty.
  *
- * The Codex CLI does write the full unified-diff patch to the rollout JSONL
- * at `~/.codex/sessions/YYYY/MM/DD/rollout-*-<thread_id>.jsonl` as a
- * `custom_tool_call` with `name: "apply_patch"`. Each `apply_patch.input`
- * contains an envelope-format patch like:
+ * The Codex CLI does write the real contents to the rollout JSONL at
+ * `<codex-home>/sessions/YYYY/MM/DD/rollout-*-<thread_id>.jsonl` as a
+ * `patch_apply_end` event, emitted just before the SDK's `file_change` item:
  *
- *   *** Begin Patch
- *   *** Update File: <abs path>
- *   @@
- *   -old line
- *   +new line
- *   *** End Patch
+ *   {"type":"event_msg","payload":{"type":"patch_apply_end","success":true,
+ *     "changes":{
+ *       "/abs/path.css": {"type":"update","unified_diff":"@@ -1,3 +1,3 @@\n …"},
+ *       "/abs/new.md":   {"type":"add","content":"# New file\n…"}
+ *     }}}
  *
- * We read the rollout, parse every `apply_patch` envelope, and look up the
- * latest one whose update-paths match the live `FileChangeItem` so the Edit
- * block can be filled with real diff content.
+ * We read the rollout, collect every `patch_apply_end`, and look up the
+ * latest one whose change-paths match the live `FileChangeItem` so the Edit
+ * and Write blocks can be filled with the real content.
  *
  * TODO(codex-sdk): once `@openai/codex-sdk` exposes per-change content on
- * `FileUpdateChange` natively (e.g. `oldText`/`newText`), delete this file
- * and read directly from the SDK event in `buildFileChangePair`.
+ * `FileUpdateChange` natively (e.g. `unifiedDiff`/`content`), delete this
+ * file and read directly from the SDK event in `buildFileChangePair`.
  *
  * Until then, this helper depends on an undocumented internal CLI file
  * format. If the format shifts between releases, the adapter degrades
- * gracefully to empty `oldString`/`newString` (no worse than before).
+ * gracefully to empty content (no worse than before).
  */
 import fs from 'node:fs';
 import { debug } from '$shared/utils/logger';
 import { findRolloutFile } from './usage-rollout';
 
-export interface FilePatch {
+/** Content recovered from the rollout for a single changed file. */
+export interface FileChangeContent {
+	kind: 'add' | 'update' | 'delete';
+	/** `update` only: the pre-edit text (context + removed lines). */
 	oldString: string;
+	/** `update` only: the post-edit text (context + added lines). */
 	newString: string;
+	/** `add` only: the full contents of the newly created file. */
+	content: string;
+}
+
+/** One `patch_apply_end` event: absolute file path → recovered content. */
+export type FileChangeSet = Map<string, FileChangeContent>;
+
+/**
+ * Shape of `payload.changes[path]` in a `patch_apply_end` rollout event.
+ * Undocumented CLI-internal format — every field is treated as optional.
+ */
+interface RolloutFileChange {
+	type?: string;
+	unified_diff?: string;
+	content?: string;
+	move_path?: string | null;
 }
 
 /**
- * Parse one `apply_patch` envelope into a per-file map of old/new strings.
+ * Reconstruct before/after text from a unified diff.
  *
- * Multiple hunks per file are concatenated (all `-`/context lines into
- * `oldString`, all `+`/context lines into `newString`) so the rendered Edit
- * block shows every change the model made — even though the unified `Edit`
- * type only carries a single before/after pair.
- *
- * Only `*** Update File:` sections are returned. `Add` and `Delete`
- * sections are ignored — those map to `Write`/`Bash` blocks elsewhere and
- * don't need diff content.
+ * Multiple hunks are concatenated (all `-`/context lines into `oldString`,
+ * all `+`/context lines into `newString`) so the rendered Edit block shows
+ * every change the model made in that file — even though the unified `Edit`
+ * type only carries a single before/after pair. Non-adjacent hunks therefore
+ * render as if they were contiguous; that is a deliberate trade-off of the
+ * single-pair `Edit` shape, not a parsing bug.
  */
-export function parseApplyPatch(input: string): Map<string, FilePatch> {
-	const result = new Map<string, FilePatch>();
-	const lines = input.split('\n');
+export function parseUnifiedDiff(unifiedDiff: string): { oldString: string; newString: string } {
+	const oldLines: string[] = [];
+	const newLines: string[] = [];
+	let insideHunk = false;
 
-	let currentPath: string | null = null;
-	let isUpdate = false;
-	const oldBuf: string[] = [];
-	const newBuf: string[] = [];
-
-	const flush = () => {
-		if (currentPath && isUpdate && (oldBuf.length || newBuf.length)) {
-			result.set(currentPath, {
-				oldString: oldBuf.join('\n'),
-				newString: newBuf.join('\n'),
-			});
-		}
-		currentPath = null;
-		isUpdate = false;
-		oldBuf.length = 0;
-		newBuf.length = 0;
-	};
-
-	for (const line of lines) {
-		if (line.startsWith('*** Begin Patch') || line.startsWith('*** End Patch')) {
-			if (line.startsWith('*** End Patch')) flush();
+	for (const line of unifiedDiff.split('\n')) {
+		if (line.startsWith('@@')) {
+			insideHunk = true;
 			continue;
 		}
-		if (line.startsWith('*** Update File: ')) {
-			flush();
-			currentPath = line.slice('*** Update File: '.length).trim();
-			isUpdate = true;
-			continue;
-		}
-		if (line.startsWith('*** Add File: ') || line.startsWith('*** Delete File: ')) {
-			flush();
-			continue;
-		}
-		if (!isUpdate) continue;
-		if (line.startsWith('@@')) continue;
+		// `---` / `+++` / `diff --git` only count as file headers before the
+		// first hunk. Inside a hunk they are real content (a removed line whose
+		// text is `--`, for instance), so they must not be filtered there.
+		if (!insideHunk) continue;
+		// "\ No newline at end of file" is a diff annotation, not content.
+		if (line.startsWith('\\')) continue;
+
 		if (line.startsWith('-')) {
-			oldBuf.push(line.slice(1));
+			oldLines.push(line.slice(1));
 		} else if (line.startsWith('+')) {
-			newBuf.push(line.slice(1));
+			newLines.push(line.slice(1));
 		} else {
-			// Context line. The CLI sometimes prefixes with a leading space,
-			// sometimes leaves it bare — strip one leading space if present.
-			const ctx = line.startsWith(' ') ? line.slice(1) : line;
-			oldBuf.push(ctx);
-			newBuf.push(ctx);
+			// Context line — carried by both sides. The CLI prefixes it with a
+			// single space; blank context lines arrive as an empty string.
+			const contextLine = line.startsWith(' ') ? line.slice(1) : line;
+			oldLines.push(contextLine);
+			newLines.push(contextLine);
 		}
 	}
-	flush();
-	return result;
+
+	return { oldString: oldLines.join('\n'), newString: newLines.join('\n') };
+}
+
+/** Normalize one `payload.changes` entry into our recovered-content shape. */
+function toFileChangeContent(change: RolloutFileChange): FileChangeContent | null {
+	if (change.type === 'add') {
+		return { kind: 'add', oldString: '', newString: '', content: change.content ?? '' };
+	}
+	if (change.type === 'delete') {
+		return { kind: 'delete', oldString: '', newString: '', content: '' };
+	}
+	if (change.type === 'update') {
+		const { oldString, newString } = parseUnifiedDiff(change.unified_diff ?? '');
+		return { kind: 'update', oldString, newString, content: '' };
+	}
+	return null;
 }
 
 /**
- * Read every `apply_patch` `custom_tool_call` from the rollout file in
- * chronological (file) order. Each entry maps update-path → diff content.
+ * Read every `patch_apply_end` event from the rollout file in chronological
+ * (file) order. Each entry maps an absolute path → recovered content.
  *
- * Returns an empty array if the rollout file isn't found or the read
- * fails — callers should fall back to leaving `oldString`/`newString`
- * empty.
+ * Returns an empty array if the rollout file isn't found or the read fails —
+ * callers should fall back to leaving the content fields empty.
  */
-export function readApplyPatchesFromRollout(threadId: string): Array<Map<string, FilePatch>> {
+export function readFileChangeSetsFromRollout(threadId: string): FileChangeSet[] {
 	const file = findRolloutFile(threadId);
 	if (!file) return [];
 
-	const patches: Array<Map<string, FilePatch>> = [];
+	const changeSets: FileChangeSet[] = [];
 	try {
 		const content = fs.readFileSync(file, 'utf-8');
-		const lines = content.split('\n');
-		for (const line of lines) {
-			if (!line || !line.includes('"apply_patch"')) continue;
+		for (const line of content.split('\n')) {
+			if (!line || !line.includes('"patch_apply_end"')) continue;
 			try {
-				const parsed = JSON.parse(line);
-				const payload = parsed?.payload;
-				if (
-					payload?.type === 'custom_tool_call'
-					&& payload.name === 'apply_patch'
-					&& typeof payload.input === 'string'
-				) {
-					patches.push(parseApplyPatch(payload.input));
+				const payload = JSON.parse(line)?.payload;
+				if (payload?.type !== 'patch_apply_end' || !payload.changes) continue;
+				const changeSet: FileChangeSet = new Map();
+				for (const [path, raw] of Object.entries(payload.changes as Record<string, RolloutFileChange>)) {
+					const recovered = toFileChangeContent(raw ?? {});
+					if (recovered) changeSet.set(path, recovered);
 				}
+				if (changeSet.size > 0) changeSets.push(changeSet);
 			} catch { /* malformed line — skip */ }
 		}
 	} catch (err) {
 		debug.warn('engine', `Codex patch-rollout: failed to read ${file}:`, err);
 		return [];
 	}
-	return patches;
+	return changeSets;
 }
 
 /**
- * Pick the patch from `patches` (rollout-order) that best matches the set
- * of update-paths in the current `FileChangeItem`. Walks from the end of
- * the list (most recent first) so the newest matching `apply_patch`
- * always wins — that's the one whose SDK `file_change` event we just
- * received.
+ * Pick the change set that best matches the paths in the current
+ * `FileChangeItem`. Walks from the end of the list (most recent first) so the
+ * newest matching `patch_apply_end` wins — that's the one whose SDK
+ * `file_change` event we just received.
  *
- * "Match" = the patch's update-path set is a superset of `wantedPaths`.
- * Returns `null` if no patch matches.
+ * Reading the rollout fresh on every `file_change` keeps this correct when a
+ * turn patches the same paths twice: at the time the first item arrives the
+ * second patch has not been written yet, so "newest" is still the first one.
+ *
+ * A resumed thread replays the previous rollout history into the same file,
+ * so older matches for the same paths are expected and deliberately skipped.
+ *
+ * "Match" = the change set covers every path in `wantedPaths`.
+ * Returns `null` if nothing matches.
  */
-export function findMatchingPatch(
-	patches: Array<Map<string, FilePatch>>,
+export function findMatchingFileChangeSet(
+	changeSets: FileChangeSet[],
 	wantedPaths: string[],
-): Map<string, FilePatch> | null {
+): FileChangeSet | null {
 	if (wantedPaths.length === 0) return null;
-	for (let i = patches.length - 1; i >= 0; i--) {
-		const candidate = patches[i];
+	for (let index = changeSets.length - 1; index >= 0; index--) {
+		const candidate = changeSets[index];
 		if (!candidate) continue;
-		const ok = wantedPaths.every(p => candidate.has(p));
-		if (ok) return candidate;
+		if (wantedPaths.every(path => candidate.has(path))) return candidate;
 	}
 	return null;
 }
