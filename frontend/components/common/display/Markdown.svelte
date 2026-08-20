@@ -2,11 +2,18 @@
 	// Single, shared markdown surface for the whole app. Renders content via renderMarkdown, wires
 	// the data-md-* link clicks via dispatchMarkdownClick, and owns the markdown CSS. Visual scale is
 	// selected with `variant`; consumers pass only their content and a couple of flags.
-	import { renderMarkdown, dispatchMarkdownClick } from '$frontend/utils/markdown-renderer';
+	import { onDestroy } from 'svelte';
+	import {
+		renderMarkdown,
+		dispatchMarkdownClick,
+		resolveLocalImageSrc
+	} from '$frontend/utils/markdown-renderer';
 	import { revealFile } from '$frontend/stores/ui/file-peek.svelte';
 	import { initMonaco } from '$frontend/components/common/editor/monaco-loader';
 	import { getThemeName, registerThemes } from '$frontend/components/common/editor/monaco-themes';
 	import { themeStore } from '$frontend/stores/ui/theme.svelte';
+	import ws from '$frontend/utils/ws';
+	import { debug } from '$shared/utils/logger';
 
 	interface Props {
 		content: string;
@@ -38,6 +45,85 @@
 		// when that panel isn't part of the current layout.
 		dispatchMarkdownClick(event, { onFileLink: onFileLink ?? revealFile });
 	}
+
+	// --- Local images ---
+	// Images that point at a path on the backend's disk carry [data-md-local-src] instead of a src
+	// (see resolveLocalImageSrc). Their bytes are read over the file WS API — the same channel the
+	// media preview uses — and handed to the <img> as a blob URL, so they render identically for a
+	// local browser and for someone viewing the workspace from another device.
+	const localImageUrls = new Map<string, string>();
+	const localImageLoads = new Map<string, Promise<string | null>>();
+	const localImageFailures = new Set<string>();
+
+	function loadLocalImage(path: string): Promise<string | null> {
+		const cached = localImageUrls.get(path);
+		if (cached) return Promise.resolve(cached);
+		const inFlight = localImageLoads.get(path);
+		if (inFlight) return inFlight;
+
+		const load = (async () => {
+			try {
+				const response = await ws.http('files:read-content', { path });
+				if (!response.content) return null;
+				const binary = atob(response.content);
+				const bytes = new Uint8Array(binary.length);
+				for (let i = 0; i < binary.length; i++) bytes[i] = binary.charCodeAt(i);
+				const blob = new Blob([bytes], {
+					type: response.contentType || 'application/octet-stream'
+				});
+				const url = URL.createObjectURL(blob);
+				localImageUrls.set(path, url);
+				return url;
+			} catch (err) {
+				debug.error('file', 'Failed to load markdown image:', path, err);
+				return null;
+			} finally {
+				localImageLoads.delete(path);
+			}
+		})();
+		localImageLoads.set(path, load);
+		return load;
+	}
+
+	$effect(() => {
+		void rendered; // re-run when the rendered HTML changes
+		const el = root;
+		if (!el) return;
+
+		const present = new Set<string>();
+		for (const img of Array.from(el.querySelectorAll('img'))) {
+			// Sanitized raw <img src="/Users/..."> goes through the same resolution, so inline HTML
+			// in a file preview behaves like markdown image syntax.
+			const path =
+				img.getAttribute('data-md-local-src') || resolveLocalImageSrc(img.getAttribute('src') || '');
+			if (!path) continue;
+			// Stamp the resolved path so the next pass still recognizes the element after its src
+			// has been swapped for a blob URL (matters for the raw-HTML case).
+			img.setAttribute('data-md-local-src', path);
+			present.add(path);
+			// A failed read is remembered so a streaming message doesn't retry it on every chunk.
+			if (localImageFailures.has(path)) continue;
+			void loadLocalImage(path).then((url) => {
+				if (!url) {
+					localImageFailures.add(path);
+					return;
+				}
+				if (img.isConnected) img.src = url;
+			});
+		}
+
+		// Release blobs for images the current content no longer references.
+		for (const [path, url] of localImageUrls) {
+			if (present.has(path)) continue;
+			URL.revokeObjectURL(url);
+			localImageUrls.delete(path);
+		}
+	});
+
+	onDestroy(() => {
+		for (const url of localImageUrls.values()) URL.revokeObjectURL(url);
+		localImageUrls.clear();
+	});
 
 	// Fence language → Monaco language id (aliases Monaco doesn't resolve itself).
 	const MONACO_LANG: Record<string, string> = {

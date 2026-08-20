@@ -70,6 +70,17 @@ function isExternalUrl(href: string): boolean {
 	return PROTOCOL_RE.test(href) || href.startsWith('//') || href.startsWith('mailto:');
 }
 
+// Recognize an absolute filesystem path (as it appears in a URL pathname or bare in markdown).
+// Returns the file path if matched, otherwise null.
+function matchAbsoluteFilePath(path: string): string | null {
+	// Unix-style absolute file path
+	if (/^\/(Users|home|tmp|opt|var|root|mnt|private|etc)\//.test(path)) return path;
+	// Windows-style, either as a URL pathname (/C:/...) or bare (C:\... / C:/...)
+	const winMatch = path.match(/^\/?([A-Za-z]):[/\\](.*)$/);
+	if (winMatch) return `${winMatch[1]}:/${winMatch[2].replace(/\\/g, '/')}`;
+	return null;
+}
+
 // Detect URLs that point to a local absolute file path served by the current host (e.g.
 // http://localhost/Users/...). Returns the resolved file path if matched, otherwise null, so
 // same-host file links resolve to a Files-panel target instead of opening a new tab.
@@ -81,16 +92,37 @@ function matchLocalFilePath(href: string): string | null {
 			url.hostname === 'localhost' ||
 			url.hostname === '127.0.0.1';
 		if (!sameHost) return null;
-		const path = decodeURIComponent(url.pathname);
-		// Unix-style absolute file path
-		if (/^\/(Users|home|tmp|opt|var|root|mnt|private|etc)\//.test(path)) return path;
-		// Windows-style /C:/...
-		const winMatch = path.match(/^\/([A-Za-z]):\/(.*)$/);
-		if (winMatch) return `${winMatch[1]}:/${winMatch[2]}`;
-		return null;
+		return matchAbsoluteFilePath(decodeURIComponent(url.pathname));
 	} catch {
 		return null;
 	}
+}
+
+// Classify an image source: returns the absolute filesystem path when the source points at a
+// file on the machine running the backend, otherwise null (leave the src alone).
+//
+// Assistants routinely reference screenshots by absolute path (`![shot](/Users/me/x.png)`), which
+// the browser would resolve against the app origin — http://localhost:9141/Users/me/x.png — and
+// fail. A `file://` URL is no fix either: browsers refuse file subresources inside an http page,
+// and for someone viewing the app from another device the path isn't on their disk at all. The
+// bytes have to come from the backend, so these sources are handed to Markdown.svelte, which
+// fetches them over the file WS API. Everything else (http(s), data:, blob:, relative) passes
+// through untouched.
+export function resolveLocalImageSrc(src: string): string | null {
+	const href = src.trim();
+	if (!href) return null;
+	if (href.startsWith('file:')) {
+		try {
+			return matchAbsoluteFilePath(decodeURIComponent(new URL(href).pathname));
+		} catch {
+			return null;
+		}
+	}
+	// A Windows drive letter (C:\...) looks like a URL scheme, so it has to be settled before the
+	// protocol check.
+	if (/^[A-Za-z]:[/\\]/.test(href)) return matchAbsoluteFilePath(href);
+	if (PROTOCOL_RE.test(href) || href.startsWith('//')) return matchLocalFilePath(href);
+	return matchAbsoluteFilePath(href);
 }
 
 // --- Heading id generation (used for in-document scroll anchors) ---
@@ -178,6 +210,20 @@ export function renderMarkdown(content: string, options: RenderMarkdownOptions =
 			return `<a href="${safeHref}" data-md-file="${safeHref}"${titleAttr}>${text}</a>`;
 		}
 		return `<a href="${escapeHtml(href)}" target="_blank" rel="noopener noreferrer"${titleAttr}>${text}</a>`;
+	};
+
+	renderer.image = function (token) {
+		const href = token.href || '';
+		const altAttr = ` alt="${escapeHtml(token.text || '')}"`;
+		const titleAttr = token.title ? ` title="${escapeHtml(token.title)}"` : '';
+		const localPath = resolveLocalImageSrc(href);
+		if (localPath) {
+			// Deliberately no src — an http://<origin>/Users/... request would only 404. The
+			// element is marked instead, and Markdown.svelte fills in a blob URL once it has
+			// read the file from the backend.
+			return `<img data-md-local-src="${escapeHtml(localPath)}"${altAttr}${titleAttr}>`;
+		}
+		return `<img src="${escapeHtml(href)}"${altAttr}${titleAttr}>`;
 	};
 
 	renderer.table = function (token) {
