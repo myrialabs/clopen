@@ -495,13 +495,21 @@
 		onRetry();
 	}
 
-	// Handle screencast refresh request from Canvas (when stream is stuck)
-	// This sends a scale-update which triggers CDP screencast restart on backend
+	/**
+	 * Ask the source to re-send — the Canvas watchdog's cheap repair.
+	 *
+	 * Carried as a scale update because that is the message the source treats as
+	 * "rebuild your capture".
+	 *
+	 * Falling back to 1 matters: the scale is only known once the container has
+	 * been measured, and skipping the send while it is not made the watchdog's
+	 * recovery a silent no-op in exactly the case it exists for — a preview that
+	 * has never painted anything.
+	 */
 	function handleScreencastRefresh() {
-		if (previewDimensions?.scale) {
-			debug.log('preview', `📐 Requesting screencast refresh with scale: ${previewDimensions.scale}`);
-			sendScaleUpdate(previewDimensions.scale);
-		}
+		const scale = previewDimensions?.scale && previewDimensions.scale > 0 ? previewDimensions.scale : 1;
+		debug.log('preview', `📐 Requesting screencast refresh with scale: ${scale}`);
+		sendScaleUpdate(scale);
 	}
 
 	// Initial dimensions calculation

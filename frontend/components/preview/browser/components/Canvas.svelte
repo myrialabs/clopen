@@ -161,6 +161,20 @@
 	const WATCHDOG_ESCALATION_STEP_MS = 3000;
 	const WATCHDOG_MAX_WAIT_MS = 15000;
 
+	/**
+	 * How many rounds the watchdog spends asking the source to re-send before it
+	 * stops believing the connection is the healthy half.
+	 *
+	 * "Connected but blank" has two causes that look identical from here: a
+	 * source that simply has no new frame to send, which a refresh fixes, and a
+	 * source whose capture is broken, which it cannot. Only ever asking for a
+	 * refresh made the second case permanent — the request is cheap, it always
+	 * "succeeds", and nothing else in the ladder is reached while the peer is
+	 * connected. After this many fruitless rounds the connection is torn down
+	 * and rebuilt, which is what re-injects the page-side capture.
+	 */
+	const WATCHDOG_REFRESH_ROUNDS = 2;
+
 	// Sync isStreamReady with hasReceivedFirstFrame for parent component
 	$effect(() => {
 		isStreamReady = hasReceivedFirstFrame;
@@ -1297,8 +1311,13 @@
 
 		// Connected, decoding nothing: the source half is the broken one, and
 		// restarting its capture is both cheaper and likelier to work than
-		// re-negotiating a connection that is demonstrably fine.
-		if (isWebCodecsActive && stats?.isConnected) {
+		// re-negotiating a connection that is demonstrably fine — for the first
+		// couple of rounds. Past that the refresh has demonstrably not worked,
+		// and staying on this branch forever (which it did, because a connected
+		// peer never reaches the re-handshake below) is the whole reason a tab
+		// could sit on "Loading preview…" indefinitely while the page behind it
+		// was perfectly healthy.
+		if (isWebCodecsActive && stats?.isConnected && watchdogRound <= WATCHDOG_REFRESH_ROUNDS) {
 			debug.warn('webcodecs', `Watchdog: connected but blank for ${patience}ms, refreshing capture (round ${watchdogRound})`);
 			onRequestScreencastRefresh();
 			return;

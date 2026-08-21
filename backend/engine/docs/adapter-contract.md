@@ -190,6 +190,13 @@ interface EngineQueryOptions {
 **cannot** write into project B. Always forward it: see `claude/stream.ts`
 calling `getEnabledMcpServers(options.mcpContext)`.
 
+Engines that reach MCP over the HTTP bridge instead of in-process forward the
+same context to their config builder — `getCodexMcpConfig(filter, mcpContext)`
+and friends — which writes it into the bridge URL for `handleMcpRequest` to bind.
+Skipping it does not fail loudly: the handler falls back to the most recently
+started stream, so tool calls land in whichever project the user most recently
+prompted in. See `backend/mcp/README.md` → "Who is calling".
+
 `reasoningEffort` is an **opaque, native-per-engine token** — there is no
 cross-engine normalization. The adapter that produced the level in
 `models.ts` is the one that consumes it in `stream.ts`; every other layer

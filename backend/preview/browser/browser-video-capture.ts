@@ -169,6 +169,13 @@ interface VideoStreamSession {
 	lastEncodedAt: number;
 	/** Guards the watchdog against re-entering while a repair is in flight. */
 	repairing: boolean;
+	/**
+	 * Repairs attempted since the stream last produced anything. A repair that
+	 * did not restore frames must escalate rather than be repeated: the cheap
+	 * one asks the page what it thinks, and a page whose own answer is the
+	 * wrong one will give the same answer every time.
+	 */
+	stallRounds: number;
 	/** Codecs every viewer can decode — one encoder serves them all. */
 	codecSupport: ClientCodecSupport;
 	/** Display metrics of the most demanding viewer. */
@@ -587,6 +594,12 @@ export class BrowserVideoCapture extends EventEmitter {
 	 */
 	private static readonly STREAM_STALL_MS = 6_000;
 
+	/**
+	 * Cheap stall repairs before the watchdog stops taking the page's word for
+	 * its own health and rebuilds the peer from scratch.
+	 */
+	private static readonly STALL_REPAIR_ROUNDS = 1;
+
 	private sessions = new Map<string, VideoStreamSession>();
 	private feeders = new Map<string, ScreencastFeeder>();
 	private preInjectPromises = new Map<string, Promise<boolean>>();
@@ -729,6 +742,7 @@ export class BrowserVideoCapture extends EventEmitter {
 			scriptsPreInjected: false,
 			lastEncodedAt: 0,
 			repairing: false,
+			stallRounds: 0,
 			codecSupport: { ...DEFAULT_CODEC_SUPPORT },
 			display: {},
 			profile,
@@ -978,6 +992,20 @@ export class BrowserVideoCapture extends EventEmitter {
 		const codecChanged = injection.codecSignature !== this.codecSignature(videoSession);
 		const needsInjection = epochMismatch || codecChanged;
 
+		// In push mode the page is only the encoder — the frames come from a CDP
+		// screencast this process owns. `capturing: true` then means "willing",
+		// not "being fed", so a feeder that has gone away leaves a session both
+		// halves call healthy and which produces nothing at all. That state is
+		// self-sustaining: the page keeps answering, so this check keeps taking
+		// the cheap branch, and the viewer keeps waiting for a first frame that
+		// no longer has a source.
+		const sourceMissing =
+			!needsInjection &&
+			!!health?.capturing &&
+			health.captureMode === 'push' &&
+			!videoSession.paused &&
+			!this.feeders.has(sessionId);
+
 		if (needsInjection) {
 			const reason = options.force
 				? 'forced'
@@ -993,7 +1021,10 @@ export class BrowserVideoCapture extends EventEmitter {
 			this.feeders.get(sessionId)?.invalidatePeerHandle();
 		}
 
-		if (needsInjection || !health?.capturing) {
+		if (needsInjection || !health?.capturing || sourceMissing) {
+			if (sourceMissing) {
+				debug.warn('webcodecs', `Page for ${sessionId} reports capturing with no frame source — rebuilding it`);
+			}
 			const started = await this.startPageCapture(page);
 			if (!started) {
 				debug.error('webcodecs', `Page refused to start capturing for ${sessionId}`);
@@ -1593,10 +1624,23 @@ export class BrowserVideoCapture extends EventEmitter {
 		if (videoSession.lastEncodedAt === 0 || silentFor < BrowserVideoCapture.STREAM_STALL_MS) return;
 
 		const { sessionId, tab } = videoSession;
-		debug.warn('webcodecs', `Stream for ${sessionId} produced nothing for ${silentFor}ms — repairing`);
+		videoSession.stallRounds++;
+
+		// The first round asks the page what state it is in and repairs from
+		// that answer, which is cheap and keeps every viewer's peer intact. Once
+		// that has been tried and the stream is still silent, the page's own
+		// account is the thing that cannot be trusted — so rebuild the peer
+		// outright. Viewers lose their connection and re-handshake, which is a
+		// visible hiccup, but they are looking at a frozen picture either way.
+		const force = videoSession.stallRounds > BrowserVideoCapture.STALL_REPAIR_ROUNDS;
+		debug.warn(
+			'webcodecs',
+			`Stream for ${sessionId} produced nothing for ${silentFor}ms — ` +
+				`${force ? 'rebuilding the page peer' : 'repairing'} (round ${videoSession.stallRounds})`
+		);
 
 		videoSession.repairing = true;
-		void this.ensureLive(sessionId, tab, () => !tab.isDestroyed)
+		void this.ensureLive(sessionId, tab, () => !tab.isDestroyed, { force })
 			.then((live) => {
 				if (live) return this.requestKeyframe(sessionId, tab);
 			})
@@ -1620,7 +1664,10 @@ export class BrowserVideoCapture extends EventEmitter {
 		// Frames reaching the encoder is the one signal that means the pipeline
 		// is genuinely alive end to end. The counter is per-window, so any
 		// non-zero report is proof of life for this window.
-		if (stats.framesAttempted > 0) videoSession.lastEncodedAt = Date.now();
+		if (stats.framesAttempted > 0) {
+			videoSession.lastEncodedAt = Date.now();
+			videoSession.stallRounds = 0;
+		}
 
 		// In-page capture can end on its own — the captured surface goes away
 		// on some navigations — and the page has no way to start a screencast.

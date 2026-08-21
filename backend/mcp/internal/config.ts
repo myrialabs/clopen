@@ -12,6 +12,7 @@ import type { CLIMcpServerConfig as QwenMcpServerConfig } from '@qwen-code/sdk';
 import type { McpServerConfig as CursorMcpServerConfig } from '@cursor/sdk';
 import type { ServerConfig, ParsedMcpToolName, ServerName } from './types';
 import type { McpExecutionContext } from '../../engine/types';
+import type { EngineType } from '$shared/types/unified';
 import { serverMetadata } from './servers';
 import { loadEngineSdk } from '$backend/engine/sdk-loader';
 import { projectContextService } from './project-context';
@@ -435,6 +436,40 @@ export function resolveOpenCodeToolName(toolName: string): string | null {
 }
 
 // ============================================================================
+// Internal bridge URL
+// ============================================================================
+
+/**
+ * Loopback URL of the internal `clopen-mcp` bridge, addressed to the caller.
+ *
+ * The in-process engines (Claude, Pi, Cline) bind `McpExecutionContext` around
+ * every tool handler, so a tool call always knows which project asked. The
+ * engines that reach the bridge over HTTP had no such thing: the request
+ * carries no identity, so the handler fell back to "the most recently started
+ * stream" — which is the project the *user* last prompted in, not the one the
+ * agent is working in. An agent running in project A opened its tabs in project
+ * B the moment the user moved over there.
+ *
+ * The query string closes that. Each config says as much as its own lifetime
+ * allows, and the bridge binds whatever it is told:
+ *
+ * - `project` + `session` — the caller named outright. Copilot, Cursor and Qwen
+ *   build their config per stream, so both are true for the whole MCP session.
+ * - `project` alone — Codex, whose client (and therefore this URL) is built
+ *   once per project and reused by every chat session in it.
+ * - `engine` alone — Open Code, whose URL is baked into a server the pool shares
+ *   across projects. All it can honestly say is which engine is asking.
+ */
+function internalBridgeUrl(engine: EngineType, context?: McpExecutionContext): string {
+	const params = new URLSearchParams({ engine });
+
+	if (context?.projectId) params.set('project', context.projectId);
+	if (context?.chatSessionId) params.set('session', context.chatSessionId);
+
+	return `http://localhost:${SERVER_ENV.PORT}/mcp?${params.toString()}`;
+}
+
+// ============================================================================
 // Open Code MCP Configuration
 // ============================================================================
 
@@ -454,14 +489,17 @@ export function getOpenCodeMcpConfig(profileFilter?: Set<string>): Record<string
 		return {};
 	}
 
-	const port = SERVER_ENV.PORT;
+	// No caller binding: this URL is baked into a server the pool shares across
+	// projects and chat sessions (see `scopeKeyFor` in the Open Code adapter),
+	// so the engine marker is all it can honestly carry.
+	const url = internalBridgeUrl('opencode');
 
-	debug.log('mcp', `📦 Open Code MCP: remote server at http://localhost:${port}/mcp`);
+	debug.log('mcp', `📦 Open Code MCP: remote server at ${url}`);
 
 	return {
 		'clopen-mcp': {
 			type: 'remote',
-			url: `http://localhost:${port}/mcp`,
+			url,
 			enabled: true,
 			timeout: MCP_TOOL_CALL_TIMEOUT_MS,
 			headers: { Authorization: `Bearer ${getMcpServiceToken()}` },
@@ -507,13 +545,16 @@ type CodexMcpServerConfig = {
  * `--config mcp_servers.clopen-mcp.<dotted-key>=<value>` flags when the SDK
  * invokes the CLI subprocess for each turn.
  */
-export function getCodexMcpConfig(profileFilter?: Set<string>): Record<string, CodexMcpServerConfig> {
+export function getCodexMcpConfig(
+	profileFilter?: Set<string>,
+	context?: McpExecutionContext
+): Record<string, CodexMcpServerConfig> {
 	const enabledServers = activeInternalServerNames(profileFilter);
 	if (enabledServers.length === 0) {
 		return {};
 	}
 
-	const port = SERVER_ENV.PORT;
+	const url = internalBridgeUrl('codex', context);
 
 	const tools: Record<string, { approval_mode: 'approve' }> = {};
 	for (const serverName of enabledServers) {
@@ -523,11 +564,11 @@ export function getCodexMcpConfig(profileFilter?: Set<string>): Record<string, C
 		}
 	}
 
-	debug.log('mcp', `📦 Codex MCP: remote server at http://localhost:${port}/mcp (auto-approving ${Object.keys(tools).length} tools)`);
+	debug.log('mcp', `📦 Codex MCP: remote server at ${url} (auto-approving ${Object.keys(tools).length} tools)`);
 
 	return {
 		'clopen-mcp': {
-			url: `http://localhost:${port}/mcp`,
+			url,
 			http_headers: { Authorization: `Bearer ${getMcpServiceToken()}` },
 			tools,
 		},
@@ -557,13 +598,16 @@ export function getCodexMcpConfig(profileFilter?: Set<string>): Record<string, C
  * `resolveOpenCodeToolName()` to recover the canonical
  * `mcp__<server>__<tool>` form.
  */
-export function getCopilotMcpConfig(profileFilter?: Set<string>): Record<string, MCPHTTPServerConfig> {
+export function getCopilotMcpConfig(
+	profileFilter?: Set<string>,
+	context?: McpExecutionContext
+): Record<string, MCPHTTPServerConfig> {
 	const enabledServers = activeInternalServerNames(profileFilter);
 	if (enabledServers.length === 0) {
 		return {};
 	}
 
-	const port = SERVER_ENV.PORT;
+	const url = internalBridgeUrl('copilot', context);
 
 	const tools: string[] = [];
 	for (const serverName of enabledServers) {
@@ -573,12 +617,12 @@ export function getCopilotMcpConfig(profileFilter?: Set<string>): Record<string,
 		}
 	}
 
-	debug.log('mcp', `📦 Copilot MCP: remote server at http://localhost:${port}/mcp (${tools.length} tools)`);
+	debug.log('mcp', `📦 Copilot MCP: remote server at ${url} (${tools.length} tools)`);
 
 	return {
 		'clopen-mcp': {
 			type: 'http',
-			url: `http://localhost:${port}/mcp`,
+			url,
 			tools,
 			timeout: MCP_TOOL_CALL_TIMEOUT_MS,
 			headers: { Authorization: `Bearer ${getMcpServiceToken()}` },
@@ -598,20 +642,23 @@ export function getCopilotMcpConfig(profileFilter?: Set<string>): Record<string,
  * Open Code, Codex, Copilot and Qwen already consume — no new HTTP server, no
  * per-engine bridge (README §10.12). The service-token bearer authorises the hop.
  */
-export function getCursorMcpConfig(profileFilter?: Set<string>): Record<string, CursorMcpServerConfig> {
+export function getCursorMcpConfig(
+	profileFilter?: Set<string>,
+	context?: McpExecutionContext
+): Record<string, CursorMcpServerConfig> {
 	const enabledServers = activeInternalServerNames(profileFilter);
 	if (enabledServers.length === 0) {
 		return {};
 	}
 
-	const port = SERVER_ENV.PORT;
+	const url = internalBridgeUrl('cursor', context);
 
-	debug.log('mcp', `📦 Cursor MCP: remote server at http://localhost:${port}/mcp`);
+	debug.log('mcp', `📦 Cursor MCP: remote server at ${url}`);
 
 	return {
 		'clopen-mcp': {
 			type: 'http',
-			url: `http://localhost:${port}/mcp`,
+			url,
 			headers: { Authorization: `Bearer ${getMcpServiceToken()}` },
 		},
 	};
@@ -636,13 +683,16 @@ export function getCursorMcpConfig(profileFilter?: Set<string>): Record<string, 
  * so the model never sees it. The callback covers MCP tool calls too — no
  * per-tool enumeration needed.
  */
-export function getQwenMcpConfig(profileFilter?: Set<string>): Record<string, QwenMcpServerConfig> {
+export function getQwenMcpConfig(
+	profileFilter?: Set<string>,
+	context?: McpExecutionContext
+): Record<string, QwenMcpServerConfig> {
 	const enabledServers = activeInternalServerNames(profileFilter);
 	if (enabledServers.length === 0) {
 		return {};
 	}
 
-	const port = SERVER_ENV.PORT;
+	const url = internalBridgeUrl('qwen', context);
 
 	const includeTools: string[] = [];
 	for (const serverName of enabledServers) {
@@ -652,11 +702,11 @@ export function getQwenMcpConfig(profileFilter?: Set<string>): Record<string, Qw
 		}
 	}
 
-	debug.log('mcp', `📦 Qwen MCP: remote server at http://localhost:${port}/mcp (${includeTools.length} tools)`);
+	debug.log('mcp', `📦 Qwen MCP: remote server at ${url} (${includeTools.length} tools)`);
 
 	return {
 		'clopen-mcp': {
-			httpUrl: `http://localhost:${port}/mcp`,
+			httpUrl: url,
 			includeTools,
 			timeout: MCP_TOOL_CALL_TIMEOUT_MS,
 			trust: true,

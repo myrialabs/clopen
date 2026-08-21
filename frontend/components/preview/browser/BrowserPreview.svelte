@@ -477,6 +477,37 @@
 		}
 	});
 
+	/**
+	 * Adopt an address that has no browser behind it.
+	 *
+	 * A tab whose `url` is set but whose `sessionId` is not renders no Canvas at
+	 * all — the device frame is empty and the solid overlay covers it — so no
+	 * stream, and therefore no stream watchdog, ever exists to notice. The panel
+	 * sits on "Loading preview…" for good while every other tab is fine, and the
+	 * backend tab the agent is driving is a different one.
+	 *
+	 * The URL watcher above cannot close this, because it only fires when the
+	 * address *changes*: a blank slot rebuilt from the workspace snapshot, or a
+	 * switch to a tab whose address happens to equal the one already seen, both
+	 * arrive with `url === previousUrl` and are skipped. This looks at the tab's
+	 * own state instead, so it is true whenever it is true.
+	 *
+	 * `errorMessage` is part of the guard on purpose — a launch that failed is
+	 * reported to the user and must not be retried in a loop by an effect that
+	 * re-runs on every field of the tab.
+	 */
+	$effect(() => {
+		const tab = activeTab;
+		if (!tab || !tab.url) return;
+		if (tab.sessionId || tab.isLaunchingBrowser || tab.errorMessage) return;
+		if (mcpLaunchInProgress) return;
+		if (tab.url.startsWith('chrome-error://') || tab.url.startsWith('chrome://')) return;
+
+		debug.log('preview', `🩹 Tab ${tab.id} has a URL but no session — launching for it`);
+		previousUrl = tab.url;
+		coordinator.launchBrowserForTab(tab.id, tab.url);
+	});
+
 	// Store previewDimensions in active tab. (canvasAPI is not stored: see the
 	// note where the tab state is adopted.)
 	$effect(() => {

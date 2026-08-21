@@ -121,33 +121,33 @@ export function getOpenCodeMcpConfig(profileFilter?: Set<string>) {
 }
 
 /** Codex MCP config. */
-export function getCodexMcpConfig(profileFilter?: Set<string>) {
+export function getCodexMcpConfig(profileFilter?: Set<string>, context?: McpExecutionContext) {
 	return {
-		...internal.getCodexMcpConfig(profileFilter),
+		...internal.getCodexMcpConfig(profileFilter, context),
 		...external.getCodexExternalMcpConfig(profileFilter)
 	};
 }
 
 /** Copilot MCP config. */
-export function getCopilotMcpConfig(profileFilter?: Set<string>) {
+export function getCopilotMcpConfig(profileFilter?: Set<string>, context?: McpExecutionContext) {
 	return {
-		...internal.getCopilotMcpConfig(profileFilter),
+		...internal.getCopilotMcpConfig(profileFilter, context),
 		...external.getCopilotExternalMcpConfig(profileFilter)
 	};
 }
 
 /** Cursor MCP config: internal `clopen-mcp` remote bridge + external servers. */
-export function getCursorMcpConfig(profileFilter?: Set<string>) {
+export function getCursorMcpConfig(profileFilter?: Set<string>, context?: McpExecutionContext) {
 	return {
-		...internal.getCursorMcpConfig(profileFilter),
+		...internal.getCursorMcpConfig(profileFilter, context),
 		...external.getCursorExternalMcpConfig(profileFilter)
 	};
 }
 
 /** Qwen Code MCP config. */
-export function getQwenMcpConfig(profileFilter?: Set<string>) {
+export function getQwenMcpConfig(profileFilter?: Set<string>, context?: McpExecutionContext) {
 	return {
-		...internal.getQwenMcpConfig(profileFilter),
+		...internal.getQwenMcpConfig(profileFilter, context),
 		...external.getQwenExternalMcpConfig(profileFilter)
 	};
 }
