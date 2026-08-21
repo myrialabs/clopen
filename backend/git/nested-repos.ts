@@ -18,15 +18,31 @@
  * are machine-generated, the user never commits them, and listing them floods
  * the Changes tab with thousands of foreign files.
  *
- * Two signals separate the two, both applied while walking:
+ * Names alone cannot separate the two. `plugins/` holds tmux's cloned packages
+ * and a WordPress developer's own plugin repos; `modules/` holds Puppet's
+ * librarian checkouts and hand-written modules. Any denylist of directory
+ * names is wrong on one side of those, and every new package manager adds
+ * another name to chase. So the policy leans on structure instead:
  *
- * 1. **Name** — directories in `HARD_SKIP_DIRS` are dependency/build caches by
- *    definition; never descend into them.
+ * 1. **Name, for cost only** — `HARD_SKIP_DIRS` are caches so large that
+ *    walking them is wasteful. Pruning them is an optimisation, not the policy.
  * 2. **Ignore state** — a directory the enclosing repo ignores is not part of
  *    the project's own structure. We still peek `IGNORED_DESCENT_LEVELS` level
  *    into it, because an embedded repo is commonly placed directly under an
- *    ignored parent (`wp-content/themes/` ignored, the theme repo inside it),
- *    but generated checkouts always sit much deeper.
+ *    ignored parent (`wp-content/plugins/` ignored, the plugin repo inside it).
+ * 3. **Local work** — a repo found inside an ignored tree is reported only if
+ *    it has something to show: uncommitted changes, or a `.gitmodules` entry
+ *    declaring it. A package manager's checkout is pristine by construction —
+ *    it is a clone at a pinned ref that nobody edits — so this drops Mix's
+ *    `deps/*`, OpenWrt's `feeds/*`, Vim's `bundle/*` and every future
+ *    equivalent without naming any of them. A repo the user actually works in
+ *    appears the moment there is a change to see, which is exactly when the
+ *    Changes tab needs it.
+ *
+ * Repos in the project's own tracked structure are never subject to (3): they
+ * are listed whether or not they are clean. That includes a repo whose own
+ * path is ignored while its parents are tracked — a directory that is itself a
+ * repo is recognised before its ignore state is ever consulted.
  *
  * A repo found this way resets the ignore budget: its own contents are then
  * judged by its own `.gitignore`, not the outer repo's.
@@ -38,10 +54,11 @@ import { debug } from '$shared/utils/logger';
 import { execGit } from './git-executor';
 
 /**
- * Directories that never hold a user's own repo — VCS internals, dependency
- * caches, and package-manager checkout dirs. Pruned by name at any depth,
- * whether or not the enclosing repo ignores them (a project may well commit
- * its `Pods/`, and it still isn't where sub-repos live).
+ * Directories large enough that walking them is pure waste — VCS internals and
+ * the big dependency caches. Pruned by name at any depth, whether or not the
+ * enclosing repo ignores them. This list is a cost guard, not the policy: what
+ * keeps package checkouts out of the panel is rule (3) above, so a name
+ * missing from here costs a little walking, not a wrong answer.
  */
 const HARD_SKIP_DIRS = new Set([
 	'.git', '.svn', '.hg',
@@ -77,6 +94,13 @@ interface WalkEntry {
 	 * when this directory is part of the enclosing repo's own structure.
 	 */
 	ignoredBudget: number | null;
+	/**
+	 * True once the walk has crossed into a tree the project ignores. Repos
+	 * found from here on must prove they hold local work before being
+	 * reported, and the flag is inherited so a repo nested inside a rejected
+	 * package checkout does not slip through on its own clean ignore state.
+	 */
+	insideIgnored: boolean;
 }
 
 /**
@@ -108,6 +132,25 @@ async function filterIgnored(repoRoot: string, relPaths: string[]): Promise<Set<
 	return ignored;
 }
 
+/**
+ * Whether `repoPath` has anything the Git panel could show — staged, unstaged,
+ * untracked or conflicted entries. This is what separates a repo the user
+ * works in from a package manager's checkout, which is a clone at a pinned ref
+ * that nobody edits and so reports nothing.
+ *
+ * A repo we cannot read is reported as having work: hiding a sub-repo the user
+ * edits is a far worse failure than showing one they do not care about.
+ */
+async function hasLocalWork(repoPath: string): Promise<boolean> {
+	try {
+		const result = await execGit(['status', '--porcelain', '-z'], repoPath, { timeout: 15000 });
+		if (result.exitCode !== 0) return true;
+		return result.stdout.length > 0;
+	} catch {
+		return true;
+	}
+}
+
 /** Whether `dirPath` is a git repo (`.git` is a dir for clones, a file for worktrees/submodules). */
 async function isRepoDir(dirPath: string): Promise<boolean> {
 	try {
@@ -125,7 +168,11 @@ async function isRepoDir(dirPath: string): Promise<boolean> {
  */
 export async function findNestedRepoPaths(rootPath: string): Promise<string[]> {
 	const found: string[] = [];
-	let level: WalkEntry[] = [{ dirPath: rootPath, repoRoot: rootPath, ignoredBudget: null }];
+	/** Repos found inside an ignored tree — reported only if they prove local work. */
+	const provisional: string[] = [];
+	let level: WalkEntry[] = [
+		{ dirPath: rootPath, repoRoot: rootPath, ignoredBudget: null, insideIgnored: false }
+	];
 	let truncated = false;
 
 	for (let depth = 0; depth < MAX_DEPTH && level.length > 0 && !truncated; depth++) {
@@ -172,13 +219,27 @@ export async function findNestedRepoPaths(rootPath: string): Promise<string[]> {
 		const next: WalkEntry[] = [];
 		candidates.forEach((c, i) => {
 			if (repoFlags[i]) {
-				if (found.length >= MAX_REPOS) {
-					truncated = true;
-					return;
+				if (c.parent.insideIgnored) {
+					// Candidates from an ignored tree get their own budget, so a
+					// directory full of package checkouts bounds the `git status`
+					// work without blinding the rest of the walk to real sub-repos.
+					if (provisional.length >= MAX_REPOS) return;
+					provisional.push(c.fullPath);
+				} else {
+					if (found.length >= MAX_REPOS) {
+						truncated = true;
+						return;
+					}
+					found.push(c.fullPath);
 				}
-				found.push(c.fullPath);
-				// Inside a repo, its own ignore rules apply from scratch.
-				next.push({ dirPath: c.fullPath, repoRoot: c.fullPath, ignoredBudget: null });
+				// Inside a repo, its own ignore rules apply from scratch — but a
+				// repo buried in an ignored tree cannot launder its children.
+				next.push({
+					dirPath: c.fullPath,
+					repoRoot: c.fullPath,
+					ignoredBudget: null,
+					insideIgnored: c.parent.insideIgnored
+				});
 				return;
 			}
 
@@ -187,7 +248,12 @@ export async function findNestedRepoPaths(rootPath: string): Promise<string[]> {
 				const ignored = ignoredByRepo.get(c.parent.repoRoot);
 				if (!ignored?.has(c.relPath)) {
 					// Part of the project's own structure — descend freely.
-					next.push({ dirPath: c.fullPath, repoRoot: c.parent.repoRoot, ignoredBudget: null });
+					next.push({
+						dirPath: c.fullPath,
+						repoRoot: c.parent.repoRoot,
+						ignoredBudget: null,
+						insideIgnored: c.parent.insideIgnored
+					});
 					return;
 				}
 				budget = IGNORED_DESCENT_LEVELS;
@@ -196,7 +262,12 @@ export async function findNestedRepoPaths(rootPath: string): Promise<string[]> {
 			}
 			// Inside an ignored tree: keep looking only while the budget lasts.
 			if (budget > 0) {
-				next.push({ dirPath: c.fullPath, repoRoot: c.parent.repoRoot, ignoredBudget: budget });
+				next.push({
+					dirPath: c.fullPath,
+					repoRoot: c.parent.repoRoot,
+					ignoredBudget: budget,
+					insideIgnored: true
+				});
 			}
 		});
 
@@ -205,6 +276,20 @@ export async function findNestedRepoPaths(rootPath: string): Promise<string[]> {
 
 	if (truncated) {
 		debug.warn('git', `Nested repo scan of ${rootPath} stopped at ${MAX_REPOS} repos`);
+	}
+
+	if (provisional.length > 0) {
+		// A submodule is the user declaring the sub-repo themselves, which
+		// outranks anything we could infer from its working tree.
+		const submodulePaths = await findSubmodulePaths(rootPath);
+		const isDeclared = (repoPath: string) =>
+			submodulePaths.has(path.relative(rootPath, repoPath).replace(/\\/g, '/'));
+		const verdicts = await Promise.all(
+			provisional.map(async (repoPath) => isDeclared(repoPath) || (await hasLocalWork(repoPath)))
+		);
+		provisional.forEach((repoPath, i) => {
+			if (verdicts[i]) found.push(repoPath);
+		});
 	}
 
 	found.sort();
