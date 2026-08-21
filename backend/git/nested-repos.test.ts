@@ -7,10 +7,14 @@ import { findNestedRepoPaths, findRepoForFile } from './nested-repos';
 
 /**
  * Sub-repo detection used to walk the whole tree and report every directory
- * with a `.git` inside it. On an iOS project that meant Swift Package
- * Manager's `build/…/SourcePackages/checkouts/*` — thousands of foreign
- * changes in the Changes tab. These cover both sides of the policy: package
- * caches stay out, repos the user actually embedded stay in.
+ * with a `.git` inside it — on an iOS project, Swift Package Manager's
+ * `build/…/SourcePackages/checkouts/*` put thousands of foreign changes in the
+ * Changes tab. Pruning by directory name fixed that case and nothing more:
+ * `plugins/` is where tmux clones its packages *and* where a WordPress
+ * developer keeps their own plugin repos, so no denylist can be right on both
+ * sides. The policy these tests pin down is structural instead — inside a tree
+ * the project ignores, a sub-repo is reported only if it holds local work or
+ * is a declared submodule.
  */
 
 let root: string;
@@ -29,6 +33,15 @@ async function initRepo(dir: string) {
 	await git(dir, 'config', 'user.email', 'test@example.com');
 	await git(dir, 'config', 'user.name', 'Test');
 	await git(dir, 'config', 'commit.gpgsign', 'false');
+}
+
+/**
+ * Give a repo something the Git panel could show. An untracked file is what an
+ * agent writing into a sub-repo produces, and it is what tells a repo the user
+ * works in apart from a package manager's pristine checkout.
+ */
+async function addLocalWork(dir: string) {
+	await writeFile(path.join(dir, 'index.php'), '<?php // edited\n');
 }
 
 /** Paths relative to the project root, for readable assertions. */
@@ -78,17 +91,107 @@ describe('findNestedRepoPaths', () => {
 		expect(await detected()).toEqual(['wp-content/themes/mytheme']);
 	});
 
-	test('detects a repo sitting directly under an ignored parent', async () => {
+	test('detects a worked-in repo sitting directly under an ignored parent', async () => {
 		await writeFile(path.join(root, '.gitignore'), 'themes/\n');
+		await initRepo(path.join(root, 'themes/mytheme'));
+		await addLocalWork(path.join(root, 'themes/mytheme'));
+
+		expect(await detected()).toEqual(['themes/mytheme']);
+	});
+
+	test('leaves a pristine repo under an ignored parent out until it changes', async () => {
+		// The deliberate trade-off: with nothing to show, a repo inside an
+		// ignored tree is indistinguishable from a package checkout. It comes
+		// back the moment there is a change — which is when the panel needs it.
+		await writeFile(path.join(root, '.gitignore'), 'themes/\n');
+		await initRepo(path.join(root, 'themes/mytheme'));
+
+		expect(await detected()).toEqual([]);
+
+		await addLocalWork(path.join(root, 'themes/mytheme'));
+		expect(await detected()).toEqual(['themes/mytheme']);
+	});
+
+	test.each([
+		['elixir mix', '/deps/\n', ['deps/daisyui', 'deps/heroicons']],
+		['openwrt feeds', 'feeds/\n', ['feeds/packages', 'feeds/luci']],
+		['vim pathogen', 'bundle/\n', ['bundle/vim-fugitive']],
+		['tmux tpm', 'plugins/\n', ['plugins/tpm']],
+		['ansible galaxy', 'roles/\n', ['roles/geerlingguy.nginx']],
+		['puppet librarian', 'modules/\n', ['modules/stdlib']],
+		['chef berkshelf', 'berks-cookbooks/\n', ['berks-cookbooks/nginx']],
+		['zephyr west', 'west-modules/\n', ['west-modules/hal_stm32']],
+		['composer source install', 'vendor/\n', ['vendor/acme/lib']],
+		['cmake fetchcontent', 'build/\n', ['build/_deps/googletest-src']]
+	])(
+		'ignores %s checkouts inside an ignored tree',
+		async (_name, gitignore, repos) => {
+			// Every one of these clones into an ignored directory, several of
+			// them exactly one level down where the peek looks. They are all
+			// pristine, which is the only thing the policy needs to know —
+			// `plugins/` and `modules/` appear on the user's side of the fence
+			// too, so their names cannot be the signal.
+			await writeFile(path.join(root, '.gitignore'), gitignore);
+			for (const repo of repos) await initRepo(path.join(root, repo));
+
+			expect(await detected()).toEqual([]);
+		}
+	);
+
+	test('reports the user plugin repo under an ignored dir that tmux also uses', async () => {
+		// Same directory name as the tmux case above, opposite verdict.
+		await writeFile(path.join(root, '.gitignore'), 'wp-content/plugins/\n');
+		await initRepo(path.join(root, 'wp-content/plugins/my-plugin'));
+		await addLocalWork(path.join(root, 'wp-content/plugins/my-plugin'));
+
+		expect(await detected()).toEqual(['wp-content/plugins/my-plugin']);
+	});
+
+	test('reports a declared submodule inside an ignored tree even when pristine', async () => {
+		// `.gitmodules` is the user naming the sub-repo themselves, which
+		// outranks anything its working tree could tell us.
+		await writeFile(path.join(root, '.gitignore'), 'themes/\n');
+		await writeFile(
+			path.join(root, '.gitmodules'),
+			'[submodule "themes/mytheme"]\n\tpath = themes/mytheme\n\turl = https://example.com/t.git\n'
+		);
 		await initRepo(path.join(root, 'themes/mytheme'));
 
 		expect(await detected()).toEqual(['themes/mytheme']);
 	});
 
+	test('a repo inside a rejected checkout cannot launder itself', async () => {
+		// Entering a repo resets the ignore budget, so without inheriting the
+		// "inside an ignored tree" flag the vendored repo would be treated as
+		// part of `pkg`'s own tracked structure and reported unconditionally.
+		await writeFile(path.join(root, '.gitignore'), '/deps/\n');
+		const pkg = path.join(root, 'deps/pkg');
+		await initRepo(pkg);
+		// Committed, so `pkg` itself stays pristine — otherwise the vendored
+		// directory would show up as untracked work and this would test nothing.
+		await writeFile(path.join(pkg, '.gitignore'), 'vendored/\n');
+		await git(pkg, 'add', '-A');
+		await git(pkg, 'commit', '-m', 'init');
+		await initRepo(path.join(pkg, 'vendored'));
+
+		expect(await detected()).toEqual([]);
+	});
+
+	test('still reports an ignored build dir that is itself a repo', async () => {
+		// A `dist/` deploy worktree is a repo the user works in; only the
+		// contents of a dependency-named dir are off limits, not the dir itself.
+		await writeFile(path.join(root, '.gitignore'), 'dist/\n');
+		await initRepo(path.join(root, 'dist'));
+
+		expect(await detected()).toEqual(['dist']);
+	});
+
 	test('does not report repos generated deep inside an ignored tree', async () => {
 		await writeFile(path.join(root, '.gitignore'), 'themes/\n');
 		await initRepo(path.join(root, 'themes/mytheme'));
+		await addLocalWork(path.join(root, 'themes/mytheme'));
 		await initRepo(path.join(root, 'themes/cache/vendor/dep/checkout'));
+		await addLocalWork(path.join(root, 'themes/cache/vendor/dep/checkout'));
 
 		expect(await detected()).toEqual(['themes/mytheme']);
 	});
