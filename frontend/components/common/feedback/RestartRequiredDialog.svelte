@@ -8,16 +8,14 @@
 		hideRestartModal();
 	}
 
-	// Show the changelog entry matching the version that was just installed, if we have it.
-	// Wrapped in a single-item array here (rather than inline in the template) so the
-	// reference stays stable across unrelated re-renders — ReleaseNotesList reseeds its
-	// expand/collapse state whenever the `releases` array reference changes.
-	const installedReleaseNote = $derived(
-		updateState.releaseNotes?.find(
-			release => release.tag_name.replace(/^v/, '') === updateState.latestVersion
-		) ?? null
+	// Show the same last-few-versions changelog the other update surfaces show, with the
+	// version that was just installed expanded — a user who skipped a release still gets
+	// to read what landed in it.
+	const releaseNotes = $derived(updateState.releaseNotes ?? []);
+	const installedTagName = $derived(
+		releaseNotes.find(release => release.tag_name.replace(/^v/, '') === updateState.latestVersion)
+			?.tag_name
 	);
-	const installedReleaseNoteList = $derived(installedReleaseNote ? [installedReleaseNote] : []);
 </script>
 
 <Dialog
@@ -62,11 +60,11 @@
 				</li>
 			</ol>
 
-			{#if installedReleaseNote}
+			{#if releaseNotes.length}
 				<div class="pt-3 mt-1 border-t border-slate-200 dark:border-slate-700">
 					<div class="text-sm font-semibold text-slate-500 dark:text-slate-400 mb-2">What's new</div>
 					<div class="px-3 py-3 bg-slate-100/80 dark:bg-slate-800/80 border border-slate-200 dark:border-slate-700 rounded-lg max-h-64 overflow-y-auto">
-						<ReleaseNotesList releases={installedReleaseNoteList} defaultExpandedCount={0} />
+						<ReleaseNotesList releases={releaseNotes} defaultExpandedCount={0} expandedTagName={installedTagName} />
 					</div>
 				</div>
 			{/if}

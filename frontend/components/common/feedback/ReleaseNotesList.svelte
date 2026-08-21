@@ -13,16 +13,21 @@
 		releases: ReleaseNote[];
 		/** How many releases (from the top) start expanded. The rest collapse into an accordion. Default 1. */
 		defaultExpandedCount?: number;
+		/** Expand this specific release instead of the top `defaultExpandedCount` ones. */
+		expandedTagName?: string;
 	}
 
-	const { releases, defaultExpandedCount = 1 }: Props = $props();
+	const { releases, defaultExpandedCount = 1, expandedTagName }: Props = $props();
 
 	let expanded = $state(new Set<string>());
 
 	// Seed which entries start expanded whenever the release list itself changes
 	// (new fetch, different version list) — not on every unrelated re-render.
 	$effect(() => {
-		expanded = new Set(releases.slice(0, defaultExpandedCount).map(r => r.tag_name));
+		const initiallyExpanded = expandedTagName
+			? releases.filter(release => release.tag_name === expandedTagName)
+			: releases.slice(0, defaultExpandedCount);
+		expanded = new Set(initiallyExpanded.map(release => release.tag_name));
 	});
 
 	function toggle(tag_name: string) {
@@ -32,6 +37,21 @@
 			expanded.add(tag_name);
 		}
 		expanded = new Set(expanded);
+	}
+
+	// GitHub's auto-generated notes end every entry with " in <pull-request-url>". In a
+	// narrow dialog that link wraps onto its own line and doubles the height of the list
+	// without saying anything the entry doesn't already say, so drop it. Only bullet
+	// lines are touched — the trailing "Full Changelog" link stays clickable.
+	const TRAILING_PULL_REQUEST_LINK = /\s+in\s+<?https:\/\/github\.com\/\S+?>?\s*$/;
+
+	function stripPullRequestLinks(body: string): string {
+		return body
+			.split('\n')
+			.map(line =>
+				/^\s*([-*+]|\d+\.)\s/.test(line) ? line.replace(TRAILING_PULL_REQUEST_LINK, '') : line
+			)
+			.join('\n');
 	}
 
 	function formatDate(published_at: string): string {
@@ -64,7 +84,7 @@
 
 			{#if expanded.has(release.tag_name)}
 				<div class="mt-2 release-notes-body">
-					<Markdown variant="compact" content={release.body} />
+					<Markdown variant="compact" content={stripPullRequestLinks(release.body)} />
 					<div class="mt-2">
 						<a
 							href={release.html_url}
