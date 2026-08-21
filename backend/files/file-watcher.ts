@@ -33,6 +33,7 @@ import { stat, readdir } from 'node:fs/promises';
 import { join, relative, normalize, sep } from 'node:path';
 import { ws } from '$backend/utils/ws';
 import { debug } from '$shared/utils/logger';
+import { resolveGitDirs, type GitDirTarget } from '$backend/git/git-dirs';
 import type { FileChange } from '$shared/types/filesystem';
 
 /**
@@ -89,10 +90,77 @@ const IGNORED_FILES = new Set([
 ]);
 
 /**
- * Git state files to watch for external git operations
+ * Entries inside a git directory that never change what the Git panel renders.
+ *
+ * This is a denylist on purpose, and the inversion matters. Git writes almost
+ * everything atomically — it creates `<name>.lock`, writes it, then renames it
+ * onto `<name>` — and macOS reports that rename under the OLD name. In practice
+ * `<name>.lock` is frequently the ONLY name that ever arrives: a commit reports
+ * `index.lock`, `HEAD.lock` and `refs/heads/<branch>.lock` and never once
+ * reports `index`, `HEAD` or the branch ref itself.
+ *
+ * The previous allowlist of final names (`index`, `HEAD`, `MERGE_HEAD`,
+ * `REBASE_HEAD`) therefore matched almost nothing, and the sibling `refs/`
+ * watcher discarded every `.lock` outright — so external commits, checkouts,
+ * branch creations, stashes and tag creations produced no event at all and the
+ * panel only ever refreshed when a working-tree write happened to coincide.
+ *
+ * Listing what to ignore fails safe in the other direction: an unrecognised
+ * entry costs one debounced refresh, not a silently stale panel.
+ *
+ * `logs/` is deliberately NOT listed. The reflog looks like noise but is the
+ * best signal we get: git appends to it whenever a ref actually moves, it is
+ * written in place rather than through a lock file, and measurement showed it
+ * is frequently the ONLY event the project's recursive root watch delivers for
+ * `git branch` — the ref's own `.lock` never surfaces there.
  */
-const GIT_STATE_FILES = ['index', 'HEAD', 'MERGE_HEAD', 'REBASE_HEAD'];
+const GIT_INTERNAL_IGNORED = new Set([
+	// Pure content churn, with no state meaning of its own; the index or ref
+	// update that gives it meaning is reported separately.
+	'objects',
+	'lfs',
+	// Never read by the panel.
+	'hooks',
+	'info',
+	'COMMIT_EDITMSG',
+	'MERGE_MSG',
+	'SQUASH_MSG',
+	'TAG_EDITMSG',
+	'index.stat',
+	'gitk.cache'
+]);
+
 const GIT_DEBOUNCE_MS = 500;
+
+/**
+ * Delay before re-resolving a project's git directories after an event arrived
+ * from one we do not know about yet. Debounced because the trigger is bursty:
+ * `git init` and `git clone` create dozens of files under a brand-new `.git`.
+ */
+const GIT_TARGETS_REFRESH_MS = 1500;
+
+/** Strip git's atomic-write suffix so `index.lock` is read as `index`. */
+export function stripGitLockSuffix(entryPath: string): string {
+	return entryPath.endsWith('.lock') ? entryPath.slice(0, -'.lock'.length) : entryPath;
+}
+
+/**
+ * Whether a path inside a git directory represents state the Git panel shows.
+ * `entryPath` is relative to the git directory itself (`index`, `HEAD`,
+ * `refs/heads/main.lock`, `objects/ab/cd`, …).
+ */
+export function isGitStateEvent(entryPath: string): boolean {
+	const normalized = stripGitLockSuffix(entryPath.replace(/\\/g, '/'));
+	if (!normalized || normalized === '.') return false;
+	const topLevelEntry = normalized.split('/')[0];
+	if (!topLevelEntry) return false;
+	return !GIT_INTERNAL_IGNORED.has(topLevelEntry);
+}
+
+/** Whether a project-relative path passes through a `.git` directory. */
+export function hasGitSegment(relativePath: string): boolean {
+	return relativePath.split('/').includes('.git');
+}
 
 /**
  * Watcher instance for a project
@@ -110,9 +178,25 @@ interface ProjectWatcher {
 	faults: number;
 	/** Flipped by stopWatching so in-flight async tree walks bail out. */
 	closed: boolean;
-	gitWatcher: FSWatcher | null;
-	gitRefsWatcher: FSWatcher | null;
+	/**
+	 * Every known git directory -> the working tree it belongs to. Covers the
+	 * project's own repo and each sub-repo, and is the attribution table for
+	 * git events seen by the project's recursive root watch.
+	 */
+	gitDirOwners: Map<string, string>;
+	/** Git directory -> the handles held on it (its root and its `refs/`). */
+	gitWatchers: Map<string, FSWatcher[]>;
+	/**
+	 * Git directories that were re-resolved and still turned out not to belong to
+	 * this project, so their churn never schedules another resolve.
+	 */
+	rejectedGitDirs: Set<string>;
+	/** Git dirs awaiting the next resolve, to be judged once it completes. */
+	unresolvedGitDirs: Set<string>;
+	/** Working trees with git state changes awaiting the debounced emit. */
+	pendingGitRepos: Set<string>;
 	gitDebounceTimer: ReturnType<typeof setTimeout> | null;
+	gitTargetsTimer: ReturnType<typeof setTimeout> | null;
 }
 
 /**
@@ -256,9 +340,13 @@ class FileWatcherManager {
 				truncated: false,
 				faults,
 				closed: false,
-				gitWatcher: null,
-				gitRefsWatcher: null,
-				gitDebounceTimer: null
+				gitDirOwners: new Map(),
+				gitWatchers: new Map(),
+				rejectedGitDirs: new Set(),
+				unresolvedGitDirs: new Set(),
+				pendingGitRepos: new Set(),
+				gitDebounceTimer: null,
+				gitTargetsTimer: null
 			};
 			this.watchers.set(projectId, projectWatcher);
 
@@ -269,8 +357,10 @@ class FileWatcherManager {
 				return false;
 			}
 
-			// Start git state watcher (for external git operations)
-			this.startGitWatcher(projectId, normalizedPath);
+			// Resolve and watch the project's git directories (for external git
+			// operations). Async, but nothing is missed while it runs: git dirs
+			// inside the project tree are already covered by the root watch above.
+			void this.syncGitWatchers(projectId);
 
 			// On Linux the root watch only covers the root itself. Walk the tree in
 			// the background so every non-ignored directory gets its own watch;
@@ -436,8 +526,10 @@ class FileWatcherManager {
 			projectWatcher.dirWatchers.clear();
 
 			// Close git watchers
-			projectWatcher.gitWatcher?.close();
-			projectWatcher.gitRefsWatcher?.close();
+			for (const gitDirPath of Array.from(projectWatcher.gitWatchers.keys())) {
+				this.closeGitDirWatchers(projectWatcher, gitDirPath);
+			}
+			projectWatcher.gitDirOwners.clear();
 
 			// Clear debounce timers
 			if (projectWatcher.debounceTimer) {
@@ -445,6 +537,9 @@ class FileWatcherManager {
 			}
 			if (projectWatcher.gitDebounceTimer) {
 				clearTimeout(projectWatcher.gitDebounceTimer);
+			}
+			if (projectWatcher.gitTargetsTimer) {
+				clearTimeout(projectWatcher.gitTargetsTimer);
 			}
 
 			// Remove from map
@@ -503,10 +598,17 @@ class FileWatcherManager {
 		const relativePath = relative(projectWatcher.projectPath, fullPath).replace(/\\/g, '/');
 
 		// Paths outside the project (possible on some platforms for rename events)
-		// and ignored paths never reach clients.
-		if (relativePath.startsWith('..') || this.shouldIgnore(relativePath)) {
-			return;
-		}
+		// never reach clients.
+		if (relativePath.startsWith('..')) return;
+
+		// Git metadata is not a working-tree change — it drives the Git panel
+		// instead. This runs BEFORE `shouldIgnore`, which discards every `.git`
+		// path: where the root watch is recursive it is the only thing that sees
+		// a sub-repo's git dir, so dropping it here is what left a commit made
+		// inside a nested repo completely unreported.
+		if (this.routeGitEvent(projectWatcher, relativePath, fullPath)) return;
+
+		if (this.shouldIgnore(relativePath)) return;
 
 		// Determine change type
 		let changeType: 'created' | 'modified' | 'deleted';
@@ -609,56 +711,180 @@ class FileWatcherManager {
 	}
 
 	/**
-	 * Start watching .git directory for external git operations
-	 * Watches: .git/index (staging), .git/HEAD (branch switch), .git/refs/ (branches/tags)
+	 * Resolve every git directory this project depends on and reconcile the
+	 * watchers held for them.
+	 *
+	 * Every git dir gets its own handles, including the ones already inside the
+	 * watched tree. That is deliberate redundancy, not an oversight: measurement
+	 * showed the two paths see different events for the same operation — the
+	 * project's recursive root watch reports `git branch` only as a reflog write,
+	 * while a watch rooted at `refs/` reports the ref's own lock file. Neither is
+	 * complete alone, both are debounced into one emit, and the cost is two
+	 * handles per repo against a sub-repo count already capped at 50.
+	 *
+	 * Git dirs OUTSIDE the tree — a project opened at a repo subfolder, a linked
+	 * worktree, a submodule whose git dir lives in the superproject — have no
+	 * other source at all, which is why resolving them is what makes those
+	 * layouts work rather than silently reporting nothing.
 	 */
-	private startGitWatcher(projectId: string, projectPath: string): void {
+	private async syncGitWatchers(projectId: string): Promise<void> {
 		const projectWatcher = this.watchers.get(projectId);
-		if (!projectWatcher) return;
+		if (!projectWatcher || projectWatcher.closed) return;
 
-		const gitDir = join(projectPath, '.git');
-		if (!existsSync(gitDir)) return;
-
+		let targets: GitDirTarget[];
 		try {
-			// Watch .git/ root for index, HEAD, MERGE_HEAD changes
-			projectWatcher.gitWatcher = watch(gitDir, (eventType, filename) => {
-				if (!filename) return;
-				const normalized = filename.replace(/\\/g, '/');
-				if (GIT_STATE_FILES.includes(normalized)) {
-					this.emitGitChanged(projectId);
-				}
-			});
-			projectWatcher.gitWatcher.on('error', () => {
-				// Silently ignore git watcher errors
-			});
-
-			// Watch .git/refs/ for branch/tag create/delete. Lock files are git's
-			// own write-in-progress scratch space: every ref update produces a
-			// `<ref>.lock` create AND delete, so forwarding them doubled the churn
-			// and fired a refresh before the ref itself had landed.
-			const refsDir = join(gitDir, 'refs');
-			if (existsSync(refsDir)) {
-				projectWatcher.gitRefsWatcher = watch(refsDir, { recursive: true }, (_eventType, filename) => {
-					if (filename && filename.replace(/\\/g, '/').endsWith('.lock')) return;
-					this.emitGitChanged(projectId);
-				});
-				projectWatcher.gitRefsWatcher.on('error', () => {
-					// Silently ignore refs watcher errors
-				});
-			}
-
-			debug.log('file', `Started git watcher for project: ${projectId}`);
-		} catch (err) {
-			debug.warn('file', `Failed to start git watcher for project ${projectId}:`, err);
+			targets = await resolveGitDirs(projectWatcher.projectPath);
+		} catch (error) {
+			debug.warn('file', `Failed to resolve git dirs for project ${projectId}:`, error);
+			return;
 		}
+
+		// The project may have been swapped or torn down while `git rev-parse` ran.
+		if (projectWatcher.closed || this.watchers.get(projectId) !== projectWatcher) return;
+
+		// A git dir can appear twice (a worktree's own dir and its common dir);
+		// the first owner wins, which keeps shared refs attributed to the repo
+		// that actually owns them.
+		const ownerByGitDir = new Map<string, string>();
+		for (const target of targets) {
+			if (!ownerByGitDir.has(target.gitDir)) ownerByGitDir.set(target.gitDir, target.repoPath);
+			if (!ownerByGitDir.has(target.commonDir)) ownerByGitDir.set(target.commonDir, target.repoPath);
+		}
+		projectWatcher.gitDirOwners = ownerByGitDir;
+
+		// Release handles on git dirs that are gone (repo deleted, worktree pruned).
+		for (const gitDirPath of Array.from(projectWatcher.gitWatchers.keys())) {
+			if (ownerByGitDir.has(gitDirPath)) continue;
+			this.closeGitDirWatchers(projectWatcher, gitDirPath);
+		}
+
+		for (const [gitDirPath, repoPath] of ownerByGitDir) {
+			this.watchGitDir(projectWatcher, gitDirPath, repoPath);
+		}
+
+		// Anything that triggered this resolve and is still unaccounted for does
+		// not belong to the project (a package-manager checkout the sub-repo
+		// policy rejects); remember it so its churn cannot re-trigger forever.
+		for (const gitDirPath of projectWatcher.unresolvedGitDirs) {
+			if (!ownerByGitDir.has(gitDirPath)) projectWatcher.rejectedGitDirs.add(gitDirPath);
+		}
+		projectWatcher.unresolvedGitDirs.clear();
+
+		debug.log(
+			'file',
+			`Watching ${projectWatcher.gitWatchers.size} git dir(s) for project ${projectId}`
+		);
 	}
 
 	/**
-	 * Debounced emit of git:changed event
+	 * Attach handles to one git directory: its root (where `index`, `HEAD` and
+	 * the in-progress operation markers live) and `refs/` recursively.
 	 */
-	private emitGitChanged(projectId: string): void {
+	private watchGitDir(projectWatcher: ProjectWatcher, gitDirPath: string, repoPath: string): void {
+		if (projectWatcher.closed || projectWatcher.gitWatchers.has(gitDirPath)) return;
+		if (!existsSync(gitDirPath)) return;
+
+		const attached: FSWatcher[] = [];
+		const attach = (dirToWatch: string, recursive: boolean): void => {
+			if (!existsSync(dirToWatch)) return;
+			try {
+				const watcher = watch(dirToWatch, { recursive }, (_eventType, filename) => {
+					if (!filename) return;
+					const entryPath = relative(gitDirPath, join(dirToWatch, String(filename)));
+					if (!isGitStateEvent(entryPath)) return;
+					this.emitGitChanged(projectWatcher.projectId, repoPath);
+				});
+				// A faulted git watcher used to be swallowed in silence, leaving the
+				// panel with no event source and no way to notice. Re-resolving
+				// rebuilds the handles from scratch.
+				watcher.on('error', (error) => {
+					debug.warn('file', `Git watcher error for ${dirToWatch}:`, error);
+					this.closeGitDirWatchers(projectWatcher, gitDirPath);
+					this.scheduleGitTargetsRefresh(projectWatcher.projectId);
+				});
+				attached.push(watcher);
+			} catch (error) {
+				debug.warn('file', `Failed to watch git dir ${dirToWatch}:`, error);
+			}
+		};
+
+		attach(gitDirPath, false);
+		attach(join(gitDirPath, 'refs'), true);
+
+		if (attached.length > 0) projectWatcher.gitWatchers.set(gitDirPath, attached);
+	}
+
+	/** Close and forget every handle held on one git directory. */
+	private closeGitDirWatchers(projectWatcher: ProjectWatcher, gitDirPath: string): void {
+		const attached = projectWatcher.gitWatchers.get(gitDirPath);
+		if (!attached) return;
+		for (const watcher of attached) {
+			try {
+				watcher.close();
+			} catch {
+				// Already closed — nothing to do.
+			}
+		}
+		projectWatcher.gitWatchers.delete(gitDirPath);
+	}
+
+	/**
+	 * Queue a re-resolve of the project's git directories, for when an event
+	 * arrives from a `.git` we do not know about — `git init` or `git clone` run
+	 * inside the project while it is open.
+	 */
+	private scheduleGitTargetsRefresh(projectId: string, gitDirPath?: string): void {
 		const projectWatcher = this.watchers.get(projectId);
-		if (!projectWatcher) return;
+		if (!projectWatcher || projectWatcher.closed) return;
+
+		if (gitDirPath) projectWatcher.unresolvedGitDirs.add(gitDirPath);
+		if (projectWatcher.gitTargetsTimer) return;
+
+		projectWatcher.gitTargetsTimer = setTimeout(() => {
+			projectWatcher.gitTargetsTimer = null;
+			if (projectWatcher.closed) return;
+			void this.syncGitWatchers(projectId).then(() => {
+				if (projectWatcher.closed) return;
+				// The repo set itself changed, so tell clients: this is what flips a
+				// panel out of "Not a git repository" after an external `git init`.
+				this.emitGitChanged(projectId, projectWatcher.projectPath);
+			});
+		}, GIT_TARGETS_REFRESH_MS);
+	}
+
+	/**
+	 * Handle a change under a `.git` directory reported by the project's own
+	 * (recursive) root watch. Returns true when the event was git metadata and
+	 * must not be forwarded as a working-tree change.
+	 */
+	private routeGitEvent(projectWatcher: ProjectWatcher, relativePath: string, fullPath: string): boolean {
+		if (!hasGitSegment(relativePath)) return false;
+
+		const segments = relativePath.split('/');
+		const gitSegmentIndex = segments.indexOf('.git');
+		const gitDirPath = join(projectWatcher.projectPath, ...segments.slice(0, gitSegmentIndex + 1));
+
+		const repoPath = projectWatcher.gitDirOwners.get(gitDirPath);
+		if (repoPath) {
+			if (isGitStateEvent(relative(gitDirPath, fullPath))) {
+				this.emitGitChanged(projectWatcher.projectId, repoPath);
+			}
+		} else if (!projectWatcher.rejectedGitDirs.has(gitDirPath)) {
+			this.scheduleGitTargetsRefresh(projectWatcher.projectId, gitDirPath);
+		}
+
+		return true;
+	}
+
+	/**
+	 * Debounced emit of git:changed, carrying every working tree that moved since
+	 * the last flush so clients can refresh sub-repos selectively.
+	 */
+	private emitGitChanged(projectId: string, repoPath: string): void {
+		const projectWatcher = this.watchers.get(projectId);
+		if (!projectWatcher || projectWatcher.closed) return;
+
+		projectWatcher.pendingGitRepos.add(repoPath);
 
 		if (projectWatcher.gitDebounceTimer) {
 			clearTimeout(projectWatcher.gitDebounceTimer);
@@ -666,11 +892,17 @@ class FileWatcherManager {
 
 		projectWatcher.gitDebounceTimer = setTimeout(() => {
 			projectWatcher.gitDebounceTimer = null;
+			const repoPaths = Array.from(projectWatcher.pendingGitRepos);
+			projectWatcher.pendingGitRepos.clear();
 			ws.emit.project(projectId, 'git:changed', {
 				projectId,
+				repoPaths,
 				timestamp: Date.now()
 			});
-			debug.log('file', `Emitted git:changed for project ${projectId}`);
+			debug.log(
+				'file',
+				`Emitted git:changed for project ${projectId} (${repoPaths.length} repo(s))`
+			);
 		}, GIT_DEBOUNCE_MS);
 	}
 
