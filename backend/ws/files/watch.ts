@@ -161,8 +161,12 @@ export const watchHandler = createRouter()
 		error: t.String()
 	}))
 
-	// Emitted when git state changes (external git operations)
+	// Emitted when git state changes (external git operations).
+	// `repoPaths` lists the working trees that moved — the project root and/or
+	// sub-repo roots — so a client can refresh a sub-repo's view without
+	// re-reading every other repo in the project.
 	.emit('git:changed', t.Object({
 		projectId: t.String(),
+		repoPaths: t.Optional(t.Array(t.String())),
 		timestamp: t.Number()
 	}));

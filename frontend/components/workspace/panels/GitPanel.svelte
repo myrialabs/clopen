@@ -8,7 +8,7 @@
 	import { showError, showInfo } from '$frontend/stores/ui/notification.svelte';
 	import { debug } from '$shared/utils/logger';
 	import { settings } from '$frontend/stores/features/settings.svelte';
-	import ws from '$frontend/utils/ws';
+	import ws, { onWsReconnect } from '$frontend/utils/ws';
 	import { acquireFileWatch } from '$frontend/utils/file-watch';
 	import { getFileIcon } from '$frontend/utils/file-icon-mappings';
 	import { isPreviewableFile, isBinaryFile } from '$frontend/utils/file-type';
@@ -1010,10 +1010,6 @@
 
 	// Log state
 	let commits = $state<GitCommit[]>([]);
-	// Set when a git-mutating action or an external git:changed event happens
-	// while History isn't the active view, so the next switch to History
-	// re-fetches instead of trusting the (now stale) cached commits.
-	let logStale = false;
 	let nestedCommits = $state<Record<string, GitCommit[]>>({});
 	let isLogLoading = $state(false);
 	let nestedIsLogLoading = $state<Record<string, boolean>>({});
@@ -1038,12 +1034,69 @@
 		body: string;
 		files: GitFileDiff[];
 		isLoading: boolean;
+		/** Set when the commit belongs to a sub-repo, so a refresh re-reads it there. */
+		repoPath?: string;
 	} | null>(null);
 
 	// Conflict state
 	let conflictFiles = $state<GitConflictFile[]>([]);
 	let isConflictLoading = $state(false);
 	let conflictInitialPath = $state<string | null>(null);
+
+	// ============================
+	// Staleness tracking
+	// ============================
+	//
+	// Every slice of git data the panel renders, and whether the last git event
+	// invalidated it. A slice that is on screen is re-read straight away; one
+	// that is hidden is re-read the moment its view is opened.
+	//
+	// This replaced a single ad-hoc `logStale` flag plus a per-view "have I
+	// loaded this yet" test. Those two only ever covered the main repo's commit
+	// list, which is why every other derived slice — the commit list under an
+	// expanded branch, an open commit's file list, a sub-repo's history, the
+	// remotes of a sub-repo — kept rendering whatever it had fetched the first
+	// time, no matter how much the repository moved underneath it.
+	type GitSection =
+		| 'status'
+		| 'branches'
+		| 'remotes'
+		| 'log'
+		| 'stash'
+		| 'tags'
+		| 'contributors'
+		| 'conflicts';
+
+	const ALL_GIT_SECTIONS: GitSection[] = [
+		'status',
+		'branches',
+		'remotes',
+		'log',
+		'stash',
+		'tags',
+		'contributors',
+		'conflicts'
+	];
+
+	let staleSections = $state<Set<GitSection>>(new Set());
+
+	function markGitSectionsStale(sections: readonly GitSection[] = ALL_GIT_SECTIONS): void {
+		const next = new Set(staleSections);
+		for (const section of sections) next.add(section);
+		staleSections = next;
+	}
+
+	function clearGitSectionStale(...sections: readonly GitSection[]): void {
+		if (sections.every((section) => !staleSections.has(section))) return;
+		const next = new Set(staleSections);
+		for (const section of sections) next.delete(section);
+		staleSections = next;
+	}
+
+	/** True when `section` must be re-read before it can be trusted on screen. */
+	function isGitSectionStale(section: GitSection): boolean {
+		return staleSections.has(section);
+	}
 
 	// Container width for responsive layout (same threshold as Files: 800)
 	let containerRef = $state<HTMLDivElement | null>(null);
@@ -1291,18 +1344,24 @@
 	// so the tab-switch effect re-fetches on the next visit instead of
 	// trusting the cached `commits` array.
 	async function refreshLogIfVisible() {
-		if (activeView === 'log') {
-			await loadLog(true);
-		} else {
-			logStale = true;
-		}
+		markGitSectionsStale(['log']);
+		if (activeView === 'log') await refreshAllLogs();
 	}
 
+	/**
+	 * Re-read the commit list for the main repo and every expanded sub-repo.
+	 *
+	 * Sub-repo history used to be refreshed only while History was the active
+	 * view: the staleness flag it fell back to otherwise was read solely by the
+	 * main repo's loader, so a sub-repo's commit list survived every subsequent
+	 * visit unchanged. Marking the section carries the sub-repos with it now.
+	 */
 	async function refreshAllLogs() {
 		if (activeView !== 'log') {
-			logStale = true;
+			markGitSectionsStale(['log']);
 			return;
 		}
+		clearGitSectionStale('log');
 		await loadLog(true);
 		if (branchInfo?.nested) {
 			for (const nested of branchInfo.nested) {
@@ -1313,6 +1372,90 @@
 					await loadNestedLog(nested.relPath, nested.path, true);
 				}
 			}
+		}
+	}
+
+	/**
+	 * Re-read the commit list behind every branch the user has expanded in the
+	 * Branches view, keeping however many pages they had already loaded.
+	 *
+	 * Nothing refreshed these before: once expanded, a branch's commits were
+	 * fetched once and then frozen, so a commit made on that branch from a
+	 * terminal never appeared under it.
+	 */
+	async function refreshExpandedBranchCommits(): Promise<void> {
+		if (expandedBranches.size === 0) return;
+
+		// Walk the branch lists rather than parsing the composite state keys, so
+		// the key format stays an implementation detail of `branchCommitStateKey`.
+		const expandedTargets: { branchName: string; repoPath?: string }[] = [];
+		const collectExpanded = (branches: GitBranch[] | undefined, repoPath?: string) => {
+			for (const branch of branches ?? []) {
+				if (expandedBranches.has(branchCommitStateKey(branch.name, repoPath))) {
+					expandedTargets.push({ branchName: branch.name, repoPath });
+				}
+			}
+		};
+		collectExpanded(branchInfo?.local);
+		collectExpanded(branchInfo?.remote);
+		for (const nested of branchInfo?.nested ?? []) {
+			collectExpanded(nested.info.local, nested.path);
+			collectExpanded(nested.info.remote, nested.path);
+		}
+
+		for (const target of expandedTargets) {
+			const stateKey = branchCommitStateKey(target.branchName, target.repoPath);
+			const loadedCount = branchCommitState[stateKey]?.commits.length ?? 0;
+			if (loadedCount === 0) continue;
+			// Re-read exactly as many commits as were on screen, so a refresh never
+			// collapses a list the user had paged through.
+			await loadBranchCommits(target.branchName, true, target.repoPath, loadedCount);
+		}
+	}
+
+	/**
+	 * Re-read the open commit detail. An amend or a rebase rewrites the commit
+	 * under the same position in the log, and can remove it entirely — in which
+	 * case the detail is closed rather than left showing a commit that is gone.
+	 */
+	async function refreshSelectedCommit(): Promise<void> {
+		const open = selectedCommit;
+		if (!open || !projectId) return;
+		try {
+			const res = await ws.http('git:diff-commit', {
+				projectId,
+				commitHash: open.hash,
+				repoPath: open.repoPath
+			});
+			if (selectedCommit?.hash !== open.hash) return;
+			selectedCommit = { ...selectedCommit, files: res.files, body: res.body, isLoading: false };
+		} catch {
+			if (selectedCommit?.hash !== open.hash) return;
+			// Close the detail only when the commit really is gone — the log has
+			// already been re-read at this point, so its absence there is the
+			// answer. A transient failure keeps what is on screen instead.
+			const stillInLog = open.repoPath
+				? Object.values(nestedCommits).some((list) => list.some((c) => c.hash === open.hash))
+				: commits.some((c) => c.hash === open.hash);
+			if (!stillInLog) selectedCommit = null;
+		}
+	}
+
+	/** Re-read the remotes of every sub-repo whose remote list is on screen. */
+	async function refreshNestedRemotes(): Promise<void> {
+		if (!branchInfo?.nested) return;
+		for (const nested of branchInfo.nested) {
+			if (!nestedRemotesList[nested.relPath]) continue;
+			await loadNestedRemotes(nested);
+		}
+	}
+
+	/** Re-read the file list of every expanded stash entry. */
+	async function refreshExpandedStashFiles(): Promise<void> {
+		if (expandedStashes.size === 0) return;
+		for (const entry of stashEntries) {
+			if (!expandedStashes.has(getStashKey(entry))) continue;
+			await loadStashFiles(entry);
 		}
 	}
 
@@ -2004,7 +2147,8 @@
 			author: commit.author,
 			body: '',
 			files: [],
-			isLoading: true
+			isLoading: true,
+			repoPath
 		};
 		// Remember the open commit detail per-project (server-persisted).
 		markGitUiDirty();
@@ -2181,15 +2325,21 @@
 		return repoPath ? `${repoPath}::${branchName}` : branchName;
 	}
 
-	async function loadBranchCommits(branchName: string, reset = false, repoPath?: string) {
+	/**
+	 * `resetLimit` re-reads that many commits in one call instead of a single
+	 * page — used when refreshing a branch the user had already paged through,
+	 * so the refresh restores the list at its current length.
+	 */
+	async function loadBranchCommits(branchName: string, reset = false, repoPath?: string, resetLimit?: number) {
 		if (!projectId) return;
 		const key = branchCommitStateKey(branchName, repoPath);
 		const current = branchCommitState[key] ?? { commits: [], isLoading: false, hasMore: true, skip: 0 };
 		if (current.isLoading) return;
 		const skip = reset ? 0 : current.skip;
+		const limit = reset && resetLimit ? resetLimit : BRANCH_COMMIT_PAGE_SIZE;
 		branchCommitState = { ...branchCommitState, [key]: { ...current, isLoading: true } };
 		try {
-			const result = await ws.http('git:log', { projectId, branch: branchName, limit: BRANCH_COMMIT_PAGE_SIZE, skip, repoPath });
+			const result = await ws.http('git:log', { projectId, branch: branchName, limit, skip, repoPath });
 			branchCommitState = { ...branchCommitState, [key]: { commits: reset ? result.commits : [...current.commits, ...result.commits], isLoading: false, hasMore: result.hasMore, skip: skip + result.commits.length } };
 		} catch { branchCommitState = { ...branchCommitState, [key]: { ...current, isLoading: false } }; }
 	}
@@ -3403,7 +3553,7 @@ ${bodies}`;
 					gitStatus = { staged: [], unstaged: [], untracked: [], conflicted: [] };
 					branchInfo = null;
 					commits = [];
-					logStale = false;
+					staleSections = new Set();
 					logSkip = 0;
 					selectedCommit = null;
 					expandedContributors = new Set();
@@ -3412,6 +3562,18 @@ ${bodies}`;
 					contributorTotal = 0;
 					expandedBranchCommits = new Set();
 					branchCommitFileState = {};
+					// Sub-repo and expanded-branch data is keyed by path or branch
+					// name, not by project, so leaving it behind let one project's
+					// commit lists and remotes render under the next project's repos.
+					expandedBranches = new Set();
+					branchCommitState = {};
+					nestedCommits = {};
+					nestedLogSkip = {};
+					nestedLogHasMore = {};
+					nestedRemotesList = {};
+					expandedStashes = new Set();
+					stashFileState = {};
+					conflictFiles = [];
 
 					// Restore this project's view. Persistence of the LEAVING project
 					// is handled by the workspace coordinator (snapshot provider +
@@ -3485,26 +3647,25 @@ ${bodies}`;
 		};
 	});
 
-	// Load log when switching to log view. Also re-fetches if a git-mutating
-	// action or an external git:changed event happened while History was
-	// hidden (logStale), so the tab never shows a cached-but-outdated list.
+	// Load the log when History is shown, and re-load it whenever a git event
+	// invalidated it while the view was hidden — so the tab can never present a
+	// cached-but-outdated list.
 	$effect(() => {
 		if (activeView === 'log' && isRepo) {
 			untrack(() => {
-				if (commits.length === 0 || logStale) {
-					logStale = false;
-					loadLog(true);
-				}
+				if (commits.length === 0 || isGitSectionStale('log')) void refreshAllLogs();
 			});
 		}
 	});
 
-
-
-	// Refresh branch list when switching to Branches view
+	// Refresh the branch list (and any expanded branch's commits) on the way in
 	$effect(() => {
 		if (activeView === 'branches' && isRepo) {
-			untrack(() => loadBranches());
+			untrack(async () => {
+				clearGitSectionStale('branches');
+				await loadBranches();
+				await refreshExpandedBranchCommits();
+			});
 		}
 	});
 
@@ -3512,10 +3673,18 @@ ${bodies}`;
 	$effect(() => {
 		if (activeView !== 'more' || !isRepo) return;
 		const sub = moreSubTab;
-		untrack(() => {
-			if (sub === 'tags') loadTags();
-			else if (sub === 'stash') loadStash();
-			else if (sub === 'contributors') loadContributors();
+		untrack(async () => {
+			if (sub === 'tags') {
+				clearGitSectionStale('tags');
+				await loadTags();
+			} else if (sub === 'stash') {
+				clearGitSectionStale('stash');
+				await loadStash();
+				await refreshExpandedStashFiles();
+			} else if (sub === 'contributors') {
+				clearGitSectionStale('contributors');
+				await loadContributors();
+			}
 		});
 	});
 
@@ -3559,9 +3728,16 @@ ${bodies}`;
 	 * six unbounded loads of its own on top of this one, so a burst of git
 	 * activity spawned dozens of overlapping git processes — which is exactly when
 	 * the panel felt slowest.
+	 *
+	 * A full refresh marks every section stale, then re-reads what is on screen
+	 * and leaves the rest to be re-read when its view is opened. That split keeps
+	 * the cost bounded while still guaranteeing that no tab — including the
+	 * derived views nested under it, like an expanded branch's commits or an open
+	 * commit's file list — can show data older than the last git event.
 	 */
 	function scheduleGitRefresh(full = false) {
 		pendingFullRefresh ||= full;
+		if (full) markGitSectionsStale();
 		if (changeDebounce) clearTimeout(changeDebounce);
 		changeDebounce = setTimeout(async () => {
 			changeDebounce = null;
@@ -3569,23 +3745,41 @@ ${bodies}`;
 			pendingFullRefresh = false;
 
 			// Refresh git status and branches (branch switch also modifies working tree)
-			const prevBranch = branchInfo?.current;
+			const previousBranch = branchInfo?.current;
+			clearGitSectionStale('status', 'branches');
 			await Promise.all([loadStatus(), loadBranches()]);
 
 			// A branch switch can change the remote set; so can an out-of-band git
 			// operation. Either way, re-read it at most once.
-			if (isFull || branchInfo?.current !== prevBranch) {
-				loadRemotes();
+			if (isFull || branchInfo?.current !== previousBranch) {
+				clearGitSectionStale('remotes');
+				await loadRemotes();
+				await refreshNestedRemotes();
 			}
 
 			if (isFull) {
 				// Keep the Stash/Tags badge counts live when git changes out-of-band
-				// (e.g. `git stash` / `git tag` run from the terminal).
-				loadStash();
-				loadTags();
-				loadContributors();
-				// Refresh log if it was already loaded (History tab was visited)
-				if (commits.length > 0) refreshAllLogs();
+				// (e.g. `git stash` / `git tag` run from the terminal). These feed
+				// badges that are visible from every tab, so they are never deferred.
+				clearGitSectionStale('stash', 'tags', 'contributors');
+				await Promise.all([loadStash(), loadTags(), loadContributors()]);
+				await refreshExpandedStashFiles();
+
+				// Refresh the log if History was ever visited; when it is not the
+				// active view this only marks it stale for the next visit.
+				if (commits.length > 0) await refreshAllLogs();
+
+				// Views nested inside the active one. Each of these was previously
+				// fetched once and never revisited, so they outlived every change.
+				if (activeView === 'branches') await refreshExpandedBranchCommits();
+				if (selectedCommit) await refreshSelectedCommit();
+
+				// An external merge or rebase can raise (or resolve) conflicts while
+				// the resolver is open on screen.
+				if (conflictFiles.length > 0 || branchInfo?.operation) {
+					clearGitSectionStale('conflicts');
+					await loadConflicts();
+				}
 			}
 
 			// Refresh the active diff tab if currently viewing one. The file may
@@ -3602,18 +3796,18 @@ ${bodies}`;
 		if (!hasActiveProject || !projectId) return;
 
 		const unsub = ws.on('files:changed', (payload: any) => {
-			if (payload.projectId !== projectId || !isRepo) return;
+			if (payload.projectId !== projectId) return;
 			// An empty change list carries no information; refreshing on it just
 			// churns git and the open diff for nothing.
 			if (payload.changes.length === 0) return;
 			scheduleGitRefresh();
 		});
 
-		// The watcher was rebuilt and may have missed events. Reconcile status, but
-		// as a plain refresh — nothing is known to have changed.
+		// The watcher was rebuilt and may have missed events. Reconcile everything:
+		// what was missed is by definition unknown, so no section can be trusted.
 		const unsubResync = ws.on('files:resync', (payload: any) => {
-			if (payload.projectId !== projectId || !isRepo) return;
-			scheduleGitRefresh();
+			if (payload.projectId !== projectId) return;
+			scheduleGitRefresh(true);
 		});
 
 		return () => {
@@ -3627,17 +3821,73 @@ ${bodies}`;
 	});
 
 	// Subscribe to git state change events (external git add, commit, branch switch, etc.)
+	//
+	// Deliberately NOT gated on `isRepo`: a project that was not a repository
+	// when the panel loaded becomes one the moment `git init` or `git clone` runs
+	// in a terminal, and the gate is what pinned the panel on "Not a git
+	// repository" until the user switched projects and back.
 	$effect(() => {
 		if (!hasActiveProject || !projectId) return;
 
 		const unsub = ws.on('git:changed', (payload: any) => {
-			if (payload.projectId !== projectId || !isRepo) return;
+			if (payload.projectId !== projectId) return;
 			// Full refresh: index/HEAD/refs moved, so branches, remotes, stash, tags,
 			// contributors and the log can all be stale.
 			scheduleGitRefresh(true);
 		});
 
 		return () => unsub();
+	});
+
+	/**
+	 * Revalidate after a gap in which events could not reach us.
+	 *
+	 * Two gaps exist and neither produces an event of its own. While the
+	 * WebSocket is down — a sleeping laptop, a network blip, a server restart,
+	 * a remote device — every `git:changed` is delivered to nobody and is gone
+	 * for good. And while the page is hidden, browsers throttle timers and
+	 * handlers, so what does arrive may be coalesced away.
+	 *
+	 * Both are answered the same way: on reconnect, and on becoming visible
+	 * again, treat every section as stale and re-read the active view. This is
+	 * the reason the panel needs no polling — the only moments it can fall
+	 * behind are moments it is told about.
+	 */
+	$effect(() => {
+		if (!hasActiveProject || !projectId) return;
+
+		// Regaining focus is a frequent, cheap event (every alt-tab), and a full
+		// refresh spawns several git processes. Throttle it: anything the throttle
+		// swallows is at most a few seconds behind, and a real change during that
+		// window still arrives as its own `git:changed`.
+		const REVALIDATE_MIN_INTERVAL_MS = 5000;
+		let lastRevalidateAt = 0;
+
+		const revalidate = () => {
+			const now = Date.now();
+			if (now - lastRevalidateAt < REVALIDATE_MIN_INTERVAL_MS) return;
+			lastRevalidateAt = now;
+			scheduleGitRefresh(true);
+		};
+
+		// A reconnect always revalidates: the gap it closes is unbounded, and a
+		// throttle would be measuring the wrong thing.
+		const unsubReconnect = onWsReconnect(() => {
+			lastRevalidateAt = Date.now();
+			scheduleGitRefresh(true);
+		});
+
+		const onBecameVisible = () => {
+			if (document.visibilityState === 'visible') revalidate();
+		};
+		document.addEventListener('visibilitychange', onBecameVisible);
+		window.addEventListener('focus', revalidate);
+
+		return () => {
+			unsubReconnect();
+			document.removeEventListener('visibilitychange', onBecameVisible);
+			window.removeEventListener('focus', revalidate);
+		};
 	});
 
 	function startColumnResize(e: MouseEvent) {
