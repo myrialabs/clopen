@@ -18,7 +18,7 @@
 
 import { WebStandardStreamableHTTPServerTransport } from '@modelcontextprotocol/sdk/server/webStandardStreamableHttp.js';
 import { isInitializeRequest } from '@modelcontextprotocol/sdk/types.js';
-import { createRemoteMcpServer } from './servers/helper';
+import { createRemoteMcpServer, type RemoteMcpCaller } from './servers/helper';
 import { createExternalProxyServer } from '../external/proxy';
 import { debug } from '$shared/utils/logger';
 import { authQueries } from '$backend/database/queries';
@@ -214,13 +214,46 @@ async function handleStreamable(
 }
 
 /**
+ * Who is on the other end of an internal-bridge request.
+ *
+ * Read from the query string each engine's config builder writes (see
+ * `internalBridgeUrl` in `./config.ts`), which says as much as that config's
+ * lifetime allows: the calling stream, its project, or only the engine. A URL
+ * with none of it — an older config, or a client that stripped the query —
+ * yields `undefined` and the handlers fall back to their own resolution, which
+ * is what every engine did before this existed.
+ */
+function callerFromRequest(request: Request): RemoteMcpCaller | undefined {
+	const params = new URL(request.url).searchParams;
+	const projectId = params.get('project') ?? undefined;
+	const chatSessionId = params.get('session') ?? undefined;
+	const engine = (params.get('engine') as EngineType | null) ?? undefined;
+
+	if (projectId) return { context: { projectId, ...(chatSessionId && { chatSessionId }) }, engine };
+	if (engine) return { engine };
+	return undefined;
+}
+
+/**
  * Handle an incoming request to the INTERNAL `clopen-mcp` bridge (`/mcp`).
  * Serves the in-process custom tools defined via `defineServer()`.
+ *
+ * The caller is read from the initialize request only, and the resulting server
+ * stays bound to that session — the same way the external bridge binds its
+ * per-engine tool filter. That is correct because the identity in the URL is a
+ * property of the engine session, not of a single tool call: a Codex turn gets
+ * a fresh subprocess and therefore a fresh MCP session, while Copilot/Qwen/
+ * Cursor keep one per chat session, which is exactly the scope of `session`.
  */
 export async function handleMcpRequest(request: Request): Promise<Response> {
-	return handleStreamable(request, 'Remote MCP', async () => {
+	const caller = callerFromRequest(request);
+	const label = caller?.context
+		? `Remote MCP (${caller.engine ?? 'engine'}, project ${caller.context.projectId})`
+		: `Remote MCP${caller?.engine ? ` (${caller.engine})` : ''}`;
+
+	return handleStreamable(request, label, async () => {
 		const { allServers, enabledConfig } = await getServerDeps();
-		return { server: createRemoteMcpServer(allServers, enabledConfig) };
+		return { server: createRemoteMcpServer(allServers, enabledConfig, caller) };
 	});
 }
 

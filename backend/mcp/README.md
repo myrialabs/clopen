@@ -284,7 +284,7 @@ servers/browser-automation/
    └─> Mounted at /mcp on the main Elysia server
         ↓
 3. Open Code engine (opencode/stream.ts)
-   └─> Uses getOpenCodeMcpConfig() → { type: 'remote', url: '/mcp' }
+   └─> Uses getOpenCodeMcpConfig() → { type: 'remote', url: '/mcp?engine=opencode' }
         ↓
 4. Open Code connects via Streamable HTTP transport
    └─> Sends JSON-RPC tool calls to /mcp endpoint
@@ -612,8 +612,33 @@ Returns MCP configuration for Open Code engine (remote HTTP MCP server).
 import { getOpenCodeMcpConfig } from '$backend/mcp';
 
 const mcpConfig = getOpenCodeMcpConfig();
-// Returns: { 'clopen-mcp': { type: 'remote', url: 'http://localhost:9151/mcp', ... } }
+// Returns: { 'clopen-mcp': { type: 'remote', url: 'http://localhost:9151/mcp?engine=opencode', ... } }
 ```
+
+##### Who is calling: the bridge URL carries the caller
+
+The in-process engines (Claude, Pi, Cline) wrap every tool handler in the
+stream's `McpExecutionContext`, so a handler that asks "which project is this?"
+always gets the right answer. An HTTP request carries no such context, and the
+fallback — the most recently *started* stream anywhere in the app — is the
+project the **user** last prompted in, not the one the agent is working in. An
+agent driving the Preview Browser in project A opened its tabs in project B the
+moment the user switched over there.
+
+So each config builder addresses the bridge with as much identity as its own
+lifetime allows, and `handleMcpRequest` binds that for the MCP session:
+
+| Engine        | Query string                            | Why not more |
+| ------------- | --------------------------------------- | ------------ |
+| Copilot, Cursor, Qwen | `engine`, `project`, `session`  | — built per stream |
+| Codex         | `engine`, `project`                     | one client per project, shared by its chat sessions |
+| Open Code     | `engine`                                | one pooled server per Profile, shared across projects |
+
+A caller that names only its project resolves the chat session to the most
+recent stream *in that project*; a caller that names only its engine resolves to
+the most recent stream *on that engine*. Both are guesses, but confined ones —
+and when a config gains a narrower lifetime, pass the richer context and the
+guess disappears.
 
 #### `resolveOpenCodeToolName(toolName)`
 Resolve a remote-MCP tool name to `mcp__server__tool` format (single source
@@ -660,13 +685,16 @@ engines. Each returns the **same** `/mcp` URL in the SDK-specific shape:
 
 ```typescript
 // Codex (config object flattened to --config flags)
-getCodexMcpConfig();
-// { 'clopen-mcp': { url: 'http://localhost:9151/mcp', tools: { ... } } }
+getCodexMcpConfig(profileFilter, mcpContext);
+// { 'clopen-mcp': { url: 'http://localhost:9151/mcp?engine=codex&project=…', tools: { ... } } }
 
 // Copilot (MCPHTTPServerConfig from @github/copilot-sdk)
-getCopilotMcpConfig();
-// { 'clopen-mcp': { type: 'http', url: 'http://localhost:9151/mcp', tools: [...] } }
+getCopilotMcpConfig(profileFilter, mcpContext);
+// { 'clopen-mcp': { type: 'http', url: 'http://localhost:9151/mcp?engine=copilot&project=…&session=…', tools: [...] } }
 ```
+
+Pass the stream's `mcpContext` — without it the bridge cannot tell whose tool
+call it is holding (see "Who is calling" above).
 
 When adding a new engine that consumes streamable-HTTP MCP, add a sibling
 `getXxxMcpConfig()` here — do **not** introduce a new HTTP listener or a

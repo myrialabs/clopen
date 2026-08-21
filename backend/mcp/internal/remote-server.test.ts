@@ -37,10 +37,10 @@ function sessionCount(userId: string): number {
 	return row.count;
 }
 
-function mcpRequest(token?: string): Request {
+function mcpRequest(token?: string, query = ''): Request {
 	const headers: Record<string, string> = { 'Content-Type': 'application/json' };
 	if (token) headers['Authorization'] = `Bearer ${token}`;
-	return new Request('http://localhost/mcp', {
+	return new Request(`http://localhost/mcp${query}`, {
 		method: 'POST',
 		headers,
 		body: JSON.stringify({
@@ -132,6 +132,21 @@ describe('MCP Remote Server Authentication', () => {
 		const response = await handleMcpRequest(mcpRequest(sessionToken));
 		// Past auth — the MCP transport handles the body from here.
 		expect(response.status).not.toBe(401);
+	});
+
+	test('accepts a caller-identified bridge URL', async () => {
+		// Each engine's config builder addresses the bridge with the project (and
+		// where its config lives that long, the chat session) driving the call, so
+		// tool handlers are bound to it instead of guessing from ambient state.
+		// Routing must not care that the query string is there.
+		const query = '?engine=codex&project=project-a&session=session-a';
+		const response = await handleMcpRequest(mcpRequest(getMcpServiceToken(), query));
+		expect(response.status).not.toBe(401);
+	});
+
+	test('rejects a caller-identified bridge URL without a token', async () => {
+		const response = await handleMcpRequest(mcpRequest(undefined, '?engine=opencode'));
+		expect(response.status).toBe(401);
 	});
 
 	test('accepts a valid PAT token', async () => {

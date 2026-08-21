@@ -339,7 +339,7 @@ export class CopilotEngine implements AIEngine {
 		const { approveAll } = await loadEngineSdk<typeof import('@github/copilot-sdk')>('copilot', '@github/copilot-sdk');
 
 		try {
-			const mcpConfig = getCopilotMcpConfig(mcpProfileFilter);
+			const mcpConfig = getCopilotMcpConfig(mcpProfileFilter, options.mcpContext);
 
 			const baseConfig: ResumeSessionConfig = {
 				onPermissionRequest: (request, invocation) =>

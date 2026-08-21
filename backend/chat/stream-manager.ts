@@ -439,7 +439,10 @@ class StreamManager extends EventEmitter {
 		// Register session -> projectId mapping for MCP context
 		if (request.projectId) {
 			projectContextService.registerSession(request.chatSessionId, request.projectId);
-			projectContextService.registerStream(streamId, request.projectId, request.chatSessionId);
+			// The engine goes with it: the remote HTTP MCP bridge cannot always
+			// name the calling stream, and knowing which engine asked is what
+			// keeps a fallback from reaching across into another engine's project.
+			projectContextService.registerStream(streamId, request.projectId, request.chatSessionId, request.engine.type);
 		}
 		// Hand the AbortSignal to MCP so tool handlers can fast-fail on
 		// cancellation. Without this, the engine subprocess dies on cancel

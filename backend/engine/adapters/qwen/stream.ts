@@ -162,7 +162,7 @@ export class QwenEngine implements AIEngine {
 		// Refresh the synthetic skills preamble in the Qwen memory file.
 		await syncSkills('qwen', profileId);
 		await syncEngineArtifacts('qwen', profileId);
-		const mcpConfig = getQwenMcpConfig(mcpProfileFilter);
+		const mcpConfig = getQwenMcpConfig(mcpProfileFilter, options.mcpContext);
 
 		// Resolve the permission policy once per stream; canUseTool enforces it
 		// (Qwen otherwise auto-allows everything). Tool names arrive snake_cased.

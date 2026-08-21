@@ -192,7 +192,7 @@ export class CursorEngine implements AIEngine {
 			},
 		});
 		const customTools: Record<string, SDKCustomTool> = { AskUserQuestion: askTool };
-		const mcpServers = getCursorMcpConfig(mcpProfileFilter);
+		const mcpServers = getCursorMcpConfig(mcpProfileFilter, options.mcpContext);
 		const agents = await this.buildAgents();
 
 		const { Agent } = await loadEngineSdk<typeof import('@cursor/sdk')>('cursor', '@cursor/sdk');

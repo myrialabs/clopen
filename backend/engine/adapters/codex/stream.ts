@@ -86,6 +86,24 @@ export class CodexEngine implements AIEngine {
 	 * `'*'` = unfiltered (no profile constraint). `null` = not initialized.
 	 */
 	private currentMcpFilterKey: string | null = null;
+	/**
+	 * Project baked into `this.codex`'s MCP bridge URL.
+	 *
+	 * Codex takes its MCP set at construction, so the URL — and with it the
+	 * identity the bridge binds tool calls to — is fixed for the life of the
+	 * client. An instance serves exactly one project (see the per-project engine
+	 * cache in `backend/engine/index.ts`), so the project is a safe thing to bake;
+	 * the chat session is not, because the same client serves all of them.
+	 * `null` = built without a project, which a later stream re-initialises.
+	 */
+	private currentProjectId: string | null = null;
+	/**
+	 * Project for the client `initialize()` is about to build. Carried in a field
+	 * rather than an argument because `initialize` is part of the `AIEngine`
+	 * interface and adding a parameter to the implementation would stop it
+	 * satisfying that type.
+	 */
+	private pendingProjectId: string | null = null;
 
 	get isInitialized(): boolean {
 		return this._isInitialized;
@@ -100,6 +118,8 @@ export class CodexEngine implements AIEngine {
 		if (this._isInitialized && (accountId == null || accountId === this.currentAccountId) && mcpKey === this.currentMcpFilterKey) {
 			return;
 		}
+
+		const projectId = this.pendingProjectId;
 
 		const account = accountId != null
 			? engineQueries.getAccount(accountId)
@@ -122,7 +142,7 @@ export class CodexEngine implements AIEngine {
 		// inside the stack dir) over an older copy on the user's PATH — the SDK
 		// would otherwise be pinned while the process it spawns drifts.
 		const codexCli = await resolveEngineCli('codex');
-		const mcpConfig = getCodexMcpConfig(mcpProfileFilter);
+		const mcpConfig = getCodexMcpConfig(mcpProfileFilter, projectId ? { projectId } : undefined);
 
 		// Codex SDK takes config at construction. We pass `show_raw_agent_reasoning`
 		// (so the SDK forwards reasoning text events) and forward the Clopen MCP
@@ -149,8 +169,9 @@ export class CodexEngine implements AIEngine {
 		});
 		this.currentAccountId = account.id;
 		this.currentMcpFilterKey = mcpKey;
+		this.currentProjectId = projectId;
 		this._isInitialized = true;
-		debug.log('engine', `Codex engine initialized (account ${account.id}, mode=${credential.kind}, mcpFilter=${mcpKey})`);
+		debug.log('engine', `Codex engine initialized (account ${account.id}, mode=${credential.kind}, mcpFilter=${mcpKey}, project=${projectId ?? 'none'})`);
 	}
 
 	async dispose(): Promise<void> {
@@ -158,6 +179,7 @@ export class CodexEngine implements AIEngine {
 		this.codex = null;
 		this.currentAccountId = null;
 		this.currentMcpFilterKey = null;
+		this.currentProjectId = null;
 		this._isInitialized = false;
 		debug.log('engine', 'Codex engine disposed');
 	}
@@ -191,10 +213,17 @@ export class CodexEngine implements AIEngine {
 		const mcpKey = mcpProfileFilter ? [...mcpProfileFilter].sort().join(',') : '*';
 		const accountChanged = this._isInitialized && accountId != null && accountId !== this.currentAccountId;
 		const mcpChanged = this._isInitialized && mcpKey !== this.currentMcpFilterKey;
-		if (accountChanged || mcpChanged) {
-			debug.log('engine', `Codex re-initialising (accountChanged=${accountChanged}, mcpChanged=${mcpChanged})`);
+		// A client built without a project (the bare `initialize()` the engine
+		// registry does) addresses the bridge anonymously, and its tool calls fall
+		// back to whichever stream started last — the way an agent in one project
+		// ended up opening tabs in another.
+		const streamProjectId = options.mcpContext?.projectId ?? null;
+		const projectChanged = this._isInitialized && streamProjectId !== null && streamProjectId !== this.currentProjectId;
+		if (accountChanged || mcpChanged || projectChanged) {
+			debug.log('engine', `Codex re-initialising (accountChanged=${accountChanged}, mcpChanged=${mcpChanged}, projectChanged=${projectChanged})`);
 			await this.dispose();
 		}
+		this.pendingProjectId = streamProjectId;
 		if (!this._isInitialized || !this.codex) {
 			await this.initialize(accountId, mcpProfileFilter);
 		}
