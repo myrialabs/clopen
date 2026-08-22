@@ -14,42 +14,13 @@ import { Elysia } from 'elysia';
 import { Readable } from 'node:stream';
 
 import { debug } from '$shared/utils/logger';
-import { hashToken } from '../auth/tokens';
-import { authQueries, sshConnectionQueries } from '../database/queries';
+import { sshConnectionQueries } from '../database/queries';
 import { joinRemote, sftpService } from '../ssh/sftp';
-
-interface AuthIdentity {
-	userId: string;
-	role: string;
-}
-
-function authenticate(request: Request): AuthIdentity {
-	const header = request.headers.get('authorization') || request.headers.get('Authorization');
-	if (!header || !header.toLowerCase().startsWith('bearer ')) {
-		throw Object.assign(new Error('Authorization required'), { status: 401 });
-	}
-	const token = header.slice(7).trim();
-	if (!token) {
-		throw Object.assign(new Error('Authorization required'), { status: 401 });
-	}
-	const session = authQueries.getSessionByTokenHash(hashToken(token));
-	if (!session) {
-		throw Object.assign(new Error('Invalid session token'), { status: 401 });
-	}
-	if (new Date(session.expires_at) < new Date()) {
-		throw Object.assign(new Error('Session expired'), { status: 401 });
-	}
-	const user = authQueries.getUserById(session.user_id);
-	if (!user) {
-		throw Object.assign(new Error('User not found'), { status: 401 });
-	}
-	authQueries.updateLastActive(session.id);
-	return { userId: user.id, role: user.role };
-}
+import { authenticateRequest } from './bearer-auth';
 
 /** Resolve the caller and confirm they own the SSH connection they named. */
 function authorizeConnection(request: Request, connectionId: string): void {
-	const identity = authenticate(request);
+	const identity = authenticateRequest(request);
 	const connection = sshConnectionQueries.getForUser(
 		connectionId,
 		identity.userId,
