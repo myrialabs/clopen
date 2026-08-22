@@ -198,10 +198,6 @@
 				{/if}
 			</span>
 			<input type="password" bind:value={password} class={fieldClass} />
-			<span class="text-xs text-slate-500 dark:text-slate-500">
-				Also answers keyboard-interactive prompts, so hosts with
-				<code>PasswordAuthentication no</code> still work.
-			</span>
 		</label>
 	{:else if authMethod === 'key'}
 		<label class="flex flex-col gap-1">
@@ -321,8 +317,8 @@
 			</span>
 		</button>
 		<span class="text-xs text-slate-500 dark:text-slate-500 -mt-2">
-			Clopen remembers the key a host presents the first time and refuses a different one after
-			that. Turning this off accepts any key, which is only safe on a network you control.
+			Blocks the connection if the host's key changes after the first connect. Turn off only on a
+			network you trust.
 		</span>
 	</div>
 
