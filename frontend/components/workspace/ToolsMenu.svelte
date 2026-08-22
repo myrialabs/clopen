@@ -6,6 +6,7 @@
 	import { tunnelStore } from '$frontend/stores/features/tunnel.svelte';
 	import { remoteAccessStore } from '$frontend/stores/features/remote-access.svelte';
 	import { dbClientStore } from '$frontend/stores/features/db-client.svelte';
+	import { sshClientStore } from '$frontend/stores/features/ssh-client.svelte';
 	import type { IconName } from '$shared/types/ui/icons';
 
 	interface Props {
@@ -14,18 +15,28 @@
 		onRemoteAccess: () => void;
 		onPublicTunnel: () => void;
 		onDbClient: () => void;
+		onSshClient: () => void;
 		onMemory: () => void;
 	}
 
-	const { collapsed = false, mobile = false, onRemoteAccess, onPublicTunnel, onDbClient, onMemory }: Props = $props();
+	const {
+		collapsed = false,
+		mobile = false,
+		onRemoteAccess,
+		onPublicTunnel,
+		onDbClient,
+		onSshClient,
+		onMemory
+	}: Props = $props();
 
 	let isOpen = $state(false);
 
 	const remoteCount = $derived(remoteAccessStore.activeConnections);
 	const tunnelCount = $derived(tunnelStore.activeDomainCount);
 	const dbCount = $derived(dbClientStore.liveCount);
+	const sshCount = $derived(sshClientStore.liveCount);
 	// A single dot on the trigger signals "something under here is active".
-	const hasActivity = $derived(remoteCount > 0 || tunnelCount > 0 || dbCount > 0);
+	const hasActivity = $derived(remoteCount > 0 || tunnelCount > 0 || dbCount > 0 || sshCount > 0);
 
 	interface ToolItem {
 		label: string;
@@ -60,6 +71,14 @@
 			onClick: onDbClient,
 			count: dbCount,
 			accent: 'text-emerald-600 dark:text-emerald-400'
+		},
+		{
+			label: 'SSH Client',
+			description: 'Shell, files, and port forwarding',
+			icon: 'lucide:server',
+			onClick: onSshClient,
+			count: sshCount,
+			accent: 'text-sky-600 dark:text-sky-400'
 		},
 		{
 			label: 'Memory',

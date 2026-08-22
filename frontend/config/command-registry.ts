@@ -15,7 +15,8 @@ import {
 	openNewProjectDialog,
 	openRemoteAccessDialog,
 	openTunnelDialog,
-	openDbClientDialog
+	openDbClientDialog,
+	openSshClientDialog
 } from '$frontend/stores/ui/quick-panels.svelte';
 import { addNotification } from '$frontend/stores/ui/notification.svelte';
 
@@ -182,6 +183,15 @@ export function getCommandActions(): CommandAction[] {
 		icon: 'lucide:database',
 		keywords: ['sql', 'database', 'query'],
 		run: openDbClientDialog
+	});
+
+	actions.push({
+		id: 'ssh-client',
+		label: 'SSH Client',
+		description: 'Open a shell, browse files, forward a port',
+		icon: 'lucide:server',
+		keywords: ['ssh', 'shell', 'sftp', 'remote', 'server', 'tunnel', 'port forward'],
+		run: openSshClientDialog
 	});
 
 	actions.push({

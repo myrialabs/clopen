@@ -46,6 +46,7 @@ export type LogLabel =
 	| 'tunnel'
 	| 'remote-access'
 	| 'db-client'
+	| 'ssh'
 	
 	// User
 	| 'user'

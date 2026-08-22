@@ -36,6 +36,7 @@ const sshAuthSchema = t.Union([t.Literal('password'), t.Literal('key')]);
 
 const sshInputSchema = t.Object({
 	enabled: t.Optional(t.Boolean()),
+	connectionId: t.Optional(t.Nullable(t.String())),
 	host: t.Optional(t.String()),
 	port: t.Optional(t.Number()),
 	username: t.Optional(t.String()),
