@@ -12,6 +12,7 @@
 	import { getFolderIcon } from '$frontend/utils/folder-icon-mappings';
 	import { isImageFile, isSvgFile, isPdfFile, isAudioFile, isVideoFile, isBinaryFile, isBinaryContent, isPreviewableFile, isEditableImageFile } from '$frontend/utils/file-type';
 	import { formatFileSize } from '$frontend/utils/format';
+	import { fetchFileBlob, isAbortError, saveBlob } from '$frontend/utils/file-download';
 	import { onMount } from 'svelte';
 	import { scale } from 'svelte/transition';
 	import { cubicOut } from 'svelte/easing';
@@ -1905,13 +1906,19 @@
 		}
 	}
 
-	function saveBlob(blob: Blob, name: string) {
-		const url = URL.createObjectURL(blob);
-		const a = document.createElement('a');
-		a.href = url;
-		a.download = name;
-		a.click();
-		URL.revokeObjectURL(url);
+	// Progress of the one download this viewer can have in flight, so a large
+	// binary reports movement instead of sitting on a dead button.
+	let downloadProgress = $state<{ transferredBytes: number; totalBytes: number | null } | null>(null);
+	let downloadAbort: AbortController | null = null;
+
+	const downloadPercent = $derived(
+		downloadProgress && downloadProgress.totalBytes
+			? Math.min(100, Math.round((downloadProgress.transferredBytes / downloadProgress.totalBytes) * 100))
+			: null
+	);
+
+	function cancelDownload() {
+		downloadAbort?.abort();
 	}
 
 	async function downloadFile() {
@@ -1925,19 +1932,26 @@
 			return;
 		}
 
-		// Binary / media files: fetch the original bytes from disk so the download
-		// is byte-for-byte intact. `preview` is omitted so transcodable formats
-		// (TIFF/HEIC) download in their original format, not a PNG copy.
+		// Binary / media files: stream the original bytes from disk so the download
+		// is byte-for-byte intact and reports progress on the way. `preview` is not
+		// involved, so transcodable formats (TIFF/HEIC) download in their original
+		// format, not a PNG copy.
+		if (downloadAbort) return;
+		const controller = new AbortController();
+		downloadAbort = controller;
+		downloadProgress = { transferredBytes: 0, totalBytes: file.size ?? null };
 		try {
-			const response = await ws.http('files:read-content', { path: file.path });
-			const binaryString = atob(response.content);
-			const bytes = new Uint8Array(binaryString.length);
-			for (let i = 0; i < binaryString.length; i++) {
-				bytes[i] = binaryString.charCodeAt(i);
-			}
-			saveBlob(new Blob([bytes], { type: response.contentType || 'application/octet-stream' }), file.name);
+			const blob = await fetchFileBlob(file.path, {
+				totalBytes: file.size ?? null,
+				signal: controller.signal,
+				onProgress: (progress) => { downloadProgress = progress; }
+			});
+			saveBlob(blob, file.name);
 		} catch (err) {
-			debug.error('file', 'Failed to download file:', err);
+			if (!isAbortError(err)) debug.error('file', 'Failed to download file:', err);
+		} finally {
+			downloadAbort = null;
+			downloadProgress = null;
 		}
 	}
 </script>
@@ -2298,12 +2312,38 @@
 					<p class="text-sm text-slate-500 dark:text-slate-400 text-center mb-4">
 						This file cannot be previewed in the browser.
 					</p>
-					<button
-						class="px-6 py-2.5 bg-violet-600 text-white rounded-xl hover:bg-violet-700 transition-all duration-200"
-						onclick={downloadFile}
-					>
-						Download File
-					</button>
+					{#if downloadProgress}
+						<div class="w-full max-w-xs flex flex-col items-center gap-2">
+							<div class="h-1.5 w-full rounded-full bg-slate-200 dark:bg-slate-700 overflow-hidden">
+								{#if downloadPercent !== null}
+									<div
+										class="h-full bg-violet-600 transition-all duration-150"
+										style="width: {downloadPercent}%"
+									></div>
+								{:else}
+									<div class="h-full w-1/3 bg-violet-600 animate-pulse"></div>
+								{/if}
+							</div>
+							<div class="text-xs text-slate-500 dark:text-slate-400">
+								{formatFileSize(downloadProgress.transferredBytes)}{downloadProgress.totalBytes
+									? ` / ${formatFileSize(downloadProgress.totalBytes)}`
+									: ''}
+							</div>
+							<button
+								class="text-xs text-slate-500 dark:text-slate-400 hover:text-slate-700 dark:hover:text-slate-200 cursor-pointer"
+								onclick={cancelDownload}
+							>
+								Cancel
+							</button>
+						</div>
+					{:else}
+						<button
+							class="px-6 py-2.5 bg-violet-600 text-white rounded-xl hover:bg-violet-700 transition-all duration-200"
+							onclick={downloadFile}
+						>
+							Download File
+						</button>
+					{/if}
 				</div>
 			{:else}
 				<!-- Code content (always in edit mode) -->

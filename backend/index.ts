@@ -43,6 +43,7 @@ import { wsRouter } from './ws';
 // HTTP upload route — bypasses the Vite WS proxy, which corrupts sustained
 // binary transfers with `write EPIPE`. See backend/http/files-upload.ts.
 import { filesUploadRoute } from './http/files-upload';
+import { filesDownloadRoute } from './http/files-download';
 
 // HTTP routes for per-user notification sounds (upload / serve / delete).
 import { audioRoute } from './http/audio';
@@ -181,9 +182,10 @@ const app = new Elysia()
 		}
 	})
 
-	// HTTP file upload — mounted before the WS plugin so /api/files/upload
-	// stays on the HTTP path through the Vite dev proxy.
+	// HTTP file transfer — mounted before the WS plugin so /api/files/* stays
+	// on the HTTP path through the Vite dev proxy.
 	.use(filesUploadRoute)
+	.use(filesDownloadRoute)
 
 	// Per-user notification sound upload/serve/delete.
 	.use(audioRoute)

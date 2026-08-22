@@ -26,6 +26,7 @@ export interface FileAuditLogEntry {
 
 export type FileAuditAction = 
 	| 'upload'
+	| 'download'
 	| 'delete'
 	| 'move'
 	| 'rename'

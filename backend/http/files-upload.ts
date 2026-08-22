@@ -19,43 +19,17 @@ import { join } from 'node:path';
 import { link, mkdir, stat, unlink } from 'node:fs/promises';
 
 import { debug } from '$shared/utils/logger';
-import { hashToken } from '../auth/tokens';
-import { authQueries, fileAuditLogQueries } from '../database/queries';
+import { fileAuditLogQueries } from '../database/queries';
 import { findContainingProjectId, requireFilePathAccessFor } from '../ws/files/path-access';
 import { clientIpFromRequest } from '../utils/client-ip';
 import { validateFileSize } from '../files/file-size-limit';
 import { uploadTempCleanup } from './upload-temp-cleanup';
-
-type AuthIdentity = { userId: string; role: string };
-
-function authenticate(request: Request): AuthIdentity {
-	const header = request.headers.get('authorization') || request.headers.get('Authorization');
-	if (!header || !header.toLowerCase().startsWith('bearer ')) {
-		throw Object.assign(new Error('Authorization required'), { status: 401 });
-	}
-	const token = header.slice(7).trim();
-	if (!token) {
-		throw Object.assign(new Error('Authorization required'), { status: 401 });
-	}
-	const session = authQueries.getSessionByTokenHash(hashToken(token));
-	if (!session) {
-		throw Object.assign(new Error('Invalid session token'), { status: 401 });
-	}
-	if (new Date(session.expires_at) < new Date()) {
-		throw Object.assign(new Error('Session expired'), { status: 401 });
-	}
-	const user = authQueries.getUserById(session.user_id);
-	if (!user) {
-		throw Object.assign(new Error('User not found'), { status: 401 });
-	}
-	authQueries.updateLastActive(session.id);
-	return { userId: user.id, role: user.role };
-}
+import { authenticateRequest, type AuthIdentity } from './bearer-auth';
 
 export const filesUploadRoute = new Elysia().post('/api/files/upload', async ({ request, query, server }) => {
 	let identity: AuthIdentity;
 	try {
-		identity = authenticate(request);
+		identity = authenticateRequest(request);
 	} catch (error) {
 		const status = (error as { status?: number }).status ?? 401;
 		const message = error instanceof Error ? error.message : 'Unauthorized';

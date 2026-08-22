@@ -74,6 +74,7 @@
 	import { stripArchiveExtension, extensionFor, type ArchiveFormat, type ZipMethod } from '$frontend/utils/archive';
 	import { acquireFileWatch } from '$frontend/utils/file-watch';
 	import { authStore } from '$frontend/stores/features/auth.svelte';
+	import { fetchFileBlob, isAbortError, saveBlob } from '$frontend/utils/file-download';
 	import { showConfirm } from '$frontend/stores/ui/dialog.svelte';
 	import { SvelteMap } from 'svelte/reactivity';
 	import { getFileIcon } from '$frontend/utils/file-icon-mappings';
@@ -1245,25 +1246,45 @@
 		}
 	}
 
-	// Download a file from the sidebar context menu. Fetches the on-disk bytes
-	// (base64) over WS and saves them client-side, preserving the original format.
+	// Download a file from the sidebar context menu. Streams the on-disk bytes
+	// over HTTP and saves them client-side, preserving the original format.
+	// It takes the same banner as an upload: a big file used to give no sign of
+	// movement at all, then simply appear on the device.
 	async function downloadFileNode(file: FileNode) {
+		const opId = crypto.randomUUID();
+		const controller = new AbortController();
+		// Deliberately not `markBusy` — that greys the row out and blocks it, which
+		// is right for a mutation but wrong for a read: the file is still openable
+		// while its bytes are being copied. The banner carries the feedback.
+		pushOp({
+			id: opId,
+			kind: 'download',
+			label: `Downloading ${file.name}`,
+			progress: 0,
+			onCancel: () => controller.abort()
+		});
+
 		try {
-			const response = await ws.http('files:read-content', { path: file.path });
-			const binaryString = atob(response.content);
-			const bytes = new Uint8Array(binaryString.length);
-			for (let i = 0; i < binaryString.length; i++) {
-				bytes[i] = binaryString.charCodeAt(i);
-			}
-			const blob = new Blob([bytes], { type: response.contentType || 'application/octet-stream' });
-			const url = URL.createObjectURL(blob);
-			const a = document.createElement('a');
-			a.href = url;
-			a.download = file.name;
-			a.click();
-			URL.revokeObjectURL(url);
+			const blob = await fetchFileBlob(file.path, {
+				totalBytes: file.size ?? null,
+				signal: controller.signal,
+				onProgress: ({ transferredBytes, totalBytes }) => {
+					updateOp(opId, {
+						label: totalBytes
+							? `Downloading ${file.name} (${formatBytes(transferredBytes)} / ${formatBytes(totalBytes)})`
+							: `Downloading ${file.name} (${formatBytes(transferredBytes)})`,
+						// Undefined leaves the banner on its indeterminate spinner,
+						// which is honest when the total is unknown.
+						progress: totalBytes ? transferredBytes / totalBytes : undefined
+					});
+				}
+			});
+			saveBlob(blob, file.name);
 		} catch (err) {
+			if (isAbortError(err)) return;
 			showErrorAlert(err instanceof Error ? err.message : 'Failed to download file');
+		} finally {
+			popOp(opId);
 		}
 	}
 
@@ -1359,9 +1380,12 @@
 
 	type ActiveOp = {
 		id: string;
-		kind: 'upload' | 'zip' | 'extract';
+		kind: 'upload' | 'download' | 'zip' | 'extract';
 		label: string;
-		progress?: number; // 0–1, only set for chunked uploads
+		progress?: number; // 0–1, only set for transfers that report bytes
+		// Present only for ops that can be stopped mid-flight (transfers);
+		// its presence is what puts a cancel button on the banner row.
+		onCancel?: () => void;
 	};
 	const activeOps = new SvelteMap<string, ActiveOp>();
 	const activeOpsList = $derived(Array.from(activeOps.values()));
@@ -2496,6 +2520,16 @@
 							</div>
 						{/if}
 					</div>
+					{#if op.onCancel}
+						<button
+							onclick={op.onCancel}
+							class="flex-shrink-0 p-1 rounded text-slate-400 hover:text-slate-100 hover:bg-slate-700/60 transition-colors cursor-pointer"
+							title="Cancel"
+							aria-label="Cancel {op.label}"
+						>
+							<Icon name="lucide:x" class="w-3.5 h-3.5" />
+						</button>
+					{/if}
 				</div>
 			{/each}
 		</div>
