@@ -28,6 +28,8 @@ import { startEngineConfigWatcher } from './engine/config-revision';
 import { startEngineHotReload } from './engine/hot-reload';
 import { disposeAllEngines } from './engine';
 import { connectionManager } from './db-client/connection-manager';
+import { sshClientPool } from './ssh/client-pool';
+import { sshForwardManager } from './ssh/forwards';
 import { refreshProcessPath } from './utils/path-enrich';
 import { installProcessWarningFilter } from './utils/process-warnings';
 import { debug } from '$shared/utils/logger';
@@ -44,6 +46,9 @@ import { filesUploadRoute } from './http/files-upload';
 
 // HTTP routes for per-user notification sounds (upload / serve / delete).
 import { audioRoute } from './http/audio';
+
+// HTTP routes for SFTP transfer — same reason as the file upload route above.
+import { sshSftpRoute } from './http/ssh-sftp';
 
 // Import browser preview manager for graceful shutdown
 import { browserPreviewServiceManager } from './preview';
@@ -183,6 +188,9 @@ const app = new Elysia()
 	// Per-user notification sound upload/serve/delete.
 	.use(audioRoute)
 
+	// SSH file transfer (SFTP download/upload).
+	.use(sshSftpRoute)
+
 	// Mount WebSocket router (all functionality now via WebSocket)
 	.use(wsRouter.asPlugin('/ws'));
 
@@ -310,6 +318,10 @@ async function gracefulShutdown() {
 		// and browser teardown below — otherwise the old process keeps those
 		// sockets open long enough to overlap the new process ("too many clients").
 		await connectionManager.closeAll();
+		// Same reasoning for SSH: stop the forwards' listeners and close every
+		// transport so their remote sessions and bound ports are released now.
+		await sshForwardManager.stopAll();
+		sshClientPool.closeAll();
 		// Dispose rate limiter timer
 		authRateLimiter.dispose();
 		// Dispose expired session cleanup timer

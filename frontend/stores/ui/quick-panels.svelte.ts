@@ -11,6 +11,7 @@ interface QuickPanelsState {
 	remoteAccessOpen: boolean;
 	tunnelOpen: boolean;
 	dbClientOpen: boolean;
+	sshClientOpen: boolean;
 	memoryOpen: boolean;
 }
 
@@ -19,6 +20,7 @@ export const quickPanelsState = $state<QuickPanelsState>({
 	remoteAccessOpen: false,
 	tunnelOpen: false,
 	dbClientOpen: false,
+	sshClientOpen: false,
 	memoryOpen: false
 });
 
@@ -52,6 +54,14 @@ export function openDbClientDialog() {
 
 export function closeDbClientDialog() {
 	quickPanelsState.dbClientOpen = false;
+}
+
+export function openSshClientDialog() {
+	quickPanelsState.sshClientOpen = true;
+}
+
+export function closeSshClientDialog() {
+	quickPanelsState.sshClientOpen = false;
 }
 
 export function openMemoryDialog() {

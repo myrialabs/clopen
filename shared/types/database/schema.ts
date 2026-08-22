@@ -203,8 +203,57 @@ export interface DBDbClientConnectionRow {
 	options_json: string | null;
 	color: string | null;
 	owner_user_id: string | null;
+	/** When set, the SSH tunnel settings come from this saved SSH connection. */
+	ssh_connection_id: string | null;
 	created_at: string;
 	updated_at: string;
 	last_used_at: string | null;
+}
+
+export interface DBSshConnectionRow {
+	id: string;
+	name: string;
+	host: string;
+	port: number;
+	username: string;
+	auth_method: 'password' | 'key' | 'key-file' | 'agent';
+	password: string | null;
+	private_key: string | null;
+	private_key_path: string | null;
+	passphrase: string | null;
+	agent_socket: string | null;
+	jump_connection_id: string | null;
+	initial_path: string | null;
+	keepalive_seconds: number;
+	strict_host_key: number;
+	color: string | null;
+	owner_user_id: string | null;
+	created_at: string;
+	updated_at: string;
+	last_used_at: string | null;
+}
+
+export interface DBSshKnownHostRow {
+	id: string;
+	host: string;
+	port: number;
+	key_type: string;
+	fingerprint: string;
+	added_at: string;
+	last_seen_at: string | null;
+}
+
+export interface DBSshPortForwardRow {
+	id: string;
+	connection_id: string;
+	name: string;
+	type: 'local' | 'remote' | 'dynamic';
+	listen_host: string;
+	listen_port: number;
+	dest_host: string | null;
+	dest_port: number | null;
+	auto_start: number;
+	created_at: string;
+	updated_at: string;
 }
 

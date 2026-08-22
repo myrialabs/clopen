@@ -8,6 +8,12 @@ export type DbSshAuthMethod = 'password' | 'key';
 
 export interface DbClientSshConfig {
 	enabled: boolean;
+	/**
+	 * When set, the tunnel is opened through this saved SSH connection and every
+	 * field below is ignored. Keeping both modes means existing connections that
+	 * carry their own credentials keep working untouched.
+	 */
+	connectionId?: string | null;
 	host: string;
 	port: number;
 	username: string;

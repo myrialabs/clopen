@@ -8,6 +8,7 @@
 
 import { dbClientConnectionQueries } from '../database/queries';
 import { openSshTunnel, type SshTunnel } from './ssh-tunnel';
+import { openTunnelViaSavedConnection } from '../ssh/tunnel';
 import { MysqlAdapter } from './drivers/mysql';
 import { PostgresAdapter } from './drivers/postgres';
 import { SqliteAdapter } from './drivers/sqlite';
@@ -72,7 +73,12 @@ class ConnectionManager {
 		if (conn.ssh.enabled && conn.driver !== 'sqlite') {
 			const remoteHost = conn.host || '127.0.0.1';
 			const remotePort = conn.port ?? defaultPortFor(conn.driver);
-			tunnel = await openSshTunnel(conn.ssh, remoteHost, remotePort);
+			// Two modes: a saved SSH host from the SSH client (shared credentials,
+			// jump chain and trusted host key), or the credentials stored inline on
+			// this connection. The inline path is what every existing connection uses.
+			tunnel = conn.ssh.connectionId
+				? await openTunnelViaSavedConnection(conn.ssh.connectionId, remoteHost, remotePort)
+				: await openSshTunnel(conn.ssh, remoteHost, remotePort);
 		}
 
 		try {
@@ -250,6 +256,7 @@ function inputToConnection(input: DbClientConnectionInput): DbClientConnection {
 		sslCa: input.sslCa ?? null,
 		ssh: {
 			enabled: input.ssh?.enabled ?? false,
+			connectionId: input.ssh?.connectionId ?? null,
 			host: input.ssh?.host ?? '',
 			port: input.ssh?.port ?? 22,
 			username: input.ssh?.username ?? '',
