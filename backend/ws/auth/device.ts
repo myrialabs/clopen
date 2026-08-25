@@ -89,7 +89,7 @@ export const deviceHandler = createRouter()
 				ipAddress: clientIpFromConnection(conn)
 			});
 
-			authRateLimiter.recordSuccess(ip);
+			authRateLimiter.recordSuccess(ip, 'auth:claim-device-code');
 
 			auditLogQueries.logEvent({
 				userId: result.user.id,

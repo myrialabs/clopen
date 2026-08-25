@@ -174,7 +174,7 @@ export const loginHandler = createRouter()
 
 			// Success — clear any rate limit record for this IP
 			if (isRateLimited) {
-				authRateLimiter.recordSuccess(ip);
+				authRateLimiter.recordSuccess(ip, 'auth:login');
 			}
 
 			auditLogQueries.logEvent({
@@ -226,7 +226,7 @@ export const loginHandler = createRouter()
 		try {
 			const result = createUserFromInvite(data.inviteToken, data.name, { userAgent: data.userAgent, ipAddress: clientIpFromConnection(conn) });
 
-			authRateLimiter.recordSuccess(ip);
+			authRateLimiter.recordSuccess(ip, 'auth:accept-invite');
 
 			auditLogQueries.logEvent({
 				userId: result.user.id,
@@ -272,8 +272,12 @@ export const loginHandler = createRouter()
 
 		const result = validateInviteToken(data.inviteToken);
 
-		// Record failure if invalid token (probing)
-		if (!result.valid) {
+		// Record failure if invalid token (probing). On a valid token, clear this
+		// route's record so someone who mistyped their link a couple of times
+		// doesn't carry those failures into a later attempt.
+		if (result.valid) {
+			authRateLimiter.recordSuccess(ip, 'auth:validate-invite');
+		} else {
 			authRateLimiter.recordFailure(ip, 'auth:validate-invite');
 		}
 
