@@ -12,40 +12,13 @@ import { join } from 'node:path';
 import { mkdir, readdir, rename, stat, unlink } from 'node:fs/promises';
 
 import { debug } from '$shared/utils/logger';
-import { hashToken } from '../auth/tokens';
-import { authQueries } from '../database/queries';
 import { getClopenDir } from '../utils/paths';
+import { authenticateRequest, type AuthIdentity } from './bearer-auth';
 import {
 	NOTIFICATION_SOUND_ALLOWED_EXTS,
 	NOTIFICATION_SOUND_MAX_BYTES,
 	isValidNotificationSoundExt
 } from '$shared/constants/notification-sounds';
-
-type AuthIdentity = { userId: string; role: string };
-
-function authenticate(request: Request): AuthIdentity {
-	const header = request.headers.get('authorization') || request.headers.get('Authorization');
-	if (!header || !header.toLowerCase().startsWith('bearer ')) {
-		throw Object.assign(new Error('Authorization required'), { status: 401 });
-	}
-	const token = header.slice(7).trim();
-	if (!token) {
-		throw Object.assign(new Error('Authorization required'), { status: 401 });
-	}
-	const session = authQueries.getSessionByTokenHash(hashToken(token));
-	if (!session) {
-		throw Object.assign(new Error('Invalid session token'), { status: 401 });
-	}
-	if (new Date(session.expires_at) < new Date()) {
-		throw Object.assign(new Error('Session expired'), { status: 401 });
-	}
-	const user = authQueries.getUserById(session.user_id);
-	if (!user) {
-		throw Object.assign(new Error('User not found'), { status: 401 });
-	}
-	authQueries.updateLastActive(session.id);
-	return { userId: user.id, role: user.role };
-}
 
 function getUserAudioDir(userId: string): string {
 	return join(getClopenDir(), 'audio', userId);
@@ -78,7 +51,7 @@ export const audioRoute = new Elysia()
 	.post('/api/audio/upload', async ({ request, query }) => {
 		let identity: AuthIdentity;
 		try {
-			identity = authenticate(request);
+			identity = authenticateRequest(request);
 		} catch (error) {
 			const status = (error as { status?: number }).status ?? 401;
 			const message = error instanceof Error ? error.message : 'Unauthorized';
@@ -173,7 +146,7 @@ export const audioRoute = new Elysia()
 	.get('/api/audio/custom/meta', async ({ request }) => {
 		let identity: AuthIdentity;
 		try {
-			identity = authenticate(request);
+			identity = authenticateRequest(request);
 		} catch (error) {
 			const status = (error as { status?: number }).status ?? 401;
 			const message = error instanceof Error ? error.message : 'Unauthorized';
@@ -196,7 +169,7 @@ export const audioRoute = new Elysia()
 	.get('/api/audio/custom', async ({ request }) => {
 		let identity: AuthIdentity;
 		try {
-			identity = authenticate(request);
+			identity = authenticateRequest(request);
 		} catch (error) {
 			const status = (error as { status?: number }).status ?? 401;
 			const message = error instanceof Error ? error.message : 'Unauthorized';
@@ -220,7 +193,7 @@ export const audioRoute = new Elysia()
 	.delete('/api/audio/custom', async ({ request }) => {
 		let identity: AuthIdentity;
 		try {
-			identity = authenticate(request);
+			identity = authenticateRequest(request);
 		} catch (error) {
 			const status = (error as { status?: number }).status ?? 401;
 			const message = error instanceof Error ? error.message : 'Unauthorized';

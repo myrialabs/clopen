@@ -3,6 +3,7 @@
 	import Button from '$frontend/components/common/display/Button.svelte';
 	import ArtifactGenerateBar from '$frontend/components/settings/common/ArtifactGenerateBar.svelte';
 	import { instructionsStore } from '$frontend/stores/features/instructions.svelte';
+	import { setActiveSection } from '$frontend/stores/ui/settings-modal.svelte';
 
 	interface Props {
 		showHeader?: boolean;
@@ -54,6 +55,7 @@
 	<ArtifactGenerateBar
 		artifactType="instruction"
 		placeholder={'Describe the instructions, e.g. "always answer concisely and prefer TypeScript"'}
+		onNavigateArtifacts={() => setActiveSection('artifacts')}
 		onGenerated={(f) => { if (typeof f.content === 'string') content = f.content; }}
 	/>
 

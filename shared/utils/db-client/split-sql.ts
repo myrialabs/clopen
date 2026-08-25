@@ -13,8 +13,20 @@
  * It is intentionally conservative: it never rewrites the SQL, only slices it
  * on statement boundaries. Anything it can't confidently classify is kept in
  * the current statement so the database — not this splitter — has the final say.
+ *
+ * `splitOnBlankLine` additionally treats a blank line (a `\n` followed by a
+ * line containing only whitespace) as a statement boundary. This is OFF by
+ * default because a blank line inside a single formatted statement is common
+ * and would otherwise be split into invalid fragments. It exists for SQL
+ * Server, where batch-sensitive DDL (`CREATE PROCEDURE`, …) is customarily
+ * separated by blank lines rather than `;`.
  */
-export function splitSqlStatements(sql: string): string[] {
+export interface SplitSqlOptions {
+	splitOnBlankLine?: boolean;
+}
+
+export function splitSqlStatements(sql: string, opts?: SplitSqlOptions): string[] {
+	const splitOnBlankLine = opts?.splitOnBlankLine ?? false;
 	const statements: string[] = [];
 	let current = '';
 	let quote: "'" | '"' | '`' | null = null;
@@ -112,6 +124,31 @@ export function splitSqlStatements(sql: string): string[] {
 				dollarTag = tagMatch[0];
 				current += dollarTag;
 				i += dollarTag.length;
+				continue;
+			}
+		}
+
+		if (splitOnBlankLine && ch === '\n') {
+			let j = i + 1;
+			let isBlankLine = false;
+			while (j < n) {
+				const c2 = sql[j];
+				if (c2 === ' ' || c2 === '\t' || c2 === '\r') {
+					j++;
+				} else if (c2 === '\n') {
+					isBlankLine = true;
+					break;
+				} else {
+					break;
+				}
+			}
+			if (isBlankLine) {
+				const stmt = current.trim();
+				if (stmt) {
+					statements.push(stmt);
+				}
+				current = '';
+				i = j + 1;
 				continue;
 			}
 		}

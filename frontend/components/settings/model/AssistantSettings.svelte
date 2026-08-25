@@ -1,8 +1,14 @@
 <script lang="ts">
 	import { settings, updateSettings } from '$frontend/stores/features/settings.svelte';
 	import { modelStore } from '$frontend/stores/features/models.svelte';
+	import { authStore } from '$frontend/stores/features/auth.svelte';
+	import { setActiveSection } from '$frontend/stores/ui/settings-modal.svelte';
+	import { pickDefaultModel } from '$shared/constants/engines';
 	import type { EngineType } from '$shared/types/unified';
 	import EngineModelPicker from './EngineModelPicker.svelte';
+	import Icon from '$frontend/components/common/display/Icon.svelte';
+
+	const isAdmin = $derived(authStore.isAdmin);
 
 	function handleAssistantEngineChange(engineType: EngineType) {
 		updateSettings({ selectedEngine: engineType });
@@ -12,7 +18,7 @@
 
 		modelStore.fetchModels(engineType).then(models => {
 			const target = (remembered && models.find(m => m.engine.model.id === remembered.id))
-				|| models[0];
+				|| pickDefaultModel(models);
 			if (target) {
 				updateSettings({
 					selectedProvider: target.engine.provider,
@@ -37,13 +43,36 @@
 			engineModelMemory: { ...memory, [settings.selectedEngine]: { provider, id: modelId, name: model?.engine.model.name || modelId } }
 		});
 	}
+
+	// The default engine (OpenCode) has a dynamic catalog with no fixed model id.
+	// Once its models load, auto-select the most capable one (most badges) so a
+	// first-time user starts with a valid, feature-rich selection.
+	$effect(() => {
+		if (settings.selectedEngine === 'opencode' && !settings.selectedModelId) {
+			const models = modelStore.getByEngine('opencode');
+			const target = pickDefaultModel(models);
+			if (target) {
+				handleAssistantModelChange(target.engine.model.id);
+			}
+		}
+	});
 </script>
 
 <div class="py-1">
 	<h3 class="text-base font-bold text-slate-900 dark:text-slate-100 mb-1.5">Assistant</h3>
 	<p class="text-sm text-slate-600 dark:text-slate-500 mb-4">
-		Configure the engine and model for chat
+		Default engine and model used when you start a new chat.
 	</p>
+
+	<div class="flex items-start gap-2.5 p-3 mb-4 rounded-xl bg-slate-500/5 dark:bg-slate-400/5 border border-slate-200 dark:border-slate-700/60">
+		<Icon name="lucide:info" class="w-4 h-4 text-slate-400 shrink-0 mt-0.5" />
+		<p class="text-xs text-slate-500 dark:text-slate-400 leading-relaxed">
+			Just the default — override it per chat anytime from the model picker in the chat input.
+			{#if isAdmin}
+				Accounts are managed under <button type="button" class="text-violet-600 dark:text-violet-400 hover:underline cursor-pointer font-medium" onclick={() => setActiveSection('engines')}>Settings → Engines</button>.
+			{/if}
+		</p>
+	</div>
 
 	<EngineModelPicker
 		engine={settings.selectedEngine}

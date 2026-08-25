@@ -74,12 +74,14 @@
 	import { stripArchiveExtension, extensionFor, type ArchiveFormat, type ZipMethod } from '$frontend/utils/archive';
 	import { acquireFileWatch } from '$frontend/utils/file-watch';
 	import { authStore } from '$frontend/stores/features/auth.svelte';
+	import { fetchFileBlob, isAbortError, saveBlob } from '$frontend/utils/file-download';
 	import { showConfirm } from '$frontend/stores/ui/dialog.svelte';
 	import { SvelteMap } from 'svelte/reactivity';
 	import { getFileIcon } from '$frontend/utils/file-icon-mappings';
 	import { getGitStatusLabel, getGitStatusColor } from '$frontend/utils/git-status';
 	import type { IconName } from '$shared/types/ui/icons';
 	import { fileState, clearRevealRequest, collapseAllTrigger } from '$frontend/stores/core/files.svelte';
+	import { onAiFilesChange } from '$frontend/utils/ai-changes';
 	import {
 		gitStatusState,
 		initGitStatus,
@@ -91,6 +93,7 @@
 		initIgnoredPaths,
 		refreshIgnoredPaths
 	} from '$frontend/stores/features/ignored-paths.svelte';
+	import { beginPanelLoad } from '$frontend/stores/ui/project-workspace.svelte';
 
 	// Props
 	interface Props {
@@ -113,6 +116,9 @@
 	let isInitialLoad = $state(true);
 	let error = $state('');
 	let expandedFolders = $state(new Set<string>());
+
+	// AI changes set for explorer dot indicators
+	let aiChangesSet = $state(new Set<string>());
 
 	// Watch global collapse-all signal
 	$effect(() => {
@@ -388,10 +394,15 @@
 		const savedTreeScrollTop = treeScrollContainer
 			? treeScrollContainer.scrollTop
 			: pendingTreeScrollRestore ?? treeScrollTop;
+		const requestPath = projectPath;
 
-		if (!preserveState) {
-			isLoading = true;
-		}
+		// `preserveState` is about scroll/expansion, NOT about the loading flag —
+		// conflating the two is what made a project switch render the tree's empty
+		// state ("No files in project") while the tree was still being fetched, since
+		// a switch that restored panel state always passed preserveState=true. The
+		// flag is always set; the template only shows the spinner when there is
+		// nothing to show yet, so a background refresh still never blanks the tree.
+		isLoading = true;
 		error = '';
 
 		try {
@@ -403,6 +414,11 @@
 			}
 
 			const data = await ws.http('files:list-tree', requestData);
+
+			// The project may have changed while this was in flight — dropping the
+			// response is the only way to stop the previous project's tree from
+			// landing in the new project's panel.
+			if (requestPath !== projectPath) return;
 
 			const convertToFileNode = (apiFile: unknown): FileNode => {
 				if (typeof apiFile !== 'object' || apiFile === null) {
@@ -445,10 +461,11 @@
 				});
 			}
 		} catch (err) {
+			if (requestPath !== projectPath) return;
 			error = err instanceof Error ? err.message : 'Failed to load files';
 			projectFiles = [];
 		} finally {
-			isLoading = false;
+			if (requestPath === projectPath) isLoading = false;
 		}
 	}
 
@@ -494,6 +511,9 @@
 
 	function openFileInTab(file: FileNode, target?: { line: number; column?: number; length?: number }) {
 		if (file.type === 'directory') return;
+
+		// Reset active AI reveal filter on normal file tree/tab navigation
+		fileViewerRef?.resetRevealFilter?.();
 
 		// Snapshot current active tab's editor scroll before switching
 		snapshotActiveTabScroll();
@@ -564,6 +584,9 @@
 	}
 
 	function selectTab(path: string) {
+		// Reset active AI reveal filter on normal file tree/tab navigation
+		fileViewerRef?.resetRevealFilter?.();
+
 		// Snapshot current active tab's editor scroll before switching away
 		snapshotActiveTabScroll();
 
@@ -1210,6 +1233,9 @@
 			case 'extract':
 				if (file.type === 'file') await extractZip(file);
 				break;
+			case 'download':
+				if (file.type === 'file') await downloadFileNode(file);
+				break;
 			case 'reveal-in-file-manager':
 				try {
 					await ws.http('files:reveal-in-file-manager', { path: file.path });
@@ -1217,6 +1243,48 @@
 					showErrorAlert(err instanceof Error ? err.message : 'Failed to open file manager');
 				}
 				break;
+		}
+	}
+
+	// Download a file from the sidebar context menu. Streams the on-disk bytes
+	// over HTTP and saves them client-side, preserving the original format.
+	// It takes the same banner as an upload: a big file used to give no sign of
+	// movement at all, then simply appear on the device.
+	async function downloadFileNode(file: FileNode) {
+		const opId = crypto.randomUUID();
+		const controller = new AbortController();
+		// Deliberately not `markBusy` — that greys the row out and blocks it, which
+		// is right for a mutation but wrong for a read: the file is still openable
+		// while its bytes are being copied. The banner carries the feedback.
+		pushOp({
+			id: opId,
+			kind: 'download',
+			label: `Downloading ${file.name}`,
+			progress: 0,
+			onCancel: () => controller.abort()
+		});
+
+		try {
+			const blob = await fetchFileBlob(file.path, {
+				totalBytes: file.size ?? null,
+				signal: controller.signal,
+				onProgress: ({ transferredBytes, totalBytes }) => {
+					updateOp(opId, {
+						label: totalBytes
+							? `Downloading ${file.name} (${formatBytes(transferredBytes)} / ${formatBytes(totalBytes)})`
+							: `Downloading ${file.name} (${formatBytes(transferredBytes)})`,
+						// Undefined leaves the banner on its indeterminate spinner,
+						// which is honest when the total is unknown.
+						progress: totalBytes ? transferredBytes / totalBytes : undefined
+					});
+				}
+			});
+			saveBlob(blob, file.name);
+		} catch (err) {
+			if (isAbortError(err)) return;
+			showErrorAlert(err instanceof Error ? err.message : 'Failed to download file');
+		} finally {
+			popOp(opId);
 		}
 	}
 
@@ -1312,9 +1380,12 @@
 
 	type ActiveOp = {
 		id: string;
-		kind: 'upload' | 'zip' | 'extract';
+		kind: 'upload' | 'download' | 'zip' | 'extract';
 		label: string;
-		progress?: number; // 0–1, only set for chunked uploads
+		progress?: number; // 0–1, only set for transfers that report bytes
+		// Present only for ops that can be stopped mid-flight (transfers);
+		// its presence is what puts a cancel button on the banner row.
+		onCancel?: () => void;
 	};
 	const activeOps = new SvelteMap<string, ActiveOp>();
 	const activeOpsList = $derived(Array.from(activeOps.values()));
@@ -1955,6 +2026,12 @@
 			activeTabPath = null;
 			expandedFolders = new Set();
 			viewMode = 'tree';
+			// Drop the outgoing project's tree. It used to survive here and stay on
+			// screen until the new tree arrived, which only looked right because the
+			// switch barrier hid it; now that panels reveal before their data lands,
+			// leaving it would show the wrong project's files.
+			projectFiles = [];
+			error = '';
 			// Drop the clipboard: it holds FileNode references from the previous
 			// project, which would be dangling/invalid pointers in the new one.
 			clipboard = null;
@@ -1972,40 +2049,50 @@
 	});
 
 	async function restoreAndLoad(targetProjectId: string, targetProjectPath: string) {
-		// Try in-memory snapshot first (instant for same-session mobile/desktop switch)
-		const inMem = projectFileStates.get(targetProjectPath);
-		let restored = false;
-
-		if (inMem) {
-			applyPersistedState(inMem, targetProjectPath);
-			restored = true;
-		}
-
-		// Always fetch DB state too — it may be newer (cross-device, refresh)
+		// Hold the Files panel's skeleton for the WHOLE restore, not just the tree
+		// fetch: the panel state round-trip happens first, and without this the
+		// panel would show an empty tree for its duration.
+		const releasePanel = beginPanelLoad('files');
 		try {
-			const result = await ws.http('files:get-panel-state', { projectId: targetProjectId });
-			if (projectId !== targetProjectId) return; // race: project changed mid-fetch
-			if (result?.state) {
-				try {
-					const parsed: PersistedPanelState = JSON.parse(result.state);
-					applyPersistedState(parsed, targetProjectPath);
-					restored = true;
-				} catch (err) {
-					debug.error('file', 'Failed to parse panel state JSON:', err);
-				}
+			// Try in-memory snapshot first (instant for same-session mobile/desktop switch)
+			const inMem = projectFileStates.get(targetProjectPath);
+			let restored = false;
+
+			if (inMem) {
+				applyPersistedState(inMem, targetProjectPath);
+				restored = true;
 			}
-		} catch (err) {
-			debug.error('file', 'Failed to fetch panel state:', err);
+
+			// Always fetch DB state too — it may be newer (cross-device, refresh)
+			try {
+				const result = await ws.http('files:get-panel-state', { projectId: targetProjectId });
+				if (projectId !== targetProjectId) return; // race: project changed mid-fetch
+				if (result?.state) {
+					try {
+						const parsed: PersistedPanelState = JSON.parse(result.state);
+						applyPersistedState(parsed, targetProjectPath);
+						restored = true;
+					} catch (err) {
+						debug.error('file', 'Failed to parse panel state JSON:', err);
+					}
+				}
+			} catch (err) {
+				debug.error('file', 'Failed to fetch panel state:', err);
+			}
+
+			if (projectId !== targetProjectId) return;
+
+			// Mark as loaded BEFORE loadProjectFiles so any post-load saves are kept
+			panelStateLoaded = true;
+
+			await loadProjectFiles(restored);
+
+			// After tree load, hydrate tab content for any restored tabs that
+			// don't yet have content (their loadTabContent was triggered in
+			// applyPersistedState but may still be in flight)
+		} finally {
+			releasePanel();
 		}
-
-		// Mark as loaded BEFORE loadProjectFiles so any post-load saves are kept
-		panelStateLoaded = true;
-
-		await loadProjectFiles(restored);
-
-		// After tree load, hydrate tab content for any restored tabs that
-		// don't yet have content (their loadTabContent was triggered in
-		// applyPersistedState but may still be in flight)
 	}
 
 	function applyPersistedState(state: PersistedPanelState, basePath: string) {
@@ -2079,6 +2166,7 @@
 
 		const unsubChanges = ws.on('files:changed', (payload) => {
 			if (payload.projectId !== projectId) return;
+			if (payload.changes.length === 0) return;
 
 			// Accumulate changes from all events before debounce fires
 			accumulatedChanges.push(...payload.changes);
@@ -2093,6 +2181,14 @@
 			}, 500);
 		});
 
+		// The watcher was rebuilt and may have missed events; no path is known to
+		// have changed, so re-read the tree in place (scroll and expansion kept)
+		// rather than reconciling a phantom change list.
+		const unsubResync = ws.on('files:resync', (payload) => {
+			if (payload.projectId !== projectId) return;
+			void loadProjectFiles(true);
+		});
+
 		const unsubWatching = ws.on('files:watching', (payload) => {
 			if (payload.projectId !== projectId) return;
 			isWatching = payload.watching;
@@ -2105,6 +2201,7 @@
 
 		return () => {
 			unsubChanges();
+			unsubResync();
 			unsubWatching();
 			unsubError();
 			if (watchDebounceTimer) clearTimeout(watchDebounceTimer);
@@ -2271,6 +2368,11 @@
 		initGitStatus();
 		initIgnoredPaths();
 
+		// Subscribe to AI changes for explorer dot indicators
+		const unsubAiFiles = onAiFilesChange((paths) => {
+			aiChangesSet = new Set(paths);
+		});
+
 		// Safety-net reconcile when the user returns to the app/tab. File-watch
 		// push events can be missed while the window is hidden (OS throttling,
 		// sleep/wake, dropped events); reconciling on focus re-establishes truth
@@ -2291,6 +2393,7 @@
 		}
 
 		return () => {
+			unsubAiFiles();
 			if (typeof window !== 'undefined') {
 				window.removeEventListener('focus', scheduleReconcile);
 				document.removeEventListener('visibilitychange', handleVisibilityChange);
@@ -2417,6 +2520,16 @@
 							</div>
 						{/if}
 					</div>
+					{#if op.onCancel}
+						<button
+							onclick={op.onCancel}
+							class="flex-shrink-0 p-1 rounded text-slate-400 hover:text-slate-100 hover:bg-slate-700/60 transition-colors cursor-pointer"
+							title="Cancel"
+							aria-label="Cancel {op.label}"
+						>
+							<Icon name="lucide:x" class="w-3.5 h-3.5" />
+						</button>
+					{/if}
 				</div>
 			{/each}
 		</div>
@@ -2487,6 +2600,7 @@
 							{isRootDropTarget}
 							{busyPaths}
 							{isRootBusy}
+							{aiChangesSet}
 						/>
 					</div>
 				</div>

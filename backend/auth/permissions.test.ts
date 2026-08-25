@@ -7,7 +7,6 @@ describe('ADMIN_ONLY_ROUTES', () => {
 			'auth:logout-all',
 			'system:clear-data',
 			'settings:update',
-			'engine:codex-restart',
 			'tunnel:remote:start'
 		];
 

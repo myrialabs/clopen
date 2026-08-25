@@ -1,0 +1,134 @@
+/**
+ * System Tool Install Handlers
+ *
+ * HTTP-style routes start/cancel installs and look up session state.
+ * Server → client events stream stdout/stderr lines and signal the
+ * final status. Install sessions are created on the backend and keyed
+ * by a server-generated session id; clients only pick the tool id.
+ */
+
+import { t } from 'elysia';
+import { createRouter } from '$shared/utils/ws-server';
+import { ws } from '$backend/utils/ws';
+import { debug } from '$shared/utils/logger';
+import {
+	startInstall,
+	cancelInstall,
+	InstallAlreadyRunningError,
+	InstallNotAutoInstallableError
+} from '$backend/engine/install-runner';
+import { requireInstallSessionAccess } from './access';
+
+const TOOL_UNION = t.Union([
+	t.Literal('git'),
+	t.Literal('claude'),
+	t.Literal('opencode'),
+	t.Literal('copilot'),
+	t.Literal('codex'),
+	t.Literal('qwen'),
+	t.Literal('pi'),
+	t.Literal('cline'),
+	t.Literal('cursor'),
+	t.Literal('chrome'),
+]);
+
+const STATUS_UNION = t.Union([
+	t.Literal('running'),
+	t.Literal('success'),
+	t.Literal('failed'),
+	t.Literal('cancelled')
+]);
+
+export const stackInstallHandler = createRouter()
+
+	.http('stack:install-start', {
+		data: t.Object({ tool: TOOL_UNION }),
+		response: t.Object({
+			sessionId: t.String(),
+			tool: TOOL_UNION,
+			displayCommand: t.String(),
+			startedAt: t.Number()
+		})
+	}, async ({ conn, data }) => {
+		const userId = ws.getUserId(conn);
+		if (!userId) throw new Error('Not authenticated');
+
+		debug.log('path', `install-start requested: tool=${data.tool} user=${userId}`);
+		try {
+			const session = await startInstall(data.tool, userId);
+			return {
+				sessionId: session.id,
+				tool: data.tool,
+				displayCommand: session.recipe.displayCommand ?? '',
+				startedAt: session.startedAt
+			};
+		} catch (err) {
+			if (err instanceof InstallAlreadyRunningError) {
+				throw new Error(`Install already running for ${err.tool}`);
+			}
+			if (err instanceof InstallNotAutoInstallableError) {
+				throw new Error(err.message);
+			}
+			throw err;
+		}
+	})
+
+	.http('stack:install-cancel', {
+		data: t.Object({ sessionId: t.String() }),
+		response: t.Object({ cancelled: t.Boolean() })
+	}, async ({ data, conn }) => {
+		const userId = ws.getUserId(conn);
+		if (!userId) throw new Error('Not authenticated');
+		requireInstallSessionAccess(conn, data.sessionId);
+		const cancelled = cancelInstall(data.sessionId);
+		return { cancelled };
+	})
+
+	.http('stack:install-session', {
+		data: t.Object({ sessionId: t.String() }),
+		response: t.Object({
+			session: t.Union([
+				t.Null(),
+				t.Object({
+					sessionId: t.String(),
+					tool: TOOL_UNION,
+					status: STATUS_UNION,
+					exitCode: t.Union([t.Number(), t.Null()]),
+					startedAt: t.Number(),
+					endedAt: t.Union([t.Number(), t.Null()]),
+					totalLines: t.Number(),
+					recentLines: t.Array(t.String()),
+					displayCommand: t.String()
+				})
+			])
+		})
+	}, async ({ data, conn }) => {
+		const userId = ws.getUserId(conn);
+		if (!userId) throw new Error('Not authenticated');
+		const session = requireInstallSessionAccess(conn, data.sessionId);
+		return { session };
+	})
+
+	// ═══ Server → client events ═══
+
+	.emit('stack:install-started', t.Object({
+		sessionId: t.String(),
+		tool: TOOL_UNION,
+		displayCommand: t.String(),
+		startedAt: t.Number()
+	}))
+
+	.emit('stack:install-stream', t.Object({
+		sessionId: t.String(),
+		tool: TOOL_UNION,
+		type: t.Union([t.Literal('stdout'), t.Literal('stderr')]),
+		line: t.String()
+	}))
+
+	.emit('stack:install-finished', t.Object({
+		sessionId: t.String(),
+		tool: TOOL_UNION,
+		status: STATUS_UNION,
+		exitCode: t.Number(),
+		endedAt: t.Number()
+	}));

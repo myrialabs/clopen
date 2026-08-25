@@ -10,18 +10,41 @@
 import { t } from 'elysia';
 import { createRouter } from '$shared/utils/ws-server';
 import { debug } from '$shared/utils/logger';
-import { requireBrowserPreviewAccess } from '../access';
+import { requireBrowserPreviewAccess, requireBrowserTabAccess } from '../access';
 
 // Event forwarding is now handled automatically by BrowserPreviewServiceManager
 // when service instances are created, ensuring proper project isolation.
 
 export const nativeUIPreviewHandler = createRouter()
+	/**
+	 * Take the page out of full screen on the viewer's behalf.
+	 *
+	 * The page draws its own exit hint, but it is a DOM node the page is free
+	 * to destroy — and a fullscreen Chrome granted from its own C++ leaves no
+	 * hint at all, just a collapsed capture surface that reads as a preview
+	 * stuck full screen. This route is the way out that the page cannot lose.
+	 */
+	.http('preview:browser-exit-fullscreen', {
+		data: t.Object({
+			tabId: t.Optional(t.String())
+		}),
+		response: t.Object({
+			success: t.Boolean()
+		})
+	}, async ({ data, conn }) => {
+		const { previewService, tab } = requireBrowserTabAccess(conn, data.tabId);
+		const success = await previewService.exitPageFullscreen(tab.id);
+		return { success };
+	})
+
 	// Action: Client responds to a dialog (alert, confirm, prompt)
 	.on('preview:browser-dialog-input', {
 		data: t.Object({
 			dialogId: t.String({ minLength: 1 }),
 			accept: t.Boolean(),
-			promptText: t.Optional(t.String())
+			promptText: t.Optional(t.String()),
+			/** The tab whose dialog this is — see `tabId` on browser-interact. */
+			tabId: t.Optional(t.String())
 		})
 	}, async ({ data, conn }) => {
 		try {
@@ -30,14 +53,13 @@ export const nativeUIPreviewHandler = createRouter()
 
 			debug.log('preview', `📬 Dialog response received from frontend - dialogId: ${dialogId}, accept: ${accept}${promptText ? `, promptText: "${promptText}"` : ''} (project: ${projectId})`);
 
-			// Get active tab
-			const tab = previewService.getActiveTab();
+			const tab = data.tabId ? previewService.getTab(data.tabId) : previewService.getActiveTab();
 			if (!tab) {
-				debug.error('preview', `❌ No active tab for dialog input (project: ${projectId})`);
+				debug.error('preview', `❌ No tab for dialog input (project: ${projectId}, requested: ${data.tabId ?? 'active'})`);
 				return;
 			}
 
-			debug.log('preview', `✅ Active tab found: ${tab.id}`);
+			debug.log('preview', `✅ Dialog target tab: ${tab.id}`);
 
 			// Send response to dialog handler
 			const result = await previewService.respondToDialog({
@@ -59,14 +81,17 @@ export const nativeUIPreviewHandler = createRouter()
 
 	// Action: Client triggers print (in response to print event or manually)
 	.on('preview:browser-print-input', {
-		data: t.Object({})
-	}, async ({ conn }) => {
+		data: t.Object({
+			/** The tab being printed — see `tabId` on browser-interact. */
+			tabId: t.Optional(t.String())
+		})
+	}, async ({ data, conn }) => {
 		try {
 			const { projectId, previewService } = requireBrowserPreviewAccess(conn);
 
-			const tab = previewService.getActiveTab();
+			const tab = data.tabId ? previewService.getTab(data.tabId) : previewService.getActiveTab();
 			if (!tab) {
-				debug.error('preview', `No active tab for print input (project: ${projectId})`);
+				debug.error('preview', `No tab for print input (project: ${projectId}, requested: ${data.tabId ?? 'active'})`);
 				return;
 			}
 
@@ -146,6 +171,19 @@ export const nativeUIPreviewHandler = createRouter()
 		timestamp: t.Number()
 	}))
 
+	/**
+	 * The page's dialog has been answered — by whoever got there first.
+	 *
+	 * A dialog belongs to the page, not to a viewer, but each viewer was shown
+	 * its own copy of the prompt. Without this the other devices keep an overlay
+	 * for a dialog that no longer exists, and answering it again does nothing.
+	 */
+	.emit('preview:browser-dialog-closed', t.Object({
+		sessionId: t.String(),
+		dialogId: t.String(),
+		timestamp: t.Number()
+	}))
+
 	.emit('preview:browser-print', t.Object({
 		sessionId: t.String(),
 		timestamp: t.Number()
@@ -194,10 +232,16 @@ export const nativeUIPreviewHandler = createRouter()
 			isLink: t.Boolean(),
 			isImage: t.Boolean(),
 			isInput: t.Boolean(),
+			isEditable: t.Boolean(),
 			isTextSelected: t.Boolean(),
+			selectedText: t.Optional(t.String()),
 			linkUrl: t.Optional(t.String()),
+			linkText: t.Optional(t.String()),
 			imageUrl: t.Optional(t.String()),
-			inputType: t.Optional(t.String())
+			mediaUrl: t.Optional(t.String()),
+			mediaType: t.Optional(t.String()),
+			inputType: t.Optional(t.String()),
+			pageUrl: t.Optional(t.String())
 		}),
 		timestamp: t.Number()
 	}))
@@ -208,6 +252,17 @@ export const nativeUIPreviewHandler = createRouter()
 
 	.emit('preview:browser-open-url-new-tab', t.Object({
 		url: t.String()
+	}))
+
+	// "Open in Your Browser" — leaves the preview entirely and hands the URL to
+	// the viewer's own browser.
+	.emit('preview:browser-open-url-host', t.Object({
+		url: t.String()
+	}))
+
+	// "Inspect" — asks the viewer to reveal the console panel.
+	.emit('preview:browser-open-inspector', t.Object({
+		timestamp: t.Number()
 	}))
 
 	.emit('preview:browser-download-image', t.Object({

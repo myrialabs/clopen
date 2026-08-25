@@ -2,7 +2,7 @@
  * Auth Rate Limiter
  *
  * Protects auth endpoints against brute-force and credential stuffing attacks.
- * Tracks failed attempts per IP with progressive lockout.
+ * Tracks failed attempts per (IP, route) with progressive lockout.
  *
  * Thresholds:
  *   5 failures  → 30 second lockout
@@ -10,15 +10,20 @@
  *   20 failures → 10 minute lockout
  *
  * Attempts decay after the lockout window expires.
+ *
+ * Records are keyed by IP *and* route: a lockout earned on one endpoint must
+ * not block an unrelated one, and clearing one route's record on success must
+ * not wipe another route's accumulated failures.
  */
 
 import { debug } from '$shared/utils/logger';
 
-/** Routes that should be rate-limited */
+/** Routes that should be rate-limited. */
 const RATE_LIMITED_ROUTES = new Set([
 	'auth:login',
 	'auth:accept-invite',
 	'auth:validate-invite',
+	'auth:claim-device-code',
 	'auth:setup'
 ]);
 
@@ -42,12 +47,17 @@ const STALE_AFTER_MS = 15 * 60_000; // 15 minutes
 const CLEANUP_INTERVAL_MS = 5 * 60_000; // 5 minutes
 
 class AuthRateLimiter {
+	/** Keyed by `${identifier}::${action}` — see the note on the module doc. */
 	private attempts = new Map<string, AttemptRecord>();
 	private cleanupTimer: ReturnType<typeof setInterval> | null = null;
 
 	constructor() {
 		// Periodic cleanup of stale entries
 		this.cleanupTimer = setInterval(() => this.cleanup(), CLEANUP_INTERVAL_MS);
+	}
+
+	private static recordKey(identifier: string, action: string): string {
+		return `${identifier}::${action}`;
 	}
 
 	/**
@@ -59,9 +69,9 @@ class AuthRateLimiter {
 			return null; // Not a rate-limited route
 		}
 
-		const record = this.attempts.get(identifier);
+		const record = this.attempts.get(AuthRateLimiter.recordKey(identifier, action));
 		if (!record) {
-			return null; // No previous failures
+			return null; // No previous activity
 		}
 
 		const now = Date.now();
@@ -69,7 +79,7 @@ class AuthRateLimiter {
 		// Check if currently locked out
 		if (record.lockedUntil > now) {
 			const remainingSec = Math.ceil((record.lockedUntil - now) / 1000);
-			debug.warn('auth', `Rate limited: ${identifier} (${remainingSec}s remaining, ${record.failures} failures)`);
+			debug.warn('auth', `Rate limited: ${identifier} on ${action} (${remainingSec}s remaining, ${record.failures} failures)`);
 			return `Too many failed attempts. Try again in ${remainingSec} seconds.`;
 		}
 
@@ -77,13 +87,15 @@ class AuthRateLimiter {
 	}
 
 	/**
-	 * Record a failed auth attempt for the given identifier.
+	 * Record a failed auth attempt for the given identifier + action.
+	 * Escalates the failure-tier lockout when a new threshold is crossed.
 	 */
 	recordFailure(identifier: string, action: string): void {
 		if (!RATE_LIMITED_ROUTES.has(action)) return;
 
 		const now = Date.now();
-		const record = this.attempts.get(identifier) ?? { failures: 0, lastFailure: 0, lockedUntil: 0 };
+		const key = AuthRateLimiter.recordKey(identifier, action);
+		const record = this.attempts.get(key) ?? { failures: 0, lastFailure: 0, lockedUntil: 0 };
 
 		record.failures += 1;
 		record.lastFailure = now;
@@ -98,17 +110,19 @@ class AuthRateLimiter {
 
 		if (lockoutMs > 0) {
 			record.lockedUntil = now + lockoutMs;
-			debug.warn('auth', `Lockout triggered: ${identifier} — ${record.failures} failures, locked for ${lockoutMs / 1000}s`);
+			debug.warn('auth', `Lockout triggered: ${identifier} on ${action} — ${record.failures} failures, locked for ${lockoutMs / 1000}s`);
 		}
 
-		this.attempts.set(identifier, record);
+		this.attempts.set(key, record);
 	}
 
 	/**
-	 * Clear failure record on successful auth (e.g., successful login).
+	 * Clear the failure record for this route on successful auth (e.g., successful
+	 * login). Other routes keep whatever they had accumulated.
 	 */
-	recordSuccess(identifier: string): void {
-		this.attempts.delete(identifier);
+	recordSuccess(identifier: string, action: string): void {
+		if (!RATE_LIMITED_ROUTES.has(action)) return;
+		this.attempts.delete(AuthRateLimiter.recordKey(identifier, action));
 	}
 
 	/**

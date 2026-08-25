@@ -11,7 +11,7 @@ export interface DetectedSubagentGroup {
 }
 
 export async function detectSubagents(projectPath?: string): Promise<DetectedSubagentGroup[]> {
-	const engines: ArtifactEngine[] = ['claude', 'codex', 'copilot', 'qwen', 'opencode'];
+	const engines: ArtifactEngine[] = ['claude', 'codex', 'copilot', 'qwen', 'opencode', 'pi'];
 	const scope = projectPath ? 'project' : 'global';
 	const groups = await Promise.all(
 		engines.map(async engine => ({

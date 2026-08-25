@@ -1,19 +1,40 @@
 <script lang="ts">
 	import Toolbar from './components/Toolbar.svelte';
 	import Container from './components/Container.svelte';
-	import VirtualCursor from './components/VirtualCursor.svelte';
 	import SelectDropdown from './components/SelectDropdown.svelte';
 	import ContextMenu from './components/ContextMenu.svelte';
-	import type { BrowserSelectInfo, BrowserContextMenuInfo } from '$frontend/utils/native-ui';
+	import NativePicker from './components/NativePicker.svelte';
+	import ConsolePanel from './components/ConsolePanel.svelte';
+	import DialogOverlay from './components/DialogOverlay.svelte';
+	import PermissionPrompt from './components/PermissionPrompt.svelte';
+	import Dialog from '$frontend/components/common/overlay/Dialog.svelte';
+	import type {
+		BrowserSelectInfo,
+		BrowserContextMenuInfo,
+		BrowserConsoleMessage,
+		BrowserDialogEvent,
+		BrowserNativePickerInfo,
+		PendingPermission
+	} from '$frontend/utils/native-ui';
 	import { fly } from 'svelte/transition';
 	import { cubicOut } from 'svelte/easing';
 	import { onMount, onDestroy } from 'svelte';
 	import type { DeviceSize, Rotation } from '$frontend/utils/preview-constants';
 	import { debug } from '$shared/utils/logger';
 	import { createBrowserCoordinator } from './core/coordinator.svelte';
-	import { sendScaleUpdate } from './core/interactions.svelte';
+	import { setDisplayScale, goHistory, setInteractionTabId } from './core/interactions.svelte';
+	import { previewHostBridge } from '$frontend/services/preview/browser/host-bridge.service';
+	import { browserConsoleService } from '$frontend/services/preview/browser/browser-console.service';
+	import { addNotification } from '$frontend/stores/ui/notification.svelte';
+	import {
+		getMcpActivity,
+		getMcpCursor,
+		isBackendTabFullscreen
+	} from '$frontend/stores/features/preview-tabs-workspace.svelte';
+	import ws from '$frontend/utils/ws';
 	import { projectState } from '$frontend/stores/core/projects.svelte';
 	import { appState } from '$frontend/stores/core/app.svelte';
+	import { isPanelLoading } from '$frontend/stores/ui/project-workspace.svelte';
 
 	let {
 		url = $bindable(''),
@@ -40,24 +61,92 @@
 	let isConnected = $state(false);
 	let isStreamReady = $state(false);
 	let errorMessage = $state<string | null>(null);
-	let isConsoleOpen = $state(false); // Console temporarily disabled
-	let consoleLogs = $state<any[]>([]);
+	let isConsoleOpen = $state(false);
+	let consoleDock = $state<'bottom' | 'right'>('bottom');
+	let consoleHeight = $state(240);
+	let consoleWidth = $state(380);
+	/** Panel width, which decides whether the console may dock to the side. */
+	let panelWidth = $state(0);
+	let consoleLogs = $state<BrowserConsoleMessage[]>([]);
+
+	// Navigation affordances, pushed by the backend after every navigation
+	let canGoBack = $state(false);
+	let canGoForward = $state(false);
+
+	/**
+	 * Native UI answered by the viewer, keyed by the backend tab that raised it.
+	 *
+	 * A dialog or permission prompt belongs to one page. Holding a single global
+	 * slot meant a prompt raised by tab 1 followed the user to tab 2 and appeared
+	 * to be asking on that page's behalf — and answering it there granted access
+	 * to a page they were not looking at. Pending requests now stay with their
+	 * tab and reappear when the user returns to it.
+	 */
+	let dialogsByTab = $state<Record<string, BrowserDialogEvent>>({});
+	let permissionsByTab = $state<Record<string, PendingPermission[]>>({});
+	let pendingFilePick = $state<PendingPermission | null>(null);
+	let filePickerElement = $state<HTMLInputElement | undefined>();
+
+	const currentDialog = $derived(sessionId ? (dialogsByTab[sessionId] ?? null) : null);
+	const pendingPermission = $derived(
+		sessionId ? (permissionsByTab[sessionId]?.[0] ?? null) : null
+	);
+
+	function queuePermission(request: PendingPermission) {
+		const queue = permissionsByTab[request.tabId] ?? [];
+		permissionsByTab = { ...permissionsByTab, [request.tabId]: [...queue, request] };
+	}
+
+	function dequeuePermission(request: PendingPermission) {
+		const queue = (permissionsByTab[request.tabId] ?? []).filter(
+			(entry) => entry.requestId !== request.requestId
+		);
+		permissionsByTab = { ...permissionsByTab, [request.tabId]: queue };
+	}
+
+	// Bounds the context menu and select popup are kept inside
+	let panelElement = $state<HTMLDivElement | undefined>();
+	let panelBounds = $state<DOMRect | null>(null);
+
+	let isMobile = $state(false);
+
+	/** Errors and warnings drive the badge on the console button. */
+	const consoleIssueCount = $derived(
+		consoleLogs.reduce(
+			(total, entry) =>
+				entry.type === 'error' || entry.type === 'warn' ? total + (entry.count ?? 1) : total,
+			0
+		)
+	);
 
 	// Virtual cursors
 	let virtualCursor = $state<{x: number, y: number, visible: boolean, clicking?: boolean}>({
 		x: 0, y: 0, visible: false, clicking: false
 	});
-	let mcpVirtualCursor = $state<{x: number, y: number, visible: boolean, clicking?: boolean}>({
-		x: 0, y: 0, visible: false, clicking: false
-	});
+	/**
+	 * The agent's pointer on the tab being shown, in *page* coordinates.
+	 *
+	 * Read from the dock store rather than accumulated here: the store records
+	 * every controlled tab's pointer whether or not this panel is mounted or
+	 * happens to be showing it, so switching to the tab an agent is working on
+	 * picks up its live position immediately. Kept in page space all the way
+	 * down to the Container, which owns the projection.
+	 *
+	 * Position only — never visibility. Whether the pointer is drawn follows
+	 * from the lock, which the Container reads directly.
+	 */
+	const mcpCursorPage = $derived(getMcpCursor(sessionId));
 
 	// Native UI state
 	let currentSelectInfo = $state<BrowserSelectInfo | null>(null);
 	let currentContextMenuInfo = $state<BrowserContextMenuInfo | null>(null);
+	let currentNativePicker = $state<BrowserNativePickerInfo | null>(null);
 
 	// Canvas and preview state
 	let canvasAPI = $state<any>(null);
-	let currentTabLastFrameData = $state<any>(null);
+	/** Whether the canvas has a picture on it — see Canvas's own prop. */
+	let hasPaintedContent = $state(false);
+	let toolbarRef = $state<any>(null);
 
 	// Flag to prevent URL watcher from double-launching during MCP session creation
 	const mcpLaunchInProgress = $state(false);
@@ -68,6 +157,7 @@
 	// Create browser coordinator with projectId
 	const coordinator = createBrowserCoordinator({
 		projectId: () => projectId, // Pass projectId as getter function
+		canvasAPI: () => canvasAPI,
 		onUrlChange: (newUrl) => {
 			url = newUrl;
 		},
@@ -84,10 +174,36 @@
 			errorMessage = error;
 		},
 		onSelectOpen: (selectInfo) => {
+			refreshPanelBounds();
 			currentSelectInfo = selectInfo;
 		},
 		onContextMenuOpen: (menuInfo) => {
+			refreshPanelBounds();
 			currentContextMenuInfo = menuInfo;
+		},
+		onNativePickerOpen: (picker) => {
+			refreshPanelBounds();
+			currentNativePicker = picker;
+		},
+		onDialogOpen: (dialogEvent) => {
+			dialogsByTab = { ...dialogsByTab, [dialogEvent.sessionId]: dialogEvent };
+		},
+		onDialogClose: (closed) => {
+			if (!closed) return;
+			// Keyed by dialog id as well as tab: a stale close must not clear a
+			// second dialog the page raised straight after the first.
+			const current = dialogsByTab[closed.sessionId];
+			if (!current || current.dialogId !== closed.dialogId) return;
+
+			const next = { ...dialogsByTab };
+			delete next[closed.sessionId];
+			dialogsByTab = next;
+		},
+		onOpenInspector: () => {
+			isConsoleOpen = true;
+		},
+		onOpenUrlInHostBrowser: (targetUrl) => {
+			window.open(targetUrl, '_blank', 'noopener');
 		},
 		onVirtualCursorUpdate: (x, y, clicking) => {
 			virtualCursor = { x, y, visible: true, clicking: clicking || false };
@@ -99,17 +215,6 @@
 		},
 		onVirtualCursorHide: () => {
 			virtualCursor = { ...virtualCursor, visible: false };
-		},
-		onMcpCursorUpdate: (x, y, clicking) => {
-			mcpVirtualCursor = { x, y, visible: true, clicking: clicking || false };
-			if (clicking) {
-				setTimeout(() => {
-					mcpVirtualCursor = { ...mcpVirtualCursor, clicking: false };
-				}, 300);
-			}
-		},
-		onMcpCursorHide: () => {
-			mcpVirtualCursor = { ...mcpVirtualCursor, visible: false };
 		},
 		transformBrowserToDisplayCoordinates: (browserX, browserY) => {
 			return transformBrowserToDisplayCoordinates(browserX, browserY);
@@ -126,27 +231,124 @@
 	// Initialize event listeners. Tab recovery itself is driven by the
 	// preview-tabs dock's load() inside the workspace switch barrier — we just
 	// adopt the singleton state below.
+	let stopHostBridge: (() => void) | null = null;
+
 	onMount(() => {
 		coordinator.initialize();
+
+		const syncLayout = () => {
+			isMobile = window.innerWidth < 1024;
+			const rect = panelElement?.getBoundingClientRect() ?? null;
+			panelBounds = rect;
+			panelWidth = rect?.width ?? 0;
+		};
+		syncLayout();
+		window.addEventListener('resize', syncLayout);
+
+		// The panel is resizable independently of the window, so its own width has
+		// to be observed rather than inferred from the viewport.
+		const observer =
+			typeof ResizeObserver !== 'undefined'
+				? new ResizeObserver((entries) => {
+						for (const entry of entries) panelWidth = entry.contentRect.width;
+					})
+				: null;
+		if (panelElement && observer) observer.observe(panelElement);
+
+		// The bridge answers the page's requests for the viewer's own devices, so
+		// it lives for as long as the panel is mounted rather than per tab.
+		stopHostBridge = previewHostBridge.start({
+			onPermissionRequest: (request) => {
+				queuePermission(request);
+			},
+			onFilePickRequest: (request) => {
+				// Routed through the same prompt as the other capabilities rather
+				// than opening the picker straight away: browsers only raise a file
+				// dialog for a page that just received a user gesture, and a
+				// WebSocket event is not one. The Choose button supplies it.
+				pendingFilePick = request;
+				queuePermission(request);
+			},
+			onRequestSettled: ({ tabId, requestId }) => {
+				// Answered somewhere — possibly on another device. The page has its
+				// answer either way, so this prompt is now asking about nothing.
+				const queue = permissionsByTab[tabId];
+				if (queue?.some((entry) => entry.requestId === requestId)) {
+					permissionsByTab = {
+						...permissionsByTab,
+						[tabId]: queue.filter((entry) => entry.requestId !== requestId)
+					};
+				}
+				if (pendingFilePick?.requestId === requestId) pendingFilePick = null;
+			},
+			onDownload: (event) => {
+				if (event.state === 'failed') {
+					addNotification({
+						type: 'error',
+						title: 'Download failed',
+						message: event.error || `Could not download ${event.filename}`
+					});
+				} else if (event.state === 'completed') {
+					addNotification({
+						type: 'success',
+						title: 'Download ready',
+						message: `${event.filename} was saved to your device`
+					});
+				}
+			},
+			getTabOrigin: (tabId) => {
+				const tab = tabManager.tabs.find((entry) => entry.sessionId === tabId);
+				try {
+					return new URL(tab?.url ?? url).origin;
+				} catch {
+					return tab?.url || 'This page';
+				}
+			}
+		});
+
+		return () => {
+			window.removeEventListener('resize', syncLayout);
+			observer?.disconnect();
+		};
 	});
 
 	// Cleanup
 	onDestroy(async () => {
+		stopHostBridge?.();
+		stopHostBridge = null;
 		await coordinator.cleanup();
 	});
 
+	// Transient overlays belong to the page that raised them, so a tab switch
+	// dismisses them rather than leaving a menu pointing at content that is no
+	// longer on screen. Dialogs and permissions are queued per tab instead.
+	let lastOverlayTabId: string | null = null;
+	$effect(() => {
+		if (sessionId === lastOverlayTabId) return;
+		lastOverlayTabId = sessionId;
+		currentSelectInfo = null;
+		currentContextMenuInfo = null;
+		currentNativePicker = null;
+	});
+
+	/** Bounds are only read when a popup opens, so refreshing then is enough. */
+	function refreshPanelBounds() {
+		panelBounds = panelElement?.getBoundingClientRect() ?? null;
+	}
+
 	// Watch for project changes and reload sessions.
 	//
-	// Bail while a workspace switch is in flight: the singleton tabManager is
+	// Bail while the preview dock is still hydrating: the singleton tabManager is
 	// mid clear/restore/load during that window and adopting it now would race
 	// with the dock — observed as a spurious "New Tab" or duplicated/cross-
-	// project tabs once load() completes. Once the barrier drops, isSwitching
-	// flips and the effect re-runs against the authoritative state.
+	// project tabs once load() completes. Keying this on the dock's own loading
+	// state rather than the switch barrier matters: the barrier now drops as soon
+	// as the workspace is structurally correct, well before load() has finished.
 	let previousProjectId = '';
 	let initialRecoveryDone = false;
 	$effect(() => {
 		const currentProjectId = projectId;
-		if (appState.isSwitching) return;
+		if (appState.isSwitching || isPanelLoading('preview')) return;
 
 		// Initial recovery - trigger when projectId first becomes available after mount
 		if (!initialRecoveryDone && currentProjectId && previousProjectId === '') {
@@ -165,12 +367,34 @@
 		}
 	});
 
+	/**
+	 * Address-bar ownership.
+	 *
+	 * The sync effect below re-runs on *any* tab mutation — a console line, a
+	 * stream flag — because `updateTab` replaces the tab object. Writing
+	 * `urlInput` unconditionally therefore wiped whatever was being typed, and
+	 * clearing the field brought the old URL straight back. So the field is only
+	 * refilled when the tab's URL genuinely changed, and never while the user has
+	 * the address bar focused.
+	 */
+	let lastSyncedUrl = $state<string | null>(null);
+	let lastSyncedTabId = $state<string | null>(null);
+	let isEditingAddress = $state(false);
+
 	// Sync state from active tab
 	$effect(() => {
 		const tab = activeTab;
 		if (tab) {
 			url = tab.url;
-			urlInput = tab.url;
+
+			// A tab switch always adopts the new tab's URL: a half-typed address
+			// belongs to the tab it was typed in.
+			const switchedTab = tab.id !== lastSyncedTabId;
+			if (switchedTab || tab.url !== lastSyncedUrl) {
+				lastSyncedTabId = tab.id;
+				lastSyncedUrl = tab.url;
+				if (switchedTab || !isEditingAddress) urlInput = tab.url;
+			}
 			sessionId = tab.sessionId;
 			sessionInfo = tab.sessionInfo;
 			isConnected = tab.isConnected;
@@ -182,9 +406,16 @@
 			deviceSize = tab.deviceSize;
 			rotation = tab.rotation;
 			consoleLogs = tab.consoleLogs;
-			canvasAPI = tab.canvasAPI;
+			canGoBack = tab.canGoBack;
+			canGoForward = tab.canGoForward;
+			// `canvasAPI` is deliberately not adopted from the tab. There is one
+			// Canvas behind every tab and it publishes its API once per mount, so
+			// a per-tab copy could only ever be the same object — or, once that
+			// Canvas had unmounted and remounted, a stale one whose element is
+			// gone. Adopting that stale copy left every page→screen projection
+			// answering "no geometry" for good: no agent cursor, no select popup,
+			// no picker, until the panel was rebuilt.
 			previewDimensions = tab.previewDimensions || { scale: 1 };
-			currentTabLastFrameData = tab.lastFrameData;
 
 			// Setup canvas after tab switch
 			if (canvasAPI && canvasAPI.setupCanvas) {
@@ -246,24 +477,43 @@
 		}
 	});
 
-	// Store canvasAPI and previewDimensions in active tab
+	/**
+	 * Adopt an address that has no browser behind it.
+	 *
+	 * A tab whose `url` is set but whose `sessionId` is not renders no Canvas at
+	 * all — the device frame is empty and the solid overlay covers it — so no
+	 * stream, and therefore no stream watchdog, ever exists to notice. The panel
+	 * sits on "Loading preview…" for good while every other tab is fine, and the
+	 * backend tab the agent is driving is a different one.
+	 *
+	 * The URL watcher above cannot close this, because it only fires when the
+	 * address *changes*: a blank slot rebuilt from the workspace snapshot, or a
+	 * switch to a tab whose address happens to equal the one already seen, both
+	 * arrive with `url === previousUrl` and are skipped. This looks at the tab's
+	 * own state instead, so it is true whenever it is true.
+	 *
+	 * `errorMessage` is part of the guard on purpose — a launch that failed is
+	 * reported to the user and must not be retried in a loop by an effect that
+	 * re-runs on every field of the tab.
+	 */
+	$effect(() => {
+		const tab = activeTab;
+		if (!tab || !tab.url) return;
+		if (tab.sessionId || tab.isLaunchingBrowser || tab.errorMessage) return;
+		if (mcpLaunchInProgress) return;
+		if (tab.url.startsWith('chrome-error://') || tab.url.startsWith('chrome://')) return;
+
+		debug.log('preview', `🩹 Tab ${tab.id} has a URL but no session — launching for it`);
+		previousUrl = tab.url;
+		coordinator.launchBrowserForTab(tab.id, tab.url);
+	});
+
+	// Store previewDimensions in active tab. (canvasAPI is not stored: see the
+	// note where the tab state is adopted.)
 	$effect(() => {
 		if (activeTabId && activeTab) {
-			const updates: any = {};
-			let needsUpdate = false;
-
-			if (canvasAPI && activeTab.canvasAPI !== canvasAPI) {
-				updates.canvasAPI = canvasAPI;
-				needsUpdate = true;
-			}
-
 			if (previewDimensions && JSON.stringify(activeTab.previewDimensions) !== JSON.stringify(previewDimensions)) {
-				updates.previewDimensions = previewDimensions;
-				needsUpdate = true;
-			}
-
-			if (needsUpdate) {
-				tabManager.updateTab(activeTabId, updates);
+				tabManager.updateTab(activeTabId, { previewDimensions });
 			}
 		}
 	});
@@ -282,20 +532,39 @@
 		}
 	});
 
-	// Watch scale changes and send to backend
+	// Watch scale changes and send to backend.
+	// Capture resolution follows the displayed size, so a resize needs the new
+	// metrics — but not a capture restart, which is what sendScaleUpdate does
+	// and is reserved for recovering a stuck stream.
 	let lastSentScale = 1;
 	$effect(() => {
 		const currentScale = previewDimensions?.scale || 1;
 		if (currentScale !== lastSentScale && sessionId && isStreamReady) {
 			debug.log('preview', `📐 Scale changed to ${currentScale}, sending to backend`);
-			sendScaleUpdate(currentScale);
+			setDisplayScale(currentScale);
+			canvasAPI?.sendDisplayMetrics?.();
 			lastSentScale = currentScale;
 		}
 	});
 
+	/**
+	 * Whether `candidate` already carries an explicit scheme Puppeteer can
+	 * navigate to as-is.
+	 *
+	 * A blank tab's URL is literally the string "about:blank" — checking only
+	 * for http(s)/file left it unrecognised, so it got "http://" prepended
+	 * into "http://about:blank", which CDP correctly refuses as an invalid
+	 * URL. This isn't a generic `scheme:` sniff on purpose: that would also
+	 * match "localhost:3000", which needs the prefix, not to be mistaken for
+	 * a `localhost:` scheme.
+	 */
+	function hasUrlScheme(candidate: string): boolean {
+		return /^(https?|file|about|data|blob|chrome|chrome-error|view-source|mailto):/i.test(candidate);
+	}
+
 	// Initialize URL input
 	$effect(() => {
-		if (url && !url.startsWith('http://') && !url.startsWith('https://') && !url.startsWith('file://')) {
+		if (url && !hasUrlScheme(url)) {
 			url = 'http://' + url;
 		}
 		if (url && !urlInput) {
@@ -308,7 +577,7 @@
 		if (!urlInput.trim()) return;
 
 		let processedUrl = urlInput.trim();
-		if (!processedUrl.startsWith('http://') && !processedUrl.startsWith('https://') && !processedUrl.startsWith('file://')) {
+		if (!hasUrlScheme(processedUrl)) {
 			processedUrl = 'http://' + processedUrl;
 		}
 
@@ -339,46 +608,200 @@
 		}
 	}
 
-	async function closePreview() {
-		if (activeTabId && tabs.length > 0) {
-			coordinator.closeTab(activeTabId);
-			if (tabs.length === 0) {
-				isOpen = false;
-			}
-		} else {
-			isOpen = false;
+	/**
+	 * Stop loading.
+	 *
+	 * Halts the page's own load via `window.stop()`, then clears the local
+	 * loading flags — Puppeteer offers no cancel for an in-flight `goto`, so the
+	 * indicator has to be released here rather than waiting for it to settle.
+	 */
+	function stopLoading() {
+		if (!activeTabId) return;
+
+		const tab = activeTab;
+		if (tab?.sessionId) {
+			coordinator.sendInteraction({ type: 'stop' });
+		}
+
+		tabManager.updateTab(activeTabId, {
+			isLoading: false,
+			isNavigating: false,
+			isLaunchingBrowser: false
+		});
+		isLoading = false;
+		isNavigating = false;
+		isReconnecting = false;
+	}
+
+	async function navigateHistory(direction: 'back' | 'forward') {
+		const tab = activeTab;
+		if (!tab?.sessionId) return;
+
+		// Optimistic: the arrow greys out immediately, then the authoritative
+		// state arrives with the tab-meta push once the entry commits.
+		if (activeTabId) {
+			tabManager.updateTab(activeTabId, { isNavigating: true });
+		}
+		await goHistory(direction, tab.sessionId);
+	}
+
+	function handleDialogResponse(accept: boolean, promptText?: string) {
+		const dialog = currentDialog;
+		if (!dialog) return;
+
+		// The overlay is dismissed by the resulting `onDialogClose`, which is the
+		// same path every other viewer of this tab takes.
+		nativeUIHandler.respondToDialog(dialog, accept, promptText);
+	}
+
+	function handlePermissionAllow(request: PendingPermission) {
+		dequeuePermission(request);
+
+		if (request.kind === 'file-pick') {
+			if (!filePickerElement) return;
+			// Reset first: re-picking the same file fires no change event otherwise.
+			filePickerElement.value = '';
+			filePickerElement.multiple = !!request.payload?.multiple;
+			filePickerElement.click();
+			return;
+		}
+
+		// Not awaited: the device API must run inside this click's task so Safari
+		// still counts it as user-initiated.
+		void previewHostBridge.approve(request);
+	}
+
+	function handlePermissionDeny(request: PendingPermission) {
+		dequeuePermission(request);
+
+		if (request.kind === 'file-pick') {
+			pendingFilePick = null;
+			// The page is blocked on an answer; an empty selection is how a
+			// cancelled chooser is reported.
+			void previewHostBridge.submitFiles(request, []);
+			return;
+		}
+
+		previewHostBridge.deny(request);
+	}
+
+	function handleFilesPicked(event: Event) {
+		const request = pendingFilePick;
+		pendingFilePick = null;
+		if (!request) return;
+
+		const input = event.currentTarget as HTMLInputElement;
+		void previewHostBridge.submitFiles(request, Array.from(input.files ?? []));
+		input.value = '';
+	}
+
+	/**
+	 * Seed the panel from the backend's buffer the first time it is opened.
+	 *
+	 * Live messages only start arriving once the panel mounts its listeners, so
+	 * anything the page logged during load would otherwise be missing from the
+	 * one view where it matters most.
+	 */
+	const seededConsoleTabs = new Set<string>();
+
+	$effect(() => {
+		if (!isConsoleOpen || !activeTabId || !sessionId) return;
+		if (seededConsoleTabs.has(sessionId)) return;
+
+		const tabId = activeTabId;
+		const seedFor = sessionId;
+		seededConsoleTabs.add(seedFor);
+
+		void browserConsoleService
+			.getConsoleLogs(seedFor)
+			.then((logs) => {
+				const tab = tabManager.getTab(tabId);
+				if (!tab || logs.length === 0) return;
+
+				// Merge rather than replace: live messages may already have landed
+				// while this request was in flight.
+				const known = new Set((tab.consoleLogs ?? []).map((entry) => entry.id));
+				const missing = logs.filter((entry) => !known.has(entry.id));
+				if (missing.length === 0) return;
+
+				tabManager.updateTab(tabId, {
+					consoleLogs: [...missing, ...(tab.consoleLogs ?? [])].sort((a, b) => a.timestamp - b.timestamp)
+				});
+			})
+			.catch(() => {
+				// Backend buffer unavailable — the live stream still fills the panel.
+				seededConsoleTabs.delete(seedFor);
+			});
+	});
+
+	async function clearConsole() {
+		if (activeTabId) tabManager.updateTab(activeTabId, { consoleLogs: [] });
+		try {
+			await browserConsoleService.clearConsoleLogs(sessionId ?? '');
+		} catch {
+			// The local view is already cleared; a failed backend clear only means
+			// its buffer keeps older entries, which no longer surface anywhere.
+		}
+	}
+
+	async function executeConsoleCommand(commandText: string) {
+		try {
+			await browserConsoleService.executeConsoleCommand(sessionId ?? '', commandText);
+		} catch (error) {
+			debug.error('preview', 'Console command failed:', error);
+		}
+	}
+
+	// ── Close all tabs ────────────────────────────────────────────────────────
+
+	let showCloseAllConfirm = $state(false);
+
+	/** Agent-driven tabs survive: closing one mid-run would fail the automation. */
+	function closableTabIds(): string[] {
+		const controlled = mcpHandler.getControlledTabIds();
+		return tabs.filter((tab) => !controlled.has(tab.id)).map((tab) => tab.id);
+	}
+
+	const closeAllMessage = $derived.by(() => {
+		const controlled = mcpHandler.getControlledTabIds();
+		const closable = tabs.filter((tab) => !controlled.has(tab.id)).length;
+		const locked = tabs.length - closable;
+
+		if (locked > 0) {
+			return `Close ${closable} tabs? ${locked} controlled by an agent will stay open.`;
+		}
+		return `Close all ${closable} tabs?`;
+	});
+
+	function requestCloseAllTabs() {
+		if (closableTabIds().length === 0) return;
+		showCloseAllConfirm = true;
+	}
+
+	function closeAllTabs() {
+		showCloseAllConfirm = false;
+		// Snapshot first: closing mutates the tab list this is derived from.
+		for (const tabId of closableTabIds()) {
+			coordinator.closeTab(tabId);
 		}
 	}
 
 	function handleCanvasInteraction(action: any) {
 		const tab = activeTab;
 		if (tab && tab.sessionId) {
-			// Hide the AI cursor instantly if the human explicitly interacts
-			mcpVirtualCursor = { ...mcpVirtualCursor, visible: false };	
 			coordinator.sendInteraction(action);
 		}
 	}
 
 	function transformBrowserToDisplayCoordinates(browserX: number, browserY: number): { x: number, y: number } | null {
-		let canvasElement: HTMLCanvasElement | null = null;
-		if (canvasAPI && canvasAPI.getCanvasElement) {
-			canvasElement = canvasAPI.getCanvasElement();
-		}
-		if (!canvasElement && typeof document !== 'undefined') {
-			canvasElement = document.querySelector('canvas[tabindex="0"]') as HTMLCanvasElement;
-		}
-		if (!canvasElement) return null;
-
+		// The canvas owns this conversion: it is the only place that knows both
+		// where the frame is painted (the canvas is `object-contain`, so it is
+		// letterboxed whenever the aspect ratios differ) and that the page's
+		// coordinate space is the emulated viewport rather than the adaptive
+		// capture bitmap. Re-deriving it here is how these overlays drifted away
+		// from the element they were anchored to.
 		try {
-			const canvasRect = canvasElement.getBoundingClientRect();
-			if (!canvasRect || canvasElement.width === 0 || canvasElement.height === 0) return null;
-			
-			const scaleX = canvasRect.width / canvasElement.width;
-			const scaleY = canvasRect.height / canvasElement.height;
-			const screenX = canvasRect.left + (browserX * scaleX);
-			const screenY = canvasRect.top + (browserY * scaleY);
-
-			return { x: screenX, y: screenY };
+			return canvasAPI?.pageToScreen?.(browserX, browserY) ?? null;
 		} catch (e) {
 			return null;
 		}
@@ -409,13 +832,43 @@
 		return mcpHandler.isCurrentTabMcpControlled();
 	}
 
-	// Hide MCP virtual cursor when switching to a non-MCP-controlled tab
-	$effect(() => {
-		void activeTabId; // track activeTabId changes
-		if (!isCurrentTabMcpControlled()) {
-			mcpVirtualCursor = { x: 0, y: 0, visible: false, clicking: false };
+	/**
+	 * Leave a page full screen from outside the page.
+	 *
+	 * The only way out, now that the shim no longer draws one of its own inside
+	 * the page. It is also the one that works in the case the in-page hint never
+	 * could: a fullscreen Chrome granted from its own C++ that the shim never
+	 * saw, which used to leave the preview zoomed and cropped with nothing to
+	 * press.
+	 */
+	async function exitPageFullscreen() {
+		const tab = activeTab;
+		if (!tab?.sessionId) return;
+		try {
+			await ws.http('preview:browser-exit-fullscreen', { tabId: tab.sessionId }, 10000);
+		} catch (error) {
+			debug.warn('preview', 'Failed to exit page full screen:', error);
 		}
+	}
+
+	/**
+	 * Tell the interaction layer which tab this viewer is on.
+	 *
+	 * Every gesture carries it, so input lands on the tab the person is looking
+	 * at rather than on whatever the project last called "active" — which, with
+	 * two people in one project, is whatever the other one clicked most
+	 * recently.
+	 */
+	$effect(() => {
+		setInteractionTabId(sessionId);
 	});
+
+	// Nothing to re-point on a tab switch: `mcpCursorPage` is derived from the
+	// store, keyed by the shown tab's backend id, so it already answers for
+	// whichever tab is on screen. The effect that used to live here copied one
+	// position across at switch time and then let the panel's own copy drift —
+	// which is what made switching onto a tab an agent was driving show a
+	// pointer that clicked but never moved.
 
 	// Stream message handling
 	$effect(() => {
@@ -443,12 +896,14 @@
 
 {#if isOpen && mode === 'split'}
 	<div
+		bind:this={panelElement}
 		class="h-full flex flex-col theme-transition bg-slate-50 dark:bg-slate-900 dot-pattern"
 		in:fly={{ x: 300, duration: 300, easing: cubicOut }}
 		out:fly={{ x: 300, duration: 250, easing: cubicOut }}
 	>
 		<!-- Preview Toolbar -->
 		<Toolbar
+			bind:this={toolbarRef}
 			bind:url
 			bind:urlInput
 			bind:isLoading
@@ -460,24 +915,43 @@
 			bind:isConnected
 			bind:isStreamReady
 			bind:errorMessage
-			bind:isConsoleOpen
+			{isConsoleOpen}
+			{consoleIssueCount}
+			{canGoBack}
+			{canGoForward}
+			{isMobile}
+			showKeyboardToggle={!!canvasAPI?.supportsKeyboardToggle?.()}
 			{tabs}
 			{activeTabId}
 			mcpControlledTabIds={mcpHandler.getControlledTabIds()}
+			mcpFocusedTabIds={mcpHandler.getFocusedTabIds()}
 			onGoClick={handleGoClick}
 			onRefresh={refreshPreview}
+			onStop={stopLoading}
+			onBack={() => navigateHistory('back')}
+			onForward={() => navigateHistory('forward')}
 			onOpenInExternalBrowser={() => {}}
-			onClosePreview={closePreview}
-			onToggleConsole={() => {}}
+			onToggleConsole={() => (isConsoleOpen = !isConsoleOpen)}
+			onToggleKeyboard={() => {
+				if (canvasAPI?.isKeyboardActive?.()) canvasAPI.closeKeyboard();
+				else canvasAPI?.openKeyboard?.();
+			}}
 			onUrlInput={() => {}}
+			onAddressFocusChange={(focused: boolean) => (isEditingAddress = focused)}
 			onUrlKeydown={() => {}}
 			onSwitchTab={(tabId: string) => coordinator.switchToTab(tabId)}
 			onCloseTab={(tabId: string) => coordinator.closeTab(tabId)}
+			onReorderTab={(tabId: string, targetTabId: string) => tabManager.reorderTab(tabId, targetTabId)}
 			onNewTab={() => coordinator.createNewTab()}
+			onCloseAllTabs={requestCloseAllTabs}
 		/>
 
-		<!-- Preview Container -->
-		<div class="flex-1 flex min-h-0">
+		<!--
+			Preview + console. The console docks below or beside, so the axis of
+			this row flips with it rather than the console being repositioned.
+		-->
+		<div class="flex min-h-0 flex-1 {consoleDock === 'right' && isConsoleOpen ? 'flex-row' : 'flex-col'}">
+		<div class="relative flex min-h-0 min-w-0 flex-1">
 			<Container
 				projectId={projectId}
 				bind:url
@@ -491,30 +965,111 @@
 				bind:sessionInfo
 				bind:isConnected
 				bind:isStreamReady
+				bind:hasPaintedContent
 				bind:errorMessage
 				bind:virtualCursor
-				bind:mcpVirtualCursor
+				{mcpCursorPage}
 				bind:canvasAPI
 				bind:previewDimensions
-				bind:lastFrameData={currentTabLastFrameData}
 				bind:touchMode
 				isMcpControlled={isCurrentTabMcpControlled()}
+				isMcpFocused={mcpHandler.isCurrentTabMcpFocused()}
+				mcpActivity={getMcpActivity(sessionId) ?? ''}
+				isPageFullscreen={isBackendTabFullscreen(sessionId)}
+				onExitFullscreen={exitPageFullscreen}
 				onInteraction={handleCanvasInteraction}
 				onRetry={handleGoClick}
 			/>
+
+			<!-- Page-owned prompts. Anchored to the preview area rather than the
+			     app so they read as coming from the page, like a browser's own. -->
+			<PermissionPrompt
+				request={pendingPermission}
+				onAllow={handlePermissionAllow}
+				onDeny={handlePermissionDeny}
+			/>
+
+			<DialogOverlay
+				dialog={currentDialog}
+				origin={(() => {
+					try {
+						return new URL(url).origin;
+					} catch {
+						return '';
+					}
+				})()}
+				onRespond={handleDialogResponse}
+			/>
+		</div>
+
+		{#if isConsoleOpen}
+			<ConsolePanel
+				logs={consoleLogs}
+				{isMobile}
+				{panelWidth}
+				bind:dock={consoleDock}
+				bind:height={consoleHeight}
+				bind:width={consoleWidth}
+				onClose={() => (isConsoleOpen = false)}
+				onClear={clearConsole}
+				onExecute={executeConsoleCommand}
+			/>
+		{/if}
 		</div>
 
 		<!-- Native UI Overlays -->
 		<SelectDropdown
-			bind:selectInfo={currentSelectInfo}
+			selectInfo={currentSelectInfo}
+			scale={previewDimensions?.scale ?? 1}
+			bounds={panelBounds}
 			onSelect={handleSelectOption}
 			onClose={closeSelectDropdown}
 		/>
 
+		<NativePicker
+			picker={currentNativePicker}
+			onCommit={(value: string) => {
+				if (currentNativePicker) nativeUIHandler.respondNativePicker(currentNativePicker, value);
+			}}
+			onClose={() => (currentNativePicker = null)}
+		/>
+
 		<ContextMenu
-			bind:menuInfo={currentContextMenuInfo}
+			menuInfo={currentContextMenuInfo}
+			scale={previewDimensions?.scale ?? 1}
+			bounds={panelBounds}
 			onSelectItem={handleContextMenuItem}
 			onClose={closeContextMenu}
+		/>
+
+		<!-- Closing several tabs at once is worth a beat of confirmation. -->
+		<Dialog
+			bind:isOpen={showCloseAllConfirm}
+			onClose={() => (showCloseAllConfirm = false)}
+			type="warning"
+			title="Close all tabs"
+			message={closeAllMessage}
+			confirmText="Close tabs"
+			onConfirm={closeAllTabs}
+		/>
+
+		<!--
+			File picker for intercepted `<input type="file">` in the page. Opened
+			programmatically from the host bridge so the viewer chooses from their
+			own filesystem — the headless browser has nothing worth picking.
+		-->
+		<input
+			bind:this={filePickerElement}
+			type="file"
+			class="hidden"
+			onchange={handleFilesPicked}
+			oncancel={() => {
+				const request = pendingFilePick;
+				pendingFilePick = null;
+				// The page is blocked on an answer; an empty selection is how a
+				// cancelled chooser is reported.
+				if (request) void previewHostBridge.submitFiles(request, []);
+			}}
 		/>
 	</div>
 {/if}

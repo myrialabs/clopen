@@ -141,6 +141,53 @@ export interface AgentInput {
 	mode?: 'acceptEdits' | 'auto' | 'bypassPermissions' | 'default' | 'dontAsk' | 'plan' | 'bubble';
 }
 
+export interface WorkflowInput {
+	script?: string;
+	name?: string;
+	description?: string;
+	title?: string;
+	args?: Record<string, unknown>;
+	scriptPath?: string;
+	resumeFromRunId?: string;
+}
+
+export interface ReplInput {
+	code: string;
+	description?: string;
+	timeout?: number;
+}
+
+export interface SendMessageInput {
+	taskId?: string;
+	agentId?: string;
+	recipient?: string;
+	message: string;
+}
+
+export interface ListAgentsInput {
+	includeCompleted?: boolean;
+}
+
+export interface ReadAgentInput {
+	agentId: string;
+	wait?: boolean;
+	timeout?: number;
+	sinceTurn?: number;
+}
+
+export interface SendInboxInput {
+	summary: string;
+	content: string;
+}
+
+export interface ContextBoardInput {
+	command: 'get' | 'add' | 'prune' | 'get_board';
+	src?: string;
+	name?: string;
+	description?: string;
+	context?: string;
+}
+
 export interface TaskOutputInput {
 	taskId: string;
 	block?: boolean;
@@ -294,6 +341,7 @@ export interface ToolInputMap {
 	ExitPlanMode: ExitPlanModeInput;
 	// Sub-agents & tasks
 	Agent: AgentInput;
+	Workflow: WorkflowInput;
 	TaskOutput: TaskOutputInput;
 	TaskStop: TaskStopInput;
 	TaskCreate: TaskCreateInput;
@@ -310,6 +358,12 @@ export interface ToolInputMap {
 	Skill: SkillInput;
 	ToolSearch: ToolSearchInput;
 	Lsp: LspInput;
+	REPL: ReplInput;
+	SendMessage: SendMessageInput;
+	ListAgents: ListAgentsInput;
+	ReadAgent: ReadAgentInput;
+	SendInbox: SendInboxInput;
+	ContextBoard: ContextBoardInput;
 	// Automation & notifications
 	ScheduleWakeup: ScheduleWakeupInput;
 	Monitor: MonitorInput;
@@ -340,9 +394,10 @@ export const CANONICAL_TOOL_NAMES = new Set<KnownToolName>([
 	'Glob', 'Grep', 'List',
 	'WebFetch', 'WebSearch',
 	'TodoWrite', 'AskUserQuestion', 'EnterPlanMode', 'ExitPlanMode',
-	'Agent', 'TaskOutput', 'TaskStop', 'TaskCreate', 'TaskGet', 'TaskUpdate', 'TaskList',
+	'Agent', 'Workflow', 'TaskOutput', 'TaskStop', 'TaskCreate', 'TaskGet', 'TaskUpdate', 'TaskList',
 	'ListMcpResources', 'ReadMcpResource',
-	'Config', 'EnterWorktree', 'ExitWorktree', 'Skill', 'ToolSearch', 'Lsp',
+	'Config', 'EnterWorktree', 'ExitWorktree', 'Skill', 'ToolSearch', 'Lsp', 'REPL',
+	'SendMessage', 'ListAgents', 'ReadAgent', 'SendInbox', 'ContextBoard',
 	'ScheduleWakeup', 'Monitor', 'PushNotification', 'RemoteTrigger',
 	'CronCreate', 'CronDelete', 'CronList',
 ]);

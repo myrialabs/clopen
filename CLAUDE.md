@@ -22,12 +22,13 @@ This document provides guidelines for Claude Code when working on the Clopen pro
 
 ### After Coding
 
-- Run `bun run check` and `bun run lint` to ensure code functions properly
+- Run `bun run check` and `bun run lint`; add `bun run test` when the change touches tested logic
 - Do not create any .md files unless explicitly instructed
-- Suggest a branch name and commit message following CONTRIBUTING.md conventions:
+- Hand back the three artifacts from CONTRIBUTING.md → Delivering a Change:
   - Branch: `<type>/<description>` — lowercase, kebab-case, concise
-  - Commit: `<type>(<scope>): <subject>` — imperative mood, lowercase, no period, max 72 chars
-  - Do NOT create the branch or commit automatically — only suggest the names for review
+  - One commit: `<type>(<scope>): <subject>` (imperative, lowercase, no period) **plus a body** — what broke, why it happened, what the change does about it, wrapped at 72 columns
+  - PR description from the template, ready to paste — or a PR comment if the work extends an open PR
+  - Do NOT create the branch, commit, or PR automatically — draft all three for review
 
 ---
 
@@ -64,7 +65,7 @@ This document provides guidelines for Claude Code when working on the Clopen pro
 
 ### Testing
 
-- Run `bun run check` for type checking and `bun run lint` for linting
+- Run `bun run check` for type checking, `bun run lint` for linting, `bun run test` for the suite (`--isolate`, data in `~/.clopen-test`)
 - Ensure all checks pass before committing
 
 ### Communication

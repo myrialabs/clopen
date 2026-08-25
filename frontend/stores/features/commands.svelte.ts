@@ -59,7 +59,6 @@ let installed = $state<InstalledCommand[]>([]);
 let installedLoaded = $state(false);
 let detected = $state<DetectedGroup[]>([]);
 let available = $state<AvailableCommand[]>([]);
-let hasPendingChanges = $state(false);
 
 export const commandsStore = {
 	get installed() { return installed; },
@@ -67,8 +66,6 @@ export const commandsStore = {
 	get detected() { return detected; },
 	/** Enabled commands for the chat "/" picker (non-admin surface). */
 	get available() { return available; },
-	get hasPendingChanges() { return hasPendingChanges; },
-	set hasPendingChanges(v: boolean) { hasPendingChanges = v; },
 
 	/**
 	 * `profileId`/`projectId` narrow the result to the session's active profile

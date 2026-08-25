@@ -56,6 +56,8 @@
 				return 'Weekly · Sonnet';
 			case 'overage':
 				return 'Overage';
+			case 'seven_day_overage_included':
+				return 'Weekly · incl. overage';
 			default:
 				return null;
 		}

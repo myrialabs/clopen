@@ -18,6 +18,13 @@ import type { KnownToolName, ToolUseBlock } from '$shared/types/unified';
 
 // Classic variants
 import AgentToolClassic from './variants/classic/AgentTool.svelte';
+import WorkflowToolClassic from './variants/classic/WorkflowTool.svelte';
+import ReplToolClassic from './variants/classic/ReplTool.svelte';
+import SendMessageToolClassic from './variants/classic/SendMessageTool.svelte';
+import ListAgentsToolClassic from './variants/classic/ListAgentsTool.svelte';
+import ReadAgentToolClassic from './variants/classic/ReadAgentTool.svelte';
+import SendInboxToolClassic from './variants/classic/SendInboxTool.svelte';
+import ContextBoardToolClassic from './variants/classic/ContextBoardTool.svelte';
 import AskUserQuestionToolClassic from './variants/classic/AskUserQuestionTool.svelte';
 import BashToolClassic from './variants/classic/BashTool.svelte';
 import BashOutputToolClassic from './variants/classic/BashOutputTool.svelte';
@@ -57,6 +64,13 @@ import WriteToolClassic from './variants/classic/WriteTool.svelte';
 
 // Compact variants
 import AgentToolCompact from './variants/compact/AgentTool.svelte';
+import WorkflowToolCompact from './variants/compact/WorkflowTool.svelte';
+import ReplToolCompact from './variants/compact/ReplTool.svelte';
+import SendMessageToolCompact from './variants/compact/SendMessageTool.svelte';
+import ListAgentsToolCompact from './variants/compact/ListAgentsTool.svelte';
+import ReadAgentToolCompact from './variants/compact/ReadAgentTool.svelte';
+import SendInboxToolCompact from './variants/compact/SendInboxTool.svelte';
+import ContextBoardToolCompact from './variants/compact/ContextBoardTool.svelte';
 import AskUserQuestionToolCompact from './variants/compact/AskUserQuestionTool.svelte';
 import BashToolCompact from './variants/compact/BashTool.svelte';
 import BashOutputToolCompact from './variants/compact/BashOutputTool.svelte';
@@ -118,6 +132,7 @@ export const TOOL_COMPONENTS_CLASSIC: Record<KnownToolName, ToolComponent> = {
 	ExitPlanMode: ExitPlanModeToolClassic,
 	// Sub-agents & tasks
 	Agent: AgentToolClassic,
+	Workflow: WorkflowToolClassic,
 	TaskOutput: BashOutputToolClassic,
 	TaskStop: TaskStopToolClassic,
 	TaskCreate: TaskCreateToolClassic,
@@ -134,6 +149,12 @@ export const TOOL_COMPONENTS_CLASSIC: Record<KnownToolName, ToolComponent> = {
 	Skill: SkillToolClassic,
 	ToolSearch: ToolSearchToolClassic,
 	Lsp: LspToolClassic,
+	REPL: ReplToolClassic,
+	SendMessage: SendMessageToolClassic,
+	ListAgents: ListAgentsToolClassic,
+	ReadAgent: ReadAgentToolClassic,
+	SendInbox: SendInboxToolClassic,
+	ContextBoard: ContextBoardToolClassic,
 	// Automation & notifications
 	ScheduleWakeup: ScheduleWakeupToolClassic,
 	Monitor: MonitorToolClassic,
@@ -166,6 +187,7 @@ export const TOOL_COMPONENTS_COMPACT: Record<KnownToolName, ToolComponent> = {
 	ExitPlanMode: ExitPlanModeToolCompact,
 	// Sub-agents & tasks
 	Agent: AgentToolCompact,
+	Workflow: WorkflowToolCompact,
 	TaskOutput: BashOutputToolCompact,
 	TaskStop: TaskStopToolCompact,
 	TaskCreate: TaskCreateToolCompact,
@@ -182,6 +204,12 @@ export const TOOL_COMPONENTS_COMPACT: Record<KnownToolName, ToolComponent> = {
 	Skill: SkillToolCompact,
 	ToolSearch: ToolSearchToolCompact,
 	Lsp: LspToolCompact,
+	REPL: ReplToolCompact,
+	SendMessage: SendMessageToolCompact,
+	ListAgents: ListAgentsToolCompact,
+	ReadAgent: ReadAgentToolCompact,
+	SendInbox: SendInboxToolCompact,
+	ContextBoard: ContextBoardToolCompact,
 	// Automation & notifications
 	ScheduleWakeup: ScheduleWakeupToolCompact,
 	Monitor: MonitorToolCompact,

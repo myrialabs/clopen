@@ -7,14 +7,14 @@
  * survives page refresh and session switches without local persistence.
  */
 
+import type { RateLimitType } from '$shared/types/unified';
+
 export type RateLimitStatus = 'allowed_warning' | 'rejected';
 
-export type RateLimitType =
-	| 'five_hour'
-	| 'seven_day'
-	| 'seven_day_opus'
-	| 'seven_day_sonnet'
-	| 'overage';
+// The set of limit buckets is the engine's, not the UI's — re-export the shared
+// union instead of restating it, so a bucket added by an SDK upgrade cannot be
+// accepted by the backend and rejected here.
+export type { RateLimitType };
 
 export interface RateLimitState {
 	engine: string;

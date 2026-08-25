@@ -105,9 +105,9 @@ export type { ParsedMcpServer, ParsedField, ParseResult } from './external/parse
 // existing behaviour, unchanged.
 
 /** Claude Agent SDK `mcpServers`: in-process internal servers + external stdio/remote. */
-export function getEnabledMcpServers(context?: McpExecutionContext, profileFilter?: Set<string>): Record<string, McpServerConfig> {
+export async function getEnabledMcpServers(context?: McpExecutionContext, profileFilter?: Set<string>): Promise<Record<string, McpServerConfig>> {
 	return {
-		...internal.getEnabledMcpServers(context, profileFilter),
+		...(await internal.getEnabledMcpServers(context, profileFilter)),
 		...external.getClaudeExternalMcpConfig(profileFilter)
 	};
 }
@@ -121,25 +121,33 @@ export function getOpenCodeMcpConfig(profileFilter?: Set<string>) {
 }
 
 /** Codex MCP config. */
-export function getCodexMcpConfig(profileFilter?: Set<string>) {
+export function getCodexMcpConfig(profileFilter?: Set<string>, context?: McpExecutionContext) {
 	return {
-		...internal.getCodexMcpConfig(profileFilter),
+		...internal.getCodexMcpConfig(profileFilter, context),
 		...external.getCodexExternalMcpConfig(profileFilter)
 	};
 }
 
 /** Copilot MCP config. */
-export function getCopilotMcpConfig(profileFilter?: Set<string>) {
+export function getCopilotMcpConfig(profileFilter?: Set<string>, context?: McpExecutionContext) {
 	return {
-		...internal.getCopilotMcpConfig(profileFilter),
+		...internal.getCopilotMcpConfig(profileFilter, context),
 		...external.getCopilotExternalMcpConfig(profileFilter)
 	};
 }
 
-/** Qwen Code MCP config. */
-export function getQwenMcpConfig(profileFilter?: Set<string>) {
+/** Cursor MCP config: internal `clopen-mcp` remote bridge + external servers. */
+export function getCursorMcpConfig(profileFilter?: Set<string>, context?: McpExecutionContext) {
 	return {
-		...internal.getQwenMcpConfig(profileFilter),
+		...internal.getCursorMcpConfig(profileFilter, context),
+		...external.getCursorExternalMcpConfig(profileFilter)
+	};
+}
+
+/** Qwen Code MCP config. */
+export function getQwenMcpConfig(profileFilter?: Set<string>, context?: McpExecutionContext) {
+	return {
+		...internal.getQwenMcpConfig(profileFilter, context),
 		...external.getQwenExternalMcpConfig(profileFilter)
 	};
 }
@@ -151,4 +159,18 @@ export function getQwenMcpConfig(profileFilter?: Set<string>) {
  */
 export function resolveOpenCodeToolName(toolName: string): string | null {
 	return internal.resolveOpenCodeToolName(toolName) ?? external.resolveExternalToolName(toolName);
+}
+
+/**
+ * Open Code tool ids to DISABLE for INTERNAL connectors excluded by an active
+ * Profile, for the per-prompt `tools` map (per-session → concurrency-safe). All
+ * internal tools ride the single `clopen-mcp` bridge, which is all-or-nothing at
+ * the MCP-config level, so per-connector scoping must happen here. EXTERNAL
+ * connectors are handled at the server level instead — each is its own MCP entry,
+ * dropped from the per-Profile server's config when excluded (see
+ * `getOpenCodeMcpConfig(profileFilter)` in the server pool). `undefined` filter
+ * (profile doesn't constrain connectors) → none.
+ */
+export function getOpenCodeProfileDisabledToolIds(profileFilter?: Set<string>): string[] {
+	return internal.getOpenCodeProfileDisabledInternalToolIds(profileFilter);
 }

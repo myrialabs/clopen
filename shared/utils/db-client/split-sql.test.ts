@@ -82,6 +82,19 @@ describe('splitSqlStatements', () => {
 		]);
 	});
 
+	test('splits on blank lines only when splitOnBlankLine is enabled', () => {
+		expect(splitSqlStatements('SELECT 1\n\nSELECT 2', { splitOnBlankLine: true })).toEqual([
+			'SELECT 1',
+			'SELECT 2'
+		]);
+	});
+
+	test('keeps a blank line inside a single statement intact by default', () => {
+		expect(splitSqlStatements('SELECT id, name\nFROM users\n\nWHERE active = 1')).toEqual([
+			'SELECT id, name\nFROM users\n\nWHERE active = 1'
+		]);
+	});
+
 	test('returns empty array for whitespace / comment only input', () => {
 		expect(splitSqlStatements('   ;  ')).toEqual([]);
 	});

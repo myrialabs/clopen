@@ -75,7 +75,19 @@
 
 			for (const contentItem of message.content) {
 				if (contentItem.type === 'text') {
-					elements.push({ type: 'text', content: (contentItem as any).text });
+					const text = (contentItem as any).text as string;
+					// Engine-setup errors route through ErrorMessage so they render
+					// as an actionable card with a one-click button. These are only
+					// ever surfaced as a synthetic assistant message prefixed with
+					// "**Error:**" (see stream-manager). Requiring that prefix keeps
+					// plain assistant prose that merely *mentions* "Settings → Stack /
+					// Engines" from being misdetected as an error — it stays text.
+					const isSyntheticError = typeof text === 'string' && /^\s*\*\*Error:\*\*/.test(text);
+					if (isSyntheticError && (text.includes('Settings → Stack') || text.includes('Settings → Engines'))) {
+						elements.push({ type: 'error', content: text.replace(/^\s*\*\*Error:\*\*\s*/, '') });
+					} else {
+						elements.push({ type: 'text', content: text });
+					}
 				} else if (contentItem.type === 'tool_use') {
 					elements.push({ type: 'tool_use', content: contentItem });
 				}

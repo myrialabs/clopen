@@ -53,6 +53,8 @@ const mockCreateUserFromInvite = mock((inviteToken: string, name: string) => ({
 
 const mockNeedsSetup = mock(() => true);
 const mockGetAuthMode = mock(() => 'none');
+const mockMarkOnboardingPending = mock(() => {});
+const mockWriteSystemSettings = mock((patch: Record<string, unknown>) => patch);
 
 // Mock settings
 let mockSettings: any = { value: JSON.stringify({ authMode: 'required' }) };
@@ -83,12 +85,17 @@ mock.module('$backend/database/queries', () => ({
 	}
 }));
 
+mock.module('$backend/settings/system-settings', () => ({
+	getAuthMode: mockGetAuthMode,
+	writeSystemSettings: mockWriteSystemSettings
+}));
+
 mock.module('$backend/auth/auth-service', () => ({
 	createAdmin: mockCreateAdmin,
 	createOrGetNoAuthAdmin: mockCreateOrGetNoAuthAdmin,
 	createUserFromInvite: mockCreateUserFromInvite,
 	needsSetup: mockNeedsSetup,
-	getAuthMode: mockGetAuthMode,
+	markOnboardingPending: mockMarkOnboardingPending,
 	loginWithToken: mock(() => ({})),
 	logout: mock(() => {}),
 	logoutAllSessions: mock(() => 0),
@@ -150,7 +157,7 @@ describe('Session creation audit logging', () => {
 		});
 
 		// Verify createAdmin was called
-		expect(mockCreateAdmin).toHaveBeenCalledWith('Admin User');
+		expect(mockCreateAdmin).toHaveBeenCalledWith('Admin User', expect.anything());
 
 		// Verify logEvent was called with correct parameters
 		expect(mockLogEvent).toHaveBeenCalledTimes(1);
@@ -226,7 +233,7 @@ describe('Session creation audit logging', () => {
 		});
 
 		// Verify createUserFromInvite was called
-		expect(mockCreateUserFromInvite).toHaveBeenCalledWith('invite-token-123', 'New User');
+		expect(mockCreateUserFromInvite).toHaveBeenCalledWith('invite-token-123', 'New User', expect.anything());
 
 		// Verify logEvent was called with correct parameters
 		expect(mockLogEvent).toHaveBeenCalledTimes(1);

@@ -36,7 +36,8 @@
 		onNodeDrop,
 		onNodeDragEnd,
 		dropTargetPath = null,
-		busyPaths = new Set<string>()
+		busyPaths = new Set<string>(),
+		aiChangesSet = new Set<string>()
 	}: {
 		file: FileNodeType;
 		isSelected?: boolean;
@@ -63,6 +64,7 @@
 		onNodeDragEnd?: (file: FileNodeType, event: DragEvent) => void;
 		dropTargetPath?: string | null;
 		busyPaths?: Set<string>;
+		aiChangesSet?: Set<string>;
 	} = $props();
 
 	const revealLabel = $derived(
@@ -117,6 +119,11 @@
 	);
 	const gitStatusTitle = $derived(
 		gitStatusCode ? getGitStatusBadgeLabel(gitStatusCode) : ''
+	);
+
+	// AI changes indicator
+	const hasAiChanges = $derived(
+		file.type === 'file' && aiChangesSet.has(file.path)
 	);
 
 	let nodeElement: HTMLDivElement;
@@ -258,13 +265,19 @@
 		{file.name}
 	</span>
 
-	<!-- Status indicators (unsaved dot + git status letter) -->
-	{#if showModifiedIndicator || gitStatusCode}
+	<!-- Status indicators (unsaved dot + ai dot + git status letter) -->
+	{#if showModifiedIndicator || hasAiChanges || gitStatusCode}
 		<span class="flex items-center gap-1 flex-shrink-0 {isIgnored ? 'opacity-40' : ''}">
 			{#if showModifiedIndicator}
 				<span
 					class="w-1.5 h-1.5 rounded-full bg-amber-500 dark:bg-amber-600"
 					title="Unsaved changes"
+				></span>
+			{/if}
+			{#if hasAiChanges}
+				<span
+					class="w-1.5 h-1.5 rounded-full bg-violet-500 dark:bg-violet-400"
+					title="Has AI changes"
 				></span>
 			{/if}
 			{#if gitStatusCode}
@@ -392,6 +405,17 @@
 
 				<div class="border-t border-slate-200 dark:border-slate-700 my-1"></div>
 
+				<!-- Download (files only) -->
+				{#if file.type === 'file'}
+					<button
+						class="w-full px-3 py-1.5 text-xs text-left text-slate-700 dark:text-slate-300 hover:bg-slate-100 dark:hover:bg-slate-700 flex items-center gap-2"
+						onclick={(e) => { handleAction('download', e); closeMenu(); }}
+					>
+						<Icon name="lucide:download" class="w-3 h-3" />
+						Download File
+					</button>
+				{/if}
+
 				<!-- Archive actions -->
 				<button
 					class="w-full px-3 py-1.5 text-xs text-left text-slate-700 dark:text-slate-300 hover:bg-slate-100 dark:hover:bg-slate-700 flex items-center gap-2"
@@ -472,6 +496,7 @@
 			{onNodeDragEnd}
 			{dropTargetPath}
 			{busyPaths}
+			{aiChangesSet}
 		/>
 	{/each}
 {/if}

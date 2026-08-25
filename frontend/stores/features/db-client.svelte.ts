@@ -15,7 +15,35 @@ import type {
 	DbClientSchemaNodeType
 } from '$shared/types/db-client';
 
-export type DbClientView = 'overview' | 'query' | 'data' | 'structure';
+export type DbClientView = 'overview' | 'query' | 'data' | 'structure' | 'er';
+
+/** The per-object views, scoped to whichever object is active. */
+const TABLE_VIEWS: DbClientView[] = ['data', 'structure', 'er'];
+const ROUTINE_VIEWS: DbClientView[] = ['structure'];
+
+/** Pick the view to show when opening `obj`: keep the user's current view when
+ *  it's valid for this object type (so switching objects remembers the tab),
+ *  else fall back — coercing routine-invalid fallbacks (data/er) to structure. */
+function resolveTableView(current: DbClientView, obj: DbClientActiveObject, fallback: DbClientView): DbClientView {
+	const isRoutine = obj.type === 'function' || obj.type === 'procedure';
+	const allowed = isRoutine ? ROUTINE_VIEWS : TABLE_VIEWS;
+	if (allowed.includes(current)) return current;
+	if (isRoutine && (fallback === 'data' || fallback === 'er')) return 'structure';
+	return fallback;
+}
+
+/** Drop duplicate (type, name) schema nodes, keeping the first occurrence.
+ *  Guards keyed {#each} consumers against duplicate names (e.g. overloaded
+ *  SQL functions that share one name across signatures). */
+function dedupeSchemaNodes(nodes: DbClientSchemaNode[]): DbClientSchemaNode[] {
+	const seen = new Set<string>();
+	return nodes.filter((n) => {
+		const key = `${n.type}:${n.name}`;
+		if (seen.has(key)) return false;
+		seen.add(key);
+		return true;
+	});
+}
 
 /** A single data-grid filter condition, carried with the active object so
  *  foreign-key navigation survives back/forward history. */
@@ -156,7 +184,8 @@ function writeView(connId: string): void {
 				activeView: view.activeView,
 				activeObject: view.activeObject,
 				query: { text: view.query.text },
-				openTables: view.openTables
+				openTables: view.openTables,
+				openedDatabase: state.openedDatabase[connId] ?? null
 			})
 		);
 	} catch (e) {
@@ -198,12 +227,16 @@ function loadView(connId: string): DbClientConnectionView | null {
 	try {
 		const serialized = localStorage.getItem(viewStorageKey(connId));
 		if (!serialized) return null;
-		const parsed = JSON.parse(serialized) as { v?: number };
+		const parsed = JSON.parse(serialized) as { v?: number; openedDatabase?: string | null };
 		// Drop data written by an older, incompatible shape.
 		if (parsed.v !== VIEW_STORAGE_VERSION) return null;
 		
-		const r = parsed as Partial<DbClientConnectionView>;
+		const r = parsed as Partial<DbClientConnectionView> & { openedDatabase?: string | null };
 		const base = emptyView();
+		
+		if (r.openedDatabase !== undefined) {
+			state.openedDatabase = { ...state.openedDatabase, [connId]: r.openedDatabase };
+		}
 		
 		return {
 			activeView: r.activeView ?? base.activeView,
@@ -255,6 +288,7 @@ function applyNavSnapshot(connId: string, snap: DbClientNavSnapshot): void {
 	view.activeObject = snap.object ? { ...snap.object } : null;
 	view.activeView = snap.view;
 	state.navObjectTick++;
+	saveView(connId);
 }
 
 export const dbClientStore = {
@@ -310,6 +344,7 @@ export const dbClientStore = {
 	/** The database currently browsed in the sidebar for a connection (tree drivers). */
 	setOpenedDatabase(connId: string, database: string | null): void {
 		state.openedDatabase = { ...state.openedDatabase, [connId]: database };
+		saveView(connId);
 	},
 
 	// ── Navigation history (back/forward) ────────────────────────────────
@@ -418,7 +453,12 @@ export const dbClientStore = {
 		saveView(connId);
 	},
 
-	openTable(connId: string, obj: DbClientActiveObject, defaultView: 'data' | 'structure' = 'data'): void {
+	openTable(
+		connId: string,
+		obj: DbClientActiveObject,
+		defaultView: DbClientView = 'data',
+		opts?: { remember?: boolean }
+	): void {
 		const view = ensureView(connId);
 		const exists = view.openTables.find(
 			(t) => t.name === obj.name && (t.database ?? null) === (obj.database ?? null)
@@ -427,7 +467,11 @@ export const dbClientStore = {
 			view.openTables = [...view.openTables, obj];
 		}
 		view.activeObject = obj;
-		view.activeView = defaultView;
+		// When remembering, keep the current table-scoped view (Data/Structure/Log/
+		// ERD) across object switches; otherwise honor the explicit defaultView.
+		view.activeView = opts?.remember
+			? resolveTableView(view.activeView, obj, defaultView)
+			: defaultView;
 		state.navObjectTick++;
 		saveView(connId);
 	},
@@ -443,9 +487,24 @@ export const dbClientStore = {
 		view.openTables = view.openTables.filter((_, i) => i !== index);
 
 		if (isActive) {
-			if (view.openTables.length > 0) {
-				const nextIndex = Math.min(index, view.openTables.length - 1);
-				view.activeObject = view.openTables[nextIndex];
+			const connection = state.connections.find(c => c.id === connId);
+			const defaultDb = connection?.database ?? null;
+			const closedDb = closedTab.database ?? defaultDb;
+			const sameDbTables = view.openTables.filter(t => (t.database ?? defaultDb) === closedDb);
+
+			if (sameDbTables.length > 0) {
+				// Find the tab in sameDbTables that is closest to the closed tab's index
+				let bestTable = sameDbTables[0];
+				let minDiff = Infinity;
+				for (const t of sameDbTables) {
+					const origIdx = view.openTables.indexOf(t);
+					const diff = Math.abs(origIdx - index);
+					if (diff < minDiff) {
+						minDiff = diff;
+						bestTable = t;
+					}
+				}
+				view.activeObject = bestTable;
 			} else {
 				view.activeObject = null;
 				view.activeView = 'overview';
@@ -551,7 +610,7 @@ export const dbClientStore = {
 
 	async listDatabases(connId: string): Promise<DbClientSchemaNode[]> {
 		const result = (await ws.http('db-client:list-databases', { connectionId: connId })) as DbClientSchemaNode[];
-		return result;
+		return dedupeSchemaNodes(result);
 	},
 
 	async listObjects(connId: string, opts?: { database?: string; schema?: string }): Promise<DbClientSchemaNode[]> {
@@ -560,10 +619,14 @@ export const dbClientStore = {
 			database: opts?.database,
 			schema: opts?.schema
 		})) as DbClientSchemaNode[];
+		// Collapse duplicate (type, name) pairs — e.g. overloaded SQL functions
+		// that share one name — so the keyed {#each} blocks rendering this list
+		// (sidebar tree, export picker) never hit a duplicate-key crash.
+		const deduped = dedupeSchemaNodes(result);
 		// Reassign the container (not just the key) so cross-component $derived
 		// consumers re-run even when refreshed externally (e.g. after a drop).
-		state.schema = { ...state.schema, [connId]: result };
-		return result;
+		state.schema = { ...state.schema, [connId]: deduped };
+		return deduped;
 	},
 
 	async refreshSchema(connId: string, opts?: { database?: string; schema?: string }): Promise<DbClientSchemaNode[]> {
@@ -622,6 +685,20 @@ export const dbClientStore = {
 
 	async cancel(connId: string): Promise<void> {
 		await ws.http('db-client:cancel', { connectionId: connId });
+	},
+
+	async getErSchema(connId: string, opts?: { database?: string; schema?: string }): Promise<{
+		tables: Array<{
+			name: string;
+			columns: Array<{ name: string; type: string; isPrimary: boolean; isUnique: boolean }>;
+			foreignKeys: Array<{ column: string; refTable: string; refColumn: string }>;
+		}>;
+	}> {
+		return (await ws.http('db-client:get-er-schema', {
+			connectionId: connId,
+			database: opts?.database,
+			schema: opts?.schema
+		})) as any;
 	},
 
 	// ── Data CRUD ────────────────────────────────────────────────────────

@@ -12,8 +12,8 @@ export interface AIEngine {
 
   initialize(accountId?: number): Promise<void>;  // lazy; idempotent
   dispose(): Promise<void>;           // called per-project & on shutdown
-  cancel(): Promise<void>;            // hard cancel
-  interrupt(): Promise<void>;         // soft stop
+  cancel(owner: AbortController): Promise<void>;     // hard cancel, ONE run
+  interrupt(owner: AbortController): Promise<void>;  // soft stop, ONE run
 
   streamQuery(options: EngineQueryOptions):
     AsyncGenerator<EngineOutput, void, unknown>;
@@ -26,36 +26,86 @@ export interface AIEngine {
 }
 ```
 
-Three invariants:
+Four invariants:
 
 1. **`streamQuery` is the only streaming output path.** It is an
    `AsyncGenerator<EngineOutput>`. The adapter translates SDK events into
    `EngineOutput` — that is all.
-2. **Streaming state lives on the instance.** Because `getProjectEngine`
-   returns one instance per `(projectId, engineType)`, the abort controller,
-   active query, `pendingUserAnswers`, and session ID are automatically
-   isolated per-project.
+2. **Streaming state lives on the RUN, never on the instance.**
+   `getProjectEngine` returns one instance per `(projectId, engineType)`, so an
+   instance is isolated from other *projects* — and shared by every chat session
+   *within* one project. Several of them stream at the same time. An
+   `activeController` / `activeQuery` / `activeSessionId` field therefore holds
+   whichever chat started last, and the earlier one silently loses its handles.
+   That is not theoretical: it is how `cancel()` came to abort a different chat
+   than the one the user stopped, how a finished stream made `isActive` report
+   idle while another was still running (letting engine retirement dispose it
+   mid-answer), and how OpenCode leaked a pooled-server hold per overwritten
+   stream.
+
+   So every adapter keeps a `private runs = new EngineRuns<XxxRun>()`
+   ([`adapters/run-registry.ts`](../adapters/run-registry.ts)) and puts each
+   stream's controller, SDK handle, session id, server binding and parked
+   questions in its own `XxxRun`. The registry keys runs by the AbortController
+   the caller passed to `streamQuery` — the same object
+   `StreamState.abortController` holds, so no id has to be minted or kept in
+   sync. `isActive` is `this.runs.isActive` (any run, not the latest one), the
+   stream's `finally` retires only its own run, and anything keyed by tool id
+   (`pendingUserAnswers`, `pendingAsks`, `pendingQuestions`) records which run
+   parked it so a cancel drops that run's entries alone.
+
+   `cancel(owner)` and `interrupt(owner)` take the run to stop, and the
+   parameter is required on purpose — there is no "cancel whatever you are
+   doing" for callers outside the adapter. Adapters implement the teardown once
+   in a private `stopRuns(targets)`, called with `this.runs.select(owner)` from
+   `cancel` and with `this.runs.all()` from `dispose()`. Stopping everything is
+   `dispose()`'s job; only shutdown and engine retirement get to ask for it.
 3. **Init is lazy & concurrency-safe.** The first `streamQuery` /
    `getAvailableModels` call triggers `initialize()`. Multiple parallel
    callers **must** share a single init promise. See:
    - `claude/environment.ts::setupEnvironmentOnce`
    - `opencode/server.ts::ensureClient`
+4. **`generateStructured` callers resolve their target first.** The
+   `providerSlug` a client hands to a one-shot JSON call is a *hint*, not
+   truth — every call site pipes it through
+   `resolveGenerationTarget(engine, modelId, providerHint)`
+   (`backend/engine/resolve-model.ts`) and uses what comes back. The engine's
+   own catalog is the only source of truth for which provider (and account) a
+   model belongs to. Skipping this "works" on the five engines that ignore the
+   slug and fails on OpenCode, Pi, and Cline. See §10.16 point 3.
 
 ### 2.2 `index.ts` — registry & lifecycle
 
-Two instance tiers:
+Adapters are reached only through `ENGINE_LOADERS`, a total
+`Record<EngineType, () => Promise<AIEngine>>` of dynamic imports. Nothing in
+the registry statically imports an adapter, so boot loads no engine and a
+broken one cannot take the others down (§10.24). Creation is therefore
+**async**, and the cache holds the in-flight promise so concurrent callers
+share one instance instead of racing to build two.
 
-| Tier               | Factory                       | Used for                                  |
-|--------------------|-------------------------------|-------------------------------------------|
-| Global singleton   | `getEngine(type)`             | Non-streaming ops: `models:list`, settings|
-| Per-project        | `getProjectEngine(projectId, type)` | Streaming chat — isolated per-project|
+| Accessor                             | Kind  | Used for                                      |
+|--------------------------------------|-------|-----------------------------------------------|
+| `getEngine(type)`                    | async | Global singleton — `models:list`, settings    |
+| `getProjectEngine(projectId, type)`  | async | Streaming chat — one instance per project, shared by its chat sessions |
+| `findProjectEngine(projectId, type)` | sync  | An engine that must already exist — cancel, answer routing |
+
+`findProjectEngine` returns `undefined` rather than creating one: cancelling a
+stream or routing an `AskUserQuestion` answer acts on a stream that is already
+running, and a fresh instance would have nothing to cancel and no pending
+question. Reach for it whenever "not there" is a real answer.
+
+A load failure is **not** caught here. It reaches the user through the single
+readiness surface (`checkEngineSetup` → chat error carrying an **Open Stack**
+button); a second handler would let a broken engine look like a working one.
 
 Cleanup:
 - `disposeProjectEngines(projectId)` when a project closes.
 - `disposeAllEngines()` at server shutdown — also calls
   `disposeOpenCodeClient()`. Pattern: when an adapter owns a shared
-  subprocess, expose `disposeXxxClient()` from `adapters/<name>/index.ts`
-  and call it from `disposeAllProjectEngines()` in `index.ts`.
+  subprocess, expose `disposeXxxClient()` from the adapter's **helper module**
+  (`adapters/<name>/server.ts`) and import it from there in `index.ts` —
+  importing it through the adapter barrel would pull the engine class into the
+  boot graph and undo the lazy loading.
 
 ### 2.3 `EngineOutput` — the event contract
 
@@ -88,6 +138,35 @@ type EngineOutput =
 > `shared/types/unified/stream.ts` first, teach `stream-manager` how to
 > route it, and only then emit it from the adapter.
 
+#### Parent-tool activity contract (`Agent` / `Workflow`)
+
+Nested activity is still ordinary `AssistantMessage` / `UserMessage` output;
+its placement is determined by `message.parent.toolUseId`.
+
+The following invariants are mandatory:
+
+1. Emit the parent tool message before any child activity.
+2. Set every child message's `parent.toolUseId` to the parent tool call id
+   before yielding it. Never emit a root-shaped child and patch it later.
+3. Keep top-level tool results at `parent.toolUseId = null`; the id of the tool
+   they answer belongs on the inner `tool_result.toolUseId`.
+4. Do not forward nested text/reasoning `stream_event` deltas unless the
+   protocol can carry their parent id. Suppress them and emit the finalized
+   parent-tagged message instead.
+5. When activity comes from a side channel, merge it with the SDK stream using
+   a push queue. Use the source's native notification mechanism (for example
+   filesystem change events for JSONL transcripts), not interval polling.
+6. Preserve source timestamps and byte/file offsets so events retain their
+   actual order and are emitted exactly once.
+7. Keep the merged stream open until the parent run reports a terminal status,
+   then perform one final drain and release watchers/listeners on success,
+   cancellation, and error.
+
+The frontend groups parent-tagged messages directly into `subActivities`.
+They must never claim a root `stream_event` placeholder; doing so produces a
+visible root-to-child jump even though the persisted DB relation is correct.
+See §10.15 and frontend-and-chat §6.5.
+
 ### 2.4 `EngineQueryOptions`
 
 ```ts
@@ -98,7 +177,8 @@ interface EngineQueryOptions {
   forkSession?: boolean;
   maxTurns?: number;
   providerSlug: string;         // 'anthropic', 'openai', etc — required for opencode
-  modelId: string;              // 'claude-opus-4-7', 'gpt-5', etc
+  modelId: string;              // 'claude-opus-5', 'gpt-5', etc
+  reasoningEffort?: string;     // native reasoning/thinking level for this turn
   includePartialMessages?: boolean;
   abortController?: AbortController;
   accountId?: number;           // override credential for a single stream
@@ -109,6 +189,68 @@ interface EngineQueryOptions {
 `mcpContext` is bound into the MCP handler so a tool call from project A
 **cannot** write into project B. Always forward it: see `claude/stream.ts`
 calling `getEnabledMcpServers(options.mcpContext)`.
+
+Engines that reach MCP over the HTTP bridge instead of in-process forward the
+same context to their config builder — `getCodexMcpConfig(filter, mcpContext)`
+and friends — which writes it into the bridge URL for `handleMcpRequest` to bind.
+Skipping it does not fail loudly: the handler falls back to the most recently
+started stream, so tool calls land in whichever project the user most recently
+prompted in. See `backend/mcp/README.md` → "Who is calling".
+
+`reasoningEffort` is an **opaque, native-per-engine token** — there is no
+cross-engine normalization. The adapter that produced the level in
+`models.ts` is the one that consumes it in `stream.ts`; every other layer
+(stream-manager, WS, frontend) just carries the string. `undefined` means
+"no explicit choice" → the engine's own default applies. See §2.4a.
+
+### 2.4a Reasoning effort — `EngineModel.capabilities.reasoningControl`
+
+A model may advertise a reasoning/thinking control from its `models.ts`:
+
+```ts
+interface ReasoningControl {
+  levels: { value: string; label: string }[];  // ordered low → high
+  default: string;                             // mirrors the engine default
+}
+```
+
+Rules:
+
+- **Capability-driven, not hardcoded.** The picker renders a level selector
+  **only** when the selected model carries `capabilities.reasoningControl`.
+  Omit the field and the UI hides the control entirely — that is how Qwen,
+  OpenCode, and Cline stay knob-less without a single `if (engine === …)`
+  anywhere in the frontend.
+- **Levels are the SDK's own vocabulary.** Don't invent a shared
+  `low|medium|high` scale. Use `toReasoningOptions([...])` from
+  `$shared/constants/engines` to attach labels; `reasoningLevelLabel()` maps the
+  known tokens (`off`, `auto`/`adaptive`, `minimal` … `max`) and capitalizes
+  anything it doesn't recognise.
+- **Derive from the catalog when the SDK reports it.** Copilot reads
+  `supportedReasoningEfforts` / `defaultReasoningEffort` off `ModelInfo`, Pi
+  reads `getSupportedThinkingLevels(model)`, Cursor reads the model's
+  `ModelParameterDefinition`. Only static catalogs (Claude, Codex) hardcode
+  the list.
+- **The adapter clamps.** `streamQuery` must treat the incoming token as
+  untrusted — an unknown/stale value falls back to the engine default rather
+  than being forwarded to the SDK.
+
+Where each engine's knob lives:
+
+| Engine        | SDK knob                                | Levels                                     |
+|---------------|-----------------------------------------|--------------------------------------------|
+| `claude-code` | `thinking` + `effort` on `query()`      | `off, auto, low, medium, high, xhigh, max` (static; `off` → `thinking: { type: 'disabled' }`, `auto` → adaptive with no `effort`) |
+| `codex`       | `modelReasoningEffort` (thread option)  | `minimal, low, medium, high, xhigh` (static; reasoning-capable models only) |
+| `copilot`     | `SessionConfig.reasoningEffort`         | from `ModelInfo.supportedReasoningEfforts` (dynamic) |
+| `pi`          | agent `thinkingLevel`                   | from `getSupportedThinkingLevels(model)` (dynamic; `clampThinkingLevel` on apply) |
+| `cursor`      | `ModelSelection.params[]`               | from the model's reasoning-ish `ModelParameterDefinition` (dynamic) |
+| `qwen`, `opencode`, `cline` | — (none exposed)          | no `reasoningControl` → selector hidden    |
+
+Cursor is the one engine whose token is **not** a bare level: it encodes the
+model-parameter id as `"<paramId>::<value>"` so `stream.ts` can rebuild a
+`ModelSelection.params` entry without re-fetching the catalog. If a future SDK
+needs more than a level name, follow that shape rather than adding a new field
+to `EngineQueryOptions`.
 
 ### 2.5 What an adapter **MUST NOT** do
 
@@ -129,7 +271,7 @@ calling `getEnabledMcpServers(options.mcpContext)`.
 - ❌ **Create per-account isolated home directories** to multiplex two
   accounts into the same CLI's shared dotfile. Snapshot the CLI's auth
   file into `engine_accounts.credential` on login; write the chosen
-  account's snapshot back into the shared location on switch. See §9.13.
+  account's snapshot back into the shared location on switch. See §10.13.
 
 ### 2.6 Standard files in each adapter
 
@@ -157,7 +299,7 @@ Naming rules — strict, even when an SDK's local jargon differs:
 
 | File              | Owns                                                                  |
 |-------------------|-----------------------------------------------------------------------|
-| `credential.ts`   | Parse `engine_accounts.credential` (JSON wrapper or raw key); for shared-CLI engines, materialise the auth-blob into the dotfile and snapshot it back. **Never** name this `auth.ts` — credentials are the unified concept (see §9.13). |
+| `credential.ts`   | Parse `engine_accounts.credential` (JSON wrapper or raw key); for shared-CLI engines, materialise the auth-blob into the dotfile and snapshot it back. **Never** name this `auth.ts` — credentials are the unified concept (see §10.13). |
 | `error-handler.ts`| Export `handleStreamError(error: unknown, ...): void` that swallows abort errors and re-throws everything else as a sanitised `Error`. Required even when the body is short — `OpenCodeEngine` previously inlined ~50 lines into the catch block; that pattern is no longer accepted. |
 | `presets.ts`      | Multi-provider/region picker catalog (Qwen's DashScope/OpenRouter/Fireworks; OpenCode's models.dev cache). Multi-provider engines that lacked a `presets.ts` (OpenCode used to call this `config.ts`) have been migrated. |
 | `config.ts`       | Runtime config builder ONLY — turning DB providers + accounts into env vars / spawn options. Catalog data goes in `presets.ts`. |
@@ -170,14 +312,24 @@ Important conventions:
 - Tool names **must** be canonicalised via `toCanonicalToolName(...)`
   (`shared/types/unified/tool.ts`) so the frontend renders the same UI for
   tools that have different names across SDKs.
+- `cancel()` targeting: act **only** on `this.runs.select(owner)`. Never fall
+  back to "the runs that are left" when the owner is gone — the caller named a
+  stream that already ended, and the runs that are left belong to other chats
+  (see invariant 2 and `adapters/run-registry.test.ts`).
 - `cancel()` ordering: **abort the local controller first**, **then** RPC
   to the SDK/server. RPCs can hang; the local abort cuts the `for await`
-  loop deterministically. See `OpenCodeEngine.cancel`,
-  `ClaudeCodeEngine.cancel`, `CopilotEngine.cancel`.
+  loop deterministically. Release shared resources (OpenCode's pool hold)
+  **after** the RPC, or the server can be reaped mid-call. See
+  `OpenCodeEngine.stopRuns`, `ClaudeCodeEngine.stopRuns`,
+  `CopilotEngine.stopRuns`.
 - Dynamic-catalog fetchers in `models.ts` MUST return `EngineModel[]` and
   use `[]` as the failure sentinel (network, auth, parse error). Do **not**
   return `null` — both `fetchOpenCodeModels` and `fetchQwenModels` return
   `[]` on failure so the picker renders empty rather than a stale catalog.
+- `stream.ts` materialises the user's artifacts at stream start: call
+  `syncSkills(...)` then `syncEngineArtifacts(...)` (and, for prompt-scoped
+  engines, prepend `buildArtifactsPromptContext(...)` to the prompt) from
+  `backend/engine/artifact-sync.ts`. These are shared helpers, **not** files in
+  the per-adapter taxonomy — the adapter only calls them. See §8.3.
 
 ---
-

@@ -51,6 +51,7 @@ temp-videos/
 # Terminal output cache
 .terminal-output-cache/
 
-/okegas
-/okegas (1)
-/okegas (2)
+# Generated embedding artifact (built by scripts/build-embedding-artifact.ts)
+.cache/
+packages/clopen-embedding/model/
+packages/clopen-embedding/checksums.json

@@ -19,8 +19,10 @@ import { isElevated } from '$backend/utils/privilege';
 import { getClopenDir } from '$backend/utils/paths';
 import { resolveBinary, resolveBinaryWithRefresh } from '$backend/utils/cli';
 import { resolveStaticCurlAsset } from '$backend/utils/static-curl';
+import { getStackEnginesDir, readEngineSdkVersion, getRequiredSdkVersion } from './sdk-loader';
+import { engineCliInstallArg, getEngineCliSpec, getRequiredEngineCliSpec, resolveEngineCli } from './engine-cli';
 
-export type ToolId = 'git' | 'claude' | 'opencode' | 'copilot' | 'codex' | 'qwen' | 'chrome';
+export type ToolId = 'git' | 'claude' | 'opencode' | 'copilot' | 'codex' | 'qwen' | 'pi' | 'cline' | 'cursor' | 'chrome';
 
 export interface ManualInstruction {
 	label: string;
@@ -35,6 +37,8 @@ export interface Recipe {
 	unavailableReason?: string;
 	/** Spawn arg vector when autoInstallable. */
 	command?: string[];
+	/** Working directory for the spawned install (e.g. the managed stack dir for engines). */
+	cwd?: string;
 	/** Optional shell to wrap command (e.g. sh -c for pipe chains). */
 	shell?: { program: string; args: string[] };
 	/**
@@ -68,7 +72,77 @@ export interface ToolStatus {
 	version: string | null;
 	/** Where the binary was found (e.g. "/usr/bin/git", "system", "~/.clopen/bin"). */
 	source: string | null;
+	/** Version clopen pins for this engine SDK (engines only); omitted for host tools. */
+	requiredVersion?: string | null;
+	/** True when the engine SDK is installed but at a different version than required. */
+	needsUpdate?: boolean;
 }
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Engine SDK packages (SSOT: versions read from package.json)
+// ─────────────────────────────────────────────────────────────────────────────
+
+/**
+ * Engine → the npm package(s) clopen must install to run that engine on demand.
+ * The FIRST entry is the SDK clopen imports (used for install-state detection);
+ * any extras pin something the SDK would otherwise float — a transitive CLI
+ * (copilot), a sibling package (pi, cline), or an unmet PEER dependency.
+ *
+ * Peers are the subtle case. `@anthropic-ai/claude-agent-sdk` declares
+ * `@anthropic-ai/sdk`, `@modelcontextprotocol/sdk` and `zod` as peers and ships
+ * no copy of its own, so installing the SDK alone lets bun resolve all three at
+ * `@latest` inside the stack dir — clopen would then type-check against the
+ * versions in its own package.json while the adapter loads different ones at
+ * runtime (observed: pinned `@anthropic-ai/sdk` 0.100.1 vs 0.115.0 installed).
+ * Listing them here holds them to the same pin. Engines whose SDK depends on
+ * these packages directly (copilot, cursor, qwen) need no entry: their own
+ * range governs, and bun nests a separate copy when it disagrees.
+ *
+ * Versions are read from package.json (the single source of truth), so an
+ * on-demand install always matches the exact version clopen was tested against.
+ * Every package listed here must therefore be declared in package.json —
+ * `install-recipes.test.ts` enforces that, since an undeclared one would
+ * silently install as `@latest`.
+ */
+export const ENGINE_PACKAGES: Partial<Record<ToolId, string[]>> = {
+	claude: [
+		'@anthropic-ai/claude-agent-sdk',
+		'@anthropic-ai/sdk',
+		'@modelcontextprotocol/sdk',
+		'zod'
+	],
+	opencode: ['@opencode-ai/sdk'],
+	copilot: ['@github/copilot-sdk', '@github/copilot'],
+	codex: ['@openai/codex-sdk'],
+	qwen: ['@qwen-code/sdk'],
+	pi: ['@earendil-works/pi-coding-agent', '@earendil-works/pi-ai', '@earendil-works/pi-agent-core'],
+	cline: ['@cline/sdk', '@cline/agents'],
+	cursor: ['@cursor/sdk'],
+};
+
+function isEngineTool(tool: ToolId): boolean {
+	return tool in ENGINE_PACKAGES;
+}
+
+/**
+ * `bun add` arg vector for an engine: each package pinned to its package.json
+ * version, plus the engine's CLI package when it needs one (see engine-cli.ts).
+ * The CLI is pinned through its SDK's version instead of a package.json entry
+ * of its own — it is a platform binary, not something to put in devDependencies.
+ */
+export function engineInstallArgs(tool: ToolId): string[] {
+	const packages = ENGINE_PACKAGES[tool] ?? [];
+	const args = packages.map(name => {
+		const v = getRequiredSdkVersion(name);
+		return v ? `${name}@${v}` : name;
+	});
+
+	const cli = getEngineCliSpec(tool);
+	const cliArg = cli ? engineCliInstallArg(cli) : null;
+	if (cliArg) args.push(cliArg);
+	return args;
+}
+
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Package manager detection
@@ -202,6 +276,42 @@ export async function getToolStatus(tool: ToolId): Promise<ToolStatus> {
 		const version = await runVersion(resolved);
 		const source = resolveClopenChromePath() ? 'clopen' : resolved;
 		return { tool, installed: true, version, source };
+	}
+
+	if (isEngineTool(tool)) {
+		// Engines are detected by the presence of their SDK in the clopen-managed
+		// stack dir (installed on demand there) — that is what the adapter loads.
+		const sdkPkg = ENGINE_PACKAGES[tool]![0];
+		const sdkVersion = readEngineSdkVersion(sdkPkg);
+		const requiredVersion = getRequiredSdkVersion(sdkPkg);
+		if (!sdkVersion) return { tool, installed: false, version: null, source: null, requiredVersion, needsUpdate: false };
+		const sdkNeedsUpdate = requiredVersion !== null && sdkVersion !== requiredVersion;
+
+		// Only a CLI the engine cannot run without gates its install state; a CLI
+		// the SDK bundles and locates itself arrives with the engine anyway.
+		const cliSpec = getRequiredEngineCliSpec(tool);
+		if (!cliSpec) {
+			return { tool, installed: true, version: sdkVersion, source: getStackEnginesDir(), requiredVersion, needsUpdate: sdkNeedsUpdate };
+		}
+
+		// Engines that cannot run without an external CLI (Open Code) count as
+		// installed only when a runnable binary exists. Reporting the SDK alone is
+		// what let Stack show "installed" for an engine nothing could spawn.
+		const cli = await resolveEngineCli(tool);
+		if (!cli) return { tool, installed: false, version: null, source: null, requiredVersion, needsUpdate: false };
+
+		// The CLI is the artifact that actually runs, so it decides the reported
+		// version — a user's own older copy on PATH surfaces as "needs update"
+		// instead of hiding behind the pinned SDK version.
+		const cliNeedsUpdate = requiredVersion !== null && cli.version !== null && cli.version !== requiredVersion;
+		return {
+			tool,
+			installed: true,
+			version: cli.version ?? sdkVersion,
+			source: cli.path,
+			requiredVersion,
+			needsUpdate: sdkNeedsUpdate || cliNeedsUpdate
+		};
 	}
 
 	const resolved = await resolveBinaryWithRefresh(tool);
@@ -342,80 +452,27 @@ function attachCurlRequirement(base: Recipe, toolLabel: string): boolean {
 	return true;
 }
 
-async function resolveClaudeRecipe(): Promise<Recipe> {
+/**
+ * Engine install recipe — installs the exact engine SDK package(s) declared in
+ * package.json (the single source of truth) into the clopen-managed stack dir
+ * (`~/.clopen/stack/engines`), NOT the user's global bun store. Installing the
+ * SDK also pulls whatever CLI binary the SDK bundles, plus — for engines whose
+ * SDK bundles none (Open Code) — the separate package that carries the CLI.
+ * Versions are pinned, never floated to `latest`.
+ */
+function resolveEngineRecipe(tool: ToolId): Recipe {
+	const args = engineInstallArgs(tool);
+	const displayCommand = `bun add ${args.join(' ')}`;
 	return {
-		tool: 'claude',
+		tool,
 		autoInstallable: true,
 		missingPrereqs: [],
-		manualInstructions: [{
-			label: 'bun',
-			command: 'bun add -g @anthropic-ai/claude-code',
-			docs: 'https://code.claude.com/docs/en/setup'
-		}],
-		command: ['bun', 'add', '-g', '@anthropic-ai/claude-code'],
-		displayCommand: 'bun add -g @anthropic-ai/claude-code'
-	};
-}
-
-async function resolveOpenCodeRecipe(): Promise<Recipe> {
-	const base: Recipe = {
-		tool: 'opencode',
-		autoInstallable: true,
-		missingPrereqs: [],
-		manualInstructions: [{
-			label: 'bun',
-			command: 'bun add -g opencode-ai',
-			docs: 'https://opencode.ai/docs'
-		}],
-		command: ['bun', 'add', '-g', 'opencode-ai'],
-		displayCommand: 'bun add -g opencode-ai'
-	};
-	return base;
-}
-
-async function resolveCopilotRecipe(): Promise<Recipe> {
-	const base: Recipe = {
-		tool: 'copilot',
-		autoInstallable: true,
-		missingPrereqs: [],
-		manualInstructions: [{
-			label: 'bun',
-			command: 'bun add -g @github/copilot',
-			docs: 'https://docs.github.com/en/copilot/how-tos/copilot-cli/set-up-copilot-cli/install-copilot-cli'
-		}],
-		command: ['bun', 'add', '-g', '@github/copilot'],
-		displayCommand: 'bun add -g @github/copilot'
-	};
-	return base;
-}
-
-async function resolveQwenRecipe(): Promise<Recipe> {
-	return {
-		tool: 'qwen',
-		autoInstallable: true,
-		missingPrereqs: [],
-		manualInstructions: [{
-			label: 'bun',
-			command: 'bun add -g @qwen-code/qwen-code',
-			docs: 'https://qwen.ai/qwencode'
-		}],
-		command: ['bun', 'add', '-g', '@qwen-code/qwen-code'],
-		displayCommand: 'bun add -g @qwen-code/qwen-code'
-	};
-}
-
-async function resolveCodexRecipe(): Promise<Recipe> {
-	return {
-		tool: 'codex',
-		autoInstallable: true,
-		missingPrereqs: [],
-		manualInstructions: [{
-			label: 'bun',
-			command: 'bun add -g @openai/codex',
-			docs: 'https://developers.openai.com/codex/quickstart'
-		}],
-		command: ['bun', 'add', '-g', '@openai/codex'],
-		displayCommand: 'bun add -g @openai/codex'
+		// Engine installs are fully clopen-managed (into ~/.clopen/stack/engines),
+		// so there is no separate manual command for the user to run.
+		manualInstructions: [],
+		command: ['bun', 'add', ...args],
+		cwd: getStackEnginesDir(),
+		displayCommand
 	};
 }
 
@@ -579,11 +636,15 @@ function pickLinuxChromeStrategy(
 export async function resolveRecipe(tool: ToolId): Promise<Recipe> {
 	switch (tool) {
 		case 'git': return resolveGitRecipe();
-		case 'claude': return resolveClaudeRecipe();
-		case 'opencode': return resolveOpenCodeRecipe();
-		case 'copilot': return resolveCopilotRecipe();
-		case 'codex': return resolveCodexRecipe();
-		case 'qwen': return resolveQwenRecipe();
 		case 'chrome': return resolveChromeRecipe();
+		case 'claude':
+		case 'opencode':
+		case 'copilot':
+		case 'codex':
+		case 'qwen':
+		case 'pi':
+		case 'cline':
+		case 'cursor':
+			return resolveEngineRecipe(tool);
 	}
 }

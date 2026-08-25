@@ -74,6 +74,9 @@ function nativeDir(type: ArtifactType, ctx: ArtifactContext): string | null {
 			case 'claude': return scope === 'global' ? join(base, 'skills') : proj ? join(proj, '.claude', 'skills') : null;
 			case 'qwen': return scope === 'global' ? join(homedir(), '.qwen', 'skills') : null;
 			case 'copilot': return scope === 'global' ? join(homedir(), '.copilot', 'skills') : null;
+			// Pi discovers skills from `<agentDir>/skills` (global) and `.pi/skills`
+			// (project) via DefaultResourceLoader — https://pi.dev/docs/latest/skills.
+			case 'pi': return scope === 'global' ? join(base, 'skills') : proj ? join(proj, '.pi', 'skills') : null;
 			default: return null;
 		}
 	}
@@ -82,6 +85,9 @@ function nativeDir(type: ArtifactType, ctx: ArtifactContext): string | null {
 			case 'claude': return scope === 'global' ? join(base, 'commands') : proj ? join(proj, '.claude', 'commands') : null;
 			case 'opencode': return scope === 'global' ? join(base, 'opencode', 'command') : proj ? join(proj, '.opencode', 'command') : null;
 			case 'codex': return scope === 'global' ? join(base, 'prompts') : null;
+			// Pi's file-based prompt templates live in `<agentDir>/prompts` (global)
+			// and `.pi/prompts` (project) — https://pi.dev/docs/latest/prompt-templates.
+			case 'pi': return scope === 'global' ? join(base, 'prompts') : proj ? join(proj, '.pi', 'prompts') : null;
 			default: return null;
 		}
 	}
@@ -102,11 +108,13 @@ function realGlobalLocations(type: ArtifactType, engine: ArtifactEngine): string
 		if (engine === 'claude') return [join(home, '.claude', 'skills')];
 		if (engine === 'qwen') return [join(home, '.qwen', 'skills')];
 		if (engine === 'copilot') return [join(home, '.copilot', 'skills')];
+		if (engine === 'pi') return [join(home, '.pi', 'agent', 'skills')];
 	}
 	if (type === 'command') {
 		if (engine === 'claude') return [join(home, '.claude', 'commands')];
 		if (engine === 'opencode') return [join(home, '.config', 'opencode', 'command')];
 		if (engine === 'codex') return [join(home, '.codex', 'prompts')];
+		if (engine === 'pi') return [join(home, '.pi', 'agent', 'prompts')];
 	}
 	if (type === 'subagent') {
 		if (engine === 'claude') return [join(home, '.claude', 'agents')];
@@ -214,6 +222,23 @@ function unsupported(): ArtifactResolution {
 		ownership: 'whole-file',
 		locateEffective: () => ''
 	};
+}
+
+/**
+ * Engines whose runtime reads artifacts through a channel that is SHARED across
+ * sessions and NOT reliably re-read per turn — a persistent server/client
+ * (OpenCode `opencode serve`, Codex/Copilot long-lived clients) and/or a shared
+ * global memory file. For these, an on-disk/global-file filter can't express a
+ * per-session Profile choice (it leaks across concurrent sessions and/or is
+ * served stale), so the adapter ALSO advertises the profile-scoped set
+ * per-session by injecting a preamble into the prompt (see
+ * `buildArtifactsPromptContext`). Claude and Qwen are excluded: each spawns a
+ * fresh per-query CLI over an isolated/pruned dir, so the on-disk filter alone
+ * already scopes correctly.
+ */
+export const PROMPT_SCOPED_ENGINES: readonly ArtifactEngine[] = ['opencode', 'codex', 'copilot'];
+export function isPromptScopedEngine(engine: ArtifactEngine): boolean {
+	return PROMPT_SCOPED_ENGINES.includes(engine);
 }
 
 /** Whether a synthetic (non-native) target is best-effort/unverified for the UI. */

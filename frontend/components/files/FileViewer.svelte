@@ -2,6 +2,7 @@
 	import type { FileNode } from '$shared/types/filesystem';
 	import LoadingSpinner from '../common/feedback/LoadingSpinner.svelte';
 	import MonacoCodeEditor from '../common/editor/MonacoCodeEditor.svelte';
+	import { initMonaco } from '../common/editor/monaco-loader';
 	import MediaPreview from '../common/media/MediaPreview.svelte';
 	import MarkdownPreview from '../common/media/MarkdownPreview.svelte';
 	import ImageEditor from './ImageEditor.svelte';
@@ -11,7 +12,11 @@
 	import { getFolderIcon } from '$frontend/utils/folder-icon-mappings';
 	import { isImageFile, isSvgFile, isPdfFile, isAudioFile, isVideoFile, isBinaryFile, isBinaryContent, isPreviewableFile, isEditableImageFile } from '$frontend/utils/file-type';
 	import { formatFileSize } from '$frontend/utils/format';
+	import { fetchFileBlob, isAbortError, saveBlob } from '$frontend/utils/file-download';
 	import { onMount } from 'svelte';
+	import { scale } from 'svelte/transition';
+	import { cubicOut } from 'svelte/easing';
+	import { clickOutside } from '$frontend/utils/click-outside';
 	import type { IconName } from '$shared/types/ui/icons';
 	import type { editor } from 'monaco-editor';
 	import { debug } from '$shared/utils/logger';
@@ -19,7 +24,9 @@
 	import { computeLineDiff, type GutterChange } from '$frontend/utils/line-diff';
 	import { gitStatusState } from '$frontend/stores/features/git-status.svelte';
 	import { settings } from '$frontend/stores/features/settings.svelte';
-	import { requestRevealFile } from '$frontend/stores/core/files.svelte';
+	import { revealFile } from '$frontend/stores/ui/file-peek.svelte';
+	import { getAiChanges, onAiChange, onAiScrollReveal, consumeAiScrollReveal, getGutterViewMode, setGutterViewMode, onGutterViewModeChange, latestTurnIndex } from '$frontend/utils/ai-changes';
+	import type { GutterViewMode, AiChange } from '$frontend/utils/ai-changes';
 
 	// Interface untuk MonacoCodeEditor component
 	interface MonacoEditorComponent {
@@ -56,6 +63,14 @@
 		projectId?: string;
 		editorScrollTop?: number;
 		onEditorScroll?: (scrollTop: number) => void;
+		/**
+		 * When set, the header renders a close button at the end of the action bar.
+		 * Used by the file-peek modal so the viewer's own header is the *only*
+		 * header — the modal no longer stacks a second one above it.
+		 */
+		onClose?: () => void;
+		/** id applied to the header's filename, so a host modal can label itself by it. */
+		titleId?: string;
 	}
 
 	const {
@@ -76,7 +91,9 @@
 		projectPath = '',
 		projectId = '',
 		editorScrollTop = 0,
-		onEditorScroll
+		onEditorScroll,
+		onClose,
+		titleId
 	}: Props = $props();
 
 	// Relative path for display
@@ -150,9 +167,54 @@
 
 	// Git gutter decorations + HEAD content cache
 	let gutterDecorations: string[] = [];
+	let aiChangeDecorations: string[] = [];
 	let envDecorations: string[] = [];
 	let envDecoEditor: editor.IStandaloneCodeEditor | null = null;
 	let gutterChanges: GutterChange[] = [];
+	let aiGutterChanges: GutterChange[] = [];
+	/**
+	 * Which AI edits the gutter paints:
+	 * - 'all'      → every edit in the loaded conversation
+	 * - 'turn'     → every edit from the most recent turn ("Latest AI turn"). Not
+	 *                the last tool call — one turn often edits a file repeatedly,
+	 *                and showing only the final call hides the rest of the work.
+	 * - 'selected' → only `aiSelectedKey`, the edit whose tool row was clicked
+	 * The mode is re-resolved on every pass, so it keeps pointing at the right
+	 * edits as the conversation grows or a checkpoint restore truncates it.
+	 */
+	let aiFilter = $state<'all' | 'turn' | 'selected'>('turn');
+	/** tool_use id of the edit focused from chat; kept so the user can switch back to it. */
+	let aiSelectedKey = $state<string | null>(null);
+	/** True when the selected edit's text is no longer anywhere in the file. */
+	let aiSelectedMissing = $state(false);
+	/** 1-based position of the selected edit among the file's edits (0 = none). */
+	let aiSelectedOrdinal = $state(0);
+	/**
+	 * A reveal request that has been taken off the store but not yet scrolled to.
+	 * The request must be claimed the moment we see it because it flips the view to
+	 * AI mode — but the pass that sees it is often a *clearing* pass (the view was
+	 * still in git mode), so it parks here until a pass that actually paints can
+	 * scroll to it. Dropping it there is what made a chat file click land on the
+	 * file with no diff shown.
+	 */
+	let pendingAiRevealKey: string | null = null;
+	let hasAiChanges = $state(false);
+	let aiChangeCount = $state(0);
+	/** Edit indices whose "before" text is known — only those hunks can be discarded. */
+	let aiDiscardableEdits = new Set<number>();
+	/**
+	 * Content of a Write-edited file as it stood immediately before the Write,
+	 * keyed by tool_use id. The Write tool records no "before" text, so this is
+	 * fetched from the turn's checkpoint snapshot (and then replayed forward past
+	 * any earlier edits in the same turn). Without it a Write can only be painted
+	 * as "the whole file is new", and has nothing to discard back to.
+	 */
+	const aiWriteBases = new Map<string, string>();
+	/** Write keys whose base is unavailable — don't ask the server twice. */
+	const aiWriteBaseMisses = new Set<string>();
+	const aiWriteBasePending = new Set<string>();
+	let aiMenuOpen = $state(false);
+	let gutterMode = $state<GutterViewMode>(getGutterViewMode());
 	let headContent = $state<string | null>(null);
 	let headContentForPath = '';
 	let pendingScrollRestore: number | null = null;
@@ -162,6 +224,7 @@
 	let activeDiffZone: {
 		id: string;
 		line: number;
+		isAi: boolean;
 		escHandler: (e: KeyboardEvent) => void;
 		domNode: HTMLElement;
 		overlayWidget: editor.IOverlayWidget;
@@ -246,7 +309,7 @@
 	function handleMdFileLink(href: string) {
 		const resolved = resolveRelativeFilePath(href);
 		if (!resolved) return;
-		requestRevealFile(resolved);
+		revealFile(resolved);
 	}
 
 	function switchMdMode(next: 'visual' | 'code') {
@@ -360,11 +423,17 @@
 		if (!path || !projectId) {
 			headContent = null;
 			headContentForPath = '';
+			resetAiFilter();
+			setGutterViewMode('git');
+			closeDiffPeek();
 			return;
 		}
 		if (path === headContentForPath) return;
 		headContentForPath = path;
 		headContent = null;
+		resetAiFilter();
+		setGutterViewMode('git');
+		closeDiffPeek();
 
 		// Only fetch when git is tracking this file
 		if (!gitStatusState.isRepo) return;
@@ -400,6 +469,370 @@
 		}
 	});
 
+	// React to gutter view mode changes (AI vs Git)
+	$effect(() => {
+		const mode = gutterMode;
+		const editor = monacoEditorRef?.getEditor();
+		if (!editor) return;
+		if (mode === 'ai') {
+			applyAiChangeDecorations();  // re-apply AI gutter
+			updateGutterDecorations(true); // clear git gutter
+		} else {
+			applyAiChangeDecorations(true); // clear AI gutter
+			scheduleGutterUpdate();
+			if (activeDiffZone && activeDiffZone.isAi) {
+				closeDiffPeek();
+			}
+		}
+	});
+
+	// Sync with external preference changes
+	onMount(() => {
+		const unsub = onGutterViewModeChange((mode) => {
+			gutterMode = mode;
+		});
+		return unsub;
+	});
+
+	const selectedEditLabel = $derived(
+		aiSelectedOrdinal > 0 && aiChangeCount > 1 ? ` · ${aiSelectedOrdinal} of ${aiChangeCount}` : ''
+	);
+
+	function selectAiFilter(next: 'all' | 'turn' | 'selected') {
+		if (next === 'selected' && !aiSelectedKey) return;
+		setGutterViewMode('ai');
+		aiFilter = next;
+		aiMenuOpen = false;
+		applyAiChangeDecorations();
+		// Move an open peek onto the new scope's first hunk (or close it if the new
+		// scope has none) so the peek never outlives the changes it describes.
+		refreshActiveDiffPeek();
+	}
+
+	/** Reset the AI view to its default (latest turn, nothing pinned). */
+	function resetAiFilter() {
+		aiFilter = 'turn';
+		aiSelectedKey = null;
+		aiSelectedMissing = false;
+		aiSelectedOrdinal = 0;
+		pendingAiRevealKey = null;
+		aiWriteBases.clear();
+		aiWriteBaseMisses.clear();
+		aiWriteBasePending.clear();
+	}
+
+	/** Does this edit belong to the current view mode? */
+	function isEditInFilter(list: AiChange[], editIdx: number, latestTurn: number): boolean {
+		if (aiFilter === 'selected') {
+			return aiSelectedKey !== null && list[editIdx].key === aiSelectedKey;
+		}
+		if (aiFilter === 'turn') return list[editIdx].turnIndex === latestTurn;
+		return true;
+	}
+
+	/**
+	 * Content of the file immediately before `editIdx` ran, or null when unknown.
+	 * Edits carry their own "before" text; Writes don't, so they lean on the
+	 * checkpoint snapshot fetched by `ensureWriteBase`.
+	 */
+	function aiBaseContent(list: AiChange[], editIdx: number): string | null {
+		const change = list[editIdx];
+		if (!change.wholeFile) return change.oldContent;
+		return change.key ? aiWriteBases.get(change.key) ?? null : null;
+	}
+
+	/**
+	 * Walk the file's earlier edits from the same turn onto `preTurnContent`.
+	 * Snapshots are captured once per turn, so when a turn touched this file more
+	 * than once the snapshot alone lands us at the start of the turn, not at the
+	 * moment just before the Write we care about.
+	 */
+	function replayTurnEdits(list: AiChange[], targetIdx: number, preTurnContent: string): string {
+		const turn = list[targetIdx].turnIndex;
+		let content = preTurnContent;
+		for (let i = 0; i < targetIdx; i++) {
+			const earlier = list[i];
+			if (earlier.turnIndex !== turn) continue;
+			if (earlier.wholeFile) {
+				content = earlier.newContent;
+				continue;
+			}
+			const at = content.indexOf(earlier.oldContent);
+			if (at < 0) continue;
+			content =
+				content.slice(0, at) + earlier.newContent + content.slice(at + earlier.oldContent.length);
+		}
+		return content;
+	}
+
+	/** Fetch (once) the pre-write content backing a Write edit's diff and discard. */
+	function ensureWriteBase(list: AiChange[], editIdx: number, path: string) {
+		const change = list[editIdx];
+		const key = change.key;
+		if (!change.wholeFile || !key) return;
+		if (aiWriteBases.has(key) || aiWriteBaseMisses.has(key) || aiWriteBasePending.has(key)) return;
+		if (!change.checkpointMessageId) {
+			aiWriteBaseMisses.add(key);
+			return;
+		}
+
+		aiWriteBasePending.add(key);
+		ws.http('snapshot:read-file-before-checkpoint', {
+			messageId: change.checkpointMessageId,
+			filePath: path
+		})
+			.then((res) => {
+				aiWriteBasePending.delete(key);
+				if (res.content === null) {
+					aiWriteBaseMisses.add(key);
+					return;
+				}
+				aiWriteBases.set(key, replayTurnEdits(list, editIdx, res.content));
+				if (file?.path === path) applyAiChangeDecorations();
+			})
+			.catch(() => {
+				aiWriteBasePending.delete(key);
+				aiWriteBaseMisses.add(key);
+			});
+	}
+
+	/**
+	 * Move a hunk from snippet coordinates onto the file's own line numbering.
+	 * An AI edit is diffed against its own "before" text, so *both* sides come
+	 * back numbered from 1 — the old side has to travel with the new one, or the
+	 * peek labels every replaced block "1, 2, 3…" no matter where it sits in the
+	 * file. 0 is the "no old side" sentinel (pure addition) and stays 0.
+	 */
+	function shiftHunk(hunk: GutterChange, offset: number): GutterChange {
+		return {
+			...hunk,
+			startLine: hunk.startLine + offset,
+			endLine: hunk.endLine + offset,
+			oldStartLine: hunk.oldStartLine > 0 ? hunk.oldStartLine + offset : 0,
+			oldEndLine: hunk.oldEndLine > 0 ? hunk.oldEndLine + offset : 0
+		};
+	}
+
+	/**
+	 * Place an edit's hunks onto the file as it stands now. Fast path: the edit's
+	 * text is still present verbatim, so every hunk shifts by the same offset.
+	 * Otherwise a later edit rewrote part of it — fall back to anchoring each hunk
+	 * on its own text, so the surviving parts of the edit still show up instead of
+	 * the whole edit silently vanishing.
+	 */
+	function anchorHunks(
+		hunks: GutterChange[],
+		editedText: string,
+		content: string
+	): GutterChange[] {
+		const at = content.indexOf(editedText);
+		if (at >= 0) {
+			const offset = content.substring(0, at).split('\n').length - 1;
+			return hunks.map((c) => shiftHunk(c, offset));
+		}
+
+		const anchored: GutterChange[] = [];
+		for (const hunk of hunks) {
+			// A pure deletion has no surviving text to search for.
+			if (hunk.newLines.length === 0) continue;
+			const text = hunk.newLines.join('\n');
+			const idx = content.indexOf(text);
+			if (idx < 0) continue;
+			const startLine = content.substring(0, idx).split('\n').length;
+			anchored.push(shiftHunk(hunk, startLine - hunk.startLine));
+		}
+		return anchored;
+	}
+
+	// AI change decorations — highlight lines modified by AI (Write/Edit tools)
+	function applyAiChangeDecorations(forceClear = false) {
+		const editor = monacoEditorRef?.getEditor();
+		if (!editor) return;
+
+		const path = file?.path || '';
+		if (!path) {
+			aiChangeDecorations = editor.deltaDecorations(aiChangeDecorations, []);
+			hasAiChanges = false;
+			aiChangeCount = 0;
+			aiSelectedMissing = false;
+			return;
+		}
+
+		const allChanges = getAiChanges(path);
+		hasAiChanges = allChanges.length > 0;
+		aiChangeCount = allChanges.length;
+
+		// A click on a chat tool row pins that exact edit — it's the only way to see
+		// what one tool call did to a file that later edits have moved on from.
+		const revealKey = consumeAiScrollReveal(path);
+		if (revealKey !== null) {
+			aiSelectedKey = revealKey;
+			aiFilter = 'selected';
+			pendingAiRevealKey = revealKey;
+			setGutterViewMode('ai');
+		}
+
+		// The pinned edit may be gone after a checkpoint restore truncated the
+		// conversation — fall back rather than showing an empty gutter forever.
+		if (aiFilter === 'selected' && !allChanges.some((c) => c.key === aiSelectedKey)) {
+			aiSelectedKey = null;
+			aiFilter = 'turn';
+		}
+		aiSelectedOrdinal = aiSelectedKey
+			? allChanges.findIndex((c) => c.key === aiSelectedKey) + 1
+			: 0;
+
+		if (forceClear || gutterMode === 'git') {
+			aiChangeDecorations = editor.deltaDecorations(aiChangeDecorations, []);
+			aiGutterChanges = [];
+			aiSelectedMissing = false;
+			return;
+		}
+
+		if (allChanges.length === 0) {
+			aiChangeDecorations = editor.deltaDecorations(aiChangeDecorations, []);
+			aiSelectedMissing = false;
+			return;
+		}
+
+		const merged: Array<GutterChange & { _editIdx: number; _timestamp: number }> = [];
+		const latestTurn = latestTurnIndex(allChanges);
+		const discardable = new Set<number>();
+
+		for (let editIdx = 0; editIdx < allChanges.length; editIdx++) {
+			if (!isEditInFilter(allChanges, editIdx, latestTurn)) continue;
+
+			const change = allChanges[editIdx];
+			ensureWriteBase(allChanges, editIdx, path);
+			const base = aiBaseContent(allChanges, editIdx);
+
+			let local: GutterChange[];
+			if (base === null) {
+				// A Write whose "before" text we couldn't recover — all we can honestly
+				// say is that the AI produced this content, so mark it whole and leave
+				// Discard off (there is nothing to revert to).
+				local = computeLineDiff('', change.newContent);
+			} else {
+				discardable.add(editIdx);
+				local = anchorHunks(
+					computeLineDiff(base, change.newContent),
+					change.newContent,
+					editableContent
+				);
+			}
+
+			for (const gc of local) {
+				merged.push({ ...gc, _editIdx: editIdx, _timestamp: change.timestamp });
+			}
+		}
+
+		aiDiscardableEdits = discardable;
+		aiSelectedMissing = aiFilter === 'selected' && merged.length === 0;
+
+		const newDecorations = merged.map((entry) => {
+			const { _editIdx, _timestamp, ...change } = entry;
+
+			const options: any = {
+				isWholeLine: false,
+				linesDecorationsClassName: `ai-gutter-${change.type}`,
+				overviewRuler: {
+					color: colorForChangeType(change.type),
+					position: OVERVIEW_RULER_RIGHT
+				}
+			};
+
+			return {
+				range: {
+					startLineNumber: change.startLine,
+					startColumn: 1,
+					endLineNumber: change.endLine,
+					endColumn: 1
+				},
+				options
+			};
+		});
+
+		// Store tagged changes for peek
+		aiGutterChanges = merged.map(({ _editIdx, _timestamp, ...change }) => ({
+			...change,
+			editIndex: _editIdx,
+			timestamp: _timestamp,
+		}));
+		aiChangeDecorations = editor.deltaDecorations(aiChangeDecorations, newDecorations);
+
+		// Scroll-reveal: focus the specific edit the user clicked in chat.
+		if (pendingAiRevealKey !== null) {
+			pendingAiRevealKey = null;
+			if (aiGutterChanges.length > 0) {
+				const targetChange = aiGutterChanges[0];
+				requestAnimationFrame(() => {
+					editor.revealLineInCenter(targetChange.startLine);
+					editor.setPosition({ lineNumber: targetChange.startLine, column: 1 });
+					editor.focus();
+					showDiffPeek(targetChange, true);
+				});
+			} else if (aiSelectedMissing) {
+				// Nothing to anchor — show what the tool call recorded instead, so the
+				// click still answers "what did this tool do to this file?".
+				requestAnimationFrame(() => showRecordedAiPeek());
+			}
+		}
+	}
+
+	/**
+	 * Peek the selected edit's recorded before/after when its text is no longer in
+	 * the file (a later edit rewrote it, or a checkpoint restore rolled it back).
+	 * Read-only: there is no live region to navigate to or discard.
+	 */
+	function showRecordedAiPeek() {
+		const path = file?.path || '';
+		if (!path || !aiSelectedKey) return;
+		const list = getAiChanges(path);
+		const editIdx = list.findIndex((c) => c.key === aiSelectedKey);
+		if (editIdx < 0) return;
+
+		const change = list[editIdx];
+		const base = aiBaseContent(list, editIdx) ?? '';
+		const oldLines = base ? base.split('\n') : [];
+		const newLines = change.newContent.split('\n');
+
+		// Anchored at the top and numbered from 1: the recorded text no longer maps
+		// onto the file, so borrowing the file's line numbers would be a lie.
+		monacoEditorRef?.getEditor()?.revealLine(1);
+		showDiffPeek(
+			{
+				type: oldLines.length > 0 ? 'modified' : 'added',
+				startLine: 1,
+				endLine: 1,
+				oldStartLine: oldLines.length > 0 ? 1 : 0,
+				oldEndLine: oldLines.length,
+				oldLines,
+				newLines,
+				editIndex: editIdx,
+				timestamp: change.timestamp
+			},
+			true,
+			{ recorded: true }
+		);
+	}
+
+	// Register callback for AI change notifications (fires when a new change arrives)
+	onMount(() => {
+		const unregister = onAiChange(() => {
+			applyAiChangeDecorations();
+		});
+		const unregisterReveal = onAiScrollReveal((revealPath) => {
+			const currentPath = file?.path || '';
+			if (revealPath === currentPath) {
+				applyAiChangeDecorations();
+			}
+		});
+		return () => {
+			unregister();
+			unregisterReveal();
+		};
+	});
+
 	function scheduleGutterUpdate() {
 		if (gutterUpdateTimer) clearTimeout(gutterUpdateTimer);
 		gutterUpdateTimer = setTimeout(() => {
@@ -415,15 +848,26 @@
 		return type === 'added' ? '#10b981' : type === 'modified' ? '#3b82f6' : '#ef4444';
 	}
 
-	function updateGutterDecorations() {
+	function updateGutterDecorations(forceClear = false) {
 		const editor = monacoEditorRef?.getEditor();
 		if (!editor) return;
+
+		if (forceClear || gutterMode === 'ai') {
+			gutterChanges = [];
+			gutterDecorations = editor.deltaDecorations(gutterDecorations, []);
+			if (activeDiffZone && !activeDiffZone.isAi) {
+				closeDiffPeek();
+			}
+			return;
+		}
 
 		// No HEAD content (untracked, missing repo) — clear any existing gutter
 		if (headContent === null || headContent === undefined) {
 			gutterChanges = [];
 			gutterDecorations = editor.deltaDecorations(gutterDecorations, []);
-			closeDiffPeek();
+			if (activeDiffZone && !activeDiffZone.isAi) {
+				closeDiffPeek();
+			}
 			return;
 		}
 
@@ -431,7 +875,7 @@
 		gutterChanges = changes;
 
 		// Close any open peek whose anchor line is no longer marked as changed
-		if (activeDiffZone) {
+		if (activeDiffZone && !activeDiffZone.isAi) {
 			const stillExists = changes.some(
 				(c) => activeDiffZone!.line >= c.startLine && activeDiffZone!.line <= c.endLine
 			);
@@ -465,9 +909,12 @@
 		gutterDecorations = editor.deltaDecorations(gutterDecorations, newDecorations);
 	}
 
-	function findChangeAtLine(line: number): GutterChange | null {
+	function findChangeAtLine(line: number): { change: GutterChange; isAi: boolean } | null {
 		for (const change of gutterChanges) {
-			if (line >= change.startLine && line <= change.endLine) return change;
+			if (line >= change.startLine && line <= change.endLine) return { change, isAi: false };
+		}
+		for (const change of aiGutterChanges) {
+			if (line >= change.startLine && line <= change.endLine) return { change, isAi: true };
 		}
 		return null;
 	}
@@ -545,13 +992,73 @@
 		});
 	}
 
-	function buildPeekDom(change: GutterChange): HTMLElement {
+	/**
+	 * Rows rendered per side before the peek truncates. A whole-file Write hunk can
+	 * carry thousands of lines and every row is a DOM node built synchronously —
+	 * the overflow is announced rather than silently dropped.
+	 */
+	const PEEK_MAX_ROWS = 400;
+
+	function appendPeekRows(target: HTMLElement, lines: string[], side: 'old' | 'new') {
+		const shown = Math.min(lines.length, PEEK_MAX_ROWS);
+		const rows: HTMLElement[] = [];
+		for (let i = 0; i < shown; i++) {
+			const row = document.createElement('div');
+			row.className = `git-diff-peek-row git-diff-peek-row-${side}`;
+			row.textContent = lines[i].length > 0 ? lines[i] : '\u00A0';
+			target.appendChild(row);
+			rows.push(row);
+		}
+		if (lines.length > shown) {
+			const more = document.createElement('div');
+			more.className = `git-diff-peek-row git-diff-peek-row-${side}`;
+			more.textContent = `… ${lines.length - shown} more lines`;
+			target.appendChild(more);
+		}
+		colorizePeekRows(rows, lines.slice(0, shown));
+	}
+
+	/**
+	 * Tokenize the peek's rows with the editor's own colorizer so a hunk is
+	 * syntax-highlighted exactly like the code above and below it — same theme,
+	 * same `.mtk*` classes, no second palette to keep in sync. Rows are rendered
+	 * as plain text first and upgraded here, so a language with no tokenizer (or
+	 * a failed load) keeps the readable fallback.
+	 */
+	function colorizePeekRows(rows: HTMLElement[], lines: string[]) {
+		if (rows.length === 0) return;
+		const model = monacoEditorRef?.getEditor()?.getModel();
+		const languageId = model?.getLanguageId();
+		if (!model || !languageId || languageId === 'plaintext') return;
+		const tabSize = model.getOptions().tabSize;
+
+		void initMonaco()
+			.then((monaco) => monaco.editor.colorize(lines.join('\n'), languageId, { tabSize }))
+			.then((html) => {
+				// The peek can be closed or replaced while the tokenizer loads.
+				if (!rows[0].isConnected) return;
+				// colorize() emits one chunk per line, separated by <br/>.
+				const chunks = html.split('<br/>');
+				for (let i = 0; i < rows.length; i++) {
+					const chunk = chunks[i];
+					if (chunk === undefined) break;
+					rows[i].innerHTML = chunk.length > 0 ? chunk : '&nbsp;';
+				}
+			})
+			.catch(() => {
+				/* keep the plain-text rows — the hunk stays readable */
+			});
+	}
+
+	function buildPeekDom(change: GutterChange, isAi = false): HTMLElement {
 		const root = document.createElement('div');
 		root.className = `git-diff-peek git-diff-peek-${change.type}`;
 
 		const inner = document.createElement('div');
 		inner.className = 'git-diff-peek-inner';
 		root.appendChild(inner);
+
+
 
 		// Old (HEAD) lines — red background, shown for deletions and modifications
 		if (change.oldLines.length > 0) {
@@ -560,12 +1067,7 @@
 			const bodyContent = document.createElement('div');
 			bodyContent.className = 'git-diff-peek-body-content';
 			body.appendChild(bodyContent);
-			change.oldLines.forEach((line) => {
-				const row = document.createElement('div');
-				row.className = 'git-diff-peek-row git-diff-peek-row-old';
-				row.textContent = line.length > 0 ? line : '\u00A0';
-				bodyContent.appendChild(row);
-			});
+			appendPeekRows(bodyContent, change.oldLines, 'old');
 			inner.appendChild(body);
 		}
 
@@ -576,12 +1078,7 @@
 			const bodyContent = document.createElement('div');
 			bodyContent.className = 'git-diff-peek-body-content';
 			body.appendChild(bodyContent);
-			change.newLines.forEach((line) => {
-				const row = document.createElement('div');
-				row.className = 'git-diff-peek-row git-diff-peek-row-new';
-				row.textContent = line.length > 0 ? line : '\u00A0';
-				bodyContent.appendChild(row);
-			});
+			appendPeekRows(bodyContent, change.newLines, 'new');
 			inner.appendChild(body);
 		}
 
@@ -602,32 +1099,41 @@
 		const margin = document.createElement('div');
 		margin.className = 'git-diff-peek-margin';
 
+		// Row counts must match buildPeekDom exactly — the margin and the body live
+		// in separate scroll containers kept in lockstep by row index.
+		const appendNumbers = (count: number, firstLine: number, side: 'old' | 'new') => {
+			const shown = Math.min(count, PEEK_MAX_ROWS);
+			for (let idx = 0; idx < shown; idx++) {
+				const row = document.createElement('div');
+				row.className = `git-diff-peek-margin-row git-diff-peek-margin-row-${side}`;
+				row.textContent = String(firstLine + idx);
+				margin.appendChild(row);
+			}
+			if (count > shown) {
+				const row = document.createElement('div');
+				row.className = `git-diff-peek-margin-row git-diff-peek-margin-row-${side}`;
+				row.textContent = '⋯';
+				margin.appendChild(row);
+			}
+		};
+
 		// Old line numbers (HEAD) — rendered for deletions and modifications
-		change.oldLines.forEach((_, idx) => {
-			const row = document.createElement('div');
-			row.className = 'git-diff-peek-margin-row git-diff-peek-margin-row-old';
-			row.textContent = String(change.oldStartLine + idx);
-			margin.appendChild(row);
-		});
+		appendNumbers(change.oldLines.length, change.oldStartLine, 'old');
 
 		// New line numbers (current) — rendered for additions and modifications.
 		// For pure additions oldStartLine is 0, so we use startLine (1-based).
-		if (change.newLines.length > 0) {
-			change.newLines.forEach((_, idx) => {
-				const row = document.createElement('div');
-				row.className = 'git-diff-peek-margin-row git-diff-peek-margin-row-new';
-				row.textContent = String(change.startLine + idx);
-				margin.appendChild(row);
-			});
-		}
+		appendNumbers(change.newLines.length, change.startLine, 'new');
 
 		return margin;
 	}
 
-	// Discard (revert) a single hunk back to its HEAD content. Uses Monaco's
-	// executeEdits so the change is undoable (Ctrl+Z) and propagates through
-	// onDidChangeModelContent → bind:value → handleContentChange, which closes
-	// the peek and refreshes the gutter automatically.
+	// Discard (revert) a single hunk back to the content it replaced — HEAD for a
+	// git hunk, the AI edit's own "before" text for an AI hunk (both arrive here as
+	// `change.oldLines`). Uses Monaco's executeEdits so the change is undoable
+	// (Ctrl+Z) and propagates through onDidChangeModelContent → bind:value →
+	// handleContentChange, which closes the peek and refreshes the gutter
+	// automatically. Like the git flow, this only edits the buffer — the user still
+	// saves to write it to disk.
 	function discardHunk(change: GutterChange) {
 		const editorInstance = monacoEditorRef?.getEditor();
 		if (!editorInstance) return;
@@ -691,7 +1197,9 @@
 	function buildPeekOverlayHeader(
 		change: GutterChange,
 		index: number,
-		total: number
+		total: number,
+		isAi = false,
+		recorded = false
 	): HTMLElement {
 		const root = document.createElement('div');
 		root.className = `git-diff-peek-overlay-header git-diff-peek-overlay-header-${change.type}`;
@@ -699,7 +1207,9 @@
 		const title = document.createElement('span');
 		title.className = 'git-diff-peek-overlay-title';
 		const fileName = file?.name ?? '';
-		title.textContent = `${fileName} · ${index} of ${total}`;
+		title.textContent = recorded
+			? `${fileName} · recorded change (no longer in the file)`
+			: `${fileName} · ${index} of ${total}`;
 		root.appendChild(title);
 
 		const actions = document.createElement('div');
@@ -711,7 +1221,7 @@
 		prevBtn.title = 'Previous change';
 		prevBtn.setAttribute('aria-label', 'Previous change');
 		prevBtn.innerHTML = ICON_CHEVRON_UP;
-		prevBtn.disabled = total <= 1;
+		prevBtn.disabled = total <= 1 || recorded;
 		attachPeekButton(prevBtn, () => navigatePeek(-1));
 		actions.appendChild(prevBtn);
 
@@ -721,18 +1231,28 @@
 		nextBtn.title = 'Next change';
 		nextBtn.setAttribute('aria-label', 'Next change');
 		nextBtn.innerHTML = ICON_CHEVRON_DOWN;
-		nextBtn.disabled = total <= 1;
+		nextBtn.disabled = total <= 1 || recorded;
 		attachPeekButton(nextBtn, () => navigatePeek(1));
 		actions.appendChild(nextBtn);
 
-		const discardBtn = document.createElement('button');
-		discardBtn.className = 'git-diff-peek-discard-btn';
-		discardBtn.type = 'button';
-		discardBtn.title = 'Discard this change (revert to HEAD)';
-		discardBtn.setAttribute('aria-label', 'Discard this change');
-		discardBtn.innerHTML = `${ICON_DISCARD}<span>Discard</span>`;
-		attachPeekButton(discardBtn, () => discardHunk(change));
-		actions.appendChild(discardBtn);
+		// Discard reverts the hunk to whatever it replaced: HEAD for a git hunk, the
+		// AI edit's own "before" text for an AI hunk. A recorded peek has no live
+		// lines to act on, and a Write with no recovered base has nothing to revert to.
+		const canDiscard = recorded
+			? false
+			: !isAi || (change.editIndex !== undefined && aiDiscardableEdits.has(change.editIndex));
+		if (canDiscard) {
+			const discardBtn = document.createElement('button');
+			discardBtn.className = 'git-diff-peek-discard-btn';
+			discardBtn.type = 'button';
+			discardBtn.title = isAi
+				? 'Discard this change (revert to the content before this AI edit)'
+				: 'Discard this change (revert to HEAD)';
+			discardBtn.setAttribute('aria-label', 'Discard this change');
+			discardBtn.innerHTML = `${ICON_DISCARD}<span>Discard</span>`;
+			attachPeekButton(discardBtn, () => discardHunk(change));
+			actions.appendChild(discardBtn);
+		}
 
 		const closeBtn = document.createElement('button');
 		closeBtn.className = 'git-diff-peek-iconbtn git-diff-peek-close';
@@ -748,33 +1268,105 @@
 	}
 
 	function navigatePeek(direction: 1 | -1) {
-		if (!activeDiffZone || gutterChanges.length === 0) return;
+		if (!activeDiffZone) return;
+		const changes = getActiveChanges(activeDiffZone.isAi);
+		if (changes.length === 0) return;
 		const currentLine = activeDiffZone.line;
-		const currentIdx = gutterChanges.findIndex(
+		const currentIdx = changes.findIndex(
 			(c) => c.startLine === currentLine
 		);
 		if (currentIdx === -1) return;
 		const nextIdx =
-			(currentIdx + direction + gutterChanges.length) % gutterChanges.length;
-		const next = gutterChanges[nextIdx];
+			(currentIdx + direction + changes.length) % changes.length;
+		const next = changes[nextIdx];
 		const editor = monacoEditorRef?.getEditor();
 		if (editor) editor.revealLineInCenter(next.startLine);
-		showDiffPeek(next);
+		showDiffPeek(next, activeDiffZone.isAi);
 	}
 
-	function applyPeekSizing(editorInstance: editor.IStandaloneCodeEditor, domNode: HTMLElement) {
+	/**
+	 * The editor is the single source of truth for the peek's typography. Monaco
+	 * writes its resolved font info as inline styles on `.view-lines`, and the
+	 * same values drive the line-number column — so reading them back puts the
+	 * peek on the editor's exact grid, mouse-wheel zoom included (zoom never
+	 * touches the settings store). Recomputing the metrics here instead is what
+	 * broke the alignment: round(round(size * 0.9) * 1.5) is a pixel taller than
+	 * the editor's round(size * 0.9 * 1.5) at some sizes, and that pixel compounds
+	 * per row until the line numbers label the wrong lines.
+	 */
+	function readEditorFont(editorInstance: editor.IStandaloneCodeEditor) {
+		const viewLines = editorInstance.getDomNode()?.querySelector<HTMLElement>('.view-lines');
+		if (viewLines) {
+			const style = getComputedStyle(viewLines);
+			const fontSize = parseFloat(style.fontSize);
+			const lineHeight = parseFloat(style.lineHeight);
+			if (fontSize > 0 && lineHeight > 0) {
+				return {
+					fontFamily: style.fontFamily,
+					fontSize,
+					lineHeight,
+					letterSpacing: style.letterSpacing === 'normal' ? '' : style.letterSpacing
+				};
+			}
+		}
+		// Editor not laid out yet — mirror MonacoCodeEditor's construction options.
+		return {
+			fontFamily: '',
+			fontSize: Math.round(settings.fontSize * 0.9),
+			lineHeight: Math.round(settings.fontSize * 0.9 * 1.5),
+			letterSpacing: ''
+		};
+	}
+
+	/** Height of the overlay header; the peek's two columns reserve it as padding. */
+	const PEEK_HEADER_PX = 28;
+
+	function applyPeekSizing(editorInstance: editor.IStandaloneCodeEditor, nodes: HTMLElement[]) {
 		const layoutInfo = editorInstance.getLayoutInfo();
-		// Constrain peek width to the visible content viewport so the action
-		// buttons stay reachable when the source has long lines.
-		const fontSize = Math.round(settings.fontSize * 0.9);
-		const lineHeight = Math.round(fontSize * 1.5);
+		const font = readEditorFont(editorInstance);
 		// Match the editor's tab width so leading tabs in the peek body align
 		// 1:1 with the editor's content above/below.
 		const tabSize = editorInstance.getModel()?.getOptions().tabSize ?? 2;
-		domNode.style.setProperty('--peek-viewport-width', `${layoutInfo.contentWidth}px`);
-		domNode.style.setProperty('--peek-font-size', `${fontSize}px`);
-		domNode.style.setProperty('--peek-line-height', `${lineHeight}px`);
-		domNode.style.setProperty('--peek-tab-size', String(tabSize));
+		// Monaco right-aligns each line number at lineNumbersLeft + lineNumbersWidth
+		// while the margin view zone spans the whole gutter (contentLeft), so this
+		// padding lands the peek's numbers on the editor's own right edge.
+		const numbersPadRight = Math.max(
+			0,
+			layoutInfo.contentLeft - (layoutInfo.lineNumbersLeft + layoutInfo.lineNumbersWidth)
+		);
+		for (const node of nodes) {
+			// Constrain peek width to the visible content viewport so the action
+			// buttons stay reachable when the source has long lines.
+			node.style.setProperty('--peek-viewport-width', `${layoutInfo.contentWidth}px`);
+			// An empty value drops the property, which falls back to the CSS default.
+			node.style.setProperty('--peek-font-family', font.fontFamily);
+			node.style.setProperty('--peek-font-size', `${font.fontSize}px`);
+			node.style.setProperty('--peek-line-height', `${font.lineHeight}px`);
+			node.style.setProperty('--peek-letter-spacing', font.letterSpacing);
+			node.style.setProperty('--peek-tab-size', String(tabSize));
+			node.style.setProperty('--peek-numbers-pad-right', `${numbersPadRight}px`);
+			node.style.setProperty('--peek-header-height', `${PEEK_HEADER_PX}px`);
+		}
+	}
+
+	/**
+	 * Can `el` still absorb this wheel delta, or is it against the end already?
+	 * Sub-pixel scroll positions (zoom, fractional line heights) never land
+	 * exactly on the maximum, so the ends are compared with a 1px tolerance —
+	 * without it the last pixel of slack would keep eating gestures that belong
+	 * to the editor.
+	 */
+	function canScrollBy(el: HTMLElement, deltaX: number, deltaY: number): boolean {
+		const EDGE_TOLERANCE = 1;
+		const maxTop = el.scrollHeight - el.clientHeight;
+		const maxLeft = el.scrollWidth - el.clientWidth;
+		const canVertical =
+			(deltaY < 0 && el.scrollTop > EDGE_TOLERANCE) ||
+			(deltaY > 0 && el.scrollTop < maxTop - EDGE_TOLERANCE);
+		const canHorizontal =
+			(deltaX < 0 && el.scrollLeft > EDGE_TOLERANCE) ||
+			(deltaX > 0 && el.scrollLeft < maxLeft - EDGE_TOLERANCE);
+		return canVertical || canHorizontal;
 	}
 
 	function applyPeekScroll(domNode: HTMLElement, scrollLeft: number) {
@@ -783,18 +1375,21 @@
 		domNode.style.transform = `translateX(${scrollLeft}px)`;
 	}
 
-	function showDiffPeek(change: GutterChange) {
+	function showDiffPeek(change: GutterChange, isAi = false, opts?: { recorded?: boolean }) {
 		const editorInstance = monacoEditorRef?.getEditor();
 		if (!editorInstance) return;
 
 		closeDiffPeek();
 
-		const index = gutterChanges.indexOf(change) + 1;
-		const total = gutterChanges.length;
-		const domNode = buildPeekDom(change);
+		const recorded = opts?.recorded === true;
+		const changes = getActiveChanges(isAi);
+		const foundIdx = changes.findIndex(c => c.startLine === change.startLine && c.type === change.type);
+		const index = recorded || foundIdx < 0 ? 1 : foundIdx + 1;
+		const total = recorded ? 1 : changes.length;
+		const domNode = buildPeekDom(change, isAi);
 		const marginDomNode = buildPeekMargin(change);
-		const overlayHeader = buildPeekOverlayHeader(change, index, total);
-		applyPeekSizing(editorInstance, domNode);
+		const overlayHeader = buildPeekOverlayHeader(change, index, total, isAi, recorded);
+		applyPeekSizing(editorInstance, [domNode, marginDomNode]);
 		applyPeekScroll(domNode, editorInstance.getScrollLeft());
 
 		// Monaco attaches mouse/pointer listeners on its view container in
@@ -828,6 +1423,21 @@
 		// own scroll programmatically so the body scrolls under the cursor
 		// instead of the editor below.
 		const innerEl = domNode.querySelector<HTMLElement>('.git-diff-peek-inner');
+		// One continuous wheel stream — a trackpad glide plus the momentum tail the
+		// OS keeps sending after the fingers lift, or a wheel spun without letting
+		// up — fires far faster than a person can decide to scroll again, so a gap
+		// this size is what separates two inputs. Nothing here is a delay: the
+		// stream is only used to tell "still the same push" from "pushed again".
+		const STREAM_GAP_MS = 60;
+		let lastWheelAt = 0;
+		/**
+		 * Did this stream actually move the peek? If it did, running into the end
+		 * stops it dead for the rest of the stream — momentum included — so the
+		 * editor never lurches out from under someone who was only reading the hunk.
+		 * If it didn't (nothing to scroll, or the input arrived already at the end),
+		 * the wheel chains to Monaco right away. There is no timer either way.
+		 */
+		let scrolledInStream = false;
 		const wheelHandler = (e: WheelEvent) => {
 			const target = e.target as Node | null;
 			if (!target) return;
@@ -837,17 +1447,28 @@
 				!overlayHeader.contains(target)
 			)
 				return;
+			if (!innerEl) return;
+
+			if (e.timeStamp - lastWheelAt >= STREAM_GAP_MS) scrolledInStream = false;
+			lastWheelAt = e.timeStamp;
+
+			if (!canScrollBy(innerEl, e.deltaX, e.deltaY)) {
+				if (!scrolledInStream) return;
+				e.stopPropagation();
+				e.preventDefault();
+				return;
+			}
+
+			scrolledInStream = true;
 			e.stopPropagation();
 			e.preventDefault();
-			if (innerEl) {
-				innerEl.scrollTop += e.deltaY;
-				innerEl.scrollLeft += e.deltaX;
-				// Sync the margin (line numbers) so it scrolls in lockstep
-				// with the body. They live in separate clipped DOM trees
-				// (Monaco splits view-zone content and margin), so a single
-				// overflow container can't span both.
-				marginDomNode.scrollTop = innerEl.scrollTop;
-			}
+			innerEl.scrollTop += e.deltaY;
+			innerEl.scrollLeft += e.deltaX;
+			// Sync the margin (line numbers) so it scrolls in lockstep
+			// with the body. They live in separate clipped DOM trees
+			// (Monaco splits view-zone content and margin), so a single
+			// overflow container can't span both.
+			marginDomNode.scrollTop = innerEl.scrollTop;
 		};
 		document.addEventListener('wheel', wheelHandler, { capture: true, passive: false });
 
@@ -859,9 +1480,9 @@
 		};
 
 		const afterLineNumber = Math.max(0, change.startLine - 1);
-		const fontSize = Math.round(settings.fontSize * 0.9);
-		const editorLineHeight = Math.round(fontSize * 1.5);
-		const HEADER_PX = 28;
+		// Same row height the peek renders with, so the zone reserves exactly the
+		// space its rows occupy instead of a rounded-up guess.
+		const editorLineHeight = readEditorFont(editorInstance).lineHeight;
 		// Cap each section independently at 40% of the editor viewport so a
 		// massive hunk on one side doesn't bury the other side or the editor.
 		// Each body is scrollable (overflow:auto) so long hunks are still
@@ -872,7 +1493,7 @@
 		const oldPx = Math.min(change.oldLines.length * editorLineHeight, sectionMaxPx);
 		const newPx = Math.min(change.newLines.length * editorLineHeight, sectionMaxPx);
 		const contentPx = (oldPx + newPx) || editorLineHeight;
-		const heightInPx = HEADER_PX + contentPx + 6;
+		const heightInPx = Math.ceil(PEEK_HEADER_PX + contentPx + 6);
 
 		const widgetId = `git-diff-peek-overlay-${change.startLine}-${Date.now()}`;
 		const overlayWidget: editor.IOverlayWidget = {
@@ -915,12 +1536,13 @@
 			if (e.scrollLeftChanged) applyPeekScroll(domNode, e.scrollLeft);
 		});
 		const layoutDisposable = editorInstance.onDidLayoutChange(() => {
-			applyPeekSizing(editorInstance, domNode);
+			applyPeekSizing(editorInstance, [domNode, marginDomNode]);
 		});
 
 		activeDiffZone = {
 			id: zoneId,
 			line: change.startLine,
+			isAi,
 			escHandler,
 			domNode,
 			overlayWidget,
@@ -928,6 +1550,26 @@
 			layoutDispose: () => layoutDisposable.dispose(),
 			detachSwallow
 		};
+	}
+
+	function getActiveChanges(isAi: boolean): GutterChange[] {
+		return isAi ? aiGutterChanges : gutterChanges;
+	}
+
+	function refreshActiveDiffPeek() {
+		if (!activeDiffZone) return;
+		const isAi = activeDiffZone.isAi;
+		const changes = getActiveChanges(isAi);
+		if (changes.length === 0) {
+			closeDiffPeek();
+			return;
+		}
+		const targetChange = changes[0];
+		showDiffPeek(targetChange, isAi);
+		const editor = monacoEditorRef?.getEditor();
+		if (editor) {
+			editor.revealLineInCenterIfOutsideViewport(targetChange.startLine);
+		}
 	}
 
 	function closeDiffPeek() {
@@ -954,12 +1596,13 @@
 			if (e.target.type !== GUTTER_LINE_DECORATIONS) return;
 			const line = e.target.position?.lineNumber;
 			if (!line) return;
-			const change = findChangeAtLine(line);
-			if (!change) return;
+			const found = findChangeAtLine(line);
+			if (!found) return;
+			const { change, isAi } = found;
 			if (activeDiffZone && activeDiffZone.line === change.startLine) {
 				closeDiffPeek();
 			} else {
-				showDiffPeek(change);
+				showDiffPeek(change, isAi);
 			}
 		});
 		gutterClickDispose = () => disposable.dispose();
@@ -1003,6 +1646,7 @@
 		// Reset decoration ids — the prior editor instance is gone so its ids
 		// are no longer valid.
 		gutterDecorations = [];
+		aiChangeDecorations = [];
 
 		// Previous editor's view zones are gone with the disposed instance
 		if (activeDiffZone) {
@@ -1044,6 +1688,7 @@
 		}
 
 		scheduleGutterUpdate();
+		applyAiChangeDecorations();
 	}
 
 	// Handle content changes from editor
@@ -1051,14 +1696,22 @@
 		hasChanges = newContent !== referenceContent;
 		onContentChange?.(newContent);
 		// User edits invalidate the captured HEAD-side hunk in the peek; close it
-		// so the next click reflects the up-to-date diff.
 		if (activeDiffZone) closeDiffPeek();
 		scheduleGutterUpdate();
+		// Re-apply AI decorations against the new content. The store is derived from
+		// the conversation, so editing never destroys it — hunks whose text no longer
+		// appears simply drop out and reappear if the user reverts.
+		applyAiChangeDecorations();
 	}
 
-	// Expose scroll position to parent (FilesPanel snapshots it on tab switches)
 	export function getEditorScrollTop(): number {
 		return monacoEditorRef?.getScrollTop?.() ?? 0;
+	}
+
+	export function resetRevealFilter() {
+		resetAiFilter();
+		setGutterViewMode('git');
+		closeDiffPeek();
 	}
 
 	// Update Monaco word wrap when prop changes
@@ -1253,13 +1906,19 @@
 		}
 	}
 
-	function saveBlob(blob: Blob, name: string) {
-		const url = URL.createObjectURL(blob);
-		const a = document.createElement('a');
-		a.href = url;
-		a.download = name;
-		a.click();
-		URL.revokeObjectURL(url);
+	// Progress of the one download this viewer can have in flight, so a large
+	// binary reports movement instead of sitting on a dead button.
+	let downloadProgress = $state<{ transferredBytes: number; totalBytes: number | null } | null>(null);
+	let downloadAbort: AbortController | null = null;
+
+	const downloadPercent = $derived(
+		downloadProgress && downloadProgress.totalBytes
+			? Math.min(100, Math.round((downloadProgress.transferredBytes / downloadProgress.totalBytes) * 100))
+			: null
+	);
+
+	function cancelDownload() {
+		downloadAbort?.abort();
 	}
 
 	async function downloadFile() {
@@ -1273,19 +1932,26 @@
 			return;
 		}
 
-		// Binary / media files: fetch the original bytes from disk so the download
-		// is byte-for-byte intact. `preview` is omitted so transcodable formats
-		// (TIFF/HEIC) download in their original format, not a PNG copy.
+		// Binary / media files: stream the original bytes from disk so the download
+		// is byte-for-byte intact and reports progress on the way. `preview` is not
+		// involved, so transcodable formats (TIFF/HEIC) download in their original
+		// format, not a PNG copy.
+		if (downloadAbort) return;
+		const controller = new AbortController();
+		downloadAbort = controller;
+		downloadProgress = { transferredBytes: 0, totalBytes: file.size ?? null };
 		try {
-			const response = await ws.http('files:read-content', { path: file.path });
-			const binaryString = atob(response.content);
-			const bytes = new Uint8Array(binaryString.length);
-			for (let i = 0; i < binaryString.length; i++) {
-				bytes[i] = binaryString.charCodeAt(i);
-			}
-			saveBlob(new Blob([bytes], { type: response.contentType || 'application/octet-stream' }), file.name);
+			const blob = await fetchFileBlob(file.path, {
+				totalBytes: file.size ?? null,
+				signal: controller.signal,
+				onProgress: (progress) => { downloadProgress = progress; }
+			});
+			saveBlob(blob, file.name);
 		} catch (err) {
-			debug.error('file', 'Failed to download file:', err);
+			if (!isAbortError(err)) debug.error('file', 'Failed to download file:', err);
+		} finally {
+			downloadAbort = null;
+			downloadProgress = null;
 		}
 	}
 </script>
@@ -1298,7 +1964,7 @@
 			<div class="flex items-center gap-2 sm:gap-3 min-w-0 flex-1">
 				<Icon name={getDisplayIcon(file.name, file.type === 'directory')} class="w-7 h-7" />
 				<div class="min-w-0 flex-1">
-					<h3 class="text-xs sm:text-sm font-bold text-slate-900 dark:text-slate-100 truncate">
+					<h3 id={titleId} class="text-xs sm:text-sm font-bold text-slate-900 dark:text-slate-100 truncate">
 						{file.name}
 					</h3>
 					<p class="text-xs text-slate-600 dark:text-slate-400 truncate mt-0.5">
@@ -1310,16 +1976,16 @@
 			<div class="flex items-center gap-1.5 sm:gap-1 flex-shrink-0">
 				<!-- SVG view mode toggle -->
 				{#if file && file.type === 'file' && isSvgFile(file.name)}
-					<div class="flex bg-slate-100 dark:bg-slate-800 rounded-lg overflow-hidden mr-1">
+					<div class="flex items-center gap-0.5 p-0.5 rounded-lg bg-slate-100 dark:bg-slate-800/60">
 						<button
-							class="flex px-2 py-1.5 text-xs font-medium transition-colors {svgViewMode === 'visual' ? 'bg-violet-600 text-white' : 'text-slate-600 dark:text-slate-400 hover:bg-slate-200 dark:hover:bg-slate-700'}"
+							class="flex items-center px-2 py-1 rounded-md text-xs font-semibold transition-all duration-200 {svgViewMode === 'visual' ? 'text-violet-700 dark:text-violet-300 bg-violet-100 dark:bg-violet-900/60 shadow-sm' : 'text-slate-500 dark:text-slate-400 hover:text-slate-700 dark:hover:text-slate-200'}"
 							onclick={() => { svgViewMode = 'visual'; }}
 							title="Visual preview"
 						>
 							<Icon name="lucide:eye" class="w-3.5 h-3.5" />
 						</button>
 						<button
-							class="flex px-2 py-1.5 text-xs font-medium transition-colors {svgViewMode === 'code' ? 'bg-violet-600 text-white' : 'text-slate-600 dark:text-slate-400 hover:bg-slate-200 dark:hover:bg-slate-700'}"
+							class="flex items-center px-2 py-1 rounded-md text-xs font-semibold transition-all duration-200 {svgViewMode === 'code' ? 'text-violet-700 dark:text-violet-300 bg-violet-100 dark:bg-violet-900/60 shadow-sm' : 'text-slate-500 dark:text-slate-400 hover:text-slate-700 dark:hover:text-slate-200'}"
 							onclick={() => { svgViewMode = 'code'; }}
 							title="Code view"
 						>
@@ -1330,16 +1996,16 @@
 
 				<!-- Markdown view mode toggle -->
 				{#if isMarkdown}
-					<div class="flex bg-slate-100 dark:bg-slate-800 rounded-lg overflow-hidden mr-1">
+					<div class="flex items-center gap-0.5 p-0.5 rounded-lg bg-slate-100 dark:bg-slate-800/60">
 						<button
-							class="flex px-2 py-1.5 text-xs font-medium transition-colors {mdViewMode === 'visual' ? 'bg-violet-600 text-white' : 'text-slate-600 dark:text-slate-400 hover:bg-slate-200 dark:hover:bg-slate-700'}"
+							class="flex items-center px-2 py-1 rounded-md text-xs font-semibold transition-all duration-200 {mdViewMode === 'visual' ? 'text-violet-700 dark:text-violet-300 bg-violet-100 dark:bg-violet-900/60 shadow-sm' : 'text-slate-500 dark:text-slate-400 hover:text-slate-700 dark:hover:text-slate-200'}"
 							onclick={() => switchMdMode('visual')}
 							title="Rendered markdown preview"
 						>
 							<Icon name="lucide:book-open" class="w-3.5 h-3.5" />
 						</button>
 						<button
-							class="flex px-2 py-1.5 text-xs font-medium transition-colors {mdViewMode === 'code' ? 'bg-violet-600 text-white' : 'text-slate-600 dark:text-slate-400 hover:bg-slate-200 dark:hover:bg-slate-700'}"
+							class="flex items-center px-2 py-1 rounded-md text-xs font-semibold transition-all duration-200 {mdViewMode === 'code' ? 'text-violet-700 dark:text-violet-300 bg-violet-100 dark:bg-violet-900/60 shadow-sm' : 'text-slate-500 dark:text-slate-400 hover:text-slate-700 dark:hover:text-slate-200'}"
 							onclick={() => switchMdMode('code')}
 							title="Source view"
 						>
@@ -1379,6 +2045,89 @@
 						>
 							<Icon name={hideEnvValues ? 'lucide:eye-off' : 'lucide:eye'} class="w-4 h-4" />
 						</button>
+					{/if}
+					<!-- Gutter view mode: segmented AI | Git. The AI pill doubles as a
+					     dropdown scoping which edits the gutter paints (all / latest
+					     turn / the one edit clicked in chat). -->
+					{#if hasAiChanges}
+						<div
+							class="relative flex items-center gap-0.5 p-0.5 rounded-lg bg-slate-100 dark:bg-slate-800/60"
+							role="group"
+							aria-label="Gutter view mode"
+							use:clickOutside={() => (aiMenuOpen = false)}
+						>
+							<button
+								class="flex items-center gap-1 px-2 py-1 rounded-md text-xs font-semibold transition-all duration-200 {gutterMode === 'ai' ?
+									'text-violet-700 dark:text-violet-300 bg-violet-100 dark:bg-violet-900/60 shadow-sm' :
+									'text-slate-500 dark:text-slate-400 hover:text-slate-700 dark:hover:text-slate-200'
+								}"
+								onclick={() => {
+									setGutterViewMode('ai');
+									if (aiChangeCount >= 1) aiMenuOpen = !aiMenuOpen;
+								}}
+								aria-pressed={gutterMode === 'ai'}
+								aria-haspopup={aiChangeCount >= 1 ? 'menu' : undefined}
+								aria-expanded={aiChangeCount >= 1 ? aiMenuOpen : undefined}
+								title="Show AI changes"
+							>
+								<Icon name="lucide:sparkles" class="w-3.5 h-3.5" />
+								{#if aiChangeCount >= 1}
+									<Icon name="lucide:chevron-down" class="w-3 h-3 opacity-70" />
+								{/if}
+							</button>
+							<button
+								class="flex items-center gap-1 px-2 py-1 rounded-md text-xs font-semibold transition-all duration-200 {gutterMode === 'git' ?
+									'text-sky-700 dark:text-sky-300 bg-sky-100 dark:bg-sky-900/60 shadow-sm' :
+									'text-slate-500 dark:text-slate-400 hover:text-slate-700 dark:hover:text-slate-200'
+								}"
+								onclick={() => {
+									setGutterViewMode('git');
+									aiMenuOpen = false;
+								}}
+								aria-pressed={gutterMode === 'git'}
+								title="Show Git changes"
+							>
+								<Icon name="lucide:git-branch" class="w-3.5 h-3.5" />
+							</button>
+
+							{#if aiMenuOpen && aiChangeCount >= 1}
+								<div
+									class="absolute top-full left-0 mt-1 w-52 py-1 bg-white dark:bg-slate-800 border border-violet-500/20 rounded-lg shadow-2xl shadow-slate-900/20 dark:shadow-black/40 z-50 overflow-hidden"
+									role="menu"
+									transition:scale={{ duration: 150, easing: cubicOut, start: 0.95, opacity: 0 }}
+								>
+									<button
+										class="flex items-center gap-2 w-full px-3 py-1.5 text-xs text-left text-slate-700 dark:text-slate-200 hover:bg-violet-500/10 transition-colors"
+										role="menuitemradio"
+										aria-checked={aiFilter === 'all'}
+										onclick={() => selectAiFilter('all')}
+									>
+										<Icon name="lucide:check" class="w-3.5 h-3.5 text-violet-600 dark:text-violet-400 {aiFilter === 'all' ? '' : 'opacity-0'}" />
+										<span>All AI changes</span>
+									</button>
+									<button
+										class="flex items-center gap-2 w-full px-3 py-1.5 text-xs text-left text-slate-700 dark:text-slate-200 hover:bg-violet-500/10 transition-colors"
+										role="menuitemradio"
+										aria-checked={aiFilter === 'turn'}
+										onclick={() => selectAiFilter('turn')}
+									>
+										<Icon name="lucide:check" class="w-3.5 h-3.5 text-violet-600 dark:text-violet-400 {aiFilter === 'turn' ? '' : 'opacity-0'}" />
+										<span>Latest AI turn</span>
+									</button>
+									{#if aiSelectedKey}
+										<button
+											class="flex items-center gap-2 w-full px-3 py-1.5 text-xs text-left text-slate-700 dark:text-slate-200 hover:bg-violet-500/10 transition-colors"
+											role="menuitemradio"
+											aria-checked={aiFilter === 'selected'}
+											onclick={() => selectAiFilter('selected')}
+										>
+											<Icon name="lucide:check" class="w-3.5 h-3.5 text-violet-600 dark:text-violet-400 {aiFilter === 'selected' ? '' : 'opacity-0'}" />
+											<span class="min-w-0 truncate">Selected AI change{selectedEditLabel}</span>
+										</button>
+									{/if}
+								</div>
+							{/if}
+						</div>
 					{/if}
 					<!-- Word Wrap toggle -->
 					{#if onToggleWordWrap}
@@ -1421,14 +2170,6 @@
 							<Icon name="lucide:copy" class="w-4 h-4" />
 						</button>
 					{/if}
-
-					<button
-						class="flex p-2 text-slate-600 dark:text-slate-400 hover:text-violet-600 dark:hover:text-violet-400 hover:bg-violet-50 dark:hover:bg-violet-900/30 rounded-lg transition-all duration-200"
-						onclick={downloadFile}
-						title="Download file"
-					>
-						<Icon name="lucide:download" class="w-4 h-4" />
-					</button>
 				{:else if file && file.type === 'file'}
 					<!-- Edit button for raster images the editor can round-trip -->
 					{#if canEditImage}
@@ -1440,17 +2181,42 @@
 							<Icon name="lucide:pencil" class="w-3.5 h-3.5" /> Edit
 						</button>
 					{/if}
-					<!-- Non-editable file actions -->
+				{/if}
+
+				<!-- Close, when the viewer is hosted in a modal that has no chrome of
+				     its own. Sits outside the editable/preview branches so every file
+				     type keeps a way out. -->
+				{#if onClose}
 					<button
-						class="flex p-2 text-slate-600 dark:text-slate-400 hover:text-violet-600 dark:hover:text-violet-400 hover:bg-violet-50 dark:hover:bg-violet-900/30 rounded-lg transition-all duration-200"
-						onclick={downloadFile}
-						title="Download file"
+						type="button"
+						class="flex p-2 text-slate-500 dark:text-slate-400 hover:text-slate-700 dark:hover:text-slate-200 hover:bg-slate-100 dark:hover:bg-slate-800 rounded-lg transition-all duration-200"
+						onclick={onClose}
+						title="Close (Esc)"
+						aria-label="Close"
 					>
-						<Icon name="lucide:download" class="w-4 h-4" />
+						<Icon name="lucide:x" class="w-4 h-4" />
 					</button>
 				{/if}
 			</div>
 		</div>
+		{/if}
+
+		<!-- The pinned edit exists in the conversation but not in the file any more.
+		     Say so rather than showing an empty gutter that reads as "no changes". -->
+		{#if gutterMode === 'ai' && aiFilter === 'selected' && aiSelectedMissing}
+			<div class="flex-shrink-0 flex items-center gap-2 px-4 py-1.5 text-2xs bg-amber-50 dark:bg-amber-900/20 border-b border-amber-200 dark:border-amber-900/40 text-amber-800 dark:text-amber-300">
+				<Icon name="lucide:info" class="w-3.5 h-3.5 shrink-0" />
+				<span class="min-w-0 truncate">
+					This change is no longer in the file — a later edit replaced it, or a checkpoint was restored.
+				</span>
+				<button
+					type="button"
+					class="ml-auto shrink-0 px-2 py-0.5 rounded-md font-medium bg-amber-100 dark:bg-amber-900/40 hover:bg-amber-200 dark:hover:bg-amber-900/70 transition-colors"
+					onclick={showRecordedAiPeek}
+				>
+					View recorded diff
+				</button>
+			</div>
 		{/if}
 
 		<!-- Content -->
@@ -1546,12 +2312,38 @@
 					<p class="text-sm text-slate-500 dark:text-slate-400 text-center mb-4">
 						This file cannot be previewed in the browser.
 					</p>
-					<button
-						class="px-6 py-2.5 bg-violet-600 text-white rounded-xl hover:bg-violet-700 transition-all duration-200"
-						onclick={downloadFile}
-					>
-						Download File
-					</button>
+					{#if downloadProgress}
+						<div class="w-full max-w-xs flex flex-col items-center gap-2">
+							<div class="h-1.5 w-full rounded-full bg-slate-200 dark:bg-slate-700 overflow-hidden">
+								{#if downloadPercent !== null}
+									<div
+										class="h-full bg-violet-600 transition-all duration-150"
+										style="width: {downloadPercent}%"
+									></div>
+								{:else}
+									<div class="h-full w-1/3 bg-violet-600 animate-pulse"></div>
+								{/if}
+							</div>
+							<div class="text-xs text-slate-500 dark:text-slate-400">
+								{formatFileSize(downloadProgress.transferredBytes)}{downloadProgress.totalBytes
+									? ` / ${formatFileSize(downloadProgress.totalBytes)}`
+									: ''}
+							</div>
+							<button
+								class="text-xs text-slate-500 dark:text-slate-400 hover:text-slate-700 dark:hover:text-slate-200 cursor-pointer"
+								onclick={cancelDownload}
+							>
+								Cancel
+							</button>
+						</div>
+					{:else}
+						<button
+							class="px-6 py-2.5 bg-violet-600 text-white rounded-xl hover:bg-violet-700 transition-all duration-200"
+							onclick={downloadFile}
+						>
+							Download File
+						</button>
+					{/if}
 				</div>
 			{:else}
 				<!-- Code content (always in edit mode) -->
@@ -1668,6 +2460,46 @@
 		filter: brightness(1.15);
 	}
 
+	/* AI gutter decorations — same colors as Git changes (green/blue/red) */
+	:global(.ai-gutter-added) {
+		background-color: #10b981;
+		width: 3px !important;
+		margin-left: 3px;
+	}
+	:global(.ai-gutter-modified) {
+		background-color: #3b82f6;
+		width: 3px !important;
+		margin-left: 3px;
+	}
+	:global(.ai-gutter-deleted) {
+		width: 0 !important;
+		margin-left: 3px;
+		border-top: 4px solid #ef4444;
+		border-right: 4px solid transparent;
+		height: 0 !important;
+	}
+	:global(.dark .ai-gutter-added) {
+		background-color: #059669;
+	}
+	:global(.dark .ai-gutter-modified) {
+		background-color: #2563eb;
+	}
+	:global(.dark .ai-gutter-deleted) {
+		border-top-color: #dc2626;
+	}
+	:global(.ai-gutter-added:hover),
+	:global(.ai-gutter-modified:hover) {
+		width: 6px !important;
+		margin-left: 1px;
+		filter: brightness(1.15);
+	}
+	:global(.ai-gutter-deleted:hover) {
+		margin-left: 1px;
+		border-top-width: 6px;
+		border-right-width: 6px;
+		filter: brightness(1.15);
+	}
+
 	/* Narrow the overview ruler so the change markers align visually with the
 	   3px gutter bars. The canvas content scales to fit the CSS width. */
 	:global(.monaco-editor .decorationsOverviewRuler) {
@@ -1704,20 +2536,31 @@
 		flex-direction: column;
 		width: var(--peek-viewport-width, 100%);
 		height: 100%;
-		font-family: 'SF Mono', Monaco, Inconsolata, 'Roboto Mono', Consolas, 'Courier New',
-			monospace;
+		/* Typography comes from the editor itself (see applyPeekSizing) — the
+		   literals are only a pre-layout fallback. */
+		font-family: var(
+			--peek-font-family,
+			'SF Mono',
+			Monaco,
+			Inconsolata,
+			'Roboto Mono',
+			Consolas,
+			'Courier New',
+			monospace
+		);
 		font-size: var(--peek-font-size, 12px);
-		background-color: #ffffff;
+		letter-spacing: var(--peek-letter-spacing, normal);
+		background-color: var(--vscode-editor-background, #ffffff);
 		border-top: 1px solid #d4d4d4;
 		border-bottom: 1px solid #d4d4d4;
-		padding-top: 28px;
+		padding-top: var(--peek-header-height, 28px);
 		overflow-y: auto;
 		overflow-x: auto;
 		box-sizing: border-box;
 		pointer-events: auto;
 	}
 	:global(.dark .git-diff-peek-inner) {
-		background-color: #0d1117;
+		background-color: var(--vscode-editor-background, #0d1117);
 		border-top-color: #30363d;
 		border-bottom-color: #30363d;
 	}
@@ -1881,7 +2724,8 @@
 		flex: none;
 		min-width: 0;
 		overflow: visible;
-		color: #333;
+		/* Base colour for untokenized text; syntax spans paint over it. */
+		color: var(--vscode-editor-foreground, #333);
 		-webkit-user-select: text;
 		user-select: text;
 		cursor: text;
@@ -1892,11 +2736,9 @@
 	:global(.git-diff-peek-body-new .git-diff-peek-body-content) {
 		background-color: rgba(16, 185, 129, 0.10);
 	}
-	:global(.dark .git-diff-peek-body-old) {
-		color: #e6edf3;
-	}
+	:global(.dark .git-diff-peek-body-old),
 	:global(.dark .git-diff-peek-body-new) {
-		color: #e6edf3;
+		color: var(--vscode-editor-foreground, #e6edf3);
 	}
 	:global(.dark .git-diff-peek-body-old .git-diff-peek-body-content) {
 		background-color: rgba(239, 68, 68, 0.16);
@@ -1963,17 +2805,28 @@
 		flex-direction: column;
 		width: 100%;
 		height: 100%;
-		font-family: 'SF Mono', Monaco, Inconsolata, 'Roboto Mono', Consolas, 'Courier New',
-			monospace;
+		font-family: var(
+			--peek-font-family,
+			'SF Mono',
+			Monaco,
+			Inconsolata,
+			'Roboto Mono',
+			Consolas,
+			'Courier New',
+			monospace
+		);
 		font-size: var(--peek-font-size, 12px);
-		color: rgba(0, 0, 0, 0.4);
+		letter-spacing: var(--peek-letter-spacing, normal);
+		/* Same digits and the same colour Monaco paints its own gutter with. */
+		font-variant-numeric: tabular-nums;
+		color: var(--vscode-editorLineNumber-foreground, rgba(0, 0, 0, 0.4));
 		user-select: none;
 		overflow: hidden;
 		box-sizing: border-box;
 		pointer-events: auto;
 		border-top: 1px solid #d4d4d4;
 		border-bottom: 1px solid #d4d4d4;
-		padding-top: 28px;
+		padding-top: var(--peek-header-height, 28px);
 	}
 	:global(.git-diff-peek-margin-row-old) {
 		background-color: rgba(239, 68, 68, 0.10);
@@ -1988,16 +2841,20 @@
 		background-color: rgba(16, 185, 129, 0.16);
 	}
 	:global(.dark .git-diff-peek-margin) {
-		color: rgba(255, 255, 255, 0.35);
+		color: var(--vscode-editorLineNumber-foreground, rgba(255, 255, 255, 0.35));
 		border-top-color: #30363d;
 		border-bottom-color: #30363d;
 	}
 
+	/* padding-right lands the digits on the same right edge as the editor's own
+	   line-number column (see applyPeekSizing), so the peek's numbers sit in a
+	   straight line with the ones above and below it. */
 	:global(.git-diff-peek-margin-row) {
 		flex-shrink: 0;
+		box-sizing: border-box;
 		line-height: var(--peek-line-height, 18px);
 		min-height: var(--peek-line-height, 18px);
-		padding-right: 10px;
+		padding-right: var(--peek-numbers-pad-right, 10px);
 		text-align: right;
 	}
 

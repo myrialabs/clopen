@@ -21,8 +21,16 @@ export type {
 export type {
 	EngineModel,
 	EngineInfo,
+	ReasoningOption,
+	ReasoningControl,
 	QwenProviderPresetId,
 	QwenProviderPreset,
+	PiAuthMode,
+	PiCredentialField,
+	PiProviderPreset,
+	ClineAuthMode,
+	ClineCredentialField,
+	ClineProviderPreset,
 } from './engine';
 
 // ── Tools ────────────────────────────────────────────────────
@@ -46,6 +54,13 @@ export type {
 	TaskUpdateInput,
 	TaskListInput,
 	AgentInput,
+	WorkflowInput,
+	ReplInput,
+	SendMessageInput,
+	ListAgentsInput,
+	ReadAgentInput,
+	SendInboxInput,
+	ContextBoardInput,
 	TaskOutputInput,
 	TaskStopInput,
 	NotebookEditInput,

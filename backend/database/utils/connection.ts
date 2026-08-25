@@ -1,4 +1,5 @@
 import { join } from 'path';
+import { mkdirSync } from 'fs';
 import { Database } from 'bun:sqlite';
 import type { DatabaseConnection } from '$shared/types/database/connection';
 
@@ -29,37 +30,12 @@ export class DatabaseManager {
 		debug.log('database', '🔗 Connecting to database...');
 
 		try {
-			// Create clopen directory if it doesn't exist
-			const clopenDir = getClopenDir();
-			const dirFile = Bun.file(clopenDir);
-
-			// Check if directory exists, if not create it
-			try {
-				await dirFile.stat();
-			} catch {
-				// Directory doesn't exist, create using Bun.write workaround
-				const tempFile = join(clopenDir, '.init');
-				await Bun.write(tempFile, '');
-				// Remove the temp file
-				try {
-					const tempFileHandle = Bun.file(tempFile);
-					if (await tempFileHandle.exists()) {
-						if (process.platform === 'win32') {
-							await Bun.spawn(['cmd', '/c', 'del', '/f', '/q', tempFile.replace(/\//g, '\\')], {
-								stdout: 'ignore',
-								stderr: 'ignore'
-							}).exited;
-						} else {
-							await Bun.spawn(['rm', '-f', tempFile], {
-								stdout: 'ignore',
-								stderr: 'ignore'
-							}).exited;
-						}
-					}
-				} catch {
-					// Ignore cleanup errors
-				}
-			}
+			// Ensure the data directory exists before SQLite touches the path.
+			// This has to be reliable: on a first run the directory is missing, and
+			// opening a database inside a missing directory fails in ways that
+			// surface much later as "no such table". `mkdirSync` is atomic, creates
+			// parents, and no-ops when the directory is already there.
+			mkdirSync(getClopenDir(), { recursive: true });
 
 			// Use Bun's native SQLite exclusively
 			this.db = new Database(this.dbPath);

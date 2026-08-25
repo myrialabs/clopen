@@ -111,6 +111,26 @@ export const snapshotQueries = {
 	/**
 	 * Get all snapshots for a session
 	 */
+	/**
+	 * The most recent snapshot for a session.
+	 *
+	 * Exists because the Memory Graph needs one row per turn and `getBySessionId`
+	 * returns every snapshot the session ever took, each carrying a full
+	 * `session_changes` JSON blob. Reading a few hundred of those on every message
+	 * to look at the last one is the kind of cost that is invisible until a long
+	 * session makes it obvious.
+	 */
+	getLatestBySessionId(sessionId: string): MessageSnapshot | null {
+		const row = getDatabase().prepare(`
+			SELECT * FROM message_snapshots
+			WHERE session_id = ? AND (is_deleted IS NULL OR is_deleted = 0)
+			ORDER BY created_at DESC
+			LIMIT 1
+		`).get(sessionId) as MessageSnapshot | undefined;
+
+		return row ?? null;
+	},
+
 	getBySessionId(sessionId: string): MessageSnapshot[] {
 		const db = getDatabase();
 		const snapshots = db.prepare(`

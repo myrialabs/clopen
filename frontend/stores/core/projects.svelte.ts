@@ -14,7 +14,10 @@ import { cleanupProjectState } from '$frontend/utils/project-state-cleanup';
 import {
 	activateProjectWorkspace,
 	raiseSwitchBarrier,
-	lowerSwitchBarrier
+	lowerSwitchBarrier,
+	beginProjectSwitch,
+	isCurrentSwitch,
+	beginPanelLoad
 } from '$frontend/stores/ui/project-workspace.svelte';
 
 // Subscribe to admin-driven project assignment changes for the current user.
@@ -71,68 +74,72 @@ export function currentProjectPath() {
 // PROJECT MANAGEMENT
 // ========================================
 
+/**
+ * Make `project` the active project.
+ *
+ * A switch is generation-guarded: every run takes a token and re-checks it after
+ * each `await` before writing shared state. Clicking through projects quickly
+ * used to leave several of these chains racing — a superseded one would finish
+ * last and publish ITS project as current, so the workspace ended up on a
+ * project the user had already moved past (or stuck behind a barrier whose
+ * raise/release no longer paired up).
+ *
+ * The structural swap (WS room, workspace layout, dock view-state) runs behind
+ * the switch barrier because showing anything mid-swap means showing the wrong
+ * project. Everything else — sessions, messages, edit mode, dock data — loads
+ * after reveal behind each panel's own skeleton, so switch latency is one round
+ * trip plus a blob fetch instead of the sum of every subsystem's load.
+ */
 export async function setCurrentProject(project: Project | null) {
-	// Only clear session if we're actually switching to a different project
-	const { sessionState, setCurrentSession } = await import('./sessions.svelte');
+	const { setCurrentSession } = await import('./sessions.svelte');
 	const { appState } = await import('./app.svelte');
 
-	// Sync project context with WebSocket (for room-based broadcasting)
-	// IMPORTANT: Must await to ensure server has context before other operations
-	await ws.setProject(project?.id ?? null);
-
-	// Check if we're switching to a different project
 	const currentProjectId = projectState.currentProject?.id;
 	const newProjectId = project?.id;
 	const isProjectSwitch = currentProjectId !== newProjectId;
 
-	// Raise the switch barrier as early as possible — BEFORE the terminal context
-	// swap below — so the uniform dock skeletons cover the entire transition,
-	// including the terminal's clear-then-restore. Balanced by lowerSwitchBarrier()
-	// in the session-transition block's finally (same isProjectSwitch condition).
-	if (isProjectSwitch) raiseSwitchBarrier();
-
-	// Handle project status tracking and terminal context switching
-	if (typeof window !== 'undefined') {
-		try {
-			// Import services dynamically to avoid circular dependency
-			const { projectStatusService } = await import('$frontend/services/project');
-
-			// Stop tracking previous project if switching
-			if (currentProjectId && currentProjectId !== newProjectId) {
-				await projectStatusService.stopTracking();
-
-				// Reset loading state when switching projects
-				appState.isLoading = false;
-			}
-
-			// Start tracking new project. The terminal context is now restored by the
-			// terminal dock inside activateProjectWorkspace() (below) — deterministically
-			// under the switch barrier — instead of out-of-band here, which used to race
-			// the WS room change and leave the new project's terminal blank until a
-			// second project-click.
-			if (project?.id) {
-				await projectStatusService.startTracking(project.id);
-			}
-		} catch (error) {
-			debug.error('project', 'Error updating project tracking:', error);
+	if (!isProjectSwitch) {
+		// Same project — no transition, just refresh the record.
+		await ws.setProject(newProjectId ?? null);
+		projectState.currentProject = project;
+		if (project) {
+			persistCurrentProjectId(project.id);
+			void refreshProjectRecord(project.id);
+		} else {
+			persistCurrentProjectId(null);
 		}
+		return;
 	}
 
-	// If switching to a different project, handle session transition.
-	// The switch barrier was already raised above (before the terminal swap); it
-	// is released in this block's finally so skeletons stay up for the whole
-	// transition — no stale data, no staggered fade-ins.
-	if (isProjectSwitch) {
-		try {
-		// Set restoring flag FIRST - prevents reactive effects from syncing stale state
-		// to the new project during transition
-		if (project) {
-			appState.isRestoring = true;
-		}
+	const token = beginProjectSwitch();
+
+	// Raise the barrier as early as possible so no frame of the outgoing project
+	// survives into the new one. Released as soon as the workspace is
+	// structurally correct — not once all data has arrived.
+	raiseSwitchBarrier();
+
+	// Held for the whole transition so panels keep their skeletons (and reactive
+	// effects keep their "don't persist stale state" guard) until the chat
+	// session has actually landed.
+	const releaseChat = project ? beginPanelLoad('chat', token) : null;
+	if (project) appState.isRestoring = true;
+
+	try {
+		// Sync project context with WebSocket (for room-based broadcasting).
+		// IMPORTANT: must complete before anything project-scoped is requested,
+		// so this one stays sequential.
+		await ws.setProject(newProjectId ?? null);
+		if (!isCurrentSwitch(token)) return;
+
+		// Presence tracking is independent of the workspace swap — startTracking()
+		// already leaves the previous project — so let it run alongside instead of
+		// adding two round trips in front of the visible transition.
+		const tracking = swapPresenceTracking(newProjectId);
+		if (currentProjectId) appState.isLoading = false;
 
 		// Swap the per-project workspace: clears all docks, restores this
-		// project's layout + dock view-state, and awaits dock data loads under
-		// the same barrier.
+		// project's layout + dock view-state, then starts each dock's data load
+		// behind its own panel skeleton.
 		//
 		// Publish the new current project via the coordinator's post-restore
 		// hook so it lands in the SAME synchronous flush as the layout swap.
@@ -140,105 +147,138 @@ export async function setCurrentProject(project: Project | null) {
 		// currentProject still points at the OLD project — they load the wrong
 		// project, then race a reload, and can end up blank until a full refresh.
 		// isRestoring is already true (set above), so effects that fire on this
-		// change still see the transition flag and won't persist stale state —
-		// matching the previous (late) assignment's intent.
-		await activateProjectWorkspace(project?.id ?? null, () => {
-			if (project) projectState.currentProject = project;
-		});
+		// change still see the transition flag and won't persist stale state.
+		await activateProjectWorkspace(
+			newProjectId ?? null,
+			() => {
+				if (project) projectState.currentProject = project;
+			},
+			token
+		);
+		if (!isCurrentSwitch(token)) return;
 
-		// Clear edit mode state from previous project (server retains per-project state)
 		const { onProjectLeave, onProjectEnter } = await import('$frontend/stores/ui/edit-mode.svelte');
 		onProjectLeave();
-
-		// Clear current session when switching projects
 		await setCurrentSession(null);
+		if (!isCurrentSwitch(token)) return;
 
-		// If we have a new project, try to restore or create a session for it
-		if (project) {
-			try {
-				// Import session management functions
-				const { createSession, getSessionsForProject, reloadSessionsForProject } = await import('./sessions.svelte');
-
-				// Reload all sessions for this project from server
-				// (local state may only have sessions from the previous project)
-				const savedSessionId = await reloadSessionsForProject();
-
-				// Check if there's an existing session for this project
-				const existingSessions = getSessionsForProject(project.id);
-				const activeSessions = existingSessions
-					.filter(s => !s.ended_at)
-					.sort((a, b) => new Date(b.started_at).getTime() - new Date(a.started_at).getTime());
-
-				// Try server-saved session first (preserves user's last selected session)
-				let activeSession = savedSessionId
-					? activeSessions.find(s => s.id === savedSessionId) || null
-					: null;
-				// Fall back to most recent active session
-				if (!activeSession) {
-					activeSession = activeSessions[0] || null;
-				}
-
-				if (activeSession) {
-					// Restore the most recent active session for this project
-					debug.log('project', 'Restoring existing session for project:', activeSession.id);
-					await setCurrentSession(activeSession);
-				} else {
-					// Create a new session for this project
-					debug.log('project', 'Creating new session for project:', project.id);
-					const newSession = await createSession(project.id, 'Chat Session', false);
-					if (newSession) {
-						await setCurrentSession(newSession);
-					}
-				}
-
-				// Restore edit mode from server for the new project
-				// (ws.setProject already completed, so server returns correct project's state)
-				await onProjectEnter();
-
-				// projectState.currentProject was already published above via the
-				// activateProjectWorkspace post-restore hook (batched with the layout
-				// swap). It is still set while isRestoring is true, so the original
-				// guarantee — reactive effects see the transition flag and don't
-				// persist stale state — is preserved.
-			} finally {
-				// Clear restoring flag after project state is fully set
-				appState.isRestoring = false;
-			}
-		}
-		} finally {
-			lowerSwitchBarrier();
-		}
-	} else {
-		projectState.currentProject = project;
+		await tracking;
+	} finally {
+		// Reveal: the workspace is now structurally the new project's.
+		lowerSwitchBarrier();
 	}
 
-	if (project) {
-		// Save current project ID to server
-		ws.http('user:save-state', { key: 'currentProjectId', value: project.id }).catch(err => {
-			debug.error('project', 'Error saving project state to server:', err);
-		});
+	if (!isCurrentSwitch(token)) {
+		releaseChat?.();
+		return;
+	}
 
-		try {
-			// Update last opened time via WebSocket
-			const updatedProject = await ws.http('projects:get', { id: project.id });
-
-			if (updatedProject) {
-				// Update in local state
-				const index = projectState.projects.findIndex(p => p.id === project.id);
-				if (index !== -1) {
-					projectState.projects[index] = updatedProject;
-				}
-				projectState.currentProject = updatedProject;
-			}
-		} catch (error) {
-			debug.error('project', 'Error updating project last opened:', error);
-		}
-	} else {
-		// Save null to server
-		ws.http('user:save-state', { key: 'currentProjectId', value: null }).catch(err => {
-			debug.error('project', 'Error clearing project state on server:', err);
-		});
+	if (!project) {
+		appState.isRestoring = false;
+		persistCurrentProjectId(null);
 		debug.log('project', 'Project cleared');
+		return;
+	}
+
+	persistCurrentProjectId(project.id);
+
+	// Everything below runs AFTER the reveal, behind the chat panel's skeleton.
+	try {
+		await restoreSessionForProject(project, token);
+	} finally {
+		if (isCurrentSwitch(token)) appState.isRestoring = false;
+		releaseChat?.();
+	}
+
+	if (isCurrentSwitch(token)) await refreshProjectRecord(project.id);
+}
+
+/** Move presence tracking to `projectId` (or drop it when null). */
+async function swapPresenceTracking(projectId: string | undefined): Promise<void> {
+	if (typeof window === 'undefined') return;
+	try {
+		const { projectStatusService } = await import('$frontend/services/project');
+		if (projectId) {
+			// startTracking() stops the previous project itself.
+			await projectStatusService.startTracking(projectId);
+		} else {
+			await projectStatusService.stopTracking();
+		}
+	} catch (error) {
+		debug.error('project', 'Error updating project tracking:', error);
+	}
+}
+
+/**
+ * Restore (or create) the chat session for a freshly-activated project and
+ * restore its edit mode. Runs after reveal; every write is guarded by `token`
+ * so a superseded switch can never install its session into the live project.
+ */
+async function restoreSessionForProject(project: Project, token: number): Promise<void> {
+	const { setCurrentSession, createSession, getSessionsForProject, reloadSessionsForProject } =
+		await import('./sessions.svelte');
+	const { onProjectEnter } = await import('$frontend/stores/ui/edit-mode.svelte');
+
+	try {
+		// Reload all sessions for this project from server
+		// (local state may only have sessions from the previous project)
+		const savedSessionId = await reloadSessionsForProject();
+		if (!isCurrentSwitch(token)) return;
+
+		const activeSessions = getSessionsForProject(project.id)
+			.filter((s) => !s.ended_at)
+			.sort((a, b) => new Date(b.started_at).getTime() - new Date(a.started_at).getTime());
+
+		// Try server-saved session first (preserves user's last selected session),
+		// then fall back to the most recent active one.
+		const activeSession =
+			(savedSessionId ? activeSessions.find((s) => s.id === savedSessionId) : null) ||
+			activeSessions[0] ||
+			null;
+
+		if (activeSession) {
+			debug.log('project', 'Restoring existing session for project:', activeSession.id);
+			await setCurrentSession(activeSession);
+		} else {
+			debug.log('project', 'Creating new session for project:', project.id);
+			const newSession = await createSession(project.id, 'Chat Session', false);
+			if (newSession && isCurrentSwitch(token)) {
+				await setCurrentSession(newSession);
+			}
+		}
+		if (!isCurrentSwitch(token)) return;
+
+		// Restore edit mode from server for the new project
+		// (ws.setProject already completed, so server returns correct project's state)
+		await onProjectEnter();
+	} catch (error) {
+		debug.error('project', 'Error restoring session for project:', error);
+	}
+}
+
+/** Persist the active project id server-side (fire and forget). */
+function persistCurrentProjectId(projectId: string | null): void {
+	ws.http('user:save-state', { key: 'currentProjectId', value: projectId }).catch((err) => {
+		debug.error('project', 'Error saving project state to server:', err);
+	});
+}
+
+/** Re-read a project so `last_opened_at` and any server-side edits are current. */
+async function refreshProjectRecord(projectId: string): Promise<void> {
+	try {
+		const updatedProject = await ws.http('projects:get', { id: projectId });
+		if (!updatedProject) return;
+
+		const index = projectState.projects.findIndex((p) => p.id === projectId);
+		if (index !== -1) {
+			projectState.projects[index] = updatedProject;
+		}
+		// Only adopt it as current if the user hasn't moved on in the meantime.
+		if (projectState.currentProject?.id === projectId) {
+			projectState.currentProject = updatedProject;
+		}
+	} catch (error) {
+		debug.error('project', 'Error updating project last opened:', error);
 	}
 }
 

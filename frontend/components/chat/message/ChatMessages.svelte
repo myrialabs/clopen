@@ -1,5 +1,5 @@
 <script lang="ts">
-	import { sessionState } from '$frontend/stores/core/sessions.svelte';
+	import { sessionState, syncAiChangesFromMessages } from '$frontend/stores/core/sessions.svelte';
 	import { appState } from '$frontend/stores/core/app.svelte';
 	import ChatMessage from './ChatMessage.svelte';
 	import DateSeparator from './DateSeparator.svelte';
@@ -53,6 +53,14 @@
 	const processedMessages = $derived.by(() => {
 		const { groups, toolUseMap, subAgentMap, skillPromptMap } = groupMessages(sessionState.messages);
 		return embedToolResults(groups, toolUseMap, subAgentMap, skillPromptMap);
+	});
+
+	// Keep AI-change indicators (file dots, gutter, pill) in sync with the messages
+	// on screen, including live streaming edits. Reads processedMessages so it
+	// re-runs on any deep message change; the sync itself is signature-guarded.
+	$effect(() => {
+		void processedMessages;
+		syncAiChangesFromMessages();
 	});
 
 	// Filter out messages with empty content arrays

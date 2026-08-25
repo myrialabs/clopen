@@ -104,6 +104,50 @@ export function applyAutoLimit(query: string, limit = 500): string {
 	return `${trimmed} LIMIT ${limit}`;
 }
 
+/**
+ * SQL Server has no `LIMIT`; the equivalent cap is `TOP (n)` right after the
+ * `SELECT` keyword. Conservative — only touches a plain leading `SELECT`
+ * (skips `WITH`/CTE where TOP placement is ambiguous) and leaves queries that
+ * already cap or page (`TOP`, `OFFSET … ROWS`) untouched.
+ */
+export function applyAutoLimitMssql(query: string, limit = 500): string {
+	const trimmed = query.replace(/;\s*$/, '');
+	if (firstSqlKeyword(trimmed) !== 'SELECT') return query;
+	if (/\boffset\s+\d+\s+rows?\b/i.test(trimmed)) return query;
+
+	// Locate the leading SELECT token, skipping whitespace and comments.
+	let i = 0;
+	while (i < trimmed.length) {
+		const ch = trimmed[i];
+		if (ch === ' ' || ch === '\t' || ch === '\n' || ch === '\r') {
+			i++;
+		} else if (ch === '-' && trimmed[i + 1] === '-') {
+			const nl = trimmed.indexOf('\n', i);
+			if (nl === -1) return query;
+			i = nl + 1;
+		} else if (ch === '/' && trimmed[i + 1] === '*') {
+			const end = trimmed.indexOf('*/', i + 2);
+			if (end === -1) return query;
+			i = end + 2;
+		} else {
+			break;
+		}
+	}
+	const after = trimmed.slice(i);
+	const m = /^select\s+(distinct\s+|all\s+)?/i.exec(after);
+	if (!m) return query;
+	if (/^top\b/i.test(after.slice(m[0].length))) return query;
+	const insertAt = i + m[0].length;
+	return `${trimmed.slice(0, insertAt)}TOP (${limit}) ${trimmed.slice(insertAt)}`;
+}
+
+/** Apply the driver-appropriate auto-limit to a read query (no-op for drivers without one). */
+function autoLimitForDriver(driver: DbDriver, query: string, limit: number): string {
+	if (driver === 'mysql' || driver === 'postgres' || driver === 'sqlite') return applyAutoLimit(query, limit);
+	if (driver === 'mssql') return applyAutoLimitMssql(query, limit);
+	return query;
+}
+
 interface RunSafelyInput {
 	driver: DbDriver;
 	adapter: DbClientDriverAdapter;
@@ -118,8 +162,8 @@ export async function runSafely(input: RunSafelyInput): Promise<DbClientQueryRes
 	const { adapter, driver, mode, params, database, limit } = input;
 	let query = input.query;
 
-	if (mode === 'read' && (driver === 'mysql' || driver === 'postgres' || driver === 'sqlite')) {
-		query = applyAutoLimit(query, limit ?? 500);
+	if (mode === 'read') {
+		query = autoLimitForDriver(driver, query, limit ?? 500);
 	}
 
 	const fn = mode === 'read' ? adapter.executeRead : adapter.executeWrite;
@@ -164,7 +208,7 @@ export async function executeBatch(input: ExecuteBatchInput): Promise<DbClientBa
 			}
 			try {
 				const result = queryClass === 'read'
-					? await exec.executeRead(applyAutoLimit(query, limit ?? 500), params, { database })
+					? await exec.executeRead(autoLimitForDriver(driver, query, limit ?? 500), params, { database })
 					: await exec.executeWrite(query, params, { database });
 				totalDurationMs += result.durationMs;
 				results.push({ index, query, queryClass, status: 'success', result, error: null, durationMs: result.durationMs });

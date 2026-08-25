@@ -3,6 +3,7 @@
  */
 
 import { SQL } from 'bun';
+import type { ReservedSQL } from 'bun';
 import type {
 	DbClientConnection,
 	DbClientHealth,
@@ -24,6 +25,7 @@ import type {
 	TableDefinition
 } from './types';
 import { normalizeBunSqlResult } from './bun-sql-helpers';
+import { BUN_SQL_POOL_OPTIONS } from '../pool-config';
 import {
 	assertSafeIdentifier,
 	buildDelete,
@@ -44,13 +46,10 @@ export class MysqlAdapter implements DbClientDriverAdapter {
 
 	private sql: SQL | null = null;
 	private alive = false;
-	// The session's currently-USEd database (mutated by ensureDatabase).
-	private defaultDb: string | null = null;
 	// The connection's configured database — immutable, used as the scope
 	// fallback so a connection-level overview never resolves to the last-browsed
-	// database that only the session happens to be sitting on.
+	// database, and as the state every pooled socket is restored to.
 	private configuredDb: string | null = null;
-	private ensureLock = Promise.resolve();
 
 	async connect(conn: DbClientConnection, tunnelPort?: number): Promise<void> {
 		const host = tunnelPort ? '127.0.0.1' : (conn.host ?? '127.0.0.1');
@@ -61,28 +60,18 @@ export class MysqlAdapter implements DbClientDriverAdapter {
 		const db = conn.database ? `/${encodeURIComponent(conn.database)}` : '';
 
 		const url = `mysql://${auth}${host}:${port}${db}`;
-		this.sql = new SQL(url);
+		this.sql = new SQL(url, BUN_SQL_POOL_OPTIONS);
 		await this.sql.connect();
-		this.defaultDb = conn.database || null;
 		this.configuredDb = conn.database || null;
 		this.alive = true;
 	}
 
 	async close(): Promise<void> {
-		let release: () => void;
-		const prev = this.ensureLock;
-		this.ensureLock = new Promise<void>((resolve) => { release = resolve; });
-		await prev;
-
-		try {
-			this.alive = false;
-			this.defaultDb = null;
-			if (!this.sql) return;
-			await this.sql.close().catch((err) => debug.warn('db-client', 'MySQL close error:', err));
-			this.sql = null;
-		} finally {
-			release!();
-		}
+		this.alive = false;
+		if (!this.sql) return;
+		const sql = this.sql;
+		this.sql = null;
+		await sql.close().catch((err) => debug.warn('db-client', 'MySQL close error:', err));
 	}
 
 	isAlive(): boolean {
@@ -122,32 +111,53 @@ export class MysqlAdapter implements DbClientDriverAdapter {
 		return opts?.database || this.configuredDb || undefined;
 	}
 
-	private async ensureDatabase(database?: string): Promise<void> {
-		if (!database) return;
-		if (database === this.defaultDb) return;
+	/**
+	 * Restore a socket to the connection's configured database.
+	 *
+	 * Every pooled socket is opened on the configured database (it is in the
+	 * connection URL), so putting it back there before releasing keeps an idle
+	 * socket's session state predictable for statements that carry their own
+	 * qualification instead of naming a database.
+	 */
+	private async restoreConfigured(sql: SQL, current: string): Promise<void> {
+		if (!this.configuredDb || this.configuredDb === current) return;
+		await sql
+			.unsafe(`USE ${quoteMysql(this.configuredDb)}`)
+			.catch((err) => debug.warn('db-client', 'MySQL restore database failed:', err));
+	}
 
-		let release: () => void;
-		const prev = this.ensureLock;
-		this.ensureLock = new Promise<void>((resolve) => { release = resolve; });
-		await prev;
-
+	/**
+	 * Run `fn` on a socket pinned to `database`.
+	 *
+	 * `USE` is per-connection session state while the adapter holds a *pool*, so
+	 * a `USE` sent on one pooled socket says nothing about the socket the next
+	 * query lands on — that is why browsing a database other than the configured
+	 * one intermittently failed with "Table 'configured_db.x' doesn't exist".
+	 * Reserving a connection makes the switch and the query share one socket.
+	 */
+	private async withDatabase<T>(
+		database: string | undefined,
+		fn: (sql: SQL | ReservedSQL) => Promise<T>
+	): Promise<T> {
+		const sql = this.requireSql();
+		if (!database) return fn(sql);
+		assertSafeIdentifier(database);
+		const reserved = await sql.reserve();
 		try {
-			if (database === this.defaultDb) return;
-			const sql = this.requireSql();
-			assertSafeIdentifier(database);
-			await sql.unsafe(`USE ${quoteMysql(database)}`);
-			this.defaultDb = database;
+			await reserved.unsafe(`USE ${quoteMysql(database)}`);
+			return await fn(reserved);
 		} finally {
-			release!();
+			await this.restoreConfigured(reserved, database);
+			reserved.release();
 		}
 	}
 
 	async executeRead(q: string, params: unknown[] = [], opts?: { database?: string }): Promise<DbClientQueryResult> {
-		await this.ensureDatabase(opts?.database);
-		const sql = this.requireSql();
-		const start = performance.now();
-		const raw = await sql.unsafe(q, params as never);
-		return normalizeBunSqlResult(raw, Math.round(performance.now() - start));
+		return this.withDatabase(opts?.database, async (sql) => {
+			const start = performance.now();
+			const raw = await sql.unsafe(q, params as never);
+			return normalizeBunSqlResult(raw, Math.round(performance.now() - start));
+		});
 	}
 
 	async executeWrite(q: string, params: unknown[] = [], opts?: { database?: string }): Promise<DbClientQueryResult> {
@@ -159,22 +169,33 @@ export class MysqlAdapter implements DbClientDriverAdapter {
 	}
 
 	async withTransaction<T>(fn: (tx: DbClientTxContext) => Promise<T>, opts?: { database?: string }): Promise<T> {
-		await this.ensureDatabase(opts?.database);
 		const sql = this.requireSql();
-		// Bun.sql reserves one connection for the `begin` block. Note: MySQL
+		const database = opts?.database;
+		if (database) assertSafeIdentifier(database);
+		// Bun.sql reserves one connection for the `begin` block, so the batch's
+		// database has to be selected inside it — a `USE` sent anywhere else
+		// belongs to a different socket. `USE` is not an implicit-commit
+		// statement, so it is safe within the transaction. Note: MySQL
 		// implicitly commits on DDL (CREATE/ALTER/DROP/…), so a batch that
 		// mixes DDL with later failures cannot fully roll back the DDL — a
 		// server limitation, not an app one.
 		return sql.begin(async (tx) => {
+			if (database) await tx.unsafe(`USE ${quoteMysql(database)}`);
 			const run = async (q: string, params: unknown[] = []): Promise<DbClientQueryResult> => {
 				const start = performance.now();
 				const raw = await tx.unsafe(q, params as never);
 				return normalizeBunSqlResult(raw, Math.round(performance.now() - start));
 			};
-			return fn({
-				executeRead: (q, params) => run(q, params ?? []),
-				executeWrite: (q, params) => run(q, params ?? [])
-			});
+			try {
+				return await fn({
+					executeRead: (q, params) => run(q, params ?? []),
+					executeWrite: (q, params) => run(q, params ?? [])
+				});
+			} finally {
+				// The transaction's socket goes back to the pool once the block
+				// ends, and a rollback does not undo `USE`.
+				if (database) await this.restoreConfigured(tx, database);
+			}
 		}) as Promise<T>;
 	}
 
@@ -239,14 +260,27 @@ export class MysqlAdapter implements DbClientDriverAdapter {
 	async listObjects(database?: string): Promise<DbClientSchemaNode[]> {
 		const target = this.targetDb({ database });
 		if (!target) throw new Error('MySQL: database is required');
-		const rows = (await this.requireSql().unsafe(
+		const tables = (await this.requireSql().unsafe(
 			'SELECT TABLE_NAME, TABLE_TYPE FROM information_schema.tables WHERE TABLE_SCHEMA = ? ORDER BY TABLE_NAME',
 			[target] as never
 		)) as Array<{ TABLE_NAME: string; TABLE_TYPE: string }>;
-		return rows.map((r) => ({
+
+		const routines = (await this.requireSql().unsafe(
+			'SELECT ROUTINE_NAME, ROUTINE_TYPE FROM information_schema.routines WHERE ROUTINE_SCHEMA = ? ORDER BY ROUTINE_NAME',
+			[target] as never
+		)) as Array<{ ROUTINE_NAME: string; ROUTINE_TYPE: string }>;
+
+		const tableNodes = tables.map((r) => ({
 			name: r.TABLE_NAME,
-			type: r.TABLE_TYPE === 'VIEW' ? 'view' as const : 'table' as const
+			type: r.TABLE_TYPE === 'VIEW' ? ('view' as const) : ('table' as const)
 		}));
+
+		const routineNodes = routines.map((r) => ({
+			name: r.ROUTINE_NAME,
+			type: r.ROUTINE_TYPE === 'FUNCTION' ? ('function' as const) : ('procedure' as const)
+		}));
+
+		return [...tableNodes, ...routineNodes];
 	}
 
 	async getObjectDetails(
@@ -257,6 +291,21 @@ export class MysqlAdapter implements DbClientDriverAdapter {
 		const target = this.targetDb({ database });
 		if (!target) throw new Error('MySQL: database is required');
 		const sql = this.requireSql();
+
+		if (_type === 'function' || _type === 'procedure') {
+			const query = _type === 'function'
+				? `SHOW CREATE FUNCTION ${Q(target)}.${Q(name)}`
+				: `SHOW CREATE PROCEDURE ${Q(target)}.${Q(name)}`;
+			
+			const res = (await sql.unsafe(query)) as any[];
+			const field = _type === 'function' ? 'Create Function' : 'Create Procedure';
+			const definition = res[0]?.[field] ?? res[0]?.[field.toUpperCase()] ?? '';
+			return {
+				name,
+				type: _type,
+				ddl: String(definition)
+			};
+		}
 
 		const colRows = (await sql.unsafe(
 			`SELECT COLUMN_NAME, DATA_TYPE, COLUMN_TYPE, IS_NULLABLE, COLUMN_DEFAULT, COLUMN_KEY, EXTRA
@@ -329,7 +378,8 @@ export class MysqlAdapter implements DbClientDriverAdapter {
 		assertSafeIdentifier(name);
 		const ddl = `DROP DATABASE ${Q(name)}`;
 		await this.requireSql().unsafe(ddl);
-		if (this.defaultDb === name) this.defaultDb = null;
+		// Nothing to fall back to or restore sockets into once it is gone.
+		if (this.configuredDb === name) this.configuredDb = null;
 		return ddl;
 	}
 
@@ -350,8 +400,8 @@ export class MysqlAdapter implements DbClientDriverAdapter {
 			await sql.unsafe(`RENAME TABLE ${qualified(Q, [name, r.TABLE_NAME])} TO ${qualified(Q, [newName, r.TABLE_NAME])}`);
 		}
 		await sql.unsafe(`DROP DATABASE ${Q(name)}`);
-		// Force a fresh `USE` on next access — the session's selected db is gone.
-		if (this.defaultDb === name) this.defaultDb = null;
+		// The connection's scope database no longer exists under that name.
+		if (this.configuredDb === name) this.configuredDb = null;
 		return `CREATE DATABASE ${Q(newName)}; RENAME TABLE …; DROP DATABASE ${Q(name)}`;
 	}
 

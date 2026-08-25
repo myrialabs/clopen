@@ -20,25 +20,43 @@
 	import FolderBrowser from '$frontend/components/common/form/FolderBrowser.svelte';
 	import Dialog from '$frontend/components/common/overlay/Dialog.svelte';
 	import ViewMenu from '$frontend/components/workspace/ViewMenu.svelte';
-	import TunnelButton from '$frontend/components/tunnel/TunnelButton.svelte';
+	import ToolsMenu from '$frontend/components/workspace/ToolsMenu.svelte';
+	import QuickSearchButton from '$frontend/components/workspace/QuickSearchButton.svelte';
 	import TunnelModal from '$frontend/components/tunnel/TunnelModal.svelte';
-	import DbClientButton from '$frontend/components/db-client/DbClientButton.svelte';
+	import RemoteAccessPanel from '$frontend/components/remote-access/RemoteAccessPanel.svelte';
 	import DbClientModal from '$frontend/components/db-client/DbClientModal.svelte';
+	import SshClientModal from '$frontend/components/ssh-client/SshClientModal.svelte';
+	import MemoryModal from '$frontend/components/memory/MemoryModal.svelte';
+	import SettingButton from '$frontend/components/settings/SettingButton.svelte';
 	import ProjectUserAvatars from '$frontend/components/common/display/ProjectUserAvatars.svelte';
 	import ws from '$frontend/utils/ws';
+	import {
+		quickPanelsState,
+		openNewProjectDialog,
+		closeNewProjectDialog,
+		openRemoteAccessDialog,
+		closeRemoteAccessDialog,
+		openTunnelDialog,
+		closeTunnelDialog,
+		openDbClientDialog,
+		closeDbClientDialog,
+		openSshClientDialog,
+		closeSshClientDialog,
+		openMemoryDialog,
+		closeMemoryDialog
+	} from '$frontend/stores/ui/quick-panels.svelte';
 
 	// State
-	let showFolderBrowser = $state(false);
 	let showDeleteDialog = $state(false);
 	let projectToDelete = $state<Project | null>(null);
 	let searchQuery = $state('');
-	let showTunnelModal = $state(false);
-	let showDbClientModal = $state(false);
 	let hoveredProject = $state<Project | null>(null);
 	let tooltipY = $state(0);
 	let tooltipX = $state(0);
 	let draggedProjectId = $state<string | null>(null);
 	let dragOverProjectId = $state<string | null>(null);
+	let expandedListEl = $state<HTMLElement>();
+	let collapsedListEl = $state<HTMLElement>();
 
 	// Derived
 	const isCollapsed = $derived(workspaceState.navigatorCollapsed);
@@ -56,6 +74,19 @@
 		);
 	});
 
+	// Auto-scroll the active project into view — covers both clicking it directly
+	// and switching to it from elsewhere (e.g. the Command Palette).
+	$effect(() => {
+		const id = currentProjectId;
+		const collapsed = isCollapsed;
+		if (!id) return;
+		requestAnimationFrame(() => {
+			const container = collapsed ? collapsedListEl : expandedListEl;
+			const el = container?.querySelector(`[data-project-id="${CSS.escape(id)}"]`);
+			el?.scrollIntoView({ block: 'nearest', behavior: 'smooth' });
+		});
+	});
+
 	// Select project
 	async function selectProject(project: Project) {
 		await setCurrentProject(project);
@@ -67,7 +98,7 @@
 	// Create project from folder
 	async function createProjectFromFolder(folderPath: string, folderName: string) {
 		try {
-			showFolderBrowser = false;
+			closeNewProjectDialog();
 
 			// Check if already exists
 			const existing = projectState.projects.find((p) => p.path === folderPath);
@@ -118,11 +149,6 @@
 	}
 
 	// Status color for project indicator — uses shared helper from presence store
-
-	// Close folder browser
-	function closeFolderBrowser() {
-		showFolderBrowser = false;
-	}
 
 	// Close delete dialog
 	function closeDeleteDialog() {
@@ -267,7 +293,7 @@
 						<button
 							type="button"
 							class="flex items-center justify-center w-6 h-6 bg-transparent border-none rounded-md text-slate-600 dark:text-slate-500 cursor-pointer transition-all duration-150 hover:bg-violet-500/20 hover:text-violet-600"
-							onclick={() => (showFolderBrowser = true)}
+							onclick={openNewProjectDialog}
 							aria-label="Add project"
 							title="Add project"
 						>
@@ -276,9 +302,10 @@
 					{/if}
 				</div>
 
-				<div class="flex-1 overflow-y-auto flex flex-col">
+				<div class="flex-1 overflow-y-auto flex flex-col" bind:this={expandedListEl}>
 					{#each filteredProjects() as project (project.id)}
 						<div
+							data-project-id={project.id}
 							class="flex items-center gap-2.5 py-2.5 px-3 bg-transparent border-none rounded-lg text-slate-600 dark:text-slate-400 text-sm text-left cursor-pointer transition-all duration-150 relative group
 								hover:bg-violet-500/10
 								{draggedProjectId === project.id ? 'opacity-50' : ''}
@@ -345,7 +372,7 @@
 								<button
 									type="button"
 									class="py-2 px-4 bg-violet-500/10 dark:bg-violet-500/15 border border-violet-500/20 dark:border-violet-500/30 rounded-lg text-violet-600 text-xs font-medium cursor-pointer transition-all duration-150 hover:bg-violet-500/20 dark:hover:bg-violet-500/25"
-									onclick={() => (showFolderBrowser = true)}
+									onclick={openNewProjectDialog}
 								>
 									Add your first project
 								</button>
@@ -360,18 +387,16 @@
 
 			<!-- Footer Actions -->
 			<footer class="flex flex-col p-3 border-t border-slate-200 dark:border-slate-800" in:fade={{ duration: 150 }}>
+				<ToolsMenu
+					onRemoteAccess={openRemoteAccessDialog}
+					onPublicTunnel={openTunnelDialog}
+					onDbClient={openDbClientDialog}
+					onSshClient={openSshClientDialog}
+					onMemory={openMemoryDialog}
+				/>
+				<QuickSearchButton />
+				<SettingButton onClick={() => openSettingsModal()} />
 				<ViewMenu />
-				<TunnelButton onClick={() => (showTunnelModal = true)} />
-				<DbClientButton onClick={() => (showDbClientModal = true)} />
-
-				<button
-					type="button"
-					class="flex items-center gap-2.5 w-full py-2.5 px-3 bg-transparent border-none rounded-lg text-slate-500 text-sm cursor-pointer transition-all duration-150 hover:bg-violet-500/10 hover:text-slate-900 dark:hover:text-slate-100"
-					onclick={() => openSettingsModal()}
-				>
-					<Icon name="lucide:settings" class="w-4 h-4" />
-					<span>Settings</span>
-				</button>
 			</footer>
 		{:else}
 			<!-- Collapsed State: Icon Buttons -->
@@ -380,7 +405,7 @@
 					<button
 						type="button"
 						class="flex items-center justify-center w-9 h-9 bg-transparent border-none rounded-lg text-slate-500 cursor-pointer transition-all duration-150 relative hover:bg-violet-500/10 hover:text-slate-900 dark:hover:text-slate-100"
-						onclick={() => (showFolderBrowser = true)}
+						onclick={openNewProjectDialog}
 						title="Add Project"
 					>
 						<Icon name="lucide:folder-plus" class="w-5 h-5" />
@@ -390,12 +415,13 @@
 				</div>
 			{/if}
 
-			<div class="flex-1 flex flex-col items-center gap-2 px-2 pb-4 min-h-0 overflow-y-auto">
+			<div class="flex-1 flex flex-col items-center gap-2 px-2 pb-4 min-h-0 overflow-y-auto" bind:this={collapsedListEl}>
 				{#each projectState.projects as project (project.id)}
 					{@const projectStatus = presenceState.statuses.get(project.id ?? '')}
 					{@const activeUserCount = (projectStatus?.activeUsers || []).length}
 					<button
 						type="button"
+						data-project-id={project.id}
 						class="flex items-center justify-center w-9 h-9 shrink-0 border-none rounded-lg cursor-pointer transition-all duration-150 relative font-semibold text-sm
 							{draggedProjectId === project.id ? 'opacity-50' : ''}
 							{dragOverProjectId === project.id ? 'ring-1 ring-inset ring-violet-400/60' : ''}
@@ -428,18 +454,17 @@
 			</div>
 
 			<footer class="flex flex-col gap-2 py-3 px-2 border-t border-slate-200 dark:border-slate-800">
+				<ToolsMenu
+					collapsed={true}
+					onRemoteAccess={openRemoteAccessDialog}
+					onPublicTunnel={openTunnelDialog}
+					onDbClient={openDbClientDialog}
+					onSshClient={openSshClientDialog}
+					onMemory={openMemoryDialog}
+				/>
+				<QuickSearchButton collapsed={true} />
+				<SettingButton collapsed={true} onClick={() => openSettingsModal()} />
 				<ViewMenu collapsed={true} />
-				<TunnelButton collapsed={true} onClick={() => (showTunnelModal = true)} />
-				<DbClientButton collapsed={true} onClick={() => (showDbClientModal = true)} />
-
-				<button
-					type="button"
-					class="flex items-center justify-center w-9 h-9 bg-transparent border-none rounded-lg text-slate-500 cursor-pointer transition-all duration-150 relative hover:bg-violet-500/10 hover:text-slate-900 dark:hover:text-slate-100"
-					onclick={() => openSettingsModal()}
-					title="Settings"
-				>
-					<Icon name="lucide:settings" class="w-5 h-5" />
-				</button>
 			</footer>
 		{/if}
 	</nav>
@@ -458,8 +483,8 @@
 
 <!-- Folder Browser (includes its own Modal) -->
 <FolderBrowser
-	bind:isOpen={showFolderBrowser}
-	onClose={closeFolderBrowser}
+	bind:isOpen={quickPanelsState.newProjectOpen}
+	onClose={closeNewProjectDialog}
 	onSelect={createProjectFromFolder}
 />
 
@@ -517,8 +542,13 @@
 	{/snippet}
 </Dialog>
 
+<!-- Remote Access Modal -->
+<RemoteAccessPanel bind:isOpen={quickPanelsState.remoteAccessOpen} onClose={closeRemoteAccessDialog} />
+
 <!-- Tunnel Modal -->
-<TunnelModal bind:isOpen={showTunnelModal} onClose={() => (showTunnelModal = false)} />
+<TunnelModal bind:isOpen={quickPanelsState.tunnelOpen} onClose={closeTunnelDialog} />
 
 <!-- DB Client Modal -->
-<DbClientModal bind:isOpen={showDbClientModal} onClose={() => (showDbClientModal = false)} />
+<DbClientModal bind:isOpen={quickPanelsState.dbClientOpen} onClose={closeDbClientDialog} />
+<SshClientModal bind:isOpen={quickPanelsState.sshClientOpen} onClose={closeSshClientDialog} />
+<MemoryModal bind:isOpen={quickPanelsState.memoryOpen} onClose={closeMemoryDialog} />

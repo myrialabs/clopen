@@ -35,7 +35,6 @@ let sets = $state<PermissionSet[]>([]);
 let setsLoaded = $state(false);
 let inventory = $state<PermissionInventory | null>(null);
 let inventoryLoaded = $state(false);
-let hasPendingChanges = $state(false);
 
 /** Empty rule set for an engine that has no stored row yet. */
 function emptySet(engine: EngineType): PermissionSet {
@@ -47,8 +46,6 @@ export const permissionsStore = {
 	get setsLoaded() { return setsLoaded; },
 	get inventory() { return inventory; },
 	get inventoryLoaded() { return inventoryLoaded; },
-	get hasPendingChanges() { return hasPendingChanges; },
-	set hasPendingChanges(v: boolean) { hasPendingChanges = v; },
 
 	/** The stored global set for an engine, or an empty one. */
 	globalSet(engine: EngineType): PermissionSet {
@@ -94,7 +91,6 @@ export const permissionsStore = {
 
 	async saveGlobal(engine: EngineType, allow: string[], deny: string[]): Promise<void> {
 		await ws.http('permissions:save', { scope: 'global', projectId: null, engine, allow, deny });
-		hasPendingChanges = true;
 		await this.refreshSets();
 	},
 

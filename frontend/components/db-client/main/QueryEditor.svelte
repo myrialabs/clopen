@@ -9,7 +9,7 @@
 	import { splitSqlStatements } from '$shared/utils/db-client/split-sql';
 	import type { DbDriver } from '$shared/types/db-client';
 
-	const SQL_DRIVERS: DbDriver[] = ['mysql', 'postgres', 'sqlite'];
+	const SQL_DRIVERS: DbDriver[] = ['mysql', 'postgres', 'sqlite', 'mssql'];
 
 	interface Props {
 		connectionId: string;
@@ -30,6 +30,9 @@
 	let pendingBatch = $state(false);
 	let confirmClearOpen = $state(false);
 	let forceSyncTick = $state(0);
+	let queryToExecute = $state('');
+	let pendingStatementsCount = $state(0);
+	let editorComponent = $state<any>(null);
 
 	let editorRatio = $state(0.35);
 	let containerEl = $state<HTMLDivElement | null>(null);
@@ -39,8 +42,11 @@
 	const classification = $derived(classifyQuery(driver, queryText));
 
 	// Only SQL drivers split on `;`; Mongo/Redis payloads are always single.
+	// SQL Server additionally separates batch-sensitive DDL by blank lines.
 	const statements = $derived(
-		SQL_DRIVERS.includes(driver) ? splitSqlStatements(queryText) : [queryText.trim()].filter(Boolean)
+		SQL_DRIVERS.includes(driver)
+			? splitSqlStatements(queryText, { splitOnBlankLine: driver === 'mssql' })
+			: [queryText.trim()].filter(Boolean)
 	);
 	const isMultiStatement = $derived(statements.length > 1);
 	const batchHasDestructive = $derived(
@@ -54,13 +60,13 @@
 		dbClientStore.setQueryText(connectionId, value);
 	}
 
-	async function runRead(): Promise<void> {
-		const query = queryText.trim();
-		if (!query) return;
+	async function runRead(query: string): Promise<void> {
+		const q = query.trim();
+		if (!q) return;
 		dbClientStore.setQueryRunning(connectionId, true);
 		dbClientStore.setQueryError(connectionId, null);
 		try {
-			const out = await dbClientStore.executeRead(connectionId, query, { database });
+			const out = await dbClientStore.executeRead(connectionId, q, { database });
 			dbClientStore.setQueryResult(connectionId, out);
 			dbClientStore.setQueryError(connectionId, null);
 		} catch (e) {
@@ -72,13 +78,13 @@
 		}
 	}
 
-	async function runWrite(): Promise<void> {
-		const query = queryText.trim();
-		if (!query) return;
+	async function runWrite(query: string): Promise<void> {
+		const q = query.trim();
+		if (!q) return;
 		dbClientStore.setQueryRunning(connectionId, true);
 		dbClientStore.setQueryError(connectionId, null);
 		try {
-			const out = await dbClientStore.executeWrite(connectionId, query, { database });
+			const out = await dbClientStore.executeWrite(connectionId, q, { database });
 			dbClientStore.setQueryResult(connectionId, out);
 			dbClientStore.setQueryError(connectionId, null);
 		} catch (e) {
@@ -90,13 +96,13 @@
 		}
 	}
 
-	async function runBatch(): Promise<void> {
-		const query = queryText.trim();
-		if (!query) return;
+	async function runBatch(query: string): Promise<void> {
+		const q = query.trim();
+		if (!q) return;
 		dbClientStore.setQueryRunning(connectionId, true);
 		dbClientStore.setQueryError(connectionId, null);
 		try {
-			const out = await dbClientStore.executeBatch(connectionId, query, { database });
+			const out = await dbClientStore.executeBatch(connectionId, q, { database });
 			dbClientStore.setQueryResult(connectionId, out);
 			dbClientStore.setQueryError(connectionId, null);
 		} catch (e) {
@@ -109,33 +115,65 @@
 	}
 
 	function run(): void {
-		if (isMultiStatement) {
-			pendingBatch = true;
-			if (batchHasDestructive) {
-				pendingClass = statements.some((s) => classifyQuery(driver, s) === 'ddl') ? 'ddl' : 'write';
+		let query = queryText;
+		if (editorComponent) {
+			const editor = editorComponent.getEditor();
+			if (editor) {
+				const selection = editor.getSelection();
+				if (selection) {
+					const selected = editor.getModel()?.getValueInRange(selection);
+					if (selected && selected.trim()) {
+						query = selected;
+					}
+				}
+			}
+		}
+
+		const trimmedQuery = query.trim();
+		if (!trimmedQuery) return;
+
+		const currentStatements = SQL_DRIVERS.includes(driver)
+			? splitSqlStatements(query, { splitOnBlankLine: driver === 'mssql' })
+			: [trimmedQuery].filter(Boolean);
+
+		const currentIsMulti = currentStatements.length > 1;
+		const currentClass = classifyQuery(driver, query);
+
+		pendingBatch = currentIsMulti;
+		pendingClass = currentClass;
+		pendingStatementsCount = currentStatements.length;
+
+		if (currentIsMulti) {
+			const hasDestructive = currentStatements.some((s) => {
+				const c = classifyQuery(driver, s);
+				return c === 'write' || c === 'ddl';
+			});
+			if (hasDestructive) {
+				pendingClass = currentStatements.some((s) => classifyQuery(driver, s) === 'ddl') ? 'ddl' : 'write';
+				queryToExecute = query;
 				confirmOpen = true;
 				return;
 			}
-			runBatch();
+			runBatch(query);
 			return;
 		}
-		pendingBatch = false;
-		const c = classification;
-		pendingClass = c;
-		if (c === 'write' || c === 'ddl') {
+
+		if (currentClass === 'write' || currentClass === 'ddl') {
+			queryToExecute = query;
 			confirmOpen = true;
 			return;
 		}
-		runRead();
+
+		runRead(query);
 	}
 
 	function confirmRun(): void {
 		if (pendingBatch) {
-			runBatch();
+			runBatch(queryToExecute);
 			return;
 		}
-		if (pendingClass === 'read') runRead();
-		else runWrite();
+		if (pendingClass === 'read') runRead(queryToExecute);
+		else runWrite(queryToExecute);
 	}
 
 	async function cancel(): Promise<void> {
@@ -247,6 +285,7 @@
 	<div bind:this={containerEl} class="flex-1 min-h-0 flex flex-col {isDragging ? 'select-none cursor-row-resize' : ''}">
 		<div class="min-h-[80px] overflow-hidden flex flex-col" style="flex: {editorRatio} 1 0;">
 			<MonacoCodeEditor
+				bind:this={editorComponent}
 				value={queryText}
 				{language}
 				path={"db-client/queries/default"}
@@ -277,12 +316,12 @@
 <ConfirmDestructive
 	bind:isOpen={confirmOpen}
 	title={pendingBatch
-		? `Run ${statements.length} statements?`
+		? `Run ${pendingStatementsCount} statements?`
 		: pendingClass === 'ddl'
 			? 'Run DDL statement?'
 			: 'Run write statement?'}
 	message={pendingBatch
-		? `This batch of ${statements.length} statements includes ${pendingClass === 'ddl' ? 'schema (DDL)' : 'write'} operations that modify data.${SQL_DRIVERS.includes(driver) ? ' It runs in a transaction where supported (rolled back on failure).' : ''} Continue?`
+		? `This batch of ${pendingStatementsCount} statements includes ${pendingClass === 'ddl' ? 'schema (DDL)' : 'write'} operations that modify data.${SQL_DRIVERS.includes(driver) ? ' It runs in a transaction where supported (rolled back on failure).' : ''} Continue?`
 		: `Classification: ${pendingClass}. This will modify data. Continue?`}
 	confirmText="Run"
 	onConfirm={confirmRun}

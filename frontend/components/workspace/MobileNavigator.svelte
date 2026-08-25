@@ -6,24 +6,38 @@
 	import { presenceState, getProjectStatusColor } from '$frontend/stores/core/presence.svelte';
 	import { openSettingsModal } from '$frontend/stores/ui/settings-modal.svelte';
 	import { addNotification } from '$frontend/stores/ui/notification.svelte';
-	import TunnelButton from '$frontend/components/tunnel/TunnelButton.svelte';
+	import ToolsMenu from '$frontend/components/workspace/ToolsMenu.svelte';
 	import TunnelModal from '$frontend/components/tunnel/TunnelModal.svelte';
-	import DbClientButton from '$frontend/components/db-client/DbClientButton.svelte';
+	import RemoteAccessPanel from '$frontend/components/remote-access/RemoteAccessPanel.svelte';
 	import DbClientModal from '$frontend/components/db-client/DbClientModal.svelte';
+	import SshClientModal from '$frontend/components/ssh-client/SshClientModal.svelte';
+	import MemoryModal from '$frontend/components/memory/MemoryModal.svelte';
+	import SettingButton from '$frontend/components/settings/SettingButton.svelte';
 	import type { Project } from '$shared/types/database/schema';
 	import FolderBrowser from '$frontend/components/common/form/FolderBrowser.svelte';
 	import ProjectUserAvatars from '$frontend/components/common/display/ProjectUserAvatars.svelte';
 	import { authStore } from '$frontend/stores/features/auth.svelte';
 	import ws from '$frontend/utils/ws';
 	import { debug } from '$shared/utils/logger';
-
-	// Modal states
-	let showTunnelModal = $state(false);
-	let showDbClientModal = $state(false);
+	import {
+		quickPanelsState,
+		openNewProjectDialog,
+		closeNewProjectDialog,
+		openRemoteAccessDialog,
+		closeRemoteAccessDialog,
+		openTunnelDialog,
+		closeTunnelDialog,
+		openDbClientDialog,
+		closeDbClientDialog,
+		openSshClientDialog,
+		closeSshClientDialog,
+		openMemoryDialog,
+		closeMemoryDialog
+	} from '$frontend/stores/ui/quick-panels.svelte';
+	import { openCommandPalette } from '$frontend/stores/ui/command-palette.svelte';
 
 	// Project dropdown state
 	let showProjectMenu = $state(false);
-	let showFolderBrowser = $state(false);
 	let showDeleteDialog = $state(false);
 	let projectToDelete = $state<Project | null>(null);
 	let searchQuery = $state('');
@@ -57,11 +71,7 @@
 
 	function openAddProject() {
 		showProjectMenu = false;
-		showFolderBrowser = true;
-	}
-
-	function closeFolderBrowser() {
-		showFolderBrowser = false;
+		openNewProjectDialog();
 	}
 
 	function closeProjectMenu() {
@@ -107,7 +117,7 @@
 
 	async function createProjectFromFolder(folderPath: string, folderName: string) {
 		try {
-			showFolderBrowser = false;
+			closeNewProjectDialog();
 
 			const projects = await ws.http('projects:list', {});
 
@@ -139,7 +149,7 @@
 	<!-- Project Selector -->
 	<button
 		type="button"
-		class="flex items-center gap-2 px-3 py-2.5 bg-slate-100/80 dark:bg-slate-800/80 border border-slate-200 dark:border-slate-800 rounded-lg text-slate-900 dark:text-slate-100 text-sm font-medium cursor-pointer transition-all duration-150 flex-1 min-w-0 active:bg-violet-500/10"
+		class="flex items-center gap-2 px-3 py-2 bg-slate-100/80 dark:bg-slate-800/50 border border-slate-200 dark:border-slate-800 rounded-lg text-slate-900 dark:text-slate-100 text-sm font-medium cursor-pointer transition-all duration-150 flex-1 min-w-0 active:bg-violet-500/10"
 		onclick={toggleProjectMenu}
 		aria-expanded={showProjectMenu}
 		aria-haspopup="menu"
@@ -156,27 +166,34 @@
 
 	<!-- Action Buttons -->
 	<div
-		class="flex gap-1 bg-slate-100/80 dark:bg-slate-800/50 p-1 border border-slate-200 dark:border-slate-800 rounded-lg"
+		class="flex gap-1 bg-slate-100/80 dark:bg-slate-800/50 px-1 py-0.5 border border-slate-200 dark:border-slate-800 rounded-lg"
 		role="tablist"
 		aria-label="Action Buttons"
 	>
-		<!-- Tunnel Button -->
-		<TunnelButton collapsed={true} onClick={() => (showTunnelModal = true)} mobile={true} />
+		<!-- Tools (Remote Access, Public Tunnel, DB Client) -->
+		<ToolsMenu
+			collapsed={true}
+			mobile={true}
+			onRemoteAccess={openRemoteAccessDialog}
+			onPublicTunnel={openTunnelDialog}
+			onDbClient={openDbClientDialog}
+					onSshClient={openSshClientDialog}
+					onMemory={openMemoryDialog}
+		/>
 
-		<!-- DB Client Button -->
-		<DbClientButton collapsed={true} onClick={() => (showDbClientModal = true)} mobile={true} />
-
-		<!-- Settings Button -->
+		<!-- Quick Search Button -->
 		<button
 			type="button"
 			class="flex items-center justify-center w-9 h-8 bg-transparent border-none rounded-md text-slate-500 cursor-pointer transition-all duration-150 active:bg-violet-500/10"
-			role="tab"
-			onclick={() => openSettingsModal()}
-			aria-label="Settings"
-			title="Settings"
+			onclick={openCommandPalette}
+			aria-label="Quick search"
+			title="Quick search"
 		>
-			<Icon name="lucide:settings" class="w-5 h-5" />
+			<Icon name="lucide:search" class="w-4.5 h-4.5" />
 		</button>
+
+		<!-- Settings Button -->
+		<SettingButton collapsed={true} mobile={true} onClick={() => openSettingsModal()} />
 	</div>
 </header>
 
@@ -339,8 +356,8 @@
 
 <!-- Folder Browser -->
 <FolderBrowser
-	bind:isOpen={showFolderBrowser}
-	onClose={closeFolderBrowser}
+	bind:isOpen={quickPanelsState.newProjectOpen}
+	onClose={closeNewProjectDialog}
 	onSelect={createProjectFromFolder}
 />
 
@@ -399,7 +416,11 @@
 </Dialog>
 
 <!-- Tunnel Modal -->
-<TunnelModal bind:isOpen={showTunnelModal} onClose={() => (showTunnelModal = false)} />
+<RemoteAccessPanel bind:isOpen={quickPanelsState.remoteAccessOpen} onClose={closeRemoteAccessDialog} />
+
+<TunnelModal bind:isOpen={quickPanelsState.tunnelOpen} onClose={closeTunnelDialog} />
 
 <!-- DB Client Modal -->
-<DbClientModal bind:isOpen={showDbClientModal} onClose={() => (showDbClientModal = false)} />
+<DbClientModal bind:isOpen={quickPanelsState.dbClientOpen} onClose={closeDbClientDialog} />
+<SshClientModal bind:isOpen={quickPanelsState.sshClientOpen} onClose={closeSshClientDialog} />
+<MemoryModal bind:isOpen={quickPanelsState.memoryOpen} onClose={closeMemoryDialog} />

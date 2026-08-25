@@ -1,12 +1,97 @@
 # `backend/engine/` — End-to-End Adapter Guide
 
 This folder is the **boundary** between Clopen and the AI SDKs that drive
-streaming chat. Today there are three adapters: **`claude`**
-(`@anthropic-ai/claude-agent-sdk`), **`opencode`** (`@opencode-ai/sdk`), and
-**`copilot`** (`@github/copilot-sdk`). Every adapter follows the same shape so
-that the rest of the system outside this folder — `stream-manager`, MCP, DB,
-WebSocket, frontend chat, settings UI — stays **agnostic** to the underlying
-SDK.
+streaming chat. The adapters today: **`claude`**
+(`@anthropic-ai/claude-agent-sdk`), **`opencode`** (`@opencode-ai/sdk`),
+**`copilot`** (`@github/copilot-sdk`), **`codex`** (`@openai/codex-sdk`),
+**`qwen`** (`@qwen-code/sdk`), **`pi`**
+(`@earendil-works/pi-coding-agent`), **`cline`** (`@cline/sdk`), and
+**`cursor`** (`@cursor/sdk`). Every
+adapter follows the same shape so that the rest of the system outside this
+folder — `stream-manager`, MCP, DB, WebSocket, frontend chat, settings UI —
+stays **agnostic** to the underlying SDK.
+
+> **Engine SDKs are NOT bundled — they install on demand.** None of the SDK
+> packages above ship in the clopen global install (they moved to
+> `devDependencies` in `package.json`, which is the single source of truth for
+> each engine's exact pinned version). At runtime clopen installs them on
+> demand into a clopen-managed directory — `~/.clopen/stack/engines`
+> (`getStackEnginesDir()`) — and every adapter **lazy-loads** its SDK via
+> `loadEngineSdk(engine, pkg)` from [`sdk-loader.ts`](./sdk-loader.ts) (keep
+> all type references on `import type` so they erase at runtime). The loader
+> refuses to load an SDK whose installed version ≠ the pinned version, throwing
+> `EngineNotReadyError` (`reason: 'not-installed' | 'needs-update'`) — the
+> engine must first be installed/updated in **Settings → Stack**. This is
+> what fixed `bun add -g @myrialabs/clopen` aborting mid-install (it used to
+> drag 200–300 MB of native CLI binaries). The pin covers an SDK's unbundled
+> **peer** dependencies too (`ENGINE_PACKAGES` in
+> [`install-recipes.ts`](./install-recipes.ts)) — without that they resolve at
+> `@latest` in the stack dir and clopen runs a version it never type-checked
+> against; read **§10.25** in [lessons-learned](./docs/lessons-learned.md)
+> before bumping any SDK. Future Stack work (runtimes, services, per-project
+> versioning) is specced in
+> [`docs/stack-roadmap.md`](../../docs/stack-roadmap.md).
+
+> **Adapters load on first use, and that rule is now mechanical.** The registry
+> reaches every adapter through `ENGINE_LOADERS` (dynamic `import()`), never a
+> static import, so an engine that fails to load takes only itself down — it
+> used to take the whole backend down at boot, for users who had never touched
+> that engine. The "`import type` only" rule above had been written down since
+> the SDKs were unbundled and was still violated three times (Qwen, OpenCode,
+> Pi), because a value import resolves fine in the repo **and** on any machine
+> whose shared global bun store happens to carry the package. So it is enforced
+> now rather than documented: ESLint rejects value imports of `devDependencies`
+> in shipped code (list derived from `package.json`, so a new engine is covered
+> the moment you add it), and three tests fail on the things types cannot
+> see — an unresolvable shipped import, an adapter reachable from boot, and a
+> loader wired to the wrong engine class. Read **§10.21** and **§10.24** in
+> [lessons-learned](./docs/lessons-learned.md) before touching either.
+
+> **In-process, session-less SDKs are their own category.** Most adapters
+> wrap a CLI subprocess or an SDK that owns a session store (on disk or via a
+> server). `cline` is different: `@cline/sdk`'s stateless `Agent` holds **no**
+> session store at all, so the adapter reconstructs branch history in memory
+> and synthesizes the sub-agent (`Agent`) tool itself. Both were bug sources
+> during bring-up — read **§10.10** (checkpoint forks) and **§10.15**
+> (sub-agents) in [lessons-learned](./docs/lessons-learned.md) before adding a
+> similar engine.
+
+> **Delta-stream SDKs are another category.** `cursor` (`@cursor/sdk`) is
+> in-process with an on-disk store like `pi`, but its `run.stream()` emits each
+> text/thinking CHUNK as its own message (deltas, not snapshots), routes MCP +
+> custom tools through a single wrapper tool, streams sub-agents only via
+> `onDelta`, and reports no context-window metadata. If a new SDK is delta-based,
+> tool-wrapping, or metadata-poor, read **§10.20** in
+> [lessons-learned](./docs/lessons-learned.md) before writing the converter — and
+> capture the SDK's real runtime shapes with a throwaway script rather than
+> trusting its `.d.ts`.
+
+> **One instance, many streams.** `getProjectEngine` hands the same adapter
+> instance to every chat session of a project, and Clopen lets those sessions
+> stream at the same time. So per-stream state — abort controller, SDK query or
+> session, session id, pooled server, parked questions — belongs to a **run**,
+> held in the adapter's `EngineRuns` registry
+> ([`adapters/run-registry.ts`](./adapters/run-registry.ts)), never in an
+> instance field. `cancel(owner)` and `interrupt(owner)` take the run to stop
+> and the parameter is required; stopping everything is `dispose()`'s job.
+> Storing a stream's handles on the instance is not a style question — it made
+> Stop in one chat abort another chat of the same project, made `isActive`
+> report idle while a stream was still running (so engine retirement disposed it
+> mid-answer), and leaked a pooled OpenCode server hold per overwritten stream.
+> Read **§10.26** in [lessons-learned](./docs/lessons-learned.md) and invariant 2
+> in [adapter-contract](./docs/adapter-contract.md) before adding state to an
+> adapter class.
+
+> **Background parent tools are a streaming category of their own.** `Agent`
+> receives nested activity from the SDK stream, while Claude's `Workflow`
+> writes agent transcripts to JSONL files outside that stream. Both must obey
+> the same UI contract: emit the parent first, stamp every child with the
+> parent's `toolUseId` before it crosses the adapter boundary, and never expose
+> a child on the root timeline even temporarily. File-backed activity must use
+> filesystem change events rather than interval polling. Read **§10.15** in
+> [lessons-learned](./docs/lessons-learned.md) and **§6.5** in
+> [frontend-and-chat](./docs/frontend-and-chat.md) before adding another
+> background or nested tool.
 
 This guide is split into focused documents — start here for the architecture
 map, then jump to the area you need.
@@ -16,12 +101,13 @@ map, then jump to the area you need.
 1. [Architecture map](#1-architecture-map) — the layers and the two design pitfalls to read before proposing new infrastructure (below).
 2. [Adapter contract](./docs/adapter-contract.md) — the `AIEngine` interface, `EngineOutput`, `EngineQueryOptions`, the standard adapter file taxonomy, and what an adapter must NOT do.
 3. [Database](./docs/database.md) — `engine_providers` + `engine_accounts`, `engineQueries`, and how each adapter reads credentials.
-4. [WebSocket routes](./docs/websocket-routes.md) — `engine:*`, `system-tools:*`, `models:list`, `chat:stream`, and the Restart-Server pattern.
-5. [Frontend & chat integration](./docs/frontend-and-chat.md) — Settings → Engines / System Tools, the model picker, the send path, reasoning/attachments/AskUserQuestion.
-6. [System Tools](./docs/system-tools.md) — registering a binary in `install-recipes.ts` + the install runner.
-7. [Adding a new engine](./docs/adding-an-engine.md) — the end-to-end, stage-by-stage checklist.
-8. [Lessons learned](./docs/lessons-learned.md) — §9 pitfalls (tool name/input canonicalisation, fork session, MCP reuse, auth-blob swap, sub-agent routing, OpenCode v1/v2, structured output, …).
-9. [Quick reference](./docs/quick-reference.md) — "I need X → look in file Y" table.
+4. [WebSocket routes](./docs/websocket-routes.md) — `engine:*`, `stack:*`, `models:list`, `chat:stream`, and the Restart-Server pattern.
+5. [Frontend & chat integration](./docs/frontend-and-chat.md) — Settings → Engines / Stack, the model picker, the send path, reasoning effort/attachments/AskUserQuestion.
+6. [Stack](./docs/stack.md) — registering a host tool or on-demand engine SDK in `install-recipes.ts` + the install runner.
+7. [Artifacts & Access](./docs/artifacts.md) — the extension layer (Skills, Commands, Subagents, Instructions, Permissions, Profiles, MCP), the capability matrix, and the `artifact-sync.ts` seam adapters call at stream start.
+8. [Adding a new engine](./docs/adding-an-engine.md) — the end-to-end, stage-by-stage checklist.
+9. [Lessons learned](./docs/lessons-learned.md) — §10 pitfalls (tool name/input canonicalisation, fork session, MCP reuse, auth-blob swap, sub-agent routing, OpenCode v1/v2, structured output, cross-engine handoff, SDK upgrades, …).
+10. [Quick reference](./docs/quick-reference.md) — "I need X → look in file Y" table.
 
 ---
 
@@ -30,17 +116,17 @@ map, then jump to the area you need.
 ```
 ┌──────────────────── FRONTEND (Svelte 5 + runes) ─────────────────────┐
 │                                                                       │
-│  Settings → Engines           Settings → System Tools  Chat Input     │
+│  Settings → Engines           Settings → Stack         Chat Input     │
 │  ─────────────────────        ──────────────────────  ──────────────  │
-│  AIEnginesSettings.svelte     SystemToolsSettings…    EngineModel…    │
+│  AIEnginesSettings+panels/    StackSettings…    EngineModel…    │
 │       │                            │                       │          │
 │       ├─ claudeAccountsStore       └─ ws.http(             ├─ model   │
-│       ├─ copilotAccountsStore         'system-tools:…')    │  Store   │
+│       ├─ copilotAccountsStore         'stack:…')    │  Store   │
 │       ├─ opencodeProvidersStore                            └─ chat    │
 │       └─ modelStore                                          ModelState│
 │       │            │             │             │             │        │
 │       ▼            ▼             ▼             ▼             ▼        │
-│  ws.http('engine:*')   ws.http('system-tools:*')   ws.emit('chat:…')  │
+│  ws.http('engine:*')   ws.http('stack:*')   ws.emit('chat:…')  │
 └──────────────────────────────┬────────────────────────────────────────┘
                                │ WebSocket (ws-server router)
 ┌──────────────────────────────▼────────────────────────────────────────┐
@@ -50,17 +136,24 @@ map, then jump to the area you need.
 │    status.ts, accounts.ts         status.ts, providers.ts             │
 │  backend/ws/engine/copilot/                                           │
 │    status.ts, accounts.ts                                             │
-│  backend/ws/system-tools/         backend/ws/chat/stream.ts           │
+│  backend/ws/stack/         backend/ws/chat/stream.ts           │
 │    status.ts, install.ts          backend/ws/settings/crud.ts         │
 │           │                                  │                        │
 │           ▼                                  ▼                        │
 │  ┌──────────────────────────────────────────────────────────────────┐ │
 │  │  backend/engine/         ← THE LAYER THIS README DOCUMENTS       │ │
 │  │  ──────────────────                                              │ │
-│  │  index.ts                  registry: getEngine / getProjectEngine│ │
+│  │  index.ts                  registry: ENGINE_LOADERS (lazy) +    │ │
+│  │                            getEngine / getProjectEngine (async) │ │
+│  │                            findProjectEngine (sync, no create)  │ │
+│  │  engine-setup.ts           pre-stream readiness → Open Stack    │ │
 │  │  types.ts                  contract: AIEngine                    │ │
-│  │  install-recipes.ts        per-platform install commands         │ │
+│  │  sdk-loader.ts             on-demand loader (~/.clopen/stack/…)   │ │
+│  │  install-recipes.ts        host-tool + engine-SDK install recipes│ │
 │  │  install-runner.ts         spawns recipe, streams logs over WS   │ │
+│  │  bootstrap-default-engine  fresh install → auto-install OpenCode │ │
+│  │  resolve-model.ts          catalog-verified provider/model/acct  │ │
+│  │  structured-helpers.ts     prompt + tolerant JSON extraction     │ │
 │  │  adapters/<name>/                                                │ │
 │  │    index.ts                public surface (re-exports only)      │ │
 │  │    stream.ts               class implements AIEngine             │ │
@@ -78,6 +171,9 @@ map, then jump to the area you need.
 │  backend/database/queries/        backend/chat/stream-manager.ts      │
 │    engine-queries.ts                routes EngineOutput → DB + WS     │
 │      engine_providers + engine_accounts                               │
+│                                   backend/chat/engine-handoff.ts      │
+│                                     replays the branch when the       │
+│                                     session changes engine            │
 └───────────────────────────────────────────────────────────────────────┘
 ```
 
@@ -93,6 +189,13 @@ Three key rules that **every** layer upholds:
   New methods are not added ad-hoc — they are added to the interface first,
   then implemented in **every** adapter.
 
+For parent tools (`Agent`, `Workflow`, or a future equivalent), message
+placement is also part of the contract: root messages carry
+`parent.toolUseId = null`; every nested message carries the parent tool call id
+from its first emission. The frontend must not render at root and relocate
+later. See [adapter contract §2.3](./docs/adapter-contract.md) for the complete
+invariants.
+
 > ⚠️ **Before you propose new infrastructure, read this.**
 > Two design pitfalls have repeatedly tripped people adding new adapters.
 > Before sketching architecture, double-check:
@@ -104,19 +207,41 @@ Three key rules that **every** layer upholds:
 >    `streamable-http` MCP URL (Codex, future engines) reuses **the same
 >    URL** by adding a sibling `getXxxMcpConfig()` helper in
 >    `backend/mcp/internal/config.ts`. Do **NOT** propose a "new MCP bridge",
->    "per-engine MCP server", or "per-stream MCP path". See §9.12.
+>    "per-engine MCP server", or "per-stream MCP path". See §10.12.
 > 2. **Engine home dirs are isolated per-engine (Clopen vs. global), but
 >    multi-account stays DB-swap.** Two different axes — don't conflate them:
 >    - **Clopen vs. the user's global CLI usage:** every engine's home/config
 >      is redirected to `{clopenDir}/engine/{engine}/user/` via that engine's env
 >      var (`CLAUDE_CONFIG_DIR`, `CODEX_HOME`, `COPILOT_HOME` via
 >      `baseDirectory`, `QWEN_RUNTIME_DIR`, `XDG_*` for OpenCode) so Clopen
->      never touches `~/.codex`, `~/.copilot`, … See §9.19.
+>      never touches `~/.codex`, `~/.copilot`, … See §10.19.
 >    - **Multiple accounts *within* Clopen:** still the auth-blob swap — one
 >      shared dotfile inside that isolated home, snapshotted to/from the DB on
 >      login/switch. Do **NOT** propose **per-account** home dirs
 >      (`CODEX_HOME=/foo/account-1/`); that splits session-state, breaks
->      fork-by-copy, and loses token-refresh persistence. See §9.13.
+>      fork-by-copy, and loses token-refresh persistence. See §10.13.
+> 3. **A session may change engine mid-conversation.** Never assume one
+>    session ↔ one engine. `chat_sessions.engine` names the *currently
+>    selected* engine, so anything reasoning about "which engine produced
+>    this?" must read `engine.type` **per message** — resume-target
+>    derivation and checkpoint restore both do. An SDK session id is only
+>    meaningful to the engine that minted it; handing one to another engine
+>    fails differently on every adapter (silent fresh start on Codex,
+>    Copilot, Pi and Cline; an unknown-session error on OpenCode and Claude).
+>    Carrying the conversation across is already solved by
+>    `backend/chat/engine-handoff.ts` — do **NOT** propose a new adapter
+>    method, a portable session format, or per-engine history injection.
+>    See §10.23.
+> 4. **Boot must not know about any adapter.** Adding a static
+>    `import { XEngine } from './adapters/x'` — to the registry or to anything
+>    the boot path reaches — re-couples every user's startup to every engine.
+>    There is exactly one place that decides what an unusable engine means to
+>    the user (`checkEngineSetup`, surfaced as a chat error with an **Open
+>    Stack** button); do **NOT** propose a second one, and do **NOT** wrap the
+>    adapter `import()` in a catch that returns a placeholder engine. A broken
+>    engine must fail loudly on the engine the user asked for. Translating a
+>    module-load failure into an install prompt is worse than the raw message:
+>    it sends people reinstalling for a bug no reinstall can fix. See §10.24.
 
 ---
 

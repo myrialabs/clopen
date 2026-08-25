@@ -85,7 +85,24 @@ export const queryHandler = createRouter()
 				rowCount: result.rowCount ?? null,
 				error: null
 			});
-			return result;
+			const top = {
+				...result,
+				batch: result.batch ?? {
+					statements: [{
+						index: 0,
+						query: data.query,
+						queryClass: 'read' as const,
+						status: 'success' as const,
+						result,
+						error: null,
+						durationMs: result.durationMs
+					}],
+					totalDurationMs: result.durationMs,
+					transaction: false,
+					ok: true
+				}
+			};
+			return top;
 		} catch (error) {
 			recordHistory({
 				connectionId: data.connectionId,
@@ -130,7 +147,24 @@ export const queryHandler = createRouter()
 				rowCount: result.rowCount ?? null,
 				error: null
 			});
-			return result;
+			const top = {
+				...result,
+				batch: result.batch ?? {
+					statements: [{
+						index: 0,
+						query: data.query,
+						queryClass: 'write' as const,
+						status: 'success' as const,
+						result,
+						error: null,
+						durationMs: result.durationMs
+					}],
+					totalDurationMs: result.durationMs,
+					transaction: false,
+					ok: true
+				}
+			};
+			return top;
 		} catch (error) {
 			recordHistory({
 				connectionId: data.connectionId,
@@ -159,8 +193,11 @@ export const queryHandler = createRouter()
 		const connection = requireDbClientConnectionAccess(conn, data.connectionId);
 		const adapter = await connectionManager.get(data.connectionId);
 		// Statement splitting is a SQL concern; Mongo/Redis payloads run whole.
-		const isSql = connection.driver === 'mysql' || connection.driver === 'postgres' || connection.driver === 'sqlite';
-		const split = isSql ? splitSqlStatements(data.query) : [data.query.trim()];
+		const isSql = connection.driver === 'mysql' || connection.driver === 'postgres' || connection.driver === 'sqlite' || connection.driver === 'mssql';
+		// SQL Server separates batch-sensitive DDL by blank lines rather than `;`.
+		const split = isSql
+			? splitSqlStatements(data.query, { splitOnBlankLine: connection.driver === 'mssql' })
+			: [data.query.trim()];
 		const statements = split.length > 0 ? split : [data.query.trim()];
 		try {
 			const batch = await executeBatch({

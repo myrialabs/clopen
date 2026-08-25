@@ -32,6 +32,7 @@ export type LogLabel =
 	| 'commands'
 	| 'subagents'
 	| 'instructions'
+	| 'memory'
 	| 'permissions'
 	| 'profiles'
 	| 'notification'
@@ -43,7 +44,9 @@ export type LogLabel =
 	| 'settings'
 	| 'engine'
 	| 'tunnel'
+	| 'remote-access'
 	| 'db-client'
+	| 'ssh'
 	
 	// User
 	| 'user'

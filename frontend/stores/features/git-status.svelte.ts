@@ -7,7 +7,7 @@
  */
 
 import { projectState } from '$frontend/stores/core/projects.svelte';
-import ws from '$frontend/utils/ws';
+import ws, { onWsReconnect } from '$frontend/utils/ws';
 import { debug } from '$shared/utils/logger';
 import type { GitFileChange, GitStatus } from '$shared/types/git';
 
@@ -30,6 +30,8 @@ let inFlight = false;
 let pendingRefresh = false;
 let unsubscribeFiles: (() => void) | null = null;
 let unsubscribeGit: (() => void) | null = null;
+let unsubscribeResync: (() => void) | null = null;
+let unsubscribeReconnect: (() => void) | null = null;
 let lastProjectId = '';
 
 /**
@@ -147,11 +149,24 @@ export function initGitStatus(): void {
 	if (unsubscribeFiles || unsubscribeGit) return;
 	unsubscribeFiles = ws.on('files:changed', (payload) => {
 		if (payload.projectId !== projectState.currentProject?.id) return;
+		// An empty change list says nothing changed — refreshing on it would spawn
+		// a git process for no reason.
+		if (payload.changes.length === 0) return;
 		refreshGitStatus(500);
 	});
 	unsubscribeGit = ws.on('git:changed', (payload) => {
 		if (payload.projectId !== projectState.currentProject?.id) return;
 		refreshGitStatus(150);
+	});
+	unsubscribeResync = ws.on('files:resync', (payload) => {
+		if (payload.projectId !== projectState.currentProject?.id) return;
+		refreshGitStatus(500);
+	});
+	// Every `git:changed` sent while the socket was down was delivered to nobody,
+	// so the badges have no way of knowing what they missed. Re-read once the
+	// connection is back rather than waiting for the next unrelated file write.
+	unsubscribeReconnect = onWsReconnect(() => {
+		refreshGitStatus(250);
 	});
 }
 

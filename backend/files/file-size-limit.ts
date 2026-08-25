@@ -7,7 +7,7 @@
  * defaults to 500MB when the setting is missing or invalid.
  */
 
-import { settingsQueries } from '../database/queries';
+import { readSystemSetting } from '../settings/system-settings';
 
 /** Default maximum file size in megabytes when no admin setting is present. */
 export const DEFAULT_MAX_FILE_SIZE_MB = 500;
@@ -19,19 +19,10 @@ export const DEFAULT_MAX_FILE_SIZE_MB = 500;
  * (e.g. on first boot before the admin writes any system setting).
  */
 export function getMaxFileSize(): number {
-	let limitMB = DEFAULT_MAX_FILE_SIZE_MB;
-	try {
-		const row = settingsQueries.get('system:settings');
-		if (row?.value) {
-			const parsed = typeof row.value === 'string' ? JSON.parse(row.value) : row.value;
-			const candidate = Number(parsed?.maxFileSizeMB);
-			if (Number.isFinite(candidate) && candidate > 0) {
-				limitMB = candidate;
-			}
-		}
-	} catch {
-		// Fall back to default on any read/parse failure.
-	}
+	const limitMB = readSystemSetting((settings) => {
+		const candidate = Number(settings.maxFileSizeMB);
+		return Number.isFinite(candidate) && candidate > 0 ? candidate : undefined;
+	}, DEFAULT_MAX_FILE_SIZE_MB);
 	return Math.floor(limitMB * 1024 * 1024);
 }
 

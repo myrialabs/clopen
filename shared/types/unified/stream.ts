@@ -90,7 +90,8 @@ export type RateLimitType =
 	| 'seven_day'
 	| 'seven_day_opus'
 	| 'seven_day_sonnet'
-	| 'overage';
+	| 'overage'
+	| 'seven_day_overage_included';
 
 export interface RateLimitEvent {
 	type: 'rate_limit';
@@ -102,9 +103,14 @@ export interface RateLimitEvent {
 }
 
 /**
- * Transient, non-persisted notification surfaced as a toast. Currently emitted
- * for Claude background-task completion (SDKTaskNotificationMessage); the
- * stream-manager routes it to a `chat:notification`.
+ * Transient, non-persisted notification surfaced as a toast; the stream-manager
+ * routes it to a `chat:notification`.
+ *
+ * Reserved for things the transcript alone cannot explain: a turn that produced
+ * no output (Pi, Cline), an answer that came from a fallback model after a
+ * refusal (Claude), a request cancelled because the account's credit limit ran
+ * out (Copilot). Routine progress does NOT belong here — backgrounded task
+ * outcomes already land in the transcript, and toasting them was pure noise.
  */
 export interface NotificationEvent {
 	type: 'notification';
@@ -176,6 +182,12 @@ export interface StreamRequest {
 	prompt: UserMessage;
 	engine: MessageEngine;
 	sender: MessageSender;
+	/**
+	 * Reasoning/thinking level token chosen for this session (native per engine).
+	 * `null`/absent → the engine's own default applies. Persisted to
+	 * `chat_sessions.reasoning_effort` like engine/model.
+	 */
+	reasoningEffort?: string | null;
 	/**
 	 * Active Profile chosen for this session (bundle of Skills/Commands/Subagents/
 	 * MCP/Permissions). `null` = explicit "no profile"; `undefined` = client didn't

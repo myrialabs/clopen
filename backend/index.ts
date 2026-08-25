@@ -8,7 +8,12 @@ if (typeof globalThis.Bun === 'undefined') {
 	process.exit(1);
 }
 
-// MUST be first import — cleans process.env before any other module reads it
+// Note: the node:v8 isBuildingSnapshot shim (backend/utils/bun-compat.ts) is
+// applied via Bun `preload` (bunfig.toml + --preload in bin/clopen.ts), NOT a
+// plain import here — Bun does not guarantee side-effect import order ahead of
+// the transitive mongodb/bson CJS import, so an import would run too late.
+
+// MUST be first import — cleans process.env before any other module reads it.
 import { SERVER_ENV } from './utils/env';
 
 import { Elysia } from 'elysia';
@@ -19,9 +24,15 @@ import { securityMiddleware } from './middleware/security';
 
 // Database initialization
 import { initializeDatabase, closeDatabase } from './database';
-import { syncInternalServers } from './mcp';
+import { bootstrapAfterDbInit } from './bootstrap';
+import { startEngineConfigWatcher } from './engine/config-revision';
+import { startEngineHotReload } from './engine/hot-reload';
 import { disposeAllEngines } from './engine';
+import { connectionManager } from './db-client/connection-manager';
+import { sshClientPool } from './ssh/client-pool';
+import { sshForwardManager } from './ssh/forwards';
 import { refreshProcessPath } from './utils/path-enrich';
+import { installProcessWarningFilter } from './utils/process-warnings';
 import { debug } from '$shared/utils/logger';
 import { networkInterfaces } from 'os';
 import { resolve } from 'node:path';
@@ -33,9 +44,13 @@ import { wsRouter } from './ws';
 // HTTP upload route — bypasses the Vite WS proxy, which corrupts sustained
 // binary transfers with `write EPIPE`. See backend/http/files-upload.ts.
 import { filesUploadRoute } from './http/files-upload';
+import { filesDownloadRoute } from './http/files-download';
 
 // HTTP routes for per-user notification sounds (upload / serve / delete).
 import { audioRoute } from './http/audio';
+
+// HTTP routes for SFTP transfer — same reason as the file upload route above.
+import { sshSftpRoute } from './http/ssh-sftp';
 
 // Import browser preview manager for graceful shutdown
 import { browserPreviewServiceManager } from './preview';
@@ -44,18 +59,45 @@ import { browserPreviewServiceManager } from './preview';
 import { handleMcpRequest, handleExternalMcpRequest, closeMcpServer, completeAuthorization } from './mcp';
 
 // Auth middleware
-import { checkRouteAccess } from './auth/permissions';
+import { checkRouteAccess, PUBLIC_ROUTES } from './auth/permissions';
+import { getAuthMode } from './settings/system-settings';
+import { authQueries } from './database/queries';
 import { authRateLimiter } from './auth';
 import { sessionCleanupScheduler } from './auth/session-cleanup';
 import { uploadTempCleanup } from './http/upload-temp-cleanup';
 import { ws as wsServer } from './utils/ws';
 import { messageRateLimiter } from './ws/message-rate-limiter';
+import { flushEpisodicIngest, stopExtractionRunner } from './memory/extract';
+import { stopMemoryMaintenance } from './memory/maintenance';
+
+/** How often (ms) the auth gate re-confirms a connection's session against the DB. */
+const SESSION_REVALIDATE_MS = 15_000;
 
 // Register auth gate on WebSocket router — blocks unauthenticated/unauthorized access
 wsRouter.setAuthMiddleware(async (conn, action) => {
 	const isAuth = wsServer.isAuthenticated(conn);
 	const role = wsServer.getRole(conn);
-	return checkRouteAccess(action, isAuth, role);
+	const result = checkRouteAccess(action, isAuth, role);
+	if (!result.allowed) return result;
+
+	// Defense-in-depth: an authenticated connection trusts the in-memory auth set
+	// at login. If its session was revoked/expired/deleted afterwards (sign-out
+	// from another device, admin removal, expiry), the live socket would otherwise
+	// keep full access until it reconnects. Periodically re-confirm the session
+	// still exists in the DB and kick the connection the moment it doesn't.
+	if (isAuth && getAuthMode() === 'required' && !PUBLIC_ROUTES.has(action)) {
+		if (wsServer.dueForSessionCheck(conn, SESSION_REVALIDATE_MS)) {
+			const hash = wsServer.getSessionTokenHash(conn);
+			const session = hash ? authQueries.getSessionByTokenHash(hash) : null;
+			const valid = !!session && new Date(session.expires_at) >= new Date();
+			if (!valid) {
+				wsServer.invalidateConnection(conn, 'Your session has ended');
+				return { allowed: false, error: 'Session ended' };
+			}
+		}
+	}
+
+	return result;
 });
 
 // Register message rate limiter on WebSocket router — prevents DoS via message spam
@@ -142,12 +184,16 @@ const app = new Elysia()
 		}
 	})
 
-	// HTTP file upload — mounted before the WS plugin so /api/files/upload
-	// stays on the HTTP path through the Vite dev proxy.
+	// HTTP file transfer — mounted before the WS plugin so /api/files/* stays
+	// on the HTTP path through the Vite dev proxy.
 	.use(filesUploadRoute)
+	.use(filesDownloadRoute)
 
 	// Per-user notification sound upload/serve/delete.
 	.use(audioRoute)
+
+	// SSH file transfer (SFTP download/upload).
+	.use(sshSftpRoute)
 
 	// Mount WebSocket router (all functionality now via WebSocket)
 	.use(wsRouter.asPlugin('/ws'));
@@ -201,18 +247,32 @@ async function startServer() {
 		debug.warn('path', '⚠️ Initial PATH enrichment failed:', error);
 	}
 
-	// Initialize database first before accepting connections
+	// Initialize database first before accepting connections.
+	//
+	// A failure here is fatal on purpose. Serving requests without a database
+	// means every settings read fails, and callers that fall back to defaults
+	// report a configured instance as unconfigured — an empty project list, an
+	// unfinished setup wizard. Refusing to start is both louder and safer.
 	try {
 		await initializeDatabase();
-		debug.log('database', '✅ Database initialized successfully');
-		// Mirror code-defined internal MCP servers into the DB so Settings → MCP
-		// can list and toggle them. Idempotent; preserves the user's toggles.
-		syncInternalServers();
+		debug.log('database', `✅ Database initialized successfully (data dir: ${SERVER_ENV.DATA_DIR})`);
+		// Re-establish code-defined built-ins that live outside migrations/seeders
+		// (internal MCP servers like Browser Automation + the default engine).
+		// Shared with the clear-data handler so a DB wipe on the live process
+		// restores them without a restart.
+		bootstrapAfterDbInit();
 		// Start expired session cleanup now that the database is ready
 		sessionCleanupScheduler.start();
 		uploadTempCleanup.start();
+		// Watch for engine-affecting config edits and apply them on their own.
+		// Long-lived, so it belongs here rather than in bootstrapAfterDbInit(),
+		// which also runs on the live process during "Clear All Data".
+		startEngineHotReload();
+		startEngineConfigWatcher();
 	} catch (error) {
-		debug.warn('database', '⚠️ Database initialization failed:', error);
+		console.error('❌ Database initialization failed — refusing to start:', error);
+		console.error(`   Data directory: ${SERVER_ENV.DATA_DIR}`);
+		process.exit(1);
 	}
 
 	// Start listening after database is ready
@@ -257,6 +317,15 @@ async function gracefulShutdown() {
 	try {
 		// Stop accepting new connections first — release the port ASAP
 		app.stop();
+		// Release DB Client pools up front so remote server sessions are freed
+		// immediately on restart (dev `bun --watch`), before the slower engine
+		// and browser teardown below — otherwise the old process keeps those
+		// sockets open long enough to overlap the new process ("too many clients").
+		await connectionManager.closeAll();
+		// Same reasoning for SSH: stop the forwards' listeners and close every
+		// transport so their remote sessions and bound ports are released now.
+		await sshForwardManager.stopAll();
+		sshClientPool.closeAll();
 		// Dispose rate limiter timer
 		authRateLimiter.dispose();
 		// Dispose expired session cleanup timer
@@ -267,6 +336,13 @@ async function gracefulShutdown() {
 		await closeMcpServer();
 		// Cleanup browser preview sessions
 		await browserPreviewServiceManager.cleanup();
+		// Write out any memory extraction still in flight or held back by a live
+		// stream. Bounded, because each entry is a model call with no timeout of its
+		// own — and the queue is a table, so whatever is left is picked up on the next
+		// start rather than lost.
+		stopMemoryMaintenance();
+		stopExtractionRunner();
+		await flushEpisodicIngest();
 		// Dispose all AI engines
 		await disposeAllEngines();
 		// Close database connection
@@ -328,6 +404,10 @@ globalThis.addEventListener('unhandledrejection', (event: PromiseRejectionEvent)
 	event.preventDefault();
 	reportUnhandledRejection(event.reason);
 });
+
+// Owns every `process.emitWarning` line in the server log (see the module for
+// why registering a listener means we must re-print what we keep).
+installProcessWarningFilter();
 
 process.on('uncaughtException', (error) => {
 	try {

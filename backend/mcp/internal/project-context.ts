@@ -11,6 +11,7 @@
 
 import { AsyncLocalStorage } from 'node:async_hooks';
 import { debug } from '$shared/utils/logger';
+import type { EngineType } from '$shared/types/unified';
 
 // Execution context for MCP tool handlers
 interface ExecutionContext {
@@ -30,7 +31,10 @@ class ProjectContextService {
 	private streamProjectMap = new Map<string, string>();
 
 	// Track active streams (streamId -> context)
-	private activeStreams = new Map<string, { chatSessionId: string; projectId: string; startedAt: number }>();
+	private activeStreams = new Map<
+		string,
+		{ chatSessionId: string; projectId: string; startedAt: number; engine?: EngineType }
+	>();
 
 	// Track the most recently active stream (for MCP tool execution context)
 	private mostRecentActiveStream: { streamId: string; chatSessionId: string; projectId: string } | null = null;
@@ -42,9 +46,10 @@ class ProjectContextService {
 	 * Per-stream AbortSignal map. The stream-manager registers each stream's
 	 * AbortController.signal here when the stream starts so MCP tool handlers
 	 * can fast-fail on cancellation. The remote-MCP HTTP transport (used by
-	 * OpenCode/Codex/Copilot/Qwen) does not preserve the engine's
-	 * AsyncLocalStorage context across the HTTP boundary — `mostRecentActiveStream`
-	 * is the practical fallback for resolving "which stream is asking right now".
+	 * OpenCode/Codex/Copilot/Qwen/Cursor) does not preserve the engine's
+	 * AsyncLocalStorage context across the HTTP boundary; the bridge re-creates
+	 * it from the identity in its URL, and `mostRecentActiveStream` is the last
+	 * resort for a caller that could not be identified at all.
 	 */
 	private streamSignals = new Map<string, AbortSignal>();
 
@@ -69,7 +74,7 @@ class ProjectContextService {
 	 * Register a stream ID with its project ID
 	 * Should be called when a chat stream starts
 	 */
-	registerStream(streamId: string, projectId: string, chatSessionId?: string): void {
+	registerStream(streamId: string, projectId: string, chatSessionId?: string, engine?: EngineType): void {
 		if (!streamId || !projectId) {
 			debug.warn('mcp', `⚠️ Cannot register stream: streamId='${streamId}' projectId='${projectId}'`);
 			return;
@@ -82,7 +87,8 @@ class ProjectContextService {
 			this.activeStreams.set(streamId, {
 				chatSessionId,
 				projectId,
-				startedAt: Date.now()
+				startedAt: Date.now(),
+				engine
 			});
 
 			// Update most recent active stream
@@ -156,6 +162,13 @@ class ProjectContextService {
 				}
 			}
 		}
+		if (context?.projectId) {
+			const inProject = this.mostRecentStreamInProject(context.projectId);
+			if (inProject) {
+				const signal = this.streamSignals.get(inProject.streamId);
+				if (signal) return signal;
+			}
+		}
 		if (this.mostRecentActiveStream) {
 			return this.streamSignals.get(this.mostRecentActiveStream.streamId);
 		}
@@ -186,6 +199,60 @@ class ProjectContextService {
 				this.mostRecentActiveStream = null;
 			}
 		}
+	}
+
+	/**
+	 * The most recently started live stream in `projectId`.
+	 *
+	 * The bridge can bind a project without a chat session — Codex's client, and
+	 * therefore its bridge URL, is built once per project and shared by every
+	 * chat session in it. Resolving the session inside that project is still a
+	 * guess when several of them stream at once, but it is a guess confined to
+	 * the right project, which is what tab ownership and cancellation need.
+	 */
+	private mostRecentStreamInProject(projectId: string): { streamId: string; chatSessionId: string } | undefined {
+		let best: { streamId: string; chatSessionId: string; startedAt: number } | undefined;
+		for (const [streamId, info] of this.activeStreams) {
+			if (info.projectId !== projectId) continue;
+			if (!best || info.startedAt > best.startedAt) {
+				best = { streamId, chatSessionId: info.chatSessionId, startedAt: info.startedAt };
+			}
+		}
+		return best ? { streamId: best.streamId, chatSessionId: best.chatSessionId } : undefined;
+	}
+
+	/**
+	 * The execution context of the most recent stream running on `engine`.
+	 *
+	 * For the engines whose MCP bridge URL cannot carry the calling stream —
+	 * Open Code bakes its MCP config into a server that is pooled per Profile
+	 * and shared by every project — this is as precise as the bridge can be. It
+	 * is still strictly narrower than "the most recent stream anywhere", which
+	 * is what sent a tool call from the project the agent is working in to
+	 * whichever project the user had most recently prompted in.
+	 */
+	getContextForEngine(engine: EngineType): ExecutionContext | undefined {
+		let best: { streamId: string; chatSessionId: string; projectId: string; startedAt: number } | undefined;
+		let candidates = 0;
+
+		for (const [streamId, info] of this.activeStreams) {
+			if (info.engine !== engine) continue;
+			candidates++;
+			if (!best || info.startedAt > best.startedAt) {
+				best = { streamId, chatSessionId: info.chatSessionId, projectId: info.projectId, startedAt: info.startedAt };
+			}
+		}
+
+		if (!best) return undefined;
+		if (candidates > 1) {
+			debug.warn(
+				'mcp',
+				`⚠️ ${candidates} ${engine} streams are live and the bridge cannot tell them apart — ` +
+					`attributing this call to the most recent one (project ${best.projectId})`
+			);
+		}
+
+		return { chatSessionId: best.chatSessionId, projectId: best.projectId, streamId: best.streamId };
 	}
 
 	/**
@@ -286,7 +353,13 @@ class ProjectContextService {
 			return context.chatSessionId;
 		}
 
-		// 2. Fallback to most recent active stream
+		// 2. Within the bound project, when the caller could only name that much
+		if (context?.projectId) {
+			const inProject = this.mostRecentStreamInProject(context.projectId);
+			if (inProject) return inProject.chatSessionId;
+		}
+
+		// 3. Fallback to most recent active stream
 		if (this.mostRecentActiveStream) {
 			return this.mostRecentActiveStream.chatSessionId;
 		}

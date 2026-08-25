@@ -30,7 +30,7 @@ export function handleStreamError(error: unknown, stderrTail?: string): void {
 	const tailLower = tail.toLowerCase();
 
 	if (error.message.includes('ENOENT') || error.message.includes('spawn qwen')) {
-		throw new Error('Qwen Code CLI not found. Install it via Settings → System Tools (or `bun add -g @qwen-code/qwen-code`).');
+		throw new Error('Qwen Code CLI not found. Install it via Settings → Stack (or `bun add -g @qwen-code/qwen-code`).');
 	}
 
 	if (

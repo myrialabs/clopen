@@ -1,13 +1,18 @@
 <script lang="ts">
 	import type { ToolUseBlock, AskUserQuestionInput } from '$shared/types/unified';
 	import ws from '$frontend/utils/ws';
-	import { currentSessionId } from '$frontend/stores/core/sessions.svelte';
+	import { renderedSessionId, sessionState } from '$frontend/stores/core/sessions.svelte';
 	import { appState, updateSessionProcessState } from '$frontend/stores/core/app.svelte';
 	import { debug } from '$shared/utils/logger';
 
 	const { toolInput }: { toolInput: ToolUseBlock } = $props();
 	const input = $derived(toolInput.input as AskUserQuestionInput);
 	const result = $derived(toolInput.result);
+
+	// `questions` is required by the type but not by reality: a call the harness
+	// rejects for a missing/malformed `questions` is still emitted and persisted.
+	// Every read goes through this normalized list so no code path can assume it.
+	const questions = $derived(Array.isArray(input?.questions) ? input.questions : []);
 
 	function parseResultAnswers(content: string, questions: { question: string }[]): Record<string, string> {
 		const answers: Record<string, string> = {};
@@ -34,7 +39,7 @@
 	const hasResult = $derived(!!result?.content);
 	const parsedAnswers = $derived.by(() => {
 		if (!result?.content) return {};
-		return parseResultAnswers(result.content, input.questions);
+		return parseResultAnswers(result.content, questions);
 	});
 	const isError = $derived(hasResult && Object.keys(parsedAnswers).length === 0);
 	const isAnswered = $derived(hasResult && !isError);
@@ -47,11 +52,10 @@
 	const isInterrupted = $derived(toolInput.interrupted);
 
 	$effect(() => {
-		if (!input.questions) return;
 		const init: Record<number, Set<string>> = {};
 		const initCustom: Record<number, string> = {};
 		const initOther: Record<number, boolean> = {};
-		for (let i = 0; i < input.questions.length; i++) {
+		for (let i = 0; i < questions.length; i++) {
 			init[i] = new Set();
 			initCustom[i] = '';
 			initOther[i] = false;
@@ -91,8 +95,8 @@
 		isSubmitting = true;
 		try {
 			const answers: Record<string, string> = {};
-			for (let i = 0; i < input.questions.length; i++) {
-				const q = input.questions[i];
+			for (let i = 0; i < questions.length; i++) {
+				const q = questions[i];
 				const selected = selections[i] || new Set();
 				const customText = customInputs[i]?.trim();
 				const isOther = otherActive[i];
@@ -104,10 +108,12 @@
 				}
 			}
 			debug.log('chat', 'Submitting AskUserQuestion answers:', answers);
-			ws.emit('chat:ask-user-answer', { chatSessionId: currentSessionId(), toolUseId: toolInput.id, answers });
-			const sessId = currentSessionId();
+			ws.emit('chat:ask-user-answer', { chatSessionId: renderedSessionId(), toolUseId: toolInput.id, answers });
+			const sessId = renderedSessionId();
 			if (sessId) updateSessionProcessState(sessId, { isWaitingInput: false });
-			appState.isWaitingInput = false;
+			// Only mirror to the global flag when this transcript is also the one
+			// the rest of the UI is pointed at.
+			if (sessId === sessionState.currentSession?.id) appState.isWaitingInput = false;
 			hasSubmitted = true;
 		} catch (error) {
 			debug.error('chat', 'Failed to submit answers:', error);
@@ -119,9 +125,18 @@
 
 <!-- Opaque background so the timeline rail doesn't clash with the question borders -->
 <div class="bg-slate-50 dark:bg-slate-900">
-{#if isError || isInterrupted}
+{#if questions.length === 0}
+	<!-- The call carried no usable questions — show why instead of an empty form. -->
+	<div class="border-l-2 border-red-300 dark:border-red-800 pl-2 space-y-0.5">
+		<div class="text-sm font-medium text-slate-600 dark:text-slate-400">Question could not be displayed</div>
+		<p class="text-sm text-red-500 dark:text-red-400 whitespace-pre-wrap break-words">
+			{result?.content || 'The engine sent this question without any content.'}
+		</p>
+	</div>
+
+{:else if isError || isInterrupted}
 	<div class="space-y-1.5">
-		{#each input.questions as question}
+		{#each questions as question}
 			<div class="border-l-2 border-slate-300 dark:border-slate-600 pl-2 space-y-0.5">
 				{#if question.header}
 					<div class="text-sm font-medium text-slate-600 dark:text-slate-400">{question.header}</div>
@@ -136,7 +151,7 @@
 
 {:else if isAnswered || hasSubmitted}
 	<div class="space-y-2">
-		{#each input.questions as question, idx}
+		{#each questions as question, idx}
 			{@const answer = isAnswered
 				? parsedAnswers[question.question]
 				: (() => {
@@ -159,14 +174,14 @@
 
 {:else}
 	<div class="space-y-2">
-		{#each input.questions as question, idx}
+		{#each questions as question, idx}
 			<div class="border-l-2 border-slate-300 dark:border-slate-600 pl-2.5 space-y-1.5">
 				{#if question.header}
 					<div class="text-sm font-semibold text-slate-700 dark:text-slate-300">{question.header}</div>
 				{/if}
 				<p class="text-sm text-slate-600 dark:text-slate-400">{question.question}</p>
 				<div class="space-y-1">
-					{#each question.options as option}
+					{#each question.options ?? [] as option}
 						<button
 							class="w-full text-left flex items-start gap-2 px-2 py-1 rounded text-sm transition-colors
 								{isSelected(idx, option.label)

@@ -53,7 +53,9 @@
 <!-- Header card -->
 <div class="bg-white dark:bg-slate-800 rounded-md border border-slate-200/60 dark:border-slate-700/60 p-3 mb-2">
 	<div class="space-y-1">
-		<InfoLine icon="lucide:search" text={description} />
+		{#if description}
+			<InfoLine icon="lucide:search" text={description} />
+		{/if}
 		<InfoLine icon="lucide:bot" text="Using {subagentType} agent" />
 	</div>
 </div>

@@ -21,6 +21,10 @@ export interface GutterChange {
 	oldLines: string[];
 	/** New lines in current content (empty for pure deletions) */
 	newLines: string[];
+	/** Which AI edit this hunk belongs to (undefined for git gutters) */
+	editIndex?: number;
+	/** Timestamp of the AI edit (undefined for git gutters) */
+	timestamp?: number;
 }
 
 /**

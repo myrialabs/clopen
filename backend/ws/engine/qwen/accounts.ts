@@ -134,4 +134,26 @@ export const qwenAccountsHandler = createRouter()
 	}, async ({ data }) => {
 		engineQueries.renameAccount(data.id, data.name.trim());
 		return { success: true };
+	})
+
+	// Update an account's API key and/or preset. Both are optional — an omitted
+	// (or blank) apiKey keeps the stored one, so the user can re-point the
+	// preset without re-entering the secret, and vice versa.
+	.http('engine:qwen-accounts-update', {
+		data: t.Object({
+			id: t.Number(),
+			apiKey: t.Optional(t.String()),
+			preset: t.Optional(PRESET_LITERALS),
+		}),
+		response: t.Object({ success: t.Boolean() })
+	}, async ({ data }) => {
+		const account = engineQueries.getAccount(data.id);
+		if (!account) throw new Error('Account not found');
+		const current = parseQwenCredential(account.credential);
+		const apiKey = data.apiKey?.trim() ? data.apiKey.trim() : current.apiKey;
+		const preset = data.preset ?? current.preset;
+		engineQueries.updateAccountCredential(data.id, serializeQwenCredential({ apiKey, preset }));
+		const active = engineQueries.getActiveAccountForEngine('qwen');
+		if (active?.id === data.id) await disposeQwenEngines();
+		return { success: true };
 	});

@@ -16,6 +16,13 @@ export { default as NotebookEditTool } from './variants/classic/NotebookEditTool
 export { default as ReadTool } from './variants/classic/ReadTool.svelte';
 export { default as ReadMcpResourceTool } from './variants/classic/ReadMcpResourceTool.svelte';
 export { default as AgentTool } from './variants/classic/AgentTool.svelte';
+export { default as WorkflowTool } from './variants/classic/WorkflowTool.svelte';
+export { default as ReplTool } from './variants/classic/ReplTool.svelte';
+export { default as SendMessageTool } from './variants/classic/SendMessageTool.svelte';
+export { default as ListAgentsTool } from './variants/classic/ListAgentsTool.svelte';
+export { default as ReadAgentTool } from './variants/classic/ReadAgentTool.svelte';
+export { default as SendInboxTool } from './variants/classic/SendInboxTool.svelte';
+export { default as ContextBoardTool } from './variants/classic/ContextBoardTool.svelte';
 export { default as TodoWriteTool } from './variants/classic/TodoWriteTool.svelte';
 export { default as WebFetchTool } from './variants/classic/WebFetchTool.svelte';
 export { default as WebSearchTool } from './variants/classic/WebSearchTool.svelte';
@@ -57,6 +64,13 @@ export { default as NotebookEditToolCompact } from './variants/compact/NotebookE
 export { default as ReadToolCompact } from './variants/compact/ReadTool.svelte';
 export { default as ReadMcpResourceToolCompact } from './variants/compact/ReadMcpResourceTool.svelte';
 export { default as AgentToolCompact } from './variants/compact/AgentTool.svelte';
+export { default as WorkflowToolCompact } from './variants/compact/WorkflowTool.svelte';
+export { default as ReplToolCompact } from './variants/compact/ReplTool.svelte';
+export { default as SendMessageToolCompact } from './variants/compact/SendMessageTool.svelte';
+export { default as ListAgentsToolCompact } from './variants/compact/ListAgentsTool.svelte';
+export { default as ReadAgentToolCompact } from './variants/compact/ReadAgentTool.svelte';
+export { default as SendInboxToolCompact } from './variants/compact/SendInboxTool.svelte';
+export { default as ContextBoardToolCompact } from './variants/compact/ContextBoardTool.svelte';
 export { default as TodoWriteToolCompact } from './variants/compact/TodoWriteTool.svelte';
 export { default as WebFetchToolCompact } from './variants/compact/WebFetchTool.svelte';
 export { default as WebSearchToolCompact } from './variants/compact/WebSearchTool.svelte';

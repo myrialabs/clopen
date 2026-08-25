@@ -54,6 +54,20 @@ import * as migration052 from './052_add_default_profile_to_projects';
 import * as migration053 from './053_add_profile_to_permission_sets';
 import * as migration054 from './054_drop_subagent_agent_type';
 import * as migration055 from './055_artifact_model_tools_per_engine';
+import * as migration056 from './056_support_mssql_driver';
+import * as migration057 from './057_seed_pi_provider';
+import * as migration058 from './058_seed_cline_provider';
+import * as migration059 from './059_seed_cursor_provider';
+import * as migration060 from './060_create_device_codes_table';
+import * as migration061 from './061_add_session_device_metadata';
+import * as migration062 from './062_add_session_source';
+import * as migration063 from './063_add_invite_project_ids';
+import * as migration064 from './064_create_messages_fts';
+import * as migration065 from './065_add_session_reasoning_effort';
+import * as migration066 from './066_create_memory_graph';
+import * as migration067 from './067_add_memory_graph_layout';
+import * as migration068 from './068_create_engine_config_revision';
+import * as migration069 from './069_create_ssh_client_tables';
 
 // Export all migrations in order
 export const migrations = [
@@ -386,6 +400,90 @@ export const migrations = [
 		description: migration055.description,
 		up: migration055.up,
 		down: migration055.down
+	},
+	{
+		id: '056',
+		description: migration056.description,
+		up: migration056.up,
+		down: migration056.down
+	},
+	{
+		id: '057',
+		description: migration057.description,
+		up: migration057.up,
+		down: migration057.down
+	},
+	{
+		id: '058',
+		description: migration058.description,
+		up: migration058.up,
+		down: migration058.down
+	},
+	{
+		id: '059',
+		description: migration059.description,
+		up: migration059.up,
+		down: migration059.down
+	},
+	{
+		id: '060',
+		description: migration060.description,
+		up: migration060.up,
+		down: migration060.down
+	},
+	{
+		id: '061',
+		description: migration061.description,
+		up: migration061.up,
+		down: migration061.down
+	},
+	{
+		id: '062',
+		description: migration062.description,
+		up: migration062.up,
+		down: migration062.down
+	},
+	{
+		id: '063',
+		description: migration063.description,
+		up: migration063.up,
+		down: migration063.down
+	},
+	{
+		id: '064',
+		description: migration064.description,
+		up: migration064.up,
+		down: migration064.down
+	},
+	{
+		id: '065',
+		description: migration065.description,
+		up: migration065.up,
+		down: migration065.down
+	},
+	{
+		id: '066',
+		description: migration066.description,
+		up: migration066.up,
+		down: migration066.down
+	},
+	{
+		id: '067',
+		description: migration067.description,
+		up: migration067.up,
+		down: migration067.down
+	},
+	{
+		id: '068',
+		description: migration068.description,
+		up: migration068.up,
+		down: migration068.down
+	},
+	{
+		id: '069',
+		description: migration069.description,
+		up: migration069.up,
+		down: migration069.down
 	}
 ];
 

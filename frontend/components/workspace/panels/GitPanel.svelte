@@ -1,5 +1,6 @@
 <script lang="ts">
 	import { onMount, untrack } from 'svelte';
+	import { onAiFilesChange } from '$frontend/utils/ai-changes';
 	import Icon from '$frontend/components/common/display/Icon.svelte';
 	import Modal from '$frontend/components/common/overlay/Modal.svelte';
 	import Dialog from '$frontend/components/common/overlay/Dialog.svelte';
@@ -7,7 +8,7 @@
 	import { showError, showInfo } from '$frontend/stores/ui/notification.svelte';
 	import { debug } from '$shared/utils/logger';
 	import { settings } from '$frontend/stores/features/settings.svelte';
-	import ws from '$frontend/utils/ws';
+	import ws, { onWsReconnect } from '$frontend/utils/ws';
 	import { acquireFileWatch } from '$frontend/utils/file-watch';
 	import { getFileIcon } from '$frontend/utils/file-icon-mappings';
 	import { isPreviewableFile, isBinaryFile } from '$frontend/utils/file-type';
@@ -28,6 +29,7 @@
 		type GitUiState,
 		type GitActiveDiff
 	} from '$frontend/stores/features/git-workspace.svelte';
+	import { beginPanelLoad } from '$frontend/stores/ui/project-workspace.svelte';
 	import { detectLanguageFromFilename } from '$frontend/components/common/editor/monaco-languages';
 	import type { IconName } from '$shared/types/ui/icons';
 	import type {
@@ -59,8 +61,14 @@
 
 	// Git state
 	let isRepo = $state(false);
+	// Whether `git:status` has answered for the CURRENT project. `isRepo` alone
+	// can't distinguish "not a repo" from "not asked yet", so the panel used to
+	// flash "Not a git repository" on every switch — and, coming from a repo,
+	// keep showing the previous project's repo UI until the answer arrived.
+	let statusLoaded = $state(false);
 	let isLoading = $state(false);
 	let gitStatus = $state<GitStatus>({ staged: [], unstaged: [], untracked: [], conflicted: [] });
+	let aiChangesSet = $state(new Set<string>());
 	let branchInfo = $state<GitBranchInfo | null>(null);
 
 	// Action-bar busy flags are keyed per-project in the workspace store, so an
@@ -1002,10 +1010,6 @@
 
 	// Log state
 	let commits = $state<GitCommit[]>([]);
-	// Set when a git-mutating action or an external git:changed event happens
-	// while History isn't the active view, so the next switch to History
-	// re-fetches instead of trusting the (now stale) cached commits.
-	let logStale = false;
 	let nestedCommits = $state<Record<string, GitCommit[]>>({});
 	let isLogLoading = $state(false);
 	let nestedIsLogLoading = $state<Record<string, boolean>>({});
@@ -1027,14 +1031,72 @@
 		hashShort: string;
 		message: string;
 		author: string;
+		body: string;
 		files: GitFileDiff[];
 		isLoading: boolean;
+		/** Set when the commit belongs to a sub-repo, so a refresh re-reads it there. */
+		repoPath?: string;
 	} | null>(null);
 
 	// Conflict state
 	let conflictFiles = $state<GitConflictFile[]>([]);
 	let isConflictLoading = $state(false);
 	let conflictInitialPath = $state<string | null>(null);
+
+	// ============================
+	// Staleness tracking
+	// ============================
+	//
+	// Every slice of git data the panel renders, and whether the last git event
+	// invalidated it. A slice that is on screen is re-read straight away; one
+	// that is hidden is re-read the moment its view is opened.
+	//
+	// This replaced a single ad-hoc `logStale` flag plus a per-view "have I
+	// loaded this yet" test. Those two only ever covered the main repo's commit
+	// list, which is why every other derived slice — the commit list under an
+	// expanded branch, an open commit's file list, a sub-repo's history, the
+	// remotes of a sub-repo — kept rendering whatever it had fetched the first
+	// time, no matter how much the repository moved underneath it.
+	type GitSection =
+		| 'status'
+		| 'branches'
+		| 'remotes'
+		| 'log'
+		| 'stash'
+		| 'tags'
+		| 'contributors'
+		| 'conflicts';
+
+	const ALL_GIT_SECTIONS: GitSection[] = [
+		'status',
+		'branches',
+		'remotes',
+		'log',
+		'stash',
+		'tags',
+		'contributors',
+		'conflicts'
+	];
+
+	let staleSections = $state<Set<GitSection>>(new Set());
+
+	function markGitSectionsStale(sections: readonly GitSection[] = ALL_GIT_SECTIONS): void {
+		const next = new Set(staleSections);
+		for (const section of sections) next.add(section);
+		staleSections = next;
+	}
+
+	function clearGitSectionStale(...sections: readonly GitSection[]): void {
+		if (sections.every((section) => !staleSections.has(section))) return;
+		const next = new Set(staleSections);
+		for (const section of sections) next.delete(section);
+		staleSections = next;
+	}
+
+	/** True when `section` must be re-read before it can be trusted on screen. */
+	function isGitSectionStale(section: GitSection): boolean {
+		return staleSections.has(section);
+	}
 
 	// Container width for responsive layout (same threshold as Files: 800)
 	let containerRef = $state<HTMLDivElement | null>(null);
@@ -1116,8 +1178,18 @@
 	// Data Loading
 	// ============================
 
-	async function loadAll() {
+	/**
+	 * Load everything the panel needs for the active project.
+	 *
+	 * `registerPanelLoad` is set for a project switch so the panel shows the
+	 * shared loading overlay for the whole fetch — the panel is revealed before
+	 * its data arrives, and without it the user would read the empty state
+	 * ("Not a git repository") as the answer. Background refreshes pass false:
+	 * they must never blank a panel that already has data on screen.
+	 */
+	async function loadAll(registerPanelLoad = false) {
 		if (!hasActiveProject || !projectId) return;
+		const releasePanel = registerPanelLoad ? beginPanelLoad('git') : null;
 		isLoading = true;
 		try {
 			// Stash + tags are loaded here too (not just lazily on their view) so the
@@ -1128,14 +1200,20 @@
 			debug.error('git', 'Failed to load git data:', err);
 		} finally {
 			isLoading = false;
+			releasePanel?.();
 		}
 	}
 
 	async function loadStatus() {
 		if (!projectId) return;
+		const requestProjectId = projectId;
 		try {
 			const data = await ws.http('git:status', { projectId });
+			// Drop a response that outlived its project — otherwise the previous
+			// project's changes render under the new project's header.
+			if (requestProjectId !== projectId) return;
 			isRepo = data.isRepo;
+			statusLoaded = true;
 			if (data.isRepo) {
 				gitStatus = {
 					staged: data.staged,
@@ -1143,9 +1221,14 @@
 					untracked: data.untracked,
 					conflicted: data.conflicted
 				};
+			} else {
+				gitStatus = { staged: [], unstaged: [], untracked: [], conflicted: [] };
 			}
 		} catch (err) {
 			debug.error('git', 'Failed to load status:', err);
+			// Still mark it answered: leaving it false would pin the panel on
+			// "Loading..." with no way out short of switching projects.
+			if (requestProjectId === projectId) statusLoaded = true;
 		}
 	}
 
@@ -1261,18 +1344,24 @@
 	// so the tab-switch effect re-fetches on the next visit instead of
 	// trusting the cached `commits` array.
 	async function refreshLogIfVisible() {
-		if (activeView === 'log') {
-			await loadLog(true);
-		} else {
-			logStale = true;
-		}
+		markGitSectionsStale(['log']);
+		if (activeView === 'log') await refreshAllLogs();
 	}
 
+	/**
+	 * Re-read the commit list for the main repo and every expanded sub-repo.
+	 *
+	 * Sub-repo history used to be refreshed only while History was the active
+	 * view: the staleness flag it fell back to otherwise was read solely by the
+	 * main repo's loader, so a sub-repo's commit list survived every subsequent
+	 * visit unchanged. Marking the section carries the sub-repos with it now.
+	 */
 	async function refreshAllLogs() {
 		if (activeView !== 'log') {
-			logStale = true;
+			markGitSectionsStale(['log']);
 			return;
 		}
+		clearGitSectionStale('log');
 		await loadLog(true);
 		if (branchInfo?.nested) {
 			for (const nested of branchInfo.nested) {
@@ -1283,6 +1372,90 @@
 					await loadNestedLog(nested.relPath, nested.path, true);
 				}
 			}
+		}
+	}
+
+	/**
+	 * Re-read the commit list behind every branch the user has expanded in the
+	 * Branches view, keeping however many pages they had already loaded.
+	 *
+	 * Nothing refreshed these before: once expanded, a branch's commits were
+	 * fetched once and then frozen, so a commit made on that branch from a
+	 * terminal never appeared under it.
+	 */
+	async function refreshExpandedBranchCommits(): Promise<void> {
+		if (expandedBranches.size === 0) return;
+
+		// Walk the branch lists rather than parsing the composite state keys, so
+		// the key format stays an implementation detail of `branchCommitStateKey`.
+		const expandedTargets: { branchName: string; repoPath?: string }[] = [];
+		const collectExpanded = (branches: GitBranch[] | undefined, repoPath?: string) => {
+			for (const branch of branches ?? []) {
+				if (expandedBranches.has(branchCommitStateKey(branch.name, repoPath))) {
+					expandedTargets.push({ branchName: branch.name, repoPath });
+				}
+			}
+		};
+		collectExpanded(branchInfo?.local);
+		collectExpanded(branchInfo?.remote);
+		for (const nested of branchInfo?.nested ?? []) {
+			collectExpanded(nested.info.local, nested.path);
+			collectExpanded(nested.info.remote, nested.path);
+		}
+
+		for (const target of expandedTargets) {
+			const stateKey = branchCommitStateKey(target.branchName, target.repoPath);
+			const loadedCount = branchCommitState[stateKey]?.commits.length ?? 0;
+			if (loadedCount === 0) continue;
+			// Re-read exactly as many commits as were on screen, so a refresh never
+			// collapses a list the user had paged through.
+			await loadBranchCommits(target.branchName, true, target.repoPath, loadedCount);
+		}
+	}
+
+	/**
+	 * Re-read the open commit detail. An amend or a rebase rewrites the commit
+	 * under the same position in the log, and can remove it entirely — in which
+	 * case the detail is closed rather than left showing a commit that is gone.
+	 */
+	async function refreshSelectedCommit(): Promise<void> {
+		const open = selectedCommit;
+		if (!open || !projectId) return;
+		try {
+			const res = await ws.http('git:diff-commit', {
+				projectId,
+				commitHash: open.hash,
+				repoPath: open.repoPath
+			});
+			if (selectedCommit?.hash !== open.hash) return;
+			selectedCommit = { ...selectedCommit, files: res.files, body: res.body, isLoading: false };
+		} catch {
+			if (selectedCommit?.hash !== open.hash) return;
+			// Close the detail only when the commit really is gone — the log has
+			// already been re-read at this point, so its absence there is the
+			// answer. A transient failure keeps what is on screen instead.
+			const stillInLog = open.repoPath
+				? Object.values(nestedCommits).some((list) => list.some((c) => c.hash === open.hash))
+				: commits.some((c) => c.hash === open.hash);
+			if (!stillInLog) selectedCommit = null;
+		}
+	}
+
+	/** Re-read the remotes of every sub-repo whose remote list is on screen. */
+	async function refreshNestedRemotes(): Promise<void> {
+		if (!branchInfo?.nested) return;
+		for (const nested of branchInfo.nested) {
+			if (!nestedRemotesList[nested.relPath]) continue;
+			await loadNestedRemotes(nested);
+		}
+	}
+
+	/** Re-read the file list of every expanded stash entry. */
+	async function refreshExpandedStashFiles(): Promise<void> {
+		if (expandedStashes.size === 0) return;
+		for (const entry of stashEntries) {
+			if (!expandedStashes.has(getStashKey(entry))) continue;
+			await loadStashFiles(entry);
 		}
 	}
 
@@ -1465,7 +1638,7 @@
 	async function handleViewCommitDiffs(commit: GitCommit, repoPath?: string) {
 		if (!projectId) return;
 		try {
-			const diffs = await ws.http('git:diff-commit', { projectId, commitHash: commit.hash, repoPath }) as GitFileDiff[];
+			const { files: diffs } = await ws.http('git:diff-commit', { projectId, commitHash: commit.hash, repoPath });
 			if (!diffs || diffs.length === 0) {
 				showInfo('No Changes', 'This commit has no file changes.');
 				return;
@@ -1700,14 +1873,17 @@
 			return;
 		}
 
+		// Refresh in place: this runs on every file/git change event, so tearing the
+		// tab down would make the open diff flicker on unrelated edits.
+		const scrollTop = tab.scrollTop ?? 0;
 		if (stagedFile) {
-			await viewDiff(stagedFile, 'staged');
+			await viewDiff(stagedFile, 'staged', scrollTop, true);
 		} else if (unstagedFile) {
-			await viewDiff(unstagedFile, 'unstaged');
+			await viewDiff(unstagedFile, 'unstaged', scrollTop, true);
 		} else if (untrackedFile) {
-			await viewDiff(untrackedFile, 'unstaged');
+			await viewDiff(untrackedFile, 'unstaged', scrollTop, true);
 		} else if (conflictedFile) {
-			await viewDiff(conflictedFile, 'conflicted');
+			await viewDiff(conflictedFile, 'conflicted', scrollTop, true);
 		}
 	}
 
@@ -1751,26 +1927,46 @@
 		return isPreviewableFile(fileName) || isBinaryFile(fileName);
 	}
 
-	async function viewDiff(file: GitFileChange, section: string, restoreScrollTop = 0) {
+	/**
+	 * Open a file's diff in the Changes view.
+	 *
+	 * `silent` re-fetches the diff for the tab that is ALREADY open, leaving it on
+	 * screen while the new content is fetched and swapping it in only if it
+	 * actually differs. Background refreshes (a file-watch event, a git state
+	 * change) use it; without it every refresh tore the tab down and rebuilt it as
+	 * an empty spinner, so the editor visibly reloaded and lost its scroll
+	 * position — several times a minute on a busy working tree.
+	 */
+	async function viewDiff(
+		file: GitFileChange,
+		section: string,
+		restoreScrollTop = 0,
+		silent = false
+	) {
 		if (!projectId) return;
+		const requestProjectId = projectId;
 		const tabId = `${section}:${file.path}`;
 		const fileName = file.path.split(/[\\/]/).pop() || file.path;
 		const status = section === 'staged' ? file.indexStatus : file.workingStatus;
+		const existing = openTabs.find((t) => t.id === tabId);
+		const keepInPlace = silent && existing !== undefined && !existing.isLoading;
 
-		// Changes view: always replace with single tab
-		openTabs = [{
-			id: tabId,
-			filePath: file.path,
-			fileName,
-			section,
-			diff: null,
-			diffs: [],
-			isLoading: true,
-			status,
-			scrollTop: restoreScrollTop
-		}];
-		activeTabId = tabId;
-		if (!isTwoColumnMode) viewMode = 'diff';
+		if (!keepInPlace) {
+			// Changes view: always replace with single tab
+			openTabs = [{
+				id: tabId,
+				filePath: file.path,
+				fileName,
+				section,
+				diff: null,
+				diffs: [],
+				isLoading: true,
+				status,
+				scrollTop: restoreScrollTop
+			}];
+			activeTabId = tabId;
+			if (!isTwoColumnMode) viewMode = 'diff';
+		}
 
 		try {
 			let diffResult: GitFileDiff | null = null;
@@ -1903,17 +2099,35 @@
 				}
 			}
 
+			if (requestProjectId !== projectId) return;
+
+			// An unchanged diff must not be reassigned: DiffViewer re-renders (and
+			// resets its scroll) on identity change, so a silent refresh that found
+			// nothing new has to be a genuine no-op.
+			if (keepInPlace && sameDiff(existing?.diff ?? null, diffResult)) return;
+
 			openTabs = openTabs.map(t =>
-				t.id === tabId ? { ...t, diff: diffResult, isLoading: false } : t
+				t.id === tabId ? { ...t, diff: diffResult, status, isLoading: false } : t
 			);
 		} catch (err) {
 			debug.error('git', 'Failed to load diff:', err);
+			if (requestProjectId !== projectId) return;
+			// A failed background refresh keeps whatever is on screen rather than
+			// blanking a diff the user is reading.
+			if (keepInPlace) return;
 			openTabs = openTabs.map(t =>
 				t.id === tabId ? { ...t, diff: null, isLoading: false } : t
 			);
 		}
 		// Remember the open diff tab per-project (server-persisted).
 		markGitUiDirty();
+	}
+
+	/** Structural equality for two diffs, used to skip no-op editor updates. */
+	function sameDiff(a: GitFileDiff | null, b: GitFileDiff | null): boolean {
+		if (a === b) return true;
+		if (!a || !b) return false;
+		return JSON.stringify(a) === JSON.stringify(b);
 	}
 
 	async function viewCommitDiff(hash: string, repoPath?: string) {
@@ -1931,23 +2145,25 @@
 			hashShort: commit.hashShort,
 			message: commit.message,
 			author: commit.author,
+			body: '',
 			files: [],
-			isLoading: true
+			isLoading: true,
+			repoPath
 		};
 		// Remember the open commit detail per-project (server-persisted).
 		markGitUiDirty();
 
 		try {
-			const diffs = await ws.http('git:diff-commit', { projectId, commitHash: hash, repoPath });
+			const res = await ws.http('git:diff-commit', { projectId, commitHash: hash, repoPath });
 			if (selectedCommit?.hash !== hash) return;
-			selectedCommit = { ...selectedCommit, files: diffs, isLoading: false };
+			selectedCommit = { ...selectedCommit, files: res.files, body: res.body, isLoading: false };
 
 			// Re-open a previously-open commit-file diff tab for this project, now
 			// that the commit's file list is available (lazy restore).
 			const pend = pendingActiveDiff;
 			if (pend && pend.section === 'commit' && pend.commitHash === hash) {
 				pendingActiveDiff = null;
-				const target = diffs.find(d => (d.newPath || d.oldPath) === pend.filePath);
+				const target = res.files.find(d => (d.newPath || d.oldPath) === pend.filePath);
 				if (target) viewCommitFileDiff(target, pend.scrollTop ?? 0);
 			}
 		} catch (err) {
@@ -2109,15 +2325,21 @@
 		return repoPath ? `${repoPath}::${branchName}` : branchName;
 	}
 
-	async function loadBranchCommits(branchName: string, reset = false, repoPath?: string) {
+	/**
+	 * `resetLimit` re-reads that many commits in one call instead of a single
+	 * page — used when refreshing a branch the user had already paged through,
+	 * so the refresh restores the list at its current length.
+	 */
+	async function loadBranchCommits(branchName: string, reset = false, repoPath?: string, resetLimit?: number) {
 		if (!projectId) return;
 		const key = branchCommitStateKey(branchName, repoPath);
 		const current = branchCommitState[key] ?? { commits: [], isLoading: false, hasMore: true, skip: 0 };
 		if (current.isLoading) return;
 		const skip = reset ? 0 : current.skip;
+		const limit = reset && resetLimit ? resetLimit : BRANCH_COMMIT_PAGE_SIZE;
 		branchCommitState = { ...branchCommitState, [key]: { ...current, isLoading: true } };
 		try {
-			const result = await ws.http('git:log', { projectId, branch: branchName, limit: BRANCH_COMMIT_PAGE_SIZE, skip, repoPath });
+			const result = await ws.http('git:log', { projectId, branch: branchName, limit, skip, repoPath });
 			branchCommitState = { ...branchCommitState, [key]: { commits: reset ? result.commits : [...current.commits, ...result.commits], isLoading: false, hasMore: result.hasMore, skip: skip + result.commits.length } };
 		} catch { branchCommitState = { ...branchCommitState, [key]: { ...current, isLoading: false } }; }
 	}
@@ -2136,7 +2358,7 @@
 		if (current.isLoading) return;
 		branchCommitFileState = { ...branchCommitFileState, [hash]: { ...current, isLoading: true } };
 		try {
-			const files = await ws.http('git:diff-commit', { projectId, commitHash: hash, repoPath });
+			const { files } = await ws.http('git:diff-commit', { projectId, commitHash: hash, repoPath });
 			branchCommitFileState = { ...branchCommitFileState, [hash]: { files, isLoading: false } };
 		} catch { branchCommitFileState = { ...branchCommitFileState, [hash]: { ...current, isLoading: false } }; }
 	}
@@ -3322,8 +3544,16 @@ ${bodies}`;
 
 					// Heavy data (open diffs, history) is always re-fetched lazily.
 					resetAllViewTabs();
+					// Drop the outgoing project's git state. `isRepo`/`gitStatus` used
+					// to persist across the switch, which the barrier hid; now that the
+					// panel is revealed before its data lands, stale changes from the
+					// previous project would be visible (and stageable).
+					statusLoaded = false;
+					isRepo = false;
+					gitStatus = { staged: [], unstaged: [], untracked: [], conflicted: [] };
+					branchInfo = null;
 					commits = [];
-					logStale = false;
+					staleSections = new Set();
 					logSkip = 0;
 					selectedCommit = null;
 					expandedContributors = new Set();
@@ -3332,6 +3562,18 @@ ${bodies}`;
 					contributorTotal = 0;
 					expandedBranchCommits = new Set();
 					branchCommitFileState = {};
+					// Sub-repo and expanded-branch data is keyed by path or branch
+					// name, not by project, so leaving it behind let one project's
+					// commit lists and remotes render under the next project's repos.
+					expandedBranches = new Set();
+					branchCommitState = {};
+					nestedCommits = {};
+					nestedLogSkip = {};
+					nestedLogHasMore = {};
+					nestedRemotesList = {};
+					expandedStashes = new Set();
+					stashFileState = {};
+					conflictFiles = [];
 
 					// Restore this project's view. Persistence of the LEAVING project
 					// is handled by the workspace coordinator (snapshot provider +
@@ -3366,7 +3608,7 @@ ${bodies}`;
 					// explicitly rather than leaning solely on the reactive view
 					// effects, which can miss the isRepo flip during a busy switch and
 					// leave History stuck on "No commits yet".
-					loadAll().then(() => {
+					loadAll(true).then(() => {
 						if (!isRepo) return;
 						reopenPendingChangesDiff();
 						if (activeView === 'log' && commits.length === 0) loadLog(true);
@@ -3405,26 +3647,25 @@ ${bodies}`;
 		};
 	});
 
-	// Load log when switching to log view. Also re-fetches if a git-mutating
-	// action or an external git:changed event happened while History was
-	// hidden (logStale), so the tab never shows a cached-but-outdated list.
+	// Load the log when History is shown, and re-load it whenever a git event
+	// invalidated it while the view was hidden — so the tab can never present a
+	// cached-but-outdated list.
 	$effect(() => {
 		if (activeView === 'log' && isRepo) {
 			untrack(() => {
-				if (commits.length === 0 || logStale) {
-					logStale = false;
-					loadLog(true);
-				}
+				if (commits.length === 0 || isGitSectionStale('log')) void refreshAllLogs();
 			});
 		}
 	});
 
-
-
-	// Refresh branch list when switching to Branches view
+	// Refresh the branch list (and any expanded branch's commits) on the way in
 	$effect(() => {
 		if (activeView === 'branches' && isRepo) {
-			untrack(() => loadBranches());
+			untrack(async () => {
+				clearGitSectionStale('branches');
+				await loadBranches();
+				await refreshExpandedBranchCommits();
+			});
 		}
 	});
 
@@ -3432,10 +3673,18 @@ ${bodies}`;
 	$effect(() => {
 		if (activeView !== 'more' || !isRepo) return;
 		const sub = moreSubTab;
-		untrack(() => {
-			if (sub === 'tags') loadTags();
-			else if (sub === 'stash') loadStash();
-			else if (sub === 'contributors') loadContributors();
+		untrack(async () => {
+			if (sub === 'tags') {
+				clearGitSectionStale('tags');
+				await loadTags();
+			} else if (sub === 'stash') {
+				clearGitSectionStale('stash');
+				await loadStash();
+				await refreshExpandedStashFiles();
+			} else if (sub === 'contributors') {
+				clearGitSectionStale('contributors');
+				await loadContributors();
+			}
 		});
 	});
 
@@ -3468,19 +3717,69 @@ ${bodies}`;
 
 	// Debounce timer for file/git change events
 	let changeDebounce: ReturnType<typeof setTimeout> | null = null;
+	// Whether the pending refresh must also re-read the slow, rarely-changing
+	// data (stash/tags/contributors/log) — set by `git:changed` only.
+	let pendingFullRefresh = false;
 
-	// Shared refresh logic for both file changes and git state changes
-	function scheduleGitRefresh() {
+	/**
+	 * Shared, debounced refresh for both file changes and git state changes.
+	 *
+	 * Everything funnels through one timer on purpose: `git:changed` used to fire
+	 * six unbounded loads of its own on top of this one, so a burst of git
+	 * activity spawned dozens of overlapping git processes — which is exactly when
+	 * the panel felt slowest.
+	 *
+	 * A full refresh marks every section stale, then re-reads what is on screen
+	 * and leaves the rest to be re-read when its view is opened. That split keeps
+	 * the cost bounded while still guaranteeing that no tab — including the
+	 * derived views nested under it, like an expanded branch's commits or an open
+	 * commit's file list — can show data older than the last git event.
+	 */
+	function scheduleGitRefresh(full = false) {
+		pendingFullRefresh ||= full;
+		if (full) markGitSectionsStale();
 		if (changeDebounce) clearTimeout(changeDebounce);
 		changeDebounce = setTimeout(async () => {
 			changeDebounce = null;
+			const isFull = pendingFullRefresh;
+			pendingFullRefresh = false;
+
 			// Refresh git status and branches (branch switch also modifies working tree)
-			const prevBranch = branchInfo?.current;
+			const previousBranch = branchInfo?.current;
+			clearGitSectionStale('status', 'branches');
 			await Promise.all([loadStatus(), loadBranches()]);
 
-			// If branch changed, also refresh remotes
-			if (branchInfo?.current !== prevBranch) {
-				loadRemotes();
+			// A branch switch can change the remote set; so can an out-of-band git
+			// operation. Either way, re-read it at most once.
+			if (isFull || branchInfo?.current !== previousBranch) {
+				clearGitSectionStale('remotes');
+				await loadRemotes();
+				await refreshNestedRemotes();
+			}
+
+			if (isFull) {
+				// Keep the Stash/Tags badge counts live when git changes out-of-band
+				// (e.g. `git stash` / `git tag` run from the terminal). These feed
+				// badges that are visible from every tab, so they are never deferred.
+				clearGitSectionStale('stash', 'tags', 'contributors');
+				await Promise.all([loadStash(), loadTags(), loadContributors()]);
+				await refreshExpandedStashFiles();
+
+				// Refresh the log if History was ever visited; when it is not the
+				// active view this only marks it stale for the next visit.
+				if (commits.length > 0) await refreshAllLogs();
+
+				// Views nested inside the active one. Each of these was previously
+				// fetched once and never revisited, so they outlived every change.
+				if (activeView === 'branches') await refreshExpandedBranchCommits();
+				if (selectedCommit) await refreshSelectedCommit();
+
+				// An external merge or rebase can raise (or resolve) conflicts while
+				// the resolver is open on screen.
+				if (conflictFiles.length > 0 || branchInfo?.operation) {
+					clearGitSectionStale('conflicts');
+					await loadConflicts();
+				}
 			}
 
 			// Refresh the active diff tab if currently viewing one. The file may
@@ -3497,12 +3796,23 @@ ${bodies}`;
 		if (!hasActiveProject || !projectId) return;
 
 		const unsub = ws.on('files:changed', (payload: any) => {
-			if (payload.projectId !== projectId || !isRepo) return;
+			if (payload.projectId !== projectId) return;
+			// An empty change list carries no information; refreshing on it just
+			// churns git and the open diff for nothing.
+			if (payload.changes.length === 0) return;
 			scheduleGitRefresh();
+		});
+
+		// The watcher was rebuilt and may have missed events. Reconcile everything:
+		// what was missed is by definition unknown, so no section can be trusted.
+		const unsubResync = ws.on('files:resync', (payload: any) => {
+			if (payload.projectId !== projectId) return;
+			scheduleGitRefresh(true);
 		});
 
 		return () => {
 			unsub();
+			unsubResync();
 			if (changeDebounce) {
 				clearTimeout(changeDebounce);
 				changeDebounce = null;
@@ -3511,27 +3821,73 @@ ${bodies}`;
 	});
 
 	// Subscribe to git state change events (external git add, commit, branch switch, etc.)
+	//
+	// Deliberately NOT gated on `isRepo`: a project that was not a repository
+	// when the panel loaded becomes one the moment `git init` or `git clone` runs
+	// in a terminal, and the gate is what pinned the panel on "Not a git
+	// repository" until the user switched projects and back.
 	$effect(() => {
 		if (!hasActiveProject || !projectId) return;
 
 		const unsub = ws.on('git:changed', (payload: any) => {
-			if (payload.projectId !== projectId || !isRepo) return;
-			scheduleGitRefresh();
-			// Refresh branches and remotes in case of branch switch/create/delete
-			loadBranches();
-			loadRemotes();
-			// Keep the Stash/Tags badge counts live when git changes out-of-band
-			// (e.g. `git stash` / `git tag` run from the terminal).
-			loadStash();
-			loadTags();
-			loadContributors();
-			// Refresh log if it was already loaded (History tab was visited)
-			if (commits.length > 0) {
-				refreshAllLogs();
-			}
+			if (payload.projectId !== projectId) return;
+			// Full refresh: index/HEAD/refs moved, so branches, remotes, stash, tags,
+			// contributors and the log can all be stale.
+			scheduleGitRefresh(true);
 		});
 
 		return () => unsub();
+	});
+
+	/**
+	 * Revalidate after a gap in which events could not reach us.
+	 *
+	 * Two gaps exist and neither produces an event of its own. While the
+	 * WebSocket is down — a sleeping laptop, a network blip, a server restart,
+	 * a remote device — every `git:changed` is delivered to nobody and is gone
+	 * for good. And while the page is hidden, browsers throttle timers and
+	 * handlers, so what does arrive may be coalesced away.
+	 *
+	 * Both are answered the same way: on reconnect, and on becoming visible
+	 * again, treat every section as stale and re-read the active view. This is
+	 * the reason the panel needs no polling — the only moments it can fall
+	 * behind are moments it is told about.
+	 */
+	$effect(() => {
+		if (!hasActiveProject || !projectId) return;
+
+		// Regaining focus is a frequent, cheap event (every alt-tab), and a full
+		// refresh spawns several git processes. Throttle it: anything the throttle
+		// swallows is at most a few seconds behind, and a real change during that
+		// window still arrives as its own `git:changed`.
+		const REVALIDATE_MIN_INTERVAL_MS = 5000;
+		let lastRevalidateAt = 0;
+
+		const revalidate = () => {
+			const now = Date.now();
+			if (now - lastRevalidateAt < REVALIDATE_MIN_INTERVAL_MS) return;
+			lastRevalidateAt = now;
+			scheduleGitRefresh(true);
+		};
+
+		// A reconnect always revalidates: the gap it closes is unbounded, and a
+		// throttle would be measuring the wrong thing.
+		const unsubReconnect = onWsReconnect(() => {
+			lastRevalidateAt = Date.now();
+			scheduleGitRefresh(true);
+		});
+
+		const onBecameVisible = () => {
+			if (document.visibilityState === 'visible') revalidate();
+		};
+		document.addEventListener('visibilitychange', onBecameVisible);
+		window.addEventListener('focus', revalidate);
+
+		return () => {
+			unsubReconnect();
+			document.removeEventListener('visibilitychange', onBecameVisible);
+			window.removeEventListener('focus', revalidate);
+		};
 	});
 
 	function startColumnResize(e: MouseEvent) {
@@ -3556,6 +3912,10 @@ ${bodies}`;
 
 	// Monitor container width
 	onMount(() => {
+		const unsubAiFiles = onAiFilesChange((paths) => {
+			aiChangesSet = new Set(paths);
+		});
+
 		let resizeObserver: ResizeObserver | null = null;
 		if (containerRef && typeof ResizeObserver !== 'undefined') {
 			resizeObserver = new ResizeObserver((entries) => {
@@ -3567,6 +3927,7 @@ ${bodies}`;
 		}
 
 		return () => {
+			unsubAiFiles();
 			resizeObserver?.disconnect();
 		};
 	});
@@ -3630,20 +3991,16 @@ ${bodies}`;
 	{@const commitState = branchCommitState[branchKey]}
 	{@const branchRelativeDate = formatRelativeTime(branch.lastCommitDate)}
 	{@const nestedPushed = nestedPushedBranchNames(nested)}
-	{@const curPush = !nestedPushed.has(branch.name) || branch.ahead > 0}
-	{@const curPull = branch.behind > 0}
-	{@const curActionCount = (curPush ? 1 : 0) + (curPull ? 1 : 0) + 1}
-	{@const curPadding = curActionCount === 1 ? 'group-hover:pr-9' : curActionCount === 2 ? 'group-hover:pr-16' : 'group-hover:pr-24'}
 	<div>
 		<div
-			class="group relative flex items-center gap-1.5 pl-1.5 pr-2.5 py-1.5 rounded-md transition-colors border cursor-pointer select-none {branch.isCurrent ? 'bg-violet-500/10 border-violet-500/20 text-violet-700 dark:text-violet-300' : 'border-transparent hover:bg-slate-100 dark:hover:bg-slate-800/60 text-slate-700 dark:text-slate-300'}"
+			class="group flex items-center gap-1.5 pl-1.5 pr-2.5 py-1.5 rounded-md transition-colors border cursor-pointer select-none {branch.isCurrent ? 'bg-violet-500/10 border-violet-500/20 text-violet-700 dark:text-violet-300' : 'border-transparent hover:bg-slate-100 dark:hover:bg-slate-800/60 text-slate-700 dark:text-slate-300'}"
 			role="button"
 			tabindex="0"
 			onclick={() => toggleBranchExpanded(branch.name, nested.path)}
 			onkeydown={(e) => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); toggleBranchExpanded(branch.name, nested.path); } }}
 		>
 			<Icon name={isExpanded ? 'lucide:chevron-down' : 'lucide:chevron-right'} class="w-3.5 h-3.5 shrink-0 {branch.isCurrent ? 'text-violet-500' : 'text-slate-400'}" />
-			<div class="flex-1 min-w-0 flex flex-col justify-center overflow-hidden pr-2 {!branch.isCurrent ? (nestedPushed.has(branch.name) ? 'group-hover:pr-32' : 'group-hover:pr-40') : curPadding} transition-[padding] duration-150">
+			<div class="flex-1 min-w-0 flex flex-col justify-center overflow-hidden">
 				<div class="flex min-w-0 items-center gap-2">
 					<span class="flex-1 min-w-0 text-sm text-slate-900 dark:text-slate-100 leading-tight truncate" title={branch.name}>{branch.name}</span>
 					{#if upstreamName}<span class="text-3xs text-slate-400 shrink-0">{upstreamName}</span>{/if}
@@ -3656,31 +4013,31 @@ ${bodies}`;
 				</div>
 			</div>
 			{#if !branch.isCurrent}
-			<div class="pointer-events-none absolute inset-y-0 right-0 flex items-center gap-1 pl-1 pr-2 bg-white/20 opacity-0 backdrop-blur-md supports-[backdrop-filter]:bg-white/10 transition-opacity group-hover:opacity-100 dark:bg-slate-900/20 dark:supports-[backdrop-filter]:bg-slate-900/10">
-				<button type="button" class="pointer-events-auto flex items-center justify-center w-7 h-7 rounded-md text-slate-400 hover:bg-violet-500/10 hover:text-violet-500 transition-colors bg-transparent border-none cursor-pointer" onclick={(e) => { e.stopPropagation(); handleSwitchNestedBranch(nested, branch.name); }} title="Switch to this branch"><Icon name="lucide:arrow-right" class="w-3.5 h-3.5" /></button>
+			<div class="flex items-center gap-1 shrink-0">
+				<button type="button" class="flex items-center justify-center w-6 h-6 rounded-md text-slate-400 hover:bg-violet-500/10 hover:text-violet-500 transition-colors bg-transparent border-none cursor-pointer" onclick={(e) => { e.stopPropagation(); handleSwitchNestedBranch(nested, branch.name); }} title="Switch to this branch"><Icon name="lucide:arrow-right" class="w-3.5 h-3.5" /></button>
 				{#if !nestedPushed.has(branch.name)}
 					{#if pushingBranch === branch.name}
-						<div class="pointer-events-auto flex items-center justify-center w-7 h-7 rounded-md text-emerald-500"><Icon name="lucide:loader-circle" class="w-3.5 h-3.5 animate-spin" /></div>
+						<div class="flex items-center justify-center w-6 h-6 rounded-md text-emerald-500"><Icon name="lucide:loader-circle" class="w-3.5 h-3.5 animate-spin" /></div>
 					{:else}
-						<button type="button" class="pointer-events-auto flex items-center justify-center w-7 h-7 rounded-md text-slate-400 hover:bg-emerald-500/10 hover:text-emerald-500 transition-colors bg-transparent border-none cursor-pointer" onclick={(e) => { e.stopPropagation(); handlePushBranch(branch.name, nested.path); }} title="Push branch to remote"><Icon name="lucide:upload" class="w-3.5 h-3.5" /></button>
+						<button type="button" class="flex items-center justify-center w-6 h-6 rounded-md text-slate-400 hover:bg-emerald-500/10 hover:text-emerald-500 transition-colors bg-transparent border-none cursor-pointer" onclick={(e) => { e.stopPropagation(); handlePushBranch(branch.name, nested.path); }} title="Push branch to remote"><Icon name="lucide:upload" class="w-3.5 h-3.5" /></button>
 					{/if}
 				{/if}
-				<button type="button" class="pointer-events-auto flex items-center justify-center w-7 h-7 rounded-md text-slate-400 hover:bg-blue-500/10 hover:text-blue-500 transition-colors bg-transparent border-none cursor-pointer" onclick={(e) => { e.stopPropagation(); mergeNestedBranch(branch.name, nested.path); }} title="Merge into current branch"><Icon name="lucide:git-merge" class="w-3.5 h-3.5" /></button>
-			<button type="button" class="pointer-events-auto flex items-center justify-center w-7 h-7 rounded-md text-slate-400 hover:bg-red-500/10 hover:text-red-500 transition-colors bg-transparent border-none cursor-pointer" onclick={(e) => { e.stopPropagation(); handleDeleteNestedBranch(nested, branch.name); }} title="Delete branch"><Icon name="lucide:trash-2" class="w-3.5 h-3.5" /></button>
+				<button type="button" class="flex items-center justify-center w-6 h-6 rounded-md text-slate-400 hover:bg-blue-500/10 hover:text-blue-500 transition-colors bg-transparent border-none cursor-pointer" onclick={(e) => { e.stopPropagation(); mergeNestedBranch(branch.name, nested.path); }} title="Merge into current branch"><Icon name="lucide:git-merge" class="w-3.5 h-3.5" /></button>
+				<button type="button" class="flex items-center justify-center w-6 h-6 rounded-md text-slate-400 hover:bg-red-500/10 hover:text-red-500 transition-colors bg-transparent border-none cursor-pointer" onclick={(e) => { e.stopPropagation(); handleDeleteNestedBranch(nested, branch.name); }} title="Delete branch"><Icon name="lucide:trash-2" class="w-3.5 h-3.5" /></button>
 			</div>
 			{:else}
-			<div class="pointer-events-none absolute inset-y-0 right-0 flex items-center gap-1 pl-1 pr-2 bg-white/20 opacity-0 backdrop-blur-md supports-[backdrop-filter]:bg-white/10 transition-opacity group-hover:opacity-100 dark:bg-slate-900/20 dark:supports-[backdrop-filter]:bg-slate-900/10">
+			<div class="flex items-center gap-1 shrink-0">
 				{#if !nestedPushed.has(branch.name) || branch.ahead > 0}
 					{#if pushingBranch === branch.name}
-						<div class="pointer-events-auto flex items-center justify-center w-7 h-7 rounded-md text-emerald-500"><Icon name="lucide:loader-circle" class="w-3.5 h-3.5 animate-spin" /></div>
+						<div class="flex items-center justify-center w-6 h-6 rounded-md text-emerald-500"><Icon name="lucide:loader-circle" class="w-3.5 h-3.5 animate-spin" /></div>
 					{:else}
-						<button type="button" class="pointer-events-auto flex items-center justify-center w-7 h-7 rounded-md text-slate-400 hover:bg-emerald-500/10 hover:text-emerald-500 transition-colors bg-transparent border-none cursor-pointer" onclick={(e) => { e.stopPropagation(); handlePushBranch(branch.name, nested.path); }} title="Push{branch.ahead > 0 ? ` (${branch.ahead} ahead)` : ` ${branch.name} to remote`}"><Icon name="lucide:upload" class="w-3.5 h-3.5" /></button>
+						<button type="button" class="flex items-center justify-center w-6 h-6 rounded-md text-slate-400 hover:bg-emerald-500/10 hover:text-emerald-500 transition-colors bg-transparent border-none cursor-pointer" onclick={(e) => { e.stopPropagation(); handlePushBranch(branch.name, nested.path); }} title="Push{branch.ahead > 0 ? ` (${branch.ahead} ahead)` : ` ${branch.name} to remote`}"><Icon name="lucide:upload" class="w-3.5 h-3.5" /></button>
 					{/if}
 				{/if}
 				{#if branch.behind > 0}
-					<button type="button" class="pointer-events-auto flex items-center justify-center w-7 h-7 rounded-md text-slate-400 hover:bg-blue-500/10 hover:text-blue-500 transition-colors bg-transparent border-none cursor-pointer" onclick={(e) => { e.stopPropagation(); handlePull(nested.path, getNestedSelectedRemote(nested)); }} title="Pull ({branch.behind} behind)"><Icon name="lucide:download" class="w-3.5 h-3.5" /></button>
+					<button type="button" class="flex items-center justify-center w-6 h-6 rounded-md text-slate-400 hover:bg-blue-500/10 hover:text-blue-500 transition-colors bg-transparent border-none cursor-pointer" onclick={(e) => { e.stopPropagation(); handlePull(nested.path, getNestedSelectedRemote(nested)); }} title="Pull ({branch.behind} behind)"><Icon name="lucide:download" class="w-3.5 h-3.5" /></button>
 				{/if}
-				<button type="button" class="pointer-events-auto flex items-center justify-center w-7 h-7 rounded-md text-slate-400 hover:bg-orange-500/10 hover:text-orange-500 transition-colors bg-transparent border-none cursor-pointer" onclick={(e) => { e.stopPropagation(); renameBranch(branch.name, nested.path); }} title="Rename branch"><Icon name="lucide:pen-line" class="w-3.5 h-3.5" /></button>
+				<button type="button" class="flex items-center justify-center w-6 h-6 rounded-md text-slate-400 hover:bg-orange-500/10 hover:text-orange-500 transition-colors bg-transparent border-none cursor-pointer" onclick={(e) => { e.stopPropagation(); renameBranch(branch.name, nested.path); }} title="Rename branch"><Icon name="lucide:pen-line" class="w-3.5 h-3.5" /></button>
 			</div>
 			{/if}
 		</div>
@@ -3696,38 +4053,37 @@ ${bodies}`;
 						{@const filesState = branchCommitFileState[commit.hash]}
 						{@const commitRelativeDate = formatRelativeTime(commit.date)}
 						{@const showHeadPush = branch.isCurrent && i === 0 && (!nestedPushed.has(branch.name) || (nested.info.ahead ?? 0) > 0)}
-						{@const headActionCount = !branch.isCurrent ? 2 : (i === 0 ? (showHeadPush || pushingBranch === branch.name ? 3 : 2) : 1)}
 						<div>
 							<div
-								class="group/commit relative flex items-center gap-1.5 w-full px-2 py-1.5 rounded-md hover:bg-slate-100 dark:hover:bg-slate-800/60 transition-colors cursor-pointer"
+								class="group/commit flex items-center gap-1.5 w-full px-2 py-1.5 rounded-md hover:bg-slate-100 dark:hover:bg-slate-800/60 transition-colors cursor-pointer"
 								role="button"
 								tabindex="0"
 								onclick={() => toggleBranchCommitExpanded(commit.hash, nested.path)}
 								onkeydown={(e) => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); toggleBranchCommitExpanded(commit.hash, nested.path); } }}
 							>
 								<Icon name={commitExpanded ? 'lucide:chevron-down' : 'lucide:chevron-right'} class="w-3 h-3 shrink-0 text-slate-400" />
-								<div class="flex-1 min-w-0 flex flex-col justify-center overflow-hidden pr-2 {headActionCount === 1 ? 'group-hover/commit:pr-9' : headActionCount === 2 ? 'group-hover/commit:pr-16' : 'group-hover/commit:pr-24'} transition-[padding] duration-150">
+								<div class="flex-1 min-w-0 flex flex-col justify-center overflow-hidden">
 									<div class="flex min-w-0 items-center gap-2">
 										<span class="flex-1 min-w-0 text-sm text-slate-700 dark:text-slate-300 leading-tight truncate" title={commit.message}>{commit.message}</span>
-										{#if commitRelativeDate}<span class="text-3xs text-slate-400 shrink-0">{commitRelativeDate}</span>{/if}
 									</div>
 									<div class="flex min-w-0 items-center gap-1.5 mt-0.5">
 										<button type="button" class="font-mono text-xs text-violet-600 dark:text-violet-400 hover:text-violet-800 dark:hover:text-violet-300 bg-transparent border-none cursor-pointer p-0 shrink-0 transition-colors" onclick={(e) => copyCommitHash(commit.hash, e)} title="Copy commit hash">{commit.hashShort}</button>
+										{#if commitRelativeDate}<span class="text-3xs text-slate-400 shrink-0 whitespace-nowrap">{commitRelativeDate}</span>{/if}
 										{#if commit.author}<span class="flex-1 min-w-0 text-xs text-slate-500 truncate">{commit.author}</span>{/if}
 									</div>
 								</div>
-								<div class="absolute right-1.5 top-1/2 -translate-y-1/2 flex items-center gap-0.5 shrink-0 opacity-0 group-hover/commit:opacity-100">
-									<button type="button" class="flex items-center justify-center w-7 h-7 rounded-md text-slate-400 hover:text-violet-500 hover:bg-violet-500/10 transition-colors bg-transparent border-none cursor-pointer" onclick={(e) => { e.stopPropagation(); handleViewCommitDiffs(commit, nested.path); }} title="View all file diffs in this commit"><Icon name="lucide:file-diff" class="w-4 h-4" /></button>
+								<div class="flex items-center gap-1 shrink-0">
+									<button type="button" class="flex items-center justify-center w-6 h-6 rounded-md text-slate-400 hover:text-violet-500 hover:bg-violet-500/10 transition-colors bg-transparent border-none cursor-pointer" onclick={(e) => { e.stopPropagation(); handleViewCommitDiffs(commit, nested.path); }} title="View all file diffs in this commit"><Icon name="lucide:file-diff" class="w-3.5 h-3.5" /></button>
 									{#if !branch.isCurrent}
-										<button type="button" class="flex items-center justify-center w-7 h-7 rounded-md text-slate-400 hover:text-emerald-500 hover:bg-emerald-500/10 transition-colors bg-transparent border-none cursor-pointer" onclick={(e) => { e.stopPropagation(); handleCherryPick(commit.hash, nested.path); }} title="Cherry-pick this commit onto {nested.info.current}"><Icon name="lucide:git-fork" class="w-4 h-4" /></button>
+										<button type="button" class="flex items-center justify-center w-6 h-6 rounded-md text-slate-400 hover:text-emerald-500 hover:bg-emerald-500/10 transition-colors bg-transparent border-none cursor-pointer" onclick={(e) => { e.stopPropagation(); handleCherryPick(commit.hash, nested.path); }} title="Cherry-pick this commit onto {nested.info.current}"><Icon name="lucide:git-fork" class="w-3.5 h-3.5" /></button>
 									{:else if i === 0}
 										{#if pushingBranch === branch.name}
-											<div class="flex items-center justify-center w-7 h-7 text-slate-400"><Icon name="lucide:loader-circle" class="w-4 h-4 animate-spin" /></div>
+											<div class="flex items-center justify-center w-6 h-6 text-slate-400"><Icon name="lucide:loader-circle" class="w-3.5 h-3.5 animate-spin" /></div>
 										{:else if showHeadPush}
 											{@const isDiverged = nestedPushed.has(branch.name) && (nested.info.ahead ?? 0) > 0 && (nested.info.behind ?? 0) > 0}
-											<button type="button" class="flex items-center justify-center w-7 h-7 rounded-md text-slate-400 hover:bg-emerald-500/10 hover:text-emerald-500 transition-colors bg-transparent border-none cursor-pointer" onclick={(e) => { e.stopPropagation(); handlePushFromBranchList(branch, nested.path); }} title={isDiverged ? `Force push ${branch.name} (diverged: ${nested.info.ahead} ahead, ${nested.info.behind} behind)` : `Push ${branch.name} to remote`}><Icon name="lucide:upload" class="w-4 h-4 {isDiverged ? 'text-amber-500' : ''}" /></button>
+											<button type="button" class="flex items-center justify-center w-6 h-6 rounded-md text-slate-400 hover:bg-emerald-500/10 hover:text-emerald-500 transition-colors bg-transparent border-none cursor-pointer" onclick={(e) => { e.stopPropagation(); handlePushFromBranchList(branch, nested.path); }} title={isDiverged ? `Force push ${branch.name} (diverged: ${nested.info.ahead} ahead, ${nested.info.behind} behind)` : `Push ${branch.name} to remote`}><Icon name="lucide:upload" class="w-3.5 h-3.5 {isDiverged ? 'text-amber-500' : ''}" /></button>
 										{/if}
-										<button type="button" class="flex items-center justify-center w-7 h-7 rounded-md text-slate-400 hover:text-amber-500 hover:bg-amber-500/10 transition-colors bg-transparent border-none cursor-pointer" onclick={(e) => { e.stopPropagation(); handleUndoHeadCommit(commit, branch, nested.path); }} title="Undo this commit (keep changes staged){nestedPushed.has(branch.name) && branch.ahead === 0 ? ' · force push needed after' : ''}"><Icon name="lucide:undo-2" class="w-4 h-4" /></button>
+										<button type="button" class="flex items-center justify-center w-6 h-6 rounded-md text-slate-400 hover:text-amber-500 hover:bg-amber-500/10 transition-colors bg-transparent border-none cursor-pointer" onclick={(e) => { e.stopPropagation(); handleUndoHeadCommit(commit, branch, nested.path); }} title="Undo this commit (keep changes staged){nestedPushed.has(branch.name) && branch.ahead === 0 ? ' · force push needed after' : ''}"><Icon name="lucide:undo-2" class="w-3.5 h-3.5" /></button>
 									{/if}
 								</div>
 							</div>
@@ -3853,6 +4209,7 @@ ${bodies}`;
 							activeSection={activeTab?.section ?? null}
 							onViewDiff={(file, sec) => viewDiff(file, sec)}
 							onResolve={(path) => openConflictResolver(path)}
+							{aiChangesSet}
 						/>
 					{/if}
 					<ChangesSection
@@ -3866,6 +4223,7 @@ ${bodies}`;
 						onUnstageAll={async () => { if (projectId) { try { await ws.http('git:unstage-all', { projectId, repoPath: nested.path }); await loadStatus(); } catch (err) { debug.error('git', 'Failed to unstage all in nested repo:', err); } } }}
 						onStash={() => openStashPrompt('staged', nested.path)}
 						onViewDiff={(file, sec) => viewDiff(file, sec)}
+						{aiChangesSet}
 					/>
 					<ChangesSection
 						title="Changes"
@@ -3879,6 +4237,7 @@ ${bodies}`;
 						onDiscard={(path) => discardFile(path)}
 						onDiscardAll={async () => { if (projectId) { try { await ws.http('git:discard-all', { projectId, repoPath: nested.path }); await loadStatus(); } catch (err) { debug.error('git', 'Failed to discard all in nested repo:', err); } } }}
 						onViewDiff={(file, sec) => viewDiff(file, sec)}
+						{aiChangesSet}
 					/>
 					{#if nestedTotalChanges === 0 && !isLoading}
 						<div class="flex flex-col items-center justify-center gap-2 py-6 text-slate-500 text-xs">
@@ -4036,24 +4395,24 @@ ${bodies}`;
 											</div>
 										</div>
 									{:else}
-										<div class="group relative flex items-center gap-1.5 pl-1.5 pr-2.5 py-1.5 rounded-md border transition-colors select-none {isActiveRemote ? 'bg-violet-500/10 border-violet-500/20' : 'border-transparent hover:bg-slate-100 dark:hover:bg-slate-800/60'}">
+										<div class="group flex items-center gap-1.5 pl-1.5 pr-2.5 py-1.5 rounded-md border transition-colors select-none {isActiveRemote ? 'bg-violet-500/10 border-violet-500/20' : 'border-transparent hover:bg-slate-100 dark:hover:bg-slate-800/60'}">
 											<Icon name="lucide:server" class="w-4 h-4 shrink-0 text-slate-400" />
-											<div class="flex-1 min-w-0 flex flex-col justify-center overflow-hidden pr-2 {isActiveRemote ? 'group-hover:pr-24' : 'group-hover:pr-32'} transition-[padding] duration-150">
+											<div class="flex-1 min-w-0 flex flex-col justify-center overflow-hidden">
 												<div class="flex min-w-0 items-center gap-2">
 													<span class="min-w-0 text-sm font-medium text-slate-900 dark:text-slate-100 leading-tight truncate">{remoteName}</span>
 													{#if isActiveRemote}<span class="shrink-0 text-3xs font-medium px-1.5 py-0.5 rounded bg-violet-500/15 text-violet-600 dark:text-violet-400">Active</span>{/if}
 												</div>
 											</div>
 											{#if isFetching}
-												<div class="flex items-center justify-center w-7 h-7 text-slate-500 shrink-0"><Icon name="lucide:loader-circle" class="w-3.5 h-3.5 animate-spin" /></div>
+												<div class="flex items-center justify-center w-6 h-6 text-slate-500 shrink-0"><Icon name="lucide:loader-circle" class="w-3.5 h-3.5 animate-spin" /></div>
 											{:else}
-												<div class="pointer-events-none absolute inset-y-0 right-0 flex items-center gap-1 pl-1 pr-2 bg-white/20 opacity-0 backdrop-blur-md supports-[backdrop-filter]:bg-white/10 transition-opacity group-hover:opacity-100 dark:bg-slate-900/20 dark:supports-[backdrop-filter]:bg-slate-900/10">
+												<div class="flex items-center gap-1 shrink-0">
 													{#if !isActiveRemote}
-														<button type="button" class="pointer-events-auto flex items-center justify-center w-7 h-7 rounded-md text-slate-400 hover:bg-violet-500/10 hover:text-violet-500 transition-colors bg-transparent border-none cursor-pointer" onclick={(e) => { e.stopPropagation(); setNestedActiveRemote(remoteName, nested.relPath); }} title="Set as active remote"><Icon name="lucide:star" class="w-3.5 h-3.5" /></button>
+														<button type="button" class="flex items-center justify-center w-6 h-6 rounded-md text-slate-400 hover:bg-violet-500/10 hover:text-violet-500 transition-colors bg-transparent border-none cursor-pointer" onclick={(e) => { e.stopPropagation(); setNestedActiveRemote(remoteName, nested.relPath); }} title="Set as active remote"><Icon name="lucide:star" class="w-3.5 h-3.5" /></button>
 													{/if}
-													<button type="button" class="pointer-events-auto flex items-center justify-center w-7 h-7 rounded-md text-slate-400 hover:bg-violet-500/10 hover:text-violet-500 transition-colors bg-transparent border-none cursor-pointer" onclick={(e) => { e.stopPropagation(); nestedEditingRemote = { ...nestedEditingRemote, [nested.relPath]: remoteName }; nestedEditRemoteNames = { ...nestedEditRemoteNames, [nested.relPath]: remoteName }; }} title="Edit remote"><Icon name="lucide:pencil" class="w-3.5 h-3.5" /></button>
-													<button type="button" class="pointer-events-auto flex items-center justify-center w-7 h-7 rounded-md text-slate-400 hover:bg-blue-500/10 hover:text-blue-500 transition-colors bg-transparent border-none cursor-pointer" onclick={(e) => { e.stopPropagation(); void handleNestedFetchRemote(remoteName, nested.relPath); }} title="Fetch"><Icon name="lucide:refresh-cw" class="w-3.5 h-3.5" /></button>
-													<button type="button" class="pointer-events-auto flex items-center justify-center w-7 h-7 rounded-md text-slate-400 hover:bg-red-500/10 hover:text-red-500 transition-colors bg-transparent border-none cursor-pointer" onclick={(e) => { e.stopPropagation(); handleNestedRemoveRemote(remoteName, nested.relPath); }} title="Disconnect"><Icon name="lucide:unlink" class="w-3.5 h-3.5" /></button>
+													<button type="button" class="flex items-center justify-center w-6 h-6 rounded-md text-slate-400 hover:bg-violet-500/10 hover:text-violet-500 transition-colors bg-transparent border-none cursor-pointer" onclick={(e) => { e.stopPropagation(); nestedEditingRemote = { ...nestedEditingRemote, [nested.relPath]: remoteName }; nestedEditRemoteNames = { ...nestedEditRemoteNames, [nested.relPath]: remoteName }; }} title="Edit remote"><Icon name="lucide:pencil" class="w-3.5 h-3.5" /></button>
+													<button type="button" class="flex items-center justify-center w-6 h-6 rounded-md text-slate-400 hover:bg-blue-500/10 hover:text-blue-500 transition-colors bg-transparent border-none cursor-pointer" onclick={(e) => { e.stopPropagation(); void handleNestedFetchRemote(remoteName, nested.relPath); }} title="Fetch"><Icon name="lucide:refresh-cw" class="w-3.5 h-3.5" /></button>
+													<button type="button" class="flex items-center justify-center w-6 h-6 rounded-md text-slate-400 hover:bg-red-500/10 hover:text-red-500 transition-colors bg-transparent border-none cursor-pointer" onclick={(e) => { e.stopPropagation(); handleNestedRemoveRemote(remoteName, nested.relPath); }} title="Disconnect"><Icon name="lucide:unlink" class="w-3.5 h-3.5" /></button>
 												</div>
 											{/if}
 										</div>
@@ -4064,18 +4423,18 @@ ${bodies}`;
 												{@const branchRelativeDate = formatRelativeTime(branch.lastCommitDate)}
 												{@const shortName = branch.name.substring(remoteName.length + 1)}
 												{@const isDeleting = deletingRemoteBranch === nestedRemoteBranchKey(remoteName, shortName, nested.path)}
-												<div class="group/rb relative flex items-center gap-1.5 px-2 py-1.5 rounded-md hover:bg-slate-100 dark:hover:bg-slate-800/60 transition-colors">
-													<div class="flex-1 min-w-0 flex flex-col justify-center overflow-hidden pr-2 group-hover/rb:pr-20 transition-[padding] duration-150">
+												<div class="group/rb flex items-center gap-1.5 px-2 py-1.5 rounded-md hover:bg-slate-100 dark:hover:bg-slate-800/60 transition-colors">
+													<div class="flex-1 min-w-0 flex flex-col justify-center overflow-hidden">
 														<span class="text-sm text-slate-700 dark:text-slate-300 whitespace-nowrap leading-tight truncate" title={branch.name}>{shortName}</span>
 														{#if branchRelativeDate}<span class="text-xs text-slate-500 leading-tight">{branchRelativeDate}</span>{/if}
 													</div>
 													{#if isDeleting}
-														<div class="flex items-center justify-center w-7 h-7 text-slate-400 shrink-0"><Icon name="lucide:loader-circle" class="w-3.5 h-3.5 animate-spin" /></div>
+														<div class="flex items-center justify-center w-6 h-6 text-slate-400 shrink-0"><Icon name="lucide:loader-circle" class="w-3.5 h-3.5 animate-spin" /></div>
 													{:else}
-														<div class="pointer-events-none absolute inset-y-0 right-0 flex items-center gap-1 pl-1 pr-2 bg-white/20 opacity-0 backdrop-blur-md supports-[backdrop-filter]:bg-white/10 transition-opacity group-hover/rb:opacity-100 dark:bg-slate-900/20 dark:supports-[backdrop-filter]:bg-slate-900/10">
-															<button type="button" class="pointer-events-auto flex items-center justify-center w-7 h-7 rounded-md text-slate-400 hover:bg-violet-500/10 hover:text-violet-500 transition-colors bg-transparent border-none cursor-pointer" onclick={(e) => { e.stopPropagation(); checkoutRemoteBranch(branch.name, nested.path); }} title="Checkout locally"><Icon name="lucide:arrow-right" class="w-3.5 h-3.5" /></button>
-															<button type="button" class="pointer-events-auto flex items-center justify-center w-7 h-7 rounded-md text-slate-400 hover:bg-blue-500/10 hover:text-blue-500 transition-colors bg-transparent border-none cursor-pointer" onclick={(e) => { e.stopPropagation(); copyToClipboard(branch.name); }} title="Copy branch name"><Icon name="lucide:copy" class="w-3.5 h-3.5" /></button>
-															<button type="button" class="pointer-events-auto flex items-center justify-center w-7 h-7 rounded-md text-slate-400 hover:bg-red-500/10 hover:text-red-500 transition-colors bg-transparent border-none cursor-pointer" onclick={(e) => { e.stopPropagation(); handleDeleteRemoteBranch(remoteName, shortName, nested.path); }} title="Delete branch"><Icon name="lucide:trash-2" class="w-3.5 h-3.5" /></button>
+														<div class="flex items-center gap-1 shrink-0">
+															<button type="button" class="flex items-center justify-center w-6 h-6 rounded-md text-slate-400 hover:bg-violet-500/10 hover:text-violet-500 transition-colors bg-transparent border-none cursor-pointer" onclick={(e) => { e.stopPropagation(); checkoutRemoteBranch(branch.name, nested.path); }} title="Checkout locally"><Icon name="lucide:arrow-right" class="w-3.5 h-3.5" /></button>
+															<button type="button" class="flex items-center justify-center w-6 h-6 rounded-md text-slate-400 hover:bg-blue-500/10 hover:text-blue-500 transition-colors bg-transparent border-none cursor-pointer" onclick={(e) => { e.stopPropagation(); copyToClipboard(branch.name); }} title="Copy branch name"><Icon name="lucide:copy" class="w-3.5 h-3.5" /></button>
+															<button type="button" class="flex items-center justify-center w-6 h-6 rounded-md text-slate-400 hover:bg-red-500/10 hover:text-red-500 transition-colors bg-transparent border-none cursor-pointer" onclick={(e) => { e.stopPropagation(); handleDeleteRemoteBranch(remoteName, shortName, nested.path); }} title="Delete branch"><Icon name="lucide:trash-2" class="w-3.5 h-3.5" /></button>
 														</div>
 													{/if}
 												</div>
@@ -4245,14 +4604,14 @@ ${bodies}`;
 								{@const sFiles = stashFileState[key]}
 								<div>
 									<div
-										class="group relative flex items-center gap-1.5 pl-1.5 pr-2.5 py-1.5 rounded-md hover:bg-slate-100 dark:hover:bg-slate-800/60 transition-colors cursor-pointer"
+										class="group flex items-center gap-1.5 pl-1.5 pr-2.5 py-1.5 rounded-md hover:bg-slate-100 dark:hover:bg-slate-800/60 transition-colors cursor-pointer"
 										role="button"
 										tabindex="0"
 										onclick={() => toggleStashExpanded(entry)}
 										onkeydown={(e) => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); toggleStashExpanded(entry); } }}
 									>
 										<Icon name={stashExpanded ? 'lucide:chevron-down' : 'lucide:chevron-right'} class="w-3.5 h-3.5 shrink-0 text-slate-400" />
-										<div class="flex-1 min-w-0 pr-2 group-hover:pr-16 flex flex-col justify-center overflow-hidden transition-[padding] duration-150">
+										<div class="flex-1 min-w-0 flex flex-col justify-center overflow-hidden">
 											<p class="text-sm font-medium text-slate-900 dark:text-slate-100 truncate">{entry.message}</p>
 											<p class="text-xs text-slate-400 dark:text-slate-500">
 												<span>stash@&#123;{entry.index}&#125;</span>
@@ -4261,9 +4620,9 @@ ${bodies}`;
 												{/if}
 											</p>
 										</div>
-										<div class="pointer-events-none absolute inset-y-0 right-0 flex items-center gap-1 pl-1 pr-2 bg-white/20 opacity-0 backdrop-blur-md supports-[backdrop-filter]:bg-white/10 transition-opacity group-hover:opacity-100 dark:bg-slate-900/20 dark:supports-[backdrop-filter]:bg-slate-900/10">
-											<button type="button" class="pointer-events-auto flex items-center justify-center w-7 h-7 rounded-md text-slate-400 hover:bg-emerald-500/10 hover:text-emerald-500 transition-colors bg-transparent border-none cursor-pointer" onclick={(e) => { e.stopPropagation(); handleStashPop(entry); }} title="Pop"><Icon name="lucide:archive-restore" class="w-3.5 h-3.5" /></button>
-											<button type="button" class="pointer-events-auto flex items-center justify-center w-7 h-7 rounded-md text-slate-400 hover:bg-red-500/10 hover:text-red-500 transition-colors bg-transparent border-none cursor-pointer" onclick={(e) => { e.stopPropagation(); handleStashDrop(entry); }} title="Drop"><Icon name="lucide:trash-2" class="w-3.5 h-3.5" /></button>
+										<div class="flex items-center gap-1 shrink-0">
+											<button type="button" class="flex items-center justify-center w-6 h-6 rounded-md text-slate-400 hover:bg-emerald-500/10 hover:text-emerald-500 transition-colors bg-transparent border-none cursor-pointer" onclick={(e) => { e.stopPropagation(); handleStashPop(entry); }} title="Pop"><Icon name="lucide:archive-restore" class="w-3.5 h-3.5" /></button>
+											<button type="button" class="flex items-center justify-center w-6 h-6 rounded-md text-slate-400 hover:bg-red-500/10 hover:text-red-500 transition-colors bg-transparent border-none cursor-pointer" onclick={(e) => { e.stopPropagation(); handleStashDrop(entry); }} title="Drop"><Icon name="lucide:trash-2" class="w-3.5 h-3.5" /></button>
 										</div>
 									</div>
 									{#if stashExpanded}
@@ -4405,25 +4764,27 @@ ${bodies}`;
 					{:else}
 						<div class="space-y-1 pb-2">
 							{#each nestedTags as tag (tag.name)}
+								{@const tagRelativeDate = formatRelativeTime(tag.date)}
 								<div class="group flex items-center gap-2 px-2 py-1.5 rounded-md hover:bg-slate-100 dark:hover:bg-slate-800/60 transition-colors">
 									<div class="flex-1 min-w-0">
 										<p class="text-sm font-medium text-slate-900 dark:text-slate-100 truncate">{tag.name}</p>
-										<div class="flex items-center gap-1.5">
+										<div class="flex min-w-0 items-center gap-1.5">
 											<button
 												type="button"
 												class="text-xs font-mono text-slate-400 dark:text-slate-500 hover:text-violet-600 dark:hover:text-violet-400 bg-transparent border-none cursor-pointer p-0 shrink-0 transition-colors"
 												onclick={(e) => copyTagHash(tag.hash, e)}
 												title="Copy tag hash"
 											>{tag.hash.slice(0, 7)}</button>
+											{#if tagRelativeDate}<span class="text-xs text-slate-400 dark:text-slate-500 shrink-0 whitespace-nowrap">{tagRelativeDate}</span>{/if}
 											{#if tag.message}
-												<span class="text-xs text-slate-400 dark:text-slate-500 truncate">{tag.message}</span>
+												<span class="flex-1 min-w-0 text-xs text-slate-400 dark:text-slate-500 truncate">{tag.message}</span>
 											{/if}
 										</div>
 									</div>
-									<div class="flex items-center gap-0.5 shrink-0">
+									<div class="flex items-center gap-1 shrink-0">
 										<button
 											type="button"
-											class="flex items-center justify-center w-7 h-7 rounded-md text-slate-400 hover:bg-blue-500/10 hover:text-blue-500 transition-colors bg-transparent border-none cursor-pointer"
+											class="flex items-center justify-center w-6 h-6 rounded-md text-slate-400 hover:bg-blue-500/10 hover:text-blue-500 transition-colors bg-transparent border-none cursor-pointer"
 											onclick={() => handlePushTag(tag.name, nested.path)}
 											title="Push tag to remote"
 										>
@@ -4431,7 +4792,7 @@ ${bodies}`;
 										</button>
 										<button
 											type="button"
-											class="flex items-center justify-center w-7 h-7 rounded-md text-slate-400 hover:bg-red-500/10 hover:text-red-500 transition-colors bg-transparent border-none cursor-pointer"
+											class="flex items-center justify-center w-6 h-6 rounded-md text-slate-400 hover:bg-red-500/10 hover:text-red-500 transition-colors bg-transparent border-none cursor-pointer"
 											onclick={() => handleDeleteTag(tag.name, nested.path)}
 											title="Delete tag"
 										>
@@ -4572,10 +4933,10 @@ ${bodies}`;
 														<div class="flex-1 min-w-0 flex flex-col justify-center overflow-hidden">
 															<div class="flex min-w-0 items-center gap-2">
 																<span class="flex-1 min-w-0 text-sm text-slate-700 dark:text-slate-300 leading-tight truncate" title={commit.message}>{commit.message}</span>
-																{#if rel}<span class="text-3xs text-slate-400 shrink-0">{rel}</span>{/if}
 															</div>
 															<div class="flex min-w-0 items-center gap-1.5 mt-0.5">
 																<button type="button" class="font-mono text-xs text-violet-600 dark:text-violet-400 hover:text-violet-800 dark:hover:text-violet-300 bg-transparent border-none cursor-pointer p-0 shrink-0 transition-colors" onclick={(e) => copyCommitHash(commit.hash, e)} title="Copy commit hash">{commit.hashShort}</button>
+																{#if rel}<span class="text-3xs text-slate-400 shrink-0 whitespace-nowrap">{rel}</span>{/if}
 															</div>
 														</div>
 													</div>
@@ -4727,6 +5088,7 @@ ${bodies}`;
 					activeSection={activeTab?.section ?? null}
 					onViewDiff={viewDiff}
 					onResolve={openConflictResolver}
+					{aiChangesSet}
 				/>
 			{/if}
 
@@ -4741,6 +5103,7 @@ ${bodies}`;
 				onUnstageAll={unstageAll}
 				onStash={() => openStashPrompt('staged')}
 				onViewDiff={viewDiff}
+				{aiChangesSet}
 			/>
 
 			<!--
@@ -4764,6 +5127,7 @@ ${bodies}`;
 				onDiscard={discardFile}
 				onDiscardAll={discardAll}
 				onViewDiff={viewDiff}
+				{aiChangesSet}
 			/>
 
 			{#if mainStagedFiles.length === 0 && mainAllChanges.length === 0 && mainConflictedFiles.length === 0 && !isLoading && !(branchInfo?.nested?.length)}
@@ -4787,6 +5151,7 @@ ${bodies}`;
 				commitHash={selectedCommit.hash}
 				commitHashShort={selectedCommit.hashShort}
 				commitMessage={selectedCommit.message}
+				commitBody={selectedCommit.body}
 				commitAuthor={selectedCommit.author}
 				files={selectedCommit.files}
 				isLoading={selectedCommit.isLoading}
@@ -4871,20 +5236,16 @@ ${bodies}`;
 									{@const isExpanded = expandedBranches.has(branch.name)}
 									{@const commitState = branchCommitState[branch.name]}
 									{@const branchRelativeDate = formatRelativeTime(branch.lastCommitDate)}
-									{@const curPush = !pushedBranchNames.has(branch.name) || branch.ahead > 0}
-									{@const curPull = branch.behind > 0}
-									{@const curActionCount = (curPush ? 1 : 0) + (curPull ? 1 : 0) + 1}
-									{@const curPadding = curActionCount === 1 ? 'group-hover:pr-9' : curActionCount === 2 ? 'group-hover:pr-16' : 'group-hover:pr-24'}
 									<div>
 										<div
-											class="group relative flex items-center gap-1.5 pl-1.5 pr-2.5 py-1.5 rounded-md transition-colors border cursor-pointer select-none {branch.isCurrent ? 'bg-violet-500/10 border-violet-500/20 text-violet-700 dark:text-violet-300' : 'border-transparent hover:bg-slate-100 dark:hover:bg-slate-800/60 text-slate-700 dark:text-slate-300'}"
+											class="group flex items-center gap-1.5 pl-1.5 pr-2.5 py-1.5 rounded-md transition-colors border cursor-pointer select-none {branch.isCurrent ? 'bg-violet-500/10 border-violet-500/20 text-violet-700 dark:text-violet-300' : 'border-transparent hover:bg-slate-100 dark:hover:bg-slate-800/60 text-slate-700 dark:text-slate-300'}"
 											role="button"
 											tabindex="0"
 											onclick={() => toggleBranchExpanded(branch.name)}
 											onkeydown={(e) => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); toggleBranchExpanded(branch.name); } }}
 										>
 											<Icon name={isExpanded ? 'lucide:chevron-down' : 'lucide:chevron-right'} class="w-3.5 h-3.5 shrink-0 {branch.isCurrent ? 'text-violet-500' : 'text-slate-400'}" />
-											<div class="flex-1 min-w-0 flex flex-col justify-center overflow-hidden pr-2 {!branch.isCurrent ? (pushedBranchNames.has(branch.name) ? 'group-hover:pr-24' : 'group-hover:pr-32') : curPadding} transition-[padding] duration-150">
+											<div class="flex-1 min-w-0 flex flex-col justify-center overflow-hidden">
 												<div class="flex min-w-0 items-center gap-2">
 													<span class="flex-1 min-w-0 text-sm text-slate-900 dark:text-slate-100 leading-tight truncate" title={branch.name}>{branch.name}</span>
 													{#if upstreamName}<span class="text-3xs text-slate-400 shrink-0">{upstreamName}</span>{/if}
@@ -4897,31 +5258,31 @@ ${bodies}`;
 												</div>
 											</div>
 											{#if !branch.isCurrent}
-											<div class="pointer-events-none absolute inset-y-0 right-0 flex items-center gap-1 pl-1 pr-2 bg-white/20 opacity-0 backdrop-blur-md supports-[backdrop-filter]:bg-white/10 transition-opacity group-hover:opacity-100 dark:bg-slate-900/20 dark:supports-[backdrop-filter]:bg-slate-900/10">
-												<button type="button" class="pointer-events-auto flex items-center justify-center w-7 h-7 rounded-md text-slate-400 hover:bg-violet-500/10 hover:text-violet-500 transition-colors bg-transparent border-none cursor-pointer" onclick={(e) => { e.stopPropagation(); switchBranch(branch.name); }} title="Switch to this branch"><Icon name="lucide:arrow-right" class="w-3.5 h-3.5" /></button>
+											<div class="flex items-center gap-1 shrink-0">
+												<button type="button" class="flex items-center justify-center w-6 h-6 rounded-md text-slate-400 hover:bg-violet-500/10 hover:text-violet-500 transition-colors bg-transparent border-none cursor-pointer" onclick={(e) => { e.stopPropagation(); switchBranch(branch.name); }} title="Switch to this branch"><Icon name="lucide:arrow-right" class="w-3.5 h-3.5" /></button>
 												{#if !pushedBranchNames.has(branch.name)}
 													{#if pushingBranch === branch.name}
-														<div class="pointer-events-auto flex items-center justify-center w-7 h-7 rounded-md text-emerald-500"><Icon name="lucide:loader-circle" class="w-3.5 h-3.5 animate-spin" /></div>
+														<div class="flex items-center justify-center w-6 h-6 rounded-md text-emerald-500"><Icon name="lucide:loader-circle" class="w-3.5 h-3.5 animate-spin" /></div>
 													{:else}
-														<button type="button" class="pointer-events-auto flex items-center justify-center w-7 h-7 rounded-md text-slate-400 hover:bg-emerald-500/10 hover:text-emerald-500 transition-colors bg-transparent border-none cursor-pointer" onclick={(e) => { e.stopPropagation(); handlePushBranch(branch.name); }} title="Push branch to remote"><Icon name="lucide:upload" class="w-3.5 h-3.5" /></button>
+														<button type="button" class="flex items-center justify-center w-6 h-6 rounded-md text-slate-400 hover:bg-emerald-500/10 hover:text-emerald-500 transition-colors bg-transparent border-none cursor-pointer" onclick={(e) => { e.stopPropagation(); handlePushBranch(branch.name); }} title="Push branch to remote"><Icon name="lucide:upload" class="w-3.5 h-3.5" /></button>
 													{/if}
 												{/if}
-												<button type="button" class="pointer-events-auto flex items-center justify-center w-7 h-7 rounded-md text-slate-400 hover:bg-blue-500/10 hover:text-blue-500 transition-colors bg-transparent border-none cursor-pointer" onclick={(e) => { e.stopPropagation(); mergeBranch(branch.name); }} title="Merge into current branch"><Icon name="lucide:git-merge" class="w-3.5 h-3.5" /></button>
-												<button type="button" class="pointer-events-auto flex items-center justify-center w-7 h-7 rounded-md text-slate-400 hover:bg-red-500/10 hover:text-red-500 transition-colors bg-transparent border-none cursor-pointer" onclick={(e) => { e.stopPropagation(); deleteBranch(branch.name); }} title="Delete branch"><Icon name="lucide:trash-2" class="w-3.5 h-3.5" /></button>
+												<button type="button" class="flex items-center justify-center w-6 h-6 rounded-md text-slate-400 hover:bg-blue-500/10 hover:text-blue-500 transition-colors bg-transparent border-none cursor-pointer" onclick={(e) => { e.stopPropagation(); mergeBranch(branch.name); }} title="Merge into current branch"><Icon name="lucide:git-merge" class="w-3.5 h-3.5" /></button>
+												<button type="button" class="flex items-center justify-center w-6 h-6 rounded-md text-slate-400 hover:bg-red-500/10 hover:text-red-500 transition-colors bg-transparent border-none cursor-pointer" onclick={(e) => { e.stopPropagation(); deleteBranch(branch.name); }} title="Delete branch"><Icon name="lucide:trash-2" class="w-3.5 h-3.5" /></button>
 										</div>
 										{:else}
-										<div class="pointer-events-none absolute inset-y-0 right-0 flex items-center gap-1 pl-1 pr-2 bg-white/20 opacity-0 backdrop-blur-md supports-[backdrop-filter]:bg-white/10 transition-opacity group-hover:opacity-100 dark:bg-slate-900/20 dark:supports-[backdrop-filter]:bg-slate-900/10">
+										<div class="flex items-center gap-1 shrink-0">
 											{#if !pushedBranchNames.has(branch.name) || branch.ahead > 0}
 												{#if pushingBranch === branch.name}
-													<div class="pointer-events-auto flex items-center justify-center w-7 h-7 rounded-md text-emerald-500"><Icon name="lucide:loader-circle" class="w-3.5 h-3.5 animate-spin" /></div>
+													<div class="flex items-center justify-center w-6 h-6 rounded-md text-emerald-500"><Icon name="lucide:loader-circle" class="w-3.5 h-3.5 animate-spin" /></div>
 												{:else}
-													<button type="button" class="pointer-events-auto flex items-center justify-center w-7 h-7 rounded-md text-slate-400 hover:bg-emerald-500/10 hover:text-emerald-500 transition-colors bg-transparent border-none cursor-pointer" onclick={(e) => { e.stopPropagation(); handlePushBranch(branch.name); }} title="Push{branch.ahead > 0 ? ` (${branch.ahead} ahead)` : ` ${branch.name} to remote`}"><Icon name="lucide:upload" class="w-3.5 h-3.5" /></button>
+													<button type="button" class="flex items-center justify-center w-6 h-6 rounded-md text-slate-400 hover:bg-emerald-500/10 hover:text-emerald-500 transition-colors bg-transparent border-none cursor-pointer" onclick={(e) => { e.stopPropagation(); handlePushBranch(branch.name); }} title="Push{branch.ahead > 0 ? ` (${branch.ahead} ahead)` : ` ${branch.name} to remote`}"><Icon name="lucide:upload" class="w-3.5 h-3.5" /></button>
 												{/if}
 											{/if}
 											{#if branch.behind > 0}
-												<button type="button" class="pointer-events-auto flex items-center justify-center w-7 h-7 rounded-md text-slate-400 hover:bg-blue-500/10 hover:text-blue-500 transition-colors bg-transparent border-none cursor-pointer" onclick={(e) => { e.stopPropagation(); handlePull(); }} title="Pull ({branch.behind} behind)"><Icon name="lucide:download" class="w-3.5 h-3.5" /></button>
+												<button type="button" class="flex items-center justify-center w-6 h-6 rounded-md text-slate-400 hover:bg-blue-500/10 hover:text-blue-500 transition-colors bg-transparent border-none cursor-pointer" onclick={(e) => { e.stopPropagation(); handlePull(); }} title="Pull ({branch.behind} behind)"><Icon name="lucide:download" class="w-3.5 h-3.5" /></button>
 											{/if}
-											<button type="button" class="pointer-events-auto flex items-center justify-center w-7 h-7 rounded-md text-slate-400 hover:bg-orange-500/10 hover:text-orange-500 transition-colors bg-transparent border-none cursor-pointer" onclick={(e) => { e.stopPropagation(); renameBranch(branch.name); }} title="Rename branch"><Icon name="lucide:pen-line" class="w-3.5 h-3.5" /></button>
+											<button type="button" class="flex items-center justify-center w-6 h-6 rounded-md text-slate-400 hover:bg-orange-500/10 hover:text-orange-500 transition-colors bg-transparent border-none cursor-pointer" onclick={(e) => { e.stopPropagation(); renameBranch(branch.name); }} title="Rename branch"><Icon name="lucide:pen-line" class="w-3.5 h-3.5" /></button>
 										</div>
 										{/if}
 										</div>
@@ -4937,38 +5298,37 @@ ${bodies}`;
 												{@const filesState = branchCommitFileState[commit.hash]}
 												{@const commitRelativeDate = formatRelativeTime(commit.date)}
 												{@const showHeadPush = branch.isCurrent && i === 0 && (!pushedBranchNames.has(branch.name) || (branchInfo?.ahead ?? 0) > 0)}
-												{@const headActionCount = !branch.isCurrent ? 2 : (i === 0 ? (showHeadPush || pushingBranch === branch.name ? 3 : 2) : 1)}
 												<div>
 														<div
-															class="group/commit relative flex items-center gap-1.5 w-full px-2 py-1.5 rounded-md hover:bg-slate-100 dark:hover:bg-slate-800/60 transition-colors cursor-pointer"
+															class="group/commit flex items-center gap-1.5 w-full px-2 py-1.5 rounded-md hover:bg-slate-100 dark:hover:bg-slate-800/60 transition-colors cursor-pointer"
 															role="button"
 															tabindex="0"
 															onclick={() => toggleBranchCommitExpanded(commit.hash)}
 															onkeydown={(e) => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); toggleBranchCommitExpanded(commit.hash); } }}
 														>
 															<Icon name={commitExpanded ? 'lucide:chevron-down' : 'lucide:chevron-right'} class="w-3 h-3 shrink-0 text-slate-400" />
-															<div class="flex-1 min-w-0 flex flex-col justify-center overflow-hidden pr-2 {headActionCount === 1 ? 'group-hover/commit:pr-9' : headActionCount === 2 ? 'group-hover/commit:pr-16' : 'group-hover/commit:pr-24'} transition-[padding] duration-150">
+															<div class="flex-1 min-w-0 flex flex-col justify-center overflow-hidden">
 																<div class="flex min-w-0 items-center gap-2">
 																	<span class="flex-1 min-w-0 text-sm text-slate-700 dark:text-slate-300 leading-tight truncate" title={commit.message}>{commit.message}</span>
-																	{#if commitRelativeDate}<span class="text-3xs text-slate-400 shrink-0">{commitRelativeDate}</span>{/if}
 																</div>
 																<div class="flex min-w-0 items-center gap-1.5 mt-0.5">
 																	<button type="button" class="font-mono text-xs text-violet-600 dark:text-violet-400 hover:text-violet-800 dark:hover:text-violet-300 bg-transparent border-none cursor-pointer p-0 shrink-0 transition-colors" onclick={(e) => copyCommitHash(commit.hash, e)} title="Copy commit hash">{commit.hashShort}</button>
+																	{#if commitRelativeDate}<span class="text-3xs text-slate-400 shrink-0 whitespace-nowrap">{commitRelativeDate}</span>{/if}
 																	{#if commit.author}<span class="flex-1 min-w-0 text-xs text-slate-500 truncate">{commit.author}</span>{/if}
 																</div>
 															</div>
-														<div class="absolute right-1.5 top-1/2 -translate-y-1/2 flex items-center gap-0.5 shrink-0 opacity-0 group-hover/commit:opacity-100">
-															<button type="button" class="flex items-center justify-center w-7 h-7 rounded-md text-slate-400 hover:text-violet-500 hover:bg-violet-500/10 transition-colors bg-transparent border-none cursor-pointer" onclick={(e) => { e.stopPropagation(); handleViewCommitDiffs(commit); }} title="View all file diffs in this commit"><Icon name="lucide:file-diff" class="w-4 h-4" /></button>
+														<div class="flex items-center gap-1 shrink-0">
+															<button type="button" class="flex items-center justify-center w-6 h-6 rounded-md text-slate-400 hover:text-violet-500 hover:bg-violet-500/10 transition-colors bg-transparent border-none cursor-pointer" onclick={(e) => { e.stopPropagation(); handleViewCommitDiffs(commit); }} title="View all file diffs in this commit"><Icon name="lucide:file-diff" class="w-3.5 h-3.5" /></button>
 															{#if !branch.isCurrent}
-																<button type="button" class="flex items-center justify-center w-7 h-7 rounded-md text-slate-400 hover:text-emerald-500 hover:bg-emerald-500/10 transition-colors bg-transparent border-none cursor-pointer" onclick={(e) => { e.stopPropagation(); handleCherryPick(commit.hash); }} title="Cherry-pick this commit onto {branchInfo?.current}"><Icon name="lucide:git-fork" class="w-4 h-4" /></button>
+																<button type="button" class="flex items-center justify-center w-6 h-6 rounded-md text-slate-400 hover:text-emerald-500 hover:bg-emerald-500/10 transition-colors bg-transparent border-none cursor-pointer" onclick={(e) => { e.stopPropagation(); handleCherryPick(commit.hash); }} title="Cherry-pick this commit onto {branchInfo?.current}"><Icon name="lucide:git-fork" class="w-3.5 h-3.5" /></button>
 															{:else if i === 0}
 																{#if pushingBranch === branch.name}
-																	<div class="flex items-center justify-center w-7 h-7 text-slate-400"><Icon name="lucide:loader-circle" class="w-4 h-4 animate-spin" /></div>
+																	<div class="flex items-center justify-center w-6 h-6 text-slate-400"><Icon name="lucide:loader-circle" class="w-3.5 h-3.5 animate-spin" /></div>
 																{:else if showHeadPush}
 																	{@const isDiverged = pushedBranchNames.has(branch.name) && (branchInfo?.ahead ?? 0) > 0 && (branchInfo?.behind ?? 0) > 0}
-																	<button type="button" class="flex items-center justify-center w-7 h-7 rounded-md text-slate-400 hover:bg-emerald-500/10 hover:text-emerald-500 transition-colors bg-transparent border-none cursor-pointer" onclick={(e) => { e.stopPropagation(); handlePushFromBranchList(branch); }} title={isDiverged ? `Force push ${branch.name} to ${selectedRemote} (diverged: ${branchInfo?.ahead} ahead, ${branchInfo?.behind} behind)` : `Push ${branch.name} to remote`}><Icon name="lucide:upload" class="w-4 h-4 {isDiverged ? 'text-amber-500' : ''}" /></button>
+																	<button type="button" class="flex items-center justify-center w-6 h-6 rounded-md text-slate-400 hover:bg-emerald-500/10 hover:text-emerald-500 transition-colors bg-transparent border-none cursor-pointer" onclick={(e) => { e.stopPropagation(); handlePushFromBranchList(branch); }} title={isDiverged ? `Force push ${branch.name} to ${selectedRemote} (diverged: ${branchInfo?.ahead} ahead, ${branchInfo?.behind} behind)` : `Push ${branch.name} to remote`}><Icon name="lucide:upload" class="w-3.5 h-3.5 {isDiverged ? 'text-amber-500' : ''}" /></button>
 																{/if}
-																<button type="button" class="flex items-center justify-center w-7 h-7 rounded-md text-slate-400 hover:text-amber-500 hover:bg-amber-500/10 transition-colors bg-transparent border-none cursor-pointer" onclick={(e) => { e.stopPropagation(); handleUndoHeadCommit(commit, branch); }} title="Undo this commit (keep changes staged){pushedBranchNames.has(branch.name) && branch.ahead === 0 ? ' · force push needed after' : ''}"><Icon name="lucide:undo-2" class="w-4 h-4" /></button>
+																<button type="button" class="flex items-center justify-center w-6 h-6 rounded-md text-slate-400 hover:text-amber-500 hover:bg-amber-500/10 transition-colors bg-transparent border-none cursor-pointer" onclick={(e) => { e.stopPropagation(); handleUndoHeadCommit(commit, branch); }} title="Undo this commit (keep changes staged){pushedBranchNames.has(branch.name) && branch.ahead === 0 ? ' · force push needed after' : ''}"><Icon name="lucide:undo-2" class="w-3.5 h-3.5" /></button>
 															{/if}
 														</div>
 															</div>
@@ -5044,9 +5404,9 @@ ${bodies}`;
 											</div>
 										</div>
 									{:else}
-										<div class="group relative flex items-center gap-1.5 pl-1.5 pr-2.5 py-1.5 rounded-md border transition-colors select-none {isActiveRemote ? 'bg-violet-500/10 border-violet-500/20' : 'border-transparent hover:bg-slate-100 dark:hover:bg-slate-800/60'}">
+										<div class="group flex items-center gap-1.5 pl-1.5 pr-2.5 py-1.5 rounded-md border transition-colors select-none {isActiveRemote ? 'bg-violet-500/10 border-violet-500/20' : 'border-transparent hover:bg-slate-100 dark:hover:bg-slate-800/60'}">
 											<Icon name="lucide:server" class="w-4 h-4 shrink-0 text-slate-400" />
-											<div class="flex-1 min-w-0 flex flex-col justify-center overflow-hidden pr-2 {isActiveRemote ? 'group-hover:pr-24' : 'group-hover:pr-32'} transition-[padding] duration-150">
+											<div class="flex-1 min-w-0 flex flex-col justify-center overflow-hidden">
 												<div class="flex min-w-0 items-center gap-2">
 													<span class="min-w-0 text-sm font-medium text-slate-900 dark:text-slate-100 leading-tight truncate">{remote.name}</span>
 													{#if isActiveRemote}<span class="shrink-0 text-3xs font-medium px-1.5 py-0.5 rounded bg-violet-500/15 text-violet-600 dark:text-violet-400">Active</span>{/if}
@@ -5054,15 +5414,15 @@ ${bodies}`;
 												{#if remote.fetchUrl || remote.pushUrl}<span class="text-xs text-slate-500 leading-tight truncate" title={remote.fetchUrl || remote.pushUrl}>{remote.fetchUrl || remote.pushUrl}</span>{/if}
 											</div>
 											{#if fetchingRemote === remote.name}
-												<div class="flex items-center justify-center w-7 h-7 text-slate-500 shrink-0"><Icon name="lucide:loader-circle" class="w-3.5 h-3.5 animate-spin" /></div>
+												<div class="flex items-center justify-center w-6 h-6 text-slate-500 shrink-0"><Icon name="lucide:loader-circle" class="w-3.5 h-3.5 animate-spin" /></div>
 											{:else}
-												<div class="pointer-events-none absolute inset-y-0 right-0 flex items-center gap-1 pl-1 pr-2 bg-white/20 opacity-0 backdrop-blur-md supports-[backdrop-filter]:bg-white/10 transition-opacity group-hover:opacity-100 dark:bg-slate-900/20 dark:supports-[backdrop-filter]:bg-slate-900/10">
+												<div class="flex items-center gap-1 shrink-0">
 													{#if !isActiveRemote}
-														<button type="button" class="pointer-events-auto flex items-center justify-center w-7 h-7 rounded-md text-slate-400 hover:bg-violet-500/10 hover:text-violet-500 transition-colors bg-transparent border-none cursor-pointer" onclick={(e) => { e.stopPropagation(); setActiveRemote(remote.name); }} title="Set as active remote"><Icon name="lucide:star" class="w-3.5 h-3.5" /></button>
+														<button type="button" class="flex items-center justify-center w-6 h-6 rounded-md text-slate-400 hover:bg-violet-500/10 hover:text-violet-500 transition-colors bg-transparent border-none cursor-pointer" onclick={(e) => { e.stopPropagation(); setActiveRemote(remote.name); }} title="Set as active remote"><Icon name="lucide:star" class="w-3.5 h-3.5" /></button>
 													{/if}
-													<button type="button" class="pointer-events-auto flex items-center justify-center w-7 h-7 rounded-md text-slate-400 hover:bg-violet-500/10 hover:text-violet-500 transition-colors bg-transparent border-none cursor-pointer" onclick={(e) => { e.stopPropagation(); editingRemote = remote.name; editRemoteName = remote.name; editRemoteUrl = remote.fetchUrl || remote.pushUrl || ''; }} title="Edit remote"><Icon name="lucide:pencil" class="w-3.5 h-3.5" /></button>
-													<button type="button" class="pointer-events-auto flex items-center justify-center w-7 h-7 rounded-md text-slate-400 hover:bg-blue-500/10 hover:text-blue-500 transition-colors bg-transparent border-none cursor-pointer" onclick={(e) => { e.stopPropagation(); handleFetchRemote(remote.name); }} title="Fetch"><Icon name="lucide:refresh-cw" class="w-3.5 h-3.5" /></button>
-													<button type="button" class="pointer-events-auto flex items-center justify-center w-7 h-7 rounded-md text-slate-400 hover:bg-red-500/10 hover:text-red-500 transition-colors bg-transparent border-none cursor-pointer" onclick={(e) => { e.stopPropagation(); handleRemoveRemote(remote.name); }} title="Disconnect"><Icon name="lucide:unlink" class="w-3.5 h-3.5" /></button>
+													<button type="button" class="flex items-center justify-center w-6 h-6 rounded-md text-slate-400 hover:bg-violet-500/10 hover:text-violet-500 transition-colors bg-transparent border-none cursor-pointer" onclick={(e) => { e.stopPropagation(); editingRemote = remote.name; editRemoteName = remote.name; editRemoteUrl = remote.fetchUrl || remote.pushUrl || ''; }} title="Edit remote"><Icon name="lucide:pencil" class="w-3.5 h-3.5" /></button>
+													<button type="button" class="flex items-center justify-center w-6 h-6 rounded-md text-slate-400 hover:bg-blue-500/10 hover:text-blue-500 transition-colors bg-transparent border-none cursor-pointer" onclick={(e) => { e.stopPropagation(); handleFetchRemote(remote.name); }} title="Fetch"><Icon name="lucide:refresh-cw" class="w-3.5 h-3.5" /></button>
+													<button type="button" class="flex items-center justify-center w-6 h-6 rounded-md text-slate-400 hover:bg-red-500/10 hover:text-red-500 transition-colors bg-transparent border-none cursor-pointer" onclick={(e) => { e.stopPropagation(); handleRemoveRemote(remote.name); }} title="Disconnect"><Icon name="lucide:unlink" class="w-3.5 h-3.5" /></button>
 												</div>
 											{/if}
 										</div>
@@ -5073,18 +5433,18 @@ ${bodies}`;
 												{@const branchRelativeDate = formatRelativeTime(branch.lastCommitDate)}
 												{@const shortName = branch.name.substring(remote.name.length + 1)}
 												{@const isDeleting = deletingRemoteBranch === `${remote.name}/${shortName}`}
-												<div class="group/rb relative flex items-center gap-1.5 px-2 py-1.5 rounded-md hover:bg-slate-100 dark:hover:bg-slate-800/60 transition-colors select-none">
-													<div class="flex-1 min-w-0 flex flex-col justify-center overflow-hidden pr-2 group-hover/rb:pr-20 transition-[padding] duration-150">
+												<div class="group/rb flex items-center gap-1.5 px-2 py-1.5 rounded-md hover:bg-slate-100 dark:hover:bg-slate-800/60 transition-colors select-none">
+													<div class="flex-1 min-w-0 flex flex-col justify-center overflow-hidden">
 														<span class="text-sm text-slate-700 dark:text-slate-300 leading-tight truncate" title={branch.name}>{shortName}</span>
 														{#if branchRelativeDate}<span class="text-xs text-slate-500 leading-tight">{branchRelativeDate}</span>{/if}
 													</div>
 													{#if isDeleting}
-														<div class="flex items-center justify-center w-7 h-7 text-slate-400 shrink-0"><Icon name="lucide:loader-circle" class="w-3.5 h-3.5 animate-spin" /></div>
+														<div class="flex items-center justify-center w-6 h-6 text-slate-400 shrink-0"><Icon name="lucide:loader-circle" class="w-3.5 h-3.5 animate-spin" /></div>
 													{:else}
-														<div class="pointer-events-none absolute inset-y-0 right-0 flex items-center gap-1 pl-1 pr-2 bg-white/20 opacity-0 backdrop-blur-md supports-[backdrop-filter]:bg-white/10 transition-opacity group-hover/rb:opacity-100 dark:bg-slate-900/20 dark:supports-[backdrop-filter]:bg-slate-900/10">
-															<button type="button" class="pointer-events-auto flex items-center justify-center w-7 h-7 rounded-md text-slate-400 hover:bg-violet-500/10 hover:text-violet-500 transition-colors bg-transparent border-none cursor-pointer" onclick={(e) => { e.stopPropagation(); checkoutRemoteBranch(branch.name); }} title="Checkout locally"><Icon name="lucide:arrow-right" class="w-3.5 h-3.5" /></button>
-															<button type="button" class="pointer-events-auto flex items-center justify-center w-7 h-7 rounded-md text-slate-400 hover:bg-blue-500/10 hover:text-blue-500 transition-colors bg-transparent border-none cursor-pointer" onclick={(e) => { e.stopPropagation(); copyToClipboard(branch.name); }} title="Copy branch name"><Icon name="lucide:copy" class="w-3.5 h-3.5" /></button>
-															<button type="button" class="pointer-events-auto flex items-center justify-center w-7 h-7 rounded-md text-slate-400 hover:bg-red-500/10 hover:text-red-500 transition-colors bg-transparent border-none cursor-pointer" onclick={(e) => { e.stopPropagation(); handleDeleteRemoteBranch(remote.name, shortName); }} title="Delete branch"><Icon name="lucide:trash-2" class="w-3.5 h-3.5" /></button>
+														<div class="flex items-center gap-1 shrink-0">
+															<button type="button" class="flex items-center justify-center w-6 h-6 rounded-md text-slate-400 hover:bg-violet-500/10 hover:text-violet-500 transition-colors bg-transparent border-none cursor-pointer" onclick={(e) => { e.stopPropagation(); checkoutRemoteBranch(branch.name); }} title="Checkout locally"><Icon name="lucide:arrow-right" class="w-3.5 h-3.5" /></button>
+															<button type="button" class="flex items-center justify-center w-6 h-6 rounded-md text-slate-400 hover:bg-blue-500/10 hover:text-blue-500 transition-colors bg-transparent border-none cursor-pointer" onclick={(e) => { e.stopPropagation(); copyToClipboard(branch.name); }} title="Copy branch name"><Icon name="lucide:copy" class="w-3.5 h-3.5" /></button>
+															<button type="button" class="flex items-center justify-center w-6 h-6 rounded-md text-slate-400 hover:bg-red-500/10 hover:text-red-500 transition-colors bg-transparent border-none cursor-pointer" onclick={(e) => { e.stopPropagation(); handleDeleteRemoteBranch(remote.name, shortName); }} title="Delete branch"><Icon name="lucide:trash-2" class="w-3.5 h-3.5" /></button>
 														</div>
 													{/if}
 												</div>
@@ -5193,25 +5553,27 @@ ${bodies}`;
 						{:else}
 							<div class="space-y-1 pb-2">
 								{#each mainTags as tag (tag.name)}
+									{@const tagRelativeDate = formatRelativeTime(tag.date)}
 									<div class="group flex items-center gap-2 px-2.5 py-2 rounded-md hover:bg-slate-100 dark:hover:bg-slate-800/60 transition-colors">
 										<div class="flex-1 min-w-0">
 											<p class="text-sm font-medium text-slate-900 dark:text-slate-100 truncate">{tag.name}</p>
-											<div class="flex items-center gap-1.5">
+											<div class="flex min-w-0 items-center gap-1.5">
 												<button
 													type="button"
 													class="text-xs font-mono text-slate-400 dark:text-slate-500 hover:text-violet-600 dark:hover:text-violet-400 bg-transparent border-none cursor-pointer p-0 shrink-0 transition-colors"
 													onclick={(e) => copyTagHash(tag.hash, e)}
 													title="Copy tag hash"
 												>{tag.hash.slice(0, 7)}</button>
+												{#if tagRelativeDate}<span class="text-xs text-slate-400 dark:text-slate-500 shrink-0 whitespace-nowrap">{tagRelativeDate}</span>{/if}
 												{#if tag.message}
-													<span class="text-xs text-slate-400 dark:text-slate-500 truncate">{tag.message}</span>
+													<span class="flex-1 min-w-0 text-xs text-slate-400 dark:text-slate-500 truncate">{tag.message}</span>
 												{/if}
 											</div>
 										</div>
-										<div class="flex items-center gap-0.5 shrink-0">
+										<div class="flex items-center gap-1 shrink-0">
 											<button
 												type="button"
-												class="flex items-center justify-center w-7 h-7 rounded-md text-slate-400 hover:bg-blue-500/10 hover:text-blue-500 transition-colors bg-transparent border-none cursor-pointer"
+												class="flex items-center justify-center w-6 h-6 rounded-md text-slate-400 hover:bg-blue-500/10 hover:text-blue-500 transition-colors bg-transparent border-none cursor-pointer"
 												onclick={() => handlePushTag(tag.name)}
 												title="Push tag to remote"
 											>
@@ -5219,7 +5581,7 @@ ${bodies}`;
 											</button>
 											<button
 												type="button"
-												class="flex items-center justify-center w-7 h-7 rounded-md text-slate-400 hover:bg-red-500/10 hover:text-red-500 transition-colors bg-transparent border-none cursor-pointer"
+												class="flex items-center justify-center w-6 h-6 rounded-md text-slate-400 hover:bg-red-500/10 hover:text-red-500 transition-colors bg-transparent border-none cursor-pointer"
 												onclick={() => handleDeleteTag(tag.name)}
 												title="Delete tag"
 											>
@@ -5278,14 +5640,14 @@ ${bodies}`;
 									{@const sFiles = stashFileState[key]}
 									<div>
 										<div
-											class="group relative flex items-center gap-1.5 pl-1.5 pr-2.5 py-1.5 rounded-md hover:bg-slate-100 dark:hover:bg-slate-800/60 transition-colors cursor-pointer"
+											class="group flex items-center gap-1.5 pl-1.5 pr-2.5 py-1.5 rounded-md hover:bg-slate-100 dark:hover:bg-slate-800/60 transition-colors cursor-pointer"
 											role="button"
 											tabindex="0"
 											onclick={() => toggleStashExpanded(entry)}
 											onkeydown={(e) => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); toggleStashExpanded(entry); } }}
 										>
 											<Icon name={stashExpanded ? 'lucide:chevron-down' : 'lucide:chevron-right'} class="w-3.5 h-3.5 shrink-0 text-slate-400" />
-											<div class="flex-1 min-w-0 pr-2 group-hover:pr-16 flex flex-col justify-center overflow-hidden transition-[padding] duration-150">
+											<div class="flex-1 min-w-0 flex flex-col justify-center overflow-hidden">
 												<p class="text-sm font-medium text-slate-900 dark:text-slate-100 truncate">{entry.message}</p>
 												<p class="text-xs text-slate-400 dark:text-slate-500">
 													<span>stash@&#123;{entry.index}&#125;</span>
@@ -5294,9 +5656,9 @@ ${bodies}`;
 													{/if}
 												</p>
 											</div>
-											<div class="pointer-events-none absolute inset-y-0 right-0 flex items-center gap-1 pl-1 pr-2 bg-white/20 opacity-0 backdrop-blur-md supports-[backdrop-filter]:bg-white/10 transition-opacity group-hover:opacity-100 dark:bg-slate-900/20 dark:supports-[backdrop-filter]:bg-slate-900/10">
-												<button type="button" class="pointer-events-auto flex items-center justify-center w-7 h-7 rounded-md text-slate-400 hover:bg-emerald-500/10 hover:text-emerald-500 transition-colors bg-transparent border-none cursor-pointer" onclick={(e) => { e.stopPropagation(); handleStashPop(entry); }} title="Pop"><Icon name="lucide:archive-restore" class="w-3.5 h-3.5" /></button>
-												<button type="button" class="pointer-events-auto flex items-center justify-center w-7 h-7 rounded-md text-slate-400 hover:bg-red-500/10 hover:text-red-500 transition-colors bg-transparent border-none cursor-pointer" onclick={(e) => { e.stopPropagation(); handleStashDrop(entry); }} title="Drop"><Icon name="lucide:trash-2" class="w-3.5 h-3.5" /></button>
+											<div class="flex items-center gap-1 shrink-0">
+												<button type="button" class="flex items-center justify-center w-6 h-6 rounded-md text-slate-400 hover:bg-emerald-500/10 hover:text-emerald-500 transition-colors bg-transparent border-none cursor-pointer" onclick={(e) => { e.stopPropagation(); handleStashPop(entry); }} title="Pop"><Icon name="lucide:archive-restore" class="w-3.5 h-3.5" /></button>
+												<button type="button" class="flex items-center justify-center w-6 h-6 rounded-md text-slate-400 hover:bg-red-500/10 hover:text-red-500 transition-colors bg-transparent border-none cursor-pointer" onclick={(e) => { e.stopPropagation(); handleStashDrop(entry); }} title="Drop"><Icon name="lucide:trash-2" class="w-3.5 h-3.5" /></button>
 											</div>
 										</div>
 										{#if stashExpanded}
@@ -5392,10 +5754,10 @@ ${bodies}`;
 															<div class="flex-1 min-w-0 flex flex-col justify-center overflow-hidden">
 																<div class="flex min-w-0 items-center gap-2">
 																	<span class="flex-1 min-w-0 text-sm text-slate-700 dark:text-slate-300 leading-tight truncate" title={commit.message}>{commit.message}</span>
-																	{#if rel}<span class="text-3xs text-slate-400 shrink-0">{rel}</span>{/if}
 																</div>
 																<div class="flex min-w-0 items-center gap-1.5 mt-0.5">
 																	<button type="button" class="font-mono text-xs text-violet-600 dark:text-violet-400 hover:text-violet-800 dark:hover:text-violet-300 bg-transparent border-none cursor-pointer p-0 shrink-0 transition-colors" onclick={(e) => copyCommitHash(commit.hash, e)} title="Copy commit hash">{commit.hashShort}</button>
+																	{#if rel}<span class="text-3xs text-slate-400 shrink-0 whitespace-nowrap">{rel}</span>{/if}
 																</div>
 															</div>
 														</div>
@@ -5465,7 +5827,7 @@ ${bodies}`;
 			<Icon name="lucide:git-branch" class="w-10 h-10 opacity-30" />
 			<span>No project selected</span>
 		</div>
-	{:else if isLoading && !isRepo}
+	{:else if !statusLoaded}
 		<div class="flex-1 flex flex-col items-center justify-center gap-3 text-slate-600 dark:text-slate-500 text-sm">
 			<div class="w-6 h-6 border-2 border-slate-200 dark:border-slate-800 border-t-violet-600 rounded-full animate-spin"></div>
 			<span>Loading...</span>

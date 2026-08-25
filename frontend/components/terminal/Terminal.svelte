@@ -14,6 +14,7 @@
 	import { ptyClient, registerSession, unregisterSession } from '$frontend/services/terminal/ptykit-client';
 	import { settings } from '$frontend/stores/features/settings.svelte';
 	import TerminalTabs from './TerminalTabs.svelte';
+	import Dialog from '$frontend/components/common/overlay/Dialog.svelte';
 	import { PtyTerminal } from '@myrialabs/ptykit/svelte';
 	import type { ComponentProps } from 'svelte';
 
@@ -103,6 +104,8 @@
 		}
 	}
 
+	let showCloseAllConfirm = $state(false);
+
 	async function handleCloseSession(sessionId: string) {
 		const isLastSession = terminalStore.sessions.length <= 1;
 		// Close (and kill the PTY) while the session handle is still registered.
@@ -112,6 +115,27 @@
 		unregisterSession(sessionId);
 		terminals.delete(sessionId);
 		if (closed && isLastSession) {
+			await handleNewSession();
+		}
+	}
+
+	/**
+	 * Close every terminal, then leave one fresh shell behind.
+	 *
+	 * Sequential rather than parallel: each close kills a PTY and unregisters its
+	 * handle, and the store's active-session bookkeeping assumes one at a time.
+	 */
+	async function handleCloseAllSessions() {
+		showCloseAllConfirm = false;
+
+		// Snapshot: the list this iterates is the one being emptied.
+		for (const sessionId of terminalStore.sessions.map((session) => session.id)) {
+			await terminalStore.closeSession(sessionId);
+			unregisterSession(sessionId);
+			terminals.delete(sessionId);
+		}
+
+		if (terminalStore.sessions.length === 0) {
 			await handleNewSession();
 		}
 	}
@@ -161,8 +185,22 @@
 			onCloseSession={handleCloseSession}
 			onNewSession={handleNewSession}
 			onRenameSession={handleRenameSession}
+			onReorderSession={(sessionId, targetSessionId) =>
+				terminalStore.reorderSession(sessionId, targetSessionId)}
+			onCloseAllSessions={() => (showCloseAllConfirm = true)}
 		/>
 	</div>
+
+	<!-- Terminals can hold running processes, so closing several asks first. -->
+	<Dialog
+		bind:isOpen={showCloseAllConfirm}
+		onClose={() => (showCloseAllConfirm = false)}
+		type="warning"
+		title="Close all terminals"
+		message="Close all {sessions.length} terminals? Anything still running in them is stopped."
+		confirmText="Close terminals"
+		onConfirm={handleCloseAllSessions}
+	/>
 
 	{#if sessions.length > 0}
 		<div class="flex-1 relative min-h-0 overflow-hidden font-mono">

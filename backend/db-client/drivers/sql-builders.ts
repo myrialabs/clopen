@@ -25,6 +25,12 @@ export function quoteSqlite(name: string): string {
 	return quotePg(name);
 }
 
+export function quoteMssql(name: string): string {
+	if (!name) throw new Error('Identifier cannot be empty');
+	if (name.includes('[') || name.includes(']')) throw new Error(`Invalid identifier: ${name}`);
+	return `[${name}]`;
+}
+
 export type Quoter = (name: string) => string;
 
 export function qualified(quote: Quoter, parts: Array<string | undefined | null>): string {
@@ -142,7 +148,7 @@ export function buildDelete({
 interface RenderColumnInput {
 	quote: Quoter;
 	column: ColumnDefinition;
-	driver: 'mysql' | 'postgres' | 'sqlite';
+	driver: 'mysql' | 'postgres' | 'sqlite' | 'mssql';
 }
 
 export function renderColumn({ quote, column, driver }: RenderColumnInput): string {
@@ -154,6 +160,7 @@ export function renderColumn({ quote, column, driver }: RenderColumnInput): stri
 	if (column.autoIncrement) {
 		if (driver === 'mysql') parts.push('AUTO_INCREMENT');
 		else if (driver === 'sqlite') parts.push('AUTOINCREMENT');
+		else if (driver === 'mssql') parts.push('IDENTITY(1,1)');
 		// PG handled via SERIAL/IDENTITY in the type itself; nothing to append.
 	}
 	if (column.primary) parts.push('PRIMARY KEY');
@@ -166,7 +173,7 @@ interface RenderTableInput {
 	definition: TableDefinition;
 	schema?: string;
 	database?: string;
-	driver: 'mysql' | 'postgres' | 'sqlite';
+	driver: 'mysql' | 'postgres' | 'sqlite' | 'mssql';
 }
 
 export function renderCreateTable({

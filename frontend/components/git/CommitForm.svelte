@@ -16,6 +16,7 @@
 		setGitOp
 	} from '$frontend/stores/features/git-workspace.svelte';
 	import ws from '$frontend/utils/ws';
+	import { resolveGenerationModel } from '$frontend/utils/model-override';
 	import GitMoreMenu, { type GitMoreAction } from '$frontend/components/git/GitMoreMenu.svelte';
 
 	interface Props {
@@ -229,10 +230,9 @@
 
 		setGitOp(projectId, 'isGenerating', true, repoPath);
 		try {
-			const { useCustomModel, engine, provider, modelId, format } = settings.commitGenerator;
-			const resolvedEngine = useCustomModel ? engine : settings.selectedEngine;
-			const resolvedProvider = useCustomModel ? provider : settings.selectedProvider;
-			const resolvedModel = useCustomModel ? modelId : settings.selectedModelId;
+			const { format } = settings.commitGenerator;
+			const { engine: resolvedEngine, providerSlug: resolvedProvider, modelId: resolvedModel } =
+				resolveGenerationModel(settings.commitGenerator);
 			const extra = buildCommitExtra();
 			const result = await ws.http('git:generate-commit-message', {
 				projectId,
@@ -266,10 +266,9 @@
 
 		setGitOp(projectId, 'isGeneratingBranch', true, repoPath);
 		try {
-			const { useCustomModel, engine, provider, modelId, branchSeparator, branchConfig } = settings.commitGenerator;
-			const resolvedEngine = useCustomModel ? engine : settings.selectedEngine;
-			const resolvedProvider = useCustomModel ? provider : settings.selectedProvider;
-			const resolvedModel = useCustomModel ? modelId : settings.selectedModelId;
+			const { branchSeparator, branchConfig } = settings.commitGenerator;
+			const { engine: resolvedEngine, providerSlug: resolvedProvider, modelId: resolvedModel } =
+				resolveGenerationModel(settings.commitGenerator);
 			const extra = buildBranchExtra();
 			const result = await ws.http('git:generate-branch-name', {
 				projectId,

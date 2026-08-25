@@ -14,6 +14,7 @@
 <FileHeader
 	{filePath}
 	{fileName}
+	editKey={toolInput.id}
 	iconColor="text-violet-600 dark:text-violet-400"
 />
 

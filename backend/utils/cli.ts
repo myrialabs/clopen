@@ -6,7 +6,7 @@
  * Resolution strategy:
  *   1. Enrich process.env.PATH with known install directories (and, on Unix
  *      desktops, the user's interactive-shell PATH) so binaries installed
- *      via our System Tools installer, nvm/fnm/volta/asdf/bun/homebrew, or
+ *      via our Stack installer, nvm/fnm/volta/asdf/bun/homebrew, or
  *      by the user become visible without a clopen restart.
  *   2. Call `Bun.which(binary, { PATH: process.env.PATH })` — the explicit
  *      PATH option is critical: without it, Bun.which uses a cached startup

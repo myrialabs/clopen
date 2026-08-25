@@ -9,8 +9,10 @@
 
 import { t } from 'elysia';
 import { createRouter } from '$shared/utils/ws-server';
-import { settingsQueries } from '../../database/queries';
+import { settingsQueries, engineQueries } from '../../database/queries';
+import { SYSTEM_SETTINGS_KEY, writeSystemSettings } from '../../settings/system-settings';
 import { initializeEngine } from '../../engine';
+import { checkEngineSetup } from '../../engine/engine-setup';
 import { registerModels } from '$shared/constants/engines';
 import type { EngineType } from '$shared/types/unified';
 
@@ -48,6 +50,13 @@ export const crudHandler = createRouter()
 			throw new Error('Key and value are required');
 		}
 
+		if (key === SYSTEM_SETTINGS_KEY) {
+			// The system blob is never replaced wholesale — a caller sending a
+			// partial copy would silently drop every field it does not know about
+			// (that is how the onboarding marker used to disappear). Merge instead.
+			throw new Error(`Use settings:update-system to change ${SYSTEM_SETTINGS_KEY}`);
+		}
+
 		settingsQueries.set(key, value);
 		const setting = settingsQueries.get(key);
 
@@ -55,34 +64,18 @@ export const crudHandler = createRouter()
 	})
 
 	// Merge-update system settings (admin only).
-	// Reads the current `system:settings` blob, merges the provided patch, and
-	// writes it back atomically. Sending only the changed keys prevents a partial
-	// update from clobbering sibling fields (e.g. onboardingComplete) when a
-	// client's in-memory copy of the settings is stale.
+	// Sending only the changed keys prevents a partial update from clobbering
+	// sibling fields (e.g. the onboarding marker) when a client's in-memory copy
+	// of the settings is stale. The merge itself lives in the system-settings
+	// module, which is the only writer of that row.
 	.http('settings:update-system', {
 		data: t.Object({
 			patch: t.Record(t.String(), t.Any())
 		}),
 		response: t.Any()
 	}, async ({ data }) => {
-		const KEY = 'system:settings';
-		const existing = settingsQueries.get(KEY);
-
-		let current: Record<string, unknown> = {};
-		if (existing?.value) {
-			try {
-				current = typeof existing.value === 'string'
-					? JSON.parse(existing.value)
-					: (existing.value as Record<string, unknown>);
-			} catch {
-				current = {};
-			}
-		}
-
-		const merged = { ...current, ...data.patch };
-		settingsQueries.set(KEY, JSON.stringify(merged));
-
-		return settingsQueries.get(KEY);
+		writeSystemSettings(data.patch);
+		return settingsQueries.get(SYSTEM_SETTINGS_KEY);
 	})
 
 	// Batch update multiple settings
@@ -110,11 +103,11 @@ export const crudHandler = createRouter()
 	// List available models for an engine
 	.http('models:list', {
 		data: t.Object({
-			engine: t.Union([t.Literal('claude-code'), t.Literal('opencode'), t.Literal('copilot'), t.Literal('codex'), t.Literal('qwen')])
+			engine: t.Union([t.Literal('claude-code'), t.Literal('opencode'), t.Literal('copilot'), t.Literal('codex'), t.Literal('qwen'), t.Literal('pi'), t.Literal('cline'), t.Literal('cursor')])
 		}),
 		response: t.Array(t.Object({
 			engine: t.Object({
-				type: t.Union([t.Literal('claude-code'), t.Literal('opencode'), t.Literal('copilot'), t.Literal('codex'), t.Literal('qwen')]),
+				type: t.Union([t.Literal('claude-code'), t.Literal('opencode'), t.Literal('copilot'), t.Literal('codex'), t.Literal('qwen'), t.Literal('pi'), t.Literal('cline'), t.Literal('cursor')]),
 				provider: t.String(),
 				model: t.Object({ id: t.String(), name: t.String() }),
 				account: t.Object({ id: t.Number(), name: t.String() }),
@@ -134,6 +127,14 @@ export const crudHandler = createRouter()
 		}))
 	}, async ({ data }) => {
 		const engineType: EngineType = data.engine;
+
+		// Gate on engine readiness: don't surface a catalog for an engine whose
+		// SDK isn't installed / is out of date (→ Stack), or that requires an
+		// account and has none (→ Engines). Mirrors the chat pre-stream gate so
+		// the model picker reflects the same install/sign-in state as chat.
+		const activeAccount = engineQueries.getActiveAccountForEngine(engineType);
+		const setupIssue = await checkEngineSetup(engineType, activeAccount?.id ?? 0);
+		if (setupIssue) throw new Error(setupIssue.message);
 
 		// Uniform path for every engine. Each adapter's getAvailableModels()
 		// owns the catalog logic (static array or dynamic fetch); this handler

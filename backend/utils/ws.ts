@@ -74,6 +74,8 @@ interface ConnectionState {
 	role: 'admin' | 'member' | null;
 	/** Hash of the session token used for this connection */
 	sessionTokenHash: string | null;
+	/** Epoch ms of the last DB session re-validation (throttles the auth-gate check). */
+	lastSessionCheck: number;
 }
 
 /**
@@ -147,7 +149,7 @@ class WSServer {
 		const id = crypto.randomUUID();
 		this.rawToId.set(raw, id);
 		this.connections.set(id, conn);
-		this.connectionState.set(id, { userId: null, projectId: null, chatSessionIds: new Set(), cleanups: new Set(), authenticated: false, role: null, sessionTokenHash: null });
+		this.connectionState.set(id, { userId: null, projectId: null, chatSessionIds: new Set(), cleanups: new Set(), authenticated: false, role: null, sessionTokenHash: null, lastSessionCheck: 0 });
 
 		this.metrics.totalConnections = this.connections.size;
 		debug.log('websocket', `Connection registered: ${id} (total: ${this.connections.size})`);
@@ -179,6 +181,7 @@ class WSServer {
 
 		// Get state from external storage (NOT from wrapper which may be stale)
 		const state = this.connectionState.get(id);
+		const wasAuthenticated = state?.authenticated === true;
 
 		// Run all registered cleanup functions
 		if (state?.cleanups.size) {
@@ -244,6 +247,11 @@ class WSServer {
 		this.metrics.activeUsers = this.userConnections.size;
 
 		debug.log('websocket', `Connection unregistered: ${id} (total: ${this.connections.size})`);
+
+		// A device went offline — refresh Remote Access counts/lists everywhere.
+		if (wasAuthenticated) {
+			this.notifyPresenceChanged();
+		}
 	}
 
 	/**
@@ -551,6 +559,8 @@ class WSServer {
 		// Also set userId via existing method (handles room management)
 		this.setUser(conn, userId);
 		debug.log('websocket', `Connection ${wsId} authenticated: userId=${userId}, role=${role}`);
+		// A device just came online — refresh Remote Access counts/lists everywhere.
+		this.notifyPresenceChanged();
 	}
 
 	/**
@@ -662,6 +672,121 @@ class WSServer {
 			debug.log('websocket', `Cleared auth on ${cleared} targeted connection(s)`);
 		}
 		return cleared;
+	}
+
+	/**
+	 * Get the session token hash bound to a connection, or null.
+	 */
+	getSessionTokenHash(conn: WSConnection): string | null {
+		const id = this.resolveId(conn);
+		if (!id) return null;
+		return this.connectionState.get(id)?.sessionTokenHash ?? null;
+	}
+
+	/**
+	 * All session token hashes that currently have at least one authenticated,
+	 * live connection. Backs the Remote Access "active connections" count so it
+	 * reflects devices that are genuinely online right now, not merely sessions
+	 * that still exist in the DB.
+	 */
+	getOnlineSessionHashes(): Set<string> {
+		const hashes = new Set<string>();
+		for (const state of this.connectionState.values()) {
+			if (state.authenticated && state.sessionTokenHash) {
+				hashes.add(state.sessionTokenHash);
+			}
+		}
+		return hashes;
+	}
+
+	/**
+	 * Broadcast that the set of online devices changed (a device connected or
+	 * disconnected) so every client's Remote Access count and device list can
+	 * refresh live. Best-effort — never throws into connection lifecycle code.
+	 */
+	private notifyPresenceChanged(): void {
+		try {
+			this.emit.global('remote-access:changed', { kind: 'presence' });
+		} catch {
+			// Emitting must never break connect/disconnect handling.
+		}
+	}
+
+	/**
+	 * Throttle helper for the auth gate's DB session re-validation: returns true
+	 * at most once per `intervalMs` per connection (and records the check time).
+	 */
+	dueForSessionCheck(conn: WSConnection, intervalMs: number): boolean {
+		const id = this.resolveId(conn);
+		if (!id) return false;
+		const state = this.connectionState.get(id);
+		if (!state) return false;
+		const now = Date.now();
+		if (now - state.lastSessionCheck >= intervalMs) {
+			state.lastSessionCheck = now;
+			return true;
+		}
+		return false;
+	}
+
+	/**
+	 * Send a single event to one connection (used for targeted force-logout).
+	 */
+	private sendEventToConnection(conn: WSConnection, action: string, payload: unknown): void {
+		try {
+			this.sendToConnection(conn, JSON.stringify({ action, payload }));
+		} catch {
+			// Connection may already be closing.
+		}
+	}
+
+	/**
+	 * Invalidate a single connection immediately: clear its in-memory auth, push a
+	 * force-logout so the client resets to the login screen, and close the socket
+	 * shortly after so any in-flight streams (terminal output, etc.) stop. Used
+	 * when the underlying session no longer exists.
+	 */
+	invalidateConnection(conn: WSConnection, reason: string): void {
+		const id = this.resolveId(conn);
+		if (!id) return;
+		const state = this.connectionState.get(id);
+		if (state) {
+			state.authenticated = false;
+			state.role = null;
+			state.sessionTokenHash = null;
+		}
+		this.sendEventToConnection(conn, 'auth:force-logout-user', { reason });
+		// Give the event a moment to flush, then drop the socket entirely.
+		setTimeout(() => {
+			try {
+				(conn as unknown as { close?: () => void }).close?.();
+			} catch {
+				// Already closed.
+			}
+		}, 250);
+		debug.log('websocket', `Connection ${id} invalidated: ${reason}`);
+	}
+
+	/**
+	 * Invalidate every live connection bound to a given session token hash. Called
+	 * when a session is revoked (e.g. "sign out this device") so the kicked device
+	 * loses access instantly instead of at its next reconnect.
+	 */
+	invalidateSessionByHash(hash: string, reason: string): number {
+		let count = 0;
+		for (const [id, state] of this.connectionState) {
+			if (state.sessionTokenHash === hash) {
+				const conn = this.connections.get(id);
+				if (conn) {
+					this.invalidateConnection(conn, reason);
+					count++;
+				}
+			}
+		}
+		if (count > 0) {
+			debug.log('websocket', `Invalidated ${count} connection(s) for revoked session`);
+		}
+		return count;
 	}
 
 	/**

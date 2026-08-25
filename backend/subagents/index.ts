@@ -5,5 +5,6 @@
 
 export { subagentService } from './service';
 export type { SubagentDTO, SubagentInputFields } from './service';
-export { syncSubagents, syncSubagentsAllEngines } from './sync';
+export { syncSubagents, syncSubagentsAllEngines, buildSubagentsPromptContext, buildOpenCodeInlineAgents } from './sync';
+export type { OpenCodeInlineAgent } from './sync';
 export { detectSubagents } from './detect';

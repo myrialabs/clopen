@@ -19,7 +19,7 @@ import {
 } from '../../files/file-reading';
 import { handlePathBrowsing } from '../../files/path-browsing';
 import { gitService } from '../../git/git-service';
-import { findRepoForFile } from '../../snapshot/gitignore';
+import { findRepoForFile } from '../../git/nested-repos';
 import { projectQueries } from '../../database/queries/project-queries';
 import { isAbsolute, relative } from 'node:path';
 import { requireProjectAccess } from '../access';

@@ -27,7 +27,8 @@ export const artifactGenerateHandler = createRouter()
 			]),
 			purpose: t.String(),
 			engine: t.String(),
-			providerSlug: t.String(),
+			/** Hint only — the provider is re-derived from the engine catalog. */
+			providerSlug: t.Optional(t.String()),
 			modelId: t.String(),
 			projectId: t.Optional(t.String())
 		}),

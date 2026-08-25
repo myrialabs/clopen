@@ -11,5 +11,5 @@
 	const diff = $derived({ additions: lines });
 </script>
 
-<ToolRow icon="lucide:file-plus" label="Wrote" {filePath} {fileName} {diff} />
+<ToolRow icon="lucide:file-plus" label="Wrote" {filePath} {fileName} {diff} editKey={toolInput.id} />
 

@@ -14,6 +14,8 @@ import { projectState } from './projects.svelte';
 import { setupEditModeListener, restoreEditMode } from '$frontend/stores/ui/edit-mode.svelte';
 import { markSessionUnread, markSessionRead, clearSessionState, syncGlobalStateFromSession, appState } from '$frontend/stores/core/app.svelte';
 import { debug } from '$shared/utils/logger';
+import { setAiChanges } from '$frontend/utils/ai-changes';
+import { extractAiEdits } from '$frontend/utils/chat/ai-edits-from-messages';
 
 /**
  * Frontend-only streaming message for assistant text or reasoning.
@@ -46,6 +48,17 @@ interface SessionState {
 	sessions: ChatSession[];
 	currentSession: ChatSession | null;
 	messages: FrontendMessage[];
+	/**
+	 * Which session `messages` currently holds.
+	 *
+	 * `currentSession` moves the instant the user switches, while the transcript
+	 * arrives one round trip later — so for that window the two disagree, and
+	 * anything that reads `messages` "for the current session" is reading the
+	 * previous chat. Live stream events and stream catchup both check this
+	 * before they write, which is what stops one chat's pending question from
+	 * being reported against another (see chat.service.ts::ownerOf).
+	 */
+	messagesSessionId: string | null;
 	isLoading: boolean;
 	error: string | null;
 	/** True if the current session has message history (even if HEAD is null after restore to initial) */
@@ -57,6 +70,7 @@ export const sessionState = $state<SessionState>({
 	sessions: [],
 	currentSession: null,
 	messages: [],
+	messagesSessionId: null,
 	isLoading: false,
 	error: null,
 	hasMessageHistory: false
@@ -72,6 +86,19 @@ export function hasSessions() {
 
 export function currentSessionId() {
 	return sessionState.currentSession?.id || '';
+}
+
+/**
+ * The session that owns the transcript on screen.
+ *
+ * Anything acting on a rendered message — answering its AskUserQuestion,
+ * clearing the waiting flag it set — belongs to THIS session, not to
+ * `currentSession`: a switch moves that one a round trip before the new
+ * transcript replaces the old one, and in that window the messages still being
+ * rendered are the previous chat's.
+ */
+export function renderedSessionId() {
+	return sessionState.messagesSessionId || '';
 }
 
 export function messageCount() {
@@ -126,8 +153,11 @@ export async function setCurrentSession(session: ChatSession | null, skipLoadMes
 			// Ignore - proceed with existing session data
 		}
 
-		// Load messages for this session (skip if we're restoring and already have messages)
-		if (!skipLoadMessages) {
+		// Load messages for this session (skip if we're restoring and already have
+		// messages — those already belong to this session, so claim them).
+		if (skipLoadMessages) {
+			sessionState.messagesSessionId = session.id;
+		} else {
 			await loadMessagesForSession(session.id);
 		}
 
@@ -135,6 +165,8 @@ export async function setCurrentSession(session: ChatSession | null, skipLoadMes
 	} else {
 		// Clear messages when no session
 		sessionState.messages = [];
+		sessionState.messagesSessionId = null;
+		syncAiChangesFromMessages();
 		debug.log('session', 'Session cleared');
 	}
 }
@@ -203,6 +235,8 @@ export function removeSession(sessionId: string) {
 	if (sessionState.currentSession?.id === sessionId) {
 		sessionState.currentSession = null;
 		sessionState.messages = [];
+		sessionState.messagesSessionId = null;
+		syncAiChangesFromMessages();
 	}
 }
 
@@ -226,6 +260,24 @@ export async function endSession(sessionId: string) {
 // MESSAGE MANAGEMENT
 // ========================================
 
+// Signature of the last synced edit set — skip rebuilds when nothing relevant
+// changed (e.g. streaming text deltas that add no completed AI edit).
+let lastAiEditSignature = '';
+
+/**
+ * Re-derive the AI-change store from the messages currently in view. Called
+ * whenever the message set changes (session/checkpoint/history/project switch,
+ * clear) and reactively from ChatMessages for live streaming edits, so the AI
+ * indicators always reflect exactly what the user is looking at.
+ */
+export function syncAiChangesFromMessages() {
+	const entries = extractAiEdits(sessionState.messages);
+	const signature = entries.map((e) => e.key).join('|');
+	if (signature === lastAiEditSignature) return;
+	lastAiEditSignature = signature;
+	setAiChanges(entries);
+}
+
 export function addMessage(message: UnifiedMessage): void {
 	sessionState.messages.push(message);
 }
@@ -236,7 +288,9 @@ export function updateMessages(messages: FrontendMessage[]) {
 
 export function clearMessages() {
 	sessionState.messages = [];
+	sessionState.messagesSessionId = null;
 	sessionState.hasMessageHistory = false;
+	syncAiChangesFromMessages();
 }
 
 export async function loadMessagesForSession(sessionId: string) {
@@ -246,6 +300,7 @@ export async function loadMessagesForSession(sessionId: string) {
 		if (response && Array.isArray(response)) {
 			// Messages from server already have correct UnifiedMessage shape
 			sessionState.messages = response as UnifiedMessage[];
+			sessionState.messagesSessionId = sessionId;
 
 			if (response.length > 0) {
 				sessionState.hasMessageHistory = true;
@@ -256,12 +311,18 @@ export async function loadMessagesForSession(sessionId: string) {
 			}
 		} else {
 			sessionState.messages = [];
+			sessionState.messagesSessionId = sessionId;
 			sessionState.hasMessageHistory = false;
 		}
 	} catch (error) {
 		debug.error('session', 'Error loading messages:', error);
 		sessionState.messages = [];
+		sessionState.messagesSessionId = null;
 		sessionState.hasMessageHistory = false;
+	} finally {
+		// Re-derive AI-change indicators for whatever is now loaded (incl. after a
+		// checkpoint restore, which truncates messages to the checkpoint).
+		syncAiChangesFromMessages();
 	}
 }
 

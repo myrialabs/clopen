@@ -66,6 +66,8 @@
 		busyPaths?: Set<string>;
 		/** Root-level operation in progress (e.g. upload to project root). */
 		isRootBusy?: boolean;
+		/** File paths that have pending AI changes (for dot indicator). */
+		aiChangesSet?: Set<string>;
 	}
 
 	let {
@@ -100,7 +102,8 @@
 		onClearSelection,
 		isRootDropTarget = false,
 		busyPaths = new Set<string>(),
-		isRootBusy = false
+		isRootBusy = false,
+		aiChangesSet = new Set<string>()
 	}: Props = $props();
 
 	// Create local state if expandedFolders is not provided
@@ -839,6 +842,7 @@
 							{onNodeDragEnd}
 							{dropTargetPath}
 							{busyPaths}
+							{aiChangesSet}
 						/>
 					{/each}
 				</div>

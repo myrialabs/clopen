@@ -10,6 +10,7 @@ import { DEFAULT_MODEL_ID, DEFAULT_MODEL_NAME, DEFAULT_ENGINE } from '$shared/co
 import { DEFAULT_BRANCH_SEPARATOR } from '$shared/constants/git';
 import type { AppSettings, SystemSettings } from '$shared/types/stores/settings';
 import { builtInPresets } from '$frontend/stores/ui/workspace.svelte';
+import { loadUserState, resetUserState } from '$frontend/stores/core/user-state.svelte';
 import ws from '$frontend/utils/ws';
 
 import { debug } from '$shared/utils/logger';
@@ -26,7 +27,7 @@ const createDefaultPresetVisibility = (): Record<string, boolean> => {
 // Default per-user settings
 const defaultSettings: AppSettings = {
 	selectedEngine: DEFAULT_ENGINE,
-	selectedProvider: 'anthropic',
+	selectedProvider: '',
 	selectedModelId: DEFAULT_MODEL_ID,
 	selectedModelName: DEFAULT_MODEL_NAME,
 	engineModelMemory: { 'claude-code': { provider: 'anthropic', id: DEFAULT_MODEL_ID, name: DEFAULT_MODEL_NAME } },
@@ -51,7 +52,8 @@ const defaultSettings: AppSettings = {
 		commitConfig: { style: 'technical', subjectLength: 72, allowedTypes: '', context: '' },
 		branchConfig: { maxWords: 3, allowedPrefixes: '', context: '' }
 	},
-	pinnedModels: []
+	pinnedModels: [],
+	reasoningDefaults: {}
 };
 
 // Default system settings
@@ -61,7 +63,9 @@ const defaultSystemSettings: SystemSettings = {
 	allowedBasePaths: [],
 	autoUpdate: false,
 	sessionLifetimeDays: 30,
-	maxFileSizeMB: 500
+	maxFileSizeMB: 500,
+	publicBaseUrl: '',
+	lastSeenReleaseNotesVersion: ''
 };
 
 // Create and export reactive settings state directly (starts with defaults)
@@ -77,8 +81,24 @@ export function applyFontSize(size: number): void {
 }
 
 /**
+ * Whether `settings` reflects the server's copy of this user's settings.
+ *
+ * Until this is true the store holds nothing but defaults, and saving it would
+ * replace the user's real settings with those defaults — every save writes the
+ * whole object. So saving is blocked until hydration happens. This is what used
+ * to wipe engine/model memory, font size, chat appearance and the commit
+ * generator config whenever the app rendered without a successful restore
+ * (most visibly during the setup wizard, which mounts outside the workspace).
+ */
+let hydrated = false;
+
+/**
  * Apply server-provided per-user settings during initialization.
- * Called from WorkspaceLayout with state from user:restore-state.
+ *
+ * Call with `null` when the server has no saved settings for this user: that is
+ * still a successful hydration (a brand-new user legitimately starts on
+ * defaults) and unblocks saving. Only call this after `user:restore-state`
+ * actually succeeded.
  */
 export function applyServerSettings(serverSettings: Partial<AppSettings> | null): void {
 	if (serverSettings && typeof serverSettings === 'object') {
@@ -92,6 +112,30 @@ export function applyServerSettings(serverSettings: Partial<AppSettings> | null)
 		applyFontSize(settings.fontSize);
 		debug.log('settings', 'Applied server settings');
 	}
+	hydrated = true;
+}
+
+/**
+ * Load this user's settings from the server and apply them.
+ * Safe to call from several entry points — the underlying request is shared.
+ * Returns false when the state could not be loaded, in which case the store
+ * stays un-hydrated and refuses to persist anything.
+ */
+export async function hydrateSettings(): Promise<boolean> {
+	const state = await loadUserState();
+	if (!state) return false;
+	applyServerSettings((state.settings as Partial<AppSettings> | null) ?? null);
+	return true;
+}
+
+/**
+ * Forget the hydrated state on sign-out, so the next user's session cannot be
+ * saved over with the previous user's settings.
+ */
+export function resetSettingsHydration(): void {
+	hydrated = false;
+	Object.assign(settings, defaultSettings);
+	resetUserState();
 }
 
 /**
@@ -114,23 +158,39 @@ export async function loadSystemSettings(): Promise<void> {
 
 /**
  * Save system settings (admin only).
+ * Returns whether the change was persisted; on failure the local copy is rolled
+ * back so the UI never shows a setting the server did not accept.
  */
-export async function updateSystemSettings(newSettings: Partial<SystemSettings>): Promise<void> {
+export async function updateSystemSettings(newSettings: Partial<SystemSettings>): Promise<boolean> {
+	const previous = Object.fromEntries(
+		Object.keys(newSettings).map((key) => [key, systemSettings[key as keyof SystemSettings]])
+	) as Partial<SystemSettings>;
+
 	// Optimistically update the local reactive copy.
 	Object.assign(systemSettings, newSettings);
 	try {
 		// Send ONLY the changed keys — the backend merges them into the stored
-		// blob, so a partial write never clobbers sibling fields (e.g.
-		// onboardingComplete) even if our in-memory copy was stale.
+		// blob, so a partial write never clobbers sibling fields even if our
+		// in-memory copy was stale.
 		await ws.http('settings:update-system', { patch: { ...newSettings } });
 		debug.log('settings', 'System settings saved');
+		return true;
 	} catch (err) {
+		Object.assign(systemSettings, previous);
 		debug.error('settings', 'Failed to save system settings:', err);
+		return false;
 	}
 }
 
-// Save per-user settings to server (fire-and-forget)
+// Save per-user settings to server (fire-and-forget).
+// Blocked until hydration: saving a store that still holds defaults would
+// replace the user's real settings with them, because every save sends the
+// whole object.
 function saveSettings(): void {
+	if (!hydrated) {
+		debug.warn('settings', 'Not saving settings — server copy not loaded yet (would overwrite it with defaults)');
+		return;
+	}
 	ws.http('user:save-state', { key: 'settings', value: { ...settings } }).catch(err => {
 		debug.error('settings', 'Failed to save settings to server:', err);
 	});
@@ -155,6 +215,22 @@ export function togglePinnedModel(modelId: string) {
 	} else {
 		updateSettings({ pinnedModels: pinned.filter(id => id !== modelId) });
 	}
+}
+
+/**
+ * Persist the per-model reasoning/thinking default (Settings → Models + the
+ * chat picker share this map). Passing `null` clears the model's entry so it
+ * falls back to the engine/model default.
+ */
+export function setReasoningDefault(modelId: string, level: string | null): void {
+	if (!modelId) return;
+	const next = { ...settings.reasoningDefaults };
+	if (level === null) {
+		delete next[modelId];
+	} else {
+		next[modelId] = level;
+	}
+	updateSettings({ reasoningDefaults: next });
 }
 
 export function exportSettings(): string {

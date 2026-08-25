@@ -61,6 +61,8 @@ export function initIgnoredPaths(): void {
 	if (unsubscribeFiles || unsubscribeGit) return;
 	unsubscribeFiles = ws.on('files:changed', (payload) => {
 		if (payload.projectId !== projectState.currentProject?.id) return;
+		// Nothing actually changed — don't spend a round trip on it.
+		if (payload.changes.length === 0) return;
 		refreshIgnoredPaths(500);
 	});
 	unsubscribeGit = ws.on('git:changed', (payload) => {

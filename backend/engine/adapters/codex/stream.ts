@@ -6,7 +6,7 @@
  * instance, the `Thread` lifecycle, and an `AbortController` for cancellation.
  *
  * Auth: dual mode (API key + ChatGPT browser OAuth). See ./auth.ts and
- * backend/engine/README.md §9.13 for the auth-blob swap pattern.
+ * backend/engine/README.md §10.13 for the auth-blob swap pattern.
  *
  * MCP: reuses the existing remote MCP HTTP server at /mcp via
  * getCodexMcpConfig() in backend/mcp/config.ts. No new MCP infrastructure.
@@ -19,18 +19,21 @@
  * `backend/ws/chat/stream.ts` to it — same pattern as Claude/OpenCode.
  */
 
-import { Codex, type Thread, type ThreadOptions, type Input as CodexInput } from '@openai/codex-sdk';
+import type { Codex, Thread, ThreadOptions, Input as CodexInput, ModelReasoningEffort } from '@openai/codex-sdk';
+import { loadEngineSdk } from '$backend/engine/sdk-loader';
 import type { EngineOutput, EngineModel } from '$shared/types/unified';
 import type { AIEngine, EngineQueryOptions, StructuredGenerationOptions } from '../../types';
 import { extractJson } from '../../structured-helpers';
 import { engineQueries } from '$backend/database/queries/engine-queries';
 import { resolveOsPath } from '$backend/utils/paths';
-import { resolveBinary } from '$backend/utils/cli';
+import { resolveEngineCli } from '$backend/engine/engine-cli';
 import { getCleanSpawnEnv } from '$backend/utils/index.js';
 import { getCodexMcpConfig } from '../../../mcp';
+import { EngineRuns } from '../run-registry';
+import { artifactFilter } from '$backend/profiles';
 import { syncSkills } from '$backend/skills';
-import { syncEngineArtifacts } from '$backend/engine/artifact-sync';
-import { CODEX_MODELS } from './models';
+import { syncEngineArtifacts, buildArtifactsPromptContext } from '$backend/engine/artifact-sync';
+import { CODEX_MODELS, resolveCodexEffort } from './models';
 import { debug } from '$shared/utils/logger';
 import { handleStreamError, buildTurnError } from './error-handler';
 import {
@@ -54,28 +57,69 @@ import path from 'node:path';
 import os from 'node:os';
 import fs from 'node:fs';
 
+/** One stream in flight on this instance. */
+interface CodexRun {
+	/** Identity of the run — the controller the caller passed to streamQuery. */
+	controller: AbortController;
+	thread: Thread | null;
+}
+
 export class CodexEngine implements AIEngine {
 	readonly name = 'codex' as const;
 
 	private _isInitialized = false;
 	private codex: Codex | null = null;
-	private activeThread: Thread | null = null;
-	private activeController: AbortController | null = null;
+	/**
+	 * Every stream in flight, keyed by the AbortController its caller passed to
+	 * streamQuery. One instance serves all chat sessions of a project, so the
+	 * thread and controller of a stream belong to the run, not the instance — a
+	 * field would hold only the most recent one and cancelling any chat would
+	 * abort another chat's turn.
+	 */
+	private runs = new EngineRuns<CodexRun>();
 	/** Account ID currently baked into `this.codex`. Same trade-off as Copilot. */
 	private currentAccountId: number | null = null;
+	/**
+	 * Profile connector-filter signature baked into `this.codex`. Codex takes its
+	 * MCP set at construction, so scoping connectors to a Profile means rebuilding
+	 * the client when the filter changes (same trade-off as an account switch).
+	 * `'*'` = unfiltered (no profile constraint). `null` = not initialized.
+	 */
+	private currentMcpFilterKey: string | null = null;
+	/**
+	 * Project baked into `this.codex`'s MCP bridge URL.
+	 *
+	 * Codex takes its MCP set at construction, so the URL — and with it the
+	 * identity the bridge binds tool calls to — is fixed for the life of the
+	 * client. An instance serves exactly one project (see the per-project engine
+	 * cache in `backend/engine/index.ts`), so the project is a safe thing to bake;
+	 * the chat session is not, because the same client serves all of them.
+	 * `null` = built without a project, which a later stream re-initialises.
+	 */
+	private currentProjectId: string | null = null;
+	/**
+	 * Project for the client `initialize()` is about to build. Carried in a field
+	 * rather than an argument because `initialize` is part of the `AIEngine`
+	 * interface and adding a parameter to the implementation would stop it
+	 * satisfying that type.
+	 */
+	private pendingProjectId: string | null = null;
 
 	get isInitialized(): boolean {
 		return this._isInitialized;
 	}
 
 	get isActive(): boolean {
-		return this.activeController !== null;
+		return this.runs.isActive;
 	}
 
-	async initialize(accountId?: number): Promise<void> {
-		if (this._isInitialized && (accountId == null || accountId === this.currentAccountId)) {
+	async initialize(accountId?: number, mcpProfileFilter?: Set<string>): Promise<void> {
+		const mcpKey = mcpProfileFilter ? [...mcpProfileFilter].sort().join(',') : '*';
+		if (this._isInitialized && (accountId == null || accountId === this.currentAccountId) && mcpKey === this.currentMcpFilterKey) {
 			return;
 		}
+
+		const projectId = this.pendingProjectId;
 
 		const account = accountId != null
 			? engineQueries.getAccount(accountId)
@@ -94,8 +138,11 @@ export class CodexEngine implements AIEngine {
 		// option is passed directly; no filesystem mutation.
 		applyAccountAuth(account);
 
-		const codexBinary = resolveBinary('codex');
-		const mcpConfig = getCodexMcpConfig();
+		// Prefer the binary clopen manages (vendored in the SDK's platform package
+		// inside the stack dir) over an older copy on the user's PATH — the SDK
+		// would otherwise be pinned while the process it spawns drifts.
+		const codexCli = await resolveEngineCli('codex');
+		const mcpConfig = getCodexMcpConfig(mcpProfileFilter, projectId ? { projectId } : undefined);
 
 		// Codex SDK takes config at construction. We pass `show_raw_agent_reasoning`
 		// (so the SDK forwards reasoning text events) and forward the Clopen MCP
@@ -110,9 +157,10 @@ export class CodexEngine implements AIEngine {
 		// The SDK does NOT inherit process.env when `env` is provided, so we
 		// pass the full clean spawn env and layer CODEX_HOME on top to redirect
 		// the subprocess's auth.json + sessions into Clopen's isolated dir.
+		const { Codex } = await loadEngineSdk<typeof import('@openai/codex-sdk')>('codex', '@openai/codex-sdk');
 		this.codex = new Codex({
 			apiKey: credential.kind === 'api_key' ? credential.apiKey : undefined,
-			...(codexBinary ? { codexPathOverride: codexBinary } : {}),
+			...(codexCli ? { codexPathOverride: codexCli.path } : {}),
 			env: { ...getCleanSpawnEnv(), CODEX_HOME: getCodexHomeDir() },
 			config: {
 				show_raw_agent_reasoning: true,
@@ -120,14 +168,18 @@ export class CodexEngine implements AIEngine {
 			},
 		});
 		this.currentAccountId = account.id;
+		this.currentMcpFilterKey = mcpKey;
+		this.currentProjectId = projectId;
 		this._isInitialized = true;
-		debug.log('engine', `Codex engine initialized (account ${account.id}, mode=${credential.kind})`);
+		debug.log('engine', `Codex engine initialized (account ${account.id}, mode=${credential.kind}, mcpFilter=${mcpKey}, project=${projectId ?? 'none'})`);
 	}
 
 	async dispose(): Promise<void> {
-		await this.cancel();
+		await this.stopRuns(this.runs.all());
 		this.codex = null;
 		this.currentAccountId = null;
+		this.currentMcpFilterKey = null;
+		this.currentProjectId = null;
 		this._isInitialized = false;
 		debug.log('engine', 'Codex engine disposed');
 	}
@@ -138,27 +190,42 @@ export class CodexEngine implements AIEngine {
 	}
 
 	async *streamQuery(options: EngineQueryOptions): AsyncGenerator<EngineOutput, void, unknown> {
-		const { projectPath, prompt, resume, modelId, abortController, accountId } = options;
+		const { projectPath, prompt, resume, modelId, reasoningEffort, abortController, accountId } = options;
 
-		// Active Profile for this stream — scopes the materialized artifact set.
-		// Note: Codex MCP config is baked in at client construction (see
-		// initialize()), so per-stream profile filtering of CONNECTORS is not
-		// applied here — consistent with Codex's existing best-effort MCP status
-		// (Prompt 2). Skills/Commands/Subagents ARE scoped, since they re-sync here.
+		// Per-model reasoning levels live in the catalog, which is derived from the
+		// CLI's own preset table — see `resolveCodexEffort` for the validity rules
+		// and for why the SDK's narrower `ModelReasoningEffort` union is cast past.
+		const modelReasoningEffort = resolveCodexEffort(modelId, reasoningEffort) as ModelReasoningEffort;
+
+		// Active Profile for this stream — scopes the materialized artifact set AND
+		// (below) the MCP connector set baked into the Codex client.
 		const profileId = options.mcpContext?.profileId;
 		// Refresh the synthetic skills preamble in CODEX_HOME before the turn.
 		await syncSkills('codex', profileId);
 		await syncEngineArtifacts('codex', profileId);
 
-		// Per-stream account override — same shape as Copilot. The SDK takes
-		// the apiKey at construction time, so an account switch requires
-		// re-creating the Codex client.
-		if (this._isInitialized && accountId != null && accountId !== this.currentAccountId) {
-			debug.log('engine', `Codex account switch ${this.currentAccountId} → ${accountId}; re-initialising`);
+		// Per-stream account/profile override — the SDK bakes both the apiKey and the
+		// MCP set at construction, so a change in either requires re-creating the
+		// client. The connector filter narrows MCP to the Profile's set (like Claude/
+		// Qwen/Copilot do per stream); `undefined` = unfiltered → no change for the
+		// common no-profile path.
+		const mcpProfileFilter = artifactFilter(profileId, 'mcp') ?? undefined;
+		const mcpKey = mcpProfileFilter ? [...mcpProfileFilter].sort().join(',') : '*';
+		const accountChanged = this._isInitialized && accountId != null && accountId !== this.currentAccountId;
+		const mcpChanged = this._isInitialized && mcpKey !== this.currentMcpFilterKey;
+		// A client built without a project (the bare `initialize()` the engine
+		// registry does) addresses the bridge anonymously, and its tool calls fall
+		// back to whichever stream started last — the way an agent in one project
+		// ended up opening tabs in another.
+		const streamProjectId = options.mcpContext?.projectId ?? null;
+		const projectChanged = this._isInitialized && streamProjectId !== null && streamProjectId !== this.currentProjectId;
+		if (accountChanged || mcpChanged || projectChanged) {
+			debug.log('engine', `Codex re-initialising (accountChanged=${accountChanged}, mcpChanged=${mcpChanged}, projectChanged=${projectChanged})`);
 			await this.dispose();
 		}
+		this.pendingProjectId = streamProjectId;
 		if (!this._isInitialized || !this.codex) {
-			await this.initialize(accountId);
+			await this.initialize(accountId, mcpProfileFilter);
 		}
 		if (!this.codex) {
 			throw new Error('Codex client unavailable.');
@@ -173,7 +240,9 @@ export class CodexEngine implements AIEngine {
 			applyAccountAuth(activeAccount);
 		}
 
-		this.activeController = abortController || new AbortController();
+		const controller = abortController || new AbortController();
+		const run: CodexRun = { controller, thread: null };
+		this.runs.add(run);
 
 		const resolvedProjectPath = resolveOsPath(projectPath);
 		const state = createCodexState('', modelId);
@@ -184,7 +253,7 @@ export class CodexEngine implements AIEngine {
 			skipGitRepoCheck: true,
 			sandboxMode: 'danger-full-access',
 			approvalPolicy: 'never',
-			modelReasoningEffort: 'medium',
+			modelReasoningEffort,
 			webSearchMode: 'cached',
 			webSearchEnabled: true,
 		};
@@ -194,7 +263,7 @@ export class CodexEngine implements AIEngine {
 
 			if (resume) {
 				// Fork-by-copy on EVERY resume — same semantics as Copilot
-				// (README §9.10 sharp edge: never gate on options.forkSession).
+				// (README §10.10 sharp edge: never gate on options.forkSession).
 				let resumeId = resume;
 				if (sessionStateExists(resume)) {
 					const forkId = crypto.randomUUID();
@@ -213,15 +282,19 @@ export class CodexEngine implements AIEngine {
 				thread = this.codex.startThread(threadOptions);
 			}
 
-			this.activeThread = thread;
+			run.thread = thread;
 
-			const input = await buildCodexInput(prompt);
+			// Prompt-scoped engine: advertise the profile-scoped Skills/Commands/
+			// Subagents PER-SESSION via the prompt (not the shared global AGENTS.md /
+			// persistent client) so the active Profile scopes them correctly.
+			const artifactsContext = buildArtifactsPromptContext(profileId);
+			const input = await buildCodexInput(prompt, artifactsContext || undefined);
 			const { events } = await thread.runStreamed(input, {
-				signal: this.activeController.signal,
+				signal: controller.signal,
 			});
 
 			for await (const event of events) {
-				if (this.activeController.signal.aborted) break;
+				if (controller.signal.aborted) break;
 
 				switch (event.type) {
 					case 'thread.started':
@@ -256,34 +329,45 @@ export class CodexEngine implements AIEngine {
 				}
 			}
 
-			yield buildResultEvent(state, this.activeController.signal.aborted);
+			yield buildResultEvent(state, controller.signal.aborted);
 		} catch (error) {
 			handleStreamError(error);
 		} finally {
 			// Snapshot the (possibly token-refreshed) auth.json back to DB so
-			// refreshes survive across account switches (README §9.13 step 4).
+			// refreshes survive across account switches (README §10.13 step 4).
 			try {
 				snapshotAuthJsonToActiveAccount();
 			} catch (snapshotErr) {
 				debug.warn('engine', 'Codex: post-stream auth.json snapshot failed (non-fatal):', snapshotErr);
 			}
-			this.activeThread = null;
-			this.activeController = null;
+			// Retire THIS run only — another chat session of the same project may
+			// still be streaming on this instance.
+			this.runs.remove(run);
 		}
 	}
 
-	async cancel(): Promise<void> {
+	/**
+	 * Cancel the run whose AbortController is `owner`, and only that run.
+	 */
+	async cancel(owner: AbortController): Promise<void> {
+		await this.stopRuns(this.runs.select(owner));
+	}
+
+	/**
+	 * Tear down the given runs. `cancel` passes the one run it was asked to
+	 * stop; `dispose` passes them all. Nothing else may reach this.
+	 */
+	private async stopRuns(targets: CodexRun[]): Promise<void> {
 		// Abort the local controller so the for-await loop exits even if the
 		// SDK's signal propagation hangs.
-		if (this.activeController && !this.activeController.signal.aborted) {
-			this.activeController.abort();
+		for (const run of targets) {
+			if (!run.controller.signal.aborted) run.controller.abort();
+			this.runs.remove(run);
 		}
-		this.activeController = null;
-		this.activeThread = null;
 	}
 
-	async interrupt(): Promise<void> {
-		await this.cancel();
+	async interrupt(owner: AbortController): Promise<void> {
+		await this.stopRuns(this.runs.select(owner));
 	}
 
 	/**
@@ -365,8 +449,14 @@ export class CodexEngine implements AIEngine {
 // Helpers
 // ============================================================================
 
-async function buildCodexInput(prompt: EngineQueryOptions['prompt']): Promise<CodexInput> {
+async function buildCodexInput(prompt: EngineQueryOptions['prompt'], prefixText?: string): Promise<CodexInput> {
 	const items: Array<{ type: 'text'; text: string } | { type: 'local_image'; path: string }> = [];
+
+	// Optional per-session context (e.g. the profile-scoped skills preamble),
+	// prepended so it leads the turn.
+	if (prefixText) {
+		items.push({ type: 'text', text: prefixText });
+	}
 
 	for (const block of prompt.content) {
 		if (block.type === 'text') {

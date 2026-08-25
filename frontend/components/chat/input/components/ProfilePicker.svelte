@@ -1,5 +1,7 @@
 <script lang="ts">
 	import { untrack } from 'svelte';
+	import { scale } from 'svelte/transition';
+	import { cubicOut } from 'svelte/easing';
 	import Icon from '$frontend/components/common/display/Icon.svelte';
 	import { appState } from '$frontend/stores/core/app.svelte';
 	import { projectState } from '$frontend/stores/core/projects.svelte';
@@ -16,6 +18,11 @@
 	const isAdmin = $derived(authStore.isAdmin);
 	let projectDefaultId = $state<number | null>(null);
 
+	// The profile is switchable at any point in a session. The backend resolves
+	// the effective profile per stream (`resolveActiveProfileId`, called at
+	// stream start), so a mid-session change simply scopes the next turn's
+	// artifacts and MCP servers — there is no engine state to invalidate and
+	// nothing to carry over. Only an in-flight stream blocks the picker.
 	let open = $state(false);
 	let searchQuery = $state('');
 	let triggerButton = $state<HTMLButtonElement | null>(null);
@@ -76,6 +83,13 @@
 
 	function select(profileId: number | null) {
 		chatModelState.profileId = profileId;
+		// Mirror onto the session object for the same reason the remote listener
+		// above does: the init $effect in EngineModelPicker restores profile_id
+		// from `currentSession`, so leaving it stale reverts this pick the next
+		// time anything replaces that object.
+		if (sessionState.currentSession) {
+			sessionState.currentSession = { ...sessionState.currentSession, profile_id: profileId };
+		}
 		const chatSessionId = sessionState.currentSession?.id;
 		if (chatSessionId) {
 			ws.emit('chat:profile-sync', {
@@ -105,7 +119,7 @@
 		class="flex items-center gap-1.5 px-2 py-1 text-xs rounded-lg transition-all duration-150
 			bg-slate-100 dark:bg-slate-800 hover:bg-slate-200 dark:hover:bg-slate-700
 			text-slate-600 dark:text-slate-400 border border-slate-200 dark:border-slate-700
-			disabled:opacity-50 disabled:cursor-not-allowed"
+			disabled:opacity-50 disabled:cursor-not-allowed disabled:hover:bg-slate-100 dark:disabled:hover:bg-slate-800"
 		onclick={toggle}
 		disabled={appState.isLoading}
 		title="Active profile for this session"
@@ -117,7 +131,11 @@
 
 	{#if open}
 		<div class="fixed inset-0" style="z-index: 9998;" onclick={close}></div>
-		<div style={dropdownStyle} class="bg-white dark:bg-slate-800 border border-slate-200 dark:border-slate-700 rounded-lg shadow-xl overflow-hidden w-64 max-h-80 flex flex-col">
+		<div
+			style={dropdownStyle}
+			class="origin-bottom-left bg-white dark:bg-slate-800 border border-slate-200 dark:border-slate-700 rounded-lg shadow-xl overflow-hidden w-64 max-w-[calc(100vw-1.5rem)] max-h-80 flex flex-col"
+			transition:scale={{ duration: 130, easing: cubicOut, start: 0.95, opacity: 0 }}
+		>
 			<!-- Search (matches the model dropdown) -->
 			<div class="px-2 py-2 border-b border-slate-200 dark:border-slate-700 flex-shrink-0">
 				<div class="relative">
