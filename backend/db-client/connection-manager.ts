@@ -40,6 +40,19 @@ class ConnectionManager {
 	private entries = new Map<string, ConnectionEntry>();
 	private sweeperHandle: ReturnType<typeof setInterval> | null = null;
 
+	/**
+	 * Local ports currently held open by SSH tunnels, for the port manager.
+	 * These are ephemeral ports nobody asked for by number, so without this the
+	 * panel would show them as an unexplained listener owned by Clopen itself.
+	 */
+	activeTunnelPorts(): Array<{ connectionId: string; localPort: number }> {
+		const ports: Array<{ connectionId: string; localPort: number }> = [];
+		for (const [connectionId, entry] of this.entries) {
+			if (entry.tunnel) ports.push({ connectionId, localPort: entry.tunnel.localPort });
+		}
+		return ports;
+	}
+
 	private startSweeper(): void {
 		if (this.sweeperHandle) return;
 		this.sweeperHandle = setInterval(() => {

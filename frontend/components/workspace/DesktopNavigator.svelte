@@ -26,6 +26,7 @@
 	import RemoteAccessPanel from '$frontend/components/remote-access/RemoteAccessPanel.svelte';
 	import DbClientModal from '$frontend/components/db-client/DbClientModal.svelte';
 	import SshClientModal from '$frontend/components/ssh-client/SshClientModal.svelte';
+	import PortsModal from '$frontend/components/ports/PortsModal.svelte';
 	import MemoryModal from '$frontend/components/memory/MemoryModal.svelte';
 	import SettingButton from '$frontend/components/settings/SettingButton.svelte';
 	import ProjectUserAvatars from '$frontend/components/common/display/ProjectUserAvatars.svelte';
@@ -42,6 +43,8 @@
 		closeDbClientDialog,
 		openSshClientDialog,
 		closeSshClientDialog,
+		openPortsDialog,
+		closePortsDialog,
 		openMemoryDialog,
 		closeMemoryDialog
 	} from '$frontend/stores/ui/quick-panels.svelte';
@@ -392,6 +395,7 @@
 					onPublicTunnel={openTunnelDialog}
 					onDbClient={openDbClientDialog}
 					onSshClient={openSshClientDialog}
+					onPorts={openPortsDialog}
 					onMemory={openMemoryDialog}
 				/>
 				<QuickSearchButton />
@@ -460,6 +464,7 @@
 					onPublicTunnel={openTunnelDialog}
 					onDbClient={openDbClientDialog}
 					onSshClient={openSshClientDialog}
+					onPorts={openPortsDialog}
 					onMemory={openMemoryDialog}
 				/>
 				<QuickSearchButton collapsed={true} />
@@ -551,4 +556,5 @@
 <!-- DB Client Modal -->
 <DbClientModal bind:isOpen={quickPanelsState.dbClientOpen} onClose={closeDbClientDialog} />
 <SshClientModal bind:isOpen={quickPanelsState.sshClientOpen} onClose={closeSshClientDialog} />
+<PortsModal bind:isOpen={quickPanelsState.portsOpen} onClose={closePortsDialog} />
 <MemoryModal bind:isOpen={quickPanelsState.memoryOpen} onClose={closeMemoryDialog} />

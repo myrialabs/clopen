@@ -7,6 +7,7 @@
 	import { remoteAccessStore } from '$frontend/stores/features/remote-access.svelte';
 	import { dbClientStore } from '$frontend/stores/features/db-client.svelte';
 	import { sshClientStore } from '$frontend/stores/features/ssh-client.svelte';
+	import { portsStore } from '$frontend/stores/features/ports.svelte';
 	import type { IconName } from '$shared/types/ui/icons';
 
 	interface Props {
@@ -16,6 +17,7 @@
 		onPublicTunnel: () => void;
 		onDbClient: () => void;
 		onSshClient: () => void;
+		onPorts: () => void;
 		onMemory: () => void;
 	}
 
@@ -26,6 +28,7 @@
 		onPublicTunnel,
 		onDbClient,
 		onSshClient,
+		onPorts,
 		onMemory
 	}: Props = $props();
 
@@ -35,8 +38,11 @@
 	const tunnelCount = $derived(tunnelStore.activeDomainCount);
 	const dbCount = $derived(dbClientStore.liveCount);
 	const sshCount = $derived(sshClientStore.liveCount);
+	const portsCount = $derived(portsStore.liveCount);
 	// A single dot on the trigger signals "something under here is active".
-	const hasActivity = $derived(remoteCount > 0 || tunnelCount > 0 || dbCount > 0 || sshCount > 0);
+	const hasActivity = $derived(
+		remoteCount > 0 || tunnelCount > 0 || dbCount > 0 || sshCount > 0 || portsCount > 0
+	);
 
 	interface ToolItem {
 		label: string;
@@ -79,6 +85,16 @@
 			onClick: onSshClient,
 			count: sshCount,
 			accent: 'text-sky-600 dark:text-sky-400'
+		},
+		{
+			label: 'Ports',
+			description: 'What is listening on this machine',
+			icon: 'lucide:cable',
+			onClick: onPorts,
+			// Counts ports born in a Clopen terminal, not every port on the box —
+			// a machine's own listeners are a constant, not a sign of activity.
+			count: portsCount,
+			accent: 'text-amber-600 dark:text-amber-400'
 		},
 		{
 			label: 'Memory',

@@ -18,6 +18,7 @@
 	import { globalStreamMonitor } from '$frontend/services/notification/global-stream-monitor';
 	import { tunnelStore } from '$frontend/stores/features/tunnel.svelte';
 	import { remoteAccessStore } from '$frontend/stores/features/remote-access.svelte';
+	import { portsStore } from '$frontend/stores/features/ports.svelte';
 	import { startUpdateChecker, stopUpdateChecker } from '$frontend/stores/ui/update.svelte';
 	import ws from '$frontend/utils/ws';
 	import { showNotificationWithActions } from '$frontend/stores/ui/notification.svelte';
@@ -55,6 +56,10 @@
 
 			// Keep the Remote Access share count in sync for the sidebar indicator
 			remoteAccessStore.initRealtimeListener();
+
+			// Keep the Ports count in sync. The server only scans when a terminal
+			// session is actually running, so an idle workspace costs nothing.
+			portsStore.initRealtimeListener();
 
 			// Nudge admins to set project access when a new member joins via an invite,
 			// so the "invite → join → grant access" flow doesn't dead-end.

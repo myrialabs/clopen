@@ -32,7 +32,7 @@ import type {
 	SshKnownHost
 } from '$shared/types/ssh';
 
-export type SshView = 'terminal' | 'files' | 'forwards' | 'overview';
+export type SshView = 'terminal' | 'files' | 'ports' | 'forwards' | 'overview';
 
 /** One terminal tab. `sessionId` is the PtyKit session it renders. */
 export interface SshTerminalTab {

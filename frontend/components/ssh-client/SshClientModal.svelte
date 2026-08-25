@@ -13,6 +13,7 @@
 	import TerminalPane from './main/TerminalPane.svelte';
 	import FileBrowser from './main/FileBrowser.svelte';
 	import ForwardsPanel from './main/ForwardsPanel.svelte';
+	import PortsPanel from './main/PortsPanel.svelte';
 	import HostOverview from './main/HostOverview.svelte';
 	import { sshClientStore, type SshView } from '$frontend/stores/features/ssh-client.svelte';
 	import { debug } from '$shared/utils/logger';
@@ -40,9 +41,12 @@
 	const activeView = $derived(view?.activeView ?? 'terminal');
 	const connected = $derived(sshClientStore.isConnected(activeConnection?.id));
 	const health = $derived(activeConnection ? sshClientStore.health[activeConnection.id] : null);
-	// Terminal and Files need a live transport; Forwards and Host are settings
-	// pages and stay readable while the host is disconnected.
-	const viewNeedsConnection = $derived(activeView === 'terminal' || activeView === 'files');
+	// Terminal, Files and Ports all run against the host itself, so they need a
+	// live transport; Forwards and Host are settings pages and stay readable
+	// while the host is disconnected.
+	const viewNeedsConnection = $derived(
+		activeView === 'terminal' || activeView === 'files' || activeView === 'ports'
+	);
 
 	let connecting = $state(false);
 
@@ -61,6 +65,7 @@
 	const VIEWS: Array<{ id: SshView; label: string; icon: IconName }> = [
 		{ id: 'terminal', label: 'Terminal', icon: 'lucide:terminal' },
 		{ id: 'files', label: 'Files', icon: 'lucide:folder' },
+		{ id: 'ports', label: 'Ports', icon: 'lucide:cable' },
 		{ id: 'forwards', label: 'Forwards', icon: 'lucide:arrow-left-right' },
 		{ id: 'overview', label: 'Host', icon: 'lucide:info' }
 	];
@@ -267,6 +272,8 @@
 										<TerminalPane connectionId={activeConnection.id} />
 									{:else if activeView === 'files'}
 										<FileBrowser connectionId={activeConnection.id} />
+									{:else if activeView === 'ports'}
+										<PortsPanel connectionId={activeConnection.id} />
 									{:else if activeView === 'forwards'}
 										<ForwardsPanel connectionId={activeConnection.id} />
 									{:else}

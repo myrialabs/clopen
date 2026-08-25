@@ -16,7 +16,8 @@ import {
 	openRemoteAccessDialog,
 	openTunnelDialog,
 	openDbClientDialog,
-	openSshClientDialog
+	openSshClientDialog,
+	openPortsDialog
 } from '$frontend/stores/ui/quick-panels.svelte';
 import { addNotification } from '$frontend/stores/ui/notification.svelte';
 
@@ -192,6 +193,15 @@ export function getCommandActions(): CommandAction[] {
 		icon: 'lucide:server',
 		keywords: ['ssh', 'shell', 'sftp', 'remote', 'server', 'tunnel', 'port forward'],
 		run: openSshClientDialog
+	});
+
+	actions.push({
+		id: 'ports',
+		label: 'Ports',
+		description: 'What is listening on this machine, and how to stop it',
+		icon: 'lucide:cable',
+		keywords: ['port', 'listening', 'process', 'kill', 'netstat', 'lsof', 'in use', 'occupied'],
+		run: openPortsDialog
 	});
 
 	actions.push({
