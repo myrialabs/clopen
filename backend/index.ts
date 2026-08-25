@@ -20,6 +20,7 @@ import { Elysia } from 'elysia';
 import { corsMiddleware } from './middleware/cors';
 import { errorHandlerMiddleware } from './middleware/error-handler';
 import { loggerMiddleware } from './middleware/logger';
+import { securityMiddleware } from './middleware/security';
 
 // Database initialization
 import { initializeDatabase, closeDatabase } from './database';
@@ -129,6 +130,7 @@ const HOST = SERVER_ENV.HOST;
 const app = new Elysia()
 	// Apply middleware
 	.use(corsMiddleware)
+	.use(securityMiddleware)
 	.use(errorHandlerMiddleware)
 	.use(loggerMiddleware)
 
