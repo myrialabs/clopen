@@ -64,6 +64,7 @@ import { getAuthMode } from './settings/system-settings';
 import { authQueries } from './database/queries';
 import { authRateLimiter } from './auth';
 import { sessionCleanupScheduler } from './auth/session-cleanup';
+import { portMonitor } from './ports/monitor';
 import { uploadTempCleanup } from './http/upload-temp-cleanup';
 import { ws as wsServer } from './utils/ws';
 import { messageRateLimiter } from './ws/message-rate-limiter';
@@ -269,6 +270,10 @@ async function startServer() {
 		// which also runs on the live process during "Clear All Data".
 		startEngineHotReload();
 		startEngineConfigWatcher();
+		// Sidebar count for the port manager. Idle-cheap by construction: with no
+		// terminal sessions running there are no session-born ports to count, so
+		// the tick skips the scan entirely.
+		portMonitor.start();
 	} catch (error) {
 		console.error('❌ Database initialization failed — refusing to start:', error);
 		console.error(`   Data directory: ${SERVER_ENV.DATA_DIR}`);
@@ -332,6 +337,8 @@ async function gracefulShutdown() {
 		sessionCleanupScheduler.dispose();
 		// Dispose upload temp cleanup timer
 		uploadTempCleanup.dispose();
+		// Stop port polling and release any SSH leases it holds
+		portMonitor.stop();
 		// Close MCP remote server (before engines, as they may still reference it)
 		await closeMcpServer();
 		// Cleanup browser preview sessions

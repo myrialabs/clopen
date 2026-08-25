@@ -32,6 +32,7 @@ import { engineRouter } from './engine';
 import { stackRouter } from './stack';
 import { dbClientRouter } from './db-client';
 import { sshRouter } from './ssh';
+import { portsRouter } from './ports';
 import { mcpRouter } from './mcp';
 import { skillsRouter } from './skills';
 import { commandsRouter } from './commands';
@@ -87,6 +88,7 @@ export const wsRouter = createRouter()
 
 	// SSH client (terminal, SFTP, port forwarding)
 	.merge(sshRouter)
+	.merge(portsRouter)
 
 	// External MCP server management (install from the official registry)
 	.merge(mcpRouter)

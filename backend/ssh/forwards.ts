@@ -74,6 +74,37 @@ class SshForwardManager {
 		};
 	}
 
+	/**
+	 * Forwards holding a listener on the machine Clopen runs on, for the port
+	 * manager. `server` is the local `net.Server`, so its presence is what makes
+	 * a forward local — remote forwards bind on the far host and are reported by
+	 * `remoteListeners` instead.
+	 */
+	localListeners(): Array<{ forward: SshForward; boundPort: number }> {
+		const listeners: Array<{ forward: SshForward; boundPort: number }> = [];
+		for (const active of this.running.values()) {
+			if (!active.server) continue;
+			listeners.push({ forward: active.forward, boundPort: active.boundPort });
+		}
+		return listeners;
+	}
+
+	/**
+	 * Forwards holding a listener on a given SSH host. A remote forward asks the
+	 * host's sshd to bind a port on Clopen's behalf, so that port is every bit as
+	 * much Clopen's doing as a local one — the port manager names it the same way
+	 * when looking at that host.
+	 */
+	remoteListeners(connectionId: string): Array<{ forward: SshForward; boundPort: number }> {
+		const listeners: Array<{ forward: SshForward; boundPort: number }> = [];
+		for (const active of this.running.values()) {
+			if (active.server) continue;
+			if (active.forward.connectionId !== connectionId) continue;
+			listeners.push({ forward: active.forward, boundPort: active.boundPort });
+		}
+		return listeners;
+	}
+
 	statusesForConnection(connectionId: string): SshForwardStatus[] {
 		return sshPortForwardQueries.listForConnection(connectionId).map((forward) => this.status(forward));
 	}

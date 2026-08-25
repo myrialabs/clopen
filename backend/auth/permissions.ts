@@ -43,6 +43,9 @@ export const ADMIN_ONLY_ROUTES = new Set([
 	'settings:update-batch',
 	'system:run-update',
 	'system:clear-data',
+	// Port manager — anyone signed in may see what is listening, but ending a
+	// process can take down another member's work, so stopping is admin-only.
+	'ports:kill',
 	// Stack — binary installation is an admin-only operation.
 	'stack:status',
 	'stack:status-all',
