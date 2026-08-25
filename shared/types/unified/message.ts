@@ -39,10 +39,16 @@ export interface MessageModel {
 
 /** Engine context attached to every message */
 export interface MessageEngine {
-	type: 'claude-code' | 'opencode' | 'copilot' | 'codex' | 'qwen';
+	type: 'claude-code' | 'opencode' | 'copilot' | 'codex' | 'qwen' | 'pi' | 'cline' | 'cursor';
 	provider: string;
 	model: MessageModel;
 	account: MessageAccount;
+	/**
+	 * Reasoning/thinking level applied to this turn (native per engine — see
+	 * `EngineModel.capabilities.reasoningControl`). Present only when the
+	 * engine/model exposes a reasoning knob; absent for engines/models without one.
+	 */
+	reasoningEffort?: string | null;
 }
 
 /** Common fields present on every message */

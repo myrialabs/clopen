@@ -14,6 +14,7 @@ import { remoteHandler } from './remote';
 import { conflictHandler } from './conflict';
 import { commitMessageHandler } from './commit-message';
 import { branchNameHandler } from './branch-name';
+import { ignoredHandler } from './ignored';
 
 export const gitRouter = createRouter()
 	.merge(statusHandler)
@@ -25,4 +26,5 @@ export const gitRouter = createRouter()
 	.merge(remoteHandler)
 	.merge(conflictHandler)
 	.merge(commitMessageHandler)
-	.merge(branchNameHandler);
+	.merge(branchNameHandler)
+	.merge(ignoredHandler);

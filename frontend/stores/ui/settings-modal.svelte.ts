@@ -7,33 +7,43 @@ import type { IconName } from '$shared/types/ui/icons';
 import type { EngineType } from '$shared/types/unified';
 
 export type SettingsSection =
-	| 'models'
+	| 'assistant'
+	| 'commit-message'
+	| 'artifacts'
 	| 'engines'
-	| 'system-tools'
+	| 'stack'
 	| 'mcp'
 	| 'skills'
+	| 'commands'
+	| 'subagents'
+	| 'instructions'
+	| 'permissions'
+	| 'memory'
+	| 'memory-graph'
+	| 'profiles'
 	| 'appearance'
 	| 'notifications'
 	| 'tunnel'
 	| 'account'
 	| 'team'
 	| 'security'
+	| 'device'
 	| 'system';
 
 /** Sidebar grouping. Sections are rendered under their group header. */
 export type SettingsGroup =
-	| 'assistant'
-	| 'extensions'
-	| 'general'
-	| 'account'
+	| 'models'
+	| 'infrastructure'
+	| 'artifacts-access'
+	| 'preferences'
 	| 'administration';
 
 /** Ordered group definitions for the settings sidebar. */
 export const settingsGroups: { id: SettingsGroup; label: string }[] = [
-	{ id: 'assistant', label: 'Assistant' },
-	{ id: 'extensions', label: 'Tools & Extensions' },
-	{ id: 'general', label: 'General' },
-	{ id: 'account', label: 'Account' },
+	{ id: 'models', label: 'Models' },
+	{ id: 'infrastructure', label: 'Infrastructure' },
+	{ id: 'artifacts-access', label: 'Artifacts & Access' },
+	{ id: 'preferences', label: 'Preferences' },
 	{ id: 'administration', label: 'Administration' }
 ];
 
@@ -46,6 +56,12 @@ interface SettingsModalState {
 	 * "Go to Engines" CTA); AIEnginesSettings consumes and clears it.
 	 */
 	engineFocus: EngineType | null;
+	/**
+	 * User whose project-access modal should auto-open when Team is shown. Set by
+	 * the "new member joined" nudge and the invite flow; UserManagement consumes
+	 * and clears it.
+	 */
+	teamFocusUserId: string | null;
 }
 
 // Settings sections metadata
@@ -60,26 +76,72 @@ export interface SettingsSectionMeta {
 
 export const settingsSections: SettingsSectionMeta[] = [
 	{
-		id: 'models',
-		label: 'Models',
+		id: 'assistant',
+		label: 'Assistant',
+		icon: 'lucide:bot',
+		description: 'Chat engine and model',
+		group: 'models'
+	},
+	{
+		id: 'commit-message',
+		label: 'Git',
+		icon: 'lucide:git-branch',
+		description: 'Commits and branches',
+		group: 'models'
+	},
+	{
+		id: 'artifacts',
+		label: 'Artifacts',
 		icon: 'lucide:sparkles',
-		description: 'Chat and commit model',
-		group: 'assistant'
+		description: 'Model for extensions',
+		group: 'models'
+	},
+	{
+		id: 'memory',
+		label: 'Memory',
+		icon: 'lucide:brain',
+		description: 'Model for long-term memory',
+		group: 'models',
+		adminOnly: true
 	},
 	{
 		id: 'engines',
 		label: 'Engines',
-		icon: 'lucide:plug',
+		icon: 'lucide:circuit-board',
 		description: 'Accounts and providers',
-		group: 'extensions',
+		group: 'infrastructure',
+		adminOnly: true
+	},
+	{
+		id: 'stack',
+		label: 'Stack',
+		icon: 'lucide:hammer',
+		description: 'Engines, runtimes & tools',
+		group: 'infrastructure',
+		adminOnly: true
+	},
+	{
+		id: 'memory-graph',
+		label: 'Memory',
+		icon: 'lucide:brain',
+		description: 'What gets remembered',
+		group: 'infrastructure',
+		adminOnly: true
+	},
+	{
+		id: 'tunnel',
+		label: 'Tunnel',
+		icon: 'lucide:globe',
+		description: 'Cloudflare tunnel services',
+		group: 'infrastructure',
 		adminOnly: true
 	},
 	{
 		id: 'mcp',
-		label: 'MCP Servers',
-		icon: 'lucide:blocks',
-		description: 'Connect external tools',
-		group: 'extensions',
+		label: 'Connectors',
+		icon: 'lucide:plug',
+		description: 'Connect external tools (MCP)',
+		group: 'artifacts-access',
 		adminOnly: true
 	},
 	{
@@ -87,15 +149,47 @@ export const settingsSections: SettingsSectionMeta[] = [
 		label: 'Skills',
 		icon: 'lucide:graduation-cap',
 		description: 'Reusable agent instructions',
-		group: 'extensions',
+		group: 'artifacts-access',
 		adminOnly: true
 	},
 	{
-		id: 'system-tools',
-		label: 'System Tools',
-		icon: 'lucide:hammer',
-		description: 'Server-side binaries',
-		group: 'extensions',
+		id: 'commands',
+		label: 'Commands',
+		icon: 'lucide:terminal',
+		description: 'Custom slash commands',
+		group: 'artifacts-access',
+		adminOnly: true
+	},
+	{
+		id: 'subagents',
+		label: 'Subagents',
+		icon: 'lucide:bot',
+		description: 'Specialized delegated agents',
+		group: 'artifacts-access',
+		adminOnly: true
+	},
+	{
+		id: 'instructions',
+		label: 'Instructions',
+		icon: 'lucide:scroll-text',
+		description: 'Shared instruction block',
+		group: 'artifacts-access',
+		adminOnly: true
+	},
+	{
+		id: 'permissions',
+		label: 'Permissions',
+		icon: 'lucide:shield-check',
+		description: 'Per-engine tool allow/deny',
+		group: 'artifacts-access',
+		adminOnly: true
+	},
+	{
+		id: 'profiles',
+		label: 'Profiles',
+		icon: 'lucide:layers',
+		description: 'Reusable tool bundles',
+		group: 'artifacts-access',
 		adminOnly: true
 	},
 	{
@@ -103,35 +197,27 @@ export const settingsSections: SettingsSectionMeta[] = [
 		label: 'Appearance',
 		icon: 'lucide:palette',
 		description: 'Theme and layout',
-		group: 'general'
+		group: 'preferences'
 	},
 	{
 		id: 'notifications',
 		label: 'Notifications',
 		icon: 'lucide:bell',
 		description: 'Sound and push notifications',
-		group: 'general'
-	},
-	{
-		id: 'tunnel',
-		label: 'Tunnel',
-		icon: 'lucide:globe',
-		description: 'Cloudflare tunnel services',
-		group: 'general',
-		adminOnly: true
+		group: 'preferences'
 	},
 	{
 		id: 'account',
 		label: 'User Profile',
 		icon: 'lucide:user',
 		description: 'Your profile and access',
-		group: 'account'
+		group: 'preferences'
 	},
 	{
 		id: 'team',
 		label: 'Team',
 		icon: 'lucide:users',
-		description: 'Users and invites',
+		description: 'Members, invites, and devices',
 		group: 'administration',
 		adminOnly: true
 	},
@@ -140,6 +226,14 @@ export const settingsSections: SettingsSectionMeta[] = [
 		label: 'Security',
 		icon: 'lucide:shield',
 		description: 'Login and access control',
+		group: 'administration',
+		adminOnly: true
+	},
+	{
+		id: 'device',
+		label: 'Device',
+		icon: 'lucide:server',
+		description: 'Server hardware and status',
 		group: 'administration',
 		adminOnly: true
 	},
@@ -156,12 +250,13 @@ export const settingsSections: SettingsSectionMeta[] = [
 // Create the state using Svelte 5 runes
 export const settingsModalState = $state<SettingsModalState>({
 	isOpen: false,
-	activeSection: 'models',
-	engineFocus: null
+	activeSection: 'assistant',
+	engineFocus: null,
+	teamFocusUserId: null
 });
 
 // Helper functions
-export function openSettingsModal(section: SettingsSection = 'models') {
+export function openSettingsModal(section: SettingsSection = 'assistant') {
 	settingsModalState.isOpen = true;
 	settingsModalState.activeSection = section;
 }
@@ -187,4 +282,20 @@ export function focusEngineSection(engine: EngineType) {
 /** Called by AIEnginesSettings after consuming the focus request. */
 export function clearEngineFocus() {
 	settingsModalState.engineFocus = null;
+}
+
+/**
+ * Open the Team section and request a specific member's project-access modal —
+ * used by the "new member joined" nudge and the invite flow so the admin lands
+ * exactly where they can grant access.
+ */
+export function openTeamForUser(userId: string) {
+	settingsModalState.isOpen = true;
+	settingsModalState.activeSection = 'team';
+	settingsModalState.teamFocusUserId = userId;
+}
+
+/** Called by UserManagement after consuming the focus request. */
+export function clearTeamFocus() {
+	settingsModalState.teamFocusUserId = null;
 }

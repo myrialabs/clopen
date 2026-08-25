@@ -223,6 +223,29 @@ export function markSessionRead(sessionId: string): void {
 }
 
 /**
+ * Mark every unread session in a project as read (bulk).
+ * Persists to backend so the state survives browser refresh.
+ */
+export function markAllSessionsRead(projectId: string): void {
+	const next = new Map(appState.unreadSessions);
+	let changed = false;
+	for (const [sessionId, pId] of appState.unreadSessions.entries()) {
+		if (pId === projectId) {
+			next.delete(sessionId);
+			changed = true;
+		}
+	}
+	if (!changed) return;
+
+	appState.unreadSessions = next;
+
+	// Persist to backend via a single bulk delete (proven infrastructure)
+	debug.log('session', `[unread] markAllSessionsRead: projectId=${projectId}`);
+	ws.emit('sessions:mark-all-read', { projectId });
+	persistUnreadSessions();
+}
+
+/**
  * Restore unread sessions from server state (called during initialization).
  */
 export function restoreUnreadSessions(saved: Record<string, string> | null): void {

@@ -18,7 +18,7 @@
 
 import { existsSync, readdirSync, mkdirSync, chmodSync, renameSync } from 'node:fs';
 import { join, dirname } from 'node:path';
-import { XzReadableStream } from 'xz-decompress';
+import { untar, unxz } from '@myrialabs/zipkit';
 import { debug } from '$shared/utils/logger';
 import { getClopenDir } from '$backend/utils/paths';
 import { resolveBinary } from '$backend/utils/cli';
@@ -104,59 +104,18 @@ function sha256(bytes: Uint8Array): string {
 	return hasher.digest('hex');
 }
 
-function parseTarOctal(bytes: Uint8Array): number {
-	let end = bytes.length;
-	for (let i = 0; i < bytes.length; i++) {
-		if (bytes[i] === 0 || bytes[i] === 0x20) {
-			end = i;
-			break;
-		}
-	}
-	const str = new TextDecoder().decode(bytes.subarray(0, end)).trim();
-	return str === '' ? 0 : parseInt(str, 8);
-}
-
 /**
- * Minimal POSIX tar reader: walks header blocks and returns the first
- * regular file whose name matches. Sufficient for static-curl archives
- * which contain `curl` at the root with a short name.
+ * Pull the `curl` binary out of a static-curl `.tar.xz` archive: unxz the
+ * outer layer, then walk the tar for the entry named `curl` (it sits at the
+ * archive root). The archive is small and already SHA256-verified before we
+ * get here, so decoding it whole in memory is fine — no streaming needed.
  */
-function findFileInTar(tarBytes: Uint8Array, filename: string): Uint8Array | null {
-	const decoder = new TextDecoder();
-	let offset = 0;
-	while (offset + 512 <= tarBytes.length) {
-		const header = tarBytes.subarray(offset, offset + 512);
-		let allZero = true;
-		for (let i = 0; i < 512; i++) {
-			if (header[i] !== 0) { allZero = false; break; }
-		}
-		if (allZero) return null;
-
-		const nameBytes = header.subarray(0, 100);
-		const nameEnd = nameBytes.indexOf(0);
-		const name = decoder.decode(nameEnd >= 0 ? nameBytes.subarray(0, nameEnd) : nameBytes);
-		const size = parseTarOctal(header.subarray(124, 136));
-		const typeflag = header[156];
-		const isRegularFile = typeflag === 0 || typeflag === 0x30; // '\0' or '0'
-
-		offset += 512;
-		if (isRegularFile && name === filename) {
-			return tarBytes.subarray(offset, offset + size);
-		}
-		offset += Math.ceil(size / 512) * 512;
-	}
-	return null;
-}
-
-async function decompressXz(xzBytes: Uint8Array): Promise<Uint8Array> {
-	const input = new ReadableStream<Uint8Array>({
-		start(controller) {
-			controller.enqueue(xzBytes);
-			controller.close();
-		}
-	});
-	const decompressed = new Response(new XzReadableStream(input));
-	return new Uint8Array(await decompressed.arrayBuffer());
+async function extractCurlFromArchive(archiveBytes: Uint8Array): Promise<Uint8Array | null> {
+	const entries = untar(await unxz(archiveBytes));
+	const curl = entries.find(
+		(entry) => entry.type === 'file' && entry.name.split('/').pop() === 'curl'
+	);
+	return curl?.data ?? null;
 }
 
 export type CurlProgressPhase = 'cached' | 'fetching' | 'verifying' | 'extracting' | 'done';
@@ -209,8 +168,7 @@ export async function ensureCurlAvailable(
 	}
 
 	onProgress({ phase: 'extracting', message: `extracting curl to ${binDir}` });
-	const tarBytes = await decompressXz(archiveBytes);
-	const curlBytes = findFileInTar(tarBytes, 'curl');
+	const curlBytes = await extractCurlFromArchive(archiveBytes);
 	if (!curlBytes) {
 		throw new Error('curl binary not found in archive');
 	}

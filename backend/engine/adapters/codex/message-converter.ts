@@ -77,7 +77,7 @@ import type {
 } from '@openai/codex-sdk';
 import { resolveOpenCodeToolName } from '../../../mcp';
 import { readLastTokenUsageFromRollout } from './usage-rollout';
-import { readApplyPatchesFromRollout, findMatchingPatch } from './patch-rollout';
+import { readFileChangeSetsFromRollout, findMatchingFileChangeSet } from './patch-rollout';
 
 // ============================================================================
 // Engine Identity
@@ -254,7 +254,7 @@ export function convertTurnCompleted(event: TurnCompletedEvent, state: CodexStre
 	// Note: the per-turn `usage` aggregate is NOT attached to individual
 	// assistant messages here — they were already saved live during the turn
 	// (with usage:null). The stream-manager backfills usage after the result
-	// event by looking up each saved row's DB id. See README §9.4.
+	// event by looking up each saved row's DB id. See README §10.4.
 
 	const stopLifecycle: StreamLifecycleEvent = {
 		type: 'stream_event',
@@ -439,7 +439,7 @@ function buildToolResultUserMessage(
 		createdAt: new Date().toISOString(),
 		messageId: crypto.randomUUID(),
 		sessionId: state.sessionId,
-		// IMPORTANT: parent.toolUseId stays null (README §9.5 sharp edge).
+		// IMPORTANT: parent.toolUseId stays null (README §10.5 sharp edge).
 		parent: { messageId: null, sessionId: null, toolUseId: null },
 		engine: buildEngine(state.modelId),
 		sender: { id: '', name: '' },
@@ -463,35 +463,41 @@ function buildCommandExecutionPair(item: CommandExecutionItem, state: CodexStrea
 }
 
 function buildFileChangePair(item: FileChangeItem, state: CodexStreamState): EngineOutput[] {
-	// Codex bundles N file changes per item. Per README §9.3 we split into N
+	// Codex bundles N file changes per item. Per README §10.3 we split into N
 	// separate AssistantMessages so each shows up as its own tool block.
 	const out: EngineOutput[] = [];
 	const baseId = item.id;
 	const isFailed = item.status === 'failed';
 
-	// SDK doesn't carry diff content on FileUpdateChange — pull it from the
-	// rollout JSONL's apply_patch envelope so Edit blocks render real before/
-	// after text. Falls back to empty strings if the rollout isn't readable.
-	const updatePaths = item.changes.filter(c => c.kind === 'update').map(c => c.path);
-	const matchedPatch = updatePaths.length > 0
-		? findMatchingPatch(readApplyPatchesFromRollout(state.sessionId), updatePaths)
-		: null;
+	// SDK doesn't carry file content on FileUpdateChange — pull it from the
+	// rollout JSONL's `patch_apply_end` event so Edit blocks render the real
+	// before/after text and Write blocks the real file body. Falls back to
+	// empty strings if the rollout isn't readable.
+	const changedPaths = item.changes.map(change => change.path);
+	const matchedChangeSet = findMatchingFileChangeSet(
+		readFileChangeSetsFromRollout(state.sessionId),
+		changedPaths,
+	);
 
 	item.changes.forEach((change, idx) => {
 		const toolId = `${baseId}:${idx}`;
 		let toolName: string;
 		let input: Record<string, unknown>;
 
+		const recovered = matchedChangeSet?.get(change.path);
+
 		if (change.kind === 'add') {
 			toolName = 'Write';
-			input = { filePath: change.path, content: '' } satisfies WriteInput as unknown as Record<string, unknown>;
-		} else if (change.kind === 'update') {
-			toolName = 'Edit';
-			const diff = matchedPatch?.get(change.path);
 			input = {
 				filePath: change.path,
-				oldString: diff?.oldString ?? '',
-				newString: diff?.newString ?? '',
+				content: recovered?.content ?? '',
+			} satisfies WriteInput as unknown as Record<string, unknown>;
+		} else if (change.kind === 'update') {
+			toolName = 'Edit';
+			input = {
+				filePath: change.path,
+				oldString: recovered?.oldString ?? '',
+				newString: recovered?.newString ?? '',
 			} satisfies EditInput as unknown as Record<string, unknown>;
 		} else {
 			// delete → no canonical UI; map to Bash `rm <path>` so the user
@@ -557,7 +563,7 @@ function buildWebSearchPair(item: WebSearchItem, state: CodexStreamState): Engin
 	const block = buildToolUseBlock('WebSearch', input as unknown as Record<string, unknown>, item.id);
 	const assistant = createAssistantToolUseMessage(state, block, item.id);
 	// Synthetic tool_result so the frontend grouper attaches a non-null
-	// result at render time (README §9.5). Without it `tool_use.result`
+	// result at render time (README §10.5). Without it `tool_use.result`
 	// stays null forever.
 	const result = buildToolResultUserMessage(
 		item.id,
@@ -627,6 +633,11 @@ function buildErrorUserMessage(item: ErrorItem, state: CodexStreamState): UserMe
  * `cacheReadInputTokens`. Subtract here, otherwise the frontend's context
  * window indicator (which sums input + cacheCreate + cacheRead) would
  * double-count the cached prefix and appear to fill up far too quickly.
+ *
+ * `cache_write_input_tokens` (added in SDK 0.147) is the slice of that same
+ * prompt written INTO the cache this turn, so it is subtracted for the same
+ * reason and reported as `cacheCreationInputTokens`. The three parts still sum
+ * back to `input_tokens`, which is what the indicator expects.
  */
 function mapUsage(raw: Usage | null): TokenUsage {
 	if (!raw) {
@@ -634,10 +645,11 @@ function mapUsage(raw: Usage | null): TokenUsage {
 	}
 	const totalInput = raw.input_tokens ?? 0;
 	const cached = raw.cached_input_tokens ?? 0;
+	const cacheWrite = raw.cache_write_input_tokens ?? 0;
 	return {
-		inputTokens: Math.max(0, totalInput - cached),
+		inputTokens: Math.max(0, totalInput - cached - cacheWrite),
 		outputTokens: (raw.output_tokens ?? 0) + (raw.reasoning_output_tokens ?? 0),
-		cacheCreationInputTokens: 0,
+		cacheCreationInputTokens: cacheWrite,
 		cacheReadInputTokens: cached,
 	};
 }

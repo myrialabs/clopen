@@ -2,8 +2,8 @@
 	import Icon from '$frontend/components/common/display/Icon.svelte';
 	import { getFileIcon } from '$frontend/utils/file-icon-mappings';
 	import { getFolderIcon } from '$frontend/utils/folder-icon-mappings';
-	import { requestRevealFile } from '$frontend/stores/core/files.svelte';
-	import { getVisiblePanels, workspaceState } from '$frontend/stores/ui/workspace.svelte';
+	import { revealFile } from '$frontend/stores/ui/file-peek.svelte';
+	import { requestAiScrollReveal } from '$frontend/utils/ai-changes';
 	import type { IconName } from '$shared/types/ui/icons';
 
 	interface DiffStat {
@@ -38,6 +38,8 @@
 		expanded?: boolean;
 		/** Called when header row is clicked (for expandable rows) */
 		onclick?: () => void;
+		/** tool_use id of the AI edit, for scroll-reveal targeting */
+		editKey?: string | null;
 	}
 
 	let {
@@ -54,6 +56,7 @@
 		expandable = false,
 		expanded = $bindable(false),
 		onclick,
+		editKey = null,
 	}: Props = $props();
 
 	const displayName = $derived(fileName || (filePath ? filePath.split(/[/\\]/).pop() || filePath : ''));
@@ -68,8 +71,8 @@
 	function handleFileClick(e: MouseEvent) {
 		e.stopPropagation();
 		if (!filePath) return;
-		const panels = getVisiblePanels(workspaceState.layout);
-		if (panels.includes('files')) requestRevealFile(filePath);
+		revealFile(filePath);
+		if (editKey) requestAiScrollReveal(filePath, editKey);
 	}
 
 	function handleRowClick() {

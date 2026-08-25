@@ -70,13 +70,15 @@
 		transition: all 200ms cubic-bezier(0.4, 0, 0.2, 1);
 	}
 
-	/* Disable transitions during theme switching for performance */
+	/* Disable transitions during theme switching for performance.
+	   Transitions only — killing `animation` here would restart every running
+	   spinner on each theme switch, and the 50ms window is long enough to see
+	   the stutter. */
 	.no-transitions,
 	.no-transitions *,
 	.no-transitions *::before,
 	.no-transitions *::after {
 		transition: none !important;
-		animation: none !important;
 	}
 
 	/* Remove all focus outlines - use custom focus states */
@@ -111,7 +113,18 @@
 		white-space: normal;
 	}
 
-	/* Reduced motion support */
+	/* Reduced motion support.
+	   Windows 11 (Accessibility -> Visual effects -> Animation effects) and
+	   most Linux desktops without a running settings daemon report `reduce`,
+	   which is why a frozen spinner only ever showed up on those machines and
+	   never on macOS, where Reduce motion is off by default.
+
+	   The blanket rule below stays: decorative motion goes away. But feedback
+	   indicators are exempt in the block after it — a spinner that does not
+	   spin reads as a hung app, and WCAG 2.3.3 only asks for *non-essential*
+	   motion to be removed. This exemption list is the single place that
+	   decides what counts as essential; add to it, do not scatter
+	   `prefers-reduced-motion` overrides across components. */
 	@media (prefers-reduced-motion: reduce) {
 
 		*,
@@ -122,13 +135,37 @@
 			transition-duration: 0.01ms !important;
 		}
 
+		/* Class selectors outrank the universal one, so these win the !important
+		   fight above and keep their own timing. */
+
+		/* Indeterminate progress: still spinning, just slower and gentler. */
 		.animate-spin {
-			animation: none;
+			animation-duration: 1.5s !important;
+			animation-iteration-count: infinite !important;
 		}
 
-		.animate-pulse {
-			animation: none;
+		/* Skeleton and status pulses — opacity only, no vestibular motion. */
+		.animate-pulse,
+		.ai-pulse {
+			animation-duration: 2s !important;
+			animation-iteration-count: infinite !important;
 		}
+
+		.ai-thinking-bar::after {
+			animation-duration: 1.5s !important;
+			animation-iteration-count: infinite !important;
+		}
+
+		/* Search-jump highlight fades out over its full 3s instead of snapping
+		   to the end state the moment it is painted. */
+		.line-highlight,
+		.match-highlight {
+			animation-duration: 3s !important;
+		}
+
+		/* Deliberately NOT exempt: `.animate-ping` (a halo behind a dot that is
+		   itself always visible), panel/modal enter animations, and the virtual
+		   cursor float — all decorative, all safe to drop. */
 	}
 
 	button {
@@ -257,7 +294,12 @@
 		}
 	}
 
+	/* The lit state lives on the class, not only inside the keyframes: when the
+	   blink is dropped (reduced motion) the cursor degrades to a solid block
+	   instead of vanishing into the terminal background. */
 	.animate-terminal-cursor {
+		background-color: rgb(124 58 237);
+		color: #000000;
 		animation: terminal-cursor-blink 1s infinite;
 	}
 

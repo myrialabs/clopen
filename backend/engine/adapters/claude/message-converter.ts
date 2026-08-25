@@ -18,6 +18,8 @@ import type {
 	SDKSystemMessage,
 	SDKCompactBoundaryMessage,
 	SDKRateLimitEvent,
+	SDKModelRefusalFallbackMessage,
+	SDKModelRefusalNoFallbackMessage,
 } from '@anthropic-ai/claude-agent-sdk';
 // Infer block/usage types from the agent SDK so we stay in sync with whichever
 // @anthropic-ai/sdk version claude-agent-sdk bundles internally.
@@ -275,10 +277,15 @@ export function convertUserMessage(msg: SDKUserMessage): UserMessage {
 export interface StreamConverterState {
 	/** index → true when the block is a thinking block */
 	reasoningBlocks: Map<number, boolean>;
+	/** Workflow background task id → originating Workflow tool_use id. */
+	workflowParents: Map<string, string>;
 }
 
 export function createStreamConverterState(): StreamConverterState {
-	return { reasoningBlocks: new Map() };
+	return {
+		reasoningBlocks: new Map(),
+		workflowParents: new Map(),
+	};
 }
 
 /** Convert SDKPartialAssistantMessage (stream_event) → TextDeltaEvent | StreamLifecycleEvent */
@@ -390,24 +397,21 @@ export function convertSystemInit(msg: SDKSystemMessage): SystemInitEvent {
 	};
 }
 
-/**
- * Convert SDKTaskNotificationMessage (terminal background-task event) →
- * NotificationEvent. Fires when a backgrounded Agent/teammate finishes
- * abnormally (failed | stopped). Successful completion is intentionally
- * not surfaced — the result already lands in the conversation, and a
- * success toast is just noise. The non-terminal task_started /
- * task_progress / task_updated messages are also not surfaced.
- */
-function convertTaskNotification(
-	msg: { session_id: string; status: string; summary?: string; task_id: string },
-): NotificationEvent | null {
-	if (msg.status === 'completed') return null;
+function workflowActivityMessage(
+	msg: { session_id: string; uuid?: string },
+	parentToolUseId: string,
+	text: string,
+): AssistantMessage {
 	return {
-		type: 'notification',
+		type: 'assistant',
+		createdAt: new Date().toISOString(),
+		messageId: msg.uuid || crypto.randomUUID(),
 		sessionId: msg.session_id,
-		level: 'warning',
-		title: `Background task ${msg.status}`,
-		message: msg.summary || `Task ${msg.task_id} ${msg.status}`,
+		parent: { messageId: null, sessionId: null, toolUseId: parentToolUseId },
+		engine: { type: 'claude-code', provider: 'anthropic', model: { id: '', name: '' }, account: { id: 0, name: '' } },
+		content: [{ type: 'text', text }],
+		stopReason: null,
+		usage: null,
 	};
 }
 
@@ -422,6 +426,50 @@ export function convertCompactBoundary(msg: SDKCompactBoundaryMessage): CompactB
 		engine: { type: 'claude-code', provider: 'anthropic', model: { id: '', name: '' }, account: { id: 0, name: '' } },
 		trigger: msg.compact_metadata.trigger,
 		preTokens: msg.compact_metadata.pre_tokens || 0,
+	};
+}
+
+/**
+ * Convert a model-refusal banner → NotificationEvent.
+ *
+ * Both subtypes arrived in @anthropic-ai/claude-agent-sdk 0.3.229 and were
+ * previously dropped by the `default` arm, which is the worst outcome for the
+ * two cases users actually notice: a turn answered by a *different* model than
+ * the one they picked, and a turn that produced nothing at all. Neither is an
+ * error the stream should abort on, so they surface as toasts.
+ *
+ * NOT handled: `retracted_message_uuids`, the fallback's list of already-
+ * delivered messages the CLI has retracted. Honouring it means deleting
+ * persisted messages by id across adapter → stream-manager → WS → UI, so the
+ * refused partial currently stays in the transcript above the fallback answer.
+ * See docs/lessons-learned.md §10.25.
+ */
+function convertModelRefusalFallback(msg: SDKModelRefusalFallbackMessage): NotificationEvent {
+	// 'local' means only this response came from the fallback (a subagent or a
+	// side question); 'session' means the session's model itself was swapped.
+	const scope = msg.scope ?? 'session';
+	const swapped = scope === 'session'
+		? `The session model is now ${msg.fallback_model}.`
+		: `Only this response came from ${msg.fallback_model}; the session model is unchanged.`;
+	return {
+		type: 'notification',
+		sessionId: msg.session_id,
+		level: 'warning',
+		title: 'Model refused — answered by a fallback',
+		message: `${msg.original_model} declined this request${msg.api_refusal_category ? ` (${msg.api_refusal_category})` : ''}. ${swapped}`,
+	};
+}
+
+/** Convert SDKModelRefusalNoFallbackMessage → NotificationEvent (no retry ran). */
+function convertModelRefusalNoFallback(msg: SDKModelRefusalNoFallbackMessage): NotificationEvent {
+	return {
+		type: 'notification',
+		sessionId: msg.session_id,
+		level: 'error',
+		title: 'Model refused this request',
+		// `content` is the CLI's own human-readable banner; explanation is
+		// unstable prose meant for display only.
+		message: msg.api_refusal_explanation || msg.content,
 	};
 }
 
@@ -507,12 +555,32 @@ function* dispatchSdkMessage(msg: SDKMessage, state: StreamConverterState): Gene
 				yield convertSystemInit(msg as SDKSystemMessage);
 			} else if (subtype === 'compact_boundary') {
 				yield convertCompactBoundary(msg as SDKCompactBoundaryMessage);
+			} else if (subtype === 'model_refusal_fallback') {
+				yield convertModelRefusalFallback(msg as SDKModelRefusalFallbackMessage);
+			} else if (subtype === 'model_refusal_no_fallback') {
+				yield convertModelRefusalNoFallback(msg as SDKModelRefusalNoFallbackMessage);
+			} else if (subtype === 'task_started') {
+				const task = msg as unknown as { session_id: string; uuid?: string; task_id: string; tool_use_id?: string; task_type?: string; workflow_name?: string; description?: string };
+				if (task.task_type === 'local_workflow' && task.tool_use_id) {
+					state.workflowParents.set(task.task_id, task.tool_use_id);
+					const detail = `Workflow ${task.workflow_name || task.description || task.task_id} started.`;
+					yield workflowActivityMessage(task, task.tool_use_id, detail);
+				}
 			} else if (subtype === 'task_notification') {
-				const note = convertTaskNotification(msg as unknown as Parameters<typeof convertTaskNotification>[0]);
-				if (note) yield note;
+				// Only workflow tasks surface anything, and only inline in the
+				// conversation. Backgrounded Agent/Bash tasks stay silent: their
+				// outcome already lands in the transcript, so a terminal toast
+				// ("Background task failed") is pure noise — a backgrounded
+				// `grep` with no match is a non-zero exit, not a problem.
+				const task = msg as unknown as { session_id: string; uuid?: string; task_id: string; tool_use_id?: string; status: string; summary?: string };
+				const parent = task.tool_use_id || state.workflowParents.get(task.task_id);
+				if (parent && state.workflowParents.has(task.task_id)) {
+					yield workflowActivityMessage(task, parent, `Workflow ${task.status}.`);
+					state.workflowParents.delete(task.task_id);
+				}
 			}
-			// task_started / task_progress / task_updated: background-task
-			// progress noise — intentionally not surfaced (no tasks panel).
+			// task_progress is a repeated heartbeat; real child activity is replayed
+			// from Workflow-owned transcripts. task_updated has no tool_use_id.
 			break;
 		}
 

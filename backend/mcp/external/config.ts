@@ -23,12 +23,14 @@ import type { McpServerConfig } from '@anthropic-ai/claude-agent-sdk';
 import type { McpRemoteConfig } from '@opencode-ai/sdk';
 import type { MCPHTTPServerConfig as CopilotMcpServerConfig } from '@github/copilot-sdk';
 import type { CLIMcpServerConfig as QwenMcpServerConfig } from '@qwen-code/sdk';
+import type { McpServerConfig as CursorMcpServerConfig } from '@cursor/sdk';
 import { debug } from '$shared/utils/logger';
 import { mcpServerQueries } from '$backend/database/queries';
 import { externalNamespace, MCP_TOOL_CALL_TIMEOUT_MS } from '../shared/constants';
 import { getMcpServiceToken } from '../internal/service-token';
 import { SERVER_ENV } from '../../utils/env';
 import type { McpServerRow } from '$backend/database/queries';
+import type { EngineType } from '$shared/types/unified';
 import type { ResolvedExternalServer } from './types';
 
 /**
@@ -42,9 +44,16 @@ type CodexMcpServerConfig = {
 	http_headers?: Record<string, string>;
 };
 
-/** Loopback URL of the per-server external proxy bridge for `slug`. */
-function bridgeUrl(slug: string): string {
-	return `http://localhost:${SERVER_ENV.PORT}/mcp/ext/${slug}`;
+/**
+ * Loopback URL of the per-server external proxy bridge for `slug`.
+ *
+ * The `engine` query param identifies the caller so the proxy can apply that
+ * engine's per-tool exposure filter (see `./proxy.ts` / `./tools.ts`). Each
+ * engine's config builder passes its own `EngineType`, giving every engine a
+ * distinct bridge session with its own filtered tool list.
+ */
+function bridgeUrl(slug: string, engine: EngineType): string {
+	return `http://localhost:${SERVER_ENV.PORT}/mcp/ext/${slug}?engine=${engine}`;
 }
 
 /** The service-token bearer header every engine→bridge hop carries. */
@@ -88,12 +97,26 @@ export function resolveServerRow(row: McpServerRow): ResolvedExternalServer {
 /**
  * Load every enabled external server from the DB, parsing JSON columns and
  * computing its `<slug>` namespace key.
+ *
+ * `profileFilter` (when a Profile is active for the stream) restricts the result
+ * to the connectors the profile references, by slug. `undefined` = no active
+ * profile / the profile bundles no connector → every enabled server is emitted
+ * (presence-per-type, see `backend/profiles`).
  */
-export function getEnabledExternalServers(): ResolvedExternalServer[] {
+export function getEnabledExternalServers(profileFilter?: Set<string>): ResolvedExternalServer[] {
 	// `mcp_servers` also holds INTERNAL (code-defined) rows used only for the
 	// Settings listing + toggle — exclude them here so they're never emitted as
 	// real external servers the engine would try to connect to.
-	return mcpServerQueries.getEnabled().filter(row => row.source !== 'internal').map(resolveServerRow);
+	//
+	// When a Profile is active it is the source of truth for which connectors run:
+	// a connector it references is emitted even if globally disabled in the
+	// Connectors settings, and the global enable toggle is ignored. Without a
+	// profile filter, only enabled servers apply (unchanged).
+	const rows = profileFilter ? mcpServerQueries.getAll() : mcpServerQueries.getEnabled();
+	return rows
+		.filter(row => row.source !== 'internal')
+		.filter(row => !profileFilter || profileFilter.has(row.slug))
+		.map(resolveServerRow);
 }
 
 /**
@@ -122,22 +145,22 @@ export function remoteNeedsOAuth(s: ResolvedExternalServer): boolean {
 // ---------------------------------------------------------------------------
 
 /** Claude Agent SDK: Streamable-HTTP remote keyed by namespace. */
-export function getClaudeExternalMcpConfig(): Record<string, McpServerConfig> {
+export function getClaudeExternalMcpConfig(profileFilter?: Set<string>): Record<string, McpServerConfig> {
 	const out: Record<string, McpServerConfig> = {};
-	for (const s of getEnabledExternalServers()) {
-		out[s.namespace] = { type: 'http', url: bridgeUrl(s.slug), headers: serviceAuthHeaders() };
+	for (const s of getEnabledExternalServers(profileFilter)) {
+		out[s.namespace] = { type: 'http', url: bridgeUrl(s.slug, 'claude-code'), headers: serviceAuthHeaders() };
 	}
 	logBuilt('Claude', out);
 	return out;
 }
 
 /** Open Code: `McpRemoteConfig` pointing at the bridge proxy. */
-export function getOpenCodeExternalMcpConfig(): Record<string, McpRemoteConfig> {
+export function getOpenCodeExternalMcpConfig(profileFilter?: Set<string>): Record<string, McpRemoteConfig> {
 	const out: Record<string, McpRemoteConfig> = {};
-	for (const s of getEnabledExternalServers()) {
+	for (const s of getEnabledExternalServers(profileFilter)) {
 		out[s.namespace] = {
 			type: 'remote',
-			url: bridgeUrl(s.slug),
+			url: bridgeUrl(s.slug, 'opencode'),
 			enabled: true,
 			timeout: MCP_TOOL_CALL_TIMEOUT_MS,
 			headers: serviceAuthHeaders()
@@ -156,26 +179,26 @@ export function getOpenCodeExternalMcpConfig(): Record<string, McpRemoteConfig> 
  * The server is registered so interactive/known-tool flows work; this limit is
  * unchanged by the proxy.
  */
-export function getCodexExternalMcpConfig(): Record<string, CodexMcpServerConfig> {
+export function getCodexExternalMcpConfig(profileFilter?: Set<string>): Record<string, CodexMcpServerConfig> {
 	const out: Record<string, CodexMcpServerConfig> = {};
-	for (const s of getEnabledExternalServers()) {
-		out[s.namespace] = { url: bridgeUrl(s.slug), http_headers: serviceAuthHeaders() };
+	for (const s of getEnabledExternalServers(profileFilter)) {
+		out[s.namespace] = { url: bridgeUrl(s.slug, 'codex'), http_headers: serviceAuthHeaders() };
 	}
 	logBuilt('Codex', out);
 	return out;
 }
 
 /** Copilot: `MCPHTTPServerConfig` pointing at the bridge proxy. */
-export function getCopilotExternalMcpConfig(): Record<string, CopilotMcpServerConfig> {
+export function getCopilotExternalMcpConfig(profileFilter?: Set<string>): Record<string, CopilotMcpServerConfig> {
 	const out: Record<string, CopilotMcpServerConfig> = {};
-	for (const s of getEnabledExternalServers()) {
+	for (const s of getEnabledExternalServers(profileFilter)) {
 		// `tools: ['*']` makes the Copilot runtime expose ALL of the proxy's
 		// tools. Leaving it unset relies on the SDK's documented "undefined =
 		// all" default, which the bundled CLI does not honour for dynamically
 		// discovered servers — the tools never reach the model.
 		out[s.namespace] = {
 			type: 'http',
-			url: bridgeUrl(s.slug),
+			url: bridgeUrl(s.slug, 'copilot'),
 			tools: ['*'],
 			timeout: MCP_TOOL_CALL_TIMEOUT_MS,
 			headers: serviceAuthHeaders()
@@ -186,11 +209,21 @@ export function getCopilotExternalMcpConfig(): Record<string, CopilotMcpServerCo
 }
 
 /** Qwen Code: `CLIMcpServerConfig` Streamable-HTTP (`httpUrl`) at the bridge proxy. */
-export function getQwenExternalMcpConfig(): Record<string, QwenMcpServerConfig> {
+/** Cursor: `McpServerConfig` (http variant) pointing at the bridge proxy. */
+export function getCursorExternalMcpConfig(profileFilter?: Set<string>): Record<string, CursorMcpServerConfig> {
+	const out: Record<string, CursorMcpServerConfig> = {};
+	for (const s of getEnabledExternalServers(profileFilter)) {
+		out[s.namespace] = { type: 'http', url: bridgeUrl(s.slug, 'cursor'), headers: serviceAuthHeaders() };
+	}
+	logBuilt('Cursor', out);
+	return out;
+}
+
+export function getQwenExternalMcpConfig(profileFilter?: Set<string>): Record<string, QwenMcpServerConfig> {
 	const out: Record<string, QwenMcpServerConfig> = {};
-	for (const s of getEnabledExternalServers()) {
+	for (const s of getEnabledExternalServers(profileFilter)) {
 		out[s.namespace] = {
-			httpUrl: bridgeUrl(s.slug),
+			httpUrl: bridgeUrl(s.slug, 'qwen'),
 			timeout: MCP_TOOL_CALL_TIMEOUT_MS,
 			trust: true,
 			headers: serviceAuthHeaders()

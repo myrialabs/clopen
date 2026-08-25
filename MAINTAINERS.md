@@ -30,6 +30,7 @@ Internal guide for Clopen core maintainers. External contributors should follow 
 - [Reference](#reference)
   - [`Co-authored-by` Trailer Format](#co-authored-by-trailer-format)
   - [Release Process](#release-process)
+  - [Publishing the Memory Graph Embedding Artifact](#publishing-the-memory-graph-embedding-artifact)
   - [Questions](#questions)
 
 ---
@@ -116,7 +117,8 @@ When the PR is ready:
 
 - **Strategy:** Always squash-merge via the GitHub UI.
 - **Subject:** Use GitHub's default (`<PR title> (#NNN)`). The PR title must already follow the conventional commit format from [CONTRIBUTING.md → Commit Messages](./CONTRIBUTING.md#commit-messages).
-- **Extended description:** Leave empty. Repo convention is subject-only — check recently-merged PRs on `main` if unsure of the current style. Detail belongs in the PR description, not duplicated into the commit body. **Exception:** `Co-authored-by:` trailer when the PR is a reshape of a contributor's earlier work — see [`Co-authored-by` Trailer Format](#co-authored-by-trailer-format).
+- **Extended description:** Carry the commit body — what was broken, why, and what the change does about it, per [CONTRIBUTING.md → Commit Body](./CONTRIBUTING.md#commit-body). GitHub pre-fills this box with every commit message from the branch; replace that with a single clean body rather than shipping the concatenation. Leave it empty only when the subject is the whole story (dependency bump, release, typo). Review-time detail — test plan, screenshots, follow-ups — stays in the PR description and does not belong here. Check recently-merged commits on `main` if unsure of the current style.
+- **`Co-authored-by:` trailer:** Required when the PR is a reshape of a contributor's earlier work — see [`Co-authored-by` Trailer Format](#co-authored-by-trailer-format).
 - **Branch deletion:** Delete the source branch via the GitHub button immediately after merge.
 
 #### Local cleanup
@@ -140,7 +142,7 @@ Worked examples are illustrative templates, not literal copy-paste. The recurrin
 Use when the audit is clean — no adjacent gaps, established patterns followed, scope appropriate, and tests are present where [CONTRIBUTING.md → Tests](./CONTRIBUTING.md#tests) requires them. Post a short approval comment, then proceed to [Merge](#4-merge).
 
 ```markdown
-Thanks @contributor — nice catch on this one, and the `<specific thing they did well>` made the audit straightforward. Checked adjacent call sites in `path/to/dir` and they all follow the same shape, no gaps. `bun run check` / `bun run lint` / `bun test` green locally. Merging.
+Thanks @contributor — nice catch on this one, and the `<specific thing they did well>` made the audit straightforward. Checked adjacent call sites in `path/to/dir` and they all follow the same shape, no gaps. `bun run check` / `bun run lint` / `bun run test` green locally. Merging.
 ```
 
 The opener has to name something specific — the regression test that pinned the boundary, the choice to follow an existing pattern, the threat model in the description. "Thanks for the PR!" alone is filler.
@@ -405,7 +407,7 @@ Builds on #NNN by @contributor, reshaped after review to <one-sentence reason>.
 
 This creates two-way cross-links: the closed PR shows "Referenced in PR #MMM", and the new PR shows the original as context.
 
-At squash-merge time, add a `Co-authored-by:` trailer to the squash commit body. This is the **only acceptable exception** to the "leave extended description empty" rule. See [`Co-authored-by` Trailer Format](#co-authored-by-trailer-format) for the strict format.
+At squash-merge time, add a `Co-authored-by:` trailer to the squash commit body — below the body prose, separated by one blank line. See [`Co-authored-by` Trailer Format](#co-authored-by-trailer-format) for the strict format.
 
 ### Path F — Close as Not Actionable
 
@@ -562,7 +564,7 @@ This is the canonical exception to "section headers belong in PR descriptions" �
 
 When you're contributing review work to a PR you are **not** personally merging — AI assistants, sub-reviewers doing first-pass triage, anyone whose output the merging maintainer will adopt — the audit response always ships with exactly two artifacts:
 
-1. **A suggested commit message** following [CONTRIBUTING.md → Commit Messages](./CONTRIBUTING.md#commit-messages). If a branch name needs to be proposed, follow [CONTRIBUTING.md → Branch Naming](./CONTRIBUTING.md#branch-naming) exactly. Comment-only paths ([Path D — *Comment and Wait*](#path-d--comment-and-wait) and [Path F — *Close as Not Actionable*](#path-f--close-as-not-actionable)) have no maintainer commit, so omit this artifact. For Path D, note that the existing PR title will serve as the squash subject if the contributor's revisions land. For Path F, there is no squash subject because the PR is being closed.
+1. **A suggested commit message** — subject and body — following [CONTRIBUTING.md → Commit Messages](./CONTRIBUTING.md#commit-messages). If a branch name needs to be proposed, follow [CONTRIBUTING.md → Branch Naming](./CONTRIBUTING.md#branch-naming) exactly. Comment-only paths ([Path D — *Comment and Wait*](#path-d--comment-and-wait) and [Path F — *Close as Not Actionable*](#path-f--close-as-not-actionable)) have no maintainer commit, so omit this artifact. For Path D, note that the existing PR title will serve as the squash subject if the contributor's revisions land. For Path F, there is no squash subject because the PR is being closed.
 2. **A suggested PR comment** matching the chosen review path — start from the worked example in the relevant subsection of [Review Paths](#review-paths) and adapt to the actual diff.
 
 **Draft these inline with the audit; never ask permission to draft.** "Should I draft a comment?" is the wrong question — the artifacts are part of the deliverable, not a follow-up offer. Confirmation gates exist only for *acting* on the suggestion (Stage 1: editing the working tree; Stage 2: committing, pushing, posting). A draft that lives only in chat hasn't touched the repo and doesn't need a gate.
@@ -656,6 +658,80 @@ Rules:
 ### Release Process
 
 To be documented when the release flow stabilizes.
+
+### Publishing the Memory Graph Embedding Artifact
+
+Memory's semantic recall runs on a local embedding table — four files, ~44 MB, hosted as a **GitHub release asset**, not shipped in the repository and not published to npm. They are weights, not code: bundling them would add 44 MB to every install whether or not memory is enabled, and publishing to npm would mean publishing a package this repository is itself the source of.
+
+Clopen downloads them on demand into `~/.clopen/stack/embedding/<version>/`. Until they land, **recall is off** — recording continues, and the indexer backfills vectors when the artifact arrives, so nothing recorded during setup is lost.
+
+Where things live:
+
+| Path | Role | In git? |
+| --- | --- | --- |
+| `packages/clopen-embedding/model/` | Build output, staged for upload | No — gitignored |
+| `packages/clopen-embedding/checksums.json` | Emitted by the build script | No — gitignored |
+| `backend/memory/embedding/paths.ts` | `EMBEDDING_VERSION` + pinned checksums | **Yes** |
+| GitHub release `embedding-v<version>` | What users download | n/a |
+
+#### Publishing a version whose checksums are already pinned
+
+If `paths.ts` already carries real checksums for the current `EMBEDDING_VERSION`, the artifact was built and just needs uploading. Verify the local files still match the pins before you publish — a mismatch means the release will fail verification on every user's machine:
+
+```bash
+cd packages/clopen-embedding/model
+shasum -a 256 model.bin tokenizer.json tokenizer_config.json manifest.json
+# Compare against EMBEDDING_ASSETS in backend/memory/embedding/paths.ts
+```
+
+Then:
+
+```bash
+gh release create embedding-v0.0.1 \
+  packages/clopen-embedding/model/model.bin \
+  packages/clopen-embedding/model/tokenizer.json \
+  packages/clopen-embedding/model/tokenizer_config.json \
+  packages/clopen-embedding/model/manifest.json \
+  --repo myrialabs/clopen \
+  --title "Memory Graph embedding artifact v0.0.1" \
+  --notes "Pruned int8 Model2Vec table (potion-multilingual-128M, MIT). Downloaded on demand by the Memory Graph; not an npm package."
+```
+
+Three things break the download silently if changed:
+
+- **The tag** must be exactly `embedding-v<EMBEDDING_VERSION>`.
+- **The asset filenames** must stay as they are — `assetUrl()` builds the URL from the filename.
+- **The release must be public.** `install.ts` fetches unauthenticated; a draft or private release gives every user a 404 that retries forever.
+
+#### Shipping a NEW model version
+
+Rebuilding is a coordinated change: the checksums in `paths.ts` and the files on the release must move together, in that order, or users get a verification failure they cannot fix.
+
+1. **Build.** `--install` also drops it into the local stack so you can try it before anyone else does:
+
+   ```bash
+   bun scripts/build-embedding-artifact.ts --install
+   ```
+
+   The script prints an `EMBEDDING_ASSETS` block and writes `checksums.json`.
+
+2. **Bump `EMBEDDING_VERSION`** in `backend/memory/embedding/paths.ts`. Always bump — the install directory is version-keyed, so reusing a version means existing users keep the old files forever and never see the new ones.
+
+3. **Paste the new `EMBEDDING_ASSETS` block** into the same file, in the same commit as the bump. A version bumped without its checksums makes `hasPinnedChecksums()` false and the installer refuses to download — which fails safe, but leaves recall off for everyone until it is corrected.
+
+4. **Verify locally before publishing.** Delete the installed copy and let the app fetch it, which is the only way to exercise the real download path:
+
+   ```bash
+   rm -rf ~/.clopen/stack/embedding/<new-version>
+   ```
+
+   Restart, then check Settings → Memory reports the model as ready. Note that a machine which has ever run `--install` will pass a "is it ready" check without proving the release works.
+
+5. **Publish the release** with the new tag, using the command above.
+
+6. **Merge the version bump only once the release is live.** In the other order, every user who updates between the two lands on a build whose pinned checksums point at a tag that does not exist yet.
+
+If a published artifact turns out to be wrong, do **not** replace the assets on an existing tag — clients cache by version directory and checksum-verify, so a swapped file reads as corruption. Cut a new version instead.
 
 ### Questions
 

@@ -100,6 +100,16 @@ export const opencodeProvidersStore = {
 		await this.refreshProviders();
 	},
 
+	async updateProvider(id: number, data: {
+		slug?: string;
+		name?: string;
+		apiUrl?: string;
+		options?: string;
+	}): Promise<void> {
+		await ws.http('engine:opencode-provider-update', { id, ...data });
+		await this.refreshProviders();
+	},
+
 	async updateProviderOptions(id: number, options: string): Promise<void> {
 		await ws.http('engine:opencode-provider-update-options', { id, options });
 		await this.refreshProviders();
@@ -126,6 +136,11 @@ export const opencodeProvidersStore = {
 
 	async renameAccount(accountId: number, name: string): Promise<void> {
 		await ws.http('engine:opencode-account-rename', { accountId, name });
+		await this.refreshProviders();
+	},
+
+	async updateAccountCredential(accountId: number, credential: string): Promise<void> {
+		await ws.http('engine:opencode-account-update-credential', { accountId, credential });
 		await this.refreshProviders();
 	},
 
@@ -165,14 +180,6 @@ export const opencodeProvidersStore = {
 			debug.error('settings', 'Failed to re-fetch models.dev catalog:', error);
 			throw error;
 		}
-	},
-
-	// ========================================================================
-	// Server Restart
-	// ========================================================================
-
-	async restartServer(force = false): Promise<{ success: boolean; activeChats?: number; needsConfirmation?: boolean }> {
-		return ws.http('engine:opencode-server-restart', { force });
 	},
 
 	// ========================================================================

@@ -9,7 +9,7 @@
  *
  * Strategy (in order, dedup'd, prepended so new entries win):
  *   1. Known install directories: deterministic list of locations used by
- *      common installers and package managers (our System Tools installer,
+ *      common installers and package managers (our Stack installer,
  *      `curl | bash` scripts, Homebrew, Scoop, winget links, cargo, bun,
  *      deno, volta, yarn, nvm/fnm node versions, …). Existing entries only.
  *   2. Harvested shell PATH: on Unix desktops where the user has custom
@@ -23,7 +23,7 @@
  *
  * Concurrency: refreshProcessPath() dedups via an in-flight promise so
  * parallel callers share one pass. Known-dir enumeration happens every
- * call so tools installed at runtime (via System Tools) become visible
+ * call so tools installed at runtime (via Stack) become visible
  * without a restart.
  */
 
@@ -84,6 +84,8 @@ function windowsKnownDirs(): string[] {
 		join(home, '.bun', 'bin'),
 		join(home, '.deno', 'bin'),
 		join(home, '.cargo', 'bin'),
+		// install-script target (Open Code), the Windows twin of the posix entry
+		join(home, '.opencode', 'bin'),
 		join(home, 'scoop', 'shims'),
 		join(localAppData, 'Microsoft', 'WinGet', 'Links'),
 		join(localAppData, 'Programs', 'Git', 'cmd'),

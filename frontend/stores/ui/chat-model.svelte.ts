@@ -18,6 +18,14 @@ interface ChatModelState {
 	engineModelMemory: Record<string, { provider: string; id: string; name: string }>;
 	accountId: number | null;
 	accountName: string | null;
+	/** Active Profile for this session. `null` = no profile / use project default. */
+	profileId: number | null;
+	/**
+	 * Reasoning/thinking level for the selected model (native per engine).
+	 * `null` = use the engine/model default (no explicit choice). Sent with the
+	 * turn and persisted to the session record.
+	 */
+	reasoningEffort: string | null;
 }
 
 // Local reactive state — starts from compile-time defaults.
@@ -29,7 +37,9 @@ export const chatModelState = $state<ChatModelState>({
 	modelName: DEFAULT_MODEL_NAME,
 	engineModelMemory: { 'claude-code': { provider: 'anthropic', id: DEFAULT_MODEL_ID, name: DEFAULT_MODEL_NAME } },
 	accountId: null,
-	accountName: null
+	accountName: null,
+	profileId: null,
+	reasoningEffort: null
 });
 
 /**
@@ -41,7 +51,8 @@ export function initChatModel(
 	provider: string,
 	modelId: string,
 	modelName: string,
-	memory: Record<string, { provider: string; id: string; name: string }>
+	memory: Record<string, { provider: string; id: string; name: string }>,
+	reasoningEffort: string | null = null
 ): void {
 	chatModelState.engine = engine;
 	chatModelState.provider = provider;
@@ -51,6 +62,11 @@ export function initChatModel(
 	// accountId/accountName are set by EngineModelPicker after fetching engine-specific accounts
 	chatModelState.accountId = null;
 	chatModelState.accountName = null;
+	// New session: no explicit profile choice yet — the stream falls back to the
+	// project default. The picker surfaces that default; a user pick sets it.
+	chatModelState.profileId = null;
+	// Seed the reasoning level from the per-model default (Settings → Models).
+	chatModelState.reasoningEffort = reasoningEffort;
 }
 
 /**
@@ -64,7 +80,9 @@ export function restoreChatModelFromSession(
 	modelId: string,
 	modelName: string,
 	accountId?: number | null,
-	accountName?: string | null
+	accountName?: string | null,
+	profileId?: number | null,
+	reasoningEffort?: string | null
 ): void {
 	chatModelState.engine = engine;
 	chatModelState.provider = provider;
@@ -75,4 +93,6 @@ export function restoreChatModelFromSession(
 	chatModelState.engineModelMemory = { [engine]: { provider, id: modelId, name: modelName } };
 	chatModelState.accountId = accountId ?? null;
 	chatModelState.accountName = accountName ?? null;
+	chatModelState.profileId = profileId ?? null;
+	chatModelState.reasoningEffort = reasoningEffort ?? null;
 }

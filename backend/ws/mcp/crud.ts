@@ -24,7 +24,8 @@ import {
 	startAuthorization,
 	completeAuthorization,
 	getValidAccessToken,
-	parseMcpConfig
+	parseMcpConfig,
+	parseToolOverrides
 } from '$backend/mcp';
 
 const TRANSPORT_SCHEMA = t.Union([t.Literal('stdio'), t.Literal('http'), t.Literal('sse')]);
@@ -59,6 +60,9 @@ const INSTALLED_SERVER_SCHEMA = t.Object({
 	url: t.Union([t.String(), t.Null()]),
 	source: t.String(),
 	enabled: t.Boolean(),
+	// Number of tools with a stored exposure restriction — drives a "N restricted"
+	// badge without a per-server upstream round-trip. The details live in mcp:tools.
+	restrictedToolCount: t.Number(),
 	createdAt: t.String()
 });
 
@@ -71,6 +75,7 @@ function toDTO(row: McpServerRow) {
 	try { env = JSON.parse(row.env); } catch { /* ignore */ }
 	try { headers = JSON.parse(row.headers); } catch { /* ignore */ }
 	try { configSchema = JSON.parse(row.config_schema); } catch { /* ignore */ }
+	const restrictedToolCount = Object.keys(parseToolOverrides(row.tool_overrides)).length;
 	return {
 		id: row.id,
 		slug: row.slug,
@@ -88,6 +93,7 @@ function toDTO(row: McpServerRow) {
 		url: row.url,
 		source: row.source,
 		enabled: row.is_enabled === 1,
+		restrictedToolCount,
 		createdAt: row.created_at
 	};
 }

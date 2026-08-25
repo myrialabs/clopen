@@ -1323,7 +1323,7 @@ Guards live in **two tiers**:
 | `preview`     | `requireBrowserPreviewAccess`       | the connection's current project — adds membership check + service lookup       |
 | `preview`     | `requireBrowserTabAccess`           | an optional `tabId` — combines membership check with active/explicit tab lookup |
 | `db-client`   | `requireDbClientConnectionAccess`   | a connection id from `db_client_connections` (admin override + owner check)     |
-| `system-tools`| `requireInstallSessionAccess`       | a system-tools install `sessionId` — owner check                                |
+| `stack`       | `requireInstallSessionAccess`       | a Stack install `sessionId` — owner check                                       |
 | `engine`      | `requireSetupSessionAccess`         | a setup-flow `setupId` — admin who started the flow only                        |
 
 **DO:**

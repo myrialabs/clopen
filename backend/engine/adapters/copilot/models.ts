@@ -9,7 +9,8 @@
  */
 
 import type { CopilotClient, ModelInfo } from '@github/copilot-sdk';
-import type { EngineModel } from '$shared/types/unified';
+import type { EngineModel, ReasoningControl } from '$shared/types/unified';
+import { toReasoningOptions } from '$shared/constants/engines';
 import { debug } from '$shared/utils/logger';
 
 export async function fetchCopilotModels(
@@ -49,9 +50,26 @@ function summariseModelsError(error: unknown): string {
 	return firstLine;
 }
 
+/**
+ * Copilot's reasoning knob is the SDK `SessionConfig.reasoningEffort`. The
+ * models.list payload reports which levels each model accepts
+ * (`supportedReasoningEfforts`) and its default (`defaultReasoningEffort`), so
+ * the control is fully model-driven. Absent when the model doesn't support it.
+ */
+function buildCopilotReasoningControl(info: ModelInfo): ReasoningControl | undefined {
+	if (!info.capabilities?.supports?.reasoningEffort) return undefined;
+	const levels = info.supportedReasoningEfforts ?? [];
+	if (levels.length === 0) return undefined;
+	return {
+		levels: toReasoningOptions(levels),
+		default: info.defaultReasoningEffort ?? levels[0],
+	};
+}
+
 function mapModelInfoToEngineModel(info: ModelInfo): EngineModel {
 	const limits = info.capabilities?.limits;
 	const supports = info.capabilities?.supports;
+	const reasoningControl = buildCopilotReasoningControl(info);
 	return {
 		engine: {
 			type: 'copilot',
@@ -83,6 +101,7 @@ function mapModelInfoToEngineModel(info: ModelInfo): EngineModel {
 			reasoning: !!supports?.reasoningEffort,
 			tools: true,
 			structuredOutput: false,
+			...(reasoningControl && { reasoningControl }),
 		},
 		cost: {
 			input: info.billing?.multiplier ?? 0,

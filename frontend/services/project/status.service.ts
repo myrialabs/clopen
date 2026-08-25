@@ -6,7 +6,7 @@
  * Single event: `projects:presence-updated` contains full state
  */
 
-import { getOrCreateAnonymousUser, type AnonymousUser } from '$shared/utils/anonymous-user';
+import { getOrCreateAnonymousUser, type AnonymousUser } from '$frontend/utils/anonymous-user';
 import ws, { onWsReconnect } from '$frontend/utils/ws';
 import { debug } from '$shared/utils/logger';
 

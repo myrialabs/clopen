@@ -146,14 +146,27 @@ export const watchHandler = createRouter()
 		timestamp: t.Number()
 	}))
 
+	// Emitted when the watcher was rebuilt after a fault and may have missed
+	// events. Consumers should re-fetch their own data, but must NOT treat this
+	// as "these files changed" — no path is known to have changed, so live views
+	// (an open diff, an editor tab) must be reconciled in place, not rebuilt.
+	.emit('files:resync', t.Object({
+		projectId: t.String(),
+		timestamp: t.Number()
+	}))
+
 	// Emitted on watcher errors
 	.emit('files:watch-error', t.Object({
 		projectId: t.String(),
 		error: t.String()
 	}))
 
-	// Emitted when git state changes (external git operations)
+	// Emitted when git state changes (external git operations).
+	// `repoPaths` lists the working trees that moved — the project root and/or
+	// sub-repo roots — so a client can refresh a sub-repo's view without
+	// re-reading every other repo in the project.
 	.emit('git:changed', t.Object({
 		projectId: t.String(),
+		repoPaths: t.Optional(t.Array(t.String())),
 		timestamp: t.Number()
 	}));

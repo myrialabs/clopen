@@ -99,7 +99,7 @@ const LANGUAGE_BY_EXTENSION: Record<string, string> = {
 	vue: 'html',
 
 	gitignore: 'plaintext',
-	env: 'plaintext',
+	env: 'env',
 	txt: 'plaintext',
 	log: 'plaintext',
 };
@@ -112,6 +112,7 @@ export function getLanguageFromExtension(ext: string): string {
 
 export function detectLanguageFromFilename(filename: string, fallback = DEFAULT_LANGUAGE): string {
 	if (!filename) return fallback;
+	if (/\.env(\.\w+)?$/i.test(filename)) return 'env';
 	const ext = filename.split('.').pop();
 	return ext ? getLanguageFromExtension(ext) : fallback;
 }

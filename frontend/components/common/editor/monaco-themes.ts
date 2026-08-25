@@ -31,6 +31,9 @@ interface ThemeConfig {
 		number: string;
 		type: string;
 		function: string;
+		key: string;
+		delimiter: string;
+		variable: string;
 	};
 }
 
@@ -66,6 +69,9 @@ export const THEMES = {
 			number: 'B5CEA8',
 			type: '4EC9B0',
 			function: 'DCDCAA',
+			key: 'DCDCAA',
+			delimiter: '569CD6',
+			variable: '4EC9B0',
 		},
 	},
 	light: {
@@ -99,6 +105,9 @@ export const THEMES = {
 			number: '098658',
 			type: '267F99',
 			function: '795E26',
+			key: '795E26',
+			delimiter: '0000FF',
+			variable: '267F99',
 		},
 	},
 } as const satisfies Record<'dark' | 'light', ThemeConfig>;
@@ -124,6 +133,9 @@ export function createThemeDefinition(
 			{ token: 'number', foreground: themeConfig.tokens.number },
 			{ token: 'type', foreground: themeConfig.tokens.type },
 			{ token: 'function', foreground: themeConfig.tokens.function },
+			{ token: 'key', foreground: themeConfig.tokens.key },
+			{ token: 'delimiter', foreground: themeConfig.tokens.delimiter },
+			{ token: 'variable', foreground: themeConfig.tokens.variable },
 		],
 		colors: {
 			'editor.background': themeConfig.colors.background,

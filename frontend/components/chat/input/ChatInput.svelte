@@ -35,6 +35,8 @@
 	import LoadingIndicator from './components/LoadingIndicator.svelte';
 	import DragDropOverlay from './components/DragDropOverlay.svelte';
 	import EngineModelPicker from './components/EngineModelPicker.svelte';
+	import SlashCommandMenu from './components/SlashCommandMenu.svelte';
+	import { commandsStore, type AvailableCommand } from '$frontend/stores/features/commands.svelte';
 
 	// Composables
 	import { useFileHandling, buildAcceptedMimeTypes } from './composables/use-file-handling.svelte';
@@ -63,6 +65,50 @@
 	const adjustTextareaHeight = () =>
 		textareaResize.adjustTextareaHeight(textareaElement, messageText);
 	const focusTextarea = () => textareaElement?.focus();
+
+	// --- Slash command menu (typing "/" surfaces enabled Custom Commands) ---
+	let slashActiveIndex = $state(0);
+	let slashDismissed = $state(false);
+
+	// Active only when the whole input is a single "/token" (no space yet).
+	const slashQuery = $derived.by(() => {
+		const m = /^\/([A-Za-z0-9-]*)$/.exec(messageText);
+		return m ? m[1].toLowerCase() : null;
+	});
+	const slashMatches = $derived.by(() => {
+		if (slashQuery === null) return [] as AvailableCommand[];
+		const q = slashQuery;
+		return commandsStore.available.filter(c => !q || `${c.slug} ${c.name}`.toLowerCase().includes(q));
+	});
+	// (No isInputDisabled guard: a disabled textarea can't receive the "/" input
+	// that opens the menu, and referencing it here would precede its declaration.)
+	const slashOpen = $derived(
+		slashQuery !== null && !slashDismissed && slashMatches.length > 0
+	);
+
+	// Re-fetch whenever the session's active profile (or its project, for the
+	// project-default fallback) changes, so the "/" picker mirrors exactly what
+	// the profile makes available in the stream (see commandsStore.fetchAvailable).
+	$effect(() => {
+		void commandsStore.fetchAvailable(chatModelState.profileId, projectState.currentProject?.id);
+	});
+
+	// Reset dismissal + clamp the active index as the slash session changes.
+	$effect(() => {
+		if (slashQuery === null) {
+			slashDismissed = false;
+			slashActiveIndex = 0;
+		} else if (slashActiveIndex >= slashMatches.length) {
+			slashActiveIndex = 0;
+		}
+	});
+
+	function selectSlashCommand(command: AvailableCommand) {
+		setMessageText(`/${command.slug} `);
+		slashDismissed = true;
+		focusTextarea();
+		adjustTextareaHeight();
+	}
 
 	// Chat actions params
 	const chatActionsParams = {
@@ -162,10 +208,40 @@
 		// Sync input text to other collaborators (includes draft save)
 		inputState.emitInputSync(messageText, fileHandling.attachedFiles);
 	};
-	const handleKeyDown = (event: KeyboardEvent) =>
+	const handleKeyDown = (event: KeyboardEvent) => {
+		// Slash menu owns navigation keys while it's open.
+		if (slashOpen) {
+			if (event.key === 'ArrowDown') {
+				event.preventDefault();
+				slashActiveIndex = (slashActiveIndex + 1) % slashMatches.length;
+				return;
+			}
+			if (event.key === 'ArrowUp') {
+				event.preventDefault();
+				slashActiveIndex = (slashActiveIndex - 1 + slashMatches.length) % slashMatches.length;
+				return;
+			}
+			if (event.key === 'Enter' || event.key === 'Tab') {
+				event.preventDefault();
+				selectSlashCommand(slashMatches[slashActiveIndex]);
+				return;
+			}
+			if (event.key === 'Escape') {
+				event.preventDefault();
+				slashDismissed = true;
+				return;
+			}
+		}
 		textareaResize.handleKeyDown(event, textareaElement, messageText);
-	const handleKeyPress = (event: KeyboardEvent) =>
+	};
+	const handleKeyPress = (event: KeyboardEvent) => {
+		// Enter is consumed by the slash menu (selection), never sends the message.
+		if (slashOpen && event.key === 'Enter') {
+			event.preventDefault();
+			return;
+		}
 		chatActions.handleKeyPress(event, messageText, setMessageText);
+	};
 	const handleSendMessage = () => {
 		chatActions.sendMessage(messageText, setMessageText);
 	};
@@ -195,18 +271,22 @@
 
 	// Sync appState.isLoading from presence data (single source of truth for all users)
 	// Also fetch partial text and reconnect to stream for late-joining users / refresh
-	let lastCatchupProjectId: string | undefined;
+	// Keyed by project + session: two sessions of the same project can stream at
+	// once, so a project-only key made an intra-project session switch skip
+	// catchup entirely — the switched-to session never re-attached to its live
+	// stream and its output stopped updating.
+	let lastCatchupKey: string | undefined;
 	let lastPresenceProjectId: string | undefined;
 
 	// Reset catchup tracking on WS reconnect so catchupActiveStream re-runs.
 	// When WS briefly disconnects, the server-side cleanup removes the stream
 	// EventEmitter subscription. Without resetting, catchup won't fire again
-	// (guarded by lastCatchupProjectId) and the stream subscription is never
+	// (guarded by lastCatchupKey) and the stream subscription is never
 	// re-established — causing stream output to silently stop in the UI.
 	onWsReconnect(() => {
-		if (lastCatchupProjectId) {
+		if (lastCatchupKey) {
 			debug.log('chat', 'WS reconnected — resetting stream catchup tracking');
-			lastCatchupProjectId = undefined;
+			lastCatchupKey = undefined;
 		}
 	});
 
@@ -226,6 +306,13 @@
 			lastPresenceProjectId = projectId;
 		}
 
+		// Catchup reads and writes this session's transcript, so it may only run
+		// once that transcript is the one loaded — `currentSession` moves on
+		// switch, `messagesSessionId` a round trip later. Leaving the key
+		// undefined until then means the attempt is not marked as done, so this
+		// effect retries the moment the messages land.
+		const transcriptReady = !!sessionId && sessionState.messagesSessionId === sessionId;
+		const catchupKey = transcriptReady ? `${projectId}:${sessionId}` : undefined;
 		const status = presenceState.statuses.get(projectId);
 		// Check if the active stream is for the CURRENT session (not just any session in the project)
 		const hasActiveForSession = status?.streams?.some(
@@ -238,28 +325,29 @@
 			appState.isLoading = true;
 
 			// Catch up on active stream's partial text for late-joining users
-			// Only do this once per project switch to avoid repeated fetches
+			// Only do this once per project+session switch to avoid repeated fetches
 			// Only attempt if session is available (may not be on initial load)
-			if (projectId !== lastCatchupProjectId && sessionId) {
-				lastCatchupProjectId = projectId;
+			if (catchupKey && catchupKey !== lastCatchupKey) {
+				lastCatchupKey = catchupKey;
 				catchupActiveStream(status);
 			}
-		} else if (hasActiveForSession && appState.isLoading && sessionId && projectId !== lastCatchupProjectId) {
-			// Session became available after loading was already set (e.g. page refresh)
-			// The first run set isLoading=true but couldn't catch up because session wasn't loaded yet
-			lastCatchupProjectId = projectId;
+		} else if (hasActiveForSession && appState.isLoading && catchupKey && catchupKey !== lastCatchupKey) {
+			// Session became available after loading was already set (e.g. page refresh),
+			// or the user switched to another session of this project that is still
+			// streaming — either way this session must re-attach to its live stream.
+			lastCatchupKey = catchupKey;
 			catchupActiveStream(status);
 		} else if (!hasActiveForSession && appState.isLoading && !appState.isCancelling) {
 			// Only clear loading if not in the middle of a cancel operation
 			appState.isLoading = false;
-			lastCatchupProjectId = undefined;
+			lastCatchupKey = undefined;
 		} else if (!hasActiveForSession && !appState.isLoading) {
 			// No active streams for this session — clear cancelling state and reset catchup tracking.
 			// This is the authoritative signal that the cancel is fully complete (presence confirmed).
 			if (appState.isCancelling) {
 				appState.isCancelling = false;
 			}
-			lastCatchupProjectId = undefined;
+			lastCatchupKey = undefined;
 		}
 	});
 
@@ -268,18 +356,27 @@
 	 * for late-joining users (browser refresh, project switch, long absence)
 	 */
 	async function catchupActiveStream(status: any) {
-		if (!status?.streams?.length || !sessionState.currentSession?.id) return;
+		// Pin the session this catchup is for. Everything below runs after an
+		// await, and `sessionState.messages` always holds whichever session is on
+		// screen *now* — so a catchup that resolves after the user switched away
+		// would inject one chat's partial text into another's transcript and read
+		// that transcript to decide whether to show "Waiting for your input".
+		const chatSessionId = sessionState.currentSession?.id;
+		if (!status?.streams?.length || !chatSessionId) return;
+		// `messagesSessionId` — not `currentSession` — is what says the transcript
+		// on screen is this session's; the switch moves one a round trip before
+		// the other.
+		const holdsThisSession = () => sessionState.messagesSessionId === chatSessionId;
 
 		// Find the active stream for the current session
 		const activeStream = status.streams.find(
-			(s: any) => s.status === 'active' && s.chatSessionId === sessionState.currentSession?.id
+			(s: any) => s.status === 'active' && s.chatSessionId === chatSessionId
 		);
 		if (!activeStream) return;
 
 		try {
-			const streamState = await ws.http('chat:stream-state', {
-				chatSessionId: sessionState.currentSession.id
-			});
+			const streamState = await ws.http('chat:stream-state', { chatSessionId });
+			if (!holdsThisSession()) return;
 
 			if (streamState && streamState.status === 'active' && streamState.processId) {
 				// ── Inject reasoning stream_event (if available) ──
@@ -338,13 +435,10 @@
 				}
 
 				// Reconnect to live stream events so future partials/messages/complete flow in
-				chatService.reconnectToStream(
-					sessionState.currentSession.id,
-					streamState.processId
-				);
+				chatService.reconnectToStream(chatSessionId, streamState.processId);
 
 				// Detect if an interactive tool (e.g. AskUserQuestion) is pending in existing messages
-				chatService.detectPendingInteractiveTools();
+				chatService.detectPendingInteractiveTools(chatSessionId);
 
 				debug.log('chat', 'Caught up with active stream:', {
 					processId: streamState.processId,
@@ -419,6 +513,16 @@
 			attachedFiles={fileHandling.attachedFiles}
 			onRemove={fileHandling.removeAttachment}
 		/>
+
+		<!-- Slash command autocomplete (typing "/" surfaces Custom Commands) -->
+		{#if slashOpen}
+			<SlashCommandMenu
+				commands={slashMatches}
+				activeIndex={slashActiveIndex}
+				onselect={selectSlashCommand}
+				onhover={(i) => (slashActiveIndex = i)}
+			/>
+		{/if}
 
 		<!-- Main input area with drag and drop support -->
 		<div

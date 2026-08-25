@@ -77,7 +77,7 @@
 			aria-expanded={isOpen}
 			title="Layout Presets"
 		>
-			<Icon name="lucide:layout-grid" class="w-5 h-5" />
+			<Icon name="lucide:layout-template" class="w-5 h-5" />
 		</button>
 	{:else}
 		<!-- Expanded: Full Width -->
@@ -89,7 +89,7 @@
 			aria-label="Layout Presets"
 			aria-expanded={isOpen}
 		>
-			<Icon name="lucide:layout-grid" class="w-4 h-4" />
+			<Icon name="lucide:layout-template" class="w-4 h-4" />
 			<span class="flex-1 text-left">Layout Presets</span>
 		</button>
 	{/if}

@@ -18,11 +18,13 @@ import type {
 import type {
 	AlterOperation,
 	DbClientDriverAdapter,
+	DbClientTxContext,
 	IndexDefinition,
 	SchemaOpts,
 	TableDefinition
 } from './types';
 import { normalizeBunSqlResult } from './bun-sql-helpers';
+import { BUN_SQL_POOL_OPTIONS } from '../pool-config';
 import {
 	assertSafeIdentifier,
 	buildDelete,
@@ -45,7 +47,7 @@ export class PostgresAdapter implements DbClientDriverAdapter {
 	private sql: SQL | null = null;
 	private alive = false;
 	// The database the active connection currently points at (switched by
-	// reconnecting in ensureDatabase).
+	// reconnecting in acquire).
 	private defaultDb: string | null = null;
 	// The connection's home database — what we revert to when no specific
 	// database is requested, so a connection-level overview doesn't keep
@@ -79,7 +81,7 @@ export class PostgresAdapter implements DbClientDriverAdapter {
 	async connect(conn: DbClientConnection, tunnelPort?: number): Promise<void> {
 		const url = this.buildUrl(conn, tunnelPort);
 
-		this.sql = new SQL(url);
+		this.sql = new SQL(url, BUN_SQL_POOL_OPTIONS);
 		await this.sql.connect();
 		this.hasConfiguredDb = !!conn.database;
 		this.homeDb = conn.database || 'postgres';
@@ -90,10 +92,19 @@ export class PostgresAdapter implements DbClientDriverAdapter {
 		this.alive = true;
 	}
 
-	private async ensureDatabase(database?: string): Promise<void> {
-		if (!this.conn) return;
+	/**
+	 * Return the client connected to `database`, switching if needed.
+	 *
+	 * Postgres cannot cross databases within a session, so a switch means a new
+	 * client on a rewritten URL. Callers must run their statement on the client
+	 * this returns rather than re-reading `this.sql`: a concurrent switch can
+	 * land between the two, and the query would then silently run against
+	 * whichever database the shared field points at by then.
+	 */
+	private async acquire(database?: string): Promise<SQL> {
+		if (!this.conn) return this.requireSql();
 		const target = database || this.homeDb;
-		if (target === this.defaultDb) return;
+		if (target === this.defaultDb) return this.requireSql();
 
 		let release: () => void;
 		const prev = this.ensureLock;
@@ -101,17 +112,20 @@ export class PostgresAdapter implements DbClientDriverAdapter {
 		await prev;
 
 		try {
-			if (target === this.defaultDb) return;
+			if (target === this.defaultDb) return this.requireSql();
 			const newConn = { ...this.conn, database: target };
 			const url = this.buildUrl(newConn, this.tunnelPort);
-			const next = new SQL(url);
+			const next = new SQL(url, BUN_SQL_POOL_OPTIONS);
 			await next.connect();
 			const prevSql = this.sql;
 			this.sql = next;
 			this.defaultDb = target;
 			this.conn = newConn;
 			this.alive = true;
+			// The old client closes gracefully, so queries already running on it
+			// finish before its sockets go away.
 			if (prevSql) await prevSql.close().catch((err) => debug.warn('db-client', 'pg switch close error:', err));
+			return next;
 		} finally {
 			release!();
 		}
@@ -171,8 +185,7 @@ export class PostgresAdapter implements DbClientDriverAdapter {
 	}
 
 	async executeRead(q: string, params: unknown[] = [], opts?: { database?: string }): Promise<DbClientQueryResult> {
-		await this.ensureDatabase(opts?.database);
-		const sql = this.requireSql();
+		const sql = await this.acquire(opts?.database);
 		const start = performance.now();
 		const raw = await sql.unsafe(q, params as never);
 		return normalizeBunSqlResult(raw, Math.round(performance.now() - start));
@@ -186,11 +199,28 @@ export class PostgresAdapter implements DbClientDriverAdapter {
 		return this.executeRead(`EXPLAIN ${q}`, [], opts);
 	}
 
+	async withTransaction<T>(fn: (tx: DbClientTxContext) => Promise<T>, opts?: { database?: string }): Promise<T> {
+		const sql = await this.acquire(opts?.database);
+		// Bun.sql reserves a single connection for the duration of `begin`, so
+		// every statement below shares one transaction. Postgres wraps DDL in
+		// the transaction too, so a mid-batch failure rolls everything back.
+		return sql.begin(async (tx) => {
+			const run = async (q: string, params: unknown[] = []): Promise<DbClientQueryResult> => {
+				const start = performance.now();
+				const raw = await tx.unsafe(q, params as never);
+				return normalizeBunSqlResult(raw, Math.round(performance.now() - start));
+			};
+			return fn({
+				executeRead: (q, params) => run(q, params ?? []),
+				executeWrite: (q, params) => run(q, params ?? [])
+			});
+		}) as Promise<T>;
+	}
+
 	// ── Overview ──────────────────────────────────────────────────────────
 
 	async overview(opts?: SchemaOpts): Promise<DbClientOverview> {
-		await this.ensureDatabase(opts?.database);
-		const sql = this.requireSql();
+		const sql = await this.acquire(opts?.database);
 		const start = performance.now();
 		const verRows = (await sql.unsafe('SELECT version() AS v')) as Array<{ v: string }>;
 		const latencyMs = Math.round(performance.now() - start);
@@ -231,7 +261,9 @@ export class PostgresAdapter implements DbClientDriverAdapter {
 			tableCount: c.tables === undefined ? null : Number(c.tables),
 			viewCount: c.views === undefined ? null : Number(c.views),
 			extra: [
-				{ label: 'Database', value: this.defaultDb ?? 'postgres' },
+				// Report what was asked for, not the shared "currently connected"
+				// field — a switch for another panel could have moved it by now.
+				{ label: 'Database', value: opts?.database || this.homeDb },
 				{ label: 'Schema', value: schema }
 			]
 		};
@@ -246,8 +278,12 @@ export class PostgresAdapter implements DbClientDriverAdapter {
 		return rows.map((r) => ({ name: r.datname, type: 'database' as const }));
 	}
 
-	async listSchemas(): Promise<DbClientSchemaNode[]> {
-		const rows = (await this.requireSql().unsafe(
+	async listSchemas(database?: string): Promise<DbClientSchemaNode[]> {
+		// Schemas live inside a database, so this has to run on the browsed one —
+		// the caller passes it and the tree would otherwise show the home
+		// database's schemas under every database node.
+		const sql = await this.acquire(database);
+		const rows = (await sql.unsafe(
 			`SELECT schema_name FROM information_schema.schemata
 			 WHERE schema_name NOT IN ('pg_catalog','information_schema','pg_toast')
 			 ORDER BY schema_name`
@@ -256,17 +292,49 @@ export class PostgresAdapter implements DbClientDriverAdapter {
 	}
 
 	async listObjects(database?: string, schema?: string): Promise<DbClientSchemaNode[]> {
-		await this.ensureDatabase(database);
+		const sql = await this.acquire(database);
 		const target = this.targetSchema({ schema });
-		const rows = (await this.requireSql().unsafe(
+		const tables = (await sql.unsafe(
 			`SELECT table_name, table_type FROM information_schema.tables
 			 WHERE table_schema = $1 ORDER BY table_name`,
 			[target] as never
 		)) as Array<{ table_name: string; table_type: string }>;
-		return rows.map((r) => ({
+
+		// Query pg_proc directly (not information_schema.routines) so we can filter
+		// on prokind: keep plain functions ('f') and procedures ('p'), but exclude
+		// aggregates ('a') and window functions ('w') — those (e.g. avg/sum) have no
+		// pg_get_functiondef and would error when their DDL is opened.
+		const routines = (await sql.unsafe(
+			`SELECT p.proname AS routine_name, p.prokind
+			 FROM pg_proc p
+			 JOIN pg_namespace n ON p.pronamespace = n.oid
+			 WHERE n.nspname = $1 AND p.prokind IN ('f', 'p')
+			 ORDER BY p.proname`,
+			[target] as never
+		)) as Array<{ routine_name: string; prokind: string }>;
+
+		const tableNodes = tables.map((r) => ({
 			name: r.table_name,
-			type: r.table_type === 'VIEW' ? 'view' as const : 'table' as const
+			type: r.table_type === 'VIEW' ? ('view' as const) : ('table' as const)
 		}));
+
+		// Overloaded functions (e.g. the `citext` extension) appear once per
+		// signature. Collapse to one node per name since the tree browses and
+		// fetches routine details by name alone.
+		const seenRoutines = new Set<string>();
+		const routineNodes = routines
+			.filter((r) => {
+				const key = `${r.prokind}:${r.routine_name}`;
+				if (seenRoutines.has(key)) return false;
+				seenRoutines.add(key);
+				return true;
+			})
+			.map((r) => ({
+				name: r.routine_name,
+				type: r.prokind === 'p' ? ('procedure' as const) : ('function' as const)
+			}));
+
+		return [...tableNodes, ...routineNodes];
 	}
 
 	async getObjectDetails(
@@ -275,9 +343,25 @@ export class PostgresAdapter implements DbClientDriverAdapter {
 		database?: string,
 		schema?: string
 	): Promise<DbClientObjectDetails> {
-		await this.ensureDatabase(database);
+		const sql = await this.acquire(database);
 		const target = this.targetSchema({ schema });
-		const sql = this.requireSql();
+
+		if (_type === 'function' || _type === 'procedure') {
+			const routineRows = (await sql.unsafe(
+				`SELECT pg_get_functiondef(p.oid) AS definition
+				 FROM pg_proc p
+				 JOIN pg_namespace n ON p.pronamespace = n.oid
+				 WHERE n.nspname = $1 AND p.proname = $2`,
+				[target, name] as never
+			)) as Array<{ definition: string }>;
+			
+			const definition = routineRows[0]?.definition ?? '';
+			return {
+				name,
+				type: _type,
+				ddl: String(definition)
+			};
+		}
 
 		const colRows = (await sql.unsafe(
 			`SELECT c.column_name, c.data_type, c.udt_name, c.is_nullable, c.column_default,
@@ -368,25 +452,24 @@ export class PostgresAdapter implements DbClientDriverAdapter {
 		assertSafeIdentifier(name);
 		// Postgres refuses to drop the database the session is connected to —
 		// hop to the maintenance database first when needed.
-		if (this.defaultDb === name) await this.ensureDatabase('postgres');
+		const sql = this.defaultDb === name ? await this.acquire('postgres') : this.requireSql();
 		const ddl = `DROP DATABASE ${Q(name)}`;
-		await this.requireSql().unsafe(ddl);
+		await sql.unsafe(ddl);
 		return ddl;
 	}
 
 	async renameDatabase(name: string, newName: string): Promise<string> {
 		assertSafeIdentifier(name);
 		assertSafeIdentifier(newName);
-		if (this.defaultDb === name) await this.ensureDatabase('postgres');
+		const sql = this.defaultDb === name ? await this.acquire('postgres') : this.requireSql();
 		const ddl = `ALTER DATABASE ${Q(name)} RENAME TO ${Q(newName)}`;
-		await this.requireSql().unsafe(ddl);
+		await sql.unsafe(ddl);
 		return ddl;
 	}
 
 	async resetDatabase(opts?: SchemaOpts): Promise<string> {
-		await this.ensureDatabase(opts?.database);
+		const sql = await this.acquire(opts?.database);
 		const target = this.targetSchema(opts);
-		const sql = this.requireSql();
 		const rows = (await sql.unsafe(
 			`SELECT table_name FROM information_schema.tables
 			 WHERE table_schema = $1 AND table_type = 'BASE TABLE' ORDER BY table_name`,
@@ -401,21 +484,20 @@ export class PostgresAdapter implements DbClientDriverAdapter {
 	}
 
 	async resetTable(name: string, opts?: SchemaOpts): Promise<string> {
-		await this.ensureDatabase(opts?.database);
+		const sql = await this.acquire(opts?.database);
 		assertSafeIdentifier(name);
 		const ddl = `TRUNCATE TABLE ${qualified(Q, [this.targetSchema(opts), name])} RESTART IDENTITY`;
-		await this.requireSql().unsafe(ddl);
+		await sql.unsafe(ddl);
 		return ddl;
 	}
 
 	async duplicateTable(name: string, newName: string, opts?: (SchemaOpts & { withData?: boolean })): Promise<string> {
-		await this.ensureDatabase(opts?.database);
+		const sql = await this.acquire(opts?.database);
 		assertSafeIdentifier(name);
 		assertSafeIdentifier(newName);
 		const schema = this.targetSchema(opts);
 		const src = qualified(Q, [schema, name]);
 		const dst = qualified(Q, [schema, newName]);
-		const sql = this.requireSql();
 		const create = `CREATE TABLE ${dst} (LIKE ${src} INCLUDING ALL)`;
 		await sql.unsafe(create);
 		const statements = [create];
@@ -445,7 +527,7 @@ export class PostgresAdapter implements DbClientDriverAdapter {
 	}
 
 	async createTable(definition: TableDefinition, opts?: SchemaOpts): Promise<string> {
-		await this.ensureDatabase(opts?.database);
+		const sql = await this.acquire(opts?.database);
 		assertSafeIdentifier(definition.name);
 		const ddl = renderCreateTable({
 			quote: Q,
@@ -453,12 +535,12 @@ export class PostgresAdapter implements DbClientDriverAdapter {
 			schema: this.targetSchema(opts),
 			driver: 'postgres'
 		});
-		await this.requireSql().unsafe(ddl);
+		await sql.unsafe(ddl);
 		return ddl;
 	}
 
 	async alterTable(name: string, operations: AlterOperation[], opts?: SchemaOpts): Promise<string> {
-		await this.ensureDatabase(opts?.database);
+		const sql = await this.acquire(opts?.database);
 		assertSafeIdentifier(name);
 		const fqt = qualified(Q, [this.targetSchema(opts), name]);
 		const parts: string[] = [];
@@ -484,73 +566,75 @@ export class PostgresAdapter implements DbClientDriverAdapter {
 			}
 		}
 		const ddl = `ALTER TABLE ${fqt} ${parts.join(', ')}`;
-		await this.requireSql().unsafe(ddl);
+		await sql.unsafe(ddl);
 		return ddl;
 	}
 
 	async dropTable(name: string, opts?: SchemaOpts): Promise<string> {
-		await this.ensureDatabase(opts?.database);
+		const sql = await this.acquire(opts?.database);
 		assertSafeIdentifier(name);
 		const ddl = `DROP TABLE ${qualified(Q, [this.targetSchema(opts), name])}`;
-		await this.requireSql().unsafe(ddl);
+		await sql.unsafe(ddl);
 		return ddl;
 	}
 
 	async truncateTable(name: string, opts?: SchemaOpts): Promise<string> {
-		await this.ensureDatabase(opts?.database);
+		const sql = await this.acquire(opts?.database);
 		assertSafeIdentifier(name);
 		const ddl = `TRUNCATE TABLE ${qualified(Q, [this.targetSchema(opts), name])}`;
-		await this.requireSql().unsafe(ddl);
+		await sql.unsafe(ddl);
 		return ddl;
 	}
 
 	async renameTable(name: string, newName: string, opts?: SchemaOpts): Promise<string> {
-		await this.ensureDatabase(opts?.database);
+		const sql = await this.acquire(opts?.database);
 		assertSafeIdentifier(name);
 		assertSafeIdentifier(newName);
 		const ddl = `ALTER TABLE ${qualified(Q, [this.targetSchema(opts), name])} RENAME TO ${Q(newName)}`;
-		await this.requireSql().unsafe(ddl);
+		await sql.unsafe(ddl);
 		return ddl;
 	}
 
 	async createIndex(tableName: string, def: IndexDefinition, opts?: SchemaOpts): Promise<string> {
-		await this.ensureDatabase(opts?.database);
+		const sql = await this.acquire(opts?.database);
 		assertSafeIdentifier(tableName);
 		assertSafeIdentifier(def.name);
 		def.columns.forEach(assertSafeIdentifier);
 		const ddl = renderCreateIndex({ quote: Q, tableName, def, schema: this.targetSchema(opts) });
-		await this.requireSql().unsafe(ddl);
+		await sql.unsafe(ddl);
 		return ddl;
 	}
 
 	async dropIndex(_tableName: string, indexName: string, opts?: SchemaOpts): Promise<string> {
-		await this.ensureDatabase(opts?.database);
+		const sql = await this.acquire(opts?.database);
 		assertSafeIdentifier(indexName);
 		const ddl = `DROP INDEX ${qualified(Q, [this.targetSchema(opts), indexName])}`;
-		await this.requireSql().unsafe(ddl);
+		await sql.unsafe(ddl);
 		return ddl;
 	}
 
 	async createView(name: string, query: string, opts?: SchemaOpts): Promise<string> {
-		await this.ensureDatabase(opts?.database);
+		const sql = await this.acquire(opts?.database);
 		assertSafeIdentifier(name);
 		const ddl = `CREATE VIEW ${qualified(Q, [this.targetSchema(opts), name])} AS ${query}`;
-		await this.requireSql().unsafe(ddl);
+		await sql.unsafe(ddl);
 		return ddl;
 	}
 
 	async dropView(name: string, opts?: SchemaOpts): Promise<string> {
-		await this.ensureDatabase(opts?.database);
+		const sql = await this.acquire(opts?.database);
 		assertSafeIdentifier(name);
 		const ddl = `DROP VIEW ${qualified(Q, [this.targetSchema(opts), name])}`;
-		await this.requireSql().unsafe(ddl);
+		await sql.unsafe(ddl);
 		return ddl;
 	}
 
 	// ── Data CRUD ─────────────────────────────────────────────────────────
 
+	// Postgres statements can only be schema-qualified, never database-qualified,
+	// so the target database has to ride along to `executeWrite` — without it the
+	// write resolves against the connection's home database instead.
 	async insertRow(table: string, row: Record<string, unknown>, opts?: SchemaOpts): Promise<DbClientQueryResult> {
-		await this.ensureDatabase(opts?.database);
 		assertSafeIdentifier(table);
 		Object.keys(row).forEach(assertSafeIdentifier);
 		const { sql, params } = buildInsert({
@@ -560,7 +644,7 @@ export class PostgresAdapter implements DbClientDriverAdapter {
 			schema: this.targetSchema(opts),
 			placeholder: PG_PLACEHOLDER
 		});
-		return this.executeWrite(sql, params);
+		return this.executeWrite(sql, params, { database: opts?.database });
 	}
 
 	async updateRow(
@@ -569,7 +653,6 @@ export class PostgresAdapter implements DbClientDriverAdapter {
 		changes: Record<string, unknown>,
 		opts?: SchemaOpts
 	): Promise<DbClientQueryResult> {
-		await this.ensureDatabase(opts?.database);
 		assertSafeIdentifier(table);
 		[...Object.keys(pk), ...Object.keys(changes)].forEach(assertSafeIdentifier);
 		const { sql, params } = buildUpdate({
@@ -580,11 +663,10 @@ export class PostgresAdapter implements DbClientDriverAdapter {
 			schema: this.targetSchema(opts),
 			placeholder: PG_PLACEHOLDER
 		});
-		return this.executeWrite(sql, params);
+		return this.executeWrite(sql, params, { database: opts?.database });
 	}
 
 	async deleteRows(table: string, pks: Record<string, unknown>[], opts?: SchemaOpts): Promise<DbClientQueryResult> {
-		await this.ensureDatabase(opts?.database);
 		assertSafeIdentifier(table);
 		if (pks.length > 0) Object.keys(pks[0]).forEach(assertSafeIdentifier);
 		const { sql, params } = buildDelete({
@@ -594,7 +676,7 @@ export class PostgresAdapter implements DbClientDriverAdapter {
 			schema: this.targetSchema(opts),
 			placeholder: PG_PLACEHOLDER
 		});
-		return this.executeWrite(sql, params);
+		return this.executeWrite(sql, params, { database: opts?.database });
 	}
 }
 

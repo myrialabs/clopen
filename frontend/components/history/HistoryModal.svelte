@@ -10,10 +10,11 @@
 	import Modal from '$frontend/components/common/overlay/Modal.svelte';
 	import Dialog from '$frontend/components/common/overlay/Dialog.svelte';
 	import { presenceState, isSessionWaitingInput } from '$frontend/stores/core/presence.svelte';
-	import { isSessionUnread } from '$frontend/stores/core/app.svelte';
+	import { isSessionUnread, markAllSessionsRead } from '$frontend/stores/core/app.svelte';
 	import { userStore } from '$frontend/stores/features/user.svelte';
 	import { debug } from '$shared/utils/logger';
 	import { modelStore } from '$frontend/stores/features/models.svelte';
+	import { parseSnippet } from '$frontend/utils/fts-snippet';
 
 	interface Props {
 		isOpen: boolean;
@@ -101,11 +102,12 @@
 
 	// Search state
 	let searchQuery = $state('');
-	let deepSearchResults = $state<Set<string> | null>(null);
+	/** sessionId -> highlighted snippet, from the message-content (deep) search. */
+	let deepSearchResults = $state<Map<string, string> | null>(null);
 	let deepSearching = $state(false);
 	let searchDebounceTimer: ReturnType<typeof setTimeout> | undefined;
 
-	// Deep search: query backend for message-level search
+	// Deep search: query backend for message-level search (FTS5-backed, fast)
 	function triggerDeepSearch(query: string) {
 		clearTimeout(searchDebounceTimer);
 		if (!query.trim()) {
@@ -117,14 +119,14 @@
 		searchDebounceTimer = setTimeout(async () => {
 			try {
 				const result = await ws.http('sessions:search', { query: query.trim() });
-				deepSearchResults = new Set(result.sessionIds);
+				deepSearchResults = new Map(result.results.map(r => [r.sessionId, r.snippet]));
 			} catch (err) {
 				debug.error('session', 'Deep search failed:', err);
 				deepSearchResults = null;
 			} finally {
 				deepSearching = false;
 			}
-		}, 300);
+		}, 150);
 	}
 
 	// Trigger deep search when query changes
@@ -153,6 +155,22 @@
 		}
 		return counts;
 	});
+
+	// Count of sessions showing an unread (blue) indicator — mirrors the dot logic
+	// in the list: unread, not the active session, and not currently streaming.
+	const unreadCount = $derived(
+		sessions.filter(
+			session =>
+				isSessionUnread(session.id) &&
+				session.id !== sessionState.currentSession?.id &&
+				!isSessionStreaming(session.id)
+		).length
+	);
+
+	function handleMarkAllRead() {
+		const projectId = projectState.currentProject?.id;
+		if (projectId) markAllSessionsRead(projectId);
+	}
 
 	const filteredSessions = $derived(
 		sessions
@@ -364,6 +382,17 @@
 		<div class="flex items-center justify-between px-4 py-3 md:px-6 md:py-4">
 			<h2 class="text-base md:text-lg font-bold text-slate-900 dark:text-slate-100">Sessions</h2>
 			<div class="flex items-center gap-2">
+				{#if unreadCount > 0}
+					<button
+						type="button"
+						class="flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg text-xs font-medium text-blue-600 dark:text-blue-400 hover:bg-blue-500/10 transition-colors"
+						onclick={handleMarkAllRead}
+						aria-label="Mark all sessions as read"
+					>
+						<Icon name="lucide:check-check" class="w-3.5 h-3.5" />
+						<span class="hidden sm:inline">Mark all read</span>
+					</button>
+				{/if}
 				{#if filteredSessions.length > 0}
 					<button
 						type="button"
@@ -494,6 +523,7 @@
 					{@const modelName = getSessionModel(session)}
 					{@const title = session.title || session.head_title || 'New Conversation'}
 					{@const summary = session.head_summary || 'No messages yet'}
+					{@const deepSnippet = deepSearchResults?.get(session.id)}
 					{@const userCount = session.user_count ?? 0}
 					<div
 						class="flex items-center gap-2 w-full p-3 bg-transparent border border-slate-200 dark:border-slate-700 rounded-lg text-slate-900 dark:text-slate-100 text-sm text-left transition-all duration-150
@@ -567,6 +597,12 @@
 										Processing...
 									</p>
 								{/if}
+							{:else if deepSnippet}
+								<p class="text-xs text-slate-400 dark:text-slate-500 truncate mt-0.5">
+									{#each parseSnippet(deepSnippet) as part}
+										{#if part.hl}<mark class="bg-transparent text-violet-600 dark:text-violet-400 font-semibold">{part.text}</mark>{:else}{part.text}{/if}
+									{/each}
+								</p>
 							{:else}
 								<p class="text-xs text-slate-400 dark:text-slate-500 truncate mt-0.5">
 									{summary}

@@ -67,6 +67,15 @@ export function generateOpenCodeProviderConfig(): OpenCodeProviderConfigResult {
 
 	for (const provider of providers) {
 		const activeAccount = engineQueries.getActiveAccount(provider.id);
+
+		// Custom providers (api_url set) are OpenAI-compatible endpoints that
+		// don't need env-var management — the config injection in server.ts
+		// handles npm + baseURL + model discovery from /v1/models.
+		if (provider.api_url) {
+			enabledProviders.push(provider.slug);
+			continue;
+		}
+
 		if (!activeAccount) continue;
 
 		enabledProviders.push(provider.slug);

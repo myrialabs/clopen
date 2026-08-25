@@ -14,13 +14,15 @@
 	import DataGrid from './main/DataGrid.svelte';
 	import StructureManager from './main/StructureManager.svelte';
 	import OverviewPanel from './main/OverviewPanel.svelte';
+	import ErDiagram from './main/ErDiagram.svelte';
 	import TableDesigner from './main/TableDesigner.svelte';
 	import ExportModal from './main/ExportModal.svelte';
 	import ImportModal from './main/ImportModal.svelte';
 	import { dbClientStore, type DbClientView } from '$frontend/stores/features/db-client.svelte';
+	import { ensureSqlCompletion } from './sql-completion';
 	import { debug } from '$shared/utils/logger';
 	import type { DbClientSchemaNode } from '$shared/types/db-client';
-	import type { IconName } from '$shared/types/ui/icons';
+	import MonacoCodeEditor from '$frontend/components/common/editor/MonacoCodeEditor.svelte';
 
 	interface Props {
 		isOpen: boolean;
@@ -60,6 +62,12 @@
 	let exportOpen = $state(false);
 	let exportPreselect = $state<string[]>([]);
 	let importOpen = $state(false);
+	let createRoutineOpen = $state(false);
+	let createRoutineType = $state<'function' | 'procedure'>('function');
+	let createRoutineQuery = $state('');
+	let createRoutineDb = $state<string | undefined>(undefined);
+	let createRoutineSaving = $state(false);
+	let createRoutineError = $state<string | null>(null);
 
 	let confirmReset = $state(false);
 	let confirmDropDatabase = $state(false);
@@ -77,13 +85,13 @@
 	let duplicateSource = $state<{ name: string; database?: string } | null>(null);
 
 	const driver = $derived(activeConnection?.driver);
-	const canDropDatabase = $derived(driver === 'mysql' || driver === 'postgres' || driver === 'mongodb');
-	const canRenameDatabase = $derived(driver === 'postgres' || driver === 'mysql');
-	const canEmptyDatabase = $derived(driver === 'mysql' || driver === 'postgres' || driver === 'sqlite' || driver === 'mongodb');
+	const canDropDatabase = $derived(driver === 'mysql' || driver === 'postgres' || driver === 'mongodb' || driver === 'mssql');
+	const canRenameDatabase = $derived(driver === 'postgres' || driver === 'mysql' || driver === 'mssql');
+	const canEmptyDatabase = $derived(driver === 'mysql' || driver === 'postgres' || driver === 'sqlite' || driver === 'mongodb' || driver === 'mssql');
 	const canFlushDatabase = $derived(driver === 'redis');
-	const canResetTable = $derived(driver === 'mysql' || driver === 'postgres' || driver === 'sqlite' || driver === 'mongodb');
-	const canDuplicateTable = $derived(driver === 'mysql' || driver === 'postgres' || driver === 'sqlite' || driver === 'mongodb');
-	const canCopyCreate = $derived(driver === 'mysql' || driver === 'postgres' || driver === 'sqlite');
+	const canResetTable = $derived(driver === 'mysql' || driver === 'postgres' || driver === 'sqlite' || driver === 'mongodb' || driver === 'mssql');
+	const canDuplicateTable = $derived(driver === 'mysql' || driver === 'postgres' || driver === 'sqlite' || driver === 'mongodb' || driver === 'mssql');
+	const canCopyCreate = $derived(driver === 'mysql' || driver === 'postgres' || driver === 'sqlite' || driver === 'mssql');
 
 	// The database currently in scope: the one opened in the sidebar (tree
 	// drivers) or the connection's fixed database. Single source of truth so
@@ -98,7 +106,7 @@
 	// database and none is opened yet). At this level there is no table context,
 	// so the Data/Structure tabs are meaningless.
 	const useDatabaseTree = $derived(
-		!!activeConnection && !activeConnection.database && (driver === 'mysql' || driver === 'postgres' || driver === 'mongodb')
+		!!activeConnection && !activeConnection.database && (driver === 'mysql' || driver === 'postgres' || driver === 'mongodb' || driver === 'mssql')
 	);
 	const atConnectionScope = $derived(
 		useDatabaseTree && !!activeConnection && (dbClientStore.openedDatabase[activeConnection.id] ?? null) === null
@@ -109,17 +117,18 @@
 
 	$effect(() => {
 		if (isOpen) {
+			ensureSqlCompletion();
 			dbClientStore.list().catch((err) => {
 				debug.error('db-client', 'failed to load connections on modal open:', err);
 			});
 		}
 	});
 
-	// Data and Structure need a table in scope; bounce back to Overview when we
+	// Table-scoped views need a table in scope; bounce back to Overview when we
 	// step up to the connection (database-list) level while on one of them.
 	// Declared before the recorder so the correction lands before we snapshot.
 	$effect(() => {
-		if (atConnectionScope && activeConnection && (activeView === 'data' || activeView === 'structure')) {
+		if (atConnectionScope && activeConnection && isTableScopedView(activeView)) {
 			dbClientStore.setView(activeConnection.id, 'overview');
 		}
 	});
@@ -155,6 +164,34 @@
 			case 'sqlite': return '"' + name.replace(/"/g, '""') + '"';
 			default: return name;
 		}
+	}
+
+	function getFunctionTemplate(): string {
+		const drv = activeConnection?.driver;
+		if (drv === 'postgres') {
+			return `-- New PostgreSQL Function Template\nCREATE OR REPLACE FUNCTION new_function()\nRETURNS INTEGER AS $$\nBEGIN\n  RETURN 1;\nEND;\n$$ LANGUAGE plpgsql;`;
+		}
+		if (drv === 'mysql') {
+			return `-- New MySQL Function Template\nCREATE FUNCTION new_function()\nRETURNS INT\nDETERMINISTIC\nBEGIN\n  DECLARE res INT;\n  SET res = 1;\n  RETURN res;\nEND`;
+		}
+		if (drv === 'mssql') {
+			return `-- New MSSQL Function Template\nCREATE FUNCTION new_function()\nRETURNS INT\nAS\nBEGIN\n  DECLARE @res INT;\n  SET @res = 1;\n  RETURN @res;\nEND`;
+		}
+		return `CREATE FUNCTION new_function() RETURNS INTEGER AS $$ BEGIN RETURN 1; END $$;`;
+	}
+
+	function getProcedureTemplate(): string {
+		const drv = activeConnection?.driver;
+		if (drv === 'postgres') {
+			return `-- New PostgreSQL Procedure Template\nCREATE OR REPLACE PROCEDURE new_procedure()\nLANGUAGE plpgsql AS $$\nBEGIN\n  -- procedure logic here\nEND;\n$$;`;
+		}
+		if (drv === 'mysql') {
+			return `-- New MySQL Procedure Template\nCREATE PROCEDURE new_procedure()\nBEGIN\n  -- procedure logic here\nEND`;
+		}
+		if (drv === 'mssql') {
+			return `-- New MSSQL Procedure Template\nCREATE PROCEDURE new_procedure\nAS\nBEGIN\n  -- procedure logic here\nEND`;
+		}
+		return `CREATE PROCEDURE new_procedure() BEGIN END;`;
 	}
 
 	function itemsForNode(node: DbClientSchemaNode): ContextMenuItem[] {
@@ -306,12 +343,10 @@
 				createViewOpen = true;
 				break;
 			case 'open-data':
-				dbClientStore.setActiveObject(conn.id, { name: node.name, type: node.type, database: db });
-				dbClientStore.setView(conn.id, 'data');
+				dbClientStore.openTable(conn.id, { name: node.name, type: node.type, database: db }, 'data');
 				break;
 			case 'open-structure':
-				dbClientStore.setActiveObject(conn.id, { name: node.name, type: node.type, database: db });
-				dbClientStore.setView(conn.id, 'structure');
+				dbClientStore.openTable(conn.id, { name: node.name, type: node.type, database: db }, 'structure');
 				break;
 			case 'new-query':
 				dbClientStore.setQueryText(conn.id, `SELECT * FROM ${quoteIdent(node.name)} LIMIT 100`);
@@ -552,6 +587,23 @@
 		}
 	}
 
+	async function doCreateRoutine(): Promise<void> {
+		const conn = activeConnection;
+		if (!conn || !createRoutineQuery.trim()) return;
+		createRoutineSaving = true;
+		createRoutineError = null;
+		try {
+			await dbClientStore.executeWrite(conn.id, createRoutineQuery, { database: createRoutineDb });
+			dbClientStore.requestSchemaReload();
+			createRoutineOpen = false;
+		} catch (e) {
+			createRoutineError = e instanceof Error ? e.message : String(e);
+			debug.error('db-client', `create ${createRoutineType} failed:`, e);
+		} finally {
+			createRoutineSaving = false;
+		}
+	}
+
 	async function ws_createView(connId: string): Promise<void> {
 		const ws = (await import('$frontend/utils/ws')).default;
 		await ws.http('db-client:structure:create-view', {
@@ -562,34 +614,35 @@
 		});
 	}
 
-	const VIEW_DEFS: { id: DbClientView; label: string; icon: IconName }[] = [
-		{ id: 'overview', label: 'Overview', icon: 'lucide:info' },
-		{ id: 'query', label: 'Query', icon: 'lucide:code' },
-		{ id: 'data', label: 'Data', icon: 'lucide:table' },
-		{ id: 'structure', label: 'Structure', icon: 'lucide:layout-list' }
-	];
-
-	// At connection scope (no table context) Data/Structure are hidden.
-	const visibleViews = $derived(
-		atConnectionScope ? VIEW_DEFS.filter((v) => v.id === 'overview' || v.id === 'query') : VIEW_DEFS
-	);
-
 	function pickView(v: DbClientView): void {
 		if (!activeConnection) return;
 		dbClientStore.setView(activeConnection.id, v);
 	}
 
+	function isTableScopedView(v: DbClientView): boolean {
+		return v === 'data' || v === 'structure' || v === 'er';
+	}
+
 	const showSchemaTree = $derived(!!activeConnection && !isFormOpen);
 
-	const activeObjectIcon = $derived<IconName>(
-		activeObject?.type === 'view'
-			? 'lucide:eye'
-			: activeObject?.type === 'collection'
-				? 'lucide:layers'
-				: activeObject?.type === 'key'
-					? 'lucide:key'
-					: 'lucide:table'
+	const scopedTables = $derived(
+		view
+			? scopeDb
+				? view.openTables.filter((t) => (t.database ?? activeConnection?.database ?? null) === scopeDb)
+				: view.openTables.filter((t) => !t.database && !activeConnection?.database)
+			: []
 	);
+
+	$effect(() => {
+		if (!activeObject) return;
+		void activeObject.name;
+		void activeObject.database;
+		requestAnimationFrame(() => {
+			const el = document.querySelector(`[data-active-tab="true"]`);
+			el?.scrollIntoView({ behavior: 'smooth', block: 'nearest', inline: 'center' });
+		});
+	});
+
 </script>
 
 <svelte:window on:resize={handleResize} />
@@ -604,7 +657,7 @@
 >
 	{#snippet children()}
 		{#if isMobile}
-			<header class="flex items-center justify-between py-3 px-4 border-b border-slate-200 dark:border-slate-800">
+			<header class="flex items-center justify-between py-3 px-4 bg-slate-100 dark:bg-slate-900/95 border-b border-slate-200 dark:border-slate-800">
 				<button
 					type="button"
 					class="flex items-center justify-center w-9 h-9 bg-transparent border-none rounded-lg text-slate-500 cursor-pointer transition-all duration-150 hover:bg-violet-500/10 hover:text-slate-900 dark:hover:text-slate-100"
@@ -659,6 +712,28 @@
 									{onScopeMenu}
 									onBackToConnections={backToConnections}
 									onCreateTable={(db) => { createTableDb = db; createTableOpen = true; }}
+									onCreateView={(db) => {
+										createViewDb = db;
+										createViewName = '';
+										createViewQuery = 'CREATE VIEW new_view AS\nSELECT * FROM table_name';
+										createViewOpen = true;
+									}}
+									onCreateFunction={(db) => {
+										createRoutineType = 'function';
+										createRoutineQuery = getFunctionTemplate();
+										createRoutineDb = db;
+										createRoutineError = null;
+										createRoutineSaving = false;
+										createRoutineOpen = true;
+									}}
+									onCreateProcedure={(db) => {
+										createRoutineType = 'procedure';
+										createRoutineQuery = getProcedureTemplate();
+										createRoutineDb = db;
+										createRoutineError = null;
+										createRoutineSaving = false;
+										createRoutineOpen = true;
+									}}
 								/>
 							{/key}
 						</div>
@@ -702,53 +777,223 @@
 			<main class="flex-1 flex flex-col min-w-0 overflow-hidden bg-slate-50 dark:bg-slate-950">
 				{#if activeConnection}
 					<div class="flex-1 min-h-0 px-3 pt-3 pb-3 flex flex-col gap-2">
-						<!-- block 1: header -->
-						<div class="flex items-center gap-2 px-3 py-1.5 bg-white dark:bg-slate-900 rounded-xl border border-slate-200 dark:border-slate-800 shrink-0">
-							<div class="flex items-center gap-1 shrink-0">
-								{#each visibleViews as v (v.id)}
+						<!-- Mobile: two-row layout | Desktop: single row -->
+						{#if isMobile}
+							<!-- Row 1: Navigation + View selector -->
+							<div class="flex items-center gap-2 shrink-0 bg-white dark:bg-slate-900 rounded-xl border border-slate-200 dark:border-slate-800 py-1 px-1.5 min-w-0">
+								<div class="flex items-center gap-0.5 shrink-0">
+									<button type="button" class="flex items-center justify-center w-7 h-7 rounded-md text-slate-500 dark:text-slate-400 hover:bg-slate-100 dark:hover:bg-slate-800 disabled:opacity-40 disabled:cursor-not-allowed transition-colors" onclick={() => activeConnection && dbClientStore.navBack(activeConnection.id)} disabled={!canNavBack} title="Back" aria-label="Back">
+										<Icon name="lucide:arrow-left" class="w-4 h-4" />
+									</button>
+									<button type="button" class="flex items-center justify-center w-7 h-7 rounded-md text-slate-500 dark:text-slate-400 hover:bg-slate-100 dark:hover:bg-slate-800 disabled:opacity-40 disabled:cursor-not-allowed transition-colors" onclick={() => activeConnection && dbClientStore.navForward(activeConnection.id)} disabled={!canNavForward} title="Forward" aria-label="Forward">
+										<Icon name="lucide:arrow-right" class="w-4 h-4" />
+									</button>
+								</div>
+								<div class="w-px h-4 bg-slate-200 dark:bg-slate-800 shrink-0 mx-1"></div>
+								<div class="flex items-center gap-1 shrink-0">
 									<button
 										type="button"
-										class="flex items-center gap-1.5 px-3 py-1.5 rounded-md text-sm transition-colors
-											{activeView === v.id
-												? 'bg-violet-500/10 text-violet-700 dark:text-violet-300 font-semibold'
-												: 'text-slate-600 dark:text-slate-400 hover:bg-slate-100 dark:hover:bg-slate-800/60'}"
-										onclick={() => pickView(v.id)}
+										title="Overview"
+										class="flex items-center gap-1.5 px-2.5 h-7 rounded-md text-xs font-semibold transition-colors cursor-pointer shrink-0
+											{activeView === 'overview' ? 'bg-violet-500/10 text-violet-700 dark:text-violet-300' : 'text-slate-500 dark:text-slate-400 hover:text-slate-700 hover:bg-slate-100 dark:hover:text-slate-100 dark:hover:bg-slate-800'}"
+										onclick={() => {
+											dbClientStore.setView(activeConnection.id, 'overview');
+											dbClientStore.setActiveObject(activeConnection.id, null);
+										}}
 									>
-										<Icon name={v.icon} class="w-4 h-4" />
-										{v.label}
+										<Icon name="lucide:info" class="w-3.5 h-3.5" />
+										<span>Overview</span>
 									</button>
-								{/each}
+									<button
+										type="button"
+										title="Query Editor"
+										class="flex items-center gap-1.5 px-2.5 h-7 rounded-md text-xs font-semibold transition-colors cursor-pointer shrink-0
+											{activeView === 'query' ? 'bg-violet-500/10 text-violet-700 dark:text-violet-300' : 'text-slate-500 dark:text-slate-400 hover:text-slate-700 hover:bg-slate-100 dark:hover:text-slate-100 dark:hover:bg-slate-800'}"
+										onclick={() => dbClientStore.setQueryView(activeConnection.id)}
+									>
+										<Icon name="lucide:code" class="w-3.5 h-3.5" />
+										<span>Query Editor</span>
+									</button>
+								</div>
 							</div>
-							<div class="flex-1 min-w-0"></div>
-							{#if activeObject}
-								<div class="flex items-center gap-1.5 shrink-0 text-sm font-semibold text-slate-700 dark:text-slate-200">
-									<Icon name={activeObjectIcon} class="w-4 h-4 text-slate-400 dark:text-slate-500 shrink-0" />
-									<span class="truncate max-w-[240px]">{activeObject.name}</span>
+							<!-- Row 2: Table tabs + Close All (only when there are open tables) -->
+							{#if view && scopedTables.length > 0}
+								<div class="flex items-center shrink-0 bg-white dark:bg-slate-900 rounded-xl border border-slate-200 dark:border-slate-800 p-1 pr-1.5 min-w-0">
+									<div class="flex-1 flex items-center overflow-x-auto overflow-y-hidden select-none no-scrollbar min-w-0">
+										{#each scopedTables as tab, idx (`${activeConnection.id}::${tab.database ?? ''}::${tab.schema ?? ''}::${tab.name}`)}
+											{@const isActive = isTableScopedView(activeView) && activeObject && activeObject.name === tab.name && (activeObject.database ?? null) === (tab.database ?? null)}
+											<div data-active-tab={isActive ? 'true' : undefined} class="flex items-center h-7 pl-2.5 pr-1.5 gap-1 rounded-md shrink-0 transition-colors {isActive ? 'bg-violet-500/10' : 'hover:bg-slate-100 dark:hover:bg-slate-800'}">
+												<button
+													type="button"
+													class="flex-1 min-w-0 flex items-center gap-1.5 h-full text-xs transition-colors cursor-pointer {isActive ? 'text-violet-700 dark:text-violet-300 font-semibold' : 'text-slate-500 dark:text-slate-400 hover:text-slate-700 dark:hover:text-slate-300'}"
+													onclick={() => dbClientStore.openTable(activeConnection.id, tab, 'data', { remember: true })}
+												>
+													<Icon name={tab.type === 'procedure' ? 'lucide:terminal' : tab.type === 'function' ? 'lucide:code' : tab.type === 'view' ? 'lucide:eye' : 'lucide:table'} class="w-3.5 h-3.5 text-slate-400 shrink-0" />
+													<span class="truncate max-w-[120px]">{tab.name}</span>
+												</button>
+												<button
+													type="button"
+													class="p-0.5 rounded opacity-60 hover:opacity-100 text-slate-400 hover:text-red-500 transition-all cursor-pointer shrink-0"
+													onclick={(e) => {
+														e.stopPropagation();
+														const globalIdx = view.openTables.findIndex((t) => t === tab);
+														if (globalIdx !== -1) dbClientStore.closeTable(activeConnection.id, globalIdx);
+													}}
+													title="Close tab"
+												>
+													<Icon name="lucide:x" class="w-3 h-3" />
+												</button>
+											</div>
+										{/each}
+									</div>
+									<div class="flex items-center shrink-0 pl-1 ml-0.5">
+										<div class="w-px h-4 bg-slate-200 dark:bg-slate-800 shrink-0 mr-1.5"></div>
+										<button
+											type="button"
+											class="flex items-center justify-center w-6 h-6 rounded text-slate-400 hover:text-red-500 hover:bg-slate-100 dark:hover:bg-slate-800/60 transition-colors shrink-0 cursor-pointer"
+											onclick={() => {
+												const indices = scopedTables
+													.map((t) => view.openTables.indexOf(t))
+													.filter((i) => i !== -1)
+													.sort((a, b) => b - a);
+												for (const i of indices) dbClientStore.closeTable(activeConnection.id, i);
+											}}
+											title="Close all tabs"
+										>
+											<Icon name="lucide:x" class="w-3.5 h-3.5" />
+										</button>
+									</div>
 								</div>
 							{/if}
-							<div class="flex items-center gap-0.5 shrink-0 pl-1">
-								<button
-									type="button"
-									class="flex items-center justify-center w-7 h-7 rounded-md text-slate-500 dark:text-slate-400 hover:bg-slate-100 dark:hover:bg-slate-800/60 disabled:opacity-40 disabled:cursor-not-allowed transition-colors"
-									onclick={() => activeConnection && dbClientStore.navBack(activeConnection.id)}
-									disabled={!canNavBack}
-									title="Back"
-									aria-label="Back"
-								>
-									<Icon name="lucide:arrow-left" class="w-4 h-4" />
-								</button>
-								<button
-									type="button"
-									class="flex items-center justify-center w-7 h-7 rounded-md text-slate-500 dark:text-slate-400 hover:bg-slate-100 dark:hover:bg-slate-800/60 disabled:opacity-40 disabled:cursor-not-allowed transition-colors"
-									onclick={() => activeConnection && dbClientStore.navForward(activeConnection.id)}
-									disabled={!canNavForward}
-									title="Forward"
-									aria-label="Forward"
-								>
-									<Icon name="lucide:arrow-right" class="w-4 h-4" />
-								</button>
+						{:else}
+							<!-- Desktop: two cards in one row -->
+							<div class="flex items-center gap-2 shrink-0 min-w-0">
+								<!-- Card 1: Navigation + View selector -->
+								<div class="flex items-center gap-1 shrink-0 bg-white dark:bg-slate-900 rounded-xl border border-slate-200 dark:border-slate-800 p-1">
+									<button type="button" class="flex items-center justify-center w-7 h-7 rounded-md text-slate-500 dark:text-slate-400 hover:bg-slate-100 dark:hover:bg-slate-800 disabled:opacity-40 disabled:cursor-not-allowed transition-colors" onclick={() => activeConnection && dbClientStore.navBack(activeConnection.id)} disabled={!canNavBack} title="Back" aria-label="Back">
+										<Icon name="lucide:arrow-left" class="w-4 h-4" />
+									</button>
+									<button type="button" class="flex items-center justify-center w-7 h-7 rounded-md text-slate-500 dark:text-slate-400 hover:bg-slate-100 dark:hover:bg-slate-800 disabled:opacity-40 disabled:cursor-not-allowed transition-colors" onclick={() => activeConnection && dbClientStore.navForward(activeConnection.id)} disabled={!canNavForward} title="Forward" aria-label="Forward">
+										<Icon name="lucide:arrow-right" class="w-4 h-4" />
+									</button>
+									<div class="w-px h-4 bg-slate-200 dark:bg-slate-800 shrink-0 mx-0.5"></div>
+									<button
+										type="button"
+										title="Overview"
+										class="flex items-center gap-1.5 px-2.5 sm:px-3 h-7 rounded-md text-xs font-semibold transition-colors cursor-pointer shrink-0
+											{activeView === 'overview' ? 'bg-violet-500/10 text-violet-700 dark:text-violet-300' : 'text-slate-500 dark:text-slate-400 hover:text-slate-700 hover:bg-slate-100 dark:hover:text-slate-100 dark:hover:bg-slate-800'}"
+										onclick={() => {
+											dbClientStore.setView(activeConnection.id, 'overview');
+											dbClientStore.setActiveObject(activeConnection.id, null);
+										}}
+									>
+										<Icon name="lucide:info" class="w-3.5 h-3.5" />
+										<span class="hidden sm:inline">Overview</span>
+									</button>
+									<button
+										type="button"
+										title="Query Editor"
+										class="flex items-center gap-1.5 px-2.5 sm:px-3 h-7 rounded-md text-xs font-semibold transition-colors cursor-pointer shrink-0
+											{activeView === 'query' ? 'bg-violet-500/10 text-violet-700 dark:text-violet-300' : 'text-slate-500 dark:text-slate-400 hover:text-slate-700 hover:bg-slate-100 dark:hover:text-slate-100 dark:hover:bg-slate-800'}"
+										onclick={() => dbClientStore.setQueryView(activeConnection.id)}
+									>
+										<Icon name="lucide:code" class="w-3.5 h-3.5" />
+										<span class="hidden sm:inline">Query Editor</span>
+									</button>
+								</div>
+								<!-- Card 2: Table tabs + Close All -->
+								{#if view && scopedTables.length > 0}
+									<div class="flex items-center gap-1 flex-1 min-w-0 bg-white dark:bg-slate-900 rounded-xl border border-slate-200 dark:border-slate-800 p-1">
+										<div class="flex-1 flex items-center overflow-x-auto overflow-y-hidden select-none no-scrollbar min-w-0">
+											{#each scopedTables as tab, idx (`${activeConnection.id}::${tab.database ?? ''}::${tab.schema ?? ''}::${tab.name}`)}
+												{@const isActive = isTableScopedView(activeView) && activeObject && activeObject.name === tab.name && (activeObject.database ?? null) === (tab.database ?? null)}
+												<div data-active-tab={isActive ? 'true' : undefined} class="flex items-center h-7 pl-2.5 pr-1.5 gap-1 rounded-md shrink-0 transition-colors {isActive ? 'bg-violet-500/10' : 'hover:bg-slate-100 dark:hover:bg-slate-800'}">
+													<button
+														type="button"
+														class="flex-1 min-w-0 flex items-center gap-1.5 h-full text-xs transition-colors cursor-pointer font-semibold {isActive ? 'text-violet-700 dark:text-violet-300' : 'text-slate-500 dark:text-slate-400 hover:text-slate-700 dark:hover:text-slate-300'}"
+														onclick={() => dbClientStore.openTable(activeConnection.id, tab, 'data', { remember: true })}
+													>
+														<Icon name={tab.type === 'procedure' ? 'lucide:terminal' : tab.type === 'function' ? 'lucide:code' : tab.type === 'view' ? 'lucide:eye' : 'lucide:table'} class="w-3.5 h-3.5 text-slate-400 shrink-0" />
+														<span class="truncate max-w-[160px]">{tab.name}</span>
+													</button>
+													<button
+														type="button"
+														class="p-0.5 rounded opacity-60 hover:opacity-100 text-slate-400 hover:text-red-500 transition-all cursor-pointer shrink-0"
+														onclick={(e) => {
+															e.stopPropagation();
+															const globalIdx = view.openTables.findIndex((t) => t === tab);
+															if (globalIdx !== -1) dbClientStore.closeTable(activeConnection.id, globalIdx);
+														}}
+														title="Close tab"
+													>
+														<Icon name="lucide:x" class="w-3 h-3" />
+													</button>
+												</div>
+											{/each}
+										</div>
+										<div class="flex items-center shrink-0 pl-1.5">
+											<div class="w-px h-4 bg-slate-200 dark:bg-slate-800 shrink-0 mr-1.5"></div>
+											<button
+												type="button"
+												class="flex items-center gap-1 px-2 h-7 rounded text-2xs text-slate-400 hover:text-red-500 hover:bg-slate-100 dark:hover:bg-slate-800/60 transition-colors shrink-0 cursor-pointer font-medium"
+												onclick={() => {
+													const indices = scopedTables
+														.map((t) => view.openTables.indexOf(t))
+														.filter((i) => i !== -1)
+														.sort((a, b) => b - a);
+													for (const i of indices) dbClientStore.closeTable(activeConnection.id, i);
+												}}
+												title="Close all tabs"
+											>
+												<Icon name="lucide:x" class="w-3.5 h-3.5" />
+												<span class="hidden sm:inline">Close All</span>
+											</button>
+										</div>
+									</div>
+								{/if}
 							</div>
-						</div>
+						{/if}
+
+						<!-- Sub-header: table-scoped view toggle + breadcrumb (table context only) -->
+						{#if activeObject}
+							<div class="flex items-center justify-between gap-3 p-1 pr-2.5 bg-white dark:bg-slate-900 rounded-xl border border-slate-200 dark:border-slate-800 shrink-0 min-w-0">
+								<!-- Data / Structure toggle — same visual language as the Overview/Query Editor tabs -->
+								<div class="flex items-center gap-1 shrink-0">
+									{#if activeObject.type !== 'function' && activeObject.type !== 'procedure'}
+										<button type="button" class="flex items-center gap-1.5 px-2.5 sm:px-3 h-7 rounded-md text-xs font-semibold transition-colors cursor-pointer shrink-0 {activeView === 'data' ? 'bg-violet-500/10 text-violet-700 dark:text-violet-300' : 'text-slate-500 dark:text-slate-400 hover:text-slate-700 hover:bg-slate-100 dark:hover:text-slate-100 dark:hover:bg-slate-800'}" onclick={() => pickView('data')}>
+											<Icon name="lucide:table" class="w-3.5 h-3.5" />
+											<span>Data</span>
+										</button>
+									{/if}
+									<button type="button" class="flex items-center gap-1.5 px-2.5 sm:px-3 h-7 rounded-md text-xs font-semibold transition-colors cursor-pointer shrink-0 {activeView === 'structure' ? 'bg-violet-500/10 text-violet-700 dark:text-violet-300' : 'text-slate-500 dark:text-slate-400 hover:text-slate-700 hover:bg-slate-100 dark:hover:text-slate-100 dark:hover:bg-slate-800'}" onclick={() => pickView('structure')}>
+										<Icon name="lucide:layout-list" class="w-3.5 h-3.5" />
+										<span>Structure</span>
+									</button>
+									{#if activeObject.type !== 'function' && activeObject.type !== 'procedure'}
+										{#if activeConnection.driver === 'mysql' || activeConnection.driver === 'postgres' || activeConnection.driver === 'sqlite' || activeConnection.driver === 'mssql'}
+											<button type="button" class="flex items-center gap-1.5 px-2.5 sm:px-3 h-7 rounded-md text-xs font-semibold transition-colors cursor-pointer shrink-0 {activeView === 'er' ? 'bg-violet-500/10 text-violet-700 dark:text-violet-300' : 'text-slate-500 dark:text-slate-400 hover:text-slate-700 hover:bg-slate-100 dark:hover:text-slate-100 dark:hover:bg-slate-800'}" onclick={() => pickView('er')}>
+												<Icon name="lucide:network" class="w-3.5 h-3.5" />
+												<span>ERD</span>
+											</button>
+										{/if}
+									{/if}
+								</div>
+								<!-- Breadcrumb fills the row; db/schema collapse away on small screens -->
+								<div class="flex items-center justify-end gap-1.5 min-w-0 overflow-hidden text-xs text-slate-500 dark:text-slate-400">
+									<div class="hidden sm:flex items-center gap-1.5 min-w-0">
+										<Icon name="lucide:database" class="w-3.5 h-3.5 text-slate-400 shrink-0" />
+										<span class="truncate max-w-[140px]">{activeObject.database || scopeDb || 'default'}</span>
+										{#if activeObject.schema}
+											<Icon name="lucide:chevron-right" class="w-3 h-3 text-slate-300 dark:text-slate-600 shrink-0" />
+											<span class="truncate max-w-[120px]">{activeObject.schema}</span>
+										{/if}
+										<Icon name="lucide:chevron-right" class="w-3 h-3 text-slate-300 dark:text-slate-600 shrink-0" />
+									</div>
+									<Icon name={activeObject.type === 'function' ? 'lucide:code' : activeObject.type === 'procedure' ? 'lucide:terminal' : 'lucide:table'} class="w-3.5 h-3.5 text-slate-400 shrink-0" />
+									<span class="truncate max-w-[160px] font-semibold text-slate-700 dark:text-slate-200">{activeObject.name}</span>
+								</div>
+							</div>
+						{/if}
 
 						<!-- block 2: content -->
 						<div class="flex-1 min-h-0 flex flex-col bg-white dark:bg-slate-900 rounded-xl border border-slate-200 dark:border-slate-800 overflow-hidden">
@@ -761,7 +1006,7 @@
 								<QueryEditor
 									connectionId={activeConnection.id}
 									driver={activeConnection.driver}
-									database={activeConnection.database ?? undefined}
+									database={scopeDb}
 								/>
 							{:else if activeView === 'data'}
 								{#if activeObject}
@@ -801,6 +1046,14 @@
 											</div>
 										</div>
 									</div>
+								{/if}
+							{:else if activeView === 'er'}
+								{#if activeObject}
+									<ErDiagram
+										connectionId={activeConnection.id}
+										database={scopeDb}
+										tableName={activeObject.name}
+									/>
 								{/if}
 							{/if}
 						</div>
@@ -968,11 +1221,11 @@
 	bind:isOpen={createViewOpen}
 	onClose={() => (createViewOpen = false)}
 	title="Create view"
-	size="md"
+	size="lg"
 >
 	{#snippet children()}
-		<div class="space-y-3">
-			<div>
+		<div class="space-y-3 flex flex-col h-[500px]">
+			<div class="shrink-0">
 				<label for="view-name" class="text-xs font-medium text-slate-700 dark:text-slate-300">View name</label>
 				<input
 					id="view-name"
@@ -981,19 +1234,56 @@
 					bind:value={createViewName}
 				/>
 			</div>
-			<div>
-				<label for="view-query" class="text-xs font-medium text-slate-700 dark:text-slate-300">Query</label>
-				<textarea
-					id="view-query"
-					rows="6"
-					class="w-full mt-1 px-2 py-1.5 text-sm bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-700 rounded"
-					bind:value={createViewQuery}
-				></textarea>
+			<div class="flex-1 flex flex-col min-h-0">
+				<label class="text-xs font-medium text-slate-700 dark:text-slate-300 mb-1.5">Query</label>
+				<div class="flex-1 min-h-0 border border-slate-200 dark:border-slate-800 rounded-lg overflow-hidden">
+					<MonacoCodeEditor
+						bind:value={createViewQuery}
+						language="sql"
+					/>
+				</div>
 			</div>
 		</div>
 	{/snippet}
 	{#snippet footer()}
 		<Button variant="outline" size="sm" onclick={() => (createViewOpen = false)}>Cancel</Button>
-		<Button variant="primary" size="sm" onclick={async () => { await doCreateView(); createViewOpen = false; }} disabled={!createViewName || !createViewQuery}>Create</Button>
+		<Button variant="primary" size="sm" onclick={async () => { await doCreateView(); createViewOpen = false; }} disabled={!createViewName.trim() || !createViewQuery.trim()}>Create</Button>
 	{/snippet}
 </Modal>
+
+{#if activeConnection}
+	<Modal
+		bind:isOpen={createRoutineOpen}
+		onClose={() => (createRoutineOpen = false)}
+		title={createRoutineType === 'function' ? 'Create function' : 'Create procedure'}
+		size="lg"
+	>
+		{#snippet children()}
+			<div class="space-y-3 flex flex-col h-[500px]">
+				<div class="flex-1 flex flex-col min-h-0">
+					<label class="text-xs font-medium text-slate-700 dark:text-slate-300 mb-1.5">Definition</label>
+					<div class="flex-1 min-h-0 border border-slate-200 dark:border-slate-800 rounded-lg overflow-hidden">
+						<MonacoCodeEditor
+							bind:value={createRoutineQuery}
+							language="sql"
+						/>
+					</div>
+				</div>
+				{#if createRoutineError}
+					<div class="text-xs text-red-600 dark:text-red-400 max-h-24 overflow-y-auto bg-red-500/10 p-2 rounded border border-red-500/20">{createRoutineError}</div>
+				{/if}
+			</div>
+		{/snippet}
+		{#snippet footer()}
+			<Button variant="outline" size="sm" onclick={() => (createRoutineOpen = false)}>Cancel</Button>
+			<Button variant="primary" size="sm" onclick={doCreateRoutine} disabled={!createRoutineQuery.trim() || createRoutineSaving}>
+				{#if createRoutineSaving}
+					<Icon name="lucide:loader" class="w-4 h-4 animate-spin mr-1.5" />
+					Saving...
+				{:else}
+					Create
+				{/if}
+			</Button>
+		{/snippet}
+	</Modal>
+{/if}

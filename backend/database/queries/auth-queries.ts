@@ -18,6 +18,10 @@ export interface DBAuthSession {
 	expires_at: string;
 	created_at: string;
 	last_active_at: string;
+	user_agent: string | null;
+	ip_address: string | null;
+	/** How the session was created: 'setup' | 'invite' | 'device-link' | 'login' | 'pat' | 'no-auth'. */
+	source: string | null;
 }
 
 export interface DBInviteToken {
@@ -29,6 +33,18 @@ export interface DBInviteToken {
 	max_uses: number;
 	use_count: number;
 	expires_at: string | null;
+	created_at: string;
+	/** JSON array of project ids to grant the new member on join (null = none). */
+	project_ids: string | null;
+}
+
+export interface DBDeviceCode {
+	id: string;
+	code_hash: string;
+	user_id: string;
+	label: string | null;
+	expires_at: string;
+	claimed_at: string | null;
 	created_at: string;
 }
 
@@ -106,15 +122,18 @@ export const authQueries = {
 	createSession(session: DBAuthSession): DBAuthSession {
 		const db = getDatabase();
 		db.prepare(`
-			INSERT INTO auth_sessions (id, user_id, token_hash, expires_at, created_at, last_active_at)
-			VALUES (?, ?, ?, ?, ?, ?)
+			INSERT INTO auth_sessions (id, user_id, token_hash, expires_at, created_at, last_active_at, user_agent, ip_address, source)
+			VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
 		`).run(
 			session.id,
 			session.user_id,
 			session.token_hash,
 			session.expires_at,
 			session.created_at,
-			session.last_active_at
+			session.last_active_at,
+			session.user_agent,
+			session.ip_address,
+			session.source
 		);
 		return db.prepare('SELECT * FROM auth_sessions WHERE id = ?').get(session.id) as DBAuthSession;
 	},
@@ -122,6 +141,22 @@ export const authQueries = {
 	getSessionByTokenHash(hash: string): DBAuthSession | null {
 		const db = getDatabase();
 		return db.prepare('SELECT * FROM auth_sessions WHERE token_hash = ?').get(hash) as DBAuthSession | null;
+	},
+
+	getSessionsByUserId(userId: string): DBAuthSession[] {
+		const db = getDatabase();
+		return db.prepare('SELECT * FROM auth_sessions WHERE user_id = ? ORDER BY last_active_at DESC').all(userId) as DBAuthSession[];
+	},
+
+	/** All sessions across every user (admin "Connected devices" view). */
+	getAllSessions(): DBAuthSession[] {
+		const db = getDatabase();
+		return db.prepare('SELECT * FROM auth_sessions ORDER BY last_active_at DESC').all() as DBAuthSession[];
+	},
+
+	getSessionById(id: string): DBAuthSession | null {
+		const db = getDatabase();
+		return db.prepare('SELECT * FROM auth_sessions WHERE id = ?').get(id) as DBAuthSession | null;
 	},
 
 	updateLastActive(id: string): void {
@@ -157,8 +192,8 @@ export const authQueries = {
 	createInvite(invite: DBInviteToken): DBInviteToken {
 		const db = getDatabase();
 		db.prepare(`
-			INSERT INTO invite_tokens (id, token_hash, role, label, created_by, max_uses, use_count, expires_at, created_at)
-			VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+			INSERT INTO invite_tokens (id, token_hash, role, label, created_by, max_uses, use_count, expires_at, created_at, project_ids)
+			VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 		`).run(
 			invite.id,
 			invite.token_hash,
@@ -168,7 +203,8 @@ export const authQueries = {
 			invite.max_uses,
 			invite.use_count,
 			invite.expires_at,
-			invite.created_at
+			invite.created_at,
+			invite.project_ids
 		);
 		return db.prepare('SELECT * FROM invite_tokens WHERE id = ?').get(invite.id) as DBInviteToken;
 	},
@@ -196,6 +232,64 @@ export const authQueries = {
 	deleteAllSessions(): number {
 		const db = getDatabase();
 		const result = db.prepare('DELETE FROM auth_sessions').run() as { changes: number };
+		return result.changes;
+	},
+
+	// ===================== Device Codes =====================
+
+	createDeviceCode(code: DBDeviceCode): DBDeviceCode {
+		const db = getDatabase();
+		db.prepare(`
+			INSERT INTO device_codes (id, code_hash, user_id, label, expires_at, claimed_at, created_at)
+			VALUES (?, ?, ?, ?, ?, ?, ?)
+		`).run(
+			code.id,
+			code.code_hash,
+			code.user_id,
+			code.label,
+			code.expires_at,
+			code.claimed_at,
+			code.created_at
+		);
+		return db.prepare('SELECT * FROM device_codes WHERE id = ?').get(code.id) as DBDeviceCode;
+	},
+
+	getDeviceCodeByHash(hash: string): DBDeviceCode | null {
+		const db = getDatabase();
+		return db.prepare('SELECT * FROM device_codes WHERE code_hash = ?').get(hash) as DBDeviceCode | null;
+	},
+
+	/** Mark a device code as claimed. Returns rows changed — used to guarantee single-use under races. */
+	markDeviceCodeClaimed(id: string, claimedAt: string): number {
+		const db = getDatabase();
+		const result = db.prepare(
+			'UPDATE device_codes SET claimed_at = ? WHERE id = ? AND claimed_at IS NULL'
+		).run(claimedAt, id) as { changes: number };
+		return result.changes;
+	},
+
+	deleteDeviceCode(id: string): void {
+		const db = getDatabase();
+		db.prepare('DELETE FROM device_codes WHERE id = ?').run(id);
+	},
+
+	/** Count a user's pending (unclaimed, unexpired) device codes. */
+	countPendingDeviceCodes(userId: string): number {
+		const db = getDatabase();
+		const now = new Date().toISOString();
+		const result = db.prepare(
+			'SELECT COUNT(*) as count FROM device_codes WHERE user_id = ? AND claimed_at IS NULL AND expires_at > ?'
+		).get(userId, now) as { count: number };
+		return result.count;
+	},
+
+	/** Remove expired or already-claimed device codes. */
+	deleteStaleDeviceCodes(): number {
+		const db = getDatabase();
+		const now = new Date().toISOString();
+		const result = db.prepare(
+			'DELETE FROM device_codes WHERE expires_at < ? OR claimed_at IS NOT NULL'
+		).run(now) as { changes: number };
 		return result.changes;
 	}
 };

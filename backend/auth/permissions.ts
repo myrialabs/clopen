@@ -5,7 +5,7 @@
  * Used by the auth gate in WSRouter.handleMessage().
  */
 
-import { getAuthMode } from './auth-service';
+import { getAuthMode } from '$backend/settings/system-settings';
 
 /** Routes that can be accessed WITHOUT authentication */
 export const PUBLIC_ROUTES = new Set([
@@ -16,6 +16,7 @@ export const PUBLIC_ROUTES = new Set([
 	'auth:auto-login-no-auth',
 	'auth:accept-invite',
 	'auth:validate-invite',
+	'auth:claim-device-code',
 	'ws:set-context'
 ]);
 
@@ -26,6 +27,8 @@ export const ADMIN_ONLY_ROUTES = new Set([
 	'auth:create-invite',
 	'auth:list-invites',
 	'auth:revoke-invite',
+	'auth:list-all-sessions',
+	'auth:revoke-any-session',
 	'auth:list-users',
 	'auth:remove-user',
 	'auth:list-user-projects',
@@ -40,12 +43,12 @@ export const ADMIN_ONLY_ROUTES = new Set([
 	'settings:update-batch',
 	'system:run-update',
 	'system:clear-data',
-	// System Tools — binary installation is an admin-only operation.
-	'system-tools:status',
-	'system-tools:status-all',
-	'system-tools:install-start',
-	'system-tools:install-cancel',
-	'system-tools:install-session',
+	// Stack — binary installation is an admin-only operation.
+	'stack:status',
+	'stack:status-all',
+	'stack:install-start',
+	'stack:install-cancel',
+	'stack:install-session',
 	// Engine — account/provider mutations are global system credentials and
 	// must only be changed by admins. Read-only routes (status, *-list) stay
 	// open so any authenticated user can see what is configured.
@@ -61,27 +64,39 @@ export const ADMIN_ONLY_ROUTES = new Set([
 	'engine:codex-accounts-rename',
 	'engine:codex-account-setup-start',
 	'engine:codex-account-setup-cancel',
-	'engine:codex-restart',
 	'engine:copilot-accounts-add',
 	'engine:copilot-accounts-switch',
 	'engine:copilot-accounts-delete',
 	'engine:copilot-accounts-rename',
-	'engine:copilot-restart',
 	'engine:qwen-accounts-add',
 	'engine:qwen-accounts-switch',
 	'engine:qwen-accounts-delete',
 	'engine:qwen-accounts-rename',
+	'engine:pi-accounts-save',
+	'engine:pi-accounts-switch',
+	'engine:pi-accounts-delete',
+	'engine:pi-accounts-rename',
+	'engine:pi-account-login-start',
+	'engine:pi-account-login-submit',
+	'engine:pi-account-login-cancel',
+	'engine:cline-accounts-save',
+	'engine:cline-accounts-switch',
+	'engine:cline-accounts-delete',
+	'engine:cline-accounts-rename',
+	'engine:cline-account-login-start',
+	'engine:cline-account-login-submit',
+	'engine:cline-account-login-cancel',
 	'engine:opencode-provider-add',
 	'engine:opencode-provider-remove',
 	'engine:opencode-provider-toggle',
+	'engine:opencode-provider-update',
 	'engine:opencode-provider-update-options',
+	'engine:opencode-provider-fetch-models',
 	'engine:opencode-account-add',
 	'engine:opencode-account-switch',
 	'engine:opencode-account-delete',
 	'engine:opencode-account-rename',
-	'engine:opencode-server-restart',
 	'engine:opencode-models-dev-fetch',
-	'engine:restart-all',
 	// Tunnel — remote/local management mutates global Cloudflare credentials,
 	// cloudflared auth, and ingress rules. Quick Tunnel is ephemeral and stays
 	// open. Read-only routes (status, *-list, ingress, auth-status) stay open so
@@ -102,7 +117,7 @@ export const ADMIN_ONLY_ROUTES = new Set([
 	'tunnel:local:stop',
 	// External MCP — installing/removing servers from the official registry is a
 	// global, system-wide operation (it applies to every engine and project), so
-	// the whole surface is admin-only, mirroring System Tools and Engines.
+	// the whole surface is admin-only, mirroring Stack and Engines.
 	'mcp:catalog',
 	'mcp:list',
 	'mcp:parse-config',
@@ -113,9 +128,35 @@ export const ADMIN_ONLY_ROUTES = new Set([
 	'mcp:status',
 	'mcp:oauth-start',
 	'mcp:oauth-complete',
+	// Per-tool control + inspector — introspects/filters an installed server's
+	// tools and can invoke them, so it stays within the admin-only MCP surface.
+	'mcp:tools',
+	'mcp:set-tool-overrides',
+	'mcp:call-tool',
+	// Memory Graph — the graph is instance-global and is injected into every
+	// future turn on every engine, so editing it changes what every agent is told.
+	// Mutations only: the read surface (memory:graph / :node / :search / :stats /
+	// :config) stays open so any member can see what the project has learned.
+	'memory:save-node',
+	'memory:archive-node',
+	'memory:restore-nodes',
+	'memory:save-config',
+	// Writing a memory by hand. `draft-node` is gated too even though it stores
+	// nothing: it spends a model call, and a member who cannot save the result has
+	// no reason to be able to generate one.
+	'memory:draft-node',
+	'memory:create-node',
+	// Hard deletes. `delete-nodes` is reached only from the forgotten list, but
+	// `purge` empties a project — or the entire instance — in one call, which is
+	// the most destructive action the memory surface has.
+	'memory:delete-nodes',
+	'memory:purge',
+	// Re-running failed extractions costs model calls, so it is an admin action —
+	// reading the queue's status is not.
+	'memory:retry-failed',
 	// Agent Skills — creating/importing/installing skills writes to the shared
 	// canonical store and applies to every engine, so the whole surface is
-	// admin-only, mirroring MCP and System Tools.
+	// admin-only, mirroring MCP and Stack.
 	'skills:list',
 	'skills:get',
 	'skills:create',
@@ -125,7 +166,52 @@ export const ADMIN_ONLY_ROUTES = new Set([
 	'skills:toggle',
 	'skills:delete',
 	'skills:catalog',
-	'skills:install'
+	'skills:install',
+	// Custom Commands — same shared-store rationale as Skills; admin-only surface.
+	'commands:list',
+	'commands:get',
+	'commands:create',
+	'commands:update',
+	'commands:parse-import',
+	'commands:import',
+	'commands:toggle',
+	'commands:delete',
+	'commands:detect',
+	// Subagents — shared canonical store applied to every engine; admin-only.
+	'subagents:list',
+	'subagents:get',
+	'subagents:create',
+	'subagents:update',
+	'subagents:parse-import',
+	'subagents:import',
+	'subagents:toggle',
+	'subagents:delete',
+	'subagents:detect',
+	// Project Instructions — writes managed regions into engine memory files; admin-only.
+	'instructions:get-global',
+	'instructions:save-global',
+	'instructions:get-project',
+	'instructions:save-project',
+	// Permissions — per-engine tool allow/deny applied to every engine/project;
+	// same shared-store rationale as Skills/MCP, admin-only surface.
+	'permissions:list',
+	'permissions:inventory',
+	'permissions:save',
+	// AI authoring of artifacts — part of the admin artifact editors.
+	'artifacts:generate',
+	// Profiles — reusable artifact bundles applied to every collaborator's
+	// sessions; same shared-store rationale as Skills/MCP, admin-only surface.
+	// (profiles:available / profiles:project-default stay non-admin — choosing a
+	// profile for a session is a run choice like the model.)
+	'profiles:list',
+	'profiles:get',
+	'profiles:inventory',
+	'profiles:create',
+	'profiles:update',
+	'profiles:delete',
+	'profiles:get-permissions',
+	'profiles:save-permissions',
+	'profiles:set-project-default'
 ]);
 
 /**

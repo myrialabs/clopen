@@ -82,6 +82,7 @@ export function languageForDriver(driver: DbDriver): string {
 		case 'mysql':
 		case 'postgres':
 		case 'sqlite':
+		case 'mssql':
 			return 'sql';
 		case 'mongodb':
 			return 'json';

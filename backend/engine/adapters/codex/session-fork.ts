@@ -18,7 +18,7 @@
  * Earlier versions of this helper assumed a directory layout
  * (`~/.codex/sessions/<thread_id>/`) and so `sessionStateExists()` always
  * returned false — the fork block was silently skipped and resume reused
- * the source thread id, breaking multi-branch checkpoints (README §9.10
+ * the source thread id, breaking multi-branch checkpoints (README §10.10
  * sharp edge: "reusing the same id across turns is the symptom that
  * forking is gated or skipped").
  *

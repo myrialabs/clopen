@@ -1,5 +1,5 @@
 <script lang="ts">
-	import { sessionState } from '$frontend/stores/core/sessions.svelte';
+	import { sessionState, syncAiChangesFromMessages } from '$frontend/stores/core/sessions.svelte';
 	import { appState } from '$frontend/stores/core/app.svelte';
 	import ChatMessage from './ChatMessage.svelte';
 	import DateSeparator from './DateSeparator.svelte';
@@ -55,6 +55,14 @@
 		return embedToolResults(groups, toolUseMap, subAgentMap, skillPromptMap);
 	});
 
+	// Keep AI-change indicators (file dots, gutter, pill) in sync with the messages
+	// on screen, including live streaming edits. Reads processedMessages so it
+	// re-runs on any deep message change; the sync itself is signature-guarded.
+	$effect(() => {
+		void processedMessages;
+		syncAiChangesFromMessages();
+	});
+
 	// Filter out messages with empty content arrays
 	const filteredMessages = $derived(
 		processedMessages.filter(message => !shouldFilterMessage(message))
@@ -99,9 +107,12 @@
 		return map;
 	});
 
-	// Get last user message ID for undo button logic
+	// Get last user message ID for undo button logic. Excludes synthetic
+	// (engine-generated) user messages — e.g. Codex inline error notices —
+	// which are never something the human actually typed and shouldn't count
+	// as "the last turn" for undo purposes.
 	const lastUserMessageId = $derived.by(() => {
-		const userMessages = filteredMessages.filter(m => m.type === 'user');
+		const userMessages = filteredMessages.filter(m => m.type === 'user' && !(m as any).synthetic);
 		if (userMessages.length === 0) return undefined;
 		const lastUserMsg = userMessages[userMessages.length - 1];
 		return 'messageId' in lastUserMsg ? lastUserMsg.messageId : undefined;

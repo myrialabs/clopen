@@ -10,8 +10,9 @@
 import { t } from 'elysia';
 import { createRouter } from '$shared/utils/ws-server';
 import { streamManager, type StreamEvent } from '../../chat/stream-manager';
-import type { EngineType } from '$shared/types/unified';
+import type { EngineType, UnifiedMessage } from '$shared/types/unified';
 import { debug } from '$shared/utils/logger';
+import { trimSubAgentForWire } from '$shared/utils/subagent-wire-trim';
 import { ws } from '$backend/utils/ws';
 import { broadcastPresence } from '../projects/status';
 import { sessionQueries, messageQueries } from '../../database/queries';
@@ -201,7 +202,7 @@ export const streamHandler = createRouter()
 			projectPath: t.String(),
 			prompt: t.Any(), // UserMessage object
 			engine: t.Object({
-				type: t.Union([t.Literal('claude-code'), t.Literal('opencode'), t.Literal('copilot'), t.Literal('codex'), t.Literal('qwen')]),
+				type: t.Union([t.Literal('claude-code'), t.Literal('opencode'), t.Literal('copilot'), t.Literal('codex'), t.Literal('qwen'), t.Literal('pi'), t.Literal('cline'), t.Literal('cursor')]),
 				provider: t.String(),
 				model: t.Object({
 					id: t.String(),
@@ -215,7 +216,13 @@ export const streamHandler = createRouter()
 			sender: t.Object({
 				id: t.String(),
 				name: t.String()
-			})
+			}),
+			// Active Profile for this session (null = explicit none; absent = use
+			// the project default). Persisted like engine/model.
+			profileId: t.Optional(t.Union([t.Number(), t.Null()])),
+			// Reasoning/thinking level for this session (native per engine; null/
+			// absent = engine default). Persisted like engine/model.
+			reasoningEffort: t.Optional(t.Union([t.String(), t.Null()]))
 		})
 	}, async ({ data, conn }) => {
 		requireSessionAccess(conn, data.chatSessionId);
@@ -234,7 +241,9 @@ export const streamHandler = createRouter()
 				prompt: data.prompt,
 				chatSessionId: data.chatSessionId,
 				engine: data.engine,
-				sender: data.sender
+				sender: data.sender,
+				profileId: data.profileId,
+				reasoningEffort: data.reasoningEffort
 			});
 
 			debug.log('chat', 'Stream started with ID:', streamId);
@@ -244,6 +253,7 @@ export const streamHandler = createRouter()
 			const stream = streamManager.getStream(streamId);
 			if (stream) {
 				ws.emit.chatSession(data.chatSessionId, 'chat:connection', {
+					chatSessionId: data.chatSessionId,
 					processId: stream.processId,
 					timestamp: stream.startedAt.toISOString(),
 					seq: 1
@@ -264,6 +274,7 @@ export const streamHandler = createRouter()
 					switch (event.type) {
 						case 'connection':
 							ws.emit.chatSession(chatSessionId, 'chat:connection', {
+								chatSessionId,
 								processId: event.data.processId,
 								timestamp: event.data.timestamp,
 								seq: event.seq
@@ -275,8 +286,9 @@ export const streamHandler = createRouter()
 
 						case 'message': {
 							ws.emit.chatSession(chatSessionId, 'chat:message', {
+								chatSessionId,
 								processId: event.processId,
-								message: event.data.message,
+								message: trimSubAgentForWire(event.data.message),
 								usage: event.data.usage,
 								timestamp: event.data.timestamp,
 								message_id: event.data.message_id,
@@ -293,6 +305,7 @@ export const streamHandler = createRouter()
 
 						case 'partial':
 							ws.emit.chatSession(chatSessionId, 'chat:partial', {
+								chatSessionId,
 								processId: event.processId,
 								eventType: event.data.eventType as any,
 								partialText: event.data.partialText || '',
@@ -327,6 +340,7 @@ export const streamHandler = createRouter()
 
 						case 'complete':
 							ws.emit.chatSession(chatSessionId, 'chat:complete', {
+								chatSessionId,
 								processId: event.processId,
 								timestamp: event.data.timestamp,
 								seq: event.seq
@@ -338,6 +352,7 @@ export const streamHandler = createRouter()
 
 						case 'error':
 							ws.emit.chatSession(chatSessionId, 'chat:error', {
+								chatSessionId,
 								processId: event.processId,
 								error: event.data.error,
 								timestamp: event.data.timestamp,
@@ -349,6 +364,7 @@ export const streamHandler = createRouter()
 
 						case 'cancelled':
 							ws.emit.chatSession(chatSessionId, 'chat:error', {
+								chatSessionId,
 								processId: event.processId,
 								error: 'Stream cancelled',
 								timestamp: event.data.timestamp,
@@ -378,6 +394,7 @@ export const streamHandler = createRouter()
 			debug.error('chat', 'WS chat:stream error:', errorMessage);
 
 			ws.emit.chatSession(data.chatSessionId, 'chat:error', {
+				chatSessionId: data.chatSessionId,
 				processId: crypto.randomUUID(),
 				error: errorMessage,
 				timestamp: new Date().toISOString()
@@ -411,6 +428,7 @@ export const streamHandler = createRouter()
 					switch (event.type) {
 						case 'connection':
 							ws.emit.chatSession(chatSessionId, 'chat:connection', {
+								chatSessionId,
 								processId: event.data.processId,
 								timestamp: event.data.timestamp,
 								seq: event.seq
@@ -419,8 +437,9 @@ export const streamHandler = createRouter()
 
 						case 'message': {
 							ws.emit.chatSession(chatSessionId, 'chat:message', {
+								chatSessionId,
 								processId: event.processId,
-								message: event.data.message,
+								message: trimSubAgentForWire(event.data.message),
 								usage: event.data.usage,
 								timestamp: event.data.timestamp,
 								message_id: event.data.message_id,
@@ -437,6 +456,7 @@ export const streamHandler = createRouter()
 
 						case 'partial':
 							ws.emit.chatSession(chatSessionId, 'chat:partial', {
+								chatSessionId,
 								processId: event.processId,
 								eventType: event.data.eventType as any,
 								partialText: event.data.partialText || '',
@@ -471,6 +491,7 @@ export const streamHandler = createRouter()
 
 						case 'complete':
 							ws.emit.chatSession(chatSessionId, 'chat:complete', {
+								chatSessionId,
 								processId: event.processId,
 								timestamp: event.data.timestamp,
 								seq: event.seq
@@ -481,6 +502,7 @@ export const streamHandler = createRouter()
 
 						case 'error':
 							ws.emit.chatSession(chatSessionId, 'chat:error', {
+								chatSessionId,
 								processId: event.processId,
 								error: event.data.error,
 								timestamp: event.data.timestamp,
@@ -492,6 +514,7 @@ export const streamHandler = createRouter()
 
 						case 'cancelled':
 							ws.emit.chatSession(chatSessionId, 'chat:error', {
+								chatSessionId,
 								processId: event.processId,
 								error: 'Stream cancelled',
 								timestamp: event.data.timestamp,
@@ -514,6 +537,7 @@ export const streamHandler = createRouter()
 
 			// Send current state snapshot to chat session room so frontend can catch up
 			ws.emit.chatSession(chatSessionId, 'chat:connection', {
+				chatSessionId,
 				processId: streamState.processId,
 				timestamp: streamState.startedAt.toISOString(),
 				seq: streamState.eventSeq
@@ -614,7 +638,14 @@ export const streamHandler = createRouter()
 			streamId: streamState.streamId,
 			status: streamState.status,
 			processId: streamState.processId,
-			messages: streamState.messages,
+			// Trim sub-agent noise from the catch-up buffer too (see trimSubAgentForWire).
+			// Buffer entries wrap the UnifiedMessage under `.message`; leave the rest intact.
+			messages: streamState.messages.map(entry => {
+				const wrapped = entry as { message?: UnifiedMessage };
+				return wrapped?.message
+					? { ...wrapped, message: trimSubAgentForWire(wrapped.message) }
+					: entry;
+			}),
 			currentPartialText: streamState.currentPartialText,
 			currentReasoningText: streamState.currentReasoningText,
 			error: streamState.error,
@@ -641,6 +672,7 @@ export const streamHandler = createRouter()
 				// Stream not found - could already be completed/cleaned up
 				// Send cancellation to chat session room so frontend stops loading
 				ws.emit.chatSession(chatSessionId, 'chat:cancelled', {
+					chatSessionId,
 					status: 'cancelled',
 					processId: ''
 				});
@@ -653,6 +685,7 @@ export const streamHandler = createRouter()
 			await streamManager.cancelStream(streamState.streamId);
 			// Always send cancelled to chat session room to clear UI
 			ws.emit.chatSession(chatSessionId, 'chat:cancelled', {
+				chatSessionId,
 				status: 'cancelled',
 				processId: streamState.processId
 			});
@@ -663,6 +696,7 @@ export const streamHandler = createRouter()
 		} catch (error) {
 			const errorMessage = error instanceof Error ? error.message : 'Unknown error';
 			ws.emit.chatSession(chatSessionId, 'chat:error', {
+				chatSessionId,
 				processId: '',
 				error: errorMessage,
 				timestamp: new Date().toISOString()
@@ -855,6 +889,55 @@ export const streamHandler = createRouter()
 		});
 	})
 
+	// Collaborative reasoning-effort sync — broadcast + persist the per-session
+	// reasoning/thinking level, mirroring chat:model-sync. Choosing a level is a
+	// per-run choice like the model/account.
+	.on('chat:reasoning-sync', {
+		data: t.Object({
+			senderId: t.String(),
+			chatSessionId: t.String(),
+			reasoningEffort: t.Union([t.String(), t.Null()])
+		})
+	}, ({ data, conn }) => {
+		requireSessionAccess(conn, data.chatSessionId);
+		const chatSessionId = data.chatSessionId;
+
+		// Persist to the session record so refreshes and late joiners get it.
+		try {
+			sessionQueries.updateReasoning(chatSessionId, data.reasoningEffort);
+		} catch (err) {
+			debug.error('chat', 'Failed to persist reasoning sync to DB:', err);
+		}
+
+		// Broadcast to all users in the same chat session
+		ws.emit.chatSession(chatSessionId, 'chat:reasoning-sync', {
+			senderId: data.senderId,
+			reasoningEffort: data.reasoningEffort
+		});
+	})
+
+	// Collaborative profile sync — broadcast + persist the per-session active
+	// profile, mirroring chat:model-sync. Non-admin: choosing a profile is a run
+	// choice like the model, not an admin mutation of the profile itself.
+	.on('chat:profile-sync', {
+		data: t.Object({
+			senderId: t.String(),
+			chatSessionId: t.String(),
+			profileId: t.Union([t.Number(), t.Null()])
+		})
+	}, ({ data, conn }) => {
+		requireSessionAccess(conn, data.chatSessionId);
+		try {
+			sessionQueries.updateProfile(data.chatSessionId, data.profileId);
+		} catch (err) {
+			debug.error('chat', 'Failed to persist profile sync to DB:', err);
+		}
+		ws.emit.chatSession(data.chatSessionId, 'chat:profile-sync', {
+			senderId: data.senderId,
+			profileId: data.profileId
+		});
+	})
+
 	// Event declarations
 	.emit('chat:edit-mode', t.Object({
 		senderId: t.String(),
@@ -890,13 +973,25 @@ export const streamHandler = createRouter()
 		accountName: t.Union([t.String(), t.Null()])
 	}))
 
+	.emit('chat:profile-sync', t.Object({
+		senderId: t.String(),
+		profileId: t.Union([t.Number(), t.Null()])
+	}))
+
+	.emit('chat:reasoning-sync', t.Object({
+		senderId: t.String(),
+		reasoningEffort: t.Union([t.String(), t.Null()])
+	}))
+
 	.emit('chat:connection', t.Object({
+		chatSessionId: t.String(),
 		processId: t.String(),
 		timestamp: t.String(),
 		seq: t.Optional(t.Number())
 	}))
 
 	.emit('chat:message', t.Object({
+		chatSessionId: t.String(),
 		processId: t.String(),
 		message: t.Any(), // SDKMessage
 		usage: t.Optional(t.Any()),
@@ -910,6 +1005,7 @@ export const streamHandler = createRouter()
 	}))
 
 	.emit('chat:partial', t.Object({
+		chatSessionId: t.String(),
 		processId: t.String(),
 		eventType: t.Union([
 			t.Literal('start'),
@@ -947,6 +1043,7 @@ export const streamHandler = createRouter()
 			t.Literal('seven_day_opus'),
 			t.Literal('seven_day_sonnet'),
 			t.Literal('overage'),
+			t.Literal('seven_day_overage_included'),
 			t.Null()
 		]),
 		timestamp: t.String(),
@@ -954,12 +1051,14 @@ export const streamHandler = createRouter()
 	}))
 
 	.emit('chat:complete', t.Object({
+		chatSessionId: t.String(),
 		processId: t.String(),
 		timestamp: t.String(),
 		seq: t.Optional(t.Number())
 	}))
 
 	.emit('chat:error', t.Object({
+		chatSessionId: t.String(),
 		processId: t.String(),
 		error: t.String(),
 		timestamp: t.String(),
@@ -967,6 +1066,7 @@ export const streamHandler = createRouter()
 	}))
 
 	.emit('chat:cancelled', t.Object({
+		chatSessionId: t.String(),
 		status: t.Literal('cancelled'),
 		processId: t.Optional(t.String()),
 		seq: t.Optional(t.Number())

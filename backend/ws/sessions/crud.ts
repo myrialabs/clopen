@@ -19,6 +19,8 @@ import { ws } from '$backend/utils/ws';
 import { streamManager } from '../../chat/stream-manager';
 import { snapshotService } from '../../snapshot/snapshot-service';
 import { blobStore } from '../../snapshot/blob-store';
+import { cancelEpisodicIngest } from '../../memory/extract';
+import { forgetSessionContext } from '../../memory/context';
 import { broadcastPresence } from '../projects/status';
 import { debug } from '$shared/utils/logger';
 import { requireCurrentProjectAccess, requireProjectAccess, requireSessionAccess } from '../access';
@@ -32,7 +34,7 @@ const sessionSchema = t.Object({
 	ended_at: t.Optional(t.String()),
 	// Session preferences
 	title: t.Optional(t.String()),
-	engine: t.Optional(t.Union([t.Literal('claude-code'), t.Literal('opencode'), t.Literal('copilot'), t.Literal('codex'), t.Literal('qwen')])),
+	engine: t.Optional(t.Union([t.Literal('claude-code'), t.Literal('opencode'), t.Literal('copilot'), t.Literal('codex'), t.Literal('qwen'), t.Literal('pi'), t.Literal('cline'), t.Literal('cursor')])),
 	model_id: t.Optional(t.String()),
 	model_name: t.Optional(t.String()),
 	account_id: t.Optional(t.Number()),
@@ -48,6 +50,12 @@ const sessionSchema = t.Object({
 	message_count: t.Optional(t.Number()),
 	user_count: t.Optional(t.Number()),
 	last_message_at: t.Optional(t.String()),
+});
+
+/** sessionSchema plus a highlighted match snippet — global (cross-project) search only. */
+const sessionSearchResultSchema = t.Object({
+	...sessionSchema.properties,
+	matchSnippet: t.Optional(t.String())
 });
 
 /** Convert ChatSession DB row → response (null → undefined for Elysia optional fields) */
@@ -117,7 +125,7 @@ export const crudHandler = createRouter()
 	.http('sessions:create', {
 		data: t.Object({
 			title: t.Optional(t.String()),
-			engine: t.Optional(t.Union([t.Literal('claude-code'), t.Literal('opencode'), t.Literal('copilot'), t.Literal('codex'), t.Literal('qwen')]))
+			engine: t.Optional(t.Union([t.Literal('claude-code'), t.Literal('opencode'), t.Literal('copilot'), t.Literal('codex'), t.Literal('qwen'), t.Literal('pi'), t.Literal('cline'), t.Literal('cursor')]))
 		}),
 		response: sessionSchema
 	}, async ({ data, conn }) => {
@@ -248,6 +256,12 @@ export const crudHandler = createRouter()
 		// Clear in-memory snapshot baseline
 		snapshotService.clearSessionBaseline(data.id);
 
+		// Drop any memory extraction parked for this session. It reads the message
+		// chain, which is about to be deleted, and its injection bookkeeping is now
+		// about a session that no longer exists.
+		cancelEpisodicIngest(data.id);
+		forgetSessionContext(data.id);
+
 		// Delete session and all related DB data (messages, snapshots, branches, relationships, unread)
 		sessionQueries.delete(data.id);
 
@@ -323,6 +337,8 @@ export const crudHandler = createRouter()
 		// Clear in-memory snapshot baselines for all sessions
 		for (const s of sessions) {
 			snapshotService.clearSessionBaseline(s.id);
+			cancelEpisodicIngest(s.id);
+			forgetSessionContext(s.id);
 		}
 
 		// Delete all sessions and related DB data (messages, snapshots, branches, relationships, unread)
@@ -404,16 +420,47 @@ export const crudHandler = createRouter()
 		debug.log('session', `[unread] Marked session ${data.sessionId} as UNREAD for user ${userId} in project ${data.projectId}`);
 	})
 
-	// Search sessions by message content (deep search)
+	// Mark every session in a project as read for the current user
+	.on('sessions:mark-all-read', {
+		data: t.Object({
+			projectId: t.String()
+		})
+	}, async ({ data, conn }) => {
+		const userId = ws.getUserId(conn);
+		requireProjectAccess(conn, data.projectId);
+		sessionQueries.markAllRead(userId, data.projectId);
+		debug.log('session', `[unread] Marked ALL sessions as READ for user ${userId} in project ${data.projectId}`);
+	})
+
+	// Search sessions by message content within the current project (deep search)
 	.http('sessions:search', {
 		data: t.Object({
 			query: t.String({ minLength: 1 })
 		}),
 		response: t.Object({
-			sessionIds: t.Array(t.String())
+			results: t.Array(t.Object({
+				sessionId: t.String(),
+				snippet: t.String()
+			}))
 		})
 	}, async ({ data, conn }) => {
 		const { projectId } = requireCurrentProjectAccess(conn);
-		const sessionIds = sessionQueries.searchByMessageContent(projectId, data.query);
-		return { sessionIds };
+		const results = sessionQueries.searchByMessageContent(projectId, data.query);
+		return { results };
+	})
+
+	// Search sessions across every project the user has access to (Command Palette)
+	.http('sessions:search-global', {
+		data: t.Object({
+			query: t.String({ minLength: 1 })
+		}),
+		response: t.Object({
+			sessions: t.Array(sessionSearchResultSchema)
+		})
+	}, async ({ data, conn }) => {
+		const userId = ws.getUserId(conn);
+		const results = sessionQueries.searchGlobal(userId, data.query);
+		return {
+			sessions: results.map(r => ({ ...serializeSession(r), matchSnippet: r.matchSnippet }))
+		};
 	});

@@ -15,9 +15,16 @@
 		svgContent?: string;
 		/** Bump to force a reload of the same path (e.g. after an in-place edit). */
 		reloadToken?: number;
+		/**
+		 * How the file's bytes are fetched. Defaults to reading a project file
+		 * over the WebSocket; the SSH file browser passes a loader that pulls the
+		 * bytes off the remote host, so both panels preview media through this
+		 * one component rather than each growing its own viewer.
+		 */
+		loadBlob?: (path: string) => Promise<Blob | null>;
 	}
 
-	const { fileName, filePath, svgContent, reloadToken = 0 }: Props = $props();
+	const { fileName, filePath, svgContent, reloadToken = 0, loadBlob }: Props = $props();
 
 	let blobUrl = $state<string | null>(null);
 	let pdfBlobUrl = $state<string | null>(null);
@@ -39,19 +46,24 @@
 		}
 	}
 
+	/** The default source: a file in the open project, read over the socket. */
+	async function readProjectFile(path: string): Promise<Blob | null> {
+		const response = await ws.http('files:read-content', { path });
+		if (!response.content) return null;
+		const binaryString = atob(response.content);
+		const bytes = new Uint8Array(binaryString.length);
+		for (let index = 0; index < binaryString.length; index++) {
+			bytes[index] = binaryString.charCodeAt(index);
+		}
+		return new Blob([bytes], { type: response.contentType || 'application/octet-stream' });
+	}
+
 	async function loadBinaryContent(path: string, name: string) {
 		isLoading = true;
 		try {
-			const response = await ws.http('files:read-content', { path });
+			const blob = await (loadBlob ?? readProjectFile)(path);
 
-			if (response.content) {
-				const binaryString = atob(response.content);
-				const bytes = new Uint8Array(binaryString.length);
-				for (let i = 0; i < binaryString.length; i++) {
-					bytes[i] = binaryString.charCodeAt(i);
-				}
-				const blob = new Blob([bytes], { type: response.contentType || 'application/octet-stream' });
-
+			if (blob) {
 				if (isPdfFile(name)) {
 					if (pdfBlobUrl) URL.revokeObjectURL(pdfBlobUrl);
 					pdfBlobUrl = URL.createObjectURL(blob);

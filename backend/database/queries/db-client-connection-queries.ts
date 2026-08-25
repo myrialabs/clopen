@@ -11,6 +11,7 @@ import type {
 
 const DEFAULT_SSH: DbClientSshConfig = {
 	enabled: false,
+	connectionId: null,
 	host: '',
 	port: 22,
 	username: '',
@@ -35,6 +36,7 @@ function rowToConnection(row: DBDbClientConnectionRow): DbClientConnection {
 
 	const ssh: DbClientSshConfig = {
 		enabled: row.ssh_enabled === 1,
+		connectionId: row.ssh_connection_id,
 		host: row.ssh_host ?? '',
 		port: row.ssh_port ?? 22,
 		username: row.ssh_username ?? '',
@@ -151,7 +153,7 @@ function insertConnection(input: DbClientConnectionInput, ownerUserId: string | 
 			host, port, username, password, database,
 			ssl_mode, ssl_ca,
 			ssh_enabled, ssh_host, ssh_port, ssh_username, ssh_auth_method,
-			ssh_password, ssh_private_key, ssh_passphrase,
+			ssh_password, ssh_private_key, ssh_passphrase, ssh_connection_id,
 			options_json, color,
 			owner_user_id,
 			created_at, updated_at, last_used_at
@@ -160,7 +162,7 @@ function insertConnection(input: DbClientConnectionInput, ownerUserId: string | 
 			?, ?, ?, ?, ?,
 			?, ?,
 			?, ?, ?, ?, ?,
-			?, ?, ?,
+			?, ?, ?, ?,
 			?, ?,
 			?,
 			?, ?, ?
@@ -177,6 +179,7 @@ function insertConnection(input: DbClientConnectionInput, ownerUserId: string | 
 		params.ssh.password || null,
 		params.ssh.privateKey || null,
 		params.ssh.passphrase || null,
+		params.ssh.connectionId || null,
 		JSON.stringify(params.options),
 		params.color,
 		params.ownerUserId,
@@ -275,6 +278,7 @@ export const dbClientConnectionQueries = {
 		if (patch.ssh !== undefined) {
 			const merged: DbClientSshConfig = {
 				enabled: existing.ssh_enabled === 1,
+				connectionId: existing.ssh_connection_id,
 				host: existing.ssh_host ?? '',
 				port: existing.ssh_port ?? 22,
 				username: existing.ssh_username ?? '',
@@ -296,6 +300,7 @@ export const dbClientConnectionQueries = {
 			push('ssh_password', sshPassword);
 			push('ssh_private_key', sshPrivateKey);
 			push('ssh_passphrase', sshPassphrase);
+			push('ssh_connection_id', merged.connectionId || null);
 		}
 
 		push('updated_at', new Date().toISOString());

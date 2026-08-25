@@ -1,14 +1,14 @@
 <script lang="ts">
 	import Icon from '$frontend/components/common/display/Icon.svelte';
 	import { getFileIcon } from '$frontend/utils/file-icon-mappings';
-	import { requestRevealFile } from '$frontend/stores/core/files.svelte';
-	import { getVisiblePanels, workspaceState } from '$frontend/stores/ui/workspace.svelte';
+	import { revealFile } from '$frontend/stores/ui/file-peek.svelte';
+	import { requestAiScrollReveal } from '$frontend/utils/ai-changes';
 
 	function handleClick() {
-		const visiblePanels = getVisiblePanels(workspaceState.layout);
-		if (visiblePanels.includes('files')) {
-			requestRevealFile(filePath);
-		}
+		revealFile(filePath);
+		// Focus this specific edit in the viewer ("Selected AI change") so the user
+		// sees what *this* tool call did, not just the file's current state.
+		if (editKey) requestAiScrollReveal(filePath, editKey);
 	}
 
 	interface Props {
@@ -17,9 +17,10 @@
 		iconColor?: string;
 		badges?: Array<{ text: string; color: string }>;
 		box?: boolean;
+		editKey?: string | null;
 	}
 
-	const { filePath, fileName, iconColor, badges = [], box = true }: Props = $props();
+	const { filePath, fileName, iconColor, badges = [], box = true, editKey = null }: Props = $props();
 
 	const displayFileName = $derived(fileName || filePath.split(/[/\\]/).pop() || filePath);
 </script>

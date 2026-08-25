@@ -1,0 +1,4 @@
+# Preload Bun compatibility shims before any entry's import graph is evaluated.
+# Required because Bun does not guarantee ESM side-effect import order ahead of
+# CJS imports — see backend/utils/bun-compat.ts (node:v8 isBuildingSnapshot / bson).
+preload = ["./backend/utils/bun-compat.ts"]

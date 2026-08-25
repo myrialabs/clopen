@@ -9,11 +9,12 @@
  * Open Code:   createRemoteMcpServer() → HTTP MCP server (same process, same handlers)
  */
 
-import { createSdkMcpServer, tool } from "@anthropic-ai/claude-agent-sdk";
 import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import type { z } from "zod";
 import { projectContextService } from '../project-context';
 import { validateMcpOutput } from '../output-validator';
+import type { McpExecutionContext } from '$backend/engine/types';
+import type { EngineType } from '$shared/types/unified';
 
 /**
  * Infer argument types from Zod schema
@@ -56,9 +57,6 @@ interface ServerWithMeta<
 	TName extends string,
 	TToolNames extends readonly string[]
 > {
-	server: ReturnType<typeof createSdkMcpServer>;
-	/** Factory that creates a fresh SDK server instance (new Protocol, safe for concurrent use) */
-	createInstance: () => ReturnType<typeof createSdkMcpServer>;
 	meta: {
 		readonly name: TName;
 		/** Human-facing title shown in Settings → MCP and the Chat tool header. */
@@ -96,10 +94,8 @@ export function defineServer<
 	// Extract tool names
 	const toolNames = Object.keys(config.tools) as Array<keyof TConfig['tools'] & string>;
 
-	// Build raw tool definitions (engine-agnostic)
+	// Build raw tool definitions (engine-agnostic) and store for reuse.
 	const toolDefs: Record<string, RawToolDef> = {};
-
-	// Build raw tool definitions (engine-agnostic) and store for reuse
 	toolNames.forEach((toolName) => {
 		const toolDef = config.tools[toolName] as any;
 		const schema = toolDef.schema || {};
@@ -111,24 +107,10 @@ export function defineServer<
 		};
 	});
 
-	// Factory: creates a fresh SDK server instance with new Protocol (safe for concurrent use)
-	const createInstance = () => {
-		const sdkTools = toolNames.map((toolName) => {
-			const def = toolDefs[toolName as string];
-			return tool(toolName as string, def.description, def.schema, def.handler as any);
-		});
-
-		return createSdkMcpServer({
-			name: config.name,
-			version: config.version,
-			tools: sdkTools
-		});
-	};
-
-	// Return server with metadata and factory
+	// Return metadata + raw tool defs only. The SDK-shaped in-process server
+	// instances (Claude Code) are built lazily in mcp/internal/config.ts, so the
+	// Claude Agent SDK is not imported unless the Claude engine actually streams.
 	return {
-		server: createInstance(),
-		createInstance,
 		meta: {
 			name: config.name,
 			title: config.title,
@@ -147,24 +129,14 @@ export function buildServerRegistries<
 	T extends readonly ServerWithMeta<string, readonly string[]>[]
 >(servers: T) {
 	const metadata = {} as any;
-	const registry = {} as any;
-	const factories = {} as any;
 
 	for (const server of servers) {
 		metadata[server.meta.name] = server.meta;
-		registry[server.meta.name] = server.server;
-		factories[server.meta.name] = server.createInstance;
 	}
 
 	return {
 		metadata: metadata as {
 			[K in T[number]['meta']['name']]: Extract<T[number], { meta: { name: K } }>['meta']
-		},
-		registry: registry as {
-			[K in T[number]['meta']['name']]: Extract<T[number], { meta: { name: K } }>['server']
-		},
-		factories: factories as {
-			[K in T[number]['meta']['name']]: () => Extract<T[number], { meta: { name: K } }>['server']
 		}
 	};
 }
@@ -172,6 +144,21 @@ export function buildServerRegistries<
 // ============================================================================
 // Remote MCP Server for Open Code (HTTP transport, in-process execution)
 // ============================================================================
+
+/**
+ * Who the bridge is talking to.
+ *
+ * `context` is the calling stream, named by the query string its engine's
+ * config builder put on the bridge URL — the HTTP equivalent of the
+ * `McpExecutionContext` the in-process engines bind directly. `engine` alone is
+ * the fallback for a config that cannot name the caller (Open Code's pooled
+ * server), and is resolved per call rather than pinned, because the stream it
+ * refers to changes while the MCP session stays open.
+ */
+export interface RemoteMcpCaller {
+	context?: McpExecutionContext;
+	engine?: EngineType;
+}
 
 /**
  * Create a McpServer instance (from @modelcontextprotocol/sdk) with tools registered
@@ -182,10 +169,12 @@ export function buildServerRegistries<
  *
  * @param servers - Server definitions from defineServer()
  * @param enabledConfig - Which servers/tools are enabled (from mcpServersConfig)
+ * @param caller - Identity of the engine/stream on the other end of the bridge
  */
 export function createRemoteMcpServer(
 	servers: readonly ServerWithMeta<string, readonly string[]>[],
-	enabledConfig: Record<string, { enabled: boolean; tools: readonly string[] }>
+	enabledConfig: Record<string, { enabled: boolean; tools: readonly string[] }>,
+	caller?: RemoteMcpCaller
 ): McpServer {
 	const mcpServer = new McpServer({
 		name: 'clopen-mcp',
@@ -208,23 +197,34 @@ export function createRemoteMcpServer(
 				// at runtime. Cast to bridge the mismatch.
 				inputSchema: def.schema as Record<string, any>,
 			}, async (args: Record<string, unknown>) => {
-				// Fast-fail when the owning chat stream has already been
-				// cancelled — the handler never runs. Without this, the
-				// engine subprocess dies on cancel but in-flight HTTP-MCP
-				// tool calls continue to drive puppeteer ops, surfacing as
-				// "preview keeps moving by itself" after interrupt.
-				const signal = projectContextService.getCurrentSignal();
-				if (signal?.aborted) {
-					return {
-						content: [{ type: 'text' as const, text: `Tool ${String(toolName)} was cancelled because the chat stream was interrupted.` }],
-						isError: true,
-					} as any;
-				}
-				const result = await def.handler(args) as any;
-				if (result?.content) {
-					result.content = validateMcpOutput(result.content, toolName as string);
-				}
-				return result;
+				const run = async () => {
+					// Fast-fail when the owning chat stream has already been
+					// cancelled — the handler never runs. Without this, the
+					// engine subprocess dies on cancel but in-flight HTTP-MCP
+					// tool calls continue to drive puppeteer ops, surfacing as
+					// "preview keeps moving by itself" after interrupt.
+					const signal = projectContextService.getCurrentSignal();
+					if (signal?.aborted) {
+						return {
+							content: [{ type: 'text' as const, text: `Tool ${String(toolName)} was cancelled because the chat stream was interrupted.` }],
+							isError: true,
+						} as any;
+					}
+					const result = await def.handler(args) as any;
+					if (result?.content) {
+						result.content = validateMcpOutput(result.content, toolName as string);
+					}
+					return result;
+				};
+
+				// Bind the caller for the duration of the handler, exactly as the
+				// in-process path does. Without it every handler that asks "which
+				// project is this?" answers with the most recently started stream
+				// anywhere in the app.
+				const bound = caller?.context
+					?? (caller?.engine ? projectContextService.getContextForEngine(caller.engine) : undefined);
+
+				return bound ? projectContextService.runWithContextAsync(bound, run) : run();
 			});
 		}
 	}

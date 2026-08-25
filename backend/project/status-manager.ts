@@ -6,41 +6,23 @@
 import { streamManager, type StreamState } from '../chat/stream-manager.js';
 import { ws } from '../utils/ws.js';
 import type { UnifiedMessage } from '$shared/types/unified';
-
-// Interactive tools that block the stream waiting for user input
-const INTERACTIVE_TOOLS = new Set(['AskUserQuestion']);
+import { isWaitingForInteractiveInput } from '$shared/utils/interactive-input';
 
 /**
  * Check if an active stream is waiting for user input.
- * Scans stream messages for unanswered interactive tool_use blocks.
+ * Delegates to the shared derivation so backend presence and the frontend
+ * chat service can never disagree on what "waiting for input" means.
  * This is the backend single source of truth — works even when the
  * user is on a different project and not receiving chat events.
  */
 function detectStreamWaitingInput(stream: StreamState): boolean {
   if (stream.status !== 'active') return false;
 
-  const answeredToolIds = new Set<string>();
-  for (const event of stream.messages) {
-    const msg = (event as { message?: UnifiedMessage }).message;
-    if (!msg || msg.type !== 'user') continue;
-    for (const block of msg.content) {
-      if (block.type === 'tool_result' && block.toolUseId) {
-        answeredToolIds.add(block.toolUseId);
-      }
-    }
-  }
+  const messages = stream.messages
+    .map(event => (event as { message?: UnifiedMessage }).message)
+    .filter((msg): msg is UnifiedMessage => Boolean(msg));
 
-  for (const event of stream.messages) {
-    const msg = (event as { message?: UnifiedMessage }).message;
-    if (!msg || msg.type !== 'assistant') continue;
-    if (msg.content.some(block =>
-      block.type === 'tool_use' && INTERACTIVE_TOOLS.has(block.name) && block.id && !answeredToolIds.has(block.id)
-    )) {
-      return true;
-    }
-  }
-
-  return false;
+  return isWaitingForInteractiveInput(messages);
 }
 
 // Store active users per project (shared with main endpoint)

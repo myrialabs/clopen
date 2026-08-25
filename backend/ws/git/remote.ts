@@ -136,12 +136,14 @@ export const remoteHandler = createRouter()
 		data: t.Object({
 			projectId: t.String(),
 			name: t.String(),
-			url: t.String()
+			url: t.String(),
+			repoPath: t.Optional(t.String())
 		}),
 		response: t.Object({ ok: t.Boolean() })
 	}, async ({ data, conn }) => {
 		const project = requireProjectAccess(conn, data.projectId);
-		await gitService.addRemote(project.path, data.name, data.url);
+		const cwd = resolveRepoCwd(project.path, data.repoPath);
+		await gitService.addRemote(cwd, data.name, data.url);
 		return { ok: true };
 	})
 
@@ -149,12 +151,14 @@ export const remoteHandler = createRouter()
 		data: t.Object({
 			projectId: t.String(),
 			name: t.String(),
-			url: t.String()
+			url: t.String(),
+			repoPath: t.Optional(t.String())
 		}),
 		response: t.Object({ ok: t.Boolean() })
 	}, async ({ data, conn }) => {
 		const project = requireProjectAccess(conn, data.projectId);
-		await gitService.setRemoteUrl(project.path, data.name, data.url);
+		const cwd = resolveRepoCwd(project.path, data.repoPath);
+		await gitService.setRemoteUrl(cwd, data.name, data.url);
 		return { ok: true };
 	})
 
@@ -162,12 +166,14 @@ export const remoteHandler = createRouter()
 		data: t.Object({
 			projectId: t.String(),
 			oldName: t.String(),
-			newName: t.String()
+			newName: t.String(),
+			repoPath: t.Optional(t.String())
 		}),
 		response: t.Object({ ok: t.Boolean() })
 	}, async ({ data, conn }) => {
 		const project = requireProjectAccess(conn, data.projectId);
-		await gitService.renameRemote(project.path, data.oldName, data.newName);
+		const cwd = resolveRepoCwd(project.path, data.repoPath);
+		await gitService.renameRemote(cwd, data.oldName, data.newName);
 		return { ok: true };
 	})
 
@@ -176,27 +182,31 @@ export const remoteHandler = createRouter()
 			projectId: t.String(),
 			oldName: t.String(),
 			newName: t.String(),
-			newUrl: t.String()
+			newUrl: t.String(),
+			repoPath: t.Optional(t.String())
 		}),
 		response: t.Object({ ok: t.Boolean() })
 	}, async ({ data, conn }) => {
 		const project = requireProjectAccess(conn, data.projectId);
+		const cwd = resolveRepoCwd(project.path, data.repoPath);
 		if (data.oldName !== data.newName) {
-			await gitService.renameRemote(project.path, data.oldName, data.newName);
+			await gitService.renameRemote(cwd, data.oldName, data.newName);
 		}
-		await gitService.setRemoteUrl(project.path, data.newName, data.newUrl);
+		await gitService.setRemoteUrl(cwd, data.newName, data.newUrl);
 		return { ok: true };
 	})
 
 	.http('git:remove-remote', {
 		data: t.Object({
 			projectId: t.String(),
-			name: t.String()
+			name: t.String(),
+			repoPath: t.Optional(t.String())
 		}),
 		response: t.Object({ ok: t.Boolean() })
 	}, async ({ data, conn }) => {
 		const project = requireProjectAccess(conn, data.projectId);
-		await gitService.removeRemote(project.path, data.name);
+		const cwd = resolveRepoCwd(project.path, data.repoPath);
+		await gitService.removeRemote(cwd, data.name);
 		return { ok: true };
 	})
 

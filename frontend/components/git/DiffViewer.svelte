@@ -10,8 +10,7 @@
 	import { projectState } from '$frontend/stores/core/projects.svelte';
 	import type { GitFileDiff } from '$shared/types/git';
 	import type { IconName } from '$shared/types/ui/icons';
-	import { requestRevealFile } from '$frontend/stores/core/files.svelte';
-	import { getVisiblePanels, workspaceState } from '$frontend/stores/ui/workspace.svelte';
+	import { revealFile } from '$frontend/stores/ui/file-peek.svelte';
 	import { settings, updateSettings } from '$frontend/stores/features/settings.svelte';
 
 	interface Props {
@@ -94,16 +93,12 @@
 
 	function openInFilesPanel() {
 		if (!activeDiff) return;
-		const visiblePanels = getVisiblePanels(workspaceState.layout);
-		if (!visiblePanels.includes('files')) return;
 		const basePath = projectState.currentProject?.path;
 		if (!basePath) return;
 		const relativePath = activeDiff.newPath || activeDiff.oldPath;
 		const separator = basePath.includes('\\') ? '\\' : '/';
-		requestRevealFile(`${basePath}${separator}${relativePath}`);
+		revealFile(`${basePath}${separator}${relativePath}`);
 	}
-
-	const isFilesPanelVisible = $derived(getVisiblePanels(workspaceState.layout).includes('files'));
 </script>
 
 <div class="h-full flex flex-col">
@@ -141,12 +136,12 @@
 						<Icon name={renderSideBySide ? 'lucide:columns-2' : 'lucide:rows-2'} class="w-4 h-4" />
 					</button>
 				{/if}
-				{#if isFilesPanelVisible && activeDiff.status !== 'D'}
+				{#if activeDiff.status !== 'D'}
 					<button
 						type="button"
 						class="flex p-2 text-slate-600 dark:text-slate-400 hover:text-violet-600 dark:hover:text-violet-400 hover:bg-violet-50 dark:hover:bg-violet-900/30 rounded-lg transition-all duration-200 cursor-pointer"
 						onclick={openInFilesPanel}
-						title="Open in Files panel"
+						title="Open in Files"
 					>
 						<Icon name="lucide:file-symlink" class="w-4 h-4" />
 					</button>

@@ -16,6 +16,8 @@ export interface ContextUsage {
   max: number;
   percentage: number;
   nearLimit: boolean;
+  /** True when the model doesn't expose a max context window — usage % can't be computed. */
+  unknown: boolean;
 }
 
 /**
@@ -34,13 +36,21 @@ export function getContextUsage(messages: FrontendMessage[], contextWindow: numb
     }
   }
 
-  if (!lastUsage) {
-    return { current: 0, max: contextWindow, percentage: 0, nearLimit: false };
+  const current = lastUsage
+    ? (lastUsage.inputTokens || 0)
+      + (lastUsage.cacheCreationInputTokens || 0)
+      + (lastUsage.cacheReadInputTokens || 0)
+    : 0;
+
+  // The model didn't report a max context window (e.g. Cursor): we can show how
+  // many tokens were used, but not a percentage. Flag it so the UI renders "?".
+  if (!contextWindow || contextWindow <= 0) {
+    return { current, max: 0, percentage: 0, nearLimit: false, unknown: true };
   }
 
-  const current = (lastUsage.inputTokens || 0)
-    + (lastUsage.cacheCreationInputTokens || 0)
-    + (lastUsage.cacheReadInputTokens || 0);
+  if (!lastUsage) {
+    return { current: 0, max: contextWindow, percentage: 0, nearLimit: false, unknown: false };
+  }
 
   const percentage = Math.min(100, Math.round((current / contextWindow) * 1000) / 10);
 
@@ -48,6 +58,7 @@ export function getContextUsage(messages: FrontendMessage[], contextWindow: numb
     current,
     max: contextWindow,
     percentage,
-    nearLimit: current >= contextWindow * WARNING_THRESHOLD
+    nearLimit: current >= contextWindow * WARNING_THRESHOLD,
+    unknown: false
   };
 }

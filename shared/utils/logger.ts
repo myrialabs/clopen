@@ -28,6 +28,13 @@ export type LogLabel =
 	| 'websocket'
 	| 'mcp'
 	| 'skills'
+	| 'artifacts'
+	| 'commands'
+	| 'subagents'
+	| 'instructions'
+	| 'memory'
+	| 'permissions'
+	| 'profiles'
 	| 'notification'
 	| 'rate-limit'
 	
@@ -37,7 +44,9 @@ export type LogLabel =
 	| 'settings'
 	| 'engine'
 	| 'tunnel'
+	| 'remote-access'
 	| 'db-client'
+	| 'ssh'
 	
 	// User
 	| 'user'

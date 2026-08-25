@@ -217,11 +217,41 @@ export const restoreHandler = createRouter()
 		// 5b. Update head_session_id so resume works correctly.
 		// Claude Code: skip cancelled fork session_ids (partial messages from cancelStream).
 		// OpenCode: simple walk — any session_id is valid (sessions created synchronously).
+		//
+		// Engine is read PER MESSAGE, not from `chat_sessions.engine`: a session can
+		// now switch engine mid-conversation, so the session column only names the
+		// currently selected engine. Restoring into a region driven by a different
+		// engine must apply that region's semantics, and must not adopt an SDK
+		// session id belonging to some other engine's store.
 		{
 			let foundSdkSessionId: string | null = null;
 			const msgLookup = new Map(allMessages.map(m => [m.id, m]));
-			const sessionRecord = sessionQueries.getById(sessionId);
-			const isClaudeCode = sessionRecord?.engine === 'claude-code';
+
+			const engineOf = (msg: UnifiedMessage): string | null => msg.engine?.type ?? null;
+
+			// The engine that owns the restored branch head — the only engine whose
+			// session ids are meaningful for a subsequent resume.
+			let branchEngine: string | null = null;
+			{
+				let probeId: string | null = sessionEnd.id;
+				while (probeId) {
+					const probeMsg = msgLookup.get(probeId);
+					if (!probeMsg) break;
+					try {
+						const msg = JSON.parse(probeMsg.data) as UnifiedMessage;
+						if (msg.type !== 'user') {
+							const type = engineOf(msg);
+							if (type) { branchEngine = type; break; }
+						}
+					} catch { /* skip */ }
+					probeId = probeMsg.parent_message_id || null;
+				}
+				if (!branchEngine) {
+					branchEngine = sessionQueries.getById(sessionId)?.engine ?? null;
+				}
+			}
+
+			const isClaudeCode = branchEngine === 'claude-code';
 
 			// Claude Code only: detect cancelled stream by stopReason on sessionEnd
 			let cancelledSessionId: string | null = null;
@@ -257,8 +287,12 @@ export const restoreHandler = createRouter()
 						continue;
 					}
 
-					// Any engine: message with sessionId
-					if (msg.sessionId) {
+					// Any engine: message with sessionId, but only from the branch's own
+					// engine. Crossing that line would store a foreign store's id.
+					// A message with no engine block is pre-migration: it cannot be
+					// proven foreign, so keep the old behaviour and accept it.
+					const msgEngine = engineOf(msg);
+					if (msg.sessionId && (!branchEngine || !msgEngine || msgEngine === branchEngine)) {
 						foundSdkSessionId = msg.sessionId;
 						break;
 					}

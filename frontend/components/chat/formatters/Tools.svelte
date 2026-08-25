@@ -1,8 +1,10 @@
 <script lang="ts">
 	import type { ToolUseBlock, KnownToolName } from '$shared/types/unified';
 	import { settings } from '$frontend/stores/features/settings.svelte';
+	import { debug } from '$shared/utils/logger';
 	import { CustomMcpTool, UnknownTool, CustomMcpToolCompact, UnknownToolCompact } from '../tools';
 	import { TOOL_COMPONENTS_CLASSIC, TOOL_COMPONENTS_COMPACT } from '../tools/registry';
+	import ToolRenderError from '../tools/ToolRenderError.svelte';
 
 	const { toolInput }: { toolInput: ToolUseBlock } = $props();
 
@@ -21,4 +23,15 @@
 	});
 </script>
 
-<Component {toolInput} />
+<!--
+	Every tool renderer is isolated. Tool inputs originate from the engine and are
+	not guaranteed to match their declared schema, so a single bad block must not
+	be able to tear down the surrounding chat — or the app.
+-->
+<svelte:boundary onerror={(error) => debug.error('chat', `Tool renderer failed for ${toolInput.name}:`, error)}>
+	<Component {toolInput} />
+
+	{#snippet failed(error, reset)}
+		<ToolRenderError {toolInput} {error} {reset} />
+	{/snippet}
+</svelte:boundary>

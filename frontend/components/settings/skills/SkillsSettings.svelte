@@ -4,12 +4,14 @@
 	import Button from '$frontend/components/common/display/Button.svelte';
 	import Input from '$frontend/components/common/form/Input.svelte';
 	import Modal from '$frontend/components/common/overlay/Modal.svelte';
+	import ArtifactGenerateBar from '$frontend/components/settings/common/ArtifactGenerateBar.svelte';
 	import {
 		skillsStore,
 		type InstalledSkill,
 		type MarketplaceSkill,
 		type ParsedSkillPreview
 	} from '$frontend/stores/features/skills.svelte';
+	import { setActiveSection } from '$frontend/stores/ui/settings-modal.svelte';
 	import { debug } from '$shared/utils/logger';
 
 	interface Props {
@@ -115,7 +117,6 @@
 			};
 			if (editorMode === 'create') await skillsStore.create(payload);
 			else if (editorId != null) await skillsStore.update(editorId, payload);
-			skillsStore.hasPendingChanges = true;
 			closeEditor();
 			activeTab = 'installed';
 		} catch (error) {
@@ -163,7 +164,6 @@
 		importError = null;
 		try {
 			await skillsStore.import(importText);
-			skillsStore.hasPendingChanges = true;
 			closeImport();
 			activeTab = 'installed';
 		} catch (error) {
@@ -195,7 +195,6 @@
 		deleting = true;
 		try {
 			await skillsStore.remove(deleteTarget.id);
-			skillsStore.hasPendingChanges = true;
 			deleteTarget = null;
 		} catch (error) {
 			debug.error('settings', 'delete skill failed', error);
@@ -209,7 +208,6 @@
 		busyId = skill.id;
 		try {
 			await skillsStore.toggle(skill.id, !skill.enabled);
-			skillsStore.hasPendingChanges = true;
 		} catch (error) {
 			debug.error('settings', 'toggle skill failed', error);
 		} finally {
@@ -269,7 +267,6 @@
 				license: inLicense.trim() || null,
 				body: inBody
 			});
-			skillsStore.hasPendingChanges = true;
 			closeInstall();
 		} catch (error) {
 			debug.error('settings', 'install skill failed', error);
@@ -536,12 +533,21 @@
 <Modal isOpen={editorOpen} onClose={closeEditor} title={editorMode === 'create' ? 'Create skill' : 'Edit skill'} size="lg">
 	{#snippet children()}
 		<div class="space-y-4 text-sm">
+			<ArtifactGenerateBar
+				artifactType="skill"
+				placeholder={'Describe the skill, e.g. "extract tables from PDF files"'}
+				onNavigateArtifacts={() => { closeEditor(); setActiveSection('artifacts'); }}
+				onGenerated={(f) => {
+					if (typeof f.name === 'string') edName = f.name;
+					if (typeof f.description === 'string') edDescription = f.description;
+					if (typeof f.body === 'string') edBody = f.body;
+				}}
+			/>
 			<Input label="Name" required type="text" placeholder="e.g. PDF processing" bind:value={edName} />
 			<div class="space-y-1">
 				<Input label="Description" required type="text" placeholder="What it does and when to use it" bind:value={edDescription} />
 				<p class="text-[11px] text-slate-400">Stated to the agent up front — describe what the skill does and when to use it (max 1024 chars).</p>
 			</div>
-			<Input label="License (optional)" type="text" placeholder="e.g. Apache-2.0" bind:value={edLicense} />
 			<div class="space-y-1">
 				<p class="block text-sm font-semibold text-slate-700 dark:text-slate-300">Instructions</p>
 				<textarea
@@ -578,7 +584,6 @@
 					<Input label="Description" required type="text" placeholder="What it does and when to use it" bind:value={inDescription} />
 					<p class="text-[11px] text-slate-400">Stated to the agent up front — what the skill does and when to use it (max 1024 chars).</p>
 				</div>
-				<Input label="License (optional)" type="text" placeholder="e.g. Apache-2.0" bind:value={inLicense} />
 				<div class="space-y-1">
 					<p class="block text-sm font-semibold text-slate-700 dark:text-slate-300">Instructions</p>
 					<textarea

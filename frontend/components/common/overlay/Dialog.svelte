@@ -21,6 +21,10 @@
 		closable?: boolean;
 		confirmDisabled?: boolean;
 		onConfirm?: (value?: string) => void;
+		extraText?: string;
+		onExtra?: () => void;
+		/** Tailwind max-width class for the dialog box. Default 'max-w-md'; use a wider class for content-heavy dialogs (lists, changelogs). */
+		maxWidth?: string;
 		children?: import('svelte').Snippet;
 	}
 
@@ -39,6 +43,9 @@
 		closable = true,
 		confirmDisabled = false,
 		onConfirm,
+		extraText,
+		onExtra,
+		maxWidth = 'max-w-md',
 		children
 	}: Props = $props();
 
@@ -135,6 +142,13 @@
 		onClose();
 	}
 
+	function handleExtra() {
+		if (onExtra) {
+			onExtra();
+		}
+		onClose();
+	}
+
 	// Auto-focus management
 	onMount(() => {
 		if (isOpen) {
@@ -188,7 +202,7 @@
 		out:fade={{ duration: 150, easing: cubicOut }}
 	>
 		<div
-			class="bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-700 rounded-xl max-w-md w-full p-6 space-y-4 shadow-xl max-h-[calc(100dvh-2rem)] overflow-y-auto wrap-anywhere"
+			class="bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-700 rounded-xl {maxWidth} w-full p-6 space-y-4 shadow-xl max-h-[calc(100dvh-2rem)] overflow-y-auto wrap-anywhere"
 			role="document"
 			onclick={(e) => e.stopPropagation()}
 			onkeydown={(e) => e.stopPropagation()}
@@ -251,6 +265,14 @@
 							class="px-6 py-2.5 bg-slate-50 dark:bg-slate-800 border border-slate-200 dark:border-slate-700 text-slate-700 dark:text-slate-300 rounded-lg hover:bg-slate-100 dark:hover:bg-slate-700 transition-all duration-200 font-semibold"
 						>
 							{cancelText}
+						</button>
+					{/if}
+					{#if extraText && onExtra}
+						<button
+							onclick={handleExtra}
+							class="px-6 py-2.5 bg-violet-600 dark:bg-violet-600 hover:bg-violet-700 dark:hover:bg-violet-700 text-white rounded-lg transition-all duration-200 font-semibold"
+						>
+							{extraText}
 						</button>
 					{/if}
 					<button

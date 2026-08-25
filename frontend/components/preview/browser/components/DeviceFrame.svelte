@@ -1,16 +1,33 @@
 <script lang="ts">
 	import type { Snippet } from 'svelte';
-	import { getFrameMetrics, type DeviceSize, type Rotation } from '$frontend/utils/preview-constants';
+	import {
+		getFrameMetrics,
+		getViewportDimensions,
+		type DeviceSize,
+		type Rotation
+	} from '$frontend/utils/preview-constants';
 
 	interface Props {
 		deviceSize: DeviceSize;
 		rotation: Rotation;
-		canvasWidth: number;
-		canvasHeight: number;
 		children: Snippet;
 	}
 
-	const { deviceSize, rotation, canvasWidth, canvasHeight, children }: Props = $props();
+	const { deviceSize, rotation, children }: Props = $props();
+
+	/**
+	 * The screen box is derived here rather than passed in.
+	 *
+	 * The canvas sizes its bitmap from `getViewportDimensions(deviceSize,
+	 * rotation)` directly, while the parent recomputes its own copy on a timer.
+	 * Taking the size from the parent let the two disagree for a few frames after
+	 * a rotation change — and because the canvas is `object-contain`, a mismatched
+	 * box letterboxes the image inside it, which is exactly the offset that made
+	 * clicks land up and to the left of the pointer.
+	 */
+	const viewport = $derived(getViewportDimensions(deviceSize, rotation));
+	const canvasWidth = $derived(viewport.width);
+	const canvasHeight = $derived(viewport.height);
 
 	const metrics = $derived(getFrameMetrics(deviceSize, rotation));
 	const bodyWidth = $derived(canvasWidth + metrics.left + metrics.right);

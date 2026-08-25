@@ -61,7 +61,7 @@ export function groupMessages(messages: FrontendMessage[]): {
 } {
   const groups: ProcessedMessage[] = [];
   const toolUseMap = new Map<string, ToolGroup>();
-  const agentToolUseIds = new Set<string>();
+  const activityParentToolUseIds = new Set<string>();
   const subAgentMap = new Map<string, FrontendMessage[]>();
   const skillToolUseIds = new Set<string>();
   const skillPromptMap = new Map<string, string>();
@@ -80,7 +80,7 @@ export function groupMessages(messages: FrontendMessage[]): {
     // Intercept ALL sub-agent messages (any parentToolUseId !== null)
     const parentToolId = getParentToolUseId(message);
     if (parentToolId) {
-      if (agentToolUseIds.has(parentToolId)) {
+      if (activityParentToolUseIds.has(parentToolId)) {
         if (!subAgentMap.has(parentToolId)) {
           subAgentMap.set(parentToolId, []);
         }
@@ -110,8 +110,8 @@ export function groupMessages(messages: FrontendMessage[]): {
               toolUseMessage: message,
               toolResultMessage: null
             });
-            if (toolUse.name === 'Agent') {
-              agentToolUseIds.add(toolUse.id);
+            if (toolUse.name === 'Agent' || toolUse.name === 'Workflow') {
+              activityParentToolUseIds.add(toolUse.id);
             }
             if (toolUse.name === 'Skill') {
               skillToolUseIds.add(toolUse.id);
@@ -137,8 +137,14 @@ export function groupMessages(messages: FrontendMessage[]): {
         return;
       }
 
-      // Synthetic user messages after Skill tool
-      if (isSyntheticUserMessage(message) && lastSkillToolUseId) {
+      const toolResults = extractToolResults(message.content);
+
+      // Synthetic user messages after Skill tool (the expanded skill prompt
+      // text, distinct from the tool_result below — must check toolResults
+      // is empty here, otherwise the Skill tool_result itself gets swallowed
+      // by this branch before it reaches the toolResults handling further
+      // down, leaving the Skill tool_use's `result` stuck at null).
+      if (isSyntheticUserMessage(message) && lastSkillToolUseId && toolResults.length === 0) {
         const promptText = extractUserTextContent(message);
         if (promptText) {
           skillPromptMap.set(lastSkillToolUseId, promptText);
@@ -149,7 +155,6 @@ export function groupMessages(messages: FrontendMessage[]): {
 
       lastCompactBoundaryIdx = -1;
 
-      const toolResults = extractToolResults(message.content);
       if (toolResults.length > 0) {
         toolResults.forEach((toolResult) => {
           if (toolResult.toolUseId && toolUseMap.has(toolResult.toolUseId)) {
@@ -160,10 +165,11 @@ export function groupMessages(messages: FrontendMessage[]): {
           }
         });
         // Don't add tool_result messages separately
-      } else {
-        lastSkillToolUseId = null;
-        groups.push(message);
+        return;
       }
+
+      lastSkillToolUseId = null;
+      groups.push(message);
       return;
     }
 

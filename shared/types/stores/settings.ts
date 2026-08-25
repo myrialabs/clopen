@@ -19,6 +19,11 @@ export interface CommitGeneratorSettings {
 	/** When false, uses the chat model (selectedEngine/selectedModel). When true, uses custom engine/model below. */
 	useCustomModel: boolean;
 	engine: EngineType;
+	/**
+	 * Provider of `modelId`. Write it with `modelFieldsOf()` so it can never lag
+	 * behind a model change — the backend re-derives it anyway
+	 * (`backend/engine/resolve-model.ts`), but a stale value here is misleading.
+	 */
 	provider: string;
 	modelId: string;
 	modelName: string;
@@ -27,6 +32,20 @@ export interface CommitGeneratorSettings {
 	branchSeparator: string;
 	commitConfig: CommitMessageConfig;
 	branchConfig: BranchNameConfig;
+}
+
+/**
+ * AI authoring model for generating Skills/Commands/Subagents/Instructions from a
+ * purpose sentence. Optional — when absent (or `useCustomModel` false), the
+ * assistant model (selectedEngine/selectedModel) is used.
+ */
+export interface ArtifactGeneratorSettings {
+	useCustomModel: boolean;
+	engine: EngineType;
+	/** See `CommitGeneratorSettings.provider` — write via `modelFieldsOf()`. */
+	provider: string;
+	modelId: string;
+	modelName: string;
 }
 
 /** Per-user settings (stored per user) */
@@ -54,8 +73,16 @@ export interface AppSettings {
 	gitDiffSideBySide: boolean;
 	/** AI commit message generator configuration */
 	commitGenerator: CommitGeneratorSettings;
+	/** AI authoring model for artifact generation (optional; falls back to assistant model) */
+	artifactGenerator?: ArtifactGeneratorSettings;
 	/** Pinned model IDs — shown at top of provider group in model picker */
 	pinnedModels: string[];
+	/**
+	 * Per-model reasoning/thinking level defaults, keyed by model id. Stores the
+	 * native level token (e.g. 'high'). Seeds new sessions and remembers the last
+	 * level chosen per model. Absent key → use the engine/model default.
+	 */
+	reasoningDefaults: Record<string, string>;
 }
 
 /** Authentication mode */
@@ -65,7 +92,17 @@ export type AuthMode = 'none' | 'required';
 export interface SystemSettings {
 	/** Authentication mode: 'none' = single user no login, 'required' = multi-user with login. Default: 'required'. */
 	authMode: AuthMode;
-	/** Whether the initial setup wizard has been completed. Default: false. */
+	/**
+	 * Setup wizard state — the authoritative marker.
+	 * 'pending' is only written by a fresh install that entered the wizard; an
+	 * install with users and no marker at all is treated (and recorded) as
+	 * complete. Read server-side via `auth:status`, never decided by the client.
+	 */
+	onboarding?: 'pending' | 'complete';
+	/**
+	 * Legacy boolean mirror of `onboarding`, still written so an older build
+	 * downgraded onto the same database keeps recognising a completed setup.
+	 */
 	onboardingComplete: boolean;
 	/** Restrict folder browser to only these base paths. Empty = no restriction. */
 	allowedBasePaths: string[];
@@ -75,4 +112,13 @@ export interface SystemSettings {
 	sessionLifetimeDays: number;
 	/** Maximum file size (megabytes) for write, upload, zip, and extract operations. Default: 500. */
 	maxFileSizeMB: number;
+	/**
+	 * Public base URL Remote Access share links are built against (e.g.
+	 * https://clopen.example.com). Set for VPS/reverse-proxy deployments where the
+	 * app is already reachable on a domain; when empty, Remote Access falls back to
+	 * the current origin or a Cloudflare quick tunnel. Default: '' (unset).
+	 */
+	publicBaseUrl?: string;
+	/** Latest version the "What's New" preview dialog has been dismissed for. Default: '' (never dismissed). */
+	lastSeenReleaseNotesVersion?: string;
 }

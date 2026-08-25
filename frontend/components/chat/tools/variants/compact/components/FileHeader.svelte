@@ -1,21 +1,22 @@
 <script lang="ts">
-	import { requestRevealFile } from '$frontend/stores/core/files.svelte';
-	import { getVisiblePanels, workspaceState } from '$frontend/stores/ui/workspace.svelte';
+	import { revealFile } from '$frontend/stores/ui/file-peek.svelte';
+	import { requestAiScrollReveal } from '$frontend/utils/ai-changes';
 
 	interface Props {
 		filePath: string;
 		fileName?: string;
 		operation?: string;
 		badges?: string[];
+		editKey?: string | null;
 	}
 
-	const { filePath, fileName, operation, badges = [] }: Props = $props();
+	const { filePath, fileName, operation, badges = [], editKey = null }: Props = $props();
 
 	const displayFileName = $derived(fileName || filePath.split(/[/\\]/).pop() || filePath);
 
 	function handleClick() {
-		const visiblePanels = getVisiblePanels(workspaceState.layout);
-		if (visiblePanels.includes('files')) requestRevealFile(filePath);
+		revealFile(filePath);
+		if (editKey) requestAiScrollReveal(filePath, editKey);
 	}
 </script>
 

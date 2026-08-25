@@ -1,42 +1,26 @@
 /**
  * OpenAI Codex Engine Status Handler
  *
- * Reports SDK availability + active account state. Codex differs from
- * Copilot in that the SDK does NOT bundle a CLI internally — the CLI must
- * be installed on PATH (System Tools → Codex CLI). `installed` reflects
- * whether the `codex` binary resolves on the host's PATH.
+ * Reports SDK availability + active account state. `installed` tracks the SDK;
+ * `version` is the CLI's, since that is the process Codex actually runs. That
+ * binary is vendored inside the SDK's platform package in the managed stack dir
+ * (or comes from PATH when the user installed Codex themselves) — reading it
+ * off PATH alone left the version blank on a Stack-only install.
  */
 
 import { t } from 'elysia';
 import { createRouter } from '$shared/utils/ws-server';
 import { engineQueries } from '../../../database/queries';
-import { resolveBinaryWithRefresh } from '../../../utils/cli';
+import { resolveEngineCli } from '$backend/engine/engine-cli';
 import { getBackendOS } from '../../../utils/os';
 import { debug } from '$shared/utils/logger';
-
-function readSdkVersion(): string | null {
-	try {
-		const path = require.resolve('@openai/codex-sdk/package.json');
-		const pkg = require(path) as { version?: string };
-		return pkg.version ?? null;
-	} catch {
-		return null;
-	}
-}
+import { readEngineSdkVersion } from '$backend/engine/sdk-loader';
 
 async function readCliVersion(): Promise<string | null> {
-	const bin = await resolveBinaryWithRefresh('codex');
-	if (!bin) return null;
-	try {
-		const proc = Bun.spawn([bin, '--version'], { stdout: 'pipe', stderr: 'pipe' });
-		const exitCode = await proc.exited;
-		if (exitCode !== 0) return null;
-		const stdout = await new Response(proc.stdout).text();
-		const first = stdout.trim().split('\n')[0]?.trim() ?? '';
-		return first || null;
-	} catch {
-		return null;
-	}
+	// `resolveEngineCli` already ran `--version` on the binary it handed back,
+	// so the version comes for free with the resolution.
+	const cli = await resolveEngineCli('codex');
+	return cli?.version ?? null;
 }
 
 export const codexStatusHandler = createRouter()
@@ -65,6 +49,7 @@ export const codexStatusHandler = createRouter()
 		const activeAccount = engineQueries.getActiveAccountForEngine('codex');
 
 		const cliVersion = await readCliVersion();
+		const sdkVersion = readEngineSdkVersion('@openai/codex-sdk');
 
 		// authMode parsing — defer the import to avoid initializing fs paths in
 		// the status hot path; only matters when an active account exists.
@@ -75,9 +60,9 @@ export const codexStatusHandler = createRouter()
 		}
 
 		return {
-			installed: cliVersion !== null,
+			installed: sdkVersion !== null,
 			version: cliVersion,
-			sdkVersion: readSdkVersion(),
+			sdkVersion,
 			activeAccount: activeAccount
 				? { id: activeAccount.id, name: activeAccount.name, authMode }
 				: null,

@@ -23,22 +23,32 @@
 </p>
 
 <p align="center">
-  <img src="https://clopen.myrialabs.dev/images/workspace-overview.webp" alt="Clopen workspace overview" />
+  <img src="https://clopen.myrialabs.dev/images/workspace.webp" alt="Clopen workspace overview" />
 </p>
 
-All-in-one workspace for AI coding agents — Claude Code, OpenCode, Codex, Copilot, and Qwen Code. Chat, terminal, git, browser preview, database client, and real-time collaboration, built for multi-project and multi-session workflows.
+All-in-one workspace for AI coding agents — Claude Code, OpenCode, Codex, Copilot, Qwen Code, Pi, Cline, and Cursor. Chat, terminal, git, browser preview, database client, and real-time collaboration — plus Skills, Subagents, Commands, and MCP connectors to extend every engine.
 
 ---
 
 ## Screenshots
 
-![AI chat interface](https://clopen.myrialabs.dev/images/ai-chat-interface.webp)
+![AI chat interface](https://clopen.myrialabs.dev/images/chat-panel.webp)
 
-![Multi-account manager](https://clopen.myrialabs.dev/images/multi-account-claude-code.webp)
+![Engines and accounts](https://clopen.myrialabs.dev/images/engines-setting.webp)
 
-![Browser preview panel](https://clopen.myrialabs.dev/images/browser-preview-panel.webp)
+![Database client](https://clopen.myrialabs.dev/images/db-client.webp)
 
-![Checkpoint restore](https://clopen.myrialabs.dev/images/checkpoint-restore.webp)
+![Browser preview panel](https://clopen.myrialabs.dev/images/preview-panel.webp)
+
+![Connectors settings](https://clopen.myrialabs.dev/images/connectors-setting.webp)
+
+![Public tunnel](https://clopen.myrialabs.dev/images/public-tunnel.webp)
+
+![Checkpoint restore](https://clopen.myrialabs.dev/images/restore-checkpoint.webp)
+
+### Works on Any Device
+
+<img src="https://clopen.myrialabs.dev/images/chat-panel-mobile.jpg" width="140" alt="AI Chat on mobile" /> <img src="https://clopen.myrialabs.dev/images/files-panel-mobile.jpg" width="140" alt="File Explorer on mobile" /> <img src="https://clopen.myrialabs.dev/images/git-panel-mobile.jpg" width="140" alt="Git on mobile" /> <img src="https://clopen.myrialabs.dev/images/terminal-panel-mobile.jpg" width="140" alt="Terminal on mobile" /> <img src="https://clopen.myrialabs.dev/images/preview-panel-mobile.jpg" width="140" alt="Browser Preview on mobile" /> <img src="https://clopen.myrialabs.dev/images/db-client-mobile.jpg" width="140" alt="Database Client on mobile" />
 
 ---
 
@@ -46,8 +56,9 @@ All-in-one workspace for AI coding agents — Claude Code, OpenCode, Codex, Copi
 
 A complete development environment designed around AI-assisted workflows, built to disappear into the background and just work.
 
-- **Multi-Engine Support** — Switch between Claude Code, OpenCode, Codex, GitHub Copilot, and Qwen Code as your AI engine, per session
+- **Multi-Engine Support** — Switch between Claude Code, OpenCode, Codex, GitHub Copilot, Qwen Code, Pi, Cline, and Cursor as your AI engine, per session
 - **Multi-Account Per Engine** — Manage multiple accounts per engine (personal, work, or team) and switch between them instantly per chat session
+- **Reasoning Effort Control** — Dial a model's thinking level right from the chat input, using that engine's own levels. Set a default per model in Settings, and the choice is remembered and synced with everyone in the session
 - **Integrated Terminal** — Multi-tab xterm.js terminal with full keyboard control and complete ANSI/VT support, right inside your workspace
 - **Full Git Management** — Stage, commit, branch, push, pull, stash, log, and resolve conflicts, all from a clean UI
 - **Real Browser Preview** — A live browser preview streams directly into your workspace. Interact with your app manually, or let the AI drive: clicking, typing, and scrolling for autonomous visual testing
@@ -56,10 +67,12 @@ A complete development environment designed around AI-assisted workflows, built 
 - **Real-Time Collaboration** — See who's working on which project, and collaborate live in the same codebase
 - **Monaco File Editor** — VS Code's editor right in the browser. Full syntax highlighting, autocomplete, and live file watching, beside your AI chat
 - **Cloudflare Tunnel** — One-click public HTTPS URL for your local dev server. Built-in QR code for instant mobile access. Share your work without deploying
-- **MCP Support** — Full Model Context Protocol integration. Connect AI tools, external APIs, and custom capabilities to your AI agents with zero friction
+- **Connectors (MCP)** — Browse a searchable catalog of Model Context Protocol servers, connect with OAuth or custom env/headers, and sync every connector across all your AI engines
+- **Skills, Commands & Subagents** — Build reusable Skills, slash Commands, delegated Subagents, shared Instructions, and tool Permissions or Profiles once, synced automatically across every engine
 - **Flexible Authentication** — No Login or With Login mode with admin/member roles, invite links, rate-limited login, and CLI token recovery
-- **System Tools Installer** — Install Git, Claude Code, OpenCode, Codex, Copilot, Qwen Code, Chrome, and Cloudflared (for Public Tunnel) from a one-click admin panel
+- **Stack** — Install AI engines, Git, Chrome, and Cloudflared (for Public Tunnel) from a one-click admin panel. Engines install on demand into a clopen-managed directory (`~/.clopen/stack/engines`) — isolated from your global setup, no PATH pollution
 - **Background Processing** — Chat, terminal, and other processes continue running even when you close the browser — come back later and pick up where you left off
+- **Works on Any Device** — Fully responsive across desktop, laptop, tablet, and mobile. Open your workspace from any device and continue exactly where you left off
 
 ---
 
@@ -68,7 +81,7 @@ A complete development environment designed around AI-assisted workflows, built 
 ### Prerequisites
 
 - [Bun.js](https://bun.sh/) v1.2.12+
-- At least one supported AI engine — [Claude Code](https://github.com/anthropics/claude-code), [OpenCode](https://opencode.ai), [Codex](https://github.com/openai/codex), [GitHub Copilot CLI](https://github.com/github/copilot-cli), or [Qwen Code](https://github.com/QwenLM/qwen-code). All are installable from **Settings → System Tools** after first launch
+- At least one supported AI engine — [Claude Code](https://github.com/anthropics/claude-code), [OpenCode](https://opencode.ai), [Codex](https://github.com/openai/codex), [GitHub Copilot CLI](https://github.com/github/copilot-cli), [Qwen Code](https://github.com/QwenLM/qwen-code), [Pi](https://github.com/earendil-works/pi), [Cline](https://github.com/cline/cline), or [Cursor](https://cursor.com). All install on demand from **Settings → Stack** after first launch (nothing is bundled into the clopen install), then sign in from **Settings → Engines**
 
 ### Installation
 
@@ -104,8 +117,8 @@ On first launch, a setup wizard guides you through:
 
 1. **Authentication mode** — Choose between **No Login** (no authentication required, ideal for personal/local use) or **With Login** (login with Personal Access Token, supports team collaboration)
 2. **Admin account** — If With Login mode is selected, create your admin account and save the generated PAT
-3. **System Tools** — Install Git, Chrome, Cloudflared, and any AI engine you don't have yet — straight from the wizard, no terminal needed
-4. **AI Engines** — Check installation status for Claude Code, OpenCode, Codex, Copilot, and Qwen Code, and sign in to the engines you'll use
+3. **Stack** — Install Git, Chrome, Cloudflared, and any AI engine you don't have yet — straight from the wizard, no terminal needed
+4. **AI Engines** — Check installation status for every engine and sign in to the ones you'll use. An engine that isn't installed yet links straight back to the Stack step
 5. **Preferences** — Set dark mode, font size, sound notifications, and message layout (Classic cards or Compact lines)
 
 You can change the authentication mode anytime in **Settings → Security → Authentication**.
@@ -152,7 +165,7 @@ See [CONTRIBUTING.md](CONTRIBUTING.md) for guidelines and [DECISIONS.md](DECISIO
 | Styling | Tailwind CSS v4 |
 | Database | SQLite with migrations |
 | Terminal | bun-pty |
-| AI Engines | Claude Code, OpenCode, Codex, Copilot, Qwen Code |
+| AI Engines | Claude Code, OpenCode, Codex, Copilot, Qwen Code, Pi, Cline, Cursor |
 | DB Client | Postgres, MySQL, SQLite, MongoDB, Redis (+ SSH tunnel) |
 
 ---
@@ -190,6 +203,9 @@ MIT License - see [LICENSE](LICENSE) for details.
 - [Codex](https://github.com/openai/codex) by OpenAI
 - [GitHub Copilot CLI](https://github.com/github/copilot-cli) by GitHub
 - [Qwen Code](https://github.com/QwenLM/qwen-code) by Alibaba Qwen
+- [Pi](https://github.com/earendil-works/pi) by Earendil Works
+- [Cline](https://github.com/cline/cline) by Cline Bot Inc.
+- [Cursor](https://cursor.com) by Anysphere
 - [Bun](https://bun.sh/) runtime
 - [Svelte](https://svelte.dev/) framework
 

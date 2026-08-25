@@ -28,14 +28,17 @@
 	const { port, publicUrl, startedAt, autoStopMinutes, type = 'quick', name, id, ingress, connections = 0 }: Props = $props();
 
 	const isQuick = $derived(type === 'quick');
+	// A quick tunnel pointing at Clopen's own port was created by Remote Access —
+	// label it as such so both surfaces agree on what it is.
+	const isRemoteAccess = $derived(tunnelStore.isSelfTunnel(port, type));
 	const displayLabel = $derived(
-		name ? name : isQuick ? `Port ${port}` : type === 'remote' ? 'Remote Tunnel' : 'Local Tunnel'
+		name ? name : isRemoteAccess ? 'Remote Access' : isQuick ? `Port ${port}` : type === 'remote' ? 'Remote Tunnel' : 'Local Tunnel'
 	);
 	const typeIcon = $derived(
-		type === 'remote' ? 'lucide:cloud' : type === 'local' ? 'lucide:server' : 'lucide:zap'
+		isRemoteAccess ? 'lucide:radio' : type === 'remote' ? 'lucide:cloud' : type === 'local' ? 'lucide:server' : 'lucide:zap'
 	);
 	const typeBadge = $derived(
-		type === 'remote' ? 'Remote' : type === 'local' ? 'Local' : 'Quick'
+		isRemoteAccess ? 'Remote Access' : type === 'remote' ? 'Remote' : type === 'local' ? 'Local' : 'Quick'
 	);
 	const ingressHostnames = $derived(ingress?.filter((r) => r.hostname) ?? []);
 	const isManagedTunnel = $derived(type === 'remote' || type === 'local');

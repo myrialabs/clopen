@@ -21,6 +21,7 @@
 		onStash?: () => void;
 		onViewDiff?: (file: GitFileChange, section: string) => void;
 		onResolve?: (path: string) => void;
+		aiChangesSet?: Set<string>;
 	}
 
 	let {
@@ -31,7 +32,8 @@
 		onStage, onUnstage, onDiscard,
 		onStageAll, onUnstageAll, onDiscardAll,
 		onStash,
-		onViewDiff, onResolve
+		onViewDiff, onResolve,
+		aiChangesSet = new Set<string>()
 	}: Props = $props();
 
 	function isFileActive(filePath: string): boolean {
@@ -197,6 +199,7 @@
 									{onDiscard}
 									{onViewDiff}
 									{onResolve}
+									{aiChangesSet}
 								/>
 							</div>
 						{/each}
@@ -214,6 +217,7 @@
 							{onDiscard}
 							{onViewDiff}
 							{onResolve}
+							{aiChangesSet}
 						/>
 					{/each}
 				</div>

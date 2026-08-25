@@ -38,6 +38,11 @@ class SessionCleanupScheduler {
 			if (deleted > 0) {
 				debug.log('auth', `Session cleanup: removed ${deleted} expired session(s)`);
 			}
+			// Sweep expired / already-claimed device-pairing codes alongside sessions.
+			const staleCodes = authQueries.deleteStaleDeviceCodes();
+			if (staleCodes > 0) {
+				debug.log('auth', `Session cleanup: removed ${staleCodes} stale device code(s)`);
+			}
 		} catch (error) {
 			debug.warn('auth', 'Session cleanup failed:', error);
 		}

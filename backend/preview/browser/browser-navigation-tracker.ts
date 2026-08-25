@@ -261,6 +261,62 @@ export class BrowserNavigationTracker extends EventEmitter {
 	}
 
 	/**
+	 * Reuse the tab's tracking CDP session, creating one if setup failed or ran
+	 * before this call. History reads happen on every navigation, so attaching a
+	 * fresh session each time would be wasteful.
+	 */
+	private async getCdpSession(sessionId: string, page: Page): Promise<CDPSession> {
+		const existing = this.cdpSessions.get(sessionId);
+		if (existing) return existing;
+
+		const cdp = await page.createCDPSession();
+		this.cdpSessions.set(sessionId, cdp);
+		return cdp;
+	}
+
+	/**
+	 * Read the tab's real navigation history from CDP.
+	 *
+	 * `window.history.length` cannot answer "can I go forward?" and over-counts
+	 * for SPAs; `Page.getNavigationHistory` returns the actual entry list plus
+	 * the current index, which is what a real browser's buttons read.
+	 */
+	async getNavigationHistory(
+		sessionId: string,
+		page: Page
+	): Promise<{ currentIndex: number; entries: Array<{ id: number; url: string; title: string }> } | null> {
+		try {
+			const cdp = await this.getCdpSession(sessionId, page);
+			const history = await cdp.send('Page.getNavigationHistory');
+			return {
+				currentIndex: history.currentIndex,
+				entries: history.entries.map((entry) => ({
+					id: entry.id,
+					url: entry.url,
+					title: entry.title || entry.url
+				}))
+			};
+		} catch (error) {
+			debug.warn('preview', `⚠️ Failed to read navigation history for ${sessionId}:`, error);
+			return null;
+		}
+	}
+
+	/**
+	 * Jump to a specific history entry by CDP entry id.
+	 */
+	async navigateToHistoryEntry(sessionId: string, page: Page, entryId: number): Promise<boolean> {
+		try {
+			const cdp = await this.getCdpSession(sessionId, page);
+			await cdp.send('Page.navigateToHistoryEntry', { entryId });
+			return true;
+		} catch (error) {
+			debug.warn('preview', `⚠️ Failed to navigate to history entry ${entryId} for ${sessionId}:`, error);
+			return false;
+		}
+	}
+
+	/**
 	 * Cleanup CDP session for a tab
 	 */
 	async cleanupSession(sessionId: string) {

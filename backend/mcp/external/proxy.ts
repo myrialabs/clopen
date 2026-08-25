@@ -37,8 +37,13 @@ import {
 	type Tool
 } from '@modelcontextprotocol/sdk/types.js';
 import { debug } from '$shared/utils/logger';
-import { mcpServerQueries } from '$backend/database/queries';
+import { mcpServerQueries, permissionSetQueries, profileQueries } from '$backend/database/queries';
+import type { EngineType } from '$shared/types/unified';
 import { resolveServerRow } from './config';
+import { parseToolOverrides, isToolExposed } from './tools';
+// Import the PURE resolver (no `$backend/mcp` dependency) to avoid an
+// mcp → permissions/service → mcp import cycle.
+import { isToolAllowed, mergePermissions, pickEngineSet } from '$backend/permissions/resolve';
 import type { ResolvedExternalServer } from './types';
 
 /** Cap on how long we wait for an upstream server to complete its handshake. */
@@ -163,14 +168,39 @@ export interface ExternalProxy {
  * forwards verbatim. Throws if the slug isn't an enabled external server or the
  * upstream handshake fails (the caller surfaces this as a per-server failure,
  * never taking down the whole bridge).
+ *
+ * `engine` identifies the caller (each engine's config points at
+ * `/mcp/ext/<slug>?engine=<engine>`). It is the SINGLE enforcement point for
+ * per-tool exposure: `tools/list` hides tools the user disabled for this engine
+ * and `tools/call` refuses them — so filtering behaves identically on every
+ * engine, even those whose SDK has no tool-allowlist config.
  */
-export async function createExternalProxyServer(slug: string): Promise<ExternalProxy> {
+export async function createExternalProxyServer(slug: string, engine?: EngineType): Promise<ExternalProxy> {
 	const row = mcpServerQueries.getBySlug(slug);
 	if (!row || row.source === 'internal') throw new Error(`Unknown external MCP server: ${slug}`);
-	if (row.is_enabled !== 1) throw new Error(`External MCP server is disabled: ${slug}`);
+	// A globally-disabled server is still servable when a Profile references it — an
+	// active profile is the source of truth for which connectors run, overriding the
+	// enable toggle (the config builder only emits its bridge URL in that case).
+	if (row.is_enabled !== 1 && !profileQueries.isArtifactReferenced('mcp', slug)) {
+		throw new Error(`External MCP server is disabled: ${slug}`);
+	}
 
 	const resolved = resolveServerRow(row);
+	const overrides = parseToolOverrides(row.tool_overrides);
 	const client = await connectUpstream(resolved);
+
+	// Global tool-permission policy for this engine (Settings → Permissions).
+	// MCP tools carry no permission hook on some engines (e.g. OpenCode only gates
+	// edit/bash/webfetch), so the bridge is the single reliable enforcement point
+	// for MCP deny/allow across every engine — it filters the tool out before the
+	// engine ever sees it. Rules are matched against the canonical engine-facing
+	// name `mcp__<namespace>__<tool>` (the identity the Permissions UI uses).
+	// Global scope only: the bridge has no session/project context.
+	const permissions = engine
+		? mergePermissions(pickEngineSet(permissionSetQueries.getGlobal(), engine), undefined)
+		: null;
+	const permitted = (toolName: string): boolean =>
+		!permissions || isToolAllowed(permissions, `mcp__${resolved.namespace}__${toolName}`);
 
 	const server = new Server(
 		{ name: `clopen-ext-${slug}`, version: '1.0.0' },
@@ -178,12 +208,29 @@ export async function createExternalProxyServer(slug: string): Promise<ExternalP
 	);
 
 	server.setRequestHandler(ListToolsRequestSchema, async () => {
-		const tools = (await listAllToolsRaw(client)).map(sanitizeTool);
-		debug.log('mcp', `🔌 Proxy ${slug}: serving ${tools.length} tool(s)`);
+		const all = (await listAllToolsRaw(client)).map(sanitizeTool);
+		const tools = all.filter(t => isToolExposed(overrides, t.name, engine) && permitted(t.name));
+		const hidden = all.length - tools.length;
+		debug.log('mcp', `🔌 Proxy ${slug}${engine ? ` (${engine})` : ''}: serving ${tools.length} tool(s)${hidden > 0 ? `, ${hidden} hidden` : ''}`);
 		return { tools };
 	});
 
 	server.setRequestHandler(CallToolRequestSchema, async (req) => {
+		// Defense in depth: a disabled tool should never have been advertised, but
+		// refuse the call outright in case the engine cached an older tool list.
+		if (!isToolExposed(overrides, req.params.name, engine)) {
+			return {
+				content: [{ type: 'text' as const, text: `Tool ${req.params.name} is disabled for this engine.` }],
+				isError: true
+			};
+		}
+		// Same guard for a permission-denied tool (Settings → Permissions).
+		if (!permitted(req.params.name)) {
+			return {
+				content: [{ type: 'text' as const, text: `Tool ${req.params.name} is blocked by Clopen permission policy.` }],
+				isError: true
+			};
+		}
 		// Forward verbatim. CompatibilityCallToolResultSchema tolerates both the
 		// modern and 2024-10-07 result shapes; we never cached an output
 		// validator (we bypass listTools), so no schema check runs here.
@@ -199,4 +246,41 @@ export async function createExternalProxyServer(slug: string): Promise<ExternalP
 	};
 
 	return { server, close };
+}
+
+/**
+ * Open a short-lived upstream connection for a slug (no bridge, no session).
+ * Used by the Settings tool panel / inspector — reuses the same connect +
+ * credential path as the bridge but tears the client down immediately. Unlike
+ * the bridge it does NOT require the server to be enabled, so tools can be
+ * inspected before the server is switched on.
+ */
+async function withUpstreamClient<T>(slug: string, fn: (client: Client) => Promise<T>): Promise<T> {
+	const row = mcpServerQueries.getBySlug(slug);
+	if (!row || row.source === 'internal') throw new Error(`Unknown external MCP server: ${slug}`);
+	const client = await connectUpstream(resolveServerRow(row));
+	try {
+		return await fn(client);
+	} finally {
+		client.close().catch(error => debug.warn('mcp', `Introspect ${slug}: error closing client:`, error));
+	}
+}
+
+/** List a server's sanitized tools live (unfiltered) — for the Settings tool panel. */
+export async function listExternalServerTools(slug: string): Promise<Tool[]> {
+	return withUpstreamClient(slug, async (client) => (await listAllToolsRaw(client)).map(sanitizeTool));
+}
+
+/**
+ * Call a single tool live and return its raw MCP result — for the inspector.
+ * A tool that fails returns an `isError` result (not a throw), so the inspector
+ * can render the error content; connection/handshake failures still throw.
+ */
+export async function callExternalServerTool(slug: string, toolName: string, args: unknown): Promise<unknown> {
+	return withUpstreamClient(slug, async (client) =>
+		client.request(
+			{ method: 'tools/call', params: { name: toolName, arguments: (args ?? {}) as Record<string, unknown> } },
+			CompatibilityCallToolResultSchema
+		)
+	);
 }

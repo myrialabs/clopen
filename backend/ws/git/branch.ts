@@ -142,12 +142,14 @@ export const branchHandler = createRouter()
 		data: t.Object({
 			projectId: t.String(),
 			oldName: t.String(),
-			newName: t.String({ minLength: 1 })
+			newName: t.String({ minLength: 1 }),
+			repoPath: t.Optional(t.String())
 		}),
 		response: t.Object({ ok: t.Boolean() })
 	}, async ({ data, conn }) => {
 		const project = requireProjectAccess(conn, data.projectId);
-		await gitService.renameBranch(project.path, data.oldName, data.newName);
+		const cwd = resolveRepoCwd(project.path, data.repoPath);
+		await gitService.renameBranch(cwd, data.oldName, data.newName);
 		return { ok: true };
 	})
 

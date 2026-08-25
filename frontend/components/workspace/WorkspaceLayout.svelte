@@ -18,6 +18,7 @@
 	import LoadingScreen from '$frontend/components/common/feedback/LoadingScreen.svelte';
 	import ModalProvider from '$frontend/components/workspace/ModalProvider.svelte';
 	import SettingsModal from '$frontend/components/settings/SettingsModal.svelte';
+	import FilePeekModal from '$frontend/components/files/FilePeekModal.svelte';
 	import NotificationToast from '$frontend/components/common/feedback/NotificationToast.svelte';
 
 	// Services
@@ -27,7 +28,9 @@
 	import { initializeSessions } from '$frontend/stores/core/sessions.svelte';
 	import { initializeNotifications, notificationStore } from '$frontend/stores/ui/notification.svelte';
 	import { applyServerSettings, loadSystemSettings } from '$frontend/stores/features/settings.svelte';
+	import { loadUserState } from '$frontend/stores/core/user-state.svelte';
 	import { applyTodoPanelState } from '$frontend/stores/ui/todo-panel.svelte';
+	import { applyCommandUsage } from '$frontend/stores/ui/command-usage.svelte';
 	import { presenceState, initPresence } from '$frontend/stores/core/presence.svelte';
 	import { updateTitleBadge } from '$frontend/services/title.service';
 	import ws from '$frontend/utils/ws';
@@ -76,29 +79,23 @@
 			setProgress(20, 'Connecting...');
 			await ws.waitUntilConnected(10000);
 
-			// Step 3: Restore user state from server
+			// Step 3: Restore user state from server.
+			// Shared loader — auth already fetched this for the current session, so
+			// this is normally a cache hit and never a second round trip.
 			setProgress(30, 'Restoring state...');
-			let serverState: {
-				currentProjectId: string | null;
-				lastView: string | null;
-				settings: any;
-				unreadSessions: any;
-				todoPanelState: any;
-				projectOrder: string[] | null;
-			} | null = null;
-			try {
-				serverState = await ws.http('user:restore-state', {});
-				debug.log('workspace', 'Server state restored:', serverState);
-			} catch (err) {
-				debug.warn('workspace', 'Failed to restore server state, using defaults:', err);
-			}
+			const serverState = await loadUserState();
+			debug.log('workspace', 'Server state restored:', serverState);
 
 			// Step 4: Apply restored state + load system settings + setup presence
 			setProgress(40);
-			if (serverState?.settings) {
+			// Only mark settings hydrated when the restore actually succeeded —
+			// applying defaults over a failed load is what used to overwrite the
+			// user's saved settings on the next change.
+			if (serverState) {
 				applyServerSettings(serverState.settings);
 			}
 			applyTodoPanelState(serverState?.todoPanelState);
+			applyCommandUsage(serverState?.commandUsage);
 			restoreLastView(serverState?.lastView);
 			restoreUnreadSessions(serverState?.unreadSessions);
 			restoreProjectOrder(serverState?.projectOrder);
@@ -200,6 +197,9 @@
 
 <!-- Settings Modal -->
 <SettingsModal />
+
+<!-- File peek modal (opened when a file link fires while the Files panel is hidden) -->
+<FilePeekModal />
 
 <!-- Toast Notifications -->
 {#if notificationStore.notifications.length > 0}

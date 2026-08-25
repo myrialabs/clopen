@@ -44,6 +44,19 @@ export const crudHandler = createRouter()
 		return loadMessage(message);
 	})
 
+	// Get full (untrimmed) sub-agent messages nested under a message.
+	// Used by the Debug modal to show complete data despite the wire trimming
+	// sub-agent noise from the normal chat payload.
+	.http('messages:get-subagents', {
+		data: t.Object({
+			messageId: t.String({ minLength: 1 })
+		}),
+		response: t.Array(t.Any())
+	}, async ({ data, conn }) => {
+		requireMessageAccess(conn, data.messageId);
+		return messageQueries.getSubAgentMessages(data.messageId);
+	})
+
 	// Delete message
 	.http('messages:delete', {
 		data: t.Object({

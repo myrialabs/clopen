@@ -8,12 +8,17 @@
  */
 
 import ws from '$frontend/utils/ws';
+import {
+	hydrateSettings,
+	resetSettingsHydration,
+	updateSystemSettings
+} from '$frontend/stores/features/settings.svelte';
 import { debug } from '$shared/utils/logger';
 import type { AuthMode } from '$shared/types/stores/settings';
 
 const SESSION_TOKEN_KEY = 'clopen-session-token';
 
-export type AuthState = 'loading' | 'setup' | 'login' | 'invite' | 'ready';
+export type AuthState = 'loading' | 'setup' | 'login' | 'invite' | 'device' | 'ready';
 
 export interface AuthUser {
 	id: string;
@@ -31,14 +36,36 @@ let sessionToken = $state<string | null>(null);
 let personalAccessToken = $state<string | null>(null);
 let authMode = $state<AuthMode>('required');
 
-// Listen for server-side force-logout (auth mode switched to required)
-ws.on('auth:force-logout', (payload) => {
-	debug.log('auth', `Force logout received: ${payload.reason}`);
+/**
+ * Load this session's per-user state before showing any screen that can write
+ * it back. The setup wizard edits settings too, so hydration cannot wait for the
+ * workspace to mount — an un-hydrated store persists defaults over the user's
+ * real settings. Never throws: a failed load simply leaves saving disabled.
+ */
+async function hydrateSession(): Promise<void> {
+	try {
+		if (!(await hydrateSettings())) {
+			debug.warn('auth', 'User settings could not be loaded — they will not be saved until a successful reload');
+		}
+	} catch (err) {
+		debug.error('auth', 'User settings hydration failed:', err);
+	}
+}
+
+/** Clear session-scoped client state shared by every sign-out path. */
+function clearSessionState(): void {
 	currentUser = null;
 	sessionToken = null;
 	personalAccessToken = null;
 	localStorage.removeItem(SESSION_TOKEN_KEY);
 	ws.setSessionToken(null);
+	resetSettingsHydration();
+}
+
+// Listen for server-side force-logout (auth mode switched to required)
+ws.on('auth:force-logout', (payload) => {
+	debug.log('auth', `Force logout received: ${payload.reason}`);
+	clearSessionState();
 	authMode = 'required';
 	authState = 'login';
 });
@@ -46,11 +73,7 @@ ws.on('auth:force-logout', (payload) => {
 // Listen for targeted force-logout (e.g., project access revoked)
 ws.on('auth:force-logout-user', (payload) => {
 	debug.log('auth', `User force-logout received: ${payload.reason}`);
-	currentUser = null;
-	sessionToken = null;
-	personalAccessToken = null;
-	localStorage.removeItem(SESSION_TOKEN_KEY);
-	ws.setSessionToken(null);
+	clearSessionState();
 	authState = 'login';
 });
 
@@ -84,7 +107,7 @@ export const authStore = {
 			// If we have a stored token, try to authenticate
 			if (storedToken) {
 				try {
-					const result = await ws.http('auth:login', { token: storedToken });
+					const result = await ws.http('auth:login', { token: storedToken, userAgent: navigator.userAgent });
 					currentUser = result.user;
 					sessionToken = result.sessionToken;
 					// Update stored token (may have been refreshed)
@@ -95,6 +118,10 @@ export const authStore = {
 					// Fetch auth mode and onboarding status from server
 					const status = await ws.http('auth:status', {});
 					authMode = status.authMode;
+
+					// Load saved settings before any screen renders — the wizard can
+					// write them too, so this must not wait for the workspace.
+					await hydrateSession();
 
 					// If onboarding not yet completed, show wizard instead of going to ready
 					if (!status.onboardingComplete) {
@@ -118,6 +145,12 @@ export const authStore = {
 			const hash = window.location.hash;
 			if (hash.startsWith('#invite/')) {
 				authState = 'invite';
+				return;
+			}
+
+			// Check if a device-pairing code is in URL hash (Remote Access "Add a device")
+			if (hash.startsWith('#device/')) {
+				authState = 'device';
 				return;
 			}
 
@@ -165,6 +198,7 @@ export const authStore = {
 		sessionToken = result.sessionToken;
 		localStorage.setItem(SESSION_TOKEN_KEY, result.sessionToken);
 		ws.setSessionToken(result.sessionToken);
+		await hydrateSession();
 		authState = 'ready';
 		debug.log('auth', `No-auth auto-login: ${result.user.name}`);
 	},
@@ -173,13 +207,14 @@ export const authStore = {
 	 * Setup — create first admin account (with-auth mode).
 	 */
 	async setup(name: string) {
-		const result = await ws.http('auth:setup', { name });
+		const result = await ws.http('auth:setup', { name, userAgent: navigator.userAgent });
 		currentUser = result.user;
 		sessionToken = result.sessionToken;
 		personalAccessToken = result.personalAccessToken;
 		localStorage.setItem(SESSION_TOKEN_KEY, result.sessionToken);
 		ws.setSessionToken(result.sessionToken);
 		authMode = 'required';
+		await hydrateSession();
 		// Don't set authState to 'ready' yet — setup page shows PAT first
 		debug.log('auth', `Admin setup complete: ${result.user.name}`);
 	},
@@ -194,6 +229,7 @@ export const authStore = {
 		localStorage.setItem(SESSION_TOKEN_KEY, result.sessionToken);
 		ws.setSessionToken(result.sessionToken);
 		authMode = 'none';
+		await hydrateSession();
 		// Don't set authState to 'ready' yet — wizard continues to next step
 		debug.log('auth', `No-auth setup complete: ${result.user.name}`);
 	},
@@ -203,8 +239,9 @@ export const authStore = {
 	 * Regenerates PAT for the existing no-auth admin and updates authMode setting.
 	 */
 	async switchToWithAuth() {
-		const { updateSystemSettings } = await import('$frontend/stores/features/settings.svelte');
-		await updateSystemSettings({ authMode: 'required' });
+		if (!(await updateSystemSettings({ authMode: 'required' }))) {
+			throw new Error('Could not switch to login mode. Please try again.');
+		}
 
 		const result = await ws.http('auth:regenerate-pat', {});
 		personalAccessToken = result.personalAccessToken;
@@ -217,37 +254,38 @@ export const authStore = {
 	 * Only updates the authMode setting; existing user remains unchanged.
 	 */
 	async switchToNoAuth() {
-		const { updateSystemSettings } = await import('$frontend/stores/features/settings.svelte');
-		await updateSystemSettings({ authMode: 'none' });
+		if (!(await updateSystemSettings({ authMode: 'none' }))) {
+			throw new Error('Could not switch to no-login mode. Please try again.');
+		}
 
 		authMode = 'none';
 		debug.log('auth', 'Switched to no-auth mode');
 	},
 
 	/**
-	 * Complete setup — transition to ready state after wizard is done.
-	 * Saves onboardingComplete flag so wizard won't show again.
+	 * Complete setup — transition to ready state after the wizard is done.
+	 *
+	 * The wizard is only dismissed once the server confirms it recorded the
+	 * completion. Persisting this best-effort is what let a failed write send the
+	 * user silently back through setup on the next refresh; now the failure is
+	 * raised so the wizard can show it and let them retry.
 	 */
 	async completeSetup() {
-		personalAccessToken = null;
-
-		// Save onboardingComplete to system settings
-		try {
-			const { updateSystemSettings } = await import('$frontend/stores/features/settings.svelte');
-			await updateSystemSettings({ onboardingComplete: true });
-		} catch {
-			// Best-effort — if this fails, wizard may show again
-			debug.warn('auth', 'Failed to save onboardingComplete flag');
+		const result = await ws.http('auth:complete-onboarding', {});
+		if (!result?.onboardingComplete) {
+			throw new Error('Setup could not be saved. Please try again.');
 		}
 
+		personalAccessToken = null;
 		authState = 'ready';
+		debug.log('auth', 'Onboarding recorded as complete');
 	},
 
 	/**
 	 * Login with a Personal Access Token (PAT).
 	 */
 	async login(token: string) {
-		const result = await ws.http('auth:login', { token });
+		const result = await ws.http('auth:login', { token, userAgent: navigator.userAgent });
 		currentUser = result.user;
 		sessionToken = result.sessionToken;
 		localStorage.setItem(SESSION_TOKEN_KEY, result.sessionToken);
@@ -256,6 +294,7 @@ export const authStore = {
 		// Check if onboarding is pending
 		const status = await ws.http('auth:status', {});
 		authMode = status.authMode;
+		await hydrateSession();
 		if (!status.onboardingComplete) {
 			authState = 'setup';
 			debug.log('auth', `Logged in, onboarding pending: ${result.user.name}`);
@@ -270,7 +309,7 @@ export const authStore = {
 	 * Accept invite — create account from invite token.
 	 */
 	async acceptInvite(inviteToken: string, name: string) {
-		const result = await ws.http('auth:accept-invite', { inviteToken, name });
+		const result = await ws.http('auth:accept-invite', { inviteToken, name, userAgent: navigator.userAgent });
 		currentUser = result.user;
 		sessionToken = result.sessionToken;
 		personalAccessToken = result.personalAccessToken;
@@ -278,6 +317,7 @@ export const authStore = {
 		ws.setSessionToken(result.sessionToken);
 		// Clear invite hash from URL
 		window.location.hash = '';
+		await hydrateSession();
 		debug.log('auth', `Invite accepted: ${result.user.name}`);
 	},
 
@@ -290,6 +330,33 @@ export const authStore = {
 	},
 
 	/**
+	 * Claim a device-pairing code — signs this device in as the code's owner.
+	 * Used by the DeviceClaimPage after reading the code from the URL hash.
+	 */
+	async claimDeviceCode(deviceCode: string) {
+		const result = await ws.http('auth:claim-device-code', { deviceCode, userAgent: navigator.userAgent });
+		currentUser = result.user;
+		sessionToken = result.sessionToken;
+		localStorage.setItem(SESSION_TOKEN_KEY, result.sessionToken);
+		ws.setSessionToken(result.sessionToken);
+		// Clear the device hash from the URL so a refresh doesn't re-claim.
+		window.location.hash = '';
+
+		// Respect a pending onboarding wizard, mirroring login().
+		const status = await ws.http('auth:status', {});
+		authMode = status.authMode;
+		await hydrateSession();
+		if (!status.onboardingComplete) {
+			authState = 'setup';
+			debug.log('auth', `Device signed in, onboarding pending: ${result.user.name}`);
+			return;
+		}
+
+		authState = 'ready';
+		debug.log('auth', `Device signed in: ${result.user.name} (${result.user.role})`);
+	},
+
+	/**
 	 * Logout — clear session.
 	 */
 	async logout() {
@@ -298,11 +365,7 @@ export const authStore = {
 		} catch {
 			// Ignore errors during logout
 		}
-		currentUser = null;
-		sessionToken = null;
-		personalAccessToken = null;
-		localStorage.removeItem(SESSION_TOKEN_KEY);
-		ws.setSessionToken(null);
+		clearSessionState();
 		authState = 'login';
 		debug.log('auth', 'Logged out');
 	},
@@ -316,11 +379,7 @@ export const authStore = {
 		} catch {
 			// Ignore errors
 		}
-		currentUser = null;
-		sessionToken = null;
-		personalAccessToken = null;
-		localStorage.removeItem(SESSION_TOKEN_KEY);
-		ws.setSessionToken(null);
+		clearSessionState();
 		authState = 'login';
 		debug.log('auth', 'All sessions logged out');
 	},

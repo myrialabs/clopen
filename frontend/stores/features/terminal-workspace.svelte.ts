@@ -59,6 +59,7 @@ export function markTerminalDirty(): void {
 
 registerDock({
 	id: 'terminal',
+	panelId: 'terminal',
 	snapshot() {
 		const projectId = getActiveWorkspaceProjectId();
 		if (!projectId) return undefined;

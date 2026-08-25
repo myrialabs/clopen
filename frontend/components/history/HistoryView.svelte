@@ -14,6 +14,7 @@
 	import TimelineModal from '../checkpoint/TimelineModal.svelte';
 	import { presenceState } from '$frontend/stores/core/presence.svelte';
 	import { debug } from '$shared/utils/logger';
+	import { parseSnippet } from '$frontend/utils/fts-snippet';
 
 	// Check if a session has an active stream
 	function isSessionStreaming(chatSessionId: string): boolean {
@@ -68,8 +69,8 @@
 	let showTimelineModal = $state(false);
 	let timelineSession = $state<ChatSession | null>(null);
 
-	// Deep search state
-	let deepSearchResults = $state<Set<string> | null>(null);
+	// Deep search state — sessionId -> highlighted snippet
+	let deepSearchResults = $state<Map<string, string> | null>(null);
 	let deepSearching = $state(false);
 	let searchDebounceTimer: ReturnType<typeof setTimeout> | undefined;
 
@@ -84,14 +85,14 @@
 		searchDebounceTimer = setTimeout(async () => {
 			try {
 				const result = await ws.http('sessions:search', { query: query.trim() });
-				deepSearchResults = new Set(result.sessionIds);
+				deepSearchResults = new Map(result.results.map(r => [r.sessionId, r.snippet]));
 			} catch (err) {
 				debug.error('session', 'Deep search failed:', err);
 				deepSearchResults = null;
 			} finally {
 				deepSearching = false;
 			}
-		}, 300);
+		}, 150);
 	}
 
 	$effect(() => {
@@ -389,6 +390,7 @@
 					{#each filteredSessions as session (session.id)}
 						{@const title = session.title || session.head_title || 'New Conversation'}
 						{@const summary = session.head_summary || 'No messages yet'}
+						{@const deepSnippet = deepSearchResults?.get(session.id)}
 						{@const userCount = session.user_count ?? 0}
 						{@const messageCount = session.message_count ?? 0}
 						<div class="bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-700 rounded-lg p-6 transition-all duration-200">
@@ -438,7 +440,13 @@
 
 									<!-- Summary -->
 									<p class="text-sm text-slate-600 dark:text-slate-400 line-clamp-2">
-										{summary}
+										{#if deepSnippet}
+											{#each parseSnippet(deepSnippet) as part}
+												{#if part.hl}<mark class="bg-transparent text-violet-600 dark:text-violet-400 font-semibold">{part.text}</mark>{:else}{part.text}{/if}
+											{/each}
+										{:else}
+											{summary}
+										{/if}
 									</p>
 
 								</div>

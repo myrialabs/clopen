@@ -43,6 +43,31 @@ import * as migration041 from './041_add_mcp_config_schema';
 import * as migration042 from './042_add_mcp_oauth';
 import * as migration043 from './043_relocate_engine_config_dirs';
 import * as migration044 from './044_create_skills_table';
+import * as migration045 from './045_create_commands_table';
+import * as migration046 from './046_create_subagents_table';
+import * as migration047 from './047_create_instructions_table';
+import * as migration048 from './048_add_mcp_tool_overrides';
+import * as migration049 from './049_create_permission_sets_table';
+import * as migration050 from './050_create_profiles_tables';
+import * as migration051 from './051_add_profile_to_sessions';
+import * as migration052 from './052_add_default_profile_to_projects';
+import * as migration053 from './053_add_profile_to_permission_sets';
+import * as migration054 from './054_drop_subagent_agent_type';
+import * as migration055 from './055_artifact_model_tools_per_engine';
+import * as migration056 from './056_support_mssql_driver';
+import * as migration057 from './057_seed_pi_provider';
+import * as migration058 from './058_seed_cline_provider';
+import * as migration059 from './059_seed_cursor_provider';
+import * as migration060 from './060_create_device_codes_table';
+import * as migration061 from './061_add_session_device_metadata';
+import * as migration062 from './062_add_session_source';
+import * as migration063 from './063_add_invite_project_ids';
+import * as migration064 from './064_create_messages_fts';
+import * as migration065 from './065_add_session_reasoning_effort';
+import * as migration066 from './066_create_memory_graph';
+import * as migration067 from './067_add_memory_graph_layout';
+import * as migration068 from './068_create_engine_config_revision';
+import * as migration069 from './069_create_ssh_client_tables';
 
 // Export all migrations in order
 export const migrations = [
@@ -309,6 +334,156 @@ export const migrations = [
 		description: migration044.description,
 		up: migration044.up,
 		down: migration044.down
+	},
+	{
+		id: '045',
+		description: migration045.description,
+		up: migration045.up,
+		down: migration045.down
+	},
+	{
+		id: '046',
+		description: migration046.description,
+		up: migration046.up,
+		down: migration046.down
+	},
+	{
+		id: '047',
+		description: migration047.description,
+		up: migration047.up,
+		down: migration047.down
+	},
+	{
+		id: '048',
+		description: migration048.description,
+		up: migration048.up,
+		down: migration048.down
+	},
+	{
+		id: '049',
+		description: migration049.description,
+		up: migration049.up,
+		down: migration049.down
+	},
+	{
+		id: '050',
+		description: migration050.description,
+		up: migration050.up,
+		down: migration050.down
+	},
+	{
+		id: '051',
+		description: migration051.description,
+		up: migration051.up,
+		down: migration051.down
+	},
+	{
+		id: '052',
+		description: migration052.description,
+		up: migration052.up,
+		down: migration052.down
+	},
+	{
+		id: '053',
+		description: migration053.description,
+		up: migration053.up,
+		down: migration053.down
+	},
+	{
+		id: '054',
+		description: migration054.description,
+		up: migration054.up,
+		down: migration054.down
+	},
+	{
+		id: '055',
+		description: migration055.description,
+		up: migration055.up,
+		down: migration055.down
+	},
+	{
+		id: '056',
+		description: migration056.description,
+		up: migration056.up,
+		down: migration056.down
+	},
+	{
+		id: '057',
+		description: migration057.description,
+		up: migration057.up,
+		down: migration057.down
+	},
+	{
+		id: '058',
+		description: migration058.description,
+		up: migration058.up,
+		down: migration058.down
+	},
+	{
+		id: '059',
+		description: migration059.description,
+		up: migration059.up,
+		down: migration059.down
+	},
+	{
+		id: '060',
+		description: migration060.description,
+		up: migration060.up,
+		down: migration060.down
+	},
+	{
+		id: '061',
+		description: migration061.description,
+		up: migration061.up,
+		down: migration061.down
+	},
+	{
+		id: '062',
+		description: migration062.description,
+		up: migration062.up,
+		down: migration062.down
+	},
+	{
+		id: '063',
+		description: migration063.description,
+		up: migration063.up,
+		down: migration063.down
+	},
+	{
+		id: '064',
+		description: migration064.description,
+		up: migration064.up,
+		down: migration064.down
+	},
+	{
+		id: '065',
+		description: migration065.description,
+		up: migration065.up,
+		down: migration065.down
+	},
+	{
+		id: '066',
+		description: migration066.description,
+		up: migration066.up,
+		down: migration066.down
+	},
+	{
+		id: '067',
+		description: migration067.description,
+		up: migration067.up,
+		down: migration067.down
+	},
+	{
+		id: '068',
+		description: migration068.description,
+		up: migration068.up,
+		down: migration068.down
+	},
+	{
+		id: '069',
+		description: migration069.description,
+		up: migration069.up,
+		down: migration069.down
 	}
 ];
 

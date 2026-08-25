@@ -8,11 +8,13 @@
 
 import { dbClientConnectionQueries } from '../database/queries';
 import { openSshTunnel, type SshTunnel } from './ssh-tunnel';
+import { openTunnelViaSavedConnection } from '../ssh/tunnel';
 import { MysqlAdapter } from './drivers/mysql';
 import { PostgresAdapter } from './drivers/postgres';
 import { SqliteAdapter } from './drivers/sqlite';
 import { MongoDbAdapter } from './drivers/mongodb';
 import { RedisAdapter } from './drivers/redis';
+import { MssqlAdapter } from './drivers/mssql';
 import type { DbClientDriverAdapter } from './drivers/types';
 import type {
 	DbClientConnection,
@@ -28,8 +30,11 @@ interface ConnectionEntry {
 	lastUsedAt: number;
 }
 
-const IDLE_MS = 10 * 60 * 1000; // 10 minutes
-const SWEEP_INTERVAL_MS = 60 * 1000; // 1 minute
+// Tear an idle adapter (and its pool) down quickly so a browsed connection
+// doesn't hold server-side sessions after the user walks away. The adapter is
+// reopened transparently on next use.
+const IDLE_MS = 60 * 1000; // 1 minute
+const SWEEP_INTERVAL_MS = 30 * 1000; // 30 seconds
 
 class ConnectionManager {
 	private entries = new Map<string, ConnectionEntry>();
@@ -53,6 +58,7 @@ class ConnectionManager {
 			case 'sqlite': return new SqliteAdapter();
 			case 'mongodb': return new MongoDbAdapter();
 			case 'redis': return new RedisAdapter();
+			case 'mssql': return new MssqlAdapter();
 			default: {
 				const exhaustive: never = driver;
 				throw new Error(`Unsupported driver: ${exhaustive}`);
@@ -67,7 +73,12 @@ class ConnectionManager {
 		if (conn.ssh.enabled && conn.driver !== 'sqlite') {
 			const remoteHost = conn.host || '127.0.0.1';
 			const remotePort = conn.port ?? defaultPortFor(conn.driver);
-			tunnel = await openSshTunnel(conn.ssh, remoteHost, remotePort);
+			// Two modes: a saved SSH host from the SSH client (shared credentials,
+			// jump chain and trusted host key), or the credentials stored inline on
+			// this connection. The inline path is what every existing connection uses.
+			tunnel = conn.ssh.connectionId
+				? await openTunnelViaSavedConnection(conn.ssh.connectionId, remoteHost, remotePort)
+				: await openSshTunnel(conn.ssh, remoteHost, remotePort);
 		}
 
 		try {
@@ -225,6 +236,7 @@ function defaultPortFor(driver: DbDriver): number {
 		case 'postgres': return 5432;
 		case 'mongodb': return 27017;
 		case 'redis': return 6379;
+		case 'mssql': return 1433;
 		case 'sqlite': return 0;
 	}
 }
@@ -244,6 +256,7 @@ function inputToConnection(input: DbClientConnectionInput): DbClientConnection {
 		sslCa: input.sslCa ?? null,
 		ssh: {
 			enabled: input.ssh?.enabled ?? false,
+			connectionId: input.ssh?.connectionId ?? null,
 			host: input.ssh?.host ?? '',
 			port: input.ssh?.port ?? 22,
 			username: input.ssh?.username ?? '',

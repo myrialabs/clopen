@@ -52,7 +52,14 @@ System for adding custom tools to AI engines with type-safe TypeScript definitio
 
 **Features:**
 - Single source of truth — define tools once, use in every engine
-- In-process execution for Claude Code via `createSdkMcpServer`
+- **Decoupled from the Claude Agent SDK.** `internal/` holds only
+  engine-agnostic raw tool defs (built on `@modelcontextprotocol/sdk`). The
+  Claude-SDK-shaped in-process servers are built **lazily** — only on the Claude
+  path — inside `getEnabledMcpServers()` (now `async`), which lazy-loads
+  `createSdkMcpServer`/`tool` from `@anthropic-ai/claude-agent-sdk` via
+  `loadEngineSdk`. Non-Claude engines never touch the Claude SDK; they already
+  use the remote HTTP bridge (`createRemoteMcpServer`).
+- In-process execution for Claude Code via `createSdkMcpServer` (loaded on demand)
 - Remote HTTP MCP server (Streamable HTTP) for Open Code, Codex, and
   Copilot via `createRemoteMcpServer` mounted at `/mcp`
 - All engines execute handlers in-process (no subprocess, no bridge)
@@ -180,10 +187,14 @@ backend/mcp/
 │       │   ├── index.ts
 │       │   └── get-temperature.ts
 │       └── browser-automation/  # Example: Browser automation service
-│           ├── index.ts
-│           ├── actions.ts
-│           ├── browser.ts
-│           └── inspection.ts
+│           ├── index.ts        # One tool (`actions`), assembled from the registry
+│           ├── schema.ts       # Discriminated union over every action
+│           ├── description.ts  # Tool docs, generated from the registry
+│           ├── runner.ts       # Batch execution: grouping, retargeting, reporting
+│           ├── context.ts      # Project / chat-session / tab resolution
+│           ├── format.ts       # Run report → MCP content blocks
+│           ├── paths.ts        # Project-scoped file paths (screenshot, upload)
+│           └── actions/        # One module per group; index.ts is the registry
 ├── external/           # User-installed servers from the official registry
 │   ├── types.ts        # CatalogServer / ResolvedExternalServer
 │   ├── registry-client.ts  # Fetch + normalise registry.modelcontextprotocol.io
@@ -213,18 +224,35 @@ servers/
     └── utils.ts    # Shared utilities
 ```
 
-Example structure from `browser-automation`:
+`browser-automation` goes one step further: it exposes a **single** tool whose
+first argument is an array of actions, so an agent batches a whole interaction
+into one call instead of paying a round trip per click. Its actions live in a
+registry, and the tool's schema, its documentation and the runner's dispatch
+table are all derived from that one list — adding an action is one file plus one
+registry line, and the three cannot drift apart.
+
 ```
 servers/browser-automation/
-├── index.ts         # Main server definition with all tools
-├── session.ts       # Session management handlers
-├── navigation.ts    # Navigation handlers
-├── actions.ts       # Browser action handlers
-├── inspection.ts    # Page inspection handlers
-└── ...             # Other organized handler files
+├── index.ts         # defineServer, one tool
+├── schema.ts        # z.discriminatedUnion over every action's schema
+├── description.ts   # Prose + a reference generated from each action's `doc`
+├── runner.ts        # Runs the batch, reports per action
+└── actions/
+    ├── index.ts     # THE registry
+    ├── tabs.ts · navigation.ts · input.ts · inspect.ts · console.ts
+    └── dom-analyze.ts  # Large browser-side program, kept on its own
 ```
 
 ### Data Flow
+
+> **Where the DB rows come from.** Code-defined internal servers are mirrored
+> into `mcp_servers` by `syncInternalServers()` (`internal/config.ts`), which is
+> called from `backend/bootstrap.ts::bootstrapAfterDbInit()` — shared by server
+> startup **and** the "Clear All Data" handler. Clear-data wipes `~/.clopen` and
+> re-runs only migrations + seeders on the live process, so a built-in synced
+> from code (Browser Automation, …) would otherwise disappear from Settings →
+> MCP until the next restart. Anything else established from code after
+> `initializeDatabase()` belongs in that same function.
 
 **Claude Code (in-process):**
 ```
@@ -238,7 +266,8 @@ servers/browser-automation/
    └─> User config merged with registry automatically
         ↓
 4. Claude Agent SDK (stream.ts)
-   └─> Uses getEnabledMcpServers()
+   └─> Uses await getEnabledMcpServers() — builds Claude-SDK servers lazily
+       from the raw defs (lazy-loads @anthropic-ai/claude-agent-sdk)
         ↓
 5. Claude uses the tool (in-process handler execution)
         ↓
@@ -255,7 +284,7 @@ servers/browser-automation/
    └─> Mounted at /mcp on the main Elysia server
         ↓
 3. Open Code engine (opencode/stream.ts)
-   └─> Uses getOpenCodeMcpConfig() → { type: 'remote', url: '/mcp' }
+   └─> Uses getOpenCodeMcpConfig() → { type: 'remote', url: '/mcp?engine=opencode' }
         ↓
 4. Open Code connects via Streamable HTTP transport
    └─> Sends JSON-RPC tool calls to /mcp endpoint
@@ -272,8 +301,11 @@ servers/browser-automation/
 
 **`defineServer`**
 Helper function to define MCP server with automatic metadata extraction.
-Stores both Claude SDK server instance AND raw tool definitions (`toolDefs`)
-for reuse by both engines.
+Stores **engine-agnostic** raw tool definitions (`toolDefs`, built on
+`@modelcontextprotocol/sdk`) — no Claude SDK dependency. The Claude-SDK-shaped
+in-process server is constructed lazily from these defs on the Claude path only
+(`getEnabledMcpServers()`); the remote HTTP bridge (`createRemoteMcpServer`)
+builds its `McpServer` from the same defs for every other engine.
 
 **`buildServerRegistries`**
 Function to build server registries from server array.
@@ -529,13 +561,18 @@ const weatherServer = serverRegistry["weather-service"];
 ### Main Functions
 
 #### `getEnabledMcpServers()`
-Returns all enabled MCP servers for use with Claude SDK.
+Returns all enabled MCP servers as Claude-SDK-shaped in-process servers. This
+is the **only** path that touches the Claude Agent SDK: it is `async` and
+lazy-loads `createSdkMcpServer`/`tool` from `@anthropic-ai/claude-agent-sdk`
+(via `loadEngineSdk`) only when called — so non-Claude engines never pull the
+Claude SDK in. Every other engine consumes the raw tool defs through the remote
+HTTP bridge instead.
 
 ```typescript
 import { getEnabledMcpServers } from '$backend/mcp';
 
-const servers = getEnabledMcpServers();
-// Returns: Record<string, McpServerConfig>
+const servers = await getEnabledMcpServers();
+// Returns: Promise<Record<string, McpServerConfig>>
 ```
 
 #### `getAllowedMcpTools()`
@@ -575,8 +612,33 @@ Returns MCP configuration for Open Code engine (remote HTTP MCP server).
 import { getOpenCodeMcpConfig } from '$backend/mcp';
 
 const mcpConfig = getOpenCodeMcpConfig();
-// Returns: { 'clopen-mcp': { type: 'remote', url: 'http://localhost:9151/mcp', ... } }
+// Returns: { 'clopen-mcp': { type: 'remote', url: 'http://localhost:9151/mcp?engine=opencode', ... } }
 ```
+
+##### Who is calling: the bridge URL carries the caller
+
+The in-process engines (Claude, Pi, Cline) wrap every tool handler in the
+stream's `McpExecutionContext`, so a handler that asks "which project is this?"
+always gets the right answer. An HTTP request carries no such context, and the
+fallback — the most recently *started* stream anywhere in the app — is the
+project the **user** last prompted in, not the one the agent is working in. An
+agent driving the Preview Browser in project A opened its tabs in project B the
+moment the user switched over there.
+
+So each config builder addresses the bridge with as much identity as its own
+lifetime allows, and `handleMcpRequest` binds that for the MCP session:
+
+| Engine        | Query string                            | Why not more |
+| ------------- | --------------------------------------- | ------------ |
+| Copilot, Cursor, Qwen | `engine`, `project`, `session`  | — built per stream |
+| Codex         | `engine`, `project`                     | one client per project, shared by its chat sessions |
+| Open Code     | `engine`                                | one pooled server per Profile, shared across projects |
+
+A caller that names only its project resolves the chat session to the most
+recent stream *in that project*; a caller that names only its engine resolves to
+the most recent stream *on that engine*. Both are guesses, but confined ones —
+and when a config gains a narrower lifetime, pass the richer context and the
+guess disappears.
 
 #### `resolveOpenCodeToolName(toolName)`
 Resolve a remote-MCP tool name to `mcp__server__tool` format (single source
@@ -623,17 +685,20 @@ engines. Each returns the **same** `/mcp` URL in the SDK-specific shape:
 
 ```typescript
 // Codex (config object flattened to --config flags)
-getCodexMcpConfig();
-// { 'clopen-mcp': { url: 'http://localhost:9151/mcp', tools: { ... } } }
+getCodexMcpConfig(profileFilter, mcpContext);
+// { 'clopen-mcp': { url: 'http://localhost:9151/mcp?engine=codex&project=…', tools: { ... } } }
 
 // Copilot (MCPHTTPServerConfig from @github/copilot-sdk)
-getCopilotMcpConfig();
-// { 'clopen-mcp': { type: 'http', url: 'http://localhost:9151/mcp', tools: [...] } }
+getCopilotMcpConfig(profileFilter, mcpContext);
+// { 'clopen-mcp': { type: 'http', url: 'http://localhost:9151/mcp?engine=copilot&project=…&session=…', tools: [...] } }
 ```
+
+Pass the stream's `mcpContext` — without it the bridge cannot tell whose tool
+call it is holding (see "Who is calling" above).
 
 When adding a new engine that consumes streamable-HTTP MCP, add a sibling
 `getXxxMcpConfig()` here — do **not** introduce a new HTTP listener or a
-new namespace key. See `backend/engine/README.md` §9.12 for the full
+new namespace key. See `backend/engine/README.md` §10.12 for the full
 checklist (variable naming, type imports, auto-approval surface, etc.).
 
 ### Helper Functions
@@ -1127,7 +1192,9 @@ export default defineServer({
 **Problem:** TypeScript errors in custom tool.
 
 **Solutions:**
-1. Install dependencies: `bun install zod @anthropic-ai/claude-agent-sdk`
+1. Install dependencies: `bun install` (internal tools depend only on `zod`
+   + `@modelcontextprotocol/sdk` — NOT the Claude Agent SDK, which is loaded on
+   demand elsewhere)
 2. Verify you're importing `defineServer` from `../helper`
 3. Check that server name matches between `defineServer` and `config.ts`
 4. Verify tool names in `config.ts` match tool keys in `defineServer`
@@ -1195,7 +1262,7 @@ automatically available to **every** engine:
 ### Adding a New Engine
 
 If your engine's CLI/SDK accepts a streamable-HTTP MCP URL, follow the
-checklist in `backend/engine/README.md` §9.12. The summary:
+checklist in `backend/engine/README.md` §10.12. The summary:
 
 1. Add a sibling `getXxxMcpConfig()` next to the existing helpers in
    `config.ts`. Reuse the `'clopen-mcp'` namespace key. Use the SDK's
@@ -1215,7 +1282,7 @@ checklist in `backend/engine/README.md` §9.12. The summary:
    credential handling (the proxy injects it). Codex still uses
    `http_headers`, **not** `bearer_token`. See
    [External Servers, OAuth & Connection Status](#external-servers-oauth--connection-status)
-   and `backend/engine/docs/lessons-learned.md` §9.18.
+   and `backend/engine/docs/lessons-learned.md` §10.18.
 
 ### File Locations
 

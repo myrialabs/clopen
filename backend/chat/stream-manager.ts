@@ -9,6 +9,7 @@
  */
 
 import { EventEmitter } from 'events';
+import { checkEngineSetup } from '../engine/engine-setup';
 import type {
 	EngineOutput,
 	UnifiedMessage,
@@ -32,12 +33,17 @@ import type {
 } from '$shared/types/unified';
 import type { EngineType } from '$shared/types/unified';
 import type { DatabaseMessage } from '$shared/types/database/schema';
-import { getProjectEngine, initializeProjectEngine } from '../engine';
-import { messageQueries, sessionQueries } from '../database/queries';
+import { initializeProjectEngine, type AIEngine } from '../engine';
+import { messageQueries, projectQueries, sessionQueries } from '../database/queries';
 import { snapshotService } from '../snapshot/snapshot-service';
+import { snapshotQueries } from '../database/queries/snapshot-queries';
 import { projectContextService, refreshExpiringExternalOAuth } from '../mcp';
+import { resolveActiveProfileId } from '../profiles';
 import { browserMcpControl } from '../preview';
 import { extractMessageText } from '../snapshot/helpers';
+import { deferEpisodicIngest, ingestTurn } from '../memory/extract';
+import { buildMemoryContext, withMemoryContext } from '../memory/context';
+import { buildEngineHandoff, resolveBranchEngine, withHandoff } from './engine-handoff';
 import { debug } from '$shared/utils/logger';
 import { DEFAULT_MODEL_ID, DEFAULT_MODEL_NAME } from '$shared/constants/engines';
 
@@ -53,6 +59,8 @@ export interface StreamState {
 	processId: string;
 	engine: EngineType;
 	accountId?: number;
+	/** Reasoning/thinking level token for this run (native per engine; undefined = engine default). */
+	reasoningEffort?: string;
 	status: 'active' | 'completed' | 'error' | 'cancelled';
 	startedAt: Date;
 	completedAt?: Date;
@@ -63,6 +71,17 @@ export interface StreamState {
 	error?: string;
 	abortController?: AbortController;
 	streamPromise?: Promise<void>;
+	/**
+	 * The engine instance actually running this stream.
+	 *
+	 * Pinned rather than looked up by (projectId, engineType), because the cache
+	 * behind that lookup is now replaced whenever engine config changes. Looking
+	 * it up again would hand back the REPLACEMENT: an instance with no query to
+	 * cancel and no pending question to answer, so Stop would do nothing and an
+	 * AskUserQuestion answer would go nowhere — and only for users unlucky enough
+	 * to have changed a setting while a chat was running.
+	 */
+	engineInstance?: AIEngine;
 	sdkSessionId?: string;
 	preStreamSessionId?: string | null;
 	hasCompactBoundary?: boolean;
@@ -122,6 +141,8 @@ interface RequestEngineContext {
 	accountId: number;
 	accountName: string;
 	modelName: string;
+	/** Reasoning/thinking level for this turn (native per engine; undefined = no knob). */
+	reasoningEffort?: string;
 }
 
 /**
@@ -130,6 +151,66 @@ interface RequestEngineContext {
  * model name). The adapter supplies type/provider/model.id; stream-manager
  * is the single source of truth for the rest.
  */
+/** One file's hash pair inside a snapshot's `session_changes` map. */
+interface SnapshotChange {
+	oldHash?: string;
+	newHash?: string;
+}
+
+/**
+ * Parsed `session_changes`, which is stored as a JSON string. Returns an empty
+ * map when the column is absent or unparseable — a snapshot with no recorded
+ * changes simply gives the Memory Graph nothing to ingest.
+ */
+function parseSessionChanges(raw: string | null | undefined): Record<string, SnapshotChange> {
+	if (!raw) return {};
+	try {
+		const parsed = JSON.parse(raw) as Record<string, SnapshotChange>;
+		return parsed && typeof parsed === 'object' ? parsed : {};
+	} catch {
+		return {};
+	}
+}
+
+/**
+ * What actually changed on disk during THIS turn.
+ *
+ * `session_changes` is cumulative: it records every file that differs from the
+ * SESSION's baseline, so it only ever grows as a session runs. Handing it to the
+ * Memory Graph as "files changed this turn" was wrong in three ways at once — the
+ * extraction prompt described a hundred files as belonging to one turn, the
+ * sixty-file cap re-ingested whatever sorted first while genuinely new files fell
+ * off the end, and every file in the session was re-upserted every turn, which
+ * flattened the reinforcement signal it was supposed to produce.
+ *
+ * Differencing against the parent snapshot recovers the real delta: a path is in
+ * it when its content hash differs from what the previous checkpoint recorded.
+ */
+function diffSnapshotAgainstParent(snapshot: {
+	session_changes?: unknown;
+	parent_snapshot_id?: string | null;
+}): { changed: string[]; deleted: string[] } {
+	const current = parseSessionChanges(snapshot?.session_changes as string | null | undefined);
+	const parentId = snapshot?.parent_snapshot_id ?? null;
+	const parent = parentId
+		? parseSessionChanges(snapshotQueries.getById(parentId)?.session_changes as string | null | undefined)
+		: {};
+
+	const changed: string[] = [];
+	const deleted: string[] = [];
+
+	for (const [path, entry] of Object.entries(current)) {
+		const before = parent[path];
+		// Unchanged since the previous checkpoint — it belongs to an earlier turn.
+		if (before && before.newHash === entry.newHash) continue;
+		// An empty `newHash` is how the snapshot service records a deletion.
+		if (!entry.newHash) deleted.push(path);
+		else changed.push(path);
+	}
+
+	return { changed, deleted };
+}
+
 function enrichMessageEngine(
 	message: UnifiedMessage,
 	ctx: RequestEngineContext,
@@ -146,6 +227,9 @@ function enrichMessageEngine(
 				id: ctx.accountId || message.engine.account.id,
 				name: ctx.accountName || message.engine.account.name,
 			},
+			// Surface the turn's reasoning level (when the engine exposes one) so it's
+			// visible in the Raw Message view. Omitted when there's no knob.
+			...(ctx.reasoningEffort !== undefined && { reasoningEffort: ctx.reasoningEffort }),
 		},
 	};
 }
@@ -234,6 +318,22 @@ class StreamManager extends EventEmitter {
 		super();
 		// Increase max listeners for high concurrency
 		this.setMaxListeners(1000);
+
+		// MCP browser locks are scoped to a chat session, and every release path
+		// runs from this class. Teaching the lock manager how to check liveness
+		// closes the gap those paths can't: a tool call that lands after its
+		// stream ended used to be able to take a lock nothing would release.
+		browserMcpControl.setSessionLivenessProbe((chatSessionId) =>
+			this.isChatSessionStreaming(chatSessionId)
+		);
+	}
+
+	/** Whether any stream for this chat session is still running. */
+	private isChatSessionStreaming(chatSessionId: string): boolean {
+		for (const stream of this.activeStreams.values()) {
+			if (stream.chatSessionId === chatSessionId && stream.status === 'active') return true;
+		}
+		return false;
 	}
 
 	/**
@@ -296,6 +396,7 @@ class StreamManager extends EventEmitter {
 			processId,
 			engine: request.engine.type,
 			accountId: request.engine.account?.id || undefined,
+			reasoningEffort: request.reasoningEffort ?? undefined,
 			status: 'active',
 			startedAt: new Date(),
 			messages: [],
@@ -319,6 +420,17 @@ class StreamManager extends EventEmitter {
 				if (request.engine.account.id) {
 					sessionQueries.updateAccount(request.chatSessionId, request.engine.account.id, request.engine.account.name || null);
 				}
+				// Persist the session's explicit profile choice (number or null).
+				// `undefined` (older client that doesn't send one) leaves it untouched
+				// so the session keeps inheriting the project default.
+				if (request.profileId !== undefined) {
+					sessionQueries.updateProfile(request.chatSessionId, request.profileId);
+				}
+				// Persist the reasoning/thinking level (string or null). `undefined`
+				// (client didn't send one) leaves the stored value untouched.
+				if (request.reasoningEffort !== undefined) {
+					sessionQueries.updateReasoning(request.chatSessionId, request.reasoningEffort);
+				}
 			} catch (error) {
 				debug.error('chat', 'Failed to save engine/model to session:', error);
 			}
@@ -327,7 +439,10 @@ class StreamManager extends EventEmitter {
 		// Register session -> projectId mapping for MCP context
 		if (request.projectId) {
 			projectContextService.registerSession(request.chatSessionId, request.projectId);
-			projectContextService.registerStream(streamId, request.projectId, request.chatSessionId);
+			// The engine goes with it: the remote HTTP MCP bridge cannot always
+			// name the calling stream, and knowing which engine asked is what
+			// keeps a fallback from reaching across into another engine's project.
+			projectContextService.registerStream(streamId, request.projectId, request.chatSessionId, request.engine.type);
 		}
 		// Hand the AbortSignal to MCP so tool handlers can fast-fail on
 		// cancellation. Without this, the engine subprocess dies on cancel
@@ -448,11 +563,21 @@ class StreamManager extends EventEmitter {
 				accountId: requestEngine.account.id,
 				accountName: requestEngine.account.name,
 				modelName: requestEngine.model.name,
+				reasoningEffort: streamState.reasoningEffort,
 			};
 
 			const projectPathExists = projectPath ? await this.existsSync(projectPath) : false;
 			if (!projectPath) throw new Error('Project path is required. Please select a valid project directory.');
 			if (!projectPathExists) throw new Error(`Project path does not exist: ${projectPath}. Please select a valid project directory.`);
+
+			// Which engine produced the trailing part of this branch. When it differs
+			// from the engine the user just picked, the branch's SDK session id
+			// belongs to a foreign store and MUST NOT be used as a resume target —
+			// the conversation is carried over as prompt content instead (see
+			// buildEngineHandoff below). Null means a fresh branch: nothing to hand
+			// over, nothing to resume.
+			const branchEngine = chatSessionId ? resolveBranchEngine(chatSessionId) : null;
+			const engineSwitched = branchEngine !== null && branchEngine !== requestEngine.type;
 
 			// Get resume session ID (branch-aware).
 			// Primary: use parentSessionId carried by the UserMessage — set by the
@@ -460,8 +585,11 @@ class StreamManager extends EventEmitter {
 			// Fallback: walk the HEAD chain in the DB (handles messages sent from
 			// older clients or tool-result user messages that lack parentSessionId).
 			let resumeSessionId: string | undefined = undefined;
-			if (chatSessionId) {
-				// Primary source: parent.sessionId on the raw prompt
+			if (chatSessionId && !engineSwitched) {
+				// Primary source: parent.sessionId on the raw prompt.
+				// Note this is client-supplied and engine-blind, which is why the
+				// engineSwitched guard above is authoritative — an older client will
+				// happily send the previous engine's id.
 				const promptParentSessionId = rawPrompt?.parent?.sessionId;
 				if (promptParentSessionId && promptParentSessionId !== chatSessionId) {
 					resumeSessionId = promptParentSessionId;
@@ -530,21 +658,105 @@ class StreamManager extends EventEmitter {
 			let lastAssistantTextContent: string | null = null;
 			const projectId = streamState.projectId || 'default';
 
+			// Resolve the effective Profile once per stream: the session's explicit
+			// choice, else the project's shared default (see backend/profiles). Passed
+			// down via mcpContext so the existing per-engine sync + MCP config path
+			// scopes artifacts/connectors to the profile's bundle — no new sync path.
+			const activeProfileId = resolveActiveProfileId(requestData.profileId, streamState.projectId);
+
 			if ((streamState.status as string) === 'cancelled' || streamState.abortController?.signal.aborted) {
 				debug.log('chat', 'Stream cancelled before engine initialization, skipping query');
 				return;
 			}
 
+			// Push back any memory summary parked for this session. Extraction talks to
+			// the same engine this stream is about to use, and on a shared-process
+			// engine that request would queue against the user's reply.
+			if (chatSessionId) deferEpisodicIngest(chatSessionId);
+
 			const engine = await initializeProjectEngine(projectId, requestEngine.type);
+			streamState.engineInstance = engine;
 
 			if ((streamState.status as string) === 'cancelled' || streamState.abortController?.signal.aborted) {
 				debug.log('chat', 'Stream cancelled during engine initialization, skipping query');
 				return;
 			}
 
-			// Detect orphaned user messages and prepend context (claude-code only)
+			// ── Cross-engine handoff ──
+			// The user switched engine mid-conversation, so the new engine has no
+			// native session to resume. Replay the branch as prompt content. This
+			// is prepended to the ENGINE prompt only — `userMessage` (already saved
+			// above) stays clean, so the transcript never reaches the timeline.
 			let enginePrompt = userMessage;
-			if (requestEngine.type === 'claude-code' && chatSessionId) {
+			if (engineSwitched && chatSessionId) {
+				try {
+					const handoff = buildEngineHandoff(
+						chatSessionId,
+						requestEngine.type,
+						requestEngine.model.id || '',
+						branchEngine,
+						userMessageId
+					);
+					if (handoff) {
+						enginePrompt = withHandoff(userMessage, handoff.blocks);
+						const { turns, clearedToolResults, droppedAttachments, estimatedTokens } = handoff.stats;
+						debug.log(
+							'chat',
+							`Engine handoff ${branchEngine} → ${requestEngine.type}: ${turns} turn(s), ~${estimatedTokens} tokens` +
+							(clearedToolResults ? `, ${clearedToolResults} tool result(s) cleared` : '') +
+							(droppedAttachments ? `, ${droppedAttachments} attachment(s) omitted (unsupported by target)` : '')
+						);
+					}
+				} catch (error) {
+					// A failed handoff must not block the turn — the engine simply
+					// starts without carried context.
+					debug.error('chat', 'Engine handoff failed, continuing without carried context:', error);
+				}
+			}
+
+			// ── Memory Graph injection ──
+			// Relevant memories from earlier sessions, retrieved from the user's own
+			// words. Done here rather than per adapter so every engine behaves the
+			// same, and prepended to the ENGINE prompt only — like the handoff above,
+			// `userMessage` stays clean so this never reaches the timeline.
+			try {
+				// The files this session has been working in are seeds too. A turn whose
+				// text carries no retrievable signal — "continue", "fix it" — still has a
+				// working set, and that is often the only thing pointing at the memory
+				// that matters.
+				const anchorPaths = chatSessionId
+					? Object.keys(
+							parseSessionChanges(
+								snapshotQueries.getLatestBySessionId(chatSessionId)?.session_changes as string | undefined
+							)
+						).slice(-40)
+					: [];
+
+				const memory = buildMemoryContext({
+					query: extractMessageText(userMessage),
+					projectId: projectId ?? null,
+					sessionId: chatSessionId ?? null,
+					anchorPaths,
+					// So a memory learned in another repository can say which one. Without
+					// the name, a travelling insight reads as a claim about the project in
+					// front of the agent — which is worse than not surfacing it at all.
+					projectNames: new Map(projectQueries.getAll().map(project => [project.id, project.name]))
+				});
+				if (memory) {
+					enginePrompt = withMemoryContext(enginePrompt, memory.text);
+					debug.log(
+						'memory',
+						`Injected ${memory.text.length} chars of memory context (${memory.nodeIds.length} memories):\n${memory.text}`
+					);
+				}
+			} catch (error) {
+				debug.warn('memory', 'Memory injection failed, continuing without it:', error);
+			}
+
+			// Detect orphaned user messages and prepend context (claude-code only).
+			// Same idea as the handoff above but for the in-engine case: messages the
+			// engine's own session never saw because an earlier turn was cancelled.
+			if (!engineSwitched && requestEngine.type === 'claude-code' && chatSessionId) {
 				try {
 					const head = sessionQueries.getHead(chatSessionId);
 					if (head) {
@@ -614,6 +826,13 @@ class StreamManager extends EventEmitter {
 				debug.warn('chat', 'MCP OAuth refresh failed:', error)
 			);
 
+			// Refuse to stream an engine that isn't ready and point the user at the
+			// exact fix (Stack to install/update, Engines to sign in). Thrown here
+			// so the processStream catch surfaces it as a chat error, which the
+			// ErrorMessage renderer turns into a one-click action.
+			const setupIssue = await checkEngineSetup(requestEngine.type, requestEngine.account.id);
+			if (setupIssue) throw new Error(setupIssue.message);
+
 			// Stream EngineOutput events through the engine adapter
 			const streamIterable = engine.streamQuery({
 				projectPath,
@@ -621,11 +840,12 @@ class StreamManager extends EventEmitter {
 				resume: resumeSessionId,
 				providerSlug: requestEngine.provider,
 				modelId: requestEngine.model.id,
+				...(streamState.reasoningEffort && { reasoningEffort: streamState.reasoningEffort }),
 				includePartialMessages: true,
 				abortController: streamState.abortController,
 				...(requestEngine.account.id !== 0 && { accountId: requestEngine.account.id }),
 				...(projectId && chatSessionId && {
-					mcpContext: { projectId, chatSessionId, streamId: streamState.streamId }
+					mcpContext: { projectId, chatSessionId, streamId: streamState.streamId, ...(activeProfileId != null && { profileId: activeProfileId }) }
 				}),
 			});
 
@@ -798,11 +1018,11 @@ class StreamManager extends EventEmitter {
 									});
 								}
 							}
-							// Codex emits usage only once per turn (after all items
-							// streamed live), so saved assistant rows have usage:null.
-							// Backfill the turn's aggregate to every saved assistant
-							// without usage so it survives a refresh.
-							if (successResult.usage && streamState.engine === 'codex') {
+							// Codex and Cursor emit usage only once per turn (after all
+							// items streamed live), so saved assistant rows have
+							// usage:null. Backfill the turn's aggregate to every saved
+							// assistant without usage so it survives a refresh.
+							if (successResult.usage && (streamState.engine === 'codex' || streamState.engine === 'cursor')) {
 								this.backfillUsageForStream(streamState, successResult.usage, requestSender);
 							}
 						} else {
@@ -1090,13 +1310,43 @@ class StreamManager extends EventEmitter {
 			}
 		} finally {
 			const { projectPath, projectId, chatSessionId } = requestData;
-			if (projectPath && projectId && chatSessionId && userMessageId) {
-				snapshotService.captureSnapshot(projectPath, projectId, chatSessionId, userMessageId)
-					.then(() => {
-						debug.log('chat', `Stream-end snapshot captured for message: ${userMessageId}`);
+			// Captured into a const: `userMessageId` is reassigned during the stream,
+			// so its narrowing does not survive into the async callback below.
+			const snapshotMessageId = userMessageId;
+			if (projectPath && projectId && chatSessionId && snapshotMessageId) {
+				// The Memory Graph is fed from the SNAPSHOT rather than from tool calls.
+				// The snapshot is a gitignore-aware disk diff, so it also catches files
+				// rewritten through Bash, a codemod or a formatter — none of which appear
+				// as an Edit/Write tool call. Passing the snapshot straight in leaves the
+				// `snapshot:captured` broadcast payload (a WS schema) untouched.
+				//
+				// Ingestion is attached with `finally`, NOT with `then`, and that is the
+				// difference between losing a conversation and losing a file list. A
+				// snapshot can fail for reasons the transcript has no stake in — a
+				// permission error, a path that vanished mid-turn, a repository that grew
+				// past a limit — and hanging the only write path in the feature off its
+				// success meant one of those quietly cost the turn's memories entirely.
+				// The code can be re-read next turn; the conversation happened once.
+				snapshotService.captureSnapshot(projectPath, projectId, chatSessionId, snapshotMessageId)
+					.then(snapshot => {
+						debug.log('chat', `Stream-end snapshot captured for message: ${snapshotMessageId}`);
 						this.emit('snapshot:captured', { projectId, chatSessionId });
+						return snapshot ? diffSnapshotAgainstParent(snapshot) : null;
 					})
-					.catch(err => debug.error('chat', 'Failed to capture stream-end snapshot:', err));
+					.catch(err => {
+						debug.error('chat', 'Failed to capture stream-end snapshot:', err);
+						return null;
+					})
+					.then(delta => {
+						void ingestTurn({
+							projectId,
+							projectPath,
+							sessionId: chatSessionId,
+							userMessageId: snapshotMessageId,
+							changedPaths: delta?.changed ?? [],
+							deletedPaths: delta?.deleted ?? []
+						});
+					});
 			}
 		}
 	}
@@ -1156,11 +1406,12 @@ class StreamManager extends EventEmitter {
 			return false;
 		}
 
-		// Get the engine for this project
-		const pid = streamState.projectId || 'default';
-		const engine = getProjectEngine(pid, streamState.engine);
+		// The stream is live, so it is holding the engine that owns the pending
+		// question. Use that one — a replacement instance holds no question to
+		// answer, and a fresh one would not even be the same process.
+		const engine = streamState.engineInstance;
 
-		if (!engine.resolveUserAnswer) {
+		if (!engine?.resolveUserAnswer) {
 			debug.warn('chat', 'resolveUserAnswer: Engine does not support resolveUserAnswer');
 			return false;
 		}
@@ -1266,30 +1517,47 @@ class StreamManager extends EventEmitter {
 			}
 		}
 
-		// Cancel the per-project engine with a bounded timeout.
-		// engine.cancel() stops the SDK process (Claude Code: close() kills subprocess,
+		// Abort first, then release the browser locks, and only then ask the
+		// engine to stop.
+		//
+		// The order matters and used to be the other way round. `engine.cancel()`
+		// is awaited for up to five seconds, and a browser-automation batch that
+		// was mid-flight kept resolving its target tab throughout — re-acquiring
+		// control of a tab moments after (or before) it was handed back, under a
+		// chat session whose release had already run. That is the interrupt that
+		// left the tab locked with nobody to unlock it. Aborting up front makes
+		// the batch stop between actions, and releasing before the wait means
+		// anything that slips through is refused rather than orphaned.
+		if (!streamState.abortController?.signal.aborted) {
+			streamState.abortController?.abort();
+		}
+
+		// Auto-release all MCP-controlled tabs for this chat session
+		if (streamState.chatSessionId) {
+			browserMcpControl.releaseSession(streamState.chatSessionId);
+			debug.log('mcp', `✅ Auto-released MCP tabs for session ${streamState.chatSessionId.slice(0, 8)} on stream cancellation`);
+		}
+
+		// Stop this stream's run on the engine, with a bounded timeout.
+		// engine.cancel() stops the SDK work (Claude Code: close() kills subprocess,
 		// OpenCode: aborts controller + HTTP abort to server). If cancel() hangs
 		// (e.g. unresponsive SDK), the timeout ensures we always proceed to emit
 		// events and update presence — preventing infinite loader on the frontend.
-		const projectId = streamState.projectId || 'default';
+		//
+		// The abortController identifies WHICH run to stop. One engine instance is
+		// shared by every chat session of a project, so an untargeted cancel stops
+		// whichever run the instance happened to have on hand — cancelling one chat
+		// would kill another chat of the same project mid-answer.
 		try {
-			const engine = getProjectEngine(projectId, streamState.engine);
-			if (engine.isActive) {
+			const engine = streamState.engineInstance;
+			if (engine && streamState.abortController) {
 				await Promise.race([
-					engine.cancel(),
+					engine.cancel(streamState.abortController),
 					new Promise<void>(resolve => setTimeout(resolve, 5000))
 				]);
 			}
 		} catch (error) {
 			debug.error('chat', 'Error cancelling engine (non-fatal):', error);
-		}
-
-		// Abort the stream-manager's controller as a fallback.
-		// engine.cancel() already aborts the same controller, so this is
-		// typically a no-op but ensures cleanup if the engine timed out
-		// or wasn't active.
-		if (!streamState.abortController?.signal.aborted) {
-			streamState.abortController?.abort();
 		}
 
 		this.emitStreamEvent(streamState, 'cancelled', {
@@ -1299,11 +1567,10 @@ class StreamManager extends EventEmitter {
 
 		this.emitStreamLifecycle(streamState, 'cancelled', reason);
 
-		// Auto-release all MCP-controlled tabs for this chat session
-		if (streamState.chatSessionId) {
-			browserMcpControl.releaseSession(streamState.chatSessionId);
-			debug.log('mcp', `✅ Auto-released MCP tabs for session ${streamState.chatSessionId.slice(0, 8)} on stream cancellation`);
-		}
+		// Sweep again after the engine has actually stopped: a tool call still
+		// in flight during the wait above may have taken a lock that its own
+		// release path will never reach.
+		browserMcpControl.releaseOrphans();
 
 		return true;
 	}

@@ -42,6 +42,7 @@ import type {
 	ReadMcpResourceInput,
 	TodoWriteInput,
 	PatchInput,
+	AgentInput,
 } from '$shared/types/unified';
 
 // ============================================================
@@ -87,7 +88,7 @@ type NormalizedToolInput =
 	| GlobInput | GrepInput | WebFetchInput | WebSearchInput
 	| AskUserQuestionInput | TodoWriteInput
 	| ListMcpResourcesInput | ReadMcpResourceInput
-	| PatchInput
+	| PatchInput | AgentInput
 	| Record<string, unknown>;
 
 // ============================================================
@@ -103,7 +104,7 @@ type NormalizedToolInput =
  *
  * @see https://opencode.ai/docs/tools
  */
-const TOOL_NAME_MAP: Record<string, string> = {
+export const TOOL_NAME_MAP: Record<string, string> = {
 	// File operations
 	'bash': 'Bash',
 	'view': 'Read',
@@ -340,6 +341,24 @@ function normalizePatchInput(raw: OCToolInput): PatchInput {
 	return { filePath, patch: patchBody };
 }
 
+/**
+ * OpenCode's `task` tool dispatches a named sub-agent. Some providers (e.g.
+ * GLM/z.ai via opencode) emit already-snake_case args like `subagent_type`.
+ * Map those to the unified `AgentInput` so the Agent tool component renders
+ * consistently with Claude's `Task` and Copilot's `task`.
+ */
+function normalizeAgentInput(raw: OCToolInput): AgentInput {
+	return {
+		prompt: str(raw, 'prompt', 'prompt') || str(raw, 'task', 'task') || str(raw, 'instruction', 'instruction'),
+		description: str(raw, 'description', 'description'),
+		subagentType: optStr(raw, 'subagent_type', 'subagentType')
+			?? optStr(raw, 'agent_type', 'agentType')
+			?? optStr(raw, 'agent', 'agent')
+			?? optStr(raw, 'name', 'name')
+			?? 'general-purpose',
+	};
+}
+
 // ============================================================
 // Normalizer Dispatcher
 // ============================================================
@@ -368,6 +387,7 @@ function normalizeToolInput(claudeToolName: string, raw: OCToolInput): Normalize
 		case 'ReadMcpResource': return normalizeReadMcpResourceInput(raw);
 		case 'TodoWrite': return normalizeTodoWriteInput(raw);
 		case 'Patch': return normalizePatchInput(raw);
+		case 'Agent': return normalizeAgentInput(raw);
 		default: {
 			// Unknown tool: generic camelCase → snake_case key normalization
 			const normalized: Record<string, string | number | boolean> = {};
@@ -638,6 +658,38 @@ export function convertAssistantMessages(
 	}
 
 	return messages;
+}
+
+/**
+ * Convert text parts that have not yet been finalized.
+ *
+ * OpenCode can append a tool part to the same assistant message while the
+ * preceding text is still represented by a live stream placeholder. Flushing
+ * that text before emitting the tool preserves the source part order. Tracking
+ * part IDs prevents the normal message/session finalizer from emitting it a
+ * second time later.
+ */
+export function convertPendingTextParts(
+	ocMessage: OCMessage,
+	ocParts: Part[],
+	sessionId: string,
+	emittedTextPartIds: Set<string>,
+): EngineOutput[] {
+	const pendingTextParts = ocParts.filter(part =>
+		part.type === 'text' && !emittedTextPartIds.has(part.id)
+	);
+
+	for (const part of pendingTextParts) {
+		emittedTextPartIds.add(part.id);
+	}
+
+	const visibleTextParts = pendingTextParts.filter(part =>
+		part.type === 'text' && Boolean(part.text)
+	);
+
+	return visibleTextParts.length > 0
+		? convertAssistantMessages(ocMessage, visibleTextParts, sessionId)
+		: [];
 }
 
 /**

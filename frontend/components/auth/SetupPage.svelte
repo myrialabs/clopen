@@ -3,11 +3,9 @@
 	import { authStore } from '$frontend/stores/features/auth.svelte';
 	import { themeStore, toggleDarkMode, initializeTheme } from '$frontend/stores/ui/theme.svelte';
 	import { settings, updateSettings, applyFontSize } from '$frontend/stores/features/settings.svelte';
-	import { opencodeProvidersStore } from '$frontend/stores/features/opencode-providers.svelte';
 	import Icon from '$frontend/components/common/display/Icon.svelte';
-	import SystemToolsSettings from '$frontend/components/settings/system-tools/SystemToolsSettings.svelte';
+	import StackSettings from '$frontend/components/settings/stack/StackSettings.svelte';
 	import AIEnginesSettings from '$frontend/components/settings/engines/AIEnginesSettings.svelte';
-	import ws from '$frontend/utils/ws';
 	import type { AuthMode } from '$shared/types/stores/settings';
 	import type { IconName } from '$shared/types/ui/icons';
 
@@ -17,8 +15,8 @@
 	});
 
 	// ─── Wizard state ───
-	type WizardStep = 'auth-mode' | 'admin-account' | 'system-tools' | 'engines' | 'preferences';
-	const ALL_STEPS: WizardStep[] = ['auth-mode', 'admin-account', 'system-tools', 'engines', 'preferences'];
+	type WizardStep = 'auth-mode' | 'admin-account' | 'stack' | 'engines' | 'preferences';
+	const ALL_STEPS: WizardStep[] = ['auth-mode', 'admin-account', 'stack', 'engines', 'preferences'];
 
 	let currentStep = $state<WizardStep>('auth-mode');
 	let completedSteps = $state<Set<WizardStep>>(new Set());
@@ -81,23 +79,30 @@
 		}
 	}
 
+	let finishError = $state('');
+	let finishLoading = $state(false);
+
 	async function finishWizard() {
+		finishError = '';
+		finishLoading = true;
 		try {
-			const status = await ws.http('engine:opencode-status', {}).catch(() => null);
-			if (status?.installed) {
-				await opencodeProvidersStore.restartServer(true);
-			}
-		} catch {
-			// Ignore — best effort restart
+			// Nothing to prime here: whatever the wizard configured is already the
+			// current config, and the backend brings engines up against it on its own.
+			// Only leaves the wizard once the server confirms setup is recorded;
+			// otherwise the next refresh would land right back here.
+			await authStore.completeSetup();
+		} catch (err) {
+			finishError = err instanceof Error ? err.message : 'Setup could not be saved';
+		} finally {
+			finishLoading = false;
 		}
-		authStore.completeSetup();
 	}
 
 	// ─── Step Labels ───
 	const stepLabels: Record<WizardStep, { label: string; icon: IconName }> = {
 		'auth-mode': { label: 'Login', icon: 'lucide:shield' },
 		'admin-account': { label: 'Account', icon: 'lucide:user-plus' },
-		'system-tools': { label: 'System Tools', icon: 'lucide:hammer' },
+		'stack': { label: 'Stack', icon: 'lucide:hammer' },
 		'engines': { label: 'Engines', icon: 'lucide:plug' },
 		'preferences': { label: 'Preferences', icon: 'lucide:palette' }
 	};
@@ -118,7 +123,7 @@
 					completedSteps.add('auth-mode');
 					completedSteps.add('admin-account');
 					completedSteps = new Set(completedSteps);
-					currentStep = 'system-tools';
+					currentStep = 'stack';
 				} else {
 					goToNextStep();
 				}
@@ -131,17 +136,17 @@
 					completedSteps.add('auth-mode');
 					completedSteps.add('admin-account');
 					completedSteps = new Set(completedSteps);
-					currentStep = 'system-tools';
+					currentStep = 'stack';
 				} else if (selectedAuthMode === 'required' && previousMode !== 'required') {
 					// no-auth → with-auth: update mode, regenerate PAT, go to admin-account
 					await authStore.switchToWithAuth();
 					goToNextStep();
 				} else if (selectedAuthMode === 'none') {
-					// Same mode (none) — skip admin-account, go to system-tools
+					// Same mode (none) — skip admin-account, go to stack
 					completedSteps.add('auth-mode');
 					completedSteps.add('admin-account');
 					completedSteps = new Set(completedSteps);
-					currentStep = 'system-tools';
+					currentStep = 'stack';
 				} else {
 					// Same mode (required) — advance to admin-account
 					goToNextStep();
@@ -300,7 +305,7 @@
 								<div class="flex-1 min-w-0">
 									<div class="text-sm font-semibold text-slate-900 dark:text-slate-100">No Login</div>
 									<div class="text-xs text-slate-500 dark:text-slate-400 mt-0.5">
-										No authentication required. Anyone with access to this URL can use Clopen. Ideal for personal or local use.
+										Best if you're just using Clopen on your own computer. It opens straight to the app with no sign-in — but anyone who can reach the address can use it, so keep it to your own machine or home network.
 									</div>
 								</div>
 								{#if selectedAuthMode === 'none'}
@@ -328,7 +333,7 @@
 								<div class="flex-1 min-w-0">
 									<div class="text-sm font-semibold text-slate-900 dark:text-slate-100">With Login</div>
 									<div class="text-xs text-slate-500 dark:text-slate-400 mt-0.5">
-										Authenticate with a Personal Access Token. Supports multiple users and invite links.
+										Best if you want to reach Clopen from anywhere — a public server, a shared machine, or the same setup used by more than one person. A sign-in keeps it private, and you can invite others to join.
 									</div>
 								</div>
 								{#if selectedAuthMode === 'required'}
@@ -392,7 +397,7 @@
 							<p class="text-sm text-red-500">{adminError}</p>
 						{/if}
 
-						<div class="flex gap-2">
+						<div class="flex gap-2 sticky bottom-0 z-10 pt-3 pb-3 bg-white dark:bg-slate-950 border-t border-slate-200/70 dark:border-slate-800/70">
 							<button
 								onclick={goToPrevStep}
 								class="px-4 py-2 rounded-lg border border-slate-300 dark:border-slate-700 text-slate-600 dark:text-slate-400 text-sm font-medium hover:bg-slate-50 dark:hover:bg-slate-800 transition-colors"
@@ -449,21 +454,21 @@
 					{/if}
 				</div>
 
-			<!-- ════════ Step 3: System Tools ════════ -->
-			{:else if currentStep === 'system-tools'}
+			<!-- ════════ Step 3: Stack ════════ -->
+			{:else if currentStep === 'stack'}
 				<div class="space-y-4">
 					<div class="text-center">
-						<h2 class="text-base font-semibold text-slate-900 dark:text-slate-100 mb-1">System Tools</h2>
+						<h2 class="text-base font-semibold text-slate-900 dark:text-slate-100 mb-1">Stack</h2>
 						<p class="text-sm text-slate-500 dark:text-slate-400">
 							Install binaries clopen depends on, directly on the server.
 						</p>
 					</div>
 
 					<div class="text-left">
-						<SystemToolsSettings showHeader={false} />
+						<StackSettings showHeader={false} />
 					</div>
 
-					<div class="flex gap-2">
+					<div class="flex gap-2 sticky bottom-0 z-10 pt-3 pb-3 bg-white dark:bg-slate-950 border-t border-slate-200/70 dark:border-slate-800/70">
 						<button
 							onclick={goToPrevStep}
 							class="px-4 py-2 rounded-lg border border-slate-300 dark:border-slate-700 text-slate-600 dark:text-slate-400 text-sm font-medium hover:bg-slate-50 dark:hover:bg-slate-800 transition-colors"
@@ -489,9 +494,9 @@
 						</p>
 					</div>
 
-					<AIEnginesSettings showHeader={false} compact />
+					<AIEnginesSettings showHeader={false} compact onOpenStack={goToPrevStep} />
 
-					<div class="flex gap-2">
+					<div class="flex gap-2 sticky bottom-0 z-10 pt-3 pb-3 bg-white dark:bg-slate-950 border-t border-slate-200/70 dark:border-slate-800/70">
 						<button
 							onclick={goToPrevStep}
 							class="px-4 py-2 rounded-lg border border-slate-300 dark:border-slate-700 text-slate-600 dark:text-slate-400 text-sm font-medium hover:bg-slate-50 dark:hover:bg-slate-800 transition-colors"
@@ -711,7 +716,11 @@
 						</div>
 					</div>
 
-					<div class="flex gap-2">
+					{#if finishError}
+						<p class="text-sm text-red-500 text-left">{finishError}</p>
+					{/if}
+
+					<div class="flex gap-2 sticky bottom-0 z-10 pt-3 pb-3 bg-white dark:bg-slate-950 border-t border-slate-200/70 dark:border-slate-800/70">
 						<button
 							onclick={goToPrevStep}
 							class="px-4 py-2 rounded-lg border border-slate-300 dark:border-slate-700 text-slate-600 dark:text-slate-400 text-sm font-medium hover:bg-slate-50 dark:hover:bg-slate-800 transition-colors"
@@ -720,9 +729,10 @@
 						</button>
 						<button
 							onclick={finishWizard}
-							class="flex-1 py-2.5 px-4 rounded-lg bg-violet-600 hover:bg-violet-700 text-white text-sm font-medium transition-colors"
+							disabled={finishLoading}
+							class="flex-1 py-2.5 px-4 rounded-lg bg-violet-600 hover:bg-violet-700 text-white text-sm font-medium transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
 						>
-							Finish Setup
+							{finishLoading ? 'Saving...' : 'Finish Setup'}
 						</button>
 					</div>
 				</div>

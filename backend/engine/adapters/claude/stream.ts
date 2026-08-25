@@ -13,22 +13,30 @@
  * When v2 SDKSessionOptions gains these, migrate streamQuery() to v2.
  */
 
-import { query } from '@anthropic-ai/claude-agent-sdk';
+import { loadEngineSdk } from '$backend/engine/sdk-loader';
 import type {
 	Options,
 	Query,
 	PermissionMode,
 	PermissionResult,
+	EffortLevel,
+	HookInput,
+	HookJSONOutput,
 } from '@anthropic-ai/claude-agent-sdk';
 import type { EngineOutput } from '$shared/types/unified';
 import type { StructuredGenerationOptions } from '../../types';
 import { createSdkMessageConverter, toSdkUserMessage } from './message-converter';
+import { WorkflowTranscriptTailer } from './workflow-transcript';
 import { resolveOsPath } from '$backend/utils/paths';
 import { setupEnvironmentOnce, getEngineEnv } from './environment';
 import { handleStreamError } from './error-handler';
 import { getEnabledMcpServers, getAllowedMcpTools } from '../../../mcp';
 import { syncSkills } from '$backend/skills';
+import { syncEngineArtifacts } from '$backend/engine/artifact-sync';
+import { artifactFilter } from '$backend/profiles';
+import { resolvePermissionsFromDb, isToolAllowed, hasAnyRestriction, syncPermissions } from '$backend/permissions';
 import type { AIEngine, EngineQueryOptions } from '../../types';
+import { EngineRuns } from '../run-registry';
 import type { EngineModel } from '$shared/types/unified';
 import { CLAUDE_CODE_MODELS } from './models';
 
@@ -39,13 +47,53 @@ interface PendingUserAnswer {
   resolve: (result: PermissionResult) => void;
   removeAbortListener: () => void;
   input: Record<string, unknown>;
+  /** The run that asked — cancelling one run must not abandon another's questions. */
+  run: ClaudeRun;
+}
+
+/**
+ * One stream in flight on this instance. This engine instance is shared by every
+ * chat session of a project, so the SDK query has to be held per run: a single
+ * field holds only the most recently started stream, and cancelling any chat
+ * would then close another chat's query.
+ */
+interface ClaudeRun {
+  /** Identity of the run — the controller the caller passed to streamQuery. */
+  controller: AbortController;
+  query: Query | null;
+}
+
+/** Merge the SDK stream with Workflow transcript polling without blocking either producer. */
+class EventQueue<T> {
+  private buffer: T[] = [];
+  private wake: (() => void) | null = null;
+  private done = false;
+  private error: unknown = null;
+
+  push(value: T): void { this.buffer.push(value); this.signal(); }
+  close(): void { this.done = true; this.signal(); }
+  fail(error: unknown): void { this.error = error; this.done = true; this.signal(); }
+
+  private signal(): void {
+    const wake = this.wake;
+    this.wake = null;
+    wake?.();
+  }
+
+  async *drain(): AsyncGenerator<T, void, unknown> {
+    while (true) {
+      while (this.buffer.length) yield this.buffer.shift() as T;
+      if (this.error) throw this.error;
+      if (this.done) return;
+      await new Promise<void>(resolve => { this.wake = resolve; });
+    }
+  }
 }
 
 export class ClaudeCodeEngine implements AIEngine {
   readonly name = 'claude-code' as const;
   private _isInitialized = false;
-  private activeController: AbortController | null = null;
-  private activeQuery: Query | null = null;
+  private runs = new EngineRuns<ClaudeRun>();
   private pendingUserAnswers = new Map<string, PendingUserAnswer>();
 
   get isInitialized(): boolean {
@@ -53,7 +101,7 @@ export class ClaudeCodeEngine implements AIEngine {
   }
 
   get isActive(): boolean {
-    return this.activeController !== null;
+    return this.runs.isActive;
   }
 
   async initialize(): Promise<void> {
@@ -67,7 +115,8 @@ export class ClaudeCodeEngine implements AIEngine {
   }
 
   async dispose(): Promise<void> {
-    await this.cancel();
+    // Shutdown/retirement: every run on this instance goes.
+    await this.stopRuns(this.runs.all());
     this.pendingUserAnswers.clear();
     this._isInitialized = false;
   }
@@ -86,31 +135,87 @@ export class ClaudeCodeEngine implements AIEngine {
       resume,
       maxTurns = undefined,
       modelId,
+      reasoningEffort,
       includePartialMessages = false,
       abortController,
       accountId
     } = options;
 
+    // Map the chosen reasoning level to Claude's knobs: `off` disables thinking
+    // entirely, `auto`/unset keeps adaptive thinking (Claude decides how much),
+    // and an explicit effort level pairs adaptive thinking with `effort`.
+    const claudeEffort = new Set<string>(['low', 'medium', 'high', 'xhigh', 'max']);
+    const thinkingConfig: Options['thinking'] = reasoningEffort === 'off'
+      ? { type: 'disabled' }
+      : { type: 'adaptive', display: 'summarized' };
+    const effortOption = reasoningEffort && claudeEffort.has(reasoningEffort)
+      ? { effort: reasoningEffort as EffortLevel }
+      : {};
+
     debug.log('chat', "Claude Code - Stream Query");
     debug.log('chat', { prompt });
 
-    this.activeController = abortController || new AbortController();
+    const streamController = abortController || new AbortController();
+    const run: ClaudeRun = { controller: streamController, query: null };
+    this.runs.add(run);
 
     const resolvedProjectPath = resolveOsPath(projectPath);
 
     try {
+      // Active Profile for this stream (resolved in stream-manager). Scopes the
+      // materialized artifact set + MCP connectors to the profile's bundle.
+      const profileId = options.mcpContext?.profileId;
+      const mcpProfileFilter = artifactFilter(profileId, 'mcp') ?? undefined;
+
       // Materialize enabled skills into Claude's native skills dir before the
       // session starts so the SDK picks them up via settingSources.
-      await syncSkills('claude');
+      await syncSkills('claude', profileId);
+      // Commands, Subagents, and global Instructions share the same trigger.
+      await syncEngineArtifacts('claude', profileId);
+      // Mirror the resolved allow/deny into the isolated settings.json so the
+      // rules are visible to anyone inspecting the config. Deny rules there do
+      // bite even under bypassPermissions, but an allowlist has no on-disk
+      // equivalent — the PreToolUse hook below is the authoritative enforcement.
+      await syncPermissions('claude');
+
+      // Resolve the effective permission policy once per stream. Enforcement
+      // lives in the PreToolUse hook, NOT in canUseTool: under
+      // permissionMode 'bypassPermissions' the CLI auto-approves a tool call
+      // before the permission callback is consulted (the SDK says so itself via
+      // the CLAUDE_SDK_CAN_USE_TOOL_SHADOWED warning), so a callback-side check
+      // would be a no-op. A PreToolUse hook sees every call regardless of mode.
+      const permissions = resolvePermissionsFromDb('claude-code', options.mcpContext?.projectId, profileId);
+      // Registering the hook costs one control round-trip per tool call, so only
+      // pay it when there is actually a rule to enforce.
+      const enforcePermissions = hasAnyRestriction(permissions);
 
       // Get custom MCP servers and allowed tools
       // Pass mcpContext so tool handlers are bound to the correct project
-      const mcpServers = getEnabledMcpServers(options.mcpContext);
+      const mcpServers = await getEnabledMcpServers(options.mcpContext, mcpProfileFilter);
       const allowedMcpTools = getAllowedMcpTools();
 
       debug.log('mcp', '📦 Loading custom MCP servers...');
       debug.log('mcp', `Enabled servers: ${Object.keys(mcpServers).length}`);
       debug.log('mcp', `Allowed tools: ${allowedMcpTools.length}`);
+
+      // AskUserQuestion safety net. The CLI still routes that tool through
+      // canUseTool even under bypassPermissions, but the SDK explicitly
+      // documents the callback as shadowed in that mode — so we rely on
+      // behaviour upstream has not promised. If a future SDK stops routing it,
+      // the question would never reach the user and the failure would be
+      // silent; comparing what the model asked against what the callback parked
+      // turns that into a log line instead of a frozen chat.
+      const questionsAsked = new Set<string>();
+      const questionsParked = new Set<string>();
+      const observeAskUserQuestion = (sdkMessage: unknown): void => {
+        const message = sdkMessage as { type?: string; message?: { content?: unknown } };
+        if (message.type !== 'assistant' || !Array.isArray(message.message?.content)) return;
+        for (const block of message.message.content as Array<{ type?: string; name?: string; id?: string }>) {
+          if (block.type === 'tool_use' && block.name === 'AskUserQuestion' && block.id) {
+            questionsAsked.add(block.id);
+          }
+        }
+      };
 
       // SDK uses cwd from options — no process.chdir() needed.
       // Environment is passed via env option — no process.env mutation.
@@ -124,15 +229,22 @@ export class ClaudeCodeEngine implements AIEngine {
         systemPrompt: { type: "preset", preset: "claude_code" },
         settingSources: ["user", "project", "local"],
         forkSession: true,
-        // Explicit adaptive thinking with summarized display so Opus 4.6+ emits
-        // visible thinking_delta events; without this the SDK can default to
-        // 'omitted' and reasoning blocks arrive empty.
-        thinking: { type: 'adaptive', display: 'summarized' },
-        // Custom permission handler: blocks on AskUserQuestion until user answers,
-        // auto-allows everything else. Works alongside bypassPermissions.
+        // Reasoning level → thinking/effort (see thinkingConfig above). Adaptive
+        // thinking with summarized display keeps Opus 4.6+ emitting visible
+        // thinking_delta events; 'off' disables it, an explicit level adds effort.
+        thinking: thinkingConfig,
+        ...effortOption,
+        // Tool gating that must survive every permission mode lives in the
+        // PreToolUse hook below. This callback is kept for one job only: park
+        // the SDK on AskUserQuestion until the user answers. It waits without a
+        // deadline on purpose — a hook would be bounded by its `timeout`
+        // (default 600000 ms, and values above 2^31-1 ms overflow setTimeout and
+        // fire immediately), while a parked promise simply waits until the user
+        // answers or the stream is cancelled.
         canUseTool: async (_toolName, input, canUseToolOptions) => {
           if (_toolName === 'AskUserQuestion') {
             debug.log('engine', `AskUserQuestion detected (toolUseID: ${canUseToolOptions.toolUseID}), waiting for user input...`);
+            questionsParked.add(canUseToolOptions.toolUseID);
             return new Promise<PermissionResult>((resolve) => {
               // Handle abort (stream cancelled while waiting)
               if (canUseToolOptions.signal.aborted) {
@@ -146,6 +258,7 @@ export class ClaudeCodeEngine implements AIEngine {
               canUseToolOptions.signal.addEventListener('abort', onAbort, { once: true });
 
               this.pendingUserAnswers.set(canUseToolOptions.toolUseID, {
+                run,
                 resolve: (result: PermissionResult) => {
                   canUseToolOptions.signal.removeEventListener('abort', onAbort);
                   resolve(result);
@@ -157,14 +270,41 @@ export class ClaudeCodeEngine implements AIEngine {
               });
             });
           }
-          // Auto-allow all other tools
           return { behavior: 'allow' as const, updatedInput: input };
         },
+        // Enforce the resolved permission policy: deny blocks the tool, an
+        // allowlist (when set) blocks anything not on it. Returning an empty
+        // result leaves the decision alone, so unrestricted tools fall through
+        // to the mode's own auto-approve without an extra round-trip.
+        ...(enforcePermissions && {
+          hooks: {
+            PreToolUse: [{
+              hooks: [async (hookInput: HookInput): Promise<HookJSONOutput> => {
+                if (hookInput.hook_event_name !== 'PreToolUse') return {};
+                // AskUserQuestion is Clopen's own interaction channel, not a
+                // capability the policy is about — it was exempt while the check
+                // lived in canUseTool (that branch returned first), so an
+                // allowlist must not start silencing questions now.
+                if (hookInput.tool_name === 'AskUserQuestion') return {};
+                if (isToolAllowed(permissions, hookInput.tool_name)) return {};
+                debug.log('permissions', `⛔ Blocked tool "${hookInput.tool_name}" (Clopen permission policy)`);
+                return {
+                  hookSpecificOutput: {
+                    hookEventName: 'PreToolUse',
+                    permissionDecision: 'deny',
+                    permissionDecisionReason: `Blocked by Clopen permission policy: ${hookInput.tool_name}`
+                  }
+                };
+              }]
+            }]
+          }
+        }),
         ...(modelId && { model: modelId }),
         ...(resume && { resume }),
         ...(maxTurns && { maxTurns }),
         ...(includePartialMessages && { includePartialMessages }),
-        abortController: this.activeController,
+        forwardSubagentText: true,
+        abortController: streamController,
         ...(Object.keys(mcpServers).length > 0 && { mcpServers }),
         ...(allowedMcpTools.length > 0 && { allowedTools: allowedMcpTools })
       };
@@ -175,80 +315,150 @@ export class ClaudeCodeEngine implements AIEngine {
         yield sdkPrompt;
       })();
 
+      const { query } = await loadEngineSdk<typeof import('@anthropic-ai/claude-agent-sdk')>('claude-code', '@anthropic-ai/claude-agent-sdk');
       const queryInstance = query({
         prompt: promptIterable,
         options: sdkOptions,
       });
 
-      this.activeQuery = queryInstance;
+      run.query = queryInstance;
 
       // Per-query stateful converter so block-stop reasoning tracking persists
       // across the stream of SDK messages.
       const convertSdkMessage = createSdkMessageConverter();
-      for await (const sdkMessage of queryInstance) {
-        // Convert SDK message → EngineOutput (may yield 0-N events per SDK message)
-        yield* convertSdkMessage(sdkMessage);
+      const workflowTranscripts = new WorkflowTranscriptTailer();
+      const events = new EventQueue<EngineOutput>();
+      let sdkStreamDone = false;
+
+      const sdkProducer = (async () => {
+        try {
+          for await (const sdkMessage of queryInstance) {
+            observeAskUserQuestion(sdkMessage);
+            // Register Workflow launches after queueing the corresponding parent
+            // and tool result, preserving their ordering ahead of child records.
+            for (const output of convertSdkMessage(sdkMessage)) events.push(output);
+            workflowTranscripts.observe(sdkMessage);
+          }
+        } finally {
+          sdkStreamDone = true;
+          workflowTranscripts.wake();
+        }
+      })();
+
+      const transcriptProducer = (async () => {
+        while (true) {
+          const observedVersion = workflowTranscripts.changeVersion;
+          for (const output of await workflowTranscripts.drain()) events.push(output);
+
+          if (streamController.signal.aborted) break;
+          if (sdkStreamDone && !await workflowTranscripts.hasActiveWorkflows()) break;
+          await workflowTranscripts.waitForChange(observedVersion, streamController.signal);
+        }
+        // The terminal status event is authoritative; drain once more for writes
+        // already queued by the filesystem before closing the merged stream.
+        for (const output of await workflowTranscripts.drain()) events.push(output);
+      })();
+
+      const producers = Promise.all([sdkProducer, transcriptProducer]);
+      void producers.then(() => events.close(), error => events.fail(error));
+      try {
+        yield* events.drain();
+        await producers;
+      } finally {
+        workflowTranscripts.dispose();
+        // A cancelled stream legitimately leaves questions unparked.
+        if (!streamController.signal.aborted) {
+          const unrouted = [...questionsAsked].filter(id => !questionsParked.has(id));
+          if (unrouted.length > 0) {
+            debug.error('engine', `AskUserQuestion never reached canUseTool (${unrouted.length}: ${unrouted.join(', ')}). The SDK likely stopped routing that tool through the permission callback under bypassPermissions — interactive questions are now unanswerable and must move to a PreToolUse hook.`);
+          }
+        }
       }
 
     } catch (error) {
       handleStreamError(error);
     } finally {
-      this.activeController = null;
-      this.activeQuery = null;
+      // Retire THIS run only — a concurrent stream of another chat session in
+      // the same project is still using the instance.
+      this.forgetRun(run);
     }
   }
 
   /**
-   * Cancel active query
+   * Drop a finished run and the questions only it could have answered.
    */
-  async cancel(): Promise<void> {
-    // Remove abort listeners from pending AskUserQuestion promises WITHOUT
-    // resolving them. Resolving causes the SDK to call handleControlRequest →
-    // write() to send the permission result to the subprocess. If close() has
-    // already killed the subprocess, this write throws "Operation aborted" as
-    // an unhandled error, crashing the server. By removing listeners and not
-    // resolving, the promises are safely abandoned when close() terminates the
-    // process and the async generator completes.
-    for (const [, pending] of this.pendingUserAnswers) {
-      pending.removeAbortListener();
+  private forgetRun(run: ClaudeRun): void {
+    this.runs.remove(run);
+    for (const [toolUseId, pending] of this.pendingUserAnswers) {
+      if (pending.run === run) this.pendingUserAnswers.delete(toolUseId);
     }
-    this.pendingUserAnswers.clear();
+    run.query = null;
+  }
 
-    // Use close() to forcefully terminate the query process and clean up
-    // all resources (docs: "Forcefully ends the query and cleans up all
-    // resources"). Unlike interrupt() which can hang indefinitely when the
-    // subprocess is unresponsive, close() is synchronous and guaranteed to
-    // complete — making cancel deterministic.
-    if (this.activeQuery && typeof this.activeQuery.close === 'function') {
-      try {
-        this.activeQuery.close();
-      } catch {
-        // Ignore close errors — process may already be dead
+  /**
+   * Cancel the run whose AbortController is `owner`, and only that run.
+   */
+  async cancel(owner: AbortController): Promise<void> {
+    await this.stopRuns(this.runs.select(owner));
+  }
+
+  /**
+   * Tear down the given runs. `cancel` passes the one run it was asked to
+   * stop; `dispose` passes them all. Nothing else may reach this.
+   */
+  private async stopRuns(targets: ClaudeRun[]): Promise<void> {
+    for (const run of targets) {
+      // Remove abort listeners from this run's pending AskUserQuestion promises
+      // WITHOUT resolving them. Resolving causes the SDK to call
+      // handleControlRequest → write() to send the permission result to the
+      // subprocess. If close() has already killed the subprocess, this write
+      // throws "Operation aborted" as an unhandled error, crashing the server.
+      // By removing listeners and not resolving, the promises are safely
+      // abandoned when close() terminates the process and the async generator
+      // completes. Questions parked by OTHER runs stay put — their subprocess
+      // is still alive and still waiting for an answer.
+      for (const [, pending] of this.pendingUserAnswers) {
+        if (pending.run === run) pending.removeAbortListener();
+      }
+
+      // Use close() to forcefully terminate the query process and clean up
+      // all resources (docs: "Forcefully ends the query and cleans up all
+      // resources"). Unlike interrupt() which can hang indefinitely when the
+      // subprocess is unresponsive, close() is synchronous and guaranteed to
+      // complete — making cancel deterministic.
+      if (run.query && typeof run.query.close === 'function') {
+        try {
+          run.query.close();
+        } catch {
+          // Ignore close errors — process may already be dead
+        }
+      }
+
+      if (!run.controller.signal.aborted) run.controller.abort();
+      this.forgetRun(run);
+    }
+  }
+
+  /**
+   * Interrupt a run (soft stop). Targeted like `cancel`.
+   */
+  async interrupt(owner: AbortController): Promise<void> {
+    const targets = this.runs.select(owner);
+    for (const run of targets) {
+      if (run.query && typeof run.query.interrupt === 'function') {
+        await run.query.interrupt();
       }
     }
-
-    if (this.activeController && !this.activeController.signal.aborted) {
-      this.activeController.abort();
-    }
-    this.activeController = null;
-    this.activeQuery = null;
   }
 
   /**
-   * Interrupt the active query
+   * Change permission mode for one run's query.
    */
-  async interrupt(): Promise<void> {
-    if (this.activeQuery && typeof this.activeQuery.interrupt === 'function') {
-      await this.activeQuery.interrupt();
-    }
-  }
-
-  /**
-   * Change permission mode for active query
-   */
-  async setPermissionMode(mode: PermissionMode): Promise<void> {
-    if (this.activeQuery && typeof this.activeQuery.setPermissionMode === 'function') {
-      await this.activeQuery.setPermissionMode(mode);
+  async setPermissionMode(mode: PermissionMode, owner: AbortController): Promise<void> {
+    for (const run of this.runs.select(owner)) {
+      if (run.query && typeof run.query.setPermissionMode === 'function') {
+        await run.query.setPermissionMode(mode);
+      }
     }
   }
 
@@ -324,6 +534,7 @@ export class ClaudeCodeEngine implements AIEngine {
     };
 
     // Use plain string prompt — simpler and faster than AsyncIterable
+    const { query } = await loadEngineSdk<typeof import('@anthropic-ai/claude-agent-sdk')>('claude-code', '@anthropic-ai/claude-agent-sdk');
     const queryInstance = query({
       prompt,
       options: sdkOptions

@@ -63,8 +63,6 @@ let catalogLoading = $state(false);
 let catalogLoadingFresh = $state(false);
 let catalogError = $state<string | null>(null);
 
-let hasPendingChanges = $state(false);
-
 // Monotonic id used to discard superseded/cancelled catalog requests.
 let catalogReqId = 0;
 
@@ -78,8 +76,6 @@ export const skillsStore = {
 	get catalogLoadingFresh() { return catalogLoadingFresh; },
 	get catalogError() { return catalogError; },
 	set catalogError(v: string | null) { catalogError = v; },
-	get hasPendingChanges() { return hasPendingChanges; },
-	set hasPendingChanges(v: boolean) { hasPendingChanges = v; },
 
 	/** Set of marketplace refs already installed (for "Installed" badges in Browse). */
 	get installedRefs(): Set<string> {

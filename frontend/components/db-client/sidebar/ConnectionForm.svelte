@@ -1,7 +1,9 @@
 <script lang="ts">
 	import { untrack } from 'svelte';
 	import Icon from '$frontend/components/common/display/Icon.svelte';
+	import PathBrowser from '$frontend/components/common/form/PathBrowser.svelte';
 	import { dbClientStore } from '$frontend/stores/features/db-client.svelte';
+	import { sshClientStore } from '$frontend/stores/features/ssh-client.svelte';
 	import type {
 		DbClientConnection,
 		DbClientConnectionInput,
@@ -23,15 +25,20 @@
 		postgres: 5432,
 		mongodb: 27017,
 		redis: 6379,
+		mssql: 1433,
 		sqlite: null
 	};
+
+	// Extensions the SQLite file picker filters on — it can still show every file
+	const SQLITE_EXTENSIONS = ['db', 'sqlite', 'sqlite3', 'db3'];
 
 	const DRIVER_LABELS: Record<DbDriver, string> = {
 		mysql: 'MySQL',
 		postgres: 'PostgreSQL',
 		sqlite: 'SQLite',
 		mongodb: 'MongoDB',
-		redis: 'Redis'
+		redis: 'Redis',
+		mssql: 'SQL Server'
 	};
 
 	const initial = untrack(() => connection);
@@ -45,6 +52,10 @@
 	let database = $state(initial?.database ?? '');
 
 	let sshEnabled = $state(initial?.ssh.enabled ?? false);
+	// Either point at a saved SSH host (shared credentials, jump chain and
+	// trusted host key) or keep the credentials on this connection. Existing
+	// connections have no saved host, so they open on the inline mode.
+	let sshConnectionId = $state<string>(initial?.ssh.connectionId ?? '');
 	let sshHost = $state(initial?.ssh.host ?? '');
 	let sshPort = $state<number>(initial?.ssh.port ?? 22);
 	let sshUsername = $state(initial?.ssh.username ?? '');
@@ -53,13 +64,18 @@
 	let sshPrivateKey = $state(initial?.ssh.privateKey ?? '');
 	let sshPassphrase = $state(initial?.ssh.passphrase ?? '');
 
+	let dbFilePickerOpen = $state(false);
+
 	let testing = $state(false);
 	let saving = $state(false);
 	let testResult = $state<DbClientHealth | null>(null);
 	let formError = $state<string | null>(null);
 
 	const isSqlite = $derived(driver === 'sqlite');
-	const showHostFields = $derived(!isSqlite);
+	// SQLite opens a file on the server's filesystem: no host, no port, no
+	// credentials, and nothing for an SSH tunnel to forward — the backend skips
+	// the tunnel for this driver outright (connection-manager openEntry).
+	const isNetworkDriver = $derived(!isSqlite);
 
 	const hostPlaceholder = '127.0.0.1';
 	const portPlaceholder = $derived(DEFAULT_PORTS[driver]?.toString() ?? '');
@@ -81,9 +97,12 @@
 	}
 
 	function buildInput(): DbClientConnectionInput {
-		const ssh = sshEnabled
-			? {
+		const ssh = isNetworkDriver && sshEnabled
+			? sshConnectionId
+				? { enabled: true, connectionId: sshConnectionId }
+				: {
 					enabled: true,
+					connectionId: null,
 					host: sshHost,
 					port: sshPort || 22,
 					username: sshUsername,
@@ -92,19 +111,19 @@
 					privateKey: sshAuthMethod === 'key' ? sshPrivateKey || undefined : undefined,
 					passphrase: sshAuthMethod === 'key' ? sshPassphrase || undefined : undefined
 				}
-			: { enabled: false };
+			: { enabled: false, connectionId: null };
 
-		const resolvedHost = showHostFields ? (host.trim() || hostPlaceholder) : undefined;
-		const resolvedPort = showHostFields ? (port ?? DEFAULT_PORTS[driver] ?? undefined) : undefined;
+		const resolvedHost = isNetworkDriver ? (host.trim() || hostPlaceholder) : undefined;
+		const resolvedPort = isNetworkDriver ? (port ?? DEFAULT_PORTS[driver] ?? undefined) : undefined;
 
 		return {
 			name: name.trim(),
 			driver,
 			host: resolvedHost,
 			port: resolvedPort,
-			username: username || undefined,
+			username: username.trim(),
 			password: password || undefined,
-			database: database || undefined,
+			database: database.trim(),
 			ssh
 		};
 	}
@@ -112,7 +131,7 @@
 	function validate(): string | null {
 		if (!name.trim()) return 'Name is required';
 		if (driver === 'sqlite' && !database.trim()) return 'SQLite needs a file path in Database field';
-		if (sshEnabled) {
+		if (isNetworkDriver && sshEnabled && !sshConnectionId) {
 			if (!sshHost.trim()) return 'SSH host is required';
 			if (!sshUsername.trim()) return 'SSH username is required';
 			if (sshAuthMethod === 'password' && !sshPassword) return 'SSH password is required';
@@ -120,6 +139,16 @@
 		}
 		return null;
 	}
+
+	// The picker needs the saved SSH hosts, which the SSH Client modal may never
+	// have been opened to load.
+	$effect(() => {
+		if (sshClientStore.connections.length === 0) {
+			sshClientStore.list().catch(() => {
+				// Without the list the picker just shows the inline option.
+			});
+		}
+	});
 
 	async function onTest(): Promise<void> {
 		const err = validate();
@@ -191,7 +220,7 @@
 		</select>
 	</label>
 
-	{#if showHostFields}
+	{#if isNetworkDriver}
 		<div class="grid grid-cols-3 gap-2">
 			<label class="col-span-2 flex flex-col gap-1">
 				<span class="text-xs text-slate-500 dark:text-slate-400">Host</span>
@@ -246,15 +275,47 @@
 				<span class="text-slate-400">(file path)</span>
 			{/if}
 		</span>
-		<input
-			type="text"
-			bind:value={database}
-			placeholder={isSqlite ? '/absolute/path/to.db' : ''}
-			class="px-2.5 py-1.5 bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-700 rounded-md text-sm text-slate-900 dark:text-slate-100"
-		/>
+		<div class="flex items-center gap-2">
+			<input
+				type="text"
+				bind:value={database}
+				placeholder={isSqlite ? '/absolute/path/to.db' : ''}
+				class="flex-1 min-w-0 px-2.5 py-1.5 bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-700 rounded-md text-sm text-slate-900 dark:text-slate-100"
+			/>
+			{#if isSqlite}
+				<button
+					type="button"
+					class="flex shrink-0 p-2 rounded-md border border-slate-200 dark:border-slate-700 text-slate-600 dark:text-slate-300 hover:bg-slate-100 dark:hover:bg-slate-800"
+					onclick={() => (dbFilePickerOpen = true)}
+					title="Browse for a database file"
+					aria-label="Browse for a database file"
+				>
+					<Icon name="lucide:folder-open" class="w-4 h-4" />
+				</button>
+			{/if}
+		</div>
 	</label>
 
-	<!-- SSH section -->
+	{#if isSqlite}
+		<PathBrowser
+			bind:isOpen={dbFilePickerOpen}
+			mode="file"
+			title="Select Database File"
+			confirmText="Use File"
+			fileExtensions={SQLITE_EXTENSIONS}
+			initialPath={database.trim()}
+			allowFolderActions={false}
+			onClose={() => (dbFilePickerOpen = false)}
+			onSelect={(path) => {
+				database = path;
+				dbFilePickerOpen = false;
+			}}
+		/>
+	{/if}
+
+	<!-- SSH section — network drivers only; a tunnel forwards a TCP port and
+	     SQLite has none -->
+	{#if isNetworkDriver}
 	<div class="border-t border-slate-200 dark:border-slate-800 pt-3">
 		<button
 			type="button"
@@ -276,6 +337,28 @@
 
 		{#if sshEnabled}
 			<div class="mt-3 flex flex-col gap-2">
+				<label class="flex flex-col gap-1">
+					<span class="text-xs text-slate-500 dark:text-slate-400">Tunnel through</span>
+					<select
+						bind:value={sshConnectionId}
+						class="px-2.5 py-1.5 bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-700 rounded-md text-sm text-slate-900 dark:text-slate-100"
+					>
+						<option value="">Credentials entered here</option>
+						{#each sshClientStore.connections as sshConnection (sshConnection.id)}
+							<option value={sshConnection.id}>
+								{sshConnection.name} ({sshConnection.username}@{sshConnection.host})
+							</option>
+						{/each}
+					</select>
+					{#if sshConnectionId}
+						<span class="text-xs text-slate-500 dark:text-slate-500">
+							Uses that host's credentials, jump chain and trusted host key. Manage it in SSH Client.
+						</span>
+					{/if}
+				</label>
+			</div>
+			{#if !sshConnectionId}
+			<div class="mt-2 flex flex-col gap-2">
 				<div class="grid grid-cols-3 gap-2">
 					<label class="col-span-2 flex flex-col gap-1">
 						<span class="text-xs text-slate-500 dark:text-slate-400">SSH Host</span>
@@ -349,8 +432,10 @@
 					</label>
 				{/if}
 			</div>
+			{/if}
 		{/if}
 	</div>
+	{/if}
 
 	<!-- Test result -->
 	{#if testResult}

@@ -2,13 +2,18 @@
 	import type { ToolUseBlock, AskUserQuestionInput } from '$shared/types/unified';
 	import Icon from '$frontend/components/common/display/Icon.svelte';
 	import ws from '$frontend/utils/ws';
-	import { currentSessionId } from '$frontend/stores/core/sessions.svelte';
+	import { renderedSessionId, sessionState } from '$frontend/stores/core/sessions.svelte';
 	import { appState, updateSessionProcessState } from '$frontend/stores/core/app.svelte';
 	import { debug } from '$shared/utils/logger';
 
 	const { toolInput }: { toolInput: ToolUseBlock } = $props();
 	const input = $derived(toolInput.input as AskUserQuestionInput);
 	const result = $derived(toolInput.result);
+
+	// `questions` is required by the type but not by reality: a call the harness
+	// rejects for a missing/malformed `questions` is still emitted and persisted.
+	// Every read goes through this normalized list so no code path can assume it.
+	const questions = $derived(Array.isArray(input?.questions) ? input.questions : []);
 
 	function parseResultAnswers(content: string, questions: { question: string }[]): Record<string, string> {
 		const answers: Record<string, string> = {};
@@ -44,7 +49,7 @@
 	const hasResult = $derived(!!result?.content);
 	let parsedAnswers = $derived.by(() => {
 		if (!result?.content) return {};
-		return parseResultAnswers(result.content, input.questions);
+		return parseResultAnswers(result.content, questions);
 	});
 	const isError = $derived(hasResult && Object.keys(parsedAnswers).length === 0);
 	const isAnswered = $derived(hasResult && !isError);
@@ -57,11 +62,10 @@
 	const isInterrupted = $derived(toolInput.interrupted);
 
 	$effect(() => {
-		if (!input.questions) return;
 		const initial: Record<number, Set<string>> = {};
 		const initialCustom: Record<number, string> = {};
 		const initialOther: Record<number, boolean> = {};
-		for (let i = 0; i < input.questions.length; i++) {
+		for (let i = 0; i < questions.length; i++) {
 			initial[i] = new Set();
 			initialCustom[i] = '';
 			initialOther[i] = false;
@@ -102,7 +106,6 @@
 		isSubmitting = true;
 		try {
 			const answers: Record<string, string> = {};
-			const questions = input.questions;
 			for (let i = 0; i < questions.length; i++) {
 				const q = questions[i];
 				const selected = selections[i] || new Set();
@@ -124,13 +127,15 @@
 			}
 			debug.log('chat', 'Submitting AskUserQuestion answers:', answers);
 			ws.emit('chat:ask-user-answer', {
-				chatSessionId: currentSessionId(),
+				chatSessionId: renderedSessionId(),
 				toolUseId: toolInput.id,
 				answers
 			});
-			const sessId = currentSessionId();
+			const sessId = renderedSessionId();
 			if (sessId) updateSessionProcessState(sessId, { isWaitingInput: false });
-			appState.isWaitingInput = false;
+			// Only mirror to the global flag when this transcript is also the one
+			// the rest of the UI is pointed at.
+			if (sessId === sessionState.currentSession?.id) appState.isWaitingInput = false;
 			hasSubmitted = true;
 		} catch (error) {
 			debug.error('chat', 'Failed to submit answers:', error);
@@ -140,9 +145,21 @@
 	}
 </script>
 
-{#if isError || isInterrupted}
+{#if questions.length === 0}
+	<!-- The call carried no usable questions — show why instead of an empty form. -->
+	<div class="bg-white dark:bg-slate-800 rounded-lg border border-red-200/60 dark:border-red-800/40 p-4 space-y-2">
+		<div class="flex items-center gap-2">
+			<Icon name="lucide:circle-x" class="text-red-500 w-4 h-4 shrink-0" />
+			<span class="text-sm font-medium text-slate-700 dark:text-slate-200">Question could not be displayed</span>
+		</div>
+		<p class="text-xs text-red-500 dark:text-red-400 whitespace-pre-wrap break-words">
+			{result?.content || 'The engine sent this question without any content.'}
+		</p>
+	</div>
+
+{:else if isError || isInterrupted}
 	<div class="space-y-3">
-		{#each input.questions as question}
+		{#each questions as question}
 			<div class="bg-white dark:bg-slate-800 rounded-lg border border-red-200/60 dark:border-red-800/40 p-4 space-y-2.5">
 				<div class="flex items-center gap-2">
 					<Icon name="lucide:circle-x" class="text-red-500 w-4 h-4 shrink-0" />
@@ -164,7 +181,7 @@
 
 {:else if isAnswered}
 	<div class="space-y-3">
-		{#each input.questions as question}
+		{#each questions as question}
 			<div class="bg-white dark:bg-slate-800 rounded-lg border border-slate-200/60 dark:border-slate-700/60 p-4 space-y-2.5">
 				<div class="flex items-center gap-2">
 					<Icon name="lucide:circle-check" class="text-green-500 w-4 h-4 shrink-0" />
@@ -184,7 +201,7 @@
 
 {:else if hasSubmitted}
 	<div class="space-y-3">
-		{#each input.questions as question, idx}
+		{#each questions as question, idx}
 			{@const selected = selections[idx] || new Set()}
 			{@const customText = customInputs[idx]?.trim()}
 			{@const isOther = otherActive[idx]}
@@ -211,7 +228,7 @@
 
 {:else}
 	<div class="space-y-3">
-		{#each input.questions as question, idx}
+		{#each questions as question, idx}
 			<div class="bg-white dark:bg-slate-800 rounded-lg border border-slate-200/60 dark:border-slate-700/60 p-4 space-y-3">
 				<div class="flex items-center gap-2">
 					<Icon name="lucide:message-circle-question-mark" class="text-blue-500 dark:text-blue-400 w-4 h-4 shrink-0" />
@@ -225,7 +242,7 @@
 				<p class="text-sm font-medium text-slate-700 dark:text-slate-200">{question.question}</p>
 
 				<div class="space-y-1.5">
-					{#each question.options as option}
+					{#each question.options ?? [] as option}
 						<button
 							class="w-full text-left flex items-start gap-3 p-2.5 rounded-md border transition-colors
 								{isSelected(idx, option.label)

@@ -7,8 +7,9 @@
 // Browser-specific services
 // Note: Session service removed - operations now in browser-tab-operations.svelte.ts module
 export { browserConsoleService } from './browser/browser-console.service';
-export type { ConsoleMessage } from './browser/browser-console.service';
 export { BrowserWebCodecsService } from './browser/browser-webcodecs.service';
+export { previewHostBridge, PreviewHostBridge } from './browser/host-bridge.service';
+export type { HostBridgeCallbacks } from './browser/host-bridge.service';
 
 // MCP Preview Integration
 export {

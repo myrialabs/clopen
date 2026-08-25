@@ -80,7 +80,7 @@ export class BrowserTabManager extends EventEmitter {
 		rotation: Rotation = 'landscape',
 		options?: {
 			setActive?: boolean;
-			preNavigationSetup?: (page: Page) => Promise<void>;
+			preNavigationSetup?: (page: Page, tabId: string) => Promise<void>;
 		}
 	): Promise<BrowserTab> {
 		const tabId = `tab-${this.nextTabNumber++}`;
@@ -121,7 +121,7 @@ export class BrowserTabManager extends EventEmitter {
 		// Run pre-navigation setup if provided (e.g., dialog handling)
 		if (options?.preNavigationSetup) {
 			debug.log('preview', `🔧 Running pre-navigation setup...`);
-			await options.preNavigationSetup(page);
+			await options.preNavigationSetup(page, tabId);
 			debug.log('preview', `✅ Pre-navigation setup complete`);
 		}
 
@@ -480,11 +480,14 @@ export class BrowserTabManager extends EventEmitter {
 			id: tab.id,
 			url: tab.url,
 			title: tab.title,
+			favicon: tab.favicon,
 			quality: tab.quality,
 			isStreaming: tab.isStreaming,
 			deviceSize: tab.deviceSize,
 			rotation: tab.rotation,
-			isActive: tab.isActive
+			isActive: tab.isActive,
+			canGoBack: tab.canGoBack,
+			canGoForward: tab.canGoForward
 		};
 	}
 
@@ -496,11 +499,14 @@ export class BrowserTabManager extends EventEmitter {
 			id: tab.id,
 			url: tab.url,
 			title: tab.title,
+			favicon: tab.favicon,
 			quality: tab.quality,
 			isStreaming: tab.isStreaming,
 			deviceSize: tab.deviceSize,
 			rotation: tab.rotation,
-			isActive: tab.isActive
+			isActive: tab.isActive,
+			canGoBack: tab.canGoBack,
+			canGoForward: tab.canGoForward
 		}));
 	}
 
@@ -709,18 +715,12 @@ export class BrowserTabManager extends EventEmitter {
 			})();
 		});
 
-		// Auto-dismiss native browser dialogs to prevent page hang in headless mode.
-		// alert() → accept (one-way informational, safe to dismiss)
-		// confirm()/prompt() → dismiss/cancel (avoid unintended side effects)
-		// CAPTCHA-related alerts are silently dismissed.
-		page.on('dialog', async (dialog) => {
-			const type = dialog.type();
-			if (type === 'alert') {
-				await dialog.accept().catch(() => {});
-			} else {
-				await dialog.dismiss().catch(() => {});
-			}
-		});
+		// NOTE: no `page.on('dialog')` here on purpose. Dialogs are owned by
+		// BrowserDialogHandler, which forwards them to the viewer and renders a
+		// real dialog there. Puppeteer hands a dialog to whichever listener
+		// answers first, so an auto-dismiss registered at this point would win
+		// every race and the user would never see alert()/confirm()/prompt().
+		// The handler auto-dismisses on its own timeout if nobody is watching.
 	}
 
 	/**
@@ -747,15 +747,39 @@ export class BrowserTabManager extends EventEmitter {
 	}
 
 	/**
+	 * Defensive cleanup before a URL reaches CDP.
+	 *
+	 * `Page.navigate` rejects with a bare "Cannot navigate to invalid URL" for
+	 * strings that look completely valid to a person — the usual cause is a
+	 * copy-paste artefact CDP does not tolerate: leading/trailing whitespace,
+	 * a stray newline, or zero-width/invisible Unicode that a real address
+	 * bar strips silently but Puppeteer never sees. `URL` is the same class of
+	 * parser Chromium uses internally, so whatever it rejects would have
+	 * failed identically inside the browser — surfacing that here, with the
+	 * exact string, turns a dead end into something explainable instead of
+	 * three pointless retries against a string that was never going anywhere.
+	 */
+	private sanitizeNavigationUrl(url: string): string {
+		const cleaned = url.replace(/[\u200B-\u200F\u202A-\u202E\uFEFF]/g, '').trim();
+		try {
+			new URL(cleaned);
+		} catch {
+			throw new Error(`Invalid URL: "${cleaned}"`);
+		}
+		return cleaned;
+	}
+
+	/**
 	 * Navigate with retry, including Cloudflare auto-pass detection and CAPTCHA popup dismissal.
 	 */
 	private async navigateWithRetry(page: Page, url: string): Promise<string> {
+		const cleanUrl = this.sanitizeNavigationUrl(url);
 		let retries = 3;
 		let actualUrl = '';
 
 		while (retries > 0) {
 			try {
-				await page.goto(url, {
+				await page.goto(cleanUrl, {
 					waitUntil: 'domcontentloaded',
 					timeout: 30000
 				});

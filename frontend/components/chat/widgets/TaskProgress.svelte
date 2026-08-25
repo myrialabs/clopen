@@ -230,10 +230,7 @@
 				<div class="task-list max-h-56 overflow-y-auto px-3 py-2 space-y-1">
 					{#each latestTodos as todo, index}
 						<div
-							class="flex items-start gap-2.5 px-2 py-1.5 rounded-md transition-colors
-								{todo.status === 'in_progress' ? 'bg-violet-50 dark:bg-violet-900/20' : ''}
-								{todo.status === 'completed' ? 'bg-green-50/60 dark:bg-green-900/10' : ''}"
-						>
+							class="flex items-start gap-2.5 px-2 py-1.5 rounded-md transition-colors">
 							<Icon
 								name={getStatusIcon(todo.status)}
 								class="w-3.5 h-3.5 mt-0.5 shrink-0 {getStatusColor(todo.status)} {todo.status === 'in_progress' && appState.isLoading ? 'animate-spin' : ''}"

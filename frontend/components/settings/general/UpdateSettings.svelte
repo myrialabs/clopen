@@ -1,27 +1,15 @@
 <script lang="ts">
-	import { marked } from 'marked';
-	import DOMPurify from 'dompurify';
 	import { systemSettings, updateSystemSettings } from '$frontend/stores/features/settings.svelte';
-	import { updateState, checkForUpdate, runUpdate, showRestartModal, fetchReleaseNotes } from '$frontend/stores/ui/update.svelte';
+	import { updateState, checkForUpdate, runUpdate, showRestartModal, fetchReleaseNotes, refetchReleaseNotes } from '$frontend/stores/ui/update.svelte';
 	import Icon from '../../common/display/Icon.svelte';
-	import Markdown from '../../common/display/Markdown.svelte';
+	import ReleaseNotesList from '../../common/feedback/ReleaseNotesList.svelte';
 
 	let showReleaseNotes = $state(false);
 
-	const releaseDate = $derived(
-		updateState.releaseNotes?.published_at
-			? new Date(updateState.releaseNotes.published_at).toLocaleDateString(undefined, {
-					year: 'numeric',
-					month: 'short',
-					day: 'numeric'
-				})
-			: ''
-	);
-
 	const releaseSubtitle = $derived(
-		updateState.releaseNotes
-			? [updateState.releaseNotes.tag_name, releaseDate].filter(Boolean).join(' · ')
-			: "What's new in the latest version"
+		updateState.releaseNotes?.length
+			? `Last ${updateState.releaseNotes.length} versions`
+			: "What's new in recent versions"
 	);
 
 	function toggleAutoUpdate() {
@@ -38,13 +26,11 @@
 
 	function handleToggleReleaseNotes() {
 		showReleaseNotes = !showReleaseNotes;
-		if (showReleaseNotes && !updateState.releaseNotes && !updateState.releaseNotesLoading) {
-			fetchReleaseNotes();
-		}
+		if (showReleaseNotes) fetchReleaseNotes();
 	}
 
 	function handleRetryReleaseNotes() {
-		fetchReleaseNotes();
+		refetchReleaseNotes();
 	}
 </script>
 
@@ -165,18 +151,7 @@
 							Loading release notes...
 						</div>
 					{:else if updateState.releaseNotes}
-						<Markdown variant="compact" content={updateState.releaseNotes.body} />
-						<div class="mt-3">
-							<a
-								href={updateState.releaseNotes.html_url}
-								target="_blank"
-								rel="noopener noreferrer"
-								class="inline-flex items-center gap-1.5 text-xs font-semibold text-violet-600 dark:text-violet-400 hover:underline"
-							>
-								<Icon name="lucide:external-link" class="w-3.5 h-3.5" />
-								View on GitHub
-							</a>
-						</div>
+						<ReleaseNotesList releases={updateState.releaseNotes} />
 					{:else if updateState.releaseNotesError}
 						<div class="flex items-center justify-between gap-3">
 							<div class="flex items-center gap-2 min-w-0">

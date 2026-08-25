@@ -3,7 +3,9 @@
 	import PageTemplate from '../common/display/PageTemplate.svelte';
 
 	// Import modular components
-	import ModelSettings from './model/ModelSettings.svelte';
+	import AssistantSettings from './model/AssistantSettings.svelte';
+	import GitSettings from './model/GitSettings.svelte';
+	import ArtifactsSettings from './model/ArtifactsSettings.svelte';
 	import AppearanceSettings from './appearance/AppearanceSettings.svelte';
 	import AccountSettings from './account/AccountSettings.svelte';
 	import NotificationSettings from './notifications/NotificationSettings.svelte';
@@ -24,8 +26,10 @@
 	<div class="flex-1 overflow-auto">
 		<div class="space-y-6">
 
-			<!-- AI Model (Assistant + Commit Message) -->
-			<ModelSettings />
+			<!-- AI Model (Assistant + Commit Message + Artifacts) -->
+			<AssistantSettings />
+			<GitSettings />
+			<ArtifactsSettings />
 
 			<!-- Appearance Configuration -->
 			<AppearanceSettings />

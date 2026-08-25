@@ -4,8 +4,7 @@
 	import { getGitStatusLabel, getGitStatusColor } from '$frontend/utils/git-status';
 	import type { GitFileChange } from '$shared/types/git';
 	import type { IconName } from '$shared/types/ui/icons';
-	import { requestRevealFile } from '$frontend/stores/core/files.svelte';
-	import { getVisiblePanels, workspaceState } from '$frontend/stores/ui/workspace.svelte';
+	import { revealFile } from '$frontend/stores/ui/file-peek.svelte';
 	import { projectState } from '$frontend/stores/core/projects.svelte';
 
 	interface Props {
@@ -17,9 +16,10 @@
 		onDiscard?: (path: string) => void;
 		onViewDiff?: (file: GitFileChange, section: string) => void;
 		onResolve?: (path: string) => void;
+		aiChangesSet?: Set<string>;
 	}
 
-	const { file, section, isActive = false, onStage, onUnstage, onDiscard, onViewDiff, onResolve }: Props = $props();
+	const { file, section, isActive = false, onStage, onUnstage, onDiscard, onViewDiff, onResolve, aiChangesSet = new Set<string>() }: Props = $props();
 
 	const statusCode = $derived(section === 'staged' ? file.indexStatus : file.workingStatus);
 	const statusLabel = $derived(getGitStatusLabel(statusCode));
@@ -31,14 +31,24 @@
 		return parts.join('/');
 	});
 	const fileIcon = $derived(getFileIcon(fileName) as IconName);
-	const isFilesPanelVisible = $derived(getVisiblePanels(workspaceState.layout).includes('files'));
+
+	// AI changes indicator — file.path is relative with forward slashes; build the
+	// absolute path with the project's separator (matching git-status.svelte.ts) so
+	// the lookup lands on Windows too.
+	const hasAiChange = $derived(() => {
+		const base = projectState.currentProject?.path;
+		if (!base) return false;
+		const sep = base.includes('\\') ? '\\' : '/';
+		const rel = sep === '\\' ? file.path.replace(/\//g, '\\') : file.path;
+		return aiChangesSet.has(`${base}${sep}${rel}`);
+	});
 
 	function openInFilesPanel(e: MouseEvent) {
 		e.stopPropagation();
 		const basePath = projectState.currentProject?.path;
 		if (!basePath) return;
 		const separator = basePath.includes('\\') ? '\\' : '/';
-		requestRevealFile(`${basePath}${separator}${file.path}`);
+		revealFile(`${basePath}${separator}${file.path}`);
 	}
 </script>
 
@@ -67,17 +77,25 @@
 		{/if}
 	</div>
 
-	<!-- Status badge -->
-	<span class="w-4 text-center text-sm font-bold {statusColor} shrink-0">{statusLabel}</span>
+	<!-- Status badge + AI dot -->
+	<span class="flex items-center gap-1 shrink-0">
+		{#if hasAiChange()}
+			<span
+				class="w-1.5 h-1.5 rounded-full bg-violet-500 dark:bg-violet-400"
+				title="Has AI changes"
+			></span>
+		{/if}
+		<span class="w-4 text-center text-sm font-bold {statusColor} shrink-0">{statusLabel}</span>
+	</span>
 
 	<!-- Actions - always visible -->
 	<div class="flex items-center gap-0.5 shrink-0">
-		{#if isFilesPanelVisible && statusCode !== 'D'}
+		{#if statusCode !== 'D'}
 			<button
 				type="button"
 				class="flex items-center justify-center w-6 h-6 rounded-md text-slate-400 hover:bg-violet-500/10 hover:text-violet-500 transition-colors bg-transparent border-none cursor-pointer"
 				onclick={openInFilesPanel}
-				title="Open in Files panel"
+				title="Open in Files"
 			>
 				<Icon name="lucide:file-symlink" class="w-3.5 h-3.5" />
 			</button>

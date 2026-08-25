@@ -6,14 +6,17 @@
  * isolated by the per-project engine registry in backend/engine/index.ts.
  */
 
-import { CopilotClient, approveAll } from '@github/copilot-sdk';
 import type {
+	CopilotClient,
 	CopilotSession,
 	SessionConfig,
 	ResumeSessionConfig,
 	SessionEvent,
 	ModelInfo,
+	PermissionRequest,
+	PermissionRequestResult,
 } from '@github/copilot-sdk';
+import { loadEngineSdk } from '$backend/engine/sdk-loader';
 import type { EngineOutput, EngineModel } from '$shared/types/unified';
 import type { AIEngine, EngineQueryOptions, StructuredGenerationOptions } from '../../types';
 import { buildJsonPrompt, extractJson } from '../../structured-helpers';
@@ -21,7 +24,11 @@ import { engineQueries } from '$backend/database/queries/engine-queries';
 import { resolveOsPath, getEngineUserConfigDir } from '$backend/utils/paths';
 import { debug } from '$shared/utils/logger';
 import { getCopilotMcpConfig } from '../../../mcp';
+import { EngineRuns } from '../run-registry';
+import { artifactFilter } from '$backend/profiles';
 import { syncSkills } from '$backend/skills';
+import { syncEngineArtifacts, buildArtifactsPromptContext } from '$backend/engine/artifact-sync';
+import { resolvePermissionsFromDb, isToolAllowed, type ResolvedPermissions } from '$backend/permissions';
 import { handleStreamError, buildSessionError } from './error-handler';
 import { fetchCopilotModels } from './models';
 
@@ -30,6 +37,39 @@ import { fetchCopilotModels } from './models';
 // `onUserInputRequest`'s return type is exactly that shape — derive
 // it from the SessionConfig field so we don't drift from the SDK.
 type UserInputResponse = Awaited<ReturnType<NonNullable<SessionConfig['onUserInputRequest']>>>;
+
+// `MessageOptions` is likewise not re-exported from the SDK root, so derive the
+// attachment element type from `session.send`'s options overload.
+type MessageAttachment = NonNullable<Parameters<CopilotSession['send']>[0] extends string
+	? never
+	: NonNullable<Extract<Parameters<CopilotSession['send']>[0], { prompt: string }>['attachments']>>[number];
+
+/**
+ * Map a Copilot permission request to the token the permission policy matches on.
+ * MCP / custom tools carry a `toolName`; everything else is matched by its
+ * operation `kind` (`shell` / `write` / `read` / `url` / `memory` / …), which is
+ * why the Copilot builtin catalog lists kinds rather than tool names.
+ */
+function copilotPermissionToken(request: PermissionRequest): string {
+	const named = (request as { toolName?: string }).toolName;
+	return named && named.trim() ? named : request.kind;
+}
+
+/**
+ * Enforce the resolved permission policy for one Copilot request. Returns a
+ * reject decision for blocked tools, or null to fall through to auto-approve.
+ */
+function enforceCopilotPermission(
+	permissions: ResolvedPermissions,
+	request: PermissionRequest
+): PermissionRequestResult | null {
+	const token = copilotPermissionToken(request);
+	if (!isToolAllowed(permissions, token)) {
+		debug.log('permissions', `⛔ Blocked tool "${token}" (Clopen permission policy)`);
+		return { kind: 'reject', feedback: `Blocked by Clopen permission policy: ${token}` };
+	}
+	return null;
+}
 import {
 	createStreamConverterState,
 	convertSessionStart,
@@ -68,13 +108,30 @@ interface PendingCopilotUserAnswer {
 	choices?: string[];
 }
 
+/**
+ * One stream in flight on this instance.
+ */
+interface CopilotRun {
+	/** Identity of the run — the controller the caller passed to streamQuery. */
+	controller: AbortController;
+	session: CopilotSession | null;
+	/** Correlates `onUserInputRequest` with the toolCallId seen on the event stream. */
+	pendingAskUserToolCallId: string | null;
+}
+
 export class CopilotEngine implements AIEngine {
 	readonly name = 'copilot' as const;
 
 	private _isInitialized = false;
 	private client: CopilotClient | null = null;
-	private activeSession: CopilotSession | null = null;
-	private activeController: AbortController | null = null;
+	/**
+	 * Every stream in flight, keyed by the AbortController its caller passed to
+	 * streamQuery. One instance serves all chat sessions of a project, so the
+	 * Copilot session of a stream belongs to the run — a field would hold only
+	 * the most recent one and cancelling any chat would abort another chat's
+	 * session.
+	 */
+	private runs = new EngineRuns<CopilotRun>();
 	private modelsCache: ModelInfo[] | null = null;
 	/**
 	 * Account ID currently baked into `this.client`. The Copilot SDK takes the
@@ -93,20 +150,20 @@ export class CopilotEngine implements AIEngine {
 	 *     NOT the toolCallId (see `node_modules/@github/copilot-sdk/dist/client.js::handleUserInputRequest`)
 	 *
 	 * To correlate the two we capture the most recent `toolCallId` from
-	 * those events into `pendingAskUserToolCallId`, then read it inside
-	 * the callback. Only one `ask_user` can be outstanding per session at
-	 * a time (the SDK blocks the agent's turn until the callback returns),
-	 * so a single-slot variable is sufficient.
+	 * those events into the run's `pendingAskUserToolCallId`, then read it
+	 * inside the callback. Only one `ask_user` can be outstanding per session
+	 * at a time (the SDK blocks the agent's turn until the callback returns),
+	 * so a single slot PER RUN is sufficient — but it cannot be a single slot
+	 * per instance, which two concurrent chats of a project would share.
 	 */
-	private pendingUserAnswers = new Map<string, PendingCopilotUserAnswer>();
-	private pendingAskUserToolCallId: string | null = null;
+	private pendingUserAnswers = new Map<string, PendingCopilotUserAnswer & { owner: CopilotRun }>();
 
 	get isInitialized(): boolean {
 		return this._isInitialized;
 	}
 
 	get isActive(): boolean {
-		return this.activeController !== null;
+		return this.runs.isActive;
 	}
 
 	async initialize(accountId?: number): Promise<void> {
@@ -120,6 +177,8 @@ export class CopilotEngine implements AIEngine {
 		if (!account) {
 			throw new Error('Copilot is not configured. Add a Personal Access Token in Settings → Engines → Copilot.');
 		}
+
+		const { CopilotClient } = await loadEngineSdk<typeof import('@github/copilot-sdk')>('copilot', '@github/copilot-sdk');
 
 		this.client = new CopilotClient({
 			gitHubToken: account.credential,
@@ -137,7 +196,7 @@ export class CopilotEngine implements AIEngine {
 	}
 
 	async dispose(): Promise<void> {
-		await this.cancel();
+		await this.stopRuns(this.runs.all());
 
 		if (this.client) {
 			try {
@@ -176,7 +235,16 @@ export class CopilotEngine implements AIEngine {
 	}
 
 	async *streamQuery(options: EngineQueryOptions): AsyncGenerator<EngineOutput, void, unknown> {
-		const { projectPath, prompt, resume, modelId, abortController, accountId } = options;
+		const { projectPath, prompt, resume, modelId, reasoningEffort, abortController, accountId } = options;
+
+		// Copilot's `reasoningEffort` accepts low | medium | high | xhigh; only
+		// applied for models that support it (unsupported tokens are dropped so
+		// the SDK falls back to the model default).
+		const copilotEfforts = new Set<string>(['low', 'medium', 'high', 'xhigh']);
+		const reasoningOption: Pick<ResumeSessionConfig, 'reasoningEffort'> | Record<string, never> =
+			reasoningEffort && copilotEfforts.has(reasoningEffort)
+				? { reasoningEffort: reasoningEffort as ResumeSessionConfig['reasoningEffort'] }
+				: {};
 
 		// Per-stream account override: the Copilot SDK takes the GitHub token at
 		// construction time, so an account switch requires recreating the client.
@@ -192,10 +260,30 @@ export class CopilotEngine implements AIEngine {
 			throw new Error('Copilot client unavailable.');
 		}
 
-		this.activeController = abortController || new AbortController();
+		const controller = abortController || new AbortController();
+		const run: CopilotRun = { controller, session: null, pendingAskUserToolCallId: null };
+		this.runs.add(run);
+
+		// Active Profile for this stream — scopes artifacts + connectors.
+		const profileId = options.mcpContext?.profileId;
+		const mcpProfileFilter = artifactFilter(profileId, 'mcp') ?? undefined;
 
 		// Mirror enabled skills into Copilot's native skills dir before the turn.
-		await syncSkills('copilot');
+		await syncSkills('copilot', profileId);
+		await syncEngineArtifacts('copilot', profileId);
+
+		// Copilot's skills dir (`~/.copilot/skills`) is SHARED across sessions and
+		// read by a PERSISTENT runtime, and its Commands/Subagents ride a synthetic
+		// global block — none can reliably scope to THIS session's Profile. Inject
+		// the profile-scoped Skills/Commands/Subagents preamble into the prompt as
+		// the authoritative per-session signal (synthetic commands/subagents are
+		// stripped from the global file; the native skill mirror still loads the
+		// filtered folders).
+		const artifactsContext = buildArtifactsPromptContext(profileId);
+
+		// Resolve the permission policy once per stream; onPermissionRequest below
+		// enforces it (Copilot otherwise approves every tool via approveAll).
+		const permissions = resolvePermissionsFromDb('copilot', options.mcpContext?.projectId, profileId);
 
 		const resolvedProjectPath = resolveOsPath(projectPath);
 		const state = createStreamConverterState('', modelId);
@@ -231,13 +319,13 @@ export class CopilotEngine implements AIEngine {
 			if (event.type === 'assistant.message' && event.data.toolRequests) {
 				for (const req of event.data.toolRequests) {
 					if (req.name === 'ask_user') {
-						this.pendingAskUserToolCallId = req.toolCallId;
+						run.pendingAskUserToolCallId = req.toolCallId;
 					}
 				}
 			} else if (event.type === 'tool.execution_start' && event.data.toolName === 'ask_user') {
-				this.pendingAskUserToolCallId = event.data.toolCallId;
+				run.pendingAskUserToolCallId = event.data.toolCallId;
 			} else if (event.type === 'user_input.requested' && event.data.toolCallId) {
-				this.pendingAskUserToolCallId = event.data.toolCallId;
+				run.pendingAskUserToolCallId = event.data.toolCallId;
 			}
 			pushEvent(event);
 		};
@@ -246,13 +334,16 @@ export class CopilotEngine implements AIEngine {
 			finished = true;
 			pushEvent(null);
 		};
-		this.activeController.signal.addEventListener('abort', onAbort, { once: true });
+		controller.signal.addEventListener('abort', onAbort, { once: true });
+
+		const { approveAll } = await loadEngineSdk<typeof import('@github/copilot-sdk')>('copilot', '@github/copilot-sdk');
 
 		try {
-			const mcpConfig = getCopilotMcpConfig();
+			const mcpConfig = getCopilotMcpConfig(mcpProfileFilter, options.mcpContext);
 
 			const baseConfig: ResumeSessionConfig = {
-				onPermissionRequest: approveAll,
+				onPermissionRequest: (request, invocation) =>
+					enforceCopilotPermission(permissions, request) ?? approveAll(request, invocation),
 				// Enables the agent's `ask_user` tool. Without this callback the
 				// SDK reports `requestUserInput: false` to the server and the
 				// tool is not exposed to the model, so the AskUserQuestion
@@ -272,8 +363,8 @@ export class CopilotEngine implements AIEngine {
 					// to a synthetic id so `cancel()` can still release the
 					// Promise — but log loudly because the chat UI's answer
 					// submission won't reach this entry.
-					const captured = this.pendingAskUserToolCallId;
-					this.pendingAskUserToolCallId = null;
+					const captured = run.pendingAskUserToolCallId;
+					run.pendingAskUserToolCallId = null;
 					const toolCallId = captured ?? `copilot-ask-user-${crypto.randomUUID()}`;
 
 					if (captured) {
@@ -286,10 +377,12 @@ export class CopilotEngine implements AIEngine {
 						this.pendingUserAnswers.set(toolCallId, {
 							resolve,
 							choices: request.choices,
+							owner: run,
 						});
 					});
 				},
 				model: modelId,
+				...reasoningOption,
 				workingDirectory: resolvedProjectPath,
 				onEvent: handler,
 				// Emit assistant.message_delta / assistant.reasoning_delta events
@@ -305,7 +398,7 @@ export class CopilotEngine implements AIEngine {
 				includeSubAgentStreamingEvents: false,
 				// Custom MCP tools served from Clopen's in-process remote MCP HTTP
 				// endpoint (`/mcp`). Same `clopen-mcp` namespace and URL Open Code
-				// and Codex consume — see backend/engine/README.md §9.12.
+				// and Codex consume — see backend/engine/README.md §10.12.
 				...(Object.keys(mcpConfig).length > 0 && { mcpServers: mcpConfig }),
 			};
 
@@ -341,11 +434,18 @@ export class CopilotEngine implements AIEngine {
 				session = await this.client.createSession({ ...baseConfig } as SessionConfig);
 			}
 
-			this.activeSession = session;
+			run.session = session;
 			state.sessionId = session.sessionId;
 
 			// Send the prompt — fire-and-forget; events arrive via the queue.
-			const sendPromise = session.send({ prompt: extractPromptText(prompt) }).catch(error => {
+			const promptText = artifactsContext
+				? `${artifactsContext}\n\n${extractPromptText(prompt)}`
+				: extractPromptText(prompt);
+			const promptAttachments = extractPromptAttachments(prompt);
+			const sendPromise = session.send({
+				prompt: promptText,
+				...(promptAttachments.length > 0 && { attachments: promptAttachments }),
+			}).catch(error => {
 				debug.error('engine', 'Copilot session.send error:', error);
 				pushEvent({
 					type: 'session.error',
@@ -361,7 +461,7 @@ export class CopilotEngine implements AIEngine {
 
 			// Drain the event queue.
 			while (!finished) {
-				if (this.activeController.signal.aborted) break;
+				if (controller.signal.aborted) break;
 
 				const event: SessionEvent | null = queue.length > 0
 					? queue.shift()!
@@ -369,7 +469,7 @@ export class CopilotEngine implements AIEngine {
 						waiter = resolve;
 					});
 
-				if (!event || this.activeController.signal.aborted) break;
+				if (!event || controller.signal.aborted) break;
 
 				// Resolve the parent Agent (`task`) tool call id for events
 				// originating inside a sub-agent. Null for the root agent and
@@ -464,6 +564,30 @@ export class CopilotEngine implements AIEngine {
 						finished = true;
 						break;
 
+					case 'session_limits_exhausted.requested': {
+						// Added in @github/copilot-sdk 1.0.9. The model request is
+						// BLOCKED until a client answers this over `rpc.ui` — an
+						// unhandled one hangs the turn with no output at all.
+						//
+						// The available actions are `add` / `set` / `unset` / `cancel`,
+						// i.e. three of them raise (or remove) the user's AI-credit
+						// ceiling. Clopen never spends on someone's behalf, so it
+						// cancels the blocked request and reports the numbers; raising
+						// the limit stays a deliberate act in GitHub's own settings.
+						const { requestId, usedAiCredits, maxAiCredits } = event.data;
+						void session.rpc.ui
+							.handlePendingSessionLimitsExhausted({ requestId, response: { action: 'cancel' } })
+							.catch((error: unknown) => debug.warn('engine', 'Copilot session-limit cancel failed:', error));
+						yield {
+							type: 'notification',
+							sessionId: state.sessionId,
+							level: 'error',
+							title: 'Copilot AI credit limit reached',
+							message: `This session used ${usedAiCredits} of ${maxAiCredits} AI credits, so the request was cancelled. Raise the limit in your GitHub Copilot settings to continue.`,
+						};
+						break;
+					}
+
 					case 'session.error':
 						throw buildSessionError(event.data);
 
@@ -479,54 +603,77 @@ export class CopilotEngine implements AIEngine {
 		} catch (error) {
 			handleStreamError(error);
 		} finally {
-			this.activeController.signal.removeEventListener('abort', onAbort);
+			controller.signal.removeEventListener('abort', onAbort);
 
-			if (this.activeSession) {
+			if (run.session) {
 				try {
-					await this.activeSession.disconnect();
+					await run.session.disconnect();
 				} catch (error) {
 					debug.warn('engine', 'Copilot session.disconnect failed (non-fatal):', error);
 				}
 			}
-			this.activeSession = null;
-			this.activeController = null;
+			// Retire THIS run only — another chat session of the same project may
+			// still be streaming on this instance.
+			this.forgetRun(run);
 		}
 	}
 
-	async cancel(): Promise<void> {
-		// 1. Release any parked `onUserInputRequest` callbacks with an empty
-		// answer so the SDK isn't left blocked on a Promise that will never
-		// resolve. Empty `answer` + `wasFreeform: false` is the SDK-safe way
-		// to unblock without injecting fake user input.
-		for (const [, pending] of this.pendingUserAnswers) {
-			pending.resolve({ answer: '', wasFreeform: false });
+	/** Drop a finished run and the questions only it could answer. */
+	private forgetRun(run: CopilotRun): void {
+		this.runs.remove(run);
+		for (const [toolCallId, pending] of this.pendingUserAnswers) {
+			if (pending.owner === run) this.pendingUserAnswers.delete(toolCallId);
 		}
-		this.pendingUserAnswers.clear();
-		this.pendingAskUserToolCallId = null;
+		run.session = null;
+		run.pendingAskUserToolCallId = null;
+	}
 
-		// 2. Abort the local stream first so the loop exits even if RPC hangs.
-		const session = this.activeSession;
-		if (this.activeController && !this.activeController.signal.aborted) {
-			this.activeController.abort();
-		}
-		this.activeController = null;
+	/**
+	 * Cancel the run whose AbortController is `owner`, and only that run.
+	 */
+	async cancel(owner: AbortController): Promise<void> {
+		await this.stopRuns(this.runs.select(owner));
+	}
 
-		// 3. Tell the Copilot server to stop processing (with timeout).
-		if (session) {
-			try {
-				await Promise.race([
-					session.abort(),
-					new Promise<void>(resolve => setTimeout(resolve, ABORT_TIMEOUT_MS)),
-				]);
-				debug.log('engine', 'Copilot session aborted:', session.sessionId);
-			} catch (error) {
-				debug.warn('engine', 'Copilot session.abort failed (non-fatal):', error);
+	/**
+	 * Tear down the given runs. `cancel` passes the one run it was asked to
+	 * stop; `dispose` passes them all. Nothing else may reach this.
+	 */
+	private async stopRuns(targets: CopilotRun[]): Promise<void> {
+		for (const run of targets) {
+			// 1. Release THIS run's parked `onUserInputRequest` callbacks with an
+			// empty answer so the SDK isn't left blocked on a Promise that will
+			// never resolve. Empty `answer` + `wasFreeform: false` is the SDK-safe
+			// way to unblock without injecting fake user input. Another run's
+			// parked callback stays — its session is still live.
+			for (const [toolCallId, pending] of this.pendingUserAnswers) {
+				if (pending.owner !== run) continue;
+				pending.resolve({ answer: '', wasFreeform: false });
+				this.pendingUserAnswers.delete(toolCallId);
+			}
+
+			// 2. Abort the local stream first so the loop exits even if RPC hangs.
+			const session = run.session;
+			if (!run.controller.signal.aborted) run.controller.abort();
+			this.forgetRun(run);
+
+			// 3. Tell the Copilot server to stop processing (with timeout).
+			if (session) {
+				try {
+					await Promise.race([
+						session.abort(),
+						new Promise<void>(resolve => setTimeout(resolve, ABORT_TIMEOUT_MS)),
+					]);
+					debug.log('engine', 'Copilot session aborted:', session.sessionId);
+				} catch (error) {
+					debug.warn('engine', 'Copilot session.abort failed (non-fatal):', error);
+				}
 			}
 		}
 	}
 
-	async interrupt(): Promise<void> {
-		await this.cancel();
+	async interrupt(owner: AbortController): Promise<void> {
+		await this.stopRuns(this.runs.select(owner));
 	}
 
 	/**
@@ -567,6 +714,8 @@ export class CopilotEngine implements AIEngine {
 		if (!this.client) {
 			throw new Error('Copilot client unavailable.');
 		}
+
+		const { approveAll } = await loadEngineSdk<typeof import('@github/copilot-sdk')>('copilot', '@github/copilot-sdk');
 
 		const controller = abortController || new AbortController();
 		const resolvedProjectPath = resolveOsPath(projectPath);
@@ -634,4 +783,30 @@ function extractPromptText(prompt: EngineQueryOptions['prompt']): string {
 		}
 	}
 	return parts.join('\n').trim();
+}
+
+/**
+ * Image / document blocks → Copilot `blob` attachments.
+ *
+ * The SDK takes raw base64 in `data` plus a `mimeType` (see its README, "Image
+ * Support"), which lines up 1:1 with our unified blocks — no temp files needed,
+ * unlike the Codex path. Before this existed the adapter forwarded text only,
+ * so every attachment the user added was silently dropped even though
+ * `models.ts` advertises `image: !!supports?.vision`.
+ */
+function extractPromptAttachments(prompt: EngineQueryOptions['prompt']): MessageAttachment[] {
+	const attachments: MessageAttachment[] = [];
+	for (const block of prompt.content) {
+		if (block.type === 'image') {
+			attachments.push({ type: 'blob', data: block.data, mimeType: block.mediaType });
+		} else if (block.type === 'document') {
+			attachments.push({
+				type: 'blob',
+				data: block.data,
+				mimeType: block.mediaType,
+				...(block.title ? { displayName: block.title } : {}),
+			});
+		}
+	}
+	return attachments;
 }

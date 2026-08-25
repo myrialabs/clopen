@@ -10,6 +10,7 @@
 		commitHash: string;
 		commitHashShort: string;
 		commitMessage: string;
+		commitBody?: string;
 		commitAuthor: string;
 		files: GitFileDiff[];
 		isLoading: boolean;
@@ -22,6 +23,7 @@
 		commitHash,
 		commitHashShort,
 		commitMessage,
+		commitBody = '',
 		commitAuthor,
 		files,
 		isLoading,
@@ -29,6 +31,16 @@
 		onBack,
 		onViewFile
 	}: Props = $props();
+
+	// The body is hidden by default — it can be long, so the user opts in to
+	// reveal it via a toggle.
+	let bodyExpanded = $state(false);
+
+	// Collapse again whenever the commit changes.
+	$effect(() => {
+		commitHash;
+		bodyExpanded = false;
+	});
 
 	function splitPath(path: string): { fileName: string; dirPath: string } {
 		const parts = path.split(/[\\/]/);
@@ -58,7 +70,7 @@
 			<Icon name="lucide:arrow-left" class="w-4 h-4" />
 		</button>
 		<div class="flex-1 min-w-0 pt-0.5">
-			<p class="text-sm font-medium text-slate-900 dark:text-slate-100 leading-tight truncate" title={commitMessage}>
+			<p class="text-sm font-medium text-slate-900 dark:text-slate-100 leading-snug break-words" title={commitMessage}>
 				{commitMessage}
 			</p>
 			<div class="flex items-center gap-1.5 mt-1">
@@ -72,6 +84,24 @@
 				</button>
 				<span class="text-xs text-slate-500 truncate">{commitAuthor}</span>
 			</div>
+			{#if commitBody}
+				<div class="mt-1.5">
+					<button
+						type="button"
+						class="flex items-center gap-1 text-xs font-medium text-violet-600 dark:text-violet-400 hover:text-violet-800 dark:hover:text-violet-300 bg-transparent border-none cursor-pointer p-0 transition-colors"
+						onclick={() => (bodyExpanded = !bodyExpanded)}
+						aria-expanded={bodyExpanded}
+					>
+						<Icon name="lucide:chevron-right" class="w-3.5 h-3.5 transition-transform {bodyExpanded ? 'rotate-90' : ''}" />
+						{bodyExpanded ? 'Hide description' : 'Show description'}
+					</button>
+					{#if bodyExpanded}
+						<pre
+							class="mt-1.5 whitespace-pre-wrap break-words font-mono text-xs text-slate-600 dark:text-slate-400 leading-relaxed max-h-64 overflow-y-auto pr-1"
+						>{commitBody}</pre>
+					{/if}
+				</div>
+			{/if}
 		</div>
 	</div>
 

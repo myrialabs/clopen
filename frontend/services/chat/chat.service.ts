@@ -11,7 +11,7 @@
  * - Proper presence synchronization
  */
 
-import { appState, updateSessionProcessState } from '$frontend/stores/core/app.svelte';
+import { appState, updateSessionProcessState, getSessionProcessState } from '$frontend/stores/core/app.svelte';
 import type { SessionProcessState } from '$frontend/stores/core/app.svelte';
 import { chatModelState } from '$frontend/stores/ui/chat-model.svelte';
 import { projectState } from '$frontend/stores/core/projects.svelte';
@@ -22,6 +22,7 @@ import { userStore } from '$frontend/stores/features/user.svelte';
 import type { UnifiedMessage, AssistantMessage, ReasoningMessage } from '$shared/types/unified';
 import type { StreamingMessage, OptimisticUserMessage, FrontendMessage } from '$frontend/stores/core/sessions.svelte';
 import { debug } from '$shared/utils/logger';
+import { INTERACTIVE_TOOLS, isWaitingForInteractiveInput } from '$shared/utils/interactive-input';
 
 /** Chat service configuration */
 interface ChatServiceOptions {
@@ -34,21 +35,35 @@ interface ChatServiceOptions {
 import ws from '$frontend/utils/ws';
 
 /**
- * Tools that block the SDK waiting for user interaction.
- * When these tools appear in an assistant message without a result,
- * and the stream is active, the chat status switches to "waiting for input".
- * Extend this list for future interactive tools.
+ * Stream bookkeeping for ONE chat session.
+ *
+ * Streams run concurrently across sessions, so every piece of stream identity
+ * has to be keyed by chat session. A single global "current stream" pins itself
+ * to whichever session last sent a message and then mis-targets every later
+ * action — most visibly, Stop in session A cancelling session B's stream.
  */
-const INTERACTIVE_TOOLS = new Set(['AskUserQuestion']);
+/** A stream event resolved to the session that owns it. */
+interface OwnedStream {
+  sessionId: string;
+  state: SessionStreamState;
+  /** True when `sessionState.messages` is this session's transcript. */
+  ownsTranscript: boolean;
+}
+
+interface SessionStreamState {
+  /** processId of this session's in-flight stream; null when idle. */
+  processId: string | null;
+  /** True once this session's stream ended locally (complete/error/cancel). */
+  streamCompleted: boolean;
+  /** Streams of THIS session that were cancelled/abandoned locally — their late events are dropped. */
+  cancelledProcessIds: Set<string>;
+  /** Fallback timer that clears a stuck `isCancelling` for this session. */
+  cancelSafetyTimer: ReturnType<typeof setTimeout> | null;
+}
 
 class ChatService {
-  private activeProcessId: string | null = null;
-  private streamCompleted: boolean = false;
-  private currentSessionId: string | null = null;
-  private lastEventSeq = new Map<string, number>(); // Sequence-based deduplication
-  private cancelledProcessIds = new Set<string>(); // Track ALL cancelled streams to ignore late events
-  private reconnected: boolean = false; // Whether we've reconnected to an active stream
-  private cancelSafetyTimer: ReturnType<typeof setTimeout> | null = null;
+  private streams = new Map<string, SessionStreamState>();
+  private lastEventSeq = new Map<string, number>(); // Sequence-based deduplication (processId → last seq)
 
   static loadingTexts: string[] = [
     'thinking', 'processing', 'analyzing', 'calculating', 'computing',
@@ -119,18 +134,61 @@ class ChatService {
   }
 
   /**
+   * Get (creating if needed) the stream bookkeeping for a chat session.
+   */
+  private streamFor(sessionId: string): SessionStreamState {
+    let state = this.streams.get(sessionId);
+    if (!state) {
+      state = {
+        processId: null,
+        streamCompleted: false,
+        cancelledProcessIds: new Set<string>(),
+        cancelSafetyTimer: null
+      };
+      this.streams.set(sessionId, state);
+    }
+    return state;
+  }
+
+  /**
+   * The session a stream event belongs to, and whether that session is on screen.
+   *
+   * Every stream event (chat:connection/message/partial/complete/error/cancelled)
+   * carries its own `chatSessionId`. The session on screen is NOT a safe
+   * substitute: a session switch points `sessionState.currentSession` at the new
+   * chat immediately, while the room leave/join and the message reload are still
+   * in flight — so an event of the chat being left would be credited to the chat
+   * being opened. That is how one chat's "Waiting for your input" appeared over
+   * another chat that was still working.
+   */
+  private ownerOf(data: { chatSessionId?: string }): OwnedStream | null {
+    const sessionId = data.chatSessionId;
+    if (!sessionId) return null;
+    return {
+      sessionId,
+      state: this.streamFor(sessionId),
+      // `sessionState.messages` may only be touched by the session that array
+      // actually holds. Checking the viewed session alone is not enough: the
+      // switch points `currentSession` at the new chat a round trip before its
+      // transcript arrives, so for that window the array still belongs to the
+      // chat being left.
+      ownsTranscript: sessionState.messagesSessionId === sessionId,
+    };
+  }
+
+  /**
    * Update process state for a session.
    * Writes to both the per-session map (for multi-session support)
    * and global convenience flags (for backward-compatible single-session components).
    *
    * @param update - Partial state to merge
-   * @param sessionId - Override session ID (defaults to this.currentSessionId or current session)
+   * @param sessionId - Target session ID (defaults to the session on screen)
    */
   private setProcessState(
     update: Partial<SessionProcessState>,
     sessionId?: string | null
   ): void {
-    const resolvedId = sessionId ?? this.currentSessionId ?? sessionState.currentSession?.id;
+    const resolvedId = sessionId ?? sessionState.currentSession?.id;
     if (resolvedId) {
       updateSessionProcessState(resolvedId, update);
     }
@@ -181,30 +239,40 @@ class ChatService {
 
     // Connection event - received by ALL users in the project
     ws.on('chat:connection', (data) => {
+      const ctx = this.ownerOf(data);
+      if (!ctx) return;
       if (this.shouldSkipEvent(data.processId, data.seq)) return;
       // Ignore events from a locally cancelled stream
-      if (data.processId && this.cancelledProcessIds.has(data.processId)) return;
+      if (data.processId && ctx.state.cancelledProcessIds.has(data.processId)) return;
 
-      this.activeProcessId = data.processId;
-      this.streamCompleted = false;
+      ctx.state.processId = data.processId;
+      ctx.state.streamCompleted = false;
     });
 
     // Message event
     ws.on('chat:message', (data) => {
+      const ctx = this.ownerOf(data);
+      if (!ctx) return;
       if (this.shouldSkipEvent(data.processId, data.seq)) return;
       // Ignore events from a locally cancelled stream
-      if (data.processId && this.cancelledProcessIds.has(data.processId)) return;
+      if (data.processId && ctx.state.cancelledProcessIds.has(data.processId)) return;
+      // A message for a chat that is not on screen has no message list to land
+      // in — that session's status comes from presence until it is opened.
+      if (!ctx.ownsTranscript) return;
 
-      this.handleMessageEvent(data);
+      this.handleMessageEvent(data, ctx);
     });
 
     // Partial message event (streaming)
     ws.on('chat:partial', (data) => {
+      const ctx = this.ownerOf(data);
+      if (!ctx) return;
       if (this.shouldSkipEvent(data.processId, data.seq)) return;
       // Ignore events from a locally cancelled stream
-      if (data.processId && this.cancelledProcessIds.has(data.processId)) return;
+      if (data.processId && ctx.state.cancelledProcessIds.has(data.processId)) return;
+      if (!ctx.ownsTranscript) return;
 
-      this.handlePartialEvent(data);
+      this.handlePartialEvent(data, ctx.state);
     });
 
     // Notification event
@@ -242,21 +310,24 @@ class ChatService {
 
     // Complete event
     ws.on('chat:complete', async (data) => {
+      const ctx = this.ownerOf(data);
+      if (!ctx) return;
       if (this.shouldSkipEvent(data.processId, data.seq)) return;
       // Ignore late events from a locally cancelled stream
-      if (data.processId && this.cancelledProcessIds.has(data.processId)) return;
+      if (data.processId && ctx.state.cancelledProcessIds.has(data.processId)) return;
 
-      this.streamCompleted = true;
-      this.reconnected = false;
-      this.clearCancelSafetyTimer();
-      this.setProcessState({ isLoading: false, isWaitingInput: false, isCancelling: false });
+      ctx.state.streamCompleted = true;
+      ctx.state.processId = null;
+      this.clearCancelSafetyTimer(ctx.sessionId);
+      this.setProcessState({ isLoading: false, isWaitingInput: false, isCancelling: false }, ctx.sessionId);
 
       // Mark any tool_use blocks that never got a tool_result
-      this.markInterruptedTools();
+      if (ctx.ownsTranscript) this.markInterruptedTools();
 
-      // Stream completed successfully — all old cancelled streams' events
-      // have definitely been delivered by now, so clear the blacklist.
-      this.cancelledProcessIds.clear();
+      // A completed stream means every late event of THIS session's older
+      // cancelled streams has been delivered, so its blacklist can go. Other
+      // sessions keep theirs — their streams may still be running.
+      ctx.state.cancelledProcessIds.clear();
 
       // Don't reload messages - they're already added via chat:message events
       // Reloading would cause duplicates
@@ -266,44 +337,48 @@ class ChatService {
 
     // Cancelled event - broadcast to ALL collaborators when any user cancels
     ws.on('chat:cancelled', async (data) => {
+      const ctx = this.ownerOf(data);
+      if (!ctx) return;
       // Track the cancelled processId so late-arriving events are blocked.
       // This handles the case where a collaborator initiated the cancel
       // (so our local cancelRequest was not called).
       if (data.processId) {
-        this.cancelledProcessIds.add(data.processId);
+        ctx.state.cancelledProcessIds.add(data.processId);
       }
-      this.streamCompleted = true;
-      this.reconnected = false;
-      this.activeProcessId = null;
-      this.clearCancelSafetyTimer();
+      ctx.state.streamCompleted = true;
+      ctx.state.processId = null;
+      this.clearCancelSafetyTimer(ctx.sessionId);
       // Don't clear isCancelling here — it causes a race with presence.
       // The chat:cancelled WS event arrives before broadcastPresence() updates,
       // so clearing isCancelling lets the presence $effect re-enable isLoading
       // (because hasActiveForSession is still true). The presence $effect will
       // clear isCancelling once the stream is actually gone from presence.
-      this.setProcessState({ isLoading: false, isWaitingInput: false });
+      this.setProcessState({ isLoading: false, isWaitingInput: false }, ctx.sessionId);
 
       // Mark any tool_use blocks that never got a tool_result
-      this.markInterruptedTools();
+      if (ctx.ownsTranscript) this.markInterruptedTools();
 
       // Notifications handled by GlobalStreamMonitor via chat:stream-finished
     });
 
     // Error event
     ws.on('chat:error', async (data) => {
+      const ctx = this.ownerOf(data);
+      if (!ctx) return;
       if (this.shouldSkipEvent(data.processId, data.seq)) return;
-      if (this.streamCompleted) return;
+      if (ctx.state.streamCompleted) return;
       // Ignore late error events from a locally cancelled stream
-      if (data.processId && this.cancelledProcessIds.has(data.processId)) return;
+      if (data.processId && ctx.state.cancelledProcessIds.has(data.processId)) return;
 
       // Mark completed immediately to block any duplicate error events that may arrive
       // (e.g. from multiple subscriptions or late-arriving events with different processId/seq)
-      this.streamCompleted = true;
-      this.reconnected = false;
-      this.setProcessState({ isLoading: false, isWaitingInput: false, isCancelling: false });
+      ctx.state.streamCompleted = true;
+      ctx.state.processId = null;
+      this.clearCancelSafetyTimer(ctx.sessionId);
+      this.setProcessState({ isLoading: false, isWaitingInput: false, isCancelling: false }, ctx.sessionId);
 
       // Mark any tool_use blocks that never got a tool_result
-      this.markInterruptedTools();
+      if (ctx.ownsTranscript) this.markInterruptedTools();
 
       // Don't show notification for cancel-triggered errors
       if (data.error === 'Stream cancelled') return;
@@ -311,9 +386,11 @@ class ChatService {
       // Remove any remaining stream_event messages (streaming placeholders that won't be finalized).
       // The actual error bubble is now emitted as a chat:message from the backend and saved to DB,
       // so it persists across browser refresh. No need to inject a synthetic bubble here.
-      for (let i = sessionState.messages.length - 1; i >= 0; i--) {
-        if (sessionState.messages[i].type === 'stream_event') {
-          sessionState.messages.splice(i, 1);
+      if (ctx.ownsTranscript) {
+        for (let i = sessionState.messages.length - 1; i >= 0; i--) {
+          if (sessionState.messages[i].type === 'stream_event') {
+            sessionState.messages.splice(i, 1);
+          }
         }
       }
 
@@ -334,12 +411,13 @@ class ChatService {
   reconnectToStream(chatSessionId: string, processId: string): void {
     debug.log('chat', 'Reconnecting to active stream:', { chatSessionId, processId });
 
-    // Set up local state so events are processed and cancel works
-    this.activeProcessId = processId;
-    this.currentSessionId = chatSessionId;
-    this.streamCompleted = false;
-    this.cancelledProcessIds.clear();
-    this.reconnected = true;
+    // Set up this session's stream state so its events are processed again.
+    // Re-attaching is deliberate, so any block placed on this stream by a
+    // previous switch-away (resetForSessionSwitch) is lifted here.
+    const state = this.streamFor(chatSessionId);
+    state.processId = processId;
+    state.streamCompleted = false;
+    state.cancelledProcessIds.clear();
 
     // Tell backend to re-subscribe this connection to the stream
     ws.emit('chat:reconnect', {
@@ -399,15 +477,18 @@ class ChatService {
       return;
     }
 
-    // Set loading state
-    this.streamCompleted = false;
-    this.reconnected = false;
-    this.currentSessionId = sessionState.currentSession.id;
-    this.setProcessState({ isLoading: true, isWaitingInput: false, isCancelling: false });
-    // DON'T clear cancelledProcessIds — late events from previously cancelled
-    // streams must still be blocked. The set is cleared on stream complete.
-    // Clear sequence tracking for new stream
-    this.lastEventSeq.clear();
+    // Set loading state for the session being sent to
+    const targetSessionId = sessionState.currentSession.id;
+    const targetStream = this.streamFor(targetSessionId);
+    targetStream.streamCompleted = false;
+    this.setProcessState({ isLoading: true, isWaitingInput: false, isCancelling: false }, targetSessionId);
+    // DON'T clear this session's cancelledProcessIds — late events from its
+    // previously cancelled streams must still be blocked. The set is cleared
+    // when one of its streams completes.
+    // Drop sequence tracking for THIS session's previous stream only; other
+    // sessions may still be streaming and need theirs to deduplicate.
+    if (targetStream.processId) this.lastEventSeq.delete(targetStream.processId);
+    targetStream.processId = null;
 
     // Clean up stale stream_events from any previous cancelled streams.
     // These linger because cancel doesn't remove them, and they cause
@@ -442,15 +523,28 @@ class ChatService {
       }
       const messageContent = contentBlocks.length > 0 ? contentBlocks : [{ type: 'text', text: userMessage }];
 
+      // Capture selected engine/model/account before sending
+      const selectedEngine = chatModelState.engine;
+      const selectedProvider = chatModelState.provider;
+      const selectedModelId = chatModelState.modelId;
+      const selectedModelName = chatModelState.modelName;
+
       // Determine the SDK session ID for the current branch HEAD.
       // After non-linear operations (edit/undo/restore), sessionState.messages
       // reflects the correct branch — find the last assistant/reasoning message
       // whose sessionId differs from the clopen session ID.
+      //
+      // Only messages produced by the SELECTED engine qualify: session ids are
+      // native to whichever engine minted them, so after an engine switch the
+      // previous engine's id would name a session the new engine's store has
+      // never heard of. The backend re-checks this (it must, for older clients),
+      // but sending a foreign id here would also make the request misleading.
       const currentSessionId = sessionState.currentSession.id;
       let parentSessionId: string | null = null;
       for (let i = sessionState.messages.length - 1; i >= 0; i--) {
         const m = sessionState.messages[i];
         if ((m.type === 'assistant' || m.type === 'reasoning') && 'sessionId' in m) {
+          if ((m as any).engine?.type && (m as any).engine.type !== selectedEngine) break;
           const sid = (m as any).sessionId as string;
           if (sid && sid !== currentSessionId) {
             parentSessionId = sid;
@@ -458,12 +552,6 @@ class ChatService {
           }
         }
       }
-
-      // Capture selected engine/model/account before sending
-      const selectedEngine = chatModelState.engine;
-      const selectedProvider = chatModelState.provider;
-      const selectedModelId = chatModelState.modelId;
-      const selectedModelName = chatModelState.modelName;
 
       // Create UserMessage format for prompt
       const userMsgId = crypto.randomUUID();
@@ -513,6 +601,12 @@ class ChatService {
           id: userStore.currentUser?.id || '',
           name: userStore.currentUser?.name || '',
         },
+        // Active Profile for this session (null = use project default). Persisted
+        // to chat_sessions.profile_id server-side like engine/model.
+        profileId: chatModelState.profileId,
+        // Reasoning/thinking level (native per engine; null = engine default).
+        // Persisted to chat_sessions.reasoning_effort server-side.
+        reasoningEffort: chatModelState.reasoningEffort,
       });
 
       // Persist engine/model/account to frontend session state immediately.
@@ -532,6 +626,8 @@ class ChatService {
           model_name: selectedModelName,
           ...(selectedAccountId !== null && { account_id: selectedAccountId }),
           ...(selectedAccountName !== null && { account_name: selectedAccountName }),
+          profile_id: chatModelState.profileId,
+          reasoning_effort: chatModelState.reasoningEffort,
         });
       }
 
@@ -541,48 +637,54 @@ class ChatService {
   }
 
   /**
-   * Cancel the current request - works for ANY collaborator, not just the sender
-   * Also works after browser refresh since it uses sessionState as fallback
+   * Cancel the stream of the session on screen — works for ANY collaborator,
+   * not just the sender, and after a browser refresh.
+   *
+   * The session being VIEWED is the only valid target: Stop is rendered inside
+   * that session's chat. Resolving it from remembered sender state instead
+   * would cancel whichever session this client last sent to, which is a
+   * different session as soon as two chats stream at once.
    */
   cancelRequest(): void {
-    // Use currentSessionId (set by sender) OR sessionState (available to all collaborators)
-    const chatSessionId = this.currentSessionId || sessionState.currentSession?.id;
+    const chatSessionId = sessionState.currentSession?.id;
+    if (!chatSessionId) return;
 
-    if (chatSessionId) {
-      ws.emit('chat:cancel', {
-        sessionId: crypto.randomUUID(),
-        chatSessionId
-      });
-    }
+    const state = this.streamFor(chatSessionId);
 
-    // Track cancelled processId so late-arriving events are ignored.
-    // Use a Set to track ALL cancelled streams (not just the last one),
-    // preventing late events from any previously cancelled stream from leaking through.
-    if (this.activeProcessId) {
-      this.cancelledProcessIds.add(this.activeProcessId);
+    ws.emit('chat:cancel', {
+      sessionId: crypto.randomUUID(),
+      chatSessionId
+    });
+
+    // Track this session's cancelled processId so its late-arriving events are
+    // ignored. The set holds ALL of this session's cancelled streams, so late
+    // events from an earlier cancel can't leak through either.
+    if (state.processId) {
+      state.cancelledProcessIds.add(state.processId);
     }
-    this.activeProcessId = null;
-    this.currentSessionId = null;
-    this.streamCompleted = true;
-    this.reconnected = false;
-    // Update per-session map with captured ID (before it was nulled above)
-    // and global flags — cancel sets isCancelling=true to prevent presence re-enabling
+    state.processId = null;
+    state.streamCompleted = true;
+    // Update per-session map and (when this session is on screen) the global
+    // flags — cancel sets isCancelling=true to prevent presence re-enabling
     this.setProcessState({ isLoading: false, isWaitingInput: false, isCancelling: true }, chatSessionId);
 
     // Convert stream_events to finalized assistant messages on cancel.
     // This preserves partial reasoning/text that was visible to the user.
     // Empty stream_events are removed. The backend saves partial text to DB
-    // independently, so on refresh the DB version takes over.
-    this.finalizeStreamEvents();
+    // independently, so on refresh the DB version takes over. Only touch the
+    // transcript when it is the one belonging to the cancelled session.
+    if (sessionState.messagesSessionId === chatSessionId) {
+      this.finalizeStreamEvents();
+    }
 
     // Safety timeout: if backend events (chat:cancelled + presence update) don't
     // arrive within 10 seconds, force-clear isCancelling to prevent infinite loader.
     // This catches edge cases: WS disconnect during cancel, engine.cancel() timeout,
     // or race conditions between presence update and chat:cancelled event ordering.
-    this.clearCancelSafetyTimer();
-    this.cancelSafetyTimer = setTimeout(() => {
-      this.cancelSafetyTimer = null;
-      if (appState.isCancelling) {
+    this.clearCancelSafetyTimer(chatSessionId);
+    state.cancelSafetyTimer = setTimeout(() => {
+      state.cancelSafetyTimer = null;
+      if (getSessionProcessState(chatSessionId).isCancelling) {
         debug.warn('chat', 'Cancel safety timeout: force-clearing isCancelling after 10s');
         this.setProcessState({ isCancelling: false, isLoading: false }, chatSessionId);
       }
@@ -590,28 +692,35 @@ class ChatService {
   }
 
   /**
-   * Clear the cancel safety timer (called when cancel completes normally)
+   * Clear a session's cancel safety timer (called when its cancel completes normally)
    */
-  private clearCancelSafetyTimer(): void {
-    if (this.cancelSafetyTimer) {
-      clearTimeout(this.cancelSafetyTimer);
-      this.cancelSafetyTimer = null;
+  private clearCancelSafetyTimer(sessionId: string): void {
+    const state = this.streams.get(sessionId);
+    if (state?.cancelSafetyTimer) {
+      clearTimeout(state.cancelSafetyTimer);
+      state.cancelSafetyTimer = null;
     }
   }
 
   /**
-   * Reset stream state when switching sessions (e.g. collaborator receiving new-chat).
-   * Blocks all stale events from the old stream.
+   * Stop tracking the viewed session's stream before switching away from it
+   * (e.g. New Chat). The backend stream keeps running; this only blocks stale
+   * events from reaching the session that replaces it on screen.
+   *
+   * Coming back to this session re-attaches via catchupActiveStream →
+   * reconnectToStream, which lifts the block again.
    */
   resetForSessionSwitch(): void {
-    if (this.activeProcessId) {
-      this.cancelledProcessIds.add(this.activeProcessId);
+    const sessionId = sessionState.currentSession?.id;
+    if (sessionId) {
+      const state = this.streamFor(sessionId);
+      if (state.processId) {
+        state.cancelledProcessIds.add(state.processId);
+        this.lastEventSeq.delete(state.processId);
+      }
+      state.processId = null;
+      state.streamCompleted = true;
     }
-    this.activeProcessId = null;
-    this.currentSessionId = null;
-    this.streamCompleted = true;
-    this.reconnected = false;
-    this.lastEventSeq.clear();
     appState.isLoading = false;
     appState.isWaitingInput = false;
     appState.isCancelling = false;
@@ -635,19 +744,14 @@ class ChatService {
   /**
    * Handle message events from stream
    */
-  private handleMessageEvent(data: any): void {
+  private handleMessageEvent(data: any, ctx: OwnedStream): void {
     const rawMessage = data.message as UnifiedMessage | undefined;
 
     // Early return if no message
     if (!rawMessage) return;
 
     // Ignore messages from a completed/cancelled stream
-    if (this.streamCompleted) return;
-
-    // Early return if no valid session
-    if (!sessionState.currentSession?.id) {
-      return;
-    }
+    if (ctx.state.streamCompleted) return;
 
     // Enrich with transport metadata (DB id, parent, sender)
     const message = this.enrichMessage(rawMessage, data);
@@ -668,12 +772,17 @@ class ChatService {
     // If this is an assistant message, replace the matching non-reasoning
     // stream_event placeholder (leave any reasoning placeholder alone —
     // it will be replaced by its own ReasoningMessage).
-    if (message.type === 'assistant') {
+    // Only root assistant messages may claim the root text placeholder.
+    // Agent/Workflow child messages already carry parent.toolUseId and must be
+    // pushed intact so the grouper embeds them directly into subActivities.
+    // Replacing a root placeholder with a child briefly renders that child at
+    // the root before the next reactive grouping pass relocates it.
+    if (message.type === 'assistant' && !message.parent?.toolUseId) {
       for (let i = sessionState.messages.length - 1; i >= 0; i--) {
         const msg = sessionState.messages[i];
         if (msg.type === 'stream_event' && !(msg as StreamingMessage).reasoning) {
           sessionState.messages[i] = message;
-          this.checkInteractiveTools(message);
+          this.checkInteractiveTools(message, ctx.sessionId);
           return;
         }
       }
@@ -715,14 +824,14 @@ class ChatService {
 
     // Detect interactive tool_use blocks (e.g., AskUserQuestion) and set waiting status
     if (message.type === 'assistant') {
-      this.checkInteractiveTools(message);
+      this.checkInteractiveTools(message, ctx.sessionId);
     }
 
     // When a user message with tool_result arrives, the SDK is unblocked — clear waiting status
     if (message.type === 'user') {
       const hasToolResult = message.content.some((item) => item.type === 'tool_result');
-      if (hasToolResult && appState.isWaitingInput) {
-        this.setProcessState({ isWaitingInput: false });
+      if (hasToolResult) {
+        this.setProcessState({ isWaitingInput: false }, ctx.sessionId);
       }
     }
 
@@ -733,26 +842,21 @@ class ChatService {
   /**
    * Check for interactive tool_use blocks and set waiting status
    */
-  private checkInteractiveTools(message: AssistantMessage): void {
+  private checkInteractiveTools(message: AssistantMessage, sessionId: string): void {
     const hasInteractiveTool = message.content.some(
       (item) => item.type === 'tool_use' && INTERACTIVE_TOOLS.has(item.name)
     );
     if (hasInteractiveTool) {
-      this.setProcessState({ isWaitingInput: true });
+      this.setProcessState({ isWaitingInput: true }, sessionId);
     }
   }
 
   /**
    * Handle partial message events (streaming)
    */
-  private handlePartialEvent(data: any): void {
+  private handlePartialEvent(data: any, stream: SessionStreamState): void {
     // Ignore partials from a completed/cancelled stream
-    if (this.streamCompleted) return;
-
-    // Early return if no valid session
-    if (!sessionState.currentSession?.id) {
-      return;
-    }
+    if (stream.streamCompleted) return;
 
     const isReasoning = data.reasoning === true;
     const { eventType, partialText } = data;
@@ -876,33 +980,23 @@ class ChatService {
   }
 
   /**
-   * Detect whether any interactive tool (e.g. AskUserQuestion) is pending in the current messages.
-   * Used after browser refresh / catchup to restore the isWaitingInput state.
+   * Detect whether an interactive tool (e.g. AskUserQuestion) is pending for
+   * `chatSessionId`. Used after browser refresh / catchup to restore the
+   * isWaitingInput state.
+   *
+   * The answer is derived from `sessionState.messages`, which holds the VIEWED
+   * session — so a stale caller (catchup resolving after the user moved on)
+   * would read one chat's transcript and write the verdict onto another. The
+   * session is therefore named by the caller and checked here.
    */
-  detectPendingInteractiveTools(): void {
-    if (!appState.isLoading) return;
+  detectPendingInteractiveTools(chatSessionId: string): void {
+    if (sessionState.messagesSessionId !== chatSessionId) return;
+    if (!getSessionProcessState(chatSessionId).isLoading) return;
 
-    // Collect all tool_use IDs that have a matching tool_result
-    const answeredToolIds = new Set<string>();
-    for (const msg of sessionState.messages) {
-      if (msg.type !== 'user' || !('content' in msg)) continue;
-      for (const item of msg.content) {
-        if (item.type === 'tool_result') {
-          answeredToolIds.add(item.toolUseId);
-        }
-      }
-    }
-
-    // Check if any interactive tool is unanswered (skip interrupted blocks)
-    for (const msg of sessionState.messages) {
-      if (msg.type !== 'assistant' || !('content' in msg)) continue;
-      const hasPendingInteractive = msg.content.some(
-        (item) => item.type === 'tool_use' && !item.interrupted && INTERACTIVE_TOOLS.has(item.name) && !answeredToolIds.has(item.id)
-      );
-      if (hasPendingInteractive) {
-        this.setProcessState({ isWaitingInput: true });
-        return;
-      }
+    // Delegate to the shared derivation so this can never disagree with the
+    // backend presence layer (both read the same message-ordering rules).
+    if (isWaitingForInteractiveInput(sessionState.messages)) {
+      this.setProcessState({ isWaitingInput: true }, chatSessionId);
     }
   }
 

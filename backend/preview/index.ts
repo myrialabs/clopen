@@ -2,7 +2,12 @@
 export * from './browser/types';
 
 // Export MCP control types
-export type { McpControlEvent, McpCursorEvent, McpClickEvent } from './browser/browser-mcp-control';
+export type {
+	McpControlEvent,
+	McpCursorEvent,
+	McpClickEvent,
+	McpFocusEvent
+} from './browser/browser-mcp-control';
 
 // Export the main preview service class and manager
 export {

@@ -29,10 +29,18 @@ import { systemRouter } from './system';
 import { tunnelRouter } from './tunnel';
 import { gitRouter } from './git';
 import { engineRouter } from './engine';
-import { systemToolsRouter } from './system-tools';
+import { stackRouter } from './stack';
 import { dbClientRouter } from './db-client';
+import { sshRouter } from './ssh';
 import { mcpRouter } from './mcp';
 import { skillsRouter } from './skills';
+import { commandsRouter } from './commands';
+import { subagentsRouter } from './subagents';
+import { instructionsRouter } from './instructions';
+import { permissionsRouter } from './permissions';
+import { profilesRouter } from './profiles';
+import { artifactsRouter } from './artifacts';
+import { memoryRouter } from './memory';
 
 // ============================================
 // Main App Router - Merge All Module Routers
@@ -71,17 +79,33 @@ export const wsRouter = createRouter()
 	// AI Engine Management
 	.merge(engineRouter)
 
-	// System Tools (install Git, Claude Code, OpenCode, Chrome binaries)
-	.merge(systemToolsRouter)
+	// Stack (install Git, Claude Code, OpenCode, Chrome binaries)
+	.merge(stackRouter)
 
 	// DB Client (global database management)
 	.merge(dbClientRouter)
+
+	// SSH client (terminal, SFTP, port forwarding)
+	.merge(sshRouter)
 
 	// External MCP server management (install from the official registry)
 	.merge(mcpRouter)
 
 	// Agent Skills management (create, import, install from a marketplace)
-	.merge(skillsRouter);
+	.merge(skillsRouter)
+
+	// Custom Commands, Subagents, and Project Instructions (artifact framework)
+	.merge(commandsRouter)
+	.merge(subagentsRouter)
+	.merge(instructionsRouter)
+	.merge(permissionsRouter)
+
+	// Profiles (reusable artifact bundles activated per-session)
+	.merge(profilesRouter)
+	.merge(artifactsRouter)
+
+	// Memory Graph (unified episodic + structural memory, shared by every engine)
+	.merge(memoryRouter);
 
 // Export API type for frontend type-safe access
 export type WSAPI = typeof wsRouter['$api'];

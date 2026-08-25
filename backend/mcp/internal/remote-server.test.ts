@@ -13,7 +13,8 @@ import { randomUUID } from 'node:crypto';
 
 import { handleMcpRequest } from './remote-server';
 import { getMcpServiceToken } from './service-token';
-import { authQueries, settingsQueries } from '../../database/queries';
+import { authQueries } from '../../database/queries';
+import { writeSystemSettings } from '../../settings/system-settings';
 import { generatePAT, generateSessionToken, hashToken } from '../../auth/tokens';
 import { initializeDatabase, closeDatabase, getDatabase } from '../../database';
 
@@ -22,7 +23,11 @@ let sessionToken: string;
 let patToken: string;
 
 function setAuthMode(mode: 'none' | 'required'): void {
-	settingsQueries.set('system:settings', JSON.stringify({ authMode: mode }));
+	// Merge rather than replace: the system settings blob holds unrelated state
+	// (the onboarding marker, admin limits) and a test must never be able to drop
+	// it — the data directory is isolated under NODE_ENV=test, but the habit is
+	// what keeps it isolated if that ever changes.
+	writeSystemSettings({ authMode: mode });
 }
 
 function sessionCount(userId: string): number {
@@ -32,10 +37,10 @@ function sessionCount(userId: string): number {
 	return row.count;
 }
 
-function mcpRequest(token?: string): Request {
+function mcpRequest(token?: string, query = ''): Request {
 	const headers: Record<string, string> = { 'Content-Type': 'application/json' };
 	if (token) headers['Authorization'] = `Bearer ${token}`;
-	return new Request('http://localhost/mcp', {
+	return new Request(`http://localhost/mcp${query}`, {
 		method: 'POST',
 		headers,
 		body: JSON.stringify({
@@ -70,14 +75,17 @@ beforeAll(async () => {
 		token_hash: hashToken(sessionToken),
 		expires_at: new Date(Date.now() + 24 * 60 * 60 * 1000).toISOString(),
 		created_at: new Date().toISOString(),
-		last_active_at: new Date().toISOString()
+		last_active_at: new Date().toISOString(),
+		user_agent: null,
+		ip_address: null,
+		source: null
 	});
 });
 
 afterAll(() => {
 	authQueries.deleteSessionsByUserId(testUserId);
 	authQueries.deleteUser(testUserId);
-	settingsQueries.set('system:settings', JSON.stringify({ authMode: 'required' }));
+	setAuthMode('required');
 	closeDatabase();
 });
 
@@ -124,6 +132,21 @@ describe('MCP Remote Server Authentication', () => {
 		const response = await handleMcpRequest(mcpRequest(sessionToken));
 		// Past auth — the MCP transport handles the body from here.
 		expect(response.status).not.toBe(401);
+	});
+
+	test('accepts a caller-identified bridge URL', async () => {
+		// Each engine's config builder addresses the bridge with the project (and
+		// where its config lives that long, the chat session) driving the call, so
+		// tool handlers are bound to it instead of guessing from ambient state.
+		// Routing must not care that the query string is there.
+		const query = '?engine=codex&project=project-a&session=session-a';
+		const response = await handleMcpRequest(mcpRequest(getMcpServiceToken(), query));
+		expect(response.status).not.toBe(401);
+	});
+
+	test('rejects a caller-identified bridge URL without a token', async () => {
+		const response = await handleMcpRequest(mcpRequest(undefined, '?engine=opencode'));
+		expect(response.status).toBe(401);
 	});
 
 	test('accepts a valid PAT token', async () => {

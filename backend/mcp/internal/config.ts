@@ -5,13 +5,16 @@
  * to avoid duplication and make it easier to add new servers.
  */
 
-import { createSdkMcpServer, tool, type McpSdkServerConfigWithInstance, type McpServerConfig } from "@anthropic-ai/claude-agent-sdk";
+import type { McpServerConfig } from "@anthropic-ai/claude-agent-sdk";
 import type { McpRemoteConfig } from '@opencode-ai/sdk';
 import type { MCPHTTPServerConfig } from '@github/copilot-sdk';
 import type { CLIMcpServerConfig as QwenMcpServerConfig } from '@qwen-code/sdk';
+import type { McpServerConfig as CursorMcpServerConfig } from '@cursor/sdk';
 import type { ServerConfig, ParsedMcpToolName, ServerName } from './types';
 import type { McpExecutionContext } from '../../engine/types';
-import { serverRegistry, serverFactories, serverMetadata } from './servers';
+import type { EngineType } from '$shared/types/unified';
+import { serverMetadata } from './servers';
+import { loadEngineSdk } from '$backend/engine/sdk-loader';
 import { projectContextService } from './project-context';
 import { mcpServerQueries } from '$backend/database/queries';
 import { debug } from '$shared/utils/logger';
@@ -31,54 +34,27 @@ import { getMcpServiceToken } from './service-token';
 export const mcpServersConfig: Record<ServerName, ServerConfig> = {
 	"browser-automation": {
 		enabled: true,
-		tools: [
-			// Tab Management
-			"list_tabs",
-			"switch_tab",
-			"open_new_tab",
-			"close_tab",
-
-			// Navigation
-			"navigate",
-
-			// Browser Actions
-			"actions",
-
-			// Page Inspection
-			"analyze_dom",
-			"take_screenshot",
-			"get_console_logs",
-			"clear_console_logs",
-			"execute_console",
-		]
+		// One tool. Every browser capability is an action inside `actions`, so a
+		// whole interaction is one call and the agent decides what to batch.
+		tools: ["actions"]
+	},
+	"memory-graph": {
+		enabled: true,
+		// Same shape: every graph capability is an operation inside `memory`, so
+		// recalling a memory and then walking its neighbours is a single call.
+		tools: ["memory"]
 	}
 };
 
 /**
- * Helper to merge user config with server instances from registry
- */
-function createServerConfig<T extends Record<ServerName, ServerConfig>>(
-	config: T
-): { [K in keyof T]: T[K] & { instance: McpSdkServerConfigWithInstance } } {
-	const result = {} as any;
-
-	for (const [serverName, serverConfig] of Object.entries(config)) {
-		result[serverName] = {
-			...serverConfig,
-			instance: serverRegistry[serverName as ServerName]
-		};
-	}
-
-	return result;
-}
-
-/**
- * MCP Servers Configuration with instances
+ * MCP Servers Configuration
  *
- * This is the final configuration used throughout the application.
- * Automatically merges user config with server instances.
+ * The final configuration used throughout the application. SDK-shaped
+ * in-process server instances (Claude Code) are built on demand in
+ * `getEnabledMcpServers`; every other path works off server names + the raw
+ * tool defs held in `serverMetadata`.
  */
-export const mcpServers: Record<string, ServerConfig & { instance: McpSdkServerConfigWithInstance }> = createServerConfig(mcpServersConfig);
+export const mcpServers: Record<string, ServerConfig> = mcpServersConfig;
 
 // ============================================================================
 // Runtime enabled state (DB-backed)
@@ -129,49 +105,56 @@ function serverEnabled(serverName: string): boolean {
  * propagation — without this, background streams from Project A would
  * resolve to Project B's preview browser when the user switches projects.
  */
-export function getEnabledMcpServers(context?: McpExecutionContext): Record<string, McpServerConfig> {
+export async function getEnabledMcpServers(context?: McpExecutionContext, profileFilter?: Set<string>): Promise<Record<string, McpServerConfig>> {
 	const enabledServers: Record<string, McpServerConfig> = {};
+	const active = new Set(activeInternalServerNames(profileFilter));
+	const activeNames = Object.keys(mcpServers).filter(name => active.has(name));
 
-	Object.entries(mcpServers).forEach(([serverName, serverConfig]) => {
-		if (serverEnabled(serverName)) {
-			if (context) {
-				// Create context-bound instance: wrap each tool handler so
-				// AsyncLocalStorage context is restored on invocation, then
-				// short-circuit if the owning stream's AbortSignal has fired
-				// — handler never runs, no half-completed browser ops.
-				const meta = serverMetadata[serverName as ServerName];
-				const sdkTools = (serverConfig.tools as readonly string[]).map(toolName => {
-					const def = meta.toolDefs[toolName];
-					const boundHandler = async (args: any) => {
-						return projectContextService.runWithContextAsync(context, async () => {
-							const signal = projectContextService.getCurrentSignal();
-							if (signal?.aborted) {
-								return abortedToolResult(toolName);
-							}
-							const result = await def.handler(args);
-							result.content = validateMcpOutput(result.content, toolName);
-							return result;
-						});
-					};
-					return tool(toolName, def.description, def.schema, boundHandler as any);
-				});
-				enabledServers[serverName] = createSdkMcpServer({
-					name: meta.name,
-					version: '1.0.0',
-					tools: sdkTools
-				});
-			} else {
-				const factory = serverFactories[serverName as ServerName];
-				enabledServers[serverName] = factory ? factory() : serverConfig.instance;
-			}
-			debug.log('mcp', `✓ Enabled MCP server: ${serverName}${context ? ' (context-bound)' : ''}`);
-		} else {
-			debug.log('mcp', `✗ Disabled MCP server: ${serverName}`);
-		}
-	});
+	// Nothing to build → don't load the Claude Agent SDK at all.
+	if (activeNames.length === 0) {
+		debug.log('mcp', 'Total enabled MCP servers: 0');
+		return enabledServers;
+	}
+
+	// This is the Claude in-process path ONLY (other engines consume the remote
+	// HTTP bridge via createRemoteMcpServer, which uses @modelcontextprotocol/sdk
+	// directly). Load the Claude Agent SDK's `createSdkMcpServer`/`tool` lazily so
+	// it is never required unless the Claude engine actually streams.
+	const { createSdkMcpServer, tool } = await loadEngineSdk<typeof import('@anthropic-ai/claude-agent-sdk')>(
+		'claude-code', '@anthropic-ai/claude-agent-sdk'
+	);
+
+	for (const serverName of activeNames) {
+		const serverConfig = mcpServers[serverName];
+		const meta = serverMetadata[serverName as ServerName];
+		const sdkTools = (serverConfig.tools as readonly string[]).map(toolName => {
+			const def = meta.toolDefs[toolName];
+			// With context: wrap each handler so AsyncLocalStorage context is
+			// restored on invocation, then short-circuit if the owning stream's
+			// AbortSignal has fired — handler never runs, no half-completed
+			// browser ops. Without context: the raw handler (unchanged behavior).
+			const handler = context
+				? async (args: any) => projectContextService.runWithContextAsync(context, async () => {
+					const signal = projectContextService.getCurrentSignal();
+					if (signal?.aborted) {
+						return abortedToolResult(toolName);
+					}
+					const result = await def.handler(args);
+					result.content = validateMcpOutput(result.content, toolName);
+					return result;
+				})
+				: def.handler;
+			return tool(toolName, def.description, def.schema, handler as any);
+		});
+		enabledServers[serverName] = createSdkMcpServer({
+			name: meta.name,
+			version: '1.0.0',
+			tools: sdkTools
+		});
+		debug.log('mcp', `✓ Enabled MCP server: ${serverName}${context ? ' (context-bound)' : ''}`);
+	}
 
 	debug.log('mcp', `Total enabled MCP servers: ${Object.keys(enabledServers).length}`);
-
 	return enabledServers;
 }
 
@@ -303,6 +286,19 @@ export function getEnabledServerNames(): string[] {
 }
 
 /**
+ * Internal server names ACTIVE for a stream. When a Profile is active, its
+ * referenced connector set is the source of truth — a referenced internal server
+ * counts even if globally disabled, and one NOT referenced is excluded (built-in
+ * connectors appear in the profile's Connectors picker, so this is an explicit
+ * choice). Without a profile, every globally-enabled server is active (unchanged).
+ */
+export function activeInternalServerNames(profileFilter?: Set<string>): string[] {
+	return Object.keys(mcpServers).filter(name =>
+		profileFilter ? profileFilter.has(name) : serverEnabled(name)
+	);
+}
+
+/**
  * Get all enabled tool names for a specific server
  */
 export function getEnabledToolsForServer(serverName: string): string[] {
@@ -312,6 +308,28 @@ export function getEnabledToolsForServer(serverName: string): string[] {
 	}
 
 	return serverConfig.tools.map((toolName) => `mcp__${serverName}__${toolName}`);
+}
+
+/**
+ * Open Code tool ids (`clopen-mcp_<tool>`) for INTERNAL connectors EXCLUDED by an
+ * active Profile — every globally-enabled internal server whose slug is NOT in the
+ * profile's connector set. Fed to Open Code's per-prompt `tools` disable map so
+ * those tools are removed for THIS session, even though the persistent server was
+ * built with every enabled connector. `undefined` filter (profile doesn't
+ * constrain connectors) → none. All internal tools share the single `clopen-mcp`
+ * bridge namespace, so the id is `clopen-mcp_<tool>` regardless of owning server.
+ */
+export function getOpenCodeProfileDisabledInternalToolIds(profileFilter?: Set<string>): string[] {
+	if (!profileFilter) return [];
+	const ids: string[] = [];
+	for (const [serverName, serverConfig] of Object.entries(mcpServers)) {
+		if (!serverEnabled(serverName)) continue;   // not in the running config anyway
+		if (profileFilter.has(serverName)) continue; // allowed by the profile
+		for (const toolName of serverConfig.tools as readonly string[]) {
+			ids.push(`clopen-mcp_${toolName}`);
+		}
+	}
+	return ids;
 }
 
 /**
@@ -418,6 +436,40 @@ export function resolveOpenCodeToolName(toolName: string): string | null {
 }
 
 // ============================================================================
+// Internal bridge URL
+// ============================================================================
+
+/**
+ * Loopback URL of the internal `clopen-mcp` bridge, addressed to the caller.
+ *
+ * The in-process engines (Claude, Pi, Cline) bind `McpExecutionContext` around
+ * every tool handler, so a tool call always knows which project asked. The
+ * engines that reach the bridge over HTTP had no such thing: the request
+ * carries no identity, so the handler fell back to "the most recently started
+ * stream" — which is the project the *user* last prompted in, not the one the
+ * agent is working in. An agent running in project A opened its tabs in project
+ * B the moment the user moved over there.
+ *
+ * The query string closes that. Each config says as much as its own lifetime
+ * allows, and the bridge binds whatever it is told:
+ *
+ * - `project` + `session` — the caller named outright. Copilot, Cursor and Qwen
+ *   build their config per stream, so both are true for the whole MCP session.
+ * - `project` alone — Codex, whose client (and therefore this URL) is built
+ *   once per project and reused by every chat session in it.
+ * - `engine` alone — Open Code, whose URL is baked into a server the pool shares
+ *   across projects. All it can honestly say is which engine is asking.
+ */
+function internalBridgeUrl(engine: EngineType, context?: McpExecutionContext): string {
+	const params = new URLSearchParams({ engine });
+
+	if (context?.projectId) params.set('project', context.projectId);
+	if (context?.chatSessionId) params.set('session', context.chatSessionId);
+
+	return `http://localhost:${SERVER_ENV.PORT}/mcp?${params.toString()}`;
+}
+
+// ============================================================================
 // Open Code MCP Configuration
 // ============================================================================
 
@@ -429,21 +481,25 @@ export function resolveOpenCodeToolName(toolName: string): string | null {
  *
  * This is the Open Code equivalent of Claude Code's in-process MCP servers.
  */
-export function getOpenCodeMcpConfig(): Record<string, McpRemoteConfig> {
-	// Check if any servers are enabled
-	const enabledServers = getEnabledServerNames();
+export function getOpenCodeMcpConfig(profileFilter?: Set<string>): Record<string, McpRemoteConfig> {
+	// Drop the internal bridge entirely when an active profile excludes every
+	// internal connector (else include it; the bridge serves the enabled ones).
+	const enabledServers = activeInternalServerNames(profileFilter);
 	if (enabledServers.length === 0) {
 		return {};
 	}
 
-	const port = SERVER_ENV.PORT;
+	// No caller binding: this URL is baked into a server the pool shares across
+	// projects and chat sessions (see `scopeKeyFor` in the Open Code adapter),
+	// so the engine marker is all it can honestly carry.
+	const url = internalBridgeUrl('opencode');
 
-	debug.log('mcp', `📦 Open Code MCP: remote server at http://localhost:${port}/mcp`);
+	debug.log('mcp', `📦 Open Code MCP: remote server at ${url}`);
 
 	return {
 		'clopen-mcp': {
 			type: 'remote',
-			url: `http://localhost:${port}/mcp`,
+			url,
 			enabled: true,
 			timeout: MCP_TOOL_CALL_TIMEOUT_MS,
 			headers: { Authorization: `Bearer ${getMcpServiceToken()}` },
@@ -489,13 +545,16 @@ type CodexMcpServerConfig = {
  * `--config mcp_servers.clopen-mcp.<dotted-key>=<value>` flags when the SDK
  * invokes the CLI subprocess for each turn.
  */
-export function getCodexMcpConfig(): Record<string, CodexMcpServerConfig> {
-	const enabledServers = getEnabledServerNames();
+export function getCodexMcpConfig(
+	profileFilter?: Set<string>,
+	context?: McpExecutionContext
+): Record<string, CodexMcpServerConfig> {
+	const enabledServers = activeInternalServerNames(profileFilter);
 	if (enabledServers.length === 0) {
 		return {};
 	}
 
-	const port = SERVER_ENV.PORT;
+	const url = internalBridgeUrl('codex', context);
 
 	const tools: Record<string, { approval_mode: 'approve' }> = {};
 	for (const serverName of enabledServers) {
@@ -505,11 +564,11 @@ export function getCodexMcpConfig(): Record<string, CodexMcpServerConfig> {
 		}
 	}
 
-	debug.log('mcp', `📦 Codex MCP: remote server at http://localhost:${port}/mcp (auto-approving ${Object.keys(tools).length} tools)`);
+	debug.log('mcp', `📦 Codex MCP: remote server at ${url} (auto-approving ${Object.keys(tools).length} tools)`);
 
 	return {
 		'clopen-mcp': {
-			url: `http://localhost:${port}/mcp`,
+			url,
 			http_headers: { Authorization: `Bearer ${getMcpServiceToken()}` },
 			tools,
 		},
@@ -539,13 +598,16 @@ export function getCodexMcpConfig(): Record<string, CodexMcpServerConfig> {
  * `resolveOpenCodeToolName()` to recover the canonical
  * `mcp__<server>__<tool>` form.
  */
-export function getCopilotMcpConfig(): Record<string, MCPHTTPServerConfig> {
-	const enabledServers = getEnabledServerNames();
+export function getCopilotMcpConfig(
+	profileFilter?: Set<string>,
+	context?: McpExecutionContext
+): Record<string, MCPHTTPServerConfig> {
+	const enabledServers = activeInternalServerNames(profileFilter);
 	if (enabledServers.length === 0) {
 		return {};
 	}
 
-	const port = SERVER_ENV.PORT;
+	const url = internalBridgeUrl('copilot', context);
 
 	const tools: string[] = [];
 	for (const serverName of enabledServers) {
@@ -555,14 +617,48 @@ export function getCopilotMcpConfig(): Record<string, MCPHTTPServerConfig> {
 		}
 	}
 
-	debug.log('mcp', `📦 Copilot MCP: remote server at http://localhost:${port}/mcp (${tools.length} tools)`);
+	debug.log('mcp', `📦 Copilot MCP: remote server at ${url} (${tools.length} tools)`);
 
 	return {
 		'clopen-mcp': {
 			type: 'http',
-			url: `http://localhost:${port}/mcp`,
+			url,
 			tools,
 			timeout: MCP_TOOL_CALL_TIMEOUT_MS,
+			headers: { Authorization: `Bearer ${getMcpServiceToken()}` },
+		},
+	};
+}
+
+// ============================================================================
+// Cursor MCP Configuration
+// ============================================================================
+
+/**
+ * Get MCP configuration for the Cursor engine.
+ *
+ * The Cursor SDK (`@cursor/sdk`) accepts a `mcpServers` map whose HTTP variant is
+ * `{ type: 'http', url, headers? }`. We reuse the SAME in-process `/mcp` bridge
+ * Open Code, Codex, Copilot and Qwen already consume — no new HTTP server, no
+ * per-engine bridge (README §10.12). The service-token bearer authorises the hop.
+ */
+export function getCursorMcpConfig(
+	profileFilter?: Set<string>,
+	context?: McpExecutionContext
+): Record<string, CursorMcpServerConfig> {
+	const enabledServers = activeInternalServerNames(profileFilter);
+	if (enabledServers.length === 0) {
+		return {};
+	}
+
+	const url = internalBridgeUrl('cursor', context);
+
+	debug.log('mcp', `📦 Cursor MCP: remote server at ${url}`);
+
+	return {
+		'clopen-mcp': {
+			type: 'http',
+			url,
 			headers: { Authorization: `Bearer ${getMcpServiceToken()}` },
 		},
 	};
@@ -579,7 +675,7 @@ export function getCopilotMcpConfig(): Record<string, MCPHTTPServerConfig> {
  * a `CLIMcpServerConfig` value that supports the Streamable-HTTP transport via
  * `httpUrl`. We reuse the SAME `/mcp` URL Open Code, Codex and Copilot already
  * consume — no new HTTP server, no per-engine bridge. Tool handlers run
- * in-process in the Clopen backend (README §9.12).
+ * in-process in the Clopen backend (README §10.12).
  *
  * Approval: the Qwen adapter uses `permissionMode: 'default'` with a
  * `canUseTool` callback that auto-allows everything. `AskUserQuestion` is
@@ -587,13 +683,16 @@ export function getCopilotMcpConfig(): Record<string, MCPHTTPServerConfig> {
  * so the model never sees it. The callback covers MCP tool calls too — no
  * per-tool enumeration needed.
  */
-export function getQwenMcpConfig(): Record<string, QwenMcpServerConfig> {
-	const enabledServers = getEnabledServerNames();
+export function getQwenMcpConfig(
+	profileFilter?: Set<string>,
+	context?: McpExecutionContext
+): Record<string, QwenMcpServerConfig> {
+	const enabledServers = activeInternalServerNames(profileFilter);
 	if (enabledServers.length === 0) {
 		return {};
 	}
 
-	const port = SERVER_ENV.PORT;
+	const url = internalBridgeUrl('qwen', context);
 
 	const includeTools: string[] = [];
 	for (const serverName of enabledServers) {
@@ -603,11 +702,11 @@ export function getQwenMcpConfig(): Record<string, QwenMcpServerConfig> {
 		}
 	}
 
-	debug.log('mcp', `📦 Qwen MCP: remote server at http://localhost:${port}/mcp (${includeTools.length} tools)`);
+	debug.log('mcp', `📦 Qwen MCP: remote server at ${url} (${includeTools.length} tools)`);
 
 	return {
 		'clopen-mcp': {
-			httpUrl: `http://localhost:${port}/mcp`,
+			httpUrl: url,
 			includeTools,
 			timeout: MCP_TOOL_CALL_TIMEOUT_MS,
 			trust: true,

@@ -1,7 +1,7 @@
 /**
  * OpenAI Codex Account Management Handlers
  *
- * Codex supports TWO auth modes (per backend/engine/README.md §9.13):
+ * Codex supports TWO auth modes (per backend/engine/README.md §10.13):
  *
  *   1. **API key** — paste-token flow, identical to Copilot's. The `apiKey`
  *      is wrapped as `{kind:"api_key", apiKey}` and stored in
@@ -48,23 +48,14 @@ import {
 	serializeCodexCredential,
 	getCodexHomeDir,
 } from '../../../engine/adapters/codex/credential';
-import { resolveBinaryWithRefresh } from '../../../utils/cli';
+import { resolveEngineCli } from '$backend/engine/engine-cli';
 import { getCleanSpawnEnv } from '../../../utils/env';
 import { debug } from '$shared/utils/logger';
 import { requireSetupSessionAccess } from '../access';
-
-// ─────────────────────────────────────────────────────────────────────────────
-// ANSI helpers — Codex emits coloured output and cursor moves; we strip them
-// before pattern-matching but stream the raw bytes (with ANSI) to the UI's
-// xterm.js so the user sees the CLI exactly as it would render in a real
-// terminal.
-// ─────────────────────────────────────────────────────────────────────────────
-
-function stripAnsi(str: string): string {
-	return str
-		.replace(/\x1B\[\d+;\d+[Hf]/g, '\n')
-		.replace(/\x1B(?:[@-Z\\-_]|\[[0-?]*[ -/]*[@-~])/g, '');
-}
+// Codex emits coloured output and cursor moves; we strip them before
+// pattern-matching but stream the raw bytes (with ANSI) to the UI's xterm.js so
+// the user sees the CLI exactly as it would render in a real terminal.
+import { stripAnsi } from '../pty-output';
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Engine cleanup helper — called after any account mutation that might affect
@@ -93,6 +84,8 @@ interface CodexLoginProcess {
 	userId: string;
 	accountName: string;
 	deviceAuth: boolean;
+	/** When set, re-authenticate this existing account in place instead of creating a new one. */
+	reauthAccountId: number | null;
 	timer: ReturnType<typeof setTimeout>;
 }
 
@@ -157,7 +150,7 @@ function isLoginSuccess(buffer: string): boolean {
 	return /Successfully logged in/i.test(buffer);
 }
 
-function persistChatGptLoginResult(accountName: string): { ok: true; accountId: number } | { ok: false; error: string } {
+function persistChatGptLoginResult(accountName: string, reauthAccountId?: number | null): { ok: true; accountId: number } | { ok: false; error: string } {
 	const provider = engineQueries.getProviderBySlug('codex', 'openai');
 	if (!provider) return { ok: false, error: 'OpenAI Codex provider not found in DB' };
 
@@ -167,6 +160,17 @@ function persistChatGptLoginResult(accountName: string): { ok: true; accountId: 
 	}
 
 	const credential = serializeCodexCredential({ kind: 'chatgpt', authJson });
+
+	// Re-authentication: replace the existing account's blob in place so its
+	// name and active state survive.
+	if (reauthAccountId != null) {
+		const existing = engineQueries.getAccount(reauthAccountId);
+		if (!existing) return { ok: false, error: 'Account to re-authenticate not found' };
+		engineQueries.updateAccountCredential(reauthAccountId, credential);
+		if (accountName) engineQueries.renameAccount(reauthAccountId, accountName);
+		return { ok: true, accountId: reauthAccountId };
+	}
+
 	const account = engineQueries.createAccount(provider.id, accountName, credential);
 	return { ok: true, accountId: account.id };
 }
@@ -285,6 +289,23 @@ export const codexAccountsHandler = createRouter()
 		return { success: true };
 	})
 
+	// Replace the API key for an api_key-mode account. ChatGPT accounts have no
+	// editable key — they re-authenticate via the login flow instead.
+	.http('engine:codex-accounts-update-api-key', {
+		data: t.Object({ id: t.Number(), apiKey: t.String({ minLength: 1 }) }),
+		response: t.Object({ success: t.Boolean() })
+	}, async ({ data }) => {
+		const account = engineQueries.getAccount(data.id);
+		if (!account) throw new Error('Account not found');
+		if (authModeOf(account) !== 'api_key') {
+			throw new Error('Only API-key accounts can have their key edited; ChatGPT accounts re-authenticate instead');
+		}
+		engineQueries.updateAccountCredential(data.id, serializeCodexCredential({ kind: 'api_key', apiKey: data.apiKey.trim() }));
+		const active = engineQueries.getActiveAccountForEngine('codex');
+		if (active?.id === data.id) await disposeCodexEngines();
+		return { success: true };
+	})
+
 	// ─── ChatGPT browser OAuth flow ───
 	//
 	// Spawn `codex login` in a PTY (the CLI silently no-ops when stdout
@@ -294,7 +315,8 @@ export const codexAccountsHandler = createRouter()
 	.on('engine:codex-account-setup-start', {
 		data: t.Object({
 			name: t.String({ minLength: 1 }),
-			deviceAuth: t.Optional(t.Boolean())
+			deviceAuth: t.Optional(t.Boolean()),
+			reauthAccountId: t.Optional(t.Number())
 		})
 	}, async ({ data, conn }) => {
 		const userId = ws.getUserId(conn);
@@ -306,11 +328,14 @@ export const codexAccountsHandler = createRouter()
 		const existing = userSetups.get(userId);
 		if (existing) cleanupSetup(existing);
 
-		const codexCmd = await resolveBinaryWithRefresh('codex');
-		if (!codexCmd) {
+		// The CLI is vendored inside the Codex SDK's platform package in the
+		// managed stack dir; resolving through `resolveEngineCli` means sign-in
+		// works off a Stack install instead of demanding a global one.
+		const codexCli = await resolveEngineCli('codex');
+		if (!codexCli) {
 			ws.emit.user(userId, 'engine:codex-account-setup-error', {
 				setupId,
-				message: 'Codex CLI not found on PATH. Install it via Settings → System Tools.'
+				message: 'Codex CLI not found. Install the engine via Settings → Stack.'
 			});
 			return;
 		}
@@ -330,7 +355,7 @@ export const codexAccountsHandler = createRouter()
 
 			let pty: ReturnType<typeof spawn>;
 			try {
-				pty = spawn(codexCmd, args, {
+				pty = spawn(codexCli.path, args, {
 					name: 'xterm-256color',
 					cols: 1000,
 					rows: 30,
@@ -363,6 +388,7 @@ export const codexAccountsHandler = createRouter()
 				userId,
 				accountName: data.name.trim(),
 				deviceAuth: !!data.deviceAuth,
+				reauthAccountId: data.reauthAccountId ?? null,
 				timer,
 			};
 			setupProcesses.set(setupId, entry);
@@ -409,7 +435,7 @@ export const codexAccountsHandler = createRouter()
 				if (isLoginSuccess(clean) && !entry.completed) {
 					entry.completed = true;
 					debug.log('engine', `[${setupId}] Codex login success — persisting auth.json`);
-					const result = persistChatGptLoginResult(entry.accountName);
+					const result = persistChatGptLoginResult(entry.accountName, entry.reauthAccountId);
 					if (result.ok) {
 						disposeCodexEngines().finally(() => {
 							ws.emit.user(userId, 'engine:codex-account-setup-complete', {
@@ -438,7 +464,7 @@ export const codexAccountsHandler = createRouter()
 				// in the final chunk right before exit.
 				if (isLoginSuccess(clean)) {
 					entry.completed = true;
-					const result = persistChatGptLoginResult(entry.accountName);
+					const result = persistChatGptLoginResult(entry.accountName, entry.reauthAccountId);
 					if (result.ok) {
 						disposeCodexEngines().finally(() => {
 							ws.emit.user(userId, 'engine:codex-account-setup-complete', {
@@ -476,18 +502,6 @@ export const codexAccountsHandler = createRouter()
 		}
 		entry.cancelled = true;
 		cleanupSetup(data.setupId);
-	})
-
-	// Restart all Codex engine instances. Use after changing the active
-	// account so subsequent models:list / chat calls re-initialise with the
-	// right credential. (The auth-blob swap on accounts-switch already
-	// handles the on-disk file; this just drops cached engine instances.)
-	.http('engine:codex-restart', {
-		data: t.Object({}),
-		response: t.Object({ success: t.Boolean() })
-	}, async () => {
-		await disposeCodexEngines();
-		return { success: true };
 	})
 
 	// ─── Server → client events ───

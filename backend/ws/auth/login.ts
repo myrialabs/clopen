@@ -2,7 +2,6 @@ import { t } from 'elysia';
 import { createRouter } from '$shared/utils/ws-server';
 import {
 	createAdmin,
-	getAuthMode,
 	loginWithToken,
 	createUserFromInvite,
 	logout,
@@ -11,9 +10,11 @@ import {
 	regeneratePAT,
 	updateUserName,
 	createOrGetNoAuthAdmin,
-	needsSetup
+	needsSetup,
+	markOnboardingPending
 } from '$backend/auth/auth-service';
-import { settingsQueries, auditLogQueries } from '$backend/database/queries';
+import { getAuthMode, writeSystemSettings } from '$backend/settings/system-settings';
+import { auditLogQueries } from '$backend/database/queries';
 import { getTokenType } from '$backend/auth/tokens';
 import { authRateLimiter } from '$backend/auth/rate-limiter';
 import { ws } from '$backend/utils/ws';
@@ -32,7 +33,8 @@ export const loginHandler = createRouter()
 	// Setup — create first admin (only works when no users exist)
 	.http('auth:setup', {
 		data: t.Object({
-			name: t.String({ minLength: 1 })
+			name: t.String({ minLength: 1 }),
+			userAgent: t.Optional(t.String())
 		}),
 		response: t.Object({
 			user: authUserSchema,
@@ -41,15 +43,22 @@ export const loginHandler = createRouter()
 			expiresAt: t.String()
 		})
 	}, async ({ data, conn }) => {
-		const result = createAdmin(data.name);
+		// Refuse before touching any state. This route is public, so without the
+		// guard a stray call against a live instance would flip the onboarding
+		// marker below and send every user back through the wizard.
+		if (!needsSetup()) {
+			throw new Error('Setup already completed. Admin account exists.');
+		}
+
+		// Mark the wizard as in-progress BEFORE the first user exists, so a refresh
+		// between here and "Finish" resumes setup instead of looking like a
+		// completed install (which is how onboarding state is inferred).
+		markOnboardingPending();
+
+		const result = createAdmin(data.name, { userAgent: data.userAgent, ipAddress: clientIpFromConnection(conn) });
 
 		// Save authMode to system settings
-		const currentSettings = settingsQueries.get('system:settings');
-		const parsed = currentSettings?.value
-			? (typeof currentSettings.value === 'string' ? JSON.parse(currentSettings.value) : currentSettings.value)
-			: {};
-		parsed.authMode = 'required';
-		settingsQueries.set('system:settings', JSON.stringify(parsed));
+		writeSystemSettings({ authMode: 'required' });
 
 		auditLogQueries.logEvent({
 			userId: result.user.id,
@@ -79,13 +88,12 @@ export const loginHandler = createRouter()
 			throw new Error('Setup already completed.');
 		}
 
+		// Same ordering as auth:setup — record the in-progress wizard before the
+		// first user exists.
+		markOnboardingPending();
+
 		// Save authMode to system settings
-		const currentSettings = settingsQueries.get('system:settings');
-		const parsed = currentSettings?.value
-			? (typeof currentSettings.value === 'string' ? JSON.parse(currentSettings.value) : currentSettings.value)
-			: {};
-		parsed.authMode = 'none';
-		settingsQueries.set('system:settings', JSON.stringify(parsed));
+		writeSystemSettings({ authMode: 'none' });
 
 		// Create or get default admin
 		const result = createOrGetNoAuthAdmin();
@@ -138,7 +146,8 @@ export const loginHandler = createRouter()
 	// Login with token (PAT or session token)
 	.http('auth:login', {
 		data: t.Object({
-			token: t.String({ minLength: 1 })
+			token: t.String({ minLength: 1 }),
+			userAgent: t.Optional(t.String())
 		}),
 		response: t.Object({
 			user: authUserSchema,
@@ -161,7 +170,7 @@ export const loginHandler = createRouter()
 		}
 
 		try {
-			const result = loginWithToken(data.token);
+			const result = loginWithToken(data.token, { userAgent: data.userAgent, ipAddress: clientIpFromConnection(conn) });
 
 			// Success — clear any rate limit record for this IP
 			if (isRateLimited) {
@@ -196,7 +205,8 @@ export const loginHandler = createRouter()
 	.http('auth:accept-invite', {
 		data: t.Object({
 			inviteToken: t.String({ minLength: 1 }),
-			name: t.String({ minLength: 1 })
+			name: t.String({ minLength: 1 }),
+			userAgent: t.Optional(t.String())
 		}),
 		response: t.Object({
 			user: authUserSchema,
@@ -214,7 +224,7 @@ export const loginHandler = createRouter()
 		}
 
 		try {
-			const result = createUserFromInvite(data.inviteToken, data.name);
+			const result = createUserFromInvite(data.inviteToken, data.name, { userAgent: data.userAgent, ipAddress: clientIpFromConnection(conn) });
 
 			authRateLimiter.recordSuccess(ip, 'auth:accept-invite');
 
@@ -232,6 +242,9 @@ export const loginHandler = createRouter()
 
 			// Notify admin sessions so their User Management list refreshes.
 			ws.emit.global('auth:users-changed', { type: 'added', userId: result.user.id });
+			// A member just joined via an invite — close the admin's invite QR and
+			// refresh the invite/device lists (mirrors device-claimed).
+			ws.emit.global('remote-access:changed', { kind: 'invite-claimed' });
 
 			return result;
 		} catch (err) {
