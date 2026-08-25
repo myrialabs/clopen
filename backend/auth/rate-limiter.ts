@@ -2,22 +2,18 @@
  * Auth Rate Limiter
  *
  * Protects auth endpoints against brute-force and credential stuffing attacks.
- * Tracks failed attempts per (IP, route) with progressive lockout, plus a
- * volume cap on *all* attempts (success + failure) per (IP, route) so that
- * probes alternating valid and invalid tokens cannot avoid the limit.
+ * Tracks failed attempts per (IP, route) with progressive lockout.
  *
- * Failure tiers:
+ * Thresholds:
  *   5 failures  → 30 second lockout
  *   10 failures → 2 minute lockout
  *   20 failures → 10 minute lockout
  *
- * Volume cap:
- *   100 attempts per (IP, route) within a 15-minute sliding window →
- *   15-minute lockout, regardless of success/failure mix. Defends routes
- *   like `auth:validate-invite` against high-volume probing of token
- *   space, including probes that happen to find a valid token.
- *
  * Attempts decay after the lockout window expires.
+ *
+ * Records are keyed by IP *and* route: a lockout earned on one endpoint must
+ * not block an unrelated one, and clearing one route's record on success must
+ * not wipe another route's accumulated failures.
  */
 
 import { debug } from '$shared/utils/logger';
@@ -33,8 +29,6 @@ const RATE_LIMITED_ROUTES = new Set([
 
 interface AttemptRecord {
 	failures: number;
-	attempts: number;
-	attemptWindowStart: number;
 	lastFailure: number;
 	lockedUntil: number;
 }
@@ -46,19 +40,14 @@ const LOCKOUT_TIERS: [number, number][] = [
 	[20, 10 * 60_000], // 20 failures → 10 minutes
 ];
 
-/** Volume cap: max attempts (success or failure) per route per sliding window. */
-const ATTEMPT_CAP = 100;
-const ATTEMPT_WINDOW_MS = 15 * 60_000;
-const ATTEMPT_LOCKOUT_MS = 15 * 60_000;
-
-/** After this duration of no activity, the record is considered stale and cleaned up. */
+/** After this duration of no failures, the record is considered stale and cleaned up */
 const STALE_AFTER_MS = 15 * 60_000; // 15 minutes
 
 /** How often to run cleanup (ms) */
 const CLEANUP_INTERVAL_MS = 5 * 60_000; // 5 minutes
 
-export class AuthRateLimiter {
-	// Key format: `${identifier}::${action}` — per (IP, route) isolation.
+class AuthRateLimiter {
+	/** Keyed by `${identifier}::${action}` — see the note on the module doc. */
 	private attempts = new Map<string, AttemptRecord>();
 	private cleanupTimer: ReturnType<typeof setInterval> | null = null;
 
@@ -67,7 +56,7 @@ export class AuthRateLimiter {
 		this.cleanupTimer = setInterval(() => this.cleanup(), CLEANUP_INTERVAL_MS);
 	}
 
-	private static key(identifier: string, action: string): string {
+	private static recordKey(identifier: string, action: string): string {
 		return `${identifier}::${action}`;
 	}
 
@@ -80,17 +69,17 @@ export class AuthRateLimiter {
 			return null; // Not a rate-limited route
 		}
 
-		const record = this.attempts.get(AuthRateLimiter.key(identifier, action));
+		const record = this.attempts.get(AuthRateLimiter.recordKey(identifier, action));
 		if (!record) {
 			return null; // No previous activity
 		}
 
 		const now = Date.now();
 
-		// Check if currently locked out (either failure-tier or volume-tier)
+		// Check if currently locked out
 		if (record.lockedUntil > now) {
 			const remainingSec = Math.ceil((record.lockedUntil - now) / 1000);
-			debug.warn('auth', `Rate limited: ${identifier} on ${action} (${remainingSec}s remaining, ${record.failures} failures, ${record.attempts} attempts)`);
+			debug.warn('auth', `Rate limited: ${identifier} on ${action} (${remainingSec}s remaining, ${record.failures} failures)`);
 			return `Too many failed attempts. Try again in ${remainingSec} seconds.`;
 		}
 
@@ -105,15 +94,13 @@ export class AuthRateLimiter {
 		if (!RATE_LIMITED_ROUTES.has(action)) return;
 
 		const now = Date.now();
-		const key = AuthRateLimiter.key(identifier, action);
-		const record = this.attempts.get(key) ?? this.newRecord(now);
+		const key = AuthRateLimiter.recordKey(identifier, action);
+		const record = this.attempts.get(key) ?? { failures: 0, lastFailure: 0, lockedUntil: 0 };
 
 		record.failures += 1;
 		record.lastFailure = now;
-		record.attempts += 1;
-		record.attemptWindowStart = this.maybeResetWindow(record, now);
 
-		// Determine failure-tier lockout duration based on failure count
+		// Determine lockout duration based on failure count
 		let lockoutMs = 0;
 		for (const [threshold, duration] of LOCKOUT_TIERS) {
 			if (record.failures >= threshold) {
@@ -126,69 +113,16 @@ export class AuthRateLimiter {
 			debug.warn('auth', `Lockout triggered: ${identifier} on ${action} — ${record.failures} failures, locked for ${lockoutMs / 1000}s`);
 		}
 
-		this.maybeApplyAttemptCap(record, now);
 		this.attempts.set(key, record);
 	}
 
 	/**
-	 * Record a successful auth attempt for the given identifier + action.
-	 * Clears the per-route record so legitimate users don't accumulate debt
-	 * across successful validations.
+	 * Clear the failure record for this route on successful auth (e.g., successful
+	 * login). Other routes keep whatever they had accumulated.
 	 */
 	recordSuccess(identifier: string, action: string): void {
 		if (!RATE_LIMITED_ROUTES.has(action)) return;
-		this.attempts.delete(AuthRateLimiter.key(identifier, action));
-	}
-
-	/**
-	 * Record an auth attempt without recording a failure. Used for routes
-	 * like `auth:validate-invite` where a successful call should still
-	 * count toward the volume cap (so high-volume probes can't avoid it by
-	 * happening to find valid tokens).
-	 */
-	recordAttempt(identifier: string, action: string): void {
-		if (!RATE_LIMITED_ROUTES.has(action)) return;
-
-		const now = Date.now();
-		const key = AuthRateLimiter.key(identifier, action);
-		const record = this.attempts.get(key) ?? this.newRecord(now);
-
-		record.attempts += 1;
-		record.attemptWindowStart = this.maybeResetWindow(record, now);
-		this.maybeApplyAttemptCap(record, now);
-		this.attempts.set(key, record);
-	}
-
-	private newRecord(now: number): AttemptRecord {
-		return {
-			failures: 0,
-			attempts: 0,
-			attemptWindowStart: now,
-			lastFailure: 0,
-			lockedUntil: 0
-		};
-	}
-
-	/**
-	 * If the sliding attempt window has expired, reset the counter. Returns
-	 * the (possibly updated) window start.
-	 */
-	private maybeResetWindow(record: AttemptRecord, now: number): number {
-		if (now - record.attemptWindowStart >= ATTEMPT_WINDOW_MS) {
-			record.attempts = 0;
-			record.attemptWindowStart = now;
-		}
-		return record.attemptWindowStart;
-	}
-
-	/**
-	 * If the attempt count has reached the cap, apply the volume-tier lockout.
-	 */
-	private maybeApplyAttemptCap(record: AttemptRecord, now: number): void {
-		if (record.attempts >= ATTEMPT_CAP && record.lockedUntil < now + ATTEMPT_LOCKOUT_MS) {
-			record.lockedUntil = now + ATTEMPT_LOCKOUT_MS;
-			debug.warn('auth', `Volume lockout triggered: ${record.attempts} attempts in window, locked for ${ATTEMPT_LOCKOUT_MS / 1000}s`);
-		}
+		this.attempts.delete(AuthRateLimiter.recordKey(identifier, action));
 	}
 
 	/**
