@@ -1,6 +1,8 @@
 <script lang="ts">
 	import { browser } from '$frontend/app-environment';
 	import { onMount, onDestroy } from 'svelte';
+	import { scale } from 'svelte/transition';
+	import { cubicOut } from 'svelte/easing';
 	import Icon from '$frontend/components/common/display/Icon.svelte';
 	import AvatarBubble from '$frontend/components/common/display/AvatarBubble.svelte';
 	import { sessionState } from '$frontend/stores/core/sessions.svelte';
@@ -201,7 +203,11 @@
 
 		{#if showActionsMenu}
 			<div class="fixed inset-0 z-40" onclick={closeActionsMenu}></div>
-			<div class="fixed z-50 bg-white dark:bg-slate-800 border border-slate-200 dark:border-slate-700 rounded-lg shadow-lg overflow-hidden min-w-44 py-1" style="top: {menuPosition.top}px; left: {menuPosition.left}px;">
+			<div
+				class="fixed z-50 bg-white dark:bg-slate-800 border border-slate-200 dark:border-slate-700 rounded-lg shadow-lg overflow-hidden min-w-44 py-1"
+				style="top: {menuPosition.top}px; left: {menuPosition.left}px;"
+				transition:scale={{ duration: 150, easing: cubicOut, start: 0.95, opacity: 0 }}
+			>
 				<!-- Split actions -->
 				<button
 					type="button"
