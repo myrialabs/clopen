@@ -95,9 +95,9 @@
 		{#if roleCategory === 'user' || roleCategory === 'assistant'}
 			<button
 				onclick={handleCopy}
-				class="inline-flex p-1.5 rounded-md hover:bg-slate-200 dark:hover:bg-slate-600 transition-colors opacity-60 hover:opacity-100"
-				aria-label="Copy message"
-				title="Copy message"
+				class="inline-flex p-1.5 rounded-md hover:bg-slate-200 dark:hover:bg-slate-600 transition-colors opacity-100"
+				aria-label={isCopied ? "Copied" : "Copy message"}
+				title={isCopied ? "Copied!" : "Copy message"}
 			>
 				<Icon name={isCopied ? "lucide:check" : "lucide:copy"} class="w-3.5 h-3.5" />
 			</button>

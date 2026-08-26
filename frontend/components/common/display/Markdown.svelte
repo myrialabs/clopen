@@ -183,28 +183,42 @@
 		};
 	});
 
-	// Inject "Copy" button into every <pre> block for easy code copying.
+	// Inject icon-only Copy button into every <pre> block (per-item, smaller than Copy All).
 	// Works for chat + preview variants; re-runs on content change.
+	// Single-line blocks get overflow hidden to avoid scrollbar.
 	$effect(() => {
 		void rendered;
 		if (variant !== 'chat' && variant !== 'preview') return;
 		const el = root;
 		if (!el) return;
 
+		const copySvg = `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" class="w-3 h-3" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><g fill="none" stroke="currentColor" stroke-linecap="round" stroke-linejoin="round" stroke-width="2"><rect width="14" height="14" x="8" y="8" rx="2" ry="2"/><path d="M4 16c-1.1 0-2-.9-2-2V4c0-1.1.9-2 2-2h10c1.1 0 2 .9 2 2"/></g></svg>`;
+		const checkSvg = `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" class="w-3 h-3" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path fill="none" stroke="currentColor" stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M20 6L9 17l-5-5"/></svg>`;
+
 		for (const pre of Array.from(el.querySelectorAll('pre'))) {
 			if ((pre as HTMLElement).dataset.copyBtn === 'true') continue;
 			(pre as HTMLElement).dataset.copyBtn = 'true';
 			(pre as HTMLElement).style.position = 'relative';
 
+			// Single-line blocks should not show a scrollbar (e.g. "git push")
+			const codeEl = pre.querySelector('code');
+			const rawText = codeEl ? (codeEl.textContent ?? '') : (pre.textContent ?? '');
+			const lineCount = rawText.trim().split('\n').length;
+			if (lineCount <= 1) {
+				(pre as HTMLElement).classList.add('single-line');
+				(pre as HTMLElement).style.overflow = 'hidden';
+			}
+
 			const btn = document.createElement('button');
 			btn.type = 'button';
-			btn.textContent = 'Copy';
+			btn.innerHTML = copySvg;
 			btn.setAttribute('aria-label', 'Copy code');
+			btn.setAttribute('title', 'Copy');
 			btn.className = 'code-copy-btn';
 			btn.addEventListener('click', async (e) => {
 				e.stopPropagation();
-				const codeEl = pre.querySelector('code');
-				const text = codeEl ? (codeEl.textContent ?? '') : (pre.textContent ?? '');
+				const cEl = pre.querySelector('code');
+				const text = cEl ? (cEl.textContent ?? '') : (pre.textContent ?? '');
 				try {
 					await navigator.clipboard.writeText(text);
 				} catch {
@@ -217,12 +231,14 @@
 					document.execCommand('copy');
 					ta.remove();
 				}
-				const prev = btn.textContent;
-				btn.textContent = 'Copied!';
+				const prev = btn.innerHTML;
+				btn.innerHTML = checkSvg;
 				btn.classList.add('copied');
+				btn.setAttribute('title', 'Copied!');
 				setTimeout(() => {
-					btn.textContent = prev;
+					btn.innerHTML = prev;
 					btn.classList.remove('copied');
+					btn.setAttribute('title', 'Copy');
 				}, 1500);
 			});
 			pre.appendChild(btn);
@@ -249,6 +265,10 @@
 	}
 	:global(.markdown-chat *:last-child) {
 		margin-bottom: 0;
+	}
+	/* Single paragraph — symmetric top/bottom (container padding handles spacing) */
+	:global(.markdown-chat > p:only-child) {
+		margin: 0;
 	}
 	:global(.markdown-chat h1) {
 		font-size: 1.5rem;
@@ -336,6 +356,15 @@
 		overflow-x: auto;
 		margin: 1rem 0;
 		border: 1px solid rgb(226 232 240);
+	}
+	/* Fix asymmetric top/bottom gap: p bottom 1rem + pre top 1rem = 2rem vs pre bottom 1rem alone */
+	:global(.markdown-chat p + pre),
+	:global(.markdown-chat h1 + pre),
+	:global(.markdown-chat h2 + pre),
+	:global(.markdown-chat h3 + pre),
+	:global(.markdown-chat ul + pre),
+	:global(.markdown-chat ol + pre) {
+		margin-top: 0;
 	}
 	:global(.dark .markdown-chat pre) {
 		background-color: rgb(30 41 59);
@@ -564,6 +593,12 @@
 		border: 1px solid rgb(226 232 240);
 		font-size: 0.85rem;
 	}
+	:global(.markdown-preview p + pre),
+	:global(.markdown-preview h1 + pre),
+	:global(.markdown-preview h2 + pre),
+	:global(.markdown-preview h3 + pre) {
+		margin-top: 0;
+	}
 	:global(.dark .markdown-preview pre) {
 		background-color: rgb(30 41 59);
 		color: rgb(203 213 225);
@@ -716,6 +751,9 @@
 		margin-top: 0.375rem;
 		margin-bottom: 0.375rem;
 	}
+	:global(.markdown-compact > p:only-child) {
+		margin: 0.125rem 0;
+	}
 	:global(.markdown-compact code) {
 		font-size: 0.75rem;
 		padding: 0.125rem 0.25rem;
@@ -777,7 +815,7 @@
 		text-align: left;
 	}
 
-	/* Code block copy button — appears on hover, positioned top-right of <pre> */
+	/* Code block copy button — icon-only, smaller than Copy All (w-3 vs w-3.5), always visible */
 	:global(.code-copy-btn) {
 		position: absolute;
 		top: 6px;
@@ -785,29 +823,37 @@
 		display: inline-flex;
 		align-items: center;
 		justify-content: center;
-		gap: 4px;
-		padding: 4px 8px;
-		font-size: 11px;
-		font-weight: 600;
-		line-height: 1;
+		padding: 5px;
+		width: 26px;
+		height: 26px;
 		border-radius: 6px;
 		border: 1px solid rgb(226 232 240);
 		background: rgba(255, 255, 255, 0.95);
 		color: rgb(71 85 105);
 		cursor: pointer;
-		opacity: 0;
+		opacity: 1;
 		backdrop-filter: blur(4px);
 		transition: opacity 0.15s, background 0.15s, color 0.15s;
 		z-index: 1;
+	}
+	/* Single-line code blocks must not show scrollbar (e.g. "git push") — and must be vertically centered */
+	:global(.markdown-chat pre.single-line),
+	:global(.markdown-preview pre.single-line) {
+		display: flex;
+		align-items: center;
+		overflow: hidden !important;
+		white-space: nowrap;
+		min-height: 36px;
+	}
+	:global(.markdown-chat pre.single-line .code-copy-btn),
+	:global(.markdown-preview pre.single-line .code-copy-btn) {
+		top: 50%;
+		transform: translateY(-50%);
 	}
 	:global(.dark .code-copy-btn) {
 		border-color: rgb(51 65 85);
 		background: rgba(30, 41, 59, 0.9);
 		color: rgb(148 163 184);
-	}
-	:global(pre:hover .code-copy-btn),
-	:global(.code-copy-btn:focus) {
-		opacity: 1;
 	}
 	:global(.code-copy-btn:hover) {
 		background: rgb(255 255 255);

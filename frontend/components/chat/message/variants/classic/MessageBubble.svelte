@@ -13,7 +13,6 @@
 	import type { FrontendMessage } from '$frontend/stores/core/sessions.svelte';
 	import type { IconName } from '$shared/types/ui/icons';
 	import Card from '$frontend/components/common/display/Card.svelte';
-	import Icon from '$frontend/components/common/display/Icon.svelte';
 	import MessageFormatter from '../../../formatters/MessageFormatter.svelte';
 	import MessageHeader from './MessageHeader.svelte';
 
@@ -47,13 +46,6 @@
 
 	let scrollContainer: HTMLDivElement | undefined = $state();
 	let stickToBottom = $state(true);
-	let isCopiedFloating = $state(false);
-
-	function handleFloatingCopy() {
-		onCopy();
-		isCopiedFloating = true;
-		setTimeout(() => (isCopiedFloating = false), 1500);
-	}
 
 	function handleScroll() {
 		if (!scrollContainer) return;
@@ -115,20 +107,8 @@
 		<div
 			bind:this={scrollContainer}
 			onscroll={handleScroll}
-			class="relative group/content p-3 md:p-4 {roleCategory === 'reasoning' || roleCategory === 'system' || roleCategory === 'compact' ? 'max-h-80 overflow-y-auto' : ''}"
+			class="relative p-3 md:p-4 {roleCategory === 'reasoning' || roleCategory === 'system' || roleCategory === 'compact' ? 'max-h-80 overflow-y-auto' : ''}"
 		>
-			{#if roleCategory === 'assistant' || roleCategory === 'user'}
-				<button
-					type="button"
-					onclick={handleFloatingCopy}
-					class="absolute bottom-2 right-2 inline-flex items-center gap-1.5 p-1.5 rounded-md border bg-white/95 dark:bg-slate-800/95 border-slate-200 dark:border-slate-700 text-slate-500 dark:text-slate-400 hover:text-slate-700 dark:hover:text-slate-200 shadow-sm backdrop-blur-sm transition-all opacity-0 group-hover/content:opacity-100 focus:opacity-100 z-10"
-					aria-label={isCopiedFloating ? 'Copied' : 'Copy all'}
-					title={isCopiedFloating ? 'Copied!' : 'Copy entire message'}
-				>
-					<Icon name={isCopiedFloating ? 'lucide:check' : 'lucide:copy'} class="w-3.5 h-3.5" />
-					<span class="hidden sm:inline text-xs font-medium leading-none">{isCopiedFloating ? 'Copied!' : 'Copy'}</span>
-				</button>
-			{/if}
 			<div class="max-w-none space-y-4">
 				<!-- Content rendering using MessageFormatter component -->
 				<MessageFormatter {message} />
