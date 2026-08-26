@@ -252,11 +252,22 @@
 	<div
 		bind:this={scrollContainer}
 		onscroll={handleScroll}
-		class="text-slate-900 dark:text-slate-100 {roleCategory === 'system' ? 'max-h-48 overflow-y-auto' : ''}"
+		class="relative group/copy text-slate-900 dark:text-slate-100 {roleCategory === 'system' ? 'max-h-48 overflow-y-auto' : ''}"
 	>
+		{#if roleCategory === 'reasoning' || roleCategory === 'system' || roleCategory === 'assistant'}
+			<button
+				type="button"
+				onclick={(e) => { e.stopPropagation(); handleCopy(); }}
+				class="absolute bottom-1 right-1 inline-flex items-center justify-center gap-1 p-1.5 rounded-md border bg-white/90 dark:bg-slate-800/90 border-slate-200 dark:border-slate-700 text-slate-500 dark:text-slate-400 hover:text-slate-700 dark:hover:text-slate-200 shadow-sm backdrop-blur-sm transition-all opacity-0 group-hover/copy:opacity-100 focus:opacity-100 z-10"
+				aria-label={isCopied ? 'Copied' : 'Copy all'}
+				title={isCopied ? 'Copied!' : 'Copy entire message'}
+			>
+				<Icon name={isCopied ? 'lucide:check' : 'lucide:copy'} class="w-3 h-3" />
+			</button>
+		{/if}
 		{#if roleCategory === 'reasoning'}
 			<!-- Reasoning row — same icon, indent, color and font as the tool rows -->
-			<div class="flex items-start gap-2 py-[2px] min-w-0">
+			<div class="flex items-start gap-2 py-[2px] min-w-0 pr-8">
 				<span class="relative shrink-0 w-[14px] mt-[1px] flex items-center justify-center text-slate-500 dark:text-slate-400 z-10">
 					<span class="absolute inset-0 -m-[3px] rounded bg-slate-50 dark:bg-slate-900"></span>
 					<Icon name="lucide:sparkles" class="relative w-[13px] h-[13px]" />
@@ -266,7 +277,9 @@
 				</span>
 			</div>
 		{:else}
-			<MessageFormatter {message} />
+			<div class="">
+				<MessageFormatter {message} />
+			</div>
 		{/if}
 	</div>
 {/if}

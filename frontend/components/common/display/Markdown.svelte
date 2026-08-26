@@ -182,6 +182,52 @@
 			cancelled = true;
 		};
 	});
+
+	// Inject "Copy" button into every <pre> block for easy code copying.
+	// Works for chat + preview variants; re-runs on content change.
+	$effect(() => {
+		void rendered;
+		if (variant !== 'chat' && variant !== 'preview') return;
+		const el = root;
+		if (!el) return;
+
+		for (const pre of Array.from(el.querySelectorAll('pre'))) {
+			if ((pre as HTMLElement).dataset.copyBtn === 'true') continue;
+			(pre as HTMLElement).dataset.copyBtn = 'true';
+			(pre as HTMLElement).style.position = 'relative';
+
+			const btn = document.createElement('button');
+			btn.type = 'button';
+			btn.textContent = 'Copy';
+			btn.setAttribute('aria-label', 'Copy code');
+			btn.className = 'code-copy-btn';
+			btn.addEventListener('click', async (e) => {
+				e.stopPropagation();
+				const codeEl = pre.querySelector('code');
+				const text = codeEl ? (codeEl.textContent ?? '') : (pre.textContent ?? '');
+				try {
+					await navigator.clipboard.writeText(text);
+				} catch {
+					const ta = document.createElement('textarea');
+					ta.value = text;
+					ta.style.position = 'fixed';
+					ta.style.opacity = '0';
+					document.body.appendChild(ta);
+					ta.select();
+					document.execCommand('copy');
+					ta.remove();
+				}
+				const prev = btn.textContent;
+				btn.textContent = 'Copied!';
+				btn.classList.add('copied');
+				setTimeout(() => {
+					btn.textContent = prev;
+					btn.classList.remove('copied');
+				}, 1500);
+			});
+			pre.appendChild(btn);
+		}
+	});
 </script>
 
 <!-- svelte-ignore a11y_click_events_have_key_events a11y_no_static_element_interactions -->
@@ -729,5 +775,54 @@
 		padding: 0.375rem 0.5rem;
 		border: 1px solid rgb(148 163 184 / 0.2);
 		text-align: left;
+	}
+
+	/* Code block copy button — appears on hover, positioned top-right of <pre> */
+	:global(.code-copy-btn) {
+		position: absolute;
+		top: 6px;
+		right: 6px;
+		display: inline-flex;
+		align-items: center;
+		justify-content: center;
+		gap: 4px;
+		padding: 4px 8px;
+		font-size: 11px;
+		font-weight: 600;
+		line-height: 1;
+		border-radius: 6px;
+		border: 1px solid rgb(226 232 240);
+		background: rgba(255, 255, 255, 0.95);
+		color: rgb(71 85 105);
+		cursor: pointer;
+		opacity: 0;
+		backdrop-filter: blur(4px);
+		transition: opacity 0.15s, background 0.15s, color 0.15s;
+		z-index: 1;
+	}
+	:global(.dark .code-copy-btn) {
+		border-color: rgb(51 65 85);
+		background: rgba(30, 41, 59, 0.9);
+		color: rgb(148 163 184);
+	}
+	:global(pre:hover .code-copy-btn),
+	:global(.code-copy-btn:focus) {
+		opacity: 1;
+	}
+	:global(.code-copy-btn:hover) {
+		background: rgb(255 255 255);
+		color: rgb(15 23 42);
+	}
+	:global(.dark .code-copy-btn:hover) {
+		background: rgb(51 65 85);
+		color: rgb(241 245 249);
+	}
+	:global(.code-copy-btn.copied) {
+		color: rgb(22 163 74);
+		border-color: rgb(134 239 172);
+	}
+	:global(.dark .code-copy-btn.copied) {
+		color: rgb(74 222 128);
+		border-color: rgb(34 197 94 / 0.4);
 	}
 </style>
