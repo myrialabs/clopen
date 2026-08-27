@@ -27,6 +27,7 @@
 		onCopy,
 		onRestore,
 		onEdit,
+		onShowDebug,
 	}: {
 		message: FrontendMessage;
 		messageTimestamp: string;
