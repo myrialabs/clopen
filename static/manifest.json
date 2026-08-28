@@ -1,16 +1,23 @@
 {
+  "id": "/",
   "name": "Clopen",
   "short_name": "Clopen",
-  "description": "All-in-one web workspace for Claude Code & OpenCode — chat, terminal, git, browser preview, checkpoints, and real-time collaboration",
+  "description": "All-in-one web workspace for AI coding agents — Claude Code, OpenCode, Codex, Copilot, Qwen Code, Pi, Cline, and Cursor — with chat, terminal, git, browser preview, database client, checkpoints, and real-time collaboration",
   "start_url": "/",
+  "scope": "/",
+  "lang": "en",
+  "dir": "ltr",
   "display": "standalone",
+  "orientation": "any",
+  "categories": ["developer", "productivity", "utilities"],
   "background_color": "#0e172b",
   "theme_color": "#0e172b",
   "icons": [
     {
       "src": "/favicon.svg",
       "sizes": "any",
-      "type": "image/svg+xml"
+      "type": "image/svg+xml",
+      "purpose": "any"
     }
   ]
 }
