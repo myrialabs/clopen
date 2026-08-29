@@ -333,6 +333,12 @@
 									}
 									otherActive[idx] = true;
 								}}
+								onkeydown={(e) => {
+									if (e.key === 'Enter') {
+										e.preventDefault();
+										submitAnswers();
+									}
+								}}
 							/>
 						</div>
 					</div>
