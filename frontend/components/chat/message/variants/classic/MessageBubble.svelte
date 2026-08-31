@@ -107,7 +107,7 @@
 		<div
 			bind:this={scrollContainer}
 			onscroll={handleScroll}
-			class="relative p-3 md:p-4 {roleCategory === 'reasoning' || roleCategory === 'system' || roleCategory === 'compact' ? 'max-h-80 overflow-y-auto' : ''}"
+			class="p-3 md:p-4 {roleCategory === 'reasoning' || roleCategory === 'system' || roleCategory === 'compact' ? 'max-h-80 overflow-y-auto' : ''}"
 		>
 			<div class="max-w-none space-y-4">
 				<!-- Content rendering using MessageFormatter component -->

@@ -168,9 +168,13 @@
 				if (!langClass) continue;
 				const raw = langClass.slice('language-'.length);
 				const lang = MONACO_LANG[raw] ?? raw;
+				const source = code.textContent ?? '';
 				try {
-					const highlighted = await monaco.editor.colorize(code.textContent ?? '', lang, {});
+					const highlighted = await monaco.editor.colorize(source, lang, {});
 					if (cancelled) return;
+					// colorize() joins lines with <br/>, which textContent drops. Stash the
+					// pre-colorize source so the copy button still yields real newlines.
+					code.closest('pre')?.setAttribute('data-raw-code', source);
 					code.innerHTML = highlighted;
 				} catch {
 					/* leave the plain escaped code as-is */
@@ -198,15 +202,22 @@
 		for (const pre of Array.from(el.querySelectorAll('pre'))) {
 			if ((pre as HTMLElement).dataset.copyBtn === 'true') continue;
 			(pre as HTMLElement).dataset.copyBtn = 'true';
-			(pre as HTMLElement).style.position = 'relative';
+
+			// The button hangs off a wrapper, not off the <pre>: the <pre> is the scroll
+			// container, and an absolutely positioned child of a scroll container travels
+			// with its content. The wrapper never scrolls, so the button stays pinned to
+			// the block's top-right however far the code is scrolled.
+			const wrap = document.createElement('div');
+			wrap.className = 'code-block';
+			pre.parentNode?.insertBefore(wrap, pre);
+			wrap.appendChild(pre);
 
 			// Single-line blocks should not show a scrollbar (e.g. "git push")
 			const codeEl = pre.querySelector('code');
 			const rawText = codeEl ? (codeEl.textContent ?? '') : (pre.textContent ?? '');
 			const lineCount = rawText.trim().split('\n').length;
 			if (lineCount <= 1) {
-				(pre as HTMLElement).classList.add('single-line');
-				(pre as HTMLElement).style.overflow = 'hidden';
+				wrap.classList.add('single-line');
 			}
 
 			const btn = document.createElement('button');
@@ -215,10 +226,13 @@
 			btn.setAttribute('aria-label', 'Copy code');
 			btn.setAttribute('title', 'Copy');
 			btn.className = 'code-copy-btn';
+			let resetTimer: ReturnType<typeof setTimeout> | undefined;
 			btn.addEventListener('click', async (e) => {
 				e.stopPropagation();
 				const cEl = pre.querySelector('code');
-				const text = cEl ? (cEl.textContent ?? '') : (pre.textContent ?? '');
+				const text =
+					(pre as HTMLElement).dataset.rawCode ??
+					(cEl ? (cEl.textContent ?? '') : (pre.textContent ?? ''));
 				try {
 					await navigator.clipboard.writeText(text);
 				} catch {
@@ -231,17 +245,19 @@
 					document.execCommand('copy');
 					ta.remove();
 				}
-				const prev = btn.innerHTML;
 				btn.innerHTML = checkSvg;
 				btn.classList.add('copied');
 				btn.setAttribute('title', 'Copied!');
-				setTimeout(() => {
-					btn.innerHTML = prev;
+				btn.setAttribute('aria-label', 'Copied');
+				clearTimeout(resetTimer);
+				resetTimer = setTimeout(() => {
+					btn.innerHTML = copySvg;
 					btn.classList.remove('copied');
 					btn.setAttribute('title', 'Copy');
+					btn.setAttribute('aria-label', 'Copy code');
 				}, 1500);
 			});
-			pre.appendChild(btn);
+			wrap.appendChild(btn);
 		}
 	});
 </script>
@@ -265,10 +281,6 @@
 	}
 	:global(.markdown-chat *:last-child) {
 		margin-bottom: 0;
-	}
-	/* Single paragraph — symmetric top/bottom (container padding handles spacing) */
-	:global(.markdown-chat > p:only-child) {
-		margin: 0;
 	}
 	:global(.markdown-chat h1) {
 		font-size: 1.5rem;
@@ -356,15 +368,6 @@
 		overflow-x: auto;
 		margin: 1rem 0;
 		border: 1px solid rgb(226 232 240);
-	}
-	/* Fix asymmetric top/bottom gap: p bottom 1rem + pre top 1rem = 2rem vs pre bottom 1rem alone */
-	:global(.markdown-chat p + pre),
-	:global(.markdown-chat h1 + pre),
-	:global(.markdown-chat h2 + pre),
-	:global(.markdown-chat h3 + pre),
-	:global(.markdown-chat ul + pre),
-	:global(.markdown-chat ol + pre) {
-		margin-top: 0;
 	}
 	:global(.dark .markdown-chat pre) {
 		background-color: rgb(30 41 59);
@@ -593,12 +596,6 @@
 		border: 1px solid rgb(226 232 240);
 		font-size: 0.85rem;
 	}
-	:global(.markdown-preview p + pre),
-	:global(.markdown-preview h1 + pre),
-	:global(.markdown-preview h2 + pre),
-	:global(.markdown-preview h3 + pre) {
-		margin-top: 0;
-	}
 	:global(.dark .markdown-preview pre) {
 		background-color: rgb(30 41 59);
 		color: rgb(203 213 225);
@@ -815,6 +812,18 @@
 		text-align: left;
 	}
 
+	/* Wrapper around every <pre>: it owns the block's margin and gives the copy button a
+	   non-scrolling anchor, so the button holds its corner while the code scrolls. */
+	:global(.markdown-chat .code-block),
+	:global(.markdown-preview .code-block) {
+		position: relative;
+		margin: 1rem 0;
+	}
+	:global(.markdown-chat .code-block > pre),
+	:global(.markdown-preview .code-block > pre) {
+		margin: 0;
+	}
+
 	/* Code block copy button — icon-only, smaller than Copy All (w-3 vs w-3.5), always visible */
 	:global(.code-copy-btn) {
 		position: absolute;
@@ -836,17 +845,21 @@
 		transition: opacity 0.15s, background 0.15s, color 0.15s;
 		z-index: 1;
 	}
-	/* Single-line code blocks must not show scrollbar (e.g. "git push") — and must be vertically centered */
-	:global(.markdown-chat pre.single-line),
-	:global(.markdown-preview pre.single-line) {
+	/* Single-line code blocks hide the scrollbar (e.g. "git push") and centre their content.
+	   Scrolling stays on: a long one-liner must still be readable end to end. */
+	:global(.markdown-chat .code-block.single-line > pre),
+	:global(.markdown-preview .code-block.single-line > pre) {
 		display: flex;
 		align-items: center;
-		overflow: hidden !important;
 		white-space: nowrap;
 		min-height: 36px;
+		scrollbar-width: none;
 	}
-	:global(.markdown-chat pre.single-line .code-copy-btn),
-	:global(.markdown-preview pre.single-line .code-copy-btn) {
+	:global(.markdown-chat .code-block.single-line > pre::-webkit-scrollbar),
+	:global(.markdown-preview .code-block.single-line > pre::-webkit-scrollbar) {
+		display: none;
+	}
+	:global(.code-block.single-line > .code-copy-btn) {
 		top: 50%;
 		transform: translateY(-50%);
 	}
