@@ -59,8 +59,9 @@
 	</div>
 {:else}
 	<div
-		class="shrink-0 flex w-80"
-		transition:fly|global={{ x: PANEL_TRAVEL, duration: 240, easing: cubicOut, opacity: 1 }}
+		class="absolute top-0 right-0 bottom-0 flex w-[320px] z-10 will-change-transform"
+		style="backface-visibility: hidden; transform: translateZ(0);"
+		transition:fly|global={{ x: PANEL_TRAVEL, duration: 320, easing: cubicOut, opacity: 1 }}
 	>
 		<PortDetail {entry} {onClose} />
 	</div>
