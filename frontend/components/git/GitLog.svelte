@@ -12,9 +12,17 @@
 		onViewCommit: (hash: string) => void;
 		onCheckoutCommit: (hash: string) => void;
 		getRemoteCommitUrl?: (hash: string) => string | null;
+				/** When true, graph is rendered as a single linear lane (for sparse/filtered lists) */
+		isFiltered?: boolean;
+		/** Full unfiltered commits for building branching graph when filtered (to keep continuity) */
+		originalCommits?: GitCommit[];
+		/** Set of hashes that match filter (for branching filtered graph) */
+		highlightHashes?: Set<string>;
+		/** Current search text for highlighting in message */
+		searchQuery?: string;
 	}
 
-	const { commits, isLoading, hasMore, activeHash = null, onLoadMore, onViewCommit, onCheckoutCommit, getRemoteCommitUrl }: Props = $props();
+	const { commits, isLoading, hasMore, activeHash = null, onLoadMore, onViewCommit, onCheckoutCommit, getRemoteCommitUrl, isFiltered = false, originalCommits, highlightHashes, searchQuery = '' }: Props = $props();
 
 	let selectedHash = $state('');
 	const effectiveActiveHash = $derived(activeHash ?? selectedHash);
@@ -62,7 +70,160 @@
 		'#f43f5e', '#06b6d4', '#f97316', '#ec4899'
 	];
 
-	const graphRows = $derived(computeGraph(commits));
+	const graphRows = $derived.by(() => {
+		if (!isFiltered) return computeGraph(commits);
+		if (originalCommits && highlightHashes) {
+			return computeFilteredGraph(commits, originalCommits, highlightHashes);
+		}
+		return computeLinearGraph(commits);
+	});
+
+	function computeLinearGraph(commits: GitCommit[]): GraphRow[] {
+		if (commits.length === 0) return [];
+		const color = LANE_COLORS[0];
+		return commits.map((_, idx) => ({
+			col: 0,
+			nodeColor: color,
+			lanes: [],
+			mergeFrom: [],
+			branchTo: [],
+			branchToCols: new Set<number>(),
+			prevLaneCols: idx > 0 ? new Set([0]) : new Set<number>(),
+			nextLaneCols: idx < commits.length - 1 ? new Set([0]) : new Set<number>(),
+			nodeHasTop: idx > 0,
+			nodeHasBottom: idx < commits.length - 1,
+			maxCol: 0
+		}));
+	}
+
+	function computeFilteredGraph(
+		filtered: GitCommit[],
+		all: GitCommit[],
+		filteredSet: Set<string>
+	): GraphRow[] {
+		if (filtered.length === 0) return [];
+		// Build map for walking parent chain
+		const map = new Map<string, GitCommit>();
+		for (const c of all) map.set(c.hash, c);
+
+		function nearestFilteredAncestor(startHash: string): string | null {
+			let cur: string | null = startHash;
+			const visited = new Set<string>();
+			while (cur) {
+				if (visited.has(cur)) break;
+				visited.add(cur);
+				if (filteredSet.has(cur)) return cur;
+				const commit = map.get(cur);
+				if (!commit || commit.parents.length === 0) return null;
+				// Follow first parent for linear ancestry (merges handled via second parent separately)
+				cur = commit.parents[0];
+			}
+			return null;
+		}
+
+		// Build effective parents for each filtered commit
+		const effectiveParentsMap = new Map<string, string[]>();
+		for (const commit of filtered) {
+			const eff: string[] = [];
+			for (const p of commit.parents) {
+				const ancestor = nearestFilteredAncestor(p);
+				if (ancestor && ancestor !== commit.hash) eff.push(ancestor);
+			}
+			effectiveParentsMap.set(commit.hash, eff);
+		}
+
+		// Reuse lane algorithm but with effective parents
+		const lanes: (string | null)[] = [];
+		const laneColorMap = new Map<number, string>();
+		let colorIdx = 0;
+		const rows: GraphRow[] = [];
+		const processedSet = new Set<string>();
+
+		function getColor(col: number): string {
+			if (!laneColorMap.has(col)) {
+				laneColorMap.set(col, LANE_COLORS[colorIdx % LANE_COLORS.length]);
+				colorIdx++;
+			}
+			return laneColorMap.get(col)!;
+		}
+		function getActiveCols(): Set<number> {
+			const s = new Set<number>();
+			for (let i = 0; i < lanes.length; i++) if (lanes[i] !== null) s.add(i);
+			return s;
+		}
+		let prevActiveCols = new Set<number>();
+		for (const commit of filtered) {
+			const myLanes: number[] = [];
+			for (let i = 0; i < lanes.length; i++) if (lanes[i] === commit.hash) myLanes.push(i);
+			let col: number;
+			const mergeFrom: Array<{ col: number; color: string }> = [];
+			if (myLanes.length > 0) {
+				col = myLanes[0];
+				for (let i = 1; i < myLanes.length; i++) {
+					mergeFrom.push({ col: myLanes[i], color: getColor(myLanes[i]) });
+					lanes[myLanes[i]] = null;
+				}
+			} else {
+				const empty = lanes.indexOf(null);
+				col = empty >= 0 ? empty : lanes.length;
+				if (col >= lanes.length) lanes.push(null);
+			}
+			getColor(col);
+			const nodeHasTop = prevActiveCols.has(col);
+			const currentPrevCols = new Set(prevActiveCols);
+			const branchTo: Array<{ col: number; color: string }> = [];
+			const branchToCols = new Set<number>();
+			const effParents = effectiveParentsMap.get(commit.hash) || [];
+			if (effParents.length > 0) {
+				if (processedSet.has(effParents[0])) {
+					lanes[col] = null;
+				} else {
+					lanes[col] = effParents[0];
+				}
+				for (let p = 1; p < effParents.length; p++) {
+					if (processedSet.has(effParents[p])) continue;
+					const existingIdx = lanes.indexOf(effParents[p]);
+					if (existingIdx >= 0 && existingIdx !== col) {
+						branchTo.push({ col: existingIdx, color: getColor(existingIdx) });
+						branchToCols.add(existingIdx);
+					} else {
+						let newCol = -1;
+						for (let i = 0; i < lanes.length; i++) if (lanes[i] === null && i !== col) { newCol = i; break; }
+						if (newCol < 0) { newCol = lanes.length; lanes.push(null); }
+						lanes[newCol] = effParents[p];
+						branchTo.push({ col: newCol, color: getColor(newCol) });
+						branchToCols.add(newCol);
+					}
+				}
+			} else {
+				lanes[col] = null;
+			}
+			const activeLanes: Array<{ col: number; color: string }> = [];
+			for (let i = 0; i < lanes.length; i++) if (lanes[i] !== null) activeLanes.push({ col: i, color: getColor(i) });
+			const nextActiveCols = getActiveCols();
+			let rowMaxCol = col;
+			for (const lane of activeLanes) rowMaxCol = Math.max(rowMaxCol, lane.col);
+			for (const m of mergeFrom) rowMaxCol = Math.max(rowMaxCol, m.col);
+			for (const b of branchTo) rowMaxCol = Math.max(rowMaxCol, b.col);
+			rows.push({
+				col,
+				nodeColor: getColor(col),
+				lanes: activeLanes,
+				mergeFrom,
+				branchTo,
+				branchToCols,
+				prevLaneCols: currentPrevCols,
+				nextLaneCols: nextActiveCols,
+				nodeHasTop,
+				nodeHasBottom: nextActiveCols.has(col),
+				maxCol: rowMaxCol
+			});
+			processedSet.add(commit.hash);
+			prevActiveCols = nextActiveCols;
+			while (lanes.length > 0 && lanes[lanes.length - 1] === null) lanes.pop();
+		}
+		return rows;
+	}
 
 	function computeGraph(commits: GitCommit[]): GraphRow[] {
 		if (commits.length === 0) return [];
@@ -235,6 +396,23 @@
 		return date.toLocaleDateString();
 	}
 
+	function escapeHtml(str: string): string {
+		return str.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
+	}
+
+	function highlightMessage(text: string): string {
+		const q = searchQuery?.trim();
+		if (!q) return escapeHtml(text);
+		const escaped = escapeHtml(text);
+		const qEsc = q.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+		try {
+			const re = new RegExp(`(${qEsc})`, 'gi');
+			return escaped.replace(re, '<mark class="bg-yellow-200 dark:bg-yellow-500/30 text-slate-900 dark:text-slate-100 rounded px-0.5">$1</mark>');
+		} catch {
+			return escaped;
+		}
+	}
+
 	function handleViewCommit(hash: string) {
 		selectedHash = hash;
 		onViewCommit(hash);
@@ -373,7 +551,11 @@
 					<div class="flex-1 min-w-0 px-1.5 py-0.5 flex flex-col justify-center overflow-hidden">
 						<!-- Line 1: Message -->
 						<p class="text-sm text-slate-900 dark:text-slate-100 leading-tight truncate" title={commit.message}>
-							{commit.message}
+							{#if searchQuery?.trim()}
+								{@html highlightMessage(commit.message)}
+							{:else}
+								{commit.message}
+							{/if}
 						</p>
 
 						<!-- Line 2: Hash + Date + Author -->

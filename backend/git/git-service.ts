@@ -484,8 +484,12 @@ export class GitService {
 		];
 
 		if (branch) {
-			assertSafeGitRevish(branch, 'log branch');
-			args.push(branch);
+			if (branch === '--all') {
+				args.push('--all');
+			} else {
+				assertSafeGitRevish(branch, 'log branch');
+				args.push(branch);
+			}
 		}
 
 		const result = await execGit(args, cwd);
@@ -503,7 +507,7 @@ export class GitService {
 		if (hasMore) commits.pop(); // Remove the extra one
 
 		// Get total count
-		const countRef = branch ?? 'HEAD';
+		const countRef = branch === '--all' ? '--all' : (branch ?? 'HEAD');
 		const countResult = await execGit(['rev-list', '--count', countRef], cwd);
 		const total = parseInt(countResult.stdout.trim()) || commits.length;
 
