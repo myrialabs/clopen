@@ -55,15 +55,18 @@ export const statusHandler = createRouter()
 			};
 		}
 
-		const status = await gitService.getStatus(project.path);
+		// Fetch outer status and nested repo list in parallel — the walk does
+		// not depend on the status result, and on Windows the walk (readdir +
+		// check-ignore spawns) is the dominant cost. Sharing the walk via the
+		// findNestedRepoPaths cache + inflight dedup also keeps concurrent
+		// callers (status + branches triggered together) from walking twice.
+		const [status, nestedRepoPathsRaw] = await Promise.all([
+			gitService.getStatus(project.path),
+			findNestedRepoPaths(project.path).catch(() => [] as string[])
+		]);
+		const nestedRepoPaths = nestedRepoPathsRaw ?? [];
 
-		// Also aggregate status from nested git repos living inside the
-		// project (e.g. a theme extracted into its own repo, listed in the
-		// parent's .gitignore). The outer repo's `git status` skips them
-		// entirely, so without this aggregation the Changes tab would not
-		// show edits the AI made inside the nested repo.
-		try {
-			const nestedRepoPaths = await findNestedRepoPaths(project.path);
+		if (nestedRepoPaths.length > 0) {
 			const nestedPrefixes = nestedRepoPaths.map(
 				(repoPath) => pathRelative(project.path, repoPath).replace(/\\/g, '/') + '/'
 			);
@@ -84,26 +87,33 @@ export const statusHandler = createRouter()
 				status.conflicted = status.conflicted.filter((f) => !underNested(f));
 			}
 
-			for (const repoPath of nestedRepoPaths) {
-				try {
-					const nestedStatus = await gitService.getStatus(repoPath);
-					const prefix = pathRelative(project.path, repoPath).replace(/\\/g, '/') + '/';
-					const withPrefix = (f: typeof nestedStatus.staged[number]) => ({
-						...f,
-						path: prefix + f.path,
-						oldPath: f.oldPath ? prefix + f.oldPath : undefined
-					});
-					status.staged.push(...nestedStatus.staged.map(withPrefix));
-					status.unstaged.push(...nestedStatus.unstaged.map(withPrefix));
-					status.untracked.push(...nestedStatus.untracked.map(withPrefix));
-					status.conflicted.push(...nestedStatus.conflicted.map(withPrefix));
-				} catch {
-					// Skip repos whose git status fails — don't break the
-					// whole response because one nested repo is broken.
-				}
+			// Fetch all nested statuses in parallel instead of sequentially.
+			// Each `git status` is a separate spawn; on Windows Defender scans
+			// .git/index per call, so sequential loops multiplied the wait.
+			const nestedStatuses = await Promise.all(
+				nestedRepoPaths.map(async (repoPath) => {
+					try {
+						const nestedStatus = await gitService.getStatus(repoPath);
+						return { repoPath, nestedStatus };
+					} catch {
+						return null;
+					}
+				})
+			);
+
+			for (const entry of nestedStatuses) {
+				if (!entry) continue;
+				const prefix = pathRelative(project.path, entry.repoPath).replace(/\\/g, '/') + '/';
+				const withPrefix = (f: typeof entry.nestedStatus.staged[number]) => ({
+					...f,
+					path: prefix + f.path,
+					oldPath: f.oldPath ? prefix + f.oldPath : undefined
+				});
+				status.staged.push(...entry.nestedStatus.staged.map(withPrefix));
+				status.unstaged.push(...entry.nestedStatus.unstaged.map(withPrefix));
+				status.untracked.push(...entry.nestedStatus.untracked.map(withPrefix));
+				status.conflicted.push(...entry.nestedStatus.conflicted.map(withPrefix));
 			}
-		} catch {
-			// If findNestedRepoPaths itself fails, just return outer status
 		}
 
 		return { isRepo: true, ...status };

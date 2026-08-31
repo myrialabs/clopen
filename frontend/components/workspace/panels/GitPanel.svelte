@@ -1475,14 +1475,24 @@
 	// Staging Actions
 	// ============================
 
+	// Busy flags for staging operations — on Windows git status is slower
+	// (Bun.spawn + Defender scanning .git/index), so without a guard the user
+	// can double-click Stage All and queue two full walks. The flag disables
+	// the bulk buttons until the refresh finishes.
+	let isStagingBusy = $state(false);
+	let stagingFilePath = $state<string | null>(null);
+
 	async function stageFile(path: string) {
-		if (!projectId) return;
+		if (!projectId || isStagingBusy || stagingFilePath) return;
+		stagingFilePath = path;
 		try {
 			await ws.http('git:stage', { projectId, filePath: path });
 			await loadStatus();
 			await migrateActiveTabAfterStatusChange(path);
 		} catch (err) {
 			debug.error('git', 'Failed to stage file:', err);
+		} finally {
+			stagingFilePath = null;
 		}
 	}
 
@@ -1683,7 +1693,8 @@
 	}
 
 	async function stageAll() {
-		if (!projectId) return;
+		if (!projectId || isStagingBusy) return;
+		isStagingBusy = true;
 		try {
 			await ws.http('git:stage-all', { projectId });
 			await loadStatus();
@@ -1692,22 +1703,28 @@
 			}
 		} catch (err) {
 			debug.error('git', 'Failed to stage all:', err);
+		} finally {
+			isStagingBusy = false;
 		}
 	}
 
 	async function unstageFile(path: string) {
-		if (!projectId) return;
+		if (!projectId || isStagingBusy || stagingFilePath) return;
+		stagingFilePath = path;
 		try {
 			await ws.http('git:unstage', { projectId, filePath: path });
 			await loadStatus();
 			await migrateActiveTabAfterStatusChange(path);
 		} catch (err) {
 			debug.error('git', 'Failed to unstage file:', err);
+		} finally {
+			stagingFilePath = null;
 		}
 	}
 
 	async function unstageAll() {
-		if (!projectId) return;
+		if (!projectId || isStagingBusy) return;
+		isStagingBusy = true;
 		try {
 			await ws.http('git:unstage-all', { projectId });
 			await loadStatus();
@@ -1716,6 +1733,8 @@
 			}
 		} catch (err) {
 			debug.error('git', 'Failed to unstage all:', err);
+		} finally {
+			isStagingBusy = false;
 		}
 	}
 
@@ -5104,6 +5123,7 @@ ${bodies}`;
 				onStash={() => openStashPrompt('staged')}
 				onViewDiff={viewDiff}
 				{aiChangesSet}
+				busy={isStagingBusy}
 			/>
 
 			<!--
@@ -5128,6 +5148,7 @@ ${bodies}`;
 				onDiscardAll={discardAll}
 				onViewDiff={viewDiff}
 				{aiChangesSet}
+				busy={isStagingBusy}
 			/>
 
 			{#if mainStagedFiles.length === 0 && mainAllChanges.length === 0 && mainConflictedFiles.length === 0 && !isLoading && !(branchInfo?.nested?.length)}

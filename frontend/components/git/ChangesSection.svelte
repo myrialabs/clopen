@@ -22,6 +22,7 @@
 		onViewDiff?: (file: GitFileChange, section: string) => void;
 		onResolve?: (path: string) => void;
 		aiChangesSet?: Set<string>;
+		busy?: boolean;
 	}
 
 	let {
@@ -33,7 +34,8 @@
 		onStageAll, onUnstageAll, onDiscardAll,
 		onStash,
 		onViewDiff, onResolve,
-		aiChangesSet = new Set<string>()
+		aiChangesSet = new Set<string>(),
+		busy = false
 	}: Props = $props();
 
 	function isFileActive(filePath: string): boolean {
@@ -139,9 +141,10 @@
 				{#if onStash}
 					<button
 						type="button"
-						class="flex items-center justify-center w-7 h-7 rounded-md text-slate-400 hover:bg-violet-500/10 hover:text-violet-500 transition-colors bg-transparent border-none cursor-pointer"
+						class="flex items-center justify-center w-7 h-7 rounded-md text-slate-400 hover:bg-violet-500/10 hover:text-violet-500 transition-colors bg-transparent border-none cursor-pointer disabled:opacity-40 disabled:cursor-not-allowed"
 						onclick={(e) => { e.stopPropagation(); onStash?.(); }}
 						title="Stash changes"
+						disabled={busy}
 					>
 						<Icon name="lucide:archive" class="w-3.5 h-3.5" />
 					</button>
@@ -149,30 +152,41 @@
 				{#if section === 'staged' && onUnstageAll}
 					<button
 						type="button"
-						class="flex items-center justify-center w-7 h-7 rounded-md text-slate-400 hover:bg-red-500/10 hover:text-red-500 transition-colors bg-transparent border-none cursor-pointer"
+						class="flex items-center justify-center w-7 h-7 rounded-md text-slate-400 hover:bg-red-500/10 hover:text-red-500 transition-colors bg-transparent border-none cursor-pointer disabled:opacity-40 disabled:cursor-not-allowed"
 						onclick={(e) => { e.stopPropagation(); onUnstageAll?.(); }}
-						title="Unstage All"
+						title={busy ? 'Working…' : 'Unstage All'}
+						disabled={busy}
 					>
-						<Icon name="lucide:minus" class="w-4 h-4" />
+						{#if busy}
+							<Icon name="lucide:loader-2" class="w-4 h-4 animate-spin" />
+						{:else}
+							<Icon name="lucide:minus" class="w-4 h-4" />
+						{/if}
 					</button>
 				{:else if (section === 'unstaged' || section === 'untracked') && onStageAll}
 					{#if onDiscardAll}
 						<button
 							type="button"
-							class="flex items-center justify-center w-7 h-7 rounded-md text-slate-400 hover:bg-red-500/10 hover:text-red-500 transition-colors bg-transparent border-none cursor-pointer"
+							class="flex items-center justify-center w-7 h-7 rounded-md text-slate-400 hover:bg-red-500/10 hover:text-red-500 transition-colors bg-transparent border-none cursor-pointer disabled:opacity-40 disabled:cursor-not-allowed"
 							onclick={(e) => { e.stopPropagation(); onDiscardAll?.(); }}
 							title="Discard All"
+							disabled={busy}
 						>
 							<Icon name="lucide:undo-2" class="w-4 h-4" />
 						</button>
 					{/if}
 					<button
 						type="button"
-						class="flex items-center justify-center w-7 h-7 rounded-md text-slate-400 hover:bg-emerald-500/10 hover:text-emerald-500 transition-colors bg-transparent border-none cursor-pointer"
+						class="flex items-center justify-center w-7 h-7 rounded-md text-slate-400 hover:bg-emerald-500/10 hover:text-emerald-500 transition-colors bg-transparent border-none cursor-pointer disabled:opacity-40 disabled:cursor-not-allowed"
 						onclick={(e) => { e.stopPropagation(); onStageAll?.(); }}
-						title="Stage All"
+						title={busy ? 'Working…' : 'Stage All'}
+						disabled={busy}
 					>
-						<Icon name="lucide:plus" class="w-4 h-4" />
+						{#if busy}
+							<Icon name="lucide:loader-2" class="w-4 h-4 animate-spin" />
+						{:else}
+							<Icon name="lucide:plus" class="w-4 h-4" />
+						{/if}
 					</button>
 				{/if}
 			</div>

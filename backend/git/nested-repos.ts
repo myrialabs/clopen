@@ -77,6 +77,31 @@ const IGNORED_DESCENT_LEVELS = 1;
 const MAX_DEPTH = 12;
 
 /**
+ * Cache for nested repo discovery. On Windows `fs.readdir` + `git check-ignore`
+ * are noticeably slower (Bun.spawn + Defender scanning .git/index), so a short
+ * TTL avoids re-walking the same tree on every `git:status` / `git:branches`
+ * call triggered by Stage All, Stage, Unstage, etc. The status panel fires
+ * those in quick succession (stage → loadStatus + file watcher → git:changed),
+ * which previously walked the tree 3-4 times within a second.
+ *
+ * The walk result (found + provisional) is cached, but the provisional
+ * filtering (hasLocalWork / .gitmodules) is always re-evaluated: a repo
+ * inside an ignored tree becomes visible the moment it gains local work,
+ * which happens after the walk but before the next TTL expiry. Caching the
+ * filtered list would hide that new repo for up to 5s on Windows.
+ * Similarly, clearing the walk cache on filesystem changes is cheaper than
+ * caching a stale filtered answer.
+ */
+const NESTED_REPO_CACHE_TTL_MS = process.platform === 'win32' ? 5000 : 3000;
+interface NestedWalkCache {
+	found: string[];
+	provisional: string[];
+	expiresAt: number;
+}
+const nestedRepoWalkCache = new Map<string, NestedWalkCache>();
+const nestedRepoInflight = new Map<string, Promise<string[]>>();
+
+/**
  * Upper bound on reported sub-repos. A project with more than this is either
  * pathological or hit a detection hole; either way the UI cannot usefully show
  * them, so we stop and log instead of flooding it.
@@ -165,8 +190,56 @@ async function isRepoDir(dirPath: string): Promise<boolean> {
  * Find every nested git repo under `rootPath`, skipping dependency caches and
  * ignored trees (see the module comment for the exact policy). Does NOT scan
  * the repos — just returns their absolute paths, sorted for stable UI order.
+ *
+ * The filesystem walk is cached for a few seconds (longer on Windows) and
+ * concurrent callers for the same root share a single walk via inflight
+ * deduplication. The provisional → found filtering is re-run on every call
+ * so a newly-dirtied repo appears immediately.
  */
 export async function findNestedRepoPaths(rootPath: string): Promise<string[]> {
+	const now = Date.now();
+	const cachedWalk = nestedRepoWalkCache.get(rootPath);
+	if (cachedWalk && now < cachedWalk.expiresAt) {
+		return resolveProvisional(rootPath, cachedWalk.found, cachedWalk.provisional);
+	}
+	const inflight = nestedRepoInflight.get(rootPath);
+	if (inflight) return inflight;
+
+	const promise = (async (): Promise<string[]> => {
+		const walk = await walkNestedRepos(rootPath);
+		nestedRepoWalkCache.set(walk.key, { found: walk.found, provisional: walk.provisional, expiresAt: Date.now() + NESTED_REPO_CACHE_TTL_MS });
+		return resolveProvisional(rootPath, walk.found, walk.provisional);
+	})();
+
+	nestedRepoInflight.set(rootPath, promise);
+	try {
+		return await promise;
+	} finally {
+		nestedRepoInflight.delete(rootPath);
+	}
+}
+
+async function resolveProvisional(rootPath: string, found: string[], provisional: string[]): Promise<string[]> {
+	if (provisional.length === 0) {
+		const out = [...found];
+		out.sort();
+		return out;
+	}
+	const submodulePaths = await findSubmodulePaths(rootPath);
+	const isDeclared = (repoPath: string) =>
+		submodulePaths.has(path.relative(rootPath, repoPath).replace(/\\/g, '/'));
+	const verdicts = await Promise.all(
+		provisional.map(async (repoPath) => isDeclared(repoPath) || (await hasLocalWork(repoPath)))
+	);
+	const out = [...found];
+	provisional.forEach((repoPath, i) => {
+		if (verdicts[i]) out.push(repoPath);
+	});
+	out.sort();
+	return out;
+}
+
+async function walkNestedRepos(rootPath: string): Promise<{ key: string; found: string[]; provisional: string[] }> {
 	const found: string[] = [];
 	/** Repos found inside an ignored tree — reported only if they prove local work. */
 	const provisional: string[] = [];
@@ -278,22 +351,7 @@ export async function findNestedRepoPaths(rootPath: string): Promise<string[]> {
 		debug.warn('git', `Nested repo scan of ${rootPath} stopped at ${MAX_REPOS} repos`);
 	}
 
-	if (provisional.length > 0) {
-		// A submodule is the user declaring the sub-repo themselves, which
-		// outranks anything we could infer from its working tree.
-		const submodulePaths = await findSubmodulePaths(rootPath);
-		const isDeclared = (repoPath: string) =>
-			submodulePaths.has(path.relative(rootPath, repoPath).replace(/\\/g, '/'));
-		const verdicts = await Promise.all(
-			provisional.map(async (repoPath) => isDeclared(repoPath) || (await hasLocalWork(repoPath)))
-		);
-		provisional.forEach((repoPath, i) => {
-			if (verdicts[i]) found.push(repoPath);
-		});
-	}
-
-	found.sort();
-	return found;
+	return { key: rootPath, found, provisional };
 }
 
 /**
@@ -345,6 +403,17 @@ export async function findSubmodulePaths(rootPath: string): Promise<Set<string>>
 		out.add(s.path ?? s.name);
 	}
 	return out;
+}
+
+/** Clear the walk cache — primarily for tests. */
+export function clearNestedRepoCache(rootPath?: string): void {
+	if (rootPath) {
+		nestedRepoWalkCache.delete(rootPath);
+		nestedRepoInflight.delete(rootPath);
+	} else {
+		nestedRepoWalkCache.clear();
+		nestedRepoInflight.clear();
+	}
 }
 
 /**
