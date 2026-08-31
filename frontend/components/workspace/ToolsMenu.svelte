@@ -136,7 +136,7 @@
 			aria-expanded={isOpen}
 			title="More Tools"
 		>
-			<Icon name="lucide:wrench" class="{mobile ? 'w-4.5 h-4.5' : 'w-5 h-5'}" />
+			<Icon name="lucide:wrench" class={mobile ? 'w-4.5 h-4.5' : 'w-5 h-5'} />
 			{#if hasActivity}
 				<span
 					class="absolute top-0.5 right-0.5 w-2 h-2 rounded-full bg-green-500 border-2 border-slate-50 dark:border-slate-900/95"

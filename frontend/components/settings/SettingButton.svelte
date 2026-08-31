@@ -22,7 +22,7 @@
 		aria-label="Settings"
 		title="Settings"
 	>
-		<Icon name="lucide:settings" class="{mobile ? 'w-4.5 h-4.5' : 'w-5 h-5'}" />
+		<Icon name="lucide:settings" class={mobile ? 'w-4.5 h-4.5' : 'w-5 h-5'} />
 	</button>
 {:else}
 	<!-- Expanded: Full Width -->
