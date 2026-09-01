@@ -22,7 +22,7 @@
  */
 
 import type { PortOrigin, PortProcess, PortSocket } from '$shared/types/ports';
-import type { ProbePlatform } from './runner';
+import type { ProbePlatform } from '../host/runner';
 import { ptyKitManager } from '../terminal/ptykit';
 import { projectQueries } from '../database/queries';
 import { collectOwnedPorts, ownedPortKey, type OwnedPort } from './registry';

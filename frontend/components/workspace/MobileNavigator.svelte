@@ -12,6 +12,7 @@
 	import DbClientModal from '$frontend/components/db-client/DbClientModal.svelte';
 	import SshClientModal from '$frontend/components/ssh-client/SshClientModal.svelte';
 	import PortsModal from '$frontend/components/ports/PortsModal.svelte';
+	import ContainersModal from '$frontend/components/containers/ContainersModal.svelte';
 	import MemoryModal from '$frontend/components/memory/MemoryModal.svelte';
 	import SettingButton from '$frontend/components/settings/SettingButton.svelte';
 	import type { Project } from '$shared/types/database/schema';
@@ -33,6 +34,8 @@
 		openSshClientDialog,
 		closeSshClientDialog,
 		openPortsDialog,
+		closeContainersDialog,
+		openContainersDialog,
 		closePortsDialog,
 		openMemoryDialog,
 		closeMemoryDialog
@@ -182,6 +185,7 @@
 			onDbClient={openDbClientDialog}
 					onSshClient={openSshClientDialog}
 					onPorts={openPortsDialog}
+					onContainers={openContainersDialog}
 					onMemory={openMemoryDialog}
 		/>
 
@@ -428,4 +432,5 @@
 <DbClientModal bind:isOpen={quickPanelsState.dbClientOpen} onClose={closeDbClientDialog} />
 <SshClientModal bind:isOpen={quickPanelsState.sshClientOpen} onClose={closeSshClientDialog} />
 <PortsModal bind:isOpen={quickPanelsState.portsOpen} onClose={closePortsDialog} />
+<ContainersModal bind:isOpen={quickPanelsState.containersOpen} onClose={closeContainersDialog} />
 <MemoryModal bind:isOpen={quickPanelsState.memoryOpen} onClose={closeMemoryDialog} />

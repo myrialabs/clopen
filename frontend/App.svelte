@@ -19,6 +19,7 @@
 	import { tunnelStore } from '$frontend/stores/features/tunnel.svelte';
 	import { remoteAccessStore } from '$frontend/stores/features/remote-access.svelte';
 	import { portsStore } from '$frontend/stores/features/ports.svelte';
+	import { containersStore } from '$frontend/stores/features/containers.svelte';
 	import { startUpdateChecker, stopUpdateChecker } from '$frontend/stores/ui/update.svelte';
 	import ws from '$frontend/utils/ws';
 	import { showNotificationWithActions } from '$frontend/stores/ui/notification.svelte';
@@ -60,6 +61,10 @@
 			// Keep the Ports count in sync. The server only scans when a terminal
 			// session is actually running, so an idle workspace costs nothing.
 			portsStore.initRealtimeListener();
+
+			// Same for the container count. A machine with no runtime costs nothing:
+			// the server remembers that answer and skips the command entirely.
+			containersStore.initRealtimeListener();
 
 			// Nudge admins to set project access when a new member joins via an invite,
 			// so the "invite → join → grant access" flow doesn't dead-end.

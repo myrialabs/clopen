@@ -201,9 +201,10 @@
 <!-- File peek modal (opened when a file link fires while the Files panel is hidden) -->
 <FilePeekModal />
 
-<!-- Toast Notifications -->
+<!-- Toast Notifications. Above Dialog's z-10000, or a dialog hides the very
+     notification that reports what it started. -->
 {#if notificationStore.notifications.length > 0}
-	<div class="fixed top-4 right-4 z-[200] flex flex-col gap-2">
+	<div class="fixed top-4 right-4 z-[10200] flex flex-col gap-2">
 		{#each notificationStore.notifications as notification (notification.id)}
 			<NotificationToast {notification} />
 		{/each}

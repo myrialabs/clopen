@@ -46,6 +46,13 @@ export const ADMIN_ONLY_ROUTES = new Set([
 	// Port manager — anyone signed in may see what is listening, but ending a
 	// process can take down another member's work, so stopping is admin-only.
 	'ports:kill',
+	// Containers — anyone signed in may see what is running, but starting or
+	// stopping one takes down whatever it serves for everyone else. Opening a
+	// shell inside a container is gated separately, in the PtyKit authorize.
+	'containers:action',
+	'containers:remove',
+	'containers:prune',
+	'containers:prune-dismiss',
 	// Stack — binary installation is an admin-only operation.
 	'stack:status',
 	'stack:status-all',
