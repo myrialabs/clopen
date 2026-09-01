@@ -168,8 +168,19 @@
 				: projectState.projects;
 			return base.slice(0, 6);
 		}
+		const lowerQ = q.toLowerCase();
 		return projectState.projects
-			.map((p) => ({ p, match: bestFuzzyScore(q, [p.name, p.path]) }))
+			.map((p) => {
+				const nameScore = bestFuzzyScore(q, [p.name]);
+				// Path is only considered when the query appears as a contiguous
+				// substring (e.g. "laravel") — avoids false positives like "Dec"
+				// matching "D:\Project-Laravel\..." via scattered subsequence
+				// d → e → c.
+				const pathScore = p.path.toLowerCase().includes(lowerQ)
+					? bestFuzzyScore(q, [p.path])
+					: 0;
+				return { p, match: Math.max(nameScore, pathScore) };
+			})
 			.filter((x) => x.match > 0)
 			.map((x) => ({ p: x.p, score: x.match + usageBoost(`project-${x.p.id}`) }))
 			.sort((a, b) => b.score - a.score)
@@ -310,7 +321,18 @@
 		return all.filter((g) => g.items.length > 0);
 	});
 
-	// Keep the selection valid as the result set shrinks/grows while typing.
+	// Reset selection to top when the search query changes so the most relevant
+	// result (e.g. "New Chat Session" for "sess") is highlighted instead of
+	// retaining the previous index (e.g. a hovered file like
+	// "session-invalidation.ts").
+	$effect(() => {
+		void query;
+		void effectiveQuery;
+		selectedIndex = 0;
+	});
+
+	// Keep the selection valid as the result set shrinks/grows while typing
+	// (e.g. async file/session results arriving after debounce).
 	$effect(() => {
 		if (selectedIndex >= items.length) selectedIndex = Math.max(0, items.length - 1);
 	});

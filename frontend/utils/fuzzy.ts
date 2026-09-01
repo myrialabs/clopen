@@ -65,6 +65,11 @@ export function fuzzyMatch(query: string, text: string): FuzzyMatch | null {
  * Best fuzzy score across several candidate strings (e.g. label, description,
  * keywords). Returns 0 when none of them match, so callers can treat `> 0` as
  * "matched".
+ *
+ * Only scores that correspond to a contiguous substring (100+) or a strong
+ * fuzzy hit (>= 50) are considered. This prevents low-score subsequence
+ * matches like "Dec" → "D:\\Project-Laravel\\..." (score ~19) from
+ * polluting palette results while keeping exact/prefix hits (score 100+).
  */
 export function bestFuzzyScore(query: string, texts: (string | undefined | null)[]): number {
 	if (!query.trim()) return 0;
@@ -72,7 +77,7 @@ export function bestFuzzyScore(query: string, texts: (string | undefined | null)
 	for (const text of texts) {
 		if (!text) continue;
 		const m = fuzzyMatch(query, text);
-		if (m && m.score > best) best = m.score;
+		if (m && m.score > best && m.score >= 50) best = m.score;
 	}
 	return best;
 }
