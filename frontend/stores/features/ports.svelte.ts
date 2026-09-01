@@ -14,13 +14,18 @@
 import { debug } from '$shared/utils/logger';
 import ws, { onWsReconnect } from '$frontend/utils/ws';
 import { SvelteSet } from 'svelte/reactivity';
-import type { PortEntry, PortOriginKind, PortScanResult } from '$shared/types/ports';
+import type { PortEntry, PortOriginKind, PortProtocol, PortScanResult } from '$shared/types/ports';
 import { LOCAL_PORT_HOST } from '$shared/types/ports';
 
 /** Rows are grouped by where they came from, most explicable first. */
 export const ORIGIN_GROUPS: Array<{ kind: PortOriginKind; title: string; blurb: string }> = [
 	{ kind: 'clopen', title: 'Opened by Clopen', blurb: 'Listeners Clopen is responsible for' },
 	{ kind: 'session', title: 'Started from Clopen', blurb: 'Terminals, engines, and anything they launched' },
+	{
+		kind: 'container',
+		title: 'Published by containers',
+		blurb: 'Ports a container runtime forwards into a container'
+	},
 	{ kind: 'external', title: 'Outside Clopen', blurb: 'Everything else on this host' }
 ];
 
@@ -66,6 +71,8 @@ function matches(entry: PortEntry, needle: string): boolean {
 		entry.process?.user ?? '',
 		entry.process?.cwd ?? '',
 		entry.pid === null ? '' : String(entry.pid),
+		entry.container?.name ?? '',
+		entry.container?.image ?? '',
 		...entry.addresses
 	]
 		.join(' ')
@@ -134,6 +141,28 @@ export const portsStore = {
 
 	select(key: string | null): void {
 		state.selectedKey = state.selectedKey === key ? null : key;
+	},
+
+	/**
+	 * Point the table at one host port, used by the cross-link from Containers.
+	 *
+	 * Matched on protocol and port rather than on a row key, because the
+	 * container side knows the mapping and not which pid ended up holding the
+	 * socket — and where the userland proxy is off, no pid ever will. The search
+	 * and the row's group are cleared on the way in: selecting a row that a
+	 * filter or a collapsed group is hiding looks exactly like the jump failing.
+	 */
+	focusPort(hostId: string, protocol: PortProtocol, port: number): void {
+		void (async () => {
+			state.search = '';
+			await this.watch(hostId);
+			const entry = (state.results[hostId]?.entries ?? []).find(
+				(candidate) => candidate.protocol === protocol && candidate.port === port
+			);
+			if (!entry) return;
+			state.collapsed.delete(entry.origin.kind);
+			state.selectedKey = entry.key;
+		})();
 	},
 
 	/**

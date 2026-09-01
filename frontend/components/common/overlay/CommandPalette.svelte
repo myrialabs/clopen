@@ -422,9 +422,11 @@
 <svelte:window onkeydowncapture={handleGlobalKeydown} />
 
 {#if commandPaletteState.isOpen}
+	<!-- Above Dialog's z-10000: the palette is reachable from anywhere, including
+	     from behind an open dialog. -->
 	<div
 		use:portal
-		class="fixed inset-0 z-[200] bg-black/50 dark:bg-slate-950/70 backdrop-blur-sm flex items-start justify-center pt-[12vh] px-4"
+		class="fixed inset-0 z-[10100] bg-black/50 dark:bg-slate-950/70 backdrop-blur-sm flex items-start justify-center pt-[12vh] px-4"
 		role="dialog"
 		aria-modal="true"
 		aria-label="Command palette"

@@ -65,6 +65,8 @@ import { authQueries } from './database/queries';
 import { authRateLimiter } from './auth';
 import { sessionCleanupScheduler } from './auth/session-cleanup';
 import { portMonitor } from './ports/monitor';
+import { containerMonitor } from './containers/monitor';
+import { stopAllLogStreams as stopAllContainerLogStreams } from './containers/logs';
 import { uploadTempCleanup } from './http/upload-temp-cleanup';
 import { ws as wsServer } from './utils/ws';
 import { messageRateLimiter } from './ws/message-rate-limiter';
@@ -274,6 +276,10 @@ async function startServer() {
 		// terminal sessions running there are no session-born ports to count, so
 		// the tick skips the scan entirely.
 		portMonitor.start();
+		// Sidebar count for the container manager: containers running on this
+		// machine. Idle-cheap too — a machine with no runtime is remembered as
+		// having none, so the tick costs a cached lookup and no command at all.
+		containerMonitor.start();
 	} catch (error) {
 		console.error('❌ Database initialization failed — refusing to start:', error);
 		console.error(`   Data directory: ${SERVER_ENV.DATA_DIR}`);
@@ -339,6 +345,9 @@ async function gracefulShutdown() {
 		uploadTempCleanup.dispose();
 		// Stop port polling and release any SSH leases it holds
 		portMonitor.stop();
+		// Same for the container list, and the log streams it may still be pumping
+		stopAllContainerLogStreams();
+		containerMonitor.stop();
 		// Close MCP remote server (before engines, as they may still reference it)
 		await closeMcpServer();
 		// Cleanup browser preview sessions

@@ -48,6 +48,8 @@ export type LogLabel =
 	| 'db-client'
 	| 'ssh'
 	| 'ports'
+	| 'containers'
+	| 'host'
 	
 	// User
 	| 'user'
