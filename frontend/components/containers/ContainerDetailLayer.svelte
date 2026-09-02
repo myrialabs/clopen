@@ -27,7 +27,18 @@
 	/** Space left above the sheet so the list behind it stays visible. */
 	const SHEET_TOP_GAP = 56;
 	/** The side panel's own width, so it slides exactly its own length. */
-	const PANEL_TRAVEL = 320;
+	const PANEL_WIDTH = 320;
+
+	/**
+	 * The panel claims its width over the same time it slides in, so the list
+	 * beside it gives way in step. Left to flex alone the list snaps to its
+	 * narrow size on the first frame and the panel slides onto a bare strip.
+	 */
+	const claimWidth = (_node: Element) => ({
+		duration: 240,
+		easing: cubicOut,
+		css: (t: number) => `width: ${PANEL_WIDTH * t}px`
+	});
 
 	let windowWidth = $state(typeof window !== 'undefined' ? window.innerWidth : 1024);
 	let windowHeight = $state(typeof window !== 'undefined' ? window.innerHeight : 768);
@@ -60,10 +71,22 @@
 		<ContainerDetail sheet {entry} {canManage} {onClose} {onAction} />
 	</div>
 {:else}
+	<!-- Two elements, one motion: the outer takes the width away from the list
+	     while it clips, the inner slides its own length inside it. The inner is
+	     pinned to the right rather than laid out in flow so the clip always eats
+	     the left side, which is what keeps the panel's border against the list
+	     instead of sliding a gap in front of it. -->
 	<div
-		class="shrink-0 flex w-80"
-		transition:fly|global={{ x: PANEL_TRAVEL, duration: 240, easing: cubicOut, opacity: 1 }}
+		class="relative shrink-0 flex overflow-hidden"
+		style:width="{PANEL_WIDTH}px"
+		transition:claimWidth|global
 	>
-		<ContainerDetail {entry} {canManage} {onClose} {onAction} />
+		<div
+			class="absolute inset-y-0 right-0 flex"
+			style:width="{PANEL_WIDTH}px"
+			transition:fly|global={{ x: PANEL_WIDTH, duration: 240, easing: cubicOut, opacity: 1 }}
+		>
+			<ContainerDetail {entry} {canManage} {onClose} {onAction} />
+		</div>
 	</div>
 {/if}
