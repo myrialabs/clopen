@@ -7,6 +7,8 @@
 	import { projectState } from '$frontend/stores/core/projects.svelte';
 	import { showError, showInfo } from '$frontend/stores/ui/notification.svelte';
 	import { debug } from '$shared/utils/logger';
+	import { scale } from 'svelte/transition';
+	import { cubicOut } from 'svelte/easing';
 	import { clickOutside } from '$frontend/utils/click-outside';
 	import { settings } from '$frontend/stores/features/settings.svelte';
 	import ws, { onWsReconnect } from '$frontend/utils/ws';
@@ -5366,7 +5368,7 @@ ${bodies}`;
 								class="flex-1 bg-transparent border-none outline-none text-slate-900 dark:text-slate-100 text-xs placeholder:text-slate-500 dark:placeholder:text-slate-400"
 							/>
 							{#if historySearchQuery}
-								<button type="button" class="flex items-center justify-center w-5 h-5 bg-transparent border-none rounded text-slate-400 cursor-pointer hover:text-slate-600 dark:hover:text-slate-300" onclick={() => (historySearchQuery = '')} title="Clear search">
+								<button type="button" class="-my-1 flex items-center justify-center w-5 h-5 bg-transparent border-none rounded text-slate-400 cursor-pointer hover:text-slate-600 dark:hover:text-slate-300" onclick={() => (historySearchQuery = '')} title="Clear search">
 									<Icon name="lucide:x" class="w-3 h-3" />
 								</button>
 							{/if}
@@ -5386,9 +5388,12 @@ ${bodies}`;
 								{/if}
 							</button>
 							{#if showHistoryFilterMenu}
-								<div class="absolute right-0 top-full mt-1 w-64 bg-white dark:bg-slate-800 border border-slate-200 dark:border-slate-700 rounded-lg shadow-lg p-3 z-20 space-y-3">
-									<div class="space-y-1.5">
-										<label class="text-3xs font-semibold text-slate-500 dark:text-slate-400 uppercase tracking-wide">Author</label>
+								<div
+									class="absolute right-0 top-full mt-1 w-64 origin-top-right bg-white dark:bg-slate-800 border border-slate-200 dark:border-slate-700 rounded-lg shadow-lg p-3 z-20 space-y-3"
+									transition:scale={{ duration: 130, easing: cubicOut, start: 0.95, opacity: 0 }}
+								>
+									<div class="space-y-1">
+										<label class="flex text-3xs font-semibold text-slate-500 dark:text-slate-400 uppercase tracking-wide">Author</label>
 										<select
 											value={historyAuthorFilter}
 											onchange={(e) => (historyAuthorFilter = e.currentTarget.value)}
@@ -5400,8 +5405,8 @@ ${bodies}`;
 											{/each}
 										</select>
 									</div>
-									<div class="space-y-1.5">
-										<label class="text-3xs font-semibold text-slate-500 dark:text-slate-400 uppercase tracking-wide">Branch</label>
+									<div class="space-y-1">
+										<label class="flex text-3xs font-semibold text-slate-500 dark:text-slate-400 uppercase tracking-wide">Branch</label>
 										<select
 											value={historyBranchFilter}
 											onchange={(e) => (historyBranchFilter = e.currentTarget.value)}
@@ -5414,9 +5419,9 @@ ${bodies}`;
 											{/each}
 										</select>
 									</div>
-									<div class="space-y-1.5">
+									<div class="space-y-1">
 										<div class="flex items-center gap-2">
-											<span class="text-3xs font-semibold text-slate-500 dark:text-slate-400 uppercase tracking-wide">Date range</span>
+											<span class="flex text-3xs font-semibold text-slate-500 dark:text-slate-400 uppercase tracking-wide">Date range</span>
 											{#if historyDateFrom || historyDateTo}
 												<button type="button" class="ml-auto text-3xs font-medium text-violet-600 dark:text-violet-400 hover:text-violet-700 dark:hover:text-violet-300 bg-transparent border-none cursor-pointer p-0" onclick={() => { historyDateFrom = ''; historyDateTo = ''; }}>Reset</button>
 											{/if}
@@ -6330,7 +6335,7 @@ ${bodies}`;
 			</button>
 			<button
 				type="button"
-				class="inline-flex items-center gap-2 px-3 py-2 text-sm font-semibold rounded-lg transition-colors
+				class="flex items-center gap-2 px-3 py-2 text-sm font-semibold rounded-lg transition-colors
 					{mergeBranchName && !isMoreBusy
 						? 'bg-violet-600 text-white hover:bg-violet-700 cursor-pointer'
 						: 'bg-slate-200 dark:bg-slate-700 text-slate-400 dark:text-slate-500 cursor-not-allowed'}"
