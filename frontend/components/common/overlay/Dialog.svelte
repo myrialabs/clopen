@@ -21,6 +21,13 @@
 		closable?: boolean;
 		confirmDisabled?: boolean;
 		onConfirm?: (value?: string) => void;
+		/**
+		 * Whether confirming also closes the dialog. Default true, which is right
+		 * for a decision that is over the moment it is made. Set false when the
+		 * confirm starts something the dialog then reports on — the caller closes
+		 * it when there is something to close.
+		 */
+		closeOnConfirm?: boolean;
 		extraText?: string;
 		onExtra?: () => void;
 		/** Tailwind max-width class for the dialog box. Default 'max-w-md'; use a wider class for content-heavy dialogs (lists, changelogs). */
@@ -43,6 +50,7 @@
 		closable = true,
 		confirmDisabled = false,
 		onConfirm,
+		closeOnConfirm = true,
 		extraText,
 		onExtra,
 		maxWidth = 'max-w-md',
@@ -135,7 +143,7 @@
 		if (onConfirm) {
 			onConfirm(inputValue !== undefined ? inputValue : undefined);
 		}
-		onClose();
+		if (closeOnConfirm) onClose();
 	}
 
 	function handleCancel() {

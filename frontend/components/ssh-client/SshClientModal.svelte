@@ -1,6 +1,7 @@
 <!--
 	SSH Client — saved hosts in the sidebar, and per host a remote shell, an SFTP
-	file browser, port forwarding, and the host's connection/key overview.
+	file browser, its listening ports, its containers, port forwarding, and the
+	host's connection/key overview.
 
 	Laid out like the DB Client modal so the two read as one family: sidebar list
 	on the left, a view switcher and the active view on the right, and the sidebar
@@ -14,6 +15,7 @@
 	import FileBrowser from './main/FileBrowser.svelte';
 	import ForwardsPanel from './main/ForwardsPanel.svelte';
 	import PortsPanel from './main/PortsPanel.svelte';
+	import ContainersPanel from './main/ContainersPanel.svelte';
 	import HostOverview from './main/HostOverview.svelte';
 	import { sshClientStore, type SshView } from '$frontend/stores/features/ssh-client.svelte';
 	import { debug } from '$shared/utils/logger';
@@ -41,11 +43,14 @@
 	const activeView = $derived(view?.activeView ?? 'terminal');
 	const connected = $derived(sshClientStore.isConnected(activeConnection?.id));
 	const health = $derived(activeConnection ? sshClientStore.health[activeConnection.id] : null);
-	// Terminal, Files and Ports all run against the host itself, so they need a
-	// live transport; Forwards and Host are settings pages and stay readable
-	// while the host is disconnected.
+	// Terminal, Files, Ports and Containers all run against the host itself, so
+	// they need a live transport; Forwards and Host are settings pages and stay
+	// readable while the host is disconnected.
 	const viewNeedsConnection = $derived(
-		activeView === 'terminal' || activeView === 'files' || activeView === 'ports'
+		activeView === 'terminal' ||
+			activeView === 'files' ||
+			activeView === 'ports' ||
+			activeView === 'containers'
 	);
 
 	let connecting = $state(false);
@@ -66,6 +71,7 @@
 		{ id: 'terminal', label: 'Terminal', icon: 'lucide:terminal' },
 		{ id: 'files', label: 'Files', icon: 'lucide:folder' },
 		{ id: 'ports', label: 'Ports', icon: 'lucide:cable' },
+		{ id: 'containers', label: 'Containers', icon: 'lucide:container' },
 		{ id: 'forwards', label: 'Forwards', icon: 'lucide:arrow-left-right' },
 		{ id: 'overview', label: 'Host', icon: 'lucide:info' }
 	];
@@ -274,6 +280,8 @@
 										<FileBrowser connectionId={activeConnection.id} />
 									{:else if activeView === 'ports'}
 										<PortsPanel connectionId={activeConnection.id} />
+									{:else if activeView === 'containers'}
+										<ContainersPanel connectionId={activeConnection.id} />
 									{:else if activeView === 'forwards'}
 										<ForwardsPanel connectionId={activeConnection.id} />
 									{:else}

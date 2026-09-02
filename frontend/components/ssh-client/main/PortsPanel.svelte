@@ -25,7 +25,6 @@
 	let pendingKill = $state<PortEntry | null>(null);
 
 	const selected = $derived(portsStore.selected);
-	const result = $derived(portsStore.result);
 	/** Reading is open to every member; stopping a process is not. */
 	const canKill = $derived(authStore.isAdmin);
 
@@ -55,16 +54,6 @@
 				bind:value={portsStore.search}
 			/>
 		</div>
-
-		{#if result}
-			<span
-				class="hidden sm:flex items-center gap-1.5 shrink-0 text-[11px] text-slate-400 dark:text-slate-600"
-				title="This table refreshes about once a second while the tab is open"
-			>
-				<span class="w-1.5 h-1.5 rounded-full bg-emerald-500"></span>
-				live
-			</span>
-		{/if}
 	</div>
 
 	<div class="flex flex-1 min-h-0 relative">

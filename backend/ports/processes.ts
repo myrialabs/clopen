@@ -19,7 +19,7 @@
  */
 
 import type { PortLimitation, PortProcess } from '$shared/types/ports';
-import type { CommandRunner, ProbePlatform } from './runner';
+import type { CommandRunner, ProbePlatform } from '../host/runner';
 import { debug } from '$shared/utils/logger';
 
 /** How often the whole table is re-read, so exited pids stop being reported. */

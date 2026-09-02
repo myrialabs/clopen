@@ -17,7 +17,8 @@ import {
 	openTunnelDialog,
 	openDbClientDialog,
 	openSshClientDialog,
-	openPortsDialog
+	openPortsDialog,
+	openContainersDialog
 } from '$frontend/stores/ui/quick-panels.svelte';
 import { addNotification } from '$frontend/stores/ui/notification.svelte';
 
@@ -202,6 +203,15 @@ export function getCommandActions(): CommandAction[] {
 		icon: 'lucide:cable',
 		keywords: ['port', 'listening', 'process', 'kill', 'netstat', 'lsof', 'in use', 'occupied'],
 		run: openPortsDialog
+	});
+
+	actions.push({
+		id: 'containers',
+		label: 'Containers',
+		description: 'Docker and Podman on this machine — logs, shell, start and stop',
+		icon: 'lucide:container',
+		keywords: ['docker', 'podman', 'container', 'compose', 'image', 'volume', 'logs', 'exec'],
+		run: openContainersDialog
 	});
 
 	actions.push({

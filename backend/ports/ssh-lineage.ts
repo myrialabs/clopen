@@ -35,7 +35,7 @@
  */
 
 import type { PortProcess } from '$shared/types/ports';
-import { posixArgv, type CommandRunner, type ProbePlatform } from './runner';
+import { posixArgv, type CommandRunner, type ProbePlatform } from '../host/runner';
 import { parsePsOutput } from './processes';
 import { debug } from '$shared/utils/logger';
 

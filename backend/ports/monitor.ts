@@ -33,7 +33,7 @@ import {
 	localPlatform,
 	type CommandRunner,
 	type ProbePlatform
-} from './runner';
+} from '../host/runner';
 import { sshClientPool, type SshLease } from '../ssh/client-pool';
 import { forgetClopenRootPid } from './ssh-lineage';
 import { sshConnectionQueries } from '../database/queries';

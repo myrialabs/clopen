@@ -19,7 +19,7 @@
 
 import type { PortKillResult, PortOwnerFeature } from '$shared/types/ports';
 import { parsePsOutput, unixPsArgv } from './processes';
-import type { CommandRunner, ProbePlatform } from './runner';
+import type { CommandRunner, ProbePlatform } from '../host/runner';
 import { sshForwardManager } from '../ssh/forwards';
 import { connectionManager } from '../db-client/connection-manager';
 import { debug } from '$shared/utils/logger';

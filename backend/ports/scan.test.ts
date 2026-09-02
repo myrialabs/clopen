@@ -1,5 +1,5 @@
 import { describe, expect, test } from 'bun:test';
-import type { CommandRunner } from './runner';
+import type { CommandRunner } from '../host/runner';
 import {
 	parseLsof,
 	parseNetstatUnix,
