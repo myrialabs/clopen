@@ -168,9 +168,13 @@
 				if (!langClass) continue;
 				const raw = langClass.slice('language-'.length);
 				const lang = MONACO_LANG[raw] ?? raw;
+				const source = code.textContent ?? '';
 				try {
-					const highlighted = await monaco.editor.colorize(code.textContent ?? '', lang, {});
+					const highlighted = await monaco.editor.colorize(source, lang, {});
 					if (cancelled) return;
+					// colorize() joins lines with <br/>, which textContent drops. Stash the
+					// pre-colorize source so the copy button still yields real newlines.
+					code.closest('pre')?.setAttribute('data-raw-code', source);
 					code.innerHTML = highlighted;
 				} catch {
 					/* leave the plain escaped code as-is */
@@ -181,6 +185,80 @@
 		return () => {
 			cancelled = true;
 		};
+	});
+
+	// Inject icon-only Copy button into every <pre> block (per-item, smaller than Copy All).
+	// Works for chat + preview variants; re-runs on content change.
+	// Single-line blocks get overflow hidden to avoid scrollbar.
+	$effect(() => {
+		void rendered;
+		if (variant !== 'chat' && variant !== 'preview') return;
+		const el = root;
+		if (!el) return;
+
+		const copySvg = `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" class="w-3 h-3" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><g fill="none" stroke="currentColor" stroke-linecap="round" stroke-linejoin="round" stroke-width="2"><rect width="14" height="14" x="8" y="8" rx="2" ry="2"/><path d="M4 16c-1.1 0-2-.9-2-2V4c0-1.1.9-2 2-2h10c1.1 0 2 .9 2 2"/></g></svg>`;
+		const checkSvg = `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" class="w-3 h-3" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path fill="none" stroke="currentColor" stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M20 6L9 17l-5-5"/></svg>`;
+
+		for (const pre of Array.from(el.querySelectorAll('pre'))) {
+			if ((pre as HTMLElement).dataset.copyBtn === 'true') continue;
+			(pre as HTMLElement).dataset.copyBtn = 'true';
+
+			// The button hangs off a wrapper, not off the <pre>: the <pre> is the scroll
+			// container, and an absolutely positioned child of a scroll container travels
+			// with its content. The wrapper never scrolls, so the button stays pinned to
+			// the block's top-right however far the code is scrolled.
+			const wrap = document.createElement('div');
+			wrap.className = 'code-block';
+			pre.parentNode?.insertBefore(wrap, pre);
+			wrap.appendChild(pre);
+
+			// Single-line blocks should not show a scrollbar (e.g. "git push")
+			const codeEl = pre.querySelector('code');
+			const rawText = codeEl ? (codeEl.textContent ?? '') : (pre.textContent ?? '');
+			const lineCount = rawText.trim().split('\n').length;
+			if (lineCount <= 1) {
+				wrap.classList.add('single-line');
+			}
+
+			const btn = document.createElement('button');
+			btn.type = 'button';
+			btn.innerHTML = copySvg;
+			btn.setAttribute('aria-label', 'Copy code');
+			btn.setAttribute('title', 'Copy');
+			btn.className = 'code-copy-btn';
+			let resetTimer: ReturnType<typeof setTimeout> | undefined;
+			btn.addEventListener('click', async (e) => {
+				e.stopPropagation();
+				const cEl = pre.querySelector('code');
+				const text =
+					(pre as HTMLElement).dataset.rawCode ??
+					(cEl ? (cEl.textContent ?? '') : (pre.textContent ?? ''));
+				try {
+					await navigator.clipboard.writeText(text);
+				} catch {
+					const ta = document.createElement('textarea');
+					ta.value = text;
+					ta.style.position = 'fixed';
+					ta.style.opacity = '0';
+					document.body.appendChild(ta);
+					ta.select();
+					document.execCommand('copy');
+					ta.remove();
+				}
+				btn.innerHTML = checkSvg;
+				btn.classList.add('copied');
+				btn.setAttribute('title', 'Copied!');
+				btn.setAttribute('aria-label', 'Copied');
+				clearTimeout(resetTimer);
+				resetTimer = setTimeout(() => {
+					btn.innerHTML = copySvg;
+					btn.classList.remove('copied');
+					btn.setAttribute('title', 'Copy');
+					btn.setAttribute('aria-label', 'Copy code');
+				}, 1500);
+			});
+			wrap.appendChild(btn);
+		}
 	});
 </script>
 
@@ -670,6 +748,9 @@
 		margin-top: 0.375rem;
 		margin-bottom: 0.375rem;
 	}
+	:global(.markdown-compact > p:only-child) {
+		margin: 0.125rem 0;
+	}
 	:global(.markdown-compact code) {
 		font-size: 0.75rem;
 		padding: 0.125rem 0.25rem;
@@ -729,5 +810,78 @@
 		padding: 0.375rem 0.5rem;
 		border: 1px solid rgb(148 163 184 / 0.2);
 		text-align: left;
+	}
+
+	/* Wrapper around every <pre>: it owns the block's margin and gives the copy button a
+	   non-scrolling anchor, so the button holds its corner while the code scrolls. */
+	:global(.markdown-chat .code-block),
+	:global(.markdown-preview .code-block) {
+		position: relative;
+		margin: 1rem 0;
+	}
+	:global(.markdown-chat .code-block > pre),
+	:global(.markdown-preview .code-block > pre) {
+		margin: 0;
+	}
+
+	/* Code block copy button — icon-only, smaller than Copy All (w-3 vs w-3.5), always visible */
+	:global(.code-copy-btn) {
+		position: absolute;
+		top: 6px;
+		right: 6px;
+		display: inline-flex;
+		align-items: center;
+		justify-content: center;
+		padding: 5px;
+		width: 26px;
+		height: 26px;
+		border-radius: 6px;
+		border: 1px solid rgb(226 232 240);
+		background: rgba(255, 255, 255, 0.95);
+		color: rgb(71 85 105);
+		cursor: pointer;
+		opacity: 1;
+		backdrop-filter: blur(4px);
+		transition: opacity 0.15s, background 0.15s, color 0.15s;
+		z-index: 1;
+	}
+	/* Single-line code blocks hide the scrollbar (e.g. "git push") and centre their content.
+	   Scrolling stays on: a long one-liner must still be readable end to end. */
+	:global(.markdown-chat .code-block.single-line > pre),
+	:global(.markdown-preview .code-block.single-line > pre) {
+		display: flex;
+		align-items: center;
+		white-space: nowrap;
+		min-height: 36px;
+		scrollbar-width: none;
+	}
+	:global(.markdown-chat .code-block.single-line > pre::-webkit-scrollbar),
+	:global(.markdown-preview .code-block.single-line > pre::-webkit-scrollbar) {
+		display: none;
+	}
+	:global(.code-block.single-line > .code-copy-btn) {
+		top: 50%;
+		transform: translateY(-50%);
+	}
+	:global(.dark .code-copy-btn) {
+		border-color: rgb(51 65 85);
+		background: rgba(30, 41, 59, 0.9);
+		color: rgb(148 163 184);
+	}
+	:global(.code-copy-btn:hover) {
+		background: rgb(255 255 255);
+		color: rgb(15 23 42);
+	}
+	:global(.dark .code-copy-btn:hover) {
+		background: rgb(51 65 85);
+		color: rgb(241 245 249);
+	}
+	:global(.code-copy-btn.copied) {
+		color: rgb(22 163 74);
+		border-color: rgb(134 239 172);
+	}
+	:global(.dark .code-copy-btn.copied) {
+		color: rgb(74 222 128);
+		border-color: rgb(34 197 94 / 0.4);
 	}
 </style>

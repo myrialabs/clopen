@@ -95,9 +95,9 @@
 		{#if roleCategory === 'user' || roleCategory === 'assistant'}
 			<button
 				onclick={handleCopy}
-				class="inline-flex p-1.5 rounded-md hover:bg-slate-200 dark:hover:bg-slate-600 transition-colors opacity-60 hover:opacity-100"
-				aria-label="Copy message"
-				title="Copy message"
+				class="inline-flex p-1.5 rounded-md hover:bg-slate-200 dark:hover:bg-slate-600 transition-colors"
+				aria-label={isCopied ? "Copied" : "Copy message"}
+				title={isCopied ? "Copied!" : "Copy message"}
 			>
 				<Icon name={isCopied ? "lucide:check" : "lucide:copy"} class="w-3.5 h-3.5" />
 			</button>
@@ -110,7 +110,7 @@
 				<button
 					onclick={onRestore}
 					disabled={appState.isLoading}
-					class="inline-flex p-1.5 rounded-md transition-colors {appState.isLoading ? 'cursor-not-allowed opacity-40' : 'hover:bg-slate-200 dark:hover:bg-slate-600 opacity-60 hover:opacity-100'}"
+					class="inline-flex p-1.5 rounded-md transition-colors {appState.isLoading ? 'cursor-not-allowed opacity-40' : 'hover:bg-slate-200 dark:hover:bg-slate-600'}"
 					aria-label="Undo to this checkpoint"
 					title="Undo to this checkpoint"
 				>
@@ -122,7 +122,7 @@
 			<button
 				onclick={onEdit}
 				disabled={appState.isLoading}
-				class="inline-flex p-1.5 rounded-md transition-colors {appState.isLoading ? 'cursor-not-allowed opacity-40' : 'hover:bg-slate-200 dark:hover:bg-slate-600 opacity-60 hover:opacity-100'}"
+				class="inline-flex p-1.5 rounded-md transition-colors {appState.isLoading ? 'cursor-not-allowed opacity-40' : 'hover:bg-slate-200 dark:hover:bg-slate-600'}"
 				aria-label="Edit message"
 				title="Edit message"
 			>
@@ -133,7 +133,7 @@
 		<!-- Debug toggle button -->
 		<button
 			onclick={onShowDebug}
-			class="inline-flex p-1.5 rounded-md hover:bg-slate-200 dark:hover:bg-slate-600 transition-colors opacity-60 hover:opacity-100"
+			class="inline-flex p-1.5 rounded-md hover:bg-slate-200 dark:hover:bg-slate-600 transition-colors"
 			aria-label="Show debug info"
 			title="Debug info"
 		>

@@ -1,15 +1,19 @@
 /**
- * Port manager — one command interface, two transports.
+ * Host commands — one command interface, two transports.
  *
- * Every probe in this feature is a small POSIX/Windows command, and the same
- * probe has to run on the machine hosting Clopen and on a saved SSH host. So
- * the probes are written once against `CommandRunner` and the transport is
- * swapped underneath: `Bun.spawn` locally, an exec channel remotely.
+ * Every host-scoped feature in Clopen — the port table, and the container list
+ * that followed it — is built out of small POSIX/Windows commands, and the same
+ * command has to run on the machine hosting Clopen and on a saved SSH host. So
+ * they are written once against `CommandRunner` and the transport is swapped
+ * underneath: `Bun.spawn` locally, an exec channel remotely.
  *
  * Commands are argv arrays rather than shell strings. Locally that removes
  * quoting from the picture entirely; remotely each argument is quoted by
- * `shellQuote` on the way out, so a hostile process name in an argument can
- * never turn into a second command.
+ * `shellQuote` on the way out, so a hostile process or container name in an
+ * argument can never turn into a second command.
+ *
+ * This lives outside `ports/` because `local` is not a special case and neither
+ * is any one feature: whatever asks a host a question asks it through here.
  */
 
 import type { Client as SshClient } from 'ssh2';
@@ -34,9 +38,14 @@ const PROBE_PATH = '/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
  * arguments stay arguments — while fixing both problems a bare command has on
  * a remote host: a PATH too narrow to find the tool, and a locale that renders
  * dates in words nothing can parse.
+ *
+ * `locale: null` drops the `LC_ALL=C` half. A probe wants a machine-readable
+ * locale; an interactive shell opened through the same PATH fix does not —
+ * forcing C on one would leave the user unable to type a non-ASCII character.
  */
-export function posixArgv(argv: string[]): string[] {
-	return ['env', 'LC_ALL=C', `PATH=${PROBE_PATH}`, ...argv];
+export function posixArgv(argv: string[], options: { locale?: string | null } = {}): string[] {
+	const locale = options.locale === undefined ? 'C' : options.locale;
+	return ['env', ...(locale === null ? [] : [`LC_ALL=${locale}`]), `PATH=${PROBE_PATH}`, ...argv];
 }
 
 export interface RunResult {
@@ -171,7 +180,7 @@ export async function detectRemotePlatform(cacheKey: string, runner: CommandRunn
 			else if (name.includes('bsd')) platform = 'linux';
 		}
 	} catch (error) {
-		debug.log('ports', `uname failed on ${runner.label}:`, error);
+		debug.log('host', `uname failed on ${runner.label}:`, error);
 	}
 
 	// No `uname` usually means a Windows host answering over OpenSSH, where the

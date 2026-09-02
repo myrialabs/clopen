@@ -8,6 +8,7 @@
 	import { dbClientStore } from '$frontend/stores/features/db-client.svelte';
 	import { sshClientStore } from '$frontend/stores/features/ssh-client.svelte';
 	import { portsStore } from '$frontend/stores/features/ports.svelte';
+	import { containersStore } from '$frontend/stores/features/containers.svelte';
 	import type { IconName } from '$shared/types/ui/icons';
 
 	interface Props {
@@ -18,6 +19,7 @@
 		onDbClient: () => void;
 		onSshClient: () => void;
 		onPorts: () => void;
+		onContainers: () => void;
 		onMemory: () => void;
 	}
 
@@ -29,6 +31,7 @@
 		onDbClient,
 		onSshClient,
 		onPorts,
+		onContainers,
 		onMemory
 	}: Props = $props();
 
@@ -39,9 +42,15 @@
 	const dbCount = $derived(dbClientStore.liveCount);
 	const sshCount = $derived(sshClientStore.liveCount);
 	const portsCount = $derived(portsStore.liveCount);
+	const containersCount = $derived(containersStore.liveCount);
 	// A single dot on the trigger signals "something under here is active".
 	const hasActivity = $derived(
-		remoteCount > 0 || tunnelCount > 0 || dbCount > 0 || sshCount > 0 || portsCount > 0
+		remoteCount > 0 ||
+			tunnelCount > 0 ||
+			dbCount > 0 ||
+			sshCount > 0 ||
+			portsCount > 0 ||
+			containersCount > 0
 	);
 
 	interface ToolItem {
@@ -97,6 +106,16 @@
 			accent: 'text-amber-600 dark:text-amber-400'
 		},
 		{
+			label: 'Containers',
+			description: 'Docker and Podman on this machine',
+			icon: 'lucide:container',
+			onClick: onContainers,
+			// Containers running here. Unlike ports, every one of these is
+			// something someone chose to start, so all of them count.
+			count: containersCount,
+			accent: 'text-blue-600 dark:text-blue-400'
+		},
+		{
 			label: 'Memory',
 			description: 'What this workspace has learned',
 			icon: 'lucide:brain',
@@ -136,7 +155,7 @@
 			aria-expanded={isOpen}
 			title="More Tools"
 		>
-			<Icon name="lucide:wrench" class="{mobile ? 'w-4.5 h-4.5' : 'w-5 h-5'}" />
+			<Icon name="lucide:wrench" class={mobile ? 'w-4.5 h-4.5' : 'w-5 h-5'} />
 			{#if hasActivity}
 				<span
 					class="absolute top-0.5 right-0.5 w-2 h-2 rounded-full bg-green-500 border-2 border-slate-50 dark:border-slate-900/95"

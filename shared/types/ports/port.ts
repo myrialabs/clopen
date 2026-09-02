@@ -8,6 +8,8 @@
  * than guessing.
  */
 
+import { LOCAL_HOST_ID, type HostId } from '../host';
+
 export type PortProtocol = 'tcp' | 'udp';
 
 export type PortIpVersion = 'v4' | 'v6';
@@ -60,12 +62,13 @@ export interface PortProcess {
 export type PortOriginConfidence = 'certain' | 'guess';
 
 /**
- * The three tiers the UI groups by:
- * - `clopen`   — a listener Clopen opened, registered by the feature that owns it
- * - `session`  — a process descended from a Clopen terminal session
- * - `external` — everything else on the machine
+ * The four tiers the UI groups by:
+ * - `clopen`    — a listener Clopen opened, registered by the feature that owns it
+ * - `session`   — a process descended from a Clopen terminal session
+ * - `container` — a port a container runtime publishes on this host
+ * - `external`  — everything else on the machine
  */
-export type PortOriginKind = 'clopen' | 'session' | 'external';
+export type PortOriginKind = 'clopen' | 'session' | 'container' | 'external';
 
 /** Which Clopen feature owns a `clopen` port, so it can be stopped properly. */
 export type PortOwnerFeature =
@@ -94,6 +97,29 @@ export interface PortOrigin {
 	projectId?: string;
 	/** Set when the lineage ends at an sshd session rather than a Clopen one. */
 	remoteSessionUser?: string;
+	/** Set when `kind` is `container` — the container publishing this port. */
+	containerId?: string;
+}
+
+/**
+ * The container publishing a port, when one does.
+ *
+ * A published port is a fact the runtime states outright, so this is never a
+ * guess. It is also the only owner worth naming: the listening process is
+ * `docker-proxy` or the daemon itself, and with the userland proxy disabled
+ * there is no listening socket at all — the port is reached through a firewall
+ * rule. Either way the thing to act on is the container.
+ */
+export interface PortContainerRef {
+	runtime: 'docker' | 'podman';
+	/** Full container id, so an action can address it unambiguously. */
+	id: string;
+	/** Twelve-character id, which is how the runtime's own output reads. */
+	shortId: string;
+	name: string;
+	image: string;
+	/** The port inside the container this host port is mapped to. */
+	containerPort: number;
 }
 
 /** A peer currently connected to a listening port. */
@@ -109,7 +135,8 @@ export type PortKillBlockedReason =
 	| 'is-clopen-itself'
 	| 'unknown-pid'
 	| 'not-permitted'
-	| 'system-process';
+	| 'system-process'
+	| 'managed-by-container';
 
 /** One row in the table: a port, its owner, and what is connected to it. */
 export interface PortEntry {
@@ -138,6 +165,13 @@ export interface PortEntry {
 	 * reachable from the public internet.
 	 */
 	publicUrl: string | null;
+	/**
+	 * Set when a container runtime publishes this port. Like `publicUrl` this
+	 * describes how the port is reached rather than replacing whoever holds it,
+	 * and it is what lets the row point at the container instead of offering to
+	 * signal a proxy process that would only come back.
+	 */
+	container: PortContainerRef | null;
 	canKill: boolean;
 	killBlockedReason: PortKillBlockedReason | null;
 }
@@ -158,10 +192,14 @@ export interface PortLimitation {
 	message: string;
 }
 
-/** `local` is the machine running Clopen; any other id is an SSH connection. */
-export type PortHostId = string;
+/**
+ * `local` is the machine running Clopen; any other id is an SSH connection.
+ * Both names point at the same value: host identity is shared by every
+ * host-scoped feature, and ports keep their own spelling only for readability.
+ */
+export type PortHostId = HostId;
 
-export const LOCAL_PORT_HOST: PortHostId = 'local';
+export const LOCAL_PORT_HOST: PortHostId = LOCAL_HOST_ID;
 
 export interface PortScanResult {
 	hostId: PortHostId;
