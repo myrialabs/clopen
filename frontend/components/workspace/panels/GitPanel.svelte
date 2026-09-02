@@ -7,6 +7,7 @@
 	import { projectState } from '$frontend/stores/core/projects.svelte';
 	import { showError, showInfo } from '$frontend/stores/ui/notification.svelte';
 	import { debug } from '$shared/utils/logger';
+	import { clickOutside } from '$frontend/utils/click-outside';
 	import { settings } from '$frontend/stores/features/settings.svelte';
 	import ws, { onWsReconnect } from '$frontend/utils/ws';
 	import { acquireFileWatch } from '$frontend/utils/file-watch';
@@ -688,95 +689,6 @@
 		) ?? []
 	);
 
-	// History: distinct authors for the author filter dropdown
-	const historyAuthors = $derived([...new Set(commits.map(c => c.author))].sort((a, b) => a.localeCompare(b)));
-
-	const hasHistoryFilter = $derived(
-		historySearchQuery.trim() !== '' || historyAuthorFilter !== 'all' || historyDateFilter !== 'all' || historyBranchFilter !== 'current'
-	);
-
-	// Branch options for history filter (current + all locals)
-	const historyBranchOptions = $derived(
-		branchInfo?.local.map(b => b.name) ?? []
-	);
-
-	function matchesHistorySearch(c: GitCommit, q: string): boolean {
-		if (!q) return true;
-		const lower = q.toLowerCase();
-		return (
-			c.message.toLowerCase().includes(lower) ||
-			c.author.toLowerCase().includes(lower) ||
-			c.authorEmail.toLowerCase().includes(lower) ||
-			c.hash.toLowerCase().includes(lower) ||
-			c.hashShort.toLowerCase().includes(lower) ||
-			(c.refs?.join(' ').toLowerCase().includes(lower) ?? false)
-		);
-	}
-
-	function matchesHistoryDate(c: GitCommit, filter: typeof historyDateFilter): boolean {
-		if (filter === 'all') return true;
-		const t = new Date(c.date).getTime();
-		if (Number.isNaN(t)) return true;
-		const diff = Date.now() - t;
-		if (filter === 'today') return diff < 24 * 60 * 60 * 1000;
-		if (filter === 'week') return diff < 7 * 24 * 60 * 60 * 1000;
-		if (filter === 'month') return diff < 30 * 24 * 60 * 60 * 1000;
-		return true;
-	}
-
-	const filteredCommits = $derived.by(() => {
-		const q = historySearchQuery.trim();
-		const authorF = historyAuthorFilter;
-		const dateF = historyDateFilter;
-		if (!q && authorF === 'all' && dateF === 'all') return commits;
-		return commits.filter(c => {
-			if (!matchesHistorySearch(c, q)) return false;
-			if (authorF !== 'all' && c.author !== authorF) return false;
-			if (!matchesHistoryDate(c, dateF)) return false;
-			return true;
-		});
-	});
-
-	function filteredNestedCommits(nested: GitNestedRepoInfo): GitCommit[] {
-		const list = nestedCommits[nested.relPath] || [];
-		const q = historySearchQuery.trim();
-		const authorF = historyAuthorFilter;
-		const dateF = historyDateFilter;
-		if (!q && authorF === 'all' && dateF === 'all') return list;
-		return list.filter(c => {
-			if (!matchesHistorySearch(c, q)) return false;
-			if (authorF !== 'all' && c.author !== authorF) return false;
-			if (!matchesHistoryDate(c, dateF)) return false;
-			return true;
-		});
-	}
-
-	const filteredCommitHashes = $derived(new Set(filteredCommits.map(c => c.hash)));
-
-	function filteredNestedCommitHashes(nested: GitNestedRepoInfo): Set<string> {
-		return new Set(filteredNestedCommits(nested).map(c => c.hash));
-	}
-
-	function clearHistoryFilters() {
-		historySearchQuery = '';
-		historyAuthorFilter = 'all';
-		historyDateFilter = 'all';
-		historyBranchFilter = 'current';
-		showHistoryFilterMenu = false;
-		// reload current branch history
-		void loadLog(true);
-	}
-
-	let prevHistoryBranchFilter = $state<string>('current');
-	$effect(() => {
-		const current = historyBranchFilter;
-		if (!hasActiveProject || !projectId) return;
-		if (current !== prevHistoryBranchFilter) {
-			prevHistoryBranchFilter = current;
-			void loadLog(true);
-		}
-	});
-
 	function filteredNestedLocalBranches(nested: GitNestedRepoInfo): GitBranch[] {
 		const q = nestedSearchQuery(nested.relPath);
 		return nested.info.local.filter(b => !q || b.name.toLowerCase().includes(q.toLowerCase()));
@@ -1113,12 +1025,121 @@
 	let nestedLogHasMore = $state<Record<string, boolean>>({});
 	let logSkip = $state(0);
 	let nestedLogSkip = $state<Record<string, number>>({});
+	// Commits reachable from the log's current scope, which is what the client-side
+	// filters are narrowing — not the number loaded so far.
+	let logTotal = $state(0);
+	// Set when a page fails so the filter scan below can't retry it forever.
+	let logLoadFailed = $state(false);
+
 	// A commit detail to re-open once the log finishes loading (per-project restore).
 	let pendingSelectedCommitHash = $state<string | null>(null);
 	// A diff tab to re-open once its data source is loaded (per-project restore):
 	// for changes sections, once git status is in; for commit files, once the
 	// commit detail's file list is fetched.
 	let pendingActiveDiff = $state<GitActiveDiff | null>(null);
+
+	// ============================
+	// History search & filter
+	// ============================
+
+	// Search, author and period run over loaded commits; only the branch scope is
+	// a server-side query, so changing it re-fetches.
+	const historyAuthors = $derived(
+		[...new Set([...commits, ...Object.values(nestedCommits).flat()].map(c => c.author))]
+			.sort((a, b) => a.localeCompare(b))
+	);
+
+	const hasHistoryFilter = $derived(
+		historySearchQuery.trim() !== '' || historyAuthorFilter !== 'all' || historyDateFilter !== 'all' || historyBranchFilter !== 'current'
+	);
+
+	const historyBranchOptions = $derived(branchInfo?.local.map(b => b.name) ?? []);
+
+	/**
+	 * Scope params for `git:log`. A named branch belongs to the main repo, so
+	 * sub-repos follow only `all` — their refs are their own and the parent's
+	 * branch name usually doesn't resolve there.
+	 */
+	function historyLogScope(nested = false): { branch?: string; allBranches?: boolean } {
+		if (historyBranchFilter === 'all') return { allBranches: true };
+		if (historyBranchFilter === 'current' || nested) return {};
+		return { branch: historyBranchFilter };
+	}
+
+	function matchesHistorySearch(c: GitCommit, q: string): boolean {
+		if (!q) return true;
+		const lower = q.toLowerCase();
+		return (
+			c.message.toLowerCase().includes(lower) ||
+			c.author.toLowerCase().includes(lower) ||
+			c.authorEmail.toLowerCase().includes(lower) ||
+			c.hash.toLowerCase().includes(lower) ||
+			c.hashShort.toLowerCase().includes(lower) ||
+			(c.refs?.join(' ').toLowerCase().includes(lower) ?? false)
+		);
+	}
+
+	function matchesHistoryDate(c: GitCommit, filter: typeof historyDateFilter): boolean {
+		if (filter === 'all') return true;
+		const t = new Date(c.date).getTime();
+		if (Number.isNaN(t)) return true;
+		if (filter === 'today') {
+			const midnight = new Date();
+			midnight.setHours(0, 0, 0, 0);
+			return t >= midnight.getTime();
+		}
+		const days = filter === 'week' ? 7 : 30;
+		return Date.now() - t < days * 24 * 60 * 60 * 1000;
+	}
+
+	function applyHistoryFilters(list: GitCommit[]): GitCommit[] {
+		const q = historySearchQuery.trim();
+		const authorF = historyAuthorFilter;
+		const dateF = historyDateFilter;
+		if (!q && authorF === 'all' && dateF === 'all') return list;
+		return list.filter(c =>
+			matchesHistorySearch(c, q) &&
+			(authorF === 'all' || c.author === authorF) &&
+			matchesHistoryDate(c, dateF)
+		);
+	}
+
+	const filteredCommits = $derived(applyHistoryFilters(commits));
+
+	function filteredNestedCommits(nested: GitNestedRepoInfo): GitCommit[] {
+		return applyHistoryFilters(nestedCommits[nested.relPath] || []);
+	}
+
+	function resetHistoryFilters() {
+		historySearchQuery = '';
+		historyAuthorFilter = 'all';
+		historyDateFilter = 'all';
+		historyBranchFilter = 'current';
+		prevHistoryBranchFilter = 'current';
+		showHistoryFilterMenu = false;
+	}
+
+	/** Explicit "load more" — also clears the latch that halted the background scan. */
+	function loadMoreLog() {
+		logLoadFailed = false;
+		void loadLog();
+	}
+
+	function clearHistoryFilters() {
+		const needsReload = historyBranchFilter !== 'current';
+		resetHistoryFilters();
+		if (needsReload) void refreshAllLogs();
+	}
+
+	let prevHistoryBranchFilter = $state<string>('current');
+	$effect(() => {
+		const current = historyBranchFilter;
+		if (!hasActiveProject || !projectId) return;
+		if (current !== prevHistoryBranchFilter) {
+			prevHistoryBranchFilter = current;
+			void refreshAllLogs();
+		}
+	});
 
 	// Commit detail state — when set, History view shows a per-commit file list
 	// instead of the commit log. Cleared via the back button.
@@ -1386,15 +1407,17 @@
 			if (reset) {
 				logSkip = 0;
 				commits = [];
+				logTotal = 0;
+				logLoadFailed = false;
 			}
-			const branchParam = historyBranchFilter === 'current' ? undefined : historyBranchFilter === 'all' ? '--all' : historyBranchFilter;
-			const data = await ws.http('git:log', { projectId, limit: 50, skip: logSkip, ...(branchParam ? { branch: branchParam } : {}) });
+			const data = await ws.http('git:log', { projectId, limit: 50, skip: logSkip, ...historyLogScope() });
 			if (reset) {
 				commits = data.commits;
 			} else {
 				commits = [...commits, ...data.commits];
 			}
 			logHasMore = data.hasMore;
+			logTotal = data.total;
 			logSkip += data.commits.length;
 
 			// Re-open a previously-selected commit detail for this project, once
@@ -1407,20 +1430,32 @@
 				}
 			}
 		} catch (err) {
+			logLoadFailed = true;
 			debug.error('git', 'Failed to load log:', err);
 		} finally {
 			isLogLoading = false;
 		}
 	}
 
-	// Auto-load remaining pages when filtering to get accurate "Showing X of Y" for All branches
+	/**
+	 * Search, author and period match against commits already in memory, so a
+	 * filter pulls further pages in the background.
+	 *
+	 * Both guards are load-bearing. `logLoadFailed` stops the scan on the first
+	 * failed page: the effect tracks `isLogLoading`, so without it a page that
+	 * throws re-triggers the effect the moment it settles and the panel retries
+	 * four times a second forever. The page cap stops a one-character search from
+	 * walking an entire long-lived history 50 commits at a time, each page also
+	 * paying a full `rev-list --count` on the server.
+	 */
+	const HISTORY_SCAN_LIMIT = 1000;
+	const historyScanCapped = $derived(hasHistoryFilter && logHasMore && commits.length >= HISTORY_SCAN_LIMIT);
+
 	$effect(() => {
-		if (!hasHistoryFilter || !logHasMore || isLogLoading || commits.length === 0) return;
-		// Only auto-load for All branches or when search/author filter needs full scan
-		if (historyBranchFilter === 'all' || historySearchQuery.trim() !== '' || historyAuthorFilter !== 'all') {
-			const t = setTimeout(() => void loadLog(), 250);
-			return () => clearTimeout(t);
-		}
+		if (!hasHistoryFilter || !logHasMore || isLogLoading || logLoadFailed) return;
+		if (commits.length === 0 || commits.length >= HISTORY_SCAN_LIMIT) return;
+		const t = setTimeout(() => void loadLog(), 150);
+		return () => clearTimeout(t);
 	});
 
 	async function loadNestedLog(relPath: string, repoPath: string, reset = false) {
@@ -1430,7 +1465,7 @@
 		nestedIsLogLoading = { ...nestedIsLogLoading, [relPath]: true };
 		try {
 			const currentSkip = reset ? 0 : (nestedLogSkip[relPath] || 0);
-			const data = await ws.http('git:log', { projectId, repoPath, limit: 50, skip: currentSkip });
+			const data = await ws.http('git:log', { projectId, repoPath, limit: 50, skip: currentSkip, ...historyLogScope(true) });
 			if (reset) {
 				nestedCommits = { ...nestedCommits, [relPath]: data.commits };
 				nestedLogSkip = { ...nestedLogSkip, [relPath]: data.commits.length };
@@ -3662,6 +3697,13 @@ ${bodies}`;
 					commits = [];
 					staleSections = new Set();
 					logSkip = 0;
+					logHasMore = false;
+					logTotal = 0;
+					logLoadFailed = false;
+					// History filters are per-project: a branch name carried into the
+					// next project doesn't resolve there, so `git:log` fails and its
+					// History view stays empty for the rest of the session.
+					resetHistoryFilters();
 					selectedCommit = null;
 					expandedContributors = new Set();
 					contributorVisible = {};
@@ -4618,12 +4660,10 @@ ${bodies}`;
 					<GitLog
 						commits={filteredNested}
 						originalCommits={commitsList}
-						highlightHashes={filteredNestedCommitHashes(nested)}
 						searchQuery={historySearchQuery}
 						isLoading={nestedIsLogLoading[nested.relPath] || false}
 						hasMore={nestedLogHasMore[nested.relPath] || false}
 						activeHash={activeTab?.commitHash ?? null}
-						isFiltered={hasHistoryFilter}
 						onLoadMore={() => loadNestedLog(nested.relPath, nested.path)}
 						onViewCommit={(hash) => viewCommitDiff(hash, nested.path)}
 						onCheckoutCommit={(hash) => checkoutCommit(hash, nested.path)}
@@ -5297,7 +5337,7 @@ ${bodies}`;
 								</button>
 							{/if}
 						</div>
-						<div class="relative">
+						<div class="relative" use:clickOutside={() => (showHistoryFilterMenu = false)}>
 							<button
 								type="button"
 								class="flex items-center gap-1.5 px-2.5 py-1.5 text-xs font-medium rounded-lg border transition-colors cursor-pointer {hasHistoryFilter ? 'bg-violet-500/10 border-violet-500/30 text-violet-600 dark:text-violet-400' : 'bg-white dark:bg-slate-800 border-slate-200 dark:border-slate-700 text-slate-600 dark:text-slate-300 hover:bg-slate-50 dark:hover:bg-slate-700'}"
@@ -5312,7 +5352,6 @@ ${bodies}`;
 								{/if}
 							</button>
 							{#if showHistoryFilterMenu}
-								<button type="button" class="fixed inset-0 z-10 bg-transparent border-none cursor-default" onclick={() => (showHistoryFilterMenu = false)} aria-label="Close filter menu"></button>
 								<div class="absolute right-0 top-full mt-1 w-64 bg-white dark:bg-slate-800 border border-slate-200 dark:border-slate-700 rounded-lg shadow-lg p-3 z-20 space-y-3">
 									<div class="space-y-1.5">
 										<label class="text-3xs font-semibold text-slate-500 dark:text-slate-400 uppercase tracking-wide">Author</label>
@@ -5365,10 +5404,10 @@ ${bodies}`;
 					</div>
 					{#if hasHistoryFilter}
 						<div class="flex items-center gap-2 text-3xs text-slate-500 dark:text-slate-400">
-							<span>Showing {filteredCommits.length} of {commits.length} commits</span>
-							{#if historyBranchFilter !== 'current'}<span>· {historyBranchFilter === 'all' ? 'all branches' : historyBranchFilter}</span>{/if}
-							{#if historySearchQuery}<span class="truncate">· "{historySearchQuery}"</span>{/if}
-							<button type="button" class="ml-auto text-violet-600 dark:text-violet-400 hover:text-violet-700 dark:hover:text-violet-300 bg-transparent border-none cursor-pointer p-0 text-3xs font-medium" onclick={clearHistoryFilters}>Clear</button>
+							<span>{filteredCommits.length} of {commits.length} scanned{logTotal > commits.length ? ` · ${logTotal} total` : ''}</span>
+							{#if historyBranchFilter !== 'current'}<span class="truncate">· {historyBranchFilter === 'all' ? 'all branches' : historyBranchFilter}</span>{/if}
+							{#if historyScanCapped}<span class="text-amber-600 dark:text-amber-500">· scan limit reached</span>{/if}
+							<button type="button" class="ml-auto shrink-0 text-violet-600 dark:text-violet-400 hover:text-violet-700 dark:hover:text-violet-300 bg-transparent border-none cursor-pointer p-0 text-3xs font-medium" onclick={clearHistoryFilters}>Clear</button>
 						</div>
 					{/if}
 				</div>
@@ -5382,9 +5421,9 @@ ${bodies}`;
 					{#if commits.length > 0 && filteredCommits.length === 0}
 						<div class="flex flex-col items-center justify-center gap-2 py-8 text-slate-500 text-xs">
 							<Icon name="lucide:search-x" class="w-6 h-6 opacity-30" />
-							<span>No commits match your filters</span>
-							{#if logHasMore}
-								<button type="button" class="px-3 py-1.5 text-xs font-medium rounded-md bg-violet-600 text-white hover:bg-violet-700 transition-colors cursor-pointer border-none" onclick={() => loadLog()}>
+							<span>{isLogLoading || (logHasMore && !logLoadFailed && !historyScanCapped) ? 'Searching earlier commits…' : 'No commits match your filters'}</span>
+							{#if logHasMore && !isLogLoading}
+								<button type="button" class="px-3 py-1.5 text-xs font-medium rounded-md bg-violet-600 text-white hover:bg-violet-700 transition-colors cursor-pointer border-none" onclick={loadMoreLog}>
 									Load more
 								</button>
 							{/if}
@@ -5394,12 +5433,10 @@ ${bodies}`;
 						<GitLog
 							commits={filteredCommits}
 							originalCommits={commits}
-							highlightHashes={filteredCommitHashes}
 							searchQuery={historySearchQuery}
 							isLoading={isLogLoading}
 							hasMore={logHasMore}
 							activeHash={activeTab?.commitHash ?? null}
-							isFiltered={hasHistoryFilter}
 							onLoadMore={() => loadLog()}
 							onViewCommit={viewCommitDiff}
 							onCheckoutCommit={checkoutCommit}

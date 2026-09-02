@@ -107,6 +107,39 @@ describe('undoLastCommit — with a parent commit', () => {
 	});
 });
 
+describe('getLog branch scoping', () => {
+	beforeEach(async () => {
+		await writeFile(path.join(repo, 'a.txt'), 'one\n');
+		await commitAll('on main');
+		await git('checkout', '-b', 'side');
+		await writeFile(path.join(repo, 'b.txt'), 'two\n');
+		await commitAll('on side');
+		await git('checkout', 'main');
+	});
+
+	test('defaults to HEAD, so another branch\'s commits stay out', async () => {
+		const log = await gitService.getLog(repo);
+		expect(log.commits.map(c => c.message)).toEqual(['on main']);
+		expect(log.total).toBe(1);
+	});
+
+	test('a named branch reports that branch', async () => {
+		const log = await gitService.getLog(repo, 50, 0, 'side');
+		expect(log.commits.map(c => c.message)).toEqual(['on side', 'on main']);
+		expect(log.total).toBe(2);
+	});
+
+	test('allBranches walks every ref and counts across all of them', async () => {
+		const log = await gitService.getLog(repo, 50, 0, undefined, true);
+		expect(log.commits.map(c => c.message).sort()).toEqual(['on main', 'on side']);
+		expect(log.total).toBe(2);
+	});
+
+	test('the branch argument still rejects option-shaped values', async () => {
+		await expect(gitService.getLog(repo, 50, 0, '--all')).rejects.toThrow(/option injection/i);
+	});
+});
+
 describe('other actions on a repo with no commits', () => {
 	test('getLog reports an empty history rather than throwing', async () => {
 		expect(await gitService.getLog(repo)).toEqual({ commits: [], total: 0, hasMore: false });
