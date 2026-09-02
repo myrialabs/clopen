@@ -165,16 +165,6 @@
 					Shell
 				</button>
 			{/if}
-
-			{#if result?.runtime}
-				<span
-					class="hidden lg:flex items-center gap-1.5 shrink-0 text-[11px] text-slate-400 dark:text-slate-600"
-					title="This list refreshes every couple of seconds while the panel is open"
-				>
-					<span class="w-1.5 h-1.5 rounded-full bg-emerald-500"></span>
-					live
-				</span>
-			{/if}
 		</div>
 
 		{#if containersStore.isLoading && !result}
