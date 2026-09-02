@@ -66,10 +66,11 @@ export function fuzzyMatch(query: string, text: string): FuzzyMatch | null {
  * keywords). Returns 0 when none of them match, so callers can treat `> 0` as
  * "matched".
  *
- * Only scores that correspond to a contiguous substring (100+) or a strong
- * fuzzy hit (>= 50) are considered. This prevents low-score subsequence
- * matches like "Dec" → "D:\\Project-Laravel\\..." (score ~19) from
- * polluting palette results while keeping exact/prefix hits (score 100+).
+ * No score floor is applied here: a two- or three-character initialism
+ * ("dm" → "Toggle Dark Mode") legitimately scores in the low twenties, so any
+ * global cutoff would collapse this into `String.includes`. Callers that need
+ * to reject weak subsequence hits on a specific candidate (long filesystem
+ * paths, say) should filter that candidate out before scoring it.
  */
 export function bestFuzzyScore(query: string, texts: (string | undefined | null)[]): number {
 	if (!query.trim()) return 0;
@@ -77,7 +78,7 @@ export function bestFuzzyScore(query: string, texts: (string | undefined | null)
 	for (const text of texts) {
 		if (!text) continue;
 		const m = fuzzyMatch(query, text);
-		if (m && m.score > best && m.score >= 50) best = m.score;
+		if (m && m.score > best) best = m.score;
 	}
 	return best;
 }

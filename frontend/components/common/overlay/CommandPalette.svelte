@@ -168,19 +168,18 @@
 				: projectState.projects;
 			return base.slice(0, 6);
 		}
+		// Paths are long enough that almost any short query is a subsequence of
+		// them ("Dec" → "D:\Project-Laravel\..." via a scattered d → e → c), so
+		// the path only counts as a match when the query is a contiguous
+		// substring of it ("laravel"). Names are still matched fuzzily.
 		const lowerQ = q.toLowerCase();
 		return projectState.projects
-			.map((p) => {
-				const nameScore = bestFuzzyScore(q, [p.name]);
-				// Path is only considered when the query appears as a contiguous
-				// substring (e.g. "laravel") — avoids false positives like "Dec"
-				// matching "D:\Project-Laravel\..." via scattered subsequence
-				// d → e → c.
-				const pathScore = p.path.toLowerCase().includes(lowerQ)
-					? bestFuzzyScore(q, [p.path])
-					: 0;
-				return { p, match: Math.max(nameScore, pathScore) };
-			})
+			.map((p) => ({
+				p,
+				match: p.path.toLowerCase().includes(lowerQ)
+					? bestFuzzyScore(q, [p.name, p.path])
+					: bestFuzzyScore(q, [p.name])
+			}))
 			.filter((x) => x.match > 0)
 			.map((x) => ({ p: x.p, score: x.match + usageBoost(`project-${x.p.id}`) }))
 			.sort((a, b) => b.score - a.score)
@@ -321,13 +320,16 @@
 		return all.filter((g) => g.items.length > 0);
 	});
 
-	// Reset selection to top when the search query changes so the most relevant
-	// result (e.g. "New Chat Session" for "sess") is highlighted instead of
-	// retaining the previous index (e.g. a hovered file like
-	// "session-invalidation.ts").
+	// Every keystroke rebuilds `items`, so an index left behind by a hover or by
+	// arrow-key navigation points at a different row than the one the user was
+	// looking at — hovering a file, then typing "sess", kept the highlight on
+	// "session-invalidation.ts" instead of moving it to "New Chat Session".
+	// Track the two things that actually change the result set: `effectiveQuery`
+	// (so whitespace-only edits don't reset) and `fileOnly` (an "@" prefix
+	// leaves `effectiveQuery` untouched but swaps the whole list for files).
 	$effect(() => {
-		void query;
 		void effectiveQuery;
+		void fileOnly;
 		selectedIndex = 0;
 	});
 
