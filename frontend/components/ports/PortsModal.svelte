@@ -102,10 +102,8 @@
 				<Icon name="lucide:loader-circle" class="w-5 h-5 animate-spin text-slate-400" />
 			</div>
 		{:else}
-			<div class="flex flex-1 min-h-0 relative bg-slate-50 dark:bg-slate-950 overflow-hidden">
-				<div class="port-list-wrap flex-1 min-h-0 flex flex-col overflow-hidden" class:detail-open={!!selected}>
-					<PortTable {canKill} onKill={(entry) => (pendingKill = entry)} />
-				</div>
+			<div class="flex flex-1 min-h-0 relative bg-slate-50 dark:bg-slate-950">
+				<PortTable {canKill} onKill={(entry) => (pendingKill = entry)} />
 				{#if selected}
 					<PortDetailLayer entry={selected} onClose={() => portsStore.select(null)} />
 				{/if}
@@ -113,19 +111,5 @@
 		{/if}
 	{/snippet}
 </Modal>
-
-<style>
-	@media (min-width: 768px) {
-		.port-list-wrap {
-			transition: margin-right 320ms cubic-bezier(0.16, 1, 0.3, 1);
-			margin-right: 0;
-			will-change: margin-right;
-			backface-visibility: hidden;
-		}
-		.port-list-wrap.detail-open {
-			margin-right: 320px;
-		}
-	}
-</style>
 
 <PortKillDialog bind:entry={pendingKill} />

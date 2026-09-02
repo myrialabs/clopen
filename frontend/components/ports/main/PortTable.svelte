@@ -23,22 +23,9 @@
 	const result = $derived(portsStore.result);
 	const total = $derived(result?.entries.length ?? 0);
 	const shown = $derived(portsStore.entries.length);
-
-	const hasDetail = $derived(portsStore.selected !== null);
-	// tanpa gap: saat detail terbuka, padding kanan di-nol-kan supaya
-	// list menempel langsung ke border-l detail (w-[320px] == margin 320px).
-	// p-3 = 0.75rem (12px di 16px), jadi pad 0.75rem ↔ 0 sinkron dengan
-	// margin-right dan fly 240ms. Mobile tetap 0.75rem via !important di bawah.
-	const padRight = $derived(hasDetail ? '0px' : '0.75rem');
 </script>
 
-<div
-	class="port-table flex-1 min-h-0 overflow-y-auto flex flex-col gap-4 p-3"
-	style:padding-right={padRight}
-	style:transition="padding-right 320ms cubic-bezier(0.16, 1, 0.3, 1)"
-	style:will-change="padding-right"
-	style:backface-visibility="hidden"
->
+<div class="flex-1 min-h-0 overflow-y-auto flex flex-col gap-4 p-3">
 	{#if result?.error}
 		<div
 			class="flex items-start gap-2.5 p-3 rounded-lg bg-red-500/10 text-red-700 dark:text-red-400"
@@ -115,12 +102,3 @@
 		</section>
 	{/if}
 </div>
-
-<style>
-	/* Mobile: detail adalah bottom-sheet, jangan hilangkan padding kanan */
-	@media (max-width: 767px) {
-		.port-table {
-			padding-right: 0.75rem !important;
-		}
-	}
-</style>
