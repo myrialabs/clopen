@@ -297,11 +297,23 @@
 	let branchesSubTab = $state<'local' | 'remote'>('local');
 
 	// History view state — search & filter
+	// `historySearchQuery` is what the input holds; `historySearchTerm` is the
+	// debounced copy everything downstream reads, so a keystroke doesn't re-filter
+	// and re-render the whole commit list.
 	let historySearchQuery = $state('');
+	let historySearchTerm = $state('');
 	let historyAuthorFilter = $state<string>('all');
-	let historyDateFilter = $state<'all' | 'today' | 'week' | 'month'>('all');
+	let historyDateFrom = $state('');
+	let historyDateTo = $state('');
 	let historyBranchFilter = $state<string>('current');
 	let showHistoryFilterMenu = $state(false);
+
+	$effect(() => {
+		const q = historySearchQuery;
+		if (q === historySearchTerm) return;
+		const t = setTimeout(() => (historySearchTerm = q), 200);
+		return () => clearTimeout(t);
+	});
 
 	// Per-nested-repo branches view state
 	let nestedSearchQueries = $state<Record<string, string>>({});
@@ -1050,7 +1062,13 @@
 	);
 
 	const hasHistoryFilter = $derived(
-		historySearchQuery.trim() !== '' || historyAuthorFilter !== 'all' || historyDateFilter !== 'all' || historyBranchFilter !== 'current'
+		historySearchTerm.trim() !== '' || historyAuthorFilter !== 'all' || historyDateFrom !== '' || historyDateTo !== '' || historyBranchFilter !== 'current'
+	);
+
+	// Only the client-side filters need more pages loaded; the branch scope is
+	// already a server-side query, so switching it just paginates as usual.
+	const historyNeedsScan = $derived(
+		historySearchTerm.trim() !== '' || historyAuthorFilter !== 'all' || historyDateFrom !== '' || historyDateTo !== ''
 	);
 
 	const historyBranchOptions = $derived(branchInfo?.local.map(b => b.name) ?? []);
@@ -1079,28 +1097,37 @@
 		);
 	}
 
-	function matchesHistoryDate(c: GitCommit, filter: typeof historyDateFilter): boolean {
-		if (filter === 'all') return true;
+	/** Local midnight bounds for the `yyyy-mm-dd` range inputs; `to` is inclusive. */
+	const historyDateBounds = $derived.by(() => {
+		const parse = (value: string, endOfDay: boolean) => {
+			if (!value) return null;
+			const [y, m, d] = value.split('-').map(Number);
+			if (!y || !m || !d) return null;
+			return endOfDay
+				? new Date(y, m - 1, d, 23, 59, 59, 999).getTime()
+				: new Date(y, m - 1, d).getTime();
+		};
+		return { from: parse(historyDateFrom, false), to: parse(historyDateTo, true) };
+	});
+
+	function matchesHistoryDate(c: GitCommit, bounds: { from: number | null; to: number | null }): boolean {
+		if (bounds.from === null && bounds.to === null) return true;
 		const t = new Date(c.date).getTime();
 		if (Number.isNaN(t)) return true;
-		if (filter === 'today') {
-			const midnight = new Date();
-			midnight.setHours(0, 0, 0, 0);
-			return t >= midnight.getTime();
-		}
-		const days = filter === 'week' ? 7 : 30;
-		return Date.now() - t < days * 24 * 60 * 60 * 1000;
+		if (bounds.from !== null && t < bounds.from) return false;
+		if (bounds.to !== null && t > bounds.to) return false;
+		return true;
 	}
 
 	function applyHistoryFilters(list: GitCommit[]): GitCommit[] {
-		const q = historySearchQuery.trim();
+		const q = historySearchTerm.trim();
 		const authorF = historyAuthorFilter;
-		const dateF = historyDateFilter;
-		if (!q && authorF === 'all' && dateF === 'all') return list;
+		const bounds = historyDateBounds;
+		if (!q && authorF === 'all' && bounds.from === null && bounds.to === null) return list;
 		return list.filter(c =>
 			matchesHistorySearch(c, q) &&
 			(authorF === 'all' || c.author === authorF) &&
-			matchesHistoryDate(c, dateF)
+			matchesHistoryDate(c, bounds)
 		);
 	}
 
@@ -1112,8 +1139,10 @@
 
 	function resetHistoryFilters() {
 		historySearchQuery = '';
+		historySearchTerm = '';
 		historyAuthorFilter = 'all';
-		historyDateFilter = 'all';
+		historyDateFrom = '';
+		historyDateTo = '';
 		historyBranchFilter = 'current';
 		prevHistoryBranchFilter = 'current';
 		showHistoryFilterMenu = false;
@@ -1395,7 +1424,7 @@
 		}
 	}
 
-	async function loadLog(reset = false) {
+	async function loadLog(reset = false, limit = 50) {
 		if (!projectId) return;
 		// Guard against concurrent loads. On restore both the explicit load and the
 		// reactive view effect can fire for the same view; without this they'd
@@ -1410,7 +1439,7 @@
 				logTotal = 0;
 				logLoadFailed = false;
 			}
-			const data = await ws.http('git:log', { projectId, limit: 50, skip: logSkip, ...historyLogScope() });
+			const data = await ws.http('git:log', { projectId, limit, skip: logSkip, ...historyLogScope() });
 			if (reset) {
 				commits = data.commits;
 			} else {
@@ -1444,17 +1473,22 @@
 	 * Both guards are load-bearing. `logLoadFailed` stops the scan on the first
 	 * failed page: the effect tracks `isLogLoading`, so without it a page that
 	 * throws re-triggers the effect the moment it settles and the panel retries
-	 * four times a second forever. The page cap stops a one-character search from
-	 * walking an entire long-lived history 50 commits at a time, each page also
-	 * paying a full `rev-list --count` on the server.
+	 * four times a second forever. The cap stops a one-character search from
+	 * walking an entire long-lived history, each page also paying a full
+	 * `rev-list --count` on the server. Pages are much larger than the ones
+	 * scrolling asks for: each one re-renders the list, so 50 at a time flickers.
 	 */
 	const HISTORY_SCAN_LIMIT = 1000;
-	const historyScanCapped = $derived(hasHistoryFilter && logHasMore && commits.length >= HISTORY_SCAN_LIMIT);
+	const HISTORY_SCAN_PAGE = 500;
+	const historyScanCapped = $derived(historyNeedsScan && logHasMore && commits.length >= HISTORY_SCAN_LIMIT);
+	// Stays true for the whole scan, so the empty state doesn't blink its message
+	// and its button in and out once per page.
+	const historyScanning = $derived(historyNeedsScan && logHasMore && !logLoadFailed && !historyScanCapped);
 
 	$effect(() => {
-		if (!hasHistoryFilter || !logHasMore || isLogLoading || logLoadFailed) return;
+		if (!historyNeedsScan || !logHasMore || isLogLoading || logLoadFailed) return;
 		if (commits.length === 0 || commits.length >= HISTORY_SCAN_LIMIT) return;
-		const t = setTimeout(() => void loadLog(), 150);
+		const t = setTimeout(() => void loadLog(false, HISTORY_SCAN_PAGE), 150);
 		return () => clearTimeout(t);
 	});
 
@@ -4660,7 +4694,7 @@ ${bodies}`;
 					<GitLog
 						commits={filteredNested}
 						originalCommits={commitsList}
-						searchQuery={historySearchQuery}
+						searchQuery={historySearchTerm}
 						isLoading={nestedIsLogLoading[nested.relPath] || false}
 						hasMore={nestedLogHasMore[nested.relPath] || false}
 						activeHash={activeTab?.commitHash ?? null}
@@ -5381,17 +5415,29 @@ ${bodies}`;
 										</select>
 									</div>
 									<div class="space-y-1.5">
-										<label class="text-3xs font-semibold text-slate-500 dark:text-slate-400 uppercase tracking-wide">Period</label>
-										<select
-											value={historyDateFilter}
-											onchange={(e) => (historyDateFilter = e.currentTarget.value as typeof historyDateFilter)}
-											class="w-full px-2.5 py-1.5 text-xs bg-slate-50 dark:bg-slate-900 border border-slate-200 dark:border-slate-700 rounded-md text-slate-900 dark:text-slate-100 outline-none focus:border-violet-500/40"
-										>
-											<option value="all">All time</option>
-											<option value="today">Today</option>
-											<option value="week">Last 7 days</option>
-											<option value="month">Last 30 days</option>
-										</select>
+										<div class="flex items-center gap-2">
+											<span class="text-3xs font-semibold text-slate-500 dark:text-slate-400 uppercase tracking-wide">Date range</span>
+											{#if historyDateFrom || historyDateTo}
+												<button type="button" class="ml-auto text-3xs font-medium text-violet-600 dark:text-violet-400 hover:text-violet-700 dark:hover:text-violet-300 bg-transparent border-none cursor-pointer p-0" onclick={() => { historyDateFrom = ''; historyDateTo = ''; }}>Reset</button>
+											{/if}
+										</div>
+										<div class="flex items-center gap-1.5">
+											<input
+												type="date"
+												aria-label="From date"
+												bind:value={historyDateFrom}
+												max={historyDateTo || undefined}
+												class="min-w-0 flex-1 px-2 py-1.5 text-xs bg-slate-50 dark:bg-slate-900 border border-slate-200 dark:border-slate-700 rounded-md text-slate-900 dark:text-slate-100 outline-none focus:border-violet-500/40"
+											/>
+											<span class="text-3xs text-slate-400 shrink-0">to</span>
+											<input
+												type="date"
+												aria-label="To date"
+												bind:value={historyDateTo}
+												min={historyDateFrom || undefined}
+												class="min-w-0 flex-1 px-2 py-1.5 text-xs bg-slate-50 dark:bg-slate-900 border border-slate-200 dark:border-slate-700 rounded-md text-slate-900 dark:text-slate-100 outline-none focus:border-violet-500/40"
+											/>
+										</div>
 									</div>
 									{#if hasHistoryFilter}
 										<button type="button" class="w-full px-2.5 py-1.5 text-xs font-medium rounded-md bg-slate-100 dark:bg-slate-700 text-slate-600 dark:text-slate-300 hover:bg-slate-200 dark:hover:bg-slate-600 transition-colors cursor-pointer border-none" onclick={clearHistoryFilters}>
@@ -5421,8 +5467,8 @@ ${bodies}`;
 					{#if commits.length > 0 && filteredCommits.length === 0}
 						<div class="flex flex-col items-center justify-center gap-2 py-8 text-slate-500 text-xs">
 							<Icon name="lucide:search-x" class="w-6 h-6 opacity-30" />
-							<span>{isLogLoading || (logHasMore && !logLoadFailed && !historyScanCapped) ? 'Searching earlier commits…' : 'No commits match your filters'}</span>
-							{#if logHasMore && !isLogLoading}
+							<span>{historyScanning ? 'Searching earlier commits…' : 'No commits match your filters'}</span>
+							{#if logHasMore && !historyScanning && !isLogLoading}
 								<button type="button" class="px-3 py-1.5 text-xs font-medium rounded-md bg-violet-600 text-white hover:bg-violet-700 transition-colors cursor-pointer border-none" onclick={loadMoreLog}>
 									Load more
 								</button>
@@ -5433,7 +5479,7 @@ ${bodies}`;
 						<GitLog
 							commits={filteredCommits}
 							originalCommits={commits}
-							searchQuery={historySearchQuery}
+							searchQuery={historySearchTerm}
 							isLoading={isLogLoading}
 							hasMore={logHasMore}
 							activeHash={activeTab?.commitHash ?? null}
