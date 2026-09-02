@@ -12,9 +12,14 @@
 		onViewCommit: (hash: string) => void;
 		onCheckoutCommit: (hash: string) => void;
 		getRemoteCommitUrl?: (hash: string) => string | null;
+		/** The unfiltered list `commits` was filtered from — lets the graph keep each
+		 *  commit on the lane it occupies in the full history. */
+		originalCommits?: GitCommit[];
+		/** Search text to highlight inside commit messages. */
+		searchQuery?: string;
 	}
 
-	const { commits, isLoading, hasMore, activeHash = null, onLoadMore, onViewCommit, onCheckoutCommit, getRemoteCommitUrl }: Props = $props();
+	const { commits, isLoading, hasMore, activeHash = null, onLoadMore, onViewCommit, onCheckoutCommit, getRemoteCommitUrl, originalCommits, searchQuery = '' }: Props = $props();
 
 	let selectedHash = $state('');
 	const effectiveActiveHash = $derived(activeHash ?? selectedHash);
@@ -62,7 +67,101 @@
 		'#f43f5e', '#06b6d4', '#f97316', '#ec4899'
 	];
 
-	const graphRows = $derived(computeGraph(commits));
+	// Graph of the full history. Filtering never recomputes it — it only decides
+	// which of its rows are drawn — so a commit keeps its lane and colour.
+	const baseGraph = $derived(originalCommits ? computeGraph(originalCommits) : null);
+
+	const graphRows = $derived.by(() => {
+		if (baseGraph && originalCommits && originalCommits.length !== commits.length) {
+			return projectGraph(commits, originalCommits, baseGraph);
+		}
+		return computeGraph(commits);
+	});
+
+	/**
+	 * Draw a filtered subset against the full history's graph.
+	 *
+	 * Rebuilding the lane assignment from the subset alone reflows every lane:
+	 * a commit sitting on the second branch collapses onto the first as soon as
+	 * the commits that held its lane open are filtered out, and the lane colours
+	 * shift with it. So we keep each visible commit's row from the full graph and
+	 * only recompute the connectors, carrying a lane across a run of hidden rows
+	 * when it stays open the whole way.
+	 */
+	function projectGraph(filtered: GitCommit[], all: GitCommit[], base: GraphRow[]): GraphRow[] {
+		if (filtered.length === 0 || base.length === 0) return [];
+
+		const indexOf = new Map<string, number>();
+		all.forEach((c, i) => indexOf.set(c.hash, i));
+
+		const visible: number[] = [];
+		for (const c of filtered) {
+			const i = indexOf.get(c.hash);
+			// A commit outside `all` has no row to borrow; fall back rather than misalign.
+			if (i === undefined) return computeGraph(filtered);
+			visible.push(i);
+		}
+
+		// col -> colour is stable across the whole base graph, so any row that
+		// touches a lane tells us that lane's colour.
+		const laneColor = new Map<number, string>();
+		for (const row of base) {
+			laneColor.set(row.col, row.nodeColor);
+			for (const l of row.lanes) laneColor.set(l.col, l.color);
+			for (const m of row.mergeFrom) laneColor.set(m.col, m.color);
+			for (const b of row.branchTo) laneColor.set(b.col, b.color);
+		}
+		const colorAt = (col: number) => laneColor.get(col) ?? LANE_COLORS[col % LANE_COLORS.length];
+
+		// Lanes that survive from one visible row down to the next: a lane only
+		// counts if it stays open across every hidden row in between, which is
+		// also what keeps a recycled lane from splicing two unrelated branches.
+		function lanesBelow(k: number): Set<number> {
+			const from = visible[k];
+			const to = k + 1 < visible.length ? visible[k + 1] : from + 1;
+			let open: Set<number> | null = null;
+			for (let i = from; i < to && i < base.length; i++) {
+				const next = base[i].nextLaneCols;
+				if (open === null) {
+					open = new Set(next);
+					continue;
+				}
+				for (const col of open) if (!next.has(col)) open.delete(col);
+			}
+			return open ?? new Set<number>();
+		}
+
+		const rows: GraphRow[] = [];
+		let above = new Set<number>();
+		for (let k = 0; k < visible.length; k++) {
+			const src = base[visible[k]];
+			const below = lanesBelow(k);
+			const mergeFrom = src.mergeFrom.filter(m => above.has(m.col));
+			const branchTo = src.branchTo.filter(b => below.has(b.col));
+			const lanes = [...below].sort((a, b) => a - b).map(col => ({ col, color: colorAt(col) }));
+
+			let maxCol = src.col;
+			for (const l of lanes) maxCol = Math.max(maxCol, l.col);
+			for (const m of mergeFrom) maxCol = Math.max(maxCol, m.col);
+			for (const b of branchTo) maxCol = Math.max(maxCol, b.col);
+
+			rows.push({
+				col: src.col,
+				nodeColor: src.nodeColor,
+				lanes,
+				mergeFrom,
+				branchTo,
+				branchToCols: new Set(branchTo.map(b => b.col)),
+				prevLaneCols: above,
+				nextLaneCols: below,
+				nodeHasTop: above.has(src.col),
+				nodeHasBottom: below.has(src.col),
+				maxCol
+			});
+			above = below;
+		}
+		return rows;
+	}
 
 	function computeGraph(commits: GitCommit[]): GraphRow[] {
 		if (commits.length === 0) return [];
@@ -235,6 +334,26 @@
 		return date.toLocaleDateString();
 	}
 
+	/** Split a message into plain and matched runs, so the match can be marked up
+	 *  without routing user text through `{@html}`. */
+	function highlightParts(text: string, query: string): Array<{ text: string; hl: boolean }> {
+		const q = query.trim().toLowerCase();
+		if (!q) return [{ text, hl: false }];
+
+		const parts: Array<{ text: string; hl: boolean }> = [];
+		const haystack = text.toLowerCase();
+		let cursor = 0;
+		let at = haystack.indexOf(q);
+		while (at !== -1) {
+			if (at > cursor) parts.push({ text: text.slice(cursor, at), hl: false });
+			parts.push({ text: text.slice(at, at + q.length), hl: true });
+			cursor = at + q.length;
+			at = haystack.indexOf(q, cursor);
+		}
+		if (cursor < text.length) parts.push({ text: text.slice(cursor), hl: false });
+		return parts;
+	}
+
 	function handleViewCommit(hash: string) {
 		selectedHash = hash;
 		onViewCommit(hash);
@@ -373,7 +492,11 @@
 					<div class="flex-1 min-w-0 px-1.5 py-0.5 flex flex-col justify-center overflow-hidden">
 						<!-- Line 1: Message -->
 						<p class="text-sm text-slate-900 dark:text-slate-100 leading-tight truncate" title={commit.message}>
-							{commit.message}
+							{#if searchQuery.trim()}
+								{#each highlightParts(commit.message, searchQuery) as part}{#if part.hl}<mark class="bg-transparent text-violet-600 dark:text-violet-400 font-semibold">{part.text}</mark>{:else}{part.text}{/if}{/each}
+							{:else}
+								{commit.message}
+							{/if}
 						</p>
 
 						<!-- Line 2: Hash + Date + Author -->
