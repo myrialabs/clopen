@@ -26,7 +26,9 @@
 			? 'lucide:shield-check'
 			: entry.origin.kind === 'session'
 				? 'lucide:terminal'
-				: 'lucide:circle-question-mark'
+				: entry.origin.kind === 'container'
+					? 'lucide:container'
+					: 'lucide:circle-question-mark'
 	);
 
 	const accent = $derived(
@@ -34,7 +36,9 @@
 			? 'text-violet-600 dark:text-violet-400'
 			: entry.origin.kind === 'session'
 				? 'text-sky-600 dark:text-sky-400'
-				: 'text-slate-400 dark:text-slate-500'
+				: entry.origin.kind === 'container'
+					? 'text-blue-600 dark:text-blue-400'
+					: 'text-slate-400 dark:text-slate-500'
 	);
 
 	/** Why the stop button is absent, in the user's terms rather than a code. */
@@ -47,7 +51,9 @@
 					? `Owned by ${entry.process?.user ?? 'another user'}`
 					: entry.killBlockedReason === 'system-process'
 						? 'System process'
-						: null
+						: entry.killBlockedReason === 'managed-by-container'
+							? 'Published by a container — stop the container instead'
+							: null
 	);
 </script>
 
@@ -85,6 +91,14 @@
 						guess
 					</span>
 				{/if}
+				{#if entry.container}
+					<span
+						class="hidden sm:inline shrink-0 px-1 py-px rounded text-[9px] font-semibold uppercase tracking-wide bg-blue-500/15 text-blue-700 dark:text-blue-400"
+						title="Published by the {entry.container.name} container from its port {entry.container.containerPort}"
+					>
+						{entry.container.runtime}
+					</span>
+				{/if}
 				{#if entry.publicUrl}
 					<span
 						class="shrink-0 px-1 py-px rounded text-[9px] font-semibold uppercase tracking-wide bg-amber-500/15 text-amber-700 dark:text-amber-400"
@@ -106,7 +120,11 @@
 				{entry.addresses.join(', ')}
 			</span>
 			<span class="text-[11px] text-slate-400 dark:text-slate-600">
-				{#if entry.pid === null}
+				{#if entry.pid === null && entry.container}
+					<!-- No process to name: the runtime forwards this port through a
+					     firewall rule rather than a listening socket. -->
+					published by {entry.container.runtime}
+				{:else if entry.pid === null}
 					owner unknown
 				{:else}
 					pid {entry.pid}{#if entry.workerPids.length > 1}

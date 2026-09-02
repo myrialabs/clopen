@@ -8,7 +8,11 @@
 -->
 <script lang="ts">
 	import Icon from '$frontend/components/common/display/Icon.svelte';
-	import type { PortEntry } from '$shared/types/ports';
+	import { portsStore } from '$frontend/stores/features/ports.svelte';
+	import { containersStore } from '$frontend/stores/features/containers.svelte';
+	import { sshClientStore } from '$frontend/stores/features/ssh-client.svelte';
+	import { closePortsDialog, openContainersDialog } from '$frontend/stores/ui/quick-panels.svelte';
+	import { LOCAL_PORT_HOST, type PortEntry } from '$shared/types/ports';
 
 	interface Props {
 		entry: PortEntry;
@@ -28,8 +32,26 @@
 			? 'Clopen opened this listener, so this is exact.'
 			: entry.origin.kind === 'session'
 				? 'Traced through the process tree — the lineage is certain.'
-				: 'Inferred from the command line. Clopen did not start this, so treat the label as a guess.'
+				: entry.origin.kind === 'container'
+					? 'The container runtime publishes this port, so the owner is exact. Whatever holds the socket is the runtime’s own proxy, not the server you are looking for.'
+					: 'Inferred from the command line. Clopen did not start this, so treat the label as a guess.'
 	);
+
+	/**
+	 * Jump to this port's container. The panel and the SSH Client tab are the
+	 * same view, so which one to open follows from which host the row is on.
+	 */
+	function openContainer(): void {
+		if (!entry.container) return;
+		const hostId = portsStore.activeHostId;
+		containersStore.focus(hostId, entry.container.id);
+		if (hostId === LOCAL_PORT_HOST) {
+			closePortsDialog();
+			openContainersDialog();
+			return;
+		}
+		sshClientStore.setView(hostId, 'containers');
+	}
 </script>
 
 <aside
@@ -74,6 +96,26 @@
 			{/if}
 		</section>
 
+		{#if entry.container}
+			<section class="flex flex-col gap-1.5 p-2.5 rounded-lg bg-blue-500/10">
+				<h4 class="m-0 text-[11px] font-semibold uppercase tracking-wider text-blue-700 dark:text-blue-400">
+					Published by a container
+				</h4>
+				<p class="m-0 text-xs text-blue-800 dark:text-blue-300 break-all">
+					{entry.container.name} · {entry.container.image} · container port
+					{entry.container.containerPort}
+				</p>
+				<button
+					type="button"
+					class="flex items-center gap-1.5 self-start mt-0.5 px-2 h-7 rounded-md bg-blue-500/15 border-none text-[11px] font-semibold text-blue-800 dark:text-blue-300 cursor-pointer hover:bg-blue-500/25"
+					onclick={openContainer}
+				>
+					<Icon name="lucide:container" class="w-3.5 h-3.5" />
+					Open in Containers
+				</button>
+			</section>
+		{/if}
+
 		{#if entry.publicUrl}
 			<section class="flex flex-col gap-1 p-2.5 rounded-lg bg-amber-500/10">
 				<h4 class="m-0 text-[11px] font-semibold uppercase tracking-wider text-amber-700 dark:text-amber-400">
@@ -101,7 +143,13 @@
 
 		<section class="flex flex-col gap-1.5">
 			<h4 class="m-0 text-[11px] font-semibold uppercase tracking-wider text-slate-500">Process</h4>
-			{#if entry.pid === null}
+			{#if entry.pid === null && entry.container}
+				<p class="m-0 text-xs text-slate-500 dark:text-slate-500">
+					Nothing is listening on this port. The runtime forwards it into the
+					container through a firewall rule instead, which is why no process
+					holds it — the port is still reachable.
+				</p>
+			{:else if entry.pid === null}
 				<p class="m-0 text-xs text-slate-500 dark:text-slate-500">
 					This host did not name the owning process. On Linux the kernel only
 					reveals it for your own processes.

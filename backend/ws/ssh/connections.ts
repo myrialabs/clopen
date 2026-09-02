@@ -11,6 +11,8 @@ import { sshForwardManager } from '../../ssh/forwards';
 import { sshHealthService } from '../../ssh/health';
 import { knownHosts } from '../../ssh/known-hosts';
 import { killSessionsForConnection } from '../../ssh/ptykit';
+import { killContainerSessionsForHost } from '../../containers/pty';
+import { stopLogStreamsForHost } from '../../containers/logs';
 import type { SshConnectionInput } from '$shared/types/ssh';
 import { debug } from '$shared/utils/logger';
 import { getSshPrincipal, requireSshConnection } from './access';
@@ -78,9 +80,13 @@ function isInput(value: unknown): value is SshConnectionInput {
 /**
  * Changing where or how a host is reached invalidates everything riding the old
  * transport, so shells, forwards and the pooled client all go before the write.
+ * That includes the two things this host's containers hold open: shells running
+ * inside them, and any log stream being followed.
  */
 async function tearDownConnection(connectionId: string): Promise<void> {
 	killSessionsForConnection(connectionId);
+	killContainerSessionsForHost(connectionId);
+	stopLogStreamsForHost(connectionId);
 	await sshForwardManager.stopForConnection(connectionId);
 	sshClientPool.release(connectionId);
 	// Editing or deleting is not "disconnect" — a host suspended earlier should
@@ -187,6 +193,8 @@ export const sshConnectionsHandler = createRouter()
 	}, async ({ data, conn }) => {
 		requireSshConnection(conn, data.id);
 		killSessionsForConnection(data.id);
+		killContainerSessionsForHost(data.id);
+		stopLogStreamsForHost(data.id);
 		await sshForwardManager.stopForConnection(data.id);
 		sshClientPool.suspend(data.id);
 		return sshHealthService.testSaved(data.id);

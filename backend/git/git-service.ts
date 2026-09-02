@@ -471,7 +471,7 @@ export class GitService {
 	// Log
 	// ============================================
 
-	async getLog(cwd: string, limit = 50, skip = 0, branch?: string): Promise<GitLogResult> {
+	async getLog(cwd: string, limit = 50, skip = 0, branch?: string, allBranches = false): Promise<GitLogResult> {
 		const SEPARATOR = '|||';
 		const format = `%H${SEPARATOR}%h${SEPARATOR}%an${SEPARATOR}%ae${SEPARATOR}%aI${SEPARATOR}%P${SEPARATOR}%D%n%s%x00`;
 
@@ -483,7 +483,11 @@ export class GitService {
 			`--skip=${skip}`
 		];
 
-		if (branch) {
+		// `--all` is a flag, not a revision, so it stays out of the value slot that
+		// `assertSafeGitRevish` guards against option injection.
+		if (allBranches) {
+			args.push('--all');
+		} else if (branch) {
 			assertSafeGitRevish(branch, 'log branch');
 			args.push(branch);
 		}
@@ -503,7 +507,7 @@ export class GitService {
 		if (hasMore) commits.pop(); // Remove the extra one
 
 		// Get total count
-		const countRef = branch ?? 'HEAD';
+		const countRef = allBranches ? '--all' : (branch ?? 'HEAD');
 		const countResult = await execGit(['rev-list', '--count', countRef], cwd);
 		const total = parseInt(countResult.stdout.trim()) || commits.length;
 

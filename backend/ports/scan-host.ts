@@ -8,9 +8,12 @@
 
 import os from 'node:os';
 import type {
+	PortContainerRef,
 	PortEntry,
+	PortIpVersion,
 	PortKillBlockedReason,
 	PortLimitation,
+	PortOrigin,
 	PortPeer,
 	PortProtocol,
 	PortScanResult,
@@ -22,7 +25,12 @@ import { ProcessTable } from './processes';
 import { attribute, buildContext, groupListenerPids } from './attribute';
 import { collectExposedPorts } from './registry';
 import { resolveClopenPids } from './ssh-lineage';
-import type { CommandRunner, ProbePlatform } from './runner';
+import {
+	addressesOverlap,
+	containerPortIndex,
+	refreshContainerPortIndex
+} from '../containers/port-index';
+import type { CommandRunner, ProbePlatform } from '../host/runner';
 
 /** Who the scan is running as, which decides what it may signal. */
 export interface ScanPrincipal {
@@ -49,6 +57,18 @@ const NO_CLOPEN_LINEAGE: PortLimitation = {
 	message:
 		'Nothing listening here belongs to Clopen’s own SSH connection. If you started a server from a Clopen terminal on this host and it is not listed under “Started from Clopen”, this host does not let Clopen read a process’s environment.'
 };
+
+/** How a published port describes itself: by the container, not the proxy. */
+function containerOrigin(ref: PortContainerRef): PortOrigin {
+	return {
+		kind: 'container',
+		// The runtime states this outright — there is nothing to infer.
+		confidence: 'certain',
+		label: ref.name,
+		detail: `${ref.image} · container port ${ref.containerPort}`,
+		containerId: ref.id
+	};
+}
 
 function protocolPortKey(protocol: PortProtocol, port: number): string {
 	return `${protocol}:${port}`;
@@ -184,6 +204,11 @@ export class HostPortScanner {
 		});
 		const peers = collectPeers(sockets);
 		const exposed = this.isLocal ? collectExposedPorts() : new Map<number, string>();
+		// Read now, refresh behind us: a table that ticks every second must never
+		// wait on a `docker ps`, and a mapping that lands one tick late is
+		// invisible next to one that made the whole table stutter.
+		const containers = containerPortIndex(this.hostId);
+		refreshContainerPortIndex(this.hostId, this.runner, this.platform, now);
 
 		// Bucket the listening sockets per protocol+port first; a port is the
 		// unit the user thinks in, and the addresses under it are detail.
@@ -196,6 +221,8 @@ export class HostPortScanner {
 		}
 
 		const entries: PortEntry[] = [];
+		/** Mappings that found a socket to sit on; the rest get their own row. */
+		const annotated = new Set<string>();
 
 		for (const [key, bucket] of buckets) {
 			const { protocol, port } = bucket[0];
@@ -218,19 +245,27 @@ export class HostPortScanner {
 				const representative = groupSockets[0];
 				const pid = owner === -1 ? null : owner;
 				const process = pid !== null ? (processes.get(pid) ?? null) : null;
-				const origin = attribute({ ...representative, pid }, context);
+				const attributed = attribute({ ...representative, pid }, context);
+				// A published container port outranks whatever holds the socket: the
+				// listener is the runtime's own proxy, and signalling it would either
+				// fail or be undone by the daemon a moment later. Clopen's own
+				// listeners are the exception — those it does know better.
+				const candidate = attributed.kind === 'clopen' ? undefined : containers.get(key);
+				const groupAddresses = unique(groupSockets.map((socket) => socket.address));
+				const mapping =
+					candidate && addressesOverlap(groupAddresses, candidate.addresses) ? candidate : undefined;
+				if (mapping) annotated.add(key);
+				const origin = mapping ? containerOrigin(mapping.ref) : attributed;
 				const ownerUser = process?.user ?? representative.user;
-				const { canKill, reason } = this.killability(
-					pid,
-					ownerUser,
-					origin.ownerFeature === 'server'
-				);
+				const { canKill, reason } = mapping
+					? { canKill: false, reason: 'managed-by-container' as PortKillBlockedReason }
+					: this.killability(pid, ownerUser, origin.ownerFeature === 'server');
 
 				entries.push({
 					key: `${this.hostId}:${key}:${pid ?? 'unknown'}`,
 					protocol,
 					port,
-					addresses: unique(groupSockets.map((socket) => socket.address)).sort(),
+					addresses: [...groupAddresses].sort(),
 					ipVersions: unique(groupSockets.map((socket) => socket.ipVersion)).sort(),
 					pid,
 					process,
@@ -239,10 +274,44 @@ export class HostPortScanner {
 					peers: peers.get(key) ?? [],
 					peerCount: (peers.get(key) ?? []).length,
 					publicUrl: exposed.get(port) ?? null,
+					container: mapping?.ref ?? null,
 					canKill,
 					killBlockedReason: reason
 				});
 			}
+		}
+
+		// Mappings with no socket behind them still get a row. Docker publishes
+		// through a firewall rule when its userland proxy is off, and Podman's
+		// rootless networking often leaves nothing for the probe to find either —
+		// so without this the port a user can actually reach would be missing from
+		// the one table that claims to list what is reachable.
+		for (const [mappingKey, mapping] of containers) {
+			if (annotated.has(mappingKey)) continue;
+			const [protocolText, portText] = mappingKey.split(':');
+			const port = Number(portText);
+			if (!Number.isFinite(port)) continue;
+			const protocol = protocolText === 'udp' ? 'udp' : 'tcp';
+
+			entries.push({
+				key: `${this.hostId}:${mappingKey}:container`,
+				protocol,
+				port,
+				addresses: [...mapping.addresses].sort(),
+				ipVersions: unique(
+					mapping.addresses.map((address): PortIpVersion => (address.includes(':') ? 'v6' : 'v4'))
+				).sort(),
+				pid: null,
+				process: null,
+				workerPids: [],
+				origin: containerOrigin(mapping.ref),
+				peers: peers.get(mappingKey) ?? [],
+				peerCount: (peers.get(mappingKey) ?? []).length,
+				publicUrl: exposed.get(port) ?? null,
+				container: mapping.ref,
+				canKill: false,
+				killBlockedReason: 'managed-by-container'
+			});
 		}
 
 		entries.sort((a, b) => a.port - b.port || a.protocol.localeCompare(b.protocol));

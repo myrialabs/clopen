@@ -13,6 +13,7 @@ interface QuickPanelsState {
 	dbClientOpen: boolean;
 	sshClientOpen: boolean;
 	portsOpen: boolean;
+	containersOpen: boolean;
 	memoryOpen: boolean;
 }
 
@@ -23,6 +24,7 @@ export const quickPanelsState = $state<QuickPanelsState>({
 	dbClientOpen: false,
 	sshClientOpen: false,
 	portsOpen: false,
+	containersOpen: false,
 	memoryOpen: false
 });
 
@@ -72,6 +74,14 @@ export function openPortsDialog() {
 
 export function closePortsDialog() {
 	quickPanelsState.portsOpen = false;
+}
+
+export function openContainersDialog() {
+	quickPanelsState.containersOpen = true;
+}
+
+export function closeContainersDialog() {
+	quickPanelsState.containersOpen = false;
 }
 
 export function openMemoryDialog() {
