@@ -18,6 +18,7 @@
 	import type { Project } from '$shared/types/database/schema';
 	import FolderBrowser from '$frontend/components/common/form/FolderBrowser.svelte';
 	import ProjectUserAvatars from '$frontend/components/common/display/ProjectUserAvatars.svelte';
+	import ProjectInfoModal from '$frontend/components/workspace/ProjectInfoModal.svelte';
 	import { authStore } from '$frontend/stores/features/auth.svelte';
 	import ws from '$frontend/utils/ws';
 	import { debug } from '$shared/utils/logger';
@@ -46,6 +47,8 @@
 	let showProjectMenu = $state(false);
 	let showDeleteDialog = $state(false);
 	let projectToDelete = $state<Project | null>(null);
+	let showProjectInfo = $state(false);
+	let projectInfoProject = $state<Project | null>(null);
 	let searchQuery = $state('');
 
 	const canManageProjects = $derived(authStore.isAdmin);
@@ -89,6 +92,16 @@
 		event.stopPropagation();
 		projectToDelete = project;
 		showDeleteDialog = true;
+	}
+
+	function handleInfoClick(project: Project, event: MouseEvent) {
+		event.stopPropagation();
+		projectInfoProject = project;
+		showProjectInfo = true;
+	}
+
+	function closeProjectInfo() {
+		showProjectInfo = false;
 	}
 
 	let deletingProject = $state(false);
@@ -330,6 +343,15 @@
 							</div>
 						</button>
 						<ProjectUserAvatars projectStatus={presenceState.statuses.get(project.id ?? '')} maxVisible={2} />
+						<button
+							type="button"
+							class="flex items-center justify-center w-8 h-8 bg-transparent border-none rounded-lg text-slate-400 dark:text-slate-500 cursor-pointer transition-all duration-150 hover:bg-violet-500/10 hover:text-violet-600 shrink-0"
+							onclick={(e) => handleInfoClick(project, e)}
+							aria-label="Project info"
+							title="Info"
+						>
+							<Icon name="lucide:info" class="w-4 h-4" />
+						</button>
 						{#if canManageProjects}
 							<button
 								type="button"
@@ -431,6 +453,8 @@
 <!-- DB Client Modal -->
 <DbClientModal bind:isOpen={quickPanelsState.dbClientOpen} onClose={closeDbClientDialog} />
 <SshClientModal bind:isOpen={quickPanelsState.sshClientOpen} onClose={closeSshClientDialog} />
-<PortsModal bind:isOpen={quickPanelsState.portsOpen} onClose={closePortsDialog} />
-<ContainersModal bind:isOpen={quickPanelsState.containersOpen} onClose={closeContainersDialog} />
-<MemoryModal bind:isOpen={quickPanelsState.memoryOpen} onClose={closeMemoryDialog} />
+	<PortsModal bind:isOpen={quickPanelsState.portsOpen} onClose={closePortsDialog} />
+	<ContainersModal bind:isOpen={quickPanelsState.containersOpen} onClose={closeContainersDialog} />
+	<MemoryModal bind:isOpen={quickPanelsState.memoryOpen} onClose={closeMemoryDialog} />
+
+	<ProjectInfoModal bind:isOpen={showProjectInfo} onClose={closeProjectInfo} project={projectInfoProject} />

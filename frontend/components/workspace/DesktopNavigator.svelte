@@ -31,6 +31,7 @@
 	import MemoryModal from '$frontend/components/memory/MemoryModal.svelte';
 	import SettingButton from '$frontend/components/settings/SettingButton.svelte';
 	import ProjectUserAvatars from '$frontend/components/common/display/ProjectUserAvatars.svelte';
+	import ProjectInfoModal from '$frontend/components/workspace/ProjectInfoModal.svelte';
 	import ws from '$frontend/utils/ws';
 	import {
 		quickPanelsState,
@@ -55,6 +56,8 @@
 	// State
 	let showDeleteDialog = $state(false);
 	let projectToDelete = $state<Project | null>(null);
+	let showProjectInfo = $state(false);
+	let projectInfoProject = $state<Project | null>(null);
 	let searchQuery = $state('');
 	let hoveredProject = $state<Project | null>(null);
 	let tooltipY = $state(0);
@@ -167,6 +170,16 @@
 		event.stopPropagation();
 		projectToDelete = project;
 		showDeleteDialog = true;
+	}
+
+	function handleInfoClick(project: Project, event: MouseEvent) {
+		event.stopPropagation();
+		projectInfoProject = project;
+		showProjectInfo = true;
+	}
+
+	function closeProjectInfo() {
+		showProjectInfo = false;
 	}
 
 	// Get project initials (max 2 characters)
@@ -354,6 +367,15 @@
 								</div>
 								<div class="flex items-center gap-1 shrink-0">
 									<ProjectUserAvatars projectStatus={presenceState.statuses.get(project.id ?? '')} maxVisible={2} />
+									<button
+										type="button"
+										class="flex items-center justify-center w-6 h-6 bg-transparent border-none rounded-md text-slate-400 dark:text-slate-600 cursor-pointer transition-all duration-150 hover:bg-violet-500/10 hover:text-violet-600 shrink-0"
+										onclick={(e) => handleInfoClick(project, e)}
+										aria-label="Project info"
+										title="Info"
+									>
+										<Icon name="lucide:info" class="w-3.5 h-3.5" />
+									</button>
 									{#if canManageProjects}
 										<button
 											type="button"
@@ -564,3 +586,5 @@
 <PortsModal bind:isOpen={quickPanelsState.portsOpen} onClose={closePortsDialog} />
 <ContainersModal bind:isOpen={quickPanelsState.containersOpen} onClose={closeContainersDialog} />
 <MemoryModal bind:isOpen={quickPanelsState.memoryOpen} onClose={closeMemoryDialog} />
+
+<ProjectInfoModal bind:isOpen={showProjectInfo} onClose={closeProjectInfo} project={projectInfoProject} />

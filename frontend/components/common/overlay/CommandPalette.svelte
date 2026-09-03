@@ -310,6 +310,12 @@
 		return all.filter((g) => g.items.length > 0);
 	});
 
+	// Reset cursor to first result whenever search query changes; keep navigation intact.
+	$effect(() => {
+		void query;
+		if (commandPaletteState.isOpen) selectedIndex = 0;
+	});
+
 	// Keep the selection valid as the result set shrinks/grows while typing.
 	$effect(() => {
 		if (selectedIndex >= items.length) selectedIndex = Math.max(0, items.length - 1);
