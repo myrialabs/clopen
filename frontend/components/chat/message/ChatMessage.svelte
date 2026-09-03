@@ -417,7 +417,6 @@
 			onCopy={copyToClipboard}
 			onRestore={handleRestore}
 			onEdit={handleEdit}
-			onShowDebug={openDebugInfoModal}
 		/>
 	</div>
 {:else}
