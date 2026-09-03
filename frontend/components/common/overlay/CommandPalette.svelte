@@ -80,6 +80,11 @@
 	let fileResults = $state<FileHit[]>([]);
 	let filesLoading = $state(false);
 	let fileDebounceTimer: ReturnType<typeof setTimeout> | undefined;
+	// Pointer-vs-list arbitration for the result rows — see handleItemMouseEnter.
+	// Plain `let`: nothing in the markup reads these, so they don't need to be reactive.
+	let listMovedUnderPointer = false;
+	let lastPointerX = -1;
+	let lastPointerY = -1;
 
 	const modifierLabel = isMac() ? '⌘' : 'Ctrl+';
 
@@ -90,6 +95,7 @@
 			selectedIndex = 0;
 			sessionResults = [];
 			fileResults = [];
+			listMovedUnderPointer = false;
 			queueMicrotask(() => inputEl?.focus());
 		}
 	});
@@ -310,10 +316,46 @@
 		return all.filter((g) => g.items.length > 0);
 	});
 
-	// Keep the selection valid as the result set shrinks/grows while typing.
+	// Reset to the top row on every keystroke — the old index may still be in
+	// bounds but now points at a different item after re-ranking. The container
+	// scrolls back up with it, otherwise a preserved offset leaves the new top
+	// row above the fold and the palette looks like it highlighted nothing.
+	$effect(() => {
+		void effectiveQuery;
+		selectedIndex = 0;
+		resultsEl?.scrollTo({ top: 0 });
+	});
+
+	// Clamp selection when async results shrink the list (sessions/files).
 	$effect(() => {
 		if (selectedIndex >= items.length) selectedIndex = Math.max(0, items.length - 1);
 	});
+
+	// Any reshuffle of the rows puts a different item under a stationary cursor,
+	// and the browser answers that with a `mouseenter` the user never aimed —
+	// re-ranking on a keystroke, async session/file results landing, a page jump
+	// scrolling the list. Acting on those hands the highlight to whatever the
+	// mouse happens to rest on, so the row the user navigated to and the row
+	// under the cursor both look active. Treat the pointer as stale until it
+	// actually moves, which we detect by comparing client coordinates rather
+	// than by trusting an event to imply movement.
+	$effect(() => {
+		void items;
+		listMovedUnderPointer = true;
+	});
+
+	function handleItemMouseEnter(index: number) {
+		if (listMovedUnderPointer) return;
+		selectedIndex = index;
+	}
+
+	function handleItemMouseMove(index: number, event: MouseEvent) {
+		if (event.clientX === lastPointerX && event.clientY === lastPointerY) return;
+		lastPointerX = event.clientX;
+		lastPointerY = event.clientY;
+		listMovedUnderPointer = false;
+		selectedIndex = index;
+	}
 
 	async function activate(item: PaletteItem) {
 		// Track usage so frequent/recent entries rank higher next time.
@@ -325,27 +367,32 @@
 	}
 
 	/**
-	 * Keep the highlighted row visible as arrow-key navigation moves past the
-	 * fold. Only scrolls when the row is actually out of view — anchoring to
-	 * the edge it's crossing (bottom when it overflows below, top when it
-	 * overflows above) — instead of unconditionally calling scrollIntoView
-	 * on every key press. Doing it unconditionally caused a jump on
-	 * alternating Down/Up presses: the row would still be fully visible, but
-	 * the previous direction's edge anchor would yank it back to the
-	 * opposite edge anyway.
+	 * Keep the highlighted row visible as keyboard navigation moves past the
+	 * fold. Only scrolls when the row is actually out of view, and `nearest`
+	 * moves the minimum distance to bring it back — so alternating Down/Up
+	 * presses on a still-visible row don't yank it between edges. A page jump
+	 * lands many rows away, so it scrolls smoothly; single steps snap.
 	 */
-	function scrollSelectedIntoView() {
+	function scrollSelectedIntoView(opts: { smooth?: boolean } = {}) {
 		requestAnimationFrame(() => {
 			const el = resultsEl?.querySelector(`[data-index="${selectedIndex}"]`) as HTMLElement | null;
 			if (!resultsEl || !el) return;
 			const containerRect = resultsEl.getBoundingClientRect();
 			const elRect = el.getBoundingClientRect();
-			if (elRect.bottom > containerRect.bottom) {
-				el.scrollIntoView({ block: 'end' });
-			} else if (elRect.top < containerRect.top) {
-				el.scrollIntoView({ block: 'start' });
+			if (elRect.bottom > containerRect.bottom || elRect.top < containerRect.top) {
+				el.scrollIntoView({ block: 'nearest', behavior: opts.smooth ? 'smooth' : 'auto' });
 			}
 		});
+	}
+
+	/** Rows per PageUp/PageDown — one viewport, minus a row of overlap for context. */
+	function getPageSize(): number {
+		const firstItem = resultsEl?.querySelector('[data-index]') as HTMLElement | null;
+		const itemHeight = firstItem?.offsetHeight ?? 0;
+		// Before the list has rendered there's nothing to measure; 8 rows is
+		// roughly a viewport at the palette's max height.
+		if (!resultsEl || itemHeight <= 0) return 8;
+		return Math.max(1, Math.floor(resultsEl.clientHeight / itemHeight) - 1);
 	}
 
 	/** Don't steal Ctrl/Cmd+K from the terminal — readline binds it to kill-line. */
@@ -383,6 +430,7 @@
 			event.preventDefault();
 			event.stopPropagation();
 			if (items.length > 0) {
+				listMovedUnderPointer = true;
 				selectedIndex = (selectedIndex + 1) % items.length;
 				scrollSelectedIntoView();
 			}
@@ -393,8 +441,26 @@
 			event.preventDefault();
 			event.stopPropagation();
 			if (items.length > 0) {
+				listMovedUnderPointer = true;
 				selectedIndex = (selectedIndex - 1 + items.length) % items.length;
 				scrollSelectedIntoView();
+			}
+			return;
+		}
+
+		// Page keys clamp instead of wrapping — a page jump that teleports from
+		// the last row back to the first reads as a scroll glitch, not navigation.
+		// Home/End are deliberately not bound: focus lives in the query input for
+		// the palette's whole lifetime, so claiming them would break jumping the
+		// text caret to the start or end of what the user typed.
+		if (event.key === 'PageDown' || event.key === 'PageUp') {
+			event.preventDefault();
+			event.stopPropagation();
+			if (items.length > 0) {
+				listMovedUnderPointer = true;
+				const page = event.key === 'PageDown' ? getPageSize() : -getPageSize();
+				selectedIndex = Math.min(items.length - 1, Math.max(0, selectedIndex + page));
+				scrollSelectedIntoView({ smooth: true });
 			}
 			return;
 		}
@@ -471,11 +537,12 @@
 							<button
 								type="button"
 								data-index={item.index}
-								class="flex items-center gap-3 w-[calc(100%-1rem)] mx-2 px-2.5 py-2 rounded-lg text-left bg-transparent border-none cursor-pointer transition-colors duration-100
+								class="flex items-center gap-3 w-[calc(100%-1rem)] mx-2 px-2.5 py-2 rounded-lg text-left bg-transparent border-none cursor-pointer
 									{item.index === selectedIndex
 									? 'bg-violet-500/10 text-slate-900 dark:text-slate-100'
-									: 'text-slate-700 dark:text-slate-300 hover:bg-slate-100/80 dark:hover:bg-slate-800/80'}"
-								onmouseenter={() => (selectedIndex = item.index)}
+									: 'text-slate-700 dark:text-slate-300'}"
+								onmouseenter={() => handleItemMouseEnter(item.index)}
+								onmousemove={(event) => handleItemMouseMove(item.index, event)}
 								onclick={() => activate(item)}
 							>
 								<Icon
