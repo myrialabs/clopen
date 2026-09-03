@@ -12,6 +12,7 @@ import { describe, expect, mock, test, beforeAll, afterEach } from 'bun:test';
 import { mkdtemp, mkdir, rm, writeFile } from 'node:fs/promises';
 import { execGit } from '../git/git-executor';
 import { clearNestedRepoCache, findNestedRepoPaths } from '../git/nested-repos';
+import { relative } from 'node:path';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
@@ -48,6 +49,16 @@ async function makeProject(): Promise<string> {
 	const dir = await mkdtemp(join(tmpdir(), 'clopen-watch-'));
 	tempRoots.push(dir);
 	return dir;
+}
+
+/** Wait until an async `predicate` holds, or fail after `timeout` ms. */
+async function waitForAsync(predicate: () => Promise<boolean>, timeout = 8000): Promise<void> {
+	const deadline = Date.now() + timeout;
+	while (Date.now() < deadline) {
+		if (await predicate()) return;
+		await new Promise((resolve) => setTimeout(resolve, 50));
+	}
+	throw new Error('Timed out waiting for watcher-driven invalidation');
 }
 
 /** Wait until `predicate` holds, or fail after `timeout` ms. */
@@ -194,6 +205,41 @@ describe('FileWatcherManager', () => {
 		await writeFile(join(sub, '.git', 'index'), 'stand-in for a real index write');
 
 		await waitFor(() => gitRepoPathsFor('p7').includes(sub), 10000);
+	});
+
+	test('an edited .gitignore changes which sub-repos the panel lists', async () => {
+		// Discovery leans on this watcher instead of a short clock, so every
+		// signal that could change its answer has to reach it. `.gitignore` is
+		// the one with no other route: it carries no `.git` segment, so
+		// `routeGitEvent` passes it by, and `shouldIgnore` discards every
+		// dotfile. Without an explicit hook the repo set sits unchanged behind
+		// the watched-root TTL.
+		//
+		// Direction matters here. Going the other way — a repo that only becomes
+		// visible once the ignore rule is dropped — is not a test of this hook
+		// at all: an unreported repo's `.git` is one the watcher does not know,
+		// so its first event triggers the unknown-git-dir refresh, and the repo
+		// set gets invalidated by that path whether or not `.gitignore` is
+		// wired. Starting from a REPORTED repo keeps its git dir known and
+		// leaves the `.gitignore` write as the only signal in play.
+		const root = await makeProject();
+		await initRepo(root);
+		const theme = join(root, 'themes', 'mytheme');
+		await initRepo(theme);
+
+		expect(await fileWatcher.startWatching('p8', root)).toBe(true);
+		expect((await findNestedRepoPaths(root)).map((repo) => relative(root, repo))).toEqual([
+			join('themes', 'mytheme')
+		]);
+
+		// Space it out: the platform watchers coalesce bursts, and this write has
+		// to be seen on its own to mean anything.
+		await new Promise((resolve) => setTimeout(resolve, 400));
+		// `themes/` is now ignored, so the still-pristine repo inside it has to
+		// prove local work before it is listed — and it has none.
+		await writeFile(join(root, '.gitignore'), 'themes/\n');
+
+		await waitForAsync(async () => (await findNestedRepoPaths(root)).length === 0);
 	});
 
 	test('stops watching once the last viewer leaves', async () => {

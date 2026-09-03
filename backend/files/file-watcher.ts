@@ -34,7 +34,12 @@ import { join, relative, normalize, sep } from 'node:path';
 import { ws } from '$backend/utils/ws';
 import { debug } from '$shared/utils/logger';
 import { resolveGitDirs, type GitDirTarget } from '$backend/git/git-dirs';
-import { clearNestedRepoCache } from '$backend/git/nested-repos';
+import {
+	beginWatchedDiscovery,
+	endWatchedDiscovery,
+	invalidateLocalWork,
+	invalidateRepoSet
+} from '$backend/git/nested-repos';
 import type { FileChange } from '$shared/types/filesystem';
 
 /**
@@ -161,6 +166,20 @@ export function isGitStateEvent(entryPath: string): boolean {
 /** Whether a project-relative path passes through a `.git` directory. */
 export function hasGitSegment(relativePath: string): boolean {
 	return relativePath.split('/').includes('.git');
+}
+
+/**
+ * Whether a path is one of the files that decide which sub-repos count:
+ * `.gitignore` (a tree the project ignores holds repos it must prove itself
+ * to report) and `.gitmodules` (the user declaring a sub-repo outright).
+ *
+ * Editing either changes the reported repo set with no `.git` created or
+ * removed, so nothing else in the watcher would notice — `hasGitSegment` is
+ * false for both, and `shouldIgnore` discards every dotfile.
+ */
+export function isRepoSetRuleFile(relativePath: string): boolean {
+	const basename = relativePath.split('/').pop();
+	return basename === '.gitignore' || basename === '.gitmodules';
 }
 
 /**
@@ -351,6 +370,12 @@ class FileWatcherManager {
 			};
 			this.watchers.set(projectId, projectWatcher);
 
+			// From here on this watcher is the authority on when the project's
+			// sub-repo set and their working states change, so discovery can stop
+			// re-deriving them on a short clock. Paired with `endWatchedDiscovery`
+			// in `stopWatching`, which puts discovery back on the clock.
+			beginWatchedDiscovery(normalizedPath);
+
 			// Watch the root synchronously so events are never missed while the
 			// (async) subtree walk is still in progress.
 			if (!this.watchDir(projectWatcher, normalizedPath)) {
@@ -532,6 +557,9 @@ class FileWatcherManager {
 			}
 			projectWatcher.gitDirOwners.clear();
 
+			// No more signals from here, so discovery must not keep trusting them.
+			endWatchedDiscovery(projectWatcher.projectPath);
+
 			// Clear debounce timers
 			if (projectWatcher.debounceTimer) {
 				clearTimeout(projectWatcher.debounceTimer);
@@ -609,7 +637,18 @@ class FileWatcherManager {
 		// inside a nested repo completely unreported.
 		if (this.routeGitEvent(projectWatcher, relativePath, fullPath)) return;
 
+		// Last point these are visible: `shouldIgnore` below drops every dotfile.
+		if (isRepoSetRuleFile(relativePath)) {
+			invalidateRepoSet(projectWatcher.projectPath);
+		}
+
 		if (this.shouldIgnore(relativePath)) return;
+
+		// A write inside a sub-repo can flip whether it has anything to show,
+		// which is what decides whether one sitting in an ignored tree is listed.
+		// Cheap and scoped: only repos whose own path contains this file lose
+		// their verdict, and there are at most a few dozen of them.
+		invalidateLocalWork(fullPath);
 
 		// Determine change type
 		let changeType: 'created' | 'modified' | 'deleted';
@@ -852,7 +891,7 @@ class FileWatcherManager {
 		projectWatcher.gitTargetsTimer = setTimeout(() => {
 			projectWatcher.gitTargetsTimer = null;
 			if (projectWatcher.closed) return;
-			clearNestedRepoCache(projectWatcher.projectPath);
+			invalidateRepoSet(projectWatcher.projectPath);
 			void this.syncGitWatchers(projectId).then(() => {
 				if (projectWatcher.closed) return;
 				// The repo set itself changed, so tell clients: this is what flips a
@@ -877,6 +916,10 @@ class FileWatcherManager {
 		const repoPath = projectWatcher.gitDirOwners.get(gitDirPath);
 		if (repoPath) {
 			if (isGitStateEvent(relative(gitDirPath, fullPath))) {
+				// A commit, stage or checkout here can flip whether this repo has
+				// anything to show, which is what decides if a sub-repo inside an
+				// ignored tree is listed at all.
+				invalidateLocalWork(repoPath);
 				this.emitGitChanged(projectWatcher.projectId, repoPath);
 			}
 		} else if (!projectWatcher.rejectedGitDirs.has(gitDirPath)) {

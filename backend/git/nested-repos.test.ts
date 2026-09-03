@@ -3,7 +3,15 @@ import { mkdtemp, rm, writeFile, mkdir } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { execGit } from './git-executor';
-import { clearNestedRepoCache, findNestedRepoPaths, findRepoForFile } from './nested-repos';
+import {
+	beginWatchedDiscovery,
+	clearNestedRepoCache,
+	endWatchedDiscovery,
+	findNestedRepoPaths,
+	findRepoForFile,
+	invalidateLocalWork,
+	invalidateRepoSet
+} from './nested-repos';
 
 /**
  * Sub-repo detection used to walk the whole tree and report every directory
@@ -273,6 +281,144 @@ describe('walk cache', () => {
 		} finally {
 			await rm(other, { recursive: true, force: true });
 		}
+	});
+});
+
+describe('watcher-driven discovery', () => {
+	// Discovery used to be re-derived on every `git:status` and `git:branches`:
+	// an `fs.readdir` over the whole tree, a `git check-ignore` spawn per repo
+	// per depth level, then a `git status` spawn per repo inside an ignored
+	// tree. The panel fires that three or four times a second while staging,
+	// and on Windows every spawn pays for Defender.
+	//
+	// The file watcher already knows when any of it changes, so it — not a
+	// clock — decides when an answer is stale. These tests pin the contract
+	// both ways: a watched root reuses answers, and every signal that could
+	// change one puts it back.
+
+	/** Count git subcommands spawned while `run` executes. */
+	async function countSpawns<T>(run: () => Promise<T>): Promise<{ result: T; spawns: string[] }> {
+		const spawns: string[] = [];
+		const realSpawn = Bun.spawn;
+		// argv is [git, -c, safe.directory=…, <subcommand>, …]
+		// @ts-expect-error test instrumentation
+		Bun.spawn = (cmd: string[], options: unknown) => {
+			if (Array.isArray(cmd) && cmd[3]) spawns.push(cmd[3]);
+			// @ts-expect-error passthrough
+			return realSpawn(cmd, options);
+		};
+		try {
+			return { result: await run(), spawns };
+		} finally {
+			Bun.spawn = realSpawn;
+		}
+	}
+
+	test('a watched root answers a repeat call without touching git at all', async () => {
+		// The WordPress shape the detection policy was written for: every plugin
+		// is its own repo inside a tree the project ignores, so every one of them
+		// needs a `git status` to prove it has something to show. Unwatched, that
+		// is a spawn per plugin on every single call.
+		await writeFile(path.join(root, '.gitignore'), 'wp-content/plugins/\n');
+		for (const name of ['alpha', 'beta', 'gamma']) {
+			const plugin = path.join(root, 'wp-content/plugins', name);
+			await initRepo(plugin);
+			await addLocalWork(plugin);
+		}
+
+		beginWatchedDiscovery(root);
+		expect(await detected()).toEqual([
+			'wp-content/plugins/alpha',
+			'wp-content/plugins/beta',
+			'wp-content/plugins/gamma'
+		]);
+
+		const { result, spawns } = await countSpawns(() => detected());
+		expect(result).toEqual([
+			'wp-content/plugins/alpha',
+			'wp-content/plugins/beta',
+			'wp-content/plugins/gamma'
+		]);
+		expect(spawns).toEqual([]);
+	});
+
+	test('an unwatched root keeps probing live, so nothing can hide behind a guess', async () => {
+		// No watcher means no signal, and a cached "nothing to show" would hide a
+		// sub-repo the user is working in — the worst failure this module has.
+		await writeFile(path.join(root, '.gitignore'), 'themes/\n');
+		await initRepo(path.join(root, 'themes/mytheme'));
+		await addLocalWork(path.join(root, 'themes/mytheme'));
+
+		expect(await detected()).toEqual(['themes/mytheme']);
+
+		const { spawns } = await countSpawns(() => detected());
+		expect(spawns).toContain('status');
+	});
+
+	test('a write into a pristine sub-repo puts it back on the list', async () => {
+		// The transition the containment matching exists for. While `mytheme` is
+		// pristine it is deliberately unreported, so the watcher has never
+		// resolved a git dir for it and cannot name it. The only place it is
+		// known is the verdict cache holding the `false` that is about to be
+		// wrong — which is why invalidation matches by containment.
+		await writeFile(path.join(root, '.gitignore'), 'themes/\n');
+		await initRepo(path.join(root, 'themes/mytheme'));
+
+		beginWatchedDiscovery(root);
+		expect(await detected()).toEqual([]);
+
+		const edited = path.join(root, 'themes/mytheme/style.css');
+		await writeFile(edited, 'body { color: red }\n');
+		invalidateLocalWork(edited);
+
+		expect(await detected()).toEqual(['themes/mytheme']);
+	});
+
+	test('a sibling sub-repo keeps its verdict when one of them is written to', async () => {
+		await writeFile(path.join(root, '.gitignore'), 'themes/\n');
+		for (const name of ['alpha', 'beta']) {
+			const theme = path.join(root, 'themes', name);
+			await initRepo(theme);
+			await addLocalWork(theme);
+		}
+
+		beginWatchedDiscovery(root);
+		expect(await detected()).toEqual(['themes/alpha', 'themes/beta']);
+
+		const edited = path.join(root, 'themes/alpha/style.css');
+		await writeFile(edited, 'body {}\n');
+		invalidateLocalWork(edited);
+
+		// Only alpha is re-probed; beta answers from its cached verdict.
+		const { spawns } = await countSpawns(() => detected());
+		expect(spawns.filter((cmd) => cmd === 'status')).toHaveLength(1);
+	});
+
+	test('invalidating the repo set re-walks the tree', async () => {
+		beginWatchedDiscovery(root);
+		expect(await detected()).toEqual([]);
+
+		await initRepo(path.join(root, 'packages/widget'));
+		expect(await detected()).toEqual([]);
+
+		invalidateRepoSet(root);
+		expect(await detected()).toEqual(['packages/widget']);
+	});
+
+	test('losing the watcher drops every answer it was backing', async () => {
+		// Nothing will invalidate from here on, so a verdict kept across this
+		// boundary would never be corrected.
+		await writeFile(path.join(root, '.gitignore'), 'themes/\n');
+		await initRepo(path.join(root, 'themes/mytheme'));
+		await addLocalWork(path.join(root, 'themes/mytheme'));
+
+		beginWatchedDiscovery(root);
+		expect(await detected()).toEqual(['themes/mytheme']);
+
+		endWatchedDiscovery(root);
+		const { spawns } = await countSpawns(() => detected());
+		expect(spawns).toContain('check-ignore');
+		expect(spawns).toContain('status');
 	});
 });
 
