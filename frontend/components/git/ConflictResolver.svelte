@@ -24,6 +24,13 @@
 		onResolveAllWithAI: () => void;
 		onAbortMerge: () => void;
 		onClose: () => void;
+		/**
+		 * A resolve or abort is already running against this repo. Both are
+		 * followed by a full status refresh, slow enough on Windows that the
+		 * dialog looks unchanged long enough to invite a second click — which
+		 * would resolve against a file the first call is still rewriting.
+		 */
+		busy?: boolean;
 	}
 
 	const {
@@ -35,7 +42,8 @@
 		onResolveWithAI,
 		onResolveAllWithAI,
 		onAbortMerge,
-		onClose
+		onClose,
+		busy = false
 	}: Props = $props();
 
 	let selectedPath = $state<string | null>(null);
@@ -276,6 +284,7 @@
 					type="button"
 					class="hidden md:flex items-center gap-1.5 px-3 py-1.5 text-sm font-medium text-red-600 dark:text-red-400 bg-red-500/10 hover:bg-red-500/20 rounded-lg transition-colors cursor-pointer border-none"
 					onclick={onAbortMerge}
+					disabled={busy}
 					title="Abort the merge and discard all conflict resolutions"
 				>
 					<Icon name="lucide:octagon-x" class="w-4 h-4" />
@@ -622,7 +631,7 @@
 										? 'bg-violet-600 text-white hover:bg-violet-700 cursor-pointer'
 										: 'bg-slate-200 dark:bg-slate-700 text-slate-500 dark:text-slate-400 cursor-not-allowed'}"
 									onclick={applyGuidedResolution}
-									disabled={!allResolved}
+									disabled={!allResolved || busy}
 									title={allResolved
 										? 'Apply resolutions and stage file'
 										: 'Resolve all conflicts first'}
@@ -719,6 +728,7 @@
 									type="button"
 									class="flex items-center gap-1.5 px-3 py-1 text-xs md:text-sm font-semibold bg-violet-600 text-white rounded-md hover:bg-violet-700 transition-colors cursor-pointer border-none"
 									onclick={applyManualResolution}
+									disabled={busy}
 								>
 									<Icon name="lucide:check" class="w-3.5 h-3.5 md:w-4 md:h-4" />
 									Save &amp; Stage

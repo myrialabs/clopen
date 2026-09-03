@@ -10,6 +10,9 @@
 
 import { describe, expect, mock, test, beforeAll, afterEach } from 'bun:test';
 import { mkdtemp, mkdir, rm, writeFile } from 'node:fs/promises';
+import { execGit } from '../git/git-executor';
+import { clearNestedRepoCache, findNestedRepoPaths } from '../git/nested-repos';
+import { relative } from 'node:path';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
@@ -48,6 +51,16 @@ async function makeProject(): Promise<string> {
 	return dir;
 }
 
+/** Wait until an async `predicate` holds, or fail after `timeout` ms. */
+async function waitForAsync(predicate: () => Promise<boolean>, timeout = 8000): Promise<void> {
+	const deadline = Date.now() + timeout;
+	while (Date.now() < deadline) {
+		if (await predicate()) return;
+		await new Promise((resolve) => setTimeout(resolve, 50));
+	}
+	throw new Error('Timed out waiting for watcher-driven invalidation');
+}
+
 /** Wait until `predicate` holds, or fail after `timeout` ms. */
 async function waitFor(predicate: () => boolean, timeout = 4000): Promise<void> {
 	const deadline = Date.now() + timeout;
@@ -56,6 +69,19 @@ async function waitFor(predicate: () => boolean, timeout = 4000): Promise<void> 
 		await new Promise((r) => setTimeout(r, 25));
 	}
 	throw new Error('Timed out waiting for watcher event');
+}
+
+function gitRepoPathsFor(projectId: string): string[] {
+	return emitted
+		.filter((e) => e.projectId === projectId && e.event === 'git:changed')
+		.flatMap((e) => e.payload.repoPaths as string[]);
+}
+
+async function initRepo(dir: string): Promise<void> {
+	await mkdir(dir, { recursive: true });
+	await execGit(['init', '-b', 'main', '.'], dir);
+	await execGit(['config', 'user.email', 'test@example.com'], dir);
+	await execGit(['config', 'user.name', 'Test'], dir);
 }
 
 function changesFor(projectId: string): string[] {
@@ -69,6 +95,7 @@ afterEach(async () => {
 		fileWatcher.releaseProject(projectId);
 	}
 	emitted.length = 0;
+	clearNestedRepoCache();
 	await Promise.all(tempRoots.splice(0).map((dir) => rm(dir, { recursive: true, force: true })));
 });
 
@@ -145,6 +172,84 @@ describe('FileWatcherManager', () => {
 		fileWatcher.clearDirtyFiles('p5');
 		expect(fileWatcher.getDirtyFiles('p5').size).toBe(0);
 	});
+
+	test('watches a sub-repo created while the project is already open', async () => {
+		// `findNestedRepoPaths` caches its walk for a few seconds, and the panel
+		// warms that cache constantly — every `git:status` and `git:branches`
+		// goes through it. `scheduleGitTargetsRefresh` then re-resolves 1.5s
+		// after an unknown `.git` shows up, well inside the TTL, so it would be
+		// answered from a walk taken before the new repo existed. The git dir
+		// would stay unaccounted for, `syncGitWatchers` would file it under
+		// `rejectedGitDirs` — which is permanent — and `routeGitEvent` would
+		// then refuse to schedule another refresh for it. The sub-repo would go
+		// unwatched for as long as the project stayed open.
+		const root = await makeProject();
+		await initRepo(root);
+
+		// Warm the cache the way the panel does, before the sub-repo exists.
+		expect(await findNestedRepoPaths(root)).toEqual([]);
+
+		expect(await fileWatcher.startWatching('p7', root)).toBe(true);
+
+		const sub = join(root, 'packages', 'widget');
+		await initRepo(sub);
+
+		// The refresh announces itself by emitting for the project root once the
+		// repo set has been re-resolved.
+		await waitFor(() => gitRepoPathsFor('p7').includes(root), 10000);
+
+		emitted.length = 0;
+		// Space this out: the platform watchers coalesce bursts, and this write
+		// has to be seen on its own to mean anything.
+		await new Promise((resolve) => setTimeout(resolve, 400));
+		await writeFile(join(sub, '.git', 'index'), 'stand-in for a real index write');
+
+		await waitFor(() => gitRepoPathsFor('p7').includes(sub), 10000);
+		// 20s, not bun's 5s default: this test cannot finish faster than the
+		// watcher's own debounces (1.5s to re-resolve git targets, 0.5s to emit)
+		// plus two `git init`s and the spacing write.
+	}, 20000);
+
+	test('the watcher forwards path events to sub-repo discovery', async () => {
+		// Discovery leans on this watcher instead of a short clock, so raw paths
+		// have to reach it. There are two forwarding points — the working-tree
+		// handler and the git dir handles, which are a separate event source and
+		// the only one for `.git` on Linux — and this pins that AT LEAST ONE of
+		// them is live. It deliberately does not pin which: the two overlap on a
+		// real filesystem, and asserting on one would only pass by accident of
+		// which handle the platform happened to report an event through.
+		//
+		// Which path means what is pinned exactly, and without timing, by the
+		// `notifyPathChanged` tests in nested-repos.test.ts — `.gitignore`,
+		// `.git/info/exclude`, a `.git` appearing, and an ordinary write that
+		// must NOT invalidate anything.
+		//
+		// Direction matters. Going the other way — a repo that only becomes
+		// visible once an ignore rule is dropped — tests nothing: an unreported
+		// repo's `.git` is one the watcher does not know, so its first event
+		// triggers the unknown-git-dir refresh and the repo set is invalidated
+		// by that path whether or not anything is forwarded. Starting from a
+		// REPORTED repo keeps its git dir known.
+		const root = await makeProject();
+		await initRepo(root);
+		await initRepo(join(root, 'themes', 'mytheme'));
+
+		expect(await fileWatcher.startWatching('p8', root)).toBe(true);
+		expect((await findNestedRepoPaths(root)).map((repo) => relative(root, repo))).toEqual([
+			join('themes', 'mytheme')
+		]);
+
+		// Space it out: the platform watchers coalesce bursts, and this write has
+		// to be seen on its own to mean anything.
+		await new Promise((resolve) => setTimeout(resolve, 400));
+		// `themes/` is now ignored, so the still-pristine repo inside it has to
+		// prove local work before it is listed — and it has none.
+		await writeFile(join(root, '.gitignore'), 'themes/\n');
+
+		await waitForAsync(async () => (await findNestedRepoPaths(root)).length === 0);
+		// Same reason as the test above — the debounces alone outlast bun's 5s
+		// default.
+	}, 20000);
 
 	test('stops watching once the last viewer leaves', async () => {
 		const root = await makeProject();
