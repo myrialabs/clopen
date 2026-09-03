@@ -1,3 +1,10 @@
+<script module lang="ts">
+	// Module-level cache: persists across tab switches so Device opens instantly
+	// on second click without re-showing skeleton.
+	// eslint-disable-next-line @typescript-eslint/no-explicit-any
+	export let cachedDeviceInfo: any = null;
+</script>
+
 <script lang="ts">
 	import { onMount, onDestroy } from 'svelte';
 	import Icon from '../../common/display/Icon.svelte';
@@ -56,32 +63,45 @@
 		disks: Disk[];
 	}
 
-	const POLL_INTERVAL_MS = 2500;
+	const POLL_INTERVAL_MS = 3500;
 
-	let info = $state<DeviceInfo | null>(null);
+	let info = $state<DeviceInfo | null>(cachedDeviceInfo as DeviceInfo | null);
 	let error = $state<string | null>(null);
-	let loading = $state(true);
-	let timer: ReturnType<typeof setInterval> | null = null;
+	let timer: ReturnType<typeof setTimeout> | null = null;
+	let fetching = false;
 
 	async function fetchInfo() {
+		if (fetching) return;
+		fetching = true;
 		try {
-			info = await ws.http('system:device-info', {});
+			// 8s client timeout — shorter than ws default 30s so UI recovers faster
+			const data = await ws.http('system:device-info', {}, 8000);
+			info = data as DeviceInfo;
+			cachedDeviceInfo = info;
 			error = null;
 		} catch (err) {
 			debug.error('settings', 'Failed to fetch device info:', err);
-			error = err instanceof Error ? err.message : 'Failed to load device information';
+			// Keep stale info visible; only show error if we have no data yet
+			if (!info) error = err instanceof Error ? err.message : 'Failed to load device information';
 		} finally {
-			loading = false;
+			fetching = false;
+			scheduleNext();
 		}
 	}
 
+	function scheduleNext() {
+		if (timer) clearTimeout(timer);
+		timer = setTimeout(fetchInfo, POLL_INTERVAL_MS);
+	}
+
 	onMount(() => {
+		// If cached data exists, show it instantly and refresh in background.
+		// Otherwise fetch immediately.
 		fetchInfo();
-		timer = setInterval(fetchInfo, POLL_INTERVAL_MS);
 	});
 
 	onDestroy(() => {
-		if (timer) clearInterval(timer);
+		if (timer) clearTimeout(timer);
 	});
 
 	// --- Formatting helpers ---
@@ -151,12 +171,7 @@
 	</div>
 	<p class="text-sm text-slate-600 dark:text-slate-500 mb-5">{subtitle}</p>
 
-	{#if loading && !info}
-		<div class="flex items-center gap-2 text-sm text-slate-500 px-4 py-8">
-			<div class="w-4 h-4 border-2 border-slate-400/30 border-t-slate-500 rounded-full animate-spin"></div>
-			Reading device information…
-		</div>
-	{:else if error && !info}
+	{#if error && !info}
 		<div class="flex items-center justify-between gap-3 px-4 py-3 bg-red-500/10 border border-red-500/20 rounded-xl">
 			<div class="flex items-center gap-2 min-w-0">
 				<Icon name="lucide:circle-alert" class="w-4 h-4 text-red-500 shrink-0" />
@@ -171,7 +186,36 @@
 				Retry
 			</button>
 		</div>
-	{:else if info}
+	{:else if !info}
+		<!-- Instant skeleton: same card layout as real data, appears immediately without spinner -->
+		<div class="flex flex-col gap-3.5 animate-pulse">
+			<div class="px-4 py-3 bg-slate-100/80 dark:bg-slate-800/80 border border-slate-200 dark:border-slate-800 rounded-xl">
+				<div class="flex items-center gap-3.5">
+					<div class="w-10 h-10 rounded-lg bg-slate-200 dark:bg-slate-700 shrink-0"></div>
+					<div class="flex-1 space-y-2 min-w-0">
+						<div class="h-3.5 w-32 bg-slate-200 dark:bg-slate-700 rounded"></div>
+						<div class="h-3 w-48 bg-slate-200 dark:bg-slate-700 rounded"></div>
+					</div>
+					<div class="h-6 w-16 bg-slate-200 dark:bg-slate-700 rounded shrink-0"></div>
+				</div>
+			</div>
+			<div class="grid grid-cols-1 sm:grid-cols-2 gap-3.5">
+				{#each Array(6) as _, i (i)}
+					<div class="px-4 py-3 bg-slate-100/80 dark:bg-slate-800/80 border border-slate-200 dark:border-slate-800 rounded-xl">
+						<div class="flex items-center gap-3.5 mb-2.5">
+							<div class="w-10 h-10 rounded-lg bg-slate-200 dark:bg-slate-700 shrink-0"></div>
+							<div class="flex-1 space-y-2 min-w-0">
+								<div class="h-3.5 w-24 bg-slate-200 dark:bg-slate-700 rounded"></div>
+								<div class="h-3 w-36 bg-slate-200 dark:bg-slate-700 rounded"></div>
+							</div>
+							<div class="h-4 w-10 bg-slate-200 dark:bg-slate-700 rounded shrink-0"></div>
+						</div>
+						<div class="h-2 w-full bg-slate-200 dark:bg-slate-700 rounded-full"></div>
+					</div>
+				{/each}
+			</div>
+		</div>
+	{:else}
 		<div class="flex flex-col gap-3.5">
 			<!-- Identity (full-width header) -->
 			<div class="px-4 py-3 bg-slate-100/80 dark:bg-slate-800/80 border border-slate-200 dark:border-slate-800 rounded-xl">
