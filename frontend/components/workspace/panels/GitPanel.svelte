@@ -1475,16 +1475,19 @@
 	// Staging Actions
 	// ============================
 
-	// Busy flags for staging operations — on Windows git status is slower
-	// (Bun.spawn + Defender scanning .git/index), so without a guard the user
-	// can double-click Stage All and queue two full walks. The flag disables
-	// the bulk buttons until the refresh finishes.
-	let isStagingBusy = $state(false);
-	let stagingFilePath = $state<string | null>(null);
+	// Files with a stage/unstage request in flight. Each of those costs a full
+	// `loadStatus()`, which on Windows is slow enough (Bun.spawn + Defender
+	// scanning .git/index) that an impatient second click on the same row
+	// would queue a second round trip for work already under way. Guarding per
+	// path rather than globally keeps staging several files in quick
+	// succession working — dropping those clicks silently is worse than the
+	// duplicate refresh it would avoid. Plain Set, not $state: nothing renders
+	// from it, it is only read inside these handlers.
+	const stagingFiles = new Set<string>();
 
 	async function stageFile(path: string) {
-		if (!projectId || isStagingBusy || stagingFilePath) return;
-		stagingFilePath = path;
+		if (!projectId || stagingFiles.has(path)) return;
+		stagingFiles.add(path);
 		try {
 			await ws.http('git:stage', { projectId, filePath: path });
 			await loadStatus();
@@ -1492,7 +1495,7 @@
 		} catch (err) {
 			debug.error('git', 'Failed to stage file:', err);
 		} finally {
-			stagingFilePath = null;
+			stagingFiles.delete(path);
 		}
 	}
 
@@ -1692,11 +1695,17 @@
 		}
 	}
 
-	async function stageAll() {
-		if (!projectId || isStagingBusy) return;
-		isStagingBusy = true;
+	// The three bulk actions take an optional `repoPath` so a nested sub-repo
+	// runs — and shows its spinner — independently of the outer repo. The busy
+	// flag lives in the shared git-op store keyed by (projectId, repoPath), the
+	// same place push/pull/commit keep theirs, so a bulk stage started in one
+	// project clears the right flag even if the user switches away mid-flight.
+	async function stageAll(repoPath?: string) {
+		const pid = projectId;
+		if (!pid || getGitOps(pid, repoPath).isStaging) return;
+		setGitOp(pid, 'isStaging', true, repoPath);
 		try {
-			await ws.http('git:stage-all', { projectId });
+			await ws.http('git:stage-all', { projectId: pid, repoPath });
 			await loadStatus();
 			if (activeTab && activeTab.section !== 'commit') {
 				await migrateActiveTabAfterStatusChange(activeTab.filePath);
@@ -1704,13 +1713,13 @@
 		} catch (err) {
 			debug.error('git', 'Failed to stage all:', err);
 		} finally {
-			isStagingBusy = false;
+			setGitOp(pid, 'isStaging', false, repoPath);
 		}
 	}
 
 	async function unstageFile(path: string) {
-		if (!projectId || isStagingBusy || stagingFilePath) return;
-		stagingFilePath = path;
+		if (!projectId || stagingFiles.has(path)) return;
+		stagingFiles.add(path);
 		try {
 			await ws.http('git:unstage', { projectId, filePath: path });
 			await loadStatus();
@@ -1718,15 +1727,16 @@
 		} catch (err) {
 			debug.error('git', 'Failed to unstage file:', err);
 		} finally {
-			stagingFilePath = null;
+			stagingFiles.delete(path);
 		}
 	}
 
-	async function unstageAll() {
-		if (!projectId || isStagingBusy) return;
-		isStagingBusy = true;
+	async function unstageAll(repoPath?: string) {
+		const pid = projectId;
+		if (!pid || getGitOps(pid, repoPath).isStaging) return;
+		setGitOp(pid, 'isStaging', true, repoPath);
 		try {
-			await ws.http('git:unstage-all', { projectId });
+			await ws.http('git:unstage-all', { projectId: pid, repoPath });
 			await loadStatus();
 			if (activeTab && activeTab.section !== 'commit') {
 				await migrateActiveTabAfterStatusChange(activeTab.filePath);
@@ -1734,7 +1744,7 @@
 		} catch (err) {
 			debug.error('git', 'Failed to unstage all:', err);
 		} finally {
-			isStagingBusy = false;
+			setGitOp(pid, 'isStaging', false, repoPath);
 		}
 	}
 
@@ -1758,22 +1768,26 @@
 		});
 	}
 
-	async function discardAll() {
+	async function discardAll(repoPath?: string) {
 		requestConfirm({
 			title: 'Discard All Changes',
 			message: 'Discard ALL changes? This cannot be undone.',
 			type: 'error',
 			confirmText: 'Discard All',
 			onConfirm: async () => {
-				if (!projectId) return;
+				const pid = projectId;
+				if (!pid || getGitOps(pid, repoPath).isStaging) return;
+				setGitOp(pid, 'isStaging', true, repoPath);
 				try {
-					await ws.http('git:discard-all', { projectId });
+					await ws.http('git:discard-all', { projectId: pid, repoPath });
 					await loadStatus();
 					if (activeTab && activeTab.section !== 'commit') {
 						await migrateActiveTabAfterStatusChange(activeTab.filePath);
 					}
 				} catch (err) {
 					debug.error('git', 'Failed to discard all:', err);
+				} finally {
+					setGitOp(pid, 'isStaging', false, repoPath);
 				}
 			}
 		});
@@ -4239,10 +4253,11 @@ ${bodies}`;
 						activeFilePath={activeTab?.filePath}
 						activeSection={activeTab?.section ?? null}
 						onUnstage={(path) => unstageFile(path)}
-						onUnstageAll={async () => { if (projectId) { try { await ws.http('git:unstage-all', { projectId, repoPath: nested.path }); await loadStatus(); } catch (err) { debug.error('git', 'Failed to unstage all in nested repo:', err); } } }}
+						onUnstageAll={() => unstageAll(nested.path)}
 						onStash={() => openStashPrompt('staged', nested.path)}
 						onViewDiff={(file, sec) => viewDiff(file, sec)}
 						{aiChangesSet}
+						busy={getGitOps(projectId, nested.path).isStaging}
 					/>
 					<ChangesSection
 						title="Changes"
@@ -4252,11 +4267,12 @@ ${bodies}`;
 						activeFilePath={activeTab?.filePath}
 						activeSection={activeTab?.section ?? null}
 						onStage={(path) => stageFile(path)}
-						onStageAll={async () => { if (projectId) { try { await ws.http('git:stage-all', { projectId, repoPath: nested.path }); await loadStatus(); } catch (err) { debug.error('git', 'Failed to stage all in nested repo:', err); } } }}
+						onStageAll={() => stageAll(nested.path)}
 						onDiscard={(path) => discardFile(path)}
-						onDiscardAll={async () => { if (projectId) { try { await ws.http('git:discard-all', { projectId, repoPath: nested.path }); await loadStatus(); } catch (err) { debug.error('git', 'Failed to discard all in nested repo:', err); } } }}
+						onDiscardAll={() => discardAll(nested.path)}
 						onViewDiff={(file, sec) => viewDiff(file, sec)}
 						{aiChangesSet}
+						busy={getGitOps(projectId, nested.path).isStaging}
 					/>
 					{#if nestedTotalChanges === 0 && !isLoading}
 						<div class="flex flex-col items-center justify-center gap-2 py-6 text-slate-500 text-xs">
@@ -5123,7 +5139,7 @@ ${bodies}`;
 				onStash={() => openStashPrompt('staged')}
 				onViewDiff={viewDiff}
 				{aiChangesSet}
-				busy={isStagingBusy}
+				busy={ops.isStaging}
 			/>
 
 			<!--
@@ -5148,7 +5164,7 @@ ${bodies}`;
 				onDiscardAll={discardAll}
 				onViewDiff={viewDiff}
 				{aiChangesSet}
-				busy={isStagingBusy}
+				busy={ops.isStaging}
 			/>
 
 			{#if mainStagedFiles.length === 0 && mainAllChanges.length === 0 && mainConflictedFiles.length === 0 && !isLoading && !(branchInfo?.nested?.length)}

@@ -22,6 +22,12 @@
 		onViewDiff?: (file: GitFileChange, section: string) => void;
 		onResolve?: (path: string) => void;
 		aiChangesSet?: Set<string>;
+		/**
+		 * A bulk action is running against this section's repo. Every header
+		 * button is disabled and the triggering ones swap to a spinner: on
+		 * Windows the status refresh behind Stage All takes long enough that
+		 * without feedback the panel reads as frozen and invites a second click.
+		 */
 		busy?: boolean;
 	}
 
@@ -158,7 +164,7 @@
 						disabled={busy}
 					>
 						{#if busy}
-							<Icon name="lucide:loader-2" class="w-4 h-4 animate-spin" />
+							<Icon name="lucide:loader-circle" class="w-4 h-4 animate-spin" />
 						{:else}
 							<Icon name="lucide:minus" class="w-4 h-4" />
 						{/if}
@@ -169,10 +175,14 @@
 							type="button"
 							class="flex items-center justify-center w-7 h-7 rounded-md text-slate-400 hover:bg-red-500/10 hover:text-red-500 transition-colors bg-transparent border-none cursor-pointer disabled:opacity-40 disabled:cursor-not-allowed"
 							onclick={(e) => { e.stopPropagation(); onDiscardAll?.(); }}
-							title="Discard All"
+							title={busy ? 'Working…' : 'Discard All'}
 							disabled={busy}
 						>
-							<Icon name="lucide:undo-2" class="w-4 h-4" />
+							{#if busy}
+								<Icon name="lucide:loader-circle" class="w-4 h-4 animate-spin" />
+							{:else}
+								<Icon name="lucide:undo-2" class="w-4 h-4" />
+							{/if}
 						</button>
 					{/if}
 					<button
@@ -183,7 +193,7 @@
 						disabled={busy}
 					>
 						{#if busy}
-							<Icon name="lucide:loader-2" class="w-4 h-4 animate-spin" />
+							<Icon name="lucide:loader-circle" class="w-4 h-4 animate-spin" />
 						{:else}
 							<Icon name="lucide:plus" class="w-4 h-4" />
 						{/if}

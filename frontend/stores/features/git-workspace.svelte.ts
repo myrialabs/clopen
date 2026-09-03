@@ -119,11 +119,15 @@ export function applyGeneratedCommitMessage(projectId: string, message: string):
 // ============================================================
 //
 // Busy state for the action-bar buttons (commit / push / pull / fetch / more /
-// AI generation). Keyed by projectId so an operation started for one project
-// keeps its spinner — and clears the right project's flag — regardless of which
-// project is active when it resolves.
+// AI generation) and the Changes section's bulk buttons (stage/unstage/discard
+// all). Keyed by projectId — and by repoPath for anything a nested sub-repo can
+// run on its own — so an operation started for one project keeps its spinner,
+// and clears the right project's flag, regardless of which project is active
+// when it resolves.
 export interface GitOpFlags {
 	isCommitting: boolean;
+	/** A bulk stage/unstage/discard is running against this repo. */
+	isStaging: boolean;
 	isPushing: boolean;
 	isPulling: boolean;
 	isFetching: boolean;
@@ -135,6 +139,7 @@ export interface GitOpFlags {
 
 const NO_OPS: GitOpFlags = Object.freeze({
 	isCommitting: false,
+	isStaging: false,
 	isPushing: false,
 	isPulling: false,
 	isFetching: false,

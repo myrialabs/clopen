@@ -84,13 +84,17 @@ const MAX_DEPTH = 12;
  * those in quick succession (stage → loadStatus + file watcher → git:changed),
  * which previously walked the tree 3-4 times within a second.
  *
- * The walk result (found + provisional) is cached, but the provisional
- * filtering (hasLocalWork / .gitmodules) is always re-evaluated: a repo
- * inside an ignored tree becomes visible the moment it gains local work,
- * which happens after the walk but before the next TTL expiry. Caching the
- * filtered list would hide that new repo for up to 5s on Windows.
- * Similarly, clearing the walk cache on filesystem changes is cheaper than
- * caching a stale filtered answer.
+ * Only the walk result (found + provisional) is cached. The provisional
+ * filtering (hasLocalWork / .gitmodules) is re-run on every call, because a
+ * repo inside an ignored tree becomes reportable the moment it gains local
+ * work — which is exactly when the Changes tab needs it. Caching the filtered
+ * list would hide that repo for the rest of the TTL.
+ *
+ * Nothing invalidates the cache on filesystem events — the TTL is the only
+ * bound. A sub-repo created or deleted while an entry is warm is therefore up
+ * to `NESTED_REPO_CACHE_TTL_MS` late, which is acceptable for a list that only
+ * refreshes when the panel asks, and far cheaper than driving a whole-tree
+ * discovery walk off the `.git` watcher.
  */
 const NESTED_REPO_CACHE_TTL_MS = process.platform === 'win32' ? 5000 : 3000;
 interface NestedWalkCache {
@@ -197,17 +201,25 @@ async function isRepoDir(dirPath: string): Promise<boolean> {
  * so a newly-dirtied repo appears immediately.
  */
 export async function findNestedRepoPaths(rootPath: string): Promise<string[]> {
-	const now = Date.now();
 	const cachedWalk = nestedRepoWalkCache.get(rootPath);
-	if (cachedWalk && now < cachedWalk.expiresAt) {
+	if (cachedWalk && Date.now() < cachedWalk.expiresAt) {
 		return resolveProvisional(rootPath, cachedWalk.found, cachedWalk.provisional);
 	}
+
+	// A caller that arrives while a walk is running shares it instead of
+	// starting a second one, but gets its own copy of the result: the array
+	// goes out to unrelated call sites, and one of them mutating it in place
+	// would corrupt the others.
 	const inflight = nestedRepoInflight.get(rootPath);
-	if (inflight) return inflight;
+	if (inflight) return [...(await inflight)];
 
 	const promise = (async (): Promise<string[]> => {
 		const walk = await walkNestedRepos(rootPath);
-		nestedRepoWalkCache.set(walk.key, { found: walk.found, provisional: walk.provisional, expiresAt: Date.now() + NESTED_REPO_CACHE_TTL_MS });
+		nestedRepoWalkCache.set(rootPath, {
+			found: walk.found,
+			provisional: walk.provisional,
+			expiresAt: Date.now() + NESTED_REPO_CACHE_TTL_MS
+		});
 		return resolveProvisional(rootPath, walk.found, walk.provisional);
 	})();
 
@@ -219,6 +231,12 @@ export async function findNestedRepoPaths(rootPath: string): Promise<string[]> {
 	}
 }
 
+/**
+ * Decide which provisional repos (those found inside an ignored tree) earn a
+ * place in the result, and return the sorted list. Deliberately outside the
+ * cache: a repo qualifies the moment it gains local work, so this runs against
+ * the live working trees on every call even when the walk itself was cached.
+ */
 async function resolveProvisional(rootPath: string, found: string[], provisional: string[]): Promise<string[]> {
 	if (provisional.length === 0) {
 		const out = [...found];
@@ -239,7 +257,12 @@ async function resolveProvisional(rootPath: string, found: string[], provisional
 	return out;
 }
 
-async function walkNestedRepos(rootPath: string): Promise<{ key: string; found: string[]; provisional: string[] }> {
+/**
+ * The raw, uncached filesystem walk. Returns repos split into those reportable
+ * on structure alone and those still needing to prove local work — the split
+ * `findNestedRepoPaths` caches, because only the first half is stable.
+ */
+async function walkNestedRepos(rootPath: string): Promise<{ found: string[]; provisional: string[] }> {
 	const found: string[] = [];
 	/** Repos found inside an ignored tree — reported only if they prove local work. */
 	const provisional: string[] = [];
@@ -351,7 +374,7 @@ async function walkNestedRepos(rootPath: string): Promise<{ key: string; found: 
 		debug.warn('git', `Nested repo scan of ${rootPath} stopped at ${MAX_REPOS} repos`);
 	}
 
-	return { key: rootPath, found, provisional };
+	return { found, provisional };
 }
 
 /**
@@ -405,7 +428,11 @@ export async function findSubmodulePaths(rootPath: string): Promise<Set<string>>
 	return out;
 }
 
-/** Clear the walk cache — primarily for tests. */
+/**
+ * Drop cached walks so the next call re-scans the tree. Exists for tests, which
+ * mutate a project's layout far faster than the TTL and would otherwise assert
+ * against a walk from the previous fixture.
+ */
 export function clearNestedRepoCache(rootPath?: string): void {
 	if (rootPath) {
 		nestedRepoWalkCache.delete(rootPath);

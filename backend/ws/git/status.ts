@@ -60,11 +60,11 @@ export const statusHandler = createRouter()
 		// check-ignore spawns) is the dominant cost. Sharing the walk via the
 		// findNestedRepoPaths cache + inflight dedup also keeps concurrent
 		// callers (status + branches triggered together) from walking twice.
-		const [status, nestedRepoPathsRaw] = await Promise.all([
+		const [status, nestedRepoPaths] = await Promise.all([
 			gitService.getStatus(project.path),
+			// Discovery failing must not cost the user the outer repo's status.
 			findNestedRepoPaths(project.path).catch(() => [] as string[])
 		]);
-		const nestedRepoPaths = nestedRepoPathsRaw ?? [];
 
 		if (nestedRepoPaths.length > 0) {
 			const nestedPrefixes = nestedRepoPaths.map(

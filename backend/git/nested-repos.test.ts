@@ -3,7 +3,7 @@ import { mkdtemp, rm, writeFile, mkdir } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { execGit } from './git-executor';
-import { findNestedRepoPaths, findRepoForFile } from './nested-repos';
+import { clearNestedRepoCache, findNestedRepoPaths, findRepoForFile } from './nested-repos';
 
 /**
  * Sub-repo detection used to walk the whole tree and report every directory
@@ -53,6 +53,10 @@ async function detected(): Promise<string[]> {
 beforeEach(async () => {
 	root = await mkdtemp(path.join(tmpdir(), 'clopen-nested-'));
 	await initRepo(root);
+	// The walk is cached for seconds; these tests rebuild a project's layout in
+	// milliseconds. Without this a fixture would be asserted against the
+	// previous test's tree whenever mkdtemp hands back a reused path.
+	clearNestedRepoCache();
 });
 
 afterEach(async () => {
@@ -203,6 +207,72 @@ describe('findNestedRepoPaths', () => {
 		await initRepo(path.join(root, 'packages/widget/plugins/helper'));
 
 		expect(await detected()).toEqual(['packages/widget', 'packages/widget/plugins/helper']);
+	});
+});
+
+describe('walk cache', () => {
+	// The walk is the expensive half of discovery (readdir over the whole tree
+	// plus a `git check-ignore` spawn per level), and the Git panel fires it
+	// several times a second: staging triggers `git:status` and `git:branches`,
+	// and the `.git` watcher fires `git:changed` right behind them. On Windows
+	// each of those spawns is slow enough that the panel visibly froze.
+
+	test('reuses the walk instead of re-scanning the tree', async () => {
+		expect(await detected()).toEqual([]);
+
+		// Created after the walk was cached, so it must not be visible yet:
+		// this is what proves the second call did not re-scan.
+		await initRepo(path.join(root, 'packages/widget'));
+		expect(await detected()).toEqual([]);
+
+		clearNestedRepoCache();
+		expect(await detected()).toEqual(['packages/widget']);
+	});
+
+	test('still reports a cached provisional repo the moment it gains work', async () => {
+		// The reason only the walk is cached. A repo inside an ignored tree is
+		// held back until it has something to show; if the filtered list were
+		// cached too, the sub-repo an agent just wrote into would stay missing
+		// from the Changes tab for the rest of the TTL.
+		await writeFile(path.join(root, '.gitignore'), 'themes/\n');
+		await initRepo(path.join(root, 'themes/mytheme'));
+
+		expect(await detected()).toEqual([]);
+
+		await addLocalWork(path.join(root, 'themes/mytheme'));
+		expect(await detected()).toEqual(['themes/mytheme']);
+	});
+
+	test('callers arriving during a walk share it and get their own array', async () => {
+		await initRepo(path.join(root, 'packages/widget'));
+
+		const [first, second] = await Promise.all([
+			findNestedRepoPaths(root),
+			findNestedRepoPaths(root)
+		]);
+
+		expect(second).toEqual(first);
+		// Separate arrays — `git:status` mutates the list it is handed, and it
+		// runs concurrently with `git:branches` on the same root.
+		expect(second).not.toBe(first);
+	});
+
+	test('scopes clearing to one root', async () => {
+		const other = await mkdtemp(path.join(tmpdir(), 'clopen-nested-other-'));
+		try {
+			await initRepo(other);
+			expect(await detected()).toEqual([]);
+			await findNestedRepoPaths(other);
+
+			await initRepo(path.join(root, 'packages/widget'));
+			await initRepo(path.join(other, 'packages/widget'));
+
+			clearNestedRepoCache(root);
+			expect(await detected()).toEqual(['packages/widget']);
+			expect(await findNestedRepoPaths(other)).toEqual([]);
+		} finally {
+			await rm(other, { recursive: true, force: true });
+		}
 	});
 });
 
