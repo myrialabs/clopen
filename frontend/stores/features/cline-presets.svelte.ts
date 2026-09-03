@@ -7,36 +7,39 @@
 
 import ws from '$frontend/utils/ws';
 import { debug } from '$shared/utils/logger';
+import { createCachedLoad } from '$frontend/stores/utils/cached-load.svelte';
 import type { ClineProviderPreset } from '$shared/types/unified';
 
 let presets = $state<ClineProviderPreset[]>([]);
-let loaded = $state(false);
+const cache = createCachedLoad('Cline presets');
 
 export const clinePresetsStore = {
 	get presets() { return presets; },
-	get loaded() { return loaded; },
+	get loaded() { return cache.loaded; },
 
 	async fetch(): Promise<ClineProviderPreset[]> {
-		if (loaded) return presets;
-		return this.refresh();
+		await cache.ensure(load);
+		return presets;
 	},
 
 	async refresh(): Promise<ClineProviderPreset[]> {
-		try {
-			const result = await ws.http('engine:cline-presets-list', {});
-			presets = result.presets;
-			loaded = true;
-			debug.log('settings', `Cline presets loaded: ${presets.length}`);
-			return presets;
-		} catch {
-			presets = [];
-			loaded = true;
-			return [];
-		}
+		await cache.refresh(load);
+		return presets;
 	},
 
 	reset() {
 		presets = [];
-		loaded = false;
+		cache.reset();
 	}
 };
+
+/**
+ * The one request behind this store. It does not catch — see the note in
+ * `createCachedLoad`: a failed load must not be cached as an empty catalog,
+ * because nothing would ever ask for it again.
+ */
+async function load(): Promise<void> {
+	const result = await ws.http('engine:cline-presets-list', {});
+	presets = result.presets;
+	debug.log('settings', `Cline presets loaded: ${presets.length}`);
+}

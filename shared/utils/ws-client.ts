@@ -278,6 +278,23 @@ export class WSClient<TAPI extends { client: any; server: any }> {
 	/** Prevents a heal-reconnect stampede when many requests time out at once. */
 	private healingReconnect = false;
 
+	/**
+	 * When the socket last delivered ANYTHING from the server.
+	 *
+	 * This is the evidence that separates the two failures a stalled request can
+	 * mean, which the recovery path used to conflate. A socket that is still
+	 * handing us other traffic is demonstrably alive, so a request that has not
+	 * come back is slow or was lost in transit — re-sending it is the whole fix.
+	 * A socket that has gone completely silent is the black-holed case reconnect
+	 * exists for.
+	 *
+	 * Treating both as "the connection is dead" is what turned one slow read into
+	 * a full teardown, and a teardown re-runs every panel's reconnect handler at
+	 * once — a burst far more expensive than the request that triggered it, and
+	 * one that made the next timeout more likely rather than less.
+	 */
+	private lastInboundAt = 0;
+
 	/** Current context (synced with server) */
 	private context: {
 		userId: string | null;
@@ -376,8 +393,11 @@ export class WSClient<TAPI extends { client: any; server: any }> {
 				}
 
 				// A fresh socket is live again — clear the heal guard so future
-				// dead-connection recoveries can fire.
+				// dead-connection recoveries can fire, and count the open itself as
+				// proof of life so a quiet-but-healthy connection is never mistaken
+				// for a black-holed one on its first request.
 				this.healingReconnect = false;
+				this.lastInboundAt = Date.now();
 
 				// Flush queued fire-and-forget messages AFTER context + room
 				// re-joins are synced. Drain into a local array first so a send
@@ -407,6 +427,10 @@ export class WSClient<TAPI extends { client: any; server: any }> {
 			};
 
 			this.ws.onmessage = (event) => {
+				// Proof of life for the recovery path, recorded before anything can
+				// throw: what matters is that a frame ARRIVED, not that we managed
+				// to handle it.
+				this.lastInboundAt = Date.now();
 				try {
 					if (event.data instanceof ArrayBuffer) {
 						// Binary message
@@ -889,7 +913,7 @@ export class WSClient<TAPI extends { client: any; server: any }> {
 		// Reads can be safely re-sent; mutations can only be re-sent if they were
 		// never delivered (tracked via `entry.sent`).
 		const idempotent = isIdempotentHttpAction(actionStr);
-		// Up to this many automatic heal-reconnect retries for idempotent reads.
+		// Up to this many automatic recovery attempts for idempotent reads.
 		const MAX_HEAL_ATTEMPTS = 2;
 
 		return new Promise((resolve, reject) => {
@@ -920,23 +944,54 @@ export class WSClient<TAPI extends { client: any; server: any }> {
 				}
 			};
 
-			// Timeout handler — for idempotent reads, try to heal a dead-but-open
-			// socket and retry instead of failing outright.
+			// Timeout handler — for idempotent reads, recover and retry instead of
+			// failing outright.
+			//
+			// The recovery is now proportionate to the evidence, which it was not
+			// before: ANY stalled read forced a full reconnect, so one slow answer
+			// from a busy server tore down a connection that was working perfectly
+			// and made all fifteen `onWsReconnect` subscribers refetch at once. On a
+			// loaded instance that burst is what caused the NEXT timeout, and the
+			// loop sustained itself — panels re-showing their skeletons every few
+			// seconds for as long as the instance stayed busy.
+			//
+			// So the socket is only rebuilt when it has actually stopped speaking.
+			// While other traffic is still arriving the connection is known-good and
+			// re-sending the one request costs a single frame.
 			const onTimeout = () => {
 				if (idempotent && entry.attempts < MAX_HEAL_ATTEMPTS) {
 					entry.attempts++;
+					entry.arm();
+
+					// Silent for a whole timeout window means nothing at all is
+					// coming through — a stream, an event, another response — which
+					// is the black-hole signature reconnect exists for. Anything
+					// less is a connection that works and a request that did not.
+					const silentFor = Date.now() - this.lastInboundAt;
+					const socketIsBlackHoled = this.isSocketOpen() && silentFor >= timeout;
+
+					if (socketIsBlackHoled && !this.healingReconnect) {
+						debug.warn(
+							'websocket',
+							`Socket silent for ${silentFor}ms — reconnecting and retrying: ${actionStr} (attempt ${entry.attempts})`
+						);
+						this.healingReconnect = true;
+						// The onopen resend loop re-sends this request on the fresh
+						// socket, so nothing extra is needed here.
+						this.reconnect();
+						return;
+					}
+
 					debug.warn(
 						'websocket',
-						`Request stalled, healing connection and retrying: ${actionStr} (attempt ${entry.attempts})`
+						`Request stalled but connection is live — re-sending: ${actionStr} (attempt ${entry.attempts})`
 					);
-					entry.arm();
-					// If the socket still claims to be open, it is likely black-holed
-					// — force a reconnect (guarded against a stampede). The onopen
-					// resend loop will re-send this request on the fresh socket.
-					if (this.isSocketOpen() && !this.healingReconnect) {
-						this.healingReconnect = true;
-						this.reconnect();
+					if (this.isSocketOpen()) {
+						entry.sent = true;
+						this.sendRaw(entry.action, entry.payload);
 					}
+					// A socket that is not open needs no action: the request stays in
+					// `pendingHttpRequests` and the onopen resend loop delivers it.
 					return;
 				}
 				entry.cleanup();

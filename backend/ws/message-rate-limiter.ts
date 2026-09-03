@@ -6,8 +6,29 @@
  *
  * Thresholds:
  *   50 messages/second  → warning logged
- *   100 messages/second → connection throttled (messages dropped)
- *   200 messages/second → connection flagged for potential disconnect
+ *   100 messages/second → connection throttled (fire-and-forget events dropped)
+ *   200 messages/second → connection closed
+ *
+ * WHAT GETS SHED WHEN THROTTLING
+ *
+ * Throttling drops events, never request-response calls, and the asymmetry is
+ * the entire point. A busy Clopen tab is dominated by high-volume fire-and-
+ * forget traffic — preview pointer moves at ~30/s per viewer, terminal
+ * keystrokes, stream feedback — while the calls a panel actually waits on
+ * (`files:list-tree`, `git:status`, `engine:*-accounts-list`) are a trickle by
+ * comparison.
+ *
+ * Counting them in one bucket and dropping whatever arrived last meant the
+ * flood survived and the request died. That is backwards twice over: a dropped
+ * pointer move is invisible because the next one supersedes it a frame later,
+ * whereas a dropped request leaves a panel with no data and a user with no
+ * explanation. Worse, it was self-amplifying — a dropped request used to hang
+ * its caller until the client tore the socket down and every panel refetched at
+ * once, which is a bigger burst than the one that tripped the limiter.
+ *
+ * Abuse is still bounded, and by the threshold that was always the real one:
+ * a connection genuinely spamming the server crosses 200/s and gets closed
+ * regardless of what it is sending.
  */
 
 import { debug } from '$shared/utils/logger';
@@ -59,7 +80,13 @@ export class MessageRateLimiter {
 		return state;
 	}
 
-	checkRateLimit(conn: WSConnection, action: string): boolean {
+	/**
+	 * @param isRequest Whether `action` is a request-response route — i.e. a
+	 *   caller is blocked waiting for its reply. Such calls are counted like
+	 *   everything else but are never shed by throttling; see the note at the
+	 *   top of this file.
+	 */
+	checkRateLimit(conn: WSConnection, action: string, isRequest = false): boolean {
 		const state = this.getState(conn);
 		const now = Date.now();
 		const windowStart = now - this.config.windowMs;
@@ -91,6 +118,10 @@ export class MessageRateLimiter {
 				state.isWarning = false;
 				debug.warn('rate-limit', `Connection throttled: ${messagesPerSecond.toFixed(0)} msg/s on action ${action}`);
 			}
+			// Shed the flood, not the thing somebody is waiting on. Below the
+			// disconnect threshold a request is always answered; above it the
+			// connection is gone anyway.
+			if (isRequest) return true;
 			state.messagesDropped++;
 			return false;
 		}

@@ -104,8 +104,8 @@ wsRouter.setAuthMiddleware(async (conn, action) => {
 });
 
 // Register message rate limiter on WebSocket router — prevents DoS via message spam
-wsRouter.setRateLimiter((conn, action) => {
-	return messageRateLimiter.checkRateLimit(conn, action);
+wsRouter.setRateLimiter((conn, action, isRequest) => {
+	return messageRateLimiter.checkRateLimit(conn, action, isRequest);
 });
 
 /**
