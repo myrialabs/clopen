@@ -24,7 +24,7 @@ import type {
 	PortSocket,
 	PortSocketState
 } from '$shared/types/ports';
-import { posixArgv, type CommandRunner, type ProbePlatform } from './runner';
+import { posixArgv, type CommandRunner, type ProbePlatform } from '../host/runner';
 import { debug } from '$shared/utils/logger';
 
 /** Per-host memory of which probe answered, held by the host's scanner. */

@@ -32,6 +32,7 @@ export const logHandler = createRouter()
 			limit: t.Optional(t.Number()),
 			skip: t.Optional(t.Number()),
 			branch: t.Optional(t.String()),
+			allBranches: t.Optional(t.Boolean()),
 			repoPath: t.Optional(t.String())
 		}),
 		response: t.Object({
@@ -55,6 +56,7 @@ export const logHandler = createRouter()
 			cwd,
 			data.limit ?? 50,
 			data.skip ?? 0,
-			data.branch
+			data.branch,
+			data.allBranches ?? false
 		);
 	});
