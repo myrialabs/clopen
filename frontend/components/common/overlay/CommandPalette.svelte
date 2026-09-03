@@ -1,7 +1,6 @@
 <script lang="ts">
 	import { fade, scale } from 'svelte/transition';
 	import { cubicOut } from 'svelte/easing';
-	import { tick } from 'svelte';
 	import { portal } from '$frontend/utils/portal';
 	import { isMac } from '$frontend/utils/platform';
 	import Icon from '$frontend/components/common/display/Icon.svelte';
@@ -81,6 +80,11 @@
 	let fileResults = $state<FileHit[]>([]);
 	let filesLoading = $state(false);
 	let fileDebounceTimer: ReturnType<typeof setTimeout> | undefined;
+	// Pointer-vs-keyboard arbitration for the result list — see handleItemMouseMove.
+	// Plain `let`: nothing in the markup reads these, so they don't need to be reactive.
+	let isKeyboardNav = false;
+	let lastPointerX = -1;
+	let lastPointerY = -1;
 
 	const modifierLabel = isMac() ? '⌘' : 'Ctrl+';
 
@@ -91,6 +95,7 @@
 			selectedIndex = 0;
 			sessionResults = [];
 			fileResults = [];
+			isKeyboardNav = false;
 			queueMicrotask(() => inputEl?.focus());
 		}
 	});
@@ -323,31 +328,24 @@
 		if (selectedIndex >= items.length) selectedIndex = Math.max(0, items.length - 1);
 	});
 
-	// After keyboard navigation, ignore synthetic mouseenter events fired when
-	// the list scrolls under a stationary cursor — otherwise hover steals the
-	// selection and both the keyboard-selected and hovered rows appear
-	// highlighted (the "trail" on PgUp/PgDn). We also hide the CSS :hover
-	// background while keyboard-navigating so only the violet selected row is visible.
-	let isKeyboardNav = $state(false);
-	let keyboardNavTimer: ReturnType<typeof setTimeout> | undefined;
-	function bumpMouseSuppress() {
-		isKeyboardNav = true;
-		clearTimeout(keyboardNavTimer);
-		// Keep suppressed until real mouse move; fallback 900ms in case mouse never moves
-		keyboardNavTimer = setTimeout(() => (isKeyboardNav = false), 900);
-	}
-	function isMouseSuppressed(): boolean {
-		return isKeyboardNav;
-	}
+	// Scrolling the list under a stationary cursor makes the browser fire
+	// `mouseenter` on whichever row slides beneath it, which would hand the
+	// selection to the pointer mid-keypress — the row the user navigated to and
+	// the row under the cursor would both look active. Keyboard navigation
+	// therefore sets a flag that ignores those synthetic enters until the
+	// pointer really moves, which we detect by comparing client coordinates
+	// rather than trusting the event to imply movement.
 	function handleItemMouseEnter(index: number) {
-		if (isMouseSuppressed()) return;
+		if (isKeyboardNav) return;
 		selectedIndex = index;
 	}
-	function handleMouseMove() {
-		if (!isKeyboardNav) return;
-		clearTimeout(keyboardNavTimer);
-		// Small debounce so the synthetic mousemove that follows scroll doesn't instantly re-enable
-		keyboardNavTimer = setTimeout(() => (isKeyboardNav = false), 60);
+
+	function handleItemMouseMove(index: number, event: MouseEvent) {
+		if (event.clientX === lastPointerX && event.clientY === lastPointerY) return;
+		lastPointerX = event.clientX;
+		lastPointerY = event.clientY;
+		isKeyboardNav = false;
+		selectedIndex = index;
 	}
 
 	async function activate(item: PaletteItem) {
@@ -360,39 +358,32 @@
 	}
 
 	/**
-	 * Keep the highlighted row visible as arrow-key navigation moves past the
-	 * fold. Only scrolls when the row is actually out of view — anchoring to
-	 * the edge it's crossing (bottom when it overflows below, top when it
-	 * overflows above) — instead of unconditionally calling scrollIntoView
-	 * on every key press. Doing it unconditionally caused a jump on
-	 * alternating Down/Up presses: the row would still be fully visible, but
-	 * the previous direction's edge anchor would yank it back to the
-	 * opposite edge anyway.
+	 * Keep the highlighted row visible as keyboard navigation moves past the
+	 * fold. Only scrolls when the row is actually out of view, and `nearest`
+	 * moves the minimum distance to bring it back — so alternating Down/Up
+	 * presses on a still-visible row don't yank it between edges. A page jump
+	 * lands many rows away, so it scrolls smoothly; single steps snap.
 	 */
-	async function scrollSelectedIntoView(opts: { smooth?: boolean } = {}) {
-		// Wait for Svelte to flush selectedIndex -> DOM class/data-index update
-		await tick();
+	function scrollSelectedIntoView(opts: { smooth?: boolean } = {}) {
 		requestAnimationFrame(() => {
 			const el = resultsEl?.querySelector(`[data-index="${selectedIndex}"]`) as HTMLElement | null;
 			if (!resultsEl || !el) return;
 			const containerRect = resultsEl.getBoundingClientRect();
 			const elRect = el.getBoundingClientRect();
-			const behavior = opts.smooth ? 'smooth' : 'auto';
-			if (elRect.bottom > containerRect.bottom) {
-				el.scrollIntoView({ block: 'nearest', behavior });
-			} else if (elRect.top < containerRect.top) {
-				el.scrollIntoView({ block: 'nearest', behavior });
+			if (elRect.bottom > containerRect.bottom || elRect.top < containerRect.top) {
+				el.scrollIntoView({ block: 'nearest', behavior: opts.smooth ? 'smooth' : 'auto' });
 			}
 		});
 	}
 
+	/** Rows per PageUp/PageDown — one viewport, minus a row of overlap for context. */
 	function getPageSize(): number {
-		if (!resultsEl) return 8;
-		const firstItem = resultsEl.querySelector('[data-index]') as HTMLElement | null;
-		const itemHeight = firstItem?.offsetHeight || 56;
-		const visibleCount = Math.floor(resultsEl.clientHeight / itemHeight);
-		// Keep one overlapping row for context, fallback to 8 if container not measurable.
-		return Math.max(1, visibleCount > 1 ? visibleCount - 1 : 8);
+		const firstItem = resultsEl?.querySelector('[data-index]') as HTMLElement | null;
+		const itemHeight = firstItem?.offsetHeight ?? 0;
+		// Before the list has rendered there's nothing to measure; 8 rows is
+		// roughly a viewport at the palette's max height.
+		if (!resultsEl || itemHeight <= 0) return 8;
+		return Math.max(1, Math.floor(resultsEl.clientHeight / itemHeight) - 1);
 	}
 
 	/** Don't steal Ctrl/Cmd+K from the terminal — readline binds it to kill-line. */
@@ -430,7 +421,7 @@
 			event.preventDefault();
 			event.stopPropagation();
 			if (items.length > 0) {
-				bumpMouseSuppress();
+				isKeyboardNav = true;
 				selectedIndex = (selectedIndex + 1) % items.length;
 				scrollSelectedIntoView();
 			}
@@ -441,55 +432,26 @@
 			event.preventDefault();
 			event.stopPropagation();
 			if (items.length > 0) {
-				bumpMouseSuppress();
+				isKeyboardNav = true;
 				selectedIndex = (selectedIndex - 1 + items.length) % items.length;
 				scrollSelectedIntoView();
 			}
 			return;
 		}
 
-		if (event.key === 'PageDown') {
+		// Page keys clamp instead of wrapping — a page jump that teleports from
+		// the last row back to the first reads as a scroll glitch, not navigation.
+		// Home/End are deliberately not bound: focus lives in the query input for
+		// the palette's whole lifetime, so claiming them would break jumping the
+		// text caret to the start or end of what the user typed.
+		if (event.key === 'PageDown' || event.key === 'PageUp') {
 			event.preventDefault();
 			event.stopPropagation();
 			if (items.length > 0) {
-				bumpMouseSuppress();
-				const page = getPageSize();
-				selectedIndex = Math.min(items.length - 1, selectedIndex + page);
+				isKeyboardNav = true;
+				const page = event.key === 'PageDown' ? getPageSize() : -getPageSize();
+				selectedIndex = Math.min(items.length - 1, Math.max(0, selectedIndex + page));
 				scrollSelectedIntoView({ smooth: true });
-			}
-			return;
-		}
-
-		if (event.key === 'PageUp') {
-			event.preventDefault();
-			event.stopPropagation();
-			if (items.length > 0) {
-				bumpMouseSuppress();
-				const page = getPageSize();
-				selectedIndex = Math.max(0, selectedIndex - page);
-				scrollSelectedIntoView({ smooth: true });
-			}
-			return;
-		}
-
-		if (event.key === 'Home') {
-			event.preventDefault();
-			event.stopPropagation();
-			if (items.length > 0) {
-				bumpMouseSuppress();
-				selectedIndex = 0;
-				scrollSelectedIntoView();
-			}
-			return;
-		}
-
-		if (event.key === 'End') {
-			event.preventDefault();
-			event.stopPropagation();
-			if (items.length > 0) {
-				bumpMouseSuppress();
-				selectedIndex = items.length - 1;
-				scrollSelectedIntoView();
 			}
 			return;
 		}
@@ -549,7 +511,7 @@
 			</div>
 
 			<!-- Results -->
-			<div bind:this={resultsEl} class="flex-1 overflow-y-auto py-2" onmousemove={handleMouseMove}>
+			<div bind:this={resultsEl} class="flex-1 overflow-y-auto py-2">
 				{#if items.length === 0}
 					<div class="flex flex-col items-center gap-2 py-10 text-slate-500 dark:text-slate-500 text-sm">
 						<Icon name="lucide:search-x" class="w-8 h-8 opacity-40" />
@@ -567,8 +529,9 @@
 								class="flex items-center gap-3 w-[calc(100%-1rem)] mx-2 px-2.5 py-2 rounded-lg text-left bg-transparent border-none cursor-pointer
 									{item.index === selectedIndex
 									? 'bg-violet-500/10 text-slate-900 dark:text-slate-100'
-									: 'text-slate-700 dark:text-slate-300' + (isKeyboardNav ? '' : ' hover:bg-slate-100/80 dark:hover:bg-slate-800/80')}"
+									: 'text-slate-700 dark:text-slate-300'}"
 								onmouseenter={() => handleItemMouseEnter(item.index)}
+								onmousemove={(event) => handleItemMouseMove(item.index, event)}
 								onclick={() => activate(item)}
 							>
 								<Icon
