@@ -90,11 +90,19 @@ const MAX_DEPTH = 12;
  * work — which is exactly when the Changes tab needs it. Caching the filtered
  * list would hide that repo for the rest of the TTL.
  *
- * Nothing invalidates the cache on filesystem events — the TTL is the only
- * bound. A sub-repo created or deleted while an entry is warm is therefore up
- * to `NESTED_REPO_CACHE_TTL_MS` late, which is acceptable for a list that only
- * refreshes when the panel asks, and far cheaper than driving a whole-tree
- * discovery walk off the `.git` watcher.
+ * Only ONE filesystem signal invalidates an entry: the file watcher seeing an
+ * event from a `.git` it does not know about, i.e. a `git init` or `git clone`
+ * inside an open project. That path (`scheduleGitTargetsRefresh`) must not be
+ * answered from a walk taken before the repo existed — it decides which git
+ * dirs get watched at all, and rejects unaccounted-for ones permanently.
+ * Everything else rides the TTL: a sub-repo DELETED while an entry is warm
+ * stays listed for up to `NESTED_REPO_CACHE_TTL_MS`, which costs one failed
+ * `git status` that the caller already skips.
+ *
+ * Note what is NOT cached: no file status ever is. Staged, unstaged, untracked
+ * and conflicted entries come from a live `git status` per repo on every call,
+ * so the Changes tab is never stale. The cache only answers "which directories
+ * under this root are repos".
  */
 const NESTED_REPO_CACHE_TTL_MS = process.platform === 'win32' ? 5000 : 3000;
 interface NestedWalkCache {

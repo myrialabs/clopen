@@ -10,6 +10,8 @@
 
 import { describe, expect, mock, test, beforeAll, afterEach } from 'bun:test';
 import { mkdtemp, mkdir, rm, writeFile } from 'node:fs/promises';
+import { execGit } from '../git/git-executor';
+import { clearNestedRepoCache, findNestedRepoPaths } from '../git/nested-repos';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
@@ -58,6 +60,19 @@ async function waitFor(predicate: () => boolean, timeout = 4000): Promise<void> 
 	throw new Error('Timed out waiting for watcher event');
 }
 
+function gitRepoPathsFor(projectId: string): string[] {
+	return emitted
+		.filter((e) => e.projectId === projectId && e.event === 'git:changed')
+		.flatMap((e) => e.payload.repoPaths as string[]);
+}
+
+async function initRepo(dir: string): Promise<void> {
+	await mkdir(dir, { recursive: true });
+	await execGit(['init', '-b', 'main', '.'], dir);
+	await execGit(['config', 'user.email', 'test@example.com'], dir);
+	await execGit(['config', 'user.name', 'Test'], dir);
+}
+
 function changesFor(projectId: string): string[] {
 	return emitted
 		.filter((e) => e.projectId === projectId && e.event === 'files:changed')
@@ -69,6 +84,7 @@ afterEach(async () => {
 		fileWatcher.releaseProject(projectId);
 	}
 	emitted.length = 0;
+	clearNestedRepoCache();
 	await Promise.all(tempRoots.splice(0).map((dir) => rm(dir, { recursive: true, force: true })));
 });
 
@@ -144,6 +160,40 @@ describe('FileWatcherManager', () => {
 
 		fileWatcher.clearDirtyFiles('p5');
 		expect(fileWatcher.getDirtyFiles('p5').size).toBe(0);
+	});
+
+	test('watches a sub-repo created while the project is already open', async () => {
+		// `findNestedRepoPaths` caches its walk for a few seconds, and the panel
+		// warms that cache constantly — every `git:status` and `git:branches`
+		// goes through it. `scheduleGitTargetsRefresh` then re-resolves 1.5s
+		// after an unknown `.git` shows up, well inside the TTL, so it would be
+		// answered from a walk taken before the new repo existed. The git dir
+		// would stay unaccounted for, `syncGitWatchers` would file it under
+		// `rejectedGitDirs` — which is permanent — and `routeGitEvent` would
+		// then refuse to schedule another refresh for it. The sub-repo would go
+		// unwatched for as long as the project stayed open.
+		const root = await makeProject();
+		await initRepo(root);
+
+		// Warm the cache the way the panel does, before the sub-repo exists.
+		expect(await findNestedRepoPaths(root)).toEqual([]);
+
+		expect(await fileWatcher.startWatching('p7', root)).toBe(true);
+
+		const sub = join(root, 'packages', 'widget');
+		await initRepo(sub);
+
+		// The refresh announces itself by emitting for the project root once the
+		// repo set has been re-resolved.
+		await waitFor(() => gitRepoPathsFor('p7').includes(root), 10000);
+
+		emitted.length = 0;
+		// Space this out: the platform watchers coalesce bursts, and this write
+		// has to be seen on its own to mean anything.
+		await new Promise((resolve) => setTimeout(resolve, 400));
+		await writeFile(join(sub, '.git', 'index'), 'stand-in for a real index write');
+
+		await waitFor(() => gitRepoPathsFor('p7').includes(sub), 10000);
 	});
 
 	test('stops watching once the last viewer leaves', async () => {

@@ -34,6 +34,7 @@ import { join, relative, normalize, sep } from 'node:path';
 import { ws } from '$backend/utils/ws';
 import { debug } from '$shared/utils/logger';
 import { resolveGitDirs, type GitDirTarget } from '$backend/git/git-dirs';
+import { clearNestedRepoCache } from '$backend/git/nested-repos';
 import type { FileChange } from '$shared/types/filesystem';
 
 /**
@@ -832,6 +833,14 @@ class FileWatcherManager {
 	 * Queue a re-resolve of the project's git directories, for when an event
 	 * arrives from a `.git` we do not know about — `git init` or `git clone` run
 	 * inside the project while it is open.
+	 *
+	 * This is the one signal that the project's repo SET changed, so it drops
+	 * the cached sub-repo walk first. Without that, `resolveGitDirs` answers
+	 * from a walk taken before the new repo existed, the git dir stays
+	 * unaccounted for, and `syncGitWatchers` files it under `rejectedGitDirs` —
+	 * which is permanent, and which `routeGitEvent` then uses to stop
+	 * scheduling refreshes for it. A repo created in an open project would
+	 * never be watched again.
 	 */
 	private scheduleGitTargetsRefresh(projectId: string, gitDirPath?: string): void {
 		const projectWatcher = this.watchers.get(projectId);
@@ -843,6 +852,7 @@ class FileWatcherManager {
 		projectWatcher.gitTargetsTimer = setTimeout(() => {
 			projectWatcher.gitTargetsTimer = null;
 			if (projectWatcher.closed) return;
+			clearNestedRepoCache(projectWatcher.projectPath);
 			void this.syncGitWatchers(projectId).then(() => {
 				if (projectWatcher.closed) return;
 				// The repo set itself changed, so tell clients: this is what flips a
