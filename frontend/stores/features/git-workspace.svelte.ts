@@ -135,6 +135,16 @@ export interface GitOpFlags {
 	isGenerating: boolean;
 	isGeneratingBranch: boolean;
 	isCreatingBranch: boolean;
+	/** Stash save / pop / drop. */
+	isStashing: boolean;
+	/** Tag create / delete / push. */
+	isTagging: boolean;
+	/** Branch switch / create / rename / delete, and commit checkout. */
+	isBranching: boolean;
+	/** Conflict resolution and merge abort. */
+	isResolving: boolean;
+	/** Repo setup that is not a working-tree change: init, remote add/edit/remove. */
+	isConfiguring: boolean;
 }
 
 const NO_OPS: GitOpFlags = Object.freeze({
@@ -146,7 +156,12 @@ const NO_OPS: GitOpFlags = Object.freeze({
 	isMoreBusy: false,
 	isGenerating: false,
 	isGeneratingBranch: false,
-	isCreatingBranch: false
+	isCreatingBranch: false,
+	isStashing: false,
+	isTagging: false,
+	isBranching: false,
+	isResolving: false,
+	isConfiguring: false
 });
 
 const gitOps = $state<Record<string, GitOpFlags>>({});
@@ -167,6 +182,43 @@ export function setGitOp(projectId: string, key: keyof GitOpFlags, value: boolea
 	const opKey = getOpKey(projectId, repoPath);
 	const current = gitOps[opKey] ?? NO_OPS;
 	gitOps[opKey] = { ...current, [key]: value };
+}
+
+/**
+ * Run one git action while its flag is held, and skip it entirely if that flag
+ * is already set. Returns whether the action ran.
+ *
+ * Every mutating git action in the panel goes through this. Hand-rolling the
+ * check-set-try-finally at each call site is how they drifted apart: of the
+ * panel's fifty mutating handlers, most held no flag at all, so a second click
+ * during a slow refresh fired the request twice. That was merely wasteful for
+ * something idempotent like `git add`, and destructive for anything addressed
+ * by position — `git stash pop stash@{0}` twice pops two different stashes,
+ * because the list re-indexes under the second call.
+ *
+ * The flag is per (projectId, repoPath), so a nested sub-repo runs
+ * independently of its parent and an action started in one project clears the
+ * right flag even if the user switches away mid-flight.
+ *
+ * Callers must render the flag — a disabled button or a spinner. A guard that
+ * nothing displays turns a double-click into a click that silently does
+ * nothing, which is worse than the duplicate request it prevents.
+ */
+export async function runGitOp(
+	projectId: string | null | undefined,
+	key: keyof GitOpFlags,
+	action: () => Promise<void>,
+	repoPath?: string
+): Promise<boolean> {
+	if (!projectId) return false;
+	if (getGitOps(projectId, repoPath)[key]) return false;
+	setGitOp(projectId, key, true, repoPath);
+	try {
+		await action();
+		return true;
+	} finally {
+		setGitOp(projectId, key, false, repoPath);
+	}
 }
 
 let snapshotProvider: (() => GitUiState) | null = null;
