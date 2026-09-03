@@ -27,7 +27,6 @@
 		onCopy,
 		onRestore,
 		onEdit,
-		onShowDebug,
 	}: {
 		message: FrontendMessage;
 		messageTimestamp: string;
@@ -40,7 +39,6 @@
 		onCopy: () => void;
 		onRestore: () => void;
 		onEdit: () => void;
-		onShowDebug: () => void;
 	} = $props();
 
 	let scrollContainer: HTMLDivElement | undefined = $state();
@@ -249,53 +247,26 @@
 	</div>
 
 {:else}
-	<!-- Assistant / reasoning / system -->
-	<!-- The actions sit outside the scroll container on purpose: for `system` the inner
-	     div scrolls, and an absolutely positioned child of a scroll container travels
-	     with its content instead of staying pinned to the row. -->
-	<div class="relative">
-		<!-- Copy + Debug — always visible, subtle by colour rather than opacity -->
-		<div class="absolute top-1 right-1 z-10 flex items-center gap-0.5">
-			{#if roleCategory === 'assistant'}
-				<button
-					type="button"
-					onclick={(e) => { e.stopPropagation(); handleCopy(); }}
-					class="inline-flex p-1 rounded-md hover:bg-slate-100 dark:hover:bg-slate-800 text-slate-400 hover:text-slate-600 dark:hover:text-slate-300 transition-colors"
-					aria-label={isCopied ? 'Copied' : 'Copy message'}
-					title={isCopied ? 'Copied!' : 'Copy message'}
-				>
-					<Icon name={isCopied ? 'lucide:check' : 'lucide:copy'} class="w-3.5 h-3.5" />
-				</button>
-			{/if}
-			<button
-				type="button"
-				onclick={(e) => { e.stopPropagation(); onShowDebug(); }}
-				class="inline-flex p-1 rounded-md hover:bg-slate-100 dark:hover:bg-slate-800 text-slate-400 hover:text-slate-600 dark:hover:text-slate-300 transition-colors"
-				aria-label="Show debug info"
-				title="Debug info"
-			>
-				<Icon name="lucide:bug" class="w-3.5 h-3.5" />
-			</button>
-		</div>
-		<div
-			bind:this={scrollContainer}
-			onscroll={handleScroll}
-			class="text-slate-900 dark:text-slate-100 {roleCategory === 'system' ? 'max-h-48 overflow-y-auto' : ''} {roleCategory === 'assistant' ? 'pr-14' : 'pr-8'} py-1"
-		>
-			{#if roleCategory === 'reasoning'}
-				<!-- Reasoning row — same icon, indent, color and font as the tool rows -->
-				<div class="flex items-start gap-2 py-[2px] min-w-0">
-					<span class="relative shrink-0 w-[14px] mt-[1px] flex items-center justify-center text-slate-500 dark:text-slate-400 z-10">
-						<span class="absolute inset-0 -m-[3px] rounded bg-slate-50 dark:bg-slate-900"></span>
-						<Icon name="lucide:sparkles" class="relative w-[13px] h-[13px]" />
-					</span>
-					<span class="text-[12px] text-slate-500 dark:text-slate-400">
-						{#if isThinkingInProgress}Thinking{thinkingDots}{:else}Thought for a moment{/if}
-					</span>
-				</div>
-			{:else}
-				<MessageFormatter {message} />
-			{/if}
-		</div>
+	<!-- Assistant / reasoning / system — no per-message actions: compact mode keeps
+	     the transcript clean, only the user row carries copy/undo/edit. -->
+	<div
+		bind:this={scrollContainer}
+		onscroll={handleScroll}
+		class="text-slate-900 dark:text-slate-100 {roleCategory === 'system' ? 'max-h-48 overflow-y-auto pr-2' : ''} py-1"
+	>
+		{#if roleCategory === 'reasoning'}
+			<!-- Reasoning row — same icon, indent, color and font as the tool rows -->
+			<div class="flex items-start gap-2 py-[2px] min-w-0">
+				<span class="relative shrink-0 w-[14px] mt-[1px] flex items-center justify-center text-slate-500 dark:text-slate-400 z-10">
+					<span class="absolute inset-0 -m-[3px] rounded bg-slate-50 dark:bg-slate-900"></span>
+					<Icon name="lucide:sparkles" class="relative w-[13px] h-[13px]" />
+				</span>
+				<span class="text-[12px] text-slate-500 dark:text-slate-400">
+					{#if isThinkingInProgress}Thinking{thinkingDots}{:else}Thought for a moment{/if}
+				</span>
+			</div>
+		{:else}
+			<MessageFormatter {message} />
+		{/if}
 	</div>
 {/if}
