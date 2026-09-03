@@ -9,8 +9,8 @@ import {
 	endWatchedDiscovery,
 	findNestedRepoPaths,
 	findRepoForFile,
-	invalidateLocalWork,
-	invalidateRepoSet
+	invalidateRepoSet,
+	notifyPathChanged
 } from './nested-repos';
 
 /**
@@ -369,7 +369,7 @@ describe('watcher-driven discovery', () => {
 
 		const edited = path.join(root, 'themes/mytheme/style.css');
 		await writeFile(edited, 'body { color: red }\n');
-		invalidateLocalWork(edited);
+		notifyPathChanged(root, edited);
 
 		expect(await detected()).toEqual(['themes/mytheme']);
 	});
@@ -387,11 +387,86 @@ describe('watcher-driven discovery', () => {
 
 		const edited = path.join(root, 'themes/alpha/style.css');
 		await writeFile(edited, 'body {}\n');
-		invalidateLocalWork(edited);
+		notifyPathChanged(root, edited);
 
 		// Only alpha is re-probed; beta answers from its cached verdict.
 		const { spawns } = await countSpawns(() => detected());
 		expect(spawns.filter((cmd) => cmd === 'status')).toHaveLength(1);
+	});
+
+	test('a per-repo exclude file moves the boundary like .gitignore does', async () => {
+		// `.git/info/exclude` is obeyed by `git check-ignore` exactly like
+		// `.gitignore`, so it decides whether a sub-repo has to prove local work.
+		// The watcher deliberately filters it out of the panel's git-state
+		// events — the panel has nothing to show for it — so discovery has to
+		// recognise it by name rather than ride along with those.
+		await initRepo(path.join(root, 'themes/mytheme'));
+
+		beginWatchedDiscovery(root);
+		expect(await detected()).toEqual(['themes/mytheme']);
+
+		await mkdir(path.join(root, '.git/info'), { recursive: true });
+		const exclude = path.join(root, '.git/info/exclude');
+		await writeFile(exclude, 'themes/\n');
+		notifyPathChanged(root, exclude);
+
+		// Now inside an ignored tree and pristine, so it drops off the list.
+		expect(await detected()).toEqual([]);
+	});
+
+	test('a .git appearing is itself a repo-set change', async () => {
+		beginWatchedDiscovery(root);
+		expect(await detected()).toEqual([]);
+
+		const widget = path.join(root, 'packages/widget');
+		await initRepo(widget);
+		notifyPathChanged(root, path.join(widget, '.git'));
+
+		expect(await detected()).toEqual(['packages/widget']);
+	});
+
+	test('an ordinary write is not treated as a repo-set change', async () => {
+		// The counterweight to the rules above: if every path invalidated the
+		// walk, the cache would do nothing at all during a build.
+		beginWatchedDiscovery(root);
+		expect(await detected()).toEqual([]);
+
+		await initRepo(path.join(root, 'packages/widget'));
+		const ordinary = path.join(root, 'src/app.ts');
+		await mkdir(path.join(root, 'src'), { recursive: true });
+		await writeFile(ordinary, 'export {}\n');
+		notifyPathChanged(root, ordinary);
+
+		expect(await detected()).toEqual([]);
+	});
+
+	test('ignores signals for a root nobody is watching', async () => {
+		await initRepo(path.join(root, 'packages/widget'));
+		// Never claimed, so there is no cached answer a signal could correct and
+		// nothing here should pretend otherwise.
+		notifyPathChanged(root, path.join(root, '.gitignore'));
+		expect(await detected()).toEqual(['packages/widget']);
+	});
+
+	test('two watchers on one root: the first to leave does not revoke the claim', async () => {
+		// Two projects can be opened at the same directory. Releasing on the
+		// first close would put discovery back on the clock while a perfectly
+		// good signal source was still running.
+		await writeFile(path.join(root, '.gitignore'), 'themes/\n');
+		await initRepo(path.join(root, 'themes/mytheme'));
+		await addLocalWork(path.join(root, 'themes/mytheme'));
+
+		beginWatchedDiscovery(root);
+		beginWatchedDiscovery(root);
+		expect(await detected()).toEqual(['themes/mytheme']);
+
+		endWatchedDiscovery(root);
+		const stillWatched = await countSpawns(() => detected());
+		expect(stillWatched.spawns).toEqual([]);
+
+		endWatchedDiscovery(root);
+		const released = await countSpawns(() => detected());
+		expect(released.spawns).toContain('status');
 	});
 
 	test('invalidating the repo set re-walks the tree', async () => {

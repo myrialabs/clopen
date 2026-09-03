@@ -37,8 +37,8 @@ import { resolveGitDirs, type GitDirTarget } from '$backend/git/git-dirs';
 import {
 	beginWatchedDiscovery,
 	endWatchedDiscovery,
-	invalidateLocalWork,
-	invalidateRepoSet
+	invalidateRepoSet,
+	notifyPathChanged
 } from '$backend/git/nested-repos';
 import type { FileChange } from '$shared/types/filesystem';
 
@@ -166,20 +166,6 @@ export function isGitStateEvent(entryPath: string): boolean {
 /** Whether a project-relative path passes through a `.git` directory. */
 export function hasGitSegment(relativePath: string): boolean {
 	return relativePath.split('/').includes('.git');
-}
-
-/**
- * Whether a path is one of the files that decide which sub-repos count:
- * `.gitignore` (a tree the project ignores holds repos it must prove itself
- * to report) and `.gitmodules` (the user declaring a sub-repo outright).
- *
- * Editing either changes the reported repo set with no `.git` created or
- * removed, so nothing else in the watcher would notice — `hasGitSegment` is
- * false for both, and `shouldIgnore` discards every dotfile.
- */
-export function isRepoSetRuleFile(relativePath: string): boolean {
-	const basename = relativePath.split('/').pop();
-	return basename === '.gitignore' || basename === '.gitmodules';
 }
 
 /**
@@ -635,20 +621,15 @@ class FileWatcherManager {
 		// path: where the root watch is recursive it is the only thing that sees
 		// a sub-repo's git dir, so dropping it here is what left a commit made
 		// inside a nested repo completely unreported.
+		// Tell sub-repo discovery before anything below filters the path away.
+		// It decides for itself what a path means: `routeGitEvent` swallows every
+		// `.git` path and `shouldIgnore` every dotfile, so `.gitignore` — which
+		// moves the reported repo set — would otherwise never reach it.
+		notifyPathChanged(projectWatcher.projectPath, fullPath);
+
 		if (this.routeGitEvent(projectWatcher, relativePath, fullPath)) return;
 
-		// Last point these are visible: `shouldIgnore` below drops every dotfile.
-		if (isRepoSetRuleFile(relativePath)) {
-			invalidateRepoSet(projectWatcher.projectPath);
-		}
-
 		if (this.shouldIgnore(relativePath)) return;
-
-		// A write inside a sub-repo can flip whether it has anything to show,
-		// which is what decides whether one sitting in an ignored tree is listed.
-		// Cheap and scoped: only repos whose own path contains this file lose
-		// their verdict, and there are at most a few dozen of them.
-		invalidateLocalWork(fullPath);
 
 		// Determine change type
 		let changeType: 'created' | 'modified' | 'deleted';
@@ -830,7 +811,17 @@ class FileWatcherManager {
 			try {
 				const watcher = watch(dirToWatch, { recursive }, (_eventType, filename) => {
 					if (!filename) return;
-					const entryPath = relative(gitDirPath, join(dirToWatch, String(filename)));
+					const fullPath = join(dirToWatch, String(filename));
+
+					// These handles are their own event source: nothing here reaches
+					// `handleFileChange`, and on Linux — where `.git` is pruned from the
+					// recursive walk — they are the ONLY source for it. Discovery has to
+					// be told from here too, before `isGitStateEvent` filters, since that
+					// filter answers 'does the panel show this' and drops `info/exclude`,
+					// which discovery very much cares about.
+					notifyPathChanged(projectWatcher.projectPath, fullPath);
+
+					const entryPath = relative(gitDirPath, fullPath);
 					if (!isGitStateEvent(entryPath)) return;
 					this.emitGitChanged(projectWatcher.projectId, repoPath);
 				});
@@ -916,10 +907,6 @@ class FileWatcherManager {
 		const repoPath = projectWatcher.gitDirOwners.get(gitDirPath);
 		if (repoPath) {
 			if (isGitStateEvent(relative(gitDirPath, fullPath))) {
-				// A commit, stage or checkout here can flip whether this repo has
-				// anything to show, which is what decides if a sub-repo inside an
-				// ignored tree is listed at all.
-				invalidateLocalWork(repoPath);
 				this.emitGitChanged(projectWatcher.projectId, repoPath);
 			}
 		} else if (!projectWatcher.rejectedGitDirs.has(gitDirPath)) {
@@ -988,6 +975,10 @@ class FileWatcherManager {
 				projectId,
 				error: 'File watching stopped after repeated failures. Refresh to retry.'
 			});
+			// No more signals are coming, so sub-repo discovery must stop trusting
+			// this watcher and go back to re-deriving on its own clock. Without
+			// this the claim outlives the watcher that made it.
+			this.stopWatching(projectId);
 			return;
 		}
 

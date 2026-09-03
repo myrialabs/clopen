@@ -149,8 +149,14 @@ const nestedRepoWalkCache = new Map<string, WalkEntryCache>();
 const nestedRepoInflight = new Map<string, Promise<string[]>>();
 const localWorkCache = new Map<string, LocalWorkCache>();
 
-/** Project roots a live file watcher is currently feeding signals for. */
-const watchedRoots = new Set<string>();
+/**
+ * Project roots a live file watcher is feeding signals for, and how many
+ * watchers are doing so. Refcounted because two projects can be opened at the
+ * same directory: without it the first one to close would revoke the claim
+ * while the second is still reporting, and discovery would quietly go back to
+ * the clock while a perfectly good signal source was still running.
+ */
+const watchedRoots = new Map<string, number>();
 
 /**
  * The key every cache and the watched-root set is stored under. Callers reach
@@ -172,8 +178,12 @@ function isUnder(base: string, candidate: string): boolean {
 	return candidateKey === baseKey || candidateKey.startsWith(baseKey + '/');
 }
 
+function isWatched(rootPath: string): boolean {
+	return (watchedRoots.get(cacheKey(rootPath)) ?? 0) > 0;
+}
+
 function ttlFor(rootPath: string): number {
-	return watchedRoots.has(cacheKey(rootPath)) ? WATCHED_TTL_MS : UNWATCHED_TTL_MS;
+	return isWatched(rootPath) ? WATCHED_TTL_MS : UNWATCHED_TTL_MS;
 }
 
 /**
@@ -182,7 +192,8 @@ function ttlFor(rootPath: string): number {
  * short clock — and `hasLocalWork` verdicts become cacheable at all.
  */
 export function beginWatchedDiscovery(rootPath: string): void {
-	watchedRoots.add(cacheKey(rootPath));
+	const key = cacheKey(rootPath);
+	watchedRoots.set(key, (watchedRoots.get(key) ?? 0) + 1);
 }
 
 /**
@@ -190,8 +201,14 @@ export function beginWatchedDiscovery(rootPath: string): void {
  * because it was being invalidated, so the next call re-probes live.
  */
 export function endWatchedDiscovery(rootPath: string): void {
-	watchedRoots.delete(cacheKey(rootPath));
-	nestedRepoWalkCache.delete(cacheKey(rootPath));
+	const key = cacheKey(rootPath);
+	const remaining = (watchedRoots.get(key) ?? 0) - 1;
+	if (remaining > 0) {
+		watchedRoots.set(key, remaining);
+		return;
+	}
+	watchedRoots.delete(key);
+	nestedRepoWalkCache.delete(key);
 	for (const cachedRepoKey of Array.from(localWorkCache.keys())) {
 		if (isUnder(rootPath, cachedRepoKey)) localWorkCache.delete(cachedRepoKey);
 	}
@@ -204,6 +221,53 @@ export function endWatchedDiscovery(rootPath: string): void {
  */
 export function invalidateRepoSet(rootPath: string): void {
 	nestedRepoWalkCache.delete(cacheKey(rootPath));
+}
+
+/**
+ * Whether a changed path is one that can change WHICH repos are reported, as
+ * opposed to what is inside one.
+ *
+ * These live here rather than in the watcher on purpose. They are facts about
+ * the sub-repo policy at the top of this file, not about filesystem events, so
+ * extending that policy has to mean editing one place. Splitting them across
+ * the two files is what let discovery and its invalidation drift apart in the
+ * first place.
+ */
+function isRepoSetRule(changedPath: string): boolean {
+	const segments = cacheKey(changedPath).split('/');
+	const basename = segments[segments.length - 1];
+
+	// The repository itself appearing or vanishing.
+	if (basename === '.git') return true;
+
+	// Rule (2) and rule (3): what the project ignores, and what it declares.
+	if (basename === '.gitignore' || basename === '.gitmodules') return true;
+
+	// `.git/info/exclude` is a per-repo ignore file `git check-ignore` obeys
+	// exactly like `.gitignore`, so it moves the same boundary. The watcher
+	// filters it out of the panel's git-state events — correctly, the panel has
+	// nothing to show for it — which is precisely why discovery has to ask for
+	// it by name instead of riding along with those.
+	return (
+		basename === 'exclude' &&
+		segments[segments.length - 2] === 'info' &&
+		segments[segments.length - 3] === '.git'
+	);
+}
+
+/**
+ * A path under `rootPath` changed. The single entry point the file watcher
+ * uses: it forwards raw paths and this module decides what each one means, so
+ * no caller has to carry a copy of the sub-repo policy.
+ *
+ * Ignored entirely for a root nobody claimed — an unwatched root caches
+ * nothing that a signal could correct, and answering it here would only hide
+ * that fact.
+ */
+export function notifyPathChanged(rootPath: string, changedPath: string): void {
+	if (!isWatched(rootPath)) return;
+	if (isRepoSetRule(changedPath)) invalidateRepoSet(rootPath);
+	dropLocalWorkUnder(changedPath);
 }
 
 /**
@@ -221,7 +285,7 @@ export function invalidateRepoSet(rootPath: string): void {
  * Still scoped: a write in one sub-repo says nothing about its siblings, and
  * re-probing all of them is the cost this cache exists to avoid.
  */
-export function invalidateLocalWork(changedPath: string): void {
+function dropLocalWorkUnder(changedPath: string): void {
 	for (const cachedRepoKey of Array.from(localWorkCache.keys())) {
 		if (isUnder(cachedRepoKey, changedPath)) localWorkCache.delete(cachedRepoKey);
 	}
@@ -311,7 +375,7 @@ async function probeLocalWork(repoPath: string): Promise<boolean> {
  * hide a repo the user is working in.
  */
 async function hasLocalWork(rootPath: string, repoPath: string): Promise<boolean> {
-	if (!watchedRoots.has(cacheKey(rootPath))) return probeLocalWork(repoPath);
+	if (!isWatched(rootPath)) return probeLocalWork(repoPath);
 
 	const cached = localWorkCache.get(cacheKey(repoPath));
 	if (cached && Date.now() < cached.expiresAt) return cached.hasWork;
@@ -319,7 +383,7 @@ async function hasLocalWork(rootPath: string, repoPath: string): Promise<boolean
 	const hasWork = await probeLocalWork(repoPath);
 	// Re-read the flag: the watcher may have stopped while the probe ran, and a
 	// verdict nobody will invalidate must not be left behind.
-	if (watchedRoots.has(cacheKey(rootPath))) {
+	if (isWatched(rootPath)) {
 		localWorkCache.set(cacheKey(repoPath), { hasWork, expiresAt: Date.now() + WATCHED_TTL_MS });
 	}
 	return hasWork;

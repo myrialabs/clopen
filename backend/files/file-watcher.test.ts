@@ -205,27 +205,34 @@ describe('FileWatcherManager', () => {
 		await writeFile(join(sub, '.git', 'index'), 'stand-in for a real index write');
 
 		await waitFor(() => gitRepoPathsFor('p7').includes(sub), 10000);
-	});
+		// 20s, not bun's 5s default: this test cannot finish faster than the
+		// watcher's own debounces (1.5s to re-resolve git targets, 0.5s to emit)
+		// plus two `git init`s and the spacing write.
+	}, 20000);
 
-	test('an edited .gitignore changes which sub-repos the panel lists', async () => {
-		// Discovery leans on this watcher instead of a short clock, so every
-		// signal that could change its answer has to reach it. `.gitignore` is
-		// the one with no other route: it carries no `.git` segment, so
-		// `routeGitEvent` passes it by, and `shouldIgnore` discards every
-		// dotfile. Without an explicit hook the repo set sits unchanged behind
-		// the watched-root TTL.
+	test('the watcher forwards path events to sub-repo discovery', async () => {
+		// Discovery leans on this watcher instead of a short clock, so raw paths
+		// have to reach it. There are two forwarding points — the working-tree
+		// handler and the git dir handles, which are a separate event source and
+		// the only one for `.git` on Linux — and this pins that AT LEAST ONE of
+		// them is live. It deliberately does not pin which: the two overlap on a
+		// real filesystem, and asserting on one would only pass by accident of
+		// which handle the platform happened to report an event through.
 		//
-		// Direction matters here. Going the other way — a repo that only becomes
-		// visible once the ignore rule is dropped — is not a test of this hook
-		// at all: an unreported repo's `.git` is one the watcher does not know,
-		// so its first event triggers the unknown-git-dir refresh, and the repo
-		// set gets invalidated by that path whether or not `.gitignore` is
-		// wired. Starting from a REPORTED repo keeps its git dir known and
-		// leaves the `.gitignore` write as the only signal in play.
+		// Which path means what is pinned exactly, and without timing, by the
+		// `notifyPathChanged` tests in nested-repos.test.ts — `.gitignore`,
+		// `.git/info/exclude`, a `.git` appearing, and an ordinary write that
+		// must NOT invalidate anything.
+		//
+		// Direction matters. Going the other way — a repo that only becomes
+		// visible once an ignore rule is dropped — tests nothing: an unreported
+		// repo's `.git` is one the watcher does not know, so its first event
+		// triggers the unknown-git-dir refresh and the repo set is invalidated
+		// by that path whether or not anything is forwarded. Starting from a
+		// REPORTED repo keeps its git dir known.
 		const root = await makeProject();
 		await initRepo(root);
-		const theme = join(root, 'themes', 'mytheme');
-		await initRepo(theme);
+		await initRepo(join(root, 'themes', 'mytheme'));
 
 		expect(await fileWatcher.startWatching('p8', root)).toBe(true);
 		expect((await findNestedRepoPaths(root)).map((repo) => relative(root, repo))).toEqual([
@@ -240,7 +247,9 @@ describe('FileWatcherManager', () => {
 		await writeFile(join(root, '.gitignore'), 'themes/\n');
 
 		await waitForAsync(async () => (await findNestedRepoPaths(root)).length === 0);
-	});
+		// Same reason as the test above — the debounces alone outlast bun's 5s
+		// default.
+	}, 20000);
 
 	test('stops watching once the last viewer leaves', async () => {
 		const root = await makeProject();
