@@ -7,36 +7,39 @@
 
 import ws from '$frontend/utils/ws';
 import { debug } from '$shared/utils/logger';
+import { createCachedLoad } from '$frontend/stores/utils/cached-load.svelte';
 import type { PiProviderPreset } from '$shared/types/unified';
 
 let presets = $state<PiProviderPreset[]>([]);
-let loaded = $state(false);
+const cache = createCachedLoad('Pi presets');
 
 export const piPresetsStore = {
 	get presets() { return presets; },
-	get loaded() { return loaded; },
+	get loaded() { return cache.loaded; },
 
 	async fetch(): Promise<PiProviderPreset[]> {
-		if (loaded) return presets;
-		return this.refresh();
+		await cache.ensure(load);
+		return presets;
 	},
 
 	async refresh(): Promise<PiProviderPreset[]> {
-		try {
-			const result = await ws.http('engine:pi-presets-list', {});
-			presets = result.presets;
-			loaded = true;
-			debug.log('settings', `Pi presets loaded: ${presets.length}`);
-			return presets;
-		} catch {
-			presets = [];
-			loaded = true;
-			return [];
-		}
+		await cache.refresh(load);
+		return presets;
 	},
 
 	reset() {
 		presets = [];
-		loaded = false;
+		cache.reset();
 	}
 };
+
+/**
+ * The one request behind this store. It does not catch — see the note in
+ * `createCachedLoad`: a failed load must not be cached as an empty catalog,
+ * because nothing would ever ask for it again.
+ */
+async function load(): Promise<void> {
+	const result = await ws.http('engine:pi-presets-list', {});
+	presets = result.presets;
+	debug.log('settings', `Pi presets loaded: ${presets.length}`);
+}

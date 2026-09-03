@@ -7,6 +7,7 @@
 
 import ws from '$frontend/utils/ws';
 import { debug } from '$shared/utils/logger';
+import { createCachedLoad } from '$frontend/stores/utils/cached-load.svelte';
 
 export interface OpenCodeAccountItem {
 	id: number;
@@ -38,37 +39,28 @@ export interface ModelsDevProviderItem {
 let providers = $state<OpenCodeProviderItem[]>([]);
 let catalog = $state<ModelsDevProviderItem[]>([]);
 let catalogCachedAt = $state<string | null>(null);
-let loaded = $state(false);
-let catalogLoaded = $state(false);
+const providersCache = createCachedLoad('OpenCode providers');
+const catalogCache = createCachedLoad('Models.dev catalog');
 
 export const opencodeProvidersStore = {
 	get providers() { return providers; },
 	get catalog() { return catalog; },
 	get catalogCachedAt() { return catalogCachedAt; },
-	get loaded() { return loaded; },
-	get catalogLoaded() { return catalogLoaded; },
+	get loaded() { return providersCache.loaded; },
+	get catalogLoaded() { return catalogCache.loaded; },
 
 	// ========================================================================
 	// Providers
 	// ========================================================================
 
 	async fetchProviders(): Promise<OpenCodeProviderItem[]> {
-		if (loaded) return providers;
-		return this.refreshProviders();
+		await providersCache.ensure(loadProviders);
+		return providers;
 	},
 
 	async refreshProviders(): Promise<OpenCodeProviderItem[]> {
-		try {
-			const result = await ws.http('engine:opencode-providers-list', {});
-			providers = result.providers;
-			loaded = true;
-			debug.log('settings', `OpenCode providers loaded: ${providers.length}`);
-			return providers;
-		} catch {
-			providers = [];
-			loaded = true;
-			return [];
-		}
+		await providersCache.refresh(loadProviders);
+		return providers;
 	},
 
 	async addProvider(data: {
@@ -149,31 +141,28 @@ export const opencodeProvidersStore = {
 	// ========================================================================
 
 	async fetchCatalog(): Promise<ModelsDevProviderItem[]> {
-		if (catalogLoaded) return catalog;
-		return this.refreshCatalog();
+		await catalogCache.ensure(loadCatalog);
+		return catalog;
 	},
 
 	async refreshCatalog(): Promise<ModelsDevProviderItem[]> {
-		try {
-			const result = await ws.http('engine:opencode-models-dev-list', {});
-			catalog = result.catalog;
-			catalogCachedAt = result.cachedAt;
-			catalogLoaded = true;
-			debug.log('settings', `Models.dev catalog loaded: ${catalog.length} providers`);
-			return catalog;
-		} catch {
-			catalog = [];
-			catalogLoaded = true;
-			return [];
-		}
+		await catalogCache.refresh(loadCatalog);
+		return catalog;
 	},
 
+	/**
+	 * Ask the backend to go back to models.dev rather than serve its cache.
+	 *
+	 * Unlike the two above this one still throws: it is only ever reached from an
+	 * explicit "refresh catalog" button, and a user who pressed it is owed an
+	 * error rather than a list that quietly did not change.
+	 */
 	async refetchCatalog(): Promise<ModelsDevProviderItem[]> {
 		try {
 			const result = await ws.http('engine:opencode-models-dev-fetch', {});
 			catalog = result.catalog;
 			catalogCachedAt = result.cachedAt;
-			catalogLoaded = true;
+			catalogCache.markLoaded();
 			debug.log('settings', `Models.dev catalog re-fetched: ${catalog.length} providers`);
 			return catalog;
 		} catch (error) {
@@ -190,7 +179,26 @@ export const opencodeProvidersStore = {
 		providers = [];
 		catalog = [];
 		catalogCachedAt = null;
-		loaded = false;
-		catalogLoaded = false;
+		providersCache.reset();
+		catalogCache.reset();
 	}
 };
+
+/**
+ * The two requests behind this store. Neither catches — see the note in
+ * `createCachedLoad`: a failed load must not be cached as an empty list, or the
+ * Engines settings would show "no providers" for the rest of the session with no
+ * way back short of a reload.
+ */
+async function loadProviders(): Promise<void> {
+	const result = await ws.http('engine:opencode-providers-list', {});
+	providers = result.providers;
+	debug.log('settings', `OpenCode providers loaded: ${providers.length}`);
+}
+
+async function loadCatalog(): Promise<void> {
+	const result = await ws.http('engine:opencode-models-dev-list', {});
+	catalog = result.catalog;
+	catalogCachedAt = result.cachedAt;
+	debug.log('settings', `Models.dev catalog loaded: ${catalog.length} providers`);
+}

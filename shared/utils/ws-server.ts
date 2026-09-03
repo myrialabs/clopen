@@ -281,7 +281,12 @@ export class WSRouter<
 
 	/** Optional auth middleware — called before every route handler */
 	private authMiddleware: ((conn: WSConnection, action: string) => Promise<{ allowed: boolean; error?: string }>) | null = null;
-	private rateLimiter: ((conn: WSConnection, action: string) => boolean) | null = null;
+	/**
+	 * Optional rate limiter. `isRequest` tells it whether a caller is blocked
+	 * waiting on a reply, so throttling can shed fire-and-forget floods without
+	 * killing the low-volume calls panels depend on.
+	 */
+	private rateLimiter: ((conn: WSConnection, action: string, isRequest: boolean) => boolean) | null = null;
 
 	constructor() {
 		this.registerContextHandler();
@@ -291,7 +296,7 @@ export class WSRouter<
 		this.authMiddleware = fn;
 	}
 
-	setRateLimiter(fn: (conn: WSConnection, action: string) => boolean): void {
+	setRateLimiter(fn: (conn: WSConnection, action: string, isRequest: boolean) => boolean): void {
 		this.rateLimiter = fn;
 	}
 
@@ -531,16 +536,30 @@ export class WSRouter<
 				data: validatedData
 			});
 
-			// Validate response data schema
-			let validatedResponse;
-			try {
-				validatedResponse = Value.Decode(route.responseSchema, result);
-			} catch (err) {
-				debug.error('websocket', `Response validation failed for ${action}:`, err);
-				throw new Error(
-					`Response validation failed: ${err instanceof Error ? err.message : 'Unknown error'}`
-				);
-			}
+			// The response is NOT re-validated.
+			//
+			// `route.responseSchema` stays declared because it is what gives
+			// `ws.http()` its return type on the client — but checking the value
+			// against it at runtime bought nothing and cost the whole server.
+			// A response is produced by our own handler, not by a peer: it is not
+			// untrusted input, so the only thing validation could catch is a bug
+			// we would rather surface as a wrong field than as a route that fails
+			// outright for the user.
+			//
+			// The cost was not theoretical. `Value.Decode` walks the entire value
+			// synchronously on the main thread, and the worst offender is exactly
+			// the biggest payload: `files:list-tree` declares a RECURSIVE UNION
+			// (backend/ws/files/read.ts), so TypeBox tries both branches at every
+			// node of the tree. On a large project that locked the event loop for
+			// hundreds of milliseconds per load — during which every other panel's
+			// request, every other project's, and the preview watchdog all waited.
+			// That is what made one slow Files load feel like the whole app hanging.
+			//
+			// Measured against what it protects: `Value.Decode` returns the very
+			// same object reference and strips nothing (there is not one
+			// `t.Transform` in the codebase), so removing it cannot change a
+			// successful response by even one byte.
+			const validatedResponse = result;
 
 			// Check if response contains binary data
 			if (isBinaryAction(responseAction, validatedResponse)) {
@@ -628,7 +647,39 @@ export class WSRouter<
 			// ═══ END AUTH GATE ═══
 
 			// ═══ RATE LIMIT GATE ═══
-			if (this.rateLimiter && !this.rateLimiter(conn, action)) {
+			// A request-response route has a caller blocked on its reply; an event
+			// does not. The limiter needs that distinction to shed the right half
+			// of a flood, and the answer below needs it to know whether anyone is
+			// listening for one.
+			const isRequest = this.httpRoutes.has(action);
+			if (this.rateLimiter && !this.rateLimiter(conn, action, isRequest)) {
+				// A dropped request must still be ANSWERED. Returning silently here
+				// left `ws.http()` waiting on a reply that was never coming, so the
+				// caller hung for its full 30s timeout and then tore the whole
+				// socket down to "heal" it — which re-ran every panel's reconnect
+				// handler at once, producing the very burst that tripped the limiter
+				// again. Telling the client no is what breaks that loop: the request
+				// fails immediately, the caller retries on its own terms, and the
+				// connection survives.
+				//
+				// The auth gate directly above has always done this; the two gates
+				// only differed because this one was written to `return` on a path
+				// where nothing was waiting for an answer. Fire-and-forget events
+				// have no requestId and still just drop.
+				if (isRequest) {
+					try {
+						conn.send(JSON.stringify({
+							action: `${action}:response`,
+							payload: {
+								success: false,
+								error: 'Rate limit exceeded — request dropped',
+								requestId: payload?.requestId
+							}
+						}));
+					} catch {
+						// Connection may already be closing.
+					}
+				}
 				return;
 			}
 			// ═══ END RATE LIMIT GATE ═══
