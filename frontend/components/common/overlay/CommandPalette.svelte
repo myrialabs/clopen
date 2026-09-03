@@ -80,9 +80,9 @@
 	let fileResults = $state<FileHit[]>([]);
 	let filesLoading = $state(false);
 	let fileDebounceTimer: ReturnType<typeof setTimeout> | undefined;
-	// Pointer-vs-keyboard arbitration for the result list — see handleItemMouseMove.
+	// Pointer-vs-list arbitration for the result rows — see handleItemMouseEnter.
 	// Plain `let`: nothing in the markup reads these, so they don't need to be reactive.
-	let isKeyboardNav = false;
+	let listMovedUnderPointer = false;
 	let lastPointerX = -1;
 	let lastPointerY = -1;
 
@@ -95,7 +95,7 @@
 			selectedIndex = 0;
 			sessionResults = [];
 			fileResults = [];
-			isKeyboardNav = false;
+			listMovedUnderPointer = false;
 			queueMicrotask(() => inputEl?.focus());
 		}
 	});
@@ -316,11 +316,14 @@
 		return all.filter((g) => g.items.length > 0);
 	});
 
-	// Reset to top when query changes — the old index may still be in-bounds
-	// but now points at a different item after re-ranking.
+	// Reset to the top row on every keystroke — the old index may still be in
+	// bounds but now points at a different item after re-ranking. The container
+	// scrolls back up with it, otherwise a preserved offset leaves the new top
+	// row above the fold and the palette looks like it highlighted nothing.
 	$effect(() => {
 		void effectiveQuery;
 		selectedIndex = 0;
+		resultsEl?.scrollTo({ top: 0 });
 	});
 
 	// Clamp selection when async results shrink the list (sessions/files).
@@ -328,15 +331,21 @@
 		if (selectedIndex >= items.length) selectedIndex = Math.max(0, items.length - 1);
 	});
 
-	// Scrolling the list under a stationary cursor makes the browser fire
-	// `mouseenter` on whichever row slides beneath it, which would hand the
-	// selection to the pointer mid-keypress — the row the user navigated to and
-	// the row under the cursor would both look active. Keyboard navigation
-	// therefore sets a flag that ignores those synthetic enters until the
-	// pointer really moves, which we detect by comparing client coordinates
-	// rather than trusting the event to imply movement.
+	// Any reshuffle of the rows puts a different item under a stationary cursor,
+	// and the browser answers that with a `mouseenter` the user never aimed —
+	// re-ranking on a keystroke, async session/file results landing, a page jump
+	// scrolling the list. Acting on those hands the highlight to whatever the
+	// mouse happens to rest on, so the row the user navigated to and the row
+	// under the cursor both look active. Treat the pointer as stale until it
+	// actually moves, which we detect by comparing client coordinates rather
+	// than by trusting an event to imply movement.
+	$effect(() => {
+		void items;
+		listMovedUnderPointer = true;
+	});
+
 	function handleItemMouseEnter(index: number) {
-		if (isKeyboardNav) return;
+		if (listMovedUnderPointer) return;
 		selectedIndex = index;
 	}
 
@@ -344,7 +353,7 @@
 		if (event.clientX === lastPointerX && event.clientY === lastPointerY) return;
 		lastPointerX = event.clientX;
 		lastPointerY = event.clientY;
-		isKeyboardNav = false;
+		listMovedUnderPointer = false;
 		selectedIndex = index;
 	}
 
@@ -421,7 +430,7 @@
 			event.preventDefault();
 			event.stopPropagation();
 			if (items.length > 0) {
-				isKeyboardNav = true;
+				listMovedUnderPointer = true;
 				selectedIndex = (selectedIndex + 1) % items.length;
 				scrollSelectedIntoView();
 			}
@@ -432,7 +441,7 @@
 			event.preventDefault();
 			event.stopPropagation();
 			if (items.length > 0) {
-				isKeyboardNav = true;
+				listMovedUnderPointer = true;
 				selectedIndex = (selectedIndex - 1 + items.length) % items.length;
 				scrollSelectedIntoView();
 			}
@@ -448,7 +457,7 @@
 			event.preventDefault();
 			event.stopPropagation();
 			if (items.length > 0) {
-				isKeyboardNav = true;
+				listMovedUnderPointer = true;
 				const page = event.key === 'PageDown' ? getPageSize() : -getPageSize();
 				selectedIndex = Math.min(items.length - 1, Math.max(0, selectedIndex + page));
 				scrollSelectedIntoView({ smooth: true });
