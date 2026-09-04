@@ -14,7 +14,10 @@ import { join } from 'node:path';
 import { createRouter } from '$shared/utils/ws-server';
 import { projectQueries } from '../../database/queries';
 import { requireProjectAccess } from '../access';
-import { ptyKitManager } from '../../terminal/ptykit';
+import { projectShellPids } from '../../projects/shell-ownership';
+import { portMonitor } from '../../ports/monitor';
+import { LOCAL_PORT_HOST, type PortEntry } from '$shared/types/ports';
+import { debug } from '$shared/utils/logger';
 import { collectProcessTree, getHostFacts, getProcessTable } from '../../host/metrics';
 
 /** Ceiling on entries visited by one walk, so a monorepo cannot pin a core. */
@@ -29,6 +32,8 @@ const STORAGE_CACHE_TTL_MS = 15_000;
  *  answer goes stale — otherwise one core stays busy while the panel is open. */
 const STORAGE_TTL_PER_MS_SPENT = 4;
 const STORAGE_CACHE_MAX_TTL_MS = 5 * 60_000;
+/** A scan reads the socket table and the process list; the panel polls faster. */
+const PORTS_CACHE_TTL_MS = 5_000;
 
 // ── Storage ──────────────────────────────────────────────────────────────────
 
@@ -174,11 +179,7 @@ const IDLE: ProcessStats = {
 };
 
 async function getProjectProcessStats(projectId: string, totalMemBytes: number): Promise<ProcessStats> {
-	const rootPids = ptyKitManager
-		.list(projectId)
-		.filter((session) => session.status === 'active')
-		.map((session) => session.pid)
-		.filter((pid) => Number.isFinite(pid) && pid > 0);
+	const rootPids = projectShellPids(projectId);
 
 	// No shells means nothing is running, so zero is the truth here.
 	if (rootPids.length === 0) return IDLE;
@@ -245,6 +246,75 @@ async function getProjectProcessStats(projectId: string, totalMemBytes: number):
 	};
 }
 
+// ── Ports ────────────────────────────────────────────────────────────────────
+
+export interface ProjectPort {
+	port: number;
+	protocol: string;
+	label: string;
+	publicUrl: string | null;
+}
+
+let cachedPorts: { entries: Map<string, ProjectPort[]>; at: number } | null = null;
+let inFlightPorts: Promise<Map<string, ProjectPort[]>> | null = null;
+
+/**
+ * Ports the local scan already attributed to a project, grouped by project id.
+ *
+ * The attribution is the port manager's, not a second guess: it climbs from the
+ * listening pid to a terminal session using the same shell roots this handler
+ * descends from. Ports a container publishes are the runtime's, not a shell's,
+ * so they carry no project and do not appear here.
+ */
+export function groupPortsByProject(entries: PortEntry[]): Map<string, ProjectPort[]> {
+	const byProject = new Map<string, ProjectPort[]>();
+
+	for (const entry of entries) {
+		const projectId = entry.origin.projectId;
+		// A container's published port belongs to the runtime, not to a shell.
+		if (entry.origin.kind !== 'session' || !projectId) continue;
+		const list = byProject.get(projectId) ?? [];
+		list.push({
+			port: entry.port,
+			protocol: entry.protocol,
+			label: entry.origin.label,
+			publicUrl: entry.publicUrl
+		});
+		byProject.set(projectId, list);
+	}
+
+	return byProject;
+}
+
+async function scanProjectPorts(): Promise<Map<string, ProjectPort[]>> {
+	try {
+		const scan = await portMonitor.scanOnce(LOCAL_PORT_HOST);
+		return groupPortsByProject(scan.entries);
+	} catch (error) {
+		// A panel that cannot list ports still reports storage and usage.
+		debug.warn('project', 'port scan failed for project info:', error);
+		return new Map();
+	}
+}
+
+/** Cached and single-flighted — one scan serves every open panel. */
+function getProjectPorts(projectId: string): Promise<ProjectPort[]> {
+	const pick = (entries: Map<string, ProjectPort[]>) =>
+		(entries.get(projectId) ?? []).sort((left, right) => left.port - right.port);
+
+	if (cachedPorts && Date.now() - cachedPorts.at < PORTS_CACHE_TTL_MS) {
+		return Promise.resolve(pick(cachedPorts.entries));
+	}
+	if (inFlightPorts) return inFlightPorts.then(pick);
+
+	inFlightPorts = scanProjectPorts().then((entries) => {
+		cachedPorts = { entries, at: Date.now() };
+		inFlightPorts = null;
+		return entries;
+	});
+	return inFlightPorts.then(pick);
+}
+
 // ── Handler ──────────────────────────────────────────────────────────────────
 
 const nullableNumber = t.Union([t.Number(), t.Null()]);
@@ -282,6 +352,14 @@ export const infoHandler = createRouter().http(
 					})
 				)
 			}),
+			ports: t.Array(
+				t.Object({
+					port: t.Number(),
+					protocol: t.String(),
+					label: t.String(),
+					publicUrl: t.Union([t.String(), t.Null()])
+				})
+			),
 			meta: t.Object({
 				platform: t.String(),
 				arch: t.String(),
@@ -299,15 +377,17 @@ export const infoHandler = createRouter().http(
 		// Probed once per process, so only the first caller pays.
 		const facts = await getHostFacts();
 
-		const [storage, resources] = await Promise.all([
+		const [storage, resources, ports] = await Promise.all([
 			getFolderStats(project.path),
-			getProjectProcessStats(data.id, facts.totalMemBytes)
+			getProjectProcessStats(data.id, facts.totalMemBytes),
+			getProjectPorts(data.id)
 		]);
 
 		return {
 			project,
 			storage,
 			resources,
+			ports,
 			meta: {
 				platform: facts.platform,
 				arch: facts.arch,

@@ -38,6 +38,12 @@
 				command: string;
 			}>;
 		};
+		ports: Array<{
+			port: number;
+			protocol: string;
+			label: string;
+			publicUrl: string | null;
+		}>;
 		meta: {
 			platform: string;
 			arch: string;
@@ -289,6 +295,36 @@
 						{/if}
 					</div>
 				</div>
+
+				<!-- Ports the port manager attributed to this project -->
+				{#if data.ports.length > 0}
+					<div class="flex flex-col gap-2">
+						<h3 class="text-xs font-semibold text-slate-700 dark:text-slate-300 uppercase tracking-wider flex items-center gap-2">
+							<Icon name="lucide:radio-tower" class="w-3.5 h-3.5" />
+							Listening ({data.ports.length})
+						</h3>
+						<div class="flex flex-wrap gap-2">
+							{#each data.ports as entry (entry.protocol + entry.port)}
+								<div class="flex items-center gap-2 px-2.5 py-1.5 bg-white dark:bg-slate-800 border border-slate-200 dark:border-slate-700 rounded-lg">
+									<span class="font-mono text-xs font-semibold text-slate-900 dark:text-slate-100">:{entry.port}</span>
+									<span class="text-2xs text-slate-500 dark:text-slate-400 truncate max-w-[160px]" title={entry.label}>{entry.label}</span>
+									{#if entry.publicUrl}
+										<a
+											href={entry.publicUrl}
+											target="_blank"
+											rel="noopener noreferrer"
+											class="shrink-0 text-violet-500 hover:text-violet-400"
+											title={entry.publicUrl}
+											aria-label="Open public URL"
+										>
+											<Icon name="lucide:external-link" class="w-3 h-3" />
+										</a>
+									{/if}
+								</div>
+							{/each}
+						</div>
+					</div>
+				{/if}
 
 				<!-- Process list (only when running) -->
 				{#if data.resources.status === 'running' && data.resources.processes.length > 0}
