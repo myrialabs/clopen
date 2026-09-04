@@ -484,8 +484,15 @@ class FileWatcherManager {
 	 * Recursively attach watchers to every non-ignored directory under `dir`.
 	 * Ignored directories (node_modules, .git, build output, …) are never
 	 * descended into — that pruning is what keeps the watch count survivable.
+	 *
+	 * `announceGitDirs` reports each pruned `.git` to git discovery. Set it when
+	 * walking a directory that just APPEARED: everything inside it was created
+	 * before this watcher had a handle on it, so a `git clone` or `git init` into
+	 * a fresh nested path emits no event we can ever see. Pruning `.git` without
+	 * announcing it therefore lost the sub-repo for the whole session. The
+	 * initial walk leaves it off — `syncGitWatchers` already resolves the tree.
 	 */
-	private async watchSubtree(pw: ProjectWatcher, dir: string): Promise<void> {
+	private async watchSubtree(pw: ProjectWatcher, dir: string, announceGitDirs = false): Promise<void> {
 		if (pw.closed) return;
 
 		let entries;
@@ -501,7 +508,12 @@ class FileWatcherManager {
 
 			const childPath = join(dir, entry.name);
 			const relativePath = relative(pw.projectPath, childPath).replace(/\\/g, '/');
-			if (this.shouldIgnore(relativePath)) continue;
+			if (this.shouldIgnore(relativePath)) {
+				if (announceGitDirs && entry.name === '.git') {
+					this.routeGitEvent(pw, relativePath, childPath);
+				}
+				continue;
+			}
 
 			if (!this.watchDir(pw, childPath)) {
 				// Ceiling reached — stop descending entirely rather than watching an
@@ -509,7 +521,7 @@ class FileWatcherManager {
 				if (pw.truncated) return;
 				continue;
 			}
-			await this.watchSubtree(pw, childPath);
+			await this.watchSubtree(pw, childPath, announceGitDirs);
 		}
 	}
 
@@ -653,7 +665,9 @@ class FileWatcherManager {
 		if (!USE_NATIVE_RECURSIVE_WATCH) {
 			if (isDirectory && changeType === 'created') {
 				if (this.watchDir(projectWatcher, fullPath)) {
-					void this.watchSubtree(projectWatcher, fullPath);
+					// Announce pruned git dirs: this subtree existed before we could
+					// watch it, so anything already inside it emitted no event.
+					void this.watchSubtree(projectWatcher, fullPath, true);
 				}
 			} else if (changeType === 'deleted' && projectWatcher.dirWatchers.has(fullPath)) {
 				this.unwatchDir(projectWatcher, fullPath);
