@@ -32,6 +32,9 @@
 	import SettingButton from '$frontend/components/settings/SettingButton.svelte';
 	import ProjectUserAvatars from '$frontend/components/common/display/ProjectUserAvatars.svelte';
 	import ProjectInfoModal from '$frontend/components/workspace/ProjectInfoModal.svelte';
+	import ProjectContextMenu, {
+		type ProjectContextMenuItem
+	} from '$frontend/components/workspace/ProjectContextMenu.svelte';
 	import ws from '$frontend/utils/ws';
 	import {
 		quickPanelsState,
@@ -65,6 +68,9 @@
 	let draggedProjectId = $state<string | null>(null);
 	let dragOverProjectId = $state<string | null>(null);
 	let expandedListEl = $state<HTMLElement>();
+	let contextMenuProject = $state<Project | null>(null);
+	let contextMenuX = $state(0);
+	let contextMenuY = $state(0);
 	let collapsedListEl = $state<HTMLElement>();
 
 	// Derived
@@ -82,6 +88,15 @@
 			(p) => p.name.toLowerCase().includes(query) || p.path.toLowerCase().includes(query)
 		);
 	});
+
+	const contextMenuItems = $derived<ProjectContextMenuItem[]>(
+		canManageProjects
+			? [
+					{ id: 'info', label: 'Info', icon: 'lucide:info' },
+					{ id: 'delete', label: 'Delete', icon: 'lucide:trash-2', danger: true }
+				]
+			: [{ id: 'info', label: 'Info', icon: 'lucide:info' }]
+	);
 
 	// Auto-scroll the active project into view — covers both clicking it directly
 	// and switching to it from elsewhere (e.g. the Command Palette).
@@ -180,6 +195,30 @@
 
 	function closeProjectInfo() {
 		showProjectInfo = false;
+	}
+
+	function openProjectContextMenu(project: Project, event: MouseEvent) {
+		event.preventDefault();
+		hideProjectTooltip();
+		contextMenuX = event.clientX;
+		contextMenuY = event.clientY;
+		contextMenuProject = project;
+	}
+
+	function closeProjectContextMenu() {
+		contextMenuProject = null;
+	}
+
+	function handleContextMenuSelect(action: string) {
+		const project = contextMenuProject;
+		if (!project) return;
+		if (action === 'info') {
+			projectInfoProject = project;
+			showProjectInfo = true;
+		} else if (action === 'delete' && canManageProjects) {
+			projectToDelete = project;
+			showDeleteDialog = true;
+		}
 	}
 
 	// Get project initials (max 2 characters)
@@ -342,6 +381,7 @@
 							ondrop={(event) => handleProjectDrop(event, project.id)}
 							ondragend={handleProjectDragEnd}
 							onclick={() => selectProject(project)}
+							oncontextmenu={(event) => openProjectContextMenu(project, event)}
 							onkeydown={(e) => e.key === 'Enter' && selectProject(project)}
 						>
 							<div class="relative shrink-0">
@@ -465,6 +505,7 @@
 						ondrop={(event) => handleProjectDrop(event, project.id)}
 						ondragend={handleProjectDragEnd}
 						onclick={() => selectProject(project)}
+						oncontextmenu={(event) => openProjectContextMenu(project, event)}
 						onmouseenter={(e) => showProjectTooltip(project, e)}
 						onmouseleave={hideProjectTooltip}
 					>
@@ -586,5 +627,16 @@
 <PortsModal bind:isOpen={quickPanelsState.portsOpen} onClose={closePortsDialog} />
 <ContainersModal bind:isOpen={quickPanelsState.containersOpen} onClose={closeContainersDialog} />
 <MemoryModal bind:isOpen={quickPanelsState.memoryOpen} onClose={closeMemoryDialog} />
+
+<!-- Project Context Menu -->
+{#if contextMenuProject}
+	<ProjectContextMenu
+		items={contextMenuItems}
+		x={contextMenuX}
+		y={contextMenuY}
+		onSelect={handleContextMenuSelect}
+		onClose={closeProjectContextMenu}
+	/>
+{/if}
 
 <ProjectInfoModal bind:isOpen={showProjectInfo} onClose={closeProjectInfo} project={projectInfoProject} />
