@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'bun:test';
-import { collectProcessTree, cpuCapacityFactor } from './info';
+import { collectProcessTree, cpuCapacityFactor, getHostFacts, withTimeout } from './metrics';
 
 function proc(pid: number, parentPid: number) {
 	return { pid, parentPid };
@@ -70,5 +70,41 @@ describe('cpuCapacityFactor', () => {
 
 	it('refuses to divide by a missing core count', () => {
 		expect(cpuCapacityFactor('darwin', 0, null, true)).toBeNull();
+	});
+});
+
+describe('withTimeout', () => {
+	it('passes a value through when it beats the deadline', async () => {
+		expect(await withTimeout(Promise.resolve(7), 1000)).toBe(7);
+	});
+
+	it('resolves null on timeout when no fallback is given', async () => {
+		expect(await withTimeout(new Promise(() => {}), 10)).toBeNull();
+	});
+
+	it('resolves the fallback on timeout when one is given', async () => {
+		expect(await withTimeout(new Promise<number>(() => {}), 10, -1)).toBe(-1);
+	});
+
+	it('treats a rejection like a timeout rather than propagating it', async () => {
+		expect(await withTimeout(Promise.reject(new Error('nope')), 1000)).toBeNull();
+	});
+});
+
+describe('getHostFacts', () => {
+	it('probes once and hands every caller the same object', async () => {
+		const [a, b] = await Promise.all([getHostFacts(), getHostFacts()]);
+		expect(a).toBe(b);
+	});
+
+	it('always answers with a usable core count and installed RAM', async () => {
+		// Both are denominators: the core count normalises per-process CPU on
+		// macOS/BSD, and the RAM total is what "percent of host memory" divides
+		// by in Project Info. A zero from a failed probe would poison both.
+		const facts = await getHostFacts();
+		expect(facts.logicalCores).toBeGreaterThan(0);
+		expect(facts.totalMemBytes).toBeGreaterThan(0);
+		expect(facts.platform).toBeTruthy();
+		expect(facts.arch).toBeTruthy();
 	});
 });
