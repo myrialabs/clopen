@@ -28,6 +28,7 @@
 		setCommitDraft,
 		hasCommitDraft,
 		getGitOps,
+		runGitOp,
 		setGitOp,
 		type GitUiState,
 		type GitActiveDiff
@@ -189,17 +190,18 @@
 			type: 'error',
 			confirmText: 'Delete',
 			onConfirm: async () => {
-				if (!projectId) return;
-				const key = nestedRemoteBranchKey(remote, branch, repoPath);
-				deletingRemoteBranch = key;
-				try {
-					await ws.http('git:delete-remote-branch', { projectId, remote, branch, repoPath });
-					await loadBranches();
-				} catch (err) {
-					debug.error('git', 'Failed to delete remote branch:', err);
-				} finally {
-					deletingRemoteBranch = null;
-				}
+				await runGitOp(projectId, 'isBranching', async () => {
+					const key = nestedRemoteBranchKey(remote, branch, repoPath);
+					deletingRemoteBranch = key;
+					try {
+						await ws.http('git:delete-remote-branch', { projectId, remote, branch, repoPath });
+						await loadBranches();
+					} catch (err) {
+						debug.error('git', 'Failed to delete remote branch:', err);
+					} finally {
+						deletingRemoteBranch = null;
+					}
+				}, repoPath);
 			}
 		});
 	}
@@ -746,6 +748,7 @@
 		if (!projectId) return;
 		const name = nestedNewBranchName(nested.relPath).trim();
 		if (!name) return;
+		await runGitOp(projectId, 'isBranching', async () => {
 		try {
 			await ws.http('git:create-branch', { projectId, name, repoPath: nested.path });
 			showInfo('Branch Created', `Created "${name}" in ${nested.relPath}.`);
@@ -756,9 +759,10 @@
 			debug.error('git', 'Failed to create nested branch:', err);
 			showError('Create Branch Failed', err instanceof Error ? err.message : 'Unknown error');
 		}
+		}, nested.path);
 	}
 	async function handleSwitchNestedBranch(nested: GitNestedRepoInfo, name: string) {
-		if (!projectId) return;
+		await runGitOp(projectId, 'isBranching', async () => {
 		try {
 			await ws.http('git:switch-branch', { projectId, name, repoPath: nested.path });
 			showInfo('Switched Branch', `Switched to "${name}" in ${nested.relPath}.`);
@@ -767,6 +771,7 @@
 			debug.error('git', 'Failed to switch nested branch:', err);
 			showError('Switch Branch Failed', err instanceof Error ? err.message : 'Unknown error');
 		}
+		}, nested.path);
 	}
 	function handleDeleteNestedBranch(nested: GitNestedRepoInfo, name: string) {
 		requestConfirm({
@@ -775,27 +780,31 @@
 			type: 'error',
 			confirmText: 'Delete',
 			onConfirm: async () => {
-				if (!projectId) return;
-				try {
-					await ws.http('git:delete-branch', { projectId, name, repoPath: nested.path });
-					await loadBranches();
-				} catch (err) {
-					debug.error('git', 'Failed to delete nested branch:', err);
-					requestConfirm({
-						title: 'Force Delete Branch',
-						message: 'Branch is not fully merged. Force delete?',
-						type: 'error',
-						confirmText: 'Force Delete',
-						onConfirm: async () => {
-							try {
-								await ws.http('git:delete-branch', { projectId, name, force: true, repoPath: nested.path });
-								await loadBranches();
-							} catch (forceErr) {
-								showError('Force Delete Failed', forceErr instanceof Error ? forceErr.message : 'Unknown error');
+				await runGitOp(projectId, 'isBranching', async () => {
+					try {
+						await ws.http('git:delete-branch', { projectId, name, repoPath: nested.path });
+						await loadBranches();
+					} catch (err) {
+						debug.error('git', 'Failed to delete nested branch:', err);
+						requestConfirm({
+							title: 'Force Delete Branch',
+							message: 'Branch is not fully merged. Force delete?',
+							type: 'error',
+							confirmText: 'Force Delete',
+							// Its own guard: answered after the first attempt released.
+							onConfirm: async () => {
+								await runGitOp(projectId, 'isBranching', async () => {
+									try {
+										await ws.http('git:delete-branch', { projectId, name, force: true, repoPath: nested.path });
+										await loadBranches();
+									} catch (forceErr) {
+										showError('Force Delete Failed', forceErr instanceof Error ? forceErr.message : 'Unknown error');
+									}
+								}, nested.path);
 							}
-						}
-					});
-				}
+						});
+					}
+				}, nested.path);
 			}
 		});
 	}
@@ -813,6 +822,8 @@
 		const name = (nestedNewRemoteNames[relPath] ?? '').trim();
 		const url = (nestedNewRemoteUrls[relPath] ?? '').trim();
 		if (!name || !url) return;
+		const nestedPath = branchInfo?.nested?.find(entry => entry.relPath === relPath)?.path;
+		await runGitOp(projectId, 'isConfiguring', async () => {
 		nestedAddingRemote = { ...nestedAddingRemote, [relPath]: true };
 		try {
 			const nested = branchInfo?.nested?.find(n => n.relPath === relPath);
@@ -829,6 +840,7 @@
 		} finally {
 			nestedAddingRemote = { ...nestedAddingRemote, [relPath]: false };
 		}
+		}, nestedPath);
 	}
 
 	async function handleNestedSaveRemote(relPath: string) {
@@ -837,6 +849,8 @@
 		const newName = (nestedEditRemoteNames[relPath] ?? '').trim();
 		const newUrl = (nestedEditRemoteUrls[relPath] ?? '').trim();
 		if (!oldName || !newName || !newUrl) return;
+		const nestedPath = branchInfo?.nested?.find(entry => entry.relPath === relPath)?.path;
+		await runGitOp(projectId, 'isConfiguring', async () => {
 		nestedSavingRemote = { ...nestedSavingRemote, [relPath]: true };
 		try {
 			const nested = branchInfo?.nested?.find(n => n.relPath === relPath);
@@ -852,6 +866,7 @@
 		} finally {
 			nestedSavingRemote = { ...nestedSavingRemote, [relPath]: false };
 		}
+		}, nestedPath);
 	}
 
 	async function handleNestedRemoveRemote(name: string, relPath: string) {
@@ -861,21 +876,23 @@
 			type: 'warning',
 			confirmText: 'Remove',
 			onConfirm: async () => {
-				if (!projectId) return;
-				try {
-					const nested = branchInfo?.nested?.find(n => n.relPath === relPath);
-					await ws.http('git:remove-remote', { projectId, name, repoPath: nested?.path });
-					await loadBranches();
-					if (nested) await loadNestedRemotes(nested);
-				} catch (err) {
-					debug.error('git', 'Failed to remove remote:', err);
-				}
+				const nested = branchInfo?.nested?.find(entry => entry.relPath === relPath);
+				await runGitOp(projectId, 'isConfiguring', async () => {
+					try {
+						await ws.http('git:remove-remote', { projectId, name, repoPath: nested?.path });
+						await loadBranches();
+						if (nested) await loadNestedRemotes(nested);
+					} catch (err) {
+						debug.error('git', 'Failed to remove remote:', err);
+					}
+				}, nested?.path);
 			}
 		});
 	}
 
 	async function handleNestedFetchRemote(remote: string, relPath: string) {
-		if (!projectId) return;
+		const nestedPath = branchInfo?.nested?.find(entry => entry.relPath === relPath)?.path;
+		await runGitOp(projectId, 'isFetching', async () => {
 		nestedFetchingRemote = { ...nestedFetchingRemote, [relPath]: remote };
 		try {
 			const nested = branchInfo?.nested?.find(n => n.relPath === relPath);
@@ -887,6 +904,7 @@
 		} finally {
 			nestedFetchingRemote = { ...nestedFetchingRemote, [relPath]: null };
 		}
+		}, nestedPath);
 	}
 
 	interface BranchCommitState {
@@ -1309,7 +1327,7 @@
 	// ============================
 
 	async function handleInit() {
-		if (!projectId) return;
+		await runGitOp(projectId, 'isConfiguring', async () => {
 		isInitializing = true;
 		try {
 			await ws.http('git:init', { projectId, defaultBranch: 'main' });
@@ -1320,6 +1338,7 @@
 		} finally {
 			isInitializing = false;
 		}
+		});
 	}
 
 	// ============================
@@ -1653,14 +1672,27 @@
 	// Staging Actions
 	// ============================
 
+	// Files with a stage/unstage request in flight. Each of those costs a full
+	// `loadStatus()`, which on Windows is slow enough (Bun.spawn + Defender
+	// scanning .git/index) that an impatient second click on the same row
+	// would queue a second round trip for work already under way. Guarding per
+	// path rather than globally keeps staging several files in quick
+	// succession working — dropping those clicks silently is worse than the
+	// duplicate refresh it would avoid. Plain Set, not $state: nothing renders
+	// from it, it is only read inside these handlers.
+	const stagingFiles = new Set<string>();
+
 	async function stageFile(path: string) {
-		if (!projectId) return;
+		if (!projectId || stagingFiles.has(path)) return;
+		stagingFiles.add(path);
 		try {
 			await ws.http('git:stage', { projectId, filePath: path });
 			await loadStatus();
 			await migrateActiveTabAfterStatusChange(path);
 		} catch (err) {
 			debug.error('git', 'Failed to stage file:', err);
+		} finally {
+			stagingFiles.delete(path);
 		}
 	}
 
@@ -1671,22 +1703,24 @@
 			type: 'warning',
 			confirmText: 'Remove',
 			onConfirm: async () => {
-				if (!projectId) return;
-				try {
-					await ws.http('git:remove-remote', { projectId, name });
-					await loadRemotes();
-				} catch (err) {
-					debug.error('git', 'Failed to remove remote:', err);
-				}
+				await runGitOp(projectId, 'isConfiguring', async () => {
+					try {
+						await ws.http('git:remove-remote', { projectId, name });
+						await loadRemotes();
+					} catch (err) {
+						debug.error('git', 'Failed to remove remote:', err);
+					}
+				});
 			}
 		});
 	}
 
 	async function handleSaveRemote() {
-		if (!projectId || !editingRemote || !editRemoteName.trim() || !editRemoteUrl.trim()) return;
+		if (!editingRemote || !editRemoteName.trim() || !editRemoteUrl.trim()) return;
 		const oldName = editingRemote;
 		const newName = editRemoteName.trim();
 		const newUrl = editRemoteUrl.trim();
+		await runGitOp(projectId, 'isConfiguring', async () => {
 		savingRemote = true;
 		try {
 			await ws.http('git:edit-remote', { projectId, oldName, newName, newUrl });
@@ -1701,6 +1735,7 @@
 		} finally {
 			savingRemote = false;
 		}
+		});
 	}
 
 	// Mark a remote as the active one (drives branch ahead/behind, push target,
@@ -1712,7 +1747,7 @@
 	}
 
 	async function handleFetchRemote(remote: string) {
-		if (!projectId) return;
+		await runGitOp(projectId, 'isFetching', async () => {
 		fetchingRemote = remote;
 		try {
 			const result = await ws.http('git:fetch', { projectId, remote }) as { message: string };
@@ -1723,10 +1758,12 @@
 		} finally {
 			fetchingRemote = null;
 		}
+		});
 	}
 
 	async function handleAddRemote() {
-		if (!projectId || !newRemoteName.trim() || !newRemoteUrl.trim()) return;
+		if (!newRemoteName.trim() || !newRemoteUrl.trim()) return;
+		await runGitOp(projectId, 'isConfiguring', async () => {
 		addingRemote = true;
 		try {
 			await ws.http('git:add-remote', { projectId, name: newRemoteName.trim(), url: newRemoteUrl.trim() });
@@ -1741,10 +1778,11 @@
 		} finally {
 			addingRemote = false;
 		}
+		});
 	}
 
 	async function handlePushBranch(branch: string, repoPath?: string) {
-		if (!projectId) return;
+		await runGitOp(projectId, 'isPushing', async () => {
 		pushingBranch = branch;
 		try {
 			const result = await ws.http('git:push', { projectId, branch, repoPath }) as { success: boolean; message: string };
@@ -1755,6 +1793,7 @@
 		} finally {
 			pushingBranch = null;
 		}
+		}, repoPath);
 	}
 
 	// Push the current branch from the branch list. If the branch has
@@ -1785,7 +1824,7 @@
 	}
 
 	async function handlePushBranchForce(branch: string, repoPath?: string) {
-		if (!projectId) return;
+		await runGitOp(projectId, 'isPushing', async () => {
 		pushingBranch = branch;
 		try {
 			const result = await ws.http('git:push-advanced', {
@@ -1808,6 +1847,7 @@
 		} finally {
 			pushingBranch = null;
 		}
+		}, repoPath);
 	}
 
 	// Load all per-file diffs for a commit and open them as tabs so the
@@ -1847,7 +1887,7 @@
 	}
 
 	async function handleCherryPick(hash: string, repoPath?: string) {
-		if (!projectId) return;
+		await runGitOp(projectId, 'isMoreBusy', async () => {
 		try {
 			const result = await ws.http('git:cherry-pick', { projectId, hashes: [hash], repoPath }) as { success: boolean; message: string };
 			showInfo(result.success ? 'Cherry-picked' : 'Cherry-pick failed', result.message);
@@ -1858,42 +1898,59 @@
 		} catch (err) {
 			debug.error('git', 'Failed to cherry-pick:', err);
 		}
+		}, repoPath);
 	}
 
-	async function stageAll() {
-		if (!projectId) return;
+	// The three bulk actions take an optional `repoPath` so a nested sub-repo
+	// runs — and shows its spinner — independently of the outer repo. The busy
+	// flag lives in the shared git-op store keyed by (projectId, repoPath), the
+	// same place push/pull/commit keep theirs, so a bulk stage started in one
+	// project clears the right flag even if the user switches away mid-flight.
+	async function stageAll(repoPath?: string) {
+		const pid = projectId;
+		if (!pid || getGitOps(pid, repoPath).isStaging) return;
+		setGitOp(pid, 'isStaging', true, repoPath);
 		try {
-			await ws.http('git:stage-all', { projectId });
+			await ws.http('git:stage-all', { projectId: pid, repoPath });
 			await loadStatus();
 			if (activeTab && activeTab.section !== 'commit') {
 				await migrateActiveTabAfterStatusChange(activeTab.filePath);
 			}
 		} catch (err) {
 			debug.error('git', 'Failed to stage all:', err);
+		} finally {
+			setGitOp(pid, 'isStaging', false, repoPath);
 		}
 	}
 
 	async function unstageFile(path: string) {
-		if (!projectId) return;
+		if (!projectId || stagingFiles.has(path)) return;
+		stagingFiles.add(path);
 		try {
 			await ws.http('git:unstage', { projectId, filePath: path });
 			await loadStatus();
 			await migrateActiveTabAfterStatusChange(path);
 		} catch (err) {
 			debug.error('git', 'Failed to unstage file:', err);
+		} finally {
+			stagingFiles.delete(path);
 		}
 	}
 
-	async function unstageAll() {
-		if (!projectId) return;
+	async function unstageAll(repoPath?: string) {
+		const pid = projectId;
+		if (!pid || getGitOps(pid, repoPath).isStaging) return;
+		setGitOp(pid, 'isStaging', true, repoPath);
 		try {
-			await ws.http('git:unstage-all', { projectId });
+			await ws.http('git:unstage-all', { projectId: pid, repoPath });
 			await loadStatus();
 			if (activeTab && activeTab.section !== 'commit') {
 				await migrateActiveTabAfterStatusChange(activeTab.filePath);
 			}
 		} catch (err) {
 			debug.error('git', 'Failed to unstage all:', err);
+		} finally {
+			setGitOp(pid, 'isStaging', false, repoPath);
 		}
 	}
 
@@ -1905,34 +1962,39 @@
 			type: 'error',
 			confirmText: 'Discard',
 			onConfirm: async () => {
-				if (!projectId) return;
-				try {
-					await ws.http('git:discard', { projectId, filePath: path });
-					await loadStatus();
-					await migrateActiveTabAfterStatusChange(path);
-				} catch (err) {
-					debug.error('git', 'Failed to discard file:', err);
-				}
+				await runGitOp(projectId, 'isStaging', async () => {
+					try {
+						await ws.http('git:discard', { projectId, filePath: path });
+						await loadStatus();
+						await migrateActiveTabAfterStatusChange(path);
+					} catch (err) {
+						debug.error('git', 'Failed to discard file:', err);
+					}
+				});
 			}
 		});
 	}
 
-	async function discardAll() {
+	async function discardAll(repoPath?: string) {
 		requestConfirm({
 			title: 'Discard All Changes',
 			message: 'Discard ALL changes? This cannot be undone.',
 			type: 'error',
 			confirmText: 'Discard All',
 			onConfirm: async () => {
-				if (!projectId) return;
+				const pid = projectId;
+				if (!pid || getGitOps(pid, repoPath).isStaging) return;
+				setGitOp(pid, 'isStaging', true, repoPath);
 				try {
-					await ws.http('git:discard-all', { projectId });
+					await ws.http('git:discard-all', { projectId: pid, repoPath });
 					await loadStatus();
 					if (activeTab && activeTab.section !== 'commit') {
 						await migrateActiveTabAfterStatusChange(activeTab.filePath);
 					}
 				} catch (err) {
 					debug.error('git', 'Failed to discard all:', err);
+				} finally {
+					setGitOp(pid, 'isStaging', false, repoPath);
 				}
 			}
 		});
@@ -2387,15 +2449,16 @@
 	// ============================
 
 	async function switchBranch(name: string) {
-		if (!projectId) return;
-		try {
-			await ws.http('git:switch-branch', { projectId, name });
-			await loadAll();
-			await refreshLogIfVisible();
-		} catch (err) {
-			debug.error('git', 'Failed to switch branch:', err);
-			showError('Switch Branch Failed', err instanceof Error ? err.message : 'Unknown error');
-		}
+		await runGitOp(projectId, 'isBranching', async () => {
+			try {
+				await ws.http('git:switch-branch', { projectId, name });
+				await loadAll();
+				await refreshLogIfVisible();
+			} catch (err) {
+				debug.error('git', 'Failed to switch branch:', err);
+				showError('Switch Branch Failed', err instanceof Error ? err.message : 'Unknown error');
+			}
+		});
 	}
 
 	function checkoutCommit(hash: string, repoPath?: string) {
@@ -2410,19 +2473,20 @@
 			type: 'warning',
 			confirmText: 'Checkout',
 			onConfirm: async () => {
-				if (!projectId) return;
-				try {
-					await ws.http('git:checkout-commit', { projectId, commitHash: hash, repoPath });
-					selectedCommit = null;
-					openTabs = [];
-					activeTabId = null;
-					await loadAll();
-					await refreshAllLogs();
-					showInfo('Commit Checked Out', `Checked out ${shortHash}. HEAD is now detached.`);
-				} catch (err) {
-					debug.error('git', 'Failed to checkout commit:', err);
-					showError('Checkout Failed', err instanceof Error ? err.message : 'Unknown error');
-				}
+				await runGitOp(projectId, 'isBranching', async () => {
+					try {
+						await ws.http('git:checkout-commit', { projectId, commitHash: hash, repoPath });
+						selectedCommit = null;
+						openTabs = [];
+						activeTabId = null;
+						await loadAll();
+						await refreshAllLogs();
+						showInfo('Commit Checked Out', `Checked out ${shortHash}. HEAD is now detached.`);
+					} catch (err) {
+						debug.error('git', 'Failed to checkout commit:', err);
+						showError('Checkout Failed', err instanceof Error ? err.message : 'Unknown error');
+					}
+				}, repoPath);
 			}
 		});
 	}
@@ -2473,15 +2537,16 @@
 		const parts = remoteBranch.split('/');
 		const localName = parts.slice(1).join('/');
 		if (repoPath) {
-			if (!projectId) return;
-			try {
-				await ws.http('git:create-branch', { projectId, name: localName, startPoint: remoteBranch, repoPath });
-				showInfo('Branch Created', `Checked out "${localName}" from ${remoteBranch}.`);
-				await loadBranches();
-			} catch (err) {
-				debug.error('git', 'Failed to checkout remote branch:', err);
-				showError('Checkout Failed', err instanceof Error ? err.message : 'Unknown error');
-			}
+			await runGitOp(projectId, 'isBranching', async () => {
+				try {
+					await ws.http('git:create-branch', { projectId, name: localName, startPoint: remoteBranch, repoPath });
+					showInfo('Branch Created', `Checked out "${localName}" from ${remoteBranch}.`);
+					await loadBranches();
+				} catch (err) {
+					debug.error('git', 'Failed to checkout remote branch:', err);
+					showError('Checkout Failed', err instanceof Error ? err.message : 'Unknown error');
+				}
+			}, repoPath);
 		} else {
 			await switchBranch(localName);
 		}
@@ -2602,17 +2667,22 @@
 	}
 
 	async function createBranch(name: string, repoPath?: string): Promise<boolean> {
-		if (!projectId) return false;
-		try {
-			await ws.http('git:create-branch', { projectId, name, repoPath });
-			showInfo('Branch Created', `Switched to "${name}".`);
-			await loadAll();
-			return true;
-		} catch (err) {
-			debug.error('git', 'Failed to create branch:', err);
-			showError('Create Branch Failed', err instanceof Error ? err.message : 'Unknown error');
-			return false;
-		}
+		// `runGitOp` reports whether it ran, not what the action returned, so the
+		// outcome callers branch on is captured here. A skipped run reads as
+		// failure, which is the honest answer: no branch was created.
+		let created = false;
+		await runGitOp(projectId, 'isBranching', async () => {
+			try {
+				await ws.http('git:create-branch', { projectId, name, repoPath });
+				showInfo('Branch Created', `Switched to "${name}".`);
+				await loadAll();
+				created = true;
+			} catch (err) {
+				debug.error('git', 'Failed to create branch:', err);
+				showError('Create Branch Failed', err instanceof Error ? err.message : 'Unknown error');
+			}
+		}, repoPath);
+		return created;
 	}
 
 	function getDefaultRemote(repoPath?: string): string {
@@ -2633,6 +2703,7 @@
 			inputPlaceholder: 'New branch name',
 			onConfirm: async (newName) => {
 				if (!newName || newName === oldName) return;
+				await runGitOp(projectId, 'isBranching', async () => {
 				try {
 					await ws.http('git:rename-branch', { projectId, oldName, newName, repoPath });
 					const pushed = repoPath
@@ -2653,6 +2724,7 @@
 					debug.error('git', 'Failed to rename branch:', err);
 					showError('Rename Branch Failed', err instanceof Error ? err.message : 'Unknown error');
 				}
+				}, repoPath);
 			}
 		});
 	}
@@ -2664,27 +2736,32 @@
 			type: 'error',
 			confirmText: 'Delete',
 			onConfirm: async () => {
-				if (!projectId) return;
-				try {
-					await ws.http('git:delete-branch', { projectId, name });
-					await loadBranches();
-				} catch (err) {
-					debug.error('git', 'Failed to delete branch:', err);
-					requestConfirm({
-						title: 'Force Delete Branch',
-						message: 'Branch is not fully merged. Force delete?',
-						type: 'error',
-						confirmText: 'Force Delete',
-						onConfirm: async () => {
-							try {
-								await ws.http('git:delete-branch', { projectId, name, force: true });
-			await Promise.all([loadBranches(), loadRemotes()]);
-							} catch (forceErr) {
-								showError('Force Delete Failed', forceErr instanceof Error ? forceErr.message : 'Unknown error');
+				await runGitOp(projectId, 'isBranching', async () => {
+					try {
+						await ws.http('git:delete-branch', { projectId, name });
+						await loadBranches();
+					} catch (err) {
+						debug.error('git', 'Failed to delete branch:', err);
+						requestConfirm({
+							title: 'Force Delete Branch',
+							message: 'Branch is not fully merged. Force delete?',
+							type: 'error',
+							confirmText: 'Force Delete',
+							// Its own guard: this dialog is answered long after the
+							// first attempt released the flag.
+							onConfirm: async () => {
+								await runGitOp(projectId, 'isBranching', async () => {
+									try {
+										await ws.http('git:delete-branch', { projectId, name, force: true });
+										await Promise.all([loadBranches(), loadRemotes()]);
+									} catch (forceErr) {
+										showError('Force Delete Failed', forceErr instanceof Error ? forceErr.message : 'Unknown error');
+									}
+								});
 							}
-						}
-					});
-				}
+						});
+					}
+				});
 			}
 		});
 	}
@@ -2929,15 +3006,9 @@
 	// More Git Actions (push variants, undo, npm version, maintenance)
 	// ============================
 
+	/** The More menu's slice of `runGitOp`, kept as a name its callers already use. */
 	async function runMore(fn: () => Promise<void>, repoPath?: string) {
-		const pid = projectId;
-		if (!pid || getGitOps(pid, repoPath).isMoreBusy) return;
-		setGitOp(pid, 'isMoreBusy', true, repoPath);
-		try {
-			await fn();
-		} finally {
-			setGitOp(pid, 'isMoreBusy', false, repoPath);
-		}
+		await runGitOp(projectId, 'isMoreBusy', fn, repoPath);
 	}
 
 	async function pushVariant(mode: 'with-tags' | 'all-tags' | 'force-lease' | 'force', label: string, repoPath?: string, branch?: string, remote?: string) {
@@ -3307,7 +3378,7 @@
 	// ============================
 
 	async function resolveConflict(filePath: string, resolution: 'ours' | 'theirs' | 'custom', customContent?: string) {
-		if (!projectId) return;
+		await runGitOp(projectId, 'isResolving', async () => {
 		try {
 			await ws.http('git:resolve-conflict', { projectId, filePath, resolution, customContent });
 			await loadConflicts();
@@ -3318,6 +3389,7 @@
 		} catch (err) {
 			debug.error('git', 'Failed to resolve conflict:', err);
 		}
+		});
 	}
 
 	function buildAIPromptForFile(file: GitConflictFile): string {
@@ -3388,7 +3460,7 @@ ${bodies}`;
 			type: 'error',
 			confirmText: 'Abort Merge',
 			onConfirm: async () => {
-				if (!projectId) return;
+				await runGitOp(projectId, 'isResolving', async () => {
 				try {
 					let targetRepoPath: string | undefined = undefined;
 					const anyConflictFile = conflictFiles[0]?.path || conflictInitialPath;
@@ -3404,6 +3476,7 @@ ${bodies}`;
 				} catch (err) {
 					debug.error('git', 'Failed to abort merge:', err);
 				}
+				});
 			}
 		});
 	}
@@ -3449,7 +3522,7 @@ ${bodies}`;
 	}
 
 	async function handleStashSave() {
-		if (!projectId) return;
+		await runGitOp(projectId, 'isStashing', async () => {
 		try {
 			await ws.http('git:stash-save', {
 				projectId,
@@ -3466,6 +3539,7 @@ ${bodies}`;
 			debug.error('git', 'Stash save failed:', err);
 			showError('Stash Failed', err instanceof Error ? err.message : 'Unknown error');
 		}
+		}, stashRepoPath);
 	}
 
 	/**
@@ -3497,8 +3571,13 @@ ${bodies}`;
 		return entry.repoPath ? `${entry.repoPath}::${entry.index}` : `${entry.index}`;
 	}
 
+	// Stash actions are addressed by POSITION, so a duplicate request is not a
+	// wasted round trip but a different stash: `git stash pop stash@{0}` twice
+	// pops stash@{0}, then whatever re-indexed into its place. The guard is what
+	// makes the second click impossible, and `isStashing` disables the section's
+	// buttons so it reads as busy rather than as nothing happening.
 	async function handleStashPop(entry: StashEntryExtended) {
-		if (!projectId) return;
+		await runGitOp(projectId, 'isStashing', async () => {
 		try {
 			const result = await ws.http('git:stash-pop', { projectId, index: entry.index, repoPath: entry.repoPath });
 			await Promise.all([loadStash(), loadStatus()]);
@@ -3519,6 +3598,7 @@ ${bodies}`;
 			const msg = err instanceof Error ? err.message : 'Unknown error';
 			showError('Stash Pop Failed', msg.replace(/^git stash pop failed:\s*/i, '').trim() || msg);
 		}
+		}, entry.repoPath);
 	}
 
 	async function handleStashDrop(entry: StashEntryExtended) {
@@ -3529,14 +3609,15 @@ ${bodies}`;
 			type: 'error',
 			confirmText: 'Drop',
 			onConfirm: async () => {
-				if (!projectId) return;
-				try {
-					await ws.http('git:stash-drop', { projectId, index: entry.index, repoPath: entry.repoPath });
-					await loadStash();
-				} catch (err) {
-					debug.error('git', 'Stash drop failed:', err);
-					showError('Stash Drop Failed', err instanceof Error ? err.message : 'Unknown error');
-				}
+				await runGitOp(projectId, 'isStashing', async () => {
+					try {
+						await ws.http('git:stash-drop', { projectId, index: entry.index, repoPath: entry.repoPath });
+						await loadStash();
+					} catch (err) {
+						debug.error('git', 'Stash drop failed:', err);
+						showError('Stash Drop Failed', err instanceof Error ? err.message : 'Unknown error');
+					}
+				}, entry.repoPath);
 			}
 		});
 	}
@@ -3645,7 +3726,8 @@ ${bodies}`;
 	}
 
 	async function handleCreateTag() {
-		if (!projectId || !newTagName.trim()) return;
+		if (!newTagName.trim()) return;
+		await runGitOp(projectId, 'isTagging', async () => {
 		try {
 			await ws.http('git:create-tag', {
 				projectId,
@@ -3662,6 +3744,7 @@ ${bodies}`;
 			debug.error('git', 'Create tag failed:', err);
 			showError('Create Tag Failed', err instanceof Error ? err.message : 'Unknown error');
 		}
+		}, tagRepoPath);
 	}
 
 	async function handleDeleteTag(name: string, repoPath?: string) {
@@ -3672,20 +3755,21 @@ ${bodies}`;
 			type: 'error',
 			confirmText: 'Delete',
 			onConfirm: async () => {
-				if (!projectId) return;
-				try {
-					await ws.http('git:delete-tag', { projectId, name, repoPath });
-					await loadTags();
-				} catch (err) {
-					debug.error('git', 'Delete tag failed:', err);
-					showError('Delete Tag Failed', err instanceof Error ? err.message : 'Unknown error');
-				}
+				await runGitOp(projectId, 'isTagging', async () => {
+					try {
+						await ws.http('git:delete-tag', { projectId, name, repoPath });
+						await loadTags();
+					} catch (err) {
+						debug.error('git', 'Delete tag failed:', err);
+						showError('Delete Tag Failed', err instanceof Error ? err.message : 'Unknown error');
+					}
+				}, repoPath);
 			}
 		});
 	}
 
 	async function handlePushTag(name: string, repoPath?: string) {
-		if (!projectId) return;
+		await runGitOp(projectId, 'isTagging', async () => {
 		try {
 			const result = await ws.http('git:push-tag', { projectId, name, repoPath });
 			if (!result.success) {
@@ -3697,6 +3781,7 @@ ${bodies}`;
 			debug.error('git', 'Push tag failed:', err);
 			showError('Push Tag Failed', err instanceof Error ? err.message : 'Unknown error');
 		}
+		}, repoPath);
 	}
 
 	async function copyTagHash(hash: string, e: MouseEvent) {
@@ -4199,7 +4284,7 @@ ${bodies}`;
 			</div>
 			{#if !branch.isCurrent}
 			<div class="flex items-center gap-1 shrink-0">
-				<button type="button" class="flex items-center justify-center w-6 h-6 rounded-md text-slate-400 hover:bg-violet-500/10 hover:text-violet-500 transition-colors bg-transparent border-none cursor-pointer" onclick={(e) => { e.stopPropagation(); handleSwitchNestedBranch(nested, branch.name); }} title="Switch to this branch"><Icon name="lucide:arrow-right" class="w-3.5 h-3.5" /></button>
+				<button type="button" class="flex items-center justify-center w-6 h-6 rounded-md text-slate-400 hover:bg-violet-500/10 hover:text-violet-500 transition-colors bg-transparent border-none cursor-pointer disabled:opacity-40 disabled:cursor-not-allowed" onclick={(e) => { e.stopPropagation(); handleSwitchNestedBranch(nested, branch.name); }} title="Switch to this branch" disabled={getGitOps(projectId, nested.path).isBranching}><Icon name="lucide:arrow-right" class="w-3.5 h-3.5" /></button>
 				{#if !nestedPushed.has(branch.name)}
 					{#if pushingBranch === branch.name}
 						<div class="flex items-center justify-center w-6 h-6 rounded-md text-emerald-500"><Icon name="lucide:loader-circle" class="w-3.5 h-3.5 animate-spin" /></div>
@@ -4208,7 +4293,7 @@ ${bodies}`;
 					{/if}
 				{/if}
 				<button type="button" class="flex items-center justify-center w-6 h-6 rounded-md text-slate-400 hover:bg-blue-500/10 hover:text-blue-500 transition-colors bg-transparent border-none cursor-pointer" onclick={(e) => { e.stopPropagation(); mergeNestedBranch(branch.name, nested.path); }} title="Merge into current branch"><Icon name="lucide:git-merge" class="w-3.5 h-3.5" /></button>
-				<button type="button" class="flex items-center justify-center w-6 h-6 rounded-md text-slate-400 hover:bg-red-500/10 hover:text-red-500 transition-colors bg-transparent border-none cursor-pointer" onclick={(e) => { e.stopPropagation(); handleDeleteNestedBranch(nested, branch.name); }} title="Delete branch"><Icon name="lucide:trash-2" class="w-3.5 h-3.5" /></button>
+				<button type="button" class="flex items-center justify-center w-6 h-6 rounded-md text-slate-400 hover:bg-red-500/10 hover:text-red-500 transition-colors bg-transparent border-none cursor-pointer disabled:opacity-40 disabled:cursor-not-allowed" onclick={(e) => { e.stopPropagation(); handleDeleteNestedBranch(nested, branch.name); }} title="Delete branch" disabled={getGitOps(projectId, nested.path).isBranching}><Icon name="lucide:trash-2" class="w-3.5 h-3.5" /></button>
 			</div>
 			{:else}
 			<div class="flex items-center gap-1 shrink-0">
@@ -4222,7 +4307,7 @@ ${bodies}`;
 				{#if branch.behind > 0}
 					<button type="button" class="flex items-center justify-center w-6 h-6 rounded-md text-slate-400 hover:bg-blue-500/10 hover:text-blue-500 transition-colors bg-transparent border-none cursor-pointer" onclick={(e) => { e.stopPropagation(); handlePull(nested.path, getNestedSelectedRemote(nested)); }} title="Pull ({branch.behind} behind)"><Icon name="lucide:download" class="w-3.5 h-3.5" /></button>
 				{/if}
-				<button type="button" class="flex items-center justify-center w-6 h-6 rounded-md text-slate-400 hover:bg-orange-500/10 hover:text-orange-500 transition-colors bg-transparent border-none cursor-pointer" onclick={(e) => { e.stopPropagation(); renameBranch(branch.name, nested.path); }} title="Rename branch"><Icon name="lucide:pen-line" class="w-3.5 h-3.5" /></button>
+				<button type="button" class="flex items-center justify-center w-6 h-6 rounded-md text-slate-400 hover:bg-orange-500/10 hover:text-orange-500 transition-colors bg-transparent border-none cursor-pointer disabled:opacity-40 disabled:cursor-not-allowed" onclick={(e) => { e.stopPropagation(); renameBranch(branch.name, nested.path); }} title="Rename branch" disabled={getGitOps(projectId, nested.path).isBranching}><Icon name="lucide:pen-line" class="w-3.5 h-3.5" /></button>
 			</div>
 			{/if}
 		</div>
@@ -4405,10 +4490,11 @@ ${bodies}`;
 						activeFilePath={activeTab?.filePath}
 						activeSection={activeTab?.section ?? null}
 						onUnstage={(path) => unstageFile(path)}
-						onUnstageAll={async () => { if (projectId) { try { await ws.http('git:unstage-all', { projectId, repoPath: nested.path }); await loadStatus(); } catch (err) { debug.error('git', 'Failed to unstage all in nested repo:', err); } } }}
+						onUnstageAll={() => unstageAll(nested.path)}
 						onStash={() => openStashPrompt('staged', nested.path)}
 						onViewDiff={(file, sec) => viewDiff(file, sec)}
 						{aiChangesSet}
+						busy={getGitOps(projectId, nested.path).isStaging}
 					/>
 					<ChangesSection
 						title="Changes"
@@ -4418,11 +4504,12 @@ ${bodies}`;
 						activeFilePath={activeTab?.filePath}
 						activeSection={activeTab?.section ?? null}
 						onStage={(path) => stageFile(path)}
-						onStageAll={async () => { if (projectId) { try { await ws.http('git:stage-all', { projectId, repoPath: nested.path }); await loadStatus(); } catch (err) { debug.error('git', 'Failed to stage all in nested repo:', err); } } }}
+						onStageAll={() => stageAll(nested.path)}
 						onDiscard={(path) => discardFile(path)}
-						onDiscardAll={async () => { if (projectId) { try { await ws.http('git:discard-all', { projectId, repoPath: nested.path }); await loadStatus(); } catch (err) { debug.error('git', 'Failed to discard all in nested repo:', err); } } }}
+						onDiscardAll={() => discardAll(nested.path)}
 						onViewDiff={(file, sec) => viewDiff(file, sec)}
 						{aiChangesSet}
+						busy={getGitOps(projectId, nested.path).isStaging}
 					/>
 					{#if nestedTotalChanges === 0 && !isLoading}
 						<div class="flex flex-col items-center justify-center gap-2 py-6 text-slate-500 text-xs">
@@ -4597,7 +4684,7 @@ ${bodies}`;
 													{/if}
 													<button type="button" class="flex items-center justify-center w-6 h-6 rounded-md text-slate-400 hover:bg-violet-500/10 hover:text-violet-500 transition-colors bg-transparent border-none cursor-pointer" onclick={(e) => { e.stopPropagation(); nestedEditingRemote = { ...nestedEditingRemote, [nested.relPath]: remoteName }; nestedEditRemoteNames = { ...nestedEditRemoteNames, [nested.relPath]: remoteName }; }} title="Edit remote"><Icon name="lucide:pencil" class="w-3.5 h-3.5" /></button>
 													<button type="button" class="flex items-center justify-center w-6 h-6 rounded-md text-slate-400 hover:bg-blue-500/10 hover:text-blue-500 transition-colors bg-transparent border-none cursor-pointer" onclick={(e) => { e.stopPropagation(); void handleNestedFetchRemote(remoteName, nested.relPath); }} title="Fetch"><Icon name="lucide:refresh-cw" class="w-3.5 h-3.5" /></button>
-													<button type="button" class="flex items-center justify-center w-6 h-6 rounded-md text-slate-400 hover:bg-red-500/10 hover:text-red-500 transition-colors bg-transparent border-none cursor-pointer" onclick={(e) => { e.stopPropagation(); handleNestedRemoveRemote(remoteName, nested.relPath); }} title="Disconnect"><Icon name="lucide:unlink" class="w-3.5 h-3.5" /></button>
+													<button type="button" class="flex items-center justify-center w-6 h-6 rounded-md text-slate-400 hover:bg-red-500/10 hover:text-red-500 transition-colors bg-transparent border-none cursor-pointer disabled:opacity-40 disabled:cursor-not-allowed" onclick={(e) => { e.stopPropagation(); handleNestedRemoveRemote(remoteName, nested.relPath); }} title="Disconnect" disabled={getGitOps(projectId, nested.path).isConfiguring}><Icon name="lucide:unlink" class="w-3.5 h-3.5" /></button>
 												</div>
 											{/if}
 										</div>
@@ -4617,9 +4704,9 @@ ${bodies}`;
 														<div class="flex items-center justify-center w-6 h-6 text-slate-400 shrink-0"><Icon name="lucide:loader-circle" class="w-3.5 h-3.5 animate-spin" /></div>
 													{:else}
 														<div class="flex items-center gap-1 shrink-0">
-															<button type="button" class="flex items-center justify-center w-6 h-6 rounded-md text-slate-400 hover:bg-violet-500/10 hover:text-violet-500 transition-colors bg-transparent border-none cursor-pointer" onclick={(e) => { e.stopPropagation(); checkoutRemoteBranch(branch.name, nested.path); }} title="Checkout locally"><Icon name="lucide:arrow-right" class="w-3.5 h-3.5" /></button>
+															<button type="button" class="flex items-center justify-center w-6 h-6 rounded-md text-slate-400 hover:bg-violet-500/10 hover:text-violet-500 transition-colors bg-transparent border-none cursor-pointer disabled:opacity-40 disabled:cursor-not-allowed" onclick={(e) => { e.stopPropagation(); checkoutRemoteBranch(branch.name, nested.path); }} title="Checkout locally" disabled={getGitOps(projectId, nested.path).isBranching}><Icon name="lucide:arrow-right" class="w-3.5 h-3.5" /></button>
 															<button type="button" class="flex items-center justify-center w-6 h-6 rounded-md text-slate-400 hover:bg-blue-500/10 hover:text-blue-500 transition-colors bg-transparent border-none cursor-pointer" onclick={(e) => { e.stopPropagation(); copyToClipboard(branch.name); }} title="Copy branch name"><Icon name="lucide:copy" class="w-3.5 h-3.5" /></button>
-															<button type="button" class="flex items-center justify-center w-6 h-6 rounded-md text-slate-400 hover:bg-red-500/10 hover:text-red-500 transition-colors bg-transparent border-none cursor-pointer" onclick={(e) => { e.stopPropagation(); handleDeleteRemoteBranch(remoteName, shortName, nested.path); }} title="Delete branch"><Icon name="lucide:trash-2" class="w-3.5 h-3.5" /></button>
+															<button type="button" class="flex items-center justify-center w-6 h-6 rounded-md text-slate-400 hover:bg-red-500/10 hover:text-red-500 transition-colors bg-transparent border-none cursor-pointer disabled:opacity-40 disabled:cursor-not-allowed" onclick={(e) => { e.stopPropagation(); handleDeleteRemoteBranch(remoteName, shortName, nested.path); }} title="Delete branch" disabled={getGitOps(projectId, nested.path).isBranching}><Icon name="lucide:trash-2" class="w-3.5 h-3.5" /></button>
 														</div>
 													{/if}
 												</div>
@@ -4777,7 +4864,7 @@ ${bodies}`;
 									<button type="button" class="flex-1 px-2 py-1 text-xs font-medium rounded transition-colors cursor-pointer border-none {stashStagedOnly ? 'bg-white dark:bg-slate-700 text-slate-900 dark:text-slate-100 shadow-sm' : 'bg-transparent text-slate-500 hover:text-slate-700 dark:hover:text-slate-300'}" onclick={() => stashStagedOnly = true}>Staged only</button>
 								</div>
 								<div class="flex gap-1.5">
-									<button type="button" class="flex-1 px-3 py-1.5 text-xs font-medium rounded-md bg-violet-600 text-white hover:bg-violet-700 transition-colors cursor-pointer border-none" onclick={handleStashSave}>Stash Changes</button>
+									<button type="button" class="flex-1 px-3 py-1.5 text-xs font-medium rounded-md bg-violet-600 text-white hover:bg-violet-700 transition-colors cursor-pointer border-none disabled:opacity-40 disabled:cursor-not-allowed" onclick={handleStashSave} disabled={getGitOps(projectId, nested.path).isStashing}>Stash Changes</button>
 									<button type="button" class="px-3 py-1.5 text-xs font-medium bg-transparent border border-slate-200 dark:border-slate-700 text-slate-600 dark:text-slate-400 rounded-md hover:bg-slate-100 dark:hover:bg-slate-800 transition-colors cursor-pointer" onclick={() => { showStashSaveForm = false; stashMessage = ''; stashStagedOnly = false; stashRepoPath = undefined; }}>Cancel</button>
 								</div>
 							</div>
@@ -4816,8 +4903,8 @@ ${bodies}`;
 											</p>
 										</div>
 										<div class="flex items-center gap-1 shrink-0">
-											<button type="button" class="flex items-center justify-center w-6 h-6 rounded-md text-slate-400 hover:bg-emerald-500/10 hover:text-emerald-500 transition-colors bg-transparent border-none cursor-pointer" onclick={(e) => { e.stopPropagation(); handleStashPop(entry); }} title="Pop"><Icon name="lucide:archive-restore" class="w-3.5 h-3.5" /></button>
-											<button type="button" class="flex items-center justify-center w-6 h-6 rounded-md text-slate-400 hover:bg-red-500/10 hover:text-red-500 transition-colors bg-transparent border-none cursor-pointer" onclick={(e) => { e.stopPropagation(); handleStashDrop(entry); }} title="Drop"><Icon name="lucide:trash-2" class="w-3.5 h-3.5" /></button>
+											<button type="button" class="flex items-center justify-center w-6 h-6 rounded-md text-slate-400 hover:bg-emerald-500/10 hover:text-emerald-500 transition-colors bg-transparent border-none cursor-pointer disabled:opacity-40 disabled:cursor-not-allowed" onclick={(e) => { e.stopPropagation(); handleStashPop(entry); }} title="Pop" disabled={getGitOps(projectId, nested.path).isStashing}><Icon name="lucide:archive-restore" class="w-3.5 h-3.5" /></button>
+											<button type="button" class="flex items-center justify-center w-6 h-6 rounded-md text-slate-400 hover:bg-red-500/10 hover:text-red-500 transition-colors bg-transparent border-none cursor-pointer disabled:opacity-40 disabled:cursor-not-allowed" onclick={(e) => { e.stopPropagation(); handleStashDrop(entry); }} title="Drop" disabled={getGitOps(projectId, nested.path).isStashing}><Icon name="lucide:trash-2" class="w-3.5 h-3.5" /></button>
 										</div>
 									</div>
 									{#if stashExpanded}
@@ -4927,7 +5014,7 @@ ${bodies}`;
 												? 'bg-violet-600 text-white hover:bg-violet-700'
 												: 'bg-slate-200 dark:bg-slate-700 text-slate-400 dark:text-slate-500 cursor-not-allowed'}"
 										onclick={handleCreateTag}
-										disabled={!newTagName.trim()}
+										disabled={!newTagName.trim() || getGitOps(projectId, nested.path).isTagging}
 									>
 										Create Tag
 									</button>
@@ -4981,6 +5068,7 @@ ${bodies}`;
 											type="button"
 											class="flex items-center justify-center w-6 h-6 rounded-md text-slate-400 hover:bg-blue-500/10 hover:text-blue-500 transition-colors bg-transparent border-none cursor-pointer"
 											onclick={() => handlePushTag(tag.name, nested.path)}
+											disabled={getGitOps(projectId, nested.path).isTagging}
 											title="Push tag to remote"
 										>
 											<Icon name="lucide:arrow-up-from-line" class="w-3.5 h-3.5" />
@@ -4989,6 +5077,7 @@ ${bodies}`;
 											type="button"
 											class="flex items-center justify-center w-6 h-6 rounded-md text-slate-400 hover:bg-red-500/10 hover:text-red-500 transition-colors bg-transparent border-none cursor-pointer"
 											onclick={() => handleDeleteTag(tag.name, nested.path)}
+											disabled={getGitOps(projectId, nested.path).isTagging}
 											title="Delete tag"
 										>
 											<Icon name="lucide:trash-2" class="w-3.5 h-3.5" />
@@ -5299,6 +5388,7 @@ ${bodies}`;
 				onStash={() => openStashPrompt('staged')}
 				onViewDiff={viewDiff}
 				{aiChangesSet}
+				busy={ops.isStaging}
 			/>
 
 			<!--
@@ -5323,6 +5413,7 @@ ${bodies}`;
 				onDiscardAll={discardAll}
 				onViewDiff={viewDiff}
 				{aiChangesSet}
+				busy={ops.isStaging}
 			/>
 
 			{#if mainStagedFiles.length === 0 && mainAllChanges.length === 0 && mainConflictedFiles.length === 0 && !isLoading && !(branchInfo?.nested?.length)}
@@ -5575,7 +5666,7 @@ ${bodies}`;
 											</div>
 											{#if !branch.isCurrent}
 											<div class="flex items-center gap-1 shrink-0">
-												<button type="button" class="flex items-center justify-center w-6 h-6 rounded-md text-slate-400 hover:bg-violet-500/10 hover:text-violet-500 transition-colors bg-transparent border-none cursor-pointer" onclick={(e) => { e.stopPropagation(); switchBranch(branch.name); }} title="Switch to this branch"><Icon name="lucide:arrow-right" class="w-3.5 h-3.5" /></button>
+												<button type="button" class="flex items-center justify-center w-6 h-6 rounded-md text-slate-400 hover:bg-violet-500/10 hover:text-violet-500 transition-colors bg-transparent border-none cursor-pointer disabled:opacity-40 disabled:cursor-not-allowed" onclick={(e) => { e.stopPropagation(); switchBranch(branch.name); }} title="Switch to this branch" disabled={ops.isBranching}><Icon name="lucide:arrow-right" class="w-3.5 h-3.5" /></button>
 												{#if !pushedBranchNames.has(branch.name)}
 													{#if pushingBranch === branch.name}
 														<div class="flex items-center justify-center w-6 h-6 rounded-md text-emerald-500"><Icon name="lucide:loader-circle" class="w-3.5 h-3.5 animate-spin" /></div>
@@ -5584,7 +5675,7 @@ ${bodies}`;
 													{/if}
 												{/if}
 												<button type="button" class="flex items-center justify-center w-6 h-6 rounded-md text-slate-400 hover:bg-blue-500/10 hover:text-blue-500 transition-colors bg-transparent border-none cursor-pointer" onclick={(e) => { e.stopPropagation(); mergeBranch(branch.name); }} title="Merge into current branch"><Icon name="lucide:git-merge" class="w-3.5 h-3.5" /></button>
-												<button type="button" class="flex items-center justify-center w-6 h-6 rounded-md text-slate-400 hover:bg-red-500/10 hover:text-red-500 transition-colors bg-transparent border-none cursor-pointer" onclick={(e) => { e.stopPropagation(); deleteBranch(branch.name); }} title="Delete branch"><Icon name="lucide:trash-2" class="w-3.5 h-3.5" /></button>
+												<button type="button" class="flex items-center justify-center w-6 h-6 rounded-md text-slate-400 hover:bg-red-500/10 hover:text-red-500 transition-colors bg-transparent border-none cursor-pointer disabled:opacity-40 disabled:cursor-not-allowed" onclick={(e) => { e.stopPropagation(); deleteBranch(branch.name); }} title="Delete branch" disabled={ops.isBranching}><Icon name="lucide:trash-2" class="w-3.5 h-3.5" /></button>
 										</div>
 										{:else}
 										<div class="flex items-center gap-1 shrink-0">
@@ -5598,7 +5689,7 @@ ${bodies}`;
 											{#if branch.behind > 0}
 												<button type="button" class="flex items-center justify-center w-6 h-6 rounded-md text-slate-400 hover:bg-blue-500/10 hover:text-blue-500 transition-colors bg-transparent border-none cursor-pointer" onclick={(e) => { e.stopPropagation(); handlePull(); }} title="Pull ({branch.behind} behind)"><Icon name="lucide:download" class="w-3.5 h-3.5" /></button>
 											{/if}
-											<button type="button" class="flex items-center justify-center w-6 h-6 rounded-md text-slate-400 hover:bg-orange-500/10 hover:text-orange-500 transition-colors bg-transparent border-none cursor-pointer" onclick={(e) => { e.stopPropagation(); renameBranch(branch.name); }} title="Rename branch"><Icon name="lucide:pen-line" class="w-3.5 h-3.5" /></button>
+											<button type="button" class="flex items-center justify-center w-6 h-6 rounded-md text-slate-400 hover:bg-orange-500/10 hover:text-orange-500 transition-colors bg-transparent border-none cursor-pointer disabled:opacity-40 disabled:cursor-not-allowed" onclick={(e) => { e.stopPropagation(); renameBranch(branch.name); }} title="Rename branch" disabled={ops.isBranching}><Icon name="lucide:pen-line" class="w-3.5 h-3.5" /></button>
 										</div>
 										{/if}
 										</div>
@@ -5738,7 +5829,7 @@ ${bodies}`;
 													{/if}
 													<button type="button" class="flex items-center justify-center w-6 h-6 rounded-md text-slate-400 hover:bg-violet-500/10 hover:text-violet-500 transition-colors bg-transparent border-none cursor-pointer" onclick={(e) => { e.stopPropagation(); editingRemote = remote.name; editRemoteName = remote.name; editRemoteUrl = remote.fetchUrl || remote.pushUrl || ''; }} title="Edit remote"><Icon name="lucide:pencil" class="w-3.5 h-3.5" /></button>
 													<button type="button" class="flex items-center justify-center w-6 h-6 rounded-md text-slate-400 hover:bg-blue-500/10 hover:text-blue-500 transition-colors bg-transparent border-none cursor-pointer" onclick={(e) => { e.stopPropagation(); handleFetchRemote(remote.name); }} title="Fetch"><Icon name="lucide:refresh-cw" class="w-3.5 h-3.5" /></button>
-													<button type="button" class="flex items-center justify-center w-6 h-6 rounded-md text-slate-400 hover:bg-red-500/10 hover:text-red-500 transition-colors bg-transparent border-none cursor-pointer" onclick={(e) => { e.stopPropagation(); handleRemoveRemote(remote.name); }} title="Disconnect"><Icon name="lucide:unlink" class="w-3.5 h-3.5" /></button>
+													<button type="button" class="flex items-center justify-center w-6 h-6 rounded-md text-slate-400 hover:bg-red-500/10 hover:text-red-500 transition-colors bg-transparent border-none cursor-pointer disabled:opacity-40 disabled:cursor-not-allowed" onclick={(e) => { e.stopPropagation(); handleRemoveRemote(remote.name); }} title="Disconnect" disabled={ops.isConfiguring}><Icon name="lucide:unlink" class="w-3.5 h-3.5" /></button>
 												</div>
 											{/if}
 										</div>
@@ -5758,9 +5849,9 @@ ${bodies}`;
 														<div class="flex items-center justify-center w-6 h-6 text-slate-400 shrink-0"><Icon name="lucide:loader-circle" class="w-3.5 h-3.5 animate-spin" /></div>
 													{:else}
 														<div class="flex items-center gap-1 shrink-0">
-															<button type="button" class="flex items-center justify-center w-6 h-6 rounded-md text-slate-400 hover:bg-violet-500/10 hover:text-violet-500 transition-colors bg-transparent border-none cursor-pointer" onclick={(e) => { e.stopPropagation(); checkoutRemoteBranch(branch.name); }} title="Checkout locally"><Icon name="lucide:arrow-right" class="w-3.5 h-3.5" /></button>
+															<button type="button" class="flex items-center justify-center w-6 h-6 rounded-md text-slate-400 hover:bg-violet-500/10 hover:text-violet-500 transition-colors bg-transparent border-none cursor-pointer disabled:opacity-40 disabled:cursor-not-allowed" onclick={(e) => { e.stopPropagation(); checkoutRemoteBranch(branch.name); }} title="Checkout locally" disabled={ops.isBranching}><Icon name="lucide:arrow-right" class="w-3.5 h-3.5" /></button>
 															<button type="button" class="flex items-center justify-center w-6 h-6 rounded-md text-slate-400 hover:bg-blue-500/10 hover:text-blue-500 transition-colors bg-transparent border-none cursor-pointer" onclick={(e) => { e.stopPropagation(); copyToClipboard(branch.name); }} title="Copy branch name"><Icon name="lucide:copy" class="w-3.5 h-3.5" /></button>
-															<button type="button" class="flex items-center justify-center w-6 h-6 rounded-md text-slate-400 hover:bg-red-500/10 hover:text-red-500 transition-colors bg-transparent border-none cursor-pointer" onclick={(e) => { e.stopPropagation(); handleDeleteRemoteBranch(remote.name, shortName); }} title="Delete branch"><Icon name="lucide:trash-2" class="w-3.5 h-3.5" /></button>
+															<button type="button" class="flex items-center justify-center w-6 h-6 rounded-md text-slate-400 hover:bg-red-500/10 hover:text-red-500 transition-colors bg-transparent border-none cursor-pointer disabled:opacity-40 disabled:cursor-not-allowed" onclick={(e) => { e.stopPropagation(); handleDeleteRemoteBranch(remote.name, shortName); }} title="Delete branch" disabled={ops.isBranching}><Icon name="lucide:trash-2" class="w-3.5 h-3.5" /></button>
 														</div>
 													{/if}
 												</div>
@@ -5830,7 +5921,7 @@ ${bodies}`;
 												? 'bg-violet-600 text-white hover:bg-violet-700'
 												: 'bg-slate-200 dark:bg-slate-700 text-slate-400 dark:text-slate-500 cursor-not-allowed'}"
 										onclick={handleCreateTag}
-										disabled={!newTagName.trim()}
+										disabled={!newTagName.trim() || ops.isTagging}
 									>
 										Create Tag
 									</button>
@@ -5891,6 +5982,7 @@ ${bodies}`;
 												type="button"
 												class="flex items-center justify-center w-6 h-6 rounded-md text-slate-400 hover:bg-blue-500/10 hover:text-blue-500 transition-colors bg-transparent border-none cursor-pointer"
 												onclick={() => handlePushTag(tag.name)}
+												disabled={ops.isTagging}
 												title="Push tag to remote"
 											>
 												<Icon name="lucide:arrow-up-from-line" class="w-3.5 h-3.5" />
@@ -5899,6 +5991,7 @@ ${bodies}`;
 												type="button"
 												class="flex items-center justify-center w-6 h-6 rounded-md text-slate-400 hover:bg-red-500/10 hover:text-red-500 transition-colors bg-transparent border-none cursor-pointer"
 												onclick={() => handleDeleteTag(tag.name)}
+												disabled={ops.isTagging}
 												title="Delete tag"
 											>
 												<Icon name="lucide:trash-2" class="w-3.5 h-3.5" />
@@ -5935,7 +6028,7 @@ ${bodies}`;
 									<button type="button" class="flex-1 px-2 py-1 text-xs font-medium rounded transition-colors cursor-pointer border-none {!stashStagedOnly ? 'bg-white dark:bg-slate-700 text-slate-900 dark:text-slate-100 shadow-sm' : 'bg-transparent text-slate-500 hover:text-slate-700 dark:hover:text-slate-300'}" onclick={() => stashStagedOnly = false}>All changes</button>
 									<button type="button" class="flex-1 px-2 py-1 text-xs font-medium rounded transition-colors cursor-pointer border-none {stashStagedOnly ? 'bg-white dark:bg-slate-700 text-slate-900 dark:text-slate-100 shadow-sm' : 'bg-transparent text-slate-500 hover:text-slate-700 dark:hover:text-slate-300'}" onclick={() => stashStagedOnly = true}>Staged only</button>
 								</div>
-								<div class="flex gap-1.5"><button type="button" class="flex-1 px-3 py-1.5 text-xs font-medium rounded-md bg-violet-600 text-white hover:bg-violet-700 transition-colors cursor-pointer border-none" onclick={handleStashSave}>Stash Changes</button><button type="button" class="px-3 py-1.5 text-xs font-medium bg-transparent border border-slate-200 dark:border-slate-700 text-slate-600 dark:text-slate-400 rounded-md hover:bg-slate-100 dark:hover:bg-slate-800 transition-colors cursor-pointer" onclick={() => { showStashSaveForm = false; stashMessage = ''; stashStagedOnly = false; stashRepoPath = undefined; }}>Cancel</button></div>
+								<div class="flex gap-1.5"><button type="button" class="flex-1 px-3 py-1.5 text-xs font-medium rounded-md bg-violet-600 text-white hover:bg-violet-700 transition-colors cursor-pointer border-none disabled:opacity-40 disabled:cursor-not-allowed" onclick={handleStashSave} disabled={ops.isStashing}>Stash Changes</button><button type="button" class="px-3 py-1.5 text-xs font-medium bg-transparent border border-slate-200 dark:border-slate-700 text-slate-600 dark:text-slate-400 rounded-md hover:bg-slate-100 dark:hover:bg-slate-800 transition-colors cursor-pointer" onclick={() => { showStashSaveForm = false; stashMessage = ''; stashStagedOnly = false; stashRepoPath = undefined; }}>Cancel</button></div>
 							</div>
 						{:else}
 							<button type="button" class="flex items-center justify-center gap-2 w-full py-2 px-3 border border-dashed border-slate-300 dark:border-slate-600 rounded-lg text-xs text-slate-500 hover:text-violet-600 hover:border-violet-400 transition-colors cursor-pointer bg-transparent" onclick={() => { stashStagedOnly = false; stashRepoPath = undefined; showStashSaveForm = true; }}><Icon name="lucide:plus" class="w-3.5 h-3.5" /><span>Stash Current Changes</span></button>
@@ -5973,8 +6066,8 @@ ${bodies}`;
 												</p>
 											</div>
 											<div class="flex items-center gap-1 shrink-0">
-												<button type="button" class="flex items-center justify-center w-6 h-6 rounded-md text-slate-400 hover:bg-emerald-500/10 hover:text-emerald-500 transition-colors bg-transparent border-none cursor-pointer" onclick={(e) => { e.stopPropagation(); handleStashPop(entry); }} title="Pop"><Icon name="lucide:archive-restore" class="w-3.5 h-3.5" /></button>
-												<button type="button" class="flex items-center justify-center w-6 h-6 rounded-md text-slate-400 hover:bg-red-500/10 hover:text-red-500 transition-colors bg-transparent border-none cursor-pointer" onclick={(e) => { e.stopPropagation(); handleStashDrop(entry); }} title="Drop"><Icon name="lucide:trash-2" class="w-3.5 h-3.5" /></button>
+												<button type="button" class="flex items-center justify-center w-6 h-6 rounded-md text-slate-400 hover:bg-emerald-500/10 hover:text-emerald-500 transition-colors bg-transparent border-none cursor-pointer disabled:opacity-40 disabled:cursor-not-allowed" onclick={(e) => { e.stopPropagation(); handleStashPop(entry); }} title="Pop" disabled={ops.isStashing}><Icon name="lucide:archive-restore" class="w-3.5 h-3.5" /></button>
+												<button type="button" class="flex items-center justify-center w-6 h-6 rounded-md text-slate-400 hover:bg-red-500/10 hover:text-red-500 transition-colors bg-transparent border-none cursor-pointer disabled:opacity-40 disabled:cursor-not-allowed" onclick={(e) => { e.stopPropagation(); handleStashDrop(entry); }} title="Drop" disabled={ops.isStashing}><Icon name="lucide:trash-2" class="w-3.5 h-3.5" /></button>
 											</div>
 										</div>
 										{#if stashExpanded}
@@ -6363,6 +6456,7 @@ ${bodies}`;
 		onResolveWithAI={resolveWithAI}
 		onResolveAllWithAI={resolveAllWithAI}
 		onAbortMerge={abortMerge}
+		busy={ops.isResolving}
 		onClose={() => {
 			showConflictResolver = false;
 			conflictInitialPath = null;

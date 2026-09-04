@@ -34,6 +34,12 @@ import { join, relative, normalize, sep } from 'node:path';
 import { ws } from '$backend/utils/ws';
 import { debug } from '$shared/utils/logger';
 import { resolveGitDirs, type GitDirTarget } from '$backend/git/git-dirs';
+import {
+	beginWatchedDiscovery,
+	endWatchedDiscovery,
+	invalidateRepoSet,
+	notifyPathChanged
+} from '$backend/git/nested-repos';
 import type { FileChange } from '$shared/types/filesystem';
 
 /**
@@ -350,6 +356,12 @@ class FileWatcherManager {
 			};
 			this.watchers.set(projectId, projectWatcher);
 
+			// From here on this watcher is the authority on when the project's
+			// sub-repo set and their working states change, so discovery can stop
+			// re-deriving them on a short clock. Paired with `endWatchedDiscovery`
+			// in `stopWatching`, which puts discovery back on the clock.
+			beginWatchedDiscovery(normalizedPath);
+
 			// Watch the root synchronously so events are never missed while the
 			// (async) subtree walk is still in progress.
 			if (!this.watchDir(projectWatcher, normalizedPath)) {
@@ -531,6 +543,9 @@ class FileWatcherManager {
 			}
 			projectWatcher.gitDirOwners.clear();
 
+			// No more signals from here, so discovery must not keep trusting them.
+			endWatchedDiscovery(projectWatcher.projectPath);
+
 			// Clear debounce timers
 			if (projectWatcher.debounceTimer) {
 				clearTimeout(projectWatcher.debounceTimer);
@@ -606,6 +621,12 @@ class FileWatcherManager {
 		// path: where the root watch is recursive it is the only thing that sees
 		// a sub-repo's git dir, so dropping it here is what left a commit made
 		// inside a nested repo completely unreported.
+		// Tell sub-repo discovery before anything below filters the path away.
+		// It decides for itself what a path means: `routeGitEvent` swallows every
+		// `.git` path and `shouldIgnore` every dotfile, so `.gitignore` — which
+		// moves the reported repo set — would otherwise never reach it.
+		notifyPathChanged(projectWatcher.projectPath, fullPath);
+
 		if (this.routeGitEvent(projectWatcher, relativePath, fullPath)) return;
 
 		if (this.shouldIgnore(relativePath)) return;
@@ -790,7 +811,17 @@ class FileWatcherManager {
 			try {
 				const watcher = watch(dirToWatch, { recursive }, (_eventType, filename) => {
 					if (!filename) return;
-					const entryPath = relative(gitDirPath, join(dirToWatch, String(filename)));
+					const fullPath = join(dirToWatch, String(filename));
+
+					// These handles are their own event source: nothing here reaches
+					// `handleFileChange`, and on Linux — where `.git` is pruned from the
+					// recursive walk — they are the ONLY source for it. Discovery has to
+					// be told from here too, before `isGitStateEvent` filters, since that
+					// filter answers 'does the panel show this' and drops `info/exclude`,
+					// which discovery very much cares about.
+					notifyPathChanged(projectWatcher.projectPath, fullPath);
+
+					const entryPath = relative(gitDirPath, fullPath);
 					if (!isGitStateEvent(entryPath)) return;
 					this.emitGitChanged(projectWatcher.projectId, repoPath);
 				});
@@ -832,6 +863,14 @@ class FileWatcherManager {
 	 * Queue a re-resolve of the project's git directories, for when an event
 	 * arrives from a `.git` we do not know about — `git init` or `git clone` run
 	 * inside the project while it is open.
+	 *
+	 * This is the one signal that the project's repo SET changed, so it drops
+	 * the cached sub-repo walk first. Without that, `resolveGitDirs` answers
+	 * from a walk taken before the new repo existed, the git dir stays
+	 * unaccounted for, and `syncGitWatchers` files it under `rejectedGitDirs` —
+	 * which is permanent, and which `routeGitEvent` then uses to stop
+	 * scheduling refreshes for it. A repo created in an open project would
+	 * never be watched again.
 	 */
 	private scheduleGitTargetsRefresh(projectId: string, gitDirPath?: string): void {
 		const projectWatcher = this.watchers.get(projectId);
@@ -843,6 +882,7 @@ class FileWatcherManager {
 		projectWatcher.gitTargetsTimer = setTimeout(() => {
 			projectWatcher.gitTargetsTimer = null;
 			if (projectWatcher.closed) return;
+			invalidateRepoSet(projectWatcher.projectPath);
 			void this.syncGitWatchers(projectId).then(() => {
 				if (projectWatcher.closed) return;
 				// The repo set itself changed, so tell clients: this is what flips a
@@ -935,6 +975,10 @@ class FileWatcherManager {
 				projectId,
 				error: 'File watching stopped after repeated failures. Refresh to retry.'
 			});
+			// No more signals are coming, so sub-repo discovery must stop trusting
+			// this watcher and go back to re-deriving on its own clock. Without
+			// this the claim outlives the watcher that made it.
+			this.stopWatching(projectId);
 			return;
 		}
 

@@ -162,18 +162,23 @@ interface VideoStreamSession {
 	scriptInjected: boolean; // Track if persistent script was injected
 	scriptsPreInjected: boolean; // Track if scripts were pre-injected during tab creation
 	/**
-	 * When the page last reported frames reaching its encoder. A connected
-	 * viewer while this stands still is watching a stream that has stopped
-	 * producing — which looks identical, from the client, to a slow page.
+	 * When the page last reported ANYTHING, frames or not.
+	 *
+	 * This is the liveness signal, and the distinction it draws is the whole
+	 * point: the page ticks a stats report every two seconds for as long as its
+	 * encoder loop is alive, whether or not there was anything to encode. Reports
+	 * arriving with zero frames mean a still picture. Reports stopping mean the
+	 * loop itself is gone — a navigation that took the injected script with it, a
+	 * context that was torn down — which is the only thing a repair can fix.
 	 */
-	lastEncodedAt: number;
+	lastPageReportAt: number;
 	/** Guards the watchdog against re-entering while a repair is in flight. */
 	repairing: boolean;
 	/**
-	 * Repairs attempted since the stream last produced anything. A repair that
-	 * did not restore frames must escalate rather than be repeated: the cheap
-	 * one asks the page what it thinks, and a page whose own answer is the
-	 * wrong one will give the same answer every time.
+	 * Repairs attempted since the page last reported in. A repair that did not
+	 * restore reporting must escalate rather than be repeated: the cheap one asks
+	 * the page what it thinks, and a page whose own answer is the wrong one will
+	 * give the same answer every time.
 	 */
 	stallRounds: number;
 	/** Codecs every viewer can decode — one encoder serves them all. */
@@ -588,11 +593,18 @@ export class BrowserVideoCapture extends EventEmitter {
 	private static readonly VIEWER_HANDSHAKE_TTL_MS = 45_000;
 
 	/**
-	 * Silence tolerated from a connected viewer's stream before the watchdog
-	 * repairs it. Two encoder-stat windows plus slack — long enough that a
-	 * genuinely idle page (which still tops off) never trips it.
+	 * Silence tolerated from the PAGE before the watchdog repairs the stream,
+	 * and the interval the watchdog itself runs on.
+	 *
+	 * The page reports encoder stats every two seconds for as long as its capture
+	 * loop is alive, so this is three missed reports: late enough that a slow tick
+	 * or a busy host is never mistaken for a dead page, early enough that a
+	 * genuinely broken stream is repaired before anyone reaches for reload.
+	 *
+	 * This deliberately measures REPORTS, not frames — a still page produces no
+	 * frames at all and is perfectly healthy. See `checkForStall`.
 	 */
-	private static readonly STREAM_STALL_MS = 6_000;
+	private static readonly PAGE_SILENCE_MS = 6_000;
 
 	/**
 	 * Cheap stall repairs before the watchdog stops taking the page's word for
@@ -740,7 +752,7 @@ export class BrowserVideoCapture extends EventEmitter {
 			viewers: new Map(),
 			scriptInjected: false,
 			scriptsPreInjected: false,
-			lastEncodedAt: 0,
+			lastPageReportAt: 0,
 			repairing: false,
 			stallRounds: 0,
 			codecSupport: { ...DEFAULT_CODEC_SUPPORT },
@@ -856,7 +868,10 @@ export class BrowserVideoCapture extends EventEmitter {
 			// for the first mouse move to see anything. Push one refresh
 			// frame as soon as the peer is up.
 			if (state === 'connected' && videoSession.tab) {
-				videoSession.lastEncodedAt = Date.now();
+				// A peer that just reached `connected` is a page that was talking to
+				// us a moment ago — give it a fresh silence window rather than
+				// judging it on a clock that predates the handshake.
+				videoSession.lastPageReportAt = Date.now();
 				void this.requestKeyframe(sessionId, videoSession.tab);
 			}
 
@@ -1045,7 +1060,8 @@ export class BrowserVideoCapture extends EventEmitter {
 			this.reconcileViewers(videoSession, health);
 		}
 
-		videoSession.lastEncodedAt = Date.now();
+		// `ensureLive` just heard from the page directly, so this IS a report.
+		videoSession.lastPageReportAt = Date.now();
 		this.ensureWatchdog();
 		return true;
 	}
@@ -1561,7 +1577,7 @@ export class BrowserVideoCapture extends EventEmitter {
 				if (this.reapStaleViewers(videoSession)) continue;
 				this.checkForStall(videoSession);
 			}
-		}, BrowserVideoCapture.STREAM_STALL_MS);
+		}, BrowserVideoCapture.PAGE_SILENCE_MS);
 
 		// Nothing here should hold the process open on its own.
 		this.watchdogTimer.unref?.();
@@ -1606,36 +1622,71 @@ export class BrowserVideoCapture extends EventEmitter {
 	}
 
 	/**
-	 * Repair a stream that has stopped producing while someone is watching it.
+	 * Repair a stream whose PAGE has stopped reporting while someone is watching.
 	 *
 	 * Recovery used to live entirely in the viewer: it noticed no first frame,
 	 * asked for a screencast refresh, then re-handshook. That only works while
 	 * the *client's* view of the problem is right — and the failures that stuck
 	 * were the ones where the client did everything correctly and the source
-	 * was the broken half. Repairing from here closes that gap, and costs
-	 * nothing on a healthy stream because even an idle page still tops off.
+	 * was the broken half. Repairing from here closes that gap.
+	 *
+	 * WHAT COUNTS AS A STALL, AND WHY IT CHANGED
+	 *
+	 * This used to key on `lastEncodedAt` — frames reaching the encoder — on the
+	 * stated assumption that "even an idle page still tops off". That assumption
+	 * was wrong, and the bug it caused was severe.
+	 *
+	 * Capture is damage-driven: `framesAttempted` is only incremented for motion
+	 * frames (see `shouldSkipMotionFrame` in scripts/video-stream.ts), and the
+	 * still-page top-off is a one-shot that fires after motion stops, not a
+	 * heartbeat. So a page that is simply SITTING THERE — the normal case, a user
+	 * looking at their app without touching it — reports zero frames forever, and
+	 * every one of those reports was read as "the stream is dead".
+	 *
+	 * The result was a permanent loop on every idle preview: six seconds of
+	 * stillness triggered a repair, twelve seconds triggered a FORCED peer
+	 * rebuild, which drops every viewer into a re-handshake — the reload with a
+	 * progress bar that users saw arrive every few seconds and could not explain.
+	 * The rebuild produced a keyframe, which reset the counters, which started
+	 * the same clock again. It also made the failure self-sustaining across the
+	 * rest of the app: each rebuild is a burst of CDP work plus handshake round
+	 * trips on the shared socket, so the busier the instance, the more of them
+	 * were in flight at once.
+	 *
+	 * The honest signal is whether the PAGE is still talking to us, not whether
+	 * it has anything to show. Its stats timer ticks every two seconds for as
+	 * long as the encoder loop is alive, so silence there — and only there —
+	 * means the loop is genuinely gone. A still picture is not a stall.
+	 *
+	 * The other real failure, an in-page capture that ends on its own, is already
+	 * detected explicitly in `applyEncoderStats` rather than inferred from frame
+	 * absence, so nothing is lost by no longer guessing here.
 	 */
 	private checkForStall(videoSession: VideoStreamSession): void {
 		if (videoSession.paused || videoSession.repairing || !videoSession.tab) return;
 		if (videoSession.viewers.size === 0) return;
 		if (!Array.from(videoSession.viewers.values()).some((viewer) => viewer.connected)) return;
 
-		const silentFor = Date.now() - videoSession.lastEncodedAt;
-		if (videoSession.lastEncodedAt === 0 || silentFor < BrowserVideoCapture.STREAM_STALL_MS) return;
+		// Nothing reported yet: the stream is still coming up and its own
+		// handshake path owns that window.
+		if (videoSession.lastPageReportAt === 0) return;
+
+		const silentFor = Date.now() - videoSession.lastPageReportAt;
+		if (silentFor < BrowserVideoCapture.PAGE_SILENCE_MS) return;
 
 		const { sessionId, tab } = videoSession;
 		videoSession.stallRounds++;
 
 		// The first round asks the page what state it is in and repairs from
 		// that answer, which is cheap and keeps every viewer's peer intact. Once
-		// that has been tried and the stream is still silent, the page's own
+		// that has been tried and the page is still silent, the page's own
 		// account is the thing that cannot be trusted — so rebuild the peer
 		// outright. Viewers lose their connection and re-handshake, which is a
 		// visible hiccup, but they are looking at a frozen picture either way.
 		const force = videoSession.stallRounds > BrowserVideoCapture.STALL_REPAIR_ROUNDS;
 		debug.warn(
 			'webcodecs',
-			`Stream for ${sessionId} produced nothing for ${silentFor}ms — ` +
+			`Page for ${sessionId} stopped reporting for ${silentFor}ms — ` +
 				`${force ? 'rebuilding the page peer' : 'repairing'} (round ${videoSession.stallRounds})`
 		);
 
@@ -1647,7 +1698,10 @@ export class BrowserVideoCapture extends EventEmitter {
 			.catch((error) => debug.warn('webcodecs', `Stall repair failed for ${sessionId}:`, error))
 			.finally(() => {
 				videoSession.repairing = false;
-				videoSession.lastEncodedAt = Date.now();
+				// Give the repaired page a full silence window to report in before
+				// it can be judged again. Without this the next tick would measure
+				// against a clock that never moved and escalate immediately.
+				videoSession.lastPageReportAt = Date.now();
 			});
 	}
 
@@ -1661,13 +1715,12 @@ export class BrowserVideoCapture extends EventEmitter {
 
 		videoSession.captureMode = stats.captureMode || videoSession.captureMode;
 
-		// Frames reaching the encoder is the one signal that means the pipeline
-		// is genuinely alive end to end. The counter is per-window, so any
-		// non-zero report is proof of life for this window.
-		if (stats.framesAttempted > 0) {
-			videoSession.lastEncodedAt = Date.now();
-			videoSession.stallRounds = 0;
-		}
+		// THE report arriving is proof the page's capture loop is alive — whether
+		// or not it had anything to encode. This is what the watchdog measures.
+		// Frames are a property of the CONTENT (a still page has none and is
+		// perfectly healthy); reports are a property of the PIPELINE.
+		videoSession.lastPageReportAt = Date.now();
+		videoSession.stallRounds = 0;
 
 		// In-page capture can end on its own — the captured surface goes away
 		// on some navigations — and the page has no way to start a screencast.

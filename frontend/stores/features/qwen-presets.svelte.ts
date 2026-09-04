@@ -10,43 +10,48 @@
 
 import ws from '$frontend/utils/ws';
 import { debug } from '$shared/utils/logger';
+import { createCachedLoad } from '$frontend/stores/utils/cached-load.svelte';
 import type { QwenProviderPreset, QwenProviderPresetId } from '$shared/types/unified';
 
 let presets = $state<QwenProviderPreset[]>([]);
 let defaultPreset = $state<QwenProviderPresetId>('dashscope-intl');
-let loaded = $state(false);
+const cache = createCachedLoad('Qwen presets');
 
 export const qwenPresetsStore = {
 	get presets() { return presets; },
 	get defaultPreset() { return defaultPreset; },
-	get loaded() { return loaded; },
+	get loaded() { return cache.loaded; },
 
 	getPreset(id: QwenProviderPresetId | string): QwenProviderPreset | undefined {
 		return presets.find(p => p.id === id);
 	},
 
 	async fetch(): Promise<QwenProviderPreset[]> {
-		if (loaded) return presets;
-		return this.refresh();
+		await cache.ensure(load);
+		return presets;
 	},
 
 	async refresh(): Promise<QwenProviderPreset[]> {
-		try {
-			const result = await ws.http('engine:qwen-presets-list', {});
-			presets = result.presets;
-			defaultPreset = result.defaultPreset;
-			loaded = true;
-			debug.log('settings', `Qwen presets loaded: ${presets.length}`);
-			return presets;
-		} catch {
-			presets = [];
-			loaded = true;
-			return [];
-		}
+		await cache.refresh(load);
+		return presets;
 	},
 
 	reset() {
 		presets = [];
-		loaded = false;
+		cache.reset();
 	}
 };
+
+/**
+ * The one request behind this store. It does not catch — see the note in
+ * `createCachedLoad`: a failed load must not be cached as an empty catalog,
+ * because nothing would ever ask for it again. `defaultPreset` deliberately
+ * keeps its last good value on failure rather than falling back, so the picker
+ * never silently re-points an account at a different endpoint.
+ */
+async function load(): Promise<void> {
+	const result = await ws.http('engine:qwen-presets-list', {});
+	presets = result.presets;
+	defaultPreset = result.defaultPreset;
+	debug.log('settings', `Qwen presets loaded: ${presets.length}`);
+}

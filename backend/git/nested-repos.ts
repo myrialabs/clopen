@@ -77,6 +77,221 @@ const IGNORED_DESCENT_LEVELS = 1;
 const MAX_DEPTH = 12;
 
 /**
+ * Discovery caching, and who is allowed to decide it is stale.
+ *
+ * Every `git:status` / `git:branches` used to re-answer "which directories
+ * under this root are repos" from scratch: an `fs.readdir` over the whole tree
+ * plus a `git check-ignore` spawn per repo per depth level, then one
+ * `git status` per repo sitting inside an ignored tree. Measured on a real
+ * project that is 132ms and 7 spawns for the walk alone, and the panel fires it
+ * three or four times a second while staging. On Windows every spawn and every
+ * readdir also pays for Defender, which is what made Stage All look frozen.
+ *
+ * The answer barely ever changes, and the file watcher already knows exactly
+ * when it does. So the watcher, not a clock, is the invalidation authority:
+ *
+ *   - `beginWatchedDiscovery` / `endWatchedDiscovery` — a root is "watched"
+ *     while a live watcher is feeding it signals.
+ *   - `invalidateRepoSet` — a `.git` appeared or vanished, or `.gitignore` /
+ *     `.gitmodules` changed. The set of repos may be different.
+ *   - `invalidateLocalWork` — something was written inside one repo, so only
+ *     that repo's "does it have work to show" verdict is suspect.
+ *
+ * THE SAFETY RULE, which every change here must preserve: **the watcher only
+ * ever makes an answer fresher, never staler.** A TTL is always the floor, so
+ * losing every signal degrades to re-walking on a timer — never to an answer
+ * that is wrong forever. That failure mode is not hypothetical: `resolveGitDirs`
+ * decides which git dirs get watched at all and rejects unaccounted-for ones
+ * permanently, so one stale walk there took a sub-repo out of the panel for the
+ * whole session.
+ *
+ * The two halves have different exposure, so they are cached separately:
+ *
+ *   - The WALK (which dirs hold a `.git`) is stable, and the signal for it —
+ *     a `.git` entry appearing — is one the watcher sees reliably on every
+ *     platform, because the repo's parent directory is watched. Long floor.
+ *   - LOCAL WORK (whether a repo inside an ignored tree has anything to show)
+ *     changes with ordinary file writes, and the watcher is blind inside the
+ *     directories it prunes by name. Cached ONLY for watched roots, where a
+ *     write lands as an invalidation; an unwatched caller (the snapshot
+ *     scanner, a CLI path) still probes live, exactly as before. Hiding a
+ *     sub-repo the user edits is the worst failure this module can produce, so
+ *     it does not get cached on a guess.
+ *
+ * What is never cached, at any point: file status. Staged, unstaged, untracked
+ * and conflicted entries come from a live `git status` per repo on every call.
+ * The Changes tab cannot go stale through this module.
+ */
+
+/** Floor for a root nobody is invalidating — the clock is the only signal. */
+const UNWATCHED_TTL_MS = process.platform === 'win32' ? 5000 : 3000;
+
+/**
+ * Floor for a watched root. Long, because the watcher normally invalidates
+ * within milliseconds; this only bounds the damage if a signal is ever missed
+ * (a platform that drops an event, a watcher that faulted and is restarting).
+ */
+const WATCHED_TTL_MS = 60_000;
+
+interface WalkEntryCache {
+	found: string[];
+	provisional: string[];
+	expiresAt: number;
+}
+
+/** Whether a sub-repo has anything the panel could show. Watched roots only. */
+interface LocalWorkCache {
+	hasWork: boolean;
+	expiresAt: number;
+}
+
+const nestedRepoWalkCache = new Map<string, WalkEntryCache>();
+const nestedRepoInflight = new Map<string, Promise<string[]>>();
+const localWorkCache = new Map<string, LocalWorkCache>();
+
+/**
+ * Project roots a live file watcher is feeding signals for, and how many
+ * watchers are doing so. Refcounted because two projects can be opened at the
+ * same directory: without it the first one to close would revoke the claim
+ * while the second is still reporting, and discovery would quietly go back to
+ * the clock while a perfectly good signal source was still running.
+ */
+const watchedRoots = new Map<string, number>();
+
+/**
+ * The key every cache and the watched-root set is stored under. Callers reach
+ * this module from both sides of a `path.normalize()` — the watcher normalises
+ * the project path before registering, `git:status` passes `project.path`
+ * straight through — and on Windows those differ by separator alone. Keying on
+ * the raw string would put them in two entries: the watcher would invalidate
+ * one while the panel read the other, silently turning the signal off.
+ * Values keep their native separators; only keys are folded.
+ */
+function cacheKey(inputPath: string): string {
+	return inputPath.replace(/\\/g, '/').replace(/\/+$/, '');
+}
+
+/** Whether `candidate` is `base` or sits underneath it. */
+function isUnder(base: string, candidate: string): boolean {
+	const baseKey = cacheKey(base);
+	const candidateKey = cacheKey(candidate);
+	return candidateKey === baseKey || candidateKey.startsWith(baseKey + '/');
+}
+
+function isWatched(rootPath: string): boolean {
+	return (watchedRoots.get(cacheKey(rootPath)) ?? 0) > 0;
+}
+
+function ttlFor(rootPath: string): number {
+	return isWatched(rootPath) ? WATCHED_TTL_MS : UNWATCHED_TTL_MS;
+}
+
+/**
+ * Declare that a live file watcher will report changes for `rootPath`. Until
+ * `endWatchedDiscovery`, discovery may lean on those signals instead of the
+ * short clock — and `hasLocalWork` verdicts become cacheable at all.
+ */
+export function beginWatchedDiscovery(rootPath: string): void {
+	const key = cacheKey(rootPath);
+	watchedRoots.set(key, (watchedRoots.get(key) ?? 0) + 1);
+}
+
+/**
+ * The watcher for `rootPath` is gone. Drop everything that was only safe
+ * because it was being invalidated, so the next call re-probes live.
+ */
+export function endWatchedDiscovery(rootPath: string): void {
+	const key = cacheKey(rootPath);
+	const remaining = (watchedRoots.get(key) ?? 0) - 1;
+	if (remaining > 0) {
+		watchedRoots.set(key, remaining);
+		return;
+	}
+	watchedRoots.delete(key);
+	nestedRepoWalkCache.delete(key);
+	for (const cachedRepoKey of Array.from(localWorkCache.keys())) {
+		if (isUnder(rootPath, cachedRepoKey)) localWorkCache.delete(cachedRepoKey);
+	}
+}
+
+/**
+ * The set of repos under `rootPath` may have changed — a `.git` appeared or
+ * vanished, or the rules that decide what counts (`.gitignore`, `.gitmodules`)
+ * were edited. Forces a fresh walk on the next call.
+ */
+export function invalidateRepoSet(rootPath: string): void {
+	nestedRepoWalkCache.delete(cacheKey(rootPath));
+}
+
+/**
+ * Whether a changed path is one that can change WHICH repos are reported, as
+ * opposed to what is inside one.
+ *
+ * These live here rather than in the watcher on purpose. They are facts about
+ * the sub-repo policy at the top of this file, not about filesystem events, so
+ * extending that policy has to mean editing one place. Splitting them across
+ * the two files is what let discovery and its invalidation drift apart in the
+ * first place.
+ */
+function isRepoSetRule(changedPath: string): boolean {
+	const segments = cacheKey(changedPath).split('/');
+	const basename = segments[segments.length - 1];
+
+	// The repository itself appearing or vanishing.
+	if (basename === '.git') return true;
+
+	// Rule (2) and rule (3): what the project ignores, and what it declares.
+	if (basename === '.gitignore' || basename === '.gitmodules') return true;
+
+	// `.git/info/exclude` is a per-repo ignore file `git check-ignore` obeys
+	// exactly like `.gitignore`, so it moves the same boundary. The watcher
+	// filters it out of the panel's git-state events — correctly, the panel has
+	// nothing to show for it — which is precisely why discovery has to ask for
+	// it by name instead of riding along with those.
+	return (
+		basename === 'exclude' &&
+		segments[segments.length - 2] === 'info' &&
+		segments[segments.length - 3] === '.git'
+	);
+}
+
+/**
+ * A path under `rootPath` changed. The single entry point the file watcher
+ * uses: it forwards raw paths and this module decides what each one means, so
+ * no caller has to carry a copy of the sub-repo policy.
+ *
+ * Ignored entirely for a root nobody claimed — an unwatched root caches
+ * nothing that a signal could correct, and answering it here would only hide
+ * that fact.
+ */
+export function notifyPathChanged(rootPath: string, changedPath: string): void {
+	if (!isWatched(rootPath)) return;
+	if (isRepoSetRule(changedPath)) invalidateRepoSet(rootPath);
+	dropLocalWorkUnder(changedPath);
+}
+
+/**
+ * Something at or under `changedPath` moved, so the "has work to show" verdict
+ * of every cached repo containing it is suspect.
+ *
+ * Matching by containment rather than taking a repo path directly is what makes
+ * the important case work. A pristine sub-repo inside an ignored tree is NOT in
+ * the watcher's repo list — it is deliberately unreported until it has
+ * something to show, so the watcher has never resolved a git dir for it. The
+ * transition that must be caught is exactly the first write into it, and at
+ * that moment the only place it is known by name is this cache, holding the
+ * `false` verdict that is about to become wrong.
+ *
+ * Still scoped: a write in one sub-repo says nothing about its siblings, and
+ * re-probing all of them is the cost this cache exists to avoid.
+ */
+function dropLocalWorkUnder(changedPath: string): void {
+	for (const cachedRepoKey of Array.from(localWorkCache.keys())) {
+		if (isUnder(cachedRepoKey, changedPath)) localWorkCache.delete(cachedRepoKey);
+	}
+}
+
+/**
  * Upper bound on reported sub-repos. A project with more than this is either
  * pathological or hit a detection hole; either way the UI cannot usefully show
  * them, so we stop and log instead of flooding it.
@@ -141,7 +356,7 @@ async function filterIgnored(repoRoot: string, relPaths: string[]): Promise<Set<
  * A repo we cannot read is reported as having work: hiding a sub-repo the user
  * edits is a far worse failure than showing one they do not care about.
  */
-async function hasLocalWork(repoPath: string): Promise<boolean> {
+async function probeLocalWork(repoPath: string): Promise<boolean> {
 	try {
 		const result = await execGit(['status', '--porcelain', '-z'], repoPath, { timeout: 15000 });
 		if (result.exitCode !== 0) return true;
@@ -149,6 +364,29 @@ async function hasLocalWork(repoPath: string): Promise<boolean> {
 	} catch {
 		return true;
 	}
+}
+
+/**
+ * `probeLocalWork` with the verdict remembered — but only under a root the
+ * watcher is invalidating, where a write inside the repo lands as an
+ * `invalidateLocalWork` before anyone can read a stale answer. Unwatched roots
+ * probe live every time: this is the verdict that decides whether a sub-repo is
+ * shown at all, and a cached "nothing to show" with no signal behind it would
+ * hide a repo the user is working in.
+ */
+async function hasLocalWork(rootPath: string, repoPath: string): Promise<boolean> {
+	if (!isWatched(rootPath)) return probeLocalWork(repoPath);
+
+	const cached = localWorkCache.get(cacheKey(repoPath));
+	if (cached && Date.now() < cached.expiresAt) return cached.hasWork;
+
+	const hasWork = await probeLocalWork(repoPath);
+	// Re-read the flag: the watcher may have stopped while the probe ran, and a
+	// verdict nobody will invalidate must not be left behind.
+	if (isWatched(rootPath)) {
+		localWorkCache.set(cacheKey(repoPath), { hasWork, expiresAt: Date.now() + WATCHED_TTL_MS });
+	}
+	return hasWork;
 }
 
 /** Whether `dirPath` is a git repo (`.git` is a dir for clones, a file for worktrees/submodules). */
@@ -165,8 +403,76 @@ async function isRepoDir(dirPath: string): Promise<boolean> {
  * Find every nested git repo under `rootPath`, skipping dependency caches and
  * ignored trees (see the module comment for the exact policy). Does NOT scan
  * the repos — just returns their absolute paths, sorted for stable UI order.
+ *
+ * The filesystem walk is cached for a few seconds (longer on Windows) and
+ * concurrent callers for the same root share a single walk via inflight
+ * deduplication. The provisional → found filtering is re-run on every call
+ * so a newly-dirtied repo appears immediately.
  */
 export async function findNestedRepoPaths(rootPath: string): Promise<string[]> {
+	const cachedWalk = nestedRepoWalkCache.get(cacheKey(rootPath));
+	if (cachedWalk && Date.now() < cachedWalk.expiresAt) {
+		return resolveProvisional(rootPath, cachedWalk.found, cachedWalk.provisional);
+	}
+
+	// A caller that arrives while a walk is running shares it instead of
+	// starting a second one, but gets its own copy of the result: the array
+	// goes out to unrelated call sites, and one of them mutating it in place
+	// would corrupt the others.
+	const inflight = nestedRepoInflight.get(cacheKey(rootPath));
+	if (inflight) return [...(await inflight)];
+
+	const promise = (async (): Promise<string[]> => {
+		const walk = await walkNestedRepos(rootPath);
+		nestedRepoWalkCache.set(cacheKey(rootPath), {
+			found: walk.found,
+			provisional: walk.provisional,
+			expiresAt: Date.now() + ttlFor(rootPath)
+		});
+		return resolveProvisional(rootPath, walk.found, walk.provisional);
+	})();
+
+	nestedRepoInflight.set(cacheKey(rootPath), promise);
+	try {
+		return await promise;
+	} finally {
+		nestedRepoInflight.delete(cacheKey(rootPath));
+	}
+}
+
+/**
+ * Decide which provisional repos (those found inside an ignored tree) earn a
+ * place in the result, and return the sorted list. Deliberately outside the
+ * WALK cache: a repo qualifies the moment it gains local work, so a cached walk
+ * must never carry a cached verdict with it. The verdicts have their own,
+ * signal-backed cache — see `hasLocalWork`.
+ */
+async function resolveProvisional(rootPath: string, found: string[], provisional: string[]): Promise<string[]> {
+	if (provisional.length === 0) {
+		const out = [...found];
+		out.sort();
+		return out;
+	}
+	const submodulePaths = await findSubmodulePaths(rootPath);
+	const isDeclared = (repoPath: string) =>
+		submodulePaths.has(path.relative(rootPath, repoPath).replace(/\\/g, '/'));
+	const verdicts = await Promise.all(
+		provisional.map(async (repoPath) => isDeclared(repoPath) || (await hasLocalWork(rootPath, repoPath)))
+	);
+	const out = [...found];
+	provisional.forEach((repoPath, i) => {
+		if (verdicts[i]) out.push(repoPath);
+	});
+	out.sort();
+	return out;
+}
+
+/**
+ * The raw, uncached filesystem walk. Returns repos split into those reportable
+ * on structure alone and those still needing to prove local work — the split
+ * `findNestedRepoPaths` caches, because only the first half is stable.
+ */
+async function walkNestedRepos(rootPath: string): Promise<{ found: string[]; provisional: string[] }> {
 	const found: string[] = [];
 	/** Repos found inside an ignored tree — reported only if they prove local work. */
 	const provisional: string[] = [];
@@ -278,22 +584,7 @@ export async function findNestedRepoPaths(rootPath: string): Promise<string[]> {
 		debug.warn('git', `Nested repo scan of ${rootPath} stopped at ${MAX_REPOS} repos`);
 	}
 
-	if (provisional.length > 0) {
-		// A submodule is the user declaring the sub-repo themselves, which
-		// outranks anything we could infer from its working tree.
-		const submodulePaths = await findSubmodulePaths(rootPath);
-		const isDeclared = (repoPath: string) =>
-			submodulePaths.has(path.relative(rootPath, repoPath).replace(/\\/g, '/'));
-		const verdicts = await Promise.all(
-			provisional.map(async (repoPath) => isDeclared(repoPath) || (await hasLocalWork(repoPath)))
-		);
-		provisional.forEach((repoPath, i) => {
-			if (verdicts[i]) found.push(repoPath);
-		});
-	}
-
-	found.sort();
-	return found;
+	return { found, provisional };
 }
 
 /**
@@ -345,6 +636,28 @@ export async function findSubmodulePaths(rootPath: string): Promise<Set<string>>
 		out.add(s.path ?? s.name);
 	}
 	return out;
+}
+
+/**
+ * Drop every cached answer so the next call re-scans and re-probes. Exists for
+ * tests, which mutate a project's layout far faster than any TTL and would
+ * otherwise assert against the previous fixture. Production code should reach
+ * for the targeted `invalidateRepoSet` / `invalidateLocalWork` instead, so one
+ * repo's churn does not throw away every other repo's answer.
+ */
+export function clearNestedRepoCache(rootPath?: string): void {
+	if (rootPath) {
+		nestedRepoWalkCache.delete(cacheKey(rootPath));
+		nestedRepoInflight.delete(cacheKey(rootPath));
+		for (const cachedRepoKey of Array.from(localWorkCache.keys())) {
+			if (isUnder(rootPath, cachedRepoKey)) localWorkCache.delete(cachedRepoKey);
+		}
+	} else {
+		nestedRepoWalkCache.clear();
+		nestedRepoInflight.clear();
+		localWorkCache.clear();
+		watchedRoots.clear();
+	}
 }
 
 /**

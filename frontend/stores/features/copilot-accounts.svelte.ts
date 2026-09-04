@@ -8,6 +8,7 @@
 
 import ws from '$frontend/utils/ws';
 import { debug } from '$shared/utils/logger';
+import { createCachedLoad } from '$frontend/stores/utils/cached-load.svelte';
 
 export interface CopilotAccountItem {
 	id: number;
@@ -17,42 +18,47 @@ export interface CopilotAccountItem {
 }
 
 let accounts = $state<CopilotAccountItem[]>([]);
-let loaded = $state(false);
+const cache = createCachedLoad('Copilot accounts');
 
 export const copilotAccountsStore = {
 	get accounts() { return accounts; },
-	get loaded() { return loaded; },
+	get loaded() { return cache.loaded; },
 
-	/** Fetch accounts from backend. Idempotent — skips if already loaded. */
+	/** Fetch accounts from backend. Idempotent — skips only if already loaded. */
 	async fetch(): Promise<CopilotAccountItem[]> {
-		if (loaded) return accounts;
-		return this.refresh();
+		await cache.ensure(load);
+		return accounts;
 	},
 
 	/** Force re-fetch accounts from backend. */
 	async refresh(): Promise<CopilotAccountItem[]> {
-		try {
-			const result = await ws.http('engine:copilot-accounts-list', {});
-			accounts = result.accounts;
-			loaded = true;
-			debug.log('settings', `Copilot accounts loaded: ${accounts.length}`);
-			return accounts;
-		} catch {
-			accounts = [];
-			loaded = true;
-			return [];
-		}
+		await cache.refresh(load);
+		return accounts;
 	},
 
 	/** Update accounts list directly (avoids round-trip to backend). */
 	set(newAccounts: CopilotAccountItem[]) {
 		accounts = newAccounts;
-		loaded = true;
+		cache.markLoaded();
 	},
 
 	/** Reset store state. */
 	reset() {
 		accounts = [];
-		loaded = false;
+		cache.reset();
 	}
 };
+
+/**
+ * The one request behind this store.
+ *
+ * It deliberately does not catch: `createCachedLoad` decides what a failure
+ * means, and the answer is "do not cache it" — blanking `accounts` here is what
+ * used to turn a timeout into an account list that stayed empty for the rest of
+ * the session.
+ */
+async function load(): Promise<void> {
+	const result = await ws.http('engine:copilot-accounts-list', {});
+	accounts = result.accounts;
+	debug.log('settings', `Copilot accounts loaded: ${accounts.length}`);
+}
