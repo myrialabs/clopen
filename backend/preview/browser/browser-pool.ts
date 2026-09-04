@@ -129,12 +129,23 @@ function shouldDisableGpu(): boolean {
 
 const CHROME_ARGS = buildChromeArgs();
 
+/**
+ * How long the shared browser stays up with no sessions left.
+ *
+ * Long enough that closing a tab and opening another does not pay for a
+ * relaunch, short enough that a machine is not left running a headless Chrome
+ * nobody is using. Chrome is only reachable through sessions, so once the last
+ * one goes the browser has no work left to do.
+ */
+const IDLE_BROWSER_CLOSE_MS = 60_000;
+
 class BrowserPool {
 	private browser: Browser | null = null;
 	private sessions = new Map<string, PooledSession>();
 	private config: PoolConfig;
 	private isLaunching = false;
 	private launchPromise: Promise<Browser> | null = null;
+	private idleCloseTimer: ReturnType<typeof setTimeout> | null = null;
 
 	constructor(config: Partial<PoolConfig> = {}) {
 		this.config = { ...DEFAULT_CONFIG, ...config };
@@ -146,6 +157,8 @@ class BrowserPool {
 	 * StealthPlugin hooks fire for every page created.
 	 */
 	async getBrowser(): Promise<Browser> {
+		this.cancelIdleClose();
+
 		if (this.browser?.connected) {
 			return this.browser;
 		}
@@ -206,6 +219,8 @@ class BrowserPool {
 	 * Each context has separate cookies, localStorage, sessionStorage, and cache.
 	 */
 	async createSession(sessionId: string): Promise<PooledSession> {
+		this.cancelIdleClose();
+
 		const existing = this.sessions.get(sessionId);
 		if (existing) {
 			debug.log('preview', `♻️ Reusing existing session: ${sessionId}`);
@@ -233,6 +248,37 @@ class BrowserPool {
 		debug.log('preview', `✅ Session created: ${sessionId} (total: ${this.sessions.size})`);
 
 		return session;
+	}
+
+	/**
+	 * Give a session a fresh page, reusing its context where the context lived.
+	 *
+	 * A crashed renderer takes the page but usually leaves the BrowserContext —
+	 * and with it the cookies, localStorage and cache the tab has built up.
+	 * Rebuilding the whole session would quietly sign the user out of whatever
+	 * they were looking at, so the context is only recreated when it is really
+	 * gone (the browser died, or it refuses to hand out a page).
+	 */
+	async renewSessionPage(sessionId: string): Promise<PooledSession> {
+		this.cancelIdleClose();
+
+		const existing = this.sessions.get(sessionId);
+		if (existing && this.browser?.connected) {
+			try {
+				const page = await existing.context.newPage();
+				if (!existing.page.isClosed()) {
+					await existing.page.close().catch(() => {});
+				}
+				existing.page = page;
+				debug.log('preview', `♻️ Session ${sessionId}: new page in the surviving context`);
+				return existing;
+			} catch (error) {
+				debug.warn('preview', `⚠️ Context for ${sessionId} could not hand out a page: ${error}`);
+			}
+		}
+
+		await this.destroySession(sessionId);
+		return this.createSession(sessionId);
 	}
 
 	/**
@@ -276,6 +322,40 @@ class BrowserPool {
 
 		this.sessions.delete(sessionId);
 		debug.log('preview', `✅ Session destroyed (remaining: ${this.sessions.size})`);
+
+		this.scheduleIdleClose();
+	}
+
+	/**
+	 * Close the shared browser once nothing has referenced it for a while.
+	 *
+	 * The pool outlives every individual project — no single workspace may
+	 * close it — so idleness is the only safe trigger left.
+	 */
+	private scheduleIdleClose(): void {
+		this.cancelIdleClose();
+		if (this.sessions.size > 0 || !this.browser) return;
+
+		this.idleCloseTimer = setTimeout(() => {
+			this.idleCloseTimer = null;
+			if (this.sessions.size > 0) return;
+
+			const browser = this.browser;
+			this.browser = null;
+			debug.log('preview', '💤 No sessions left, closing the shared browser');
+			browser?.close().catch((error) => {
+				debug.warn('preview', `⚠️ Error closing idle browser: ${error}`);
+			});
+		}, IDLE_BROWSER_CLOSE_MS);
+
+		// Nothing here should hold the process open on its own.
+		this.idleCloseTimer.unref?.();
+	}
+
+	private cancelIdleClose(): void {
+		if (!this.idleCloseTimer) return;
+		clearTimeout(this.idleCloseTimer);
+		this.idleCloseTimer = null;
 	}
 
 	/**
@@ -310,6 +390,7 @@ class BrowserPool {
 	 */
 	async cleanup(): Promise<void> {
 		debug.log('preview', '🧹 Cleaning up browser pool...');
+		this.cancelIdleClose();
 
 		const sessionIds = Array.from(this.sessions.keys());
 		await Promise.all(sessionIds.map((id) => this.destroySession(id)));

@@ -9,6 +9,7 @@ import { BrowserDialogHandler } from './browser-dialog-handler.js';
 import { BrowserNativeUIHandler } from './browser-native-ui-handler.js';
 import { BrowserHostBridge, type HostResponse } from './browser-host-bridge.js';
 import { browserMcpControl } from './browser-mcp-control.js';
+import { browserPool } from './browser-pool.js';
 import { ws } from '$backend/utils/ws';
 import { getViewportDimensions } from '$shared/constants/preview.js';
 import { debug } from '$shared/utils/logger';
@@ -59,6 +60,15 @@ export class BrowserPreviewService extends EventEmitter {
 
 	/** Tabs whose page is showing something full screen — see applyFullscreenState. */
 	private fullscreenTabs = new Set<string>();
+
+	/**
+	 * Page rebuilds in flight, per tab.
+	 *
+	 * A dead page is noticed by whatever touches the tab first — the stream's
+	 * frame guard, the tab list, an MCP action — and often by several of them
+	 * at once, so the first one to ask owns the rebuild and the rest wait on it.
+	 */
+	private tabRecoveries = new Map<string, Promise<boolean>>();
 
 	// Project ID for isolation (REQUIRED)
 	private projectId: string;
@@ -179,6 +189,12 @@ export class BrowserPreviewService extends EventEmitter {
 		});
 		this.tabManager.on('preview:browser-tab-switched', (data) => {
 			this.emit('preview:browser-tab-switched', data);
+		});
+
+		// A tab whose page died. The tab manager can replace the page but not
+		// the per-page state layered on top of it, so the rebuild is owned here.
+		this.tabManager.on('preview:browser-tab-unhealthy', (data: { tabId: string; reason: string }) => {
+			if (data?.tabId) void this.recoverTab(data.tabId, data.reason);
 		});
 		this.tabManager.on('preview:browser-tab-navigated', (data) => {
 			this.emit('preview:browser-tab-navigated', data);
@@ -313,6 +329,87 @@ export class BrowserPreviewService extends EventEmitter {
 		void this.refreshTabMeta(tab.id);
 
 		return tab;
+	}
+
+	/**
+	 * Rebuild a tab whose page died, in place.
+	 *
+	 * A crashed renderer, a Chrome that went away, a page a site closed on
+	 * itself: every one of these used to delete the tab, which is how a preview
+	 * could disappear mid-session — while an agent was driving it, even — with
+	 * nobody having closed anything. The tab keeps its id, its slot in the strip
+	 * and its URL; only the page underneath is replaced.
+	 *
+	 * Viewers are told about it as a navigation, because that is exactly what it
+	 * looks like from their side and they already know how to restart a stream
+	 * across one.
+	 */
+	async recoverTab(tabId: string, reason = 'page-gone'): Promise<boolean> {
+		const inFlight = this.tabRecoveries.get(tabId);
+		if (inFlight) return inFlight;
+
+		const run = this.rebuildTab(tabId, reason).finally(() => {
+			this.tabRecoveries.delete(tabId);
+		});
+		this.tabRecoveries.set(tabId, run);
+
+		return run;
+	}
+
+	private async rebuildTab(tabId: string, reason: string): Promise<boolean> {
+		const before = this.tabManager.peekTab(tabId);
+		if (!before || before.isDestroyed) return false;
+
+		debug.warn('preview', `♻️ Rebuilding tab ${tabId} after ${reason}`);
+
+		this.emit('preview:browser-navigation-loading', {
+			sessionId: tabId,
+			type: 'recovery',
+			url: before.url,
+			timestamp: Date.now()
+		});
+
+		// Everything below is bound to the page that died — bindings, injected
+		// scripts, the CDP sessions behind navigation tracking and the host
+		// bridge. All of it is re-applied against the new page.
+		await this.videoCapture.stopStreaming(tabId).catch(() => {});
+		this.videoCapture.disposeTab(tabId);
+		await this.navigationTracker.cleanupSession(tabId).catch(() => {});
+		await this.hostBridge.teardown(tabId).catch(() => {});
+		this.fullscreenTabs.delete(tabId);
+
+		let tab: BrowserTab | null;
+		try {
+			tab = await this.tabManager.respawnPage(tabId);
+		} catch (error) {
+			// Left in place on purpose: the tab stays in the strip and the next
+			// read of it asks for another rebuild, so a host that is briefly out
+			// of memory recovers on its own instead of losing the tab.
+			debug.error('preview', `❌ Rebuild failed for tab ${tabId}:`, error);
+			return false;
+		}
+		if (!tab) return false;
+
+		await Promise.all([
+			this.consoleManager.setupConsoleLogging(tab.id, tab.page, tab),
+			this.navigationTracker.setupNavigationTracking(tab.id, tab.page, tab)
+		]);
+
+		this.videoCapture.preInjectScripts(tab.id, tab).catch(() => {});
+
+		await this.captureHistoryBase(tab.id);
+		void this.refreshTabMeta(tab.id);
+
+		this.emit('preview:browser-navigation', {
+			sessionId: tabId,
+			type: 'recovery',
+			url: tab.url,
+			timestamp: Date.now()
+		});
+
+		debug.log('preview', `✅ Tab ${tabId} rebuilt at ${tab.url}`);
+
+		return true;
 	}
 
 	/**
@@ -1029,7 +1126,8 @@ export class BrowserPreviewService extends EventEmitter {
 		this.interactionHandler.clearAllSessionCursors();
 		// Release host-bridge scratch dirs and unblock any parked page promises
 		await this.hostBridge.cleanup();
-		// Cleanup tabs (this will also cleanup all contexts/pages/browser pool)
+		// Cleanup tabs (contexts and pages go with them). The shared browser
+		// pool is deliberately left alone — it is one Chrome for every project.
 		await this.tabManager.cleanup();
 	}
 
@@ -1396,6 +1494,12 @@ class BrowserPreviewServiceManager {
 
 		await Promise.all(cleanupPromises);
 		this.services.clear();
+
+		// The only place the shared browser may be closed: this is every
+		// project at once, i.e. the process going away. A single workspace's
+		// teardown must never reach it — doing so took every other project's
+		// preview tabs down with it.
+		await browserPool.cleanup();
 	}
 
 	/**

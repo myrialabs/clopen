@@ -1,9 +1,9 @@
-import type { Browser, BrowserContext, Page } from 'puppeteer';
+import type { Browser, BrowserContext, Page, Target } from 'puppeteer';
 import { EventEmitter } from 'events';
 import { getViewportDimensions } from '$shared/constants/preview.js';
 import type { BrowserTab, BrowserTabInfo, DeviceSize, Rotation } from './types';
 import { DEFAULT_STREAMING_CONFIG } from './types';
-import { browserPool } from './browser-pool';
+import { browserPool, type PooledSession } from './browser-pool';
 import { BrowserAudioCapture } from './browser-audio-capture';
 import { cursorTrackingScript } from './scripts/cursor-tracking';
 import { browserMcpControl } from './browser-mcp-control';
@@ -13,6 +13,25 @@ import { scopeSlug } from '$shared/utils/workspace-scope';
 // Tab cleanup configuration
 const INACTIVE_TIMEOUT = 5 * 60 * 1000; // 5 minutes
 const CLEANUP_INTERVAL = 60 * 1000; // Check every minute
+
+/**
+ * Shortest gap between two rebuild requests for the same tab.
+ *
+ * The health check runs from read paths that fire many times a second (the
+ * stream's per-frame guard, the tab list, an MCP action's pre-check), so
+ * without this a single dead page would ask for a rebuild on every one of
+ * them. Long enough that a failed rebuild backs off, short enough that the
+ * page is back before anyone reaches for reload.
+ */
+const RECOVERY_REQUEST_INTERVAL = 5 * 1000;
+
+/**
+ * Why a tab's underlying page cannot be driven right now.
+ *
+ * All three are recoverable: the tab keeps its identity and the page is
+ * rebuilt underneath it. None of them is a reason to delete the tab.
+ */
+export type TabAilment = 'browser-gone' | 'session-gone' | 'page-gone';
 
 /**
  * Browser Tab Manager
@@ -46,6 +65,43 @@ export class BrowserTabManager extends EventEmitter {
 	private tabActivity = new Map<string, number>();
 	private cleanupInterval: NodeJS.Timeout | null = null;
 	private signalHandlers: { sigterm: () => void; sigint: () => void } | null = null;
+
+	/** Tabs whose close is already running, so closeTab is idempotent. */
+	private closingTabs = new Set<string>();
+
+	/**
+	 * Set once the process is on its way out, and while a workspace teardown is
+	 * running. Both close every page on purpose, and without this each one would
+	 * read as a crash worth relaunching Chrome for.
+	 */
+	private shuttingDown = false;
+
+	/** When a rebuild was last asked for, per tab — see RECOVERY_REQUEST_INTERVAL. */
+	private recoveryRequestedAt = new Map<string, number>();
+
+	/**
+	 * Per-tab page setup that has to run again on every page the tab gets.
+	 * Dialog interception and the host-capability shims must be installed
+	 * before the first navigation, so a rebuilt page needs them re-applied
+	 * exactly as the original one did.
+	 */
+	private tabSetupHooks = new Map<string, (page: Page, tabId: string) => Promise<void>>();
+
+	/**
+	 * The listeners a tab holds on objects that outlive its page — the shared
+	 * browser and its own context. A rebuild has to take these off before it
+	 * fits new ones: left attached, the old popup watcher would see the tab's
+	 * replacement page as a popup and close it on sight.
+	 */
+	private tabListeners = new Map<
+		string,
+		{
+			browser: Browser;
+			onDisconnected: () => void;
+			context: BrowserContext;
+			onTargetCreated: (target: Target) => void;
+		}
+	>();
 
 	// Audio capture manager
 	private audioCapture = new BrowserAudioCapture();
@@ -180,6 +236,11 @@ export class BrowserTabManager extends EventEmitter {
 		};
 
 		this.tabs.set(tabId, tab);
+		// Kept for the life of the tab: a rebuilt page needs the same setup the
+		// original one got, before it navigates anywhere.
+		if (options?.preNavigationSetup) {
+			this.tabSetupHooks.set(tabId, options.preNavigationSetup);
+		}
 		this.setupBrowserHandlers(tabId, browser, context, page);
 
 		// Mark tab as active immediately
@@ -272,66 +333,82 @@ export class BrowserTabManager extends EventEmitter {
 			return { success: false, newActiveTabId: null };
 		}
 
-		debug.log('preview', `🗑️ Closing tab: ${tabId}`);
-
-		const wasActive = tab.isActive;
-
-		// Auto-release MCP control if this tab is being controlled
-		browserMcpControl.autoReleaseForTab(tabId, this.projectId);
-
-		// IMMEDIATELY set destroyed flag and stop streaming
-		tab.isDestroyed = true;
-		tab.isStreaming = false;
-
-		// Clear all intervals immediately
-		if (tab.screenshotInterval) {
-			clearInterval(tab.screenshotInterval);
-			tab.screenshotInterval = undefined;
+		// Closing is reachable from several places at once (the user, an MCP
+		// batch, the idle sweep). Running it twice destroys the pool session
+		// under the half that is still working.
+		if (this.closingTabs.has(tabId)) {
+			debug.log('preview', `⏭️ Tab ${tabId} is already closing`);
+			return { success: false, newActiveTabId: null };
 		}
-		if (tab.streamingInterval) {
-			clearInterval(tab.streamingInterval);
-			tab.streamingInterval = undefined;
-		}
+		this.closingTabs.add(tabId);
 
-		// Wait a moment for streaming loop to detect the flags and stop
-		await new Promise(resolve => setTimeout(resolve, 500));
+		try {
+			debug.log('preview', `🗑️ Closing tab: ${tabId}`);
 
-		// Clean up the isolated context
-		await this.cleanupContext(tab);
+			const wasActive = tab.isActive;
 
-		// Remove from map
-		this.tabs.delete(tabId);
-		this.tabActivity.delete(tabId);
+			// Auto-release MCP control if this tab is being controlled
+			browserMcpControl.autoReleaseForTab(tabId, this.projectId);
 
-		// If closing active tab, switch to another tab
-		let newActiveTabId: string | null = null;
-		if (wasActive && this.tabs.size > 0) {
-			// Get the first available tab
-			const nextTab = Array.from(this.tabs.values())[0];
-			if (nextTab) {
-				this.setActiveTab(nextTab.id);
-				newActiveTabId = nextTab.id;
-			} else {
+			// IMMEDIATELY set destroyed flag and stop streaming
+			tab.isDestroyed = true;
+			tab.isStreaming = false;
+
+			// Clear all intervals immediately
+			if (tab.screenshotInterval) {
+				clearInterval(tab.screenshotInterval);
+				tab.screenshotInterval = undefined;
+			}
+			if (tab.streamingInterval) {
+				clearInterval(tab.streamingInterval);
+				tab.streamingInterval = undefined;
+			}
+
+			// Wait a moment for streaming loop to detect the flags and stop
+			await new Promise(resolve => setTimeout(resolve, 500));
+
+			// Clean up the isolated context
+			await this.cleanupContext(tab);
+
+			// Remove from map
+			this.detachTabListeners(tabId);
+			this.tabs.delete(tabId);
+			this.tabActivity.delete(tabId);
+			this.tabSetupHooks.delete(tabId);
+			this.recoveryRequestedAt.delete(tabId);
+
+			// If closing active tab, switch to another tab
+			let newActiveTabId: string | null = null;
+			if (wasActive && this.tabs.size > 0) {
+				// Get the first available tab
+				const nextTab = Array.from(this.tabs.values())[0];
+				if (nextTab) {
+					this.setActiveTab(nextTab.id);
+					newActiveTabId = nextTab.id;
+				} else {
+					this.activeTabId = null;
+				}
+			} else if (this.tabs.size === 0) {
 				this.activeTabId = null;
 			}
-		} else if (this.tabs.size === 0) {
-			this.activeTabId = null;
+
+			// Emit tab closed event
+			this.emit('preview:browser-tab-closed', {
+				tabId,
+				newActiveTabId,
+				timestamp: Date.now()
+			});
+
+			debug.log('preview', `✅ Tab closed: ${tabId} (new active: ${newActiveTabId || 'none'})`);
+
+			// Log pool stats after cleanup
+			const stats = browserPool.getStats();
+			debug.log('preview', `📊 Pool stats after cleanup: ${stats.activeSessions}/${stats.maxConcurrency} tabs active`);
+
+			return { success: true, newActiveTabId };
+		} finally {
+			this.closingTabs.delete(tabId);
 		}
-
-		// Emit tab closed event
-		this.emit('preview:browser-tab-closed', {
-			tabId,
-			newActiveTabId,
-			timestamp: Date.now()
-		});
-
-		debug.log('preview', `✅ Tab closed: ${tabId} (new active: ${newActiveTabId || 'none'})`);
-
-		// Log pool stats after cleanup
-		const stats = browserPool.getStats();
-		debug.log('preview', `📊 Pool stats after cleanup: ${stats.activeSessions}/${stats.maxConcurrency} tabs active`);
-
-		return { success: true, newActiveTabId };
 	}
 
 	/**
@@ -391,6 +468,16 @@ export class BrowserTabManager extends EventEmitter {
 		}
 
 		return tab;
+	}
+
+	/**
+	 * Get a tab without validating its page.
+	 *
+	 * The counterpart to `getTab`: used by the rebuild path, which needs the
+	 * record of a tab precisely when its page is the thing that is broken.
+	 */
+	peekTab(tabId: string): BrowserTab | null {
+		return this.tabs.get(tabId) ?? null;
 	}
 
 	/**
@@ -524,21 +611,31 @@ export class BrowserTabManager extends EventEmitter {
 			isStreaming: tab.isStreaming,
 			isDestroyed: tab.isDestroyed || false,
 			browserConnected: tab.browser?.connected || false,
-			pageClosed: tab.page?.isClosed() || true,
+			// `tab.page?.isClosed() || true` — the shape this used to have — is
+			// always true, which reported every tab as a dead one.
+			pageClosed: tab.page ? tab.page.isClosed() : true,
 			deviceSize: tab.deviceSize,
 			rotation: tab.rotation,
 			consoleLogs: tab.consoleLogs.length,
 			lastInteractionTime: tab.lastInteractionTime,
 			duplicateFrameCount: tab.duplicateFrameCount || 0,
 			isActive: tab.isActive,
+			isRecovering: tab.isRecovering || false,
 			createdAt: tab.createdAt,
 			lastAccessedAt: tab.lastAccessedAt
 		}));
 
+		// "Alive" is about the page, not about whether anyone is watching it:
+		// a tab whose panel is closed is not streaming and is perfectly fine.
+		// The inactive-mode cleanup uses the same definition, so what this
+		// reports is what that mode would actually remove.
+		const isDead = (t: (typeof tabs)[number]) =>
+			t.isDestroyed || (!t.isRecovering && (!t.browserConnected || t.pageClosed));
+
 		return {
 			totalTabs: tabs.length,
-			activeTabs: tabs.filter(t => t.isStreaming && t.browserConnected && !t.pageClosed && !t.isDestroyed).length,
-			inactiveTabs: tabs.filter(t => t.isDestroyed || !t.browserConnected || t.pageClosed || !t.isStreaming).length,
+			activeTabs: tabs.filter(t => !isDead(t)).length,
+			inactiveTabs: tabs.filter(isDead).length,
 			tabs
 		};
 	}
@@ -571,44 +668,159 @@ export class BrowserTabManager extends EventEmitter {
 	}
 
 	/**
-	 * Validate tab
+	 * What, if anything, is wrong with a tab's page. Pure — it only looks.
+	 *
+	 * Deliberately side-effect free: this is called from read paths (the tab
+	 * list, the stream's per-frame guard, an MCP action's pre-check), and it
+	 * used to close the tab from all of them. A page that dies for a moment is
+	 * not a request to throw the tab away, and answering one that way is what
+	 * made previews disappear with nobody having closed anything.
+	 */
+	diagnoseTab(tabId: string): TabAilment | null {
+		const tab = this.tabs.get(tabId);
+		if (!tab) return null;
+
+		if (!tab.browser || !tab.browser.connected) return 'browser-gone';
+		if (!browserPool.isSessionValid(this.getSessionId(tabId))) return 'session-gone';
+		if (!tab.page || tab.page.isClosed()) return 'page-gone';
+
+		return null;
+	}
+
+	/**
+	 * Ask for a tab's page to be rebuilt.
+	 *
+	 * The tab manager cannot do it alone — console logging, navigation
+	 * tracking and the streaming scripts are all owned a layer up — so this
+	 * only reports the ailment. `BrowserPreviewService` listens and calls
+	 * `respawnPage` as part of a full rebuild.
+	 */
+	private requestRecovery(tabId: string, ailment: TabAilment): void {
+		if (this.shuttingDown) return;
+
+		const tab = this.tabs.get(tabId);
+		if (!tab || tab.isDestroyed || tab.isRecovering) return;
+		if (this.closingTabs.has(tabId)) return;
+
+		const now = Date.now();
+		const last = this.recoveryRequestedAt.get(tabId) ?? 0;
+		if (now - last < RECOVERY_REQUEST_INTERVAL) return;
+		this.recoveryRequestedAt.set(tabId, now);
+
+		debug.warn('preview', `⚠️ Tab ${tabId}: ${ailment} — requesting a page rebuild`);
+		this.emit('preview:browser-tab-unhealthy', { tabId, reason: ailment, timestamp: now });
+	}
+
+	/**
+	 * Whether the tab can be driven right now. An unusable page schedules a
+	 * rebuild rather than a close.
 	 */
 	private isValidTab(tabId: string): boolean {
 		const tab = this.tabs.get(tabId);
-		if (!tab) {
-			return false;
-		}
+		if (!tab) return false;
 
-		// Check if tab is already destroyed
 		if (tab.isDestroyed) {
 			debug.warn('preview', `⚠️ Tab ${tabId}: already destroyed`);
 			return false;
 		}
 
-		// Check if browser is still connected (shared browser)
-		if (!tab.browser || !tab.browser.connected) {
-			debug.warn('preview', `⚠️ Tab ${tabId}: shared browser disconnected`);
-			this.closeTab(tabId).catch(console.error);
-			return false;
-		}
+		const ailment = this.diagnoseTab(tabId);
+		if (!ailment) return true;
 
-		// Check if session is still valid in the pool (use project-scoped sessionId)
-		const sessionId = this.getSessionId(tabId);
-		const isPoolValid = browserPool.isSessionValid(sessionId);
-		if (!isPoolValid) {
-			debug.warn('preview', `⚠️ Tab ${tabId}: session no longer valid in pool`);
-			this.closeTab(tabId).catch(console.error);
-			return false;
-		}
+		this.requestRecovery(tabId, ailment);
+		return false;
+	}
 
-		// Check if page is still open
-		if (!tab.page || tab.page.isClosed()) {
-			debug.warn('preview', `⚠️ Tab ${tabId}: page closed`);
-			this.closeTab(tabId).catch(console.error);
-			return false;
-		}
+	/**
+	 * Rebuild the page behind an existing tab, keeping the tab itself.
+	 *
+	 * The id, the slot in the tab strip, the device size and the URL all
+	 * survive; only `browser`/`context`/`page` are replaced. The pool relaunches
+	 * Chrome on demand, so this covers a crashed renderer and a browser that
+	 * went away entirely. Callers own the per-page state layered on top (console,
+	 * navigation tracking, streaming scripts) and must re-apply it afterwards.
+	 *
+	 * Returns the tab, or null if it is gone / already being rebuilt.
+	 */
+	async respawnPage(tabId: string): Promise<BrowserTab | null> {
+		const tab = this.tabs.get(tabId);
+		if (!tab || tab.isDestroyed || tab.isRecovering) return null;
+		if (this.closingTabs.has(tabId)) return null;
 
-		return true;
+		tab.isRecovering = true;
+		let pooled: PooledSession | null = null;
+
+		try {
+			const sessionId = this.getSessionId(tabId);
+
+			// Before anything is asked of the context: its popup watcher closes
+			// every page in it that is not the one this tab was built around,
+			// which would include the replacement page it is about to open.
+			this.detachTabListeners(tabId);
+
+			// Keeps the context — and so the cookies and storage the tab has
+			// built up — whenever the context itself survived.
+			pooled = await browserPool.renewSessionPage(sessionId);
+			const browser = await browserPool.getBrowser();
+
+			tab.browser = browser;
+			tab.context = pooled.context;
+			tab.page = pooled.page;
+			tab.isStreaming = false;
+			tab.isCapturing = false;
+			tab.lastFrameHash = undefined;
+			tab.duplicateFrameCount = 0;
+			// History belongs to the page that died; the new one starts over.
+			tab.historyBaseIndex = undefined;
+			tab.canGoBack = false;
+			tab.canGoForward = false;
+
+			await this.setupPage(pooled.page, tab.deviceSize, tab.rotation);
+
+			const setupHook = this.tabSetupHooks.get(tabId);
+			if (setupHook) {
+				await setupHook(pooled.page, tabId);
+			}
+
+			this.setupBrowserHandlers(tabId, browser, pooled.context, pooled.page);
+
+			// `url` over `currentUrl`: the navigation tracker keeps the former
+			// current through redirects and SPA pushState, while the latter only
+			// moves on an explicit navigate. Rebuilding from `currentUrl` would
+			// drop a single-page app back to the route it was first opened at.
+			const target = tab.url || tab.currentUrl || 'about:blank';
+			const actualUrl = await this.navigateWithRetry(pooled.page, target);
+			tab.url = actualUrl;
+			tab.currentUrl = actualUrl;
+			tab.isLoading = false;
+
+			this.markTabActivity(tabId);
+			this.recoveryRequestedAt.delete(tabId);
+
+			debug.log('preview', `♻️ Tab ${tabId}: page rebuilt at ${actualUrl}`);
+
+			return tab;
+		} catch (error) {
+			// Drop a half-built page rather than leave it in place: it would
+			// have none of the instrumentation the tab needs, while reading as
+			// perfectly healthy — so nothing would ever try again.
+			if (pooled && !pooled.page.isClosed()) {
+				await pooled.page.close().catch(() => {});
+			}
+			throw error;
+		} finally {
+			tab.isRecovering = false;
+		}
+	}
+
+	/** Take a tab's browser- and context-level listeners back off. */
+	private detachTabListeners(tabId: string): void {
+		const entry = this.tabListeners.get(tabId);
+		if (!entry) return;
+
+		entry.browser.off('disconnected', entry.onDisconnected);
+		entry.context.off('targetcreated', entry.onTargetCreated);
+		this.tabListeners.delete(tabId);
 	}
 
 	/**
@@ -969,34 +1181,31 @@ export class BrowserTabManager extends EventEmitter {
 	 * Setup browser event handlers
 	 */
 	private setupBrowserHandlers(tabId: string, browser: Browser, context: BrowserContext, page: Page) {
-		// Add error handlers for browser disconnection
-		// Note: With shared browser, we only clean up THIS tab, not close the browser
-		browser.on('disconnected', () => {
-			const tab = this.tabs.get(tabId);
-			if (tab && !tab.isDestroyed) {
-				debug.warn('preview', `⚠️ Shared browser disconnected, cleaning up tab ${tabId}`);
-				tab.isDestroyed = true;
-				this.closeTab(tabId).catch(console.error);
-			}
-		});
+		// Chrome went away — a crash, an OOM kill, a machine that slept. The tab
+		// is not: the pool launches a new browser on demand, so ask for a rebuild
+		// instead of deleting a tab the user never closed.
+		const onDisconnected = () => {
+			this.requestRecovery(tabId, 'browser-gone');
+		};
 
-		// Handle page errors
+		// Puppeteer raises this when the renderer crashes. Long-running previews
+		// hit it on low-memory hosts, and it used to be terminal for the tab.
 		page.on('error', (error) => {
-			const tab = this.tabs.get(tabId);
-			if (tab && !tab.isDestroyed) {
-				debug.error('preview', `💥 Page error for tab ${tabId}: ${error.message}, cleaning up`);
-				tab.isDestroyed = true;
-				this.closeTab(tabId).catch(console.error);
-			}
+			debug.error('preview', `💥 Page crashed for tab ${tabId}: ${error.message}`);
+			this.requestRecovery(tabId, 'page-gone');
 		});
 
-		// Track page close event
+		// The page can also go away without an error — a site calling
+		// window.close(), a target Chrome dropped. Same answer: rebuild it.
+		// Our own teardown paths hold the closing/recovering flags that
+		// requestRecovery checks, so this never fights them.
 		page.on('close', () => {
 			debug.warn('preview', `⚠️ Page close event for tab ${tabId}`);
+			this.requestRecovery(tabId, 'page-gone');
 		});
 
 		// Handle popup/new window events within this context
-		context.on('targetcreated', async (target) => {
+		const onTargetCreated = async (target: Target) => {
 			if (target.type() === 'page') {
 				const newPage = await target.page();
 				if (newPage && newPage !== page) {
@@ -1017,7 +1226,14 @@ export class BrowserTabManager extends EventEmitter {
 					}
 				}
 			}
-		});
+		};
+
+		// Registered together so a rebuild can lift both at once, before the
+		// context is asked for the page that replaces this one.
+		this.detachTabListeners(tabId);
+		browser.on('disconnected', onDisconnected);
+		context.on('targetcreated', onTargetCreated);
+		this.tabListeners.set(tabId, { browser, onDisconnected, context, onTargetCreated });
 	}
 
 	/**
@@ -1070,6 +1286,7 @@ export class BrowserTabManager extends EventEmitter {
 		// and prevent duplicate listeners if multiple BrowserTabManager
 		// instances are created.
 		const cleanup = () => {
+			this.shuttingDown = true;
 			if (this.cleanupInterval) clearInterval(this.cleanupInterval);
 			this.cleanupInterval = null;
 			this.tabActivity.clear();
@@ -1093,7 +1310,12 @@ export class BrowserTabManager extends EventEmitter {
 	}
 
 	/**
-	 * Perform cleanup of inactive tabs
+	 * Reap bookkeeping left behind by a close that did not finish.
+	 *
+	 * The only thing this may remove is a tab already marked destroyed with no
+	 * close in flight — i.e. an entry whose teardown threw halfway. A tab whose
+	 * page merely died is NOT reaped: it is rebuilt on next use, and closing it
+	 * here is exactly the silent disappearance this sweep used to cause.
 	 */
 	private performCleanup(): void {
 		const now = Date.now();
@@ -1114,11 +1336,8 @@ export class BrowserTabManager extends EventEmitter {
 				continue;
 			}
 
-			// Only cleanup if tab is truly orphaned
-			if (tab.isDestroyed || (tab.page?.isClosed() && !tab.browser?.connected)) {
-				debug.log('preview', `🧹 Auto-cleaning up inactive tab: ${tabId} (inactive for ${Math.round(inactiveTime / 1000)}s)`);
-
-				// Close tab
+			if (tab.isDestroyed && !this.closingTabs.has(tabId)) {
+				debug.log('preview', `🧹 Reaping half-closed tab: ${tabId} (idle for ${Math.round(inactiveTime / 1000)}s)`);
 				this.closeTab(tabId).catch(console.error);
 			}
 		}
@@ -1140,12 +1359,11 @@ export class BrowserTabManager extends EventEmitter {
 				continue;
 			}
 
-			// Check if tab is truly inactive
-			const isInactive =
-				tab.isDestroyed ||
-				!tab.browser?.connected ||
-				tab.page?.isClosed() ||
-				!tab.isStreaming;
+			// Truly inactive means the page is gone, not that nobody is
+			// watching: a tab whose panel is closed or minimized is not
+			// streaming and is perfectly alive. Treating that as a zombie is
+			// what let the "SAFE" mode take out tabs it promised to preserve.
+			const isInactive = tab.isDestroyed || (!tab.isRecovering && this.diagnoseTab(tabId) !== null);
 
 			if (isInactive) {
 				inactiveTabs.push(tabId);
@@ -1186,6 +1404,13 @@ export class BrowserTabManager extends EventEmitter {
 	async cleanup(): Promise<void> {
 		debug.log('preview', `🧹 Cleaning up ${this.tabs.size} tabs...`);
 
+		// Every page below is about to be closed on purpose; none of them is a
+		// crash to rebuild from. Restored at the end: an admin "clean up all"
+		// leaves the manager in service, and the tabs opened after it must be
+		// able to recover like any other.
+		const wasShuttingDown = this.shuttingDown;
+		this.shuttingDown = true;
+
 		// Stop cleanup interval
 		if (this.cleanupInterval) {
 			clearInterval(this.cleanupInterval);
@@ -1216,12 +1441,21 @@ export class BrowserTabManager extends EventEmitter {
 		}
 
 		// Force clear tabs map
+		for (const tabId of this.tabs.keys()) this.detachTabListeners(tabId);
 		this.tabs.clear();
 		this.activeTabId = null;
 		this.tabActivity.clear();
+		this.tabSetupHooks.clear();
+		this.recoveryRequestedAt.clear();
 
-		// Clean up the browser pool (closes all contexts and the shared browser)
-		await browserPool.cleanup();
+		this.shuttingDown = wasShuttingDown;
+
+		// Deliberately NOT browserPool.cleanup(): the pool holds one Chrome and
+		// every project's contexts. Closing it from one workspace's teardown —
+		// deleting a worktree, an admin "clean up all" — took every other
+		// project's preview tabs down with it. Our own sessions are already gone
+		// with the tabs above; the pool closes its browser when the last session
+		// goes, and on process shutdown.
 
 		debug.log('preview', '✅ All tabs cleaned up');
 	}
