@@ -10,7 +10,7 @@
  */
 
 import { join } from 'path';
-import { mkdir, readdir, rm, writeFile, cp, stat } from 'node:fs/promises';
+import { mkdir, readdir, readFile, rm, writeFile, cp, stat } from 'node:fs/promises';
 import { resolveArtifact } from './matrix';
 import { markersFor, writeManagedBlock } from './markers';
 import type { ArtifactContext, ArtifactType, ManagedArtifact } from './types';
@@ -37,10 +37,63 @@ async function pathExists(path: string): Promise<boolean> {
 	}
 }
 
-/** Mirror one canonical folder into a destination dir under `<slug>/` (replacing any stale copy). */
+/**
+ * Write only when the bytes differ.
+ *
+ * This runs at every stream start, and a no-op rewrite still moves mtime. The
+ * Open Code pool fingerprints these files to decide whether its baked config
+ * changed, so an unconditional write made every single turn spawn a fresh
+ * `opencode serve` process for a config that was byte-identical.
+ */
+async function writeFileIfChanged(filePath: string, content: string): Promise<void> {
+	try {
+		if ((await readFile(filePath, 'utf8')) === content) return;
+	} catch { /* missing or unreadable — fall through and write */ }
+	await writeFile(filePath, content, 'utf8');
+}
+
+/** Every file under `dir`, keyed by path relative to it. Missing dir → empty map. */
+async function fileStats(dir: string): Promise<Map<string, { size: number; mtimeMs: number }>> {
+	const out = new Map<string, { size: number; mtimeMs: number }>();
+	const walk = async (current: string, prefix: string): Promise<void> => {
+		let entries;
+		try {
+			entries = await readdir(current, { withFileTypes: true });
+		} catch {
+			return;
+		}
+		for (const entry of entries) {
+			const relative = prefix ? `${prefix}/${entry.name}` : entry.name;
+			if (entry.isDirectory()) {
+				await walk(join(current, entry.name), relative);
+				continue;
+			}
+			try {
+				const info = await stat(join(current, entry.name));
+				out.set(relative, { size: info.size, mtimeMs: info.mtimeMs });
+			} catch { /* raced away */ }
+		}
+	};
+	await walk(dir, '');
+	return out;
+}
+
+/** True when `destDir` already holds a current copy — same files, same sizes, none of them older than the source. */
+async function folderInSync(sourceDir: string, destDir: string): Promise<boolean> {
+	const [source, dest] = await Promise.all([fileStats(sourceDir), fileStats(destDir)]);
+	if (source.size === 0 || source.size !== dest.size) return false;
+	for (const [relative, sourceInfo] of source) {
+		const destInfo = dest.get(relative);
+		if (!destInfo || destInfo.size !== sourceInfo.size || destInfo.mtimeMs < sourceInfo.mtimeMs) return false;
+	}
+	return true;
+}
+
+/** Mirror one canonical folder into a destination dir under `<slug>/`, skipping the copy when it is already current. */
 async function mirrorFolder(sourceDir: string, destDir: string, slug: string): Promise<void> {
 	if (!(await pathExists(sourceDir))) return;
 	const dest = join(destDir, slug);
+	if (await folderInSync(sourceDir, dest)) return;
 	await rm(dest, { recursive: true, force: true });
 	await mkdir(destDir, { recursive: true });
 	await cp(sourceDir, dest, { recursive: true });
@@ -104,7 +157,7 @@ export async function materializeArtifacts(
 			if (resolution.format === 'folder-md') {
 				if (item.sourceDir) await mirrorFolder(item.sourceDir, target, item.slug);
 			} else if (item.document != null) {
-				await writeFile(join(target, `${item.slug}.md`), item.document, 'utf8');
+				await writeFileIfChanged(join(target, `${item.slug}.md`), item.document);
 			}
 		}
 

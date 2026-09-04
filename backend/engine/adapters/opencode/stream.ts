@@ -42,7 +42,7 @@ import {
 	mapToolName,
 	TOOL_NAME_MAP,
 } from './message-converter';
-import { ensureClient, acquireServer, releaseServer, getClient, getServerUrl, type ServerInstance } from './server';
+import { ensureClient, acquireServer, releaseServer, getDefaultServer, type ServerInstance } from './server';
 import { syncSkills } from '$backend/skills';
 import { syncEngineArtifacts, buildArtifactsPromptContext } from '$backend/engine/artifact-sync';
 import { artifactFilter } from '$backend/profiles';
@@ -887,7 +887,7 @@ export class OpenCodeEngine implements AIEngine {
 		//    The pool hold is still held here on purpose — handing the server back
 		//    first could let it be reaped out from under this very call.
 		for (const run of targets) {
-			const client = run.server?.client ?? getClient();
+			const client = run.server?.client ?? getDefaultServer()?.client;
 			const { sessionId, projectPath } = run;
 			if (!client || !sessionId) continue;
 			try {
@@ -948,8 +948,8 @@ export class OpenCodeEngine implements AIEngine {
 	 * POST /question/{requestID}/reply to send user answers back to the OpenCode server.
 	 */
 	private replyToQuestion(run: OpenCodeRun | null, requestId: string, orderedAnswers: string[][]): void {
-		const serverUrl = run?.server?.url ?? getServerUrl();
-		if (!serverUrl) {
+		const server = run?.server ?? getDefaultServer();
+		if (!server) {
 			debug.warn('engine', 'replyToQuestion: Server URL not available');
 			return;
 		}
@@ -959,12 +959,12 @@ export class OpenCodeEngine implements AIEngine {
 		// a shared "current server" would post this reply into the wrong one and
 		// leave the asking session waiting forever.
 		const dirParam = run?.projectPath ? `?directory=${encodeURIComponent(run.projectPath)}` : '';
-		const url = `${serverUrl}/question/${requestId}/reply${dirParam}`;
+		const url = `${server.url}/question/${requestId}/reply${dirParam}`;
 		debug.log('engine', `Replying to question ${requestId}:`, orderedAnswers);
 
 		fetch(url, {
 			method: 'POST',
-			headers: { 'Content-Type': 'application/json' },
+			headers: { 'Content-Type': 'application/json', ...server.authHeaders },
 			body: JSON.stringify({ answers: orderedAnswers }),
 		}).then(async res => {
 			if (res.ok) {
@@ -986,15 +986,15 @@ export class OpenCodeEngine implements AIEngine {
 		// still-running one when there is exactly one, else the shared client.
 		const running = this.runs.all();
 		const run = running.length === 1 ? running[0] : null;
-		const serverUrl = run?.server?.url ?? getServerUrl();
-		if (!serverUrl) {
+		const server = run?.server ?? getDefaultServer();
+		if (!server) {
 			debug.warn('engine', 'fetchAndReplyToQuestion: Server URL not available');
 			return;
 		}
 
 		try {
 			const dirParam = run?.projectPath ? `?directory=${encodeURIComponent(run.projectPath)}` : '';
-			const res = await fetch(`${serverUrl}/question${dirParam}`);
+			const res = await fetch(`${server.url}/question${dirParam}`, { headers: server.authHeaders });
 			if (!res.ok) {
 				debug.error('engine', `Failed to list pending questions: ${res.status}`);
 				return;
@@ -1029,14 +1029,14 @@ export class OpenCodeEngine implements AIEngine {
 	 * the v2 permission.reply method.
 	 */
 	private replyPermission(run: OpenCodeRun, permissionId: string, sessionId: string, response: 'once' | 'reject'): void {
-		const serverUrl = run.server?.url ?? getServerUrl();
-		if (!serverUrl) return;
+		const server = run.server ?? getDefaultServer();
+		if (!server) return;
 		const verb = response === 'reject' ? 'rejected' : 'approved';
 
 		// Try v2 endpoint first (/permission/{requestID}/reply), fall back to v1
-		fetch(`${serverUrl}/permission/${permissionId}/reply`, {
+		fetch(`${server.url}/permission/${permissionId}/reply`, {
 			method: 'POST',
-			headers: { 'Content-Type': 'application/json' },
+			headers: { 'Content-Type': 'application/json', ...server.authHeaders },
 			body: JSON.stringify({ reply: response }),
 		}).then(res => {
 			if (res.ok) {
@@ -1044,7 +1044,7 @@ export class OpenCodeEngine implements AIEngine {
 				return;
 			}
 			// v2 endpoint not available — try v1
-			const client = run.server?.client ?? getClient();
+			const client = run.server?.client ?? getDefaultServer()?.client;
 			if (client) {
 				client.postSessionIdPermissionsPermissionId({
 					path: { id: sessionId, permissionID: permissionId },

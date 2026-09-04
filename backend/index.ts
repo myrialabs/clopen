@@ -333,6 +333,11 @@ async function gracefulShutdown() {
 		// and browser teardown below — otherwise the old process keeps those
 		// sockets open long enough to overlap the new process ("too many clients").
 		await connectionManager.closeAll();
+		// Engines next, because they own CHILD PROCESSES. Everything below is
+		// in-process cleanup that dies with us anyway, but an `opencode serve`
+		// we fail to kill outlives the restart holding its port and data-dir
+		// lock — and the 5s force-exit above used to fire before we got here.
+		await disposeAllEngines();
 		// Same reasoning for SSH: stop the forwards' listeners and close every
 		// transport so their remote sessions and bound ports are released now.
 		await sshForwardManager.stopAll();
@@ -359,8 +364,6 @@ async function gracefulShutdown() {
 		stopMemoryMaintenance();
 		stopExtractionRunner();
 		await flushEpisodicIngest();
-		// Dispose all AI engines
-		await disposeAllEngines();
 		// Close database connection
 		closeDatabase();
 		debug.log('server', '✅ Graceful shutdown completed');
