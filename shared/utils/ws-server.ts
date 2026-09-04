@@ -308,11 +308,13 @@ export class WSRouter<
 		this.httpRoutes.set('ws:set-context', {
 			action: 'ws:set-context',
 			dataSchema: t.Object({
-				projectId: t.Optional(t.Union([t.String(), t.Null()]))
+				projectId: t.Optional(t.Union([t.String(), t.Null()])),
+				worktreeId: t.Optional(t.Union([t.String(), t.Null()]))
 			}),
 			responseSchema: t.Object({
 				userId: t.Union([t.String(), t.Null()]),
-				projectId: t.Union([t.String(), t.Null()])
+				projectId: t.Union([t.String(), t.Null()]),
+				worktreeId: t.Union([t.String(), t.Null()])
 			}),
 			handler: async ({ conn, data }) => {
 				// Import ws server to update context
@@ -338,11 +340,25 @@ export class WSRouter<
 					wsServer.setProject(conn, data.projectId);
 				}
 
+				// Which tree this connection is viewing. Validated against the
+				// project so a client cannot point itself at another one's worktree.
+				if (data.worktreeId !== undefined) {
+					let worktreeId = data.worktreeId;
+					if (worktreeId !== null) {
+						const { worktreeQueries } = await import('$backend/database/queries');
+						const activeProjectId = wsServer.getConnectionState(conn)?.projectId ?? null;
+						const worktree = worktreeQueries.getById(worktreeId);
+						if (!worktree || worktree.project_id !== activeProjectId) worktreeId = null;
+					}
+					wsServer.setWorktree(conn, worktreeId);
+				}
+
 				// Read back from connectionState (single source of truth)
 				const state = wsServer.getConnectionState(conn);
 				return {
 					userId: state?.userId ?? null,
-					projectId: state?.projectId ?? null
+					projectId: state?.projectId ?? null,
+					worktreeId: state?.worktreeId ?? null
 				};
 			}
 		});

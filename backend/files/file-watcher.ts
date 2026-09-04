@@ -33,6 +33,7 @@ import { stat, readdir } from 'node:fs/promises';
 import { join, relative, normalize, sep } from 'node:path';
 import { ws } from '$backend/utils/ws';
 import { debug } from '$shared/utils/logger';
+import { isScopeOfProject, scopeProjectId } from '$shared/utils/workspace-scope';
 import { resolveGitDirs, type GitDirTarget } from '$backend/git/git-dirs';
 import {
 	beginWatchedDiscovery,
@@ -413,7 +414,7 @@ class FileWatcherManager {
 					'file',
 					`Watch ceiling (${MAX_WATCHED_DIRS} dirs) reached for project ${pw.projectId}; deeper directories will not report changes`
 				);
-				ws.emit.project(pw.projectId, 'files:watch-error', {
+				ws.emit.project(scopeProjectId(pw.projectId), 'files:watch-error', {
 					projectId: pw.projectId,
 					error: `Project is too large to watch entirely (${MAX_WATCHED_DIRS}+ directories). Changes in deeply nested folders may not appear automatically.`
 				});
@@ -592,6 +593,17 @@ class FileWatcherManager {
 	}
 
 	/**
+	 * Release every workspace of a project — the main tree and each worktree.
+	 * Watchers are keyed per workspace, so releasing the project id alone would
+	 * leave a deleted project's worktree watchers running.
+	 */
+	releaseProjectScopes(projectId: string): void {
+		for (const key of [...this.watchers.keys(), ...this.viewers.keys()]) {
+			if (isScopeOfProject(key, projectId)) this.releaseProject(key);
+		}
+	}
+
+	/**
 	 * Check if a project is being watched
 	 */
 	isWatching(projectId: string): boolean {
@@ -733,7 +745,7 @@ class FileWatcherManager {
 		projectWatcher.debounceTimer = null;
 
 		// Emit changes to users currently viewing the project
-		ws.emit.project(projectId, 'files:changed', {
+		ws.emit.project(scopeProjectId(projectId), 'files:changed', {
 			projectId,
 			changes,
 			timestamp: Date.now()
@@ -948,7 +960,7 @@ class FileWatcherManager {
 			projectWatcher.gitDebounceTimer = null;
 			const repoPaths = Array.from(projectWatcher.pendingGitRepos);
 			projectWatcher.pendingGitRepos.clear();
-			ws.emit.project(projectId, 'git:changed', {
+			ws.emit.project(scopeProjectId(projectId), 'git:changed', {
 				projectId,
 				repoPaths,
 				timestamp: Date.now()
@@ -985,7 +997,7 @@ class FileWatcherManager {
 				'file',
 				`Watcher for project ${projectId} faulted ${attempt} times; giving up on automatic restart`
 			);
-			ws.emit.project(projectId, 'files:watch-error', {
+			ws.emit.project(scopeProjectId(projectId), 'files:watch-error', {
 				projectId,
 				error: 'File watching stopped after repeated failures. Refresh to retry.'
 			});
@@ -1017,7 +1029,7 @@ class FileWatcherManager {
 			// reconcile — deliberately NOT via `files:changed`, which means "these
 			// specific paths changed" and made consumers tear down and rebuild live
 			// views (the open diff editor) on every restart.
-			ws.emit.project(projectId, 'files:resync', {
+			ws.emit.project(scopeProjectId(projectId), 'files:resync', {
 				projectId,
 				timestamp: Date.now()
 			});

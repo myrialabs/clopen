@@ -3,7 +3,7 @@ import { createRouter } from '$shared/utils/ws-server';
 import { debug } from '$shared/utils/logger';
 import { join, extname, basename, relative } from 'path';
 import { readdir } from 'fs/promises';
-import { requireProjectPathAccess } from './path-access';
+import { requireWorkspaceRootAccess } from './path-access';
 import { validateFileSize } from '../../files/file-size-limit';
 
 // Heuristic patterns that indicate potential ReDoS risk:
@@ -407,13 +407,13 @@ export const fileSearchHandler = createRouter()
 		response: t.Array(FileSearchResultSchema)
 	}, async ({ data, conn }) => {
 		const { project_path, query } = data;
-		const project = requireProjectPathAccess(conn, project_path);
+		const { root } = requireWorkspaceRootAccess(conn, project_path);
 
 		if (!query || query.trim().length === 0) {
 			return [];
 		}
 
-		return await searchFilesByName(project.path, query);
+		return await searchFilesByName(root, query);
 	})
 	.http('files:search-code', {
 		data: t.Object({
@@ -446,13 +446,13 @@ export const fileSearchHandler = createRouter()
 			include_pattern,
 			exclude_pattern
 		} = data;
-		const project = requireProjectPathAccess(conn, project_path);
+		const { root } = requireWorkspaceRootAccess(conn, project_path);
 
 		if (!query || query.trim().length === 0) {
 			return [];
 		}
 
-		return await searchCodeContent(project.path, query, {
+		return await searchCodeContent(root, query, {
 			caseSensitive: case_sensitive,
 			wholeWord: whole_word,
 			useRegex: use_regex,
@@ -491,13 +491,13 @@ export const fileSearchHandler = createRouter()
 			include_pattern,
 			exclude_pattern
 		} = data;
-		const project = requireProjectPathAccess(conn, project_path);
+		const { root } = requireWorkspaceRootAccess(conn, project_path);
 
 		if (!search_query || search_query.trim().length === 0) {
 			return { results: [], totalReplacements: 0, totalFiles: 0 };
 		}
 
-		const results = await replaceInFiles(project.path, search_query, replace_with, {
+		const results = await replaceInFiles(root, search_query, replace_with, {
 			caseSensitive: case_sensitive,
 			wholeWord: whole_word,
 			useRegex: use_regex,

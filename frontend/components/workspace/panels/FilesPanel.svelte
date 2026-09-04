@@ -60,6 +60,7 @@
 
 <script lang="ts">
 	import { projectState } from '$frontend/stores/core/projects.svelte';
+	import { currentScopeKey } from '$frontend/stores/features/worktrees.svelte';
 	import FileTree from '$frontend/components/files/FileTree.svelte';
 	import FileViewer from '$frontend/components/files/FileViewer.svelte';
 	import Icon from '$frontend/components/common/display/Icon.svelte';
@@ -106,6 +107,9 @@
 	const hasActiveProject = $derived(projectState.currentProject !== null);
 	const projectPath = $derived(projectState.currentProject?.path || '');
 	const projectId = $derived(projectState.currentProject?.id || '');
+	// File-watch events are keyed by workspace, so a worktree's changes never
+	// reach a panel viewing the main tree.
+	const watchScope = $derived(currentScopeKey() || projectId);
 
 	// File watcher state
 	let isWatching = $state(false);
@@ -265,6 +269,9 @@
 	// projectFileStates is at module level to survive component destruction (mobile/desktop switch)
 	let lastProjectPath = $state<string>('');
 	let lastProjectId = $state<string>('');
+	// Workspace the panel last persisted for; the outgoing state must be written
+	// under it, not under the scope the panel has already advanced to.
+	let lastProjectScope = $state<string>('');
 
 	// Container width detection for 2-column layout
 	let containerRef = $state<HTMLDivElement | null>(null);
@@ -357,7 +364,7 @@
 	// Persist using explicit project refs — required when switching projects
 	// because $derived projectId/projectPath have already advanced to the new
 	// project by the time the change-effect fires.
-	function persistStateForProject(targetId: string, targetPath: string) {
+	function persistStateForProject(targetId: string, targetPath: string, targetScope = watchScope) {
 		if (!targetId || !targetPath) return;
 		// Capture unsaved editor buffers for this project so dirty edits survive a
 		// switch (openTabs still holds this project's tabs when called on switch).
@@ -372,6 +379,7 @@
 		projectFileStates.set(targetPath, state);
 		ws.http('files:set-panel-state', {
 			projectId: targetId,
+			scopeKey: targetScope,
 			state: JSON.stringify(state)
 		}).catch((err) => debug.error('file', 'Failed to persist panel state:', err));
 	}
@@ -1994,6 +2002,7 @@
 	$effect(() => {
 		const currentProjectId = projectId;
 		const currentProjectPath = projectPath;
+		const currentScope = watchScope;
 
 		if (!hasActiveProject) {
 			openTabs = [];
@@ -2001,6 +2010,7 @@
 			viewMode = 'tree';
 			lastProjectPath = '';
 			lastProjectId = '';
+			lastProjectScope = '';
 			isInitialLoad = true;
 			panelStateLoaded = false;
 			return;
@@ -2015,7 +2025,7 @@
 				clearTimeout(panelStateSaveTimer);
 				panelStateSaveTimer = null;
 			}
-			persistStateForProject(lastProjectId, lastProjectPath);
+			persistStateForProject(lastProjectId, lastProjectPath, lastProjectScope || lastProjectId);
 		}
 
 		if (lastProjectPath !== currentProjectPath) {
@@ -2039,16 +2049,17 @@
 
 		lastProjectPath = currentProjectPath;
 		lastProjectId = currentProjectId;
+		lastProjectScope = currentScope;
 
 		// Sync git status for the new project
 		syncGitStatusForProject();
 		refreshIgnoredPaths();
 
 		// Restore from DB then load the tree
-		restoreAndLoad(currentProjectId, currentProjectPath);
+		restoreAndLoad(currentProjectId, currentProjectPath, currentScope);
 	});
 
-	async function restoreAndLoad(targetProjectId: string, targetProjectPath: string) {
+	async function restoreAndLoad(targetProjectId: string, targetProjectPath: string, targetScope = watchScope) {
 		// Hold the Files panel's skeleton for the WHOLE restore, not just the tree
 		// fetch: the panel state round-trip happens first, and without this the
 		// panel would show an empty tree for its duration.
@@ -2065,7 +2076,10 @@
 
 			// Always fetch DB state too — it may be newer (cross-device, refresh)
 			try {
-				const result = await ws.http('files:get-panel-state', { projectId: targetProjectId });
+				const result = await ws.http('files:get-panel-state', {
+					projectId: targetProjectId,
+					scopeKey: targetScope
+				});
 				if (projectId !== targetProjectId) return; // race: project changed mid-fetch
 				if (result?.state) {
 					try {
@@ -2165,7 +2179,7 @@
 		let accumulatedChanges: Array<{ path: string; type: 'created' | 'modified' | 'deleted'; timestamp: string }> = [];
 
 		const unsubChanges = ws.on('files:changed', (payload) => {
-			if (payload.projectId !== projectId) return;
+			if (payload.projectId !== watchScope) return;
 			if (payload.changes.length === 0) return;
 
 			// Accumulate changes from all events before debounce fires
@@ -2185,17 +2199,17 @@
 		// have changed, so re-read the tree in place (scroll and expansion kept)
 		// rather than reconciling a phantom change list.
 		const unsubResync = ws.on('files:resync', (payload) => {
-			if (payload.projectId !== projectId) return;
+			if (payload.projectId !== watchScope) return;
 			void loadProjectFiles(true);
 		});
 
 		const unsubWatching = ws.on('files:watching', (payload) => {
-			if (payload.projectId !== projectId) return;
+			if (payload.projectId !== watchScope) return;
 			isWatching = payload.watching;
 		});
 
 		const unsubError = ws.on('files:watch-error', (payload) => {
-			if (payload.projectId !== projectId) return;
+			if (payload.projectId !== watchScope) return;
 			debug.error('file', `Watch error: ${payload.error}`);
 		});
 

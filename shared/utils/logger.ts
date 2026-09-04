@@ -10,6 +10,7 @@ export type LogLabel =
 	| 'chat'
 	| 'checkpoint'
 	| 'snapshot'
+	| 'worktree'
 	
 	// Preview
 	| 'preview'

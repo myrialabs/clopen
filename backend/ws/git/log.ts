@@ -6,7 +6,7 @@ import { t } from 'elysia';
 import path from 'node:path';
 import { createRouter } from '$shared/utils/ws-server';
 import { gitService } from '../../git/git-service';
-import { requireProjectAccess } from '../access';
+import { requireProjectWorkspace } from '../access';
 import { debug } from '$shared/utils/logger';
 
 /**
@@ -50,8 +50,8 @@ export const logHandler = createRouter()
 			hasMore: t.Boolean()
 		})
 	}, async ({ data, conn }) => {
-		const project = requireProjectAccess(conn, data.projectId);
-		const cwd = resolveRepoCwd(project.path, data.repoPath);
+		const { root } = requireProjectWorkspace(conn, data.projectId);
+		const cwd = resolveRepoCwd(root, data.repoPath);
 		return await gitService.getLog(
 			cwd,
 			data.limit ?? 50,

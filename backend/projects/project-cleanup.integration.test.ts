@@ -3,7 +3,7 @@ import { projectCleanupRegistry, runProjectCleanups } from './project-cleanup-re
 
 import './project-cleanup';
 
-const DEFAULT_CLEANUP_HANDLERS = ['engine', 'mcp-context', 'file-watcher', 'presence'] as const;
+const DEFAULT_CLEANUP_HANDLERS = ['engine', 'mcp-context', 'file-watcher', 'presence', 'worktrees'] as const;
 
 describe('project cleanup integration', () => {
 	test('registers default backend handlers when project-cleanup is loaded', () => {

@@ -6,7 +6,7 @@ import { t } from 'elysia';
 import path from 'node:path';
 import { createRouter } from '$shared/utils/ws-server';
 import { gitService } from '../../git/git-service';
-import { requireProjectAccess } from '../access';
+import { requireProjectWorkspace } from '../access';
 import { debug } from '$shared/utils/logger';
 
 /**
@@ -37,8 +37,8 @@ export const remoteHandler = createRouter()
 			pushUrl: t.String()
 		}))
 	}, async ({ data, conn }) => {
-		const project = requireProjectAccess(conn, data.projectId);
-		const cwd = resolveRepoCwd(project.path, data.repoPath);
+		const { root } = requireProjectWorkspace(conn, data.projectId);
+		const cwd = resolveRepoCwd(root, data.repoPath);
 		return await gitService.getRemotes(cwd);
 	})
 
@@ -52,8 +52,8 @@ export const remoteHandler = createRouter()
 			message: t.String()
 		})
 	}, async ({ data, conn }) => {
-		const project = requireProjectAccess(conn, data.projectId);
-		const cwd = resolveRepoCwd(project.path, data.repoPath);
+		const { root } = requireProjectWorkspace(conn, data.projectId);
+		const cwd = resolveRepoCwd(root, data.repoPath);
 		const message = await gitService.fetch(cwd, data.remote);
 		return { message };
 	})
@@ -71,8 +71,8 @@ export const remoteHandler = createRouter()
 			message: t.String()
 		})
 	}, async ({ data, conn }) => {
-		const project = requireProjectAccess(conn, data.projectId);
-		const cwd = resolveRepoCwd(project.path, data.repoPath);
+		const { root } = requireProjectWorkspace(conn, data.projectId);
+		const cwd = resolveRepoCwd(root, data.repoPath);
 		return await gitService.pull(cwd, data.remote, data.branch, data.rebase);
 	})
 
@@ -94,8 +94,8 @@ export const remoteHandler = createRouter()
 			message: t.String()
 		})
 	}, async ({ data, conn }) => {
-		const project = requireProjectAccess(conn, data.projectId);
-		const cwd = resolveRepoCwd(project.path, data.repoPath);
+		const { root } = requireProjectWorkspace(conn, data.projectId);
+		const cwd = resolveRepoCwd(root, data.repoPath);
 		return await gitService.pushAdvanced(cwd, data.mode, data.remote, data.branch);
 	})
 
@@ -108,8 +108,8 @@ export const remoteHandler = createRouter()
 			message: t.String()
 		})
 	}, async ({ data, conn }) => {
-		const project = requireProjectAccess(conn, data.projectId);
-		const cwd = resolveRepoCwd(project.path, data.repoPath);
+		const { root } = requireProjectWorkspace(conn, data.projectId);
+		const cwd = resolveRepoCwd(root, data.repoPath);
 		const message = await gitService.fetchAll(cwd);
 		return { message };
 	})
@@ -127,8 +127,8 @@ export const remoteHandler = createRouter()
 			message: t.String()
 		})
 	}, async ({ data, conn }) => {
-		const project = requireProjectAccess(conn, data.projectId);
-		const cwd = resolveRepoCwd(project.path, data.repoPath);
+		const { root } = requireProjectWorkspace(conn, data.projectId);
+		const cwd = resolveRepoCwd(root, data.repoPath);
 		return await gitService.push(cwd, data.remote, data.branch, data.force);
 	})
 
@@ -141,8 +141,8 @@ export const remoteHandler = createRouter()
 		}),
 		response: t.Object({ ok: t.Boolean() })
 	}, async ({ data, conn }) => {
-		const project = requireProjectAccess(conn, data.projectId);
-		const cwd = resolveRepoCwd(project.path, data.repoPath);
+		const { root } = requireProjectWorkspace(conn, data.projectId);
+		const cwd = resolveRepoCwd(root, data.repoPath);
 		await gitService.addRemote(cwd, data.name, data.url);
 		return { ok: true };
 	})
@@ -156,8 +156,8 @@ export const remoteHandler = createRouter()
 		}),
 		response: t.Object({ ok: t.Boolean() })
 	}, async ({ data, conn }) => {
-		const project = requireProjectAccess(conn, data.projectId);
-		const cwd = resolveRepoCwd(project.path, data.repoPath);
+		const { root } = requireProjectWorkspace(conn, data.projectId);
+		const cwd = resolveRepoCwd(root, data.repoPath);
 		await gitService.setRemoteUrl(cwd, data.name, data.url);
 		return { ok: true };
 	})
@@ -171,8 +171,8 @@ export const remoteHandler = createRouter()
 		}),
 		response: t.Object({ ok: t.Boolean() })
 	}, async ({ data, conn }) => {
-		const project = requireProjectAccess(conn, data.projectId);
-		const cwd = resolveRepoCwd(project.path, data.repoPath);
+		const { root } = requireProjectWorkspace(conn, data.projectId);
+		const cwd = resolveRepoCwd(root, data.repoPath);
 		await gitService.renameRemote(cwd, data.oldName, data.newName);
 		return { ok: true };
 	})
@@ -187,8 +187,8 @@ export const remoteHandler = createRouter()
 		}),
 		response: t.Object({ ok: t.Boolean() })
 	}, async ({ data, conn }) => {
-		const project = requireProjectAccess(conn, data.projectId);
-		const cwd = resolveRepoCwd(project.path, data.repoPath);
+		const { root } = requireProjectWorkspace(conn, data.projectId);
+		const cwd = resolveRepoCwd(root, data.repoPath);
 		if (data.oldName !== data.newName) {
 			await gitService.renameRemote(cwd, data.oldName, data.newName);
 		}
@@ -204,8 +204,8 @@ export const remoteHandler = createRouter()
 		}),
 		response: t.Object({ ok: t.Boolean() })
 	}, async ({ data, conn }) => {
-		const project = requireProjectAccess(conn, data.projectId);
-		const cwd = resolveRepoCwd(project.path, data.repoPath);
+		const { root } = requireProjectWorkspace(conn, data.projectId);
+		const cwd = resolveRepoCwd(root, data.repoPath);
 		await gitService.removeRemote(cwd, data.name);
 		return { ok: true };
 	})
@@ -219,8 +219,8 @@ export const remoteHandler = createRouter()
 		}),
 		response: t.Object({ ok: t.Boolean() })
 	}, async ({ data, conn }) => {
-		const project = requireProjectAccess(conn, data.projectId);
-		const cwd = resolveRepoCwd(project.path, data.repoPath);
+		const { root } = requireProjectWorkspace(conn, data.projectId);
+		const cwd = resolveRepoCwd(root, data.repoPath);
 		await gitService.deleteRemoteBranch(cwd, data.remote, data.branch);
 		return { ok: true };
 	})
@@ -236,8 +236,8 @@ export const remoteHandler = createRouter()
 			date: t.String()
 		}))
 	}, async ({ data, conn }) => {
-		const project = requireProjectAccess(conn, data.projectId);
-		const cwd = resolveRepoCwd(project.path, data.repoPath);
+		const { root } = requireProjectWorkspace(conn, data.projectId);
+		const cwd = resolveRepoCwd(root, data.repoPath);
 		return await gitService.stashList(cwd);
 	})
 
@@ -250,8 +250,8 @@ export const remoteHandler = createRouter()
 		}),
 		response: t.Object({ ok: t.Boolean() })
 	}, async ({ data, conn }) => {
-		const project = requireProjectAccess(conn, data.projectId);
-		const cwd = resolveRepoCwd(project.path, data.repoPath);
+		const { root } = requireProjectWorkspace(conn, data.projectId);
+		const cwd = resolveRepoCwd(root, data.repoPath);
 		await gitService.stashSave(cwd, data.message, data.staged);
 		return { ok: true };
 	})
@@ -268,8 +268,8 @@ export const remoteHandler = createRouter()
 			message: t.String()
 		})
 	}, async ({ data, conn }) => {
-		const project = requireProjectAccess(conn, data.projectId);
-		const cwd = resolveRepoCwd(project.path, data.repoPath);
+		const { root } = requireProjectWorkspace(conn, data.projectId);
+		const cwd = resolveRepoCwd(root, data.repoPath);
 		return await gitService.stashPop(cwd, data.index);
 	})
 
@@ -281,8 +281,8 @@ export const remoteHandler = createRouter()
 		}),
 		response: t.Object({ ok: t.Boolean() })
 	}, async ({ data, conn }) => {
-		const project = requireProjectAccess(conn, data.projectId);
-		const cwd = resolveRepoCwd(project.path, data.repoPath);
+		const { root } = requireProjectWorkspace(conn, data.projectId);
+		const cwd = resolveRepoCwd(root, data.repoPath);
 		await gitService.stashDrop(cwd, data.index);
 		return { ok: true };
 	})
@@ -313,8 +313,8 @@ export const remoteHandler = createRouter()
 			isBinary: t.Boolean()
 		}))
 	}, async ({ data, conn }) => {
-		const project = requireProjectAccess(conn, data.projectId);
-		const cwd = resolveRepoCwd(project.path, data.repoPath);
+		const { root } = requireProjectWorkspace(conn, data.projectId);
+		const cwd = resolveRepoCwd(root, data.repoPath);
 		return await gitService.stashDiff(cwd, data.index);
 	})
 
@@ -331,8 +331,8 @@ export const remoteHandler = createRouter()
 			isAnnotated: t.Boolean()
 		}))
 	}, async ({ data, conn }) => {
-		const project = requireProjectAccess(conn, data.projectId);
-		const cwd = resolveRepoCwd(project.path, data.repoPath);
+		const { root } = requireProjectWorkspace(conn, data.projectId);
+		const cwd = resolveRepoCwd(root, data.repoPath);
 		return await gitService.getTags(cwd);
 	})
 
@@ -346,8 +346,8 @@ export const remoteHandler = createRouter()
 		}),
 		response: t.Object({ ok: t.Boolean() })
 	}, async ({ data, conn }) => {
-		const project = requireProjectAccess(conn, data.projectId);
-		const cwd = resolveRepoCwd(project.path, data.repoPath);
+		const { root } = requireProjectWorkspace(conn, data.projectId);
+		const cwd = resolveRepoCwd(root, data.repoPath);
 		await gitService.createTag(cwd, data.name, data.message, data.commitHash);
 		return { ok: true };
 	})
@@ -360,8 +360,8 @@ export const remoteHandler = createRouter()
 		}),
 		response: t.Object({ ok: t.Boolean() })
 	}, async ({ data, conn }) => {
-		const project = requireProjectAccess(conn, data.projectId);
-		const cwd = resolveRepoCwd(project.path, data.repoPath);
+		const { root } = requireProjectWorkspace(conn, data.projectId);
+		const cwd = resolveRepoCwd(root, data.repoPath);
 		await gitService.deleteTag(cwd, data.name);
 		return { ok: true };
 	})
@@ -378,7 +378,7 @@ export const remoteHandler = createRouter()
 			message: t.String()
 		})
 	}, async ({ data, conn }) => {
-		const project = requireProjectAccess(conn, data.projectId);
-		const cwd = resolveRepoCwd(project.path, data.repoPath);
+		const { root } = requireProjectWorkspace(conn, data.projectId);
+		const cwd = resolveRepoCwd(root, data.repoPath);
 		return await gitService.pushTag(cwd, data.name, data.remote);
 	});

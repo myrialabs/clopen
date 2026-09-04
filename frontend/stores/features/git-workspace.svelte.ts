@@ -24,6 +24,7 @@ import {
 	getActiveWorkspaceProjectId
 } from '$frontend/stores/ui/project-workspace.svelte';
 import { registerProjectCleanup } from '$frontend/utils/project-state-cleanup';
+import { isScopeOfProject } from '$shared/utils/workspace-scope';
 
 export type GitView = 'changes' | 'log' | 'branches' | 'more';
 
@@ -286,7 +287,15 @@ registerDock({
 });
 
 registerProjectCleanup((projectId) => {
-	pending.delete(projectId);
-	delete commitDrafts[projectId];
-	delete gitOps[projectId];
+	// Entries are keyed per workspace, so a project's worktrees have their own —
+	// deleting the project id alone would strand them.
+	for (const key of [...pending.keys()]) {
+		if (isScopeOfProject(key, projectId)) pending.delete(key);
+	}
+	for (const key of Object.keys(commitDrafts)) {
+		if (isScopeOfProject(key, projectId)) delete commitDrafts[key];
+	}
+	for (const key of Object.keys(gitOps)) {
+		if (isScopeOfProject(key, projectId)) delete gitOps[key];
+	}
 });

@@ -64,6 +64,8 @@ interface WSMetrics {
 interface ConnectionState {
 	userId: string | null;
 	projectId: string | null;
+	/** Worktree this connection is viewing; null = the main project tree */
+	worktreeId: string | null;
 	/** Chat session IDs this connection is subscribed to */
 	chatSessionIds: Set<string>;
 	/** Cleanup functions called automatically on unregister (connection close) */
@@ -149,7 +151,7 @@ class WSServer {
 		const id = crypto.randomUUID();
 		this.rawToId.set(raw, id);
 		this.connections.set(id, conn);
-		this.connectionState.set(id, { userId: null, projectId: null, chatSessionIds: new Set(), cleanups: new Set(), authenticated: false, role: null, sessionTokenHash: null, lastSessionCheck: 0 });
+		this.connectionState.set(id, { userId: null, projectId: null, worktreeId: null, chatSessionIds: new Set(), cleanups: new Set(), authenticated: false, role: null, sessionTokenHash: null, lastSessionCheck: 0 });
 
 		this.metrics.totalConnections = this.connections.size;
 		debug.log('websocket', `Connection registered: ${id} (total: ${this.connections.size})`);
@@ -366,6 +368,9 @@ class WSServer {
 		// Update connection state
 		if (state) {
 			state.projectId = projectId;
+			// A worktree belongs to one project; carrying it across would point
+			// the connection at a tree the new project does not own.
+			if (oldProjectId !== projectId) state.worktreeId = null;
 		}
 
 		// Add to new project room by ID (Map.set replaces if same key → no duplicates)
@@ -388,6 +393,21 @@ class WSServer {
 
 		this.metrics.activeProjects = this.projectRooms.size;
 		debug.log('websocket', `Connection ${wsId} set to project: ${projectId}`);
+	}
+
+	/** Set the worktree this connection is viewing (null = main tree). */
+	setWorktree(conn: WSConnection, worktreeId: string | null): void {
+		const wsId = this.ensureRegistered(conn);
+		const state = this.connectionState.get(wsId);
+		if (state) state.worktreeId = worktreeId;
+		debug.log('websocket', `Connection ${wsId} set to worktree: ${worktreeId ?? 'main'}`);
+	}
+
+	/** Worktree this connection is viewing, or null for the main project tree. */
+	getWorktreeId(conn: WSConnection): string | null {
+		const id = this.resolveId(conn);
+		if (!id) return null;
+		return this.connectionState.get(id)?.worktreeId ?? null;
 	}
 
 	/**

@@ -10,6 +10,7 @@
 	import TaskProgress from '$frontend/components/chat/widgets/TaskProgress.svelte';
 	import RateLimit from '$frontend/components/chat/widgets/RateLimit.svelte';
 	import TimelineModal from '$frontend/components/checkpoint/TimelineModal.svelte';
+	import CreateWorktreeModal from '$frontend/components/worktree/CreateWorktreeModal.svelte';
 	import Icon from '$frontend/components/common/display/Icon.svelte';
 	import Button from '$frontend/components/common/display/Button.svelte';
 	import { debug } from '$shared/utils/logger';
@@ -44,6 +45,9 @@
 
 	// Checkpoints modal state
 	let showCheckpoints = $state(false);
+
+	// "New isolated chat" — creating the worktree also lands a session in it.
+	let showNewWorktree = $state(false);
 
 	function openCheckpoints() {
 		showCheckpoints = true;
@@ -201,6 +205,7 @@
 	export const panelActions = {
 		checkpoints: openCheckpoints,
 		newChat: startNewChat,
+		newIsolatedChat: () => { showNewWorktree = true; },
 		hasMessages: () => sessionState.messages.length > 0
 	};
 </script>
@@ -272,6 +277,11 @@
 				{/if}
 			{/if}
 		</div>
+
+		<CreateWorktreeModal
+			bind:isOpen={showNewWorktree}
+			onClose={() => (showNewWorktree = false)}
+		/>
 
 		<!-- Checkpoint Modal -->
 		<TimelineModal

@@ -8,7 +8,7 @@
 
 import { t } from 'elysia';
 import { createRouter } from '$shared/utils/ws-server';
-import { messageQueries, sessionQueries, projectQueries, checkpointQueries } from '../../database/queries';
+import { messageQueries, sessionQueries, checkpointQueries } from '../../database/queries';
 import { snapshotService } from '../../snapshot/snapshot-service';
 import { streamManager } from '../../chat/stream-manager';
 import { debug } from '$shared/utils/logger';
@@ -22,6 +22,7 @@ import {
 } from '../../snapshot/helpers';
 import { ws } from '$backend/utils/ws';
 import { requireSessionAccess } from '../access';
+import { resolveSessionRoot } from '../../worktrees';
 
 export const restoreHandler = createRouter()
 	/**
@@ -52,13 +53,9 @@ export const restoreHandler = createRouter()
 
 		debug.log('snapshot', `Checking restore conflicts for checkpoint ${messageId} in session ${sessionId}`);
 
-		// Resolve project path for reading file contents
-		let projectPath: string | undefined;
-		const session = sessionQueries.getById(sessionId);
-		if (session) {
-			const project = projectQueries.getById(session.project_id);
-			if (project) projectPath = project.path;
-		}
+		// Read file contents from the tree this session actually runs in —
+		// its worktree when it has one, the project otherwise.
+		const projectPath = resolveSessionRoot(sessionId)?.path || undefined;
 
 		// Build checkpoint path for branch-aware conflict detection
 		let targetPath: string[] | undefined;
@@ -147,10 +144,10 @@ export const restoreHandler = createRouter()
 			let filesRestored = 0;
 			let filesSkipped = 0;
 
-			const project = projectQueries.getById(session.project_id);
-			if (project) {
+			const sessionRoot = resolveSessionRoot(sessionId);
+			if (sessionRoot?.path) {
 				const result = await snapshotService.restoreSessionScoped(
-					project.path,
+					sessionRoot.path,
 					sessionId,
 					null, // null = restore to initial (before all snapshots)
 					conflictResolutions
@@ -327,10 +324,10 @@ export const restoreHandler = createRouter()
 		let filesRestored = 0;
 		let filesSkipped = 0;
 
-		const project = projectQueries.getById(session.project_id);
-		if (project) {
+		const sessionRoot = resolveSessionRoot(sessionId);
+		if (sessionRoot?.path) {
 			const result = await snapshotService.restoreSessionScoped(
-				project.path,
+				sessionRoot.path,
 				sessionId,
 				resolvedCheckpointId,
 				conflictResolutions,

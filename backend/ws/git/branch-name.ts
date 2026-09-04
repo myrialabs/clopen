@@ -19,7 +19,7 @@ import {
 	TEST_BRANCH_NAME_PREFIX
 } from '$shared/constants/git';
 import { debug } from '$shared/utils/logger';
-import { requireProjectAccess } from '../access';
+import { requireProjectWorkspace } from '../access';
 
 const INVALID_BRANCH_SEPARATOR_CHARS = /[\s\0~^:?*[\]\\]+/g;
 const GENERATED_BRANCH_PREFIXES = [
@@ -144,8 +144,8 @@ export const branchNameHandler = createRouter()
 			branchName: t.String()
 		})
 	}, async ({ data, conn }) => {
-		const project = requireProjectAccess(conn, data.projectId);
-		const cwd = resolveRepoCwd(project.path, data.repoPath);
+		const { root } = requireProjectWorkspace(conn, data.projectId);
+		const cwd = resolveRepoCwd(root, data.repoPath);
 
 		const diffResult = await execGit(['diff', '--cached'], cwd);
 		const rawDiff = diffResult.stdout;

@@ -68,6 +68,7 @@ import * as migration066 from './066_create_memory_graph';
 import * as migration067 from './067_add_memory_graph_layout';
 import * as migration068 from './068_create_engine_config_revision';
 import * as migration069 from './069_create_ssh_client_tables';
+import * as migration070 from './070_create_worktrees_table';
 
 // Export all migrations in order
 export const migrations = [
@@ -484,6 +485,12 @@ export const migrations = [
 		description: migration069.description,
 		up: migration069.up,
 		down: migration069.down
+	},
+	{
+		id: '070',
+		description: migration070.description,
+		up: migration070.up,
+		down: migration070.down
 	}
 ];
 

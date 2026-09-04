@@ -2,6 +2,7 @@ import { basename, dirname, isAbsolute, join, relative, resolve } from 'node:pat
 import { realpath } from 'node:fs/promises';
 
 import { projectQueries } from '../../database/queries/project-queries';
+import { worktreeQueries } from '../../database/queries/worktree-queries';
 import { ws } from '$backend/utils/ws';
 import type { WSConnection } from '$shared/utils/ws-server';
 import type { Project } from '$shared/types/database/schema';
@@ -36,15 +37,56 @@ async function isPathInside(rootPath: string, candidatePath: string): Promise<bo
 	return rel === '' || (!!rel && !rel.startsWith('..') && !isAbsolute(rel));
 }
 
-export function requireProjectPathAccess(conn: WSConnection, projectPath: string): Project {
-	const project = projectQueries.getByPath(projectPath);
+/**
+ * Resolve a workspace root to the project that owns it.
+ *
+ * A worktree root is not a registered project, so a plain project lookup
+ * rejects it — which is what made the Files panel deny access to every path
+ * inside a worktree.
+ */
+export function resolveProjectForRoot(rootPath: string): Project | null {
+	const project = projectQueries.getByPath(rootPath);
+	if (project) return project;
+
+	const worktree = worktreeQueries.getByPath(rootPath);
+	if (!worktree) return null;
+
+	return projectQueries.getById(worktree.project_id);
+}
+
+export interface WorkspaceRoot {
+	/** The project that owns the workspace — what access is decided on. */
+	project: Project;
+	/** The directory the caller asked for: the project, or one of its worktrees. */
+	root: string;
+	worktreeId: string | null;
+}
+
+/**
+ * Grant access to a workspace root and hand back the root that was requested.
+ *
+ * Returning the root rather than only the project is the point: callers used to
+ * validate a path and then operate on `project.path`, which was identical until
+ * worktrees existed and silently became "list the main tree" afterwards.
+ */
+export function requireWorkspaceRootAccess(conn: WSConnection, rootPath: string): WorkspaceRoot {
+	const worktree = worktreeQueries.getByPath(rootPath);
+	const project = worktree
+		? projectQueries.getById(worktree.project_id)
+		: projectQueries.getByPath(rootPath);
+
 	if (!project) {
 		throw new Error('Access denied');
 	}
-	if (ws.getRole(conn) === 'admin') {
-		return project;
+	if (ws.getRole(conn) !== 'admin') {
+		requireProjectAccess(conn, project.id);
 	}
-	return requireProjectAccess(conn, project.id);
+
+	return {
+		project,
+		root: worktree ? worktree.path : project.path,
+		worktreeId: worktree?.id ?? null
+	};
 }
 
 export async function requireFilePathAccess(conn: WSConnection, filePath: string): Promise<string> {
@@ -65,10 +107,17 @@ export async function requireFilePathAccessFor(filePath: string, role: string | 
 		throw new Error('Access denied');
 	}
 
+	// A project's accessible area is its own tree plus every worktree cloned
+	// from it — both are workspaces the user is already entitled to.
 	const projects = projectQueries.getAllForUser(userId);
 	for (const project of projects) {
 		if (await isPathInside(project.path, normalizedPath)) {
 			return normalizedPath;
+		}
+		for (const worktree of worktreeQueries.getByProjectId(project.id)) {
+			if (await isPathInside(worktree.path, normalizedPath)) {
+				return normalizedPath;
+			}
 		}
 	}
 

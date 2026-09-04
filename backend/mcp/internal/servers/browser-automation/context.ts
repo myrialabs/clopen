@@ -11,6 +11,8 @@
 import { browserMcpControl, browserPreviewServiceManager, type BrowserPreviewService } from '$backend/preview';
 import type { BrowserTab } from '$backend/preview/browser/types';
 import { projectContextService } from '$backend/mcp/internal/project-context';
+import { sessionQueries } from '$backend/database/queries';
+import { makeScopeKey } from '$shared/utils/workspace-scope';
 import { debug } from '$shared/utils/logger';
 
 /**
@@ -22,10 +24,10 @@ import { debug } from '$shared/utils/logger';
  * because acting on a guessed project is worth noticing in the logs.
  */
 export function getPreviewService(projectId?: string): BrowserPreviewService {
-	if (projectId) return browserPreviewServiceManager.getService(projectId);
+	if (projectId) return browserPreviewServiceManager.getService(scopeForProject(projectId));
 
 	const contextProjectId = projectContextService.getCurrentProjectId();
-	if (contextProjectId) return browserPreviewServiceManager.getService(contextProjectId);
+	if (contextProjectId) return browserPreviewServiceManager.getService(scopeForProject(contextProjectId));
 
 	const activeProjects = browserPreviewServiceManager.getActiveProjects();
 	if (activeProjects.length > 0) {
@@ -34,6 +36,18 @@ export function getPreviewService(projectId?: string): BrowserPreviewService {
 	}
 
 	throw new Error('No active browser preview service found. Project isolation requires projectId.');
+}
+
+/**
+ * Workspace scope of the session driving this call, so an agent working in a
+ * worktree drives that worktree's browser rather than the main tree's.
+ */
+function scopeForProject(projectId: string): string {
+	const chatSessionId = projectContextService.getCurrentChatSessionId();
+	const worktreeId = chatSessionId
+		? sessionQueries.getById(chatSessionId)?.worktree_id ?? null
+		: null;
+	return makeScopeKey(projectId, worktreeId);
 }
 
 /** The chat session driving this call — MCP control is scoped to it. */

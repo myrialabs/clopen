@@ -43,6 +43,7 @@ import { permissionsRouter } from './permissions';
 import { profilesRouter } from './profiles';
 import { artifactsRouter } from './artifacts';
 import { memoryRouter } from './memory';
+import { worktreesRouter } from './worktrees';
 
 // ============================================
 // Main App Router - Merge All Module Routers
@@ -63,6 +64,9 @@ export const wsRouter = createRouter()
 
 	// Snapshot System
 	.merge(snapshotRouter)
+
+	// Worktrees (isolated project copies)
+	.merge(worktreesRouter)
 
 	// CRUD Operations
 	.merge(projectsRouter)

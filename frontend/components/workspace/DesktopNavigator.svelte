@@ -21,6 +21,7 @@
 	import Dialog from '$frontend/components/common/overlay/Dialog.svelte';
 	import ViewMenu from '$frontend/components/workspace/ViewMenu.svelte';
 	import ToolsMenu from '$frontend/components/workspace/ToolsMenu.svelte';
+	import WorktreeSwitcher from '$frontend/components/worktree/WorktreeSwitcher.svelte';
 	import QuickSearchButton from '$frontend/components/workspace/QuickSearchButton.svelte';
 	import TunnelModal from '$frontend/components/tunnel/TunnelModal.svelte';
 	import RemoteAccessPanel from '$frontend/components/remote-access/RemoteAccessPanel.svelte';
@@ -455,6 +456,7 @@
 
 			<!-- Footer Actions -->
 			<footer class="flex flex-col p-3 border-t border-slate-200 dark:border-slate-800" in:fade={{ duration: 150 }}>
+				<WorktreeSwitcher />
 				<ToolsMenu
 					onRemoteAccess={openRemoteAccessDialog}
 					onPublicTunnel={openTunnelDialog}
@@ -525,6 +527,7 @@
 			</div>
 
 			<footer class="flex flex-col gap-2 py-3 px-2 border-t border-slate-200 dark:border-slate-800">
+				<WorktreeSwitcher collapsed={true} />
 				<ToolsMenu
 					collapsed={true}
 					onRemoteAccess={openRemoteAccessDialog}
