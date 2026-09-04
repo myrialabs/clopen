@@ -61,19 +61,25 @@
 		return `${size >= 100 ? Math.round(size) : size >= 10 ? size.toFixed(1) : size.toFixed(2)} ${units[i]}`;
 	}
 
+	// A share of an 8-core machine is 8x smaller than the per-core number `top`
+	// prints, so separate real-but-tiny from genuinely idle.
 	function formatPercent(value: number | null): string {
-		return value === null ? '—' : `${value.toFixed(1)}%`;
+		if (value === null) return '—';
+		if (value === 0) return '0%';
+		if (value < 0.1) return '<0.1%';
+		return `${value.toFixed(1)}%`;
 	}
 
-	/**
-	 * One poll at a time, chained after the previous answer instead of fired on a
-	 * fixed interval: the probe walks a folder and reads the host process table,
-	 * which on a large project or a Windows host outruns the interval and would
-	 * otherwise queue requests faster than the server answers them.
-	 *
-	 * `token` drops the answer to a request whose project is no longer the one on
-	 * screen, so switching projects quickly cannot paint stale numbers.
-	 */
+	/** The same figure in the unit developers reason about. */
+	function formatCores(percent: number, logicalCores: number): string {
+		const cores = (percent / 100) * logicalCores;
+		if (cores === 0) return `0 of ${logicalCores} cores`;
+		if (cores < 0.01) return `<0.01 of ${logicalCores} cores`;
+		return `${cores < 1 ? cores.toFixed(2) : cores.toFixed(1)} of ${logicalCores} cores`;
+	}
+
+	// One poll at a time, chained after the previous answer: the probe can outrun
+	// a fixed interval. `token` drops answers for a project no longer on screen.
 	let token = 0;
 	let pollTimer: ReturnType<typeof setTimeout> | null = null;
 
@@ -83,9 +89,9 @@
 			if (requestToken !== token) return;
 			data = result;
 			error = null;
-		} catch (e) {
+		} catch (requestError) {
 			if (requestToken !== token) return;
-			error = e instanceof Error ? e.message : String(e);
+			error = requestError instanceof Error ? requestError.message : String(requestError);
 		} finally {
 			if (requestToken === token) {
 				loading = false;
@@ -123,11 +129,8 @@
 		};
 	});
 
-	/**
-	 * `navigator.clipboard` only exists on a secure origin, and Clopen is
-	 * routinely reached over plain HTTP on a LAN address, so the async API cannot
-	 * be the only path — without the fallback the button throws and does nothing.
-	 */
+	// `navigator.clipboard` is absent on the plain-HTTP LAN origins Clopen is
+	// reached on, where the async API alone would throw and do nothing.
 	async function copyPath() {
 		const path = project?.path;
 		if (!path) return;
@@ -187,25 +190,24 @@
 					<div class="w-10 h-10 rounded-lg bg-violet-100 dark:bg-violet-900/30 flex items-center justify-center shrink-0">
 						<Icon name="lucide:folder" class="w-5 h-5 text-violet-600 dark:text-violet-400" />
 					</div>
-					<div class="flex-1 min-w-0">
+					<div class="flex-1 min-w-0 flex flex-col gap-0.5">
 						<p class="text-sm font-semibold text-slate-900 dark:text-slate-100 truncate">{data.project.name}</p>
-						<div class="flex items-center gap-1.5 mt-0.5">
-							<p class="text-xs font-mono text-slate-500 dark:text-slate-400 truncate flex-1 min-w-0" title={data.project.path}>
+						<div class="flex items-center gap-1 min-w-0">
+							<p class="text-xs font-mono text-slate-500 dark:text-slate-400 truncate" title={data.project.path}>
 								{data.project.path}
 							</p>
 							<button
 								type="button"
-								class="shrink-0 w-6 h-6 flex items-center justify-center rounded-md text-slate-400 hover:text-violet-600 hover:bg-violet-500/10 transition-colors"
+								class="shrink-0 w-5 h-5 flex items-center justify-center rounded text-slate-400 hover:text-violet-600 hover:bg-violet-500/10 transition-colors"
 								onclick={copyPath}
 								title={copied ? 'Copied!' : 'Copy path'}
 								aria-label="Copy path"
 							>
-								<Icon name={copied ? 'lucide:check' : 'lucide:copy'} class="w-3.5 h-3.5" />
+								<Icon name={copied ? 'lucide:check' : 'lucide:copy'} class="w-3 h-3" />
 							</button>
 						</div>
-						<p class="text-3xs text-slate-400 dark:text-slate-500 mt-1">
-							Created {new Date(data.project.created_at).toLocaleDateString()} · {data.meta.platform}
-							{data.meta.arch} · {data.meta.logicalCores} cores
+						<p class="text-3xs text-slate-400 dark:text-slate-500">
+							Created {new Date(data.project.created_at).toLocaleDateString()}
 						</p>
 					</div>
 					<span
@@ -240,8 +242,7 @@
 								{#if data.resources.cpuPercent === null}
 									Measuring…
 								{:else}
-									{data.resources.processCount} process{data.resources.processCount !== 1 ? 'es' : ''} · {data.resources.rootPids.length}
-									shell{data.resources.rootPids.length !== 1 ? 's' : ''}
+									{formatCores(data.resources.cpuPercent, data.meta.logicalCores)}
 								{/if}
 							</p>
 						{/if}
@@ -294,7 +295,7 @@
 					<div class="flex flex-col gap-2">
 						<h3 class="text-xs font-semibold text-slate-700 dark:text-slate-300 uppercase tracking-wider flex items-center gap-2">
 							<Icon name="lucide:list-tree" class="w-3.5 h-3.5" />
-							Processes ({data.resources.processCount})
+							Processes ({data.resources.processCount}) · {data.resources.rootPids.length} shell{data.resources.rootPids.length !== 1 ? 's' : ''}
 						</h3>
 						<div class="border border-slate-200 dark:border-slate-700 rounded-xl overflow-hidden">
 							<div class="max-h-48 overflow-y-auto">

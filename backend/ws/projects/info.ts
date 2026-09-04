@@ -1,20 +1,11 @@
 /**
  * Projects Info — what one project costs on this machine.
  *
- * Storage is measured here; CPU and RAM are read from the shared host probe in
- * `backend/host/metrics.ts` and then narrowed to this project, so the figures
- * sit on the same basis as the ones Settings → Device reports for the whole
- * machine.
- *
- * - Storage: a recursive walk of `project.path`. Nothing is excluded — `.git`
- *   and `node_modules` are part of what the folder actually occupies — so the
- *   walk is stopped by whichever of `MAX_ENTRIES` or `WALK_DEADLINE_MS` comes
- *   first and reports `truncated` when it was. Both bounds are shared between
- *   concurrent callers, so N open panels cost one walk rather than N.
- * - CPU/RAM: the PTY shells Clopen opened for this project plus every live
- *   descendant of them. Nothing else on the host is counted, so this is the
- *   project's own footprint and not the server's. Engine processes that Clopen
- *   runs outside a terminal are not shells and do not appear here.
+ * Storage is a bounded walk of the project folder, nothing excluded. CPU and
+ * RAM come from the shared host probe in `backend/host/metrics.ts`, narrowed to
+ * the project's PTY shells and their descendants, so they sit on the same basis
+ * Settings → Device reports for the whole machine. Engine processes Clopen runs
+ * outside a terminal are not shells and do not appear here.
  */
 
 import { t } from 'elysia';
@@ -28,17 +19,14 @@ import { collectProcessTree, getHostFacts, getProcessTable } from '../../host/me
 
 /** Ceiling on entries visited by one walk, so a monorepo cannot pin a core. */
 const MAX_ENTRIES = 300_000;
-/** Wall-clock ceiling on one walk — the backstop for slow disks and network mounts. */
+/** Wall-clock ceiling — the backstop for slow disks and network mounts. */
 const WALK_DEADLINE_MS = 15_000;
 /** How many `stat` calls are in flight at once while walking one directory. */
 const STAT_BATCH = 64;
 /** A folder's size changes slowly; a poll should not re-walk it every tick. */
 const STORAGE_CACHE_TTL_MS = 15_000;
-/**
- * An expensive walk earns a proportionally longer rest: a tree that takes ten
- * seconds to measure would otherwise be re-walked the moment its answer went
- * stale, leaving one core busy for as long as the panel stays open.
- */
+/** An expensive walk earns a longer rest, so it is not repeated the moment its
+ *  answer goes stale — otherwise one core stays busy while the panel is open. */
 const STORAGE_TTL_PER_MS_SPENT = 4;
 const STORAGE_CACHE_MAX_TTL_MS = 5 * 60_000;
 
@@ -55,14 +43,8 @@ interface FolderStats {
 const storageCache = new Map<string, { stats: FolderStats; at: number; ttl: number }>();
 const storageInFlight = new Map<string, Promise<FolderStats>>();
 
-/**
- * Cached *and* single-flighted.
- *
- * Single-flight is the load-bearing half: a walk of a large project takes far
- * longer than the panel's poll interval, and a result-only cache is still empty
- * while the first walk runs, so every poll would start another full walk and
- * they would pile up faster than they finish.
- */
+/** Cached and single-flighted: a big walk outlives the poll interval, so a
+ *  result-only cache would let every tick start another one. */
 function getFolderStats(root: string): Promise<FolderStats> {
 	const cached = storageCache.get(root);
 	if (cached && Date.now() - cached.at < cached.ttl) {
@@ -74,12 +56,12 @@ function getFolderStats(root: string): Promise<FolderStats> {
 
 	const startedAt = Date.now();
 	const walk = walkFolder(root)
-		.catch((e): FolderStats => ({
+		.catch((error): FolderStats => ({
 			sizeBytes: 0,
 			fileCount: 0,
 			dirCount: 0,
 			truncated: false,
-			error: e instanceof Error ? e.message : String(e)
+			error: error instanceof Error ? error.message : String(error)
 		}))
 		.then((stats) => {
 			const spent = Date.now() - startedAt;
@@ -102,9 +84,9 @@ async function walkFolder(root: string): Promise<FolderStats> {
 		if (!rootStat.isDirectory()) {
 			return { sizeBytes: rootStat.size, fileCount: 1, dirCount: 0, truncated: false };
 		}
-	} catch (e) {
-		const msg = e instanceof Error ? e.message : String(e);
-		return { sizeBytes: 0, fileCount: 0, dirCount: 0, truncated: false, error: msg };
+	} catch (error) {
+		const message = error instanceof Error ? error.message : String(error);
+		return { sizeBytes: 0, fileCount: 0, dirCount: 0, truncated: false, error: message };
 	}
 
 	const deadline = Date.now() + WALK_DEADLINE_MS;
@@ -135,8 +117,7 @@ async function walkFolder(root: string): Promise<FolderStats> {
 				truncated = true;
 				break;
 			}
-			// Symlinks and Windows junctions are not followed: they would double
-			// count their target at best and loop forever at worst.
+			// Symlinks and Windows junctions: double-counted at best, a loop at worst.
 			if (entry.isSymbolicLink()) continue;
 
 			if (entry.isDirectory()) {
@@ -148,11 +129,11 @@ async function walkFolder(root: string): Promise<FolderStats> {
 			}
 		}
 
-		// One `stat` per file is unavoidable — no platform reports sizes from a
-		// directory read — but they need not be serialised.
-		for (let i = 0; i < files.length; i += STAT_BATCH) {
+		// No platform reports sizes from a directory read, so one `stat` per file
+		// is unavoidable — but they need not be serialised.
+		for (let offset = 0; offset < files.length; offset += STAT_BATCH) {
 			const sizes = await Promise.all(
-				files.slice(i, i + STAT_BATCH).map((file) => stat(file).then((s) => s.size, () => 0))
+				files.slice(offset, offset + STAT_BATCH).map((file) => stat(file).then((info) => info.size, () => 0))
 			);
 			for (const size of sizes) sizeBytes += size;
 		}
@@ -199,14 +180,12 @@ async function getProjectProcessStats(projectId: string, totalMemBytes: number):
 		.map((session) => session.pid)
 		.filter((pid) => Number.isFinite(pid) && pid > 0);
 
-	// No shells means nothing of this project is running, and zero is the truth
-	// rather than a stand-in for a number we failed to read.
+	// No shells means nothing is running, so zero is the truth here.
 	if (rootPids.length === 0) return IDLE;
 
 	const probe = await getProcessTable();
 
-	// Shells are alive but the host's process table is unreadable, or none of
-	// them are visible in it yet. Either way the usage is unknown, not zero.
+	// Shells are alive but the host table is unreadable — unknown, not zero.
 	if (!probe || probe.list.length === 0) {
 		return {
 			status: 'running',
@@ -220,7 +199,7 @@ async function getProjectProcessStats(projectId: string, totalMemBytes: number):
 	}
 
 	const tree = collectProcessTree(probe.list, rootPids);
-	const matched = probe.list.filter((p) => tree.has(p.pid));
+	const matched = probe.list.filter((entry) => tree.has(entry.pid));
 
 	if (matched.length === 0) {
 		return {
@@ -237,9 +216,9 @@ async function getProjectProcessStats(projectId: string, totalMemBytes: number):
 	const factor = probe.cpuFactor;
 	let cpuPercent = factor === null ? null : 0;
 	let memRssBytes = 0;
-	for (const proc of matched) {
-		if (cpuPercent !== null && factor !== null) cpuPercent += proc.cpu * factor;
-		memRssBytes += proc.memRss * 1024;
+	for (const entry of matched) {
+		if (cpuPercent !== null && factor !== null) cpuPercent += entry.cpu * factor;
+		memRssBytes += entry.memRss * 1024;
 	}
 	if (cpuPercent !== null) cpuPercent = Math.min(100, Math.max(0, cpuPercent));
 
@@ -247,21 +226,20 @@ async function getProjectProcessStats(projectId: string, totalMemBytes: number):
 		status: 'running',
 		cpuPercent,
 		memRssBytes,
-		// Derived from the bytes above, against the same installed-RAM figure
-		// Settings -> Device reports, so no two panels can disagree on the total.
+		// Same installed-RAM figure Settings -> Device divides by.
 		memPercent: totalMemBytes > 0 ? (memRssBytes / totalMemBytes) * 100 : null,
 		processCount: matched.length,
 		processes: matched
 			.slice()
 			.sort((a, b) => b.cpu - a.cpu)
 			.slice(0, 20)
-			.map((p) => ({
-				pid: p.pid,
-				parentPid: p.parentPid,
-				name: p.name,
-				cpuPercent: factor === null ? null : Math.min(100, Math.max(0, p.cpu * factor)),
-				memRssBytes: p.memRss * 1024,
-				command: p.command
+			.map((entry) => ({
+				pid: entry.pid,
+				parentPid: entry.parentPid,
+				name: entry.name,
+				cpuPercent: factor === null ? null : Math.min(100, Math.max(0, entry.cpu * factor)),
+				memRssBytes: entry.memRss * 1024,
+				command: entry.command
 			})),
 		rootPids
 	};
@@ -318,8 +296,7 @@ export const infoHandler = createRouter().http(
 			throw new Error('Project not found');
 		}
 
-		// Host facts are probed once per process and cached, so only the first
-		// caller pays for them; every panel then reads the same numbers.
+		// Probed once per process, so only the first caller pays.
 		const facts = await getHostFacts();
 
 		const [storage, resources] = await Promise.all([
