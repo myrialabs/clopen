@@ -10,6 +10,7 @@
 <script lang="ts">
 	import { terminalStore } from '$frontend/stores/features/terminal.svelte';
 	import { projectState } from '$frontend/stores/core/projects.svelte';
+	import { currentScopeKey } from '$frontend/stores/features/worktrees.svelte';
 	import { terminalService, terminalProjectManager } from '$frontend/services/terminal';
 	import { ptyClient, registerSession, unregisterSession } from '$frontend/services/terminal/ptykit-client';
 	import { settings } from '$frontend/stores/features/settings.svelte';
@@ -26,7 +27,9 @@
 	// Project-aware state
 	const hasActiveProject = $derived(projectState.currentProject !== null);
 	const projectPath = $derived(projectState.currentProject?.path || '');
-	const projectId = $derived(projectState.currentProject?.id || '');
+	// Shells are grouped by workspace scope, so a worktree's terminals never show
+	// up alongside the main tree's.
+	const projectId = $derived(currentScopeKey() || projectState.currentProject?.id || '');
 
 	const activeSessionId = $derived(terminalStore.activeSessionId);
 	const sessions = $derived(terminalStore.sessions);

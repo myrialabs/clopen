@@ -8,6 +8,7 @@ import { BrowserAudioCapture } from './browser-audio-capture';
 import { cursorTrackingScript } from './scripts/cursor-tracking';
 import { browserMcpControl } from './browser-mcp-control';
 import { debug } from '$shared/utils/logger';
+import { scopeSlug } from '$shared/utils/workspace-scope';
 
 // Tab cleanup configuration
 const INACTIVE_TIMEOUT = 5 * 60 * 1000; // 5 minutes
@@ -83,7 +84,9 @@ export class BrowserTabManager extends EventEmitter {
 			preNavigationSetup?: (page: Page, tabId: string) => Promise<void>;
 		}
 	): Promise<BrowserTab> {
-		const tabId = `tab-${this.nextTabNumber++}`;
+		// The counter restarts per workspace, so the scope token is what stops a
+		// worktree's `tab-1` from being matched as the main tree's on the client.
+		const tabId = `tab-${scopeSlug(this.projectId)}-${this.nextTabNumber++}`;
 		const finalUrl = url || 'about:blank';
 
 		debug.log('preview', `🟡🟡🟡 Creating new tab: ${tabId} for project: ${this.projectId} 🟡🟡🟡`);

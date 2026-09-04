@@ -14,6 +14,31 @@ export interface Project {
 	default_profile_id?: number | null; // Shared per-project default Profile (null = none)
 }
 
+/** Isolation status of a worktree copy. */
+export type WorktreeStatus = 'active' | 'applied' | 'archived';
+
+/** How the worktree directory was materialised from the main tree. */
+export type WorktreeCloneMode = 'reflink' | 'copy';
+
+/**
+ * An isolated copy of a project that sessions can run in. `base_tree` is the
+ * merge base — a JSON TreeMap of the main tree at clone time.
+ */
+export interface Worktree {
+	id: string;
+	project_id: string;
+	name: string;
+	slug: string;
+	path: string;
+	status: WorktreeStatus;
+	clone_mode: WorktreeCloneMode;
+	base_tree: string;
+	created_by?: string | null;
+	created_at: string;
+	last_opened_at?: string | null;
+	last_applied_at?: string | null;
+}
+
 export interface ChatSession {
 	// ── Identity ──
 	id: string;
@@ -31,6 +56,7 @@ export interface ChatSession {
 	account_name?: string; // Display name of the selected account
 	profile_id?: number | null; // Active Profile bundle for this session (null = use project default / none)
 	reasoning_effort?: string | null; // Reasoning/thinking level token (native per engine; null = engine default)
+	worktree_id?: string | null; // Isolated worktree this session runs in (null = main project tree)
 
 	// ── HEAD state (re-derived when HEAD changes: undo/redo/restore/branch) ──
 	head_message_id?: string; // Git-like HEAD pointer to current branch tip

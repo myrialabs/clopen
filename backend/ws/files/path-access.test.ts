@@ -27,6 +27,7 @@ const mockGetAllForUser = mock(() => [] as Array<{ id: string; path: string }>);
 const mockGetAll = mock(() => [] as Array<{ id: string; path: string }>);
 const mockUserHasProject = mock(() => false);
 const mockGetByPath = mock(() => null as { id: string; path: string } | null);
+const mockGetById = mock(() => null as { id: string; path: string } | null);
 
 mock.module('../../database/queries/project-queries', () => ({
 	projectQueries: {
@@ -34,6 +35,19 @@ mock.module('../../database/queries/project-queries', () => ({
 		getAll: mockGetAll,
 		userHasProject: mockUserHasProject,
 		getByPath: mockGetByPath,
+		getById: mockGetById,
+	}
+}));
+
+// A project's accessible area now includes its worktrees, so the lookup is part
+// of the data layer this test models.
+const mockWorktreesByProject = mock(() => [] as Array<{ id: string; path: string }>);
+const mockWorktreeByPath = mock(() => null as { id: string; project_id: string; path: string } | null);
+
+mock.module('../../database/queries/worktree-queries', () => ({
+	worktreeQueries: {
+		getByProjectId: mockWorktreesByProject,
+		getByPath: mockWorktreeByPath,
 	}
 }));
 
@@ -52,7 +66,7 @@ mock.module('../access', () => ({
 }));
 
 // Import after mocking
-const { requireFilePathAccess, requireSharedFilePathAccess, findContainingProjectId } = await import('./path-access');
+const { requireFilePathAccess, requireSharedFilePathAccess, findContainingProjectId, resolveProjectForRoot, requireWorkspaceRootAccess } = await import('./path-access');
 
 let testDir: string;
 
@@ -69,6 +83,84 @@ describe('path-access symlink resolution', () => {
 
 	afterEach(async () => {
 		await rm(testDir, { recursive: true, force: true });
+		mockWorktreesByProject.mockReturnValue([]);
+		mockWorktreeByPath.mockReturnValue(null);
+	});
+
+	test('allows a path inside a worktree of an accessible project', async () => {
+		const projectPath = join(testDir, 'project');
+		const worktreePath = join(testDir, 'worktrees', 'feature');
+		await mkdir(projectPath, { recursive: true });
+		await mkdir(worktreePath, { recursive: true });
+		await writeFile(join(worktreePath, 'index.ts'), 'export {};');
+
+		mockGetAllForUser.mockReturnValue([{ id: 'proj-1', path: projectPath }]);
+		mockWorktreesByProject.mockReturnValue([{ id: 'wt-1', path: worktreePath }]);
+
+		const target = join(worktreePath, 'index.ts');
+		await expect(requireFilePathAccess({} as any, target)).resolves.toBe(target);
+	});
+
+	test('still denies a worktree of a project the user cannot access', async () => {
+		const worktreePath = join(testDir, 'worktrees', 'other');
+		await mkdir(worktreePath, { recursive: true });
+		await writeFile(join(worktreePath, 'secret.txt'), 'nope');
+
+		mockGetAllForUser.mockReturnValue([]);
+		mockWorktreesByProject.mockReturnValue([{ id: 'wt-1', path: worktreePath }]);
+
+		await expect(
+			requireFilePathAccess({} as any, join(worktreePath, 'secret.txt'))
+		).rejects.toThrow('Access denied');
+	});
+
+	test('resolves a worktree root back to its owning project', async () => {
+		const worktreePath = join(testDir, 'worktrees', 'feature');
+		mockGetByPath.mockReturnValue(null);
+		mockWorktreeByPath.mockReturnValue({ id: 'wt-1', project_id: 'proj-1', path: worktreePath });
+		mockGetById.mockReturnValue({ id: 'proj-1', path: join(testDir, 'project') });
+
+		expect(resolveProjectForRoot(worktreePath)?.id).toBe('proj-1');
+	});
+
+	test('returns the worktree root, not the project root, for a worktree path', async () => {
+		// The regression this guards: handlers validated the requested root and
+		// then operated on `project.path`, so opening a file in a worktree listed
+		// and read the main tree instead.
+		const projectPath = join(testDir, 'project');
+		const worktreePath = join(testDir, 'worktrees', 'feature');
+
+		mockGetByPath.mockReturnValue(null);
+		mockWorktreeByPath.mockReturnValue({ id: 'wt-1', project_id: 'proj-1', path: worktreePath });
+		mockGetById.mockReturnValue({ id: 'proj-1', path: projectPath });
+		mockGetRole.mockImplementation(() => 'admin');
+
+		const resolved = requireWorkspaceRootAccess({} as any, worktreePath);
+		expect(resolved.root).toBe(worktreePath);
+		expect(resolved.worktreeId).toBe('wt-1');
+		expect(resolved.project.id).toBe('proj-1');
+	});
+
+	test('returns the project root for the main tree', async () => {
+		const projectPath = join(testDir, 'project');
+
+		mockWorktreeByPath.mockReturnValue(null);
+		mockGetByPath.mockReturnValue({ id: 'proj-1', path: projectPath });
+		mockGetRole.mockImplementation(() => 'admin');
+
+		const resolved = requireWorkspaceRootAccess({} as any, projectPath);
+		expect(resolved.root).toBe(projectPath);
+		expect(resolved.worktreeId).toBeNull();
+	});
+
+	test('denies an unknown root', async () => {
+		mockWorktreeByPath.mockReturnValue(null);
+		mockGetByPath.mockReturnValue(null);
+		mockGetRole.mockImplementation(() => 'admin');
+
+		expect(() => requireWorkspaceRootAccess({} as any, join(testDir, 'nowhere'))).toThrow(
+			'Access denied'
+		);
 	});
 
 	test('blocks read through symlink to external directory', async () => {

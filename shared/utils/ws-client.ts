@@ -299,9 +299,11 @@ export class WSClient<TAPI extends { client: any; server: any }> {
 	private context: {
 		userId: string | null;
 		projectId: string | null;
+		worktreeId: string | null;
 	} = {
 		userId: null,
-		projectId: null
+		projectId: null,
+		worktreeId: null
 	};
 
 	/** Session token for re-authentication on reconnection */
@@ -775,7 +777,24 @@ export class WSClient<TAPI extends { client: any; server: any }> {
 		if (this.context.projectId === projectId) return;
 
 		this.context.projectId = projectId;
+		// A worktree belongs to one project, so it never survives the switch.
+		this.context.worktreeId = null;
 		debug.log('websocket', 'Context: project set to', projectId);
+
+		if (this.isConnected) {
+			await this.syncContext();
+		}
+	}
+
+	/**
+	 * Set the worktree this client is viewing (null = the main project tree).
+	 * Server-side scoping of terminals and preview tabs reads this.
+	 */
+	async setWorktree(worktreeId: string | null): Promise<void> {
+		if (this.context.worktreeId === worktreeId) return;
+
+		this.context.worktreeId = worktreeId;
+		debug.log('websocket', 'Context: worktree set to', worktreeId);
 
 		if (this.isConnected) {
 			await this.syncContext();
@@ -785,7 +804,7 @@ export class WSClient<TAPI extends { client: any; server: any }> {
 	/**
 	 * Get current context
 	 */
-	getContext(): { userId: string | null; projectId: string | null } {
+	getContext(): { userId: string | null; projectId: string | null; worktreeId: string | null } {
 		return { ...this.context };
 	}
 
@@ -862,15 +881,16 @@ export class WSClient<TAPI extends { client: any; server: any }> {
 			// Register response listener
 			unsubResponse = this.on('ws:set-context:response' as any, handleResponse);
 
-			// Send context sync request (only projectId — userId is set server-side by auth)
+			// Send context sync request (userId is set server-side by auth)
 			this.emit('ws:set-context' as any, {
 				requestId,
 				data: {
-					projectId: this.context.projectId
+					projectId: this.context.projectId,
+					worktreeId: this.context.worktreeId
 				}
 			} as any);
 
-			debug.log('websocket', 'Context sync sent: projectId=', this.context.projectId);
+			debug.log('websocket', 'Context sync sent: projectId=', this.context.projectId, 'worktreeId=', this.context.worktreeId);
 		});
 	}
 

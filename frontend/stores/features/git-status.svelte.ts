@@ -7,6 +7,7 @@
  */
 
 import { projectState } from '$frontend/stores/core/projects.svelte';
+import { currentScopeKey } from '$frontend/stores/features/worktrees.svelte';
 import ws, { onWsReconnect } from '$frontend/utils/ws';
 import { debug } from '$shared/utils/logger';
 import type { GitFileChange, GitStatus } from '$shared/types/git';
@@ -148,18 +149,18 @@ export function refreshGitStatus(delay = 250): void {
 export function initGitStatus(): void {
 	if (unsubscribeFiles || unsubscribeGit) return;
 	unsubscribeFiles = ws.on('files:changed', (payload) => {
-		if (payload.projectId !== projectState.currentProject?.id) return;
+		if (payload.projectId !== currentScopeKey()) return;
 		// An empty change list says nothing changed — refreshing on it would spawn
 		// a git process for no reason.
 		if (payload.changes.length === 0) return;
 		refreshGitStatus(500);
 	});
 	unsubscribeGit = ws.on('git:changed', (payload) => {
-		if (payload.projectId !== projectState.currentProject?.id) return;
+		if (payload.projectId !== currentScopeKey()) return;
 		refreshGitStatus(150);
 	});
 	unsubscribeResync = ws.on('files:resync', (payload) => {
-		if (payload.projectId !== projectState.currentProject?.id) return;
+		if (payload.projectId !== currentScopeKey()) return;
 		refreshGitStatus(500);
 	});
 	// Every `git:changed` sent while the socket was down was delivered to nobody,

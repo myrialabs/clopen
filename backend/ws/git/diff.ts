@@ -7,7 +7,7 @@ import path from 'node:path';
 import { createRouter } from '$shared/utils/ws-server';
 import { gitService } from '../../git/git-service';
 import { findRepoForFile } from '../../git/nested-repos';
-import { requireProjectAccess } from '../access';
+import { requireProjectWorkspace } from '../access';
 import { debug } from '$shared/utils/logger';
 
 const DiffHunkLineSchema = t.Object({
@@ -58,14 +58,14 @@ export const diffHandler = createRouter()
 		}),
 		response: t.Array(FileDiffSchema)
 	}, async ({ data, conn }) => {
-		const project = requireProjectAccess(conn, data.projectId);
+		const { root } = requireProjectWorkspace(conn, data.projectId);
 		// Route the diff to the nested repo that owns the file (if any) —
 		// the outer repo's `git diff` returns nothing for files that are
 		// tracked inside a nested repo and gitignored by the parent.
 		const repo = data.filePath
-			? await findRepoForFile(project.path, data.filePath)
+			? await findRepoForFile(root, data.filePath)
 			: null;
-		const cwd = repo?.repoPath ?? project.path;
+		const cwd = repo?.repoPath ?? root;
 		const filePath = repo?.relativeFilePath ?? data.filePath;
 		return await gitService.getDiffUnstaged(cwd, filePath);
 	})
@@ -77,11 +77,11 @@ export const diffHandler = createRouter()
 		}),
 		response: t.Array(FileDiffSchema)
 	}, async ({ data, conn }) => {
-		const project = requireProjectAccess(conn, data.projectId);
+		const { root } = requireProjectWorkspace(conn, data.projectId);
 		const repo = data.filePath
-			? await findRepoForFile(project.path, data.filePath)
+			? await findRepoForFile(root, data.filePath)
 			: null;
-		const cwd = repo?.repoPath ?? project.path;
+		const cwd = repo?.repoPath ?? root;
 		const filePath = repo?.relativeFilePath ?? data.filePath;
 		return await gitService.getDiffStaged(cwd, filePath);
 	})
@@ -98,7 +98,7 @@ export const diffHandler = createRouter()
 			body: t.String()
 		})
 	}, async ({ data, conn }) => {
-		const project = requireProjectAccess(conn, data.projectId);
-		const cwd = resolveRepoCwd(project.path, data.repoPath);
+		const { root } = requireProjectWorkspace(conn, data.projectId);
+		const cwd = resolveRepoCwd(root, data.repoPath);
 		return await gitService.getDiffCommit(cwd, data.commitHash);
 	});

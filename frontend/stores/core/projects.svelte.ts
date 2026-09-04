@@ -70,6 +70,46 @@ export function currentProjectPath() {
 	return projectState.currentProject?.path || '';
 }
 
+/**
+ * Root override installed when the active session runs in a worktree.
+ *
+ * `currentProject` is what every panel reads to find the tree it works on, so
+ * overriding its path here is what makes Files, Git, Terminal and Preview
+ * follow the session into its worktree — rather than each panel having to know
+ * worktrees exist. Identity is untouched: the id still points at the real
+ * project, so sessions, settings and engine config resolve to the parent.
+ */
+let projectRootOverride: { projectId: string; path: string } | null = null;
+
+/** The project's own path, ignoring any worktree override. */
+export function mainProjectPath(): string {
+	const id = projectState.currentProject?.id;
+	if (!id) return '';
+	return projectState.projects.find((p) => p.id === id)?.path || projectState.currentProject?.path || '';
+}
+
+function withRootOverride(project: Project): Project {
+	if (!projectRootOverride || projectRootOverride.projectId !== project.id) return project;
+	return { ...project, path: projectRootOverride.path };
+}
+
+/** Point the workspace at `path` (a worktree) or back at the project (null). */
+export function setProjectRootOverride(projectId: string, path: string | null): void {
+	const next = path ? { projectId, path } : null;
+	const unchanged =
+		(next === null && projectRootOverride === null) ||
+		(next !== null && projectRootOverride?.projectId === next.projectId &&
+			projectRootOverride?.path === next.path);
+	if (unchanged) return;
+
+	projectRootOverride = next;
+
+	const record = projectState.projects.find((p) => p.id === projectId);
+	if (record && projectState.currentProject?.id === projectId) {
+		projectState.currentProject = withRootOverride(record);
+	}
+}
+
 // ========================================
 // PROJECT MANAGEMENT
 // ========================================
@@ -111,6 +151,12 @@ export async function setCurrentProject(project: Project | null) {
 		return;
 	}
 
+	// Drop the outgoing project's worktree context before anything loads, so the
+	// docks activate against the new project's main tree rather than a tree that
+	// belongs to the project being left.
+	const { clearWorktreeState } = await import('$frontend/stores/features/worktrees.svelte');
+	clearWorktreeState();
+
 	const token = beginProjectSwitch();
 
 	// Raise the barrier as early as possible so no frame of the outgoing project
@@ -151,7 +197,7 @@ export async function setCurrentProject(project: Project | null) {
 		await activateProjectWorkspace(
 			newProjectId ?? null,
 			() => {
-				if (project) projectState.currentProject = project;
+				if (project) projectState.currentProject = withRootOverride(project);
 			},
 			token
 		);
@@ -176,11 +222,23 @@ export async function setCurrentProject(project: Project | null) {
 	if (!project) {
 		appState.isRestoring = false;
 		persistCurrentProjectId(null);
+		const { clearWorktreeState } = await import('$frontend/stores/features/worktrees.svelte');
+		clearWorktreeState();
 		debug.log('project', 'Project cleared');
 		return;
 	}
 
 	persistCurrentProjectId(project.id);
+
+	// Worktrees must land before the session does: the session names the tree it
+	// runs in by id, and resolving that id to a path needs the list.
+	const { initWorktreeEvents, loadWorktrees } = await import('$frontend/stores/features/worktrees.svelte');
+	initWorktreeEvents();
+	await loadWorktrees();
+	if (!isCurrentSwitch(token)) {
+		releaseChat?.();
+		return;
+	}
 
 	// Everything below runs AFTER the reveal, behind the chat panel's skeleton.
 	try {
@@ -275,7 +333,7 @@ async function refreshProjectRecord(projectId: string): Promise<void> {
 		}
 		// Only adopt it as current if the user hasn't moved on in the meantime.
 		if (projectState.currentProject?.id === projectId) {
-			projectState.currentProject = updatedProject;
+			projectState.currentProject = withRootOverride(updatedProject);
 		}
 	} catch (error) {
 		debug.error('project', 'Error updating project last opened:', error);
@@ -296,7 +354,7 @@ export function updateProject(updatedProject: Project) {
 
 		// Update current project if it's the same
 		if (projectState.currentProject?.id === updatedProject.id) {
-			projectState.currentProject = updatedProject;
+			projectState.currentProject = withRootOverride(updatedProject);
 		}
 	}
 	updateRecentProjects();
@@ -314,6 +372,7 @@ export function removeProject(projectId: string) {
 	// Clear current project if it's being removed
 	if (projectState.currentProject?.id === projectId) {
 		projectState.currentProject = null;
+		if (projectRootOverride?.projectId === projectId) projectRootOverride = null;
 	}
 
 	// Clean up in-memory state to prevent memory leaks
@@ -412,9 +471,23 @@ export async function loadProjects(restoreProjectId?: string | null) {
 					// screen, so the restored layout is ready on first paint.
 					// Publish currentProject via the post-restore hook (batched with
 					// the layout swap) for parity with the project-switch path.
+					const { clearWorktreeState } = await import(
+						'$frontend/stores/features/worktrees.svelte'
+					);
+					clearWorktreeState();
+
 					await activateProjectWorkspace(existingProject.id, () => {
-						projectState.currentProject = existingProject;
+						projectState.currentProject = withRootOverride(existingProject);
 					});
+
+					// Same ordering rule as a project switch: the worktree list has to
+					// be here before a session names one, or the restored session would
+					// render against the main tree.
+					const { initWorktreeEvents, loadWorktrees } = await import(
+						'$frontend/stores/features/worktrees.svelte'
+					);
+					initWorktreeEvents();
+					await loadWorktrees();
 
 					// Start tracking the restored project
 					if (typeof window !== 'undefined') {

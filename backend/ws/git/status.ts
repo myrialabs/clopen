@@ -6,7 +6,7 @@ import { t } from 'elysia';
 import { createRouter } from '$shared/utils/ws-server';
 import { gitService } from '../../git/git-service';
 import { findNestedRepoPaths } from '../../git/nested-repos';
-import { requireProjectAccess } from '../access';
+import { requireProjectWorkspace } from '../access';
 import { relative as pathRelative } from 'path';
 
 export const statusHandler = createRouter()
@@ -42,9 +42,9 @@ export const statusHandler = createRouter()
 			}))
 		})
 	}, async ({ data, conn }) => {
-		const project = requireProjectAccess(conn, data.projectId);
+		const { root } = requireProjectWorkspace(conn, data.projectId);
 
-		const isRepo = await gitService.isRepo(project.path);
+		const isRepo = await gitService.isRepo(root);
 		if (!isRepo) {
 			return {
 				isRepo: false,
@@ -61,14 +61,14 @@ export const statusHandler = createRouter()
 		// findNestedRepoPaths cache + inflight dedup also keeps concurrent
 		// callers (status + branches triggered together) from walking twice.
 		const [status, nestedRepoPaths] = await Promise.all([
-			gitService.getStatus(project.path),
+			gitService.getStatus(root),
 			// Discovery failing must not cost the user the outer repo's status.
-			findNestedRepoPaths(project.path).catch(() => [] as string[])
+			findNestedRepoPaths(root).catch(() => [] as string[])
 		]);
 
 		if (nestedRepoPaths.length > 0) {
 			const nestedPrefixes = nestedRepoPaths.map(
-				(repoPath) => pathRelative(project.path, repoPath).replace(/\\/g, '/') + '/'
+				(repoPath) => pathRelative(root, repoPath).replace(/\\/g, '/') + '/'
 			);
 
 			// Drop outer-repo entries that fall under a nested repo's prefix.
@@ -103,7 +103,7 @@ export const statusHandler = createRouter()
 
 			for (const entry of nestedStatuses) {
 				if (!entry) continue;
-				const prefix = pathRelative(project.path, entry.repoPath).replace(/\\/g, '/') + '/';
+				const prefix = pathRelative(root, entry.repoPath).replace(/\\/g, '/') + '/';
 				const withPrefix = (f: typeof entry.nestedStatus.staged[number]) => ({
 					...f,
 					path: prefix + f.path,
@@ -126,8 +126,8 @@ export const statusHandler = createRouter()
 		}),
 		response: t.Object({ ok: t.Boolean() })
 	}, async ({ data, conn }) => {
-		const project = requireProjectAccess(conn, data.projectId);
-		await gitService.init(project.path, data.defaultBranch);
+		const { root } = requireProjectWorkspace(conn, data.projectId);
+		await gitService.init(root, data.defaultBranch);
 		return { ok: true };
 	})
 
@@ -140,9 +140,9 @@ export const statusHandler = createRouter()
 			root: t.Optional(t.String())
 		})
 	}, async ({ data, conn }) => {
-		const project = requireProjectAccess(conn, data.projectId);
+		const { root } = requireProjectWorkspace(conn, data.projectId);
 
-		const isRepo = await gitService.isRepo(project.path);
-		const root = isRepo ? await gitService.getRoot(project.path) : undefined;
-		return { isRepo, root: root ?? undefined };
+		const isRepo = await gitService.isRepo(root);
+		const repoRoot = isRepo ? await gitService.getRoot(root) : undefined;
+		return { isRepo, root: repoRoot ?? undefined };
 	});

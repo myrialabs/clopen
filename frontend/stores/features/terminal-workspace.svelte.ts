@@ -91,7 +91,13 @@ registerDock({
 		try {
 			// Dynamic import to avoid a static cycle (the manager imports this module).
 			const { terminalProjectManager } = await import('$frontend/services/terminal');
-			await terminalProjectManager.switchToProject(projectId, project.path);
+			const { currentScopeKey } = await import('$frontend/stores/features/worktrees.svelte');
+			// Shells belong to the tree they were opened in, so the scope key —
+			// not the project id — is what groups them.
+			await terminalProjectManager.switchToProject(
+				currentScopeKey() || projectId,
+				projectState.currentProject?.path ?? project.path
+			);
 		} catch (err) {
 			debug.error('terminal', 'Failed to restore terminal tabs for project:', projectId, err);
 		}

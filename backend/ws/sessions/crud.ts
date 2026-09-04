@@ -14,7 +14,7 @@ import { t } from 'elysia';
 import { createRouter } from '$shared/utils/ws-server';
 import type { EngineType } from '$shared/types/unified';
 import type { ChatSession } from '$shared/types/database/schema';
-import { sessionQueries, messageQueries, projectQueries, snapshotQueries } from '../../database/queries';
+import { sessionQueries, messageQueries, projectQueries, snapshotQueries, worktreeQueries } from '../../database/queries';
 import { ws } from '$backend/utils/ws';
 import { streamManager } from '../../chat/stream-manager';
 import { snapshotService } from '../../snapshot/snapshot-service';
@@ -44,6 +44,8 @@ const sessionSchema = t.Object({
 	head_session_id: t.Optional(t.String()),
 	head_title: t.Optional(t.String()),
 	head_summary: t.Optional(t.String()),
+	// Isolation
+	worktree_id: t.Optional(t.Union([t.String(), t.Null()])),
 	// Activity tracking
 	sender_id: t.Optional(t.String()),
 	sender_name: t.Optional(t.String()),
@@ -78,7 +80,15 @@ function serializeSession(session: ChatSession) {
 		message_count: session.message_count ?? undefined,
 		user_count: session.user_count ?? undefined,
 		last_message_at: session.last_message_at ?? undefined,
+		worktree_id: session.worktree_id ?? null,
 	};
+}
+
+/** Validate a requested worktree belongs to this project; anything else is main. */
+function resolveRequestedWorktree(projectId: string, worktreeId: string | null | undefined): string | null {
+	if (!worktreeId) return null;
+	const worktree = worktreeQueries.getById(worktreeId);
+	return worktree && worktree.project_id === projectId ? worktree.id : null;
 }
 
 export const crudHandler = createRouter()
@@ -125,7 +135,8 @@ export const crudHandler = createRouter()
 	.http('sessions:create', {
 		data: t.Object({
 			title: t.Optional(t.String()),
-			engine: t.Optional(t.Union([t.Literal('claude-code'), t.Literal('opencode'), t.Literal('copilot'), t.Literal('codex'), t.Literal('qwen'), t.Literal('pi'), t.Literal('cline'), t.Literal('cursor')]))
+			engine: t.Optional(t.Union([t.Literal('claude-code'), t.Literal('opencode'), t.Literal('copilot'), t.Literal('codex'), t.Literal('qwen'), t.Literal('pi'), t.Literal('cline'), t.Literal('cursor')])),
+			worktreeId: t.Optional(t.Union([t.String(), t.Null()]))
 		}),
 		response: sessionSchema
 	}, async ({ data, conn }) => {
@@ -136,7 +147,8 @@ export const crudHandler = createRouter()
 			project_id: projectId,
 			title: data.title || 'New Chat Session',
 			engine,
-			started_at: now
+			started_at: now,
+			worktree_id: resolveRequestedWorktree(projectId, data.worktreeId)
 		});
 
 		return serializeSession(session);
@@ -166,20 +178,23 @@ export const crudHandler = createRouter()
 	// Get or create shared session
 	.http('sessions:get-shared', {
 		data: t.Object({
-			forceNew: t.Optional(t.Boolean())
+			forceNew: t.Optional(t.Boolean()),
+			worktreeId: t.Optional(t.Union([t.String(), t.Null()]))
 		}),
 		response: sessionSchema
 	}, async ({ data, conn }) => {
 		const { projectId, project } = requireCurrentProjectAccess(conn);
+		const worktreeId = resolveRequestedWorktree(projectId, data.worktreeId);
 
 		// Check if an active session already exists BEFORE get-or-create
-		const existingActiveSession = (data.forceNew) ? null : sessionQueries.getActiveSessionForProject(projectId);
+		const existingActiveSession = (data.forceNew) ? null : sessionQueries.getActiveSessionForProject(projectId, worktreeId);
 
 		// Get or create shared session
 		const session = sessionQueries.getOrCreateSharedSession(
 			projectId,
 			project.name,
-			data.forceNew || false
+			data.forceNew || false,
+			worktreeId
 		);
 
 		const sessionResponse = serializeSession(session);

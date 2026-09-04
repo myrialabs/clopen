@@ -5,6 +5,7 @@
 	import LoadingSpinner from '$frontend/components/common/feedback/LoadingSpinner.svelte';
 	import { terminalStore } from '$frontend/stores/features/terminal.svelte';
 	import { projectState } from '$frontend/stores/core/projects.svelte';
+	import { currentScopeKey } from '$frontend/stores/features/worktrees.svelte';
 
 	// Props
 	interface Props {
@@ -15,7 +16,8 @@
 
 	const hasActiveProject = $derived(projectState.currentProject !== null);
 	const projectPath = $derived(projectState.currentProject?.path || '');
-	const projectId = $derived(projectState.currentProject?.id || '');
+	// Workspace scope, so terminals stay inside the tree they belong to.
+	const projectId = $derived(currentScopeKey() || projectState.currentProject?.id || '');
 
 	// Terminal reference
 	let terminalRef: any = $state();

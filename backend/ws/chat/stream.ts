@@ -17,6 +17,7 @@ import { ws } from '$backend/utils/ws';
 import { broadcastPresence } from '../projects/status';
 import { sessionQueries, messageQueries } from '../../database/queries';
 import { requireSessionAccess } from '../access';
+import { resolveSessionPath } from '../../worktrees';
 
 /**
  * Broadcast presence + notify project members when a chat message may flip the
@@ -228,15 +229,21 @@ export const streamHandler = createRouter()
 		requireSessionAccess(conn, data.chatSessionId);
 		const projectId = ws.getProjectId(conn);
 
+		// The client's projectPath is a view preference; the session's worktree is
+		// the fact. Resolving server-side is what keeps an isolated session from
+		// writing into the main tree when the two disagree.
+		const workingRoot = resolveSessionPath(data.chatSessionId, data.projectPath);
+
 		try {
 			debug.log('chat', 'WS chat:stream received:', {
 				chatSessionId: data.chatSessionId,
-				projectId
+				projectId,
+				workingRoot
 			});
 
 			// Start background stream
 			const streamId = await streamManager.startStream({
-				projectPath: data.projectPath,
+				projectPath: workingRoot,
 				projectId,
 				prompt: data.prompt,
 				chatSessionId: data.chatSessionId,

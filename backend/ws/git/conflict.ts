@@ -7,7 +7,7 @@ import path from 'node:path';
 import { createRouter } from '$shared/utils/ws-server';
 import { gitService } from '../../git/git-service';
 import { findNestedRepoPaths, findRepoForFile } from '../../git/nested-repos';
-import { requireProjectAccess } from '../access';
+import { requireProjectWorkspace } from '../access';
 import { debug } from '$shared/utils/logger';
 
 function resolveRepoCwd(projectPath: string, repoPath: string | undefined): string | null {
@@ -45,15 +45,15 @@ export const conflictHandler = createRouter()
 			markers: t.Array(ConflictMarkerSchema)
 		}))
 	}, async ({ data, conn }) => {
-		const project = requireProjectAccess(conn, data.projectId);
-		const conflicts = await gitService.getConflictFiles(project.path);
+		const { root } = requireProjectWorkspace(conn, data.projectId);
+		const conflicts = await gitService.getConflictFiles(root);
 
 		try {
-			const nestedRepoPaths = await findNestedRepoPaths(project.path);
+			const nestedRepoPaths = await findNestedRepoPaths(root);
 			for (const repoPath of nestedRepoPaths) {
 				try {
 					const nestedConflicts = await gitService.getConflictFiles(repoPath);
-					const prefix = path.relative(project.path, repoPath).replace(/\\/g, '/') + '/';
+					const prefix = path.relative(root, repoPath).replace(/\\/g, '/') + '/';
 					for (const conflict of nestedConflicts) {
 						conflicts.push({
 							...conflict,
@@ -80,9 +80,9 @@ export const conflictHandler = createRouter()
 		}),
 		response: t.Object({ ok: t.Boolean() })
 	}, async ({ data, conn }) => {
-		const project = requireProjectAccess(conn, data.projectId);
-		const repo = await findRepoForFile(project.path, data.filePath);
-		const cwd = repo?.repoPath ?? project.path;
+		const { root } = requireProjectWorkspace(conn, data.projectId);
+		const repo = await findRepoForFile(root, data.filePath);
+		const cwd = repo?.repoPath ?? root;
 		const filePath = repo?.relativeFilePath ?? data.filePath;
 		await gitService.resolveConflict(
 			cwd,
@@ -100,8 +100,8 @@ export const conflictHandler = createRouter()
 		}),
 		response: t.Object({ ok: t.Boolean() })
 	}, async ({ data, conn }) => {
-		const project = requireProjectAccess(conn, data.projectId);
-		const cwd = resolveRepoCwd(project.path, data.repoPath) ?? project.path;
+		const { root } = requireProjectWorkspace(conn, data.projectId);
+		const cwd = resolveRepoCwd(root, data.repoPath) ?? root;
 		await gitService.abortMerge(cwd);
 		return { ok: true };
 	});

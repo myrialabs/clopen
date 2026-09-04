@@ -6,6 +6,7 @@ import { projectContextService } from '../mcp';
 import { fileWatcher } from '../files/file-watcher';
 import { clearProjectPresence } from '../project/status-manager';
 import { registerProjectCleanup } from './project-cleanup-registry';
+import { removeProjectWorktrees } from '../worktrees';
 
 registerProjectCleanup({
 	name: 'engine',
@@ -20,7 +21,7 @@ registerProjectCleanup({
 registerProjectCleanup({
 	name: 'file-watcher',
 	run: (projectId) => {
-		fileWatcher.releaseProject(projectId);
+		fileWatcher.releaseProjectScopes(projectId);
 	}
 });
 
@@ -29,4 +30,9 @@ registerProjectCleanup({
 	run: (projectId) => {
 		clearProjectPresence(projectId);
 	}
+});
+
+registerProjectCleanup({
+	name: 'worktrees',
+	run: (projectId) => removeProjectWorktrees(projectId)
 });

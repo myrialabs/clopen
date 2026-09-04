@@ -12,7 +12,7 @@ import { resolveGenerationTarget } from '../../engine/resolve-model';
 import type { EngineType } from '$shared/types/unified';
 import type { GeneratedCommitMessage } from '$shared/types/git';
 import { debug } from '$shared/utils/logger';
-import { requireProjectAccess } from '../access';
+import { requireProjectWorkspace } from '../access';
 
 // Schema is shaped to satisfy OpenAI's strict structured-output mode (used by
 // Codex via `outputSchema`): every object must declare `additionalProperties:
@@ -74,8 +74,8 @@ export const commitMessageHandler = createRouter()
 			message: t.String()
 		})
 	}, async ({ data, conn }) => {
-		const project = requireProjectAccess(conn, data.projectId);
-		const cwd = resolveRepoCwd(project.path, data.repoPath);
+		const { root } = requireProjectWorkspace(conn, data.projectId);
+		const cwd = resolveRepoCwd(root, data.repoPath);
 
 		// Get raw staged diff text
 		const diffResult = await execGit(['diff', '--cached'], cwd);

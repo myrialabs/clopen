@@ -2,6 +2,7 @@ import type { WSConnection } from '$shared/utils/ws-server';
 import type { Project, ChatSession, DatabaseMessage } from '$shared/types/database/schema';
 import { ws } from '$backend/utils/ws';
 import { projectQueries, sessionQueries, messageQueries } from '$backend/database/queries';
+import { resolveWorktreeRoot } from '$backend/worktrees';
 
 export function requireProjectAccess(conn: WSConnection, projectId: string): Project {
 	const userId = ws.getUserId(conn);
@@ -16,6 +17,23 @@ export function requireProjectAccess(conn: WSConnection, projectId: string): Pro
 	}
 
 	return project;
+}
+
+/**
+ * Project access plus the workspace root the connection is viewing.
+ *
+ * Anything that runs against a repository or a tree must use `root`: a worktree
+ * is its own checkout, and resolving to `project.path` silently ran every git
+ * command against the main tree instead.
+ */
+export function requireProjectWorkspace(conn: WSConnection, projectId: string): {
+	project: Project;
+	root: string;
+	worktreeId: string | null;
+} {
+	const project = requireProjectAccess(conn, projectId);
+	const resolved = resolveWorktreeRoot(projectId, ws.getWorktreeId(conn));
+	return { project, root: resolved.path || project.path, worktreeId: resolved.worktreeId };
 }
 
 export function requireCurrentProjectAccess(conn: WSConnection): {

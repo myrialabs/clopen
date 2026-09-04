@@ -26,7 +26,7 @@ import { requireProjectAccess } from '../access';
 import {
 	filterAccessibleExpandedPaths,
 	requireFilePathAccess,
-	requireProjectPathAccess,
+	requireWorkspaceRootAccess,
 	requireSharedFilePathAccess
 } from './path-access';
 
@@ -72,8 +72,9 @@ export const readHandler = createRouter()
 			])
 		)
 	}, async ({ data, conn }) => {
-		const project = requireProjectPathAccess(conn, data.project_path);
-		const projectPath = project.path;
+		// The requested root, not the project's: for a worktree these differ, and
+		// listing the project would hand back the main tree's files and paths.
+		const { root: projectPath } = requireWorkspaceRootAccess(conn, data.project_path);
 
 		if (!(await existsSync(projectPath))) {
 			throw new Error('Project path does not exist');
@@ -186,6 +187,8 @@ export const readHandler = createRouter()
 	.http('files:read-file-at', {
 		data: t.Object({
 			projectId: t.String(),
+			// Workspace root the file lives in; absent means the project itself.
+			rootPath: t.Optional(t.String()),
 			filePath: t.String(),
 			ref: t.Optional(t.String())
 		}),
@@ -194,16 +197,18 @@ export const readHandler = createRouter()
 			ref: t.String()
 		})
 	}, async ({ data, conn }) => {
-		requireProjectAccess(conn, data.projectId);
-		const project = projectQueries.getById(data.projectId);
-		if (!project) throw new Error('Access denied');
+		// A worktree is its own checkout, so the gutter diff has to resolve
+		// against the tree the file is in rather than the project's.
+		const { root } = data.rootPath
+			? requireWorkspaceRootAccess(conn, data.rootPath)
+			: { root: requireProjectAccess(conn, data.projectId).path };
 
 		const ref = data.ref || 'HEAD';
 
-		// Make filePath relative to project root for `git show`
+		// Make filePath relative to the workspace root for `git show`
 		let relativePath = data.filePath;
 		if (isAbsolute(data.filePath)) {
-			relativePath = relative(project.path, data.filePath);
+			relativePath = relative(root, data.filePath);
 		}
 		// Normalize path separators for git
 		relativePath = relativePath.replace(/\\/g, '/');
@@ -212,8 +217,8 @@ export const readHandler = createRouter()
 		// repo's `git show HEAD:file` returns nothing for files tracked
 		// inside a nested repo and gitignored by the parent, so the editor
 		// gutter diff would silently go empty for subrepo files without this.
-		const repo = await findRepoForFile(project.path, relativePath);
-		const cwd = repo?.repoPath ?? project.path;
+		const repo = await findRepoForFile(root, relativePath);
+		const cwd = repo?.repoPath ?? root;
 		const gitFilePath = repo?.relativeFilePath ?? relativePath;
 
 		const content = await gitService.getFileAtRef(cwd, ref, gitFilePath);

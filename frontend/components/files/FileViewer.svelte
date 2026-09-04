@@ -438,7 +438,7 @@
 		// Only fetch when git is tracking this file
 		if (!gitStatusState.isRepo) return;
 
-		ws.http('files:read-file-at', { projectId, filePath: path, ref: 'HEAD' })
+		ws.http('files:read-file-at', { projectId, rootPath: projectPath, filePath: path, ref: 'HEAD' })
 			.then((res) => {
 				if (file?.path !== path) return; // file changed mid-flight
 				headContent = res.content;
@@ -459,7 +459,7 @@
 		// Force re-fetch of HEAD next render cycle by clearing the cache key
 		const path = file?.path || '';
 		if (path && headContentForPath === path && projectId) {
-			ws.http('files:read-file-at', { projectId, filePath: path, ref: 'HEAD' })
+			ws.http('files:read-file-at', { projectId, rootPath: projectPath, filePath: path, ref: 'HEAD' })
 				.then((res) => {
 					if (file?.path !== path) return;
 					headContent = res.content;

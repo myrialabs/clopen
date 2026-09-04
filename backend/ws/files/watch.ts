@@ -12,7 +12,8 @@ import { createRouter } from '$shared/utils/ws-server';
 import { fileWatcher } from '$backend/files/file-watcher';
 import { debug } from '$shared/utils/logger';
 import { ws } from '$backend/utils/ws';
-import { projectQueries } from '../../database/queries/project-queries';
+import { makeScopeKey } from '$shared/utils/workspace-scope';
+import { requireWorkspaceRootAccess } from './path-access';
 import { requireProjectAccess } from '../access';
 
 // Connection ids that already have a disconnect cleanup registered, so we
@@ -28,10 +29,10 @@ export const watchHandler = createRouter()
 	}, async ({ data, conn }) => {
 		const { projectPath } = data;
 
-		const project = projectQueries.getByPath(projectPath);
-		if (!project) throw new Error('Access denied');
-		requireProjectAccess(conn, project.id);
-		const projectId = project.id;
+		// The root may be the project or one of its worktrees; watchers are keyed
+		// per workspace so two trees of one project never share a watcher.
+		const { project, worktreeId } = requireWorkspaceRootAccess(conn, projectPath);
+		const projectId = makeScopeKey(project.id, worktreeId);
 
 		try {
 			const connId = ws.getConnectionId(conn);
@@ -54,7 +55,7 @@ export const watchHandler = createRouter()
 
 			if (success) {
 				// Broadcast confirmation (frontend filters by projectId)
-				ws.emit.project(projectId, 'files:watching', {
+				ws.emit.project(project.id, 'files:watching', {
 					projectId,
 					watching: true,
 					timestamp: Date.now()
@@ -63,14 +64,14 @@ export const watchHandler = createRouter()
 				debug.log('file', `Started watching project ${projectId}`);
 			} else {
 				// Broadcast error (frontend filters by projectId)
-				ws.emit.project(projectId, 'files:watch-error', {
+				ws.emit.project(project.id, 'files:watch-error', {
 					projectId,
 					error: 'Failed to start file watcher'
 				});
 			}
 		} catch (error) {
 			debug.error('file', 'Error starting file watch:', error);
-			ws.emit.project(projectId, 'files:watch-error', {
+			ws.emit.project(project.id, 'files:watch-error', {
 				projectId,
 				error: error instanceof Error ? error.message : 'Unknown error'
 			});
@@ -88,14 +89,15 @@ export const watchHandler = createRouter()
 		})
 	}, async ({ data, conn }) => {
 		let projectId: string;
+		let roomProjectId: string;
 		if (data.projectPath) {
-			const project = projectQueries.getByPath(data.projectPath);
-			if (!project) return; // unknown path — nothing to unwatch
-			requireProjectAccess(conn, project.id);
-			projectId = project.id;
+			const { project, worktreeId } = requireWorkspaceRootAccess(conn, data.projectPath);
+			roomProjectId = project.id;
+			projectId = makeScopeKey(project.id, worktreeId);
 		} else {
 			// Backwards-compatible fallback for callers that don't send a path.
-			projectId = ws.getProjectId(conn);
+			roomProjectId = ws.getProjectId(conn);
+			projectId = roomProjectId;
 		}
 
 		try {
@@ -110,7 +112,7 @@ export const watchHandler = createRouter()
 			// Broadcast the ACTUAL resulting state — other devices may still be
 			// viewing this project, in which case the watcher is still alive and
 			// they must not be told it stopped.
-			ws.emit.project(projectId, 'files:watching', {
+			ws.emit.project(roomProjectId, 'files:watching', {
 				projectId,
 				watching: fileWatcher.isWatching(projectId),
 				timestamp: Date.now()

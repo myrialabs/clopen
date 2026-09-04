@@ -7,6 +7,7 @@
 	import { openSettingsModal } from '$frontend/stores/ui/settings-modal.svelte';
 	import { addNotification } from '$frontend/stores/ui/notification.svelte';
 	import ToolsMenu from '$frontend/components/workspace/ToolsMenu.svelte';
+	import WorktreeSwitcher from '$frontend/components/worktree/WorktreeSwitcher.svelte';
 	import TunnelModal from '$frontend/components/tunnel/TunnelModal.svelte';
 	import RemoteAccessPanel from '$frontend/components/remote-access/RemoteAccessPanel.svelte';
 	import DbClientModal from '$frontend/components/db-client/DbClientModal.svelte';
@@ -190,6 +191,7 @@
 		aria-label="Action Buttons"
 	>
 		<!-- Tools (Remote Access, Public Tunnel, DB Client) -->
+		<WorktreeSwitcher collapsed={true} mobile={true} />
 		<ToolsMenu
 			collapsed={true}
 			mobile={true}

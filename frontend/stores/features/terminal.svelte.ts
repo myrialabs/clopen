@@ -9,6 +9,7 @@ import { terminalSessionManager } from '$frontend/services/terminal';
 import { addNotification } from '../ui/notification.svelte';
 import { markTerminalDirty } from './terminal-workspace.svelte';
 import { debug } from '$shared/utils/logger';
+import { scopeSlug } from '$shared/utils/workspace-scope';
 interface TerminalState {
 	sessions: TerminalSession[];
 	activeSessionId: string | null;
@@ -74,9 +75,10 @@ export const terminalStore = {
 		}
 
 		terminalState.nextSessionId = sessionNumber + 1;
-		// Always include projectId in sessionId to ensure uniqueness across projects
-		const sanitizedProjectId = projectId.replace(/[^a-zA-Z0-9]/g, '').substring(0, 8);
-		const sessionId = `${sanitizedProjectId}-terminal-${sessionNumber}`;
+		// The prefix carries the workspace, not just the project: stripping it left
+		// Main and its worktrees minting the same id, and PtyKit rejects an id held
+		// by another namespace — so "Terminal 1" in a worktree simply never opened.
+		const sessionId = `${scopeSlug(projectId)}-terminal-${sessionNumber}`;
 		const sessionName = `Terminal ${sessionNumber}`;
 		// Use provided directory or project path, but default to current working directory if invalid
 		const workingDirectory = directory || projectPath || '~';

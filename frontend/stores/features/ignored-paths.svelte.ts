@@ -1,4 +1,5 @@
 import { projectState } from '$frontend/stores/core/projects.svelte';
+import { currentScopeKey } from '$frontend/stores/features/worktrees.svelte';
 import ws from '$frontend/utils/ws';
 import { debug } from '$shared/utils/logger';
 
@@ -60,13 +61,13 @@ export function initIgnoredPaths(): void {
 	refreshIgnoredPaths(0);
 	if (unsubscribeFiles || unsubscribeGit) return;
 	unsubscribeFiles = ws.on('files:changed', (payload) => {
-		if (payload.projectId !== projectState.currentProject?.id) return;
+		if (payload.projectId !== currentScopeKey()) return;
 		// Nothing actually changed — don't spend a round trip on it.
 		if (payload.changes.length === 0) return;
 		refreshIgnoredPaths(500);
 	});
 	unsubscribeGit = ws.on('git:changed', (payload) => {
-		if (payload.projectId !== projectState.currentProject?.id) return;
+		if (payload.projectId !== currentScopeKey()) return;
 		refreshIgnoredPaths(150);
 	});
 }

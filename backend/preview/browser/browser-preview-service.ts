@@ -12,6 +12,7 @@ import { browserMcpControl } from './browser-mcp-control.js';
 import { ws } from '$backend/utils/ws';
 import { getViewportDimensions } from '$shared/constants/preview.js';
 import { debug } from '$shared/utils/logger';
+import { scopeProjectId } from '$shared/utils/workspace-scope';
 import type {
 	BrowserTab,
 	BrowserTabInfo,
@@ -1107,13 +1108,18 @@ class BrowserPreviewServiceManager {
 	private setupWebSocketForwarding(service: BrowserPreviewService, projectId: string): void {
 		debug.log('preview', `🔌 Setting up WebSocket forwarding for project: ${projectId}...`);
 
+		// `projectId` is a workspace scope key: it separates a worktree's tabs from
+		// the main tree's. Rooms are keyed by the real project, so events go there
+		// and each client filters on the scope carried in the payload.
+		const roomId = scopeProjectId(projectId);
+
 		// Forward WebCodecs events.
 		//
 		// The room is the whole project, so several viewers of the same tab all
 		// receive these. `viewerId` is what lets each of them recognise the half
 		// of the handshake that is theirs.
 		service.on('preview:browser-webcodecs-ice-candidate', (data) => {
-			ws.emit.project(projectId, 'preview:browser-stream-ice', {
+			ws.emit.project(roomId, 'preview:browser-stream-ice', {
 				sessionId: data.sessionId,
 				viewerId: data.viewerId,
 				candidate: data.candidate,
@@ -1122,25 +1128,25 @@ class BrowserPreviewServiceManager {
 		});
 
 		service.on('preview:browser-webcodecs-connection-state', (data) => {
-			ws.emit.project(projectId, 'preview:browser-stream-state', data);
+			ws.emit.project(roomId, 'preview:browser-stream-state', data);
 		});
 
 		service.on('preview:browser-cursor-change', (data) => {
-			ws.emit.project(projectId, 'preview:browser-cursor-change', data);
+			ws.emit.project(roomId, 'preview:browser-cursor-change', data);
 		});
 
 		// Forward navigation events
 		service.on('preview:browser-navigation-loading', (data) => {
-			ws.emit.project(projectId, 'preview:browser-navigation-loading', data);
+			ws.emit.project(roomId, 'preview:browser-navigation-loading', data);
 		});
 
 		service.on('preview:browser-navigation', (data) => {
-			ws.emit.project(projectId, 'preview:browser-navigation', data);
+			ws.emit.project(roomId, 'preview:browser-navigation', data);
 		});
 
 		// Forward SPA navigation events (pushState/replaceState — URL-only update)
 		service.on('preview:browser-navigation-spa', (data) => {
-			ws.emit.project(projectId, 'preview:browser-navigation-spa', data);
+			ws.emit.project(roomId, 'preview:browser-navigation-spa', data);
 		});
 
 		// Forward tab events. Each carries projectId so the frontend can drop
@@ -1149,113 +1155,113 @@ class BrowserPreviewServiceManager {
 		// project the user is now viewing.
 		service.on('preview:browser-tab-opened', (data) => {
 			debug.log('preview', `🚀 Forwarding preview:browser-tab-opened to project ${projectId}:`, data);
-			ws.emit.project(projectId, 'preview:browser-tab-opened', { ...data, projectId });
+			ws.emit.project(roomId, 'preview:browser-tab-opened', { ...data, projectId });
 		});
 
 		service.on('preview:browser-tab-closed', (data) => {
-			ws.emit.project(projectId, 'preview:browser-tab-closed', { ...data, projectId });
+			ws.emit.project(roomId, 'preview:browser-tab-closed', { ...data, projectId });
 		});
 
 		service.on('preview:browser-tab-switched', (data) => {
-			ws.emit.project(projectId, 'preview:browser-tab-switched', { ...data, projectId });
+			ws.emit.project(roomId, 'preview:browser-tab-switched', { ...data, projectId });
 		});
 
 		service.on('preview:browser-tab-navigated', (data) => {
-			ws.emit.project(projectId, 'preview:browser-tab-navigated', { ...data, projectId });
+			ws.emit.project(roomId, 'preview:browser-tab-navigated', { ...data, projectId });
 		});
 
 		service.on('preview:browser-viewport-changed', (data) => {
-			ws.emit.project(projectId, 'preview:browser-viewport-changed', { ...data, projectId });
+			ws.emit.project(roomId, 'preview:browser-viewport-changed', { ...data, projectId });
 		});
 
 		service.on('preview:browser-fullscreen-state', (data) => {
-			ws.emit.project(projectId, 'preview:browser-fullscreen-state', { ...data, projectId });
+			ws.emit.project(roomId, 'preview:browser-fullscreen-state', { ...data, projectId });
 		});
 
 		// Forward live tab metadata (title, favicon, back/forward availability)
 		service.on('preview:browser-tab-meta', (data) => {
-			ws.emit.project(projectId, 'preview:browser-tab-meta', { ...data, projectId });
+			ws.emit.project(roomId, 'preview:browser-tab-meta', { ...data, projectId });
 		});
 
 		// Forward host-capability requests (geolocation, camera, clipboard, …)
 		// and relayed downloads — both are answered by the viewer's own browser.
 		service.on('preview:browser-host-request', (data) => {
-			ws.emit.project(projectId, 'preview:browser-host-request', data);
+			ws.emit.project(roomId, 'preview:browser-host-request', data);
 		});
 
 		// Answered (or expired) — every viewer that was shown this prompt drops it.
 		service.on('preview:browser-host-request-settled', (data) => {
-			ws.emit.project(projectId, 'preview:browser-host-request-settled', data);
+			ws.emit.project(roomId, 'preview:browser-host-request-settled', data);
 		});
 
 		service.on('preview:browser-download', (data) => {
-			ws.emit.project(projectId, 'preview:browser-download', data);
+			ws.emit.project(roomId, 'preview:browser-download', data);
 		});
 
 		// Forward console events
 		service.on('preview:browser-console-message', (data) => {
-			ws.emit.project(projectId, 'preview:browser-console-message', data);
+			ws.emit.project(roomId, 'preview:browser-console-message', data);
 		});
 
 		service.on('preview:browser-console-clear', (data) => {
-			ws.emit.project(projectId, 'preview:browser-console-clear', data);
+			ws.emit.project(roomId, 'preview:browser-console-clear', data);
 		});
 
 		// Forward dialog events
 		service.on('preview:browser-dialog', (data) => {
-			ws.emit.project(projectId, 'preview:browser-dialog', data);
+			ws.emit.project(roomId, 'preview:browser-dialog', data);
 		});
 
 		// A dialog belongs to the page, not to whoever answered it: every viewer
 		// was shown the same prompt, so all of them are told it is settled.
 		service.on('preview:browser-dialog-closed', (data) => {
-			ws.emit.project(projectId, 'preview:browser-dialog-closed', data);
+			ws.emit.project(roomId, 'preview:browser-dialog-closed', data);
 		});
 
 		service.on('preview:browser-print', (data) => {
-			ws.emit.project(projectId, 'preview:browser-print', data);
+			ws.emit.project(roomId, 'preview:browser-print', data);
 		});
 
 		// Forward native UI events
 		service.on('preview:browser-native-picker', (data) => {
-			ws.emit.project(projectId, 'preview:browser-native-picker', data);
+			ws.emit.project(roomId, 'preview:browser-native-picker', data);
 		});
 
 		service.on('preview:browser-select', (data) => {
-			ws.emit.project(projectId, 'preview:browser-select', data);
+			ws.emit.project(roomId, 'preview:browser-select', data);
 		});
 
 		service.on('preview:browser-context-menu', (data) => {
-			ws.emit.project(projectId, 'preview:browser-context-menu', data);
+			ws.emit.project(roomId, 'preview:browser-context-menu', data);
 		});
 
 		service.on('preview:browser-copy-to-clipboard', (data) => {
-			ws.emit.project(projectId, 'preview:browser-copy-to-clipboard', data);
+			ws.emit.project(roomId, 'preview:browser-copy-to-clipboard', data);
 		});
 
 		service.on('preview:browser-open-url-new-tab', (data) => {
-			ws.emit.project(projectId, 'preview:browser-open-url-new-tab', data);
+			ws.emit.project(roomId, 'preview:browser-open-url-new-tab', data);
 		});
 
 		service.on('preview:browser-download-image', (data) => {
-			ws.emit.project(projectId, 'preview:browser-download-image', data);
+			ws.emit.project(roomId, 'preview:browser-download-image', data);
 		});
 
 		service.on('preview:browser-open-url-host', (data) => {
-			ws.emit.project(projectId, 'preview:browser-open-url-host', data);
+			ws.emit.project(roomId, 'preview:browser-open-url-host', data);
 		});
 
 		service.on('preview:browser-open-inspector', (data) => {
-			ws.emit.project(projectId, 'preview:browser-open-inspector', data);
+			ws.emit.project(roomId, 'preview:browser-open-inspector', data);
 		});
 
 		service.on('preview:browser-copy-image-to-clipboard', (data) => {
-			ws.emit.project(projectId, 'preview:browser-copy-image-to-clipboard', data);
+			ws.emit.project(roomId, 'preview:browser-copy-image-to-clipboard', data);
 		});
 
 		// Forward new window events
 		service.on('preview:browser-new-window', (data) => {
-			ws.emit.project(projectId, 'preview:browser-new-window', data);
+			ws.emit.project(roomId, 'preview:browser-new-window', data);
 		});
 
 		// MCP control events come from the singleton browserMcpControl, so their

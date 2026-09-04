@@ -14,7 +14,7 @@ import { createRouter } from '$shared/utils/ws-server';
 import { debug } from '$shared/utils/logger';
 import { generateArtifact, type GeneratableType } from '$backend/artifacts';
 import type { EngineType } from '$shared/types/unified';
-import { requireProjectAccess } from '../access';
+import { requireProjectWorkspace } from '../access';
 
 export const artifactGenerateHandler = createRouter()
 	.http('artifacts:generate', {
@@ -40,7 +40,7 @@ export const artifactGenerateHandler = createRouter()
 
 		// Optional project only decides the engine process cwd; generation has no
 		// project side effects. Falls back to the Clopen data dir when absent.
-		const projectPath = data.projectId ? requireProjectAccess(conn, data.projectId).path : undefined;
+		const projectPath = data.projectId ? requireProjectWorkspace(conn, data.projectId).root : undefined;
 
 		const fields = await generateArtifact(data.artifactType as GeneratableType, data.purpose, {
 			engine: data.engine as EngineType,

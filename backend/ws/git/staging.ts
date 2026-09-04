@@ -7,7 +7,7 @@ import path from 'node:path';
 import { createRouter } from '$shared/utils/ws-server';
 import { gitService } from '../../git/git-service';
 import { findRepoForFile } from '../../git/nested-repos';
-import { requireProjectAccess } from '../access';
+import { requireProjectWorkspace } from '../access';
 import { debug } from '$shared/utils/logger';
 
 function resolveRepoCwd(projectPath: string, repoPath: string | undefined): string | null {
@@ -30,9 +30,9 @@ export const stagingHandler = createRouter()
 		}),
 		response: t.Object({ ok: t.Boolean() })
 	}, async ({ data, conn }) => {
-		const project = requireProjectAccess(conn, data.projectId);
-		const repo = await findRepoForFile(project.path, data.filePath);
-		const cwd = repo?.repoPath ?? project.path;
+		const { root } = requireProjectWorkspace(conn, data.projectId);
+		const repo = await findRepoForFile(root, data.filePath);
+		const cwd = repo?.repoPath ?? root;
 		const filePath = repo?.relativeFilePath ?? data.filePath;
 		await gitService.stageFile(cwd, filePath);
 		return { ok: true };
@@ -45,8 +45,8 @@ export const stagingHandler = createRouter()
 		}),
 		response: t.Object({ ok: t.Boolean() })
 	}, async ({ data, conn }) => {
-		const project = requireProjectAccess(conn, data.projectId);
-		const cwd = data.repoPath ? (resolveRepoCwd(project.path, data.repoPath) ?? project.path) : project.path;
+		const { root } = requireProjectWorkspace(conn, data.projectId);
+		const cwd = data.repoPath ? (resolveRepoCwd(root, data.repoPath) ?? root) : root;
 		await gitService.stageAll(cwd);
 		return { ok: true };
 	})
@@ -58,9 +58,9 @@ export const stagingHandler = createRouter()
 		}),
 		response: t.Object({ ok: t.Boolean() })
 	}, async ({ data, conn }) => {
-		const project = requireProjectAccess(conn, data.projectId);
-		const repo = await findRepoForFile(project.path, data.filePath);
-		const cwd = repo?.repoPath ?? project.path;
+		const { root } = requireProjectWorkspace(conn, data.projectId);
+		const repo = await findRepoForFile(root, data.filePath);
+		const cwd = repo?.repoPath ?? root;
 		const filePath = repo?.relativeFilePath ?? data.filePath;
 		await gitService.unstageFile(cwd, filePath);
 		return { ok: true };
@@ -73,8 +73,8 @@ export const stagingHandler = createRouter()
 		}),
 		response: t.Object({ ok: t.Boolean() })
 	}, async ({ data, conn }) => {
-		const project = requireProjectAccess(conn, data.projectId);
-		const cwd = data.repoPath ? (resolveRepoCwd(project.path, data.repoPath) ?? project.path) : project.path;
+		const { root } = requireProjectWorkspace(conn, data.projectId);
+		const cwd = data.repoPath ? (resolveRepoCwd(root, data.repoPath) ?? root) : root;
 		await gitService.unstageAll(cwd);
 		return { ok: true };
 	})
@@ -86,9 +86,9 @@ export const stagingHandler = createRouter()
 		}),
 		response: t.Object({ ok: t.Boolean() })
 	}, async ({ data, conn }) => {
-		const project = requireProjectAccess(conn, data.projectId);
-		const repo = await findRepoForFile(project.path, data.filePath);
-		const cwd = repo?.repoPath ?? project.path;
+		const { root } = requireProjectWorkspace(conn, data.projectId);
+		const repo = await findRepoForFile(root, data.filePath);
+		const cwd = repo?.repoPath ?? root;
 		const filePath = repo?.relativeFilePath ?? data.filePath;
 		await gitService.discardFile(cwd, filePath);
 		return { ok: true };
@@ -101,8 +101,8 @@ export const stagingHandler = createRouter()
 		}),
 		response: t.Object({ ok: t.Boolean() })
 	}, async ({ data, conn }) => {
-		const project = requireProjectAccess(conn, data.projectId);
-		const cwd = data.repoPath ? (resolveRepoCwd(project.path, data.repoPath) ?? project.path) : project.path;
+		const { root } = requireProjectWorkspace(conn, data.projectId);
+		const cwd = data.repoPath ? (resolveRepoCwd(root, data.repoPath) ?? root) : root;
 		await gitService.discardAll(cwd);
 		return { ok: true };
 	});

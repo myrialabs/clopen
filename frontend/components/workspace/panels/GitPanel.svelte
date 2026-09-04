@@ -5,6 +5,7 @@
 	import Modal from '$frontend/components/common/overlay/Modal.svelte';
 	import Dialog from '$frontend/components/common/overlay/Dialog.svelte';
 	import { projectState } from '$frontend/stores/core/projects.svelte';
+	import { currentScopeKey } from '$frontend/stores/features/worktrees.svelte';
 	import { showError, showInfo } from '$frontend/stores/ui/notification.svelte';
 	import { debug } from '$shared/utils/logger';
 	import { scale } from 'svelte/transition';
@@ -62,6 +63,9 @@
 	// Derived state
 	const hasActiveProject = $derived(projectState.currentProject !== null);
 	const projectId = $derived(projectState.currentProject?.id || '');
+	// File-watch events are keyed by workspace, so a worktree's changes never
+	// reach a panel viewing the main tree.
+	const watchScope = $derived(currentScopeKey() || projectId);
 
 	// Git state
 	let isRepo = $state(false);
@@ -78,7 +82,7 @@
 	// Action-bar busy flags are keyed per-project in the workspace store, so an
 	// operation started for one project keeps its spinner (and clears the right
 	// project's flag) even after the user switches projects mid-run.
-	const ops = $derived(getGitOps(projectId));
+	const ops = $derived(getGitOps(watchScope));
 	const isCommitting = $derived(ops.isCommitting);
 
 	// Repo is in a transitional state (detached HEAD or an in-progress operation
@@ -190,7 +194,7 @@
 			type: 'error',
 			confirmText: 'Delete',
 			onConfirm: async () => {
-				await runGitOp(projectId, 'isBranching', async () => {
+				await runGitOp(watchScope, 'isBranching', async () => {
 					const key = nestedRemoteBranchKey(remote, branch, repoPath);
 					deletingRemoteBranch = key;
 					try {
@@ -748,7 +752,7 @@
 		if (!projectId) return;
 		const name = nestedNewBranchName(nested.relPath).trim();
 		if (!name) return;
-		await runGitOp(projectId, 'isBranching', async () => {
+		await runGitOp(watchScope, 'isBranching', async () => {
 		try {
 			await ws.http('git:create-branch', { projectId, name, repoPath: nested.path });
 			showInfo('Branch Created', `Created "${name}" in ${nested.relPath}.`);
@@ -762,7 +766,7 @@
 		}, nested.path);
 	}
 	async function handleSwitchNestedBranch(nested: GitNestedRepoInfo, name: string) {
-		await runGitOp(projectId, 'isBranching', async () => {
+		await runGitOp(watchScope, 'isBranching', async () => {
 		try {
 			await ws.http('git:switch-branch', { projectId, name, repoPath: nested.path });
 			showInfo('Switched Branch', `Switched to "${name}" in ${nested.relPath}.`);
@@ -780,7 +784,7 @@
 			type: 'error',
 			confirmText: 'Delete',
 			onConfirm: async () => {
-				await runGitOp(projectId, 'isBranching', async () => {
+				await runGitOp(watchScope, 'isBranching', async () => {
 					try {
 						await ws.http('git:delete-branch', { projectId, name, repoPath: nested.path });
 						await loadBranches();
@@ -793,7 +797,7 @@
 							confirmText: 'Force Delete',
 							// Its own guard: answered after the first attempt released.
 							onConfirm: async () => {
-								await runGitOp(projectId, 'isBranching', async () => {
+								await runGitOp(watchScope, 'isBranching', async () => {
 									try {
 										await ws.http('git:delete-branch', { projectId, name, force: true, repoPath: nested.path });
 										await loadBranches();
@@ -823,7 +827,7 @@
 		const url = (nestedNewRemoteUrls[relPath] ?? '').trim();
 		if (!name || !url) return;
 		const nestedPath = branchInfo?.nested?.find(entry => entry.relPath === relPath)?.path;
-		await runGitOp(projectId, 'isConfiguring', async () => {
+		await runGitOp(watchScope, 'isConfiguring', async () => {
 		nestedAddingRemote = { ...nestedAddingRemote, [relPath]: true };
 		try {
 			const nested = branchInfo?.nested?.find(n => n.relPath === relPath);
@@ -850,7 +854,7 @@
 		const newUrl = (nestedEditRemoteUrls[relPath] ?? '').trim();
 		if (!oldName || !newName || !newUrl) return;
 		const nestedPath = branchInfo?.nested?.find(entry => entry.relPath === relPath)?.path;
-		await runGitOp(projectId, 'isConfiguring', async () => {
+		await runGitOp(watchScope, 'isConfiguring', async () => {
 		nestedSavingRemote = { ...nestedSavingRemote, [relPath]: true };
 		try {
 			const nested = branchInfo?.nested?.find(n => n.relPath === relPath);
@@ -877,7 +881,7 @@
 			confirmText: 'Remove',
 			onConfirm: async () => {
 				const nested = branchInfo?.nested?.find(entry => entry.relPath === relPath);
-				await runGitOp(projectId, 'isConfiguring', async () => {
+				await runGitOp(watchScope, 'isConfiguring', async () => {
 					try {
 						await ws.http('git:remove-remote', { projectId, name, repoPath: nested?.path });
 						await loadBranches();
@@ -892,7 +896,7 @@
 
 	async function handleNestedFetchRemote(remote: string, relPath: string) {
 		const nestedPath = branchInfo?.nested?.find(entry => entry.relPath === relPath)?.path;
-		await runGitOp(projectId, 'isFetching', async () => {
+		await runGitOp(watchScope, 'isFetching', async () => {
 		nestedFetchingRemote = { ...nestedFetchingRemote, [relPath]: remote };
 		try {
 			const nested = branchInfo?.nested?.find(n => n.relPath === relPath);
@@ -1273,7 +1277,11 @@
 	const isTwoColumnMode = $derived(containerWidth >= TWO_COLUMN_THRESHOLD);
 
 	// Track last project for re-fetch
+	// The workspace the panel last reset for. Keyed on the scope, not the project:
+	// a worktree switch keeps the project id, so keying on it left the panel
+	// showing the previous tree's repository until it was remounted.
 	let lastProjectId = $state('');
+	let lastGitScope = $state('');
 
 	// (File watcher subscription managed by $effect with auto-cleanup)
 
@@ -1327,7 +1335,7 @@
 	// ============================
 
 	async function handleInit() {
-		await runGitOp(projectId, 'isConfiguring', async () => {
+		await runGitOp(watchScope, 'isConfiguring', async () => {
 		isInitializing = true;
 		try {
 			await ws.http('git:init', { projectId, defaultBranch: 'main' });
@@ -1703,7 +1711,7 @@
 			type: 'warning',
 			confirmText: 'Remove',
 			onConfirm: async () => {
-				await runGitOp(projectId, 'isConfiguring', async () => {
+				await runGitOp(watchScope, 'isConfiguring', async () => {
 					try {
 						await ws.http('git:remove-remote', { projectId, name });
 						await loadRemotes();
@@ -1720,7 +1728,7 @@
 		const oldName = editingRemote;
 		const newName = editRemoteName.trim();
 		const newUrl = editRemoteUrl.trim();
-		await runGitOp(projectId, 'isConfiguring', async () => {
+		await runGitOp(watchScope, 'isConfiguring', async () => {
 		savingRemote = true;
 		try {
 			await ws.http('git:edit-remote', { projectId, oldName, newName, newUrl });
@@ -1747,7 +1755,7 @@
 	}
 
 	async function handleFetchRemote(remote: string) {
-		await runGitOp(projectId, 'isFetching', async () => {
+		await runGitOp(watchScope, 'isFetching', async () => {
 		fetchingRemote = remote;
 		try {
 			const result = await ws.http('git:fetch', { projectId, remote }) as { message: string };
@@ -1763,7 +1771,7 @@
 
 	async function handleAddRemote() {
 		if (!newRemoteName.trim() || !newRemoteUrl.trim()) return;
-		await runGitOp(projectId, 'isConfiguring', async () => {
+		await runGitOp(watchScope, 'isConfiguring', async () => {
 		addingRemote = true;
 		try {
 			await ws.http('git:add-remote', { projectId, name: newRemoteName.trim(), url: newRemoteUrl.trim() });
@@ -1782,7 +1790,7 @@
 	}
 
 	async function handlePushBranch(branch: string, repoPath?: string) {
-		await runGitOp(projectId, 'isPushing', async () => {
+		await runGitOp(watchScope, 'isPushing', async () => {
 		pushingBranch = branch;
 		try {
 			const result = await ws.http('git:push', { projectId, branch, repoPath }) as { success: boolean; message: string };
@@ -1824,7 +1832,7 @@
 	}
 
 	async function handlePushBranchForce(branch: string, repoPath?: string) {
-		await runGitOp(projectId, 'isPushing', async () => {
+		await runGitOp(watchScope, 'isPushing', async () => {
 		pushingBranch = branch;
 		try {
 			const result = await ws.http('git:push-advanced', {
@@ -1887,7 +1895,7 @@
 	}
 
 	async function handleCherryPick(hash: string, repoPath?: string) {
-		await runGitOp(projectId, 'isMoreBusy', async () => {
+		await runGitOp(watchScope, 'isMoreBusy', async () => {
 		try {
 			const result = await ws.http('git:cherry-pick', { projectId, hashes: [hash], repoPath }) as { success: boolean; message: string };
 			showInfo(result.success ? 'Cherry-picked' : 'Cherry-pick failed', result.message);
@@ -1962,7 +1970,7 @@
 			type: 'error',
 			confirmText: 'Discard',
 			onConfirm: async () => {
-				await runGitOp(projectId, 'isStaging', async () => {
+				await runGitOp(watchScope, 'isStaging', async () => {
 					try {
 						await ws.http('git:discard', { projectId, filePath: path });
 						await loadStatus();
@@ -2449,7 +2457,7 @@
 	// ============================
 
 	async function switchBranch(name: string) {
-		await runGitOp(projectId, 'isBranching', async () => {
+		await runGitOp(watchScope, 'isBranching', async () => {
 			try {
 				await ws.http('git:switch-branch', { projectId, name });
 				await loadAll();
@@ -2473,7 +2481,7 @@
 			type: 'warning',
 			confirmText: 'Checkout',
 			onConfirm: async () => {
-				await runGitOp(projectId, 'isBranching', async () => {
+				await runGitOp(watchScope, 'isBranching', async () => {
 					try {
 						await ws.http('git:checkout-commit', { projectId, commitHash: hash, repoPath });
 						selectedCommit = null;
@@ -2537,7 +2545,7 @@
 		const parts = remoteBranch.split('/');
 		const localName = parts.slice(1).join('/');
 		if (repoPath) {
-			await runGitOp(projectId, 'isBranching', async () => {
+			await runGitOp(watchScope, 'isBranching', async () => {
 				try {
 					await ws.http('git:create-branch', { projectId, name: localName, startPoint: remoteBranch, repoPath });
 					showInfo('Branch Created', `Checked out "${localName}" from ${remoteBranch}.`);
@@ -2671,7 +2679,7 @@
 		// outcome callers branch on is captured here. A skipped run reads as
 		// failure, which is the honest answer: no branch was created.
 		let created = false;
-		await runGitOp(projectId, 'isBranching', async () => {
+		await runGitOp(watchScope, 'isBranching', async () => {
 			try {
 				await ws.http('git:create-branch', { projectId, name, repoPath });
 				showInfo('Branch Created', `Switched to "${name}".`);
@@ -2703,7 +2711,7 @@
 			inputPlaceholder: 'New branch name',
 			onConfirm: async (newName) => {
 				if (!newName || newName === oldName) return;
-				await runGitOp(projectId, 'isBranching', async () => {
+				await runGitOp(watchScope, 'isBranching', async () => {
 				try {
 					await ws.http('git:rename-branch', { projectId, oldName, newName, repoPath });
 					const pushed = repoPath
@@ -2736,7 +2744,7 @@
 			type: 'error',
 			confirmText: 'Delete',
 			onConfirm: async () => {
-				await runGitOp(projectId, 'isBranching', async () => {
+				await runGitOp(watchScope, 'isBranching', async () => {
 					try {
 						await ws.http('git:delete-branch', { projectId, name });
 						await loadBranches();
@@ -2750,7 +2758,7 @@
 							// Its own guard: this dialog is answered long after the
 							// first attempt released the flag.
 							onConfirm: async () => {
-								await runGitOp(projectId, 'isBranching', async () => {
+								await runGitOp(watchScope, 'isBranching', async () => {
 									try {
 										await ws.http('git:delete-branch', { projectId, name, force: true });
 										await Promise.all([loadBranches(), loadRemotes()]);
@@ -2811,7 +2819,7 @@
 		if (!projectId || !name) return;
 		const activeRepoPath = repoPath ?? mergeRepoPath ?? undefined;
 		const isNested = Boolean(activeRepoPath);
-		const isBusy = getGitOps(projectId, activeRepoPath).isMoreBusy;
+		const isBusy = getGitOps(watchScope, activeRepoPath).isMoreBusy;
 		if (isBusy) return;
 		if (!isNested && blockedWhileBusy('merge')) return;
 
@@ -3008,7 +3016,7 @@
 
 	/** The More menu's slice of `runGitOp`, kept as a name its callers already use. */
 	async function runMore(fn: () => Promise<void>, repoPath?: string) {
-		await runGitOp(projectId, 'isMoreBusy', fn, repoPath);
+		await runGitOp(watchScope, 'isMoreBusy', fn, repoPath);
 	}
 
 	async function pushVariant(mode: 'with-tags' | 'all-tags' | 'force-lease' | 'force', label: string, repoPath?: string, branch?: string, remote?: string) {
@@ -3378,7 +3386,7 @@
 	// ============================
 
 	async function resolveConflict(filePath: string, resolution: 'ours' | 'theirs' | 'custom', customContent?: string) {
-		await runGitOp(projectId, 'isResolving', async () => {
+		await runGitOp(watchScope, 'isResolving', async () => {
 		try {
 			await ws.http('git:resolve-conflict', { projectId, filePath, resolution, customContent });
 			await loadConflicts();
@@ -3460,7 +3468,7 @@ ${bodies}`;
 			type: 'error',
 			confirmText: 'Abort Merge',
 			onConfirm: async () => {
-				await runGitOp(projectId, 'isResolving', async () => {
+				await runGitOp(watchScope, 'isResolving', async () => {
 				try {
 					let targetRepoPath: string | undefined = undefined;
 					const anyConflictFile = conflictFiles[0]?.path || conflictInitialPath;
@@ -3522,7 +3530,7 @@ ${bodies}`;
 	}
 
 	async function handleStashSave() {
-		await runGitOp(projectId, 'isStashing', async () => {
+		await runGitOp(watchScope, 'isStashing', async () => {
 		try {
 			await ws.http('git:stash-save', {
 				projectId,
@@ -3577,7 +3585,7 @@ ${bodies}`;
 	// makes the second click impossible, and `isStashing` disables the section's
 	// buttons so it reads as busy rather than as nothing happening.
 	async function handleStashPop(entry: StashEntryExtended) {
-		await runGitOp(projectId, 'isStashing', async () => {
+		await runGitOp(watchScope, 'isStashing', async () => {
 		try {
 			const result = await ws.http('git:stash-pop', { projectId, index: entry.index, repoPath: entry.repoPath });
 			await Promise.all([loadStash(), loadStatus()]);
@@ -3609,7 +3617,7 @@ ${bodies}`;
 			type: 'error',
 			confirmText: 'Drop',
 			onConfirm: async () => {
-				await runGitOp(projectId, 'isStashing', async () => {
+				await runGitOp(watchScope, 'isStashing', async () => {
 					try {
 						await ws.http('git:stash-drop', { projectId, index: entry.index, repoPath: entry.repoPath });
 						await loadStash();
@@ -3727,7 +3735,7 @@ ${bodies}`;
 
 	async function handleCreateTag() {
 		if (!newTagName.trim()) return;
-		await runGitOp(projectId, 'isTagging', async () => {
+		await runGitOp(watchScope, 'isTagging', async () => {
 		try {
 			await ws.http('git:create-tag', {
 				projectId,
@@ -3755,7 +3763,7 @@ ${bodies}`;
 			type: 'error',
 			confirmText: 'Delete',
 			onConfirm: async () => {
-				await runGitOp(projectId, 'isTagging', async () => {
+				await runGitOp(watchScope, 'isTagging', async () => {
 					try {
 						await ws.http('git:delete-tag', { projectId, name, repoPath });
 						await loadTags();
@@ -3769,7 +3777,7 @@ ${bodies}`;
 	}
 
 	async function handlePushTag(name: string, repoPath?: string) {
-		await runGitOp(projectId, 'isTagging', async () => {
+		await runGitOp(watchScope, 'isTagging', async () => {
 		try {
 			const result = await ws.http('git:push-tag', { projectId, name, repoPath });
 			if (!result.success) {
@@ -3800,10 +3808,12 @@ ${bodies}`;
 
 	$effect(() => {
 		if (hasActiveProject && projectId) {
-			const prevId = untrack(() => lastProjectId);
-			if (projectId !== prevId) {
+			const scope = watchScope;
+			const prevScope = untrack(() => lastGitScope);
+			if (scope !== prevScope) {
 				untrack(() => {
 					lastProjectId = projectId;
+					lastGitScope = scope;
 
 					// Heavy data (open diffs, history) is always re-fetched lazily.
 					resetAllViewTabs();
@@ -3849,7 +3859,7 @@ ${bodies}`;
 					// is handled by the workspace coordinator (snapshot provider +
 					// flush-before-switch), so we ONLY restore here — never save the
 					// already-cleared draft (that previously clobbered it).
-					const restored = loadGitUiState(projectId);
+					const restored = loadGitUiState(watchScope);
 					if (restored) {
 						activeView = restored.activeView;
 						leftPanelWidth = restored.leftPanelWidth;
@@ -3870,8 +3880,8 @@ ${bodies}`;
 					// authoritative, so an in-flight AI generation's result (which
 					// writes straight to that project's draft) is never clobbered by a
 					// stale restore. Mirror the resolved draft into the live commit box.
-					if (!hasCommitDraft(projectId)) setCommitDraft(projectId, restored?.commitMessage ?? '');
-					gitDraft.commitMessage = getCommitDraft(projectId);
+					if (!hasCommitDraft(watchScope)) setCommitDraft(watchScope, restored?.commitMessage ?? '');
+					gitDraft.commitMessage = getCommitDraft(watchScope);
 
 					// Once git status is loaded (isRepo known), re-open the restored
 					// diff tab and load the data behind the restored view. We do this
@@ -3894,7 +3904,7 @@ ${bodies}`;
 			activeView,
 			leftPanelWidth,
 			selectedRemote,
-			commitMessage: getCommitDraft(projectId),
+			commitMessage: getCommitDraft(watchScope),
 			selectedCommitHash: selectedCommit?.hash ?? null,
 			activeDiff: activeTab
 				? {
@@ -4066,7 +4076,7 @@ ${bodies}`;
 		if (!hasActiveProject || !projectId) return;
 
 		const unsub = ws.on('files:changed', (payload: any) => {
-			if (payload.projectId !== projectId) return;
+			if (payload.projectId !== watchScope) return;
 			// An empty change list carries no information; refreshing on it just
 			// churns git and the open diff for nothing.
 			if (payload.changes.length === 0) return;
@@ -4076,7 +4086,7 @@ ${bodies}`;
 		// The watcher was rebuilt and may have missed events. Reconcile everything:
 		// what was missed is by definition unknown, so no section can be trusted.
 		const unsubResync = ws.on('files:resync', (payload: any) => {
-			if (payload.projectId !== projectId) return;
+			if (payload.projectId !== watchScope) return;
 			scheduleGitRefresh(true);
 		});
 
@@ -4100,7 +4110,7 @@ ${bodies}`;
 		if (!hasActiveProject || !projectId) return;
 
 		const unsub = ws.on('git:changed', (payload: any) => {
-			if (payload.projectId !== projectId) return;
+			if (payload.projectId !== watchScope) return;
 			// Full refresh: index/HEAD/refs moved, so branches, remotes, stash, tags,
 			// contributors and the log can all be stale.
 			scheduleGitRefresh(true);
@@ -4284,7 +4294,7 @@ ${bodies}`;
 			</div>
 			{#if !branch.isCurrent}
 			<div class="flex items-center gap-1 shrink-0">
-				<button type="button" class="flex items-center justify-center w-6 h-6 rounded-md text-slate-400 hover:bg-violet-500/10 hover:text-violet-500 transition-colors bg-transparent border-none cursor-pointer disabled:opacity-40 disabled:cursor-not-allowed" onclick={(e) => { e.stopPropagation(); handleSwitchNestedBranch(nested, branch.name); }} title="Switch to this branch" disabled={getGitOps(projectId, nested.path).isBranching}><Icon name="lucide:arrow-right" class="w-3.5 h-3.5" /></button>
+				<button type="button" class="flex items-center justify-center w-6 h-6 rounded-md text-slate-400 hover:bg-violet-500/10 hover:text-violet-500 transition-colors bg-transparent border-none cursor-pointer disabled:opacity-40 disabled:cursor-not-allowed" onclick={(e) => { e.stopPropagation(); handleSwitchNestedBranch(nested, branch.name); }} title="Switch to this branch" disabled={getGitOps(watchScope, nested.path).isBranching}><Icon name="lucide:arrow-right" class="w-3.5 h-3.5" /></button>
 				{#if !nestedPushed.has(branch.name)}
 					{#if pushingBranch === branch.name}
 						<div class="flex items-center justify-center w-6 h-6 rounded-md text-emerald-500"><Icon name="lucide:loader-circle" class="w-3.5 h-3.5 animate-spin" /></div>
@@ -4293,7 +4303,7 @@ ${bodies}`;
 					{/if}
 				{/if}
 				<button type="button" class="flex items-center justify-center w-6 h-6 rounded-md text-slate-400 hover:bg-blue-500/10 hover:text-blue-500 transition-colors bg-transparent border-none cursor-pointer" onclick={(e) => { e.stopPropagation(); mergeNestedBranch(branch.name, nested.path); }} title="Merge into current branch"><Icon name="lucide:git-merge" class="w-3.5 h-3.5" /></button>
-				<button type="button" class="flex items-center justify-center w-6 h-6 rounded-md text-slate-400 hover:bg-red-500/10 hover:text-red-500 transition-colors bg-transparent border-none cursor-pointer disabled:opacity-40 disabled:cursor-not-allowed" onclick={(e) => { e.stopPropagation(); handleDeleteNestedBranch(nested, branch.name); }} title="Delete branch" disabled={getGitOps(projectId, nested.path).isBranching}><Icon name="lucide:trash-2" class="w-3.5 h-3.5" /></button>
+				<button type="button" class="flex items-center justify-center w-6 h-6 rounded-md text-slate-400 hover:bg-red-500/10 hover:text-red-500 transition-colors bg-transparent border-none cursor-pointer disabled:opacity-40 disabled:cursor-not-allowed" onclick={(e) => { e.stopPropagation(); handleDeleteNestedBranch(nested, branch.name); }} title="Delete branch" disabled={getGitOps(watchScope, nested.path).isBranching}><Icon name="lucide:trash-2" class="w-3.5 h-3.5" /></button>
 			</div>
 			{:else}
 			<div class="flex items-center gap-1 shrink-0">
@@ -4307,7 +4317,7 @@ ${bodies}`;
 				{#if branch.behind > 0}
 					<button type="button" class="flex items-center justify-center w-6 h-6 rounded-md text-slate-400 hover:bg-blue-500/10 hover:text-blue-500 transition-colors bg-transparent border-none cursor-pointer" onclick={(e) => { e.stopPropagation(); handlePull(nested.path, getNestedSelectedRemote(nested)); }} title="Pull ({branch.behind} behind)"><Icon name="lucide:download" class="w-3.5 h-3.5" /></button>
 				{/if}
-				<button type="button" class="flex items-center justify-center w-6 h-6 rounded-md text-slate-400 hover:bg-orange-500/10 hover:text-orange-500 transition-colors bg-transparent border-none cursor-pointer disabled:opacity-40 disabled:cursor-not-allowed" onclick={(e) => { e.stopPropagation(); renameBranch(branch.name, nested.path); }} title="Rename branch" disabled={getGitOps(projectId, nested.path).isBranching}><Icon name="lucide:pen-line" class="w-3.5 h-3.5" /></button>
+				<button type="button" class="flex items-center justify-center w-6 h-6 rounded-md text-slate-400 hover:bg-orange-500/10 hover:text-orange-500 transition-colors bg-transparent border-none cursor-pointer disabled:opacity-40 disabled:cursor-not-allowed" onclick={(e) => { e.stopPropagation(); renameBranch(branch.name, nested.path); }} title="Rename branch" disabled={getGitOps(watchScope, nested.path).isBranching}><Icon name="lucide:pen-line" class="w-3.5 h-3.5" /></button>
 			</div>
 			{/if}
 		</div>
@@ -4438,16 +4448,16 @@ ${bodies}`;
 				<!-- Nested commit form -->
 				<CommitForm
 					stagedCount={nestedStaged.length}
-					isCommitting={getGitOps(projectId, nested.path).isCommitting}
+					isCommitting={getGitOps(watchScope, nested.path).isCommitting}
 					onCommit={(msg) => handleCommit(msg, nested.path)}
 					hasRemotes={nestedRemoteNames(nested).length > 0}
 					selectedRemote={getNestedSelectedRemote(nested)}
 					currentBranch={nested.info.current}
 					branchAhead={nested.info.ahead ?? 0}
 					branchBehind={nested.info.behind ?? 0}
-					isPushing={getGitOps(projectId, nested.path).isPushing}
-					isPulling={getGitOps(projectId, nested.path).isPulling}
-					isMoreBusy={getGitOps(projectId, nested.path).isMoreBusy}
+					isPushing={getGitOps(watchScope, nested.path).isPushing}
+					isPulling={getGitOps(watchScope, nested.path).isPulling}
+					isMoreBusy={getGitOps(watchScope, nested.path).isMoreBusy}
 					repoBusy={Boolean(nested.info.detached || nested.info.operation)}
 					repoBusyReason={nested.info.operation ? `A ${nested.info.operation} is in progress` : nested.info.detached ? 'HEAD is detached' : ''}
 					repoPath={nested.path}
@@ -4494,7 +4504,7 @@ ${bodies}`;
 						onStash={() => openStashPrompt('staged', nested.path)}
 						onViewDiff={(file, sec) => viewDiff(file, sec)}
 						{aiChangesSet}
-						busy={getGitOps(projectId, nested.path).isStaging}
+						busy={getGitOps(watchScope, nested.path).isStaging}
 					/>
 					<ChangesSection
 						title="Changes"
@@ -4509,7 +4519,7 @@ ${bodies}`;
 						onDiscardAll={() => discardAll(nested.path)}
 						onViewDiff={(file, sec) => viewDiff(file, sec)}
 						{aiChangesSet}
-						busy={getGitOps(projectId, nested.path).isStaging}
+						busy={getGitOps(watchScope, nested.path).isStaging}
 					/>
 					{#if nestedTotalChanges === 0 && !isLoading}
 						<div class="flex flex-col items-center justify-center gap-2 py-6 text-slate-500 text-xs">
@@ -4684,7 +4694,7 @@ ${bodies}`;
 													{/if}
 													<button type="button" class="flex items-center justify-center w-6 h-6 rounded-md text-slate-400 hover:bg-violet-500/10 hover:text-violet-500 transition-colors bg-transparent border-none cursor-pointer" onclick={(e) => { e.stopPropagation(); nestedEditingRemote = { ...nestedEditingRemote, [nested.relPath]: remoteName }; nestedEditRemoteNames = { ...nestedEditRemoteNames, [nested.relPath]: remoteName }; }} title="Edit remote"><Icon name="lucide:pencil" class="w-3.5 h-3.5" /></button>
 													<button type="button" class="flex items-center justify-center w-6 h-6 rounded-md text-slate-400 hover:bg-blue-500/10 hover:text-blue-500 transition-colors bg-transparent border-none cursor-pointer" onclick={(e) => { e.stopPropagation(); void handleNestedFetchRemote(remoteName, nested.relPath); }} title="Fetch"><Icon name="lucide:refresh-cw" class="w-3.5 h-3.5" /></button>
-													<button type="button" class="flex items-center justify-center w-6 h-6 rounded-md text-slate-400 hover:bg-red-500/10 hover:text-red-500 transition-colors bg-transparent border-none cursor-pointer disabled:opacity-40 disabled:cursor-not-allowed" onclick={(e) => { e.stopPropagation(); handleNestedRemoveRemote(remoteName, nested.relPath); }} title="Disconnect" disabled={getGitOps(projectId, nested.path).isConfiguring}><Icon name="lucide:unlink" class="w-3.5 h-3.5" /></button>
+													<button type="button" class="flex items-center justify-center w-6 h-6 rounded-md text-slate-400 hover:bg-red-500/10 hover:text-red-500 transition-colors bg-transparent border-none cursor-pointer disabled:opacity-40 disabled:cursor-not-allowed" onclick={(e) => { e.stopPropagation(); handleNestedRemoveRemote(remoteName, nested.relPath); }} title="Disconnect" disabled={getGitOps(watchScope, nested.path).isConfiguring}><Icon name="lucide:unlink" class="w-3.5 h-3.5" /></button>
 												</div>
 											{/if}
 										</div>
@@ -4704,9 +4714,9 @@ ${bodies}`;
 														<div class="flex items-center justify-center w-6 h-6 text-slate-400 shrink-0"><Icon name="lucide:loader-circle" class="w-3.5 h-3.5 animate-spin" /></div>
 													{:else}
 														<div class="flex items-center gap-1 shrink-0">
-															<button type="button" class="flex items-center justify-center w-6 h-6 rounded-md text-slate-400 hover:bg-violet-500/10 hover:text-violet-500 transition-colors bg-transparent border-none cursor-pointer disabled:opacity-40 disabled:cursor-not-allowed" onclick={(e) => { e.stopPropagation(); checkoutRemoteBranch(branch.name, nested.path); }} title="Checkout locally" disabled={getGitOps(projectId, nested.path).isBranching}><Icon name="lucide:arrow-right" class="w-3.5 h-3.5" /></button>
+															<button type="button" class="flex items-center justify-center w-6 h-6 rounded-md text-slate-400 hover:bg-violet-500/10 hover:text-violet-500 transition-colors bg-transparent border-none cursor-pointer disabled:opacity-40 disabled:cursor-not-allowed" onclick={(e) => { e.stopPropagation(); checkoutRemoteBranch(branch.name, nested.path); }} title="Checkout locally" disabled={getGitOps(watchScope, nested.path).isBranching}><Icon name="lucide:arrow-right" class="w-3.5 h-3.5" /></button>
 															<button type="button" class="flex items-center justify-center w-6 h-6 rounded-md text-slate-400 hover:bg-blue-500/10 hover:text-blue-500 transition-colors bg-transparent border-none cursor-pointer" onclick={(e) => { e.stopPropagation(); copyToClipboard(branch.name); }} title="Copy branch name"><Icon name="lucide:copy" class="w-3.5 h-3.5" /></button>
-															<button type="button" class="flex items-center justify-center w-6 h-6 rounded-md text-slate-400 hover:bg-red-500/10 hover:text-red-500 transition-colors bg-transparent border-none cursor-pointer disabled:opacity-40 disabled:cursor-not-allowed" onclick={(e) => { e.stopPropagation(); handleDeleteRemoteBranch(remoteName, shortName, nested.path); }} title="Delete branch" disabled={getGitOps(projectId, nested.path).isBranching}><Icon name="lucide:trash-2" class="w-3.5 h-3.5" /></button>
+															<button type="button" class="flex items-center justify-center w-6 h-6 rounded-md text-slate-400 hover:bg-red-500/10 hover:text-red-500 transition-colors bg-transparent border-none cursor-pointer disabled:opacity-40 disabled:cursor-not-allowed" onclick={(e) => { e.stopPropagation(); handleDeleteRemoteBranch(remoteName, shortName, nested.path); }} title="Delete branch" disabled={getGitOps(watchScope, nested.path).isBranching}><Icon name="lucide:trash-2" class="w-3.5 h-3.5" /></button>
 														</div>
 													{/if}
 												</div>
@@ -4864,7 +4874,7 @@ ${bodies}`;
 									<button type="button" class="flex-1 px-2 py-1 text-xs font-medium rounded transition-colors cursor-pointer border-none {stashStagedOnly ? 'bg-white dark:bg-slate-700 text-slate-900 dark:text-slate-100 shadow-sm' : 'bg-transparent text-slate-500 hover:text-slate-700 dark:hover:text-slate-300'}" onclick={() => stashStagedOnly = true}>Staged only</button>
 								</div>
 								<div class="flex gap-1.5">
-									<button type="button" class="flex-1 px-3 py-1.5 text-xs font-medium rounded-md bg-violet-600 text-white hover:bg-violet-700 transition-colors cursor-pointer border-none disabled:opacity-40 disabled:cursor-not-allowed" onclick={handleStashSave} disabled={getGitOps(projectId, nested.path).isStashing}>Stash Changes</button>
+									<button type="button" class="flex-1 px-3 py-1.5 text-xs font-medium rounded-md bg-violet-600 text-white hover:bg-violet-700 transition-colors cursor-pointer border-none disabled:opacity-40 disabled:cursor-not-allowed" onclick={handleStashSave} disabled={getGitOps(watchScope, nested.path).isStashing}>Stash Changes</button>
 									<button type="button" class="px-3 py-1.5 text-xs font-medium bg-transparent border border-slate-200 dark:border-slate-700 text-slate-600 dark:text-slate-400 rounded-md hover:bg-slate-100 dark:hover:bg-slate-800 transition-colors cursor-pointer" onclick={() => { showStashSaveForm = false; stashMessage = ''; stashStagedOnly = false; stashRepoPath = undefined; }}>Cancel</button>
 								</div>
 							</div>
@@ -4903,8 +4913,8 @@ ${bodies}`;
 											</p>
 										</div>
 										<div class="flex items-center gap-1 shrink-0">
-											<button type="button" class="flex items-center justify-center w-6 h-6 rounded-md text-slate-400 hover:bg-emerald-500/10 hover:text-emerald-500 transition-colors bg-transparent border-none cursor-pointer disabled:opacity-40 disabled:cursor-not-allowed" onclick={(e) => { e.stopPropagation(); handleStashPop(entry); }} title="Pop" disabled={getGitOps(projectId, nested.path).isStashing}><Icon name="lucide:archive-restore" class="w-3.5 h-3.5" /></button>
-											<button type="button" class="flex items-center justify-center w-6 h-6 rounded-md text-slate-400 hover:bg-red-500/10 hover:text-red-500 transition-colors bg-transparent border-none cursor-pointer disabled:opacity-40 disabled:cursor-not-allowed" onclick={(e) => { e.stopPropagation(); handleStashDrop(entry); }} title="Drop" disabled={getGitOps(projectId, nested.path).isStashing}><Icon name="lucide:trash-2" class="w-3.5 h-3.5" /></button>
+											<button type="button" class="flex items-center justify-center w-6 h-6 rounded-md text-slate-400 hover:bg-emerald-500/10 hover:text-emerald-500 transition-colors bg-transparent border-none cursor-pointer disabled:opacity-40 disabled:cursor-not-allowed" onclick={(e) => { e.stopPropagation(); handleStashPop(entry); }} title="Pop" disabled={getGitOps(watchScope, nested.path).isStashing}><Icon name="lucide:archive-restore" class="w-3.5 h-3.5" /></button>
+											<button type="button" class="flex items-center justify-center w-6 h-6 rounded-md text-slate-400 hover:bg-red-500/10 hover:text-red-500 transition-colors bg-transparent border-none cursor-pointer disabled:opacity-40 disabled:cursor-not-allowed" onclick={(e) => { e.stopPropagation(); handleStashDrop(entry); }} title="Drop" disabled={getGitOps(watchScope, nested.path).isStashing}><Icon name="lucide:trash-2" class="w-3.5 h-3.5" /></button>
 										</div>
 									</div>
 									{#if stashExpanded}
@@ -5014,7 +5024,7 @@ ${bodies}`;
 												? 'bg-violet-600 text-white hover:bg-violet-700'
 												: 'bg-slate-200 dark:bg-slate-700 text-slate-400 dark:text-slate-500 cursor-not-allowed'}"
 										onclick={handleCreateTag}
-										disabled={!newTagName.trim() || getGitOps(projectId, nested.path).isTagging}
+										disabled={!newTagName.trim() || getGitOps(watchScope, nested.path).isTagging}
 									>
 										Create Tag
 									</button>
@@ -5068,7 +5078,7 @@ ${bodies}`;
 											type="button"
 											class="flex items-center justify-center w-6 h-6 rounded-md text-slate-400 hover:bg-blue-500/10 hover:text-blue-500 transition-colors bg-transparent border-none cursor-pointer"
 											onclick={() => handlePushTag(tag.name, nested.path)}
-											disabled={getGitOps(projectId, nested.path).isTagging}
+											disabled={getGitOps(watchScope, nested.path).isTagging}
 											title="Push tag to remote"
 										>
 											<Icon name="lucide:arrow-up-from-line" class="w-3.5 h-3.5" />
@@ -5077,7 +5087,7 @@ ${bodies}`;
 											type="button"
 											class="flex items-center justify-center w-6 h-6 rounded-md text-slate-400 hover:bg-red-500/10 hover:text-red-500 transition-colors bg-transparent border-none cursor-pointer"
 											onclick={() => handleDeleteTag(tag.name, nested.path)}
-											disabled={getGitOps(projectId, nested.path).isTagging}
+											disabled={getGitOps(watchScope, nested.path).isTagging}
 											title="Delete tag"
 										>
 											<Icon name="lucide:trash-2" class="w-3.5 h-3.5" />

@@ -30,6 +30,7 @@ import {
 } from '$frontend/components/preview/browser/core/tab-operations.svelte';
 import { browserCleanup } from '$frontend/components/preview/browser/core/cleanup.svelte';
 import { setInteractionProjectId } from '$frontend/components/preview/browser/core/interactions.svelte';
+import { currentScopeKey } from '$frontend/stores/features/worktrees.svelte';
 import { registerDock, getActiveWorkspaceProjectId } from '$frontend/stores/ui/project-workspace.svelte';
 import ws, { onWsReconnect } from '$frontend/utils/ws';
 import { debug } from '$shared/utils/logger';
@@ -322,10 +323,10 @@ function materializeBlankTab(slot: TabSnapshotSlot): string {
  * Rebuild the singleton tab-list for `projectId` by reconciling the persisted
  * snapshot (slot order + blank tabs) with the backend's live sessions.
  */
-async function reconcileTabs(projectId: string): Promise<void> {
+async function reconcileTabs(projectId: string, scopeKey: string): Promise<void> {
 	let backendTabs: ExistingTabInfo[] = [];
 	try {
-		const result = await getExistingTabs(projectId);
+		const result = await getExistingTabs(scopeKey);
 		if (result && result.count > 0) {
 			backendTabs = result.tabs;
 			debug.log('preview', `✅ [dock load] Found ${result.count} backend tabs for project ${projectId}`);
@@ -388,7 +389,7 @@ async function reconcileTabs(projectId: string): Promise<void> {
 		previewTabManager.switchTab(activeFrontendId);
 		const activeTab = previewTabManager.getTab(activeFrontendId);
 		if (activeTab?.sessionId) {
-			await switchToBackendTab(activeTab.sessionId, projectId);
+			await switchToBackendTab(activeTab.sessionId, scopeKey);
 		}
 	}
 }
@@ -431,7 +432,7 @@ registerDock({
 		// Update the interactions module's projectId so any subsequent sends use it.
 		setInteractionProjectId(projectId);
 
-		await reconcileTabs(projectId);
+		await reconcileTabs(projectId, currentScopeKey() || projectId);
 
 		// Authoritative seeding: when neither snapshot nor backend produced any
 		// tabs, drop a single empty tab while the panel still shows its loading
@@ -465,12 +466,16 @@ registerDock({
  * Unstamped events (older backend / no projectId) are accepted so we never drop
  * legitimate events we can't attribute.
  */
+/**
+ * Events carry a workspace scope key, not a bare project id — a worktree's tabs
+ * must not reach a viewer sitting on the main tree of the same project.
+ */
 function isEventForActiveProject(data: { projectId?: string } | null | undefined): boolean {
 	const eventProjectId = data?.projectId;
 	if (!eventProjectId) return true;
-	const activeProjectId = getActiveWorkspaceProjectId();
-	if (!activeProjectId) return true;
-	return eventProjectId === activeProjectId;
+	const activeScope = currentScopeKey() || getActiveWorkspaceProjectId();
+	if (!activeScope) return true;
+	return eventProjectId === activeScope;
 }
 
 let tabSyncInitialized = false;
@@ -498,7 +503,8 @@ export function initPreviewTabSync(): void {
 		if (!projectId) return;
 
 		debug.log('preview', '🔁 [dock] Reconnected — re-reading agent state from backend');
-		void getExistingTabs(projectId).then((result) => {
+		const scopeKey = currentScopeKey() || projectId;
+		void getExistingTabs(scopeKey).then((result) => {
 			// A project switch may have landed while this was in flight; its own
 			// load() is authoritative and must not be overwritten by this answer.
 			if (getActiveWorkspaceProjectId() !== projectId) return;
@@ -709,4 +715,23 @@ export function initPreviewTabSync(): void {
 		if (!isEventForActiveProject(data)) return;
 		setBackendTabFullscreen(data.tabId, !!data.active);
 	});
+}
+
+/**
+ * Rebuild the tab list for the workspace now on screen.
+ *
+ * A worktree switch keeps the same project, so the dock's own load never fires
+ * — but the tabs belong to the tree, not the project, and must be re-read.
+ */
+export async function reloadPreviewTabsForScope(projectId: string, scopeKey: string): Promise<void> {
+	previewTabManager.clearAllTabs();
+	browserCleanup.clearAll();
+	restoredSnapshot = null;
+	setInteractionProjectId(projectId);
+
+	await reconcileTabs(projectId, scopeKey);
+
+	if (previewTabManager.getAllTabs().length === 0) {
+		previewTabManager.createTab('');
+	}
 }

@@ -21,6 +21,7 @@ import { getSnapshotFiles } from './gitignore';
 import { fileWatcher } from '../files/file-watcher';
 import type { MessageSnapshot, SessionScopedChanges } from '$shared/types/database/schema';
 import { calculateFileChangeStats } from '$shared/utils/diff-calculator';
+import { makeScopeKey } from '$shared/utils/workspace-scope';
 import { debug } from '$shared/utils/logger';
 
 interface SnapshotMetadata {
@@ -218,8 +219,11 @@ export class SnapshotService {
 			}
 
 			// The dirty set is no longer the snapshot source, but clear it so it does
-			// not grow unbounded for the Files panel UI.
-			fileWatcher.clearDirtyFiles(projectId);
+			// not grow unbounded for the Files panel UI. Keyed per workspace, so a
+			// worktree session must not clear the main tree's set.
+			fileWatcher.clearDirtyFiles(
+				makeScopeKey(projectId, sessionQueries.getById(sessionId)?.worktree_id ?? null)
+			);
 
 			// No changes vs the baseline → reuse the existing head snapshot.
 			if (Object.keys(sessionChanges).length === 0 && previousSnapshot) {

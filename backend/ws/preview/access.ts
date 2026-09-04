@@ -12,6 +12,7 @@ import type { WSConnection } from '$shared/utils/ws-server';
 import { ws } from '$backend/utils/ws';
 import { requireCurrentProjectAccess, requireProjectAccess } from '../access';
 import { browserPreviewServiceManager } from '../../preview/index';
+import { makeScopeKey, scopeProjectId } from '$shared/utils/workspace-scope';
 
 type PreviewService = ReturnType<typeof browserPreviewServiceManager.getService>;
 type Tab = NonNullable<ReturnType<PreviewService['getActiveTab']>>;
@@ -24,7 +25,11 @@ export interface BrowserPreviewContext {
 
 export function requireBrowserPreviewAccess(conn: WSConnection): BrowserPreviewContext {
 	const { userId, projectId } = requireCurrentProjectAccess(conn);
-	const previewService = browserPreviewServiceManager.getService(projectId);
+	// Tabs are scoped to the tree being viewed, so a worktree's preview never
+	// shows the main project's pages.
+	const previewService = browserPreviewServiceManager.getService(
+		makeScopeKey(projectId, ws.getWorktreeId(conn))
+	);
 	return { userId, projectId, previewService };
 }
 
@@ -38,11 +43,14 @@ export function requireBrowserPreviewAccess(conn: WSConnection): BrowserPreviewC
  */
 export function requireBrowserPreviewAccessFor(
 	conn: WSConnection,
-	projectId: string
+	scopeKey: string
 ): BrowserPreviewContext {
+	// The caller passes a workspace scope key; membership is always decided on
+	// the project it belongs to.
+	const projectId = scopeProjectId(scopeKey);
 	requireProjectAccess(conn, projectId); // throws if the caller isn't a member
 	const userId = ws.getUserId(conn);
-	const previewService = browserPreviewServiceManager.getService(projectId);
+	const previewService = browserPreviewServiceManager.getService(scopeKey);
 	return { userId, projectId, previewService };
 }
 

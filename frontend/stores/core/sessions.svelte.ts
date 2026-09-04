@@ -119,6 +119,11 @@ export async function setCurrentSession(session: ChatSession | null, skipLoadMes
 	// session re-detects its state via catchupActiveStream on switch.
 	syncGlobalStateFromSession(session?.id ?? null);
 
+	// Point the workspace at the tree this session runs in, before anything else
+	// asks the server for files, terminals or preview tabs.
+	const { syncWorktreeContextFromSession } = await import('$frontend/stores/features/worktrees.svelte');
+	await syncWorktreeContextFromSession(session);
+
 	// Clear unread status when viewing a session
 	if (session) {
 		markSessionRead(session.id);
@@ -148,6 +153,8 @@ export async function setCurrentSession(session: ChatSession | null, skipLoadMes
 					sessionState.sessions[idx] = freshSession;
 				}
 				sessionState.currentSession = freshSession;
+
+				await syncWorktreeContextFromSession(freshSession);
 			}
 		} catch {
 			// Ignore - proceed with existing session data
@@ -171,10 +178,15 @@ export async function setCurrentSession(session: ChatSession | null, skipLoadMes
 	}
 }
 
-export async function createSession(projectId: string, title: string, forceNew: boolean = false): Promise<ChatSession | null> {
+export async function createSession(projectId: string, title: string, forceNew: boolean = false, worktreeId?: string | null): Promise<ChatSession | null> {
 	try {
+		// A new chat inherits the tree the user is currently working in, unless the
+		// caller names one explicitly (the "new isolated chat" shortcut).
+		const { worktreeState } = await import('$frontend/stores/features/worktrees.svelte');
+		const targetWorktreeId = worktreeId === undefined ? worktreeState.activeId : worktreeId;
+
 		// For shared sessions, we want to get or create a shared session for the project
-		const session = await ws.http('sessions:get-shared', { forceNew });
+		const session = await ws.http('sessions:get-shared', { forceNew, worktreeId: targetWorktreeId });
 
 		// When forceNew is true, mark all other sessions for this project as ended in frontend state
 		// This ensures switching projects and back won't restore the old session
@@ -203,9 +215,9 @@ export async function createSession(projectId: string, title: string, forceNew: 
 	}
 }
 
-export async function createNewChatSession(projectId: string): Promise<ChatSession | null> {
+export async function createNewChatSession(projectId: string, worktreeId?: string | null): Promise<ChatSession | null> {
 	// Force create a new session (ends current shared session if exists)
-	return createSession(projectId, 'New Chat Session', true);
+	return createSession(projectId, 'New Chat Session', true, worktreeId);
 }
 
 export function updateSession(updatedSession: ChatSession) {

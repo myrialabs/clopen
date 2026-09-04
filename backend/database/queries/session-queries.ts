@@ -41,8 +41,8 @@ export const sessionQueries = {
 		const newSession = { id, ...session };
 
 		db.prepare(`
-			INSERT INTO chat_sessions (id, project_id, title, engine, head_session_id, head_message_id, started_at, ended_at)
-			VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+			INSERT INTO chat_sessions (id, project_id, title, engine, head_session_id, head_message_id, started_at, ended_at, worktree_id)
+			VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
 		`).run(
 			id,
 			session.project_id,
@@ -51,7 +51,8 @@ export const sessionQueries = {
 			session.head_session_id || null,
 			session.head_message_id || null,
 			session.started_at,
-			session.ended_at || null
+			session.ended_at || null,
+			session.worktree_id || null
 		);
 
 		return newSession;
@@ -104,6 +105,14 @@ export const sessionQueries = {
 	},
 
 	/** Persist the active profile for a session (NULL clears it). */
+	/** Bind a session to a worktree; null puts it back on the main project tree. */
+	setWorktree(id: string, worktreeId: string | null): void {
+		const db = getDatabase();
+		db.prepare(`
+			UPDATE chat_sessions SET worktree_id = ? WHERE id = ?
+		`).run(worktreeId, id);
+	},
+
 	updateProfile(id: string, profileId: number | null): void {
 		const db = getDatabase();
 		db.prepare(`
@@ -440,14 +449,37 @@ export const sessionQueries = {
 	 * Get the active shared session for a project
 	 * Returns the most recent session that hasn't ended
 	 */
-	getActiveSessionForProject(projectId: string): ChatSession | null {
+	/**
+	 * Most recent active session, optionally restricted to one worktree.
+	 * `worktreeId` undefined means "any"; null means "the main tree only".
+	 */
+	getActiveSessionForProject(projectId: string, worktreeId?: string | null): ChatSession | null {
 		const db = getDatabase();
+
+		if (worktreeId === undefined) {
+			return db.prepare(`
+				SELECT * FROM chat_sessions
+				WHERE project_id = ? AND ended_at IS NULL
+				ORDER BY started_at DESC
+				LIMIT 1
+			`).get(projectId) as ChatSession | null;
+		}
+
+		if (worktreeId === null) {
+			return db.prepare(`
+				SELECT * FROM chat_sessions
+				WHERE project_id = ? AND ended_at IS NULL AND worktree_id IS NULL
+				ORDER BY started_at DESC
+				LIMIT 1
+			`).get(projectId) as ChatSession | null;
+		}
+
 		return db.prepare(`
-			SELECT * FROM chat_sessions 
-			WHERE project_id = ? AND ended_at IS NULL
+			SELECT * FROM chat_sessions
+			WHERE project_id = ? AND ended_at IS NULL AND worktree_id = ?
 			ORDER BY started_at DESC
 			LIMIT 1
-		`).get(projectId) as ChatSession | null;
+		`).get(projectId, worktreeId) as ChatSession | null;
 	},
 
 	/**
@@ -468,10 +500,16 @@ export const sessionQueries = {
 	 * When forceNew=true, creates a new session WITHOUT ending existing ones
 	 * (multiple sessions can be active in parallel).
 	 */
-	getOrCreateSharedSession(projectId: string, projectName: string, forceNew: boolean = false): ChatSession {
+	getOrCreateSharedSession(
+		projectId: string,
+		projectName: string,
+		forceNew: boolean = false,
+		worktreeId: string | null = null
+	): ChatSession {
 		if (!forceNew) {
-			// Return most recent active session if exists
-			const activeSession = this.getActiveSessionForProject(projectId);
+			// Reuse only within the same tree — a session bound to a worktree is
+			// not a substitute for one on main, and vice versa.
+			const activeSession = this.getActiveSessionForProject(projectId, worktreeId);
 			if (activeSession) {
 				return activeSession;
 			}
@@ -484,7 +522,8 @@ export const sessionQueries = {
 			title: `Shared Chat - ${projectName} (${new Date().toLocaleString()})`,
 			started_at: now,
 			ended_at: undefined,
-			head_session_id: undefined
+			head_session_id: undefined,
+			worktree_id: worktreeId
 		});
 	},
 

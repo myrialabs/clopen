@@ -47,6 +47,7 @@
 	// Mobile detection
 	let isMobile = $state(false);
 
+
 	// Touchscreen detection
 	let isTouchDevice = $state(false);
 
@@ -201,6 +202,7 @@
 			{/each}
 		</div>
 
+
 		{#if showActionsMenu}
 			<div class="fixed inset-0 z-40" onclick={closeActionsMenu}></div>
 			<div
@@ -295,6 +297,14 @@
 						<Icon name="lucide:undo-2" class={isMobile ? 'w-4.5 h-4.5' : 'w-4 h-4'} />
 					</button>
 				{/if}
+				<button
+					type="button"
+					class="flex items-center justify-center {isMobile ? 'w-9 h-8' : 'w-6 h-6'} bg-transparent border-none rounded-md text-slate-500 cursor-pointer transition-all duration-150 hover:bg-violet-500/10 hover:text-slate-900 dark:hover:text-slate-100"
+					onclick={() => chatPanelRef?.panelActions?.newIsolatedChat()}
+					title="New Isolated Chat"
+				>
+					<Icon name="lucide:git-fork" class={isMobile ? 'w-4.5 h-4.5' : 'w-4 h-4'} />
+				</button>
 				<button
 					type="button"
 					class="flex items-center justify-center {isMobile ? 'w-9 h-8' : 'w-6 h-6'} bg-transparent border-none rounded-md text-slate-500 cursor-pointer transition-all duration-150 hover:bg-violet-500/10 hover:text-slate-900 dark:hover:text-slate-100"
