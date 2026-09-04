@@ -14,6 +14,7 @@
 	import { userStore } from '$frontend/stores/features/user.svelte';
 	import { debug } from '$shared/utils/logger';
 	import { modelStore } from '$frontend/stores/features/models.svelte';
+	import { worktreeById } from '$frontend/stores/features/worktrees.svelte';
 	import { parseSnippet } from '$frontend/utils/fts-snippet';
 
 	interface Props {
@@ -525,6 +526,11 @@
 					{@const summary = session.head_summary || 'No messages yet'}
 					{@const deepSnippet = deepSearchResults?.get(session.id)}
 					{@const userCount = session.user_count ?? 0}
+					<!-- Only a worktree is labelled — no label means the main tree, which is
+					     where most sessions live. A worktree deleted since the session ran
+					     leaves a dangling id, and the server resolves that to the main tree,
+					     so the lookup missing is the right answer rather than a gap. -->
+					{@const sessionWorktree = worktreeById(session.worktree_id)}
 					<div
 						class="flex items-center gap-2 w-full p-3 bg-transparent border border-slate-200 dark:border-slate-700 rounded-lg text-slate-900 dark:text-slate-100 text-sm text-left transition-all duration-150
 							{isActive
@@ -571,6 +577,16 @@
 									{/if}
 								</div>
 								<div class="flex items-center gap-2 mt-0.5 text-xs text-slate-500 dark:text-slate-400">
+									{#if sessionWorktree}
+										<span
+											class="flex items-center gap-1 min-w-0 max-w-32 text-amber-600 dark:text-amber-400"
+											title="Worktree: {sessionWorktree.name}"
+										>
+											<Icon name="lucide:git-fork" class="w-3 h-3 shrink-0" />
+											<span class="truncate">{sessionWorktree.name}</span>
+										</span>
+										<span>·</span>
+									{/if}
 									<span class="flex items-center gap-1 flex-none">
 										<Icon name="lucide:messages-square" class="w-3 h-3" />
 										{userCount}
