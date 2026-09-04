@@ -453,8 +453,8 @@
 <!-- DB Client Modal -->
 <DbClientModal bind:isOpen={quickPanelsState.dbClientOpen} onClose={closeDbClientDialog} />
 <SshClientModal bind:isOpen={quickPanelsState.sshClientOpen} onClose={closeSshClientDialog} />
-	<PortsModal bind:isOpen={quickPanelsState.portsOpen} onClose={closePortsDialog} />
-	<ContainersModal bind:isOpen={quickPanelsState.containersOpen} onClose={closeContainersDialog} />
-	<MemoryModal bind:isOpen={quickPanelsState.memoryOpen} onClose={closeMemoryDialog} />
+<PortsModal bind:isOpen={quickPanelsState.portsOpen} onClose={closePortsDialog} />
+<ContainersModal bind:isOpen={quickPanelsState.containersOpen} onClose={closeContainersDialog} />
+<MemoryModal bind:isOpen={quickPanelsState.memoryOpen} onClose={closeMemoryDialog} />
 
-	<ProjectInfoModal bind:isOpen={showProjectInfo} onClose={closeProjectInfo} project={projectInfoProject} />
+<ProjectInfoModal bind:isOpen={showProjectInfo} onClose={closeProjectInfo} project={projectInfoProject} />
