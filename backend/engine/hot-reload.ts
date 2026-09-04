@@ -34,6 +34,8 @@ import {
 	acquireServer,
 	pooledScopeKeys,
 	reconcileServerHolders,
+	revalidatePool,
+	setLiveStreamSource,
 	DEFAULT_SCOPE_KEY,
 } from './adapters/opencode/server';
 import { debug } from '$shared/utils/logger';
@@ -51,7 +53,6 @@ let started = false;
  * talk to a server anyway.
  */
 async function warmDefaultScope(): Promise<void> {
-	if (!pooledScopeKeys().includes(DEFAULT_SCOPE_KEY)) return;
 	try {
 		await acquireServer({});
 		debug.log('engine', 'Open Code default server re-warmed for the new config');
@@ -71,6 +72,10 @@ export function startEngineHotReload(): void {
 	if (started) return;
 	started = true;
 
+	// The pool sweeps itself on a timer; this is where it learns which holds are
+	// still backed by a running stream.
+	setLiveStreamSource(() => new Set(streamManager.getActiveStreams().map(s => s.streamId)));
+
 	onEngineConfigChanged(revision => {
 		// Holder bookkeeping is reconciled against the live stream set first, so
 		// "is anything running" and "is this server still needed" are answered from
@@ -83,16 +88,26 @@ export function startEngineHotReload(): void {
 		// that is mid-answer.
 		retireAllEngines();
 
-		if (liveStreams.length > 0) {
-			debug.log(
-				'engine',
-				`Engine config now at revision ${revision}; ${liveStreams.length} stream(s) in flight — ` +
-				'applying it to the next turn and draining the old server behind them'
-			);
-			return;
-		}
+		// Read BEFORE revalidating: revalidation is what makes the outgoing default
+		// server reapable, so asking afterwards would report the scope as unused
+		// and skip the warm-up on exactly the change that needs it.
+		const defaultScopeInUse = pooledScopeKeys().includes(DEFAULT_SCOPE_KEY);
 
-		void warmDefaultScope();
+		// Re-resolve every pooled scope's key, not just the default one. A Profile
+		// server is otherwise still its own scope's current key, so it is neither
+		// superseded nor idle and goes on serving the config — and the credentials —
+		// that were just replaced. Held servers are unaffected: they are pinned.
+		void revalidatePool().then(() => {
+			if (liveStreams.length > 0) {
+				debug.log(
+					'engine',
+					`Engine config now at revision ${revision}; ${liveStreams.length} stream(s) in flight — ` +
+					'applying it to the next turn and draining the old server behind them'
+				);
+				return;
+			}
+			if (defaultScopeInUse) return warmDefaultScope();
+		});
 	});
 
 	debug.log('engine', 'Engine hot-reload active');
