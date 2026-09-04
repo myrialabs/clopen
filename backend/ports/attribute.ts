@@ -23,47 +23,8 @@
 
 import type { PortOrigin, PortProcess, PortSocket } from '$shared/types/ports';
 import type { ProbePlatform } from '../host/runner';
-import { ptyKitManager } from '../terminal/ptykit';
-import { projectQueries } from '../database/queries';
+import { collectSessionPids, type ProjectShell } from '../projects/shell-ownership';
 import { collectOwnedPorts, ownedPortKey, type OwnedPort } from './registry';
-import { debug } from '$shared/utils/logger';
-
-/** A live Clopen terminal session, keyed by the pid of its shell. */
-export interface SessionPid {
-	pid: number;
-	sessionId: string;
-	projectId: string;
-	projectName: string | null;
-	cwd: string;
-}
-
-/**
- * Shell pids of every active PTY session. The manager lists per namespace and
- * a namespace is a project, so every project is asked in turn.
- */
-export function collectSessionPids(): Map<number, SessionPid> {
-	const sessions = new Map<number, SessionPid>();
-
-	try {
-		for (const project of projectQueries.getAll()) {
-			for (const session of ptyKitManager.list(project.id)) {
-				const info = session.info();
-				if (info.status !== 'active' || !info.pid) continue;
-				sessions.set(info.pid, {
-					pid: info.pid,
-					sessionId: info.sessionId,
-					projectId: project.id,
-					projectName: project.name ?? null,
-					cwd: info.cwd
-				});
-			}
-		}
-	} catch (error) {
-		debug.log('ports', 'could not read terminal sessions:', error);
-	}
-
-	return sessions;
-}
 
 /** Guard against a malformed parent chain looping forever. */
 const MAX_ANCESTRY_DEPTH = 40;
@@ -118,7 +79,7 @@ export interface Ancestry {
 	/** The chain from the process itself up to init, self first. */
 	chain: PortProcess[];
 	/** The Clopen terminal session it descends from, if any. */
-	session: SessionPid | null;
+	session: ProjectShell | null;
 	/**
 	 * True when the chain reaches a process Clopen is: one of its own instances
 	 * locally, or the sshd session it is using on a remote host.
@@ -137,13 +98,13 @@ function sshdUserOf(command: string): string | null {
 export function traceAncestry(
 	pid: number,
 	processes: Map<number, PortProcess>,
-	sessions: Map<number, SessionPid>,
+	sessions: Map<number, ProjectShell>,
 	clopenRootPids: ReadonlySet<number> = new Set()
 ): Ancestry {
 	const chain: PortProcess[] = [];
 	const seen = new Set<number>();
 
-	let session: SessionPid | null = null;
+	let session: ProjectShell | null = null;
 	let sshdUser: string | null = null;
 	let fromClopen = false;
 	let current: number | null = pid;
@@ -218,7 +179,7 @@ export interface AttributionContext {
 	/** Ports Clopen opened on this host, whichever host it is. */
 	owned: Map<string, OwnedPort>;
 	/** Shell pids of local terminal sessions; empty on an SSH host. */
-	sessions: Map<number, SessionPid>;
+	sessions: Map<number, ProjectShell>;
 	/**
 	 * The processes that count as "Clopen" on this host: its own instances
 	 * locally, and remotely everything found to belong to Clopen's own SSH

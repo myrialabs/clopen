@@ -13,6 +13,7 @@ import { createRouter } from '$shared/utils/ws-server';
 import { crudHandler } from './crud';
 import { statusHandler } from './status';
 import { presenceHandler } from './presence';
+import { infoHandler } from './info';
 
 export const projectsRouter = createRouter()
 	// CRUD Operations (HTTP)
@@ -22,4 +23,7 @@ export const projectsRouter = createRouter()
 	.merge(statusHandler)
 
 	// Presence Management (HTTP + Broadcast)
-	.merge(presenceHandler);
+	.merge(presenceHandler)
+
+	// Per-project resource info (storage + process-isolated CPU/RAM)
+	.merge(infoHandler);

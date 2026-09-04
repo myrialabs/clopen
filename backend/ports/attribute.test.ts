@@ -1,6 +1,7 @@
 import { describe, expect, test } from 'bun:test';
 import type { PortProcess, PortSocket } from '$shared/types/ports';
-import { findClopenPids, groupListenerPids, traceAncestry, type SessionPid } from './attribute';
+import { findClopenPids, groupListenerPids, traceAncestry } from './attribute';
+import type { ProjectShell } from '../projects/shell-ownership';
 import { findConnectionSshd, parseEnvironProbe, sameConnection } from './ssh-lineage';
 
 function proc(pid: number, parentPid: number | null, command: string): PortProcess {
@@ -75,7 +76,7 @@ describe('groupListenerPids', () => {
 });
 
 describe('traceAncestry', () => {
-	const sessions = new Map<number, SessionPid>([
+	const sessions = new Map<number, ProjectShell>([
 		[400, { pid: 400, sessionId: 'sess-1', projectId: 'proj-1', projectName: 'shop', cwd: '/srv/shop' }]
 	]);
 
