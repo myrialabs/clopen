@@ -123,6 +123,15 @@ export interface BrowserTab {
 
 	// Internal
 	isDestroyed?: boolean;
+	/**
+	 * Whether the tab's page is being rebuilt right now.
+	 *
+	 * A crashed renderer or a Chrome that went away leaves the tab itself
+	 * intact — it keeps its id, its slot in the strip and its URL — while
+	 * `browser`/`context`/`page` are replaced underneath. Anything that would
+	 * otherwise treat the dead page as a reason to reap the tab checks this.
+	 */
+	isRecovering?: boolean;
 }
 
 /**
