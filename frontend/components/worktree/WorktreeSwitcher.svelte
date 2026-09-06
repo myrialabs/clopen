@@ -141,11 +141,11 @@
 		}
 	}
 
-	/** Tooltip spells out what the counts mean; the row itself has no space for it. */
-	function summaryTitleFor(worktree: WorktreeSummary): string {
+	/** Row tooltip: the path, plus what the pending count actually means. */
+	function rowTitleFor(worktree: WorktreeSummary): string {
 		const pending = pendingByWorktree[worktree.id];
 		if (pending === undefined) return worktree.path;
-		return `${pending} file${pending === 1 ? '' : 's'} differ from Main and would be transferred by "Apply to Main"`;
+		return `${worktree.path}\n${pending} file${pending === 1 ? '' : 's'} differ from Main and would be transferred by "Apply to Main"`;
 	}
 
 	function summaryFor(worktree: WorktreeSummary): string {
@@ -233,10 +233,22 @@
 
 					{#each worktrees as worktree (worktree.id)}
 						{@const isActive = worktreeState.activeId === worktree.id}
-						<div class="group px-3 py-2 transition-colors duration-150 hover:bg-violet-500/5">
+						<div class="group relative px-3 py-2 transition-colors duration-150 hover:bg-violet-500/5">
+							{#if renamingId !== worktree.id}
+								<!-- Overlay carries the whole row's click: the row itself cannot be a
+								     button because it already holds the action buttons. -->
+								<button
+									type="button"
+									class="absolute inset-0 bg-transparent border-none cursor-pointer focus-visible:outline-none focus-visible:bg-violet-500/10"
+									title={rowTitleFor(worktree)}
+									aria-label="Switch to {worktree.name}"
+									onclick={() => selectContext(worktree.id)}
+								></button>
+							{/if}
+
 							<!-- Actions share the name's line; the summary gets the row to itself. -->
 							<div class="flex items-center gap-2.5">
-								<div class="relative shrink-0">
+								<div class="relative shrink-0 pointer-events-none">
 									<Icon
 										name="lucide:git-fork"
 										class="w-4 h-4 {isActive ? 'text-amber-600 dark:text-amber-400' : 'text-slate-500'}"
@@ -257,22 +269,18 @@
 										class="flex-1 min-w-0 px-2 py-1 bg-white dark:bg-slate-900 border border-violet-500/50 rounded text-sm text-slate-900 dark:text-slate-100 outline-none"
 									/>
 								{:else}
-									<button
-										type="button"
-										class="flex items-center gap-1.5 min-w-0 flex-1 bg-transparent border-none text-left cursor-pointer p-0"
-										title={worktree.path}
-										onclick={() => selectContext(worktree.id)}
-									>
+									<span class="flex items-center gap-1.5 min-w-0 flex-1">
 										<span class="text-sm font-medium text-slate-800 dark:text-slate-200 truncate">
 											{worktree.name}
 										</span>
 										{#if isActive}
 											<Icon name="lucide:check" class="w-3.5 h-3.5 shrink-0 text-amber-600 dark:text-amber-400" />
 										{/if}
-									</button>
+									</span>
 
-									<!-- Dimmed rather than hidden: taps have no hover to reveal them. -->
-									<div class="flex items-center gap-0.5 shrink-0 opacity-60 transition-opacity duration-150 group-hover:opacity-100 focus-within:opacity-100">
+									<!-- Above the overlay so they keep their own clicks; dimmed rather
+								     than hidden, since taps have no hover to reveal them. -->
+									<div class="relative z-10 flex items-center gap-0.5 shrink-0 opacity-60 transition-opacity duration-150 group-hover:opacity-100 focus-within:opacity-100">
 										<button
 											type="button"
 											class="{actionButtonClass} hover:bg-violet-500/10 hover:text-violet-600"
@@ -313,10 +321,7 @@
 								{/if}
 							</div>
 
-							<span
-								class="block pl-6.5 text-xs text-slate-500 dark:text-slate-500 truncate"
-								title={summaryTitleFor(worktree)}
-							>
+							<span class="block pl-6.5 text-xs text-slate-500 dark:text-slate-500 truncate">
 								{summaryFor(worktree)}
 							</span>
 						</div>

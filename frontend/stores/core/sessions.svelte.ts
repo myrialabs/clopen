@@ -389,18 +389,13 @@ export async function loadSessions() {
 						}
 
 						debug.log('session', 'Auto-restoring session for project:', targetSession.id);
-						// Load messages BEFORE setting session to avoid race condition:
-						// Setting session triggers $effect → catchupActiveStream (async),
-						// but loadMessagesForSession replaces sessionState.messages entirely,
-						// wiping out any stream_event injected by catchup.
+						// Messages first: adopting the session triggers catchupActiveStream,
+						// and loadMessagesForSession would overwrite what it injected.
 						await loadMessagesForSession(targetSession.id);
-						sessionState.currentSession = targetSession;
-						// Clear unread status — user is actively viewing this session
-						markSessionRead(targetSession.id);
-						// Join chat session room so we receive session-scoped events
-						// (stream, input sync, edit mode, model sync).
-						// Critical after refresh — without it, connection misses all events.
-						ws.emit('chat:join-session', { chatSessionId: targetSession.id });
+						// Adopt via setCurrentSession, not a direct assignment: it re-points the
+						// workspace at the session's tree, joins the chat room and clears unread.
+						// Assigning skipped all three, so a refresh in a worktree returned to Main.
+						await setCurrentSession(targetSession, true);
 					}
 				}
 			}
