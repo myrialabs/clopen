@@ -126,3 +126,43 @@ export function getProjectStatusColor(projectId: string): string {
 	return 'bg-slate-500/30';
 }
 
+/**
+ * Which tree a chat session belongs to (null = the main project tree).
+ * Presence wins over the local session list: a session started in another tab
+ * reaches presence before it reaches `sessionState.sessions`.
+ */
+function sessionWorktreeId(chatSessionId: string, status: ProjectStatus | undefined): string | null {
+	const stream = status?.streams?.find((s: any) => s.chatSessionId === chatSessionId);
+	if (stream && stream.worktreeId !== undefined) return stream.worktreeId ?? null;
+
+	return sessionState.sessions.find((s) => s.id === chatSessionId)?.worktree_id ?? null;
+}
+
+/**
+ * Same indicator as {@link getProjectStatusColor}, narrowed to one tree, so the
+ * worktree list can show which tree is busy instead of only that the project is.
+ * `worktreeId` of null means the main project tree.
+ */
+export function getWorktreeStatusColor(projectId: string, worktreeId: string | null): string {
+	const status = presenceState.statuses.get(projectId);
+	const inTree = (id: string | null | undefined) => (id ?? null) === worktreeId;
+
+	const activeStreams =
+		status?.streams?.filter((s: any) => s.status === 'active' && inTree(s.worktreeId)) ?? [];
+
+	if (activeStreams.length > 0) {
+		const hasProcessing = activeStreams.some((s: any) =>
+			!s.isWaitingInput && !appState.sessionStates[s.chatSessionId]?.isWaitingInput
+		);
+		return hasProcessing ? 'bg-emerald-500' : 'bg-amber-500';
+	}
+
+	const currentSessionId = sessionState.currentSession?.id;
+	for (const [sessionId, unreadProjectId] of appState.unreadSessions.entries()) {
+		if (unreadProjectId !== projectId || sessionId === currentSessionId) continue;
+		if (inTree(sessionWorktreeId(sessionId, status))) return 'bg-blue-500';
+	}
+
+	return 'bg-slate-500/30';
+}
+

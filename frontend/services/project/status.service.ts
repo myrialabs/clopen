@@ -18,6 +18,8 @@ export interface ProjectStatus {
   streams: {
     streamId: string;
     chatSessionId: string;
+    /** Worktree the stream runs in; null = the main project tree. */
+    worktreeId?: string | null;
     status: string;
     startedAt: string;
     messagesCount: number;
