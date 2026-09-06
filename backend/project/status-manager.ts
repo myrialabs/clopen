@@ -5,6 +5,7 @@
 
 import { streamManager, type StreamState } from '../chat/stream-manager.js';
 import { ws } from '../utils/ws.js';
+import { sessionQueries } from '../database/queries/session-queries.js';
 import type { UnifiedMessage } from '$shared/types/unified';
 import { isWaitingForInteractiveInput } from '$shared/utils/interactive-input';
 
@@ -23,6 +24,21 @@ function detectStreamWaitingInput(stream: StreamState): boolean {
     .filter((msg): msg is UnifiedMessage => Boolean(msg));
 
   return isWaitingForInteractiveInput(messages);
+}
+
+/**
+ * Which tree a stream runs in (null = the main project tree).
+ * Resolved from the session rather than the stream, because a stream never
+ * carries the worktree it was started in — and the callers need it to tell
+ * apart "this project is busy" from "this worktree is busy".
+ */
+function resolveStreamWorktreeId(chatSessionId: string, memo: Map<string, string | null>): string | null {
+  const cached = memo.get(chatSessionId);
+  if (cached !== undefined) return cached;
+
+  const worktreeId = sessionQueries.getById(chatSessionId)?.worktree_id ?? null;
+  memo.set(chatSessionId, worktreeId);
+  return worktreeId;
 }
 
 // Store active users per project (shared with main endpoint)
@@ -57,6 +73,7 @@ export async function getProjectStatusData(projectId?: string) {
 
     // Get per-chat-session user presence from WS rooms
     const chatSessionUsers = ws.getProjectChatSessions(projectId);
+    const worktreeMemo = new Map<string, string | null>();
 
     return {
       projectId,
@@ -69,6 +86,7 @@ export async function getProjectStatusData(projectId?: string) {
       streams: allProjectStreams.map(s => ({
         streamId: s.streamId,
         chatSessionId: s.chatSessionId,
+        worktreeId: resolveStreamWorktreeId(s.chatSessionId, worktreeMemo),
         status: s.status,
         startedAt: s.startedAt,
         messagesCount: s.messages.length,
@@ -91,6 +109,7 @@ export async function getProjectStatusData(projectId?: string) {
     
     // Get all active streams grouped by project
     const allStreams = streamManager.getAllStreams();
+    const worktreeMemo = new Map<string, string | null>();
     allStreams.forEach(stream => {
       if (stream.projectId) {
         if (!allProjects.has(stream.projectId)) {
@@ -111,6 +130,7 @@ export async function getProjectStatusData(projectId?: string) {
         projectData.streams.push({
           streamId: stream.streamId,
           chatSessionId: stream.chatSessionId,
+          worktreeId: resolveStreamWorktreeId(stream.chatSessionId, worktreeMemo),
           status: stream.status,
           startedAt: stream.startedAt,
           messagesCount: stream.messages.length,
