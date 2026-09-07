@@ -45,6 +45,10 @@
 		GitFileDiff,
 		GitCommit,
 		GitConflictFile,
+		GitConflictResolution,
+		GitPushTarget,
+		GitOperationState,
+		GitReflogEntry,
 		GitStashEntry,
 		GitTag,
 		GitRemote,
@@ -59,6 +63,8 @@
 	import GitLog from '$frontend/components/git/GitLog.svelte';
 	import CommitFileList from '$frontend/components/git/CommitFileList.svelte';
 	import ConflictResolver from '$frontend/components/git/ConflictResolver.svelte';
+	import GitOperationBanner from '$frontend/components/git/GitOperationBanner.svelte';
+	import GitReflogModal from '$frontend/components/git/GitReflogModal.svelte';
 
 	// Derived state
 	const hasActiveProject = $derived(projectState.currentProject !== null);
@@ -92,7 +98,7 @@
 	const repoBusy = $derived(Boolean(branchInfo?.detached || branchInfo?.operation));
 	const repoBusyReason = $derived(
 		branchInfo?.operation
-			? `A ${branchInfo.operation} is in progress — finish or abort it first.`
+			? `A ${branchInfo.operation} is in progress — use Continue or Abort in the banner above.`
 			: branchInfo?.detached
 				? 'HEAD is detached (no branch checked out).'
 				: ''
@@ -217,7 +223,12 @@
 	let viewMode = $state<'list' | 'diff'>('list');
 	let showMergeBranchModal = $state(false);
 	let mergeBranchName = $state('');
-	let mergeMode = $state<'default' | 'no-ff'>('default');
+	let mergeMode = $state<'default' | 'no-ff' | 'squash'>('default');
+	/**
+	 * The branch picker is identical for merge and rebase, so one modal serves
+	 * both; only the mode options and the final command differ.
+	 */
+	let mergeIntent = $state<'merge' | 'rebase'>('merge');
 	let showConflictResolver = $state(false);
 	let mergeRepoPath = $state<string | null>(null);
 	const mergeableBranches = $derived.by(() => {
@@ -1212,6 +1223,38 @@
 	let conflictFiles = $state<GitConflictFile[]>([]);
 	let isConflictLoading = $state(false);
 	let conflictInitialPath = $state<string | null>(null);
+	/**
+	 * In-progress merge/rebase/cherry-pick for the OUTER repo. Nested repos carry
+	 * their own state in `nestedOperations`, keyed by relPath — a project can be
+	 * mid-rebase in a sub-repo while the outer tree is perfectly clean.
+	 */
+	let operationState = $state<GitOperationState | null>(null);
+	let nestedOperations = $state<Record<string, GitOperationState>>({});
+	let isOperationBusy = $state(false);
+
+	/**
+	 * Operation state for the repo the resolver is focused on. A conflict inside a
+	 * sub-repo must be labelled with that sub-repo's rebase, not the outer one's.
+	 */
+	const resolverOperation = $derived.by(() => {
+		const focusedPath = conflictInitialPath || conflictFiles[0]?.path;
+		const nested = focusedPath
+			? branchInfo?.nested?.find((n) => focusedPath.startsWith(n.relPath + '/'))
+			: undefined;
+		return nested ? (nestedOperations[nested.relPath] ?? null) : operationState;
+	});
+
+	/**
+	 * Where a push actually lands, per git's own config. Shown on the Push button
+	 * so the destination is visible before the click rather than after it.
+	 */
+	let pushTarget = $state<GitPushTarget | null>(null);
+
+	// Reflog state
+	let showReflog = $state(false);
+	let reflogEntries = $state<GitReflogEntry[]>([]);
+	let reflogRepoPath = $state<string | null>(null);
+	let isReflogLoading = $state(false);
 
 	// ============================
 	// Staleness tracking
@@ -1371,6 +1414,8 @@
 			// Stash/Tags badge counts are correct immediately after a switch/refresh,
 			// not only once the user opens those views.
 			await Promise.all([loadStatus(), loadBranches(), loadRemotes(), loadStash(), loadTags(), loadContributors()]);
+			// Both depend on what `loadBranches` just produced.
+			await Promise.all([loadOperationState(), loadPushTarget()]);
 		} catch (err) {
 			debug.error('git', 'Failed to load git data:', err);
 		} finally {
@@ -1673,6 +1718,271 @@
 			debug.error('git', 'Failed to load conflicts:', err);
 		} finally {
 			isConflictLoading = false;
+		}
+	}
+
+	/**
+	 * Read the in-progress operation for the outer repo and every nested one.
+	 * Cheap enough to run on each status refresh: it is a handful of `.git` file
+	 * reads plus one `git diff --name-only`.
+	 */
+	async function loadOperationState() {
+		if (!projectId) return;
+		const requestProjectId = projectId;
+		try {
+			const outer = await ws.http('git:operation-state', { projectId });
+			if (requestProjectId !== projectId) return;
+			operationState = outer;
+		} catch (err) {
+			debug.error('git', 'Failed to load operation state:', err);
+			operationState = null;
+		}
+
+		const nested = branchInfo?.nested ?? [];
+		if (nested.length === 0) {
+			nestedOperations = {};
+			return;
+		}
+
+		const next: Record<string, GitOperationState> = {};
+		await Promise.all(
+			nested.map(async (repo) => {
+				try {
+					const state = await ws.http('git:operation-state', {
+						projectId,
+						repoPath: repo.path
+					});
+					if (state.operation || state.stashConflict) next[repo.relPath] = state;
+				} catch {
+					// A sub-repo we cannot read has nothing to show a banner for.
+				}
+			})
+		);
+		if (requestProjectId !== projectId) return;
+		nestedOperations = next;
+	}
+
+	async function loadPushTarget() {
+		if (!projectId) return;
+		const requestProjectId = projectId;
+		try {
+			const target = await ws.http('git:push-target', { projectId });
+			if (requestProjectId !== projectId) return;
+			pushTarget = target;
+		} catch (err) {
+			debug.error('git', 'Failed to resolve push target:', err);
+			pushTarget = null;
+		}
+	}
+
+	/** `owner/repo/branch` for a URL remote, `remote/branch` otherwise. */
+	function describePushTarget(target: GitPushTarget): string {
+		const remote = target.isUrl ? shortRemoteLabel(target.remote) : target.remote;
+		return `${remote}/${target.remoteBranch}`;
+	}
+
+	/**
+	 * Spelled out on the Push button. A branch under review often tracks somewhere
+	 * other than the panel's selected remote, and the destination is not something
+	 * the user should have to discover from the result.
+	 */
+	const pushDestinationLabel = $derived(
+		pushTarget
+			? pushTarget.hasUpstream
+				? describePushTarget(pushTarget)
+				: `${selectedRemote}/${pushTarget.branch} (new)`
+			: ''
+	);
+
+	/**
+	 * True when the push destination is not the obvious `<selected remote>/<same
+	 * name>`. That is the state that used to be invisible and cost the user a
+	 * stray branch in the main repository, so it gets a banner.
+	 */
+	const pushTargetDiffers = $derived.by(() => {
+		if (!pushTarget?.hasUpstream) return false;
+		return (
+			pushTarget.isUrl ||
+			pushTarget.remote !== selectedRemote ||
+			pushTarget.remoteBranch !== pushTarget.branch
+		);
+	});
+
+	// Upstream editor
+	let showUpstreamModal = $state(false);
+	let upstreamRemote = $state('');
+	let upstreamBranch = $state('');
+
+	function openUpstreamModal() {
+		if (!branchInfo?.current) return;
+		upstreamRemote =
+			pushTarget && !pushTarget.isUrl ? pushTarget.remote : (remotes[0]?.name ?? 'origin');
+		upstreamBranch = pushTarget?.remoteBranch || branchInfo.current;
+		showUpstreamModal = true;
+	}
+
+	async function saveUpstream() {
+		if (!projectId || !branchInfo?.current || !upstreamRemote.trim()) return;
+		try {
+			await ws.http('git:set-upstream', {
+				projectId,
+				branch: branchInfo.current,
+				remote: upstreamRemote.trim(),
+				remoteBranch: upstreamBranch.trim() || undefined
+			});
+			showUpstreamModal = false;
+			await Promise.all([loadBranches(), loadPushTarget()]);
+			showInfo('Upstream Updated', `${branchInfo.current} now tracks ${upstreamRemote}/${upstreamBranch}.`);
+		} catch (err) {
+			showError(
+				'Could Not Set Upstream',
+				err instanceof Error ? err.message : 'git rejected the upstream.'
+			);
+		}
+	}
+
+	function clearUpstream() {
+		if (!projectId || !branchInfo?.current) return;
+		const branch = branchInfo.current;
+		requestConfirm({
+			title: 'Clear Upstream',
+			message: `Stop "${branch}" from tracking anything? The next push will ask for a destination instead of using the current one.`,
+			type: 'warning',
+			confirmText: 'Clear',
+			onConfirm: async () => {
+				try {
+					await ws.http('git:unset-upstream', { projectId, branch });
+					showUpstreamModal = false;
+					await Promise.all([loadBranches(), loadPushTarget()]);
+					showInfo('Upstream Cleared', `${branch} no longer tracks a remote branch.`);
+				} catch (err) {
+					showError(
+						'Could Not Clear Upstream',
+						err instanceof Error ? err.message : 'git rejected the change.'
+					);
+				}
+			}
+		});
+	}
+
+	/** Absolute path of the nested repo a conflict path belongs to, if any. */
+	function nestedRepoPathFor(filePath: string): string | undefined {
+		return branchInfo?.nested?.find((n) => filePath.startsWith(n.relPath + '/'))?.path;
+	}
+
+	/**
+	 * Finish, skip or unwind the in-progress operation.
+	 *
+	 * These are the actions the panel was missing entirely: resolving every
+	 * conflict during a rebase used to leave the repo mid-rebase with Abort as the
+	 * only button, so the work had to be finished from a terminal.
+	 */
+	async function runOperationAction(
+		action: 'continue' | 'skip' | 'abort',
+		repoPath?: string
+	) {
+		if (!projectId || isOperationBusy) return;
+		isOperationBusy = true;
+		try {
+			if (action === 'abort') {
+				await ws.http('git:abort-operation', { projectId, ...(repoPath && { repoPath }) });
+				showConflictResolver = false;
+			} else {
+				const endpoint = action === 'continue' ? 'git:continue-operation' : 'git:skip-operation';
+				const result = await ws.http(endpoint, { projectId, ...(repoPath && { repoPath }) });
+				if (!result.success) {
+					// git's failure here is usually an instruction ("nothing to commit,
+					// use --skip"), so it belongs in front of the user verbatim.
+					showError(
+						action === 'continue' ? 'Could Not Continue' : 'Could Not Skip',
+						result.message || 'git refused the operation.'
+					);
+				}
+			}
+			await loadAll();
+			await loadConflicts();
+			await loadOperationState();
+			if (conflictFiles.length === 0) showConflictResolver = false;
+		} catch (err) {
+			debug.error('git', `Operation ${action} failed:`, err);
+			showError(
+				`Could Not ${action === 'continue' ? 'Continue' : action === 'skip' ? 'Skip' : 'Abort'}`,
+				err instanceof Error ? err.message : 'The git operation failed.'
+			);
+		} finally {
+			isOperationBusy = false;
+		}
+	}
+
+	function confirmAbortOperation(state: GitOperationState, repoPath?: string) {
+		const what = state.stashConflict
+			? 'reset the working tree'
+			: `abort the ${state.operation ?? 'operation'}`;
+		requestConfirm({
+			title: state.stashConflict ? 'Reset Working Tree' : `Abort ${state.operation ?? 'Operation'}`,
+			message: state.stashConflict
+				? 'Unwind the unmerged paths from the stash? Your stash entry is kept, so you can apply it again.'
+				: `Are you sure you want to ${what}? Every conflict resolution you have made will be discarded.`,
+			type: 'error',
+			confirmText: state.stashConflict ? 'Reset' : 'Abort',
+			onConfirm: () => void runOperationAction('abort', repoPath)
+		});
+	}
+
+	async function loadReflog(repoPath?: string) {
+		if (!projectId) return;
+		isReflogLoading = true;
+		try {
+			reflogEntries = await ws.http('git:reflog', {
+				projectId,
+				limit: 100,
+				...(repoPath && { repoPath })
+			});
+		} catch (err) {
+			debug.error('git', 'Failed to load reflog:', err);
+			showError('Reflog Failed', err instanceof Error ? err.message : 'Could not read the reflog.');
+		} finally {
+			isReflogLoading = false;
+		}
+	}
+
+	function openReflog(repoPath?: string) {
+		reflogRepoPath = repoPath ?? null;
+		showReflog = true;
+		void loadReflog(repoPath);
+	}
+
+	/**
+	 * Apply the newest stash without removing it. Offered from the More menu as
+	 * the low-risk counterpart to Pop; per-entry Apply lives in the Stash list.
+	 */
+	async function applyLatestStash(repoPath?: string) {
+		const entry = stashEntries.find((item) => (item.repoPath ?? undefined) === repoPath);
+		if (!entry) {
+			showError('No Stash', 'There is nothing in the stash to apply.');
+			return;
+		}
+		await handleStashRestore(entry, 'apply');
+	}
+
+	/** Recover an orphaned commit by branching at it — never by resetting onto it. */
+	async function createBranchAtCommit(hash: string, name: string) {
+		if (!projectId) return;
+		try {
+			await ws.http('git:create-branch', {
+				projectId,
+				name,
+				startPoint: hash,
+				...(reflogRepoPath && { repoPath: reflogRepoPath })
+			});
+			showReflog = false;
+			await loadAll();
+			showInfo('Branch Created', `${name} now points at ${hash.slice(0, 7)}.`);
+		} catch (err) {
+			showError(
+				'Create Branch Failed',
+				err instanceof Error ? err.message : 'Could not create the branch.'
+			);
 		}
 	}
 
@@ -2268,8 +2578,14 @@
 							};
 						}
 					} catch (readErr) {
+						// A conflict can exist with no working-tree file at all — both
+						// sides deleted the path, or one side did and the other edited it.
+						// An empty diff tab explains none of that, so hand the user to
+						// the resolver, which knows how to describe and resolve it.
 						debug.error('git', 'Failed to read conflicted file:', readErr);
-						diffResult = null;
+						closeTab(tabId);
+						openConflictResolver(file.path);
+						return;
 					}
 				}
 			} else if (status === '?') {
@@ -2560,14 +2876,48 @@
 		}
 	}
 
+	/**
+	 * Split an upstream like `origin/main` into its remote and branch halves.
+	 *
+	 * Matching against the configured remotes first matters: a remote name may
+	 * itself contain a slash, and `branch.<name>.remote` can hold a bare URL
+	 * (what `gh pr checkout` writes for a fork PR), where splitting on the first
+	 * `/` yields "https:".
+	 */
+	function splitUpstream(upstream: string): { remote: string; branch: string } {
+		const matched = remotes
+			.filter(remote => upstream.startsWith(remote.name + '/'))
+			.sort((a, b) => b.name.length - a.name.length)[0];
+		if (matched) {
+			return { remote: matched.name, branch: upstream.slice(matched.name.length + 1) };
+		}
+		// A URL upstream: everything up to the last slash is the remote.
+		const cut = upstream.lastIndexOf('/');
+		if (cut <= 0) return { remote: '', branch: upstream };
+		return { remote: upstream.slice(0, cut), branch: upstream.slice(cut + 1) };
+	}
+
+	/** Compact label for a remote that may be a full URL. */
+	function shortRemoteLabel(remote: string): string {
+		if (!/:\/\/|@/.test(remote)) return remote;
+		// git@github.com:owner/repo.git or https://github.com/owner/repo.git
+		const withoutSuffix = remote.replace(/\.git$/, '');
+		const parts = withoutSuffix.split(/[/:]/).filter(Boolean);
+		const owner = parts.length >= 2 ? parts[parts.length - 2] : '';
+		const repo = parts[parts.length - 1] ?? remote;
+		return owner ? `${owner}/${repo}` : repo;
+	}
+
 	function getBranchRemote(branch: GitBranch): string | null {
-		return branch.upstream?.split('/')[0] || remotes.find(remote => branch.upstream?.startsWith(remote.name + '/'))?.name || null;
+		if (!branch.upstream) return null;
+		return splitUpstream(branch.upstream).remote || null;
 	}
 
 	function getBranchRemoteName(branch: GitBranch): string | null {
 		if (!branch.upstream) return null;
-		const remoteName = getBranchRemote(branch);
-		return remoteName ? branch.upstream.slice(remoteName.length + 1) : branch.upstream;
+		const { remote, branch: remoteBranch } = splitUpstream(branch.upstream);
+		if (!remote) return remoteBranch;
+		return `${shortRemoteLabel(remote)}/${remoteBranch}`;
 	}
 
 	const BRANCH_COMMIT_PAGE_SIZE = 8;
@@ -2774,18 +3124,21 @@
 		});
 	}
 
-	async function openMergeBranchModal(repoPath?: string) {
+	async function openMergeBranchModal(repoPath?: string, intent: 'merge' | 'rebase' = 'merge') {
 		const isNested = Boolean(repoPath);
 		if (isNested) {
 			const nested = branchInfo?.nested?.find(n => n.path === repoPath);
 			if (!nested) return;
 			if (nested.info.operation || nested.info.detached) {
-				showError('Cannot Merge', nested.info.operation ? `A ${nested.info.operation} is in progress.` : 'HEAD is detached.');
+				showError(
+					intent === 'rebase' ? 'Cannot Rebase' : 'Cannot Merge',
+					nested.info.operation ? `A ${nested.info.operation} is in progress.` : 'HEAD is detached.'
+				);
 				return;
 			}
 			const latestMergeableBranches = nested.info.local.filter(branch => !branch.isCurrent) ?? [];
 			if (latestMergeableBranches.length === 0) {
-				showError('Merge Branch Unavailable', 'No other local branches are available to merge.');
+				showError('No Other Branches', 'No other local branches are available.');
 				return;
 			}
 			mergeRepoPath = repoPath ?? null;
@@ -2793,11 +3146,11 @@
 				?? latestMergeableBranches[0]?.name
 				?? '';
 		} else {
-			if (blockedWhileBusy('merge')) return;
+			if (blockedWhileBusy(intent)) return;
 			const latestBranchInfo = await loadBranches();
 			const latestMergeableBranches = latestBranchInfo?.local.filter(branch => !branch.isCurrent) ?? [];
 			if (latestMergeableBranches.length === 0) {
-				showError('Merge Branch Unavailable', 'No other local branches are available to merge.');
+				showError('No Other Branches', 'No other local branches are available.');
 				return;
 			}
 			mergeRepoPath = null;
@@ -2805,6 +3158,7 @@
 				?? latestMergeableBranches[0]?.name
 				?? '';
 		}
+		mergeIntent = intent;
 		mergeMode = 'default';
 		showMergeBranchModal = true;
 	}
@@ -2812,10 +3166,15 @@
 	function closeMergeBranchModal() {
 		showMergeBranchModal = false;
 		mergeMode = 'default';
+		mergeIntent = 'merge';
 		mergeRepoPath = null;
 	}
 
-	async function runMergeBranch(name: string, noFastForward = false, repoPath?: string) {
+	async function runMergeBranch(
+		name: string,
+		mode: 'default' | 'no-ff' | 'squash' = 'default',
+		repoPath?: string
+	) {
 		if (!projectId || !name) return;
 		const activeRepoPath = repoPath ?? mergeRepoPath ?? undefined;
 		const isNested = Boolean(activeRepoPath);
@@ -2828,7 +3187,8 @@
 				const result = await ws.http('git:merge-branch', {
 					projectId,
 					branchName: name,
-					noFastForward,
+					noFastForward: mode === 'no-ff',
+					squash: mode === 'squash',
 					...(activeRepoPath && { repoPath: activeRepoPath })
 				});
 				showMergeBranchModal = false;
@@ -2848,7 +3208,9 @@
 						: mergeTargetBranch;
 					showInfo(
 						'Merge Complete',
-						`Merged "${name}" into "${targetBranch}"${noFastForward ? ' with --no-ff' : ''}.`
+						mode === 'squash'
+							? `Squashed "${name}" into "${targetBranch}" — the changes are staged and still need a commit.`
+							: `Merged "${name}" into "${targetBranch}"${mode === 'no-ff' ? ' with --no-ff' : ''}.`
 					);
 				}
 			} catch (err) {
@@ -2865,7 +3227,7 @@
 			message: `Merge "${name}" into "${branchInfo?.current}"?`,
 			type: 'info',
 			confirmText: 'Merge',
-			onConfirm: () => void runMergeBranch(name, false)
+			onConfirm: () => void runMergeBranch(name, 'default')
 		});
 	}
 
@@ -2878,8 +3240,62 @@
 			message: `Merge "${name}" into "${nested.info.current}"?`,
 			type: 'info',
 			confirmText: 'Merge',
-			onConfirm: () => void runMergeBranch(name, false, repoPath)
+			onConfirm: () => void runMergeBranch(name, 'default', repoPath)
 		});
+	}
+
+	/**
+	 * Rebase the current branch onto another local branch. `--autostash` is on by
+	 * default server-side: git otherwise refuses to start on a dirty tree, which
+	 * from the panel reads as the button doing nothing.
+	 */
+	async function runRebaseOnto(name: string, repoPath?: string) {
+		if (!projectId || !name) return;
+		const activeRepoPath = repoPath ?? mergeRepoPath ?? undefined;
+		if (!activeRepoPath && blockedWhileBusy('rebase')) return;
+		if (getGitOps(watchScope, activeRepoPath).isMoreBusy) return;
+
+		await runMore(async () => {
+			try {
+				const result = await ws.http('git:rebase', {
+					projectId,
+					upstream: name,
+					...(activeRepoPath && { repoPath: activeRepoPath })
+				});
+				showMergeBranchModal = false;
+				await loadAll();
+
+				if (result.hasConflicts) {
+					await loadConflicts();
+					conflictInitialPath = conflictFiles[0]?.path ?? null;
+					showConflictResolver = true;
+				} else if (result.success) {
+					showInfo('Rebase Complete', `Rebased onto "${name}".`);
+				} else {
+					showError('Rebase Failed', result.message);
+				}
+			} catch (err) {
+				debug.error('git', 'Failed to rebase:', err);
+				showError('Rebase Failed', err instanceof Error ? err.message : 'Unknown error');
+			}
+		}, activeRepoPath);
+	}
+
+	/** Leave a detached HEAD (or just go back one checkout). */
+	async function returnToPreviousBranch(repoPath?: string) {
+		if (!projectId) return;
+		await runMore(async () => {
+			try {
+				await ws.http('git:return-to-branch', { projectId, ...(repoPath && { repoPath }) });
+				await loadAll();
+				showInfo('Branch Restored', 'Returned to the previous branch.');
+			} catch (err) {
+				showError(
+					'Could Not Return',
+					err instanceof Error ? err.message : 'No previous branch was recorded.'
+				);
+			}
+		}, repoPath);
 	}
 
 	// ============================
@@ -2991,15 +3407,24 @@
 					useRemote = selectedRemote;
 				}
 			}
+			// `useUpstream` (the backend default) means a tracked branch goes where
+			// git says it goes; `useRemote` is only the fallback for a branch that
+			// tracks nothing. Reporting `useRemote` unconditionally would name the
+			// wrong destination for every fork PR under review.
 			const result = await ws.http('git:push', { projectId: pid, remote: useRemote, branch: info?.current, repoPath });
 			if (!result.success) {
 				showError('Push Failed', result.message);
 			} else {
-				await loadBranches();
+				await Promise.all([loadBranches(), loadPushTarget()]);
+				const destination = repoPath
+					? useRemote
+					: pushTarget?.hasUpstream
+						? describePushTarget(pushTarget)
+						: useRemote;
 				if (prevAhead > 0) {
-					showInfo('Push Complete', `Pushed ${prevAhead} commit${prevAhead > 1 ? 's' : ''} to ${useRemote}.`);
+					showInfo('Push Complete', `Pushed ${prevAhead} commit${prevAhead > 1 ? 's' : ''} to ${destination}.`);
 				} else {
-					showInfo('Push Complete', `Branch pushed to ${useRemote}.`);
+					showInfo('Push Complete', `Branch pushed to ${destination}.`);
 				}
 			}
 		} catch (err) {
@@ -3251,6 +3676,17 @@
 		switch (action) {
 			case 'merge-branch':
 				return void openMergeBranchModal(repoPath);
+			case 'rebase-onto':
+				return void openMergeBranchModal(repoPath, 'rebase');
+			case 'return-to-branch':
+				return void returnToPreviousBranch(repoPath);
+			case 'set-upstream':
+				// The editor is scoped to the outer repo's current branch.
+				return openUpstreamModal();
+			case 'stash-apply':
+				return void applyLatestStash(repoPath);
+			case 'reflog':
+				return openReflog(repoPath);
 			case 'push-follow-tags':
 				return void pushVariant('with-tags', 'Pushed branch with tags', repoPath, info.current, subRemote);
 			case 'push-all-tags':
@@ -3318,6 +3754,16 @@
 		switch (action) {
 			case 'merge-branch':
 				return void openMergeBranchModal();
+			case 'rebase-onto':
+				return void openMergeBranchModal(undefined, 'rebase');
+			case 'return-to-branch':
+				return void returnToPreviousBranch();
+			case 'set-upstream':
+				return openUpstreamModal();
+			case 'stash-apply':
+				return void applyLatestStash();
+			case 'reflog':
+				return openReflog();
 			case 'push-follow-tags':
 				return void pushVariant('with-tags', 'Pushed branch with tags');
 			case 'push-all-tags':
@@ -3385,37 +3831,203 @@
 	// Conflict Resolution
 	// ============================
 
-	async function resolveConflict(filePath: string, resolution: 'ours' | 'theirs' | 'custom', customContent?: string) {
+	async function resolveConflict(
+		filePath: string,
+		resolution: GitConflictResolution,
+		customContent?: string
+	) {
 		await runGitOp(watchScope, 'isResolving', async () => {
 		try {
 			await ws.http('git:resolve-conflict', { projectId, filePath, resolution, customContent });
 			await loadConflicts();
 			await loadStatus();
+			await loadOperationState();
 			if (conflictFiles.length === 0) {
 				showConflictResolver = false;
 			}
 		} catch (err) {
 			debug.error('git', 'Failed to resolve conflict:', err);
+			// The backend refuses to stage leftover `<<<<<<<` markers, and that
+			// refusal is the whole point — it has to reach the user, not the log.
+			showError(
+				'Could Not Resolve',
+				err instanceof Error ? err.message : 'The conflict could not be resolved.'
+			);
 		}
 		});
 	}
 
-	function buildAIPromptForFile(file: GitConflictFile): string {
-		const lang = detectLanguageFromFilename(file.path);
-		const count = file.markers.length;
-		return `Please help me resolve the merge conflict${count === 1 ? '' : 's'} in \`${file.path}\`. Analyze the conflict${count === 1 ? '' : 's'} and edit the file directly using your tools to apply the resolution, then stage it with \`git add\`.
+	// ============================
+	// AI conflict brief
+	// ============================
+	//
+	// This used to paste every conflicted file's ENTIRE contents into the chat
+	// message — tens of thousands of tokens for a handful of files, repeated on
+	// every retry. The agent already has file-reading tools, so the full text was
+	// redundant; what it actually lacked was the context git holds and the file
+	// system does not: which operation is running, and which side is which.
+	//
+	// So we send a brief plus a hard-capped excerpt of the conflicting regions
+	// only, and tell the agent to read the rest itself.
 
-The file currently has ${count} conflict marker${count === 1 ? '' : 's'}:
+	/** Max characters of conflict excerpt inlined into one chat message. */
+	const AI_CONFLICT_EXCERPT_BUDGET = 8 * 1024;
+	/** Max lines kept from either side of a single conflict. */
+	const AI_CONFLICT_SIDE_LINES = 40;
 
-\`\`\`${lang}
-${file.content}
-\`\`\``;
+	function clampLines(text: string, maxLines: number): string {
+		const lines = text.split('\n');
+		if (lines.length <= maxLines) return text;
+		const omitted = lines.length - maxLines;
+		return [...lines.slice(0, maxLines), `… ${omitted} more line${omitted === 1 ? '' : 's'}`].join('\n');
 	}
 
-	async function resolveWithAI(filePath: string) {
-		const file = conflictFiles.find((f) => f.path === filePath);
-		if (!file) return;
-		const prompt = buildAIPromptForFile(file);
+	/** One-line description of what the two sides did to a path. */
+	function describeConflictForAI(file: GitConflictFile, ours: string, theirs: string): string {
+		if (file.omitReason === 'binary') return 'binary file — pick one side, no text merge is possible';
+		if (file.omitReason === 'too-large') return 'file too large to inline — read it directly';
+		switch (file.kind) {
+			case 'both-modified':
+			case 'both-added': {
+				const count = file.markers.length;
+				if (count === 0) return 'conflicted, but no markers found — inspect the file';
+				const lines = file.markers.slice(0, 8).map((m) => m.ourStart + 1).join(', ');
+				const more = file.markers.length > 8 ? ', …' : '';
+				return `${count} conflict${count === 1 ? '' : 's'} at line${count === 1 ? '' : 's'} ${lines}${more}`;
+			}
+			case 'added-by-us':
+				return `added on ${ours} only — keep it or delete it`;
+			case 'added-by-them':
+				return `added on ${theirs} only — keep it or delete it`;
+			case 'deleted-by-us':
+				return `deleted on ${ours}, modified on ${theirs} — keep it or delete it`;
+			case 'deleted-by-them':
+				return `modified on ${ours}, deleted on ${theirs} — keep it or delete it`;
+			case 'both-deleted':
+				return 'deleted on both sides — resolve with `git rm`';
+		}
+	}
+
+	/**
+	 * The shared header: what git is doing, and what `ours`/`theirs` mean right
+	 * now. During a rebase those two words are inverted relative to a merge, which
+	 * is the single most common way an AI-assisted resolution goes wrong.
+	 */
+	function buildConflictHeader(): { text: string; ours: string; theirs: string } {
+		const state = operationState;
+		const ours = state?.oursLabel || 'ours (HEAD)';
+		const theirs = state?.theirsLabel || 'theirs (incoming)';
+		const lines: string[] = [];
+
+		if (state?.operation === 'rebase') {
+			const progress = state.step && state.total ? ` (commit ${state.step} of ${state.total})` : '';
+			lines.push(`A rebase is in progress${progress}.`);
+			lines.push(
+				`Because this is a rebase the sides are inverted from a merge: \`ours\` is \`${ours}\` (the branch being rebased onto) and \`theirs\` is ${theirs}. Keep both sets of changes unless they genuinely contradict.`
+			);
+		} else if (state?.operation === 'merge') {
+			lines.push(`A merge is in progress: \`ours\` is \`${ours}\`, \`theirs\` is \`${theirs}\`.`);
+		} else if (state?.operation === 'cherry-pick' || state?.operation === 'revert') {
+			lines.push(
+				`A ${state.operation} is in progress: \`ours\` is \`${ours}\`, \`theirs\` is \`${theirs}\`.`
+			);
+		} else if (state?.stashConflict) {
+			lines.push('A stash could not be applied cleanly: `ours` is the working tree, `theirs` is the stashed change.');
+		} else {
+			lines.push(`Conflicts are outstanding: \`ours\` is \`${ours}\`, \`theirs\` is \`${theirs}\`.`);
+		}
+
+		if (state?.currentCommit) lines.push(`Commit being applied: "${state.currentCommit}".`);
+
+		return { text: lines.join('\n'), ours, theirs };
+	}
+
+	/** Instructions block, including the right cwd for conflicts inside sub-repos. */
+	function buildConflictInstructions(files: GitConflictFile[]): string {
+		const lines = [
+			'For each file: read it, resolve the conflict, remove every conflict marker, then stage it with `git add <path>`.',
+			'Resolve add/delete conflicts with `git add <path>` to keep the file or `git rm <path>` to drop it.'
+		];
+
+		const nestedNotes = new Set<string>();
+		for (const file of files) {
+			const nested = branchInfo?.nested?.find((n) => file.path.startsWith(n.relPath + '/'));
+			if (nested) nestedNotes.add(nested.relPath);
+		}
+		if (nestedNotes.size > 0) {
+			lines.push(
+				`Paths under ${[...nestedNotes].map((p) => `\`${p}/\``).join(', ')} belong to nested git repositories — run \`git add\`/\`git rm\` for those from inside that directory, not the project root.`
+			);
+		}
+
+		lines.push(
+			'Do not run `git rebase --continue`, `git merge --continue` or `git commit` — I will finish the operation from the Git panel once everything is staged.'
+		);
+		return lines.join('\n');
+	}
+
+	/** Conflict regions only, hard-capped. Never the whole file. */
+	function buildConflictExcerpts(
+		files: GitConflictFile[],
+		ours: string,
+		theirs: string
+	): { text: string; omitted: number } {
+		const blocks: string[] = [];
+		let used = 0;
+		let omitted = 0;
+
+		for (const file of files) {
+			for (const [index, marker] of file.markers.entries()) {
+				const block = [
+					`--- ${file.path} · conflict ${index + 1} of ${file.markers.length} (line ${marker.ourStart + 1}) ---`,
+					`<<<<<<< ours: ${ours}`,
+					clampLines(marker.ourContent, AI_CONFLICT_SIDE_LINES),
+					'=======',
+					clampLines(marker.theirContent, AI_CONFLICT_SIDE_LINES),
+					`>>>>>>> theirs: ${theirs}`
+				].join('\n');
+
+				if (used + block.length > AI_CONFLICT_EXCERPT_BUDGET) {
+					omitted++;
+					continue;
+				}
+				blocks.push(block);
+				used += block.length;
+			}
+		}
+
+		return { text: blocks.join('\n\n'), omitted };
+	}
+
+	function buildConflictPrompt(files: GitConflictFile[]): string {
+		const header = buildConflictHeader();
+		const list = files
+			.map((f, i) => `${i + 1}. \`${f.path}\` — ${describeConflictForAI(f, header.ours, header.theirs)}`)
+			.join('\n');
+		const excerpts = buildConflictExcerpts(files, header.ours, header.theirs);
+
+		const sections = [
+			`Resolve the git conflicts in this repository.`,
+			header.text,
+			`Conflicted file${files.length === 1 ? '' : 's'} (${files.length}):\n${list}`
+		];
+
+		if (excerpts.text) {
+			const note = excerpts.omitted > 0
+				? ` ${excerpts.omitted} further conflict${excerpts.omitted === 1 ? ' was' : 's were'} left out to save context — read those files directly.`
+				: '';
+			sections.push(
+				`Conflict regions (excerpt only — open the files for surrounding context):${note}\n\n${excerpts.text}`
+			);
+		}
+
+		sections.push(buildConflictInstructions(files));
+		return sections.join('\n\n');
+	}
+
+	async function sendConflictPrompt(files: GitConflictFile[]) {
+		if (files.length === 0) return;
+		const prompt = buildConflictPrompt(files);
 		showConflictResolver = false;
 		showPanel('chat');
 		try {
@@ -3424,69 +4036,48 @@ ${file.content}
 			debug.error('git', 'Failed to send AI conflict resolution prompt:', err);
 			showError(
 				'AI Resolution Failed',
-				err instanceof Error ? err.message : 'Could not send conflict to chat.'
+				err instanceof Error ? err.message : 'Could not send the conflicts to chat.'
 			);
 		}
+	}
+
+	async function resolveWithAI(filePath: string) {
+		const file = conflictFiles.find((f) => f.path === filePath);
+		if (!file) return;
+		await sendConflictPrompt([file]);
 	}
 
 	async function resolveAllWithAI() {
-		if (conflictFiles.length === 0) return;
-		const summary = conflictFiles
-			.map(
-				(f, i) =>
-					`${i + 1}. \`${f.path}\` (${f.markers.length} conflict${f.markers.length === 1 ? '' : 's'})`
-			)
-			.join('\n');
-		const bodies = conflictFiles
-			.map((f) => {
-				const lang = detectLanguageFromFilename(f.path);
-				return `### \`${f.path}\`\n\n\`\`\`${lang}\n${f.content}\n\`\`\``;
-			})
-			.join('\n\n');
-		const prompt = `Please help me resolve merge conflicts in these files. For each file, analyze the conflicts, edit the file directly using your tools to apply the resolution, then stage each one with \`git add\`.
-
-${summary}
-
-${bodies}`;
-		showConflictResolver = false;
-		showPanel('chat');
-		try {
-			await chatService.sendMessage(prompt);
-		} catch (err) {
-			debug.error('git', 'Failed to send AI bulk conflict resolution prompt:', err);
-			showError(
-				'AI Resolution Failed',
-				err instanceof Error ? err.message : 'Could not send conflicts to chat.'
-			);
-		}
+		await sendConflictPrompt(conflictFiles);
 	}
 
+	/**
+	 * Abort from inside the resolver. The repo is picked from the file the user is
+	 * actually looking at, not from `conflictFiles[0]` — with conflicts in both the
+	 * outer repo and a sub-repo, that guess aborted whichever happened to sort
+	 * first and then closed the dialog as if everything was done.
+	 */
 	async function abortMerge() {
-		requestConfirm({
-			title: 'Abort Merge',
-			message: 'Abort the current merge? All conflict resolutions will be lost.',
-			type: 'error',
-			confirmText: 'Abort Merge',
-			onConfirm: async () => {
-				await runGitOp(watchScope, 'isResolving', async () => {
-				try {
-					let targetRepoPath: string | undefined = undefined;
-					const anyConflictFile = conflictFiles[0]?.path || conflictInitialPath;
-					if (anyConflictFile && branchInfo?.nested) {
-						const matchingNested = branchInfo.nested.find(n => anyConflictFile.startsWith(n.relPath + '/'));
-						if (matchingNested) {
-							targetRepoPath = matchingNested.path;
-						}
-					}
-					await ws.http('git:abort-merge', { projectId, repoPath: targetRepoPath });
-					showConflictResolver = false;
-					await loadAll();
-				} catch (err) {
-					debug.error('git', 'Failed to abort merge:', err);
-				}
-				});
-			}
-		});
+		const focusedPath = conflictInitialPath || conflictFiles[0]?.path;
+		const repoPath = focusedPath ? nestedRepoPathFor(focusedPath) : undefined;
+		const state = repoPath
+			? nestedOperations[
+					branchInfo?.nested?.find((n) => n.path === repoPath)?.relPath ?? ''
+				]
+			: operationState;
+
+		confirmAbortOperation(
+			state ?? {
+				operation: null,
+				oursLabel: 'ours',
+				theirsLabel: 'theirs',
+				unmergedCount: conflictFiles.length,
+				canContinue: false,
+				canSkip: false,
+				stashConflict: false
+			},
+			repoPath
+		);
 	}
 
 	function openConflictResolver(path: string) {
@@ -3584,29 +4175,49 @@ ${bodies}`;
 	// pops stash@{0}, then whatever re-indexed into its place. The guard is what
 	// makes the second click impossible, and `isStashing` disables the section's
 	// buttons so it reads as busy rather than as nothing happening.
-	async function handleStashPop(entry: StashEntryExtended) {
+	/**
+	 * Restore a stash. `apply` keeps the entry, `pop` removes it on success —
+	 * apply is the safer choice when the changes might conflict, because a
+	 * conflicted pop is easy to abort into a state where the work looks lost.
+	 */
+	async function handleStashRestore(entry: StashEntryExtended, mode: 'pop' | 'apply' = 'pop') {
+		const verb = mode === 'pop' ? 'Pop' : 'Apply';
 		await runGitOp(watchScope, 'isStashing', async () => {
 		try {
-			const result = await ws.http('git:stash-pop', { projectId, index: entry.index, repoPath: entry.repoPath });
+			const endpoint = mode === 'pop' ? 'git:stash-pop' : 'git:stash-apply';
+			const result = await ws.http(endpoint, { projectId, index: entry.index, repoPath: entry.repoPath });
 			await Promise.all([loadStash(), loadStatus()]);
+			await loadOperationState();
 			if (!result.success && result.hasConflicts) {
 				await loadConflicts();
 				const count = conflictFiles.length;
 				showError(
-					'Stash Pop — Conflicts',
+					`Stash ${verb} — Conflicts`,
 					`Applied the stash but ${count} file${count === 1 ? '' : 's'} ${count === 1 ? 'has' : 'have'} conflicts. Opening the resolver — the stash is still saved in case you need to abort.`
 				);
 				conflictInitialPath = conflictFiles[0]?.path ?? null;
 				showConflictResolver = true;
 			} else if (result.success) {
-				showInfo('Stash Applied', 'Stash popped successfully.');
+				showInfo(
+					'Stash Applied',
+					mode === 'pop'
+						? 'Stash popped successfully.'
+						: 'Stash applied — the entry is still in the list.'
+				);
 			}
 		} catch (err) {
-			debug.error('git', 'Stash pop failed:', err);
+			debug.error('git', `Stash ${mode} failed:`, err);
 			const msg = err instanceof Error ? err.message : 'Unknown error';
-			showError('Stash Pop Failed', msg.replace(/^git stash pop failed:\s*/i, '').trim() || msg);
+			showError(
+				`Stash ${verb} Failed`,
+				msg.replace(/^git stash (pop|apply) failed:\s*/i, '').trim() || msg
+			);
 		}
 		}, entry.repoPath);
+	}
+
+	function handleStashPop(entry: StashEntryExtended) {
+		return handleStashRestore(entry, 'pop');
 	}
 
 	async function handleStashDrop(entry: StashEntryExtended) {
@@ -4055,8 +4666,10 @@ ${bodies}`;
 				if (selectedCommit) await refreshSelectedCommit();
 
 				// An external merge or rebase can raise (or resolve) conflicts while
-				// the resolver is open on screen.
-				if (conflictFiles.length > 0 || branchInfo?.operation) {
+				// the resolver is open on screen — and can start or finish an
+				// operation the banner is describing.
+				await loadOperationState();
+				if (conflictFiles.length > 0 || branchInfo?.operation || operationState?.operation) {
 					clearGitSectionStale('conflicts');
 					await loadConflicts();
 				}
@@ -4445,6 +5058,24 @@ ${bodies}`;
 			</div>
 			<!-- Nested repo changes content -->
 			{#if !nested.error}
+				{#if nestedOperations[nested.relPath]}
+					<!-- A sub-repo can be mid-rebase while the outer tree is clean, so
+						it gets its own banner rather than borrowing the outer one. -->
+					<div class="pt-2">
+						<GitOperationBanner
+							state={nestedOperations[nested.relPath]}
+							busy={isOperationBusy}
+							repoLabel={nested.relPath}
+							onContinue={() => void runOperationAction('continue', nested.path)}
+							onSkip={() => void runOperationAction('skip', nested.path)}
+							onAbort={() =>
+								confirmAbortOperation(nestedOperations[nested.relPath], nested.path)}
+							onResolve={nestedConflicted.length > 0
+								? () => openConflictResolver(nestedConflicted[0].path)
+								: undefined}
+						/>
+					</div>
+				{/if}
 				<!-- Nested commit form -->
 				<CommitForm
 					stagedCount={nestedStaged.length}
@@ -4913,7 +5544,7 @@ ${bodies}`;
 											</p>
 										</div>
 										<div class="flex items-center gap-1 shrink-0">
-											<button type="button" class="flex items-center justify-center w-6 h-6 rounded-md text-slate-400 hover:bg-emerald-500/10 hover:text-emerald-500 transition-colors bg-transparent border-none cursor-pointer disabled:opacity-40 disabled:cursor-not-allowed" onclick={(e) => { e.stopPropagation(); handleStashPop(entry); }} title="Pop" disabled={getGitOps(watchScope, nested.path).isStashing}><Icon name="lucide:archive-restore" class="w-3.5 h-3.5" /></button>
+											<button type="button" class="flex items-center justify-center w-6 h-6 rounded-md text-slate-400 hover:bg-emerald-500/10 hover:text-emerald-500 transition-colors bg-transparent border-none cursor-pointer disabled:opacity-40 disabled:cursor-not-allowed" onclick={(e) => { e.stopPropagation(); handleStashPop(entry); }} title="Pop — apply and remove this entry" disabled={getGitOps(watchScope, nested.path).isStashing}><Icon name="lucide:archive-restore" class="w-3.5 h-3.5" /></button><button type="button" class="flex items-center justify-center w-6 h-6 rounded-md text-slate-400 hover:bg-violet-500/10 hover:text-violet-500 transition-colors bg-transparent border-none cursor-pointer disabled:opacity-40 disabled:cursor-not-allowed" onclick={(e) => { e.stopPropagation(); handleStashRestore(entry, 'apply'); }} title="Apply — keep this entry in the stash list" disabled={getGitOps(watchScope, nested.path).isStashing}><Icon name="lucide:copy-plus" class="w-3.5 h-3.5" /></button>
 											<button type="button" class="flex items-center justify-center w-6 h-6 rounded-md text-slate-400 hover:bg-red-500/10 hover:text-red-500 transition-colors bg-transparent border-none cursor-pointer disabled:opacity-40 disabled:cursor-not-allowed" onclick={(e) => { e.stopPropagation(); handleStashDrop(entry); }} title="Drop" disabled={getGitOps(watchScope, nested.path).isStashing}><Icon name="lucide:trash-2" class="w-3.5 h-3.5" /></button>
 										</div>
 									</div>
@@ -5343,6 +5974,48 @@ ${bodies}`;
 {#snippet changesList()}
 	{#if activeView === 'changes'}
 		<div class="flex-1 flex flex-col min-h-0 overflow-hidden">
+		{#if operationState && (operationState.operation || operationState.stashConflict)}
+			<!-- The panel already knew about this state; it just never said so.
+				Without the banner a stalled rebase reads as broken buttons. -->
+			<div class="pt-2">
+				<GitOperationBanner
+					state={operationState}
+					busy={isOperationBusy}
+					onContinue={() => void runOperationAction('continue')}
+					onSkip={() => void runOperationAction('skip')}
+					onAbort={() => confirmAbortOperation(operationState!)}
+					onResolve={mainConflictedFiles.length > 0
+						? () => openConflictResolver(mainConflictedFiles[0].path)
+						: undefined}
+				/>
+			</div>
+		{/if}
+
+		{#if pushTargetDiffers && pushTarget}
+			<!-- Only rendered when the destination is surprising. A fork PR checked
+				out for review tracks the contributor's repository, not this one, and
+				the panel used to give no sign of that at all. -->
+			<div class="px-2 pt-2">
+				<div
+					class="flex flex-wrap items-center gap-x-2 gap-y-1 rounded-lg border border-sky-400/40 bg-sky-500/10 px-2.5 py-1.5 dark:border-sky-500/40"
+				>
+					<Icon name="lucide:arrow-up-from-line" class="w-3.5 h-3.5 shrink-0 text-sky-600 dark:text-sky-400" />
+					<span class="min-w-0 flex-1 truncate text-3xs text-sky-800 dark:text-sky-200">
+						Pushes to <span class="font-mono font-semibold">{describePushTarget(pushTarget)}</span>
+						{#if pushTarget.isUrl}(a remote URL, not <span class="font-mono">{selectedRemote}</span>){/if}
+					</span>
+					<button
+						type="button"
+						class="shrink-0 cursor-pointer rounded-md border-none bg-sky-500/15 px-2 py-0.5 text-3xs font-semibold text-sky-800 transition-colors hover:bg-sky-500/25 dark:text-sky-100"
+						onclick={openUpstreamModal}
+						title="Change which remote branch this branch tracks"
+					>
+						Change
+					</button>
+				</div>
+			</div>
+		{/if}
+
 		<!-- Commit form -->
 		<CommitForm
 			stagedCount={mainStagedFiles.length}
@@ -5358,6 +6031,7 @@ ${bodies}`;
 			{isMoreBusy}
 			{repoBusy}
 			{repoBusyReason}
+			pushDestination={pushDestinationLabel}
 			onCreateBranch={createBranch}
 			onPush={() => handlePush()}
 			onPull={() => handlePull()}
@@ -6076,7 +6750,7 @@ ${bodies}`;
 												</p>
 											</div>
 											<div class="flex items-center gap-1 shrink-0">
-												<button type="button" class="flex items-center justify-center w-6 h-6 rounded-md text-slate-400 hover:bg-emerald-500/10 hover:text-emerald-500 transition-colors bg-transparent border-none cursor-pointer disabled:opacity-40 disabled:cursor-not-allowed" onclick={(e) => { e.stopPropagation(); handleStashPop(entry); }} title="Pop" disabled={ops.isStashing}><Icon name="lucide:archive-restore" class="w-3.5 h-3.5" /></button>
+												<button type="button" class="flex items-center justify-center w-6 h-6 rounded-md text-slate-400 hover:bg-emerald-500/10 hover:text-emerald-500 transition-colors bg-transparent border-none cursor-pointer disabled:opacity-40 disabled:cursor-not-allowed" onclick={(e) => { e.stopPropagation(); handleStashPop(entry); }} title="Pop — apply and remove this entry" disabled={ops.isStashing}><Icon name="lucide:archive-restore" class="w-3.5 h-3.5" /></button><button type="button" class="flex items-center justify-center w-6 h-6 rounded-md text-slate-400 hover:bg-violet-500/10 hover:text-violet-500 transition-colors bg-transparent border-none cursor-pointer disabled:opacity-40 disabled:cursor-not-allowed" onclick={(e) => { e.stopPropagation(); handleStashRestore(entry, 'apply'); }} title="Apply — keep this entry in the stash list" disabled={ops.isStashing}><Icon name="lucide:copy-plus" class="w-3.5 h-3.5" /></button>
 												<button type="button" class="flex items-center justify-center w-6 h-6 rounded-md text-slate-400 hover:bg-red-500/10 hover:text-red-500 transition-colors bg-transparent border-none cursor-pointer disabled:opacity-40 disabled:cursor-not-allowed" onclick={(e) => { e.stopPropagation(); handleStashDrop(entry); }} title="Drop" disabled={ops.isStashing}><Icon name="lucide:trash-2" class="w-3.5 h-3.5" /></button>
 											</div>
 										</div>
@@ -6331,11 +7005,18 @@ ${bodies}`;
 		{#snippet header()}
 			<div class="flex items-center justify-between px-4 py-3 md:px-6 md:py-4">
 				<div class="flex items-center gap-2.5">
-					<Icon name="lucide:git-merge" class="w-5 h-5 text-violet-600" />
+					<Icon
+						name={mergeIntent === 'rebase' ? 'lucide:git-pull-request-arrow' : 'lucide:git-merge'}
+						class="w-5 h-5 text-violet-600"
+					/>
 					<div>
-						<h2 class="text-base md:text-lg font-bold text-slate-900 dark:text-slate-100">Merge Branch</h2>
+						<h2 class="text-base md:text-lg font-bold text-slate-900 dark:text-slate-100">
+							{mergeIntent === 'rebase' ? 'Rebase Branch' : 'Merge Branch'}
+						</h2>
 						<p class="text-xs text-slate-500 dark:text-slate-400">
-							Merge into <span class="font-mono text-slate-700 dark:text-slate-300">{branchInfo?.current ?? 'current branch'}</span>
+							{mergeIntent === 'rebase' ? 'Replay' : 'Merge into'}
+							<span class="font-mono text-slate-700 dark:text-slate-300">{mergeTargetBranch}</span>
+							{mergeIntent === 'rebase' ? 'onto the branch below' : ''}
 						</p>
 					</div>
 				</div>
@@ -6376,6 +7057,16 @@ ${bodies}`;
 					{/if}
 				</div>
 
+				{#if mergeIntent === 'rebase'}
+					<div class="rounded-lg border border-amber-500/40 bg-amber-500/10 p-3">
+						<p class="text-xs text-amber-800 dark:text-amber-200">
+							Runs <code class="font-mono">git rebase --autostash {mergeBranchName || '<branch>'}</code>.
+							This rewrites your commits on top of that branch, so don't rebase a branch
+							you have already shared unless you intend to force-push. Local changes are
+							stashed and restored automatically.
+						</p>
+					</div>
+				{:else}
 				<div>
 					<div class="text-sm font-semibold text-slate-700 dark:text-slate-300 mb-2">Merge Mode</div>
 					<div class="grid grid-cols-1 gap-2">
@@ -6422,8 +7113,31 @@ ${bodies}`;
 								</span>
 							</span>
 						</button>
+
+						<button
+							type="button"
+							class="flex items-start gap-3 p-3 rounded-lg border text-left transition-colors
+								{mergeMode === 'squash'
+									? 'border-violet-500 bg-violet-500/10'
+									: 'border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-900 hover:border-violet-400'}"
+							onclick={() => mergeMode = 'squash'}
+							disabled={isMoreBusy}
+						>
+							<span class="mt-0.5 flex-none flex h-4 w-4 items-center justify-center rounded-full border {mergeMode === 'squash' ? 'border-violet-600 bg-violet-600' : 'border-slate-300 dark:border-slate-600'}">
+								{#if mergeMode === 'squash'}
+									<span class="flex-none h-1.5 w-1.5 rounded-full bg-white"></span>
+								{/if}
+							</span>
+							<span class="min-w-0">
+								<span class="block text-sm font-semibold text-slate-900 dark:text-slate-100">--squash</span>
+								<span class="block text-xs text-slate-500 dark:text-slate-400">
+									Runs <code class="font-mono">git merge --squash {mergeBranchName || '<branch>'}</code>. Collapses the branch into staged changes — you still write the commit yourself.
+								</span>
+							</span>
+						</button>
 					</div>
 				</div>
+				{/if}
 			</div>
 		{/snippet}
 
@@ -6442,15 +7156,21 @@ ${bodies}`;
 					{mergeBranchName && !isMoreBusy
 						? 'bg-violet-600 text-white hover:bg-violet-700 cursor-pointer'
 						: 'bg-slate-200 dark:bg-slate-700 text-slate-400 dark:text-slate-500 cursor-not-allowed'}"
-				onclick={() => void runMergeBranch(mergeBranchName, mergeMode === 'no-ff')}
+				onclick={() =>
+					mergeIntent === 'rebase'
+						? void runRebaseOnto(mergeBranchName)
+						: void runMergeBranch(mergeBranchName, mergeMode)}
 				disabled={!mergeBranchName || isMoreBusy}
 			>
 				{#if isMoreBusy}
 					<div class="w-3.5 h-3.5 border-2 border-white/30 border-t-white rounded-full animate-spin"></div>
 				{:else}
-					<Icon name="lucide:git-merge" class="w-3.5 h-3.5" />
+					<Icon
+						name={mergeIntent === 'rebase' ? 'lucide:git-pull-request-arrow' : 'lucide:git-merge'}
+						class="w-3.5 h-3.5"
+					/>
 				{/if}
-				Merge Branch
+				{mergeIntent === 'rebase' ? 'Rebase Branch' : 'Merge Branch'}
 			</button>
 		{/snippet}
 	</Modal>
@@ -6463,13 +7183,130 @@ ${bodies}`;
 		isLoading={isConflictLoading}
 		initialPath={conflictInitialPath}
 		onResolve={resolveConflict}
+		operation={resolverOperation}
 		onResolveWithAI={resolveWithAI}
 		onResolveAllWithAI={resolveAllWithAI}
 		onAbortMerge={abortMerge}
-		busy={ops.isResolving}
+		busy={ops.isResolving || isOperationBusy}
 		onClose={() => {
 			showConflictResolver = false;
 			conflictInitialPath = null;
+		}}
+	/>
+
+	<!-- Upstream Modal -->
+	<Modal isOpen={showUpstreamModal} onClose={() => (showUpstreamModal = false)} size="sm">
+		{#snippet header()}
+			<div class="flex items-center justify-between px-4 py-3 md:px-6 md:py-4">
+				<div class="flex items-center gap-2.5">
+					<Icon name="lucide:git-branch" class="w-5 h-5 text-violet-600" />
+					<div>
+						<h2 class="text-base font-bold text-slate-900 md:text-lg dark:text-slate-100">
+							Branch Upstream
+						</h2>
+						<p class="text-xs text-slate-500 dark:text-slate-400">
+							Where <span class="font-mono text-slate-700 dark:text-slate-300">{branchInfo?.current ?? ''}</span>
+							pushes and pulls
+						</p>
+					</div>
+				</div>
+				<button
+					type="button"
+					class="rounded-lg p-1.5 text-slate-500 transition-colors hover:bg-violet-500/10 hover:text-slate-900 md:p-2 dark:hover:text-slate-100"
+					onclick={() => (showUpstreamModal = false)}
+					aria-label="Close upstream modal"
+				>
+					<Icon name="lucide:x" class="w-4 h-4 md:w-5 md:h-5" />
+				</button>
+			</div>
+		{/snippet}
+
+		{#snippet children()}
+			<div class="flex flex-col gap-3 px-4 py-2 md:px-6">
+				<div>
+					<label
+						for="upstream-remote"
+						class="mb-1 block text-sm font-semibold text-slate-700 dark:text-slate-300"
+					>
+						Remote
+					</label>
+					<select
+						id="upstream-remote"
+						bind:value={upstreamRemote}
+						class="w-full rounded-lg border border-slate-200 bg-white px-2.5 py-2 text-sm text-slate-900 outline-none focus:ring-1 focus:ring-violet-500 dark:border-slate-700 dark:bg-slate-900 dark:text-slate-100"
+					>
+						{#each remotes as remote (remote.name)}
+							<option value={remote.name}>{remote.name}</option>
+						{/each}
+					</select>
+				</div>
+				<div>
+					<label
+						for="upstream-branch"
+						class="mb-1 block text-sm font-semibold text-slate-700 dark:text-slate-300"
+					>
+						Remote branch
+					</label>
+					<input
+						id="upstream-branch"
+						type="text"
+						bind:value={upstreamBranch}
+						placeholder={branchInfo?.current ?? 'branch'}
+						class="w-full rounded-lg border border-slate-200 bg-white px-2.5 py-2 text-sm text-slate-900 outline-none focus:ring-1 focus:ring-violet-500 dark:border-slate-700 dark:bg-slate-900 dark:text-slate-100"
+					/>
+					<p class="mt-1 text-xs text-slate-500 dark:text-slate-400">
+						The remote-tracking ref must already exist — fetch first if it does not.
+					</p>
+				</div>
+				{#if pushTarget?.isUrl}
+					<p class="rounded-lg bg-amber-500/10 px-2.5 py-2 text-xs text-amber-800 dark:text-amber-200">
+						This branch currently tracks a URL
+						(<span class="font-mono">{shortRemoteLabel(pushTarget.remote)}</span>), which is normal
+						for a pull request checked out from a fork. Changing it here will redirect future
+						pushes to a named remote instead.
+					</p>
+				{/if}
+			</div>
+		{/snippet}
+
+		{#snippet footer()}
+			<button
+				type="button"
+				class="cursor-pointer rounded-lg border-none bg-transparent px-3 py-2 text-sm font-medium text-red-600 transition-colors hover:bg-red-500/10 dark:text-red-400"
+				onclick={clearUpstream}
+			>
+				Clear upstream
+			</button>
+			<button
+				type="button"
+				class="cursor-pointer rounded-lg border border-slate-200 bg-transparent px-3 py-2 text-sm font-medium text-slate-600 transition-colors hover:bg-slate-100 dark:border-slate-700 dark:text-slate-400 dark:hover:bg-slate-800"
+				onclick={() => (showUpstreamModal = false)}
+			>
+				Cancel
+			</button>
+			<button
+				type="button"
+				class="rounded-lg px-3 py-2 text-sm font-semibold transition-colors
+					{upstreamRemote.trim()
+					? 'cursor-pointer bg-violet-600 text-white hover:bg-violet-700'
+					: 'cursor-not-allowed bg-slate-200 text-slate-400 dark:bg-slate-700 dark:text-slate-500'}"
+				onclick={() => void saveUpstream()}
+				disabled={!upstreamRemote.trim()}
+			>
+				Set Upstream
+			</button>
+		{/snippet}
+	</Modal>
+
+	<GitReflogModal
+		isOpen={showReflog}
+		entries={reflogEntries}
+		isLoading={isReflogLoading}
+		onClose={() => (showReflog = false)}
+		onCreateBranch={(hash, name) => void createBranchAtCommit(hash, name)}
+		onCheckout={(hash) => {
+			showReflog = false;
+			checkoutCommit(hash, reflogRepoPath ?? undefined);
 		}}
 	/>
 

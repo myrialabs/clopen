@@ -62,6 +62,12 @@ export async function execGit(
 			// actually changing. Commands that genuinely need the index lock (commit,
 			// add, checkout) still take it; only the optional refresh is suppressed.
 			GIT_OPTIONAL_LOCKS: '0',
+			// `rebase --continue`, `merge --continue` and friends open $EDITOR for the
+			// commit message. With no TTY that call blocks until our timeout kills it,
+			// so point both editors at `true`: it exits 0 immediately and git keeps
+			// the message git already prepared.
+			GIT_EDITOR: 'true',
+			GIT_SEQUENCE_EDITOR: 'true',
 			// Use English output for consistent parsing
 			LANG: 'en_US.UTF-8',
 			LC_ALL: 'en_US.UTF-8'

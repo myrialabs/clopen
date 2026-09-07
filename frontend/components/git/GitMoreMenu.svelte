@@ -7,6 +7,11 @@
 
 	export type GitMoreAction =
 		| 'merge-branch'
+		| 'rebase-onto'
+		| 'set-upstream'
+		| 'stash-apply'
+		| 'reflog'
+		| 'return-to-branch'
 		| 'push-follow-tags'
 		| 'push-all-tags'
 		| 'push-force-lease'
@@ -79,7 +84,13 @@
 		{
 			label: 'Branch',
 			items: [
-				{ id: 'merge-branch', label: 'Merge Branch', command: 'git merge', icon: 'lucide:git-merge' }
+				// One entry only: the merge modal already offers default / --no-ff /
+				// --squash, so listing the modes here as well would be two routes to
+				// the same choice.
+				{ id: 'merge-branch', label: 'Merge Branch', command: 'git merge', icon: 'lucide:git-merge' },
+				{ id: 'rebase-onto', label: 'Rebase onto Branch', hint: '--autostash', command: 'git rebase --autostash', icon: 'lucide:git-pull-request-arrow' },
+				{ id: 'return-to-branch', label: 'Return to Previous Branch', hint: 'checkout -', command: 'git checkout -', icon: 'lucide:corner-up-left' },
+				{ id: 'set-upstream', label: 'Branch Upstream…', hint: 'where it pushes', command: 'git branch --set-upstream-to', icon: 'lucide:git-compare-arrows' }
 			]
 		},
 		{
@@ -97,6 +108,13 @@
 				{ id: 'npm-patch', label: 'npm version patch', hint: 'x.x.+1', command: 'npm version patch', icon: 'lucide:package' },
 				{ id: 'npm-minor', label: 'npm version minor', hint: 'x.+1.0', command: 'npm version minor', icon: 'lucide:package' },
 				{ id: 'npm-major', label: 'npm version major', hint: '+1.0.0', command: 'npm version major', icon: 'lucide:package' }
+			]
+		},
+		{
+			label: 'Recovery',
+			items: [
+				{ id: 'stash-apply', label: 'Apply stash (keep entry)', hint: 'apply', command: 'git stash apply', icon: 'lucide:layers' },
+				{ id: 'reflog', label: 'Browse reflog', hint: 'recover commits', command: 'git reflog', icon: 'lucide:history' }
 			]
 		},
 		{

@@ -46,6 +46,12 @@ export interface GitBranch {
 	name: string;
 	isCurrent: boolean;
 	isRemote: boolean;
+	/**
+	 * The branch this one tracks, e.g. `origin/main`. Populated from
+	 * `%(upstream:short)`, or from `branch.<name>.remote`/`.merge` when the
+	 * configured remote is a bare URL — which is what `gh pr checkout` writes for
+	 * a fork PR, and which has no remote-tracking ref for git to name.
+	 */
 	upstream?: string;
 	ahead: number;
 	behind: number;
@@ -163,10 +169,107 @@ export interface GitConflictMarker {
 	baseContent?: string;
 }
 
+/**
+ * How git recorded the conflict, derived from the porcelain XY code. Only
+ * `both-modified` and `both-added` carry inline `<<<<<<<` markers; the rest are
+ * add/delete disagreements where the only meaningful answer is "keep the file"
+ * or "delete the file", which is why they need their own UI affordance.
+ */
+export type GitConflictKind =
+	| 'both-modified'   // UU
+	| 'both-added'      // AA
+	| 'added-by-us'     // AU
+	| 'added-by-them'   // UA
+	| 'deleted-by-us'   // DU
+	| 'deleted-by-them' // UD
+	| 'both-deleted';   // DD
+
+/** Ways a single conflicted path can be resolved. */
+export type GitConflictResolution =
+	/** Take the whole file from our side (`git checkout --ours`). */
+	| 'ours'
+	/** Take the whole file from their side (`git checkout --theirs`). */
+	| 'theirs'
+	/** Write caller-supplied content, then stage it. */
+	| 'custom'
+	/** Keep the working-tree file as it stands (`git add`). */
+	| 'keep'
+	/** Resolve as deleted (`git rm`). */
+	| 'delete'
+	/** Put the conflict markers back (`git checkout --merge`). */
+	| 'reset';
+
 export interface GitConflictFile {
 	path: string;
+	/** Working-tree text. Empty when `contentOmitted` is true. */
 	content: string;
 	markers: GitConflictMarker[];
+	kind: GitConflictKind;
+	/** True when the file has no text side to edit (binary, missing, or oversized). */
+	contentOmitted: boolean;
+	/** Why the content was omitted — drives the resolver's fallback UI. */
+	omitReason?: 'binary' | 'missing' | 'too-large';
+	/** Working-tree size in bytes, when the file exists. */
+	size?: number;
+}
+
+/**
+ * Everything the UI needs to explain (and finish) an in-progress operation.
+ *
+ * `oursLabel`/`theirsLabel` exist because the two sides swap meaning between
+ * merge and rebase: rebasing replays your commits onto the upstream, so `ours`
+ * is the branch you are rebasing *onto* and `theirs` is your own commit — the
+ * exact opposite of a merge. Showing the raw words without the branch names is
+ * the single biggest source of wrong resolutions.
+ */
+export interface GitOperationState {
+	operation: GitOperation | null;
+	/** 1-based position in a multi-commit replay (rebase only). */
+	step?: number;
+	/** Total commits in the replay (rebase only). */
+	total?: number;
+	/** Human label for the `ours` side, e.g. "main". */
+	oursLabel: string;
+	/** Human label for the `theirs` side, e.g. "your commit". */
+	theirsLabel: string;
+	/** Subject of the commit being replayed, when there is one. */
+	currentCommit?: string;
+	/** Paths still unmerged. `--continue` is refused while this is non-zero. */
+	unmergedCount: number;
+	canContinue: boolean;
+	canSkip: boolean;
+	/**
+	 * Unmerged paths with no operation sentinel — a `stash pop`/`apply` that hit
+	 * a conflict. The stash entry survives a failed pop, so aborting here must
+	 * say so rather than implying the work is gone.
+	 */
+	stashConflict: boolean;
+}
+
+// ============================================
+// Push Target
+// ============================================
+
+/**
+ * Where `git push` will actually send this branch.
+ *
+ * The panel used to push to whichever remote its dropdown had selected, with
+ * `-u`. On a fork PR checked out for review that pushed the contributor's work
+ * into the main repository as a new branch, and the `-u` rewrote the branch's
+ * remote so every later push went there too. Resolving the real destination —
+ * and showing it — is what keeps that from happening.
+ */
+export interface GitPushTarget {
+	/** Remote name, or a bare URL when that is how the branch is configured. */
+	remote: string;
+	/** Branch name on the far side, which need not match the local name. */
+	remoteBranch: string;
+	/** False when the branch tracks nothing, so a push has to pick a destination. */
+	hasUpstream: boolean;
+	/** True when `remote` is a URL rather than a configured remote name. */
+	isUrl: boolean;
+	/** The local branch this was resolved for. */
+	branch: string;
 }
 
 // ============================================
@@ -206,6 +309,26 @@ export interface GitTag {
 	message: string;
 	date: string;
 	isAnnotated: boolean;
+}
+
+// ============================================
+// Reflog
+// ============================================
+
+/**
+ * One `git reflog` row. This is the repo's undo journal: it still holds commits
+ * that branch deletes, resets and rebases have orphaned, so it is the only way
+ * back from a destructive action.
+ */
+export interface GitReflogEntry {
+	hash: string;
+	hashShort: string;
+	/** Reflog selector, e.g. `HEAD@{3}`. */
+	selector: string;
+	/** The recorded action, e.g. `rebase (finish)` or `commit`. */
+	action: string;
+	subject: string;
+	date: string;
 }
 
 // ============================================
