@@ -21,6 +21,7 @@
 		onPorts: () => void;
 		onContainers: () => void;
 		onMemory: () => void;
+		onNotes: () => void;
 	}
 
 	const {
@@ -32,7 +33,8 @@
 		onSshClient,
 		onPorts,
 		onContainers,
-		onMemory
+		onMemory,
+		onNotes
 	}: Props = $props();
 
 	let isOpen = $state(false);
@@ -123,6 +125,14 @@
 			// No live count: memory is not a connection you open, it just accrues.
 			count: 0,
 			accent: 'text-violet-600 dark:text-violet-400'
+		},
+		{
+			label: 'Notes',
+			description: 'Project notes with images',
+			icon: 'lucide:sticky-note',
+			onClick: onNotes,
+			count: 0,
+			accent: 'text-amber-600 dark:text-amber-400'
 		}
 	]);
 

@@ -42,6 +42,7 @@ export type LogLabel =
 	// Configuration
 	| 'project'
 	| 'workspace'
+	| 'notes'
 	| 'settings'
 	| 'engine'
 	| 'tunnel'

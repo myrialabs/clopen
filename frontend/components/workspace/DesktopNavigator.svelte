@@ -30,6 +30,7 @@
 	import PortsModal from '$frontend/components/ports/PortsModal.svelte';
 	import ContainersModal from '$frontend/components/containers/ContainersModal.svelte';
 	import MemoryModal from '$frontend/components/memory/MemoryModal.svelte';
+	import NotesModal from '$frontend/components/notes/NotesModal.svelte';
 	import SettingButton from '$frontend/components/settings/SettingButton.svelte';
 	import ProjectUserAvatars from '$frontend/components/common/display/ProjectUserAvatars.svelte';
 	import ProjectInfoModal from '$frontend/components/workspace/ProjectInfoModal.svelte';
@@ -54,7 +55,9 @@
 		openContainersDialog,
 		closePortsDialog,
 		openMemoryDialog,
-		closeMemoryDialog
+		closeMemoryDialog,
+		openNotesDialog,
+		closeNotesDialog
 	} from '$frontend/stores/ui/quick-panels.svelte';
 
 	// State
@@ -465,6 +468,7 @@
 					onPorts={openPortsDialog}
 					onContainers={openContainersDialog}
 					onMemory={openMemoryDialog}
+					onNotes={openNotesDialog}
 				/>
 				<QuickSearchButton />
 				<SettingButton onClick={() => openSettingsModal()} />
@@ -537,6 +541,7 @@
 					onPorts={openPortsDialog}
 					onContainers={openContainersDialog}
 					onMemory={openMemoryDialog}
+					onNotes={openNotesDialog}
 				/>
 				<QuickSearchButton collapsed={true} />
 				<SettingButton collapsed={true} onClick={() => openSettingsModal()} />
@@ -630,6 +635,7 @@
 <PortsModal bind:isOpen={quickPanelsState.portsOpen} onClose={closePortsDialog} />
 <ContainersModal bind:isOpen={quickPanelsState.containersOpen} onClose={closeContainersDialog} />
 <MemoryModal bind:isOpen={quickPanelsState.memoryOpen} onClose={closeMemoryDialog} />
+<NotesModal bind:isOpen={quickPanelsState.notesOpen} onClose={closeNotesDialog} />
 
 <!-- Project Context Menu -->
 {#if contextMenuProject}
