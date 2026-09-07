@@ -32,4 +32,4 @@ export { graphQueries, deriveDigest, entityKeyFor, DIGEST_VERSION } from './grap
 export { memoryQueueQueries, type QueuedExtraction } from './memory-queue-queries';
 export { profileQueries, PROFILE_ITEM_TYPES } from './profile-queries';
 export type { ProfileRow, ProfileItemRow, ProfileInput, ProfileItemInput, ProfileItemType } from './profile-queries';
-export { noteQueries, noteImageQueries } from './note-queries';
+export { noteQueries, noteCollectionQueries, noteImageQueries } from './note-queries';

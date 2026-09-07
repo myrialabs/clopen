@@ -7,6 +7,7 @@ import { fileWatcher } from '../files/file-watcher';
 import { clearProjectPresence } from '../project/status-manager';
 import { registerProjectCleanup } from './project-cleanup-registry';
 import { removeProjectWorktrees } from '../worktrees';
+import { removeProjectNotes } from '../notes/storage';
 
 registerProjectCleanup({
 	name: 'engine',
@@ -35,4 +36,9 @@ registerProjectCleanup({
 registerProjectCleanup({
 	name: 'worktrees',
 	run: (projectId) => removeProjectWorktrees(projectId)
+});
+
+registerProjectCleanup({
+	name: 'notes',
+	run: (projectId) => removeProjectNotes(projectId)
 });

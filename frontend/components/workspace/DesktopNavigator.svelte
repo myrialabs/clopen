@@ -634,8 +634,8 @@
 <SshClientModal bind:isOpen={quickPanelsState.sshClientOpen} onClose={closeSshClientDialog} />
 <PortsModal bind:isOpen={quickPanelsState.portsOpen} onClose={closePortsDialog} />
 <ContainersModal bind:isOpen={quickPanelsState.containersOpen} onClose={closeContainersDialog} />
-	<MemoryModal bind:isOpen={quickPanelsState.memoryOpen} onClose={closeMemoryDialog} />
-	<NotesModal bind:isOpen={quickPanelsState.notesOpen} onClose={closeNotesDialog} />
+<MemoryModal bind:isOpen={quickPanelsState.memoryOpen} onClose={closeMemoryDialog} />
+<NotesModal bind:isOpen={quickPanelsState.notesOpen} onClose={closeNotesDialog} />
 
 <!-- Project Context Menu -->
 {#if contextMenuProject}

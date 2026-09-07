@@ -395,13 +395,6 @@
 	:global(.dark .markdown-chat em) {
 		color: rgb(203 213 225);
 	}
-	:global(.markdown-chat u) {
-		text-decoration: underline;
-	}
-	:global(.markdown-chat del),
-	:global(.markdown-chat s) {
-		text-decoration: line-through;
-	}
 	:global(.markdown-chat blockquote) {
 		border-left: 0.25rem solid rgb(203 213 225);
 		padding-left: 1rem;
@@ -623,13 +616,6 @@
 	}
 	:global(.markdown-preview em) {
 		font-style: italic;
-	}
-	:global(.markdown-preview u) {
-		text-decoration: underline;
-	}
-	:global(.markdown-preview del),
-	:global(.markdown-preview s) {
-		text-decoration: line-through;
 	}
 	:global(.markdown-preview blockquote) {
 		border-left: 0.25rem solid rgb(203 213 225);

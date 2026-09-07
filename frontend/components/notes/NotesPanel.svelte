@@ -1,64 +1,24 @@
 <script lang="ts">
-	import { onMount } from 'svelte';
-	import { projectState } from '$frontend/stores/core/projects.svelte';
-	import { notesState, loadNotes, selectNote, clearNotes, createNote } from '$frontend/stores/features/notes.svelte';
-	import NotesList from './NotesList.svelte';
+	import NotesSidebar from './NotesSidebar.svelte';
 	import NoteEditor from './NoteEditor.svelte';
-	import { debug } from '$shared/utils/logger';
+	import NoteDeleteDialog from './NoteDeleteDialog.svelte';
 
-	let lastProjectId: string | null = null;
+	// Loading is the notes dock's job, not this component's: the workspace
+	// coordinator clears the previous project's notes before the switch is
+	// revealed and loads the new project's behind this panel's skeleton.
+	// Fetching from an $effect here would race that and paint stale notes.
 
-	$effect(() => {
-		const pid = projectState.currentProject?.id ?? null;
-		if (pid !== lastProjectId) {
-			lastProjectId = pid;
-			if (pid) {
-				void loadNotes(pid);
-			} else {
-				clearNotes();
-			}
-		}
-	});
-
-	onMount(() => {
-		const pid = projectState.currentProject?.id;
-		if (pid) void loadNotes(pid);
-	});
-
-	async function handleCreate(): Promise<void> {
-		const pid = projectState.currentProject?.id;
-		if (!pid) return;
-		try {
-			const note = await createNote(pid, 'Untitled', '');
-			if (note) debug.log('notes', 'Created note', note.id);
-		} catch (error) {
-			debug.error('notes', 'Create failed', error);
-		}
-	}
-
-	function handleSelect(id: string): void {
-		selectNote(id);
-	}
-
-	async function handleDelete(id: string): Promise<void> {
-		const { deleteNote } = await import('$frontend/stores/features/notes.svelte');
-		if (!confirm('Delete this note?')) return;
-		await deleteNote(id);
-	}
+	let pendingDeleteId = $state<string | null>(null);
 </script>
 
 <div class="flex h-full w-full overflow-hidden bg-transparent">
-	<div class="w-[320px] shrink-0 border-r border-slate-200 dark:border-slate-800 overflow-hidden flex flex-col bg-white dark:bg-slate-900">
-		<NotesList
-			notes={notesState.notes}
-			selectedId={notesState.currentNoteId}
-			isLoading={notesState.isLoading}
-			onSelect={handleSelect}
-			onDelete={handleDelete}
-			onCreate={handleCreate}
-		/>
+	<div class="w-72 shrink-0 border-r border-slate-200 dark:border-slate-800 overflow-hidden flex flex-col bg-white dark:bg-slate-900">
+		<NotesSidebar onDeleteNote={(id) => (pendingDeleteId = id)} />
 	</div>
-	<div class="flex-1 min-w-0 overflow-hidden">
+	<!-- NoteEditor supplies its own padding and content card in both hosts. -->
+	<div class="flex-1 min-w-0 overflow-hidden bg-slate-50 dark:bg-slate-950">
 		<NoteEditor />
 	</div>
 </div>
+
+<NoteDeleteDialog bind:noteId={pendingDeleteId} />

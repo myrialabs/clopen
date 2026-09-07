@@ -11,31 +11,31 @@
 	import { containersStore } from '$frontend/stores/features/containers.svelte';
 	import type { IconName } from '$shared/types/ui/icons';
 
-interface Props {
-	collapsed?: boolean;
-	mobile?: boolean;
-	onRemoteAccess: () => void;
-	onPublicTunnel: () => void;
-	onDbClient: () => void;
-	onSshClient: () => void;
-	onPorts: () => void;
-	onContainers: () => void;
-	onMemory: () => void;
-	onNotes: () => void;
-}
+	interface Props {
+		collapsed?: boolean;
+		mobile?: boolean;
+		onRemoteAccess: () => void;
+		onPublicTunnel: () => void;
+		onDbClient: () => void;
+		onSshClient: () => void;
+		onPorts: () => void;
+		onContainers: () => void;
+		onMemory: () => void;
+		onNotes: () => void;
+	}
 
-const {
-	collapsed = false,
-	mobile = false,
-	onRemoteAccess,
-	onPublicTunnel,
-	onDbClient,
-	onSshClient,
-	onPorts,
-	onContainers,
-	onMemory,
-	onNotes
-}: Props = $props();
+	const {
+		collapsed = false,
+		mobile = false,
+		onRemoteAccess,
+		onPublicTunnel,
+		onDbClient,
+		onSshClient,
+		onPorts,
+		onContainers,
+		onMemory,
+		onNotes
+	}: Props = $props();
 
 	let isOpen = $state(false);
 

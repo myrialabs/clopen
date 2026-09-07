@@ -283,10 +283,25 @@ export interface DBSshPortForwardRow {
 	updated_at: string;
 }
 
-export interface Note {
+/** Who may read and write every note inside a collection. */
+export type NoteScope = 'project' | 'global';
+
+export interface NoteCollection {
 	id: string;
-	project_id: string;
-	folder_path: string | null;
+	name: string;
+	/** `project` — members of `project_id`. `global` — every signed-in user. */
+	scope: NoteScope;
+	/** Set when `scope` is `project`, null when `scope` is `global`. */
+	project_id: string | null;
+	created_by: string | null;
+	created_at: string;
+	updated_at: string;
+}
+
+export interface Note {
+	/** Access is inherited from this collection; a note carries no scope of its own. */
+	collection_id: string;
+	id: string;
 	title: string | null;
 	content: string;
 	created_by: string | null;
@@ -300,9 +315,12 @@ export interface NoteImage {
 	file_name: string;
 	mime_type: string;
 	size: number;
+	/** Relative to the data dir, forward-slashed — resolve via `resolveNoteImagePath`. */
 	storage_path: string;
 	created_at: string;
 }
 
 export type NoteWithImages = Note & { images: NoteImage[] };
+
+export type NoteCollectionWithNotes = NoteCollection & { notes: NoteWithImages[] };
 

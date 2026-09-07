@@ -177,7 +177,7 @@ export function renderMarkdown(content: string, options: RenderMarkdownOptions =
 	renderer.html =
 		html === 'escape'
 			? (token) => escapeHtml(token.text)
-			: (token) => DOMPurify.sanitize(token.text, { USE_PROFILES: { html: true }, ADD_TAGS: ['u'] } as unknown as Parameters<typeof DOMPurify.sanitize>[1]);
+			: (token) => DOMPurify.sanitize(token.text, { USE_PROFILES: { html: true } });
 
 	// ANSI is only processed when actually present, so `ansi: true` is a no-op for plain code.
 	renderer.code = (token) => renderCodeBlock(token, { ansi: true });
