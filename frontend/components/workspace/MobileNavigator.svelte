@@ -15,6 +15,7 @@
 	import PortsModal from '$frontend/components/ports/PortsModal.svelte';
 	import ContainersModal from '$frontend/components/containers/ContainersModal.svelte';
 	import MemoryModal from '$frontend/components/memory/MemoryModal.svelte';
+	import NotesModal from '$frontend/components/notes/NotesModal.svelte';
 	import SettingButton from '$frontend/components/settings/SettingButton.svelte';
 	import type { Project } from '$shared/types/database/schema';
 	import FolderBrowser from '$frontend/components/common/form/FolderBrowser.svelte';
@@ -40,7 +41,9 @@
 		openContainersDialog,
 		closePortsDialog,
 		openMemoryDialog,
-		closeMemoryDialog
+		closeMemoryDialog,
+		openNotesDialog,
+		closeNotesDialog
 	} from '$frontend/stores/ui/quick-panels.svelte';
 	import { openCommandPalette } from '$frontend/stores/ui/command-palette.svelte';
 
@@ -202,6 +205,7 @@
 					onPorts={openPortsDialog}
 					onContainers={openContainersDialog}
 					onMemory={openMemoryDialog}
+					onNotes={openNotesDialog}
 		/>
 
 		<!-- Quick Search Button -->
@@ -458,5 +462,6 @@
 <PortsModal bind:isOpen={quickPanelsState.portsOpen} onClose={closePortsDialog} />
 <ContainersModal bind:isOpen={quickPanelsState.containersOpen} onClose={closeContainersDialog} />
 <MemoryModal bind:isOpen={quickPanelsState.memoryOpen} onClose={closeMemoryDialog} />
+<NotesModal bind:isOpen={quickPanelsState.notesOpen} onClose={closeNotesDialog} />
 
 <ProjectInfoModal bind:isOpen={showProjectInfo} onClose={closeProjectInfo} project={projectInfoProject} />

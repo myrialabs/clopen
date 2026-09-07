@@ -15,6 +15,7 @@ interface QuickPanelsState {
 	portsOpen: boolean;
 	containersOpen: boolean;
 	memoryOpen: boolean;
+	notesOpen: boolean;
 }
 
 export const quickPanelsState = $state<QuickPanelsState>({
@@ -25,7 +26,8 @@ export const quickPanelsState = $state<QuickPanelsState>({
 	sshClientOpen: false,
 	portsOpen: false,
 	containersOpen: false,
-	memoryOpen: false
+	memoryOpen: false,
+	notesOpen: false
 });
 
 export function openNewProjectDialog() {
@@ -90,4 +92,12 @@ export function openMemoryDialog() {
 
 export function closeMemoryDialog() {
 	quickPanelsState.memoryOpen = false;
+}
+
+export function openNotesDialog() {
+	quickPanelsState.notesOpen = true;
+}
+
+export function closeNotesDialog() {
+	quickPanelsState.notesOpen = false;
 }

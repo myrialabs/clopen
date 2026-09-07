@@ -184,7 +184,8 @@ const panelLoading = $state<Record<PanelId, boolean>>({
 	files: false,
 	git: false,
 	terminal: false,
-	preview: false
+	preview: false,
+	notes: false
 });
 
 function setPanelLoadCount(panelId: PanelId, count: number): void {

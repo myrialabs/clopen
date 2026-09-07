@@ -16,7 +16,8 @@
 		files: 'bg-blue-200/60 dark:bg-blue-700/40',
 		preview: 'bg-emerald-200/60 dark:bg-emerald-700/40',
 		terminal: 'bg-amber-200/60 dark:bg-amber-700/40',
-		git: 'bg-pink-200/60 dark:bg-pink-700/40'
+		git: 'bg-pink-200/60 dark:bg-pink-700/40',
+		notes: 'bg-slate-200/60 dark:bg-slate-700/40'
 	};
 
 	// Panel labels (optional, for larger previews)
@@ -25,7 +26,8 @@
 		files: 'F',
 		preview: 'P',
 		terminal: 'T',
-		git: 'G'
+		git: 'G',
+		notes: 'N'
 	};
 
 	function renderNode(node: SplitNode, depth: number = 0): any {
