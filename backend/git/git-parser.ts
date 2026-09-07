@@ -14,7 +14,8 @@ import type {
 	GitCommit,
 	GitRemote,
 	GitStashEntry,
-	GitConflictMarker
+	GitConflictMarker,
+	GitReflogEntry
 } from '$shared/types/git';
 
 /**
@@ -120,10 +121,15 @@ export function parseBranches(localOutput: string, remoteOutput: string): GitBra
 	// Parse local branches
 	const localLines = localOutput.split('\n').filter(Boolean);
 	for (const line of localLines) {
-		const dateSep = line.lastIndexOf('|');
+		// The upstream is appended after a 0x1F unit separator rather than another
+		// `|`, because the subject in the middle of the line can contain `|` and
+		// the legacy fields are still split positionally.
+		const [legacy, upstreamField = ''] = line.split('\x1f');
+
+		const dateSep = legacy.lastIndexOf('|');
 		if (dateSep === -1) continue;
-		const lastCommitDate = line.substring(dateSep + 1);
-		const head = line.substring(0, dateSep);
+		const lastCommitDate = legacy.substring(dateSep + 1);
+		const head = legacy.substring(0, dateSep);
 
 		// head = "<*>|<name>|<hash>|<subject>"
 		const parts = head.split('|', 4);
@@ -135,7 +141,7 @@ export function parseBranches(localOutput: string, remoteOutput: string): GitBra
 
 		if (isCurrent) current = name;
 
-		local.push({
+		const branch: GitBranch = {
 			name,
 			isCurrent,
 			isRemote: false,
@@ -144,7 +150,10 @@ export function parseBranches(localOutput: string, remoteOutput: string): GitBra
 			lastCommit,
 			lastCommitMessage,
 			lastCommitDate
-		} as GitBranch);
+		};
+		if (upstreamField.trim()) branch.upstream = upstreamField.trim();
+
+		local.push(branch);
 	}
 
 	// Parse remote branches
@@ -394,58 +403,145 @@ export function parseStashList(output: string): GitStashEntry[] {
 /**
  * Parse conflict markers from file content
  */
+/**
+ * Conflict markers are exactly seven repeated characters followed by a space or
+ * the end of the line. Matching a bare `startsWith('<<<<<<<')` also fires on
+ * ordinary content — an eight-arrow ASCII divider, a diff quoted inside a
+ * markdown file — and turns a clean file into a phantom conflict.
+ */
+const MARKER_OURS = /^<{7}(?:[ \t\r]|$)/;
+const MARKER_BASE = /^\|{7}(?:[ \t\r]|$)/;
+const MARKER_SEP = /^={7}(?:[ \t\r]|$)/;
+const MARKER_THEIRS = /^>{7}(?:[ \t\r]|$)/;
+
+/**
+ * True when the text still contains an unresolved conflict block. Used as a
+ * guard before staging: `git add` happily records a file that still has markers
+ * in it, which silently commits `<<<<<<<` into the tree.
+ */
+export function hasConflictMarkers(content: string): boolean {
+	return parseConflictMarkers(content).length > 0;
+}
+
 export function parseConflictMarkers(content: string): GitConflictMarker[] {
 	const markers: GitConflictMarker[] = [];
 	const lines = content.split('\n');
 
 	let i = 0;
 	while (i < lines.length) {
-		if (lines[i].startsWith('<<<<<<<')) {
-			const ourStart = i;
-			let baseStart: number | undefined;
-			let separatorIndex = -1;
-			let theirEnd = -1;
-
-			// Find the rest of the conflict
-			let j = i + 1;
-			while (j < lines.length) {
-				if (lines[j].startsWith('|||||||')) {
-					baseStart = j;
-				} else if (lines[j].startsWith('=======')) {
-					separatorIndex = j;
-				} else if (lines[j].startsWith('>>>>>>>')) {
-					theirEnd = j;
-					break;
-				}
-				j++;
-			}
-
-			if (separatorIndex >= 0 && theirEnd >= 0) {
-				const ourContentStart = ourStart + 1;
-				const ourContentEnd = baseStart !== undefined ? baseStart : separatorIndex;
-				const theirContentStart = separatorIndex + 1;
-
-				const marker: GitConflictMarker = {
-					ourStart,
-					ourEnd: separatorIndex,
-					theirStart: separatorIndex,
-					theirEnd,
-					ourContent: lines.slice(ourContentStart, ourContentEnd).join('\n'),
-					theirContent: lines.slice(theirContentStart, theirEnd).join('\n')
-				};
-
-				if (baseStart !== undefined) {
-					marker.baseStart = baseStart;
-					marker.baseContent = lines.slice(baseStart + 1, separatorIndex).join('\n');
-				}
-
-				markers.push(marker);
-				i = theirEnd + 1;
-				continue;
-			}
+		if (!MARKER_OURS.test(lines[i])) {
+			i++;
+			continue;
 		}
-		i++;
+
+		const ourStart = i;
+		let baseStart: number | undefined;
+		let separatorIndex = -1;
+		let theirEnd = -1;
+		let restartAt = -1;
+
+		let j = i + 1;
+		while (j < lines.length) {
+			const line = lines[j];
+			if (MARKER_OURS.test(line)) {
+				// A second opener before this one closed means the first was never a
+				// real conflict. Drop it and re-scan from the opener we just found.
+				restartAt = j;
+				break;
+			}
+			if (MARKER_BASE.test(line)) baseStart = j;
+			else if (MARKER_SEP.test(line)) separatorIndex = j;
+			else if (MARKER_THEIRS.test(line)) {
+				theirEnd = j;
+				break;
+			}
+			j++;
+		}
+
+		if (restartAt >= 0) {
+			i = restartAt;
+			continue;
+		}
+
+		if (separatorIndex < 0 || theirEnd < 0) {
+			i = ourStart + 1;
+			continue;
+		}
+
+		const ourContentEnd = baseStart !== undefined ? baseStart : separatorIndex;
+		const marker: GitConflictMarker = {
+			ourStart,
+			ourEnd: separatorIndex,
+			theirStart: separatorIndex,
+			theirEnd,
+			ourContent: lines.slice(ourStart + 1, ourContentEnd).join('\n'),
+			theirContent: lines.slice(separatorIndex + 1, theirEnd).join('\n')
+		};
+
+		if (baseStart !== undefined) {
+			marker.baseStart = baseStart;
+			marker.baseContent = lines.slice(baseStart + 1, separatorIndex).join('\n');
+		}
+
+		markers.push(marker);
+		i = theirEnd + 1;
 	}
 
 	return markers;
+}
+
+/**
+ * Parse `git reflog --format=%H|||%h|||%gd|||%gs|||%cI`.
+ *
+ * `%gs` (the reflog subject) already carries both halves — "commit: fix thing",
+ * "rebase (finish): returning to refs/heads/main" — so we split on the first
+ * ": " to separate the action from the description.
+ */
+export function parseReflog(output: string): GitReflogEntry[] {
+	const SEPARATOR = '|||';
+	const entries: GitReflogEntry[] = [];
+
+	for (const line of output.split('\n')) {
+		if (!line.trim()) continue;
+		const parts = line.split(SEPARATOR);
+		if (parts.length < 5) continue;
+		const [hash, hashShort, selector, gs, date] = parts;
+		const colon = gs.indexOf(': ');
+		entries.push({
+			hash,
+			hashShort,
+			selector,
+			action: colon >= 0 ? gs.slice(0, colon) : gs,
+			subject: colon >= 0 ? gs.slice(colon + 2) : '',
+			date
+		});
+	}
+
+	return entries;
+}
+
+/**
+ * Parse `git ls-files -u -z`: one row per unmerged *stage* (1 = base, 2 = ours,
+ * 3 = theirs), so a path shows up two or three times. Which stages are present
+ * is what distinguishes a both-modified conflict from a delete/modify one, and
+ * unlike `git status` this never omits a path whose working-tree file is gone.
+ */
+export function parseUnmergedStages(output: string): Map<string, Set<number>> {
+	const stages = new Map<string, Set<number>>();
+
+	for (const row of output.split('\0')) {
+		if (!row.trim()) continue;
+		// "<mode> <sha> <stage>\t<path>"
+		const tab = row.indexOf('\t');
+		if (tab < 0) continue;
+		const meta = row.slice(0, tab).trim().split(/\s+/);
+		const path = row.slice(tab + 1);
+		const stage = Number(meta[2]);
+		if (!path || !Number.isInteger(stage)) continue;
+		const set = stages.get(path) ?? new Set<number>();
+		set.add(stage);
+		stages.set(path, set);
+	}
+
+	return stages;
 }

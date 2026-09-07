@@ -158,6 +158,10 @@ export const branchHandler = createRouter()
 			projectId: t.String(),
 			branchName: t.String(),
 			noFastForward: t.Optional(t.Boolean()),
+			/** Collapse the branch into staged changes without committing. */
+			squash: t.Optional(t.Boolean()),
+			/** Refuse the merge unless it is a fast-forward. */
+			ffOnly: t.Optional(t.Boolean()),
 			repoPath: t.Optional(t.String())
 		}),
 		response: t.Object({
@@ -167,5 +171,43 @@ export const branchHandler = createRouter()
 	}, async ({ data, conn }) => {
 		const { root } = requireProjectWorkspace(conn, data.projectId);
 		const cwd = resolveRepoCwd(root, data.repoPath);
-		return await gitService.mergeBranch(cwd, data.branchName, data.noFastForward ?? false);
+		return await gitService.mergeBranch(cwd, data.branchName, {
+			noFastForward: data.noFastForward ?? false,
+			squash: data.squash ?? false,
+			ffOnly: data.ffOnly ?? false
+		});
+	})
+
+	.http('git:rebase', {
+		data: t.Object({
+			projectId: t.String(),
+			upstream: t.String({ minLength: 1 }),
+			/** Stash and restore local changes around the rebase. Defaults to true. */
+			autostash: t.Optional(t.Boolean()),
+			repoPath: t.Optional(t.String())
+		}),
+		response: t.Object({
+			success: t.Boolean(),
+			hasConflicts: t.Boolean(),
+			message: t.String()
+		})
+	}, async ({ data, conn }) => {
+		const { root } = requireProjectWorkspace(conn, data.projectId);
+		const cwd = resolveRepoCwd(root, data.repoPath);
+		return await gitService.rebaseOnto(cwd, data.upstream, data.autostash ?? true);
+	})
+
+	.http('git:return-to-branch', {
+		data: t.Object({
+			projectId: t.String(),
+			/** Explicit target; omit to use git's own "previous checkout" shorthand. */
+			branch: t.Optional(t.String()),
+			repoPath: t.Optional(t.String())
+		}),
+		response: t.Object({ ok: t.Boolean() })
+	}, async ({ data, conn }) => {
+		const { root } = requireProjectWorkspace(conn, data.projectId);
+		const cwd = resolveRepoCwd(root, data.repoPath);
+		await gitService.returnToBranch(cwd, data.branch);
+		return { ok: true };
 	});

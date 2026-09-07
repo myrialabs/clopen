@@ -59,4 +59,29 @@ export const logHandler = createRouter()
 			data.branch,
 			data.allBranches ?? false
 		);
+	})
+
+	/**
+	 * The repo's undo journal. Unlike `git log` this still lists commits that a
+	 * reset, a branch delete or a rebase orphaned, so it is the recovery path for
+	 * every destructive action the panel offers.
+	 */
+	.http('git:reflog', {
+		data: t.Object({
+			projectId: t.String(),
+			limit: t.Optional(t.Number()),
+			repoPath: t.Optional(t.String())
+		}),
+		response: t.Array(t.Object({
+			hash: t.String(),
+			hashShort: t.String(),
+			selector: t.String(),
+			action: t.String(),
+			subject: t.String(),
+			date: t.String()
+		}))
+	}, async ({ data, conn }) => {
+		const { root } = requireProjectWorkspace(conn, data.projectId);
+		const cwd = resolveRepoCwd(root, data.repoPath);
+		return await gitService.getReflog(cwd, data.limit ?? 100);
 	});

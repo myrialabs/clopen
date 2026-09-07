@@ -33,6 +33,12 @@
 		isMoreBusy?: boolean;
 		/** Repo is detached / mid-operation (rebase, merge, …) — block branch-targeted actions */
 		repoBusy?: boolean;
+		/**
+		 * Where a push will actually land, e.g. `contributor/clopen/their-branch`.
+		 * Shown in the tooltip because the destination is decided by the branch's
+		 * own config, not by the panel's remote dropdown.
+		 */
+		pushDestination?: string;
 		/** Human-readable reason shown in disabled button tooltips */
 		repoBusyReason?: string;
 		/** Absolute path to a nested repo; when set, actions operate inside that repo. */
@@ -62,6 +68,7 @@
 		isMoreBusy = false,
 		repoBusy = false,
 		repoBusyReason = '',
+		pushDestination = '',
 		repoPath,
 		onCreateBranch,
 		onPush,
@@ -78,7 +85,6 @@
 	const showSyncActions = $derived(Boolean(onPush || onPull));
 
 	// Branch operand shown in the sync-button tooltips (omitted when unknown).
-	const branchRef = $derived(currentBranch ? ` ${currentBranch}` : '');
 
 	// The commit message draft is per-project and lives in the git workspace
 	// store so it survives remounts and is isolated/restored per project.
@@ -455,7 +461,11 @@
 					class="relative flex items-center justify-center w-8 h-7 bg-white dark:bg-slate-800/80 border border-slate-200 dark:border-slate-700 rounded-md text-slate-500 cursor-pointer transition-all duration-150 hover:bg-violet-500/10 hover:text-violet-600 dark:hover:text-violet-400 disabled:opacity-50 disabled:cursor-not-allowed disabled:hover:bg-white dark:disabled:hover:bg-slate-800/80 disabled:hover:text-slate-500 flex-shrink-0"
 					onclick={onPush}
 					disabled={isPushing || !hasRemotes || !onPush || repoBusy}
-					title={repoBusy ? repoBusyReason : hasRemotes ? `Push${branchAhead > 0 ? ` (${branchAhead} ahead)` : ''} — git push -u ${selectedRemote}${branchRef}` : 'No remote configured'}
+					title={repoBusy
+						? repoBusyReason
+						: hasRemotes
+							? `Push${branchAhead > 0 ? ` (${branchAhead} ahead)` : ''}${pushDestination ? ` → ${pushDestination}` : ''}`
+							: 'No remote configured'}
 				>
 					{#if isPushing}
 						<div class="w-3.5 h-3.5 border-2 border-white/30 border-t-white rounded-full animate-spin flex-shrink-0"></div>
@@ -473,7 +483,11 @@
 					class="relative flex items-center justify-center w-8 h-7 bg-white dark:bg-slate-800/80 border border-slate-200 dark:border-slate-700 rounded-md text-slate-500 cursor-pointer transition-all duration-150 hover:bg-violet-500/10 hover:text-violet-600 dark:hover:text-violet-400 disabled:opacity-50 disabled:cursor-not-allowed disabled:hover:bg-white dark:disabled:hover:bg-slate-800/80 disabled:hover:text-slate-500 flex-shrink-0"
 					onclick={onPull}
 					disabled={isPulling || !hasRemotes || !onPull || repoBusy}
-					title={repoBusy ? repoBusyReason : hasRemotes ? `Pull${branchBehind > 0 ? ` (${branchBehind} behind)` : ''} — git pull ${selectedRemote}${branchRef}` : 'No remote configured'}
+					title={repoBusy
+						? repoBusyReason
+						: hasRemotes
+							? `Pull${branchBehind > 0 ? ` (${branchBehind} behind)` : ''}${pushDestination ? ` ← ${pushDestination}` : ''}`
+							: 'No remote configured'}
 				>
 					{#if isPulling}
 						<div class="w-3.5 h-3.5 border-2 border-white/30 border-t-white rounded-full animate-spin flex-shrink-0"></div>

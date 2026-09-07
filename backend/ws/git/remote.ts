@@ -120,6 +120,11 @@ export const remoteHandler = createRouter()
 			remote: t.Optional(t.String()),
 			branch: t.Optional(t.String()),
 			force: t.Optional(t.Boolean()),
+			/**
+			 * Follow the branch's own upstream instead of `remote`. Default true —
+			 * only set false for a deliberate "push this somewhere else" action.
+			 */
+			useUpstream: t.Optional(t.Boolean()),
 			repoPath: t.Optional(t.String())
 		}),
 		response: t.Object({
@@ -129,7 +134,59 @@ export const remoteHandler = createRouter()
 	}, async ({ data, conn }) => {
 		const { root } = requireProjectWorkspace(conn, data.projectId);
 		const cwd = resolveRepoCwd(root, data.repoPath);
-		return await gitService.push(cwd, data.remote, data.branch, data.force);
+		return await gitService.push(cwd, data.remote, data.branch, data.force, {
+			useUpstream: data.useUpstream ?? true
+		});
+	})
+
+	/** Where a push would actually land — drives the Push button's label. */
+	.http('git:push-target', {
+		data: t.Object({
+			projectId: t.String(),
+			branch: t.Optional(t.String()),
+			repoPath: t.Optional(t.String())
+		}),
+		response: t.Object({
+			remote: t.String(),
+			remoteBranch: t.String(),
+			hasUpstream: t.Boolean(),
+			isUrl: t.Boolean(),
+			branch: t.String()
+		})
+	}, async ({ data, conn }) => {
+		const { root } = requireProjectWorkspace(conn, data.projectId);
+		const cwd = resolveRepoCwd(root, data.repoPath);
+		return await gitService.getPushTarget(cwd, data.branch);
+	})
+
+	.http('git:set-upstream', {
+		data: t.Object({
+			projectId: t.String(),
+			branch: t.String({ minLength: 1 }),
+			remote: t.String({ minLength: 1 }),
+			remoteBranch: t.Optional(t.String()),
+			repoPath: t.Optional(t.String())
+		}),
+		response: t.Object({ ok: t.Boolean() })
+	}, async ({ data, conn }) => {
+		const { root } = requireProjectWorkspace(conn, data.projectId);
+		const cwd = resolveRepoCwd(root, data.repoPath);
+		await gitService.setUpstream(cwd, data.branch, data.remote, data.remoteBranch);
+		return { ok: true };
+	})
+
+	.http('git:unset-upstream', {
+		data: t.Object({
+			projectId: t.String(),
+			branch: t.String({ minLength: 1 }),
+			repoPath: t.Optional(t.String())
+		}),
+		response: t.Object({ ok: t.Boolean() })
+	}, async ({ data, conn }) => {
+		const { root } = requireProjectWorkspace(conn, data.projectId);
+		const cwd = resolveRepoCwd(root, data.repoPath);
+		await gitService.unsetUpstream(cwd, data.branch);
+		return { ok: true };
 	})
 
 	.http('git:add-remote', {
@@ -271,6 +328,23 @@ export const remoteHandler = createRouter()
 		const { root } = requireProjectWorkspace(conn, data.projectId);
 		const cwd = resolveRepoCwd(root, data.repoPath);
 		return await gitService.stashPop(cwd, data.index);
+	})
+
+	.http('git:stash-apply', {
+		data: t.Object({
+			projectId: t.String(),
+			index: t.Optional(t.Number()),
+			repoPath: t.Optional(t.String())
+		}),
+		response: t.Object({
+			success: t.Boolean(),
+			hasConflicts: t.Boolean(),
+			message: t.String()
+		})
+	}, async ({ data, conn }) => {
+		const { root } = requireProjectWorkspace(conn, data.projectId);
+		const cwd = resolveRepoCwd(root, data.repoPath);
+		return await gitService.stashApply(cwd, data.index);
 	})
 
 	.http('git:stash-drop', {
