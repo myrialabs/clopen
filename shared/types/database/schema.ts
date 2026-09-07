@@ -283,3 +283,26 @@ export interface DBSshPortForwardRow {
 	updated_at: string;
 }
 
+export interface Note {
+	id: string;
+	project_id: string;
+	folder_path: string | null;
+	title: string | null;
+	content: string;
+	created_by: string | null;
+	created_at: string;
+	updated_at: string;
+}
+
+export interface NoteImage {
+	id: string;
+	note_id: string;
+	file_name: string;
+	mime_type: string;
+	size: number;
+	storage_path: string;
+	created_at: string;
+}
+
+export type NoteWithImages = Note & { images: NoteImage[] };
+
