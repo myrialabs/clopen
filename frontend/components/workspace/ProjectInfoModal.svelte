@@ -288,9 +288,6 @@
 							<p class="text-lg font-bold text-slate-900 dark:text-slate-100">{formatBytes(data.storage.sizeBytes)}</p>
 							<p class="text-2xs text-slate-500 dark:text-slate-400">
 								{data.storage.fileCount.toLocaleString()} files · {data.storage.dirCount.toLocaleString()} dirs
-								{#if data.storage.truncated}
-									<span class="text-amber-600 dark:text-amber-400"> (partial)</span>
-								{/if}
 							</p>
 						{/if}
 					</div>
@@ -367,12 +364,6 @@
 						<Icon name="lucide:info" class="w-4 h-4 shrink-0" />
 						{data.resources.rootPids.length} shell{data.resources.rootPids.length !== 1 ? 's' : ''} running, but the host process table could not be read.
 					</div>
-				{/if}
-
-				{#if data.storage.truncated}
-					<p class="text-3xs text-amber-600 dark:text-amber-400 text-center">
-						Storage scan stopped early — the folder is larger than one pass covers, so the size is a floor, not a total.
-					</p>
 				{/if}
 
 				{#if error}
