@@ -40,7 +40,7 @@ All-in-one workspace for AI coding agents — Claude Code, OpenCode, Codex, Copi
 
 ![Browser preview panel](https://clopen.myrialabs.dev/images/preview-panel.webp)
 
-![Connectors settings](https://clopen.myrialabs.dev/images/connectors-setting.webp)
+![Integrations settings](https://clopen.myrialabs.dev/images/connectors-setting.webp)
 
 ![Public tunnel](https://clopen.myrialabs.dev/images/public-tunnel.webp)
 
@@ -67,7 +67,7 @@ A complete development environment designed around AI-assisted workflows, built 
 - **Real-Time Collaboration** — See who's working on which project, and collaborate live in the same codebase
 - **Monaco File Editor** — VS Code's editor right in the browser. Full syntax highlighting, autocomplete, and live file watching, beside your AI chat
 - **Cloudflare Tunnel** — One-click public HTTPS URL for your local dev server. Built-in QR code for instant mobile access. Share your work without deploying
-- **Connectors (MCP)** — Browse a searchable catalog of Model Context Protocol servers, connect with OAuth or custom env/headers, and sync every connector across all your AI engines
+- **Integrations** — Connect a third-party account once and every engine and project can use it. Credentials are sealed at rest with AES-256-GCM. Includes the full MCP surface: browse the official Model Context Protocol registry, connect with OAuth or custom env/headers, control tool exposure per engine, and sync every connector across all your AI engines
 - **Skills, Commands & Subagents** — Build reusable Skills, slash Commands, delegated Subagents, shared Instructions, and tool Permissions or Profiles once, synced automatically across every engine
 - **Flexible Authentication** — No Login or With Login mode with admin/member roles, invite links, rate-limited login, and CLI token recovery
 - **Stack** — Install AI engines, Git, Chrome, and Cloudflared (for Public Tunnel) from a one-click admin panel. Engines install on demand into a clopen-managed directory (`~/.clopen/stack/engines`) — isolated from your global setup, no PATH pollution

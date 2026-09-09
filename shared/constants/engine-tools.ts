@@ -1,6 +1,6 @@
 /**
  * Built-in tool catalog per engine — the inventory the Permissions UI offers for
- * allow/deny rules, alongside MCP tools (from Connectors) and subagent tool
+ * allow/deny rules, alongside MCP tools (from Integrations) and subagent tool
  * allowlists.
  *
  * Tool NAMES must match what each engine reports at its permission hook, or a

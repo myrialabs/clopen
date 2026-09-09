@@ -19,7 +19,7 @@
 	import ArtifactsSettings from './model/ArtifactsSettings.svelte';
 	import AIEnginesSettings from './engines/AIEnginesSettings.svelte';
 	import StackSettings from './stack/StackSettings.svelte';
-	import McpSettings from './mcp/McpSettings.svelte';
+	import IntegrationsSettings from './integrations/IntegrationsSettings.svelte';
 	import SkillsSettings from './skills/SkillsSettings.svelte';
 	import CommandsSettings from './commands/CommandsSettings.svelte';
 	import SubagentsSettings from './subagents/SubagentsSettings.svelte';
@@ -306,9 +306,9 @@
 						<div in:fly={{ x: 20, duration: 200 }}>
 							<StackSettings />
 						</div>
-					{:else if activeSection === 'mcp' && isAdmin}
+					{:else if activeSection === 'integrations' && isAdmin}
 						<div in:fly={{ x: 20, duration: 200 }}>
-							<McpSettings />
+							<IntegrationsSettings />
 						</div>
 					{:else if activeSection === 'skills' && isAdmin}
 						<div in:fly={{ x: 20, duration: 200 }}>

@@ -15,6 +15,9 @@
  */
 
 import { syncInternalServers } from './mcp';
+import { getDatabase } from './database';
+import { logSecretColumnAudit } from './database/crypto';
+import { SERVER_ENV } from './utils/env';
 import { ensureDefaultEngineInstalled } from './engine/bootstrap-default-engine';
 import { bootstrapMemoryGraph } from './memory/bootstrap';
 import { ensureMemoryModel } from './memory/model';
@@ -46,6 +49,19 @@ export function bootstrapAfterDbInit(): void {
 	void ensureDefaultEngineInstalled()
 		.then(() => ensureMemoryModel())
 		.catch(error => debug.warn('server', 'Default engine / memory model bootstrap failed', error));
+
+	// Outside production, report any declared secret column still holding
+	// plaintext. This is the safety net for sealing in the query modules rather
+	// than in a wrapper: a new write path that forgets `sealFor()` shows up here
+	// instead of leaking quietly. Left off in production — it reads every secret
+	// column on every start, and there it is a cost without a reader.
+	if (SERVER_ENV.isDevelopment) {
+		try {
+			logSecretColumnAudit(getDatabase());
+		} catch (error) {
+			debug.warn('server', 'Secret-column audit failed', error);
+		}
+	}
 
 	// Fetch the embedding artifact and backfill memory vectors in the background.
 	// Recall is gated on the artifact, but recording is not, so nothing here

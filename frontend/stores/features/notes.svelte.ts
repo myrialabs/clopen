@@ -18,7 +18,7 @@
 
 import ws from '$frontend/utils/ws';
 import { authStore } from '$frontend/stores/features/auth.svelte';
-import { registerDock, beginPanelLoad } from '$frontend/stores/ui/project-workspace.svelte';
+import { registerDock } from '$frontend/stores/ui/project-workspace.svelte';
 import { projectState } from '$frontend/stores/core/projects.svelte';
 import { debug } from '$shared/utils/logger';
 import type {
@@ -87,7 +87,6 @@ export async function loadNotes(): Promise<void> {
 		return;
 	}
 
-	const releasePanel = beginPanelLoad('notes');
 	notesState.isLoading = true;
 	notesState.error = null;
 	try {
@@ -108,7 +107,6 @@ export async function loadNotes(): Promise<void> {
 		debug.error('notes', 'Failed to load notes:', error);
 	} finally {
 		notesState.isLoading = false;
-		releasePanel();
 	}
 }
 
@@ -420,13 +418,13 @@ export function initNotesEvents(): void {
 	});
 }
 
-// The coordinator owns the switch: `clear()` drops the previous project's notes
-// before the new project is revealed, and `load()` runs after, behind the notes
-// panel's own skeleton. Loading from the panel's own `$effect` instead would
-// show the previous project's notes for as long as the request takes.
+// Notes has no dock panel — it is reached from More Tools — but it still needs
+// the switch lifecycle: `clear()` drops the previous project's notes before the
+// new project is revealed, and `load()` runs after. Without `panelId` there is
+// no panel to show a skeleton, so `notesState.isLoading` carries the modal's
+// own loading state instead.
 registerDock({
 	id: 'notes',
-	panelId: 'notes',
 	clear() {
 		clearNotes();
 	},

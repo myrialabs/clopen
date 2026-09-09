@@ -25,7 +25,8 @@ import {
 	completeAuthorization,
 	getValidAccessToken,
 	parseMcpConfig,
-	parseToolOverrides
+	parseToolOverrides,
+	getEngineConfigsForServer
 } from '$backend/mcp';
 
 const TRANSPORT_SCHEMA = t.Union([t.Literal('stdio'), t.Literal('http'), t.Literal('sse')]);
@@ -325,4 +326,27 @@ export const mcpCrudHandler = createRouter()
 		mcpServerQueries.remove(data.id);
 		debug.log('mcp', `🗑️ Uninstalled external MCP server: ${existing.slug}`);
 		return { success: true };
+	})
+	/**
+	 * What each engine is actually handed for this server.
+	 *
+	 * Not the same thing as the stored row: every external server reaches an
+	 * engine as a Streamable-HTTP remote pointing at Clopen's own proxy, so
+	 * showing the row and labelling it "the engine's config" would mislead.
+	 * Returned as a JSON string per engine because the shapes differ by SDK and
+	 * the UI only ever prints them.
+	 */
+	.http('mcp:engine-config', {
+		data: t.Object({ id: t.Number() }),
+		response: t.Object({ configs: t.Record(t.String(), t.String()) })
+	}, async ({ data }) => {
+		debug.log('path', `mcp:engine-config ${data.id}`);
+		const existing = mcpServerQueries.getById(data.id);
+		if (!existing) throw new Error('MCP server not found');
+
+		const configs = Object.fromEntries(
+			Object.entries(getEngineConfigsForServer(existing.slug))
+				.map(([engine, config]) => [engine, JSON.stringify(config, null, 2)])
+		);
+		return { configs };
 	});

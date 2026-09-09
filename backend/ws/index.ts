@@ -35,6 +35,7 @@ import { sshRouter } from './ssh';
 import { portsRouter } from './ports';
 import { containersRouter } from './containers';
 import { mcpRouter } from './mcp';
+import { integrationsRouter } from './integrations';
 import { skillsRouter } from './skills';
 import { commandsRouter } from './commands';
 import { subagentsRouter } from './subagents';
@@ -99,6 +100,7 @@ export const wsRouter = createRouter()
 
 	// External MCP server management (install from the official registry)
 	.merge(mcpRouter)
+	.merge(integrationsRouter)
 
 	// Agent Skills management (create, import, install from a marketplace)
 	.merge(skillsRouter)

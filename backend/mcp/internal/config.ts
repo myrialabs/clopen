@@ -289,7 +289,7 @@ export function getEnabledServerNames(): string[] {
  * Internal server names ACTIVE for a stream. When a Profile is active, its
  * referenced connector set is the source of truth — a referenced internal server
  * counts even if globally disabled, and one NOT referenced is excluded (built-in
- * connectors appear in the profile's Connectors picker, so this is an explicit
+ * connectors appear in the profile's Integrations picker, so this is an explicit
  * choice). Without a profile, every globally-enabled server is active (unchanged).
  */
 export function activeInternalServerNames(profileFilter?: Set<string>): string[] {

@@ -52,6 +52,7 @@ import { audioRoute } from './http/audio';
 // HTTP routes for SFTP transfer — same reason as the file upload route above.
 import { sshSftpRoute } from './http/ssh-sftp';
 import { notesImagesRoute } from './http/notes-images';
+import { integrationHooksRoute } from './http/integration-hooks';
 
 // Import browser preview manager for graceful shutdown
 import { browserPreviewServiceManager } from './preview';
@@ -201,6 +202,10 @@ const app = new Elysia()
 
 	// Notes images
 	.use(notesImagesRoute)
+
+	// Inbound third-party events. Unauthenticated by necessity — it verifies a
+	// per-provider signature over the raw bytes instead of a session.
+	.use(integrationHooksRoute)
 
 	// Mount WebSocket router (all functionality now via WebSocket)
 	.use(wsRouter.asPlugin('/ws'));

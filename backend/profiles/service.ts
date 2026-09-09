@@ -3,7 +3,7 @@
  * resolution consumed by the artifact/MCP sync path.
  *
  * A Profile is a reusable, named set of references to existing artifacts
- * (Skills, Commands, Subagents, MCP Connectors). It NARROWS which of the
+ * (Skills, Commands, Subagents, Integrations). It NARROWS which of the
  * instance-global artifacts are active for a session, without duplicating any
  * artifact data — `profile_items` only stores slugs.
  *

@@ -143,6 +143,20 @@ export const ADMIN_ONLY_ROUTES = new Set([
 	'mcp:tools',
 	'mcp:set-tool-overrides',
 	'mcp:call-tool',
+	'mcp:engine-config',
+	// Third-party integrations. A connected account holds a credential and
+	// projects rows onto surfaces every engine and every project can reach, so
+	// the whole surface is admin-only for the same reason MCP is. The read
+	// events are gated too: `integrations:list` names which services this
+	// install is connected to, and `integrations:secrets-health` describes the
+	// state of the key that protects them.
+	'integrations:providers',
+	'integrations:list',
+	'integrations:connect',
+	'integrations:update',
+	'integrations:disconnect',
+	'integrations:health',
+	'integrations:secrets-health',
 	// Memory Graph — the graph is instance-global and is injected into every
 	// future turn on every engine, so editing it changes what every agent is told.
 	// Mutations only: the read surface (memory:graph / :node / :search / :stats /
