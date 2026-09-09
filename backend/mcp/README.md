@@ -6,7 +6,7 @@ disk and in their namespace keys:
 | | **Internal** (`internal/`) | **External** (`external/`) |
 |---|---|---|
 | What | Custom tools defined in code via `defineServer()` | Servers the user installs from the official MCP registry |
-| Managed | By developers (this README) | By users in **Settings → MCP** |
+| Managed | By developers (this README) | By users in **Settings → Integrations** |
 | Stored | In code (`internal/servers/`) | In the DB (`mcp_servers` table) |
 | Namespace | `clopen-mcp` bridge (non-Claude) / server name (Claude) | one bare `<slug>` per server (no prefix) |
 | Execution | In-process (no subprocess) | Engine connects to Clopen's `/mcp/ext/<slug>` proxy; Clopen connects to the real upstream (stdio subprocess or remote HTTP) |
@@ -18,6 +18,27 @@ the rest of the backend imports from (`getEnabledMcpServers()`,
 The rest of this document covers the **internal** custom-tool system. External
 servers need no code — see `external/registry-client.ts`, `external/config.ts`,
 and `external/proxy.ts` (the per-server `/mcp/ext/<slug>` proxy bridge).
+
+### Where `backend/integrations/` fits
+
+MCP is a **protocol**; an integration is a **credential with capabilities**.
+They are separate modules on purpose, and `backend/integrations/` is the newer
+of the two:
+
+- `backend/mcp/` owns installing, proxying, per-engine tool exposure and
+  MCP-level OAuth. It knows nothing about accounts.
+- `backend/integrations/` owns the account and its credential. One of the
+  capabilities an account can offer — `agent-tools` — **projects** a row into
+  `mcp_servers`, which is the only place the two meet.
+
+That direction matters. A projected row is read by `resolveServerRow()` and by
+every per-engine config builder exactly as a hand-installed one is, so nothing
+in this subsystem has to know accounts exist. And most integrations project no
+MCP server at all — a database provider projects a `db_client_connections` row,
+a chat provider registers a notification channel.
+
+Both appear under one UI, **Settings → Integrations**, which absorbed the old
+Connectors section.
 
 > **External servers are proxied, not direct.** Engines never connect straight
 > to a third-party MCP server. Clopen connects to it (as an MCP client) and
@@ -199,7 +220,7 @@ backend/mcp/
 │   ├── types.ts        # CatalogServer / ResolvedExternalServer
 │   ├── registry-client.ts  # Fetch + normalise registry.modelcontextprotocol.io
 │   ├── proxy.ts        # `/mcp/ext/<slug>` proxy: Clopen ↔ upstream, schema sanitiser
-│   ├── probe.ts        # Connection health probe (Settings → MCP status)
+│   ├── probe.ts        # Connection health probe (Settings → Integrations status)
 │   ├── oauth.ts        # Centralized OAuth (discovery + dynamic reg + PKCE)
 │   └── config.ts       # Per-engine builders (bridge URL, bare <slug>) + resolveExternalToolName
 └── README.md           # This file
@@ -1305,7 +1326,8 @@ checklist in `backend/engine/README.md` §10.12. The summary:
 
 Everything above describes **internal** custom tools (the `clopen-mcp`
 bridge). **External** servers are the ones a user installs from the official
-registry (Settings → MCP → Browse), stored in the `mcp_servers` table.
+registry (Settings → Integrations → Add → Browse the MCP registry), stored in
+the `mcp_servers` table.
 
 ### Proxied through the bridge (not direct)
 

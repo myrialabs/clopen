@@ -28,6 +28,7 @@ export type LogLabel =
 	// Communication
 	| 'websocket'
 	| 'mcp'
+	| 'integrations'
 	| 'skills'
 	| 'artifacts'
 	| 'commands'

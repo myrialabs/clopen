@@ -12,7 +12,7 @@ export type SettingsSection =
 	| 'artifacts'
 	| 'engines'
 	| 'stack'
-	| 'mcp'
+	| 'integrations'
 	| 'skills'
 	| 'commands'
 	| 'subagents'
@@ -137,10 +137,13 @@ export const settingsSections: SettingsSectionMeta[] = [
 		adminOnly: true
 	},
 	{
-		id: 'mcp',
-		label: 'Connectors',
+		id: 'integrations',
+		label: 'Integrations',
 		icon: 'lucide:plug',
-		description: 'Connect external tools (MCP)',
+		// Absorbed the old Connectors section: built-in tools, connected accounts
+		// and hand-installed MCP servers are one list now, because two places to
+		// connect a service means two tokens in two tables.
+		description: 'Connected services and tools',
 		group: 'artifacts-access',
 		adminOnly: true
 	},

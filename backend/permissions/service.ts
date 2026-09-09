@@ -5,7 +5,7 @@
  *
  * The inventory (what the UI offers as allow/deny targets) is the union of:
  *   - built-in engine tools ({@link ENGINE_BUILTIN_TOOLS}),
- *   - live MCP tools from enabled Connectors (best-effort; a server that fails to
+ *   - live MCP tools from enabled connectors (best-effort; a server that fails to
  *     connect is simply skipped),
  *   - tool names named by subagent allowlists.
  */
@@ -142,7 +142,7 @@ export const permissionService = {
 				const tools = await listExternalServerTools(server.slug);
 				// Claude-style namespaced name (`mcp__<namespace>__<tool>`) — the form
 				// the authoritative Claude hook sees. MCP exposure is primarily
-				// governed by Connectors (Prompt 2); these are a belt-and-suspenders
+				// governed by Integrations (Prompt 2); these are a belt-and-suspenders
 				// deny target.
 				for (const tool of tools) mcpSet.add(`mcp__${server.namespace}__${tool.name}`);
 			} catch (error) {

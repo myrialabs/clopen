@@ -70,6 +70,8 @@ import * as migration068 from './068_create_engine_config_revision';
 import * as migration069 from './069_create_ssh_client_tables';
 import * as migration070 from './070_create_worktrees_table';
 import * as migration071 from './071_create_notes_tables';
+import * as migration072 from './072_encrypt_stored_secrets';
+import * as migration073 from './073_create_integration_tables';
 
 // Export all migrations in order
 export const migrations = [
@@ -498,6 +500,18 @@ export const migrations = [
 		description: migration071.description,
 		up: migration071.up,
 		down: migration071.down
+	},
+	{
+		id: '072',
+		description: migration072.description,
+		up: migration072.up,
+		down: migration072.down
+	},
+	{
+		id: '073',
+		description: migration073.description,
+		up: migration073.up,
+		down: migration073.down
 	}
 ];
 

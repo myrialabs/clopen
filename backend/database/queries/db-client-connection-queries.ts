@@ -1,4 +1,5 @@
 import { getDatabase } from '../index';
+import { openRow, sealFor } from '../crypto';
 import type { DBDbClientConnectionRow } from '$shared/types/database/schema';
 import type {
 	DbClientConnection,
@@ -8,6 +9,16 @@ import type {
 	DbSshAuthMethod,
 	DbSslMode
 } from '$shared/types/db-client';
+
+// Passwords, SSH passwords, private keys and passphrases are sealed at rest
+// (see backend/database/crypto). Every read below opens them first, so the
+// drivers and the panel keep seeing plaintext exactly as before.
+const TABLE = 'db_client_connections';
+
+/** Open the sealed columns on a row straight out of SQLite. */
+function openConnectionRow<T extends DBDbClientConnectionRow | null>(row: T): T {
+	return (row ? openRow(TABLE, row) : row) as T;
+}
 
 const DEFAULT_SSH: DbClientSshConfig = {
 	enabled: false,
@@ -136,9 +147,9 @@ function normalizeInput(input: DbClientConnectionInput, ownerUserId: string | nu
 
 function getRowById(id: string): DBDbClientConnectionRow | null {
 	const db = getDatabase();
-	return db.prepare(`
+	return openConnectionRow(db.prepare(`
 		SELECT * FROM db_client_connections WHERE id = ?
-	`).get(id) as DBDbClientConnectionRow | null;
+	`).get(id) as DBDbClientConnectionRow | null);
 }
 
 function insertConnection(input: DbClientConnectionInput, ownerUserId: string | null): DbClientConnection {
@@ -169,16 +180,16 @@ function insertConnection(input: DbClientConnectionInput, ownerUserId: string | 
 		)
 	`).run(
 		id, params.name, params.driver,
-		params.host, params.port, params.username, params.password, params.database,
+		params.host, params.port, params.username, sealFor(TABLE, 'password', params.password), params.database,
 		params.sslMode, params.sslCa,
 		params.ssh.enabled ? 1 : 0,
 		params.ssh.host || null,
 		params.ssh.port,
 		params.ssh.username || null,
 		params.ssh.authMethod,
-		params.ssh.password || null,
-		params.ssh.privateKey || null,
-		params.ssh.passphrase || null,
+		sealFor(TABLE, 'ssh_password', params.ssh.password || null),
+		sealFor(TABLE, 'ssh_private_key', params.ssh.privateKey || null),
+		sealFor(TABLE, 'ssh_passphrase', params.ssh.passphrase || null),
 		params.ssh.connectionId || null,
 		JSON.stringify(params.options),
 		params.color,
@@ -207,7 +218,7 @@ export const dbClientConnectionQueries = {
 				ORDER BY (last_used_at IS NULL), last_used_at DESC, created_at DESC
 			`).all(userId)) as DBDbClientConnectionRow[];
 
-		return rows.map((row) => redactConnectionSecrets(rowToConnection(row)));
+		return rows.map((row) => redactConnectionSecrets(rowToConnection(openConnectionRow(row))));
 	},
 
 	getForUser(id: string, userId: string, isAdmin: boolean): DbClientConnection | null {
@@ -232,7 +243,7 @@ export const dbClientConnectionQueries = {
 			SELECT * FROM db_client_connections
 			ORDER BY (last_used_at IS NULL), last_used_at DESC, created_at DESC
 		`).all() as DBDbClientConnectionRow[];
-		return rows.map(rowToConnection);
+		return rows.map((row) => rowToConnection(openConnectionRow(row)));
 	},
 
 	get(id: string): DbClientConnection | null {
@@ -268,7 +279,7 @@ export const dbClientConnectionQueries = {
 		if (patch.host !== undefined) push('host', patch.host || null);
 		if (patch.port !== undefined) push('port', patch.port ?? null);
 		if (patch.username !== undefined) push('username', patch.username || null);
-		if (patch.password !== undefined && patch.password !== '') push('password', patch.password);
+		if (patch.password !== undefined && patch.password !== '') push('password', sealFor(TABLE, 'password', patch.password));
 		if (patch.database !== undefined) push('database', patch.database || null);
 		if (patch.sslMode !== undefined) push('ssl_mode', patch.sslMode);
 		if (patch.sslCa !== undefined) push('ssl_ca', patch.sslCa || null);
@@ -297,9 +308,9 @@ export const dbClientConnectionQueries = {
 			push('ssh_port', merged.port);
 			push('ssh_username', merged.username || null);
 			push('ssh_auth_method', merged.authMethod);
-			push('ssh_password', sshPassword);
-			push('ssh_private_key', sshPrivateKey);
-			push('ssh_passphrase', sshPassphrase);
+			push('ssh_password', sealFor(TABLE, 'ssh_password', sshPassword));
+			push('ssh_private_key', sealFor(TABLE, 'ssh_private_key', sshPrivateKey));
+			push('ssh_passphrase', sealFor(TABLE, 'ssh_passphrase', sshPassphrase));
 			push('ssh_connection_id', merged.connectionId || null);
 		}
 
