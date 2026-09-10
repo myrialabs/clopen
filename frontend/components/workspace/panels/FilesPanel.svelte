@@ -77,6 +77,7 @@
 	import { authStore } from '$frontend/stores/features/auth.svelte';
 	import { fetchFileBlob, isAbortError, saveBlob } from '$frontend/utils/file-download';
 	import { showConfirm } from '$frontend/stores/ui/dialog.svelte';
+	import { showSuccess, showError, showWarning } from '$frontend/stores/ui/notification.svelte';
 	import { SvelteMap } from 'svelte/reactivity';
 	import { getFileIcon } from '$frontend/utils/file-icon-mappings';
 	import { getGitStatusLabel, getGitStatusColor } from '$frontend/utils/git-status';
@@ -95,6 +96,13 @@
 		refreshIgnoredPaths
 	} from '$frontend/stores/features/ignored-paths.svelte';
 	import { beginPanelLoad } from '$frontend/stores/ui/project-workspace.svelte';
+	import {
+		getExplorerShortcutLabels,
+		isExplorerMod,
+		isLocalConnection,
+		isMac,
+		nativeFileManagerName
+	} from '$frontend/utils/platform';
 
 	// Props
 	interface Props {
@@ -797,7 +805,9 @@
 		return files.map((file) => {
 			if (file.path === oldPath) {
 				const newName = newPath.split(/[\\/]/).pop() || file.name;
-				return { ...file, path: newPath, name: newName };
+				// SSOT: rename folder harus rebase seluruh subtree agar
+				// children tidak tertinggal dengan path lama (hilang/duplikat).
+				return { ...rebaseSubtree(file, newPath), name: newName };
 			} else if (file.type === 'directory' && file.children) {
 				return { ...file, children: updateNodePathInTree(file.children, oldPath, newPath) };
 			}
@@ -817,14 +827,20 @@
 	}
 
 	function addNodeToTree(files: FileNode[], parentPath: string | null, newNode: FileNode): FileNode[] {
+		// SSOT guard: jangan pernah menambah path yang sama dua kali
+		// (optimistic + retry/reload race = duplikat di tree).
+		if (findFileInTree(files, newNode.path)) return files;
 		if (!parentPath) {
 			return sortFileNodes([...files, newNode]);
 		}
 		return files.map((file) => {
 			if (file.path === parentPath && file.type === 'directory') {
+				// Parent mungkin belum punya children (lazy load) — tetap
+				// beri array baru agar item langsung muncul tanpa refresh.
+				if ((file.children || []).some((c) => c.path === newNode.path)) return file;
 				return { ...file, children: sortFileNodes([...(file.children || []), newNode]) };
-			} else if (file.type === 'directory' && file.children) {
-				return { ...file, children: addNodeToTree(file.children, parentPath, newNode) };
+			} else if (file.type === 'directory') {
+				return { ...file, children: addNodeToTree(file.children || [], parentPath, newNode) };
 			}
 			return file;
 		});
@@ -834,11 +850,12 @@
 		const sourceNode = findFileInTree(files, sourcePath);
 		if (!sourceNode) return files;
 		const newName = targetPath.split(/[\\/]/).pop() || sourceNode.name;
-		const duplicateNode: FileNode = { ...sourceNode, path: targetPath, name: newName };
-		const pathParts = targetPath.split(/[\\/]/);
-		pathParts.pop();
-		const parentPath = pathParts.length > 0 ? pathParts.join(targetPath.includes('\\') ? '\\' : '/') : null;
-		return addNodeToTree(files, parentPath, duplicateNode);
+		const duplicateNode: FileNode = { ...rebaseSubtree(sourceNode, targetPath), name: newName };
+		// Sama seperti moveNodeInTree: root nodes disimpan top-level, bukan di
+		// bawah node path === projectPath. Tanpa mapping ini paste file ke
+		// root gagal masuk state (optimistic hilang) walau backend sukses.
+		// Type dipertahankan dari sourceNode (file tetap file via rebaseSubtree).
+		return addNodeToTree(files, parentForAdd(targetPath), duplicateNode);
 	}
 
 	function moveNodeInTree(files: FileNode[], sourcePath: string, targetPath: string): FileNode[] {
@@ -846,14 +863,141 @@
 		if (!sourceNode) return files;
 		const newTree = removeNodeFromTree(files, sourcePath);
 		const newName = targetPath.split(/[\\/]/).pop() || sourceNode.name;
-		const movedNode: FileNode = { ...sourceNode, path: targetPath, name: newName };
-		const pathParts = targetPath.split(/[\\/]/);
-		pathParts.pop();
-		const computedParent = pathParts.length > 0 ? pathParts.join(targetPath.includes('\\') ? '\\' : '/') : null;
+		const movedNode: FileNode = { ...rebaseSubtree(sourceNode, targetPath), name: newName };
 		// Root nodes are stored at the top of the tree, not under a node whose
 		// path === projectPath. Map that case to `null` so addNodeToTree appends.
-		const parentPath = computedParent === projectPath ? null : computedParent;
-		return addNodeToTree(newTree, parentPath, movedNode);
+		return addNodeToTree(newTree, parentForAdd(targetPath), movedNode);
+	}
+
+	// Rewrite a moved/copied subtree so every descendant keeps its name but
+	// points under the new root path. Without this, pasting/moving a folder
+	// leaves nested children with STALE source paths (wrong open/actions,
+	// phantom structure) until a refresh rebuilds the tree.
+	function rebaseSubtree(node: FileNode, newPath: string): FileNode {
+		const sep = newPath.includes('\\') ? '\\' : '/';
+		const children = node.children?.map((c) => rebaseSubtree(c, `${newPath}${sep}${c.name}`));
+		return { ...node, path: newPath, children };
+	}
+
+	// Optimistic copy node built directly from a source FileNode (fresh tree
+	// node when available, otherwise the clipboard entry itself). Unlike
+	// duplicateNodeInTree() this needs no tree lookup, so entries adopted
+	// from the native OS clipboard (paths outside the project tree) still
+	// render optimistically with the correct FILE/FOLDER type.
+	function addCopiedNodeToTree(sourceNode: FileNode, targetPath: string): void {
+		const newName = targetPath.split(/[\\/]/).pop() || sourceNode.name;
+		const optimisticNode: FileNode = { ...rebaseSubtree(sourceNode, targetPath), name: newName };
+		projectFiles = addNodeToTree(projectFiles, parentForAdd(targetPath), optimisticNode);
+	}
+
+	// ============================
+	// SSOT: path-based state sync (single source of truth)
+	// ============================
+	// Every move/rename/delete MUST go through these helpers so tree,
+	// open tabs, expanded folders, selection, and clipboard never diverge
+	// (no manual refresh, no hilang/duplikat). Direct ad-hoc updates to
+	// expandedFolders/selectedPaths/clipboard outside these helpers are
+	// forbidden — add the case here instead.
+	let pendingFsMutations = 0;
+
+	function isSameOrDescendant(p: string | null, base: string): boolean {
+		if (!p) return false;
+		if (p === base) return true;
+		const sep = base.includes('\\') ? '\\' : '/';
+		return p.startsWith(`${base}${sep}`);
+	}
+
+	function rebaseSinglePath(p: string | null, oldPath: string, newPath: string): string | null {
+		if (!p) return p;
+		if (p === oldPath) return newPath;
+		const sep = oldPath.includes('\\') ? '\\' : '/';
+		if (p.startsWith(`${oldPath}${sep}`)) {
+			return `${newPath}${sep}${p.slice(oldPath.length + 1)}`;
+		}
+		return p;
+	}
+
+	function leafNameOf(path: string, fallback: string): string {
+		return path.split(/[\\/]/).pop() || fallback;
+	}
+
+	// Root nodes live top-level (never under a node with path === projectPath).
+	function parentForAdd(targetAbs: string): string | null {
+		const parts = targetAbs.split(/[\\/]/);
+		parts.pop();
+		if (parts.length === 0) return null;
+		const computed = parts.join(targetAbs.includes('\\') ? '\\' : '/');
+		if (!computed || computed === projectPath) return null;
+		return computed;
+	}
+
+	// Rebase ALL path-keyed state for a move/rename (tree excluded — caller
+	// already applied updateNodePathInTree/moveNodeInTree). Covers folder
+	// descendants so children tabs/expansion/selection follow the new path.
+	function rebaseAllPathState(oldPath: string, newPath: string): void {
+		openTabs = openTabs.map((t) => {
+			const next = rebaseSinglePath(t.file.path, oldPath, newPath);
+			if (!next || next === t.file.path) return t;
+			return { ...t, file: { ...t.file, path: next, name: leafNameOf(next, t.file.name) } };
+		});
+		if (activeTabPath) activeTabPath = rebaseSinglePath(activeTabPath, oldPath, newPath) ?? activeTabPath;
+		if (expandedFolders.size > 0) {
+			const next = new Set<string>();
+			for (const p of expandedFolders) next.add(rebaseSinglePath(p, oldPath, newPath) ?? p);
+			expandedFolders = next;
+		}
+		if (selectedPaths.size > 0) {
+			selectedPaths = new Set(Array.from(selectedPaths).map((p) => rebaseSinglePath(p, oldPath, newPath) ?? p));
+		}
+		if (selectionAnchor) selectionAnchor = rebaseSinglePath(selectionAnchor, oldPath, newPath) ?? selectionAnchor;
+		if (clipboard) {
+			clipboard = {
+				...clipboard,
+				files: clipboard.files.map((f) => {
+					const next = rebaseSinglePath(f.path, oldPath, newPath);
+					if (!next || next === f.path) return f;
+					return { ...f, path: next, name: leafNameOf(next, f.name) };
+				})
+			};
+		}
+	}
+
+	// Prune ALL path-keyed state for a delete (target + descendants).
+	// Tabs are closed here (exact + descendants) so no stale tab survives.
+	function pruneAllPathStateForDelete(targetPath: string): void {
+		const pathsToClose = openTabs.filter((t) => isSameOrDescendant(t.file.path, targetPath)).map((t) => t.file.path);
+		for (const p of pathsToClose) closeTab(p);
+		if (expandedFolders.size > 0) {
+			expandedFolders = new Set(Array.from(expandedFolders).filter((p) => !isSameOrDescendant(p, targetPath)));
+		}
+		if (selectedPaths.size > 0) {
+			selectedPaths = new Set(Array.from(selectedPaths).filter((p) => !isSameOrDescendant(p, targetPath)));
+		}
+		if (selectionAnchor && isSameOrDescendant(selectionAnchor, targetPath)) selectionAnchor = null;
+		if (clipboard) {
+			const remaining = clipboard.files.filter((f) => !isSameOrDescendant(f.path, targetPath));
+			clipboard = remaining.length === 0 ? null : { ...clipboard, files: remaining };
+		}
+	}
+
+	// Background disk-truth sync after structural changes whose optimistic
+	// subtree may be shallow (collapsed-folder copy/move/duplicate). The
+	// optimistic node already renders instantly; this only fills missing
+	// children so no refresh manual is ever needed. Never throws.
+	function syncTreeWithDisk(): void {
+		void loadProjectFiles(true).catch((err) => debug.error('file', 'Background tree sync failed:', err));
+	}
+
+	// Resync yang ditunda saat mutasi optimistis berjalan — dipanggil oleh
+	// watcher resync agar echo tidak menimpa tampilan langsung.
+	function syncTreeWithDiskDeferred(): void {
+		setTimeout(() => {
+			if (pendingFsMutations > 0) {
+				syncTreeWithDiskDeferred();
+				return;
+			}
+			void loadProjectFiles(true).catch((err) => debug.error('file', 'Deferred tree sync failed:', err));
+		}, 500);
 	}
 
 	function sortFileNodes(nodes: FileNode[]): FileNode[] {
@@ -891,6 +1035,31 @@
 		showAlert = true;
 	}
 
+	// ============================
+	// Unified Explorer notifications
+	// ============================
+	// Every mutating explorer action — whether triggered from the context
+	// menu, a keyboard shortcut, drag-and-drop, or an OS paste — emits
+	// EXACTLY ONE toast via notifyExplorer(): success and failure alike,
+	// always in English. The modal showErrorAlert() above stays reserved for
+	// editor flows (save, open) and is never used for explorer file actions,
+	// so a single action can never produce two notifications (toast + modal).
+	type ExplorerNoticeKind = 'success' | 'warning' | 'error';
+
+	function notifyExplorer(kind: ExplorerNoticeKind, title: string, message: string): void {
+		if (kind === 'success') showSuccess(title, message);
+		else if (kind === 'warning') showWarning(title, message);
+		else showError(title, message);
+	}
+
+	function describeTargets(targets: FileNode[]): string {
+		return targets.length === 1 ? targets[0].name : `${targets.length} items`;
+	}
+
+	function errorMessage(error: unknown, fallback: string): string {
+		return error instanceof Error ? error.message : fallback;
+	}
+
 	function openDialog(type: 'rename' | 'new-file' | 'new-folder', file?: FileNode, parentPath?: string | null) {
 		dialogType = type;
 		dialogTargetFile = file || null;
@@ -904,6 +1073,23 @@
 		dialogValue = '';
 		dialogTargetFile = null;
 		dialogParentPath = null;
+	}
+
+	// Shared rename entry: opens the rename dialog for the given node, or —
+	// for keyboard triggers with no clicked node — for the single selected
+	// item (falling back to the selection anchor). Called by the context-menu
+	// item AND the F2 shortcut: one logic, one dialog, one toast on confirm.
+	function startRename(file: FileNode | null): void {
+		if (file) {
+			openDialog('rename', file);
+			return;
+		}
+		const paths = Array.from(selectedPaths);
+		const targetPath = paths.length === 1 ? paths[0] : (selectionAnchor ?? null);
+		if (!targetPath) return;
+		const node = findFileInTree(projectFiles, targetPath);
+		if (!node) return;
+		openDialog('rename', node);
 	}
 
 	async function handleDialogConfirm(value?: string) {
@@ -931,47 +1117,46 @@
 		const file = dialogTargetFile;
 		if (!file || newName === file.name) return;
 
-		try {
-			const pathParts = file.path.split(/[\\/]/);
-			pathParts[pathParts.length - 1] = newName;
-			const newPath = pathParts.join(file.path.includes('\\') ? '\\' : '/');
-			const oldPath = file.path;
+		const pathParts = file.path.split(/[\\/]/);
+		pathParts[pathParts.length - 1] = newName;
+		const newPath = pathParts.join(file.path.includes('\\') ? '\\' : '/');
+		const oldPath = file.path;
 
+		try {
 			const existingFile = findFileInTree(projectFiles, newPath);
 			if (existingFile) {
-				showErrorAlert('A file or folder with this name already exists.', 'Rename Failed');
+				notifyExplorer('error', 'Rename Failed', 'A file or folder with this name already exists.');
 				return;
 			}
 
-			// Optimistic UI
+			// Optimistic UI — SSOT: tree + semua state ber-path via helper yang sama.
+			pendingFsMutations += 1;
 			projectFiles = updateNodePathInTree(projectFiles, oldPath, newPath);
+			rebaseAllPathState(oldPath, newPath);
 
-			// Update tab if open
-			openTabs = openTabs.map(t => {
-				if (t.file.path === oldPath) {
-					return { ...t, file: { ...t.file, path: newPath, name: newName } };
-				}
-				return t;
-			});
-			if (activeTabPath === oldPath) {
-				activeTabPath = newPath;
+			try {
+				await ws.http('files:rename', { oldPath, newPath });
+			} finally {
+				pendingFsMutations = Math.max(0, pendingFsMutations - 1);
 			}
-
-			await ws.http('files:rename', { oldPath, newPath });
+			notifyExplorer('success', 'Renamed', `Renamed "${file.name}" to "${newName}".`);
 		} catch (error) {
 			debug.error('file', 'Failed to rename file:', error);
-			showErrorAlert(error instanceof Error ? error.message : 'Unknown error', 'Rename Failed');
+			// Roll back via SSOT yang sama agar tree + tabs + expanded +
+			// selection + clipboard kembali utuh (no hilang/duplikat).
+			projectFiles = updateNodePathInTree(projectFiles, newPath, oldPath);
+			rebaseAllPathState(newPath, oldPath);
+			notifyExplorer('error', 'Rename Failed', errorMessage(error, 'Unknown error'));
 		}
 	}
 
 	async function performCreateNew(type: 'file' | 'folder', name: string) {
+		const parentPath = dialogParentPath;
+		const separator = (parentPath || projectPath).includes('\\') ? '\\' : '/';
+		const fullPath = parentPath
+			? `${parentPath}${separator}${name}`
+			: `${projectPath}${separator}${name}`;
 		try {
-			const parentPath = dialogParentPath;
-			const separator = (parentPath || projectPath).includes('\\') ? '\\' : '/';
-			const fullPath = parentPath
-				? `${parentPath}${separator}${name}`
-				: `${projectPath}${separator}${name}`;
-
 			const newNode: FileNode = {
 				name,
 				path: fullPath,
@@ -981,7 +1166,8 @@
 				children: type === 'folder' ? [] : undefined
 			};
 
-			// Optimistic UI
+			// Optimistic UI — langsung muncul tanpa refresh (SSOT addNodeToTree).
+			pendingFsMutations += 1;
 			projectFiles = addNodeToTree(projectFiles, parentPath, newNode);
 
 			if (parentPath && !expandedFolders.has(parentPath)) {
@@ -989,14 +1175,25 @@
 				expandedFolders = new Set(expandedFolders);
 			}
 
-			if (type === 'file') {
-				await ws.http('files:create-file', { filePath: fullPath, content: '' });
-			} else {
-				await ws.http('files:create-directory', { dirPath: fullPath });
+			try {
+				if (type === 'file') {
+					await ws.http('files:create-file', { filePath: fullPath, content: '' });
+				} else {
+					await ws.http('files:create-directory', { dirPath: fullPath });
+				}
+			} finally {
+				pendingFsMutations = Math.max(0, pendingFsMutations - 1);
 			}
+			notifyExplorer(
+				'success',
+				type === 'file' ? 'File Created' : 'Folder Created',
+				`Created ${type === 'file' ? 'file' : 'folder'} "${name}".`
+			);
 		} catch (error) {
 			debug.error('file', 'Failed to create new item:', error);
-			showErrorAlert(error instanceof Error ? error.message : 'Unknown error', 'Create Failed');
+			// Roll back the optimistic node so a failed create leaves no ghost entry.
+			projectFiles = removeNodeFromTree(projectFiles, fullPath);
+			notifyExplorer('error', 'Create Failed', errorMessage(error, 'Unknown error'));
 		}
 	}
 
@@ -1036,6 +1233,16 @@
 	}
 
 	function handleNodeClick(file: FileNode, event: MouseEvent | KeyboardEvent) {
+		// Keep keyboard focus inside the tree so Ctrl/Cmd+C/X/V (handled by
+		// handleExplorerKeydown) keeps working after a mouse click. Without
+		// this, focus stays on <body> and the shortcut guard rejects the keys.
+		// This never steals focus from the editor/terminal: it only focuses
+		// the row the user just clicked inside the tree.
+		const row = event.currentTarget as HTMLElement | null;
+		if (row && typeof row.focus === 'function' && document.activeElement !== row) {
+			row.focus({ preventScroll: true });
+		}
+
 		const ctrl = event.ctrlKey || event.metaKey;
 		const shift = event.shiftKey;
 
@@ -1070,6 +1277,33 @@
 		selectionAnchor = null;
 	}
 
+	// Context-menu open (single handler for every row): native file-manager
+	// behavior — right-clicking outside the current selection re-targets the
+	// selection to the clicked row, so a subsequent single-file COPY copies
+	// ONLY that file even right after a multi-file COPY. Right-clicking
+	// inside an existing multi-selection keeps it, so multi-copy via
+	// right-click still works. Also refreshes OS clipboard affordance.
+	function handleMenuOpen(filePath: string): void {
+		if (!selectedPaths.has(filePath)) {
+			selectedPaths = new Set([filePath]);
+			selectionAnchor = filePath;
+		}
+		void refreshOsClipboardState();
+	}
+
+	// Shared select-all: every visible row becomes the selection, like
+	// Ctrl+A / ⌘A in the native manager. Called by the keyboard shortcut AND
+	// the context-menu item — one logic, one state update, no toast
+	// (selection change is not a mutating action).
+	function selectAllVisible(): void {
+		const visible = getVisiblePaths();
+		if (visible.length === 0) return;
+		selectedPaths = new Set(visible);
+		if (!selectionAnchor || !selectedPaths.has(selectionAnchor)) {
+			selectionAnchor = visible[0];
+		}
+	}
+
 	// Collect FileNodes for an action — operate on the multi-selection when
 	// the clicked node is part of a >1 selection, otherwise just the clicked
 	// node.
@@ -1086,10 +1320,390 @@
 	// Clipboard
 	// ============================
 
-	let clipboard = $state<{ files: FileNode[]; operation: 'copy' | 'cut' } | null>(null);
+	// OS-aware shortcut labels + file-manager name (Ctrl on Windows/Linux,
+	// ⌘ on macOS; File Explorer vs Finder). Used by tooltips and
+	// notification hints so the displayed shortcut always matches what the
+	// keyboard handler listens for on this OS.
+	const explorerKeys = getExplorerShortcutLabels();
+	const explorerIsMac = isMac();
+	const fileManagerName = nativeFileManagerName();
+
+	let clipboard = $state<{ files: FileNode[]; operation: 'copy' | 'cut'; origin: 'internal' | 'os' } | null>(null);
+	// Monotonic revision: every COPY/CUT/OS-adopt bumps it synchronously, so
+	// the newest source always wins and no async continuation can resurrect a
+	// stale clipboard. The OS publish queue below is ordered by the same
+	// sequence — a superseded publish is skipped instead of overwriting the
+	// OS clipboard with stale paths.
+	let clipboardRev = 0;
+	let osPublishSeq = 0;
+	let osPublishTail: Promise<void> = Promise.resolve();
+	// When the last in-Clopen COPY happened, and whether its async OS publish
+	// is still in flight. The publish runs in the background while the
+	// internal clipboard is already set, so during this brief window the
+	// native clipboard may still hold the PREVIOUS Explorer content. Paste
+	// protects the newer internal copy only inside that window — afterwards
+	// a differing native content is genuinely newer (user copied again in
+	// Explorer) and wins. No OS content is ever cached: every paste reads
+	// the native clipboard fresh (see tryReadOsClipboardItems).
+	let lastInternalCopyAt = 0;
+	let pendingPublishSeq = 0;
+	// Grace window covering the async OS publish round-trip. Kept short so a
+	// real follow-up Explorer copy is never shadowed for long.
+	const INTERNAL_COPY_GRACE_MS = 2000;
+
+	// Folders in the current multi-selection, in selection order. Used to
+	// fan paste out to every chosen destination instead of just the first.
+	function selectedDirectoryPaths(): string[] {
+		const out: string[] = [];
+		for (const p of selectedPaths) {
+			const node = findFileInTree(projectFiles, p);
+			if (node && node.type === 'directory' && !out.includes(node.path)) out.push(node.path);
+		}
+		return out;
+	}
+
+	// Publish Copy/Cut targets to the native OS clipboard (best-effort) so
+	// they can be pasted with Ctrl+V in the native file manager. Ordered
+	// through osPublishTail: concurrent publishes are serialized and a
+	// superseded (older) request is skipped, so the OS clipboard always ends
+	// up with the LATEST action — never a stale one finishing late.
+	// The internal clipboard is always set first (synchronously in
+	// doCopy/doCut), so in-app paste works instantly even while the OS
+	// bridge is in flight. COPY publishes DROPEFFECT_COPY (sources stay);
+	// CUT publishes DROPEFFECT_MOVE (Explorer itself performs the move).
+	// Failures are swallowed deliberately and must never break copy/cut.
+	function publishCopyToOsClipboardOrdered(paths: string[], seq: number, effect: 'copy' | 'move'): Promise<boolean> {
+		const run = osPublishTail.then(async (): Promise<boolean> => {
+			if (seq !== osPublishSeq) return false;
+			try {
+				await ws.http('files:copy-to-os-clipboard', { paths, effect });
+				return true;
+			} catch (error) {
+				debug.debug('file', 'OS clipboard copy unavailable:', error);
+				return false;
+			}
+		});
+		// Keep the chain alive for the next COPY even if this one rejects.
+		osPublishTail = run.then(
+			() => undefined,
+			() => undefined
+		);
+		return run;
+	}
+
+	// Shared copy/cut executors — the ONLY copy/cut logic. Both the context
+	// menu (handleFileAction) and the keyboard shortcuts (Ctrl/Cmd+C/X) call
+	// these, so both triggers behave identically and emit exactly one toast.
+	// Clipboard assignment is SYNCHRONOUS so the very next paste always reads
+	// the latest source — never a stale one. The OS bridge publish is async
+	// and fires in the background (best-effort, failures swallowed).
+	function doCopy(targets: FileNode[]): void {
+		if (targets.length === 0) return;
+		clipboardRev += 1;
+		clipboard = { files: targets, operation: 'copy', origin: 'internal' };
+		// Fire-and-forget: publish to native OS clipboard in the background.
+		// The internal clipboard (used by in-app paste) is already set above.
+		lastInternalCopyAt = Date.now();
+		const seq = ++osPublishSeq;
+		pendingPublishSeq = seq;
+		void publishCopyToOsClipboardOrdered(
+			targets.map((t) => t.path),
+			seq,
+			'copy'
+		).then((osReady) => {
+			// Only the latest COPY clears the in-flight flag: a superseded
+			// publish must never mark a newer copy as done.
+			if (seq === osPublishSeq) pendingPublishSeq = 0;
+			const label = describeTargets(targets);
+			notifyExplorer(
+				'success',
+				'Copied',
+				osReady
+					? `${label} — press ${explorerKeys.paste} in ${fileManagerName}`
+					: `${label} copied to clipboard (${explorerKeys.copy})`
+			);
+		});
+	}
+
+	function doCut(targets: FileNode[]): void {
+		if (targets.length === 0) return;
+		clipboardRev += 1;
+		clipboard = { files: targets, operation: 'cut', origin: 'internal' };
+		// Fire-and-forget: publish with DROPEFFECT_MOVE in the background so
+		// pasting in the native file manager performs a real move. Clopen
+		// itself NEVER deletes the sources here — Explorer does the move, and
+		// the file watcher then reflects the deletion. Exactly one toast,
+		// like doCopy.
+		const seq = ++osPublishSeq;
+		pendingPublishSeq = seq;
+		void publishCopyToOsClipboardOrdered(
+			targets.map((t) => t.path),
+			seq,
+			'move'
+		).then((osReady) => {
+			if (seq === osPublishSeq) pendingPublishSeq = 0;
+			notifyExplorer(
+				'success',
+				'Cut',
+				osReady
+					? `${describeTargets(targets)} — press ${explorerKeys.paste} in ${fileManagerName} to move`
+					: `${describeTargets(targets)} cut to clipboard (${explorerKeys.cut})`
+			);
+		});
+	}
+
+	// Paste from the NATIVE file-manager clipboard (File Explorer / Finder).
+	// A context-menu click carries no DataTransfer, and browsers cannot read
+	// CF_HDROP / file URLs from script, so the backend reads the native
+	// file-drop list on our behalf. Adopted entries become the internal
+	// clipboard (COPY semantics — manager sources are never moved/deleted)
+	// and flow through the shared pasteToDestinations(), so a paste from
+	// outside Clopen behaves exactly like an internal paste: same
+	// destinations, same "(1)" renaming, FILE stays FILE / FOLDER stays
+	// FOLDER, and exactly one toast. Both the context-menu Paste and the
+	// keyboard Ctrl+V/⌘V use the same adoption below for native
+	// file-manager copies, so both triggers give identical results.
+	function osClipboardItemsToStubs(items: { path: string; isDirectory: boolean }[]): FileNode[] {
+		return items.map((item) => ({
+			name: item.path.split(/[\\/]/).pop() || item.path,
+			path: item.path,
+			type: item.isDirectory ? 'directory' : 'file',
+			size: 0,
+			modified: new Date(),
+			children: item.isDirectory ? [] : undefined
+		}));
+	}
+
+	// Silent OS probe: same backend source as menu paste, but NEVER any
+	// toast — callers decide whether empty means "warn" (explicit menu
+	// paste) or "stay silent" (keyboard, where the DOM `paste` event still
+	// owns screenshots/DataTransfer).
+	async function tryReadOsClipboardItems(): Promise<{ path: string; isDirectory: boolean }[]> {
+		if (!isLocalConnection()) return [];
+		try {
+			const res = await ws.http('files:read-os-clipboard', {});
+			return res.items ?? [];
+		} catch {
+			return [];
+		}
+	}
+
+	function normalizeOsPath(p: string): string {
+		return p.replace(/\//g, '\\').toLowerCase();
+	}
+
+	// True when the native clipboard holds file paths that are NOT what the
+	// internal clipboard already represents. CUT intent always wins (doCut
+	// never publishes to the OS, so the OS content is unrelated to the
+	// pending move and must not shadow it).
+	function osItemsDifferFromClipboard(items: { path: string; isDirectory: boolean }[]): boolean {
+		if (!clipboard || items.length === 0) return false;
+		if (clipboard.operation !== 'copy') return false;
+		if (clipboard.files.length !== items.length) return true;
+		const current = new Set(clipboard.files.map((f) => normalizeOsPath(f.path)));
+		for (const it of items) {
+			if (!current.has(normalizeOsPath(it.path))) return true;
+		}
+		return false;
+	}
+	// Adopt a FRESH native-clipboard read as the paste source (COPY semantics).
+	// The stored value is only ever a per-paste copy: the next paste re-reads
+	// the native clipboard again, so a newer Explorer Ctrl+C is never
+	// shadowed by a previous adoption. No OS content is cached here.
+	function adoptOsItems(items: { path: string; isDirectory: boolean }[]): void {
+		clipboardRev += 1;
+		clipboard = { files: osClipboardItemsToStubs(items), operation: 'copy', origin: 'os' };
+	}
+	// Fresh native content vs an in-Clopen COPY that differs: the native side
+	// wins UNLESS our own async OS publish is still in flight (or the COPY
+	// just happened) — in that brief window the native side still holds the
+	// PREVIOUS Explorer content, which must not shadow the newer copy.
+	function shouldPreferInternalOverFreshOs(): boolean {
+		if (pendingPublishSeq !== 0) return true;
+		return Date.now() - lastInternalCopyAt < INTERNAL_COPY_GRACE_MS;
+	}
+	async function pasteFromOsClipboard(dests: string[]): Promise<void> {
+		if (dests.length === 0 || !projectPath) return;
+		let items: { path: string; isDirectory: boolean }[];
+		try {
+			const res = await ws.http('files:read-os-clipboard', {});
+			items = res.items ?? [];
+		} catch (error) {
+			debug.error('file', 'Failed to read OS clipboard:', error);
+			notifyExplorer('error', 'Paste Failed', errorMessage(error, 'Unknown error'));
+			return;
+		}
+		if (items.length === 0) {
+			notifyExplorer(
+				'warning',
+				'Clipboard Empty',
+				`Copy files first in ${fileManagerName} (${explorerKeys.copy}), then paste here.`
+			);
+			return;
+		}
+		adoptOsItems(items);
+		await pasteToDestinations(dests.map((base) => ({ base, expand: true })));
+	}
+
+	// ============================
+	// Paste availability (single condition source)
+	// ============================
+	// isPasteAvailable() is the ONLY condition driving every Paste affordance
+	// (context-menu row, paste-to-root button). Paste is offered when the
+	// internal clipboard holds items OR the native OS clipboard holds
+	// files/folders. Text/URL/image-only clipboards yield [] from the backend
+	// reader, so Paste stays hidden for unsupported data. The OS side is
+	// never cached stale: it refreshes on window focus / tab-visible (the
+	// Explorer-Ctrl+C → back-to-Clopen flow) and on every context-menu open.
+	let osClipboardHasFiles = $state(false);
+	let osClipboardProbeId = 0;
+
+	function isPasteAvailable(): boolean {
+		return clipboard !== null || osClipboardHasFiles;
+	}
+
+	async function refreshOsClipboardState(): Promise<void> {
+		if (!hasActiveProject || !isLocalConnection()) {
+			// No project, or a remote session with no local OS clipboard.
+			if (!isLocalConnection()) osClipboardHasFiles = false;
+			return;
+		}
+		// Always probe (even with an internal entry): handlePaste compares
+		// the native clipboard against the internal one, so this flag must
+		// reflect the OS truth — e.g. a fresh Explorer Ctrl+C while an
+		// internal COPY is still held.
+		const id = ++osClipboardProbeId;
+		try {
+			const res = await ws.http('files:read-os-clipboard', {});
+			if (id !== osClipboardProbeId) return;
+			// Availability flag only — the item list itself is NEVER stored:
+			// every paste re-reads the native clipboard fresh (see handlePaste).
+			osClipboardHasFiles = (res.items ?? []).length > 0;
+		} catch {
+			if (id !== osClipboardProbeId) return;
+			osClipboardHasFiles = false;
+		}
+	}
+
+	// ============================
+	// Unified paste entry (single handler)
+	// ============================
+	// handlePaste() is the ONLY paste entry: keyboard Ctrl+V/⌘V (hotkey leg
+	// and `paste`-event leg), context-menu Paste, and the paste-to-root
+	// button all funnel here. EVERY trigger reads the LIVE clipboard at call
+	// time — no snapshots, no frozen sources — so a COPY that happened
+	// immediately before a PASTE always uses the newest source.
+	type PasteTrigger =
+		| { kind: 'menu'; file: FileNode }
+		| { kind: 'root' }
+		| { kind: 'keyboard' }
+		| { kind: 'os-event'; event: ClipboardEvent };
+
+	async function handlePaste(trigger: PasteTrigger): Promise<void> {
+		if (!hasActiveProject || !projectPath) return;
+		// The `paste` DOM event carries OS data — its own implementation
+		// (backend-read first, DataTransfer fallback) is preserved as-is.
+		if (trigger.kind === 'os-event') {
+			await handleOsPaste(trigger.event);
+			return;
+		}
+		// Fresh native clipboard first (local sessions only). EVERY paste
+		// re-reads the Windows clipboard directly — nothing cached, no
+		// snapshot — so Copy A → Paste A, Copy B → Paste B, Copy C → Paste C.
+		// A previous OS adoption is NEVER trusted: with origin 'os' the fresh
+		// read always wins. An in-Clopen COPY (origin 'internal') wins only
+		// while its async OS publish is still in flight (or just happened),
+		// when the native side may still hold the previous Explorer content.
+		// CUT always uses the internal clipboard (never published to the OS).
+		// Adopted entries become the internal clipboard (COPY semantics) and
+		// flow through the same pasteToDestinations() as everything else.
+		if (isLocalConnection()) {
+			const osItems = await tryReadOsClipboardItems();
+			let useFreshOs = false;
+			if (osItems.length > 0) {
+				if (!clipboard) useFreshOs = true;
+				else if (clipboard.operation !== 'copy') useFreshOs = false;
+				else if (clipboard.origin === 'os') useFreshOs = true;
+				else if (osItemsDifferFromClipboard(osItems)) {
+					useFreshOs = !shouldPreferInternalOverFreshOs();
+				}
+			}
+			if (useFreshOs) {
+				adoptOsItems(osItems);
+				if (trigger.kind === 'keyboard') lastInternalPasteAt = Date.now();
+				if (trigger.kind === 'menu') {
+					const dirs = selectedDirectoryPaths();
+					const dests = dirs.length >= 2 ? dirs : [trigger.file.path];
+					await pasteToDestinations(dests.map((base) => ({ base, expand: true })));
+					return;
+				}
+				if (trigger.kind === 'root') {
+					await pasteToBase(projectPath, null);
+					return;
+				}
+				const dests = resolvePasteDestinations();
+				const bases = dests.length > 0 ? dests : [projectPath];
+				await pasteToDestinations(bases.map((base) => ({ base, expand: true })));
+				return;
+			}
+		}
+		// Internal clipboard (set synchronously by doCopy/doCut) always wins.
+		// A keyboard paste always stamps the guard so the `paste` DOM event
+		// firing right after this keydown cannot paste a second time.
+		if (clipboard) {
+			if (trigger.kind === 'menu') {
+				await pasteFile(trigger.file);
+				return;
+			}
+			if (trigger.kind === 'root') {
+				await pasteToBase(projectPath, null);
+				return;
+			}
+			lastInternalPasteAt = Date.now();
+			await pasteViaKeyboard();
+			return;
+		}
+		// No internal clipboard: menu/root go through pasteFromOsClipboard
+		// (which sets the clipboard from the OS, then pastes it).
+		if (trigger.kind === 'root') {
+			await pasteFromOsClipboard([projectPath]);
+			return;
+		}
+		if (trigger.kind === 'menu') {
+			const dirs = selectedDirectoryPaths();
+			await pasteFromOsClipboard(dirs.length >= 2 ? dirs : [trigger.file.path]);
+			return;
+		}
+		// Keyboard with empty internal clipboard: peek the OS clipboard
+		// silently (no toast when empty) and paste if files are found.
+		// Falls through to the DOM `paste` event for screenshots/DataTransfer.
+		const dests = resolvePasteDestinations();
+		const bases = dests.length > 0 ? dests : [projectPath];
+		try {
+			const res = await ws.http('files:read-os-clipboard', {});
+			const items = res.items ?? [];
+			if (items.length > 0) {
+				adoptOsItems(items);
+				lastInternalPasteAt = Date.now();
+				await pasteToDestinations(bases.map((base) => ({ base, expand: true })));
+			}
+		} catch {
+			// Unavailable — let the DOM `paste` event handle DataTransfer.
+		}
+	}
 
 	async function pasteFile(targetFolder: FileNode) {
-		if (!clipboard) return;
+		if (!clipboard) {
+			const dirs = selectedDirectoryPaths();
+			const dests = dirs.length >= 2 ? dirs : [targetFolder.path];
+			await pasteFromOsClipboard(dests);
+			return;
+		}
+		const selectedDirs = selectedDirectoryPaths();
+		if (selectedDirs.length >= 2) {
+			await pasteToDestinations(selectedDirs.map((base) => ({ base, expand: true })));
+			return;
+		}
 		const basePath = targetFolder.type === 'directory'
 			? targetFolder.path
 			: (() => {
@@ -1102,52 +1716,940 @@
 	}
 
 	async function pasteToRoot() {
-		if (!clipboard || !projectPath) return;
-		await pasteToBase(projectPath, null);
+		await handlePaste({ kind: 'root' });
+	}
+
+	// ============================
+	// Paste with automatic duplicate naming
+	// ============================
+	// COPY never fails on duplicates and never asks for a name: the target
+	// is always resolved via generateUniqueFilename (same style as uploads).
+	// "Laporan PKL" -> "Laporan PKL (1)" -> "Laporan PKL (2)"; for files the
+	// number goes before the extension ("laporan.docx" -> "laporan (1).docx").
+	// Names are checked against items that already exist; existing items are
+	// never overwritten. A folder keeps its type and its whole subtree is
+	// copied with its structure intact — a FILE is pasted directly as a FILE,
+	// never wrapped in a folder. CUT keeps exact targets (a move conflict is
+	// reported, nothing is renamed or overwritten).
+	function isBackendExistsError(error: unknown): boolean {
+		if (!(error instanceof Error)) return false;
+		const m = error.message;
+		return (
+			m.includes('already exists') ||
+			m.includes('Target file already exists') ||
+			m.includes('Destination path already exists') ||
+			m.includes('Destination already exists') ||
+			m.includes('EEXIST') ||
+			m.includes(' 409') ||
+			m.includes('(409)')
+		);
+	}
+
+	// Builds the SINGLE notification for a paste action from the aggregated
+	// per-destination outcomes. One paste action always yields one toast:
+	// full success → success, partial (some items applied, some skipped or
+	// failed) → warning, nothing applied → warning/error describing why.
+	function notifyPasteOutcome(
+		operation: 'copy' | 'cut',
+		appliedTotal: number,
+		selfNested: string[],
+		skipped: string[],
+		failed: string[],
+		destErrors: string[]
+	): void {
+		const uniq = (arr: string[]): string[] => [...new Set(arr)];
+		const shown = (arr: string[]): string => uniq(arr).slice(0, 3).join(', ');
+		const more = (arr: string[]): string =>
+			uniq(arr).length > 3 ? ` (+${uniq(arr).length - 3} more)` : '';
+		const verb = operation === 'copy' ? 'Copied' : 'Moved';
+		if (appliedTotal > 0 && selfNested.length === 0 && skipped.length === 0 && failed.length === 0 && destErrors.length === 0) {
+			notifyExplorer('success', 'Pasted', `${verb} ${appliedTotal === 1 ? '1 item' : `${appliedTotal} items`}.`);
+			return;
+		}
+		if (appliedTotal > 0) {
+			const reasons: string[] = [];
+			if (skipped.length > 0) reasons.push(`already exists: ${shown(skipped)}${more(skipped)}`);
+			if (selfNested.length > 0) reasons.push(`cannot paste a folder into itself: ${shown(selfNested)}${more(selfNested)}`);
+			if (failed.length > 0) reasons.push(`failed: ${shown(failed)}${more(failed)}`);
+			if (destErrors.length > 0) reasons.push(`destination error: ${shown(destErrors)}${more(destErrors)}`);
+			notifyExplorer('warning', 'Partially Pasted', `${verb} ${appliedTotal === 1 ? '1 item' : `${appliedTotal} items`} (${reasons.join('; ')}).`);
+			return;
+		}
+		if (selfNested.length > 0) {
+			notifyExplorer('warning', 'Paste Cancelled', `Cannot paste a folder into itself: ${shown(selfNested)}${more(selfNested)}.`);
+			return;
+		}
+		if (skipped.length > 0) {
+			notifyExplorer('warning', 'Paste Cancelled', `Item already exists at the destination: ${shown(skipped)}${more(skipped)}.`);
+			return;
+		}
+		if (failed.length > 0) {
+			notifyExplorer('error', 'Paste Failed', `Unable to paste the item: ${shown(failed)}${more(failed)}.`);
+			return;
+		}
+		if (destErrors.length > 0) {
+			notifyExplorer('error', 'Paste Failed', `Unable to paste into: ${shown(destErrors)}${more(destErrors)}.`);
+			return;
+		}
+		notifyExplorer('warning', 'Nothing Pasted', 'Items are already at this location.');
+	}
+
+	type PasteOutcome = { applied: number; failed: string[]; skipped: string[]; selfNested: string[] };
+
+	// Core paste into ONE folder: no toasts/alerts. Every item is processed
+	// independently — a failing item is recorded in the outcome and the batch
+	// continues with the next item, so one bad file never stops the rest.
+	// Only a transport-level failure (e.g. loadProjectFiles throwing) escapes
+	// to the multi-destination driver, which isolates it per folder.
+	type ClipboardType = { files: FileNode[]; operation: 'copy' | 'cut'; origin: 'internal' | 'os' };
+	async function applyPasteToBase(basePath: string, source?: ClipboardType): Promise<PasteOutcome> {
+		const empty: PasteOutcome = { applied: 0, failed: [], skipped: [], selfNested: [] };
+		// Snapshot the source at entry: a concurrent COPY/CUT mid-paste must
+		// never redirect the remaining destinations to the newer clipboard.
+		// Callers pass the paste-entry snapshot; direct callers fall back to
+		// the live clipboard for backward compatibility.
+		const active = source ?? clipboard;
+		if (!active || active.files.length === 0) return empty;
+		const { files: sourceFiles, operation } = active;
+		// OS-adopted sources may live outside every project (Desktop,
+		// Downloads, …), which the plain files:duplicate guard rejects with
+		// "Access denied" — the backend root cause behind menu-Paste failing
+		// after an Explorer Ctrl+C. Route them through
+		// files:duplicate-from-outside instead (target stays access-guarded,
+		// COPY-only, sources never moved/deleted).
+		const duplicateRoute =
+			active.origin === 'os' ? 'files:duplicate-from-outside' : 'files:duplicate';
+		const sep = basePath.includes('\\') ? '\\' : '/';
+
+		// A folder must never be pasted into itself or its descendant.
+		// CUT pasting an item onto its own path is a silent no-op; CUT move
+		// conflicts keep exact targets and are reported (never renamed).
+		// COPY targets are resolved per item at apply time via
+		// generateUniqueFilename so same-name multi-copy
+		// (a/file.txt + b/file.txt) also serializes to file.txt, file (1).txt.
+		const selfNested: string[] = [];
+		const skipped: string[] = [];
+		const planned: FileNode[] = [];
+		for (const sourceFile of sourceFiles) {
+			if (
+				sourceFile.type === 'directory' &&
+				(basePath === sourceFile.path || basePath.startsWith(`${sourceFile.path}${sep}`))
+			) {
+				selfNested.push(sourceFile.name);
+				continue;
+			}
+			if (operation === 'cut') {
+				const targetPath = `${basePath}${sep}${sourceFile.name}`;
+				if (targetPath === sourceFile.path) continue;
+				if (findFileInTree(projectFiles, targetPath)) {
+					skipped.push(sourceFile.name);
+					continue;
+				}
+			}
+			planned.push(sourceFile);
+		}
+		if (planned.length === 0) {
+			// Nothing to apply (all no-ops or move conflicts). The clipboard
+			// is kept so the items can be pasted at another location.
+			return { applied: 0, failed: [], skipped, selfNested };
+		}
+
+		let applied = 0;
+		const failed: string[] = [];
+		for (const sourceFile of planned) {
+			if (operation === 'copy') {
+				// Auto-rename against everything already in the tree,
+				// including items pasted earlier in this same batch.
+				// Prefer the fresh tree node; fall back to the clipboard
+				// entry itself so OS-adopted stubs (outside the tree) still
+				// render optimistically with the right type.
+				const freshNode = findFileInTree(projectFiles, sourceFile.path) ?? sourceFile;
+				let targetPath = generateUniqueFilename(basePath, sourceFile.name);
+				// Optimistic copy — langsung muncul tanpa refresh (SSOT add, guard duplikat).
+				pendingFsMutations += 1;
+				addCopiedNodeToTree(freshNode, targetPath);
+				try {
+					await ws.http(duplicateRoute, { sourcePath: sourceFile.path, targetPath });
+					pendingFsMutations = Math.max(0, pendingFsMutations - 1);
+				} catch (err) {
+					// Roll back the optimistic node so there is no ghost item.
+					projectFiles = removeNodeFromTree(projectFiles, targetPath);
+					pendingFsMutations = Math.max(0, pendingFsMutations - 1);
+					if (!isBackendExistsError(err)) {
+						// One bad item must never stop the rest of the batch:
+						// record it and continue with the next item instead of
+						// throwing out of the whole destination loop.
+						debug.error('file', 'Failed to paste item, continuing batch:', { source: sourceFile.path, error: err });
+						failed.push(sourceFile.name);
+						continue;
+					}
+					// Stale tree: the name looked free locally but exists on
+					// disk. Re-sync with disk truth once and retry with a
+					// fresh unique name instead of failing. A non-exists
+					// error on retry is recorded and the batch continues —
+					// it must never throw out of the destination loop.
+					let done = false;
+					for (let attempt = 0; attempt < 2 && !done; attempt++) {
+						await loadProjectFiles(true);
+						targetPath = generateUniqueFilename(basePath, sourceFile.name);
+						pendingFsMutations += 1;
+						addCopiedNodeToTree(findFileInTree(projectFiles, sourceFile.path) ?? sourceFile, targetPath);
+						try {
+							await ws.http(duplicateRoute, { sourcePath: sourceFile.path, targetPath });
+							pendingFsMutations = Math.max(0, pendingFsMutations - 1);
+							done = true;
+						} catch (retryErr) {
+							projectFiles = removeNodeFromTree(projectFiles, targetPath);
+							pendingFsMutations = Math.max(0, pendingFsMutations - 1);
+							if (!isBackendExistsError(retryErr)) {
+								debug.error('file', 'Failed to paste item on retry, continuing batch:', { source: sourceFile.path, error: retryErr });
+								break;
+							}
+						}
+					}
+					if (!done) {
+						failed.push(sourceFile.name);
+						continue;
+					}
+				}
+			} else {
+				const targetPath = `${basePath}${sep}${sourceFile.name}`;
+				// Optimistic move — langsung pindah tanpa refresh (SSOT: tree + rebase).
+				pendingFsMutations += 1;
+				projectFiles = moveNodeInTree(projectFiles, sourceFile.path, targetPath);
+				rebaseAllPathState(sourceFile.path, targetPath);
+				try {
+					await ws.http('files:rename', { oldPath: sourceFile.path, newPath: targetPath });
+				} catch (err) {
+					// Roll back via SSOT yang sama agar tidak hilang/duplikat.
+					projectFiles = moveNodeInTree(projectFiles, targetPath, sourceFile.path);
+					rebaseAllPathState(targetPath, sourceFile.path);
+					pendingFsMutations = Math.max(0, pendingFsMutations - 1);
+					if (isBackendExistsError(err)) {
+						skipped.push(sourceFile.name);
+						continue;
+					}
+					// Same batch rule as copy above: isolate the failure,
+					// keep moving the remaining items.
+					debug.error('file', 'Failed to move item, continuing batch:', { source: sourceFile.path, error: err });
+					failed.push(sourceFile.name);
+					continue;
+				}
+				pendingFsMutations = Math.max(0, pendingFsMutations - 1);
+			}
+			applied += 1;
+		}
+		return { applied, failed, skipped, selfNested };
+	}
+
+	// Paste into EVERY chosen destination. COPY fans out to all folders;
+	// CUT (a move consumes its sources) only targets the first one. Each
+	// destination is isolated: unexpected failure in one never stops the
+	// others. Duplicate names resolve per destination via the upload-style
+	// "(1)" naming; FILE stays FILE and FOLDER stays FOLDER everywhere.
+	// Explorer updates optimistically per item (no full reload): nodes appear
+	// instantly via addCopiedNodeToTree/moveNodeInTree.
+	// Captures the clipboard snapshot at entry so every destination pastes
+	// the SAME source even if a concurrent COPY/CUT replaces the clipboard
+	// mid-paste. The identity guard below still detects that replacement so
+	// a concurrent COPY is never wiped by cut-consumption.
+	async function pasteToDestinations(dests: { base: string; expand: boolean }[]): Promise<void> {
+		if (!clipboard || dests.length === 0) return;
+		// Capture the clipboard reference at entry. The whole paste uses the
+		// entry snapshot (passed to applyPasteToBase), while the
+		// cut-consumption guard below compares live identity to detect a
+		// concurrent COPY/CUT (e.g. user did COPY while a CUT paste was in
+		// flight — the cut source must NOT be wiped).
+		const source = clipboard;
+		const { operation, origin } = clipboard;
+		const snapshot: ClipboardType = { files: [...source.files], operation, origin };
+		const targets = operation === 'copy' ? dests : dests.slice(0, 1);
+		const uniq = (arr: string[]): string[] => [...new Set(arr)];
+		const selfNestedAll: string[] = [];
+		const skippedAll: string[] = [];
+		const failedAll: string[] = [];
+		const destErrors: string[] = [];
+		let appliedTotal = 0;
+		let expandedChanged = false;
+		for (const { base, expand } of targets) {
+			try {
+				const outcome = await applyPasteToBase(base, snapshot);
+				appliedTotal += outcome.applied;
+				selfNestedAll.push(...outcome.selfNested);
+				skippedAll.push(...outcome.skipped);
+				failedAll.push(...outcome.failed);
+				if (expand && !expandedFolders.has(base)) {
+					expandedFolders.add(base);
+					expandedChanged = true;
+				}
+			} catch (error) {
+				debug.error('file', 'Failed to paste:', error);
+				destErrors.push(base.split(/[\\/]/).pop() || base);
+			}
+		}
+		if (expandedChanged) expandedFolders = new Set(expandedFolders);
+
+		if (operation === 'cut' && appliedTotal > 0) {
+			// Consume the CUT source only if no newer COPY/CUT replaced it
+			// mid-paste — otherwise a concurrent COPY would be wiped out and
+			// the next PASTE would wrongly fall back to stale state.
+			if (clipboard === source) {
+				clipboardRev += 1;
+				clipboard = null;
+				clearSelection();
+				// The cut sources are consumed: re-probe the OS clipboard so the
+				// Paste affordance reflects what is truly still pasteable.
+				void refreshOsClipboardState();
+			}
+		}
+		if (origin === 'os') {
+			// OS-adopted entries arrive with shallow children: re-sync the
+			// tree once the whole batch lands so Explorer shows disk truth
+			// (full subtrees, exact names). Internal pastes already carry
+			// fresh tree nodes, so they keep the lighter optimistic path.
+			try {
+				await loadProjectFiles(true);
+			} catch (error) {
+				debug.error('file', 'Post-paste tree sync failed (watcher covers):', error);
+			}
+		}
+		// Exactly one notification per paste action (success and failure alike).
+		notifyPasteOutcome(operation, appliedTotal, uniq(selfNestedAll), uniq(skippedAll), uniq(failedAll), uniq(destErrors));
 	}
 
 	async function pasteToBase(basePath: string, expandFolder: string | null) {
-		if (!clipboard) return;
-		const { files: sourceFiles, operation } = clipboard;
-		const movedPairs: { from: string; to: string }[] = [];
+		await pasteToDestinations([{ base: basePath, expand: expandFolder !== null }]);
+	}
 
-		try {
-			for (const sourceFile of sourceFiles) {
-				const targetPath = generateUniqueFilename(basePath, sourceFile.name);
+	// ============================
+	// Keyboard Shortcuts (Ctrl/Cmd+C/X/V)
+	// ============================
+	// Reuses the internal clipboard + pasteToBase() above — no backend changes.
+	// Single handler for all platforms: `ctrlKey || metaKey` covers Ctrl on
+	// Windows/Linux and Cmd on macOS in one branch, so it can never fire twice.
 
-				if (operation === 'copy') {
-					projectFiles = duplicateNodeInTree(projectFiles, sourceFile.path, targetPath);
-					try {
-						await ws.http('files:duplicate', { sourcePath: sourceFile.path, targetPath });
-					} catch (err) {
-						projectFiles = removeNodeFromTree(projectFiles, targetPath);
-						throw err;
-					}
-				} else {
-					projectFiles = moveNodeInTree(projectFiles, sourceFile.path, targetPath);
-					try {
-						await ws.http('files:rename', { oldPath: sourceFile.path, newPath: targetPath });
-						movedPairs.push({ from: sourceFile.path, to: targetPath });
-					} catch (err) {
-						projectFiles = moveNodeInTree(projectFiles, targetPath, sourceFile.path);
-						throw err;
-					}
+	// Paths currently marked as "cut" — visual feedback only (FileTree/FileNode).
+	const cutPaths = $derived(
+		clipboard?.operation === 'cut'
+			? new Set(clipboard.files.map((f) => f.path))
+			: new Set<string>()
+	);
+
+	function getParentDir(filePath: string): string | null {
+		const parts = filePath.split(/[\\/]/);
+		if (parts.length <= 1) return null;
+		parts.pop();
+		const parent = parts.join(filePath.includes('\\') ? '\\' : '/');
+		return parent || null;
+	}
+
+	// "Current folder" fallback — ONLY for an empty selection (no explicit
+	// destination). Never used when the user selected folders: those are
+	// returned verbatim by resolvePasteDestinations() below.
+	function getActiveFolderPath(): string {
+		const candidates: (string | null)[] = [
+			activeTabPath ? (getParentDir(activeTabPath) ?? null) : null,
+			displayFile ? (getParentDir(displayFile.path) ?? null) : null,
+			selectionAnchor ? (getParentDir(selectionAnchor) ?? null) : null
+		];
+		for (const candidate of candidates) {
+			if (!candidate) continue;
+			if (candidate === projectPath) return candidate;
+			const node = findFileInTree(projectFiles, candidate);
+			if (node && node.type === 'directory') return candidate;
+		}
+		return projectPath;
+	}
+
+	function resolveClipboardTargets(): FileNode[] {
+		if (selectedPaths.size > 0) {
+			const nodes = Array.from(selectedPaths)
+				.map((p) => findFileInTree(projectFiles, p))
+				.filter((n): n is FileNode => n !== null);
+			if (nodes.length > 0) return nodes;
+		}
+		if (activeTabPath) {
+			const activeNode = findFileInTree(projectFiles, activeTabPath);
+			if (activeNode) return [activeNode];
+		}
+		if (displayFile) {
+			const displayNode = findFileInTree(projectFiles, displayFile.path);
+			if (displayNode) return [displayNode];
+		}
+		return [];
+	}
+
+	// Single source of truth for paste destinations. ROOT CAUSE FIX: the old
+	// resolveKeyboardPasteBase() returned getActiveFolderPath() — the PARENT
+	// of the anchor/active tab — for every multi-select case that did not hit
+	// the dirs>=2 fast path (dirs==0, stale tree, mixed files). That is why a
+	// paste with 2 selected folders landed in the PARENT folder. Explicit
+	// selection now always wins:
+	// - 1+ folders selected → those folders verbatim (never their parent).
+	// - only files selected → parent of the selected file(s), never the
+	//   active tab's folder and never root unless that parent IS root.
+	// - empty selection → current-folder heuristic (active file's parent),
+	//   fallback to project root. This is the ONLY path allowed to use it.
+	function resolvePasteDestinations(): string[] {
+		if (!projectPath) return [];
+		const dirs = selectedDirectoryPaths();
+		if (dirs.length > 0) return dirs;
+		if (selectedPaths.size > 0) {
+			for (const p of selectedPaths) {
+				const node = findFileInTree(projectFiles, p);
+				if (node && node.type === 'file') {
+					return [getParentDir(node.path) ?? projectPath];
 				}
 			}
-
-			if (expandFolder && !expandedFolders.has(expandFolder)) {
-				expandedFolders.add(expandFolder);
-				expandedFolders = new Set(expandedFolders);
-			}
-
-			if (operation === 'cut') {
-				clipboard = null;
-				clearSelection();
-			}
-		} catch (error) {
-			debug.error('file', 'Failed to paste:', error);
-			showErrorAlert(error instanceof Error ? error.message : 'Unknown error', 'Paste Failed');
+			const anchor = selectionAnchor ?? Array.from(selectedPaths)[0];
+			if (anchor) return [getParentDir(anchor) ?? projectPath];
+			return [projectPath];
 		}
+		return [getActiveFolderPath()];
+	}
+
+	// Single folder selected → that folder. Single file → its parent.
+	// Multi-select / unclear → explicit selection first (resolvePasteDestinations),
+	// never the active-folder parent heuristic. Root is only returned when it
+	// really is the destination (empty selection at root / explicit root).
+	function resolveKeyboardPasteBase(): string | null {
+		if (!projectPath) return null;
+		if (selectedPaths.size === 1) {
+			const only = Array.from(selectedPaths)[0];
+			const node = findFileInTree(projectFiles, only);
+			if (node) {
+				if (node.type === 'directory') return node.path;
+				return getParentDir(node.path) ?? projectPath;
+			}
+			return getParentDir(only) ?? projectPath;
+		}
+		const dests = resolvePasteDestinations();
+		return dests.length > 0 ? dests[0] : null;
+	}
+
+	async function pasteViaKeyboard(): Promise<void> {
+		if (!clipboard) return;
+		const dests = resolvePasteDestinations();
+		if (dests.length === 0) return;
+		if (dests.length >= 2) {
+			await pasteToDestinations(dests.map((base) => ({ base, expand: true })));
+			return;
+		}
+		const base = dests[0];
+		const isRoot = base === projectPath;
+		await pasteToBase(base, isRoot ? null : base);
+	}
+
+	function isEditableTarget(el: HTMLElement | null): boolean {
+		if (!el) return false;
+		const tag = el.tagName;
+		if (tag === 'INPUT' || tag === 'TEXTAREA' || tag === 'SELECT') return true;
+		if (el.isContentEditable) return true;
+		if (
+			el.closest(
+				'input,textarea,select,[contenteditable="true"],[contenteditable=""],[contenteditable="plaintext-only"],.monaco-editor,.cm-editor,.cm-content,.xterm,.xterm-screen,[data-terminal],.terminal,[role="dialog"],[role="alertdialog"],.modal,[data-dialog],[data-command-palette]'
+			)
+		)
+			return true;
+		return false;
+	}
+
+	// Strict scope: only handle when the user is interacting with the file
+	// tree — never the editor side, terminal, search inputs, or open dialogs.
+	// DOM focus alone is not reliable here: in 1-column mode opening a file
+	// hides the tree, so focus falls back to <body>. Instead, track where the
+	// last pointer interaction happened (capture phase, so nothing can block
+	// it) and accept <body>-focused keys only when the tree was clicked last.
+	let pointerInTree = false;
+
+	function trackPointerSide(event: PointerEvent): void {
+		const t = event.target as HTMLElement | null;
+		pointerInTree = !!(t && treeScrollContainer && treeScrollContainer.contains(t));
+	}
+
+	// True when the user selected readable text outside the tree (e.g. in the
+	// markdown preview). Copy/cut/select-all must keep the native text
+	// behavior then.
+	function hasTextSelectionOutsideTree(): boolean {
+		const sel = window.getSelection();
+		if (!sel || sel.isCollapsed || sel.rangeCount === 0) return false;
+		const anchor = sel.anchorNode as Node | null;
+		if (!anchor) return false;
+		const el = anchor instanceof Element ? anchor : anchor.parentElement;
+		if (el && treeScrollContainer && treeScrollContainer.contains(el)) return false;
+		return true;
+	}
+
+	function shouldHandleExplorerShortcut(event: KeyboardEvent, key: string): boolean {
+		if (dialogOpen || compressDialogOpen || passwordDialogOpen || closeAllUnsavedDialogOpen)
+			return false;
+		const target = event.target as HTMLElement | null;
+		if (isEditableTarget(target)) return false;
+		const active = document.activeElement as HTMLElement | null;
+		if (active && active !== document.body && isEditableTarget(active)) return false;
+		const inTree = !!(target && treeScrollContainer && treeScrollContainer.contains(target));
+		if (!inTree) {
+			// Focus sits outside the tree (typically <body> after opening a
+			// file hid the tree in 1-column mode). Only continue when the last
+			// click was inside the tree and focus isn't on another widget.
+			if (!pointerInTree) return false;
+			if (target !== document.body && target !== document.documentElement) return false;
+			if ((key === 'c' || key === 'x' || key === 'a') && hasTextSelectionOutsideTree()) return false;
+		}
+		return true;
+	}
+
+	function handleExplorerKeydown(event: KeyboardEvent): void {
+		if (!hasActiveProject || !projectPath) return;
+		const key = event.key.toLowerCase();
+
+		// Delete / Backspace (no modifier): native parity — File Explorer
+		// deletes with Delete, Finder with Delete/Backspace (Cmd+Backspace
+		// also works there, but plain Backspace must stay navigational on
+		// Windows, so it is mac-only here). Same pipeline as the menu Delete.
+		if (key === 'delete' || (key === 'backspace' && explorerIsMac)) {
+			if (!shouldHandleExplorerShortcut(event, 'delete')) return;
+			if (selectedPaths.size === 0) return;
+			event.preventDefault();
+			event.stopPropagation();
+			void runExplorerAction('delete', null);
+			return;
+		}
+
+		// F2 renames, like the native manager. Shares startRename() with the
+		// context-menu Rename item: same dialog, same single toast on confirm.
+		if (key === 'f2') {
+			if (!shouldHandleExplorerShortcut(event, 'f2')) return;
+			event.preventDefault();
+			event.stopPropagation();
+			startRename(null);
+			return;
+		}
+
+		// OS-specific modifier: Command (never Ctrl) on macOS, Ctrl (never
+		// Command) on Windows/Linux — matching Finder vs File Explorer.
+		// Alt/Shift variants (e.g. Ctrl+Shift+V) are intentionally ignored.
+		if (!isExplorerMod(event)) return;
+		if (key !== 'c' && key !== 'x' && key !== 'v' && key !== 'a') return;
+		if (!shouldHandleExplorerShortcut(event, key)) return;
+
+		// Select all visible rows, like Ctrl+A / ⌘A in the native manager.
+		// Shared with the context-menu item (selectAllVisible): selection-only
+		// change, no toast (not a mutating action).
+		if (key === 'a') {
+			event.preventDefault();
+			event.stopPropagation();
+			selectAllVisible();
+			return;
+		}
+
+		// Context menu and keyboard share one action pipeline: copy/cut/paste
+		// ALL funnel through runExplorerAction(), so keyboard shortcuts run
+		// the exact same logic and emit the same single toast as the menu
+		// items. Ctrl+V always funnels here (even with an empty internal
+		// clipboard) so the OS peek runs in the same handler; when nothing
+		// is pasted handlePaste leaves lastInternalPasteAt untouched and the
+		// DOM `paste` event below still owns screenshots/DataTransfer.
+		if (key === 'c' || key === 'x') {
+			event.preventDefault();
+			event.stopPropagation();
+			void runExplorerAction(key === 'c' ? 'copy' : 'cut', null);
+			return;
+		}
+
+		if (key === 'v') {
+			event.preventDefault();
+			event.stopPropagation();
+			void runExplorerAction('paste', null);
+		}
+	}
+
+	// ============================
+	// OS Clipboard Paste (file manager / screenshots)
+	// ============================
+	// Files copied outside Clopen never touch keydown — browsers expose them
+	// on the `paste` event instead. This reuses uploadFilesTo() (the same path
+	// as drag&drop-from-OS) and the keyboard paste destination, so Ctrl+V /
+	// ⌘V from the native file manager lands where an internal paste would
+	// land. Right-click menu Paste (no DataTransfer there) uses the backend
+	// `files:read-os-clipboard` round-trip instead — see pasteFromOsClipboard.
+	// Guards mirror the keyboard shortcuts: editors, terminals, chats, inputs
+	// and dialogs keep their own paste behavior; plain text paste is ignored.
+	let lastInternalPasteAt = 0;
+
+	function collectOsPasteFiles(event: ClipboardEvent): File[] {
+		const dt = event.clipboardData;
+		if (!dt) return [];
+		const files = Array.from(dt.files);
+		if (files.length > 0) return files;
+		// Screenshots / copied bitmaps may arrive as image items only.
+		const out: File[] = [];
+		if (dt.items) {
+			for (const item of Array.from(dt.items)) {
+				if (item.kind !== 'file') continue;
+				const f = item.getAsFile();
+				if (!f) continue;
+				out.push(f.name ? f : new File([f], `pasted-image-${Date.now()}.png`, { type: f.type || 'image/png' }));
+			}
+		}
+		return out;
+	}
+
+	// DOM `paste` listener leg of the unified handlePaste(): the browser
+	// delivers outside-Clopen copies (and screenshots) through this event.
+	function handlePasteDomEvent(event: ClipboardEvent): void {
+		void handlePaste({ kind: 'os-event', event });
+	}
+
+	async function handleOsPaste(event: ClipboardEvent): Promise<void> {
+		if (!hasActiveProject || !projectPath) return;
+		// An internal paste just ran from the Ctrl+V keydown that precedes
+		// this event — don't paste twice.
+		if (Date.now() - lastInternalPasteAt < 1000) return;
+		if (dialogOpen || compressDialogOpen || passwordDialogOpen || closeAllUnsavedDialogOpen)
+			return;
+		const target = event.target as HTMLElement | null;
+		if (isEditableTarget(target)) return;
+		const active = document.activeElement as HTMLElement | null;
+		if (active && active !== document.body && isEditableTarget(active)) return;
+		const dt = event.clipboardData;
+		if (!dt) return;
+		const inTree = !!(target && treeScrollContainer && treeScrollContainer.contains(target));
+		if (!inTree) {
+			if (!pointerInTree) return;
+			if (target !== document.body && target !== document.documentElement) return;
+		}
+		// Same destination rule as internal paste: every explicitly selected
+		// folder is a destination. The old single-base call collapsed a
+		// 2-folder selection into getActiveFolderPath() (their PARENT).
+		const dests = resolvePasteDestinations();
+		const bases = dests.length > 0 ? dests : [projectPath];
+		// Same source as Context Menu Paste: prefer the native file-drop list
+		// (File Explorer / Finder copies) via the backend, so keyboard Ctrl+V
+		// and right-click → Paste share one handler and produce identical
+		// results. Screenshots/bitmap data have no file paths, and remote
+		// sessions have no local clipboard — an empty or failed read falls
+		// through to the DataTransfer path below.
+		if (isLocalConnection()) {
+			try {
+				const res = await ws.http('files:read-os-clipboard', {});
+				const osItems = res.items ?? [];
+				if (osItems.length > 0) {
+					event.preventDefault();
+					event.stopPropagation();
+					adoptOsItems(osItems);
+					await pasteToDestinations(bases.map((base) => ({ base, expand: true })));
+					return;
+				}
+			} catch (error) {
+				debug.debug('file', 'OS clipboard read unavailable, using paste event data:', error);
+			}
+		}
+		// Folders first (needs async traversal); falls back to flat files.
+		const tree = await collectOsPasteTree(dt);
+		if (tree && (tree.dirs.length > 0 || tree.files.length > 0)) {
+			event.preventDefault();
+			event.stopPropagation();
+			try {
+				let pastedTotal = 0;
+				const failedAll: { name: string; reason: string }[] = [];
+				let firstDirName: string | null = null;
+				let onlyOneDir = false;
+				for (const base of bases) {
+					try {
+						const result = await uploadOsPasteTree(base, tree);
+						pastedTotal += result.createdDirs + result.acceptedFiles;
+						failedAll.push(...result.failedFiles);
+						if (firstDirName === null && result.dirNames.length > 0) {
+							firstDirName = result.dirNames[0];
+							onlyOneDir = result.createdDirs === 1 && result.acceptedFiles === 0;
+						}
+					} catch (error) {
+						debug.error('file', 'Failed to paste folder to destination, continuing batch:', { base, error });
+						failedAll.push({ name: base.split(/[\\/]/).pop() || base, reason: errorMessage(error, 'Could not paste the folder.') });
+					}
+				}
+				// Exactly one notification for the whole OS paste action.
+				if (failedAll.length === 0) {
+					if (pastedTotal > 0) {
+						notifyExplorer('success', 'Pasted', pastedTotal === 1
+							? (onlyOneDir && firstDirName ? `Pasted folder "${firstDirName}".` : `Pasted "${tree.files[0]?.file.name ?? 'item'}".`)
+							: `Pasted ${pastedTotal} items.`);
+					}
+				} else if (pastedTotal > 0) {
+					notifyExplorer('warning', 'Partially Pasted', `Pasted ${pastedTotal} items (${failedAll.length} failed: ${failedAll.slice(0, 3).map((f) => f.name).join(', ')}).`);
+				} else {
+					notifyExplorer('error', 'Paste Failed', failedAll[0]?.reason || 'Could not paste the items.');
+				}
+			} catch (error) {
+				debug.error('file', 'Failed to paste folder:', error);
+				notifyExplorer('error', 'Paste Failed', errorMessage(error, 'Unknown error'));
+			}
+			return;
+		}
+		const files = collectOsPasteFiles(event);
+		if (files.length === 0) return;
+		// Duplicates auto-rename via uploadFilesTo() (same "(1)" style as
+		// internal paste) — never rejected, never overwritten.
+		event.preventDefault();
+		event.stopPropagation();
+		let uploadedTotal = 0;
+		const failedAll: { name: string; reason: string }[] = [];
+		for (const base of bases) {
+			try {
+				const result = await uploadFilesTo(files, base);
+				uploadedTotal += result.uploaded;
+				failedAll.push(...result.failed);
+			} catch (error) {
+				debug.error('file', 'Failed to upload paste to destination, continuing batch:', { base, error });
+				failedAll.push({ name: base.split(/[\\/]/).pop() || base, reason: errorMessage(error, 'Could not paste the files.') });
+			}
+		}
+		// Exactly one notification for the whole OS paste action.
+		if (failedAll.length === 0) {
+			notifyExplorer('success', 'Pasted', files.length === 1 ? `Pasted "${files[0].name}".` : `Pasted ${files.length} files.`);
+		} else if (uploadedTotal > 0) {
+			notifyExplorer('warning', 'Partially Pasted', `Pasted ${uploadedTotal} files (${failedAll.length} failed).`);
+		} else {
+			notifyExplorer('error', 'Paste Failed', failedAll[0]?.reason || 'Could not paste the files.');
+		}
+	}
+
+	// ============================
+	// OS Folder Paste (directory traversal via FileSystem API)
+	// ============================
+	// A folder copied in Windows Explorer arrives as directory entries, not
+	// flat files — DataTransfer.files alone would silently drop it. We walk
+	// the entries (Chrome/Edge; other browsers fall back to the flat path)
+	// and recreate the structure, reusing uploadFilesTo() per directory. The
+	// backend auto-creates parent dirs on upload; only empty folders need an
+	// explicit create. Name clashes auto-rename ("Laporan PKL" becomes
+	// "Laporan PKL (1)" with its whole subtree), matching internal paste —
+	// existing items are never merged into, overwritten, or skipped.
+	interface PastedTreeFile {
+		dir: string; // '/'-separated path relative to the paste base ('' = base)
+		file: File;
+	}
+
+	function pasteEntryOf(item: DataTransferItem): FileSystemEntry | null {
+		const anyItem = item as DataTransferItem & {
+			getAsEntry?: () => FileSystemEntry | null;
+			webkitGetAsEntry?: () => FileSystemEntry | null;
+		};
+		try {
+			return anyItem.getAsEntry?.() ?? anyItem.webkitGetAsEntry?.() ?? null;
+		} catch {
+			return null;
+		}
+	}
+
+	function readDirectoryEntries(reader: FileSystemDirectoryReader): Promise<FileSystemEntry[]> {
+		return new Promise((resolve, reject) => {
+			const out: FileSystemEntry[] = [];
+			const pump = () => {
+				// readEntries must be called repeatedly until it returns [].
+				reader.readEntries(
+					(batch) => {
+						if (batch.length === 0) resolve(out);
+						else {
+							out.push(...batch);
+							pump();
+						}
+					},
+					reject
+				);
+			};
+			pump();
+		});
+	}
+
+	function entryAsFile(entry: FileSystemFileEntry): Promise<File> {
+		return new Promise((resolve, reject) => entry.file(resolve, reject));
+	}
+
+	// Nama sampah OS yang boleh diabaikan saat menilai pola folder-dari-file.
+	function isOsJunkName(name: string): boolean {
+		if (name.startsWith('.')) return true;
+		const lower = name.toLowerCase();
+		return lower === 'desktop.ini' || lower === 'thumbs.db';
+	}
+
+	async function walkPasteEntry(
+		entry: FileSystemEntry,
+		relDir: string,
+		dirs: string[],
+		files: PastedTreeFile[]
+	): Promise<void> {
+		if (entry.isDirectory) {
+			const reader = (entry as FileSystemDirectoryEntry).createReader();
+			const children = await readDirectoryEntries(reader);
+			// Defensif: sejumlah sumber clipboard melaporkan FILE sebagai folder
+			// yang berisi dirinya sendiri ("nama.docx"/"nama.docx"). Runtuhkan
+			// kembali menjadi file biasa — jangan pernah membuat folder bernama
+			// seperti file. Sampah tersembunyi (desktop.ini, thumbs.db, dotfile)
+			// diabaikan saat menilai pola ini. Pola sah (folder berisi file
+			// beda nama, beberapa file, atau subfolder) tetap disalin apa adanya.
+			const meaningful = children.filter((c) => !isOsJunkName(c.name));
+			// Compare NFC-normalized: the same visible name may arrive in a
+			// different Unicode normalization than the entry itself.
+			if (
+				meaningful.length === 1 &&
+				meaningful[0].isFile &&
+				meaningful[0].name.normalize('NFC') === entry.name.normalize('NFC') &&
+				/\.[A-Za-z0-9]{1,6}$/.test(entry.name)
+			) {
+				const parentRel = relDir.includes('/') ? relDir.slice(0, relDir.lastIndexOf('/')) : '';
+				files.push({ dir: parentRel, file: await entryAsFile(meaningful[0] as FileSystemFileEntry) });
+				return;
+			}
+		dirs.push(relDir);
+		for (const child of children) {
+			// ROOT CAUSE FIX: relDir adalah PARENT dir untuk FILE, tapi path
+			// DIR itu sendiri untuk FOLDER. Versi lama selalu menambahkan
+			// child.name sehingga file "Laporan PKL/ABSENSI.docx" mendapat
+			// dir="Laporan PKL/ABSENSI.docx" dan upload membuat folder
+			// bernama file berisi file yang sama. FILE harus langsung
+			// memakai relDir induknya; hanya FOLDER yang menambah nama.
+			if (child.isDirectory) {
+				await walkPasteEntry(child, relDir ? `${relDir}/${child.name}` : child.name, dirs, files);
+			} else {
+				await walkPasteEntry(child, relDir, dirs, files);
+			}
+		}
+		} else if (entry.isFile) {
+			files.push({ dir: relDir, file: await entryAsFile(entry as FileSystemFileEntry) });
+		}
+	}
+
+	async function collectOsPasteTree(dt: DataTransfer): Promise<{ dirs: string[]; files: PastedTreeFile[] } | null> {
+		if (!dt.items) return null;
+		const entries: FileSystemEntry[] = [];
+		for (const item of Array.from(dt.items)) {
+			if (item.kind !== 'file') continue;
+			const entry = pasteEntryOf(item);
+			if (entry) entries.push(entry);
+		}
+		// No folders involved — the caller keeps the flat-file fast path.
+		if (!entries.some((e) => e.isDirectory)) return null;
+		const dirs: string[] = [];
+		const files: PastedTreeFile[] = [];
+		for (const entry of entries) {
+			if (entry.isDirectory) {
+				await walkPasteEntry(entry, entry.name, dirs, files);
+			} else if (entry.isFile) {
+				files.push({ dir: '', file: await entryAsFile(entry as FileSystemFileEntry) });
+			}
+		}
+		return { dirs, files };
+	}
+
+	function treeParentFor(targetAbs: string): string | null {
+		const parts = targetAbs.split(/[\\/]/);
+		parts.pop();
+		const parent = parts.join(targetAbs.includes('\\') ? '\\' : '/');
+		return parent === projectPath || parent === '' ? null : parent;
+	}
+
+	async function uploadOsPasteTree(
+		base: string,
+		tree: { dirs: string[]; files: PastedTreeFile[] }
+	): Promise<{ createdDirs: number; acceptedFiles: number; dirNames: string[]; failedFiles: { name: string; reason: string }[] }> {
+		const sep = base.includes('\\') ? '\\' : '/';
+		const joinBase = (rel: string): string => (rel ? `${base}${sep}${rel.split('/').join(sep)}` : base);
+		const parentOf = (rel: string): string => (rel.includes('/') ? rel.slice(0, rel.lastIndexOf('/')) : '');
+		// 1. Directories: a colliding folder is created under a fresh unique
+		//    name ("Laporan PKL" -> "Laporan PKL (1)") and its whole subtree
+		//    follows the renamed parent via `remap`. Existing folders are
+		//    never merged into and nothing is ever skipped or overwritten.
+		const remap = new Map<string, string>(); // original rel -> actual rel
+		const ordered = [...tree.dirs].sort((a, b) => a.split('/').length - b.split('/').length);
+		const dirNames: string[] = [];
+		let createdDirs = 0;
+		for (const rel of ordered) {
+			const leaf = rel.split('/').pop() || rel;
+			const parentNew = remap.get(parentOf(rel)) ?? parentOf(rel);
+			const parentAbs = joinBase(parentNew);
+			let targetAbs = generateUniqueFilename(parentAbs, leaf);
+			const optimisticLeaf = targetAbs.split(/[\\/]/).pop() || leaf;
+			// Optimistic dir — langsung muncul tanpa refresh (SSOT add).
+			pendingFsMutations += 1;
+			projectFiles = addNodeToTree(
+				projectFiles,
+				treeParentFor(targetAbs),
+				{ name: optimisticLeaf, path: targetAbs, type: 'directory', size: 0, modified: new Date(), children: [] }
+			);
+			try {
+				await ws.http('files:create-directory', { dirPath: targetAbs });
+				pendingFsMutations = Math.max(0, pendingFsMutations - 1);
+			} catch (err) {
+				// Stale tree but already on disk: re-sync once and retry with
+				// a fresh unique name. Other errors go to the general alert.
+				if (!isBackendExistsError(err)) {
+					projectFiles = removeNodeFromTree(projectFiles, targetAbs);
+					pendingFsMutations = Math.max(0, pendingFsMutations - 1);
+					throw err;
+				}
+				projectFiles = removeNodeFromTree(projectFiles, targetAbs);
+				await loadProjectFiles(true);
+				targetAbs = generateUniqueFilename(parentAbs, leaf);
+				projectFiles = addNodeToTree(
+					projectFiles,
+					treeParentFor(targetAbs),
+					{ name: targetAbs.split(/[\\/]/).pop() || leaf, path: targetAbs, type: 'directory', size: 0, modified: new Date(), children: [] }
+				);
+				try {
+					await ws.http('files:create-directory', { dirPath: targetAbs });
+					pendingFsMutations = Math.max(0, pendingFsMutations - 1);
+				} catch (retryErr) {
+					projectFiles = removeNodeFromTree(projectFiles, targetAbs);
+					pendingFsMutations = Math.max(0, pendingFsMutations - 1);
+					throw retryErr;
+				}
+			}
+			const newLeaf = targetAbs.split(/[\\/]/).pop() || leaf;
+			remap.set(rel, parentNew ? `${parentNew}/${newLeaf}` : newLeaf);
+			dirNames.push(newLeaf);
+			createdDirs += 1;
+		}
+		const remapDir = (rel: string): string => {
+			if (!rel) return '';
+			// Longest remapped-prefix wins so nested files follow renames.
+			const parts = rel.split('/');
+			for (let i = parts.length; i >= 1; i--) {
+				const prefix = parts.slice(0, i).join('/');
+				const mapped = remap.get(prefix);
+				if (mapped !== undefined) {
+					const rest = parts.slice(i).join('/');
+					if (!rest) return mapped;
+					return mapped ? `${mapped}/${rest}` : rest;
+				}
+			}
+			return rel;
+		};
+		// 2. Files: grouped by their (possibly renamed) directory.
+		//    uploadFilesTo() auto-renames per-file collisions, so a FILE is
+		//    never turned into a folder and never overwrites anything.
+		const byDir = new Map<string, File[]>();
+		for (const f of tree.files) {
+			const newDir = remapDir(f.dir);
+			const list = byDir.get(newDir) ?? [];
+			list.push(f.file);
+			byDir.set(newDir, list);
+		}
+		let acceptedFiles = 0;
+		const failedFiles: { name: string; reason: string }[] = [];
+		for (const [rel, list] of byDir) {
+			// Silent per-group upload — failures aggregate into failedFiles so
+			// the caller can emit the single notification for the whole action.
+			const outcome = await uploadFilesTo(list, joinBase(rel));
+			acceptedFiles += outcome.uploaded;
+			failedFiles.push(...outcome.failed);
+		}
+		if (base !== projectPath && !expandedFolders.has(base)) {
+			expandedFolders.add(base);
+			expandedFolders = new Set(expandedFolders);
+		}
+		return { createdDirs, acceptedFiles, dirNames, failedFiles };
 	}
 
 	// ============================
@@ -1184,14 +2686,33 @@
 		openFileInTab(file, target);
 	}
 
-	async function handleFileAction(action: string, file: FileNode) {
-		const targets = getActionTargets(file);
+	// Single action pipeline for the whole explorer: every context-menu item
+	// AND every keyboard shortcut funnels through here, so both triggers run
+	// the same logic and emit the same single toast. `file` is the
+	// right-clicked node for menu triggers, or null for keyboard triggers
+	// (targets then resolve from the current selection, same as before).
+	type ExplorerAction =
+		| 'copy' | 'cut' | 'paste'
+		| 'copy-path' | 'copy-relative-path'
+		| 'rename' | 'duplicate' | 'delete' | 'select-all'
+		| 'new-file' | 'new-folder' | 'upload'
+		| 'refresh' | 'zip' | 'extract' | 'download'
+		| 'reveal-in-file-manager';
 
+	async function runExplorerAction(action: ExplorerAction, file: FileNode | null): Promise<void> {
 		switch (action) {
-			case 'copy-path':
-				navigator.clipboard.writeText(file.path);
+			case 'copy-path': {
+				if (!file) return;
+				try {
+					await navigator.clipboard.writeText(file.path);
+					notifyExplorer('success', 'Copied', `Copied path "${file.name}".`);
+				} catch (err) {
+					notifyExplorer('error', 'Copy Failed', errorMessage(err, 'Could not copy the path.'));
+				}
 				break;
+			}
 			case 'copy-relative-path': {
+				if (!file) return;
 				let relativePath = file.path;
 				if (projectPath && file.path.startsWith(projectPath)) {
 					relativePath = file.path.substring(projectPath.length);
@@ -1199,59 +2720,79 @@
 						relativePath = relativePath.substring(1);
 					}
 				}
-				navigator.clipboard.writeText(relativePath);
+				try {
+					await navigator.clipboard.writeText(relativePath);
+					notifyExplorer('success', 'Copied', `Copied relative path "${relativePath}".`);
+				} catch (err) {
+					notifyExplorer('error', 'Copy Failed', errorMessage(err, 'Could not copy the path.'));
+				}
 				break;
 			}
 			case 'rename':
-				openDialog('rename', file);
+				startRename(file);
+				break;
+			case 'select-all':
+				selectAllVisible();
 				break;
 			case 'copy':
-				clipboard = { files: targets, operation: 'copy' };
+				await doCopy(file ? getActionTargets(file) : resolveClipboardTargets());
 				break;
 			case 'cut':
-				clipboard = { files: targets, operation: 'cut' };
+				doCut(file ? getActionTargets(file) : resolveClipboardTargets());
 				break;
 			case 'paste':
-				if (clipboard) await pasteFile(file);
+				if (file) await handlePaste({ kind: 'menu', file });
+				else await handlePaste({ kind: 'keyboard' });
 				break;
 			case 'new-file':
-				openDialog('new-file', undefined, file.type === 'directory' ? file.path : null);
+				if (file) openDialog('new-file', undefined, file.type === 'directory' ? file.path : null);
 				break;
 			case 'new-folder':
-				openDialog('new-folder', undefined, file.type === 'directory' ? file.path : null);
+				if (file) openDialog('new-folder', undefined, file.type === 'directory' ? file.path : null);
 				break;
 			case 'duplicate':
-				await duplicateFile(file);
+				if (file) await duplicateFile(file);
 				break;
-			case 'delete':
-				await deleteFiles(targets);
+			case 'delete': {
+				const targets = file ? getActionTargets(file) : resolveClipboardTargets();
+				if (targets.length > 0) await deleteFiles(targets);
 				break;
+			}
 			case 'refresh':
 				await refreshAll();
 				break;
 			case 'upload':
-				if (file.type === 'directory') triggerUpload(file.path);
+				if (file && file.type === 'directory') triggerUpload(file.path);
 				break;
-			case 'zip':
+			case 'zip': {
+				if (!file) return;
+				const targets = getActionTargets(file);
 				if (targets.length > 0) {
 					compressTargets = targets;
 					compressDialogOpen = true;
 				}
 				break;
+			}
 			case 'extract':
-				if (file.type === 'file') await extractZip(file);
+				if (file && file.type === 'file') await extractZip(file);
 				break;
 			case 'download':
-				if (file.type === 'file') await downloadFileNode(file);
+				if (file && file.type === 'file') await downloadFileNode(file);
 				break;
 			case 'reveal-in-file-manager':
+				if (!file) return;
 				try {
 					await ws.http('files:reveal-in-file-manager', { path: file.path });
+					notifyExplorer('success', 'Revealed', `Revealed "${file.name}" in file manager.`);
 				} catch (err) {
-					showErrorAlert(err instanceof Error ? err.message : 'Failed to open file manager');
+					notifyExplorer('error', 'Reveal Failed', errorMessage(err, 'Failed to open file manager'));
 				}
 				break;
 		}
+	}
+
+	function handleFileAction(action: string, file: FileNode) {
+		void runExplorerAction(action as ExplorerAction, file);
 	}
 
 	// Download a file from the sidebar context menu. Streams the on-disk bytes
@@ -1288,9 +2829,10 @@
 				}
 			});
 			saveBlob(blob, file.name);
+			notifyExplorer('success', 'Downloaded', `Downloaded "${file.name}".`);
 		} catch (err) {
 			if (isAbortError(err)) return;
-			showErrorAlert(err instanceof Error ? err.message : 'Failed to download file');
+			notifyExplorer('error', 'Download Failed', errorMessage(err, 'Failed to download file'));
 		} finally {
 			popOp(opId);
 		}
@@ -1314,51 +2856,69 @@
 		});
 		if (!confirmed) return;
 
+		let deleted = 0;
+		let failedName: string | null = null;
+		let failedReason = '';
 		for (const file of files) {
 			try {
 				const deletedNode = findFileInTree(projectFiles, file.path);
+				// Optimistic delete — langsung hilang tanpa refresh (SSOT).
+				pendingFsMutations += 1;
 				projectFiles = removeNodeFromTree(projectFiles, file.path);
-
-				// Close tab if open
-				closeTab(file.path);
+				pruneAllPathStateForDelete(file.path);
 
 				try {
 					await ws.http('files:delete', { filePath: file.path, force: file.type === 'directory' });
 				} catch (err) {
+					// Roll back via SSOT yang sama (parentForAdd agar root ikut pulih).
 					if (deletedNode) {
-						const pathParts = file.path.split(/[\\/]/);
-						pathParts.pop();
-						const parentPath = pathParts.length > 0 ? pathParts.join(file.path.includes('\\') ? '\\' : '/') : null;
-						projectFiles = addNodeToTree(projectFiles, parentPath, deletedNode);
+						projectFiles = addNodeToTree(projectFiles, parentForAdd(file.path), deletedNode);
 					}
 					throw err;
+				} finally {
+					pendingFsMutations = Math.max(0, pendingFsMutations - 1);
 				}
+				deleted += 1;
 			} catch (error) {
 				debug.error('file', 'Failed to delete file:', error);
-				showErrorAlert(error instanceof Error ? error.message : 'Unknown error', 'Delete Failed');
+				failedName = file.name;
+				failedReason = errorMessage(error, 'Unknown error');
 				break;
 			}
 		}
-		clearSelection();
+		// SSOT prune di atas sudah membersihkan selection/expanded/clipboard
+		// untuk target yang dihapus — tanpa refresh manual.
+		// Exactly one notification for the whole delete action.
+		if (failedName !== null) {
+			notifyExplorer('error', 'Delete Failed', `Could not delete "${failedName}": ${failedReason}`);
+		} else {
+			notifyExplorer('success', 'Deleted', deleted === 1 ? `Deleted "${files[0].name}" (${explorerKeys.deleteKey}).` : `Deleted ${deleted} items (${explorerKeys.deleteKey}).`);
+		}
 	}
 
 	async function duplicateFile(file: FileNode) {
+		const pathParts = file.path.split(/[\\/]/);
+		const fileName = pathParts.pop() || file.name;
+		const parentPath = pathParts.join(file.path.includes('\\') ? '\\' : '/');
+		const targetPath = generateUniqueFilename(parentPath, fileName);
+		// Optimistic UI — langsung muncul tanpa refresh (SSOT duplicate).
+		pendingFsMutations += 1;
+		projectFiles = duplicateNodeInTree(projectFiles, file.path, targetPath);
 		try {
-			const pathParts = file.path.split(/[\\/]/);
-			const fileName = pathParts.pop() || file.name;
-			const parentPath = pathParts.join(file.path.includes('\\') ? '\\' : '/');
-			const targetPath = generateUniqueFilename(parentPath, fileName);
-
-			// Optimistic UI
-			projectFiles = duplicateNodeInTree(projectFiles, file.path, targetPath);
-
 			await ws.http('files:duplicate', { sourcePath: file.path, targetPath });
+			// Folder hasil duplicate optimistis bisa shallow — sinkron latar
+			// agar subtree penuh tanpa refresh manual.
+			if (file.type === 'directory') syncTreeWithDisk();
 		} catch (error) {
 			debug.error('file', 'Failed to duplicate file:', error);
-			showErrorAlert(error instanceof Error ? error.message : 'Unknown error', 'Duplicate Failed');
-			// Reload to revert optimistic update
-			await loadProjectFiles(true);
+			// Roll back node optimistis yang sama (no hilang/duplikat, no reload).
+			projectFiles = removeNodeFromTree(projectFiles, targetPath);
+			notifyExplorer('error', 'Duplicate Failed', errorMessage(error, 'Unknown error'));
+			return;
+		} finally {
+			pendingFsMutations = Math.max(0, pendingFsMutations - 1);
 		}
+		notifyExplorer('success', 'Duplicated', `Duplicated "${file.name}" as "${targetPath.split(/[\\/]/).pop() || file.name}".`);
 	}
 
 	function createNewFileInRoot() {
@@ -1439,7 +2999,7 @@
 	async function handleUploadInputChange(event: Event) {
 		const input = event.target as HTMLInputElement;
 		if (!input.files || input.files.length === 0) return;
-		await uploadFilesTo(input.files, uploadTargetDir);
+		await doUploadFiles(input.files, uploadTargetDir);
 		input.value = '';
 	}
 
@@ -1453,11 +3013,10 @@
 	// HTTP upload via /api/files/upload. The WS path used to wedge on the Vite
 	// dev proxy (`write EPIPE`) on sustained binary transfers; HTTP through the
 	// same proxy streams cleanly. XHR is used so we can drive a real progress
-	// bar via `upload.onprogress`.
-	async function uploadSingleFileHttp(file: File, targetDir: string, opId: string, fileIndex: number, total: number): Promise<{ finalName: string; finalPath: string } | null> {
-		const targetFullPath = generateUniqueFilename(targetDir, file.name);
-		const finalName = targetFullPath.split(/[\\/]/).pop() || file.name;
-
+	// bar via `upload.onprogress`. finalName sudah dipesan via
+	// generateUniqueFilename oleh pemanggil agar node optimistis dan nama di
+	// disk selalu sama (no duplikat, langsung muncul).
+	async function uploadSingleFileHttp(file: File, targetDir: string, finalName: string, finalPath: string, opId: string, fileIndex: number, total: number): Promise<{ finalName: string; finalPath: string } | null> {
 		updateOp(opId, {
 			label: total === 1
 				? `Uploading ${finalName} (${formatBytes(file.size)})`
@@ -1489,7 +3048,7 @@
 			xhr.onload = () => {
 				if (xhr.status >= 200 && xhr.status < 300) {
 					updateOp(opId, { progress: 1 });
-					resolve({ finalName, finalPath: targetFullPath });
+					resolve({ finalName, finalPath });
 				} else {
 					const msg = (xhr.responseText || '').trim();
 					reject(new Error(msg || `Upload failed (HTTP ${xhr.status})`));
@@ -1502,10 +3061,17 @@
 		});
 	}
 
-	async function uploadFilesTo(files: FileList | File[], targetDir: string) {
-		if (!targetDir) return;
+	type UploadOutcome = { uploaded: number; failed: { name: string; reason: string }[] };
+
+	// Silent batch uploader: performs the transfer + progress banner + tree
+	// updates, but emits NO toast itself. Every caller wraps it in a shared
+	// single-notification step (doUploadFiles / OS paste / folder-tree paste),
+	// so one upload action always yields exactly one toast.
+	async function uploadFilesTo(files: FileList | File[], targetDir: string): Promise<UploadOutcome> {
+		const none: UploadOutcome = { uploaded: 0, failed: [] };
+		if (!targetDir) return none;
 		const list = Array.from(files);
-		if (list.length === 0) return;
+		if (list.length === 0) return none;
 
 		const isRoot = targetDir === projectPath;
 		if (isRoot) {
@@ -1522,33 +3088,41 @@
 			progress: 0
 		});
 
+		const outcome: UploadOutcome = { uploaded: 0, failed: [] };
+		pendingFsMutations += 1;
 		try {
 			for (let i = 0; i < list.length; i++) {
 				const f = list[i];
+				// Pesan nama dulu + tampilkan node SEBELUM transfer agar upload
+				// langsung muncul tanpa refresh. Batch berikutnya melihat node
+				// ini sehingga auto-rename "(1)" tetap benar (no duplikat).
+				const targetFullPath = generateUniqueFilename(targetDir, f.name);
+				const finalName = targetFullPath.split(/[\\/]/).pop() || f.name;
+				const parentForAdd = targetDir === projectPath ? null : targetDir;
+				const newNode: FileNode = {
+					name: finalName,
+					path: targetFullPath,
+					type: 'file',
+					size: f.size,
+					modified: new Date()
+				};
+				projectFiles = addNodeToTree(projectFiles, parentForAdd, newNode);
+				if (parentForAdd && !expandedFolders.has(parentForAdd)) {
+					expandedFolders.add(parentForAdd);
+					expandedFolders = new Set(expandedFolders);
+				}
 				try {
-					const result = await uploadSingleFileHttp(f, targetDir, opId, i, list.length);
-					if (!result) continue;
-					// Optimistically add to tree so subsequent uploads in the same
-					// batch see the new name and auto-rename correctly.
-					const parentForAdd = targetDir === projectPath ? null : targetDir;
-					const newNode: FileNode = {
-						name: result.finalName,
-						path: result.finalPath,
-						type: 'file',
-						size: f.size,
-						modified: new Date()
-					};
-					projectFiles = addNodeToTree(projectFiles, parentForAdd, newNode);
-					if (parentForAdd && !expandedFolders.has(parentForAdd)) {
-						expandedFolders.add(parentForAdd);
-						expandedFolders = new Set(expandedFolders);
-					}
+					await uploadSingleFileHttp(f, targetDir, finalName, targetFullPath, opId, i, list.length);
+					outcome.uploaded += 1;
 				} catch (error) {
+					// Roll back node optimistis agar gagal upload tidak menyisakan ghost.
+					projectFiles = removeNodeFromTree(projectFiles, targetFullPath);
 					debug.error('file', 'Failed to upload file:', error);
-					showErrorAlert(error instanceof Error ? error.message : 'Upload failed', 'Upload Failed');
+					outcome.failed.push({ name: f.name, reason: errorMessage(error, 'Upload failed') });
 				}
 			}
 		} finally {
+			pendingFsMutations = Math.max(0, pendingFsMutations - 1);
 			popOp(opId);
 			if (isRoot) {
 				rootBusyOps = Math.max(0, rootBusyOps - 1);
@@ -1556,6 +3130,29 @@
 				markBusy(targetDir, -1);
 			}
 		}
+		return outcome;
+	}
+
+	// Shared upload completion step: exactly one toast per upload action.
+	function notifyUploadOutcome(total: number, uploaded: number, failed: { name: string; reason: string }[]): void {
+		if (failed.length === 0) {
+			notifyExplorer('success', 'Uploaded', total === 1 ? 'Uploaded 1 file.' : `Uploaded ${uploaded} files.`);
+			return;
+		}
+		if (uploaded > 0) {
+			notifyExplorer('warning', 'Partially Uploaded', `Uploaded ${uploaded} of ${total} files (failed: ${failed.slice(0, 3).map((f) => f.name).join(', ')}).`);
+			return;
+		}
+		notifyExplorer('error', 'Upload Failed', failed[0]?.reason || 'Could not upload the files.');
+	}
+
+	// Upload entry used by the file picker, drag-and-drop, and any other
+	// direct upload trigger: transfer (silent) + exactly one toast.
+	async function doUploadFiles(files: FileList | File[], targetDir: string): Promise<void> {
+		const list = Array.from(files);
+		if (list.length === 0 || !targetDir) return;
+		const outcome = await uploadFilesTo(files, targetDir);
+		notifyUploadOutcome(list.length, outcome.uploaded, outcome.failed);
 	}
 
 	// ============================
@@ -1598,6 +3195,17 @@
 				? `Compressing ${targets[0].name} → ${targetName}`
 				: `Compressing ${targets.length} items → ${targetName}`
 		});
+		// Optimistic UI (same SSOT helpers as every other action): the archive
+		// appears instantly; the reload below reconciles it with disk truth.
+		const zipTreeParent = !parentPath || parentPath === projectPath ? null : parentPath;
+		pendingFsMutations += 1;
+		projectFiles = addNodeToTree(projectFiles, zipTreeParent, {
+			name: targetName,
+			path: targetPath,
+			type: 'file',
+			size: 0,
+			modified: new Date()
+		});
 		try {
 			await ws.http(
 				'files:zip',
@@ -1614,10 +3222,14 @@
 			);
 			// Watcher will pick the new archive up; explicitly refresh for snappier UI.
 			await loadProjectFiles(true);
+			notifyExplorer('success', 'Compressed', `Created archive "${targetName}".`);
 		} catch (error) {
 			debug.error('file', 'Failed to create archive:', error);
-			showErrorAlert(error instanceof Error ? error.message : 'Compress failed', 'Compress Failed');
+			// Roll back the optimistic node so a failed compress leaves no ghost file.
+			projectFiles = removeNodeFromTree(projectFiles, targetPath);
+			notifyExplorer('error', 'Compress Failed', errorMessage(error, 'Compress failed'));
 		} finally {
+			pendingFsMutations = Math.max(0, pendingFsMutations - 1);
 			popOp(opId);
 			for (const p of busyTargets) markBusy(p, -1);
 		}
@@ -1631,6 +3243,19 @@
 		const baseName = stripArchiveExtension(fileName) || 'extracted';
 		const targetDir = generateUniqueFilename(parentPath, baseName);
 		const targetName = targetDir.split(/[\\/]/).pop() || baseName;
+
+		// Optimistic UI (same SSOT helpers as every other action): the
+		// destination folder appears instantly; reloads below reconcile it.
+		const extractTreeParent = !parentPath || parentPath === projectPath ? null : parentPath;
+		pendingFsMutations += 1;
+		projectFiles = addNodeToTree(projectFiles, extractTreeParent, {
+			name: targetName,
+			path: targetDir,
+			type: 'directory',
+			size: 0,
+			modified: new Date(),
+			children: []
+		});
 
 		// Retry loop: encrypted archives surface a clean error, prompt for the
 		// password, then re-run with it (re-prompting on a wrong password).
@@ -1654,17 +3279,27 @@
 					300_000
 				);
 				await loadProjectFiles(true);
+				pendingFsMutations = Math.max(0, pendingFsMutations - 1);
+				notifyExplorer('success', 'Extracted', `Extracted "${fileName}" to "${targetName}".`);
 				return;
 			} catch (error) {
 				const message = error instanceof Error ? error.message : 'Extract failed';
 				if (/password-protected|incorrect password/i.test(message)) {
 					const entered = await promptPassword(/incorrect password/i.test(message));
-					if (!entered) return;
+					if (!entered) {
+						// Cancelled by user: silent, but remove the optimistic
+						// folder so no ghost entry remains.
+						projectFiles = removeNodeFromTree(projectFiles, targetDir);
+						pendingFsMutations = Math.max(0, pendingFsMutations - 1);
+						return;
+					}
 					password = entered;
 					continue;
 				}
 				debug.error('file', 'Failed to extract archive:', error);
-				showErrorAlert(message, 'Extract Failed');
+				projectFiles = removeNodeFromTree(projectFiles, targetDir);
+				pendingFsMutations = Math.max(0, pendingFsMutations - 1);
+				notifyExplorer('error', 'Extract Failed', message);
 				return;
 			} finally {
 				popOp(opId);
@@ -1735,7 +3370,7 @@
 		isRootDropTarget = false;
 
 		if (hasOSFiles(event) && event.dataTransfer?.files && event.dataTransfer.files.length > 0) {
-			await uploadFilesTo(event.dataTransfer.files, file.path);
+			await doUploadFiles(event.dataTransfer.files, file.path);
 			return;
 		}
 
@@ -1746,6 +3381,7 @@
 				await moveNodesTo(payload.paths, file.path);
 			} catch (err) {
 				debug.error('file', 'Drop parse failed:', err);
+				notifyExplorer('error', 'Move Failed', 'Could not read the dropped items.');
 			}
 		}
 	}
@@ -1774,7 +3410,7 @@
 		dropTargetPath = null;
 
 		if (hasOSFiles(event) && event.dataTransfer?.files && event.dataTransfer.files.length > 0) {
-			await uploadFilesTo(event.dataTransfer.files, projectPath);
+			await doUploadFiles(event.dataTransfer.files, projectPath);
 			return;
 		}
 
@@ -1785,17 +3421,20 @@
 				await moveNodesTo(payload.paths, projectPath);
 			} catch (err) {
 				debug.error('file', 'Root drop parse failed:', err);
+				notifyExplorer('error', 'Move Failed', 'Could not read the dropped items.');
 			}
 		}
 	}
 
 	async function moveNodesTo(sourcePaths: string[], targetDirPath: string) {
 		const sep = targetDirPath.includes('\\') ? '\\' : '/';
+		let moved = 0;
 		for (const src of sourcePaths) {
 			if (src === targetDirPath) continue;
 			// Reject moving a folder into itself or its descendant
 			if (targetDirPath === src || targetDirPath.startsWith(`${src}${sep}`)) {
-				showErrorAlert('Cannot move a folder into itself or its descendant.', 'Move Failed');
+				const name = src.split(/[\\/]/).pop() || src;
+				notifyExplorer('warning', 'Move Cancelled', `Cannot move "${name}" into itself or its descendant.`);
 				return;
 			}
 			// No-op when already in target
@@ -1807,23 +3446,30 @@
 			const name = src.split(/[\\/]/).pop() || '';
 			const targetPath = generateUniqueFilename(targetDirPath, name);
 
+			// Optimistic move — langsung pindah tanpa refresh (SSOT: tree + rebase).
+			pendingFsMutations += 1;
 			projectFiles = moveNodeInTree(projectFiles, src, targetPath);
+			rebaseAllPathState(src, targetPath);
 			try {
 				await ws.http('files:rename', { oldPath: src, newPath: targetPath });
-				// Update any open tab whose path matches
-				openTabs = openTabs.map((t) =>
-					t.file.path === src
-						? { ...t, file: { ...t.file, path: targetPath, name: targetPath.split(/[\\/]/).pop() || t.file.name } }
-						: t
-				);
-				if (activeTabPath === src) activeTabPath = targetPath;
+				moved += 1;
 			} catch (err) {
+				// Roll back via SSOT yang sama (termasuk tab turunan folder).
 				projectFiles = moveNodeInTree(projectFiles, targetPath, src);
-				showErrorAlert(err instanceof Error ? err.message : 'Move failed', 'Move Failed');
+				rebaseAllPathState(targetPath, src);
+				pendingFsMutations = Math.max(0, pendingFsMutations - 1);
+				notifyExplorer('error', 'Move Failed', errorMessage(err, 'Move failed'));
 				return;
 			}
+			pendingFsMutations = Math.max(0, pendingFsMutations - 1);
 		}
-		clearSelection();
+		// SSOT rebase di atas sudah menggeser selection mengikuti path baru.
+		// Exactly one notification for the whole move action.
+		if (moved > 0) {
+			notifyExplorer('success', 'Moved', moved === 1 ? 'Moved 1 item.' : `Moved ${moved} items.`);
+		} else {
+			notifyExplorer('warning', 'Nothing Moved', 'Items are already in this folder.');
+		}
 	}
 
 	// Save file with optimistic-concurrency protection.
@@ -1990,7 +3636,18 @@
 	function handleVisibilityChange() {
 		if (typeof document !== 'undefined' && document.visibilityState === 'visible') {
 			scheduleReconcile();
+			// Returning from another app (e.g. after Ctrl+C in the native
+			// file manager) can change the OS clipboard: refresh Paste
+			// availability so the next context menu is already correct.
+			void refreshOsClipboardState();
 		}
+	}
+
+	// Same refresh on window focus (Alt+Tab back from File Explorer/Finder):
+	// reconcile tree truth and re-probe the OS clipboard together.
+	function handleWindowFocusRefresh(): void {
+		scheduleReconcile();
+		void refreshOsClipboardState();
 	}
 
 	// ============================
@@ -2191,15 +3848,35 @@
 				const changes = [...accumulatedChanges];
 				accumulatedChanges = [];
 				watchDebounceTimer = null;
+				// Mutasi optimistis sendiri sedang berjalan (rename/paste/upload/
+				// delete langsung tampil): tunda reconcile agar echo watcher
+				// tidak menimpa state optimistis (hilang/duplikat). Jadwalkan
+				// ulang setelah mutasi selesai.
+				if (pendingFsMutations > 0) {
+					accumulatedChanges.push(...changes);
+					if (watchDebounceTimer) clearTimeout(watchDebounceTimer);
+					watchDebounceTimer = setTimeout(async () => {
+						const retry = [...accumulatedChanges];
+						accumulatedChanges = [];
+						watchDebounceTimer = null;
+						await reconcile(retry, true);
+					}, 500);
+					return;
+				}
 				await reconcile(changes, true);
 			}, 500);
 		});
 
 		// The watcher was rebuilt and may have missed events; no path is known to
 		// have changed, so re-read the tree in place (scroll and expansion kept)
-		// rather than reconciling a phantom change list.
+		// rather than reconciling a phantom change list. Tunda saat mutasi
+		// optimistis berjalan agar tidak menimpa tampilan langsung.
 		const unsubResync = ws.on('files:resync', (payload) => {
 			if (payload.projectId !== watchScope) return;
+			if (pendingFsMutations > 0) {
+				syncTreeWithDiskDeferred();
+				return;
+			}
 			void loadProjectFiles(true);
 		});
 
@@ -2392,8 +4069,11 @@
 		// sleep/wake, dropped events); reconciling on focus re-establishes truth
 		// without relying on the watcher having stayed perfectly live.
 		if (typeof window !== 'undefined') {
-			window.addEventListener('focus', scheduleReconcile);
+			window.addEventListener('focus', handleWindowFocusRefresh);
 			document.addEventListener('visibilitychange', handleVisibilityChange);
+			window.addEventListener('keydown', handleExplorerKeydown);
+			window.addEventListener('pointerdown', trackPointerSide, true);
+			window.addEventListener('paste', handlePasteDomEvent);
 		}
 
 		let resizeObserver: ResizeObserver | null = null;
@@ -2409,8 +4089,11 @@
 		return () => {
 			unsubAiFiles();
 			if (typeof window !== 'undefined') {
-				window.removeEventListener('focus', scheduleReconcile);
+				window.removeEventListener('focus', handleWindowFocusRefresh);
 				document.removeEventListener('visibilitychange', handleVisibilityChange);
+				window.removeEventListener('keydown', handleExplorerKeydown);
+				window.removeEventListener('pointerdown', trackPointerSide, true);
+				window.removeEventListener('paste', handlePasteDomEvent);
 			}
 			if (reconcileTimer) clearTimeout(reconcileTimer);
 			resizeObserver?.disconnect();
@@ -2589,8 +4272,11 @@
 							onFileSelect={handleFileSelect}
 							onFileAction={handleFileAction}
 							onFileOpen={handleFileOpen}
-							onToggle={handleFolderToggle}
+						onToggle={handleFolderToggle}
 							hasClipboard={clipboard !== null}
+							canPaste={isPasteAvailable()}
+							onMenuOpen={handleMenuOpen}
+							{cutPaths}
 							onPasteToRoot={pasteToRoot}
 							onNewFileInRoot={createNewFileInRoot}
 							onNewFolderInRoot={createNewFolderInRoot}

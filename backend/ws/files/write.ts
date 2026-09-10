@@ -123,6 +123,40 @@ export const writeHandler = createRouter()
 		return await duplicateOperation(sourcePath, targetPath);
 	})
 
+	// Duplicate from an OS-clipboard source that may live OUTSIDE every
+	// project (e.g. a file copied in Windows File Explorer from the Desktop).
+	// The plain `files:duplicate` guard rejects such sources, which is what
+	// made right-click → Paste fail after an Explorer Ctrl+C. This route keeps
+	// the write side fully guarded (target must sit inside an accessible
+	// project) and only relaxes the SOURCE side to "must exist on this
+	// machine" — the same trust level as HTTP upload, which accepts arbitrary
+	// client bytes. COPY semantics only: sources are never moved or deleted.
+	.http('files:duplicate-from-outside', {
+		data: t.Object({
+			sourcePath: t.String(),
+			targetPath: t.String()
+		}),
+		response: t.Object({
+			message: t.String(),
+			sourcePath: t.String(),
+			targetPath: t.String(),
+			size: t.Number(),
+			modified: t.String()
+		})
+	}, async ({ data, conn }) => {
+		const targetPath = await requireFilePathAccess(conn, data.targetPath);
+		let sourceStats;
+		try {
+			sourceStats = await fsStat(data.sourcePath);
+		} catch {
+			throw new Error('Source file does not exist');
+		}
+		if (!sourceStats.isFile() && !sourceStats.isDirectory()) {
+			throw new Error('Unsupported file type');
+		}
+		return await duplicateOperation(data.sourcePath, targetPath);
+	})
+
 	// Uploads moved to the HTTP route POST /api/files/upload — the WS path
 	// kept getting dropped by the Vite dev proxy with `write EPIPE` on
 	// sustained binary transfers (any chunk size). See backend/http/files-upload.ts.

@@ -84,11 +84,49 @@ export function getShortcutLabels() {
 }
 
 /**
- * Get platform-specific modifier key display
+ * Explorer shortcut labels matching the native file manager of each OS:
+ * Windows/Linux use Ctrl+C/X/V/A + Delete (File Explorer / Files),
+ * macOS uses ⌘C/X/V/A + Delete/Backspace (Finder).
+ * Used for tooltips and notification hints so the displayed shortcut always
+ * matches what the keyboard handler actually listens for on this OS.
  */
-export function getModifierKey(): string {
+export function getExplorerShortcutLabels() {
 	const platform = detectPlatform();
-	return platform === 'mac' ? '⌘' : 'Ctrl';
+	const modifier = platform === 'mac' ? '⌘' : 'Ctrl';
+
+	return {
+		modifier,
+		copy: `${modifier}+C`,
+		cut: `${modifier}+X`,
+		paste: `${modifier}+V`,
+		selectAll: `${modifier}+A`,
+		deleteKey: platform === 'mac' ? 'Delete/Backspace' : 'Delete'
+	};
+}
+
+/**
+ * True when the event carries the Explorer modifier for this OS:
+ * Command (and not Ctrl) on macOS, Ctrl (and not Command) on Windows/Linux.
+ * Alt/Shift variants (e.g. Ctrl+Shift+V) are intentionally rejected.
+ */
+export function isExplorerMod(event: KeyboardEvent): boolean {
+	if (event.altKey || event.shiftKey) return false;
+	if (detectPlatform() === 'mac') {
+		return event.metaKey && !event.ctrlKey;
+	}
+	return event.ctrlKey && !event.metaKey;
+}
+
+/**
+ * Native file manager name for this OS (Finder / File Explorer / Files).
+ * Used in clipboard guidance so messages match the user's environment.
+ */
+export function nativeFileManagerName(): string {
+	const platform = detectPlatform();
+	if (platform === 'mac') return 'Finder';
+	if (platform === 'windows') return 'File Explorer';
+	if (platform === 'linux') return 'file manager';
+	return 'system file manager';
 }
 
 /**
