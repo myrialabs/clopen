@@ -6,6 +6,21 @@ export const description = 'Create note collections, notes and note images';
 export const up = (db: DatabaseConnection): void => {
 	debug.log('migration', 'Creating notes tables...');
 
+	// Repair path for databases that ran a pre-release version of this
+	// migration: the early `notes` table (project_id/folder_path shape) has no
+	// `collection_id` column, so the index creation below would fail with
+	// "no such column: collection_id". Since migrations also run per-request
+	// via initializeDatabase(), that failure would break every API call, not
+	// just startup. The old shape is unreadable by current code (nothing
+	// references folder_path anymore) and the collections feature is
+	// unreleased, so drop the legacy tables and recreate them fresh.
+	const existingCols = db.prepare(`SELECT name FROM pragma_table_info('notes')`).all() as { name: string }[];
+	if (existingCols.length > 0 && !existingCols.some((c) => c.name === 'collection_id')) {
+		debug.warn('migration', '⚠️ Legacy notes table found (no collection_id) — recreating...');
+		db.exec('DROP TABLE IF EXISTS note_images');
+		db.exec('DROP TABLE IF EXISTS notes');
+	}
+
 	// Scope lives here and only here. A note inherits who may read it from its
 	// collection, so there is no second copy of the scope that could disagree
 	// with this one — and no note that is reachable through two different
