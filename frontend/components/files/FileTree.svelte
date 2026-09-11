@@ -23,6 +23,7 @@
 	import { showConfirm } from '$frontend/stores/ui/dialog.svelte';
 	import { triggerCollapseAll } from '$frontend/stores/core/files.svelte';
 	import { normalizePath } from '$shared/utils/path';
+	import { getExplorerShortcutLabels } from '$frontend/utils/platform';
 	import { onDestroy, untrack } from 'svelte';
 	import {
 		setFileSearchSnapshotProvider,
@@ -43,6 +44,11 @@
 		expandedFolders?: Set<string>;
 		onToggle?: (folderPath: string) => void;
 		hasClipboard?: boolean;
+		/** Single paste-availability source from the panel (internal OR OS clipboard). Gates Paste affordances. */
+		canPaste?: boolean;
+		/** Fired when a row's context menu opens, so the panel can refresh fresh clipboard state. */
+		onMenuOpen?: (filePath: string) => void;
+		cutPaths?: Set<string>;
 		onFileOpen?: (path: string, target?: { line: number; column?: number; length?: number }) => void;
 		onRefresh?: () => void;
 		modifiedFiles?: Set<string>;
@@ -82,6 +88,9 @@
 		expandedFolders,
 		onToggle,
 		hasClipboard = false,
+		canPaste = false,
+		onMenuOpen,
+		cutPaths = new Set<string>(),
 		onFileOpen,
 		onRefresh,
 		modifiedFiles = new Set(),
@@ -114,6 +123,10 @@
 
 	// State to track which menu is currently open (only one menu at a time)
 	let openMenuPath = $state<string | null>(null);
+
+	// OS-aware shortcut labels (Ctrl on Windows/Linux, ⌘ on macOS) for
+	// tooltips, matching the Explorer keyboard handler + native file manager.
+	const explorerKeys = getExplorerShortcutLabels();
 
 	// Search visibility
 	let searchVisible = $state(false);
@@ -286,7 +299,12 @@
 	});
 
 	function handleMenuToggle(filePath: string) {
-		openMenuPath = openMenuPath === filePath ? null : filePath;
+		const opening = openMenuPath !== filePath;
+		openMenuPath = opening ? filePath : null;
+		// Fresh clipboard truth on every menu open: the OS clipboard may have
+		// changed since the last render (e.g. Ctrl+C in File Explorer). The
+		// panel re-probes and the Paste row appears/disappears reactively.
+		if (opening) onMenuOpen?.(filePath);
 	}
 
 	function handleFileSelect(file: FileNodeType) {
@@ -589,11 +607,11 @@
 						{/if}
 					</button>
 				{/if}
-				{#if hasClipboard && onPasteToRoot}
+				{#if onPasteToRoot && canPaste}
 					<button
 						class="flex flex-shrink-0 p-1.5 text-slate-600 dark:text-slate-400 hover:text-violet-600 dark:hover:text-violet-400 hover:bg-violet-50 dark:hover:bg-violet-900/30 rounded-md transition-colors"
 						onclick={onPasteToRoot}
-						title="Paste to root"
+						title={hasClipboard ? `Paste to root (${explorerKeys.paste})` : `Paste from system clipboard to root (${explorerKeys.paste})`}
 					>
 						<Icon name="lucide:clipboard" class="w-4 h-4" />
 					</button>
@@ -829,6 +847,8 @@
 							onToggle={toggleFolder}
 							onMenuToggle={handleMenuToggle}
 							{hasClipboard}
+							{canPaste}
+							{cutPaths}
 							{modifiedFiles}
 							{activeFilePath}
 							{gitStatusMap}
