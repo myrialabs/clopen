@@ -19,6 +19,7 @@
 	import { getGitStatusLabel, getGitStatusColor } from '$frontend/utils/git-status';
 	import { chatService } from '$frontend/services/chat/chat.service';
 	import { showPanel } from '$frontend/stores/ui/workspace.svelte';
+	import { openWorkDialog } from '$frontend/stores/ui/quick-panels.svelte';
 	import {
 		gitDraft,
 		setGitSnapshotProvider,
@@ -3752,6 +3753,12 @@
 
 	function handleMoreAction(action: GitMoreAction) {
 		switch (action) {
+			case 'open-pull-request':
+				// Hands off to the Issues & PRs surface with its composer already up. The
+				// git panel owns local state; a pull request is remote state, and
+				// duplicating the composer here is exactly the split this surface
+				// exists to avoid.
+				return openWorkDialog({ composePullRequest: true });
 			case 'merge-branch':
 				return void openMergeBranchModal();
 			case 'rebase-onto':

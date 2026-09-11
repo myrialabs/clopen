@@ -9,6 +9,7 @@
 
 import context7 from './providers/context7';
 import firecrawl from './providers/firecrawl';
+import github from './providers/github';
 import type { IntegrationProvider } from './types';
 import type { IntegrationProviderInfo } from '$shared/types/integrations';
 
@@ -18,7 +19,8 @@ export { defineProvider } from './define';
 /** Every declared provider. Add new ones here. */
 export const PROVIDERS: readonly IntegrationProvider[] = [
 	context7,
-	firecrawl
+	firecrawl,
+	github
 ];
 
 const byId = new Map(PROVIDERS.map((provider) => [provider.id, provider]));

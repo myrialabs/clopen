@@ -154,6 +154,22 @@ export const integrationAccountQueries = {
 		);
 	},
 
+	/**
+	 * Rename an account.
+	 *
+	 * `(provider, label)` is the identity, so this can collide — the UNIQUE
+	 * constraint refuses it, and the caller turns that into a readable message
+	 * rather than letting a raw SQLite error reach the dialog.
+	 */
+	setLabel(id: string, label: string): void {
+		const db = getDatabase();
+		db.prepare(`UPDATE integration_accounts SET label = ?, updated_at = ? WHERE id = ?`).run(
+			label,
+			new Date().toISOString(),
+			id
+		);
+	},
+
 	setCapabilities(id: string, capabilities: IntegrationCapability[]): void {
 		const db = getDatabase();
 		db.prepare(`UPDATE integration_accounts SET capabilities = ?, updated_at = ? WHERE id = ?`).run(

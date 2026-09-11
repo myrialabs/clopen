@@ -35,3 +35,5 @@ export type { ProfileRow, ProfileItemRow, ProfileInput, ProfileItemInput, Profil
 export { noteQueries, noteCollectionQueries, noteImageQueries } from './note-queries';
 export { integrationAccountQueries, integrationProjectionQueries, integrationWebhookQueries } from './integration-queries';
 export type { IntegrationAccountRow, IntegrationAccountInput, IntegrationProjectionRow } from './integration-queries';
+export { workBindingQueries, workLinkQueries, parseBindingConfig } from './work-queries';
+export type { WorkBindingRow, WorkLinkRow } from './work-queries';

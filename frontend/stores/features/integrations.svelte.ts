@@ -107,6 +107,7 @@ export const integrationsStore = {
 
 	async update(input: {
 		id: string;
+		label?: string;
 		credentials?: Record<string, string>;
 		capabilities?: IntegrationCapability[];
 		projectId?: string | null;

@@ -50,6 +50,22 @@
 
 	const isEditing = $derived(account !== null);
 
+	/**
+	 * How many accounts this provider already has.
+	 *
+	 * The copy under Name used to say "only needed if you connect more than
+	 * one", which was a rule the user had no way to satisfy and no way to check.
+	 * Saying the actual number turns it into information.
+	 */
+	const existingCount = $derived(
+		provider ? integrationsStore.accounts.filter((entry) => entry.provider === provider.id).length : 0
+	);
+
+	/** The name the server would generate, shown as the placeholder. */
+	const suggestedLabel = $derived(
+		provider ? (existingCount === 0 ? provider.name : `${provider.name} ${existingCount + 1}`) : ''
+	);
+
 	// Re-seed whenever a different provider or account is opened.
 	$effect(() => {
 		const p = provider;
@@ -96,8 +112,12 @@
 				const changed = Object.fromEntries(
 					Object.entries(values).filter(([, value]) => value.trim().length > 0)
 				);
+				const renamed = label.trim();
 				await integrationsStore.update({
 					id: account.id,
+					// Only when it actually changed: sending the same name back
+					// would still run the uniqueness check against itself.
+					...(renamed && renamed !== account.label && { label: renamed }),
 					credentials: Object.keys(changed).length > 0 ? changed : undefined,
 					capabilities
 				});
@@ -131,16 +151,22 @@
 			<div class="space-y-5 text-sm">
 				<p class="text-xs text-slate-500 dark:text-slate-400">{provider.description}</p>
 
+				<!--
+					Editable when reconfiguring too. A name is how two accounts of
+					one service are told apart, and the one thing you cannot fix
+					about a mistyped name should not be the name.
+				-->
 				<Input
 					label="Name"
 					type="text"
-					placeholder={provider.name}
-					disabled={isEditing}
+					placeholder={suggestedLabel}
 					bind:value={label}
 				/>
 				{#if !isEditing}
 					<p class="-mt-4 text-[11px] text-slate-400">
-						Only needed if you connect more than one {provider.name} account.
+						{existingCount > 0
+							? `You already have ${existingCount} ${provider.name} account${existingCount === 1 ? '' : 's'} — name this one so you can tell them apart.`
+							: `How this account is listed. Leave blank for "${provider.name}".`}
 					</p>
 				{/if}
 

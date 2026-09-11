@@ -237,8 +237,136 @@ description, and stream a failing Actions run's logs back into the chat as
 context. Reuse `backend/git/git-service.ts` for local state and never duplicate
 remote data into local git commands. Six more providers plug in later.
 
-- [ ] Done
-- Notes: —
+- [x] Done
+- Notes: The surface is `More Tools → Issues`, NOT a sixth dock panel — adding
+  one touches `PanelId`, the split tree, every layout preset and both
+  navigators, and a second entry point for the same work would repeat the Notes
+  mistake. The Git panel's More menu gained `Open pull request…`, which opens
+  THIS surface with its composer up; many doors, one room. Issues registers an
+  ADAPTER (`backend/issues/registry.ts`), not a projector: a projection derives
+  a row on a surface that owns a table, and work items are deliberately never
+  copied locally, so there was no row to derive — the comment in
+  `projections/types.ts` promising an `issues` projector is corrected. That left
+  the hub reporting "Nothing to probe yet" forever for a provider with no MCP
+  row, so `health.ts` gained `registerAccountProbe(provider, probe)`, which the
+  surface registers and which returns null when it has nothing to say (a GitHub
+  account with `issues` off still probes through MCP). AUTH IS A FINE-GRAINED
+  PAT, not the OAuth device flow sketched above — a device flow needs an
+  embedded client id that makes every self-hosted install depend on one app we
+  own, its narrowest scope is `repo` (write to EVERY repository the user can
+  reach), and `Task 9`'s targets only offer tokens, so the token path had to
+  exist anyway. Device flow remains addable later without changing what is
+  stored: it is another way to fill the same `token` field. GitHub declares
+  `agent-tools` too (official remote MCP, same bearer) but OFF by default.
+  Migration 074 adds `issue_bindings` (which repo, per project per account, plus
+  the transition/branch-template config — off by default) and `issue_work_links`
+  (item → worktree/session/branch, `ON DELETE SET NULL` so applying and deleting
+  a worktree does not erase which issue a branch belongs to). Nothing else about
+  a work item is persisted. Binding is DETECTED from the git remotes and
+  recorded as detected, always overridable. `diff-budget.ts` was generalised
+  from `--cached` to a `DiffScope` (`rangeScope(base, head)` uses three dots, or
+  the description would claim work someone else did) rather than copied. Start
+  work is kind-aware: an ISSUE gets a new branch from the template, a PULL
+  REQUEST gets its head branch fetched and checked out — reviewing code on an
+  empty branch is the wrong action — and every branch step fails soft, reporting
+  the branch it actually landed on. The prompt differs per mode for the same
+  reason. Actions logs pull only FAILED jobs via the per-job endpoint (the
+  run-level one is a zip of everything) and keep the TAIL, since a CI log's head
+  is dependency installation; the redirect to signed storage is followed
+  manually so the bearer token is never replayed at a third-party host. Both
+  loops hand TEXT back to the client to send, because the chat pipeline is
+  browser-owned and a second injection path would race it. `switchToSession()`
+  was added to the worktree store and `switchWorktreeContext` refactored onto
+  the same barrier, rather than duplicating the swap. Routes are project-access
+  gated, not admin-gated like `integrations:*` — they act inside one project,
+  the way `git:push` does. Post-QA pass: the More Tools menu is capped at the
+  viewport and scrolls (nine entries ran off the top of small screens); the
+  modal is one header row — title, account and repository together, with the
+  repository editor as a popover — because two stacked strips of chrome cost a
+  quarter of the height before an issue was shown; every control on a row is a
+  fixed h-8/h-9 rather than sized by its own padding, since a button sized by
+  text and a `<select>` sized by the browser never line up; no action is
+  hover-revealed, because a touch screen has no hover and the control simply
+  does not exist there. The empty state deep-links to the Connect dialog for the
+  provider it needs via `openIntegrationConnect()`, not to the integrations
+  list. GitHub's 404 is now explained rather than repeated: it answers the same
+  way for a missing repository and an unpermitted one, and the real cause is
+  almost always that a FINE-GRAINED token is scoped to one resource owner — it
+  cannot reach another person's repository even as a collaborator, and needs an
+  owner's approval for an organisation's. `tokenKindOf()` reads the prefix and
+  the message names the fix. Second QA pass REVERSED the token guidance: the
+  recommendation is now a CLASSIC token with `repo`, because least privilege is
+  the wrong trade when it silently removes access the user already has — a
+  fine-grained token cannot reach a repository you merely collaborate on, and
+  that is the common case here. Fine-grained still works and is diagnosed, not
+  rejected. `issues:start-work` timed out at the default 30s mid-clone while the
+  server carried on, leaving a worktree nobody was working in; the call now
+  carries a 10-minute budget. Every route takes an optional `projectId`
+  (`ws/issues/context.ts`) so the surface is genuinely global — it has its own
+  project picker and no longer follows the workspace, and only "start work"
+  relocates you. Layout: Behaviour is a stacked modal instead of a band that
+  pushed the list down, tabs moved into the list column (a full-width strip
+  spent a whole row labelling a third-width column), the sidebar is 19rem, and
+  the provider mark moved to the footer beside the rate limit — it is
+  identification, not navigation. Features added to reach parity: edit/delete
+  comment (`canModify` computed server-side from authorship plus repo write
+  access, because GitHub reports no per-comment permission), merge with method
+  choice restricted to what the repo allows, PR sub-tabs
+  Conversation/Commits/Checks/Files changed, assignees, create issue, copy
+  link/markdown. The comment box is a markdown composer with a toolbar and
+  Write/Preview — NOT the Notes editor, which is contenteditable HTML with its
+  own image store, and converting HTML→markdown on the way out is where fidelity
+  goes. IMAGE UPLOAD IS NOT POSSIBLE: no REST endpoint attaches a file to a
+  comment (the one behind drag-and-drop on github.com is private), and storing
+  bytes in Clopen would produce a link broken for everyone else on the thread —
+  so the composer offers image-by-URL and says so when a file is dropped.
+  `frontend/utils/clipboard.ts` was added because `navigator.clipboard` does not
+  exist on a non-secure origin, which is how Clopen is usually reached. Third QA
+  pass fixed two real bugs and closed the parity gap. A PR's discussion lives on
+  THREE endpoints and only two were read: `/pulls/{n}/reviews` carries the
+  summary a reviewer submits, which is where review bots put their findings, so
+  a bot's comment was simply never shown and looked deleted. Review summaries
+  now appear, marked read-only (they are edited through the reviews endpoint
+  with different rules). The list also raced itself: typing a filter and
+  clearing it fired two requests and the slower first one could land last,
+  leaving a partial list — every response now checks a generation counter before
+  writing. Added: state filter incl. Closed, author/label/date-range filters
+  behind one button, infinite scroll with provider-driven `hasMore`, edit title
+  and edit body (the item body renders through `CommentCard`, so its menu comes
+  from one component), copy-as-markdown and open-in-browser on every comment,
+  author names as profile links, a `StatePicker` dropdown replacing the native
+  `<select>` (which cannot show the current state or a coloured glyph), a
+  project-picker filter input, a shared `RefreshButton` that spins, disables and
+  holds the spinner a beat so a fast response still reads as an action, an
+  in-app log viewer (`CheckLogsModal`) showing exactly the bundle the chat
+  prompt is built from, and a Files-changed view rebuilt as tree + code with an
+  IntersectionObserver scroll-spy. Multi-account is now REACHABLE: the account
+  layer always supported `(provider, label)`, but Add hid connected providers,
+  which made the connect dialog's "only if you connect more than one" a promise
+  the UI refused to keep — Add now lists every provider with an "Add another"
+  action and a connected count. The inner filter pill "Integrations" is renamed
+  "Accounts" so it no longer repeats its own section name. Fourth QA pass, three
+  more bugs. `state=all` rendered a single row: `/issues` returns pull requests
+  too and they are filtered out here, so on a busy repo the fifty most recently
+  updated items were nearly all closed PRs and almost nothing survived — both
+  list paths now go through `fillPage()`, which keeps pulling provider pages
+  until the FILTERED page is full and reports `nextPage` so load-more resumes
+  where the fill stopped rather than at `page + 1`. Relative time was off by one
+  unit (an hour-old item read "1 minute ago") because the loop divided and then
+  applied the previous unit's name; it is now `frontend/utils/relative-time.ts`
+  with explicit thresholds and tests. The filter badge counted Open/Closed/All,
+  which is a view rather than a narrowing, so an untouched list claimed one
+  filter. `MenuSurface` replaced six hand-rolled popovers: every menu now
+  animates, measures itself against the viewport to flip left/right and
+  up/down, and shares one z-index — the comment menu used to render beneath the
+  composer. Also: account rename (the Name field was read-only when
+  reconfiguring, so a typo was permanent), copy-as-markdown now copies the whole
+  comment as an attributed blockquote instead of its first line, the status
+  badge carries an icon and a category colour, "Only mine" became "Assigned to
+  me", the item timeline (`/issues/{n}/timeline`, unknown event kinds dropped)
+  renders on a vertical rail with the comments, and Files changed gained a
+  unified/split toggle, copy-path, and a whole-file viewer through the shared
+  Monaco editor.
 
 **Task 3 — Deployments surface + Vercel.** Close the loop after preview. Build
 the panel every deploy target plugs into — deployments for the current project

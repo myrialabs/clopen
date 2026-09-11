@@ -24,6 +24,14 @@
 		onScroll?: (top: number) => void;
 		width?: string;
 		height?: string;
+		/**
+		 * Fraction of the app font size to render code at.
+		 *
+		 * A diff inside a review pane sits next to prose, a file tree and a
+		 * header, and at the panel's own scale it dwarfs all of them. The panel
+		 * says how loud its code should be; the app still owns the base size.
+		 */
+		fontScale?: number;
 	}
 
 	const {
@@ -41,6 +49,7 @@
 		onScroll,
 		width = '100%',
 		height = '100%',
+		fontScale = 0.9,
 	}: Props = $props();
 
 	function makeLineNumberFn(numbers: number[] | undefined) {
@@ -88,8 +97,8 @@
 				useInlineViewWhenSpaceIsLimited: false,
 				minimap: { enabled: false },
 				scrollBeyondLastLine: false,
-				fontSize: Math.round(settings.fontSize * 0.9),
-				lineHeight: Math.round(settings.fontSize * 0.9 * 1.5),
+				fontSize: Math.round(settings.fontSize * fontScale),
+				lineHeight: Math.round(settings.fontSize * fontScale * 1.5),
 				renderOverviewRuler: false,
 				enableSplitViewResizing: true,
 				automaticLayout: true,
@@ -140,10 +149,11 @@
 
 	$effect(() => {
 		const size = settings.fontSize;
+		const scale = fontScale;
 		if (diffEditor) {
 			diffEditor.updateOptions({
-				fontSize: Math.round(size * 0.9),
-				lineHeight: Math.round(size * 0.9 * 1.5),
+				fontSize: Math.round(size * scale),
+				lineHeight: Math.round(size * scale * 1.5),
 				renderSideBySideInlineBreakpoint: Math.round(600 * (size / 13)),
 			});
 		}

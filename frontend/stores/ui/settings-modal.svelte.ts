@@ -62,6 +62,15 @@ interface SettingsModalState {
 	 * and clears it.
 	 */
 	teamFocusUserId: string | null;
+	/**
+	 * Provider whose Connect dialog should open as soon as Integrations is shown.
+	 *
+	 * Set by a CTA that already knows what the user is trying to connect — the
+	 * Issues & PRs surface's empty state, for one. Sending them to a list and letting
+	 * them find Add → GitHub is three clicks of looking for something we already
+	 * knew. IntegrationsSettings consumes and clears it.
+	 */
+	integrationFocusProvider: string | null;
 }
 
 // Settings sections metadata
@@ -255,7 +264,8 @@ export const settingsModalState = $state<SettingsModalState>({
 	isOpen: false,
 	activeSection: 'assistant',
 	engineFocus: null,
-	teamFocusUserId: null
+	teamFocusUserId: null,
+	integrationFocusProvider: null
 });
 
 // Helper functions
@@ -274,6 +284,19 @@ export function setActiveSection(section: SettingsSection) {
 
 export function toggleSettingsModal() {
 	settingsModalState.isOpen = !settingsModalState.isOpen;
+}
+
+/**
+ * Open Integrations with one provider's Connect dialog already up.
+ *
+ * `providerId` is a hint, not a promise: a provider that is not in the registry
+ * (or is already connected) simply lands on the list, which is the same place
+ * the user would have arrived at anyway.
+ */
+export function openIntegrationConnect(providerId: string) {
+	settingsModalState.isOpen = true;
+	settingsModalState.activeSection = 'integrations';
+	settingsModalState.integrationFocusProvider = providerId;
 }
 
 /** Switch to the Engines section and request a specific engine sub-tab. */

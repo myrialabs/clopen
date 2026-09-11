@@ -5,9 +5,17 @@
  * never learn that accounts exist: they keep reading their own tables, and a
  * projector is the only thing that writes an integration-owned row into them.
  *
- * One projector per capability. `agent-tools` is the only one that exists
- * today; `database`, `issues`, `deployments`, `worktree-branching` and
- * `notifications` are registered by the tasks that build those surfaces.
+ * One projector per capability — but ONLY for capabilities whose surface owns a
+ * table to write into. `agent-tools` writes an `mcp_servers` row, `database`
+ * will write a `db_client_connections` one, and `deployments`,
+ * `worktree-branching` and `notifications` are registered by the tasks that
+ * build those surfaces.
+ *
+ * `work` deliberately has NO projector. Work items are never copied into the
+ * database (see migration 074 for why), so there is no derived row to keep in
+ * step — the Issues & PRs surface registers an ADAPTER in
+ * `backend/issues/registry.ts` and reads the account directly. A capability
+ * without a table is a capability without a projection.
  */
 
 import type { IntegrationCapability, IntegrationTargetKind } from '$shared/types/integrations';

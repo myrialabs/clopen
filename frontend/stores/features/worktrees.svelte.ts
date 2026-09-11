@@ -188,7 +188,7 @@ export async function switchWorktreeContext(worktreeId: string | null): Promise<
 	if (!project) return;
 	if (worktreeState.activeId === worktreeId) return;
 
-	const { sessionState, setCurrentSession, getSessionsForProject } = await import(
+	const { setCurrentSession, getSessionsForProject } = await import(
 		'$frontend/stores/core/sessions.svelte'
 	);
 
@@ -200,24 +200,52 @@ export async function switchWorktreeContext(worktreeId: string | null): Promise<
 			.filter((session) => !session.ended_at && (session.worktree_id ?? null) === worktreeId)
 			.sort((a, b) => new Date(b.started_at).getTime() - new Date(a.started_at).getTime())[0];
 
-		let target = existing ?? null;
-		if (!target) {
-			target = (await ws.http('sessions:get-shared', {
-				forceNew: true,
-				worktreeId
-			})) as ChatSession;
-
-			// The server also broadcasts the new session, so guard against holding
-			// it twice.
-			const existingIndex = sessionState.sessions.findIndex((s) => s.id === target?.id);
-			if (existingIndex === -1) sessionState.sessions.push(target);
-			else sessionState.sessions[existingIndex] = target;
-		}
+		const target = existing ?? await adoptSession(
+			(await ws.http('sessions:get-shared', { forceNew: true, worktreeId })) as ChatSession
+		);
 
 		await syncWorktreeContextFromSession(target);
 		await setCurrentSession(target);
 	} catch (error) {
 		debug.error('worktree', 'Failed to switch worktree context:', error);
+	} finally {
+		lowerSwitchBarrier();
+	}
+}
+
+/**
+ * Hold a session the server just created.
+ *
+ * The server broadcasts some of these and not others, so this replaces rather
+ * than appends when the id is already known — otherwise the session picker
+ * shows the same chat twice.
+ */
+async function adoptSession(session: ChatSession): Promise<ChatSession> {
+	const { sessionState } = await import('$frontend/stores/core/sessions.svelte');
+	const index = sessionState.sessions.findIndex((held) => held.id === session.id);
+	if (index === -1) sessionState.sessions.push(session);
+	else sessionState.sessions[index] = session;
+	return session;
+}
+
+/**
+ * Move the workspace into a session the caller already has.
+ *
+ * `switchWorktreeContext` finds or creates a session for a tree; this one is for
+ * the reverse case, where a session was created server-side for a specific
+ * reason — starting work on an issue — and the tree follows from it. Sharing the
+ * barrier and the sync means neither path can forget one of them.
+ */
+export async function switchToSession(session: ChatSession): Promise<void> {
+	const { setCurrentSession } = await import('$frontend/stores/core/sessions.svelte');
+
+	raiseSwitchBarrier();
+	try {
+		await adoptSession(session);
+		await syncWorktreeContextFromSession(session);
+		await setCurrentSession(session);
+	} catch (error) {
+		debug.error('worktree', 'Failed to switch into session:', error);
 	} finally {
 		lowerSwitchBarrier();
 	}
