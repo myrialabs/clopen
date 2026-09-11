@@ -15,6 +15,7 @@
 
 import type { EngineType } from '$shared/types/unified';
 import { getDatabase } from '../index';
+import { openRow, sealFor } from '../crypto';
 
 // ============================================================================
 // Types
@@ -49,6 +50,15 @@ export interface EngineProviderWithAccounts extends EngineProvider {
 // ============================================================================
 // Queries
 // ============================================================================
+
+// `engine_accounts.credential` is sealed at rest (see backend/database/crypto).
+// Every account read opens it, so the adapters keep receiving the raw token.
+const ACCOUNTS_TABLE = 'engine_accounts';
+
+/** Open the sealed credential on a row straight out of SQLite. */
+function openAccount<T extends EngineAccount | null>(row: T): T {
+	return (row ? openRow(ACCOUNTS_TABLE, row) : row) as T;
+}
 
 export const engineQueries = {
 	// ------------------------------------------------------------------
@@ -150,21 +160,21 @@ export const engineQueries = {
 
 	getAccount(id: number): EngineAccount | null {
 		const db = getDatabase();
-		return db.prepare(`SELECT * FROM engine_accounts WHERE id = ?`).get(id) as EngineAccount | null;
+		return openAccount(db.prepare(`SELECT * FROM engine_accounts WHERE id = ?`).get(id) as EngineAccount | null);
 	},
 
 	getAccountsByProvider(providerId: number): EngineAccount[] {
 		const db = getDatabase();
-		return db.prepare(
+		return (db.prepare(
 			`SELECT * FROM engine_accounts WHERE provider_id = ? ORDER BY created_at ASC`
-		).all(providerId) as EngineAccount[];
+		).all(providerId) as EngineAccount[]).map((row) => openAccount(row));
 	},
 
 	getActiveAccount(providerId: number): EngineAccount | null {
 		const db = getDatabase();
-		return db.prepare(
+		return openAccount(db.prepare(
 			`SELECT * FROM engine_accounts WHERE provider_id = ? AND is_active = 1`
-		).get(providerId) as EngineAccount | null;
+		).get(providerId) as EngineAccount | null);
 	},
 
 	/**
@@ -173,14 +183,14 @@ export const engineQueries = {
 	 */
 	getActiveAccountForEngine(engineType: EngineType): EngineAccount | null {
 		const db = getDatabase();
-		return db.prepare(`
+		return openAccount(db.prepare(`
 			SELECT a.*
 			FROM engine_accounts a
 			JOIN engine_providers p ON p.id = a.provider_id
 			WHERE p.engine_type = ? AND p.is_enabled = 1 AND a.is_active = 1
 			ORDER BY p.created_at ASC, a.created_at ASC
 			LIMIT 1
-		`).get(engineType) as EngineAccount | null;
+		`).get(engineType) as EngineAccount | null);
 	},
 
 	createAccount(providerId: number, name: string, credential: string): EngineAccount {
@@ -195,10 +205,10 @@ export const engineQueries = {
 		const result = db.prepare(`
 			INSERT INTO engine_accounts (provider_id, name, credential, is_active)
 			VALUES (?, ?, ?, ?)
-		`).run(providerId, name, credential, isActive) as { lastInsertRowid: number | bigint };
+		`).run(providerId, name, sealFor(ACCOUNTS_TABLE, 'credential', credential), isActive) as { lastInsertRowid: number | bigint };
 
 		const id = Number(result.lastInsertRowid);
-		return db.prepare(`SELECT * FROM engine_accounts WHERE id = ?`).get(id) as EngineAccount;
+		return openAccount(db.prepare(`SELECT * FROM engine_accounts WHERE id = ?`).get(id) as EngineAccount);
 	},
 
 	switchAccount(accountId: number): void {
@@ -242,7 +252,10 @@ export const engineQueries = {
 	 */
 	updateAccountCredential(accountId: number, credential: string): void {
 		const db = getDatabase();
-		db.prepare(`UPDATE engine_accounts SET credential = ? WHERE id = ?`).run(credential, accountId);
+		db.prepare(`UPDATE engine_accounts SET credential = ? WHERE id = ?`).run(
+			sealFor(ACCOUNTS_TABLE, 'credential', credential),
+			accountId
+		);
 	},
 
 	// ------------------------------------------------------------------

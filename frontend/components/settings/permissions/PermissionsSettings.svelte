@@ -132,7 +132,7 @@
 				<strong class="text-slate-600 dark:text-slate-300">Deny wins;</strong> set an allowlist to restrict an engine to only the listed tools.
 				Rules apply globally on the next chat stream. Patterns support a trailing <code class="text-[11px]">*</code> wildcard (e.g. <code class="text-[11px]">mcp__github__*</code>).
 			</p>
-			<p>MCP tools are mainly managed in <strong class="text-slate-600 dark:text-slate-300">Connectors</strong> — adding one here is an extra engine-level block.</p>
+			<p>MCP tools are mainly managed in <strong class="text-slate-600 dark:text-slate-300">Integrations</strong> — adding one here is an extra engine-level block.</p>
 		</div>
 	</div>
 

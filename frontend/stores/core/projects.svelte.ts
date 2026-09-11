@@ -235,6 +235,12 @@ export async function setCurrentProject(project: Project | null) {
 	const { initWorktreeEvents, loadWorktrees } = await import('$frontend/stores/features/worktrees.svelte');
 	initWorktreeEvents();
 	await loadWorktrees();
+
+	// The Issues & PRs surface is bound to a project — its sources, its repository
+	// binding and its work items all change with it.
+	const { initIssuesEvents, workStore } = await import('$frontend/stores/features/work.svelte');
+	initIssuesEvents();
+	workStore.reset();
 	if (!isCurrentSwitch(token)) {
 		releaseChat?.();
 		return;
@@ -488,6 +494,9 @@ export async function loadProjects(restoreProjectId?: string | null) {
 					);
 					initWorktreeEvents();
 					await loadWorktrees();
+
+					const { initIssuesEvents } = await import('$frontend/stores/features/work.svelte');
+					initIssuesEvents();
 
 					// Start tracking the restored project
 					if (typeof window !== 'undefined') {
