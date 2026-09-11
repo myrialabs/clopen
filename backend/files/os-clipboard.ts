@@ -85,33 +85,55 @@ export function buildOsClipboardPsScript(effect: OsClipboardEffect = 'copy'): st
 	].join('\r\n');
 }
 
+/** Classic multi-file pasteboard type; still what Finder itself publishes. */
+const MAC_FILENAMES_PBOARD_TYPE = 'NSFilenamesPboardType';
+
 /**
- * Build the AppleScript (ASObjC) program that publishes file URLs onto the
+ * Build the AppleScript (ASObjC) program that publishes file paths onto the
  * macOS general pasteboard. Paths arrive as `argv`, and Bun spawns osascript
  * without a shell, so no quoting or escaping applies to them.
  *
  * macOS has no clipboard equivalent of DROPEFFECT_MOVE: Finder decides
  * copy-vs-move at paste time (⌘V copies, ⌘⌥V moves). A CUT therefore
- * publishes the same file URLs as a COPY and the caller reports the actual
+ * publishes the same entries as a COPY and the caller reports the actual
  * published effect — see {@link copyPathsToOsClipboard}.
  *
- * The URL list must be a plain AppleScript list. Collecting the URLs into an
- * `NSMutableArray` instead makes `writeObjects:` return true while placing
- * only the FIRST url on the pasteboard, so a multi-select copy silently
- * arrives in Finder as a single file.
+ * Two details here are load-bearing for MULTI-FILE copies, and getting either
+ * wrong drops entries silently rather than failing:
+ *
+ * 1. `setPropertyList:forType:` writes the whole list as concrete data.
+ *    `writeObjects:` instead hands the pasteboard server one lazily-provided
+ *    item per URL; osascript exits before those are all pulled, so the number
+ *    of entries that actually land is a race — the same four paths arrived as
+ *    1, 3 or 4 items across identical runs. `NSFilenamesPboardType` still
+ *    yields `public.file-url` and the rest of the modern type set, so readers
+ *    that only understand file URLs are unaffected.
+ * 2. The script reads the list back before exiting. Even an eager write is
+ *    not guaranteed to be visible to other processes the instant the writer
+ *    dies, and confirming it is what makes the result deterministic.
+ *
  * Exported (pure, no side effects) for unit tests.
  */
 export function buildMacClipboardWriteScriptLines(): string[] {
 	return [
 		'use framework "AppKit"',
+		'use scripting additions',
 		'on run argv',
-		'set urls to {}',
+		'set paths to {}',
 		'repeat with p in argv',
-		"set end of urls to (current application's NSURL's fileURLWithPath:(p as text))",
+		'set end of paths to (p as text)',
 		'end repeat',
 		"set pb to current application's NSPasteboard's generalPasteboard()",
 		"pb's clearContents()",
-		"pb's writeObjects:urls",
+		`pb's declareTypes:{"${MAC_FILENAMES_PBOARD_TYPE}"} owner:(missing value)`,
+		`pb's setPropertyList:paths forType:"${MAC_FILENAMES_PBOARD_TYPE}"`,
+		'repeat 50 times',
+		`set written to (pb's propertyListForType:"${MAC_FILENAMES_PBOARD_TYPE}")`,
+		'if written is not missing value then',
+		"if ((written's |count|()) as integer) is (count of paths) then exit repeat",
+		'end if',
+		'delay 0.02',
+		'end repeat',
 		'end run'
 	];
 }

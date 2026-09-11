@@ -116,18 +116,36 @@ describe('mac clipboard write script', () => {
 	const lines = buildMacClipboardWriteScriptLines();
 	const script = lines.join('\n');
 
-	test('publishes file URLs onto the general pasteboard', () => {
+	test('publishes onto the general pasteboard as a file-name list', () => {
 		expect(script).toContain('NSPasteboard');
-		expect(script).toContain('fileURLWithPath');
+		expect(script).toContain('NSFilenamesPboardType');
 		expect(script).toContain("pb's clearContents()");
-		expect(script).toContain("pb's writeObjects:urls");
 	});
 
-	test('collects URLs in a plain AppleScript list, never an NSMutableArray', () => {
-		// An NSMutableArray bridges to writeObjects: as a SINGLE object, so a
-		// multi-select copy silently arrives in Finder as one file.
-		expect(script).toContain('set urls to {}');
-		expect(script).toContain('set end of urls to');
+	test('writes the list eagerly instead of through writeObjects:', () => {
+		// writeObjects: hands the pasteboard server one lazily-provided item
+		// per URL. osascript exits before they are all pulled, so the entries
+		// that actually land are a race — the same four paths arrived as 1, 3
+		// or 4 items across identical runs, which is how a multi-select copy
+		// turned into a single pasted file.
+		expect(script).toContain('setPropertyList:paths');
+		expect(script).toContain('declareTypes:');
+		expect(script).not.toContain('writeObjects');
+	});
+
+	test('confirms the write landed before the process exits', () => {
+		// An eager write is still not guaranteed to be visible to other
+		// processes the instant the writer dies; reading it back is what makes
+		// the result deterministic.
+		expect(script).toContain('propertyListForType:');
+		expect(script).toContain('repeat 50 times');
+		expect(script).toContain('exit repeat');
+		expect(lines).toContain('use scripting additions');
+	});
+
+	test('collects the paths in a plain AppleScript list', () => {
+		expect(script).toContain('set paths to {}');
+		expect(script).toContain('set end of paths to');
 		expect(script).not.toContain('NSMutableArray');
 	});
 

@@ -1351,6 +1351,11 @@
 	// the native clipboard fresh (see tryReadOsClipboardItems).
 	let lastInternalCopyAt = 0;
 	let pendingPublishSeq = 0;
+	// The clipboardRev whose contents are known to have reached the OS
+	// clipboard. Only when our own copy IS what the OS holds does a later
+	// difference prove the user copied somewhere else; if the publish failed
+	// or never ran, the OS side is simply unrelated and must not win.
+	let osPublishedRev = 0;
 	// Grace window covering the async OS publish round-trip. Kept short so a
 	// real follow-up Explorer copy is never shadowed for long.
 	const INTERNAL_COPY_GRACE_MS = 2000;
@@ -1412,7 +1417,7 @@
 	// and fires in the background (best-effort, failures swallowed).
 	function doCopy(targets: FileNode[]): void {
 		if (targets.length === 0) return;
-		clipboardRev += 1;
+		const rev = ++clipboardRev;
 		clipboard = { files: targets, operation: 'copy', origin: 'internal' };
 		// Fire-and-forget: publish to native OS clipboard in the background.
 		// The internal clipboard (used by in-app paste) is already set above.
@@ -1427,20 +1432,22 @@
 			// Only the latest COPY clears the in-flight flag: a superseded
 			// publish must never mark a newer copy as done.
 			if (seq === osPublishSeq) pendingPublishSeq = 0;
+			if (published && seq === osPublishSeq) osPublishedRev = rev;
 			const label = describeTargets(targets);
+			// A copy behaves the same wherever it is pasted, so the toast just
+			// confirms it. Naming one target read as a restriction — "press
+			// ⌘V in Finder" suggested the copy did NOT work inside Clopen.
 			notifyExplorer(
 				'success',
 				'Copied',
-				published
-					? `${label} — press ${explorerKeys.paste} in ${fileManagerName}`
-					: `${label} copied to clipboard (${explorerKeys.copy})`
+				published ? `Copied ${label}.` : `Copied ${label} — available inside Clopen only.`
 			);
 		});
 	}
 
 	function doCut(targets: FileNode[]): void {
 		if (targets.length === 0) return;
-		clipboardRev += 1;
+		const rev = ++clipboardRev;
 		clipboard = { files: targets, operation: 'cut', origin: 'internal' };
 		// Fire-and-forget: publish with DROPEFFECT_MOVE in the background so
 		// pasting in the native file manager performs a real move. Clopen
@@ -1455,16 +1462,20 @@
 			'move'
 		).then((published) => {
 			if (seq === osPublishSeq) pendingPublishSeq = 0;
+			if (published && seq === osPublishSeq) osPublishedRev = rev;
 			const label = describeTargets(targets);
 			let message: string;
 			if (published === 'move') {
-				message = `${label} — press ${explorerKeys.paste} in ${fileManagerName} to move`;
+				// Pasting moves everywhere — inside Clopen and in the file
+				// manager alike, so there is nothing to qualify.
+				message = `Cut ${label}.`;
 			} else if (published === 'copy') {
-				// macOS: the pasteboard cannot carry a move intent, Finder
-				// decides at paste time. Name the shortcut that really moves.
-				message = `${label} — press ${explorerKeys.pasteMove} in ${fileManagerName} to move`;
+				// macOS only: the pasteboard carries no move intent and Finder
+				// decides at paste time, so ⌘V there would COPY. That caveat is
+				// genuinely Finder-specific, unlike the copy case above.
+				message = `Cut ${label} — ${explorerKeys.pasteMove} moves them in ${fileManagerName}.`;
 			} else {
-				message = `${label} cut to clipboard (${explorerKeys.cut})`;
+				message = `Cut ${label} — available inside Clopen only.`;
 			}
 			notifyExplorer('success', 'Cut', message);
 		});
@@ -1554,6 +1565,11 @@
 	// PREVIOUS Explorer content, which must not shadow the newer copy.
 	function shouldPreferInternalOverFreshOs(): boolean {
 		if (pendingPublishSeq !== 0) return true;
+		// Our copy never made it onto the OS clipboard (member session, missing
+		// helper, failed publish). Whatever the OS holds is then leftover from
+		// some earlier copy, not a newer one, and adopting it would paste
+		// unrelated files — or a truncated subset of what the user selected.
+		if (osPublishedRev !== clipboardRev) return true;
 		return Date.now() - lastInternalCopyAt < INTERNAL_COPY_GRACE_MS;
 	}
 	async function pasteFromOsClipboard(dests: string[]): Promise<void> {
@@ -1571,7 +1587,7 @@
 			notifyExplorer(
 				'warning',
 				'Clipboard Empty',
-				`Copy files first in ${fileManagerName} (${explorerKeys.copy}), then paste here.`
+				`Copy files here or in ${fileManagerName} first.`
 			);
 			return;
 		}
@@ -2953,7 +2969,7 @@
 				notifyExplorer('error', 'Delete Failed', reason);
 			}
 		} else {
-			notifyExplorer('success', 'Deleted', deleted === 1 ? `Deleted "${files[0].name}" (${explorerKeys.deleteKey}).` : `Deleted ${deleted} items (${explorerKeys.deleteKey}).`);
+			notifyExplorer('success', 'Deleted', deleted === 1 ? `Deleted "${files[0].name}".` : `Deleted ${deleted} items.`);
 		}
 	}
 
