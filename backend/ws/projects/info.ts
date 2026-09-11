@@ -22,10 +22,12 @@ import { collectProcessTree, getHostFacts, getProcessTable } from '../../host/me
 
 /** Ceiling on entries visited by one walk, so a monorepo cannot pin a core. */
 const MAX_ENTRIES = 300_000;
-/** Wall-clock ceiling — the backstop for slow disks and network mounts. */
-const WALK_DEADLINE_MS = 15_000;
+/** Wall-clock ceiling — the backstop for slow disks and network mounts.
+ *  Sized to stay under the 30s client timeout of both callers
+ *  (`projects:info` default, `projects:overview` explicit) with margin. */
+const WALK_DEADLINE_MS = 20_000;
 /** How many `stat` calls are in flight at once while walking one directory. */
-const STAT_BATCH = 64;
+const STAT_BATCH = 128;
 /** A folder's size changes slowly; a poll should not re-walk it every tick. */
 const STORAGE_CACHE_TTL_MS = 15_000;
 /** An expensive walk earns a longer rest, so it is not repeated the moment its
@@ -37,7 +39,7 @@ const PORTS_CACHE_TTL_MS = 5_000;
 
 // ── Storage ──────────────────────────────────────────────────────────────────
 
-interface FolderStats {
+export interface FolderStats {
 	sizeBytes: number;
 	fileCount: number;
 	dirCount: number;
@@ -49,8 +51,12 @@ const storageCache = new Map<string, { stats: FolderStats; at: number; ttl: numb
 const storageInFlight = new Map<string, Promise<FolderStats>>();
 
 /** Cached and single-flighted: a big walk outlives the poll interval, so a
- *  result-only cache would let every tick start another one. */
-function getFolderStats(root: string): Promise<FolderStats> {
+ *  result-only cache would let every tick start another one.
+ *
+ *  Exported for reuse by `projects:overview` so idle-project totals share the
+ *  same walk, cache entry, and in-flight guard as per-project `projects:info`.
+ *  No behavior change for existing callers. */
+export function getFolderStats(root: string): Promise<FolderStats> {
 	const cached = storageCache.get(root);
 	if (cached && Date.now() - cached.at < cached.ttl) {
 		return Promise.resolve(cached.stats);
@@ -149,7 +155,7 @@ async function walkFolder(root: string): Promise<FolderStats> {
 
 // ── Per-project slice of the host process table ──────────────────────────────
 
-interface ProjectProcess {
+export interface ProjectProcess {
 	pid: number;
 	parentPid: number;
 	name: string;
@@ -158,7 +164,7 @@ interface ProjectProcess {
 	command: string;
 }
 
-interface ProcessStats {
+export interface ProcessStats {
 	status: 'running' | 'not_running';
 	cpuPercent: number | null;
 	memRssBytes: number | null;
@@ -178,7 +184,12 @@ const IDLE: ProcessStats = {
 	rootPids: []
 };
 
-async function getProjectProcessStats(projectId: string, totalMemBytes: number): Promise<ProcessStats> {
+/**
+ * Exported for reuse by `projects:overview` so per-project CPU/RAM there is
+ * measured exactly the way `projects:info` measures it — same roots, same
+ * shared process table, same capacity basis. No behavior change for callers.
+ */
+export async function getProjectProcessStats(projectId: string, totalMemBytes: number): Promise<ProcessStats> {
 	const rootPids = projectShellPids(projectId);
 
 	// No shells means nothing is running, so zero is the truth here.
