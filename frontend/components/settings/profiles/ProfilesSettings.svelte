@@ -29,7 +29,7 @@
 		{ type: 'skill', label: 'Skills', icon: 'lucide:graduation-cap' },
 		{ type: 'command', label: 'Commands', icon: 'lucide:terminal' },
 		{ type: 'subagent', label: 'Subagents', icon: 'lucide:bot' },
-		{ type: 'mcp', label: 'Connectors', icon: 'lucide:plug' }
+		{ type: 'mcp', label: 'Integrations', icon: 'lucide:plug' }
 	];
 
 	let listFilter = $state('');

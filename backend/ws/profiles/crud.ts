@@ -7,7 +7,7 @@
  *   - profiles:available / project-default                         (non-admin)
  *
  * A Profile bundles references to existing artifacts (Skills, Commands,
- * Subagents, MCP Connectors) by slug plus an optional per-engine allow/deny
+ * Subagents, Integrations) by slug plus an optional per-engine allow/deny
  * overlay. Nothing is duplicated — see `backend/profiles`. Admin gating lives in
  * `backend/auth/permissions.ts`; the picker/default-read routes stay non-admin
  * (choosing a profile for a session is a run choice like the model).

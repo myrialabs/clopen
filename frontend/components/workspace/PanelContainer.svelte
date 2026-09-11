@@ -8,7 +8,6 @@
 	import FilesPanel from './panels/FilesPanel.svelte';
 	import TerminalPanel from './panels/TerminalPanel.svelte';
 	import GitPanel from './panels/GitPanel.svelte';
-	import NotesPanel from '../notes/NotesPanel.svelte';
 	import HistoryModal from '$frontend/components/history/HistoryModal.svelte';
 	import { workspaceState, type PanelId } from '$frontend/stores/ui/workspace.svelte';
 	import { appState } from '$frontend/stores/core/app.svelte';
@@ -93,8 +92,6 @@
 				<TerminalPanel bind:this={terminalPanelRef} />
 			{:else if panelId === 'git'}
 				<GitPanel bind:this={gitPanelRef} />
-			{:else if panelId === 'notes'}
-				<NotesPanel />
 			{/if}
 
 			<!-- Two overlays, one look. `isSwitching` covers the structural swap, when

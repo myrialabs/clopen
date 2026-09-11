@@ -22,6 +22,7 @@
 		onContainers: () => void;
 		onMemory: () => void;
 		onNotes: () => void;
+		onWork: () => void;
 	}
 
 	const {
@@ -34,7 +35,8 @@
 		onPorts,
 		onContainers,
 		onMemory,
-		onNotes
+		onNotes,
+		onWork
 	}: Props = $props();
 
 	let isOpen = $state(false);
@@ -133,6 +135,18 @@
 			onClick: onNotes,
 			count: 0,
 			accent: 'text-amber-600 dark:text-amber-400'
+		},
+		{
+			// "Issues" alone was a lie by omission: pull requests are half of what
+			// is behind it, and the only half with CI, commits and a diff.
+			label: 'Issues & PRs',
+			description: 'Issues, pull requests and CI',
+			icon: 'lucide:circle-dot',
+			onClick: onWork,
+			// No live count: an open issue is not a connection this machine holds,
+			// and a badge counting someone's backlog would nag rather than inform.
+			count: 0,
+			accent: 'text-rose-600 dark:text-rose-400'
 		}
 	]);
 
@@ -195,18 +209,28 @@
 	{/if}
 
 	{#if isOpen}
+		<!--
+			The menu grows with every tool that lands, so it is capped at the
+			viewport and scrolls rather than being sized by its contents. It opens
+			upward from a button that sits at the bottom of the sidebar, so an
+			uncapped list ran off the top of the screen — and did so first on the
+			small screens that can least afford it.
+
+			The heading stays put while the list moves under it: losing "More
+			Tools" on the first scroll leaves an unlabelled list of icons.
+		-->
 		<div
-			class="absolute {mobile ? 'top-full right-0 mt-1' : 'bottom-full left-0 mb-1'} w-64 bg-white dark:bg-slate-800 border border-violet-500/20 rounded-lg shadow-2xl shadow-slate-900/20 dark:shadow-black/40 z-50 overflow-hidden"
+			class="absolute {mobile ? 'top-full right-0 mt-1' : 'bottom-full left-0 mb-1'} flex flex-col w-64 max-h-[min(28rem,70dvh)] bg-white dark:bg-slate-800 border border-violet-500/20 rounded-lg shadow-2xl shadow-slate-900/20 dark:shadow-black/40 z-50 overflow-hidden"
 			transition:scale={{ duration: 150, easing: cubicOut, start: 0.95, opacity: 0 }}
 		>
-			<div class="py-1.5">
-				<div class="px-3 py-1.5 text-xs font-semibold text-slate-600 dark:text-slate-500 uppercase tracking-wider">
-					More Tools
-				</div>
+			<div class="px-3 pt-2 pb-1.5 shrink-0 text-xs font-semibold text-slate-600 dark:text-slate-500 uppercase tracking-wider">
+				More Tools
+			</div>
+			<div class="flex flex-col min-h-0 overflow-y-auto pb-1.5">
 				{#each items as item (item.label)}
 					<button
 						type="button"
-						class="flex items-center gap-3 w-full px-3 py-2.5 bg-transparent border-none text-left cursor-pointer transition-all duration-150 hover:bg-violet-500/10"
+						class="flex items-center gap-3 w-full shrink-0 px-3 py-2 bg-transparent border-none text-left cursor-pointer transition-all duration-150 hover:bg-violet-500/10"
 						onclick={() => select(item)}
 					>
 						<Icon name={item.icon} class="w-4 h-4 shrink-0 {item.count > 0 ? item.accent : 'text-slate-500 dark:text-slate-400'}" />

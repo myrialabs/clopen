@@ -11,7 +11,7 @@ import { registerDock, requestWorkspaceSave } from '$frontend/stores/ui/project-
 // TYPE DEFINITIONS
 // ============================================
 
-export type PanelId = 'chat' | 'files' | 'terminal' | 'preview' | 'git' | 'notes';
+export type PanelId = 'chat' | 'files' | 'terminal' | 'preview' | 'git';
 
 export interface PanelConfig {
 	id: PanelId;
@@ -491,14 +491,6 @@ const defaultPanels: Record<PanelId, PanelConfig> = {
 		visible: true,
 		minimized: false,
 		order: 4
-	},
-	notes: {
-		id: 'notes',
-		title: 'Notes',
-		icon: 'lucide:sticky-note',
-		visible: true,
-		minimized: false,
-		order: 5
 	}
 };
 
@@ -507,8 +499,7 @@ export const PANEL_OPTIONS: { id: PanelId; title: string; icon: IconName }[] = [
 	{ id: 'files', title: 'Files', icon: 'lucide:folder' },
 	{ id: 'git', title: 'Source Control', icon: 'lucide:git-branch' },
 	{ id: 'terminal', title: 'Terminal', icon: 'lucide:terminal' },
-	{ id: 'preview', title: 'Preview', icon: 'lucide:globe' },
-	{ id: 'notes', title: 'Notes', icon: 'lucide:sticky-note' }
+	{ id: 'preview', title: 'Preview', icon: 'lucide:globe' }
 ];
 
 // Default: Sidebar layout (chat narrow left, files wide right)

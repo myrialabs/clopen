@@ -5,7 +5,7 @@
 The adapters stream chat; **artifacts** are the reusable "extensions" the user
 manages in **Settings → Artifacts & Access** that shape what each engine sees and
 may do during that stream — Skills, Commands, Subagents, Instructions,
-Permissions, Profiles, and Connectors (MCP).
+Permissions, Profiles, and Integrations (MCP).
 
 They are a **separate subsystem** (`backend/artifacts/` + one module per feature)
 that meets the adapter layer at exactly one seam: `backend/engine/artifact-sync.ts`,
@@ -21,7 +21,7 @@ each exposes a different native surface.
 
 | Menu (UI)        | Backend module          | WS router                  | Materialized as |
 |------------------|-------------------------|----------------------------|-----------------|
-| Connectors (MCP) | `backend/mcp/`          | `backend/ws/mcp/`          | config object + `/mcp/ext/<slug>` bridge — **not** a file artifact (see §8.5) |
+| Integrations     | `backend/mcp/` + `backend/integrations/` | `backend/ws/mcp/` + `backend/ws/integrations/` | config object + `/mcp/ext/<slug>` bridge — **not** a file artifact (see §8.5) |
 | Skills           | `backend/skills/`       | `backend/ws/skills/`       | `folder-md` in a native dir, or synthetic preamble |
 | Commands         | `backend/commands/`     | `backend/ws/commands/`     | `single-md` in a native dir, or synthetic preamble |
 | Subagents        | `backend/subagents/`    | `backend/ws/subagents/`    | `single-md` in a native dir, or synthetic preamble |
@@ -101,14 +101,27 @@ reliably re-read per turn — the prompt is the one genuinely per-session channe
 | **Permissions** (`backend/permissions/`) | per-engine tool allow/deny | global, project | **enforcement is a runtime check** (`resolvePermissionsFromDb` + `isToolAllowed`) each adapter runs at whichever surface fires for every tool call — for Claude a `PreToolUse` hook, since `bypassPermissions` auto-approves before `canUseTool` is consulted. The matrix only describes the optional on-disk file, which today only Claude reads (a managed `permissions` key merged into its isolated `settings.json`); its `deny` rules do bite even under `bypassPermissions`, an allowlist has no on-disk equivalent |
 | **Profiles** (`backend/profiles/`) | a named bundle of slugs | per session | not materialized. Narrows which instance-global artifacts are active: effective profile = `chat_sessions.profile_id ?? projects.default_profile_id`, resolved once at stream start and threaded down as `profileId`. Only constrains the types it references (`artifactFilter` → `null` = unconstrained), so a Commands-only profile never disables every Skill |
 
-### 8.5 Connectors (MCP)
+### 8.5 Integrations (MCP + connected accounts)
 
-MCP is part of Artifacts & Access in the UI but is **not** part of this file
-framework — it has its own subsystem. MCP servers are config objects composed
-per engine and proxied through the `/mcp/ext/<slug>` bridge, so forcing them
-through a file writer/detector would be a mis-fit; the `'mcp'` slot in
-`ArtifactType` exists only for future extensibility. Profiles can still reference
-MCP connectors as bundle items (§8.4).
+Integrations sit under Artifacts & Access in the UI but are **not** part of this
+file framework — they have their own subsystem. MCP servers are config objects
+composed per engine and proxied through the `/mcp/ext/<slug>` bridge, so forcing
+them through a file writer/detector would be a mis-fit; the `'mcp'` slot in
+`ArtifactType` exists only for future extensibility. Profiles can still
+reference connectors as bundle items (§8.4).
+
+Two modules, one menu:
+
+- `backend/mcp/` — the protocol: install, proxy, per-engine tool exposure,
+  MCP-level OAuth.
+- `backend/integrations/` — the connected account and its credential (sealed at
+  rest, see `backend/database/crypto/`). An account with the `agent-tools`
+  capability **projects** an `mcp_servers` row; other capabilities project onto
+  other surfaces, or onto none yet.
+
+Nothing on the adapter path can tell a projected row from a hand-installed one,
+which is the point: this layer stays off the path MCP config already flows
+through.
 
 For MCP's own architecture — internal `defineServer()` tools, the OAuth client,
 the remote HTTP bridge, per-engine config, and tool overrides — see

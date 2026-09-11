@@ -1,6 +1,17 @@
 import { getDatabase } from '../index';
+import { openRow, sealFor } from '../crypto';
 import type { DBSshConnectionRow } from '$shared/types/database/schema';
 import type { SshAuthMethod, SshConnection, SshConnectionInput } from '$shared/types/ssh';
+
+// Password, private key and passphrase are sealed at rest (see
+// backend/database/crypto). Reads open them before anything else touches the
+// row, so the dialler and the panel are unchanged.
+const TABLE = 'ssh_connections';
+
+/** Open the sealed columns on a row straight out of SQLite. */
+function openConnectionRow<T extends DBSshConnectionRow | null>(row: T): T {
+	return (row ? openRow(TABLE, row) : row) as T;
+}
 
 function rowToConnection(row: DBSshConnectionRow): SshConnection {
 	return {
@@ -57,7 +68,7 @@ function preserveExistingSecret(patchValue: string | undefined, existingValue: s
 
 function getRowById(id: string): DBSshConnectionRow | null {
 	const db = getDatabase();
-	return db.prepare('SELECT * FROM ssh_connections WHERE id = ?').get(id) as DBSshConnectionRow | null;
+	return openConnectionRow(db.prepare('SELECT * FROM ssh_connections WHERE id = ?').get(id) as DBSshConnectionRow | null);
 }
 
 /**
@@ -100,10 +111,10 @@ function insertConnection(input: SshConnectionInput, ownerUserId: string | null)
 		input.port ?? 22,
 		input.username,
 		input.authMethod ?? 'password',
-		input.password || null,
-		input.privateKey || null,
+		sealFor(TABLE, 'password', input.password || null),
+		sealFor(TABLE, 'private_key', input.privateKey || null),
 		input.privateKeyPath || null,
-		input.passphrase || null,
+		sealFor(TABLE, 'passphrase', input.passphrase || null),
 		input.agentSocket || null,
 		input.jumpConnectionId || null,
 		input.initialPath || null,
@@ -135,7 +146,7 @@ export const sshConnectionQueries = {
 				ORDER BY (last_used_at IS NULL), last_used_at DESC, created_at DESC
 			`).all(userId)) as DBSshConnectionRow[];
 
-		return rows.map((row) => redactConnectionSecrets(rowToConnection(row)));
+		return rows.map((row) => redactConnectionSecrets(rowToConnection(openConnectionRow(row))));
 	},
 
 	getForUser(id: string, userId: string, isAdmin: boolean): SshConnection | null {
@@ -203,9 +214,9 @@ export const sshConnectionQueries = {
 			push('jump_connection_id', jumpConnectionId);
 		}
 
-		if (patch.password !== undefined) push('password', preserveExistingSecret(patch.password, existing.password));
-		if (patch.privateKey !== undefined) push('private_key', preserveExistingSecret(patch.privateKey, existing.private_key));
-		if (patch.passphrase !== undefined) push('passphrase', preserveExistingSecret(patch.passphrase, existing.passphrase));
+		if (patch.password !== undefined) push('password', sealFor(TABLE, 'password', preserveExistingSecret(patch.password, existing.password)));
+		if (patch.privateKey !== undefined) push('private_key', sealFor(TABLE, 'private_key', preserveExistingSecret(patch.privateKey, existing.private_key)));
+		if (patch.passphrase !== undefined) push('passphrase', sealFor(TABLE, 'passphrase', preserveExistingSecret(patch.passphrase, existing.passphrase)));
 
 		push('updated_at', new Date().toISOString());
 

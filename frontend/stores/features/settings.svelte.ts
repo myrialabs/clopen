@@ -41,6 +41,7 @@ const defaultSettings: AppSettings = {
 	fontSize: 13,
 	chatAppearance: 'classic',
 	gitDiffSideBySide: true,
+	workDiffSideBySide: false,
 	commitGenerator: {
 		useCustomModel: false,
 		engine: 'claude-code',

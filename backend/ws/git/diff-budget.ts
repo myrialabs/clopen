@@ -52,6 +52,56 @@ export const BRANCH_NAME_BUDGET: DiffBudget = {
 };
 
 /**
+ * Budget for pull-request descriptions. The most generous of the three: a PR
+ * description covers a whole branch rather than one commit, and a description
+ * written from a heavily sampled diff is the one that invents changes.
+ */
+export const PR_DESCRIPTION_BUDGET: DiffBudget = {
+	perFileBytes: 8 * 1024,
+	totalBytes: 40 * 1024,
+	maxFiles: 60,
+	contextLines: 3
+};
+
+/**
+ * WHICH diff to budget.
+ *
+ * Extracted when the pull-request composer needed `base...head` instead of
+ * `--cached`. Everything below is identical for both — the file walk, the
+ * skip list, the per-file clipping — so the scope is a parameter rather than a
+ * second copy of the builder that would drift from this one.
+ */
+export interface DiffScope {
+	/** Operands inserted into every `git diff` invocation. */
+	args: string[];
+	/** How the patch section is introduced. */
+	label: string;
+	/** Wording when nothing changed, used by the caller's empty check. */
+	emptyLabel: string;
+}
+
+export const STAGED_SCOPE: DiffScope = {
+	args: ['--cached'],
+	label: 'Staged diff',
+	emptyLabel: 'staged changes'
+};
+
+/**
+ * Everything on `head` that is not on `base`.
+ *
+ * Three dots, not two: `base..head` would also show changes made to base since
+ * the branch left it, which are not this pull request's changes and are exactly
+ * what makes an AI-written description claim work someone else did.
+ */
+export function rangeScope(base: string, head: string): DiffScope {
+	return {
+		args: [`${base}...${head}`],
+		label: `Diff (${base}...${head})`,
+		emptyLabel: `changes between ${base} and ${head}`
+	};
+}
+
+/**
  * Paths whose diff is machine-generated: enormous, uninformative, and the single
  * biggest source of wasted context. They still appear in the `--stat` header, so
  * the model can see they changed.
@@ -123,29 +173,30 @@ export interface BudgetedDiff {
 	text: string;
 	/** True when any file's patch was clipped or dropped. */
 	truncated: boolean;
-	/** True when there is nothing staged at all. */
+	/** True when the scope contains no change at all. */
 	isEmpty: boolean;
 }
 
 /**
- * Build the staged-diff section of an AI prompt under `budget`.
+ * Build the diff section of an AI prompt under `budget`, for `scope`.
  *
  * We deliberately spawn one `git diff` per file rather than one for everything:
- * it lets us stop as soon as the budget is spent, so a 200 MB staged blob is
- * never read into memory in the first place.
+ * it lets us stop as soon as the budget is spent, so a 200 MB blob is never read
+ * into memory in the first place.
  */
-export async function buildBudgetedStagedDiff(
+export async function buildBudgetedDiff(
 	cwd: string,
-	budget: DiffBudget
+	budget: DiffBudget,
+	scope: DiffScope = STAGED_SCOPE
 ): Promise<BudgetedDiff> {
-	const numstat = await execGit(['diff', '--cached', '--numstat', '-z', '-M'], cwd);
+	const numstat = await execGit(['diff', ...scope.args, '--numstat', '-z', '-M'], cwd);
 	const entries = parseNumstat(numstat.stdout);
 
 	if (entries.length === 0) {
 		return { text: '', truncated: false, isEmpty: true };
 	}
 
-	const statResult = await execGit(['diff', '--cached', '--stat=200', '-M'], cwd);
+	const statResult = await execGit(['diff', ...scope.args, '--stat=200', '-M'], cwd);
 	const stat = statResult.stdout.trim();
 
 	const skipped: string[] = [];
@@ -180,7 +231,7 @@ export async function buildBudgetedStagedDiff(
 		const result = await execGit(
 			[
 				'diff',
-				'--cached',
+				...scope.args,
 				'--no-color',
 				`--unified=${budget.contextLines}`,
 				'-M',
@@ -208,8 +259,8 @@ export async function buildBudgetedStagedDiff(
 	}
 	if (patches.length > 0) {
 		const header = truncated
-			? 'Staged diff (sampled — some files or lines were omitted to fit context):'
-			: 'Staged diff:';
+			? `${scope.label} (sampled — some files or lines were omitted to fit context):`
+			: `${scope.label}:`;
 		sections.push(`${header}\n${patches.join('\n')}`);
 	}
 	if (filesOmitted > 0) {
@@ -217,4 +268,12 @@ export async function buildBudgetedStagedDiff(
 	}
 
 	return { text: sections.join('\n\n'), truncated, isEmpty: false };
+}
+
+/** The staged diff. Kept as its own name because two callers read better for it. */
+export async function buildBudgetedStagedDiff(
+	cwd: string,
+	budget: DiffBudget
+): Promise<BudgetedDiff> {
+	return buildBudgetedDiff(cwd, budget, STAGED_SCOPE);
 }

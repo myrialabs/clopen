@@ -6,6 +6,7 @@
 	import type { IconName } from '$shared/types/ui/icons';
 
 	export type GitMoreAction =
+		| 'open-pull-request'
 		| 'merge-branch'
 		| 'rebase-onto'
 		| 'set-upstream'
@@ -65,6 +66,22 @@
 	}
 
 	const sections: MenuSection[] = [
+		{
+			// The git panel used to stop at push. This is the one step past it,
+			// and it opens the Issues & PRs surface rather than a composer of its own —
+			// a second place to write a pull request would drift from the first.
+			label: 'Review',
+			items: [
+				{
+					id: 'open-pull-request',
+					label: 'Open pull request…',
+					hint: 'this branch',
+					command: 'Opens the Issues & PRs surface',
+					icon: 'lucide:git-pull-request',
+					needsRemote: true
+				}
+			]
+		},
 		{
 			label: 'Push',
 			items: [
