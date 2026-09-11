@@ -4,6 +4,13 @@
  * Account health reuses the MCP probe rather than inventing a second notion of
  * "is this connector working" — for an account whose only capability is agent
  * tools, the probe against its projected row IS the answer.
+ *
+ * That answer runs out the moment a capability projects no MCP row. A GitHub
+ * account offering `work` has a credential that can be verified precisely —
+ * by calling the API it was issued for — but nothing for `probeServer()` to
+ * reach. So a surface may register its own probe for its providers, and the
+ * hub's status strip keeps meaning something for every account rather than
+ * reading "Nothing to probe yet" forever.
  */
 
 import { probeServer, resolveServerRow } from '$backend/mcp';
@@ -17,6 +24,26 @@ import { auditSecretColumns, getDecryptFailures, getMasterKey } from '$backend/d
 import type { IntegrationStatus, SecretsHealth } from '$shared/types/integrations';
 import { integrationAccounts } from './accounts';
 import { debug } from '$shared/utils/logger';
+
+/**
+ * A probe contributed by a surface, keyed by provider id.
+ *
+ * Returning null means "this probe has nothing to say about this account" — for
+ * instance a GitHub account with `work` switched off — and the MCP path is
+ * used instead. That is what lets one account carry both kinds of capability
+ * without the two probes fighting over which one reports.
+ */
+export type AccountProbe = (
+	accountId: string,
+	projectId: string | null
+) => Promise<{ status: IntegrationStatus; detail: string | null } | null>;
+
+const providerProbes = new Map<string, AccountProbe>();
+
+/** Register a provider-specific probe. Called at module load by the surface. */
+export function registerAccountProbe(provider: string, probe: AccountProbe): void {
+	providerProbes.set(provider, probe);
+}
 
 /**
  * Probe one account.
@@ -34,6 +61,25 @@ export async function checkAccountHealth(accountId: string): Promise<{ status: I
 		const result = { status: 'unknown' as const, detail: 'Disabled' };
 		integrationAccounts.setStatus(accountId, result.status, result.detail);
 		return result;
+	}
+
+	// A surface probe is the more specific answer when there is one: it talks to
+	// the API the credential was issued for, rather than to an MCP server that
+	// happens to accept the same token.
+	const providerProbe = providerProbes.get(account.provider);
+	if (providerProbe) {
+		try {
+			const result = await providerProbe(accountId, account.project_id);
+			if (result) {
+				integrationAccounts.setStatus(accountId, result.status, result.detail);
+				return result;
+			}
+		} catch (error) {
+			const detail = error instanceof Error ? error.message : String(error);
+			debug.error('integrations', `Provider probe failed for account ${accountId}:`, error);
+			integrationAccounts.setStatus(accountId, 'error', detail);
+			return { status: 'error', detail };
+		}
 	}
 
 	const projection = integrationProjectionQueries

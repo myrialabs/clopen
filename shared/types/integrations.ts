@@ -17,7 +17,8 @@
  */
 export const INTEGRATION_CAPABILITIES = [
 	'agent-tools',
-	'issues',
+	/** Issues, pull requests and CI — the Issues & PRs surface. */
+	'work',
 	'deployments',
 	'database',
 	'worktree-branching',

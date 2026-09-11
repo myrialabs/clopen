@@ -25,6 +25,7 @@
 	import { getProviderIcon } from '$shared/constants/tool-icons';
 	import ws from '$frontend/utils/ws';
 	import { isDarkMode } from '$frontend/stores/ui/theme.svelte';
+	import { settingsModalState } from '$frontend/stores/ui/settings-modal.svelte';
 	import type { IntegrationAccountInfo, IntegrationProviderInfo } from '$shared/types/integrations';
 	import type { IconName } from '$shared/types/ui/icons';
 
@@ -34,7 +35,7 @@
 
 	const { showHeader = true }: Props = $props();
 
-	type RowKind = 'builtin' | 'integration' | 'custom';
+	type RowKind = 'builtin' | 'apps' | 'custom';
 
 	interface HubRow {
 		key: string;
@@ -49,7 +50,11 @@
 	const FILTERS: { id: 'all' | RowKind; label: string }[] = [
 		{ id: 'all', label: 'All' },
 		{ id: 'builtin', label: 'Built-in' },
-		{ id: 'integration', label: 'Integrations' },
+		// Not "Accounts": every row here is an account of some kind, including the
+		// built-in ones. What sets these apart is that they are external services
+		// you authorised, and "Apps" is both the word those services use for it
+		// and the only one short enough to sit in a row of one-word chips.
+		{ id: 'apps', label: 'Apps' },
 		{ id: 'custom', label: 'Custom MCP' }
 	];
 
@@ -104,7 +109,7 @@
 			if (account) claimedAccounts.add(account.id);
 			out.push({
 				key: `mcp:${server.id}`,
-				kind: server.source === 'internal' ? 'builtin' : account ? 'integration' : 'custom',
+				kind: server.source === 'internal' ? 'builtin' : account ? 'apps' : 'custom',
 				name: server.name,
 				description: server.description,
 				server,
@@ -118,7 +123,7 @@
 			const provider = providerById[account.provider] ?? null;
 			out.push({
 				key: `account:${account.id}`,
-				kind: 'integration',
+				kind: 'apps',
 				name: account.label,
 				description: provider?.description ?? null,
 				server: null,
@@ -130,7 +135,7 @@
 		// Built-ins first — they are always present and always work, so they are
 		// the least interesting thing to scroll past looking for a problem.
 		return out.sort((a, b) => {
-			const rank = (row: HubRow) => (row.kind === 'builtin' ? 0 : row.kind === 'integration' ? 1 : 2);
+			const rank = (row: HubRow) => (row.kind === 'builtin' ? 0 : row.kind === 'apps' ? 1 : 2);
 			return rank(a) - rank(b) || a.name.localeCompare(b.name);
 		});
 	});
@@ -187,6 +192,37 @@
 		connectProvider = null;
 		connectAccount = null;
 	}
+
+	/**
+	 * Honour a deep-link that named the provider it wants connected.
+	 *
+	 * Waits for the registry to arrive, because the caller knows an id and this
+	 * dialog needs the declaration behind it. The request is cleared whatever
+	 * happens — including when the provider is unknown or already connected —
+	 * so it cannot fire again the next time Integrations is opened.
+	 */
+	$effect(() => {
+		const wanted = settingsModalState.integrationFocusProvider;
+		if (!wanted) return;
+
+		const providers = integrationsStore.providers;
+		if (providers.length === 0) return;
+
+		settingsModalState.integrationFocusProvider = null;
+
+		const provider = providers.find((candidate) => candidate.id === wanted);
+		if (!provider) return;
+
+		const existing = integrationsStore.accounts.find((account) => account.provider === wanted);
+		if (existing) {
+			// Opening Connect on a provider that is already set up would look like
+			// Clopen forgot. Land on its row instead.
+			detailKey = `account:${existing.id}`;
+			return;
+		}
+
+		startConnect(provider);
+	});
 </script>
 
 <div class="space-y-5">
@@ -294,7 +330,7 @@
 						<div class="flex items-center gap-1.5 flex-wrap mt-1">
 							{#if row.kind === 'builtin'}
 								<span class="text-[10px] font-semibold px-1.5 py-0.5 rounded bg-violet-500/10 text-violet-600 dark:text-violet-400">Built-in</span>
-							{:else if row.kind === 'integration'}
+							{:else if row.kind === 'apps'}
 								<span class="text-[10px] font-semibold px-1.5 py-0.5 rounded bg-sky-500/10 text-sky-600 dark:text-sky-400">Integration</span>
 							{/if}
 							{#if row.server}

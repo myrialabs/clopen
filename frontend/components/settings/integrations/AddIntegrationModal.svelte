@@ -33,11 +33,26 @@
 
 	let search = $state('');
 
+	/**
+	 * EVERY provider, not only the unconnected ones.
+	 *
+	 * The account layer keys on `(provider, label)` and generates "GitHub 2" for
+	 * a second one, so two accounts for the same service — a personal org and a
+	 * work org, say — are supported and always were. Hiding a connected provider
+	 * from this list was the only thing preventing it, which also made the
+	 * connect dialog's "only needed if you connect more than one" a promise the
+	 * UI refused to keep.
+	 */
 	const available = $derived.by(() => {
 		const query = search.trim().toLowerCase();
-		return integrationsStore.unconnectedProviders
+		return integrationsStore.providers
 			.filter(provider => !query || `${provider.name} ${provider.description}`.toLowerCase().includes(query));
 	});
+
+	/** How many accounts already exist for a provider, so the row can say so. */
+	function connectedCount(providerId: string): number {
+		return integrationsStore.accounts.filter(account => account.provider === providerId).length;
+	}
 
 	function brandMark(providerId: string): string | null {
 		const icon = getProviderIcon(providerId);
@@ -70,12 +85,13 @@
 
 			{#if available.length === 0}
 				<p class="text-sm text-slate-500 dark:text-slate-400 text-center py-6">
-					{search.trim() ? `Nothing matches "${search.trim()}".` : 'Everything available is already connected.'}
+					{search.trim() ? `Nothing matches "${search.trim()}".` : 'No providers are declared.'}
 				</p>
 			{:else}
 				<div class="space-y-2">
 					{#each available as provider (provider.id)}
 						{@const mark = brandMark(provider.id)}
+						{@const existing = connectedCount(provider.id)}
 						<div class="flex items-center gap-3 p-3 bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 rounded-xl">
 							{#if mark}
 								<span class="w-6 h-6 shrink-0 [&>svg]:w-full [&>svg]:h-full">{@html mark}</span>
@@ -88,10 +104,17 @@
 									<span class="text-[10px] px-1.5 py-0.5 rounded bg-slate-100 dark:bg-slate-800 text-slate-500 shrink-0">
 										{CATEGORY_LABELS[provider.category]}
 									</span>
+									{#if existing > 0}
+										<span class="text-[10px] px-1.5 py-0.5 rounded bg-green-500/10 text-green-600 dark:text-green-400 shrink-0">
+											{existing} connected
+										</span>
+									{/if}
 								</div>
 								<p class="text-xs text-slate-500 dark:text-slate-400 mt-0.5 line-clamp-2">{provider.description}</p>
 							</div>
-							<Button variant="outline" size="sm" class="shrink-0" onclick={() => onConnect(provider)}>Connect</Button>
+							<Button variant="outline" size="sm" class="shrink-0" onclick={() => onConnect(provider)}>
+								{existing > 0 ? 'Add another' : 'Connect'}
+							</Button>
 						</div>
 					{/each}
 				</div>

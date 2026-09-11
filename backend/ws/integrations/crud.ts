@@ -167,6 +167,7 @@ export const integrationsCrudHandler = createRouter()
 	.http('integrations:update', {
 		data: t.Object({
 			id: t.String(),
+			label: t.Optional(t.String({ minLength: 1, maxLength: 120 })),
 			credentials: t.Optional(t.Record(t.String(), t.String())),
 			capabilities: t.Optional(t.Array(CAPABILITY_SCHEMA)),
 			projectId: t.Optional(t.Union([t.String(), t.Null()])),
@@ -176,6 +177,7 @@ export const integrationsCrudHandler = createRouter()
 	}, async ({ data }) => {
 		debug.log('path', `integrations:update ${data.id}`);
 
+		if (data.label !== undefined) integrationAccounts.setLabel(data.id, data.label);
 		if (data.credentials) integrationAccounts.updateCredentials(data.id, data.credentials);
 		if (data.capabilities) integrationAccounts.setCapabilities(data.id, data.capabilities as IntegrationCapability[]);
 		if (data.projectId !== undefined) integrationAccounts.setProject(data.id, data.projectId);

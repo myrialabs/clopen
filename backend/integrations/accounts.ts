@@ -173,6 +173,23 @@ export const integrationAccounts = {
 		return this.get(id)!;
 	},
 
+	/** Rename. The label is how a user tells two accounts of one service apart. */
+	setLabel(id: string, label: string): IntegrationAccountInfo {
+		const row = integrationAccountQueries.getById(id);
+		if (!row) throw new Error('Integration account not found');
+
+		const trimmed = label.trim();
+		if (!trimmed) throw new Error('A name is required');
+
+		const taken = integrationAccountQueries
+			.getByProvider(row.provider)
+			.some((other) => other.id !== id && other.label === trimmed);
+		if (taken) throw new Error(`Another ${row.provider} account is already called "${trimmed}"`);
+
+		integrationAccountQueries.setLabel(id, trimmed);
+		return this.get(id)!;
+	},
+
 	setCapabilities(id: string, capabilities: IntegrationCapability[]): IntegrationAccountInfo {
 		const row = integrationAccountQueries.getById(id);
 		if (!row) throw new Error('Integration account not found');

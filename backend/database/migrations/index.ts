@@ -72,6 +72,7 @@ import * as migration070 from './070_create_worktrees_table';
 import * as migration071 from './071_create_notes_tables';
 import * as migration072 from './072_encrypt_stored_secrets';
 import * as migration073 from './073_create_integration_tables';
+import * as migration074 from './074_create_work_tables';
 
 // Export all migrations in order
 export const migrations = [
@@ -512,6 +513,12 @@ export const migrations = [
 		description: migration073.description,
 		up: migration073.up,
 		down: migration073.down
+	},
+	{
+		id: '074',
+		description: migration074.description,
+		up: migration074.up,
+		down: migration074.down
 	}
 ];
 

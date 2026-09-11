@@ -32,4 +32,5 @@ export { handleInboundDelivery, onWebhook, MAX_BODY_BYTES } from './webhooks/gat
 export type { WebhookEvent, WebhookSubscriber } from './webhooks/gateway';
 export { verifySignature } from './webhooks/verify';
 
-export { checkAccountHealth, getSecretsHealth } from './health';
+export { checkAccountHealth, getSecretsHealth, registerAccountProbe } from './health';
+export type { AccountProbe } from './health';

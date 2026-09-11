@@ -71,6 +71,14 @@ export interface AppSettings {
 	chatAppearance: 'classic' | 'compact';
 	/** Git diff viewer layout — true = side-by-side (2 columns), false = inline (1 column). Default: true. */
 	gitDiffSideBySide: boolean;
+	/**
+	 * Issue/pull-request diff layout. Default: false (inline, 1 column).
+	 *
+	 * Separate from the Git panel's: a review diff shares its pane with a file
+	 * tree and a header, so two columns start narrow, and reading someone
+	 * else's change is mostly reading the new side.
+	 */
+	workDiffSideBySide: boolean;
 	/** AI commit message generator configuration */
 	commitGenerator: CommitGeneratorSettings;
 	/** AI authoring model for artifact generation (optional; falls back to assistant model) */

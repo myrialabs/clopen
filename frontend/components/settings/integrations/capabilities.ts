@@ -12,7 +12,7 @@ import type { IconName } from '$shared/types/ui/icons';
 
 export const CAPABILITY_LABELS: Record<IntegrationCapability, string> = {
 	'agent-tools': 'Agent tools',
-	issues: 'Issues & PRs',
+	work: 'Issues & PRs',
 	deployments: 'Deployments',
 	database: 'Database',
 	'worktree-branching': 'Worktree branching',
@@ -23,7 +23,7 @@ export const CAPABILITY_LABELS: Record<IntegrationCapability, string> = {
 /** Where the capability's work actually happens — shown so "connect" ≠ "use". */
 export const CAPABILITY_SURFACES: Record<IntegrationCapability, string> = {
 	'agent-tools': 'Available to every engine as MCP tools',
-	issues: 'Issues panel',
+	work: 'More Tools → Issues & PRs',
 	deployments: 'Deployments panel',
 	database: 'DB Client',
 	'worktree-branching': 'Worktree manager',
