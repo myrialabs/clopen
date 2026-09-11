@@ -1,7 +1,9 @@
 import { describe, expect, test } from 'bun:test';
 
 import {
+	buildGnomeCopiedFilesPayload,
 	buildMacClipboardReadScriptLines,
+	buildMacClipboardWriteScriptLines,
 	buildOsClipboardPsScript,
 	buildOsClipboardReadPsScript,
 	copyPathsToOsClipboard,
@@ -9,21 +11,23 @@ import {
 	encodeOsClipboardPayload,
 	OS_CLIPBOARD_ENV_VAR,
 	parseFileDropLines,
-	parseTextUriList
+	parseGnomeCopiedFiles,
+	parseTextUriList,
+	pathToFileUri
 } from './os-clipboard';
 
 describe('os-clipboard payload encoding', () => {
 	test('round-trips paths with spaces, unicode, quotes and ampersands', () => {
 		const paths = [
-			'C:\\Users\\Test\\Laporan PKL\\ABSENSI KEGIATAN.docx',
-			'C:\\Users\\Test\\Jurnal Mingguan (1).docx',
+			'C:\\Users\\Test\\Report 2026\\Attendance Log.docx',
+			'C:\\Users\\Test\\Weekly Journal (1).docx',
 			'C:\\Users\\Test\\a&b\'c"d;e|.txt'
 		];
 		expect(decodeOsClipboardPayload(encodeOsClipboardPayload(paths))).toEqual(paths);
 	});
 
 	test('round-trips folder paths', () => {
-		const paths = ['C:\\Users\\Test\\Laporan PKL'];
+		const paths = ['C:\\Users\\Test\\Report 2026'];
 		expect(decodeOsClipboardPayload(encodeOsClipboardPayload(paths))).toEqual(paths);
 	});
 });
@@ -53,7 +57,7 @@ describe('os-clipboard PowerShell script', () => {
 
 	test('never interpolates paths (injection-safe transport via env var)', () => {
 		const script = buildOsClipboardPsScript();
-		expect(script).not.toContain('ABSENSI');
+		expect(script).not.toContain('Attendance');
 		expect(script).not.toContain('C:\\');
 	});
 });
@@ -68,7 +72,7 @@ describe('copyPathsToOsClipboard validation', () => {
 
 	test('rejects an empty path list', async () => {
 		await expect(copyPathsToOsClipboard([])).rejects.toThrow(
-			/At least one path|only supported on Windows/
+			/At least one path|not supported on this platform/
 		);
 	});
 
@@ -95,9 +99,9 @@ describe('os-clipboard read helpers', () => {
 	test('parseTextUriList decodes file URIs and skips comments', () => {
 		expect(
 			parseTextUriList(
-				'# comment\nfile:///home/user/Laporan%20PKL\nfile://host/tmp/a&b.txt\n'
+				'# comment\nfile:///home/user/Report%202026\nfile://host/tmp/a&b.txt\n'
 			)
-		).toEqual(['/home/user/Laporan PKL', '/tmp/a&b.txt']);
+		).toEqual(['/home/user/Report 2026', '/tmp/a&b.txt']);
 	});
 
 	test('read PowerShell script prints the FileDropList line by line', () => {
@@ -106,10 +110,82 @@ describe('os-clipboard read helpers', () => {
 		expect(script).toContain('Write-Output');
 		expect(script).not.toContain('SetDataObject');
 	});
+});
 
-	test('mac read script targets pasteboard file URLs', () => {
-		const lines = buildMacClipboardReadScriptLines();
-		expect(lines.join('\n')).toContain('NSPasteboard');
-		expect(lines.join('\n')).toContain('NSURLReadingFileURLsOnly');
+describe('mac clipboard write script', () => {
+	const lines = buildMacClipboardWriteScriptLines();
+	const script = lines.join('\n');
+
+	test('publishes file URLs onto the general pasteboard', () => {
+		expect(script).toContain('NSPasteboard');
+		expect(script).toContain('fileURLWithPath');
+		expect(script).toContain("pb's clearContents()");
+		expect(script).toContain("pb's writeObjects:urls");
+	});
+
+	test('collects URLs in a plain AppleScript list, never an NSMutableArray', () => {
+		// An NSMutableArray bridges to writeObjects: as a SINGLE object, so a
+		// multi-select copy silently arrives in Finder as one file.
+		expect(script).toContain('set urls to {}');
+		expect(script).toContain('set end of urls to');
+		expect(script).not.toContain('NSMutableArray');
+	});
+
+	test('takes paths from argv so nothing is interpolated into the script', () => {
+		expect(lines).toContain('on run argv');
+		expect(script).toContain('repeat with p in argv');
+	});
+});
+
+describe('mac clipboard read script', () => {
+	const lines = buildMacClipboardReadScriptLines();
+	const script = lines.join('\n');
+
+	test('targets pasteboard file URLs', () => {
+		expect(script).toContain('NSPasteboard');
+		expect(script).toContain('readObjectsForClasses');
+	});
+
+	test('opens the if as a block instead of a one-line if/then/repeat', () => {
+		// `if ... then repeat ...` on one line is an AppleScript syntax error,
+		// which made every Finder read fail with "not available on this Mac".
+		expect(lines).toContain('if urls is not missing value then');
+		expect(lines).toContain('end if');
+		expect(script).not.toMatch(/then repeat/);
+	});
+
+	test('filters file URLs with isFileURL, not a reading-options dictionary', () => {
+		// The ASObjC bridge cannot resolve NSURLReadingFileURLsOnly and aborts
+		// with "Can't continue", so the filter has to be an explicit test.
+		expect(script).toContain('isFileURL');
+		expect(script).toContain('options:(missing value)');
+		expect(script).not.toContain('NSURLReadingFileURLsOnly');
+	});
+});
+
+describe('linux clipboard payloads', () => {
+	test('pathToFileUri percent-encodes each segment and keeps separators', () => {
+		expect(pathToFileUri('/home/user/Report 2026/a&b;c.txt')).toBe(
+			'file:///home/user/Report%202026/a%26b%3Bc.txt'
+		);
+	});
+
+	test('gnome-copied-files leads with the action line', () => {
+		expect(buildGnomeCopiedFilesPayload(['/tmp/a.txt'])).toBe('copy\nfile:///tmp/a.txt');
+		expect(buildGnomeCopiedFilesPayload(['/tmp/a.txt'], 'move')).toBe('cut\nfile:///tmp/a.txt');
+	});
+
+	test('round-trips through parseGnomeCopiedFiles for both actions', () => {
+		const paths = ['/home/user/Report 2026', '/home/user/a&b.txt'];
+		for (const effect of ['copy', 'move'] as const) {
+			expect(parseGnomeCopiedFiles(buildGnomeCopiedFilesPayload(paths, effect))).toEqual(paths);
+		}
+	});
+
+	test('parseGnomeCopiedFiles tolerates a payload with no action line', () => {
+		expect(parseGnomeCopiedFiles('file:///tmp/a.txt\nfile:///tmp/b.txt')).toEqual([
+			'/tmp/a.txt',
+			'/tmp/b.txt'
+		]);
 	});
 });

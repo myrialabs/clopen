@@ -99,6 +99,12 @@ export function getExplorerShortcutLabels() {
 		copy: `${modifier}+C`,
 		cut: `${modifier}+X`,
 		paste: `${modifier}+V`,
+		// The shortcut that performs a MOVE in the native file manager.
+		// Windows/Linux carry the move intent on the clipboard itself, so a
+		// plain paste moves after a cut. macOS cannot: the pasteboard has no
+		// move flag and Finder decides at paste time, where ⌘⌥V is "Move Item
+		// Here". Messages that promise a move must name this key, not `paste`.
+		pasteMove: platform === 'mac' ? '⌘⌥V' : `${modifier}+V`,
 		selectAll: `${modifier}+A`,
 		deleteKey: platform === 'mac' ? 'Delete/Backspace' : 'Delete'
 	};

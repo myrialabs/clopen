@@ -11,8 +11,9 @@
 	import { ignoredPathsState } from '$frontend/stores/features/ignored-paths.svelte';
 	import { isExtractableArchive } from '$frontend/utils/archive';
 
-	// OS-aware shortcut hint (Ctrl on Windows/Linux, ⌘ on macOS) shown next
-	// to the Delete row, like the native file manager. Cut/Copy/Paste rows
+	// OS-aware shortcut hint (Delete on Windows/Linux, Delete/Backspace on
+	// macOS) carried on the Delete row's tooltip and accessible name, matching
+	// what the keyboard handler actually listens for. Cut/Copy/Paste rows
 	// intentionally show plain labels without shortcut text.
 	const explorerKeys = getExplorerShortcutLabels();
 

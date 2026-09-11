@@ -77,6 +77,7 @@
 	import { authStore } from '$frontend/stores/features/auth.svelte';
 	import { fetchFileBlob, isAbortError, saveBlob } from '$frontend/utils/file-download';
 	import { showConfirm } from '$frontend/stores/ui/dialog.svelte';
+	import { copyText } from '$frontend/utils/clipboard';
 	import { showSuccess, showError, showWarning } from '$frontend/stores/ui/notification.svelte';
 	import { SvelteMap } from 'svelte/reactivity';
 	import { getFileIcon } from '$frontend/utils/file-icon-mappings';
@@ -101,6 +102,7 @@
 		isExplorerMod,
 		isLocalConnection,
 		isMac,
+		isWindows,
 		nativeFileManagerName
 	} from '$frontend/utils/platform';
 
@@ -805,8 +807,8 @@
 		return files.map((file) => {
 			if (file.path === oldPath) {
 				const newName = newPath.split(/[\\/]/).pop() || file.name;
-				// SSOT: rename folder harus rebase seluruh subtree agar
-				// children tidak tertinggal dengan path lama (hilang/duplikat).
+				// SSOT: renaming a folder must rebase the whole subtree, or its
+				// children keep the old path and go missing / show up twice.
 				return { ...rebaseSubtree(file, newPath), name: newName };
 			} else if (file.type === 'directory' && file.children) {
 				return { ...file, children: updateNodePathInTree(file.children, oldPath, newPath) };
@@ -827,16 +829,16 @@
 	}
 
 	function addNodeToTree(files: FileNode[], parentPath: string | null, newNode: FileNode): FileNode[] {
-		// SSOT guard: jangan pernah menambah path yang sama dua kali
-		// (optimistic + retry/reload race = duplikat di tree).
+		// SSOT guard: never add the same path twice — an optimistic insert
+		// racing a retry/reload would otherwise duplicate the node.
 		if (findFileInTree(files, newNode.path)) return files;
 		if (!parentPath) {
 			return sortFileNodes([...files, newNode]);
 		}
 		return files.map((file) => {
 			if (file.path === parentPath && file.type === 'directory') {
-				// Parent mungkin belum punya children (lazy load) — tetap
-				// beri array baru agar item langsung muncul tanpa refresh.
+				// The parent may not have loaded its children yet (lazy load) —
+				// give it a fresh array so the item shows up without a refresh.
 				if ((file.children || []).some((c) => c.path === newNode.path)) return file;
 				return { ...file, children: sortFileNodes([...(file.children || []), newNode]) };
 			} else if (file.type === 'directory') {
@@ -851,10 +853,11 @@
 		if (!sourceNode) return files;
 		const newName = targetPath.split(/[\\/]/).pop() || sourceNode.name;
 		const duplicateNode: FileNode = { ...rebaseSubtree(sourceNode, targetPath), name: newName };
-		// Sama seperti moveNodeInTree: root nodes disimpan top-level, bukan di
-		// bawah node path === projectPath. Tanpa mapping ini paste file ke
-		// root gagal masuk state (optimistic hilang) walau backend sukses.
-		// Type dipertahankan dari sourceNode (file tetap file via rebaseSubtree).
+		// Same as moveNodeInTree: root nodes are stored top-level, not under a
+		// node whose path === projectPath. Without this mapping a paste into
+		// the root never reaches the state (the optimistic node disappears)
+		// even though the backend succeeded. The type is carried over from
+		// sourceNode, so a file stays a file through rebaseSubtree.
 		return addNodeToTree(files, parentForAdd(targetPath), duplicateNode);
 	}
 
@@ -895,7 +898,7 @@
 	// ============================
 	// Every move/rename/delete MUST go through these helpers so tree,
 	// open tabs, expanded folders, selection, and clipboard never diverge
-	// (no manual refresh, no hilang/duplikat). Direct ad-hoc updates to
+	// (no manual refresh, nothing lost or duplicated). Direct ad-hoc updates to
 	// expandedFolders/selectedPaths/clipboard outside these helpers are
 	// forbidden — add the case here instead.
 	let pendingFsMutations = 0;
@@ -988,8 +991,8 @@
 		void loadProjectFiles(true).catch((err) => debug.error('file', 'Background tree sync failed:', err));
 	}
 
-	// Resync yang ditunda saat mutasi optimistis berjalan — dipanggil oleh
-	// watcher resync agar echo tidak menimpa tampilan langsung.
+	// Resync deferred while an optimistic mutation is still running — called
+	// by the watcher resync so its echo cannot overwrite what is on screen.
 	function syncTreeWithDiskDeferred(): void {
 		setTimeout(() => {
 			if (pendingFsMutations > 0) {
@@ -1129,7 +1132,7 @@
 				return;
 			}
 
-			// Optimistic UI — SSOT: tree + semua state ber-path via helper yang sama.
+			// Optimistic UI — SSOT: tree plus every path-keyed state, one helper.
 			pendingFsMutations += 1;
 			projectFiles = updateNodePathInTree(projectFiles, oldPath, newPath);
 			rebaseAllPathState(oldPath, newPath);
@@ -1142,8 +1145,8 @@
 			notifyExplorer('success', 'Renamed', `Renamed "${file.name}" to "${newName}".`);
 		} catch (error) {
 			debug.error('file', 'Failed to rename file:', error);
-			// Roll back via SSOT yang sama agar tree + tabs + expanded +
-			// selection + clipboard kembali utuh (no hilang/duplikat).
+			// Roll back through the same SSOT helpers so tree, tabs, expanded
+			// folders, selection and clipboard all return intact.
 			projectFiles = updateNodePathInTree(projectFiles, newPath, oldPath);
 			rebaseAllPathState(newPath, oldPath);
 			notifyExplorer('error', 'Rename Failed', errorMessage(error, 'Unknown error'));
@@ -1166,7 +1169,7 @@
 				children: type === 'folder' ? [] : undefined
 			};
 
-			// Optimistic UI — langsung muncul tanpa refresh (SSOT addNodeToTree).
+			// Optimistic UI — appears immediately, no refresh (SSOT addNodeToTree).
 			pendingFsMutations += 1;
 			projectFiles = addNodeToTree(projectFiles, parentPath, newNode);
 
@@ -1326,6 +1329,7 @@
 	// keyboard handler listens for on this OS.
 	const explorerKeys = getExplorerShortcutLabels();
 	const explorerIsMac = isMac();
+	const isWindowsPlatform = isWindows();
 	const fileManagerName = nativeFileManagerName();
 
 	let clipboard = $state<{ files: FileNode[]; operation: 'copy' | 'cut'; origin: 'internal' | 'os' } | null>(null);
@@ -1372,15 +1376,24 @@
 	// bridge is in flight. COPY publishes DROPEFFECT_COPY (sources stay);
 	// CUT publishes DROPEFFECT_MOVE (Explorer itself performs the move).
 	// Failures are swallowed deliberately and must never break copy/cut.
-	function publishCopyToOsClipboardOrdered(paths: string[], seq: number, effect: 'copy' | 'move'): Promise<boolean> {
-		const run = osPublishTail.then(async (): Promise<boolean> => {
-			if (seq !== osPublishSeq) return false;
+	// Resolves to the effect the OS clipboard actually received, or null when
+	// the bridge is unavailable. macOS answers 'copy' even for a CUT: Finder
+	// picks copy-vs-move at paste time, so the caller words the hint as
+	// "⌘⌥V to move" instead of promising a move that ⌘V would not perform.
+	function publishCopyToOsClipboardOrdered(
+		paths: string[],
+		seq: number,
+		effect: 'copy' | 'move'
+	): Promise<'copy' | 'move' | null> {
+		const run = osPublishTail.then(async (): Promise<'copy' | 'move' | null> => {
+			if (seq !== osPublishSeq) return null;
+			if (!canUseOsClipboard()) return null;
 			try {
-				await ws.http('files:copy-to-os-clipboard', { paths, effect });
-				return true;
+				const res = await ws.http('files:copy-to-os-clipboard', { paths, effect });
+				return res.effect ?? effect;
 			} catch (error) {
 				debug.debug('file', 'OS clipboard copy unavailable:', error);
-				return false;
+				return null;
 			}
 		});
 		// Keep the chain alive for the next COPY even if this one rejects.
@@ -1410,7 +1423,7 @@
 			targets.map((t) => t.path),
 			seq,
 			'copy'
-		).then((osReady) => {
+		).then((published) => {
 			// Only the latest COPY clears the in-flight flag: a superseded
 			// publish must never mark a newer copy as done.
 			if (seq === osPublishSeq) pendingPublishSeq = 0;
@@ -1418,7 +1431,7 @@
 			notifyExplorer(
 				'success',
 				'Copied',
-				osReady
+				published
 					? `${label} — press ${explorerKeys.paste} in ${fileManagerName}`
 					: `${label} copied to clipboard (${explorerKeys.copy})`
 			);
@@ -1440,15 +1453,20 @@
 			targets.map((t) => t.path),
 			seq,
 			'move'
-		).then((osReady) => {
+		).then((published) => {
 			if (seq === osPublishSeq) pendingPublishSeq = 0;
-			notifyExplorer(
-				'success',
-				'Cut',
-				osReady
-					? `${describeTargets(targets)} — press ${explorerKeys.paste} in ${fileManagerName} to move`
-					: `${describeTargets(targets)} cut to clipboard (${explorerKeys.cut})`
-			);
+			const label = describeTargets(targets);
+			let message: string;
+			if (published === 'move') {
+				message = `${label} — press ${explorerKeys.paste} in ${fileManagerName} to move`;
+			} else if (published === 'copy') {
+				// macOS: the pasteboard cannot carry a move intent, Finder
+				// decides at paste time. Name the shortcut that really moves.
+				message = `${label} — press ${explorerKeys.pasteMove} in ${fileManagerName} to move`;
+			} else {
+				message = `${label} cut to clipboard (${explorerKeys.cut})`;
+			}
+			notifyExplorer('success', 'Cut', message);
 		});
 	}
 
@@ -1474,12 +1492,21 @@
 		}));
 	}
 
+	// The OS clipboard belongs to the machine the SERVER runs on, so the
+	// bridge is only meaningful when the viewer IS that machine's operator:
+	// same-origin localhost AND admin (the backend enforces the admin half —
+	// see backend/ws/files/clipboard.ts — this just avoids pointless
+	// round-trips and keeps the Paste affordance honest for members).
+	function canUseOsClipboard(): boolean {
+		return isLocalConnection() && authStore.isAdmin;
+	}
+
 	// Silent OS probe: same backend source as menu paste, but NEVER any
 	// toast — callers decide whether empty means "warn" (explicit menu
 	// paste) or "stay silent" (keyboard, where the DOM `paste` event still
 	// owns screenshots/DataTransfer).
 	async function tryReadOsClipboardItems(): Promise<{ path: string; isDirectory: boolean }[]> {
-		if (!isLocalConnection()) return [];
+		if (!canUseOsClipboard()) return [];
 		try {
 			const res = await ws.http('files:read-os-clipboard', {});
 			return res.items ?? [];
@@ -1488,8 +1515,15 @@
 		}
 	}
 
+	// Compare two clipboard paths for identity. Separators are unified so a
+	// backend-reported `C:/x` matches a tree `C:\\x`, but case is only folded
+	// where the filesystem is case-insensitive: lowercasing on Linux would
+	// make `A.txt` and `a.txt` — two genuinely different files — look like
+	// the same entry, and a fresh file-manager copy would then be mistaken
+	// for the copy Clopen already holds and silently ignored.
 	function normalizeOsPath(p: string): string {
-		return p.replace(/\//g, '\\').toLowerCase();
+		const unified = p.replace(/\\/g, '/');
+		return explorerIsMac || isWindowsPlatform ? unified.toLowerCase() : unified;
 	}
 
 	// True when the native clipboard holds file paths that are NOT what the
@@ -1562,12 +1596,21 @@
 		return clipboard !== null || osClipboardHasFiles;
 	}
 
+	// Each probe spawns a helper process on the host (PowerShell / osascript /
+	// xclip), and the triggers are chatty — every window focus, every tab
+	// re-show, every context-menu open. Collapse bursts so an Alt-Tab storm
+	// cannot queue one spawn per event.
+	const OS_CLIPBOARD_PROBE_TTL_MS = 750;
+	let lastOsClipboardProbeAt = 0;
+
 	async function refreshOsClipboardState(): Promise<void> {
-		if (!hasActiveProject || !isLocalConnection()) {
-			// No project, or a remote session with no local OS clipboard.
-			if (!isLocalConnection()) osClipboardHasFiles = false;
+		if (!hasActiveProject || !canUseOsClipboard()) {
+			// No project, or a session with no claim on the host clipboard.
+			if (!canUseOsClipboard()) osClipboardHasFiles = false;
 			return;
 		}
+		if (Date.now() - lastOsClipboardProbeAt < OS_CLIPBOARD_PROBE_TTL_MS) return;
+		lastOsClipboardProbeAt = Date.now();
 		// Always probe (even with an internal entry): handlePaste compares
 		// the native clipboard against the internal one, so this flag must
 		// reflect the OS truth — e.g. a fresh Explorer Ctrl+C while an
@@ -1617,7 +1660,7 @@
 		// CUT always uses the internal clipboard (never published to the OS).
 		// Adopted entries become the internal clipboard (COPY semantics) and
 		// flow through the same pasteToDestinations() as everything else.
-		if (isLocalConnection()) {
+		if (canUseOsClipboard()) {
 			const osItems = await tryReadOsClipboardItems();
 			let useFreshOs = false;
 			if (osItems.length > 0) {
@@ -1724,8 +1767,8 @@
 	// ============================
 	// COPY never fails on duplicates and never asks for a name: the target
 	// is always resolved via generateUniqueFilename (same style as uploads).
-	// "Laporan PKL" -> "Laporan PKL (1)" -> "Laporan PKL (2)"; for files the
-	// number goes before the extension ("laporan.docx" -> "laporan (1).docx").
+	// "Report 2026" -> "Report 2026 (1)" -> "Report 2026 (2)"; for files the
+	// number goes before the extension ("report.docx" -> "report (1).docx").
 	// Names are checked against items that already exist; existing items are
 	// never overwritten. A folder keeps its type and its whole subtree is
 	// copied with its structure intact — a FILE is pasted directly as a FILE,
@@ -1812,13 +1855,11 @@
 		if (!active || active.files.length === 0) return empty;
 		const { files: sourceFiles, operation } = active;
 		// OS-adopted sources may live outside every project (Desktop,
-		// Downloads, …), which the plain files:duplicate guard rejects with
-		// "Access denied" — the backend root cause behind menu-Paste failing
-		// after an Explorer Ctrl+C. Route them through
-		// files:duplicate-from-outside instead (target stays access-guarded,
-		// COPY-only, sources never moved/deleted).
-		const duplicateRoute =
-			active.origin === 'os' ? 'files:duplicate-from-outside' : 'files:duplicate';
+		// Downloads, …). `files:duplicate` accepts those for an admin — whose
+		// file access is unrestricted by design — and the OS clipboard bridge
+		// is admin-only for exactly that reason, so one route covers both
+		// origins. A dedicated "source is only existence-checked" route would
+		// instead hand every member an arbitrary read of the server's disk.
 		const sep = basePath.includes('\\') ? '\\' : '/';
 
 		// A folder must never be pasted into itself or its descendant.
@@ -1865,11 +1906,11 @@
 				// render optimistically with the right type.
 				const freshNode = findFileInTree(projectFiles, sourceFile.path) ?? sourceFile;
 				let targetPath = generateUniqueFilename(basePath, sourceFile.name);
-				// Optimistic copy — langsung muncul tanpa refresh (SSOT add, guard duplikat).
+				// Optimistic copy — appears immediately (SSOT add, duplicate-guarded).
 				pendingFsMutations += 1;
 				addCopiedNodeToTree(freshNode, targetPath);
 				try {
-					await ws.http(duplicateRoute, { sourcePath: sourceFile.path, targetPath });
+					await ws.http('files:duplicate', { sourcePath: sourceFile.path, targetPath });
 					pendingFsMutations = Math.max(0, pendingFsMutations - 1);
 				} catch (err) {
 					// Roll back the optimistic node so there is no ghost item.
@@ -1895,7 +1936,7 @@
 						pendingFsMutations += 1;
 						addCopiedNodeToTree(findFileInTree(projectFiles, sourceFile.path) ?? sourceFile, targetPath);
 						try {
-							await ws.http(duplicateRoute, { sourcePath: sourceFile.path, targetPath });
+							await ws.http('files:duplicate', { sourcePath: sourceFile.path, targetPath });
 							pendingFsMutations = Math.max(0, pendingFsMutations - 1);
 							done = true;
 						} catch (retryErr) {
@@ -1914,14 +1955,14 @@
 				}
 			} else {
 				const targetPath = `${basePath}${sep}${sourceFile.name}`;
-				// Optimistic move — langsung pindah tanpa refresh (SSOT: tree + rebase).
+				// Optimistic move — moves immediately (SSOT: tree + path rebase).
 				pendingFsMutations += 1;
 				projectFiles = moveNodeInTree(projectFiles, sourceFile.path, targetPath);
 				rebaseAllPathState(sourceFile.path, targetPath);
 				try {
 					await ws.http('files:rename', { oldPath: sourceFile.path, newPath: targetPath });
 				} catch (err) {
-					// Roll back via SSOT yang sama agar tidak hilang/duplikat.
+					// Roll back through the same SSOT helpers — nothing lost or doubled.
 					projectFiles = moveNodeInTree(projectFiles, targetPath, sourceFile.path);
 					rebaseAllPathState(targetPath, sourceFile.path);
 					pendingFsMutations = Math.max(0, pendingFsMutations - 1);
@@ -2330,7 +2371,7 @@
 		// results. Screenshots/bitmap data have no file paths, and remote
 		// sessions have no local clipboard — an empty or failed read falls
 		// through to the DataTransfer path below.
-		if (isLocalConnection()) {
+		if (canUseOsClipboard()) {
 			try {
 				const res = await ws.http('files:read-os-clipboard', {});
 				const osItems = res.items ?? [];
@@ -2375,6 +2416,12 @@
 						notifyExplorer('success', 'Pasted', pastedTotal === 1
 							? (onlyOneDir && firstDirName ? `Pasted folder "${firstDirName}".` : `Pasted "${tree.files[0]?.file.name ?? 'item'}".`)
 							: `Pasted ${pastedTotal} items.`);
+					} else {
+						// The entry walk yielded nothing (an empty folder that
+						// was collapsed away, or a source we could not read).
+						// Staying silent here would be the only paste path that
+						// gives no feedback at all.
+						notifyExplorer('warning', 'Nothing Pasted', 'The copied items had no readable content.');
 					}
 				} else if (pastedTotal > 0) {
 					notifyExplorer('warning', 'Partially Pasted', `Pasted ${pastedTotal} items (${failedAll.length} failed: ${failedAll.slice(0, 3).map((f) => f.name).join(', ')}).`);
@@ -2423,8 +2470,8 @@
 	// the entries (Chrome/Edge; other browsers fall back to the flat path)
 	// and recreate the structure, reusing uploadFilesTo() per directory. The
 	// backend auto-creates parent dirs on upload; only empty folders need an
-	// explicit create. Name clashes auto-rename ("Laporan PKL" becomes
-	// "Laporan PKL (1)" with its whole subtree), matching internal paste —
+	// explicit create. Name clashes auto-rename ("Report 2026" becomes
+	// "Report 2026 (1)" with its whole subtree), matching internal paste —
 	// existing items are never merged into, overwritten, or skipped.
 	interface PastedTreeFile {
 		dir: string; // '/'-separated path relative to the paste base ('' = base)
@@ -2467,7 +2514,8 @@
 		return new Promise((resolve, reject) => entry.file(resolve, reject));
 	}
 
-	// Nama sampah OS yang boleh diabaikan saat menilai pola folder-dari-file.
+	// OS junk names that may be ignored when judging the folder-that-is-really-
+	// a-file pattern below.
 	function isOsJunkName(name: string): boolean {
 		if (name.startsWith('.')) return true;
 		const lower = name.toLowerCase();
@@ -2483,12 +2531,12 @@
 		if (entry.isDirectory) {
 			const reader = (entry as FileSystemDirectoryEntry).createReader();
 			const children = await readDirectoryEntries(reader);
-			// Defensif: sejumlah sumber clipboard melaporkan FILE sebagai folder
-			// yang berisi dirinya sendiri ("nama.docx"/"nama.docx"). Runtuhkan
-			// kembali menjadi file biasa — jangan pernah membuat folder bernama
-			// seperti file. Sampah tersembunyi (desktop.ini, thumbs.db, dotfile)
-			// diabaikan saat menilai pola ini. Pola sah (folder berisi file
-			// beda nama, beberapa file, atau subfolder) tetap disalin apa adanya.
+			// Defensive: some clipboard sources report a FILE as a folder that
+			// contains itself ("name.docx"/"name.docx"). Collapse that back to a
+			// plain file — never create a folder named like a file. Hidden junk
+			// (desktop.ini, thumbs.db, dotfiles) is ignored while judging the
+			// pattern. Legitimate shapes (a folder holding a differently-named
+			// file, several files, or subfolders) are copied as-is.
 			const meaningful = children.filter((c) => !isOsJunkName(c.name));
 			// Compare NFC-normalized: the same visible name may arrive in a
 			// different Unicode normalization than the entry itself.
@@ -2502,20 +2550,20 @@
 				files.push({ dir: parentRel, file: await entryAsFile(meaningful[0] as FileSystemFileEntry) });
 				return;
 			}
-		dirs.push(relDir);
-		for (const child of children) {
-			// ROOT CAUSE FIX: relDir adalah PARENT dir untuk FILE, tapi path
-			// DIR itu sendiri untuk FOLDER. Versi lama selalu menambahkan
-			// child.name sehingga file "Laporan PKL/ABSENSI.docx" mendapat
-			// dir="Laporan PKL/ABSENSI.docx" dan upload membuat folder
-			// bernama file berisi file yang sama. FILE harus langsung
-			// memakai relDir induknya; hanya FOLDER yang menambah nama.
-			if (child.isDirectory) {
-				await walkPasteEntry(child, relDir ? `${relDir}/${child.name}` : child.name, dirs, files);
-			} else {
-				await walkPasteEntry(child, relDir, dirs, files);
+			dirs.push(relDir);
+			for (const child of children) {
+				// ROOT CAUSE FIX: relDir is the PARENT dir for a FILE but the
+				// dir's own path for a FOLDER. The old version always appended
+				// child.name, so a file "Report/notes.docx" got
+				// dir="Report/notes.docx" and the upload created a folder named
+				// like the file, holding that same file. A FILE must use its
+				// parent's relDir directly; only a FOLDER appends its own name.
+				if (child.isDirectory) {
+					await walkPasteEntry(child, relDir ? `${relDir}/${child.name}` : child.name, dirs, files);
+				} else {
+					await walkPasteEntry(child, relDir, dirs, files);
+				}
 			}
-		}
 		} else if (entry.isFile) {
 			files.push({ dir: relDir, file: await entryAsFile(entry as FileSystemFileEntry) });
 		}
@@ -2558,7 +2606,7 @@
 		const joinBase = (rel: string): string => (rel ? `${base}${sep}${rel.split('/').join(sep)}` : base);
 		const parentOf = (rel: string): string => (rel.includes('/') ? rel.slice(0, rel.lastIndexOf('/')) : '');
 		// 1. Directories: a colliding folder is created under a fresh unique
-		//    name ("Laporan PKL" -> "Laporan PKL (1)") and its whole subtree
+		//    name ("Report 2026" -> "Report 2026 (1)") and its whole subtree
 		//    follows the renamed parent via `remap`. Existing folders are
 		//    never merged into and nothing is ever skipped or overwritten.
 		const remap = new Map<string, string>(); // original rel -> actual rel
@@ -2571,7 +2619,7 @@
 			const parentAbs = joinBase(parentNew);
 			let targetAbs = generateUniqueFilename(parentAbs, leaf);
 			const optimisticLeaf = targetAbs.split(/[\\/]/).pop() || leaf;
-			// Optimistic dir — langsung muncul tanpa refresh (SSOT add).
+			// Optimistic dir — appears immediately, no refresh (SSOT add).
 			pendingFsMutations += 1;
 			projectFiles = addNodeToTree(
 				projectFiles,
@@ -2703,11 +2751,13 @@
 		switch (action) {
 			case 'copy-path': {
 				if (!file) return;
-				try {
-					await navigator.clipboard.writeText(file.path);
+				// copyText(), not navigator.clipboard: the modern API only exists
+				// in a secure context, and Clopen is routinely reached over plain
+				// HTTP (LAN address, VPS IP, phone on the same network).
+				if (await copyText(file.path)) {
 					notifyExplorer('success', 'Copied', `Copied path "${file.name}".`);
-				} catch (err) {
-					notifyExplorer('error', 'Copy Failed', errorMessage(err, 'Could not copy the path.'));
+				} else {
+					notifyExplorer('error', 'Copy Failed', 'Could not copy the path.');
 				}
 				break;
 			}
@@ -2720,11 +2770,10 @@
 						relativePath = relativePath.substring(1);
 					}
 				}
-				try {
-					await navigator.clipboard.writeText(relativePath);
+				if (await copyText(relativePath)) {
 					notifyExplorer('success', 'Copied', `Copied relative path "${relativePath}".`);
-				} catch (err) {
-					notifyExplorer('error', 'Copy Failed', errorMessage(err, 'Could not copy the path.'));
+				} else {
+					notifyExplorer('error', 'Copy Failed', 'Could not copy the path.');
 				}
 				break;
 			}
@@ -2735,7 +2784,7 @@
 				selectAllVisible();
 				break;
 			case 'copy':
-				await doCopy(file ? getActionTargets(file) : resolveClipboardTargets());
+				doCopy(file ? getActionTargets(file) : resolveClipboardTargets());
 				break;
 			case 'cut':
 				doCut(file ? getActionTargets(file) : resolveClipboardTargets());
@@ -2862,7 +2911,7 @@
 		for (const file of files) {
 			try {
 				const deletedNode = findFileInTree(projectFiles, file.path);
-				// Optimistic delete — langsung hilang tanpa refresh (SSOT).
+				// Optimistic delete — disappears immediately, no refresh (SSOT).
 				pendingFsMutations += 1;
 				projectFiles = removeNodeFromTree(projectFiles, file.path);
 				pruneAllPathStateForDelete(file.path);
@@ -2870,7 +2919,8 @@
 				try {
 					await ws.http('files:delete', { filePath: file.path, force: file.type === 'directory' });
 				} catch (err) {
-					// Roll back via SSOT yang sama (parentForAdd agar root ikut pulih).
+					// Roll back through the same SSOT helpers (parentForAdd so a
+					// root-level node is restored too).
 					if (deletedNode) {
 						projectFiles = addNodeToTree(projectFiles, parentForAdd(file.path), deletedNode);
 					}
@@ -2886,11 +2936,22 @@
 				break;
 			}
 		}
-		// SSOT prune di atas sudah membersihkan selection/expanded/clipboard
-		// untuk target yang dihapus — tanpa refresh manual.
-		// Exactly one notification for the whole delete action.
+		// The SSOT prune above already cleared selection, expanded folders and
+		// clipboard for every deleted target — no manual refresh needed.
+		// Exactly one notification for the whole delete action. A failure stops
+		// the batch, so say what DID get deleted: reporting only the failure
+		// would leave the user believing the earlier items are still there.
 		if (failedName !== null) {
-			notifyExplorer('error', 'Delete Failed', `Could not delete "${failedName}": ${failedReason}`);
+			const reason = `Could not delete "${failedName}": ${failedReason}`;
+			if (deleted > 0) {
+				notifyExplorer(
+					'warning',
+					'Partially Deleted',
+					`Deleted ${deleted === 1 ? '1 item' : `${deleted} items`}, then stopped — ${reason}`
+				);
+			} else {
+				notifyExplorer('error', 'Delete Failed', reason);
+			}
 		} else {
 			notifyExplorer('success', 'Deleted', deleted === 1 ? `Deleted "${files[0].name}" (${explorerKeys.deleteKey}).` : `Deleted ${deleted} items (${explorerKeys.deleteKey}).`);
 		}
@@ -2901,17 +2962,17 @@
 		const fileName = pathParts.pop() || file.name;
 		const parentPath = pathParts.join(file.path.includes('\\') ? '\\' : '/');
 		const targetPath = generateUniqueFilename(parentPath, fileName);
-		// Optimistic UI — langsung muncul tanpa refresh (SSOT duplicate).
+		// Optimistic UI — appears immediately, no refresh (SSOT duplicate).
 		pendingFsMutations += 1;
 		projectFiles = duplicateNodeInTree(projectFiles, file.path, targetPath);
 		try {
 			await ws.http('files:duplicate', { sourcePath: file.path, targetPath });
-			// Folder hasil duplicate optimistis bisa shallow — sinkron latar
-			// agar subtree penuh tanpa refresh manual.
+			// An optimistically duplicated folder can be shallow — sync in the
+			// background so the full subtree lands without a manual refresh.
 			if (file.type === 'directory') syncTreeWithDisk();
 		} catch (error) {
 			debug.error('file', 'Failed to duplicate file:', error);
-			// Roll back node optimistis yang sama (no hilang/duplikat, no reload).
+			// Roll back that same optimistic node — nothing lost, no reload.
 			projectFiles = removeNodeFromTree(projectFiles, targetPath);
 			notifyExplorer('error', 'Duplicate Failed', errorMessage(error, 'Unknown error'));
 			return;
@@ -3013,9 +3074,9 @@
 	// HTTP upload via /api/files/upload. The WS path used to wedge on the Vite
 	// dev proxy (`write EPIPE`) on sustained binary transfers; HTTP through the
 	// same proxy streams cleanly. XHR is used so we can drive a real progress
-	// bar via `upload.onprogress`. finalName sudah dipesan via
-	// generateUniqueFilename oleh pemanggil agar node optimistis dan nama di
-	// disk selalu sama (no duplikat, langsung muncul).
+	// bar via `upload.onprogress`. The caller reserves finalName through
+	// generateUniqueFilename so the optimistic node and the name on disk are
+	// always the same one.
 	async function uploadSingleFileHttp(file: File, targetDir: string, finalName: string, finalPath: string, opId: string, fileIndex: number, total: number): Promise<{ finalName: string; finalPath: string } | null> {
 		updateOp(opId, {
 			label: total === 1
@@ -3093,9 +3154,9 @@
 		try {
 			for (let i = 0; i < list.length; i++) {
 				const f = list[i];
-				// Pesan nama dulu + tampilkan node SEBELUM transfer agar upload
-				// langsung muncul tanpa refresh. Batch berikutnya melihat node
-				// ini sehingga auto-rename "(1)" tetap benar (no duplikat).
+				// Reserve the name and show the node BEFORE the transfer so the
+				// upload appears immediately. Later files in the batch see this
+				// node, so the "(1)" auto-rename stays correct.
 				const targetFullPath = generateUniqueFilename(targetDir, f.name);
 				const finalName = targetFullPath.split(/[\\/]/).pop() || f.name;
 				const parentForAdd = targetDir === projectPath ? null : targetDir;
@@ -3115,7 +3176,7 @@
 					await uploadSingleFileHttp(f, targetDir, finalName, targetFullPath, opId, i, list.length);
 					outcome.uploaded += 1;
 				} catch (error) {
-					// Roll back node optimistis agar gagal upload tidak menyisakan ghost.
+					// Roll back the optimistic node so a failed upload leaves no ghost.
 					projectFiles = removeNodeFromTree(projectFiles, targetFullPath);
 					debug.error('file', 'Failed to upload file:', error);
 					outcome.failed.push({ name: f.name, reason: errorMessage(error, 'Upload failed') });
@@ -3446,7 +3507,7 @@
 			const name = src.split(/[\\/]/).pop() || '';
 			const targetPath = generateUniqueFilename(targetDirPath, name);
 
-			// Optimistic move — langsung pindah tanpa refresh (SSOT: tree + rebase).
+			// Optimistic move — moves immediately (SSOT: tree + path rebase).
 			pendingFsMutations += 1;
 			projectFiles = moveNodeInTree(projectFiles, src, targetPath);
 			rebaseAllPathState(src, targetPath);
@@ -3454,7 +3515,8 @@
 				await ws.http('files:rename', { oldPath: src, newPath: targetPath });
 				moved += 1;
 			} catch (err) {
-				// Roll back via SSOT yang sama (termasuk tab turunan folder).
+				// Roll back through the same SSOT helpers (including tabs for
+				// descendants of a moved folder).
 				projectFiles = moveNodeInTree(projectFiles, targetPath, src);
 				rebaseAllPathState(targetPath, src);
 				pendingFsMutations = Math.max(0, pendingFsMutations - 1);
@@ -3463,7 +3525,7 @@
 			}
 			pendingFsMutations = Math.max(0, pendingFsMutations - 1);
 		}
-		// SSOT rebase di atas sudah menggeser selection mengikuti path baru.
+		// The SSOT rebase above already moved the selection to the new paths.
 		// Exactly one notification for the whole move action.
 		if (moved > 0) {
 			notifyExplorer('success', 'Moved', moved === 1 ? 'Moved 1 item.' : `Moved ${moved} items.`);
@@ -3848,10 +3910,10 @@
 				const changes = [...accumulatedChanges];
 				accumulatedChanges = [];
 				watchDebounceTimer = null;
-				// Mutasi optimistis sendiri sedang berjalan (rename/paste/upload/
-				// delete langsung tampil): tunda reconcile agar echo watcher
-				// tidak menimpa state optimistis (hilang/duplikat). Jadwalkan
-				// ulang setelah mutasi selesai.
+				// One of our own optimistic mutations is still running (rename /
+				// paste / upload / delete already on screen): defer the reconcile
+				// so the watcher echo cannot overwrite it. Reschedule once the
+				// mutation finishes.
 				if (pendingFsMutations > 0) {
 					accumulatedChanges.push(...changes);
 					if (watchDebounceTimer) clearTimeout(watchDebounceTimer);
@@ -3869,8 +3931,8 @@
 
 		// The watcher was rebuilt and may have missed events; no path is known to
 		// have changed, so re-read the tree in place (scroll and expansion kept)
-		// rather than reconciling a phantom change list. Tunda saat mutasi
-		// optimistis berjalan agar tidak menimpa tampilan langsung.
+		// rather than reconciling a phantom change list. Deferred while an
+		// optimistic mutation is running so it cannot overwrite the screen.
 		const unsubResync = ws.on('files:resync', (payload) => {
 			if (payload.projectId !== watchScope) return;
 			if (pendingFsMutations > 0) {
@@ -4272,7 +4334,7 @@
 							onFileSelect={handleFileSelect}
 							onFileAction={handleFileAction}
 							onFileOpen={handleFileOpen}
-						onToggle={handleFolderToggle}
+							onToggle={handleFolderToggle}
 							hasClipboard={clipboard !== null}
 							canPaste={isPasteAvailable()}
 							onMenuOpen={handleMenuOpen}
