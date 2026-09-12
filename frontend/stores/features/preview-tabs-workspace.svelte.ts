@@ -735,3 +735,4 @@ export async function reloadPreviewTabsForScope(projectId: string, scopeKey: str
 		previewTabManager.createTab('');
 	}
 }
+

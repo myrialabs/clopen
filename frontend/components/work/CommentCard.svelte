@@ -10,7 +10,7 @@
 	import Icon from '$frontend/components/common/display/Icon.svelte';
 	import Markdown from '$frontend/components/common/display/Markdown.svelte';
 	import MarkdownComposer from './MarkdownComposer.svelte';
-	import MenuSurface from './MenuSurface.svelte';
+	import MenuSurface from '$frontend/components/common/overlay/MenuSurface.svelte';
 	import { clickOutside } from '$frontend/utils/click-outside';
 	import { showInfo } from '$frontend/stores/ui/notification.svelte';
 	import { copyText } from '$frontend/utils/clipboard';

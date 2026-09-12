@@ -24,7 +24,11 @@
 		outline:
 			'border border-slate-300 dark:border-slate-600 text-slate-700 dark:text-slate-300 hover:bg-slate-50 dark:hover:bg-slate-800',
 		ghost:
-			'text-slate-700 dark:text-slate-300 hover:bg-slate-100 dark:hover:bg-slate-800'
+			'text-slate-700 dark:text-slate-300 hover:bg-slate-100 dark:hover:bg-slate-800',
+		// For confirming something outward-facing and hard to undo. Added because
+		// every destructive confirm in the app had hand-rolled its own rose
+		// classes, which is how two of them end up different shades.
+		danger: 'bg-rose-600 hover:bg-rose-700 text-white'
 	};
 
 	const sizeClasses = {

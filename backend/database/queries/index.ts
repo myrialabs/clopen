@@ -37,3 +37,5 @@ export { integrationAccountQueries, integrationProjectionQueries, integrationWeb
 export type { IntegrationAccountRow, IntegrationAccountInput, IntegrationProjectionRow } from './integration-queries';
 export { workBindingQueries, workLinkQueries, parseBindingConfig } from './work-queries';
 export type { WorkBindingRow, WorkLinkRow } from './work-queries';
+export { deployBindingQueries, parseDeployConfig } from './deploy-queries';
+export type { DeployBindingRow } from './deploy-queries';

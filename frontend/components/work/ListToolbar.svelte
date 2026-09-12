@@ -9,9 +9,9 @@
 	 * filtering.
 	 */
 	import Icon from '$frontend/components/common/display/Icon.svelte';
-	import RefreshButton from './RefreshButton.svelte';
+	import RefreshButton from '$frontend/components/common/display/RefreshButton.svelte';
 	import { clickOutside } from '$frontend/utils/click-outside';
-	import MenuSurface from './MenuSurface.svelte';
+	import MenuSurface from '$frontend/components/common/overlay/MenuSurface.svelte';
 	import { workStore } from '$frontend/stores/features/work.svelte';
 	import type { WorkItemState } from '$shared/types/work';
 
