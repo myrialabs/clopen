@@ -17,7 +17,7 @@
 	 * words, one click apart from this one.
 	 */
 	import Icon from '$frontend/components/common/display/Icon.svelte';
-	import RefreshButton from './RefreshButton.svelte';
+	import RefreshButton from '$frontend/components/common/display/RefreshButton.svelte';
 	import { workStore } from '$frontend/stores/features/work.svelte';
 	import { copyText } from '$frontend/utils/clipboard';
 	import { showInfo } from '$frontend/stores/ui/notification.svelte';

@@ -17,6 +17,7 @@
 	import MemoryModal from '$frontend/components/memory/MemoryModal.svelte';
 	import NotesModal from '$frontend/components/notes/NotesModal.svelte';
 	import WorkModal from '$frontend/components/work/WorkModal.svelte';
+	import DeploymentsModal from '$frontend/components/deployments/DeploymentsModal.svelte';
 	import SettingButton from '$frontend/components/settings/SettingButton.svelte';
 	import type { Project } from '$shared/types/database/schema';
 	import FolderBrowser from '$frontend/components/common/form/FolderBrowser.svelte';
@@ -46,7 +47,9 @@
 		openNotesDialog,
 		closeNotesDialog,
 		openWorkDialog,
-		closeWorkDialog
+		closeWorkDialog,
+		openDeploymentsDialog,
+		closeDeploymentsDialog
 	} from '$frontend/stores/ui/quick-panels.svelte';
 	import { openCommandPalette } from '$frontend/stores/ui/command-palette.svelte';
 
@@ -210,6 +213,7 @@
 					onMemory={openMemoryDialog}
 					onNotes={openNotesDialog}
 					onWork={() => openWorkDialog()}
+					onDeployments={() => openDeploymentsDialog()}
 		/>
 
 		<!-- Quick Search Button -->
@@ -467,6 +471,11 @@
 <ContainersModal bind:isOpen={quickPanelsState.containersOpen} onClose={closeContainersDialog} />
 <MemoryModal bind:isOpen={quickPanelsState.memoryOpen} onClose={closeMemoryDialog} />
 <NotesModal bind:isOpen={quickPanelsState.notesOpen} onClose={closeNotesDialog} />
+<DeploymentsModal
+	bind:isOpen={quickPanelsState.deploymentsOpen}
+	onClose={closeDeploymentsDialog}
+/>
+
 <WorkModal
 	bind:isOpen={quickPanelsState.workOpen}
 	composePullRequest={quickPanelsState.workComposePr}

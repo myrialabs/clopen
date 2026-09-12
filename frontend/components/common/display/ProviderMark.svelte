@@ -9,13 +9,16 @@
 	import Icon from '$frontend/components/common/display/Icon.svelte';
 	import { getProviderIcon } from '$shared/constants/tool-icons';
 	import { isDarkMode } from '$frontend/stores/ui/theme.svelte';
+	import type { IconName } from '$shared/types/ui/icons';
 
 	interface Props {
 		provider: string;
 		size?: string;
+		/** Glyph shown when the provider has no mark. Set per surface. */
+		fallback?: IconName;
 	}
 
-	const { provider, size = 'w-4 h-4' }: Props = $props();
+	const { provider, size = 'w-4 h-4', fallback = 'lucide:git-branch' }: Props = $props();
 
 	const mark = $derived.by(() => {
 		const icon = getProviderIcon(provider);
@@ -29,5 +32,5 @@
 		{@html mark}
 	</span>
 {:else}
-	<Icon name="lucide:git-branch" class="{size} shrink-0 text-slate-500 dark:text-slate-400" />
+	<Icon name={fallback} class="{size} shrink-0 text-slate-500 dark:text-slate-400" />
 {/if}

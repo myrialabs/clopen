@@ -23,6 +23,7 @@
 		onMemory: () => void;
 		onNotes: () => void;
 		onWork: () => void;
+		onDeployments: () => void;
 	}
 
 	const {
@@ -36,7 +37,8 @@
 		onContainers,
 		onMemory,
 		onNotes,
-		onWork
+		onWork,
+		onDeployments
 	}: Props = $props();
 
 	let isOpen = $state(false);
@@ -150,6 +152,17 @@
 					onClick: onNotes,
 					count: 0,
 					accent: 'text-amber-600 dark:text-amber-400'
+				},
+				{
+					label: 'Deployments',
+					description: 'Builds, logs and what is live',
+					icon: 'lucide:rocket',
+					onClick: onDeployments,
+					// No live count: a build is someone else's machine working, not a
+					// connection this one holds, and a badge would blink for something
+					// nobody here can act on.
+					count: 0,
+					accent: 'text-sky-600 dark:text-sky-400'
 				},
 				{
 					// "Issues" alone was a lie by omission: pull requests are half of what

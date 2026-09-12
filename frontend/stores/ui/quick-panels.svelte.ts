@@ -19,6 +19,7 @@ interface QuickPanelsState {
 	workOpen: boolean;
 	/** Opened with the pull-request composer already up. */
 	workComposePr: boolean;
+	deploymentsOpen: boolean;
 }
 
 export const quickPanelsState = $state<QuickPanelsState>({
@@ -32,7 +33,8 @@ export const quickPanelsState = $state<QuickPanelsState>({
 	memoryOpen: false,
 	notesOpen: false,
 	workOpen: false,
-	workComposePr: false
+	workComposePr: false,
+	deploymentsOpen: false
 });
 
 export function openNewProjectDialog() {
@@ -121,4 +123,12 @@ export function openWorkDialog(options: { composePullRequest?: boolean } = {}) {
 export function closeWorkDialog() {
 	quickPanelsState.workOpen = false;
 	quickPanelsState.workComposePr = false;
+}
+
+export function openDeploymentsDialog() {
+	quickPanelsState.deploymentsOpen = true;
+}
+
+export function closeDeploymentsDialog() {
+	quickPanelsState.deploymentsOpen = false;
 }

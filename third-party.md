@@ -377,8 +377,242 @@ action that triggers a build or changes what is live is outward-facing and must
 be confirmed explicitly. Vercel is the first provider (API token). Six more
 targets plug in later; none of them may add a panel.
 
-- [ ] Done
-- Notes: —
+- [x] Done
+- Notes: The surface is `More Tools → Deployments`, NOT a dock panel — same
+  reasoning as Task 2, and `capabilities.ts` was corrected from the "Deployments
+  panel" it promised. Like Issues it registers an ADAPTER
+  (`backend/deployments/registry.ts`) plus a `registerAccountProbe`, not a
+  projector: nothing about a deployment is copied locally, so migration 075
+  creates `deploy_bindings` and there is no link table either — unlike an issue,
+  a build leaves no worktree behind that outlives the remote record. The binding
+  is a sibling of `work_bindings` rather than a generalisation: it needs
+  `display_name` (a locator is an opaque `prj_8Qc…`, not a self-describing
+  `owner/repo`) and `team_id`. THE TEAM LIVES ON THE BINDING, NOT THE ACCOUNT —
+  one token reaches every team, so "which team" is a property of the project you
+  picked; a credential field would force connecting the same token twice. Vercel
+  therefore declares ONE field. Detection is two passes, `.vercel/project.json`
+  then a git-remote match against each target's connected repo, both recorded as
+  detected and both overridable (a monorepo deploying three apps WILL be detected
+  wrong). Three Vercel facts are absorbed in the adapter so no later provider
+  inherits them: versions are per-endpoint (`/v10/projects` to list but
+  `/v9/projects/{id}` to read, rollback on `/v1` and promote on `/v10` — two of
+  these were wrong on first guess and were checked against the published OpenAPI
+  document); `target` is `production` or NULL with no `preview` value, so only
+  production filters server-side and everything else fills the page through
+  repeated requests — the same bug `state=all` shipped with on the Issues list,
+  fixed before shipping here and covered by `list.test.ts`; and LIVE IS NOT A
+  STATE, since a superseded production build is still `READY` and still
+  `production`, so `targets.production.id` off the project is the only honest
+  answer for `isCurrent`. Logs genuinely stream (`follow=1` NDJSON), managed like
+  container logs — coalesced flush, bounded ring, per-user cap, stopped when the
+  socket closes and at shutdown. Rollback and promote report `pending`, never
+  `done`: Vercel accepts the request and moves the aliases afterwards, and saying
+  "done" would tell someone their incident was over while the old build still
+  served. All four actions sit behind one confirm dialog that names the
+  consequence and the hostname rather than asking "are you sure", with the
+  destructive styling reserved for production; the surface exposes NO MCP tool,
+  so no agent can trigger a build. Open-in-preview needed a new generic
+  `openUrlInPreview()`, which creates the tab and lets BrowserPreview's existing
+  adopt-a-URL-with-no-session effect launch it — calling `launchBrowser` here
+  would open a second backend tab for one link. That uncovered a REAL RACE worth
+  knowing about: docks hydrate AFTER the reveal and the project switch does not
+  await them, so `await setCurrentProject(...)` returns while the preview dock is
+  still rebuilding and would wipe the tab just created. Fixed with an exported
+  `whenWorkspaceSettled()` — a no-op when no switch is in flight — which every
+  future "relocate then act on a dock" path needs. Both loops hand TEXT back to
+  the client to send, for the reason Task 2 found. Deliberately out of scope:
+  webhooks (Task 7 is the first consumer, and a local Clopen has no public URL to
+  register), env-var management, and `agent-tools` — Vercel's MCP server uses its
+  own OAuth, a different audience from this REST token, so declaring it would
+  mean projecting a row this credential cannot fill. `MenuSurface`,
+  `RefreshButton` and `ProviderMark` were PROMOTED from `components/work/` to
+  `components/common/` rather than duplicated, and `Button` gained the `danger`
+  variant every destructive confirm in the app had been hand-rolling. RUNTIME QA
+  PENDING: nothing here has been run against a real Vercel token — the endpoint
+  set, the alias ordering and the log-stream shape are all verified against
+  documentation and mocked tests, not against the live API.
+  POST-QA PASS, three real findings. The scoped and default project listings
+  OVERLAP — `/v10/projects` with no `teamId` returns the token's DEFAULT scope,
+  which for anyone in a team is that team, so the same project arrived twice and
+  crashed the keyed picker. De-duplicating it is not the whole fix: only the
+  team-scoped copy carries the `teamId` that every later call needs, so a
+  team-scoped entry must always win over an unscoped one or the picker looks
+  right and everything behind it 404s. The fill loop could repeat a row the same
+  way when a build landed mid-fetch and shifted the timestamp window. And the
+  empty state said "nothing matches this environment filter" with no filter set,
+  on a target that had simply never been deployed — it now distinguishes never
+  deployed / filtered out / nothing yet, and each says something different.
+  Behind that last one was the real gap: THE SURFACE COULD NOT DEPLOY. Redeploy
+  needs an existing deployment to copy, so a project that had never been built
+  was a dead end — exactly the project someone most wants to get live. Added
+  `createDeployment` (`gitSource` from the project's own link, so a GitLab
+  project is not sent `type: 'github'`), and note the trap: `name` alone is
+  enough for the API to accept the call and CREATES a project when it does not
+  match, so `project` is what pins the build to the bound target. Added
+  `createProject` too, prefilled from the local project's name and git remote
+  and auto-bound on success, because "connect an account" previously left a user
+  with nothing to point at. Three things declared in the model but never
+  surfaced were also closed: the branch filter, the auto-refresh toggle, and the
+  `custom` environment chip.
+  SECOND QA PASS. The new dialogs passed no `title` to `Modal`, which renders an
+  empty header band containing a stray close button, and they added their own
+  padding on top of the body padding `Modal` already supplies — the house
+  pattern is `<Modal title=… size=…>` with an unpadded child, as `MergeDialog`
+  does. More substantially, "this project is not connected to a git repository"
+  was a DEAD END that sent the user to the provider's dashboard, which is
+  exactly the read-only-window feeling this surface exists to remove. Added
+  `connectRepository`, offered in the deploy dialog prefilled from the local git
+  remote. NOTE THE RISK: `POST /v9/projects/{id}/link` is NOT in Vercel's
+  published OpenAPI document — `PATCH /v9/projects/{id}` accepts no
+  `gitRepository`, and the only documented way to get a connected project is to
+  create a new one. It is what `vercel git connect` calls, so the official CLI
+  exercises it, but it is the single call in this adapter with no compatibility
+  promise; the failure path falls back to the documented create-a-project route
+  rather than to a dead end. `deployInfo` is now composed in the ROUTE from the
+  adapter's answer about the remote project plus the local working tree's
+  remote, with `AdapterDeployInfo = Omit<DeployInfo, 'suggestedRepo'>` keeping
+  the adapter free of any notion that a Clopen project has a working tree.
+  THIRD QA PASS found the limit of that: Connect failed with "You need to add a
+  Login Connection to your GitHub account first". Vercel requires the ACCOUNT to
+  hold a git login connection before any project can be linked, and that is an
+  OAuth flow on vercel.com which NO API token can stand in for — the one
+  prerequisite this surface can detect but never satisfy. `repositoryAccess()`
+  now asks `GET /v1/integrations/git-namespaces` before the button is offered
+  and distinguishes three states: no connection at all, connected but not to
+  that repository's owner (the GitHub app is installed per account or org, and
+  the message names which owners ARE reachable), and connected but restricted
+  pending an owner's approval. When blocked the dialog shows a link to
+  vercel.com/account/login-connections plus a "Check again" that re-reads
+  without closing, instead of a button that cannot win. A failed check is
+  treated as permission to try anyway — unreadable is not the same as absent —
+  and the raw Vercel error is still rewritten to carry that address, since the
+  pre-check can be skipped or go stale.
+  FOURTH QA PASS corrected that last sentence, which was the bug. The check
+  answered a BOOLEAN, so the case it could not read had to pretend — it returned
+  "can connect", which put the button back on screen and let the exact failure
+  the check exists to prevent arrive as a toast. It is now three states:
+  `ready` enables the button, `blocked` DISABLES it and offers a link out
+  instead, `unknown` allows the attempt but says so. A wrapped namespaces
+  response is also tolerated rather than read as "none", since that would be a
+  confident `blocked` built on a parsing mistake. And provider failures in this
+  dialog now render INSIDE it (`InlineError`, which splits URLs out of the
+  message and renders them as real links — never `{@html}` on a third-party
+  string) rather than as a toast: these messages end in "set it up at <url>",
+  and a toast removes the URL before it can be clicked. The general rule for
+  later surfaces: anything the user must ACT on belongs in the surface that
+  caused it, and only outcomes they merely need to KNOW belong in a toast.
+  FIFTH QA PASS, from a server log the user read. `teamId` was being sent to
+  `/v1/integrations/git-namespaces`, which REJECTS it with a 400 — namespaces
+  belong to the signed-in user, not to a team, and the endpoint's parameter list
+  never included it. That single wrong query parameter turned every readiness
+  check into an error, which surfaced as `unknown`, which let the button through:
+  the whole pre-flight was decoration. Locked by a test asserting the URL carries
+  no `teamId`. Timeouts were wrong in TWO layers and the inner one was the real
+  culprit — the Vercel client aborted at 20s before the 30s WebSocket budget was
+  reached, so a link that Vercel completed server-side was reported as a client
+  timeout. Reads keep 20s; mutations get 120s, and the slow WS calls get a
+  3-minute budget (a long budget, NOT unbounded — an unbounded call cannot tell
+  "still working" from "this socket will never answer"). Finally, build progress:
+  `deployment-state` events were being dropped with the other non-output events,
+  but they are the only thing that speaks during the stretches where a build
+  prints nothing, so they are now forwarded as a `phase` — pushed immediately
+  rather than on the flush interval, and only on a change — and rendered where
+  the "live" dot used to be. A bare dot cannot be told apart from a stall.
+  SIXTH QA PASS corrected a REASONING error rather than a coding one, and it is
+  the one worth remembering. An account with GitHub connected and working was
+  told it had no GitHub connection, because the check inferred that from an
+  EMPTY `git-namespaces` list and then disabled the button on the strength of
+  it. Two mistakes stacked: conflating a Vercel "Login Connection" (how you sign
+  in) with a GitHub App installation (what lets Vercel read repositories) — an
+  account can have the first without the second — and turning a weak signal into
+  a hard gate. The rule now: only a POSITIVE match is confident. Owner present
+  and unrestricted → `ready`. Owner absent from a NON-EMPTY list → `blocked`,
+  which is informative because the app is installed somewhere just not there. An
+  empty list → `unknown`, never blocked, because this endpoint's silence can
+  equally mean a token that cannot read integrations. The action URL is the
+  GitHub App install page, not the login-connections page, since repository
+  access is what is actually missing. General lesson for later providers: a
+  pre-flight check may enable confidently and warn freely, but it must not
+  DISABLE on an inference it cannot verify — being wrong there contradicts what
+  the user can see on their own screen.
+  SEVENTH QA PASS, after the first successful end-to-end deploy. The build log
+  is rendered with the app's own `processAnsiCodes` — the path chat tool output
+  already takes — rather than a PtyKit terminal: PtyKit is an interactive
+  emulator with a keyboard, cursor and resize protocol, and this is read-only
+  text, so it would cost far more than the colour is worth and look unlike every
+  other static output in Clopen. The log also opens itself now for every state:
+  hiding the substance of the pane behind a "Show the build log" click to save
+  one request was the wrong trade. "Open in preview" was removed at the user's
+  request — note that Task 3's spec named that loop explicitly, so this is a
+  deliberate deviation; `openUrlInPreview()` went with it rather than shipping
+  dead code, but `whenWorkspaceSettled()` stays because the send-log-to-chat
+  relocation still needs it. Detail gained the Domains list (a production build
+  answers on three hostnames and which one you want depends on the task), copy
+  buttons for commit and domains, and the trigger source; the list column went
+  from 22rem to 17rem, and the newest deployment is selected automatically
+  because an empty right-hand pane reads as a panel that failed to load. The
+  deploy dialog now caches its readiness answer per (project, account) and shows
+  a shaped skeleton instead of a bare spinner — three provider requests on every
+  open was most of why it felt slow — and offers the LOCALLY CHECKED-OUT branch
+  alongside the production one, since the branch in front of you is at least as
+  likely to be the one you meant. `repositoryAccess` became UNBOUND so the
+  new-project dialog can ask it too: that form was offering "Connect acme/web"
+  ticked by default on accounts that cannot reach acme, which is the same
+  can't-win button in a second place.
+  EIGHTH QA PASS, all layout. The two dialogs became ONE with tabs and the
+  header lost its bare "+": two buttons both about deploying made the user
+  choose before knowing what either did, so `DeployDialog`/`NewProjectModal`
+  are now `DeployPanel`/`NewProjectPanel` inside `DeployModal`, and the tab
+  strip hides itself when only one tab applies. The auto-refresh and refresh
+  controls moved off the environment-chip row (a fourth chip ran into them) onto
+  the search row they act upon, the branch filter's glyph is a search icon, and
+  list timestamps use a new `shortRelativeTime` — the long form wrapped on a row
+  that already carries a state badge, a branch and a commit. Domains are their
+  own component with an icon PER KIND: the project domain follows what is live,
+  the branch alias follows the newest build of that branch, and the build URL
+  pins this exact build, so rendering all three with one globe made them look
+  like duplicates of one address. Facts and domains now sit side by side rather
+  than stacked, which was leaving half the pane blank while pushing the log
+  down. The log lost its bordered container (a short log looked like an empty
+  card) and trims trailing whitespace, since the provider ends its stream with
+  blank lines and every streamed chunk appends its own newline. Spinners moved
+  INSIDE their buttons via a shared `ActionButton` — a spinner beside a row of
+  four actions cannot say which one is running — and the footer's empty left
+  half now names the provider and account owner, as the Issues footer does.
+  NINTH QA PASS added the actions that were still missing, and found that one of
+  them had been there all along and was unreachable. `isRollbackCandidate` was
+  read as `raw.isRollbackCandidate === true`, which collapsed "the provider says
+  no" and "the provider did not say" into the same answer — so Roll back never
+  appeared on any listing that omits the field. It is now `boolean | null`, and
+  the UI trusts a stated value but falls back to what is knowable (a ready
+  production build that is not live) when there is none. Same shape of mistake
+  as the namespace check: an absent signal is not a negative one. Added Delete
+  (`DELETE /v13/deployments/{id}`, never offered for what is serving production
+  since the provider refuses it) and Pause/Resume (`POST /v1/projects/{id}/pause`
+  and `/unpause`), which is target-level rather than per-build and is the only
+  thing that explains a list which has stopped growing — so it also gets a
+  banner. Pausing is confirmed and resuming is not: one silently changes what a
+  push does for everyone on the project, the other undoes that. Finally the
+  `pending` that rollback and promote return is now finishable: `projectStatus`
+  reads `lastAliasRequest.jobStatus`, a bounded poll follows the request to
+  succeeded or failed, and a banner says traffic is mid-move. Reporting
+  `pending` and then never mentioning it again was honest about the moment and
+  useless about the outcome.
+  TENTH QA PASS REMOVED the pause action added in the ninth, and the reason
+  matters more than the removal. Vercel's own endpoint description says pausing
+  "blocks the active Production Deployment" — it takes the SITE DOWN, it does
+  not merely stop future builds — and the confirm dialog written for it said the
+  opposite: "anything already live keeps serving". A confirm dialog that
+  misstates the consequence is worse than none, because it is the thing the user
+  relies on. That the copy was wrong is itself evidence the action was not well
+  enough understood to ship from an editor, so it is gone rather than reworded.
+  `paused` survives as READ-ONLY state with a banner, because when someone pauses
+  in the provider's dashboard nothing else explains a list that stopped growing
+  and a site that stopped answering. General rule: when a capability's
+  consequence is hard to state accurately, that is a reason not to offer it, not
+  a prompt to write better copy. Also: detail-pane text moved off 11px (fine for
+  labels, below comfortable for content) and the modal dropped from 90vw to
+  72rem, since the surface never needed the whole screen.
 
 **Task 4 — Account-backed database connections + Supabase.** Teach DB Client to
 show connections that came from a connected account rather than a hand-typed
