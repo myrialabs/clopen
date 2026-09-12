@@ -85,90 +85,94 @@
 </script>
 
 <div
-	class="mx-2 mb-2 rounded-lg border border-amber-400/50 bg-amber-500/10 dark:border-amber-500/40 dark:bg-amber-500/10"
+	class="mx-2 mb-2 rounded-lg border border-amber-400/50 bg-amber-500/10 px-2.5 py-2 dark:border-amber-500/40 dark:bg-amber-500/10"
 >
-	<div class="flex flex-wrap items-start gap-x-2 gap-y-1 px-2.5 py-2">
-		<Icon name={icon} class="w-4 h-4 mt-0.5 shrink-0 text-amber-600 dark:text-amber-400" />
-		<div class="min-w-0 flex-1">
-			<div class="flex flex-wrap items-center gap-x-1.5 gap-y-0.5">
-				<span class="text-xs font-semibold text-amber-800 dark:text-amber-200">{title}</span>
-				{#if progress}
-					<span
-						class="rounded px-1 py-px text-3xs font-semibold text-amber-800 dark:text-amber-200 bg-amber-500/20"
-					>
-						{progress}
-					</span>
-				{/if}
-				{#if repoLabel}
-					<span class="truncate text-3xs text-amber-700/80 dark:text-amber-300/80">in {repoLabel}</span>
-				{/if}
-			</div>
+	<!-- Stacked on purpose: the panel is a narrow dock, and sitting the buttons
+		beside the text squeezed the heading into a one-word-per-line column. -->
+	<div class="flex items-center gap-1.5">
+		<Icon name={icon} class="w-4 h-4 shrink-0 text-amber-600 dark:text-amber-400" />
+		<span class="shrink-0 text-xs font-semibold whitespace-nowrap text-amber-800 dark:text-amber-200">
+			{title}
+		</span>
+		{#if progress}
+			<span
+				class="shrink-0 rounded bg-amber-500/20 px-1 py-px text-3xs font-semibold text-amber-800 dark:text-amber-200"
+			>
+				{progress}
+			</span>
+		{/if}
+		{#if repoLabel}
+			<span class="min-w-0 truncate text-3xs text-amber-700/80 dark:text-amber-300/80" title={repoLabel}>
+				in {repoLabel}
+			</span>
+		{/if}
+	</div>
 
-			{#if state.currentCommit}
-				<p class="mt-0.5 truncate text-3xs text-amber-800/90 dark:text-amber-200/90" title={state.currentCommit}>
-					{state.currentCommit}
-				</p>
-			{/if}
+	{#if state.currentCommit}
+		<p class="mt-1 truncate text-3xs text-amber-800/90 dark:text-amber-200/90" title={state.currentCommit}>
+			{state.currentCommit}
+		</p>
+	{/if}
 
-			{#if sidesHint}
-				<p class="mt-0.5 truncate text-3xs text-amber-700/80 dark:text-amber-300/80" title={sidesHint}>
-					{sidesHint}
-				</p>
-			{/if}
+	{#if sidesHint}
+		<p class="mt-0.5 truncate text-3xs text-amber-700/80 dark:text-amber-300/80" title={sidesHint}>
+			{sidesHint}
+		</p>
+	{/if}
 
-			{#if state.unmergedCount > 0}
-				<button
-					type="button"
-					class="mt-1 inline-flex items-center gap-1 rounded-md border-none bg-amber-500/20 px-1.5 py-0.5 text-3xs font-medium text-amber-900 transition-colors hover:bg-amber-500/30 dark:text-amber-100 {onResolve ? 'cursor-pointer' : 'cursor-default'}"
-					onclick={onResolve}
-					disabled={!onResolve}
-				>
-					<Icon name="lucide:git-compare-arrows" class="w-3 h-3" />
-					{state.unmergedCount} unresolved file{state.unmergedCount === 1 ? '' : 's'}
-				</button>
-			{/if}
-		</div>
+	{#if state.unmergedCount > 0}
+		<button
+			type="button"
+			class="mt-1.5 flex w-full items-center gap-1 rounded-md border-none bg-amber-500/20 px-1.5 py-1 text-3xs font-medium text-amber-900 transition-colors hover:bg-amber-500/30 dark:text-amber-100 {onResolve ? 'cursor-pointer' : 'cursor-default'}"
+			onclick={onResolve}
+			disabled={!onResolve}
+		>
+			<Icon name="lucide:git-compare-arrows" class="w-3 h-3 shrink-0" />
+			<span class="truncate">
+				{state.unmergedCount} unresolved file{state.unmergedCount === 1 ? '' : 's'}
+			</span>
+		</button>
+	{/if}
 
-		<div class="flex shrink-0 flex-wrap items-center gap-1">
-			{#if !state.stashConflict && state.operation !== 'bisect'}
-				<button
-					type="button"
-					class="flex items-center gap-1 rounded-md border-none px-2 py-1 text-3xs font-semibold transition-colors
-						{state.canContinue && !busy
-							? 'bg-emerald-600 text-white hover:bg-emerald-700 cursor-pointer'
-							: 'bg-slate-200 text-slate-400 dark:bg-slate-700 dark:text-slate-500 cursor-not-allowed'}"
-					onclick={onContinue}
-					disabled={!state.canContinue || busy}
-					title={continueTitle}
-				>
-					<Icon name="lucide:play" class="w-3 h-3" />
-					Continue
-				</button>
-			{/if}
-			{#if state.canSkip}
-				<button
-					type="button"
-					class="flex items-center gap-1 rounded-md border-none bg-white/70 px-2 py-1 text-3xs font-semibold text-amber-900 transition-colors hover:bg-white disabled:cursor-not-allowed disabled:opacity-50 dark:bg-slate-800/70 dark:text-amber-100 dark:hover:bg-slate-800 cursor-pointer"
-					onclick={onSkip}
-					disabled={busy}
-					title="Drop the commit git is stuck on and move to the next one"
-				>
-					<Icon name="lucide:skip-forward" class="w-3 h-3" />
-					Skip
-				</button>
-			{/if}
+	<div class="mt-2 flex items-center gap-1">
+		{#if !state.stashConflict && state.operation !== 'bisect'}
 			<button
 				type="button"
-				class="flex items-center gap-1 rounded-md border-none bg-red-500/10 px-2 py-1 text-3xs font-semibold text-red-600 transition-colors hover:bg-red-500/20 disabled:cursor-not-allowed disabled:opacity-50 dark:text-red-400 cursor-pointer"
-				onclick={onAbort}
-				disabled={busy}
-				title={state.stashConflict
-					? 'Unwind the unmerged paths — the stash entry itself is kept'
-					: 'Undo this operation and return to the previous state'}
+				class="flex min-w-0 flex-1 items-center justify-center gap-1 rounded-md border-none px-2 py-1 text-3xs font-semibold transition-colors
+					{state.canContinue && !busy
+						? 'bg-emerald-600 text-white hover:bg-emerald-700 cursor-pointer'
+						: 'bg-slate-200 text-slate-400 dark:bg-slate-700 dark:text-slate-500 cursor-not-allowed'}"
+				onclick={onContinue}
+				disabled={!state.canContinue || busy}
+				title={continueTitle}
 			>
-				<Icon name="lucide:octagon-x" class="w-3 h-3" />
-				{abortLabel}
+				<Icon name="lucide:play" class="w-3 h-3 shrink-0" />
+				<span class="truncate">Continue</span>
 			</button>
-		</div>
+		{/if}
+		{#if state.canSkip}
+			<button
+				type="button"
+				class="flex min-w-0 flex-1 items-center justify-center gap-1 rounded-md border-none bg-white/70 px-2 py-1 text-3xs font-semibold text-amber-900 transition-colors hover:bg-white disabled:cursor-not-allowed disabled:opacity-50 dark:bg-slate-800/70 dark:text-amber-100 dark:hover:bg-slate-800 cursor-pointer"
+				onclick={onSkip}
+				disabled={busy}
+				title="Drop the commit git is stuck on and move to the next one"
+			>
+				<Icon name="lucide:skip-forward" class="w-3 h-3 shrink-0" />
+				<span class="truncate">Skip</span>
+			</button>
+		{/if}
+		<button
+			type="button"
+			class="flex min-w-0 flex-1 items-center justify-center gap-1 rounded-md border-none bg-red-500/10 px-2 py-1 text-3xs font-semibold text-red-600 transition-colors hover:bg-red-500/20 disabled:cursor-not-allowed disabled:opacity-50 dark:text-red-400 cursor-pointer"
+			onclick={onAbort}
+			disabled={busy}
+			title={state.stashConflict
+				? 'Unwind the unmerged paths — the stash entry itself is kept'
+				: 'Undo this operation and return to the previous state'}
+		>
+			<Icon name="lucide:octagon-x" class="w-3 h-3 shrink-0" />
+			<span class="truncate">{abortLabel}</span>
+		</button>
 	</div>
 </div>
