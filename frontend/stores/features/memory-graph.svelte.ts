@@ -19,7 +19,6 @@ import type {
 	MemoryQueueStatus,
 	MemoryDraft,
 	GraphNode,
-	GraphNodeKind,
 	GraphRegion,
 	GraphScope,
 	GraphSource,
@@ -30,8 +29,6 @@ import type {
 export interface MemoryStats {
 	nodes: number;
 	edges: number;
-	episodic: number;
-	structural: number;
 	vectors: number;
 	byScope: Record<GraphScope, number>;
 	byProject: { projectId: string | null; count: number }[];
@@ -64,7 +61,6 @@ export interface MemoryModel {
 
 export interface MemoryConfig {
 	enabled: boolean;
-	recordCode: boolean;
 	recordMemories: boolean;
 	autoRecall: boolean;
 	model: MemoryModel | null;
@@ -81,7 +77,6 @@ export interface MemoryFilter {
 	 * no separate "Global" entry to tick — clearing the selection already says it.
 	 */
 	projectIds: string[] | null;
-	kinds: GraphNodeKind[];
 	/** Empty means every subkind — the filter is a narrowing, not a whitelist. */
 	subkinds: string[];
 	/** Empty means any writer: inferred, agent-requested or hand-written. */
@@ -89,7 +84,7 @@ export interface MemoryFilter {
 	includeArchived: boolean;
 }
 
-/** Subkinds offered in the filter, grouped the way the graph itself is split. */
+/** Subkinds offered in the filter. */
 export const EPISODIC_SUBKINDS = [
 	'decision',
 	'pattern',
@@ -98,8 +93,6 @@ export const EPISODIC_SUBKINDS = [
 	'observation',
 	'entity'
 ] as const;
-
-export const STRUCTURAL_SUBKINDS = ['file', 'symbol', 'module', 'dependency'] as const;
 
 const EMPTY_VIEW: GraphView = {
 	level: 'flat',
@@ -147,7 +140,6 @@ function signatureOf(view: GraphView): string {
 	for (const node of view.nodes) {
 		feed(node.id);
 		feed(node.label);
-		feed(node.kind);
 		feed(node.community);
 		feed(node.degree);
 	}
@@ -177,7 +169,7 @@ function signatureOf(view: GraphView): string {
  * changes on its own, seconds after any memory is recorded, when the background
  * layout pass lands.
  *
- * Without this the canvas never saw those positions at all: the structural
+ * Without this the canvas never saw those positions at all: the node-set
  * signature was identical, so a graph the client had laid out for itself stayed
  * on screen until the modal was closed and reopened.
  */
@@ -236,7 +228,6 @@ let vectorUsed = $state(true);
 let config = $state<MemoryConfig | null>(null);
 let filter = $state<MemoryFilter>({
 	projectIds: null,
-	kinds: ['episodic', 'structural'],
 	subkinds: [],
 	sources: [],
 	includeArchived: false
@@ -349,7 +340,6 @@ export const memoryGraphStore = {
 		try {
 			const next = (await ws.http('memory:graph', {
 				...(filter.projectIds !== null && { projectIds: filter.projectIds }),
-				kinds: filter.kinds,
 				...(filter.subkinds.length > 0 && { subkinds: filter.subkinds }),
 				...(filter.sources.length > 0 && { sources: filter.sources }),
 				...(region !== null && { region }),
@@ -443,7 +433,6 @@ export const memoryGraphStore = {
 			const result = (await ws.http('memory:search', {
 				query: trimmed,
 				...(filter.projectIds !== null && { projectIds: filter.projectIds }),
-				kinds: filter.kinds,
 				...(filter.subkinds.length > 0 && { subkinds: filter.subkinds }),
 				...(filter.sources.length > 0 && { sources: filter.sources }),
 				includeArchived: filter.includeArchived,

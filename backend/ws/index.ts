@@ -117,7 +117,7 @@ export const wsRouter = createRouter()
 	.merge(profilesRouter)
 	.merge(artifactsRouter)
 
-	// Memory Graph (unified episodic + structural memory, shared by every engine)
+	// Memory Graph (one store of memories, shared by every engine)
 	.merge(memoryRouter)
 
 	// Notes (project-scoped markdown)

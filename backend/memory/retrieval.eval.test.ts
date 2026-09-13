@@ -24,6 +24,7 @@ import { beforeAll, describe, expect, it, mock } from 'bun:test';
 import { Database } from 'bun:sqlite';
 import type { DatabaseConnection } from '$shared/types/database/connection';
 import * as migration066 from '$backend/database/migrations/066_create_memory_graph';
+import * as migration076 from '$backend/database/migrations/076_remove_memory_code_graph';
 
 let db: Database;
 
@@ -197,10 +198,10 @@ beforeAll(async () => {
 	db = new Database(':memory:');
 	db.exec('PRAGMA foreign_keys = ON');
 	migration066.up(db as unknown as DatabaseConnection);
+	migration076.up(db as unknown as DatabaseConnection);
 
 	for (const entry of CORPUS) {
 		const node = graphQueries.upsert({
-			kind: 'episodic',
 			subkind: entry.subkind as 'decision',
 			projectId: PROJECT,
 			label: entry.label,
@@ -257,7 +258,6 @@ describe('retrieval quality', () => {
 
 	it('never returns a memory from another project', () => {
 		graphQueries.upsert({
-			kind: 'episodic',
 			subkind: 'decision',
 			projectId: 'someone-elses-project',
 			label: 'Clopen runs only on Bun; Node.js and Deno are not supported',

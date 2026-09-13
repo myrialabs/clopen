@@ -98,7 +98,6 @@ export function gatherRelatedMemories(options: {
 		query,
 		projectId: options.projectId,
 		sessionId: options.sessionId ?? undefined,
-		kinds: ['episodic'],
 		limit: MAX_RELATED_SHOWN,
 		expandHops: 0
 	});
