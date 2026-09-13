@@ -39,9 +39,8 @@ import { getMemoryReadiness } from '$backend/memory/readiness';
 import { reconcileVectorIndex } from '$backend/memory/indexer';
 import { ensureEmbeddingArtifact, embedder, vectorCache } from '$backend/memory/embedding';
 import type { EngineType } from '$shared/types/unified';
-import type { GraphNodeKind, GraphScope, GraphSource } from '$shared/types/memory';
+import type { GraphScope, GraphSource } from '$shared/types/memory';
 
-const KIND = t.Union([t.Literal('episodic'), t.Literal('structural')]);
 const SCOPE = t.Union([t.Literal('session'), t.Literal('project'), t.Literal('global')]);
 const SOURCE = t.Union([t.Literal('agent'), t.Literal('user')]);
 const EPISODIC_SUBKIND = t.Union([
@@ -55,16 +54,14 @@ const EPISODIC_SUBKIND = t.Union([
 
 const NODE = t.Object({
 	id: t.String(),
-	kind: t.String(),
 	subkind: t.String(),
 	scope: t.String(),
 	projectId: t.Union([t.String(), t.Null()]),
 	sessionId: t.Union([t.String(), t.Null()]),
 	label: t.String(),
 	body: t.String(),
-	path: t.Union([t.String(), t.Null()]),
-	symbol: t.Union([t.String(), t.Null()]),
-	language: t.Union([t.String(), t.Null()]),
+	/** Repo-relative paths this memory claims something about; see migration 076. */
+	relatedPaths: t.Optional(t.Array(t.String())),
 	digest: t.String(),
 	confidence: t.Number(),
 	weight: t.Number(),
@@ -94,7 +91,6 @@ const MEMORY_MODEL = t.Object({
 
 const CONFIG = t.Object({
 	enabled: t.Boolean(),
-	recordCode: t.Boolean(),
 	recordMemories: t.Boolean(),
 	autoRecall: t.Boolean(),
 	model: t.Union([MEMORY_MODEL, t.Null()])
@@ -171,7 +167,6 @@ export const memoryCrudHandler = createRouter()
 	.http('memory:graph', {
 		data: t.Object({
 			projectIds: t.Optional(t.Array(t.String())),
-			kinds: t.Optional(t.Array(KIND)),
 			subkinds: t.Optional(t.Array(t.String())),
 			scopes: t.Optional(t.Array(SCOPE)),
 			sources: t.Optional(t.Array(SOURCE)),
@@ -193,7 +188,6 @@ export const memoryCrudHandler = createRouter()
 			level: t.String(),
 			nodes: t.Array(t.Object({
 				id: t.String(),
-				kind: t.String(),
 				subkind: t.String(),
 				scope: t.String(),
 				label: t.String(),
@@ -248,7 +242,6 @@ export const memoryCrudHandler = createRouter()
 		debug.log('path', 'memory:graph');
 		return buildGraphView({
 			projectIds: scopeForRole(conn, data.projectIds),
-			kinds: data.kinds as GraphNodeKind[] | undefined,
 			subkinds: data.subkinds,
 			scopes: data.scopes as GraphScope[] | undefined,
 			sources: data.sources as GraphSource[] | undefined,
@@ -273,7 +266,6 @@ export const memoryCrudHandler = createRouter()
 		data: t.Object({
 			query: t.String(),
 			projectIds: t.Optional(t.Array(t.String())),
-			kinds: t.Optional(t.Array(KIND)),
 			subkinds: t.Optional(t.Array(t.String())),
 			sources: t.Optional(t.Array(SOURCE)),
 			limit: t.Optional(t.Number()),
@@ -303,7 +295,6 @@ export const memoryCrudHandler = createRouter()
 		const result = retrieve({
 			query: data.query,
 			projectIds: scopeForRole(conn, data.projectIds),
-			kinds: data.kinds as GraphNodeKind[] | undefined,
 			subkinds: data.subkinds,
 			sources: data.sources as GraphSource[] | undefined,
 			limit: data.limit ?? 20,
@@ -330,8 +321,6 @@ export const memoryCrudHandler = createRouter()
 		response: t.Object({
 			nodes: t.Number(),
 			edges: t.Number(),
-			episodic: t.Number(),
-			structural: t.Number(),
 			vectors: t.Number(),
 			byScope: t.Object({ session: t.Number(), project: t.Number(), global: t.Number() }),
 			byProject: t.Array(t.Object({ projectId: t.Union([t.String(), t.Null()]), count: t.Number() })),
@@ -659,7 +648,7 @@ export const memoryCrudHandler = createRouter()
 	.http('memory:save-config', {
 		data: t.Object({
 			enabled: t.Optional(t.Boolean()),
-			recordCode: t.Optional(t.Boolean()),
+
 			recordMemories: t.Optional(t.Boolean()),
 			autoRecall: t.Optional(t.Boolean()),
 			model: t.Optional(t.Union([MEMORY_MODEL, t.Null()]))
@@ -669,7 +658,6 @@ export const memoryCrudHandler = createRouter()
 		debug.log('path', 'memory:save-config');
 		return setMemoryConfig({
 			...(data.enabled !== undefined && { enabled: data.enabled }),
-			...(data.recordCode !== undefined && { recordCode: data.recordCode }),
 			...(data.recordMemories !== undefined && { recordMemories: data.recordMemories }),
 			...(data.autoRecall !== undefined && { autoRecall: data.autoRecall }),
 			...(data.model !== undefined && {

@@ -36,8 +36,29 @@ import Graph from 'graphology';
 import louvain from 'graphology-communities-louvain';
 import forceAtlas2 from 'graphology-layout-forceatlas2';
 import { graphQueries, graphLayoutQueries, type GraphLayoutRow } from '$backend/database/queries/graph-queries';
+import { settingsQueries } from '$backend/database/queries/settings-queries';
 import { broadcastGraphChanged } from './notify';
 import { debug } from '$shared/utils/logger';
+
+/**
+ * What produced the stored arrangement. BUMP IT whenever that changes — either
+ * the edges this pass lays out, or how it places them.
+ *
+ * A pass is warm by default: every node is seeded at the position it already had
+ * and only lightly re-settled, which is what stops one new memory rearranging a
+ * map somebody has learned. That is exactly wrong after the pass itself changes,
+ * because the arrangement it would preserve was computed by different rules —
+ * when removing the code half took the store from 1,351 components to one, the
+ * surviving memories stayed in the shell those nine thousand nodes had shaped.
+ *
+ * So the marker is stored alongside the arrangement, and a mismatch drops the
+ * arrangement once. It costs one cold pass, which the store pays for anyway the
+ * first time it is laid out.
+ */
+const LAYOUT_VERSION = '6';
+const LAYOUT_VERSION_KEY = 'memory_layout_version';
+/** The key this used before it covered placement as well as derivation. */
+const LEGACY_LAYOUT_KEY = 'memory_layout_derivation';
 
 /**
  * Two caps, because the two halves of a pass scale differently.
@@ -136,6 +157,16 @@ export async function runGraphLayout(): Promise<void> {
 			graphLayoutQueries.clear();
 			lastMembership = membershipOf(ids);
 			return;
+		}
+
+		// Before anything reads the stored arrangement: if a different version of
+		// this pass produced it, it is not an arrangement of this graph.
+		if (settingsQueries.get(LAYOUT_VERSION_KEY)?.value !== LAYOUT_VERSION) {
+			graphLayoutQueries.clear();
+			settingsQueries.set(LAYOUT_VERSION_KEY, LAYOUT_VERSION);
+			settingsQueries.delete(LEGACY_LAYOUT_KEY);
+			lastMembership = '';
+			debug.log('memory', 'Memory layout: the pass changed, arranging from scratch');
 		}
 
 		const membership = membershipOf(ids);
@@ -337,8 +368,9 @@ async function arrange(
 		const anchor = existingCentroid(member, existing);
 		seedComponent(part, communities, existing, anchor);
 		await settle(part, cold || !anchor ? iterationsFor(part.order) : warmIterationsFor(part.order));
+		const lobes = spreadCommunities(part, communities);
 
-		placed.push(measure(part, anchor));
+		placed.push(measure(part, anchor, lobes));
 	}
 
 	packComponents(placed);
@@ -356,8 +388,168 @@ async function arrange(
 		}
 	}
 
-	for (const row of scatterSingletons(singletons, placed, communities, existing)) rows.push(row);
+	// The field is where the LOBES are. Lone nodes are dropped into it rather than
+	// onto a disc of their own, which is what stopped them deciding how far the
+	// map reaches — see `placeLoneNodes`.
+	const field: Disc[] = [];
+	for (const component of placed) {
+		for (const lobe of component.lobes) {
+			field.push({ x: lobe.x + component.offsetX, y: lobe.y + component.offsetY, radius: lobe.radius });
+		}
+	}
+
+	for (const row of placeLoneNodes(singletons, field, communities, existing)) rows.push(row);
 	return rows;
+}
+
+/**
+ * Push the lobes apart from each other, leaving each one's interior alone.
+ *
+ * The forces cannot do this on their own. Repulsion is between NODES, so it is
+ * strongest exactly where nodes are dense — inside a lobe — while the edges
+ * between two lobes pull them together with nothing pushing back at the same
+ * scale. A well-clustered graph therefore settles as one field of colour with
+ * its groups readable only by hue.
+ *
+ * Raising `scalingRatio` would not fix it: global repulsion inflates the lobes
+ * and the gaps together, so the picture gets bigger and reads the same.
+ *
+ * SEPARATION IS SOLVED, NOT SCALED, and the difference matters. Multiplying each
+ * lobe's distance from the centre — by one constant, or by a draw per lobe —
+ * cannot promise any particular lobe clear space: the constant preserves the
+ * silhouette and only inflates it, and the draw flings a few lobes far out while
+ * the rest stay exactly as crowded as they were. Measured, that second version
+ * put the whole store's extent in the hands of two outliers and left the other
+ * fifty-six in a clump.
+ *
+ * So each lobe is treated as a disc, and the discs are relaxed apart until none
+ * of them overlap — the same collision pass `packComponents` runs over
+ * components, one level down. Every lobe ends up with room, the field grows only
+ * as far as it has to, and `GAP` is the dial: clear space between two lobes as a
+ * fraction of the smaller one's radius.
+ *
+ * Each lobe moves RIGIDLY. Every node keeps its offset from its own lobe's
+ * centroid, so the interior the forces worked out is preserved exactly and only
+ * the distance between lobes changes. Deterministic, and it cannot destabilise a
+ * simulation that has already finished.
+ *
+ * Returns the discs, because they are the FIELD: what the map covers is where
+ * the lobes are, and the nodes that connect to nothing are placed inside it
+ * rather than on a disc of their own. See `placeLoneNodes`.
+ */
+function spreadCommunities(part: Graph, communities: Record<string, number>): Disc[] {
+	/**
+	 * Clear space between two lobes, as a fraction of the smaller one's radius.
+	 * This is the "multiverse rather than one universe" dial. `packComponents`
+	 * uses 0.15 between whole components; lobes want far more, because unlike
+	 * components they are joined by edges that read as bridges.
+	 */
+	const GAP = 0.9;
+	const PASSES = 240;
+	/**
+	 * The percentile of member distances taken as a lobe's radius.
+	 *
+	 * Not the maximum: Louvain leaves the occasional member stretched toward a
+	 * neighbouring lobe by one edge, and sizing the disc to that straggler would
+	 * separate on a distance almost none of the lobe occupies.
+	 */
+	const RADIUS_PERCENTILE = 0.9;
+
+	const members = new Map<number, string[]>();
+	part.forEachNode(id => {
+		const community = communities[id] ?? 0;
+		const list = members.get(community);
+		if (list) list.push(id);
+		else members.set(community, [id]);
+	});
+
+	interface Lobe extends Disc {
+		ids: string[];
+		originX: number;
+		originY: number;
+	}
+
+	const lobes: Lobe[] = [];
+	for (const [, ids] of [...members.entries()].sort((a, b) => a[0] - b[0])) {
+		let sumX = 0;
+		let sumY = 0;
+		for (const id of ids) {
+			sumX += part.getNodeAttribute(id, 'x') as number;
+			sumY += part.getNodeAttribute(id, 'y') as number;
+		}
+		const x = sumX / ids.length;
+		const y = sumY / ids.length;
+
+		const distances = ids
+			.map(id =>
+				Math.hypot((part.getNodeAttribute(id, 'x') as number) - x, (part.getNodeAttribute(id, 'y') as number) - y)
+			)
+			.sort((a, b) => a - b);
+		const radius = Math.max(distances[Math.floor(distances.length * RADIUS_PERCENTILE)] ?? 0, 20);
+
+		lobes.push({ ids, x, y, radius, originX: x, originY: y });
+	}
+
+	// One lobe has nothing to be spread away from, but it is still the field.
+	if (lobes.length < 2) return lobes.map(lobe => ({ x: lobe.x, y: lobe.y, radius: lobe.radius }));
+
+	for (let pass = 0; pass < PASSES; pass++) {
+		// Over-relaxed early and settling toward an exact correction, for the same
+		// reason `packComponents` does it: separating one pair nudges both into
+		// their other neighbours.
+		const relax = 1.4 - 0.4 * (pass / PASSES);
+		let collided = false;
+
+		for (let i = 0; i < lobes.length; i++) {
+			for (let j = i + 1; j < lobes.length; j++) {
+				const a = lobes[i];
+				const b = lobes[j];
+				const minimum = a.radius + b.radius + GAP * Math.min(a.radius, b.radius);
+				let dx = b.x - a.x;
+				let dy = b.y - a.y;
+				const squared = dx * dx + dy * dy;
+				if (squared >= minimum * minimum) continue;
+
+				let distance = Math.sqrt(squared);
+				if (distance < 1e-9) {
+					// Two centroids on the same point have no direction to separate
+					// along; take one from the ids, so it is still the same every pass.
+					const angle = jitterOf(a.ids[0] + b.ids[0]).angle;
+					dx = Math.cos(angle);
+					dy = Math.sin(angle);
+					distance = 1;
+				}
+
+				const push = (relax * (minimum - distance)) / distance / 2;
+				a.x -= dx * push;
+				a.y -= dy * push;
+				b.x += dx * push;
+				b.y += dy * push;
+				collided = true;
+			}
+		}
+
+		if (!collided) break;
+	}
+
+	for (const lobe of lobes) {
+		const shiftX = lobe.x - lobe.originX;
+		const shiftY = lobe.y - lobe.originY;
+		if (shiftX === 0 && shiftY === 0) continue;
+		for (const id of lobe.ids) {
+			part.setNodeAttribute(id, 'x', (part.getNodeAttribute(id, 'x') as number) + shiftX);
+			part.setNodeAttribute(id, 'y', (part.getNodeAttribute(id, 'y') as number) + shiftY);
+		}
+	}
+
+	return lobes.map(lobe => ({ x: lobe.x, y: lobe.y, radius: lobe.radius }));
+}
+
+/** A circle something occupies — a lobe, or a whole component. */
+interface Disc {
+	x: number;
+	y: number;
+	radius: number;
 }
 
 /** One component, laid out in local space and waiting to be given a place. */
@@ -371,6 +563,8 @@ interface PlacedComponent {
 	offsetY: number;
 	/** Where it already sat, when it was on the map before this pass. */
 	anchored: boolean;
+	/** Its lobes, in the same local space as `xs`/`ys`. See `placeLoneNodes`. */
+	lobes: Disc[];
 }
 
 /**
@@ -567,7 +761,7 @@ function communityMetaSeed(
 }
 
 /** Centre a settled component on its own centroid and measure what it needs. */
-function measure(part: Graph, anchor: { x: number; y: number } | null): PlacedComponent {
+function measure(part: Graph, anchor: { x: number; y: number } | null, lobes: Disc[]): PlacedComponent {
 	const ids = part.nodes();
 	const xs = new Float64Array(ids.length);
 	const ys = new Float64Array(ids.length);
@@ -594,6 +788,9 @@ function measure(part: Graph, anchor: { x: number; y: number } | null): PlacedCo
 		ids,
 		xs,
 		ys,
+		// Re-centred with the nodes, so a lobe keeps describing where its members
+		// actually are once the component is given a place.
+		lobes: lobes.map(lobe => ({ x: lobe.x - centreX, y: lobe.y - centreY, radius: lobe.radius })),
 		radius: Math.max(radius, 20),
 		// An anchored component keeps its old centroid; the drift the settle
 		// introduced is absorbed by re-centring rather than accumulating.
@@ -606,32 +803,51 @@ function measure(part: Graph, anchor: { x: number; y: number } | null): PlacedCo
 /**
  * Give every unanchored component a place, and separate any that overlap.
  *
- * The outline this produces is the point. Components are scattered into a box
- * whose AREA follows the total they need and whose aspect is deliberately not
- * square, then pushed apart until they no longer collide — so the silhouette is
- * decided by how many components there are and how big each one is, both of which
- * are properties of the data. Every spiral, ring or fill-outward-from-a-point
- * strategy converges on a disc no matter how its regions are sized; that lesson
- * cost two attempts.
+ * A store this feature has been running in for any length of time is ONE mass
+ * and a handful of stragglers, so the placement is built around that rather than
+ * around components being comparable: the largest holds the origin and does not
+ * move, the others are put just outside it, and the relaxation pushes apart
+ * whatever still collides. The silhouette is then decided by how big the mass is
+ * and how many stragglers there are, both of which are properties of the data.
  *
  * Anchored components do not move: they are where the user last saw them.
  */
 function packComponents(placed: PlacedComponent[]): void {
 	if (placed.length === 0) return;
 
-	const total = placed.reduce((sum, component) => sum + Math.PI * component.radius ** 2, 0);
-	/** Air, as a multiple of the area the components themselves occupy. */
-	const BREATHING = 2.6;
-	/** Wider than tall, so the default outline is not a square either. */
-	const ASPECT = 1.45;
-	const width = Math.sqrt(total * BREATHING * ASPECT);
-	const height = width / ASPECT;
-
-	for (const component of placed) {
-		if (component.anchored) continue;
+	// THE LARGEST COMPONENT HOLDS THE ORIGIN, and the rest are placed around it.
+	//
+	// Both halves of that are corrections, and both came from the same measurement.
+	// Once a store has grown its components are not comparable: the measured graph
+	// is one of 2,036 memories, one of three, one of two, and twenty-six lone
+	// nodes. Scattering all of them into a box sized by TOTAL area — which is what
+	// this did — flung the giant half a box width, so it settled at (6960, 5095)
+	// and took the whole map off the origin with it, while every other placement
+	// in this file measures from the middle. It also threw the two tiny components
+	// tens of thousands of units out, which then set how far the map reached.
+	//
+	// So the biggest mass is pinned at the origin and marked as fixed, and the
+	// others are placed in a ring just outside it — near the thing they are small
+	// against, rather than lost in a box scaled to it. The relaxation below then
+	// resolves whatever still overlaps. `componentsOf` returns them largest first.
+	const movable = placed.filter(component => !component.anchored);
+	const anchorRadius = movable.length > 0 ? movable[0].radius : 0;
+	for (let i = 0; i < movable.length; i++) {
+		const component = movable[i];
+		if (i === 0) {
+			component.offsetX = 0;
+			component.offsetY = 0;
+			// Fixed for the relaxation too. Without this a three-node component
+			// landing on it pushes the mass — and the map — aside to make room.
+			component.anchored = true;
+			continue;
+		}
 		const jitter = jitterOf(component.ids[0]);
-		component.offsetX = (jitter.x * width) / 2;
-		component.offsetY = (jitter.y * height) / 2;
+		// Deterministic angle, and a radius just clear of the mass with enough
+		// variation that the satellites do not draw a circle around it.
+		const distance = anchorRadius + component.radius * (1.4 + 0.9 * ((jitter.y + 1) / 2));
+		component.offsetX = Math.cos(jitter.angle) * distance;
+		component.offsetY = Math.sin(jitter.angle) * distance;
 	}
 
 	/** Clear space between two components, as a fraction of the smaller radius. */
@@ -683,20 +899,38 @@ function packComponents(placed: PlacedComponent[]): void {
 }
 
 /**
- * Place the nodes that connect to nothing, in the gaps between what does.
+ * Place the nodes that connect to nothing, inside the field the lobes occupy.
  *
- * These were the ring. A third of the marks on the measured store are lone
- * nodes, and with no edges there is no force to arrange them — so under the old
- * global gravity they all settled at one radius and drew a circle around
- * everything else. Filling the gaps instead removes the ring and puts them where
- * there is room, which is also where the eye is not already busy.
+ * These were the ring. With no edges there is no force to arrange them, so under
+ * the old global gravity they all settled at one radius and drew a circle around
+ * everything else. Two attempts to fix that each failed in their own way, and
+ * both failures are why this is shaped as it is.
  *
- * The grid is coarse on purpose: it only has to answer "is anything here", and a
- * fine one would cost more than the question is worth.
+ * A GRID OF FREE CELLS over the bounding RECTANGLE of the components, filled
+ * from the middle out, worked while the graph was many small components with
+ * gaps between them. It stopped working the moment the store became one
+ * connected mass: there is no interior gap left, so every free cell was a corner
+ * or an edge of the rectangle, and the lone nodes lined up along two sides of a
+ * box.
+ *
+ * A DISC OF THEIR OWN, sized from the component's reach, put them off the box —
+ * and made them the largest thing on the map. Measured on a real store their
+ * span was 40,998 against the clusters' 26,065, so the view fitted to THEM and
+ * zoomed the clusters, which are the thing worth looking at, down into a clump
+ * in one corner. Nodes that connect to nothing were setting the scale of
+ * everything that does.
+ *
+ * So there is no second field. The lobes ARE the field: a lone node is drawn
+ * somewhere inside it — angle and radius from its own id, the radius
+ * square-rooted so the draws are uniform over the AREA rather than bunched at
+ * the centre — and pushed clear if it lands on a lobe. It fills the gaps between
+ * the islands, and it cannot make the map larger than the islands already do.
+ *
+ * Deterministic: an id does not change, so neither does where its memory sits.
  */
-function scatterSingletons(
+function placeLoneNodes(
 	singletons: string[],
-	placed: PlacedComponent[],
+	field: Disc[],
 	communities: Record<string, number>,
 	existing: Map<string, GraphLayoutRow>
 ): GraphLayoutRow[] {
@@ -708,10 +942,9 @@ function scatterSingletons(
 	 * One that was already on the map stays exactly where it was.
 	 *
 	 * Anchoring these matters more than anchoring components, and measurement is
-	 * what showed it: the free-cell grid is derived from where the components
-	 * ended up, so a single memory arriving anywhere changed one component's
-	 * radius, which changed the grid, which reassigned EVERY lone node. A warm
-	 * pass moved a hundred of them clear across the map — the one thing a
+	 * what showed it: the old free-cell grid was derived from where the components
+	 * ended up, so a single memory arriving anywhere reassigned EVERY lone node. A
+	 * warm pass moved a hundred of them clear across the map — the one thing a
 	 * background pass must never do to a view somebody is reading.
 	 */
 	const ordered: string[] = [];
@@ -731,117 +964,73 @@ function scatterSingletons(
 	}
 	if (ordered.length === 0) return rows;
 
-	// Nothing else on the map — spread them over a box of their own rather than
-	// piling them on the origin.
-	if (placed.length === 0) {
+	// Nothing else on the map — a field of their own, which is the only case where
+	// they set the scale, because there is nothing else to set it.
+	if (field.length === 0) {
 		const span = 120 * Math.sqrt(ordered.length);
 		for (const id of ordered) {
-			const jitter = jitterOf(id);
+			const draw = jitterOf(id);
+			const radius = span * Math.sqrt((draw.x + 1) / 2);
 			rows.push({
 				nodeId: id,
 				community: communities[id] ?? 0,
-				x: jitter.x * span,
-				y: (jitter.y * span) / 1.45,
+				x: Math.cos(draw.angle) * radius,
+				y: Math.sin(draw.angle) * radius,
 				placed: 1
 			});
 		}
 		return rows;
 	}
 
-	let minX = Infinity;
-	let maxX = -Infinity;
-	let minY = Infinity;
-	let maxY = -Infinity;
-	for (const component of placed) {
-		minX = Math.min(minX, component.offsetX - component.radius);
-		maxX = Math.max(maxX, component.offsetX + component.radius);
-		minY = Math.min(minY, component.offsetY - component.radius);
-		maxY = Math.max(maxY, component.offsetY + component.radius);
+	// The field's own centre and reach, taken from the lobes rather than from the
+	// origin: a component is re-centred on its own centroid and then given a
+	// place, so the origin is not where the map is.
+	let centreX = 0;
+	let centreY = 0;
+	for (const lobe of field) {
+		centreX += lobe.x;
+		centreY += lobe.y;
+	}
+	centreX /= field.length;
+	centreY /= field.length;
+
+	let reach = 0;
+	for (const lobe of field) {
+		reach = Math.max(reach, Math.hypot(lobe.x - centreX, lobe.y - centreY) + lobe.radius);
 	}
 
-	// A thin margin, not a ring. At 12% this added a whole outer band of candidate
-	// cells, and combined with spreading across every free cell it put the lone
-	// nodes OUTSIDE the components — measured, they reached 9,790 wide where the
-	// components reached 7,996, which is the ring reappearing one layer out. Just
-	// enough air that a tightly packed store still has somewhere to put them.
-	const margin = 0.04 * Math.max(maxX - minX, maxY - minY);
-	minX -= margin;
-	maxX += margin;
-	minY -= margin;
-	maxY += margin;
+	/** Clear space kept around a lobe a lone node was drawn on top of. */
+	const CLEARANCE = 0.12;
 
-	// Roughly four candidate cells per node, which leaves enough free ones to
-	// spread across after the occupied ones are struck out.
-	const columns = Math.max(4, Math.round(Math.sqrt(ordered.length * 4 * 1.45)));
-	const rowsCount = Math.max(4, Math.round(columns / 1.45));
-	const cellWidth = (maxX - minX) / columns;
-	const cellHeight = (maxY - minY) / rowsCount;
+	for (const id of ordered) {
+		const draw = jitterOf(id);
+		const radius = reach * Math.sqrt((draw.x + 1) / 2);
+		let x = centreX + Math.cos(draw.angle) * radius;
+		let y = centreY + Math.sin(draw.angle) * radius;
 
-	const free: { x: number; y: number; distance: number }[] = [];
-	for (let column = 0; column < columns; column++) {
-		for (let row = 0; row < rowsCount; row++) {
-			const x = minX + (column + 0.5) * cellWidth;
-			const y = minY + (row + 0.5) * cellHeight;
-
-			let occupied = false;
-			for (const component of placed) {
-				const dx = x - component.offsetX;
-				const dy = y - component.offsetY;
-				if (dx * dx + dy * dy < component.radius * component.radius) {
-					occupied = true;
-					break;
-				}
+		// Nudged off any lobe it landed on, along the line out of that lobe's
+		// centre. A lone memory drawn on top of a cluster reads as a member of it,
+		// which is the one thing it is not. Bounded, because pushing off one lobe
+		// can land it on the next.
+		for (let attempt = 0; attempt < 8; attempt++) {
+			const hit = field.find(lobe => Math.hypot(x - lobe.x, y - lobe.y) < lobe.radius);
+			if (!hit) break;
+			let dx = x - hit.x;
+			let dy = y - hit.y;
+			let distance = Math.hypot(dx, dy);
+			if (distance < 1e-9) {
+				// Dead centre of a lobe has no direction to leave by; take one from the
+				// id, so it is still the same on every pass.
+				dx = Math.cos(draw.angle);
+				dy = Math.sin(draw.angle);
+				distance = 1;
 			}
-			// And the lone nodes already anchored here, so an arrival does not land
-			// on top of one that has been sitting there since a previous pass.
-			if (!occupied) {
-				const reach = Math.min(cellWidth, cellHeight) * 0.5;
-				for (const row of rows) {
-					if (Math.abs(row.x - x) < reach && Math.abs(row.y - y) < reach) {
-						occupied = true;
-						break;
-					}
-				}
-			}
-			if (occupied) continue;
-			free.push({ x, y, distance: Math.hypot(x, y) });
-		}
-	}
-
-	// Nearest the middle first, so the gaps between the big components fill before
-	// the empty edges do — which is what stops them re-forming a ring.
-	free.sort((a, b) => a.distance - b.distance || a.x - b.x || a.y - b.y);
-
-	for (let i = 0; i < ordered.length; i++) {
-		const id = ordered[i];
-		const jitter = jitterOf(id);
-
-		if (free.length === 0) {
-			rows.push({
-				nodeId: id,
-				community: communities[id] ?? 0,
-				x: jitter.x * (maxX - minX) * 0.5,
-				y: jitter.y * (maxY - minY) * 0.5,
-				placed: 1
-			});
-			continue;
+			const target = hit.radius * (1 + CLEARANCE);
+			x = hit.x + (dx / distance) * target;
+			y = hit.y + (dy / distance) * target;
 		}
 
-		// NEAREST free cells first while there are enough of them, so the lone nodes
-		// fill the gaps between the components rather than reaching for the edge.
-		// Spreading across the whole list unconditionally was what sent them to the
-		// outermost cells even when the interior had room to spare.
-		const cell =
-			ordered.length <= free.length
-				? free[i]
-				: free[Math.floor((i * free.length) / ordered.length)];
-		rows.push({
-			nodeId: id,
-			community: communities[id] ?? 0,
-			x: cell.x + jitter.x * cellWidth * 0.4,
-			y: cell.y + jitter.y * cellHeight * 0.4,
-			placed: 1
-		});
+		rows.push({ nodeId: id, community: communities[id] ?? 0, x, y, placed: 1 });
 	}
 
 	return rows;

@@ -73,13 +73,6 @@
 							'As soon as a turn finishes, summarise what it established — decisions, preferences, failures, facts — into memories.'
 					},
 					{
-						key: 'recordCode',
-						value: config.recordCode,
-						title: 'Map the code',
-						description:
-							'Track the files and symbols each turn touches, read from changes on disk — so edits made through a script or the shell count too.'
-					},
-					{
 						key: 'autoRecall',
 						value: config.autoRecall,
 						title: 'Recall automatically',
@@ -267,7 +260,7 @@
 				<div class="px-5 py-4">
 					{#if stats}
 						<div class="grid grid-cols-3 gap-3 mb-3">
-							{#each [{ label: 'Memories', value: stats.episodic }, { label: 'Code entities', value: stats.structural }, { label: 'Connections', value: stats.edges }, { label: 'Subjects', value: stats.entities }, { label: 'Proved useful', value: stats.confirmedUseful }, { label: 'Forgotten', value: stats.forgotten }] as metric (metric.label)}
+							{#each [{ label: 'Memories', value: stats.nodes }, { label: 'Connections', value: stats.edges }, { label: 'Subjects', value: stats.entities }, { label: 'Proved useful', value: stats.confirmedUseful }, { label: 'Forgotten', value: stats.forgotten }] as metric (metric.label)}
 								<div>
 									<div class="text-lg font-semibold text-slate-900 dark:text-slate-100 leading-none">
 										{metric.value}

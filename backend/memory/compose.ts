@@ -172,7 +172,7 @@ export interface CreateInput {
  * Store a reviewed draft.
  *
  * `source: 'user'`, which is not bookkeeping — it is what exempts the node from
- * structural decay, from eviction and from being archived into a consolidation,
+ * staleness decay, from eviction and from being archived into a consolidation,
  * and what makes the injected block tell the agent a person said this rather
  * than that a model inferred it.
  */
@@ -205,7 +205,6 @@ export function createMemory(input: CreateInput): GraphNode | null {
 	}
 
 	const node = graphQueries.upsert({
-		kind: 'episodic',
 		subkind: input.subkind,
 		scope,
 		projectId,
@@ -226,13 +225,11 @@ export function createMemory(input: CreateInput): GraphNode | null {
 	});
 
 	linkEntities(node.id, input.entities ?? []);
-
-	for (const raw of input.relatedPaths ?? []) {
-		const path = raw.replace(/\\/g, '/').replace(/^\.\//, '');
-		const target = input.projectId ? graphQueries.getByPath(input.projectId, path) : null;
-		if (!target) continue;
-		graphQueries.link({ srcId: node.id, dstId: target.id, rel: 'about', source: 'user' });
-	}
+	// Recorded whether or not those files have ever been seen — a path is a string
+	// on the memory now rather than a node that had to have been observed first.
+	// A hand-written memory naming a file the agent had not touched yet used to
+	// lose its attribution silently.
+	graphQueries.setPaths(node.id, input.relatedPaths ?? []);
 
 	scheduleVectorIndexing();
 	resetGraphEmptiness();

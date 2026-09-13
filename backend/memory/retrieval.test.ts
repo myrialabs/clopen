@@ -1,8 +1,8 @@
 /**
  * Memory Graph schema + retrieval tests.
  *
- * These run against a REAL in-memory SQLite database with migration 066 applied,
- * rather than a hand-mocked query surface. The interesting behaviour here lives
+ * These run against a REAL in-memory SQLite database with migrations 066 and 076
+ * applied, rather than a hand-mocked query surface. The interesting behaviour here lives
  * in the SQL — the COALESCE-based digest uniqueness, the FTS5 mirror, the
  * cross-project filters — and a mock would assert the test's own idea of that
  * SQL instead of the database's.
@@ -16,6 +16,7 @@ import { beforeEach, describe, expect, it, mock } from 'bun:test';
 import { Database } from 'bun:sqlite';
 import type { DatabaseConnection } from '$shared/types/database/connection';
 import * as migration066 from '$backend/database/migrations/066_create_memory_graph';
+import * as migration076 from '$backend/database/migrations/076_remove_memory_code_graph';
 
 let db: Database;
 
@@ -44,6 +45,7 @@ function resetDatabase(): void {
 	db = new Database(':memory:');
 	db.exec('PRAGMA foreign_keys = ON');
 	migration066.up(db as unknown as DatabaseConnection);
+	migration076.up(db as unknown as DatabaseConnection);
 }
 
 beforeEach(() => {
@@ -53,14 +55,12 @@ beforeEach(() => {
 describe('graph schema', () => {
 	it('upserts on digest instead of duplicating, and reinforces weight', () => {
 		const first = graphQueries.upsert({
-			kind: 'episodic',
 			subkind: 'decision',
 			projectId: PROJECT_A,
 			label: 'Engine SDKs install on demand',
 			body: 'They are not bundled into the global install.'
 		});
 		const second = graphQueries.upsert({
-			kind: 'episodic',
 			subkind: 'decision',
 			projectId: PROJECT_A,
 			label: 'Engine SDKs install on demand',
@@ -104,7 +104,6 @@ describe('graph schema', () => {
 
 	it('never lets an automatic write overwrite user-authored text', () => {
 		const node = graphQueries.upsert({
-			kind: 'episodic',
 			subkind: 'decision',
 			projectId: PROJECT_A,
 			label: 'Original label',
@@ -112,7 +111,6 @@ describe('graph schema', () => {
 		});
 
 		graphQueries.upsert({
-			kind: 'episodic',
 			subkind: 'decision',
 			projectId: PROJECT_A,
 			label: 'Machine-rewritten label',
@@ -125,7 +123,6 @@ describe('graph schema', () => {
 
 	it('re-derives the digest after a manual edit so extraction cannot revert it', () => {
 		const node = graphQueries.upsert({
-			kind: 'episodic',
 			subkind: 'observation',
 			projectId: PROJECT_A,
 			label: 'Snapshots use the file watcher'
@@ -138,7 +135,6 @@ describe('graph schema', () => {
 		// The original claim now hashes to a free digest, so re-extracting it adds a
 		// new node rather than overwriting the correction.
 		graphQueries.upsert({
-			kind: 'episodic',
 			subkind: 'observation',
 			projectId: PROJECT_A,
 			label: 'Snapshots use the file watcher'
@@ -147,52 +143,53 @@ describe('graph schema', () => {
 		expect(graphQueries.count({ projectId: PROJECT_A })).toBe(2);
 	});
 
-	it('gives each dependency its own identity', () => {
-		// Dependencies carry no path or symbol, so without a name-based fallback they
-		// all hash to the same digest and each new package overwrites the last.
-		const lodash = deriveDigest({ kind: 'structural', subkind: 'dependency', label: 'lodash' });
-		const zod = deriveDigest({ kind: 'structural', subkind: 'dependency', label: 'zod' });
-		expect(lodash).not.toBe(zod);
-	});
-
-	it('keeps structural identity tied to path and symbol', () => {
-		const a = deriveDigest({ kind: 'structural', subkind: 'file', label: 'x', path: 'backend/a.ts' });
-		const b = deriveDigest({ kind: 'structural', subkind: 'file', label: 'totally different label', path: 'backend/a.ts' });
-		const c = deriveDigest({ kind: 'structural', subkind: 'file', label: 'x', path: 'backend/b.ts' });
+	it('keeps identity in the claim, not in the spelling of it', () => {
+		// Whitespace and casing are not a different belief. Without normalising them
+		// the same decision, re-extracted, forks into a second node competing with
+		// the first for the same recall slot.
+		const a = deriveDigest({ subkind: 'decision', label: 'Bun only', body: 'No Node.' });
+		const b = deriveDigest({ subkind: 'decision', label: 'BUN   ONLY', body: 'no  node.' });
+		const c = deriveDigest({ subkind: 'decision', label: 'Bun only', body: 'Node is fine.' });
 
 		expect(a).toBe(b);
 		expect(a).not.toBe(c);
+	});
+
+	it('separates the subkinds, because a preference is not an observation', () => {
+		const preference = deriveDigest({ subkind: 'preference', label: 'Tabs' });
+		const observation = deriveDigest({ subkind: 'observation', label: 'Tabs' });
+		expect(preference).not.toBe(observation);
 	});
 });
 
 describe('graph edges', () => {
 	it('rejects self-loops and strengthens repeated links', () => {
-		const a = graphQueries.upsert({ kind: 'episodic', subkind: 'decision', projectId: PROJECT_A, label: 'A' });
-		const b = graphQueries.upsert({ kind: 'structural', subkind: 'file', projectId: PROJECT_A, label: 'b.ts', path: 'b.ts' });
+		const a = graphQueries.upsert({ subkind: 'decision', projectId: PROJECT_A, label: 'A' });
+		const b = graphQueries.upsert({ subkind: 'observation', projectId: PROJECT_A, label: 'B' });
 
-		expect(graphQueries.link({ srcId: a.id, dstId: a.id, rel: 'about' })).toBeNull();
+		expect(graphQueries.link({ srcId: a.id, dstId: a.id, rel: 'relates_to' })).toBeNull();
 
-		const first = graphQueries.link({ srcId: a.id, dstId: b.id, rel: 'about' })!;
-		const second = graphQueries.link({ srcId: a.id, dstId: b.id, rel: 'about' })!;
+		const first = graphQueries.link({ srcId: a.id, dstId: b.id, rel: 'relates_to' })!;
+		const second = graphQueries.link({ srcId: a.id, dstId: b.id, rel: 'relates_to' })!;
 		expect(second.id).toBe(first.id);
 		expect(second.weight).toBeGreaterThan(first.weight);
 	});
 
 	it('cascades edges when a node is hard-deleted', () => {
-		const a = graphQueries.upsert({ kind: 'episodic', subkind: 'decision', projectId: PROJECT_A, label: 'A' });
-		const b = graphQueries.upsert({ kind: 'structural', subkind: 'file', projectId: PROJECT_A, label: 'b.ts', path: 'b.ts' });
-		graphQueries.link({ srcId: a.id, dstId: b.id, rel: 'about' });
+		const a = graphQueries.upsert({ subkind: 'decision', projectId: PROJECT_A, label: 'A' });
+		const b = graphQueries.upsert({ subkind: 'observation', projectId: PROJECT_A, label: 'B' });
+		graphQueries.link({ srcId: a.id, dstId: b.id, rel: 'relates_to' });
 
 		graphQueries.remove(b.id);
 		expect(graphQueries.edgesOf(a.id)).toHaveLength(0);
 	});
 
 	it('walks multiple hops and reports distance', () => {
-		const a = graphQueries.upsert({ kind: 'episodic', subkind: 'decision', projectId: PROJECT_A, label: 'A' });
-		const b = graphQueries.upsert({ kind: 'structural', subkind: 'file', projectId: PROJECT_A, label: 'b.ts', path: 'b.ts' });
-		const c = graphQueries.upsert({ kind: 'structural', subkind: 'file', projectId: PROJECT_A, label: 'c.ts', path: 'c.ts' });
-		graphQueries.link({ srcId: a.id, dstId: b.id, rel: 'about' });
-		graphQueries.link({ srcId: b.id, dstId: c.id, rel: 'imports' });
+		const a = graphQueries.upsert({ subkind: 'decision', projectId: PROJECT_A, label: 'A' });
+		const b = graphQueries.upsert({ subkind: 'observation', projectId: PROJECT_A, label: 'B' });
+		const c = graphQueries.upsert({ subkind: 'failure', projectId: PROJECT_A, label: 'C' });
+		graphQueries.link({ srcId: a.id, dstId: b.id, rel: 'relates_to' });
+		graphQueries.link({ srcId: b.id, dstId: c.id, rel: 'caused_by' });
 
 		const oneHop = graphQueries.neighbours(a.id, 1);
 		expect(oneHop.map(n => n.node.id)).toEqual([b.id]);
@@ -201,46 +198,129 @@ describe('graph edges', () => {
 		expect(twoHops.find(n => n.node.id === c.id)?.hops).toBe(2);
 	});
 
-	it('bridges episodic and structural memory through `about`', () => {
+	it('records the files a memory is about as an attribute, not a node', () => {
+		// The one thing the code half was still doing, and the whole reason migration
+		// 076 could remove it: a memory names the code it concerns, and nothing has
+		// to exist on the other end of an edge for that to be true.
 		const decision = graphQueries.upsert({
-			kind: 'episodic',
 			subkind: 'decision',
 			projectId: PROJECT_A,
 			label: 'Credentials are read from the database, never from env vars'
 		});
-		const file = graphQueries.upsert({
-			kind: 'structural',
-			subkind: 'file',
-			projectId: PROJECT_A,
-			label: 'engine-queries.ts',
-			path: 'backend/database/queries/engine-queries.ts'
-		});
-		graphQueries.link({ srcId: decision.id, dstId: file.id, rel: 'about' });
+		graphQueries.setPaths(decision.id, ['backend/database/queries/engine-queries.ts']);
 
-		// Arriving from the code should reach the decision made about it.
-		const fromCode = graphQueries.neighbours(file.id, 1);
-		expect(fromCode.map(n => n.node.id)).toContain(decision.id);
+		expect(graphQueries.pathsOf(decision.id)).toEqual([
+			'backend/database/queries/engine-queries.ts'
+		]);
+		// Arriving from the code reaches the decision made about it.
+		expect(
+			graphQueries
+				.nodesForPaths(PROJECT_A, ['backend/database/queries/engine-queries.ts'])
+				.map(n => n.id)
+		).toContain(decision.id);
+		// And no node was created to stand in for the file.
+		expect(graphQueries.count({ projectId: PROJECT_A })).toBe(1);
+	});
+
+	it('normalizes a path however it was spelled', () => {
+		// They arrive from a model, from a disk diff and from Windows. Three
+		// spellings of one file would be three keys, and invalidation would miss two.
+		const note = graphQueries.upsert({ subkind: 'observation', projectId: PROJECT_A, label: 'N' });
+		graphQueries.setPaths(note.id, ['./backend/a.ts', 'backend\\a.ts', '/backend/a.ts']);
+
+		expect(graphQueries.pathsOf(note.id)).toEqual(['backend/a.ts']);
+	});
+
+	it('damps a subject shared by much of the graph instead of dropping it', () => {
+		// This used to assert the opposite, and the reversal is the point. Dropping
+		// any group over two dozen sounded like it was excluding "a word everyone
+		// uses"; measured on a real store it excluded `Clopen` (496 memories),
+		// `Arga` (299) and `wpuploader` (131) — the product names that are the most
+		// meaningful lobes the picture could have — and left 62% of the graph as
+		// isolated dots. The concern was right but the lever was wrong: a broad
+		// subject says LESS about any two of its members, which is a weight, not a
+		// veto.
+		const ids: string[] = [];
+		for (let i = 0; i < 30; i++) {
+			const node = graphQueries.upsert({ subkind: 'observation', projectId: PROJECT_A, label: `Note ${i}` });
+			graphQueries.setEntities(node.id, [{ key: 'typescript', name: 'TypeScript' }]);
+			ids.push(node.id);
+		}
+
+		const subject = graphQueries.derivedEdges(ids).filter(e => e.via === 'subject');
+		expect(subject.length).toBeGreaterThan(0);
+		// Weaker than a small group's, which is what Louvain reads.
+		for (const edge of subject) expect(edge.weight).toBeLessThan(1);
+
+		// And still bounded: a thirty-member subject is not a 435-edge clique.
+		const degree = new Map<string, number>();
+		for (const edge of subject) {
+			degree.set(edge.srcId, (degree.get(edge.srcId) ?? 0) + 1);
+			degree.set(edge.dstId, (degree.get(edge.dstId) ?? 0) + 1);
+		}
+		expect(Math.max(...degree.values())).toBeLessThanOrEqual(6);
+	});
+
+	it('connects two memories that claim something about the same file', () => {
+		// What the code half provided by accident: two memories about `retrieval.ts`
+		// used to be joined through the file NODE between them. Migration 076 kept
+		// the attribution and dropped the connection, which left 985 of one real
+		// graph's memories sharing a file with nobody to show for it.
+		const a = graphQueries.upsert({ subkind: 'observation', projectId: PROJECT_A, label: 'Retrieval fuses two channels with RRF' });
+		const b = graphQueries.upsert({ subkind: 'decision', projectId: PROJECT_A, label: 'The vector channel was made precise for the search box' });
+		const elsewhere = graphQueries.upsert({ subkind: 'observation', projectId: PROJECT_A, label: 'Unrelated note' });
+		graphQueries.setPaths(a.id, ['backend/memory/retrieval.ts']);
+		graphQueries.setPaths(b.id, ['backend/memory/retrieval.ts']);
+		graphQueries.setPaths(elsewhere.id, ['frontend/app.ts']);
+
+		const viaPath = graphQueries.derivedEdges([a.id, b.id, elsewhere.id]).filter(e => e.via === 'path');
+		expect(viaPath.some(e => [e.srcId, e.dstId].includes(a.id) && [e.srcId, e.dstId].includes(b.id))).toBe(true);
+		expect(viaPath.some(e => [e.srcId, e.dstId].includes(elsewhere.id))).toBe(false);
+
+		// Derived, not stored: nothing was written that could outlive the claim.
+		expect(graphQueries.edgesOf(a.id)).toHaveLength(0);
+	});
+
+	it('reaches a memory about the same file in one traversal hop', () => {
+		// The recall half of the same loss. Before 076 a question that matched one
+		// memory about a file could reach the others in two hops, through the file
+		// node; without this it could not reach them at all.
+		const a = graphQueries.upsert({ subkind: 'observation', projectId: PROJECT_A, label: 'First note about the stream manager' });
+		const b = graphQueries.upsert({ subkind: 'failure', projectId: PROJECT_A, label: 'Second note, worded nothing like the first' });
+		graphQueries.setPaths(a.id, ['backend/chat/stream-manager.ts']);
+		graphQueries.setPaths(b.id, ['backend/chat/stream-manager.ts']);
+
+		expect(graphQueries.pathNeighbourIds(a.id)).toContain(b.id);
+		expect(graphQueries.neighbours(a.id, 1).map(n => n.node.id)).toContain(b.id);
+	});
+
+	it('replaces the paths on a memory rather than accumulating them', () => {
+		// Extraction re-reads the same memory whenever it is reinforced, and a later
+		// reading is a better one. Appending would keep every path an abandoned
+		// approach ever touched.
+		const note = graphQueries.upsert({ subkind: 'observation', projectId: PROJECT_A, label: 'N' });
+		graphQueries.setPaths(note.id, ['backend/old.ts']);
+		graphQueries.setPaths(note.id, ['backend/new.ts']);
+
+		expect(graphQueries.pathsOf(note.id)).toEqual(['backend/new.ts']);
 	});
 });
 
 describe('lexical retrieval', () => {
 	beforeEach(() => {
 		graphQueries.upsert({
-			kind: 'episodic',
 			subkind: 'failure',
 			projectId: PROJECT_A,
 			label: 'Codex exits with code 1 when its home directory is missing',
 			body: 'getCodexHomeDir now creates the directory on access.'
 		});
-		graphQueries.upsert({
-			kind: 'structural',
-			subkind: 'file',
+		const loader = graphQueries.upsert({
+			subkind: 'pattern',
 			projectId: PROJECT_A,
-			label: 'sdk-loader.ts',
-			path: 'backend/engine/sdk-loader.ts'
+			label: 'Engine SDKs are resolved lazily, one module per engine'
 		});
+		graphQueries.setPaths(loader.id, ['backend/engine/sdk-loader.ts']);
 		graphQueries.upsert({
-			kind: 'episodic',
 			subkind: 'decision',
 			projectId: PROJECT_B,
 			label: 'Preview capture uses fitScale times device pixel ratio'
@@ -253,13 +333,15 @@ describe('lexical retrieval', () => {
 	});
 
 	it('matches a path fragment, because paths are indexed split as well as whole', () => {
+		// The paths a memory names are joined into its own indexed text (see
+		// `indexedText`). Without that, removing the file nodes would have made a
+		// pasted path match nothing at all.
 		const result = retrieve({ query: 'sdk loader', projectId: PROJECT_A, expandHops: 0 });
-		expect(result.hits.map(h => h.node.path)).toContain('backend/engine/sdk-loader.ts');
+		expect(result.hits[0].node.label).toContain('Engine SDKs are resolved lazily');
 	});
 
 	it('scopes results to one project but still admits global memories', () => {
 		graphQueries.upsert({
-			kind: 'episodic',
 			subkind: 'preference',
 			scope: 'global',
 			projectId: null,
@@ -285,7 +367,6 @@ describe('lexical retrieval', () => {
 
 	it('drops archived nodes from the index and restores them on demand', () => {
 		const node = graphQueries.upsert({
-			kind: 'episodic',
 			subkind: 'observation',
 			projectId: PROJECT_A,
 			label: 'Zstd compresses large WebSocket responses'
@@ -301,25 +382,26 @@ describe('lexical retrieval', () => {
 
 describe('graph expansion', () => {
 	it('surfaces a neighbour of a match that the query itself never mentions', () => {
-		const file = graphQueries.upsert({
-			kind: 'structural',
-			subkind: 'file',
+		// Expansion travels the structure that is left: memories about the same
+		// subject are neighbours, without an edge in the table. The neighbour shares
+		// no token with the query, so only the hop can reach it.
+		const match = graphQueries.upsert({
+			subkind: 'observation',
 			projectId: PROJECT_A,
-			label: 'snapshot-service.ts',
-			path: 'backend/snapshot/snapshot-service.ts'
+			label: 'Snapshot capture reads from disk'
 		});
 		const decision = graphQueries.upsert({
-			kind: 'episodic',
 			subkind: 'decision',
 			projectId: PROJECT_A,
-			label: 'The disk is the source of truth, not the watcher dirty set'
+			label: 'A working tree beats any watcher dirty set'
 		});
-		graphQueries.link({ srcId: decision.id, dstId: file.id, rel: 'about' });
+		graphQueries.setEntities(match.id, [{ key: 'zeta', name: 'Zeta' }]);
+		graphQueries.setEntities(decision.id, [{ key: 'zeta', name: 'Zeta' }]);
 
-		const direct = retrieve({ query: 'snapshot-service', projectId: PROJECT_A, expandHops: 0 });
+		const direct = retrieve({ query: 'snapshot capture reads', projectId: PROJECT_A, expandHops: 0 });
 		expect(direct.hits.map(h => h.node.id)).not.toContain(decision.id);
 
-		const expanded = retrieve({ query: 'snapshot-service', projectId: PROJECT_A, expandHops: 1 });
+		const expanded = retrieve({ query: 'snapshot capture reads', projectId: PROJECT_A, expandHops: 1 });
 		const hit = expanded.hits.find(h => h.node.id === decision.id);
 		expect(hit).toBeDefined();
 		expect(hit!.channel).toBe('graph');
@@ -327,36 +409,32 @@ describe('graph expansion', () => {
 	});
 
 	it('ranks an expanded neighbour below the direct match that produced it', () => {
-		const file = graphQueries.upsert({
-			kind: 'structural',
-			subkind: 'file',
+		const match = graphQueries.upsert({
+			subkind: 'pattern',
 			projectId: PROJECT_A,
-			label: 'stream-manager.ts',
-			path: 'backend/chat/stream-manager.ts'
+			label: 'The stream manager owns every engine turn'
 		});
 		const note = graphQueries.upsert({
-			kind: 'episodic',
 			subkind: 'observation',
 			projectId: PROJECT_A,
 			label: 'Unrelated wording entirely'
 		});
-		graphQueries.link({ srcId: note.id, dstId: file.id, rel: 'about' });
+		graphQueries.setEntities(match.id, [{ key: 'streams', name: 'Streams' }]);
+		graphQueries.setEntities(note.id, [{ key: 'streams', name: 'Streams' }]);
 
-		const result = retrieve({ query: 'stream-manager', projectId: PROJECT_A, expandHops: 1 });
-		expect(result.hits[0].node.id).toBe(file.id);
+		const result = retrieve({ query: 'stream manager engine turn', projectId: PROJECT_A, expandHops: 1 });
+		expect(result.hits[0].node.id).toBe(match.id);
 	});
 });
 
 describe('ranking priors', () => {
 	it('prefers a pinned memory over an equally-matching unpinned one', () => {
 		graphQueries.upsert({
-			kind: 'episodic',
 			subkind: 'decision',
 			projectId: PROJECT_A,
 			label: 'Compression applies to websocket responses'
 		});
 		const pinned = graphQueries.upsert({
-			kind: 'episodic',
 			subkind: 'decision',
 			projectId: PROJECT_A,
 			label: 'Compression applies to websocket payloads',
@@ -376,7 +454,6 @@ describe('ranking priors', () => {
 	 */
 	it('does not count an access merely for retrieving a node', () => {
 		const node = graphQueries.upsert({
-			kind: 'episodic',
 			subkind: 'decision',
 			projectId: PROJECT_A,
 			label: 'Cursor pagination replaced full chain loading'
@@ -388,7 +465,6 @@ describe('ranking priors', () => {
 
 	it('counts an access when a caller says the result was consulted', () => {
 		const node = graphQueries.upsert({
-			kind: 'episodic',
 			subkind: 'decision',
 			projectId: PROJECT_A,
 			label: 'Cursor pagination replaced full chain loading'
@@ -407,19 +483,16 @@ describeIfEmbedding('vector retrieval', () => {
 		await embedder.load();
 
 		const target = graphQueries.upsert({
-			kind: 'episodic',
 			subkind: 'failure',
 			projectId: PROJECT_A,
 			label: 'The browser preview stayed stuck on Loading because early ICE candidates were not buffered'
 		});
 		graphQueries.upsert({
-			kind: 'episodic',
 			subkind: 'pattern',
 			projectId: PROJECT_A,
 			label: 'Svelte runes are used for state management across the frontend'
 		});
 		graphQueries.upsert({
-			kind: 'episodic',
 			subkind: 'observation',
 			projectId: PROJECT_A,
 			label: 'SQLite migrations are numbered sequentially and seeders run after them'
@@ -442,7 +515,6 @@ describeIfEmbedding('vector retrieval', () => {
 		await embedder.load();
 
 		const target = graphQueries.upsert({
-			kind: 'episodic',
 			subkind: 'decision',
 			projectId: PROJECT_A,
 			label: 'Permissions are enforced by a runtime hook because Clopen auto approves everything'
@@ -452,7 +524,6 @@ describeIfEmbedding('vector retrieval', () => {
 		// static embeddings put short texts closer together than their meanings do.
 		// A vector-only retriever would answer wrongly here.
 		graphQueries.upsert({
-			kind: 'episodic',
 			subkind: 'observation',
 			projectId: PROJECT_A,
 			label: 'The git panel actions stay visible regardless of repository state'
@@ -480,11 +551,10 @@ describeIfEmbedding('vector retrieval', () => {
 			'Arga is a full-stack developer working in the JavaScript and TypeScript ecosystem',
 			'Arga is a full-stack developer with five years of experience based in Indonesia',
 			'Arga is the user of this workspace: a JavaScript and TypeScript full-stack developer'
-		].map(label => graphQueries.upsert({ kind: 'episodic', subkind: 'entity', projectId: PROJECT_A, label }));
+		].map(label => graphQueries.upsert({ subkind: 'entity', projectId: PROJECT_A, label }));
 		for (const node of arga) graphQueries.setEntities(node.id, [{ key: 'arga', name: 'Arga' }]);
 
 		const unrelated = graphQueries.upsert({
-			kind: 'episodic',
 			subkind: 'observation',
 			projectId: PROJECT_A,
 			label: 'Zstd compression is applied to large WebSocket responses'
@@ -500,9 +570,9 @@ describeIfEmbedding('vector retrieval', () => {
 		// the view a field of disconnected dots. What was wrong with those edges was
 		// that COSINE chose them — two memories are related when they are about the
 		// same THING, which extraction already records.
-		const a = graphQueries.upsert({ kind: 'episodic', subkind: 'observation', projectId: PROJECT_A, label: 'TunnelKit exposes three tunnel modes' });
-		const b = graphQueries.upsert({ kind: 'episodic', subkind: 'decision', projectId: PROJECT_A, label: 'TunnelKit was extracted into its own library' });
-		const unrelated = graphQueries.upsert({ kind: 'episodic', subkind: 'observation', projectId: 'project-z', label: 'Something else entirely' });
+		const a = graphQueries.upsert({ subkind: 'observation', projectId: PROJECT_A, label: 'TunnelKit exposes three tunnel modes' });
+		const b = graphQueries.upsert({ subkind: 'decision', projectId: PROJECT_A, label: 'TunnelKit was extracted into its own library' });
+		const unrelated = graphQueries.upsert({ subkind: 'observation', projectId: 'project-z', label: 'Something else entirely' });
 		graphQueries.setEntities(a.id, [{ key: 'tunnelkit', name: 'TunnelKit' }]);
 		graphQueries.setEntities(b.id, [{ key: 'tunnelkit', name: 'TunnelKit' }]);
 
@@ -514,25 +584,12 @@ describeIfEmbedding('vector retrieval', () => {
 	});
 
 	it('reaches a memory about the same subject in one traversal hop', () => {
-		const a = graphQueries.upsert({ kind: 'episodic', subkind: 'observation', projectId: PROJECT_A, label: 'First note about the subject' });
-		const b = graphQueries.upsert({ kind: 'episodic', subkind: 'observation', projectId: PROJECT_A, label: 'Second note about the subject' });
+		const a = graphQueries.upsert({ subkind: 'observation', projectId: PROJECT_A, label: 'First note about the subject' });
+		const b = graphQueries.upsert({ subkind: 'observation', projectId: PROJECT_A, label: 'Second note about the subject' });
 		graphQueries.setEntities(a.id, [{ key: 'ptykit', name: 'PtyKit' }]);
 		graphQueries.setEntities(b.id, [{ key: 'ptykit', name: 'PtyKit' }]);
 
 		expect(graphQueries.neighbours(a.id, 1).map(n => n.node.id)).toContain(b.id);
-	});
-
-	it('does not connect a subject shared by too much of the graph', () => {
-		// A word everyone uses is not a relationship. Connecting forty memories
-		// through "TypeScript" would recreate the fabricated structure that
-		// similarity linking produced, from a different cause.
-		const ids: string[] = [];
-		for (let i = 0; i < 30; i++) {
-			const node = graphQueries.upsert({ kind: 'episodic', subkind: 'observation', projectId: PROJECT_A, label: `Note ${i}` });
-			graphQueries.setEntities(node.id, [{ key: 'typescript', name: 'TypeScript' }]);
-			ids.push(node.id);
-		}
-		expect(graphQueries.derivedEdges(ids).some(e => e.via === 'subject')).toBe(false);
 	});
 
 	it('never invents an edge between two memories', async () => {
@@ -546,7 +603,7 @@ describeIfEmbedding('vector retrieval', () => {
 			'ChatKit runs on Node.js 18 and Bun with its design tokens kept local',
 			'CommonForms Detection Service is a FastAPI PDF pipeline',
 			'Programmer Finder uses Flutter for the app and Elixir for the API'
-		].map(label => graphQueries.upsert({ kind: 'episodic', subkind: 'observation', projectId: PROJECT_A, label }));
+		].map(label => graphQueries.upsert({ subkind: 'observation', projectId: PROJECT_A, label }));
 
 		for (const node of nodes) {
 			expect(graphQueries.edgesOf(node.id).filter(e => e.rel === 'relates_to')).toHaveLength(0);
@@ -557,7 +614,6 @@ describeIfEmbedding('vector retrieval', () => {
 		await embedder.load();
 
 		graphQueries.upsert({
-			kind: 'episodic',
 			subkind: 'decision',
 			projectId: PROJECT_A,
 			label: 'Engine SDKs are installed on demand into the managed stack directory'
@@ -609,58 +665,48 @@ describe('graph expansion', () => {
 	/**
 	 * Edges deliberately cross project boundaries — that is what lets a pattern
 	 * proven in one repository be reused in another. Traversal therefore has to
-	 * re-apply the scope filter, or one hop from a shared dependency node reaches
-	 * another project's files and, through them, another project's memories — into a
-	 * block that is about to be injected into THIS project's prompt.
+	 * re-apply the scope filter, or one hop from a memory about a shared subject
+	 * reaches another project's memories — into a block that is about to be
+	 * injected into THIS project's prompt.
 	 */
 	it('does not cross into another project through a shared node', () => {
-		const shared = graphQueries.upsert({
-			kind: 'structural',
-			subkind: 'dependency',
-			scope: 'global',
-			projectId: null,
-			label: 'zod'
-		});
 		const mine = graphQueries.upsert({
-			kind: 'structural',
-			subkind: 'file',
+			subkind: 'pattern',
 			projectId: PROJECT_A,
-			label: 'mine.ts',
-			path: 'mine.ts'
+			label: 'Every boundary here is validated with zod'
 		});
 		const theirs = graphQueries.upsert({
-			kind: 'episodic',
 			subkind: 'decision',
 			projectId: PROJECT_B,
 			label: 'Another team decided to validate every boundary with zod'
 		});
-		graphQueries.link({ srcId: mine.id, dstId: shared.id, rel: 'imports' });
-		graphQueries.link({ srcId: theirs.id, dstId: shared.id, rel: 'about' });
+		// The bridge that WOULD carry the hop, if the filter did not re-apply.
+		graphQueries.setEntities(mine.id, [{ key: 'zod', name: 'Zod' }]);
+		graphQueries.setEntities(theirs.id, [{ key: 'zod', name: 'Zod' }]);
 
 		const hits = retrieve({ query: 'zod', projectId: PROJECT_A, expandHops: 2 }).hits;
+		expect(hits.map(h => h.node.id)).toContain(mine.id);
 		expect(hits.map(h => h.node.id)).not.toContain(theirs.id);
 	});
 
 	it('does not leak another session\'s private memories', () => {
 		const shared = graphQueries.upsert({
-			kind: 'structural',
-			subkind: 'file',
+			subkind: 'observation',
 			projectId: PROJECT_A,
-			label: 'shared.ts',
-			path: 'shared.ts'
+			label: 'The shared queue is drained on a timer'
 		});
 		const priv = graphQueries.upsert({
-			kind: 'episodic',
 			subkind: 'observation',
 			scope: 'session',
 			projectId: PROJECT_A,
 			sessionId: 'other-session',
 			label: 'Private to another conversation entirely'
 		});
-		graphQueries.link({ srcId: priv.id, dstId: shared.id, rel: 'about' });
+		graphQueries.setEntities(shared.id, [{ key: 'queue', name: 'Queue' }]);
+		graphQueries.setEntities(priv.id, [{ key: 'queue', name: 'Queue' }]);
 
 		const hits = retrieve({
-			query: 'shared.ts',
+			query: 'shared queue drained',
 			projectId: PROJECT_A,
 			sessionId: 'my-session',
 			expandHops: 2
@@ -670,59 +716,72 @@ describe('graph expansion', () => {
 
 	it('reaches a memory through the file the turn is working in', () => {
 		// The "continue" case: the query says nothing, the working set says plenty.
-		const target = graphQueries.upsert({
-			kind: 'structural',
-			subkind: 'file',
-			projectId: PROJECT_A,
-			label: 'auth.ts',
-			path: 'backend/auth.ts'
-		});
+		// The seed IS the memory now — it used to be the file node, which then spent
+		// a hop of expansion crossing an `about` edge to get here.
 		const lesson = graphQueries.upsert({
-			kind: 'episodic',
 			subkind: 'failure',
 			projectId: PROJECT_A,
 			label: 'Rotating the signing key without a grace period logged everyone out'
 		});
-		graphQueries.link({ srcId: lesson.id, dstId: target.id, rel: 'about' });
+		graphQueries.setPaths(lesson.id, ['backend/auth.ts']);
 
 		const hits = retrieve({
 			query: 'lanjutkan',
 			projectId: PROJECT_A,
 			anchorPaths: ['backend/auth.ts'],
-			expandHops: 1
+			expandHops: 0
 		}).hits;
 		expect(hits.map(h => h.node.id)).toContain(lesson.id);
 	});
 
-	it('does not let a hub node drown the result in its neighbours', () => {
-		// Activation is divided by the neighbour count, so a forty-edge hub passes
-		// almost nothing to any one of them. A flat per-hop bonus — what a plain BFS
-		// expansion gives — has exactly the opposite behaviour.
-		const hub = graphQueries.upsert({
-			kind: 'structural',
-			subkind: 'file',
-			projectId: PROJECT_A,
-			label: 'hub.ts',
-			path: 'hub.ts'
+	it('does not anchor on a path another project claimed', () => {
+		// `nodesForPaths` is project-scoped, unlike the invalidation lookup: a memory
+		// about `src/index.ts` in another repository says nothing about this one.
+		const theirs = graphQueries.upsert({
+			subkind: 'observation',
+			projectId: PROJECT_B,
+			label: 'Their entry point re-exports everything'
 		});
+		graphQueries.setPaths(theirs.id, ['src/index.ts']);
+
+		const hits = retrieve({
+			query: 'lanjutkan',
+			projectId: PROJECT_A,
+			anchorPaths: ['src/index.ts'],
+			expandHops: 0
+		}).hits;
+		expect(hits.map(h => h.node.id)).not.toContain(theirs.id);
+	});
+
+	it('does not let a hub drown the result in its neighbours', () => {
+		// Activation is divided by the neighbour count, so a thirty-member subject
+		// passes almost nothing to any one of them. A flat per-hop bonus — what a
+		// plain BFS expansion gives — has exactly the opposite behaviour.
+		//
+		// The subject's NAME is deliberately nothing the query says: entity names are
+		// joined into each memory's indexed text, so naming it "Barrel" would have
+		// every leaf matching "barrel" lexically and the hop would not be what was
+		// under test.
 		const direct = graphQueries.upsert({
-			kind: 'episodic',
 			subkind: 'decision',
 			projectId: PROJECT_A,
-			label: 'hub.ts is the shared barrel export for the module'
+			label: 'The barrel export is the only public surface here'
 		});
-		graphQueries.link({ srcId: direct.id, dstId: hub.id, rel: 'about' });
+		graphQueries.setEntities(direct.id, [{ key: 'zeta', name: 'Zeta' }]);
 		for (let i = 0; i < 30; i++) {
 			const leaf = graphQueries.upsert({
-				kind: 'episodic',
 				subkind: 'observation',
 				projectId: PROJECT_A,
 				label: `Unrelated note number ${i} about nothing in particular`
 			});
-			graphQueries.link({ srcId: leaf.id, dstId: hub.id, rel: 'about' });
+			graphQueries.setEntities(leaf.id, [{ key: 'zeta', name: 'Zeta' }]);
 		}
 
-		const hits = retrieve({ query: 'hub.ts barrel export', projectId: PROJECT_A, expandHops: 1 }).hits;
+		const hits = retrieve({
+			query: 'barrel export public surface',
+			projectId: PROJECT_A,
+			expandHops: 1
+		}).hits;
 		expect(hits[0].node.id).toBe(direct.id);
 	});
 });
@@ -755,7 +814,6 @@ describe('lexical query building', () => {
 describe('multi-project scoping', () => {
 	function memoryIn(projectId: string | null, label: string) {
 		return graphQueries.upsert({
-			kind: 'episodic',
 			subkind: 'decision',
 			scope: projectId ? 'project' : 'global',
 			projectId,
@@ -798,20 +856,13 @@ describe('multi-project scoping', () => {
 	});
 
 	it('keeps expansion inside the selection', () => {
-		// Edges deliberately cross projects, so one hop from a shared dependency used
-		// to reach another project's files and, through them, another project's
-		// memories — into a block about to be injected into this project's prompt.
+		// Edges and shared subjects deliberately cross projects, so one hop used to
+		// reach another project's memories — into a block about to be injected into
+		// this project's prompt.
 		const mine = memoryIn(PROJECT_A, 'Uses the shared queue distinctivetoken');
 		const theirs = memoryIn('project-c', 'Also uses the shared queue');
-		const shared = graphQueries.upsert({
-			kind: 'structural',
-			subkind: 'dependency',
-			scope: 'global',
-			projectId: null,
-			label: 'shared-queue'
-		});
-		graphQueries.link({ srcId: mine.id, dstId: shared.id, rel: 'about' });
-		graphQueries.link({ srcId: theirs.id, dstId: shared.id, rel: 'about' });
+		graphQueries.setEntities(mine.id, [{ key: 'sharedqueue', name: 'Shared queue' }]);
+		graphQueries.setEntities(theirs.id, [{ key: 'sharedqueue', name: 'Shared queue' }]);
 
 		const ids = retrieve({
 			query: 'distinctivetoken',
@@ -835,7 +886,6 @@ describe('memory that crosses projects', () => {
 	 */
 	function travelling(projectId: string, label: string, body = '') {
 		return graphQueries.upsert({
-			kind: 'episodic',
 			subkind: 'pattern',
 			scope: 'project',
 			projectId,
@@ -848,7 +898,6 @@ describe('memory that crosses projects', () => {
 
 	function local(projectId: string, label: string, body = '') {
 		return graphQueries.upsert({
-			kind: 'episodic',
 			subkind: 'decision',
 			scope: 'project',
 			projectId,
@@ -894,18 +943,15 @@ describe('memory that crosses projects', () => {
 		expect(ids).not.toContain(theirs.id);
 	});
 
-	it('never lets another project\'s files travel', () => {
-		// `reach` is forced to `here` for structural nodes on insert, so a path from
-		// another repository cannot arrive however the caller asks. This is the leak
-		// the blanket project filter was originally added to stop, kept.
-		graphQueries.upsert({
-			kind: 'structural',
-			subkind: 'file',
+	it('never lets a memory travel unless it was judged to', () => {
+		// `reach` is the only thing that admits another repository's memory here, and
+		// it defaults to `here`. This is the leak the blanket project filter was
+		// originally added to stop, kept after the filter was relaxed.
+		const local = graphQueries.upsert({
+			subkind: 'observation',
 			scope: 'project',
 			projectId: 'project-b',
-			label: 'packages/distinctivemodule/index.ts',
-			path: 'packages/distinctivemodule/index.ts',
-			reach: 'anywhere'
+			label: 'The distinctivemodule package is vendored in this repository'
 		});
 
 		const hits = retrieve({
@@ -915,7 +961,7 @@ describe('memory that crosses projects', () => {
 			expandHops: 1
 		}).hits;
 
-		expect(hits.filter(hit => hit.node.kind === 'structural')).toHaveLength(0);
+		expect(hits.map(hit => hit.node.id)).not.toContain(local.id);
 	});
 
 	it('ranks a local memory above an equally-matching travelled one', () => {
@@ -953,7 +999,6 @@ describe('conflicting memories', () => {
 	 */
 	function preference(label: string, overrides: Record<string, unknown> = {}) {
 		return graphQueries.upsert({
-			kind: 'episodic',
 			subkind: 'preference',
 			scope: 'global',
 			projectId: null,
