@@ -29,6 +29,7 @@
 	import { debug } from '$shared/utils/logger';
 
 	// Components
+	import AiChangesSummary from './components/AiChangesSummary.svelte';
 	import FileAttachmentPreview from './components/FileAttachmentPreview.svelte';
 	import EditModeIndicator from './components/EditModeIndicator.svelte';
 	import ChatInputActions from './components/ChatInputActions.svelte';
@@ -537,6 +538,9 @@
 			ondrop={fileHandling.handleDrop}
 		>
 			<div class="flex-1">
+				<!-- What this chat has changed so far, and the way into the detail -->
+				<AiChangesSummary />
+
 				<!-- Edit Mode Indicator -->
 				<EditModeIndicator onCancel={handleCancelEdit} />
 

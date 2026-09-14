@@ -84,7 +84,6 @@
 	import { getGitStatusLabel, getGitStatusColor } from '$frontend/utils/git-status';
 	import type { IconName } from '$shared/types/ui/icons';
 	import { fileState, clearRevealRequest, collapseAllTrigger } from '$frontend/stores/core/files.svelte';
-	import { onAiFilesChange } from '$frontend/utils/ai-changes';
 	import {
 		gitStatusState,
 		initGitStatus,
@@ -132,7 +131,6 @@
 	let expandedFolders = $state(new Set<string>());
 
 	// AI changes set for explorer dot indicators
-	let aiChangesSet = $state(new Set<string>());
 
 	// Watch global collapse-all signal
 	$effect(() => {
@@ -4137,11 +4135,6 @@
 		initGitStatus();
 		initIgnoredPaths();
 
-		// Subscribe to AI changes for explorer dot indicators
-		const unsubAiFiles = onAiFilesChange((paths) => {
-			aiChangesSet = new Set(paths);
-		});
-
 		// Safety-net reconcile when the user returns to the app/tab. File-watch
 		// push events can be missed while the window is hidden (OS throttling,
 		// sleep/wake, dropped events); reconciling on focus re-establishes truth
@@ -4165,7 +4158,6 @@
 		}
 
 		return () => {
-			unsubAiFiles();
 			if (typeof window !== 'undefined') {
 				window.removeEventListener('focus', handleWindowFocusRefresh);
 				document.removeEventListener('visibilitychange', handleVisibilityChange);
@@ -4378,7 +4370,6 @@
 							{isRootDropTarget}
 							{busyPaths}
 							{isRootBusy}
-							{aiChangesSet}
 						/>
 					</div>
 				</div>

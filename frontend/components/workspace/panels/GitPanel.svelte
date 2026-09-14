@@ -1,6 +1,5 @@
 <script lang="ts">
 	import { onMount, untrack } from 'svelte';
-	import { onAiFilesChange } from '$frontend/utils/ai-changes';
 	import Icon from '$frontend/components/common/display/Icon.svelte';
 	import Modal from '$frontend/components/common/overlay/Modal.svelte';
 	import Dialog from '$frontend/components/common/overlay/Dialog.svelte';
@@ -83,7 +82,6 @@
 	let statusLoaded = $state(false);
 	let isLoading = $state(false);
 	let gitStatus = $state<GitStatus>({ staged: [], unstaged: [], untracked: [], conflicted: [] });
-	let aiChangesSet = $state(new Set<string>());
 	let branchInfo = $state<GitBranchInfo | null>(null);
 
 	// Action-bar busy flags are keyed per-project in the workspace store, so an
@@ -4831,10 +4829,6 @@
 
 	// Monitor container width
 	onMount(() => {
-		const unsubAiFiles = onAiFilesChange((paths) => {
-			aiChangesSet = new Set(paths);
-		});
-
 		let resizeObserver: ResizeObserver | null = null;
 		if (containerRef && typeof ResizeObserver !== 'undefined') {
 			resizeObserver = new ResizeObserver((entries) => {
@@ -4846,7 +4840,6 @@
 		}
 
 		return () => {
-			unsubAiFiles();
 			resizeObserver?.disconnect();
 		};
 	});
@@ -5146,7 +5139,6 @@
 							activeSection={activeTab?.section ?? null}
 							onViewDiff={(file, sec) => viewDiff(file, sec)}
 							onResolve={(path) => openConflictResolver(path)}
-							{aiChangesSet}
 						/>
 					{/if}
 					<ChangesSection
@@ -5160,7 +5152,6 @@
 						onUnstageAll={() => unstageAll(nested.path)}
 						onStash={() => openStashPrompt('staged', nested.path)}
 						onViewDiff={(file, sec) => viewDiff(file, sec)}
-						{aiChangesSet}
 						busy={getGitOps(watchScope, nested.path).isStaging}
 					/>
 					<ChangesSection
@@ -5175,7 +5166,6 @@
 						onDiscard={(path) => discardFile(path)}
 						onDiscardAll={() => discardAll(nested.path)}
 						onViewDiff={(file, sec) => viewDiff(file, sec)}
-						{aiChangesSet}
 						busy={getGitOps(watchScope, nested.path).isStaging}
 					/>
 					{#if nestedTotalChanges === 0 && !isLoading}
@@ -6095,7 +6085,6 @@
 					activeSection={activeTab?.section ?? null}
 					onViewDiff={viewDiff}
 					onResolve={openConflictResolver}
-					{aiChangesSet}
 				/>
 			{/if}
 
@@ -6110,7 +6099,6 @@
 				onUnstageAll={unstageAll}
 				onStash={() => openStashPrompt('staged')}
 				onViewDiff={viewDiff}
-				{aiChangesSet}
 				busy={ops.isStaging}
 			/>
 
@@ -6135,7 +6123,6 @@
 				onDiscard={discardFile}
 				onDiscardAll={discardAll}
 				onViewDiff={viewDiff}
-				{aiChangesSet}
 				busy={ops.isStaging}
 			/>
 

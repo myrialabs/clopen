@@ -39,6 +39,13 @@ export interface GutterChange {
 	oldLines: string[];
 	/** New lines in current content (empty for pure deletions) */
 	newLines: string[];
+	/**
+	 * False when the hunk was carried over from another revision and its lines
+	 * have shifted or partly gone since (see line-map.ts). Undefined means the
+	 * hunk was computed against the buffer it decorates, so the question does
+	 * not arise.
+	 */
+	exact?: boolean;
 	/** Which AI edit this hunk belongs to (undefined for git gutters) */
 	editIndex?: number;
 	/** Timestamp of the AI edit (undefined for git gutters) */
