@@ -231,6 +231,20 @@ export const integrationProjectionQueries = {
 		).get(targetKind, targetId) as IntegrationProjectionRow | null;
 	},
 
+	/**
+	 * Every projection of one kind, keyed by target id.
+	 *
+	 * The badge on a db-client connection needs to answer "is this row managed,
+	 * and by whom" for a whole list at once. Asking `getByTarget` per row would
+	 * be one statement per connection on every list call.
+	 */
+	getAllByKind(targetKind: IntegrationTargetKind): IntegrationProjectionRow[] {
+		const db = getDatabase();
+		return db.prepare(
+			`SELECT * FROM integration_projections WHERE target_kind = ?`
+		).all(targetKind) as IntegrationProjectionRow[];
+	},
+
 	upsert(input: {
 		accountId: string;
 		capability: IntegrationCapability;
@@ -240,12 +254,20 @@ export const integrationProjectionQueries = {
 		restore: unknown | null;
 	}): void {
 		const db = getDatabase();
+		// The conflict target is the full key: one account can own SEVERAL rows of
+		// the same kind for the same capability (a database account with two
+		// linked projects), so `target_id` identifies the row rather than being
+		// something an upsert overwrites.
+		//
+		// `restore_json` is deliberately NOT updated on conflict. It is the
+		// snapshot of what the row looked like before we adopted it, and
+		// re-projecting must never replace it with a picture of our own
+		// credential — that is the bug the MCP projector's comment describes.
 		db.prepare(`
 			INSERT INTO integration_projections (account_id, capability, target_kind, target_id, adopted, restore_json, created_at)
 			VALUES (?, ?, ?, ?, ?, ?, ?)
-			ON CONFLICT (account_id, capability, target_kind) DO UPDATE SET
-				target_id = excluded.target_id,
-				adopted   = excluded.adopted
+			ON CONFLICT (account_id, capability, target_kind, target_id) DO UPDATE SET
+				adopted = excluded.adopted
 		`).run(
 			input.accountId,
 			input.capability,
@@ -257,11 +279,17 @@ export const integrationProjectionQueries = {
 		);
 	},
 
-	remove(accountId: string, capability: IntegrationCapability, targetKind: IntegrationTargetKind): void {
+	remove(
+		accountId: string,
+		capability: IntegrationCapability,
+		targetKind: IntegrationTargetKind,
+		targetId: string
+	): void {
 		const db = getDatabase();
 		db.prepare(
-			`DELETE FROM integration_projections WHERE account_id = ? AND capability = ? AND target_kind = ?`
-		).run(accountId, capability, targetKind);
+			`DELETE FROM integration_projections
+			 WHERE account_id = ? AND capability = ? AND target_kind = ? AND target_id = ?`
+		).run(accountId, capability, targetKind, targetId);
 	},
 
 	/** The snapshot taken when an existing row was adopted, or null. */

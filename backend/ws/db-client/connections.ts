@@ -14,6 +14,7 @@ import type {
 	DbSslMode
 } from '$shared/types/db-client';
 import { debug } from '$shared/utils/logger';
+import { dbLinks } from '../../db-client/integrations';
 import { getDbClientPrincipal, requireDbClientConnectionAccess } from './access';
 
 const driverSchema = t.Union([
@@ -101,6 +102,20 @@ function normalizeSshPatch(input: DbClientConnectionInput['ssh']): DbClientConne
 	};
 }
 
+/**
+ * The fields a user may still change on a derived connection.
+ *
+ * A projection owns where the connection points and what it logs in with. The
+ * colour is decoration, and the name is what the user calls it in their own
+ * list — neither is derived from anything, so neither is taken away.
+ */
+function pickLocalFields(patch: Partial<DbClientConnectionInput>): Partial<DbClientConnectionInput> {
+	const local: Partial<DbClientConnectionInput> = {};
+	if (patch.name !== undefined) local.name = patch.name;
+	if (patch.color !== undefined) local.color = patch.color;
+	return local;
+}
+
 function ensureInputDefaults(input: DbClientConnectionInput): DbClientConnectionInput {
 	return {
 		...input,
@@ -117,7 +132,10 @@ export const connectionsHandler = createRouter()
 	}, async ({ conn }) => {
 		await initializeDatabase();
 		const { userId, isAdmin } = getDbClientPrincipal(conn);
-		return dbClientConnectionQueries.listForUser(userId, isAdmin);
+		// Ownership is attached HERE rather than stored on the connection: the
+		// answer lives in `integration_projections`, and duplicating it into a
+		// column would create a second place for it to be wrong.
+		return dbLinks.decorate(dbClientConnectionQueries.listForUser(userId, isAdmin));
 	})
 
 	.http('db-client:get', {
@@ -127,7 +145,7 @@ export const connectionsHandler = createRouter()
 		const { userId, isAdmin } = getDbClientPrincipal(conn);
 		const connection = dbClientConnectionQueries.getForUser(data.id, userId, isAdmin);
 		if (!connection) throw new Error('db-client connection not found');
-		return connection;
+		return { ...connection, managedBy: dbLinks.managedBy(data.id) };
 	})
 
 	.http('db-client:create', {
@@ -153,7 +171,13 @@ export const connectionsHandler = createRouter()
 	}, async ({ data, conn }) => {
 		const { userId, isAdmin } = getDbClientPrincipal(conn);
 		requireDbClientConnectionAccess(conn, data.id);
-		const patch = data.patch as Partial<DbClientConnectionInput>;
+		// A managed row is DERIVED. Letting the form edit its host or password
+		// would produce a connection the next re-projection silently reverts, so
+		// the two fields that are genuinely local are the only ones allowed
+		// through — everything else is changed by editing the link.
+		const patch = (dbLinks.isManaged(data.id)
+			? pickLocalFields(data.patch as Partial<DbClientConnectionInput>)
+			: data.patch) as Partial<DbClientConnectionInput>;
 		const normalized: Partial<DbClientConnectionInput> = {
 			...patch,
 			ssh: patch.ssh ? normalizeSshPatch(patch.ssh) : undefined
@@ -169,6 +193,13 @@ export const connectionsHandler = createRouter()
 	}, async ({ data, conn }) => {
 		const { userId, isAdmin } = getDbClientPrincipal(conn);
 		requireDbClientConnectionAccess(conn, data.id);
+		// Deleting a projected row here would leave the account owning a
+		// connection that no longer exists, and the next re-projection would
+		// recreate it — so the panel is told to unlink instead, which is the
+		// operation that actually means "I do not want this connection".
+		if (dbLinks.isManaged(data.id)) {
+			throw new Error('This connection comes from a connected account. Unlink it there to remove it.');
+		}
 		await connectionManager.release(data.id);
 		dbClientConnectionQueries.deleteForUser(data.id, userId, isAdmin);
 		return { ok: true };

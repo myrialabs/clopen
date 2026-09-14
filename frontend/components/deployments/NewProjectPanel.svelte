@@ -20,7 +20,7 @@
 	import Icon from '$frontend/components/common/display/Icon.svelte';
 	import Button from '$frontend/components/common/display/Button.svelte';
 	import { deploymentsStore } from '$frontend/stores/features/deployments.svelte';
-	import InlineError from './InlineError.svelte';
+	import InlineError from '$frontend/components/common/display/InlineError.svelte';
 
 	interface Props {
 		/** True while this panel is the visible tab — it fetches on becoming so. */
