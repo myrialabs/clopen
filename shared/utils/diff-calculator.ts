@@ -2,6 +2,11 @@
  * Diff Calculator Utility
  * Calculates git-like line-level differences between file contents
  * Accepts Buffer for binary-safe handling — converts to string internally for line diffing.
+ *
+ * "Binary-safe" means binary files are not line-counted at all. Splitting a PNG
+ * on newline bytes yields a line count with no meaning, and two screenshots
+ * once reported +159 lines into a checkpoint's total — dwarfing the source
+ * changes the number was there to describe.
  */
 
 export interface FileChangeStats {
@@ -10,11 +15,16 @@ export interface FileChangeStats {
 	deletions: number;
 }
 
-export interface FileDiff {
-	filepath: string;
-	insertions: number;
-	deletions: number;
-	status: 'added' | 'modified' | 'deleted';
+/**
+ * Whether these bytes are binary, and so cannot be counted or diffed as lines.
+ * A NUL byte in the first few KB is the same heuristic git uses.
+ */
+export function isBinaryBuffer(buf: Buffer): boolean {
+	const limit = Math.min(buf.length, 8000);
+	for (let i = 0; i < limit; i++) {
+		if (buf[i] === 0) return true;
+	}
+	return false;
 }
 
 /**
@@ -29,31 +39,30 @@ export function calculateFileChangeStats(
 	let totalDeletions = 0;
 	const changedFiles = new Set<string>();
 
-	// Check added and modified files
+	// Check added and modified files. A binary file still counts as changed — it
+	// just contributes no lines, because it has none.
 	for (const [filepath, newContent] of Object.entries(currentSnapshot)) {
 		const oldContent = previousSnapshot[filepath];
 
 		if (!oldContent) {
-			// File was added - count all lines as insertions
-			const lines = countLines(newContent.toString('utf-8'));
-			totalInsertions += lines;
 			changedFiles.add(filepath);
+			if (isBinaryBuffer(newContent)) continue;
+			totalInsertions += countLines(newContent.toString('utf-8'));
 		} else if (!oldContent.equals(newContent)) {
-			// File was modified - calculate line diff
+			changedFiles.add(filepath);
+			if (isBinaryBuffer(newContent) || isBinaryBuffer(oldContent)) continue;
 			const diff = calculateLineDiff(oldContent.toString('utf-8'), newContent.toString('utf-8'));
 			totalInsertions += diff.insertions;
 			totalDeletions += diff.deletions;
-			changedFiles.add(filepath);
 		}
 	}
 
 	// Check deleted files
 	for (const [filepath, oldContent] of Object.entries(previousSnapshot)) {
 		if (!currentSnapshot[filepath]) {
-			// File was deleted - count all lines as deletions
-			const lines = countLines(oldContent.toString('utf-8'));
-			totalDeletions += lines;
 			changedFiles.add(filepath);
+			if (isBinaryBuffer(oldContent)) continue;
+			totalDeletions += countLines(oldContent.toString('utf-8'));
 		}
 	}
 
@@ -62,56 +71,6 @@ export function calculateFileChangeStats(
 		insertions: totalInsertions,
 		deletions: totalDeletions
 	};
-}
-
-/**
- * Get detailed diff for each file
- * Useful for displaying individual file changes
- */
-export function getDetailedFileDiffs(
-	previousSnapshot: Record<string, Buffer>,
-	currentSnapshot: Record<string, Buffer>
-): FileDiff[] {
-	const diffs: FileDiff[] = [];
-
-	// Check added and modified files
-	for (const [filepath, newContent] of Object.entries(currentSnapshot)) {
-		const oldContent = previousSnapshot[filepath];
-
-		if (!oldContent) {
-			// File was added
-			diffs.push({
-				filepath,
-				insertions: countLines(newContent.toString('utf-8')),
-				deletions: 0,
-				status: 'added'
-			});
-		} else if (!oldContent.equals(newContent)) {
-			// File was modified
-			const diff = calculateLineDiff(oldContent.toString('utf-8'), newContent.toString('utf-8'));
-			diffs.push({
-				filepath,
-				insertions: diff.insertions,
-				deletions: diff.deletions,
-				status: 'modified'
-			});
-		}
-	}
-
-	// Check deleted files
-	for (const [filepath, oldContent] of Object.entries(previousSnapshot)) {
-		if (!currentSnapshot[filepath]) {
-			// File was deleted
-			diffs.push({
-				filepath,
-				insertions: 0,
-				deletions: countLines(oldContent.toString('utf-8')),
-				status: 'deleted'
-			});
-		}
-	}
-
-	return diffs;
 }
 
 /**
@@ -180,7 +139,13 @@ function longestCommonSubsequence(arr1: string[], arr2: string[]): number {
 function splitLines(content: string): string[] {
 	if (!content) return [];
 	// Normalize line endings and split
-	return content.replace(/\r\n/g, '\n').split('\n');
+	const lines = content.replace(/\r\n/g, '\n').split('\n');
+	// A trailing newline terminates the last line, it does not open a new one.
+	// Counting the empty string it leaves behind inflated every added or deleted
+	// file by exactly one line — a 2-line new file was reported as +3, which is
+	// not what git says and not what the user counts in the editor.
+	if (lines.length > 1 && lines[lines.length - 1] === '') lines.pop();
+	return lines;
 }
 
 /**

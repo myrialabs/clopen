@@ -21,7 +21,6 @@
 		onStash?: () => void;
 		onViewDiff?: (file: GitFileChange, section: string) => void;
 		onResolve?: (path: string) => void;
-		aiChangesSet?: Set<string>;
 		/**
 		 * A bulk action is running against this section's repo. Every header
 		 * button is disabled and the triggering ones swap to a spinner: on
@@ -40,7 +39,6 @@
 		onStageAll, onUnstageAll, onDiscardAll,
 		onStash,
 		onViewDiff, onResolve,
-		aiChangesSet = new Set<string>(),
 		busy = false
 	}: Props = $props();
 
@@ -223,7 +221,6 @@
 									{onDiscard}
 									{onViewDiff}
 									{onResolve}
-									{aiChangesSet}
 								/>
 							</div>
 						{/each}
@@ -241,7 +238,6 @@
 							{onDiscard}
 							{onViewDiff}
 							{onResolve}
-							{aiChangesSet}
 						/>
 					{/each}
 				</div>

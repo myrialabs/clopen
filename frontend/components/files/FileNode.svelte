@@ -6,6 +6,8 @@
 	import { getFileIcon } from '$frontend/utils/file-icon-mappings';
 	import { getFolderIcon } from '$frontend/utils/folder-icon-mappings';
 	import { getGitStatusColor, getGitStatusBadgeLabel, getGitStatusLabel } from '$frontend/utils/git-status';
+	import { aiMarkerState, aiMarkerTooltip } from '$frontend/utils/ai-change-marker';
+	import { openAiChanges } from '$frontend/stores/ui/ai-changes-modal.svelte';
 	import { onMount, tick } from 'svelte';
 	import { isLocalConnection, isMac, isWindows, isLinux, getExplorerShortcutLabels } from '$frontend/utils/platform';
 	import { ignoredPathsState } from '$frontend/stores/features/ignored-paths.svelte';
@@ -44,8 +46,7 @@
 		onNodeDrop,
 		onNodeDragEnd,
 		dropTargetPath = null,
-		busyPaths = new Set<string>(),
-		aiChangesSet = new Set<string>()
+		busyPaths = new Set<string>()
 	}: {
 		file: FileNodeType;
 		isSelected?: boolean;
@@ -74,7 +75,6 @@
 		onNodeDragEnd?: (file: FileNodeType, event: DragEvent) => void;
 		dropTargetPath?: string | null;
 		busyPaths?: Set<string>;
-		aiChangesSet?: Set<string>;
 	} = $props();
 
 	const revealLabel = $derived(
@@ -133,10 +133,9 @@
 		gitStatusCode ? getGitStatusBadgeLabel(gitStatusCode) : ''
 	);
 
-	// AI changes indicator
-	const hasAiChanges = $derived(
-		file.type === 'file' && aiChangesSet.has(file.path)
-	);
+	// AI changes indicator. Live while the change is still unstaged, dimmed once
+	// it has been staged or committed — see utils/ai-change-marker.ts.
+	const aiMarker = $derived(file.type === 'file' ? aiMarkerState(file.path) : null);
 
 	let nodeElement: HTMLDivElement;
 	let menuButtonElement: HTMLButtonElement;
@@ -297,7 +296,7 @@
 	</span>
 
 	<!-- Status indicators (unsaved dot + ai dot + git status letter) -->
-	{#if showModifiedIndicator || hasAiChanges || gitStatusCode}
+	{#if showModifiedIndicator || aiMarker || gitStatusCode}
 		<span class="flex items-center gap-1 flex-shrink-0 {isIgnored ? 'opacity-40' : ''}">
 			{#if showModifiedIndicator}
 				<span
@@ -305,11 +304,16 @@
 					title="Unsaved changes"
 				></span>
 			{/if}
-			{#if hasAiChanges}
-				<span
-					class="w-1.5 h-1.5 rounded-full bg-violet-500 dark:bg-violet-400"
-					title="Has AI changes"
-				></span>
+			{#if aiMarker}
+				<button
+					type="button"
+					class="w-1.5 h-1.5 rounded-full border-none p-0 cursor-pointer {aiMarker === 'live'
+						? 'bg-violet-500 dark:bg-violet-400'
+						: 'bg-violet-500/30 dark:bg-violet-400/30'}"
+					title={aiMarkerTooltip(file.path)}
+					onclick={(e) => { e.stopPropagation(); openAiChanges(file.path); }}
+					aria-label="Review this chat's changes to this file"
+				></button>
 			{/if}
 			{#if gitStatusCode}
 				<span
@@ -544,7 +548,6 @@
 			{onNodeDragEnd}
 			{dropTargetPath}
 			{busyPaths}
-			{aiChangesSet}
 		/>
 	{/each}
 {/if}
