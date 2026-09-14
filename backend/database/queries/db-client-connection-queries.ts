@@ -341,6 +341,25 @@ export const dbClientConnectionQueries = {
 		return redactConnectionSecrets(updated);
 	},
 
+	/**
+	 * Write the password exactly, including clearing it.
+	 *
+	 * `update()` treats an empty password as "the field was not re-typed" and
+	 * keeps what is stored, which is right for a form and wrong for a
+	 * projection: a derived row must equal what it was derived FROM, and
+	 * releasing an adopted row back to a user who never set a password has to
+	 * remove ours rather than leave it behind. This is that path, and it exists
+	 * for the integration projector alone.
+	 */
+	replacePassword(id: string, password: string | null): void {
+		const db = getDatabase();
+		db.prepare('UPDATE db_client_connections SET password = ?, updated_at = ? WHERE id = ?').run(
+			sealFor(TABLE, 'password', password && password.length > 0 ? password : null),
+			new Date().toISOString(),
+			id
+		);
+	},
+
 	delete(id: string): void {
 		const db = getDatabase();
 		db.prepare('DELETE FROM db_client_connections WHERE id = ?').run(id);

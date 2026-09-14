@@ -26,7 +26,7 @@
 	 */
 	import Icon from '$frontend/components/common/display/Icon.svelte';
 	import Button from '$frontend/components/common/display/Button.svelte';
-	import InlineError from './InlineError.svelte';
+	import InlineError from '$frontend/components/common/display/InlineError.svelte';
 	import { deploymentsStore } from '$frontend/stores/features/deployments.svelte';
 
 	interface Props {

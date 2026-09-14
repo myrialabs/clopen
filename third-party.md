@@ -646,8 +646,326 @@ TypeScript types written into the project on demand. Detect an existing local
 Supabase CLI project and adopt its config rather than asking the user to retype
 it.
 
-- [ ] Done
-- Notes: —
+- [x] Done
+- Notes:
+  - **The projection contract had to widen, and that is the load-bearing
+    change.** `integration_projections` was keyed `(account, capability,
+    target_kind)`, which encoded an assumption true only of the first capability
+    shipped: an account owns exactly ONE row. One Supabase personal access token
+    reaches every project in every organisation its user belongs to, so "which
+    database" is a choice made as many times as the user has databases. The
+    alternative — one account per Supabase project — is the mistake `Task 3`
+    refused for Vercel teams, since it makes a user with production and staging
+    paste the same token twice and rotate it in two places. So migration 077
+    widens the key with `target_id`, `Projector.project()` returns a LIST, and
+    `reproject()` diffs per TARGET rather than per capability: dropping one link
+    of two must release exactly one row, because releasing by capability would
+    tear the survivor down and re-adopt it, snapshotting our own credential on
+    the way. `mcp-projector` returns a single-element array and behaves exactly
+    as before. The pass also now computes every wanted projection BEFORE
+    releasing anything, so a provider error leaves the previous state intact
+    rather than half-released.
+  - **A link is where everything per-database lives.** New table
+    `integration_db_links` `(account_id, remote_ref, label, driver, mode,
+    secrets, config_json)`, the database sibling of `deploy_bindings`. The
+    Postgres password lives HERE, sealed (`secret-columns` gained the table),
+    because no Supabase API can read it back — `/database/password` is
+    PATCH-only by design — and because a projection must be rebuildable from
+    account + link alone, so a release-then-reproject cannot silently lose it.
+  - **Resolving an endpoint is async; projecting is not.** `reproject()` runs
+    inside account mutations, and working out a pooled host is a network call,
+    so the adapter's `resolveEndpoint()` is called ONCE at link time and its
+    answer is stored on the link. The projector then only copies fields, which
+    is also why a token rotation re-projects instantly instead of making every
+    account save wait on a third-party API.
+  - **Adoption identity includes the USERNAME, and a test caught that it must.**
+    Every Supabase project in one region answers on the same pooler host, the
+    same port and a database called `postgres`; `postgres.<ref>` is the only
+    part that says which project. Matching on host+port+database made a second
+    linked project adopt the first one's row, so an account with two projects
+    projected one connection. `projector.test.ts` covers it, plus
+    release-one-of-two, adopt-and-hand-back-with-the-user's-password, and
+    re-projecting not re-snapshotting our own credential.
+  - **Verified against the published OpenAPI document** at
+    `api.supabase.com/api/v1-json`, not from memory, after `Task 3`'s endpoint
+    guesses. Used: `/v1/projects`, `/v1/projects/{ref}`,
+    `/config/database/pooler`, `/types/typescript`, `/functions` + `/body`,
+    `/advisors/security`. NOT used: `POST /database/query`, which exists and is
+    marked beta — everything inside the database goes over SQL instead.
+  - **The rule that shapes the whole surface: anything inside the database is
+    read over SQL through the connection DB Client already holds; only what
+    lives outside it goes to the Management API.** Policies
+    (`pg_policies`/`pg_policy`), applied migrations
+    (`supabase_migrations.schema_migrations`), buckets (`storage.buckets`) and
+    users (`auth.users`) are all Postgres, so five of the six tabs work for a
+    `supabase start` stack with no token at all. Only edge functions, generated
+    types and the advisor need an account, and each says so rather than
+    rendering empty. `storage.buckets` over SQL is also strictly better than the
+    API's bucket listing: it carries the size limit and allowed MIME types,
+    which the API's does not.
+  - **Auth users and storage objects are read-only, deliberately.** Both write
+    paths need the SERVICE ROLE key — a key that bypasses every policy in the
+    database — and storing one to render a list would be a poor trade.
+    `auth.users` answers the same question with the credential already present,
+    and `banned_until` is read as a TIMESTAMP rather than a flag, since an
+    expired ban is not a ban and rendering it as one accuses the wrong accounts.
+  - **Applying a migration goes over SQL, in one transaction.** Not `POST
+    /database/migrations`: the SQL path is what `supabase db push` does, it also
+    works for a local stack, and one implementation beats two. The whole file is
+    sent as ONE parameterless statement — Bun's SQL uses the simple protocol
+    there, which is what allows several statements — because splitting it would
+    have to understand dollar-quoted function bodies, and getting that wrong
+    truncates a function mid-definition. The already-applied guard sits INSIDE
+    the transaction, or two people applying at once both see it pending and the
+    second one's SQL runs before the primary key rejects it. Known limit, passed
+    through unrewritten: `CREATE INDEX CONCURRENTLY` cannot run in a
+    transaction.
+  - **Supabase's connection modes are not interchangeable, and the default is
+    not a question to ask.** Pooler session mode is correct for this client in
+    every case the other two are not: a direct connection is IPv6-only on
+    projects created since 2024 without the IPv4 add-on (a DNS-shaped failure
+    that says nothing about the cause), and transaction mode does not support
+    prepared statements, which `Bun.sql` uses. The dialog first offered all
+    three as radio buttons with a paragraph each, and that was WRONG — it asked
+    the user to choose between one right answer and two ways to fail, before
+    they had connected anything. The default is now chosen silently, the other
+    two are marked `isAdvanced` and folded behind a "Change" link, and every
+    helper line was cut to one clause. The provider blurb went with them: it
+    repeated the password field's own help almost word for word, which is how a
+    form ends up saying the same thing twice. `sslMode` is `require` rather than
+    `verify-full`: Supabase's certificate comes from its own CA, so verifying
+    without shipping that CA would refuse every connection.
+  - **Creating a database, not only listing them.** An account that reaches no
+    projects — or a user who wants a fresh one — was a dead end, which is the
+    same gap `Task 3` closed for Vercel. `POST /v1/projects` needs `{db_pass,
+    name, organization_slug}` plus a region, so the adapter gained an optional
+    `createOptions`/`createDatabase` pair and the dialog gained a New database
+    form beside the picker — one dialog with a mode switch, not a second modal.
+    The payoff is that the one awkward step disappears: CLOPEN GENERATES THE
+    PASSWORD, so a project it created is one there is nothing to type for. That
+    makes the ORDER load-bearing. The link row is written FIRST, carrying the
+    generated secret, and the endpoint is resolved afterwards — every other
+    ordering has a window where a slow provision, a dropped socket or a restart
+    leaves a real database whose password nothing holds and only a reset can
+    recover. The readiness wait is bounded at three minutes and failing it is
+    NOT an error: the database exists, the link exists, and saving the link is
+    the retry (`update()` re-resolves whenever a link has no endpoint, so there
+    is no second button to find). The WS call carries a four-minute budget for
+    the reason `issues:start-work` needed ten: at the default 30s the socket
+    gives up while the server carries on, and the user is told it failed while a
+    real project quietly finishes provisioning. `region_selection` is used
+    rather than the `region` string the API document marks deprecated, and the
+    region list is hard-coded from that document rather than read from
+    `/available-regions`, which is beta, needs an organisation slug and answers
+    with a nested recommendation structure. `DbRemoteDatabase` also gained
+    `isReady`, decided by the ADAPTER: a paused or still-starting project looks
+    like an ordinary row and refuses every connection, so the picker now
+    disables it and names its state.
+  - **Contextual connect is embedded, not deep-linked.** `LinkDatabaseModal`
+    mounts the hub's own `ConnectAccountModal` — whose header comment already
+    promised this — so a user in DB Client never lands in Settings. It also
+    serves editing a link, and the local-stack path needs no account at all:
+    `supabase/config.toml` is parsed by a small SECTION-AWARE reader rather than
+    a TOML dependency, because `port` appears under `[api]`, `[db]`,
+    `[db.pooler]` and `[studio]` and a flat scan reports the API port as the
+    database's (`local.test.ts` locks that down).
+  - **Read-only means the server enforces it, not just the form.** A managed
+    connection renders with an ownership strip and disabled fields, but
+    `db-client:update` also drops everything except name and colour, and
+    `db-client:delete` refuses outright and points at unlinking — deleting the
+    row would leave the account owning a connection that no longer exists and
+    the next re-projection would recreate it. Every link mutation also RELEASES
+    the live driver adapter afterwards: `connectionManager` holds an open
+    connection per row, so rotating a password rewrote the row while every query
+    kept using the old credential until the pool happened to sweep it.
+  - **Visibility is admin-only,** by decision: a projected row is created with
+    no owner, which in db-client's existing access model means admins see it and
+    members do not, matching who can connect an account. Treating a null owner
+    as "shared" would also have exposed pre-migration-035 rows that have been
+    admin-only all along. Members keep their own hand-typed connections
+    unchanged, and the local-stack adoption path is member-visible because it
+    creates an ordinary user-owned connection.
+  - **Where things live.** One entry in DB Client's view strip, not six: that
+    row already shares its width with the open-table tabs, so the six Supabase
+    tabs live inside `SupabasePanel`. `InlineError` was PROMOTED from
+    `components/deployments/` to `components/common/display/` rather than
+    duplicated, following what `Task 3` did with `MenuSurface` and
+    `ProviderMark`.
+  - **A crash found while reviewing the hub, not the new code.**
+    `IntegrationDetail`'s projection list was keyed `capability + targetKind`,
+    which is no longer unique once one capability owns two rows — Svelte throws
+    on duplicate keys. It now groups by capability and reports counts.
+  - **Deliberately out of scope.** Deploying an edge function (bundling is the
+    CLI's job), listing storage objects and mutating auth users (both need the
+    service-role key), and `supabase db diff` for schema drift (needs the CLI
+    and a shadow database). Supabase branching is left to `Task 5`, whose shape
+    it is. NO `agent-tools`, even though Supabase's MCP server takes exactly
+    this token: that server is scoped with `--project-ref` to ONE project and an
+    account here can hold several, so there is no honest single row to project.
+    Reviewing that decision is what produced `Task 20`: the right answer is not
+    the vendor's MCP but ONE internal server over DB Client, because an agent
+    today cannot query any database at all — local Postgres and SQLite included
+    — and a per-vendor server would leave every one of those out while adding a
+    second path to the databases it does cover.
+  - **Scoped tokens are the thing to know about this provider, and the prefix
+    gives them away.** Supabase is rolling out personal access tokens that carry
+    only the permissions you tick, prefixed `sbp_fc` where a classic full-access
+    token is plain `sbp_`. That is what the account in QA had, and it explains
+    every symptom at once: it could list projects and not read organisations, so
+    `/v1/organizations` answered `[]` and `POST /v1/projects` answered a bare
+    "Forbidden" that named nothing. `tokenKindOf()` now reads that prefix and a
+    403 is rewritten to say which permission the call needed — the same trick
+    `Task 2` used on GitHub's fine-grained token prefix, for the same reason:
+    the provider's own word for it is undiagnosable. The credential help names
+    the permissions instead of describing the screen (Projects account-wide
+    Read, Project Settings Read, Database Read-write, plus Organizations Read
+    and Organization Projects Read-write to create), because a missing scope
+    fails at the moment the feature is reached rather than at connect. Verified
+    end to end against a live scoped token: the 403 now reads "this call needs
+    Organization Settings (Read)".
+  - **Creating the organisation, not just pointing at the dashboard — and then
+    trusting that we did.** An account whose token reaches no organisation
+    cannot create a database anywhere, and answering that with "go to
+    supabase.com" is the read-only-window feeling this surface exists to remove.
+    `POST /v1/organizations` takes a name and nothing else, so the adapter
+    contract gained an optional `createGroup`, kept separate from
+    `createDatabase` because an organisation is a BILLING entity and the dialog
+    says so. The first version then RE-READ the options to verify what it had
+    just made, which looked rigorous and was wrong: reading and creating are
+    SEPARATE permissions, and a token that had successfully created an
+    organisation could not read it back, so the new organisation failed
+    verification, vanished from the list, and creating it again answered "you
+    are already a member of an organisation named…". Having just created
+    something is the strongest evidence available that the token can act in it;
+    the result is now used directly.
+  - **Offer the unverifiable, mark it, do not hide it.** The same three facts
+    forced a third position on the picker itself. `/v1/organizations` can answer
+    `[]` for a token that plainly reaches projects; a project's
+    `organization_slug` names where that project lives rather than somewhere the
+    token may act, so offering those unmarked produced a 403 after the form was
+    filled in; but dropping every unverifiable candidate removed a capability
+    that may well work, which left the whole feature permanently unreachable
+    behind a warning. So a derived organisation is checked, and when the check
+    cannot confirm it the option is still offered carrying `isUnverified` — the
+    form warns that creating may be refused and that the error will name the
+    missing permission. `Task 3`'s rule was that a pre-flight must not disable
+    on an inference it cannot verify; the corollary learned here is that it must
+    not ENABLE silently either. Marking is the third state both halves were
+    missing.
+  - **Anything a user manages needs a place that exists before it is needed.**
+    Creating an organisation lived inside the create-a-database form's EMPTY
+    STATE — reachable only once things had gone wrong, and invisible the moment
+    they had not, so a user who had seen it once could not find it again. The
+    dialog is now two peer tabs, Databases and Organisations, and the second
+    lists what the account can reach, creates one, and states plainly that
+    deleting one is not possible: `/v1/organizations/{slug}` is GET-only, so no
+    permission would help and a missing button would read as an oversight.
+  - **The account strip owns the account.** It gained an Edit that opens the
+    SAME connect dialog Settings uses, in reconfigure mode — a contextual entry
+    point that then sends you to Settings to change a token was only ever half
+    an entry point. A credential change invalidates everything derived from the
+    old one, so the options, the database list and the health probe are all
+    discarded and re-fetched rather than left to look correct.
+  - **"UNKNOWN" was a question nobody had asked.** An account's status is only
+    ever written by a probe, and nothing probes on connect, so an account
+    connected from this dialog reported UNKNOWN indefinitely and read as a fault
+    — including right after the user had fixed their token. The dialog now
+    probes an unknown account through the hub's own `integrations:health` route
+    rather than inventing a second notion of working, and renders that state as
+    a neutral "checking…" while it runs.
+  - **Deleting a database, which is not unlinking.** `DELETE /v1/projects/{ref}`
+    exists, so the row gained the action — behind a confirm that NAMES the
+    database and says what the other button does, because unlink sits beside it,
+    looks similar and leaves the data alone. The link is dropped before the
+    remote call: a failed delete then costs a link that can be recreated rather
+    than leaving a projection pointing at something that no longer exists.
+  - **Copy that names one action.** The empty-organisation notice listed three
+    ways out in one paragraph and ended on "link it here", which named no action
+    available from where the reader was standing. It is now one sentence with
+    one instruction. The Create button beside the name field was also taller
+    than the input next to it, because a `Button`'s own padding sizes it while
+    an input is sized by its text — both are `h-9` now, the same fix the Issues
+    modal's rows needed.
+  - **A form that has to fetch before it can be drawn needs a skeleton.**
+    Clicking New database blanked the dialog and then filled it a second later,
+    because the render guard required the fetched options and there was nothing
+    to show without them. Empty space reads as a glitch, not as work. It now
+    draws a skeleton shaped like the form that is coming — which says what is
+    loading, where a bare spinner would not.
+  - **The organisation picker was empty, and the first fix made it worse.** `GET
+    /v1/organizations` answers `[]` WITH A 200 for a token that plainly reaches
+    projects — confirmed against a live account, alongside a 403 on
+    `/v1/organizations/{slug}` for the very organisation that account's project
+    lives in. So the token can see a project without being able to act on its
+    organisation at all. The first fix derived the organisation from each
+    project's `organization_slug` and offered it, which turned a disabled button
+    into something worse: a confident dropdown entry whose only possible outcome
+    was a 403 AFTER the user had filled in the form and pressed Create. `Task 3`
+    recorded that a pre-flight must not DISABLE on an inference it cannot
+    verify; this is the mirror image, and it must not ENABLE on one either. A
+    derived candidate is now only offered once `GET /v1/organizations/{slug}`
+    has answered for it — the same permission the create call needs — and when
+    nothing survives, the form is not rendered at all. There is no point
+    collecting a name and a region for a request that cannot succeed, so the
+    dialog states the two real causes instead: the token's user belongs to no
+    organisation, or belongs to one without permission to manage it.
+  - **A third-party footer on the modal, not in the tab.** Once a panel shows
+    data living in someone else's service, "which account am I looking through"
+    and "how much budget is left" stop being answerable from anything on screen
+    — the same gap the Issues and Deployments footers close. It sits on the DB
+    Client modal rather than inside the Supabase panel, because the question is
+    just as live while browsing a table, which is most of the time, and because
+    a later provider inherits it without a panel of its own. Identity comes from
+    `managedBy`, which every provider has, and is dropped when the account label
+    merely repeats the provider name — a single account is labelled "Supabase",
+    so the row first read "Supabase · Supabase". The quota comes from headers
+    Supabase does not document but sends on every response: `x-ratelimit-limit:
+    120` (per MINUTE), `-remaining`, and `-reset`. THAT RESET IS A DURATION IN
+    SECONDS, not an epoch — GitHub and Vercel both send an epoch there, and
+    reading this one the same way dated every reset to 1970. Readings are kept
+    PER TOKEN, since the limit is counted per Supabase user and one global
+    figure would bill one account's usage to another. The footer showed nothing
+    at first because resolving a connection's context touches no API and the
+    default tab is pure SQL, so an account with no reading yet now takes exactly
+    one, once per process. Absent still means NOT REPORTED rather than zero:
+    with no figure the row names what it does know, such as a local stack having
+    no API quota at all.
+  - **Bugs found in QA.** The first connect hit `effect_update_depth_exceeded`
+    and drove the account straight into a Supabase rate limit, and the cause is
+    worth stating as a rule because three places had it: EVERY ONE OF THESE
+    FETCHES WRITES ITS OWN CELL — `loading: true` goes in synchronously — SO AN
+    EFFECT THAT DECIDES WHETHER TO FETCH BY READING THAT CELL SUBSCRIBES TO WHAT
+    IT IS ABOUT TO CHANGE AND RE-RUNS ITSELF FOREVER. The database picker
+    checked `remoteFor(id).data`, which is never set before the first response,
+    so it fired a request per frame. The connection-context effect was worse and
+    had not been noticed: a plain Postgres connection resolves to `null`, so its
+    `!== null` guard was never satisfied and it looped for every non-Supabase
+    row in the list. The five Supabase tabs had the same shape conditionally —
+    they checked `!data && !loading`, which is exactly the state a FAILED fetch
+    leaves behind, so a provider outage turned one mounted tab into an unbounded
+    retry. The fix is that "have I asked yet" is now kept OUT of the reactive
+    graph entirely, in a plain `Set` in the store, behind `ensure*` methods an
+    effect calls with an id and nothing else; the un-prefixed methods stay the
+    forced path for the refresh controls and clear the guard. A failed fetch
+    deliberately does NOT clear it, or a provider that is down is hammered by
+    whatever is on screen. Two smaller ones fell out of the same review: the
+    link dialog's seed effect read the account list reactively, so connecting an
+    account from inside it reloaded that list, re-ran the seed and silently
+    un-chose the account `onConnected` had just chosen (the read is now
+    `untrack`ed), and `context` now distinguishes a MISSING key from `null` —
+    unasked versus known-not-Supabase — because collapsing them bounced a
+    restored Supabase tab to Overview on every open.
+  - **Status.** Connecting an account, listing projects, linking, the
+    create-options path and the rate-limit headers have all been exercised
+    against a real Supabase token — the last three by running the adapter
+    directly against the live account rather than by reading documentation,
+    which is how the 403 and the 1970 timestamp were found. Creating a project
+    has NOT been run end to end: the only token available cannot reach an
+    organisation, so the request it would make is unproven. Also still
+    unverified: whether `/config/database/pooler` returns a `connection_string`
+    carrying a real password (it is treated as a template and ignored either
+    way), and whether `auth.users.raw_app_meta_data -> 'providers'` arrives as
+    an array or a string through `Bun.sql`.
 
 **Task 5 — Worktree database branching + Neon.** Pair database branching with the
 worktree manager Clopen already has. Creating a worktree optionally creates a
@@ -840,6 +1158,54 @@ environment variables can be pulled at session start instead of being pasted int
 Clopen. This also strengthens `Task 1` by making Clopen a *consumer* of secrets
 rather than their permanent home, which is the strongest available answer to
 "why is my token in your database".
+
+- [ ] Done
+- Notes: —
+
+**Task 20 — Database tools for agents: one internal MCP server over DB Client.**
+The gap the Supabase work made obvious: an agent can read the repository, drive a
+browser and search the memory graph, but it cannot ask a single question of any
+database Clopen is already connected to. Not a local Postgres, not SQLite, not a
+projected Supabase project. Every vendor ships an MCP server that would solve
+this for its own service alone, and taking that route means one credential and
+one config per vendor, nothing at all for local databases, and — for Supabase
+specifically — a server scoped with `--project-ref` to ONE project when an
+account here can hold several. That is two places to reach the same database,
+which is the mistake the architecture above exists to prevent.
+
+Build it the other way round. DB Client OWNS the connections, so DB Client
+exposes the tools, once, through `backend/mcp/internal/servers/`
+(`defineServer()`) — the same rail Browser Automation and the memory graph use.
+One server, every driver, and every provider that projects a connection gets it
+free: Turso and Neon arrive already covered.
+
+*Shape.* One batched `actions` tool rather than a dozen, which is what the
+Browser Automation pass settled on after shipping twelve: a registry that is the
+single source of truth for schema, docs and dispatch. The actions are the
+questions an agent actually has — list the connections it may use, describe a
+schema, read a table's structure, run a query — over the existing
+`connectionManager` and `query-executor`, so the driver differences are already
+solved.
+
+*Permission is the hard half, and it is the reason this is its own entry.* An
+agent with write access to a production database is a different risk class from
+one editing files, and "the user connected it" is not consent to that. Every
+connection gets an explicit agent-access setting — `none` by default, then
+`read-only`, then `read-write` — stored on the connection and enforced in the
+server rather than in a prompt. A read-only connection must be enforced by
+classifying the statement, not by asking the model nicely; `query-executor`
+already classifies read versus write for the query console, so the same
+classifier decides. Write access names the connection in the consent UI and is
+never inherited by a connection the agent discovers later. Schema-only access is
+the useful middle ground and should be the recommended setting: an agent that can
+read the shape of a table writes better migrations without ever seeing a row of
+customer data.
+
+*Other things it must get right.* Results are bounded and truncated with an
+honest count rather than streamed whole into a context window. Secrets never
+cross the tool boundary — the agent gets connection ids and names, never a host
+or a password. And the tool list is filtered per connection, so an agent working
+in a project with no database access sees no database tools at all.
 
 - [ ] Done
 - Notes: —
