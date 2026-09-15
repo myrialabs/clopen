@@ -1,29 +1,30 @@
 <script module lang="ts">
 	import wsPrefetch from '$frontend/utils/ws';
 	import { debug as debugPrefetch } from '$shared/utils/logger';
+	import type { DeviceInfo, ProjectsOverview } from './device-types';
 
 	// Module-level cache: persists across tab switches so Device opens instantly
 	// on second click without re-showing skeleton.
-	export let cachedDeviceInfo: any = null;
-	// Same idea for the Project Overview snapshot below: opening Device a
-	// second time shows the last recap instantly while a refresh runs behind.
-	export let cachedOverview: any = null;
+	let cachedDeviceInfo: DeviceInfo | null = null;
+	// Same idea for the Project Usage snapshot below: opening Device a second
+	// time shows the last recap instantly while a refresh runs behind.
+	let cachedOverview: ProjectsOverview | null = null;
 
 	// Shared in-flight guards so a prefetch started when the Settings modal
 	// opens is joined (not duplicated) by the component mount below. This is
-	// what makes the FIRST click instant: the slow si.* probes + folder walks
-	// already run while the user is still looking at other tabs.
-	let inFlightDevice: Promise<any> | null = null;
-	let inFlightOverview: Promise<any> | null = null;
+	// what makes the FIRST click instant: the slow si.* probes already run
+	// while the user is still looking at other tabs.
+	let inFlightDevice: Promise<DeviceInfo | null> | null = null;
+	let inFlightOverview: Promise<ProjectsOverview | null> | null = null;
 
 	/** Warm the Device cache in background; safe to call repeatedly. */
-	export function prefetchDeviceInfo(): Promise<any> | null {
+	export function prefetchDeviceInfo(): Promise<DeviceInfo | null> | null {
 		if (cachedDeviceInfo || inFlightDevice) return inFlightDevice;
 		inFlightDevice = wsPrefetch
-			.http('system:device-info', {}, 8000)
+			.http('system:device-info', {}, DEVICE_TIMEOUT_MS)
 			.then((data) => {
-				cachedDeviceInfo = data;
-				return data;
+				cachedDeviceInfo = data as DeviceInfo;
+				return cachedDeviceInfo;
 			})
 			.catch((err) => {
 				debugPrefetch.error('settings', 'Failed to prefetch device info:', err);
@@ -35,14 +36,14 @@
 		return inFlightDevice;
 	}
 
-	/** Warm the Project Overview cache in background; safe to call repeatedly. */
-	export function prefetchProjectsOverview(): Promise<any> | null {
+	/** Warm the Project Usage cache in background; safe to call repeatedly. */
+	export function prefetchProjectsOverview(): Promise<ProjectsOverview | null> | null {
 		if (cachedOverview || inFlightOverview) return inFlightOverview;
 		inFlightOverview = wsPrefetch
-			.http('projects:overview', {}, 30000)
+			.http('projects:overview', {}, OVERVIEW_TIMEOUT_MS)
 			.then((data) => {
-				cachedOverview = data;
-				return data;
+				cachedOverview = data as ProjectsOverview;
+				return cachedOverview;
 			})
 			.catch((err) => {
 				debugPrefetch.error('settings', 'Failed to prefetch projects overview:', err);
@@ -55,13 +56,18 @@
 	}
 
 	/** Join an in-flight prefetch so mount never fires a duplicate request. */
-	export function joinDevicePrefetch(): Promise<any> | null {
+	function joinDevicePrefetch(): Promise<DeviceInfo | null> | null {
 		return inFlightDevice;
 	}
 
-	export function joinOverviewPrefetch(): Promise<any> | null {
+	function joinOverviewPrefetch(): Promise<ProjectsOverview | null> | null {
 		return inFlightOverview;
 	}
+
+	// Shorter than the ws default of 30s so a wedged probe surfaces as a retry
+	// instead of a frozen panel. Neither endpoint waits on a folder walk.
+	const DEVICE_TIMEOUT_MS = 8000;
+	const OVERVIEW_TIMEOUT_MS = 10000;
 </script>
 
 <script lang="ts">
@@ -69,68 +75,17 @@
 	import Icon from '../../common/display/Icon.svelte';
 	import ws from '$frontend/utils/ws';
 	import { debug } from '$shared/utils/logger';
+	import type { ProjectResourceEntry } from './device-types';
 
-	interface Gpu {
-		model: string;
-		vendor: string;
-		vramMb: number | null;
-		utilizationGpu: number | null;
-		memoryUsedMb: number | null;
-		memoryTotalMb: number | null;
-	}
-	interface Disk {
-		mount: string;
-		type: string;
-		sizeBytes: number;
-		usedBytes: number;
-		usePercent: number;
-	}
-	interface DeviceInfo {
-		hostname: string;
-		platform: string;
-		distro: string;
-		release: string;
-		kernel: string;
-		arch: string;
-		isVirtual: boolean;
-		uptimeSec: number;
-		cpu: {
-			brand: string;
-			manufacturer: string;
-			physicalCores: number;
-			logicalCores: number;
-			speedGhz: number | null;
-			loadPercent: number;
-			loadAvg1: number | null;
-		};
-		memory: {
-			totalBytes: number;
-			usedBytes: number;
-			freeBytes: number;
-			swapTotalBytes: number;
-			swapUsedBytes: number;
-		};
-		network: { iface: string; ip4: string; mac: string };
-		battery: {
-			hasBattery: boolean;
-			percent: number | null;
-			isCharging: boolean;
-			acConnected: boolean;
-			timeRemainingMinutes: number | null;
-		};
-		gpus: Gpu[];
-		disks: Disk[];
-	}
-
-	// Single 3s refresh heartbeat for the whole panel: device cards and
-	// Project Overview (counts, statuses, Top Projects) update together.
-	// Cheap per tick: device probes are cached/single-flighted, folder walks
-	// keep their own cache, and the overview snapshot has a matching 3s TTL.
+	// Single 3s refresh heartbeat for the whole panel: device cards and the
+	// per-project usage list update together. Cheap per tick — both endpoints
+	// answer from short-lived server caches, and neither waits on a folder
+	// walk, so a slow disk shows as "Measuring" instead of a stalled panel.
 	const REFRESH_INTERVAL_MS = 3000;
 
-	let info = $state<DeviceInfo | null>(cachedDeviceInfo as DeviceInfo | null);
+	let info = $state<DeviceInfo | null>(cachedDeviceInfo);
 	let error = $state<string | null>(null);
-	let timer: ReturnType<typeof setTimeout> | null = null;
+	let timer: ReturnType<typeof setInterval> | null = null;
 	let fetching = false;
 
 	async function fetchInfo() {
@@ -143,7 +98,7 @@
 			try {
 				const data = await joined;
 				if (data) {
-					info = data as DeviceInfo;
+					info = data;
 					error = null;
 				}
 			} catch (err) {
@@ -156,10 +111,9 @@
 		}
 		fetching = true;
 		try {
-			// 8s client timeout — shorter than ws default 30s so UI recovers faster
-			const data = await ws.http('system:device-info', {}, 8000);
-			info = data as DeviceInfo;
-			cachedDeviceInfo = info;
+			const data = (await ws.http('system:device-info', {}, DEVICE_TIMEOUT_MS)) as DeviceInfo;
+			info = data;
+			cachedDeviceInfo = data;
 			error = null;
 		} catch (err) {
 			debug.error('settings', 'Failed to fetch device info:', err);
@@ -170,51 +124,18 @@
 		}
 	}
 
-	// --- Project Overview (independent from the Device poll above) ---
-	interface OverviewTopEntry {
-		id: string;
-		name: string;
-		path: string;
-		created_at: string;
-		last_opened_at: string;
-		status: 'running' | 'idle';
-		cpuPercent: number | null;
-		memRssBytes: number | null;
-		memPercent: number | null;
-		sizeBytes: number;
-		fileCount: number;
-		dirCount: number;
-		truncated: boolean;
-	}
-	interface OverviewUnmeasurable {
-		id: string;
-		name: string;
-		path: string;
-		error: string;
-	}
-	interface ProjectsOverview {
-		totalProjects: number;
-		runningCount: number;
-		idleCount: number;
-		measurableCount: number;
-		unmeasurableCount: number;
-		totalStorageIdle: number;
-		totalFilesIdle: number;
-		totalDirsIdle: number;
-		top: OverviewTopEntry[];
-		unmeasurable: OverviewUnmeasurable[];
-		generatedAt: string;
-	}
+	// --- Per-project usage (independent from the Device poll above) ---
 
-	let overview = $state<ProjectsOverview | null>(cachedOverview as ProjectsOverview | null);
+	let overview = $state<ProjectsOverview | null>(cachedOverview);
 	let overviewError = $state<string | null>(null);
 	let overviewFetching = $state(false);
 
-	// View-only search over the Top Projects list (name + path). Data untouched.
-	let topSearch = $state('');
-	const filteredTop = $derived.by(() => {
-		const list = overview?.top ?? [];
-		const query = topSearch.trim().toLowerCase();
+	// View-only search over the project list (name + path). Data untouched, so
+	// the totals above always describe every project, not the filtered subset.
+	let projectSearch = $state('');
+	const filteredProjects = $derived.by(() => {
+		const list: ProjectResourceEntry[] = overview?.projects ?? [];
+		const query = projectSearch.trim().toLowerCase();
 		if (!query) return list;
 		return list.filter(
 			(entry) =>
@@ -224,46 +145,44 @@
 
 	async function fetchOverview() {
 		if (overviewFetching) return;
-		// Same join-prefetch idea as Device above: the overview folder walk
-		// already runs in background since the modal opened.
+		// Same join-prefetch idea as Device above: the request already runs in
+		// background since the modal opened.
 		const joined = joinOverviewPrefetch();
 		if (joined) {
 			overviewFetching = true;
 			try {
 				const data = await joined;
 				if (data) {
-					overview = data as ProjectsOverview;
+					overview = data;
 					overviewError = null;
 				}
 			} catch (err) {
 				debug.error('settings', 'Failed to fetch projects overview:', err);
-				if (!overview) overviewError = err instanceof Error ? err.message : 'Failed to load project overview';
+				if (!overview) overviewError = err instanceof Error ? err.message : 'Failed to load project usage';
 			} finally {
 				overviewFetching = false;
 			}
 			return;
 		}
 		overviewFetching = true;
-	try {
-		// Generous timeout: the first call can walk several project folders
-		// plus one process-table probe concurrently (worst ~20s+overhead).
-		const data = await ws.http('projects:overview', {}, 30000);
-		overview = data as ProjectsOverview;
-		cachedOverview = overview;
-		overviewError = null;
-	} catch (err) {
-		debug.error('settings', 'Failed to fetch projects overview:', err);
-		// Keep the stale recap visible; only show an error with no data yet.
-		// The Device cards above are untouched by this failure.
-		if (!overview) overviewError = err instanceof Error ? err.message : 'Failed to load project overview';
-	} finally {
-		overviewFetching = false;
-	}
+		try {
+			const data = (await ws.http('projects:overview', {}, OVERVIEW_TIMEOUT_MS)) as ProjectsOverview;
+			overview = data;
+			cachedOverview = data;
+			overviewError = null;
+		} catch (err) {
+			debug.error('settings', 'Failed to fetch projects overview:', err);
+			// Keep the stale recap visible; only show an error with no data yet.
+			// The Device cards above are untouched by this failure.
+			if (!overview) overviewError = err instanceof Error ? err.message : 'Failed to load project usage';
+		} finally {
+			overviewFetching = false;
+		}
 	}
 
 	// Single heartbeat: both fetches run concurrently on one fixed 3s
 	// interval. In-flight guards inside each fetch skip a tick while the
-	// previous one is still running, so slow folder walks can never pile up.
+	// previous one is still running, so slow responses can never pile up.
 	// The keyed list + untouched search input mean no scroll or focus jumps.
 	async function refreshAll() {
 		await Promise.all([fetchInfo(), fetchOverview()]);
@@ -290,7 +209,7 @@
 		return `${parseFloat((bytes / Math.pow(k, i)).toFixed(1))} ${sizes[i]}`;
 	}
 
-	// Compact counts for the Top Projects dashboard cards: 3797 → "3.8K".
+	// Compact counts for the per-project cards: 3797 → "3.8K".
 	function fmtCompact(n: number): string {
 		if (!Number.isFinite(n) || n < 0) return '0';
 		if (n < 1000) return n.toLocaleString();
@@ -380,15 +299,21 @@
 	// span both columns so the grid never ends with a lonely half-width cell.
 	const oddTail = $derived(info ? (info.gpus.length + info.disks.length) % 2 === 1 : false);
 
-	// --- Project Overview derived presentation (read-only recap) ---
+	// --- Per-project usage derived presentation ---
 	const deviceStorageTotal = $derived(
 		info ? info.disks.reduce((sum, d) => sum + d.sizeBytes, 0) : 0
 	);
-	const idleStorageShare = $derived(
+	const projectStorageShare = $derived(
 		overview && deviceStorageTotal > 0
-			? (overview.totalStorageIdle / deviceStorageTotal) * 100
+			? (overview.totalStorageBytes / deviceStorageTotal) * 100
 			: 0
 	);
+
+	function fmtShare(pct: number): string {
+		if (pct === 0) return '0% of device';
+		if (pct < 0.1) return '<0.1% of device';
+		return `${pct.toFixed(1)}% of device`;
+	}
 </script>
 
 <div class="py-1">
@@ -693,16 +618,16 @@
 		</div>
 	{/if}
 
-	<!-- Project Overview: read-only recap of idle/completed projects.
-	     Visually and logically separate from the Device cards above: own
-	     divider, own loading/error states, refreshed by the shared 3s
-	     heartbeat — no manual refresh needed. -->
+	<!-- Per-project usage: the same figures Project Info reports, for every
+	     project at once. Visually and logically separate from the Device cards
+	     above: own divider, own loading/error states, refreshed by the shared
+	     3s heartbeat — no manual refresh needed. -->
 	<div class="mt-6 pt-5 border-t border-slate-200 dark:border-slate-800">
 		<div class="flex items-center gap-2 mb-1.5 flex-wrap">
-			<h3 class="text-base font-bold text-slate-900 dark:text-slate-100">Project Overview</h3>
+			<h3 class="text-base font-bold text-slate-900 dark:text-slate-100">Project Usage</h3>
 			{#if overview}
 				<span class="inline-flex items-center gap-1 px-1.5 py-0.5 bg-violet-500/15 text-violet-600 dark:text-violet-400 rounded text-2xs font-semibold">
-					{overview.idleCount} idle / {overview.totalProjects} total
+					{overview.runningCount} running / {overview.totalProjects} total
 				</span>
 			{/if}
 		</div>
@@ -724,7 +649,7 @@
 				</button>
 			</div>
 		{:else if !overview}
-			<div class="grid grid-cols-2 lg:grid-cols-4 gap-3.5 animate-pulse">
+			<div class="grid grid-cols-1 sm:grid-cols-2 gap-3.5 animate-pulse">
 				{#each Array(4) as _, i (i)}
 					<div class="px-4 py-3 bg-slate-100/80 dark:bg-slate-800/80 border border-slate-200 dark:border-slate-800 rounded-xl">
 						<div class="flex items-center gap-3.5">
@@ -737,11 +662,11 @@
 					</div>
 				{/each}
 			</div>
-		{:else if overview.idleCount === 0}
+		{:else if overview.totalProjects === 0}
 			<div class="flex flex-col items-center gap-2 px-4 py-8 bg-slate-100/80 dark:bg-slate-800/80 border border-slate-200 dark:border-slate-800 rounded-xl text-center">
 				<Icon name="lucide:folder-open" class="w-6 h-6 text-slate-400 opacity-60" />
-				<span class="text-sm font-medium text-slate-700 dark:text-slate-300">No completed projects yet</span>
-				<span class="text-xs text-slate-500">Idle projects will appear here once they stop running</span>
+				<span class="text-sm font-medium text-slate-700 dark:text-slate-300">No projects yet</span>
+				<span class="text-xs text-slate-500">Resource usage appears here once a project is added</span>
 			</div>
 		{:else}
 			<div class="flex flex-col gap-3.5">
@@ -755,8 +680,8 @@
 								<Icon name="lucide:folder" class="w-5 h-5" />
 							</div>
 							<div class="flex flex-col gap-0.5 min-w-0 flex-1">
-								<div class="text-sm font-semibold text-slate-900 dark:text-slate-100">Idle Projects</div>
-								<div class="text-xs text-slate-600 dark:text-slate-500">{overview.idleCount} of {overview.totalProjects} completed</div>
+								<div class="text-sm font-semibold text-slate-900 dark:text-slate-100">Projects</div>
+								<div class="text-xs text-slate-600 dark:text-slate-500">{overview.runningCount} running · {overview.idleCount} idle</div>
 							</div>
 						</div>
 					</div>
@@ -767,9 +692,9 @@
 								<Icon name="lucide:hard-drive" class="w-5 h-5" />
 							</div>
 							<div class="flex flex-col gap-0.5 min-w-0 flex-1">
-								<div class="text-sm font-semibold text-slate-900 dark:text-slate-100">Storage (Idle)</div>
+								<div class="text-sm font-semibold text-slate-900 dark:text-slate-100">Storage</div>
 								<div class="text-xs text-slate-600 dark:text-slate-500 truncate">
-									{fmtBytes(overview.totalStorageIdle)}{#if deviceStorageTotal > 0} · {idleStorageShare === 0 ? '0% of device' : idleStorageShare < 0.1 ? '<0.1% of device' : `${idleStorageShare.toFixed(1)}% of device`}{/if}
+									{fmtBytes(overview.totalStorageBytes)}{#if deviceStorageTotal > 0} · {fmtShare(projectStorageShare)}{/if}
 								</div>
 							</div>
 						</div>
@@ -782,7 +707,7 @@
 							</div>
 							<div class="flex flex-col gap-0.5 min-w-0 flex-1">
 								<div class="text-sm font-semibold text-slate-900 dark:text-slate-100">Files</div>
-								<div class="text-xs text-slate-600 dark:text-slate-500">{overview.totalFilesIdle.toLocaleString()} files</div>
+								<div class="text-xs text-slate-600 dark:text-slate-500">{overview.totalFiles.toLocaleString()} files</div>
 							</div>
 						</div>
 					</div>
@@ -794,116 +719,102 @@
 							</div>
 							<div class="flex flex-col gap-0.5 min-w-0 flex-1">
 								<div class="text-sm font-semibold text-slate-900 dark:text-slate-100">Directories</div>
-								<div class="text-xs text-slate-600 dark:text-slate-500">{overview.totalDirsIdle.toLocaleString()} dirs</div>
+								<div class="text-xs text-slate-600 dark:text-slate-500">{overview.totalDirs.toLocaleString()} dirs</div>
 							</div>
 						</div>
 					</div>
 				</div>
 
-				<!-- Top 5 -->
-				{#if overview.top.length > 0}
-					<div class="flex flex-col gap-3">
-						<div class="flex items-center gap-2 flex-wrap">
-							<h3 class="text-base font-bold text-slate-900 dark:text-slate-100">Top Projects</h3>
-							<span class="inline-flex items-center gap-1 px-1.5 py-0.5 bg-violet-500/15 text-violet-600 dark:text-violet-400 rounded text-2xs font-semibold">
-								{filteredTop.length} of {overview.top.length}
-							</span>
-						</div>
-						<!-- Search: same look as the Model search in Engine settings -->
-						<div class="relative">
-							<svg viewBox="0 0 24 24" fill="none" class="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-slate-400 pointer-events-none" aria-hidden="true">
-								<circle cx="11" cy="11" r="7" stroke="currentColor" stroke-width="2" />
-								<path d="M21 21l-4.35-4.35" stroke="currentColor" stroke-width="2" stroke-linecap="round" />
-							</svg>
-							<input
-								type="text"
-								bind:value={topSearch}
-								placeholder="Search projects..."
-								aria-label="Search top projects"
-								class="w-full pl-9 pr-3 py-1.5 text-sm bg-white dark:bg-slate-800 border border-slate-200 dark:border-slate-700 rounded-lg outline-none focus:ring-2 focus:ring-violet-500/20 focus:border-violet-600 transition-colors text-slate-900 dark:text-slate-100 placeholder-slate-400"
-							/>
-						</div>
-						{#if filteredTop.length === 0}
-							<p class="px-1 py-3 text-xs text-slate-500 dark:text-slate-500">
-								No projects match "{topSearch.trim()}"
-							</p>
-						{:else}
-							<div class="grid grid-cols-1 sm:grid-cols-2 gap-3.5">
-								{#each filteredTop as entry (entry.id)}
-									{@const metaLine = `${fmtCompact(entry.fileCount)} files · ${fmtCompact(entry.dirCount)} dirs · opened ${fmtRelative(entry.last_opened_at)}`}
-									<div class="px-3.5 pt-1.5 pb-2.5 bg-slate-100/80 dark:bg-slate-800/80 border border-slate-200 dark:border-slate-800 rounded-xl">
-										<!-- Row 1: icon + name + status -->
-										<div class="flex items-center gap-2">
-											<div class="flex items-center justify-center w-10 h-10 rounded-lg shrink-0 bg-violet-400/15 text-violet-500">
-												<Icon name="lucide:folder" class="w-5 h-5" />
-											</div>
-											<span class="text-sm font-semibold text-slate-900 dark:text-slate-100 truncate flex-1 min-w-0">{entry.name}</span>
-											<span
-												class="inline-flex items-center gap-1 shrink-0 px-1.5 py-0.5 rounded text-2xs font-semibold
-													{entry.status === 'running'
-													? 'bg-green-500/15 text-green-600 dark:text-green-400'
-													: 'bg-slate-400/15 text-slate-500'}"
-											>
-												<span class="w-1.5 h-1.5 rounded-full {entry.status === 'running' ? 'bg-green-500 animate-pulse' : 'bg-slate-400'}"></span>
-												{entry.status === 'running' ? 'Running' : 'Idle'}
-											</span>
-										</div>
-										<!-- Row 2: path -->
-										<div class="mt-1 text-xs font-mono text-slate-500 truncate" title={entry.path}>{entry.path}</div>
-										<!-- Row 3: stat focal points, same order as Project Info -->
-										<div class="grid grid-cols-3 gap-2 mt-2 pt-2 border-t border-slate-200 dark:border-slate-700">
-											<div class="min-w-0">
-												<div class="text-sm font-semibold font-mono text-slate-900 dark:text-slate-100 truncate">{fmtCpu(entry.cpuPercent)}</div>
-												<div class="text-2xs text-slate-500">CPU</div>
-											</div>
-											<div class="min-w-0">
-												<div class="text-sm font-semibold font-mono text-slate-900 dark:text-slate-100 truncate" title={entry.memRssBytes === null ? 'Unknown' : fmtBytes(entry.memRssBytes)}>{entry.memRssBytes === null ? '—' : fmtBytes(entry.memRssBytes)}</div>
-												<div class="text-2xs text-slate-500">RAM</div>
-											</div>
-											<div class="min-w-0">
-												<div class="text-sm font-semibold font-mono text-slate-900 dark:text-slate-100 truncate" title={fmtBytes(entry.sizeBytes)}>{fmtBytes(entry.sizeBytes)}</div>
-												<div class="text-2xs text-slate-500">Storage</div>
-											</div>
-										</div>
-										<!-- Row 4: secondary metadata -->
-										<div class="mt-1.5 text-2xs text-slate-500 truncate" title={metaLine}>{metaLine}</div>
-									</div>
-								{/each}
-							</div>
-						{/if}
+				<!-- Every project, biggest footprint first -->
+				<div class="flex flex-col gap-3">
+					<div class="flex items-center gap-2 flex-wrap">
+						<h3 class="text-base font-bold text-slate-900 dark:text-slate-100">By Project</h3>
+						<span class="inline-flex items-center gap-1 px-1.5 py-0.5 bg-violet-500/15 text-violet-600 dark:text-violet-400 rounded text-2xs font-semibold">
+							{filteredProjects.length} of {overview.projects.length}
+						</span>
 					</div>
-				{/if}
-
-				<!-- Unavailable folders: listed, never counted in totals -->
-				{#if overview.unmeasurable.length > 0}
-					<div class="flex flex-col gap-2">
-						<h4 class="text-xs font-semibold text-slate-700 dark:text-slate-300 uppercase tracking-wider">
-							Unavailable ({overview.unmeasurable.length})
-						</h4>
-						<div class="flex flex-col gap-2">
-							{#each overview.unmeasurable as entry (entry.id)}
-								<div class="px-4 py-3 bg-slate-100/80 dark:bg-slate-800/80 border border-slate-200 dark:border-slate-800 rounded-xl">
-									<div class="flex items-center gap-3.5">
-										<div class="flex items-center justify-center w-10 h-10 rounded-lg shrink-0 bg-slate-400/15 text-slate-500">
+					<!-- Search: same look as the Model search in Engine settings -->
+					<div class="relative">
+						<svg viewBox="0 0 24 24" fill="none" class="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-slate-400 pointer-events-none" aria-hidden="true">
+							<circle cx="11" cy="11" r="7" stroke="currentColor" stroke-width="2" />
+							<path d="M21 21l-4.35-4.35" stroke="currentColor" stroke-width="2" stroke-linecap="round" />
+						</svg>
+						<input
+							type="text"
+							bind:value={projectSearch}
+							placeholder="Search projects..."
+							aria-label="Search projects"
+							class="w-full pl-9 pr-3 py-1.5 text-sm bg-white dark:bg-slate-800 border border-slate-200 dark:border-slate-700 rounded-lg outline-none focus:ring-2 focus:ring-violet-500/20 focus:border-violet-600 transition-colors text-slate-900 dark:text-slate-100 placeholder-slate-400"
+						/>
+					</div>
+					{#if filteredProjects.length === 0}
+						<p class="px-1 py-3 text-xs text-slate-500 dark:text-slate-500">
+							No projects match "{projectSearch.trim()}"
+						</p>
+					{:else}
+						<div class="grid grid-cols-1 sm:grid-cols-2 gap-3.5">
+							{#each filteredProjects as entry (entry.id)}
+								{@const storage = entry.storage}
+								{@const metaLine =
+									storage.state === 'ready'
+										? `${fmtCompact(storage.fileCount)} files · ${fmtCompact(storage.dirCount)} dirs · opened ${fmtRelative(entry.last_opened_at)}`
+										: `opened ${fmtRelative(entry.last_opened_at)}`}
+								<div class="px-3.5 pt-1.5 pb-2.5 bg-slate-100/80 dark:bg-slate-800/80 border border-slate-200 dark:border-slate-800 rounded-xl">
+									<!-- Row 1: icon + name + status -->
+									<div class="flex items-center gap-2">
+										<div class="flex items-center justify-center w-10 h-10 rounded-lg shrink-0 bg-violet-400/15 text-violet-500">
 											<Icon name="lucide:folder" class="w-5 h-5" />
 										</div>
-										<div class="flex flex-col gap-0.5 min-w-0 flex-1">
-											<span class="text-sm font-semibold text-slate-900 dark:text-slate-100 truncate">{entry.name}</span>
-											<div class="text-xs font-mono text-slate-500 truncate" title={entry.path}>{entry.path}</div>
-										</div>
-										<span class="inline-flex items-center shrink-0 px-1.5 py-0.5 bg-slate-400/15 text-slate-500 rounded text-2xs font-semibold" title={entry.error}>
-											Unavailable
+										<span class="text-sm font-semibold text-slate-900 dark:text-slate-100 truncate flex-1 min-w-0">{entry.name}</span>
+										<span
+											class="inline-flex items-center gap-1 shrink-0 px-1.5 py-0.5 rounded text-2xs font-semibold
+												{entry.status === 'running'
+												? 'bg-green-500/15 text-green-600 dark:text-green-400'
+												: 'bg-slate-400/15 text-slate-500'}"
+										>
+											<span class="w-1.5 h-1.5 rounded-full {entry.status === 'running' ? 'bg-green-500 animate-pulse' : 'bg-slate-400'}"></span>
+											{entry.status === 'running' ? 'Running' : 'Idle'}
 										</span>
 									</div>
+									<!-- Row 2: path -->
+									<div class="mt-1 text-xs font-mono text-slate-500 truncate" title={entry.path}>{entry.path}</div>
+									<!-- Row 3: stat focal points, same order as Project Info -->
+									<div class="grid grid-cols-3 gap-2 mt-2 pt-2 border-t border-slate-200 dark:border-slate-700">
+										<div class="min-w-0">
+											<div class="text-sm font-semibold font-mono text-slate-900 dark:text-slate-100 truncate">{fmtCpu(entry.cpuPercent)}</div>
+											<div class="text-2xs text-slate-500">CPU</div>
+										</div>
+										<div class="min-w-0">
+											<div class="text-sm font-semibold font-mono text-slate-900 dark:text-slate-100 truncate" title={entry.memRssBytes === null ? 'Unknown' : fmtBytes(entry.memRssBytes)}>{entry.memRssBytes === null ? '—' : fmtBytes(entry.memRssBytes)}</div>
+											<div class="text-2xs text-slate-500">RAM</div>
+										</div>
+										<div class="min-w-0">
+											{#if storage.state === 'ready'}
+												<div class="text-sm font-semibold font-mono text-slate-900 dark:text-slate-100 truncate" title={storage.truncated ? `At least ${fmtBytes(storage.sizeBytes)} — the scan stopped early` : fmtBytes(storage.sizeBytes)}>
+													{storage.truncated ? '≥' : ''}{fmtBytes(storage.sizeBytes)}
+												</div>
+											{:else if storage.state === 'measuring'}
+												<div class="text-sm font-semibold font-mono text-slate-400 dark:text-slate-500 truncate" title="The folder scan has not finished yet">…</div>
+											{:else}
+												<div class="text-sm font-semibold font-mono text-slate-400 dark:text-slate-500 truncate" title={storage.error ?? 'Folder unavailable'}>—</div>
+											{/if}
+											<div class="text-2xs text-slate-500">
+												{storage.state === 'ready' ? 'Storage' : storage.state === 'measuring' ? 'Measuring' : 'Unavailable'}
+											</div>
+										</div>
+									</div>
+									<!-- Row 4: secondary metadata -->
+									<div class="mt-1.5 text-2xs text-slate-500 truncate" title={metaLine}>{metaLine}</div>
 								</div>
 							{/each}
 						</div>
-					</div>
-				{/if}
+					{/if}
+				</div>
 
-				{#if overview.unmeasurableCount > 0}
+				{#if overview.measuringCount > 0 || overview.unavailableCount > 0}
 					<p class="text-3xs text-slate-400 dark:text-slate-500 text-center">
-						{overview.measurableCount} of {overview.idleCount} idle projects measured — totals exclude unavailable folders.
+						{overview.measuredCount} of {overview.totalProjects} project folders measured — totals exclude
+						{#if overview.measuringCount > 0}{overview.measuringCount} still being scanned{/if}{#if overview.measuringCount > 0 && overview.unavailableCount > 0} and {/if}{#if overview.unavailableCount > 0}{overview.unavailableCount} unavailable{/if}.
 					</p>
 				{/if}
 			</div>

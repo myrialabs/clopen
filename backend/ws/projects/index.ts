@@ -7,7 +7,7 @@
  * - crud.ts: HTTP endpoints for CRUD operations (list, create, get, update, delete)
  * - status.ts: Real-time status updates and watching (get-status, watch, unwatch, events)
  * - presence.ts: User presence management (update-presence with broadcast)
- * - overview.ts: Read-only recap of idle projects (projects:overview)
+ * - overview.ts: Per-project resource usage for every project (projects:overview)
  */
 
 import { createRouter } from '$shared/utils/ws-server';
@@ -30,5 +30,5 @@ export const projectsRouter = createRouter()
 	// Per-project resource info (storage + process-isolated CPU/RAM)
 	.merge(infoHandler)
 
-	// Read-only recap of idle projects (counts + summed storage + top 5)
+	// Per-project resource usage across every project the caller can see
 	.merge(overviewHandler);

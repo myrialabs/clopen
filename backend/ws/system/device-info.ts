@@ -31,7 +31,7 @@ import { getHostFacts, withTimeout } from '../../host/metrics';
 /** Two-tier probing. Fast signals (CPU via os deltas, memory, network, uptime)
  *  are cheap and re-read on every request. Slow signals (battery, disk usage,
  *  GPU) shell out to WMI/PowerShell, change slowly, and time out under load —
- *  re-probing them every 3.5s poll is what made the panel flip between
+ *  re-probing them on every poll is what made the panel flip between
  *  "This Device" <-> "Server" and made Battery/Swap/Storage cards appear and
  *  vanish on every open/close. Slow signals are cached for SLOW_TTL_MS and
  *  refreshed in the background; a request only waits for them on cold start
@@ -114,13 +114,19 @@ function ensureSlow(): Promise<SlowSnapshot> {
  *  `si.currentLoad()` on a cold process — especially while 11 WMI/PowerShell
  *  probes run concurrently — can spike to 100%, and the spike is partly the
  *  measurement storm itself. Sampling `os.cpus()` deltas between requests
- *  (the ~3.5s poll interval) measures the real machine load instead. */
+ *  (one per uncached request) measures the real machine load instead. */
 let lastCpuSample: { busy: number; total: number; at: number } | null = null;
 let lastCpuPercent: number | null = null;
+/** A delta is an average over the gap between samples. Across a closed panel
+ *  that gap is minutes, and the resulting figure describes a window nobody
+ *  asked about — so an old baseline is dropped and re-seeded instead. */
+const MAX_CPU_SAMPLE_GAP_MS = 15_000;
 
 function sampleOsCpuPercent(): number | null {
 	let busy = 0;
 	let total = 0;
+	// Containers with no readable per-core stats report an empty list; there is
+	// nothing to difference, so the si probe stays the source for that host.
 	for (const core of os.cpus()) {
 		const active = core.times.user + core.times.nice + core.times.sys + core.times.irq;
 		busy += active;
@@ -128,7 +134,14 @@ function sampleOsCpuPercent(): number | null {
 	}
 	const now = Date.now();
 	const prev = lastCpuSample;
-	lastCpuSample = { busy, total, at: now };
+	lastCpuSample = total > 0 ? { busy, total, at: now } : null;
+
+	if (prev && now - prev.at > MAX_CPU_SAMPLE_GAP_MS) {
+		// Re-seeded above; this tick falls back to si.currentLoad() and the
+		// next one has a baseline worth differencing.
+		lastCpuPercent = null;
+		return null;
+	}
 	if (prev && now - prev.at >= 500 && total - prev.total > 0) {
 		const pct = ((busy - prev.busy) / (total - prev.total)) * 100;
 		lastCpuPercent = Math.min(100, Math.max(0, pct));
@@ -245,8 +258,8 @@ function selectPrimaryDisks(raw: Systeminformation.FsSizeData[], platform: strin
 		.sort((a, b) => (a.mount === '/' ? -1 : b.mount === '/' ? 1 : b.sizeBytes - a.sizeBytes));
 }
 
-/** Response snapshot served from cache inside the TTL so the 3.5s frontend
- *  poll and rapid tab switches never re-run the si.* probes. */
+/** Response snapshot served from cache inside the TTL so a burst of opens
+ *  and rapid tab switches never re-run the si.* probes. */
 interface DeviceInfoPayload {
 	hostname: string;
 	platform: string;
@@ -291,8 +304,10 @@ interface DeviceInfoPayload {
 	disks: DiskInfo[];
 }
 
-/** Shorter than the frontend 3.5s poll so a poll always hits a fresh cache. */
-const DEVICE_CACHE_TTL_MS = 3000;
+/** Comfortably under the frontend's 3s heartbeat. At an equal TTL, jitter
+ *  means roughly every other poll is answered with the payload it already
+ *  has, so a panel advertising live numbers would really move every 6s. */
+const DEVICE_CACHE_TTL_MS = 1500;
 let cachedDevice: { payload: DeviceInfoPayload; at: number } | null = null;
 let inFlightDevice: Promise<DeviceInfoPayload> | null = null;
 
@@ -304,7 +319,7 @@ async function buildDeviceInfo(): Promise<DeviceInfoPayload> {
 		const factsP = getHostFacts();
 
 		// OS-level CPU sample taken at request start; the delta is measured
-		// against the previous request (~3.5s poll), free of probe overhead.
+		// against the previous uncached request, free of probe overhead.
 		const osCpuPercent = sampleOsCpuPercent();
 
 		// Per-poll storm cut from ~11 concurrent spawns to 3: only CPU

@@ -116,11 +116,11 @@
 		}
 	});
 
-	// Prefetch Device data the moment the modal opens (admin only) so the
-	// slow system:device-info probes + projects:overview folder walk already
-	// run in background while the user browses other tabs. Clicking Device
-	// then shows cached data instantly instead of a long skeleton like other
-	// tabs that render from local stores.
+	// Prefetch Device data the moment the modal opens (admin only) so the slow
+	// system:device-info probes and the projects:overview snapshot already run
+	// in background while the user browses other tabs. Clicking Device then
+	// shows cached data instantly instead of a long skeleton like other tabs
+	// that render from local stores.
 	$effect(() => {
 		if (settingsModalState.isOpen && isAdmin) {
 			prefetchDeviceInfo();

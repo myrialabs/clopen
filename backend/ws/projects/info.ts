@@ -22,12 +22,12 @@ import { collectProcessTree, getHostFacts, getProcessTable } from '../../host/me
 
 /** Ceiling on entries visited by one walk, so a monorepo cannot pin a core. */
 const MAX_ENTRIES = 300_000;
-/** Wall-clock ceiling — the backstop for slow disks and network mounts.
- *  Sized to stay under the 30s client timeout of both callers
- *  (`projects:info` default, `projects:overview` explicit) with margin. */
-const WALK_DEADLINE_MS = 20_000;
-/** How many `stat` calls are in flight at once while walking one directory. */
-const STAT_BATCH = 128;
+/** Wall-clock ceiling — the backstop for slow disks and network mounts. */
+const WALK_DEADLINE_MS = 15_000;
+/** How many `stat` calls are in flight at once while walking one directory.
+ *  Multiplied by the number of concurrent walks, so `MAX_BACKGROUND_WALKS`
+ *  bounds the descriptor fan-out on platforms with a low `ulimit -n`. */
+const STAT_BATCH = 64;
 /** A folder's size changes slowly; a poll should not re-walk it every tick. */
 const STORAGE_CACHE_TTL_MS = 15_000;
 /** An expensive walk earns a longer rest, so it is not repeated the moment its
@@ -51,12 +51,10 @@ const storageCache = new Map<string, { stats: FolderStats; at: number; ttl: numb
 const storageInFlight = new Map<string, Promise<FolderStats>>();
 
 /** Cached and single-flighted: a big walk outlives the poll interval, so a
- *  result-only cache would let every tick start another one.
- *
- *  Exported for reuse by `projects:overview` so idle-project totals share the
- *  same walk, cache entry, and in-flight guard as per-project `projects:info`.
- *  No behavior change for existing callers. */
-export function getFolderStats(root: string): Promise<FolderStats> {
+ *  result-only cache would let every tick start another one. Callers that
+ *  cannot afford the wait go through `peekFolderStats()` below, which shares
+ *  this cache and this in-flight guard. */
+function getFolderStats(root: string): Promise<FolderStats> {
 	const cached = storageCache.get(root);
 	if (cached && Date.now() - cached.at < cached.ttl) {
 		return Promise.resolve(cached.stats);
@@ -87,6 +85,61 @@ export function getFolderStats(root: string): Promise<FolderStats> {
 
 	storageInFlight.set(root, walk);
 	return walk;
+}
+
+/** Walk slots for callers that ask about every project at once.
+ *
+ *  One walk already keeps `STAT_BATCH` `stat` calls in flight; fanning out
+ *  unbounded multiplies that by the project count, which is how a 20-project
+ *  install reaches thousands of open descriptors — past the 256 soft limit
+ *  macOS hands a GUI-launched process. */
+const MAX_BACKGROUND_WALKS = 4;
+let runningBackgroundWalks = 0;
+const queuedWalks: string[] = [];
+const queuedWalkPaths = new Set<string>();
+
+function pumpBackgroundWalks(): void {
+	while (runningBackgroundWalks < MAX_BACKGROUND_WALKS && queuedWalks.length > 0) {
+		const root = queuedWalks.shift() as string;
+		queuedWalkPaths.delete(root);
+		runningBackgroundWalks++;
+		// `getFolderStats` turns walk failures into error stats, so a rejection
+		// here is a programming fault, not a slow disk — swallow it and free
+		// the slot either way.
+		void getFolderStats(root)
+			.catch((error) => {
+				debug.warn('project', 'background folder walk failed:', error);
+			})
+			.finally(() => {
+				runningBackgroundWalks--;
+				pumpBackgroundWalks();
+			});
+	}
+}
+
+/**
+ * Last known stats for a folder, never a wait.
+ *
+ * `getFolderStats` blocks for the whole walk on a cold cache, which is right
+ * for `projects:info` (one folder, one modal) and wrong for `projects:overview`
+ * (every folder, polled). The overview would hold its request open for the full
+ * walk deadline on first open — exactly the long skeleton this panel exists to
+ * avoid. Instead, callers get the previous answer immediately (`null` before
+ * the first walk ever finished) and a refresh is queued behind a bounded pool.
+ */
+export function peekFolderStats(root: string): FolderStats | null {
+	const cached = storageCache.get(root);
+	if (cached && Date.now() - cached.at < cached.ttl) return cached.stats;
+
+	if (!storageInFlight.has(root) && !queuedWalkPaths.has(root)) {
+		queuedWalkPaths.add(root);
+		queuedWalks.push(root);
+		pumpBackgroundWalks();
+	}
+
+	// Stale beats empty: the size a project had a minute ago is still the right
+	// order of magnitude, and the next poll replaces it.
+	return cached?.stats ?? null;
 }
 
 async function walkFolder(root: string): Promise<FolderStats> {
