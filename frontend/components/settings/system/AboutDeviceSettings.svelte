@@ -130,17 +130,69 @@
 	let overviewError = $state<string | null>(null);
 	let overviewFetching = $state(false);
 
-	// View-only search over the project list (name + path). Data untouched, so
-	// the totals above always describe every project, not the filtered subset.
+	// View-only search, status filter and ordering. All three are presentation
+	// only: the totals above always describe every project the caller can see,
+	// never the narrowed subset, so a filter can't quietly rewrite the summary.
+	type StatusFilter = 'all' | 'running' | 'idle';
+	type SortKey = 'size-desc' | 'size-asc' | 'name-asc' | 'name-desc' | 'opened-desc';
+
+	const SORT_OPTIONS: Array<{ value: SortKey; label: string }> = [
+		{ value: 'size-desc', label: 'Largest first' },
+		{ value: 'size-asc', label: 'Smallest first' },
+		{ value: 'name-asc', label: 'Name A–Z' },
+		{ value: 'name-desc', label: 'Name Z–A' },
+		{ value: 'opened-desc', label: 'Recently opened' }
+	];
+
 	let projectSearch = $state('');
-	const filteredProjects = $derived.by(() => {
+	let statusFilter = $state<StatusFilter>('all');
+	let sortKey = $state<SortKey>('size-desc');
+
+	// A folder still being walked has no size to rank on, so size sorts park it
+	// after every measured project instead of letting a placeholder 0 B claim
+	// the top of "Smallest first".
+	function unrankedLast(entry: ProjectResourceEntry): number {
+		return entry.storage.state === 'ready' ? 0 : 1;
+	}
+
+	function compareProjects(a: ProjectResourceEntry, b: ProjectResourceEntry): number {
+		switch (sortKey) {
+			case 'name-asc':
+				return a.name.localeCompare(b.name);
+			case 'name-desc':
+				return b.name.localeCompare(a.name);
+			case 'opened-desc':
+				return b.last_opened_at.localeCompare(a.last_opened_at);
+			case 'size-asc':
+				return (
+					unrankedLast(a) - unrankedLast(b) ||
+					a.storage.sizeBytes - b.storage.sizeBytes ||
+					a.name.localeCompare(b.name)
+				);
+			default:
+				return (
+					unrankedLast(a) - unrankedLast(b) ||
+					b.storage.sizeBytes - a.storage.sizeBytes ||
+					a.name.localeCompare(b.name)
+				);
+		}
+	}
+
+	const statusPills = $derived<Array<{ value: StatusFilter; label: string; count: number }>>([
+		{ value: 'all', label: 'All', count: overview?.totalProjects ?? 0 },
+		{ value: 'running', label: 'Running', count: overview?.runningCount ?? 0 },
+		{ value: 'idle', label: 'Idle', count: overview?.idleCount ?? 0 }
+	]);
+
+	const visibleProjects = $derived.by(() => {
 		const list: ProjectResourceEntry[] = overview?.projects ?? [];
 		const query = projectSearch.trim().toLowerCase();
-		if (!query) return list;
-		return list.filter(
-			(entry) =>
-				entry.name.toLowerCase().includes(query) || entry.path.toLowerCase().includes(query)
-		);
+		const matched = list.filter((entry) => {
+			if (statusFilter !== 'all' && entry.status !== statusFilter) return false;
+			if (!query) return true;
+			return entry.name.toLowerCase().includes(query) || entry.path.toLowerCase().includes(query);
+		});
+		return matched.sort(compareProjects);
 	});
 
 	async function fetchOverview() {
@@ -631,7 +683,7 @@
 				</span>
 			{/if}
 		</div>
-		<p class="text-sm text-slate-600 dark:text-slate-500 mb-5">Live CPU/RAM plus storage footprint, per project — same figures as Project Info</p>
+		<p class="text-sm text-slate-600 dark:text-slate-500 mb-5">Live CPU, RAM and disk per project</p>
 
 		{#if overviewError && !overview}
 			<div class="flex items-center justify-between gap-3 px-4 py-3 bg-red-500/10 border border-red-500/20 rounded-xl">
@@ -725,86 +777,118 @@
 					</div>
 				</div>
 
-				<!-- Every project, biggest footprint first -->
-				<div class="flex flex-col gap-3">
+				<!-- Every project, one dense row each: with 90+ projects the card
+				     layout the Device section uses above scrolls for pages. One
+				     column, not two — the settings pane is ~580px wide, and a
+				     second column leaves the path too narrow to identify a
+				     project by. File and directory counts move to the row's
+				     tooltip; the numbers that change live stay on the row. -->
+				<div class="flex flex-col gap-2">
+					<!-- Title, live counts and the status filter share one row;
+					     search and ordering the next. Three rows of chrome above
+					     a 90-row list is chrome nobody asked for. -->
 					<div class="flex items-center gap-2 flex-wrap">
 						<h3 class="text-base font-bold text-slate-900 dark:text-slate-100">By Project</h3>
 						<span class="inline-flex items-center gap-1 px-1.5 py-0.5 bg-violet-500/15 text-violet-600 dark:text-violet-400 rounded text-2xs font-semibold">
-							{filteredProjects.length} of {overview.projects.length}
+							{visibleProjects.length} of {overview.projects.length}
 						</span>
+						<!-- Filters narrow the view only; the summary cards above
+						     still describe every project. -->
+						<div class="flex gap-1 p-0.5 ml-auto bg-slate-100 dark:bg-slate-900 rounded-lg">
+							{#each statusPills as pill (pill.value)}
+								<button
+									type="button"
+									aria-pressed={statusFilter === pill.value}
+									class="px-2 py-0.5 text-xs font-semibold rounded-md transition-colors cursor-pointer
+										{statusFilter === pill.value
+										? 'bg-white dark:bg-slate-800 text-slate-900 dark:text-slate-100 shadow-sm'
+										: 'text-slate-500 hover:text-slate-700 dark:hover:text-slate-300'}"
+									onclick={() => (statusFilter = pill.value)}
+								>
+									{pill.label} ({pill.count})
+								</button>
+							{/each}
+						</div>
 					</div>
-					<!-- Search: same look as the Model search in Engine settings -->
-					<div class="relative">
-						<svg viewBox="0 0 24 24" fill="none" class="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-slate-400 pointer-events-none" aria-hidden="true">
-							<circle cx="11" cy="11" r="7" stroke="currentColor" stroke-width="2" />
-							<path d="M21 21l-4.35-4.35" stroke="currentColor" stroke-width="2" stroke-linecap="round" />
-						</svg>
-						<input
-							type="text"
-							bind:value={projectSearch}
-							placeholder="Search projects..."
-							aria-label="Search projects"
-							class="w-full pl-9 pr-3 py-1.5 text-sm bg-white dark:bg-slate-800 border border-slate-200 dark:border-slate-700 rounded-lg outline-none focus:ring-2 focus:ring-violet-500/20 focus:border-violet-600 transition-colors text-slate-900 dark:text-slate-100 placeholder-slate-400"
-						/>
+
+					<div class="flex items-center gap-2">
+						<!-- Search: same look as the Model search in Engine settings -->
+						<div class="relative flex-1 min-w-0">
+							<svg viewBox="0 0 24 24" fill="none" class="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-slate-400 pointer-events-none" aria-hidden="true">
+								<circle cx="11" cy="11" r="7" stroke="currentColor" stroke-width="2" />
+								<path d="M21 21l-4.35-4.35" stroke="currentColor" stroke-width="2" stroke-linecap="round" />
+							</svg>
+							<input
+								type="text"
+								bind:value={projectSearch}
+								placeholder="Search projects..."
+								aria-label="Search projects"
+								class="w-full pl-9 pr-3 py-1.5 text-sm bg-white dark:bg-slate-800 border border-slate-200 dark:border-slate-700 rounded-lg outline-none focus:ring-2 focus:ring-violet-500/20 focus:border-violet-600 transition-colors text-slate-900 dark:text-slate-100 placeholder-slate-400"
+							/>
+						</div>
+						<select
+							bind:value={sortKey}
+							aria-label="Sort projects"
+							class="shrink-0 px-2.5 py-1.5 text-xs font-semibold rounded-lg border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-800 text-slate-700 dark:text-slate-300 cursor-pointer focus:outline-none focus:ring-2 focus:ring-violet-500/20 focus:border-violet-600"
+						>
+							{#each SORT_OPTIONS as option (option.value)}
+								<option value={option.value}>{option.label}</option>
+							{/each}
+						</select>
 					</div>
-					{#if filteredProjects.length === 0}
+
+					{#if visibleProjects.length === 0}
 						<p class="px-1 py-3 text-xs text-slate-500 dark:text-slate-500">
-							No projects match "{projectSearch.trim()}"
+							{projectSearch.trim()
+								? `No projects match "${projectSearch.trim()}"`
+								: statusFilter === 'running'
+									? 'No projects are running right now'
+									: 'Every project is running right now'}
 						</p>
 					{:else}
-						<div class="grid grid-cols-1 sm:grid-cols-2 gap-3.5">
-							{#each filteredProjects as entry (entry.id)}
+						<div class="flex flex-col gap-1.5">
+							{#each visibleProjects as entry (entry.id)}
 								{@const storage = entry.storage}
-								{@const metaLine =
+								{@const detail =
 									storage.state === 'ready'
 										? `${fmtCompact(storage.fileCount)} files · ${fmtCompact(storage.dirCount)} dirs · opened ${fmtRelative(entry.last_opened_at)}`
 										: `opened ${fmtRelative(entry.last_opened_at)}`}
-								<div class="px-3.5 pt-1.5 pb-2.5 bg-slate-100/80 dark:bg-slate-800/80 border border-slate-200 dark:border-slate-800 rounded-xl">
-									<!-- Row 1: icon + name + status -->
-									<div class="flex items-center gap-2">
-										<div class="flex items-center justify-center w-10 h-10 rounded-lg shrink-0 bg-violet-400/15 text-violet-500">
-											<Icon name="lucide:folder" class="w-5 h-5" />
-										</div>
-										<span class="text-sm font-semibold text-slate-900 dark:text-slate-100 truncate flex-1 min-w-0">{entry.name}</span>
-										<span
-											class="inline-flex items-center gap-1 shrink-0 px-1.5 py-0.5 rounded text-2xs font-semibold
-												{entry.status === 'running'
-												? 'bg-green-500/15 text-green-600 dark:text-green-400'
-												: 'bg-slate-400/15 text-slate-500'}"
-										>
-											<span class="w-1.5 h-1.5 rounded-full {entry.status === 'running' ? 'bg-green-500 animate-pulse' : 'bg-slate-400'}"></span>
-											{entry.status === 'running' ? 'Running' : 'Idle'}
+								<div
+									class="flex items-center gap-2.5 px-2.5 py-1.5 bg-slate-100/80 dark:bg-slate-800/80 border border-slate-200 dark:border-slate-800 rounded-lg"
+									title={detail}
+								>
+									<span
+										class="w-1.5 h-1.5 rounded-full shrink-0 {entry.status === 'running'
+											? 'bg-green-500 animate-pulse'
+											: 'bg-slate-400/70'}"
+										title={entry.status === 'running' ? 'Running' : 'Idle'}
+									></span>
+									<div class="flex flex-col min-w-0 flex-1">
+										<span class="text-xs font-semibold text-slate-900 dark:text-slate-100 truncate">{entry.name}</span>
+										<span class="text-2xs font-mono text-slate-500 truncate" title={entry.path}>{entry.path}</span>
+									</div>
+									<div class="flex flex-col items-end shrink-0 leading-tight">
+										{#if storage.state === 'ready'}
+											<span
+												class="text-xs font-semibold font-mono text-slate-900 dark:text-slate-100"
+												title={storage.truncated ? `At least ${fmtBytes(storage.sizeBytes)} — the scan stopped early` : fmtBytes(storage.sizeBytes)}
+											>
+												{storage.truncated ? '≥' : ''}{fmtBytes(storage.sizeBytes)}
+											</span>
+										{:else}
+											<span
+												class="text-xs font-semibold font-mono text-slate-400 dark:text-slate-500"
+												title={storage.state === 'measuring'
+													? 'The folder scan has not finished yet'
+													: (storage.error ?? 'Folder unavailable')}
+											>
+												{storage.state === 'measuring' ? 'Measuring…' : 'Unavailable'}
+											</span>
+										{/if}
+										<span class="text-2xs font-mono text-slate-500">
+											{fmtCpu(entry.cpuPercent)} CPU · {entry.memRssBytes === null ? '—' : fmtBytes(entry.memRssBytes)} RAM
 										</span>
 									</div>
-									<!-- Row 2: path -->
-									<div class="mt-1 text-xs font-mono text-slate-500 truncate" title={entry.path}>{entry.path}</div>
-									<!-- Row 3: stat focal points, same order as Project Info -->
-									<div class="grid grid-cols-3 gap-2 mt-2 pt-2 border-t border-slate-200 dark:border-slate-700">
-										<div class="min-w-0">
-											<div class="text-sm font-semibold font-mono text-slate-900 dark:text-slate-100 truncate">{fmtCpu(entry.cpuPercent)}</div>
-											<div class="text-2xs text-slate-500">CPU</div>
-										</div>
-										<div class="min-w-0">
-											<div class="text-sm font-semibold font-mono text-slate-900 dark:text-slate-100 truncate" title={entry.memRssBytes === null ? 'Unknown' : fmtBytes(entry.memRssBytes)}>{entry.memRssBytes === null ? '—' : fmtBytes(entry.memRssBytes)}</div>
-											<div class="text-2xs text-slate-500">RAM</div>
-										</div>
-										<div class="min-w-0">
-											{#if storage.state === 'ready'}
-												<div class="text-sm font-semibold font-mono text-slate-900 dark:text-slate-100 truncate" title={storage.truncated ? `At least ${fmtBytes(storage.sizeBytes)} — the scan stopped early` : fmtBytes(storage.sizeBytes)}>
-													{storage.truncated ? '≥' : ''}{fmtBytes(storage.sizeBytes)}
-												</div>
-											{:else if storage.state === 'measuring'}
-												<div class="text-sm font-semibold font-mono text-slate-400 dark:text-slate-500 truncate" title="The folder scan has not finished yet">…</div>
-											{:else}
-												<div class="text-sm font-semibold font-mono text-slate-400 dark:text-slate-500 truncate" title={storage.error ?? 'Folder unavailable'}>—</div>
-											{/if}
-											<div class="text-2xs text-slate-500">
-												{storage.state === 'ready' ? 'Storage' : storage.state === 'measuring' ? 'Measuring' : 'Unavailable'}
-											</div>
-										</div>
-									</div>
-									<!-- Row 4: secondary metadata -->
-									<div class="mt-1.5 text-2xs text-slate-500 truncate" title={metaLine}>{metaLine}</div>
 								</div>
 							{/each}
 						</div>
