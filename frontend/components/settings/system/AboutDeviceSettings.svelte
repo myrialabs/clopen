@@ -232,20 +232,36 @@
 		}
 	}
 
-	// Single heartbeat: both fetches run concurrently on one fixed 3s
-	// interval. In-flight guards inside each fetch skip a tick while the
-	// previous one is still running, so slow responses can never pile up.
-	// The keyed list + untouched search input mean no scroll or focus jumps.
-	async function refreshAll() {
-		await Promise.all([fetchInfo(), fetchOverview()]);
+	// --- Tabs ---
+	// The device cards and the project list answer different questions and
+	// together run to a page of scrolling, so only one is mounted at a time.
+	type Tab = 'device' | 'projects';
+	let activeTab = $state<Tab>('device');
+
+	function selectTab(tab: Tab) {
+		if (activeTab === tab) return;
+		activeTab = tab;
+		// The other tab's cache has been sitting untouched since the last time
+		// it was visible, so show it and correct it in the same breath rather
+		// than waiting up to a full heartbeat.
+		refreshActive();
+	}
+
+	// Single heartbeat, and only for what is on screen — polling a hidden tab
+	// buys nothing and the modal-open prefetch already warmed both. In-flight
+	// guards inside each fetch skip a tick while the previous one is still
+	// running, so slow responses can never pile up. The keyed list + untouched
+	// search input mean no scroll or focus jumps.
+	async function refreshActive() {
+		await (activeTab === 'device' ? fetchInfo() : fetchOverview());
 	}
 
 	onMount(() => {
 		// If cached data exists, show it instantly and refresh in background.
 		// Otherwise fetch immediately.
-		refreshAll();
+		refreshActive();
 		if (timer) clearInterval(timer);
-		timer = setInterval(refreshAll, REFRESH_INTERVAL_MS);
+		timer = setInterval(refreshActive, REFRESH_INTERVAL_MS);
 	});
 
 	onDestroy(() => {
@@ -369,6 +385,35 @@
 </script>
 
 <div class="py-1">
+	<!-- Two tabs, not one long scroll: the device cards and a ninety-row
+	     project list answer different questions, and stacking them meant
+	     scrolling past the hardware every time to reach a project. -->
+	<div class="inline-flex gap-1 p-1 mb-4 bg-slate-100 dark:bg-slate-900 rounded-lg">
+		<button
+			type="button"
+			aria-pressed={activeTab === 'device'}
+			class="px-3.5 py-1.5 text-sm font-semibold rounded-md transition-colors cursor-pointer
+				{activeTab === 'device'
+				? 'bg-white dark:bg-slate-800 text-slate-900 dark:text-slate-100 shadow-sm'
+				: 'text-slate-500 hover:text-slate-700 dark:hover:text-slate-300'}"
+			onclick={() => selectTab('device')}
+		>
+			{title}
+		</button>
+		<button
+			type="button"
+			aria-pressed={activeTab === 'projects'}
+			class="px-3.5 py-1.5 text-sm font-semibold rounded-md transition-colors cursor-pointer
+				{activeTab === 'projects'
+				? 'bg-white dark:bg-slate-800 text-slate-900 dark:text-slate-100 shadow-sm'
+				: 'text-slate-500 hover:text-slate-700 dark:hover:text-slate-300'}"
+			onclick={() => selectTab('projects')}
+		>
+			Project Usage
+		</button>
+	</div>
+
+	{#if activeTab === 'device'}
 	<div class="flex items-center gap-2 mb-1.5">
 		<h3 class="text-base font-bold text-slate-900 dark:text-slate-100">{title}</h3>
 		{#if info?.isVirtual}
@@ -670,11 +715,11 @@
 		</div>
 	{/if}
 
+	{:else}
 	<!-- Per-project usage: the same figures Project Info reports, for every
-	     project at once. Visually and logically separate from the Device cards
-	     above: own divider, own loading/error states, refreshed by the shared
-	     3s heartbeat — no manual refresh needed. -->
-	<div class="mt-6 pt-5 border-t border-slate-200 dark:border-slate-800">
+	     project at once. Own loading and error states, and its own place in
+	     the heartbeat — only the visible tab is refreshed. -->
+	<div>
 		<div class="flex items-center gap-2 mb-1.5 flex-wrap">
 			<h3 class="text-base font-bold text-slate-900 dark:text-slate-100">Project Usage</h3>
 			{#if overview}
@@ -794,12 +839,12 @@
 						</span>
 						<!-- Filters narrow the view only; the summary cards above
 						     still describe every project. -->
-						<div class="flex gap-1 p-0.5 ml-auto bg-slate-100 dark:bg-slate-900 rounded-lg">
+						<div class="flex gap-1 p-1 ml-auto bg-slate-100 dark:bg-slate-900 rounded-lg">
 							{#each statusPills as pill (pill.value)}
 								<button
 									type="button"
 									aria-pressed={statusFilter === pill.value}
-									class="px-2 py-0.5 text-xs font-semibold rounded-md transition-colors cursor-pointer
+									class="px-3 py-1 text-sm font-semibold rounded-md transition-colors cursor-pointer
 										{statusFilter === pill.value
 										? 'bg-white dark:bg-slate-800 text-slate-900 dark:text-slate-100 shadow-sm'
 										: 'text-slate-500 hover:text-slate-700 dark:hover:text-slate-300'}"
@@ -829,7 +874,7 @@
 						<select
 							bind:value={sortKey}
 							aria-label="Sort projects"
-							class="shrink-0 px-2.5 py-1.5 text-xs font-semibold rounded-lg border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-800 text-slate-700 dark:text-slate-300 cursor-pointer focus:outline-none focus:ring-2 focus:ring-violet-500/20 focus:border-violet-600"
+							class="shrink-0 px-3 py-1.5 text-sm font-semibold rounded-lg border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-800 text-slate-700 dark:text-slate-300 cursor-pointer focus:outline-none focus:ring-2 focus:ring-violet-500/20 focus:border-violet-600"
 						>
 							{#each SORT_OPTIONS as option (option.value)}
 								<option value={option.value}>{option.label}</option>
@@ -854,30 +899,32 @@
 										? `${fmtCompact(storage.fileCount)} files · ${fmtCompact(storage.dirCount)} dirs · opened ${fmtRelative(entry.last_opened_at)}`
 										: `opened ${fmtRelative(entry.last_opened_at)}`}
 								<div
-									class="flex items-center gap-2.5 px-2.5 py-1.5 bg-slate-100/80 dark:bg-slate-800/80 border border-slate-200 dark:border-slate-800 rounded-lg"
+									class="flex items-center gap-3 px-3.5 py-2.5 bg-slate-100/80 dark:bg-slate-800/80 border border-slate-200 dark:border-slate-800 rounded-lg"
 									title={detail}
 								>
+									<!-- A steady dot: ninety rows of pulsing green reads as an
+									     alarm, and running is the ordinary state here. -->
 									<span
-										class="w-1.5 h-1.5 rounded-full shrink-0 {entry.status === 'running'
-											? 'bg-green-500 animate-pulse'
+										class="w-2 h-2 rounded-full shrink-0 {entry.status === 'running'
+											? 'bg-green-500'
 											: 'bg-slate-400/70'}"
 										title={entry.status === 'running' ? 'Running' : 'Idle'}
 									></span>
-									<div class="flex flex-col min-w-0 flex-1">
-										<span class="text-xs font-semibold text-slate-900 dark:text-slate-100 truncate">{entry.name}</span>
-										<span class="text-2xs font-mono text-slate-500 truncate" title={entry.path}>{entry.path}</span>
+									<div class="flex flex-col gap-0.5 min-w-0 flex-1">
+										<span class="text-sm font-semibold text-slate-900 dark:text-slate-100 truncate">{entry.name}</span>
+										<span class="text-xs font-mono text-slate-500 truncate" title={entry.path}>{entry.path}</span>
 									</div>
-									<div class="flex flex-col items-end shrink-0 leading-tight">
+									<div class="flex flex-col gap-0.5 items-end shrink-0">
 										{#if storage.state === 'ready'}
 											<span
-												class="text-xs font-semibold font-mono text-slate-900 dark:text-slate-100"
+												class="text-sm font-semibold font-mono text-slate-900 dark:text-slate-100"
 												title={storage.truncated ? `At least ${fmtBytes(storage.sizeBytes)} — the scan stopped early` : fmtBytes(storage.sizeBytes)}
 											>
 												{storage.truncated ? '≥' : ''}{fmtBytes(storage.sizeBytes)}
 											</span>
 										{:else}
 											<span
-												class="text-xs font-semibold font-mono text-slate-400 dark:text-slate-500"
+												class="text-sm font-semibold font-mono text-slate-400 dark:text-slate-500"
 												title={storage.state === 'measuring'
 													? 'The folder scan has not finished yet'
 													: (storage.error ?? 'Folder unavailable')}
@@ -885,7 +932,7 @@
 												{storage.state === 'measuring' ? 'Measuring…' : 'Unavailable'}
 											</span>
 										{/if}
-										<span class="text-2xs font-mono text-slate-500">
+										<span class="text-xs font-mono text-slate-500">
 											{fmtCpu(entry.cpuPercent)} CPU · {entry.memRssBytes === null ? '—' : fmtBytes(entry.memRssBytes)} RAM
 										</span>
 									</div>
@@ -904,4 +951,5 @@
 			</div>
 		{/if}
 	</div>
+	{/if}
 </div>
