@@ -4,7 +4,7 @@
  * as importantly, that it does not have to write anything.
  */
 
-export const memoryToolDescription = `Query and curate Clopen's Memory Graph — a persistent store of what has been decided, tried and learned across past sessions of this workspace, plus a map of the codebase those memories attach to. It is shared by every AI engine and survives session switches, so a memory written months ago by a different model is still here.
+export const memoryToolDescription = `Query and curate Clopen's Memory Graph — a persistent store of what has been decided, tried and learned across past sessions of this workspace. It is shared by every AI engine and survives session switches, so a memory written months ago by a different model is still here.
 
 YOU DO NOT NEED TO RECORD ANYTHING. Memories are written automatically from each finished conversation turn, including anything the user asks you to remember — saying "remember that I prefer X" is enough on its own, and there is deliberately no action here that stores a new memory. That is one write path rather than two, so what ends up in the graph is predictable. This tool is for reading it and for correcting what is already there.
 
@@ -13,13 +13,13 @@ Reach for it when:
 - something is failing in a way that feels like it has failed before
 - you need to know why code looks the way it does, when the code itself does not say
 - the user refers to a past discussion, decision or preference
-- you want to know what a file or module is connected to before changing it
+- you are about to change a file, and want to know what was decided about it
 - a memory you were shown is wrong, out of date, or filed under the wrong kind
 
 Relevant memories are already prepended to each turn automatically, so this tool is for going DEEPER than that: following up on something you have just discovered, asking about another project, or walking the graph. It is not a substitute for reading what you were given.
 
 Actions:
-- recall — natural-language search across memories and code entities. Runs keyword and semantic search together and expands into the graph, so it finds paraphrases as well as exact names. Use scope "all" to search every project, which is how you find that a problem was already solved in another repository.
+- recall — natural-language search across the memories. Runs keyword and semantic search together and expands into the graph, so it finds paraphrases as well as exact names. Use scope "all" to search every project, which is how you find that a problem was already solved in another repository.
 - neighbours — walk outward from a node returned by recall. This is where the graph earns its keep: the memory you need is often adjacent to your match rather than being it.
 - timeline — recent memories in order, for "what have we been doing here".
 - update — correct a memory in place. Prefer this whenever an existing memory is nearly right: it keeps the node's connections and its history, where retiring it and letting a new one be written loses both.

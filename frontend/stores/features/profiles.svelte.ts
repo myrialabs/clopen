@@ -2,7 +2,7 @@
  * Profiles Store
  *
  * Reactive store for Settings → Profiles — reusable bundles that reference
- * existing artifacts (Skills, Commands, Subagents, MCP Connectors) by slug, plus
+ * existing artifacts (Skills, Commands, Subagents, Integrations) by slug, plus
  * an optional per-engine permission overlay. A profile is activated per-session
  * (see the picker) and resolved at stream start against the project's shared
  * default. Nothing here duplicates artifact data.

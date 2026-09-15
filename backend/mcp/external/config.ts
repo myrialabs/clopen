@@ -110,7 +110,7 @@ export function getEnabledExternalServers(profileFilter?: Set<string>): Resolved
 	//
 	// When a Profile is active it is the source of truth for which connectors run:
 	// a connector it references is emitted even if globally disabled in the
-	// Connectors settings, and the global enable toggle is ignored. Without a
+	// Integrations settings, and the global enable toggle is ignored. Without a
 	// profile filter, only enabled servers apply (unchanged).
 	const rows = profileFilter ? mcpServerQueries.getAll() : mcpServerQueries.getEnabled();
 	return rows
@@ -267,4 +267,38 @@ export function resolveExternalToolName(toolName: string): string | null {
 function logBuilt(engine: string, out: Record<string, unknown>): void {
 	const count = Object.keys(out).length;
 	if (count > 0) debug.log('mcp', `🧩 ${engine} external MCP: ${count} server(s)`);
+}
+
+/**
+ * The config each engine is handed for ONE external server, keyed by engine.
+ *
+ * Surfaced in the Integrations detail view. It exists because "what does the
+ * engine actually receive" is otherwise unanswerable from the UI: every server,
+ * whatever its real transport, is emitted as a Streamable-HTTP remote pointing
+ * at the `/mcp/ext/<slug>` proxy, so the row a user configured and the config an
+ * engine sees do not look alike. Showing the row and calling it the engine's
+ * config would be a lie of omission.
+ *
+ * Returns `{}` for a server that is disabled or unknown — the honest answer,
+ * since a disabled server is handed to nobody.
+ */
+export function getEngineConfigsForServer(slug: string): Record<string, unknown> {
+	const namespace = externalNamespace(slug);
+	const pick = (config: Record<string, unknown>): unknown => config[namespace];
+
+	const out: Record<string, unknown> = {};
+	const builders: Record<string, () => Record<string, unknown>> = {
+		'claude-code': () => getClaudeExternalMcpConfig() as Record<string, unknown>,
+		opencode: () => getOpenCodeExternalMcpConfig() as Record<string, unknown>,
+		codex: () => getCodexExternalMcpConfig() as Record<string, unknown>,
+		copilot: () => getCopilotExternalMcpConfig() as Record<string, unknown>,
+		cursor: () => getCursorExternalMcpConfig() as Record<string, unknown>,
+		qwen: () => getQwenExternalMcpConfig() as Record<string, unknown>
+	};
+
+	for (const [engine, build] of Object.entries(builders)) {
+		const config = pick(build());
+		if (config !== undefined) out[engine] = config;
+	}
+	return out;
 }

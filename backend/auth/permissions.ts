@@ -143,6 +143,45 @@ export const ADMIN_ONLY_ROUTES = new Set([
 	'mcp:tools',
 	'mcp:set-tool-overrides',
 	'mcp:call-tool',
+	'mcp:engine-config',
+	// Third-party integrations. A connected account holds a credential and
+	// projects rows onto surfaces every engine and every project can reach, so
+	// the whole surface is admin-only for the same reason MCP is. The read
+	// events are gated too: `integrations:list` names which services this
+	// install is connected to, and `integrations:secrets-health` describes the
+	// state of the key that protects them.
+	'integrations:providers',
+	'integrations:list',
+	'integrations:connect',
+	'integrations:update',
+	'integrations:disconnect',
+	'integrations:health',
+	'integrations:secrets-health',
+	// Account-backed database connections. Linking reads a credential belonging
+	// to the install rather than to the caller, and projects a connection every
+	// admin sees — the same reason the rest of the integrations surface is
+	// admin-only. The ordinary db-client routes stay open: a member still
+	// manages their own hand-typed connections exactly as before.
+	'db-client:providers',
+	'db-client:remote-databases',
+	'db-client:create-options',
+	// Provisions real infrastructure against the account's quota, which is as
+	// outward-facing as anything on this surface gets. Creating an organisation
+	// creates a BILLING entity, which is more so.
+	'db-client:create-group',
+	'db-client:create-database',
+	// Renames a database everyone at the provider sees.
+	'db-client:rename-database',
+	// Destroys a database and everything in it.
+	'db-client:delete-database',
+	'db-client:link',
+	'db-client:update-link',
+	'db-client:unlink',
+	// Applying a migration changes a schema everyone shares, and writing types
+	// writes a file into the repository. The Supabase READS are not listed, so
+	// anyone who can use the connection can look.
+	'db-client:supabase-apply-migration',
+	'db-client:supabase-write-types',
 	// Memory Graph — the graph is instance-global and is injected into every
 	// future turn on every engine, so editing it changes what every agent is told.
 	// Mutations only: the read surface (memory:graph / :node / :search / :stats /

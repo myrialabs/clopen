@@ -83,7 +83,8 @@
 		community: number;
 		/** Connections for a memory, members for a bin; both drive size. */
 		magnitude: number;
-		kind: 'episodic' | 'structural' | 'bin';
+		/** A memory drawn on its own, or a mark standing for a crowded cell. */
+		kind: 'memory' | 'bin';
 		/** From the persisted arrangement. Absent means "not placed yet". */
 		x?: number;
 		y?: number;
@@ -284,7 +285,6 @@
 	 */
 	const THEME = {
 		light: {
-			structural: '#8b9bb0',
 			edge: '#dbe2ea',
 			edgeCross: '#c3ccd8',
 			edgeFocus: '#7c8ba1',
@@ -294,7 +294,6 @@
 			hoverText: '#0f172a'
 		},
 		dark: {
-			structural: '#4e5d75',
 			edge: '#1b2740',
 			edgeCross: '#33415c',
 			edgeFocus: '#7c8ba1',
@@ -326,7 +325,7 @@
 			label: node.label,
 			community: node.community,
 			magnitude: node.degree,
-			kind: node.kind,
+			kind: 'memory',
 			...(node.x !== undefined && { x: node.x }),
 			...(node.y !== undefined && { y: node.y })
 		}));
@@ -361,10 +360,6 @@
 	}
 
 	function nodeColor(node: DrawNode): string {
-		// Structural nodes stay neutral on purpose. They are scaffolding — the files
-		// and symbols memories hang off — and giving them community hues too would
-		// make the coloured lobes read as one undifferentiated field.
-		if (node.kind === 'structural') return palette().structural;
 		return communityColor(node.community, isDark);
 	}
 
@@ -462,9 +457,7 @@
 		if (node.kind === 'bin') return Math.max(3, baseBinSize(node) * binScale);
 
 		const share = magnitudeScale <= 1 ? 0 : Math.min(1, node.magnitude / magnitudeScale);
-		const min = node.kind === 'structural' ? 1.5 : 2;
-		const max = node.kind === 'structural' ? 6 : 9;
-		return min + (max - min) * Math.pow(share, 0.85);
+		return 2 + 7 * Math.pow(share, 0.85);
 	}
 
 	/** A mark's size before the ink scale — the size its membership asks for. */
@@ -490,7 +483,6 @@
 		// A cross-community edge belongs to neither, and painting it as one of them
 		// would imply a membership it does not have.
 		if (source.community !== target.community) return palette().edgeCross;
-		if (source.kind === 'structural' && target.kind === 'structural') return palette().edge;
 		// Two corrections pulling against each other. Hairlines mean far more edges
 		// are legible at once, which wants LESS alpha; but the hues also came down in
 		// lightness on dark, which wants more of it back before a 0.4px line over

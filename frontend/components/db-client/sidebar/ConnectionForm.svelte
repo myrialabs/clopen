@@ -1,6 +1,7 @@
 <script lang="ts">
 	import { untrack } from 'svelte';
 	import Icon from '$frontend/components/common/display/Icon.svelte';
+	import ProviderMark from '$frontend/components/common/display/ProviderMark.svelte';
 	import PathBrowser from '$frontend/components/common/form/PathBrowser.svelte';
 	import { dbClientStore } from '$frontend/stores/features/db-client.svelte';
 	import { sshClientStore } from '$frontend/stores/features/ssh-client.svelte';
@@ -16,9 +17,23 @@
 		connection?: DbClientConnection | null;
 		onSaved?: (conn: DbClientConnection) => void;
 		onCancel?: () => void;
+		/** Offered on a managed connection — where its real settings live. */
+		onEditLink?: (connection: DbClientConnection) => void;
 	}
 
-	const { connection = null, onSaved, onCancel }: Props = $props();
+	const { connection = null, onSaved, onCancel, onEditLink }: Props = $props();
+
+	/**
+	 * A managed connection is DERIVED from a connected account.
+	 *
+	 * Every field below except the name is read-only, because the account owns
+	 * them: typing a different host here would be reverted by the next
+	 * re-projection, and the server refuses those fields anyway. Showing them
+	 * disabled rather than hiding them is deliberate — where a connection points
+	 * is exactly what someone opens this form to check.
+	 */
+	const managed = $derived(connection?.managedBy ?? null);
+	const isManaged = $derived(managed !== null);
 
 	const DEFAULT_PORTS: Record<DbDriver, number | null> = {
 		mysql: 3306,
@@ -176,6 +191,22 @@
 	}
 
 	async function onSave(): Promise<void> {
+		// A managed connection only ever sends its name: the rest is derived, and
+		// the server drops it. Sending it anyway would make the form look like it
+		// saved something it did not.
+		if (connection && isManaged) {
+			formError = null;
+			saving = true;
+			try {
+				onSaved?.(await dbClientStore.update(connection.id, { name: name.trim() }));
+			} catch (e) {
+				formError = e instanceof Error ? e.message : 'Save failed';
+			} finally {
+				saving = false;
+			}
+			return;
+		}
+
 		const err = validate();
 		if (err) {
 			formError = err;
@@ -198,6 +229,38 @@
 </script>
 
 <div class="flex flex-col gap-3">
+	{#if managed}
+		<!-- Who owns this row. Shown before the fields it explains, so a disabled
+		     input is never a mystery the user has to work out. -->
+		<div class="flex flex-col gap-2 px-3 py-2.5 rounded-lg bg-violet-50 dark:bg-violet-950/30 border border-violet-200/70 dark:border-violet-900/50">
+			<div class="flex items-center gap-2 min-w-0">
+				<ProviderMark provider={managed.provider} size="w-4 h-4" fallback="lucide:database" />
+				<span class="text-xs font-semibold text-violet-900 dark:text-violet-200 truncate">
+					{managed.accountLabel}
+				</span>
+				<span class="text-3xs uppercase tracking-wider text-violet-700/70 dark:text-violet-300/70 shrink-0">
+					{managed.providerName}
+				</span>
+			</div>
+			<p class="text-xs text-violet-800/80 dark:text-violet-300/80">
+				{#if managed.adopted}
+					This connection existed before the account did. Disconnecting the account hands it back to you rather than deleting it.
+				{:else}
+					Everything except the name comes from the connected account, and is rewritten whenever its credentials change.
+				{/if}
+			</p>
+			{#if onEditLink && connection}
+				<button
+					type="button"
+					class="self-start text-xs font-medium text-violet-700 dark:text-violet-300 hover:underline cursor-pointer"
+					onclick={() => onEditLink(connection)}
+				>
+					Edit the link…
+				</button>
+			{/if}
+		</div>
+	{/if}
+
 	<label class="flex flex-col gap-1">
 		<span class="text-xs text-slate-500 dark:text-slate-400">Name</span>
 		<input
@@ -211,8 +274,9 @@
 		<span class="text-xs text-slate-500 dark:text-slate-400">Driver</span>
 		<select
 			value={driver}
+			disabled={isManaged}
 			onchange={(e) => onDriverChange((e.currentTarget as HTMLSelectElement).value as DbDriver)}
-			class="px-2.5 py-1.5 bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-700 rounded-md text-sm text-slate-900 dark:text-slate-100"
+			class="px-2.5 py-1.5 bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-700 rounded-md text-sm text-slate-900 dark:text-slate-100 disabled:opacity-60 disabled:cursor-not-allowed"
 		>
 			{#each Object.entries(DRIVER_LABELS) as [value, label] (value)}
 				<option {value}>{label}</option>
@@ -227,8 +291,9 @@
 				<input
 					type="text"
 					bind:value={host}
+					readonly={isManaged}
 					placeholder={hostPlaceholder}
-					class="px-2.5 py-1.5 bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-700 rounded-md text-sm text-slate-900 dark:text-slate-100"
+					class="read-only:bg-slate-100 read-only:text-slate-500 dark:read-only:bg-slate-800/60 dark:read-only:text-slate-400 read-only:cursor-not-allowed px-2.5 py-1.5 bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-700 rounded-md text-sm text-slate-900 dark:text-slate-100"
 				/>
 			</label>
 			<label class="flex flex-col gap-1">
@@ -236,12 +301,13 @@
 				<input
 					type="number"
 					value={port ?? ''}
+					readonly={isManaged}
 					placeholder={portPlaceholder}
 					oninput={(e) => {
 						const v = (e.currentTarget as HTMLInputElement).value;
 						port = v === '' ? null : Number(v);
 					}}
-					class="px-2.5 py-1.5 bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-700 rounded-md text-sm text-slate-900 dark:text-slate-100"
+					class="read-only:bg-slate-100 read-only:text-slate-500 dark:read-only:bg-slate-800/60 dark:read-only:text-slate-400 read-only:cursor-not-allowed px-2.5 py-1.5 bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-700 rounded-md text-sm text-slate-900 dark:text-slate-100"
 				/>
 			</label>
 		</div>
@@ -252,7 +318,8 @@
 				<input
 					type="text"
 					bind:value={username}
-					class="px-2.5 py-1.5 bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-700 rounded-md text-sm text-slate-900 dark:text-slate-100"
+					readonly={isManaged}
+					class="read-only:bg-slate-100 read-only:text-slate-500 dark:read-only:bg-slate-800/60 dark:read-only:text-slate-400 read-only:cursor-not-allowed px-2.5 py-1.5 bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-700 rounded-md text-sm text-slate-900 dark:text-slate-100"
 				/>
 			</label>
 			<label class="flex flex-col gap-1">
@@ -260,7 +327,9 @@
 				<input
 					type="password"
 					bind:value={password}
-					class="px-2.5 py-1.5 bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-700 rounded-md text-sm text-slate-900 dark:text-slate-100"
+					readonly={isManaged}
+					placeholder={isManaged ? 'Stored with the account' : ''}
+					class="read-only:bg-slate-100 read-only:text-slate-500 dark:read-only:bg-slate-800/60 dark:read-only:text-slate-400 read-only:cursor-not-allowed px-2.5 py-1.5 bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-700 rounded-md text-sm text-slate-900 dark:text-slate-100"
 				/>
 			</label>
 		</div>
@@ -279,8 +348,9 @@
 			<input
 				type="text"
 				bind:value={database}
+				readonly={isManaged}
 				placeholder={isSqlite ? '/absolute/path/to.db' : ''}
-				class="flex-1 min-w-0 px-2.5 py-1.5 bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-700 rounded-md text-sm text-slate-900 dark:text-slate-100"
+				class="read-only:bg-slate-100 read-only:text-slate-500 dark:read-only:bg-slate-800/60 dark:read-only:text-slate-400 read-only:cursor-not-allowed flex-1 min-w-0 px-2.5 py-1.5 bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-700 rounded-md text-sm text-slate-900 dark:text-slate-100"
 			/>
 			{#if isSqlite}
 				<button
@@ -314,8 +384,10 @@
 	{/if}
 
 	<!-- SSH section — network drivers only; a tunnel forwards a TCP port and
-	     SQLite has none -->
-	{#if isNetworkDriver}
+	     SQLite has none. Hidden entirely for a managed connection: a projection
+	     resolves its own reachable endpoint, so a tunnel here would be a setting
+	     with nothing to apply to. -->
+	{#if isNetworkDriver && !isManaged}
 	<div class="border-t border-slate-200 dark:border-slate-800 pt-3">
 		<button
 			type="button"

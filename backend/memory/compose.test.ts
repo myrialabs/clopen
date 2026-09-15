@@ -18,6 +18,7 @@ import { beforeEach, describe, expect, it, mock } from 'bun:test';
 import { Database } from 'bun:sqlite';
 import type { DatabaseConnection } from '$shared/types/database/connection';
 import * as migration066 from '$backend/database/migrations/066_create_memory_graph';
+import * as migration076 from '$backend/database/migrations/076_remove_memory_code_graph';
 
 let db: Database;
 
@@ -38,7 +39,6 @@ mock.module('$backend/database', () => ({
 mock.module('./config', () => ({
 	getMemoryConfig: () => ({
 		enabled: true,
-		recordCode: true,
 		recordMemories: true,
 		autoRecall: true,
 		recallBudget: 2_400,
@@ -60,6 +60,7 @@ beforeEach(() => {
 	db = new Database(':memory:');
 	db.exec('PRAGMA foreign_keys = ON');
 	migration066.up(db as unknown as DatabaseConnection);
+	migration076.up(db as unknown as DatabaseConnection);
 });
 
 describe('drafting', () => {
@@ -156,7 +157,6 @@ describe('saving', () => {
 		// Agreeing with something already stored should make it stronger, not add a
 		// near-copy that competes with it for the same recall budget.
 		const existing = graphQueries.upsert({
-			kind: 'episodic',
 			subkind: 'preference',
 			projectId: PROJECT,
 			label: 'Prefers tabs',
@@ -174,7 +174,7 @@ describe('saving', () => {
 
 		expect(node.id).toBe(existing.id);
 		expect(node.confidence).toBe(0.95);
-		expect(graphQueries.count({ projectId: PROJECT, kinds: ['episodic'] })).toBe(1);
+		expect(graphQueries.count({ projectId: PROJECT })).toBe(1);
 	});
 
 	it('makes it findable at once', () => {

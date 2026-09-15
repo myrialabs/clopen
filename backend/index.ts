@@ -51,6 +51,8 @@ import { audioRoute } from './http/audio';
 
 // HTTP routes for SFTP transfer — same reason as the file upload route above.
 import { sshSftpRoute } from './http/ssh-sftp';
+import { notesImagesRoute } from './http/notes-images';
+import { integrationHooksRoute } from './http/integration-hooks';
 
 // Import browser preview manager for graceful shutdown
 import { browserPreviewServiceManager } from './preview';
@@ -67,6 +69,7 @@ import { sessionCleanupScheduler } from './auth/session-cleanup';
 import { portMonitor } from './ports/monitor';
 import { containerMonitor } from './containers/monitor';
 import { stopAllLogStreams as stopAllContainerLogStreams } from './containers/logs';
+import { stopAllBuildLogStreams } from './deployments/log-streams';
 import { uploadTempCleanup } from './http/upload-temp-cleanup';
 import { ws as wsServer } from './utils/ws';
 import { messageRateLimiter } from './ws/message-rate-limiter';
@@ -197,6 +200,13 @@ const app = new Elysia()
 
 	// SSH file transfer (SFTP download/upload).
 	.use(sshSftpRoute)
+
+	// Notes images
+	.use(notesImagesRoute)
+
+	// Inbound third-party events. Unauthenticated by necessity — it verifies a
+	// per-provider signature over the raw bytes instead of a session.
+	.use(integrationHooksRoute)
 
 	// Mount WebSocket router (all functionality now via WebSocket)
 	.use(wsRouter.asPlugin('/ws'));
@@ -353,6 +363,9 @@ async function gracefulShutdown() {
 		// Same for the container list, and the log streams it may still be pumping
 		stopAllContainerLogStreams();
 		containerMonitor.stop();
+		// Build-log follows are open HTTPS responses against a provider; nothing
+		// closes them but us.
+		stopAllBuildLogStreams();
 		// Close MCP remote server (before engines, as they may still reference it)
 		await closeMcpServer();
 		// Cleanup browser preview sessions

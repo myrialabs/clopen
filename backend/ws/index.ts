@@ -35,6 +35,7 @@ import { sshRouter } from './ssh';
 import { portsRouter } from './ports';
 import { containersRouter } from './containers';
 import { mcpRouter } from './mcp';
+import { integrationsRouter } from './integrations';
 import { skillsRouter } from './skills';
 import { commandsRouter } from './commands';
 import { subagentsRouter } from './subagents';
@@ -44,6 +45,9 @@ import { profilesRouter } from './profiles';
 import { artifactsRouter } from './artifacts';
 import { memoryRouter } from './memory';
 import { worktreesRouter } from './worktrees';
+import { notesRouter } from './notes';
+import { workRouter } from './work';
+import { deploymentsRouter } from './deployments';
 
 // ============================================
 // Main App Router - Merge All Module Routers
@@ -98,6 +102,7 @@ export const wsRouter = createRouter()
 
 	// External MCP server management (install from the official registry)
 	.merge(mcpRouter)
+	.merge(integrationsRouter)
 
 	// Agent Skills management (create, import, install from a marketplace)
 	.merge(skillsRouter)
@@ -112,8 +117,17 @@ export const wsRouter = createRouter()
 	.merge(profilesRouter)
 	.merge(artifactsRouter)
 
-	// Memory Graph (unified episodic + structural memory, shared by every engine)
-	.merge(memoryRouter);
+	// Memory Graph (one store of memories, shared by every engine)
+	.merge(memoryRouter)
+
+	// Notes (project-scoped markdown)
+	.merge(notesRouter)
+
+	// Issues & PRs surface — work items, pull requests and CI for the current project
+	.merge(workRouter)
+
+	// Deployments surface — builds, logs and what is live, for the current project
+	.merge(deploymentsRouter);
 
 // Export API type for frontend type-safe access
 export type WSAPI = typeof wsRouter['$api'];

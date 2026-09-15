@@ -15,6 +15,7 @@ import { beforeEach, describe, expect, it, mock } from 'bun:test';
 import { Database } from 'bun:sqlite';
 import type { DatabaseConnection } from '$shared/types/database/connection';
 import * as migration066 from '$backend/database/migrations/066_create_memory_graph';
+import * as migration076 from '$backend/database/migrations/076_remove_memory_code_graph';
 
 let db: Database;
 
@@ -41,7 +42,6 @@ const PROJECT = 'project-a';
 
 function memory(label: string, overrides: Record<string, unknown> = {}) {
 	return graphQueries.upsert({
-		kind: 'episodic',
 		subkind: 'decision',
 		projectId: PROJECT,
 		label,
@@ -49,14 +49,9 @@ function memory(label: string, overrides: Record<string, unknown> = {}) {
 	} as Parameters<typeof graphQueries.upsert>[0]);
 }
 
-function file(path: string) {
-	return graphQueries.upsert({
-		kind: 'structural',
-		subkind: 'file',
-		projectId: PROJECT,
-		label: path,
-		path
-	});
+/** Attach a memory to the file it claims something about. */
+function about(node: { id: string }, ...paths: string[]): void {
+	graphQueries.setPaths(node.id, paths);
 }
 
 /** Backdate a node so age-gated behaviour can be exercised without waiting. */
@@ -72,6 +67,7 @@ beforeEach(() => {
 	db = new Database(':memory:');
 	db.exec('PRAGMA foreign_keys = ON');
 	migration066.up(db as unknown as DatabaseConnection);
+	migration076.up(db as unknown as DatabaseConnection);
 	// The queue's orphan sweep joins against sessions; a stub is enough here.
 	db.exec(`CREATE TABLE IF NOT EXISTS chat_sessions (id TEXT PRIMARY KEY)`);
 });
@@ -186,7 +182,7 @@ describe('supersession', () => {
 		graphQueries.supersede(old.id, current.id);
 
 		const stats = graphQueries.stats();
-		expect(stats.episodic).toBe(1);
+		expect(stats.nodes).toBe(1);
 		expect(stats.superseded).toBe(1);
 		expect(graphQueries.list({ projectId: PROJECT }).map(n => n.id)).not.toContain(old.id);
 	});
@@ -274,7 +270,6 @@ describe('canonical entities', () => {
 
 describe('structural invalidation', () => {
 	it('ages an observation about changed code but not the decision behind it', () => {
-		const target = file('backend/chat/stream-manager.ts');
 		const observation = memory('Stream manager captures the snapshot in its finally block', {
 			subkind: 'observation',
 			confidence: 0.9
@@ -289,10 +284,10 @@ describe('structural invalidation', () => {
 		});
 
 		for (const node of [observation, decision, preference]) {
-			graphQueries.link({ srcId: node.id, dstId: target.id, rel: 'about' });
+			about(node, 'backend/chat/stream-manager.ts');
 		}
 
-		invalidateForChanges({ projectId: PROJECT, changedPaths: ['backend/chat/stream-manager.ts'] });
+		invalidateForChanges({ changedPaths: ['backend/chat/stream-manager.ts'] });
 
 		expect(graphQueries.getById(observation.id)!.confidence).toBeLessThan(0.9);
 		expect(graphQueries.getById(observation.id)!.staleAt).not.toBeNull();
@@ -303,7 +298,6 @@ describe('structural invalidation', () => {
 	});
 
 	it('never ages a memory a person wrote or pinned', () => {
-		const target = file('backend/a.ts');
 		const authored = memory('Hand-written note about a.ts', {
 			subkind: 'observation',
 			confidence: 0.9,
@@ -314,45 +308,51 @@ describe('structural invalidation', () => {
 			confidence: 0.9,
 			pinned: true
 		});
-		for (const node of [authored, pinned]) {
-			graphQueries.link({ srcId: node.id, dstId: target.id, rel: 'about' });
-		}
+		for (const node of [authored, pinned]) about(node, 'backend/a.ts');
 
-		invalidateForChanges({ projectId: PROJECT, changedPaths: ['backend/a.ts'] });
+		invalidateForChanges({ changedPaths: ['backend/a.ts'] });
 
 		expect(graphQueries.getById(authored.id)!.confidence).toBe(0.9);
 		expect(graphQueries.getById(pinned.id)!.confidence).toBe(0.9);
 	});
 
-	it('retires the nodes of a file that no longer exists', () => {
-		// Otherwise BM25 keeps offering a path that is gone, which sends an agent to
-		// read a file that was deleted — a specific, repeatable waste of a turn.
-		file('backend/gone.ts');
-		graphQueries.upsert({
-			kind: 'structural',
-			subkind: 'symbol',
-			projectId: PROJECT,
-			label: 'goneHelper',
-			path: 'backend/gone.ts',
-			symbol: 'goneHelper'
+	it('ages a memory about a file that no longer exists', () => {
+		// Deletion is the strongest form of "the code moved underneath this", so it
+		// runs through the same per-subkind rates rather than a category of its own.
+		// The attribution itself is kept: a memory about a since-deleted module is
+		// still the only record of what that module taught.
+		const note = memory('gone.ts owned the retry loop', {
+			subkind: 'observation',
+			confidence: 0.9
 		});
+		about(note, 'backend/gone.ts');
 
 		const result = invalidateForChanges({
-			projectId: PROJECT,
 			changedPaths: [],
 			deletedPaths: ['backend/gone.ts']
 		});
 
-		expect(result.archived).toBe(2);
-		const hits = retrieve({ query: 'goneHelper', projectId: PROJECT, expandHops: 0 }).hits;
-		expect(hits).toHaveLength(0);
+		expect(result.decayed).toBe(1);
+		expect(graphQueries.getById(note.id)!.staleAt).not.toBeNull();
+		expect(graphQueries.pathsOf(note.id)).toEqual(['backend/gone.ts']);
+	});
+
+	it('matches a changed path however the caller spelled it', () => {
+		// The disk diff, a model and Windows all spell the same file differently.
+		const note = memory('The worker pool is drained on exit', {
+			subkind: 'observation',
+			confidence: 0.9
+		});
+		about(note, 'backend/pool.ts');
+
+		invalidateForChanges({ changedPaths: ['./backend/pool.ts'] });
+		expect(graphQueries.getById(note.id)!.staleAt).not.toBeNull();
 	});
 
 	it('clears staleness when the memory is re-observed', () => {
-		const target = file('backend/b.ts');
 		const node = memory('b.ts exports a queue', { subkind: 'observation', confidence: 0.9 });
-		graphQueries.link({ srcId: node.id, dstId: target.id, rel: 'about' });
-		invalidateForChanges({ projectId: PROJECT, changedPaths: ['backend/b.ts'] });
+		about(node, 'backend/b.ts');
+		invalidateForChanges({ changedPaths: ['backend/b.ts'] });
 		expect(graphQueries.getById(node.id)!.staleAt).not.toBeNull();
 
 		// Re-extracting the same claim is the evidence that it survived the change.
@@ -419,33 +419,25 @@ describe('forgetting and deleting', () => {
 	 * not, which is why forgotten memories kept reappearing.
 	 */
 	it('keeps a forgotten memory out of a neighbour walk', () => {
-		const target = file('backend/auth.ts');
 		const live = memory('Auth uses short-lived tokens');
 		const forgotten = memory('Auth used to use cookies');
-		for (const node of [live, forgotten]) {
-			graphQueries.link({ srcId: node.id, dstId: target.id, rel: 'about' });
-		}
+		graphQueries.link({ srcId: live.id, dstId: forgotten.id, rel: 'supersedes' });
 
 		graphQueries.archive(forgotten.id);
 
-		const ids = graphQueries.neighbours(target.id, 1).map(n => n.node.id);
-		expect(ids).toContain(live.id);
-		expect(ids).not.toContain(forgotten.id);
+		expect(graphQueries.neighbours(live.id, 1).map(n => n.node.id)).not.toContain(forgotten.id);
 		// The edge itself is untouched: this is a display rule, not a deletion.
 		expect(graphQueries.edgesOf(forgotten.id)).toHaveLength(1);
 	});
 
 	it('keeps a superseded memory out of a neighbour walk', () => {
-		const target = file('backend/db.ts');
 		const current = memory('Storage is SQLite');
 		const old = memory('Storage is Postgres');
-		for (const node of [current, old]) {
-			graphQueries.link({ srcId: node.id, dstId: target.id, rel: 'about' });
-		}
+		const related = memory('Migrations run at startup');
+		graphQueries.link({ srcId: related.id, dstId: old.id, rel: 'relates_to' });
 		graphQueries.supersede(old.id, current.id);
 
-		const ids = graphQueries.neighbours(target.id, 1).map(n => n.node.id);
-		expect(ids).not.toContain(old.id);
+		expect(graphQueries.neighbours(related.id, 1).map(n => n.node.id)).not.toContain(old.id);
 	});
 
 	it('lists both the archived and the superseded as forgotten', () => {
@@ -463,13 +455,22 @@ describe('forgetting and deleting', () => {
 
 	it('hard-deletes selected nodes and their edges', () => {
 		const node = memory('To be deleted');
-		const target = file('backend/x.ts');
-		graphQueries.link({ srcId: node.id, dstId: target.id, rel: 'about' });
+		const other = memory('Still here');
+		graphQueries.link({ srcId: node.id, dstId: other.id, rel: 'relates_to' });
 		graphQueries.archive(node.id);
 
 		expect(graphQueries.deleteNodes([node.id])).toBe(1);
 		expect(graphQueries.getById(node.id)).toBeNull();
-		expect(graphQueries.edgesOf(target.id)).toHaveLength(0);
+		expect(graphQueries.edgesOf(other.id)).toHaveLength(0);
+	});
+
+	it('takes a deleted memory\'s path attributions with it', () => {
+		const node = memory('About a file');
+		about(node, 'src/thing.ts');
+		graphQueries.archive(node.id);
+		graphQueries.deleteNodes([node.id]);
+
+		expect(graphQueries.memoriesForPaths(['src/thing.ts'])).toHaveLength(0);
 	});
 
 	it('does not orphan a node whose replacement was deleted', () => {
@@ -488,7 +489,6 @@ describe('purge', () => {
 	it('empties one project and leaves the others alone', () => {
 		const mine = memory('Belongs to project A');
 		const theirs = graphQueries.upsert({
-			kind: 'episodic',
 			subkind: 'decision',
 			projectId: 'project-b',
 			label: 'Belongs to project B'
@@ -504,7 +504,6 @@ describe('purge', () => {
 		// Preferences and conventions were never that repository's to hold, so losing
 		// them because one project was cleaned would be a surprise.
 		const global = graphQueries.upsert({
-			kind: 'episodic',
 			subkind: 'preference',
 			scope: 'global',
 			projectId: null,
@@ -519,7 +518,6 @@ describe('purge', () => {
 	it('empties everything when no project is named', () => {
 		memory('Project memory');
 		graphQueries.upsert({
-			kind: 'episodic',
 			subkind: 'preference',
 			scope: 'global',
 			projectId: null,
@@ -554,12 +552,12 @@ describe('who wrote it', () => {
 		expect(edited!.label).toBe('The cache is invalidated on read');
 	});
 
-	it('leaves a hand-written memory untouched by structural decay', () => {
-		const target = file('src/cache.ts');
+	it('leaves a hand-written memory untouched by staleness decay', () => {
 		const mine = memory('The cache is invalidated on write', { subkind: 'observation', source: 'user' });
-		graphQueries.link({ srcId: mine.id, dstId: target.id, rel: 'about' });
+		about(mine, 'src/cache.ts');
 
-		invalidateForChanges({ projectId: PROJECT, changedPaths: ['src/cache.ts'] });
+		invalidateForChanges({ changedPaths: ['src/cache.ts'] });
+		invalidateForChanges({ changedPaths: ['src/cache.ts'] });
 
 		const after = graphQueries.getById(mine.id)!;
 		expect(after.staleAt).toBeNull();
@@ -573,15 +571,14 @@ describe('structural decay', () => {
 		// confidence by 0.82 ten times over — 0.14, below the injection floor — so an
 		// ordinary afternoon silently destroyed everything known about whatever was
 		// being worked on.
-		const target = file('src/stream.ts');
 		const note = memory('The stream captures its snapshot in a finally block', {
 			subkind: 'observation',
 			confidence: 0.9
 		});
-		graphQueries.link({ srcId: note.id, dstId: target.id, rel: 'about' });
+		about(note, 'src/stream.ts');
 
 		for (let turn = 0; turn < 10; turn++) {
-			invalidateForChanges({ projectId: PROJECT, changedPaths: ['src/stream.ts'] });
+			invalidateForChanges({ changedPaths: ['src/stream.ts'] });
 		}
 
 		const after = graphQueries.getById(note.id)!;
@@ -591,13 +588,12 @@ describe('structural decay', () => {
 	});
 
 	it('ages it again once the cool-off has passed', () => {
-		const target = file('src/stream.ts');
 		const note = memory('An observation about the stream', { subkind: 'observation', confidence: 0.9 });
-		graphQueries.link({ srcId: note.id, dstId: target.id, rel: 'about' });
+		about(note, 'src/stream.ts');
 
-		invalidateForChanges({ projectId: PROJECT, changedPaths: ['src/stream.ts'] });
+		invalidateForChanges({ changedPaths: ['src/stream.ts'] });
 		db.prepare(`UPDATE graph_nodes SET stale_at = datetime('now', '-2 days') WHERE id = ?`).run(note.id);
-		invalidateForChanges({ projectId: PROJECT, changedPaths: ['src/stream.ts'] });
+		invalidateForChanges({ changedPaths: ['src/stream.ts'] });
 
 		expect(graphQueries.getById(note.id)!.confidence).toBeCloseTo(0.9 * 0.82 * 0.82, 5);
 	});
@@ -639,55 +635,5 @@ describe('restoring', () => {
 		expect(graphQueries.restoreNodes([a.id, b.id])).toBe(2);
 		expect(graphQueries.getById(a.id)!.archivedAt).toBeNull();
 		expect(graphQueries.getById(b.id)!.archivedAt).toBeNull();
-	});
-});
-
-describe('bounding the structural half', () => {
-	it('removes symbols nothing refers to and nothing has touched', () => {
-		// The structural half is what actually grows without bound — a node per
-		// changed file, per directory and up to twenty-five per file's symbols, every
-		// turn — and none of the episodic retention queries look at it at all.
-		const symbol = graphQueries.upsert({
-			kind: 'structural',
-			subkind: 'symbol',
-			projectId: PROJECT,
-			label: 'forgottenHelper',
-			path: 'src/old.ts',
-			symbol: 'forgottenHelper'
-		});
-		backdate(symbol.id, 200);
-
-		expect(graphQueries.pruneStructural({ maxAgeDays: 120, limit: 100 })).toBe(1);
-		expect(graphQueries.getById(symbol.id)).toBeNull();
-	});
-
-	it('spares a symbol a memory is about', () => {
-		// Deleting it would sever the `about` edge, which is the join both halves of
-		// the graph exist for.
-		const symbol = graphQueries.upsert({
-			kind: 'structural',
-			subkind: 'symbol',
-			projectId: PROJECT,
-			label: 'loadBearing',
-			path: 'src/core.ts',
-			symbol: 'loadBearing'
-		});
-		const note = memory('loadBearing must stay synchronous');
-		graphQueries.link({ srcId: note.id, dstId: symbol.id, rel: 'about' });
-		backdate(symbol.id, 200);
-
-		expect(graphQueries.pruneStructural({ maxAgeDays: 120, limit: 100 })).toBe(0);
-		expect(graphQueries.getById(symbol.id)).not.toBeNull();
-	});
-
-	it('spares file nodes, however old', () => {
-		// A file node is what a path lookup resolves to, and `invalidate.ts` already
-		// retires files the moment the disk says they are gone — better evidence
-		// than age.
-		const node = file('src/rarely-touched.ts');
-		backdate(node.id, 400);
-
-		expect(graphQueries.pruneStructural({ maxAgeDays: 120, limit: 100 })).toBe(0);
-		expect(graphQueries.getById(node.id)).not.toBeNull();
 	});
 });

@@ -28,8 +28,6 @@ export interface MemoryModelConfig {
 export interface MemoryConfig {
 	/** Master switch: off means no recording, no retrieval, no injection. */
 	enabled: boolean;
-	/** Record the files and symbols each turn touches, read from the disk diff. */
-	recordCode: boolean;
 	/** Summarise finished turns into memories using `model`. */
 	recordMemories: boolean;
 	/** Hand relevant memories to the agent automatically at the start of a turn. */
@@ -56,7 +54,6 @@ export interface MemoryConfig {
  */
 const KEYS = {
 	enabled: 'memory_enabled',
-	recordCode: 'memory_record_code',
 	recordMemories: 'memory_record_memories',
 	autoRecall: 'memory_auto_recall',
 	model: 'memory_model'
@@ -81,7 +78,6 @@ export function getMemoryConfig(): MemoryConfig {
 
 	return {
 		enabled: readBoolean(KEYS.enabled, true),
-		recordCode: readBoolean(KEYS.recordCode, true),
 		recordMemories: readBoolean(KEYS.recordMemories, true),
 		autoRecall: readBoolean(KEYS.autoRecall, true),
 		model
@@ -90,7 +86,6 @@ export function getMemoryConfig(): MemoryConfig {
 
 export function setMemoryConfig(patch: Partial<MemoryConfig>): MemoryConfig {
 	if (patch.enabled !== undefined) settingsQueries.set(KEYS.enabled, String(patch.enabled));
-	if (patch.recordCode !== undefined) settingsQueries.set(KEYS.recordCode, String(patch.recordCode));
 	if (patch.recordMemories !== undefined) settingsQueries.set(KEYS.recordMemories, String(patch.recordMemories));
 	if (patch.autoRecall !== undefined) settingsQueries.set(KEYS.autoRecall, String(patch.autoRecall));
 	if (patch.model !== undefined) {

@@ -15,6 +15,11 @@ interface QuickPanelsState {
 	portsOpen: boolean;
 	containersOpen: boolean;
 	memoryOpen: boolean;
+	notesOpen: boolean;
+	workOpen: boolean;
+	/** Opened with the pull-request composer already up. */
+	workComposePr: boolean;
+	deploymentsOpen: boolean;
 }
 
 export const quickPanelsState = $state<QuickPanelsState>({
@@ -25,7 +30,11 @@ export const quickPanelsState = $state<QuickPanelsState>({
 	sshClientOpen: false,
 	portsOpen: false,
 	containersOpen: false,
-	memoryOpen: false
+	memoryOpen: false,
+	notesOpen: false,
+	workOpen: false,
+	workComposePr: false,
+	deploymentsOpen: false
 });
 
 export function openNewProjectDialog() {
@@ -90,4 +99,36 @@ export function openMemoryDialog() {
 
 export function closeMemoryDialog() {
 	quickPanelsState.memoryOpen = false;
+}
+
+export function openNotesDialog() {
+	quickPanelsState.notesOpen = true;
+}
+
+export function closeNotesDialog() {
+	quickPanelsState.notesOpen = false;
+}
+
+/**
+ * The Issues & PRs surface.
+ *
+ * `composePullRequest` is how the Git panel's "Open pull request" reaches the
+ * same surface rather than growing its own composer — one room, several doors.
+ */
+export function openWorkDialog(options: { composePullRequest?: boolean } = {}) {
+	quickPanelsState.workComposePr = options.composePullRequest === true;
+	quickPanelsState.workOpen = true;
+}
+
+export function closeWorkDialog() {
+	quickPanelsState.workOpen = false;
+	quickPanelsState.workComposePr = false;
+}
+
+export function openDeploymentsDialog() {
+	quickPanelsState.deploymentsOpen = true;
+}
+
+export function closeDeploymentsDialog() {
+	quickPanelsState.deploymentsOpen = false;
 }

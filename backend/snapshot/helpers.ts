@@ -2,8 +2,8 @@ import { snapshotQueries, messageQueries, checkpointQueries } from '../database/
 import { blobStore } from './blob-store';
 import { debug } from '$shared/utils/logger';
 import { loadMessage } from '$shared/utils/message-formatter';
-import { calculateFileChangeStats } from '$shared/utils/diff-calculator';
-import type { DatabaseMessage } from '$shared/types/database/schema';
+import { buildTurnFiles, summariseTurnFiles } from './turn-changes';
+import type { DatabaseMessage, SessionScopedChanges } from '$shared/types/database/schema';
 import type { UnifiedMessage, UserMessage } from '$shared/types/unified';
 
 /**
@@ -318,9 +318,16 @@ export function isDescendant(
 }
 
 /**
- * Get file change stats for a checkpoint.
- * The snapshot associated with the checkpoint message itself contains the stats
- * (file changes the assistant made in response to this user message).
+ * The numbers a checkpoint shows: files changed, and lines in and out.
+ *
+ * Recomputed from the blobs rather than read off the snapshot row, through the
+ * same `buildTurnFiles` the Changes surface uses. Two reasons, and both were
+ * live bugs: rows written before binary files stopped being line-counted claim
+ * a PNG's bytes as source lines, and any second implementation of "how many
+ * lines is this" eventually disagrees with the first one on screen.
+ *
+ * Falls back to the stored numbers when the blobs are gone, which is the one
+ * case where the row knows something this cannot recover.
  */
 export async function getCheckpointFileStats(
 	checkpointMsg: DatabaseMessage
@@ -330,42 +337,29 @@ export async function getCheckpointFileStats(
 		return { filesChanged: 0, insertions: 0, deletions: 0 };
 	}
 
-	let filesChanged = snapshot.files_changed || 0;
-	let insertions = snapshot.insertions || 0;
-	let deletions = snapshot.deletions || 0;
+	const stored = {
+		filesChanged: snapshot.files_changed || 0,
+		insertions: snapshot.insertions || 0,
+		deletions: snapshot.deletions || 0
+	};
 
-	// Fallback for snapshots captured before nested-repo files were tracked:
-	// `session_changes` may be non-empty (with nested-repo entries) but
-	// `files_changed`/`insertions`/`deletions` are 0 because the capture
-	// loop never saw those files. Recompute from the blob store so the
-	// Restore Checkpoint UI shows the real numbers retroactively.
-	if (snapshot.session_changes && (insertions === 0 || deletions === 0)) {
-		try {
-			const changes = JSON.parse(snapshot.session_changes as string) as Record<string, { oldHash: string; newHash: string }>;
-			const changeCount = Object.keys(changes).length;
-			if (changeCount > 0) {
-				const previousSnapshot: Record<string, Buffer> = {};
-				const currentSnapshot: Record<string, Buffer> = {};
-				let allBlobsOk = true;
-				for (const [filepath, entry] of Object.entries(changes)) {
-					if (entry.oldHash) {
-						try { previousSnapshot[filepath] = await blobStore.readBlob(entry.oldHash); }
-						catch { allBlobsOk = false; break; }
-					}
-					if (entry.newHash) {
-						try { currentSnapshot[filepath] = await blobStore.readBlob(entry.newHash); }
-						catch { allBlobsOk = false; break; }
-					}
-				}
-				if (allBlobsOk) {
-					const recomputed = calculateFileChangeStats(previousSnapshot, currentSnapshot);
-					filesChanged = recomputed.filesChanged;
-					insertions = recomputed.insertions;
-					deletions = recomputed.deletions;
-				}
+	if (!snapshot.session_changes) return stored;
+
+	try {
+		const changes = JSON.parse(snapshot.session_changes as string) as SessionScopedChanges;
+		if (Object.keys(changes).length === 0) return stored;
+
+		let blobMissing = false;
+		const files = await buildTurnFiles(changes, async (hash) => {
+			try {
+				return await blobStore.readBlob(hash);
+			} catch (err) {
+				blobMissing = true;
+				throw err;
 			}
-		} catch { /* use stored values */ }
+		});
+		return blobMissing ? stored : summariseTurnFiles(files);
+	} catch {
+		return stored;
 	}
-
-	return { filesChanged, insertions, deletions };
 }

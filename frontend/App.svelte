@@ -19,6 +19,7 @@
 	import { tunnelStore } from '$frontend/stores/features/tunnel.svelte';
 	import { remoteAccessStore } from '$frontend/stores/features/remote-access.svelte';
 	import { portsStore } from '$frontend/stores/features/ports.svelte';
+	import { initAiChanges } from '$frontend/stores/features/ai-changes.svelte';
 	import { containersStore } from '$frontend/stores/features/containers.svelte';
 	import { startUpdateChecker, stopUpdateChecker } from '$frontend/stores/ui/update.svelte';
 	import ws from '$frontend/utils/ws';
@@ -61,6 +62,11 @@
 			// Keep the Ports count in sync. The server only scans when a terminal
 			// session is actually running, so an idle workspace costs nothing.
 			portsStore.initRealtimeListener();
+
+			// Keep the AI-change markers live no matter which panels are mounted:
+			// the Files dot, the editor gutter and the Changes tab all read one
+			// store, and it must not go stale because the chat is hidden.
+			initAiChanges();
 
 			// Same for the container count. A machine with no runtime costs nothing:
 			// the server remembers that answer and skips the command entirely.

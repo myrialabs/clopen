@@ -14,6 +14,7 @@
  */
 
 import { getDatabase } from '../index';
+import { openRow, sealFor } from '../crypto';
 import type { EngineType } from '$shared/types/unified';
 
 export type McpTransport = 'stdio' | 'http' | 'sse';
@@ -90,30 +91,56 @@ export interface McpServerInput {
 	source?: McpSource;
 }
 
+// `env`, `headers` and `oauth` are sealed at rest (see backend/database/crypto).
+// Every read below opens them again, so `resolveServerRow()` and every
+// per-engine config builder keep reading exactly what they always read.
+const TABLE = 'mcp_servers';
+
+/**
+ * Open one row's sealed columns.
+ *
+ * `env` and `headers` are NOT NULL JSON maps, so a value the active key cannot
+ * open becomes `'{}'` rather than `null`: downstream, an empty map is exactly
+ * "this server has no credentials", which is the same degradation a missing
+ * secret gets everywhere else. Handing `null` down instead would turn a lost
+ * key into a TypeError inside every per-engine config builder.
+ */
+function openServerRow(row: McpServerRow): McpServerRow {
+	const opened = openRow(TABLE, row);
+	return {
+		...opened,
+		env: opened.env ?? '{}',
+		headers: opened.headers ?? '{}'
+	};
+}
+
+const openServer = (row: McpServerRow | null): McpServerRow | null =>
+	row ? openServerRow(row) : null;
+
 export const mcpServerQueries = {
 	getAll(): McpServerRow[] {
 		const db = getDatabase();
-		return db.prepare(`SELECT * FROM mcp_servers ORDER BY created_at ASC`).all() as McpServerRow[];
+		return (db.prepare(`SELECT * FROM mcp_servers ORDER BY created_at ASC`).all() as McpServerRow[]).map(openServerRow);
 	},
 
 	getEnabled(): McpServerRow[] {
 		const db = getDatabase();
-		return db.prepare(`SELECT * FROM mcp_servers WHERE is_enabled = 1 ORDER BY created_at ASC`).all() as McpServerRow[];
+		return (db.prepare(`SELECT * FROM mcp_servers WHERE is_enabled = 1 ORDER BY created_at ASC`).all() as McpServerRow[]).map(openServerRow);
 	},
 
 	getById(id: number): McpServerRow | null {
 		const db = getDatabase();
-		return db.prepare(`SELECT * FROM mcp_servers WHERE id = ?`).get(id) as McpServerRow | null;
+		return openServer(db.prepare(`SELECT * FROM mcp_servers WHERE id = ?`).get(id) as McpServerRow | null);
 	},
 
 	getBySlug(slug: string): McpServerRow | null {
 		const db = getDatabase();
-		return db.prepare(`SELECT * FROM mcp_servers WHERE slug = ?`).get(slug) as McpServerRow | null;
+		return openServer(db.prepare(`SELECT * FROM mcp_servers WHERE slug = ?`).get(slug) as McpServerRow | null);
 	},
 
 	getBySource(source: McpSource): McpServerRow[] {
 		const db = getDatabase();
-		return db.prepare(`SELECT * FROM mcp_servers WHERE source = ? ORDER BY created_at ASC`).all(source) as McpServerRow[];
+		return (db.prepare(`SELECT * FROM mcp_servers WHERE source = ? ORDER BY created_at ASC`).all(source) as McpServerRow[]).map(openServerRow);
 	},
 
 	insert(input: McpServerInput): McpServerRow {
@@ -131,9 +158,9 @@ export const mcpServerQueries = {
 			input.transport,
 			input.command ?? null,
 			JSON.stringify(input.args ?? []),
-			JSON.stringify(input.env ?? {}),
+			sealFor(TABLE, 'env', JSON.stringify(input.env ?? {})),
 			input.url ?? null,
-			JSON.stringify(input.headers ?? {}),
+			sealFor(TABLE, 'headers', JSON.stringify(input.headers ?? {})),
 			JSON.stringify(input.configSchema ?? []),
 			input.source ?? 'registry'
 		) as { lastInsertRowid: number | bigint };
@@ -149,15 +176,15 @@ export const mcpServerQueries = {
 	/** Update the stored env (e.g. user-provided API keys) for a server. */
 	updateEnv(id: number, env: Record<string, string>): void {
 		const db = getDatabase();
-		db.prepare(`UPDATE mcp_servers SET env = ? WHERE id = ?`).run(JSON.stringify(env), id);
+		db.prepare(`UPDATE mcp_servers SET env = ? WHERE id = ?`).run(sealFor(TABLE, 'env', JSON.stringify(env)), id);
 	},
 
 	/** Update both env (stdio) and headers (remote auth) for a server. */
 	updateConfig(id: number, env: Record<string, string>, headers: Record<string, string>): void {
 		const db = getDatabase();
 		db.prepare(`UPDATE mcp_servers SET env = ?, headers = ? WHERE id = ?`).run(
-			JSON.stringify(env),
-			JSON.stringify(headers),
+			sealFor(TABLE, 'env', JSON.stringify(env)),
+			sealFor(TABLE, 'headers', JSON.stringify(headers)),
 			id
 		);
 	},
@@ -179,7 +206,7 @@ export const mcpServerQueries = {
 	/** Store (or clear with null) the managed OAuth state JSON for a server. */
 	setOAuth(id: number, oauth: string | null): void {
 		const db = getDatabase();
-		db.prepare(`UPDATE mcp_servers SET oauth = ? WHERE id = ?`).run(oauth, id);
+		db.prepare(`UPDATE mcp_servers SET oauth = ? WHERE id = ?`).run(sealFor(TABLE, 'oauth', oauth), id);
 	},
 
 	/** Persist the per-tool + per-engine exposure overrides for a server. */

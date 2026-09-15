@@ -19,6 +19,7 @@
 	import ModalProvider from '$frontend/components/workspace/ModalProvider.svelte';
 	import SettingsModal from '$frontend/components/settings/SettingsModal.svelte';
 	import FilePeekModal from '$frontend/components/files/FilePeekModal.svelte';
+	import AiChangesModal from '$frontend/components/ai-changes/AiChangesModal.svelte';
 	import NotificationToast from '$frontend/components/common/feedback/NotificationToast.svelte';
 
 	// Services
@@ -200,6 +201,9 @@
 
 <!-- File peek modal (opened when a file link fires while the Files panel is hidden) -->
 <FilePeekModal />
+
+<!-- AI Changes Modal -->
+<AiChangesModal />
 
 <!-- Toast Notifications. Above Dialog's z-10000, or a dialog hides the very
      notification that reports what it started. -->

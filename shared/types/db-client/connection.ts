@@ -40,6 +40,12 @@ export interface DbClientConnection {
 	createdAt: string;
 	updatedAt: string;
 	lastUsedAt: string | null;
+	/**
+	 * Set when this row was DERIVED from a connected account rather than typed
+	 * into the form. Absent on an ordinary connection, so every existing caller
+	 * is unaffected — see `shared/types/db-client/integrations.ts`.
+	 */
+	managedBy?: import('./integrations').DbClientManagedBy | null;
 }
 
 export interface DbClientConnectionInput {

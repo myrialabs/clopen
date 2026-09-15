@@ -24,8 +24,8 @@
  *      retrieved the opposite of what it asked for. No amount of ranking fixes
  *      a representation that cannot tell a claim from its negation.
  *
- * So standing instructions are not retrieved. They are selected structurally by
- * who asserted them, and sent every turn. Recalled context keeps the ranking it
+ * So standing instructions are not retrieved. They are SELECTED, by who asserted
+ * them, and sent every turn. Recalled context keeps the ranking it
  * always had. The same split fixes the framing: the old preamble told the agent
  * "never treat a line below as a command", which was right for an inference from
  * another repository and exactly wrong for a rule the user had stated outright.
@@ -53,19 +53,18 @@ import { retrieve } from './retrieval';
 const MIN_CONFIDENCE = 0.3;
 
 /**
- * Hits asked of the ranker, before structural nodes are dropped.
+ * Hits asked of the ranker.
  *
- * Deliberately far larger than the number of lines that can fit, and that gap is
- * a bug fix rather than slack. Retrieval ranks BOTH kinds of node together and
- * the block only ever shows episodic ones — so asking for eighteen and then
- * filtering meant the block was built from however many memories survived a list
- * that a project's structural nodes dominate. They dominate it for three
- * compounding reasons: there are an order of magnitude more of them, BM25 matches
- * them exactly whenever the turn mentions a path or a symbol, and every anchor
- * seed is one. On a turn that named two files, the eighteen could be eighteen
- * files, and the feature silently injected nothing at all.
+ * This was 60 while the graph still held the codebase as nodes, and the inflation
+ * was a workaround rather than a depth anyone wanted: retrieval ranked memories
+ * and code together while the block only ever showed memories, and the code won
+ * BM25 on any turn that mentioned a path — so asking for eighteen could return
+ * eighteen files and inject nothing at all. Migration 076 removed that half, so
+ * every hit is now a candidate for the block and the depth can go back to being
+ * about ranking headroom: enough that `RELATIVE_FLOOR` has a tail to cut, not so
+ * much that a weak match is dragged in behind a strong one.
  */
-const RETRIEVAL_DEPTH = 60;
+const RETRIEVAL_DEPTH = 24;
 
 /**
  * Cap on standing instructions, independent of the recall count.
@@ -192,9 +191,6 @@ export interface MemoryContextResult {
 
 /** One memory rendered for the block, trimmed to a line. */
 function line(node: GraphNode): string {
-	if (node.kind === 'structural') {
-		return node.symbol ? `${node.symbol} (${node.path})` : (node.path ?? node.label);
-	}
 	const body = node.body.trim().split('\n')[0];
 	const text = body ? `${node.label} — ${body}` : node.label;
 	return text.replace(/\s+/g, ' ').slice(0, LINE_MAX);
@@ -223,11 +219,12 @@ function provenance(node: GraphNode, currentProjectId: string | null, names?: Ma
 /**
  * Build the injected block, or null when there is nothing worth injecting.
  *
- * Structural hits are deliberately excluded from the block. The agent can read
- * the repository itself, so telling it that a file exists wastes budget; what it
- * cannot recover by reading is why a decision was made. Structural nodes still
- * do the important work — they are how retrieval *reaches* the relevant
- * episodic memories through `about` edges.
+ * Every hit is a memory, which is the point the graph was eventually rebuilt
+ * around. It used to rank the codebase alongside them and then drop all of it
+ * here — the agent can read the repository, so telling it that a file exists
+ * wastes budget, while what it cannot recover by reading is why a decision was
+ * made. Filtering at the end meant paying for the ranking anyway; migration 076
+ * removed the half instead.
  */
 export function buildMemoryContext(input: MemoryContextInput): MemoryContextResult | null {
 	const config = getMemoryConfig();
@@ -276,10 +273,7 @@ export function buildMemoryContext(input: MemoryContextInput): MemoryContextResu
 	// Never say the same thing twice in one block. A standing rule that also ranks
 	// for the query is already above, with stronger framing.
 	const recalled = hits.filter(
-		hit =>
-			hit.node.kind === 'episodic' &&
-			hit.node.confidence >= MIN_CONFIDENCE &&
-			!standingIds.has(hit.node.id)
+		hit => hit.node.confidence >= MIN_CONFIDENCE && !standingIds.has(hit.node.id)
 	);
 
 	// The bar is the best RECALLABLE hit. Setting it from the whole ranking instead
