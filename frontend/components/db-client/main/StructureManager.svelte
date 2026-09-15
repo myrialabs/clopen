@@ -10,7 +10,7 @@
 <script lang="ts">
 	import Icon from '$frontend/components/common/display/Icon.svelte';
 	import Dialog from '$frontend/components/common/overlay/Dialog.svelte';
-	import ConfirmDestructive from '../shared/ConfirmDestructive.svelte';
+	import ConfirmDestructive from '$frontend/components/common/overlay/ConfirmDestructive.svelte';
 	import TableDesigner from './TableDesigner.svelte';
 	import ColumnEditor from './ColumnEditor.svelte';
 	import IndexForm from './IndexForm.svelte';

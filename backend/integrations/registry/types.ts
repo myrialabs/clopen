@@ -83,6 +83,8 @@ export interface IntegrationProvider {
 	category: IntegrationCategory;
 	description: string;
 	docsUrl?: string;
+	/** The provider's own dashboard, for what Clopen cannot do — see `IntegrationProviderInfo`. */
+	consoleUrl?: string;
 	authMethod: IntegrationAuthMethod;
 	credentialFields: IntegrationCredentialField[];
 	/** Everything this provider is able to offer. */

@@ -13,7 +13,7 @@
 	 */
 	import Icon from '$frontend/components/common/display/Icon.svelte';
 	import Modal from '$frontend/components/common/overlay/Modal.svelte';
-	import ConfirmDestructive from '../shared/ConfirmDestructive.svelte';
+	import ConfirmDestructive from '$frontend/components/common/overlay/ConfirmDestructive.svelte';
 	import InlineError from '$frontend/components/common/display/InlineError.svelte';
 	import MonacoCodeEditor from '$frontend/components/common/editor/MonacoCodeEditor.svelte';
 	import { dbAccountsStore } from '$frontend/stores/features/db-client-accounts.svelte';

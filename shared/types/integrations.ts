@@ -78,6 +78,15 @@ export interface IntegrationProviderInfo {
 	category: IntegrationCategory;
 	description: string;
 	docsUrl?: string;
+	/**
+	 * The provider's own dashboard.
+	 *
+	 * Separate from `docsUrl`, which points at where a CREDENTIAL is created.
+	 * This is where the things Clopen cannot manage actually live — an
+	 * organisation Neon has no API for, a billing plan — so a surface that has
+	 * to say "do this at the vendor" can offer the trip instead of describing it.
+	 */
+	consoleUrl?: string;
 	authMethod: IntegrationAuthMethod;
 	credentialFields: IntegrationCredentialField[];
 	capabilities: IntegrationCapability[];

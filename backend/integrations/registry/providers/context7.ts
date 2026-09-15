@@ -16,6 +16,7 @@ export default defineProvider({
 	description:
 		'Pulls current, version-accurate documentation for a library straight into the session, so the agent stops writing against the API it remembers.',
 	docsUrl: 'https://context7.com',
+	consoleUrl: 'https://context7.com',
 	authMethod: 'api-key',
 	capabilities: ['agent-tools'],
 	credentialFields: [

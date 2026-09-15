@@ -15,6 +15,7 @@ export default defineProvider({
 	description:
 		'Crawls and converts live sites into clean markdown. Pairs with the browser automation tools rather than replacing them — this is for reading a site at scale, not driving one.',
 	docsUrl: 'https://firecrawl.dev',
+	consoleUrl: 'https://firecrawl.dev',
 	authMethod: 'api-key',
 	capabilities: ['agent-tools'],
 	credentialFields: [

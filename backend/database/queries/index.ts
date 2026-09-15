@@ -41,3 +41,9 @@ export { workBindingQueries, workLinkQueries, parseBindingConfig } from './work-
 export type { WorkBindingRow, WorkLinkRow } from './work-queries';
 export { deployBindingQueries, parseDeployConfig } from './deploy-queries';
 export type { DeployBindingRow } from './deploy-queries';
+export {
+	worktreeBranchBindingQueries,
+	worktreeBranchQueries,
+	parseWorktreeBranchConfig
+} from './worktree-branch-queries';
+export type { WorktreeBranchBindingRow, WorktreeBranchRow } from './worktree-branch-queries';

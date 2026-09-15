@@ -18,6 +18,7 @@ import { structureHandler } from './structure';
 import { ioHandler } from './io';
 import { accountsHandler } from './accounts';
 import { supabaseHandler } from './supabase';
+import { envHandler } from './env';
 
 export const dbClientRouter = createRouter()
 	.merge(connectionsHandler)
@@ -27,6 +28,7 @@ export const dbClientRouter = createRouter()
 	.merge(ioHandler)
 	.merge(accountsHandler)
 	.merge(supabaseHandler)
+	.merge(envHandler)
 	/**
 	 * Broadcast when the connection list changes for a reason the requesting
 	 * client did not cause — a link created, a link dropped, an account

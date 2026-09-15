@@ -53,6 +53,55 @@ export interface DbProviderEndpoint {
 	database: string;
 	sslMode: DbSslMode;
 	options?: Record<string, unknown>;
+	/**
+	 * Secrets the provider resolved for itself, for the providers that can.
+	 *
+	 * Supabase cannot: its Management API has no endpoint that reads a database
+	 * password back, so a link asks the user for one and stores it. Neon can —
+	 * `/reveal_password` exists — so it hands one back here and its
+	 * `secretFields` is empty, which removes the only manual step in linking a
+	 * database.
+	 *
+	 * `links.ts` PEELS THIS OFF before the endpoint is stored. An endpoint lives
+	 * in the link's `config_json`, which is NOT a sealed column; the secrets go
+	 * into `secrets`, which is. Leaving the password on the endpoint would write
+	 * a working credential to disk in plaintext — the exact thing `Task 1`'s
+	 * encryption layer exists to prevent.
+	 */
+	secrets?: Record<string, string>;
+}
+
+/**
+ * What this provider's own documentation calls the connection in a dotenv file.
+ *
+ * Declared rather than derived, because both halves are vendor vocabulary that
+ * nothing outside the provider's directory can know: Neon's docs name the pair
+ * `DATABASE_URL` / `DATABASE_URL_UNPOOLED`, Supabase's name it `POSTGRES_URL` /
+ * `POSTGRES_URL_NON_POOLING`, and which of a provider's connection modes counts
+ * as "not behind a pooler" is a fact about its infrastructure.
+ *
+ * A DEFAULT only. Whatever the project's own files already call the variable
+ * wins over this — see `db-client/env/detect.ts`. These names are what a
+ * project with nothing in it is offered.
+ *
+ * The second endpoint is what makes this worth declaring at all. A pooled URL
+ * is the right default for an application and the WRONG one for migrations —
+ * Prisma's `DIRECT_URL` exists for exactly this — so a connection linked in
+ * pooled mode has a counterpart worth writing, and one already on the direct
+ * endpoint has none: a `DIRECT_URL` equal to `DATABASE_URL` would look like
+ * configuration and change nothing.
+ */
+export interface DbProviderEnvHints {
+	/** What this provider's docs prefix the URL with — `DATABASE`, `POSTGRES`. */
+	urlPrefix?: string;
+	/** What its docs suffix the second endpoint with — `_UNPOOLED`, `_NON_POOLING`. */
+	altKeySuffix?: string;
+	/** The mode that is not behind a pooler, when the provider has one. */
+	directMode?: string;
+	/** Modes that ARE pooled, so a connection on one has a counterpart. */
+	pooledModes?: string[];
+	/** One sentence naming what the direct endpoint costs, where it costs something. */
+	directNotice?: string;
 }
 
 export interface DbProviderAdapter {
@@ -73,6 +122,14 @@ export interface DbProviderAdapter {
 
 	/** Health of the credential itself, for the hub's status strip. */
 	probe(context: DbProviderContext): Promise<{ status: IntegrationStatus; detail: string | null }>;
+
+	/**
+	 * Optional: what this provider's docs call the connection in a dotenv file.
+	 *
+	 * Absent means DB Client offers its generic presets and no second endpoint,
+	 * which is the correct answer for a provider with one endpoint per database.
+	 */
+	envHints?(): DbProviderEnvHints;
 
 	/**
 	 * Optional: create a database rather than only listing existing ones.
