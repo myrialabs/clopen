@@ -5,12 +5,12 @@
  * turn that simply has no memory in it — which is indistinguishable from a graph
  * that had nothing to say.
  *
- * THE BLOCK CAME OUT EMPTY ON THE TURNS WITH THE MOST TO OFFER. Retrieval ranks
- * structural and episodic nodes together and the block only ever shows episodic
- * ones, so asking for eighteen hits and then filtering meant a project's file and
- * symbol nodes could take every slot. They win exactly when the turn mentions a
- * path or a symbol — and they outnumber memories by an order of magnitude, and
- * every anchor seed is one.
+ * THE BLOCK CAME OUT EMPTY ON THE TURNS WITH THE MOST TO OFFER. Retrieval used
+ * to rank the codebase alongside the memories while the block only ever showed
+ * memories, so a project's file and symbol nodes could take every slot. That half
+ * is gone (migration 076), and the test that guarded the filtering went with it;
+ * what remains worth pinning is that the block still fills from the memories the
+ * question earns.
  *
  * THE DIRECTIVE WAS SENT INTO AN EMPTY GRAPH. A few hundred characters on every
  * turn of every session on every engine, telling an agent about a store with
@@ -21,6 +21,7 @@ import { beforeEach, describe, expect, it, mock } from 'bun:test';
 import { Database } from 'bun:sqlite';
 import type { DatabaseConnection } from '$shared/types/database/connection';
 import * as migration066 from '$backend/database/migrations/066_create_memory_graph';
+import * as migration076 from '$backend/database/migrations/076_remove_memory_code_graph';
 
 let db: Database;
 
@@ -40,7 +41,6 @@ mock.module('$backend/database', () => ({
 mock.module('./config', () => ({
 	getMemoryConfig: () => ({
 		enabled: true,
-		recordCode: true,
 		recordMemories: true,
 		autoRecall: true,
 		model: null
@@ -81,7 +81,6 @@ const PROJECT = 'project-a';
 
 function memory(label: string, body: string) {
 	return graphQueries.upsert({
-		kind: 'episodic',
 		subkind: 'decision',
 		projectId: PROJECT,
 		label,
@@ -90,24 +89,11 @@ function memory(label: string, body: string) {
 	});
 }
 
-/** A project's structural half: the nodes that outnumber and outrank memories. */
-function floodWithCode(count: number, token: string): void {
-	for (let i = 0; i < count; i++) {
-		graphQueries.upsert({
-			kind: 'structural',
-			subkind: 'file',
-			projectId: PROJECT,
-			label: `${token}-${i}.ts`,
-			body: `src/${token}/${token}-${i}.ts`,
-			path: `src/${token}/${token}-${i}.ts`
-		});
-	}
-}
-
 beforeEach(() => {
 	db = new Database(':memory:');
 	db.exec('PRAGMA foreign_keys = ON');
 	migration066.up(db as unknown as DatabaseConnection);
+	migration076.up(db as unknown as DatabaseConnection);
 	resetGraphEmptiness();
 });
 
@@ -127,34 +113,6 @@ describe('the injected block', () => {
 		});
 		expect(block).not.toBeNull();
 		expect(block!.text).toContain('<clopen-memory>');
-	});
-
-	it('still finds the memory when the code half floods the ranking', () => {
-		// Forty file nodes all matching the query's tokens, which is what a real
-		// project looks like. With a limit of eighteen applied BEFORE the episodic
-		// filter, none of the one memory that matters survived.
-		const note = memory('Snapshot capture must not run mid-stream', 'It corrupts the working tree.');
-		floodWithCode(40, 'snapshot');
-		resetGraphEmptiness();
-
-		const block = buildMemoryContext({
-			query: 'snapshot capture',
-			projectId: PROJECT,
-			sessionId: 's'
-		})!;
-
-		expect(block.nodeIds).toContain(note.id);
-	});
-
-	it('never lists a code entity — the agent can read the repository itself', () => {
-		memory('Snapshot capture must not run mid-stream', 'It corrupts the working tree.');
-		floodWithCode(10, 'snapshot');
-		resetGraphEmptiness();
-
-		const block = buildMemoryContext({ query: 'snapshot capture', projectId: PROJECT, sessionId: 's' })!;
-		const structural = graphQueries.list({ projectId: PROJECT, kinds: ['structural'] }).map(node => node.id);
-
-		expect(block.nodeIds.filter(id => structural.includes(id))).toHaveLength(0);
 	});
 
 	it('carries as many memories as the question earns, never more than the ceiling', () => {
@@ -230,7 +188,6 @@ describe('the injected block', () => {
 		// the name, a travelling memory reads as a claim about the project in front
 		// of it.
 		graphQueries.upsert({
-			kind: 'episodic',
 			subkind: 'pattern',
 			scope: 'project',
 			projectId: 'project-b',
@@ -257,7 +214,6 @@ describe('the injected block', () => {
 		// always rank it below whatever was actually asked — measured, human-stated
 		// rules reached the prompt on 3 of 20 opportunities.
 		graphQueries.upsert({
-			kind: 'episodic',
 			subkind: 'preference',
 			scope: 'global',
 			projectId: null,
@@ -277,7 +233,6 @@ describe('the injected block', () => {
 
 	it('does not repeat a standing instruction in the recalled section', () => {
 		graphQueries.upsert({
-			kind: 'episodic',
 			subkind: 'preference',
 			scope: 'global',
 			projectId: null,
@@ -303,7 +258,6 @@ describe('the injected block', () => {
 		// about how the user works is background, and promoting it would make the
 		// most privileged position in the prompt reachable by inference.
 		graphQueries.upsert({
-			kind: 'episodic',
 			subkind: 'preference',
 			scope: 'global',
 			projectId: null,

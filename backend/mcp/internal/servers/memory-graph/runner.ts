@@ -69,10 +69,7 @@ function renderHit(hit: RetrievalHit, currentProjectId: string | null): string {
 			: node.projectId !== currentProjectId
 				? 'learned in another project'
 				: node.scope;
-	const detail =
-		node.kind === 'structural'
-			? (node.symbol ? `${node.symbol} — ${node.path}` : (node.path ?? ''))
-			: node.body.split('\n')[0].slice(0, 260);
+	const detail = node.body.split('\n')[0].slice(0, 260);
 
 	return [
 		`[${node.id}] (${node.subkind}, ${where}, confidence ${node.confidence.toFixed(2)}, found by ${found})`,
@@ -84,7 +81,7 @@ function renderHit(hit: RetrievalHit, currentProjectId: string | null): string {
 }
 
 function renderNode(node: GraphNode, prefix = ''): string {
-	const detail = node.kind === 'structural' ? (node.path ?? '') : node.body.split('\n')[0].slice(0, 200);
+	const detail = node.body.split('\n')[0].slice(0, 200);
 	return `${prefix}[${node.id}] (${node.subkind}) ${node.label}${detail ? `\n${prefix}  ${detail}` : ''}`;
 }
 
@@ -120,7 +117,6 @@ async function runOne(op: Operation, ctx: Context): Promise<OperationReport> {
 				// case memory exists to cover.
 				crossProject: true,
 				sessionId: ctx.sessionId ?? undefined,
-				kinds: op.kind && op.kind !== 'both' ? [op.kind] : undefined,
 				limit: op.limit ?? 10,
 				// An explicit lookup is answered with what MATCHES it, not with what
 				// matches it plus everything one edge away. Expansion belongs to
@@ -260,7 +256,7 @@ async function runOne(op: Operation, ctx: Context): Promise<OperationReport> {
 					...(op.subkind !== undefined && { subkind: op.subkind })
 				},
 				// An agent's correction is an agent's correction. Recording it as the
-				// user's would exempt the node from structural decay, from eviction and
+				// user's would exempt the node from staleness decay, from eviction and
 				// from consolidation, and would tell every future turn a person had
 				// stated it — authority the model did not earn by editing.
 				'agent'
@@ -291,8 +287,7 @@ async function runOne(op: Operation, ctx: Context): Promise<OperationReport> {
 				action: op.action,
 				ok: true,
 				text: [
-					`${stats.nodes} nodes, ${stats.edges} edges`,
-					`  episodic: ${stats.episodic}   structural: ${stats.structural}`,
+					`${stats.nodes} memories, ${stats.edges} connections`,
 					`  scope — session ${stats.byScope.session}, project ${stats.byScope.project}, global ${stats.byScope.global}`,
 					`  ${stats.vectors} node(s) have semantic vectors`,
 					`  ${stats.entities} canonical entity/entities, ${stats.confirmedUseful} confirmed useful`,

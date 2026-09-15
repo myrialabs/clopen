@@ -6,13 +6,16 @@
 	import { getFileIcon } from '$frontend/utils/file-icon-mappings';
 	import { getFolderIcon } from '$frontend/utils/folder-icon-mappings';
 	import { getGitStatusColor, getGitStatusBadgeLabel, getGitStatusLabel } from '$frontend/utils/git-status';
+	import { aiMarkerState, aiMarkerTooltip } from '$frontend/utils/ai-change-marker';
+	import { openAiChanges } from '$frontend/stores/ui/ai-changes-modal.svelte';
 	import { onMount, tick } from 'svelte';
 	import { isLocalConnection, isMac, isWindows, isLinux, getExplorerShortcutLabels } from '$frontend/utils/platform';
 	import { ignoredPathsState } from '$frontend/stores/features/ignored-paths.svelte';
 	import { isExtractableArchive } from '$frontend/utils/archive';
 
-	// OS-aware shortcut hint (Ctrl on Windows/Linux, ⌘ on macOS) shown next
-	// to the Delete row, like the native file manager. Cut/Copy/Paste rows
+	// OS-aware shortcut hint (Delete on Windows/Linux, Delete/Backspace on
+	// macOS) carried on the Delete row's tooltip and accessible name, matching
+	// what the keyboard handler actually listens for. Cut/Copy/Paste rows
 	// intentionally show plain labels without shortcut text.
 	const explorerKeys = getExplorerShortcutLabels();
 
@@ -32,8 +35,6 @@
 		canPaste = false,
 		cutPaths = new Set<string>(),
 		modifiedFiles = new Set<string>(),
-		/** Ancestor dirs of modified files, precomputed by FileTree (EXP-PERF-01). */
-		modifiedDirSet = new Set<string>(),
 		activeFilePath = null,
 		gitStatusMap = new Map<string, string>(),
 		gitFolderStatusMap = new Map<string, string>(),
@@ -45,8 +46,7 @@
 		onNodeDrop,
 		onNodeDragEnd,
 		dropTargetPath = null,
-		busyPaths = new Set<string>(),
-		aiChangesSet = new Set<string>()
+		busyPaths = new Set<string>()
 	}: {
 		file: FileNodeType;
 		isSelected?: boolean;
@@ -63,7 +63,6 @@
 		canPaste?: boolean;
 		cutPaths?: Set<string>;
 		modifiedFiles?: Set<string>;
-		modifiedDirSet?: Set<string>;
 		activeFilePath?: string | null;
 		gitStatusMap?: Map<string, string>;
 		gitFolderStatusMap?: Map<string, string>;
@@ -76,7 +75,6 @@
 		onNodeDragEnd?: (file: FileNodeType, event: DragEvent) => void;
 		dropTargetPath?: string | null;
 		busyPaths?: Set<string>;
-		aiChangesSet?: Set<string>;
 	} = $props();
 
 	const revealLabel = $derived(
@@ -106,10 +104,17 @@
 	// Compute if this node's menu is open
 	const isMenuOpen = $derived(openMenuPath === file.path);
 
-	// Folder indicator: O(1) lookup into the ancestor set precomputed by
-	// FileTree (EXP-PERF-01) — replaces the per-node subtree recursion.
+	// Check if any descendant is modified (for folder indicator)
+	function hasModifiedDescendant(node: FileNodeType, mFiles: Set<string>): boolean {
+		if (node.type !== 'directory' || !node.children) return false;
+		for (const child of node.children) {
+			if (mFiles.has(child.path)) return true;
+			if (child.type === 'directory' && hasModifiedDescendant(child, mFiles)) return true;
+		}
+		return false;
+	}
 	const showModifiedIndicator = $derived(
-		isModified || (file.type === 'directory' && modifiedDirSet.has(file.path))
+		isModified || (file.type === 'directory' && hasModifiedDescendant(file, modifiedFiles))
 	);
 
 	// Git status code for this node — files lookup direct, folders use aggregated map
@@ -128,10 +133,9 @@
 		gitStatusCode ? getGitStatusBadgeLabel(gitStatusCode) : ''
 	);
 
-	// AI changes indicator
-	const hasAiChanges = $derived(
-		file.type === 'file' && aiChangesSet.has(file.path)
-	);
+	// AI changes indicator. Live while the change is still unstaged, dimmed once
+	// it has been staged or committed — see utils/ai-change-marker.ts.
+	const aiMarker = $derived(file.type === 'file' ? aiMarkerState(file.path) : null);
 
 	let nodeElement: HTMLDivElement;
 	let menuButtonElement: HTMLButtonElement;
@@ -292,7 +296,7 @@
 	</span>
 
 	<!-- Status indicators (unsaved dot + ai dot + git status letter) -->
-	{#if showModifiedIndicator || hasAiChanges || gitStatusCode}
+	{#if showModifiedIndicator || aiMarker || gitStatusCode}
 		<span class="flex items-center gap-1 flex-shrink-0 {isIgnored ? 'opacity-40' : ''}">
 			{#if showModifiedIndicator}
 				<span
@@ -300,11 +304,16 @@
 					title="Unsaved changes"
 				></span>
 			{/if}
-			{#if hasAiChanges}
-				<span
-					class="w-1.5 h-1.5 rounded-full bg-violet-500 dark:bg-violet-400"
-					title="Has AI changes"
-				></span>
+			{#if aiMarker}
+				<button
+					type="button"
+					class="w-1.5 h-1.5 rounded-full border-none p-0 cursor-pointer {aiMarker === 'live'
+						? 'bg-violet-500 dark:bg-violet-400'
+						: 'bg-violet-500/30 dark:bg-violet-400/30'}"
+					title={aiMarkerTooltip(file.path)}
+					onclick={(e) => { e.stopPropagation(); openAiChanges(file.path); }}
+					aria-label="Review this chat's changes to this file"
+				></button>
 			{/if}
 			{#if gitStatusCode}
 				<span
@@ -527,7 +536,6 @@
 			{canPaste}
 			{cutPaths}
 			{modifiedFiles}
-			{modifiedDirSet}
 			{activeFilePath}
 			{gitStatusMap}
 			{gitFolderStatusMap}
@@ -540,7 +548,6 @@
 			{onNodeDragEnd}
 			{dropTargetPath}
 			{busyPaths}
-			{aiChangesSet}
 		/>
 	{/each}
 {/if}

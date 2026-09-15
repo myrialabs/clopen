@@ -2,6 +2,10 @@
  * The `agent-tools` projector: an account with agent tools owns one
  * `mcp_servers` row.
  *
+ * It returns a single-element list because the contract is plural, not because
+ * there is a second row coming: a preset names ONE slug, so an account either
+ * owns that row or owns nothing.
+ *
  * Nothing downstream of this row knows accounts exist. `resolveServerRow()`,
  * every per-engine config builder and the `/mcp/ext/<slug>` proxy read the row
  * exactly as they read a hand-installed one — which is the whole point of
@@ -72,7 +76,7 @@ export const mcpProjector: Projector = {
 	capability: 'agent-tools',
 	targetKind: 'mcp_server',
 
-	project(context: ProjectionContext): ProjectionResult {
+	project(context: ProjectionContext): ProjectionResult[] {
 		const preset = presetOf(context);
 		const existing: McpServerRow | null = mcpServerQueries.getBySlug(preset.slug);
 
@@ -93,7 +97,7 @@ export const mcpProjector: Projector = {
 				// an ordinary custom row rather than needing a fourth source value.
 				source: 'custom'
 			});
-			return { targetKind: 'mcp_server', targetId: String(row.id), adopted: false, restore: null };
+			return [{ targetKind: 'mcp_server', targetId: String(row.id), adopted: false, restore: null }];
 		}
 
 		// ADOPT rather than create a sibling. A user who installed this server by
@@ -135,7 +139,7 @@ export const mcpProjector: Projector = {
 			}
 		}
 
-		return { targetKind: 'mcp_server', targetId, adopted, restore };
+		return [{ targetKind: 'mcp_server', targetId, adopted, restore }];
 	},
 
 	release(context: ProjectionContext, targetId: string, adopted: boolean, restore: unknown | null): void {

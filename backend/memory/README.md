@@ -32,14 +32,15 @@ what was already settled, and switching engine loses it entirely.
 ```
     a turn finishes
           │
-          ├── snapshot disk diff ──→ structural extraction ──┐
-          │                                                  │
-          └── transcript ──→ episodic extraction (model) ────┤
-                                                             ▼
-                                                      ┌─────────────┐
-                                                      │ graph_nodes │
-                                                      │ graph_edges │
-                                                      └──────┬──────┘
+          ├── snapshot disk diff ──→ invalidation (ages what moved) ─┐
+          │                                                          │
+          └── transcript ──→ episodic extraction (model) ────────────┤
+                                                                     ▼
+                                                          ┌──────────────────┐
+                                                          │ graph_nodes      │
+                                                          │ graph_edges      │
+                                                          │ graph_node_paths │
+                                                          └────────┬─────────┘
                                                              │
                                           ┌──────────────────┴─────────┐
                                           ▼                            ▼
@@ -58,24 +59,29 @@ Nothing on the read path calls a model or touches the network.
 
 ---
 
-## Two Halves, One Store
+## One Store, Memories Only
 
-| Kind | Holds | Written by |
-| --- | --- | --- |
-| `episodic` | decisions, patterns, failures, preferences, observations | a model reading each finished turn |
-| `structural` | files, symbols, modules, dependencies | the snapshot service's disk diff |
+Every node is a memory: a decision, a pattern, a failure, a preference, an
+observation or an entity, written by a model reading each finished turn.
 
-They live in **one** graph, joined by an `about` edge. That join is the whole
-point: asking "what touches this module" also surfaces the decisions made around
-it, and asking "what did we decide about X" surfaces the code it governs.
+It used to hold the codebase alongside them — a node per file, per directory and
+up to twenty-five per file's symbols. Measured on a real store that half was 81%
+of the nodes and 88% of the edges, it never reached a prompt (an agent can read
+the repository), and it won BM25 on any turn that mentioned a path. Migration 076
+removed it.
 
-Structural nodes come from the **disk diff**, not from tool calls, so a file
-rewritten through Bash or a codemod is captured as reliably as one edited with an
-edit tool.
+What the half was genuinely for survives as an attribute. `graph_node_paths`
+records the files each memory claims something about — shaped exactly like
+`graph_node_entities`, which records the subjects it names. Those paths:
 
-Structural hits are deliberately excluded from the injected block — an agent can
-read the repository itself. They earn their place by being the path retrieval
-*travels* to reach the relevant episodic memories.
+- are joined into the memory's indexed text, so a pasted path finds what is known
+  about it;
+- are what `invalidate.ts` ages a memory against when the file changes;
+- are what an anchored query seeds from when the turn's text says nothing.
+
+The paths come from the **disk diff** and from extraction, not from tool calls, so
+a file rewritten through Bash or a codemod counts as reliably as one edited with
+an edit tool.
 
 ---
 
@@ -169,9 +175,9 @@ by then the secret is in a durable, re-injected, instance-wide store.
 | --- | --- | --- |
 | Belief revision | `revise.ts` | Records that two memories disagree (`contradicts`) |
 | Read-time resolution | `context.ts` | Decides which is current, per turn |
-| Structural invalidation | `invalidate.ts` | Sets `stale_at` when code a memory is `about` changes |
+| Structural invalidation | `invalidate.ts` | Sets `stale_at` when a file the memory names changes |
 | Consolidation | `consolidate.ts` | Merges memories stating the same thing |
-| Retention | `retention.ts` | Bounds growth; retires unreferenced code entities |
+| Retention | `retention.ts` | Bounds growth: evicts, then purges, what earned nothing |
 | Reach classification | `judge.ts` | Decides which memories travel between projects |
 | Maintenance loop | `maintenance.ts` | Runs the above on a timer |
 
@@ -277,8 +283,8 @@ Split across two settings screens on purpose:
 
 - **Settings → Model → Memory** — which model writes memories. The only place
   memory uses a model at all.
-- **Settings → Infrastructure → Memory** — what memory does: master switch, record code, record
-  memories, auto-recall.
+- **Settings → Infrastructure → Memory** — what memory does: master switch,
+  record memories, auto-recall.
 
 Stored in the `settings` table via `config.ts`. Mutations are admin-only
 (`backend/auth/permissions.ts`), matching skills and MCP servers: memory is
@@ -292,16 +298,24 @@ member repositories they have no access to.
 
 ## Schema
 
-Created by migration `066_create_memory_graph.ts`.
+Created by migration `066_create_memory_graph.ts`, reshaped by
+`076_remove_memory_code_graph.ts`.
 
 ```
-graph_nodes              the memories and code entities
+graph_nodes              the memories
 graph_edges              typed relations between them
 graph_node_entities      subjects a memory is about (an ATTRIBUTE, not nodes)
+graph_node_paths         files a memory is about (likewise)
 graph_vectors            one int8 vector per node, 260 bytes at 256 dims
 graph_nodes_fts          FTS5 mirror for BM25
+graph_layout             persisted positions and communities (migration 067)
 memory_extraction_queue  durable queue of turns awaiting summarisation
 ```
+
+`graph_nodes.kind` survives 076 as the constant `'episodic'`: it is part of the
+unique digest index and of the FTS mirror's schema, and rebuilding both across a
+live memory store to reclaim one constant column would be risk without benefit.
+Nothing above `graph-queries.ts` has the concept.
 
 `graph_nodes` groups its columns four ways:
 
@@ -320,11 +334,14 @@ both "where learned" and "where it applies" made cross-project recall impossible
 ### Relations
 
 ```
-structural ↔ structural : imports | calls | defines | contains
-episodic   ↔ episodic   : caused_by | supersedes | contradicts | generalizes
-episodic   → structural : about        ← the bridge between both halves
-any        ↔ any        : relates_to   (user-drawn only)
+memory ↔ memory : caused_by | supersedes | contradicts | generalizes
+memory ↔ memory : relates_to   (user-drawn only)
 ```
+
+The code-shaped relations — `imports`, `defines`, `contains`, and `about`
+pointing at a file node — went with the structural half in migration 076. What a
+memory is about is a row in `graph_node_paths`, not an edge to a node standing in
+for a file.
 
 `relates_to` is **never** inferred. An automatic similarity linker used to write
 it from vector neighbourhoods and fabricated most of the graph: against a corpus
@@ -352,8 +369,6 @@ view.ts          graph serialization for the UI
 extract/
   scheduler.ts   durable queue, retries, concurrency
   episodic.ts    model-driven summarisation of a finished turn
-  structural.ts  file/symbol/dependency nodes from the disk diff
-  languages.ts   per-language symbol extraction
 
 embedding/
   paths.ts       version, pinned checksums, install location
@@ -409,6 +424,14 @@ agree or disagree with anything, and an empty body means no vector — so a stub
 could never be found semantically while still being offered to the model as
 something to adjudicate against. Subjects are now rows in `graph_node_entities`,
 folded into the FTS text.
+
+**The same rule eventually removed the codebase.** Files, symbols and modules were
+nodes for the same reason entities were — so a question about code could travel to
+the decisions made around it. They were 81% of one real store and 88% of its
+edges, they never reached a prompt, and 4,458 symbol nodes were never once the
+reason a memory was found. The paths a memory names are rows in
+`graph_node_paths` now (migration 076), and invalidation and anchoring got faster
+for losing the hop through a node that stood in for a string.
 
 **Revision resolves at read time.** See [Keeping the Graph Honest](#keeping-the-graph-honest).
 

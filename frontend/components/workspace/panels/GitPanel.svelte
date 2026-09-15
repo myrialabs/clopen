@@ -1,6 +1,5 @@
 <script lang="ts">
 	import { onMount, untrack } from 'svelte';
-	import { onAiFilesChange } from '$frontend/utils/ai-changes';
 	import Icon from '$frontend/components/common/display/Icon.svelte';
 	import Modal from '$frontend/components/common/overlay/Modal.svelte';
 	import Dialog from '$frontend/components/common/overlay/Dialog.svelte';
@@ -83,7 +82,6 @@
 	let statusLoaded = $state(false);
 	let isLoading = $state(false);
 	let gitStatus = $state<GitStatus>({ staged: [], unstaged: [], untracked: [], conflicted: [] });
-	let aiChangesSet = $state(new Set<string>());
 	let branchInfo = $state<GitBranchInfo | null>(null);
 
 	// Action-bar busy flags are keyed per-project in the workspace store, so an
@@ -2892,7 +2890,19 @@
 		if (matched) {
 			return { remote: matched.name, branch: upstream.slice(matched.name.length + 1) };
 		}
-		// A URL upstream: everything up to the last slash is the remote.
+		// A URL upstream. Its branch half can itself contain slashes, so cutting at
+		// the last one labelled `.../clopen.git/dev` the remote and
+		// `trello-task-client` the branch — match the configured remote URLs first,
+		// then the `.git/` boundary, and only then fall back to that cut.
+		const url = remotes
+			.flatMap(remote => [remote.pushUrl, remote.fetchUrl])
+			.filter(candidate => candidate && upstream.startsWith(candidate + '/'))
+			.sort((a, b) => b.length - a.length)[0];
+		if (url) return { remote: url, branch: upstream.slice(url.length + 1) };
+		const gitSuffix = upstream.indexOf('.git/');
+		if (gitSuffix > 0) {
+			return { remote: upstream.slice(0, gitSuffix + 4), branch: upstream.slice(gitSuffix + 5) };
+		}
 		const cut = upstream.lastIndexOf('/');
 		if (cut <= 0) return { remote: '', branch: upstream };
 		return { remote: upstream.slice(0, cut), branch: upstream.slice(cut + 1) };
@@ -2914,11 +2924,18 @@
 		return splitUpstream(branch.upstream).remote || null;
 	}
 
-	function getBranchRemoteName(branch: GitBranch): string | null {
+	/**
+	 * What a branch row prints beside the name. The upstream is nearly always the
+	 * same name on the same remote, and spelling it out in full left no room for
+	 * the branch name itself — so the remote alone is enough whenever the two
+	 * names agree, and the full upstream stays available as the row's tooltip.
+	 */
+	function getBranchUpstreamLabel(branch: GitBranch): string | null {
 		if (!branch.upstream) return null;
 		const { remote, branch: remoteBranch } = splitUpstream(branch.upstream);
 		if (!remote) return remoteBranch;
-		return `${shortRemoteLabel(remote)}/${remoteBranch}`;
+		const remoteLabel = shortRemoteLabel(remote);
+		return remoteBranch === branch.name ? remoteLabel : `${remoteLabel}/${remoteBranch}`;
 	}
 
 	const BRANCH_COMMIT_PAGE_SIZE = 8;
@@ -4812,10 +4829,6 @@
 
 	// Monitor container width
 	onMount(() => {
-		const unsubAiFiles = onAiFilesChange((paths) => {
-			aiChangesSet = new Set(paths);
-		});
-
 		let resizeObserver: ResizeObserver | null = null;
 		if (containerRef && typeof ResizeObserver !== 'undefined') {
 			resizeObserver = new ResizeObserver((entries) => {
@@ -4827,7 +4840,6 @@
 		}
 
 		return () => {
-			unsubAiFiles();
 			resizeObserver?.disconnect();
 		};
 	});
@@ -4885,7 +4897,7 @@
 
 <!-- Nested repo branch row snippet (mirrors main branch row) -->
 {#snippet nestedRepoBranchRow(nested: GitNestedRepoInfo, branch: GitBranch)}
-	{@const upstreamName = getBranchRemoteName(branch)}
+	{@const upstreamName = getBranchUpstreamLabel(branch)}
 	{@const branchKey = branchCommitStateKey(branch.name, nested.path)}
 	{@const isExpanded = expandedBranches.has(branchKey)}
 	{@const commitState = branchCommitState[branchKey]}
@@ -4903,7 +4915,7 @@
 			<div class="flex-1 min-w-0 flex flex-col justify-center overflow-hidden">
 				<div class="flex min-w-0 items-center gap-2">
 					<span class="flex-1 min-w-0 text-sm text-slate-900 dark:text-slate-100 leading-tight truncate" title={branch.name}>{branch.name}</span>
-					{#if upstreamName}<span class="text-3xs text-slate-400 shrink-0">{upstreamName}</span>{/if}
+					{#if upstreamName}<span class="min-w-0 max-w-[45%] truncate text-3xs text-slate-400" title="Tracks {branch.upstream}">{upstreamName}</span>{/if}
 				</div>
 				<div class="flex min-w-0 items-center gap-1.5 mt-0.5 text-xs text-slate-500 leading-tight">
 					{#if branch.ahead > 0}<span class="shrink-0">{branch.ahead} ahead</span>{/if}
@@ -5127,7 +5139,6 @@
 							activeSection={activeTab?.section ?? null}
 							onViewDiff={(file, sec) => viewDiff(file, sec)}
 							onResolve={(path) => openConflictResolver(path)}
-							{aiChangesSet}
 						/>
 					{/if}
 					<ChangesSection
@@ -5141,7 +5152,6 @@
 						onUnstageAll={() => unstageAll(nested.path)}
 						onStash={() => openStashPrompt('staged', nested.path)}
 						onViewDiff={(file, sec) => viewDiff(file, sec)}
-						{aiChangesSet}
 						busy={getGitOps(watchScope, nested.path).isStaging}
 					/>
 					<ChangesSection
@@ -5156,7 +5166,6 @@
 						onDiscard={(path) => discardFile(path)}
 						onDiscardAll={() => discardAll(nested.path)}
 						onViewDiff={(file, sec) => viewDiff(file, sec)}
-						{aiChangesSet}
 						busy={getGitOps(watchScope, nested.path).isStaging}
 					/>
 					{#if nestedTotalChanges === 0 && !isLoading}
@@ -6004,16 +6013,29 @@
 				the panel used to give no sign of that at all. -->
 			<div class="px-2 pt-2">
 				<div
-					class="flex flex-wrap items-center gap-x-2 gap-y-1 rounded-lg border border-sky-400/40 bg-sky-500/10 px-2.5 py-1.5 dark:border-sky-500/40"
+					class="flex items-start gap-2 rounded-lg border border-sky-400/40 bg-sky-500/10 px-2.5 py-1.5 dark:border-sky-500/40"
 				>
-					<Icon name="lucide:arrow-up-from-line" class="w-3.5 h-3.5 shrink-0 text-sky-600 dark:text-sky-400" />
-					<span class="min-w-0 flex-1 truncate text-3xs text-sky-800 dark:text-sky-200">
-						Pushes to <span class="font-mono font-semibold">{describePushTarget(pushTarget)}</span>
-						{#if pushTarget.isUrl}(a remote URL, not <span class="font-mono">{selectedRemote}</span>){/if}
-					</span>
+					<Icon name="lucide:arrow-up-from-line" class="mt-0.5 w-3.5 h-3.5 shrink-0 text-sky-600 dark:text-sky-400" />
+					<div class="min-w-0 flex-1">
+						<!-- The destination goes on its own line and wraps: a fork URL is far
+							wider than this dock, and truncating it hid the branch — the one part
+							that says where the commits land. -->
+						<div class="text-3xs text-sky-700/90 dark:text-sky-300/90">Pushes to</div>
+						<div
+							class="font-mono text-3xs font-semibold break-all text-sky-800 dark:text-sky-100"
+							title={describePushTarget(pushTarget)}
+						>
+							{describePushTarget(pushTarget)}
+						</div>
+						{#if pushTarget.isUrl}
+							<div class="text-3xs text-sky-700/80 dark:text-sky-300/80">
+								a remote URL, not <span class="font-mono">{selectedRemote}</span>
+							</div>
+						{/if}
+					</div>
 					<button
 						type="button"
-						class="shrink-0 cursor-pointer rounded-md border-none bg-sky-500/15 px-2 py-0.5 text-3xs font-semibold text-sky-800 transition-colors hover:bg-sky-500/25 dark:text-sky-100"
+						class="mt-0.5 shrink-0 cursor-pointer rounded-md border-none bg-sky-500/15 px-2 py-0.5 text-3xs font-semibold text-sky-800 transition-colors hover:bg-sky-500/25 dark:text-sky-100"
 						onclick={openUpstreamModal}
 						title="Change which remote branch this branch tracks"
 					>
@@ -6063,7 +6085,6 @@
 					activeSection={activeTab?.section ?? null}
 					onViewDiff={viewDiff}
 					onResolve={openConflictResolver}
-					{aiChangesSet}
 				/>
 			{/if}
 
@@ -6078,7 +6099,6 @@
 				onUnstageAll={unstageAll}
 				onStash={() => openStashPrompt('staged')}
 				onViewDiff={viewDiff}
-				{aiChangesSet}
 				busy={ops.isStaging}
 			/>
 
@@ -6103,7 +6123,6 @@
 				onDiscard={discardFile}
 				onDiscardAll={discardAll}
 				onViewDiff={viewDiff}
-				{aiChangesSet}
 				busy={ops.isStaging}
 			/>
 
@@ -6330,7 +6349,7 @@
 						{:else}
 							<div class="space-y-0.5">
 								{#each filteredLocalBranches as branch (branch.name)}
-									{@const upstreamName = getBranchRemoteName(branch)}
+									{@const upstreamName = getBranchUpstreamLabel(branch)}
 									{@const isExpanded = expandedBranches.has(branch.name)}
 									{@const commitState = branchCommitState[branch.name]}
 									{@const branchRelativeDate = formatRelativeTime(branch.lastCommitDate)}
@@ -6346,7 +6365,7 @@
 											<div class="flex-1 min-w-0 flex flex-col justify-center overflow-hidden">
 												<div class="flex min-w-0 items-center gap-2">
 													<span class="flex-1 min-w-0 text-sm text-slate-900 dark:text-slate-100 leading-tight truncate" title={branch.name}>{branch.name}</span>
-													{#if upstreamName}<span class="text-3xs text-slate-400 shrink-0">{upstreamName}</span>{/if}
+													{#if upstreamName}<span class="min-w-0 max-w-[45%] truncate text-3xs text-slate-400" title="Tracks {branch.upstream}">{upstreamName}</span>{/if}
 												</div>
 												<div class="flex min-w-0 items-center gap-1.5 mt-0.5 text-xs text-slate-500 leading-tight">
 													{#if branch.ahead > 0}<span class="shrink-0">{branch.ahead} ahead</span>{/if}

@@ -1,10 +1,12 @@
 /**
  * Memory Graph types.
  *
- * One graph holds both kinds of memory (see migration 066): `episodic` for what
- * happened and what was decided, `structural` for the codebase as entities. They
- * are connected by real edges, so a query can travel from a decision to the code
- * it governs and back.
+ * The graph holds MEMORIES: what happened, what was decided, what broke and how
+ * the user wants to work. It used to hold the codebase alongside them as nodes
+ * of its own (migration 066), which migration 076 removed — the agent can read
+ * the repository, and those nodes were four fifths of the store while never
+ * reaching a prompt. What survives of that half is `relatedPaths`: the files a
+ * memory claims something about, carried as an attribute of the memory.
  *
  * Shared between backend and frontend — the visualization, the MCP tool surface
  * and the retrieval engine all speak these shapes.
@@ -14,9 +16,7 @@
 // Nodes
 // ─────────────────────────────────────────────────────────────────────────────
 
-export type GraphNodeKind = 'episodic' | 'structural';
-
-/** What kind of memory an episodic node holds. */
+/** What kind of memory a node holds. */
 export type EpisodicSubkind =
 	| 'decision'
 	| 'pattern'
@@ -25,10 +25,7 @@ export type EpisodicSubkind =
 	| 'observation'
 	| 'entity';
 
-/** What kind of code entity a structural node represents. */
-export type StructuralSubkind = 'file' | 'symbol' | 'module' | 'dependency';
-
-export type GraphNodeSubkind = EpisodicSubkind | StructuralSubkind;
+export type GraphNodeSubkind = EpisodicSubkind;
 
 /**
  * How LONG a claim holds — its durability, not its geography.
@@ -103,7 +100,7 @@ export const AUTHORITY_RANK: Record<GraphAssertedBy, number> = {
  * distinction, because both are a model reading text and deciding what to store.
  * Meanwhile `auto` was doing the work of the real question every consumer
  * actually asks: *did a person say this, or did a model infer it?* Retention,
- * structural decay, consolidation and the trust line in the injected block all
+ * staleness decay, consolidation and the trust line in the injected block all
  * branch on precisely that. Two values answer it without ambiguity; three
  * invited every reader to guess which of the two model-written kinds a predicate
  * meant.
@@ -112,21 +109,22 @@ export type GraphSource = 'agent' | 'user';
 
 export interface GraphNode {
 	id: string;
-	kind: GraphNodeKind;
 	subkind: GraphNodeSubkind;
 	scope: GraphScope;
 	projectId: string | null;
 	sessionId: string | null;
 	/** Short, human-readable title shown on the graph and in listings. */
 	label: string;
-	/** Full memory text, or a signature/summary for structural nodes. */
+	/** Full memory text. */
 	body: string;
-	/** Repo-relative path for structural nodes. */
-	path: string | null;
-	/** Symbol name for structural nodes of subkind `symbol`. */
-	symbol: string | null;
-	/** Detected language of the file a structural node came from. */
-	language: string | null;
+	/**
+	 * Repo-relative paths this memory claims something about.
+	 *
+	 * Loaded on demand — listings that draw thousands of nodes do not pay for it.
+	 * This is what invalidation ages a memory against and what an anchored query
+	 * seeds from, and it replaces the file nodes those two used to walk through.
+	 */
+	relatedPaths?: string[];
 	/** Stable identity hash used to upsert instead of duplicating. */
 	digest: string;
 	/** How much the writer trusts this memory, 0–1. */
@@ -160,7 +158,7 @@ export interface GraphNode {
 	usefulCount: number;
 	/** Times a later turn found this memory wrong or misleading. */
 	unhelpfulCount: number;
-	/** When the code this memory is `about` last changed underneath it. */
+	/** When code this memory claims something about last changed underneath it. */
 	staleAt: string | null;
 	/** Canonical identity for `entity` nodes — the slug every statement hangs off. */
 	entityKey: string | null;
@@ -171,25 +169,18 @@ export interface GraphNode {
 // ─────────────────────────────────────────────────────────────────────────────
 
 /**
- * Relation types, grouped by what they connect.
+ * Relation types.
  *
- * `about` is the load-bearing one: it links an episodic memory to the code it
- * concerns, which is what fuses the two halves into a single graph instead of
- * two indexes in one database.
+ * All of them now connect one memory to another. The code-shaped relations
+ * (`imports`, `defines`, `contains`, and `about` pointing at a file node) went
+ * with the structural half in migration 076 — what a memory is about is a list
+ * of paths on the memory, not an edge to a node standing in for a file.
  */
 export type GraphRelation =
-	// structural ↔ structural
-	| 'imports'
-	| 'calls'
-	| 'defines'
-	| 'contains'
-	// episodic ↔ episodic
 	| 'caused_by'
 	| 'supersedes'
 	| 'contradicts'
 	| 'generalizes'
-	// episodic → structural
-	| 'about'
 	// anything, drawn by hand
 	| 'relates_to';
 
@@ -208,16 +199,12 @@ export interface GraphEdge {
 // ─────────────────────────────────────────────────────────────────────────────
 
 export interface GraphNodeInput {
-	kind: GraphNodeKind;
 	subkind: GraphNodeSubkind;
 	scope?: GraphScope;
 	projectId?: string | null;
 	sessionId?: string | null;
 	label: string;
 	body?: string;
-	path?: string | null;
-	symbol?: string | null;
-	language?: string | null;
 	/** Supply to control identity; otherwise derived from the node's content. */
 	digest?: string;
 	confidence?: number;
@@ -291,9 +278,7 @@ export interface RetrievalOptions {
 	sessionId?: string | null;
 	/** Restrict which scopes may match. Defaults to all three. */
 	scopes?: GraphScope[];
-	/** Restrict to one kind of memory. Defaults to both. */
-	kinds?: GraphNodeKind[];
-	/** Restrict to particular subkinds (decision, failure, entity, file, …). */
+	/** Restrict to particular subkinds (decision, failure, entity, …). */
 	subkinds?: string[];
 	/** Restrict by who wrote it: inferred, asked for by an agent, or hand-written. */
 	sources?: GraphSource[];
@@ -306,9 +291,9 @@ export interface RetrievalOptions {
 	 * action turn it on, because that is where "we already solved this in the
 	 * other repo" has to arrive without being asked for.
 	 *
-	 * Structural nodes never travel whatever this says — another repository's
-	 * file paths are noise here, and admitting them is the leak the hard project
-	 * filter was originally added to stop.
+	 * A memory only travels when it has been judged `anywhere`, which is what
+	 * keeps one repository's local conventions out of another's results — the
+	 * leak the hard project filter was originally added to stop.
 	 */
 	crossProject?: boolean;
 	/** Maximum hits returned after fusion. */
@@ -318,10 +303,10 @@ export interface RetrievalOptions {
 	/** Include archived nodes. Defaults to false. */
 	includeArchived?: boolean;
 	/**
-	 * Repo-relative paths the session is currently working in. Their structural
-	 * nodes join the query's seeds, so a turn whose text carries no signal
-	 * ("continue", "fix it") still reaches the memories attached to the code in
-	 * front of it.
+	 * Repo-relative paths the session is currently working in. The memories that
+	 * claim something about them join the query's seeds, so a turn whose text
+	 * carries no signal ("continue", "fix it") still reaches what is known about
+	 * the code in front of it.
 	 */
 	anchorPaths?: string[];
 	/**
@@ -369,7 +354,6 @@ export interface RetrievalResult {
 /** A node as sent to the graph view: display fields plus its community. */
 export interface GraphViewNode {
 	id: string;
-	kind: GraphNodeKind;
 	subkind: GraphNodeSubkind;
 	scope: GraphScope;
 	label: string;
@@ -534,10 +518,9 @@ export interface MemoryReadiness {
 }
 
 export interface GraphStats {
+	/** Live memories — every node in the graph is one. */
 	nodes: number;
 	edges: number;
-	episodic: number;
-	structural: number;
 	vectors: number;
 	byScope: Record<GraphScope, number>;
 	byProject: { projectId: string | null; count: number }[];
@@ -545,7 +528,7 @@ export interface GraphStats {
 	superseded: number;
 	/** Memories whose code changed underneath them since they were written. */
 	stale: number;
-	/** Canonical entity nodes (people, tools, systems) everything else hangs off. */
+	/** Memories carrying a canonical entity key (a person, a tool, a system). */
 	entities: number;
 	/** Memories a later turn confirmed it actually used. */
 	confirmedUseful: number;

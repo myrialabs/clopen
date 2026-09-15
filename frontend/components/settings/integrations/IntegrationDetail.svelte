@@ -60,6 +60,39 @@
 	const isBuiltIn = $derived(server?.source === 'internal');
 	/** Derived from an account: its configuration is not the user's to edit here. */
 	const isManaged = $derived(account !== null && server !== null);
+
+	/**
+	 * Projections, grouped by capability.
+	 *
+	 * One capability can own SEVERAL rows now — a database account projects one
+	 * connection per linked database — so listing them raw both repeated the same
+	 * sentence and produced duplicate `{#each}` keys, which is a crash rather
+	 * than a cosmetic problem.
+	 */
+	const projectionSummary = $derived.by(() => {
+		const byCapability = new Map<string, { created: number; adopted: number }>();
+		for (const projection of account?.projections ?? []) {
+			const entry = byCapability.get(projection.capability) ?? { created: 0, adopted: 0 };
+			if (projection.adopted) entry.adopted += 1;
+			else entry.created += 1;
+			byCapability.set(projection.capability, entry);
+		}
+
+		return [...byCapability.entries()].map(([capability, counts]) => {
+			const parts: string[] = [];
+			if (counts.created > 0) {
+				parts.push(counts.created === 1 ? 'created a row' : `created ${counts.created} rows`);
+			}
+			if (counts.adopted > 0) {
+				parts.push(
+					counts.adopted === 1
+						? 'adopted an existing row'
+						: `adopted ${counts.adopted} existing rows`
+				);
+			}
+			return { capability: capability as keyof typeof CAPABILITY_LABELS, summary: parts.join(', ') };
+		});
+	});
 	const canEditConfig = $derived(!!server && !isBuiltIn && !isManaged);
 
 	const statuses = $derived(mcpServersStore.statuses);
@@ -523,12 +556,10 @@
 						<div>
 							{@render sectionHeading('Projections')}
 							<div class="rounded-lg border border-slate-200 dark:border-slate-800 divide-y divide-slate-100 dark:divide-slate-800">
-								{#each account.projections as projection (projection.capability + projection.targetKind)}
+								{#each projectionSummary as entry (entry.capability)}
 									<div class="flex items-baseline gap-3 px-3 py-1.5 text-xs">
-										<span class="w-28 shrink-0 text-slate-500 dark:text-slate-400">{CAPABILITY_LABELS[projection.capability]}</span>
-										<span class="text-slate-400">
-											{projection.adopted ? 'adopted an existing row' : 'created a row'}
-										</span>
+										<span class="w-28 shrink-0 text-slate-500 dark:text-slate-400">{CAPABILITY_LABELS[entry.capability]}</span>
+										<span class="text-slate-400">{entry.summary}</span>
 									</div>
 								{:else}
 									<p class="px-3 py-1.5 text-xs text-slate-400">Nothing projected.</p>

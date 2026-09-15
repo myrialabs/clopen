@@ -26,11 +26,11 @@
 	import Button from '$frontend/components/common/display/Button.svelte';
 	import BindingBar from './BindingBar.svelte';
 	import WorkSettings from './WorkSettings.svelte';
-	import ProviderMark from './ProviderMark.svelte';
+	import ProviderMark from '$frontend/components/common/display/ProviderMark.svelte';
 	import WorkItemList from './WorkItemList.svelte';
 	import WorkItemDetailPane from './WorkItemDetailPane.svelte';
 	import ListToolbar from './ListToolbar.svelte';
-	import MenuSurface from './MenuSurface.svelte';
+	import MenuSurface from '$frontend/components/common/overlay/MenuSurface.svelte';
 	import PullRequestComposer from './PullRequestComposer.svelte';
 	import NewIssueModal from './NewIssueModal.svelte';
 	import { clickOutside } from '$frontend/utils/click-outside';

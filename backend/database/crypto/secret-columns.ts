@@ -27,7 +27,11 @@ export const SECRET_COLUMNS: Record<string, readonly string[]> = {
 	db_client_connections: ['password', 'ssh_password', 'ssh_private_key', 'ssh_passphrase'],
 	ssh_connections: ['password', 'private_key', 'passphrase'],
 	engine_accounts: ['credential'],
-	integration_accounts: ['credentials']
+	integration_accounts: ['credentials'],
+	// The secret a linked remote database needs, which is NOT always the same as
+	// the account's credential — a Supabase Management API token cannot read
+	// back the Postgres password, so the password lives here and nowhere else.
+	integration_db_links: ['secrets']
 } as const;
 
 /** Column names of one table, or an empty list when the table holds no secrets. */

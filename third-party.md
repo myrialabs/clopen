@@ -2,9 +2,12 @@
 
 Every entry below is numbered, and one task is one implementation session. Each
 task carries its own checklist and notes line: on finishing one, tick the box and
-replace the `—` with one to three lines recording what was actually built, which
-decisions were taken, and where the implementation deviated from this spec — the
-next session reads those notes, not the diff.
+replace the `—` with a nested bullet list recording what was actually built,
+which decisions were taken, and where the implementation deviated from this spec
+— the next session reads those notes, not the diff. ONE BULLET PER TOPIC, opened
+by a bolded label, grouped by subject rather than by the order things happened:
+later passes and reversals belong inside the topic bullet they corrected, so a
+reader looking for how auth works finds one place and not a chronology.
 
 **Goal.** Two outcomes at once: a *product story* (a visible catalogue of
 integrations that attracts new users) and *workflow depth* (a handful of
@@ -181,40 +184,49 @@ something real rather than a fixture: one projecting into request headers and on
 into a stdio server's environment.
 
 - [x] Done
-- Notes: Sealing lives in the QUERY MODULES (`backend/database/crypto` +
-  `sealFor`/`openRow` calls), not in a wrapper around the connection — every
-  statement touching a secret column already lives in a query module, so SQL
-  parsing bought nothing and could fail silently toward plaintext.
-  `auditSecretColumns()` replaces the safety net a wrapper would have given and
-  runs at dev startup. `mcp_servers.env`/`headers` open to `'{}'` rather than
-  `null`, because they are NOT NULL JSON maps and a lost key must not become a
-  TypeError inside every engine config builder. Migrations: 072 re-encrypts,
-  073 creates the tables. Presets are Context7 (headers) and Firecrawl (stdio
-  env) — both pure MCP, so neither collides with Task 2/3's providers; VERIFY
-  Context7's remote URL and `CONTEXT7_API_KEY` header name against their docs at
-  runtime QA. Only the `agent-tools` projector is implemented; the capability
-  enum is complete and later surfaces call `registerProjector()`. Adoption
-  snapshots the row's env/headers into `integration_projections.restore_json`
-  and only rewrites credential-bearing fields, never the user's command/args/URL.
-  Brand marks are the vendors' own SVGs, keyed by provider id in
-  `PROVIDER_ICONS`; a provider without one still falls back to a category glyph.
-  The hub toolbar is two fixed rows (controls, then pills) because one flex line
-  reflowed differently at every panel width, and everything addable lives behind
-  one `Add` button rather than an "Available" list under the connected one.
-  `ConnectAccountModal` stays mounted and opens by flipping `isOpen` — mounting
-  it already-open skips the modal's intro transition — so its credential inputs
-  use `value` + `onchange` rather than `bind:`, which would point at `undefined`
-  before the seeding effect runs (`props_invalid_value`). The detail view is
-  tabbed (Overview / Configuration / Tools / Advanced) with a header status strip
-  that owns the enable switch, and tool exposure + the inspector are inline
-  panels rather than a modal stacked on a modal. The webhook gateway ships with
-  no subscriber. "Connectors" is retired everywhere it named the section —
-  Settings → Profiles still used it, and the README, `backend/mcp/README.md` and
-  `backend/engine/docs/artifacts.md` are updated; `backend/mcp/README.md` now
-  states where `backend/integrations/` sits relative to it, since MCP is a
-  protocol and an integration is a credential, and the two being separate
-  modules is otherwise easy to read as duplication. Runtime QA of the backend
-  paths is still pending.
+- Notes:
+  - **Encryption at rest.** Sealing lives in the QUERY MODULES
+    (`backend/database/crypto` + `sealFor`/`openRow` calls), not in a wrapper
+    around the connection — every statement touching a secret column already
+    lives in a query module, so SQL parsing bought nothing and could fail
+    silently toward plaintext. `auditSecretColumns()` replaces the safety net a
+    wrapper would have given and runs at dev startup.
+  - **Open defaults.** `mcp_servers.env`/`headers` open to `'{}'` rather than
+    `null`, because they are NOT NULL JSON maps and a lost key must not become a
+    TypeError inside every engine config builder.
+  - **Migrations.** 072 re-encrypts every existing secret, 073 creates the
+    tables.
+  - **Presets.** Context7 (headers) and Firecrawl (stdio env) — both pure MCP, so
+    neither collides with Task 2/3's providers. VERIFY Context7's remote URL and
+    `CONTEXT7_API_KEY` header name against their docs at runtime QA.
+  - **Projections.** Only the `agent-tools` projector is implemented; the
+    capability enum is complete and later surfaces call `registerProjector()`.
+    Adoption snapshots the row's env/headers into
+    `integration_projections.restore_json` and only rewrites credential-bearing
+    fields, never the user's command/args/URL.
+  - **Brand marks.** The vendors' own SVGs, keyed by provider id in
+    `PROVIDER_ICONS`; a provider without one still falls back to a category
+    glyph.
+  - **Hub layout.** The toolbar is two fixed rows (controls, then pills) because
+    one flex line reflowed differently at every panel width, and everything
+    addable lives behind one `Add` button rather than an "Available" list under
+    the connected one.
+  - **Connect modal.** `ConnectAccountModal` stays mounted and opens by flipping
+    `isOpen` — mounting it already-open skips the modal's intro transition — so
+    its credential inputs use `value` + `onchange` rather than `bind:`, which
+    would point at `undefined` before the seeding effect runs
+    (`props_invalid_value`).
+  - **Detail view.** Tabbed (Overview / Configuration / Tools / Advanced) with a
+    header status strip that owns the enable switch; tool exposure and the
+    inspector are inline panels rather than a modal stacked on a modal.
+  - **Webhook gateway.** Ships with no subscriber.
+  - **Naming.** "Connectors" is retired everywhere it named the section —
+    Settings → Profiles still used it, and the README, `backend/mcp/README.md`
+    and `backend/engine/docs/artifacts.md` are updated. `backend/mcp/README.md`
+    now states where `backend/integrations/` sits relative to it, since MCP is a
+    protocol and an integration is a credential, and the two being separate
+    modules is otherwise easy to read as duplication.
+  - **Status.** Runtime QA of the backend paths is still pending.
 
 ---
 
@@ -238,135 +250,140 @@ context. Reuse `backend/git/git-service.ts` for local state and never duplicate
 remote data into local git commands. Six more providers plug in later.
 
 - [x] Done
-- Notes: The surface is `More Tools → Issues`, NOT a sixth dock panel — adding
-  one touches `PanelId`, the split tree, every layout preset and both
-  navigators, and a second entry point for the same work would repeat the Notes
-  mistake. The Git panel's More menu gained `Open pull request…`, which opens
-  THIS surface with its composer up; many doors, one room. Issues registers an
-  ADAPTER (`backend/issues/registry.ts`), not a projector: a projection derives
-  a row on a surface that owns a table, and work items are deliberately never
-  copied locally, so there was no row to derive — the comment in
-  `projections/types.ts` promising an `issues` projector is corrected. That left
-  the hub reporting "Nothing to probe yet" forever for a provider with no MCP
-  row, so `health.ts` gained `registerAccountProbe(provider, probe)`, which the
-  surface registers and which returns null when it has nothing to say (a GitHub
-  account with `issues` off still probes through MCP). AUTH IS A FINE-GRAINED
-  PAT, not the OAuth device flow sketched above — a device flow needs an
-  embedded client id that makes every self-hosted install depend on one app we
-  own, its narrowest scope is `repo` (write to EVERY repository the user can
-  reach), and `Task 9`'s targets only offer tokens, so the token path had to
-  exist anyway. Device flow remains addable later without changing what is
-  stored: it is another way to fill the same `token` field. GitHub declares
-  `agent-tools` too (official remote MCP, same bearer) but OFF by default.
-  Migration 074 adds `issue_bindings` (which repo, per project per account, plus
-  the transition/branch-template config — off by default) and `issue_work_links`
-  (item → worktree/session/branch, `ON DELETE SET NULL` so applying and deleting
-  a worktree does not erase which issue a branch belongs to). Nothing else about
-  a work item is persisted. Binding is DETECTED from the git remotes and
-  recorded as detected, always overridable. `diff-budget.ts` was generalised
-  from `--cached` to a `DiffScope` (`rangeScope(base, head)` uses three dots, or
-  the description would claim work someone else did) rather than copied. Start
-  work is kind-aware: an ISSUE gets a new branch from the template, a PULL
-  REQUEST gets its head branch fetched and checked out — reviewing code on an
-  empty branch is the wrong action — and every branch step fails soft, reporting
-  the branch it actually landed on. The prompt differs per mode for the same
-  reason. Actions logs pull only FAILED jobs via the per-job endpoint (the
-  run-level one is a zip of everything) and keep the TAIL, since a CI log's head
-  is dependency installation; the redirect to signed storage is followed
-  manually so the bearer token is never replayed at a third-party host. Both
-  loops hand TEXT back to the client to send, because the chat pipeline is
-  browser-owned and a second injection path would race it. `switchToSession()`
-  was added to the worktree store and `switchWorktreeContext` refactored onto
-  the same barrier, rather than duplicating the swap. Routes are project-access
-  gated, not admin-gated like `integrations:*` — they act inside one project,
-  the way `git:push` does. Post-QA pass: the More Tools menu is capped at the
-  viewport and scrolls (nine entries ran off the top of small screens); the
-  modal is one header row — title, account and repository together, with the
-  repository editor as a popover — because two stacked strips of chrome cost a
-  quarter of the height before an issue was shown; every control on a row is a
-  fixed h-8/h-9 rather than sized by its own padding, since a button sized by
-  text and a `<select>` sized by the browser never line up; no action is
-  hover-revealed, because a touch screen has no hover and the control simply
-  does not exist there. The empty state deep-links to the Connect dialog for the
-  provider it needs via `openIntegrationConnect()`, not to the integrations
-  list. GitHub's 404 is now explained rather than repeated: it answers the same
-  way for a missing repository and an unpermitted one, and the real cause is
-  almost always that a FINE-GRAINED token is scoped to one resource owner — it
-  cannot reach another person's repository even as a collaborator, and needs an
-  owner's approval for an organisation's. `tokenKindOf()` reads the prefix and
-  the message names the fix. Second QA pass REVERSED the token guidance: the
-  recommendation is now a CLASSIC token with `repo`, because least privilege is
-  the wrong trade when it silently removes access the user already has — a
-  fine-grained token cannot reach a repository you merely collaborate on, and
-  that is the common case here. Fine-grained still works and is diagnosed, not
-  rejected. `issues:start-work` timed out at the default 30s mid-clone while the
-  server carried on, leaving a worktree nobody was working in; the call now
-  carries a 10-minute budget. Every route takes an optional `projectId`
-  (`ws/issues/context.ts`) so the surface is genuinely global — it has its own
-  project picker and no longer follows the workspace, and only "start work"
-  relocates you. Layout: Behaviour is a stacked modal instead of a band that
-  pushed the list down, tabs moved into the list column (a full-width strip
-  spent a whole row labelling a third-width column), the sidebar is 19rem, and
-  the provider mark moved to the footer beside the rate limit — it is
-  identification, not navigation. Features added to reach parity: edit/delete
-  comment (`canModify` computed server-side from authorship plus repo write
-  access, because GitHub reports no per-comment permission), merge with method
-  choice restricted to what the repo allows, PR sub-tabs
-  Conversation/Commits/Checks/Files changed, assignees, create issue, copy
-  link/markdown. The comment box is a markdown composer with a toolbar and
-  Write/Preview — NOT the Notes editor, which is contenteditable HTML with its
-  own image store, and converting HTML→markdown on the way out is where fidelity
-  goes. IMAGE UPLOAD IS NOT POSSIBLE: no REST endpoint attaches a file to a
-  comment (the one behind drag-and-drop on github.com is private), and storing
-  bytes in Clopen would produce a link broken for everyone else on the thread —
-  so the composer offers image-by-URL and says so when a file is dropped.
-  `frontend/utils/clipboard.ts` was added because `navigator.clipboard` does not
-  exist on a non-secure origin, which is how Clopen is usually reached. Third QA
-  pass fixed two real bugs and closed the parity gap. A PR's discussion lives on
-  THREE endpoints and only two were read: `/pulls/{n}/reviews` carries the
-  summary a reviewer submits, which is where review bots put their findings, so
-  a bot's comment was simply never shown and looked deleted. Review summaries
-  now appear, marked read-only (they are edited through the reviews endpoint
-  with different rules). The list also raced itself: typing a filter and
-  clearing it fired two requests and the slower first one could land last,
-  leaving a partial list — every response now checks a generation counter before
-  writing. Added: state filter incl. Closed, author/label/date-range filters
-  behind one button, infinite scroll with provider-driven `hasMore`, edit title
-  and edit body (the item body renders through `CommentCard`, so its menu comes
-  from one component), copy-as-markdown and open-in-browser on every comment,
-  author names as profile links, a `StatePicker` dropdown replacing the native
-  `<select>` (which cannot show the current state or a coloured glyph), a
-  project-picker filter input, a shared `RefreshButton` that spins, disables and
-  holds the spinner a beat so a fast response still reads as an action, an
-  in-app log viewer (`CheckLogsModal`) showing exactly the bundle the chat
-  prompt is built from, and a Files-changed view rebuilt as tree + code with an
-  IntersectionObserver scroll-spy. Multi-account is now REACHABLE: the account
-  layer always supported `(provider, label)`, but Add hid connected providers,
-  which made the connect dialog's "only if you connect more than one" a promise
-  the UI refused to keep — Add now lists every provider with an "Add another"
-  action and a connected count. The inner filter pill "Integrations" is renamed
-  "Accounts" so it no longer repeats its own section name. Fourth QA pass, three
-  more bugs. `state=all` rendered a single row: `/issues` returns pull requests
-  too and they are filtered out here, so on a busy repo the fifty most recently
-  updated items were nearly all closed PRs and almost nothing survived — both
-  list paths now go through `fillPage()`, which keeps pulling provider pages
-  until the FILTERED page is full and reports `nextPage` so load-more resumes
-  where the fill stopped rather than at `page + 1`. Relative time was off by one
-  unit (an hour-old item read "1 minute ago") because the loop divided and then
-  applied the previous unit's name; it is now `frontend/utils/relative-time.ts`
-  with explicit thresholds and tests. The filter badge counted Open/Closed/All,
-  which is a view rather than a narrowing, so an untouched list claimed one
-  filter. `MenuSurface` replaced six hand-rolled popovers: every menu now
-  animates, measures itself against the viewport to flip left/right and
-  up/down, and shares one z-index — the comment menu used to render beneath the
-  composer. Also: account rename (the Name field was read-only when
-  reconfiguring, so a typo was permanent), copy-as-markdown now copies the whole
-  comment as an attributed blockquote instead of its first line, the status
-  badge carries an icon and a category colour, "Only mine" became "Assigned to
-  me", the item timeline (`/issues/{n}/timeline`, unknown event kinds dropped)
-  renders on a vertical rail with the comments, and Files changed gained a
-  unified/split toggle, copy-path, and a whole-file viewer through the shared
-  Monaco editor.
+- Notes:
+  - **Where it lives.** The surface is `More Tools → Issues`, NOT a sixth dock
+    panel — adding one touches `PanelId`, the split tree, every layout preset and
+    both navigators, and a second entry point for the same work would repeat the
+    Notes mistake. The Git panel's More menu gained `Open pull request…`, which
+    opens THIS surface with its composer up; many doors, one room.
+  - **Adapter, not projector.** Issues registers an ADAPTER
+    (`backend/issues/registry.ts`): a projection derives a row on a surface that
+    owns a table, and work items are deliberately never copied locally, so there
+    was no row to derive — the comment in `projections/types.ts` promising an
+    `issues` projector is corrected. That left the hub reporting "Nothing to
+    probe yet" forever for a provider with no MCP row, so `health.ts` gained
+    `registerAccountProbe(provider, probe)`, which the surface registers and
+    which returns null when it has nothing to say (a GitHub account with `issues`
+    off still probes through MCP).
+  - **Auth.** A TOKEN, not the OAuth device flow sketched above — a device flow
+    needs an embedded client id that makes every self-hosted install depend on
+    one app we own, its narrowest scope is `repo` (write to EVERY repository the
+    user can reach), and `Task 9`'s targets only offer tokens, so the token path
+    had to exist anyway. Device flow remains addable later without changing what
+    is stored: it is another way to fill the same `token` field. The
+    recommendation ENDED UP a CLASSIC token with `repo`, reversing the
+    fine-grained guidance shipped first — least privilege is the wrong trade when
+    it silently removes access the user already has, since a fine-grained token
+    cannot reach a repository you merely collaborate on and that is the common
+    case here. Fine-grained still works and is diagnosed, not rejected:
+    `tokenKindOf()` reads the prefix, and GitHub's 404 (identical for a missing
+    repository and an unpermitted one) is explained rather than repeated — the
+    real cause is almost always a fine-grained token scoped to one resource
+    owner, which also needs an owner's approval for an organisation's
+    repositories. GitHub declares `agent-tools` too (official remote MCP, same
+    bearer) but OFF by default.
+  - **Schema (migration 074).** `issue_bindings` (which repo, per project per
+    account, plus the transition/branch-template config — off by default) and
+    `issue_work_links` (item → worktree/session/branch, `ON DELETE SET NULL` so
+    applying and deleting a worktree does not erase which issue a branch belongs
+    to). Nothing else about a work item is persisted. Binding is DETECTED from
+    the git remotes and recorded as detected, always overridable.
+  - **Start work.** Kind-aware: an ISSUE gets a new branch from the template, a
+    PULL REQUEST gets its head branch fetched and checked out — reviewing code on
+    an empty branch is the wrong action — and every branch step fails soft,
+    reporting the branch it actually landed on. The prompt differs per mode for
+    the same reason. `issues:start-work` timed out at the default 30s mid-clone
+    while the server carried on, leaving a worktree nobody was working in; the
+    call now carries a 10-minute budget.
+  - **Actions logs.** Pull only FAILED jobs via the per-job endpoint (the
+    run-level one is a zip of everything) and keep the TAIL, since a CI log's
+    head is dependency installation; the redirect to signed storage is followed
+    manually so the bearer token is never replayed at a third-party host.
+    `CheckLogsModal` shows in-app exactly the bundle the chat prompt is built
+    from.
+  - **Chat handoff.** Both loops hand TEXT back to the client to send, because
+    the chat pipeline is browser-owned and a second injection path would race it.
+  - **Reuse over copy.** `diff-budget.ts` was generalised from `--cached` to a
+    `DiffScope` (`rangeScope(base, head)` uses three dots, or the description
+    would claim work someone else did) rather than copied. `switchToSession()`
+    was added to the worktree store and `switchWorktreeContext` refactored onto
+    the same barrier, rather than duplicating the swap. `MenuSurface` later
+    replaced six hand-rolled popovers: every menu now animates, measures itself
+    against the viewport to flip left/right and up/down, and shares one z-index —
+    the comment menu used to render beneath the composer.
+  - **Access.** Routes are project-access gated, not admin-gated like
+    `integrations:*` — they act inside one project, the way `git:push` does.
+    Every route takes an optional `projectId` (`ws/issues/context.ts`) so the
+    surface is genuinely global: it has its own project picker, no longer follows
+    the workspace, and only "start work" relocates you.
+  - **Layout.** The More Tools menu is capped at the viewport and scrolls (nine
+    entries ran off the top of small screens). The modal is one header row —
+    title, account and repository together, with the repository editor as a
+    popover — because two stacked strips of chrome cost a quarter of the height
+    before an issue was shown. Every control on a row is a fixed h-8/h-9 rather
+    than sized by its own padding, since a button sized by text and a `<select>`
+    sized by the browser never line up. No action is hover-revealed, because a
+    touch screen has no hover and the control simply does not exist there.
+    Behaviour is a stacked modal instead of a band that pushed the list down,
+    tabs moved into the list column (a full-width strip spent a whole row
+    labelling a third-width column), the sidebar is 19rem, and the provider mark
+    moved to the footer beside the rate limit — it is identification, not
+    navigation. The empty state deep-links to the Connect dialog for the provider
+    it needs via `openIntegrationConnect()`, not to the integrations list.
+  - **Parity features.** Edit/delete comment (`canModify` computed server-side
+    from authorship plus repo write access, because GitHub reports no per-comment
+    permission); merge with the method choice restricted to what the repo allows;
+    PR sub-tabs Conversation/Commits/Checks/Files changed; assignees; create
+    issue; edit title and edit body (the item body renders through `CommentCard`,
+    so its menu comes from one component); copy link, copy-as-markdown and
+    open-in-browser on every comment; author/label/date-range filters behind one
+    button and a state filter including Closed; infinite scroll with
+    provider-driven `hasMore`; a `StatePicker` dropdown replacing the native
+    `<select>`, which cannot show the current state or a coloured glyph; a
+    project-picker filter input; a shared `RefreshButton` that spins, disables
+    and holds the spinner a beat so a fast response still reads as an action;
+    author names as profile links; a status badge carrying an icon and a category
+    colour; "Only mine" renamed "Assigned to me"; the item timeline
+    (`/issues/{n}/timeline`, unknown event kinds dropped) on a vertical rail with
+    the comments; and a Files-changed view rebuilt as tree + code with an
+    IntersectionObserver scroll-spy, a unified/split toggle, copy-path and a
+    whole-file viewer through the shared Monaco editor.
+  - **Composer.** A markdown composer with a toolbar and Write/Preview — NOT the
+    Notes editor, which is contenteditable HTML with its own image store, and
+    converting HTML→markdown on the way out is where fidelity goes. IMAGE UPLOAD
+    IS NOT POSSIBLE: no REST endpoint attaches a file to a comment (the one
+    behind drag-and-drop on github.com is private), and storing bytes in Clopen
+    would produce a link broken for everyone else on the thread — so the composer
+    offers image-by-URL and says so when a file is dropped.
+    `frontend/utils/clipboard.ts` was added because `navigator.clipboard` does
+    not exist on a non-secure origin, which is how Clopen is usually reached.
+  - **Multi-account.** Now REACHABLE: the account layer always supported
+    `(provider, label)`, but Add hid connected providers, which made the connect
+    dialog's "only if you connect more than one" a promise the UI refused to keep
+    — Add now lists every provider with an "Add another" action and a connected
+    count. The inner filter pill "Integrations" is renamed "Accounts" so it no
+    longer repeats its own section name.
+  - **Bugs found in QA.** A PR's discussion lives on THREE endpoints and only two
+    were read: `/pulls/{n}/reviews` carries the summary a reviewer submits, which
+    is where review bots put their findings, so a bot's comment was simply never
+    shown and looked deleted — review summaries now appear, marked read-only
+    (they are edited through the reviews endpoint with different rules). The list
+    raced itself: typing a filter and clearing it fired two requests and the
+    slower first one could land last, leaving a partial list — every response now
+    checks a generation counter before writing. `state=all` rendered a single
+    row: `/issues` returns pull requests too and they are filtered out here, so
+    on a busy repo the fifty most recently updated items were nearly all closed
+    PRs and almost nothing survived — both list paths now go through
+    `fillPage()`, which keeps pulling provider pages until the FILTERED page is
+    full and reports `nextPage` so load-more resumes where the fill stopped
+    rather than at `page + 1`. Relative time was off by one unit (an hour-old
+    item read "1 minute ago") because the loop divided and then applied the
+    previous unit's name; it is now `frontend/utils/relative-time.ts` with
+    explicit thresholds and tests. The filter badge counted Open/Closed/All,
+    which is a view rather than a narrowing, so an untouched list claimed one
+    filter. The account Name field was read-only when reconfiguring, so a typo
+    was permanent — rename was added. Copy-as-markdown copied only a comment's
+    first line, and now copies the whole comment as an attributed blockquote.
 
 **Task 3 — Deployments surface + Vercel.** Close the loop after preview. Build
 the panel every deploy target plugs into — deployments for the current project
@@ -377,8 +394,243 @@ action that triggers a build or changes what is live is outward-facing and must
 be confirmed explicitly. Vercel is the first provider (API token). Six more
 targets plug in later; none of them may add a panel.
 
-- [ ] Done
-- Notes: —
+- [x] Done
+- Notes:
+  - **Where it lives.** The surface is `More Tools → Deployments`, NOT a dock
+    panel — same reasoning as Task 2, and `capabilities.ts` was corrected from
+    the "Deployments panel" it promised.
+  - **Adapter, not projector.** Like Issues it registers an ADAPTER
+    (`backend/deployments/registry.ts`) plus a `registerAccountProbe`: nothing
+    about a deployment is copied locally, so migration 075 creates
+    `deploy_bindings` and there is no link table either — unlike an issue, a
+    build leaves no worktree behind that outlives the remote record. The binding
+    is a sibling of `work_bindings` rather than a generalisation: it needs
+    `display_name` (a locator is an opaque `prj_8Qc…`, not a self-describing
+    `owner/repo`) and `team_id`.
+  - **The team lives on the BINDING, not the account.** One token reaches every
+    team, so "which team" is a property of the project you picked; a credential
+    field would force connecting the same token twice. Vercel therefore declares
+    ONE field.
+  - **Detection.** Two passes — `.vercel/project.json`, then a git-remote match
+    against each target's connected repo — both recorded as detected and both
+    overridable (a monorepo deploying three apps WILL be detected wrong).
+  - **Vercel facts absorbed in the adapter,** so no later provider inherits them.
+    Versions are per-endpoint (`/v10/projects` to list but `/v9/projects/{id}` to
+    read, rollback on `/v1` and promote on `/v10` — two of these were wrong on
+    first guess and were checked against the published OpenAPI document).
+    `target` is `production` or NULL with no `preview` value, so only production
+    filters server-side and everything else fills the page through repeated
+    requests — the same bug `state=all` shipped with on the Issues list, fixed
+    before shipping here and covered by `list.test.ts`. And LIVE IS NOT A STATE:
+    a superseded production build is still `READY` and still `production`, so
+    `targets.production.id` off the project is the only honest answer for
+    `isCurrent`.
+  - **Logs.** They genuinely stream (`follow=1` NDJSON), managed like container
+    logs — coalesced flush, bounded ring, per-user cap, stopped when the socket
+    closes and at shutdown. `deployment-state` events were being dropped with the
+    other non-output events, but they are the only thing that speaks during the
+    stretches where a build prints nothing, so they are now forwarded as a
+    `phase` — pushed immediately rather than on the flush interval, and only on a
+    change — and rendered where the "live" dot used to be. A bare dot cannot be
+    told apart from a stall. Rendering goes through the app's own
+    `processAnsiCodes`, the path chat tool output already takes, rather than a
+    PtyKit terminal: PtyKit is an interactive emulator with a keyboard, cursor
+    and resize protocol, and this is read-only text, so it would cost far more
+    than the colour is worth and look unlike every other static output in Clopen.
+    The log opens itself for every state — hiding the substance of the pane
+    behind a "Show the build log" click to save one request was the wrong trade —
+    lost its bordered container (a short log looked like an empty card) and trims
+    trailing whitespace, since the provider ends its stream with blank lines and
+    every streamed chunk appends its own newline.
+  - **Outward-facing actions.** Rollback and promote report `pending`, never
+    `done`: Vercel accepts the request and moves the aliases afterwards, and
+    saying "done" would tell someone their incident was over while the old build
+    still served. That `pending` is now finishable — `projectStatus` reads
+    `lastAliasRequest.jobStatus`, a bounded poll follows the request to succeeded
+    or failed, and a banner says traffic is mid-move; reporting `pending` and
+    then never mentioning it again was honest about the moment and useless about
+    the outcome. Delete is `DELETE /v13/deployments/{id}`, never offered for what
+    is serving production since the provider refuses it. Every action sits behind
+    one confirm dialog that names the consequence and the hostname rather than
+    asking "are you sure", with the destructive styling reserved for production,
+    and the surface exposes NO MCP tool, so no agent can trigger a build.
+  - **Pause was added and then REMOVED,** and the reason matters more than the
+    removal. It shipped as Pause/Resume (`POST /v1/projects/{id}/pause` and
+    `/unpause`), target-level rather than per-build. Vercel's own endpoint
+    description says pausing "blocks the active Production Deployment" — it takes
+    the SITE DOWN, it does not merely stop future builds — and the confirm dialog
+    written for it said the opposite: "anything already live keeps serving". A
+    confirm dialog that misstates the consequence is worse than none, because it
+    is the thing the user relies on. That the copy was wrong is itself evidence
+    the action was not well enough understood to ship from an editor, so it is
+    gone rather than reworded. `paused` survives as READ-ONLY state with a
+    banner, because when someone pauses in the provider's dashboard nothing else
+    explains a list that stopped growing and a site that stopped answering.
+    General rule: when a capability's consequence is hard to state accurately,
+    that is a reason not to offer it, not a prompt to write better copy.
+  - **Creating things, not just listing them.** Redeploy needs an existing
+    deployment to copy, so a project that had never been built was a dead end —
+    exactly the project someone most wants to get live. `createDeployment` takes
+    its `gitSource` from the project's own link, so a GitLab project is not sent
+    `type: 'github'`, and note the trap: `name` alone is enough for the API to
+    accept the call and CREATES a project when it does not match, so `project` is
+    what pins the build to the bound target. `createProject` is prefilled from
+    the local project's name and git remote and auto-bound on success, because
+    "connect an account" previously left a user with nothing to point at.
+    `connectRepository` closes the same kind of dead end for "this project is not
+    connected to a git repository", which used to send the user to the provider's
+    dashboard — exactly the read-only-window feeling this surface exists to
+    remove — and is offered in the deploy dialog prefilled from the local git
+    remote. NOTE THE RISK: `POST /v9/projects/{id}/link` is NOT in Vercel's
+    published OpenAPI document — `PATCH /v9/projects/{id}` accepts no
+    `gitRepository`, and the only documented way to get a connected project is to
+    create a new one. It is what `vercel git connect` calls, so the official CLI
+    exercises it, but it is the single call in this adapter with no compatibility
+    promise; its failure path falls back to the documented create-a-project route
+    rather than to a dead end. `deployInfo` is composed in the ROUTE from the
+    adapter's answer about the remote project plus the local working tree's
+    remote, with `AdapterDeployInfo = Omit<DeployInfo, 'suggestedRepo'>` keeping
+    the adapter free of any notion that a Clopen project has a working tree.
+  - **The git-connection pre-flight, which took four passes to get right.**
+    Connect failed with "You need to add a Login Connection to your GitHub
+    account first": Vercel requires the ACCOUNT to hold a git login connection
+    before any project can be linked, and that is an OAuth flow on vercel.com
+    which NO API token can stand in for — the one prerequisite this surface can
+    detect but never satisfy. `repositoryAccess()` asks `GET
+    /v1/integrations/git-namespaces` before the button is offered. It first
+    answered a BOOLEAN, so the case it could not read had to pretend and returned
+    "can connect", which put the button back on screen and let the exact failure
+    the check exists to prevent arrive as a toast; it is now three states —
+    `ready` enables the button, `blocked` DISABLES it and offers a link out
+    instead, `unknown` allows the attempt but says so. `teamId` was also being
+    sent to that endpoint, which REJECTS it with a 400 — namespaces belong to the
+    signed-in user, not to a team, and the parameter list never included it — so
+    every readiness check became an error, surfaced as `unknown`, and let the
+    button through: the whole pre-flight was decoration. Locked by a test
+    asserting the URL carries no `teamId`. Finally the inference itself was
+    wrong: an account with GitHub connected and working was told it had no
+    connection, because the check read an EMPTY namespaces list as absence and
+    disabled the button on the strength of it — conflating a Vercel "Login
+    Connection" (how you sign in) with a GitHub App installation (what lets
+    Vercel read repositories), which an account can have one of without the
+    other. The rule now: only a POSITIVE match is confident. Owner present and
+    unrestricted → `ready`; owner present but RESTRICTED pending an owner's
+    approval is named as that, not flattened into a failure; owner absent from a
+    NON-EMPTY list → `blocked`, which is informative because the app is installed
+    somewhere just not there; an empty list → `unknown`, never blocked, because
+    this endpoint's silence can equally mean a token that cannot read
+    integrations. A wrapped namespaces response is tolerated rather than read as
+    "none", since that would be a confident `blocked` built on a parsing mistake.
+    The raw Vercel error is still rewritten to carry the address the user needs,
+    because the pre-check can be skipped or go stale. The action URL is the
+    GitHub App install page, not the login-connections page, since repository
+    access is what is actually missing, and a "Check again" re-reads without
+    closing instead of a button that cannot win. `repositoryAccess` is UNBOUND so
+    the new-project dialog can ask it too — that form was offering "Connect
+    acme/web" ticked by default on accounts that cannot reach acme, the same
+    can't-win button in a second place. GENERAL LESSON for later providers: a
+    pre-flight check may enable confidently and warn freely, but it must not
+    DISABLE on an inference it cannot verify — being wrong there contradicts what
+    the user can see on their own screen.
+  - **An absent signal is not a negative one** — the same shape of mistake twice.
+    `isRollbackCandidate` was read as `raw.isRollbackCandidate === true`, which
+    collapsed "the provider says no" and "the provider did not say" into one
+    answer, so Roll back never appeared on any listing that omits the field. It
+    is now `boolean | null`, and the UI trusts a stated value but falls back to
+    what is knowable (a ready production build that is not live) when there is
+    none.
+  - **Where errors belong.** Provider failures in these dialogs render INSIDE
+    them (`InlineError`, which splits URLs out of the message and renders them as
+    real links — never `{@html}` on a third-party string) rather than as a toast:
+    these messages end in "set it up at <url>", and a toast removes the URL
+    before it can be clicked. The general rule for later surfaces: anything the
+    user must ACT on belongs in the surface that caused it, and only outcomes
+    they merely need to KNOW belong in a toast.
+  - **Timeouts.** Wrong in TWO layers, and the inner one was the real culprit —
+    the Vercel client aborted at 20s before the 30s WebSocket budget was reached,
+    so a link that Vercel completed server-side was reported as a client timeout.
+    Reads keep 20s; mutations get 120s, and the slow WS calls get a 3-minute
+    budget (a long budget, NOT unbounded — an unbounded call cannot tell "still
+    working" from "this socket will never answer").
+  - **Preview integration, then its removal.** Open-in-preview needed a new
+    generic `openUrlInPreview()`, which creates the tab and lets BrowserPreview's
+    existing adopt-a-URL-with-no-session effect launch it — calling
+    `launchBrowser` here would open a second backend tab for one link. That
+    uncovered a REAL RACE worth knowing about: docks hydrate AFTER the reveal and
+    the project switch does not await them, so `await setCurrentProject(...)`
+    returns while the preview dock is still rebuilding and would wipe the tab
+    just created. Fixed with an exported `whenWorkspaceSettled()` — a no-op when
+    no switch is in flight — which every future "relocate then act on a dock"
+    path needs. "Open in preview" was later REMOVED at the user's request; Task
+    3's spec named that loop explicitly, so this is a deliberate deviation.
+    `openUrlInPreview()` went with it rather than shipping dead code, but
+    `whenWorkspaceSettled()` stays because the send-log-to-chat relocation still
+    needs it.
+  - **Chat handoff.** Both loops hand TEXT back to the client to send, for the
+    reason Task 2 found.
+  - **Deliberately out of scope.** Webhooks (Task 7 is the first consumer, and a
+    local Clopen has no public URL to register), env-var management, and
+    `agent-tools` — Vercel's MCP server uses its own OAuth, a different audience
+    from this REST token, so declaring it would mean projecting a row this
+    credential cannot fill.
+  - **Shared components.** `MenuSurface`, `RefreshButton` and `ProviderMark` were
+    PROMOTED from `components/work/` to `components/common/` rather than
+    duplicated; `Button` gained the `danger` variant every destructive confirm in
+    the app had been hand-rolling; and spinners moved INSIDE their buttons via a
+    shared `ActionButton`, since a spinner beside a row of four actions cannot
+    say which one is running.
+  - **Dialogs.** The new ones passed no `title` to `Modal`, which renders an
+    empty header band containing a stray close button, and added their own
+    padding on top of the body padding `Modal` already supplies — the house
+    pattern is `<Modal title=… size=…>` with an unpadded child, as `MergeDialog`
+    does. Deploy and New Project then became ONE dialog with tabs and the header
+    lost its bare "+": two buttons both about deploying made the user choose
+    before knowing what either did, so `DeployDialog`/`NewProjectModal` are now
+    `DeployPanel`/`NewProjectPanel` inside `DeployModal`, and the tab strip hides
+    itself when only one tab applies. The deploy dialog caches its readiness
+    answer per (project, account) and shows a shaped skeleton instead of a bare
+    spinner — three provider requests on every open was most of why it felt slow
+    — and offers the LOCALLY CHECKED-OUT branch alongside the production one,
+    since the branch in front of you is at least as likely to be the one you
+    meant. The modal is 72rem, not 90vw: the surface never needed the whole
+    screen.
+  - **List and detail layout.** The auto-refresh and refresh controls moved off
+    the environment-chip row (a fourth chip ran into them) onto the search row
+    they act upon, the branch filter's glyph is a search icon, and list
+    timestamps use a new `shortRelativeTime` — the long form wrapped on a row
+    that already carries a state badge, a branch and a commit. Detail gained the
+    Domains list (a production build answers on three hostnames and which one you
+    want depends on the task), copy buttons for commit and domains, and the
+    trigger source; the list column went from 22rem to 17rem, and the newest
+    deployment is selected automatically because an empty right-hand pane reads
+    as a panel that failed to load. Domains are their own component with an icon
+    PER KIND: the project domain follows what is live, the branch alias follows
+    the newest build of that branch, and the build URL pins this exact build, so
+    rendering all three with one globe made them look like duplicates of one
+    address. Facts and domains sit side by side rather than stacked, which was
+    leaving half the pane blank while pushing the log down. Detail-pane text
+    moved off 11px (fine for labels, below comfortable for content), and the
+    footer's empty left half names the provider and account owner, as the Issues
+    footer does.
+  - **Bugs found in QA.** The scoped and default project listings OVERLAP —
+    `/v10/projects` with no `teamId` returns the token's DEFAULT scope, which for
+    anyone in a team is that team, so the same project arrived twice and crashed
+    the keyed picker. De-duplicating it is not the whole fix: only the
+    team-scoped copy carries the `teamId` that every later call needs, so a
+    team-scoped entry must always win over an unscoped one, or the picker looks
+    right and everything behind it 404s. The fill loop could repeat a row the
+    same way when a build landed mid-fetch and shifted the timestamp window. And
+    the empty state said "nothing matches this environment filter" with no filter
+    set, on a target that had simply never been deployed — it now distinguishes
+    never deployed / filtered out / nothing yet, and each says something
+    different. Three things declared in the model but never surfaced were also
+    closed: the branch filter, the auto-refresh toggle, and the `custom`
+    environment chip.
+  - **Status.** Nothing here had been run against a real Vercel token when it
+    first shipped — the endpoint set, the alias ordering and the log-stream shape
+    were verified against documentation and mocked tests only. Every pass
+    recorded above came from running it for real, the seventh onwards after a
+    successful end-to-end deploy.
 
 **Task 4 — Account-backed database connections + Supabase.** Teach DB Client to
 show connections that came from a connected account rather than a hand-typed
@@ -394,8 +646,326 @@ TypeScript types written into the project on demand. Detect an existing local
 Supabase CLI project and adopt its config rather than asking the user to retype
 it.
 
-- [ ] Done
-- Notes: —
+- [x] Done
+- Notes:
+  - **The projection contract had to widen, and that is the load-bearing
+    change.** `integration_projections` was keyed `(account, capability,
+    target_kind)`, which encoded an assumption true only of the first capability
+    shipped: an account owns exactly ONE row. One Supabase personal access token
+    reaches every project in every organisation its user belongs to, so "which
+    database" is a choice made as many times as the user has databases. The
+    alternative — one account per Supabase project — is the mistake `Task 3`
+    refused for Vercel teams, since it makes a user with production and staging
+    paste the same token twice and rotate it in two places. So migration 077
+    widens the key with `target_id`, `Projector.project()` returns a LIST, and
+    `reproject()` diffs per TARGET rather than per capability: dropping one link
+    of two must release exactly one row, because releasing by capability would
+    tear the survivor down and re-adopt it, snapshotting our own credential on
+    the way. `mcp-projector` returns a single-element array and behaves exactly
+    as before. The pass also now computes every wanted projection BEFORE
+    releasing anything, so a provider error leaves the previous state intact
+    rather than half-released.
+  - **A link is where everything per-database lives.** New table
+    `integration_db_links` `(account_id, remote_ref, label, driver, mode,
+    secrets, config_json)`, the database sibling of `deploy_bindings`. The
+    Postgres password lives HERE, sealed (`secret-columns` gained the table),
+    because no Supabase API can read it back — `/database/password` is
+    PATCH-only by design — and because a projection must be rebuildable from
+    account + link alone, so a release-then-reproject cannot silently lose it.
+  - **Resolving an endpoint is async; projecting is not.** `reproject()` runs
+    inside account mutations, and working out a pooled host is a network call,
+    so the adapter's `resolveEndpoint()` is called ONCE at link time and its
+    answer is stored on the link. The projector then only copies fields, which
+    is also why a token rotation re-projects instantly instead of making every
+    account save wait on a third-party API.
+  - **Adoption identity includes the USERNAME, and a test caught that it must.**
+    Every Supabase project in one region answers on the same pooler host, the
+    same port and a database called `postgres`; `postgres.<ref>` is the only
+    part that says which project. Matching on host+port+database made a second
+    linked project adopt the first one's row, so an account with two projects
+    projected one connection. `projector.test.ts` covers it, plus
+    release-one-of-two, adopt-and-hand-back-with-the-user's-password, and
+    re-projecting not re-snapshotting our own credential.
+  - **Verified against the published OpenAPI document** at
+    `api.supabase.com/api/v1-json`, not from memory, after `Task 3`'s endpoint
+    guesses. Used: `/v1/projects`, `/v1/projects/{ref}`,
+    `/config/database/pooler`, `/types/typescript`, `/functions` + `/body`,
+    `/advisors/security`. NOT used: `POST /database/query`, which exists and is
+    marked beta — everything inside the database goes over SQL instead.
+  - **The rule that shapes the whole surface: anything inside the database is
+    read over SQL through the connection DB Client already holds; only what
+    lives outside it goes to the Management API.** Policies
+    (`pg_policies`/`pg_policy`), applied migrations
+    (`supabase_migrations.schema_migrations`), buckets (`storage.buckets`) and
+    users (`auth.users`) are all Postgres, so five of the six tabs work for a
+    `supabase start` stack with no token at all. Only edge functions, generated
+    types and the advisor need an account, and each says so rather than
+    rendering empty. `storage.buckets` over SQL is also strictly better than the
+    API's bucket listing: it carries the size limit and allowed MIME types,
+    which the API's does not.
+  - **Auth users and storage objects are read-only, deliberately.** Both write
+    paths need the SERVICE ROLE key — a key that bypasses every policy in the
+    database — and storing one to render a list would be a poor trade.
+    `auth.users` answers the same question with the credential already present,
+    and `banned_until` is read as a TIMESTAMP rather than a flag, since an
+    expired ban is not a ban and rendering it as one accuses the wrong accounts.
+  - **Applying a migration goes over SQL, in one transaction.** Not `POST
+    /database/migrations`: the SQL path is what `supabase db push` does, it also
+    works for a local stack, and one implementation beats two. The whole file is
+    sent as ONE parameterless statement — Bun's SQL uses the simple protocol
+    there, which is what allows several statements — because splitting it would
+    have to understand dollar-quoted function bodies, and getting that wrong
+    truncates a function mid-definition. The already-applied guard sits INSIDE
+    the transaction, or two people applying at once both see it pending and the
+    second one's SQL runs before the primary key rejects it. Known limit, passed
+    through unrewritten: `CREATE INDEX CONCURRENTLY` cannot run in a
+    transaction.
+  - **Supabase's connection modes are not interchangeable, and the default is
+    not a question to ask.** Pooler session mode is correct for this client in
+    every case the other two are not: a direct connection is IPv6-only on
+    projects created since 2024 without the IPv4 add-on (a DNS-shaped failure
+    that says nothing about the cause), and transaction mode does not support
+    prepared statements, which `Bun.sql` uses. The dialog first offered all
+    three as radio buttons with a paragraph each, and that was WRONG — it asked
+    the user to choose between one right answer and two ways to fail, before
+    they had connected anything. The default is now chosen silently, the other
+    two are marked `isAdvanced` and folded behind a "Change" link, and every
+    helper line was cut to one clause. The provider blurb went with them: it
+    repeated the password field's own help almost word for word, which is how a
+    form ends up saying the same thing twice. `sslMode` is `require` rather than
+    `verify-full`: Supabase's certificate comes from its own CA, so verifying
+    without shipping that CA would refuse every connection.
+  - **Creating a database, not only listing them.** An account that reaches no
+    projects — or a user who wants a fresh one — was a dead end, which is the
+    same gap `Task 3` closed for Vercel. `POST /v1/projects` needs `{db_pass,
+    name, organization_slug}` plus a region, so the adapter gained an optional
+    `createOptions`/`createDatabase` pair and the dialog gained a New database
+    form beside the picker — one dialog with a mode switch, not a second modal.
+    The payoff is that the one awkward step disappears: CLOPEN GENERATES THE
+    PASSWORD, so a project it created is one there is nothing to type for. That
+    makes the ORDER load-bearing. The link row is written FIRST, carrying the
+    generated secret, and the endpoint is resolved afterwards — every other
+    ordering has a window where a slow provision, a dropped socket or a restart
+    leaves a real database whose password nothing holds and only a reset can
+    recover. The readiness wait is bounded at three minutes and failing it is
+    NOT an error: the database exists, the link exists, and saving the link is
+    the retry (`update()` re-resolves whenever a link has no endpoint, so there
+    is no second button to find). The WS call carries a four-minute budget for
+    the reason `issues:start-work` needed ten: at the default 30s the socket
+    gives up while the server carries on, and the user is told it failed while a
+    real project quietly finishes provisioning. `region_selection` is used
+    rather than the `region` string the API document marks deprecated, and the
+    region list is hard-coded from that document rather than read from
+    `/available-regions`, which is beta, needs an organisation slug and answers
+    with a nested recommendation structure. `DbRemoteDatabase` also gained
+    `isReady`, decided by the ADAPTER: a paused or still-starting project looks
+    like an ordinary row and refuses every connection, so the picker now
+    disables it and names its state.
+  - **Contextual connect is embedded, not deep-linked.** `LinkDatabaseModal`
+    mounts the hub's own `ConnectAccountModal` — whose header comment already
+    promised this — so a user in DB Client never lands in Settings. It also
+    serves editing a link, and the local-stack path needs no account at all:
+    `supabase/config.toml` is parsed by a small SECTION-AWARE reader rather than
+    a TOML dependency, because `port` appears under `[api]`, `[db]`,
+    `[db.pooler]` and `[studio]` and a flat scan reports the API port as the
+    database's (`local.test.ts` locks that down).
+  - **Read-only means the server enforces it, not just the form.** A managed
+    connection renders with an ownership strip and disabled fields, but
+    `db-client:update` also drops everything except name and colour, and
+    `db-client:delete` refuses outright and points at unlinking — deleting the
+    row would leave the account owning a connection that no longer exists and
+    the next re-projection would recreate it. Every link mutation also RELEASES
+    the live driver adapter afterwards: `connectionManager` holds an open
+    connection per row, so rotating a password rewrote the row while every query
+    kept using the old credential until the pool happened to sweep it.
+  - **Visibility is admin-only,** by decision: a projected row is created with
+    no owner, which in db-client's existing access model means admins see it and
+    members do not, matching who can connect an account. Treating a null owner
+    as "shared" would also have exposed pre-migration-035 rows that have been
+    admin-only all along. Members keep their own hand-typed connections
+    unchanged, and the local-stack adoption path is member-visible because it
+    creates an ordinary user-owned connection.
+  - **Where things live.** One entry in DB Client's view strip, not six: that
+    row already shares its width with the open-table tabs, so the six Supabase
+    tabs live inside `SupabasePanel`. `InlineError` was PROMOTED from
+    `components/deployments/` to `components/common/display/` rather than
+    duplicated, following what `Task 3` did with `MenuSurface` and
+    `ProviderMark`.
+  - **A crash found while reviewing the hub, not the new code.**
+    `IntegrationDetail`'s projection list was keyed `capability + targetKind`,
+    which is no longer unique once one capability owns two rows — Svelte throws
+    on duplicate keys. It now groups by capability and reports counts.
+  - **Deliberately out of scope.** Deploying an edge function (bundling is the
+    CLI's job), listing storage objects and mutating auth users (both need the
+    service-role key), and `supabase db diff` for schema drift (needs the CLI
+    and a shadow database). Supabase branching is left to `Task 5`, whose shape
+    it is. NO `agent-tools`, even though Supabase's MCP server takes exactly
+    this token: that server is scoped with `--project-ref` to ONE project and an
+    account here can hold several, so there is no honest single row to project.
+    Reviewing that decision is what produced `Task 20`: the right answer is not
+    the vendor's MCP but ONE internal server over DB Client, because an agent
+    today cannot query any database at all — local Postgres and SQLite included
+    — and a per-vendor server would leave every one of those out while adding a
+    second path to the databases it does cover.
+  - **Scoped tokens are the thing to know about this provider, and the prefix
+    gives them away.** Supabase is rolling out personal access tokens that carry
+    only the permissions you tick, prefixed `sbp_fc` where a classic full-access
+    token is plain `sbp_`. That is what the account in QA had, and it explains
+    every symptom at once: it could list projects and not read organisations, so
+    `/v1/organizations` answered `[]` and `POST /v1/projects` answered a bare
+    "Forbidden" that named nothing. `tokenKindOf()` now reads that prefix and a
+    403 is rewritten to say which permission the call needed — the same trick
+    `Task 2` used on GitHub's fine-grained token prefix, for the same reason:
+    the provider's own word for it is undiagnosable. The credential help names
+    the permissions instead of describing the screen (Projects account-wide
+    Read, Project Settings Read, Database Read-write, plus Organizations Read
+    and Organization Projects Read-write to create), because a missing scope
+    fails at the moment the feature is reached rather than at connect. Verified
+    end to end against a live scoped token: the 403 now reads "this call needs
+    Organization Settings (Read)".
+  - **Creating the organisation, not just pointing at the dashboard — and then
+    trusting that we did.** An account whose token reaches no organisation
+    cannot create a database anywhere, and answering that with "go to
+    supabase.com" is the read-only-window feeling this surface exists to remove.
+    `POST /v1/organizations` takes a name and nothing else, so the adapter
+    contract gained an optional `createGroup`, kept separate from
+    `createDatabase` because an organisation is a BILLING entity and the dialog
+    says so. The first version then RE-READ the options to verify what it had
+    just made, which looked rigorous and was wrong: reading and creating are
+    SEPARATE permissions, and a token that had successfully created an
+    organisation could not read it back, so the new organisation failed
+    verification, vanished from the list, and creating it again answered "you
+    are already a member of an organisation named…". Having just created
+    something is the strongest evidence available that the token can act in it;
+    the result is now used directly.
+  - **Offer the unverifiable, mark it, do not hide it.** The same three facts
+    forced a third position on the picker itself. `/v1/organizations` can answer
+    `[]` for a token that plainly reaches projects; a project's
+    `organization_slug` names where that project lives rather than somewhere the
+    token may act, so offering those unmarked produced a 403 after the form was
+    filled in; but dropping every unverifiable candidate removed a capability
+    that may well work, which left the whole feature permanently unreachable
+    behind a warning. So a derived organisation is checked, and when the check
+    cannot confirm it the option is still offered carrying `isUnverified` — the
+    form warns that creating may be refused and that the error will name the
+    missing permission. `Task 3`'s rule was that a pre-flight must not disable
+    on an inference it cannot verify; the corollary learned here is that it must
+    not ENABLE silently either. Marking is the third state both halves were
+    missing.
+  - **Anything a user manages needs a place that exists before it is needed.**
+    Creating an organisation lived inside the create-a-database form's EMPTY
+    STATE — reachable only once things had gone wrong, and invisible the moment
+    they had not, so a user who had seen it once could not find it again. The
+    dialog is now two peer tabs, Databases and Organisations, and the second
+    lists what the account can reach, creates one, and states plainly that
+    deleting one is not possible: `/v1/organizations/{slug}` is GET-only, so no
+    permission would help and a missing button would read as an oversight.
+  - **The account strip owns the account.** It gained an Edit that opens the
+    SAME connect dialog Settings uses, in reconfigure mode — a contextual entry
+    point that then sends you to Settings to change a token was only ever half
+    an entry point. A credential change invalidates everything derived from the
+    old one, so the options, the database list and the health probe are all
+    discarded and re-fetched rather than left to look correct.
+  - **"UNKNOWN" was a question nobody had asked.** An account's status is only
+    ever written by a probe, and nothing probes on connect, so an account
+    connected from this dialog reported UNKNOWN indefinitely and read as a fault
+    — including right after the user had fixed their token. The dialog now
+    probes an unknown account through the hub's own `integrations:health` route
+    rather than inventing a second notion of working, and renders that state as
+    a neutral "checking…" while it runs.
+  - **Deleting a database, which is not unlinking.** `DELETE /v1/projects/{ref}`
+    exists, so the row gained the action — behind a confirm that NAMES the
+    database and says what the other button does, because unlink sits beside it,
+    looks similar and leaves the data alone. The link is dropped before the
+    remote call: a failed delete then costs a link that can be recreated rather
+    than leaving a projection pointing at something that no longer exists.
+  - **Copy that names one action.** The empty-organisation notice listed three
+    ways out in one paragraph and ended on "link it here", which named no action
+    available from where the reader was standing. It is now one sentence with
+    one instruction. The Create button beside the name field was also taller
+    than the input next to it, because a `Button`'s own padding sizes it while
+    an input is sized by its text — both are `h-9` now, the same fix the Issues
+    modal's rows needed.
+  - **A form that has to fetch before it can be drawn needs a skeleton.**
+    Clicking New database blanked the dialog and then filled it a second later,
+    because the render guard required the fetched options and there was nothing
+    to show without them. Empty space reads as a glitch, not as work. It now
+    draws a skeleton shaped like the form that is coming — which says what is
+    loading, where a bare spinner would not.
+  - **The organisation picker was empty, and the first fix made it worse.** `GET
+    /v1/organizations` answers `[]` WITH A 200 for a token that plainly reaches
+    projects — confirmed against a live account, alongside a 403 on
+    `/v1/organizations/{slug}` for the very organisation that account's project
+    lives in. So the token can see a project without being able to act on its
+    organisation at all. The first fix derived the organisation from each
+    project's `organization_slug` and offered it, which turned a disabled button
+    into something worse: a confident dropdown entry whose only possible outcome
+    was a 403 AFTER the user had filled in the form and pressed Create. `Task 3`
+    recorded that a pre-flight must not DISABLE on an inference it cannot
+    verify; this is the mirror image, and it must not ENABLE on one either. A
+    derived candidate is now only offered once `GET /v1/organizations/{slug}`
+    has answered for it — the same permission the create call needs — and when
+    nothing survives, the form is not rendered at all. There is no point
+    collecting a name and a region for a request that cannot succeed, so the
+    dialog states the two real causes instead: the token's user belongs to no
+    organisation, or belongs to one without permission to manage it.
+  - **A third-party footer on the modal, not in the tab.** Once a panel shows
+    data living in someone else's service, "which account am I looking through"
+    and "how much budget is left" stop being answerable from anything on screen
+    — the same gap the Issues and Deployments footers close. It sits on the DB
+    Client modal rather than inside the Supabase panel, because the question is
+    just as live while browsing a table, which is most of the time, and because
+    a later provider inherits it without a panel of its own. Identity comes from
+    `managedBy`, which every provider has, and is dropped when the account label
+    merely repeats the provider name — a single account is labelled "Supabase",
+    so the row first read "Supabase · Supabase". The quota comes from headers
+    Supabase does not document but sends on every response: `x-ratelimit-limit:
+    120` (per MINUTE), `-remaining`, and `-reset`. THAT RESET IS A DURATION IN
+    SECONDS, not an epoch — GitHub and Vercel both send an epoch there, and
+    reading this one the same way dated every reset to 1970. Readings are kept
+    PER TOKEN, since the limit is counted per Supabase user and one global
+    figure would bill one account's usage to another. The footer showed nothing
+    at first because resolving a connection's context touches no API and the
+    default tab is pure SQL, so an account with no reading yet now takes exactly
+    one, once per process. Absent still means NOT REPORTED rather than zero:
+    with no figure the row names what it does know, such as a local stack having
+    no API quota at all.
+  - **Bugs found in QA.** The first connect hit `effect_update_depth_exceeded`
+    and drove the account straight into a Supabase rate limit, and the cause is
+    worth stating as a rule because three places had it: EVERY ONE OF THESE
+    FETCHES WRITES ITS OWN CELL — `loading: true` goes in synchronously — SO AN
+    EFFECT THAT DECIDES WHETHER TO FETCH BY READING THAT CELL SUBSCRIBES TO WHAT
+    IT IS ABOUT TO CHANGE AND RE-RUNS ITSELF FOREVER. The database picker
+    checked `remoteFor(id).data`, which is never set before the first response,
+    so it fired a request per frame. The connection-context effect was worse and
+    had not been noticed: a plain Postgres connection resolves to `null`, so its
+    `!== null` guard was never satisfied and it looped for every non-Supabase
+    row in the list. The five Supabase tabs had the same shape conditionally —
+    they checked `!data && !loading`, which is exactly the state a FAILED fetch
+    leaves behind, so a provider outage turned one mounted tab into an unbounded
+    retry. The fix is that "have I asked yet" is now kept OUT of the reactive
+    graph entirely, in a plain `Set` in the store, behind `ensure*` methods an
+    effect calls with an id and nothing else; the un-prefixed methods stay the
+    forced path for the refresh controls and clear the guard. A failed fetch
+    deliberately does NOT clear it, or a provider that is down is hammered by
+    whatever is on screen. Two smaller ones fell out of the same review: the
+    link dialog's seed effect read the account list reactively, so connecting an
+    account from inside it reloaded that list, re-ran the seed and silently
+    un-chose the account `onConnected` had just chosen (the read is now
+    `untrack`ed), and `context` now distinguishes a MISSING key from `null` —
+    unasked versus known-not-Supabase — because collapsing them bounced a
+    restored Supabase tab to Overview on every open.
+  - **Status.** Connecting an account, listing projects, linking, the
+    create-options path and the rate-limit headers have all been exercised
+    against a real Supabase token — the last three by running the adapter
+    directly against the live account rather than by reading documentation,
+    which is how the 403 and the 1970 timestamp were found. Creating a project
+    has NOT been run end to end: the only token available cannot reach an
+    organisation, so the request it would make is unproven. Also still
+    unverified: whether `/config/database/pooler` returns a `connection_string`
+    carrying a real password (it is treated as a template and ignored either
+    way), and whether `auth.users.raw_app_meta_data -> 'providers'` arrives as
+    an array or a string through `Bun.sql`.
 
 **Task 5 — Worktree database branching + Neon.** Pair database branching with the
 worktree manager Clopen already has. Creating a worktree optionally creates a
@@ -588,6 +1158,54 @@ environment variables can be pulled at session start instead of being pasted int
 Clopen. This also strengthens `Task 1` by making Clopen a *consumer* of secrets
 rather than their permanent home, which is the strongest available answer to
 "why is my token in your database".
+
+- [ ] Done
+- Notes: —
+
+**Task 20 — Database tools for agents: one internal MCP server over DB Client.**
+The gap the Supabase work made obvious: an agent can read the repository, drive a
+browser and search the memory graph, but it cannot ask a single question of any
+database Clopen is already connected to. Not a local Postgres, not SQLite, not a
+projected Supabase project. Every vendor ships an MCP server that would solve
+this for its own service alone, and taking that route means one credential and
+one config per vendor, nothing at all for local databases, and — for Supabase
+specifically — a server scoped with `--project-ref` to ONE project when an
+account here can hold several. That is two places to reach the same database,
+which is the mistake the architecture above exists to prevent.
+
+Build it the other way round. DB Client OWNS the connections, so DB Client
+exposes the tools, once, through `backend/mcp/internal/servers/`
+(`defineServer()`) — the same rail Browser Automation and the memory graph use.
+One server, every driver, and every provider that projects a connection gets it
+free: Turso and Neon arrive already covered.
+
+*Shape.* One batched `actions` tool rather than a dozen, which is what the
+Browser Automation pass settled on after shipping twelve: a registry that is the
+single source of truth for schema, docs and dispatch. The actions are the
+questions an agent actually has — list the connections it may use, describe a
+schema, read a table's structure, run a query — over the existing
+`connectionManager` and `query-executor`, so the driver differences are already
+solved.
+
+*Permission is the hard half, and it is the reason this is its own entry.* An
+agent with write access to a production database is a different risk class from
+one editing files, and "the user connected it" is not consent to that. Every
+connection gets an explicit agent-access setting — `none` by default, then
+`read-only`, then `read-write` — stored on the connection and enforced in the
+server rather than in a prompt. A read-only connection must be enforced by
+classifying the statement, not by asking the model nicely; `query-executor`
+already classifies read versus write for the query console, so the same
+classifier decides. Write access names the connection in the consent UI and is
+never inherited by a connection the agent discovers later. Schema-only access is
+the useful middle ground and should be the recommended setting: an agent that can
+read the shape of a table writes better migrations without ever seeing a row of
+customer data.
+
+*Other things it must get right.* Results are bounded and truncated with an
+honest count rather than streamed whole into a context window. Secrets never
+cross the tool boundary — the agent gets connection ids and names, never a host
+or a password. And the tool list is filtered per connection, so an agent working
+in a project with no database access sees no database tools at all.
 
 - [ ] Done
 - Notes: —

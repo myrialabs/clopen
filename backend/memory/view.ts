@@ -37,7 +37,6 @@
 import { graphQueries, graphLayoutQueries, type GraphBinGrid } from '$backend/database/queries/graph-queries';
 import type {
 	GraphNode,
-	GraphNodeKind,
 	GraphRegion,
 	GraphScope,
 	GraphSource,
@@ -69,7 +68,6 @@ export interface GraphViewFilter {
 	projectId?: string | null;
 	/** The multi-select's answer: absent = every project, empty = global only. */
 	projectIds?: string[];
-	kinds?: GraphNodeKind[];
 	/** Narrow to particular subkinds — decisions only, failures only, and so on. */
 	subkinds?: string[];
 	scopes?: GraphScope[];
@@ -340,7 +338,6 @@ function toViewNode(
 ): GraphViewNode {
 	return {
 		id: node.id,
-		kind: node.kind,
 		subkind: node.subkind,
 		scope: node.scope,
 		label: node.label,
@@ -458,13 +455,19 @@ function truncate(label: string): string {
 	return label.length > BIN_LABEL_MAX ? `${label.slice(0, BIN_LABEL_MAX - 1)}…` : label;
 }
 
-/** A node plus the nodes it reaches — what the inspector renders. */
+/**
+ * A node plus the nodes it reaches — what the inspector renders.
+ *
+ * The paths are attached HERE and nowhere else on the read path. They are a
+ * per-node query, and a listing draws thousands of nodes at a time; the
+ * inspector draws one.
+ */
 export function buildNodeDetail(nodeId: string, hops = 1) {
 	const node = graphQueries.getById(nodeId);
 	if (!node) return null;
 
 	return {
-		node,
+		node: { ...node, relatedPaths: graphQueries.pathsOf(nodeId) },
 		neighbours: graphQueries.neighbours(nodeId, hops).map(n => ({ node: n.node, hops: n.hops }))
 	};
 }

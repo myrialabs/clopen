@@ -140,6 +140,96 @@ export class SnapshotService {
 	}
 
 	// ========================================================================
+	// In-flight turn
+	// ========================================================================
+
+	/**
+	 * Changes made since the last capture, for a turn that is still running.
+	 *
+	 * The settled source of truth is `captureSnapshot`, but it only lands when
+	 * the stream ends — and the AI-change indicators have to light up while the
+	 * model is still working. This answers the same question early, from the
+	 * same baseline, without writing anything: no snapshot row, no baseline
+	 * move, no dirty-set clear. Whatever it reports is replaced wholesale by the
+	 * real capture a moment later.
+	 *
+	 * Candidates come from the file watcher's dirty set, so the cost is
+	 * proportional to what actually changed rather than to repository size. The
+	 * watcher only runs while a client is watching the project — which is
+	 * exactly when a panel that renders these indicators is mounted — and any
+	 * event it missed is recovered by the full scan at turn end.
+	 */
+	/**
+	 * The hash a file had when the running turn started.
+	 *
+	 * `known: false` means this session has no baseline at all, which is not the
+	 * same as "the file is new" — the caller must not read an absent baseline as
+	 * an empty file, or every file in the project would look freshly created.
+	 */
+	getBaselineHash(sessionId: string, relativePath: string): { known: boolean; hash: string } {
+		const baseline = this.sessionBaselines.get(sessionId);
+		if (!baseline) return { known: false, hash: '' };
+		return { known: true, hash: baseline[relativePath] || '' };
+	}
+
+	async getPendingChanges(
+		projectPath: string,
+		scopeKey: string,
+		sessionId: string
+	): Promise<SessionScopedChanges> {
+		// No baseline means this session has not captured or initialised yet.
+		// Building one here would hash the mid-turn disk state and declare it
+		// unchanged, blinding the indicators for the whole turn — so decline.
+		const baseline = this.sessionBaselines.get(sessionId);
+		if (!baseline) return {};
+
+		const dirty = fileWatcher.getDirtyFiles(scopeKey);
+		if (dirty.size === 0) return {};
+
+		// A path already in the baseline passed the gitignore-aware scan once, so
+		// it needs no second opinion. Only genuinely new paths do, and only those
+		// make us pay for a scan.
+		let eligible: Set<string> | null = null;
+		const hasNewPaths = Array.from(dirty).some((relativePath) => !(relativePath in baseline));
+		if (hasNewPaths) {
+			try {
+				const files = await getSnapshotFiles(projectPath);
+				eligible = new Set(
+					files.map((filepath) => path.relative(projectPath, filepath).replace(/\\/g, '/'))
+				);
+			} catch (error) {
+				debug.warn('snapshot', 'Pending-change scan failed, reporting tracked files only:', error);
+			}
+		}
+
+		const changes: SessionScopedChanges = {};
+
+		for (const relativePath of dirty) {
+			// An unknown path is only reported once the scan has vouched for it —
+			// so a build artifact or an ignored temp file never becomes a dot.
+			const oldHash = baseline[relativePath] || '';
+			if (!oldHash && !eligible?.has(relativePath)) continue;
+
+			const fullPath = path.join(projectPath, relativePath);
+			try {
+				const stat = await fs.stat(fullPath);
+				if (stat.size > MAX_FILE_SIZE) continue;
+
+				const result = await blobStore.hashFile(relativePath, fullPath);
+				if (result.hash !== oldHash) {
+					changes[relativePath] = { oldHash, newHash: result.hash };
+				}
+			} catch {
+				// Gone from disk: a deletion when we knew the file, nothing otherwise
+				// (a temp file the turn created and removed again).
+				if (oldHash) changes[relativePath] = { oldHash, newHash: '' };
+			}
+		}
+
+		return changes;
+	}
+
+	// ========================================================================
 	// Snapshot Capture
 	// ========================================================================
 

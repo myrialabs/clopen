@@ -135,7 +135,6 @@ export async function consolidateMemories(projectId: string | null, projectPath:
 			if (covered.length < MIN_CLUSTER) continue;
 
 			const node = graphQueries.upsert({
-				kind: 'episodic',
 				subkind: summary.subkind,
 				scope: projectId ? 'project' : 'global',
 				projectId,
@@ -181,7 +180,7 @@ export async function consolidateMemories(projectId: string | null, projectPath:
  */
 function findClusters(projectId: string | null): GraphNode[][] {
 	const nodes = graphQueries
-		.list({ projectId, kinds: ['episodic'], limit: 2_000 })
+		.list({ projectId, limit: 2_000 })
 		.filter(
 			node =>
 				node.source === 'agent' &&

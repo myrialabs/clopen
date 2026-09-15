@@ -30,7 +30,7 @@
  */
 
 import { getDatabase } from '$backend/database';
-import { graphQueries } from '$backend/database/queries/graph-queries';
+import { graphQueries, normalizePath } from '$backend/database/queries/graph-queries';
 import { debug } from '$shared/utils/logger';
 import { embedder, vectorCache } from './embedding';
 import { EMBEDDING_VERSION } from './embedding/paths';
@@ -134,8 +134,8 @@ interface FilterSql {
  * How a query should be read.
  *
  * The two channels are not equally good at the two kinds of question, and which
- * kind a query is can be told from its surface without a model. `getByPath` and
- * `backend/memory/relate.ts` are identifiers: BM25 matches them exactly, while a
+ * kind a query is can be told from its surface without a model. `setPaths` and
+ * `backend/memory/invalidate.ts` are identifiers: BM25 matches them exactly, while a
  * mean-pooled static embedding of a path fragment lands in the crowded middle of
  * the space and mostly adds noise. "kenapa kita pakai SQLite" is the reverse —
  * it shares no token with the English memory that answers it, and only the vector
@@ -180,9 +180,9 @@ function buildFilter(options: RetrievalOptions, alias: string): FilterSql {
 	const params: unknown[] = [];
 
 	// `reach = 'anywhere'` is what a memory learned elsewhere needs to be admitted
-	// here. Structural nodes are excluded by construction — their reach is written
-	// as `here` on insert — so another repository's file paths can never arrive,
-	// which is the leak the blanket project filter was originally added to stop.
+	// here, and it defaults to `here` — so a claim about one repository cannot
+	// arrive in another's results unless a model judged that it travels. That is
+	// the leak the blanket project filter was originally added to stop.
 	const travelling = options.crossProject ? ` OR ${alias}.reach = 'anywhere'` : '';
 
 	if (options.projectIds !== undefined) {
@@ -212,10 +212,6 @@ function buildFilter(options: RetrievalOptions, alias: string): FilterSql {
 		where.push(`${alias}.scope IN (${options.scopes.map(() => '?').join(',')})`);
 		params.push(...options.scopes);
 	}
-	if (options.kinds?.length) {
-		where.push(`${alias}.kind IN (${options.kinds.map(() => '?').join(',')})`);
-		params.push(...options.kinds);
-	}
 	if (options.subkinds?.length) {
 		where.push(`${alias}.subkind IN (${options.subkinds.map(() => '?').join(',')})`);
 		params.push(...options.subkinds);
@@ -239,14 +235,12 @@ function buildFilter(options: RetrievalOptions, alias: string): FilterSql {
  * Graph expansion reaches nodes through EDGES rather than through a query, and
  * edges deliberately cross project boundaries (that is what lets a pattern
  * proven in one repository be reused in another). Without re-checking the filter
- * here, one hop from a shared dependency node would pull another project's files
- * — and, through them, another project's memories — into a block that is about to
- * be injected into this project's prompt. Traversal has to obey the same scope
- * rules the channels do.
+ * here, one hop would pull another project's memories into a block that is about
+ * to be injected into this project's prompt. Traversal has to obey the same
+ * scope rules the channels do.
  */
 function makeFilterPredicate(options: RetrievalOptions): (node: GraphNode) => boolean {
 	const scopes = options.scopes?.length ? new Set(options.scopes) : null;
-	const kinds = options.kinds?.length ? new Set(options.kinds) : null;
 	const subkinds = options.subkinds?.length ? new Set(options.subkinds) : null;
 	const sources = options.sources?.length ? new Set(options.sources) : null;
 
@@ -255,7 +249,7 @@ function makeFilterPredicate(options: RetrievalOptions): (node: GraphNode) => bo
 	return (node: GraphNode): boolean => {
 		// Same admission rule as `buildFilter`, so traversal cannot reach anything
 		// the channels were not allowed to return.
-		const travels = options.crossProject === true && node.reach === 'anywhere' && node.kind === 'episodic';
+		const travels = options.crossProject === true && node.reach === 'anywhere';
 		if (projectIds) {
 			if (node.projectId !== null && !projectIds.has(node.projectId) && !travels) return false;
 		} else if (options.projectId !== undefined) {
@@ -267,7 +261,6 @@ function makeFilterPredicate(options: RetrievalOptions): (node: GraphNode) => bo
 		}
 		if (options.sessionId && node.scope === 'session' && node.sessionId !== options.sessionId) return false;
 		if (scopes && !scopes.has(node.scope)) return false;
-		if (kinds && !kinds.has(node.kind)) return false;
 		if (subkinds && !subkinds.has(node.subkind)) return false;
 		if (sources && !sources.has(node.source)) return false;
 		if (!options.includeArchived && node.archivedAt) return false;
@@ -588,16 +581,24 @@ function currentOf(a: GraphNode, b: GraphNode): GraphNode {
 }
 
 /**
- * Structural nodes for the paths the caller says it is working in.
+ * The memories attached to the files the caller says it is working in.
  *
- * These are looked up rather than searched: a path is an exact key, and running
- * it through BM25 would be both slower and less precise.
+ * Looked up rather than searched: a path is an exact key, and running it through
+ * BM25 would be both slower and less precise.
+ *
+ * These used to be the FILE nodes for those paths, which then had to spend a hop
+ * of graph expansion crossing an `about` edge to reach the memories that are the
+ * actual answer — and each of those file nodes also occupied a slot in the
+ * result that a memory could have had. The seeds are the memories themselves
+ * now, at hop zero.
  */
 function anchorSeeds(options: RetrievalOptions, accept: (node: GraphNode) => boolean): GraphNode[] {
 	const paths = options.anchorPaths;
 	if (!paths?.length || options.projectId === undefined || options.projectId === null) return [];
 	try {
-		return graphQueries.getByPaths(options.projectId, paths.slice(0, 40)).filter(accept);
+		return graphQueries
+			.nodesForPaths(options.projectId, paths.slice(0, 40).map(normalizePath))
+			.filter(accept);
 	} catch (error) {
 		debug.warn('memory', 'Anchor seeding failed', error);
 		return [];

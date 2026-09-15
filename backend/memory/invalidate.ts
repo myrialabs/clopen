@@ -2,13 +2,17 @@
  * Structural invalidation — letting the code tell memory when it has gone out of
  * date.
  *
- * This is the thing the single-store design was for, and until now it was the
- * one part of the argument that was not cashed in. Episodic and structural
- * memory live in one graph joined by `about` edges, which means the write path
- * already knows, for every file that changed on disk this turn, exactly which
- * memories claimed something about it. Nothing else in this space can do that:
- * a conversation-memory product has no view of the codebase, and a code-graph
- * product keeps its conversation facts somewhere else.
+ * Every memory records the files it claims something about (`graph_node_paths`,
+ * migration 076), and the write path already knows which files changed on disk
+ * this turn. Intersecting the two is the whole mechanism: a memory standing on
+ * code that just moved is a memory to trust slightly less, and nothing else in
+ * this space can make that connection — a conversation-memory product has no
+ * view of the codebase, and a code-graph product keeps its conversation facts
+ * somewhere else.
+ *
+ * This used to walk from a path to a file NODE to the `about` edges hanging off
+ * it. The node in between was 81% of the graph and did nothing else worth
+ * keeping, so the lookup is now a single index seek on the path itself.
  *
  * The decay is per subkind, and that distinction is the whole design:
  *
@@ -43,11 +47,11 @@
  * effect, everything the graph knew about whatever was being worked on.
  */
 
-import { graphQueries } from '$backend/database/queries/graph-queries';
+import { graphQueries, normalizePath } from '$backend/database/queries/graph-queries';
 import { debug } from '$shared/utils/logger';
 
 /**
- * Confidence multiplier per subkind when the code a memory is `about` changes.
+ * Confidence multiplier per subkind when the code a memory is about changes.
  * A subkind absent from this map, or mapped to 1, is never decayed.
  */
 const DECAY_BY_SUBKIND: Record<string, number> = {
@@ -63,68 +67,52 @@ const DECAY_BY_SUBKIND: Record<string, number> = {
 const MAX_FILES = 60;
 
 export interface InvalidationInput {
-	projectId: string;
 	/** Repo-relative paths that changed on disk this turn. */
 	changedPaths: string[];
-	/** Paths that no longer exist — the file was deleted or renamed away. */
+	/**
+	 * Paths that no longer exist — the file was deleted or renamed away.
+	 *
+	 * Treated as changed rather than as a category of its own. Deletion is the
+	 * strongest form of "the code moved underneath this", and the per-subkind
+	 * rates already say the right thing about it: an observation describing a file
+	 * that is gone should fall, while the decision that removed it should not.
+	 *
+	 * The attribution itself is left alone. A memory about a file that no longer
+	 * exists is still a memory about that file, and severing the link would lose
+	 * the only record of what a since-deleted module taught.
+	 */
 	deletedPaths?: string[];
 }
 
 export interface InvalidationResult {
 	/** Memories whose confidence was reduced. */
 	decayed: number;
-	/** Structural nodes retired because their file is gone. */
-	archived: number;
 }
 
 /**
  * Age the memories attached to code that just changed.
  *
- * Runs on the write path immediately after structural extraction, so the file
- * nodes it looks up are the ones that pass has just upserted. Deliberately
- * OUTSIDE that pass's transaction: structural ingest holds a write transaction
- * across several thousand statements, and extending it over an unrelated read
- * would widen the window in which nothing else can write for no benefit —
- * decaying a memory is idempotent within the cool-off window, so it does not
- * need to roll back with the ingest.
- *
  * Never throws: a memory left slightly over-confident is a far smaller problem
  * than a failed turn-completion hook.
  */
 export function invalidateForChanges(input: InvalidationInput): InvalidationResult {
-	const result: InvalidationResult = { decayed: 0, archived: 0 };
+	const result: InvalidationResult = { decayed: 0 };
 
 	try {
-		// A deleted file's structural nodes are retired outright. Keeping them would
-		// mean BM25 continues to offer paths that no longer exist, which sends an
-		// agent to read a file that is gone — a specific, repeatable waste of a turn.
-		const deleted = [...new Set(input.deletedPaths ?? [])].slice(0, MAX_FILES);
-		if (deleted.length > 0) {
-			result.archived = graphQueries.archiveMissingFiles(input.projectId, deleted);
-		}
+		const paths = [
+			...new Set([...input.changedPaths, ...(input.deletedPaths ?? [])].map(normalizePath))
+		]
+			.filter(Boolean)
+			.slice(0, MAX_FILES);
+		if (paths.length === 0) return result;
 
-		const changed = input.changedPaths.slice(0, MAX_FILES);
-		if (changed.length === 0) return result;
-
-		const fileNodes = graphQueries.getByPaths(input.projectId, changed);
-		if (fileNodes.length === 0) return result;
-
-		// Only ONE hop, and only `about` edges. Two hops would reach the memories
-		// attached to every file this one imports, and editing a file is not
-		// evidence about its dependencies. Resolved in one query rather than by
-		// walking every edge of every changed file — on a sixty-file turn most of
-		// those edges are `defines` and `imports`, which invalidation has no
-		// interest in and would still have to load.
-		const affected = graphQueries.memoriesAbout(fileNodes.map(node => node.id));
-
+		const affected = graphQueries.memoriesForPaths(paths);
 		if (affected.length === 0) return result;
+
 		result.decayed = graphQueries.markStale(affected, DECAY_BY_SUBKIND);
 
-		if (result.decayed > 0 || result.archived > 0) {
-			debug.log(
-				'memory',
-				`Structural invalidation: ${result.decayed} memory/memories aged, ${result.archived} node(s) retired`
-			);
+		if (result.decayed > 0) {
+			debug.log('memory', `Structural invalidation: ${result.decayed} memory/memories aged`);
 		}
 	} catch (error) {
 		debug.warn('memory', 'Structural invalidation failed (non-fatal)', error);

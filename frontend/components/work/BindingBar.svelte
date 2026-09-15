@@ -11,7 +11,7 @@
 	import Icon from '$frontend/components/common/display/Icon.svelte';
 	import { workStore } from '$frontend/stores/features/work.svelte';
 	import { clickOutside } from '$frontend/utils/click-outside';
-	import MenuSurface from './MenuSurface.svelte';
+	import MenuSurface from '$frontend/components/common/overlay/MenuSurface.svelte';
 
 	const sources = $derived(workStore.sources);
 	const source = $derived(workStore.source);
