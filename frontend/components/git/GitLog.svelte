@@ -11,6 +11,8 @@
 		onLoadMore: () => void;
 		onViewCommit: (hash: string) => void;
 		onCheckoutCommit: (hash: string) => void;
+		/** A branch-moving git action is running — the checkout buttons must not take a second click. */
+		isCheckingOut?: boolean;
 		getRemoteCommitUrl?: (hash: string) => string | null;
 		/** The unfiltered list `commits` was filtered from — lets the graph keep each
 		 *  commit on the lane it occupies in the full history. */
@@ -19,7 +21,7 @@
 		searchQuery?: string;
 	}
 
-	const { commits, isLoading, hasMore, activeHash = null, onLoadMore, onViewCommit, onCheckoutCommit, getRemoteCommitUrl, originalCommits, searchQuery = '' }: Props = $props();
+	const { commits, isLoading, hasMore, activeHash = null, onLoadMore, onViewCommit, onCheckoutCommit, isCheckingOut = false, getRemoteCommitUrl, originalCommits, searchQuery = '' }: Props = $props();
 
 	let selectedHash = $state('');
 	const effectiveActiveHash = $derived(activeHash ?? selectedHash);
@@ -361,6 +363,7 @@
 
 	function handleCheckoutCommit(hash: string, e: MouseEvent) {
 		e.stopPropagation();
+		if (isCheckingOut) return;
 		onCheckoutCommit(hash);
 	}
 
@@ -528,12 +531,17 @@
 					<div class="flex items-center gap-1 pr-2 shrink-0">
 						<button
 							type="button"
-							class="flex items-center justify-center w-6 h-6 rounded-md text-slate-500 transition-all hover:bg-violet-500/10 hover:text-violet-600 dark:text-slate-400 dark:hover:text-violet-400"
+							class="flex items-center justify-center w-6 h-6 rounded-md text-slate-500 transition-all hover:bg-violet-500/10 hover:text-violet-600 disabled:opacity-40 disabled:cursor-not-allowed dark:text-slate-400 dark:hover:text-violet-400"
 							onclick={(e) => handleCheckoutCommit(commit.hash, e)}
-							title={`Checkout commit ${commit.hashShort}`}
+							disabled={isCheckingOut}
+							title={isCheckingOut ? 'A branch action is running…' : `Checkout commit ${commit.hashShort}`}
 							aria-label={`Checkout commit ${commit.hashShort}`}
 						>
-							<Icon name="lucide:arrow-right-to-line" class="w-3.5 h-3.5" />
+							{#if isCheckingOut}
+								<Icon name="lucide:loader-circle" class="w-3.5 h-3.5 animate-spin" />
+							{:else}
+								<Icon name="lucide:arrow-right-to-line" class="w-3.5 h-3.5" />
+							{/if}
 						</button>
 						<button
 							type="button"
