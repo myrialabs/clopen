@@ -115,7 +115,11 @@ export const writeHandler = createRouter()
 			sourcePath: t.String(),
 			targetPath: t.String(),
 			size: t.Number(),
-			modified: t.String()
+			modified: t.String(),
+			// Inner entries skipped as unreadable during a folder copy
+			// (COPY-02). Optional + always present from this server; old
+			// clients simply ignore it.
+			skippedInner: t.Optional(t.Array(t.String()))
 		})
 	}, async ({ data, conn }) => {
 		const sourcePath = await requireFilePathAccess(conn, data.sourcePath);
@@ -141,7 +145,9 @@ export const writeHandler = createRouter()
 			sourcePath: t.String(),
 			targetPath: t.String(),
 			size: t.Number(),
-			modified: t.String()
+			modified: t.String(),
+			// See files:duplicate (COPY-02).
+			skippedInner: t.Optional(t.Array(t.String()))
 		})
 	}, async ({ data, conn }) => {
 		const targetPath = await requireFilePathAccess(conn, data.targetPath);

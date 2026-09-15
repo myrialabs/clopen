@@ -76,6 +76,11 @@ export const sessionState = $state<SessionState>({
 	hasMessageHistory: false
 });
 
+// Single source for invalidating in-flight transcript loads (SES-01).
+// Every load bumps the token; a response that arrives after a newer load
+// started (switch A→B→A) is discarded instead of overwriting the new transcript.
+let messagesLoadToken = 0;
+
 // ========================================
 // DERIVED VALUES
 // ========================================
@@ -306,8 +311,12 @@ export function clearMessages() {
 }
 
 export async function loadMessagesForSession(sessionId: string) {
+	const token = ++messagesLoadToken;
 	try {
 		const response = await ws.http('messages:list', { session_id: sessionId });
+		// Discard stale responses: a newer load started (or the user switched
+		// away) while this request was in flight.
+		if (token !== messagesLoadToken || sessionState.currentSession?.id !== sessionId) return;
 
 		if (response && Array.isArray(response)) {
 			// Messages from server already have correct UnifiedMessage shape
@@ -319,6 +328,7 @@ export async function loadMessagesForSession(sessionId: string) {
 			} else {
 				// HEAD might be null (restored to initial) — check if session has any messages at all
 				const allResponse = await ws.http('messages:list', { session_id: sessionId, include_all: true });
+				if (token !== messagesLoadToken || sessionState.currentSession?.id !== sessionId) return;
 				sessionState.hasMessageHistory = Array.isArray(allResponse) && allResponse.length > 0;
 			}
 		} else {
@@ -327,11 +337,13 @@ export async function loadMessagesForSession(sessionId: string) {
 			sessionState.hasMessageHistory = false;
 		}
 	} catch (error) {
+		if (token !== messagesLoadToken || sessionState.currentSession?.id !== sessionId) return;
 		debug.error('session', 'Error loading messages:', error);
 		sessionState.messages = [];
 		sessionState.messagesSessionId = null;
 		sessionState.hasMessageHistory = false;
 	} finally {
+		if (token !== messagesLoadToken) return;
 		// Re-derive AI-change indicators for whatever is now loaded (incl. after a
 		// checkpoint restore, which truncates messages to the checkpoint).
 		syncAiChangesFromMessages();
@@ -469,8 +481,15 @@ export async function reloadSessionsForProject(): Promise<string | null> {
  * Setup WebSocket listeners for collaborative session management.
  * When another user creates a new chat session, all users in the project
  * automatically switch to the new shared session.
+ *
+ * Single-registration guard (SES-duplikat): initializeSessions() can run more
+ * than once (project refresh), and every call used to add another copy of
+ * each ws.on handler — doubling markSessionUnread / loadMessagesForSession.
  */
+let collaborativeListenersInitialized = false;
 function setupCollaborativeListeners() {
+	if (collaborativeListenersInitialized) return;
+	collaborativeListenersInitialized = true;
 	// Re-join chat session room after WebSocket reconnection.
 	// Without this, the new connection is not in the session room and
 	// misses all chat events (stream, partial, complete, input sync, etc.).

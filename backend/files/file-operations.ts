@@ -1,4 +1,4 @@
-import { dirname, extname, join } from 'path';
+import { dirname, extname, join, relative, sep } from 'path';
 import { mkdir as fsMkdir, readdir as fsReaddir, rename as fsRename, rmdir as fsRmdir, stat as fsStat, unlink as fsUnlink, rm as fsRm } from 'node:fs/promises';
 
 import { debug } from '$shared/utils/logger';
@@ -19,17 +19,39 @@ async function mkdir(path: string, options?: { recursive?: boolean }) {
 }
 
 async function copyFile(src: string, dest: string) {
+	const srcStats = await fsStat(src);
 	const srcFile = Bun.file(src);
 	const content = await srcFile.arrayBuffer();
 	await Bun.write(dest, content);
+	// COPY-02 integrity: a short write (disk full, AV lock, torn Bun.write)
+	// must never leave a truncated dest behind masquerading as success.
+	// Genuine empty files (0 === 0) still pass; anything else is rolled back
+	// and thrown so single-file duplicates fail loudly while folder copies
+	// record the entry in `skipped` and keep the readable rest.
+	const destStats = await fsStat(dest);
+	if (destStats.size !== srcStats.size) {
+		try {
+			await fsUnlink(dest);
+		} catch {
+			// Best-effort cleanup — the throw below is what matters.
+		}
+		throw new Error(
+			`Copy verification failed for ${src}: expected ${srcStats.size} bytes, got ${destStats.size}`
+		);
+	}
 }
 
-async function copyDirectory(src: string, dest: string) {
+async function copyDirectory(src: string, dest: string, base: string = src): Promise<{ skipped: string[] }> {
 	// Create destination directory
 	await mkdir(dest, { recursive: true });
 
 	// List items in source
 	const items = await readdir(src);
+	// COPY-02: unreadable entries used to vanish silently (`catch { continue }`),
+	// so a "successful" paste could be missing files. Collect them (paths
+	// relative to the duplicated root, `/`-separated) and report upward —
+	// the batch still completes; nothing about the copy itself changes.
+	const skipped: string[] = [];
 
 	for (const item of items) {
 		const srcPath = join(src, item);
@@ -39,15 +61,18 @@ async function copyDirectory(src: string, dest: string) {
 		try {
 			const stats = await file.stat();
 			if (stats.isDirectory()) {
-				await copyDirectory(srcPath, destPath);
+				const inner = await copyDirectory(srcPath, destPath, base);
+				skipped.push(...inner.skipped);
 			} else {
 				await copyFile(srcPath, destPath);
 			}
 		} catch {
-			// Skip items that can't be read
+			skipped.push(relative(base, srcPath).split(sep).join('/'));
 			continue;
 		}
 	}
+
+	return { skipped };
 }
 
 async function rename(oldPath: string, newPath: string) {
@@ -310,10 +335,15 @@ export async function duplicateOperation(sourcePath: string, targetPath: string)
 			await new Promise(resolve => setTimeout(resolve, 100));
 		}
 
+		// Inner entries unreadable during a folder copy are collected (not
+		// thrown): the duplicate is partial, and the caller reports them.
+		const skippedInner: string[] = [];
+
 		if (sourceStats.isFile()) {
 			await copyFile(normalizedSourcePath, normalizedTargetPath);
 		} else if (sourceStats.isDirectory()) {
-			await copyDirectory(normalizedSourcePath, normalizedTargetPath);
+			const { skipped } = await copyDirectory(normalizedSourcePath, normalizedTargetPath);
+			skippedInner.push(...skipped);
 		} else {
 			throw new Error('Unsupported file type');
 		}
@@ -325,7 +355,8 @@ export async function duplicateOperation(sourcePath: string, targetPath: string)
 			sourcePath: normalizedSourcePath,
 			targetPath: normalizedTargetPath,
 			size: sourceStats.isDirectory() ? 0 : targetStats.size,
-			modified: targetStats.mtime.toISOString()
+			modified: targetStats.mtime.toISOString(),
+			skippedInner
 		};
 	} catch (error) {
 		debug.error('file', 'Duplicate error:', error);

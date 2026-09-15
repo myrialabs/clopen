@@ -197,7 +197,7 @@
 	 * scroll to it. Dropping it there is what made a chat file click land on the
 	 * file with no diff shown.
 	 */
-	let pendingAiRevealKey: string | null = null;
+	let pendingAiRevealKey: { key: string; path: string } | null = null;
 	let hasAiChanges = $state(false);
 	let aiChangeCount = $state(0);
 	/** Edit indices whose "before" text is known — only those hunks can be discarded. */
@@ -247,7 +247,7 @@
 	// Markdown view mode
 	let mdViewMode = $state<'visual' | 'code'>('code');
 	let mdScroll = $state<{ path: string; percent: number }>({ path: '', percent: 0 });
-	let pendingMdScrollPercent: number | null = null;
+	let pendingMdScrollPercent: { percent: number; path: string } | null = null;
 
 	function isMarkdownFile(name: string): boolean {
 		const ext = name.split('.').pop()?.toLowerCase();
@@ -319,7 +319,7 @@
 		}
 		mdViewMode = next;
 		if (next === 'code') {
-			pendingMdScrollPercent = currentMdScrollPercent;
+			pendingMdScrollPercent = { percent: currentMdScrollPercent, path: file?.path || '' };
 		}
 	}
 
@@ -668,7 +668,7 @@
 		if (revealKey !== null) {
 			aiSelectedKey = revealKey;
 			aiFilter = 'selected';
-			pendingAiRevealKey = revealKey;
+			pendingAiRevealKey = { key: revealKey, path };
 			setGutterViewMode('ai');
 		}
 
@@ -761,8 +761,11 @@
 		aiChangeDecorations = editor.deltaDecorations(aiChangeDecorations, newDecorations);
 
 		// Scroll-reveal: focus the specific edit the user clicked in chat.
-		if (pendingAiRevealKey !== null) {
-			pendingAiRevealKey = null;
+		// FV-RACE-01: the pending key is only honored for the file it was
+		// requested on — a fast A→B file switch must not scroll B to A's edit.
+		const pendingReveal = pendingAiRevealKey;
+		pendingAiRevealKey = null;
+		if (pendingReveal !== null && pendingReveal.path === path) {
 			if (aiGutterChanges.length > 0) {
 				const targetChange = aiGutterChanges[0];
 				requestAnimationFrame(() => {
@@ -1663,10 +1666,13 @@
 		updateEnvDecorations();
 
 		// Markdown mode-switch scroll restore takes precedence over the
-		// tab-switch absolute scroll restore.
-		if (pendingMdScrollPercent !== null) {
-			const target = pendingMdScrollPercent;
-			pendingMdScrollPercent = null;
+		// tab-switch absolute scroll restore. FV-RACE-01: only for the file
+		// the switch happened on — a fast A→B change must not apply A's
+		// scroll percent to B.
+		const pendingMd = pendingMdScrollPercent;
+		pendingMdScrollPercent = null;
+		if (pendingMd !== null && pendingMd.path === (file?.path || '')) {
+			const target = pendingMd.percent;
 			requestAnimationFrame(() => {
 				requestAnimationFrame(() => {
 					const scrollHeight = editorInstance.getScrollHeight();

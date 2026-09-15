@@ -29,11 +29,19 @@ export const gitStatusState = $state<GitStatusState>({
 let refreshTimer: ReturnType<typeof setTimeout> | null = null;
 let inFlight = false;
 let pendingRefresh = false;
+// Generation token (GIT-RACE-01, same pattern as SES-01): every scheduled
+// refresh bumps it; a response that resolves after a project switch (or a
+// newer refresh) is discarded instead of overwriting the new project's maps.
+let statusLoadToken = 0;
 let unsubscribeFiles: (() => void) | null = null;
 let unsubscribeGit: (() => void) | null = null;
 let unsubscribeResync: (() => void) | null = null;
 let unsubscribeReconnect: (() => void) | null = null;
 let lastProjectId = '';
+// GIT-RACE-01: project id alone cannot distinguish worktrees of the same
+// project — the scope key (projectId + active worktree) is the identity the
+// listeners already filter by. Track it so a worktree switch resets too.
+let lastScopeKey = '';
 
 /**
  * Pick the most meaningful single status code for a change entry.
@@ -90,14 +98,20 @@ function buildStatusMaps(
 	return { map, folderMap };
 }
 
-async function fetchStatus(projectId: string, projectPath: string): Promise<void> {
+async function fetchStatus(projectId: string, projectPath: string, scopeKey: string): Promise<void> {
 	if (inFlight) {
 		pendingRefresh = true;
 		return;
 	}
 	inFlight = true;
+	const token = ++statusLoadToken;
 	try {
 		const status = await ws.http('git:status', { projectId });
+		// Stale: a switch or newer refresh started while this was in flight,
+		// or the active scope moved (project or worktree) — never let an old
+		// response overwrite the active project/worktree maps.
+		if (token !== statusLoadToken) return;
+		if (scopeKey !== currentScopeKey()) return;
 		gitStatusState.isRepo = status.isRepo;
 		if (!status.isRepo) {
 			gitStatusState.map = new Map();
@@ -124,15 +138,23 @@ async function fetchStatus(projectId: string, projectPath: string): Promise<void
 export function refreshGitStatus(delay = 250): void {
 	const project = projectState.currentProject;
 	if (!project) {
+		if (refreshTimer) {
+			clearTimeout(refreshTimer);
+			refreshTimer = null;
+		}
+		statusLoadToken++;
 		gitStatusState.map = new Map();
 		gitStatusState.folderMap = new Map();
 		gitStatusState.isRepo = false;
 		return;
 	}
+	// Snapshot identity NOW: the timer may fire after a project/worktree
+	// switch, and fetchStatus re-validates both before applying.
+	const scopeKey = currentScopeKey();
 	if (refreshTimer) clearTimeout(refreshTimer);
 	refreshTimer = setTimeout(() => {
 		refreshTimer = null;
-		fetchStatus(project.id, project.path);
+		fetchStatus(project.id, project.path, scopeKey);
 	}, delay);
 }
 
@@ -178,8 +200,21 @@ export function initGitStatus(): void {
 export function syncGitStatusForProject(): void {
 	const project = projectState.currentProject;
 	const newId = project?.id || '';
-	if (newId === lastProjectId) return;
+	const newScope = currentScopeKey();
+	if (newId === lastProjectId && newScope === lastScopeKey) return;
 	lastProjectId = newId;
+	lastScopeKey = newScope;
+	// Drop any pending debounce from the previous project/scope: it carries
+	// old identity refs and must never fire after the switch and steal the
+	// newest generation token.
+	if (refreshTimer) {
+		clearTimeout(refreshTimer);
+		refreshTimer = null;
+	}
+	pendingRefresh = false;
+	// Invalidate any in-flight fetch for the previous project/scope so its
+	// late response cannot overwrite the new scope's (cleared) maps.
+	statusLoadToken++;
 	gitStatusState.map = new Map();
 	gitStatusState.folderMap = new Map();
 	gitStatusState.isRepo = false;

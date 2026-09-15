@@ -358,21 +358,29 @@
 	let panelStateSaveTimer: ReturnType<typeof setTimeout> | null = null;
 	function schedulePanelStateSave() {
 		if (!projectId || !panelStateLoaded) return;
+		// Snapshot id/path/scope NOW (EXP-03): the debounced write fires 500ms
+		// later, and $derived projectId/projectPath/watchScope may have advanced
+		// to another project by then — persisting with live refs would file
+		// this project's state under the next project (or a mixed scope).
+		const saveId = projectId;
+		const savePath = projectPath;
+		const saveScope = watchScope;
 		if (panelStateSaveTimer) clearTimeout(panelStateSaveTimer);
 		panelStateSaveTimer = setTimeout(() => {
 			panelStateSaveTimer = null;
-			persistPanelStateNow();
+			persistStateForProject(saveId, savePath, saveScope);
 		}, 500);
 	}
 
 	function persistPanelStateNow() {
-		persistStateForProject(projectId, projectPath);
+		persistStateForProject(projectId, projectPath, watchScope);
 	}
 
 	// Persist using explicit project refs — required when switching projects
 	// because $derived projectId/projectPath have already advanced to the new
-	// project by the time the change-effect fires.
-	function persistStateForProject(targetId: string, targetPath: string, targetScope = watchScope) {
+	// project by the time the change-effect fires. targetScope is required
+	// (no default): scope must be snapshotted by the caller for the same reason.
+	function persistStateForProject(targetId: string, targetPath: string, targetScope: string) {
 		if (!targetId || !targetPath) return;
 		// Capture unsaved editor buffers for this project so dirty edits survive a
 		// switch (openTabs still holds this project's tabs when called on switch).
@@ -1337,19 +1345,16 @@
 	let clipboardRev = 0;
 	let osPublishSeq = 0;
 	let osPublishTail: Promise<void> = Promise.resolve();
-	// When the last in-Clopen COPY happened, and whether its async OS publish
-	// is still in flight. The publish runs in the background while the
-	// internal clipboard is already set, so during this brief window the
-	// native clipboard may still hold the PREVIOUS Explorer content. Paste
-	// protects the newer internal copy only inside that window — afterwards
-	// a differing native content is genuinely newer (user copied again in
-	// Explorer) and wins. No OS content is ever cached: every paste reads
-	// the native clipboard fresh (see tryReadOsClipboardItems).
-	let lastInternalCopyAt = 0;
+	// Whether the async OS publish for the last in-Clopen COPY/CUT is still
+	// in flight. The publish runs in the background while the internal
+	// clipboard is already set, so during this brief window the native
+	// clipboard may still hold the PREVIOUS Explorer content. Paste protects
+	// the newer internal copy only while its publish is in flight — once the
+	// publish settles, a differing native content is genuinely newer (user
+	// copied again in Explorer) and wins immediately. No time-based grace:
+	// every paste reads the native clipboard fresh (see
+	// tryReadOsClipboardItems), so Copy A → Paste = A, Copy B → Paste = B.
 	let pendingPublishSeq = 0;
-	// Grace window covering the async OS publish round-trip. Kept short so a
-	// real follow-up Explorer copy is never shadowed for long.
-	const INTERNAL_COPY_GRACE_MS = 2000;
 
 	// Folders in the current multi-selection, in selection order. Used to
 	// fan paste out to every chosen destination instead of just the first.
@@ -1403,7 +1408,6 @@
 		clipboard = { files: targets, operation: 'copy', origin: 'internal' };
 		// Fire-and-forget: publish to native OS clipboard in the background.
 		// The internal clipboard (used by in-app paste) is already set above.
-		lastInternalCopyAt = Date.now();
 		const seq = ++osPublishSeq;
 		pendingPublishSeq = seq;
 		void publishCopyToOsClipboardOrdered(
@@ -1515,12 +1519,13 @@
 		clipboard = { files: osClipboardItemsToStubs(items), operation: 'copy', origin: 'os' };
 	}
 	// Fresh native content vs an in-Clopen COPY that differs: the native side
-	// wins UNLESS our own async OS publish is still in flight (or the COPY
-	// just happened) — in that brief window the native side still holds the
-	// PREVIOUS Explorer content, which must not shadow the newer copy.
+	// wins UNLESS our own async OS publish is still in flight — in that brief
+	// window the native side still holds the PREVIOUS Explorer content, which
+	// must not shadow the newer copy. Once the publish settles, a differing
+	// native content is a genuine newer Explorer copy and wins immediately
+	// (no time-based grace, so Copy B is never shadowed by Copy A).
 	function shouldPreferInternalOverFreshOs(): boolean {
-		if (pendingPublishSeq !== 0) return true;
-		return Date.now() - lastInternalCopyAt < INTERNAL_COPY_GRACE_MS;
+		return pendingPublishSeq !== 0;
 	}
 	async function pasteFromOsClipboard(dests: string[]): Promise<void> {
 		if (dests.length === 0 || !projectPath) return;
@@ -1612,8 +1617,8 @@
 		// snapshot — so Copy A → Paste A, Copy B → Paste B, Copy C → Paste C.
 		// A previous OS adoption is NEVER trusted: with origin 'os' the fresh
 		// read always wins. An in-Clopen COPY (origin 'internal') wins only
-		// while its async OS publish is still in flight (or just happened),
-		// when the native side may still hold the previous Explorer content.
+		// while its async OS publish is still in flight, when the native side
+		// may still hold the previous Explorer content.
 		// CUT always uses the internal clipboard (never published to the OS).
 		// Adopted entries become the internal clipboard (COPY semantics) and
 		// flow through the same pasteToDestinations() as everything else.
@@ -1630,7 +1635,7 @@
 			}
 			if (useFreshOs) {
 				adoptOsItems(osItems);
-				if (trigger.kind === 'keyboard') lastInternalPasteAt = Date.now();
+				if (trigger.kind === 'keyboard') skipNextOsPasteEvent = true;
 				if (trigger.kind === 'menu') {
 					const dirs = selectedDirectoryPaths();
 					const dests = dirs.length >= 2 ? dirs : [trigger.file.path];
@@ -1659,9 +1664,9 @@
 				await pasteToBase(projectPath, null);
 				return;
 			}
-			lastInternalPasteAt = Date.now();
-			await pasteViaKeyboard();
-			return;
+		skipNextOsPasteEvent = true;
+		await pasteViaKeyboard();
+		return;
 		}
 		// No internal clipboard: menu/root go through pasteFromOsClipboard
 		// (which sets the clipboard from the OS, then pastes it).
@@ -1684,7 +1689,7 @@
 			const items = res.items ?? [];
 			if (items.length > 0) {
 				adoptOsItems(items);
-				lastInternalPasteAt = Date.now();
+				skipNextOsPasteEvent = true;
 				await pasteToDestinations(bases.map((base) => ({ base, expand: true })));
 			}
 		} catch {
@@ -1869,8 +1874,16 @@
 				pendingFsMutations += 1;
 				addCopiedNodeToTree(freshNode, targetPath);
 				try {
-					await ws.http(duplicateRoute, { sourcePath: sourceFile.path, targetPath });
+					const res = (await ws.http(duplicateRoute, { sourcePath: sourceFile.path, targetPath })) as {
+						skippedInner?: string[];
+					};
 					pendingFsMutations = Math.max(0, pendingFsMutations - 1);
+					// COPY-02: folder copies can be partial (unreadable inner
+					// entries). The item still counts as applied; the skipped
+					// entries are reported so the batch toast is honest.
+					for (const inner of res?.skippedInner ?? []) {
+						failed.push(`${sourceFile.name}/${inner} (skipped: unreadable)`);
+					}
 				} catch (err) {
 					// Roll back the optimistic node so there is no ghost item.
 					projectFiles = removeNodeFromTree(projectFiles, targetPath);
@@ -1895,8 +1908,13 @@
 						pendingFsMutations += 1;
 						addCopiedNodeToTree(findFileInTree(projectFiles, sourceFile.path) ?? sourceFile, targetPath);
 						try {
-							await ws.http(duplicateRoute, { sourcePath: sourceFile.path, targetPath });
+							const retryRes = (await ws.http(duplicateRoute, { sourcePath: sourceFile.path, targetPath })) as {
+								skippedInner?: string[];
+							};
 							pendingFsMutations = Math.max(0, pendingFsMutations - 1);
+							for (const inner of retryRes?.skippedInner ?? []) {
+								failed.push(`${sourceFile.name}/${inner} (skipped: unreadable)`);
+							}
 							done = true;
 						} catch (retryErr) {
 							projectFiles = removeNodeFromTree(projectFiles, targetPath);
@@ -2248,7 +2266,7 @@
 		// the exact same logic and emit the same single toast as the menu
 		// items. Ctrl+V always funnels here (even with an empty internal
 		// clipboard) so the OS peek runs in the same handler; when nothing
-		// is pasted handlePaste leaves lastInternalPasteAt untouched and the
+		// is pasted handlePaste leaves the consume-flag untouched and the
 		// DOM `paste` event below still owns screenshots/DataTransfer.
 		if (key === 'c' || key === 'x') {
 			event.preventDefault();
@@ -2275,7 +2293,7 @@
 	// `files:read-os-clipboard` round-trip instead — see pasteFromOsClipboard.
 	// Guards mirror the keyboard shortcuts: editors, terminals, chats, inputs
 	// and dialogs keep their own paste behavior; plain text paste is ignored.
-	let lastInternalPasteAt = 0;
+	let skipNextOsPasteEvent = false;
 
 	function collectOsPasteFiles(event: ClipboardEvent): File[] {
 		const dt = event.clipboardData;
@@ -2303,9 +2321,15 @@
 
 	async function handleOsPaste(event: ClipboardEvent): Promise<void> {
 		if (!hasActiveProject || !projectPath) return;
-		// An internal paste just ran from the Ctrl+V keydown that precedes
-		// this event — don't paste twice.
-		if (Date.now() - lastInternalPasteAt < 1000) return;
+		// The Ctrl+V keydown that precedes this event already pasted via the
+		// keyboard path — consume the one-shot flag so we never paste twice.
+		// Flag (not timestamp): no window to mistime on slow/fast machines, and
+		// a keyboard paste that pasted nothing leaves the flag clear so this
+		// event still owns screenshots/DataTransfer.
+		if (skipNextOsPasteEvent) {
+			skipNextOsPasteEvent = false;
+			return;
+		}
 		if (dialogOpen || compressDialogOpen || passwordDialogOpen || closeAllUnsavedDialogOpen)
 			return;
 		const target = event.target as HTMLElement | null;
@@ -3737,7 +3761,10 @@
 					projectId: targetProjectId,
 					scopeKey: targetScope
 				});
-				if (projectId !== targetProjectId) return; // race: project changed mid-fetch
+				// EXP-03 scope guard: project id alone cannot distinguish
+				// worktrees of the same project. A rapid worktree switch must
+				// not let scope A's state land on scope B.
+				if (projectId !== targetProjectId || watchScope !== targetScope) return;
 				if (result?.state) {
 					try {
 						const parsed: PersistedPanelState = JSON.parse(result.state);
@@ -3751,7 +3778,7 @@
 				debug.error('file', 'Failed to fetch panel state:', err);
 			}
 
-			if (projectId !== targetProjectId) return;
+			if (projectId !== targetProjectId || watchScope !== targetScope) return;
 
 			// Mark as loaded BEFORE loadProjectFiles so any post-load saves are kept
 			panelStateLoaded = true;

@@ -59,7 +59,20 @@ interface SessionStreamState {
   cancelledProcessIds: Set<string>;
   /** Fallback timer that clears a stuck `isCancelling` for this session. */
   cancelSafetyTimer: ReturnType<typeof setTimeout> | null;
+  /** Ephemeral id of the optimistic user row awaiting server echo (C-C1). */
+  pendingOptimisticId: string | null;
+  /** One-shot send-ack timer: fires when the backend never picks up a send (C-C2). */
+  sendAckTimer: ReturnType<typeof setTimeout> | null;
 }
+
+/**
+ * How long to wait for the first stream event after a send before declaring
+ * the send lost (C-C2). Single-shot per send, NOT re-armed: once the backend
+ * emits anything it is alive and its own terminal events settle the stream.
+ * Generous on purpose — engine cold-starts can take tens of seconds, and a
+ * false timeout only costs one retry click.
+ */
+const SEND_ACK_TIMEOUT_MS = 60_000;
 
 class ChatService {
   private streams = new Map<string, SessionStreamState>();
@@ -143,7 +156,9 @@ class ChatService {
         processId: null,
         streamCompleted: false,
         cancelledProcessIds: new Set<string>(),
-        cancelSafetyTimer: null
+        cancelSafetyTimer: null,
+        pendingOptimisticId: null,
+        sendAckTimer: null
       };
       this.streams.set(sessionId, state);
     }
@@ -247,6 +262,8 @@ class ChatService {
 
       ctx.state.processId = data.processId;
       ctx.state.streamCompleted = false;
+      // First stream activity: the backend picked up the send (C-C2).
+      this.clearSendAckTimer(ctx.sessionId);
     });
 
     // Message event
@@ -260,6 +277,8 @@ class ChatService {
       // in — that session's status comes from presence until it is opened.
       if (!ctx.ownsTranscript) return;
 
+      // Any stream event proves the backend is alive (C-C2).
+      this.clearSendAckTimer(ctx.sessionId);
       this.handleMessageEvent(data, ctx);
     });
 
@@ -272,6 +291,7 @@ class ChatService {
       if (data.processId && ctx.state.cancelledProcessIds.has(data.processId)) return;
       if (!ctx.ownsTranscript) return;
 
+      this.clearSendAckTimer(ctx.sessionId);
       this.handlePartialEvent(data, ctx.state);
     });
 
@@ -319,6 +339,7 @@ class ChatService {
       ctx.state.streamCompleted = true;
       ctx.state.processId = null;
       this.clearCancelSafetyTimer(ctx.sessionId);
+      this.clearSendAckTimer(ctx.sessionId);
       this.setProcessState({ isLoading: false, isWaitingInput: false, isCancelling: false }, ctx.sessionId);
 
       // Mark any tool_use blocks that never got a tool_result
@@ -348,6 +369,7 @@ class ChatService {
       ctx.state.streamCompleted = true;
       ctx.state.processId = null;
       this.clearCancelSafetyTimer(ctx.sessionId);
+      this.clearSendAckTimer(ctx.sessionId);
       // Don't clear isCancelling here — it causes a race with presence.
       // The chat:cancelled WS event arrives before broadcastPresence() updates,
       // so clearing isCancelling lets the presence $effect re-enable isLoading
@@ -375,6 +397,7 @@ class ChatService {
       ctx.state.streamCompleted = true;
       ctx.state.processId = null;
       this.clearCancelSafetyTimer(ctx.sessionId);
+      this.clearSendAckTimer(ctx.sessionId);
       this.setProcessState({ isLoading: false, isWaitingInput: false, isCancelling: false }, ctx.sessionId);
 
       // Mark any tool_use blocks that never got a tool_result
@@ -386,12 +409,15 @@ class ChatService {
       // Remove any remaining stream_event messages (streaming placeholders that won't be finalized).
       // The actual error bubble is now emitted as a chat:message from the backend and saved to DB,
       // so it persists across browser refresh. No need to inject a synthetic bubble here.
+      // Also roll back the outstanding optimistic user row (C-C1): without this
+      // the failed send stays visible next to the backend's error bubble.
       if (ctx.ownsTranscript) {
         for (let i = sessionState.messages.length - 1; i >= 0; i--) {
           if (sessionState.messages[i].type === 'stream_event') {
             sessionState.messages.splice(i, 1);
           }
         }
+        this.removeOptimisticMessage(ctx.sessionId);
       }
 
       addNotification({
@@ -412,12 +438,15 @@ class ChatService {
     debug.log('chat', 'Reconnecting to active stream:', { chatSessionId, processId });
 
     // Set up this session's stream state so its events are processed again.
-    // Re-attaching is deliberate, so any block placed on this stream by a
-    // previous switch-away (resetForSessionSwitch) is lifted here.
+    // Re-attaching is deliberate, so the block placed on THIS stream by a
+    // previous switch-away (resetForSessionSwitch) is lifted here — but ONLY
+    // for this processId. Clearing the whole set (C-C3) re-admitted every
+    // other cancelled stream of the session, resurrecting streams the user
+    // deliberately stopped.
     const state = this.streamFor(chatSessionId);
     state.processId = processId;
     state.streamCompleted = false;
-    state.cancelledProcessIds.clear();
+    state.cancelledProcessIds.delete(processId);
 
     // Tell backend to re-subscribe this connection to the stream
     ws.emit('chat:reconnect', {
@@ -432,7 +461,13 @@ class ChatService {
     message: string,
     options: ChatServiceOptions = {}
   ): Promise<void> {
-    if ((!message.trim() && !options.attachedFiles?.length) || appState.isLoading) return;
+    if (!message.trim() && !options.attachedFiles?.length) return;
+    // Per-session send guard (CHAT-12): the global flag is true while ANY
+    // session streams, so checking it here silently dropped sends from every
+    // other session. Only block when the TARGET session is already streaming.
+    // A missing currentSession means "will create one" — always allow.
+    const sendTargetSessionId = sessionState.currentSession?.id;
+    if (sendTargetSessionId && getSessionProcessState(sendTargetSessionId).isLoading) return;
 
     // Check if project is selected
     if (!projectState.currentProject) {
@@ -582,6 +617,11 @@ class ChatService {
         optimisticId: userMsgId,
       };
       (sessionState.messages as FrontendMessage[]).push(optimisticMessage);
+      // Track the outstanding optimistic row so send failure paths can roll
+      // it back by id (C-C1), and arm the send-ack watchdog so a backend that
+      // never picks up the send cannot leave loading stuck (C-C2).
+      targetStream.pendingOptimisticId = userMsgId;
+      this.armSendAckTimer(targetSessionId);
       const selectedAccountId = chatModelState.accountId;
       const selectedAccountName = chatModelState.accountName;
 
@@ -632,6 +672,11 @@ class ChatService {
       }
 
     } catch (error) {
+      // A synchronous send failure must settle exactly like an async one:
+      // roll back the optimistic row (C-C1) and release this session's
+      // loading flag (C-C2) — the single error toast below stays the only one.
+      this.removeOptimisticMessage(targetSessionId);
+      this.setProcessState({ isLoading: false }, targetSessionId);
       this.handleError(error as Error, options);
     }
   }
@@ -703,6 +748,66 @@ class ChatService {
   }
 
   /**
+   * Roll back this session's outstanding optimistic user row, if any (C-C1).
+   * Matched by unique optimisticId, so it can never remove another message —
+   * and a server echo that already replaced the row clears the pending id,
+   * making a later rollback a no-op instead of a duplicate removal.
+   */
+  private removeOptimisticMessage(sessionId: string): void {
+    const state = this.streams.get(sessionId);
+    const pendingId = state?.pendingOptimisticId ?? null;
+    if (state) state.pendingOptimisticId = null;
+    if (!pendingId) return;
+    const idx = sessionState.messages.findIndex(
+      (m) => 'optimistic' in m && (m as OptimisticUserMessage).optimistic && (m as OptimisticUserMessage).optimisticId === pendingId
+    );
+    if (idx !== -1) sessionState.messages.splice(idx, 1);
+  }
+
+  /**
+   * Arm the one-shot send-ack watchdog for a session (C-C2). Re-arming first
+   * clears the previous timer, so concurrent sessions never share one.
+   */
+  private armSendAckTimer(sessionId: string): void {
+    const state = this.streamFor(sessionId);
+    this.clearSendAckTimer(sessionId);
+    state.sendAckTimer = setTimeout(() => {
+      state.sendAckTimer = null;
+      this.onSendAckTimeout(sessionId);
+    }, SEND_ACK_TIMEOUT_MS);
+  }
+
+  private clearSendAckTimer(sessionId: string): void {
+    const state = this.streams.get(sessionId);
+    if (state?.sendAckTimer) {
+      clearTimeout(state.sendAckTimer);
+      state.sendAckTimer = null;
+    }
+  }
+
+  /**
+   * A send got no stream event at all within the ack window: the emit was
+   * lost or the backend died before starting. Settle exactly like an error —
+   * one toast, optimistic rolled back, loading released — so a later real
+   * event for the dead stream is dropped by the completed guards below
+   * instead of producing a second toast.
+   */
+  private onSendAckTimeout(sessionId: string): void {
+    const state = this.streamFor(sessionId);
+    if (state.streamCompleted) return;
+    state.streamCompleted = true;
+    state.processId = null;
+    this.removeOptimisticMessage(sessionId);
+    this.setProcessState({ isLoading: false, isWaitingInput: false, isCancelling: false }, sessionId);
+    addNotification({
+      type: 'error',
+      title: 'AI Engine Timeout',
+      message: 'No response from the AI engine. Please check the connection and try again.',
+      duration: 5000
+    });
+  }
+
+  /**
    * Stop tracking the viewed session's stream before switching away from it
    * (e.g. New Chat). The backend stream keeps running; this only blocks stale
    * events from reaching the session that replaces it on screen.
@@ -765,6 +870,11 @@ class ChatService {
       );
       if (optimisticIndex !== -1) {
         sessionState.messages[optimisticIndex] = message;
+        // Server echo arrived: the optimistic row is settled, so a later
+        // error/timeout rollback for this send becomes a no-op (C-C1).
+        if (ctx.state.pendingOptimisticId === rawMessage!.messageId) {
+          ctx.state.pendingOptimisticId = null;
+        }
         return;
       }
     }

@@ -1510,12 +1510,25 @@
 		if (canvasElement) {
 			const canvas = canvasElement;
 
-			canvas.addEventListener('dblclick', (e) => handleCanvasDoubleClick(e, canvas));
-			canvas.addEventListener('contextmenu', (e) => handleCanvasRightClick(e, canvas));
-			canvas.addEventListener('wheel', (e) => handleCanvasWheel(e, canvas), { passive: false });
+			// Named references (CTX-01): add/removeEventListener must receive
+			// the SAME function object. The old inline arrows never matched on
+			// removal, so every re-run stacked duplicate dblclick/contextmenu/
+			// wheel/mousedown/mouseup handlers (double menus, double zoom).
+			const handleDblClick = (e: MouseEvent) => handleCanvasDoubleClick(e, canvas);
+			const handleRightClick = (e: MouseEvent) => handleCanvasRightClick(e, canvas);
+			const handleWheel = (e: WheelEvent) => handleCanvasWheel(e, canvas);
+			const handleMouseDown = (e: MouseEvent) => handleCanvasMouseDown(e, canvas);
+			const handleMouseUp = (e: MouseEvent) => handleCanvasMouseUp(e, canvas);
+			const handleFocusOnMouseDown = () => {
+				canvas.focus();
+			};
+
+			canvas.addEventListener('dblclick', handleDblClick);
+			canvas.addEventListener('contextmenu', handleRightClick);
+			canvas.addEventListener('wheel', handleWheel, { passive: false });
 			canvas.addEventListener('keydown', handleCanvasKeydown);
-			canvas.addEventListener('mousedown', (e) => handleCanvasMouseDown(e, canvas));
-			canvas.addEventListener('mouseup', (e) => handleCanvasMouseUp(e, canvas));
+			canvas.addEventListener('mousedown', handleMouseDown);
+			canvas.addEventListener('mouseup', handleMouseUp);
 
 			let lastMoveTime = 0;
 			const handleMouseMove = (e: MouseEvent) => {
@@ -1533,9 +1546,7 @@
 			};
 			canvas.addEventListener('mousemove', handleMouseMove);
 
-			canvas.addEventListener('mousedown', () => {
-				canvas.focus();
-			});
+			canvas.addEventListener('mousedown', handleFocusOnMouseDown);
 
 
 			const handleMouseLeave = () => {
@@ -1559,13 +1570,15 @@
 			canvas.addEventListener('mouseleave', handleMouseLeave);
 
 			return () => {
-				canvas.removeEventListener('dblclick', (e) => handleCanvasDoubleClick(e, canvas));
-				canvas.removeEventListener('contextmenu', (e) => handleCanvasRightClick(e, canvas));
-				canvas.removeEventListener('wheel', (e) => handleCanvasWheel(e, canvas));
+				canvas.removeEventListener('dblclick', handleDblClick);
+				canvas.removeEventListener('contextmenu', handleRightClick);
+				canvas.removeEventListener('wheel', handleWheel);
 				canvas.removeEventListener('keydown', handleCanvasKeydown);
-				canvas.removeEventListener('mousedown', (e) => handleCanvasMouseDown(e, canvas));
-				canvas.removeEventListener('mouseup', (e) => handleCanvasMouseUp(e, canvas));
+				canvas.removeEventListener('mousedown', handleMouseDown);
+				canvas.removeEventListener('mouseup', handleMouseUp);
+				canvas.removeEventListener('mousedown', handleFocusOnMouseDown);
 				canvas.removeEventListener('mousemove', handleMouseMove);
+				canvas.removeEventListener('mouseleave', handleMouseLeave);
 			};
 		}
 	});

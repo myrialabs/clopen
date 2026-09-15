@@ -32,6 +32,8 @@
 		canPaste = false,
 		cutPaths = new Set<string>(),
 		modifiedFiles = new Set<string>(),
+		/** Ancestor dirs of modified files, precomputed by FileTree (EXP-PERF-01). */
+		modifiedDirSet = new Set<string>(),
 		activeFilePath = null,
 		gitStatusMap = new Map<string, string>(),
 		gitFolderStatusMap = new Map<string, string>(),
@@ -61,6 +63,7 @@
 		canPaste?: boolean;
 		cutPaths?: Set<string>;
 		modifiedFiles?: Set<string>;
+		modifiedDirSet?: Set<string>;
 		activeFilePath?: string | null;
 		gitStatusMap?: Map<string, string>;
 		gitFolderStatusMap?: Map<string, string>;
@@ -103,17 +106,10 @@
 	// Compute if this node's menu is open
 	const isMenuOpen = $derived(openMenuPath === file.path);
 
-	// Check if any descendant is modified (for folder indicator)
-	function hasModifiedDescendant(node: FileNodeType, mFiles: Set<string>): boolean {
-		if (node.type !== 'directory' || !node.children) return false;
-		for (const child of node.children) {
-			if (mFiles.has(child.path)) return true;
-			if (child.type === 'directory' && hasModifiedDescendant(child, mFiles)) return true;
-		}
-		return false;
-	}
+	// Folder indicator: O(1) lookup into the ancestor set precomputed by
+	// FileTree (EXP-PERF-01) — replaces the per-node subtree recursion.
 	const showModifiedIndicator = $derived(
-		isModified || (file.type === 'directory' && hasModifiedDescendant(file, modifiedFiles))
+		isModified || (file.type === 'directory' && modifiedDirSet.has(file.path))
 	);
 
 	// Git status code for this node — files lookup direct, folders use aggregated map
@@ -531,6 +527,7 @@
 			{canPaste}
 			{cutPaths}
 			{modifiedFiles}
+			{modifiedDirSet}
 			{activeFilePath}
 			{gitStatusMap}
 			{gitFolderStatusMap}

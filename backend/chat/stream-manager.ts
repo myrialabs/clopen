@@ -274,6 +274,14 @@ export interface RateLimitSnapshot {
 class StreamManager extends EventEmitter {
 	private activeStreams = new Map<string, StreamState>();
 	private sessionStreams = new Map<string, string>(); // composite key -> streamId
+	/**
+	 * Per-session start mutex (CHAT-04). Two concurrent startStream() calls for
+	 * the same session could both pass the existing-stream check before either
+	 * registered itself, ending with two active streams for one session.
+	 * The lock is held only across check → cancel → register, never across the
+	 * whole stream, so different sessions still start in parallel.
+	 */
+	private startLocks = new Map<string, Promise<void>>();
 	/** Guard against duplicate lifecycle events (e.g. if both inner and outer error paths fire) */
 	private lifecycleEmitted = new Set<string>();
 	/** Latest rate-limit snapshot per `${engine}:${accountId}`. Persists across refresh so the UI banner can rehydrate on join. */
@@ -365,47 +373,69 @@ class StreamManager extends EventEmitter {
 		const streamId = crypto.randomUUID();
 		const processId = crypto.randomUUID();
 
-		// Check if there's already an active stream for this chat session + project
+		// Serialize starts per session (CHAT-04): wait for an in-progress start
+		// for the same session key before checking for an existing stream.
 		const sessionKey = this.getSessionKey(request.projectId, request.chatSessionId);
-		const existingStreamId = this.sessionStreams.get(sessionKey);
-		if (existingStreamId) {
-			const existingStream = this.activeStreams.get(existingStreamId);
-			if (existingStream && existingStream.status === 'active') {
-				if (existingStream.projectId === request.projectId) {
-					if (request.engine.type === 'claude-code') {
-						// Claude Code: cancel existing stream to prevent message loss from race condition.
-						// Claude Code SDK only returns session_id inside yielded messages, so a cancelled
-						// stream may never have established a valid session — safe to cancel and restart.
-						debug.log('chat', `Cancelling existing active stream ${existingStreamId} before starting new one`);
-						await this.cancelStream(existingStreamId);
-					} else {
-						// Other engines (OpenCode): return existing stream ID (original behavior).
-						// OpenCode creates sessions synchronously, so the existing stream is valid.
-						return existingStreamId;
+		const pendingStart = this.startLocks.get(sessionKey);
+		if (pendingStart) {
+			try {
+				await pendingStart;
+			} catch {
+				// A failed start must not block the retry — fall through and re-check.
+			}
+		}
+		let releaseStartLock!: () => void;
+		const startLock = new Promise<void>((resolve) => {
+			releaseStartLock = resolve;
+		});
+		this.startLocks.set(sessionKey, startLock);
+		let streamState!: StreamState;
+		try {
+			const existingStreamId = this.sessionStreams.get(sessionKey);
+			if (existingStreamId) {
+				const existingStream = this.activeStreams.get(existingStreamId);
+				if (existingStream && existingStream.status === 'active') {
+					if (existingStream.projectId === request.projectId) {
+						if (request.engine.type === 'claude-code') {
+							// Claude Code: cancel existing stream to prevent message loss from race condition.
+							// Claude Code SDK only returns session_id inside yielded messages, so a cancelled
+							// stream may never have established a valid session — safe to cancel and restart.
+							debug.log('chat', `Cancelling existing active stream ${existingStreamId} before starting new one`);
+							await this.cancelStream(existingStreamId);
+						} else {
+							// Other engines (OpenCode): return existing stream ID (original behavior).
+							// OpenCode creates sessions synchronously, so the existing stream is valid.
+							return existingStreamId;
+						}
 					}
 				}
 			}
+
+			// Initialize stream state
+			streamState = {
+				streamId,
+				chatSessionId: request.chatSessionId,
+				projectId: request.projectId,
+				projectPath: request.projectPath,
+				processId,
+				engine: request.engine.type,
+				accountId: request.engine.account?.id || undefined,
+				reasoningEffort: request.reasoningEffort ?? undefined,
+				status: 'active',
+				startedAt: new Date(),
+				messages: [],
+				abortController: new AbortController(),
+				eventSeq: 0 // Initialize sequence for deduplication
+			};
+
+			this.activeStreams.set(streamId, streamState);
+			this.sessionStreams.set(sessionKey, streamId);
+		} finally {
+			if (this.startLocks.get(sessionKey) === startLock) {
+				this.startLocks.delete(sessionKey);
+			}
+			releaseStartLock();
 		}
-
-		// Initialize stream state
-		const streamState: StreamState = {
-			streamId,
-			chatSessionId: request.chatSessionId,
-			projectId: request.projectId,
-			projectPath: request.projectPath,
-			processId,
-			engine: request.engine.type,
-			accountId: request.engine.account?.id || undefined,
-			reasoningEffort: request.reasoningEffort ?? undefined,
-			status: 'active',
-			startedAt: new Date(),
-			messages: [],
-			abortController: new AbortController(),
-			eventSeq: 0 // Initialize sequence for deduplication
-		};
-
-		this.activeStreams.set(streamId, streamState);
-		this.sessionStreams.set(sessionKey, streamId);
 
 		// Save engine+model+account to session for persistence across refresh/switch
 		if (request.chatSessionId) {

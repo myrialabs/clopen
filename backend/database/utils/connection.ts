@@ -63,6 +63,11 @@ export class DatabaseManager {
 		this.db.exec('PRAGMA cache_size = 1000000');
 		this.db.exec('PRAGMA temp_store = memory');
 		this.db.exec('PRAGMA foreign_keys = ON');
+		// Single shared connection + concurrent stream writes (message +
+		// head + snapshot in one hot path) used to surface SQLITE_BUSY with
+		// no wait. 5s gives writers a bounded queue instead of an instant
+		// failure; reads stay non-blocking under WAL (PERF-05).
+		this.db.exec('PRAGMA busy_timeout = 5000');
 
 		debug.log('database', '✅ Database pragmas configured');
 	}

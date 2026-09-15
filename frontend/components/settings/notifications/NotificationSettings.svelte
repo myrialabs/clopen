@@ -14,7 +14,11 @@
 	import { onMount } from 'svelte';
 
 	let isTestingSound = $state(false);
-	let isTestingPush = $state(false);
+	// Run counter (not a boolean lock) so rapid Test Push clicks each spawn
+	// their own independent run instead of being swallowed by a disabled button.
+	let pushTestRuns = $state(0);
+	const isTestingPush = $derived(pushTestRuns > 0);
+	let isTogglingPush = $state(false);
 	let isUploading = $state(false);
 	let hasCustomSound = $state(false);
 	let customFileInput: HTMLInputElement | null = $state(null);
@@ -214,12 +218,91 @@
 		}
 	}
 
-	async function testPushNotification() {
-		isTestingPush = true;
+	async function handlePushToggle() {
+		// Turning OFF never needs permission — apply immediately.
+		if (settings.pushNotifications) {
+			updateSettings({ pushNotifications: false });
+			return;
+		}
+
+		// Turning ON: request browser permission first (user gesture).
+		// If permission is already granted (e.g. macOS), this resolves
+		// immediately without a prompt and behavior is unchanged.
+		if (!pushNotification.isSupported()) {
+			addNotification({
+				type: 'error',
+				title: 'Not Supported',
+				message: 'Push notifications not supported on this browser',
+				duration: 4000
+			});
+			return;
+		}
+
+		if (!pushNotification.isContextValid()) {
+			addNotification({
+				type: 'error',
+				title: 'Insecure Context',
+				message:
+					'Browser blocks notifications on plain http://IP addresses. Open the app via http://localhost or HTTPS, then turn the toggle ON again.',
+				duration: 6000
+			});
+			return;
+		}
+
+		isTogglingPush = true;
 		try {
+			const granted = await pushNotification.initialize();
+			if (granted) {
+				updateSettings({ pushNotifications: true });
+			} else {
+				const status = pushNotification.getPermissionStatus();
+				addNotification({
+					type: 'error',
+					title: 'Permission Required',
+					message:
+						status === 'denied'
+							? 'Push notification permission denied. Allow notifications in the browser site settings, then turn the toggle ON again.'
+							: 'Push notification permission not granted. Allow the browser prompt, then turn the toggle ON again.',
+					duration: 5000
+				});
+			}
+		} finally {
+			isTogglingPush = false;
+		}
+	}
+
+	async function testPushNotification() {
+		pushTestRuns += 1;
+		try {
+			if (!pushNotification.isSupported()) {
+				throw new Error('Push notifications not supported on this browser');
+			}
+
+			if (!pushNotification.isContextValid()) {
+				addNotification({
+					type: 'error',
+					title: 'Insecure Context',
+					message:
+						'Browser blocks notifications on plain http://IP addresses. Open the app via http://localhost or HTTPS, then test again.',
+					duration: 6000
+				});
+				return;
+			}
+
 			const initialized = await pushNotification.initialize();
 
 			if (initialized) {
+				// Mirror the real chat-finished flow (sound + push) so the
+				// currently-selected sound is audible on Test Push. Uses
+				// testSound (ignores the on/off toggle) so users can verify
+				// a newly-picked sound even before enabling it. Best-effort:
+				// a sound failure must not fail the push test.
+				soundNotification.initialize();
+				try {
+					await soundNotification.testSound();
+				} catch {
+					// Ignore — push result is reported below.
+				}
 				const success = await pushNotification.testNotification();
 				if (success) {
 					addNotification({
@@ -240,11 +323,18 @@
 
 			if (!pushNotification.isSupported()) {
 				message = 'Push notifications not supported on this browser';
+			} else if (!pushNotification.isContextValid()) {
+				message =
+					'Browser blocks notifications on plain http://IP addresses. Open the app via http://localhost or HTTPS, then test again.';
 			} else if (permissionStatus === 'denied') {
 				message =
-					'Push notification permission denied. Please allow notifications in browser settings.';
+					'Push notification permission denied. Allow notifications in the browser site settings, then check Windows Settings > System > Notifications (including Focus Assist / Do Not Disturb) if the toast still does not appear.';
 			} else if (permissionStatus === 'default') {
-				message = 'Push notification permission not granted';
+				message =
+					'Push notification permission not granted. Turn the toggle ON to grant permission, then test again.';
+			} else {
+				message =
+					'Browser reports permission granted but no toast appeared. Check Windows Settings > System > Notifications for this browser and turn off Focus Assist / Do Not Disturb.';
 			}
 
 			addNotification({
@@ -254,8 +344,7 @@
 				duration: 5000
 			});
 		} finally {
-			await new Promise((resolve) => setTimeout(resolve, 2000));
-			isTestingPush = false;
+			pushTestRuns = Math.max(0, pushTestRuns - 1);
 		}
 	}
 </script>
@@ -523,7 +612,8 @@
 					<input
 						type="checkbox"
 						checked={settings.pushNotifications}
-						onchange={() => updateSettings({ pushNotifications: !settings.pushNotifications })}
+						disabled={isTogglingPush}
+						onchange={handlePushToggle}
 						class="opacity-0 w-0 h-0"
 					/>
 					<span
@@ -540,7 +630,6 @@
 					type="button"
 					class="inline-flex items-center gap-1.5 py-2 px-3.5 bg-violet-500/10 dark:bg-violet-500/10 border border-violet-500/20 dark:border-violet-500/25 rounded-lg text-violet-600 dark:text-violet-400 text-xs font-semibold cursor-pointer transition-all duration-150 hover:bg-violet-500/20 dark:hover:bg-violet-500/20 hover:border-violet-600 dark:hover:border-violet-500/40 disabled:opacity-50 disabled:cursor-not-allowed"
 					onclick={testPushNotification}
-					disabled={isTestingPush}
 				>
 					{#if isTestingPush}
 						<div
