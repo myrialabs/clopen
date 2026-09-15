@@ -63,6 +63,22 @@ async function resolveSourceUrl(): Promise<string> {
 	return presetUrl(id);
 }
 
+/**
+ * A element that can play without disturbing one already playing.
+ *
+ * The cache exists so a source is fetched and decoded once. Playing the
+ * cached element *itself* turns it into shared state: a notification
+ * arriving while the previous one is still sounding rewinds that same
+ * element with `currentTime = 0`, so three completions in quick succession
+ * are heard as a single sound. Clones inherit the warmed-up source, play
+ * independently, and are collected once playback ends.
+ */
+function createPlayback(src: string): HTMLAudioElement {
+	const audio = getOrCreateElement(src).cloneNode() as HTMLAudioElement;
+	audio.preload = 'auto';
+	return audio;
+}
+
 function getOrCreateElement(src: string): HTMLAudioElement {
 	let el = elementCache.get(src);
 	if (!el) {
@@ -84,10 +100,9 @@ async function playNotificationSound(isTesting: boolean): Promise<void> {
 		if (typeof window === 'undefined' || !window.Audio) return;
 
 		const src = await resolveSourceUrl();
-		const audio = getOrCreateElement(src);
+		const audio = createPlayback(src);
 		const volume = settings.notificationVolume;
 		audio.volume = Number.isFinite(volume) ? Math.max(0, Math.min(1, volume)) : 1;
-		audio.currentTime = 0;
 
 		const playPromise = audio.play();
 		if (playPromise !== undefined) {

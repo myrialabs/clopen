@@ -3,6 +3,7 @@
 	import { settings, updateSettings } from '$frontend/stores/features/settings.svelte';
 	import { authStore } from '$frontend/stores/features/auth.svelte';
 	import { soundNotification, pushNotification } from '$frontend/services/notification';
+	import type { NotificationBlockReason } from '$frontend/services/notification';
 	import {
 		NOTIFICATION_SOUND_PRESETS,
 		NOTIFICATION_SOUND_CUSTOM,
@@ -10,11 +11,17 @@
 		NOTIFICATION_SOUND_MAX_BYTES,
 		isValidNotificationSoundExt
 	} from '$shared/constants/notification-sounds';
+	import { detectPlatform } from '$frontend/utils/platform';
 	import Icon from '../../common/display/Icon.svelte';
 	import { onMount } from 'svelte';
 
 	let isTestingSound = $state(false);
-	let isTestingPush = $state(false);
+	// A counter, not a boolean lock. The lock disabled the button for the
+	// duration of a test, so every click in a burst after the first was
+	// swallowed by the DOM and never produced a notification at all.
+	let pushTestsInFlight = $state(0);
+	const isTestingPush = $derived(pushTestsInFlight > 0);
+	let isTogglingPush = $state(false);
 	let isUploading = $state(false);
 	let hasCustomSound = $state(false);
 	let customFileInput: HTMLInputElement | null = $state(null);
@@ -214,48 +221,140 @@
 		}
 	}
 
-	async function testPushNotification() {
-		isTestingPush = true;
+	/**
+	 * Where to look when the browser accepted a notification but nothing
+	 * appeared. Every desktop hides notifications behind a different switch,
+	 * so a single Windows-flavoured hint is noise on the other platforms.
+	 */
+	function osNotificationHint(): string {
+		switch (detectPlatform()) {
+			case 'windows':
+				return 'Check Settings > System > Notifications — both the entry for this browser and Focus assist / Do not disturb.';
+			case 'mac':
+				return 'Check System Settings > Notifications for this browser, and turn off Focus / Do Not Disturb.';
+			case 'linux':
+				return 'Check your desktop notification settings and confirm a notification daemon is running.';
+			default:
+				return 'Check your system notification settings and turn off any Do Not Disturb mode.';
+		}
+	}
+
+	const RETRY_TEST = 'then test again';
+	const RETRY_TOGGLE = 'then turn the toggle on again';
+
+	/**
+	 * Say which switch the user has to flip. The service reports the reason
+	 * rather than a bare failure, so the panel never has to guess.
+	 */
+	function blockReasonMessage(reason: NotificationBlockReason, retry: string): string {
+		switch (reason) {
+			case 'insecure-context':
+				return `Browsers only expose notifications on a secure origin, so a plain http:// address other than localhost cannot show them. Open the app via http://localhost or over HTTPS, ${retry}.`;
+			case 'unsupported':
+				return 'This browser does not support native notifications.';
+			case 'permission-denied':
+				return `Notifications are blocked for this site. Allow them in the browser site settings, ${retry}.`;
+			case 'permission-default':
+				return `Notification permission has not been granted. Accept the browser prompt, ${retry}.`;
+			case 'creation-failed':
+				return `The browser refused to create the notification. ${osNotificationHint()}`;
+		}
+	}
+
+	function pushError(message: string) {
+		addNotification({
+			type: 'error',
+			title: 'Push Notifications Unavailable',
+			message,
+			duration: 6000
+		});
+	}
+
+	async function handlePushToggle(event: Event) {
+		// Read the input before the first await — `currentTarget` is cleared
+		// once the event finishes dispatching.
+		const input = event.currentTarget as HTMLInputElement;
+		// The visible switch renders from settings, so every path that does
+		// not commit the change has to put the hidden input back in sync.
+		const resync = () => {
+			input.checked = settings.pushNotifications;
+		};
+
+		// Turning off never needs permission.
+		if (settings.pushNotifications) {
+			updateSettings({ pushNotifications: false });
+			return;
+		}
+
+		// Only a missing prompt is worth attempting; the other reasons cannot
+		// be resolved by asking again.
+		const reason = pushNotification.blockReason();
+		if (reason && reason !== 'permission-default') {
+			pushError(blockReasonMessage(reason, RETRY_TOGGLE));
+			resync();
+			return;
+		}
+
+		isTogglingPush = true;
 		try {
-			const initialized = await pushNotification.initialize();
-
-			if (initialized) {
-				const success = await pushNotification.testNotification();
-				if (success) {
-					addNotification({
-						type: 'success',
-						title: 'Push Notification Test',
-						message: 'Native push notification is working correctly',
-						duration: 3000
-					});
-				} else {
-					throw new Error('Push test failed');
-				}
-			} else {
-				throw new Error('Push notification permission denied or not supported');
-			}
-		} catch {
-			const permissionStatus = pushNotification.getPermissionStatus();
-			let message = 'Unable to send push notification';
-
-			if (!pushNotification.isSupported()) {
-				message = 'Push notifications not supported on this browser';
-			} else if (permissionStatus === 'denied') {
-				message =
-					'Push notification permission denied. Please allow notifications in browser settings.';
-			} else if (permissionStatus === 'default') {
-				message = 'Push notification permission not granted';
+			// This click is the user gesture browsers require for the
+			// permission prompt. Flipping the setting without asking left the
+			// switch on while every notification was silently dropped.
+			if (await pushNotification.initialize()) {
+				updateSettings({ pushNotifications: true });
+				return;
 			}
 
-			addNotification({
-				type: 'error',
-				title: 'Push Notification Test Failed',
-				message,
-				duration: 5000
-			});
+			pushError(
+				blockReasonMessage(pushNotification.blockReason() ?? 'permission-default', RETRY_TOGGLE)
+			);
+			resync();
 		} finally {
-			await new Promise((resolve) => setTimeout(resolve, 2000));
-			isTestingPush = false;
+			isTogglingPush = false;
+		}
+	}
+
+	async function testPushNotification() {
+		pushTestsInFlight += 1;
+		try {
+			const reason = pushNotification.blockReason();
+			if (reason === 'permission-default') {
+				await pushNotification.initialize();
+			} else if (reason) {
+				pushError(blockReasonMessage(reason, RETRY_TEST));
+				return;
+			}
+
+			// Mirror the real chat-finished flow, which plays the selected
+			// sound alongside the banner. Not awaited: resolving a custom
+			// sound can hit the network, and the banner must not queue behind
+			// it. `play()` honours the sound toggle, so a user who turned
+			// sound off still gets a silent push test.
+			void soundNotification.play();
+
+			const result = await pushNotification.testNotification();
+			if (result.outcome === 'shown') {
+				addNotification({
+					type: 'success',
+					title: 'Push Notification Test',
+					message: 'Native push notification is working correctly',
+					duration: 3000
+				});
+			} else if (result.outcome === 'unconfirmed') {
+				// Not an error: the notification may well be on screen, the OS
+				// just never said so. Calling that a failure would be as wrong
+				// as the old unconditional success.
+				addNotification({
+					type: 'warning',
+					title: 'Push Notification Unconfirmed',
+					message: `The browser sent the notification but the system never confirmed it appeared. ${osNotificationHint()}`,
+					duration: 6000
+				});
+			} else {
+				pushError(blockReasonMessage(result.reason, RETRY_TEST));
+			}
+		} finally {
+			pushTestsInFlight -= 1;
 		}
 	}
 </script>
@@ -523,7 +622,8 @@
 					<input
 						type="checkbox"
 						checked={settings.pushNotifications}
-						onchange={() => updateSettings({ pushNotifications: !settings.pushNotifications })}
+						disabled={isTogglingPush}
+						onchange={handlePushToggle}
 						class="opacity-0 w-0 h-0"
 					/>
 					<span
@@ -540,7 +640,6 @@
 					type="button"
 					class="inline-flex items-center gap-1.5 py-2 px-3.5 bg-violet-500/10 dark:bg-violet-500/10 border border-violet-500/20 dark:border-violet-500/25 rounded-lg text-violet-600 dark:text-violet-400 text-xs font-semibold cursor-pointer transition-all duration-150 hover:bg-violet-500/20 dark:hover:bg-violet-500/20 hover:border-violet-600 dark:hover:border-violet-500/40 disabled:opacity-50 disabled:cursor-not-allowed"
 					onclick={testPushNotification}
-					disabled={isTestingPush}
 				>
 					{#if isTestingPush}
 						<div
