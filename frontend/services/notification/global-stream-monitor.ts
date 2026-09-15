@@ -13,6 +13,7 @@
  */
 
 import { soundNotification, pushNotification } from '$frontend/services/notification';
+import { warmNotificationIcon } from '$frontend/services/notification/notification-icon';
 import { projectState } from '$frontend/stores/core/projects.svelte';
 import { debug } from '$shared/utils/logger';
 import ws from '$frontend/utils/ws';
@@ -33,6 +34,10 @@ class GlobalStreamMonitor {
     this.initialized = true;
 
     debug.log('notification', 'GlobalStreamMonitor: Initializing WS listeners');
+
+    // Rasterise the notification icon now rather than when a chat finishes,
+    // so the first notification of the session is not the one that pays for it.
+    warmNotificationIcon();
 
     // Stream finished — notify on completion
     ws.on('chat:stream-finished', async (data) => {

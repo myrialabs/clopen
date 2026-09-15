@@ -116,25 +116,6 @@
 	// Create local state if expandedFolders is not provided
 	let localState = $state(new Set<string>());
 
-	// Ancestor dirs of every modified file, computed ONCE per tree version
-	// (EXP-PERF-01). FileNode used to recurse its whole subtree per folder
-	// per render — O(subtree) each — so large trees froze on every keystroke.
-	// This is O(modified × depth) total; each node then does one Set lookup.
-	// Handles both separators (Windows `\`, Unix `/`).
-	const modifiedDirSet = $derived.by(() => {
-		const dirs = new Set<string>();
-		for (const filePath of modifiedFiles) {
-			let cursor = filePath;
-			while (true) {
-				const idx = Math.max(cursor.lastIndexOf('/'), cursor.lastIndexOf('\\'));
-				if (idx <= 0) break;
-				cursor = cursor.slice(0, idx);
-				dirs.add(cursor);
-			}
-		}
-		return dirs;
-	});
-
 	// Use provided expandedFolders or local state (computed)
 	const localExpandedFolders = $derived(expandedFolders || localState);
 
@@ -867,7 +848,6 @@
 							{canPaste}
 							{cutPaths}
 							{modifiedFiles}
-							{modifiedDirSet}
 							{activeFilePath}
 							{gitStatusMap}
 							{gitFolderStatusMap}

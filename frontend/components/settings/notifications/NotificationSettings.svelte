@@ -3,6 +3,7 @@
 	import { settings, updateSettings } from '$frontend/stores/features/settings.svelte';
 	import { authStore } from '$frontend/stores/features/auth.svelte';
 	import { soundNotification, pushNotification } from '$frontend/services/notification';
+	import type { NotificationBlockReason } from '$frontend/services/notification';
 	import {
 		NOTIFICATION_SOUND_PRESETS,
 		NOTIFICATION_SOUND_CUSTOM,
@@ -10,14 +11,16 @@
 		NOTIFICATION_SOUND_MAX_BYTES,
 		isValidNotificationSoundExt
 	} from '$shared/constants/notification-sounds';
+	import { detectPlatform } from '$frontend/utils/platform';
 	import Icon from '../../common/display/Icon.svelte';
 	import { onMount } from 'svelte';
 
 	let isTestingSound = $state(false);
-	// Run counter (not a boolean lock) so rapid Test Push clicks each spawn
-	// their own independent run instead of being swallowed by a disabled button.
-	let pushTestRuns = $state(0);
-	const isTestingPush = $derived(pushTestRuns > 0);
+	// A counter, not a boolean lock. The lock disabled the button for the
+	// duration of a test, so every click in a burst after the first was
+	// swallowed by the DOM and never produced a notification at all.
+	let pushTestsInFlight = $state(0);
+	const isTestingPush = $derived(pushTestsInFlight > 0);
 	let isTogglingPush = $state(false);
 	let isUploading = $state(false);
 	let hasCustomSound = $state(false);
@@ -218,133 +221,140 @@
 		}
 	}
 
-	async function handlePushToggle() {
-		// Turning OFF never needs permission — apply immediately.
+	/**
+	 * Where to look when the browser accepted a notification but nothing
+	 * appeared. Every desktop hides notifications behind a different switch,
+	 * so a single Windows-flavoured hint is noise on the other platforms.
+	 */
+	function osNotificationHint(): string {
+		switch (detectPlatform()) {
+			case 'windows':
+				return 'Check Settings > System > Notifications — both the entry for this browser and Focus assist / Do not disturb.';
+			case 'mac':
+				return 'Check System Settings > Notifications for this browser, and turn off Focus / Do Not Disturb.';
+			case 'linux':
+				return 'Check your desktop notification settings and confirm a notification daemon is running.';
+			default:
+				return 'Check your system notification settings and turn off any Do Not Disturb mode.';
+		}
+	}
+
+	const RETRY_TEST = 'then test again';
+	const RETRY_TOGGLE = 'then turn the toggle on again';
+
+	/**
+	 * Say which switch the user has to flip. The service reports the reason
+	 * rather than a bare failure, so the panel never has to guess.
+	 */
+	function blockReasonMessage(reason: NotificationBlockReason, retry: string): string {
+		switch (reason) {
+			case 'insecure-context':
+				return `Browsers only expose notifications on a secure origin, so a plain http:// address other than localhost cannot show them. Open the app via http://localhost or over HTTPS, ${retry}.`;
+			case 'unsupported':
+				return 'This browser does not support native notifications.';
+			case 'permission-denied':
+				return `Notifications are blocked for this site. Allow them in the browser site settings, ${retry}.`;
+			case 'permission-default':
+				return `Notification permission has not been granted. Accept the browser prompt, ${retry}.`;
+			case 'creation-failed':
+				return `The browser refused to create the notification. ${osNotificationHint()}`;
+		}
+	}
+
+	function pushError(message: string) {
+		addNotification({
+			type: 'error',
+			title: 'Push Notifications Unavailable',
+			message,
+			duration: 6000
+		});
+	}
+
+	async function handlePushToggle(event: Event) {
+		// Read the input before the first await — `currentTarget` is cleared
+		// once the event finishes dispatching.
+		const input = event.currentTarget as HTMLInputElement;
+		// The visible switch renders from settings, so every path that does
+		// not commit the change has to put the hidden input back in sync.
+		const resync = () => {
+			input.checked = settings.pushNotifications;
+		};
+
+		// Turning off never needs permission.
 		if (settings.pushNotifications) {
 			updateSettings({ pushNotifications: false });
 			return;
 		}
 
-		// Turning ON: request browser permission first (user gesture).
-		// If permission is already granted (e.g. macOS), this resolves
-		// immediately without a prompt and behavior is unchanged.
-		if (!pushNotification.isSupported()) {
-			addNotification({
-				type: 'error',
-				title: 'Not Supported',
-				message: 'Push notifications not supported on this browser',
-				duration: 4000
-			});
-			return;
-		}
-
-		if (!pushNotification.isContextValid()) {
-			addNotification({
-				type: 'error',
-				title: 'Insecure Context',
-				message:
-					'Browser blocks notifications on plain http://IP addresses. Open the app via http://localhost or HTTPS, then turn the toggle ON again.',
-				duration: 6000
-			});
+		// Only a missing prompt is worth attempting; the other reasons cannot
+		// be resolved by asking again.
+		const reason = pushNotification.blockReason();
+		if (reason && reason !== 'permission-default') {
+			pushError(blockReasonMessage(reason, RETRY_TOGGLE));
+			resync();
 			return;
 		}
 
 		isTogglingPush = true;
 		try {
-			const granted = await pushNotification.initialize();
-			if (granted) {
+			// This click is the user gesture browsers require for the
+			// permission prompt. Flipping the setting without asking left the
+			// switch on while every notification was silently dropped.
+			if (await pushNotification.initialize()) {
 				updateSettings({ pushNotifications: true });
-			} else {
-				const status = pushNotification.getPermissionStatus();
-				addNotification({
-					type: 'error',
-					title: 'Permission Required',
-					message:
-						status === 'denied'
-							? 'Push notification permission denied. Allow notifications in the browser site settings, then turn the toggle ON again.'
-							: 'Push notification permission not granted. Allow the browser prompt, then turn the toggle ON again.',
-					duration: 5000
-				});
+				return;
 			}
+
+			pushError(
+				blockReasonMessage(pushNotification.blockReason() ?? 'permission-default', RETRY_TOGGLE)
+			);
+			resync();
 		} finally {
 			isTogglingPush = false;
 		}
 	}
 
 	async function testPushNotification() {
-		pushTestRuns += 1;
+		pushTestsInFlight += 1;
 		try {
-			if (!pushNotification.isSupported()) {
-				throw new Error('Push notifications not supported on this browser');
-			}
-
-			if (!pushNotification.isContextValid()) {
-				addNotification({
-					type: 'error',
-					title: 'Insecure Context',
-					message:
-						'Browser blocks notifications on plain http://IP addresses. Open the app via http://localhost or HTTPS, then test again.',
-					duration: 6000
-				});
+			const reason = pushNotification.blockReason();
+			if (reason === 'permission-default') {
+				await pushNotification.initialize();
+			} else if (reason) {
+				pushError(blockReasonMessage(reason, RETRY_TEST));
 				return;
 			}
 
-			const initialized = await pushNotification.initialize();
+			// Mirror the real chat-finished flow, which plays the selected
+			// sound alongside the banner. Not awaited: resolving a custom
+			// sound can hit the network, and the banner must not queue behind
+			// it. `play()` honours the sound toggle, so a user who turned
+			// sound off still gets a silent push test.
+			void soundNotification.play();
 
-			if (initialized) {
-				// Mirror the real chat-finished flow (sound + push) so the
-				// currently-selected sound is audible on Test Push. Uses
-				// testSound (ignores the on/off toggle) so users can verify
-				// a newly-picked sound even before enabling it. Best-effort:
-				// a sound failure must not fail the push test.
-				soundNotification.initialize();
-				try {
-					await soundNotification.testSound();
-				} catch {
-					// Ignore — push result is reported below.
-				}
-				const success = await pushNotification.testNotification();
-				if (success) {
-					addNotification({
-						type: 'success',
-						title: 'Push Notification Test',
-						message: 'Native push notification is working correctly',
-						duration: 3000
-					});
-				} else {
-					throw new Error('Push test failed');
-				}
+			const result = await pushNotification.testNotification();
+			if (result.outcome === 'shown') {
+				addNotification({
+					type: 'success',
+					title: 'Push Notification Test',
+					message: 'Native push notification is working correctly',
+					duration: 3000
+				});
+			} else if (result.outcome === 'unconfirmed') {
+				// Not an error: the notification may well be on screen, the OS
+				// just never said so. Calling that a failure would be as wrong
+				// as the old unconditional success.
+				addNotification({
+					type: 'warning',
+					title: 'Push Notification Unconfirmed',
+					message: `The browser sent the notification but the system never confirmed it appeared. ${osNotificationHint()}`,
+					duration: 6000
+				});
 			} else {
-				throw new Error('Push notification permission denied or not supported');
+				pushError(blockReasonMessage(result.reason, RETRY_TEST));
 			}
-		} catch {
-			const permissionStatus = pushNotification.getPermissionStatus();
-			let message = 'Unable to send push notification';
-
-			if (!pushNotification.isSupported()) {
-				message = 'Push notifications not supported on this browser';
-			} else if (!pushNotification.isContextValid()) {
-				message =
-					'Browser blocks notifications on plain http://IP addresses. Open the app via http://localhost or HTTPS, then test again.';
-			} else if (permissionStatus === 'denied') {
-				message =
-					'Push notification permission denied. Allow notifications in the browser site settings, then check Windows Settings > System > Notifications (including Focus Assist / Do Not Disturb) if the toast still does not appear.';
-			} else if (permissionStatus === 'default') {
-				message =
-					'Push notification permission not granted. Turn the toggle ON to grant permission, then test again.';
-			} else {
-				message =
-					'Browser reports permission granted but no toast appeared. Check Windows Settings > System > Notifications for this browser and turn off Focus Assist / Do Not Disturb.';
-			}
-
-			addNotification({
-				type: 'error',
-				title: 'Push Notification Test Failed',
-				message,
-				duration: 5000
-			});
 		} finally {
-			pushTestRuns = Math.max(0, pushTestRuns - 1);
+			pushTestsInFlight -= 1;
 		}
 	}
 </script>

@@ -289,16 +289,6 @@ export class CodexEngine implements AIEngine {
 			// persistent client) so the active Profile scopes them correctly.
 			const artifactsContext = buildArtifactsPromptContext(profileId);
 			const input = await buildCodexInput(prompt, artifactsContext || undefined);
-			// Re-apply auth immediately before spawning (RACE-01): the turn-level
-			// apply above runs before several awaits (skills sync, re-init,
-			// input build), during which a concurrent turn for another account
-			// could swap auth.json — leaving this turn on the wrong account.
-			// applyAccountAuth is sync + idempotent (writes only on drift), so
-			// this pair (re-apply → runStreamed) has no yield between it and is
-			// atomic under Bun's single thread.
-			if (activeAccount) {
-				applyAccountAuth(activeAccount);
-			}
 			const { events } = await thread.runStreamed(input, {
 				signal: controller.signal,
 			});
