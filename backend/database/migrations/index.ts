@@ -76,6 +76,7 @@ import * as migration074 from './074_create_work_tables';
 import * as migration075 from './075_create_deploy_bindings';
 import * as migration076 from './076_remove_memory_code_graph';
 import * as migration077 from './077_create_integration_db_links';
+import * as migration078 from './078_create_worktree_branch_tables';
 
 // Export all migrations in order
 export const migrations = [
@@ -540,6 +541,12 @@ export const migrations = [
 		description: migration077.description,
 		up: migration077.up,
 		down: migration077.down
+	},
+	{
+		id: '078',
+		description: migration078.description,
+		up: migration078.up,
+		down: migration078.down
 	}
 ];
 

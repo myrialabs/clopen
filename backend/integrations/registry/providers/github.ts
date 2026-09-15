@@ -39,6 +39,7 @@ export default defineProvider({
 	description:
 		'Issues, pull requests and Actions for the repository this project pushes to. Start work on an issue in its own worktree, open and merge pull requests, and send a failing CI run into the chat.',
 	docsUrl: 'https://github.com/settings/tokens/new?scopes=repo,read:org&description=Clopen',
+	consoleUrl: 'https://github.com',
 	authMethod: 'api-key',
 	capabilities: ['work', 'agent-tools'],
 	// Connecting GitHub means "show me my work", not "give every agent GitHub

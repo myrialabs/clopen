@@ -140,6 +140,24 @@
 			into <span class="font-medium text-slate-800 dark:text-slate-200">{targetLabel}</span>.
 		</p>
 
+		<!--
+			Said once, where the misunderstanding would happen. A worktree with its
+			own database branch has had migrations run against THAT database; moving
+			the files does not move the schema, and the migration still has to be run
+			against the main project's database. Nothing else on screen says so, and
+			the failure is silent until something queries a column that is not there.
+		-->
+		{#if worktree?.branch}
+			<p class="flex items-start gap-2 text-xs text-slate-500 dark:text-slate-500 leading-relaxed">
+				<Icon name="lucide:database" class="w-3.5 h-3.5 mt-0.5 shrink-0" />
+				<span>
+					This moves files, not schema. Changes made to the
+					{worktree.branch.noun} "{worktree.branch.branchName}" stay there — run the
+					migrations against {targetLabel}'s own database.
+				</span>
+			</p>
+		{/if}
+
 		{#if isLoading}
 			<div class="flex items-center gap-2.5 py-10 justify-center text-sm text-slate-500">
 				<Icon name="lucide:loader-circle" class="w-4 h-4 animate-spin" />

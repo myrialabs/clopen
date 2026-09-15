@@ -1,7 +1,7 @@
 <script lang="ts">
 	import Icon from '$frontend/components/common/display/Icon.svelte';
 	import MonacoCodeEditor from '$frontend/components/common/editor/MonacoCodeEditor.svelte';
-	import ConfirmDestructive from '../shared/ConfirmDestructive.svelte';
+	import ConfirmDestructive from '$frontend/components/common/overlay/ConfirmDestructive.svelte';
 	import ResultPanel from './ResultPanel.svelte';
 	import { dbClientStore } from '$frontend/stores/features/db-client.svelte';
 	import { debug } from '$shared/utils/logger';

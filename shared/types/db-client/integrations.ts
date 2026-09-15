@@ -52,6 +52,26 @@ export interface DbProviderInfo {
 	secretFields: DbLinkSecretField[];
 	/** Copy shown above the picker — where to find things, what will happen. */
 	description: string;
+	/**
+	 * Where this provider's credential is created.
+	 *
+	 * Filled from the INTEGRATION registry rather than declared twice: the hub
+	 * already knows every provider's `docsUrl`, and a second copy here would be
+	 * the one that goes stale. It exists so the link dialog can point a user at
+	 * the right page without naming a vendor in its own markup — which is how it
+	 * ended up telling someone connecting Neon where Supabase tokens live.
+	 */
+	docsUrl?: string;
+	/**
+	 * The provider's dashboard, for the things Clopen cannot do.
+	 *
+	 * Every provider has some — Neon has no organisation endpoints at all,
+	 * Supabase exposes no organisation update — and until now the dialog only
+	 * SAID so. A sentence that names a place without offering to go there leaves
+	 * the user to find it, which is the read-only-window feeling this surface
+	 * exists to remove. Filled from the integration registry, like `docsUrl`.
+	 */
+	consoleUrl?: string;
 }
 
 /** A remote database an account can reach but has not necessarily linked. */
@@ -122,6 +142,16 @@ export interface DbProviderCreateOptions {
 	canCreateGroup: boolean;
 	/** One sentence naming what creating a container costs. */
 	createGroupNotice: string;
+	/**
+	 * What can and cannot be done to a container from here, in one sentence.
+	 *
+	 * Provider-declared because the answer is provider-specific and the reason
+	 * is too: Supabase exposes no PATCH or DELETE for an organisation, so no
+	 * permission would help, while Neon exposes no create either. Hard-coding
+	 * one vendor's sentence made the dialog send a Neon user to Supabase's
+	 * dashboard.
+	 */
+	groupManagementNotice: string;
 }
 
 /** A link, as the panel sees it. Secret VALUES never cross this line. */

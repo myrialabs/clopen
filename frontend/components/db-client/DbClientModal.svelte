@@ -8,7 +8,7 @@
 	import SchemaTree from './sidebar/SchemaTree.svelte';
 	import SchemaTreeContextMenu from './sidebar/SchemaTreeContextMenu.svelte';
 	import type { ContextMenuItem } from './sidebar/context-menu-types';
-	import ConfirmDestructive from './shared/ConfirmDestructive.svelte';
+	import ConfirmDestructive from '$frontend/components/common/overlay/ConfirmDestructive.svelte';
 	import ConfirmTyped from './shared/ConfirmTyped.svelte';
 	import Checkbox from './shared/Checkbox.svelte';
 	import QueryEditor from './main/QueryEditor.svelte';
@@ -20,6 +20,7 @@
 	import ExportModal from './main/ExportModal.svelte';
 	import ImportModal from './main/ImportModal.svelte';
 	import SupabasePanel from './supabase/SupabasePanel.svelte';
+	import EnvVarsModal from './env/EnvVarsModal.svelte';
 	import { dbClientStore, type DbClientView } from '$frontend/stores/features/db-client.svelte';
 	import { dbAccountsStore } from '$frontend/stores/features/db-client-accounts.svelte';
 	import { ensureSqlCompletion } from './sql-completion';
@@ -66,6 +67,9 @@
 	let exportOpen = $state(false);
 	let exportPreselect = $state<string[]>([]);
 	let importOpen = $state(false);
+	let envOpen = $state(false);
+	let envConnectionId = $state<string | null>(null);
+	let envDatabase = $state<string | null>(null);
 	let createRoutineOpen = $state(false);
 	let createRoutineType = $state<'function' | 'procedure'>('function');
 	let createRoutineQuery = $state('');
@@ -231,6 +235,20 @@
 
 	function onConnectionPicked(): void {
 		if (isMobile) isMobileMenuOpen = false;
+	}
+
+	/**
+	 * Open the environment panel for one connection.
+	 *
+	 * Mounted ONCE here rather than per entry point: the sidebar list and the
+	 * footer both open it, and two instances of a store-backed panel would race
+	 * each other's preview.
+	 */
+	function openEnv(connectionId: string, database: string): void {
+		envConnectionId = connectionId;
+		envDatabase = database;
+		envOpen = true;
+		isMobileMenuOpen = false;
 	}
 
 	function backToConnections(): void {
@@ -1106,9 +1124,14 @@
 						<!-- block 2: content -->
 						<div class="flex-1 min-h-0 flex flex-col bg-white dark:bg-slate-900 rounded-xl border border-slate-200 dark:border-slate-800 overflow-hidden">
 							{#if activeView === 'overview'}
+								<!-- Only inside a DATABASE. A connection with none of its own
+								     opens on the database list, and a URL built there would
+								     name the server and no database — a string that connects
+								     to the wrong place rather than failing. -->
 								<OverviewPanel
 									connectionId={activeConnection.id}
 									database={scopeDb}
+									onShowEnv={scopeDb ? () => openEnv(activeConnection.id, scopeDb) : undefined}
 								/>
 							{:else if activeView === 'query'}
 								<QueryEditor
@@ -1436,3 +1459,14 @@
 		{/snippet}
 	</Modal>
 {/if}
+
+<EnvVarsModal
+	bind:isOpen={envOpen}
+	connectionId={envConnectionId}
+	database={envDatabase}
+	onClose={() => {
+		envOpen = false;
+		envConnectionId = null;
+		envDatabase = null;
+	}}
+/>

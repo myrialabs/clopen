@@ -14,7 +14,8 @@ import {
 	countPendingChanges,
 	createWorktree,
 	getWorktreeDiskUsage,
-	removeWorktree
+	removeWorktree,
+	worktreeBranching
 } from '../../worktrees';
 import { ws } from '$backend/utils/ws';
 import { debug } from '$shared/utils/logger';
@@ -32,7 +33,9 @@ export const worktreeSchema = t.Object({
 	created_at: t.String(),
 	last_opened_at: t.Optional(t.String()),
 	last_applied_at: t.Optional(t.String()),
-	sessionCount: t.Number()
+	sessionCount: t.Number(),
+	/** The database branch this worktree owns, when the project is branching. */
+	branch: t.Optional(t.Any())
 });
 
 /**
@@ -52,7 +55,11 @@ export function serializeWorktree(worktree: Worktree) {
 		created_at: worktree.created_at,
 		last_opened_at: worktree.last_opened_at ?? undefined,
 		last_applied_at: worktree.last_applied_at ?? undefined,
-		sessionCount: worktreeQueries.countSessions(worktree.id)
+		sessionCount: worktreeQueries.countSessions(worktree.id),
+		// Carried on the row rather than fetched per worktree: the switcher shows
+		// it on every line, and a second round trip per worktree to render one
+		// badge would make opening the menu cost a request per tree.
+		branch: worktreeBranching.forWorktree(worktree.id) ?? undefined
 	};
 }
 
@@ -75,12 +82,27 @@ export const worktreeCrudHandler = createRouter()
 
 	.http('worktrees:create', {
 		data: t.Object({
-			name: t.String({ minLength: 1, maxLength: 80 })
+			name: t.String({ minLength: 1, maxLength: 80 }),
+			/** Skip this project's database branch for this one worktree. */
+			skipBranch: t.Optional(t.Boolean()),
+			dataMode: t.Optional(
+				t.Union([t.Literal('schema-data'), t.Literal('schema'), t.Literal('empty')])
+			)
 		}),
 		response: t.Object({
 			worktree: worktreeSchema,
 			fileCount: t.Number(),
-			carriedIgnoredFiles: t.Boolean()
+			carriedIgnoredFiles: t.Boolean(),
+			branch: t.Nullable(t.Any()),
+			/**
+			 * Why no branch was cut, when one was expected.
+			 *
+			 * Part of a SUCCESSFUL response on purpose. The worktree is what the
+			 * user asked for and it exists; a provider outage or a branch limit is
+			 * something they need to know rather than a reason to report the whole
+			 * action as failed.
+			 */
+			branchError: t.Nullable(t.String())
 		})
 	}, async ({ data, conn }) => {
 		const { projectId, userId } = requireCurrentProjectAccess(conn);
@@ -88,7 +110,9 @@ export const worktreeCrudHandler = createRouter()
 		const result = await createWorktree({
 			projectId,
 			name: data.name,
-			createdBy: userId
+			createdBy: userId,
+			skipBranch: data.skipBranch,
+			dataMode: data.dataMode
 		});
 
 		broadcastWorktrees(projectId);
@@ -96,7 +120,9 @@ export const worktreeCrudHandler = createRouter()
 		return {
 			worktree: serializeWorktree(result.worktree),
 			fileCount: result.fileCount,
-			carriedIgnoredFiles: result.carriedIgnoredFiles
+			carriedIgnoredFiles: result.carriedIgnoredFiles,
+			branch: result.branch,
+			branchError: result.branchError
 		};
 	})
 

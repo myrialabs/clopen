@@ -41,6 +41,10 @@ function slugify(text: string, maxWords = 6): string {
 	return text
 		.toLowerCase()
 		.normalize('NFKD')
+		// Combining marks are dropped rather than left for the character class to
+		// turn into spaces: `ü` decomposes to `u` + a diaeresis, and without this
+		// an issue titled "münchen" produces the branch `mu-nchen`.
+		.replace(/[\u0300-\u036f]/g, '')
 		.replace(/[^\w\s-]/g, ' ')
 		.trim()
 		.split(/[\s_-]+/)

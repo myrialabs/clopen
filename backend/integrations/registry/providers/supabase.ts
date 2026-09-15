@@ -40,6 +40,7 @@ export default defineProvider({
 	description:
 		'Postgres projects as connections in DB Client, with the Supabase surface on top: migrations and what is still pending, RLS policies and the security advisor, edge functions, storage buckets, auth users, and generated TypeScript types written into the project.',
 	docsUrl: 'https://supabase.com/dashboard/account/tokens',
+	consoleUrl: 'https://supabase.com/dashboard',
 	authMethod: 'api-key',
 	capabilities: ['database'],
 	credentialFields: [

@@ -12,9 +12,14 @@
 
 import ws from '$frontend/utils/ws';
 import type { ChatSession } from '$shared/types/database/schema';
+import type { BranchDataMode, WorktreeBranchInfo } from '$shared/types/worktree-branching';
 import { projectState, setProjectRootOverride } from '$frontend/stores/core/projects.svelte';
 import { raiseSwitchBarrier, lowerSwitchBarrier } from '$frontend/stores/ui/project-workspace.svelte';
 import { makeScopeKey, parseScopeKey } from '$shared/utils/workspace-scope';
+import {
+	clearBranchingState,
+	registerBranchingListeners
+} from '$frontend/stores/features/worktree-branching.svelte';
 import { debug } from '$shared/utils/logger';
 
 export type WorktreeStatus = 'active' | 'applied' | 'archived';
@@ -35,6 +40,27 @@ export interface WorktreeSummary {
 	last_opened_at?: string;
 	last_applied_at?: string;
 	sessionCount: number;
+	/**
+	 * The database branch this worktree owns.
+	 *
+	 * Carried on the row rather than fetched per worktree: the switcher renders
+	 * a badge for it on every line, and asking once per tree would make opening
+	 * the menu cost a request per worktree.
+	 */
+	branch?: WorktreeBranchInfo;
+}
+
+/**
+ * What creating a worktree produced.
+ *
+ * `branchError` rides on a SUCCESS. The worktree exists either way, so a
+ * provider outage or a branch limit is something the dialog reports beside a
+ * worktree it also created — never a reason to report the whole action failed.
+ */
+export interface WorktreeCreateResult {
+	worktree: WorktreeSummary;
+	branch: WorktreeBranchInfo | null;
+	branchError: string | null;
 }
 
 export interface WorktreeChange {
@@ -291,14 +317,28 @@ async function refreshRootDependentPanels(): Promise<void> {
 // MUTATIONS
 // ========================================
 
-export async function createWorktree(name: string): Promise<WorktreeSummary | null> {
+export async function createWorktree(
+	name: string,
+	options: { skipBranch?: boolean; dataMode?: BranchDataMode } = {}
+): Promise<WorktreeCreateResult | null> {
 	if (!projectState.currentProject) return null;
 
 	worktreeState.isCreating = true;
 	try {
-		const result = await ws.http('worktrees:create', { name });
+		const result = await ws.http('worktrees:create', {
+			name,
+			// Sent even when false: the backend reads an ABSENT flag as "this caller
+			// never asked" and falls back to the project default, which would
+			// silently override a box the user just ticked.
+			...(options.skipBranch === undefined ? {} : { skipBranch: options.skipBranch }),
+			...(options.dataMode ? { dataMode: options.dataMode } : {})
+		});
 		await loadWorktrees();
-		return result.worktree as WorktreeSummary;
+		return {
+			worktree: result.worktree as WorktreeSummary,
+			branch: (result.branch ?? null) as WorktreeBranchInfo | null,
+			branchError: result.branchError ?? null
+		};
 	} catch (error) {
 		debug.error('worktree', 'Failed to create worktree:', error);
 		throw error;
@@ -385,10 +425,16 @@ export function initWorktreeEvents(): void {
 		if (payload.projectId !== projectState.currentProject?.id) return;
 		void refreshRootDependentPanels();
 	});
+
+	registerBranchingListeners();
 }
 
 export function clearWorktreeState(): void {
 	worktreeState.worktrees = [];
 	worktreeState.activeId = null;
 	lastAppliedScope = null;
+	// The branching state is per PROJECT — binding, dotenv files, branches — so
+	// it has to go with the worktrees rather than linger and describe a project
+	// that is no longer on screen.
+	clearBranchingState();
 }

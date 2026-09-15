@@ -25,7 +25,8 @@
 import type {
 	DbProviderAdapter,
 	DbProviderContext,
-	DbProviderEndpoint
+	DbProviderEndpoint,
+	DbProviderEnvHints
 } from '../types';
 import type {
 	DbProviderCreateGroup,
@@ -196,6 +197,25 @@ export const supabaseDbAdapter: DbProviderAdapter = {
 					isRequired: true
 				}
 			]
+		};
+	},
+
+	/**
+	 * Supabase documents the `POSTGRES_*` names Vercel's integration injects, so
+	 * that is the preset. The direct endpoint is offered as the non-pooling half
+	 * WITH its caveat attached rather than silently: on projects created since
+	 * 2024 it answers only over IPv6, so a user on an IPv4-only network gets a
+	 * URL that resolves and never connects — and being told that beats
+	 * discovering it inside a migration.
+	 */
+	envHints(): DbProviderEnvHints {
+		return {
+			urlPrefix: 'POSTGRES',
+			altKeySuffix: '_NON_POOLING',
+			directMode: SUPABASE_MODES.direct,
+			pooledModes: [SUPABASE_MODES.poolerSession, SUPABASE_MODES.poolerTransaction],
+			directNotice:
+				'Supabase\u2019s direct endpoint is IPv6-only on projects created since 2024, so check it resolves before relying on it.'
 		};
 	},
 
@@ -378,7 +398,10 @@ export const supabaseDbAdapter: DbProviderAdapter = {
 			emptyGroupsNotice:
 				'This token reaches no organisation — create one, or regenerate the token with Organizations Read.',
 			canCreateGroup: true,
-			createGroupNotice: 'A new organisation is a billing entity and starts on the free plan.'
+			createGroupNotice: 'A new organisation is a billing entity and starts on the free plan.',
+			// `/v1/organizations/{slug}` is GET-only, so renaming and deleting are
+			// absent rather than broken and no permission would change that.
+			groupManagementNotice: "Rename or delete an organisation in Supabase's dashboard."
 		};
 	},
 

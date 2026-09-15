@@ -26,7 +26,7 @@ export const CAPABILITY_SURFACES: Record<IntegrationCapability, string> = {
 	work: 'More Tools → Issues & PRs',
 	deployments: 'More Tools → Deployments',
 	database: 'DB Client',
-	'worktree-branching': 'Worktree manager',
+	'worktree-branching': 'The worktree switcher → Database branching',
 	notifications: 'Notification channels',
 	'inbound-events': 'Inbound webhook gateway'
 };

@@ -26,7 +26,7 @@ import type {
 } from '$shared/types/db-client';
 import { connectionManager } from '../connection-manager';
 import { getDbProvider, listDbProviders } from '../providers/registry';
-import type { DbProviderAdapter, DbProviderContext } from '../providers/types';
+import type { DbProviderAdapter, DbProviderContext, DbProviderEndpoint } from '../providers/types';
 import { connectionIdOf } from './projector';
 import { debug } from '$shared/utils/logger';
 
@@ -81,6 +81,25 @@ async function reprojectAndRelease(accountId: string): Promise<void> {
 function defaultModeOf(adapter: DbProviderAdapter): string {
 	const modes = adapter.info().modes;
 	return (modes.find((mode) => mode.isDefault) ?? modes[0])?.id ?? 'default';
+}
+
+/**
+ * Ask a provider where a database answers, and split the answer in two.
+ *
+ * An endpoint is stored in the link's `config_json`; a secret goes in
+ * `secrets`, which is the sealed column. A provider that can resolve its own
+ * credential — Neon reveals a role's password, Supabase cannot — returns it
+ * alongside the endpoint, and this is the one place the two are separated. Not
+ * splitting them would write a working password into an unsealed column, which
+ * is precisely what `Task 1`'s encryption layer exists to prevent.
+ */
+async function resolveEndpoint(
+	adapter: DbProviderAdapter,
+	account: IntegrationAccountRow,
+	target: { remoteRef: string; mode: string }
+): Promise<{ endpoint: DbProviderEndpoint; secrets: Record<string, string> }> {
+	const { secrets, ...endpoint } = await adapter.resolveEndpoint(contextFor(account), target);
+	return { endpoint, secrets: secrets ?? {} };
 }
 
 function toLinkInfo(link: IntegrationDbLinkRow, account: IntegrationAccountRow): DbAccountLinkInfo {
@@ -155,7 +174,15 @@ async function waitForReady(
 export const dbLinks = {
 	/** Every database provider, as the link dialog renders them. */
 	providers(): DbProviderInfo[] {
-		return listDbProviders().map((adapter) => adapter.info());
+		// `docsUrl` and `consoleUrl` come from the INTEGRATION registry rather than
+		// from the adapter, so a provider declares where its credential is created
+		// and where its dashboard lives exactly once. The link dialog renders both
+		// per provider instead of naming a vendor in its own markup.
+		return listDbProviders().map((adapter) => ({
+			...adapter.info(),
+			docsUrl: getProvider(adapter.provider)?.docsUrl,
+			consoleUrl: getProvider(adapter.provider)?.consoleUrl
+		}));
 	},
 
 	/** Connected, enabled accounts that can supply database connections. */
@@ -228,12 +255,9 @@ export const dbLinks = {
 		// password only exists in memory until this row is written. Storing the
 		// secret first and resolving later is the only ordering where a slow
 		// provision cannot strand a password that nothing can recover.
-		const endpoint = input.deferEndpoint
+		const resolved = input.deferEndpoint
 			? null
-			: await adapter.resolveEndpoint(contextFor(account), {
-				remoteRef: input.remoteRef,
-				mode
-			});
+			: await resolveEndpoint(adapter, account, { remoteRef: input.remoteRef, mode });
 
 		const link = integrationDbLinkQueries.create({
 			accountId: input.accountId,
@@ -241,8 +265,8 @@ export const dbLinks = {
 			label: (input.label ?? '').trim() || input.remoteRef,
 			driver: adapter.driver,
 			mode,
-			secrets: input.secrets,
-			config: endpoint ? { endpoint } : {},
+			secrets: { ...input.secrets, ...(resolved?.secrets ?? {}) },
+			config: resolved ? { endpoint: resolved.endpoint } : {},
 			detected: input.detected
 		});
 
@@ -402,10 +426,17 @@ export const dbLinks = {
 		// still provisioning when it was created. Saving it is the retry, so the
 		// user never has to know which button re-resolves.
 		if (patch.refreshEndpoint || mode !== link.mode || !config.endpoint) {
-			config.endpoint = await adapter.resolveEndpoint(contextFor(account), {
+			const resolved = await resolveEndpoint(adapter, account, {
 				remoteRef: link.remote_ref,
 				mode
 			});
+			config.endpoint = resolved.endpoint;
+			// A provider that resolves its own credential re-resolves it here, which
+			// is what makes a password rotated at Neon picked up by saving the link
+			// rather than by finding a second button.
+			for (const [name, value] of Object.entries(resolved.secrets)) {
+				if (value) secrets[name] = value;
+			}
 		}
 
 		integrationDbLinkQueries.update(linkId, {
