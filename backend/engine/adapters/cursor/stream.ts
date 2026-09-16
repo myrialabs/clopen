@@ -31,10 +31,11 @@ import { engineQueries } from '$backend/database/queries/engine-queries';
 import { syncSkills } from '$backend/skills';
 import { syncEngineArtifacts, buildArtifactsPromptContext } from '$backend/engine/artifact-sync';
 import { artifactFilter } from '$backend/profiles';
+import { resolvePermissionsFromDb, excludedBuiltinTools } from '$backend/permissions';
 import { getCursorMcpConfig } from '../../../mcp';
 import { subagentQueries } from '$backend/database/queries';
 import { readSubagentMd } from '$backend/subagents/store';
-import { buildJsonPrompt, extractJson } from '../../structured-helpers';
+import { buildJsonPrompt, extractJson, emptyGenerationError } from '../../structured-helpers';
 import { EngineRuns } from '../run-registry';
 import { getActiveCursorAccount, resolveCursorApiKey } from './credential';
 import { getCursorStore } from './environment';
@@ -177,6 +178,20 @@ export class CursorEngine implements AIEngine {
 		await syncSkills('cursor', profileId);
 		await syncEngineArtifacts('cursor', profileId);
 
+		// ── Permissions → disallowedTools ──
+		// Cursor exposes no per-call permission hook, but `AgentOptions` takes a
+		// `disallowedTools` list that is applied before the toolset is offered to
+		// the model — strictly stronger than a hook, since a blocked tool is never
+		// even visible. Names must come from the SDK's own vocabulary (see
+		// ENGINE_BUILTIN_TOOLS.cursor); an unknown one throws at Agent.create.
+		// Not persisted on the agent, so it is passed to BOTH create and resume.
+		const permissions = resolvePermissionsFromDb('cursor', options.mcpContext?.projectId, profileId);
+		const disallowedTools = excludedBuiltinTools(permissions, 'cursor');
+		if (disallowedTools.length > 0) {
+			debug.log('engine', `Cursor permissions: withholding ${disallowedTools.length} tool(s) — ${disallowedTools.join(', ')}`);
+		}
+		const toolPolicy = disallowedTools.length > 0 ? { disallowedTools } : {};
+
 		// ── Output queue merging the pull stream with the ask tool's push emissions ──
 		const queue = new EventQueue<EngineOutput>();
 		const converterHolder: { current: ReturnType<typeof createCursorMessageConverter> | null } = { current: null };
@@ -224,6 +239,7 @@ export class CursorEngine implements AIEngine {
 					apiKey,
 					model: { id: modelId },
 					local: localOptions,
+					...toolPolicy,
 					...(Object.keys(mcpServers).length ? { mcpServers } : {}),
 					...(agents ? { agents } : {}),
 				})
@@ -231,6 +247,7 @@ export class CursorEngine implements AIEngine {
 					apiKey,
 					model: { id: modelId },
 					local: localOptions,
+					...toolPolicy,
 					...(Object.keys(mcpServers).length ? { mcpServers } : {}),
 					...(agents ? { agents } : {}),
 				});
@@ -246,8 +263,13 @@ export class CursorEngine implements AIEngine {
 		converterHolder.current = converter;
 
 		// Build the user turn (text + image attachments).
+		//
+		// The artifact context rides the user message because `@cursor/sdk` has no
+		// system-prompt option — `AgentOptions` exposes model/tools/mcpServers/agents
+		// and nothing else. It is rebuilt per turn on purpose: the active Profile can
+		// change mid-session, and a stale advertisement is worse than a repeated one.
 		const promptText = prompt.content.filter(b => b.type === 'text').map(b => (b.type === 'text' ? b.text : '')).join('\n');
-		const artifacts = buildArtifactsPromptContext(profileId);
+		const artifacts = buildArtifactsPromptContext('cursor', profileId);
 		const text = artifacts ? `${artifacts}\n\n${promptText}` : promptText;
 		const images: SDKImage[] = [];
 		for (const b of prompt.content) {
@@ -394,7 +416,7 @@ export class CursorEngine implements AIEngine {
 		try {
 			const run = await agent.send(buildJsonPrompt(prompt, schema));
 			const result = await run.wait();
-			if (!result.result?.trim()) throw new Error('Cursor returned no structured output');
+			if (!result.result?.trim()) throw emptyGenerationError('Cursor');
 			return extractJson<T>(result.result);
 		} finally {
 			try { agent.close(); } catch { /* ignore */ }

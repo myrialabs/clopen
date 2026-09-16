@@ -17,7 +17,7 @@
 		setGitOp
 	} from '$frontend/stores/features/git-workspace.svelte';
 	import ws from '$frontend/utils/ws';
-	import { resolveGenerationModel } from '$frontend/utils/model-override';
+	import { resolveGenerationModel, GENERATION_TIMEOUT_MS } from '$frontend/utils/model-override';
 	import GitMoreMenu, { type GitMoreAction } from '$frontend/components/git/GitMoreMenu.svelte';
 
 	interface Props {
@@ -258,7 +258,7 @@
 				format,
 				...(repoPath && { repoPath }),
 				...(extra && { customPrompt: extra })
-			});
+			}, GENERATION_TIMEOUT_MS);
 			// Route the result to the project it was generated for — only touches
 			// the live commit box if that project is still active.
 			if (repoPath) {
@@ -296,7 +296,7 @@
 				maxWords: branchConfig?.maxWords ?? 3,
 				...(repoPath && { repoPath }),
 				...(extra && { customPrompt: extra })
-			});
+			}, GENERATION_TIMEOUT_MS);
 			updateBranchDraft(result.branchName);
 			updateBranchDraftVisible(true);
 		} catch (err) {

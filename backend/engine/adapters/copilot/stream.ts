@@ -19,7 +19,7 @@ import type {
 import { loadEngineSdk } from '$backend/engine/sdk-loader';
 import type { EngineOutput, EngineModel } from '$shared/types/unified';
 import type { AIEngine, EngineQueryOptions, StructuredGenerationOptions } from '../../types';
-import { buildJsonPrompt, extractJson } from '../../structured-helpers';
+import { buildJsonPrompt, extractJson, emptyGenerationError } from '../../structured-helpers';
 import { engineQueries } from '$backend/database/queries/engine-queries';
 import { resolveOsPath, getEngineUserConfigDir } from '$backend/utils/paths';
 import { debug } from '$shared/utils/logger';
@@ -279,7 +279,7 @@ export class CopilotEngine implements AIEngine {
 		// the authoritative per-session signal (synthetic commands/subagents are
 		// stripped from the global file; the native skill mirror still loads the
 		// filtered folders).
-		const artifactsContext = buildArtifactsPromptContext(profileId);
+		const artifactsContext = buildArtifactsPromptContext('copilot', profileId);
 
 		// Resolve the permission policy once per stream; onPermissionRequest below
 		// enforces it (Copilot otherwise approves every tool via approveAll).
@@ -741,7 +741,7 @@ export class CopilotEngine implements AIEngine {
 		try {
 			const final = await session.sendAndWait({ prompt: jsonPrompt });
 			if (!final?.data?.content) {
-				throw new Error('Copilot returned no assistant message content');
+				throw emptyGenerationError('GitHub Copilot', 'no assistant message content');
 			}
 			return extractJson<T>(final.data.content);
 		} finally {

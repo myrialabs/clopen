@@ -80,13 +80,17 @@ function nativeDir(type: ArtifactType, ctx: ArtifactContext): string | null {
 			default: return null;
 		}
 	}
+	// LEGACY. Commands are no longer materialized per engine — a `/slash` skill is
+	// expanded by Clopen itself before the prompt reaches any engine (migration
+	// 079), which is what makes them behave identically on all eight engines
+	// instead of only the four with a native command directory. These paths are
+	// kept so `stripLegacyCommandArtifacts` can still clean out files an earlier
+	// version wrote here.
 	if (type === 'command') {
 		switch (engine) {
 			case 'claude': return scope === 'global' ? join(base, 'commands') : proj ? join(proj, '.claude', 'commands') : null;
 			case 'opencode': return scope === 'global' ? join(base, 'opencode', 'command') : proj ? join(proj, '.opencode', 'command') : null;
 			case 'codex': return scope === 'global' ? join(base, 'prompts') : null;
-			// Pi's file-based prompt templates live in `<agentDir>/prompts` (global)
-			// and `.pi/prompts` (project) — https://pi.dev/docs/latest/prompt-templates.
 			case 'pi': return scope === 'global' ? join(base, 'prompts') : proj ? join(proj, '.pi', 'prompts') : null;
 			default: return null;
 		}
@@ -236,14 +240,54 @@ function unsupported(): ArtifactResolution {
  * fresh per-query CLI over an isolated/pruned dir, so the on-disk filter alone
  * already scopes correctly.
  */
-export const PROMPT_SCOPED_ENGINES: readonly ArtifactEngine[] = ['opencode', 'codex', 'copilot'];
+export const PROMPT_SCOPED_ENGINES: readonly ArtifactEngine[] = ['opencode', 'codex', 'copilot', 'cline', 'cursor'];
 export function isPromptScopedEngine(engine: ArtifactEngine): boolean {
 	return PROMPT_SCOPED_ENGINES.includes(engine);
+}
+
+/**
+ * Engines whose runtime actually READS the global memory file this matrix would
+ * write (`CLAUDE.md` / `QWEN.md` / `AGENTS.md` inside the isolated config dir).
+ *
+ * Cline and Cursor are in-process SDKs: they build their own system prompt and
+ * resolve ambient rules from the WORKSPACE, never from an engine config dir. A
+ * managed block written there is a file nobody reads — and worse, it silently
+ * swallowed Instructions, which had no other delivery channel for them. Both now
+ * take the whole artifact context through the prompt instead (see
+ * `buildArtifactsPromptContext`).
+ */
+const MEMORY_FILE_ENGINES: readonly ArtifactEngine[] = ['claude', 'codex', 'copilot', 'qwen', 'opencode', 'pi'];
+export function readsGlobalMemoryFile(engine: ArtifactEngine): boolean {
+	return MEMORY_FILE_ENGINES.includes(engine);
+}
+
+/**
+ * Engines that can actually DELEGATE to a Clopen-managed subagent, and so may be
+ * told the subagents exist:
+ *   - `claude`   — native `agents/` directory;
+ *   - `opencode` — agents baked inline into each per-Profile server;
+ *   - `cursor`   — native `agents` config on `Agent.create`;
+ *   - `cline` / `pi` — an in-process `Agent` dispatch tool (see each adapter's
+ *     `agent-tool.ts`).
+ *
+ * Codex, Copilot and Qwen have no surface Clopen can register a subagent with.
+ * They used to receive a preamble promising "specialized agent definitions you
+ * can delegate matching tasks to" with no way to do it — an invitation to
+ * hallucinate a delegation. They are told nothing instead.
+ */
+const SUBAGENT_CAPABLE_ENGINES: readonly ArtifactEngine[] = ['claude', 'opencode', 'cursor', 'cline', 'pi'];
+export function canDelegateSubagents(engine: ArtifactEngine): boolean {
+	return SUBAGENT_CAPABLE_ENGINES.includes(engine);
 }
 
 /** Whether a synthetic (non-native) target is best-effort/unverified for the UI. */
 export function isBestEffortTarget(type: ArtifactType, engine: ArtifactEngine): boolean {
 	if (type === 'instruction') return engine !== 'claude';
+	// A `/slash` skill is expanded by Clopen before the engine sees the prompt, so
+	// its delivery is engine-independent and never best-effort. Subagents are
+	// either supported natively/by a dispatch tool, or not advertised at all.
+	if (type === 'command') return false;
+	if (type === 'subagent') return canDelegateSubagents(engine) && engine !== 'claude' && engine !== 'opencode';
 	// Permissions are enforced at a runtime hook on Claude/Qwen/Copilot/OpenCode
 	// (OpenCode resolves the tool via its permission event's callID). Only Codex
 	// has no per-call hook, so it alone is best-effort.

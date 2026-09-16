@@ -26,7 +26,7 @@ import { showPanel } from '$frontend/stores/ui/workspace.svelte';
 import { showError, showInfo, showSuccess } from '$frontend/stores/ui/notification.svelte';
 import { closeWorkDialog } from '$frontend/stores/ui/quick-panels.svelte';
 import { loadWorktrees, switchToSession } from '$frontend/stores/features/worktrees.svelte';
-import { resolveGenerationModel } from '$frontend/utils/model-override';
+import { resolveGenerationModel, GENERATION_TIMEOUT_MS } from '$frontend/utils/model-override';
 import type { ChatSession } from '$shared/types/database/schema';
 import type {
 	CheckRun,
@@ -1078,7 +1078,13 @@ export const workStore = {
 	/** Draft a title and body. Uses the Git generator model override. */
 	async draftPullRequest(accountId: string, base: string, head: string): Promise<{ title: string; body: string }> {
 		const { engine, providerSlug, modelId } = resolveGenerationModel(settings.commitGenerator);
-		if (!modelId) throw new Error('No model configured. Pick one in Settings → Models.');
+		if (!modelId) {
+			throw new Error(
+				settings.commitGenerator?.useCustomModel
+					? 'No model is selected for the Git generator. Choose one in Settings → Models → Commit message.'
+					: 'No assistant model is selected. Choose one in Settings → Models.'
+			);
+		}
 
 		return (await ws.http('work:pr-draft', {
 			...scope(),
@@ -1088,7 +1094,7 @@ export const workStore = {
 			engine,
 			providerSlug,
 			modelId
-		})) as { title: string; body: string };
+		}, GENERATION_TIMEOUT_MS)) as { title: string; body: string };
 	},
 
 	async createPullRequest(input: {
