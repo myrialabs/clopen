@@ -13,6 +13,21 @@
 import { settings } from '$frontend/stores/features/settings.svelte';
 import type { EngineModel, EngineType } from '$shared/types/unified';
 
+/**
+ * Request budget for a call that runs a real model turn.
+ *
+ * The WS default is 30 seconds, which a reasoning model routinely exceeds on a
+ * large diff or a detailed artifact. The server kept working and eventually
+ * answered, but the client had already given up with "Request timeout:
+ * artifacts:generate (30000ms)" — the one outcome worse than a plain failure,
+ * because nothing tells the user the work actually succeeded.
+ *
+ * A long budget rather than none, for the reason the deployments store gives:
+ * an unbounded call can't tell "still thinking" from "this socket will never
+ * answer", and leaves a dialog spinning with no way out but a reload.
+ */
+export const GENERATION_TIMEOUT_MS = 3 * 60 * 1000;
+
 /** The model-override shape shared by `commitGenerator` and `artifactGenerator`. */
 export interface ModelOverride {
 	useCustomModel: boolean;

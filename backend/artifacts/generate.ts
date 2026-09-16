@@ -11,7 +11,7 @@
  */
 
 import { initializeEngine } from '$backend/engine';
-import { resolveGenerationTarget } from '$backend/engine/resolve-model';
+import { resolveGenerationTarget, GENERATION_SETTINGS } from '$backend/engine/resolve-model';
 import { getClopenDir } from '$backend/utils/paths';
 import type { EngineType } from '$shared/types/unified';
 import { debug } from '$shared/utils/logger';
@@ -95,7 +95,7 @@ ${purpose.trim()}
 Always write the draft in English, regardless of the language of the purpose. Be specific and immediately usable.`;
 
 	// The caller's providerSlug/account can be stale (see resolve-model.ts).
-	const target = await resolveGenerationTarget(engine, model.modelId, model.providerSlug);
+	const target = await resolveGenerationTarget(engine, model.modelId, model.providerSlug, GENERATION_SETTINGS.artifact);
 	const accountId = model.accountId ?? target.accountId;
 
 	debug.log('artifacts', `✨ Generating ${type} draft via ${model.engine}/${target.providerSlug}/${target.modelId}`);

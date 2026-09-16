@@ -1,9 +1,9 @@
 /**
  * Artifact framework — shared capability matrix for engine "extension" artifacts.
  *
- * Clopen manages several kinds of engine artifact (Agent Skills, custom slash
- * Commands, Subagents, project Instructions). They differ in file shape but share
- * one mechanic: a canonical source (DB metadata + on-disk store, or a repo file)
+ * Clopen manages several kinds of engine artifact (Agent Skills — which cover
+ * both model-invoked skills and user-invoked `/slash` prompts — Subagents, and
+ * project Instructions). They differ in file shape but share one mechanic: a canonical source (DB metadata + on-disk store, or a repo file)
  * is MATERIALIZED into the shape each engine consumes at stream start.
  *
  * Rather than hardcode that mechanic per feature (as the original Skills sync
@@ -43,6 +43,12 @@ export const ARTIFACT_ENGINES: ArtifactEngine[] = ['claude', 'codex', 'copilot',
  * is a runtime hook (see `backend/permissions/`), and the matrix entry only
  * describes the optional on-disk "honesty" file (Claude `settings.json`, Codex
  * `config.toml`) for engines that read one.
+ *
+ * `'command'` is LEGACY. Commands merged into Skills in migration 079: a command
+ * is a Skill whose `triggers` include `slash`, and Clopen expands `/<slug>` into
+ * the prompt itself rather than materializing a file each engine may or may not
+ * read. The type survives only so the sync path can clean up the directories and
+ * `CLOPEN:COMMANDS` blocks earlier versions wrote.
  */
 export type ArtifactType = 'skill' | 'command' | 'subagent' | 'instruction' | 'mcp' | 'permission';
 

@@ -50,7 +50,7 @@ import { buildOpenCodeInlineAgents } from '$backend/subagents';
 import { getOpenCodeProfileDisabledToolIds } from '$backend/mcp';
 import { resolvePermissionsFromDb, matchesAny, type ResolvedPermissions } from '$backend/permissions';
 import { formatSessionError, handleStreamError } from './error-handler';
-import { buildJsonPrompt, extractJson } from '../../structured-helpers';
+import { buildJsonPrompt, extractJson, emptyGenerationError } from '../../structured-helpers';
 import { EngineRuns } from '../run-registry';
 import { debug } from '$shared/utils/logger';
 
@@ -250,7 +250,7 @@ export class OpenCodeEngine implements AIEngine {
 			// so advertise the profile-scoped set PER-SESSION by prepending it as a
 			// leading context part each turn (authoritative for synthetic skills;
 			// advisory on top of the native command/agent dirs).
-			const artifactsContext = buildArtifactsPromptContext(profileId);
+			const artifactsContext = buildArtifactsPromptContext('opencode', profileId);
 			if (artifactsContext) {
 				promptParts.unshift({ type: 'text', text: artifactsContext });
 			}
@@ -1147,7 +1147,7 @@ export class OpenCodeEngine implements AIEngine {
 
 		const data = response.data;
 		if (!data) {
-			throw new Error('OpenCode returned empty response');
+			throw emptyGenerationError('OpenCode', 'no response body');
 		}
 
 		const parts = data.parts || [];
@@ -1166,9 +1166,7 @@ export class OpenCodeEngine implements AIEngine {
 		const source = textContent || collectText('reasoning');
 
 		if (!source) {
-			throw new Error(
-				`OpenCode returned no parseable content (received parts: ${parts.map((p: any) => p.type).join(', ') || 'none'})`
-			);
+			throw emptyGenerationError('OpenCode', `received parts: ${parts.map((p: any) => p.type).join(', ') || 'none'}`);
 		}
 
 		debug.log('engine', `[OC structured] Raw text: ${source.slice(0, 200)}`);

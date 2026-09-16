@@ -33,7 +33,7 @@ import { syncSkills } from '$backend/skills';
 import { syncEngineArtifacts, buildArtifactsPromptContext } from '$backend/engine/artifact-sync';
 import { artifactFilter } from '$backend/profiles';
 import { resolvePermissionsFromDb, isToolAllowed } from '$backend/permissions';
-import { buildJsonPrompt, extractJson } from '../../structured-helpers';
+import { buildJsonPrompt, extractJson, emptyGenerationError } from '../../structured-helpers';
 import { EngineRuns } from '../run-registry';
 import { subagentQueries } from '$backend/database/queries';
 import { readSubagentMd } from '$backend/subagents/store';
@@ -141,7 +141,7 @@ export class ClineEngine implements AIEngine {
 		} catch {
 			base = 'You are Cline, a highly skilled software engineer. Use the available tools to complete the user\'s coding task.';
 		}
-		const artifacts = buildArtifactsPromptContext(profileId);
+		const artifacts = buildArtifactsPromptContext('cline', profileId);
 		return artifacts ? `${base}\n\n${artifacts}` : base;
 	}
 
@@ -448,7 +448,7 @@ export class ClineEngine implements AIEngine {
 		});
 
 		const result = await agent.run(buildJsonPrompt(prompt, schema));
-		if (!result.outputText?.trim()) throw new Error('Cline returned no structured output');
+		if (!result.outputText?.trim()) throw emptyGenerationError('Cline');
 		return extractJson<T>(result.outputText);
 	}
 }

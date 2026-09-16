@@ -3,7 +3,7 @@
  * the Settings UI.
  */
 
-import { detectArtifacts, type DetectedArtifact, type ArtifactEngine } from '$backend/artifacts';
+import { detectArtifacts, ARTIFACT_ENGINES, type DetectedArtifact, type ArtifactEngine } from '$backend/artifacts';
 
 export interface DetectedSubagentGroup {
 	engine: ArtifactEngine;
@@ -11,10 +11,9 @@ export interface DetectedSubagentGroup {
 }
 
 export async function detectSubagents(projectPath?: string): Promise<DetectedSubagentGroup[]> {
-	const engines: ArtifactEngine[] = ['claude', 'codex', 'copilot', 'qwen', 'opencode', 'pi'];
 	const scope = projectPath ? 'project' : 'global';
 	const groups = await Promise.all(
-		engines.map(async engine => ({
+		ARTIFACT_ENGINES.map(async engine => ({
 			engine,
 			detected: await detectArtifacts('subagent', { engine, scope, projectPath })
 		}))

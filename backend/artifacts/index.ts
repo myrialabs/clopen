@@ -2,8 +2,8 @@
  * Artifact framework — public facade.
  *
  * The shared capability-matrix foundation used by every engine-artifact feature
- * (Skills, Commands, Subagents, Instructions). See `types.ts` for the model and
- * the reserved `'mcp'` slot rationale.
+ * (Skills, Subagents, Instructions). See `types.ts` for the model, the reserved
+ * `'mcp'` slot and the legacy `'command'` slot.
  */
 
 export type {
@@ -20,11 +20,19 @@ export type {
 } from './types';
 export { ARTIFACT_ENGINES } from './types';
 
-export { resolveArtifact, isBestEffortTarget, isPromptScopedEngine, PROMPT_SCOPED_ENGINES, memoryFileName } from './matrix';
+export {
+	resolveArtifact,
+	isBestEffortTarget,
+	isPromptScopedEngine,
+	readsGlobalMemoryFile,
+	canDelegateSubagents,
+	PROMPT_SCOPED_ENGINES,
+	memoryFileName
+} from './matrix';
 export { materializeArtifacts } from './sync';
 export type { MaterializeInput } from './sync';
 export { detectArtifacts, adoptArtifact } from './detect';
-export { markersFor, writeManagedBlock, readManagedBlock, stripManagedBlock } from './markers';
+export { markersFor, markersForType, MARKER_ID, writeManagedBlock, readManagedBlock, stripManagedBlock } from './markers';
 export { parseDoc, serializeDoc } from './frontmatter';
 export type { ParsedDoc } from './frontmatter';
 export { slugify, uniqueSlug, isValidSlug } from './slug';

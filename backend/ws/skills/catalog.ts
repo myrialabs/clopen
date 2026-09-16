@@ -10,7 +10,7 @@
 import { t } from 'elysia';
 import { createRouter } from '$shared/utils/ws-server';
 import { debug } from '$shared/utils/logger';
-import { listMarketplaceSkills, skillService } from '$backend/skills';
+import { listMarketplaceSkills, skillService, syncSkillsAllEngines } from '$backend/skills';
 
 const MARKETPLACE_SKILL_SCHEMA = t.Object({
 	ref: t.String(),
@@ -31,6 +31,9 @@ const SKILL_SCHEMA = t.Object({
 	marketplaceRef: t.Union([t.String(), t.Null()]),
 	version: t.Union([t.String(), t.Null()]),
 	license: t.Union([t.String(), t.Null()]),
+	triggers: t.Array(t.Union([t.Literal('auto'), t.Literal('slash')])),
+	argumentHint: t.Union([t.String(), t.Null()]),
+	uses: t.Array(t.String()),
 	enabled: t.Boolean(),
 	present: t.Boolean(),
 	createdAt: t.String()
@@ -75,5 +78,6 @@ export const skillCatalogHandler = createRouter()
 		debug.log('path', `skills:install ${data.ref}`);
 		const { ref, ...override } = data;
 		const skill = await skillService.install(ref, override);
+		await syncSkillsAllEngines();
 		return { skill };
 	});

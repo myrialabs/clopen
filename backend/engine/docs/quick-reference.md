@@ -29,7 +29,8 @@
 | AskUserQuestion event + HTTP fallback       | `opencode/stream.ts::resolveUserAnswer`, `claude/stream.ts::canUseTool` |
 | MCP servers exposed over HTTP (single source) | `backend/mcp/internal/remote-server.ts`, `backend/mcp/internal/config.ts::getOpenCodeMcpConfig` (and future `getXxxMcpConfig`) |
 | Materialize an artifact per engine (matrix)  | `backend/artifacts/matrix.ts::resolveArtifact`, generic writer `backend/artifacts/sync.ts`, scanner `backend/artifacts/detect.ts` (see §8.2) |
-| Per-stream artifact sync (Commands/Subagents/Instructions) | `backend/engine/artifact-sync.ts::syncEngineArtifacts` + `buildArtifactsPromptContext` — called from each `stream.ts` after `syncSkills` (see §8.3) |
+| Per-stream artifact sync (Subagents/Instructions + legacy Command cleanup) | `backend/engine/artifact-sync.ts::syncEngineArtifacts` + `buildArtifactsPromptContext` — called from each `stream.ts` after `syncSkills` (see §8.3) |
+| `/slash` skill expansion (all engines) | `backend/skills/invoke.ts::expandSlashInvocation`, applied in `backend/chat/stream-manager.ts` (see §8.6) |
 | Profile scoping (narrow active artifacts)   | `backend/profiles/service.ts::resolveActiveProfileId` + `artifactFilter` (see §8.4) |
 | Permission enforcement (runtime check)       | `backend/permissions/service.ts::resolvePermissionsFromDb` + `isToolAllowed` (see §8.4); Claude wires it into a `PreToolUse` hook in `claude/stream.ts` |
 | Auth-blob swap into shared CLI dotfile      | Pattern only (no implementation yet); see §3.3 callout + §10.13 |

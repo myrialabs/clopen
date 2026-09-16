@@ -9,7 +9,7 @@ import { createRouter } from '$shared/utils/ws-server';
 import { execGit } from '../../git/git-executor';
 import { buildBudgetedStagedDiff, BRANCH_NAME_BUDGET } from './diff-budget';
 import { initializeEngine } from '../../engine';
-import { resolveGenerationTarget } from '../../engine/resolve-model';
+import { resolveGenerationTarget, GENERATION_SETTINGS } from '../../engine/resolve-model';
 import type { EngineType } from '$shared/types/unified';
 import type { GeneratedBranchName } from '$shared/types/git';
 import {
@@ -171,7 +171,7 @@ export const branchNameHandler = createRouter()
 		const prompt = `${instructions}${extra ? `\n\nAdditional constraints:\n${extra}` : ''}\n\n${diff.text}`;
 
 		// The caller's providerSlug/account can be stale (see resolve-model.ts).
-		const target = await resolveGenerationTarget(engine, data.modelId, data.providerSlug);
+		const target = await resolveGenerationTarget(engine, data.modelId, data.providerSlug, GENERATION_SETTINGS.commit);
 
 		debug.log('git', `Generating branch name via ${engineType}/${target.providerSlug}/${target.modelId}`);
 

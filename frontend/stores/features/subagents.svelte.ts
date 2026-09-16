@@ -9,7 +9,7 @@
 
 import ws from '$frontend/utils/ws';
 import { debug } from '$shared/utils/logger';
-import type { DetectedGroup } from './commands.svelte';
+import type { DetectedGroup } from './skills.svelte';
 import type { EngineValueMap } from '$frontend/stores/features/artifacts';
 
 export interface InstalledSubagent {
