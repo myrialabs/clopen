@@ -24,7 +24,7 @@
 	import ProviderMark from '$frontend/components/common/display/ProviderMark.svelte';
 	import InlineError from '$frontend/components/common/display/InlineError.svelte';
 	import ConnectAccountModal from '$frontend/components/settings/integrations/ConnectAccountModal.svelte';
-	import ConfirmDestructive from '../shared/ConfirmDestructive.svelte';
+	import ConfirmDestructive from '$frontend/components/common/overlay/ConfirmDestructive.svelte';
 	import { dbAccountsStore, type DbClientAccountInfo } from '$frontend/stores/features/db-client-accounts.svelte';
 	import { dbClientStore } from '$frontend/stores/features/db-client.svelte';
 	import { integrationsStore } from '$frontend/stores/features/integrations.svelte';
@@ -55,6 +55,15 @@
 	let error = $state<string | null>(null);
 	let connectProvider = $state<IntegrationProviderInfo | null>(null);
 	let showAdvanced = $state(false);
+	/**
+	 * The header is showing the connect-a-provider list rather than the accounts.
+	 *
+	 * A toggle because the two are alternatives, not neighbours. Rendering both
+	 * at once put a dashed "Connect Supabase…" directly under a selected Neon
+	 * account, where it read as part of that selection — and it took the same
+	 * room whether or not the user had any intention of adding a second vendor.
+	 */
+	let showConnect = $state(false);
 
 	/**
 	 * Creating a database rather than picking one.
@@ -121,6 +130,28 @@
 		)
 	);
 
+	/**
+	 * Accounts grouped by provider.
+	 *
+	 * Two accounts of the SAME provider is the case a flat list cannot render:
+	 * both rows carry the same mark and differ only by a label the user chose,
+	 * so the vendor has to be said once above them rather than implied twice
+	 * inside them.
+	 */
+	const accountGroups = $derived.by(() => {
+		const byProvider = new Map<string, DbClientAccountInfo[]>();
+		for (const entry of accounts) {
+			const list = byProvider.get(entry.provider) ?? [];
+			list.push(entry);
+			byProvider.set(entry.provider, list);
+		}
+		return [...byProvider.entries()].map(([id, list]) => ({
+			provider: id,
+			name: dbAccountsStore.providers.find((entry) => entry.id === id)?.name ?? id,
+			accounts: list
+		}));
+	});
+
 	// Seed on open. `link` decides between the two shapes the dialog serves.
 	//
 	// The account list is read through `untrack`: this effect must run when the
@@ -130,6 +161,7 @@
 	// then silently unchosen.
 	$effect(() => {
 		if (!isOpen) return;
+		showConnect = false;
 		if (link) {
 			accountId = link.accountId;
 			remoteRef = link.remoteRef;
@@ -402,6 +434,9 @@
 			return;
 		}
 		connectProvider = null;
+		// Back to the accounts: the list the user was adding to now has the thing
+		// they added, and leaving the connect view up hides it.
+		showConnect = false;
 		// The new account has to reach this dialog's own list before it can be
 		// selected, so the provider list is re-read rather than patched.
 		await dbAccountsStore.load({ force: true });
@@ -456,46 +491,96 @@
 				</p>
 			</div>
 		{:else}
-			<!-- Step 1: which account -->
+			<!-- Step 1: which account.
+			     THREE SHAPES, because the question is a different one in each. With
+			     nothing connected there is no account to choose and the providers
+			     ARE the choice, so they are the primary control rather than a
+			     dashed afterthought under an empty list. With one account there is
+			     nothing to choose either, so it is one strip and adding a second
+			     vendor is a link. With several, the vendor is said once above its
+			     accounts — two accounts of one provider carry the same mark and
+			     differ only by a label, which a flat list cannot show. -->
 			{#if !isEditing}
-				<div class="flex flex-col gap-2">
-					<span class="text-xs font-semibold uppercase tracking-wider text-slate-500 dark:text-slate-400">
-						Account
-					</span>
-					{#if accounts.length > 0}
-						<div class="flex flex-col gap-1">
-							{#each accounts as entry (entry.accountId)}
-								{@render accountRow(entry)}
+				{#if accounts.length === 0}
+					<div class="flex flex-col gap-2">
+						<span class="text-xs font-semibold uppercase tracking-wider text-slate-500 dark:text-slate-400">
+							Connect a provider
+						</span>
+						<div class="grid gap-2 sm:grid-cols-2">
+							{#each connectable as entry (entry.id)}
+								<button
+									type="button"
+									class="flex items-center gap-2.5 px-3 py-2.5 rounded-lg border border-slate-200 dark:border-slate-700 text-left hover:border-violet-400 hover:bg-violet-500/5 transition-colors cursor-pointer"
+									onclick={() => openConnect(entry.id)}
+								>
+									<ProviderMark provider={entry.id} size="w-5 h-5" fallback="lucide:database" />
+									<span class="flex flex-col min-w-0">
+										<span class="text-sm font-medium text-slate-800 dark:text-slate-200 truncate">
+											{entry.name}
+										</span>
+										{#if entry.docsUrl}
+											<a
+												href={entry.docsUrl}
+												target="_blank"
+												rel="noopener noreferrer"
+												class="text-3xs text-slate-400 hover:text-violet-500 hover:underline truncate"
+												onclick={(event) => event.stopPropagation()}
+											>Where the credential lives ↗</a>
+										{/if}
+									</span>
+									<Icon name="lucide:arrow-right" class="w-3.5 h-3.5 ml-auto shrink-0 text-slate-400" />
+								</button>
 							{/each}
 						</div>
-					{/if}
-					{#each connectable as entry (entry.id)}
-						<button
-							type="button"
-							class="flex items-center gap-2 px-3 h-10 rounded-lg border border-dashed border-slate-300 dark:border-slate-700 text-left hover:border-violet-400 hover:bg-violet-500/5 transition-colors cursor-pointer"
-							onclick={() => openConnect(entry.id)}
-						>
-							<ProviderMark provider={entry.id} size="w-4 h-4" fallback="lucide:database" />
-							<span class="text-sm text-slate-700 dark:text-slate-300">Connect {entry.name}…</span>
-							<Icon name="lucide:arrow-right" class="w-3.5 h-3.5 ml-auto text-slate-400" />
-						</button>
-					{/each}
+					</div>
+				{:else}
+					<div class="flex flex-col gap-2">
+						<div class="flex items-center justify-between gap-2">
+							<span class="text-xs font-semibold uppercase tracking-wider text-slate-500 dark:text-slate-400">
+								{accounts.length === 1 ? 'Account' : 'Accounts'}
+							</span>
+							{#if connectable.length > 0}
+								<button
+									type="button"
+									class="text-xs text-violet-600 dark:text-violet-400 hover:underline cursor-pointer"
+									onclick={() => (showConnect = !showConnect)}
+								>
+									{showConnect ? 'Back to accounts' : 'Connect another provider'}
+								</button>
+							{/if}
+						</div>
 
-					{#if accounts.length === 0 && connectable.some((entry) => entry.id === 'supabase')}
-						<!-- Where the token comes from, said where the token is needed.
-						     The connect dialog repeats the permissions; this is the link
-						     to the page that explains them. -->
-						<p class="text-xs text-slate-500 dark:text-slate-400">
-							Supabase tokens live in
-							<a
-								href="https://supabase.com/dashboard/account/tokens"
-								target="_blank"
-								rel="noopener noreferrer"
-								class="text-violet-600 dark:text-violet-400 hover:underline"
-							>Account Settings → Access Tokens</a>.
-						</p>
-					{/if}
-				</div>
+						{#if showConnect}
+							<div class="flex flex-col gap-1">
+								{#each connectable as entry (entry.id)}
+									<button
+										type="button"
+										class="flex items-center gap-2 px-3 h-10 rounded-lg border border-dashed border-slate-300 dark:border-slate-700 text-left hover:border-violet-400 hover:bg-violet-500/5 transition-colors cursor-pointer"
+										onclick={() => openConnect(entry.id)}
+									>
+										<ProviderMark provider={entry.id} size="w-4 h-4" fallback="lucide:database" />
+										<span class="text-sm text-slate-700 dark:text-slate-300">Connect {entry.name}…</span>
+										<Icon name="lucide:arrow-right" class="w-3.5 h-3.5 ml-auto text-slate-400" />
+									</button>
+								{/each}
+							</div>
+						{:else if accounts.length === 1}
+							{@render accountRow(accounts[0])}
+						{:else}
+							{#each accountGroups as group (group.provider)}
+								<div class="flex flex-col gap-1">
+									<span class="flex items-center gap-1.5 text-3xs font-semibold uppercase tracking-wider text-slate-400 dark:text-slate-500">
+										<ProviderMark provider={group.provider} size="w-3 h-3" fallback="lucide:database" />
+										{group.name}
+									</span>
+									{#each group.accounts as entry (entry.accountId)}
+										{@render accountRow(entry)}
+									{/each}
+								</div>
+							{/each}
+						{/if}
+					</div>
+				{/if}
 			{/if}
 
 			<!-- Two peers. Organisations used to hide inside the create form's
@@ -590,6 +675,7 @@
 							<p class="text-xs text-slate-500 dark:text-slate-400">
 								{createOptions.emptyGroupsNotice}
 							</p>
+							{@render consoleLink()}
 						{:else}
 							<div class="flex flex-col gap-1 max-h-56 overflow-y-auto">
 								{#each createOptions.groups as group (group.value)}
@@ -610,12 +696,23 @@
 							</div>
 						{/if}
 
-						<!-- Stated rather than left as two missing buttons: the API has
-						     no PATCH or DELETE for an organisation, so no amount of
-						     permission would help. Databases have both, and offer both. -->
-						<p class="text-xs text-slate-500 dark:text-slate-500">
-							Rename or delete an organisation in Supabase's dashboard.
-						</p>
+						<!-- Stated rather than left as missing buttons, and PROVIDER-
+						     DECLARED: which of create/rename/delete exist differs per
+						     vendor, and hard-coding one sentence sent a Neon user to
+						     Supabase's dashboard. -->
+						{#if createOptions?.groupManagementNotice}
+							<!-- The sentence AND the trip. Saying "this is managed in the
+							     vendor's console" and leaving the user to find it is the
+							     read-only window this surface exists to remove, and the
+							     link is provider-declared so it is not only Neon that
+							     gets one. -->
+							<div class="flex flex-wrap items-center gap-x-2 gap-y-1">
+								<p class="text-xs text-slate-500 dark:text-slate-500">
+									{createOptions.groupManagementNotice}
+								</p>
+								{@render consoleLink()}
+							</div>
+						{/if}
 					{/if}
 				</div>
 			{/if}
@@ -663,9 +760,12 @@
 							{remote.error}
 						</p>
 					{:else if databases.length === 0}
-						<p class="text-xs text-slate-500 dark:text-slate-400">
-							This account reaches no databases yet.
-						</p>
+						<div class="flex flex-wrap items-center gap-x-2 gap-y-1">
+							<p class="text-xs text-slate-500 dark:text-slate-400">
+								This account reaches no databases yet.
+							</p>
+							{@render consoleLink()}
+						</div>
 					{:else}
 						<div class="flex flex-col gap-1 max-h-56 overflow-y-auto">
 							{#each databases as database (database.ref)}
@@ -998,6 +1098,20 @@
 	}}
 	onConnected={onConnected}
 />
+
+{#snippet consoleLink()}
+	{#if provider?.consoleUrl}
+		<a
+			href={provider.consoleUrl}
+			target="_blank"
+			rel="noopener noreferrer"
+			class="inline-flex items-center gap-1 text-xs font-medium text-violet-600 dark:text-violet-400 hover:underline"
+		>
+			Open {provider.name}
+			<Icon name="lucide:external-link" class="w-3 h-3" />
+		</a>
+	{/if}
+{/snippet}
 
 {#snippet accountRow(entry: DbClientAccountInfo)}
 	<div

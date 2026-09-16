@@ -21,7 +21,6 @@
 	import StackSettings from './stack/StackSettings.svelte';
 	import IntegrationsSettings from './integrations/IntegrationsSettings.svelte';
 	import SkillsSettings from './skills/SkillsSettings.svelte';
-	import CommandsSettings from './commands/CommandsSettings.svelte';
 	import SubagentsSettings from './subagents/SubagentsSettings.svelte';
 	import InstructionsSettings from './instructions/InstructionsSettings.svelte';
 	import PermissionsSettings from './permissions/PermissionsSettings.svelte';
@@ -35,7 +34,10 @@
 	import InviteManagement from './admin/InviteManagement.svelte';
 	import SecuritySettings from './security/SecuritySettings.svelte';
 	import SystemSettings from './system/SystemSettings.svelte';
-	import AboutDeviceSettings from './system/AboutDeviceSettings.svelte';
+	import AboutDeviceSettings, {
+		prefetchDeviceInfo,
+		prefetchProjectsOverview
+	} from './system/AboutDeviceSettings.svelte';
 	import TunnelSettings from './tunnel/TunnelSettings.svelte';
 
 	// Responsive state
@@ -110,6 +112,18 @@
 	$effect(() => {
 		if (settingsModalState.isOpen && !isMobile) {
 			setTimeout(() => searchInputRef?.focus(), 60);
+		}
+	});
+
+	// Prefetch Device data the moment the modal opens (admin only) so the slow
+	// system:device-info probes and the projects:overview snapshot already run
+	// in background while the user browses other tabs. Clicking Device then
+	// shows cached data instantly instead of a long skeleton like other tabs
+	// that render from local stores.
+	$effect(() => {
+		if (settingsModalState.isOpen && isAdmin) {
+			prefetchDeviceInfo();
+			prefetchProjectsOverview();
 		}
 	});
 
@@ -313,10 +327,6 @@
 					{:else if activeSection === 'skills' && isAdmin}
 						<div in:fly={{ x: 20, duration: 200 }}>
 							<SkillsSettings />
-						</div>
-					{:else if activeSection === 'commands' && isAdmin}
-						<div in:fly={{ x: 20, duration: 200 }}>
-							<CommandsSettings />
 						</div>
 					{:else if activeSection === 'subagents' && isAdmin}
 						<div in:fly={{ x: 20, duration: 200 }}>

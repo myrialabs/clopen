@@ -18,6 +18,7 @@ import type {
 } from '$shared/types/db-client';
 import type { DbClientDriverAdapter, IndexDefinition, SchemaOpts, TableDefinition } from './types';
 import { debug } from '$shared/utils/logger';
+import { buildConnectionUrl } from '../connection-url';
 
 interface MongoCommand {
 	collection: string;
@@ -35,20 +36,7 @@ export class MongoDbAdapter implements DbClientDriverAdapter {
 	private alive = false;
 
 	async connect(conn: DbClientConnection, tunnelPort?: number): Promise<void> {
-		const host = tunnelPort ? '127.0.0.1' : (conn.host ?? '127.0.0.1');
-		const port = tunnelPort ?? conn.port ?? 27017;
-		const user = conn.username ? encodeURIComponent(conn.username) : '';
-		const pass = conn.password ? `:${encodeURIComponent(conn.password)}` : '';
-		const auth = user ? `${user}${pass}@` : '';
-		const dbPart = conn.database ? `/${encodeURIComponent(conn.database)}` : '';
-
-		const params = new URLSearchParams();
-		const optsAuthSource = typeof conn.options?.authSource === 'string' ? conn.options.authSource : null;
-		if (user) {
-			params.set('authSource', optsAuthSource ?? 'admin');
-		}
-		const qs = params.toString();
-		const uri = `mongodb://${auth}${host}:${port}${dbPart}${qs ? `?${qs}` : ''}`;
+		const uri = buildConnectionUrl(conn, { tunnelPort });
 
 		this.client = new MongoClient(uri, { serverSelectionTimeoutMS: 10_000 });
 		await this.client.connect();

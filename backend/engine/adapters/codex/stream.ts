@@ -23,7 +23,7 @@ import type { Codex, Thread, ThreadOptions, Input as CodexInput, ModelReasoningE
 import { loadEngineSdk } from '$backend/engine/sdk-loader';
 import type { EngineOutput, EngineModel } from '$shared/types/unified';
 import type { AIEngine, EngineQueryOptions, StructuredGenerationOptions } from '../../types';
-import { extractJson } from '../../structured-helpers';
+import { extractJson, emptyGenerationError } from '../../structured-helpers';
 import { engineQueries } from '$backend/database/queries/engine-queries';
 import { resolveOsPath } from '$backend/utils/paths';
 import { resolveEngineCli } from '$backend/engine/engine-cli';
@@ -287,7 +287,7 @@ export class CodexEngine implements AIEngine {
 			// Prompt-scoped engine: advertise the profile-scoped Skills/Commands/
 			// Subagents PER-SESSION via the prompt (not the shared global AGENTS.md /
 			// persistent client) so the active Profile scopes them correctly.
-			const artifactsContext = buildArtifactsPromptContext(profileId);
+			const artifactsContext = buildArtifactsPromptContext('codex', profileId);
 			const input = await buildCodexInput(prompt, artifactsContext || undefined);
 			const { events } = await thread.runStreamed(input, {
 				signal: controller.signal,
@@ -429,7 +429,7 @@ export class CodexEngine implements AIEngine {
 			});
 
 			if (!turn.finalResponse) {
-				throw new Error('Codex returned empty response');
+				throw emptyGenerationError('Codex');
 			}
 
 			return extractJson<T>(turn.finalResponse);

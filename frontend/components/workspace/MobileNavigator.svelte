@@ -62,6 +62,7 @@
 		toggleProjectSelection,
 		toggleSelectAllProjects,
 		areAllSelected,
+		retainSelection,
 		isProjectSelected,
 		isProjectPinned,
 		toggleProjectPin,
@@ -92,33 +93,24 @@
 	const selectionCount = $derived(projectSelectionState.selectedIds.length);
 
 	const contextMenuPinned = $derived(isProjectPinned(contextMenuProject?.id));
-	// Same menu content as Desktop: main rows expose Pin/Archive/Details/Delete
-	// (long-press on touch, right-click with mouse); archived rows expose
-	// Restore/Delete through the shared ⋮ menu.
-	const contextMenuItems = $derived<ProjectContextMenuItem[]>(
-		contextMenuArchived
-			? canManageProjects
-				? [
-						{ id: 'restore', label: 'Restore', icon: 'lucide:archive-restore' },
-						{ id: 'delete', label: 'Delete', icon: 'lucide:trash-2', danger: true }
-					]
-				: [{ id: 'info', label: 'Details', icon: 'lucide:info' }]
-			: canManageProjects
-				? [
-						contextMenuPinned
-							? { id: 'pin', label: 'Unpin', icon: 'lucide:pin-off' }
-							: { id: 'pin', label: 'Pin', icon: 'lucide:pin' },
-						{ id: 'archive', label: 'Archive', icon: 'lucide:archive' },
-						{ id: 'info', label: 'Details', icon: 'lucide:info' },
-						{ id: 'delete', label: 'Delete', icon: 'lucide:trash-2', danger: true }
-					]
-				: [
-						contextMenuPinned
-							? { id: 'pin', label: 'Unpin', icon: 'lucide:pin-off' }
-							: { id: 'pin', label: 'Pin', icon: 'lucide:pin' },
-						{ id: 'info', label: 'Details', icon: 'lucide:info' }
-					]
-	);
+	// Same menu content as Desktop, reached through the row's ⋮ button (and
+	// long-press where the browser fires `contextmenu`). Pin / Archive /
+	// Restore are per-user view state so every role gets them; only Delete —
+	// which drops the project for everyone — is gated on admin.
+	const contextMenuItems = $derived<ProjectContextMenuItem[]>([
+		...(contextMenuArchived
+			? [{ id: 'restore', label: 'Restore', icon: 'lucide:archive-restore' } as ProjectContextMenuItem]
+			: [
+					contextMenuPinned
+						? ({ id: 'pin', label: 'Unpin', icon: 'lucide:pin-off' } as ProjectContextMenuItem)
+						: ({ id: 'pin', label: 'Pin', icon: 'lucide:pin' } as ProjectContextMenuItem),
+					{ id: 'archive', label: 'Archive', icon: 'lucide:archive' } as ProjectContextMenuItem
+				]),
+		{ id: 'info', label: 'Details', icon: 'lucide:info' },
+		...(canManageProjects
+			? [{ id: 'delete', label: 'Delete', icon: 'lucide:trash-2', danger: true } as ProjectContextMenuItem]
+			: [])
+	]);
 
 	function openProjectContextMenu(project: Project, event: MouseEvent, archived = false) {
 		event.preventDefault();
@@ -135,7 +127,6 @@
 	}
 
 	function archiveSingleProject(project: Project) {
-		if (!canManageProjects) return;
 		// Archive is local-only: the project leaves the main list for the
 		// Archived section, sessions and data are untouched.
 		const done = archiveProjects([project.id]);
@@ -155,7 +146,7 @@
 			handleRestore(project);
 		} else if (action === 'pin') {
 			toggleProjectPin(project.id);
-		} else if (action === 'archive' && canManageProjects) {
+		} else if (action === 'archive') {
 			archiveSingleProject(project);
 		} else if (action === 'info') {
 			projectInfoProject = project;
@@ -220,6 +211,13 @@
 		filteredProjects().length > 0 && areAllSelected(filteredProjects().map((p) => p.id))
 	);
 
+	// Searching narrows the list the toolbar counts against, so drop picks that
+	// scrolled out of reach — otherwise the counter reads "4/1" and a bulk
+	// action would hit projects the user can no longer see.
+	$effect(() => {
+		retainSelection(filteredProjects().map((p) => p.id));
+	});
+
 	let selectAllEl = $state<HTMLInputElement | undefined>();
 
 	// Partial selection renders the Select All checkbox as indeterminate.
@@ -253,31 +251,44 @@
 		if (bulkDeleting || selectionCount === 0) return;
 		const ids = [...projectSelectionState.selectedIds];
 		bulkDeleting = true;
+		let deleted = 0;
 		try {
 			for (const id of ids) {
-				await ws.http('projects:delete', { id, mode: 'full' });
-				removeProject(id);
-				pruneProject(id);
+				try {
+					await ws.http('projects:delete', { id, mode: 'full' });
+					removeProject(id);
+					pruneProject(id);
+					deleted++;
+				} catch (error) {
+					// One failure must not strand the rest of the batch; the ones
+					// that failed stay selected so the user can retry just those.
+					debug.error('workspace', `Failed to delete project ${id}:`, error);
+				}
 			}
-			addNotification({
-				type: 'success',
-				title: 'Projects deleted',
-				message: `${ids.length} project${ids.length === 1 ? '' : 's'} deleted`,
-				duration: 4000
-			});
-			showBulkDeleteDialog = false;
-			exitSelectionMode();
-		} catch (error) {
-			debug.error('workspace', 'Failed to delete selected projects:', error);
-			addNotification({
-				type: 'error',
-				title: 'Error',
-				message: 'Failed to delete selected projects',
-				duration: 5000
-			});
 		} finally {
 			bulkDeleting = false;
 		}
+
+		const failed = ids.length - deleted;
+		if (deleted > 0) {
+			addNotification({
+				type: 'success',
+				title: 'Projects deleted',
+				message: `${deleted} project${deleted === 1 ? '' : 's'} deleted`,
+				duration: 4000
+			});
+		}
+		if (failed > 0) {
+			addNotification({
+				type: 'error',
+				title: 'Error',
+				message: `Failed to delete ${failed} project${failed === 1 ? '' : 's'}`,
+				duration: 5000
+			});
+			return;
+		}
+		showBulkDeleteDialog = false;
+		exitSelectionMode();
 	}
 
 	function handleBulkArchive() {
@@ -302,18 +313,6 @@
 			message: `"${project.name}" moved back to the list`,
 			duration: 4000
 		});
-	}
-
-	function handleDeleteClick(project: Project, event: MouseEvent) {
-		event.stopPropagation();
-		projectToDelete = project;
-		showDeleteDialog = true;
-	}
-
-	function handleInfoClick(project: Project, event: MouseEvent) {
-		event.stopPropagation();
-		projectInfoProject = project;
-		showProjectInfo = true;
 	}
 
 	function closeProjectInfo() {
@@ -670,26 +669,19 @@
 							{/if}
 						</span>
 						<ProjectUserAvatars projectStatus={presenceState.statuses.get(project.id ?? '')} maxVisible={2} />
-						<button
-							type="button"
-							class="flex items-center justify-center w-8 h-8 bg-transparent border-none rounded-lg text-slate-400 dark:text-slate-500 cursor-pointer transition-all duration-150 hover:bg-violet-500/10 hover:text-violet-600 shrink-0"
-							onclick={(e) => handleInfoClick(project, e)}
-							aria-label="Project info"
-							title="Info"
-						>
-							<Icon name="lucide:info" class="w-4 h-4" />
-						</button>
-						{#if canManageProjects}
+							<!-- One ⋮ for every row action, same as Desktop. A long press
+							     cannot carry these on its own: iOS Safari does not fire
+							     `contextmenu` for a long-pressed div, which would leave
+							     Pin and Archive unreachable on iPhone/iPad. -->
 							<button
 								type="button"
-								class="flex items-center justify-center w-8 h-8 bg-transparent border-none rounded-lg text-slate-400 dark:text-slate-500 cursor-pointer transition-all duration-150 hover:bg-red-500/15 hover:text-red-500 shrink-0"
-								onclick={(e) => handleDeleteClick(project, e)}
-								aria-label="Delete project"
-								title="Delete"
+								class="flex items-center justify-center w-9 h-9 bg-transparent border-none rounded-lg text-slate-400 dark:text-slate-500 cursor-pointer transition-all duration-150 hover:bg-violet-500/10 hover:text-violet-600 shrink-0"
+								onclick={(e) => openProjectContextMenu(project, e)}
+								aria-label="Project actions"
+								title="Project actions"
 							>
-								<Icon name="lucide:trash-2" class="w-4 h-4" />
+								<Icon name="lucide:ellipsis-vertical" class="w-4 h-4" />
 							</button>
-						{/if}
 						{/if}
 					</div>
 				{:else}
@@ -727,11 +719,24 @@
 									class="flex items-center gap-2 w-full p-3 bg-transparent border border-slate-200 dark:border-slate-700 rounded-lg text-slate-900 dark:text-slate-100 text-sm text-left"
 									oncontextmenu={(event) => openProjectContextMenu(project, event, true)}
 								>
-									<Icon name="lucide:archive" class="text-slate-400 w-4 h-4 shrink-0" />
-									<div class="flex-1 min-w-0">
-										<p class="font-semibold truncate">{project.name}</p>
-										<p class="text-xs text-slate-500 dark:text-slate-400 truncate font-mono">{project.path}</p>
-									</div>
+									<!-- Archived rows stay openable, same as Desktop — archiving
+									     hides a project from the list, it does not close it off. -->
+									<button
+										type="button"
+										class="flex items-center gap-2 flex-1 min-w-0 bg-transparent border-none cursor-pointer text-left"
+										onclick={() => {
+											import('$frontend/stores/core/projects.svelte').then((m) =>
+												m.setCurrentProject(project)
+											);
+											closeProjectMenu();
+										}}
+									>
+										<Icon name="lucide:archive" class="text-slate-400 w-4 h-4 shrink-0" />
+										<div class="flex-1 min-w-0">
+											<p class="font-semibold truncate">{project.name}</p>
+											<p class="text-xs text-slate-500 dark:text-slate-400 truncate font-mono">{project.path}</p>
+										</div>
+									</button>
 									<button
 										type="button"
 										class="flex items-center justify-center w-9 h-9 shrink-0 bg-transparent border-none rounded-lg text-slate-400 cursor-pointer transition-all duration-150 active:bg-violet-500/10 active:text-slate-700 dark:active:text-slate-200"

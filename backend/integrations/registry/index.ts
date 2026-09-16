@@ -10,6 +10,7 @@
 import context7 from './providers/context7';
 import firecrawl from './providers/firecrawl';
 import github from './providers/github';
+import neon from './providers/neon';
 import supabase from './providers/supabase';
 import vercel from './providers/vercel';
 import type { IntegrationProvider } from './types';
@@ -23,6 +24,7 @@ export const PROVIDERS: readonly IntegrationProvider[] = [
 	context7,
 	firecrawl,
 	github,
+	neon,
 	supabase,
 	vercel
 ];
@@ -46,6 +48,7 @@ export function toProviderInfo(provider: IntegrationProvider): IntegrationProvid
 		category: provider.category,
 		description: provider.description,
 		docsUrl: provider.docsUrl,
+		consoleUrl: provider.consoleUrl,
 		authMethod: provider.authMethod,
 		credentialFields: provider.credentialFields,
 		capabilities: [...provider.capabilities],

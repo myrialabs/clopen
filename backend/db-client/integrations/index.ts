@@ -19,17 +19,24 @@
 
 import { registerAccountProbe, registerProjector } from '$backend/integrations';
 import { registerDbProvider } from '../providers/registry';
+import { neonDbAdapter } from '../providers/neon/adapter';
 import { supabaseDbAdapter } from '../providers/supabase/adapter';
 import { dbConnectionProjector } from './projector';
 import { dbLinks } from './links';
 
 registerProjector(dbConnectionProjector);
 registerDbProvider(supabaseDbAdapter);
+registerDbProvider(neonDbAdapter);
 
 // Health for an account whose capability projects no MCP row. Without this the
 // hub reports "Nothing to probe yet" forever for a Supabase account — the same
 // gap the Issues surface found and the Deployments surface closed the same way.
+//
+// `dbLinks.probe` answers null when an account has the `database` capability
+// switched off, which is what lets Neon register a SECOND probe from the
+// worktree manager without the two overwriting each other.
 registerAccountProbe('supabase', (accountId) => dbLinks.probe(accountId));
+registerAccountProbe('neon', (accountId) => dbLinks.probe(accountId));
 
 export { dbLinks } from './links';
 export { dbConnectionProjector } from './projector';

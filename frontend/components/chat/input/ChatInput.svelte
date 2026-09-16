@@ -37,7 +37,7 @@
 	import DragDropOverlay from './components/DragDropOverlay.svelte';
 	import EngineModelPicker from './components/EngineModelPicker.svelte';
 	import SlashCommandMenu from './components/SlashCommandMenu.svelte';
-	import { commandsStore, type AvailableCommand } from '$frontend/stores/features/commands.svelte';
+	import { skillsStore, type AvailableSkill } from '$frontend/stores/features/skills.svelte';
 
 	// Composables
 	import { useFileHandling, buildAcceptedMimeTypes } from './composables/use-file-handling.svelte';
@@ -67,7 +67,7 @@
 		textareaResize.adjustTextareaHeight(textareaElement, messageText);
 	const focusTextarea = () => textareaElement?.focus();
 
-	// --- Slash command menu (typing "/" surfaces enabled Custom Commands) ---
+	// --- Slash command menu (typing "/" surfaces slash-invocable Skills) ---
 	let slashActiveIndex = $state(0);
 	let slashDismissed = $state(false);
 
@@ -77,9 +77,9 @@
 		return m ? m[1].toLowerCase() : null;
 	});
 	const slashMatches = $derived.by(() => {
-		if (slashQuery === null) return [] as AvailableCommand[];
+		if (slashQuery === null) return [] as AvailableSkill[];
 		const q = slashQuery;
-		return commandsStore.available.filter(c => !q || `${c.slug} ${c.name}`.toLowerCase().includes(q));
+		return skillsStore.available.filter(c => !q || `${c.slug} ${c.name}`.toLowerCase().includes(q));
 	});
 	// (No isInputDisabled guard: a disabled textarea can't receive the "/" input
 	// that opens the menu, and referencing it here would precede its declaration.)
@@ -89,9 +89,9 @@
 
 	// Re-fetch whenever the session's active profile (or its project, for the
 	// project-default fallback) changes, so the "/" picker mirrors exactly what
-	// the profile makes available in the stream (see commandsStore.fetchAvailable).
+	// the profile makes available in the stream (see skillsStore.fetchAvailable).
 	$effect(() => {
-		void commandsStore.fetchAvailable(chatModelState.profileId, projectState.currentProject?.id);
+		void skillsStore.fetchAvailable(chatModelState.profileId, projectState.currentProject?.id);
 	});
 
 	// Reset dismissal + clamp the active index as the slash session changes.
@@ -104,7 +104,7 @@
 		}
 	});
 
-	function selectSlashCommand(command: AvailableCommand) {
+	function selectSlashCommand(command: AvailableSkill) {
 		setMessageText(`/${command.slug} `);
 		slashDismissed = true;
 		focusTextarea();
@@ -515,7 +515,7 @@
 			onRemove={fileHandling.removeAttachment}
 		/>
 
-		<!-- Slash command autocomplete (typing "/" surfaces Custom Commands) -->
+		<!-- Slash command autocomplete (typing "/" surfaces slash-invocable Skills) -->
 		{#if slashOpen}
 			<SlashCommandMenu
 				commands={slashMatches}

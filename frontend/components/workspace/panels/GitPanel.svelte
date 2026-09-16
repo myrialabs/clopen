@@ -1821,23 +1821,26 @@
 	}
 
 	async function saveUpstream() {
-		if (!projectId || !branchInfo?.current || !upstreamRemote.trim()) return;
-		try {
-			await ws.http('git:set-upstream', {
-				projectId,
-				branch: branchInfo.current,
-				remote: upstreamRemote.trim(),
-				remoteBranch: upstreamBranch.trim() || undefined
-			});
-			showUpstreamModal = false;
-			await Promise.all([loadBranches(), loadPushTarget()]);
-			showInfo('Upstream Updated', `${branchInfo.current} now tracks ${upstreamRemote}/${upstreamBranch}.`);
-		} catch (err) {
-			showError(
-				'Could Not Set Upstream',
-				err instanceof Error ? err.message : 'git rejected the upstream.'
-			);
-		}
+		const branch = branchInfo?.current;
+		if (!projectId || !branch || !upstreamRemote.trim()) return;
+		await runGitOp(watchScope, 'isConfiguring', async () => {
+			try {
+				await ws.http('git:set-upstream', {
+					projectId,
+					branch,
+					remote: upstreamRemote.trim(),
+					remoteBranch: upstreamBranch.trim() || undefined
+				});
+				showUpstreamModal = false;
+				await Promise.all([loadBranches(), loadPushTarget()]);
+				showInfo('Upstream Updated', `${branch} now tracks ${upstreamRemote}/${upstreamBranch}.`);
+			} catch (err) {
+				showError(
+					'Could Not Set Upstream',
+					err instanceof Error ? err.message : 'git rejected the upstream.'
+				);
+			}
+		});
 	}
 
 	function clearUpstream() {
@@ -1849,17 +1852,19 @@
 			type: 'warning',
 			confirmText: 'Clear',
 			onConfirm: async () => {
-				try {
-					await ws.http('git:unset-upstream', { projectId, branch });
-					showUpstreamModal = false;
-					await Promise.all([loadBranches(), loadPushTarget()]);
-					showInfo('Upstream Cleared', `${branch} no longer tracks a remote branch.`);
-				} catch (err) {
-					showError(
-						'Could Not Clear Upstream',
-						err instanceof Error ? err.message : 'git rejected the change.'
-					);
-				}
+				await runGitOp(watchScope, 'isConfiguring', async () => {
+					try {
+						await ws.http('git:unset-upstream', { projectId, branch });
+						showUpstreamModal = false;
+						await Promise.all([loadBranches(), loadPushTarget()]);
+						showInfo('Upstream Cleared', `${branch} no longer tracks a remote branch.`);
+					} catch (err) {
+						showError(
+							'Could Not Clear Upstream',
+							err instanceof Error ? err.message : 'git rejected the change.'
+						);
+					}
+				});
 			}
 		});
 	}
@@ -1967,22 +1972,24 @@
 	/** Recover an orphaned commit by branching at it — never by resetting onto it. */
 	async function createBranchAtCommit(hash: string, name: string) {
 		if (!projectId) return;
-		try {
-			await ws.http('git:create-branch', {
-				projectId,
-				name,
-				startPoint: hash,
-				...(reflogRepoPath && { repoPath: reflogRepoPath })
-			});
-			showReflog = false;
-			await loadAll();
-			showInfo('Branch Created', `${name} now points at ${hash.slice(0, 7)}.`);
-		} catch (err) {
-			showError(
-				'Create Branch Failed',
-				err instanceof Error ? err.message : 'Could not create the branch.'
-			);
-		}
+		await runGitOp(watchScope, 'isBranching', async () => {
+			try {
+				await ws.http('git:create-branch', {
+					projectId,
+					name,
+					startPoint: hash,
+					...(reflogRepoPath && { repoPath: reflogRepoPath })
+				});
+				showReflog = false;
+				await loadAll();
+				showInfo('Branch Created', `${name} now points at ${hash.slice(0, 7)}.`);
+			} catch (err) {
+				showError(
+					'Create Branch Failed',
+					err instanceof Error ? err.message : 'Could not create the branch.'
+				);
+			}
+		}, reflogRepoPath ?? undefined);
 	}
 
 	// ============================
@@ -2220,13 +2227,20 @@
 
 	// The three bulk actions take an optional `repoPath` so a nested sub-repo
 	// runs — and shows its spinner — independently of the outer repo. The busy
-	// flag lives in the shared git-op store keyed by (projectId, repoPath), the
+	// flag lives in the shared git-op store keyed by (watchScope, repoPath), the
 	// same place push/pull/commit keep theirs, so a bulk stage started in one
-	// project clears the right flag even if the user switches away mid-flight.
+	// workspace clears the right flag even if the user switches away mid-flight.
+	//
+	// The key is `watchScope`, not the raw project id: a worktree is its own
+	// workspace, and the panel renders its flags from `getGitOps(watchScope)`.
+	// Writing them under the project id left every spinner in a worktree dead —
+	// the button stayed enabled through the whole request, so a second click
+	// fired a second push.
 	async function stageAll(repoPath?: string) {
 		const pid = projectId;
-		if (!pid || getGitOps(pid, repoPath).isStaging) return;
-		setGitOp(pid, 'isStaging', true, repoPath);
+		const scope = watchScope;
+		if (!pid || getGitOps(scope, repoPath).isStaging) return;
+		setGitOp(scope, 'isStaging', true, repoPath);
 		try {
 			await ws.http('git:stage-all', { projectId: pid, repoPath });
 			await loadStatus();
@@ -2236,7 +2250,7 @@
 		} catch (err) {
 			debug.error('git', 'Failed to stage all:', err);
 		} finally {
-			setGitOp(pid, 'isStaging', false, repoPath);
+			setGitOp(scope, 'isStaging', false, repoPath);
 		}
 	}
 
@@ -2256,8 +2270,9 @@
 
 	async function unstageAll(repoPath?: string) {
 		const pid = projectId;
-		if (!pid || getGitOps(pid, repoPath).isStaging) return;
-		setGitOp(pid, 'isStaging', true, repoPath);
+		const scope = watchScope;
+		if (!pid || getGitOps(scope, repoPath).isStaging) return;
+		setGitOp(scope, 'isStaging', true, repoPath);
 		try {
 			await ws.http('git:unstage-all', { projectId: pid, repoPath });
 			await loadStatus();
@@ -2267,7 +2282,7 @@
 		} catch (err) {
 			debug.error('git', 'Failed to unstage all:', err);
 		} finally {
-			setGitOp(pid, 'isStaging', false, repoPath);
+			setGitOp(scope, 'isStaging', false, repoPath);
 		}
 	}
 
@@ -2300,8 +2315,9 @@
 			confirmText: 'Discard All',
 			onConfirm: async () => {
 				const pid = projectId;
-				if (!pid || getGitOps(pid, repoPath).isStaging) return;
-				setGitOp(pid, 'isStaging', true, repoPath);
+				const scope = watchScope;
+				if (!pid || getGitOps(scope, repoPath).isStaging) return;
+				setGitOp(scope, 'isStaging', true, repoPath);
 				try {
 					await ws.http('git:discard-all', { projectId: pid, repoPath });
 					await loadStatus();
@@ -2311,7 +2327,7 @@
 				} catch (err) {
 					debug.error('git', 'Failed to discard all:', err);
 				} finally {
-					setGitOp(pid, 'isStaging', false, repoPath);
+					setGitOp(scope, 'isStaging', false, repoPath);
 				}
 			}
 		});
@@ -2323,8 +2339,9 @@
 
 	async function handleCommit(message: string, repoPath?: string) {
 		const pid = projectId;
-		if (!pid) return;
-		setGitOp(pid, 'isCommitting', true, repoPath);
+		const scope = watchScope;
+		if (!pid || getGitOps(scope, repoPath).isCommitting) return;
+		setGitOp(scope, 'isCommitting', true, repoPath);
 		try {
 			await ws.http('git:commit', { projectId: pid, message, repoPath });
 			await loadAll();
@@ -2333,7 +2350,7 @@
 			debug.error('git', 'Commit failed:', err);
 			showError('Commit Failed', err instanceof Error ? err.message : 'Unknown error');
 		} finally {
-			setGitOp(pid, 'isCommitting', false, repoPath);
+			setGitOp(scope, 'isCommitting', false, repoPath);
 		}
 	}
 
@@ -3327,9 +3344,10 @@
 
 	async function handleFetch(repoPath?: string, remote?: string) {
 		const pid = projectId;
-		if (!pid || getGitOps(pid, repoPath).isFetching) return;
+		const scope = watchScope;
+		if (!pid || getGitOps(scope, repoPath).isFetching) return;
 		if (!repoPath && blockedWhileBusy('fetch')) return;
-		setGitOp(pid, 'isFetching', true, repoPath);
+		setGitOp(scope, 'isFetching', true, repoPath);
 		try {
 			const info = repoPath ? branchInfo?.nested?.find(n => n.path === repoPath)?.info : branchInfo;
 			const prevAhead = info?.ahead ?? 0;
@@ -3362,15 +3380,16 @@
 			debug.error('git', 'Fetch failed:', err);
 			showError('Fetch Failed', err instanceof Error ? err.message : 'Unknown error');
 		} finally {
-			setGitOp(pid, 'isFetching', false, repoPath);
+			setGitOp(scope, 'isFetching', false, repoPath);
 		}
 	}
 
 	async function handlePull(repoPath?: string, remote?: string) {
 		const pid = projectId;
-		if (!pid || getGitOps(pid, repoPath).isPulling) return;
+		const scope = watchScope;
+		if (!pid || getGitOps(scope, repoPath).isPulling) return;
 		if (!repoPath && blockedWhileBusy('pull')) return;
-		setGitOp(pid, 'isPulling', true, repoPath);
+		setGitOp(scope, 'isPulling', true, repoPath);
 		try {
 			const info = repoPath ? branchInfo?.nested?.find(n => n.path === repoPath)?.info : branchInfo;
 			const prevBehind = info?.behind ?? 0;
@@ -3404,15 +3423,16 @@
 			debug.error('git', 'Pull failed:', err);
 			showError('Pull Failed', err instanceof Error ? err.message : 'Unknown error');
 		} finally {
-			setGitOp(pid, 'isPulling', false, repoPath);
+			setGitOp(scope, 'isPulling', false, repoPath);
 		}
 	}
 
 	async function handlePush(repoPath?: string, remote?: string) {
 		const pid = projectId;
-		if (!pid || getGitOps(pid, repoPath).isPushing) return;
+		const scope = watchScope;
+		if (!pid || getGitOps(scope, repoPath).isPushing) return;
 		if (!repoPath && blockedWhileBusy('push')) return;
-		setGitOp(pid, 'isPushing', true, repoPath);
+		setGitOp(scope, 'isPushing', true, repoPath);
 		try {
 			const info = repoPath ? branchInfo?.nested?.find(n => n.path === repoPath)?.info : branchInfo;
 			const prevAhead = info?.ahead ?? 0;
@@ -3449,7 +3469,7 @@
 			debug.error('git', 'Push failed:', err);
 			showError('Push Failed', err instanceof Error ? err.message : 'Unknown error');
 		} finally {
-			setGitOp(pid, 'isPushing', false, repoPath);
+			setGitOp(scope, 'isPushing', false, repoPath);
 		}
 	}
 
@@ -5447,6 +5467,7 @@
 						onLoadMore={() => loadNestedLog(nested.relPath, nested.path)}
 						onViewCommit={(hash) => viewCommitDiff(hash, nested.path)}
 						onCheckoutCommit={(hash) => checkoutCommit(hash, nested.path)}
+						isCheckingOut={getGitOps(watchScope, nested.path).isBranching}
 						getRemoteCommitUrl={(hash) => buildRemoteCommitUrl(hash, nested.path)}
 					/>
 				{/if}
@@ -6292,6 +6313,7 @@
 							onLoadMore={() => loadLog()}
 							onViewCommit={viewCommitDiff}
 							onCheckoutCommit={checkoutCommit}
+							isCheckingOut={ops.isBranching}
 							getRemoteCommitUrl={buildRemoteCommitUrl}
 						/>
 					{/if}
@@ -6968,7 +6990,7 @@
 				disabled={isInitializing}
 			>
 				{#if isInitializing}
-					<div class="w-4 h-4 border-2 border-white/30 border-t-white rounded-full animate-spin"></div>
+					<div class="w-4 h-4 border-2 border-slate-400/40 border-t-slate-600 dark:border-slate-500/40 dark:border-t-slate-200 rounded-full animate-spin"></div>
 					<span>Initializing...</span>
 				{:else}
 					<Icon name="lucide:folder-git-2" class="w-4 h-4" />
@@ -7189,7 +7211,7 @@
 				disabled={!mergeBranchName || isMoreBusy}
 			>
 				{#if isMoreBusy}
-					<div class="w-3.5 h-3.5 border-2 border-white/30 border-t-white rounded-full animate-spin"></div>
+					<div class="w-3.5 h-3.5 border-2 border-slate-400/40 border-t-slate-600 dark:border-slate-500/40 dark:border-t-slate-200 rounded-full animate-spin"></div>
 				{:else}
 					<Icon
 						name={mergeIntent === 'rebase' ? 'lucide:git-pull-request-arrow' : 'lucide:git-merge'}
@@ -7248,7 +7270,7 @@
 		{/snippet}
 
 		{#snippet children()}
-			<div class="flex flex-col gap-3 px-4 py-2 md:px-6">
+			<div class="flex flex-col gap-3">
 				<div>
 					<label
 						for="upstream-remote"
@@ -7298,8 +7320,10 @@
 		{#snippet footer()}
 			<button
 				type="button"
-				class="cursor-pointer rounded-lg border-none bg-transparent px-3 py-2 text-sm font-medium text-red-600 transition-colors hover:bg-red-500/10 dark:text-red-400"
+				class="rounded-lg border-none bg-transparent px-3 py-2 text-sm font-medium text-red-600 transition-colors hover:bg-red-500/10 disabled:cursor-not-allowed disabled:opacity-50 disabled:hover:bg-transparent dark:text-red-400
+					{ops.isConfiguring ? '' : 'cursor-pointer'}"
 				onclick={clearUpstream}
+				disabled={ops.isConfiguring}
 			>
 				Clear upstream
 			</button>
@@ -7312,13 +7336,16 @@
 			</button>
 			<button
 				type="button"
-				class="rounded-lg px-3 py-2 text-sm font-semibold transition-colors
-					{upstreamRemote.trim()
+				class="flex items-center gap-2 rounded-lg px-3 py-2 text-sm font-semibold transition-colors
+					{upstreamRemote.trim() && !ops.isConfiguring
 					? 'cursor-pointer bg-violet-600 text-white hover:bg-violet-700'
 					: 'cursor-not-allowed bg-slate-200 text-slate-400 dark:bg-slate-700 dark:text-slate-500'}"
 				onclick={() => void saveUpstream()}
-				disabled={!upstreamRemote.trim()}
+				disabled={!upstreamRemote.trim() || ops.isConfiguring}
 			>
+				{#if ops.isConfiguring}
+					<div class="h-3.5 w-3.5 animate-spin rounded-full border-2 border-slate-400/40 border-t-slate-600 dark:border-slate-500/40 dark:border-t-slate-200"></div>
+				{/if}
 				Set Upstream
 			</button>
 		{/snippet}
@@ -7328,6 +7355,7 @@
 		isOpen={showReflog}
 		entries={reflogEntries}
 		isLoading={isReflogLoading}
+		busy={getGitOps(watchScope, reflogRepoPath ?? undefined).isBranching}
 		onClose={() => (showReflog = false)}
 		onCreateBranch={(hash, name) => void createBranchAtCommit(hash, name)}
 		onCheckout={(hash) => {

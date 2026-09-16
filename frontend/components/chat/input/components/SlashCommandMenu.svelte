@@ -1,11 +1,12 @@
 <script lang="ts">
 	import Icon from '$frontend/components/common/display/Icon.svelte';
-	import type { AvailableCommand } from '$frontend/stores/features/commands.svelte';
+	import type { AvailableSkill } from '$frontend/stores/features/skills.svelte';
 
 	interface Props {
-		commands: AvailableCommand[];
+		/** Slash-invocable skills, already filtered by the typed query. */
+		commands: AvailableSkill[];
 		activeIndex: number;
-		onselect: (command: AvailableCommand) => void;
+		onselect: (command: AvailableSkill) => void;
 		onhover: (index: number) => void;
 	}
 

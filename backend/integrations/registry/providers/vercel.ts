@@ -28,6 +28,7 @@ export default defineProvider({
 	description:
 		'Deployments for the project this repository builds to. Watch a build as it runs, send a failed build log into the chat, open a preview build in the browser panel, and redeploy, cancel, roll back or promote from here.',
 	docsUrl: 'https://vercel.com/account/tokens',
+	consoleUrl: 'https://vercel.com/dashboard',
 	authMethod: 'api-key',
 	capabilities: ['deployments'],
 	credentialFields: [

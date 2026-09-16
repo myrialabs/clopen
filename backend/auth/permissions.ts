@@ -182,6 +182,29 @@ export const ADMIN_ONLY_ROUTES = new Set([
 	// anyone who can use the connection can look.
 	'db-client:supabase-apply-migration',
 	'db-client:supabase-write-types',
+	// Worktree database branching. Pointing a project at a parent database
+	// commits an account's quota to it, and deleting a branch destroys a real
+	// database — both spend a credential that belongs to the install rather than
+	// to the caller, the same reason `db-client:link` is gated.
+	//
+	// `worktrees:branching-state` and `worktrees:branch-rewrite-env` are
+	// deliberately NOT listed: a member has to be able to see whether their own
+	// worktree got a branch, and to retry the dotenv write when it was refused.
+	//
+	// NEITHER ARE `worktrees:branch-parents` AND `worktrees:branching-save`, and
+	// that is a change rather than an oversight. They used to be here because a
+	// binding could only point at an integration account, and committing the
+	// install's quota is an admin decision. A binding can now point at a DB
+	// Client connection instead — a database the member themselves saved — and
+	// refusing that would make "give this worktree its own database" an
+	// admin-only feature for no reason that survives being stated. The account
+	// half keeps the old rule: `listBranchSources` shows accounts to admins
+	// only, and `requireSource` refuses anything the caller cannot see.
+	'worktrees:branching-clear',
+	'worktrees:branch-orphans',
+	'worktrees:branch-delete',
+	'worktrees:branch-forget',
+	'worktrees:branch-delete-remote',
 	// Memory Graph — the graph is instance-global and is injected into every
 	// future turn on every engine, so editing it changes what every agent is told.
 	// Mutations only: the read surface (memory:graph / :node / :search / :stats /
@@ -205,7 +228,10 @@ export const ADMIN_ONLY_ROUTES = new Set([
 	'memory:retry-failed',
 	// Agent Skills — creating/importing/installing skills writes to the shared
 	// canonical store and applies to every engine, so the whole surface is
-	// admin-only, mirroring MCP and Stack.
+	// admin-only, mirroring MCP and Stack. This now covers what used to be a
+	// separate Commands menu: a `/slash` prompt is a skill with a slash trigger.
+	// `skills:available` is deliberately NOT here — every member needs it to type
+	// a command, and it exposes display fields only.
 	'skills:list',
 	'skills:get',
 	'skills:create',
@@ -216,16 +242,8 @@ export const ADMIN_ONLY_ROUTES = new Set([
 	'skills:delete',
 	'skills:catalog',
 	'skills:install',
-	// Custom Commands — same shared-store rationale as Skills; admin-only surface.
-	'commands:list',
-	'commands:get',
-	'commands:create',
-	'commands:update',
-	'commands:parse-import',
-	'commands:import',
-	'commands:toggle',
-	'commands:delete',
-	'commands:detect',
+	'skills:detect',
+	'skills:adopt',
 	// Subagents — shared canonical store applied to every engine; admin-only.
 	'subagents:list',
 	'subagents:get',

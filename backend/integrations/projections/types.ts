@@ -7,8 +7,15 @@
  *
  * One projector per capability — but ONLY for capabilities whose surface owns a
  * table to write into. `agent-tools` writes an `mcp_servers` row, `database`
- * writes `db_client_connections` ones, and `worktree-branching` and
- * `notifications` are registered by the tasks that build those surfaces.
+ * writes `db_client_connections` ones, `worktree-branching` writes them too —
+ * one per live worktree branch, from `worktree_branches` — and `notifications`
+ * is registered by the task that builds that surface.
+ *
+ * TWO CAPABILITIES CAN TARGET THE SAME TABLE, and one account can carry both: a
+ * Neon account owns a connection for the project it linked AND one per worktree
+ * branch it cut. That works only because migration 077 widened the projection
+ * key with `target_id`; releasing by capability alone would tear down the
+ * other's rows on every pass.
  *
  * A projector returns a LIST. Agent tools happens to produce exactly one row
  * per account, but that is a fact about MCP presets rather than about

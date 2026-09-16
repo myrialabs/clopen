@@ -5,4 +5,4 @@
 
 export { instructionService } from './service';
 export type { InstructionDTO } from './service';
-export { syncInstructions } from './sync';
+export { syncInstructions, buildInstructionsPromptContext } from './sync';

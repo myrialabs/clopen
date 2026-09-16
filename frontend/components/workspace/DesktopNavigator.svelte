@@ -46,6 +46,7 @@
 		toggleProjectSelection,
 		toggleSelectAllProjects,
 		areAllSelected,
+		retainSelection,
 		isProjectSelected,
 		isProjectPinned,
 		toggleProjectPin,
@@ -133,6 +134,13 @@
 		filteredProjects().length > 0 && areAllSelected(filteredProjects().map((p) => p.id))
 	);
 
+	// Searching narrows the list the toolbar counts against, so drop picks that
+	// scrolled out of reach — otherwise the counter reads "4/1" and a bulk
+	// action would hit projects the user can no longer see.
+	$effect(() => {
+		retainSelection(filteredProjects().map((p) => p.id));
+	});
+
 	let selectAllEl = $state<HTMLInputElement | undefined>();
 
 	// Partial selection renders the Select All checkbox as indeterminate.
@@ -149,30 +157,23 @@
 	);
 
 	const contextMenuPinned = $derived(isProjectPinned(contextMenuProject?.id));
-	const contextMenuItems = $derived<ProjectContextMenuItem[]>(
-		contextMenuArchived
-			? canManageProjects
-				? [
-						{ id: 'restore', label: 'Restore', icon: 'lucide:archive-restore' },
-						{ id: 'delete', label: 'Delete', icon: 'lucide:trash-2', danger: true }
-					]
-				: [{ id: 'info', label: 'Details', icon: 'lucide:info' }]
-			: canManageProjects
-				? [
-						contextMenuPinned
-							? { id: 'pin', label: 'Unpin', icon: 'lucide:pin-off' }
-							: { id: 'pin', label: 'Pin', icon: 'lucide:pin' },
-						{ id: 'archive', label: 'Archive', icon: 'lucide:archive' },
-						{ id: 'info', label: 'Details', icon: 'lucide:info' },
-						{ id: 'delete', label: 'Delete', icon: 'lucide:trash-2', danger: true }
-					]
-				: [
-						contextMenuPinned
-							? { id: 'pin', label: 'Unpin', icon: 'lucide:pin-off' }
-							: { id: 'pin', label: 'Pin', icon: 'lucide:pin' },
-						{ id: 'info', label: 'Details', icon: 'lucide:info' }
-					]
-	);
+	// Pin / Archive / Restore are per-user view state stored against this user's
+	// own record, so every role gets them. Only Delete — which drops the project
+	// for everyone — is gated on admin.
+	const contextMenuItems = $derived<ProjectContextMenuItem[]>([
+		...(contextMenuArchived
+			? [{ id: 'restore', label: 'Restore', icon: 'lucide:archive-restore' } as ProjectContextMenuItem]
+			: [
+					contextMenuPinned
+						? ({ id: 'pin', label: 'Unpin', icon: 'lucide:pin-off' } as ProjectContextMenuItem)
+						: ({ id: 'pin', label: 'Pin', icon: 'lucide:pin' } as ProjectContextMenuItem),
+					{ id: 'archive', label: 'Archive', icon: 'lucide:archive' } as ProjectContextMenuItem
+				]),
+		{ id: 'info', label: 'Details', icon: 'lucide:info' },
+		...(canManageProjects
+			? [{ id: 'delete', label: 'Delete', icon: 'lucide:trash-2', danger: true } as ProjectContextMenuItem]
+			: [])
+	]);
 
 	// Auto-scroll the active project into view — covers both clicking it directly
 	// and switching to it from elsewhere (e.g. the Command Palette).
@@ -277,7 +278,6 @@
 	}
 
 	function archiveSingleProject(project: Project) {
-		if (!canManageProjects) return;
 		// Archive is local-only: the project leaves the main list for the
 		// Archived section, sessions and data are untouched.
 		const done = archiveProjects([project.id]);
@@ -309,7 +309,7 @@
 			showProjectInfo = true;
 		} else if (action === 'pin') {
 			toggleProjectPin(project.id);
-		} else if (action === 'archive' && canManageProjects) {
+		} else if (action === 'archive') {
 			archiveSingleProject(project);
 		} else if (action === 'restore') {
 			restoreSingleProject(project);
@@ -339,32 +339,45 @@
 		if (bulkDeleting || selectionCount === 0) return;
 		const ids = [...projectSelectionState.selectedIds];
 		bulkDeleting = true;
+		let deleted = 0;
 		try {
 			for (const id of ids) {
-				// Delete = full removal with all data; Archive stays a local move.
-				await ws.http('projects:delete', { id, mode: 'full' });
-				removeProject(id);
-				pruneProject(id);
+				try {
+					// Delete = full removal with all data; Archive stays a local move.
+					await ws.http('projects:delete', { id, mode: 'full' });
+					removeProject(id);
+					pruneProject(id);
+					deleted++;
+				} catch (error) {
+					// One failure must not strand the rest of the batch; the ones
+					// that failed stay selected so the user can retry just those.
+					debug.error('workspace', `Failed to delete project ${id}:`, error);
+				}
 			}
-			addNotification({
-				type: 'success',
-				title: 'Projects deleted',
-				message: `${ids.length} project${ids.length === 1 ? '' : 's'} deleted`,
-				duration: 4000
-			});
-			showBulkDeleteDialog = false;
-			exitSelectionMode();
-		} catch (error) {
-			debug.error('workspace', 'Failed to delete selected projects:', error);
-			addNotification({
-				type: 'error',
-				title: 'Error',
-				message: 'Failed to delete selected projects',
-				duration: 5000
-			});
 		} finally {
 			bulkDeleting = false;
 		}
+
+		const failed = ids.length - deleted;
+		if (deleted > 0) {
+			addNotification({
+				type: 'success',
+				title: 'Projects deleted',
+				message: `${deleted} project${deleted === 1 ? '' : 's'} deleted`,
+				duration: 4000
+			});
+		}
+		if (failed > 0) {
+			addNotification({
+				type: 'error',
+				title: 'Error',
+				message: `Failed to delete ${failed} project${failed === 1 ? '' : 's'}`,
+				duration: 5000
+			});
+			return;
+		}
+		showBulkDeleteDialog = false;
+		exitSelectionMode();
 	}
 
 	function handleBulkArchive() {

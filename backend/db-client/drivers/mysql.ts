@@ -38,6 +38,7 @@ import {
 	renderCreateTable
 } from './sql-builders';
 import { debug } from '$shared/utils/logger';
+import { buildConnectionUrl } from '../connection-url';
 
 const Q = quoteMysql;
 
@@ -52,14 +53,7 @@ export class MysqlAdapter implements DbClientDriverAdapter {
 	private configuredDb: string | null = null;
 
 	async connect(conn: DbClientConnection, tunnelPort?: number): Promise<void> {
-		const host = tunnelPort ? '127.0.0.1' : (conn.host ?? '127.0.0.1');
-		const port = tunnelPort ?? conn.port ?? 3306;
-		const user = encodeURIComponent(conn.username ?? '');
-		const pass = conn.password ? `:${encodeURIComponent(conn.password)}` : '';
-		const auth = user ? `${user}${pass}@` : '';
-		const db = conn.database ? `/${encodeURIComponent(conn.database)}` : '';
-
-		const url = `mysql://${auth}${host}:${port}${db}`;
+		const url = buildConnectionUrl(conn, { tunnelPort });
 		this.sql = new SQL(url, BUN_SQL_POOL_OPTIONS);
 		await this.sql.connect();
 		this.configuredDb = conn.database || null;

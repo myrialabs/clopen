@@ -26,7 +26,10 @@
 	import { initializeTheme } from '$frontend/utils/theme';
 	import { initializeStore } from '$frontend/stores/core/app.svelte';
 	import { initializeProjects, restoreProjectOrder } from '$frontend/stores/core/projects.svelte';
-	import { restoreArchivedIds } from '$frontend/stores/ui/project-selection.svelte';
+	import {
+		restoreArchivedIds,
+		restorePinnedIds
+	} from '$frontend/stores/ui/project-selection.svelte';
 	import { initializeSessions } from '$frontend/stores/core/sessions.svelte';
 	import { initializeNotifications, notificationStore } from '$frontend/stores/ui/notification.svelte';
 	import { applyServerSettings, loadSystemSettings } from '$frontend/stores/features/settings.svelte';
@@ -101,6 +104,7 @@
 			restoreLastView(serverState?.lastView);
 			restoreUnreadSessions(serverState?.unreadSessions);
 			restoreProjectOrder(serverState?.projectOrder);
+			restorePinnedIds(serverState?.pinnedProjectIds);
 			restoreArchivedIds(serverState?.archivedProjectIds);
 			await loadSystemSettings();
 			initPresence();

@@ -38,11 +38,26 @@ export type AccountProbe = (
 	projectId: string | null
 ) => Promise<{ status: IntegrationStatus; detail: string | null } | null>;
 
-const providerProbes = new Map<string, AccountProbe>();
+/**
+ * Probes per provider, in registration order.
+ *
+ * A LIST rather than one entry, because a provider can serve more than one
+ * surface: Neon offers `database` to DB Client and `worktree-branching` to the
+ * worktree manager, and each surface registers the probe that speaks for its
+ * own capability. A map would have let whichever module loaded last silently
+ * replace the other's, so an account using only the losing capability would
+ * report on something it had switched off.
+ *
+ * They are tried in order and the first non-null answer wins, which is exactly
+ * what the "returns null when it has nothing to say" contract was written for.
+ */
+const providerProbes = new Map<string, AccountProbe[]>();
 
 /** Register a provider-specific probe. Called at module load by the surface. */
 export function registerAccountProbe(provider: string, probe: AccountProbe): void {
-	providerProbes.set(provider, probe);
+	const existing = providerProbes.get(provider);
+	if (existing) existing.push(probe);
+	else providerProbes.set(provider, [probe]);
 }
 
 /**
@@ -66,8 +81,7 @@ export async function checkAccountHealth(accountId: string): Promise<{ status: I
 	// A surface probe is the more specific answer when there is one: it talks to
 	// the API the credential was issued for, rather than to an MCP server that
 	// happens to accept the same token.
-	const providerProbe = providerProbes.get(account.provider);
-	if (providerProbe) {
+	for (const providerProbe of providerProbes.get(account.provider) ?? []) {
 		try {
 			const result = await providerProbe(accountId, account.project_id);
 			if (result) {

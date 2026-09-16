@@ -977,8 +977,236 @@ than as Neon-specific code — Turso lands on the same shape. Opt-in per project
 and fail soft: a provider outage must never block worktree creation, and an
 orphaned remote branch must be reported rather than silently leaked.
 
-- [ ] Done
-- Notes: —
+- [x] Done
+- Notes:
+  - **One credential, TWO capabilities, and that is the shape this entry
+    proves.** Neon declares `database` AND `worktree-branching` from one API
+    key, so it is both a DB Client provider like Supabase and the first
+    lifecycle provider. Two accounts would have meant pasting one key twice and
+    rotating it in two places — the mistake `Task 3` refused for Vercel teams.
+    It works only because migration 077 widened the projection key with
+    `target_id`: both capabilities write `db_client_connections` rows for the
+    same account, and releasing by capability alone would tear down the other's
+    on every pass. `projections/types.ts`, which promised `worktree-branching`
+    as future work, now states that rule instead. `registerAccountProbe` also
+    had to become a LIST per provider — it was a map, so whichever module loaded
+    last silently replaced the other's probe, and an account using only the
+    losing capability would have reported on one it had switched off.
+  - **Adapter AND projector, not one or the other.** `backend/worktrees/branching/`
+    registers an adapter (`registry.ts`, the sibling of the Issues, Deployments
+    and DB Client registries) because a provider has to be asked to cut a branch,
+    and a projector because a branch IS a real database worth looking at —
+    without it a user could see that their agent had run migrations and have no
+    way to inspect what those migrations did. The projected row is deliberately
+    NOT an `integration_db_links` row even though the shape matches: a link is
+    user-managed and carries an Unlink button, and unlinking would tear the
+    connection out from under a live worktree while leaving the branch running.
+    Nothing is ever ADOPTED here either — a host the provider minted seconds ago
+    cannot have been typed in by anyone — so release is always a delete and
+    there is no snapshot to restore.
+  - **The dotenv write, and the one thing it refuses.** A Clopen worktree is a
+    FILE COPY, so it already carries the project's `.env` pointing at the
+    database this feature exists to protect. The fix is therefore a marked block
+    (`# >>> clopen:worktree-database >>>`) appended to a dotenv file inside the
+    worktree: one write reaches all nine engines, the PtyKit terminal, a dev
+    server from the Ports manager and the user's own shell, where process-env
+    injection would have needed an upstream PtyKit change (`CreateSessionOptions`
+    has no `env` field at all) plus nine adapter edits and still missed the last
+    one. Appended at the END because every dotenv reader takes the LAST
+    assignment of a repeated key, which is how it beats the copy the worktree
+    inherited without editing the user's own line. THE REFUSAL IS THE
+    LOAD-BEARING PART: a dotenv file git TRACKS is never written, because
+    `hashTree` lists files with `git ls-files -co --exclude-standard` — an
+    ignored file is invisible to the merge plan, a tracked one is carried to the
+    main project by "Apply to Main", overwriting the real connection string with
+    one whose database deleting that worktree destroys. An unknown answer from
+    git counts as tracked, since that failure is one-directional.
+  - **Which dotenv file is ASKED, not guessed.** Next.js and Vite read
+    `.env.local` in preference to `.env`, so a project with both has exactly one
+    right answer and picking the other produces the worst outcome available: the
+    branch is created, the variable is written, and nothing reads it. The setup
+    dialog lists the files that exist (most-precedent first, templates excluded —
+    writing a live password into a committed `.env.example` is the opposite of
+    the rule above) and always offers `.env` and `.env.local` as creatable, so a
+    project that has never needed one is not a dead end.
+  - **Ordering, in both directions.** The branch is cut AFTER the clone
+    succeeds: the clone is the step that genuinely fails, and cutting first would
+    leak a branch at the provider on every failed create. The row is written
+    BEFORE the dotenv file is touched, so a crash in between leaves a branch that
+    is tracked and deletable — which is also why `env_status` defaults to
+    `failed` rather than `written`: a process that died there genuinely wrote
+    nothing, so the default is the honest reading of that moment rather than a
+    placeholder. On delete the branch goes BEFORE the directory, and a failure
+    there does NOT stop the deletion — refusing to delete a worktree because a
+    third party is down would trap the user in a state they cannot leave.
+  - **`worktree_id` is `ON DELETE SET NULL`, never a cascade, and that single
+    choice is what makes leak reporting possible.** When the remote delete fails
+    the branch is still there costing money, and a cascade would delete the only
+    record of it in the same breath — a leak both silent and unrecoverable.
+    `worktree_id IS NULL` is therefore the definition of an orphan. The sweep has
+    a second half for the crash window between "the provider created it" and "the
+    row was written": branch names are deterministic and prefixed
+    (`clopen/<project>/<worktree>`) because no provider here lets a client set
+    metadata on a branch — Neon's `creation_source` is read-only — so the name is
+    the entire evidence. Reported, never auto-deleted, and "no untracked
+    branches" is kept distinct from "the sweep could not run".
+  - **`/projects` IS ORGANISATION-SCOPED, and getting that wrong took down every
+    read path.** The endpoint reads like an account-wide listing and is not —
+    the document calls it "a list of projects for the specified organization" —
+    so the first version sent no `org_id` at all, on the reading that a personal
+    key answers with its user's projects. Against a real key every call answered
+    `400 org_id is required, you can find it on your organization settings
+    page`: the database picker, the branching parent list, the health probe (so
+    both accounts sat on a red ERROR badge) and the readiness poll of a project
+    that had just been created successfully. The fix is
+    `GET /users/me/organizations`, which is the ONE endpoint answering for both
+    kinds of Neon key — the document is explicit that an organisation- or
+    project-scoped key, tied to no user at all, gets back the organisation that
+    owns it — and then one `/projects?org_id=` per organisation, merged and
+    de-duplicated. That also closes a quieter bug the 400 was hiding: a key
+    belonging to two organisations would only ever have seen one of them. The
+    lookup is memoised for a minute per key, because `listNeonProjects` sits on
+    the readiness poll's path and would otherwise double its request count every
+    five seconds for three minutes. A partial failure returns what it got and
+    logs the rest, but a TOTAL failure rethrows rather than answering with an
+    empty list — "an absent signal is not a negative one", `Task 3`'s rule,
+    applied to a list this time. Locked down by `list.test.ts`, whose first
+    assertion is simply that no request for `/projects` goes out without a
+    scope. Two things fell out of the same fix: the create form's synthetic
+    "Personal account" option (an empty `org_id`) is GONE, since it would create
+    a project this adapter then could not list, and Neon reports a personal
+    account as an organisation of its own anyway; and a 400 is now classified
+    `config` rather than `error`, so the hub's strip says there is something to
+    fix rather than showing a red failure with no guidance. Neon's own wording
+    is REWRITTEN rather than repeated — by the time it surfaces it is our
+    organisation lookup that came back empty, so "you can find it on your
+    organization settings page" would send the user to a page with nothing on
+    it. Same trick as `Task 2` on GitHub's 404 and `Task 4` on Supabase's 403.
+  - **Two connection shapes, conflated, and every link failed on it.** Neon has
+    `ConnectionDetails` — `{connection_uri, connection_parameters}`, the items of
+    the `connection_uris[]` array on a CREATE response — and
+    `ConnectionURIResponse`, which is what `GET /connection_uri` answers with and
+    is `{uri}`, ONE bare string with no host, role or database field at all. The
+    first version typed the second as the first, so every discrete field read
+    back `undefined` and both linking a project and creating one died on "Neon
+    did not report a host for branch …". The endpoint's answer is now PARSED, and
+    kept verbatim rather than rebuilt: it already reflects the `pooled` parameter
+    it was asked for, and it may carry options (`channel_binding`) a rebuild
+    would silently drop. The create-response reader keeps its own path, with one
+    added rule — given only the string it will answer a DIRECT request and
+    refuse a POOLED one, because the string names the direct host and deriving
+    the pooler hostname would mean guessing at a naming convention; refusing
+    sends the caller to `GET /connection_uri?pooled=true`, which is
+    authoritative. `reveal_password` survives as the second fallback for a URI
+    that carries no password. The two shapes are now declared as two types in
+    `api-types.ts`, each naming the other, so the next reader cannot repeat it.
+  - **The dialog was naming the wrong vendor, in three places.** DB Client's link
+    dialog had Supabase written into its own markup: a Neon user saw "Connect
+    Supabase…" directly under their selected Neon account, a hint saying where
+    *Supabase* tokens live, and — on the organisations tab — "Rename or delete an
+    organisation in Supabase's dashboard". All three are provider-driven now.
+    `DbProviderInfo` gained `docsUrl`, filled from the INTEGRATION registry
+    rather than declared a second time in the adapter, so the credential hint
+    points at the right page per provider. `DbProviderCreateOptions` gained
+    `groupManagementNotice`, because which of create/rename/delete exist really
+    is per-vendor: Supabase has no PATCH or DELETE for an organisation, Neon has
+    no POST either. The connect entries moved under an "Add another provider"
+    heading, since a dashed row sitting directly beneath the chosen account read
+    as part of that selection. Two smaller ones from the same screenshots: Neon's
+    `groupLabel` went back to `Organisation` (it was `Owner`, left over from the
+    synthetic personal entry, so the tab said "Owners" while the copy under it
+    said "organisation"), and the database rows were printing the literal word
+    "Organisation" as a fallback for a missing `org_name` — which made two
+    projects in different organisations indistinguishable, the exact question
+    that field exists to answer. It now resolves the real name from the
+    organisation list already in hand, and shows nothing when it cannot.
+  - **Neon facts, read from the OpenAPI document** at
+    `dfv3qgd2ykmrx.cloudfront.net/api_spec/release/v2.json`, not from memory.
+    `endpoints: [{type:'read_write'}]` is MANDATORY on create — without it the
+    branch exists, costs storage and refuses every connection. `connection_uris`
+    in the response is OPTIONAL: the document states a branch cut from a parent
+    with more than one role or database comes back without one, so the fallback
+    to `GET /connection_uri` (which insists on `database_name` AND `role_name`)
+    is a correctness requirement, not an optimisation — and it is the
+    established projects, the ones this feature most helps, that take it.
+    `connection_parameters` carries `host` and `pooler_host` together, so pooled
+    versus direct is a field choice rather than a second request, but the URI is
+    REBUILT from the parts because `connection_uri` always names the direct host
+    and would contradict the fields beside it. `expires_at` would have been a
+    perfect leak guard and is deliberately unused: EARLY ACCESS ONLY, so sending
+    it fails for most accounts. Direct is the silent default and pooled the
+    advanced escape hatch — the REVERSE of Supabase, because Neon's pooler is
+    PgBouncer in transaction mode (no prepared statements, which `Bun.sql` uses)
+    while its direct host is reachable over IPv4, so the pooler-or-unreachable
+    trade Supabase forced does not arise here.
+  - **Linking a Neon database asks for NO password, which needed a contract
+    change.** `GET /branches/{id}/roles/{role}/reveal_password` exists, so
+    `secretFields` is empty — the opposite of Supabase, whose
+    `/database/password` is PATCH-only by design. But a resolved endpoint lives
+    in the link's `config_json`, which is NOT a sealed column, so
+    `DbProviderEndpoint` gained an optional `secrets` that `links.ts` PEELS OFF
+    before storing: the password lands in `secrets`, which is sealed. It is
+    re-resolved whenever the endpoint is, so a password reset at Neon is picked
+    up by saving the link rather than by finding a second button. Two more
+    places where Neon is simply better-behaved than Supabase: `ProjectListItem`
+    carries `org_name`, so naming the billed organisation costs no second
+    request and no extra permission, and `GET /regions` is documented and
+    non-beta, so the region list is live rather than hard-coded. And there is no
+    `POST /organizations` at all, so `createGroup` is ABSENT rather than faked.
+  - **Access is split across two mechanisms.** Every route takes project access
+    the way `worktrees:create` does; the configuring and destroying ones are
+    additionally listed in `backend/auth/permissions.ts` as admin-only the way
+    `db-client:link` is, because a binding commits an account's quota to a
+    project. `worktrees:branching-state` and `worktrees:branch-rewrite-env` stay
+    open so a member can see and repair their own worktree's branch — the same
+    split that leaves the Supabase reads ungated.
+  - **Where the UI lives.** No new panel and no Settings page: the switcher is
+    already "the one place worktrees are seen and acted on", so it gains a
+    `Database branching…` footer entry opening a two-tab dialog (Setup / Leaks).
+    Leaks is a PEER TAB rather than an empty state, applying `Task 4`'s lesson
+    that anything a user manages needs a place existing before it is needed — an
+    orphan list reachable only once something has gone wrong is invisible the
+    moment it has not. `CreateWorktreeModal` states before the button that a
+    real database is about to be created and offers a per-worktree opt-out; a
+    failed branch renders INLINE there rather than as a toast and does not close
+    the dialog, since the message usually ends in "delete a branch you no longer
+    need". The delete confirm NAMES the branch it will destroy. The transfer
+    modal says once, where the misunderstanding happens, that Apply moves files
+    and NOT schema. `ConfirmDestructive` was PROMOTED from
+    `components/db-client/shared/` to `components/common/overlay/` rather than
+    duplicated, following `MenuSurface`, `ProviderMark` and `InlineError`.
+  - **A bug the tests found, fixed at the root in both places.** `NFKD`
+    normalisation followed by `[^\w\s-] → ' '` turns a combining diaeresis into
+    a space, so "münchen" slugged to `mu-nchen` — a name split mid-word and not
+    the one anyone would search the provider's console for. Combining marks are
+    now dropped before the character class runs, in `branching/naming.ts` AND in
+    `work/start-work.ts`, which had the identical shape from `Task 2`.
+  - **Brand mark.** Added from Neon's own asset pack — the logomark in its two
+    greens, `#37C38F` on a light background and `#34D59A` on a dark one, which
+    is the pair the vendor ships rather than a tint we picked. Vercel's entry
+    was re-taken from the same kind of source at the same time: its viewBox had
+    been re-typed by hand and was a slightly different aspect ratio from the
+    official artwork.
+  - **Deliberately out of scope.** Turso (`Task 13`'s, and the reason
+    `info().noun` exists — it seeds a whole database rather than branching one,
+    and the dialog must not call that a branch), merging a branch back into its
+    parent (no provider here offers it, and migrations are files the user runs
+    against main themselves), branching per CHAT SESSION rather than per
+    worktree, and `agent-tools` — Neon's MCP server uses its own OAuth, a
+    different audience from this REST key, which is the reason `Task 3` left
+    Vercel's alone.
+  - **Status.** `bun run check`, `bun run lint` and the full suite pass; 57 new
+    tests cover the branch name, the managed dotenv block (including the
+    tracked-file refusal against a real git repository), the projection, the
+    organisation scoping of the project listing, and both connection shapes.
+    Runtime QA against a real Neon key found BOTH API-reading mistakes recorded
+    above, and the pattern is worth naming: every one of them came from reading
+    a schema name and assuming its shape rather than opening it. Now exercised
+    for real: connecting an account, listing projects, creating a project, the
+    health probe, and the link dialog's copy. Still unverified against a live
+    key: cutting and deleting a branch, whether `connection_uris` really is
+    absent on a multi-role parent, `reveal_password` as the second fallback, and
+    what a branch-limit refusal answers with.
 
 **Task 6 — Notification channels + Telegram.** Build the loop Remote Access has
 been missing: when a session needs input or finishes a long run, Clopen sends a

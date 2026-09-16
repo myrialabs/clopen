@@ -23,9 +23,11 @@
 		onClose: () => void;
 		onCreateBranch: (hash: string, name: string) => void;
 		onCheckout: (hash: string) => void;
+		/** A branch action started from this list is still running. */
+		busy?: boolean;
 	}
 
-	const { isOpen, entries, isLoading, onClose, onCreateBranch, onCheckout }: Props = $props();
+	const { isOpen, entries, isLoading, onClose, onCreateBranch, onCheckout, busy = false }: Props = $props();
 
 	let query = $state('');
 	let branchingHash = $state<string | null>(null);
@@ -73,7 +75,7 @@
 	}
 
 	function confirmBranch() {
-		if (!branchingHash || !branchName.trim()) return;
+		if (busy || !branchingHash || !branchName.trim()) return;
 		onCreateBranch(branchingHash, branchName.trim());
 		branchingHash = null;
 		branchName = '';
@@ -165,10 +167,13 @@
 								/>
 								<button
 									type="button"
-									class="shrink-0 cursor-pointer rounded-md border-none bg-violet-600 px-2 py-1 text-3xs font-semibold text-white transition-colors hover:bg-violet-700 disabled:cursor-not-allowed disabled:opacity-50"
+									class="flex shrink-0 cursor-pointer items-center gap-1 rounded-md border-none bg-violet-600 px-2 py-1 text-3xs font-semibold text-white transition-colors hover:bg-violet-700 disabled:cursor-not-allowed disabled:opacity-50"
 									onclick={confirmBranch}
-									disabled={!branchName.trim()}
+									disabled={!branchName.trim() || busy}
 								>
+									{#if busy}
+										<Icon name="lucide:loader-circle" class="w-3 h-3 animate-spin" />
+									{/if}
 									Create
 								</button>
 								<button
@@ -186,18 +191,20 @@
 						<div class="flex shrink-0 items-center gap-1">
 							<button
 								type="button"
-								class="flex cursor-pointer items-center gap-1 rounded-md border-none bg-violet-500/10 px-2 py-1 text-3xs font-medium text-violet-700 transition-colors hover:bg-violet-500/20 dark:text-violet-300"
+								class="flex cursor-pointer items-center gap-1 rounded-md border-none bg-violet-500/10 px-2 py-1 text-3xs font-medium text-violet-700 transition-colors hover:bg-violet-500/20 disabled:cursor-not-allowed disabled:opacity-50 dark:text-violet-300"
 								onclick={() => startBranch(entry)}
-								title="Create a branch at this commit — the safe way to recover it"
+								disabled={busy}
+								title={busy ? 'A branch action is running…' : 'Create a branch at this commit — the safe way to recover it'}
 							>
 								<Icon name="lucide:git-branch-plus" class="w-3 h-3" />
 								Branch
 							</button>
 							<button
 								type="button"
-								class="flex cursor-pointer items-center gap-1 rounded-md border-none bg-transparent px-1.5 py-1 text-3xs font-medium text-slate-500 transition-colors hover:bg-slate-100 hover:text-slate-800 dark:hover:bg-slate-800 dark:hover:text-slate-200"
+								class="flex cursor-pointer items-center gap-1 rounded-md border-none bg-transparent px-1.5 py-1 text-3xs font-medium text-slate-500 transition-colors hover:bg-slate-100 hover:text-slate-800 disabled:cursor-not-allowed disabled:opacity-50 dark:hover:bg-slate-800 dark:hover:text-slate-200"
 								onclick={() => onCheckout(entry.hash)}
-								title="Check this commit out to inspect it (detached HEAD)"
+								disabled={busy}
+								title={busy ? 'A branch action is running…' : 'Check this commit out to inspect it (detached HEAD)'}
 							>
 								<Icon name="lucide:eye" class="w-3 h-3" />
 							</button>

@@ -46,14 +46,38 @@ export const ENGINE_BUILTIN_TOOLS: Record<EngineType, string[]> = {
 	// Cline — @cline/sdk default tool names, enforced via `toolPolicies` (a denied
 	// tool is set `{ enabled: false }`, hiding it from the model entirely).
 	cline: ['read_files', 'search_codebase', 'run_commands', 'fetch_web_content', 'apply_patch', 'editor', 'skills', 'ask_question'],
-	// Cursor — @cursor/sdk built-in tool ids (best-effort; the SDK exposes no
-	// per-tool permission hook, so these lists inform the UI but aren't enforced).
-	cursor: ['read', 'write', 'edit', 'ls', 'glob', 'grep', 'shell', 'task', 'update_todos', 'web_search']
+	// Cursor — names from @cursor/sdk's public tool vocabulary (`ToolName`),
+	// enforced by passing the blocked set as `disallowedTools` on Agent
+	// create/resume. The SDK REJECTS unknown names with a ConfigurationError, so
+	// these must stay spelled exactly as the SDK spells them (`webSearch`, not
+	// `web_search`). `mcp` is deliberately absent: it is a capability group whose
+	// removal would also kill Clopen's in-process custom tools (AskUserQuestion),
+	// so it is not offered as a per-tool target.
+	cursor: [
+		'shell',
+		'read',
+		'edit',
+		'delete',
+		'ls',
+		'glob',
+		'grep',
+		'semSearch',
+		'task',
+		'webSearch',
+		'webFetch',
+		'readLints',
+		'updateTodos',
+		'readTodos',
+		'generateImage',
+		'applyAgentDiff'
+	]
 };
 
 /**
  * Engines whose permission enforcement is best-effort. Only Codex — it has no
- * per-call permission hook (Claude/Qwen/Copilot/OpenCode all enforce at runtime).
+ * per-call permission hook; every other engine enforces at runtime, either at a
+ * per-call surface (Claude/Qwen/Copilot/OpenCode/Pi) or by withholding the tool
+ * from the model entirely (Cline `toolPolicies`, Cursor `disallowedTools`).
  */
 export const ENGINE_TOOLS_BEST_EFFORT: Record<EngineType, boolean> = {
 	'claude-code': false,
@@ -65,6 +89,7 @@ export const ENGINE_TOOLS_BEST_EFFORT: Record<EngineType, boolean> = {
 	pi: false,
 	// Cline enforces allow/deny via `toolPolicies` (`{ enabled: false }` = real).
 	cline: false,
-	// Cursor has no per-tool permission hook exposed by the SDK — best-effort only.
-	cursor: true
+	// Cursor enforces allow/deny through `AgentOptions.disallowedTools` (a blocked
+	// tool is never offered to the model) — real, not best-effort.
+	cursor: false
 };

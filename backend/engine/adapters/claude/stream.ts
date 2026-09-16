@@ -30,6 +30,7 @@ import { WorkflowTranscriptTailer } from './workflow-transcript';
 import { resolveOsPath } from '$backend/utils/paths';
 import { setupEnvironmentOnce, getEngineEnv } from './environment';
 import { handleStreamError } from './error-handler';
+import { emptyGenerationError } from '../../structured-helpers';
 import { getEnabledMcpServers, getAllowedMcpTools } from '../../../mcp';
 import { syncSkills } from '$backend/skills';
 import { syncEngineArtifacts } from '$backend/engine/artifact-sync';
@@ -591,6 +592,6 @@ export class ClaudeCodeEngine implements AIEngine {
       }
     }
 
-    throw new Error(lastError || 'Claude Code did not return valid structured output');
+    throw emptyGenerationError('Claude Code', lastError || undefined);
   }
 }

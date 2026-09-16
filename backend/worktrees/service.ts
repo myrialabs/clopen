@@ -5,6 +5,7 @@
 import fs from 'fs/promises';
 import path from 'path';
 import type { Worktree } from '$shared/types/database/schema';
+import type { WorktreeBranchInfo } from '$shared/types/worktree-branching';
 import type { TreeMap } from '../snapshot/blob-store';
 import { projectQueries, worktreeQueries } from '../database/queries';
 import { fileWatcher } from '../files/file-watcher';
@@ -23,6 +24,8 @@ import {
 } from './merge';
 import { getProjectWorktreesDir, getWorktreePath, uniqueWorktreeSlug } from './paths';
 import { hashTree, readBlobText } from './tree';
+import { worktreeBranching } from './branching';
+import type { BranchDataMode } from '$shared/types/worktree-branching';
 
 /** Worktree → main is `apply`; main → worktree is `sync`. */
 export type TransferDirection = 'apply' | 'sync';
@@ -59,6 +62,16 @@ export interface WorktreeCreateResult {
 	worktree: Worktree;
 	fileCount: number;
 	carriedIgnoredFiles: boolean;
+	/** The database branch cut for it, when the project is bound to a provider. */
+	branch: WorktreeBranchInfo | null;
+	/**
+	 * Why no branch was cut, when one was expected.
+	 *
+	 * Reported rather than thrown, and that is the rule this whole feature runs
+	 * on: the worktree is what the user asked for, and losing it because a third
+	 * party is down or a plan limit was reached would be a poor trade.
+	 */
+	branchError: string | null;
 }
 
 /**
@@ -72,6 +85,10 @@ export async function createWorktree(input: {
 	projectId: string;
 	name: string;
 	createdBy?: string | null;
+	/** Skip the project's database branch for this one worktree. */
+	skipBranch?: boolean;
+	/** Overrides the project's default for THIS worktree only. */
+	dataMode?: BranchDataMode;
 }): Promise<WorktreeCreateResult> {
 	const project = projectQueries.getById(input.projectId);
 	if (!project) throw new Error('Project not found');
@@ -110,13 +127,36 @@ export async function createWorktree(input: {
 	});
 
 	debug.log('worktree', `Created worktree "${worktree.name}" (${clone.mode}) at ${targetPath}`);
-	return { worktree, fileCount: clone.fileCount, carriedIgnoredFiles: clone.carriedIgnoredFiles };
+
+	// AFTER the clone, never before. The clone is the expensive step that
+	// genuinely fails — a missing project path, a full disk, an unreadable tree —
+	// and cutting a remote branch first would leak one at the provider on every
+	// failed create. `attach` never throws.
+	const branch = await worktreeBranching.attach(worktree, {
+		skip: input.skipBranch,
+		dataMode: input.dataMode
+	});
+
+	return {
+		worktree,
+		fileCount: clone.fileCount,
+		carriedIgnoredFiles: clone.carriedIgnoredFiles,
+		branch: branch.branch,
+		branchError: branch.error
+	};
 }
 
 /** Delete the worktree directory and its row. Sessions fall back to the main tree. */
 export async function removeWorktree(worktreeId: string): Promise<void> {
 	const worktree = worktreeQueries.getById(worktreeId);
 	if (!worktree) return;
+
+	// BEFORE the directory and the row go, so the branch is still reachable
+	// through its own row. A failure here does not stop the deletion — it leaves
+	// the branch row behind as a reportable orphan instead, because the user has
+	// already said what they want and refusing to delete a worktree over a
+	// third-party outage would trap them.
+	await worktreeBranching.detach(worktree.id);
 
 	// Shells and browser tabs live in the worktree's own scope; without this they
 	// would outlive the directory they were opened in.
@@ -131,6 +171,13 @@ export async function removeWorktree(worktreeId: string): Promise<void> {
 
 /** Remove every worktree of a project — used when the project itself is deleted. */
 export async function removeProjectWorktrees(projectId: string): Promise<void> {
+	// Detached one at a time BEFORE the rows go, for the reason `removeWorktree`
+	// does it: once the worktree rows are deleted, `worktree_id` is null on every
+	// branch and they all read as orphans whether or not they were cleaned up.
+	for (const worktree of worktreeQueries.getByProjectId(projectId)) {
+		await worktreeBranching.detach(worktree.id);
+	}
+
 	for (const worktree of worktreeQueries.deleteByProjectId(projectId)) {
 		releaseWorkspaceScope(projectId, worktree.id);
 	}

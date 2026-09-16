@@ -18,10 +18,8 @@ export { auditLogQueries } from './audit-log-queries';
 export { fileAuditLogQueries } from './file-audit-log-queries';
 export { mcpServerQueries } from './mcp-server-queries';
 export type { McpServerRow, McpServerInput, McpTransport, McpSource, McpConfigField, McpToolOverride, McpToolOverrides } from './mcp-server-queries';
-export { skillQueries } from './skill-queries';
-export type { SkillRow, SkillInput, SkillSource } from './skill-queries';
-export { commandQueries } from './command-queries';
-export type { CommandRow, CommandInput, CommandSource } from './command-queries';
+export { skillQueries, parseTriggers, stringifyTriggers, parseUses, stringifyUses, SKILL_TRIGGERS } from './skill-queries';
+export type { SkillRow, SkillInput, SkillSource, SkillTrigger } from './skill-queries';
 export { subagentQueries } from './subagent-queries';
 export type { SubagentRow, SubagentInput, SubagentSource } from './subagent-queries';
 export { instructionQueries } from './instruction-queries';
@@ -41,3 +39,9 @@ export { workBindingQueries, workLinkQueries, parseBindingConfig } from './work-
 export type { WorkBindingRow, WorkLinkRow } from './work-queries';
 export { deployBindingQueries, parseDeployConfig } from './deploy-queries';
 export type { DeployBindingRow } from './deploy-queries';
+export {
+	worktreeBranchBindingQueries,
+	worktreeBranchQueries,
+	parseWorktreeBranchConfig
+} from './worktree-branch-queries';
+export type { WorktreeBranchBindingRow, WorktreeBranchRow } from './worktree-branch-queries';

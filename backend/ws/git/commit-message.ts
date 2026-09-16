@@ -8,7 +8,7 @@ import { t } from 'elysia';
 import { createRouter } from '$shared/utils/ws-server';
 import { buildBudgetedStagedDiff, COMMIT_MESSAGE_BUDGET } from './diff-budget';
 import { initializeEngine } from '../../engine';
-import { resolveGenerationTarget } from '../../engine/resolve-model';
+import { resolveGenerationTarget, GENERATION_SETTINGS } from '../../engine/resolve-model';
 import type { EngineType } from '$shared/types/unified';
 import type { GeneratedCommitMessage } from '$shared/types/git';
 import { debug } from '$shared/utils/logger';
@@ -116,7 +116,7 @@ ${diff.text}`;
 			: defaultPrompt;
 
 		// The caller's providerSlug/account can be stale (see resolve-model.ts).
-		const target = await resolveGenerationTarget(engine, data.modelId, data.providerSlug);
+		const target = await resolveGenerationTarget(engine, data.modelId, data.providerSlug, GENERATION_SETTINGS.commit);
 
 		debug.log('git', `Generating commit message via ${engineType}/${target.providerSlug}/${target.modelId}`);
 
