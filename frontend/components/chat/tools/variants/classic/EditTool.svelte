@@ -18,7 +18,6 @@
 	{filePath}
 	{fileName}
 	{badges}
-	editKey={toolInput.id}
 	iconColor="text-emerald-600 dark:text-emerald-400"
 />
 

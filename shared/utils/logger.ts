@@ -30,6 +30,7 @@ export type LogLabel =
 	| 'mcp'
 	| 'integrations'
 	| 'work'
+	| 'deployments'
 	| 'skills'
 	| 'artifacts'
 	| 'commands'

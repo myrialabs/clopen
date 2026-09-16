@@ -6,6 +6,9 @@
 	import type { IconName } from '$shared/types/ui/icons';
 	import { revealFile } from '$frontend/stores/ui/file-peek.svelte';
 	import { projectState } from '$frontend/stores/core/projects.svelte';
+	import { aiMarkerState, aiMarkerTooltip } from '$frontend/utils/ai-change-marker';
+	import { toAbsolutePath } from '$frontend/utils/ai-change-index';
+	import { openAiChanges } from '$frontend/stores/ui/ai-changes-modal.svelte';
 
 	interface Props {
 		file: GitFileChange;
@@ -16,10 +19,9 @@
 		onDiscard?: (path: string) => void;
 		onViewDiff?: (file: GitFileChange, section: string) => void;
 		onResolve?: (path: string) => void;
-		aiChangesSet?: Set<string>;
 	}
 
-	const { file, section, isActive = false, onStage, onUnstage, onDiscard, onViewDiff, onResolve, aiChangesSet = new Set<string>() }: Props = $props();
+	const { file, section, isActive = false, onStage, onUnstage, onDiscard, onViewDiff, onResolve }: Props = $props();
 
 	const statusCode = $derived(section === 'staged' ? file.indexStatus : file.workingStatus);
 	const statusLabel = $derived(getGitStatusLabel(statusCode));
@@ -32,16 +34,14 @@
 	});
 	const fileIcon = $derived(getFileIcon(fileName) as IconName);
 
-	// AI changes indicator — file.path is relative with forward slashes; build the
-	// absolute path with the project's separator (matching git-status.svelte.ts) so
-	// the lookup lands on Windows too.
-	const hasAiChange = $derived(() => {
+	// AI changes indicator — file.path is relative with forward slashes, and every
+	// lookup key in the app is absolute, so the join goes through the same helper
+	// the store indexes with.
+	const absolutePath = $derived.by(() => {
 		const base = projectState.currentProject?.path;
-		if (!base) return false;
-		const sep = base.includes('\\') ? '\\' : '/';
-		const rel = sep === '\\' ? file.path.replace(/\//g, '\\') : file.path;
-		return aiChangesSet.has(`${base}${sep}${rel}`);
+		return base ? toAbsolutePath(base, file.path) : '';
 	});
+	const aiMarker = $derived(absolutePath ? aiMarkerState(absolutePath) : null);
 
 	function openInFilesPanel(e: MouseEvent) {
 		e.stopPropagation();
@@ -79,11 +79,16 @@
 
 	<!-- Status badge + AI dot -->
 	<span class="flex items-center gap-1 shrink-0">
-		{#if hasAiChange()}
-			<span
-				class="w-1.5 h-1.5 rounded-full bg-violet-500 dark:bg-violet-400"
-				title="Has AI changes"
-			></span>
+		{#if aiMarker}
+			<button
+				type="button"
+				class="w-1.5 h-1.5 rounded-full border-none p-0 cursor-pointer {aiMarker === 'live'
+					? 'bg-violet-500 dark:bg-violet-400'
+					: 'bg-violet-500/30 dark:bg-violet-400/30'}"
+				title={aiMarkerTooltip(absolutePath)}
+				onclick={(e) => { e.stopPropagation(); openAiChanges(absolutePath); }}
+				aria-label="Review this chat's changes to this file"
+			></button>
 		{/if}
 		<span class="w-4 text-center text-sm font-bold {statusColor} shrink-0">{statusLabel}</span>
 	</span>

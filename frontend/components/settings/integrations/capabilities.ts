@@ -24,7 +24,7 @@ export const CAPABILITY_LABELS: Record<IntegrationCapability, string> = {
 export const CAPABILITY_SURFACES: Record<IntegrationCapability, string> = {
 	'agent-tools': 'Available to every engine as MCP tools',
 	work: 'More Tools → Issues & PRs',
-	deployments: 'Deployments panel',
+	deployments: 'More Tools → Deployments',
 	database: 'DB Client',
 	'worktree-branching': 'Worktree manager',
 	notifications: 'Notification channels',

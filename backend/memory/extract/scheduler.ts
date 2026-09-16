@@ -46,8 +46,9 @@
  * delete is conditional on it, so the merged-in turn is never thrown away with
  * the one that succeeded.
  *
- * Structural extraction is NOT queued — it reads the disk diff, touches no model,
- * costs microseconds, and its nodes should be searchable at once.
+ * Invalidation is NOT queued — it reads the disk diff, touches no model, costs
+ * one indexed lookup, and a memory standing on code that just moved should say so
+ * before the next turn rather than after the next extraction.
  */
 
 import { memoryQueueQueries, type QueuedExtraction } from '$backend/database/queries/memory-queue-queries';
@@ -334,10 +335,6 @@ async function runOne(entry: QueuedExtraction): Promise<void> {
 			userMessageId: entry.userMessageId,
 			changedPaths: entry.changedPaths,
 			deletedPaths: entry.deletedPaths,
-			// Rebuilt from the graph rather than carried through the queue: a Map of
-			// path → node id does not serialise usefully, and `getByPath` finds the
-			// same nodes. The only cost is a lookup per path.
-			fileNodes: new Map<string, string>(),
 			injectedMemoryIds: entry.injectedMemoryIds
 		});
 

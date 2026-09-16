@@ -10,19 +10,30 @@ import { projectState } from '$frontend/stores/core/projects.svelte';
 import { currentScopeKey } from '$frontend/stores/features/worktrees.svelte';
 import ws, { onWsReconnect } from '$frontend/utils/ws';
 import { debug } from '$shared/utils/logger';
-import type { GitFileChange, GitStatus } from '$shared/types/git';
+import { buildGitStatusMaps } from '$frontend/utils/git-status';
 
 interface GitStatusState {
 	/** Absolute path -> single-letter status code (M/A/D/R/?/U/T/C). */
 	map: Map<string, string>;
 	/** Absolute folder path -> highest-priority descendant status code. */
 	folderMap: Map<string, string>;
+	/**
+	 * Absolute paths that still differ in the WORKING TREE — unstaged edits and
+	 * untracked files.
+	 *
+	 * `map` cannot answer this: it falls back to the index status when the
+	 * working status is clean, so a fully staged file looks identical to an
+	 * unstaged one. Anything that needs to know whether a change is still
+	 * waiting to be reviewed — the AI-change dot, for one — has to ask here.
+	 */
+	unstagedSet: Set<string>;
 	isRepo: boolean;
 }
 
 export const gitStatusState = $state<GitStatusState>({
 	map: new Map(),
 	folderMap: new Map(),
+	unstagedSet: new Set(),
 	isRepo: false
 });
 
@@ -34,61 +45,6 @@ let unsubscribeGit: (() => void) | null = null;
 let unsubscribeResync: (() => void) | null = null;
 let unsubscribeReconnect: (() => void) | null = null;
 let lastProjectId = '';
-
-/**
- * Pick the most meaningful single status code for a change entry.
- * Prefers working-tree status, falls back to index status. Untracked is `?`.
- */
-function pickStatusCode(change: GitFileChange): string {
-	const w = (change.workingStatus || '').trim();
-	const i = (change.indexStatus || '').trim();
-	if (w && w !== ' ') return w;
-	if (i && i !== ' ') return i;
-	return '';
-}
-
-function buildStatusMaps(
-	status: GitStatus,
-	projectPath: string
-): { map: Map<string, string>; folderMap: Map<string, string> } {
-	const map = new Map<string, string>();
-	const folderMap = new Map<string, string>();
-	const sep = projectPath.includes('\\') ? '\\' : '/';
-
-	const upsertFolder = (folderPath: string, code: string) => {
-		const existing = folderMap.get(folderPath);
-		const newRank = FOLDER_STATUS_PRIORITY[code] ?? 0;
-		const oldRank = existing ? (FOLDER_STATUS_PRIORITY[existing] ?? 0) : -1;
-		if (newRank > oldRank) folderMap.set(folderPath, code);
-	};
-
-	const collect = (entries: GitFileChange[]) => {
-		for (const change of entries) {
-			const code = pickStatusCode(change);
-			if (!code) continue;
-			const rel = sep === '\\' ? change.path.replace(/\//g, '\\') : change.path;
-			const absolute = `${projectPath}${sep}${rel}`;
-			map.set(absolute, code);
-
-			// Walk all ancestors up to (excluding) project root and aggregate
-			let cursor = absolute;
-			while (true) {
-				const idx = cursor.lastIndexOf(sep);
-				if (idx <= 0) break;
-				cursor = cursor.slice(0, idx);
-				if (cursor === projectPath || cursor.length < projectPath.length) break;
-				upsertFolder(cursor, code);
-			}
-		}
-	};
-
-	collect(status.conflicted);
-	collect(status.staged);
-	collect(status.unstaged);
-	collect(status.untracked);
-
-	return { map, folderMap };
-}
 
 async function fetchStatus(projectId: string, projectPath: string): Promise<void> {
 	if (inFlight) {
@@ -102,11 +58,13 @@ async function fetchStatus(projectId: string, projectPath: string): Promise<void
 		if (!status.isRepo) {
 			gitStatusState.map = new Map();
 			gitStatusState.folderMap = new Map();
+			gitStatusState.unstagedSet = new Set();
 			return;
 		}
-		const built = buildStatusMaps(status, projectPath);
+		const built = buildGitStatusMaps(status, projectPath);
 		gitStatusState.map = built.map;
 		gitStatusState.folderMap = built.folderMap;
+		gitStatusState.unstagedSet = built.unstagedSet;
 	} catch (err) {
 		debug.error('git', 'Failed to fetch git status:', err);
 	} finally {
@@ -126,6 +84,7 @@ export function refreshGitStatus(delay = 250): void {
 	if (!project) {
 		gitStatusState.map = new Map();
 		gitStatusState.folderMap = new Map();
+		gitStatusState.unstagedSet = new Set();
 		gitStatusState.isRepo = false;
 		return;
 	}
@@ -182,23 +141,9 @@ export function syncGitStatusForProject(): void {
 	lastProjectId = newId;
 	gitStatusState.map = new Map();
 	gitStatusState.folderMap = new Map();
+	gitStatusState.unstagedSet = new Set();
 	gitStatusState.isRepo = false;
 	if (project) {
 		refreshGitStatus(0);
 	}
 }
-
-/**
- * Aggregation priority — the highest-priority status visible determines
- * a folder's color. Conflicts and untracked files surface above plain mods.
- */
-const FOLDER_STATUS_PRIORITY: Record<string, number> = {
-	U: 100,
-	'?': 80,
-	M: 70,
-	D: 60,
-	A: 50,
-	R: 40,
-	C: 30,
-	T: 20
-};

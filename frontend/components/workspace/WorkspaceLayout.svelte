@@ -19,12 +19,14 @@
 	import ModalProvider from '$frontend/components/workspace/ModalProvider.svelte';
 	import SettingsModal from '$frontend/components/settings/SettingsModal.svelte';
 	import FilePeekModal from '$frontend/components/files/FilePeekModal.svelte';
+	import AiChangesModal from '$frontend/components/ai-changes/AiChangesModal.svelte';
 	import NotificationToast from '$frontend/components/common/feedback/NotificationToast.svelte';
 
 	// Services
 	import { initializeTheme } from '$frontend/utils/theme';
 	import { initializeStore } from '$frontend/stores/core/app.svelte';
 	import { initializeProjects, restoreProjectOrder } from '$frontend/stores/core/projects.svelte';
+	import { restoreArchivedIds } from '$frontend/stores/ui/project-selection.svelte';
 	import { initializeSessions } from '$frontend/stores/core/sessions.svelte';
 	import { initializeNotifications, notificationStore } from '$frontend/stores/ui/notification.svelte';
 	import { applyServerSettings, loadSystemSettings } from '$frontend/stores/features/settings.svelte';
@@ -99,6 +101,7 @@
 			restoreLastView(serverState?.lastView);
 			restoreUnreadSessions(serverState?.unreadSessions);
 			restoreProjectOrder(serverState?.projectOrder);
+			restoreArchivedIds(serverState?.archivedProjectIds);
 			await loadSystemSettings();
 			initPresence();
 
@@ -200,6 +203,9 @@
 
 <!-- File peek modal (opened when a file link fires while the Files panel is hidden) -->
 <FilePeekModal />
+
+<!-- AI Changes Modal -->
+<AiChangesModal />
 
 <!-- Toast Notifications. Above Dialog's z-10000, or a dialog hides the very
      notification that reports what it started. -->

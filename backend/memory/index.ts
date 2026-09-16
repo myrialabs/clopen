@@ -1,16 +1,17 @@
 /**
  * Memory Graph — public surface.
  *
- * One graph holds institutional/episodic memory and structural memory of the
- * codebase together (migration 066), so an agent can ask "what did we decide
- * about X" and "what is connected to Y" of the same store, whichever engine is
- * driving the session.
+ * One store of what past work established — decisions, patterns, failures,
+ * preferences — shared by every engine, so an agent can ask "what did we decide
+ * about X" whatever is driving the session. Each memory carries the files it
+ * claims something about, which is what ages it when they change and what an
+ * anchored query seeds from (migrations 066 and 076).
  *
  * Layout:
  *   embedding/     local static-embedding model, installed on demand
  *   retrieval.ts   BM25 + vector + graph expansion, fused with RRF
  *   indexer.ts     backfills vectors behind writes
- *   extract/       turns work into memory (structural from disk diffs, episodic per turn)
+ *   extract/       turns each finished turn into memories
  *   compose.ts     the hand-written path: free text in, reviewed memory out
  *   context.ts     token-budgeted injection at turn start
  *   time.ts        reads SQLite timestamps as the UTC they actually are

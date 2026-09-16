@@ -47,6 +47,7 @@ import { memoryRouter } from './memory';
 import { worktreesRouter } from './worktrees';
 import { notesRouter } from './notes';
 import { workRouter } from './work';
+import { deploymentsRouter } from './deployments';
 
 // ============================================
 // Main App Router - Merge All Module Routers
@@ -116,14 +117,17 @@ export const wsRouter = createRouter()
 	.merge(profilesRouter)
 	.merge(artifactsRouter)
 
-	// Memory Graph (unified episodic + structural memory, shared by every engine)
+	// Memory Graph (one store of memories, shared by every engine)
 	.merge(memoryRouter)
 
 	// Notes (project-scoped markdown)
 	.merge(notesRouter)
 
 	// Issues & PRs surface — work items, pull requests and CI for the current project
-	.merge(workRouter);
+	.merge(workRouter)
+
+	// Deployments surface — builds, logs and what is live, for the current project
+	.merge(deploymentsRouter);
 
 // Export API type for frontend type-safe access
 export type WSAPI = typeof wsRouter['$api'];

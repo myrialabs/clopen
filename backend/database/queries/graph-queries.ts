@@ -27,7 +27,6 @@ import type {
 	GraphEdgeInput,
 	GraphNode,
 	GraphNodeInput,
-	GraphNodeKind,
 	GraphRelation,
 	GraphScope,
 	GraphSource,
@@ -36,16 +35,12 @@ import type {
 
 interface GraphNodeRow {
 	id: string;
-	kind: GraphNodeKind;
 	subkind: string;
 	scope: GraphScope;
 	project_id: string | null;
 	session_id: string | null;
 	label: string;
 	body: string;
-	path: string | null;
-	symbol: string | null;
-	language: string | null;
 	digest: string;
 	confidence: number;
 	weight: number;
@@ -81,16 +76,12 @@ interface GraphEdgeRow {
 function toNode(row: GraphNodeRow): GraphNode {
 	return {
 		id: row.id,
-		kind: row.kind,
 		subkind: row.subkind as GraphNode['subkind'],
 		scope: row.scope,
 		projectId: row.project_id,
 		sessionId: row.session_id,
 		label: row.label,
 		body: row.body,
-		path: row.path,
-		symbol: row.symbol,
-		language: row.language,
 		digest: row.digest,
 		confidence: row.confidence,
 		weight: row.weight,
@@ -125,22 +116,28 @@ function toEdge(row: GraphEdgeRow): GraphEdge {
 }
 
 /**
- * Text a node contributes to the lexical index: its label, its body, and its
- * path/symbol. Paths are also split on separators so `sdk-loader` matches
+ * Text a memory contributes to the lexical index: its label, its body, the
+ * subjects it names and the files it claims something about.
+ *
+ * Both attributes are joined in for the same reason. They used to be findable
+ * because each was a NODE — an entity node, a file node — and a question that
+ * named one reached the memory by an edge. Nothing stands in for them now, so
+ * unless the memory carries them into its own indexed text, "what do we know
+ * about Bun" matches only memories that happen to spell Bun in their prose, and
+ * a pasted path matches nothing at all.
+ *
+ * Paths are also split on their separators so `sdk-loader` matches
  * `backend/engine/sdk-loader.ts` — BM25 tokenizes on word boundaries and would
  * otherwise treat the whole path as one opaque term.
  */
-function indexedText(node: Pick<GraphNode, 'label' | 'body' | 'path' | 'symbol'> & { entityNames?: string[] }): string {
+function indexedText(
+	node: Pick<GraphNode, 'label' | 'body'> & { entityNames?: string[]; paths?: string[] }
+): string {
 	const parts = [node.label, node.body];
-	if (node.symbol) parts.push(node.symbol);
-	// The entities a memory names used to be findable because each was a node of
-	// its own. They are an attribute now, so the memories that name them have to
-	// carry them into the lexical index — otherwise "what do we know about Bun"
-	// only matches memories that happen to spell Bun in their prose.
 	if (node.entityNames?.length) parts.push(node.entityNames.join(' '));
-	if (node.path) {
-		parts.push(node.path);
-		parts.push(node.path.split(/[/\\._-]+/).filter(Boolean).join(' '));
+	for (const path of node.paths ?? []) {
+		parts.push(path);
+		parts.push(path.split(/[/\\._-]+/).filter(Boolean).join(' '));
 	}
 	return parts.filter(Boolean).join('\n').trim();
 }
@@ -153,6 +150,20 @@ function indexedText(node: Pick<GraphNode, 'label' | 'body' | 'path' | 'symbol'>
  * time extraction sees the same fact.
  */
 export const DIGEST_VERSION = 2;
+
+/**
+ * The value written to `graph_nodes.kind`, which is now always the same one.
+ *
+ * The column survives migration 076 as a constant rather than being dropped: it
+ * is part of the unique digest index and of the FTS mirror's schema, and
+ * rebuilding both across a live memory store to reclaim one constant column
+ * would be real risk for no benefit. Nothing above this file has the concept.
+ *
+ * The SQL that still spells `kind = 'episodic'` is not leftover: those queries
+ * are served by PARTIAL indexes declared on that predicate (migration 066), and
+ * dropping it from the WHERE would make them unusable.
+ */
+const NODE_KIND = 'episodic';
 
 /**
  * Most terms one FTS5 MATCH may carry. See `buildFtsQuery` for why there is a
@@ -194,8 +205,17 @@ export function entityKeyFor(name: string): string | null {
 }
 
 /**
- * Stable identity for a node when the caller does not supply one. Structural
- * nodes are identified by what they point at; episodic nodes by their normalized
+ * One spelling for a repo-relative path, so the same file is one key however it
+ * was typed. Backslashes become slashes, a leading `./` goes, and a leading `/`
+ * with it — a model asked for repo-relative paths returns absolute ones often
+ * enough that silently storing both forms is a real cost.
+ */
+export function normalizePath(path: string): string {
+	return path.trim().replace(/\\/g, '/').replace(/^\.\//, '').replace(/^\/+/, '');
+}
+
+/**
+ * Stable identity for a node when the caller does not supply one: its normalized
  * claim, so the same decision phrased with different whitespace or casing
  * reinforces rather than duplicates.
  *
@@ -213,22 +233,8 @@ export function deriveDigest(input: GraphNodeInput): string {
 		return sha(`entity:${input.entityKey}`);
 	}
 
-	let basis: string;
-	if (input.kind === 'structural') {
-		// Identity is what the node points AT, so the label may be rewritten (a file
-		// renamed in the graph's display) without splitting it into a second node.
-		//
-		// Dependency nodes have neither path nor symbol — a package is not a
-		// location in the repository — so they must key on their name. Without that
-		// fallback every dependency in the workspace collapses onto one shared
-		// digest and each new package silently overwrites the previous one.
-		const located = `${input.path ?? ''}:${input.symbol ?? ''}`;
-		const identity = located === ':' ? input.label.trim().toLowerCase() : located;
-		basis = `${input.subkind}:${identity}`;
-	} else {
-		basis = `${input.subkind}:${(input.label + ' ' + (input.body ?? '')).toLowerCase().replace(/\s+/g, ' ').trim()}`;
-	}
-	return sha(basis);
+	const claim = (input.label + ' ' + (input.body ?? '')).toLowerCase().replace(/\s+/g, ' ').trim();
+	return sha(`${input.subkind}:${claim}`);
 }
 
 /** 20 hex characters of SHA-256 — 80 bits, far past collision risk at this scale. */
@@ -239,10 +245,11 @@ function sha(basis: string): string {
 /**
  * What a caller may narrow a listing by.
  *
- * `subkinds` and `sources` were added because a two-way kind toggle could not
- * answer real questions of the graph: "show only what the user stated, not what
- * was inferred", or "only the failures". Both are attributes the store has always
- * carried and nothing could filter on.
+ * `subkinds` and `sources` are what the filter is actually made of. A kind
+ * toggle used to sit above them — memories or code — and it could not answer any
+ * real question of the graph: "show only what the user stated, not what was
+ * inferred", or "only the failures". It went with the code half in migration
+ * 076, and these are what remain, both attributes the store always carried.
  */
 export interface GraphListFilter {
 	/** `undefined` = every project; `null` = global-scope nodes only. */
@@ -253,7 +260,6 @@ export interface GraphListFilter {
 	 * narrowing, not an absence of one.
 	 */
 	projectIds?: string[];
-	kinds?: GraphNodeKind[];
 	subkinds?: string[];
 	scopes?: GraphScope[];
 	sources?: GraphSource[];
@@ -269,6 +275,17 @@ export interface GraphListFilter {
  * Kept in one place because the three drifting apart is how a node ends up
  * counted but not shown, or shown in the graph after being forgotten.
  */
+/**
+ * An edge nothing stored: two memories grouped by something they both name.
+ * `via` is kept because the view colours by it and the weights differ per source.
+ */
+export interface DerivedEdge {
+	srcId: string;
+	dstId: string;
+	weight: number;
+	via: 'subject' | 'path' | 'project';
+}
+
 /**
  * An id set as ONE bound parameter instead of one placeholder per id.
  *
@@ -328,10 +345,6 @@ function buildNodeFilter(
 	const params: unknown[] = [];
 
 	appendProjectFilter(filter, where, params, as);
-	if (filter.kinds?.length) {
-		where.push(`${as}kind IN (${filter.kinds.map(() => '?').join(',')})`);
-		params.push(...filter.kinds);
-	}
 	if (filter.subkinds?.length) {
 		where.push(`${as}subkind IN (${filter.subkinds.map(() => '?').join(',')})`);
 		params.push(...filter.subkinds);
@@ -378,7 +391,7 @@ export const graphQueries = {
 				`SELECT * FROM graph_nodes
 				 WHERE COALESCE(project_id, '') = COALESCE(?, '') AND kind = ? AND digest = ?`
 			)
-			.get(projectId, input.kind, digest) as GraphNodeRow | null;
+			.get(projectId, NODE_KIND, digest) as GraphNodeRow | null;
 
 		if (existing) {
 			const source = input.source ?? 'agent';
@@ -430,21 +443,18 @@ export const graphQueries = {
 		db.prepare(
 			`INSERT INTO graph_nodes (
 				id, kind, subkind, scope, project_id, session_id, label, body,
-				path, symbol, language, digest, confidence, source, pinned,
+				digest, confidence, source, pinned,
 				entity_key, digest_version, asserted_by, reach, reach_judged
-			) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+			) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
 		).run(
 			id,
-			input.kind,
+			NODE_KIND,
 			input.subkind,
 			input.scope ?? (projectId ? 'project' : 'global'),
 			projectId,
 			input.sessionId ?? null,
 			input.label,
 			input.body ?? '',
-			input.path ?? null,
-			input.symbol ?? null,
-			input.language ?? null,
 			digest,
 			input.confidence ?? 0.5,
 			input.source ?? 'agent',
@@ -452,10 +462,8 @@ export const graphQueries = {
 			input.entityKey ?? null,
 			DIGEST_VERSION,
 			input.assertedBy ?? 'inferred',
-			// Structural nodes are a repository's files and never travel, whatever a
-			// caller passes.
-			input.kind === 'structural' ? 'here' : (input.reach ?? 'here'),
-			input.kind === 'structural' || input.reachJudged ? 1 : 0
+			input.reach ?? 'here',
+			input.reachJudged ? 1 : 0
 		);
 
 		this.syncFts(id);
@@ -475,26 +483,13 @@ export const graphQueries = {
 		return rows.map(toNode);
 	},
 
-	/** Structural node for a repo-relative path, when one exists. */
-	getByPath(projectId: string | null, path: string): GraphNode | null {
-		const row = getDatabase()
-			.prepare(
-				`SELECT * FROM graph_nodes
-				 WHERE COALESCE(project_id, '') = COALESCE(?, '') AND kind = 'structural' AND path = ?
-				 ORDER BY CASE subkind WHEN 'file' THEN 0 ELSE 1 END
-				 LIMIT 1`
-			)
-			.get(projectId, path) as GraphNodeRow | null;
-		return row ? toNode(row) : null;
-	},
-
 	/**
 	 * Edit the human-facing fields of a node (the graph editor's save path).
 	 *
 	 * `source` is a PARAMETER, not a constant, and getting that wrong was quietly
 	 * expensive. This used to hard-code `'user'`, and the MCP `update` action goes
 	 * through here — so one edit by an agent made the node permanently exempt from
-	 * structural decay (`markStale` skips `source = 'user'`), from eviction, and
+	 * staleness decay (`markStale` skips `source = 'user'`), from eviction, and
 	 * from consolidation, while the injected block advertised it to every future
 	 * turn as "stated by user". A model's correction was being given a human's
 	 * authority.
@@ -526,7 +521,7 @@ export const graphQueries = {
 			// to promote it to the user's word. Same reasoning as `source` being a
 			// parameter here rather than a constant.
 			source === 'user' ? 'user' : current.assertedBy,
-			current.kind === 'structural' ? 'here' : (patch.reach ?? current.reach),
+			patch.reach ?? current.reach,
 			id
 		);
 
@@ -535,21 +530,18 @@ export const graphQueries = {
 		// overwrite the edit. Re-deriving re-parents identity onto what the user
 		// actually wrote.
 		const updated = this.getById(id)!;
-		if (updated.kind === 'episodic') {
-			const digest = deriveDigest({
-				kind: updated.kind,
-				subkind: updated.subkind,
-				label: updated.label,
-				body: updated.body
-			});
-			const clash = db
-				.prepare(
-					`SELECT id FROM graph_nodes
-					 WHERE COALESCE(project_id, '') = COALESCE(?, '') AND kind = ? AND digest = ? AND id != ?`
-				)
-				.get(updated.projectId, updated.kind, digest, id) as { id: string } | null;
-			if (!clash) db.prepare(`UPDATE graph_nodes SET digest = ? WHERE id = ?`).run(digest, id);
-		}
+		const digest = deriveDigest({
+			subkind: updated.subkind,
+			label: updated.label,
+			body: updated.body
+		});
+		const clash = db
+			.prepare(
+				`SELECT id FROM graph_nodes
+				 WHERE COALESCE(project_id, '') = COALESCE(?, '') AND kind = ? AND digest = ? AND id != ?`
+			)
+			.get(updated.projectId, NODE_KIND, digest, id) as { id: string } | null;
+		if (!clash) db.prepare(`UPDATE graph_nodes SET digest = ? WHERE id = ?`).run(digest, id);
 
 		this.syncFts(id);
 		// The vector describes text that just changed, so it must be recomputed.
@@ -647,22 +639,28 @@ export const graphQueries = {
 	},
 
 	/**
-	 * Structural nodes for a set of repo-relative paths, in one query.
+	 * Memories that claim something about any of a set of repo-relative paths.
 	 *
-	 * Used to turn the files a session is working in into retrieval seeds, so the
-	 * lookup happens once per turn rather than once per path.
+	 * The one question the structural half existed to answer, asked directly.
+	 * Retrieval uses it to turn the files a session is working in into seeds, and
+	 * invalidation uses it to find what a change has aged — both once per turn
+	 * rather than once per path, and both as an index seek rather than a walk
+	 * through file nodes that stood in for the strings.
 	 */
-	getByPaths(projectId: string | null, paths: string[]): GraphNode[] {
+	nodesForPaths(projectId: string | null, paths: string[], limit = 60): GraphNode[] {
 		if (paths.length === 0) return [];
 		const placeholders = paths.map(() => '?').join(',');
 		const rows = getDatabase()
 			.prepare(
-				`SELECT * FROM graph_nodes
-				 WHERE COALESCE(project_id, '') = COALESCE(?, '')
-				   AND kind = 'structural' AND subkind = 'file'
-				   AND archived_at IS NULL AND path IN (${placeholders})`
+				`SELECT DISTINCT n.* FROM graph_node_paths p
+				 INNER JOIN graph_nodes n ON n.id = p.node_id
+				 WHERE COALESCE(n.project_id, '') = COALESCE(?, '')
+				   AND p.path IN (${placeholders})
+				   AND n.archived_at IS NULL AND n.superseded_by IS NULL
+				 ORDER BY n.pinned DESC, n.weight DESC, n.updated_at DESC
+				 LIMIT ?`
 			)
-			.all(projectId, ...paths) as GraphNodeRow[];
+			.all(projectId, ...paths, limit) as GraphNodeRow[];
 		return rows.map(toNode);
 	},
 
@@ -762,7 +760,8 @@ export const graphQueries = {
 	// ── entities ────────────────────────────────────────────────────────────
 
 	/**
-	 * Record what a memory is about, replacing whatever was recorded before.
+	 * Record which subjects a memory is about, replacing whatever was recorded
+	 * before.
 	 *
 	 * Replace rather than append, because extraction re-reads the same memory
 	 * whenever it is reinforced and a later reading is a better one — appending
@@ -825,41 +824,65 @@ export const graphQueries = {
 	 * memory's entities are rewritten, and no way for an edge to outlive the claim
 	 * it came from.
 	 *
-	 * Two bounds, both about hubs.
+	 * THREE GROUPINGS: a shared subject, a shared FILE, and the same codebase, in
+	 * descending order of what they say about two memories. The file grouping is
+	 * what the code half used to provide by accident — two memories about
+	 * `retrieval.ts` were joined through the file NODE sitting between them — and
+	 * migration 076 kept the attribution while dropping the connection. 985 of one
+	 * real graph's 2,062 memories share a file with another; none of it was drawn.
 	 *
-	 * A subject shared by a large slice of the graph is not a relationship, it is a
-	 * word everyone happens to use. "TypeScript" across forty memories says nothing
-	 * about any two of them, and connecting them all would recreate the
-	 * fabricated-structure problem from a different cause. `MAX_SUBJECT_MEMBERS`
-	 * drops those.
+	 * A LARGE GROUP IS DAMPED, NOT DISCARDED, and that correction is why this is
+	 * worth reading twice. The rule used to be that a group of more than two dozen
+	 * is "a word everyone happens to use" and got dropped outright. Measured on a
+	 * real graph the sixteen groups it discarded were `Clopen` (496 members),
+	 * `Arga` (299), `wpuploader` (131), `nna-dms-backend` (130) — product and
+	 * project names, which is to say the most meaningful lobes the picture could
+	 * have had. It threw away 1,627 memberships and left 62% of the graph as
+	 * isolated dots, because past a couple of thousand memories every real topic
+	 * clears two dozen and only the incidental ones stay small.
 	 *
-	 * And within a subject each memory links only to the few strongest members
-	 * rather than to all of them. A clique of thirteen is seventy-eight lines
-	 * saying one thing; bounded degree says the same thing, keeps the cluster
+	 * The concern behind the rule was still right: a subject shared by a quarter of
+	 * the store does say less about any two of its members. So it is expressed as
+	 * WEIGHT — divided by the log of the group's size — which is what Louvain
+	 * actually reads. Measured, that is the difference between one lobe of 293 and
+	 * a spread of 198/153/144/122/121.
+	 *
+	 * Degree stays bounded either way, which was always the real protection: each
+	 * memory links to a few of the strongest members rather than to all of them,
+	 * and a large group links to fewer still. A clique of thirteen is seventy-eight
+	 * lines saying one thing; bounded degree says the same thing, keeps the cluster
 	 * visible, and stays linear as the graph grows.
 	 */
-	derivedEdges(nodeIds: string[]): { srcId: string; dstId: string; weight: number; via: 'subject' | 'project' }[] {
+	derivedEdges(nodeIds: string[]): DerivedEdge[] {
 		if (nodeIds.length < 2) return [];
 
-		/** Above this a group is a common word rather than a shared topic. */
-		const MAX_GROUP_MEMBERS = 24;
+		/** Past this a group is broad enough to link sparsely and weigh less. */
+		const LARGE_GROUP = 24;
 		/** Links each memory draws per group, toward the heaviest members. */
 		const LINKS_PER_MEMBER = 4;
+		/** …and inside a large group, where a full fan would be a hairball. */
+		const LINKS_IN_LARGE_GROUP = 2;
 
 		const set = idSet(nodeIds);
-		const edges: { srcId: string; dstId: string; weight: number; via: 'subject' | 'project' }[] = [];
+		const edges: DerivedEdge[] = [];
 		const seen = new Set<string>();
 
 		/** Chain a group's members, heaviest first, into bounded-degree edges. */
-		const connect = (members: string[], weight: number, via: 'subject' | 'project'): void => {
-			if (members.length < 2 || members.length > MAX_GROUP_MEMBERS) return;
+		const connect = (members: string[], weight: number, via: DerivedEdge['via']): void => {
+			if (members.length < 2) return;
+			const large = members.length > LARGE_GROUP;
+			const links = large ? LINKS_IN_LARGE_GROUP : LINKS_PER_MEMBER;
+			// `log10`, so the damping is gentle where it should be — a group of 30
+			// keeps 40% of its weight and one of 500 keeps 27% — rather than a cliff
+			// at whatever number the constant happens to be.
+			const scaled = large ? weight / (1 + Math.log10(members.length)) : weight;
 			for (let i = 0; i < members.length; i++) {
-				for (let j = i + 1; j < Math.min(members.length, i + 1 + LINKS_PER_MEMBER); j++) {
+				for (let j = i + 1; j < Math.min(members.length, i + 1 + links); j++) {
 					const [a, b] = members[i] < members[j] ? [members[i], members[j]] : [members[j], members[i]];
 					const key = `${a}|${b}`;
 					if (seen.has(key)) continue;
 					seen.add(key);
-					edges.push({ srcId: a, dstId: b, weight, via });
+					edges.push({ srcId: a, dstId: b, weight: scaled, via });
 				}
 			}
 		};
@@ -875,10 +898,7 @@ export const graphQueries = {
 			)
 			.all(set) as { groupKey: string; nodeId: string }[];
 		// Appended, not rebuilt. Spreading the existing array on every row made this
-		// quadratic in the size of a group — invisible for the subject groups, which
-		// are capped at two dozen, and the dominant cost of the whole call for the
-		// project groups, which routinely run to hundreds before the size check
-		// below discards them.
+		// quadratic in the size of a group, and groups routinely run to hundreds.
 		const bySubject = new Map<string, string[]>();
 		for (const row of rows) {
 			const members = bySubject.get(row.groupKey);
@@ -889,6 +909,28 @@ export const graphQueries = {
 		// subject to its most reinforced memories rather than to whichever happened
 		// to be written first.
 		for (const members of bySubject.values()) connect(members, 1, 'subject');
+
+		// ── shared file ──────────────────────────────────────────────────────
+		// Between a subject and a codebase in what it says: two memories about the
+		// same file are talking about the same thing far more often than two that
+		// merely share a repository, and less reliably than two that name the same
+		// subject outright.
+		const pathRows = getDatabase()
+			.prepare(
+				`SELECT p.path AS groupKey, p.node_id AS nodeId
+				 FROM graph_node_paths p
+				 INNER JOIN graph_nodes n ON n.id = p.node_id
+				 WHERE p.node_id IN ${ID_SET}
+				 ORDER BY p.path, n.weight DESC, n.updated_at DESC`
+			)
+			.all(set) as { groupKey: string; nodeId: string }[];
+		const byPath = new Map<string, string[]>();
+		for (const row of pathRows) {
+			const members = byPath.get(row.groupKey);
+			if (members) members.push(row.nodeId);
+			else byPath.set(row.groupKey, [row.nodeId]);
+		}
+		for (const members of byPath.values()) connect(members, 0.7, 'path');
 
 		// ── same codebase ────────────────────────────────────────────────────
 		// Weaker on purpose. Two memories about tunnelkit are related BECAUSE they
@@ -919,6 +961,36 @@ export const graphQueries = {
 	},
 
 	/** Ids sharing a subject with `nodeId`, for one hop of traversal. */
+	/**
+	 * Memories that claim something about one of the same files — the traversal
+	 * half of the `path` grouping above.
+	 *
+	 * Without this, removing the code half cost retrieval a route it used to have:
+	 * a question that matched a memory about `retrieval.ts` could reach the other
+	 * memories about that file in two hops, through the file node between them.
+	 * `neighbours` walks this the way it walks shared subjects.
+	 */
+	pathNeighbourIds(nodeId: string, limit = 12): string[] {
+		try {
+			return (
+				getDatabase()
+					.prepare(
+						`SELECT DISTINCT other.node_id AS id
+						 FROM graph_node_paths mine
+						 INNER JOIN graph_node_paths other ON other.path = mine.path
+						 INNER JOIN graph_nodes n ON n.id = other.node_id
+						 WHERE mine.node_id = ? AND other.node_id <> ?
+						   AND n.archived_at IS NULL AND n.superseded_by IS NULL
+						 ORDER BY n.weight DESC, n.updated_at DESC
+						 LIMIT ?`
+					)
+					.all(nodeId, nodeId, limit) as { id: string }[]
+			).map(row => row.id);
+		} catch {
+			return [];
+		}
+	},
+
 	entityNeighbourIds(nodeId: string, limit = 12): string[] {
 		try {
 			return (
@@ -963,6 +1035,97 @@ export const graphQueries = {
 		} catch {
 			return [];
 		}
+	},
+
+	// ── paths ───────────────────────────────────────────────────────────────
+
+	/**
+	 * Record which files a memory claims something about, replacing whatever was
+	 * recorded before.
+	 *
+	 * Replace rather than append, for the same reason `setEntities` does: a later
+	 * reading of the same memory is a better one, and appending would accumulate
+	 * every path any extraction ever associated with it — including the ones a
+	 * since-abandoned approach touched.
+	 *
+	 * Paths are normalized here rather than at the call sites. They arrive from a
+	 * model, from a disk diff and from Windows, and `backend\\memory\\x.ts`,
+	 * `./backend/memory/x.ts` and `backend/memory/x.ts` have to be one key or the
+	 * lookup that invalidation depends on quietly misses.
+	 */
+	setPaths(nodeId: string, paths: string[]): number {
+		const db = getDatabase();
+		const normalized = [...new Set(paths.map(normalizePath).filter(Boolean))] as string[];
+		db.prepare(`DELETE FROM graph_node_paths WHERE node_id = ?`).run(nodeId);
+		const insert = db.prepare(`INSERT OR IGNORE INTO graph_node_paths (node_id, path) VALUES (?, ?)`);
+		for (const path of normalized) insert.run(nodeId, path);
+		// The paths are part of the memory's searchable text, so the mirror is now
+		// out of date. See `indexedText`.
+		this.syncFts(nodeId);
+		return normalized.length;
+	},
+
+	/** The files one memory claims something about. */
+	pathsOf(nodeId: string): string[] {
+		return (
+			getDatabase().prepare(`SELECT path FROM graph_node_paths WHERE node_id = ?`).all(nodeId) as {
+				path: string;
+			}[]
+		).map(row => row.path);
+	},
+
+	/** Paths for many memories at once, for listings and the inspector. */
+	pathsFor(nodeIds: string[]): Map<string, string[]> {
+		const byNode = new Map<string, string[]>();
+		if (nodeIds.length === 0) return byNode;
+		const rows = getDatabase()
+			.prepare(`SELECT node_id, path FROM graph_node_paths WHERE node_id IN ${ID_SET}`)
+			.all(idSet(nodeIds)) as { node_id: string; path: string }[];
+		for (const row of rows) {
+			const paths = byNode.get(row.node_id);
+			if (paths) paths.push(row.path);
+			else byNode.set(row.node_id, [row.path]);
+		}
+		return byNode;
+	},
+
+	/**
+	 * Ids of the memories attached to any of these paths — what invalidation ages.
+	 *
+	 * Deliberately not scoped to a project. A memory judged `anywhere` is attached
+	 * to the path where it was learned, and the decay is evidence about the CLAIM
+	 * rather than about the repository: if the file that taught it has been
+	 * rewritten, that is a reason to trust it slightly less wherever it travels.
+	 * The caller passes paths from one project's disk diff, so a collision needs
+	 * two repositories to share a repo-relative path AND a memory about it.
+	 */
+	memoriesForPaths(paths: string[]): string[] {
+		if (paths.length === 0) return [];
+		const placeholders = paths.map(() => '?').join(',');
+		const rows = getDatabase()
+			.prepare(
+				`SELECT DISTINCT p.node_id AS id FROM graph_node_paths p
+				 INNER JOIN graph_nodes n ON n.id = p.node_id
+				 WHERE p.path IN (${placeholders})
+				   AND n.archived_at IS NULL AND n.superseded_by IS NULL`
+			)
+			.all(...paths) as { id: string }[];
+		return rows.map(row => row.id);
+	},
+
+	/**
+	 * Run `fn` inside one SQLite transaction.
+	 *
+	 * A memory write is a SELECT, an INSERT or UPDATE, an FTS rewrite and its
+	 * attribute rows. Outside a transaction each of those is its own durability
+	 * barrier, so the batch paths — one turn's extraction, a purge, a merge — are
+	 * worth grouping.
+	 */
+	transaction<T>(fn: () => T): T {
+		const db = getDatabase();
+		// Not every driver exposes transactions (see `DatabaseConnection`). Running
+		// the block unbatched is the correct degradation: slower, identical result.
+		return db.transaction ? db.transaction(fn)() : fn();
 	},
 
 	/** Live memories that contradict any of `ids`, in both directions. */
@@ -1086,43 +1249,6 @@ export const graphQueries = {
 		return touched;
 	},
 
-	/**
-	 * Memories that claim something about any of these code nodes, in one query.
-	 *
-	 * `about` points memory → code, so the memory is always the source. Replaces a
-	 * per-file `edgesOf` loop that pulled every edge of every changed file — on a
-	 * turn touching sixty files, most of them `defines` and `imports` edges that
-	 * invalidation has no interest in.
-	 */
-	memoriesAbout(codeNodeIds: string[]): string[] {
-		if (codeNodeIds.length === 0) return [];
-		const placeholders = codeNodeIds.map(() => '?').join(',');
-		const rows = getDatabase()
-			.prepare(
-				`SELECT DISTINCT e.src_id AS id FROM graph_edges e
-				 INNER JOIN graph_nodes n ON n.id = e.src_id
-				 WHERE e.rel = 'about' AND e.dst_id IN (${placeholders})
-				   AND n.archived_at IS NULL AND n.superseded_by IS NULL`
-			)
-			.all(...codeNodeIds) as { id: string }[];
-		return rows.map(row => row.id);
-	},
-
-	/**
-	 * Run `fn` inside one SQLite transaction.
-	 *
-	 * Structural ingestion performs several thousand statements per busy turn
-	 * (a file upsert is a SELECT, an INSERT/UPDATE and an FTS rewrite, and a file
-	 * can define 25 symbols). Outside a transaction each one is its own durability
-	 * barrier, which is the single largest cost on the write path.
-	 */
-	transaction<T>(fn: () => T): T {
-		const db = getDatabase();
-		// Not every driver exposes transactions (see `DatabaseConnection`). Running
-		// the block unbatched is the correct degradation: slower, identical result.
-		return db.transaction ? db.transaction(fn)() : fn();
-	},
-
 	/** Record that retrieval surfaced these nodes, feeding the usage signal. */
 	markAccessed(ids: string[]): void {
 		if (ids.length === 0) return;
@@ -1166,7 +1292,7 @@ export const graphQueries = {
 			return;
 		}
 
-		const text = indexedText({ ...node, entityNames: this.entityNamesOf(id) });
+		const text = indexedText({ ...node, entityNames: this.entityNamesOf(id), paths: this.pathsOf(id) });
 		if (!text) {
 			db.prepare(`UPDATE graph_nodes SET fts_rowid = NULL WHERE id = ?`).run(id);
 			return;
@@ -1174,7 +1300,7 @@ export const graphQueries = {
 
 		const result = db
 			.prepare(`INSERT INTO graph_nodes_fts (node_id, project_id, scope, kind, text) VALUES (?, ?, ?, ?, ?)`)
-			.run(id, node.projectId ?? '', node.scope, node.kind, text) as { lastInsertRowid?: number | bigint };
+			.run(id, node.projectId ?? '', node.scope, NODE_KIND, text) as { lastInsertRowid?: number | bigint };
 		db.prepare(`UPDATE graph_nodes SET fts_rowid = ? WHERE id = ?`).run(
 			Number(result.lastInsertRowid ?? 0),
 			id
@@ -1362,12 +1488,13 @@ export const graphQueries = {
 				}
 			}
 
-			// Memories about the same subject are neighbours too, without an edge in
-			// the table. This is what the entity NODE used to provide as two hops
-			// through a stub; it is one hop now, and it is the only structure the
-			// episodic half has left since similarity linking was removed.
+			// Memories about the same subject — or about the same file — are
+			// neighbours too, without an edge in the table. The first is what the
+			// entity NODE used to provide as two hops through a stub; the second is
+			// what the FILE node used to provide the same way. Both are one hop now,
+			// and together they are the structure the graph has.
 			for (const id of frontier) {
-				for (const candidate of this.entityNeighbourIds(id)) {
+				for (const candidate of [...this.entityNeighbourIds(id), ...this.pathNeighbourIds(id)]) {
 					if (distance.has(candidate)) continue;
 					distance.set(candidate, depth);
 					next.push(candidate);
@@ -1519,8 +1646,6 @@ export const graphQueries = {
 		return {
 			nodes: one(`SELECT COUNT(*) AS c FROM graph_nodes WHERE ${live}`),
 			edges: one(`SELECT COUNT(*) AS c FROM graph_edges`),
-			episodic: one(`SELECT COUNT(*) AS c FROM graph_nodes WHERE ${live} AND kind = 'episodic'`),
-			structural: one(`SELECT COUNT(*) AS c FROM graph_nodes WHERE ${live} AND kind = 'structural'`),
 			vectors: one(`SELECT COUNT(*) AS c FROM graph_vectors`),
 			byScope,
 			byProject,
@@ -1731,72 +1856,6 @@ export const graphQueries = {
 		return ids.length;
 	},
 
-	/**
-	 * Structural nodes nothing in the graph depends on any more.
-	 *
-	 * This is the bound on the term that actually dominates growth. Every turn
-	 * writes a node per changed file, per directory and up to twenty-five per
-	 * file's symbols, so on a repository under active development the structural
-	 * half outgrows the episodic half by an order of magnitude — and episodic
-	 * retention does not touch it, because none of those queries look at
-	 * `kind = 'structural'`.
-	 *
-	 * What is safe to remove is narrow and stays narrow: a `symbol` or `module`
-	 * node, untouched for `maxAgeDays`, that NO memory is `about`. A file node is
-	 * spared even when nothing points at it — it is the anchor a path lookup
-	 * resolves to, and `invalidate.ts` already retires files the moment the disk
-	 * says they are gone, which is better evidence than age. Anything a memory
-	 * hangs off is spared outright: deleting it would sever the `about` edge that
-	 * is the entire reason both halves live in one graph.
-	 */
-	pruneStructural(options: { maxAgeDays: number; limit: number }): number {
-		const db = getDatabase();
-		const ids = (
-			db
-				.prepare(
-					`SELECT n.id AS id FROM graph_nodes n
-					 WHERE n.kind = 'structural'
-					   AND n.subkind IN ('symbol', 'module')
-					   AND n.pinned = 0
-					   AND n.source != 'user'
-					   AND julianday('now') - julianday(n.updated_at) > ?
-					   AND NOT EXISTS (
-					     SELECT 1 FROM graph_edges e WHERE e.rel = 'about' AND e.dst_id = n.id
-					   )
-					 ORDER BY n.updated_at ASC
-					 LIMIT ?`
-				)
-				.all(options.maxAgeDays, options.limit) as { id: string }[]
-		).map(r => r.id);
-
-		if (ids.length === 0) return 0;
-		const placeholders = ids.map(() => '?').join(',');
-		this.dropFts(ids);
-		db.prepare(`DELETE FROM graph_nodes WHERE id IN (${placeholders})`).run(...ids);
-		return ids.length;
-	},
-
-	/**
-	 * Structural nodes whose file no longer exists on disk, so the graph stops
-	 * pointing agents at paths that are gone. Symbols of a removed file go with
-	 * it — a symbol has no meaning without the file that defined it.
-	 */
-	archiveMissingFiles(projectId: string, paths: string[]): number {
-		if (paths.length === 0) return 0;
-		const placeholders = paths.map(() => '?').join(',');
-		const ids = (
-			getDatabase()
-				.prepare(
-					`SELECT id FROM graph_nodes
-					 WHERE project_id = ? AND kind = 'structural' AND path IN (${placeholders})
-					   AND archived_at IS NULL`
-				)
-				.all(projectId, ...paths) as { id: string }[]
-		).map(r => r.id);
-
-		return this.archiveNodes(ids);
-	},
-
 	// ── vectors ─────────────────────────────────────────────────────────────
 
 	setVector(nodeId: string, dim: number, model: string, vec: Uint8Array): void {
@@ -1811,22 +1870,7 @@ export const graphQueries = {
 			.run(nodeId, dim, model, vec);
 	},
 
-	/**
-	 * Nodes that still need a vector for the current model.
-	 *
-	 * EPISODIC ONLY, deliberately. A structural node is identified by a name and a
-	 * path, and embedding that produces a bag of path fragments rather than a
-	 * meaning — measured, `backend/database/queries/index.ts` scored above a
-	 * correct answer for two unrelated natural-language questions, because
-	 * mean-pooled fragments land near the middle of the space where everything
-	 * looks vaguely similar. Names and paths are precisely what BM25 is best at,
-	 * so structural nodes lose nothing by staying lexical.
-	 *
-	 * Code is still reachable semantically, just not directly: a question finds
-	 * the memory *about* a file, and graph expansion crosses the `about` edge to
-	 * the file itself. That is the intended route — and the reason both kinds of
-	 * memory live in one graph.
-	 */
+	/** Memories that still need a vector for the current model. */
 	nodesMissingVectors(model: string, limit: number = 200): GraphNode[] {
 		const rows = getDatabase()
 			.prepare(

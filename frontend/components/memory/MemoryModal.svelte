@@ -31,11 +31,8 @@
 	import { projectState } from '$frontend/stores/core/projects.svelte';
 	import Dialog from '$frontend/components/common/overlay/Dialog.svelte';
 	import { showAlert, showConfirm } from '$frontend/stores/ui/dialog.svelte';
-	import {
-		EPISODIC_SUBKINDS,
-		STRUCTURAL_SUBKINDS
-	} from '$frontend/stores/features/memory-graph.svelte';
-	import type { GraphNodeKind, GraphRegion, GraphSource } from '$shared/types/memory';
+	import { EPISODIC_SUBKINDS } from '$frontend/stores/features/memory-graph.svelte';
+	import type { GraphRegion, GraphSource } from '$shared/types/memory';
 
 	interface Props {
 		isOpen: boolean;
@@ -118,14 +115,11 @@
 	const drawnCount = $derived(view.nodes.length + view.bins.length);
 	/** How many memories the merged marks stand for, for the header's tooltip. */
 	const mergedCount = $derived(view.bins.reduce((sum, bin) => sum + bin.members, 0));
-	const kinds = $derived(memoryGraphStore.filter.kinds);
 	const filter = $derived(memoryGraphStore.filter);
 	const forgotten = $derived(memoryGraphStore.forgotten);
 	const forgottenSelection = $derived(memoryGraphStore.forgottenSelection);
 	/** Any narrowing beyond the default, so the filter button can say so. */
-	const activeFilterCount = $derived(
-		(kinds.length < 2 ? 1 : 0) + filter.subkinds.length + filter.sources.length
-	);
+	const activeFilterCount = $derived(filter.subkinds.length + filter.sources.length);
 	/** Projects offered by the multi-select, with their path to tell namesakes apart. */
 	const projectOptions = $derived(
 		projectState.projects.map(project => ({
@@ -308,13 +302,6 @@
 		canvas?.focusNode(nodeId);
 	}
 
-	function toggleKind(kind: GraphNodeKind): void {
-		const next = kinds.includes(kind) ? kinds.filter(k => k !== kind) : [...kinds, kind];
-		// Never allow both off — an empty graph reads as a bug, not a filter choice.
-		if (next.length === 0) return;
-		memoryGraphStore.setFilter({ kinds: next });
-	}
-
 	/**
 	 * Subkind and source filters are ADDITIVE narrowings: empty means "everything",
 	 * not "nothing". A filter that starts by excluding all of its own options would
@@ -336,7 +323,7 @@
 	}
 
 	function resetFilters(): void {
-		memoryGraphStore.setFilter({ kinds: ['episodic', 'structural'], subkinds: [], sources: [] });
+		memoryGraphStore.setFilter({ subkinds: [], sources: [] });
 	}
 
 	// ── Forgotten list ──────────────────────────────────────────────────────
@@ -757,51 +744,19 @@
 							</button>
 						</div>
 
-						<span class="block text-[9px] uppercase tracking-wide text-slate-400 mb-1.5">Show</span>
+						<span class="block text-[9px] uppercase tracking-wide text-slate-400 mb-1.5">Kind of memory</span>
 						<div class="flex flex-wrap gap-1 mb-3">
-							{#each [{ kind: 'episodic' as GraphNodeKind, label: 'Memories' }, { kind: 'structural' as GraphNodeKind, label: 'Code' }] as option (option.kind)}
+							{#each EPISODIC_SUBKINDS as subkind (subkind)}
 								<button
-									onclick={() => toggleKind(option.kind)}
-									class="px-2 py-1 text-[10px] rounded border transition-colors {kinds.includes(option.kind)
+									onclick={() => toggleSubkind(subkind)}
+									class="px-2 py-1 text-[10px] rounded border capitalize transition-colors {filter.subkinds.includes(subkind)
 										? 'border-violet-500/40 bg-violet-50 dark:bg-violet-500/10 text-violet-700 dark:text-violet-300'
-										: 'border-slate-200 dark:border-slate-700 text-slate-400'}"
+										: 'border-slate-200 dark:border-slate-700 text-slate-400 hover:text-slate-600 dark:hover:text-slate-300'}"
 								>
-									{option.label}
+									{subkind}
 								</button>
 							{/each}
 						</div>
-
-						{#if kinds.includes('episodic')}
-							<span class="block text-[9px] uppercase tracking-wide text-slate-400 mb-1.5">Kind of memory</span>
-							<div class="flex flex-wrap gap-1 mb-3">
-								{#each EPISODIC_SUBKINDS as subkind (subkind)}
-									<button
-										onclick={() => toggleSubkind(subkind)}
-										class="px-2 py-1 text-[10px] rounded border capitalize transition-colors {filter.subkinds.includes(subkind)
-											? 'border-violet-500/40 bg-violet-50 dark:bg-violet-500/10 text-violet-700 dark:text-violet-300'
-											: 'border-slate-200 dark:border-slate-700 text-slate-400 hover:text-slate-600 dark:hover:text-slate-300'}"
-									>
-										{subkind}
-									</button>
-								{/each}
-							</div>
-						{/if}
-
-						{#if kinds.includes('structural')}
-							<span class="block text-[9px] uppercase tracking-wide text-slate-400 mb-1.5">Kind of code</span>
-							<div class="flex flex-wrap gap-1 mb-3">
-								{#each STRUCTURAL_SUBKINDS as subkind (subkind)}
-									<button
-										onclick={() => toggleSubkind(subkind)}
-										class="px-2 py-1 text-[10px] rounded border capitalize transition-colors {filter.subkinds.includes(subkind)
-											? 'border-violet-500/40 bg-violet-50 dark:bg-violet-500/10 text-violet-700 dark:text-violet-300'
-											: 'border-slate-200 dark:border-slate-700 text-slate-400 hover:text-slate-600 dark:hover:text-slate-300'}"
-									>
-										{subkind}
-									</button>
-								{/each}
-							</div>
-						{/if}
 
 						<span class="block text-[9px] uppercase tracking-wide text-slate-400 mb-1.5">Written by</span>
 						<div class="flex flex-wrap gap-1">

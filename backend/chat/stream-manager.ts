@@ -1338,7 +1338,7 @@ class StreamManager extends EventEmitter {
 						return null;
 					})
 					.then(delta => {
-						void ingestTurn({
+						ingestTurn({
 							projectId,
 							projectPath,
 							sessionId: chatSessionId,

@@ -29,6 +29,7 @@ export interface UserServerState {
 	unreadSessions: RestoredValue;
 	todoPanelState: RestoredValue;
 	projectOrder: string[] | null;
+	archivedProjectIds: string[] | null;
 	commandUsage: RestoredValue;
 }
 

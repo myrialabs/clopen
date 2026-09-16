@@ -15,7 +15,7 @@ import type {
 	DbClientSchemaNodeType
 } from '$shared/types/db-client';
 
-export type DbClientView = 'overview' | 'query' | 'data' | 'structure' | 'er';
+export type DbClientView = 'overview' | 'query' | 'data' | 'structure' | 'er' | 'supabase';
 
 /** The per-object views, scoped to whichever object is active. */
 const TABLE_VIEWS: DbClientView[] = ['data', 'structure', 'er'];
