@@ -45,6 +45,7 @@ import { wsRouter } from './ws';
 // binary transfers with `write EPIPE`. See backend/http/files-upload.ts.
 import { filesUploadRoute } from './http/files-upload';
 import { filesDownloadRoute } from './http/files-download';
+import { filesSharedRoute } from './http/files-shared';
 
 // HTTP routes for per-user notification sounds (upload / serve / delete).
 import { audioRoute } from './http/audio';
@@ -194,6 +195,7 @@ const app = new Elysia()
 	// on the HTTP path through the Vite dev proxy.
 	.use(filesUploadRoute)
 	.use(filesDownloadRoute)
+	.use(filesSharedRoute)
 
 	// Per-user notification sound upload/serve/delete.
 	.use(audioRoute)
