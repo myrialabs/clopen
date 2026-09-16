@@ -22,7 +22,7 @@
 	import MergeDialog from './MergeDialog.svelte';
 	import AssigneePicker from './AssigneePicker.svelte';
 	import StatePicker from './StatePicker.svelte';
-	import MenuSurface from './MenuSurface.svelte';
+	import MenuSurface from '$frontend/components/common/overlay/MenuSurface.svelte';
 	import TimelineEvent from './TimelineEvent.svelte';
 	import { clickOutside } from '$frontend/utils/click-outside';
 	import { copyText } from '$frontend/utils/clipboard';

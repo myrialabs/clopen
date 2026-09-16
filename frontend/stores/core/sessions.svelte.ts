@@ -14,8 +14,7 @@ import { projectState } from './projects.svelte';
 import { setupEditModeListener, restoreEditMode } from '$frontend/stores/ui/edit-mode.svelte';
 import { markSessionUnread, markSessionRead, clearSessionState, syncGlobalStateFromSession, appState } from '$frontend/stores/core/app.svelte';
 import { debug } from '$shared/utils/logger';
-import { setAiChanges } from '$frontend/utils/ai-changes';
-import { extractAiEdits } from '$frontend/utils/chat/ai-edits-from-messages';
+import { loadAiChanges, clearAiChanges } from '$frontend/stores/features/ai-changes.svelte';
 
 /**
  * Frontend-only streaming message for assistant text or reasoning.
@@ -164,6 +163,10 @@ export async function setCurrentSession(session: ChatSession | null, skipLoadMes
 		// messages — those already belong to this session, so claim them).
 		if (skipLoadMessages) {
 			sessionState.messagesSessionId = session.id;
+			// Messages were kept, but the checkpoint they sit on may not be: this is
+			// the restore path, and which turns are on the active path is exactly
+			// what a restore changes.
+			void loadAiChanges(session.id);
 		} else {
 			await loadMessagesForSession(session.id);
 		}
@@ -173,7 +176,7 @@ export async function setCurrentSession(session: ChatSession | null, skipLoadMes
 		// Clear messages when no session
 		sessionState.messages = [];
 		sessionState.messagesSessionId = null;
-		syncAiChangesFromMessages();
+		clearAiChanges();
 		debug.log('session', 'Session cleared');
 	}
 }
@@ -248,7 +251,7 @@ export function removeSession(sessionId: string) {
 		sessionState.currentSession = null;
 		sessionState.messages = [];
 		sessionState.messagesSessionId = null;
-		syncAiChangesFromMessages();
+		clearAiChanges();
 	}
 }
 
@@ -272,24 +275,6 @@ export async function endSession(sessionId: string) {
 // MESSAGE MANAGEMENT
 // ========================================
 
-// Signature of the last synced edit set — skip rebuilds when nothing relevant
-// changed (e.g. streaming text deltas that add no completed AI edit).
-let lastAiEditSignature = '';
-
-/**
- * Re-derive the AI-change store from the messages currently in view. Called
- * whenever the message set changes (session/checkpoint/history/project switch,
- * clear) and reactively from ChatMessages for live streaming edits, so the AI
- * indicators always reflect exactly what the user is looking at.
- */
-export function syncAiChangesFromMessages() {
-	const entries = extractAiEdits(sessionState.messages);
-	const signature = entries.map((e) => e.key).join('|');
-	if (signature === lastAiEditSignature) return;
-	lastAiEditSignature = signature;
-	setAiChanges(entries);
-}
-
 export function addMessage(message: UnifiedMessage): void {
 	sessionState.messages.push(message);
 }
@@ -302,7 +287,7 @@ export function clearMessages() {
 	sessionState.messages = [];
 	sessionState.messagesSessionId = null;
 	sessionState.hasMessageHistory = false;
-	syncAiChangesFromMessages();
+	clearAiChanges();
 }
 
 export async function loadMessagesForSession(sessionId: string) {
@@ -332,9 +317,11 @@ export async function loadMessagesForSession(sessionId: string) {
 		sessionState.messagesSessionId = null;
 		sessionState.hasMessageHistory = false;
 	} finally {
-		// Re-derive AI-change indicators for whatever is now loaded (incl. after a
-		// checkpoint restore, which truncates messages to the checkpoint).
-		syncAiChangesFromMessages();
+		// Re-read which turns changed what. This runs on every message load, which
+		// includes a checkpoint restore — the restore moves HEAD, and the turns
+		// that are no longer on the active path describe files that no longer
+		// carry their changes.
+		void loadAiChanges(sessionId);
 	}
 }
 

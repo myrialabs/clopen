@@ -157,6 +157,54 @@ export const ADMIN_ONLY_ROUTES = new Set([
 	'integrations:disconnect',
 	'integrations:health',
 	'integrations:secrets-health',
+	// Account-backed database connections. Linking reads a credential belonging
+	// to the install rather than to the caller, and projects a connection every
+	// admin sees — the same reason the rest of the integrations surface is
+	// admin-only. The ordinary db-client routes stay open: a member still
+	// manages their own hand-typed connections exactly as before.
+	'db-client:providers',
+	'db-client:remote-databases',
+	'db-client:create-options',
+	// Provisions real infrastructure against the account's quota, which is as
+	// outward-facing as anything on this surface gets. Creating an organisation
+	// creates a BILLING entity, which is more so.
+	'db-client:create-group',
+	'db-client:create-database',
+	// Renames a database everyone at the provider sees.
+	'db-client:rename-database',
+	// Destroys a database and everything in it.
+	'db-client:delete-database',
+	'db-client:link',
+	'db-client:update-link',
+	'db-client:unlink',
+	// Applying a migration changes a schema everyone shares, and writing types
+	// writes a file into the repository. The Supabase READS are not listed, so
+	// anyone who can use the connection can look.
+	'db-client:supabase-apply-migration',
+	'db-client:supabase-write-types',
+	// Worktree database branching. Pointing a project at a parent database
+	// commits an account's quota to it, and deleting a branch destroys a real
+	// database — both spend a credential that belongs to the install rather than
+	// to the caller, the same reason `db-client:link` is gated.
+	//
+	// `worktrees:branching-state` and `worktrees:branch-rewrite-env` are
+	// deliberately NOT listed: a member has to be able to see whether their own
+	// worktree got a branch, and to retry the dotenv write when it was refused.
+	//
+	// NEITHER ARE `worktrees:branch-parents` AND `worktrees:branching-save`, and
+	// that is a change rather than an oversight. They used to be here because a
+	// binding could only point at an integration account, and committing the
+	// install's quota is an admin decision. A binding can now point at a DB
+	// Client connection instead — a database the member themselves saved — and
+	// refusing that would make "give this worktree its own database" an
+	// admin-only feature for no reason that survives being stated. The account
+	// half keeps the old rule: `listBranchSources` shows accounts to admins
+	// only, and `requireSource` refuses anything the caller cannot see.
+	'worktrees:branching-clear',
+	'worktrees:branch-orphans',
+	'worktrees:branch-delete',
+	'worktrees:branch-forget',
+	'worktrees:branch-delete-remote',
 	// Memory Graph — the graph is instance-global and is injected into every
 	// future turn on every engine, so editing it changes what every agent is told.
 	// Mutations only: the read surface (memory:graph / :node / :search / :stats /

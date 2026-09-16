@@ -37,6 +37,7 @@ import {
 	renderCreateTable
 } from './sql-builders';
 import { debug } from '$shared/utils/logger';
+import { buildConnectionUrl } from '../connection-url';
 
 const Q = quotePg;
 const PG_PLACEHOLDER = (i: number): string => `$${i + 1}`;
@@ -62,20 +63,16 @@ export class PostgresAdapter implements DbClientDriverAdapter {
 	private tunnelPort: number | undefined = undefined;
 	private ensureLock = Promise.resolve();
 
+	/**
+	 * Bun's `SQL` wants the `postgres` scheme, and a connection with no database
+	 * still has to land somewhere — everything else is the shared builder.
+	 */
 	private buildUrl(conn: DbClientConnection, tunnelPort?: number): string {
-		const host = tunnelPort ? '127.0.0.1' : (conn.host ?? '127.0.0.1');
-		const port = tunnelPort ?? conn.port ?? 5432;
-		const user = encodeURIComponent(conn.username ?? '');
-		const pass = conn.password ? `:${encodeURIComponent(conn.password)}` : '';
-		const auth = user ? `${user}${pass}@` : '';
-		const db = conn.database ? `/${encodeURIComponent(conn.database)}` : '/postgres';
-
-		const params = new URLSearchParams();
-		if (conn.sslMode && conn.sslMode !== 'disable') {
-			params.set('sslmode', conn.sslMode);
-		}
-		const qs = params.toString();
-		return `postgres://${auth}${host}:${port}${db}${qs ? `?${qs}` : ''}`;
+		return buildConnectionUrl(conn, {
+			tunnelPort,
+			scheme: 'postgres',
+			fallbackDatabase: 'postgres'
+		});
 	}
 
 	async connect(conn: DbClientConnection, tunnelPort?: number): Promise<void> {

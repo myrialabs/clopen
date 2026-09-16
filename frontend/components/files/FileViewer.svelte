@@ -22,11 +22,13 @@
 	import { debug } from '$shared/utils/logger';
 	import ws from '$frontend/utils/ws';
 	import { computeLineDiff, type GutterChange } from '$frontend/utils/line-diff';
+	import { buildLineMap, remapHunks } from '$frontend/utils/line-map';
 	import { gitStatusState } from '$frontend/stores/features/git-status.svelte';
 	import { settings } from '$frontend/stores/features/settings.svelte';
 	import { revealFile } from '$frontend/stores/ui/file-peek.svelte';
-	import { getAiChanges, onAiChange, onAiScrollReveal, consumeAiScrollReveal, getGutterViewMode, setGutterViewMode, onGutterViewModeChange, latestTurnIndex } from '$frontend/utils/ai-changes';
-	import type { GutterViewMode, AiChange } from '$frontend/utils/ai-changes';
+	import { aiChangesState, turnsForPath, turnId, onAiReveal, consumeAiReveal } from '$frontend/stores/features/ai-changes.svelte';
+	import type { TurnChanges } from '$frontend/stores/features/ai-changes.svelte';
+	import { gutterModeState, setGutterViewMode } from '$frontend/stores/ui/gutter-mode.svelte';
 
 	// Interface untuk MonacoCodeEditor component
 	interface MonacoEditorComponent {
@@ -173,48 +175,52 @@
 	let gutterChanges: GutterChange[] = [];
 	let aiGutterChanges: GutterChange[] = [];
 	/**
-	 * Which AI edits the gutter paints:
-	 * - 'all'      → every edit in the loaded conversation
-	 * - 'turn'     → every edit from the most recent turn ("Latest AI turn"). Not
-	 *                the last tool call — one turn often edits a file repeatedly,
-	 *                and showing only the final call hides the rest of the work.
-	 * - 'selected' → only `aiSelectedKey`, the edit whose tool row was clicked
-	 * The mode is re-resolved on every pass, so it keeps pointing at the right
-	 * edits as the conversation grows or a checkpoint restore truncates it.
+	 * Which turn's work the gutter paints:
+	 * - 'latest'  → the chat's most recent turn, whether or not it touched this
+	 *               file. A turn that changed nothing here paints nothing, which
+	 *               is the truth; showing an older turn's work under the label
+	 *               "latest" was not.
+	 * - 'all'     → everything this chat did to the file, from before its first
+	 *               turn to after its last
+	 * - a turn id → that one turn, and only that one
+	 *
+	 * Scoping by turn rather than by individual tool call is what makes the
+	 * gutter honest for every engine: a turn's before and after come from the
+	 * checkpoint snapshot, so a file rewritten by Bash or apply_patch paints the
+	 * same as one rewritten by Edit.
 	 */
-	let aiFilter = $state<'all' | 'turn' | 'selected'>('turn');
-	/** tool_use id of the edit focused from chat; kept so the user can switch back to it. */
-	let aiSelectedKey = $state<string | null>(null);
-	/** True when the selected edit's text is no longer anywhere in the file. */
-	let aiSelectedMissing = $state(false);
-	/** 1-based position of the selected edit among the file's edits (0 = none). */
-	let aiSelectedOrdinal = $state(0);
+	let aiScope = $state<'all' | 'latest' | string>('latest');
 	/**
-	 * A reveal request that has been taken off the store but not yet scrolled to.
-	 * The request must be claimed the moment we see it because it flips the view to
-	 * AI mode — but the pass that sees it is often a *clearing* pass (the view was
-	 * still in git mode), so it parks here until a pass that actually paints can
-	 * scroll to it. Dropping it there is what made a chat file click land on the
-	 * file with no diff shown.
+	 * The scoped turn's own before and after, straight from the snapshot.
+	 *
+	 * Both sides, not just the base: diffing the base against the BUFFER would
+	 * fold every later turn into this turn's answer, so turn 2 would paint turn
+	 * 3 and 4's work as its own. The pair is diffed against itself and the
+	 * result is then carried onto the buffer (see utils/line-map.ts).
+	 *
+	 * `touched: false` is a real answer — this turn left the file alone.
 	 */
-	let pendingAiRevealKey: string | null = null;
+	let aiPair = $state<{ before: string; after: string; touched: boolean } | null>(null);
+	/** What `aiPair` holds, so it is re-read only when the scope moves. */
+	let aiPairKey = '';
+	/** Per-turn versions already fetched for the open file, keyed path::turn. */
+	const aiPairCache = new Map<string, { before: string; after: string; touched: boolean }>();
+	/**
+	 * A reveal request taken off the store but not yet scrolled to. It is claimed
+	 * the moment it is seen because it flips the view into AI mode — but the pass
+	 * that sees it is often a clearing pass, so it parks here until a pass that
+	 * actually paints can scroll to it.
+	 */
+	let pendingAiReveal = false;
+	/** Whether this chat touched the open file at all — gates the gutter toggle. */
 	let hasAiChanges = $state(false);
-	let aiChangeCount = $state(0);
-	/** Edit indices whose "before" text is known — only those hunks can be discarded. */
-	let aiDiscardableEdits = new Set<number>();
-	/**
-	 * Content of a Write-edited file as it stood immediately before the Write,
-	 * keyed by tool_use id. The Write tool records no "before" text, so this is
-	 * fetched from the turn's checkpoint snapshot (and then replayed forward past
-	 * any earlier edits in the same turn). Without it a Write can only be painted
-	 * as "the whole file is new", and has nothing to discard back to.
-	 */
-	const aiWriteBases = new Map<string, string>();
-	/** Write keys whose base is unavailable — don't ask the server twice. */
-	const aiWriteBaseMisses = new Set<string>();
-	const aiWriteBasePending = new Set<string>();
+	/** True when the scoped turn left this file alone, which the UI says out loud. */
+	let aiScopeEmpty = $state(false);
+	/** Anchor for the scope menu, measured to decide which edge it opens from. */
+	let aiMenuAnchor = $state<HTMLDivElement | null>(null);
+	let aiMenuFlipped = $state(false);
 	let aiMenuOpen = $state(false);
-	let gutterMode = $state<GutterViewMode>(getGutterViewMode());
+	const gutterMode = $derived(gutterModeState.mode);
 	let headContent = $state<string | null>(null);
 	let headContentForPath = '';
 	let pendingScrollRestore: number | null = null;
@@ -235,6 +241,10 @@
 
 	// Monaco MouseTargetType.GUTTER_LINE_DECORATIONS — clicks on the colored bar
 	// land in the line-decorations strip (between line-numbers and content).
+	/** Width of the AI scope menu (w-64) and the gap it keeps from the edge. */
+	const AI_MENU_WIDTH = 256;
+	const AI_MENU_MARGIN = 8;
+
 	const GUTTER_LINE_DECORATIONS = 4;
 	const GUTTER_GLYPH_MARGIN = 5;
 
@@ -423,7 +433,7 @@
 		if (!path || !projectId) {
 			headContent = null;
 			headContentForPath = '';
-			resetAiFilter();
+			resetAiScope();
 			setGutterViewMode('git');
 			closeDiffPeek();
 			return;
@@ -431,7 +441,7 @@
 		if (path === headContentForPath) return;
 		headContentForPath = path;
 		headContent = null;
-		resetAiFilter();
+		resetAiScope();
 		setGutterViewMode('git');
 		closeDiffPeek();
 
@@ -486,283 +496,299 @@
 		}
 	});
 
-	// Sync with external preference changes
-	onMount(() => {
-		const unsub = onGutterViewModeChange((mode) => {
-			gutterMode = mode;
+
+	function selectAiScope(next: 'all' | 'latest' | string) {
+		setGutterViewMode('ai');
+		aiScope = next;
+		aiMenuOpen = false;
+		void ensureAiPair().then(() => {
+			applyAiChangeDecorations();
+			// Move an open peek onto the new scope's first hunk (or close it if the
+			// new scope has none) so the peek never outlives what it describes.
+			refreshActiveDiffPeek();
 		});
-		return unsub;
+	}
+
+	/**
+	 * Open the scope menu from whichever edge leaves room for it.
+	 *
+	 * Decided from the anchor rather than by measuring the menu after it renders,
+	 * so it never opens off-screen for a frame and then jumps back.
+	 */
+	function toggleAiMenu() {
+		if (aiMenuOpen) {
+			aiMenuOpen = false;
+			return;
+		}
+		const rect = aiMenuAnchor?.getBoundingClientRect();
+		aiMenuFlipped = rect
+			? rect.left + AI_MENU_WIDTH > window.innerWidth - AI_MENU_MARGIN
+			: false;
+		aiMenuOpen = true;
+	}
+
+	/** Reset the AI view to its default scope. */
+	function resetAiScope() {
+		aiScope = 'latest';
+		aiPair = null;
+		aiPairKey = '';
+		aiPairCache.clear();
+		aiScopeEmpty = false;
+		pendingAiReveal = false;
+		aiMenuOpen = false;
+	}
+
+	/**
+	 * Take a pending reveal, if one is aimed at this file.
+	 *
+	 * Claimed here rather than at paint time because it moves the scope, and the
+	 * content is fetched from the scope — resolving them in the wrong order
+	 * fetched the previous scope's versions and the reveal landed on the wrong
+	 * turn.
+	 */
+	function claimAiReveal() {
+		const path = file?.path || '';
+		if (!path) return;
+		const revealTurn = consumeAiReveal(path);
+		if (revealTurn === null) return;
+
+		aiScope = chatTurns.some((turn) => turnId(turn) === revealTurn) ? revealTurn : 'latest';
+		pendingAiReveal = true;
+		setGutterViewMode('ai');
+	}
+
+	/**
+	 * Every turn of this chat, newest first — not only the ones that touched this
+	 * file.
+	 *
+	 * The menu lists all of them on purpose. A file whose turns were filtered out
+	 * offered a different menu from the file next to it, and "Latest turn" on
+	 * such a file quietly meant "latest turn that happened to touch this one".
+	 */
+	const chatTurns = $derived.by(() => {
+		void aiChangesState.byPath;
+		return aiChangesState.turns;
 	});
 
-	const selectedEditLabel = $derived(
-		aiSelectedOrdinal > 0 && aiChangeCount > 1 ? ` · ${aiSelectedOrdinal} of ${aiChangeCount}` : ''
-	);
+	/** Turns that actually changed the open file, newest first. */
+	const fileTurns = $derived.by(() => {
+		void aiChangesState.byPath;
+		const path = file?.path || '';
+		return path ? turnsForPath(path) : [];
+	});
 
-	function selectAiFilter(next: 'all' | 'turn' | 'selected') {
-		if (next === 'selected' && !aiSelectedKey) return;
-		setGutterViewMode('ai');
-		aiFilter = next;
-		aiMenuOpen = false;
-		applyAiChangeDecorations();
-		// Move an open peek onto the new scope's first hunk (or close it if the new
-		// scope has none) so the peek never outlives the changes it describes.
-		refreshActiveDiffPeek();
+	/** Which turns a menu row is offered for — all of them, marked or not. */
+	function turnTouchedFile(turn: TurnChanges): boolean {
+		return fileTurns.some((candidate) => turnId(candidate) === turnId(turn));
 	}
 
-	/** Reset the AI view to its default (latest turn, nothing pinned). */
-	function resetAiFilter() {
-		aiFilter = 'turn';
-		aiSelectedKey = null;
-		aiSelectedMissing = false;
-		aiSelectedOrdinal = 0;
-		pendingAiRevealKey = null;
-		aiWriteBases.clear();
-		aiWriteBaseMisses.clear();
-		aiWriteBasePending.clear();
-	}
-
-	/** Does this edit belong to the current view mode? */
-	function isEditInFilter(list: AiChange[], editIdx: number, latestTurn: number): boolean {
-		if (aiFilter === 'selected') {
-			return aiSelectedKey !== null && list[editIdx].key === aiSelectedKey;
+	/** How the current scope is named in prose. */
+	const aiScopeLabel = $derived.by(() => {
+		if (aiScope === 'all') return 'This chat';
+		const turn = chatTurns.find((candidate) => turnId(candidate) === aiScope);
+		if (aiScope === 'latest' || !turn) {
+			const latest = chatTurns[0];
+			if (!latest) return 'This turn';
+			return latest.turnIndex === null ? 'The running turn' : `Turn ${latest.turnIndex}`;
 		}
-		if (aiFilter === 'turn') return list[editIdx].turnIndex === latestTurn;
-		return true;
+		return turn.turnIndex === null ? 'The running turn' : `Turn ${turn.turnIndex}`;
+	});
+
+	/** The turn a non-'all' scope points at, or null when there is none. */
+	function scopedTurn(): TurnChanges | null {
+		if (chatTurns.length === 0) return null;
+		if (aiScope === 'latest') return chatTurns[0];
+		if (aiScope === 'all') return null;
+		return chatTurns.find((turn) => turnId(turn) === aiScope) ?? chatTurns[0];
 	}
 
 	/**
-	 * Content of the file immediately before `editIdx` ran, or null when unknown.
-	 * Edits carry their own "before" text; Writes don't, so they lean on the
-	 * checkpoint snapshot fetched by `ensureWriteBase`.
+	 * One turn's before/after for the open file, fetched once and remembered.
+	 *
+	 * A turn that left the file alone answers `touched: false` rather than an
+	 * error — it is a fact about the turn, and the gutter says so.
 	 */
-	function aiBaseContent(list: AiChange[], editIdx: number): string | null {
-		const change = list[editIdx];
-		if (!change.wholeFile) return change.oldContent;
-		return change.key ? aiWriteBases.get(change.key) ?? null : null;
+	async function fetchTurnVersions(
+		path: string,
+		turn: TurnChanges
+	): Promise<{ before: string; after: string; touched: boolean } | null> {
+		// A settled turn's versions are fixed forever; the running turn's are not,
+		// so it is never cached — it is the one thing on screen that is still moving.
+		const settled = turn.checkpointMessageId !== null;
+		const cacheKey = `${path}::${turnId(turn)}`;
+		const cached = settled ? aiPairCache.get(cacheKey) : undefined;
+		if (cached) return cached;
+
+		try {
+			const response = await ws.http('snapshot:read-turn-file', {
+				filePath: path,
+				...(turn.checkpointMessageId
+					? { messageId: turn.checkpointMessageId }
+					: { sessionId: aiChangesState.sessionId ?? '' })
+			});
+			const versions =
+				response.status === 'unchanged' || response.before === null || response.after === null
+					? { before: '', after: '', touched: false }
+					: { before: response.before, after: response.after, touched: true };
+			if (settled) aiPairCache.set(cacheKey, versions);
+			return versions;
+		} catch {
+			return null;
+		}
 	}
 
 	/**
-	 * Walk the file's earlier edits from the same turn onto `preTurnContent`.
-	 * Snapshots are captured once per turn, so when a turn touched this file more
-	 * than once the snapshot alone lands us at the start of the turn, not at the
-	 * moment just before the Write we care about.
+	 * The running turn's stamp, when the current scope looks at it — otherwise ''.
+	 * Settled turns never change, so they contribute nothing and stay cached.
 	 */
-	function replayTurnEdits(list: AiChange[], targetIdx: number, preTurnContent: string): string {
-		const turn = list[targetIdx].turnIndex;
-		let content = preTurnContent;
-		for (let i = 0; i < targetIdx; i++) {
-			const earlier = list[i];
-			if (earlier.turnIndex !== turn) continue;
-			if (earlier.wholeFile) {
-				content = earlier.newContent;
-				continue;
-			}
-			const at = content.indexOf(earlier.oldContent);
-			if (at < 0) continue;
-			content =
-				content.slice(0, at) + earlier.newContent + content.slice(at + earlier.oldContent.length);
-		}
-		return content;
+	function runningTurnStamp(): string {
+		const running = chatTurns.find((turn) => turn.checkpointMessageId === null);
+		if (!running) return '';
+		const inScope =
+			aiScope === 'latest'
+				? chatTurns[0] === running
+				: aiScope === 'all'
+					? fileTurns[0] === running
+					: aiScope === turnId(running);
+		return inScope ? running.timestamp : '';
 	}
 
-	/** Fetch (once) the pre-write content backing a Write edit's diff and discard. */
-	function ensureWriteBase(list: AiChange[], editIdx: number, path: string) {
-		const change = list[editIdx];
-		const key = change.key;
-		if (!change.wholeFile || !key) return;
-		if (aiWriteBases.has(key) || aiWriteBaseMisses.has(key) || aiWriteBasePending.has(key)) return;
-		if (!change.checkpointMessageId) {
-			aiWriteBaseMisses.add(key);
+	/** Resolve the current scope to a before/after pair, once per scope. */
+	async function ensureAiPair(): Promise<void> {
+		claimAiReveal();
+
+		const path = file?.path || '';
+		// The running turn's timestamp moves every time the store re-reads it, so
+		// including it is what lets a scope pointing at that turn refresh while
+		// every settled scope stays resolved once.
+		const key = `${path}::${aiScope}::${runningTurnStamp()}`;
+		// The key is claimed before the request so a repeat pass does not fire a
+		// second one. "This turn changed nothing" is an answer too, and asking
+		// again every pass would be a request loop.
+		if (aiPairKey === key) return;
+		aiPairKey = key;
+
+		if (!path || chatTurns.length === 0) {
+			aiPair = null;
 			return;
 		}
 
-		aiWriteBasePending.add(key);
-		ws.http('snapshot:read-file-before-checkpoint', {
-			messageId: change.checkpointMessageId,
-			filePath: path
-		})
-			.then((res) => {
-				aiWriteBasePending.delete(key);
-				if (res.content === null) {
-					aiWriteBaseMisses.add(key);
+		try {
+			if (aiScope === 'all') {
+				// Everything this chat did to the file: from before the first turn
+				// that touched it, to after the last one that did.
+				if (fileTurns.length === 0) {
+					aiPair = { before: '', after: '', touched: false };
 					return;
 				}
-				aiWriteBases.set(key, replayTurnEdits(list, editIdx, res.content));
-				if (file?.path === path) applyAiChangeDecorations();
-			})
-			.catch(() => {
-				aiWriteBasePending.delete(key);
-				aiWriteBaseMisses.add(key);
-			});
+				const newest = fileTurns[0];
+				const oldest = fileTurns[fileTurns.length - 1];
+				const first = await fetchTurnVersions(path, oldest);
+				const last = newest === oldest ? first : await fetchTurnVersions(path, newest);
+				if (aiPairKey !== key) return;
+				aiPair =
+					first && last && first.touched && last.touched
+						? { before: first.before, after: last.after, touched: true }
+						: null;
+				return;
+			}
+
+			const turn = scopedTurn();
+			if (!turn) {
+				aiPair = null;
+				return;
+			}
+			const versions = await fetchTurnVersions(path, turn);
+			if (aiPairKey !== key) return;
+			aiPair = versions;
+		} finally {
+			// Release the key on failure so a later pass can retry: a failed request
+			// says nothing about the file, unlike a "changed nothing" answer.
+			if (aiPairKey === key && aiPair === null) aiPairKey = '';
+		}
 	}
 
 	/**
-	 * Move a hunk from snippet coordinates onto the file's own line numbering.
-	 * An AI edit is diffed against its own "before" text, so *both* sides come
-	 * back numbered from 1 — the old side has to travel with the new one, or the
-	 * peek labels every replaced block "1, 2, 3…" no matter where it sits in the
-	 * file. 0 is the "no old side" sentinel (pure addition) and stays 0.
+	 * Paint the gutter with what the scoped turn did to this file.
+	 *
+	 * Two diffs, not one. The turn's own before against its own after says what
+	 * that turn changed — diffing against the buffer instead would hand turn 2
+	 * credit for turn 3 and 4's work. The result is then carried onto the buffer
+	 * through the diff between the turn's after and what is on screen now, so a
+	 * hunk lands where its lines actually live and disappears if they are gone.
 	 */
-	function shiftHunk(hunk: GutterChange, offset: number): GutterChange {
-		return {
-			...hunk,
-			startLine: hunk.startLine + offset,
-			endLine: hunk.endLine + offset,
-			oldStartLine: hunk.oldStartLine > 0 ? hunk.oldStartLine + offset : 0,
-			oldEndLine: hunk.oldEndLine > 0 ? hunk.oldEndLine + offset : 0
-		};
-	}
-
-	/**
-	 * Place an edit's hunks onto the file as it stands now. Fast path: the edit's
-	 * text is still present verbatim, so every hunk shifts by the same offset.
-	 * Otherwise a later edit rewrote part of it — fall back to anchoring each hunk
-	 * on its own text, so the surviving parts of the edit still show up instead of
-	 * the whole edit silently vanishing.
-	 */
-	function anchorHunks(
-		hunks: GutterChange[],
-		editedText: string,
-		content: string
-	): GutterChange[] {
-		const at = content.indexOf(editedText);
-		if (at >= 0) {
-			const offset = content.substring(0, at).split('\n').length - 1;
-			return hunks.map((c) => shiftHunk(c, offset));
-		}
-
-		const anchored: GutterChange[] = [];
-		for (const hunk of hunks) {
-			// A pure deletion has no surviving text to search for.
-			if (hunk.newLines.length === 0) continue;
-			const text = hunk.newLines.join('\n');
-			const idx = content.indexOf(text);
-			if (idx < 0) continue;
-			const startLine = content.substring(0, idx).split('\n').length;
-			anchored.push(shiftHunk(hunk, startLine - hunk.startLine));
-		}
-		return anchored;
-	}
-
-	// AI change decorations — highlight lines modified by AI (Write/Edit tools)
 	function applyAiChangeDecorations(forceClear = false) {
 		const editor = monacoEditorRef?.getEditor();
 		if (!editor) return;
 
-		const path = file?.path || '';
-		if (!path) {
-			aiChangeDecorations = editor.deltaDecorations(aiChangeDecorations, []);
-			hasAiChanges = false;
-			aiChangeCount = 0;
-			aiSelectedMissing = false;
-			return;
-		}
-
-		const allChanges = getAiChanges(path);
-		hasAiChanges = allChanges.length > 0;
-		aiChangeCount = allChanges.length;
-
-		// A click on a chat tool row pins that exact edit — it's the only way to see
-		// what one tool call did to a file that later edits have moved on from.
-		const revealKey = consumeAiScrollReveal(path);
-		if (revealKey !== null) {
-			aiSelectedKey = revealKey;
-			aiFilter = 'selected';
-			pendingAiRevealKey = revealKey;
-			setGutterViewMode('ai');
-		}
-
-		// The pinned edit may be gone after a checkpoint restore truncated the
-		// conversation — fall back rather than showing an empty gutter forever.
-		if (aiFilter === 'selected' && !allChanges.some((c) => c.key === aiSelectedKey)) {
-			aiSelectedKey = null;
-			aiFilter = 'turn';
-		}
-		aiSelectedOrdinal = aiSelectedKey
-			? allChanges.findIndex((c) => c.key === aiSelectedKey) + 1
-			: 0;
-
-		if (forceClear || gutterMode === 'git') {
+		const clear = () => {
 			aiChangeDecorations = editor.deltaDecorations(aiChangeDecorations, []);
 			aiGutterChanges = [];
-			aiSelectedMissing = false;
+		};
+
+		const path = file?.path || '';
+		if (!path) {
+			clear();
+			hasAiChanges = false;
+			aiScopeEmpty = false;
 			return;
 		}
 
-		if (allChanges.length === 0) {
-			aiChangeDecorations = editor.deltaDecorations(aiChangeDecorations, []);
-			aiSelectedMissing = false;
+		hasAiChanges = fileTurns.length > 0;
+
+		// The pinned turn can disappear when a restore moves the active path —
+		// fall back rather than painting an empty gutter forever.
+		if (
+			aiScope !== 'all' &&
+			aiScope !== 'latest' &&
+			!chatTurns.some((turn) => turnId(turn) === aiScope)
+		) {
+			aiScope = 'latest';
+			aiPairKey = '';
+		}
+
+		if (forceClear || gutterMode === 'git') {
+			clear();
+			aiScopeEmpty = false;
 			return;
 		}
 
-		const merged: Array<GutterChange & { _editIdx: number; _timestamp: number }> = [];
-		const latestTurn = latestTurnIndex(allChanges);
-		const discardable = new Set<number>();
+		// "This turn changed nothing here" is a result worth stating; a failed or
+		// pending read is not, and stays silent.
+		aiScopeEmpty = hasAiChanges && aiPair !== null && !aiPair.touched;
 
-		for (let editIdx = 0; editIdx < allChanges.length; editIdx++) {
-			if (!isEditInFilter(allChanges, editIdx, latestTurn)) continue;
-
-			const change = allChanges[editIdx];
-			ensureWriteBase(allChanges, editIdx, path);
-			const base = aiBaseContent(allChanges, editIdx);
-
-			let local: GutterChange[];
-			if (base === null) {
-				// A Write whose "before" text we couldn't recover — all we can honestly
-				// say is that the AI produced this content, so mark it whole and leave
-				// Discard off (there is nothing to revert to).
-				local = computeLineDiff('', change.newContent);
-			} else {
-				discardable.add(editIdx);
-				local = anchorHunks(
-					computeLineDiff(base, change.newContent),
-					change.newContent,
-					editableContent
-				);
-			}
-
-			for (const gc of local) {
-				merged.push({ ...gc, _editIdx: editIdx, _timestamp: change.timestamp });
-			}
+		if (!aiPair || !aiPair.touched) {
+			clear();
+			return;
 		}
 
-		aiDiscardableEdits = discardable;
-		aiSelectedMissing = aiFilter === 'selected' && merged.length === 0;
+		const changes = remapHunks(
+			computeLineDiff(aiPair.before, aiPair.after),
+			buildLineMap(computeLineDiff(aiPair.after, editableContent))
+		);
 
-		const newDecorations = merged.map((entry) => {
-			const { _editIdx, _timestamp, ...change } = entry;
-
-			const options: any = {
+		const newDecorations = changes.map((change) => ({
+			range: {
+				startLineNumber: change.startLine,
+				startColumn: 1,
+				endLineNumber: change.endLine,
+				endColumn: 1
+			},
+			options: {
 				isWholeLine: false,
 				linesDecorationsClassName: `ai-gutter-${change.type}`,
 				overviewRuler: {
 					color: colorForChangeType(change.type),
 					position: OVERVIEW_RULER_RIGHT
 				}
-			};
-
-			return {
-				range: {
-					startLineNumber: change.startLine,
-					startColumn: 1,
-					endLineNumber: change.endLine,
-					endColumn: 1
-				},
-				options
-			};
-		});
-
-		// Store tagged changes for peek
-		aiGutterChanges = merged.map(({ _editIdx, _timestamp, ...change }) => ({
-			...change,
-			editIndex: _editIdx,
-			timestamp: _timestamp,
+			}
 		}));
+
+		aiGutterChanges = changes;
 		aiChangeDecorations = editor.deltaDecorations(aiChangeDecorations, newDecorations);
 
-		// Scroll-reveal: focus the specific edit the user clicked in chat.
-		if (pendingAiRevealKey !== null) {
-			pendingAiRevealKey = null;
+		if (pendingAiReveal) {
+			pendingAiReveal = false;
 			if (aiGutterChanges.length > 0) {
 				const targetChange = aiGutterChanges[0];
 				requestAnimationFrame(() => {
@@ -771,66 +797,23 @@
 					editor.focus();
 					showDiffPeek(targetChange, true);
 				});
-			} else if (aiSelectedMissing) {
-				// Nothing to anchor — show what the tool call recorded instead, so the
-				// click still answers "what did this tool do to this file?".
-				requestAnimationFrame(() => showRecordedAiPeek());
 			}
 		}
 	}
 
-	/**
-	 * Peek the selected edit's recorded before/after when its text is no longer in
-	 * the file (a later edit rewrote it, or a checkpoint restore rolled it back).
-	 * Read-only: there is no live region to navigate to or discard.
-	 */
-	function showRecordedAiPeek() {
-		const path = file?.path || '';
-		if (!path || !aiSelectedKey) return;
-		const list = getAiChanges(path);
-		const editIdx = list.findIndex((c) => c.key === aiSelectedKey);
-		if (editIdx < 0) return;
+	// Repaint whenever the store re-reads the conversation's turns — a stream
+	// event, a captured snapshot, or a checkpoint restore.
+	$effect(() => {
+		void aiChangesState.byPath;
+		void file?.path;
+		void ensureAiPair().then(() => applyAiChangeDecorations());
+	});
 
-		const change = list[editIdx];
-		const base = aiBaseContent(list, editIdx) ?? '';
-		const oldLines = base ? base.split('\n') : [];
-		const newLines = change.newContent.split('\n');
-
-		// Anchored at the top and numbered from 1: the recorded text no longer maps
-		// onto the file, so borrowing the file's line numbers would be a lie.
-		monacoEditorRef?.getEditor()?.revealLine(1);
-		showDiffPeek(
-			{
-				type: oldLines.length > 0 ? 'modified' : 'added',
-				startLine: 1,
-				endLine: 1,
-				oldStartLine: oldLines.length > 0 ? 1 : 0,
-				oldEndLine: oldLines.length,
-				oldLines,
-				newLines,
-				editIndex: editIdx,
-				timestamp: change.timestamp
-			},
-			true,
-			{ recorded: true }
-		);
-	}
-
-	// Register callback for AI change notifications (fires when a new change arrives)
 	onMount(() => {
-		const unregister = onAiChange(() => {
-			applyAiChangeDecorations();
+		return onAiReveal((request) => {
+			if (request.absolutePath !== (file?.path || '')) return;
+			void ensureAiPair().then(() => applyAiChangeDecorations());
 		});
-		const unregisterReveal = onAiScrollReveal((revealPath) => {
-			const currentPath = file?.path || '';
-			if (revealPath === currentPath) {
-				applyAiChangeDecorations();
-			}
-		});
-		return () => {
-			unregister();
-			unregisterReveal();
-		};
 	});
 
 	function scheduleGutterUpdate() {
@@ -1198,8 +1181,7 @@
 		change: GutterChange,
 		index: number,
 		total: number,
-		isAi = false,
-		recorded = false
+		isAi = false
 	): HTMLElement {
 		const root = document.createElement('div');
 		root.className = `git-diff-peek-overlay-header git-diff-peek-overlay-header-${change.type}`;
@@ -1207,9 +1189,7 @@
 		const title = document.createElement('span');
 		title.className = 'git-diff-peek-overlay-title';
 		const fileName = file?.name ?? '';
-		title.textContent = recorded
-			? `${fileName} · recorded change (no longer in the file)`
-			: `${fileName} · ${index} of ${total}`;
+		title.textContent = `${fileName} · ${index} of ${total}`;
 		root.appendChild(title);
 
 		const actions = document.createElement('div');
@@ -1221,7 +1201,7 @@
 		prevBtn.title = 'Previous change';
 		prevBtn.setAttribute('aria-label', 'Previous change');
 		prevBtn.innerHTML = ICON_CHEVRON_UP;
-		prevBtn.disabled = total <= 1 || recorded;
+		prevBtn.disabled = total <= 1;
 		attachPeekButton(prevBtn, () => navigatePeek(-1));
 		actions.appendChild(prevBtn);
 
@@ -1231,17 +1211,15 @@
 		nextBtn.title = 'Next change';
 		nextBtn.setAttribute('aria-label', 'Next change');
 		nextBtn.innerHTML = ICON_CHEVRON_DOWN;
-		nextBtn.disabled = total <= 1 || recorded;
+		nextBtn.disabled = total <= 1;
 		attachPeekButton(nextBtn, () => navigatePeek(1));
 		actions.appendChild(nextBtn);
 
 		// Discard reverts the hunk to whatever it replaced: HEAD for a git hunk, the
-		// AI edit's own "before" text for an AI hunk. A recorded peek has no live
-		// lines to act on, and a Write with no recovered base has nothing to revert to.
-		const canDiscard = recorded
-			? false
-			: !isAi || (change.editIndex !== undefined && aiDiscardableEdits.has(change.editIndex));
-		if (canDiscard) {
+		// file as it stood before the scoped turn for an AI hunk. Withheld when the
+		// hunk was carried over from an earlier turn and its lines have shifted or
+		// partly gone since — reverting that range would take a later change with it.
+		if (change.exact !== false) {
 			const discardBtn = document.createElement('button');
 			discardBtn.className = 'git-diff-peek-discard-btn';
 			discardBtn.type = 'button';
@@ -1375,20 +1353,19 @@
 		domNode.style.transform = `translateX(${scrollLeft}px)`;
 	}
 
-	function showDiffPeek(change: GutterChange, isAi = false, opts?: { recorded?: boolean }) {
+	function showDiffPeek(change: GutterChange, isAi = false) {
 		const editorInstance = monacoEditorRef?.getEditor();
 		if (!editorInstance) return;
 
 		closeDiffPeek();
 
-		const recorded = opts?.recorded === true;
 		const changes = getActiveChanges(isAi);
 		const foundIdx = changes.findIndex(c => c.startLine === change.startLine && c.type === change.type);
-		const index = recorded || foundIdx < 0 ? 1 : foundIdx + 1;
-		const total = recorded ? 1 : changes.length;
+		const index = foundIdx < 0 ? 1 : foundIdx + 1;
+		const total = changes.length;
 		const domNode = buildPeekDom(change, isAi);
 		const marginDomNode = buildPeekMargin(change);
-		const overlayHeader = buildPeekOverlayHeader(change, index, total, isAi, recorded);
+		const overlayHeader = buildPeekOverlayHeader(change, index, total, isAi);
 		applyPeekSizing(editorInstance, [domNode, marginDomNode]);
 		applyPeekScroll(domNode, editorInstance.getScrollLeft());
 
@@ -1698,9 +1675,9 @@
 		// User edits invalidate the captured HEAD-side hunk in the peek; close it
 		if (activeDiffZone) closeDiffPeek();
 		scheduleGutterUpdate();
-		// Re-apply AI decorations against the new content. The store is derived from
-		// the conversation, so editing never destroys it — hunks whose text no longer
-		// appears simply drop out and reappear if the user reverts.
+		// Re-diff against the turn's base. Editing never destroys the marker: the
+		// base is the file as it stood before the turn, so a hunk the user reverts
+		// simply stops being a difference.
 		applyAiChangeDecorations();
 	}
 
@@ -1709,7 +1686,7 @@
 	}
 
 	export function resetRevealFilter() {
-		resetAiFilter();
+		resetAiScope();
 		setGutterViewMode('git');
 		closeDiffPeek();
 	}
@@ -2047,10 +2024,10 @@
 						</button>
 					{/if}
 					<!-- Gutter view mode: segmented AI | Git. The AI pill doubles as a
-					     dropdown scoping which edits the gutter paints (all / latest
-					     turn / the one edit clicked in chat). -->
+					     dropdown scoping which turn of this chat the gutter paints. -->
 					{#if hasAiChanges}
 						<div
+							bind:this={aiMenuAnchor}
 							class="relative flex items-center gap-0.5 p-0.5 rounded-lg bg-slate-100 dark:bg-slate-800/60"
 							role="group"
 							aria-label="Gutter view mode"
@@ -2063,17 +2040,15 @@
 								}"
 								onclick={() => {
 									setGutterViewMode('ai');
-									if (aiChangeCount >= 1) aiMenuOpen = !aiMenuOpen;
+									toggleAiMenu();
 								}}
 								aria-pressed={gutterMode === 'ai'}
-								aria-haspopup={aiChangeCount >= 1 ? 'menu' : undefined}
-								aria-expanded={aiChangeCount >= 1 ? aiMenuOpen : undefined}
-								title="Show AI changes"
+								aria-haspopup="menu"
+								aria-expanded={aiMenuOpen}
+								title="Show this chat's changes"
 							>
 								<Icon name="lucide:sparkles" class="w-3.5 h-3.5" />
-								{#if aiChangeCount >= 1}
-									<Icon name="lucide:chevron-down" class="w-3 h-3 opacity-70" />
-								{/if}
+								<Icon name="lucide:chevron-down" class="w-3 h-3 opacity-70" />
 							</button>
 							<button
 								class="flex items-center gap-1 px-2 py-1 rounded-md text-xs font-semibold transition-all duration-200 {gutterMode === 'git' ?
@@ -2090,41 +2065,55 @@
 								<Icon name="lucide:git-branch" class="w-3.5 h-3.5" />
 							</button>
 
-							{#if aiMenuOpen && aiChangeCount >= 1}
+							{#if aiMenuOpen}
 								<div
-									class="absolute top-full left-0 mt-1 w-52 py-1 bg-white dark:bg-slate-800 border border-violet-500/20 rounded-lg shadow-2xl shadow-slate-900/20 dark:shadow-black/40 z-50 overflow-hidden"
+									class="absolute top-full {aiMenuFlipped ? 'right-0' : 'left-0'} mt-1 w-64 py-1 bg-white dark:bg-slate-800 border border-violet-500/20 rounded-lg shadow-2xl shadow-slate-900/20 dark:shadow-black/40 z-50 max-h-80 overflow-y-auto"
 									role="menu"
 									transition:scale={{ duration: 150, easing: cubicOut, start: 0.95, opacity: 0 }}
 								>
 									<button
 										class="flex items-center gap-2 w-full px-3 py-1.5 text-xs text-left text-slate-700 dark:text-slate-200 hover:bg-violet-500/10 transition-colors"
 										role="menuitemradio"
-										aria-checked={aiFilter === 'all'}
-										onclick={() => selectAiFilter('all')}
+										aria-checked={aiScope === 'latest'}
+										onclick={() => selectAiScope('latest')}
 									>
-										<Icon name="lucide:check" class="w-3.5 h-3.5 text-violet-600 dark:text-violet-400 {aiFilter === 'all' ? '' : 'opacity-0'}" />
-										<span>All AI changes</span>
+										<Icon name="lucide:check" class="w-3.5 h-3.5 text-violet-600 dark:text-violet-400 {aiScope === 'latest' ? '' : 'opacity-0'}" />
+										<span>Latest turn</span>
 									</button>
 									<button
 										class="flex items-center gap-2 w-full px-3 py-1.5 text-xs text-left text-slate-700 dark:text-slate-200 hover:bg-violet-500/10 transition-colors"
 										role="menuitemradio"
-										aria-checked={aiFilter === 'turn'}
-										onclick={() => selectAiFilter('turn')}
+										aria-checked={aiScope === 'all'}
+										onclick={() => selectAiScope('all')}
 									>
-										<Icon name="lucide:check" class="w-3.5 h-3.5 text-violet-600 dark:text-violet-400 {aiFilter === 'turn' ? '' : 'opacity-0'}" />
-										<span>Latest AI turn</span>
+										<Icon name="lucide:check" class="w-3.5 h-3.5 text-violet-600 dark:text-violet-400 {aiScope === 'all' ? '' : 'opacity-0'}" />
+										<span>All {chatTurns.length} {chatTurns.length === 1 ? 'turn' : 'turns'} of this chat</span>
 									</button>
-									{#if aiSelectedKey}
+									<div class="my-1 border-t border-slate-200 dark:border-slate-700"></div>
+									<!-- Every turn of the chat, listed the same way whether or not it
+									     touched this file — a shorter menu on one file than on the
+									     next only hides which turns exist. -->
+									{#each chatTurns as turn (turnId(turn))}
+										{@const touched = turnTouchedFile(turn)}
 										<button
-											class="flex items-center gap-2 w-full px-3 py-1.5 text-xs text-left text-slate-700 dark:text-slate-200 hover:bg-violet-500/10 transition-colors"
+											class="flex items-center gap-2 w-full px-3 py-1.5 text-xs text-left transition-colors hover:bg-violet-500/10 {touched
+												? 'text-slate-700 dark:text-slate-200'
+												: 'text-slate-400 dark:text-slate-500'}"
 											role="menuitemradio"
-											aria-checked={aiFilter === 'selected'}
-											onclick={() => selectAiFilter('selected')}
+											aria-checked={aiScope === turnId(turn)}
+											onclick={() => selectAiScope(turnId(turn))}
+											title={touched ? turn.promptText : `${turn.promptText} — no changes to this file`}
 										>
-											<Icon name="lucide:check" class="w-3.5 h-3.5 text-violet-600 dark:text-violet-400 {aiFilter === 'selected' ? '' : 'opacity-0'}" />
-											<span class="min-w-0 truncate">Selected AI change{selectedEditLabel}</span>
+											<Icon name="lucide:check" class="w-3.5 h-3.5 shrink-0 text-violet-600 dark:text-violet-400 {aiScope === turnId(turn) ? '' : 'opacity-0'}" />
+											<span class="shrink-0 text-slate-400 dark:text-slate-500">
+												{turn.turnIndex === null ? 'Now' : `Turn ${turn.turnIndex}`}
+											</span>
+											<span class="min-w-0 flex-1 truncate">{turn.promptText}</span>
+											{#if !touched}
+												<span class="shrink-0 text-2xs text-slate-400 dark:text-slate-600">—</span>
+											{/if}
 										</button>
-									{/if}
+									{/each}
 								</div>
 							{/if}
 						</div>
@@ -2201,21 +2190,12 @@
 		</div>
 		{/if}
 
-		<!-- The pinned edit exists in the conversation but not in the file any more.
-		     Say so rather than showing an empty gutter that reads as "no changes". -->
-		{#if gutterMode === 'ai' && aiFilter === 'selected' && aiSelectedMissing}
-			<div class="flex-shrink-0 flex items-center gap-2 px-4 py-1.5 text-2xs bg-amber-50 dark:bg-amber-900/20 border-b border-amber-200 dark:border-amber-900/40 text-amber-800 dark:text-amber-300">
+		<!-- A turn that left this file alone. Said out loud, because an empty
+		     gutter on its own reads as "nothing to see" rather than as an answer. -->
+		{#if gutterMode === 'ai' && aiScopeEmpty}
+			<div class="flex-shrink-0 flex items-center gap-2 px-4 py-1.5 text-2xs bg-slate-50 dark:bg-slate-800/40 border-b border-slate-200 dark:border-slate-700/60 text-slate-600 dark:text-slate-400">
 				<Icon name="lucide:info" class="w-3.5 h-3.5 shrink-0" />
-				<span class="min-w-0 truncate">
-					This change is no longer in the file — a later edit replaced it, or a checkpoint was restored.
-				</span>
-				<button
-					type="button"
-					class="ml-auto shrink-0 px-2 py-0.5 rounded-md font-medium bg-amber-100 dark:bg-amber-900/40 hover:bg-amber-200 dark:hover:bg-amber-900/70 transition-colors"
-					onclick={showRecordedAiPeek}
-				>
-					View recorded diff
-				</button>
+				<span class="min-w-0 truncate">{aiScopeLabel} changed nothing in this file.</span>
 			</div>
 		{/if}
 

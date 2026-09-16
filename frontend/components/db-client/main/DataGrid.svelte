@@ -1,7 +1,7 @@
 <script lang="ts">
 	import { untrack } from 'svelte';
 	import Icon from '$frontend/components/common/display/Icon.svelte';
-	import ConfirmDestructive from '../shared/ConfirmDestructive.svelte';
+	import ConfirmDestructive from '$frontend/components/common/overlay/ConfirmDestructive.svelte';
 	import CellViewer from '../shared/CellViewer.svelte';
 	import RowForm from '../shared/RowForm.svelte';
 	import Checkbox from '../shared/Checkbox.svelte';

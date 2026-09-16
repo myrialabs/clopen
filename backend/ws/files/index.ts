@@ -7,7 +7,7 @@
  * - read.ts: HTTP endpoints for reading (list-tree, browse, read-file, read-content)
  * - write.ts: HTTP endpoints for writing (write, create, rename, duplicate, upload, delete)
  * - reveal.ts: HTTP endpoint for revealing files in the OS file manager
- * - clipboard.ts: HTTP endpoint for copying files to the OS clipboard
+ * - clipboard.ts: HTTP endpoints for the native OS clipboard bridge (admin-only)
  * - search.ts: HTTP endpoints for searching (search-files, search-code)
  * - watch.ts: Event handlers for real-time file watching
  */
@@ -19,6 +19,7 @@ import { revealHandler } from './reveal';
 import { clipboardHandler } from './clipboard';
 import { imageEditHandler } from './image-edit';
 import { fileSearchHandler } from './search';
+import { fileShareHandler } from './share';
 import { watchHandler } from './watch';
 import { filesStateHandler } from './state';
 
@@ -32,7 +33,7 @@ export const filesRouter = createRouter()
 	// Reveal in File Manager (HTTP)
 	.merge(revealHandler)
 
-	// OS Clipboard file copy (HTTP)
+	// OS Clipboard bridge — read/write native file-drop lists (HTTP)
 	.merge(clipboardHandler)
 
 	// Image Edit Operation (HTTP)
@@ -40,6 +41,9 @@ export const filesRouter = createRouter()
 
 	// Search Operations (HTTP)
 	.merge(fileSearchHandler)
+
+	// Single-file share links (HTTP)
+	.merge(fileShareHandler)
 
 	// Watch Operations (Events)
 	.merge(watchHandler)

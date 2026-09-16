@@ -4,3 +4,6 @@
 
 export * from './connection';
 export * from './query';
+export * from './integrations';
+export * from './env';
+export * from './supabase';

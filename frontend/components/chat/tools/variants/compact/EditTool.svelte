@@ -14,5 +14,5 @@
 	const diff = $derived(countLineChanges(input.oldString || '', input.newString || ''));
 </script>
 
-<ToolRow icon="lucide:pencil" label="Edited" {filePath} {fileName} {diff} editKey={toolInput.id} />
+<ToolRow icon="lucide:pencil" label="Edited" {filePath} {fileName} {diff} />
 

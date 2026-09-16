@@ -98,12 +98,33 @@ let settleTimer: ReturnType<typeof setTimeout> | null = null;
  */
 const LOAD_SAFETY_TIMEOUT_MS = 15_000;
 
+/**
+ * Callers waiting for the docks to finish hydrating.
+ *
+ * Docks load AFTER the reveal and are deliberately not awaited by the project
+ * switch, so `await setCurrentProject(...)` returns while a dock is still
+ * rebuilding its state. Anything that relocates the user and then acts on a
+ * dock — opening a URL in the preview browser, say — would have its work
+ * overwritten by that load landing a moment later.
+ *
+ * Resolved by `markSettled`, and also by the safety timeout, so a dock that
+ * never answers delays a waiter rather than stranding it forever.
+ */
+let settleWaiters: (() => void)[] = [];
+
+function releaseSettleWaiters(): void {
+	const waiters = settleWaiters;
+	settleWaiters = [];
+	for (const resolve of waiters) resolve();
+}
+
 function markSettling(): void {
 	settling = true;
 	if (settleTimer) clearTimeout(settleTimer);
 	settleTimer = setTimeout(() => {
 		settleTimer = null;
 		settling = false;
+		releaseSettleWaiters();
 	}, LOAD_SAFETY_TIMEOUT_MS);
 }
 
@@ -111,6 +132,18 @@ function markSettled(): void {
 	if (settleTimer) clearTimeout(settleTimer);
 	settleTimer = null;
 	settling = false;
+	releaseSettleWaiters();
+}
+
+/**
+ * Resolve once every dock has finished hydrating.
+ *
+ * Returns immediately when no switch is in flight, so a caller can await this
+ * unconditionally rather than having to know whether it just relocated.
+ */
+export function whenWorkspaceSettled(): Promise<void> {
+	if (!settling) return Promise.resolve();
+	return new Promise<void>((resolve) => settleWaiters.push(resolve));
 }
 
 // The switch barrier is ref-counted so the project store can hold it up across

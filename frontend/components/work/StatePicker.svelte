@@ -10,7 +10,7 @@
 	 */
 	import Icon from '$frontend/components/common/display/Icon.svelte';
 	import { clickOutside } from '$frontend/utils/click-outside';
-	import MenuSurface from './MenuSurface.svelte';
+	import MenuSurface from '$frontend/components/common/overlay/MenuSurface.svelte';
 	import { workStore } from '$frontend/stores/features/work.svelte';
 	import type { WorkItemStateCategory, WorkItemStateOption } from '$shared/types/work';
 	import type { IconName } from '$shared/types/ui/icons';

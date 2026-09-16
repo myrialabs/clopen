@@ -7,15 +7,27 @@
  *
  * One projector per capability — but ONLY for capabilities whose surface owns a
  * table to write into. `agent-tools` writes an `mcp_servers` row, `database`
- * will write a `db_client_connections` one, and `deployments`,
- * `worktree-branching` and `notifications` are registered by the tasks that
- * build those surfaces.
+ * writes `db_client_connections` ones, `worktree-branching` writes them too —
+ * one per live worktree branch, from `worktree_branches` — and `notifications`
+ * is registered by the task that builds that surface.
  *
- * `work` deliberately has NO projector. Work items are never copied into the
+ * TWO CAPABILITIES CAN TARGET THE SAME TABLE, and one account can carry both: a
+ * Neon account owns a connection for the project it linked AND one per worktree
+ * branch it cut. That works only because migration 077 widened the projection
+ * key with `target_id`; releasing by capability alone would tear down the
+ * other's rows on every pass.
+ *
+ * A projector returns a LIST. Agent tools happens to produce exactly one row
+ * per account, but that is a fact about MCP presets rather than about
+ * projection: one database credential reaches every project the token can see,
+ * and the user picks as many of them as they want (see migration 077).
+ *
+ * `work` and `deployments` deliberately have NO projector. Work items are never copied into the
  * database (see migration 074 for why), so there is no derived row to keep in
  * step — the Issues & PRs surface registers an ADAPTER in
- * `backend/issues/registry.ts` and reads the account directly. A capability
- * without a table is a capability without a projection.
+ * `backend/work/registry.ts` and reads the account directly, and Deployments
+ * does the same in `backend/deployments/registry.ts`. A capability without a
+ * table is a capability without a projection.
  */
 
 import type { IntegrationCapability, IntegrationTargetKind } from '$shared/types/integrations';
@@ -44,8 +56,15 @@ export interface ProjectionResult {
 export interface Projector {
 	capability: IntegrationCapability;
 	targetKind: IntegrationTargetKind;
-	/** Create or refresh the derived row. Called on connect, credential change and capability enable. */
-	project(context: ProjectionContext): ProjectionResult;
-	/** Remove the derived row, or hand an adopted one back untouched. */
+	/**
+	 * Create or refresh every derived row this account should own right now.
+	 *
+	 * Called on connect, credential change and capability enable. Anything the
+	 * account previously projected that is NOT in the returned list gets
+	 * released, so removing a link and disabling a capability are the same
+	 * operation as far as the pass is concerned.
+	 */
+	project(context: ProjectionContext): ProjectionResult[];
+	/** Remove one derived row, or hand an adopted one back untouched. */
 	release(context: ProjectionContext, targetId: string, adopted: boolean, restore: unknown | null): void;
 }

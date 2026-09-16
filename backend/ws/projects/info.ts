@@ -24,7 +24,9 @@ import { collectProcessTree, getHostFacts, getProcessTable } from '../../host/me
 const MAX_ENTRIES = 300_000;
 /** Wall-clock ceiling — the backstop for slow disks and network mounts. */
 const WALK_DEADLINE_MS = 15_000;
-/** How many `stat` calls are in flight at once while walking one directory. */
+/** How many `stat` calls are in flight at once while walking one directory.
+ *  Multiplied by the number of concurrent walks, so `MAX_BACKGROUND_WALKS`
+ *  bounds the descriptor fan-out on platforms with a low `ulimit -n`. */
 const STAT_BATCH = 64;
 /** A folder's size changes slowly; a poll should not re-walk it every tick. */
 const STORAGE_CACHE_TTL_MS = 15_000;
@@ -37,7 +39,7 @@ const PORTS_CACHE_TTL_MS = 5_000;
 
 // ── Storage ──────────────────────────────────────────────────────────────────
 
-interface FolderStats {
+export interface FolderStats {
 	sizeBytes: number;
 	fileCount: number;
 	dirCount: number;
@@ -49,7 +51,9 @@ const storageCache = new Map<string, { stats: FolderStats; at: number; ttl: numb
 const storageInFlight = new Map<string, Promise<FolderStats>>();
 
 /** Cached and single-flighted: a big walk outlives the poll interval, so a
- *  result-only cache would let every tick start another one. */
+ *  result-only cache would let every tick start another one. Callers that
+ *  cannot afford the wait go through `peekFolderStats()` below, which shares
+ *  this cache and this in-flight guard. */
 function getFolderStats(root: string): Promise<FolderStats> {
 	const cached = storageCache.get(root);
 	if (cached && Date.now() - cached.at < cached.ttl) {
@@ -81,6 +85,61 @@ function getFolderStats(root: string): Promise<FolderStats> {
 
 	storageInFlight.set(root, walk);
 	return walk;
+}
+
+/** Walk slots for callers that ask about every project at once.
+ *
+ *  One walk already keeps `STAT_BATCH` `stat` calls in flight; fanning out
+ *  unbounded multiplies that by the project count, which is how a 20-project
+ *  install reaches thousands of open descriptors — past the 256 soft limit
+ *  macOS hands a GUI-launched process. */
+const MAX_BACKGROUND_WALKS = 4;
+let runningBackgroundWalks = 0;
+const queuedWalks: string[] = [];
+const queuedWalkPaths = new Set<string>();
+
+function pumpBackgroundWalks(): void {
+	while (runningBackgroundWalks < MAX_BACKGROUND_WALKS && queuedWalks.length > 0) {
+		const root = queuedWalks.shift() as string;
+		queuedWalkPaths.delete(root);
+		runningBackgroundWalks++;
+		// `getFolderStats` turns walk failures into error stats, so a rejection
+		// here is a programming fault, not a slow disk — swallow it and free
+		// the slot either way.
+		void getFolderStats(root)
+			.catch((error) => {
+				debug.warn('project', 'background folder walk failed:', error);
+			})
+			.finally(() => {
+				runningBackgroundWalks--;
+				pumpBackgroundWalks();
+			});
+	}
+}
+
+/**
+ * Last known stats for a folder, never a wait.
+ *
+ * `getFolderStats` blocks for the whole walk on a cold cache, which is right
+ * for `projects:info` (one folder, one modal) and wrong for `projects:overview`
+ * (every folder, polled). The overview would hold its request open for the full
+ * walk deadline on first open — exactly the long skeleton this panel exists to
+ * avoid. Instead, callers get the previous answer immediately (`null` before
+ * the first walk ever finished) and a refresh is queued behind a bounded pool.
+ */
+export function peekFolderStats(root: string): FolderStats | null {
+	const cached = storageCache.get(root);
+	if (cached && Date.now() - cached.at < cached.ttl) return cached.stats;
+
+	if (!storageInFlight.has(root) && !queuedWalkPaths.has(root)) {
+		queuedWalkPaths.add(root);
+		queuedWalks.push(root);
+		pumpBackgroundWalks();
+	}
+
+	// Stale beats empty: the size a project had a minute ago is still the right
+	// order of magnitude, and the next poll replaces it.
+	return cached?.stats ?? null;
 }
 
 async function walkFolder(root: string): Promise<FolderStats> {
@@ -149,7 +208,7 @@ async function walkFolder(root: string): Promise<FolderStats> {
 
 // ── Per-project slice of the host process table ──────────────────────────────
 
-interface ProjectProcess {
+export interface ProjectProcess {
 	pid: number;
 	parentPid: number;
 	name: string;
@@ -158,7 +217,7 @@ interface ProjectProcess {
 	command: string;
 }
 
-interface ProcessStats {
+export interface ProcessStats {
 	status: 'running' | 'not_running';
 	cpuPercent: number | null;
 	memRssBytes: number | null;
@@ -178,7 +237,12 @@ const IDLE: ProcessStats = {
 	rootPids: []
 };
 
-async function getProjectProcessStats(projectId: string, totalMemBytes: number): Promise<ProcessStats> {
+/**
+ * Exported for reuse by `projects:overview` so per-project CPU/RAM there is
+ * measured exactly the way `projects:info` measures it — same roots, same
+ * shared process table, same capacity basis. No behavior change for callers.
+ */
+export async function getProjectProcessStats(projectId: string, totalMemBytes: number): Promise<ProcessStats> {
 	const rootPids = projectShellPids(projectId);
 
 	// No shells means nothing is running, so zero is the truth here.

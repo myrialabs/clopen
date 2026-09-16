@@ -17,6 +17,7 @@
 		deleteWorktree,
 		fetchWorktreeStatus,
 		isInWorktree,
+		loadWorktrees,
 		renameWorktree,
 		switchWorktreeContext,
 		worktreeState,
@@ -26,6 +27,8 @@
 	import { debug } from '$shared/utils/logger';
 	import CreateWorktreeModal from './CreateWorktreeModal.svelte';
 	import WorktreeTransferModal from './WorktreeTransferModal.svelte';
+	import WorktreeBranchingModal from './WorktreeBranchingModal.svelte';
+	import { rewriteBranchEnv } from '$frontend/stores/features/worktree-branching.svelte';
 
 	interface Props {
 		collapsed?: boolean;
@@ -37,6 +40,7 @@
 	let isOpen = $state(false);
 	let showCreate = $state(false);
 	let showTransfer = $state(false);
+	let showBranching = $state(false);
 	let transferWorktree = $state<WorktreeSummary | null>(null);
 	let transferDirection = $state<TransferDirection>('apply');
 
@@ -120,10 +124,18 @@
 				? ` It has ${pending} change${pending === 1 ? '' : 's'} that were never applied to Main — they will be lost.`
 				: '';
 
+		// NAMES the branch it is about to destroy. Deleting a worktree is a local
+		// action everywhere else in this menu; when it also destroys a database at
+		// a third party, that has to be in the sentence the user reads rather than
+		// something they find out afterwards.
+		const branch = worktree.branch
+			? ` Its ${worktree.branch.providerName} ${worktree.branch.noun} "${worktree.branch.branchName}" is deleted too.`
+			: '';
+
 		closeMenu();
 		const confirmed = await showConfirm({
 			title: `Delete "${worktree.name}"?`,
-			message: `The worktree directory and everything in it is removed.${warning}`,
+			message: `The worktree directory and everything in it is removed.${branch}${warning}`,
 			type: 'warning',
 			confirmText: 'Delete'
 		});
@@ -153,7 +165,30 @@
 		const pending = pendingByWorktree[worktree.id];
 		if (pending !== undefined) parts.push(`${pending} pending`);
 		if (worktree.status === 'applied') parts.push('applied');
+		if (worktree.branch) parts.push(`own ${worktree.branch.noun}`);
 		return parts.join(' · ');
+	}
+
+	/**
+	 * Put the connection string back into the worktree's dotenv file.
+	 *
+	 * A button rather than an automatic retry: the usual cause is a dotenv file
+	 * git tracks, and the fix is a `.gitignore` change only the user can make —
+	 * retrying on a timer would re-report the same refusal forever.
+	 */
+	async function retryEnv(worktree: WorktreeSummary) {
+		if (!worktree.branch) return;
+		try {
+			await rewriteBranchEnv(worktree.branch.id);
+			await loadWorktrees();
+		} catch (error) {
+			addNotification({
+				type: 'error',
+				title: 'Could not write the connection string',
+				message: error instanceof Error ? error.message : String(error),
+				duration: 5000
+			});
+		}
 	}
 
 	const actionButtonClass =
@@ -324,12 +359,37 @@
 							<span class="block pl-6.5 text-xs text-slate-500 dark:text-slate-500 truncate">
 								{summaryFor(worktree)}
 							</span>
+
+							<!--
+								A branch whose connection string never landed. Worth a line of
+								its own: the worktree works, the database exists, and the one
+								thing that would have made them meet is missing — which is
+								invisible until a migration runs against the wrong database.
+							-->
+							{#if worktree.branch && worktree.branch.envStatus !== 'written'}
+								<div class="relative z-10 mt-1 ml-6.5 flex items-start gap-1.5">
+									<Icon name="lucide:triangle-alert" class="w-3 h-3 mt-0.5 shrink-0 text-amber-500" />
+									<div class="min-w-0 flex-1">
+										<p class="text-[11px] text-amber-700 dark:text-amber-400 leading-snug">
+											{worktree.branch.envDetail ??
+												`${worktree.branch.envVar} was not written into ${worktree.branch.envFile}.`}
+										</p>
+										<button
+											type="button"
+											class="mt-0.5 text-[11px] font-medium text-violet-600 dark:text-violet-400 hover:underline"
+											onclick={() => retryEnv(worktree)}
+										>
+											Try again
+										</button>
+									</div>
+								</div>
+							{/if}
 						</div>
 					{/each}
 
 					<div class="my-1 h-px bg-slate-200 dark:bg-slate-700"></div>
 
-					<!-- Secondary action: lighter than the tree rows it sits under. -->
+					<!-- Secondary actions: lighter than the tree rows they sit under. -->
 					<button
 						type="button"
 						class="flex items-center gap-2 w-full px-3 py-1.5 bg-transparent border-none text-left cursor-pointer text-slate-600 dark:text-slate-400 transition-colors duration-150 hover:bg-violet-500/10 hover:text-slate-900 dark:hover:text-slate-100"
@@ -337,6 +397,23 @@
 					>
 						<Icon name="lucide:plus" class="w-3.5 h-3.5 shrink-0" />
 						<span class="text-xs font-medium">New worktree…</span>
+					</button>
+
+					<!--
+						Lives here rather than in Settings because this is the one place
+						worktrees are seen and acted on, and branching is a property of
+						the worktree rather than of the account.
+					-->
+					<button
+						type="button"
+						class="flex items-center gap-2 w-full px-3 py-1.5 bg-transparent border-none text-left cursor-pointer text-slate-600 dark:text-slate-400 transition-colors duration-150 hover:bg-violet-500/10 hover:text-slate-900 dark:hover:text-slate-100"
+						onclick={() => {
+							closeMenu();
+							showBranching = true;
+						}}
+					>
+						<Icon name="lucide:database" class="w-3.5 h-3.5 shrink-0" />
+						<span class="text-xs font-medium">Database branching…</span>
 					</button>
 				</div>
 			</div>
@@ -351,4 +428,6 @@
 		direction={transferDirection}
 		onClose={() => (showTransfer = false)}
 	/>
+
+	<WorktreeBranchingModal bind:isOpen={showBranching} onClose={() => (showBranching = false)} />
 {/if}

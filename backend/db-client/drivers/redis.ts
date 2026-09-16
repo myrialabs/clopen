@@ -21,6 +21,7 @@ import type {
 } from '$shared/types/db-client';
 import type { DbClientDriverAdapter } from './types';
 import { debug } from '$shared/utils/logger';
+import { buildConnectionUrl } from '../connection-url';
 
 const SCAN_CAP = 1000;
 
@@ -31,12 +32,7 @@ export class RedisAdapter implements DbClientDriverAdapter {
 	private alive = false;
 
 	async connect(conn: DbClientConnection, tunnelPort?: number): Promise<void> {
-		const host = tunnelPort ? '127.0.0.1' : (conn.host ?? '127.0.0.1');
-		const port = tunnelPort ?? conn.port ?? 6379;
-		const pass = conn.password ? `:${encodeURIComponent(conn.password)}@` : '';
-		const dbIdx = conn.database && /^\d+$/.test(conn.database) ? `/${conn.database}` : '';
-
-		const url = `redis://${pass}${host}:${port}${dbIdx}`;
+		const url = buildConnectionUrl(conn, { tunnelPort });
 		this.client = new RedisClient(url);
 		await this.client.connect();
 		this.alive = true;

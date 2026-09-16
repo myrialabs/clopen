@@ -6,13 +6,16 @@
 	import { getFileIcon } from '$frontend/utils/file-icon-mappings';
 	import { getFolderIcon } from '$frontend/utils/folder-icon-mappings';
 	import { getGitStatusColor, getGitStatusBadgeLabel, getGitStatusLabel } from '$frontend/utils/git-status';
+	import { aiMarkerState, aiMarkerTooltip } from '$frontend/utils/ai-change-marker';
+	import { openAiChanges } from '$frontend/stores/ui/ai-changes-modal.svelte';
 	import { onMount, tick } from 'svelte';
 	import { isLocalConnection, isMac, isWindows, isLinux, getExplorerShortcutLabels } from '$frontend/utils/platform';
 	import { ignoredPathsState } from '$frontend/stores/features/ignored-paths.svelte';
 	import { isExtractableArchive } from '$frontend/utils/archive';
 
-	// OS-aware shortcut hint (Ctrl on Windows/Linux, ⌘ on macOS) shown next
-	// to the Delete row, like the native file manager. Cut/Copy/Paste rows
+	// OS-aware shortcut hint (Delete on Windows/Linux, Delete/Backspace on
+	// macOS) carried on the Delete row's tooltip and accessible name, matching
+	// what the keyboard handler actually listens for. Cut/Copy/Paste rows
 	// intentionally show plain labels without shortcut text.
 	const explorerKeys = getExplorerShortcutLabels();
 
@@ -43,8 +46,7 @@
 		onNodeDrop,
 		onNodeDragEnd,
 		dropTargetPath = null,
-		busyPaths = new Set<string>(),
-		aiChangesSet = new Set<string>()
+		busyPaths = new Set<string>()
 	}: {
 		file: FileNodeType;
 		isSelected?: boolean;
@@ -73,7 +75,6 @@
 		onNodeDragEnd?: (file: FileNodeType, event: DragEvent) => void;
 		dropTargetPath?: string | null;
 		busyPaths?: Set<string>;
-		aiChangesSet?: Set<string>;
 	} = $props();
 
 	const revealLabel = $derived(
@@ -132,10 +133,9 @@
 		gitStatusCode ? getGitStatusBadgeLabel(gitStatusCode) : ''
 	);
 
-	// AI changes indicator
-	const hasAiChanges = $derived(
-		file.type === 'file' && aiChangesSet.has(file.path)
-	);
+	// AI changes indicator. Live while the change is still unstaged, dimmed once
+	// it has been staged or committed — see utils/ai-change-marker.ts.
+	const aiMarker = $derived(file.type === 'file' ? aiMarkerState(file.path) : null);
 
 	let nodeElement: HTMLDivElement;
 	let menuButtonElement: HTMLButtonElement;
@@ -296,7 +296,7 @@
 	</span>
 
 	<!-- Status indicators (unsaved dot + ai dot + git status letter) -->
-	{#if showModifiedIndicator || hasAiChanges || gitStatusCode}
+	{#if showModifiedIndicator || aiMarker || gitStatusCode}
 		<span class="flex items-center gap-1 flex-shrink-0 {isIgnored ? 'opacity-40' : ''}">
 			{#if showModifiedIndicator}
 				<span
@@ -304,11 +304,16 @@
 					title="Unsaved changes"
 				></span>
 			{/if}
-			{#if hasAiChanges}
-				<span
-					class="w-1.5 h-1.5 rounded-full bg-violet-500 dark:bg-violet-400"
-					title="Has AI changes"
-				></span>
+			{#if aiMarker}
+				<button
+					type="button"
+					class="w-1.5 h-1.5 rounded-full border-none p-0 cursor-pointer {aiMarker === 'live'
+						? 'bg-violet-500 dark:bg-violet-400'
+						: 'bg-violet-500/30 dark:bg-violet-400/30'}"
+					title={aiMarkerTooltip(file.path)}
+					onclick={(e) => { e.stopPropagation(); openAiChanges(file.path); }}
+					aria-label="Review this chat's changes to this file"
+				></button>
 			{/if}
 			{#if gitStatusCode}
 				<span
@@ -448,16 +453,24 @@
 
 				<div class="border-t border-slate-200 dark:border-slate-700 my-1"></div>
 
-				<!-- Download (files only) -->
-				{#if file.type === 'file'}
-					<button
-						class="w-full px-3 py-1.5 text-xs text-left text-slate-700 dark:text-slate-300 hover:bg-slate-100 dark:hover:bg-slate-700 flex items-center gap-2"
-						onclick={(e) => { handleAction('download', e); closeMenu(); }}
-					>
-						<Icon name="lucide:download" class="w-3 h-3" />
-						Download File
-					</button>
-				{/if}
+			<!-- Download (files only) -->
+			{#if file.type === 'file'}
+				<button
+					class="w-full px-3 py-1.5 text-xs text-left text-slate-700 dark:text-slate-300 hover:bg-slate-100 dark:hover:bg-slate-700 flex items-center gap-2"
+					onclick={(e) => { handleAction('download', e); closeMenu(); }}
+				>
+					<Icon name="lucide:download" class="w-3 h-3" />
+					Download File
+				</button>
+
+				<button
+					class="w-full px-3 py-1.5 text-xs text-left text-slate-700 dark:text-slate-300 hover:bg-slate-100 dark:hover:bg-slate-700 flex items-center gap-2"
+					onclick={(e) => { handleAction('share', e); closeMenu(); }}
+				>
+					<Icon name="lucide:share-2" class="w-3 h-3" />
+					Share via Link / QR Code
+				</button>
+			{/if}
 
 				<!-- Archive actions -->
 				<button
@@ -543,7 +556,6 @@
 			{onNodeDragEnd}
 			{dropTargetPath}
 			{busyPaths}
-			{aiChangesSet}
 		/>
 	{/each}
 {/if}

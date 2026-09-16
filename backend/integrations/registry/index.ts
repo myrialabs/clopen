@@ -10,6 +10,9 @@
 import context7 from './providers/context7';
 import firecrawl from './providers/firecrawl';
 import github from './providers/github';
+import neon from './providers/neon';
+import supabase from './providers/supabase';
+import vercel from './providers/vercel';
 import type { IntegrationProvider } from './types';
 import type { IntegrationProviderInfo } from '$shared/types/integrations';
 
@@ -20,7 +23,10 @@ export { defineProvider } from './define';
 export const PROVIDERS: readonly IntegrationProvider[] = [
 	context7,
 	firecrawl,
-	github
+	github,
+	neon,
+	supabase,
+	vercel
 ];
 
 const byId = new Map(PROVIDERS.map((provider) => [provider.id, provider]));
@@ -42,6 +48,7 @@ export function toProviderInfo(provider: IntegrationProvider): IntegrationProvid
 		category: provider.category,
 		description: provider.description,
 		docsUrl: provider.docsUrl,
+		consoleUrl: provider.consoleUrl,
 		authMethod: provider.authMethod,
 		credentialFields: provider.credentialFields,
 		capabilities: [...provider.capabilities],

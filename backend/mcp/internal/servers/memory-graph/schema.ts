@@ -42,10 +42,6 @@ const recall = z.object({
 		.describe(
 			'project (default): this project plus global memories. all: every project — use when the question is not about the current codebase, or to find how something was solved elsewhere.'
 		),
-	kind: z
-		.enum(['episodic', 'structural', 'both'])
-		.optional()
-		.describe('episodic = decisions/patterns/failures; structural = files/symbols/dependencies; both (default)'),
 	limit: z.number().int().min(1).max(40).optional().describe('Maximum results. Default 10.')
 });
 
