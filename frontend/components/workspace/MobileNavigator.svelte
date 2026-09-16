@@ -486,6 +486,33 @@
 	{/snippet}
 
 	{#snippet children()}
+		<!-- Search Box -->
+		{#if projectState.projects.length > 0}
+			<div class="mb-3">
+				<div
+					class="flex items-center gap-2 py-2 px-3 bg-slate-100/80 dark:bg-slate-800/80 border border-slate-200 dark:border-slate-800 rounded-xl transition-colors focus-within:border-violet-400/60 focus-within:bg-white dark:focus-within:bg-slate-800 focus-within:ring-2 focus-within:ring-violet-500/15"
+				>
+					<Icon name="lucide:search" class="w-4 h-4 text-slate-400 dark:text-slate-500 shrink-0" />
+					<input
+						type="text"
+						bind:value={searchQuery}
+						placeholder="Search projects..."
+						class="flex-1 min-w-0 bg-transparent border-none outline-none text-slate-900 dark:text-slate-100 text-sm placeholder:text-slate-400 dark:placeholder:text-slate-500"
+					/>
+					{#if searchQuery}
+						<button
+							type="button"
+							class="flex items-center justify-center w-5 h-5 shrink-0 bg-slate-500/10 hover:bg-slate-500/20 border-none rounded-full text-slate-400 hover:text-slate-600 dark:hover:text-slate-300 cursor-pointer transition-colors"
+							onclick={() => (searchQuery = '')}
+							aria-label="Clear search"
+						>
+							<Icon name="lucide:x" class="w-3 h-3" />
+						</button>
+					{/if}
+				</div>
+			</div>
+		{/if}
+
 		{#if selectionActive}
 			<!-- Selection toolbar: same single-row layout as Desktop (count left, icon-only actions right). Wraps on narrow screens. -->
 			<div
@@ -536,32 +563,6 @@
 					>
 						<Icon name="lucide:x" class="w-4 h-4" />
 					</button>
-				</div>
-			</div>
-		{/if}
-		<!-- Search Box -->
-		{#if projectState.projects.length > 0}
-			<div class="mb-3">
-				<div
-					class="flex items-center gap-2 py-2 px-3 bg-slate-100/80 dark:bg-slate-800/80 border border-slate-200 dark:border-slate-800 rounded-xl transition-colors focus-within:border-violet-400/60 focus-within:bg-white dark:focus-within:bg-slate-800 focus-within:ring-2 focus-within:ring-violet-500/15"
-				>
-					<Icon name="lucide:search" class="w-4 h-4 text-slate-400 dark:text-slate-500 shrink-0" />
-					<input
-						type="text"
-						bind:value={searchQuery}
-						placeholder="Search projects..."
-						class="flex-1 min-w-0 bg-transparent border-none outline-none text-slate-900 dark:text-slate-100 text-sm placeholder:text-slate-400 dark:placeholder:text-slate-500"
-					/>
-					{#if searchQuery}
-						<button
-							type="button"
-							class="flex items-center justify-center w-5 h-5 shrink-0 bg-slate-500/10 hover:bg-slate-500/20 border-none rounded-full text-slate-400 hover:text-slate-600 dark:hover:text-slate-300 cursor-pointer transition-colors"
-							onclick={() => (searchQuery = '')}
-							aria-label="Clear search"
-						>
-							<Icon name="lucide:x" class="w-3 h-3" />
-						</button>
-					{/if}
 				</div>
 			</div>
 		{/if}
