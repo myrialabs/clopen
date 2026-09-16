@@ -244,18 +244,10 @@
 			debug.warn('session', 'Failed to get current directory');
 		}
 
-		// Platform-specific fallback
-		if (typeof window !== 'undefined') {
-			if (navigator.userAgent.includes('Windows')) {
-				return 'C:\\';
-			} else {
-				// Unix-like systems (Linux, macOS, etc.)
-				return '/';
-			}
-		}
-
-		// Final fallback
-		return '/';
+		// No hardcoded drive/root here: open the drives list so the user can
+		// pick a folder from any available drive (C:, D:, …) or mount point.
+		// The project path is always saved and shown exactly as browsed.
+		return 'drives';
 	}
 
 	// Check if a folder path is a recent project

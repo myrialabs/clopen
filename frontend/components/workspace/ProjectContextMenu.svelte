@@ -1,4 +1,6 @@
 <script lang="ts">
+	import { scale } from 'svelte/transition';
+	import { cubicOut } from 'svelte/easing';
 	import { portal } from '$frontend/utils/portal';
 	import Icon from '$frontend/components/common/display/Icon.svelte';
 	import type { IconName } from '$shared/types/ui/icons';
@@ -33,7 +35,7 @@
 		pos = { top, left };
 	});
 
-	function handlePointerDown(event: MouseEvent) {
+	function handlePointerDown(event: Event) {
 		if (menuElement && !menuElement.contains(event.target as Node)) onClose();
 	}
 
@@ -45,16 +47,18 @@
 	}
 
 	$effect(() => {
-		// Defer listeners so the opening right-click does not close the menu
+		// Defer listeners so the opening right-click/tap does not close the menu.
+		// pointerdown covers mouse, touch, and pen uniformly (touch taps may not
+		// always produce compatibility mousedown events on mobile browsers).
 		const timer = setTimeout(() => {
-			document.addEventListener('mousedown', handlePointerDown);
+			document.addEventListener('pointerdown', handlePointerDown);
 			document.addEventListener('contextmenu', handlePointerDown);
 		}, 0);
 		window.addEventListener('keydown', handleKeydown);
 		window.addEventListener('resize', onClose);
 		return () => {
 			clearTimeout(timer);
-			document.removeEventListener('mousedown', handlePointerDown);
+			document.removeEventListener('pointerdown', handlePointerDown);
 			document.removeEventListener('contextmenu', handlePointerDown);
 			window.removeEventListener('keydown', handleKeydown);
 			window.removeEventListener('resize', onClose);
@@ -67,6 +71,7 @@
 	use:portal
 	class="fixed z-[10001] min-w-40 py-1 bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-700 rounded-lg shadow-xl text-sm"
 	style="top: {pos.top}px; left: {pos.left}px;"
+	transition:scale={{ duration: 150, easing: cubicOut, start: 0.95, opacity: 0 }}
 	role="menu"
 	tabindex="-1"
 >
