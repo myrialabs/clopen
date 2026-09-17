@@ -37,7 +37,6 @@ import { containersRouter } from './containers';
 import { mcpRouter } from './mcp';
 import { integrationsRouter } from './integrations';
 import { skillsRouter } from './skills';
-import { commandsRouter } from './commands';
 import { subagentsRouter } from './subagents';
 import { instructionsRouter } from './instructions';
 import { permissionsRouter } from './permissions';
@@ -104,11 +103,11 @@ export const wsRouter = createRouter()
 	.merge(mcpRouter)
 	.merge(integrationsRouter)
 
-	// Agent Skills management (create, import, install from a marketplace)
+	// Agent Skills management — model-invoked skills AND user-invoked `/slash`
+	// prompts are one feature (create, import, install from a marketplace)
 	.merge(skillsRouter)
 
-	// Custom Commands, Subagents, and Project Instructions (artifact framework)
-	.merge(commandsRouter)
+	// Subagents and Project Instructions (artifact framework)
 	.merge(subagentsRouter)
 	.merge(instructionsRouter)
 	.merge(permissionsRouter)

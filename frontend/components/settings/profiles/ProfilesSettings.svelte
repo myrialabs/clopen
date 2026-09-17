@@ -27,7 +27,6 @@
 
 	const TYPE_META: { type: ProfileItemType; label: string; icon: IconName }[] = [
 		{ type: 'skill', label: 'Skills', icon: 'lucide:graduation-cap' },
-		{ type: 'command', label: 'Commands', icon: 'lucide:terminal' },
 		{ type: 'subagent', label: 'Subagents', icon: 'lucide:bot' },
 		{ type: 'mcp', label: 'Integrations', icon: 'lucide:plug' }
 	];
@@ -68,7 +67,7 @@
 	let editorId = $state<number | null>(null);
 	let edName = $state('');
 	let edDescription = $state('');
-	let edSelected = $state<Record<ProfileItemType, Set<string>>>({ skill: new Set(), command: new Set(), subagent: new Set(), mcp: new Set() });
+	let edSelected = $state<Record<ProfileItemType, Set<string>>>({ skill: new Set(), subagent: new Set(), mcp: new Set() });
 	let editorError = $state<string | null>(null);
 	let editorSaving = $state(false);
 
@@ -84,7 +83,7 @@
 	let denyInput = $state('');
 
 	function emptySelected(): Record<ProfileItemType, Set<string>> {
-		return { skill: new Set(), command: new Set(), subagent: new Set(), mcp: new Set() };
+		return { skill: new Set(), subagent: new Set(), mcp: new Set() };
 	}
 	function emptyPermDrafts(): Record<string, Draft> {
 		const out: Record<string, Draft> = {};
@@ -112,7 +111,6 @@
 		edDescription = profile.description;
 		edSelected = {
 			skill: new Set(profile.items.skill),
-			command: new Set(profile.items.command),
 			subagent: new Set(profile.items.subagent),
 			mcp: new Set(profile.items.mcp)
 		};
@@ -198,7 +196,6 @@
 				description: edDescription.trim(),
 				items: {
 					skill: Array.from(edSelected.skill),
-					command: Array.from(edSelected.command),
 					subagent: Array.from(edSelected.subagent),
 					mcp: Array.from(edSelected.mcp)
 				}

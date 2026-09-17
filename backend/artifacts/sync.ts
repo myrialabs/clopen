@@ -12,21 +12,8 @@
 import { join } from 'path';
 import { mkdir, readdir, readFile, rm, writeFile, cp, stat } from 'node:fs/promises';
 import { resolveArtifact } from './matrix';
-import { markersFor, writeManagedBlock } from './markers';
+import { markersForType, writeManagedBlock } from './markers';
 import type { ArtifactContext, ArtifactType, ManagedArtifact } from './types';
-
-/**
- * Managed-block marker id per artifact type (uppercased feature name). `'mcp'`
- * and `'permission'` are excluded: neither routes through this generic
- * file-materializer (MCP is a config-object path; permissions have their own
- * runtime-hook enforcement + `backend/permissions/materialize.ts`).
- */
-const MARKER_ID: Record<Exclude<ArtifactType, 'mcp' | 'permission'>, string> = {
-	skill: 'SKILLS',
-	command: 'COMMANDS',
-	subagent: 'SUBAGENTS',
-	instruction: 'INSTRUCTIONS'
-};
 
 async function pathExists(path: string): Promise<boolean> {
 	try {
@@ -122,7 +109,10 @@ export interface MaterializeInput {
  * start: native dirs are reconciled and synthetic blocks are rewritten in place.
  */
 export async function materializeArtifacts(
-	type: Exclude<ArtifactType, 'mcp' | 'instruction'>,
+	// `permission` is excluded alongside `mcp`/`instruction`: it has no managed
+	// block id because its enforcement is a runtime hook, and its optional on-disk
+	// file is written by `backend/permissions/materialize.ts`, not here.
+	type: Exclude<ArtifactType, 'mcp' | 'instruction' | 'permission'>,
 	ctx: ArtifactContext,
 	input: MaterializeInput
 ): Promise<void> {
@@ -170,14 +160,12 @@ export async function materializeArtifacts(
 		// writeManagedBlock is a no-op when no such block exists.
 		const staleMemoryFile = resolveArtifact('instruction', ctx).locateEffective(ctx);
 		if (staleMemoryFile) {
-			await writeManagedBlock(staleMemoryFile, '', markersFor(MARKER_ID[type as keyof typeof MARKER_ID]));
+			await writeManagedBlock(staleMemoryFile, '', markersForType(type));
 		}
 		return;
 	}
 
-	// preamble-region → managed block inside the engine memory file. `type` is
-	// always one of the file-materialized kinds here (mcp/permission never route
-	// through this writer), so the MARKER_ID lookup is total in practice.
+	// preamble-region → managed block inside the engine memory file.
 	const build = input.buildPreamble ?? ((items) => defaultPreamble(type, items));
-	await writeManagedBlock(target, build(input.enabled), markersFor(MARKER_ID[type as keyof typeof MARKER_ID]));
+	await writeManagedBlock(target, build(input.enabled), markersForType(type));
 }

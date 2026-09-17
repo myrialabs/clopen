@@ -7,7 +7,7 @@
 import ws from '$frontend/utils/ws';
 import { settings } from '$frontend/stores/features/settings.svelte';
 import { projectState } from '$frontend/stores/core/projects.svelte';
-import { resolveGenerationModel } from '$frontend/utils/model-override';
+import { resolveGenerationModel, GENERATION_TIMEOUT_MS } from '$frontend/utils/model-override';
 
 export type GeneratableArtifactType = 'skill' | 'command' | 'subagent' | 'instruction';
 
@@ -18,7 +18,15 @@ export async function generateArtifactDraft(
 ): Promise<Record<string, unknown>> {
 	const { engine, providerSlug, modelId } = resolveGenerationModel(settings.artifactGenerator);
 
-	if (!modelId) throw new Error('No model configured. Pick one in Settings → Models.');
+	// The backend repeats this check against the engine's live catalog (see
+	// `resolve-model.ts`); this one just avoids a round-trip for the common case.
+	if (!modelId) {
+		throw new Error(
+			settings.artifactGenerator?.useCustomModel
+				? 'No model is selected for generating artifacts. Choose one in Settings → Models → Artifacts.'
+				: 'No assistant model is selected. Choose one in Settings → Models.'
+		);
+	}
 
 	const result = await ws.http('artifacts:generate', {
 		artifactType,
@@ -27,6 +35,6 @@ export async function generateArtifactDraft(
 		providerSlug,
 		modelId,
 		projectId: projectState.currentProject?.id
-	});
+	}, GENERATION_TIMEOUT_MS);
 	return result.fields;
 }

@@ -20,12 +20,12 @@ import type { ArtifactContext } from './types';
 const CONTEXT: ArtifactContext = { engine: 'opencode', scope: 'global' };
 const SLUG = 'sync-idempotence-fixture';
 
-const targetDir = resolveArtifact('command', CONTEXT).locateEffective(CONTEXT);
+const targetDir = resolveArtifact('subagent', CONTEXT).locateEffective(CONTEXT);
 const targetFile = targetDir ? join(targetDir, `${SLUG}.md`) : '';
 
-/** Materialize a single command whose body is `document`. */
+/** Materialize a single subagent whose body is `document`. */
 async function materialize(document: string): Promise<void> {
-	await materializeArtifacts('command', CONTEXT, {
+	await materializeArtifacts('subagent', CONTEXT, {
 		enabled: [{ slug: SLUG, name: 'Fixture', description: 'sync test', document }],
 		managedSlugs: [SLUG]
 	});

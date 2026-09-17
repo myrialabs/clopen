@@ -3,7 +3,7 @@
  * resolution consumed by the artifact/MCP sync path.
  *
  * A Profile is a reusable, named set of references to existing artifacts
- * (Skills, Commands, Subagents, Integrations). It NARROWS which of the
+ * (Skills, Subagents, Integrations). It NARROWS which of the
  * instance-global artifacts are active for a session, without duplicating any
  * artifact data — `profile_items` only stores slugs.
  *
@@ -20,14 +20,14 @@
  *     also when there is no active profile at all;
  *   - a `Set<slug>` when the profile references ≥1 item → the sync intersects its
  *     enabled set with these slugs.
- * This means a profile that only curates Commands never silently disables every
+ * This means a profile that only curates Subagents never silently disables every
  * Skill, and a NULL/absent profile behaves exactly like today.
  */
 
 import { profileQueries, projectQueries, mcpServerQueries } from '$backend/database/queries';
 import type { ProfileItemType, ProfileItemInput } from '$backend/database/queries';
 import { PROFILE_ITEM_TYPES } from '$backend/database/queries';
-import { skillQueries, commandQueries, subagentQueries } from '$backend/database/queries';
+import { skillQueries, subagentQueries } from '$backend/database/queries';
 import { debug } from '$shared/utils/logger';
 
 /** A profile with its items grouped by type, for the Settings UI. */
@@ -53,7 +53,7 @@ export interface ProfileInventoryEntry {
 export type ProfileInventory = Record<ProfileItemType, ProfileInventoryEntry[]>;
 
 function emptyItems(): Record<ProfileItemType, string[]> {
-	return { skill: [], command: [], subagent: [], mcp: [] };
+	return { skill: [], subagent: [], mcp: [] };
 }
 
 function toDTO(id: number): ProfileDTO | null {
@@ -133,9 +133,10 @@ export const profileService = {
 
 	/** Artifacts selectable in the profile editor, grouped by type. */
 	inventory(): ProfileInventory {
-		const inv: ProfileInventory = { skill: [], command: [], subagent: [], mcp: [] };
+		const inv: ProfileInventory = { skill: [], subagent: [], mcp: [] };
+		// Skills cover both model-invoked skills and `/slash` prompts since the
+		// merge, so one entry per skill is the whole artifact surface here.
 		for (const s of skillQueries.getAll()) inv.skill.push({ slug: s.slug, name: s.name, enabled: s.is_enabled === 1 });
-		for (const c of commandQueries.getAll()) inv.command.push({ slug: c.slug, name: c.name, enabled: c.is_enabled === 1 });
 		for (const a of subagentQueries.getAll()) inv.subagent.push({ slug: a.slug, name: a.name, enabled: a.is_enabled === 1 });
 		// Both external AND built-in (internal) connectors are selectable — a profile
 		// can scope Clopen's own tools (e.g. browser-automation) too.

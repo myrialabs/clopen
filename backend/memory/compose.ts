@@ -27,7 +27,7 @@
 
 import { graphQueries } from '$backend/database/queries/graph-queries';
 import { initializeEngine } from '$backend/engine';
-import { resolveGenerationTarget } from '$backend/engine/resolve-model';
+import { resolveGenerationTarget, GENERATION_SETTINGS } from '$backend/engine/resolve-model';
 import { debug } from '$shared/utils/logger';
 import type { EpisodicSubkind, GraphNode, MemoryDraft } from '$shared/types/memory';
 import { getMemoryConfig, type MemoryModelConfig } from './config';
@@ -299,7 +299,7 @@ ${text}`;
 		const engine = await initializeEngine(model.engine);
 		if (!engine.generateStructured) return null;
 
-		const target = await resolveGenerationTarget(engine, model.modelId, model.providerSlug);
+		const target = await resolveGenerationTarget(engine, model.modelId, model.providerSlug, GENERATION_SETTINGS.memory);
 		const accountId = model.accountId ?? target.accountId;
 
 		const result = await engine.generateStructured<{

@@ -10,7 +10,30 @@
 
 import { mkdir, readFile, writeFile, stat } from 'node:fs/promises';
 import { join } from 'path';
-import type { ArtifactMarkers } from './types';
+import type { ArtifactMarkers, ArtifactType } from './types';
+
+/**
+ * Managed-block marker id per artifact type (uppercased feature name). `'mcp'`
+ * and `'permission'` are excluded: neither routes through the generic file
+ * materializer (MCP is a config-object path; permissions have their own
+ * runtime-hook enforcement + `backend/permissions/materialize.ts`).
+ *
+ * `'command'` is a LEGACY entry. Commands are no longer materialized per engine
+ * — they are `slash`-triggered Skills that Clopen expands itself (migration 079)
+ * — but the id is kept so the sync path can still strip `CLOPEN:COMMANDS` blocks
+ * left in memory files by earlier versions.
+ */
+export const MARKER_ID: Record<Exclude<ArtifactType, 'mcp' | 'permission'>, string> = {
+	skill: 'SKILLS',
+	command: 'COMMANDS',
+	subagent: 'SUBAGENTS',
+	instruction: 'INSTRUCTIONS'
+};
+
+/** The marker pair for an artifact type's managed block. */
+export function markersForType(type: Exclude<ArtifactType, 'mcp' | 'permission'>): ArtifactMarkers {
+	return markersFor(MARKER_ID[type]);
+}
 
 /** Build a START/END marker pair for a given managed block id (e.g. `SKILLS`). */
 export function markersFor(id: string): ArtifactMarkers {

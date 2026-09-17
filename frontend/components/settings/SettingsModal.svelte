@@ -21,7 +21,6 @@
 	import StackSettings from './stack/StackSettings.svelte';
 	import IntegrationsSettings from './integrations/IntegrationsSettings.svelte';
 	import SkillsSettings from './skills/SkillsSettings.svelte';
-	import CommandsSettings from './commands/CommandsSettings.svelte';
 	import SubagentsSettings from './subagents/SubagentsSettings.svelte';
 	import InstructionsSettings from './instructions/InstructionsSettings.svelte';
 	import PermissionsSettings from './permissions/PermissionsSettings.svelte';
@@ -329,10 +328,6 @@
 					{:else if activeSection === 'skills' && isAdmin}
 						<div in:fly={{ x: 20, duration: 200 }}>
 							<SkillsSettings />
-						</div>
-					{:else if activeSection === 'commands' && isAdmin}
-						<div in:fly={{ x: 20, duration: 200 }}>
-							<CommandsSettings />
 						</div>
 					{:else if activeSection === 'subagents' && isAdmin}
 						<div in:fly={{ x: 20, duration: 200 }}>

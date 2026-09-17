@@ -39,6 +39,7 @@ import { snapshotService } from '../snapshot/snapshot-service';
 import { snapshotQueries } from '../database/queries/snapshot-queries';
 import { projectContextService, refreshExpiringExternalOAuth } from '../mcp';
 import { resolveActiveProfileId } from '../profiles';
+import { expandSlashInvocation } from '../skills';
 import { browserMcpControl } from '../preview';
 import { extractMessageText } from '../snapshot/helpers';
 import { deferEpisodicIngest, ingestTurn } from '../memory/extract';
@@ -688,6 +689,39 @@ class StreamManager extends EventEmitter {
 			// is prepended to the ENGINE prompt only — `userMessage` (already saved
 			// above) stays clean, so the transcript never reaches the timeline.
 			let enginePrompt = userMessage;
+
+			// ── Slash skill expansion ──
+			// `/review-pr 123` is resolved HERE, not by the engine. Four of the eight
+			// engines have no native command directory at all, so the old per-engine
+			// materialization delivered nothing but a name to them; expanding once,
+			// centrally, is what makes a slash skill behave the same everywhere and
+			// lets `uses:` pull in several skills deterministically. The SAVED user
+			// message keeps the `/slug` the user typed — only the engine prompt is
+			// rewritten, exactly like the handoff and memory blocks below.
+			try {
+				const firstText = enginePrompt.content.find(block => block.type === 'text');
+				if (firstText?.type === 'text') {
+					const expanded = await expandSlashInvocation(firstText.text, { profileId: activeProfileId });
+					if (expanded) {
+						enginePrompt = {
+							...enginePrompt,
+							content: enginePrompt.content.map(block =>
+								block === firstText ? { ...block, text: expanded.text } : block
+							)
+						};
+						debug.log(
+							'chat',
+							`Expanded /${expanded.slug} into the engine prompt` +
+							(expanded.used.length ? ` (requires: ${expanded.used.join(', ')})` : '')
+						);
+					}
+				}
+			} catch (error) {
+				// A failed expansion must not block the turn — the engine simply
+				// receives the message exactly as the user typed it.
+				debug.warn('chat', 'Slash skill expansion failed, sending the message as typed:', error);
+			}
+
 			if (engineSwitched && chatSessionId) {
 				try {
 					const handoff = buildEngineHandoff(
