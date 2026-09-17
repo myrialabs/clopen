@@ -1,14 +1,20 @@
 /**
  * VAPID identity for this server.
  *
- * Resolution order:
- * 1. `CLOPEN_VAPID_PUBLIC_KEY` + `CLOPEN_VAPID_PRIVATE_KEY` env (documented in
- *    `.env.example`) — for operators who provision keys themselves.
- * 2. The `settings` table (`push:vapid_keys`) — auto-generated on first use
- *    and persisted there, so keys survive restarts without any setup.
+ * VAPID is not optional decoration: every push request must carry an
+ * ES256-signed JWT proving which server sent it, or the push service answers
+ * 401, and the same public key is what binds a browser's subscription to
+ * this server so nobody else can push to that device. What IS optional is
+ * the operator's involvement — a keypair is generated on first use and
+ * persisted in the `settings` table, so push needs no configuration at all.
  *
- * Auto-generation (rather than failing closed) is deliberate: push is an
- * opt-in per-device feature, and a missing key should never break boot.
+ * There is deliberately no env-var override. Keys and subscriptions live in
+ * the same database, so they are created and wiped together and a key can
+ * never go stale against rows that outlived it — which is the only thing an
+ * externally-provisioned key would have bought.
+ *
+ * Auto-generation (rather than failing closed) is likewise deliberate: push
+ * is an opt-in per-device feature, and a missing key must never break boot.
  */
 
 import { debug } from '$shared/utils/logger';
@@ -16,22 +22,6 @@ import { settingsQueries } from '../database/queries/settings-queries';
 import { base64UrlDecode, generateVapidKeypair, type VapidKeypair } from './webpush-crypto';
 
 const SETTINGS_KEY = 'push:vapid_keys';
-
-function readEnvKeys(): VapidKeypair | null {
-	const publicKey = process.env.CLOPEN_VAPID_PUBLIC_KEY?.trim();
-	const privateKey = process.env.CLOPEN_VAPID_PRIVATE_KEY?.trim();
-	if (!publicKey && !privateKey) return null;
-	if (!publicKey || !privateKey) {
-		throw new Error(
-			'CLOPEN_VAPID_PUBLIC_KEY and CLOPEN_VAPID_PRIVATE_KEY must be set together'
-		);
-	}
-	// Fail fast on garbage rather than signing undecryptable pushes all day.
-	if (base64UrlDecode(publicKey).length !== 65 || base64UrlDecode(privateKey).length !== 32) {
-		throw new Error('Invalid CLOPEN_VAPID_* keys (expected 65-byte public, 32-byte private)');
-	}
-	return { publicKey, privateKey };
-}
 
 function readStoredKeys(): VapidKeypair | null {
 	try {
@@ -56,9 +46,6 @@ let cached: VapidKeypair | null = null;
 export async function getVapidKeys(): Promise<VapidKeypair> {
 	if (cached) return cached;
 
-	cached = readEnvKeys();
-	if (cached) return cached;
-
 	cached = readStoredKeys();
 	if (cached) return cached;
 
@@ -74,13 +61,17 @@ export async function getVapidKeys(): Promise<VapidKeypair> {
 	return cached;
 }
 
-/** Contact string for the VAPID JWT `sub` claim. */
-export function getVapidSubject(): string {
-	const subject = process.env.CLOPEN_VAPID_SUBJECT?.trim();
-	return subject || 'mailto:clopen@localhost';
-}
+/**
+ * Contact for the VAPID JWT `sub` claim.
+ *
+ * RFC 8292 wants a `mailto:` or `https:` URI a push service operator could
+ * use to reach whoever is sending. A self-hosted instance has no such
+ * address, so this points at the project rather than inventing an
+ * undeliverable mailbox — and it is a constant precisely so that nobody has
+ * to configure it.
+ */
+const VAPID_SUBJECT = 'https://github.com/myrialabs/clopen';
 
-/** Test hook: drop the cache so env/stored reads run again. */
-export function resetVapidKeyCache(): void {
-	cached = null;
+export function getVapidSubject(): string {
+	return VAPID_SUBJECT;
 }
