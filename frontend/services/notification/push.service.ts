@@ -13,6 +13,12 @@ import { settings } from '$frontend/stores/features/settings.svelte';
 import { debug } from '$shared/utils/logger';
 import { notificationIcon } from './notification-icon';
 import { uniqueNotificationTag, waitForNotificationShown } from './native-notification';
+import {
+	isMobileDevice,
+	isServiceWorkerSupported,
+	showServiceWorkerNotification,
+	warmPushServiceWorker
+} from './service-worker-notifications';
 
 /**
  * Why a notification never reached the OS. Reported back to callers instead
@@ -83,11 +89,31 @@ function blockReason(): NotificationBlockReason | null {
 }
 
 type CreateResult =
-	| { notification: Notification; reason?: undefined }
-	| { notification?: undefined; reason: NotificationBlockReason };
+	| { notification: Notification; viaServiceWorker?: false; reason?: undefined }
+	| { viaServiceWorker: true; reason?: undefined }
+	| { notification?: undefined; viaServiceWorker?: false; reason: NotificationBlockReason };
+
+/**
+ * Show via the service worker (the mobile route). Returns true when the
+ * worker accepted and displayed the notification.
+ */
+async function createViaServiceWorker(
+	title: string,
+	options: NotificationOptions
+): Promise<boolean> {
+	const tag = options.tag ?? uniqueNotificationTag('notification');
+	const result = await showServiceWorkerNotification(title, { ...options, tag });
+	return result === 'shown';
+}
 
 /**
  * The single path to a native notification.
+ *
+ * Desktop is untouched: it goes through `new Notification()` exactly as
+ * before, preserving the OS `show` event the Test Push verdict relies on.
+ * Mobile additionally routes through the service worker — Chrome on Android
+ * throws on plain construction, and worker-owned toasts are what survive in
+ * the notification shade when the tab is backgrounded.
  *
  * Deliberately never calls `close()`. The previous auto-close after five
  * seconds also removed the notification from the Windows Action Center,
@@ -106,25 +132,52 @@ async function createNotification(
 	}
 
 	const icon = await notificationIcon();
+	const fullOptions: NotificationOptions = {
+		icon,
+		badge: icon,
+		...options
+	};
+
+	// Mobile first: the worker owns the toast, so it outlives a backgrounded
+	// tab. When the worker is unavailable the code falls through to the
+	// desktop construction below, which either works or reports precisely why.
+	if (isMobileDevice() && isServiceWorkerSupported()) {
+		if (await createViaServiceWorker(title, fullOptions)) {
+			return { viaServiceWorker: true };
+		}
+		debug.warn('notification', 'Service worker notification failed, trying page notification');
+	}
 
 	try {
 		return {
-			notification: new Notification(title, {
-				icon,
-				badge: icon,
-				...options
-			})
+			notification: new Notification(title, fullOptions)
 		};
 	} catch (error) {
 		// Chrome on Android throws here: plain construction is unsupported
 		// and service workers are the only route.
 		debug.warn('notification', 'Failed to create notification:', error);
+		if (await createViaServiceWorker(title, fullOptions)) {
+			return { viaServiceWorker: true };
+		}
 		return { reason: 'creation-failed' };
 	}
 }
 
-/** Send a chat notification, honouring the user's push setting. */
-async function sendChatNotification(title: string, body: string, tagPrefix: string): Promise<void> {
+/**
+ * Send a chat notification, honouring the user's push setting.
+ *
+ * `explicitTag` pins the tag for events the server also pushes (stream
+ * completions, waiting-for-input): both copies share it, so the server copy
+ * replaces the local toast instead of stacking a duplicate. Distinct events
+ * still carry distinct tags, so separate chats never collapse into one. When
+ * omitted, a fresh tag is minted exactly as before.
+ */
+async function sendChatNotification(
+	title: string,
+	body: string,
+	tagPrefix: string,
+	explicitTag?: string
+): Promise<void> {
 	if (!settings.pushNotifications) return;
 
 	await createNotification(title, {
@@ -132,7 +185,7 @@ async function sendChatNotification(title: string, body: string, tagPrefix: stri
 		// A fresh tag per notification. Reusing one replaces the live
 		// notification instead of raising a new one, silently on Chrome, so
 		// several finished chats collapsed into a single toast.
-		tag: uniqueNotificationTag(tagPrefix)
+		tag: explicitTag ?? uniqueNotificationTag(tagPrefix)
 	});
 }
 
@@ -165,24 +218,30 @@ export const pushNotification = {
 	blockReason,
 
 	/**
-	 * Send notification for chat response completion
+	 * Send notification for chat response completion.
+	 *
+	 * `tag` is the shared server/local identity for one event (e.g.
+	 * `chat-<streamId>`). Omit it and the previous unique-per-toast behaviour
+	 * applies untouched.
 	 */
-	async sendChatComplete(message?: string): Promise<void> {
+	async sendChatComplete(message?: string, tag?: string): Promise<void> {
 		await sendChatNotification(
 			'Claude Response Complete',
 			message || 'Your chat response is ready',
-			'chat-complete'
+			'chat-complete',
+			tag
 		);
 	},
 
 	/**
 	 * Send notification for chat error
 	 */
-	async sendChatError(error?: string): Promise<void> {
+	async sendChatError(error?: string, tag?: string): Promise<void> {
 		await sendChatNotification(
 			'Claude Response Error',
 			error || 'There was an error with your chat response',
-			'chat-error'
+			'chat-error',
+			tag
 		);
 	},
 
@@ -196,12 +255,20 @@ export const pushNotification = {
 	 * few platforms display notifications without emitting `show`.
 	 */
 	async testNotification(): Promise<TestNotificationResult> {
-		const { notification, reason } = await createNotification('Test Notification', {
+		const created = await createNotification('Test Notification', {
 			body: 'Push notifications are working correctly',
 			tag: uniqueNotificationTag('test')
 		});
 
-		if (!notification) return { outcome: 'blocked', reason };
+		if (created.reason) return { outcome: 'blocked', reason: created.reason };
+
+		// The service worker route has no `show` event to wait for:
+		// `showNotification()` resolving plus the registration confirming the
+		// tag on screen is the evidence. Reaching here via the worker already
+		// means both held.
+		if (created.viaServiceWorker) return { outcome: 'shown' };
+
+		const { notification } = created;
 
 		const result = await waitForNotificationShown(notification, TEST_SHOW_TIMEOUT_MS);
 		if (result === 'shown') return { outcome: 'shown' };
@@ -217,6 +284,10 @@ export const pushNotification = {
 	 * Initialize and request permissions if needed
 	 */
 	async initialize(): Promise<boolean> {
+		// Best-effort: have the worker registered before the first test or
+		// chat completion needs it. Desktop ignores this entirely.
+		warmPushServiceWorker();
+
 		if (!isSupported()) {
 			return false;
 		}

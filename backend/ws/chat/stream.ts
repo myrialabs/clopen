@@ -15,7 +15,9 @@ import { debug } from '$shared/utils/logger';
 import { trimSubAgentForWire } from '$shared/utils/subagent-wire-trim';
 import { ws } from '$backend/utils/ws';
 import { broadcastPresence } from '../projects/status';
-import { sessionQueries, messageQueries } from '../../database/queries';
+import { projectQueries, sessionQueries, messageQueries } from '../../database/queries';
+import { sendPushToUser } from '../../push/sender';
+import { chatStreamPushTag, waitingInputPushTag } from '../../push/tags';
 import { requireSessionAccess } from '../access';
 import { resolveSessionPath } from '../../worktrees';
 
@@ -58,6 +60,24 @@ function handleWaitingInputChange(
 			toolUseId: askToolUse.id,
 			timestamp: event.data?.timestamp || new Date().toISOString()
 		});
+
+		// Background route: reach the requester's devices even when Chrome is
+		// closed. Deterministic tag replaces (not stacks with) the local toast
+		// the open tab shows for the same question.
+		const requestedByUserId = streamManager.getSessionStream(
+			chatSessionId,
+			projectId
+		)?.requestedByUserId;
+		if (requestedByUserId) {
+			const projectName = projectQueries.getById(projectId)?.name || 'Unknown';
+			void sendPushToUser(requestedByUserId, {
+				title: 'Claude Response Complete',
+				body: `Waiting for your input in "${projectName}"`,
+				tag: waitingInputPushTag(askToolUse.id)
+			}).catch((error) => {
+				debug.warn('notification', 'Background waiting-input push failed:', error);
+			});
+		}
 	}
 }
 
@@ -68,8 +88,8 @@ function handleWaitingInputChange(
 // exists (e.g., after browser refresh when user is on a different project).
 // Ensures cross-project notifications (presence update, sound, push) always work.
 // ============================================================================
-streamManager.on('stream:lifecycle', (event: { status: string; streamId: string; projectId?: string; chatSessionId?: string; timestamp: string; reason?: string }) => {
-	const { status, projectId, chatSessionId, timestamp, reason } = event;
+streamManager.on('stream:lifecycle', (event: { status: string; streamId: string; projectId?: string; chatSessionId?: string; requestedByUserId?: string; timestamp: string; reason?: string }) => {
+	const { status, streamId, projectId, chatSessionId, requestedByUserId, timestamp, reason } = event;
 	if (!projectId) return;
 
 	debug.log('chat', `Stream lifecycle: ${status} for project ${projectId} session ${chatSessionId}${reason ? ` (reason: ${reason})` : ''}`);
@@ -87,10 +107,38 @@ streamManager.on('stream:lifecycle', (event: { status: string; streamId: string;
 	ws.emit.projectMembers(projectId, 'chat:stream-finished', {
 		projectId,
 		chatSessionId: chatSessionId || '',
+		streamId,
 		status: status as 'completed' | 'error' | 'cancelled',
 		timestamp,
 		reason
 	});
+
+	// Background route: the open tab notifies locally via the WS event above;
+	// this reaches the requester's devices when Chrome is closed. The shared
+	// deterministic tag means an open tab's local toast is replaced, never
+	// duplicated. Never throws — chat completion must not depend on push.
+	if (requestedByUserId && reason !== 'session-deleted') {
+		const projectName = projectQueries.getById(projectId)?.name || 'Unknown';
+		const payload =
+			status === 'error'
+				? {
+						title: 'Claude Response Error',
+						body: `Chat error in "${projectName}"`
+					}
+				: {
+						title: 'Claude Response Complete',
+						body:
+							status === 'cancelled'
+								? `Chat interrupted in "${projectName}"`
+								: `Chat response ready in "${projectName}"`
+					};
+		void sendPushToUser(requestedByUserId, {
+			...payload,
+			tag: chatStreamPushTag(streamId)
+		}).catch((error) => {
+			debug.warn('notification', 'Background stream-finished push failed:', error);
+		});
+	}
 
 	// Broadcast updated presence (status indicators for all projects)
 	broadcastPresence().catch((err) => {
@@ -241,6 +289,16 @@ export const streamHandler = createRouter()
 				workingRoot
 			});
 
+			// The WS user id is server-trusted (unlike the client-supplied sender)
+			// and routes background Web Push to the requester's devices. Missing
+			// context must not break the stream — push is best-effort.
+			let requestedByUserId: string | undefined;
+			try {
+				requestedByUserId = ws.getUserId(conn);
+			} catch {
+				requestedByUserId = undefined;
+			}
+
 			// Start background stream
 			const streamId = await streamManager.startStream({
 				projectPath: workingRoot,
@@ -250,7 +308,8 @@ export const streamHandler = createRouter()
 				engine: data.engine,
 				sender: data.sender,
 				profileId: data.profileId,
-				reasoningEffort: data.reasoningEffort
+				reasoningEffort: data.reasoningEffort,
+				requestedByUserId
 			});
 
 			debug.log('chat', 'Stream started with ID:', streamId);
@@ -1088,6 +1147,7 @@ export const streamHandler = createRouter()
 	.emit('chat:stream-finished', t.Object({
 		projectId: t.String(),
 		chatSessionId: t.String(),
+		streamId: t.Optional(t.String()),
 		status: t.Union([t.Literal('completed'), t.Literal('error'), t.Literal('cancelled')]),
 		timestamp: t.String(),
 		reason: t.Optional(t.String())

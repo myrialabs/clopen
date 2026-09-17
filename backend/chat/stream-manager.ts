@@ -60,6 +60,12 @@ export interface StreamState {
 	processId: string;
 	engine: EngineType;
 	accountId?: number;
+	/**
+	 * Server-trusted id of the requesting user (see StreamRequest). Carried
+	 * through so terminal lifecycle events can fan out Web Push to the right
+	 * devices without trusting any client-supplied field.
+	 */
+	requestedByUserId?: string;
 	/** Reasoning/thinking level token for this run (native per engine; undefined = engine default). */
 	reasoningEffort?: string;
 	status: 'active' | 'completed' | 'error' | 'cancelled';
@@ -351,6 +357,7 @@ class StreamManager extends EventEmitter {
 			streamId: streamState.streamId,
 			projectId: streamState.projectId,
 			chatSessionId: streamState.chatSessionId,
+			requestedByUserId: streamState.requestedByUserId,
 			timestamp: (streamState.completedAt || new Date()).toISOString(),
 			reason
 		});
@@ -397,6 +404,7 @@ class StreamManager extends EventEmitter {
 			processId,
 			engine: request.engine.type,
 			accountId: request.engine.account?.id || undefined,
+			requestedByUserId: request.requestedByUserId,
 			reasoningEffort: request.reasoningEffort ?? undefined,
 			status: 'active',
 			startedAt: new Date(),

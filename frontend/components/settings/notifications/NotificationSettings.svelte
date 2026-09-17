@@ -3,6 +3,19 @@
 	import { settings, updateSettings } from '$frontend/stores/features/settings.svelte';
 	import { authStore } from '$frontend/stores/features/auth.svelte';
 	import { soundNotification, pushNotification } from '$frontend/services/notification';
+	import {
+		ensurePushSubscription,
+		getDevicePushStatus,
+		removePushSubscription,
+		sendTestPushViaServer,
+		type DevicePushStatus
+	} from '$frontend/services/notification/push-subscription.service';
+	import {
+		isBackgroundPushSupported,
+		isMobileDevice,
+		isPushSecureContext
+	} from '$frontend/services/notification/service-worker-notifications';
+	import { uniqueNotificationTag } from '$frontend/services/notification/native-notification';
 	import type { NotificationBlockReason } from '$frontend/services/notification';
 	import {
 		NOTIFICATION_SOUND_PRESETS,
@@ -25,6 +38,17 @@
 	let isUploading = $state(false);
 	let hasCustomSound = $state(false);
 	let customFileInput: HTMLInputElement | null = $state(null);
+	// Background (server-driven) push state for this device. Desktop never
+	// reads it — the line below the Test Push button only renders on mobile.
+	let devicePushStatus = $state<DevicePushStatus>('unsupported');
+
+	async function refreshDevicePushStatus() {
+		try {
+			devicePushStatus = await getDevicePushStatus();
+		} catch {
+			devicePushStatus = 'inactive';
+		}
+	}
 
 	const customSelected = $derived(settings.notificationSound === NOTIFICATION_SOUND_CUSTOM);
 
@@ -68,6 +92,7 @@
 
 	onMount(() => {
 		checkCustomSound();
+		refreshDevicePushStatus();
 	});
 
 	async function previewPreset(id: string, event: Event) {
@@ -222,11 +247,36 @@
 	}
 
 	/**
+	 * Why background delivery specifically is unavailable.
+	 *
+	 * Kept apart from `osNotificationHint()` because the two have different
+	 * audiences: a plain-HTTP origin denies background push while leaving
+	 * page-raised notifications working perfectly, so pointing a failed local
+	 * toast at HTTPS would send the user chasing the wrong thing.
+	 */
+	function backgroundPushHint(): string {
+		if (!isPushSecureContext()) {
+			return 'Background push needs a secure origin (HTTPS or localhost). Open Clopen through its HTTPS address — the Remote Access tunnel provides one — and try again.';
+		}
+		return osNotificationHint();
+	}
+
+	/**
 	 * Where to look when the browser accepted a notification but nothing
 	 * appeared. Every desktop hides notifications behind a different switch,
 	 * so a single Windows-flavoured hint is noise on the other platforms.
+	 * Mobile gets its own hints: Android gates the site behind Chrome's site
+	 * settings plus the system toggle, while iOS only shows web notifications
+	 * for an installed web app.
 	 */
 	function osNotificationHint(): string {
+		const ua = typeof navigator !== 'undefined' ? navigator.userAgent : '';
+		if (/android/i.test(ua)) {
+			return 'On Android, allow notifications for this site in Chrome > Site settings, enable system notifications for Chrome, and turn off Do Not Disturb.';
+		}
+		if (/iphone|ipad|ipod/i.test(ua)) {
+			return 'On iPhone/iPad, install Clopen via Share > Add to Home Screen, open it from the home screen, and allow notifications in iOS Settings. iOS only shows web notifications for installed web apps.';
+		}
 		switch (detectPlatform()) {
 			case 'windows':
 				return 'Check Settings > System > Notifications — both the entry for this browser and Focus assist / Do not disturb.';
@@ -280,9 +330,11 @@
 			input.checked = settings.pushNotifications;
 		};
 
-		// Turning off never needs permission.
+		// Turning off never needs permission. The device subscription goes
+		// with it, so the server stops pushing to this device immediately.
 		if (settings.pushNotifications) {
 			updateSettings({ pushNotifications: false });
+			void removePushSubscription().then(() => refreshDevicePushStatus());
 			return;
 		}
 
@@ -301,7 +353,26 @@
 			// permission prompt. Flipping the setting without asking left the
 			// switch on while every notification was silently dropped.
 			if (await pushNotification.initialize()) {
+				// Register this device with the server so completions arrive
+				// with no tab open. Every browser exposing a PushManager over
+				// a secure origin takes part, desktop included.
+				//
+				// A failed registration must never take away what already
+				// worked: the toggle still turns on for foreground (tab-open)
+				// notifications, with a warning that background is off.
+				if (isBackgroundPushSupported()) {
+					const sync = await ensurePushSubscription();
+					if (sync !== 'synced') {
+						addNotification({
+							type: 'warning',
+							title: 'Background Push Off',
+							message: `Push is on for the open tab, but this device could not be registered for background notifications (delivered with no tab open). ${backgroundPushHint()}`,
+							duration: 6000
+						});
+					}
+				}
 				updateSettings({ pushNotifications: true });
+				refreshDevicePushStatus();
 				return;
 			}
 
@@ -311,6 +382,72 @@
 			resync();
 		} finally {
 			isTogglingPush = false;
+		}
+	}
+
+	/**
+	 * Test Push over the real server → push service → this device path, the
+	 * same journey a chat completion takes with no tab open. A pass is
+	 * evidence about background delivery, not about a local toast.
+	 *
+	 * Preferred over the local test wherever it is available, because both
+	 * end at the same OS notification centre — so a server push appearing
+	 * also proves the page-raised path would appear, while the reverse says
+	 * nothing about the network leg.
+	 *
+	 * When the background route is unavailable, fall back to the local test
+	 * instead of failing outright — the tab-open path proving itself is
+	 * strictly more useful than an error.
+	 */
+	async function testPushViaServer() {
+		const synced = (await ensurePushSubscription()) === 'synced';
+		refreshDevicePushStatus();
+
+		if (synced) {
+			const result = await sendTestPushViaServer(uniqueNotificationTag('test'));
+			if (result === 'shown') {
+				addNotification({
+					type: 'success',
+					title: 'Push Notification Test',
+					message:
+						'Background push is working — notifications will arrive with no Clopen tab open',
+					duration: 4000
+				});
+				return;
+			}
+			if (result === 'unconfirmed') {
+				addNotification({
+					type: 'warning',
+					title: 'Push Notification Unconfirmed',
+					message: `The server sent the notification but this device never confirmed it appeared. ${osNotificationHint()}`,
+					duration: 6000
+				});
+				return;
+			}
+			// `no-subscription` / `failed`: the background route is down.
+			// Fall through to the local test below.
+		}
+
+		// Local fallback: proves the tab-open path while background is off.
+		const local = await pushNotification.testNotification();
+		if (local.outcome === 'shown') {
+			addNotification({
+				type: 'success',
+				title: 'Push Notification Test',
+				message: synced
+					? 'Native push notification is working correctly'
+					: `Foreground push works, but background push (with no tab open) is not registered. ${backgroundPushHint()}`,
+				duration: synced ? 3000 : 6000
+			});
+		} else if (local.outcome === 'unconfirmed') {
+			addNotification({
+				type: 'warning',
+				title: 'Push Notification Unconfirmed',
+				message: `The browser sent the notification but the system never confirmed it appeared. ${osNotificationHint()}`,
+				duration: 6000
+			});
+		} else {
+			pushError(blockReasonMessage(local.reason, RETRY_TEST));
 		}
 	}
 
@@ -331,6 +468,14 @@
 			// it. `play()` honours the sound toggle, so a user who turned
 			// sound off still gets a silent push test.
 			void soundNotification.play();
+
+			// Prove the background path wherever it exists: the server pushes
+			// through the push service exactly like a chat completion does,
+			// so a pass means notifications arrive with no tab open.
+			if (isBackgroundPushSupported()) {
+				await testPushViaServer();
+				return;
+			}
 
 			const result = await pushNotification.testNotification();
 			if (result.outcome === 'shown') {
@@ -355,6 +500,7 @@
 			}
 		} finally {
 			pushTestsInFlight -= 1;
+			refreshDevicePushStatus();
 		}
 	}
 </script>
@@ -635,22 +781,49 @@
 					></span>
 				</label>
 			</div>
-			<div class="mt-3 pt-3 border-t border-slate-200 dark:border-slate-800">
-				<button
-					type="button"
-					class="inline-flex items-center gap-1.5 py-2 px-3.5 bg-violet-500/10 dark:bg-violet-500/10 border border-violet-500/20 dark:border-violet-500/25 rounded-lg text-violet-600 dark:text-violet-400 text-xs font-semibold cursor-pointer transition-all duration-150 hover:bg-violet-500/20 dark:hover:bg-violet-500/20 hover:border-violet-600 dark:hover:border-violet-500/40 disabled:opacity-50 disabled:cursor-not-allowed"
-					onclick={testPushNotification}
-				>
-					{#if isTestingPush}
-						<div
-							class="w-3 h-3 border-2 border-violet-600/30 dark:border-violet-400/30 border-t-violet-600 dark:border-t-violet-400 rounded-full animate-spin"
-						></div>
-						<span>Testing...</span>
+			<div class="mt-3 pt-3 border-t border-slate-200 dark:border-slate-800 flex flex-col gap-2">
+				<div>
+					<button
+						type="button"
+						class="inline-flex items-center gap-1.5 py-2 px-3.5 bg-violet-500/10 dark:bg-violet-500/10 border border-violet-500/20 dark:border-violet-500/25 rounded-lg text-violet-600 dark:text-violet-400 text-xs font-semibold cursor-pointer transition-all duration-150 hover:bg-violet-500/20 dark:hover:bg-violet-500/20 hover:border-violet-600 dark:hover:border-violet-500/40 disabled:opacity-50 disabled:cursor-not-allowed"
+						onclick={testPushNotification}
+					>
+						{#if isTestingPush}
+							<div
+								class="w-3 h-3 border-2 border-violet-600/30 dark:border-violet-400/30 border-t-violet-600 dark:border-t-violet-400 rounded-full animate-spin"
+							></div>
+							<span>Testing...</span>
+						{:else}
+							<Icon name="lucide:send" class="w-3.5 h-3.5" />
+							<span>Test Push</span>
+						{/if}
+					</button>
+				</div>
+				<div class="text-xs text-slate-600 dark:text-slate-500">
+					{#if devicePushStatus === 'active' && isMobileDevice()}
+						<span class="font-semibold text-emerald-600 dark:text-emerald-400">●</span>
+						Background push active on this device — notifications arrive even with the browser closed.
+					{:else if devicePushStatus === 'active'}
+						<span class="font-semibold text-emerald-600 dark:text-emerald-400">●</span>
+						Background push active on this device — notifications arrive with no Clopen tab open. To
+						receive them after the browser's windows are closed, let it keep running in the background
+						(Chrome: Settings → System). Anything sent while it is fully quit is delivered the next
+						time you open it, for up to 12 hours.
+					{:else if devicePushStatus === 'inactive'}
+						<span class="font-semibold text-amber-600 dark:text-amber-400">●</span>
+						Background push off on this device — turn the toggle off and on again to register.
+					{:else if devicePushStatus === 'permission-needed'}
+						<span class="font-semibold text-amber-600 dark:text-amber-400">●</span>
+						Notification permission not granted yet.
+					{:else if devicePushStatus === 'insecure-context'}
+						<span class="font-semibold text-amber-600 dark:text-amber-400">●</span>
+						Background push needs an HTTPS address — this page was opened over plain HTTP, where
+						browsers disable it. Reach Clopen through its Remote Access tunnel URL.
 					{:else}
-						<Icon name="lucide:send" class="w-3.5 h-3.5" />
-						<span>Test Push</span>
+						<span class="font-semibold text-slate-400">●</span>
+						Background push is not supported in this browser.
 					{/if}
-				</button>
+				</div>
 			</div>
 		</div>
 	</div>

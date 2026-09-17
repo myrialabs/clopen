@@ -46,4 +46,6 @@ export {
 	worktreeBranchQueries,
 	parseWorktreeBranchConfig
 } from './worktree-branch-queries';
+export { pushSubscriptionQueries } from './push-subscription-queries';
+export type { PushSubscription, PushSubscriptionInput } from './push-subscription-queries';
 export type { WorktreeBranchBindingRow, WorktreeBranchRow } from './worktree-branch-queries';

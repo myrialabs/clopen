@@ -50,6 +50,9 @@ import { filesSharedRoute } from './http/files-shared';
 // HTTP routes for per-user notification sounds (upload / serve / delete).
 import { audioRoute } from './http/audio';
 
+// HTTP routes for Web Push subscriptions + test (mobile background notifications).
+import { pushRoute } from './http/push';
+
 // HTTP routes for SFTP transfer — same reason as the file upload route above.
 import { sshSftpRoute } from './http/ssh-sftp';
 import { notesImagesRoute } from './http/notes-images';
@@ -199,6 +202,9 @@ const app = new Elysia()
 
 	// Per-user notification sound upload/serve/delete.
 	.use(audioRoute)
+
+	// Web Push subscriptions + test (mobile background notifications).
+	.use(pushRoute)
 
 	// SSH file transfer (SFTP download/upload).
 	.use(sshSftpRoute)
