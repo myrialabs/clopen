@@ -40,7 +40,7 @@ export function generateDeviceCode(): string {
 	return DEVICE_PREFIX + randomHex(TOKEN_BYTES);
 }
 
-/** Single-file share token for "Share via Link / QR Code" download links. */
+/** Single-file share token for "Share Link…" download links. */
 export function generateFileShareToken(): string {
 	return FILE_SHARE_PREFIX + randomHex(TOKEN_BYTES);
 }

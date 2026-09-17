@@ -453,24 +453,24 @@
 
 				<div class="border-t border-slate-200 dark:border-slate-700 my-1"></div>
 
-			<!-- Download (files only) -->
-			{#if file.type === 'file'}
-				<button
-					class="w-full px-3 py-1.5 text-xs text-left text-slate-700 dark:text-slate-300 hover:bg-slate-100 dark:hover:bg-slate-700 flex items-center gap-2"
-					onclick={(e) => { handleAction('download', e); closeMenu(); }}
-				>
-					<Icon name="lucide:download" class="w-3 h-3" />
-					Download File
-				</button>
+				<!-- Download (files only) -->
+				{#if file.type === 'file'}
+					<button
+						class="w-full px-3 py-1.5 text-xs text-left text-slate-700 dark:text-slate-300 hover:bg-slate-100 dark:hover:bg-slate-700 flex items-center gap-2"
+						onclick={(e) => { handleAction('download', e); closeMenu(); }}
+					>
+						<Icon name="lucide:download" class="w-3 h-3" />
+						Download File
+					</button>
 
-				<button
-					class="w-full px-3 py-1.5 text-xs text-left text-slate-700 dark:text-slate-300 hover:bg-slate-100 dark:hover:bg-slate-700 flex items-center gap-2"
-					onclick={(e) => { handleAction('share', e); closeMenu(); }}
-				>
-					<Icon name="lucide:share-2" class="w-3 h-3" />
-					Share via Link / QR Code
-				</button>
-			{/if}
+					<button
+						class="w-full px-3 py-1.5 text-xs text-left text-slate-700 dark:text-slate-300 hover:bg-slate-100 dark:hover:bg-slate-700 flex items-center gap-2"
+						onclick={(e) => { handleAction('share', e); closeMenu(); }}
+					>
+						<Icon name="lucide:share-2" class="w-3 h-3" />
+						Share Link…
+					</button>
+				{/if}
 
 				<!-- Archive actions -->
 				<button

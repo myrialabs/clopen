@@ -30,6 +30,7 @@ export interface UserServerState {
 	todoPanelState: RestoredValue;
 	projectOrder: string[] | null;
 	commandUsage: RestoredValue;
+	fileShareDefaults: RestoredValue;
 }
 
 let loaded: UserServerState | null = null;

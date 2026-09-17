@@ -16,6 +16,8 @@ export { sshKnownHostQueries } from './ssh-known-host-queries';
 export { sshPortForwardQueries } from './ssh-port-forward-queries';
 export { auditLogQueries } from './audit-log-queries';
 export { fileAuditLogQueries } from './file-audit-log-queries';
+export { fileShareQueries } from './file-share-queries';
+export type { FileShareRow, FileShareListRow } from './file-share-queries';
 export { mcpServerQueries } from './mcp-server-queries';
 export type { McpServerRow, McpServerInput, McpTransport, McpSource, McpConfigField, McpToolOverride, McpToolOverrides } from './mcp-server-queries';
 export { skillQueries } from './skill-queries';

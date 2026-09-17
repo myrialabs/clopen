@@ -6,7 +6,7 @@
 	import type { Project } from '$shared/types/database/schema';
 	import Icon from '../../common/display/Icon.svelte';
 	import Dialog from '../../common/overlay/Dialog.svelte';
-	import TunnelQRCode from '$frontend/components/tunnel/TunnelQRCode.svelte';
+	import ShareLinkCard from '$frontend/components/common/share/ShareLinkCard.svelte';
 	import ws from '$frontend/utils/ws';
 	import { debug } from '$shared/utils/logger';
 
@@ -28,9 +28,6 @@
 		const total = Math.ceil(ms / 1000);
 		return `${Math.floor(total / 60)}:${String(total % 60).padStart(2, '0')}`;
 	}
-
-	// Which invite's QR is currently expanded (one at a time).
-	let qrShownId = $state<string | null>(null);
 
 	let loading = $state(true);
 	let isCreating = $state(false);
@@ -68,10 +65,6 @@
 		}
 	}
 
-	// Per-invite copy feedback
-	let copiedId = $state<string | null>(null);
-	let copiedTimer: ReturnType<typeof setTimeout> | null = null;
-
 	// Revoke state
 	let showRevokeConfirm = $state(false);
 	let inviteToRevoke = $state<{ id: string } | null>(null);
@@ -89,15 +82,6 @@
 		} finally {
 			isCreating = false;
 		}
-	}
-
-	function copyInviteURL(inviteId: string) {
-		const url = remoteAccessStore.inviteURL(inviteId);
-		if (!url) return;
-		navigator.clipboard.writeText(url);
-		copiedId = inviteId;
-		if (copiedTimer) clearTimeout(copiedTimer);
-		copiedTimer = setTimeout(() => { copiedId = null; }, 2000);
 	}
 
 	function confirmRevoke(invite: { id: string }) {
@@ -155,44 +139,18 @@
 				{@const granted = grantedProjectNames(invite)}
 				{@const remaining = formatCountdown(invite.expires_at)}
 				<div class="flex flex-col gap-2 px-3 py-2.5 bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-700 rounded-lg">
-					<div class="flex items-center gap-2">
-						<div class="flex-1 min-w-0 font-mono text-xs text-slate-600 dark:text-slate-400 truncate select-all">
-							{url ?? 'Link created on another device'}
-						</div>
-						{#if url}
-							<button
-								type="button"
-								onclick={() => copyInviteURL(invite.id)}
-								class="flex items-center justify-center w-7 h-7 rounded-md transition-all shrink-0
-									{copiedId === invite.id
-									? 'bg-green-100 dark:bg-green-900/30 text-green-600 dark:text-green-400'
-									: 'hover:bg-violet-100 dark:hover:bg-violet-900/30 text-slate-400 hover:text-violet-600 dark:hover:text-violet-400'}"
-								title="Copy link"
-							>
-								<Icon name={copiedId === invite.id ? 'lucide:check' : 'lucide:copy'} class="w-3.5 h-3.5" />
-							</button>
-							<button
-								type="button"
-								onclick={() => (qrShownId = qrShownId === invite.id ? null : invite.id)}
-								class="flex items-center justify-center w-7 h-7 rounded-md transition-all shrink-0
-									{qrShownId === invite.id
-									? 'bg-violet-100 dark:bg-violet-900/30 text-violet-600 dark:text-violet-400'
-									: 'hover:bg-violet-100 dark:hover:bg-violet-900/30 text-slate-400 hover:text-violet-600 dark:hover:text-violet-400'}"
-								title={qrShownId === invite.id ? 'Hide QR code' : 'Show QR code'}
-							>
-								<Icon name="lucide:qr-code" class="w-3.5 h-3.5" />
-							</button>
-						{/if}
+					{#snippet revokeButton()}
 						<button
 							type="button"
 							onclick={() => confirmRevoke(invite)}
-							class="flex items-center justify-center w-7 h-7 rounded-md hover:bg-red-100 dark:hover:bg-red-900/30 text-slate-400 hover:text-red-500 dark:hover:text-red-400 transition-all shrink-0"
+							class="flex items-center justify-center w-7 h-7 rounded-md hover:bg-red-100 dark:hover:bg-red-900/30 text-slate-400 hover:text-red-500 dark:hover:text-red-400 transition-all shrink-0 cursor-pointer"
 							title="Revoke invite"
+							aria-label="Revoke invite"
 						>
 							<Icon name="lucide:x" class="w-3.5 h-3.5" />
 						</button>
-					</div>
-					<div class="flex items-center gap-1.5 flex-wrap text-2xs text-slate-500 dark:text-slate-400">
+					{/snippet}
+					{#snippet grants()}
 						<Icon name="lucide:folder" class="w-3 h-3" />
 						{#if granted.length}
 							<span>Grants access to</span>
@@ -207,11 +165,22 @@
 							<Icon name="lucide:timer" class="w-3 h-3" />
 							<span>Expires in <span class="font-mono tabular-nums">{remaining}</span></span>
 						{/if}
-					</div>
-					{#if url && qrShownId === invite.id}
-						<div class="p-3 rounded-lg border border-slate-200 dark:border-slate-700 bg-slate-50 dark:bg-slate-800/50">
-							<TunnelQRCode value={url} />
-							<p class="text-center text-xs text-slate-500 dark:text-slate-400 mt-1">Scan with the other device's camera</p>
+					{/snippet}
+
+					{#if url}
+						<ShareLinkCard {url} qr="toggle" actions={revokeButton} meta={grants} />
+					{:else}
+						<!-- Minted in another session: the server keeps only the token
+						     hash, so the URL cannot be re-shown — but revoke is keyed on
+						     the invite id, so it still works. -->
+						<div class="flex items-center gap-2">
+							<div class="flex-1 min-w-0 font-mono text-xs text-slate-400 dark:text-slate-500 truncate italic">
+								Link created on another device
+							</div>
+							{@render revokeButton()}
+						</div>
+						<div class="flex items-center gap-1.5 flex-wrap text-2xs text-slate-500 dark:text-slate-400">
+							{@render grants()}
 						</div>
 					{/if}
 				</div>

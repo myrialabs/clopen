@@ -25,6 +25,7 @@
 	import SubagentsSettings from './subagents/SubagentsSettings.svelte';
 	import InstructionsSettings from './instructions/InstructionsSettings.svelte';
 	import PermissionsSettings from './permissions/PermissionsSettings.svelte';
+	import FileSharesSettings from './files/FileSharesSettings.svelte';
 	import MemorySettings from './memory/MemorySettings.svelte';
 	import MemoryModelSettings from './model/MemoryModelSettings.svelte';
 	import ProfilesSettings from './profiles/ProfilesSettings.svelte';
@@ -344,6 +345,10 @@
 					{:else if activeSection === 'permissions' && isAdmin}
 						<div in:fly={{ x: 20, duration: 200 }}>
 							<PermissionsSettings />
+						</div>
+					{:else if activeSection === 'file-shares'}
+						<div in:fly={{ x: 20, duration: 200 }}>
+							<FileSharesSettings />
 						</div>
 					{:else if activeSection === 'memory' && isAdmin}
 						<div in:fly={{ x: 20, duration: 200 }}>
