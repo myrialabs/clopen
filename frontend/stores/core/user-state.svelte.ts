@@ -29,7 +29,10 @@ export interface UserServerState {
 	unreadSessions: RestoredValue;
 	todoPanelState: RestoredValue;
 	projectOrder: string[] | null;
+	pinnedProjectIds: string[] | null;
+	archivedProjectIds: string[] | null;
 	commandUsage: RestoredValue;
+	fileShareDefaults: RestoredValue;
 }
 
 let loaded: UserServerState | null = null;

@@ -6,6 +6,10 @@
  * `description`, optional `license`/`compatibility`/`metadata`/`allowed-tools`)
  * followed by a Markdown instruction body.
  *
+ * Clopen adds three keys of its own — `triggers`, `argument-hint` and `uses`
+ * (see {@link SkillFrontmatter}). The spec tells runtimes to ignore frontmatter
+ * keys they don't model, so a Clopen skill stays a valid, portable SKILL.md.
+ *
  * We deliberately hand-roll a tiny frontmatter parser rather than pull in a YAML
  * dependency: the spec's frontmatter surface is small and flat (one nested
  * `metadata` map), and skills we author in-app are written back in this exact
@@ -20,6 +24,20 @@ export interface SkillFrontmatter {
 	compatibility?: string;
 	allowedTools?: string;
 	metadata?: Record<string, string>;
+	/**
+	 * Clopen extension — how the skill is invoked, as a comma list of `auto`
+	 * (the model decides from `description`) and/or `slash` (the user types
+	 * `/<name>`). Absent means `auto`, which is what every pre-merge skill was.
+	 */
+	triggers?: string;
+	/** Clopen extension — argument hint shown beside `/<name>` in the chat picker. */
+	argumentHint?: string;
+	/**
+	 * Clopen extension — comma list of sibling skill slugs force-loaded whenever
+	 * this skill runs. This is what lets one `/slash` skill pull in several
+	 * skills deterministically instead of hoping the model picks them up.
+	 */
+	uses?: string;
 	/** Frontmatter keys we don't model, kept verbatim for lossless round-trips. */
 	extra: Record<string, string>;
 }
@@ -123,6 +141,9 @@ export function parseSkillMd(raw: string): ParsedSkill {
 			case 'license': fm.license = value; break;
 			case 'compatibility': fm.compatibility = value; break;
 			case 'allowed-tools': fm.allowedTools = value; break;
+			case 'triggers': fm.triggers = value; break;
+			case 'argument-hint': fm.argumentHint = value; break;
+			case 'uses': fm.uses = value; break;
 			default: fm.extra[key] = value;
 		}
 	}
@@ -140,6 +161,9 @@ export function serializeSkillMd(skill: ParsedSkill): string {
 	if (fm.license) lines.push(`license: ${quoteIfNeeded(fm.license)}`);
 	if (fm.compatibility) lines.push(`compatibility: ${quoteIfNeeded(fm.compatibility)}`);
 	if (fm.allowedTools) lines.push(`allowed-tools: ${quoteIfNeeded(fm.allowedTools)}`);
+	if (fm.triggers) lines.push(`triggers: ${quoteIfNeeded(fm.triggers)}`);
+	if (fm.argumentHint) lines.push(`argument-hint: ${quoteIfNeeded(fm.argumentHint)}`);
+	if (fm.uses) lines.push(`uses: ${quoteIfNeeded(fm.uses)}`);
 	for (const [k, v] of Object.entries(fm.extra)) lines.push(`${k}: ${quoteIfNeeded(v)}`);
 	if (fm.metadata && Object.keys(fm.metadata).length > 0) {
 		lines.push('metadata:');
@@ -182,6 +206,17 @@ export function validateFrontmatter(fm: SkillFrontmatter, expectedName?: string)
 
 	if (fm.compatibility && fm.compatibility.length > 500) {
 		errors.push('`compatibility` must be at most 500 characters.');
+	}
+
+	if (fm.triggers) {
+		const parsed = fm.triggers.split(',').map(t => t.trim().toLowerCase()).filter(Boolean);
+		const unknown = parsed.filter(t => t !== 'auto' && t !== 'slash');
+		if (unknown.length > 0) {
+			errors.push(`\`triggers\` may only contain "auto" and "slash" (got: ${unknown.join(', ')}).`);
+		}
+		if (parsed.length === 0) {
+			errors.push('`triggers` must name at least one of "auto" or "slash".');
+		}
 	}
 
 	// Angle brackets in frontmatter can inject unintended system-prompt content.

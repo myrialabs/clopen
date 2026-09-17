@@ -1,39 +1,40 @@
 /**
- * Engine sync for Skills — now a thin adapter over the shared artifact framework
- * (`backend/artifacts/`). Skills were the original per-feature sync; that logic
- * has been generalized into {@link materializeArtifacts}, and this module simply
- * supplies the skill item set plus the exact preamble text skills have always
- * emitted (preserved verbatim so retrofitting introduces no behavior change).
+ * Engine sync for Skills — a thin adapter over the shared artifact framework
+ * (`backend/artifacts/`).
  *
- * Materialization by engine (unchanged):
- *   - NATIVE (Claude, Qwen, Copilot): mirror each enabled skill folder into the
- *     engine's skills dir.
- *   - SYNTHETIC (Codex, OpenCode): inject a marker-delimited "skills preamble"
- *     (name + description + absolute SKILL.md path) into the engine's global
- *     memory file. These synthetic targets are best-effort/unverified.
+ * Materialization by engine:
+ *   - NATIVE (Claude, Qwen, Copilot, Pi): mirror each enabled skill folder into
+ *     the engine's skills dir.
+ *   - SYNTHETIC (Codex, OpenCode, Cline, Cursor): no native skills dir, so the
+ *     preamble (name + description + absolute SKILL.md path) is injected into
+ *     each turn's prompt instead of a shared global memory file — a global file
+ *     can't encode a per-session Profile and leaks across concurrent sessions.
+ *
+ * Only `auto`-triggered skills are ADVERTISED. A `slash`-only skill is invoked
+ * by the user and expanded by Clopen (see `./invoke.ts`), so listing it here
+ * would just invite the model to run it unprompted.
  *
  * Sync never throws — a stream never breaks because skills couldn't sync.
  */
 
-import { skillQueries } from '$backend/database/queries';
+import { skillQueries, parseTriggers } from '$backend/database/queries';
 import { debug } from '$shared/utils/logger';
-import { materializeArtifacts, resolveArtifact, isPromptScopedEngine, type ManagedArtifact, type ArtifactEngine } from '$backend/artifacts';
+import {
+	materializeArtifacts,
+	resolveArtifact,
+	isPromptScopedEngine,
+	writeManagedBlock,
+	markersForType,
+	ARTIFACT_ENGINES,
+	type ManagedArtifact,
+	type ArtifactEngine
+} from '$backend/artifacts';
 import { artifactFilter } from '$backend/profiles';
 import { getSkillMdPath, getSkillDir } from './store';
 import { stat } from 'node:fs/promises';
 
 /** Kept for backwards-compatible imports; identical to {@link ArtifactEngine}. */
 export type SkillEngine = ArtifactEngine;
-
-interface EnabledSkill {
-	slug: string;
-	name: string;
-	description: string;
-}
-
-function getEnabledSkills(): EnabledSkill[] {
-	return skillQueries.getEnabled().map(r => ({ slug: r.slug, name: r.name, description: r.description }));
-}
 
 /** The skills preamble — exact original wording, without the markers (added by the writer). */
 function buildSkillsPreamble(items: ManagedArtifact[]): string {
@@ -66,28 +67,31 @@ async function pathExists(path: string): Promise<boolean> {
  *
  * A profile is the source of truth for what's active: an item it references is
  * included even if globally disabled, and its enable toggle is ignored. With no
- * profile filter, only the globally-enabled set applies (unchanged behaviour).
+ * profile filter, only the globally-enabled set applies.
+ *
+ * With `autoOnly`, `slash`-only skills are excluded. They exist to be invoked by
+ * name, and Clopen expands them itself, so an engine must neither be told about
+ * them nor be given a copy it could act on. Their content is still reachable —
+ * the canonical store is what the preamble and `uses:` reference by path.
  */
-export function resolveEnabledSkills(profileId?: number): ManagedArtifact[] {
+export function resolveEnabledSkills(profileId?: number, options?: { autoOnly?: boolean }): ManagedArtifact[] {
 	const filter = artifactFilter(profileId, 'skill');
-	const source = filter
-		? skillQueries.getAll().map(r => ({ slug: r.slug, name: r.name, description: r.description }))
-		: getEnabledSkills();
-	return source
-		.filter(s => !filter || filter.has(s.slug))
-		.map(s => ({
-			slug: s.slug,
-			name: s.name,
-			description: s.description,
-			sourceDir: getSkillDir(s.slug)
-		}));
+	const rows = (filter ? skillQueries.getAll() : skillQueries.getEnabled())
+		.filter(r => !filter || filter.has(r.slug))
+		.filter(r => !options?.autoOnly || parseTriggers(r.triggers).includes('auto'));
+	return rows.map(r => ({
+		slug: r.slug,
+		name: r.name,
+		description: r.description,
+		sourceDir: getSkillDir(r.slug)
+	}));
 }
 
 /**
  * Whether skills for this engine are delivered per-session via prompt injection
  * INSTEAD of the shared global memory file — true only for a synthetic (no native
  * dir) skill target on a prompt-scoped engine. Native skill engines
- * (Claude/Qwen/Copilot) keep the folder mirror+prune.
+ * (Claude/Qwen/Copilot/Pi) keep the folder mirror+prune.
  */
 function skillsViaPromptInjection(engine: SkillEngine): boolean {
 	const synthetic = resolveArtifact('skill', { engine, scope: 'global' }).format === 'preamble-region';
@@ -96,33 +100,26 @@ function skillsViaPromptInjection(engine: SkillEngine): boolean {
 
 /**
  * The profile-scoped skills preamble for PER-SESSION injection into a synthetic
- * engine's prompt (OpenCode/Codex). Returns '' when no skill applies. Uses the
- * exact wording of the old global block, so model behaviour is unchanged apart
- * from now being correctly scoped to the session's active Profile.
+ * engine's prompt (Codex/OpenCode/Copilot/Cline/Cursor). Returns '' when no skill
+ * applies.
  */
 export function buildSkillsPromptContext(profileId?: number): string {
-	return buildSkillsPreamble(resolveEnabledSkills(profileId));
+	return buildSkillsPreamble(resolveEnabledSkills(profileId, { autoOnly: true }));
 }
 
 /**
  * Sync enabled skills for one engine. Safe to call at every stream start.
  * Never throws: failures are logged and swallowed so streaming is unaffected.
- *
- * NATIVE engines (Claude/Qwen/Copilot) mirror the profile-narrowed skill folders
- * into the engine's skills dir and prune the rest — a per-query-correct filter.
- *
- * SYNTHETIC engines (OpenCode/Codex) do NOT advertise skills through the shared
- * global memory file here: a single global file can't encode a per-session
- * profile choice and would leak across concurrent sessions (and their persistent
- * server may not re-read it). Instead they inject the resolved preamble into each
- * turn's prompt (see the adapters + {@link buildSkillsPromptContext}). We still
- * materialize an EMPTY set for them so any legacy `CLOPEN:SKILLS` block left in
- * AGENTS.md is stripped.
  */
 export async function syncSkills(engine: SkillEngine, profileId?: number): Promise<void> {
 	try {
 		const viaPrompt = skillsViaPromptInjection(engine);
-		const enabled: ManagedArtifact[] = viaPrompt ? [] : resolveEnabledSkills(profileId);
+		// Auto-only, in the native dir as well as the preamble. Mirroring a
+		// slash-only skill into e.g. Claude's `skills/` would hand it to Claude's
+		// own Skill tool, which is precisely the autonomous invocation that trigger
+		// rules out. Nothing is lost by withholding it: the canonical store is what
+		// the preamble and `uses:` point at, and Clopen expands `/slug` itself.
+		const enabled: ManagedArtifact[] = viaPrompt ? [] : resolveEnabledSkills(profileId, { autoOnly: true });
 		const managedSlugs = skillQueries.getAll().map(s => s.slug);
 		await materializeArtifacts('skill', { engine, scope: 'global' }, {
 			enabled,
@@ -135,10 +132,43 @@ export async function syncSkills(engine: SkillEngine, profileId?: number): Promi
 	}
 }
 
+/**
+ * Remove everything earlier versions materialized for the separate Commands
+ * feature: the per-engine command/prompt directories AND any `CLOPEN:COMMANDS`
+ * block left inside a memory file.
+ *
+ * Commands are `slash` Skills now and are expanded by Clopen before the prompt
+ * reaches the engine (see `./invoke.ts`), so nothing should be written to those
+ * locations any more. Without this sweep a renamed or deleted command would keep
+ * being offered by Claude's or Codex's own command picker forever.
+ *
+ * Materializing an EMPTY set is exactly the right primitive: in an exclusive
+ * (Clopen-owned, isolated) directory it prunes every entry, and for a synthetic
+ * target it strips the managed block while preserving the user's own content.
+ */
+export async function stripLegacyCommandArtifacts(engine: ArtifactEngine): Promise<void> {
+	try {
+		const ctx = { engine, scope: 'global' } as const;
+		const resolution = resolveArtifact('command', ctx);
+		const directoryBacked = resolution.format === 'folder-md' || resolution.format === 'single-md';
+		if (directoryBacked && !(await pathExists(resolution.locateEffective(ctx)))) {
+			// Nothing was ever written there. Don't let the generic materializer
+			// create the directory just to find it empty — but a stale managed block
+			// can still exist in the memory file from before this engine had a
+			// native command dir, so clear that unconditionally.
+			const memoryFile = resolveArtifact('instruction', ctx).locateEffective(ctx);
+			if (memoryFile) await writeManagedBlock(memoryFile, '', markersForType('command'));
+			return;
+		}
+		await materializeArtifacts('command', ctx, { enabled: [], managedSlugs: [] });
+	} catch (error) {
+		debug.warn('skills', `⚠️ Legacy command cleanup for ${engine} failed (continuing):`, error);
+	}
+}
+
 /** Re-sync every engine — used after a mutation so changes propagate eagerly. */
 export async function syncSkillsAllEngines(): Promise<void> {
-	const engines: SkillEngine[] = ['claude', 'codex', 'copilot', 'qwen', 'opencode', 'pi'];
-	await Promise.all(engines.map(syncSkills));
+	await Promise.all(ARTIFACT_ENGINES.map(engine => syncSkills(engine)));
 }
 
 /** Validate that a skill's SKILL.md exists on disk (used by the WS status surface). */

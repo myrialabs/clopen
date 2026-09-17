@@ -2,7 +2,7 @@
 	import { tunnelStore } from '$frontend/stores/features/tunnel.svelte';
 	import { authStore } from '$frontend/stores/features/auth.svelte';
 	import Icon from '$frontend/components/common/display/Icon.svelte';
-	import TunnelQRCode from './TunnelQRCode.svelte';
+	import ShareLinkCard from '$frontend/components/common/share/ShareLinkCard.svelte';
 	import { addNotification } from '$frontend/stores/ui/notification.svelte';
 	import { debug } from '$shared/utils/logger';
 
@@ -64,8 +64,6 @@
 		return [];
 	});
 
-	let qrUrl = $state('');
-	let copiedUrl = $state<string | null>(null);
 	let now = $state(Date.now());
 
 	// Update every second for countdown (only needed for quick tunnels with auto-stop)
@@ -77,26 +75,14 @@
 		return () => clearInterval(interval);
 	});
 
-	async function copyUrl(url: string) {
-		try {
-			await navigator.clipboard.writeText(url);
-			copiedUrl = url;
-			addNotification({
-				type: 'success',
-				title: 'Success',
-				message: 'URL copied to clipboard'
-			});
-
-			setTimeout(() => {
-				copiedUrl = null;
-			}, 2000);
-		} catch (error) {
-			debug.error('tunnel', 'Failed to copy:', error);
-			addNotification({
-				type: 'error',
-				title: 'Error',
-				message: 'Failed to copy URL'
-			});
+	// ShareLinkCard performs the copy (including the non-secure-context
+	// fallback); this only reports the outcome the way this panel always has.
+	function notifyCopied(ok: boolean) {
+		if (ok) {
+			addNotification({ type: 'success', title: 'Success', message: 'URL copied to clipboard' });
+		} else {
+			debug.error('tunnel', 'Failed to copy tunnel URL');
+			addNotification({ type: 'error', title: 'Error', message: 'Failed to copy URL' });
 		}
 	}
 
@@ -185,51 +171,18 @@
 		{#if urlEntries().length > 0}
 			<div class="space-y-2.5">
 				{#each urlEntries() as entry}
-					<div>
-						<!-- URL row -->
-						<div class="flex items-start justify-between gap-2">
-							<a
-								href={entry.url}
-								target="_blank"
-								rel="noopener noreferrer"
-								class="flex items-start gap-2 text-sm font-medium text-violet-600 dark:text-violet-400 hover:underline break-all"
-							>
-								<Icon name="lucide:globe" class="w-4 h-4 shrink-0 mt-0.5" />
-								{entry.hostname}
-							</a>
-							<div class="flex items-center gap-1 shrink-0">
-								<button
-									onclick={() => copyUrl(entry.url)}
-									class="flex p-1.5 rounded transition-colors cursor-pointer {copiedUrl === entry.url
-										? 'text-green-600 dark:text-green-400 bg-green-100 dark:bg-green-900/20'
-										: 'text-slate-400 hover:text-slate-600 dark:hover:text-slate-300 hover:bg-slate-100 dark:hover:bg-slate-700'}"
-									title="Copy URL"
-								>
-									<Icon name={copiedUrl === entry.url ? 'lucide:check' : 'lucide:copy'} class="w-3.5 h-3.5" />
-								</button>
-								<button
-									onclick={() => { qrUrl = qrUrl === entry.url ? '' : entry.url; }}
-									class="flex p-1.5 rounded transition-colors cursor-pointer {qrUrl === entry.url
-										? 'text-violet-600 dark:text-violet-400 bg-violet-100 dark:bg-violet-900/20'
-										: 'text-slate-400 hover:text-slate-600 dark:hover:text-slate-300 hover:bg-slate-100 dark:hover:bg-slate-700'}"
-									title="Show QR Code"
-								>
-									<Icon name="lucide:qr-code" class="w-3.5 h-3.5" />
-								</button>
-							</div>
-						</div>
-						<!-- Service target -->
-						<div class="flex items-center gap-2 pl-6 mt-0.5 text-xs text-slate-500 dark:text-slate-400">
+					<ShareLinkCard
+						url={entry.url}
+						display={entry.hostname}
+						linkify
+						qr="toggle"
+						onCopied={notifyCopied}
+					>
+						{#snippet meta()}
 							<Icon name="lucide:arrow-right" class="w-3 h-3 shrink-0" />
 							<span class="font-mono">{entry.service}</span>
-						</div>
-						<!-- QR Code inline per domain -->
-						{#if qrUrl === entry.url}
-							<div class="mt-2 ml-6 p-3 rounded-lg border border-slate-200 dark:border-slate-700 bg-slate-50 dark:bg-slate-800/50">
-								<TunnelQRCode value={entry.url} />
-							</div>
-						{/if}
-					</div>
+						{/snippet}
+					</ShareLinkCard>
 				{/each}
 			</div>
 		{:else if isManagedTunnel}

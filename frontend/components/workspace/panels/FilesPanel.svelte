@@ -204,7 +204,7 @@
 	let compressDialogOpen = $state(false);
 	let compressTargets = $state<FileNode[]>([]);
 
-	// Share via Link / QR Code — opened from the tree for a single file.
+	// Share Link… — opened from the tree for a single file.
 	let shareModalOpen = $state(false);
 	let shareTarget = $state<FileNode | null>(null);
 
@@ -4455,7 +4455,7 @@
 		onClose={() => { compressDialogOpen = false; compressTargets = []; }}
 	/>
 
-	<!-- Share via Link / QR Code (single file) -->
+	<!-- Share Link… (single file) -->
 	<FileShareModal
 		file={shareTarget}
 		isOpen={shareModalOpen}

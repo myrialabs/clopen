@@ -9,7 +9,7 @@
 
 import { subagentQueries } from '$backend/database/queries';
 import { debug } from '$shared/utils/logger';
-import { materializeArtifacts, resolveArtifact, isPromptScopedEngine, parseDoc, serializeDoc, parseEngineMap, artifactEngineToType, type ManagedArtifact, type ArtifactEngine } from '$backend/artifacts';
+import { materializeArtifacts, resolveArtifact, isPromptScopedEngine, canDelegateSubagents, parseDoc, serializeDoc, parseEngineMap, artifactEngineToType, ARTIFACT_ENGINES, type ManagedArtifact, type ArtifactEngine } from '$backend/artifacts';
 import { artifactFilter } from '$backend/profiles';
 import { readSubagentMd } from './store';
 
@@ -56,11 +56,17 @@ function resolveEnabledSubagentsMeta(profileId?: number): ManagedArtifact[] {
 
 /**
  * The profile-scoped subagents preamble for PER-SESSION injection into a
- * prompt-scoped engine's prompt (OpenCode/Codex/Copilot). Returns '' when none
- * apply. Advisory: it steers which subagents the model delegates to, on top of
- * whatever the engine's own (possibly stale/shared) agent registry exposes.
+ * prompt-scoped engine's prompt. Returns '' when none apply. Advisory: it steers
+ * which subagents the model delegates to, on top of whatever the engine's own
+ * (possibly stale/shared) agent registry exposes.
+ *
+ * Engines with no way to delegate (Codex, Copilot, Qwen) are told nothing. They
+ * used to receive the same "you can delegate matching tasks to these" preamble
+ * as engines that can, which described a capability they do not have — the model
+ * could only respond by inventing the delegation or ignoring the block.
  */
-export function buildSubagentsPromptContext(profileId?: number): string {
+export function buildSubagentsPromptContext(engine: ArtifactEngine, profileId?: number): string {
+	if (!canDelegateSubagents(engine)) return '';
 	return buildSubagentsPreamble(resolveEnabledSubagentsMeta(profileId));
 }
 
@@ -111,7 +117,9 @@ export async function syncSubagents(engine: ArtifactEngine, profileId?: number):
 		// In both cases materialize an EMPTY set so any stale dir/block is stripped.
 		// Claude keeps its native filtered files; Qwen (per-query) keeps its preamble.
 		const synthetic = resolveArtifact('subagent', { engine, scope: 'global' }).format === 'preamble-region';
-		const viaPrompt = (synthetic && isPromptScopedEngine(engine)) || engine === 'opencode';
+		// An engine that cannot delegate gets an empty set too: no files, no block,
+		// no advertisement anywhere (see {@link buildSubagentsPromptContext}).
+		const viaPrompt = (synthetic && isPromptScopedEngine(engine)) || engine === 'opencode' || !canDelegateSubagents(engine);
 		const filter = artifactFilter(profileId, 'subagent');
 		// A profile activates the subagents it references even if globally disabled;
 		// with no profile filter, only the enabled set applies (unchanged).
@@ -139,6 +147,5 @@ export async function syncSubagents(engine: ArtifactEngine, profileId?: number):
 }
 
 export async function syncSubagentsAllEngines(): Promise<void> {
-	const engines: ArtifactEngine[] = ['claude', 'codex', 'copilot', 'qwen', 'opencode', 'pi'];
-	await Promise.all(engines.map(syncSubagents));
+	await Promise.all(ARTIFACT_ENGINES.map(engine => syncSubagents(engine)));
 }

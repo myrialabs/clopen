@@ -112,7 +112,10 @@ export const crudHandler = createRouter()
 			unreadSessions: t.Union([t.Any(), t.Null()]),
 			todoPanelState: t.Union([t.Any(), t.Null()]),
 			projectOrder: t.Union([t.Array(t.String()), t.Null()]),
-			commandUsage: t.Union([t.Any(), t.Null()])
+			pinnedProjectIds: t.Union([t.Array(t.String()), t.Null()]),
+			archivedProjectIds: t.Union([t.Array(t.String()), t.Null()]),
+			commandUsage: t.Union([t.Any(), t.Null()]),
+			fileShareDefaults: t.Union([t.Any(), t.Null()])
 		})
 	}, async ({ conn }) => {
 		const userId = ws.getUserId(conn);
@@ -123,7 +126,10 @@ export const crudHandler = createRouter()
 		const unreadSessions = getUserState(userId, 'unreadSessions');
 		const todoPanelState = getUserState(userId, 'todoPanelState');
 		const projectOrder = getUserState(userId, 'projectOrder');
+		const pinnedProjectIds = getUserState(userId, 'pinnedProjectIds');
+		const archivedProjectIds = getUserState(userId, 'archivedProjectIds');
 		const commandUsage = getUserState(userId, 'commandUsage');
+		const fileShareDefaults = getUserState(userId, 'fileShareDefaults');
 
 		debug.log('user', `Restored state for ${userId}:`, {
 			currentProjectId,
@@ -140,7 +146,10 @@ export const crudHandler = createRouter()
 			unreadSessions: unreadSessions ?? null,
 			todoPanelState: todoPanelState ?? null,
 			projectOrder: Array.isArray(projectOrder) ? projectOrder : null,
-			commandUsage: commandUsage ?? null
+			pinnedProjectIds: Array.isArray(pinnedProjectIds) ? pinnedProjectIds : null,
+			archivedProjectIds: Array.isArray(archivedProjectIds) ? archivedProjectIds : null,
+			commandUsage: commandUsage ?? null,
+			fileShareDefaults: fileShareDefaults ?? null
 		};
 	})
 
@@ -157,7 +166,7 @@ export const crudHandler = createRouter()
 		const userId = ws.getUserId(conn);
 
 		// Validate allowed keys to prevent arbitrary data storage
-		const allowedKeys = ['currentProjectId', 'lastView', 'settings', 'unreadSessions', 'todoPanelState', 'projectOrder', 'commandUsage'];
+		const allowedKeys = ['currentProjectId', 'lastView', 'settings', 'unreadSessions', 'todoPanelState', 'projectOrder', 'pinnedProjectIds', 'archivedProjectIds', 'commandUsage', 'fileShareDefaults'];
 		if (!allowedKeys.includes(data.key)) {
 			throw new Error(`Invalid state key: ${data.key}. Allowed: ${allowedKeys.join(', ')}`);
 		}

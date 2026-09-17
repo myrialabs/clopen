@@ -228,7 +228,10 @@ export const ADMIN_ONLY_ROUTES = new Set([
 	'memory:retry-failed',
 	// Agent Skills — creating/importing/installing skills writes to the shared
 	// canonical store and applies to every engine, so the whole surface is
-	// admin-only, mirroring MCP and Stack.
+	// admin-only, mirroring MCP and Stack. This now covers what used to be a
+	// separate Commands menu: a `/slash` prompt is a skill with a slash trigger.
+	// `skills:available` is deliberately NOT here — every member needs it to type
+	// a command, and it exposes display fields only.
 	'skills:list',
 	'skills:get',
 	'skills:create',
@@ -239,16 +242,8 @@ export const ADMIN_ONLY_ROUTES = new Set([
 	'skills:delete',
 	'skills:catalog',
 	'skills:install',
-	// Custom Commands — same shared-store rationale as Skills; admin-only surface.
-	'commands:list',
-	'commands:get',
-	'commands:create',
-	'commands:update',
-	'commands:parse-import',
-	'commands:import',
-	'commands:toggle',
-	'commands:delete',
-	'commands:detect',
+	'skills:detect',
+	'skills:adopt',
 	// Subagents — shared canonical store applied to every engine; admin-only.
 	'subagents:list',
 	'subagents:get',

@@ -14,7 +14,7 @@ import { execGit } from '$backend/git/git-executor';
 import { gitService } from '$backend/git/git-service';
 import { workLinkQueries } from '$backend/database/queries';
 import { initializeEngine } from '$backend/engine';
-import { resolveGenerationTarget } from '$backend/engine/resolve-model';
+import { resolveGenerationTarget, GENERATION_SETTINGS } from '$backend/engine/resolve-model';
 import { buildBudgetedDiff, PR_DESCRIPTION_BUDGET, rangeScope } from '$backend/ws/git/diff-budget';
 import type { EngineType } from '$shared/types/unified';
 import type { GitBranchInfo } from '$shared/types/git';
@@ -226,7 +226,7 @@ export async function draftPullRequestDescription(input: {
 		diffTruncated: diff.truncated
 	});
 
-	const target = await resolveGenerationTarget(engine, input.modelId, input.providerSlug);
+	const target = await resolveGenerationTarget(engine, input.modelId, input.providerSlug, GENERATION_SETTINGS.commit);
 	debug.log('work', `Drafting a PR description via ${input.engine}/${target.providerSlug}/${target.modelId}`);
 
 	const result = await engine.generateStructured<GeneratedDescription>({

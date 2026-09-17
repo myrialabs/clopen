@@ -13,7 +13,7 @@ import { join } from 'path';
 import { readdir, readFile, stat, symlink, mkdir, lstat, rm } from 'node:fs/promises';
 import { debug } from '$shared/utils/logger';
 import { resolveArtifact } from './matrix';
-import { readManagedBlock, markersFor } from './markers';
+import { readManagedBlock, markersForType } from './markers';
 import type { ArtifactContext, ArtifactType, DetectedArtifact } from './types';
 
 async function pathExists(path: string): Promise<boolean> {
@@ -75,11 +75,23 @@ export async function detectArtifacts(type: ArtifactType, ctx: ArtifactContext):
 	const bySlug = new Map<string, DetectedArtifact>();
 
 	if (resolution.format === 'preamble-region') {
+		// A managed block, not a directory of artifacts: report the block for THIS
+		// type. Reading a fixed marker here (it used to always read `INSTRUCTIONS`)
+		// made every synthetic type report a phantom "Project instructions" entry
+		// whenever the memory file happened to carry an instructions block.
+		if (type === 'mcp' || type === 'permission') return [];
 		const file = resolution.locateEffective(ctx);
 		if (file && (await pathExists(file))) {
-			const block = readManagedBlock(await readFile(file, 'utf8'), markersFor('INSTRUCTIONS'));
+			const block = readManagedBlock(await readFile(file, 'utf8'), markersForType(type));
 			if (block != null) {
-				bySlug.set('instructions', { slug: 'instructions', name: 'Project instructions', description: '', path: file, managed: true, adoptable: false });
+				bySlug.set(type, {
+					slug: type,
+					name: type === 'instruction' ? 'Project instructions' : `Managed ${type} block`,
+					description: '',
+					path: file,
+					managed: true,
+					adoptable: false
+				});
 			}
 		}
 		return [...bySlug.values()];

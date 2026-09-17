@@ -14,10 +14,12 @@
 import { getDatabase } from '../index';
 
 /** Artifact kinds a profile can bundle. Permissions are handled separately
- *  (they are a per-engine allow/deny overlay, not a slug-referenced artifact). */
-export type ProfileItemType = 'skill' | 'command' | 'subagent' | 'mcp';
+ *  (they are a per-engine allow/deny overlay, not a slug-referenced artifact).
+ *  `'command'` is gone since migration 079 folded Commands into Skills — the
+ *  migration re-typed existing `command` rows to `skill` under their new slug. */
+export type ProfileItemType = 'skill' | 'subagent' | 'mcp';
 
-export const PROFILE_ITEM_TYPES: ProfileItemType[] = ['skill', 'command', 'subagent', 'mcp'];
+export const PROFILE_ITEM_TYPES: ProfileItemType[] = ['skill', 'subagent', 'mcp'];
 
 export interface ProfileRow {
 	id: number;

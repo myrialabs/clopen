@@ -25,7 +25,7 @@
  */
 
 import { initializeEngine } from '$backend/engine';
-import { resolveGenerationTarget } from '$backend/engine/resolve-model';
+import { resolveGenerationTarget, GENERATION_SETTINGS } from '$backend/engine/resolve-model';
 import { getDatabase } from '$backend/database';
 import { graphQueries } from '$backend/database/queries/graph-queries';
 import { debug } from '$shared/utils/logger';
@@ -62,7 +62,7 @@ async function generate<T>(model: MemoryModelConfig, prompt: string, schema: Rec
 	try {
 		const engine = await initializeEngine(model.engine);
 		if (!engine.generateStructured) return null;
-		const target = await resolveGenerationTarget(engine, model.modelId, model.providerSlug);
+		const target = await resolveGenerationTarget(engine, model.modelId, model.providerSlug, GENERATION_SETTINGS.memory);
 		const accountId = model.accountId ?? target.accountId;
 		return await engine.generateStructured<T>({
 			prompt,

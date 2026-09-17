@@ -2,7 +2,7 @@
 	import { onMount } from 'svelte';
 	import Modal from '$frontend/components/common/overlay/Modal.svelte';
 	import Icon from '$frontend/components/common/display/Icon.svelte';
-	import TunnelQRCode from '$frontend/components/tunnel/TunnelQRCode.svelte';
+	import ShareLinkCard from '$frontend/components/common/share/ShareLinkCard.svelte';
 	import DeviceSessionsList from './DeviceSessionsList.svelte';
 	import ws from '$frontend/utils/ws';
 	import { remoteAccessStore, type ShareLink } from '$frontend/stores/features/remote-access.svelte';
@@ -66,8 +66,6 @@
 	let link = $state<ShareLink | null>(null);
 	let generating = $state(false);
 	let error = $state<string | null>(null);
-	let copied = $state(false);
-	let copyTimer: ReturnType<typeof setTimeout> | null = null;
 
 	// A tunnel-based link whose tunnel was stopped (e.g. from Public Tunnel) is dead.
 	const linkStale = $derived(link?.source === 'tunnel' && !selfTunnel);
@@ -100,7 +98,6 @@
 	async function generate() {
 		generating = true;
 		error = null;
-		copied = false;
 		const previous = link;
 		try {
 			const next = await remoteAccessStore.createDeviceLink();
@@ -155,16 +152,12 @@
 		}
 	}
 
-	async function copyLink() {
-		if (!link) return;
-		try {
-			await navigator.clipboard.writeText(link.url);
-			copied = true;
+	// The card owns the clipboard call (and its non-secure-context fallback);
+	// this only turns the result into the notification this panel already gave.
+	function notifyCopied(ok: boolean) {
+		if (ok) {
 			addNotification({ type: 'success', title: 'Copied', message: 'Link copied to clipboard' });
-			if (copyTimer) clearTimeout(copyTimer);
-			copyTimer = setTimeout(() => { copied = false; }, 2000);
-		} catch (err) {
-			debug.error('remote-access', 'Copy failed:', err);
+		} else {
 			addNotification({ type: 'error', title: 'Error', message: 'Failed to copy link' });
 		}
 	}
@@ -274,31 +267,8 @@
 					</div>
 				{/if}
 
-				<!-- URL + copy -->
-				<div class="flex items-center gap-2 px-3 py-2.5 bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-700 rounded-lg">
-					<div class="flex-1 min-w-0 font-mono text-xs text-slate-600 dark:text-slate-400 truncate select-all">
-						{link.url}
-					</div>
-					<button
-						type="button"
-						onclick={copyLink}
-						class="flex items-center justify-center w-7 h-7 rounded-md transition-all shrink-0
-							{copied
-							? 'bg-green-100 dark:bg-green-900/30 text-green-600 dark:text-green-400'
-							: 'hover:bg-violet-100 dark:hover:bg-violet-900/30 text-slate-400 hover:text-violet-600 dark:hover:text-violet-400'}"
-						title="Copy link"
-					>
-						<Icon name={copied ? 'lucide:check' : 'lucide:copy'} class="w-3.5 h-3.5" />
-					</button>
-				</div>
-
-				<!-- QR -->
-				<div class="p-3 rounded-lg border border-slate-200 dark:border-slate-700 bg-slate-50 dark:bg-slate-800/50">
-					<TunnelQRCode value={link.url} />
-					<p class="text-center text-xs text-slate-500 dark:text-slate-400 mt-1">
-						Scan with the other device's camera
-					</p>
-				</div>
+				<!-- URL + copy + QR -->
+				<ShareLinkCard url={link.url} qr="always" onCopied={notifyCopied} />
 
 				<div class="flex items-center gap-3">
 					<button

@@ -14,10 +14,10 @@ export type SettingsSection =
 	| 'stack'
 	| 'integrations'
 	| 'skills'
-	| 'commands'
 	| 'subagents'
 	| 'instructions'
 	| 'permissions'
+	| 'file-shares'
 	| 'memory'
 	| 'memory-graph'
 	| 'profiles'
@@ -146,6 +146,18 @@ export const settingsSections: SettingsSectionMeta[] = [
 		adminOnly: true
 	},
 	{
+		id: 'file-shares',
+		label: 'File Shares',
+		icon: 'lucide:link',
+		// Infrastructure, not Artifacts & Access: a share link is a way out of
+		// this server, like a tunnel — nothing to do with what an engine can
+		// reach. Not adminOnly either, because any member can mint one from the
+		// Explorer and therefore needs somewhere to withdraw it; the server
+		// scopes the list, admins see every link.
+		description: 'Links that expose a single file',
+		group: 'infrastructure'
+	},
+	{
 		id: 'integrations',
 		label: 'Integrations',
 		icon: 'lucide:plug',
@@ -160,15 +172,10 @@ export const settingsSections: SettingsSectionMeta[] = [
 		id: 'skills',
 		label: 'Skills',
 		icon: 'lucide:graduation-cap',
-		description: 'Reusable agent instructions',
-		group: 'artifacts-access',
-		adminOnly: true
-	},
-	{
-		id: 'commands',
-		label: 'Commands',
-		icon: 'lucide:terminal',
-		description: 'Custom slash commands',
+		// Absorbed the old Commands section: a slash command is a skill the user
+		// invokes by name instead of one the agent picks up, so two menus meant
+		// two editors over one artifact.
+		description: 'Reusable prompts and /commands',
 		group: 'artifacts-access',
 		adminOnly: true
 	},

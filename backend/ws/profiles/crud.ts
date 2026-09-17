@@ -24,7 +24,6 @@ import type { EngineType } from '$shared/types/unified';
 
 const ITEMS_SCHEMA = t.Object({
 	skill: t.Array(t.String()),
-	command: t.Array(t.String()),
 	subagent: t.Array(t.String()),
 	mcp: t.Array(t.String())
 });
@@ -41,7 +40,7 @@ const PROFILE_SCHEMA = t.Object({
 });
 
 const ITEM_INPUT_SCHEMA = t.Array(t.Object({
-	artifactType: t.Union([t.Literal('skill'), t.Literal('command'), t.Literal('subagent'), t.Literal('mcp')]),
+	artifactType: t.Union([t.Literal('skill'), t.Literal('subagent'), t.Literal('mcp')]),
 	ref: t.String()
 }));
 
@@ -72,7 +71,7 @@ export const profilesCrudHandler = createRouter()
 	})
 	.http('profiles:inventory', {
 		data: t.Object({}),
-		response: t.Object({ skill: INVENTORY_ENTRY, command: INVENTORY_ENTRY, subagent: INVENTORY_ENTRY, mcp: INVENTORY_ENTRY })
+		response: t.Object({ skill: INVENTORY_ENTRY, subagent: INVENTORY_ENTRY, mcp: INVENTORY_ENTRY })
 	}, () => {
 		debug.log('path', 'profiles:inventory');
 		return profileService.inventory();

@@ -36,7 +36,7 @@ import { join } from 'node:path';
 import { messageQueries } from '$backend/database/queries/message-queries';
 import { graphQueries } from '$backend/database/queries/graph-queries';
 import { initializeEngine } from '$backend/engine';
-import { resolveGenerationTarget } from '$backend/engine/resolve-model';
+import { resolveGenerationTarget, GENERATION_SETTINGS } from '$backend/engine/resolve-model';
 import { getClopenDir } from '$backend/utils/paths';
 import { debug } from '$shared/utils/logger';
 import type {
@@ -679,7 +679,7 @@ async function requestExtraction(model: MemoryModelConfig, prompt: string): Prom
 
 	// The stored providerSlug/accountId can be stale — a model may have moved
 	// provider or the account may be gone (see resolve-model.ts).
-	const target = await resolveGenerationTarget(engine, model.modelId, model.providerSlug);
+	const target = await resolveGenerationTarget(engine, model.modelId, model.providerSlug, GENERATION_SETTINGS.memory);
 	const accountId = model.accountId ?? target.accountId;
 
 	const abortController = new AbortController();

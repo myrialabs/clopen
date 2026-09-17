@@ -38,7 +38,7 @@ import { syncSkills } from '$backend/skills';
 import { syncEngineArtifacts } from '$backend/engine/artifact-sync';
 import { artifactFilter } from '$backend/profiles';
 import { resolvePermissionsFromDb, isToolAllowed } from '$backend/permissions';
-import { buildJsonPrompt, extractJson } from '../../structured-helpers';
+import { buildJsonPrompt, extractJson, emptyGenerationError } from '../../structured-helpers';
 import { EngineRuns } from '../run-registry';
 import { DbCredentialStore, getPiAccountForProvider, parsePiCredential } from './credential';
 import { createPiRuntime } from './presets';
@@ -467,7 +467,7 @@ export class PiEngine implements AIEngine {
 			try { session.dispose(); } catch { /* ignore */ }
 		}
 
-		if (!resultText.trim()) throw new Error('Pi returned no structured output');
+		if (!resultText.trim()) throw emptyGenerationError('Pi');
 		return extractJson<T>(resultText);
 	}
 }

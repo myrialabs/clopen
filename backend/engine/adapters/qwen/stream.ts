@@ -39,7 +39,7 @@ import type {
 import { loadEngineSdk } from '$backend/engine/sdk-loader';
 import type { EngineOutput, EngineModel } from '$shared/types/unified';
 import type { AIEngine, EngineQueryOptions, StructuredGenerationOptions } from '../../types';
-import { buildJsonPrompt, extractJson } from '../../structured-helpers';
+import { buildJsonPrompt, extractJson, emptyGenerationError } from '../../structured-helpers';
 import { resolveOsPath } from '$backend/utils/paths';
 import { debug } from '$shared/utils/logger';
 import { getEngineEnv } from './environment';
@@ -474,7 +474,7 @@ export class QwenEngine implements AIEngine {
 		}
 
 		if (!resultText) {
-			throw new Error(errorMessage || 'Qwen returned no result text');
+			throw emptyGenerationError('Qwen Code', errorMessage || undefined);
 		}
 
 		return extractJson<T>(resultText);

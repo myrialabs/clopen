@@ -77,7 +77,9 @@ import * as migration075 from './075_create_deploy_bindings';
 import * as migration076 from './076_remove_memory_code_graph';
 import * as migration077 from './077_create_integration_db_links';
 import * as migration078 from './078_create_worktree_branch_tables';
-import * as migration079 from './079_create_push_subscriptions';
+import * as migration079 from './079_merge_commands_into_skills';
+import * as migration080 from './080_create_file_shares';
+import * as migration081 from './081_create_push_subscriptions';
 
 // Export all migrations in order
 export const migrations = [
@@ -554,6 +556,18 @@ export const migrations = [
 		description: migration079.description,
 		up: migration079.up,
 		down: migration079.down
+	},
+	{
+		id: '080',
+		description: migration080.description,
+		up: migration080.up,
+		down: migration080.down
+	},
+	{
+		id: '081',
+		description: migration081.description,
+		up: migration081.up,
+		down: migration081.down
 	}
 ];
 

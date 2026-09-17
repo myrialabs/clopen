@@ -7,6 +7,28 @@
  * Claude and Codex doesn't need these helpers.
  */
 
+/**
+ * The error every adapter raises when a one-shot generation comes back with
+ * nothing.
+ *
+ * Each engine used to phrase this itself — "OpenCode returned empty response",
+ * "Pi returned no structured output" — which named the symptom and nothing else.
+ * The user is left with a dead end: no cause, no fix, and a different sentence
+ * per engine for the same situation. An empty completion is almost always an
+ * unusable model (dropped from a live catalog, not enabled for the account) or a
+ * disconnected engine, so say that and name both places it is fixed.
+ *
+ * `detail` carries whatever the adapter actually observed (parts received, an
+ * SDK error string) — useful in a bug report, never the whole message.
+ */
+export function emptyGenerationError(engineLabel: string, detail?: string): Error {
+	return new Error(
+		`${engineLabel} returned nothing for this request${detail ? ` (${detail})` : ''}. ` +
+		`The selected model may be unavailable for your account — pick another in Settings → Models, ` +
+		`and check ${engineLabel} is connected in Settings → Engines.`
+	);
+}
+
 /** Wrap a user prompt with a JSON-only instruction and the target schema. */
 export function buildJsonPrompt(prompt: string, schema: Record<string, unknown>): string {
 	return `${prompt}
