@@ -29,15 +29,20 @@ export interface PushPayload {
 }
 
 /**
- * How long a push service holds a notification for an offline device.
+ * How long a push service holds a notification for a device it cannot reach.
  *
- * One hour, not a day: every payload here is "your chat just finished" or
- * "something is waiting for input". Delivered the next morning that is not a
- * notification, it is a puzzle — the turn is long over and the state it
- * describes no longer exists. A phone that stays offline past the hour finds
- * the result in the app instead.
+ * This is the whole mechanism behind "notify me even though I closed the
+ * browser". A phone with the screen off, or a laptop whose browser is not
+ * running, is simply unreachable: the push service queues the message and
+ * replays it the moment that device reconnects. A TTL shorter than the gap
+ * throws the notification away instead — which is the one outcome this
+ * feature exists to prevent.
+ *
+ * Twelve hours covers a laptop closed overnight or a phone left face-down
+ * through a working day, and still expires before a completion notice turns
+ * into archaeology.
  */
-const PUSH_TTL_SECONDS = 3600;
+const PUSH_TTL_SECONDS = 12 * 3600;
 
 /**
  * Push services cap a record at 4096 bytes, and that budget covers the

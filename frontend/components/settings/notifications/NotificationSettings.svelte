@@ -12,6 +12,7 @@
 	} from '$frontend/services/notification/push-subscription.service';
 	import {
 		isBackgroundPushSupported,
+		isMobileDevice,
 		isPushSecureContext
 	} from '$frontend/services/notification/service-worker-notifications';
 	import { uniqueNotificationTag } from '$frontend/services/notification/native-notification';
@@ -799,9 +800,15 @@
 					</button>
 				</div>
 				<div class="text-xs text-slate-600 dark:text-slate-500">
-					{#if devicePushStatus === 'active'}
+					{#if devicePushStatus === 'active' && isMobileDevice()}
 						<span class="font-semibold text-emerald-600 dark:text-emerald-400">●</span>
-						Background push active on this device — notifications arrive with no Clopen tab open.
+						Background push active on this device — notifications arrive even with the browser closed.
+					{:else if devicePushStatus === 'active'}
+						<span class="font-semibold text-emerald-600 dark:text-emerald-400">●</span>
+						Background push active on this device — notifications arrive with no Clopen tab open. To
+						receive them after the browser's windows are closed, let it keep running in the background
+						(Chrome: Settings → System). Anything sent while it is fully quit is delivered the next
+						time you open it, for up to 12 hours.
 					{:else if devicePushStatus === 'inactive'}
 						<span class="font-semibold text-amber-600 dark:text-amber-400">●</span>
 						Background push off on this device — turn the toggle off and on again to register.
